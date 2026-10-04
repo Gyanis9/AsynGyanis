@@ -169,17 +169,25 @@ namespace AsynGyanis::Database
         bool rollback();
 
         /**
-         * @brief 归还连接池时复位会话状态：把未提交的事务滚掉，并重申外键约束
+         * @brief 归还连接池时复位会话状态：把未提交的事务滚掉，并重申外键与两个每连接设置
          * @details 残留的事务会跟着连接串给下一个借用者：对方的语句悄悄并进上一笔事务，BEGIN IMMEDIATE
          *          取到的写锁会一直握到那条连接被回收，别的连接全被挡在门外。判定直接问引擎
          *          （sqlite3_get_autocommit），因此手工执行的 "BEGIN" 同样能被认出，不依赖本类另记状态。
          *          外键开关是每连接的一位，而 connect() 承诺过它是 ON：借用者为了批量导入关掉它再归还，
          *          下一位就会在不知情的情况下插进孤儿子行（约束在表定义里看着还在，一次报错都没有），
-         *          因此事务滚干净之后再重申一次。日志模式（WAL）不在此列——那是每库文件的持久设置，
-         *          不属于「上一个借用者留下的会话状态」。其余与基类契约一致。
+         *          因此事务滚干净之后再重申一次。同一条「批量导入配方」还有两格也是每连接的：
+         *          `synchronous`（调低＝掉电可能丢数据）与 `recursive_triggers`（打开＝触发器多滚几层而
+         *          改变写入结果）——本类不承诺它们的取值，于是按**建连时读到的那份基线**重申
+         *          （写死默认值会替部署方改掉他们自己在工厂里设的口径）。先读再比，稳态下这两格只付
+         *          两次读数、既不写也不分配。
+         * @note **`case_sensitive_like` 不在名单里**：它也是每连接的一位（打开＝LIKE 少命中），但 SQLite
+         *       只让写不让读——`PRAGMA case_sensitive_like` 回零行，基线根本拿不到，于是「退回建连时那份」
+         *       这条口径在它身上无法成立。要用它的部署方请自己在使用后写回自己想要的取值。
+         * @note 日志模式（WAL）不在此列——那是每库文件的持久设置，不属于「上一个借用者留下的会话状态」
          * @note 与基类契约一致：不抛异常、幂等；未连接时不做任何事
-         * @return 未连接或本就干净时为 true；确实去滚了事务或重申外键约束则按结果交回——
-         *         任一步没做成都交回 false，让池丢掉这条连接而不是把别人的写锁或关掉的外键传下去
+         * @return 未连接或本就干净时为 true；确实去滚了事务、重申外键或退回过那两格中任何一格则按结果交回——
+         *         任一步没做成都交回 false，让池丢掉这条连接而不是把别人的写锁、关掉的外键或别人的
+         *         同步/触发器口径传下去
          */
         bool resetSessionState() noexcept override;
 
@@ -371,6 +379,16 @@ namespace AsynGyanis::Database
         void applyStartupPragma(std::string_view pragmaText, std::string_view description);
 
         /**
+         * @brief 读一个整数型 PRAGMA 的当前值
+         * @param database 数据库句柄（调用方保证非空）
+         * @param readText 读数用的完整语句文本，如「PRAGMA synchronous;」（指向常量，不转移所有权）
+         * @return int 当下取值；读不出来返回 -1（调用方据此跳过这一格，不猜）
+         * @details prepare + 一步 + finalize，不建 std::string：归还路径上每格都要问一次，
+         *          稳态（值没被借用者改过）因此只付三次极轻的语句而不额外分配
+         */
+        [[nodiscard]] static int readIntegerPragma(sqlite3 *database, const char *readText) noexcept;
+
+        /**
          * @brief 把新的 queryTimeout() 落成 busy_timeout
          * @details 重写 DatabaseConnection::applyQueryTimeoutNow()。queryTimeout() 在 SQLite 上是两道界：
          *          第二道（语句执行时限）由进度回调在每条语句入口现读 queryTimeout()，改完本来就跟着走；
@@ -405,6 +423,12 @@ namespace AsynGyanis::Database
         };
 
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
+
+        /// 建连结束时这两个**每连接**设置的读数（-1＝当时读不出来，那一格就不退回）：归还路径按它们重申。
+        /// 它们与 foreign_keys 同属「批量导入配方」，而改完不退回的代价都是下一位看不出来的那种：
+        /// synchronous 调低＝掉电可能丢数据；recursive_triggers 打开＝触发器多滚几层而改变写入结果
+        int m_synchronousBaseline{-1};
+        int m_recursiveTriggersBaseline{-1};
 
         /// SQL 文本 → 已编译且已 reset 的游标。写语句跑完即回表；查询语句只有「行已整份物化进快照」
         /// 时才回表（那种游标此后不再被任何人引用），行没跑完的查询游标随结果集走、由结果集 finalize

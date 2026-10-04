@@ -704,6 +704,48 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "FOREIGN KEY")) << connection().lastError();
     }
 
+    /**
+     * @brief 借用者改过的两个每连接设置在归还时退回建连时那一份基线
+     * @details 与上面那条同族的另一半：批量导入配方除了 `foreign_keys=OFF`，常见写法还会把 `synchronous`
+     *          调低（掉电可能丢数据，而运行期一次报错都不会有）、把 `recursive_triggers` 打开（触发器多滚
+     *          几层从而改变写入结果）。两格都是每连接的，而本类不承诺它们的取值，因此退回目标是
+     *          **建连时读到的那一份**而不是写死的默认值——写死等于替部署方改掉他们自己定的口径。
+     *          判据逐格走「先证明改得动，再证明退回」。`case_sensitive_like` 刻意不测：那一格写进引擎有效
+     *          而 `PRAGMA` 读不回来（回零行），基线拿不到，本类也就不承诺退回它。
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, ResetSessionStateRestoresPragmasTurnedByABorrower)
+    {
+        struct Case
+        {
+            const char *name;
+            const char *readText;
+            const char *changeText;
+        };
+
+        const Case cases[] = {
+                {"synchronous", "PRAGMA synchronous", "PRAGMA synchronous=OFF"},
+                {"recursive_triggers", "PRAGMA recursive_triggers", "PRAGMA recursive_triggers=ON"},
+        };
+
+        for (const Case &testCase: cases)
+        {
+            const std::optional<std::int64_t> baselineValue = readScalarInteger(connection(), testCase.readText);
+            ASSERT_TRUE(baselineValue.has_value()) << testCase.name << "：建连时读不出这一格，用例前提不成立";
+
+            // 先证明「改得动」：这一格没生效的话，后面的退回断言就是空的
+            ASSERT_NE(executeRequired(connection(), testCase.changeText), nullptr) << testCase.name << "：" << connection().lastError();
+            const std::optional<std::int64_t> changedValue = readScalarInteger(connection(), testCase.readText);
+            ASSERT_TRUE(changedValue.has_value()) << testCase.name << "：改完之后读不出来";
+            ASSERT_NE(*changedValue, *baselineValue) << testCase.name << "：那条 PRAGMA 没改变取值，用例前提不成立";
+
+            ASSERT_TRUE(connection().resetSessionState()) << testCase.name << "：" << connection().lastError();
+
+            const std::optional<std::int64_t> restoredValue = readScalarInteger(connection(), testCase.readText);
+            ASSERT_TRUE(restoredValue.has_value()) << testCase.name;
+            EXPECT_EQ(*restoredValue, *baselineValue) << "归还时没把 " << testCase.name << " 退回建连时那一份，下一个借用者接的是上一位的口径";
+        }
+    }
+
     /** @brief 钉住 queryTimeout 经 busy_timeout 零计时映射进 SQLite，含基类默认值 */
     TEST(SqliteConnection, QueryTimeoutBecomesBusyTimeoutOnConnect)
     {

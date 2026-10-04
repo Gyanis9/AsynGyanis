@@ -7,7 +7,9 @@
 
 #include <sqlite3.h>
 
+#include <array>
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -21,6 +23,11 @@ namespace AsynGyanis::Database
         constexpr auto kInMemoryDatabasePath = ":memory:";
         constexpr auto kWriteAheadLogPragma  = "PRAGMA journal_mode=WAL;";
         constexpr auto kForeignKeysPragma    = "PRAGMA foreign_keys=ON;";
+        // 两个「每连接」设置的读数文本与名字：基线在建连时读一次，归还时按那份重申（见 resetSessionState）
+        constexpr auto kSynchronousReadText       = "PRAGMA synchronous;";
+        constexpr auto kSynchronousName           = "synchronous";
+        constexpr auto kRecursiveTriggersReadText = "PRAGMA recursive_triggers;";
+        constexpr auto kRecursiveTriggersName     = "recursive_triggers";
 
         // 语句长度（sqlite3_prepare_v2）与参数长度（sqlite3_bind_text / sqlite3_bind_blob）
         // 的长度形参都是 int，超限会被静默截断成半条语句或半段数据，因此共用同一上限
@@ -97,6 +104,12 @@ namespace AsynGyanis::Database
         // 失败只把原因留在 lastError()，不改变连接结果
         applyStartupPragma(kWriteAheadLogPragma, "启用 WAL 日志模式");
         applyStartupPragma(kForeignKeysPragma, "启用外键约束");
+
+        // 记下这两个每连接设置此刻的读数作为基线：上面那两条 PRAGMA 是本类自己承诺的状态，
+        // 而这两格保持的是引擎默认，正是「一条新连接该有的样子」。借用者把它们改了再归还，
+        // 下一位接手的就不是默认态（见 resetSessionState 里那一圈重申）
+        m_synchronousBaseline       = readIntegerPragma(m_database, kSynchronousReadText);
+        m_recursiveTriggersBaseline = readIntegerPragma(m_database, kRecursiveTriggersReadText);
 
         // 状态位最后置位：前面任何一步没走完都不算连接成功，isConnected() 不会读到中间态
         m_isConnected = true;
@@ -429,6 +442,56 @@ namespace AsynGyanis::Database
             }
             return false;
         }
+
+        // 另两格「每连接」设置按建连时读到的基线重申。它们与 foreign_keys 同属批量导入配方的另一半，
+        // 而后果都是下一位**看不出来**的那种：synchronous 被调低＝掉电可能丢数据；recursive_triggers
+        // 被打开＝触发器多滚几层从而改变写入结果。（case_sensitive_like 不在此列——它写进去有效而
+        // PRAGMA 读不回来，基线根本拿不到，见 SqliteConnection.h 里那段名单说明。）
+        // 先读再比：稳态（没人改过）时只付两次读数，既不写也不分配字符串
+        struct PragmaBaseline
+        {
+            const char *readText;
+            const char *name;
+            int         baseline;
+        };
+        const PragmaBaseline pragmas[] = {
+                {kSynchronousReadText, kSynchronousName, m_synchronousBaseline},
+                {kRecursiveTriggersReadText, kRecursiveTriggersName, m_recursiveTriggersBaseline},
+        };
+        for (const PragmaBaseline &pragma: pragmas)
+        {
+            if (pragma.baseline < 0)
+            {
+                continue; // 建连时就读不出来（引擎不认这条 PRAGMA 之类）：不猜，跳过这一格
+            }
+
+            const int currentValue = readIntegerPragma(m_database, pragma.readText);
+            if (currentValue < 0 || currentValue == pragma.baseline)
+            {
+                continue; // 读不出来就别动它；一致就什么都不发
+            }
+
+            try
+            {
+                std::array<char, 64> restoreText{};
+                const int            writtenCount = std::snprintf(restoreText.data(), restoreText.size(), "PRAGMA %s=%d;", pragma.name, pragma.baseline);
+                if (writtenCount < 0 || static_cast<std::size_t>(writtenCount) >= restoreText.size())
+                {
+                    m_lastError = "归还前重申每连接设置失败：拼不出那条 PRAGMA 语句（名字或取值异常）";
+                    return false;
+                }
+                if (sqlite3_exec(m_database, restoreText.data(), nullptr, nullptr, nullptr) != SQLITE_OK)
+                {
+                    captureError("归还前重申每连接设置失败");
+                    return false;
+                }
+            } catch (...)
+            {
+                // 本方法按接口约定是 noexcept：分配失败就吞下并交回 false，
+                // 让池丢弃这条「说不清自己是什么状态」的连接，而不是把上一位的设置传给下一位
+                return false;
+            }
+        }
         return true;
     }
 
@@ -725,6 +788,24 @@ namespace AsynGyanis::Database
                 m_lastError = std::string(description) + "失败：" + (failureReason.empty() ? sqlite3_errstr(execResult) : failureReason);
             }
         }
+    }
+
+    int SqliteConnection::readIntegerPragma(sqlite3 *database, const char *readText) noexcept
+    {
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(database, readText, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            return -1;
+        }
+
+        int value = -1;
+        if (sqlite3_step(statement) == SQLITE_ROW)
+        {
+            value = sqlite3_column_int(statement, 0);
+        }
+        // finalize 必走：PRAGMA 的游标不 finalize 就留在句柄上，而这条连接是池里共享的那一份
+        sqlite3_finalize(statement);
+        return value;
     }
 
 } // namespace AsynGyanis::Database
