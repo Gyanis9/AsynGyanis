@@ -283,6 +283,11 @@ namespace AsynGyanis::Net
                !m_pendingTunnelStreams.empty() || !m_pendingTunnelStreamsEnded.empty();
     }
 
+    bool Http3Session::hasArmedProduceDeadlines() const noexcept
+    {
+        return !m_producingStreamDeadlines.empty();
+    }
+
     void Http3Session::abandonPendingStreams()
     {
         if (m_connection == nullptr)

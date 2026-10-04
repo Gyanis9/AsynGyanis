@@ -201,6 +201,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<> handleExpiry();
 
         /**
+         * @brief 应用还在做事时替这条连接保活（把一条 PING 排进下一次出包）
+         * @details 判据与「为什么不会把死连接保成僵尸」都写在 `QuicConnectionCore::requestKeepalive`。
+         *          本层只多做一件事：让下一次 tick 的 flush 真的把这包带出去
+         * @return true 欠下了一条探针，调用方应当接着刷这条连接的待发队列；false 什么都没做
+         */
+        bool requestKeepalive();
+
+        /**
          * @brief 连接是否已收口（正常关闭、被重置或空闲超时）
          * @return true 已收口，服务端应把它摘出路由表
          */

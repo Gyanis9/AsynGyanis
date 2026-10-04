@@ -430,6 +430,21 @@ namespace AsynGyanis::Net
         co_await flush();
     }
 
+    bool QuicConnection::requestKeepalive()
+    {
+        if (m_core == nullptr || m_isClosed)
+        {
+            return false;
+        }
+        if (!m_core->requestKeepalive(currentTime()))
+        {
+            return false;
+        }
+        // 探针只在这一拍排进待发编舞里：不置这个标记，本拍就没有人 drive，PING 会一直欠着
+        m_needsFlush = true;
+        return true;
+    }
+
     void QuicConnection::requestClose() noexcept
     {
         m_isClosed = true;

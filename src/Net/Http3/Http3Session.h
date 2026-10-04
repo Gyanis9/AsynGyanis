@@ -228,6 +228,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool hasOutstandingWork() const noexcept;
 
         /**
+         * @brief 是否还有「挂着产出时限」的流：承载层据此决定要不要替这条连接保活
+         * @details 谓词刻意不是 `hasOutstandingWork()`：处理器永久卡住时后者一直为真，保活就会把连接
+         *          续成僵尸，而今天「卡住的 h3 处理器最终由 QUIC 空闲超时收掉」正是清理链在用的机制。
+         *          产出时限这张表是自限的——时限一响条目就摘（`clearProduceDeadline` / `dropRequest`），
+         *          于是保活自然停，空闲超时接着把连接收掉。详见 `QuicConnectionCore::requestKeepalive`
+         * @return true 至少一条流还在产出预算里
+         */
+        [[nodiscard]] bool hasArmedProduceDeadlines() const noexcept;
+
+        /**
          * @brief 承载连接已经没了：收掉本会话所有还没答完的流，并叫醒挂在上面的业务协程
          * @details 传输层按空闲上限收口时不逐条流发 RESET/STOP，本会话拿不到「这条流结束」的信号。
          *          缺这一步，挂在 `readNext()` / `receive()` 上的协程帧会随会话一起被销毁，等待之后的

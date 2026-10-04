@@ -150,6 +150,27 @@ namespace AsynGyanis::Net
         void onTimeout(Timestamp now);
 
         /**
+         * @brief 应用还在做事时替这条连接保活：把「还早」的空闲截止提前用一条 PING 顶住
+         * @details 为什么需要：服务端一个处理器的耗时上限是 `writeTimeout`（三条通道同一个口径，h1/h2 在
+         *          处理器相位会显式把空闲截止刷成这一段，见 `HttpSession.h` 里 `refreshIdleDeadline` 那处），
+         *          而 QUIC 的空闲超时是**传输层**的闸——它只认「有没有报文进来」。一个 40 秒的处理器既不读
+         *          也不写，两端各自的 `max_idle_timeout`（默认 30 秒）先到期，连接被静默收口：同一份业务在
+         *          h1/h2 上答得出来，换到 h3 上连响应带别的流一起丢。RFC 9000 §10.1.2 给出的合法解法就是
+         *          空闲期间发一条 PING 让对端有东西可确认。
+         * @details 为什么不会变成僵尸连接：本方法只**欠一条探针**，续期仍走 `emitPacket` 里那条既有判据
+         *          ——「收到过报文之后的第一包主动发包才续一期」（§10.1 的同一处，见 `m_hasSentAckElicitingSinceReceipt`）。
+         *          对端活着就会回 ACK，那一收把标记清掉、下一轮才还能续；对端没了就永远收不到报文，
+         *          截止不再被顶开，本端按原定的空闲时限收口。调用方的谓词也必须自限：只对
+         *          「还挂着产出时限的流」保活（见 `Http3Session::hasArmedProduceDeadlines`），
+         *          时限一响、条目一摘，保活自然停。
+         * @param now 当前时刻
+         * @return true 这次确实欠下了一条探针（调用方随后要把待发队列刷出去）；false 什么都没做
+         * @note 节律：一条 PING 管四分之一期，之后即使仍在「半期之内」也不再重发——承载层的驱动是
+         *       每个节拍都调本方法的，不设节律就变成每拍一个包
+         */
+        bool requestKeepalive(Timestamp now);
+
+        /**
          * @brief 本端主动收口：排一条 CONNECTION_CLOSE 并进入 Closing
          * @details 只在传输层错误码这一档（0x1c）；应用层错误码（0x1d）随 HTTP/3 那层一起接。
          * @param errorCode 连接错误码（RFC 9000 §11.1 / RFC 9001 §4.8）
@@ -416,6 +437,7 @@ namespace AsynGyanis::Net
         std::optional<PacketNumberSpace>         m_probeSpace{};                            ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<Timestamp>                 m_idleDeadline{};                          ///< 空闲超时的截止时刻，只在「活动」发生时重算
         std::optional<Timestamp>                 m_idlePeriod{};                            ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它
+        std::optional<Timestamp>                 m_lastKeepalive{};                         ///< 上一次为保活排探针的时刻，只管节律不参与续期
         bool                                     m_hasSentAckElicitingSinceReceipt{false};  ///< 上次收包之后是否已发过触发确认的包（§10.1 只让第一包续期）
         bool                                     m_isSendKeyPhaseSet{false};                ///< 本端出包的 Key Phase 位，随写密钥一起翻（RFC 9001 §6.1）
         bool                                     m_isReadKeyPhaseSet{false};                ///< 本端当前读密钥对应的相位位；收发两套各自记账（§6.5）

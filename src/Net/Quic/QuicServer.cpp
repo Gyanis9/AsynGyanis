@@ -948,6 +948,16 @@ namespace AsynGyanis::Net
                 if (Http3Session *const session = findHttp3Session(connectionEntry.second.get()); session != nullptr)
                 {
                     session->expireStaleRequests(now);
+                    // 有流还挂在产出预算里（处理器在跑、或正等可写）时，这段静默足以让两端按
+                    // max_idle_timeout 把连接静默收掉：同一份慢处理器在 h1/h2 答得出来（那两路在处理器
+                    // 相位把空闲截止刷成 writeTimeout），在 h3 却连响应带同连接上别的流一起丢。
+                    // RFC 9000 §10.1.2 的合法解法就是顶一条 PING 让对端有东西可确认；谓词与不会把
+                    // 死连接续成僵尸的理由分别见 Http3Session::hasArmedProduceDeadlines 与
+                    // QuicConnectionCore::requestKeepalive。排在 flush 之前，这一拍就把它带出去
+                    if (session->hasArmedProduceDeadlines())
+                    {
+                        static_cast<void>(connectionEntry.second->requestKeepalive());
+                    }
                 }
                 // 业务协程可能在收报文路径之外写下响应（比如先 await 了一个定时器）：那时没人替它
                 // flush，响应会一直躺在待发队列里。这里顺手补一刀，免得它一直等到下一次报文或定时器

@@ -1137,6 +1137,34 @@ namespace AsynGyanis::Net
         return m_idleDeadline;
     }
 
+    bool QuicConnectionCore::requestKeepalive(const Timestamp now)
+    {
+        // 没宣告空闲超时就没有会被掐的东西，握手没完成或已在收口时也不替它续命
+        if (!m_idlePeriod.has_value() || !m_idleDeadline.has_value() || m_phase != QuicConnectionPhase::Established)
+        {
+            return false;
+        }
+        // 只在「剩不到半期」时才顶：一条 PING 换一期额度，早顶只是白发包（每拍都被调用）
+        if (*m_idleDeadline - now > *m_idlePeriod / 2)
+        {
+            return false;
+        }
+        if (m_probeSpace.has_value())
+        {
+            // 已经欠着一条探针（恢复层的丢包探测优先）：不重复排队，那一包本来就是触发确认的
+            return false;
+        }
+        // 节律：一条 PING 管四分之一期，之后就算还落在「半期之内」也不重复发。承载层的驱动是
+        // 每个节拍都调这里的，没有这道闸就成了每拍一个包
+        if (m_lastKeepalive.has_value() && now - *m_lastKeepalive < *m_idlePeriod / 4)
+        {
+            return false;
+        }
+        m_probeSpace    = PacketNumberSpace::Application;
+        m_lastKeepalive = now;
+        return true;
+    }
+
     void QuicConnectionCore::restartIdleTimer(const Timestamp now)
     {
         // 两端都没宣告（或还没拿到对端参数）时这条超时不启用，也就没有截止时刻可记

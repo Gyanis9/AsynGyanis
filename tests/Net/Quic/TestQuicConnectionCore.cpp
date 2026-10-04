@@ -1992,6 +1992,68 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：应用忙时的空闲保活只在「快到期」这一段顶一条 PING，而续期仍要以收到过东西为前提
+     * @details 需要它的理由：h3 服务端一个处理器的耗时上限是 `writeTimeout`（h1/h2 在处理器相位会把空闲
+     *          截止刷成这一段），而 QUIC 的空闲超时只认「有没有报文进来」——一个 40 秒的处理器既不读也不写，
+     *          两端各自的 `max_idle_timeout` 先到期，连接被静默收口，同一份业务换到 h3 就丢响应。
+     *          RFC 9000 §10.1.2 给的合法解法正是空闲期发一条 PING。
+     * @details 另一半判据是**不能把它写成无条件续命**：续期走 `emitPacket` 里那条既有规则——「收到报文之后的
+     *          第一包主动发包才续一期」。对端活着就会回 ACK，那一收把标记清掉、下一轮才还能续；对端没了就
+     *          永远收不到报文，截止不再被顶开，连接按原定时刻收口。下面第三条断言钉的就是这一格
+     */
+    TEST(QuicConnectionCore, KeepalivePingsNearTheIdleDeadlineAndRenewOnlyAfterAReceipt)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 10000);
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        ASSERT_EQ(core.phase(), QuicConnectionPhase::Established);
+
+        constexpr Timestamp kPeriod{10000000}; // 两端宣告里较小的那一个：10 秒
+        const Timestamp     lastActivity{50000};
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), lastActivity).has_value());
+        core.drive(lastActivity + Timestamp{1000});
+        drain(core);
+        const Timestamp originalDeadline = lastActivity + kPeriod;
+
+        // 还早：不该为保活多花一个包（承载层每个节拍都会问一次）
+        EXPECT_FALSE(core.requestKeepalive(lastActivity + Timestamp{1000000})) << "离到期还远就发包";
+        // 剩不到半期才顶一条探针；同一拍里重复调用不叠加（探针还欠着）
+        const Timestamp firstAttempt = lastActivity + Timestamp{6000000};
+        EXPECT_TRUE(core.requestKeepalive(firstAttempt));
+        EXPECT_FALSE(core.requestKeepalive(firstAttempt)) << "已经欠着一条探针还再排";
+
+        const std::size_t pingCountBefore = client.pingFrameCount();
+        core.drive(firstAttempt + Timestamp{1000});
+        for (const auto &datagram: drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_EQ(client.pingFrameCount(), pingCountBefore + 1) << "保活的 PING 没上线：对端的空闲计时顶不住";
+        // 节律：一条管四分之一期，刚发过就又发等于每拍一个包
+        EXPECT_FALSE(core.requestKeepalive(firstAttempt + Timestamp{99})) << "保活没有节律";
+        // 这一包是「收到报文之后的第一个触发确认包」，所以它把截止顶开一期（§10.1 既有判据）
+        const Timestamp extendedDeadline = firstAttempt + Timestamp{1000} + kPeriod;
+        core.onTimeout(originalDeadline);
+        EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "保发包没顶开空闲截止：连接还是会在原时刻被掐";
+
+        // 此后对端一句不回：第二次保活可以发包，但**不能**再把截止往后推——僵尸连接的闸就在这
+        const Timestamp secondAttempt = extendedDeadline - Timestamp{4000000};
+        EXPECT_TRUE(core.requestKeepalive(secondAttempt));
+        core.drive(secondAttempt + Timestamp{1000});
+        drain(core);
+        core.onTimeout(extendedDeadline);
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Closing) << "没收到过任何报文还在续期：对端消失后这条连接再也收不掉";
+    }
+
+    /**
      * @brief 对端宣告一个折不进计时器的 max_idle_timeout 时按「不启用」处置，而不是溢出成乱值
      * @details 变长整数能表达到 2^62-1 毫秒（约 1.46 亿年），而本层的空闲额度是按微秒计的 Timestamp：
      *          毫秒折微秒要乘 1000，天文数字乘完直接越过 int64（有符号溢出，Linux 侧 UBSan 报的就是这一

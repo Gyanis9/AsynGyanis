@@ -4053,9 +4053,11 @@ namespace AsynGyanis::Net
         static_cast<void>(pumpTask.handle().resume());
         ASSERT_TRUE(handlerWaiter != nullptr) << "用例前提：处理器要正卡在产出预算管着的那一段里";
         ASSERT_FALSE(pumpTask.isReady()) << "用例前提：pump 要停在处理器里，而不是已经跑完";
+        EXPECT_TRUE(session.hasArmedProduceDeadlines()) << "承载层的保活谓词读的就是这本账：处理器在跑时必须为真";
         EXPECT_TRUE(abortedStreams.empty()) << "时限还没到就把流收口了：判据提前生效";
 
         session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::milliseconds{2});
+        EXPECT_FALSE(session.hasArmedProduceDeadlines()) << "时限已经响过，这本账却没摘干净：承载层会据此把一条没人回话的连接一直保活下去";
 
         ASSERT_EQ(abortedStreams.size(), 1U) << "处理器超过产出预算没回来，这条流不该一直占着会话";
         EXPECT_EQ(abortedStreams.front().streamId, kFirstRequestStreamId);
