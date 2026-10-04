@@ -34,7 +34,9 @@ namespace AsynGyanis::Platform
      * @param openedAs 可选出参：成功时填入**实际读到的那个文件对象**的基本信息（句柄绑定的对象，
      *                 不随同路径的原子替换而改变）；传 nullptr 表示不需要这份信息
      * @return std::expected<std::size_t, std::error_code> 实际读到的字节数；短读（文件比期望的短）
-     *         以小于 length 的返回值表达，不报错也不补零
+     *         以小于 length 的返回值表达，不报错也不补零；length 大得连缓冲都调不出来（超出可表示
+     *         长度，或超出可用内存）时以 `not_enough_memory` 回——把缓冲调到位是本函数唯一会抛的
+     *         一步，按上面那条 @note 它必须落成错误码而不是 terminate
      * @note 本层不抛异常（与 Platform 其它封装一致）：失败只以错误码表达，文案与分支由上层决定。
      */
     [[nodiscard]] ASYN_PLATFORM_API std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, std::size_t offset, std::size_t length,

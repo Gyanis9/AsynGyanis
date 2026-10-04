@@ -24,7 +24,17 @@ namespace AsynGyanis::Platform
                                                                      FileBasicInfo *openedAs) noexcept
     {
         // 先把缓冲调到位：容量够时 resize 只是改长度，keep-alive 连接的第二条请求起不再分配
-        target.resize(length);
+        //
+        // 这一句是整条路径上唯一会抛的（长度大到装不下时 resize 抛 length_error，超出可用内存时抛
+        // bad_alloc），而本函数声明成 noexcept 且头里写明「失败只以错误码表达」：让它穿出去就是
+        // std::terminate，一个请求把整个服务带走。按既有那条失败通道交回，处置与文案仍由上层定
+        try
+        {
+            target.resize(length);
+        } catch (const std::exception &)
+        {
+            return std::unexpected(std::make_error_code(std::errc::not_enough_memory));
+        }
         if (length == 0)
         {
             // 空段不需要打开文件：省掉一次系统调用，也不需要区分「文件不存在」与「什么都不要读」
@@ -94,7 +104,14 @@ namespace AsynGyanis::Platform
     std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, const std::size_t offset, const std::size_t length, std::string &target,
                                                                      FileBasicInfo *openedAs) noexcept
     {
-        target.resize(length);
+        // 与 Windows 那半边同一条守卫：resize 是本函数唯一会抛的一步，而头里承诺「失败只以错误码表达」
+        try
+        {
+            target.resize(length);
+        } catch (const std::exception &)
+        {
+            return std::unexpected(std::make_error_code(std::errc::not_enough_memory));
+        }
         if (length == 0)
         {
             return std::size_t{0};

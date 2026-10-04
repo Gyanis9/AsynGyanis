@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <expected>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -175,6 +176,33 @@ namespace AsynGyanis::Platform
         const std::expected<std::string, std::error_code> result = readFileContents(missingPath, 0U, 8U);
         ASSERT_FALSE(result.has_value()) << "打不开文件不能当成「读到了空内容」";
         EXPECT_EQ(result.error().category(), std::system_category());
+    }
+
+    /**
+     * @brief 钉住：长度大到缓冲都调不出来时按错误码回，而不是把进程带走
+     * @details 把头里那句「本层不抛异常：失败只以错误码表达」钉在最直白的一格上。把缓冲调到位是这条
+     *          路径唯一会抛的一步（要的长度超出可表示长度时抛 length_error，超出可用内存时抛 bad_alloc），
+     *          而两个分支的函数都是 `noexcept`——不兜住就是把一次读文件变成 std::terminate。
+     *          取值刻意让 resize 在**分配之前**就抛（标准明文要求 new_size > max_size() 时抛 length_error），
+     *          所以这条判据与机器上有多少内存、有没有别的进程在抢都无关，跑在哪一档、哪个平台都成立。
+     *          反向的一格也在这里：真的按 length 打开并读一个正常文件仍然是成功路径（见上面几条用例），
+     *          守卫只吃「这长度根本调不出来」那一种。
+     */
+    TEST(FileContents, ReportsErrorInsteadOfTerminatingWhenLengthCannotBeResized)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_UnrepresentableLength");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "small-body"));
+        const std::filesystem::path assetPath = temporaryDirectory.path() / "asset.bin";
+
+        std::string target;
+        const std::expected<std::size_t, std::error_code> intoResult =
+                Platform::readFileContentsInto(assetPath, 0U, std::numeric_limits<std::size_t>::max(), target);
+        ASSERT_FALSE(intoResult.has_value()) << "连缓冲都调不出来时必须落成错误码，而不是把宿主进程一起带走";
+        EXPECT_EQ(intoResult.error(), std::make_error_code(std::errc::not_enough_memory)) << "落点错了：" << intoResult.error().message();
+
+        // 便捷层与上面同一份实现：这条也得落成错误码
+        const std::expected<std::string, std::error_code> contentsResult = Platform::readFileContents(assetPath, 0U, std::numeric_limits<std::size_t>::max());
+        EXPECT_FALSE(contentsResult.has_value()) << "便捷层漏掉同一格就是又一次 terminate 的入口";
     }
 
     /**
