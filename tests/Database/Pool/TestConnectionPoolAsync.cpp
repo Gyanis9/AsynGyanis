@@ -14,6 +14,7 @@
 // - AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
 // - WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
+// - AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -21,11 +22,13 @@
 #include "Database/Pool/PooledConnection.h"
 #include "DatabaseTestSupport.h"
 #include "MetricsTestSupport.h"
+#include "AllocationProbe.h"
 
 #include "TestConnectionPool.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -42,6 +45,9 @@ namespace AsynGyanis::Database
         using AsynGyanis::TestSupport::registryValue; // 指标助手在 AsynGyanis::TestSupport，不是本模块那一个 TestSupport
         using TestSupport::EventLoopThread;
         using TestSupport::waitForCondition;
+
+        /// 全局那份 TestSupport 的别名：本文件在 AsynGyanis::Database 里，裸写 TestSupport:: 会撞到本模块的同名空间
+        namespace SharedTestSupport = ::AsynGyanis::TestSupport;
 
         /// 一次异步获取的观测结果
         struct AcquireProbe
@@ -507,6 +513,59 @@ namespace AsynGyanis::Database
         // 帧没了，队列里那次恢复此刻执行：票据句柄已随帧清空，它什么都不做
         loop.scheduler().runAll();
         EXPECT_FALSE(probe.finished.load(std::memory_order_acquire));
+    }
+
+    /**
+     * @brief 钉住「第 N 次分配失败」开关本身：只掐一次、之后恢复正常、并且真的掐过
+     * @details 下一例靠它注入 bad_alloc，而「注入其实没发生」会让那一例变成假的「没崩=通过」。
+     *          三格各自钉一件事：① 挂上后下一次分配确实抛；② 抛过一次之后自动解除
+     *          （被测体的兜底分支自己也要分配内存，一直失败会把它打成另一种形状）；
+     *          ③ injectedAllocationFailureCount() 涨了一格——凡是靠它注入的用例都以此自证。
+     */
+    TEST(ConnectionPoolAsync, AllocationFailureProbeInjectsExactlyOneFailurePerArm)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+
+        SharedTestSupport::resetInjectedAllocationFailureCount();
+        bool          didThrow      = false;
+        bool          recoveredOk   = true;
+        std::uint64_t injectedAtArm = 0U;
+        {
+            const SharedTestSupport::AllocationFailureGuard guard(1U);
+            try
+            {
+                const std::unique_ptr<std::array<char, 64>> first = std::make_unique<std::array<char, 64>>();
+                static_cast<void>(first);
+            } catch (const std::bad_alloc &)
+            {
+                didThrow = true;
+            }
+            injectedAtArm = SharedTestSupport::injectedAllocationFailureCount();
+            try
+            {
+                const std::unique_ptr<std::array<char, 64>> second = std::make_unique<std::array<char, 64>>();
+                static_cast<void>(second);
+            } catch (...)
+            {
+                recoveredOk = false;
+            }
+        }
+
+        EXPECT_TRUE(didThrow) << "开关没掐掉任何一次分配：靠它注入的用例全是空的";
+        EXPECT_EQ(injectedAtArm, 1U) << "注入计数没涨，用例无从自证失败真的发生过";
+        EXPECT_TRUE(recoveredOk) << "开关用完一次没解除：兜底分支自己的分配也会被掐掉";
+
+        // 作用域结束后不得继续影响分配：漏着的开关会把后面每一条用例都打成随机失败
+        bool throwsAfterScope = false;
+        try
+        {
+            const std::unique_ptr<std::array<char, 64>> third = std::make_unique<std::array<char, 64>>();
+            static_cast<void>(third);
+        } catch (...)
+        {
+            throwsAfterScope = true;
+        }
+        EXPECT_FALSE(throwsAfterScope) << "开关漏在作用域之外还挂着";
     }
 
 } // namespace AsynGyanis::Database

@@ -50,6 +50,43 @@ namespace AsynGyanis::TestSupport
     using AllocationHistogram = std::array<std::uint64_t, kAllocationHistogramBucketCount>;
 
     /**
+     * @brief 「第 N 次分配失败」开关：挂上之后**本线程**的第 N 次 operator new 抛 bad_alloc，随后自动解除
+     * @details 本探针原先只能数分配，而 `std::bad_alloc` 没有别的注入点——于是好几处
+     *          「在 `noexcept` 边界上兜住分配失败」的处置一直钉不住，只能在注释里写补齐路径。
+     *          这里就是那条路径：只失败**一次**，因为被测体的兜底分支自己也要分配内存
+     *          （摘表、投唤醒），一直失败会把它打成另一种形状，判据就说不清在钉什么。
+     * @note 计数按线程各算一份（全局计数会被别的线程偷掉：事件循环线程空闲时也在分配，
+     *        于是「没掐到」会表现为随机失败）。这与探针读数本身的口径一致——见头里
+     *        「计数只在单线程测量窗口内取样」那条。
+     * @note 与计数同样的可见性限制：库以共享形态提供时 DLL 内的分配不经过本可执行体的钩子
+     *       （见 kAllocationProbeIsBlind），用例必须先 ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND()。
+     * @note 用例不能只断「没崩」：那在开关根本没掐到的时候也成立。要么断
+     *       injectedAllocationFailureCount() 涨过，要么断言的正是「失败之后走的那条出口」。
+     */
+    class AllocationFailureGuard
+    {
+    public:
+        /// @param failureAfterAllocations 从挂上这一刻起第几次分配要失败，必须大于 0
+        explicit AllocationFailureGuard(std::uint64_t failureAfterAllocations) noexcept;
+
+        AllocationFailureGuard(const AllocationFailureGuard &) = delete;
+
+        AllocationFailureGuard &operator=(const AllocationFailureGuard &) = delete;
+
+        /// 解除本层开关并恢复上一层（支持嵌套挂法）
+        ~AllocationFailureGuard() noexcept;
+
+    private:
+        std::uint64_t m_previousTarget{0U}; ///< 挂上之前的目标值，0 表示外层没挂
+    };
+
+    /// 至今被开关实际掐掉过几次分配：用例用它自证「注入真的发生了」而不是空过
+    [[nodiscard]] std::uint64_t injectedAllocationFailureCount() noexcept;
+
+    /// 清零上面的注入计数（与挂开关配对，免得读到上一用例留下的数）
+    void resetInjectedAllocationFailureCount() noexcept;
+
+    /**
      * @brief 清零大小直方图：与 snapshotAllocationHistogram() 配对量出一段窗口的分布
      */
     void resetAllocationHistogram() noexcept;

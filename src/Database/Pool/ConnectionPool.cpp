@@ -360,9 +360,11 @@ namespace AsynGyanis::Database
             // 「工厂要分配所以整段兜住」是同一个约定。
             // 入表半途失败时把票据一起收回：等待表里没有这条，唤醒方就永远不会读它，留着只会
             // 让这条等待体带着一张指向自己帧的票据走出本函数。
-            // 补齐路径：本框架的分配探针（tests/TestSupport/AllocationProbe）只能数分配、不能让第 N 次
-            // 失败，而 bad_alloc 没有别的注入点，故这一格眼下给不出用例。要钉它先给探针加一个
-            // 「按次失败」开关，再断言「挂不上表时拿到空连接且不 terminate」。
+            // 注入点：分配探针已有「第 N 次分配失败」的开关（tests/TestSupport/AllocationProbe，按线程计数）。
+            // 这一格眼下仍未被钉住，缺的不是开关而是命中点：实测从挂上开关到 resume 返回，本线程的前
+            // 四次分配里第 2~4 次都落在等待者入表**之后**（协程帧那一步在第 1 次），所以按次序掐还掐不到
+            // 这两步上。要钉它得先给出「await_suspend 内的分配」的可观测坐标——按大小直方图定序，
+            // 或给等待体留一条测试可指的分配标记，那是单独一轮的事。
             try
             {
                 m_resumeTicket = std::make_shared<ResumeTicket>();
@@ -544,8 +546,8 @@ namespace AsynGyanis::Database
                 // （隐式）走 returnConnectionIfAlive（显式）进来，穿出去就是 std::terminate
                 try
                 {
-                    IdleEntry &slot = m_idleStack.emplace_back();
-                    slot.connection = std::move(connection);
+                    IdleEntry &slot   = m_idleStack.emplace_back();
+                    slot.connection   = std::move(connection);
                     slot.returnedTime = returnedAt;
                     // 通知留在锁内：等待侧回锁后会先复检空闲栈再睡，锁内提交保证两者之间不再插入别的归还
                     m_idleCondition.notify_one();
