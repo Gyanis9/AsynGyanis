@@ -106,6 +106,17 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把一批通路字节交给解析器，并顺手判「本条响应之后还剩字节」这条连接还能不能要
+         * @details 解析器只吃到响应结束的那一格，同一批里剩下的字节属于「这条响应之外的东西」：对端
+         *          多发的半条响应、第二条响应或一截尾巴。把它们默默丢掉而把连接还回池里，下一条请求
+         *          就会从一个错位的读点开始解——这正是 `m_isOpen` 那句「字节序已经乱了」要挡的形状，
+         *          而这条是它此前唯一没被置起来的一条。响应本身仍然完整可交，只是这条连接到此为止
+         * @param data 本批收到的字节
+         * @return std::size_t 解析器实际消费的字节数
+         */
+        std::size_t feedReceivedBytes(std::string_view data);
+
+        /**
          * @brief 读一段字节
          * @param buffer 接收缓冲区首地址
          * @param length 缓冲区容量

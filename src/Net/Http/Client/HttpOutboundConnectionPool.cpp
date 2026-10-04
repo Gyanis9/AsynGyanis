@@ -156,6 +156,18 @@ namespace AsynGyanis::Net
         m_parser.reset();
     }
 
+    std::size_t HttpOutboundConnection::feedReceivedBytes(const std::string_view data)
+    {
+        const std::size_t consumedByteCount = m_parser.feed(data);
+        // 响应已经收齐而这一批还剩字节：剩下那一截没人认领，本条通路已经错位。当场收口（close 幂等），
+        // 于是 isOpen() 为 false，归还那侧的判据自然把这条连接挡在池外；调用方手上的响应仍然完整
+        if (consumedByteCount < data.size() && m_parser.isComplete())
+        {
+            close();
+        }
+        return consumedByteCount;
+    }
+
     HttpOutboundConnectionPool::HttpOutboundConnectionPool(const Config config) noexcept : m_config(config)
     {
     }

@@ -881,7 +881,9 @@ namespace AsynGyanis::Net
                         break;
                     }
                     exchange.isAnyByteReceived = true;
-                    connection.parser().feed({buffer.data(), static_cast<std::size_t>(receivedByteCount)});
+                    // 走连接自己的入口喂字节：响应收齐而这一批还剩字节时它会把这条连接当场判死，
+                    // 于是下面 isOpen() 那一判就把这种错位的连接挡在池外
+                    connection.feedReceivedBytes({buffer.data(), static_cast<std::size_t>(receivedByteCount)});
                     // 没挂接收口就是原样：一直读到整条响应收齐
                     if (!responseBodyReceiver || !connection.parser().isHeadComplete())
                     {

@@ -3,9 +3,13 @@
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequestBody.h"
+#include "Platform/Platform.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <expected>
@@ -83,6 +87,165 @@ namespace AsynGyanis::Net
 
         /// 「进门计数、按住不放」的 POST 路由路径
         constexpr std::string_view kSlowPostRoutePath = "/slow-post";
+
+        /**
+         * @brief 只讲字节的假对端：每条连接上每收完一份请求头就回同一份预设字节，且回完不关
+         * @details 用来造自家服务端造不出来的线上形状——比如「本条响应之后还多带一截尾巴」的对端。
+         *          这里不解析 HTTP，只按 \r\n\r\n 认请求头收齐；连接保持开着，好让「客户端到底复用
+         *          了没」这件事由接入计数说了算，而不是被「对端先关了」抢走判据。
+         *          网络库初始化由工作线程自己申请（见 TestUdpServer 同条纪律）：本框架之外自己 bind
+         *          的套接字没人替它做这件事，而 ctest 是一用例一进程，别处初始化过也不算。
+         */
+        class RawBytePeer
+        {
+        public:
+            explicit RawBytePeer(std::string payload) : m_payload(std::move(payload))
+            {
+            }
+
+            RawBytePeer(const RawBytePeer &) = delete;
+
+            RawBytePeer &operator=(const RawBytePeer &) = delete;
+
+            ~RawBytePeer()
+            {
+                stop();
+            }
+
+            /**
+             * @brief 起工作线程并等它把端口报回来
+             * @param waitTimeout 等待端口的上限
+             * @return true 已经在 127.0.0.1 的某个随机端口上监听
+             */
+            bool start(const std::chrono::milliseconds waitTimeout)
+            {
+                m_worker = std::thread([this]
+                                       { run(); });
+                const auto deadline = std::chrono::steady_clock::now() + waitTimeout;
+                while (m_port.load(std::memory_order_acquire) == 0U && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                return m_port.load(std::memory_order_acquire) != 0U;
+            }
+
+            /// 收摊：置停止标志并join（各处轮询都带超时，最迟一拍就退出）
+            void stop()
+            {
+                m_isStopping.store(true, std::memory_order_release);
+                if (m_worker.joinable())
+                {
+                    m_worker.join();
+                }
+            }
+
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port.load(std::memory_order_acquire);
+            }
+
+            /// 接过几条连接：用例据此判「第二条请求走的是新连接还是复用来的那条」
+            [[nodiscard]] std::size_t acceptedConnectionCount() const noexcept
+            {
+                return m_acceptedCount.load(std::memory_order_acquire);
+            }
+
+        private:
+            void run()
+            {
+                const Platform::Socket::Initialization network;
+
+                int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(listener))
+                {
+                    return;
+                }
+
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = 0;
+                if (::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 8) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+
+                sockaddr_in bound{};
+                int         boundLength = static_cast<int>(sizeof(bound));
+                if (::getsockname(listener, reinterpret_cast<sockaddr *>(&bound), &boundLength) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                m_port.store(ntohs(bound.sin_port), std::memory_order_release);
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(listener, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(listener + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue; // 只是轮询停止标志
+                    }
+
+                    sockaddr_in peer{};
+                    int         peerLength = static_cast<int>(sizeof(peer));
+                    const int   client     = static_cast<int>(::accept(listener, reinterpret_cast<sockaddr *>(&peer), &peerLength));
+                    if (!Platform::FileDescriptor::isValid(client))
+                    {
+                        continue;
+                    }
+                    m_acceptedCount.fetch_add(1U, std::memory_order_acq_rel);
+                    serveEachRequest(client);
+                    Platform::FileDescriptor::close(client);
+                }
+                Platform::FileDescriptor::close(listener);
+            }
+
+            /// 在这条连接上一次次回同一份预设字节，直到对端收口或本端收摊
+            void serveEachRequest(const int client)
+            {
+                std::string buffered;
+                std::array<char, 1024> chunk{};
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(client, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    const int readyCount = ::select(client + 1, &readSet, nullptr, nullptr, &pollInterval);
+                    if (readyCount < 0)
+                    {
+                        return;
+                    }
+                    if (readyCount == 0)
+                    {
+                        continue;
+                    }
+                    const ssize_t received = ::recv(client, chunk.data(), static_cast<int>(chunk.size()), 0);
+                    if (received <= 0)
+                    {
+                        return; // 对端收口或出错
+                    }
+                    buffered.append(chunk.data(), static_cast<std::size_t>(received));
+                    if (buffered.find("\r\n\r\n") == std::string::npos)
+                    {
+                        continue; // 请求头还没收齐
+                    }
+                    buffered.clear();
+                    static_cast<void>(::send(client, m_payload.data(), static_cast<int>(m_payload.size()), 0));
+                }
+            }
+
+            std::string              m_payload;                             ///< 每份请求要回的预设字节
+            std::thread              m_worker;                              ///< 接受与应答线程
+            std::atomic<bool>        m_isStopping{false};                   ///< 收摊标志
+            std::atomic<std::uint16_t> m_port{0};                           ///< 实际监听端口，0 表示还没起来
+            std::atomic<std::size_t> m_acceptedCount{0};                    ///< 接过的连接条数
+        };
 
         /**
          * @brief 注册一条「进门就计数、按住一段时间再回正文」的 POST 路由
@@ -295,6 +458,39 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.statusCodes[0], 200);
         EXPECT_EQ(outcome.statusCodes[1], 200) << "对端关掉上一条之后，第二条该换一条新连接重做而不是失败";
         EXPECT_EQ(outcome.idleConnectionCount, 0U) << "对端声明 close 的连接不该留在池里";
+    }
+
+    /**
+     * @brief 钉住：本条响应之后还多带一截字节的对端，那条连接不许还回池里
+     * @details 解析器只吃到响应结束那一格，同一批里剩下的字节属于「这条响应之外的东西」：对端多发的
+     *          半条响应、第二条响应或一截尾巴。默默丢掉它们而把连接还回池里，下一条请求就从一个错位的
+     *          读点开始解——上一位的尾巴会被当成本次的响应头读，这是响应走私那一族在客户端侧的形状。
+     *          判据取两条且方向不同：第二条请求要落在一条**新**连接上（对端接过两次），以及跑完之后
+     *          池里一条都不留。只数池不够——「暖场那条被对端关了」也会留下 0 条，却与本条要防的
+     *          情形无关，所以接入计数才是能分辨这两者的那一位。
+     */
+    TEST(HttpOutboundConnectionPool, DoesNotPoolConnectionWithBytesLeftAfterResponse)
+    {
+        // 一条完整的 200（Content-Length: 2、正文 "hi"）之后紧跟一截不属于任何响应的尾巴，且回完不关连接：
+        // 「对端还活着」这个前提要保住，才能让复用与否完全由被测那侧的决定说了算
+        constexpr std::string_view kOverSentResponse =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
+            "THIS-TRAILER-BELONGS-TO-NO-RESPONSE\r\n";
+
+        RawBytePeer peer(std::string{kOverSentResponse});
+        ASSERT_TRUE(peer.start(kPooledWaitTimeout)) << "假对端没能在时限内起来并报出端口";
+
+        const std::string      url     = "http://127.0.0.1:" + std::to_string(peer.port()) + "/";
+        const PooledRunOutcome outcome = runPooledRequests({url, url});
+
+        ASSERT_EQ(outcome.statusCodes.size(), 2U);
+        EXPECT_EQ(outcome.statusCodes[0], 200);
+        EXPECT_EQ(outcome.statusCodes[1], 200) << "认出错位之后该换一条新连接重做，而不是把这一条也搭进去";
+        ASSERT_EQ(outcome.bodies.size(), 2U);
+        EXPECT_EQ(outcome.bodies[0], "hi");
+        EXPECT_EQ(outcome.bodies[1], "hi");
+        EXPECT_EQ(peer.acceptedConnectionCount(), 2U) << "响应之后还剩字节的连接被复用了：下一条请求会读到上一位的尾巴";
+        EXPECT_EQ(outcome.idleConnectionCount, 0U) << "这种已经错位的连接一条都不该留在池里";
     }
 
     /**
