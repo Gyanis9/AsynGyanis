@@ -183,6 +183,10 @@ namespace AsynGyanis::Database
          * @note **`case_sensitive_like` 不在名单里**：它也是每连接的一位（打开＝LIKE 少命中），但 SQLite
          *       只让写不让读——`PRAGMA case_sensitive_like` 回零行，基线根本拿不到，于是「退回建连时那份」
          *       这条口径在它身上无法成立。要用它的部署方请自己在使用后写回自己想要的取值。
+         * @note `busy_timeout` 每次归还都按 `queryTimeout()` 重装一次（一次 C API 调用，不发语句）：
+         *       借用者可以绕开 setter 直接发 `PRAGMA busy_timeout=1`，而两者落的是同一份存储，
+         *       基类那份账察觉不到这种改法，「退回基线」那一步因此什么都不会发——下一位只等 1 毫秒
+         *       就报 SQLITE_BUSY，看着像「库太忙」而不是像被人改过
          * @note 日志模式（WAL）不在此列——那是每库文件的持久设置，不属于「上一个借用者留下的会话状态」
          * @note 与基类契约一致：不抛异常、幂等；未连接时不做任何事
          * @return 未连接或本就干净时为 true；确实去滚了事务、重申外键或退回过那两格中任何一格则按结果交回——

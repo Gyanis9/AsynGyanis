@@ -492,6 +492,13 @@ namespace AsynGyanis::Database
                 return false;
             }
         }
+
+        // busy_timeout 也是每连接的一个数，而它有一条基类察觉不到的来路：借用者可以直接执行
+        // `PRAGMA busy_timeout=1`（与 sqlite3_busy_timeout 落的是同一份存储），而 queryTimeout()
+        // 记的是本类自己那份账——「退回基线」那一步因此什么都不会发。下一位的语句在表被占用时
+        // 只等 1 毫秒就报 SQLITE_BUSY，看着像「库太忙」而不是像被人改过。
+        // 这里按基类的当前口径无条件重装：一次 C API 调用，不发语句也不分配字符串
+        sqlite3_busy_timeout(m_database, busyTimeoutMilliseconds());
         return true;
     }
 

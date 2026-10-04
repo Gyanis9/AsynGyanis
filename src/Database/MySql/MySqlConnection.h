@@ -183,7 +183,10 @@ namespace AsynGyanis::Database
          *       名单里还有两格要点名：**显式表锁 `LOCK TABLES`** 与**会话级咨询锁 `GET_LOCK`**——
          *       前者不属于事务（ROLLBACK 不放它），后者要 `RELEASE_ALL_LOCKS()` 才收得掉，而这两格
          *       都没有 server_status 那种「自报的位」可判；要清就得每次归还都多发一条语句，
-         *       与本方法「一致时不付往返」的口径相反。借用者若要用它们，请自己释放再归还
+         *       与本方法「一致时不付往返」的口径相反。借用者若要用它们，请自己释放再归还。
+         *       同一族的还有一格：绕过 `setQueryTimeout()` 直接发 `SET SESSION max_execution_time=…`——
+         *       基类那份账只记自己 setter 设过的值，退回那一步因此察觉不到它（SQLite 侧
+         *       `PRAGMA busy_timeout` 是同一形状，那一格因为重装是零成本的 C API 调用而顺手堵住了）
          * @note 唯一的例外是本驱动自己下发的那一条会话变量（只读语句时限 max_execution_time）：
          *       它由连接池在归还时按建连时的取值退回，走的是 DatabaseConnection::restoreQueryTimeoutBaseline()
          *       而不是本方法——命令超时是基类的账，不是驱动的会话账

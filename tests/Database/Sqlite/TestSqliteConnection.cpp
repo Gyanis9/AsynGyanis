@@ -746,6 +746,27 @@ namespace AsynGyanis::Database
         }
     }
 
+    /**
+     * @brief 借用者用裸 `PRAGMA busy_timeout` 改过的那个数在归还时按基类口径重装回来
+     * @details 与上面那两条同族，但这一格更隐蔽：`PRAGMA busy_timeout` 与 `sqlite3_busy_timeout()`
+     *          落的是同一份存储，而 `queryTimeout()` 记的是本类自己那份账——借用者绕开 setter 直接发
+     *          PRAGMA 时基线察觉不到，「退回基线」那一步就什么都不会发。下一位的语句在表被占用时
+     *          只等 1 毫秒就报 SQLITE_BUSY，看着像「库太忙」而不是像被人改过。
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, ResetSessionStateRearmsBusyTimeoutAfterARawPragmaChange)
+    {
+        ASSERT_EQ(readScalarInteger(connection(), "PRAGMA busy_timeout"), std::optional<std::int64_t>(kDefaultQueryTimeoutMilliseconds))
+                << "前提没立住：建连时没按 queryTimeout() 的默认值配好 busy_timeout";
+
+        ASSERT_NE(executeRequired(connection(), "PRAGMA busy_timeout=1"), nullptr) << connection().lastError();
+        ASSERT_EQ(readScalarInteger(connection(), "PRAGMA busy_timeout"), std::optional<std::int64_t>(1)) << "那条 PRAGMA 没改动同一个数，用例前提不成立";
+
+        ASSERT_TRUE(connection().resetSessionState()) << connection().lastError();
+
+        EXPECT_EQ(readScalarInteger(connection(), "PRAGMA busy_timeout"), std::optional<std::int64_t>(kDefaultQueryTimeoutMilliseconds))
+                << "归还时没按 queryTimeout() 重装 busy_timeout：下一位只等 1 毫秒就报 SQLITE_BUSY";
+    }
+
     /** @brief 钉住 queryTimeout 经 busy_timeout 零计时映射进 SQLite，含基类默认值 */
     TEST(SqliteConnection, QueryTimeoutBecomesBusyTimeoutOnConnect)
     {
