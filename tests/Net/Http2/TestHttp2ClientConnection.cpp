@@ -1315,9 +1315,9 @@ namespace AsynGyanis::Net
         /// 「收进活链那一步顺手把没人再访问的死链摘掉」这一趟在 h2 侧的结论
         struct Http2PruneRoundTripOutcome
         {
-            bool        isOpened{false};               ///< 两条链路是否都握上手（前提，缺了后面几条都是空的）
-            std::size_t linkCountAfterDeadClosed{0};   ///< 死链关掉而没人再取用时表上的条数：应当还留着
-            std::size_t linkCountAfterPruneOnAdopt{0}; ///< 给另一个端点收进一条活链之后表上的条数
+            bool        isOpened{false};                 ///< 两条链路是否都握上手（前提，缺了后面几条都是空的）
+            std::size_t linkCountAfterDeadClosed{0};     ///< 死链关掉而没人再取用时表上的条数：应当还留着
+            std::size_t linkCountAfterPruneOnAdopt{0};   ///< 给另一个端点收进一条活链之后表上的条数
             bool        isLiveLinkTheOneRetained{false}; ///< 表上留下的那条是不是活的那条
         };
 

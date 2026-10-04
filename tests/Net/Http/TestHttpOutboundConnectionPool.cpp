@@ -119,8 +119,7 @@ namespace AsynGyanis::Net
              */
             bool start(const std::chrono::milliseconds waitTimeout)
             {
-                m_worker = std::thread([this]
-                                       { run(); });
+                m_worker            = std::thread([this] { run(); });
                 const auto deadline = std::chrono::steady_clock::now() + waitTimeout;
                 while (m_port.load(std::memory_order_acquire) == 0U && std::chrono::steady_clock::now() < deadline)
                 {
@@ -209,14 +208,14 @@ namespace AsynGyanis::Net
             /// 在这条连接上一次次回同一份预设字节，直到对端收口或本端收摊
             void serveEachRequest(const int client)
             {
-                std::string buffered;
+                std::string            buffered;
                 std::array<char, 1024> chunk{};
                 while (!m_isStopping.load(std::memory_order_acquire))
                 {
                     fd_set readSet{};
                     FD_ZERO(&readSet);
                     FD_SET(client, &readSet);
-                    timeval pollInterval{0, 50 * 1000};
+                    timeval   pollInterval{0, 50 * 1000};
                     const int readyCount = ::select(client + 1, &readSet, nullptr, nullptr, &pollInterval);
                     if (readyCount < 0)
                     {
@@ -241,11 +240,11 @@ namespace AsynGyanis::Net
                 }
             }
 
-            std::string              m_payload;                             ///< 每份请求要回的预设字节
-            std::thread              m_worker;                              ///< 接受与应答线程
-            std::atomic<bool>        m_isStopping{false};                   ///< 收摊标志
-            std::atomic<std::uint16_t> m_port{0};                           ///< 实际监听端口，0 表示还没起来
-            std::atomic<std::size_t> m_acceptedCount{0};                    ///< 接过的连接条数
+            std::string                m_payload;           ///< 每份请求要回的预设字节
+            std::thread                m_worker;            ///< 接受与应答线程
+            std::atomic<bool>          m_isStopping{false}; ///< 收摊标志
+            std::atomic<std::uint16_t> m_port{0};           ///< 实际监听端口，0 表示还没起来
+            std::atomic<std::size_t>   m_acceptedCount{0};  ///< 接过的连接条数
         };
 
         /**
@@ -474,9 +473,8 @@ namespace AsynGyanis::Net
     {
         // 一条完整的 200（Content-Length: 2、正文 "hi"）之后紧跟一截不属于任何响应的尾巴，且回完不关连接：
         // 「对端还活着」这个前提要保住，才能让复用与否完全由被测那侧的决定说了算
-        constexpr std::string_view kOverSentResponse =
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
-            "THIS-TRAILER-BELONGS-TO-NO-RESPONSE\r\n";
+        constexpr std::string_view kOverSentResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
+                                                       "THIS-TRAILER-BELONGS-TO-NO-RESPONSE\r\n";
 
         RawBytePeer peer(std::string{kOverSentResponse});
         ASSERT_TRUE(peer.start(kPooledWaitTimeout)) << "假对端没能在时限内起来并报出端口";

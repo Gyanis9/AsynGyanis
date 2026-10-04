@@ -341,7 +341,7 @@ namespace AsynGyanis::Net
             }
 
         private:
-            Http2Session *m_session;  ///< 所属会话（非拥有）
+            Http2Session *m_session;        ///< 所属会话（非拥有）
             bool          m_isQueued{true}; ///< 是否已排进写队（await_suspend 分配失败时置假）
         };
 

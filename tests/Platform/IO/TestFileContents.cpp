@@ -194,9 +194,8 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "small-body"));
         const std::filesystem::path assetPath = temporaryDirectory.path() / "asset.bin";
 
-        std::string target;
-        const std::expected<std::size_t, std::error_code> intoResult =
-                Platform::readFileContentsInto(assetPath, 0U, std::numeric_limits<std::size_t>::max(), target);
+        std::string                                       target;
+        const std::expected<std::size_t, std::error_code> intoResult = Platform::readFileContentsInto(assetPath, 0U, std::numeric_limits<std::size_t>::max(), target);
         ASSERT_FALSE(intoResult.has_value()) << "连缓冲都调不出来时必须落成错误码，而不是把宿主进程一起带走";
         EXPECT_EQ(intoResult.error(), std::make_error_code(std::errc::not_enough_memory)) << "落点错了：" << intoResult.error().message();
 
