@@ -176,6 +176,19 @@ namespace AsynGyanis::Net
         return std::nullopt;
     }
 
+    std::optional<std::string> HttpHeaderFieldStore::firstHeaderValue(const std::string_view name) const
+    {
+        for (const FieldRef &ref: m_fields)
+        {
+            if (equalsIgnoringCase(nameOf(ref), name))
+            {
+                // 首条拷出交给拥有者，不参与合并：调用方跨过改写点前都能安全持有这份拷贝
+                return std::string{valueOf(ref)};
+            }
+        }
+        return std::nullopt;
+    }
+
     bool HttpHeaderFieldStore::contains(const std::string_view name) const
     {
         // 只看有没有这条记录：取值可能上百字节，为一次存在性判定把它整个拷出来是纯浪费

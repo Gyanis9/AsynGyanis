@@ -174,6 +174,20 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(store.firstValue(HttpHeaderFieldStore::toCanonicalHeaderName("X-Request-Id")).has_value());
     }
 
+    TEST(HttpHeaderFieldStore, FirstValueReturnsOwningCopy)
+    {
+        HttpHeaderFieldStore store;
+        store.append("Cache-Control", "public, max-age=3600");
+
+        const std::optional<std::string> value = store.firstHeaderValue("cache-control");
+        EXPECT_TRUE(value.has_value());
+        EXPECT_EQ(*value, "public, max-age=3600");
+
+        // 清空存储后，返回值应该仍然有效（owning）
+        store.clear();
+        EXPECT_EQ(*value, "public, max-age=3600") << "owning 版跨过清空调用后仍应有效";
+    }
+
     TEST(HttpHeaderFieldStore, MixedCaseCookieNameStillTakesTheRepeatablePath)
     {
         // 可重复头部的判定名单登记的是小写；读侧不再先归一化查询名，因此名单比对也必须

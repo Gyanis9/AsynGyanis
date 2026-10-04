@@ -114,6 +114,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string_view> firstValueView(std::string_view name) const;
 
         /**
+         * @brief 取该名的首条取值（owning 版，跨过改写点前拷一份）
+         * @details 与 firstValueView() 同口径，但返回的是拥有者：值本身被拷到返回字符串里，这样调用方
+         *          即使把本存储清空了也不会悬垂。对跨边界的使用场景（例如「先读 headerA，再改
+         *          headerB，然后读 headerC」）是安全的；firstValueView() 在那种情况下会悬垂。
+         * @param name 头部名，大小写不敏感
+         * @return std::optional<std::string> 首条取值；缺席时为空（空取值给出「存在且为空串」，不与缺席混淆）
+         * @note 这是 HttpHeaderFieldStore 对外唯一的「首条取值 owning 入口」，HttpRequest/HttpResponse
+         *       上的 firstHeaderValueView() 都基于它
+         */
+        [[nodiscard]] std::optional<std::string> firstHeaderValue(std::string_view name) const;
+
+        /**
          * @brief 判断该名是否出现过（不看取值）
          * @details 只要存在性的调用方用它：owning 的取值入口会为一次判定拷出整个值。
          * @param name 头部名，大小写不敏感
