@@ -242,6 +242,16 @@ namespace AsynGyanis::Database
             AcquireAwaiter   awaiter(this, &loop, deadline);
             PooledConnection result = co_await awaiter;
 
+            // 排队这一步分配不出来：不再重挂。内存持续吃紧时重挂就是「造票据→抛出→再造」的空转，
+            // 一直转到截止时刻为止，而这条协程正跑在调用方的线程上；就地按空手结账，让调用方自己
+            // 决定退避还是放弃。这一格不记进超时账：截止时刻根本没到，记成超时会把「池不够用」
+            // 这个容量信号打成假的，成因只在这一行 ERROR 里出声。
+            if (awaiter.m_isQueueingFailed)
+            {
+                LOG_ERROR("ConnectionPool: 异步借出排队时分配失败（恢复票据或等待表建不出来），本次借出按空手收尾，不计入超时");
+                co_return std::move(result);
+            }
+
             // 三种情况收尾：拿到了连接；到了截止时刻；池正在停摆（停摆中以空连接就地唤醒，
             // 再挂一轮也等不到东西，而且等待表马上要随池一起销毁）
             const bool isShuttingDown = m_isShuttingDown.load(std::memory_order_acquire);
@@ -353,19 +363,23 @@ namespace AsynGyanis::Database
             // 因此「反复失败的重试把超时无限顺延」这条路根本不存在；它在入表之前就已写好，
             // 后台线程持同一把锁读它，看见的只会是已写定的值（不是默认的时钟纪元）
             //
-            // 票据与入表这两步都要分配内存（make_shared 与 deque 的新块），而本函数是 noexcept——
-            // 内存吃紧时让 bad_alloc 穿出边界就是 std::terminate，进程带走整个服务的在途请求。
-            // 这里的处置与上面两条「就地放行」同一形：不挂起、调用方拿到空连接，与超时同解
-            // （拿不到连接本来就是它必须走下去的情形），也与 createNewConnection() 里那句
-            // 「工厂要分配所以整段兜住」是同一个约定。
+            // 票据与入表这三步都要分配内存（make_shared 一次，deque 首次插入要 map 与块各一次），
+            // 而本函数是 noexcept——内存吃紧时让 bad_alloc 穿出边界就是 std::terminate，
+            // 进程带走整个服务的在途请求。处置沿用 h2 那两个 FlushTurnAwaiter 的形状：置标记、
+            // 回 false 不挂起，由 acquireAsync() 按「这一轮排不上队」结账。
+            // 标记是必需的：本函数外面套着 while(true) 重挂，光回 false 只会让它立刻另造一个等待体
+            // 重走这一步——实测掐掉票据那一次分配之后等待表里仍然出现一条等待体，那就是重挂的一轮；
+            // 内存持续吃紧时这就是在调用方的线程上空转到截止时刻。
             // 入表半途失败时把票据一起收回：等待表里没有这条，唤醒方就永远不会读它，留着只会
             // 让这条等待体带着一张指向自己帧的票据走出本函数。
-            // 注入点：分配探针已有「第 N 次分配失败」的开关（tests/TestSupport/AllocationProbe，按线程计数）。
-            // 这一格眼下仍未被钉住，缺的不是开关而是命中点：实测从挂上开关到 resume 返回，本线程的前
-            // 四次分配里第 2~4 次都落在等待者入表**之后**（协程帧那一步在第 1 次），所以按次序掐还掐不到
-            // 这两步上。探针另有一档「只掐某一尺寸区间」，实测命中的档位也都是入表之后的分配——
-            // 缺的是「这两次分配与可观测档位之间的对应关系」：要么给等待体留一个测试能指的标记，
-            // 要么让探针能把每次分配的序号与大小记成可回放的序列。那是单独一轮的事。
+            // 注入点已钉住（tests/Database/Pool/TestConnectionPoolAsync.cpp 的
+            // AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter）：先把驱动协程建好，
+            // 再用探针的追踪档（beginAllocationTrace）量出「挂上开关到 resume 返回」这段窗口里本线程
+            // 碰了几次堆，然后逐档掐。序号与字节数都不写死：MSVC Debug 实测这个窗口是 416（协程帧）/
+            // 24（票据）/64/16 四笔，libstdc++ 连四笔都不到，两家的标准库各自量各自的。用例断的是
+            // 一条与平台无关的不变量——掐到分配就不许留下等待体，并且至少要有一档真的落进本 try。
+            // 序号是靠探针的分配序列追踪（beginAllocationTrace）量出来的；换标准库实现时那几个字节数
+            // 会变，而用例的命中点判据不变——「等待表为空 + 协程当场完成 + 没记进超时账」三格自证。
             try
             {
                 m_resumeTicket = std::make_shared<ResumeTicket>();
@@ -379,6 +393,7 @@ namespace AsynGyanis::Database
                 // 才置真，所以抛到这里时这一条根本还没进表。只把票据收回——留着会让等待体带着一张
                 // 指向自己帧的票据走出本函数
                 m_resumeTicket.reset();
+                m_isQueueingFailed = true;
                 return false;
             }
         }

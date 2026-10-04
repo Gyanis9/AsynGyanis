@@ -120,6 +120,43 @@ namespace AsynGyanis::TestSupport
     [[nodiscard]] AllocationHistogram snapshotAllocationHistogram() noexcept;
 
     /**
+     * @brief 一段「按线程回放的分配序列」里的一条记录
+     * @details 光有直方图定不出位：直方图把所有窗口的分布混在一起，而注入要的是
+     *          「挂上开关之后第几次分配是哪一步、申请了多少字节」。序数与尺寸成对给出，
+     *          用例就能先量出档位再按档掐——两档开关的目标值都由这里量出来。
+     */
+    struct AllocationTraceRecord
+    {
+        // 刻意不写默认成员初始值：那样这一个是聚合，追踪缓冲就能静态零初始化，
+        // 不会在首次访问时走 TLS 动态初始化（那一次 malloc 会过本钩子，白吃掉一格序号）
+        std::uint64_t ordinal; ///< 本线程的分配序号，从 1 起
+        std::size_t   bytes;   ///< 这一次申请的字节数
+    };
+
+    /// 追踪缓冲的容量：一次挂起路径上的分配远少于此，记满即停（`count == 容量` 就是被截断的信号）
+    inline constexpr std::size_t kAllocationTraceCapacity = 64U;
+
+    /**
+     * @brief 一次追踪的快照：挂上期间本线程的分配序列
+     */
+    struct AllocationTraceSnapshot
+    {
+        std::uint64_t                                               count{0}; ///< 记下了几条
+        std::array<AllocationTraceRecord, kAllocationTraceCapacity> records{};
+    };
+
+    /**
+     * @brief 开始记录本线程的分配序列（与 endAllocationTrace() 配对，中途不得跨线程读）
+     */
+    void beginAllocationTrace() noexcept;
+
+    /**
+     * @brief 停止记录并取回本线程的分配序列
+     * @return AllocationTraceSnapshot 期间每次分配的序号与字节数；没挂过则 count 为 0
+     */
+    [[nodiscard]] AllocationTraceSnapshot endAllocationTrace() noexcept;
+
+    /**
      * @brief 一次测量的结果：窗口内的分配原值，外加摊平到每次操作的读数
      * @details 摊平是整除，因此「每次 0 次」这个读数掩盖得住一千次里的零星几次分配。
      *          凡是要钉「稳态一次都不碰堆」的形状，判据一律用 totalAllocations 原值。

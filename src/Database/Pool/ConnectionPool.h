@@ -278,8 +278,12 @@ namespace AsynGyanis::Database
              * @brief 挂起当前协程并加入等待列表
              * @details 截止时刻已过的不再入表（否则要等后台线程下一拍才发现，白睡一拍），
              *          池已停摆的同样直接放行：停摆中的池不会再交给任何东西。
+             *          入表这一步要分配（票据与等待表的块），分配不出来时在 `noexcept` 边界内兜住、
+             *          置「排队失败」标记后放行——本函数不重挂，重挂是 `acquireAsync()` 那圈 while 的事，
+             *          它看到这个标记就按空手结账。
              * @param handle 当前协程句柄
-             * @return true 挂起；false 在挂起前已获取到连接，或已不必再等，不挂起
+             * @return true 挂起；false 不挂起——已获取到连接、已不必再等（截止时刻已过或池在停摆）、
+             *         或排队本身分配不出来
              */
             bool await_suspend(std::coroutine_handle<> handle) noexcept;
 
@@ -342,8 +346,11 @@ namespace AsynGyanis::Database
             std::shared_ptr<PoolLiveness>       m_liveness; ///< 池的存活令牌（构造时取）：析构里「是否碰池」整段由它把关，判活必须排在任何取消引用 m_pool 之前，见 ~AcquireAwaiter
             std::unique_ptr<DatabaseConnection> m_result;   ///< 获取到的连接（await_ready 或 notify 时设置）
             bool                                m_inList{false}; ///< 是否已加入等待列表，用于析构时判断
-            std::shared_ptr<ResumeTicket>       m_resumeTicket;  ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
-            std::chrono::steady_clock::time_point m_deadline{};  ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
+            /// 排队这一步是否分配失败：`await_suspend` 的 catch 置真，`acquireAsync()` 据此按空手收尾
+            /// 而不再重挂（内存持续吃紧时重挂就是「造票据→抛出→再造」的空转，一直转到截止时刻为止）
+            bool                                  m_isQueueingFailed{false};
+            std::shared_ptr<ResumeTicket>         m_resumeTicket; ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
+            std::chrono::steady_clock::time_point m_deadline{};   ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
         };
 
         friend class AcquireAwaiter;

@@ -15,6 +15,7 @@
 // - WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 // - AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
+// - AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter（排队途中分配失败：当场空手收尾、等待表不留半条）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -593,5 +594,151 @@ namespace AsynGyanis::Database
         }
         EXPECT_EQ(SharedTestSupport::injectedAllocationFailureCount(), 2U) << "两档各掐一次应当累计到 2";
     }
+
+    /**
+     * @brief 钉住「分配序列追踪」这一档：挂上期间本线程每次分配的序号与字节数读得回来，收手后不再记
+     * @details 这一档是给「第 N 次分配失败」找命中点用的：连接池 `await_suspend` 里票据与入表那两步的
+     *          序号就是靠它量出来的（本平台实测挂上之后四次分配依次为 416 / 24 / 64 / 16 字节，
+     *          依次是 `acquireAsync` 的协程帧、票据、入表、收尾）。
+     *          判据只钉形状不钉绝对值：挂上之前本线程已经分配过多少条与用例顺序有关，而每一次申请的
+     *          字节数由标准库实现决定（两家标准库的 deque 分块大小本来就不同），写死任何一条都会让
+     *          用例在换平台时假红或假绿。
+     * @note 三格：① 期间确有分配就确有记录（否则「按量出来的序号掐」这一步是空的）；
+     *       ② 序号严格递增且尺寸非零（注入按序号定目标，尺寸按桶定区间，两格任一失真就掐错分配）；
+     *       ③ `endAllocationTrace()` 之后继续分配不得再往里记（漏着的追踪会让后面的用例读到一份
+     *          永远读不完的缓冲，且记满 64 条即停，越界的记录会被静默丢掉）。
+     */
+    TEST(ConnectionPoolAsync, AllocationTraceSnapshotLocatesInjectionCoordinates)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+
+        SharedTestSupport::beginAllocationTrace();
+        const auto                                       ticketLike = std::make_shared<std::atomic<std::uint64_t>>();
+        const auto                                       blockLike  = std::make_unique<std::array<char, 64>>();
+        const SharedTestSupport::AllocationTraceSnapshot during     = SharedTestSupport::endAllocationTrace();
+        static_cast<void>(ticketLike);
+        static_cast<void>(blockLike);
+
+        ASSERT_GE(during.count, 2U) << "这两次分配没被记下：靠序号找命中点的用例全是空的";
+        ASSERT_LE(during.count, SharedTestSupport::kAllocationTraceCapacity);
+        for (std::uint64_t index = 1U; index < during.count; ++index)
+        {
+            EXPECT_GT(during.records[index].ordinal, during.records[index - 1U].ordinal) << "序号不单调：按它掐会掐到别的分配";
+            EXPECT_GT(during.records[index].bytes, 0U) << "尺寸记成 0：按尺寸区间掐就命中不了任何分配";
+        }
+
+        // 收手判据：end 之后再分配，下一次 end 的快照应当一条都不多
+        SharedTestSupport::beginAllocationTrace();
+        const SharedTestSupport::AllocationTraceSnapshot reopened = SharedTestSupport::endAllocationTrace();
+        EXPECT_EQ(reopened.count, 0U) << "开手到收手之间没有分配却记了条目";
+        const auto third = std::make_unique<std::array<char, 64>>();
+        static_cast<void>(third);
+        const SharedTestSupport::AllocationTraceSnapshot after = SharedTestSupport::endAllocationTrace();
+        EXPECT_EQ(after.count, 0U) << "追踪没在 end 处收手：后面的用例会读到一份漏着的缓冲";
+    }
+
+    /**
+     * @brief 钉住「排队那一步分配不出来」的出口：当场空手收尾，既不重挂也不在等待表里留半条
+     * @details `AcquireAwaiter::await_suspend` 按协程语言是 `noexcept`，而把自己挂进异步等待表要付
+     *          不止一次分配：票据的 `make_shared`、deque 首次插入的块。两家的标准库在这一步给的次数
+     *          与字节数都不同（MSVC Debug 实测挂起窗口四笔，libstdc++ 连四笔都不到），所以坐标不写死：
+     *          先用探针的追踪档量出「挂上开关到 resume 返回」这段窗口里本线程碰了几次堆，再逐档各掐一遍。
+     * @details 这一例真正钉的是**标记那一格**：`acquireAsync()` 外面套着 `while(true)` 重挂，兜底只回
+     *          `false` 而不留标记时，调用方会立刻另造一个等待体重走这一步——修复前实测掐中票据那一次
+     *          之后等待表里仍然出现一条等待体，也就是内存持续吃紧时它在调用方的线程上空转到截止时刻。
+     *          留了标记之后 `acquireAsync()` 按空手结账，并且不记进超时账（截止时刻根本没到，记成
+     *          超时会把「池不够用」这个容量信号打成假的）。
+     * @note 判据不是「没崩」，也不是「掐中了第几次」。逐档跑下来断的是同一条不变量：**掐到分配却没
+     *       留下等待体**——`掐到了 + 表里有一条 + 调用方没往下走` 正是「兜底之后被重挂」的形状，出现即红。
+     *       掐在协程帧那一步时异常由驱动协程的 promise 收下（当场既没有等待体也没完成），那是本例
+     *       管不到的另一件事，不算违例。落在 try 里的那些档给出更强的读数：当场完成、手里是空连接、
+     *       没记进超时账、借出与建连两格都不动。收尾那一格自证真的掐进了 try——否则本用例在
+     *       「这一步不在本线程上」的构建里会全绿而什么都没钉住。
+     * @note 证伪：把 `acquireAsync()` 里读标记那三行摘掉（退回「只回 false」），落在 try 里的每一档
+     *       都红在不变量那一格，收尾的自证也一起红；把 `await_suspend` 的 try/catch 整段摘掉
+     *       （退回修复前那几行），本用例当场带走进程（`RUN` 打得出来而结果行没有）。
+     */
+    TEST(ConnectionPoolAsync, AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+
+        // 量窗口：这段路径在本线程上碰几次堆，两家的标准库不一样，所以逐档掐而不是把序号写死
+        std::uint64_t windowAllocationCount = 0U;
+        {
+            ConnectionCounter counter;
+            ConnectionPool    pool = makeSingleSlotPool(counter);
+
+            EventLoopThread loopThread;
+            ASSERT_TRUE(loopThread.waitUntilRunning());
+
+            PooledConnection occupying = pool.acquire();
+            ASSERT_TRUE(occupying);
+
+            AcquireProbe     probe;
+            Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+
+            SharedTestSupport::beginAllocationTrace();
+            driver.handle().resume(); // 池满：本线程走到 await_suspend 并挂起
+            windowAllocationCount = SharedTestSupport::endAllocationTrace().count;
+            ASSERT_GE(windowAllocationCount, 1U) << "挂起窗口里本线程一次堆都不碰：票据那一步不在这里，本用例的坐标失效";
+
+            // 这一趟没掐开关，等待表里留着一条：把名额还回去叫醒它，别带着挂着的协程离开这一段
+            occupying.release();
+            ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); })) << "归还之后等待者没被叫醒：下面那一圈的前提不成立";
+            loopThread.parkDriver(std::move(driver));
+        }
+
+        bool settledAtLeastOnce = false;
+        for (std::uint64_t ordinal = 1U; ordinal <= windowAllocationCount; ++ordinal)
+        {
+            SCOPED_TRACE(ordinal);
+
+            ConnectionCounter counter;
+            ConnectionPool    pool = makeSingleSlotPool(counter);
+
+            EventLoopThread loopThread;
+            ASSERT_TRUE(loopThread.waitUntilRunning());
+
+            // 占住唯一的名额：异步获取只能排队，于是必然走到 await_suspend 里的入表那几步
+            PooledConnection occupying = pool.acquire();
+            ASSERT_TRUE(occupying);
+
+            AcquireProbe     probe;
+            Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe);
+
+            SharedTestSupport::resetInjectedAllocationFailureCount();
+            {
+                const SharedTestSupport::AllocationFailureGuard guard(ordinal);
+                driver.handle().resume();
+            }
+
+            const bool injected   = SharedTestSupport::injectedAllocationFailureCount() == 1U;
+            const bool finished   = probe.finished.load(std::memory_order_acquire);
+            const bool leftWaiter = pool.waitingCount() != 0U;
+
+            EXPECT_FALSE(injected && leftWaiter && !finished) << "掐到了一次分配，等待表里却留着一条等待体而调用方没往下走：兜底之后被那一圈 while 重挂了一次";
+
+            if (injected && finished && !leftWaiter)
+            {
+                settledAtLeastOnce = true;
+                ASSERT_TRUE(probe.connection.has_value());
+                EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "排队失败却交出了一条连接";
+                EXPECT_EQ(pool.activeCount(), 1U) << "空手收尾被记成一次借出";
+                EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "分配失败被记成了借出超时：这一格的成因是内存而不是截止时刻";
+                EXPECT_EQ(pool.createdCount(), 1U) << "排队失败不该再建一条连接";
+            }
+
+            occupying.release();
+            if (leftWaiter)
+            {
+                // 表里那条还挂着：叫醒它再离开这一段，免得池析构时带着等待体
+                ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); })) << "归还之后等待者没被叫醒：本用例的收尾前提不成立";
+            }
+            loopThread.parkDriver(std::move(driver));
+        }
+
+        EXPECT_TRUE(settledAtLeastOnce) << "窗口里没有任何一次分配落在 await_suspend 的 try 里：本平台这一步不在本线程上，本用例钉不住东西";
+    }
+
 
 } // namespace AsynGyanis::Database

@@ -34,6 +34,11 @@ namespace
     /// 实际被掐掉的次数：用例靠它自证注入真的发生过
     std::atomic<std::uint64_t> injectedFailureCount{0U};
 
+    /// 分配序列追踪：只在本线程开记时写，因此不带原子量（跨线程读是未定义用法，头里已写明）
+    thread_local bool                                                                                                          threadTraceIsOn{false};
+    thread_local std::uint64_t                                                                                                 threadTraceCount{0U};
+    thread_local std::array<AsynGyanis::TestSupport::AllocationTraceRecord, AsynGyanis::TestSupport::kAllocationTraceCapacity> threadTraceRecords{};
+
     /**
      * @brief 把一次申请按大小归桶
      * @param size 本次申请的字节数
@@ -59,6 +64,13 @@ namespace
         recordAllocationSize(size);
 
         const std::uint64_t thisThreadCount = ++threadAllocationCount;
+
+        // 追踪档只记不判：量坐标的那一次不该同时掐掉分配
+        if (threadTraceIsOn && threadTraceCount < AsynGyanis::TestSupport::kAllocationTraceCapacity)
+        {
+            threadTraceRecords[threadTraceCount] = AsynGyanis::TestSupport::AllocationTraceRecord{thisThreadCount, size};
+            ++threadTraceCount;
+        }
 
         // 尺寸档优先：挂上它时不参与序数判定，免得两档互相偷走对方的那一次
         if (threadFailureSizeMaximum != 0U)
@@ -106,6 +118,26 @@ namespace AsynGyanis::TestSupport
         {
             snapshot[bucketIndex] = allocationHistogram[bucketIndex].load(std::memory_order_relaxed);
         }
+        return snapshot;
+    }
+
+    void beginAllocationTrace() noexcept
+    {
+        threadTraceCount = 0U;
+        threadTraceIsOn  = true;
+    }
+
+    AllocationTraceSnapshot endAllocationTrace() noexcept
+    {
+        threadTraceIsOn = false;
+
+        AllocationTraceSnapshot snapshot;
+        snapshot.count = threadTraceCount;
+        for (std::uint64_t index = 0U; index < threadTraceCount; ++index)
+        {
+            snapshot.records[index] = threadTraceRecords[index];
+        }
+        threadTraceCount = 0U;
         return snapshot;
     }
 
