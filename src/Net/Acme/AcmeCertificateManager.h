@@ -143,7 +143,9 @@ namespace AsynGyanis::Net
             std::chrono::milliseconds renewalCheckInterval{std::chrono::hours{12}};
             /// 到期前多久就该续：Let's Encrypt 的证书是 90 天，社区惯例是三分之一寿命即 30 天
             std::chrono::milliseconds renewBeforeExpiry{std::chrono::hours{24 * 30}};
-            /// 一轮签发的总时限（含机构侧的自证等待）
+            /// 自证与定稿两段轮询的总时限（每轮之间查一次，含机构侧排队校验的那段）。单次出站请求的
+            /// 时限由它折算得出（见 AcmeClient::Configuration::boundedRequestTimeout），所以整轮签发的
+            /// 耗时**不**硬卡在这个数上：前置的目录/账户/订单握手各按单次时限走，它掐的是机构侧不答话
             std::chrono::milliseconds issuanceTimeout{std::chrono::seconds{180}};
             /// 自证状态的轮询间隔
             std::chrono::milliseconds challengePollInterval{std::chrono::milliseconds{500}};

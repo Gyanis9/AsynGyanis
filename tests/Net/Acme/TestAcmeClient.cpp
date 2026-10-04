@@ -741,6 +741,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：单次出站请求的时限以「那轮操作的总时限」为上界，两边都不许越过
+     * @details 签发管理器曾把总时限原样赋给单次请求的时限，于是内层等于外层：一次卡住的请求就能吃满
+     *          整轮预算，而外层那道闸每轮之间才查一次，永远轮不到它开火——报错里那句「在总时限内没走到
+     *          终局」也就永远不会由它自己说出来。一轮签发是一串请求（目录、nonce、账户、订单、每次轮询），
+     *          总耗时因此成了总时限的若干倍。
+     * @details 反向的那一格同样要成立：总时限配得比默认单次时限还小时，它就是上界——「配得更小」必须
+     *          等于「更严」，否则把 180 秒改成 3 秒不会让任何东西提前收口。
+     * @details 这条钉的是折算出口本身，钉不到签发管理器里那一行装配：管理器用例的总时限是 8 秒，比默认
+     *          单次时限还小，「调折算」与「原样赋值」算出同一个数。要连那一行一起钉，得让桩机构对某一次
+     *          请求拖过 10 秒——那是一条 10 秒起步的用例，这一轮没付这个代价。
+     */
+    TEST(AcmeClientConfiguration, BoundsPerRequestTimeoutByTheOverallBudget)
+    {
+        using Config = AcmeClient::Configuration;
+
+        // 正向：总时限很大，也不能把单次请求抬过本类的默认值
+        EXPECT_EQ(Config::boundedRequestTimeout(std::chrono::seconds{180}), Config::kDefaultRequestTimeout);
+        // 反向：总时限比默认单次时限还小时，取总时限
+        EXPECT_EQ(Config::boundedRequestTimeout(std::chrono::seconds{3}), std::chrono::seconds{3});
+        // 边界：两边相等时不该出现「取哪边都一样」之外的漂移
+        EXPECT_EQ(Config::boundedRequestTimeout(Config::kDefaultRequestTimeout), Config::kDefaultRequestTimeout);
+
+        // 不变式：折算出来的数既不超过总时限，也不超过默认单次时限（两条任缺一条就是这次的缺陷形状）
+        for (const std::chrono::milliseconds overall:
+             {std::chrono::milliseconds{0}, std::chrono::milliseconds{1000}, Config::kDefaultRequestTimeout, std::chrono::milliseconds{300000}})
+        {
+            const auto bounded = Config::boundedRequestTimeout(overall);
+            EXPECT_LE(bounded, overall) << "折算后的单次时限超过了总时限：" << bounded.count() << " > " << overall.count();
+            EXPECT_LE(bounded, Config::kDefaultRequestTimeout);
+        }
+    }
+
+    /**
      * @brief 钉住：令牌没在应答时按「自证没答上」告状，而不是含糊成超时
      */
     TEST_F(AcmeClientTest, ReportsChallengeNotAnsweredWhenTheTokenIsMissing)

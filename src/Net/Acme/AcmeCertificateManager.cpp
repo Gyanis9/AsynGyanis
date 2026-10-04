@@ -482,7 +482,9 @@ namespace AsynGyanis::Net
         clientConfiguration.isTermsOfServiceAccepted = m_configuration.isTermsOfServiceAccepted;
         clientConfiguration.externalAccountKeyId     = m_configuration.externalAccountKeyId;
         clientConfiguration.externalAccountKeySecret = m_configuration.externalAccountKeySecret;
-        clientConfiguration.requestTimeout           = m_configuration.issuanceTimeout;
+        // 单次出站请求的时限按「总时限为上界」折算，而不是原样取总时限：内层等于外层时外层那道闸
+        // 永远轮不到开火，一次卡住的请求就能吃满整轮预算（判据与理由见 AcmeClient::Configuration::boundedRequestTimeout）
+        clientConfiguration.requestTimeout = AcmeClient::Configuration::boundedRequestTimeout(m_configuration.issuanceTimeout);
         // 通道由「有没有 TXT 写入动作」定，一次签发只走一条：挑了 dns-01 就得有撤的能力，
         // 而只填了一格的动作对按「没有 DNS-01 能力」处置，不会因为 publish 在而 withdraw 不在就跑一半
         const bool isDns01Channel         = m_dns01TxtWriter.isUsable();

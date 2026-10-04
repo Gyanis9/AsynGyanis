@@ -788,7 +788,7 @@ namespace AsynGyanis::Net
             }
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                co_return std::unexpected(AcmeError{AcmeErrorKind::Transport, std::format("自证挑战在 {} 内没给出终局（最后一次状态：{}）。机构可能仍在排队校验，"
+                co_return std::unexpected(AcmeError{AcmeErrorKind::Transport, std::format("自证挑战在 {} 毫秒内没给出终局（最后一次状态：{}）。机构可能仍在排队校验，"
                                                                                           "本轮按失败收口以免占住循环",
                                                                                           overallTimeout.count(), lastStatus)});
             }
@@ -866,7 +866,7 @@ namespace AsynGyanis::Net
             if (std::chrono::steady_clock::now() >= deadline)
             {
                 co_return std::unexpected(
-                        AcmeError{AcmeErrorKind::Transport, std::format("定稿后的订单在 {} 内没有走到终局（最后一次状态：{}）", overallTimeout.count(), finalized.status)});
+                        AcmeError{AcmeErrorKind::Transport, std::format("定稿后的订单在 {} 毫秒内没有走到终局（最后一次状态：{}）", overallTimeout.count(), finalized.status)});
             }
 
             co_await timer.waitFor(pollInterval);

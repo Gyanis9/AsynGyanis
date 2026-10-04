@@ -132,6 +132,9 @@ namespace AsynGyanis::Net
          */
         struct Configuration
         {
+            /// 单次出站请求的默认时限，同时也是「外层总时限」折算成单次时的上界（见 boundedRequestTimeout）
+            static constexpr std::chrono::milliseconds kDefaultRequestTimeout{std::chrono::seconds{10}};
+
             /// 机构的目录 URL。生产一律是 https；http 只在测试的进程内桩上允许，本类不拦
             std::string directoryUrl;
             /// 联系邮箱，按 RFC 8555 §7.3 的写法带前缀："mailto:ops@example.com"。可空
@@ -144,13 +147,31 @@ namespace AsynGyanis::Net
             /// 外部账户绑定的 HMAC 密钥（base64url 文本，机构发账户时给的那份）
             std::string externalAccountKeySecret;
             /// 单次出站请求的时限
-            std::chrono::milliseconds requestTimeout{std::chrono::milliseconds{10000}};
+            std::chrono::milliseconds requestTimeout{kDefaultRequestTimeout};
             /// 要答哪一种自证挑战。默认 HTTP-01（与加这个字段之前的行为逐字相同）；选 DNS-01 时
             /// 调用方必须另外具备发布 TXT 记录的能力，本客户端只负责挑对挑战与算对 TXT 值
             AcmeChallengeKind challengeKind{AcmeChallengeKind::Http01};
             /// 撞上 badNonce 时的自动重试上限：nonce 由机构发、一次性，用坏了重取就行，
             /// 但无限重试会把一次网络抖动变成永久卡住
             std::size_t maximumNonceRetries{3};
+
+            /**
+             * @brief 把「一轮操作的总时限」折算成单次出站请求的时限：取两者较小的一边
+             * @details 调用方手上常常同时有两份数：整轮操作的总预算与每一次出站请求的时限。**把总时限
+             *          原样当单次时限用会让外层那道闸永远轮不到开火**——一次卡住的请求就能吃满整轮预算，
+             *          而一轮操作是一串请求（目录、nonce、账户、订单、每次轮询），实际总耗时于是成了总时限
+             *          的若干倍，报错里那句「在总时限内没走到终局」也永远不会由它自己说出来。
+             *          只往下钳是为了让「配得更小」永远等于「更严」：总时限小于默认单次时限时，它自己就是上界。
+             * @param overallTimeout 那一轮操作的总时限
+             * @return std::chrono::milliseconds 单次出站请求应取的时限
+             * @note 这是**上界折算**，不是硬总额：前置的目录/账户/订单握手各按这一条走，一轮的总耗时仍可能
+             *       到「单次时限 × 请求数」。要一条硬的总额闸就得把「剩余预算」一路带到每次出站请求里，
+             *       而本类的每次请求都各自取配置里的时限，没有那样的接缝。
+             */
+            [[nodiscard]] static constexpr std::chrono::milliseconds boundedRequestTimeout(const std::chrono::milliseconds overallTimeout) noexcept
+            {
+                return overallTimeout < kDefaultRequestTimeout ? overallTimeout : kDefaultRequestTimeout;
+            }
         };
 
         /**
