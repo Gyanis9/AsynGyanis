@@ -54,10 +54,19 @@ namespace AsynGyanis::Net
             {
                 return std::unexpected("装配冲突：workerProcessCount 是 0；单进程请填 1");
             }
-            // 每个进程只看得见自己这份账，所以配置里的整机上限要摊下来才真是那个数——否则起 N 个进程
-            // 就等于放行 N 倍，而配置文件上写的仍是整机的那个数
-            const std::size_t perProcessMaximumConnections = perProcessShare(configuration.maximumConnections, context.workerProcessCount);
-            const std::size_t perProcessMaximumPerIp       = perProcessShare(configuration.maximumConnectionsPerIp, context.workerProcessCount);
+            // 每进程台数同一条判据：一台进程里跑 L 条监听器时，每条各持一份自己的计数，
+            // 只按进程数摊就等于放行 L 倍（`maximum_connections` 写着 4096、四个循环线程实际收 16384，
+            // 而配置文件看着仍是 4096）。0 是「一台都不接」，与上面的 0 进程同一类用法错误
+            if (context.listenersPerProcess == 0)
+            {
+                return std::unexpected("装配冲突：listenersPerProcess 是 0；本进程只有一条监听器请填 1");
+            }
+            // 两个分母要分清，否则「共用一份账」的那几项会被摊成两份以下：
+            //   · 每台自己计数的（连接数；以及本台自建一份时的限额器/限流桶/在途预算）——进程数 × 每进程台数
+            //   · 调用方传进来的共享对象（一个进程里多台共用一份）——只按进程数摊
+            const std::size_t perListenerDenominator        = context.workerProcessCount * context.listenersPerProcess;
+            const std::size_t perListenerMaximumConnections = perProcessShare(configuration.maximumConnections, perListenerDenominator);
+            const std::size_t perProcessMaximumPerIp        = perProcessShare(configuration.maximumConnectionsPerIp, context.workerProcessCount);
 
             // 共享限额器是多台的共用对象，它的上限在构造时就定死了；配置里那个标量只对「本台新建一份」
             // 才有意义，且要多进程时是摊过的一份。两处都给又不相等时，静默挑一边就是
@@ -73,15 +82,16 @@ namespace AsynGyanis::Net
 
             server.setLimits(configuration.limits);
             server.setParserLimits(configuration.parserLimits);
-            server.setMaxConnections(perProcessMaximumConnections);
+            server.setMaxConnections(perListenerMaximumConnections);
 
             // 传进来的共享对象优先；没传而配置里有标量时本台建一份（0 表示不设这道闸门，保持不动）
             if (context.sharedPerIpLimiter != nullptr)
             {
                 server.setPerIpConnectionLimiter(context.sharedPerIpLimiter);
-            } else if (perProcessMaximumPerIp > 0)
+            } else if (configuration.maximumConnectionsPerIp > 0)
             {
-                server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(perProcessMaximumPerIp));
+                // 本台自建的那一份只有这一台看得见，因此按每台摊；共享对象那一条路保持进程口径不变
+                server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(perProcessShare(configuration.maximumConnectionsPerIp, perListenerDenominator)));
             }
 
             // 限流桶同理：多台共用一份时由调用方传入，否则本台按配置建一份（0 表示不设这道闸门，保持不动）
@@ -100,9 +110,13 @@ namespace AsynGyanis::Net
                                                        rateShare.requestsPerSecond, rateShare.burstCapacity, configuration.requestsPerSecond, context.workerProcessCount));
                 }
                 server.router().addMiddleware(tokenBucketRateLimiterMiddleware(context.sharedRateLimitBucket));
-            } else if (rateShare.requestsPerSecond > 0.0)
+            } else if (configuration.requestsPerSecond > 0.0)
             {
-                server.router().addMiddleware(tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(rateShare.requestsPerSecond, rateShare.burstCapacity)));
+                // 桶是本台自己 new 的，一个进程里几台就各有一份，因此按「进程 × 台数」摊；
+                // 上面那条共享对象的比对仍按进程口径（一台进程里多台共用一个桶）
+                const PerProcessRateLimit perListenerRateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, perListenerDenominator);
+                server.router().addMiddleware(
+                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(perListenerRateShare.requestsPerSecond, perListenerRateShare.burstCapacity)));
             }
 
             // 在途正文预算是跨连接的一份账，且账目只在进程内可见：整机口径同样要摊到本进程。
@@ -120,9 +134,10 @@ namespace AsynGyanis::Net
                                                        context.workerProcessCount));
                 }
                 server.setMemoryBudget(context.sharedMemoryBudget);
-            } else if (perProcessMemoryBudget > 0)
+            } else if (configuration.memoryBudgetBytes > 0)
             {
-                server.setMemoryBudget(std::make_shared<HttpMemoryBudget>(perProcessMemoryBudget));
+                // 自建的那份账只覆盖这一台，按台摊；共享对象那条路仍按进程口径比对
+                server.setMemoryBudget(std::make_shared<HttpMemoryBudget>(perProcessShare(configuration.memoryBudgetBytes, perListenerDenominator)));
             }
 
             // 运维面三件套同开：只开其一会让「抓不到数」与「以为没暴露」互相伪装。

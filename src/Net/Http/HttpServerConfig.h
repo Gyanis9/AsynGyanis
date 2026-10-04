@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
      * @brief 单个来源并发连接上限的内置默认值
      * @details 取 256 而不是更小的数：一条默认值会误杀真实客户——运营商级 NAT 与企业出口让一群人共用一个地址，
      *          上限压到几十就会把其中一部分拒在门外。256 足够容纳这类共享出口，同时仍挡住「一个来源吃满整机名额」
-     *          （每监听器总额 4096，即单来源最多占 1/16）。要真的不限，显式写 0。
+     *          （单机单监听器时总额 4096，即单来源最多占 1/16；两条限额都按「进程数 × 每进程台数」摊下来，见 HttpServerAssemblyContext）。要真的不限，显式写 0。
      */
     inline constexpr std::size_t kDefaultMaximumConnectionsPerIp = 256;
 
@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
     {
         HttpServerLimits limits{};                                                 ///< 连接级限额：超时与单连接请求数上限
         HttpParserLimits parserLimits{};                                           ///< 单条报文的内存上限
-        std::size_t      maximumConnections{kDefaultMaximumConnections};           ///< 全局并发连接上限；显式写 0 = 不限
+        std::size_t      maximumConnections{kDefaultMaximumConnections};           ///< 整机并发连接上限；装配时按「worker 进程数 × 每进程监听器数」摊到每台，显式写 0 = 不限
         std::size_t      maximumConnectionsPerIp{kDefaultMaximumConnectionsPerIp}; ///< 单个来源的并发连接上限；显式写 0 = 不限
         double           requestsPerSecond{0.0};                                   ///< 全局请求速率上限（令牌桶速率），0 = 不限流
         double           rateLimitBurstCapacity{1.0};                              ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1

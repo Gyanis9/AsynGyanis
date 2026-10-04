@@ -622,8 +622,8 @@ int main(int argc, char **argv)
     const std::size_t wholeMachineInflightBodyBytes = maxInflightBodyBytes > 0 ? maxInflightBodyBytes : configuration.memoryBudgetBytes;
     const std::size_t perProcessInflightBodyBytes   = Net::perProcessShare(wholeMachineInflightBodyBytes, workerProcessTotal);
     const auto        capText                       = [](const std::size_t value) { return value == 0 ? std::string("不限（显式配 0）") : std::to_string(value); };
-    LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每台 {}；单来源 {} → 每台 {}；请求速率 {}，在途正文总量 {}", capText(configuration.maximumConnections), workerProcessTotal,
-                 capText(perProcessMaximumConnections), capText(configuration.maximumConnectionsPerIp), capText(perProcessMaximumPerIp),
+    LOG_INFO_FMT("并发限额：整机 {} 摊给 {} 个进程 → 每进程 {}（每台监听器的生效值见下面一行）；单来源（本进程多台共用一份限额器）→ 每进程 {}；请求速率 {}，在途正文总量 {}",
+                 capText(configuration.maximumConnections), workerProcessTotal, capText(perProcessMaximumConnections), capText(perProcessMaximumPerIp),
                  configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
                  wholeMachineInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(wholeMachineInflightBodyBytes) + " 字节");
 
@@ -873,6 +873,8 @@ int main(int argc, char **argv)
         assemblyContext.sharedRateLimitBucket = rateLimitBucket;
         assemblyContext.sharedMemoryBudget    = inflightBodyBudget;
         assemblyContext.workerProcessCount    = workerProcessTotal;
+        // 一台进程里跑几条监听器就要乘几：TcpServer 的并发计数是每台一份的，只按进程摊会放行 L 倍
+        assemblyContext.listenersPerProcess = actualThreads;
         if (const auto outcome = Net::applyHttpServerConfiguration(*server, configuration, assemblyContext); !outcome)
         {
             // 只可能来自「共享对象与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
@@ -1043,6 +1045,10 @@ int main(int argc, char **argv)
     }
 
     LOG_INFO_FMT("{} {}Server instances created, all accept tasks scheduled", actualThreads, useHttps ? "Https" : "Http");
+    // 打印的数与下发的数必须同源：这条用的是装配出口同一个 perProcessShare（分母同样是进程数 × 台数），
+    // 另写一套就会印出一个看着对而实际没生效的数
+    LOG_INFO_FMT("并发限额（每监听器生效值）：整机 {} 摊给 {} 个进程 × 每进程 {} 条监听器 → 每台 {}", capText(configuration.maximumConnections), workerProcessTotal, actualThreads,
+                 capText(Net::perProcessShare(configuration.maximumConnections, workerProcessTotal * static_cast<std::size_t>(actualThreads))));
 
     // 运维端点另起一台只听管理口的服务器：两件事一次解决——① 来源收口（业务口可以开在 0.0.0.0，
     // 管理口默认只听回环）；② 多进程时每个进程一个端口（base + 本进程序号），采集端按进程聚合，

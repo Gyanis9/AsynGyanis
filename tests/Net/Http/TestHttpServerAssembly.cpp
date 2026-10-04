@@ -270,6 +270,47 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：一台进程里跑多条监听器时，「每台自己计数」的限额要按 进程数 × 每进程台数 摊
+     * @details `TcpServer` 的并发计数是每台一份的账，而 `reference_server` 默认给每个事件循环线程
+     *          各绑一次同一端口（SO_REUSEPORT），于是一条进程里就有 L 个各自独立的上限闸门。只按进程数
+     *          摊的话，`maximum_connections: 100` 配 4 条监听器实际放行 400，而配置文件看着仍是 100——
+     *          「文件完全正确、数被静默乘起来」这一类错最难往配置上想。
+     * @details 两个分母要分开：调用方传进来的**共享对象**（每来源限额器、限流桶、在途预算）在一台进程里
+     *          被多台共用，仍只按进程数摊；没传而由本台自建的那几份则与各台同乘。
+     */
+    TEST(HttpServerAssembly, SplitsPerListenerCapsAcrossListenersInTheProcess)
+    {
+        Core::EventLoop loop;
+        TestHttpServer  server(loop, Core::InetAddress::localhost(0));
+
+        HttpServerConfiguration configuration;
+        configuration.maximumConnections = 100;
+        configuration.memoryBudgetBytes  = 4000;
+
+        HttpServerAssemblyContext context;
+        context.workerProcessCount  = 1;
+        context.listenersPerProcess = 4;
+        ASSERT_TRUE(applyHttpServerConfiguration(server, configuration, context).has_value());
+        EXPECT_EQ(server.maximumConnections(), 25u) << "整机 100 摊给 1 个进程 × 4 条监听器，每台该卡 25";
+        EXPECT_EQ(server.memoryBudget()->maximumTotalBytes(), 1000u) << "本台自建的在途预算同样只覆盖这一台，该按台摊";
+
+        // 共享对象那一条路不得被台数二次摊小：一个进程里多台共用一份账，摊给台数就等于把闸门压到 1/L
+        TestHttpServer            sharedServer(loop, Core::InetAddress::localhost(0));
+        HttpServerAssemblyContext sharedContext;
+        sharedContext.workerProcessCount  = 1;
+        sharedContext.listenersPerProcess = 4;
+        sharedContext.sharedMemoryBudget  = std::make_shared<HttpMemoryBudget>(4000);
+        ASSERT_TRUE(applyHttpServerConfiguration(sharedServer, configuration, sharedContext).has_value()) << "与进程口径一致的共享预算被台数的分母误拒";
+        EXPECT_EQ(sharedServer.memoryBudget().get(), sharedContext.sharedMemoryBudget.get()) << "传进来的那份账应当原样接住";
+
+        // 0 台是「本进程一台都不接」，与 0 个进程同一类用法错误：当场拒，不当「不摊」
+        TestHttpServer            zeroServer(loop, Core::InetAddress::localhost(0));
+        HttpServerAssemblyContext zeroContext;
+        zeroContext.listenersPerProcess = 0;
+        ASSERT_FALSE(applyHttpServerConfiguration(zeroServer, configuration, zeroContext).has_value()) << "台数填 0 被当成不摊";
+    }
+
+    /**
      * @brief 钉住：server 段的 memory_budget_bytes 真的落到服务器上，且落的是摊到本进程那一份
      * @details 预算对象此前只能由调用方手递（库内无人构造），配置里写字节数没有任何人读——键存在而
      *          生效点缺失，正是「配了不生效却不出声」那一类。四档一起钉：默认不建账、标量建摊后的账、

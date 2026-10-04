@@ -40,7 +40,11 @@ namespace AsynGyanis::Database
         /// 超出即在 ConnectionPool 构造时被拒绝——后台要把这份秒数换算成毫秒，不设上限的话一个荒谬的
         /// 取值会先溢出成负数，让那条线程退化成每秒空转一轮（既不睡觉，也不按配置的节奏干活）
         std::size_t healthCheckIntervalSeconds = 60;
-        std::size_t acquireTimeoutMilliseconds = 5000; ///< 阻塞获取连接的超时（毫秒），超时未取到返回空 PooledConnection
+        /// 阻塞获取连接的超时（毫秒），超时未取到返回空 PooledConnection。上限是本平台把毫秒折进
+        /// 时钟刻度所能表达的量（`steady_clock` 的 duration 折成毫秒再取一半，另一半让给「现在这一刻」），
+        /// 超出即在 ConnectionPool 构造时被拒绝——这条时长要直接加到 `steady_clock::now()` 上，
+        /// 越过 2^63 会绕成负时长，两条等待路径算出的截止时刻都落在「现在之前」：配得越大反倒一条都不等
+        std::size_t acquireTimeoutMilliseconds = 5000;
     };
 
 } // namespace AsynGyanis::Database
