@@ -214,6 +214,15 @@ namespace AsynGyanis::Net
                                                  "或改用 SameSite=Lax / Strict");
         }
 
+        // 名字前缀是写进名字的授权声明，判据与 Cookie 罐同一份：不合规的那条浏览器整条丢掉，而业务
+        // 只看到「Set-Cookie 已经写出去了」——与上面 SameSite=None 那一格是同一种静默失效
+        if (const auto violation = cookie.prefixRequirementViolation(); violation.has_value())
+        {
+            throw Base::InvalidArgumentException("Cookie「" + cookie.name() + "」违背名字前缀的要求：" + std::string(*violation) +
+                                                 "。浏览器会把这条整条丢掉（RFC 6265bis §4.1.2.6），"
+                                                 "请补齐 Secure 与明确写出的 Path=/、去掉 Domain，或改用不带前缀的名字");
+        }
+
         // set-cookie 是可重复头部：setHeader 对它每次新增一条独立记录，先设先发
         static_cast<void>(setHeader("set-cookie", cookie.renderAsSetCookie()));
     }

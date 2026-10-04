@@ -366,6 +366,56 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 名字前缀（`__Host-` / `__Secure-`）的要求没满足时，写侧当场拒
+     *
+     * @details 与上面 SameSite=None 那一格同一种静默失效：发出去的那条 `Set-Cookie` 字面上完全正确，
+     *          而浏览器把它整条丢掉（RFC 6265bis §4.1.2.6），业务只看到「已经写了」。判据与
+     *          `HttpCookieJar` 收侧共用同一份，两条路不会一严一松。
+     *          反面判据同批：补齐三条要求的 `__Host-` 必须照常发出。
+     */
+    TEST(HttpResponse, RejectsCookieWhoseNamePrefixRequirementsAreUnmet)
+    {
+        HttpCookie hostWithoutSecure("__Host-sid", "1");
+        hostWithoutSecure.setPath("/");
+
+        HttpResponse response;
+        try
+        {
+            response.setCookie(hostWithoutSecure);
+            FAIL() << "__Host- 而不带 Secure：浏览器会把整条丢掉，这里本该拒而不是照发";
+        } catch (const AsynGyanis::Base::InvalidArgumentException &exception)
+        {
+            const std::string message{exception.what()};
+            EXPECT_NE(message.find("__Host-sid"), std::string::npos) << message;
+            EXPECT_NE(message.find("Secure"), std::string::npos) << message;
+        }
+        EXPECT_EQ(response.headerValues("Set-Cookie").size(), 0U) << "被拒的 Cookie 不该有一半留在响应里";
+
+        HttpCookie hostWithDomain("__Host-sid", "1");
+        hostWithDomain.setSecure();
+        hostWithDomain.setPath("/");
+        hostWithDomain.setDomain("example.com");
+        EXPECT_THROW(response.setCookie(hostWithDomain), AsynGyanis::Base::InvalidArgumentException) << "带 Domain 的 __Host- 正是这个前缀明令不许的那一型";
+
+        HttpCookie hostWithSubtreePath("__Host-sid", "1");
+        hostWithSubtreePath.setSecure();
+        hostWithSubtreePath.setPath("/admin");
+        EXPECT_THROW(response.setCookie(hostWithSubtreePath), AsynGyanis::Base::InvalidArgumentException) << "Path 必须是明确写出的 /";
+
+        HttpCookie securePrefixWithoutSecure("__Secure-csrf", "token");
+        EXPECT_THROW(response.setCookie(securePrefixWithoutSecure), AsynGyanis::Base::InvalidArgumentException);
+
+        // 合规格的那条要发得出去，且属性按本类固定次序排
+        HttpCookie wellFormed("__Host-sid", "1");
+        wellFormed.setSecure();
+        wellFormed.setPath("/");
+        response.setCookie(wellFormed);
+        const std::vector<std::string> values = response.headerValues("Set-Cookie");
+        ASSERT_EQ(values.size(), 1U) << "被误拒的合规 Cookie 少发了一条";
+        EXPECT_EQ(values[0], "__Host-sid=1; Path=/; Secure");
+    }
+
+    /**
      * @brief 只有 None 这一档需要 Secure：Lax/Strict 与不设 SameSite 都照常发出
      * @details 这条是上一条的反面判据——把闸门写成「凡是不带 Secure 的 Cookie 都拒」在这一条上会红，
      *          而那种实现会把大量既有的合法 Cookie（明文站点上的 theme=dark）挡在线外。

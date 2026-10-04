@@ -253,6 +253,14 @@ namespace AsynGyanis::Net
                 continue;
             }
 
+            // 名字前缀那一格不合规的整条丢掉（判据与写侧 HttpResponse::setCookie 同一份）：浏览器会
+            // 丢掉的那种 Cookie 我们若照收，就等于替对端兑现了它自己没做到的声明，而带 Domain 的
+            // __Host- 随后会按域匹配发往同主域下的每一个兄弟子域（RFC 6265bis §4.1.2.6）
+            if (parsedCookie->prefixRequirementViolation().has_value())
+            {
+                continue;
+            }
+
             Entry entry;
             entry.name     = parsedCookie->name();
             entry.value    = parsedCookie->value();

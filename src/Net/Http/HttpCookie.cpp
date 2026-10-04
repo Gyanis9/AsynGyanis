@@ -205,6 +205,36 @@ namespace AsynGyanis::Net
         m_domain = std::string(domain);
     }
 
+    std::optional<std::string_view> HttpCookie::prefixRequirementViolation() const noexcept
+    {
+        // 前缀的比较刻意大小写敏感：Cookie 名字本就区分大小写（RFC 6265 §4.1.1），而 bis 写的
+        // 是「以这个字符串开头」——折大小写就会让 __host- 这种形状绕过声明
+        if (m_name.starts_with("__Host-"))
+        {
+            if (!m_isSecure)
+            {
+                return "名字带 __Host- 前缀却没带 Secure";
+            }
+            if (m_domain.has_value())
+            {
+                return "名字带 __Host- 前缀却带了 Domain 属性";
+            }
+            // 只看属性文本：由请求路径推出来的根路径不算「明确写了 Path=/」，缺省路径的算法会把
+            // /admin/edit 推成 /admin，而这一格的意图是「整台主机都只给根路径用」
+            if (!m_path.has_value() || *m_path != "/")
+            {
+                return "名字带 __Host- 前缀而 Path 属性不是明确写出的 \"/\"";
+            }
+            return std::nullopt;
+        }
+
+        if (m_name.starts_with("__Secure-") && !m_isSecure)
+        {
+            return "名字带 __Secure- 前缀却没带 Secure";
+        }
+        return std::nullopt;
+    }
+
     std::string HttpCookie::renderAsSetCookie() const
     {
         std::string text = m_name + "=" + m_value;

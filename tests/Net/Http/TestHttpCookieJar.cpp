@@ -136,6 +136,81 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief `__Host-` 的三条硬要求逐格判：Secure、不得带 Domain、Path 要明确写成 `/`
+     *
+     * @details 前缀是写进名字的授权声明（RFC 6265bis §4.1.2.6）：站点用它替代「自己去查这条 Cookie
+     *          从哪来」，因为浏览器会把不合格式的整条丢掉。罐子不判这一格，收下的正是那种浏览器
+     *          会丢的形状——带 `Domain` 的一条还会按域匹配发往同主域下的每个兄弟子域。
+     *          四格都走加密连接，好让「不收」只可能来自前缀判据而不是 Secure 那条通用规则
+     */
+    TEST(HttpCookieJar, RejectsHostPrefixedCookieMissingSecure)
+    {
+        HttpCookieJar jar;
+        storeOne(jar, "__Host-sid=1; Path=/", "example.com", true);
+        EXPECT_EQ(jar.cookieCount(), 0U) << "没带 Secure 的 __Host- 不收";
+    }
+
+    TEST(HttpCookieJar, RejectsHostPrefixedCookieWithDomainAttribute)
+    {
+        HttpCookieJar jar;
+        storeOne(jar, "__Host-sid=1; Secure; Path=/; Domain=example.com", "shop.example.com", true);
+        EXPECT_EQ(jar.cookieCount(), 0U) << "带 Domain 的 __Host- 正是这个前缀明令不许的那一型";
+        EXPECT_FALSE(headerFor(jar, "api.example.com", true).has_value()) << "它更不能被发给兄弟子域";
+    }
+
+    TEST(HttpCookieJar, RejectsHostPrefixedCookieWithNonRootPath)
+    {
+        HttpCookieJar jar;
+        storeOne(jar, "__Host-sid=1; Secure; Path=/admin", "example.com", true);
+        EXPECT_EQ(jar.cookieCount(), 0U) << "Path 必须是 /";
+
+        HttpCookieJar implicitPathJar;
+        storeOne(implicitPathJar, "__Host-sid=1; Secure", "example.com", true);
+        EXPECT_EQ(implicitPathJar.cookieCount(), 0U) << "由请求路径推出来的根路径不算「明确写了 Path=/」——规范只看属性文本";
+    }
+
+    /**
+     * @brief 合规格的 `__Host-` 照收，并且仍是 host-only
+     * @details 收紧判据的反向一格：闸门不能宽到把合规的也拒了。它只回到种下自己的那台主机，
+     *          主域与兄弟子域都拿不到——这正是这个前缀买到的东西
+     */
+    TEST(HttpCookieJar, AcceptsWellFormedHostPrefixedCookieAndKeepsItHostOnly)
+    {
+        HttpCookieJar jar;
+        storeOne(jar, "__Host-sid=1; Secure; Path=/", "shop.example.com", true);
+        ASSERT_EQ(jar.cookieCount(), 1U) << "合规格的 __Host- 必须收";
+
+        EXPECT_FALSE(headerFor(jar, "example.com", true).has_value()) << "host-only 的 __Host- 不该发给主域";
+        EXPECT_FALSE(headerFor(jar, "api.example.com", true).has_value()) << "也不该发给兄弟子域";
+        ASSERT_TRUE(headerFor(jar, "shop.example.com", true).has_value());
+        EXPECT_EQ(*headerFor(jar, "shop.example.com", true), "__Host-sid=1");
+    }
+
+    /**
+     * @brief `__Secure-` 只多要一条 Secure
+     */
+    TEST(HttpCookieJar, SecurePrefixedCookieNeedsTheSecureAttribute)
+    {
+        HttpCookieJar withoutAttribute;
+        storeOne(withoutAttribute, "__Secure-sid=1", "example.com", true);
+        EXPECT_EQ(withoutAttribute.cookieCount(), 0U) << "名字说 __Secure- 而属性没写 Secure，浏览器会整条丢掉";
+
+        HttpCookieJar withAttribute;
+        storeOne(withAttribute, "__Secure-sid=2; Secure", "example.com", true);
+        EXPECT_EQ(withAttribute.cookieCount(), 1U) << "同前缀而带 Secure 的照收";
+    }
+
+    /**
+     * @brief 前缀的比较大小写敏感：Cookie 名字本就区分大小写
+     */
+    TEST(HttpCookieJar, PrefixComparisonIsCaseSensitiveLikeCookieNames)
+    {
+        HttpCookieJar jar;
+        storeOne(jar, "__host-sid=1", "example.com", true);
+        EXPECT_EQ(jar.cookieCount(), 1U) << "小写的 __host- 不是那个前缀，不该被当成不合规而丢掉";
+    }
+
+    /**
      * @brief 缺省路径按 RFC 6265 §5.1.4 推：单个斜杠是根，多个斜杠去掉最右一段
      */
     TEST(HttpCookieJar, DefaultPathFollowsTheDocumentedRemovalRule)

@@ -80,6 +80,21 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static bool isValidDomain(std::string_view text) noexcept;
 
+        /**
+         * @brief 名字前缀 `__Host-` / `__Secure-` 附带的额外要求是否满足（RFC 6265bis §4.1.2.6）
+         *
+         * @details 这两个前缀是**写进名字的授权声明**：站点用它替代「自己去校验这条 Cookie 是从哪来的」，
+         *          因为浏览器会把不合格式的整条丢掉——`__Host-` 要 Secure、要明确写 `Path=/`、且不得带
+         *          `Domain`（缺省推出来的根路径不算「明确写了」，规范只看属性文本），`__Secure-` 要 Secure。
+         *          收端不判这一条，等于替对端兑现了它自己没做到的承诺：罐子会收下一条
+         *          `__Host-sid=…; Domain=example.com`，而那条正是前缀明令不许存在的形状，随后它被发给
+         *          同一主域下的每一个兄弟子域——种下它的可能是子域上一个不受信任的脚本。
+         *          写侧（`HttpResponse::setCookie()`）与收侧（`HttpCookieJar::storeFromResponse()`）
+         *          共用这一份判据，两条路不会一严一松。
+         * @return std::optional<std::string_view> 不满足时给出违规点；满足或名字没用前缀时为空
+         */
+        [[nodiscard]] std::optional<std::string_view> prefixRequirementViolation() const noexcept;
+
         /// Cookie 名字
         [[nodiscard]] const std::string &name() const noexcept
         {
