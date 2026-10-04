@@ -3589,6 +3589,62 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：流式**正文**路由也要回显 request-id——h3 有两个派发出口，只有一处做过这件事
+     * @details 上一条钉的是普通派发（`Http3Session::pump`）里派发前回显那一步。命中 `postStreaming(...)` 的
+     *          请求走 `serveStreamingRequest`，它同样在处理器第一次写块之前就该把 id 放上响应头——
+     *          流式响应的头部在写第一块时已经上线，处理器回来再设来不及。h1/h2 的两种派发共用一个
+     *          `prepareRequestDispatch`，因此同一份业务在三条通道上应当读到同一件事；漏了这一处时，
+     *          只有 h3 的上传接口在响应头里没有关联 id，而它自己的完成日志却写着「request-id …（流式正文路由）」
+     */
+    TEST(Http3Session, EchoesRequestIdOnStreamingBodyRouteHead)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        Http3Session                    session = makeSession(opener, sentStreamData, std::make_shared<HttpRequestIdGenerator>());
+
+        std::string observedRequestId;
+        Router      router;
+        router.postStreaming("/upload-stream",
+                             [&observedRequestId](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 observedRequestId = std::string(request.requestId());
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 response.startChunkedResponse(200);
+                                 static_cast<void>(co_await response.writeChunk("done\n"));
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload-stream", "example.com", "streaming-body", 8));
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        const Http3ClientPeer::DecodedResponse response = peer.response();
+        EXPECT_EQ(response.status, 200) << "用例前提：这条流式正文请求应当被正常应答";
+        EXPECT_FALSE(observedRequestId.empty()) << "生成器在场时业务必须读到落定好的 request-id";
+        const auto requestIdHeader = response.headers.find("x-request-id");
+        ASSERT_NE(requestIdHeader, response.headers.end()) << "流式正文路由的响应头里没有 x-request-id：同一份处理器换到 h1/h2 就有";
+        EXPECT_EQ(requestIdHeader->second, observedRequestId) << "响应回显的必须正是业务读到的那一份，不能各生成一个";
+    }
+
+    /**
      * @brief 客户端带来的链路 id 原样沿用（与 h1/h2 同口径），换掉就断了关联
      */
     TEST(Http3Session, AdoptsClientSuppliedRequestId)

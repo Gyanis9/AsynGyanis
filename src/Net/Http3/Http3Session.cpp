@@ -1356,6 +1356,10 @@ namespace AsynGyanis::Net
         // h3 的两种路由形状上看到两件事」。回调指向记录里的请求对象，而记录要等本帧跑完才摘
         // （reapFinishedStreamingRequests 认的是 isServeFinished），于是 ~stop_callback 必然先注销
         std::stop_callback requestCancelForwarder(m_shutdownCancelable.stopToken(), [&streamingRequest]() { streamingRequest.request.requestCancel(); });
+        // 派发前先回显一次 request-id：流式响应的头部在处理器第一次写块时就上线了，等处理器回来再设已经
+        // 来不及。普通派发那一处（pump）本来就有这一步，流式这一处漏了——同一个业务在 h1/h2 的流式路由上
+        // 能拿到回显（那边的 prepareRequestDispatch 两种派发共用），换到 h3 的流式路由就什么都没有
+        noteRequestIdOnResponse(streamingRequest.request, response);
         try
         {
             co_await m_router->route(streamingRequest.request, response);
@@ -1414,6 +1418,9 @@ namespace AsynGyanis::Net
             static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
             isRejectedByBodyOverflow = true;
         }
+
+        // 处理器之后再过一遍：业务可能 reset() 了响应，把派发前设的那条擦掉（与 pump 那处同一对）
+        noteRequestIdOnResponse(streamingRequest.request, response);
 
         if (response.isChunkedResponse())
         {
