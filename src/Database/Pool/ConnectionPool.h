@@ -399,7 +399,8 @@ namespace AsynGyanis::Database
          * @details 取出路径与归还路径共用这一份判定，避免两处对「存活期到没到」给出不同口径。
          * @param connection 待判的连接，不可为空
          * @param now 判定时刻（一次调用里只取一次时钟，不在本函数内部读）
-         * @return true 已超过；`maximumLifetimeSeconds == 0` 视为「立即过期」，恒为 true
+         * @return true 已达到上限（按秒取整后**等于** N 秒即判过期，不是过 N 秒才判）；
+         *         `maximumLifetimeSeconds == 0` 视为「立即过期」，恒为 true
          */
         [[nodiscard]] bool isPastMaximumLifetime(const DatabaseConnection &connection, std::chrono::steady_clock::time_point now) const noexcept;
 
