@@ -17,10 +17,12 @@
 
 namespace AsynGyanis::Net
 {
-    /// 请求行（方法 SP 目标 SP 版本 CRLF）里除 URI 之外的固定余量，单位字节：方法名上限 32 B
-    /// （HttpParser::kMaximumMethodLength，与 llhttp 同档的协议语法约束）+ 版本串与分隔符 16 B
-    /// （"HTTP/1.1" 8 B + 两个分隔空格 2 B + 行尾 CRLF 2 B，另余 4 B 给版本号位数）。整行上限由它
-    /// 加上 maximumUriLength 推出，故本结构没有请求行长度的独立字段。
+    /// 请求行里除 URI 之外的固定余量，单位字节。判的是**行体**（方法 SP 目标 SP 版本），行尾那两字节
+    /// 不参与计数——与 `maximumChunkSizeLineLength` 那句「含块扩展，不含 CRLF」同一口径，见
+    /// `HttpHeaderRules.h` 的 lineBodyByteCountWithTerminator。拆法：方法名上限 32 B
+    /// （HttpParser::kMaximumMethodLength，与 llhttp 同档的协议语法约束）+ 版本串与分隔符 10 B
+    /// （"HTTP/1.1" 8 B + 两个分隔空格 2 B）+ 6 B 余量（版本号位数，以及行尾 CRLF 落在下一段时的容错）。
+    /// 整行上限由它加上 maximumUriLength 推出，故本结构没有请求行长度的独立字段。
     inline constexpr std::size_t kRequestLineFixedOverheadBytes = 32 + 16;
 
     /**

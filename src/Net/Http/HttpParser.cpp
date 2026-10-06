@@ -347,8 +347,9 @@ namespace AsynGyanis::Net
             if (newline == nullptr)
             {
                 // 本段凑不齐一行：整段并入暂存，等下一次调用继续拼。长度上限兜住
-                // 「一行永远不结束」的输入：没有它，一个超长的头部行就能把内存一直撑下去
-                if (!checkLineLength(available))
+                // 「一行永远不结束」的输入：没有它，一个超长的头部行就能把内存一直撑下去。
+                // 量的是行体：末尾若是 CR，它可能是行尾的前半，不该算进来（见 lineBodyByteCountWithoutTerminator）
+                if (!checkLineLength(lineBodyByteCountWithoutTerminator(0, available, available != 0 && begin[available - 1] == '\r')))
                 {
                     return false;
                 }
@@ -364,8 +365,9 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            // 整行落在本段输入里同样要过长度闸门：漏掉它，块大小行等阶段的限额会形同虚设
-            const std::size_t lineByteCount = static_cast<std::size_t>(lineEnd - begin) - 1;
+            // 整行落在本段输入里同样要过长度闸门：漏掉它，块大小行等阶段的限额会形同虚设。
+            // 闸门量的是行体（不含 CRLF），与下面慢路径以及出站响应解析器共用同一把尺
+            const std::size_t lineByteCount = lineBodyByteCountWithTerminator(static_cast<std::size_t>(lineEnd - begin) + 1);
             if (!checkLineLength(lineByteCount))
             {
                 return false;
@@ -378,7 +380,12 @@ namespace AsynGyanis::Net
 
         // 慢路径：行体跨在上一次的暂存与本次输入之间，先把本次输入里直到 LF 的部分并进来
         const std::size_t appendLength = newline == nullptr ? available : static_cast<std::size_t>(static_cast<const char *>(newline) - begin) + 1;
-        if (!checkLineLength(m_pendingLine.size() + appendLength))
+        // 同一把尺的第二处：见到行尾就按「CRLF 定长两字节」扣掉行尾，没见到就只按上界放行。旧写法把
+        // 这 2 个字节算进行体，于是「行体恰好等于上限」的报文会被 TCP 分段切成两种判决——整段到达放行，
+        // CR 与 LF 落到下一段就 413/431；判决应当只由报文内容决定，不由字节怎么切决定
+        const std::size_t bodyByteCount = newline == nullptr ? lineBodyByteCountWithoutTerminator(m_pendingLine.size(), available, available != 0 && begin[available - 1] == '\r')
+                                                             : lineBodyByteCountWithTerminator(m_pendingLine.size() + appendLength);
+        if (!checkLineLength(bodyByteCount))
         {
             return false;
         }

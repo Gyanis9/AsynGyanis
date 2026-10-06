@@ -298,7 +298,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 一行永不含 CRLF 的字节流不能把行缓冲撑到无界
+     * @brief 一行永不含 CRLF 的字节流不能把行缓冲撑到无界：越界那一段落地之前就得判失败
+     * @details 旧断言是「先喂一段刚好越界的、再喂第二次才红」，注释还写着「最多多攒一次喂入的字节」——
+     *          那是把闸门站在 feed() 入口（先看已有长度、再看新到）的退化行为钉成契约：一次喂入是
+     *          4 KiB，于是 8 KiB 的单行上限实际允许长到 12 KiB。新语义：闸门跟着「缓冲真要增长」那一
+     *          步下判，量即将落地的行体总长，与入站解析器同一把尺（HttpParser::takeLine）；依据是
+     *          HttpResponseParser.h 对 kDefaultMaximumLineByteCount 的承诺——「单行上限」
      */
     TEST(HttpResponseParser, RejectsEndlessStatusLineWithoutCrlf)
     {
@@ -306,9 +311,42 @@ namespace AsynGyanis::Net
 
         const std::string endlessLine(HttpResponseParser::kDefaultMaximumLineByteCount + 1, 'A');
         parser.feed(endlessLine);
-        // 闸门在 feed() 入口看行缓冲：越界那一段落地后即刻判失败（最多多攒一次喂入的字节）
-        parser.feed(endlessLine);
-        EXPECT_TRUE(parser.hasFailed()) << "永不含 CRLF 的行没有被行长度闸门拦下";
+        EXPECT_TRUE(parser.hasFailed()) << "永不含 CRLF 的行没有被行长度闸门当场拦下：越界的那一段落地之前就该判失败";
+    }
+
+    /**
+     * @brief 钉住：单行闸门量的是行体，判决不随喂入怎么分段而变（出站侧与入站侧同一把尺）
+     * @details 行体恰好等于上限的状态行，整段到达、行尾落在下一段、CR 与 LF 被切开三种送法都该放行；
+     *          多一个字节三种送法都该判失败。闸门若把 CRLF 算进行体，「放行」这一档就取决于字节怎么切
+     */
+    TEST(HttpResponseParser, StatusLineLengthVerdictDoesNotDependOnFeedSegmentation)
+    {
+        constexpr std::size_t kCap = HttpResponseParser::kDefaultMaximumLineByteCount;
+
+        const std::string bodyAtLimit = "HTTP/1.1 200 " + std::string(kCap - 13, 'x');
+        const std::string bodyAbove   = "HTTP/1.1 200 " + std::string(kCap - 12, 'x');
+        ASSERT_EQ(bodyAtLimit.size(), kCap);
+        ASSERT_EQ(bodyAbove.size(), kCap + 1);
+
+        const auto expectVerdictForAllThreeShapes = [&](const std::string &statusLine, const bool expectAccepted, const char *what)
+        {
+            HttpResponseParser wholeLineParser;
+            static_cast<void>(wholeLineParser.feed(statusLine + "\r\n"));
+            EXPECT_EQ(wholeLineParser.hasFailed(), !expectAccepted) << "整段到达的" << what;
+
+            HttpResponseParser splitBeforeParser;
+            static_cast<void>(splitBeforeParser.feed(statusLine));
+            static_cast<void>(splitBeforeParser.feed("\r\n"));
+            EXPECT_EQ(splitBeforeParser.hasFailed(), !expectAccepted) << "行尾落在下一段的" << what;
+
+            HttpResponseParser splitInsideParser;
+            static_cast<void>(splitInsideParser.feed(statusLine + "\r"));
+            static_cast<void>(splitInsideParser.feed("\n"));
+            EXPECT_EQ(splitInsideParser.hasFailed(), !expectAccepted) << "CR 与 LF 被切开的" << what;
+        };
+
+        expectVerdictForAllThreeShapes(bodyAtLimit, true, "等限状态行");
+        expectVerdictForAllThreeShapes(bodyAbove, false, "越限一个字节的状态行");
     }
 
     /**

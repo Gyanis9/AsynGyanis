@@ -58,7 +58,8 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kDefaultMaximumHeaderBlockByteCount = 64ull * 1024;
 
         /// 单行上限（状态行、头部行、分块大小行共用）：一行永不含 CRLF 的字节流会让行缓冲
-        /// 无界增长；闸门在 feed() 入口统一看行缓冲长度，越界即判失败
+        /// 无界增长；闸门跟着「缓冲真要增长」那一步下判，量的是行体（不含 CRLF），与入站解析器
+        /// 同一把尺（见 HttpParser::takeLine 与 HttpHeaderRules.h）
         static constexpr std::size_t kDefaultMaximumLineByteCount = 8ull * 1024;
 
         /**

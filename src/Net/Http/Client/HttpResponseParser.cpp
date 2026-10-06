@@ -20,11 +20,24 @@ namespace AsynGyanis::Net
             data.remove_prefix(pos + 2);
             return true;
         }
+        /// 取行的三种结论：交出完整一行 / 还需要更多字节 / 这一行的行体超过单行上限
+        enum class LineVerdict
+        {
+            Delivered,
+            NeedMoreBytes,
+            TooLong,
+        };
+
         /// 取一行并拼入 lineBuffer（应对跨馈送调用的行拆分）
         /// @note 慢路径交出的行指向 lineBuffer，调用方必须在下一次 feedLine 之前用完它；
         ///       清缓冲推迟到下一次调用（见 isLineHandedOut）——交出去就清会让 MSVC 的
         ///       std::string 在首字节写 NUL，调用方读到的是坏内容
-        bool feedLine(std::string_view &data, std::string &buffer, std::string_view &line, bool &isLineHandedOut)
+        /// @note 单行长度闸门就在这一处，量的是**行体**（不含 CRLF），与入站解析器同一把尺
+        ///       （见 HttpHeaderRules.h 的 lineBodyByteCountWithoutTerminator）。闸门原先站在 feed()
+        ///       入口「先看已有的、再等下一次喂」，于是每多喂一段就多攒一段：一次喂入是 4 KiB，
+        ///       8 KiB 的上限实际能长到 12 KiB，而调用方拿不到越界的时机信息。挪到 append 之前按
+        ///       即将落地的总长判，缓冲的峰值就是上限 + 1 字节（末尾那枚 CR 可能是行尾的前半）
+        LineVerdict feedLine(std::string_view &data, std::string &buffer, std::string_view &line, bool &isLineHandedOut, const std::size_t maximumLineByteCount)
         {
             // 上一次慢路径交出去的行按契约已经用完，此刻才清暂存
             if (isLineHandedOut)
@@ -35,7 +48,10 @@ namespace AsynGyanis::Net
             if (buffer.empty())
             {
                 if (takeLine(data, line))
-                    return true;
+                {
+                    // takeLine 交出的视图本来就不含 CRLF，直接按行体比上限
+                    return maximumLineByteCount != 0 && line.size() > maximumLineByteCount ? LineVerdict::TooLong : LineVerdict::Delivered;
+                }
             }
             // 跨段 CRLF：缓冲末字节是 '\r'、本段首字节是 '\n' 时，终止符正好被切开，
             // 下面按 "\r\n" 查找是找不到的——不单独识别，这一行会一直拼下去（两行并成一行）
@@ -45,21 +61,31 @@ namespace AsynGyanis::Net
                 line            = buffer;
                 isLineHandedOut = true;
                 data.remove_prefix(1);
-                return true;
+                return maximumLineByteCount != 0 && line.size() > maximumLineByteCount ? LineVerdict::TooLong : LineVerdict::Delivered;
             }
             // 拼入已有缓冲
             const auto pos = data.find("\r\n");
             if (pos == std::string_view::npos)
             {
+                // 本段没有行尾：按上界放行，末尾那枚 CR 可能正是下一段行尾的前半
+                if (maximumLineByteCount != 0 && lineBodyByteCountWithoutTerminator(buffer.size(), data.size(), !data.empty() && data.back() == '\r') > maximumLineByteCount)
+                {
+                    return LineVerdict::TooLong;
+                }
                 buffer.append(data.data(), data.size());
                 data = {};
-                return false;
+                return LineVerdict::NeedMoreBytes;
+            }
+            // 行尾落在本段里：data 直到 pos 之前都是行体，pos 起那两字节是 CRLF
+            if (maximumLineByteCount != 0 && buffer.size() + pos > maximumLineByteCount)
+            {
+                return LineVerdict::TooLong;
             }
             buffer.append(data.data(), pos);
             line            = buffer;
             isLineHandedOut = true;
             data.remove_prefix(pos + 2);
-            return true;
+            return LineVerdict::Delivered;
         }
         /// 小写化一个 string_view（只用于头部名比较）
         std::string toLower(const std::string_view s)
@@ -167,13 +193,8 @@ namespace AsynGyanis::Net
 
     std::size_t HttpResponseParser::feed(const std::string_view raw)
     {
-        // 行长度闸门：取行路径有多处（状态行、头部行、块大小行…），把闸门放在入口一处就够——
-        // 行缓冲只在这里增长，一行永不含 CRLF 的字节流因此不会无界吃内存
-        if (kDefaultMaximumLineByteCount != 0 && m_lineBuffer.size() > kDefaultMaximumLineByteCount)
-        {
-            m_stage = Stage::Failed;
-            return 0;
-        }
+        // 单行长度闸门不在这里：它跟着「行缓冲真正要增长」那一步下判（见 feedLine），量的是即将落地
+        // 的行体总长。站在入口只看已有长度，等于每多喂一段就多放行一段，上限形同虚设
 
         auto       data      = raw;
         const auto startSize = raw.size();
@@ -183,8 +204,14 @@ namespace AsynGyanis::Net
             {
                 case Stage::StatusLine:
                 {
-                    std::string_view line;
-                    if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut))
+                    std::string_view  line;
+                    const LineVerdict lineVerdict = feedLine(data, m_lineBuffer, line, m_isLineHandedOut, kDefaultMaximumLineByteCount);
+                    if (lineVerdict == LineVerdict::TooLong)
+                    {
+                        m_stage = Stage::Failed;
+                        return startSize - data.size();
+                    }
+                    if (lineVerdict == LineVerdict::NeedMoreBytes)
                         return startSize - data.size();
                     // "HTTP/1.1 200 OK" 或 "HTTP/1.0 200 OK"
                     if (line.size() < 12 || !line.starts_with("HTTP/1."))
@@ -223,8 +250,14 @@ namespace AsynGyanis::Net
                 }
                 case Stage::Headers:
                 {
-                    std::string_view line;
-                    if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut))
+                    std::string_view  line;
+                    const LineVerdict lineVerdict = feedLine(data, m_lineBuffer, line, m_isLineHandedOut, kDefaultMaximumLineByteCount);
+                    if (lineVerdict == LineVerdict::TooLong)
+                    {
+                        m_stage = Stage::Failed;
+                        return startSize - data.size();
+                    }
+                    if (lineVerdict == LineVerdict::NeedMoreBytes)
                         return startSize - data.size();
                     if (line.empty())
                     {
@@ -393,8 +426,14 @@ namespace AsynGyanis::Net
                                 continue;
                             }
 
-                            std::string_view line;
-                            if (!feedLine(data, m_lineBuffer, line, m_isLineHandedOut))
+                            std::string_view  line;
+                            const LineVerdict lineVerdict = feedLine(data, m_lineBuffer, line, m_isLineHandedOut, kDefaultMaximumLineByteCount);
+                            if (lineVerdict == LineVerdict::TooLong)
+                            {
+                                m_stage = Stage::Failed;
+                                break;
+                            }
+                            if (lineVerdict == LineVerdict::NeedMoreBytes)
                                 break;
                             if (m_chunkPhase == ChunkPhase::SizeLine)
                             {

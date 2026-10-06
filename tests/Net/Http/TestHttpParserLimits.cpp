@@ -359,6 +359,46 @@ namespace AsynGyanis::Net
         expectFailedWithKind(aboveLimitParser, HttpParseErrorKind::BodyTooLarge, "分块块大小行");
     }
 
+    /**
+     * @brief 钉住：块大小行的长度闸门量的是**行体**，判决不随 TCP 分段而变
+     * @details maximumChunkSizeLineLength 明写「含块扩展，不含 CRLF」，所以行体恰好等于上限的报文
+     *          必须放行——不管那两字节行尾是跟在同一段里、落在下一段、还是 CR 与 LF 被切开。
+     *          旧写法在慢路径把行尾算进行体，于是同一份字节有两种判决：整段到达放行，分段就 413；
+     *          而 413 的理由（块大小行超限）在现场根本看不出自己是被怎么切的字节触发的。
+     *          越界那一档同样要三种送法同判，否则「放宽一档」与「换个分段」就成了两个可调的开关
+     */
+    TEST(HttpParserLimits, ChunkSizeLineVerdictDoesNotDependOnSegmentation)
+    {
+        HttpParserLimits limits;
+        limits.maximumChunkSizeLineLength = 16;
+
+        const std::string bodyAtLimit = "5;" + std::string(14, 'a'); // 行体正好 16 字节
+        const std::string bodyAbove   = "5;" + std::string(15, 'a'); // 行体 17 字节
+        ASSERT_EQ(bodyAtLimit.size(), 16u);
+        ASSERT_EQ(bodyAbove.size(), 17u);
+
+        // 三种送法各喂同一个报文，只看「有没有被闸门拦下」。NeedMore 在这一格里就是「放行，正在等块数据」
+        const auto expectVerdictForAllThreeShapes = [&](const std::string &chunkSizeLineBody, const bool expectAccepted, const char *what)
+        {
+            HttpParser        wholeLineParser(limits);
+            const std::string whole = std::string(kChunkedHeaderBlock) + chunkSizeLineBody + "\r\n";
+            EXPECT_EQ(wholeLineParser.parse(whole.data(), whole.size()) == ParseStatus::Error, !expectAccepted) << "整段到达的" << what;
+
+            HttpParser        splitBeforeParser(limits);
+            const std::string headPlusBody = std::string(kChunkedHeaderBlock) + chunkSizeLineBody;
+            static_cast<void>(splitBeforeParser.parse(headPlusBody.data(), headPlusBody.size()));
+            EXPECT_EQ(splitBeforeParser.parse("\r\n", 2) == ParseStatus::Error, !expectAccepted) << "行尾落在下一段的" << what;
+
+            HttpParser        splitInsideParser(limits);
+            const std::string headPlusBodyAndCr = headPlusBody + "\r";
+            static_cast<void>(splitInsideParser.parse(headPlusBodyAndCr.data(), headPlusBodyAndCr.size()));
+            EXPECT_EQ(splitInsideParser.parse("\n", 1) == ParseStatus::Error, !expectAccepted) << "CR 与 LF 被切开的" << what;
+        };
+
+        expectVerdictForAllThreeShapes(bodyAtLimit, true, "等限行体");
+        expectVerdictForAllThreeShapes(bodyAbove, false, "越界的行体");
+    }
+
     // ============================================================================
     // 拒绝面：0 的语义是「关闭该项保护」，不是「什么都不允许」
     // ============================================================================

@@ -343,6 +343,38 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API bool parseContentLengthValue(std::string_view text, std::size_t &length) noexcept;
 
     /**
+     * @brief 一行「见到行尾」时的行体字节数：CRLF 定长两字节，不参与长度判定
+     * @details 长度闸门量的是**行体**（RFC 9112 §3 里一行的名字与值，不含行尾），这与
+     *          `HttpParserLimits` 各项写的口径一致（如 maximumChunkSizeLineLength 明写「不含 CRLF」）。
+     *          入站解析器与出站响应解析器共用这两条算式：同一份字节怎么分段，判决必须一样——
+     *          把行尾算进行体，就会让「恰好等于上限的那一行」在整段到达时放行、在 CR 与 LF 落到
+     *          下一段时被拒，那是按 TCP 分段而不是按报文内容定生死。
+     * @param stagedByteCountIncludingTerminator 已攒下的字节加上本段直到 LF（含）的字节
+     * @return std::size_t 行体字节数；不足两个字节时为 0（空行）
+     */
+    [[nodiscard]] inline constexpr std::size_t lineBodyByteCountWithTerminator(const std::size_t stagedByteCountIncludingTerminator) noexcept
+    {
+        return stagedByteCountIncludingTerminator >= 2 ? stagedByteCountIncludingTerminator - 2 : 0;
+    }
+
+    /**
+     * @brief 一行「还没见到行尾」时的行体字节数上界：末尾那枚 CR 可能正是行尾的前半，不算行体
+     * @details 这一格只能给上界而不是精确值——CR 到底是不是行尾的一部分要等下一段才知道。按上界放行、
+     *          按精确值收口（见 lineBodyByteCountWithTerminator），于是暂存最多停在「上限 + 1 字节」，
+     *          内存仍然是有界的，而恰好等于上限的行不会被一次分段切成两种判决。
+     * @param stagedByteCount 已攒下的字节数
+     * @param appendedByteCount 本次要并入的字节数（本段没有 LF）
+     * @param appendedEndsWithCarriageReturn 并入部分的最后一个字节是否是 CR
+     * @return std::size_t 行体字节数上界
+     */
+    [[nodiscard]] inline constexpr std::size_t lineBodyByteCountWithoutTerminator(const std::size_t stagedByteCount, const std::size_t appendedByteCount,
+                                                                                  const bool appendedEndsWithCarriageReturn) noexcept
+    {
+        const std::size_t combined = stagedByteCount + appendedByteCount;
+        return appendedEndsWithCarriageReturn && combined != 0 ? combined - 1 : combined;
+    }
+
+    /**
      * @brief 判断内容类型头部是否指向指定的媒体类型
      *
      * @details 只看类型本身：`; charset=utf-8` 这类参数不参与判定，媒体类型大小写不敏感
