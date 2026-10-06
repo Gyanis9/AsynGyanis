@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -67,6 +68,15 @@ namespace AsynGyanis::Net
         void setBodyArrivedHandler(BodyArrivedHandler bodyArrivedHandler);
 
         /**
+         * @brief 交代这条流的请求正文声明了多少字节（请求头部里的 content-length）
+         * @details 正文缓冲自己读不到头部——声明值由会话在派发之前交进来，此后「收尾时字节够不够」
+         *          这一判据就只有这一处实现（会话的日志与业务的 isTruncated() 都读它）。
+         * @param declaredByteCount 声明的字节数；空表示这条流没有可用的声明（头部缺席或取值非法，
+         *        或按该方法的规矩本就没有正文），此时一律判不出截断
+         */
+        void setDeclaredBodyByteCount(std::optional<std::size_t> declaredByteCount) noexcept;
+
+        /**
          * @brief 追加一段刚到达的正文
          * @param data 应用数据（帧层已剥掉 padding）
          * @param flowControlByteCount 该 DATA 帧占用的流控字节数：按承载的规矩给（见类注释）
@@ -107,6 +117,14 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isBodyTooLarge() const noexcept;
 
+        /**
+         * @brief 对端收尾时，实收字节与声明字节是否不等（两个方向都算）
+         * @details 会话的运维日志读这一句：少发是截断（业务侧读 isTruncated()），多发同样是畸形
+         *          请求，只是处理器拿到的是超出声明的那几个字节。没交代声明值时判不出，恒为假。
+         * @return true 表示这份正文的体量与它的声明不符
+         */
+        [[nodiscard]] bool hasBodyLengthMismatch() const noexcept;
+
         // ---- HttpBodySource ----
         /// 丢掉已交付的字节，并按量归还接收窗口
         void discardBufferedBody() noexcept override;
@@ -120,6 +138,9 @@ namespace AsynGyanis::Net
         /// 本流是否已不可继续
         [[nodiscard]] bool isBroken() override;
 
+        /// 收信号时字节还差着：对端收尾了，而实收不足声明的正文长度
+        [[nodiscard]] bool isTruncated() const noexcept override;
+
         /// 正文不经请求对象中转，收齐后没有「残余」可交：恒为空视图
         [[nodiscard]] std::string_view completedBody() override;
 
@@ -129,8 +150,10 @@ namespace AsynGyanis::Net
         std::size_t        m_totalReceivedByteCount{0};      ///< 本流累计收到的正文字节数
         ConsumeHandler     m_consumeHandler;                 ///< 消费回调（会话借此归还接收窗口）
         BodyArrivedHandler m_bodyArrivedHandler;             ///< 到达通知（推式承载借此唤醒等待者）
-        bool               m_isPeerFinished{false};          ///< 对端已收尾
-        bool               m_isBroken{false};                ///< 流已不可继续
-        bool               m_isBodyTooLarge{false};          ///< 正文总量越过会话上限
+        /// 会话交进来的声明正文长度（content-length）：空＝判不出体量是否相符
+        std::optional<std::size_t> m_declaredBodyByteCount;
+        bool                       m_isPeerFinished{false};  ///< 对端已收尾
+        bool                       m_isBroken{false};        ///< 流已不可继续
+        bool                       m_isBodyTooLarge{false};  ///< 正文总量越过会话上限
     };
 } // namespace AsynGyanis::Net

@@ -497,7 +497,7 @@ namespace AsynGyanis::Net
          *          MUST NOT send frames other than PRIORITY on a closed stream」——RST 就再也发不
          *          出去了。对端凭头部里补齐的 content-length 判正文收齐，不受影响。
          * @param streamId 目标流号
-         * @param declaredLength 请求头部声明的正文长度（已由 parseContentLengthValue 解析出来）
+         * @param declaredLength 请求头部声明的正文长度（`HttpRequest::declaredBodyLength()` 的首条原值）
          * @param receivedLength 该流实收正文的字节数
          * @param isHeadRequest 本请求是不是 HEAD：HEAD 的响应本就不许带正文，只能发完头就收尾，
          *        那条 RST 也就发不出去了（对端此刻没在等正文，少一个 RST 不影响它判正文收齐）

@@ -2675,13 +2675,14 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：流式路由上「声明 13 字节、实收 5 字节就 END_STREAM」不再无声通过
+     * @brief 钉住：流式路由上「声明 13 字节、实收 5 字节就 END_STREAM」两头都看得出
      * @details 服务阶段那条 content-length 判据管不到流式派发——那时正文本来就没收完，比不得。
      *          于是这个形状在 h2 的流式通路上一度既不比、也不出声：h1 读不满就根本收不了尾，h3 在连接层
-     *          按 §4.1.2 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR。
-     *          本用例同时钉住两件事：① 一声必须出（且只按收尾那一次出）；② 交付形状**没被顺手改**——
-     *          业务仍按到达批次拿到那 5 字节。把流打断看着更严格，实际会把「截断」变成「空正文」，
-     *          而 `HttpRequestBody` 的契约不区分三种终止来源，那是一次新的静默误读（要改交付得先补原因）
+     *          按 §4.1.2 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR，而业务侧经
+     *          `HttpRequestBody::isTruncated()` 问得到同一个结论（RFC 9113 §8.1.1 的畸形请求）。
+     *          本用例同时钉住三件事：① 一声必须出（且只按收尾那一次出）；② 交付形状**没被顺手改**——
+     *          业务仍按到达批次拿到那 5 字节，把流打断看着更严格，实际会把「截断」洗成「空正文」；
+     *          ③ 完整性这一句必须为真，否则处理器只能靠自己数字节去猜对端少发了没有
      */
     TEST(Http2CleartextSession, TruncatedStreamingBodyAgainstDeclaredLengthSpeaksUp)
     {
@@ -2692,11 +2693,12 @@ namespace AsynGyanis::Net
         const std::size_t           baselineMismatchCount = logCapture.countContaining("声明正文长度");
 
         std::atomic<bool>        isHandlerFinished{false};
+        std::atomic<bool>        observedTruncation{false};
         std::atomic<std::size_t> observedTotalBytes{0};
-        const auto               registerRoutes = [&isHandlerFinished, &observedTotalBytes](Router &router, Core::EventLoop &)
+        const auto               registerRoutes = [&isHandlerFinished, &observedTotalBytes, &observedTruncation](Router &router, Core::EventLoop &)
         {
             router.postStreaming("/stream",
-                                 [&isHandlerFinished, &observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 [&isHandlerFinished, &observedTotalBytes, &observedTruncation](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                                  {
                                      std::size_t            totalBytes = 0;
                                      HttpRequestBody *const stream     = request.bodyStream();
@@ -2706,6 +2708,8 @@ namespace AsynGyanis::Net
                                          {
                                              totalBytes += stream->chunk().size();
                                          }
+                                         // 终止之后才问这一句：还在逐段到达时「差着字节」是正常状态
+                                         observedTruncation.store(stream->isTruncated(), std::memory_order_release);
                                      }
                                      observedTotalBytes.store(totalBytes, std::memory_order_release);
                                      response.setBody("bytes=" + std::to_string(totalBytes));
@@ -2734,8 +2738,77 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(waitForFlag(isHandlerFinished, kWaitTimeout)) << "收尾判完之后的处理器不该被悬在那里";
         EXPECT_EQ(observedTotalBytes.load(std::memory_order_acquire), kSentPortion.size()) << "交付形状没被顺手改：按到达批次交出的还是那 5 字节";
+        EXPECT_TRUE(observedTruncation.load(std::memory_order_acquire)) << "业务问不出截断：半份上传会被当成完整的一份收下";
         EXPECT_EQ(logCapture.countContaining("声明正文长度") - baselineMismatchCount, 1U) << "声明与实收不一致必须出声，且只按收尾那一次记";
         EXPECT_EQ(logCapture.countContaining("与实收 5 字节不一致"), 1U) << "打的那条日志要能指回真正的原因（声明 13、实收 5）";
+
+        client.closeNow();
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 反向对照：声明的长度分两批发满再 END_STREAM——一声都不许出，也不得报截断
+     * @details 与上一条只差「实收够不够」：截断这道闸一旦按错方向（把「还在收」或把「刚好收满」也算成
+     *          不完整），正常的流式上传就会被处理器自己拒掉，而运维日志会淹掉真正的那一条
+     */
+    TEST(Http2CleartextSession, CompleteStreamingBodyMatchingDeclaredLengthStaysSilent)
+    {
+        constexpr std::string_view kFirstPortion  = "first-portion";
+        constexpr std::string_view kSecondPortion = "and-end";
+        constexpr std::size_t      kDeclared      = kFirstPortion.size() + kSecondPortion.size();
+
+        HttpTestSupport::LogCapture logCapture;
+        const std::size_t           baselineMismatchCount = logCapture.countContaining("声明正文长度");
+
+        std::atomic<bool>        isHandlerFinished{false};
+        std::atomic<bool>        observedTruncation{true};
+        std::atomic<std::size_t> observedTotalBytes{0};
+        const auto               registerRoutes = [&isHandlerFinished, &observedTotalBytes, &observedTruncation](Router &router, Core::EventLoop &)
+        {
+            router.postStreaming("/stream",
+                                 [&isHandlerFinished, &observedTotalBytes, &observedTruncation](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     std::size_t            totalBytes = 0;
+                                     HttpRequestBody *const stream     = request.bodyStream();
+                                     if (stream != nullptr)
+                                     {
+                                         while (co_await stream->readNext())
+                                         {
+                                             totalBytes += stream->chunk().size();
+                                         }
+                                         observedTruncation.store(stream->isTruncated(), std::memory_order_release);
+                                     }
+                                     observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     isHandlerFinished.store(true, std::memory_order_release);
+                                     co_return;
+                                 });
+        };
+
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, registerRoutes, HttpParserLimits{},
+                                         [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        std::string requestBytes = makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream") + hpackLiteralField("content-length", std::to_string(kDeclared)), false);
+        requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = std::string(kFirstPortion)}, 1U);
+        requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kSecondPortion)}, 1U);
+        ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "收满正文之后没有拿到最终响应";
+        EXPECT_TRUE(waitForFlag(isHandlerFinished, kWaitTimeout)) << "处理器没有跑完";
+        EXPECT_EQ(observedTotalBytes.load(std::memory_order_acquire), kDeclared) << "两批正文没有按到达批次全部交出";
+        EXPECT_FALSE(observedTruncation.load(std::memory_order_acquire)) << "刚好收满的那一条被误判成截断，正常的上传会被处理器拒掉";
+        EXPECT_EQ(logCapture.countContaining("声明正文长度") - baselineMismatchCount, 0U) << "体量相符的请求不该出一条截断日志";
 
         client.closeNow();
         EXPECT_FALSE(fixture.startThrew());

@@ -80,4 +80,18 @@ namespace AsynGyanis::Net
     {
         return m_chunk;
     }
+
+    bool HttpRequestBody::isTruncated() const noexcept
+    {
+        // 只有流已经终止才谈得上「没拿齐」：还在逐段交付时差着字节是正常状态，不是截断
+        if (!m_isFinished || m_source == nullptr)
+        {
+            return false;
+        }
+
+        // 两条判据取或，是因为「不完整」在线上就有两种形状：对端按规矩收尾了却少发字节（只有
+        // 来源自己判得出，它同时是「已收尾」——所以 !isComplete() 在这一格看不出来），以及
+        // 根本没收尾就断了（承载断开、流被重置、正文解析失败）。三条通道因此对同一个形状给同一个答案
+        return m_source->isTruncated() || !m_source->isComplete();
+    }
 } // namespace AsynGyanis::Net

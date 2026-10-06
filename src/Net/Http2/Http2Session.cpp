@@ -490,6 +490,14 @@ namespace AsynGyanis::Net
             pending.isStreamingBody =
                     !isIntakeRejected && !pending.isExtendedConnect &&
                     m_router.hasStreamingRoute(pending.request.method(), pending.request.uri(), pending.request.firstHeaderValueView("host").value_or(std::string_view{}));
+            if (pending.isStreamingBody)
+            {
+                // 把声明长度交给这条流自己的正文缓冲：「收尾时字节够不够」从此只有那一份判据，
+                // 运维日志与业务的 HttpRequestBody::isTruncated() 读的是同一个结论。HEAD 不给声明值——
+                // 那条流上本来就没有请求正文要收，硬以 content-length 去量会把正常收尾读成截断
+                const bool isHeadRequestAtIntake = pending.request.method() == HttpMethod::HEAD;
+                pending.streamBody.setDeclaredBodyByteCount(isHeadRequestAtIntake ? std::optional<std::size_t>{} : pending.request.declaredBodyLength());
+            }
             // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串。
             // 扩展 CONNECT 排除在外（与 h3 侧 `protocolText.empty()` 那条同一判据）：它的 `hasBody`
@@ -608,21 +616,17 @@ namespace AsynGyanis::Net
                     // 声明长度与实收不一致＝畸形请求（RFC 9113 §8.1.1）。服务阶段那条判据管不到流式派发：
                     // 那时正文本来就没收完，比不得。于是「声明 13 字节、实收 5 字节就 END_STREAM」这一形状
                     // 在 h2 的流式通路上一度既不比、也不出声——h1 读不满就根本收不了尾，h3 在连接层按 §4.1.2
-                    // 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR，指回声明值与实收值。
-                    // 只出声、不改交付：业务侧的 readNext() 分不清「读完 / 断开 / 被打断」三种终止来源
-                    // （HttpRequestBody 的既定契约），在这里把流打断会把「截断」变成「空正文」——
-                    // 那是另一种静默误读，比原来更糟。要把交付也改对，得先给那条契约补一个可问的原因
-                    if (!streamBody.isBodyTooLarge() && pending.request.method() != HttpMethod::HEAD)
+                    // 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR，指回声明值与实收值；判据住在
+                    // HttpStreamBody 一处（声明值在 intake 就交进去），业务侧经 isTruncated() 问同一个结论。
+                    // 交付照旧不动：在这里把流打断会让已到达但尚未交付的字节一并消失，「截断」就被洗成了
+                    // 「空正文」——那是另一种静默误读，比原来更糟。半份正文照旧交出，完整性由处理器裁决
+                    if (!streamBody.isBodyTooLarge() && streamBody.hasBodyLengthMismatch())
                     {
-                        const std::optional<std::string> declaredLengthText = pending.request.firstHeaderValue(kContentLengthHeaderName);
-                        std::size_t                      declaredLength     = 0;
-                        if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) && streamBody.totalReceivedByteCount() != declaredLength)
-                        {
-                            LOG_ERROR_FMT("Http2Session: 流 {} 的声明正文长度 {} 字节与实收 {} 字节不一致（流式正文已按到达批次交付，"
-                                          "对端在 END_STREAM 之前少发了 {} 字节）",
-                                          receivedData.streamId, declaredLength, streamBody.totalReceivedByteCount(),
-                                          declaredLength > streamBody.totalReceivedByteCount() ? declaredLength - streamBody.totalReceivedByteCount() : 0U);
-                        }
+                        const std::size_t declaredLength = pending.request.declaredBodyLength().value_or(0);
+                        LOG_ERROR_FMT("Http2Session: 流 {} 的声明正文长度 {} 字节与实收 {} 字节不一致（流式正文已按到达批次交付，"
+                                      "对端在 END_STREAM 之前少发了 {} 字节）",
+                                      receivedData.streamId, declaredLength, streamBody.totalReceivedByteCount(),
+                                      declaredLength > streamBody.totalReceivedByteCount() ? declaredLength - streamBody.totalReceivedByteCount() : 0U);
                     }
                 }
                 return;
@@ -1103,12 +1107,12 @@ namespace AsynGyanis::Net
         // 正文交给业务——那正是走私的收益所在
         if (!pending.isStreamingBody)
         {
-            // 只看首条：这里要的就是那一个声明值，为它构造整列 string 是每条请求一次的多余分配
-            const std::optional<std::string> declaredLengthText = request.firstHeaderValue("content-length");
-            std::size_t                      declaredLength     = 0;
-            if (declaredLengthText.has_value() && parseContentLengthValue(*declaredLengthText, declaredLength) && request.body().size() != declaredLength)
+            // 只读首条原值：这里要的就是那一个声明值，为它构造整列 string 是每条请求一次的多余分配，
+            // 而合并口径会把两条一致的「17, 17」读成非法值（判据与流式路径共用 HttpRequest 这一份读法）
+            const std::optional<std::size_t> declaredLength = request.declaredBodyLength();
+            if (declaredLength.has_value() && request.body().size() != *declaredLength)
             {
-                const RequestServeOutcome mismatchOutcome = co_await rejectMalformedBodyLength(streamId, declaredLength, request.body().size(), isHeadRequest);
+                const RequestServeOutcome mismatchOutcome = co_await rejectMalformedBodyLength(streamId, *declaredLength, request.body().size(), isHeadRequest);
                 if (mismatchOutcome == RequestServeOutcome::StreamCancelled)
                 {
                     noteStreamCancelled();

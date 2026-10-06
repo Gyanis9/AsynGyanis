@@ -201,6 +201,24 @@ namespace AsynGyanis::Net
         return m_headerStore.firstValueView(key);
     }
 
+    std::optional<std::size_t> HttpRequest::declaredBodyLength() const
+    {
+        // 首条原值而不是合并口径：两条一致的 content-length 在 getHeader() 里会拼成 "17, 17"，
+        // 那种重复是合法的（RFC 9110 §8.6），非法的那一份由头部校验层负责拒
+        const auto declaredLengthText = firstHeaderValueView("content-length");
+        if (!declaredLengthText.has_value())
+        {
+            return std::nullopt;
+        }
+
+        std::size_t declaredLength = 0;
+        if (!parseContentLengthValue(*declaredLengthText, declaredLength))
+        {
+            return std::nullopt;
+        }
+        return declaredLength;
+    }
+
     bool HttpRequest::hasHeader(const std::string_view key) const
     {
         return m_headerStore.contains(key);

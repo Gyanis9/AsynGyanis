@@ -11,9 +11,12 @@ namespace AsynGyanis::Net
         m_pendingFlowControlByteCount = 0;
         m_totalReceivedByteCount      = 0;
         m_consumeHandler              = std::move(consumeHandler);
-        m_isPeerFinished              = false;
-        m_isBroken                    = false;
-        m_isBodyTooLarge              = false;
+        // 声明值随会话的交接口进来，也必须随复位出去：漏清的话下一条流会拿上一条的
+        // content-length 判自己的体量，短了的那条被说成截断、满了的那条反过来
+        m_declaredBodyByteCount = std::nullopt;
+        m_isPeerFinished        = false;
+        m_isBroken              = false;
+        m_isBodyTooLarge        = false;
     }
 
     void HttpStreamBody::setConsumeHandler(ConsumeHandler consumeHandler)
@@ -24,6 +27,11 @@ namespace AsynGyanis::Net
     void HttpStreamBody::setBodyArrivedHandler(BodyArrivedHandler bodyArrivedHandler)
     {
         m_bodyArrivedHandler = std::move(bodyArrivedHandler);
+    }
+
+    void HttpStreamBody::setDeclaredBodyByteCount(const std::optional<std::size_t> declaredByteCount) noexcept
+    {
+        m_declaredBodyByteCount = declaredByteCount;
     }
 
     void HttpStreamBody::append(const std::string_view data, const std::size_t flowControlByteCount, const bool endStream)
@@ -82,6 +90,12 @@ namespace AsynGyanis::Net
         return m_isBodyTooLarge;
     }
 
+    bool HttpStreamBody::hasBodyLengthMismatch() const noexcept
+    {
+        // 收尾了才对得上账：还没收尾时「实收少于声明」是正常的进行中状态，不是不符
+        return m_isPeerFinished && m_declaredBodyByteCount.has_value() && m_totalReceivedByteCount != *m_declaredBodyByteCount;
+    }
+
     void HttpStreamBody::discardBufferedBody() noexcept
     {
         // 消费即还窗口：按承载给出的流控报量归还——只按应用数据报量会让对端窗口一点点被吃掉
@@ -107,6 +121,12 @@ namespace AsynGyanis::Net
     bool HttpStreamBody::isBroken()
     {
         return m_isBroken;
+    }
+
+    bool HttpStreamBody::isTruncated() const noexcept
+    {
+        // 「收尾了而字节没到位」才是截断：多发的那一向正文是全的，交给业务的只是比声明多出来的零头
+        return m_isPeerFinished && m_declaredBodyByteCount.has_value() && m_totalReceivedByteCount < *m_declaredBodyByteCount;
     }
 
     std::string_view HttpStreamBody::completedBody()

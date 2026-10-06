@@ -60,6 +60,22 @@ namespace AsynGyanis::Net
         [[nodiscard]] virtual bool isBroken() = 0;
 
         /**
+         * @brief 对端是否「收尾了却没把声明的正文发满」
+         * @details 与 isComplete() 相对：isComplete() 说的是「承载上的收尾信号到了」，本方法说的
+         *          是「收信号时字节还差着」。HTTP/2 允许 HEADERS 声明 content-length 之后用一串
+         *          不足额的 DATA 加 END_STREAM 收尾（RFC 9113 §8.1.1 判它畸形），那一刻本来源
+         *          同时是「已收尾」与「没发满」——只看 isComplete() 的读取方会把截断的正文当完整交给业务。
+         * @return true 表示正文按声明长度是不完整的
+         * @note 默认假：这一形状只在「一条流自己的正文缓冲」上判得出。HTTP/1.1 的成帧没有「收尾但
+         *       短了」这一格——声明的字节没收满就根本收不了尾，那种终止走的是 isBroken() 与泵失败
+         *       那条出口，读取方据「没收尾」同样能判出截断（见 HttpRequestBody::isTruncated()）。
+         */
+        [[nodiscard]] virtual bool isTruncated() const noexcept
+        {
+            return false;
+        }
+
+        /**
          * @brief 收齐后仍未交付的残余正文
          * @return std::string_view 残余视图；没有残余时为空。视图的有效期同 bufferedBodyView()
          * @note 读取器自己记住是否已交付过，本方法不必保证只被调用一次

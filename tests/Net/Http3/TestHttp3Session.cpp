@@ -2374,6 +2374,65 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：h3 上「声明 12 字节而正文只有 4 字节就收尾」时，处理器读到的是截断而不是完整正文
+     * @details 承载层按 RFC 9114 §4.1.2 判死这条流（`Http3Connection.ContentLengthDisagreeingWithBodyEndsTheStreamAsMessageError`
+     *          钉的是那一半），本用例钉的是另一半：会话把这条流按「不可继续」交给业务之后，
+     *          `HttpRequestBody::isTruncated()` 必须为真。这一格走的是判据的后一条——来源根本没收尾，
+     *          与 h1 的「上传中途断开」同一形状；h2 的短 END_STREAM 走前一条。三条通道对同一个线上形状
+     *          给同一个答案，处理器不必按承载分叉，也不会把半份上传落进存储。
+     */
+    TEST(Http3Session, BodyShorterThanDeclaredLengthLeavesTheHandlerReadingATruncatedBody)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                             });
+
+        bool   isHandlerEntered = false;
+        bool   isHandlerFinished{false};
+        bool   observedTruncation{false};
+        Router router;
+        router.postStreaming("/upload",
+                             [&isHandlerEntered, &isHandlerFinished, &observedTruncation](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 // 终止之后才问这一句：这条流是被承载判死的，正文永远也收不满声明的 12 字节
+                                 observedTruncation = request.bodyStream()->isTruncated();
+                                 isHandlerFinished  = true;
+                                 response.setStatus(200);
+                                 response.setBody("uploaded");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        // 正文只发 4 字节并就此收尾，而头块里声明的是 12：线上形状就是「少发就 END_STREAM」
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcd", 4, {{"content-length", "12"}}));
+
+        for (std::size_t stepIndex = 0; stepIndex < 32; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+        }
+
+        EXPECT_TRUE(isHandlerEntered) << "用例前提：流式路由得先派发，否则后面读到的终止不是这一条通路";
+        EXPECT_TRUE(isHandlerFinished) << "承载把这条流判死之后处理器仍挂在等正文上：终止没有传给业务";
+        EXPECT_TRUE(observedTruncation) << "半份正文被读成完整的一份：处理器会把它落进存储";
+    }
+
+    /**
      * @brief 钉住：走流式正文路由的 h3 请求也要计入采集端（请求数、状态码类、耗时）
      * @details 这条漏斗原先一笔都不落账：普通请求的记账写在收齐后派发的那一段里，而流式路由是
      *          「头部收齐即派发」、由本流自己的协程服务到底，绕过了那一段。后果是「只挂流式上传路由」

@@ -159,6 +159,39 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：声明正文长度的四种形状各给一个答案（缺席／合法／两条一致／非法／声明为 0）
+     * @details 读的是首条原值而不是合并口径：两条一致的 content-length 是合法的（RFC 9110 §8.6 只拒
+     *          不一致的重复），而 getHeader() 会把它们拼成 "17, 17" 判成非法值。
+     *          「空」与「0」必须分得开：0 是「真的不该有正文」，空是「判不出体量」——
+     *          流式正文的截断判据正是靠这一格把「无须比」与「比过了」分开的。
+     */
+    TEST(HttpRequest, ReadsDeclaredBodyLengthFromTheFirstValue)
+    {
+        HttpRequest absent;
+        EXPECT_FALSE(absent.declaredBodyLength().has_value()) << "没有 content-length 时不该凭空给一个长度";
+
+        HttpRequest declared;
+        declared.addHeader("Content-Length", "17");
+        ASSERT_TRUE(declared.declaredBodyLength().has_value());
+        EXPECT_EQ(*declared.declaredBodyLength(), 17U) << "名字大小写要一样认（存储侧已归一化，读口不该再加一层）";
+
+        HttpRequest repeated;
+        repeated.addHeader("content-length", "17");
+        repeated.addHeader("content-length", "17");
+        ASSERT_TRUE(repeated.declaredBodyLength().has_value()) << "两条一致的重复是合法的：按合并口径读会拼成 \"17, 17\" 而被判成没有声明";
+        EXPECT_EQ(*repeated.declaredBodyLength(), 17U);
+
+        HttpRequest emptyBody;
+        emptyBody.addHeader("content-length", "0");
+        ASSERT_TRUE(emptyBody.declaredBodyLength().has_value()) << "声明 0 字节是真声明，不是「判不出」";
+        EXPECT_EQ(*emptyBody.declaredBodyLength(), 0U);
+
+        HttpRequest garbage;
+        garbage.addHeader("content-length", "abc");
+        EXPECT_FALSE(garbage.declaredBodyLength().has_value()) << "非法取值应当判不出长度，而不是猜一个数出来";
+    }
+
+    /**
      * @brief 钉住：trailer 与头部是两档存储，同名也不互相覆盖、不互相可见
      * @details 合档会让「Content-Length 出现在正文之后」变成第二种长度解释（RFC 9110 §6.5.1
      *          禁止的正是这个形状）；两档各自可读，业务问哪一档就只有哪一档的答案。

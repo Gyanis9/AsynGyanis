@@ -35,8 +35,10 @@ namespace AsynGyanis::Net
      * @warning chunk() 的视图只在「下一次 readNext()」之前有效：处理器必须在同一段里
      *          处理完数据，不能把视图存起来等下一段（与 HttpParser::takeLine() 的交付约定一致）。
      * @note 流终止（readNext() 返回 false）有三种来源：正文真的读完、对端断开/传输失败、
-     *       正文中途解析失败。当前契约不区分三者；后两种情况下会话会在收尾时收口连接，
-     *       不会按可复用连接继续服务。
+     *       正文中途解析失败。三者「为何终止」不区分（后两种会话都在收尾时收口连接，不会按
+     *       可复用连接继续服务），但**终止时正文齐不齐**问得出：readNext() 返回 false 之后调
+     *       isTruncated()，为真就是「交出去的正文比声明的短」，处理器据此拒绝半份上传，
+     *       而不是把它当完整正文。
      * @see HttpRequest::bodyStream(), HttpBodySource, Router::postStreaming()
      */
     class ASYN_NET_API HttpRequestBody
@@ -66,6 +68,18 @@ namespace AsynGyanis::Net
          * @return std::string_view 仅在 readNext() 返回 true 之后、下一次 readNext() 之前有效
          */
         [[nodiscard]] std::string_view chunk() const noexcept;
+
+        /**
+         * @brief 这份正文是否「没拿到齐的那一份」：流终止时正文并没有按规矩收齐
+         * @details 判据是两条的或：来源自己说收尾时字节没到位（HTTP/2 的 HEADERS 声明了
+         *          content-length，随后 DATA 不足额就 END_STREAM——RFC 9113 §8.1.1 判它畸形），
+         *          或来源根本没收尾（承载断开、流被重置、正文中途解析失败）。两条通道上同一个
+         *          线上形状因此给出同一个答案。
+         * @return true 表示正文不完整，处理器不得按完整正文处理
+         * @note 只在 readNext() 返回 false 之后有意义：流还没走完时正文本来就在逐段到达，
+         *       此刻「还差着」是正常状态而不是截断。未装配（attach 没调过）恒为假。
+         */
+        [[nodiscard]] bool isTruncated() const noexcept;
 
     private:
         HttpBodySource  *m_source{nullptr};               ///< 正文来源（非拥有；h1 上是解析器，h2 上是那条流的正文缓冲）

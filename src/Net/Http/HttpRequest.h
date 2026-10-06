@@ -244,6 +244,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<std::string_view> firstHeaderValueView(std::string_view key) const;
 
         /**
+         * @brief 本请求声明的正文长度（content-length 的首条取值）
+         * @details 「实收对不对得上声明」这一判据在本框架里不止一处：h1 的解析器、h2 的收尾判定、
+         *          h3 的产出时限与体量闸门读的是同一个数，于是这个读法也只留一份。按合并口径的
+         *          `getHeader("content-length")` 会把两条一致的「17, 17」拼成非法值（RFC 9110 §8.6 只拒
+         *          不一致的重复，那份拒绝在头部校验层已经做过），而这里要的是首条原值。
+         * @return std::optional<std::size_t> 声明的字节数；头部缺席或取值非法时为空。
+         *         空与「声明为 0」不是一回事：0 是「必须没有正文」的真声明，空是「判不出体量」
+         */
+        [[nodiscard]] std::optional<std::size_t> declaredBodyLength() const;
+
+        /**
          * @brief 判断指定名称的头部是否出现过（只看存在性，不看取值）
          * @details 取代 `getHeader(x).has_value()`：后者会为一次判定把整个取值拷出来。
          * @param key 头部字段名，大小写不敏感

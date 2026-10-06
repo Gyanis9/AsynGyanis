@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -210,5 +211,108 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(body.isComplete());
         EXPECT_TRUE(body.completedBody().empty()) << "h2 的残余应当经 bufferedBodyView() 交付，completedBody() 恒为空";
+    }
+
+    /**
+     * @brief 声明 13 字节却只来了 5 字节就 END_STREAM：来源同时是「已收尾」与「没发满」
+     * @details RFC 9113 §8.1.1 判这一形状畸形。isComplete() 在这一格仍为真（收尾信号确实到了），
+     *          所以截断必须由 isTruncated() 单独答得出，否则业务只看到一次正常 EOF
+     */
+    TEST(HttpStreamBody, ShortEndStreamAgainstDeclaredLengthIsTruncated)
+    {
+        HttpStreamBody body;
+        body.reset({});
+        body.setDeclaredBodyByteCount(std::optional<std::size_t>{13});
+
+        body.append(std::string(5, 'a'), 5, true);
+
+        EXPECT_TRUE(body.isComplete()) << "对端确实收尾了：这一格不能被改成「没收尾」，否则读取方会再去泵一次等不来的字节";
+        EXPECT_TRUE(body.isTruncated()) << "实收 5 不足声明的 13，业务问不出截断就是把半份正文当完整交出";
+        EXPECT_TRUE(body.hasBodyLengthMismatch());
+    }
+
+    /**
+     * @brief 收满声明的那一格：两条判据都不该响
+     */
+    TEST(HttpStreamBody, EndStreamWithExactlyTheDeclaredLengthIsNotTruncated)
+    {
+        HttpStreamBody body;
+        body.reset({});
+        body.setDeclaredBodyByteCount(std::optional<std::size_t>{5});
+
+        body.append(std::string(5, 'a'), 5, true);
+
+        EXPECT_TRUE(body.isComplete());
+        EXPECT_FALSE(body.isTruncated()) << "收齐了却报截断，处理器会把完整的上传拒掉";
+        EXPECT_FALSE(body.hasBodyLengthMismatch());
+    }
+
+    /**
+     * @brief 多发（实收 > 声明）：算「与声明不符」，但不算「截断」
+     * @details 业务侧的判据问的是「我拿到的正文齐不齐」，多出来的零头不影响答案的完整性；
+     *          会话的运维日志要的才是「与声明不符」，两者各有一句
+     */
+    TEST(HttpStreamBody, OverDeclaredEndStreamIsMismatchButNotTruncated)
+    {
+        HttpStreamBody body;
+        body.reset({});
+        body.setDeclaredBodyByteCount(std::optional<std::size_t>{3});
+
+        body.append(std::string(7, 'a'), 7, true);
+
+        EXPECT_TRUE(body.hasBodyLengthMismatch()) << "多发同样是畸形请求，运维侧要看得见";
+        EXPECT_FALSE(body.isTruncated()) << "字节并不缺，报截断会把「我拿到的是全的」这件事说反";
+    }
+
+    /**
+     * @brief 没有可用声明值时判不出截断：两条判据都保持沉默，而不是猜一个
+     * @details 会话对 HEAD 与非法 content-length 都不交代声明值。这时谎报截断会把正常请求拒掉，
+     *          而「没声明」本来就没有可比的量
+     */
+    TEST(HttpStreamBody, WithoutDeclaredLengthNothingCanBeJudged)
+    {
+        HttpStreamBody body;
+        body.reset({});
+
+        body.append(std::string(5, 'a'), 5, true);
+
+        EXPECT_TRUE(body.isComplete());
+        EXPECT_FALSE(body.isTruncated());
+        EXPECT_FALSE(body.hasBodyLengthMismatch());
+    }
+
+    /**
+     * @brief 还没收尾就比长度：字节差额是「进行中」，不是截断
+     */
+    TEST(HttpStreamBody, PartialBodyStillInFlightIsNotTruncated)
+    {
+        HttpStreamBody body;
+        body.reset({});
+        body.setDeclaredBodyByteCount(std::optional<std::size_t>{13});
+
+        body.append(std::string(5, 'a'), 5, false);
+
+        EXPECT_FALSE(body.isComplete()) << "END_STREAM 没到，正文还在收";
+        EXPECT_FALSE(body.isTruncated()) << "把进行中的差额报成截断，处理器会在第一批就掐死一条正常上传";
+        EXPECT_FALSE(body.hasBodyLengthMismatch());
+    }
+
+    /**
+     * @brief 声明值不跨流残留：reset() 之后下一条流没重新交代就判不出
+     * @details 与 isComplete()/isBroken() 同一族：这份缓冲在同一条连接上是复用的
+     */
+    TEST(HttpStreamBody, DeclaredLengthDoesNotCrossStreams)
+    {
+        HttpStreamBody body;
+        body.reset({});
+        body.setDeclaredBodyByteCount(std::optional<std::size_t>{13});
+        body.append(std::string(5, 'a'), 5, true);
+        ASSERT_TRUE(body.isTruncated()) << "前提：上一条流确实被判成了截断";
+
+        body.reset({});
+        body.append(std::string(5, 'b'), 5, true);
+
+        EXPECT_FALSE(body.isTruncated()) << "上一条流的 content-length 串到了这一条流上";
+        EXPECT_FALSE(body.hasBodyLengthMismatch());
     }
 } // namespace AsynGyanis::Net

@@ -2093,11 +2093,11 @@ namespace AsynGyanis::Net
         // 免得给「带 Expect 却没有正文」的请求凭空塞一个 100。真没声明长度又确实要发正文的对端，
         // 按 RFC 9110 §10.1.1 的兜底走「等自己的 expect 超时后照发」，不会卡死
         //
-        // 只看首条而不是合并视图：判定器允许取值一致的 content-length 重复出现（RFC 9110 §8.6），
-        // 而合并口径会把那两条拼成「17, 17」—— parseContentLengthValue 判它非法，于是这一格在
-        // h3 上永远回不出 100，对端只能等自己的 expect 超时；h2 侧读的正是首条（Http2Session）
-        std::size_t declaredBodyByteCount = 0;
-        if (!parseContentLengthValue(incoming.request.firstHeaderValueView("content-length").value_or(std::string_view{}), declaredBodyByteCount) || declaredBodyByteCount == 0)
+        // 长度取自 `HttpRequest::declaredBodyLength()` 那一份首条原值：判定器允许取值一致的
+        // content-length 重复出现（RFC 9110 §8.6），合并口径会把那两条拼成「17, 17」而被判非法，
+        // 于是这一格在 h3 上永远回不出 100，对端只能等自己的 expect 超时
+        const std::optional<std::size_t> declaredBodyByteCount = incoming.request.declaredBodyLength();
+        if (!declaredBodyByteCount.has_value() || *declaredBodyByteCount == 0)
         {
             LOG_DEBUG_FMT("Http3Session: 流 {} 带 Expect: 100-continue 却没声明正的正文长度，不回 100", streamId);
             return;

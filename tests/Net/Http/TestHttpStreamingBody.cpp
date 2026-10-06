@@ -414,6 +414,66 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：上传途中连接断掉，处理器读出的是「正文没拿齐」而不是正常 EOF
+     * @details isTruncated() 的两条判据在这一格走的是后一条——来源根本没收尾。HTTP/1.1 没有「收尾但
+     *          短了」这一形状（声明的字节没收满就收不了尾），h2 的短 END_STREAM 走的是前一条；两条通道
+     *          对「半份上传」给同一个答案，处理器就不必按承载分叉。已到达的 10 字节仍按批次交出。
+     */
+    TEST(HttpStreamingBody, ConnectionClosedMidUploadReadsAsTruncated)
+    {
+        constexpr std::size_t kDeclaredBytes = 64;
+        constexpr std::size_t kSentBytes     = 10;
+
+        std::atomic<bool>        hasObservedFirstBatch{false};
+        std::atomic<bool>        isHandlerFinished{false};
+        std::atomic<bool>        observedTruncation{false};
+        std::atomic<std::size_t> observedTotalBytes{0};
+
+        const auto registerRoutes = [&hasObservedFirstBatch, &isHandlerFinished, &observedTruncation, &observedTotalBytes](Router &router, Core::EventLoop &)
+        {
+            router.postStreaming("/upload-cut",
+                                 [&hasObservedFirstBatch, &isHandlerFinished, &observedTruncation, &observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     std::size_t            totalBytes = 0;
+                                     HttpRequestBody *const stream     = request.bodyStream();
+                                     if (stream != nullptr)
+                                     {
+                                         while (co_await stream->readNext())
+                                         {
+                                             totalBytes += stream->chunk().size();
+                                             observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                             hasObservedFirstBatch.store(true, std::memory_order_release);
+                                         }
+                                         observedTruncation.store(stream->isTruncated(), std::memory_order_release);
+                                     }
+                                     observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                     response.setBody("bytes=" + std::to_string(totalBytes));
+                                     isHandlerFinished.store(true, std::memory_order_release);
+                                     co_return;
+                                 });
+        };
+
+        RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(uploadHeadRequest("/upload-cut", kDeclaredBytes) + makePayload(kSentBytes), kWaitTimeout));
+
+        // 先等处理器真的拿到字节，再掐连接：反过来就是拿调度当判据，红了也说不清是哪一步
+        EXPECT_TRUE(waitForCondition([&hasObservedFirstBatch] { return hasObservedFirstBatch.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "首段正文没交进处理器：流式派发没有发生，后面读到的终止形状不是本用例要验的那一种";
+        client.closeNow();
+
+        EXPECT_TRUE(waitForCondition([&isHandlerFinished] { return isHandlerFinished.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "连接断掉之后处理器仍挂在等正文上：泵失败没有把终止传给业务";
+        EXPECT_EQ(observedTotalBytes.load(std::memory_order_acquire), kSentBytes) << "已到达的字节被弄丢了，截断会被读成空正文";
+        EXPECT_TRUE(observedTruncation.load(std::memory_order_acquire)) << "半份上传被读成完整正文——落库的那一条就是缺字节的";
+    }
+
+    /**
      * @brief 钉住：普通（非流式）路由上 bodyStream() 同样可用——收齐后一次交出全量正文再 EOF
      */
     TEST(HttpStreamingBody, RegularRouteAlsoExposesBodyStream)
