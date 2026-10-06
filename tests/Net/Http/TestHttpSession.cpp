@@ -637,8 +637,7 @@ namespace AsynGyanis::Net
 
         const std::size_t firstBodyBegin = firstHeadEnd + 4;
         EXPECT_EQ(responseText.compare(firstBodyBegin, 10, "0123456789"), 0) << "第一条的正文不是那 10 个字节";
-        EXPECT_EQ(responseText.compare(firstBodyBegin + declaredLength, 9, "HTTP/1.1 "), 0)
-                << "收端按声明的 " << declaredLength << " 字节切包后，下一条报文的开头被错位";
+        EXPECT_EQ(responseText.compare(firstBodyBegin + declaredLength, 9, "HTTP/1.1 "), 0) << "收端按声明的 " << declaredLength << " 字节切包后，下一条报文的开头被错位";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
