@@ -66,7 +66,17 @@ namespace AsynGyanis::Net
     ///           连 any() 注册的通配方法路由也不会放行它，只按上面两条产出 404/405。
     ///           把它兼任「通配方法」就等于让任何未收录方法蹭上兜底路由，405 防线随之失效。
     ///
-    /// @see any(), MiddlewarePipeline
+    /// @note **注册时机：开始服务之后就别再改这张表**
+    ///       派发是按指针与视图引用持有命中条目的（处理函数取 `&route.handler`，模式原文取
+    ///       `route.pattern` 交给 `HttpRequest::matchedRoute()`），而这两样都长在路由表自己的
+    ///       容器上：`addRoute()`/`get()`/`post()`/`virtualHost()` 任何一次**追加**都可能让底层
+    ///       vector 扩容搬家，把在途请求手里的那两份引用留在已销毁的旧元素上。处理器与中间件都是
+    ///       协程，从派发到返回之间这条请求随时让出循环，所以「跑请求的过程中再注册一条路由」
+    ///       不必两个线程就会坏——同一条线程上的重入就够了。装配出口（`HttpServer::enableMetricsEndpoint()`、
+    ///       `HttpServer::enableHealthEndpoint()`、`AcmeCertificateManager::registerChallengeRoutes()`）
+    ///       因此都排在 start() 之前；实现侧的同一约定写在 `route()` 里那条注释上。
+    ///
+    /// @see any(), MiddlewarePipeline, route()
     class ASYN_NET_API Router
     {
     public:
@@ -128,6 +138,9 @@ namespace AsynGyanis::Net
          * @param handler 处理函数；读正文请用 `request.bodyStream()`，不要依赖 body()
          * @note 追加语义：处理器返回时若正文仍未读完，会话会把剩余字节排空后复用连接；
          *       排空失败或正文中途解析出错则收口连接（不按可复用处理）
+         * @note 读完要问一句完整性：`readNext()` 返回 false 之后 `request.bodyStream()->isTruncated()`
+         *       为真，表示这份正文没有按声明收齐（对端少发就收尾、承载中途断掉都算），落盘或落库
+         *       之前得先拒掉——半份上传当成完整的一份收下，是这条通路唯一会静默发生的错
          * @note 与 WebSocket 升级不兼容：流式路由里登记升级会被按 500 拒绝
          * @note 中间件对两类路由都生效；横切逻辑若需要看正文，请同样经 bodyStream() 读
          * @see HttpRequestBody, HttpRequest::bodyStream()
