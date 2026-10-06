@@ -2803,7 +2803,8 @@ namespace AsynGyanis::Net
         requestBytes += encodeHttp2DataFrame(Http2DataPayload{.endStream = true, .data = std::string(kSecondPortion)}, 1U);
         ASSERT_TRUE(client.sendBytes(requestBytes, kWaitTimeout));
 
-        ASSERT_TRUE(client.pumpUntil(frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
                 << "收满正文之后没有拿到最终响应";
         EXPECT_TRUE(waitForFlag(isHandlerFinished, kWaitTimeout)) << "处理器没有跑完";
         EXPECT_EQ(observedTotalBytes.load(std::memory_order_acquire), kDeclared) << "两批正文没有按到达批次全部交出";

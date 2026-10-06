@@ -152,8 +152,8 @@ namespace AsynGyanis::Net
         BodyArrivedHandler m_bodyArrivedHandler;             ///< 到达通知（推式承载借此唤醒等待者）
         /// 会话交进来的声明正文长度（content-length）：空＝判不出体量是否相符
         std::optional<std::size_t> m_declaredBodyByteCount;
-        bool                       m_isPeerFinished{false};  ///< 对端已收尾
-        bool                       m_isBroken{false};        ///< 流已不可继续
-        bool                       m_isBodyTooLarge{false};  ///< 正文总量越过会话上限
+        bool                       m_isPeerFinished{false}; ///< 对端已收尾
+        bool                       m_isBroken{false};       ///< 流已不可继续
+        bool                       m_isBodyTooLarge{false}; ///< 正文总量越过会话上限
     };
 } // namespace AsynGyanis::Net

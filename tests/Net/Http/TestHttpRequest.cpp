@@ -756,7 +756,7 @@ namespace AsynGyanis::Net
     {
         HttpRequest request;
         request.addHeader("host", "one.com");
-        request.addHeader("host", "two.com");  // RFC 9110 §7.1.2：多于一条 host 必须回 400
+        request.addHeader("host", "two.com"); // RFC 9110 §7.1.2：多于一条 host 必须回 400
 
         EXPECT_TRUE(request.hasMultipleHostHeaders()) << "收到多条 host 时应返回 true";
         EXPECT_EQ(request.headerFieldCount("host"), 2UL) << "计数也应反映两条记录";

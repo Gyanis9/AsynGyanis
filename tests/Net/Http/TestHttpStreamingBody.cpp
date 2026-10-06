@@ -431,26 +431,27 @@ namespace AsynGyanis::Net
 
         const auto registerRoutes = [&hasObservedFirstBatch, &isHandlerFinished, &observedTruncation, &observedTotalBytes](Router &router, Core::EventLoop &)
         {
-            router.postStreaming("/upload-cut",
-                                 [&hasObservedFirstBatch, &isHandlerFinished, &observedTruncation, &observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-                                 {
-                                     std::size_t            totalBytes = 0;
-                                     HttpRequestBody *const stream     = request.bodyStream();
-                                     if (stream != nullptr)
-                                     {
-                                         while (co_await stream->readNext())
-                                         {
-                                             totalBytes += stream->chunk().size();
-                                             observedTotalBytes.store(totalBytes, std::memory_order_release);
-                                             hasObservedFirstBatch.store(true, std::memory_order_release);
-                                         }
-                                         observedTruncation.store(stream->isTruncated(), std::memory_order_release);
-                                     }
-                                     observedTotalBytes.store(totalBytes, std::memory_order_release);
-                                     response.setBody("bytes=" + std::to_string(totalBytes));
-                                     isHandlerFinished.store(true, std::memory_order_release);
-                                     co_return;
-                                 });
+            router.postStreaming(
+                    "/upload-cut",
+                    [&hasObservedFirstBatch, &isHandlerFinished, &observedTruncation, &observedTotalBytes](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        std::size_t            totalBytes = 0;
+                        HttpRequestBody *const stream     = request.bodyStream();
+                        if (stream != nullptr)
+                        {
+                            while (co_await stream->readNext())
+                            {
+                                totalBytes += stream->chunk().size();
+                                observedTotalBytes.store(totalBytes, std::memory_order_release);
+                                hasObservedFirstBatch.store(true, std::memory_order_release);
+                            }
+                            observedTruncation.store(stream->isTruncated(), std::memory_order_release);
+                        }
+                        observedTotalBytes.store(totalBytes, std::memory_order_release);
+                        response.setBody("bytes=" + std::to_string(totalBytes));
+                        isHandlerFinished.store(true, std::memory_order_release);
+                        co_return;
+                    });
         };
 
         RunningHttpServerFixture fixture({}, std::chrono::milliseconds{50}, {}, registerRoutes);
