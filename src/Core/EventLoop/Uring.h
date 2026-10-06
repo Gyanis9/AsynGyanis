@@ -106,9 +106,11 @@ namespace AsynGyanis::Core
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
     private:
-        /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。
-        /// **必须与 Epoll / Iocp 的同名常量同值**：上层（EventLoop::%run）按「一批不超过这个数」
-        /// 安排处理预算，三个后端只有一个是特例就等于把这条约定写死在文档里而不成立
+        /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。三个后端各拿这一个数定自己的
+        /// 每批上限，取同一值是刻意的**同档配置**（每批处理的预算与延迟感相当），不是一条跨模块必须同解
+        /// 的约束：上层（EventLoop::run）只遍历交出的那段视图，并不按某张固定长度的表索引它，所以改
+        /// 一档只改这一后端的每批量，不会把另两个后端读坏。取满不丢事件——完成通知仍留在 CQ 环里，
+        /// 下一轮立刻再报
         static constexpr int kMaximumEventCount = 1024;
 
         /**
