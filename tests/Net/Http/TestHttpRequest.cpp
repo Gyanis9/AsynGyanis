@@ -732,6 +732,17 @@ namespace AsynGyanis::Net
         HttpRequest single;
         single.addHeader("host", "single.com");
         EXPECT_FALSE(single.hasMultipleHostHeaders()) << "仅一条 host 时不应误报";
+
+        // 一条都没有也不应触发：默认值不是「没数过」的另一种写法
+        HttpRequest absent;
+        EXPECT_FALSE(absent.hasMultipleHostHeaders());
+
+        // 名字大小写混着给也算同一个字段：对端写 Host 与 host 说的是同一份权威（RFC 9110 §5.1 的
+        // 字段名大小写不敏感），按原文分档就会把一份权威数成两条、或把两条数成一条
+        HttpRequest mixedCase;
+        mixedCase.addHeader("Host", "one.com");
+        mixedCase.addHeader("host", "two.com");
+        EXPECT_TRUE(mixedCase.hasMultipleHostHeaders()) << "同一字段的大小写变体被当成了两个字段";
     }
 
 } // namespace AsynGyanis::Net

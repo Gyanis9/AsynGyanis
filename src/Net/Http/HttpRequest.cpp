@@ -239,10 +239,11 @@ namespace AsynGyanis::Net
 
     bool HttpRequest::hasMultipleHostHeaders() const noexcept
     {
-        // m_hostHeaderFieldCount 由 HttpParser 在解析时计数：同一报文里有多个 host 行就累增，
-        // 这比「从存储里数几条 host」更可靠：parseRequestLine() 把整行读完就交给 this->m_requestHeaderStore，
-        // 此时「几个 host」的事实已经落定，调用方能安全依赖这个返回值做路由/拒绝等判定。
-        return m_hostHeaderFieldCount > 1;
+        // 真源是头部存储里那几条记录，而不是解析器中途递过来的一个计数：h2 与 h3 的字段是经
+        // `addHeader()` 映射进请求对象的，那条通路从来不经过 h1 的解析器——按计数读就恒为假，
+        // 而这正是唯一还可能收到两条 host 的两条通道（h1 的第二条 host 行在解析期就被拒了）。
+        // 名字先归一化再数：对端写「Host」与「host」是同一个字段（存储侧本来就按小写存）。
+        return m_headerStore.countOf("host") > 1;
     }
 
     const std::unordered_map<std::string, std::string> &HttpRequest::headers() const
@@ -282,11 +283,6 @@ namespace AsynGyanis::Net
     void HttpRequest::setBodyStream(HttpRequestBody *bodyStream) noexcept
     {
         m_bodyStream = bodyStream;
-    }
-
-    void HttpRequest::setHostHeaderFieldCount(std::size_t count) noexcept
-    {
-        m_hostHeaderFieldCount = count;
     }
 
     void HttpRequest::setRequestId(const std::string_view requestId)

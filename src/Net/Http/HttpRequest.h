@@ -261,10 +261,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t headerFieldCount(std::string_view key) const;
 
         /**
-         * @brief host 是否收到多次（RFC 9110 §7.1.2：请求走私面，收到多于一条 host 必须回 400）
-         * @details HTTP/2/3各自有 :authority 解析器，但 H1 通路上的 HttpRequest 本身只有这份计数能直接反映「是不是多行 host」。对逐字节解析的 H1 来说，
-         *          这一格比「读出来之后再去查有多少条」更可靠：parseRequestLine() 把整行读完就交给 m_requestHeaderStore，此时「几个 host」的事实已经落定，
-         *          调用方能安全依赖这个返回值做路由或拒绝等判定。
+         * @brief host 字段是否收到了两条及以上（RFC 9110 §7.1.2 与 §8.3.1：这是请求走私面，必须回 400）
+         * @details 数的是头部存储里的记录条数，而不是解析器中途递过来的一个计数：h2 与 h3 的字段
+         *          是经映射写进请求对象的，那条通路上没有 h1 的解析器可问；而 h1 上第二条 host 行
+         *          在解析期就被拒掉（`HttpParser` 自己的那份 host 计数），因此这一句真会答「有」的
+         *          场合恰好就是另两条通道。会话按 `:authority` 补齐 host 那一步只在「一条都没有」时
+         *          发生，不会在此造出假的两条。
          * @return true 收到了多于一条 host 字段
          */
         [[nodiscard]] bool hasMultipleHostHeaders() const noexcept;
@@ -559,13 +561,6 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
 
-        /**
-         * @brief 被 parser 调用时把 host 计数落进来
-         * @details parseRequestLine() 在解析时累增 m_hostHeaderFieldCount，此刻把它拷贝进请求对象：
-         *          这条接口只有 parser 内部能用（没有 public setter），保证「几条 host」的事实由 parser 定。
-         */
-        void setHostHeaderFieldCount(std::size_t count) noexcept;
-
         HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
         std::string          m_uri;                         ///< 原始 URI，含查询串
         std::string          m_httpVersion;                 ///< HTTP 版本原文
@@ -585,6 +580,5 @@ namespace AsynGyanis::Net
         std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定
         std::unordered_map<std::string, std::string> m_params;       ///< 路由参数
         mutable std::stop_source                     m_cancelSource; ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
-        std::size_t                                  m_hostHeaderFieldCount{0}; ///< host 字段计数：同一条报文里有多个 host 行就累增，由 parseRequestLine() 填
     };
 } // namespace AsynGyanis::Net
