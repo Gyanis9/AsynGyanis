@@ -337,4 +337,31 @@ namespace AsynGyanis::Database
         ASSERT_NE(afterUnsubscribe, nullptr) << "退订后仍读不回正常回复：" << subscriber.lastError();
         ASSERT_NE(m_writer->execute("DEL " + key), nullptr);
     }
+
+    /**
+     * @brief 真机：同一条命令里重复的频道，不该让退订去等一条服务端根本不会发的确认
+     * @details 本机实测（宿主那份 redis）：`SUBSCRIBE a a` 为两个参数各回一条 subscribe 确认（确认里的
+     *          计数两次都写 1），而无参数的 `UNSUBSCRIBE` 只为那**一份**真订阅回一条确认。订阅账原先按
+     *          「发出去的目标条数」记，退订那一步于是多等一条——白等满一次确认时限（5 秒）之后把这条
+     *          连接判成「订阅状态不确定」，而它其实是干净的。现在记去重后的名单。
+     *          判据只押结论不押毫秒：unsubscribeAll() 必须返回真，且退订后回到一条命令一条回复的形状
+     */
+    TEST_F(RedisSubscriptionIntegration, DuplicateChannelInOneCommandDoesNotLeaveUnsubscribeWaiting)
+    {
+        RedisConnection subscriber(m_configuration);
+        ASSERT_TRUE(subscriber.connect()) << subscriber.lastError();
+
+        const std::string                   key     = makeKey();
+        const std::string                   channel = "__keyspace@" + std::to_string(keySpaceIndex()) + "__:" + key;
+        const std::vector<std::string>      channelList{channel, channel}; // 同一个频道写两次：服务端只持一份订阅
+        const std::vector<std::string_view> channelViews(channelList.begin(), channelList.end());
+        ASSERT_TRUE(subscriber.subscribe(channelViews)) << subscriber.lastError();
+
+        EXPECT_TRUE(subscriber.unsubscribeAll()) << "重复目标让退订等一批不会来的确认：" << subscriber.lastError();
+        EXPECT_FALSE(subscriber.isSubscribing());
+
+        const std::unique_ptr<DatabaseResult> afterUnsubscribe = subscriber.execute("SET " + key + " 4");
+        ASSERT_NE(afterUnsubscribe, nullptr) << "退订后仍读不回正常回复：" << subscriber.lastError();
+        ASSERT_NE(m_writer->execute("DEL " + key), nullptr);
+    }
 } // namespace AsynGyanis::Database

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -328,7 +329,7 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool isSubscribing() const noexcept
         {
-            return m_channelSubscriptionCount + m_patternSubscriptionCount > 0;
+            return !m_channelSubscriptions.empty() || !m_patternSubscriptions.empty();
         }
 
         /**
@@ -414,11 +415,14 @@ namespace AsynGyanis::Database
         int  m_currentKeySpaceIndex{0};     ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
         bool m_isSessionModeChanged{false}; ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO/AUTH/CLIENT 的几条子命令）：归还时断开这条连接
 
-        // 两类订阅各记各的条数：服务端 UNSUBSCRIBE / PUNSUBSCRIBE 的确认里那个整数是**两类合计**
-        // 的剩余订阅数，光看回复分不出「这一类退完了没」，因此按类记账才知道每条命令该收几条确认。
-        // 订阅期间这条连接归调用方独占，本地记的数与服务端一致
-        std::size_t m_channelSubscriptionCount{0}; ///< 当前活跃的频道订阅条数
-        std::size_t m_patternSubscriptionCount{0}; ///< 当前活跃的模式订阅条数
+        // 两类订阅各记各的**去重名单**：服务端为一条订阅只记一份，无参数的 UNSUBSCRIBE / PUNSUBSCRIBE
+        // 因此按名单条数回确认（本机 redis 实测：`SUBSCRIBE a a` 回两条 subscribe 确认但计数都是 1，
+        // 随后无参数 UNSUBSCRIBE 只回一条）。原先记的是「发出去的目标条数」，重复目标会让账比真订阅多，
+        // unsubscribeAll() 就去等一批服务端根本不会发的确认——白等满一次确认时限再把连接判成不确定。
+        // 确认里那个整数是两类合计的剩余订阅数，光看回复分不出「这一类退完了没」，所以仍按类分开记。
+        // 订阅期间这条连接归调用方独占，本地记的名单与服务端一致
+        std::set<std::string> m_channelSubscriptions; ///< 当前活跃的频道订阅名单（去重）
+        std::set<std::string> m_patternSubscriptions; ///< 当前活跃的模式订阅名单（去重）
     };
 
     namespace Detail

@@ -470,10 +470,10 @@ namespace AsynGyanis::Database
         m_isInTransaction = false;
         m_isWatchingKeys  = false;
 
-        // 订阅同样随会话消失：新连接上一条订阅都不剩。两个计数不归零，isSubscribing() 就会谎报，
+        // 订阅同样随会话消失：新连接上一条订阅都不剩。名单不归零，isSubscribing() 就会谎报，
         // 而 unsubscribeAll() 会去等一批服务端根本不会发的确认（每条都等满一次确认时限）
-        m_channelSubscriptionCount = 0;
-        m_patternSubscriptionCount = 0;
+        m_channelSubscriptions.clear();
+        m_patternSubscriptions.clear();
 
         // 会话模式与库位也随会话一起没了：下一次 connect() 会按配置重设这两格
         m_isSessionModeChanged = false;
@@ -1321,8 +1321,15 @@ namespace AsynGyanis::Database
 
         // 按类记条数：unsubscribeAll() 要知道每条退订命令该收几确认（回复里那个整数是两类合计，
         // 单看它分不出「这一类退干净了没」）
-        std::size_t &subscriptionCount = commandName == "PSUBSCRIBE" ? m_patternSubscriptionCount : m_channelSubscriptionCount;
-        subscriptionCount += targets.size();
+        // 名单按**去重**记：服务端为一条订阅只持一份，无参数 UNSUBSCRIBE 就按这份名单回确认。
+        // 下面那条「补收 targets.size() - 1 条」仍然按目标数走——本机实测 `SUBSCRIBE a a` 确实为
+        // 每个参数各回一条 subscribe 确认（计数都写 1），要分开的只是「这一条命令回几条」与
+        // 「这条连接上真有几份订阅」这两个问题
+        std::set<std::string> &subscriptions = commandName == "PSUBSCRIBE" ? m_patternSubscriptions : m_channelSubscriptions;
+        for (const std::string_view target: targets)
+        {
+            subscriptions.insert(std::string(target));
+        }
 
         // 服务端为**每个目标**各回一条确认。第一条已经作为这条命令的回复被 executeArguments 取走了
         // （那一刻连接还没进入推送形态，配对是成立的），因此这里只补收剩下的 targets.size() - 1 条。
@@ -1354,12 +1361,12 @@ namespace AsynGyanis::Database
             return true;
         }
 
-        // 两类订阅各自退，各按自己记下的条数收确认。带错一条就会把另一类的确认吃掉，
+        // 两类订阅各自退，各按自己那份名单的长度收确认。带错一条就会把另一类的确认吃掉，
         // 因此先退干净的先清零，不让两类共用一个计数
-        for (const std::pair<std::string_view, std::size_t *> &command:
-             {std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptionCount}, std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptionCount}})
+        for (const std::pair<std::string_view, std::set<std::string> *> &command:
+             {std::pair{std::string_view{"UNSUBSCRIBE"}, &m_channelSubscriptions}, std::pair{std::string_view{"PUNSUBSCRIBE"}, &m_patternSubscriptions}})
         {
-            const std::size_t outstanding = *command.second;
+            const std::size_t outstanding = command.second->size();
             if (outstanding == 0)
             {
                 continue; // 这一类本来就没有订阅：不发命令，也就没有要收的确认
@@ -1368,7 +1375,7 @@ namespace AsynGyanis::Database
             const std::array<std::string_view, 1> arguments{command.first};
             if (executeArguments(arguments) == nullptr)
             {
-                *command.second = 0;
+                command.second->clear();
                 return false;
             }
 
@@ -1381,11 +1388,11 @@ namespace AsynGyanis::Database
                     {
                         m_lastError = "没有等齐服务端为退订命令回的确认，订阅状态不确定：请按断开重连处理";
                     }
-                    *command.second = 0;
+                    command.second->clear();
                     return false;
                 }
             }
-            *command.second = 0;
+            command.second->clear();
         }
 
         // 订阅全退了，但 m_isSessionModeChanged 保持原样：这条连接确实经历过推送形态，
