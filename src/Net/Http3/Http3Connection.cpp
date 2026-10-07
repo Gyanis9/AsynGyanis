@@ -492,6 +492,12 @@ namespace AsynGyanis::Net
         if (const auto fed = state.reader->feed(data); !fed)
         {
             failStream(streamId, toHttp3ErrorCode(fed.error().kind), fed.error().message);
+            // 与正常出口同一条收尾，一步都不能少：这一趟喂进去的帧头字节已经消化掉却不还额度，
+            // 对端每条坏帧都吃掉一点流窗口，攒够了整条连接停在流控上；而 failStream 只标记不 erase
+            // （调用链上到处握着 StreamState 引用），回收点就是下面这一句——跳过它，这条流的记录连同
+            // 读取器那块 maximumFrameByteCount 量级的缓冲一起留到连接收口，而对端可以无限开请求流
+            creditConsumedBytes(streamId, state, 0);
+            pruneAbandonedStream(streamId); // 此刻已不再用 state：擦掉之后它的引用就悬了
             return;
         }
 
@@ -502,6 +508,9 @@ namespace AsynGyanis::Net
             if (!nextFrame)
             {
                 failStream(streamId, toHttp3ErrorCode(nextFrame.error().kind), nextFrame.error().message);
+                // 同上：本轮已经数进去的 DATA 载荷与帧头都要按同一口径还回去，被放弃的流随后回收
+                creditConsumedBytes(streamId, state, dataPayloadByteCount);
+                pruneAbandonedStream(streamId);
                 return;
             }
             if (!nextFrame->has_value())
@@ -789,6 +798,10 @@ namespace AsynGyanis::Net
             if (!resumed)
             {
                 failStream(streamId, toHttp3ErrorCode(resumed.error().kind), resumed.error().message);
+                // failStream 只标记不 erase，而这一条通路本来就没有函数尾的回收点：不在此处收，
+                // 这条被放弃的流就再没人摘（对端可以只在编码器流上发一条指令把挂起的段判死，
+                // 每来一次留一份 StreamState 到连接收口）
+                pruneAbandonedStream(streamId);
                 return;
             }
             if (*resumed == QpackFieldSectionDecodeStatus::Blocked)
