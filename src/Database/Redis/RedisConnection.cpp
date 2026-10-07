@@ -1441,6 +1441,13 @@ namespace AsynGyanis::Database
 
         if (readStatus != REDIS_OK || rawReplyPointer == nullptr)
         {
+            // hiredis 在失败时也可能交出半截回复，非空就得释放，否则直接泄漏——与上面读管道回复
+            // 那一路（flushPipeline）同一条规矩，所有权在这一格始终归本函数，没人接手就必须自己还
+            if (rawReplyPointer != nullptr)
+            {
+                freeReplyObject(rawReplyPointer);
+            }
+
             if (timedOut)
             {
                 // 等不到消息是持续消费的正常节奏，不是失败：hiredis 把超时报成上下文错误，
