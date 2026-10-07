@@ -42,7 +42,12 @@ COMMENT_PREFIXES = ("//", "*", "/*", "#", ";;", "<!--")
 
 def load_diagrams():
     """读回所有候选图 JSON。返回 (路径, 数据) 列表与一条错误说明——解不开就是工件坏了。"""
-    names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and not n.endswith(".delivery.json"))
+    try:
+        names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and not n.endswith(".delivery.json"))
+    except OSError as error:
+        # 目录整个不见（被移动、改名，或从别的仓库树里跑这个脚本）也要退 2：这不是「没有违例」，
+        # 而是判据压根没跑。抛 Python 栈会被 CI 读成退出码 1，看着像「查出了问题」
+        return None, "读不到 %s：%s" % (DIAGRAM_DIR, error)
     found = []
     for name in names:
         path = os.path.join(DIAGRAM_DIR, name)
