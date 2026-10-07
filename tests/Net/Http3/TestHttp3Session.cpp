@@ -1291,10 +1291,12 @@ namespace AsynGyanis::Net
      * @param sentStreamData 会话出口的字节收集容器
      * @param requestIdGenerator request-id 生成器（可空）
      * @param aborter 流收口出口（可空）：给了就能断言「本端有没有把这条流交代给传输层」
+     * @param metrics 采集端（可空）：给了就能断言「这次收口进了哪本账」
      * @return Http3Session 可按值搬走的会话
      */
     Http3Session makeSession(FakeStreamOpener &opener, std::vector<CapturedStreamData> &sentStreamData,
-                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr, Http3Session::StreamAborter aborter = {})
+                             std::shared_ptr<AsynGyanis::Net::HttpRequestIdGenerator> requestIdGenerator = nullptr, Http3Session::StreamAborter aborter = {},
+                             std::shared_ptr<HttpMetricsCollector> metrics = nullptr)
     {
         return Http3Session(
                 std::ref(opener),
@@ -1305,7 +1307,7 @@ namespace AsynGyanis::Net
                     // 这里只关心「协议层交了什么字节」
                     return data.size();
                 },
-                {}, nullptr, nullptr, std::move(requestIdGenerator), std::move(aborter));
+                {}, std::move(metrics), nullptr, std::move(requestIdGenerator), std::move(aborter));
     }
 
     /**
@@ -3953,8 +3955,9 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
+        const auto metrics = std::make_shared<HttpMetricsCollector>();
         Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
 
         const auto limits   = std::make_shared<HttpServerLimits>();
         limits->readTimeout = std::chrono::milliseconds{1};
@@ -3992,6 +3995,9 @@ namespace AsynGyanis::Net
                 << "没收齐的请求不该回任何字节（没有 :method/:path 可派发的半成品响应）";
         EXPECT_FALSE(isHandlerEntered) << "过点的请求不该交给业务";
         EXPECT_FALSE(session.hasOutstandingWork()) << "过点的流要连同记账一起摘掉，否则排空永远等不完";
+        const HttpServerStats readDeadlineStats = metrics->snapshot();
+        EXPECT_EQ(readDeadlineStats.timeoutClosedCount, 1U) << "h3 的读时限到期没进与 h1/h2 同一本账：按时限收口只在两条通道上看得见";
+        EXPECT_EQ(readDeadlineStats.badRequestCount, 0U) << "等不到字节的流不是报文不合规，不该记进坏请求那本账";
     }
 
     /**
@@ -4083,8 +4089,9 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
+        const auto metrics = std::make_shared<HttpMetricsCollector>();
         Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
 
         const auto limits    = std::make_shared<HttpServerLimits>();
         limits->writeTimeout = std::chrono::milliseconds{1};
@@ -4133,6 +4140,9 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(std::ranges::none_of(sentStreamData, [requestStreamId = kFirstRequestStreamId](const CapturedStreamData &chunk) { return chunk.streamId == requestStreamId; }))
                 << "流已经复位，迟到的响应又往这条流上写字节：连接层会为死流重新攒待发数据";
         EXPECT_FALSE(session.hasOutstandingWork()) << "被产出预算收口的流要连同记账一起摘掉，否则排空永远等不完";
+        const HttpServerStats produceDeadlineStats = metrics->snapshot();
+        EXPECT_EQ(produceDeadlineStats.timeoutClosedCount, 1U) << "h3 的产出时限到期没进与 h1/h2 同一本账";
+        EXPECT_EQ(produceDeadlineStats.badRequestCount, 0U) << "处理器没回来不是对端在发坏报文，不该记进坏请求那本账";
     }
 
     /**

@@ -1093,8 +1093,10 @@ namespace AsynGyanis::Net
             LOG_WARN_FMT("Http3Session: 流 {} 在 readTimeout（{} 毫秒）内没有新的请求字节，本端收口这条流", streamId, m_serverLimits->readTimeout.count());
             if (m_metrics != nullptr)
             {
-                // 与 413/431 同一类：本端按限额拒绝，不算「对端主动取消」
-                m_metrics->countBadRequest();
+                // 时限到期归「本端按时限收口」那本账，与 h1/h2 的 onIdleTimeoutClosed 同一口径；
+                // 坏请求那本账的口径是报文不合规（解析失败、越限），把等不到字节的流记进去
+                // 会让运维看到的「有人在发坏报文」其实是「对端慢」
+                m_metrics->countTimeoutClosedConnection();
             }
             abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
             dropRequest(streamId);
@@ -1122,8 +1124,9 @@ namespace AsynGyanis::Net
                          m_serverLimits->writeTimeout.count());
             if (m_metrics != nullptr)
             {
-                // 与读时限那一趟同一口径：本端按时限拒绝，不算「对端主动取消」
-                m_metrics->countBadRequest();
+                // 与读时限那一趟同一本账：都是「本端按时限收口」，与 h1/h2 的 timeoutClosedCount 同口径；
+                // 报文本身是合规的，记进坏请求会把「处理器没回来」报成「对端在发坏报文」
+                m_metrics->countTimeoutClosedConnection();
             }
             // 先记下这条流是被预算收口的：处理器随后才回来时，响应不再往这条已复位的流上写
             m_produceBudgetCutStreamIds.insert(streamId);
