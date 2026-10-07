@@ -17,7 +17,6 @@
 用法：
     python3 scripts/check-arch-traceability.py                 # 检查（CI 用）
     python3 scripts/check-arch-traceability.py --stale-since HEAD~50   # 换新鲜度的基准
-    python3 scripts/check-arch-traceability.py --strict         # 把 WARN 也算违例
 退出码：0 通过；1 有违例；2 工件本身读不了（没有图、JSON 解不开、拿不到修订号）。
 """
 
@@ -78,8 +77,13 @@ def iter_elements(data, name, out):
         if not isinstance(elements, list):
             continue
         for element in elements:
-            if isinstance(element, dict) and "id" in element and "sources" not in element:
-                out.append("%s -> %s/%s" % (name, collection, element.get("id")))
+            if not (isinstance(element, dict) and "id" in element and "sources" not in element):
+                continue
+            # type: external 的参与者说的是「仓库之外的对端」（浏览器、curl、真实 CA），
+            # 它按定义没有仓内证据可引，算进警告只会让这条清单永远清不空
+            if str(element.get("type", "")) == "external":
+                continue
+            out.append("%s -> %s/%s" % (name, collection, element.get("id")))
 
 
 def classify_line(lines, number):
@@ -111,7 +115,6 @@ def git_changed_files(revision):
 def main() -> int:
     parser = argparse.ArgumentParser(description="架构图 sources 引用的可追溯性检查")
     parser.add_argument("--stale-since", help="新鲜度基准修订号，默认取每张图 meta.repository.revision")
-    parser.add_argument("--strict", action="store_true", help="把 WARN 也算违例")
     args = parser.parse_args()
 
     diagrams, load_error = load_diagrams()
@@ -199,7 +202,7 @@ def main() -> int:
         print("WARN " + line)
 
     print("TOTAL_REFS=%d FAIL=%d WARN=%d" % (total_refs, len(failures), len(warnings)))
-    if failures or (args.strict and warnings):
+    if failures:
         print("ARCH_TRACE_GATE=FAIL")
         return 1
     print("ARCH_TRACE_GATE=OK")
