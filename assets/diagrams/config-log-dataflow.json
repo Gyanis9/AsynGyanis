@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -51,7 +51,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 286, "label": "loadFromDirectory" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1226, "label": "按后缀选解析器" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1229, "label": "按后缀选解析器" }
       ]
     },
     {
@@ -62,7 +62,7 @@
       "stage": 0,
       "row": 1,
       "sources": [
-        { "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp", "line": 258, "label": "processEvents" },
+        { "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp", "line": 269, "label": "processEvents" },
         { "path": "src/Platform/FileSystem/Win32FileWatcher.cpp", "line": 368, "label": "watchLoop" }
       ]
     },
@@ -85,7 +85,7 @@
       "stage": 0,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 1000, "label": "h1 每响应计数" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 1036, "label": "h1 每响应计数" }
       ]
     },
     {
@@ -110,7 +110,7 @@
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1597, "label": "handleFileChange" },
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1600, "label": "Rescan 先于扩展名过滤" },
-        { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 34, "label": "不漏轮" }
+        { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 37, "label": "不漏轮" }
       ]
     },
     {
@@ -123,7 +123,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 985, "label": "yamlNodeToConfigValue" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1537, "label": "flattenValue" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1542, "label": "flattenValue" }
       ]
     },
     {
@@ -135,7 +135,7 @@
       "row": 2,
       "sources": [
         { "path": "src/Base/Log/Logger.cpp", "line": 138, "label": "writeToSinks" },
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 232, "label": "worker 里补做下游过滤" }
+        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 260, "label": "worker 里补做下游过滤" }
       ]
     },
     {
@@ -146,8 +146,8 @@
       "stage": 1,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Tracer.cpp", "line": 211, "label": "accept" },
-        { "path": "src/Net/Tracing/Tracer.cpp", "line": 272, "label": "dispatchBatch" }
+        { "path": "src/Net/Tracing/Tracer.cpp", "line": 238, "label": "accept" },
+        { "path": "src/Net/Tracing/Tracer.cpp", "line": 283, "label": "dispatchBatch" }
       ]
     },
     {
@@ -159,7 +159,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 2091, "label": "commitConfigData" },
-        { "path": "src/Base/Config/ConfigManager.h", "line": 385, "label": "m_data" }
+        { "path": "src/Base/Config/ConfigManager.h", "line": 393, "label": "m_data" }
       ]
     },
     {
@@ -171,8 +171,8 @@
       "stage": 2,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Sinks/AsyncSink.h", "line": 72, "label": "kMaximumQueueSize" },
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 51, "label": "write 入环" }
+        { "path": "src/Base/Log/Sinks/AsyncSink.h", "line": 78, "label": "kMaximumQueueSize" },
+        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 79, "label": "write 入环" }
       ]
     },
     {
@@ -183,7 +183,7 @@
       "stage": 2,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Tracer.h", "line": 166, "label": "m_pending" }
+        { "path": "src/Net/Tracing/Tracer.h", "line": 170, "label": "m_pending" }
       ]
     },
     {
@@ -194,7 +194,7 @@
       "stage": 3,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1997, "label": "环境变量覆盖" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2002, "label": "环境变量覆盖" }
       ]
     },
     {
@@ -205,7 +205,7 @@
       "stage": 3,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Config/ConfigLoadResult.h", "line": 53, "label": "HotReloadCallback" },
+        { "path": "src/Base/Config/ConfigLoadResult.h", "line": 55, "label": "HotReloadCallback" },
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1684, "label": "runReloadTask" }
       ]
     },
@@ -217,7 +217,7 @@
       "stage": 3,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 217, "label": "取出并写下游" }
+        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 245, "label": "取出并写下游" }
       ]
     },
     {
@@ -228,8 +228,8 @@
       "stage": 3,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServerStats.h", "line": 304, "label": "snapshot" },
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1410, "label": "并入准入拒绝数" }
+        { "path": "src/Net/Http/HttpServerStats.h", "line": 333, "label": "snapshot" },
+        { "path": "src/Net/Http/HttpServer.cpp", "line": 1419, "label": "并入准入拒绝数" }
       ]
     },
     {
@@ -241,7 +241,7 @@
       "row": 2,
       "sources": [
         { "path": "src/Base/Log/Sinks/ConsoleSink.cpp", "line": 21, "label": "ConsoleSink::write" },
-        { "path": "src/Base/Log/Sinks/RollingFileSink.cpp", "line": 152, "label": "RollingFileSink::write" }
+        { "path": "src/Base/Log/Sinks/RollingFileSink.cpp", "line": 160, "label": "RollingFileSink::write" }
       ]
     },
     {
@@ -252,7 +252,7 @@
       "stage": 4,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1416, "label": "enableMetricsEndpoint" }
+        { "path": "src/Net/Http/HttpServer.cpp", "line": 1426, "label": "enableMetricsEndpoint" }
       ]
     },
     {

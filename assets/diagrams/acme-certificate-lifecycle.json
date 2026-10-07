@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -50,8 +50,8 @@
       "col": 0,
       "step": "01",
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 257, "label": "入口" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 121, "label": "renewBeforeExpiry" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 397, "label": "入口" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 145, "label": "renewBeforeExpiry" }
       ]
     },
     {
@@ -63,9 +63,9 @@
       "col": 1,
       "step": "02",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 459, "label": "有持久 URL 先探针" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 513, "label": "否则新建账户" },
-        { "path": "src/Net/Acme/AcmeClient.h", "line": 112, "label": "badNonce 重发上限 3" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 486, "label": "有持久 URL 先探针" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 542, "label": "否则新建账户" },
+        { "path": "src/Net/Acme/AcmeClient.h", "line": 156, "label": "badNonce 重发上限 3" }
       ]
     },
     {
@@ -77,9 +77,9 @@
       "col": 2,
       "step": "03",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 558, "label": "提交标识符" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 592, "label": "取 authorization" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 642, "label": "没有 http-01 即失败" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 610, "label": "提交标识符" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 628, "label": "取 authorization" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 719, "label": "没有 http-01 即失败" }
       ]
     },
     {
@@ -103,9 +103,9 @@
       "col": 4,
       "step": "05",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 734, "label": "提交 CSR" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 784, "label": "轮询订单" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 798, "label": "取证书链" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 615, "label": "提交 CSR" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 873, "label": "轮询订单" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 885, "label": "取证书链" }
       ]
     },
     {
@@ -117,8 +117,8 @@
       "lane": "hold",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 438, "end_line": 450, "label": "循环与等待" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 119, "label": "renewalCheckInterval" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 620, "end_line": 633, "label": "循环与等待" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 143, "label": "renewalCheckInterval" }
       ]
     },
     {
@@ -129,7 +129,7 @@
       "lane": "hold",
       "col": 1,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 282, "end_line": 288, "label": "按绝对剩余天数判" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 422, "end_line": 428, "label": "按绝对剩余天数判" }
       ]
     },
     {
@@ -140,7 +140,7 @@
       "lane": "hold",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 351, "label": "PresentedToken 守卫" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 529, "label": "PresentedToken 守卫" },
         { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 18, "label": "present" },
         { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 71, "label": "只注册 GET" }
       ]
@@ -154,8 +154,8 @@
       "lane": "hold",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 708, "label": "轮询挑战" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 123, "label": "issuanceTimeout 兼单次 HTTP 超时" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 771, "label": "轮询挑战" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 149, "label": "issuanceTimeout 折算出单次时限" }
       ]
     },
     {
@@ -166,8 +166,8 @@
       "lane": "fault",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 768, "label": "invalid/expired/revoked" },
-        { "path": "src/Net/Acme/AcmeError.h", "line": 34, "label": "ChallengeNotAnswered" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 744, "end_line": 761, "label": "invalid/expired/revoked" },
+        { "path": "src/Net/Acme/AcmeError.h", "line": 39, "label": "ChallengeNotAnswered" }
       ]
     },
     {
@@ -178,8 +178,8 @@
       "lane": "fault",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 152, "label": "recordFailure" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 363, "end_line": 369, "label": "429/503 归 RateLimited" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 208, "label": "recordFailure" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 416, "label": "429/503 归 RateLimited" }
       ]
     },
     {
@@ -190,7 +190,7 @@
       "lane": "terminal",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 430, "label": "无 handler 即记失败" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 612, "end_line": 615, "label": "无 handler 即记失败" }
       ]
     },
     {
@@ -201,7 +201,7 @@
       "lane": "terminal",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 405, "label": "ReloadRejected" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 585, "label": "ReloadRejected" }
       ]
     },
     {
@@ -212,9 +212,9 @@
       "lane": "terminal",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 386, "label": "原子落盘" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 402, "label": "reloadHandler" },
-        { "path": "src/Net/Quic/QuicServer.cpp", "line": 238, "label": "锁内换 SSL_CTX" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 564, "label": "原子落盘" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 580, "label": "reloadHandler" },
+        { "path": "src/Net/Quic/QuicServer.cpp", "line": 222, "label": "锁内换 SSL_CTX" }
       ]
     }
   ],
@@ -244,9 +244,9 @@
       "title": "节拍与阈值",
       "items": [
         "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:145 的 renewBeforeExpiry、.cpp:419 落成的 graceWindow）",
-        "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者同时充当轮询总时限与单次 HTTP 超时",
+        "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者是两段轮询的总时限，单次出站时限由它折算得出（AcmeClient.cpp:487 走 boundedRequestTimeout），整轮耗时不硬卡在这个数上",
         "实际唤醒取 max(now+12h, 上次失败秒+1)；minimumRetryInterval 就落在这一步（AcmeCertificateManager.cpp:229），机构的 Retry-After 与本端下限谁大听谁",
-        "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:112）"
+        "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:156）"
       ]
     },
     {
@@ -257,7 +257,7 @@
         "整条重试：Transport（DNS/TLS/时限/对端收线）、UnexpectedResponse（有响应却不是 ACME 的形状）、RateLimited（429 或带 Retry-After 的 503）",
         "查部署：ChallengeNotAnswered——机构去取自证时本地没答上，多半是路由或端口",
         "判死：RejectedByAuthority（带 ACME 错误类型与 detail）；ReloadRejected 是唯一「磁盘已换、内存未换」的终态",
-        "每一种都必须有真实产出点：加一个没人产生的种类，等于让调用方以为那种失败已被区分过（AcmeError.h:23-24 注）"
+        "每一种都必须有真实产出点：加一个没人产生的种类，等于让调用方以为那种失败已被区分过（AcmeError.h:27-28 注）"
       ]
     },
     {
@@ -266,8 +266,8 @@
       "items": [
         "令牌路由只注册 GET、只答已挂出的令牌，未挂或已撤一律 404（AcmeHttp01ChallengeStore.cpp:52-59、71）",
         "PresentedToken 由析构负责摘除，每条出口（含失败）都执行，不会把令牌留在公网路由上",
-        "停放的睡眠按 kStopNoticeSlice 切片，叫停最迟一段内生效（.cpp:627-633）；切片只改醒来频次，正在进行的签发尝试照旧跑完这一轮",
-        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（.cpp:430）"
+        "停放的睡眠按 kStopNoticeSlice 切片，叫停最迟一段内生效（AcmeCertificateManager.cpp:627-633）；切片只改醒来频次，正在进行的签发尝试照旧跑完这一轮",
+        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（AcmeCertificateManager.cpp:612）"
       ]
     },
     {

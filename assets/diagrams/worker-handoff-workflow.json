@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -57,8 +57,8 @@
       "sublabel": "方向填反即拒",
       "tag": "构造期",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 83, "label": "Windows 必须有 handoff" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 104, "label": "POSIX 不该有 handoff" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 109, "label": "Windows 必须有 handoff" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 130, "label": "POSIX 不该有 handoff" }
       ]
     },
     {
@@ -70,9 +70,9 @@
       "label": "起进程",
       "sublabel": "fork+exec / CreateProcessW",
       "sources": [
-        { "path": "src/Platform/System/Process.cpp", "line": 283, "label": "fork" },
-        { "path": "src/Platform/System/Process.cpp", "line": 288, "label": "PR_SET_PDEATHSIG" },
-        { "path": "src/Platform/System/Process.cpp", "line": 242, "label": "Windows 侧" }
+        { "path": "src/Platform/System/Process.cpp", "line": 342, "label": "fork" },
+        { "path": "src/Platform/System/Process.cpp", "line": 355, "label": "PR_SET_PDEATHSIG" },
+        { "path": "src/Platform/System/Process.cpp", "line": 283, "label": "Windows 侧" }
       ]
     },
     {
@@ -85,8 +85,8 @@
       "sublabel": "waitForPeer 预算",
       "tag": "拿到就关通道",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 307, "label": "waitForPeer" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 314, "label": "peer 立即 close" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 408, "label": "waitForPeer" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 415, "label": "peer 立即 close" }
       ]
     },
     {
@@ -98,8 +98,8 @@
       "label": "收尸",
       "sublabel": "存活 < 3s 算快退",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 339, "label": "isFastExit" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 359, "label": "跑稳则清零" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 440, "label": "isFastExit" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 461, "label": "跑稳则清零" }
       ]
     },
     {
@@ -112,8 +112,8 @@
       "sublabel": "500ms 后重交",
       "tag": "满 5 次放弃",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 192, "end_line": 199, "label": "首轮不退避" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 348, "label": "crashLoopLimit" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 269, "end_line": 271, "label": "首轮不退避" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 431, "label": "crashLoopLimit" }
       ]
     },
     {
@@ -125,8 +125,8 @@
       "label": "停机",
       "sublabel": "SIGTERM 再强杀",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 363, "label": "stopAllWorkers" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 439, "label": "等强杀落地" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 465, "label": "stopAllWorkers" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 543, "label": "等强杀落地" }
       ]
     },
     {
@@ -138,8 +138,8 @@
       "label": "开通道",
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 701, "end_line": 711, "label": "通道文件与权限" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 267, "label": "UpgradeChannel::open" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 714, "end_line": 718, "label": "通道文件与权限" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 358, "label": "UpgradeChannel::open" }
       ]
     },
     {
@@ -166,7 +166,7 @@
       "tag": "blob 归 0",
       "sources": [
         { "path": "src/Platform/IO/Socket.cpp", "line": 497, "end_line": 510, "label": "控制数据装载" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 642, "label": "接手后置不可继承" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 659, "label": "接手后置不可继承" }
       ]
     },
     {
@@ -178,7 +178,7 @@
       "label": "交砸了就退",
       "sublabel": "强杀 + 等收尸",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 278, "end_line": 291, "label": "retireWithoutListener" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 369, "end_line": 382, "label": "retireWithoutListener" }
       ]
     },
     {
@@ -203,8 +203,8 @@
       "label": "标记监听",
       "sublabel": "close 不 shutdown",
       "sources": [
-        { "path": "src/Core/Socket/AsyncSocket.h", "line": 112, "end_line": 123, "label": "markAsListening" },
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 496, "end_line": 510, "label": "仅非监听才 shutdown" }
+        { "path": "src/Core/Socket/AsyncSocket.h", "line": 115, "end_line": 126, "label": "markAsListening" },
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 496, "label": "仅非监听才 shutdown" }
       ]
     },
     {
@@ -217,7 +217,7 @@
       "sublabel": "不共享状态",
       "tag": "指标 ×N",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.h", "line": 47, "label": "进程间不共享" },
+        { "path": "src/Core/Process/WorkerSupervisor.h", "line": 51, "label": "进程间不共享" },
         { "path": "src/Net/Tcp/TcpAcceptor.cpp", "line": 102, "label": "POSIX 自 bind + REUSEPORT" }
       ]
     },

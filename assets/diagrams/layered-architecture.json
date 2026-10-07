@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -42,7 +42,7 @@
       "pos": [320, 40],
       "size": [190, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 245, "label": "ASYN_ENABLE_INSTALL 出包配置" },
+        { "path": "CMakeLists.txt", "line": 269, "label": "ASYN_ENABLE_INSTALL 出包配置" },
         { "path": "packaging/conan/test_package/CMakeLists.txt", "line": 5, "end_line": 8, "label": "消费方只需 find_package" }
       ]
     },
@@ -54,8 +54,8 @@
       "pos": [560, 40],
       "size": [170, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 180, "label": "ASYN_BUILD_SAMPLES" },
-        { "path": "CMakeLists.txt", "line": 191, "end_line": 193, "label": "示例进构建" }
+        { "path": "CMakeLists.txt", "line": 204, "label": "ASYN_BUILD_SAMPLES" },
+        { "path": "CMakeLists.txt", "line": 215, "end_line": 217, "label": "示例进构建" }
       ]
     },
     {
@@ -66,8 +66,8 @@
       "pos": [40, 40],
       "size": [190, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 179, "label": "ASYN_BUILD_TESTS" },
-        { "path": "CMakeLists.txt", "line": 182, "end_line": 187, "label": "tests 与 microbench" }
+        { "path": "CMakeLists.txt", "line": 203, "label": "ASYN_BUILD_TESTS" },
+        { "path": "CMakeLists.txt", "line": 206, "end_line": 211, "label": "tests 与 microbench" }
       ]
     },
     {
@@ -79,8 +79,8 @@
       "pos": [320, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Net/CMakeLists.txt", "line": 29, "label": "STATIC" },
-        { "path": "src/Net/CMakeLists.txt", "line": 45, "end_line": 48, "label": "只 PUBLIC 链 Core" }
+        { "path": "src/Net/CMakeLists.txt", "line": 29, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Net/CMakeLists.txt", "line": 47, "label": "只 PUBLIC 链 Core" }
       ]
     },
     {
@@ -92,8 +92,8 @@
       "pos": [560, 170],
       "size": [170, 60],
       "sources": [
-        { "path": "src/Database/CMakeLists.txt", "line": 36, "label": "STATIC" },
-        { "path": "src/Database/CMakeLists.txt", "line": 40, "end_line": 47, "label": "直接声明 Base/Platform/Core" }
+        { "path": "src/Database/CMakeLists.txt", "line": 36, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Database/CMakeLists.txt", "line": 42, "label": "直接声明 Base/Platform/Core" }
       ]
     },
     {
@@ -105,8 +105,8 @@
       "pos": [40, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Net/CMakeLists.txt", "line": 50, "end_line": 52, "label": "PRIVATE 即可" },
-        { "path": "src/Net/CMakeLists.txt", "line": 40, "end_line": 43, "label": "仍要登记导出" }
+        { "path": "src/Net/CMakeLists.txt", "line": 52, "end_line": 54, "label": "PRIVATE 即可" },
+        { "path": "src/Net/CMakeLists.txt", "line": 42, "end_line": 45, "label": "仍要登记导出" }
       ]
     },
     {
@@ -118,8 +118,8 @@
       "pos": [810, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Database/CMakeLists.txt", "line": 46, "label": "SQLite 必选" },
-        { "path": "src/Database/CMakeLists.txt", "line": 51, "end_line": 72, "label": "可选驱动与报错桩" }
+        { "path": "src/Database/CMakeLists.txt", "line": 48, "label": "SQLite 必选" },
+        { "path": "src/Database/CMakeLists.txt", "line": 53, "end_line": 74, "label": "可选驱动与报错桩" }
       ]
     },
     {
@@ -131,8 +131,8 @@
       "pos": [320, 300],
       "size": [410, 60],
       "sources": [
-        { "path": "src/Core/CMakeLists.txt", "line": 21, "end_line": 23, "label": "STATIC" },
-        { "path": "src/Core/CMakeLists.txt", "line": 24, "end_line": 29, "label": "PUBLIC Base/Platform/OpenSSL" }
+        { "path": "src/Core/CMakeLists.txt", "line": 17, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Core/CMakeLists.txt", "line": 27, "label": "PUBLIC Base/Platform/OpenSSL" }
       ]
     },
     {
@@ -143,8 +143,8 @@
       "pos": [40, 300],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 32, "label": "Windows 别名到 Iocp" },
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 35, "end_line": 47, "label": "开 io_uring 别名到 Uring" }
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 34, "label": "Windows 别名到 Iocp" },
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 37, "end_line": 49, "label": "开 io_uring 别名到 Uring" }
       ]
     },
     {
@@ -156,8 +156,8 @@
       "pos": [40, 370],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Core/CMakeLists.txt", "line": 31, "end_line": 39, "label": "开关内链入" },
-        { "path": "CMakeLists.txt", "line": 73, "end_line": 77, "label": "与 sanitizer 互斥" }
+        { "path": "src/Core/CMakeLists.txt", "line": 34, "end_line": 42, "label": "开关内链入" },
+        { "path": "CMakeLists.txt", "line": 77, "end_line": 81, "label": "与 sanitizer 互斥" }
       ]
     },
     {
@@ -168,8 +168,8 @@
       "pos": [810, 300],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Core/CMakeLists.txt", "line": 27, "end_line": 28, "label": "Core 链入" },
-        { "path": "src/Net/CMakeLists.txt", "line": 56, "end_line": 60, "label": "Net 显式声明" }
+        { "path": "src/Core/CMakeLists.txt", "line": 30, "end_line": 31, "label": "Core 链入" },
+        { "path": "src/Net/CMakeLists.txt", "line": 61, "end_line": 62, "label": "Net 显式声明" }
       ]
     },
     {
@@ -181,8 +181,8 @@
       "pos": [320, 430],
       "size": [410, 60],
       "sources": [
-        { "path": "src/Base/CMakeLists.txt", "line": 17, "label": "STATIC" },
-        { "path": "src/Base/CMakeLists.txt", "line": 35, "end_line": 43, "label": "有 std::stacktrace 才带调用栈" }
+        { "path": "src/Base/CMakeLists.txt", "line": 17, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Base/CMakeLists.txt", "line": 37, "end_line": 45, "label": "有 std::stacktrace 才带调用栈" }
       ]
     },
     {
@@ -193,7 +193,7 @@
       "pos": [810, 430],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Base/CMakeLists.txt", "line": 47, "end_line": 48, "label": "Base 公开传递" }
+        { "path": "src/Base/CMakeLists.txt", "line": 70, "end_line": 71, "label": "Base 公开传递" }
       ]
     },
     {
@@ -205,8 +205,8 @@
       "pos": [320, 560],
       "size": [410, 60],
       "sources": [
-        { "path": "src/Platform/CMakeLists.txt", "line": 12, "label": "STATIC" },
-        { "path": "src/Platform/CMakeLists.txt", "line": 20, "end_line": 26, "label": "Windows 网络库" }
+        { "path": "src/Platform/CMakeLists.txt", "line": 12, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Platform/CMakeLists.txt", "line": 22, "end_line": 28, "label": "Windows 网络库" }
       ]
     },
     {
@@ -217,8 +217,8 @@
       "pos": [810, 560],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Platform/CMakeLists.txt", "line": 21, "end_line": 25, "label": "仅 Windows" },
-        { "path": "src/Platform/CMakeLists.txt", "line": 30, "end_line": 34, "label": "Threads 登记导出" }
+        { "path": "src/Platform/CMakeLists.txt", "line": 23, "label": "仅 Windows" },
+        { "path": "src/Platform/CMakeLists.txt", "line": 32, "end_line": 36, "label": "Threads 登记导出" }
       ]
     },
     {
@@ -230,7 +230,7 @@
       "size": [410, 60],
       "sources": [
         { "path": "CMakeLists.txt", "line": 17, "end_line": 20, "label": "其他系统配置期拒绝" },
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 25, "end_line": 31, "label": "AcceptEx 只能由 Iocp 取走" }
+        { "path": "src/Core/EventLoop/Epoll.h", "line": 27, "label": "AcceptEx 只能由 Iocp 取走" }
       ]
     }
   ],
@@ -266,8 +266,8 @@
       "dot": "cyan",
       "title": "构建装配与打包",
       "items": [
-        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:179-187），samples 挂 ASYN_BUILD_SAMPLES（:191-193）",
-        "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（:245）",
+        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:203-211），samples 挂 ASYN_BUILD_SAMPLES（:191-193）",
+        "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（CMakeLists.txt:269）",
         "第三方一律由 Conan 在配置期自动安装，conandata.yml 是唯一依赖事实；曾加过的第二份 vcpkg 清单已删除"
       ]
     },
@@ -275,9 +275,9 @@
       "dot": "amber",
       "title": "后端三选一的真实差异",
       "items": [
-        "Epoll.h 用别名选后端：Windows 是 using Epoll = Iocp（:32），开 ASYN_WITH_IO_URING 是 using Epoll = Uring（:47），成员集合一致故 EventLoop/IoWatcher 没有平台分支",
-        "IOCP 有一条别的后端没有的出口：AcceptEx 接进来的连接只能由 Iocp::takeAcceptedSocket() 取走（Epoll.h:25-31）",
-        "io_uring 只改后端选择，需要内核 5.6+；沙箱挡 io_uring_setup 时相关用例按能力 SKIP 而不是失败（根 CMakeLists.txt:83-85）"
+        "Epoll.h 用别名选后端：Windows 是 using Epoll = Iocp（:34），开 ASYN_WITH_IO_URING 是 using Epoll = Uring（:49），成员集合一致故 EventLoop/IoWatcher 没有平台分支",
+        "IOCP 有一条别的后端没有的出口：AcceptEx 接进来的连接只能由 Iocp::takeAcceptedSocket() 取走（Epoll.h:27-33）",
+        "io_uring 只改后端选择，需要内核 5.6+；沙箱挡 io_uring_setup 时相关用例按能力 SKIP 而不是失败（根 CMakeLists.txt:87-89）"
       ]
     },
     {
@@ -285,7 +285,7 @@
       "title": "依赖可见性口径",
       "items": [
         "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:48、:62）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
-        "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:40-47）",
+        "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:42-49）",
         "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
         "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",
         "ASYN_WITH_MIMALLOC 与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR；接管是进程级的"

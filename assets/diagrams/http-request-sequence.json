@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -55,7 +55,7 @@
       "sublabel": "accept · 分发器",
       "sources": [
         { "path": "src/Net/Tcp/TcpAcceptor.cpp", "line": 198, "label": "accept 协程" },
-        { "path": "src/Net/Tcp/TcpServer.cpp", "line": 374, "end_line": 375, "label": "投递连接协程" },
+        { "path": "src/Net/Tcp/TcpServer.cpp", "line": 396, "end_line": 397, "label": "投递连接协程" },
         { "path": "src/Core/EventLoop/ConnectionDistributor.cpp", "line": 112, "label": "adopter 收下描述符" }
       ]
     },
@@ -65,9 +65,9 @@
       "label": "TlsSocket",
       "sublabel": "握手与 ALPN",
       "sources": [
-        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 175, "label": "SSL_connect/accept" },
-        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 368, "label": "读 ALPN 结果" },
-        { "path": "src/Core/Tls/TlsContext.cpp", "line": 285, "label": "挂 ALPN 回调" }
+        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 177, "label": "SSL_connect/accept" },
+        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 425, "label": "读 ALPN 结果" },
+        { "path": "src/Core/Tls/TlsContext.cpp", "line": 286, "label": "挂 ALPN 回调" }
       ]
     },
     {
@@ -76,9 +76,9 @@
       "label": "HttpSession",
       "sublabel": "事务循环",
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 478, "label": "httpKeepAliveLoop" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 1037, "label": "readIntoWindow" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 1267, "label": "route" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 486, "label": "httpKeepAliveLoop" },
+        { "path": "src/Net/Http/HttpSession.h", "line": 742, "label": "readIntoWindow" },
+        { "path": "src/Net/Http/HttpSession.h", "line": 1307, "label": "route" }
       ]
     },
     {
@@ -97,8 +97,8 @@
       "label": "HttpParser",
       "sublabel": "手写增量",
       "sources": [
-        { "path": "src/Net/Http/HttpParser.cpp", "line": 172, "label": "parse" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 1254, "label": "Done 相位取请求" }
+        { "path": "src/Net/Http/HttpParser.cpp", "line": 53, "label": "parse" },
+        { "path": "src/Net/Http/HttpSession.h", "line": 1293, "label": "Done 相位取请求" }
       ]
     },
     {
@@ -109,7 +109,7 @@
       "sources": [
         { "path": "src/Net/Http/Router.cpp", "line": 409, "label": "route" },
         { "path": "src/Net/Http/Router.cpp", "line": 565, "label": "pipeline.run" },
-        { "path": "src/Net/Http/Middleware.h", "line": 139, "label": "invoke 逐层进入" }
+        { "path": "src/Net/Http/Middleware.h", "line": 147, "label": "invoke 逐层进入" }
       ]
     },
     {
@@ -118,9 +118,9 @@
       "label": "Http2Session",
       "sublabel": "帧与 HPACK",
       "sources": [
-        { "path": "src/Net/Http2/Http2Session.cpp", "line": 187, "label": "读 ALPN 后分岔" },
-        { "path": "src/Net/Http2/Http2Session.cpp", "line": 200, "label": "runHttp2Loop" },
-        { "path": "src/Net/Http/HttpsServer.cpp", "line": 116, "label": "服务端只建 h2 会话" }
+        { "path": "src/Net/Http2/Http2Session.cpp", "line": 180, "label": "读 ALPN 后分岔" },
+        { "path": "src/Net/Http2/Http2Session.cpp", "line": 193, "label": "runHttp2Loop" },
+        { "path": "src/Net/Http/HttpsServer.cpp", "line": 117, "end_line": 118, "label": "服务端只建 h2 会话" }
       ]
     }
   ],
@@ -175,10 +175,10 @@
       "dot": "cyan",
       "title": "TLS 支路的形状",
       "items": [
-        "ALPN 偏好表是 {h2, http/1.1}：客户端没带列表给 NO_ACK，全不匹配直接 ALERT_FATAL（src/Core/Tls/TlsContext.cpp:60、:285）",
-        "握手按 WANT_READ/WANT_WRITE 挂回事件循环（TlsSocket.cpp:121-140）；m_isWritePending 是 SSL_read/SSL_write 的唯一串行闸，反方向占槽走 5ms 让路",
-        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:116、src/Net/Http2/Http2Session.cpp:187-200）",
-        "热轮换整台换 SSL_CTX，在跑的连接各持旧上下文不受影响，只影响新连接（TlsContext.cpp:544）"
+        "ALPN 偏好表是 {h2, http/1.1}：客户端没带列表给 NO_ACK，全不匹配直接 ALERT_FATAL（src/Core/Tls/TlsContext.cpp:61、:285）",
+        "握手按 WANT_READ/WANT_WRITE 挂回事件循环（TlsSocket.cpp:177-196）；m_isWritePending 是 SSL_read/SSL_write 的唯一串行闸，反方向占槽走 5ms 让路",
+        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:117、src/Net/Http2/Http2Session.cpp:180-193）",
+        "热轮换整台换 SSL_CTX，在跑的连接各持旧上下文不受影响，只影响新连接（src/Core/Tls/TlsContext.cpp:619）"
       ]
     },
     {
@@ -186,18 +186,18 @@
       "title": "背压与写出",
       "items": [
         "读写在同一协程内 co_await：发送挂起即整条会话停住，不是只停写",
-        "发送前把截止时间切到 writeTimeout（src/Net/Http/HttpSession.h:566），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:399-434）",
-        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（HttpSession.h:942 的 requires 分支）"
+        "发送前把截止时间切到 writeTimeout（src/Net/Http/HttpSession.h:574），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）",
+        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/HttpSession.h:978 的 requires 分支）"
       ]
     },
     {
       "dot": "violet",
       "title": "错误出口各有形状",
       "items": [
-        "解析失败按原因回 431/413/400 并收口连接（HttpSession.h:1206、HttpSession.cpp:110）",
-        "正文超全局内存预算回 503 + retry-after: 1（HttpSession.h:1062-1072），预算默认不启用",
-        "处理器抛异常先整份 reset 再回 500；chunked 头部已上线时只能补终止块，改不了状态码（HttpSession.h:849-879）",
-        "WebSocket 升级不合规回 400 + Connection: close；合规就逐字节写 101 并离开本循环（HttpSession.h:1284-1338）"
+        "解析失败按原因回 431/413/400 并收口连接（src/Net/Http/HttpSession.h:1246、HttpSession.cpp:110）",
+        "正文超全局内存预算回 503 + retry-after: 1（src/Net/Http/HttpSession.h:1096-1108），预算默认不启用",
+        "处理器抛异常先整份 reset 再回 500；chunked 头部已上线时只能补终止块，改不了状态码（src/Net/Http/HttpSession.h:903-906，补终止块那条在 :879）",
+        "WebSocket 升级不合规回 400 + Connection: close；合规就逐字节写 101 并离开本循环（src/Net/Http/HttpSession.h:1318-1363）"
       ]
     }
   ]

@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -53,7 +53,7 @@
       "sublabel": "表达式树",
       "sources": [
         { "path": "src/Database/Queryable/Expression.h", "line": 157, "label": "运算符建树" },
-        { "path": "src/Database/Queryable/QueryNode.h", "line": 115, "label": "WhereCondition" }
+        { "path": "src/Database/Queryable/QueryNode.h", "line": 117, "label": "WhereCondition" }
       ]
     },
     {
@@ -73,9 +73,9 @@
       "label": "ConnectionPool",
       "sublabel": "空闲栈 LIFO",
       "sources": [
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 103, "label": "acquire 三段" },
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 130, "label": "acquireTimeout" },
-        { "path": "src/Database/Pool/PoolConfig.h", "line": 28, "end_line": 32, "label": "32 / 5000ms / 两个 0" }
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 146, "label": "acquire 三段" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 173, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/PoolConfig.h", "line": 41, "end_line": 43, "label": "32 / 5000ms / 四个 0" }
       ]
     },
     {
@@ -84,8 +84,8 @@
       "label": "PooledConnection",
       "sublabel": "RAII 租约",
       "sources": [
-        { "path": "src/Database/Queryable/Queryable.h", "line": 904, "label": "事务里持语句锁" },
-        { "path": "src/Database/Pool/PooledConnection.cpp", "line": 62, "label": "doReturnToPool" }
+        { "path": "src/Database/Queryable/Queryable.h", "line": 950, "label": "事务里持语句锁" },
+        { "path": "src/Database/Pool/PooledConnection.cpp", "line": 67, "label": "doReturnToPool" }
       ]
     },
     {
@@ -94,9 +94,9 @@
       "label": "驱动连接",
       "sublabel": "Sqlite / MySQL",
       "sources": [
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 189, "label": "未命中才 prepare" },
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 394, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 429, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 211, "label": "未命中才 prepare" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 536, "label": "findCachedStatement" },
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 471, "label": "命中直 bindAndExecute" }
       ]
     },
     {
@@ -105,8 +105,8 @@
       "label": "RowMapper",
       "sublabel": "值到字段",
       "sources": [
-        { "path": "src/Database/Queryable/RowMapper.h", "line": 560, "label": "mapResultRows" },
-        { "path": "src/Database/Queryable/RowMapper.h", "line": 239, "label": "bool 只认 0/1" }
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 651, "label": "mapResultRows" },
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 354, "label": "bool 只认 0/1" }
       ]
     }
   ],
@@ -147,8 +147,8 @@
       "dot": "rose",
       "title": "预算与分块",
       "items": [
-        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:1290、1312）",
-        "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、713）",
+        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:1354、1376）",
+        "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、715）",
         "分页钩子在渲染里落：SQLite 内联十进制并补 LIMIT -1，MySQL 用 ?（StandardSqlDialect.cpp:400、SqliteDialect.cpp:14）"
       ]
     },
@@ -156,7 +156,7 @@
       "dot": "amber",
       "title": "语句缓存的两条分支",
       "items": [
-        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:371 / MySqlConnection.h:351）",
+        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:420 / MySqlConnection.h:442）",
         "SQLite 命中刷 stamp 并整趟跳过编译与边界探测；行没跑完先 detachCachedStatement，超 256 行快照界退回游标即不回缓存",
         "MySQL 任何失败一律 discardCachedStatement，刻意不做重编重试——写语句重试就是二次写入"
       ]
@@ -165,8 +165,8 @@
       "dot": "cyan",
       "title": "事务与串行的真因",
       "items": [
-        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:904、ConnectionPool 的 acquireStatementLock）",
-        "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:40、56、76）",
+        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:950、ConnectionPool 的 acquireStatementLock）",
+        "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:68、78、91）",
         "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 的两个 0 含义相反（0=不限制 / 0=立即）"
       ]
     },
@@ -174,7 +174,7 @@
       "dot": "violet",
       "title": "Redis 借这张图的会话位",
       "items": [
-        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:199、520、574）",
+        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:206、801、634、598）",
         "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（.cpp:946）",
         "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（.cpp:1150）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
         "可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate"

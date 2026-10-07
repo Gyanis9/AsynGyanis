@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -61,8 +61,8 @@
       "label": "EventLoop",
       "sublabel": "run 的一轮",
       "sources": [
-        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 150, "end_line": 161, "label": "先排空再取事件" },
-        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 130, "label": "停止粘性不清标志" }
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 161, "end_line": 172, "label": "先排空再取事件" },
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 132, "label": "停止粘性不清标志" }
       ]
     },
     {
@@ -82,8 +82,8 @@
       "label": "TimerQueue",
       "sublabel": "驱动协程",
       "sources": [
-        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 188, "label": "waitReadable" },
-        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 316, "label": "postLocal 转恢复" }
+        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 190, "label": "waitReadable" },
+        { "path": "src/Core/EventLoop/TimerQueue.cpp", "line": 327, "label": "postLocal 转恢复" }
       ]
     },
     {
@@ -92,9 +92,9 @@
       "label": "Scheduler",
       "sublabel": "本地 + 全局队列",
       "sources": [
-        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 137, "label": "先本地" },
+        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 132, "label": "先本地" },
         { "path": "src/Core/Coroutine/Scheduler.h", "line": 63, "label": "全局按批 ≤256" },
-        { "path": "src/Core/Coroutine/Scheduler.h", "line": 27, "end_line": 31, "label": "无工作窃取" }
+        { "path": "src/Core/Coroutine/Scheduler.h", "line": 31, "end_line": 35, "label": "无工作窃取" }
       ]
     },
     {
@@ -103,7 +103,7 @@
       "label": "AsyncExecutor",
       "sublabel": "工作线程",
       "sources": [
-        { "path": "src/Core/Coroutine/AsyncExecutor.h", "line": 272, "label": "completionLoop 上回投" },
+        { "path": "src/Core/Coroutine/AsyncExecutor.h", "line": 289, "label": "completionLoop 上回投" },
         { "path": "src/Core/Coroutine/ThreadPool.cpp", "line": 90, "label": "一线程一循环" }
       ]
     }
@@ -142,9 +142,9 @@
       "dot": "rose",
       "title": "一轮的九步（EventLoop::run）",
       "items": [
-        "先 runAll() 排空就绪（:150）→ 判 m_stopRequested（:152）→ 有活则超时取 0 否则 -1（:158）→ 进 WaitingForEvents 相位 → wait()（:161）",
-        "进 Working 相位（:163）→ 哨兵优先 drain，否则判 isWatcherAlive 再 handleEvents（:166-187）",
-        "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（:192）"
+        "先 runAll() 排空就绪（EventLoop.cpp:161）→ 判 m_stopRequested（:163）→ 有活则超时取 0 否则 -1（:169）→ 进 WaitingForEvents 相位（:171）→ wait()（:172）",
+        "进 Working 相位（EventLoop.cpp:174）→ 哨兵优先 drain（:179），否则判 isWatcherAlive（:196）再 handleEvents（:198）",
+        "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（EventLoop.cpp:203）"
       ]
     },
     {
@@ -160,10 +160,10 @@
       "dot": "cyan",
       "title": "线程与生命周期契约",
       "items": [
-        "没有工作窃取：全局队列里的条目必须回到它原来的循环执行（Scheduler.h:27-31），负载均衡只发生在接受层",
+        "没有工作窃取：全局队列里的条目必须回到它原来的循环执行（Scheduler.h:31-35），负载均衡只发生在接受层",
         "Task 是惰性的：启动点在 await_suspend 返回句柄那一刻，帧走进程级 CoroutinePool",
         "Cancelable 自己不 resume 任何东西，真打断靠 requestStop + 关闭套接字让 ~IoWatcher 唤醒等待者",
-        "停止是粘的：stop() 先置位再 wake，run() 刻意不清 m_stopRequested（EventLoop.cpp:129），一个 EventLoop 实例只有一回 run"
+        "停止是粘的：stop() 先置位再 wake，run() 刻意不清 m_stopRequested（EventLoop.cpp:132），一个 EventLoop 实例只有一回 run"
       ]
     }
   ]

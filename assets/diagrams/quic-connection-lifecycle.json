@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -49,7 +49,7 @@
       "col": 0,
       "step": "01",
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 51, "label": "QuicConnectionPhase" }
+        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 53, "label": "QuicConnectionPhase" }
       ]
     },
     {
@@ -86,7 +86,7 @@
       "lane": "space",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 235, "label": "PacketNumberSpace" },
+        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 258, "label": "PacketNumberSpace" },
         { "path": "src/Net/Quic/Codec/QuicPacketHeader.h", "line": 54, "label": "数据报上限" }
       ]
     },
@@ -121,8 +121,8 @@
       "lane": "space",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1226, "label": "canInitiateKeyUpdate 门禁" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1304, "label": "retireStaleKeyPhase" }
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1264, "label": "canInitiateKeyUpdate 门禁" },
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1287, "label": "retireStaleKeyPhase" }
       ]
     },
     {
@@ -133,7 +133,7 @@
       "lane": "recover",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1193, "label": "按丢失空间重发" },
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1231, "label": "按丢失空间重发" },
         { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 579, "label": "ACK 处理体内" }
       ]
     },
@@ -156,7 +156,7 @@
       "lane": "recover",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 282, "label": "出站倍数判据" },
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1049, "label": "出站倍数判据" },
         { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 482, "label": "m_isAddressValidated 置位" }
       ]
     },
@@ -169,7 +169,7 @@
       "col": 3,
       "sources": [
         { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 716, "label": "按流码收口流" },
-        { "path": "src/Net/Quic/Streams/QuicStreamLayer.h", "line": 52, "label": "QuicStreamViolation" }
+        { "path": "src/Net/Quic/Streams/QuicStreamLayer.h", "line": 68, "label": "QuicStreamViolation" }
       ]
     },
     {
@@ -181,8 +181,8 @@
       "lane": "terminal",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1179, "label": "空闲到期出口" },
-        { "path": "src/Net/Quic/QuicServer.h", "line": 109, "label": "idleTimeout 默认 30s" }
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1217, "label": "空闲到期出口" },
+        { "path": "src/Net/Quic/QuicServer.h", "line": 114, "label": "idleTimeout 默认 30s" }
       ]
     },
     {
@@ -219,8 +219,8 @@
       "dot": "cyan",
       "title": "相位与空间是两套账",
       "items": [
-        "连接相位只有三个：Handshaking、Established、Closing（QuicConnectionCore.h:51）",
-        "包号空间也只有三个：Initial、Handshake、Application，用 spaceOf/levelOf 与相位换算（.h:235、.cpp:189）",
+        "连接相位只有三个：Handshaking、Established、Closing（QuicConnectionCore.h:53）",
+        "包号空间也只有三个：Initial、Handshake、Application，用 spaceOf/levelOf 与相位换算（QuicConnectionCore.h:293、414、.cpp:189）",
         "Initial 空间在 Handshake 密钥就位后退休（discardSpace(Initial)，.cpp:764），此后入站不再解 Initial 包"
       ]
     },
@@ -228,19 +228,19 @@
       "dot": "amber",
       "title": "恢复走 RFC 9002 NewReno",
       "items": [
-        "ACK 里出 lost 集合后按空间重发：CRYPTO 按字节偏移补，流数据交给 onSendRangesLost（.cpp:579、1193、1204）",
-        "PTO 到期时补一个 PING 探测，探测空间记在 m_probeSpace；HANDSHAKE_DONE 没被 ACK 前会持续带出（.cpp:816）",
-        "关键更新有两道门禁：上一相位必须已被 ACK，且距上次更新静置满 3×PTO（.cpp:1226），换完再 retireStaleKeyPhase 退役旧相位（.cpp:1304）"
+        "ACK 里出 lost 集合后按空间重发：CRYPTO 按字节偏移补，流数据交给 onSendRangesLost（QuicConnectionCore.cpp:579、1231、1234）",
+        "PTO 到期时补一个 PING 探测，探测空间记在 m_probeSpace；HANDSHAKE_DONE 没被 ACK 前会持续带出（QuicConnectionCore.cpp:817）",
+        "关键更新有两道门禁：上一相位必须已被 ACK，且距上次更新静置满 3×PTO（QuicConnectionCore.cpp:1278），换完再 retireStaleKeyPhase 退役旧相位（.cpp:1340）"
       ]
     },
     {
       "dot": "rose",
       "title": "常量与闸门",
       "items": [
-        "数据报负载上限 1200 B，Initial 也补足到同值（Codec/QuicPacketHeader.h:52）",
-        "idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:109、.cpp:1179）",
-        "服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（.cpp:282、366）",
-        "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:77、85）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:111）"
+        "数据报负载上限 1200 B，Initial 也补足到同值（Codec/QuicPacketHeader.h:54）",
+        "idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:114、QuicConnectionCore.cpp:1217）",
+        "服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（QuicConnectionCore.cpp:1049、482）",
+        "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:93、85）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:116）"
       ]
     },
     {

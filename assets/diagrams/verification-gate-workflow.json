@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
+      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
     },
     "views": [
       {
@@ -81,8 +81,8 @@
       "label": "clang-tidy",
       "sublabel": "只报告不阻塞",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 45, "label": "静态检查一步" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 560, "label": "CI 里的 clang-tidy 作业" }
+        { "path": "CONTRIBUTING.md", "line": 44, "label": "静态检查一步" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 596, "label": "CI 里的 clang-tidy 作业" }
       ]
     },
     {
@@ -95,8 +95,8 @@
       "sublabel": "MSVC + 容器 GCC",
       "tag": "零告警/零泄漏",
       "sources": [
-        { "path": "CMakeLists.txt", "line": 207, "label": "/W4 /WX" },
-        { "path": "CMakeLists.txt", "line": 136, "label": "ASan + UBSan" },
+        { "path": "CMakeLists.txt", "line": 231, "label": "/W4 /WX" },
+        { "path": "CMakeLists.txt", "line": 140, "label": "ASan + UBSan" },
         { "path": "CMakePresets.json", "line": 10, "label": "debug 预设" }
       ]
     },
@@ -110,7 +110,7 @@
       "sublabel": "run_samples.py",
       "tag": "两档 CI 都跑",
       "sources": [
-        { "path": "scripts/run_samples.py", "line": 194, "end_line": 200, "label": "缺产出也计失败" },
+        { "path": "scripts/run_samples.py", "line": 188, "end_line": 200, "label": "缺产出也计失败" },
         { "path": "scripts/run_samples.py", "line": 225, "label": "有失败即 return 1" }
       ]
     },
@@ -138,8 +138,8 @@
       "sublabel": "三分片 + Windows",
       "tag": "-k 0 收全告警",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 102, "label": "分片构建" },
-        { "path": ".github/workflows/windows-ci.yml", "line": 76, "label": "Windows 构建" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 106, "label": "分片构建" },
+        { "path": ".github/workflows/windows-ci.yml", "line": 77, "label": "Windows 构建" }
       ]
     },
     {
@@ -153,7 +153,7 @@
       "tag": "另起对端",
       "sources": [
         { "path": ".github/workflows/linux-ci.yml", "line": 222, "label": "h2spec 步骤" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 280, "label": "Autobahn 互操作探针" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 275, "label": "Autobahn 互操作探针" }
       ]
     },
     {
@@ -196,7 +196,7 @@
       "tag": "组件数须同解",
       "sources": [
         { "path": ".github/workflows/supply-chain.yml", "line": 12, "label": "cron 与手动" },
-        { "path": "scripts/check-dependency-advisories.py", "line": 77, "label": "台账同解判据" }
+        { "path": "scripts/check-dependency-advisories.py", "line": 71, "label": "台账同解判据" }
       ]
     },
     {
