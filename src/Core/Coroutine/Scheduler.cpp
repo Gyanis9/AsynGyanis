@@ -1,8 +1,11 @@
 #include "Core/Coroutine/Scheduler.h"
+#include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/EventNotifier.h"
 
 #include <exception>
+#include <string>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -12,8 +15,30 @@ namespace AsynGyanis::Core
         m_wakeup = notifier;
     }
 
+    void Scheduler::setOwnerLoop(EventLoop *const loop) noexcept
+    {
+        m_ownerLoop = loop;
+    }
+
+    void Scheduler::assertLocalQueueUse(const char *const operation) const
+    {
+        // 没接线（独立构造的调度器）没有判据可查；接了线而循环没在跑也不查——那正是构造期
+        // 与停机后的顺序交接，isOnOwnerThread() 已经把这一档放行
+        if (m_ownerLoop == nullptr || m_ownerLoop->isOnOwnerThread())
+        {
+            return;
+        }
+
+        // 违约不静默：本地那两个容器无锁，两条线程同时进来会把彼此的元素打乱，而现场往往
+        // 报在离肇因隔着几层的别处（与 Iocp::ExclusiveUse 拒绝并发进后端同一个理由）
+        throw Base::LogicException("调度器的本地队列被外来线程使用：操作 " + std::string{operation} +
+                                   " 想在这条循环正在跑的时候就地排队，而本地就绪队列无锁、只归跑 run() 的那条线程。"
+                                   "外部线程请改走 Scheduler::scheduleRemote() 或 Scheduler::postRemote()");
+    }
+
     void Scheduler::schedule(const std::coroutine_handle<> handle)
     {
+        assertLocalQueueUse("Scheduler::schedule()");
         if (handle)
         {
             m_localQueue.push_back(handle);
@@ -42,11 +67,12 @@ namespace AsynGyanis::Core
 
     void Scheduler::postLocal(std::function<void()> callable)
     {
+        assertLocalQueueUse("Scheduler::postLocal()");
         if (!callable)
         {
             return;
         }
-        // 本线程独享，不加锁也不唤醒：这段代码本来就跑在所属循环上，排进本轮清空即可
+        // 本线程独享，不加锁也不唤醒：这段代码本来就跑在所属循环上（上面那一步刚把这句话变成判据）
         m_localCallables.push_back(std::move(callable));
     }
 

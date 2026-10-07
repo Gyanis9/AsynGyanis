@@ -8,6 +8,7 @@
 // 分配判据只在 Release 下钉，Debug 仍跑同样的形状并打出读数供对照
 
 #include "Core/Coroutine/Scheduler.h"
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "CoreTestSupport.h"
 
@@ -524,6 +525,59 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(snapshot.stoppedByFailure) << "循环被一次派发级抛出停掉（stoppedByFailure 置上了）";
         EXPECT_TRUE(snapshot.isRunning) << "抛出之后循环不再运行";
         EXPECT_GE(snapshot.failedDispatchCount, 1U) << "快照里的失败计数没跟上";
+    }
+
+    /**
+     * @brief 钉住：循环正在跑时，外来线程就地排队当场被拒
+     * @details 本地就绪队列与本地待执行表都是无锁的普通容器，两份线程同时进来不是「读数偏一点」
+     *          而是把彼此的元素打乱，现场通常报在离肇因几层之外。这条契约此前只写在类注释里，
+     *          违约要等到别处崩掉才看得见。
+     */
+    TEST(Scheduler, RejectsLocalQueueUseFromForeignThreadWhileLoopRuns)
+    {
+        TestSupport::EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+        EventLoop &loop = runner.loop();
+
+        // 空句柄也要拒：判据排在「有没有东西要排」之前，否则外来线程拿一个空句柄就绕过去了
+        EXPECT_THROW(loop.scheduler().schedule(std::coroutine_handle<>{}), Base::LogicException)
+                << "外来线程在跑着的循环上就地排队，却没有一处出声";
+        EXPECT_THROW(loop.scheduler().postLocal([]() {}), Base::LogicException)
+                << "postLocal() 与 schedule() 是同一条契约，只守一半等于没守";
+
+        // 被拒的两次调用不该伤到循环本身：随后一条正当的投递仍要被跑到
+        std::atomic<bool> isStillServing{false};
+        loop.scheduler().postRemote([&isStillServing] { isStillServing.store(true, std::memory_order_release); });
+        EXPECT_TRUE(TestSupport::waitForCondition([&isStillServing] { return isStillServing.load(std::memory_order_acquire); }))
+                << "两次被拒的调用把这条循环弄停了";
+    }
+
+    /**
+     * @brief 钉住两个放行档：循环线程自己排队照旧，循环没在跑时也不拦
+     * @details 放行档必须有用例钉着，否则判据会被写成「一律拒绝」，当场打死真实的派发路径；
+     *          「没在跑就不查」放的是构造期与停机后的顺序交接（同 Iocp::ExclusiveUse 的口径）
+     */
+    TEST(Scheduler, AllowsLocalQueueUseOnLoopThreadAndWhileLoopIsIdle)
+    {
+        EventLoop idleLoop;
+        EXPECT_NO_THROW(idleLoop.scheduler().schedule(std::coroutine_handle<>{}));
+        EXPECT_NO_THROW(idleLoop.scheduler().postLocal([]() {}));
+
+        TestSupport::EventLoopThread runner;
+        ASSERT_TRUE(runner.waitUntilRunning());
+        EventLoop &loop = runner.loop();
+
+        std::atomic<bool> isAllowedOnLoopThread{false};
+        loop.scheduler().postRemote(
+                [&loop, &isAllowedOnLoopThread]
+                {
+                    // postRemote 的体本身就跑在循环线程上：这就是真实派发路径的形状
+                    loop.scheduler().schedule(std::coroutine_handle<>{});
+                    loop.scheduler().postLocal([]() {});
+                    isAllowedOnLoopThread.store(true, std::memory_order_release);
+                });
+        EXPECT_TRUE(TestSupport::waitForCondition([&isAllowedOnLoopThread] { return isAllowedOnLoopThread.load(std::memory_order_acquire); }))
+                << "循环线程就地排队被误拦：守卫把合法的派发也拒了";
     }
 
 } // namespace AsynGyanis::Core

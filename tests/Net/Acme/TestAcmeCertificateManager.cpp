@@ -1195,7 +1195,8 @@ namespace AsynGyanis::Net
                     return std::unexpected("用例里的装回总是失败");
                 },
                 isStopping));
-        loopThread.loop().scheduler().schedule(follower->handle());
+        // 跨线程交帧只能走全局队列：本地就绪队列只归跑 run() 的那条线程，测试线程就地排队会被调度器当场拒
+        loopThread.loop().scheduler().scheduleRemote(follower->handle());
         static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
 
         ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v2-longer"));
@@ -1229,7 +1230,8 @@ namespace AsynGyanis::Net
         // 先把「循环已经在跑」这个前提造出来再投递：向一条尚未进入 run() 的循环投递这条帧，
         // 它可能永远没人唤醒——那是用例在赌调度，不是被测代码的问题
         ASSERT_TRUE(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2})) << "后台循环没起来，环境异常";
-        loopThread.loop().scheduler().schedule(follower->handle());
+        // 跨线程交帧只能走全局队列：本地就绪队列只归跑 run() 的那条线程，测试线程就地排队会被调度器当场拒
+        loopThread.loop().scheduler().scheduleRemote(follower->handle());
 
         // 收口判据改到循环停干净之后单线程读：在主线程上轮询协程句柄本身就是跨线程碰循环对象。
         // 先叫停再等 200 ms（够这条帧被投出去跑完），循环一停就没人再动它

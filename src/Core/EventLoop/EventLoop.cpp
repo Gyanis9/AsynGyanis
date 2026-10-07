@@ -81,6 +81,9 @@ namespace AsynGyanis::Core
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
         // 「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
+        // 把本循环交给调度器做「谁在写本地队列」的判据：调度器自己不持有所有权，
+        // 它只在这条循环真在跑的时候拿 isOnOwnerThread() 拒绝外来线程就地排队
+        m_scheduler.setOwnerLoop(this);
 
         // 唤醒描述符建不起来（fd 耗尽等）：stop() 再也唤不醒阻塞在 epoll_wait 上的线程，
         // 收尾时的 join 会永久挂住，跨线程投递也永远不执行——启动期就当场失败，不要留一个
@@ -272,6 +275,17 @@ namespace AsynGyanis::Core
     bool EventLoop::isRunning() const noexcept
     {
         return m_running.load(std::memory_order_acquire);
+    }
+
+    bool EventLoop::isOnOwnerThread() const noexcept
+    {
+        // 没在跑的循环不设限：构造期在主线程建对象、再把循环交给另一条线程，以及停机后的
+        // 顺序交接，都是既有良性形态（判据来自 Iocp::ExclusiveUse 那条 @note）
+        if (!m_running.load(std::memory_order_acquire))
+        {
+            return true;
+        }
+        return m_ownerThread.load(std::memory_order_relaxed) == std::this_thread::get_id();
     }
 
     void EventLoop::enterPhase(const LoopPhase phase) noexcept

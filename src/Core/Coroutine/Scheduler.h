@@ -25,6 +25,8 @@ namespace AsynGyanis::Platform
 
 namespace AsynGyanis::Core
 {
+    class EventLoop;
+
     /**
      * @brief 协程调度器：线程本地就绪队列 + 跨线程投递，不做工作窃取
      * @details **不做工作窃取**：全局队列里的任务恰恰是「必须回到这个循环上执行」的那些
@@ -33,7 +35,10 @@ namespace AsynGyanis::Core
      *          （每循环一个监听器 + SO_REUSEPORT），不发生在就绪队列层。
      * @note 本类非线程安全，除 scheduleRemote() 与 postRemote() 这两个投递入口、以及只读原子计数的
      *       remotePendingCount() 与 failedDispatchCount() 之外，其他成员函数（含 hasWork() 与 runOne()/runAll()）
-     *       都应由所属 EventLoop 线程调用。
+     *       都应由所属 EventLoop 线程调用。本地那两个容器是无锁的 vector/deque，两份线程同时进来
+     *       不是「读数偏一点」而是把别的对象打乱，因此 schedule() 与 postLocal() 在循环正跑时
+     *       会当场拒绝外来线程（见各自的 @throws）；循环没在跑时不拦，构造期与停机后的顺序交接
+     *       是既有良性形态。
      * @note **协程帧的归属：调度器从不拥有、也从不销毁任何帧。** 队列里存的是裸
      *       `std::coroutine_handle<>`，它只表示「这一拍要 resume 谁」，不带来任何所有权。因此一条
      *       句柄在**被派发之前**必须一直有人持有它所属的帧，否则派发时 resume 的就是已经被销毁的内存。
@@ -69,9 +74,20 @@ namespace AsynGyanis::Core
         void setWakeupNotifier(Platform::EventNotifier *notifier) noexcept;
 
         /**
+         * @brief 告知调度器它服务的是哪条循环，用于本地队列的线程判据
+         * @details 由 EventLoop 在构造时接线（与 setWakeupNotifier() 同一处）；判据取自那条循环的
+         *          isOnOwnerThread()，调度器因此不需要知道后端是 IOCP、epoll 还是 io_uring——
+         *          三个后端共用这一份守护，违约在哪个后端上都一样报。
+         * @param loop 本调度器所属的循环（非拥有），传 nullptr 表示不启用判据
+         */
+        void setOwnerLoop(EventLoop *loop) noexcept;
+
+        /**
          * @brief 将协程加入本地就绪队列（本线程调用）
          * @param handle 准备调度的协程句柄；**空句柄被就地忽略**（不丢任何东西：本来就没有要恢复的帧）
          * @note 帧的归属见类注释那条 @note：本方法只借这个句柄用一拍，既不拥有也不销毁它
+         * @throws Base::LogicException 所属循环正在另一条线程上跑，而调用者是外来线程：本地队列无锁，
+         *         就地排队就是数据竞争，外部线程请改用 scheduleRemote()
          */
         void schedule(std::coroutine_handle<> handle);
 
@@ -93,6 +109,7 @@ namespace AsynGyanis::Core
          * @param callable 待执行的可调用对象；空对象会被忽略
          * @note 与 schedule() 一样只在所属 EventLoop 线程调用；取出顺序是**先进先出**，投递方排进来的
          *       顺序就是执行顺序，与本地就绪队列的栈式顺序不是一回事
+         * @throws Base::LogicException 与 schedule() 同一条判据，外来线程请改用 postRemote()
          */
         void postLocal(std::function<void()> callable);
 
@@ -184,6 +201,13 @@ namespace AsynGyanis::Core
             }
         }
 
+        /**
+         * @brief 就地排队前的线程判据：循环正在跑而调用者不是循环线程时抛出
+         * @param operation 调用方所在的操作名（只用于报错文本）
+         * @throws Base::LogicException 外来线程要在跑着的循环的本地队列里排队
+         */
+        void assertLocalQueueUse(const char *operation) const;
+
         std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
         std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）
         std::deque<std::coroutine_handle<>>  m_globalQueue;            ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
@@ -193,5 +217,6 @@ namespace AsynGyanis::Core
         std::atomic<size_t>                  m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
         std::atomic<std::size_t>             m_failedDispatchCount{0}; ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
         Platform::EventNotifier             *m_wakeup{nullptr};        ///< 唤醒器指针，nullptr 表示未启用唤醒
+        EventLoop                           *m_ownerLoop{nullptr};     ///< 所属循环（非拥有），nullptr 表示未接线、不做线程判据
     };
 } // namespace AsynGyanis::Core

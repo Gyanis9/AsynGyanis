@@ -198,6 +198,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] bool isRunning() const noexcept;
 
         /**
+         * @brief 判断调用线程是否就是这条循环跑 run() 的那条线程
+         * @details 循环没在跑时一律返回 true：构造期与停机后的**顺序交接**是既有的良性形态，
+         *          按属主线程一刀切会误伤一大片（与 Iocp::ExclusiveUse 那条 @note 同一口径）。
+         *          判「能不能直接动本循环上的对象」要连着 isRunning() 一起看，本函数已经把
+         *          这条规则包在里面。
+         * @return true 当前线程可以就地操作本循环的对象（含循环尚未启动或已退出的情形）
+         * @return false 循环正在另一条线程上跑，而调用者是外来线程：只能走 postRemote()/scheduleRemote()
+         */
+        [[nodiscard]] bool isOnOwnerThread() const noexcept;
+
+        /**
          * @brief 取本循环自己的那一行自观测快照
          * @details 读的全是原子量，因此**任意线程可调**：不必把动作投进本循环再等它应答——真停顿的
          *          循环正是应答不了的那条。要拿进程内所有循环的整表，用 eventLoopSnapshots()。
