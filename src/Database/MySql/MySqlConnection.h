@@ -185,6 +185,11 @@ namespace AsynGyanis::Database
          *       都没有 server_status 那种「自报的位」可判，按文本认又太容易漏（存储过程、动态语句里都会出现）；
          *       要清就得每次归还都多发一条语句，与本方法「一致时不付往返」的口径相反。
          *       借用者若要用它们，请自己释放再归还。
+         *       还有两格同样**不在语句台账里**：绕过 `setQueryTimeout()` 直接发的 `SET SESSION sql_mode=…`
+         *       与 `SET SESSION TRANSACTION ISOLATION LEVEL …`——台账只认 `NAMES` 与 `max_execution_time`
+         *       两个关键字（见 noteSessionCommand 里那段说明）。这两格也没有 server_status 那种自报位可判，
+         *       而「退回基线」要先读回基线：sql_mode 得发一条 SELECT @@session.sql_mode 才拿得到，
+         *       隔离级别同理。为了不让下一位继承上一位的严格度/隔离度，借用者改了它们请自己改回去再归还。
          * @note 只读语句时限有两条来路，各归一处：走 `setQueryTimeout()` 的那条由连接池在归还时按建连时的
          *       取值退回（`DatabaseConnection::restoreQueryTimeoutBaseline()`，命令超时是基类的账）；
          *       绕过 setter 直接发 `SET SESSION max_execution_time=…` 的那条由本方法按语句文本记下来并重申

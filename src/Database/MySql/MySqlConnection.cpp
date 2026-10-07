@@ -194,6 +194,11 @@ namespace AsynGyanis::Database
             {
                 m_lastError = "连接 MySQL 服务失败：连接配置（host / userName / password / database）含内嵌 NUL 字节，"
                               "客户端库只接受零终止字符串并会静默截断——请检查配置的来源";
+                // 与上面 applyConnectionOptions 失败那一路同一收尾：句柄已建、选项已下发，不关掉就留下
+                // 一个「带上一份配置选项」的活句柄——本文件开头的不变式（失败路径统一把句柄关掉并置空，
+                // 所以走到这里的空句柄一定是全新的）正是靠每一步都执行这句才成立；下一次 connect()
+                // 会跳过 mysql_init 直接复用那个旧句柄
+                disconnect();
                 return false;
             }
         }
