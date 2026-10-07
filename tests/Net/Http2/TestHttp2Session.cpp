@@ -223,6 +223,16 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 取 GOAWAY 帧通告的 last-stream-id
+         * @param payload GOAWAY 负载（前 4 字节是 last-stream-id，最高位保留）
+         * @return std::uint32_t 本端还认的最后一条对端流号；负载不足 4 字节时返回 0
+         */
+        std::uint32_t readGoAwayLastStreamId(const std::string_view payload)
+        {
+            return readBigEndianUint32(payload, 0) & 0x7FFFFFFFU;
+        }
+
+        /**
          * @brief 取 RST_STREAM 帧里的错误码
          * @param payload RST_STREAM 负载（固定 4 字节错误码）
          * @return Http2ErrorCode 错误码；负载不足 4 字节时返回 NoError
@@ -2093,6 +2103,51 @@ namespace AsynGyanis::Net
         // 收尾通告之后服务端在无在途请求时收口（与 h1 侧「回完当前响应即收口」同一口径）
         EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有收口";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：上限为 1 时答完第一条就发 GOAWAY，且通告的最后受理流号正是这一条
+     * @details SendsGoAwayWhenRequestLimitIsReached 一次写两条请求，GOAWAY 早一拍晚一拍都算通过，
+     *          钉不住「达到上限」这条边界本身（把谓词的 >= 写成 > 时它仍绿）。这里只发一条：
+     *          先等它的响应收完，再等 GOAWAY——收口早了会漏答第一条，晚了就是等不到。
+     */
+    TEST(Http2Session, GoesAwayRightAfterTheLastAllowedRequest)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits             = makeLongTimeoutLimits();
+        limits.maximumRequestsPerConnection = 1;
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(
+                client.pumpUntil(frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 只发这一条：它必须被完整服务掉，上限不该把它一起挡在外面
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout)) << "第一条请求未能写入";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "上限内的第一条请求没有收到完整响应";
+
+        // 边界就在这一刻：答完第一条即通告，不等到下一条才发
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1; }, kWaitTimeout))
+                << "上限为 1 时答完第一条就该发 GOAWAY";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayLastStreamId(goAwayFrame->payload), 1U) << "GOAWAY 通告的最后受理流号不是第一条请求：收口落点与上限该判的位置不一致";
+
+        EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有收口";
         EXPECT_FALSE(fixture.startThrew());
     }
 
