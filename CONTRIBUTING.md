@@ -47,7 +47,8 @@ ctest --test-dir build/debug --output-on-failure
    挂上去等于没有门）。基线要重录就跑 `--write`，但那等于公开承认「这一档我放松了」
    还有一条管架构工件的：`python3 scripts/check-arch-traceability.py` 把 `assets/diagrams/*.json` 里每一条
    `路径:行号` 当场回读——路径不存在、行号越过文件末尾、引到空行都判红。它管不住「行还在、说的已经不是
-   那件事」（那由它打印的 stale 清单交给人回图时复核），但「引用落得下一行真实代码」这条底线不该靠人记4. **测试**: 确保 `ctest --output-on-failure` 全部通过
+   那件事」（那由它打印的 stale 清单交给人回图时复核），但「引用落得下一行真实代码」这条底线不该靠人记
+4. **测试**: 确保 `ctest --output-on-failure` 全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
 6. **PR**: 提交 Pull Request，填写模板，等待审核
 
