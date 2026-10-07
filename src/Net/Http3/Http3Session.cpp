@@ -18,11 +18,11 @@ namespace AsynGyanis::Net
         /// HTTP/3 响应里唯一必须由本端补上的头：状态伪头（RFC 9114 §4.3.2）
         constexpr const char *kStatusHeaderName = ":status";
 
-        constexpr const char *kContentTypeHeaderName   = "content-type";   ///< 正文媒体类型
-        constexpr const char *kContentLengthHeaderName = "content-length"; ///< 正文长度
-        constexpr const char *kDateHeaderName          = "date";           ///< 响应生成时刻
-        constexpr const char *kTrailerHeaderName       = "trailer";        ///< 尾部字段声明头（RFC 9110 §6.5.1）
-        constexpr std::string_view kDefaultContentTypeValue = kPlainTextContentType;     ///< 有正文却没设类型时的缺省值
+        constexpr const char      *kContentTypeHeaderName   = "content-type";        ///< 正文媒体类型
+        constexpr const char      *kContentLengthHeaderName = "content-length";      ///< 正文长度
+        constexpr const char      *kDateHeaderName          = "date";                ///< 响应生成时刻
+        constexpr const char      *kTrailerHeaderName       = "trailer";             ///< 尾部字段声明头（RFC 9110 §6.5.1）
+        constexpr std::string_view kDefaultContentTypeValue = kPlainTextContentType; ///< 有正文却没设类型时的缺省值
 
         /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
         [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
@@ -467,13 +467,10 @@ namespace AsynGyanis::Net
 
         while (!m_readyRequests.empty())
         {
-            const std::int64_t streamId              = m_readyRequests.front().streamId;
-            const bool         isBodyTooLarge        = m_readyRequests.front().isBodyTooLarge;
-            const bool         isBudgetExceeded      = m_readyRequests.front().isBudgetExceeded;
-            const bool         isHeaderLimitExceeded = m_readyRequests.front().isHeaderLimitExceeded;
-            const bool         isUriTooLong          = m_readyRequests.front().isUriTooLong;
-            // 四个标记里任何一个为真，这条请求都不交给业务：它按 4xx/503 直接回掉
-            const bool  isRejectedWithoutHandler = isHeaderLimitExceeded || isUriTooLong || isBudgetExceeded || isBodyTooLarge;
+            const std::int64_t streamId  = m_readyRequests.front().streamId;
+            const Rejection    rejection = m_readyRequests.front().rejection;
+            // 有一条拒收结论，这条请求就不交给业务：它按 4xx/503 直接回掉
+            const bool  isRejectedWithoutHandler = rejection != Rejection::None;
             HttpRequest request                  = std::move(m_readyRequests.front().request);
             // 额度接进本次服务的作用域（而不是留在待派发记录里）：处理器 co_await 期间正文还在内存里，
             // 与 h1「应答写完后归还」、h2「记录摘掉时归还」同口径。记录被 pop 掉时才不会提前还账
@@ -497,11 +494,11 @@ namespace AsynGyanis::Net
             // 声明在分支之外：下面的统计要按「有没有半途抛异常」决定这条流式响应是否落账
             std::exception_ptr handlerException;
 
-            if (isHeaderLimitExceeded || isUriTooLong)
+            if (rejection == Rejection::HeaderListTooLarge || rejection == Rejection::UriTooLong)
             {
                 // 与 h1/h2 同一套状态码：头部越限 431、请求目标越限 414，都不交给业务
-                const int   rejectionStatus = isHeaderLimitExceeded ? 431 : 414;
-                const char *rejectionBody   = isHeaderLimitExceeded ? "Request Header Fields Too Large" : "URI Too Long";
+                const int   rejectionStatus = rejection == Rejection::HeaderListTooLarge ? 431 : 414;
+                const char *rejectionBody   = rejection == Rejection::HeaderListTooLarge ? "Request Header Fields Too Large" : "URI Too Long";
                 if (m_metrics != nullptr)
                 {
                     m_metrics->countBadRequest();
@@ -510,7 +507,7 @@ namespace AsynGyanis::Net
                 response.setStatus(rejectionStatus);
                 response.setBody(rejectionBody);
                 static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
-            } else if (isBudgetExceeded)
+            } else if (rejection == Rejection::BudgetExceeded)
             {
                 // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求
                 if (m_metrics != nullptr)
@@ -525,7 +522,7 @@ namespace AsynGyanis::Net
                 // 少了它，同一台服务器换一条协议就对端就只能自己猜退避多久（h1 在 HttpSession.h、
                 // h2 在 Http2Session.cpp 的 overloadedResponse 上都带着这一项）
                 static_cast<void>(response.setHeader("retry-after", "1"));
-            } else if (isBodyTooLarge)
+            } else if (rejection == Rejection::BodyTooLarge)
             {
                 // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）
                 if (m_metrics != nullptr)
@@ -768,7 +765,7 @@ namespace AsynGyanis::Net
         {
             if (exceedsBudget(value.size(), m_parserLimits.maximumUriLength))
             {
-                incoming.isUriTooLong = true;
+                static_cast<void>(incoming.rejectWith(Rejection::UriTooLong));
             }
             incoming.path = std::move(value);
             return;
@@ -801,12 +798,10 @@ namespace AsynGyanis::Net
     {
         ++incoming.headerFieldCount;
         incoming.headerBlockByteCount += name.size() + value.size();
-        if ((exceedsBudget(incoming.headerFieldCount, m_parserLimits.maximumHeaderCount)) ||
-            (exceedsBudget(name.size(), m_parserLimits.maximumHeaderFieldNameLength)) ||
-            (exceedsBudget(value.size(), m_parserLimits.maximumHeaderFieldValueLength)) ||
-            (exceedsBudget(incoming.headerBlockByteCount, m_parserLimits.maximumHeaderBlockLength)))
+        if ((exceedsBudget(incoming.headerFieldCount, m_parserLimits.maximumHeaderCount)) || (exceedsBudget(name.size(), m_parserLimits.maximumHeaderFieldNameLength)) ||
+            (exceedsBudget(value.size(), m_parserLimits.maximumHeaderFieldValueLength)) || (exceedsBudget(incoming.headerBlockByteCount, m_parserLimits.maximumHeaderBlockLength)))
         {
-            incoming.isHeaderLimitExceeded = true;
+            static_cast<void>(incoming.rejectWith(Rejection::HeaderListTooLarge));
         }
     }
 
@@ -911,12 +906,14 @@ namespace AsynGyanis::Net
 
         // 体量越界：只标记与记日志，不再缓冲；此后到达的 DATA 一律丢弃，但窗口照还。
         // 响应在服务阶段统一按 413 发出（与 h1/h2 同一口径）
-        if (!incoming.isBodyTooLarge && exceedsBudget(incoming.body.size() + data.size(), m_parserLimits.maximumBodySize))
+        if (!incoming.hasRejection() && exceedsBudget(incoming.body.size() + data.size(), m_parserLimits.maximumBodySize))
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答", streamId, m_parserLimits.maximumBodySize);
-            incoming.isBodyTooLarge = true;
+            static_cast<void>(incoming.rejectWith(Rejection::BodyTooLarge));
         }
-        if (!incoming.isBodyTooLarge && !incoming.isBudgetExceeded)
+        // 已有结论的流不再收正文：h2 的同一处就是这么判的（旧写法只挡正文两类，一条注定回 431 的流
+        // 照样把整段正文收进内存并占住全局额度，等于让「头部太大」这条上限反向放大内存占用）
+        if (!incoming.hasRejection())
         {
             const std::size_t bufferedByteCount = incoming.body.size() + data.size();
             // 全局在途预算：单条流的上限挡不住「很多条流各压一份正文」，这里按增量预留，
@@ -924,7 +921,7 @@ namespace AsynGyanis::Net
             if (!incoming.bodyBudget.growTo(bufferedByteCount))
             {
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已停止缓冲并按 503 应答", streamId);
-                incoming.isBudgetExceeded = true;
+                static_cast<void>(incoming.rejectWith(Rejection::BudgetExceeded));
             } else
             {
                 incoming.body.append(reinterpret_cast<const char *>(data.data()), data.size());
@@ -932,7 +929,7 @@ namespace AsynGyanis::Net
         }
         // 越界之后这条请求不可能再被受理，不必等对端收尾：当场就把它排进待派发（h2 的
         // isReadyToServe 同一判据）。等下去的代价是对端一边 dribble 正文一边等一个永远不来的响应
-        if (incoming.isBodyTooLarge || incoming.isBudgetExceeded)
+        if (incoming.rejection == Rejection::BodyTooLarge || incoming.rejection == Rejection::BudgetExceeded)
         {
             enqueueRequest(streamId);
         }
@@ -1267,11 +1264,8 @@ namespace AsynGyanis::Net
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId,
                                                .request  = std::move(request),
                                                // 额度跟着正文走：这份 body 直到派发完处理器、写出响应才离开内存
-                                               .bodyBudget            = std::move(incoming.bodyBudget),
-                                               .isBodyTooLarge        = incoming.isBodyTooLarge,
-                                               .isBudgetExceeded      = incoming.isBudgetExceeded,
-                                               .isHeaderLimitExceeded = incoming.isHeaderLimitExceeded,
-                                               .isUriTooLong          = incoming.isUriTooLong});
+                                               .bodyBudget = std::move(incoming.bodyBudget),
+                                               .rejection  = incoming.rejection});
         if (isWebSocketTunnelRequest)
         {
             m_pendingTunnelStreams.insert(streamId);

@@ -380,6 +380,21 @@ namespace AsynGyanis::Net
         /// HTTP/3 请求在 HttpRequest 里记下的版本号（业务读 httpVersion() 时与 h1/h2 同口径）
         static constexpr const char *kHttp3RequestVersion = "HTTP/3";
 
+        /**
+         * @brief 一条流被本端拒收的原因：至多一种，先记下的那条赢（与 h2 的 Http2Session::Rejection 同形）
+         * @details 「哪种越限回哪个状态码」此前散在两个结构体的八个布尔与读侧三条 if-else 链里，
+         *          加一道闸门就得同时改对置位侧与链上的每一格。收成一个值后映射只剩一处分支，
+         *          而且 ReadyRequest 与 IncomingRequest 之间交接的是一个值而不是四个字段。
+         */
+        enum class Rejection
+        {
+            None,               ///< 没有拒收结论：正常派发
+            HeaderListTooLarge, ///< 条数、单名/单值长度或整块净字节越过上限：回 431
+            UriTooLong,         ///< :path 长度越过请求目标上限：回 414
+            BodyTooLarge,       ///< 正文总量越过 maximumBodySize：此后 DATA 一律丢弃，回 413
+            BudgetExceeded,     ///< 正文超出全局在途预算：此后 DATA 一律丢弃，回 503（额度随记录析构归还）
+        };
+
         /// 正在接收的一条请求
         struct IncomingRequest
         {
@@ -391,22 +406,39 @@ namespace AsynGyanis::Net
             std::string body;                 ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
             bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
 
-            /// 正文总量越过 HttpParserLimits::maximumBodySize：此后到达的 DATA 一律丢弃，
-            /// 服务阶段按 413 应答（与 h1/h2 同一口径）
-            bool isBodyTooLarge{false};
+            /// 这一条流被本端拒收的是哪一种：至多一种，先记下的那条赢
+            Rejection rejection{Rejection::None};
 
-            /// 正文超出全局在途预算：此后到达的 DATA 一律丢弃，服务阶段按 503 应答
-            /// （额度由 bodyBudget 在记录销毁时归还）
-            bool isBudgetExceeded{false};
+            /**
+             * @brief 这条流是否已有一条拒收结论（哪一种都算）
+             * @return true rejection 不是 None
+             */
+            [[nodiscard]] bool hasRejection() const noexcept
+            {
+                return rejection != Rejection::None;
+            }
+
+            /**
+             * @brief 记下第一条拒收结论，已有结论时不覆盖
+             * @param verdict 越限的那一种
+             * @return true 本次置位生效；false 表示这条流早就有一条结论了
+             */
+            [[nodiscard]] bool rejectWith(const Rejection verdict) noexcept
+            {
+                if (rejection != Rejection::None)
+                {
+                    return false;
+                }
+                rejection = verdict;
+                return true;
+            }
 
             /// 本条流已缓冲正文占用的全局额度：随记录一起析构即归还
             HttpMemoryBudget::Reservation bodyBudget;
 
-            /// 以下四项的口径与 h1 的 HttpParserLimits 一致：越限即置位，服务阶段按 431/414 应答
-            std::size_t headerFieldCount{0};          ///< 已收到的头字段条数
-            std::size_t headerBlockByteCount{0};      ///< 头块净字节（只算名与值的长度，不含帧头）
-            bool        isHeaderLimitExceeded{false}; ///< 条数、单名/单值长度或整块净字节越过上限
-            bool        isUriTooLong{false};          ///< :path 长度越过请求目标上限
+            /// 以下两项的口径与 h1 的 HttpParserLimits 一致：越限即把 rejection 记成 431/414 那一类
+            std::size_t headerFieldCount{0};     ///< 已收到的头字段条数
+            std::size_t headerBlockByteCount{0}; ///< 头块净字节（只算名与值的长度，不含帧头）
 
             /// 下一次「该有进展」的时刻：每收到一段请求就按 readTimeout 往后推，过点即收口这条流
             Deadline deadline{std::chrono::steady_clock::now()};
@@ -805,8 +837,8 @@ namespace AsynGyanis::Net
          */
         void markBroken(Http3ErrorCode errorCode, std::string_view reason);
 
-        /// 待服务的一条请求：收齐的请求本体 + 收的过程中记下的越界标记。
-        /// 标记要跟着请求走到服务阶段，413 才发得出来（与 h2 的 PendingRequest::isBodyTooLarge 同形）
+        /// 待服务的一条请求：收齐的请求本体 + 收的过程中记下的拒收结论。
+        /// 结论要跟着请求走到服务阶段，413 才发得出来（与 h2 的 PendingRequest::rejection 同形）
         struct ReadyRequest
         {
             std::int64_t streamId{0}; ///< 流号
@@ -814,10 +846,7 @@ namespace AsynGyanis::Net
             /// 本条请求正文占用的全局在途额度：随待派发记录一起活着，直到服务完这一条才归还。
             /// 早一步还掉（在排队时就还）会让「排队的正文」脱离预算，多条流能把实际占用推过上限
             HttpMemoryBudget::Reservation bodyBudget;
-            bool                          isBodyTooLarge{false};        ///< 正文越界：服务阶段回 413 而不是派发
-            bool                          isBudgetExceeded{false};      ///< 正文超出全局在途预算：服务阶段回 503 而不是派发
-            bool                          isHeaderLimitExceeded{false}; ///< 头部越限：服务阶段回 431 而不是派发
-            bool                          isUriTooLong{false};          ///< 请求目标越限：服务阶段回 414 而不是派发
+            Rejection                     rejection{Rejection::None}; ///< 服务阶段按它回 431/414/413/503 而不是派发
         };
 
         std::unique_ptr<Http3Connection>      m_connection;      ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空

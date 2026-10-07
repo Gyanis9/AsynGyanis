@@ -478,11 +478,17 @@ namespace AsynGyanis::Net
             }
             pending.request = mapToHttpRequest(http2Request);
             // 头块越限：字段是空的，既不能派发也不该再等正文，服务阶段直接按 431 收口
-            pending.isHeaderListTooLarge = http2Request.isHeaderListTooLarge;
-            pending.headerFieldTotal     = http2Request.headerFieldTotal;
-            pending.headerNetByteTotal   = http2Request.headerNetByteTotal;
+            if (http2Request.isHeaderListTooLarge)
+            {
+                static_cast<void>(pending.rejectWith(Rejection::HeaderListTooLarge));
+            }
+            pending.headerFieldTotal   = http2Request.headerFieldTotal;
+            pending.headerNetByteTotal = http2Request.headerNetByteTotal;
             // 请求目标太长：与上面同一类处置（不派发、不等正文），差别只在状态码是 414
-            pending.isUriTooLong = http2Request.isUriTooLong;
+            if (http2Request.isUriTooLong)
+            {
+                static_cast<void>(pending.rejectWith(Rejection::UriTooLong));
+            }
             // 两道闸门任一命中都不必再去判流式路由与 100-continue：这条流只会回一个收口响应
             const bool isIntakeRejected = pending.isIntakeRejected();
             // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
@@ -551,14 +557,12 @@ namespace AsynGyanis::Net
             {
                 trailerNetByteCount += trailerField.name.size() + trailerField.value.size();
             }
-            const bool isFieldCountExceeded =
-                    exceedsBudget(pending.headerFieldTotal + receivedData.trailerFields.size(), m_parserLimits.maximumHeaderCount);
-            const bool isBlockByteExceeded =
-                    exceedsBudget(pending.headerNetByteTotal + trailerNetByteCount, m_parserLimits.maximumHeaderBlockLength);
+            const bool isFieldCountExceeded = exceedsBudget(pending.headerFieldTotal + receivedData.trailerFields.size(), m_parserLimits.maximumHeaderCount);
+            const bool isBlockByteExceeded  = exceedsBudget(pending.headerNetByteTotal + trailerNetByteCount, m_parserLimits.maximumHeaderBlockLength);
             if (isFieldCountExceeded || isBlockByteExceeded)
             {
-                pending.isHeaderListTooLarge = true;
-                // 已派发的流读不到这面旗（isIntakeRejected() 只在 serve 协程入口判一次），于是这一支
+                static_cast<void>(pending.rejectWith(Rejection::HeaderListTooLarge));
+                // 已派发的流读不到这条结论（isIntakeRejected() 只在 serve 协程入口判一次），于是这一支
                 // 既回不出 431、也不进坏请求账——不留一行日志就等于「尾字段被丢而无人出声」。
                 // 未派发那一支有日志：serve 阶段按 431 收口时记 ERROR 并计一笔 bad request
                 if (pending.isServeClaimed && !pending.isServeFinished)
@@ -637,21 +641,21 @@ namespace AsynGyanis::Net
             {
                 // 与 HTTP/1.1 侧同口径：体量越界的请求回 413。这里只标记与记日志，
                 // 响应在服务阶段统一发出；此后到达的 DATA 一律丢弃（但仍要还窗口）
-                if (!pending.isBodyTooLarge)
+                if (!pending.hasRejection())
                 {
                     LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答", receivedData.streamId, m_parserLimits.maximumBodySize);
-                    pending.isBodyTooLarge = true;
+                    static_cast<void>(pending.rejectWith(Rejection::BodyTooLarge));
                 }
             }
             // 全局在途正文预算：与 HTTP/1.1 侧同一口径，只是记账挂在每条流上。
             // 同样必须在收的过程中判——等 END_STREAM 再判，内存已经占住了
-            if (!pending.isIntakeRejected() && !pending.isBodyTooLarge && !pending.isBudgetExceeded && !pending.bodyBudget.growTo(bodyByteCount))
+            if (!pending.hasRejection() && !pending.bodyBudget.growTo(bodyByteCount))
             {
                 LOG_ERROR_FMT("Http2Session: 流 {} 的请求正文超出全局在途预算（已占 {} 字节），已停止缓冲并按 503 应答", receivedData.streamId,
                               m_memoryBudget->reservedByteCount());
-                pending.isBudgetExceeded = true;
+                static_cast<void>(pending.rejectWith(Rejection::BudgetExceeded));
             }
-            if (!pending.isIntakeRejected() && !pending.isBodyTooLarge && !pending.isBudgetExceeded)
+            if (!pending.hasRejection())
             {
                 pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
             }
@@ -708,7 +712,7 @@ namespace AsynGyanis::Net
             }
             // 流式正文的请求在头部收齐那一刻就可以服务：正文由业务边收边读，不等 END_STREAM。
             // 其余请求要等正文收齐（或已判超限/超预算）
-            const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.isBodyTooLarge || pending.isIntakeRejected() || pending.isBudgetExceeded;
+            const bool isReadyToServe = pending.isStreamingBody || pending.isRemoteEndStream || pending.hasRejection();
             if (!isReadyToServe)
             {
                 // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
@@ -1005,9 +1009,9 @@ namespace AsynGyanis::Net
             // 请求目标太长走 414（RFC 9110 §15.5.15），与 h1/h3 同一分工：431 让客户端去减头部，
             // 而 414 说的是 URL 本身。两条分支的处置动作相同，因此只在这里分岔状态码与文案。
             // 与 413 同一口径：只计入 badRequestCount，不计入已处理的请求条数
-            const int                  rejectionStatus       = pending.isHeaderListTooLarge ? 431 : 414;
-            const char                *rejectionReasonText   = pending.isHeaderListTooLarge ? "请求头超出本端上限" : "请求目标超出本端上限";
-            const char                *rejectionBodyText     = pending.isHeaderListTooLarge ? "Request Header Fields Too Large" : "URI Too Long";
+            const int                  rejectionStatus       = pending.rejection == Rejection::HeaderListTooLarge ? 431 : 414;
+            const char                *rejectionReasonText   = pending.rejection == Rejection::HeaderListTooLarge ? "请求头超出本端上限" : "请求目标超出本端上限";
+            const char                *rejectionBodyText     = pending.rejection == Rejection::HeaderListTooLarge ? "Request Header Fields Too Large" : "URI Too Long";
             constexpr std::string_view kRejectionAbortReason = "请求超出本端上限，收口响应已发出，本端不再需要该请求的正文";
 
             if (m_metrics != nullptr)
@@ -1037,7 +1041,7 @@ namespace AsynGyanis::Net
             co_return intakeOutcome;
         }
 
-        if (pending.isBodyTooLarge)
+        if (pending.rejection == Rejection::BodyTooLarge)
         {
             // 体量越界按 HTTP/1.1 侧同一口径处置：只计入 badRequestCount，不计入已处理的请求条数
             // （那边的 413 由解析失败路径回，同样不落 totalRequestCount）
@@ -1069,7 +1073,7 @@ namespace AsynGyanis::Net
             co_return tooLargeOutcome;
         }
 
-        if (pending.isBudgetExceeded)
+        if (pending.rejection == Rejection::BudgetExceeded)
         {
             // 全局预算用尽不是对端的错，因此不计入 badRequestCount：只是本端此刻没余量。
             // 同样请对端中止这条流的正文发送——剩余字节本端一律不要再收

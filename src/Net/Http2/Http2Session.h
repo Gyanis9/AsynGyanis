@@ -210,33 +210,41 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 一条流被本端拒收的原因：至多一种，先记下的那条赢
+         * @details 「哪种越限回哪个状态码」此前散在三处三元表达式与五处置位、四处守卫里，读的是
+         *          四个独立布尔——加一道 intake 闸门就得同时改对它们，漏一处就是「越限的报文回出
+         *          另一条状态码」。收成一个值之后，映射只住在 serve 那一处。
+         */
+        enum class Rejection
+        {
+            None,               ///< 没有拒收结论：正常派发
+            HeaderListTooLarge, ///< 头块（含尾段）越过本端上限：回 431，不派发也不缓冲正文
+            UriTooLong,         ///< 请求目标越过 parser_limits.maximum_uri_length：回 414，处置同上
+            BodyTooLarge,       ///< 正文越过 maximumBodySize：回 413，此后 DATA 丢弃但照还窗口
+            BudgetExceeded,     ///< 正文越过全局在途预算：回 503；额度随记录析构归还
+        };
+
+        /**
          * @brief 一条头块已收齐的请求：正文随 DATA 片段追加，收齐后（或超限后）交给路由
          * @details 这条流的响应对象与流式正文读取器同样归记录持有（一条流一份），记录摘掉即一并释放
          */
         struct PendingRequest
         {
-            HttpRequest   request;                  ///< 已按 HTTP/1.1 语义映射的请求对象
-            std::uint32_t streamId{0};              ///< 请求所属的流号，回响应时按它定位
-            bool          isRemoteEndStream{false}; ///< 对端是否已 END_STREAM：正文收齐，可以路由
-            bool          isBodyTooLarge{false};    ///< 正文超过 maximumBodySize：不再缓冲，回 413
-            std::size_t   headerFieldTotal{0};      ///< 头部那一场记了几条（伪头计入），尾字段到达后与它累加判条数上限
-            std::size_t   headerNetByteTotal{0};    ///< 头部那一场名与值的净字节，尾字段到达后与它累加判头块字节上限
-            /// 头块超出本端上限：不派发也不缓冲正文，回 431。三种来源的「字段交不交」不一样——连接层
-            /// HPACK 那把尺越限时只交回这一面旗（请求对象是空的）；intake 按 parser_limits 判的条数与净字节
-            /// 两支字段仍在，只是不派发；尾部头块累计越限时头部字段早已映射进请求，处置只剩不再把尾字段
-            /// 交给业务
-            bool isHeaderListTooLarge{false};
-            bool isUriTooLong{false};      ///< 请求目标超出 parser_limits.maximum_uri_length：同样不派发，回 414（RFC 9110 §15.5.15）
-            bool isBudgetExceeded{false};  ///< 正文超出全局在途预算：不再缓冲，回 503；额度由 bodyBudget 在记录销毁时归还
-            bool isExtendedConnect{false}; ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
-            bool isWebSocketTunnel{false}; ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
-            bool isStreamingBody{false};   ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
+            HttpRequest   request;                    ///< 已按 HTTP/1.1 语义映射的请求对象
+            std::uint32_t streamId{0};                ///< 请求所属的流号，回响应时按它定位
+            bool          isRemoteEndStream{false};   ///< 对端是否已 END_STREAM：正文收齐，可以路由
+            Rejection     rejection{Rejection::None}; ///< 这一条流被本端拒收的是哪一种：至多一种，先记下的那条赢
+            std::size_t   headerFieldTotal{0};        ///< 头部那一场记了几条（伪头计入），尾字段到达后与它累加判条数上限
+            std::size_t   headerNetByteTotal{0};      ///< 头部那一场名与值的净字节，尾字段到达后与它累加判头块字节上限
+            bool          isExtendedConnect{false};   ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
+            bool          isWebSocketTunnel{false};   ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
+            bool          isStreamingBody{false};     ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
 
             /**
              * @brief 这条流是否在 intake 阶段就被判「本端不收」，只欠一个收口响应
              * @details 头块过大（431）与请求目标过长（414）的处置动作完全一样：不派发路由、
-             *          不再缓冲正文、不等 100-continue。写成一个判据而不是四处各判两个标志，
-             *          是为了让以后再加一道 intake 闸门时不会漏掉其中某处。
+             *          不再缓冲正文、不等 100-continue。这条判据读 rejection 的一个值，而不是
+             *          在每处各判两个标志——以后再加一道 intake 闸门时不会漏掉其中某处。
              *          这条判据只在 serve 协程入口被读一次，说的因此是「还没派发的记录」：流式路由
              *          在头收齐那刻就派发了，此后置上的旗无人再消费，剩下的效果只有「不把越限的尾字段
              *          交给业务」（h3 的流式路径同处境，见 `Http3Session::addTrailerFieldToStream`）
@@ -244,7 +252,33 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] bool isIntakeRejected() const noexcept
             {
-                return isHeaderListTooLarge || isUriTooLong;
+                return rejection == Rejection::HeaderListTooLarge || rejection == Rejection::UriTooLong;
+            }
+
+            /**
+             * @brief 这条流是否已有一条拒收结论（哪一种都算）
+             * @details 置位侧的「别覆盖已有结论」与消费侧的「别再缓冲、别再判预算」读的是同一格，
+             *          写成一处而不是各写各的两面旗
+             * @return true rejection 不是 None
+             */
+            [[nodiscard]] bool hasRejection() const noexcept
+            {
+                return rejection != Rejection::None;
+            }
+
+            /**
+             * @brief 记下第一条拒收结论，已有结论时不覆盖
+             * @param verdict 越限的那一种
+             * @return true 本次置位生效；false 表示这条流早就有一条结论了
+             */
+            [[nodiscard]] bool rejectWith(const Rejection verdict) noexcept
+            {
+                if (rejection != Rejection::None)
+                {
+                    return false;
+                }
+                rejection = verdict;
+                return true;
             }
             /// 本条流的全局正文额度：随记录一起析构，流被摘掉（服务完/被取消/连接关闭）即归还
             HttpMemoryBudget::Reservation bodyBudget;
