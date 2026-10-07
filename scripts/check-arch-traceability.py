@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -37,6 +38,20 @@ VERTEX_COLLECTIONS = ("components", "nodes", "states", "participants")
 # 注释行的形状：C/C++ 与 CMake/YAML/JSON/Python 的几种起始符。判据只用于「引到注释要不要警告」，
 # 不参与任何 FAIL 判定，所以宁可写宽一点——把代码行误判成注释只会漏一条 WARN。
 COMMENT_PREFIXES = ("//", "*", "/*", "#", ";;", "<!--")
+# 卡片正文与节点标签里也手写「路径:行号」，形状有四种（完整路径、只带后缀、单冒号续写、顿号续写），
+# 后三种都从前一个完整路径继承文件。这一轮补它，是因为按出图那行的原文复核时发现 23 处号还在、
+# 说的已经不是那件事——全部落在只查 sources 的判据射程之外。
+SOURCE_EXTS = r"cpp|h|hpp|py|sh|json|ya?ml|md|txt"
+PROSE_REF_RE = re.compile(
+    rf"(?P<path>[A-Za-z0-9_./+-]+\.(?:{SOURCE_EXTS})):(?P<full>\d+)"
+    rf"|(?P<ext>\.{SOURCE_EXTS}):(?P<suffixed>\d+)"
+    rf"|(?<![\w.]):(?P<colon>\d+)"
+    rf"|、(?P<comma>\d+)(?![-\d.])"
+)
+# 正文里的行号区间尾巴：`path:40-56` 与 `path:40..56` 两种写法都在用
+PROSE_RANGE_RE = re.compile(r"^(?:-(?P<dash>\d+)|\.\.(?P<dots>\d+))")
+PROSE_TEXT_FIELDS = ("label", "sublabel", "tag", "note")
+PROSE_ELEMENT_COLLECTIONS = VERTEX_COLLECTIONS + ("edges", "lanes")
 
 
 def load_diagrams():
@@ -98,6 +113,72 @@ def classify_line(lines, number):
     return "OK", content
 
 
+def tracked_file_index():
+    """文件名 → 仓库内路径列表，用来把正文里只写文件名的引用对上真文件。git 不可用时回 None。"""
+    try:
+        result = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    index = {}
+    for line in result.stdout.splitlines():
+        rel = line.strip().replace("\\", "/")
+        if rel:
+            index.setdefault(os.path.basename(rel), []).append(rel)
+    return index
+
+
+def prose_ref_path(match, owner, index):
+    """把一条正文引用对到仓库内路径。写全路径直接认；只写文件名时按仓库内唯一同名文件补全，
+    重名就不猜（猜错会把「引用有效」报给一个根本没被核对的行）。"""
+    if match.group("path"):
+        rel = match.group("path")
+        if os.path.isfile(os.path.join(REPO, rel)):
+            return rel
+        if index is None:
+            return None
+        hits = index.get(os.path.basename(rel), [])
+        return hits[0] if len(hits) == 1 else None
+    if match.group("ext"):
+        if owner is None or index is None:
+            return None
+        want = os.path.basename(owner).rsplit(".", 1)[0] + match.group("ext")
+        for candidate in index.get(want, []):
+            if os.path.dirname(candidate) == os.path.dirname(owner):
+                return candidate
+        return None
+    return owner
+
+
+def prose_ref_line(match):
+    for key in ("full", "suffixed", "colon", "comma"):
+        if match.group(key):
+            return int(match.group(key))
+    return None
+
+
+def iter_prose_texts(data, name):
+    """卡片正文与节点/边的文字——这些地方也手写着行号，与 sources 同一条底线要同判。"""
+    for ci, card in enumerate(data.get("cards") or []):
+        for ii, item in enumerate(card.get("items") or []):
+            if isinstance(item, str):
+                yield "%s/cards[%d].items[%d]" % (name, ci, ii), item
+    for collection in PROSE_ELEMENT_COLLECTIONS:
+        for i, element in enumerate(data.get(collection) or []):
+            if not isinstance(element, dict):
+                continue
+            for field in PROSE_TEXT_FIELDS:
+                value = element.get(field)
+                if isinstance(value, str):
+                    yield "%s/%s[%d].%s" % (name, collection, i, field), value
+    for collection in VERTEX_COLLECTIONS:
+        for i, element in enumerate(data.get(collection) or []):
+            if not isinstance(element, dict):
+                continue
+            for si, source in enumerate(element.get("sources") or []):
+                if isinstance(source, dict) and isinstance(source.get("label"), str):
+                    yield "%s/%s[%d]/sources[%d].label" % (name, collection, i, si), source["label"]
+
+
 def git_changed_files(revision):
     """自 revision 起被改过的文件集合。拿不到就返回 None，让新鲜度这段明确报「没跑成」。"""
     try:
@@ -130,6 +211,7 @@ def main() -> int:
     failures = []
     warnings = []
     total_refs = 0
+    total_prose = 0
     per_diagram_refs = {}
     cited_by_path = {}
 
@@ -173,6 +255,46 @@ def main() -> int:
         for element in bare:
             warnings.append("VERTEX_WITHOUT_SOURCES %s" % element)
 
+    index = tracked_file_index()
+    for name, data in diagrams:
+        for trail, text in iter_prose_texts(data, name):
+            owner = None
+            for match in PROSE_REF_RE.finditer(text):
+                line = prose_ref_line(match)
+                rel = prose_ref_path(match, owner, index)
+                if match.group("path") and rel:
+                    owner = rel
+                if rel is None or line is None:
+                    if match.group("path"):
+                        failures.append("PROSE_MISSING_PATH %s -> %s（正文点名的文件不在树里）" % (trail, match.group("path")))
+                    # 只写了 `:123` 或 `、123` 而前面没有完整路径：续写没有可继承的对象，这条压根
+                    # 无法定位。判红等于逼人重写文案，所以略过——但它不等于「已核对过」
+                    continue
+                total_prose += 1
+                if rel not in line_cache:
+                    absolute = os.path.join(REPO, rel)
+                    with open(absolute, encoding="utf-8", errors="replace") as handle:
+                        line_cache[rel] = handle.read().splitlines()
+                lines = line_cache[rel]
+                cited_by_path.setdefault(rel, set()).add(trail)
+                cited = "%s:%d" % (rel, line)
+                verdict, _ = classify_line(lines, line)
+                if verdict == "BEYOND_EOF":
+                    failures.append("PROSE_LINE_BEYOND_EOF %s -> %s（文件只有 %d 行）" % (trail, cited, len(lines)))
+                elif verdict == "BLANK":
+                    failures.append("PROSE_LINE_BLANK %s -> %s（引到空行，等于没有证据）" % (trail, cited))
+                elif verdict == "COMMENT":
+                    warnings.append("PROSE_LINE_ON_COMMENT %s -> %s" % (trail, cited))
+                range_match = PROSE_RANGE_RE.match(text[match.end():])
+                if range_match is None:
+                    continue
+                end_line = int(range_match.group("dash") or range_match.group("dots"))
+                end_verdict, _ = classify_line(lines, end_line)
+                if end_verdict == "BEYOND_EOF":
+                    failures.append("PROSE_END_LINE_BEYOND_EOF %s -> %s..%d" % (trail, cited, end_line))
+                elif end_line < line:
+                    failures.append("PROSE_END_LINE_BEFORE_START %s -> %s..%d" % (trail, cited, end_line))
+
     for name in sorted(per_diagram_refs):
         print("DIAGRAM %s refs=%d" % (name, per_diagram_refs[name]))
 
@@ -201,7 +323,7 @@ def main() -> int:
     for line in warnings:
         print("WARN " + line)
 
-    print("TOTAL_REFS=%d FAIL=%d WARN=%d" % (total_refs, len(failures), len(warnings)))
+    print("TOTAL_REFS=%d TOTAL_PROSE_REFS=%d FAIL=%d WARN=%d" % (total_refs, total_prose, len(failures), len(warnings)))
     if failures:
         print("ARCH_TRACE_GATE=FAIL")
         return 1
