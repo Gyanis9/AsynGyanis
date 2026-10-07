@@ -261,6 +261,26 @@ namespace AsynGyanis::Net
             bool              m_hasDecodeError{false}; ///< 是否已解出非法帧
         };
 
+        /**
+         * @brief 这条流上是否已经落下至少一个响应头块
+         * @details 处理器自己发出的那条 1xx 就是「这条流已进入服务」的线上证据：客户端据此卡住
+         *          尾字段的发送时机，不让断言去赌三段写出恰落进服务端同一批读里
+         * @param frames 已解出的帧
+         * @param streamId 要看的流号
+         * @return true 至少收到一个属于本流的响应 HEADERS
+         */
+        bool hasResponseHeaderBlock(const std::vector<Http2Frame> &frames, const std::uint32_t streamId)
+        {
+            for (const Http2Frame &frame: frames)
+            {
+                if (frame.header.streamId == streamId && frame.header.type == Http2FrameType::Headers)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// 该流上是否出现过 END_STREAM（消息边界：响应正文到此为止）
         bool hasEndStream(const std::vector<Http2Frame> &frames, const std::uint32_t streamId)
         {
@@ -1245,8 +1265,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "431");
         // 每个头部查表都要一副新解码器：HPACK 的动态表状态不能靠同一副回放
         HpackDecoder contentTypeDecoder;
-        EXPECT_EQ(findResponseHeaderValue(contentTypeDecoder, frames, 1U, "content-type"), std::string(kPlainTextContentType))
-                << "h2 的拒绝响应与 h1/h3 不是同一个媒体类型取值";
+        EXPECT_EQ(findResponseHeaderValue(contentTypeDecoder, frames, 1U, "content-type"), std::string(kPlainTextContentType)) << "h2 的拒绝响应与 h1/h3 不是同一个媒体类型取值";
         for (const Http2Frame &frame: frames)
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条越限的请求头不该把整条连接判死";
@@ -3844,6 +3863,9 @@ namespace AsynGyanis::Net
                                          {
                                              std::size_t            totalByteCount = 0;
                                              HttpRequestBody *const stream         = request.bodyStream();
+                                             // 一接手就先发一条 1xx：这是「本条流已进入服务」的线上证据，客户端据此
+                                             // 才发尾字段。没有它，本用例断的其实是三次写出恰落进同一批读里
+                                             static_cast<void>(co_await response.sendInformational(102));
                                              if (stream != nullptr)
                                              {
                                                  while (co_await stream->readNext())
@@ -3868,16 +3890,21 @@ namespace AsynGyanis::Net
                 << "没有在时限内收到服务端的初始 SETTINGS";
         HpackDecoder responseDecoder;
 
-        // 头块（不带 END_STREAM）→ 正文 → 两个尾字段（带 END_STREAM）：派发发生在头块收齐那刻，
-        // 越限判定落在派发之后
+        // 头块（不带 END_STREAM）→ 正文 → 等到处理器自己发出的那一条 1xx → 两个尾字段（带 END_STREAM）：
+        // 越限判定因此必然落在派发之后，不靠服务端把三段字节读进同一批的那种运气
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makePostRequestHeaderBlock("/stream"), false), kWaitTimeout));
         ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = "abc"}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &received) { return hasResponseHeaderBlock(received, 1U); }, kWaitTimeout))
+                << "没有等到处理器那条 1xx：这条流还没进入服务就发尾字段，本用例判的就不是「派发之后」那一格";
         ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, hpackLiteralField("x-a", "1") + hpackLiteralField("x-b", "2"), true), kWaitTimeout));
         ASSERT_TRUE(client.pumpUntil(
                 frames, [](const std::vector<Http2Frame> &received) { return hasEndStream(received, 1U); }, kWaitTimeout))
                 << "已派发的流没有收到应答：越限判定把这条流挂住了";
 
-        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200") << "请求早已交给业务，越限的尾字段不该把整条响应换成 431";
+        // 第一块是处理器的 1xx（它同时是本用例的前置信号），最终响应在第二块上
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 0), "102") << "处理器接手的那条 1xx 没按预期上线";
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status", 1), "200") << "请求早已交给业务，越限的尾字段不该把整条响应换成 431";
         EXPECT_EQ(responseDataPayload(frames, 1U), "n=3,tf=-") << "正文档照常交付，而越限的尾字段必须被拦下不交给业务";
         EXPECT_EQ(logCapture.countContaining("已经派发出去"), 1U) << "这一支唯一的对外痕迹就是这行日志，缺了它这次丢弃无人出声";
         EXPECT_EQ(logCapture.countContaining("已按 431 应答"), 0U) << "派发之后回不出 431，不该再出现 431 那条收口日志";
