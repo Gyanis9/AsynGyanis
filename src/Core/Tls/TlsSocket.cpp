@@ -15,6 +15,21 @@
 
 namespace AsynGyanis::Core
 {
+    void TlsSocket::SslDeleter::operator()(SSL *const ssl) const noexcept
+    {
+        if (ssl == nullptr)
+        {
+            return;
+        }
+        // 第一次调用只发出 close_notify；返回 0 表示对端的那一份还没到，要再调一次把它收走，
+        // 否则会留下半关的会话（OpenSSL 把「已发出、未收到」的两步都算在同一次调用之外）
+        if (SSL_shutdown(ssl) == 0)
+        {
+            static_cast<void>(SSL_shutdown(ssl));
+        }
+        SSL_free(ssl);
+    }
+
     namespace
     {
         /**

@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include <openssl/err.h>
+#include "AsynGyanisExport.h"
 
 #include <string>
 
@@ -22,21 +22,9 @@ namespace AsynGyanis::Net
      * @brief 把当前线程 OpenSSL 错误队列里剩下的条目拼成一行
      * @details 一次失败常常连带多条：只取首条会把余下的留在队列里，下一次调用又把**上一次的**
      *          错误当成新原因报出来，定位时会被带偏。
+     * @note 实现放在 QuicOpenSslError.cpp：内联在这份公开头里就等于把 <openssl/err.h> 顺着
+     *       包含链交给每一个使用方，而排空队列这段逻辑不需要出现在头文件里
      * @return std::string 各条目以 "; " 连接；队列为空时给出「未给出错误详情」的固定说明
      */
-    [[nodiscard]] inline std::string quicOpenSslErrorText()
-    {
-        std::string text;
-        for (unsigned long errorCode = ERR_get_error(); errorCode != 0; errorCode = ERR_get_error())
-        {
-            char buffer[256]{};
-            ERR_error_string_n(errorCode, buffer, sizeof(buffer));
-            if (!text.empty())
-            {
-                text += "; ";
-            }
-            text += buffer;
-        }
-        return text.empty() ? "OpenSSL 未给出错误详情" : text;
-    }
+    [[nodiscard]] ASYN_NET_API std::string quicOpenSslErrorText();
 } // namespace AsynGyanis::Net

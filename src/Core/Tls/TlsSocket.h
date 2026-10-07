@@ -166,20 +166,13 @@ namespace AsynGyanis::Core
 
         struct SslDeleter
         {
-            void operator()(SSL *ssl) const noexcept
-            {
-                if (ssl)
-                {
-                    // TLS 双向关闭：第一次调用发送 close_notify
-                    const int ret = SSL_shutdown(ssl);
-                    if (ret == 0)
-                    {
-                        // 需要第二次调用接收对端的 close_notify
-                        SSL_shutdown(ssl);
-                    }
-                    SSL_free(ssl);
-                }
-            }
+            /**
+             * @brief 双向关闭并释放 SSL 对象
+             * @details 实现放在 TlsSocket.cpp：内联在这份公开头里会把 SSL_shutdown/SSL_free
+             *          逐份塞进每个包含者，而这段收口顺序并不需要出现在头文件里。
+             * @param ssl 待归还的 SSL 对象，空指针时什么也不做
+             */
+            void operator()(SSL *ssl) const noexcept;
         };
 
         std::unique_ptr<SSL, SslDeleter> m_ssl; ///< OpenSSL SSL 对象，RAII 管理
