@@ -13,6 +13,13 @@
 #include <thread>
 #include <vector>
 
+// 关掉后端句柄这一步要直接摸平台 API：Linux 上是文件描述符，Windows 上是完成端口的 HANDLE
+#if ASYN_PLATFORM_WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace AsynGyanis::Core
 {
     namespace
@@ -29,7 +36,67 @@ namespace AsynGyanis::Core
             value.store(42);
             co_return 0;
         }
+
+        /**
+         * @brief 把事件后端的句柄关到内核那里去，让下一次 wait() 只能以系统错误抛出
+         * @param loop 目标循环
+         */
+        void closeBackendHandle(EventLoop &loop)
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::CloseHandle(loop.epoll().fileDescriptor()));
+#else
+            static_cast<void>(::close(loop.epoll().fileDescriptor()));
+#endif
+        }
     } // namespace
+
+    /**
+     * @brief 钉住：后端抛过一次之后 run() 真的返回，而不是「读数说停了、线程还在派发」
+     * @details run() 的两个 catch 置 `m_stoppedByFailure` 与 `m_running=false`，而这两个原子量是全仓
+     *          唯一的「这条循环还在不在跑」判据（EventLoop.h 对 isRunning()/stoppedByFailure 的 @note
+     *          就是这么写的）。修复前它们置完就落回 while 的开头继续跑：读数说已经停了，事件照派发、
+     *          协程照恢复；而 ~EventLoop 按 `m_running==false` 跳过 stop()，紧接着在还在等事件的线程
+     *          底下销毁后端与唤醒套接字；持续失败的那一格还会退化成每轮一条 ERROR 的满核空转。
+     * @note 判据是「run() 有没有返回」，且**刻意不靠 stop() 收口**——旧代码被 stop() 也叫得醒，
+     *       那样这条判据就是假的。触发方式：关掉后端句柄（Linux 上下一次 epoll_wait 直接 EBADF，
+     *       Windows 上完成端口已关 → GetQueuedCompletionStatusEx 报错），再投一条空可调用体把
+     *       正阻塞着的那一觉叫醒——不投这一下，阻塞中的等待不受 close 影响，抛点就永远到不了。
+     *       派发级异常走不到这里（Scheduler::runGuarded 与 IoWatcher 逐条就地收下），所以落的正是
+     *       「循环自身设施坏了」那一格。
+     */
+    TEST(EventLoop, RunReturnsAfterBackendThrows)
+    {
+        EventLoop         loop;
+        std::atomic<bool> runReturned{false};
+        std::thread       worker(
+                [&loop, &runReturned]
+                {
+                    loop.run();
+                    runReturned.store(true, std::memory_order_release);
+                });
+
+        ASSERT_TRUE(waitForCondition([&loop] { return loop.isRunning(); })) << "循环没进入 run()：本用例什么都没测";
+
+        closeBackendHandle(loop);
+        static_cast<void>(loop.scheduler().postRemote([] {})); // 叫醒那一觉，让抛点真的走到
+
+        EXPECT_TRUE(waitForCondition([&runReturned] { return runReturned.load(std::memory_order_acquire); }))
+                << "后端抛出之后 run() 没有退出：isRunning()/stoppedByFailure 已经在说谎，线程还在派发事件与恢复协程";
+
+        // 断言之后仍要把线程收干净：万一判据是红的（旧代码），stop() 是它唯一的出路，不能让用例挂死
+        loop.stop();
+        worker.join();
+
+        const EventLoopSnapshot snapshot = loop.snapshot();
+        EXPECT_TRUE(snapshot.stoppedByFailure) << "异常没有落到循环的收口分支：本用例没测到它想测的那一格";
+        EXPECT_FALSE(snapshot.isRunning);
+
+        // 收尾一格自证「停了是真的不接单」：run() 已经返回，投进去的东西没有人会执行
+        bool resumedAfterExit = false;
+        static_cast<void>(loop.scheduler().postRemote([&resumedAfterExit] { resumedAfterExit = true; }));
+        EXPECT_FALSE(resumedAfterExit) << "run() 返回之后仍有循环在派发投递进来的可调用体";
+    }
 
     /**
      * @brief 构造即备好有效的 epoll 句柄，且此时并不处于运行态（run() 之前不误报 running）

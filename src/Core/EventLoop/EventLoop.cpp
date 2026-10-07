@@ -203,11 +203,18 @@ namespace AsynGyanis::Core
                 LOG_ERROR_EXCEPTION(loopError, "EventLoop: 事件循环里逃出的异常已就地收口（本条循环停止，进程继续）：{}", loopError.what());
                 m_stoppedByFailure.store(true, std::memory_order_release);
                 m_running.store(false, std::memory_order_release);
+                // 收下之后必须真的离开循环：这两个原子量是全仓唯一的「这条循环还在不在跑」判据
+                // （见 EventLoop.h 对 isRunning()/stoppedByFailure 的说明），落回 while 的开头就变成
+                // 「读数说已经停了，线程还在派发事件、恢复协程」；而析构那一步按 m_running==false 跳过
+                // stop()，紧接着在仍会去等事件的线程底下销毁后端与唤醒套接字。持续失败的那一格还会退化成
+                // 每轮一条 ERROR 日志的满核空转。重抛那一支早已被否掉（见本函数开头那段），所以这里是退出
+                break;
             } catch (...)
             {
                 LOG_ERROR_FMT("EventLoop: 事件循环里逃出的非标准异常已就地收口（本条循环停止，进程继续）");
                 m_stoppedByFailure.store(true, std::memory_order_release);
                 m_running.store(false, std::memory_order_release);
+                break; // 同上：非标准异常这一支同样要真的停下
             }
         }
 
