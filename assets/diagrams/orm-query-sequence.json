@@ -114,7 +114,7 @@
     { "from": 165, "to": 240, "label": "建树与选方言" },
     { "from": 240, "to": 330, "label": "借连接与锁" },
     { "from": 330, "to": 470, "label": "渲染与执行" },
-    { "from": 470, "to": 580, "label": "映射与归还" }
+    { "from": 470, "to": 608, "label": "映射与归还" }
   ],
   "messages": [
     { "id": "o-build", "from": "caller", "to": "qnode", "y": 175, "label": "where/orderBy/limit", "variant": "emphasis" },
@@ -131,14 +131,15 @@
     { "id": "o-result", "from": "driver", "to": "mapper", "y": 483, "label": "DatabaseResult", "variant": "default" },
     { "id": "o-rows", "from": "mapper", "to": "caller", "y": 511, "label": "vector<T>", "variant": "return" },
     { "id": "o-return", "from": "caller", "to": "lease", "y": 539, "label": "作用域结束归还", "variant": "dashed" },
-    { "id": "o-topool", "from": "lease", "to": "pool", "y": 567, "label": "先复位再入栈", "variant": "dashed" }
+    { "id": "o-topool", "from": "lease", "to": "pool", "y": 567, "label": "先复位再入栈", "variant": "dashed" },
+    { "id": "o-discard", "from": "lease", "to": "pool", "y": 595, "label": "复位失败：丢这条连接", "variant": "security", "note": "三条驱动同一处置：脏会话绝不还池" }
   ],
   "activations": [
     { "participant": "caller", "from": 175, "to": 539, "type": "frontend" },
     { "participant": "qnode", "from": 175, "to": 203, "type": "backend" },
     { "participant": "dialect", "from": 203, "to": 371, "type": "backend" },
-    { "participant": "pool", "from": 259, "to": 567, "type": "messagebus" },
-    { "participant": "lease", "from": 315, "to": 539, "type": "security" },
+    { "participant": "pool", "from": 259, "to": 595, "type": "messagebus" },
+    { "participant": "lease", "from": 315, "to": 595, "type": "security" },
     { "participant": "driver", "from": 399, "to": 483, "type": "database" },
     { "participant": "mapper", "from": 483, "to": 511, "type": "backend" }
   ],
@@ -167,7 +168,7 @@
       "items": [
         "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:950、ConnectionPool 的 acquireStatementLock）",
         "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:68、78、91）",
-        "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 的两个 0 含义相反（0=不限制 / 0=立即）"
+        "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有四个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空（PoolConfig.h:29-37）"
       ]
     },
     {
@@ -175,8 +176,8 @@
       "title": "Redis 借这张图的会话位",
       "items": [
         "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:206、801、634、598）",
-        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（.cpp:946）",
-        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（.cpp:1150）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
+        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1066）",
+        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1338）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
         "可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate"
       ]
     }

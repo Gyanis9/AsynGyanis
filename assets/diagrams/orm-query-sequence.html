@@ -5019,16 +5019,16 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
         <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="2" x="48" y="330" width="984" height="140" rx="10" class="c-lane" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="3" x="48" y="470" width="984" height="110" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="segment" data-composition-frame-id="3" x="48" y="470" width="984" height="138" rx="10" class="c-lane" stroke-width="1"/>
 
         <!-- Lifelines -->
-        <path d="M 118.5 142 L 118.5 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 262.66666666666663 142 L 262.66666666666663 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 406.8333333333333 142 L 406.8333333333333 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 551 142 L 551 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 695.1666666666666 142 L 695.1666666666666 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 839.3333333333333 142 L 839.3333333333333 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
-        <path d="M 983.5 142 L 983.5 594" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 118.5 142 L 118.5 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 262.66666666666663 142 L 262.66666666666663 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 406.8333333333333 142 L 406.8333333333333 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 551 142 L 551 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 695.1666666666666 142 L 695.1666666666666 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 839.3333333333333 142 L 839.3333333333333 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
+        <path d="M 983.5 142 L 983.5 625" class="a-default" stroke-width="0.8" stroke-dasharray="3,7"/>
 
         <!-- Activations -->
         <rect x="113.5" y="175" width="10" height="364" rx="3" class="c-mask"/>
@@ -5037,10 +5037,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect x="257.66666666666663" y="175" width="10" height="28" rx="3" class="c-backend" stroke-width="1"/>
         <rect x="401.8333333333333" y="203" width="10" height="168" rx="3" class="c-mask"/>
         <rect x="401.8333333333333" y="203" width="10" height="168" rx="3" class="c-backend" stroke-width="1"/>
-        <rect x="546" y="259" width="10" height="308" rx="3" class="c-mask"/>
-        <rect x="546" y="259" width="10" height="308" rx="3" class="c-messagebus" stroke-width="1"/>
-        <rect x="690.1666666666666" y="315" width="10" height="224" rx="3" class="c-mask"/>
-        <rect x="690.1666666666666" y="315" width="10" height="224" rx="3" class="c-security" stroke-width="1"/>
+        <rect x="546" y="259" width="10" height="336" rx="3" class="c-mask"/>
+        <rect x="546" y="259" width="10" height="336" rx="3" class="c-messagebus" stroke-width="1"/>
+        <rect x="690.1666666666666" y="315" width="10" height="280" rx="3" class="c-mask"/>
+        <rect x="690.1666666666666" y="315" width="10" height="280" rx="3" class="c-security" stroke-width="1"/>
         <rect x="834.3333333333333" y="399" width="10" height="84" rx="3" class="c-mask"/>
         <rect x="834.3333333333333" y="399" width="10" height="84" rx="3" class="c-database" stroke-width="1"/>
         <rect x="978.5" y="483" width="10" height="28" rx="3" class="c-mask"/>
@@ -5170,6 +5170,15 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
         </g>
 
+        <g data-edge-from="lease" data-edge-to="pool" data-edge-label="复位失败：丢这条连接" data-edge-key="15" data-edge-id="o-discard">
+          <path data-composition-edge-from="lease" data-composition-edge-to="pool" data-composition-edge-id="o-discard" data-composition-points="688.1666666666666,595;558,595" d="M 688.1666666666666 595 L 558 595" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <g data-detail="context">
+          <rect x="565.0833333333333" y="575" width="116" height="16" rx="3" class="c-mask"/>
+          <text x="623.0833333333333" y="585" class="t-edge-security" font-size="9" text-anchor="middle">复位失败：丢这条连接</text>
+        </g>
+        <text data-detail="fine" x="570" y="613" class="t-dim" font-size="7">三条驱动同一处置：脏会话绝不还池</text>
+        </g>
+
         <!-- Segment Labels -->
         <g data-graph-role="segment-label" data-segment-id="0">
           <rect x="56" y="143" width="76.4" height="18" rx="3" class="c-mask"/>
@@ -5275,25 +5284,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
 
         <!-- Legend -->
-        <g data-legend="">
-          <text x="40" y="616" class="t-primary" font-size="12" font-weight="650">图例</text>
-          <g data-legend-semantic-kind="emphasis" data-legend-x="40" data-legend-baseline="636" data-legend-width="93">
-            <path d="M 40 633 L 74 633" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-            <text x="83" y="636" class="t-muted" font-size="10" font-weight="500">主路径请求</text>
-          </g>
-          <g data-legend-semantic-kind="return" data-legend-x="155" data-legend-baseline="636" data-legend-width="63">
-            <path d="M 155 633 L 189 633" class="a-default" stroke-width="1.4" stroke-dasharray="3,5" marker-end="url(#arrowhead)"/>
-            <text x="198" y="636" class="t-muted" font-size="10" font-weight="500">返回</text>
-          </g>
-          <g data-legend-semantic-kind="dashed" data-legend-x="240" data-legend-baseline="636" data-legend-width="83">
-            <path d="M 240 633 L 274 633" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-            <text x="283" y="636" class="t-muted" font-size="10" font-weight="500">异步追踪</text>
-          </g>
-          <g data-legend-semantic-kind="default" data-legend-x="345" data-legend-baseline="636" data-legend-width="83">
-            <path d="M 345 633 L 379 633" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-            <text x="388" y="636" class="t-muted" font-size="10" font-weight="500">普通消息</text>
-          </g>
-        </g>
+
       </svg>
       <p class="intent-trace-status no-print" id="intent-trace-status" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="diagram-guide no-print" id="diagram-guide" hidden role="dialog" aria-modal="false" aria-labelledby="diagram-guide-title">
@@ -5502,7 +5493,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <ul>
           <li>一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:950、ConnectionPool 的 acquireStatementLock）</li>
           <li>commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:68、78、91）</li>
-          <li>池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 的两个 0 含义相反（0=不限制 / 0=立即）</li>
+          <li>池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有四个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空（PoolConfig.h:29-37）</li>
         </ul>
       </div>
 
@@ -5513,8 +5504,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:206、801、634、598）</li>
-          <li>归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（.cpp:946）</li>
-          <li>订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（.cpp:1150）；发布/订阅与命令共用同一个池，但订阅连接不可归还</li>
+          <li>归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1066）</li>
+          <li>订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1338）；发布/订阅与命令共用同一个池，但订阅连接不可归还</li>
           <li>可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate</li>
         </ul>
       </div>
