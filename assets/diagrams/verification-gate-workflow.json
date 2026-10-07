@@ -56,7 +56,7 @@
       "label": "工作树改动",
       "sublabel": "约定式提交",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 51, "end_line": 52, "label": "提交与 PR 两条约定" }
+        { "path": "CONTRIBUTING.md", "line": 54, "end_line": 55, "label": "提交与 PR 两条约定" }
       ]
     },
     {
@@ -69,7 +69,7 @@
       "sublabel": "有差异即红",
       "tag": "钉 23.1.1",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 42, "end_line": 44, "label": "版本与判据" }
+        { "path": "CONTRIBUTING.md", "line": 42, "end_line": 43, "label": "版本与判据" }
       ]
     },
     {
