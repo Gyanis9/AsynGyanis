@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "1d56b748ef50b5eff2029040223525844b15f5ec"
+      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
     },
     "views": [
       {
@@ -168,7 +168,8 @@
       "items": [
         "start()：每个工作循环各自 bind 同一端口，由内核按 SO_REUSEPORT 分摊（Linux only）",
         "startAccepting(distributor)：单监听器 + 用户态轮转投递，Windows 多线程只能用这条",
-        "过载与按 IP 限额在 takeOverConnection 里先判，通过了才建会话（src/Net/Tcp/TcpServer.cpp:174-178）"
+        "过载与按 IP 限额在 takeOverConnection 里先判，通过了才建会话（src/Net/Tcp/TcpServer.cpp:174-178）",
+      "HTTP/3 不走这张图：它没有 TcpServer 接手、没有 TlsSocket 握手、也没有 HttpParser——每条 QUIC 连接按需挂一个 Http3Session（src/Net/Quic/QuicServer.cpp:542），传输侧的形状看 quic-connection-lifecycle 那张。三条通道在业务侧读到的是同一组字段，来源地址靠构造会话时交下去的出口而不是套接字（:551）"
       ]
     },
     {
@@ -195,6 +196,7 @@
       "title": "错误出口各有形状",
       "items": [
         "解析失败按原因回 431/413/400 并收口连接（src/Net/Http/HttpSession.h:1246、HttpSession.cpp:110）",
+      "挡新请求与等在途工作是两件事：/readyz 读的是「还接不接」，探针因此能看到「在排空但还在答话」这一档（src/Net/Http/HttpMetricsEndpoint.h:106 收的是 isAccepting 出口）；/healthz 与 /readyz 都不挂令牌闸，编排器拿不到凭据（src/Net/Http/HttpServerAssembly.h:145）",
         "正文超全局内存预算回 503 + retry-after: 1（src/Net/Http/HttpSession.h:1096-1108），预算默认不启用",
         "处理器抛异常先整份 reset 再回 500；chunked 头部已上线时只能补终止块，改不了状态码（src/Net/Http/HttpSession.h:903-906，补终止块那条在 :879）",
         "WebSocket 升级不合规回 400 + Connection: close；合规就逐字节写 101 并离开本循环（src/Net/Http/HttpSession.h:1318-1363）"
