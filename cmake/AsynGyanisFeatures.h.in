@@ -1,0 +1,43 @@
+/**
+ * @file AsynGyanisFeatures.h
+ * @brief 构建期能力清单：这份库是怎么配出来的，使用方据此在编译期分支
+ * @author Gyanis
+ * @date 2026-10-07
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ *
+ * @details 由 CMake 在配置期生成（真源见 cmake/AsynGyanisFeatures.h.in 与根 CMakeLists 的
+ *          configure_file），随包安装到 include 下。缺了它，使用方只能靠「链接得过」猜库体
+ *          是怎么编的：分配器换没换、带不带 sanitizer、是静态还是共享形态，这些在构建侧都是
+ *          开关，而开关的取值过去只活在构建目录里。
+ * @note 每一项都是 0 或 1 的整数宏，可以直接进 #if；不给「未定义」这一档——留空会让
+ *       `#if ASYN_HAS_X` 静默当假，而这里要求它总是有读数。
+ * @note 宏名一律是 ASYN_*：构建侧的开关名（BUILD_SHARED_LIBS、ENABLE_SANITIZERS 这类）不进
+ *       这份头，否则就把 CMake 的变量名泄成使用方的预处理命名空间，还和使用方自己的同名宏打架。
+ */
+
+#pragma once
+
+/// 库版本号，与 find_package(AsynGyanis x.y.z) 校验的那个来源同一次取值
+#define ASYN_VERSION_STRING "@PROJECT_VERSION@"
+
+/// 事件后端是不是 io_uring（0 表示按平台默认档：Linux 走 epoll，Windows 走完成端口）
+#cmakedefine01 ASYN_HAS_IO_URING
+
+/// 分配器是否换成 mimalloc
+#cmakedefine01 ASYN_HAS_MIMALLOC
+
+/// 本构建是否带 sanitizer（AddressSanitizer 与 UndefinedBehaviorSanitizer 同一开关）
+#cmakedefine01 ASYN_IS_SANITIZED
+
+/// 是否另起线程竞争检测档（与地址检测互斥，只在 ASYN_IS_SANITIZED 为 1 时才有意义）
+#cmakedefine01 ASYN_SANITIZES_THREADS
+
+/// 是否编了行/分支覆盖计数
+#cmakedefine01 ASYN_HAS_COVERAGE
+
+/// 五个模块产出的是共享库还是静态库
+#cmakedefine01 ASYN_IS_SHARED_BUILD
+
+/// 是否建立了模糊测试目标（只有测试树关心，读数同样给出，免得使用方靠猜）
+#cmakedefine01 ASYN_HAS_FUZZ_TARGETS

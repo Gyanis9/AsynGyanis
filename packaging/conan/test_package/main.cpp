@@ -5,6 +5,7 @@
 // 覆盖，不在这里重复；也不碰事件循环——起服务器要跨线程驱动协程，那是集成测试的事，
 // 放在冒烟测试里只会让它因为与本任务无关的原因变红。
 
+#include "AsynGyanisFeatures.h"
 #include "Base/Exception/StackTrace.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Sinks/RollingFileSink.h"
@@ -65,6 +66,19 @@ int main()
     volatile auto formatterProbe = &AsynGyanis::Base::DefaultFormatter::format;
     static_cast<void>(formatterProbe);
 
-    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节\n", head.size(), compressed->size());
+    // 能力清单的读数必须每项都是 0/1 的现量：这份表与库体形状分叉时，使用方要么去用一项根本没编
+    // 进来的能力，要么把有的当成没有。先按形状判死，再把读数打出来证明「包含得到、也取到值」
+    static_assert(ASYN_HAS_IO_URING == 0 || ASYN_HAS_IO_URING == 1, "io_uring 的读数不是 0/1");
+    static_assert(ASYN_HAS_MIMALLOC == 0 || ASYN_HAS_MIMALLOC == 1, "mimalloc 的读数不是 0/1");
+    static_assert(ASYN_IS_SANITIZED == 0 || ASYN_IS_SANITIZED == 1, "sanitizer 的读数不是 0/1");
+    static_assert(ASYN_IS_SHARED_BUILD == 0 || ASYN_IS_SHARED_BUILD == 1, "共享形态的读数不是 0/1");
+
+    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d\n",
+                head.size(),
+                compressed->size(),
+                ASYN_VERSION_STRING,
+                ASYN_HAS_IO_URING,
+                ASYN_HAS_MIMALLOC,
+                ASYN_IS_SHARED_BUILD);
     return 0;
 }

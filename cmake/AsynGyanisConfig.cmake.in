@@ -36,4 +36,14 @@ unset(_asyn_required_dependencies)
 
 include("${CMAKE_CURRENT_LIST_DIR}/AsynGyanisTargets.cmake")
 
+# 构建期能力清单的 CMake 侧读数：与随包发出的 AsynGyanisFeatures.h 是同一次取值，一份给 C++
+# 编译期、一份给使用方自己的 CMake 逻辑（例如「带 sanitizer 的库不要拿去链自己的 Release 目标」）。
+# 取值是 ON/OFF（选项原样展开），不是 0/1——要 0/1 请读那份头
+set(AsynGyanis_HAS_IO_URING @ASYN_WITH_IO_URING@)
+set(AsynGyanis_HAS_MIMALLOC @ASYN_WITH_MIMALLOC@)
+set(AsynGyanis_IS_SANITIZED @ENABLE_SANITIZERS@)
+set(AsynGyanis_SANITIZES_THREADS @SANITIZE_THREADS@)
+set(AsynGyanis_HAS_COVERAGE @ASYN_ENABLE_COVERAGE@)
+set(AsynGyanis_IS_SHARED_BUILD @BUILD_SHARED_LIBS@)
+
 check_required_components(AsynGyanis)

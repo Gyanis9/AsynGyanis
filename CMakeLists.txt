@@ -325,6 +325,27 @@ if(ASYN_ENABLE_INSTALL)
             DESTINATION ${CMAKE_INSTALL_DATADIR}/asyngyanis
     )
 
+    # 构建期能力清单：mimalloc、sanitizer、覆盖计数、共享形态这些开关的取值过去只活在构建目录里，
+    # 使用方要么重编一遍要么靠「链接得过」猜。生成一份只含 0/1 宏的头随包发出，让使用方能在
+    # 编译期分支。排在 add_subdirectory(tests) 之后是有意的：ASYN_BUILD_FUZZ_TARGETS 那个选项
+    # 定义在 tests/Net 里，提前 configure 会把它读成未定义
+    #
+    # 改名而不是把开关名直接发出去：BUILD_SHARED_LIBS / ENABLE_SANITIZERS 这些是构建侧的词汇，
+    # 进了公开头就是替使用方决定了一批预处理名字，还可能与它们自己的同名宏打架
+    set(ASYN_HAS_IO_URING ${ASYN_WITH_IO_URING})
+    set(ASYN_HAS_MIMALLOC ${ASYN_WITH_MIMALLOC})
+    set(ASYN_IS_SANITIZED ${ENABLE_SANITIZERS})
+    set(ASYN_SANITIZES_THREADS ${SANITIZE_THREADS})
+    set(ASYN_HAS_COVERAGE ${ASYN_ENABLE_COVERAGE})
+    set(ASYN_IS_SHARED_BUILD ${BUILD_SHARED_LIBS})
+    set(ASYN_HAS_FUZZ_TARGETS ${ASYN_BUILD_FUZZ_TARGETS})
+    configure_file(${CMAKE_SOURCE_DIR}/cmake/AsynGyanisFeatures.h.in
+                   ${CMAKE_BINARY_DIR}/src/AsynGyanisFeatures.h
+                   @ONLY)
+    install(FILES ${CMAKE_BINARY_DIR}/src/AsynGyanisFeatures.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
     # 组件依赖图（谁链接谁）；外部依赖清单不在这里重复——各模块启用依赖时已按组件登记进
     # GLOBAL 属性（imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
     # 所以不能在本文件里用 if(TARGET ...) 反查）
