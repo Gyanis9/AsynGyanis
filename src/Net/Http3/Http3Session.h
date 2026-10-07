@@ -837,6 +837,13 @@ namespace AsynGyanis::Net
          * @param errorCode 要写进 QUIC 关闭帧的线上错误码
          * @param reason 中文原因（同时供传输层取用）
          */
+        /**
+         * @brief 记一笔「对端的报文不合规、被协议层挡在业务之外」
+         * @details 本端没有采集端时什么都不做；四条通道（含这里的 431/414/413）都只在这一格落账，
+         *          503 预算与 501 未实现协议都不落——那不是对端的错
+         */
+        void noteBadRequest() noexcept;
+
         void markBroken(Http3ErrorCode errorCode, std::string_view reason);
 
         /// 待服务的一条请求：收齐的请求本体 + 收的过程中记下的拒收结论。

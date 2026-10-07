@@ -30,6 +30,21 @@ namespace AsynGyanis::Net
             return std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
         }
 
+        /**
+         * @brief 拒收响应的共同形状：状态码 + 一句英文正文 + 纯文本媒体类型
+         * @details 三条通道对「没交给业务的那张回执」用的是同一个媒体类型取值，这一格此前在每个
+         *          分支里各写三行——少写一行就是又一次跨协议不一致
+         * @param response 要填的响应对象
+         * @param status 状态码
+         * @param body 一句英文正文（与 h1/h2 同文案）
+         */
+        void fillRejectedResponse(HttpResponse &response, const int status, const std::string_view body)
+        {
+            response.setStatus(status);
+            response.setBody(body);
+            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+        }
+
         /// 收请求头时给这条流的请求对象预留的头部容量：4 条 / 128 字节够一条典型的 GET，
         /// 比这多就照常按倍扩容。取小值是刻意的——留多了每一份在途请求都要多养一段空缓冲
         constexpr std::size_t kIncomingRequestHeaderFieldGuess = 4U;
@@ -501,33 +516,21 @@ namespace AsynGyanis::Net
                 // 说的是「没这条路由」而不是「协议没实现」。计数与 h2 同一口径：既不进
                 // bad_requests_total（不是对端的错），也不进 requests_total（没交给业务）
                 LOG_ERROR_FMT("Http3Session: 流 {} 的扩展 CONNECT 要跑本端未实现的协议，已按 501 应答且不交给业务", streamId);
-                response.setStatus(501);
-                response.setBody("CONNECT Protocol Not Implemented");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                fillRejectedResponse(response, 501, "CONNECT Protocol Not Implemented");
             } else if (rejection == Rejection::HeaderListTooLarge || rejection == Rejection::UriTooLong)
             {
                 // 与 h1/h2 同一套状态码：头部越限 431、请求目标越限 414，都不交给业务
                 const int   rejectionStatus = rejection == Rejection::HeaderListTooLarge ? 431 : 414;
                 const char *rejectionBody   = rejection == Rejection::HeaderListTooLarge ? "Request Header Fields Too Large" : "URI Too Long";
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countBadRequest();
-                }
+                noteBadRequest();
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求头部或请求目标超过配置上限，已按 {} 应答且不交给业务", streamId, rejectionStatus);
-                response.setStatus(rejectionStatus);
-                response.setBody(rejectionBody);
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                fillRejectedResponse(response, rejectionStatus, rejectionBody);
             } else if (rejection == Rejection::BudgetExceeded)
             {
                 // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countBadRequest();
-                }
+                noteBadRequest();
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已按 503 应答且不交给业务", streamId);
-                response.setStatus(503);
-                response.setBody("Service Unavailable");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                fillRejectedResponse(response, 503, "Service Unavailable");
                 // Retry-After 与 h1/h2 的同一出口同值：全局预算是本端此刻没余量，一秒后重试是真实预期。
                 // 少了它，同一台服务器换一条协议就对端就只能自己猜退避多久（h1 在 HttpSession.h、
                 // h2 在 Http2Session.cpp 的 overloadedResponse 上都带着这一项）
@@ -535,14 +538,9 @@ namespace AsynGyanis::Net
             } else if (rejection == Rejection::BodyTooLarge)
             {
                 // 正文越界：不派发，直接回 413（与 h1/h2 同一口径与文案）
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countBadRequest();
-                }
+                noteBadRequest();
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限，已按 413 应答且不交给业务", streamId);
-                response.setStatus(413);
-                response.setBody("Payload Too Large");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                fillRejectedResponse(response, 413, "Payload Too Large");
             } else if (m_router != nullptr)
             {
                 // 隧道流上跑的是 WebSocket 帧而不是正文段，因此不装流式发送口
@@ -639,10 +637,7 @@ namespace AsynGyanis::Net
                     if (response.isWebSocketUpgradeRequested() && !validateWebSocketTunnelVersion(request, &handshakeFailureReason, &handshakeRejection))
                     {
                         LOG_ERROR_FMT("Http3Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答、不建隧道。流 {}，原因：{}", streamId, handshakeFailureReason);
-                        if (m_metrics != nullptr)
-                        {
-                            m_metrics->countBadRequest();
-                        }
+                        noteBadRequest();
                         response.reset();
                         response.setStatus(400);
                         response.setBody("Bad WebSocket Handshake");
@@ -2179,6 +2174,14 @@ namespace AsynGyanis::Net
             return;
         }
         markBroken(errorCode, std::string(what) + "失败：" + std::string(reason));
+    }
+
+    void Http3Session::noteBadRequest() noexcept
+    {
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countBadRequest();
+        }
     }
 
     void Http3Session::markBroken(const Http3ErrorCode errorCode, const std::string_view reason)
