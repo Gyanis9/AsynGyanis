@@ -285,10 +285,16 @@ namespace AsynGyanis::Platform
                 rearmMissingWatchesIfDue();
             } catch (...)
             {
-                m_isRunning.store(false, std::memory_order_release);
+                // 异常出口只负责停下：读数在同一处复位（见循环之后那一句），两处各写一遍就会有一处漏
                 break;
             }
         }
+
+        // 三条出口在这里汇合后统一复位：原先只有 catch 那一条置位，`poll` 非 EINTR 失败那一条
+        // 直接 break 出去——线程已经不监听任何事件了，isRunning() 却继续答真。这条标志是本类
+        // 自己拥有的事实，就不该有某一条出口绕开它（即便眼下生产侧还没有读它的人，见 FileWatcher.h
+        // 那条 @note 记着的范围）
+        m_isRunning.store(false, std::memory_order_release);
     }
 
     void InotifyFileWatcher::processEvents()
