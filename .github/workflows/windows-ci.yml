@@ -106,6 +106,60 @@ jobs:
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
+  # 共享形态（.dll）此前只在开发机上手工跑过。五个模块的导出宏、hidden 可见性 preset、以及
+  # 「静态库不把外部依赖带给最终可执行体」这类事，只有 BUILD_SHARED_LIBS=ON 这一档才暴露得出来，
+  # 而裁判就是链接器：全目标编过 + 全量用例在 dll 形态下跑绿，这条交付形状才算没坏
+  shared-form:
+    name: 共享形态（BUILD_SHARED_LIBS=ON）
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与静态档共用同一份 Conan 缓存键：包是同一批包，只是开关不同
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装 Conan
+        run: pip install "conan>=2.25"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 不复用 debug 预设：那一档把 binaryDir 与 sanitizer 都钉死了，这里要另一棵树、不带插桩
+      - name: 配置（共享形态）
+        shell: bash
+        run: |
+          cmake -S . -B build/shared -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=conan_provider.cmake \
+            "-DCONAN_HOST_PROFILE=default;auto-cmake" -DCONAN_BUILD_PROFILE=default \
+            -DCONAN_INSTALL_ARGS=--build=missing \
+            -DBUILD_SHARED_LIBS=ON -DDATABASE_WITH_MYSQL=OFF
+
+      - name: 构建全目标
+        run: cmake --build build/shared
+
+      - name: 全量用例（dll 形态）
+        run: ctest --test-dir build/shared --output-on-failure --parallel
+
+      - name: 失败时上传用例日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-ctest-logs
+          path: build/shared/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
   # Windows 侧此前只有「用例」这一层：格式与静态检查在 Windows 档完全没有，改坏了要等 Linux 那条作业
   # 才报。这一条把两道补上，用的是与 Linux 同一件 clang-format（钉版 23.1.1）与同一份 .clang-tidy。
   static-analysis:
