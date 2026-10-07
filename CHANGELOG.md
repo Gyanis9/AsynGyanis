@@ -379,7 +379,7 @@
   （`QuicServer.cpp` 只有 978 行，而那一句说的其实是 `QuicConnectionCore.cpp`）。判据因此扩到正文，续写形式（`:123`、`.cpp:123`、`、123`）
   按前一个完整路径继承，只写文件名时按仓库内唯一同名文件补全，重名就不猜——猜错会把「引用有效」报给一个根本没被核对的行。
   同一轮把 7 条 `sources` 标签与 6 条卡片文案改成源码现在的口径（`add_library(X STATIC)`→`${ASYN_LIBRARY_KIND}`、池配置的「两个 0」→
-  「四个 0」、`issuanceTimeout` 不再原样充当单次出站时限而是由它折算）。判据现量：`TOTAL_REFS=212 TOTAL_PROSE_REFS=97 FAIL=0`；
+  「四个 0」、`issuanceTimeout` 不再原样充当单次出站时限而是由它折算）。判据现量：`TOTAL_REFS=237 TOTAL_PROSE_REFS=112 FAIL=0 WARN=56`（图上后又补了格子，这两个数是终态）；
   把新判据对着改图前的那份 JSON 跑一次报 9 条判红（8 条引到空行、1 条越出文件末尾），跑在当前这份上归零——这条门的「会红」是这样证的。
 
 
