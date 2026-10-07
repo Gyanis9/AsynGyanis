@@ -2087,7 +2087,7 @@ namespace AsynGyanis::Net
         ++m_servedRequestCount;
 
         // 上限为 0 表示不限；已经发过收尾通告就不再重复触发（同一原因只通告一次）
-        if (m_isGoAwaySent || m_limits->maximumRequestsPerConnection == 0 || m_servedRequestCount < m_limits->maximumRequestsPerConnection)
+        if (m_isGoAwaySent || !m_limits->reachesPerConnectionRequestCap(m_servedRequestCount))
         {
             return;
         }

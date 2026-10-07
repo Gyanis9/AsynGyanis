@@ -50,6 +50,18 @@ namespace AsynGyanis::Net
         /// Windows 上本项一律按 0 处理：挂着活动映射的文件既不能被截断也不能被 rename 覆盖，
         /// 启用会挡掉「写临时文件 + rename」这种常规发布方式（HttpServer 在建静态配置时降级并记一条 INFO）
         std::size_t maximumMappedStaticFiles{64};
+
+        /**
+         * @brief 单连接的请求条数是否已到上限（到量就该收口这条连接）
+         * @details 0 表示不限。这条规矩此前由三条通道各自解释一遍，写法还不一致（h1 判「>0 且达到」，
+         *          h2 把「不限」写成提前返回，h3 拆成两句），改一处口径就得同时核对三处。
+         * @param servedRequestCount 本连接已服务（h3 为已答完）的请求条数
+         * @return true 已达上限，本连接不再受理新请求
+         */
+        [[nodiscard]] constexpr bool reachesPerConnectionRequestCap(const std::size_t servedRequestCount) const noexcept
+        {
+            return maximumRequestsPerConnection != 0 && servedRequestCount >= maximumRequestsPerConnection;
+        }
     };
 
 } // namespace AsynGyanis::Net

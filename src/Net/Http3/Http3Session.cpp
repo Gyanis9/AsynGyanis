@@ -2012,11 +2012,7 @@ namespace AsynGyanis::Net
     void Http3Session::noteRequestServed()
     {
         ++m_servedRequestCount;
-        if (m_serverLimits == nullptr || m_serverLimits->maximumRequestsPerConnection == 0)
-        {
-            return;
-        }
-        if (m_servedRequestCount >= m_serverLimits->maximumRequestsPerConnection)
+        if (m_serverLimits != nullptr && m_serverLimits->reachesPerConnectionRequestCap(m_servedRequestCount))
         {
             // 到量就通告排空（与 h1/h2「回完当前响应即收口」同一意图），对端按 GOAWAY 换一条连接；
             // 这条连接等在途做完后由承载层收掉（见 QuicServer::pumpHttp3For）

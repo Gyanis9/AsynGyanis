@@ -850,7 +850,7 @@ namespace AsynGyanis::Net
                 // 计数与上限：达到上限就让 keepAlive 变 false，从而走既有的
                 // 「补 Connection: close 并收口」逻辑，而不是另开一条收尾路径
                 ++servedRequestCount;
-                const bool isRequestLimitReached = limits.maximumRequestsPerConnection > 0 && servedRequestCount >= limits.maximumRequestsPerConnection;
+                const bool isRequestLimitReached = limits.reachesPerConnectionRequestCap(servedRequestCount);
 
                 // 流式响应且头部已随首段正文上线（见 HttpResponse::writeChunk）：对端手里已经有
                 // 状态行与头部，此刻既改不了状态码、也补不了 Connection: close，收尾只剩补终止块
