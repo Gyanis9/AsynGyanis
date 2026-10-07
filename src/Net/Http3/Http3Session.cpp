@@ -648,6 +648,12 @@ namespace AsynGyanis::Net
                         }
                         finalizeResponseForHttp3(streamId, response);
                         submitResponse(streamId, response, false);
+                        // 隧道这两条出口都要记这一笔：循环末尾的 noteRequestServed() 是单连接请求条数
+                        // 上限唯一的触发点，而这两条 continue 都绕过了它——只连隧道的 h3 连接因此永远
+                        // 到不了 maximumRequestsPerConnection，该换的连接一直不换。h2 在
+                        // serveWebSocketTunnel 里升级应答发出去就记（Http2Session 的 noteServedRequest），
+                        // h1 的 respondAndFinish 对每条被答过的请求都 ++，被拒的握手也是答过的一条
+                        noteRequestServed();
                         continue;
                     }
 
@@ -663,6 +669,7 @@ namespace AsynGyanis::Net
                         // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
                         m_metrics->recordResponse(response.status(), std::chrono::steady_clock::now() - requestReceivedTime);
                     }
+                    noteRequestServed(); // 与上面那条拒绝出口同一格记账，理由写在那里
                     continue;
                 }
             } else
