@@ -630,7 +630,7 @@ namespace AsynGyanis::Net
                     response.reset();
                     response.setStatus(504);
                     response.setBody("Gateway Timeout");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                 }
             }
 
@@ -687,7 +687,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(429);
                 response.setBody("Too Many Requests");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 // Retry-After 按 RFC 9110 §10.2.3 是「秒」为单位的 delta-seconds，
                 // 窗口以毫秒配置时向上取整换算，避免亚秒窗口被截成 0 让客户端立刻重试
                 const auto retryAfterSeconds = (windowDuration.count() + 999) / 1000;
@@ -838,7 +838,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(429);
                 response.setBody("Too Many Requests");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
 
                 // Retry-After 的单位是秒（RFC 9110 §10.2.3 的 delta-seconds），因此把毫秒向上取整到秒、
                 // 且不低于 1：报 0 等于告诉客户端「立刻重试」，那正是限流要避免的
@@ -885,7 +885,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(400);
                     response.setBody("Bad Request: Invalid Content-Length");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     co_return;
                 }
 
@@ -894,7 +894,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(413);
                     response.setBody("Payload Too Large");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     co_return;
                 }
             }
@@ -1351,7 +1351,7 @@ namespace AsynGyanis::Net
                 LOG_WARN_FMT("requestDecompressionMiddleware: {}（对端声明「{}」）", reason, Base::escapeForLog(encoding));
                 response.setStatus(statusCode);
                 response.setBody(std::string(bodyText));
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
             };
 
             if (encoding.find(',') != std::string_view::npos)
@@ -1483,7 +1483,7 @@ namespace AsynGyanis::Net
 
             response.setStatus(401);
             response.setHeader("www-authenticate", "Bearer realm=\"ops\", error=\"invalid_token\"");
-            response.setHeader("content-type", "text/plain");
+            response.setHeader("content-type", kPlainTextContentType);
             // 不回显「你差在哪一位」也不区分「没给/给错/给了多条」之外的细节：这些差别只帮攻击者缩小搜索面
             response.setBody("运维端点需要 Bearer 令牌（Authorization: Bearer <token>）");
             co_return;

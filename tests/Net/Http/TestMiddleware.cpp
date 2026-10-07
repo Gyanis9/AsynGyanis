@@ -1106,7 +1106,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(request.cancelToken().stop_requested());
         EXPECT_EQ(response.status(), 504);
         EXPECT_EQ(response.body(), "Gateway Timeout");
-        EXPECT_EQ(response.getHeader("content-type").value_or(""), "text/plain");
+        EXPECT_EQ(response.getHeader("content-type").value_or(""), std::string(kPlainTextContentType));
         EXPECT_FALSE(exceptionCaught.load());
     }
 
@@ -1267,7 +1267,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(handlerCalls.load(), 0);
         EXPECT_EQ(response.status(), 413);
         EXPECT_EQ(response.body(), "Payload Too Large");
-        EXPECT_EQ(response.getHeader("content-type").value_or(""), "text/plain");
+        EXPECT_EQ(response.getHeader("content-type").value_or(""), std::string(kPlainTextContentType));
     }
 
     TEST(BodySizeLimitMiddleware, RejectsNonNumericContentLengthWith400)

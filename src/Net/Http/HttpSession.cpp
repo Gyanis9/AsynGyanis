@@ -139,7 +139,7 @@ namespace AsynGyanis::Net
                     break;
             }
 
-            response.setHeader("content-type", "text/plain");
+            response.setHeader("content-type", kPlainTextContentType);
             response.setHeader("connection", "close");
         }
 

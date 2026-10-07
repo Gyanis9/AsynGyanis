@@ -1243,6 +1243,10 @@ namespace AsynGyanis::Net
                 << "超大头部的请求没有收到应答";
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "431");
+        // 每个头部查表都要一副新解码器：HPACK 的动态表状态不能靠同一副回放
+        HpackDecoder contentTypeDecoder;
+        EXPECT_EQ(findResponseHeaderValue(contentTypeDecoder, frames, 1U, "content-type"), std::string(kPlainTextContentType))
+                << "h2 的拒绝响应与 h1/h3 不是同一个媒体类型取值";
         for (const Http2Frame &frame: frames)
         {
             EXPECT_NE(frame.header.type, Http2FrameType::GoAway) << "一条越限的请求头不该把整条连接判死";

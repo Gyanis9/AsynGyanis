@@ -660,7 +660,7 @@ namespace AsynGyanis::Net
     {
         HttpResponse withBody;
         withBody.setBody("plain text");
-        EXPECT_TRUE(containsText(withBody.toString(), "content-type: text/plain\r\n"));
+        EXPECT_TRUE(containsText(withBody.toString(), "content-type: text/plain; charset=utf-8\r\n"));
 
         HttpResponse withoutBody;
         EXPECT_FALSE(containsText(withoutBody.toString(), "content-type"));
@@ -689,8 +689,8 @@ namespace AsynGyanis::Net
         const std::size_t bodySeparator = positionOfText(output, "\r\n\r\n");
 
         EXPECT_NE(bodySeparator, std::string::npos);
-        EXPECT_LT(positionOfText(output, "x-trace: 1\r\n"), positionOfText(output, "content-type: text/plain\r\n"));
-        EXPECT_LT(positionOfText(output, "content-type: text/plain\r\n"), positionOfText(output, "content-length: 3\r\n"));
+        EXPECT_LT(positionOfText(output, "x-trace: 1\r\n"), positionOfText(output, "content-type: text/plain; charset=utf-8\r\n"));
+        EXPECT_LT(positionOfText(output, "content-type: text/plain; charset=utf-8\r\n"), positionOfText(output, "content-length: 3\r\n"));
         EXPECT_EQ(output.substr(bodySeparator + 4), "abc");
     }
 
@@ -740,7 +740,7 @@ namespace AsynGyanis::Net
         response.setBody("stable");
 
         EXPECT_EQ(response.serializeHead(), response.serializeHead());
-        EXPECT_EQ(withoutDateHeaderLine(response.serializeHead()), "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\n");
+        EXPECT_EQ(withoutDateHeaderLine(response.serializeHead()), "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 6\r\n\r\n");
     }
 
     // ============================================================================
@@ -821,7 +821,8 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(response.status(), 200);
         EXPECT_EQ(response.body(), "hi");
-        EXPECT_EQ(response.getHeader("content-type").value_or(""), "text/plain");
+        // 钉的是「工厂也用那一个出处」，字面量换成共享常量：任一通道自己硬写就会在这里红
+        EXPECT_EQ(response.getHeader("content-type").value_or(""), std::string(kPlainTextContentType));
         EXPECT_TRUE(containsText(response.toString(), "content-length: 2\r\n"));
     }
 

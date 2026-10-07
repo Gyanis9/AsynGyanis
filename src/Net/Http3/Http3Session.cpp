@@ -22,7 +22,7 @@ namespace AsynGyanis::Net
         constexpr const char *kContentLengthHeaderName = "content-length"; ///< 正文长度
         constexpr const char *kDateHeaderName          = "date";           ///< 响应生成时刻
         constexpr const char *kTrailerHeaderName       = "trailer";        ///< 尾部字段声明头（RFC 9110 §6.5.1）
-        constexpr const char *kDefaultContentTypeValue = "text/plain";     ///< 有正文却没设类型时的缺省值
+        constexpr std::string_view kDefaultContentTypeValue = kPlainTextContentType;     ///< 有正文却没设类型时的缺省值
 
         /// 把字符串按字节交给只认「指针 + 长度」的接口，不留零终止的假设
         [[nodiscard]] std::span<const std::uint8_t> asBytes(const std::string_view text) noexcept
@@ -509,7 +509,7 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求头部或请求目标超过配置上限，已按 {} 应答且不交给业务", streamId, rejectionStatus);
                 response.setStatus(rejectionStatus);
                 response.setBody(rejectionBody);
-                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
             } else if (isBudgetExceeded)
             {
                 // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求
@@ -520,7 +520,7 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已按 503 应答且不交给业务", streamId);
                 response.setStatus(503);
                 response.setBody("Service Unavailable");
-                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
                 // Retry-After 与 h1/h2 的同一出口同值：全局预算是本端此刻没余量，一秒后重试是真实预期。
                 // 少了它，同一台服务器换一条协议就对端就只能自己猜退避多久（h1 在 HttpSession.h、
                 // h2 在 Http2Session.cpp 的 overloadedResponse 上都带着这一项）
@@ -535,7 +535,7 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限，已按 413 应答且不交给业务", streamId);
                 response.setStatus(413);
                 response.setBody("Payload Too Large");
-                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
             } else if (m_router != nullptr)
             {
                 // 隧道流上跑的是 WebSocket 帧而不是正文段，因此不装流式发送口
@@ -590,7 +590,7 @@ namespace AsynGyanis::Net
                         response.reset();
                         response.setStatus(500);
                         response.setBody("Internal Server Error");
-                        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
 
                         // 成因要落日志，并与 h1/h2 同一口径：上面那条流式分支一直有日志，缺的是这条
                         // 非流式分支。响应只回 500 是对的（不把内部原因交给对端），
@@ -639,7 +639,7 @@ namespace AsynGyanis::Net
                         response.reset();
                         response.setStatus(400);
                         response.setBody("Bad WebSocket Handshake");
-                        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
                         if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
                         {
                             // 版本类失败补一条本端支持的版本（RFC 6455 §4.2.2）；状态码同 h2 留 400，
@@ -1418,7 +1418,7 @@ namespace AsynGyanis::Net
                 response.reset();
                 response.setStatus(500);
                 response.setBody("Internal Server Error");
-                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
 
                 // 流式那一路（上面）一直有日志，这条非流式的 else 缺成因记录——
                 // 与 h1/h2 补的是同一处口径差。响应仍只回 500，不外泄内部原因
@@ -1444,7 +1444,7 @@ namespace AsynGyanis::Net
             response.reset();
             response.setStatus(413);
             response.setBody("Payload Too Large");
-            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
             isRejectedByBodyOverflow = true;
         }
 
@@ -2138,7 +2138,7 @@ namespace AsynGyanis::Net
         HttpResponse response;
         response.setStatus(400);
         response.setBody(reason);
-        static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
         submitResponse(streamId, response, false);
         // 作答之后这条流上不再派发业务，也不留请求缓冲：连接层此刻只看不再解释，剩下的字节会直接还额度
         dropRequest(streamId);

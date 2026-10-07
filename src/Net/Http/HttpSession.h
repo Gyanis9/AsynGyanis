@@ -903,7 +903,7 @@ namespace AsynGyanis::Net
                         response.reset();
                         response.setStatus(500);
                         response.setBody("Internal Server Error");
-                        response.setHeader("content-type", "text/plain");
+                        response.setHeader("content-type", kPlainTextContentType);
                         if (!requestVersion.empty())
                         {
                             response.setHttpVersion(requestVersion);
@@ -1101,7 +1101,7 @@ namespace AsynGyanis::Net
 
                     response.reset();
                     response.setStatus(503);
-                    response.setHeader("content-type", "text/plain; charset=utf-8");
+                    response.setHeader("content-type", kPlainTextContentType);
                     response.setHeader("retry-after", "1");
                     response.setBody("服务繁忙，请稍后重试");
                     co_await sendResponse(response.serializeHead(), response.body());
@@ -1342,7 +1342,7 @@ namespace AsynGyanis::Net
                         response.reset();
                         response.setStatus(rejectionStatus);
                         response.setBody(upgradeFailureReason);
-                        response.setHeader("content-type", "text/plain; charset=utf-8");
+                        response.setHeader("content-type", kPlainTextContentType);
                         response.setHeader("connection", "close");
                         if (isVersionRejection)
                         {

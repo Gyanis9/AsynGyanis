@@ -63,7 +63,7 @@ namespace AsynGyanis::Net
         constexpr std::string_view kTrailerHeaderName       = "trailer";
 
         /// 自动补出的内容类型：与 HttpResponse 的兜底选择一致（不会被浏览器当脚本执行）
-        constexpr std::string_view kDefaultContentTypeValue = "text/plain";
+        constexpr std::string_view kDefaultContentTypeValue = kPlainTextContentType;
 
         /**
          * @brief 把异常的指针取成可读文本
@@ -989,7 +989,7 @@ namespace AsynGyanis::Net
             HttpResponse unsupportedResponse;
             unsupportedResponse.setStatus(501);
             unsupportedResponse.setBody("CONNECT Protocol Not Implemented");
-            static_cast<void>(unsupportedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(unsupportedResponse.setHeader("content-type", kPlainTextContentType));
             const RequestServeOutcome unsupportedOutcome = toRequestServeOutcome(co_await sendResponse(streamId, unsupportedResponse, isHeadRequest));
             if (unsupportedOutcome == RequestServeOutcome::StreamCancelled)
             {
@@ -1019,7 +1019,7 @@ namespace AsynGyanis::Net
             HttpResponse intakeResponse;
             intakeResponse.setStatus(rejectionStatus);
             intakeResponse.setBody(rejectionBodyText);
-            static_cast<void>(intakeResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(intakeResponse.setHeader("content-type", kPlainTextContentType));
             const RequestServeOutcome intakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, intakeResponse, isHeadRequest));
             if (intakeOutcome == RequestServeOutcome::StreamCancelled)
             {
@@ -1048,7 +1048,7 @@ namespace AsynGyanis::Net
             HttpResponse tooLargeResponse;
             tooLargeResponse.setStatus(413);
             tooLargeResponse.setBody("Payload Too Large");
-            static_cast<void>(tooLargeResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(tooLargeResponse.setHeader("content-type", kPlainTextContentType));
             const Http2ResponseSendStatus tooLargeSendStatus = co_await sendResponse(streamId, tooLargeResponse, isHeadRequest);
             const RequestServeOutcome     tooLargeOutcome    = toRequestServeOutcome(tooLargeSendStatus);
             if (tooLargeOutcome == RequestServeOutcome::StreamCancelled)
@@ -1076,7 +1076,7 @@ namespace AsynGyanis::Net
             HttpResponse overloadedResponse;
             overloadedResponse.setStatus(503);
             overloadedResponse.setBody("服务繁忙，请稍后重试");
-            static_cast<void>(overloadedResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(overloadedResponse.setHeader("content-type", kPlainTextContentType));
             static_cast<void>(overloadedResponse.setHeader("retry-after", "1"));
             const Http2ResponseSendStatus overloadedSendStatus = co_await sendResponse(streamId, overloadedResponse, isHeadRequest);
             const RequestServeOutcome     overloadedOutcome    = toRequestServeOutcome(overloadedSendStatus);
@@ -1202,7 +1202,7 @@ namespace AsynGyanis::Net
             response.reset();
             response.setStatus(413);
             response.setBody("Payload Too Large");
-            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
         }
 
         if (handlerException != nullptr)
@@ -1219,7 +1219,7 @@ namespace AsynGyanis::Net
                 response.reset();
                 response.setStatus(500);
                 response.setBody("Internal Server Error");
-                static_cast<void>(response.setHeader("content-type", "text/plain"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
 
                 // 成因要落日志，并与 h1 同一口径：上面那条流式分支一直有日志，缺的是这条
                 // 最常走的非流式分支。响应只回 500 是对的（不把内部原因交给对端），
@@ -1264,7 +1264,7 @@ namespace AsynGyanis::Net
                 response.reset();
                 response.setStatus(501);
                 response.setBody("WebSocket over HTTP/2 Not Implemented");
-                static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
             }
         }
 
@@ -1364,7 +1364,7 @@ namespace AsynGyanis::Net
             response.reset();
             response.setStatus(400);
             response.setBody("Bad WebSocket Handshake");
-            static_cast<void>(response.setHeader("content-type", "text/plain; charset=utf-8"));
+            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
             if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
             {
                 static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
@@ -1839,7 +1839,7 @@ namespace AsynGyanis::Net
         HttpResponse mismatchResponse;
         mismatchResponse.setStatus(400);
         mismatchResponse.setBody("Content-Length mismatch");
-        static_cast<void>(mismatchResponse.setHeader("content-type", "text/plain; charset=utf-8"));
+        static_cast<void>(mismatchResponse.setHeader("content-type", kPlainTextContentType));
 
         // HEAD 的响应不许带正文：头部带 END_STREAM 即收尾，此后流是 closed，那句 MUST 的 RST 发不出去
         // （§5.1）。对端此刻没在等正文，少一个 RST 不影响它判收齐，也不影响它看见这条 400

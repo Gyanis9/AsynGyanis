@@ -45,6 +45,13 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 纯文本响应的媒体类型，三条出站通路（h1 序列化层、h2 头块采集器、h3 头块采集器）唯一取值
+     * @details 带 charset 是必需的而不是修饰：拒绝与运维面的正文允许是中文，而 text/plain 缺省
+     *          按 RFC 2046 §4.1.3 解释成 US-ASCII，不声明就把非 ASCII 正文标错了编码
+     */
+    inline constexpr std::string_view kPlainTextContentType = "text/plain; charset=utf-8";
+
+    /**
      * @brief HTTP 响应类，用于构建并序列化 HTTP/1.1 响应消息
      *
      * @details 支持设置状态码、头部、正文，toString() 生成可直接写入 socket 的报文；

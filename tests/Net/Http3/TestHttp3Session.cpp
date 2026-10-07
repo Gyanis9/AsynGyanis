@@ -1559,8 +1559,8 @@ namespace AsynGyanis::Net
 
         const Http3ClientPeer::DecodedResponse response          = answerOneGet(session, peer, sentStreamData, "/plain");
         const auto                             contentTypeHeader = response.headers.find("content-type");
-        ASSERT_NE(contentTypeHeader, response.headers.end()) << "有正文却没设类型，h1/h2 会补 text/plain";
-        EXPECT_EQ(contentTypeHeader->second, "text/plain");
+        ASSERT_NE(contentTypeHeader, response.headers.end()) << "有正文却没设类型时，三条通道都补同一个纯文本类型";
+        EXPECT_EQ(contentTypeHeader->second, std::string(kPlainTextContentType));
     }
 
     /**
@@ -1984,6 +1984,11 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(isHandlerEntered.load()) << "越界的头部不该交给业务";
         EXPECT_EQ(peer.response().status, 431) << "头部整块越界的状态码要与 h1/h2 一致（431）";
         EXPECT_EQ(peer.response().body, "Request Header Fields Too Large");
+        // 那张表是 const 视图，取不到就不假设键一定在；判据仍是「三通道同一个媒体类型取值」
+        const auto rejectedContentType = peer.response().headers.find("content-type");
+        ASSERT_TRUE(rejectedContentType != peer.response().headers.end()) << "h3 的拒绝响应没带 content-type";
+        EXPECT_EQ(rejectedContentType->second, std::string(kPlainTextContentType))
+                << "h3 的拒绝响应与 h1/h2 不是同一个媒体类型取值";
 
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.badRequestCount, 1U) << "越界要留下一笔坏请求，否则指标上像没发生过";

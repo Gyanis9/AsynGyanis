@@ -854,6 +854,9 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kLargePayloadWaitTimeout)) << "超限头部未在时限内被判 431：上界 kLargePayloadWaitTimeout";
         EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 431"));
         EXPECT_NE(responseText.find("Request Header Fields Too Large"), std::string::npos);
+        // 媒体类型也进判据：三条通道对同一件事该发同一个取值，各自硬写一份就会漂（h1 曾漏掉 charset）
+        EXPECT_NE(responseText.find(std::string("content-type: ") + std::string(kPlainTextContentType)), std::string::npos)
+                << "h1 的拒绝响应没有用共享的那个媒体类型取值：上界 kLargePayloadWaitTimeout";
         EXPECT_NE(responseText.find("connection: close"), std::string::npos);
         EXPECT_TRUE(fixture.awaitFinished(kWaitTimeout)) << "回完 431 没有收口：上界 kWaitTimeout";
     }

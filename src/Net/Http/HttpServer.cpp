@@ -726,7 +726,7 @@ namespace AsynGyanis::Net
                 // 不把文件系统错误细节交给探测者
                 response.setStatus(404);
                 response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 return;
             }
 
@@ -962,7 +962,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(405);
                 response.setBody("Method Not Allowed");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 response.setHeader("allow", "GET, HEAD");
                 co_return;
             }
@@ -972,7 +972,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(404);
                 response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -985,7 +985,7 @@ namespace AsynGyanis::Net
                 // 400：路径本身畸形，客户端改对了才有下一次
                 response.setStatus(400);
                 response.setBody("Bad Request: Malformed Path");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
             if (verdict == PathVerdict::Forbidden)
@@ -993,7 +993,7 @@ namespace AsynGyanis::Net
                 // 403：形态合法但意图越权，明确告知是被拒绝而不是找不到
                 response.setStatus(403);
                 response.setBody("Forbidden");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1004,7 +1004,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(404);
                     response.setBody("Not Found");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     co_return;
                 }
                 renderDirectoryListing(settings->rootDirectory, request.path(), response);
@@ -1020,7 +1020,7 @@ namespace AsynGyanis::Net
                 // 归一化失败多因路径过长、字符集不支持或中途权限不足：与「不存在」同权重，回 404
                 response.setStatus(404);
                 response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1029,7 +1029,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(403);
                 response.setBody("Forbidden");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1044,7 +1044,7 @@ namespace AsynGyanis::Net
                 // 查不到元数据（不存在、权限不足或查询本身失败）：按「没有这个资源」处理
                 response.setStatus(404);
                 response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
             if (!fileBasicInfo->isRegularFile)
@@ -1059,7 +1059,7 @@ namespace AsynGyanis::Net
                 }
                 response.setStatus(404);
                 response.setBody("Not Found");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1070,7 +1070,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(413);
                 response.setBody("Payload Too Large");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1110,7 +1110,7 @@ namespace AsynGyanis::Net
             {
                 response.setStatus(412);
                 response.setBody("Precondition Failed");
-                static_cast<void>(response.setHeader("content-type", "text/plain"));
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
                 co_return;
             }
 
@@ -1160,7 +1160,7 @@ namespace AsynGyanis::Net
                 response.setStatus(416);
                 response.setHeader("content-range", "bytes */" + std::to_string(fileSize));
                 response.setBody("Range Not Satisfiable");
-                response.setHeader("content-type", "text/plain");
+                response.setHeader("content-type", kPlainTextContentType);
                 co_return;
             }
 
@@ -1181,7 +1181,7 @@ namespace AsynGyanis::Net
                     // 文件在 stat 之后被并发删除、改权限或占满句柄（TOCTOU 窗口）：按服务端故障处理，不回半个文件
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     return nullptr;
                 }
                 // 映射长度才是正文的真实字节数。文件在 stat 与映射之间被换成更大的版本时，
@@ -1190,7 +1190,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(413);
                     response.setBody("Payload Too Large");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     return nullptr;
                 }
 
@@ -1203,7 +1203,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     return nullptr;
                 }
 
@@ -1248,7 +1248,7 @@ namespace AsynGyanis::Net
                     // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     co_return;
                 }
             }
@@ -1268,7 +1268,7 @@ namespace AsynGyanis::Net
                 {
                     response.setStatus(500);
                     response.setBody("Internal Server Error");
-                    response.setHeader("content-type", "text/plain");
+                    response.setHeader("content-type", kPlainTextContentType);
                     co_return;
                 }
             }
