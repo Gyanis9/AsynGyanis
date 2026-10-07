@@ -12,7 +12,7 @@
 
 #include "Core/Tls/TlsPolicy.h"
 
-#include <openssl/err.h>
+#include <openssl/types.h>
 
 #include <memory>
 #include <mutex>

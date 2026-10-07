@@ -14,7 +14,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
 
-#include <openssl/ssl.h>
+#include <openssl/types.h>
 
 #include <memory>
 #include <string>

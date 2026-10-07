@@ -15,6 +15,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
+#include <openssl/ssl.h>
 
 #include <atomic>
 #include <cstddef>

@@ -15,7 +15,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include <openssl/evp.h>
+#include <openssl/types.h>
 
 namespace AsynGyanis::Net
 {

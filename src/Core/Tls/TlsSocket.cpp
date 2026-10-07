@@ -11,6 +11,7 @@
 #include <atomic>
 #include <limits>
 #include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <string>
 
 namespace AsynGyanis::Core

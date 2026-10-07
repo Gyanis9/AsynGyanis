@@ -34,7 +34,7 @@
 #include <string>
 #include <vector>
 
-#include <openssl/ssl.h>
+#include <openssl/types.h>
 
 namespace AsynGyanis::Net
 {

@@ -7,6 +7,7 @@
 
 #include <openssl/core_dispatch.h>
 #include <openssl/obj_mac.h>
+#include <openssl/ssl.h>
 
 #include <cstdint>
 #include <string>

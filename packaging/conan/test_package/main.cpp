@@ -6,6 +6,10 @@
 // 放在冒烟测试里只会让它因为与本任务无关的原因变红。
 
 #include "Base/Exception/StackTrace.h"
+#include "Base/Log/Formatters/DefaultFormatter.h"
+#include "Base/Log/Sinks/RollingFileSink.h"
+#include "Database/MySql/MySqlConnection.h"
+#include "Database/Redis/RedisConnection.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpResponse.h"
 #include "Platform/IO/NetworkInterface.h"
@@ -53,6 +57,13 @@ int main()
         return 1;
     }
 #endif
+
+    // 走一遍刚从安装清单里收紧的那几处的「上层头」：RollingFileSink.h / DefaultFormatter.h 背后
+    // 是 Detail/RollingPeriod.h 与 Detail/PlainTextLogLine.h，MySql/Redis 那两个公开头的兄弟
+    // （MySqlValueConversion.h、RedisReplyText.h）已经不再随包发出。仓库外的工程能把这几份头
+    // 包含干净，才说明「排除的是实现侧的头」而不是「切断了使用方要走的链」
+    volatile auto formatterProbe = &AsynGyanis::Base::DefaultFormatter::format;
+    static_cast<void>(formatterProbe);
 
     std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节\n", head.size(), compressed->size());
     return 0;

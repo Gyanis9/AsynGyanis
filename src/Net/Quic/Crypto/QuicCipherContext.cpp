@@ -1,5 +1,7 @@
 #include "Net/Quic/Crypto/QuicCipherContext.h"
 
+#include <openssl/evp.h>
+
 namespace AsynGyanis::Net
 {
     namespace

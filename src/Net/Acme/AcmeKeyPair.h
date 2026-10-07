@@ -13,7 +13,7 @@
 
 #include "Net/Acme/AcmeError.h"
 
-#include <openssl/evp.h>
+#include <openssl/types.h>
 
 #include <expected>
 #include <filesystem>

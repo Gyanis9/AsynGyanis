@@ -11,7 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include <openssl/ssl.h>
+#include <openssl/types.h>
 
 #include <optional>
 #include <string>

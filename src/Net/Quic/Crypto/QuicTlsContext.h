@@ -20,7 +20,8 @@
 
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
-#include <openssl/ssl.h>
+#include <openssl/core.h>
+#include <openssl/types.h>
 
 #include <array>
 #include <cstddef>

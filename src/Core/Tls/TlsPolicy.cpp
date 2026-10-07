@@ -2,6 +2,7 @@
 
 #include "Core/Exception/CoreException.h"
 
+#include <openssl/ssl.h>
 #include <openssl/x509_vfy.h>
 
 namespace AsynGyanis::Core

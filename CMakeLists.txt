@@ -302,9 +302,21 @@ if(ASYN_ENABLE_INSTALL)
 
     # 头文件保持 src 下的相对路径，安装后 "Core/Socket/AsyncSocket.h" 这类
     # 库内既有写法仍可直接使用（vendored 的 wepoll.h 也随此规则一起落地，供 Epoll.h 引用）
+    #
+    # 下面排除的五份是实现侧的头：判据是「没有任何一份被安装出去的公开头包含」（逐个查过），
+    # 装上它们等于把内部结构当成对外契约，也让使用方的包含链多出厂商头——
+    # MySqlValueConversion.h 会带进 <mysql/mysql.h>、RedisReplyText.h 会带进 <hiredis/hiredis.h>，
+    # 而这两个名字各自的 .h 里就写着「只允许被本驱动的 .cpp 包含」。
+    # 刻意不排除 Base/Config/Detail/ReloadRoundGate.h：ConfigManager.h 确实包含它，排掉会让
+    # 使用方包含 ConfigManager.h 就找不到文件。哪天要让那张表只归实现侧，得先把这层包含拆掉
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
             FILES_MATCHING PATTERN "*.h"
+            PATTERN "MySqlValueConversion.h" EXCLUDE
+            PATTERN "MySqlResult.h" EXCLUDE
+            PATTERN "RedisReplyText.h" EXCLUDE
+            PATTERN "PlainTextLogLine.h" EXCLUDE
+            PATTERN "RollingPeriod.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：
