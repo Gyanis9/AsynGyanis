@@ -980,6 +980,17 @@ namespace AsynGyanis::Database
         {
             std::lock_guard               lock(m_asyncMutex);
             std::vector<AcquireAwaiter *> timedOutWaiters;
+
+            // 容量先要到手，再动这张表。这段里唯一可能失败的分配就是这两次 reserve，而它们发生在
+            // 任何一条等待者被摘出链表**之前**——reserve 抛出来时表里一条没动，catch 里那句
+            // 「其余留到下一轮」才是真的。原先的顺序是先 erase_if 摘链、再逐条收集，收集那次
+            // push_back 一抛，剩下的几条已经离开 m_asyncWaiters 却没人唤醒：那条协程永远睡着，
+            // 而下一轮扫描再也看不见它（它已不在表里），借用超时的读数也不涨——现场只剩「调用方不动了」
+            const std::size_t timedOutCount = static_cast<std::size_t>(
+                    std::count_if(m_asyncWaiters.begin(), m_asyncWaiters.end(), [now](const AcquireAwaiter *const waiter) { return waiter->m_deadline <= now; }));
+            expiredWaiters.reserve(timedOutCount);
+            timedOutWaiters.reserve(timedOutCount);
+
             std::erase_if(m_asyncWaiters,
                           [&timedOutWaiters, now](AcquireAwaiter *const waiter)
                           {
@@ -988,7 +999,7 @@ namespace AsynGyanis::Database
                               {
                                   return false;
                               }
-                              timedOutWaiters.push_back(waiter);
+                              timedOutWaiters.push_back(waiter); // 容量已在上面要到手，这一步不再分配
                               return true;
                           });
             refreshAsyncWaitingCount();
@@ -1001,7 +1012,8 @@ namespace AsynGyanis::Database
                 }
 
                 // 先把这一对完整收下，再改 m_inList：顺序反过来，一次分配失败就会留下一个
-                // 「已从链表摘出、m_inList 已清、却没人唤醒」的等待器，那条协程便永远睡着
+                // 「已从链表摘出、m_inList 已清、却没人唤醒」的等待器，那条协程便永远睡着。
+                // 容量已在摘链之前要到，这一步因此不再分配
                 expiredWaiters.push_back(ExpiredWaiter{waiter->m_resumeTicket, waiter->m_completionLoop});
                 waiter->m_inList = false;
             }
