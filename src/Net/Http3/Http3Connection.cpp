@@ -493,9 +493,10 @@ namespace AsynGyanis::Net
         {
             failStream(streamId, toHttp3ErrorCode(fed.error().kind), fed.error().message);
             // 与正常出口同一条收尾，一步都不能少：这一趟喂进去的帧头字节已经消化掉却不还额度，
-            // 对端每条坏帧都吃掉一点流窗口，攒够了整条连接停在流控上；而 failStream 只标记不 erase
-            // （调用链上到处握着 StreamState 引用），回收点就是下面这一句——跳过它，这条流的记录连同
-            // 读取器那块 maximumFrameByteCount 量级的缓冲一起留到连接收口，而对端可以无限开请求流
+            // 对端每条坏帧都在**这条流**的接收窗口上啃掉一块（StreamCrediter 按流号还，不是连接级的）；
+            // 而 failStream 只标记不 erase（调用链上到处握着 StreamState 引用），回收点就是下面这一句——
+            // 跳过它，这条流的记录连同读取器那块按单帧上限长出来的缓冲一起留到连接收口，
+            // 而对端可以不断开新的请求流重复这个形状
             creditConsumedBytes(streamId, state, 0);
             pruneAbandonedStream(streamId); // 此刻已不再用 state：擦掉之后它的引用就悬了
             return;
