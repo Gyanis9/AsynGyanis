@@ -848,7 +848,8 @@ namespace AsynGyanis::Net
             /// 本条请求正文占用的全局在途额度：随待派发记录一起活着，直到服务完这一条才归还。
             /// 早一步还掉（在排队时就还）会让「排队的正文」脱离预算，多条流能把实际占用推过上限
             HttpMemoryBudget::Reservation bodyBudget;
-            Rejection                     rejection{Rejection::None}; ///< 服务阶段按它回 431/414/413/503 而不是派发
+            Rejection                     rejection{Rejection::None};                        ///< 服务阶段按它回 431/414/413/503 而不是派发
+            ExtendedConnectKind           extendedConnect{ExtendedConnectKind::NotExtended}; ///< 扩展 CONNECT 的归属：Unsupported 时服务阶段回 501
         };
 
         std::unique_ptr<Http3Connection>      m_connection;      ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空

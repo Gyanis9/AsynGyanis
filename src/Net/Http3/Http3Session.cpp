@@ -467,10 +467,11 @@ namespace AsynGyanis::Net
 
         while (!m_readyRequests.empty())
         {
-            const std::int64_t streamId  = m_readyRequests.front().streamId;
-            const Rejection    rejection = m_readyRequests.front().rejection;
-            // 有一条拒收结论，这条请求就不交给业务：它按 4xx/503 直接回掉
-            const bool  isRejectedWithoutHandler = rejection != Rejection::None;
+            const std::int64_t        streamId        = m_readyRequests.front().streamId;
+            const Rejection           rejection       = m_readyRequests.front().rejection;
+            const ExtendedConnectKind extendedConnect = m_readyRequests.front().extendedConnect;
+            // 有一条拒收结论、或扩展 CONNECT 要跑本端没实现的协议，这条请求都不交给业务
+            const bool  isRejectedWithoutHandler = rejection != Rejection::None || extendedConnect == ExtendedConnectKind::Unsupported;
             HttpRequest request                  = std::move(m_readyRequests.front().request);
             // 额度接进本次服务的作用域（而不是留在待派发记录里）：处理器 co_await 期间正文还在内存里，
             // 与 h1「应答写完后归还」、h2「记录摘掉时归还」同口径。记录被 pop 掉时才不会提前还账
@@ -494,7 +495,16 @@ namespace AsynGyanis::Net
             // 声明在分支之外：下面的统计要按「有没有半途抛异常」决定这条流式响应是否落账
             std::exception_ptr handlerException;
 
-            if (rejection == Rejection::HeaderListTooLarge || rejection == Rejection::UriTooLong)
+            if (extendedConnect == ExtendedConnectKind::Unsupported)
+            {
+                // 本端没实现那个协议，回 501 而不是把它交给路由——交下去只会按 UNKNOWN 方法回 404/405，
+                // 说的是「没这条路由」而不是「协议没实现」。计数与 h2 同一口径：既不进
+                // bad_requests_total（不是对端的错），也不进 requests_total（没交给业务）
+                LOG_ERROR_FMT("Http3Session: 流 {} 的扩展 CONNECT 要跑本端未实现的协议，已按 501 应答且不交给业务", streamId);
+                response.setStatus(501);
+                response.setBody("CONNECT Protocol Not Implemented");
+                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+            } else if (rejection == Rejection::HeaderListTooLarge || rejection == Rejection::UriTooLong)
             {
                 // 与 h1/h2 同一套状态码：头部越限 431、请求目标越限 414，都不交给业务
                 const int   rejectionStatus = rejection == Rejection::HeaderListTooLarge ? 431 : 414;
@@ -1265,8 +1275,9 @@ namespace AsynGyanis::Net
         m_readyRequests.push_back(ReadyRequest{.streamId = streamId,
                                                .request  = std::move(request),
                                                // 额度跟着正文走：这份 body 直到派发完处理器、写出响应才离开内存
-                                               .bodyBudget = std::move(incoming.bodyBudget),
-                                               .rejection  = incoming.rejection});
+                                               .bodyBudget      = std::move(incoming.bodyBudget),
+                                               .rejection       = incoming.rejection,
+                                               .extendedConnect = incoming.extendedConnect});
         if (isWebSocketTunnelRequest)
         {
             m_pendingTunnelStreams.insert(streamId);
@@ -1301,10 +1312,13 @@ namespace AsynGyanis::Net
 
         // 扩展 CONNECT（RFC 9220）要在**头收齐时**就派发：隧道建立之后对端才会在同一
         // 条流上发 WebSocket 帧，等 end_stream 就等于永远等不到（对方不会结束这条流）
-        if (methodText == "CONNECT" && extendedConnect == ExtendedConnectKind::WebSocket)
+        if (methodText == "CONNECT" && extendedConnect != ExtendedConnectKind::NotExtended)
         {
+            // 任何一档扩展 CONNECT 都在头收齐这一刻派发：本端不实现那一档也得把 501 交出去，
+            // 而对端在隧道建好之前不会 END_STREAM——等下去就是「在监听却不应答」那一格
             enqueueRequest(streamId);
-            LOG_DEBUG_FMT("Http3Session: 流 {} 是扩展 CONNECT（websocket），已在头部收齐时派发", streamId);
+            LOG_DEBUG_FMT("Http3Session: 流 {} 是扩展 CONNECT（{}），已在头部收齐时派发", streamId,
+                          extendedConnect == ExtendedConnectKind::WebSocket ? "websocket" : "本端未实现的协议");
             return;
         }
 

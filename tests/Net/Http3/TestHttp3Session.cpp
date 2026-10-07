@@ -297,6 +297,20 @@ namespace AsynGyanis::Net
                 return drainPendingWrites();
             }
 
+            /**
+             * @brief 提交一条跑「本端没实现的协议」的扩展 CONNECT：头不带 END_STREAM，也没有正文
+             * @details 这正是最坏的一格——对端认为隧道要起来了，于是在等本端应答，而本端既不建隧道
+             *          也不会收到收尾。501 必须在「头收齐」这一刻发出去，等 END_STREAM 等于永远等
+             * @param path 路径（:path）
+             * @param authority 权威主机（:authority）
+             * @return std::vector<CapturedStreamData> 待发字节
+             */
+            std::vector<CapturedStreamData> submitUnsupportedTunnel(const std::string &path, const std::string &authority)
+            {
+                queueRequestHead("CONNECT", path, authority, "webrtc", {}, kFirstRequestStreamId, false);
+                return drainPendingWrites();
+            }
+
             /// 扩展 CONNECT 的握手必填两项（RFC 9220 §3）的示例值：RFC 6455 §1.3 的 key（解码后恰 16 字节）与版本 13
             static constexpr std::string_view kExampleWebSocketClientKey = "dGhlIHNhbXBsZSBub25jZQ==";
 
@@ -1989,8 +2003,7 @@ namespace AsynGyanis::Net
         // 那张表是 const 视图，取不到就不假设键一定在；判据仍是「三通道同一个媒体类型取值」
         const auto rejectedContentType = peer.response().headers.find("content-type");
         ASSERT_TRUE(rejectedContentType != peer.response().headers.end()) << "h3 的拒绝响应没带 content-type";
-        EXPECT_EQ(rejectedContentType->second, std::string(kPlainTextContentType))
-                << "h3 的拒绝响应与 h1/h2 不是同一个媒体类型取值";
+        EXPECT_EQ(rejectedContentType->second, std::string(kPlainTextContentType)) << "h3 的拒绝响应与 h1/h2 不是同一个媒体类型取值";
 
         const HttpServerStats snapshot = metrics->snapshot();
         EXPECT_EQ(snapshot.badRequestCount, 1U) << "越界要留下一笔坏请求，否则指标上像没发生过";
@@ -3377,6 +3390,68 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：扩展 CONNECT 要跑本端没实现的协议时按 501 收口，且不等对端收尾
+     * @details h3 此前零处 501：「头收齐即派发」只认 websocket，于是 `:protocol=webrtc` 既派发不出去、
+     *          也没有拒答出口，最后只能等读时限（对端在隧道建立前根本不会 END_STREAM），或者落进路由
+     *          被 UNKNOWN 方法回成 404/405——那句话说的是「没这条路由」，不是「协议没实现」。
+     *          与 h2 的 Answers501ForUnsupportedConnectProtocol 同一格、同一优先级（协议没实现先说）。
+     * @note 两笔计数都不落：不是对端的错（不进 bad_requests_total），也没交给业务（不进 requests_total）。
+     */
+    TEST(Http3Session, Answers501ForUnsupportedExtendedConnectProtocol)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        std::atomic<bool> isHandlerEntered{false};
+        Router            router;
+        router.get("/chat",
+                   [&isHandlerEntered](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       isHandlerEntered.store(true);
+                       response.setStatus(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::vector<CapturedStreamData> requestChunks = peer.submitUnsupportedTunnel("/chat", "example.com");
+        ASSERT_FALSE(requestChunks.empty()) << "扩展 CONNECT 请求没编出来";
+        // 只有头、没有 END_STREAM：派发要发生在头收齐这一刻，否则这条流一直挂着
+        ASSERT_FALSE(requestChunks.back().isEndStream) << "对照前提没了：请求头那趟就收尾的话，本用例测不到「不等收尾」那一半";
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_FALSE(isHandlerEntered.load()) << "本端没实现的协议不该被当成一条普通请求交给业务";
+        EXPECT_EQ(peer.response().status, 501) << "扩展 CONNECT 的协议没实现要回 501，不是 404/405（与 h2 同一出口）";
+        EXPECT_EQ(peer.response().body, "CONNECT Protocol Not Implemented");
+        const auto rejectedContentType = peer.response().headers.find("content-type");
+        ASSERT_TRUE(rejectedContentType != peer.response().headers.end()) << "h3 的拒绝响应没带 content-type";
+        EXPECT_EQ(rejectedContentType->second, std::string(kPlainTextContentType)) << "h3 的拒绝响应与 h1/h2 不是同一个媒体类型取值";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.badRequestCount, 0U) << "协议没实现不是对端的错，不进坏请求账（h2 同口径）";
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "没交给业务的收口不进请求数：三条协议同解";
+    }
+
+    /**
      * @brief h3 上跑 WebSocket：扩展 CONNECT（RFC 9220）建隧道，帧在流上原样收发
      * @details 隧道建立之后这条流上跑的就是 WebSocket 帧本身（不是 h3 正文），因此这里手工造一个带
      *          掩码的文本帧喂进去，断言业务把同样的负载回显回来——回显帧由服务端发出，不带掩码，
@@ -3888,7 +3963,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 正文越界时立刻回 413，不等对端收尾；回完还请对端别再发正文
      * @details 此前 h3 的 413 排在「请求收齐」之后：客户端一边分批 dribble 一边等，响应永远不来，
-     *          这条流就这么挂着。h2 的判据是 isReadyToServe 里带上 isBodyTooLarge，这里对齐它，
+     *          这条流就这么挂着。h2 的判据是 isReadyToServe 里带上 hasRejection()，这里对齐它，
      *          并在响应完整交给传输层之后请对端停发（h2 那边同样是发完才 abortStream）
      */
     TEST(Http3Session, AnswersPayloadTooLargeBeforeTheBodyEndsAndAsksPeerToStop)
@@ -3955,9 +4030,10 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        const auto metrics = std::make_shared<HttpMetricsCollector>();
-        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
 
         const auto limits   = std::make_shared<HttpServerLimits>();
         limits->readTimeout = std::chrono::milliseconds{1};
@@ -4089,9 +4165,10 @@ namespace AsynGyanis::Net
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
         std::vector<AbortedStream>      abortedStreams;
-        const auto metrics = std::make_shared<HttpMetricsCollector>();
-        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
-                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
 
         const auto limits    = std::make_shared<HttpServerLimits>();
         limits->writeTimeout = std::chrono::milliseconds{1};
