@@ -92,7 +92,7 @@
 - **原生格式库** — JSON 与 YAML 直接使用 [nlohmann_json](https://github.com/nlohmann/json) 与 [yaml-cpp](https://github.com/jbeder/yaml-cpp) 的接口（DOM、Pointer/Patch、多文档、事件），不再自研解析与值模型
 - **配置管理** — YAML/JSON 加载、目录递归装载、热重载（inotify / ReadDirectoryChangesW）
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
-- **平台隔离** — 所有 OS 调用集中在 `Platform`，上层不出现平台宏与 Win32/POSIX API
+- **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`），它们与循环生命周期同生死，再抽一层只多一次间接
 
 ## 架构
 
@@ -104,11 +104,11 @@
 
 | 模块 | 库 | 职责 |
 |------|----|------|
-| `Platform` | `libPlatform.a` | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
-| `Base` | `libBase.a` | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
-| `Core` | `libCore.a` | 事件循环、协程运行时、socket、TLS、多进程编排 |
-| `Net` | `libNet.a` | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件、ACME |
-| `Database` | `libDatabase.a` | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
+| `Platform` | `AsynGyanis::Platform` | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
+| `Base` | `AsynGyanis::Base` | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
+| `Core` | `AsynGyanis::Core` | 事件循环、协程运行时、socket、TLS、多进程编排 |
+| `Net` | `AsynGyanis::Net` | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件、ACME |
+| `Database` | `AsynGyanis::Database` | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
 
 ### 图解索引
 
@@ -627,7 +627,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 - Windows 上共享形态把 DLL 与可执行体一起收在 `build/bin/`（Ninja 生成器不替你做这一步，缺了就是
   启动即 `0xC0000135`）；静态形态的落点一字未动。
 
-### Platform — 平台底层（`libPlatform.a`）
+### Platform — 平台底层（目标 `AsynGyanis::Platform`）
 
 | 分类 | 内容 |
 |------|------|
@@ -635,7 +635,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | 文件系统 | 文件读写、原子写、目录遍历、文件监听（inotify / ReadDirectoryChangesW） |
 | 系统 | 错误码与可读原因、进程与目录、环境变量、本地时间、UTF-8 ↔ UTF-16 与代码页 |
 
-### Base — 基础设施（`libBase.a`）
+### Base — 基础设施（目标 `AsynGyanis::Base`）
 
 | 分类 | 内容 |
 |------|------|
@@ -644,7 +644,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | 配置 | `ConfigManager`（多文件/目录装载、热重载、严格类型化取值）、文件监听；`ConfigValue` 即 nlohmann_json 文档 |
 | 格式 | JSON 与 YAML 使用 nlohmann_json / yaml-cpp 的原生接口，由 `Base` 传递依赖（见「外部依赖」） |
 
-### Core — 异步运行时（`libCore.a`）
+### Core — 异步运行时（目标 `AsynGyanis::Core`）
 
 一轮事件循环的内部步骤，以及协程/线程池/外派执行器之间的归属契约：
 
@@ -660,10 +660,10 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Tls/` | `TlsContext`、`TlsSocket` |
 | `Process/` | `WorkerSupervisor`（多进程 worker 的启停与看护） |
 | `Exception/` | Core 侧异常类型 |
-| `Crypto/` | 摘要与 HMAC（`Digest`/`Hmac`：ACME JWS 与云解析签名用的那层 OpenSSL 胶水） |
+| `Crypto/` | 摘要与 HMAC（`Digest`：`hmacSha1`/`hmacSha256` 等，ACME JWS 与云解析签名用的那层 OpenSSL 胶水；没有独立的 `Hmac` 头文件） |
 | `Metrics/` | `ProcessMetricsRegistry`（进程级读数的登记处：RAII 把手 + 同名并法，由 Net 的 `/metrics` 渲染点按完整名字导出） |
 
-### Net — 网络应用层（`libNet.a`）
+### Net — 网络应用层（目标 `AsynGyanis::Net`）
 
 自研 QUIC 传输层的相位、包号空间与恢复路径：
 
@@ -675,14 +675,14 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 |--------|------|
 | `Tcp/` | `TcpAcceptor`（`SO_REUSEPORT` 监听）、`TcpStream`（`readExact` / `readUntil` / `writeAll`）、`TcpServer` |
 | `Udp/` | `UdpServer`（一条端口面对任意来源：逐条交付报文、按来源回包、主动下发） |
-| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`Http2Session` / `HttpsServer`（TLS 一侧不另设会话类：`HttpsServer` 统一建 `Http2Session`，握手完成后按 ALPN 结果跑 h2 循环或同一份 HTTP/1.1 事务循环）、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
+| `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsServer`（TLS 一侧不另设会话类：`HttpsServer` 统一建 `Http2/` 里的 `Http2Session`，握手完成后按 ALPN 结果跑 h2 循环或同一份 HTTP/1.1 事务循环）、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
 | `Http2/` | `Http2Session` / `Http2Connection`、`Http2ClientConnection`（出站一侧的帧与 HPACK）、`Http2Frame`、`Hpack`（含 Huffman） |
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
 | `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复与 NewReno）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
 | `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
 | `Acme/` | `AcmeKeyPair`（账户与域名密钥、JWK 与 RFC 7638 指纹、RS256/ES256 的 JWS 签名、CSR）、`AcmeClient`（RFC 8555 状态机：目录 / 账户 / 下单 / 自证 / 定稿 / 取证）、`AcmeHttp01ChallengeStore`（令牌暂存与路由注册）、`AcmeCertificateManager`（到期判定、原子落盘、常驻续期循环与装回服务的回调） |
 
-### Database — 数据访问（`libDatabase.a`）
+### Database — 数据访问（目标 `AsynGyanis::Database`）
 
 一次 ORM 查询从表达式树到行对象的链路（含语句缓存命中与未命中两条分支）：
 
@@ -707,17 +707,20 @@ AsynGyanis/
 ├── conanfile.py            # 依赖清单由 conandata.yml 驱动
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
+├── cmake/                  # 包配置模板（`AsynGyanisConfig.cmake.in`）、编译期特性头模板、库形态与导出宏装配
+├── assets/diagrams/        # 架构与流程图的候选 JSON、可探索 HTML 与预览 PNG（每条断言带 路径:行号 证据）
 ├── samples/                # 按模块拆开的自检示例 + reference_server（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
 ├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2/ACME）
 ├── src/
-│   ├── Platform/           # 平台底层（OS 调用的唯一出处）：IO / FileSystem / System
+│   ├── Platform/           # 平台底层（进程 / 文件监视 / 文本编码 / 地址）：IO / FileSystem / System
 │   ├── Base/               # Coding / Config / Exception / Log
 │   ├── Core/               # Coroutine / Crypto / EventLoop / Exception / Metrics / Process / Socket / Tls
 │   ├── Net/                # Acme / Http / Http2 / Http3 / Proxy / Quic / Tcp / Tracing / Udp / WebSocket
 │   └── Database/           # Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
-└── tests/                  # 与 src 逐级对齐的 GoogleTest 测试
+└── tests/                  # 与 src 逐级对齐的 GoogleTest 测试；另有 TestSupport/（共用的循环与夹具）、
+                            # Tools/（进程外探针）、Net/Fuzz/（模糊目标）、Core/fixtures/（真机脚本）
 ```
 
 ## 外部依赖
@@ -771,16 +774,16 @@ AsynGyanis/
 
 ## 测试与验证
 
-一笔提交要过的闸门：本地串行四道 → CI 十六条作业并行铺开（Linux 十四条 + Windows 二条）→ 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
+一笔提交要过的闸门：本地串行四道 → CI 十五条作业并行铺开（Linux 十二条 + Windows 三条，构建那一档按三分片展开成十七个作业实例）→ 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
 
 ![一笔提交要过的验证闸门](assets/diagrams/png/verification-gate-workflow-light.png)
 
 > 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-10-04 实测，第 24–30 批收尾之后）：**Windows Debug（含 ASan）3966 条全绿、零告警**（91 条按 SKIP 记账——这一轮两侧都没注真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过）；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3971 条全绿、零告警、零 sanitizer 命中**；示例矩阵 12 个程序全部 PASS；两份进程外裁判在这批里复跑过（curl/nghttp2 那套 h2 对手探针全过，aioquic 那套 h3 跨实现 11 条场景全过——h3 那份逐场景打印 `content-length` 与线上字节数，正好是下面第一条判据的外部对照）。裁判的先决条件是「服务端真的活着」：这一轮第一次跑就把 reference_server 漏在容器里没起，于是 17 项全读成 000——假失败的形状是全线红而不是某一项红，跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。这一批有两把透镜。一把是「**同一句声明在写侧与收侧、出站与入站是不是各写了一半**」：HTTP 三条通道都把调用方自设的 `content-length` 原样发出，而正文按真实字节数上线——按声明切包的对端会把多出的字节当成同一条 keep-alive 连接上下一条响应的开头；Cookie 名字里的 `__Host-` / `__Secure-` 授权声明两头都没判，带 `Domain` 的 `__Host-` 会被罐子按域 Cookie 收下再发往兄弟子域；出站客户端早就替调用方解响应正文，入站请求正文的 `Content-Encoding` 却一行都没解（`inflateHttpBody` 全仓只有一个消费方）。三处都补成「一份判据、多个消费点」。另一把是「**文档点名的标识符在树上找不找得着**」：把 CHANGELOG 与 README 里反引号包着的代码形状标识符逐个拿去 src/samples/tests/scripts 语料里找，命不中的再逐条回代码定性——抓到三条点错名的配置键/指标/方法（`header_value_length`、`total_request_count`、`noteStreamResetByPeer`）与模块地图里一个根本不存在的 `HttpsSession`；同一支探针打在 `@see` 的指向上是零。版本号三处一致（2.5.0）。
+- 当前规模（2026-10-07 实测，第 36–38 批之后；下面这段的两把透镜与外部裁判记录属于第 24–30 批那一轮）：**Windows Debug（含 ASan）3992 条全绿、零告警**（92 条按 SKIP 记账——这一轮两侧都没注真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过）；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3997 条全绿、零告警、零 sanitizer 命中**；示例矩阵 12 个程序全部 PASS（清单 13 个，core_upgrade 只在 POSIX 侧构建）；两份进程外裁判在这批里复跑过（curl/nghttp2 那套 h2 对手探针全过，aioquic 那套 h3 跨实现 11 条场景全过——h3 那份逐场景打印 `content-length` 与线上字节数，正好是下面第一条判据的外部对照）。裁判的先决条件是「服务端真的活着」：这一轮第一次跑就把 reference_server 漏在容器里没起，于是 17 项全读成 000——假失败的形状是全线红而不是某一项红，跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。这一批有两把透镜。一把是「**同一句声明在写侧与收侧、出站与入站是不是各写了一半**」：HTTP 三条通道都把调用方自设的 `content-length` 原样发出，而正文按真实字节数上线——按声明切包的对端会把多出的字节当成同一条 keep-alive 连接上下一条响应的开头；Cookie 名字里的 `__Host-` / `__Secure-` 授权声明两头都没判，带 `Domain` 的 `__Host-` 会被罐子按域 Cookie 收下再发往兄弟子域；出站客户端早就替调用方解响应正文，入站请求正文的 `Content-Encoding` 却一行都没解（`inflateHttpBody` 全仓只有一个消费方）。三处都补成「一份判据、多个消费点」。另一把是「**文档点名的标识符在树上找不找得着**」：把 CHANGELOG 与 README 里反引号包着的代码形状标识符逐个拿去 src/samples/tests/scripts 语料里找，命不中的再逐条回代码定性——抓到三条点错名的配置键/指标/方法（`header_value_length`、`total_request_count`、`noteStreamResetByPeer`）与模块地图里一个根本不存在的 `HttpsSession`；同一支探针打在 `@see` 的指向上是零。版本号三处一致（2.5.0）。
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
-- 真机套件：MySQL 38 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- 真机套件：MySQL 42 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
   `develop` 不消耗分钟数——要看某个提交就 `gh workflow run linux-ci.yml --ref develop`（按**文件名**触发，
   作业名已是中文；`--ref` 只认分支/标签，直接给提交号会报 `No ref found`）。两条构建作业还带
