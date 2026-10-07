@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -42,7 +42,7 @@
       "label": "Task 协程",
       "sublabel": "惰性启动",
       "sources": [
-        { "path": "src/Core/Coroutine/Task.h", "line": 256, "label": "initial_suspend" }
+        { "path": "src/Core/Coroutine/Task.h", "line": 261, "label": "initial_suspend" }
       ]
     },
     {
@@ -62,7 +62,7 @@
       "sublabel": "run 的一轮",
       "sources": [
         { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 150, "end_line": 161, "label": "先排空再取事件" },
-        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 129, "label": "停止粘性不清标志" }
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 130, "label": "停止粘性不清标志" }
       ]
     },
     {
@@ -93,7 +93,7 @@
       "sublabel": "本地 + 全局队列",
       "sources": [
         { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 137, "label": "先本地" },
-        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 157, "label": "全局按批 ≤256" },
+        { "path": "src/Core/Coroutine/Scheduler.h", "line": 63, "label": "全局按批 ≤256" },
         { "path": "src/Core/Coroutine/Scheduler.h", "line": 27, "end_line": 31, "label": "无工作窃取" }
       ]
     },

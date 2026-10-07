@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -65,7 +65,7 @@
       "label": "TlsSocket",
       "sublabel": "握手与 ALPN",
       "sources": [
-        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 121, "label": "SSL_connect/accept" },
+        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 175, "label": "SSL_connect/accept" },
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 368, "label": "读 ALPN 结果" },
         { "path": "src/Core/Tls/TlsContext.cpp", "line": 285, "label": "挂 ALPN 回调" }
       ]
@@ -107,8 +107,8 @@
       "label": "Router",
       "sublabel": "中间件管道",
       "sources": [
-        { "path": "src/Net/Http/Router.cpp", "line": 404, "label": "route" },
-        { "path": "src/Net/Http/Router.cpp", "line": 546, "label": "pipeline.run" },
+        { "path": "src/Net/Http/Router.cpp", "line": 409, "label": "route" },
+        { "path": "src/Net/Http/Router.cpp", "line": 565, "label": "pipeline.run" },
         { "path": "src/Net/Http/Middleware.h", "line": 139, "label": "invoke 逐层进入" }
       ]
     },

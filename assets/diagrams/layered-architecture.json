@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -131,7 +131,7 @@
       "pos": [320, 300],
       "size": [410, 60],
       "sources": [
-        { "path": "src/Core/CMakeLists.txt", "line": 20, "end_line": 22, "label": "STATIC" },
+        { "path": "src/Core/CMakeLists.txt", "line": 21, "end_line": 23, "label": "STATIC" },
         { "path": "src/Core/CMakeLists.txt", "line": 24, "end_line": 29, "label": "PUBLIC Base/Platform/OpenSSL" }
       ]
     },
@@ -257,7 +257,7 @@
       "dot": "emerald",
       "title": "交付形态",
       "items": [
-        "五个模块都只出静态库：没有 BUILD_SHARED_LIBS 开关，公开头无符号可见性标注",
+        "静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（CMakeLists.txt:186、cmake/AsynGyanisLibrary.cmake:13），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（windows-ci.yml:112）",
         "只支持 Linux 与 Windows：其他系统在配置阶段 FATAL_ERROR，事件后端没有 kqueue",
         "命名空间到模块名为止（AsynGyanis::Core 等），子目录不引入新命名空间，include 从 src/ 起算"
       ]
@@ -284,7 +284,7 @@
       "dot": "rose",
       "title": "依赖可见性口径",
       "items": [
-        "Net 只 PUBLIC 链 Core：Platform 与 Base 由 Core 传递而来（src/Net/CMakeLists.txt:45-48）",
+        "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:48、:62）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
         "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:40-47）",
         "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
         "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",

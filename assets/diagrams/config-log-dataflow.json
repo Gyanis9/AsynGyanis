@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -108,7 +108,7 @@
       "stage": 1,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1592, "label": "handleFileChange" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1597, "label": "handleFileChange" },
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1600, "label": "Rescan 先于扩展名过滤" },
         { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 34, "label": "不漏轮" }
       ]

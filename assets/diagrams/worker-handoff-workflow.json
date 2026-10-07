@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -70,7 +70,7 @@
       "label": "起进程",
       "sublabel": "fork+exec / CreateProcessW",
       "sources": [
-        { "path": "src/Platform/System/Process.cpp", "line": 275, "label": "fork" },
+        { "path": "src/Platform/System/Process.cpp", "line": 283, "label": "fork" },
         { "path": "src/Platform/System/Process.cpp", "line": 288, "label": "PR_SET_PDEATHSIG" },
         { "path": "src/Platform/System/Process.cpp", "line": 242, "label": "Windows 侧" }
       ]
@@ -230,7 +230,7 @@
       "label": "换代收口",
       "sublabel": "先 drain 后关",
       "sources": [
-        { "path": "samples/core_upgrade/main.cpp", "line": 372, "label": "全程探测零失败" }
+        { "path": "samples/Core/Upgrade.cpp", "line": 372, "label": "全程探测零失败" }
       ]
     }
   ],
@@ -277,14 +277,14 @@
         "存活小于 crashLoopWindow（默认 3000ms）算快退，快退才加计数；跑稳一轮后清零",
         "补位前先退避 500ms，首轮崩溃不退避；计满 5 次置 isGivenUp",
         "全部 worker 都 isGivenUp 时 run() 返回 false，这与「按请求收口」的 true 是两种结局",
-        "停机顺序固定：SIGTERM → 等 shutdownTimeout → 强杀 → 等强杀真正落地"
+        "停机顺序固定：POSIX 走 SIGTERM → 等 shutdownTimeout → 强杀 → 等落地；Windows 发进程组 CTRL_BREAK（WorkerSupervisor.cpp:348、Process.cpp:461，前提是 CREATE_NEW_PROCESS_GROUP:266），Ctrl+C 不再把 worker 硬杀"
       ]
     },
     {
       "dot": "violet",
       "title": "验收与相邻的两件事",
       "items": [
-        "端到端判据：真起两个进程问一遍回话（TestWorkerSupervisor.cpp:296 答 handoff-ok），加上 samples/core_upgrade 的全程探测零失败",
+        "端到端判据：真起两个进程问一遍回话（TestWorkerSupervisor.cpp:365 答 handoff-ok），加上 samples/Core/Upgrade.cpp:372 的全程探测零失败",
         "WebSocket 一条连接一个写者，peer 只在会话协程帧与单循环线程上存活；收尾顺序是 markClosed → 唤醒投递方 → 关套接字 → 等业务任务",
         "内存是两套账：接收窗口固定 2 KiB 起、读满才翻倍到 8 KiB 上限，不随报文增长；HttpMemoryBudget 只管在途正文且 0 表示不限——公网暴露前要显式 setMemoryBudget + setMaxConnections"
       ]

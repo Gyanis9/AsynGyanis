@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -166,7 +166,7 @@
       "lane": "fault",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 681, "end_line": 698, "label": "invalid/expired/revoked" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 768, "label": "invalid/expired/revoked" },
         { "path": "src/Net/Acme/AcmeError.h", "line": 34, "label": "ChallengeNotAnswered" }
       ]
     },
@@ -214,7 +214,7 @@
       "sources": [
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 386, "label": "原子落盘" },
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 402, "label": "reloadHandler" },
-        { "path": "src/Net/Quic/QuicServer.cpp", "line": 210, "label": "锁内换 SSL_CTX" }
+        { "path": "src/Net/Quic/QuicServer.cpp", "line": 238, "label": "锁内换 SSL_CTX" }
       ]
     }
   ],
@@ -243,9 +243,9 @@
       "dot": "cyan",
       "title": "节拍与阈值",
       "items": [
-        "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:121、.cpp:282）",
+        "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:145 的 renewBeforeExpiry、.cpp:419 落成的 graceWindow）",
         "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者同时充当轮询总时限与单次 HTTP 超时",
-        "实际唤醒取 max(now+12h, 上次失败秒+1)；配置项 minimumRetryInterval 目前没有任何消费点，别当已生效",
+        "实际唤醒取 max(now+12h, 上次失败秒+1)；minimumRetryInterval 就落在这一步（AcmeCertificateManager.cpp:229），机构的 Retry-After 与本端下限谁大听谁",
         "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:112）"
       ]
     },
@@ -266,7 +266,7 @@
       "items": [
         "令牌路由只注册 GET、只答已挂出的令牌，未挂或已撤一律 404（AcmeHttp01ChallengeStore.cpp:52-59、71）",
         "PresentedToken 由析构负责摘除，每条出口（含失败）都执行，不会把令牌留在公网路由上",
-        "stopRenewalLoop 只在下一个检查点生效：既不打断在跑的一轮，也打不断那次睡眠（.cpp:147、438）",
+        "停放的睡眠按 kStopNoticeSlice 切片，叫停最迟一段内生效（.cpp:627-633）；切片只改醒来频次，正在进行的签发尝试照旧跑完这一轮",
         "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（.cpp:430）"
       ]
     },

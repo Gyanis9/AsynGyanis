@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "aff77f4fb520e6bd16f606687e69da49922c82d1"
+      "revision": "45d81fb66ff4faae299865d886bc3d20918cafba"
     },
     "views": [
       {
@@ -108,7 +108,7 @@
       "type": "backend",
       "label": "示例矩阵",
       "sublabel": "run_samples.py",
-      "tag": "CI 不跑它",
+      "tag": "两档 CI 都跑",
       "sources": [
         { "path": "scripts/run_samples.py", "line": 182, "end_line": 194, "label": "缺产出也计失败" },
         { "path": "scripts/run_samples.py", "line": 219, "label": "有失败即 return 1" }
@@ -125,7 +125,7 @@
       "tag": "develop 是空档",
       "sources": [
         { "path": ".github/SECURITY.md", "line": 68, "label": "别把作业存在当跑过" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 32, "label": "分片与 fail-fast" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 33, "label": "分片与 fail-fast" }
       ]
     },
     {
@@ -139,7 +139,7 @@
       "tag": "-k 0 收全告警",
       "sources": [
         { "path": ".github/workflows/linux-ci.yml", "line": 102, "label": "分片构建" },
-        { "path": ".github/workflows/windows-ci.yml", "line": 74, "label": "Windows 构建" }
+        { "path": ".github/workflows/windows-ci.yml", "line": 76, "label": "Windows 构建" }
       ]
     },
     {
@@ -230,10 +230,10 @@
       "dot": "rose",
       "title": "Linux CI 的作业清单",
       "items": [
-        "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:32-48）",
+        "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:33-48）",
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
-        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 跑 300 秒且 -error_exitcode=1",
+        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:702 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
         "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连，io-uring-compile 编 + 跑"
       ]
     },
@@ -243,7 +243,7 @@
       "items": [
         "四条工作流的作业之间零 needs：全部平铺并行，串行只发生在作业内部（checkout → 配置 → 构建 → ctest）",
         "develop 与 PR 不消耗分钟数：要看某个提交就 gh workflow run \"Linux CI\" --ref develop；三条流还 paths-ignore 掉纯文档改动",
-        "run_samples.py 在任何 yml 里零引用，它是本地与容器里的人工闸；示例每条 check 都要能红",
+        "示例矩阵两档 CI 都跑（linux-ci.yml:874 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
         "外部裁判要另起进程或容器：Autobahn 在另一网络命名空间经 host-gateway 回宿主，服务端须绑 0.0.0.0 另开端口"
       ]
     },
