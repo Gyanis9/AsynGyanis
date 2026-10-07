@@ -255,6 +255,9 @@ namespace AsynGyanis::Base
         /**
          * @brief 注册全局 schema，后续加载/热重载提交时自动校验并记录错误日志。
          * @details 传入空 schema 可取消注册；注册时立即对当前快照校验一次并记日志。
+         * @note 本框架自己**不**注册 schema：server / tracing / acme 三段各有 reader 做未知键拒绝
+         *       与取值诊断，全局 schema 是给使用方声明自己那批键用的——框架再登记一份同址的键清单
+         *       就是第二份必须同步的副本，而不是第二道闸。
          * @param schema 约束条目列表。
          * @return ConfigValidationResult 当前快照的校验结果。
          */
