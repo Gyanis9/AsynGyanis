@@ -395,6 +395,15 @@ namespace AsynGyanis::Net
             return {};
         }
 
+        // :protocol 只定义给扩展 CONNECT：h2 侧按 RFC 8441 §4 早就把「非 CONNECT 带 :protocol」判成
+        // 畸形，这边此前收下却没人按它建隧道。收下还有第二重代价——会话按「带了 :protocol 就不回
+        // 100-continue」判，于是一条普通 GET 会因为一个无人解释的伪头少掉一次过渡响应
+        if (!m_protocolText.empty() && !isConnectRequest)
+        {
+            return std::unexpected(makeHeaderError(Http3HeaderErrorKind::ProhibitedPseudoForMethod,
+                                                   ":protocol 出现在 " + m_methodText + " 请求里：RFC 9220 只把它定义给 CONNECT（扩展 CONNECT），请改用 CONNECT 或去掉该伪头"));
+        }
+
         if (m_schemeText.empty())
         {
             return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, "请求缺少 :scheme（RFC 9114 §4.3.1）"));

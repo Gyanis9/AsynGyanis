@@ -298,6 +298,15 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
             feedRequest(protocolDuplicated,
                         {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"}, {":protocol", "websocket"}, {":protocol", "subprotocol"}}),
             Http3HeaderErrorKind::DuplicatePseudoHeader, "两个 :protocol");
+
+    // 权限开了也不放宽另一头：:protocol 只跟着 CONNECT，GET 带着它就是畸形（与 h2 侧 RFC 8441 §4 同一判据）
+    Http3HeaderValidator wrongMethod(Http3MessageKind::Request, true);
+    expectRejected(feedRequest(wrongMethod, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":protocol", "websocket"}}),
+                   Http3HeaderErrorKind::ProhibitedPseudoForMethod, "非 CONNECT 带 :protocol");
+    // 对照：同一个字段表把方法换成 CONNECT 就应当放行，否则上面那条在「永远拒 :protocol」的实现下也绿
+    Http3HeaderValidator rightMethod(Http3MessageKind::Request, true);
+    const auto allowed = feedRequest(rightMethod, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":protocol", "websocket"}});
+    EXPECT_TRUE(allowed.has_value()) << "对照组被挡下：" << allowed.error().message;
 }
 
 TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
