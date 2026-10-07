@@ -31,7 +31,7 @@
     "src/Net/Http2/Http2Session.cpp": 393,
     "src/Net/Http3/Http3ClientConnection.cpp": 111,
     "src/Net/Http3/Http3HeaderValidation.cpp": 168,
-    "src/Net/Http3/Http3Session.cpp": 286,
+    "src/Net/Http3/Http3Session.cpp": 283,
     "src/Net/Http3/Qpack.cpp": 211,
     "src/Net/Quic/Codec/QuicFrame.cpp": 371,
     "src/Net/Quic/Codec/QuicTransportParameters.cpp": 121,
