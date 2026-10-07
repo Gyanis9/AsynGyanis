@@ -24,6 +24,7 @@
 #include "Net/Http/HttpStreamBody.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Error.h"
+#include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include <chrono>
@@ -398,13 +399,14 @@ namespace AsynGyanis::Net
         /// 正在接收的一条请求
         struct IncomingRequest
         {
-            HttpRequest request;              ///< 逐步填好的请求（头部在收头时写入）
-            std::string method;               ///< :method 原文
-            std::string path;                 ///< :path 原文
-            std::string authority;            ///< :authority 原文
-            std::string protocol;             ///< :protocol 原文（RFC 9220 扩展 CONNECT 用；普通请求为空）
-            std::string body;                 ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
-            bool        hasHostHeader{false}; ///< 对端是否显式给了 host 头
+            HttpRequest request;   ///< 逐步填好的请求（头部在收头时写入）
+            std::string method;    ///< :method 原文
+            std::string path;      ///< :path 原文
+            std::string authority; ///< :authority 原文
+            /// :protocol 的归属三档（判定住在 classifyExtendedConnect，与 h2 同一出处）
+            ExtendedConnectKind extendedConnect{ExtendedConnectKind::NotExtended};
+            std::string         body;                 ///< 正文（非流式路径：整段收齐后才派发；流式路径不从这里走）
+            bool                hasHostHeader{false}; ///< 对端是否显式给了 host 头
 
             /// 这一条流被本端拒收的是哪一种：至多一种，先记下的那条赢
             Rejection rejection{Rejection::None};

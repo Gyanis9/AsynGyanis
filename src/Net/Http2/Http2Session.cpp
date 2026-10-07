@@ -49,9 +49,6 @@ namespace AsynGyanis::Net
         /// 无效描述符的取值：与 Core::AsyncSocket::close() 之后的 fileDescriptor() 一致
         constexpr int kInvalidSocketDescriptor = -1;
 
-        /// RFC 8441 里 WebSocket 隧道用的 :protocol 取值（扩展 CONNECT 的协议名 token）
-        constexpr std::string_view kWebSocketProtocolName = "websocket";
-
         /// 扩展 CONNECT 的升级应答：状态码与应答头名（RFC 8441 §5 用 2xx 而不是 101）
         constexpr std::uint32_t    kWebSocketAcceptedStatusCode = 200U;
         constexpr std::string_view kWebSocketAcceptHeaderName   = "sec-websocket-accept";
@@ -468,9 +465,8 @@ namespace AsynGyanis::Net
             // 头块带 END_STREAM 的请求没有正文，当场就是「收齐」状态
             pending.isRemoteEndStream = !http2Request.hasBody;
             // RFC 8441 的扩展 CONNECT：隧道请求的后续处理与普通请求完全不同（200 + 流变隧道）
-            pending.isExtendedConnect = !http2Request.protocol.empty();
-            pending.isWebSocketTunnel = http2Request.protocol == kWebSocketProtocolName;
-            if (pending.isExtendedConnect)
+            pending.extendedConnect = classifyExtendedConnect(http2Request.protocol);
+            if (pending.extendedConnect != ExtendedConnectKind::NotExtended)
             {
                 // 扩展 CONNECT 没有「请求正文」这一回事：它一收齐就该交给路由，不能等对端的 END_STREAM——
                 // 对端在隧道收尾前根本不会发（它发来的是 WebSocket 帧，不是请求正文）
@@ -494,7 +490,7 @@ namespace AsynGyanis::Net
             // 流式路由：头部收齐即可派发，正文边收边交给业务，不必等 END_STREAM（与 h1 侧同一判据）。
             // 扩展 CONNECT 排除在外——它的「正文」是隧道里的帧，走隧道那条完全不同的路径
             pending.isStreamingBody =
-                    !isIntakeRejected && !pending.isExtendedConnect &&
+                    !isIntakeRejected && pending.extendedConnect == ExtendedConnectKind::NotExtended &&
                     m_router.hasStreamingRoute(pending.request.method(), pending.request.uri(), pending.request.firstHeaderValueView("host").value_or(std::string_view{}));
             if (pending.isStreamingBody)
             {
@@ -509,8 +505,8 @@ namespace AsynGyanis::Net
             // 扩展 CONNECT 排除在外（与 h3 侧 `protocolText.empty()` 那条同一判据）：它的 `hasBody`
             // 只是「还没 END_STREAM」，那条流上没有正文要发，回一张 1xx 就等于在 200 之前塞进一段
             // 对端没要的过渡响应
-            const bool isContinueRequested =
-                    !isIntakeRejected && !pending.isExtendedConnect && http2Request.hasBody && isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
+            const bool isContinueRequested = !isIntakeRejected && pending.extendedConnect == ExtendedConnectKind::NotExtended && http2Request.hasBody &&
+                                             isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
 
             // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
@@ -737,7 +733,7 @@ namespace AsynGyanis::Net
             }
 
             // 隧道由当前驱动者就地跑（见 serveWebSocketTunnels）：一条连接的读通路只容得下一个驱动者
-            if (pending.isWebSocketTunnel)
+            if (pending.extendedConnect == ExtendedConnectKind::WebSocket)
             {
                 ++it;
                 continue;
@@ -855,7 +851,7 @@ namespace AsynGyanis::Net
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it)
         {
             PendingRequest &pending = it->second;
-            if (!pending.isWebSocketTunnel || pending.isServeClaimed)
+            if (pending.extendedConnect != ExtendedConnectKind::WebSocket || pending.isServeClaimed)
             {
                 continue;
             }
@@ -985,7 +981,7 @@ namespace AsynGyanis::Net
 
         // RFC 8441 §4 的协议协商：本端只认 :protocol=websocket。其它取值属于「扩展 CONNECT 说的协议本端
         // 没实现」，明确回 501——不能把它当成一条未知方法的普通请求交给路由，那会回 404/405，语义不对
-        if (pending.isExtendedConnect && !pending.isWebSocketTunnel)
+        if (pending.extendedConnect == ExtendedConnectKind::Unsupported)
         {
             LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 :protocol 本端未实现（只支持 websocket），已回 501 并保持连接可用。"
                           "request-id {}，路径 {}",
@@ -1250,7 +1246,7 @@ namespace AsynGyanis::Net
         // 随后这条流变成隧道；以 101 形态登记升级的请求在 h2 上没有对应机制，仍按 501 明确拒绝
         if (response.isWebSocketUpgradeRequested())
         {
-            if (pending.isWebSocketTunnel && !isStreamingStarted)
+            if (pending.extendedConnect == ExtendedConnectKind::WebSocket && !isStreamingStarted)
             {
                 co_return co_await serveWebSocketTunnel(streamId, pending);
             }
@@ -1604,7 +1600,7 @@ namespace AsynGyanis::Net
 
             // 第二条隧道不在本片范围：一条连接上同时跑两条隧道要嵌套驱动循环，
             // 明确回 503 而不是把它晾着
-            if (pending.isWebSocketTunnel)
+            if (pending.extendedConnect == ExtendedConnectKind::WebSocket)
             {
                 std::string errorText;
                 // 这条 503 手上没有 HttpResponse，走的是裸字段表出口，因此 RFC 9110 §10.1.4 要求 5xx
@@ -1639,7 +1635,7 @@ namespace AsynGyanis::Net
         // HttpMethod::UNKNOWN，路由器按既有规则回 404/405，绝不静默降级成某条业务路由。
         // 例外是 RFC 8441 的扩展 CONNECT：它是「这条 :path 上的 WebSocket 隧道」，语义与 GET 同路，
         // 因此按 GET 交给路由——于是同一个 router.get(路径, 处理器) 同时服务 h1 的 101 升级与 h2 的隧道
-        if (http2Request.protocol == kWebSocketProtocolName)
+        if (classifyExtendedConnect(http2Request.protocol) == ExtendedConnectKind::WebSocket)
         {
             request.setMethod(HttpMethod::GET);
         } else

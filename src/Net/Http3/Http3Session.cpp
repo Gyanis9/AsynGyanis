@@ -777,8 +777,9 @@ namespace AsynGyanis::Net
         }
         if (name == ":protocol")
         {
-            // RFC 9220 的扩展 CONNECT 靠它说明这条流要跑什么协议（websocket）
-            incoming.protocol = std::move(value);
+            // RFC 9220 的扩展 CONNECT 靠它说明这条流要跑什么协议（websocket）：当场分成三档存下，
+            // 原文不再留着——除了这档判定它没有第二个读点
+            incoming.extendedConnect = classifyExtendedConnect(value);
             return;
         }
         if (name == ":scheme")
@@ -1237,7 +1238,7 @@ namespace AsynGyanis::Net
         // RFC 9220 的扩展 CONNECT：`:method = CONNECT` 且 `:protocol = websocket`。它与 h1 的 Upgrade
         // 同义，因此按 GET 交给路由——同一个 router.get(路径, 处理器) 既能服务 h1 的 101 升级，
         // 也能服务 h3 上的隧道（与 h2 侧同一口径）
-        const bool isWebSocketTunnelRequest = incoming.method == "CONNECT" && incoming.protocol == "websocket";
+        const bool isWebSocketTunnelRequest = incoming.method == "CONNECT" && incoming.extendedConnect == ExtendedConnectKind::WebSocket;
 
         HttpRequest request = std::move(incoming.request);
         // 方法原文经 methodFromString 映射：未收录的方法落到 UNKNOWN，路由器按既有规则回 404/405，
@@ -1282,25 +1283,25 @@ namespace AsynGyanis::Net
         }
 
         // 判定要用的东西先取出来：判定通过后这份记录就要从 m_incomingRequests 里搬走
-        IncomingRequest  &incoming      = found->second;
-        const std::string methodText    = incoming.method;
-        const std::string pathText      = incoming.path;
-        const std::string authorityText = incoming.authority;
-        const std::string protocolText  = incoming.protocol;
-        const bool        hasHostHeader = incoming.hasHostHeader;
-        const HttpMethod  method        = HttpRequest::methodFromString(methodText);
-        const std::string uri           = pathText.empty() ? std::string("/") : pathText;
+        IncomingRequest          &incoming        = found->second;
+        const std::string         methodText      = incoming.method;
+        const std::string         pathText        = incoming.path;
+        const std::string         authorityText   = incoming.authority;
+        const ExtendedConnectKind extendedConnect = incoming.extendedConnect;
+        const bool                hasHostHeader   = incoming.hasHostHeader;
+        const HttpMethod          method          = HttpRequest::methodFromString(methodText);
+        const std::string         uri             = pathText.empty() ? std::string("/") : pathText;
 
         // 头收齐、正文还在路上的这一刻回 100（与 h2 同一时机）。扩展 CONNECT 排除在外：
         // 隧道里没有「请求正文」这回事，对端随后发来的是 WebSocket 帧
-        if (protocolText.empty())
+        if (extendedConnect == ExtendedConnectKind::NotExtended)
         {
             answerExpectContinueIfRequested(streamId, incoming);
         }
 
         // 扩展 CONNECT（RFC 9220）要在**头收齐时**就派发：隧道建立之后对端才会在同一
         // 条流上发 WebSocket 帧，等 end_stream 就等于永远等不到（对方不会结束这条流）
-        if (methodText == "CONNECT" && protocolText == "websocket")
+        if (methodText == "CONNECT" && extendedConnect == ExtendedConnectKind::WebSocket)
         {
             enqueueRequest(streamId);
             LOG_DEBUG_FMT("Http3Session: 流 {} 是扩展 CONNECT（websocket），已在头部收齐时派发", streamId);

@@ -236,9 +236,9 @@ namespace AsynGyanis::Net
             Rejection     rejection{Rejection::None}; ///< 这一条流被本端拒收的是哪一种：至多一种，先记下的那条赢
             std::size_t   headerFieldTotal{0};        ///< 头部那一场记了几条（伪头计入），尾字段到达后与它累加判条数上限
             std::size_t   headerNetByteTotal{0};      ///< 头部那一场名与值的净字节，尾字段到达后与它累加判头块字节上限
-            bool          isExtendedConnect{false};   ///< 该请求带了 :protocol（RFC 8441 的扩展 CONNECT）：没有请求正文，收齐即可路由
-            bool          isWebSocketTunnel{false};   ///< 其中 :protocol=websocket 的那一类：应答是 200 且这条流随后成为隧道；其余协议值回 501
-            bool          isStreamingBody{false};     ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
+            /// :protocol 的归属三档（普通请求 / websocket 隧道 / 本端没实现的协议），判定见 ExtendedConnectKind
+            ExtendedConnectKind extendedConnect{ExtendedConnectKind::NotExtended};
+            bool                isStreamingBody{false}; ///< 命中流式路由：头部收齐即派发，正文经 request.bodyStream() 边收边读，不必等 END_STREAM
 
             /**
              * @brief 这条流是否在 intake 阶段就被判「本端不收」，只欠一个收口响应

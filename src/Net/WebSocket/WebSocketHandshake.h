@@ -113,6 +113,36 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API bool validateWebSocketTunnelVersion(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr);
 
     /**
+     * @brief 扩展 CONNECT 的 :protocol 取值本端认不认（RFC 8441 §4 / RFC 9220 §3）
+     * @details 三档而不是两面旗：除了「普通请求」与「websocket 隧道」，还有一整类是对端要跑一个
+     *          本端没实现的协议，它既不是普通请求也不能当隧道——按 501 收口才说得清「协议没实现」，
+     *          交给路由只会回 404/405。判定住在这一处，h2 与 h3 不再各比各的字符串字面量。
+     */
+    enum class ExtendedConnectKind
+    {
+        NotExtended, ///< :protocol 缺席：普通请求
+        WebSocket,   ///< :protocol=websocket：应答 200 后这条流成为隧道
+        Unsupported, ///< :protocol 是别的协议名：本端没实现，回 501
+    };
+
+    /// 扩展 CONNECT 唯一支持的协议名（:protocol 的取值，按 RFC 8441 的 token 逐字比较）
+    inline constexpr std::string_view kWebSocketProtocolName = "websocket";
+
+    /**
+     * @brief 把 :protocol 原文分成上面三档
+     * @param protocolValue :protocol 伪头原文，缺席时传空
+     * @return ExtendedConnectKind 这条请求属于哪一档
+     */
+    [[nodiscard]] constexpr ExtendedConnectKind classifyExtendedConnect(const std::string_view protocolValue) noexcept
+    {
+        if (protocolValue.empty())
+        {
+            return ExtendedConnectKind::NotExtended;
+        }
+        return protocolValue == kWebSocketProtocolName ? ExtendedConnectKind::WebSocket : ExtendedConnectKind::Unsupported;
+    }
+
+    /**
      * @brief 构建 101 Switching Protocols 的完整应答报文
      *
      * @details 报文依次是状态行、Upgrade、Connection、Sec-WebSocket-Accept 与结束空行，
