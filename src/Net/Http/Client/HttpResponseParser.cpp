@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
                 if (takeLine(data, line))
                 {
                     // takeLine 交出的视图本来就不含 CRLF，直接按行体比上限
-                    return maximumLineByteCount != 0 && line.size() > maximumLineByteCount ? LineVerdict::TooLong : LineVerdict::Delivered;
+                    return exceedsBudget(line.size(), maximumLineByteCount) ? LineVerdict::TooLong : LineVerdict::Delivered;
                 }
             }
             // 跨段 CRLF：缓冲末字节是 '\r'、本段首字节是 '\n' 时，终止符正好被切开，
@@ -61,14 +61,14 @@ namespace AsynGyanis::Net
                 line            = buffer;
                 isLineHandedOut = true;
                 data.remove_prefix(1);
-                return maximumLineByteCount != 0 && line.size() > maximumLineByteCount ? LineVerdict::TooLong : LineVerdict::Delivered;
+                return exceedsBudget(line.size(), maximumLineByteCount) ? LineVerdict::TooLong : LineVerdict::Delivered;
             }
             // 拼入已有缓冲
             const auto pos = data.find("\r\n");
             if (pos == std::string_view::npos)
             {
                 // 本段没有行尾：按上界放行，末尾那枚 CR 可能正是下一段行尾的前半
-                if (maximumLineByteCount != 0 && lineBodyByteCountWithoutTerminator(buffer.size(), data.size(), !data.empty() && data.back() == '\r') > maximumLineByteCount)
+                if (exceedsBudget(lineBodyByteCountWithoutTerminator(buffer.size(), data.size(), !data.empty() && data.back() == '\r'), maximumLineByteCount))
                 {
                     return LineVerdict::TooLong;
                 }
@@ -77,7 +77,7 @@ namespace AsynGyanis::Net
                 return LineVerdict::NeedMoreBytes;
             }
             // 行尾落在本段里：data 直到 pos 之前都是行体，pos 起那两字节是 CRLF
-            if (maximumLineByteCount != 0 && buffer.size() + pos > maximumLineByteCount)
+            if (exceedsBudget(buffer.size() + pos, maximumLineByteCount))
             {
                 return LineVerdict::TooLong;
             }
@@ -335,7 +335,7 @@ namespace AsynGyanis::Net
                         {
                             // 声明的长度本身就是对端给的：先按上限判一次，免得为一条永远收不完的
                             // 响应白分配缓冲（chunked 与读到关闭两条路只能边收边判，见下面两处）
-                            if (m_maximumBodySize != 0 && declaredLength > m_maximumBodySize)
+                            if (exceedsBudget(declaredLength, m_maximumBodySize))
                             {
                                 m_isBodyLimitHit = true;
                                 m_stage          = Stage::Failed;
@@ -385,8 +385,8 @@ namespace AsynGyanis::Net
                     m_headerBlockByteCount += field->first.size() + field->second.size();
                     // 条数与净字节都按**整条报文**累计：trailer 段的字段一并计入，否则「把字段拆进
                     // trailer 段」就是这两道闸的绕过口——与入站侧（h1 解析器、h2/h3 会话）同一条口径
-                    if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() + m_result.trailers.size() >= kDefaultMaximumHeaderCount) ||
-                        (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
+                    if (exceedsBudget(m_result.headers.size() + m_result.trailers.size() + 1, kDefaultMaximumHeaderCount) ||
+                        (exceedsBudget(m_headerBlockByteCount, kDefaultMaximumHeaderBlockByteCount)))
                     {
                         // 与正文上限同源：头部也是「对端说了算」的字节数，没有闸门就是让对方
                         // 决定本端分配多少内存
@@ -485,8 +485,8 @@ namespace AsynGyanis::Net
                                 break;
                             }
                             m_headerBlockByteCount += trailerField->first.size() + trailerField->second.size();
-                            if ((kDefaultMaximumHeaderCount != 0 && m_result.headers.size() + m_result.trailers.size() >= kDefaultMaximumHeaderCount) ||
-                                (kDefaultMaximumHeaderBlockByteCount != 0 && m_headerBlockByteCount > kDefaultMaximumHeaderBlockByteCount))
+                            if (exceedsBudget(m_result.headers.size() + m_result.trailers.size() + 1, kDefaultMaximumHeaderCount) ||
+                                (exceedsBudget(m_headerBlockByteCount, kDefaultMaximumHeaderBlockByteCount)))
                             {
                                 // 与头部同一道账：整条报文的字段条数与净字节都算在内，越限就判这条流不对
                                 m_stage = Stage::Failed;

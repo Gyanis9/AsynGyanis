@@ -26,6 +26,21 @@ namespace AsynGyanis::Net
     inline constexpr std::size_t kRequestLineFixedOverheadBytes = 32 + 16;
 
     /**
+     * @brief 按「0 表示关闭该项保护」的口径判定一个长度或条数是否越界
+     * @details 三条通道与出站解析器共用这一份判据：`!= 0 &&` 那一半在谁手里写，0 的语义就归谁解释，
+     *          同一把尺因此会在某一档上被当成「不允许任何长度」。比较排在增量之后，调用方传进来的
+     *          必须是**收下这一项之后**的值。
+     * @param value 实测值（字节数或条数），已含本次要收下的一项
+     * @param limit 该项上限，0 表示不设上限
+     * @return true 表示越界
+     */
+    [[nodiscard]] constexpr bool exceedsBudget(const std::size_t value, const std::size_t limit) noexcept
+    {
+        // 0 是「关掉这道闸」而不是「不允许任何长度」：上限非 0 时才比较
+        return limit != 0 && value > limit;
+    }
+
+    /**
      * @brief HTTP 解析器的资源上限配置。
      *
      * @details 与 HttpServerLimits 分工不同：连接级限额管时间与请求条数（空闲 / 读写超时、单连接
@@ -79,6 +94,24 @@ namespace AsynGyanis::Net
         {
             // 0 表示关闭该项保护：URI 不限时整行也不能只剩那几十字节余量，而是同样不设上限
             return maximumUriLength == 0 ? std::size_t{0} : maximumUriLength + kRequestLineFixedOverheadBytes;
+        }
+
+        /**
+         * @brief 推导单条头部行的行体长度上限
+         * @details 行体 = 名 + ": " + 值，那 4 字节分隔是协议给的固定开销、不是可配置项；上限完全
+         *          跟着两条长度项走，放宽其一时这道闸门自动跟随。出站响应解析器的单行默认值也取自
+         *          这里，两条方向共用一把尺（量的都是行体，不含 CRLF）。
+         * @return std::size_t 行体上限，单位字节；0 表示不设上限
+         */
+        [[nodiscard]] constexpr std::size_t headerLineLengthLimit() const noexcept
+        {
+            // 名与值任一项关闭保护（0）时整行也不设上限：否则推导值会先把被放宽的那一项卡住，
+            // 与「0 表示关闭该项保护」的承诺相反
+            if (maximumHeaderFieldNameLength == 0 || maximumHeaderFieldValueLength == 0)
+            {
+                return 0;
+            }
+            return maximumHeaderFieldNameLength + maximumHeaderFieldValueLength + 4;
         }
     };
 

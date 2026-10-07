@@ -16,18 +16,6 @@ namespace AsynGyanis::Net
     namespace
     {
         /**
-         * @brief 按「0 表示关闭该项保护」的口径判定一个长度或条数是否越界
-         * @param value 实测值（字节数或条数）
-         * @param limit 该项上限，0 表示不设上限
-         * @return true 表示越界
-         */
-        [[nodiscard]] constexpr bool exceedsLimit(const std::size_t value, const std::size_t limit) noexcept
-        {
-            // 0 是「关掉这道闸」而不是「不允许任何长度」：上限非 0 时才比较
-            return limit != 0 && value > limit;
-        }
-
-        /**
          * @brief 判断字符是否可以出现在请求目标里
          * @details 取值范围与 h2/h3 共用一份判据（`HttpHeaderRules.h` 的 `isRequestTargetCharacter`）：
          *          空格、控制字符与 DEL 不收，裸 `#`（片段不属于请求目标）与 `\`（不在 pchar 里）不收，
@@ -90,7 +78,7 @@ namespace AsynGyanis::Net
                 // 上限按**累计已收**（不止当前缓冲）判定：流式消费方每轮都会把缓冲取走，
                 // 只算 m_body.size() 等于把上限交给「调用方取走的快慢」，狂发数据照样能撑爆内存。
                 // 声明 1 字节然后狂发同样防住——判据是实收总量，不是头部声明
-                if (exceedsLimit(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
+                if (exceedsBudget(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
                 {
                     failBodyTooLarge(std::format("请求体超出上限 {} 字节", m_limits.maximumBodySize));
                     break;
@@ -115,7 +103,7 @@ namespace AsynGyanis::Net
 
                 // 上限按「解码后」的正文字节数判定，且用**累计已收**（理由同上：流式消费方
                 // 会把缓冲取走，只算当前缓冲的话上限形同虚设）；编码后的体积不能用来代替它
-                if (exceedsLimit(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
+                if (exceedsBudget(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
                 {
                     failBodyTooLarge(std::format("分块解码后的请求体超出上限 {} 字节", m_limits.maximumBodySize));
                     break;
@@ -415,7 +403,7 @@ namespace AsynGyanis::Net
         {
             // 整行上限由 URI 上限推出（URI + 方法名与版本串的固定余量）：放宽 URI 时这道闸门自动跟随
             const std::size_t requestLineLimit = m_limits.requestLineLengthLimit();
-            if (exceedsLimit(length, requestLineLimit))
+            if (exceedsBudget(length, requestLineLimit))
             {
                 failUriTooLarge(std::format("请求行超出上限 {} 字节", requestLineLimit));
                 return false;
@@ -426,7 +414,7 @@ namespace AsynGyanis::Net
         if (m_stage == Stage::ChunkSize)
         {
             // 块大小行属于正文的帧结构而不是头部，超限按正文过大判定（上层回 413）
-            if (exceedsLimit(length, m_limits.maximumChunkSizeLineLength))
+            if (exceedsBudget(length, m_limits.maximumChunkSizeLineLength))
             {
                 failBodyTooLarge(std::format("分块块大小行超出上限 {} 字节", m_limits.maximumChunkSizeLineLength));
                 return false;
@@ -434,26 +422,13 @@ namespace AsynGyanis::Net
             return true;
         }
 
-        const std::size_t headerLineLimit = headerLineLengthLimit();
-        if (exceedsLimit(length, headerLineLimit))
+        const std::size_t headerLineLimit = m_limits.headerLineLengthLimit();
+        if (exceedsBudget(length, headerLineLimit))
         {
             failHeaderTooLarge(std::format("头部行超出上限 {} 字节", headerLineLimit));
             return false;
         }
         return true;
-    }
-
-    std::size_t HttpParser::headerLineLengthLimit() const noexcept
-    {
-        // 名与值任一项关闭保护（0）时整行也不设上限：否则推导值会先把被放宽的那一项卡住，
-        // 与「0 表示关闭该项保护」的承诺相反
-        if (m_limits.maximumHeaderFieldNameLength == 0 || m_limits.maximumHeaderFieldValueLength == 0)
-        {
-            return 0;
-        }
-
-        // ": " 与 CRLF 共 4 字节：名与值之外这一行的固定开销，不是可配置项
-        return m_limits.maximumHeaderFieldNameLength + m_limits.maximumHeaderFieldValueLength + 4;
     }
 
     bool HttpParser::parseRequestLine(const std::string_view line)
@@ -488,7 +463,7 @@ namespace AsynGyanis::Net
             failMalformed("HTTP 报文解析失败：请求目标不能为空");
             return false;
         }
-        if (exceedsLimit(targetText.size(), m_limits.maximumUriLength))
+        if (exceedsBudget(targetText.size(), m_limits.maximumUriLength))
         {
             // 请求目标超限有自己的类别：RFC 9110 §15.5.15 为它留了 414，而 431 说的是头部太大——
             // 客户端据此判断该缩短 URL 还是该减少头部
@@ -561,14 +536,14 @@ namespace AsynGyanis::Net
             failMalformed(std::format("HTTP 报文解析失败：{}名只能由 token 字符组成（冒号前不得有空白）", fieldContextLabel));
             return false;
         }
-        if (exceedsLimit(fieldName.size(), m_limits.maximumHeaderFieldNameLength))
+        if (exceedsBudget(fieldName.size(), m_limits.maximumHeaderFieldNameLength))
         {
             failHeaderTooLarge(std::format("{}名超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderFieldNameLength));
             return false;
         }
 
         const std::string_view fieldValue = trimOptionalWhitespace(line.substr(colonPosition + 1));
-        if (exceedsLimit(fieldValue.size(), m_limits.maximumHeaderFieldValueLength))
+        if (exceedsBudget(fieldValue.size(), m_limits.maximumHeaderFieldValueLength))
         {
             failHeaderTooLarge(std::format("{}值超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderFieldValueLength));
             return false;
@@ -581,12 +556,12 @@ namespace AsynGyanis::Net
 
         // 头部块总长（名与值的净字节）与条数是两道独立的闸：单条名、单条值、条数各自合规，
         // 架不住上百条头部叠出来的总量。两道判定都在落库之前，拒绝路径不留半成品
-        if (exceedsLimit(m_headerBlockLength + fieldName.size() + fieldValue.size(), m_limits.maximumHeaderBlockLength))
+        if (exceedsBudget(m_headerBlockLength + fieldName.size() + fieldValue.size(), m_limits.maximumHeaderBlockLength))
         {
             failHeaderTooLarge(std::format("{}总长超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderBlockLength));
             return false;
         }
-        if (m_limits.maximumHeaderCount != 0 && m_headerFieldCount >= m_limits.maximumHeaderCount)
+        if (exceedsBudget(m_headerFieldCount + 1, m_limits.maximumHeaderCount))
         {
             failHeaderTooLarge(std::format("{}条数超出上限 {} 条", fieldContextLabel, m_limits.maximumHeaderCount));
             return false;
@@ -704,7 +679,7 @@ namespace AsynGyanis::Net
             }
             chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digitValue);
         }
-        if (exceedsLimit(chunkSize, m_limits.maximumBodySize))
+        if (exceedsBudget(chunkSize, m_limits.maximumBodySize))
         {
             failBodyTooLarge(std::format("分块单块大小超出上限 {} 字节", m_limits.maximumBodySize));
             return false;
@@ -786,7 +761,7 @@ namespace AsynGyanis::Net
 
         // 声明的长度本身就超限：现在判错，而不是等正文真的收满上限才判——
         // 那样等于按对端的声明替它预留内存，声明一个天文数字就能把缓冲区耗光
-        if (exceedsLimit(parsedLength, m_limits.maximumBodySize))
+        if (exceedsBudget(parsedLength, m_limits.maximumBodySize))
         {
             failBodyTooLarge(std::format("请求体声明长度 {} 字节超出上限 {} 字节", parsedLength, m_limits.maximumBodySize));
             return false;

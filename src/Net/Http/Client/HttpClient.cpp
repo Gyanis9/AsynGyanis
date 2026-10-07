@@ -645,16 +645,9 @@ namespace AsynGyanis::Net
             {
                 return false;
             }
-            constexpr std::string_view kTokenSeparatorsAllowed = "!#$%&'*+-.^_`|~";
-            for (const char character: text)
-            {
-                const bool isAlnum = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9');
-                if (!isAlnum && kTokenSeparatorsAllowed.find(character) == std::string_view::npos)
-                {
-                    return false;
-                }
-            }
-            return true;
+            // 字符表交给 HttpHeaderRules 那一份（RFC 9110 §5.6.2 的 tchar 定义只写一处）；
+            // 空串仍然当场拒：那边把「没有反例」算成 true，而方法名与头部名都不允许为空
+            return containsOnlyTokenCharacters(text);
         }
 
         /**

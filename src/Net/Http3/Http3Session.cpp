@@ -766,7 +766,7 @@ namespace AsynGyanis::Net
         }
         if (name == ":path")
         {
-            if (m_parserLimits.maximumUriLength != 0 && value.size() > m_parserLimits.maximumUriLength)
+            if (exceedsBudget(value.size(), m_parserLimits.maximumUriLength))
             {
                 incoming.isUriTooLong = true;
             }
@@ -801,10 +801,10 @@ namespace AsynGyanis::Net
     {
         ++incoming.headerFieldCount;
         incoming.headerBlockByteCount += name.size() + value.size();
-        if ((m_parserLimits.maximumHeaderCount != 0 && incoming.headerFieldCount > m_parserLimits.maximumHeaderCount) ||
-            (m_parserLimits.maximumHeaderFieldNameLength != 0 && name.size() > m_parserLimits.maximumHeaderFieldNameLength) ||
-            (m_parserLimits.maximumHeaderFieldValueLength != 0 && value.size() > m_parserLimits.maximumHeaderFieldValueLength) ||
-            (m_parserLimits.maximumHeaderBlockLength != 0 && incoming.headerBlockByteCount > m_parserLimits.maximumHeaderBlockLength))
+        if ((exceedsBudget(incoming.headerFieldCount, m_parserLimits.maximumHeaderCount)) ||
+            (exceedsBudget(name.size(), m_parserLimits.maximumHeaderFieldNameLength)) ||
+            (exceedsBudget(value.size(), m_parserLimits.maximumHeaderFieldValueLength)) ||
+            (exceedsBudget(incoming.headerBlockByteCount, m_parserLimits.maximumHeaderBlockLength)))
         {
             incoming.isHeaderLimitExceeded = true;
         }
@@ -866,7 +866,7 @@ namespace AsynGyanis::Net
 
             // 体量越界（与 h1/h2 同口径）：此后到达的字节一律丢弃，响应在服务阶段按 413 发出。
             // 判在收的过程中而不是收齐之后——等 END_STREAM 再判，内存已经占住了
-            if (m_parserLimits.maximumBodySize != 0 && streamBody.totalReceivedByteCount() + data.size() > m_parserLimits.maximumBodySize)
+            if (exceedsBudget(streamBody.totalReceivedByteCount() + data.size(), m_parserLimits.maximumBodySize))
             {
                 if (!streamBody.isBodyTooLarge())
                 {
@@ -911,7 +911,7 @@ namespace AsynGyanis::Net
 
         // 体量越界：只标记与记日志，不再缓冲；此后到达的 DATA 一律丢弃，但窗口照还。
         // 响应在服务阶段统一按 413 发出（与 h1/h2 同一口径）
-        if (!incoming.isBodyTooLarge && m_parserLimits.maximumBodySize != 0 && incoming.body.size() + data.size() > m_parserLimits.maximumBodySize)
+        if (!incoming.isBodyTooLarge && exceedsBudget(incoming.body.size() + data.size(), m_parserLimits.maximumBodySize))
         {
             LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超过上限 {} 字节，已停止缓冲并按 413 应答", streamId, m_parserLimits.maximumBodySize);
             incoming.isBodyTooLarge = true;

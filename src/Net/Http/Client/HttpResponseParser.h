@@ -9,6 +9,7 @@
 #pragma once
 
 #include "AsynGyanisExport.h"
+#include "Net/Http/HttpParserLimits.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -49,18 +50,18 @@ namespace AsynGyanis::Net
          * @details 客户端同样需要这道闸：chunked 与「读到连接关闭」两种定界方式下，
          *          正文长度由**对端**说了算，没有上限就是让对端决定本进程分配多少内存
          */
-        static constexpr std::size_t kDefaultMaximumBodySize = 8ull * 1024 * 1024;
+        static constexpr std::size_t kDefaultMaximumBodySize = HttpParserLimits{}.maximumBodySize;
 
         /// 头部条数上限：与服务端请求解析器同档，防对端用无限头部把客户端顶爆
-        static constexpr std::size_t kDefaultMaximumHeaderCount = 100;
+        static constexpr std::size_t kDefaultMaximumHeaderCount = HttpParserLimits{}.maximumHeaderCount;
 
         /// 头部块净字节上限（名 + 值，不含分隔与 CRLF）：与服务端同档
-        static constexpr std::size_t kDefaultMaximumHeaderBlockByteCount = 64ull * 1024;
+        static constexpr std::size_t kDefaultMaximumHeaderBlockByteCount = HttpParserLimits{}.maximumHeaderBlockLength;
 
         /// 单行上限（状态行、头部行、分块大小行共用）：一行永不含 CRLF 的字节流会让行缓冲
         /// 无界增长；闸门跟着「缓冲真要增长」那一步下判，量的是行体（不含 CRLF），与入站解析器
         /// 同一把尺（见 HttpParser::takeLine 与 HttpHeaderRules.h）
-        static constexpr std::size_t kDefaultMaximumLineByteCount = 8ull * 1024;
+        static constexpr std::size_t kDefaultMaximumLineByteCount = HttpParserLimits{}.headerLineLengthLimit();
 
         /**
          * @brief 构造解析器
@@ -203,7 +204,7 @@ namespace AsynGyanis::Net
         {
             // 按**累计收到**的字节判，不按「还留在缓冲里多少」判：接收口可以逐段把字节取走
             // （takeBodyBytes），留着的字节会一直很小，用缓冲大小当上限等于把闸门拆了
-            return m_maximumBodySize != 0 && m_receivedBodyByteCount > m_maximumBodySize;
+            return exceedsBudget(m_receivedBodyByteCount, m_maximumBodySize);
         }
     };
 } // namespace AsynGyanis::Net

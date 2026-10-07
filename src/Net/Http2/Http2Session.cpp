@@ -552,9 +552,9 @@ namespace AsynGyanis::Net
                 trailerNetByteCount += trailerField.name.size() + trailerField.value.size();
             }
             const bool isFieldCountExceeded =
-                    m_parserLimits.maximumHeaderCount != 0 && pending.headerFieldTotal + receivedData.trailerFields.size() > m_parserLimits.maximumHeaderCount;
+                    exceedsBudget(pending.headerFieldTotal + receivedData.trailerFields.size(), m_parserLimits.maximumHeaderCount);
             const bool isBlockByteExceeded =
-                    m_parserLimits.maximumHeaderBlockLength != 0 && pending.headerNetByteTotal + trailerNetByteCount > m_parserLimits.maximumHeaderBlockLength;
+                    exceedsBudget(pending.headerNetByteTotal + trailerNetByteCount, m_parserLimits.maximumHeaderBlockLength);
             if (isFieldCountExceeded || isBlockByteExceeded)
             {
                 pending.isHeaderListTooLarge = true;
@@ -587,7 +587,7 @@ namespace AsynGyanis::Net
             if (pending.isStreamingBody)
             {
                 HttpStreamBody &streamBody = pending.streamBody;
-                if (m_parserLimits.maximumBodySize != 0 && streamBody.totalReceivedByteCount() + receivedData.data.size() > m_parserLimits.maximumBodySize)
+                if (exceedsBudget(streamBody.totalReceivedByteCount() + receivedData.data.size(), m_parserLimits.maximumBodySize))
                 {
                     // 与 h1 侧同一口径：体量越界就不再收，响应在服务阶段按 413 发出。
                     // 此后到达的 DATA 一律丢弃，但窗口照还——不还的话对端会卡在自己耗尽的窗口上
@@ -633,7 +633,7 @@ namespace AsynGyanis::Net
             }
 
             const std::size_t bodyByteCount = pending.request.body().size() + receivedData.data.size();
-            if (m_parserLimits.maximumBodySize != 0 && bodyByteCount > m_parserLimits.maximumBodySize)
+            if (exceedsBudget(bodyByteCount, m_parserLimits.maximumBodySize))
             {
                 // 与 HTTP/1.1 侧同口径：体量越界的请求回 413。这里只标记与记日志，
                 // 响应在服务阶段统一发出；此后到达的 DATA 一律丢弃（但仍要还窗口）

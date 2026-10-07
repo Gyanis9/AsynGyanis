@@ -1427,7 +1427,7 @@ namespace AsynGyanis::Net
         // 头块的字节数——同一个键在三条通道上给出三种强度，运维照 h1 那个数调整台机器，h2 上却是另一回事。
         // 计数口径照 h3：这一场请求头部里的字段数，伪头也算一条。越限不是协议错误（报文本身合法，
         // 只是本端不收这么多），标成「头块过大」交给上层按 431 应答
-        if (m_parserLimits.maximumHeaderCount != 0 && headerFields.size() > m_parserLimits.maximumHeaderCount)
+        if (exceedsBudget(headerFields.size(), m_parserLimits.maximumHeaderCount))
         {
             request.isHeaderListTooLarge = true;
         }
@@ -1440,7 +1440,7 @@ namespace AsynGyanis::Net
         // 运维照 h1 那个数收紧整台机器时，h2 仍按 SETTINGS 通告的那个值放行。两把尺各判各的、取更紧的一方
         // 生效：这里按名与值的净字节判（伪头一并计入，口径照 h3），HPACK 那侧按 §6.5.2 的「名长 + 值长 + 32」
         // 逐条判——后者是协议给的定义，换不掉
-        if (m_parserLimits.maximumHeaderBlockLength != 0 && wholeBlockByteCount > m_parserLimits.maximumHeaderBlockLength)
+        if (exceedsBudget(wholeBlockByteCount, m_parserLimits.maximumHeaderBlockLength))
         {
             request.isHeaderListTooLarge = true;
         }
@@ -1517,7 +1517,7 @@ namespace AsynGyanis::Net
                     // 请求目标的闸门与 h1/h3 同一个配置键（parser_limits.maximum_uri_length）：
                     // 太长不是协议错误而是本端不收，按 414 应答（RFC 9110 §15.5.15）而不是 431——
                     // 两者的处置动作不同：431 让客户端去减头部，而这里要缩的是 URL
-                    if (m_parserLimits.maximumUriLength != 0 && request.path.size() > m_parserLimits.maximumUriLength)
+                    if (exceedsBudget(request.path.size(), m_parserLimits.maximumUriLength))
                     {
                         request.isUriTooLong = true;
                     }

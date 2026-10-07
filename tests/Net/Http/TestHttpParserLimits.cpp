@@ -6,10 +6,14 @@
 //   三. 拒绝面：0 表示关闭该项保护（不设上限），不是「不允许任何长度」；
 //   四. 出厂默认值：七个字段与推导出的请求行上限本身就是对外契约，钉在用例里防止实现漂移；
 //   五. 跨连接正文预算的唯一读数 bufferedBodyByteCount()：随喂入增长、分块按解码后计、收齐后归零。
+//   五. 跨连接正文预算的唯一读数 bufferedBodyByteCount()：随喂入增长、分块按解码后计、收齐后归零。
+//   六. 越界判据本身（exceedsBudget）与整行上限的推导：这两格现在由三条通道与出站解析器共用，
+//       判据住哪儿就测在哪儿；出站默认尺与入站出厂尺同出一处，也在这里钉住。
 // 默认上限的用例保留在 TestHttpParser.cpp，两侧不重复；报文拼接的辅助函数与那边同口径。
 
 #include "Net/Http/HttpParser.h"
 
+#include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpParseErrorKind.h"
 #include "Net/Http/HttpParserLimits.h"
@@ -21,6 +25,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -445,5 +450,50 @@ namespace AsynGyanis::Net
         ASSERT_EQ(strictParser.parse(message.data(), message.size()), ParseStatus::Error);
         EXPECT_TRUE(strictParser.isLimitExceeded());
         EXPECT_TRUE(containsText(strictParser.errorMessage(), "上限")) << strictParser.errorMessage();
+    }
+
+    /**
+     * @brief 钉住共享判据 exceedsBudget 的三档：0 关闸、恰好等于上限放行、超一格即拒
+     * @details 三条通道与出站解析器都走这一份比较，0 的解释权因此只有一处。这里测的是那份解释权
+     *          本身，不是某条通道的接线——接线由各通道自己的越限用例钉。
+     */
+    TEST(HttpParserLimits, ExceedsBudgetTreatsZeroAsDisabledGuard)
+    {
+        EXPECT_FALSE(exceedsBudget(1, 0)) << "0 是关掉这道闸，不是不允许任何长度";
+        EXPECT_FALSE(exceedsBudget(std::numeric_limits<std::size_t>::max(), 0)) << "闸关掉之后再多都不该拒";
+        EXPECT_FALSE(exceedsBudget(100, 100)) << "恰好等于上限是合规的最后一格";
+        EXPECT_TRUE(exceedsBudget(101, 100)) << "超出一格必须拒：判据松一格等于把上限悄悄改掉";
+    }
+
+    /**
+     * @brief 钉住整行上限的推导：两项都设时是「名 + 值 + 4」，任一项关闸时整行同样不限
+     * @details 出站解析器的单行默认值也取自这里，这一格错了会同时错两个方向
+     */
+    TEST(HttpParserLimits, HeaderLineLimitDerivesFromBothFieldLengths)
+    {
+        HttpParserLimits limits;
+        EXPECT_EQ(limits.headerLineLengthLimit(), limits.maximumHeaderFieldNameLength + limits.maximumHeaderFieldValueLength + 4U)
+                << "名与值之外那 4 字节的固定分隔（\": \" 与 CRLF）没算进推导值";
+
+        limits.maximumHeaderFieldValueLength = 0;
+        EXPECT_EQ(limits.headerLineLengthLimit(), 0U) << "值一项关闸后整行仍按推导值卡人，等于把用户明确关掉的保护又打开";
+
+        limits.maximumHeaderFieldValueLength = 8ull * 1024;
+        limits.maximumHeaderFieldNameLength  = 0;
+        EXPECT_EQ(limits.headerLineLengthLimit(), 0U) << "名一项关闸时同理";
+    }
+
+    /**
+     * @brief 钉住出站解析器的默认尺度与入站出厂值同出一处
+     * @details 出站那四个默认常数原先是把数字抄过去的，注释写着「与服务端同档」而没有任何东西判；
+     *          现在它们由同一个默认实例推出，这条用例钉的是「别再抄回字面量」
+     */
+    TEST(HttpParserLimits, OutboundParserDefaultsShareTheInboundRuler)
+    {
+        constexpr HttpParserLimits inboundDefaults{};
+        EXPECT_EQ(HttpResponseParser::kDefaultMaximumBodySize, inboundDefaults.maximumBodySize);
+        EXPECT_EQ(HttpResponseParser::kDefaultMaximumHeaderCount, inboundDefaults.maximumHeaderCount);
+        EXPECT_EQ(HttpResponseParser::kDefaultMaximumHeaderBlockByteCount, inboundDefaults.maximumHeaderBlockLength);
+        EXPECT_EQ(HttpResponseParser::kDefaultMaximumLineByteCount, inboundDefaults.headerLineLengthLimit());
     }
 } // namespace AsynGyanis::Net

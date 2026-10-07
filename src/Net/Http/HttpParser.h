@@ -304,13 +304,6 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool checkLineLength(std::size_t length);
 
         /**
-         * @brief 推导「一行头部」整行的长度上限
-         * @details 名与值两项各有一道上限，整行还得有第三道闸才拦得住「名与值都合规但拼起来超长」的行。
-         * @return std::size_t 整行上限（名上限 + 值上限 + ": " 与 CRLF）；0 表示不设上限
-         */
-        [[nodiscard]] std::size_t headerLineLengthLimit() const noexcept;
-
-        /**
          * @brief 解析请求行并填充暂存请求的方法与版本
          * @param line 去掉 CRLF 的请求行
          * @return true 合法
