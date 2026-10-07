@@ -54,9 +54,9 @@
       "width": 140,
       "type": "external",
       "label": "工作树改动",
-      "sublabel": "逐文件暂存",
+      "sublabel": "约定式提交",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 46, "end_line": 47, "label": "测试与提交约定" }
+        { "path": "CONTRIBUTING.md", "line": 51, "end_line": 52, "label": "提交与 PR 两条约定" }
       ]
     },
     {
@@ -82,7 +82,7 @@
       "sublabel": "只报告不阻塞",
       "sources": [
         { "path": "CONTRIBUTING.md", "line": 45, "label": "静态检查一步" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 539, "label": "CI 侧同为报告档" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 560, "label": "CI 里的 clang-tidy 作业" }
       ]
     },
     {
@@ -110,8 +110,8 @@
       "sublabel": "run_samples.py",
       "tag": "两档 CI 都跑",
       "sources": [
-        { "path": "scripts/run_samples.py", "line": 182, "end_line": 194, "label": "缺产出也计失败" },
-        { "path": "scripts/run_samples.py", "line": 219, "label": "有失败即 return 1" }
+        { "path": "scripts/run_samples.py", "line": 194, "end_line": 200, "label": "缺产出也计失败" },
+        { "path": "scripts/run_samples.py", "line": 225, "label": "有失败即 return 1" }
       ]
     },
     {
@@ -152,8 +152,8 @@
       "sublabel": "h2spec · Autobahn",
       "tag": "另起对端",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 217, "label": "h2spec 步骤" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 270, "label": "WS 互操作探针" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 222, "label": "h2spec 步骤" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 280, "label": "Autobahn 互操作探针" }
       ]
     },
     {
@@ -166,9 +166,9 @@
       "sublabel": "TSan · libFuzzer",
       "tag": "覆盖率 ≥60%",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 452, "label": "TSan 另起构建树" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 642, "label": "模糊 300 秒" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 705, "label": "gcovr 门槛" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 466, "label": "TSan 另起 build/tsan" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 709, "label": "模糊各档每档 90 秒" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 749, "label": "覆盖率总行下限的取值处" }
       ]
     },
     {
@@ -233,7 +233,7 @@
         "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:33-48）",
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
-        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:702 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
+        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:709 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
         "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连，io-uring-compile 编 + 跑"
       ]
     },
@@ -243,7 +243,7 @@
       "items": [
         "四条工作流的作业之间零 needs：全部平铺并行，串行只发生在作业内部（checkout → 配置 → 构建 → ctest）",
         "develop 与 PR 不消耗分钟数：要看某个提交就 gh workflow run \"Linux CI\" --ref develop；三条流还 paths-ignore 掉纯文档改动",
-        "示例矩阵两档 CI 都跑（linux-ci.yml:874 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
+        "示例矩阵两档 CI 都跑（linux-ci.yml:881 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
         "外部裁判要另起进程或容器：Autobahn 在另一网络命名空间经 host-gateway 回宿主，服务端须绑 0.0.0.0 另开端口"
       ]
     },
