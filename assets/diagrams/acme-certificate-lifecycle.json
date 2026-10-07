@@ -22,14 +22,14 @@
       {
         "id": "loopback",
         "label": "暂存与节拍",
-        "focus": ["reuse", "present", "poll", "sleep"],
-        "note": "令牌由 RAII 守卫挂着，每条出口都会摘"
+        "focus": ["reuse", "present", "poll", "sleep", "dns01", "follow"],
+        "note": "令牌由 RAII 守卫挂着，每条出口都会摘；dns-01 那条通道与 http-01 一样挂在同一条泳道上"
       },
       {
         "id": "exits",
         "label": "失败与终态",
-        "focus": ["noted", "unanswered", "installed", "rejected", "nohandler"],
-        "note": "装回被拒是唯一「磁盘已换、内存未换」的终态"
+        "focus": ["noted", "unanswered", "dnslose", "installed", "rejected", "nohandler", "follow"],
+        "note": "装回被拒是唯一「磁盘已换、内存未换」的终态；跟着磁盘换的那条循环常驻在同一条出口泳道"
       }
     ]
   },
@@ -37,7 +37,7 @@
     { "id": "main", "label": "签发主路径" },
     { "id": "hold", "label": "暂存与等待" },
     { "id": "fault", "label": "退避与失败" },
-    { "id": "terminal", "label": "本轮出口" }
+    { "id": "terminal", "label": "本轮出口与常驻循环" }
   ],
   "states": [
     {
@@ -216,6 +216,43 @@
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 580, "label": "reloadHandler" },
         { "path": "src/Net/Quic/QuicServer.cpp", "line": 222, "label": "锁内换 SSL_CTX" }
       ]
+    },
+    {
+      "id": "dns01",
+      "type": "waiting",
+      "label": "挂 dns-01 记录",
+      "sublabel": "写到权威侧可答",
+      "lane": "hold",
+      "col": 4,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 363, "label": "publish 到权威侧" },
+        { "path": "src/Net/Acme/AcmeDns01TxtWriter.h", "line": 45, "label": "publish 动作的类型" },
+        { "path": "src/Net/Acme/AcmeAutomationConfig.h", "line": 71, "label": "只有 dns-01 才要写入口" }
+      ]
+    },
+    {
+      "id": "dnslose",
+      "type": "failure",
+      "label": "记录写不进或撤不净",
+      "sublabel": "DnsRecordRejected",
+      "lane": "fault",
+      "col": 4,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 373, "label": "写不进当场判死" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 391, "label": "自证过了但撤不掉也判死" }
+      ]
+    },
+    {
+      "id": "follow",
+      "type": "waiting",
+      "label": "跟着磁盘换的那条循环",
+      "sublabel": "按时间戳变化装回",
+      "lane": "terminal",
+      "col": 1,
+      "sources": [
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 670, "label": "followCertificateRotation" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 706, "label": "时间戳变了才调用 reloadHandler" }
+      ]
     }
   ],
   "transitions": [
@@ -236,7 +273,12 @@
     { "id": "t-note", "from": "present", "to": "noted", "label": "其余失败", "variant": "security" },
     { "id": "t-backoff", "from": "noted", "to": "sleep", "label": "退避重来", "variant": "dashed" },
     { "id": "t-fix", "from": "unanswered", "to": "sleep", "label": "人改完再来", "variant": "dashed" },
-    { "id": "t-reload-fail", "from": "installed", "to": "rejected", "label": "回调报错", "variant": "security" }
+    { "id": "t-reload-fail", "from": "installed", "to": "rejected", "label": "回调报错", "variant": "security" },
+    { "id": "t-dns01", "from": "order", "to": "dns01", "label": "配了 dns-01", "variant": "dashed", "labelDy": 25 },
+    { "id": "t-dns-ready", "from": "dns01", "to": "prove", "label": "记录可答" },
+    { "id": "t-dns-lose", "from": "dns01", "to": "dnslose", "label": "写不进／撤不净", "labelDy": 25, "variant": "security" },
+    { "id": "t-dns-noted", "from": "dnslose", "to": "noted", "label": "记一次失败", "variant": "dashed" },
+    { "id": "t-follow", "from": "installed", "to": "follow", "label": "另起一条盯盘的循环", "variant": "dashed", "labelDy": 25 }
   ],
   "cards": [
     {
@@ -257,7 +299,7 @@
         "整条重试：Transport（DNS/TLS/时限/对端收线）、UnexpectedResponse（有响应却不是 ACME 的形状）、RateLimited（429 或带 Retry-After 的 503）",
         "查部署：ChallengeNotAnswered——机构去取自证时本地没答上，多半是路由或端口",
         "判死：RejectedByAuthority（带 ACME 错误类型与 detail）；ReloadRejected 是唯一「磁盘已换、内存未换」的终态",
-        "每一种都必须有真实产出点：加一个没人产生的种类，等于让调用方以为那种失败已被区分过（AcmeError.h:27-28 注）"
+        "每一种都必须有真实产出点：加一个没人产生的种类，等于让调用方以为那种失败已被区分过（AcmeError.h:27-28 注）。DnsRecordRejected 也在其中——记录写不进、以及自证过了但撤不净，两条出口都判这一档（src/Net/Acme/AcmeCertificateManager.cpp:373、:391）"
       ]
     },
     {
@@ -267,7 +309,8 @@
         "令牌路由只注册 GET、只答已挂出的令牌，未挂或已撤一律 404（AcmeHttp01ChallengeStore.cpp:52-59、71）",
         "PresentedToken 由析构负责摘除，每条出口（含失败）都执行，不会把令牌留在公网路由上",
         "停放的睡眠按 kStopNoticeSlice 切片，叫停最迟一段内生效（AcmeCertificateManager.cpp:627-633）；切片只改醒来频次，正在进行的签发尝试照旧跑完这一轮",
-        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（AcmeCertificateManager.cpp:612）"
+        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（AcmeCertificateManager.cpp:612）",
+      "两条自证通道按配置二选一：http-01 把令牌挂到路由上，dns-01 要把 TXT 写到权威侧才算可答（AcmeDns01TxtWriter.h:30 的契约）；通配域名只有 dns-01 验得了，配成 http-01 时当场拒而不是签一张覆盖不全的证书（AcmeClient.cpp:158）"
       ]
     },
     {

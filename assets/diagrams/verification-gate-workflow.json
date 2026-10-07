@@ -22,8 +22,8 @@
       {
         "id": "parallel",
         "label": "CI 并行铺开",
-        "focus": ["dispatch", "build", "conform", "harden"],
-        "note": "作业之间没有 needs：各自 checkout、各自构建、各自判定"
+        "focus": ["dispatch", "build", "conform", "harden", "driver", "uring", "pebble"],
+        "note": "作业之间没有 needs：各自 checkout、各自构建、各自判定。只编不连、只编不跑与真机构裁判也算作业"
       },
       {
         "id": "release",
@@ -210,6 +210,49 @@
       "sources": [
         { "path": ".github/SECURITY.md", "line": 58, "end_line": 61, "label": "披露节奏" }
       ]
+    },
+    {
+      "id": "driver",
+      "lane": "ci",
+      "col": 2,
+      "width": 140,
+      "type": "database",
+      "label": "MySQL 驱动只编不连",
+      "sublabel": "mysql-driver-compile",
+      "tag": "不设跳过开关",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 303, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 310, "label": "这个作业存在就是因为不设 ASYN_SKIP_MYSQL_DEPS" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 338, "label": "-DDATABASE_WITH_MYSQL=ON" }
+      ]
+    },
+    {
+      "id": "uring",
+      "lane": "ci",
+      "col": 1,
+      "width": 140,
+      "type": "backend",
+      "label": "io_uring 编 + 跑",
+      "sublabel": "io-uring-compile",
+      "tag": "不放行则 SKIP",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 353, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 384, "label": "-DASYN_WITH_IO_URING=ON 且带上用例" }
+      ]
+    },
+    {
+      "id": "pebble",
+      "lane": "ci",
+      "col": 0,
+      "width": 140,
+      "type": "external",
+      "label": "ACME 真机构裁判",
+      "sublabel": "acme-pebble",
+      "tag": "另起容器",
+      "sources": [
+        { "path": ".github/workflows/linux-ci.yml", "line": 896, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 963, "label": "拉 pebble 镜像后跑跨实现脚本" }
+      ]
     }
   ],
   "edges": [
@@ -223,7 +266,10 @@
     { "id": "e-harden", "from": "dispatch", "to": "harden", "variant": "dashed", "role": "branch" },
     { "id": "e-gates", "from": "build", "to": "gates", "role": "main" },
     { "id": "e-supply", "from": "harden", "to": "supply", "variant": "dashed", "role": "branch" },
-    { "id": "e-tag", "from": "gates", "to": "publish", "label": "同解才放行", "variant": "security", "role": "main" }
+    { "id": "e-tag", "from": "gates", "to": "publish", "label": "同解才放行", "variant": "security", "role": "main" },
+    { "id": "e-driver", "from": "dispatch", "to": "driver", "label": "同样平铺", "variant": "dashed", "role": "branch" },
+    { "id": "e-uring", "from": "dispatch", "to": "uring", "variant": "dashed", "role": "branch" },
+    { "id": "e-pebble", "from": "dispatch", "to": "pebble", "label": "真机构", "variant": "dashed", "role": "branch" }
   ],
   "cards": [
     {
@@ -234,7 +280,7 @@
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
         "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:709 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
-        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连，io-uring-compile 编 + 跑"
+        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:303），io-uring-compile 编 + 跑（:353），acme-pebble 拉真机构镜像做跨实现验收（:896）"
       ]
     },
     {

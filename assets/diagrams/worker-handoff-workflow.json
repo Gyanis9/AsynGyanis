@@ -28,8 +28,8 @@
       {
         "id": "child",
         "label": "worker 侧",
-        "focus": ["adopt", "mark", "serve", "drain"],
-        "note": "接手后必须补 markAsListening，否则收口会把端点一起关掉"
+        "focus": ["winleg", "adopt", "mark", "serve", "drain"],
+        "note": "接手后必须补 markAsListening，否则收口会把端点一起关掉；Windows 上叫停是 CTRL_BREAK 而不是信号"
       }
     ]
   },
@@ -123,7 +123,7 @@
       "width": 140,
       "type": "external",
       "label": "停机",
-      "sublabel": "SIGTERM 再强杀",
+      "sublabel": "先请体面退出，等不到才强杀",
       "sources": [
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 465, "label": "stopAllWorkers" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 543, "label": "等强杀落地" }
@@ -232,6 +232,21 @@
       "sources": [
         { "path": "samples/Core/Upgrade.cpp", "line": 372, "label": "全程探测零失败" }
       ]
+    },
+    {
+      "id": "winleg",
+      "lane": "child",
+      "col": 1,
+      "width": 140,
+      "type": "messagebus",
+      "label": "Windows 收到的那一侧",
+      "sublabel": "GracefulShutdown 接住 CTRL_BREAK",
+      "tag": "没接住就是默认处置当场终止",
+      "sources": [
+        { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 160, "label": "子进程自己挂控制台处理器" },
+        { "path": "src/Platform/System/Process.cpp", "line": 461, "label": "父代按进程组投 CTRL_BREAK" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 348, "label": "进程组是这条腿的前提" }
+      ]
     }
   ],
   "edges": [
@@ -249,7 +264,9 @@
     { "id": "w-adopt-mark", "from": "adopt", "to": "mark", "role": "main" },
     { "id": "w-mark-serve", "from": "mark", "to": "serve", "label": "进接受循环", "variant": "emphasis", "role": "main" },
     { "id": "w-serve-drain", "from": "serve", "to": "drain", "variant": "dashed", "role": "branch" },
-    { "id": "w-back-open", "from": "backoff", "to": "open", "label": "重新移交", "variant": "dashed", "role": "return" }
+    { "id": "w-back-open", "from": "backoff", "to": "open", "label": "重新移交", "variant": "dashed", "role": "return" },
+    { "id": "e-win1", "from": "stopall", "to": "winleg", "label": "Windows：按进程组投递", "variant": "dashed", "role": "branch" },
+    { "id": "e-win2", "from": "winleg", "to": "drain", "label": "收尾后再退", "variant": "dashed", "role": "branch" }
   ],
   "cards": [
     {
