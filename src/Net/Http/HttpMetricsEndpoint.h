@@ -105,4 +105,36 @@ namespace AsynGyanis::Net
      */
     ASYN_NET_API void registerReadinessEndpoint(Router &router, std::string_view path, std::function<bool()> isAccepting);
 
+    /**
+     * @brief 注册存活性探针端点：回固定的 200 JSON
+     * @details 明文与 TLS 两台服务器共用这一份实现（各写一遍迟早有一处漏改）。不查运维令牌的理由
+     *          与 registerReadinessEndpoint() 同一条：探针方拿不到凭据，加闸的结果是探针被人关掉。
+     * @param router 目标路由器，必须在 start() 之前注册
+     * @param path 端点路径，形状校验由调用方做（报错文案要点名是哪个服务器）
+     * @see HttpServer::enableHealthEndpoint(), HttpsServer::enableHealthEndpoint()
+     */
+    ASYN_NET_API void registerHealthEndpoint(Router &router, std::string_view path);
+
+    /**
+     * @brief 注册事件循环观测端点：每次请求现取全表渲染成 JSON
+     * @details 与上面同一条理由只留一份实现：读的是进程内每条循环自己的原子量，与走哪条通路无关。
+     * @param router 目标路由器，必须在 start() 之前注册
+     * @param path 端点路径，形状校验由调用方做
+     * @see HttpServer::enableLoopDiagnosticsEndpoint(), HttpsServer::enableLoopDiagnosticsEndpoint()
+     */
+    ASYN_NET_API void registerLoopDiagnosticsEndpoint(Router &router, std::string_view path);
+
+    /**
+     * @brief 注册指标抓取端点：每次抓取现取一次快照再渲染
+     * @details content-type 与渲染只留一份；取快照的动作由各台服务器交进来，因为在册连接数与
+     *          状态码账目挂在自己的采集端上。
+     * @param router 目标路由器，必须在 start() 之前注册
+     * @param path 端点路径，形状校验与前缀合法性由调用方做（报错文案要点名是哪个服务器）
+     * @param metricNamePrefix 已经过名字语法校验的指标名前缀，可为空
+     * @param snapshotProvider 取本服务器当前统计快照的动作，每次抓取现调一次
+     * @see HttpServer::enableMetricsEndpoint(), HttpsServer::enableMetricsEndpoint()
+     */
+    ASYN_NET_API void registerMetricsEndpoint(Router &router, std::string_view path, std::string_view metricNamePrefix,
+                                              std::function<HttpServerStats()> snapshotProvider);
+
 } // namespace AsynGyanis::Net

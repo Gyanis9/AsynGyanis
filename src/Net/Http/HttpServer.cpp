@@ -1442,17 +1442,8 @@ namespace AsynGyanis::Net
                                                  "请只用字母数字与下划线，或留空表示不加前缀");
         }
 
-        // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
-        const std::string metricPrefix(metricNamePrefix);
-        m_router.get(std::string(path),
-                     [this, metricPrefix](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
-                         response.setStatus(200);
-                         response.setHeader("content-type", kPrometheusTextContentType);
-                         response.setBody(formatPrometheusMetrics(stats(), metricPrefix));
-                         co_return;
-                     });
+        // 渲染与 content-type 交给共用实现：两台服务器各写一份迟早有一处漏改
+        registerMetricsEndpoint(m_router, path, metricNamePrefix, [this] { return stats(); });
     }
 
     void HttpServer::enableHealthEndpoint(const std::string_view path)
@@ -1463,15 +1454,9 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpServer: 健康检查端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
         }
 
-        m_router.get(std::string(path),
-                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         // 应答固定且无依赖：能走到这里就说明事件循环在转、连接还能被服务（存活性）
-                         response.setStatus(200);
-                         response.setHeader("content-type", "application/json");
-                         response.setBody(kHealthCheckResponseBody);
-                         co_return;
-                     });
+        // 应答固定且无依赖：能走到这里就说明事件循环在转、连接还能被服务（存活性）；
+        // 渲染交给两台共用的实现，形状校验留在点名服务器的那一侧
+        registerHealthEndpoint(m_router, path);
     }
 
     void HttpServer::enableReadinessEndpoint(const std::string_view path)
@@ -1495,15 +1480,8 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpServer: 事件循环观测端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
         }
 
-        m_router.get(std::string(path),
-                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         // 现取整表现场渲染：读的都是各条循环自己的原子量，不需要把动作投进任何一条循环
-                         response.setStatus(200);
-                         response.setHeader("content-type", kLoopDiagnosticsContentType);
-                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
-                         co_return;
-                     });
+        // 现取整表现场渲染：读的是各条循环自己的原子量，渲染只留一份实现
+        registerLoopDiagnosticsEndpoint(m_router, path);
     }
 
     void StaticFileService::install(Router &router, const std::size_t maximumMappedStaticFiles)

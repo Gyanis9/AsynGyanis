@@ -256,4 +256,47 @@ namespace AsynGyanis::Net
                    });
     }
 
+    void registerHealthEndpoint(Router &router, const std::string_view path)
+    {
+        router.get(std::string(path),
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 存活性只回答「进程还在不在转」：排空期间答案仍是「在」，
+                       // 因此这里刻意不读任何停止标志
+                       response.setStatus(200);
+                       response.setHeader("content-type", "application/json");
+                       response.setBody(kHealthCheckResponseBody);
+                       co_return;
+                   });
+    }
+
+    void registerLoopDiagnosticsEndpoint(Router &router, const std::string_view path)
+    {
+        router.get(std::string(path),
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 现取整表现场渲染：读的都是各条循环自己的原子量，不需要把动作投进任何一条循环
+                       response.setStatus(200);
+                       response.setHeader("content-type", kLoopDiagnosticsContentType);
+                       response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
+                       co_return;
+                   });
+    }
+
+    void registerMetricsEndpoint(Router &router, const std::string_view path, const std::string_view metricNamePrefix,
+                                 std::function<HttpServerStats()> snapshotProvider)
+    {
+        // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
+        const std::string metricPrefix(metricNamePrefix);
+        router.get(std::string(path),
+                   [metricPrefix, snapshotProvider = std::move(snapshotProvider)](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
+                       response.setStatus(200);
+                       response.setHeader("content-type", kPrometheusTextContentType);
+                       response.setBody(formatPrometheusMetrics(snapshotProvider(), metricPrefix));
+                       co_return;
+                   });
+    }
+
 } // namespace AsynGyanis::Net

@@ -170,17 +170,9 @@ namespace AsynGyanis::Net
                                                  "请只用字母数字与下划线，或留空表示不加前缀");
         }
 
-        // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
-        const std::string metricPrefix(metricNamePrefix);
-        m_router.get(std::string(path),
-                     [this, metricPrefix](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         // 每次抓取现取一次快照：计数是原子的，不必把动作投递到事件循环
-                         response.setStatus(200);
-                         response.setHeader("content-type", kPrometheusTextContentType);
-                         response.setBody(formatPrometheusMetrics(stats(), metricPrefix));
-                         co_return;
-                     });
+        // 前缀按值捕进处理函数的理由、渲染与 content-type 都在 registerMetricsEndpoint() 里，
+        // 与明文侧共用同一份实现；这里只交出「取本机快照」这个动作
+        registerMetricsEndpoint(m_router, path, metricNamePrefix, [this] { return stats(); });
     }
 
     void HttpsServer::enableHealthEndpoint(const std::string_view path)
@@ -190,14 +182,8 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpsServer: 健康检查端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
         }
 
-        m_router.get(std::string(path),
-                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         response.setStatus(200);
-                         response.setHeader("content-type", "application/json");
-                         response.setBody(kHealthCheckResponseBody);
-                         co_return;
-                     });
+        // 与明文侧同一份实现：存活性回答的是「进程还在不在转」，与走没走 TLS 无关
+        registerHealthEndpoint(m_router, path);
     }
 
     void HttpsServer::enableReadinessEndpoint(const std::string_view path)
@@ -218,15 +204,8 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpsServer: 事件循环观测端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
         }
 
-        m_router.get(std::string(path),
-                     [](HttpRequest &, HttpResponse &response) -> Core::Task<>
-                     {
-                         // 与明文侧同一张表：读的是进程内每条循环自己的原子量，与 TLS 无关
-                         response.setStatus(200);
-                         response.setHeader("content-type", kLoopDiagnosticsContentType);
-                         response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
-                         co_return;
-                     });
+        // 与明文侧同一张表、同一份渲染：读的是进程内每条循环自己的原子量，与 TLS 无关
+        registerLoopDiagnosticsEndpoint(m_router, path);
     }
 
     void HttpsServer::setLimits(HttpServerLimits limits)
