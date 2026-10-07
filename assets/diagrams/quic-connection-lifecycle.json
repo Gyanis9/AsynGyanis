@@ -28,8 +28,8 @@
       {
         "id": "recovery",
         "label": "恢复与闸门",
-        "focus": ["retransmit", "probing", "cap", "streamerr", "dropped"],
-        "note": "判丢按偏移重发；反放大超限的包直接丢而不杀连接"
+        "focus": ["retransmit", "probing", "cap", "streamerr", "idlecalc", "dropped"],
+        "note": "判丢按偏移重发；反放大超限的包直接丢而不杀连接；空闲超时压根不启用时没有这一条到期出口"
       }
     ]
   },
@@ -195,6 +195,20 @@
       "sources": [
         { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1065, "label": "发出 CLOSE" }
       ]
+    },
+    {
+      "id": "idlecalc",
+      "type": "decision",
+      "label": "算有效空闲超时",
+      "sublabel": "两端取小者",
+      "tag": "配 0 或折不进计时器即不启用",
+      "lane": "recover",
+      "col": 4,
+      "sources": [
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1182, "label": "本端与对端各宣告一个" },
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1191, "label": "两个都是 0：不启用" },
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1198, "label": "大得折不进 Timestamp：同一条不启用出口" }
+      ]
     }
   ],
   "transitions": [
@@ -212,7 +226,9 @@
     { "id": "q-clearrate", "from": "cap", "to": "appspace", "label": "超限包丢弃", "variant": "dashed" },
     { "id": "q-stream", "from": "keyupd", "to": "streamerr", "label": "流层违规", "labelDy": 25, "variant": "security" },
     { "id": "q-drop", "from": "streamerr", "to": "dropped", "label": "按码收口", "labelDy": 25, "variant": "security" },
-    { "id": "q-closed", "from": "closing", "to": "closed", "label": "带错误码", "variant": "emphasis" }
+    { "id": "q-closed", "from": "closing", "to": "closed", "label": "带错误码", "variant": "emphasis" },
+    { "id": "t-idle-calc", "from": "appspace", "to": "idlecalc", "label": "每次活动重算截止", "variant": "dashed" },
+    { "id": "t-idle-drop", "from": "idlecalc", "to": "dropped", "label": "启用且到期", "variant": "security" }
   ],
   "cards": [
     {
@@ -239,6 +255,7 @@
       "items": [
         "数据报负载上限 1200 B，Initial 也补足到同值（Codec/QuicPacketHeader.h:54）",
         "idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:114、QuicConnectionCore.cpp:1217）",
+      "「不启用」有两种来路，走的是同一条出口：两端都宣告 0，以及宣告得大到折不进 Timestamp（微秒域的一半让给「现在」）——后者不报错也不夹到上界，因为一个折不进计时器的天数说的就是「没设这一项」（QuicConnectionCore.cpp:1195-1200 的注）",
         "服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（QuicConnectionCore.cpp:1049、482）",
         "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:93、85）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:116）"
       ]

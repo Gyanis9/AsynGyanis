@@ -265,6 +265,34 @@
       "sources": [
         { "path": "src/Net/Tracing/FileSpanExporter.cpp", "line": 118, "label": "exportSpans" }
       ]
+    },
+    {
+      "id": "opsread",
+      "type": "frontend",
+      "label": "/healthz · /readyz · /debug/loops",
+      "width": 216,
+      "sublabel": "运维面另外三条读口",
+      "tag": "探针不挂牌",
+      "stage": 4,
+      "row": 0,
+      "sources": [
+        { "path": "src/Net/Http/HttpServerAssembly.h", "line": 145, "label": "探针为什么不进那道令牌闸" },
+        { "path": "src/Net/Http/Middleware.h", "line": 1414, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
+        { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 125, "label": "循环诊断口的注册函数" }
+      ]
+    },
+    {
+      "id": "sinkapi",
+      "type": "backend",
+      "label": "Logger::addSink",
+      "sublabel": "运行期也挂上一条",
+      "tag": "启动期装配之外",
+      "stage": 4,
+      "row": 1,
+      "sources": [
+        { "path": "src/Base/Log/Logger.cpp", "line": 80, "label": "addSink 的实现" },
+        { "path": "src/Base/Log/LoggerConfigLoader.cpp", "line": 326, "label": "启动期那一路用的是同一个入口" }
+      ]
     }
   ],
   "flows": [
@@ -283,7 +311,8 @@
     { "id": "f-collect-prom", "from": "collect", "to": "prom", "label": "统计快照", "classification": "read-only" },
     { "id": "f-trace-gate", "from": "tracers", "to": "tracegate", "label": "SpanRecord", "classification": "采样后入队", "variant": "emphasis" },
     { "id": "f-gate-pend", "from": "tracegate", "to": "pend", "label": "批量攒", "classification": "阈值/定时" },
-    { "id": "f-pend-out", "from": "pend", "to": "spanout", "label": "批次导出", "classification": "文件 / OTLP" }
+    { "id": "f-pend-out", "from": "pend", "to": "spanout", "label": "批次导出", "classification": "文件 / OTLP" },
+    { "id": "f-sinkapi-sinks", "from": "sinkapi", "to": "sinks", "label": "挂上即参与写入", "labelDy": 25, "classification": "写侧构造新快照" }
   ],
   "cards": [
     {
@@ -302,7 +331,7 @@
         "宏内先判等级再拷贝消息；Sink 级再判一次；异步 Sink 的下游过滤在 worker 里补做，挡下的计入丢弃数",
         "队列上限 64MiB 折算成事件数，满时按 Block/Drop/DropOldest 三档，Block 最多等 200ms 再算丢弃",
         "Sink 异常被异步 Sink 吞掉，唯一出口是 droppedEventCount()；文件 Sink 连续失败限流报一次 stderr，文件已关闭时那条静默",
-        "Sink 由 LoggerConfigLoader 在启动期按配置装配（console/file/rolling_file/async + default/color/json），日志设置本身没有热重载通道"
+        "Sink 由 LoggerConfigLoader 在启动期按配置装配（console/file/rolling_file/async + default/color/json），运行期也能经 Logger::addSink() 自己挂一条；日志设置本身没有热重载通道"
       ]
     },
     {
@@ -310,6 +339,7 @@
       "title": "观测：两套账，两个出口",
       "items": [
         "指标按监听器各持一份采集端，多监听器共用一台服务器时会报 1/N；准入拒绝数住在限额器身上，读快照时并进来",
+      "运维面四条读口只挂两道闸：/metrics 与 /debug/loops 要 Bearer 令牌，/healthz 与 /readyz 刻意不挂牌——编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉而不是配上令牌",
         "Span 只走 SpanExporter（文件或 OTLP HTTP），不经过日志 Sink；两条流在图上分列正因它们不共用出口",
         "被挡下的日志不再白付一块堆：早退排在物化之前，等级不命中时不拷贝消息"
       ]
