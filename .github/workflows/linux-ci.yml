@@ -543,6 +543,13 @@ jobs:
           git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' \
             | xargs -0 "$HOME/fmt-venv/bin/clang-format" --style=file --dry-run -Werror
 
+      - name: 复杂度基线（最长函数只准降不准升）
+        run: |
+          # 这条判据挂在格式作业而不是 clang-tidy 作业：tidy 那一档按设计只报告不阻塞，
+          # 挂上去等于没有门。基线里的数是现量生成的（scripts/complexity-baseline.json），
+          # 越线的文件没有登记项就判红，逼着「新写的长函数要么拆、要么明写进基线」
+          python3 scripts/check-complexity-baseline.py
+
   clang-tidy:
     name: 静态检查：clang-tidy
     runs-on: ubuntu-latest

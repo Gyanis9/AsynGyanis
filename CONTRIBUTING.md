@@ -41,7 +41,10 @@ ctest --test-dir build/debug --output-on-failure
 2. **编码**: 新增代码对齐 `.clang-format` 与周围既有风格。全仓已按该配置排过一遍，CI 有**格式门禁**
    （clang-format 版本钉到 23.1.1）：改动过的文件提交前跑 `clang-format --dry-run --Werror <文件>`，
    有差异就 `-i` 排齐再提。判据以 CI 同版为准——版本不同折行结果就变，那种红与你的改动无关
-3. **静态检查**: 运行 `clang-tidy -p build/debug src/<changed-file>`
+3. **静态检查**: 运行 `clang-tidy -p build/debug src/<changed-file>`。另有一条有牙齿的判据：
+   `python3 scripts/check-complexity-baseline.py` 按文件比「最长函数体行数」，**只准降不准升**，
+   越过地板又没有登记项的文件即判红（它挂在 CI 的格式作业而不是 tidy 档——tidy 那一档按设计不阻塞，
+   挂上去等于没有门）。基线要重录就跑 `--write`，但那等于公开承认「这一档我放松了」
 4. **测试**: 确保 `ctest --output-on-failure` 全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
 6. **PR**: 提交 Pull Request，填写模板，等待审核
