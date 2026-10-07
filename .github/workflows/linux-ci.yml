@@ -550,6 +550,13 @@ jobs:
           # 越线的文件没有登记项就判红，逼着「新写的长函数要么拆、要么明写进基线」
           python3 scripts/check-complexity-baseline.py
 
+      - name: 架构工件可追溯性（图里每条引用都要当场读得到）
+        run: |
+          # 九张图共 212 条 sources 引用，而 383 笔提交里零次回图——根因不是图画错了，是没有让图变红的机制。
+          # 这道门管得住机械可判的那一半：引用路径不存在、行号越过文件末尾、引到空行、顶点一条证据都没有；
+          # 管不住的那一半（行还在、说的已经不是那件事）由它打印的 stale 清单接手，回图时按清单逐条复核
+          python3 scripts/check-arch-traceability.py
+
   clang-tidy:
     name: 静态检查：clang-tidy
     runs-on: ubuntu-latest
