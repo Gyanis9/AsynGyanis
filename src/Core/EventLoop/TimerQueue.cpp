@@ -1,10 +1,12 @@
 #include "Core/EventLoop/TimerQueue.h"
 
+#include "Base/Exception/LogicException.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 namespace AsynGyanis::Core
@@ -203,6 +205,15 @@ namespace AsynGyanis::Core
 
     bool TimerQueue::insert(Awaiter &awaiter)
     {
+        // 那张堆是裸数组、只归循环线程：外来线程插一项会把 sift 中的下标簿记打乱（每个 awaiter
+        // 自带 m_heapIndex，互换时两处一起动），坏掉的现场是「摘除时找不到自己」。等待者通常
+        // 就挂在循环线程上，所以这里当场拒而不是静默插进去
+        if (!m_loop.isOnOwnerThread())
+        {
+            throw Base::LogicException("定时器队列被外来线程使用：本等待者想在一条正在别处运行的循环上排队。"
+                                       "协程的首次恢复必须在所属循环线程上做（外部线程请投 scheduleRemote()/postRemote() 再在里面 await）");
+        }
+
         // 队列已停摆：再挂起就是永远等不到人的等待，直接告诉调用方「立即完成」
         if (m_driverState == DriverState::Dead)
         {

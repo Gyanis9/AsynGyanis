@@ -80,9 +80,9 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 登记顺序即轮转顺序，游标只在本线程（接受循环）里推进
-        Worker &worker    = m_workers[m_nextWorkerIndex];
-        m_nextWorkerIndex = (m_nextWorkerIndex + 1) % m_workers.size();
+        // 登记顺序即轮转顺序：取一个名额再推进，两条线程同时进来也只是各占一格，不会都拿到同一个下标
+        const std::size_t index   = m_nextWorkerIndex.fetch_add(1, std::memory_order_relaxed) % m_workers.size();
+        Worker           &worker  = m_workers[index];
 
         // 交接句柄与回调一起投递：目标循环先退出时回调被丢弃，句柄析构把描述符关上。
         // 本函数是 noexcept 而这两步都会分配，因此不能任由分配失败升级成 terminate：
@@ -126,12 +126,12 @@ namespace AsynGyanis::Core
             return true;
         }
 
-        ++m_distributedCount;
+        m_distributedCount.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     std::size_t ConnectionDistributor::distributedCount() const noexcept
     {
-        return m_distributedCount;
+        return m_distributedCount.load(std::memory_order_relaxed);
     }
 } // namespace AsynGyanis::Core

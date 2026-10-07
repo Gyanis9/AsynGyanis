@@ -1,11 +1,14 @@
 // Timer 单元测试：循环级定时器队列上的构造、到期唤醒、到期顺序与取消
 //
-// 用例手工推进事件循环（复刻 EventLoop::run() 的「分发事件 + 清空调度队列」两步），
+// 多数用例手工推进事件循环（复刻 EventLoop::run() 的「分发事件 + 清空调度队列」两步），
 // 不引入循环线程，因此时序由用例自己掌握；真实定时器仍需等待内核到期，超时判失败而不是把用例挂住。
+// 最后一条是个例外：它要一条真在跑的循环，因为钉的是「外来线程不能把等待者插进那张堆」。
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/TimerQueue.h"
+
+#include "Base/Exception/LogicException.h"
 
 #include "CoreTestSupport.h"
 
@@ -13,10 +16,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -438,5 +444,63 @@ namespace AsynGyanis::Core
         EXPECT_EQ(Detail::armedDurationFor(origin - std::chrono::milliseconds{3}, origin), std::chrono::milliseconds{1});
         // 截止时间允许饱和到 time_point::max()：补一毫秒不得把它加溢出
         EXPECT_GT(Detail::armedDurationFor(Clock::time_point::max(), Clock::now()), std::chrono::milliseconds{0});
+    }
+
+    /**
+     * @brief 钉住：驱动已武装之后，外来线程仍不能把等待者插进那张堆
+     * @details 顺序很重要：第一条等待会顺手把驱动协程投进调度器，那次投排队撞上的是调度器那道
+     *          线程闸，测不到这一格。所以先在循环线程上挂一条长等待把驱动武装起来（此后插队不再
+     *          经过调度器），再从测试线程首次恢复第二条——被拒的必须是定时器队列自己那句。
+     *          堆里每个等待者自带下标，上浮下沉时「数组槽位」与「等待者记的下标」两处一起动，
+     *          外来线程插一项会让两处错位：取消时找不到自己，到期时又去唤醒一个已作废的帧。
+     */
+    TEST(TimerQueue, RejectsRegistrationFromForeignThreadWhileLoopRuns)
+    {
+        EventLoop                    loop;
+        TestSupport::EventLoopThread runner(loop);
+        ASSERT_TRUE(runner.waitUntilRunning()) << "后台循环没起来，环境异常";
+        Timer timer(loop);
+
+        // 武装档：一条 30 秒的等待挂在循环线程上，本用例期间永不到期，只负责把驱动状态推离 Idle
+        auto armBody = [&timer]() -> Task<>
+        {
+            static_cast<void>(co_await timer.waitFor(std::chrono::seconds{30}));
+        };
+        std::optional<Task<>>   armedWait;
+        std::atomic<bool>       isDriverArmed{false};
+        loop.scheduler().postRemote(
+                [&loop, &armedWait, &armBody, &isDriverArmed]
+                {
+                    // 首次恢复就发生在循环线程上：这是合法路径，判据不能拦它
+                    armedWait.emplace(armBody());
+                    armedWait->handle().resume();
+                    isDriverArmed.store(true, std::memory_order_release);
+                });
+        ASSERT_TRUE(TestSupport::waitForCondition([&isDriverArmed] { return isDriverArmed.load(std::memory_order_acquire); }))
+                << "驱动没被武装起来，后面那次外来插队撞的会是调度器那道闸";
+
+        std::atomic<bool> isRejectedByTimerQueue{false};
+        std::string       rejectionText;
+        auto waitingBody = [&timer, &isRejectedByTimerQueue, &rejectionText]() -> Task<>
+        {
+            try
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{20});
+            } catch (const Base::LogicException &error)
+            {
+                // Task 把异常存起来交给恢复方，所以这里按类型捕获并留下原文核对是谁拒的
+                isRejectedByTimerQueue.store(true, std::memory_order_release);
+                rejectionText = error.what();
+            }
+        };
+        auto waiting = waitingBody();
+        // 在测试线程上首次恢复：驱动已在跑，这一次只可能由定时器队列自己的判据拒掉
+        static_cast<void>(waiting.handle().resume());
+
+        EXPECT_TRUE(isRejectedByTimerQueue.load(std::memory_order_acquire)) << "外来线程把等待者插进了正在别处运行的循环的定时器堆，却没有任何东西拒它";
+        EXPECT_NE(rejectionText.find("定时器队列"), std::string::npos) << "拒掉它的是别的判据，这一格并没有被钉住：原文「" << rejectionText << "」";
+
+        // 那张堆的尺寸不在这里读：循环还在跑时 pendingCount() 归循环线程所有，跨线程读它本身就
+        // 是这条判据要防的事。「没留下半个登记」由抛出发生在任何槽位变动之前这一点保证（见 insert 的实现）
     }
 } // namespace AsynGyanis::Core

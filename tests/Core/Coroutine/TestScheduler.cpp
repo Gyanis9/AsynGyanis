@@ -544,6 +544,9 @@ namespace AsynGyanis::Core
                 << "外来线程在跑着的循环上就地排队，却没有一处出声";
         EXPECT_THROW(loop.scheduler().postLocal([]() {}), Base::LogicException)
                 << "postLocal() 与 schedule() 是同一条契约，只守一半等于没守";
+        // 排空入口同样判据：从外面泵一条正在跑的循环，等于与循环自己并发动那两张表
+        EXPECT_THROW(loop.scheduler().runOne(), Base::LogicException) << "外来线程能泵跑着的循环的队列";
+        EXPECT_THROW(loop.scheduler().runAll(), Base::LogicException) << "runAll() 与 runOne() 同一条判据，漏一个等于没守";
 
         // 被拒的两次调用不该伤到循环本身：随后一条正当的投递仍要被跑到
         std::atomic<bool> isStillServing{false};
@@ -562,6 +565,9 @@ namespace AsynGyanis::Core
         EventLoop idleLoop;
         EXPECT_NO_THROW(idleLoop.scheduler().schedule(std::coroutine_handle<>{}));
         EXPECT_NO_THROW(idleLoop.scheduler().postLocal([]() {}));
+        // 手泵档：循环还没进 run() 时，用例自己排空队列是既有形态，判据不能把它打死
+        EXPECT_NO_THROW(idleLoop.scheduler().runOne());
+        EXPECT_NO_THROW(idleLoop.scheduler().runAll());
 
         TestSupport::EventLoopThread runner;
         ASSERT_TRUE(runner.waitUntilRunning());

@@ -13,6 +13,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <vector>
@@ -22,8 +23,8 @@ namespace AsynGyanis::Core
     /**
      * @brief 把已接受的连接轮流交给若干工作循环的接收分发器
      *
-     * @note distribute() 只允许在**接受循环线程**上调用（内部游标不是原子的）；从其它线程发起时
-     *       经 `Scheduler::postRemote()` 投递过来，投递本身是线程安全的。
+     * @note 轮转游标与成功计数都是原子量：两条线程同时派发各占一个名额，不会互相踩。
+     *       仍不并发的是 `addWorker()`——请在第一次 distribute() 之前把工作循环登记满。
      * @note 工作循环若在回调执行前就退出，投递过去的回调会被丢弃——因此描述符被包在「没人接手
      *       就关闭」的句柄里一起投递，丢弃也不会漏描述符。
      * @details 内核分摊（SO_REUSEPORT）只在 Linux 上存在，Windows 需要一个用户态入口：接受循环
@@ -88,7 +89,7 @@ namespace AsynGyanis::Core
         };
 
         std::vector<Worker> m_workers;             ///< 已登记的工作循环，轮转顺序即登记顺序
-        std::size_t         m_nextWorkerIndex{0};  ///< 下一次派发给哪个工作循环
-        std::size_t         m_distributedCount{0}; ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
+        std::atomic<std::size_t> m_nextWorkerIndex{0};   ///< 下一次派发给哪个工作循环（原子：多条接受循环共用一台分发器时轮转不互相踩）
+        std::atomic<std::size_t> m_distributedCount{0};  ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
     };
 } // namespace AsynGyanis::Core

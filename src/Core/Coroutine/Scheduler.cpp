@@ -97,6 +97,7 @@ namespace AsynGyanis::Core
 
     bool Scheduler::runOne()
     {
+        assertLocalQueueUse("Scheduler::runOne()");
         // 跨线程投递的普通代码优先跑：它们多是「把刚接下的连接装进本循环」这类前置动作，
         // 先做掉能让紧随其后的读写立刻有对象可服务
         {
@@ -159,6 +160,7 @@ namespace AsynGyanis::Core
 
     void Scheduler::runAll()
     {
+        assertLocalQueueUse("Scheduler::runAll()");
         // 第一阶段：排空本地待执行代码与本地队列。两段都反复回到开头，因为前一段执行期间
         // 可能又投来新的代码（例如定时器在恢复途中又判出新的到期项）
         //
