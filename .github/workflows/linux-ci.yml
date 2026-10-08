@@ -882,6 +882,9 @@ jobs:
         run: |
           # 退出码不押在 runner 给不给 pipefail 上：先收进变量，摘要打完了再照它退
           python3 scripts/run_samples.py --build build/debug --timeout 400 > /tmp/samples.log 2>&1 && rc=0 || rc=$?
+          # 失败详情（哪一步没过＋那条示例自己的末尾输出）在表格之前进 stderr，表格只有十来行：
+          # 只 tail 末尾就把这块整片丢掉，红的时候只剩一句结论，Linux 档与 Windows 档同一形状
+          grep -A 10 "^  !!" /tmp/samples.log || true
           tail -24 /tmp/samples.log
           {
             echo "### 示例矩阵（Linux）"

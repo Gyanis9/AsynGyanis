@@ -89,6 +89,9 @@ jobs:
         shell: bash
         run: |
           python scripts/run_samples.py --build build/debug --timeout 600 > "$RUNNER_TEMP/samples.log" 2>&1 && rc=0 || rc=$?
+          # 「红在哪一步」在表格之前按示例打到 stderr（含那条示例自己的末尾输出），而表格只有十来行：
+          # 只 tail 末尾就把这块整片丢掉，2026-10-09 那次 NetHttpsH2Demo 只剩「29 步里有 1 步没过」一句
+          grep -A 10 "^  !!" "$RUNNER_TEMP/samples.log" || true
           tail -24 "$RUNNER_TEMP/samples.log"
           {
             echo "### 示例矩阵（Windows）"
