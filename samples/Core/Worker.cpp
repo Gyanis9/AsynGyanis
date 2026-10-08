@@ -249,11 +249,11 @@ int main(const int argc, char **argv)
             }
         }
     }
-    return Samples::finishSample("core_worker");
+    return Samples::finishSample("CoreWorker");
 #else
     // —— 以下只在 POSIX 上跑：worker 真的被起起来、真的被补位、真的按时刻表收手 ——
     const std::string evidenceDirectory =
-            (std::filesystem::temp_directory_path() / ("asyn-sample-core_worker-" + std::to_string(Platform::ProcessInfo::currentProcessId()))).string();
+            (std::filesystem::temp_directory_path() / ("asyn-sample-CoreWorker-" + std::to_string(Platform::ProcessInfo::currentProcessId()))).string();
     std::error_code cleanError;
     std::filesystem::remove_all(evidenceDirectory, cleanError);
 
@@ -300,6 +300,6 @@ int main(const int argc, char **argv)
 
     std::filesystem::remove_all(evidenceDirectory, cleanError);
 
-    return Samples::finishSample("core_worker");
+    return Samples::finishSample("CoreWorker");
 #endif
 }

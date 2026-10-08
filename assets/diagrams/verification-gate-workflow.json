@@ -110,8 +110,8 @@
       "sublabel": "run_samples.py",
       "tag": "两档 CI 都跑",
       "sources": [
-        { "path": "scripts/run_samples.py", "line": 188, "end_line": 200, "label": "缺产出也计失败" },
-        { "path": "scripts/run_samples.py", "line": 225, "label": "有失败即 return 1" }
+        { "path": "scripts/run_samples.py", "line": 194, "end_line": 206, "label": "缺产出也计失败" },
+        { "path": "scripts/run_samples.py", "line": 231, "label": "有失败即 return 1" }
       ]
     },
     {

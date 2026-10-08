@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # WebSocket 一致性验收：用 Autobahn|Testsuite（另一家独立实现，517 条用例）打一个正在跑的
-# reference_server 的 WebSocket 路由。
+# ReferenceServer 的 WebSocket 路由。
 #
 # 为什么要引外部裁判：自家探针与实现同源，查不出「两边都错在同一种理解上」。Autobahn 每条用例
 # 给的是「期望的事件序列」，本机这一轮就是这样查出两件事的——
@@ -11,7 +11,7 @@ set -euo pipefail
 #   * 9.1.4 / 9.3.9：单帧上限(1 MiB)比消息上限(8 MiB)还小，于是「拆片收得下、整片发来回 1009」。
 #
 # 用法：先把服务端起起来（回显要按原类型回帧），再跑本脚本
-#   build/release/samples/reference_server --port 18081 --threads 2 --metrics &
+#   build/release/samples/ReferenceServer --port 18081 --threads 2 --metrics &
 #   scripts/websocket_autobahn.sh 18081
 #
 # 镜像：默认用官方 crossbario/autobahn-testsuite。取不到 Docker Hub 的环境（本机过去就是）可以用
@@ -43,7 +43,7 @@ if ! curl -s -o /dev/null --max-time 3 "http://127.0.0.1:${port}/json"; then
     if [ -n "${MSYS_NO_PATHCONV:-}" ]; then
         echo "提示：别用 MSYS_NO_PATHCONV=1 跑本脚本——那样 native curl 写不了 /dev/null，这条探测必然假失败" >&2
     fi
-    echo "没人在 ${port} 上应答：先把 reference_server 起起来（--port ${port} --metrics），再来跑本脚本" >&2
+    echo "没人在 ${port} 上应答：先把 ReferenceServer 起起来（--port ${port} --metrics），再来跑本脚本" >&2
     exit 2
 fi
 
@@ -64,7 +64,7 @@ cat > "${work_dir}/fuzzingclient.json" <<EOF
 {
    "outdir": "/reports",
    "servers": [
-      {"url": "ws://host.docker.internal:${port}${ws_path}", "agent": "AsynGyanis reference_server"}
+      {"url": "ws://host.docker.internal:${port}${ws_path}", "agent": "AsynGyanis ReferenceServer"}
    ],
    "cases": ${cases},
    "exclude-cases": [${exclude_json}],

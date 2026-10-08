@@ -271,7 +271,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：一台进程里跑多条监听器时，「每台自己计数」的限额要按 进程数 × 每进程台数 摊
-     * @details `TcpServer` 的并发计数是每台一份的账，而 `reference_server` 默认给每个事件循环线程
+     * @details `TcpServer` 的并发计数是每台一份的账，而 `ReferenceServer` 默认给每个事件循环线程
      *          各绑一次同一端口（SO_REUSEPORT），于是一条进程里就有 L 个各自独立的上限闸门。只按进程数
      *          摊的话，`maximum_connections: 100` 配 4 条监听器实际放行 400，而配置文件看着仍是 100——
      *          「文件完全正确、数被静默乘起来」这一类错最难往配置上想。

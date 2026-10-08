@@ -1,6 +1,6 @@
 # 示例程序：每个子系统一个可独立运行的程序，各自自检并以退出码报告结果
 #
-# reference_server 是「部署形态」的参考服务端（h1/h2/h2c/h3/WS/SSE 全开，带中间件、追踪、静态文件、
+# ReferenceServer 是「部署形态」的参考服务端（h1/h2/h2c/h3/WS/SSE 全开，带中间件、追踪、静态文件、
 # 指标、限流、多进程与优雅停机），保留用于压测、上手，以及当作业务服务的起步形状；
 # 其余按模块拆开的示例承担「把每一块单独跑通」的职责，脚本 scripts/run_samples.py 会把它们
 # 全部跑一遍并按退出码判定系统完整性。
@@ -8,9 +8,12 @@
 # 一个示例一个目标。目录按**模块**分（Base / Platform / Core / Net / Database，与 src/ 与 tests/ 同一套名字），
 # 文件名就是这个示例讲的那件事（ReferenceServer.cpp、Loop.cpp、Upgrade.cpp…）——不再用 main.cpp：
 # 一排同名文件在编辑器标签页与调用栈里分不出谁是谁，而「哪个模块的哪个面」本该从路径上一眼读得出来。
-# 目标名一般不动（core_loop、net_http_demo…）：那是对外的程序名，文档、脚本、压测与 CI 都按它引用，
-# 改它属于换接口而不是改布局。唯一的例外是 reference_server（原名 echo_server）：那名字不准——它一个
-# echo 端点都没有，挂的是 /json /trace /bench /big /sse /ws，所以连程序名一起换，全仓引用同日跟上。
+# 目标名就是可运行程序名，一律大驼峰、不带下划线（CoreLoop、NetHttpDemo、ReferenceServer…），
+# 与文件名、命名空间同一套写法。它是对外的名字：文档、脚本、压测、CI 与「按可执行体名认进程」
+# 的判据都按它引用，所以改名要全仓跟上——上一次 echo_server→ReferenceServer 与这一次去下划线
+# 都是当天扫完全仓替换、grep 残留为零才提交。
+# 唯一的偏离是 PlatformPrimitives：Platform 已被库目标占用，CMake 里两个目标不能同名，
+# 于是它按文件名（Primitives.cpp）取，而不是按「模块名当程序名」。
 # common/ 统一挂作头文件搜索路径。
 function(asyn_add_sample sample_name)
         add_executable(${sample_name} ${ARGN})
@@ -24,47 +27,47 @@ function(asyn_add_sample sample_name)
         asyn_copy_sanitizer_runtime(${sample_name})
 endfunction()
 
-# 部署形态的参考服务端（原名 echo_server：它没有 echo 端点，见上面第 10 行的例外说明）
-asyn_add_sample(reference_server Net/ReferenceServer.cpp)
+# 部署形态的参考服务端（原名 echo_server：它一个 echo 端点都没有，名字与程序名同日换的）
+asyn_add_sample(ReferenceServer Net/ReferenceServer.cpp)
 # /json 里那个 version 只能取 CMake 的项目版本号（根 CMakeLists 的 project(... VERSION ...)）。
 # 原先写死 "1.0.0"，在项目已到 2.4.0 之后是一份假读数——而这份正文正是「照它起业务」的人第一眼要抄的
-target_compile_definitions(reference_server PRIVATE ASYN_PROJECT_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(ReferenceServer PRIVATE ASYN_PROJECT_VERSION="${PROJECT_VERSION}")
 
 # Base：日志子系统（Sink、格式化器、注册表、配置驱动装配、异常带栈）
-asyn_add_sample(base_log Base/Log.cpp)
+asyn_add_sample(BaseLog Base/Log.cpp)
 
 # Base：配置子系统（多文件加载、点分路径取值、模式校验、热重载）
-asyn_add_sample(base_config Base/Config.cpp)
+asyn_add_sample(BaseConfig Base/Config.cpp)
 
 # Platform：套接字工具、描述符、通知器、定时器、内存映射、数据报、进程起停与平台杂项
-asyn_add_sample(platform Platform/Primitives.cpp)
-target_link_libraries(platform PRIVATE Platform)
+asyn_add_sample(PlatformPrimitives Platform/Primitives.cpp)
+target_link_libraries(PlatformPrimitives PRIVATE Platform)
 
 # Core：事件循环与线程池、调度器、定时器、IO 监听器、帧池、取消令牌、解析与 UDP/TCP 协程收发
-asyn_add_sample(core_loop Core/Loop.cpp)
+asyn_add_sample(CoreLoop Core/Loop.cpp)
 
 # Core TLS：加固上下文、证书装载与热替换、OCSP、私有 CA 与双向 TLS 的回环握手
-asyn_add_sample(core_tls Core/Tls.cpp)
+asyn_add_sample(CoreTls Core/Tls.cpp)
 
 # Core 多进程：WorkerSupervisor 的起停、崩溃补位与「起来就崩」的次数上限
-asyn_add_sample(core_worker Core/Worker.cpp)
+asyn_add_sample(CoreWorker Core/Worker.cpp)
 
 # Net HTTP/1.1：路由与中间件、解析上限、分块与 SSE、WebSocket、限额、观测端点、优雅收口
-asyn_add_sample(net_http_demo Net/Http.cpp)
+asyn_add_sample(NetHttpDemo Net/Http.cpp)
 
 # Net TLS 与 HTTP/2：ALPN 协商、h2c 明文、多路复用、GOAWAY 排空与解析上限
-asyn_add_sample(net_https_h2_demo Net/HttpsH2.cpp)
+asyn_add_sample(NetHttpsH2Demo Net/HttpsH2.cpp)
 
 # Net HTTP/3：QUIC 服务端的配置校验、UDP 端口起停、畸形报文容错、定时驱动与排空
-asyn_add_sample(net_http3_demo Net/Http3.cpp)
+asyn_add_sample(NetHttp3Demo Net/Http3.cpp)
 
 # Net UDP：UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付、主动下发、统计与收口
-asyn_add_sample(net_udp_demo Net/Udp.cpp)
-target_link_libraries(net_udp_demo PRIVATE Platform)
+asyn_add_sample(NetUdpDemo Net/Udp.cpp)
+target_link_libraries(NetUdpDemo PRIVATE Platform)
 
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
-asyn_add_sample(database_demo Database/OrmAndPool.cpp)
-target_link_libraries(database_demo PRIVATE Database)
+asyn_add_sample(DatabaseDemo Database/OrmAndPool.cpp)
+target_link_libraries(DatabaseDemo PRIVATE Database)
 
 # Core 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（POSIX 才构建，理由见下）
 #
@@ -78,6 +81,6 @@ target_link_libraries(database_demo PRIVATE Database)
 # POSIX 侧成立的前提有两条，两条都是实测换来的：通道必须 AF_UNIX（TCP 通道上内核静默丢描述符），
 # 以及交棒方收口时不对端点做 shutdown（见 AsyncSocket::markAsListening()）。
 if (NOT WIN32)
-        asyn_add_sample(core_upgrade Core/Upgrade.cpp)
-        target_link_libraries(core_upgrade PRIVATE Platform)
+        asyn_add_sample(CoreUpgrade Core/Upgrade.cpp)
+        target_link_libraries(CoreUpgrade PRIVATE Platform)
 endif()

@@ -430,5 +430,5 @@ int main()
     samples.check(g_observations.adoptsHandedOverSocket, "发往那个端口的报文在接手来的服务端上有回话");
 
     context.stop();
-    return Samples::finishSample("net_udp_demo");
+    return Samples::finishSample("NetUdpDemo");
 }

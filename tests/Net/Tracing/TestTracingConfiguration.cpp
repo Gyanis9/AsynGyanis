@@ -327,7 +327,7 @@ TEST(TracingConfiguration, ReadsTheSectionFromAConfigFile)
     const auto loaded = manager.loadFiles({configFile.string()});
     ASSERT_TRUE(loaded.success) << "配置文件没能加载";
 
-    // 装配方（reference_server）递过来的形状是「先攒一张 ConfigObject，再整个转成 ConfigValue」：
+    // 装配方（ReferenceServer）递过来的形状是「先攒一张 ConfigObject，再整个转成 ConfigValue」：
     // 那条转换必须走圆括号——花括号会去配 initializer_list，整份文档变成一个数组，两个读取器都找不到自己的段
     AsynGyanis::Base::ConfigObject assembled;
     assembled.emplace(std::string(AsynGyanis::Net::kTracingConfigSection), manager.getSection(AsynGyanis::Net::kTracingConfigSection));

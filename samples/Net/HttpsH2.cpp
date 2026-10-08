@@ -1686,5 +1686,5 @@ int main(const int argc, char **argv)
     demonstrateCleartextHttp2AndGracefulShutdown(static_cast<std::uint16_t>(basePort + 2));
 
     LOG_INFO("=== Net 的 TLS/HTTP2 子系统示例结束 ===");
-    return Samples::finishSample("net_https_h2_demo");
+    return Samples::finishSample("NetHttpsH2Demo");
 }

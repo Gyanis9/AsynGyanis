@@ -39,9 +39,9 @@ case "${stage}" in
     *) echo "未知的 ASYN_SOAK_STAGE=${stage}（可选 h1、h2c、h3）" >&2; exit 2 ;;
 esac
 
-server_binary="${repository_root}/build/${build}/samples/reference_server"
+server_binary="${repository_root}/build/${build}/samples/ReferenceServer"
 if [ ! -x "${server_binary}" ]; then
-    echo "找不到可执行体 ${server_binary}（先 cmake --build build/${build} --target reference_server）" >&2
+    echo "找不到可执行体 ${server_binary}（先 cmake --build build/${build} --target ReferenceServer）" >&2
     exit 1
 fi
 

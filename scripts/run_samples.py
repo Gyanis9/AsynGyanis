@@ -3,10 +3,10 @@
 
 示例自己报告结论：stdout 上打印 `RESULT <name> PASS|FAIL <步数> gated <跳过数>`，退出码 0 表示全绿。
 本脚本不假设示例清单——它扫构建目录里现成的可执行文件，所以新增示例不需要改这里。
-reference_server 是部署形态的服务器（不作自检），只按 --help 做一次冒烟运行。
+ReferenceServer 是部署形态的服务器（不作自检），只按 --help 做一次冒烟运行。
 
     python scripts/run_samples.py                  # 跑全部
-    python scripts/run_samples.py --only net_http_demo --repeat 3
+    python scripts/run_samples.py --only NetHttpDemo --repeat 3
     python scripts/run_samples.py --build build/release --timeout 300
 """
 
@@ -27,27 +27,33 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# 示例名前缀 → 所属模块；用于矩阵左侧的分组
+# 示例名前缀 → 所属模块；用于矩阵左侧的分组。程序名是大驼峰，前缀就按大驼峰的首段匹配
 MODULE_BY_PREFIX = {
-    "base": "Base",
-    "platform": "Platform",
-    "core": "Core",
-    "net": "Net",
-    "database": "Database",
-    # reference_server 是 Net 的部署形态示例，归到 Net 比落到 other 更看得出覆盖面
-    "reference": "Net",
+    "Base": "Base",
+    "Platform": "Platform",
+    "Core": "Core",
+    "Net": "Net",
+    "Database": "Database",
+    # ReferenceServer 是 Net 的部署形态示例，归到 Net 比落到 other 更看得出覆盖面
+    "Reference": "Net",
 }
 
 RESULT_LINE = re.compile(r"^RESULT\s+(\S+)\s+(PASS|FAIL)\s+(\d+)(?:\s+gated\s+(\d+))?\s*$", re.MULTILINE)
 
 # 部署形态的服务器：它不是自检程序（直接跑会一直服务下去），只按 --help 冒烟一次
-SMOKE_ONLY = {"reference_server"}
+SMOKE_ONLY = {"ReferenceServer"}
 
 
 def infer_module(name: str) -> str:
-    """按名字前缀猜模块名；猜不出时归到 other。"""
-    prefix = name.split("_", 1)[0]
-    return MODULE_BY_PREFIX.get(prefix, "other")
+    """按名字前缀归组；归不进已知模块时落到 other，让矩阵自己把「这个示例没归组」暴露出来。
+
+    取**最长**匹配：程序名没有分隔符可切，`PlatformPrimitives` 的首段是 `Platform`，而
+    `ReferenceServer` 要靠 `Reference` 才归得到 Net——按最短前缀匹配会把两者都读成 other。
+    """
+    matched = [prefix for prefix in MODULE_BY_PREFIX if name.startswith(prefix)]
+    if not matched:
+        return "other"
+    return MODULE_BY_PREFIX[max(matched, key=len)]
 
 
 def find_sample_executables(build_dir: Path) -> list[Path]:
@@ -78,7 +84,7 @@ def targets_known_to_build(build_dir: Path) -> set[str] | None:
     """问构建系统「这一份配置到底产出哪些示例」；问不出来返回 None（退回按目录里有什么跑）。
 
     只按目录 glob 会把**已从构建清单里删掉或按平台关掉**的示例的残留可执行文件也算一份证据——那份
-    二进制属于上一轮配置，跑它得出的红或绿都不属于当前这份代码（实测：Windows 上关掉的 core_upgrade
+    二进制属于上一轮配置，跑它得出的红或绿都不属于当前这份代码（实测：Windows 上关掉的 CoreUpgrade
     留着一份 .exe，矩阵因此白红两条）。反过来，配置里有、目录里却没有的可执行文件也不能当没看见：
     那正是「示例根本没跑」的形态，门禁要出声。
     """

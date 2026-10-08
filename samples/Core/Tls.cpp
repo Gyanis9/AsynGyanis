@@ -267,5 +267,5 @@ int main(const int argc, char **argv)
     samples.check(probe.isEchoCorrect, "TLS 通道上的应用数据原样到达");
 
     static_cast<void>(probeTask);
-    return Samples::finishSample("core_tls");
+    return Samples::finishSample("CoreTls");
 }

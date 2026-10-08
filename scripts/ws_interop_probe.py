@@ -12,9 +12,9 @@ permessage-deflate（RFC 7692）协商之后大正文仍然等价。
 在 Git Bash/MSYS 下传 --path 要加 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'（见 main 里的判据）。
 
 先起服务（明文示例）：
-    build/debug/samples/reference_server.exe --port 18080
+    build/debug/samples/ReferenceServer.exe --port 18080
 TLS 版：
-    build/debug/samples/reference_server.exe --port 18443 --https --cert tests/Core/fixtures/test_cert.pem
+    build/debug/samples/ReferenceServer.exe --port 18443 --https --cert tests/Core/fixtures/test_cert.pem
         --key tests/Core/fixtures/test_key.pem
 
 依赖：pip install websockets
@@ -213,7 +213,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="WebSocket 跨实现一致性验收")
     parser.add_argument("host")
     parser.add_argument("port", type=int)
-    parser.add_argument("--path", default="/ws", help="reference_server 的 WebSocket 路由")
+    parser.add_argument("--path", default="/ws", help="ReferenceServer 的 WebSocket 路由")
     parser.add_argument("--wss", action="store_true", help="走 TLS（服务端需带 --https --cert --key）")
     parser.add_argument("--no-deflate", action="store_true", help="核对时不要求 permessage-deflate 协商结果")
     args = parser.parse_args()

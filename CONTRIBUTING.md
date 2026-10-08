@@ -141,7 +141,7 @@ src/Core/     — 异步运行时：EventLoop（三后端 + IoWatcher + TimerQue
 src/Net/      — 网络应用层：Tcp / Http（含 Client）/ Http2 / Http3 / Quic / WebSocket
 src/Database/ — 数据访问：Common / Dialect / Pool / Queryable / Sqlite / MySql / Redis
 tests/        — 单元测试（GoogleTest），目录与 src 逐级对齐
-samples/      — 示例程序（reference_server，随构建编译）
+samples/      — 示例程序（ReferenceServer，随构建编译）
 ```
 
 命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），子目录不引入新命名空间；include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。模块分层与链接依赖见 README 的「架构」一节。

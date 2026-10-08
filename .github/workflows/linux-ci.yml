@@ -42,7 +42,7 @@ jobs:
             redis: "0"
           - name: net
             label: Net
-            targets: "TestNet reference_server"
+            targets: "TestNet ReferenceServer"
             testDirectories: "tests/Net"
             redis: "0"
           - name: database
@@ -213,8 +213,8 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # 探针只需要「一个能跑的服务端」，示例服务器就是它：h2c / TLS 的开关都齐
-      - name: 构建 reference_server
-        run: cmake --build build/debug --target reference_server -- -k 0
+      - name: 构建 ReferenceServer
+        run: cmake --build build/debug --target ReferenceServer -- -k 0
 
       # h2spec 是**别人写的** HTTP/2 裁判：146 条判据直接引 RFC 的句子，自家探针查不出的
       # 「两边都错在同一种理解上」由它查。取固定版本的官方发布包（不自己编 Go），失败就让它红——
@@ -248,15 +248,15 @@ jobs:
 
           # 18080：h2c + /metrics（那条探针要读计数）。--h2c 会把明文连接一律收进 HTTP/2，
           # 同一端口不再服务 HTTP/1.1，所以下面的 WebSocket 探针必须另开一台明文 h1 的服务端
-          build/debug/samples/reference_server --port 18080 --threads 2 --metrics --h2c > /tmp/h2c.log 2>&1 &
+          build/debug/samples/ReferenceServer --port 18080 --threads 2 --metrics --h2c > /tmp/h2c.log 2>&1 &
           h2c_pid=$!
           # 18081 这台要能被容器访问到：Autobahn 跑在另一个网络命名空间里，经 host-gateway 回到宿主，
-          # 而 reference_server 默认只听 localhost（Docker Desktop 的代理能进宿主回环，Linux 不能 →
+          # 而 ReferenceServer 默认只听 localhost（Docker Desktop 的代理能进宿主回环，Linux 不能 →
           # 表现就是 wstest 起来了却「Connection refused」，一条用例都跑不完）
-          build/debug/samples/reference_server --host 0.0.0.0 --port 18081 --threads 2 --metrics > /tmp/plain.log 2>&1 &
+          build/debug/samples/ReferenceServer --host 0.0.0.0 --port 18081 --threads 2 --metrics > /tmp/plain.log 2>&1 &
           plain_pid=$!
           # 18443：TLS。wss 走 TCP+ALPN，对端只报 http/1.1 时就按 h1 服务（这正是它要协商到的形态）
-          build/debug/samples/reference_server --port 18443 --threads 1 --https \
+          build/debug/samples/ReferenceServer --port 18443 --threads 1 --https \
             --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem \
             > /tmp/tls.log 2>&1 &
           tls_pid=$!
@@ -611,7 +611,7 @@ jobs:
           path: /tmp/clang-tidy.log
           if-no-files-found: ignore
 
-  # HTTP/3 互通验收：用 aioquic（独立实现）当对端，按场景打 reference_server 的 h3 端点——GET 的响应头
+  # HTTP/3 互通验收：用 aioquic（独立实现）当对端，按场景打 ReferenceServer 的 h3 端点——GET 的响应头
   # 逐条核、HEAD 不许带正文、流式响应要分趟、大正文按序拼回、声明 gzip 就得真压上、扩展 CONNECT
   # （RFC 9220）隧道要回显。h3 会话用例的对端是测试自己按 RFC 排字节的（第三方实现已移出构建），
   # 它对「字节合不合规范」只算自证，这份判定必须由不认识本仓代码的实现来出。
@@ -646,9 +646,9 @@ jobs:
       - name: 配置（Release；Conan 依赖由 conan_provider.cmake 自动安装）
         run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF
 
-      - name: 构建 reference_server 与 QUIC 跨实现探针的被测端
+      - name: 构建 ReferenceServer 与 QUIC 跨实现探针的被测端
         run: |
-          cmake --build build/release --target reference_server quic_probe_server quic_probe_client
+          cmake --build build/release --target ReferenceServer quic_probe_server quic_probe_client
 
       - name: HTTP/3 跨实现验收（GET/HEAD/流式/大正文/压缩/WebSocket 隧道）
         run: ASYN_H3_CROSS_LOG=/tmp/echo-h3.log bash scripts/h3_cross_check.sh build/release "$(command -v python3)"

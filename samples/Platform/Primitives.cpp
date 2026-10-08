@@ -278,7 +278,7 @@ int main()
 {
     Samples::setupConsoleLogging();
 
-    const auto directory = std::filesystem::temp_directory_path() / ("asyn-sample-platform-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+    const auto directory = std::filesystem::temp_directory_path() / ("asyn-sample-PlatformPrimitives-orm-" + std::to_string(Platform::ProcessInfo::currentProcessId()));
     std::filesystem::remove_all(directory);
     std::filesystem::create_directories(directory);
 
@@ -294,5 +294,5 @@ int main()
     static_cast<void>(Platform::Socket::finalize());
 
     std::filesystem::remove_all(directory);
-    return Samples::finishSample("platform");
+    return Samples::finishSample("PlatformPrimitives");
 }

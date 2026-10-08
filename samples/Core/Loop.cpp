@@ -250,5 +250,5 @@ int main(const int argc, char **argv)
 
     context.stop();
     static_cast<void>(probesTask);
-    return Samples::finishSample("core_loop");
+    return Samples::finishSample("CoreLoop");
 }

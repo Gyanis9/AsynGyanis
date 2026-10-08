@@ -329,7 +329,7 @@ int main(int argc, char **argv)
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));
-        return Samples::finishSample("core_upgrade");
+        return Samples::finishSample("CoreUpgrade");
     }
 
     // 交出去。本代不关：SCM_RIGHTS 让两代各持同一个开放文件描述的一份引用，收口的顺序决定端口有空窗没空窗
@@ -341,7 +341,7 @@ int main(int argc, char **argv)
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));
-        return Samples::finishSample("core_upgrade");
+        return Samples::finishSample("CoreUpgrade");
     }
 
     // 等新一代答话——这一步成立之前本代绝不收口
@@ -382,5 +382,5 @@ int main(int argc, char **argv)
     LOG_INFO_FMT("换代结论：本代答话 {} 次；收口前新一代答话 {} 次；收口后新一代答话 {} 次；服务端口 {}", servedByParent, servedByChildBeforeDrain, servedByChildAfterDrain,
                  servicePort);
 
-    return Samples::finishSample("core_upgrade");
+    return Samples::finishSample("CoreUpgrade");
 }

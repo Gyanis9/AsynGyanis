@@ -209,63 +209,63 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 
 > 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[worker-handoff-workflow.html](assets/diagrams/worker-handoff-workflow.html)
 
-`samples/reference_server` 随构建一起编译（默认每线程一个监听 socket）：
+`samples/ReferenceServer` 随构建一起编译（默认每线程一个监听 socket）：
 
 ```bash
-./build/debug/samples/reference_server --port 8080 --threads 4                 # HTTP
-./build/debug/samples/reference_server --https --cert cert.pem --key key.pem   # HTTPS
+./build/debug/samples/ReferenceServer --port 8080 --threads 4                 # HTTP
+./build/debug/samples/ReferenceServer --https --cert cert.pem --key key.pem   # HTTPS
 # 同一个端口号的 UDP 上再提供 HTTP/3（QUIC 自带 TLS，故需与 --https 同用）
-./build/debug/samples/reference_server --https --cert cert.pem --key key.pem --h3
+./build/debug/samples/ReferenceServer --https --cert cert.pem --key key.pem --h3
 # 一个监听器 + N 个工作循环，靠用户态分发而非 SO_REUSEPORT（Windows 多线程请用这个）
-./build/debug/samples/reference_server --port 8080 --threads 4 --dispatch-accept
+./build/debug/samples/ReferenceServer --port 8080 --threads 4 --dispatch-accept
 # 每条工作循环线程绑一枚逻辑核（按线程池下标顺序占核，减少调度迁移；容器里按 cpuset 放行的核算）
-./build/debug/samples/reference_server --port 8080 --threads 4 --pin-threads
+./build/debug/samples/ReferenceServer --port 8080 --threads 4 --pin-threads
 # N 个 worker 进程服务同一个端口，崩溃即补位（进程间不共享状态）
-./build/debug/samples/reference_server --port 8080 --workers 4
+./build/debug/samples/ReferenceServer --port 8080 --workers 4
 # 配置里的 acme 段开着就装常驻续期循环：签完的新证书热装回本进程每一台 TLS 监听器，
 # 证书身份以 acme 的落点为准；多 worker 时签发只归槽位 0 那个进程，其余进程各跑一条跟盘协程
-./build/debug/samples/reference_server --config server.yaml --https
-./build/debug/samples/reference_server --help                                  # 全部参数
+./build/debug/samples/ReferenceServer --config server.yaml --https
+./build/debug/samples/ReferenceServer --help                                  # 全部参数
 ```
 
 内建端点：`GET /`、`GET /json`、`GET /bench`、`GET /big`（256 KiB 可压缩正文，`--compress` 的验收对象）。
 
 ### 按模块的自检示例
 
-`reference_server` 是部署形态；能力按模块拆成了 12 个各自自检的程序（下面这张表就是那 12 行；条数以
+`ReferenceServer` 是部署形态；能力按模块拆成了 12 个各自自检的程序（下面这张表就是那 12 行；条数以
 `python scripts/run_samples.py --build build/debug --list` 现枚举为准——Windows 这一档只有 11 条自检程序
-加 `reference_server`，`core_upgrade` 只在 POSIX 构建），每个程序逐步打印 `✓`/`✗`，
+加 `ReferenceServer`，`CoreUpgrade` 只在 POSIX 构建），每个程序逐步打印 `✓`/`✗`，
 并在 stdout 上留一行 `RESULT <名字> PASS|FAIL <步数> gated <跳过数>` 供脚本判定（退出码 0 表示全绿）：
 `<步数>` 只算真正执行过的步，`gated` 单列因环境不齐备（真机凭据缺席这类）而跳过的步——
 两者分开，「真机跑过」与「真机没跑」才不会给出同一条结论：
 
 | 程序 | 覆盖 | 自检步数 |
 | --- | --- | --- |
-| `base_log` | Sink（控制台/文件/滚动/异步）、格式化器、注册表、配置驱动装配、异常带栈 | 25 |
-| `base_config` | 多文件加载与优先级、目录递归、点分路径取值、模式校验、热重载 | 29 |
-| `platform` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 36（Windows）/ 38（POSIX） |
-| `core_loop` | 事件循环与调度器、定时器、IO 监听器、解析器、UDP/TCP 协程收发、协程池、取消令牌 | 14 |
-| `core_tls` | 证书装载与热替换、OCSP、私有 CA、回环握手与会话恢复 | 10 |
-| `core_worker` | WorkerSupervisor 的构造期拒因；Windows 上另验「不给移交档位即拒且拒因点名叫 handoff」与「填了档位即放行」，POSIX 上验补位、崩溃上限、自行收手，以及「按请求收口」与「整池被放弃」两种收场各报对一次 | 6（Windows）/ 12（POSIX） |
-| `core_upgrade` | 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（Windows 受完成端口的句柄级关联限制，只在 POSIX 构建） | 6（POSIX） |
-| `net_http_demo` | HTTP/1.1 路由与中间件、静态文件目录、解析上限、分块与 SSE、WebSocket（回显与主题扇出的文本/二进制两种帧）、下一跳地址的解析、四类限额、接受分发、指标与健康端点、优雅收口 | 47 |
-| `net_https_h2_demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
-| `net_http3_demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
-| `net_udp_demo` | UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付与零长报文、主动下发、统计、处理器抛异常后的存活、两种顺序混用被拒、收口叫醒挂着的协程 | 13 |
-| `database_demo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 79 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
+| `BaseLog` | Sink（控制台/文件/滚动/异步）、格式化器、注册表、配置驱动装配、异常带栈 | 25 |
+| `BaseConfig` | 多文件加载与优先级、目录递归、点分路径取值、模式校验、热重载 | 29 |
+| `PlatformPrimitives` | 描述符与套接字工具、通知器、定时器、内存映射、数据报、进程起停、编码与时间 | 36（Windows）/ 38（POSIX） |
+| `CoreLoop` | 事件循环与调度器、定时器、IO 监听器、解析器、UDP/TCP 协程收发、协程池、取消令牌 | 14 |
+| `CoreTls` | 证书装载与热替换、OCSP、私有 CA、回环握手与会话恢复 | 10 |
+| `CoreWorker` | WorkerSupervisor 的构造期拒因；Windows 上另验「不给移交档位即拒且拒因点名叫 handoff」与「填了档位即放行」，POSIX 上验补位、崩溃上限、自行收手，以及「按请求收口」与「整池被放弃」两种收场各报对一次 | 6（Windows）/ 12（POSIX） |
+| `CoreUpgrade` | 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（Windows 受完成端口的句柄级关联限制，只在 POSIX 构建） | 6（POSIX） |
+| `NetHttpDemo` | HTTP/1.1 路由与中间件、静态文件目录、解析上限、分块与 SSE、WebSocket（回显与主题扇出的文本/二进制两种帧）、下一跳地址的解析、四类限额、接受分发、指标与健康端点、优雅收口 | 47 |
+| `NetHttpsH2Demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
+| `NetHttp3Demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
+| `NetUdpDemo` | UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付与零长报文、主动下发、统计、处理器抛异常后的存活、两种顺序混用被拒、收口叫醒挂着的协程 | 13 |
+| `DatabaseDemo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 79 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
 
 表内步数是两侧各自实测：Windows 一轮 `run_samples.py --repeat 2` 逐对一致，POSIX 侧在容器
-`ubuntu24` 里跑同一份源码。两台的差只来自平台专属步骤（本轮逐条比对过步骤名）：`platform` 在
+`ubuntu24` 里跑同一份源码。两台的差只来自平台专属步骤（本轮逐条比对过步骤名）：`PlatformPrimitives` 在
 POSIX 多三条（`sendfile` 零拷贝两条、fork 成功而 exec 失败的一条），在 Windows 多一条（启动不存在的
-程序给出无效句柄而不是抛异常）；`core_worker` 在 Windows 只验构造期拒因，POSIX 才验补位、崩溃上限与
-自行收手。`database_demo` 的两种写法是同一条命令的两种环境：设了 `ASYN_MYSQL_TEST_PASSWORD` 与
+程序给出无效句柄而不是抛异常）；`CoreWorker` 在 Windows 只验构造期拒因，POSIX 才验补位、崩溃上限与
+自行收手。`DatabaseDemo` 的两种写法是同一条命令的两种环境：设了 `ASYN_MYSQL_TEST_PASSWORD` 与
 `ASYN_REDIS_TEST_PASSWORD` 之后，MySQL 与 Redis 两组步骤真跑（各自展开成多步），`gated` 归零。
 
 一把跑完并汇总成矩阵（示例清单从构建目录里扫出来，新增程序不必改脚本）：
 
 ```bash
 python scripts/run_samples.py                        # 全部跑一遍
-python scripts/run_samples.py --only net_http_demo --repeat 3   # 重复跑，抓靠时序侥幸的用例
+python scripts/run_samples.py --only NetHttpDemo --repeat 3   # 重复跑，抓靠时序侥幸的用例
 python scripts/run_samples.py --build build/release --timeout 300
 ```
 
@@ -577,7 +577,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 消费方有两处。签发探针 `acme_issuance_probe --config <file>` 以文件那份为默认，命令行上**显式给出**的
 `--domain` / `--contact` / `--challenge` / `--state-dir` / `--dns-zone` / `--dns-ttl` 才覆盖它，并打一行
-`CHALLENGE … FROM cli|config` 说明这次是哪份在生效。`reference_server --config <file>` 则把这一段装成
+`CHALLENGE … FROM cli|config` 说明这次是哪份在生效。`ReferenceServer --config <file>` 则把这一段装成
 **常驻续期**：本进程每一台 HTTPS 监听器与 h3 都在装回名单里，签完的新证书当场 `reloadCertificate()` 换上，
 启动日志直接给出「装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在」——那个 N 按真能转成 TLS 服务器的对象数，
 不按 `--https`/`--h3` 两个开关猜，所以「开关说了而对象不在」这一格当场可见。
@@ -595,7 +595,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
   那一个进程；而装配判据挂在「本进程会不会自己跟盘」这件能力上，不挂在进程数上——两条机制都没装的部署
   照样在启动那一刻被拒。
 
-首次签发不在服务侧：落点上还没有可加载的身份时 `reference_server` 启动即失败并说明「先用
+首次签发不在服务侧：落点上还没有可加载的身份时 `ReferenceServer` 启动即失败并说明「先用
 `acme_issuance_probe` 跑一次」，而不是把一句 OpenSSL 的 PEM 解析错误留给人猜。停机排在停服务器之前：
 先叫停 ACME 的常驻协程（续期循环与跟盘协程各一条），再等它们**真的**退出（有界——停放一片 1 秒，等待上限
 5 秒；正在进行的那一轮签发刻意不打断，半途掐掉会留下半个订单状态），帧不会带着一个已销毁的管理器被丢下。判据本体在
@@ -709,7 +709,7 @@ AsynGyanis/
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
 ├── cmake/                  # 包配置模板（`AsynGyanisConfig.cmake.in`）、编译期特性头模板、库形态与导出宏装配
 ├── assets/diagrams/        # 架构与流程图的候选 JSON、可探索 HTML 与预览 PNG（每条断言带 路径:行号 证据）
-├── samples/                # 按模块拆开的自检示例 + reference_server（部署形态），总跑见 scripts/run_samples.py
+├── samples/                # 按模块拆开的自检示例 + ReferenceServer（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
 ├── scripts/                # 发布版本一致性门禁、示例总跑、跨实现验收探针（QUIC/h3/WS/h2/ACME）
@@ -751,13 +751,13 @@ AsynGyanis/
 | --- | --- | --- | --- | --- |
 | TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
 | ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
-| `acme` 配置段 | `Net::readAcmeConfiguration(root)` + `Net::buildDns01TxtWriter(loop, cfg)` + `Net::validateAcmeAssembly(cfg, facts)`；消费方是签发探针 `acme_issuance_probe --config <file>` 与 `reference_server --config <file>`（后者装常驻续期循环，签完的新证书热装回本进程每一台 TLS 监听器） | 整段缺失 = `enabled` 为 false，谁都不去签；`challenge` 默认 `http-01`、`dns.record_ttl_seconds` 默认 600（下限也是 600：这一家实测拒更小值，配低了在**读配置**时就拒，不留到第一次签发才在 API 上报 `The specified TTL is invalid`）、`renew_before_expiry_days` 30、`renewal_check_interval_minutes` 720 | 探针打一行 `CHALLENGE <种类> PROVIDER … ZONE … TTL … FROM cli\|config`，`FROM config` 才说明文件里那份在生效；`--domain` / `--contact` / `--challenge` 显式给出时才覆盖文件。服务侧另打一行「证书自动化：开（… 装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在）」，N 按真能转成 TLS 服务器的对象数，不按开关猜 | 段内未知键当场拒（13 键 + `dns` 那 3 键）；`dns` 段与 `challenge: http-01` 同时出现两边都拒；**AccessKey 刻意不认配置文件**，只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `_SECRET` 读，缺一条就在建写入器时拒——能改域名记录的钥匙进版本库等于把域名交出去；服务侧的三条边界同属「配了不生效」这一族，一律启动即拒或启动即说清：开着 `acme` 时证书身份以 `acme` 落点为准（`--cert/--key` 不一致会被顶掉并打 WARN）、`http-01` 在本示例没有公网明文口可用（一个端口只服务一种协议，拒并指回 `dns-01`）、多 worker 进程里签发归槽位 0、其余进程靠 `Net::followCertificateRotation` 跟盘（两条都没装的部署照样拒）|
-| 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`memory_budget_bytes`、`rate_limit.*` | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB、入站 WebSocket 消息 8 MiB（`maximum_websocket_message_size`：一个数同时管单帧声明长度、分片重组后的总长与 permessage-deflate 的解压输出上限，0 = 不限；三条通道——h1 的 101 升级、h2 的扩展 CONNECT、h3 的 CONNECT 隧道——吃同一份配置）；**条数、请求目标长度与单条头名/头值长度这三道闸门在三条通道上同一判据**（h1 由解析器判，h2/h3 在 intake 判，伪头也算一条；条数与头块字节都按**整条报文累计**——尾部头块那场加在头部之上一起判，h2/h3 的流式路由是明写的例外：请求已派发，越限只拦得住尾字段而回不出 431；h2 的两条长度闸门由 HPACK 解码器执行，上限取自 `parser_limits` 而非该层自己的常数；头块**字节**数三条通道都判这一把尺——h2 在 intake 按名与值的净字节判，另有 `setHttp2Configuration()` 那个随 SETTINGS 通告出去的值按 §6.5.2 的「每条 +32」并排判，取更紧的一方生效，两者出厂同为 64 KiB）；空闲 75s、读写各 60s；**并发默认是有限值**：每监听器 4096、单来源 256（写 0 才是显式不限）；`requests_per_second` 与在途正文总量仍默认 0 = 不限——限流给默认值会误杀真实用户，方向不对 | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；开了总量账之后还有 `asyn_http_inflight_body_bytes`（当前在途正文字节）与 `asyn_http_memory_budget_rejections_total`（被预算拒掉的预留次数）；令牌桶打开后超限回 429；`reference_server` 启动打两行读数报的才是生效值：「并发限额：整机 … 摊给 N 个进程 → 每进程 …」与「并发限额（每监听器生效值）：整机 … 摊给 N 个进程 × 每进程 L 条监听器 → 每台 …」——前者是一个进程里多台共用的那份账按的分母，后者是每台自己计数的那几项按的分母，只印一行就会有一行是假的；**分母也在 `/metrics` 上**（`asyn_http_maximum_connections` 与 `asyn_http_maximum_connections_per_ip`，两条 gauge，0 分别是「不设这道限」与「那道闸门没装」）——只有分子时「离上限还有多远」这类预警画不出来，得等到真拒了连接才看得见；两条分母是**本监听器**的口径，而分子 `active_connections` 在多台监听器共用一份采集端时是**相加的那一份**，两者不同源，别直接相除当负载率 | 显式写 0 = 不限是把内存和连接表交给对端，要写就得写下理由；单来源那道 256 是给共享出口（运营商级 NAT、企业代理）留的余量——真被撞到的部署应按实测并发抬高它，而不是把闸门关掉；`--h3` 那侧另有一份 `QuicServer` 自带的默认 1024（单位连接更贵，配额刻意不同），示例只在摊后的份额为正时覆盖它。**多进程时配置写的是整机口径**：装配出口按 `workerProcessCount × listenersPerProcess` 向上取整摊到每台（`perProcessShare`，两个分母各管一类：每台自己计数的限额乘台数，而一个进程里多台共用的那份共享对象只按进程数摊——乘错了会把闸门压到 1/L），本台真正卡多少可问 `TcpServer::maximumConnections()`；启动时打**两行**读数，因为两类限额的分母不同：一行是「整机 100 摊给 2 个进程 → 每进程 50」（一个进程里多台共用的那份共享账按它），另一行是「整机 100 摊给 2 个进程 × 每进程 4 条监听器 → 每台 13」这种每台真正卡多少；`rate_limit` 走同一套摊分但**取整方向相反**——速率精确除（0.5 请求/s 不能被抬成 1），桶容量向下除后兜在 1.0（容量不足一枚令牌的桶一个请求都放不出），而递进装配出口的桶若不是摊后那一份会当场拒；`memory_budget_bytes` 与连接数同向（向上取整摊到每台），装配出口把摊后的那一份落到 `setMemoryBudget()`，示例再把同一个对象递进 `QuicServer::Configuration::memoryBudget`，于是三条通道共用一份账——命令行 `--max-inflight-body` 是它的覆盖，口径同为整机 |
+| `acme` 配置段 | `Net::readAcmeConfiguration(root)` + `Net::buildDns01TxtWriter(loop, cfg)` + `Net::validateAcmeAssembly(cfg, facts)`；消费方是签发探针 `acme_issuance_probe --config <file>` 与 `ReferenceServer --config <file>`（后者装常驻续期循环，签完的新证书热装回本进程每一台 TLS 监听器） | 整段缺失 = `enabled` 为 false，谁都不去签；`challenge` 默认 `http-01`、`dns.record_ttl_seconds` 默认 600（下限也是 600：这一家实测拒更小值，配低了在**读配置**时就拒，不留到第一次签发才在 API 上报 `The specified TTL is invalid`）、`renew_before_expiry_days` 30、`renewal_check_interval_minutes` 720 | 探针打一行 `CHALLENGE <种类> PROVIDER … ZONE … TTL … FROM cli\|config`，`FROM config` 才说明文件里那份在生效；`--domain` / `--contact` / `--challenge` 显式给出时才覆盖文件。服务侧另打一行「证书自动化：开（… 装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在）」，N 按真能转成 TLS 服务器的对象数，不按开关猜 | 段内未知键当场拒（13 键 + `dns` 那 3 键）；`dns` 段与 `challenge: http-01` 同时出现两边都拒；**AccessKey 刻意不认配置文件**，只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `_SECRET` 读，缺一条就在建写入器时拒——能改域名记录的钥匙进版本库等于把域名交出去；服务侧的三条边界同属「配了不生效」这一族，一律启动即拒或启动即说清：开着 `acme` 时证书身份以 `acme` 落点为准（`--cert/--key` 不一致会被顶掉并打 WARN）、`http-01` 在本示例没有公网明文口可用（一个端口只服务一种协议，拒并指回 `dns-01`）、多 worker 进程里签发归槽位 0、其余进程靠 `Net::followCertificateRotation` 跟盘（两条都没装的部署照样拒）|
+| 限额与背压 | `server.parser_limits.*`、`server.limits.*`、`maximum_connections`、`maximum_connections_per_ip`、`memory_budget_bytes`、`rate_limit.*` | 头部 100 条 / 单值 8 KiB / 头块 64 KiB / 正文 8 MiB、入站 WebSocket 消息 8 MiB（`maximum_websocket_message_size`：一个数同时管单帧声明长度、分片重组后的总长与 permessage-deflate 的解压输出上限，0 = 不限；三条通道——h1 的 101 升级、h2 的扩展 CONNECT、h3 的 CONNECT 隧道——吃同一份配置）；**条数、请求目标长度与单条头名/头值长度这三道闸门在三条通道上同一判据**（h1 由解析器判，h2/h3 在 intake 判，伪头也算一条；条数与头块字节都按**整条报文累计**——尾部头块那场加在头部之上一起判，h2/h3 的流式路由是明写的例外：请求已派发，越限只拦得住尾字段而回不出 431；h2 的两条长度闸门由 HPACK 解码器执行，上限取自 `parser_limits` 而非该层自己的常数；头块**字节**数三条通道都判这一把尺——h2 在 intake 按名与值的净字节判，另有 `setHttp2Configuration()` 那个随 SETTINGS 通告出去的值按 §6.5.2 的「每条 +32」并排判，取更紧的一方生效，两者出厂同为 64 KiB）；空闲 75s、读写各 60s；**并发默认是有限值**：每监听器 4096、单来源 256（写 0 才是显式不限）；`requests_per_second` 与在途正文总量仍默认 0 = 不限——限流给默认值会误杀真实用户，方向不对 | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按 IP 挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满）；开了总量账之后还有 `asyn_http_inflight_body_bytes`（当前在途正文字节）与 `asyn_http_memory_budget_rejections_total`（被预算拒掉的预留次数）；令牌桶打开后超限回 429；`ReferenceServer` 启动打两行读数报的才是生效值：「并发限额：整机 … 摊给 N 个进程 → 每进程 …」与「并发限额（每监听器生效值）：整机 … 摊给 N 个进程 × 每进程 L 条监听器 → 每台 …」——前者是一个进程里多台共用的那份账按的分母，后者是每台自己计数的那几项按的分母，只印一行就会有一行是假的；**分母也在 `/metrics` 上**（`asyn_http_maximum_connections` 与 `asyn_http_maximum_connections_per_ip`，两条 gauge，0 分别是「不设这道限」与「那道闸门没装」）——只有分子时「离上限还有多远」这类预警画不出来，得等到真拒了连接才看得见；两条分母是**本监听器**的口径，而分子 `active_connections` 在多台监听器共用一份采集端时是**相加的那一份**，两者不同源，别直接相除当负载率 | 显式写 0 = 不限是把内存和连接表交给对端，要写就得写下理由；单来源那道 256 是给共享出口（运营商级 NAT、企业代理）留的余量——真被撞到的部署应按实测并发抬高它，而不是把闸门关掉；`--h3` 那侧另有一份 `QuicServer` 自带的默认 1024（单位连接更贵，配额刻意不同），示例只在摊后的份额为正时覆盖它。**多进程时配置写的是整机口径**：装配出口按 `workerProcessCount × listenersPerProcess` 向上取整摊到每台（`perProcessShare`，两个分母各管一类：每台自己计数的限额乘台数，而一个进程里多台共用的那份共享对象只按进程数摊——乘错了会把闸门压到 1/L），本台真正卡多少可问 `TcpServer::maximumConnections()`；启动时打**两行**读数，因为两类限额的分母不同：一行是「整机 100 摊给 2 个进程 → 每进程 50」（一个进程里多台共用的那份共享账按它），另一行是「整机 100 摊给 2 个进程 × 每进程 4 条监听器 → 每台 13」这种每台真正卡多少；`rate_limit` 走同一套摊分但**取整方向相反**——速率精确除（0.5 请求/s 不能被抬成 1），桶容量向下除后兜在 1.0（容量不足一枚令牌的桶一个请求都放不出），而递进装配出口的桶若不是摊后那一份会当场拒；`memory_budget_bytes` 与连接数同向（向上取整摊到每台），装配出口把摊后的那一份落到 `setMemoryBudget()`，示例再把同一个对象递进 `QuicServer::Configuration::memoryBudget`，于是三条通道共用一份账——命令行 `--max-inflight-body` 是它的覆盖，口径同为整机 |
 | `/metrics` 接线 | `applyHttpServerConfiguration()` + `server.expose_metrics`（令牌：`server.ops_bearer_token`；程序侧 `enableMetricsEndpoint()` / `enableHealthEndpoint()` / `enableReadinessEndpoint()` / `enableLoopDiagnosticsEndpoint()`） | 关（一个端点都不注册）；不开令牌时四面都不鉴权 | 直接 `curl` 四个端点：`/metrics`、`/healthz`、`/readyz`、`/debug/loops`；配了令牌后要带 `Authorization: Bearer <token>` 才回 200 | `/metrics` 与 `/debug/loops` 读得到内部计数与每条循环的状态，开到 `0.0.0.0` 就是公开暴露；`ops_bearer_token` 给这两个加 Bearer 闸门（`/healthz` 与 `/readyz` 刻意不挡——存活探针与就绪探针都要能被编排器无凭据访问，给探针加令牌只会让人把探针关掉）。`/readyz` 只问「还在不在接新连接」：`stop()` / `drain()` 之后回 503 + `retry-after: 1`，正在排空在途请求的那段就是编排器把这台摘出负载的窗口，而这段里 `/healthz` 仍回 200（进程还在转，把它当存活失败杀掉才会真丢请求）。令牌只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表。来源本身的收口要靠只听回环的管理口（见下一行） |
 | 非 HTTP 那侧的读数出口 | `Core::ProcessMetricsRegistry::registerMetric(...)`（RAII 把手，析构即注销），渲染点在 `/metrics` 末尾按登记的**完整名字**原样导出 | 各模块的对象构造时就登记，不需要应用接线；没有登记过就没有那一行（不是 0） | 抓一次 `/metrics` 看名字在不在：`asyn_acme_certificate_expiry_seconds` / `asyn_acme_issuances_total` / `asyn_acme_failures_total`（证书自动化）、`asyn_acme_dns01_*`（dns-01 写入的条数与花掉的秒数）、`asyn_udp_*`（数据报四条计数）、`asyn_worker_crashes_total` / `asyn_worker_slots_given_up`、`asyn_db_pool_*`（在借 / 等待 / 当下持有 `connections_held`（旧名 `connections_created_total` 是同值别名）/ 已丢弃 / 借出超时 / 会话没复位干净 `session_reset_failures_total`——它是「已丢弃」的异常子集，另两条去向属正常生命周期）、`asyn_executor_pending_tasks` / `asyn_executor_rejected_total`（阻塞任务执行器：排队条数与因队满被拒的条数，每台执行器各报一份、抓取时求和；后一条涨了说明该降并发或加工作线程，提交方当场收到的是异常）、`asyn_tracing_exported_spans_total` / `asyn_tracing_dropped_spans_total` / `asyn_tracing_export_failures_total`（链路追踪：已交给出口的与被丢的都按**条**计，出口整批没收的按**批**计，最后一条与前两条口径不同、不能相减；而「已交给出口」是**已提交**不是已送达，采集端那一段的得失看出口自己的读数）、`asyn_tls_handshakes_total` / `asyn_tls_session_reused_total` | 三条口径容易读错：① 这些名字**不套**监听器的 `metric_name_prefix`，抓哪台都是同一份进程量；② 同名多实例按登记时给的并法合（计数求和；到期时刻取**最早**那张，因为它是会先出事的那个——但证书那条走的是「跳零求早」：某一格还没签出时交回的是 0，含义是「读不出」而不是「最早」，让它参与求早会把另一张的真值盖成一条假告警）；③ 长期为 0 就是要报的事——证书自动化没跑成与还没跑，从面板上看是同一个形状；到期时刻那条在构造时就按磁盘上现有那张填过了，所以计划内重启不会先报一段假的 0，它读出 0 就是那条路径上真没有读得出的证书。**有两类读数刻意不接**：跨线程不安全的对象（出站连接池明写「协程挂起期间被别的线程驱动会踩坏套接字状态」，抓取在另一条线程上）与「读口本身带副作用」的（`WorkerSupervisor::runningWorkerCount()` 会顺手回收子进程）——接出口之前先问这两条 |
-| 运维端点的监听面 | `server.metrics_port`（0 = 端点留在业务口上）+ `server.metrics_address`（默认 `127.0.0.1`） | `metrics_port` 为 0（不另起管理口，行为与加这两项之前逐字相同）；`metrics_address` 只听回环 | `metrics_port` 非 0 时业务口**不再注册那四个端点**（`/metrics`、`/healthz`、`/readyz`、`/debug/loops`，打过去回 404，这是刻意的反向断言），要抓数得打 `metrics_port + 本进程序号`；多进程下 `reference_server` 由 master 用 `--worker-index` 把序号传下去，逐台各听一个口 | 只配 `metrics_address` 而 `metrics_port` 仍为 0 = 什么都没挪；把 `metrics_address` 写成 `0.0.0.0` 又不配令牌，等于把内部计数与每条循环的状态公开到所有网卡；`metrics_port` 越界（含加序号后超 65535）在读配置与启动两处都当场拒——端口静默回绕会去听一个谁也没配的号，症状只是「Prometheus 抓不到数」；管理口那台服务器只发 HTTP/1.1（业务口开了 h2c 也不带过去）——抓取端本来就是 h1，运维面上多一条协议栈只是多一处可被打的入口，用例 `Http2CleartextSession.RefusesH2cPrefaceWhenCleartextSupportIsOff` 钉住没开 h2c 的端口收到 `PRI * HTTP/2.0` 时按 HTTP/1.1 语法判 400 而不是发 SETTINGS 接走 |
-| 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()`（每条通道各计各的）与 `Base::droppedAsyncLogEventCount()`（进程级合计）；`FileSink::skippedLineCount()`（文件没打开或流已失效时按行累计的「落不下盘」数）；开着 `/metrics` 时合计落在 `asyn_http_log_dropped_events_total`——队列满按策略丢、Block 策略等位超时、下游落地抛异常三种口径都算进去 | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；**本实现不认识的字段（含 `max_backups` 这类拼错的键）同样打一行 `stderr`，并报出这一层认识哪些字段**：`server` / `acme` 段是未知键当场拒，`logging` 这一段刻意只报不拒（sink 的字段集按类型多态，因一个多余字段就丢掉整条 sink 比现状更伤）；`reference_server --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
-| worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`reference_server --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/Core/Worker.cpp`（目标名仍是 `core_worker`）；master 被硬杀时 worker 随作业对象一起被终止（Windows `killWithParent`、POSIX `PDEATHSIG`），主机不让挂作业时保护缺席会落一条 WARN |
+| 运维端点的监听面 | `server.metrics_port`（0 = 端点留在业务口上）+ `server.metrics_address`（默认 `127.0.0.1`） | `metrics_port` 为 0（不另起管理口，行为与加这两项之前逐字相同）；`metrics_address` 只听回环 | `metrics_port` 非 0 时业务口**不再注册那四个端点**（`/metrics`、`/healthz`、`/readyz`、`/debug/loops`，打过去回 404，这是刻意的反向断言），要抓数得打 `metrics_port + 本进程序号`；多进程下 `ReferenceServer` 由 master 用 `--worker-index` 把序号传下去，逐台各听一个口 | 只配 `metrics_address` 而 `metrics_port` 仍为 0 = 什么都没挪；把 `metrics_address` 写成 `0.0.0.0` 又不配令牌，等于把内部计数与每条循环的状态公开到所有网卡；`metrics_port` 越界（含加序号后超 65535）在读配置与启动两处都当场拒——端口静默回绕会去听一个谁也没配的号，症状只是「Prometheus 抓不到数」；管理口那台服务器只发 HTTP/1.1（业务口开了 h2c 也不带过去）——抓取端本来就是 h1，运维面上多一条协议栈只是多一处可被打的入口，用例 `Http2CleartextSession.RefusesH2cPrefaceWhenCleartextSupportIsOff` 钉住没开 h2c 的端口收到 `PRI * HTTP/2.0` 时按 HTTP/1.1 语法判 400 而不是发 SETTINGS 接走 |
+| 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()`（每条通道各计各的）与 `Base::droppedAsyncLogEventCount()`（进程级合计）；`FileSink::skippedLineCount()`（文件没打开或流已失效时按行累计的「落不下盘」数）；开着 `/metrics` 时合计落在 `asyn_http_log_dropped_events_total`——队列满按策略丢、Block 策略等位超时、下游落地抛异常三种口径都算进去 | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；**本实现不认识的字段（含 `max_backups` 这类拼错的键）同样打一行 `stderr`，并报出这一层认识哪些字段**：`server` / `acme` 段是未知键当场拒，`logging` 这一段刻意只报不拒（sink 的字段集按类型多态，因一个多余字段就丢掉整条 sink 比现状更伤）；`ReferenceServer --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
+| worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`ReferenceServer --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/Core/Worker.cpp`（目标名仍是 `CoreWorker`）；master 被硬杀时 worker 随作业对象一起被终止（Windows `killWithParent`、POSIX `PDEATHSIG`），主机不让挂作业时保护缺席会落一条 WARN |
 | 优雅停机 | 各服务器的 `stop()` / `drain(timeout)`；`WorkerSupervisor` 的 `shutdownTimeout` | `drain` 的时长由调用方给（库不设默认）；到点后强关并在途请求作废 | 停机时观察：在册连接归零、`/metrics` 的丢弃计数不再涨 | 超时给小了会掐断在途长请求；worker 的体面退出在 POSIX 是 SIGTERM，Windows 没有信号——编排者给每个 worker 独立进程组再发 `CTRL_BREAK`（`Process::requestTermination()`），宿主没有控制台时发不出去，会记一条 WARN 再强杀 |
 
 配置键到服务器的对接只有一处：`applyHttpServerConfiguration(server, configuration, context)`（`Net/Http/HttpServerAssembly.h`）。
@@ -781,7 +781,7 @@ AsynGyanis/
 > 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
-- 当前规模（2026-10-07 实测，第 36–38 批之后；下面这段的两把透镜与外部裁判记录属于第 24–30 批那一轮）：**Windows Debug（含 ASan）3992 条全绿、零告警**（92 条按 SKIP 记账——这一轮两侧都没注真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过）；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3997 条全绿、零告警、零 sanitizer 命中**；示例矩阵 12 个程序全部 PASS（清单 13 个，core_upgrade 只在 POSIX 侧构建）；两份进程外裁判在这批里复跑过（curl/nghttp2 那套 h2 对手探针全过，aioquic 那套 h3 跨实现 11 条场景全过——h3 那份逐场景打印 `content-length` 与线上字节数，正好是下面第一条判据的外部对照）。裁判的先决条件是「服务端真的活着」：这一轮第一次跑就把 reference_server 漏在容器里没起，于是 17 项全读成 000——假失败的形状是全线红而不是某一项红，跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。这一批有两把透镜。一把是「**同一句声明在写侧与收侧、出站与入站是不是各写了一半**」：HTTP 三条通道都把调用方自设的 `content-length` 原样发出，而正文按真实字节数上线——按声明切包的对端会把多出的字节当成同一条 keep-alive 连接上下一条响应的开头；Cookie 名字里的 `__Host-` / `__Secure-` 授权声明两头都没判，带 `Domain` 的 `__Host-` 会被罐子按域 Cookie 收下再发往兄弟子域；出站客户端早就替调用方解响应正文，入站请求正文的 `Content-Encoding` 却一行都没解（`inflateHttpBody` 全仓只有一个消费方）。三处都补成「一份判据、多个消费点」。另一把是「**文档点名的标识符在树上找不找得着**」：把 CHANGELOG 与 README 里反引号包着的代码形状标识符逐个拿去 src/samples/tests/scripts 语料里找，命不中的再逐条回代码定性——抓到三条点错名的配置键/指标/方法（`header_value_length`、`total_request_count`、`noteStreamResetByPeer`）与模块地图里一个根本不存在的 `HttpsSession`；同一支探针打在 `@see` 的指向上是零。版本号三处一致（2.5.0）。
+- 当前规模（2026-10-07 实测，第 36–38 批之后；下面这段的两把透镜与外部裁判记录属于第 24–30 批那一轮）：**Windows Debug（含 ASan）3992 条全绿、零告警**（92 条按 SKIP 记账——这一轮两侧都没注真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过）；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3997 条全绿、零告警、零 sanitizer 命中**；示例矩阵 12 个程序全部 PASS（清单 13 个，CoreUpgrade 只在 POSIX 侧构建）；两份进程外裁判在这批里复跑过（curl/nghttp2 那套 h2 对手探针全过，aioquic 那套 h3 跨实现 11 条场景全过——h3 那份逐场景打印 `content-length` 与线上字节数，正好是下面第一条判据的外部对照）。裁判的先决条件是「服务端真的活着」：这一轮第一次跑就把 ReferenceServer 漏在容器里没起，于是 17 项全读成 000——假失败的形状是全线红而不是某一项红，跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。这一批有两把透镜。一把是「**同一句声明在写侧与收侧、出站与入站是不是各写了一半**」：HTTP 三条通道都把调用方自设的 `content-length` 原样发出，而正文按真实字节数上线——按声明切包的对端会把多出的字节当成同一条 keep-alive 连接上下一条响应的开头；Cookie 名字里的 `__Host-` / `__Secure-` 授权声明两头都没判，带 `Domain` 的 `__Host-` 会被罐子按域 Cookie 收下再发往兄弟子域；出站客户端早就替调用方解响应正文，入站请求正文的 `Content-Encoding` 却一行都没解（`inflateHttpBody` 全仓只有一个消费方）。三处都补成「一份判据、多个消费点」。另一把是「**文档点名的标识符在树上找不找得着**」：把 CHANGELOG 与 README 里反引号包着的代码形状标识符逐个拿去 src/samples/tests/scripts 语料里找，命不中的再逐条回代码定性——抓到三条点错名的配置键/指标/方法（`header_value_length`、`total_request_count`、`noteStreamResetByPeer`）与模块地图里一个根本不存在的 `HttpsSession`；同一支探针打在 `@see` 的指向上是零。版本号三处一致（2.5.0）。
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
 - 真机套件：MySQL 42 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
@@ -826,7 +826,7 @@ AsynGyanis/
 单进程、同机回环，客户端与被测服务共享同一台机器。这类数字只能用于**同一台机器上的前后对比**：
 换一次会话、换个邻居负载都能差出近一倍，跨机器比没有意义，因此这里不写「比谁快」的结论。
 
-`reference_server`（Release：MSVC `/O2` + LTO、无插桩），`--threads 4`，2026-09-24 实测，三轮取中位：
+`ReferenceServer`（Release：MSVC `/O2` + LTO、无插桩），`--threads 4`，2026-09-24 实测，三轮取中位：
 
 | 场景 | 中位吞吐 | 三轮范围 | p50 | p95 |
 |------|----------|----------|-----|-----|
@@ -839,7 +839,7 @@ AsynGyanis/
 变化，不适合当单次请求延迟的绝对值。
 
 ```bat
-cmake --build build/release --target reference_server
+cmake --build build/release --target ReferenceServer
 set ASYN_SOAK_BUILD=release && benchmarks\run-soak.bat
 ```
 

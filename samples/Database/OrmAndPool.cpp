@@ -1564,5 +1564,5 @@ int main()
     // 连接必须先关再删文件：Windows 上打开着的文件删不掉
     samplePool.reset();
     LOG_INFO("=== Database 子系统示例结束 ===");
-    return Samples::finishSample("database_demo");
+    return Samples::finishSample("DatabaseDemo");
 }

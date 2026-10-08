@@ -429,5 +429,5 @@ int main()
     Base::ConfigManager::instance().clear();
     std::filesystem::remove_all(directory);
 
-    return Samples::finishSample("base_log");
+    return Samples::finishSample("BaseLog");
 }

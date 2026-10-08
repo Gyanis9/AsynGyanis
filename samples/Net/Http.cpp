@@ -868,7 +868,7 @@ int main(const int argc, char **argv)
     auto distributor = std::make_shared<Core::ConnectionDistributor>();
     // worker 侧的服务器必须挂在 worker 自己那条循环上：addWorker 的回调是在 probeLoop 的线程上
     // 执行的，而 adoptConnection 会改这台服务器的连接表、并把会话协程排进它所属循环的本地队列——
-    // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 reference_server 里
+    // 两处都不加锁。挂在 serverLoop 上就等于从 probeLoop 去动别人的循环内结构（与 ReferenceServer 里
     // 「第 i 个 worker 用 eventLoop(i)」的写法同一纪律）
     auto             dispatchServer    = buildServer(probeLoop, dispatchWorkerPort, defaultLimits, false);
     auto             acceptorServer    = buildServer(serverLoop, dispatchPort, defaultLimits, false);
@@ -1128,5 +1128,5 @@ int main(const int argc, char **argv)
     std::filesystem::remove_all(staticDirectory, removeError);
     std::error_code existsError;
     samples.check(!removeError && !std::filesystem::exists(staticDirectory, existsError), "临时静态目录在服务收口后被清理干净");
-    return Samples::finishSample("net_http_demo");
+    return Samples::finishSample("NetHttpDemo");
 }

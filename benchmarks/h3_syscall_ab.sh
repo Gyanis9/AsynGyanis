@@ -1,6 +1,6 @@
 #!/bin/bash
 # h3 服务端的系统调用画像：固定负载下数每种收发的调用次数（A/B 的守护读数，不看计时）
-# 用法：h3_syscall_ab.sh <构建目录> <标签> [额外的 reference_server 参数]
+# 用法：h3_syscall_ab.sh <构建目录> <标签> [额外的 ReferenceServer 参数]
 #
 # 为什么数调用次数而不是数吞吐：aioquic 那个 Python 客户端自己就是瓶颈（每条连接稳定在
 # ~1000 请求/6 秒），拿它的 rps 判服务端改动的收益等于读噪声。系统调用次数是确定量，同一份
@@ -33,8 +33,8 @@
 #   ① 不能用 `strace -p` 挂到已存在的进程上——这个容器不给 PTRACE_SEIZE 权限
 #      （"ptrace(PTRACE_SEIZE, ...): Operation not permitted"），只有随 strace 一起 fork
 #      出来的子进程能被跟。于是服务必须由 strace 带着起、由服务自己收口（SIGINT）。
-#   ② 认进程要按**可执行体名**（pgrep -x reference_server）而不是命令行（pgrep -f）：strace 自己的
-#      命令行里就带着 reference_server 的路径，-f 会先命中它，SIGINT 送给 strace 只是让它 detach，
+#   ② 认进程要按**可执行体名**（pgrep -x ReferenceServer）而不是命令行（pgrep -f）：strace 自己的
+#      命令行里就带着 ReferenceServer 的路径，-f 会先命中它，SIGINT 送给 strace 只是让它 detach，
 #      服务留在场上没人收，脚本卡在 wait 上（实测卡过两次，留了一排僵尸）。
 set -u
 build_dir="${1:-/root/ticketgate/build-asan}"
@@ -47,14 +47,14 @@ mkdir -p "$log_dir"
 cd /root/ticketgate || exit 1
 
 # 上一轮没清干净就先清掉（按可执行体名，别用 -f：那会连这个脚本自己一起匹配到）
-pkill -x reference_server 2>/dev/null
+pkill -x ReferenceServer 2>/dev/null
 pkill -x strace 2>/dev/null
 sleep 1
 
 started_at=$SECONDS
 strace -f -c -e trace=recvfrom,recvmmsg,recvmsg,sendto,sendmsg,writev,epoll_wait \
   -o "$log_dir/$label-strace.txt" \
-  "$build_dir/samples/reference_server" --host 127.0.0.1 --port "$port" --https --h3 \
+  "$build_dir/samples/ReferenceServer" --host 127.0.0.1 --port "$port" --https --h3 \
   --cert tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem $extra_flags \
   > "$log_dir/$label-server.txt" 2>&1 &
 
@@ -63,9 +63,9 @@ for _ in $(seq 1 60); do
   sleep 0.2
 done
 sleep 1
-# 认进程要按**可执行体名**而不是命令行：`pgrep -f samples/reference_server` 会先命中 strace 自己
+# 认进程要按**可执行体名**而不是命令行：`pgrep -f samples/ReferenceServer` 会先命中 strace 自己
 # （它的命令行里就带着这个路径），SIGINT 送给 strace 只是让它 detach，服务留在场上没人收
-server_pid="$(pgrep -x reference_server | head -1)"
+server_pid="$(pgrep -x ReferenceServer | head -1)"
 
 /root/h3venv/bin/python benchmarks/h3_soak.py --host 127.0.0.1 --port "$port" \
   --connections 4 --requests-per-connection 25 --tunnels 0 --skip-compression --skip-idle-reap \

@@ -463,7 +463,7 @@ int main(int argc, char **argv)
 
     if (showUsage)
     {
-        LOG_INFO("Usage: reference_server [--host localhost] [--port 8080] [--threads N]");
+        LOG_INFO("Usage: ReferenceServer [--host localhost] [--port 8080] [--threads N]");
         LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3] [--static <目录>]");
         LOG_INFO("                  [--ticket-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
         LOG_INFO("  --ticket-key TLS 会话票据密钥文件（48 或 80 字节二进制，openssl rand 48 > ticket.key）：");
@@ -504,11 +504,11 @@ int main(int argc, char **argv)
         LOG_INFO("  --workers N 用 N 个 worker 进程服务同一个端口（默认 1 = 单进程）：");
 #ifdef _WIN32
         // 本示例在 Windows 上起不了多进程：那边没有 SO_REUSEPORT，多个进程各自 bind 同端口只会有一条
-        // 监听器收到连接，要靠 master 移交监听套接字——那是 core_worker 那份示例演示的形状，
+        // 监听器收到连接，要靠 master 移交监听套接字——那是 CoreWorker 那份示例演示的形状，
         // 本示例的 worker 分支没有接管移交描述字的入口。宁可这里说清、启动即失败并报原因，
         // 也不让「--workers 4」看起来跑起了四路服务
         LOG_INFO("            本示例仅 POSIX 支持（靠 SO_REUSEPORT 分摊）；Windows 上会在构造编排者时");
-        LOG_INFO("            报错退出，要多进程请看 core_worker 那份示例；");
+        LOG_INFO("            报错退出，要多进程请看 CoreWorker 那份示例；");
 #else
         LOG_INFO("            master 只做编排不服务，各 worker 靠 SO_REUSEPORT 分别监听同一端口，");
         LOG_INFO("            SIGTERM/SIGINT 会让 worker 各自体面退出；");
@@ -708,7 +708,7 @@ int main(int argc, char **argv)
             Core::SessionTicketKeyRing::readKeyFiles(ticketKeyFiles, validatedKeys);
         } catch (const Base::Exception &keyFailure)
         {
-            LOG_ERROR_FMT("reference_server 启动失败：{}", keyFailure.what());
+            LOG_ERROR_FMT("ReferenceServer 启动失败：{}", keyFailure.what());
             return 1;
         }
     }
@@ -760,7 +760,7 @@ int main(int argc, char **argv)
 #endif
 
     const char *proto = useHttps ? "https" : "http";
-    LOG_INFO_FMT("reference_server starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads, Platform::ProcessInfo::currentProcessId(),
+    LOG_INFO_FMT("ReferenceServer starting — {}://{}:{} threads={} pid={}{}", proto, host, port, threads, Platform::ProcessInfo::currentProcessId(),
                  isWorkerProcess ? " (worker)" : "");
 
     // 多线程运行时

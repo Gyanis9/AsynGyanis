@@ -15,7 +15,7 @@
             子集，要求服务照常应答、句柄与私有内存不随批次增长
 
 用法（服务端由调用方起，与 soak.py 同一口径）：
-    reference_server --host 127.0.0.1 --port 18443 --https --h3 --cert cert.pem --key key.pem
+    ReferenceServer --host 127.0.0.1 --port 18443 --https --h3 --cert cert.pem --key key.pem
     python3 benchmarks/h3_soak.py --host 127.0.0.1 --port 18443 --pid <服务进程号>
 
 资源漂移怎么读（本机 2026-09-21 实测，同一服务进程连跑多轮）：首轮那点正向漂移是暖机不是泄漏——

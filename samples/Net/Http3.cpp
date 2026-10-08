@@ -407,7 +407,7 @@ int main(const int argc, char **argv)
     samples.check(!certificateFixture.empty() && !keyFixture.empty(), "找得到仓库里的自签证书夹具（示例不自己造证书）");
     if (certificateFixture.empty() || keyFixture.empty())
     {
-        return Samples::finishSample("net_http3_demo");
+        return Samples::finishSample("NetHttp3Demo");
     }
 
     // 按请求的端口绑那台服务器单独占基准端口往后第 3 个；余量在起跑前判掉，不要让端口绕回 0
@@ -441,5 +441,5 @@ int main(const int argc, char **argv)
     samples.check(g_observations.drainReturnsImmediatelyWhenIdle, "无在途连接时 drain() 立即返回，不白等期限");
 
     context.stop();
-    return Samples::finishSample("net_http3_demo");
+    return Samples::finishSample("NetHttp3Demo");
 }
