@@ -96,11 +96,9 @@
 
 ## 架构
 
-模块分层与依赖方向（箭头表示「依赖」；依赖可见性 PUBLIC/PRIVATE 与可选开关都标在边上）：
-
 ![AsynGyanis 模块分层、挂载点与后端选择](assets/diagrams/png/layered-architecture-light.png)
 
-> 下面这张是总览，其余八张按主题拆开画在各小节里；点链接看交互版。 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[layered-architecture.html](assets/diagrams/layered-architecture.html)
+> 交互版：[layered-architecture.html](assets/diagrams/layered-architecture.html)
 
 | 模块 | 库 | 职责 |
 |------|----|------|
@@ -109,20 +107,6 @@
 | `Core` | `AsynGyanis::Core` | 事件循环、协程运行时、socket、TLS、多进程编排 |
 | `Net` | `AsynGyanis::Net` | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件、ACME |
 | `Database` | `AsynGyanis::Database` | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
-
-### 图解索引
-
-| 图 | 类型 | 讲什么 |
-|----|------|--------|
-| [模块分层与后端选择](assets/diagrams/layered-architecture.html) | 架构 | 五层依赖方向、第三方挂载点、epoll/IOCP/io_uring 三选一、两个默认关的开关 |
-| [一次请求的调用链](assets/diagrams/http-request-sequence.html) | 时序 | accept → TLS/ALPN 分岔 → 增量解析 → 路由与中间件 → 向量写与背压 → 五种错误出口 |
-| [事件循环一轮](assets/diagrams/runtime-kernel-sequence.html) | 时序 | 九步循环、三后端在第 5 步的分岔、协程与线程的归属契约 |
-| [配置/日志/指标/追踪](assets/diagrams/config-log-dataflow.html) | 数据流 | 四条数据面各自的闸门、快照与缓冲、落点 |
-| [QUIC 连接生命周期](assets/diagrams/quic-connection-lifecycle.html) | 状态机 | 三相位与三包号空间、NewReno 恢复、反放大与常量、没实现的能力 |
-| [ACME 证书生命周期](assets/diagrams/acme-certificate-lifecycle.html) | 状态机 | 下单到装回、12h 节拍与 30 天阈值、九种失败与三档处置 |
-| [ORM 查询链](assets/diagrams/orm-query-sequence.html) | 时序 | 表达式树 → 方言渲染 → 租约与语句锁 → 缓存两分支 → 行映射 |
-| [多进程移交与换代](assets/diagrams/worker-handoff-workflow.html) | 流程 | 启停补位、AF_UNIX 描述符移交、监听收口禁 shutdown、换代 drain |
-| [验证闸门](assets/diagrams/verification-gate-workflow.html) | 流程 | 本地串行四道 → CI 十六条并行 → 发布与供应链，以及哪些只是 SKIP |
 
 模块内的子目录（如 `Base/Log/Sinks`、`Core/EventLoop`）**不引入新的命名空间**：命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。
 
@@ -203,11 +187,9 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 
 ## 运行示例
 
-多 worker 的启停、崩溃补位与监听套接字移交（POSIX 走 SO_REUSEPORT，Windows 走描述符移交）：
-
 ![多进程 worker 的启停、补位与监听移交](assets/diagrams/png/worker-handoff-workflow-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[worker-handoff-workflow.html](assets/diagrams/worker-handoff-workflow.html)
+> 交互版：[worker-handoff-workflow.html](assets/diagrams/worker-handoff-workflow.html)
 
 `samples/ReferenceServer` 随构建一起编译（默认每线程一个监听 socket）：
 
@@ -298,11 +280,9 @@ Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个
 
 以下示例均取自 `samples/Net/ReferenceServer.cpp` 与 `tests/`，是当前代码里真实可编译的用法。
 
-一次请求在库里的实际走法（含 TLS/ALPN 分岔与背压挂起点）：
-
 ![一次请求从 accept、TLS/ALPN 到响应写出](assets/diagrams/png/http-request-sequence-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[http-request-sequence.html](assets/diagrams/http-request-sequence.html)
+> 交互版：[http-request-sequence.html](assets/diagrams/http-request-sequence.html)
 
 ### HTTP 服务（多线程，每线程一个监听 socket）
 
@@ -434,11 +414,9 @@ const std::string yamlText = YAML::Dump(configuration);
 
 ### 配置与日志
 
-配置、日志、指标、追踪这四条数据面的闸门与落点（哪些拒绝发生在装载期、等级过滤在哪三处生效）：
-
 ![配置、日志、指标与追踪四条数据流](assets/diagrams/png/config-log-dataflow-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[config-log-dataflow.html](assets/diagrams/config-log-dataflow.html)
+> 交互版：[config-log-dataflow.html](assets/diagrams/config-log-dataflow.html)
 
 ```cpp
 #include "Base/Config/ConfigManager.h"
@@ -459,11 +437,9 @@ LOG_INFO_FMT("listening on port {}", port);
 
 ### 证书自动化（ACME）
 
-一张证书从判到期到装回服务的完整状态机（含每条失败出口）：
-
 ![ACME 证书从下单到续期的生命周期](assets/diagrams/png/acme-certificate-lifecycle-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[acme-certificate-lifecycle.html](assets/diagrams/acme-certificate-lifecycle.html)
+> 交互版：[acme-certificate-lifecycle.html](assets/diagrams/acme-certificate-lifecycle.html)
 
 ```cpp
 #include "Core/Coroutine/Task.h"
@@ -646,11 +622,9 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 ### Core — 异步运行时（目标 `AsynGyanis::Core`）
 
-一轮事件循环的内部步骤，以及协程/线程池/外派执行器之间的归属契约：
-
 ![事件循环一轮与协程调度归属](assets/diagrams/png/runtime-kernel-sequence-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[runtime-kernel-sequence.html](assets/diagrams/runtime-kernel-sequence.html)
+> 交互版：[runtime-kernel-sequence.html](assets/diagrams/runtime-kernel-sequence.html)
 
 | 子目录 | 内容 |
 |--------|------|
@@ -665,11 +639,9 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 ### Net — 网络应用层（目标 `AsynGyanis::Net`）
 
-自研 QUIC 传输层的相位、包号空间与恢复路径：
-
 ![自研 QUIC 连接的相位、空间与恢复](assets/diagrams/png/quic-connection-lifecycle-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[quic-connection-lifecycle.html](assets/diagrams/quic-connection-lifecycle.html)
+> 交互版：[quic-connection-lifecycle.html](assets/diagrams/quic-connection-lifecycle.html)
 
 | 子目录 | 内容 |
 |--------|------|
@@ -684,11 +656,9 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 
 ### Database — 数据访问（目标 `AsynGyanis::Database`）
 
-一次 ORM 查询从表达式树到行对象的链路（含语句缓存命中与未命中两条分支）：
-
 ![一次 ORM 查询从表达式到行对象](assets/diagrams/png/orm-query-sequence-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[orm-query-sequence.html](assets/diagrams/orm-query-sequence.html)
+> 交互版：[orm-query-sequence.html](assets/diagrams/orm-query-sequence.html)
 
 | 子目录 | 内容 |
 |--------|------|
@@ -708,7 +678,7 @@ AsynGyanis/
 ├── conandata.yml           # 第三方依赖与版本
 ├── conan_provider.cmake    # CMake 侧自动触发 conan install
 ├── cmake/                  # 包配置模板（`AsynGyanisConfig.cmake.in`）、编译期特性头模板、库形态与导出宏装配
-├── assets/diagrams/        # 架构与流程图的候选 JSON、可探索 HTML 与预览 PNG（每条断言带 路径:行号 证据）
+├── assets/diagrams/        # 架构图：候选 JSON、可探索 HTML 与预览 PNG
 ├── samples/                # 按模块拆开的自检示例 + ReferenceServer（部署形态），总跑见 scripts/run_samples.py
 ├── benchmarks/             # 性能基线与门禁脚本、热路径微基准、进程外压测脚本
 ├── packaging/conan/        # Conan 库包配方与消费方冒烟测试
@@ -774,11 +744,11 @@ AsynGyanis/
 
 ## 测试与验证
 
-一笔提交要过的闸门：本地串行四道 → CI 十五条作业并行铺开（Linux 十二条 + Windows 三条，构建那一档按三分片展开成十七个作业实例）→ 发布与供应链。图下的卡片写清了哪些是硬失败、哪些只是报告档、哪些按能力 SKIP。
+一笔提交要过的闸门：本地串行四道 → CI 十五条作业并行铺开（Linux 十二条 + Windows 三条，构建那一档按三分片展开成十七个作业实例）→ 发布与供应链。
 
 ![一笔提交要过的验证闸门](assets/diagrams/png/verification-gate-workflow-light.png)
 
-> 交互版（缩放 / 聚焦 / 连线追踪 / 深浅色）：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
+> 交互版：[verification-gate-workflow.html](assets/diagrams/verification-gate-workflow.html)
 
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
 - 当前规模（2026-10-07 实测，第 36–38 批之后；下面这段的两把透镜与外部裁判记录属于第 24–30 批那一轮）：**Windows Debug（含 ASan）3992 条全绿、零告警**（92 条按 SKIP 记账——这一轮两侧都没注真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过）；同一份代码在容器 `ubuntu24` 以 GCC 13 + ASan/LSan/UBSan（`-Wall -Wextra -Werror`）跑出 **3997 条全绿、零告警、零 sanitizer 命中**；示例矩阵 12 个程序全部 PASS（清单 13 个，CoreUpgrade 只在 POSIX 侧构建）；两份进程外裁判在这批里复跑过（curl/nghttp2 那套 h2 对手探针全过，aioquic 那套 h3 跨实现 11 条场景全过——h3 那份逐场景打印 `content-length` 与线上字节数，正好是下面第一条判据的外部对照）。裁判的先决条件是「服务端真的活着」：这一轮第一次跑就把 ReferenceServer 漏在容器里没起，于是 17 项全读成 000——假失败的形状是全线红而不是某一项红，跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。这一批有两把透镜。一把是「**同一句声明在写侧与收侧、出站与入站是不是各写了一半**」：HTTP 三条通道都把调用方自设的 `content-length` 原样发出，而正文按真实字节数上线——按声明切包的对端会把多出的字节当成同一条 keep-alive 连接上下一条响应的开头；Cookie 名字里的 `__Host-` / `__Secure-` 授权声明两头都没判，带 `Domain` 的 `__Host-` 会被罐子按域 Cookie 收下再发往兄弟子域；出站客户端早就替调用方解响应正文，入站请求正文的 `Content-Encoding` 却一行都没解（`inflateHttpBody` 全仓只有一个消费方）。三处都补成「一份判据、多个消费点」。另一把是「**文档点名的标识符在树上找不找得着**」：把 CHANGELOG 与 README 里反引号包着的代码形状标识符逐个拿去 src/samples/tests/scripts 语料里找，命不中的再逐条回代码定性——抓到三条点错名的配置键/指标/方法（`header_value_length`、`total_request_count`、`noteStreamResetByPeer`）与模块地图里一个根本不存在的 `HttpsSession`；同一支探针打在 `@see` 的指向上是零。版本号三处一致（2.5.0）。
