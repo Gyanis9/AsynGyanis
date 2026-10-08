@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c998f1753158f76f0a73016dc0d77860edb6511d"
+      "revision": "c56339af27df21240007fbc643efe42c5fe171e9"
     },
     "views": [
       {
@@ -250,8 +250,8 @@
       "sublabel": "acme-pebble",
       "tag": "另起容器",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 899, "label": "作业本体" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 966, "label": "拉 pebble 镜像后跑跨实现脚本" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 902, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 969, "label": "拉 pebble 镜像后跑跨实现脚本" }
       ]
     }
   ],
@@ -280,7 +280,7 @@
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
         "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:709 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
-        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:303），io-uring-compile 编 + 跑（:353），acme-pebble 拉真机构镜像做跨实现验收（:899）"
+        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:303），io-uring-compile 编 + 跑（:353），acme-pebble 拉真机构镜像做跨实现验收（:902）"
       ]
     },
     {

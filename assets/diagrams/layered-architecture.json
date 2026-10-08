@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c998f1753158f76f0a73016dc0d77860edb6511d"
+      "revision": "c56339af27df21240007fbc643efe42c5fe171e9"
     },
     "views": [
       {
@@ -257,7 +257,7 @@
       "dot": "emerald",
       "title": "交付形态",
       "items": [
-        "静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（CMakeLists.txt:186、cmake/AsynGyanisLibrary.cmake:13），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（windows-ci.yml:112）",
+        "静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（CMakeLists.txt:186、cmake/AsynGyanisLibrary.cmake:13），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（.github/workflows/windows-ci.yml:115）",
         "只支持 Linux 与 Windows：其他系统在配置阶段 FATAL_ERROR，事件后端没有 kqueue",
         "命名空间到模块名为止（AsynGyanis::Core 等），子目录不引入新命名空间，include 从 src/ 起算"
       ]
