@@ -134,11 +134,9 @@ namespace AsynGyanis::Core
         // 「stop() 先于 run() 到达」不会被丢掉——start() 之后立刻 stop() 是常见写法，
         // 若在 run() 开头清除标志，那次停止请求就会被吞掉，工作线程将永远阻塞在
         // epoll_wait 上，join 随之卡死（实测过）。需要重新运行请新建 EventLoop 实例
-        // 自观测：先记下跑这条循环的线程，再以「工作相」开场——第一条工作段的起点就是这里。
-        // 这一句排在 m_running 发布**之前**：读侧靠 acquire 读 m_running 判断「这条循环已经在跑」，
-        // 若线程身份后写，就有一个窗口报「在跑，但整表里查不到它属于哪条线程」，隔线程的快照读
-        // 据此找不到自己关心的那台循环（就绪标记永远最后发布，载荷先写）。身份不是状态位，
-        // 早一拍写不会让谁读成「没跑却在工作」；相位与计时仍排在发布之后。
+        // 自观测：身份那句排在 m_running 发布**之前**——读侧 acquire 读 m_running 判「在跑」，
+        // 线程身份后写就有一拍报「在跑但整表里查不到属主线程」（就绪标记永远最后发布，载荷先写）。
+        // 相位与计时仍排在发布之后：那两个是状态位，提前写会把「还没跑」读成「正在工作」。
         m_ownerThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
 
         m_running.store(true, std::memory_order_release);
