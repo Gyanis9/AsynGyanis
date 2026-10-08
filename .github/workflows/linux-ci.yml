@@ -784,7 +784,10 @@ jobs:
         run: cmake --build build/coverage -- -k 0
 
       - name: 跑用例生成 .gcda
-        run: ctest --test-dir build/coverage -j 4
+        # --output-on-failure 是这一档的可读性命门：全仓其它用例步骤都带它，唯独这里没带，
+        # 于是 2026-10-08 那次红只在收尾打了「The following tests FAILED: 3954 - …」一行，
+        # 断言原文（哪一句、期望与实际各是多少）整条丢失，只能靠复现去猜是环境慢还是判据错
+        run: ctest --test-dir build/coverage -j 4 --output-on-failure
 
       - name: 汇总覆盖率并按模块与总数把关
         run: |
