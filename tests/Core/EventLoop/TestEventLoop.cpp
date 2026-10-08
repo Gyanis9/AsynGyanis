@@ -59,9 +59,10 @@ namespace AsynGyanis::Core
      *          协程照恢复；而 ~EventLoop 按 `m_running==false` 跳过 stop()，紧接着在还在等事件的线程
      *          底下销毁后端与唤醒套接字；持续失败的那一格还会退化成每轮一条 ERROR 的满核空转。
      * @note 判据是「run() 有没有返回」，且**刻意不靠 stop() 收口**——旧代码被 stop() 也叫得醒，
-     *       那样这条判据就是假的。触发方式：关掉后端句柄（Linux 上下一次 epoll_wait 直接 EBADF，
-     *       Windows 上完成端口已关 → GetQueuedCompletionStatusEx 报错），再投一条空可调用体把
-     *       正阻塞着的那一觉叫醒——不投这一下，阻塞中的等待不受 close 影响，抛点就永远到不了。
+     *       那样这条判据就是假的。触发方式：把「关掉后端句柄」投给这条循环自己（Linux 下下一趟
+     *       epoll_wait 直接 EBADF，Windows 上完成端口已关 → GetQueuedCompletionStatusEx 报错）。
+     *       投递只在两次 wait 之间被派发，所以关的那一瞬间它必然不在 wait 里——主线程去关就不一样：
+     *       那是同一个 fd 同时交给两条线程的内核调用，TSan 直接报 close 与 epoll_wait 竞争。
      *       派发级异常走不到这里（Scheduler::runGuarded 与 IoWatcher 逐条就地收下），所以落的正是
      *       「循环自身设施坏了」那一格。
      */
@@ -78,8 +79,7 @@ namespace AsynGyanis::Core
 
         ASSERT_TRUE(waitForCondition([&loop] { return loop.isRunning(); })) << "循环没进入 run()：本用例什么都没测";
 
-        closeBackendHandle(loop);
-        static_cast<void>(loop.scheduler().postRemote([] {})); // 叫醒那一觉，让抛点真的走到
+        static_cast<void>(loop.scheduler().postRemote([&loop] { closeBackendHandle(loop); }));
 
         EXPECT_TRUE(waitForCondition([&runReturned] { return runReturned.load(std::memory_order_acquire); }))
                 << "后端抛出之后 run() 没有退出：isRunning()/stoppedByFailure 已经在说谎，线程还在派发事件与恢复协程";
