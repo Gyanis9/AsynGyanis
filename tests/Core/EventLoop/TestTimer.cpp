@@ -499,5 +499,10 @@ namespace AsynGyanis::Core
 
         // 那张堆的尺寸不在这里读：循环还在跑时 pendingCount() 归循环线程所有，跨线程读它本身就
         // 是这条判据要防的事。「没留下半个登记」由抛出发生在任何槽位变动之前这一点保证（见 insert 的实现）
+
+        // 收口排在销毁帧之前：armedWait 里那条 30 秒等待还挂在堆上，而它将在本函数返回时于测试线程
+        // 销毁（Awaiter 析构要动那张堆）。先 join 掉循环线程，销毁才不与 rearm() 并读同一份数组
+        // ——见 CoreTestSupport.h 里「协程帧必须活到事件循环线程结束之后」那条销毁纪律。
+        runner.join();
     }
 } // namespace AsynGyanis::Core
