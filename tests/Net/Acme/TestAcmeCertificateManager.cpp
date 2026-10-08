@@ -1147,7 +1147,10 @@ namespace AsynGyanis::Net
                     return {};
                 },
                 isStopping));
-        loop.scheduler().schedule(follower->handle());
+        // 这条循环已经由 loopThread 在另一条线程上驱动，本地队列就归那条线程——测试线程只能把协程
+        // **投递**过去（scheduleRemote），就地 schedule() 会被调度器的线程守卫当场拒掉。快档里后台线程
+        // 常常还没进 run()，于是这一格会蒙过去；--coverage -O0 那档一起步就慢，变成确定性红。
+        loopThread.schedule(*follower);
 
         // 什么也没改的一段时间里不该叫过一次：把「每次轮询都重装」这种形状挡在门外
         static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
