@@ -540,10 +540,8 @@ namespace AsynGyanis::Core
         EventLoop &loop = runner.loop();
 
         // 空句柄也要拒：判据排在「有没有东西要排」之前，否则外来线程拿一个空句柄就绕过去了
-        EXPECT_THROW(loop.scheduler().schedule(std::coroutine_handle<>{}), Base::LogicException)
-                << "外来线程在跑着的循环上就地排队，却没有一处出声";
-        EXPECT_THROW(loop.scheduler().postLocal([]() {}), Base::LogicException)
-                << "postLocal() 与 schedule() 是同一条契约，只守一半等于没守";
+        EXPECT_THROW(loop.scheduler().schedule(std::coroutine_handle<>{}), Base::LogicException) << "外来线程在跑着的循环上就地排队，却没有一处出声";
+        EXPECT_THROW(loop.scheduler().postLocal([]() {}), Base::LogicException) << "postLocal() 与 schedule() 是同一条契约，只守一半等于没守";
         // 排空入口同样判据：从外面泵一条正在跑的循环，等于与循环自己并发动那两张表
         EXPECT_THROW(loop.scheduler().runOne(), Base::LogicException) << "外来线程能泵跑着的循环的队列";
         EXPECT_THROW(loop.scheduler().runAll(), Base::LogicException) << "runAll() 与 runOne() 同一条判据，漏一个等于没守";
@@ -551,8 +549,7 @@ namespace AsynGyanis::Core
         // 被拒的两次调用不该伤到循环本身：随后一条正当的投递仍要被跑到
         std::atomic<bool> isStillServing{false};
         loop.scheduler().postRemote([&isStillServing] { isStillServing.store(true, std::memory_order_release); });
-        EXPECT_TRUE(TestSupport::waitForCondition([&isStillServing] { return isStillServing.load(std::memory_order_acquire); }))
-                << "两次被拒的调用把这条循环弄停了";
+        EXPECT_TRUE(TestSupport::waitForCondition([&isStillServing] { return isStillServing.load(std::memory_order_acquire); })) << "两次被拒的调用把这条循环弄停了";
     }
 
     /**

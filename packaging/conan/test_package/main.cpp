@@ -73,12 +73,7 @@ int main()
     static_assert(ASYN_IS_SANITIZED == 0 || ASYN_IS_SANITIZED == 1, "sanitizer 的读数不是 0/1");
     static_assert(ASYN_IS_SHARED_BUILD == 0 || ASYN_IS_SHARED_BUILD == 1, "共享形态的读数不是 0/1");
 
-    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d\n",
-                head.size(),
-                compressed->size(),
-                ASYN_VERSION_STRING,
-                ASYN_HAS_IO_URING,
-                ASYN_HAS_MIMALLOC,
-                ASYN_IS_SHARED_BUILD);
+    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d\n", head.size(), compressed->size(),
+                ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD);
     return 0;
 }

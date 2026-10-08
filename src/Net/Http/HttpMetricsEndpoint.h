@@ -134,7 +134,6 @@ namespace AsynGyanis::Net
      * @param snapshotProvider 取本服务器当前统计快照的动作，每次抓取现调一次
      * @see HttpServer::enableMetricsEndpoint(), HttpsServer::enableMetricsEndpoint()
      */
-    ASYN_NET_API void registerMetricsEndpoint(Router &router, std::string_view path, std::string_view metricNamePrefix,
-                                              std::function<HttpServerStats()> snapshotProvider);
+    ASYN_NET_API void registerMetricsEndpoint(Router &router, std::string_view path, std::string_view metricNamePrefix, std::function<HttpServerStats()> snapshotProvider);
 
 } // namespace AsynGyanis::Net

@@ -283,8 +283,7 @@ namespace AsynGyanis::Net
                    });
     }
 
-    void registerMetricsEndpoint(Router &router, const std::string_view path, const std::string_view metricNamePrefix,
-                                 std::function<HttpServerStats()> snapshotProvider)
+    void registerMetricsEndpoint(Router &router, const std::string_view path, const std::string_view metricNamePrefix, std::function<HttpServerStats()> snapshotProvider)
     {
         // 前缀按值捕进处理函数：字符串是调用方的，可能比服务器先走；这里只留一份拷贝
         const std::string metricPrefix(metricNamePrefix);

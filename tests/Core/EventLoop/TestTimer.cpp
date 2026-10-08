@@ -462,12 +462,9 @@ namespace AsynGyanis::Core
         Timer timer(loop);
 
         // 武装档：一条 30 秒的等待挂在循环线程上，本用例期间永不到期，只负责把驱动状态推离 Idle
-        auto armBody = [&timer]() -> Task<>
-        {
-            static_cast<void>(co_await timer.waitFor(std::chrono::seconds{30}));
-        };
-        std::optional<Task<>>   armedWait;
-        std::atomic<bool>       isDriverArmed{false};
+        auto                  armBody = [&timer]() -> Task<> { static_cast<void>(co_await timer.waitFor(std::chrono::seconds{30})); };
+        std::optional<Task<>> armedWait;
+        std::atomic<bool>     isDriverArmed{false};
         loop.scheduler().postRemote(
                 [&loop, &armedWait, &armBody, &isDriverArmed]
                 {
@@ -481,7 +478,7 @@ namespace AsynGyanis::Core
 
         std::atomic<bool> isRejectedByTimerQueue{false};
         std::string       rejectionText;
-        auto waitingBody = [&timer, &isRejectedByTimerQueue, &rejectionText]() -> Task<>
+        auto              waitingBody = [&timer, &isRejectedByTimerQueue, &rejectionText]() -> Task<>
         {
             try
             {

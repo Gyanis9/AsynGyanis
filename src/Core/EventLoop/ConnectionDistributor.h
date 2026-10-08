@@ -88,8 +88,8 @@ namespace AsynGyanis::Core
             Adopter    adopter;       ///< 在该循环上执行一次，参数是连接描述符
         };
 
-        std::vector<Worker> m_workers;             ///< 已登记的工作循环，轮转顺序即登记顺序
-        std::atomic<std::size_t> m_nextWorkerIndex{0};   ///< 下一次派发给哪个工作循环（原子：多条接受循环共用一台分发器时轮转不互相踩）
-        std::atomic<std::size_t> m_distributedCount{0};  ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
+        std::vector<Worker>      m_workers;             ///< 已登记的工作循环，轮转顺序即登记顺序
+        std::atomic<std::size_t> m_nextWorkerIndex{0};  ///< 下一次派发给哪个工作循环（原子：多条接受循环共用一台分发器时轮转不互相踩）
+        std::atomic<std::size_t> m_distributedCount{0}; ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
     };
 } // namespace AsynGyanis::Core

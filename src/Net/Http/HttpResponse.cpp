@@ -49,15 +49,15 @@ namespace AsynGyanis::Net
         constexpr std::size_t kHeaderBlockTerminatorReserveLength = kCrLfLength; ///< 头部块收尾的空白行
 
         // 自动补出的头部：与下面的名字常量同处定义，改名字时不会漏改预留量
-        constexpr std::string_view kContentTypeHeaderName         = "content-type";                 ///< 媒体类型头部名（小写形态）
-        constexpr std::string_view kContentLengthHeaderName       = "content-length";               ///< 正文长度头部名（小写形态）
-        constexpr std::string_view kDateHeaderName                = "date";                         ///< 日期头部名（小写形态）
-        constexpr std::string_view kTransferEncodingHeaderName    = "transfer-encoding";            ///< 传输编码头部名（小写形态）
-        constexpr std::string_view kTrailerHeaderName             = "trailer";                      ///< 尾部字段声明头名（小写形态，RFC 9110 §6.5.1）
-        constexpr std::string_view kChunkedTransferEncodingValue  = "chunked";                      ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
+        constexpr std::string_view kContentTypeHeaderName         = "content-type";      ///< 媒体类型头部名（小写形态）
+        constexpr std::string_view kContentLengthHeaderName       = "content-length";    ///< 正文长度头部名（小写形态）
+        constexpr std::string_view kDateHeaderName                = "date";              ///< 日期头部名（小写形态）
+        constexpr std::string_view kTransferEncodingHeaderName    = "transfer-encoding"; ///< 传输编码头部名（小写形态）
+        constexpr std::string_view kTrailerHeaderName             = "trailer";           ///< 尾部字段声明头名（小写形态，RFC 9110 §6.5.1）
+        constexpr std::string_view kChunkedTransferEncodingValue  = "chunked";           ///< 分块传输编码值：正文长度未知，边界由分块帧给出（RFC 9112 §6）
         constexpr std::string_view kAutoContentTypeHeader         = "content-type: text/plain; charset=utf-8\r\n"; ///< 未设媒体类型且有正文时补出的整条头部
-        constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";             ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
-        constexpr std::string_view kAutoDateHeaderPrefix          = "date: ";                       ///< 未设日期时补出的头部名前缀（含冒号与空格）
+        constexpr std::string_view kAutoContentLengthHeaderPrefix = "content-length: ";                            ///< 未设正文长度时补出的头部名前缀（含冒号与空格）
+        constexpr std::string_view kAutoDateHeaderPrefix          = "date: ";                                      ///< 未设日期时补出的头部名前缀（含冒号与空格）
 
         constexpr std::size_t kMaximumUnsignedDecimalTextLength =
                 std::numeric_limits<std::uint64_t>::max_digits10; ///< 64 位无符号十进制最长 20 位；有符号 int 在 appendDecimal 里按 max_digits10 + 2（含负号位）同理推导
