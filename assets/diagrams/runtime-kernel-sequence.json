@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "c998f1753158f76f0a73016dc0d77860edb6511d"
     },
     "views": [
       {
@@ -61,7 +61,7 @@
       "label": "EventLoop",
       "sublabel": "run 的一轮",
       "sources": [
-        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 161, "end_line": 172, "label": "先排空再取事件" },
+        { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 164, "end_line": 175, "label": "先排空再取事件" },
         { "path": "src/Core/EventLoop/EventLoop.cpp", "line": 132, "label": "停止粘性不清标志" }
       ]
     },
@@ -142,9 +142,9 @@
       "dot": "rose",
       "title": "一轮的九步（EventLoop::run）",
       "items": [
-        "先 runAll() 排空就绪（EventLoop.cpp:161）→ 判 m_stopRequested（:163）→ 有活则超时取 0 否则 -1（:169）→ 进 WaitingForEvents 相位（:171）→ wait()（:172）",
-        "进 Working 相位（EventLoop.cpp:174）→ 哨兵优先 drain（:179），否则判 isWatcherAlive（:196）再 handleEvents（:198）",
-        "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（EventLoop.cpp:203）"
+        "先 runAll() 排空就绪（EventLoop.cpp:164）→ 判 m_stopRequested（:166）→ 有活则超时取 0 否则 -1（:172）→ 进 WaitingForEvents 相位（:174）→ wait()（:175）",
+        "进 Working 相位（EventLoop.cpp:177）→ 哨兵优先 drain（:182），否则判 isWatcherAlive（:199）再 handleEvents（:201）",
+        "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（EventLoop.cpp:206）"
       ]
     },
     {

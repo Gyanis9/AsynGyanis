@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "c998f1753158f76f0a73016dc0d77860edb6511d"
     },
     "views": [
       {
@@ -266,7 +266,7 @@
       "dot": "cyan",
       "title": "构建装配与打包",
       "items": [
-        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:203-211），samples 挂 ASYN_BUILD_SAMPLES（:191-193）",
+        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:203-211），samples 挂 ASYN_BUILD_SAMPLES（:214-217）",
         "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（CMakeLists.txt:269）",
         "第三方一律由 Conan 在配置期自动安装，conandata.yml 是唯一依赖事实；曾加过的第二份 vcpkg 清单已删除"
       ]
