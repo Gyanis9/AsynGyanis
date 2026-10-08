@@ -1159,14 +1159,20 @@ namespace AsynGyanis::Net
         {
             // 基线是在协程第一遍 stat 那一刻定的，而「已调度」不等于「已跑过」：满载的 runner 上这次写盘
             // 可能整个发生在定基线之前，对这条跟随通道就不算变化。换一份内容再写一次，让「有变化」由用例
-            // 自己造出来而不是赌调度时序。下面仍只断言装回被叫到一次，两次写入不会都被看见——
-            // 第一次没被看见正是因为基线里已经含着它
+            // 自己造出来而不是赌调度时序
             ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v3-longer-longest"));
         }
-        EXPECT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{5})) << "换了证书之后 5 秒内没有触发装回";
-        EXPECT_EQ(reloadCalls.load(), 1);
-        std::this_thread::sleep_for(std::chrono::milliseconds{150});
-        EXPECT_EQ(reloadCalls.load(), 1) << "同一次变化被按拍重复装回，等于身份每 20ms 重装一遍";
+        ASSERT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{5})) << "换了证书之后 5 秒内没有触发装回";
+
+        // 静默一拍再取数：兜底那次写盘可能恰好在 2 秒窗口过去之后才被看见，于是 v2 与 v3 各算一次真变化。
+        // 装回次数因此只能按「观察到几次变化」界定（1 或 2 次都合法），不能写死成 1——原来那句
+        // 「两次写入不会都被看见」在慢档上不成立，覆盖率档就是这样红的。
+        // 这一格真正的判据是「一次变化最多叫一次」与「没有新变化时它不再自己长」，两头都留在这里。
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const int settledReloadCalls = reloadCalls.load();
+        EXPECT_LE(settledReloadCalls, 2) << "两次写盘之外还在叫装回：一次变化被装回了不止一次";
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
+        EXPECT_EQ(reloadCalls.load(), settledReloadCalls) << "没有新的变化却仍在按拍叫装回，等于身份每 20ms 重装一遍";
 
         isStopping.store(true);
         loopThread.join();
