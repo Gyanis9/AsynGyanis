@@ -298,25 +298,43 @@ def main() -> int:
     for name in sorted(per_diagram_refs):
         print("DIAGRAM %s refs=%d" % (name, per_diagram_refs[name]))
 
-    revision = args.stale_since
-    if revision is None:
-        revisions = {str((data.get("meta") or {}).get("repository", {}).get("revision", "")) for _, data in diagrams}
-        revisions.discard("")
-        revision = sorted(revisions)[0] if len(revisions) == 1 else None
-        if revision is None:
-            sys.stderr.write("新鲜度判定跳过：各图钉的修订不止一个，请用 --stale-since 指定\n")
-    if revision:
-        changed = git_changed_files(revision)
-        if changed is not None:
-            stale_paths = sorted(p for p in cited_by_path if p in changed)
-            affected = sorted({trail for path in stale_paths for trail in cited_by_path[path]})
-            print("STALE_BASE=%s changed_cited_files=%d affected_refs=%d" % (revision[:8], len(stale_paths), len(affected)))
-            for path in stale_paths[:15]:
-                print("STALE_FILE %s（被 %d 处引用）" % (path, len(cited_by_path[path])))
-            if len(stale_paths) > 15:
-                print("STALE_FILE …另有 %d 个被引文件自该修订后变更" % (len(stale_paths) - 15))
-            if affected:
-                print("回图时按上面的引用位置逐条复核；这是清单不是判决")
+    # 新鲜度这一半必须要么给出清单、要么当场说「没跑成」。此前的形状是「各图钉的修订不止一个就整段跳过并退 0」，
+    # 于是九张图钉着两个修订的那几轮里，反向索引与 stale 清单一次都没产出，而作业是绿的——
+    # 那份跳过把「门没跑」读成了「门通过」。基准取不到按文件头的承诺退 2（宁可让作业变红）
+    bases = {}
+    if args.stale_since:
+        bases[args.stale_since] = sorted(name for name, _ in diagrams)
+    else:
+        without_revision = []
+        for name, data in diagrams:
+            pinned = str((data.get("meta") or {}).get("repository", {}).get("revision", "")).strip()
+            if pinned:
+                bases.setdefault(pinned, []).append(name)
+            else:
+                without_revision.append(name)
+        if without_revision:
+            sys.stderr.write("新鲜度判定没有基准：这些图没钉修订号 -> %s\n" % "、".join(sorted(without_revision)))
+            return 2
+
+    stale_union = set()
+    for base in sorted(bases):
+        changed = git_changed_files(base)
+        if changed is None:
+            sys.stderr.write("新鲜度判定没跑成：基准 %s 取不到变更清单（浅克隆里没有这个修订就是这种红，"
+                             "跑这道门的作业要 fetch-depth: 0）\n" % base[:8])
+            return 2
+        stale_here = {path for path in cited_by_path if path in changed}
+        print("STALE_BASE=%s diagrams_pinned_here=%d changed_cited_files=%d" % (base[:8], len(bases[base]), len(stale_here)))
+        stale_union |= stale_here
+
+    if stale_union:
+        affected = sorted({trail for path in stale_union for trail in cited_by_path[path]})
+        print("STALE_TOTAL changed_cited_files=%d affected_refs=%d" % (len(stale_union), len(affected)))
+        for path in sorted(stale_union)[:15]:
+            print("STALE_FILE %s（被 %d 处引用）" % (path, len(cited_by_path[path])))
+        if len(stale_union) > 15:
+            print("STALE_FILE …另有 %d 个被引文件自各基准后变更" % (len(stale_union) - 15))
+        print("回图时按上面的引用位置逐条复核；这是清单不是判决")
 
     for line in failures:
         print("VIOLATION " + line)

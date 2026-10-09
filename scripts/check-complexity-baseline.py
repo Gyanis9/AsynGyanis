@@ -3,9 +3,12 @@
 """复杂度基线冻禁：最长函数只准降不准升。
 
 判据的形状：
-  * 任何 .cpp/.h 里「一个函数体的行数」超过 FLOOR_LINES 就要在基线里登记过；
+  * 任何 .cpp 里「一个函数体的行数」超过 FLOOR_LINES 就要在基线里登记过（头文件刻意不量，理由见
+    SOURCE_SUFFIXES 那段注释：类内内联体的花括号计数会被模板与深层协程带偏，量出谁都不信的数）；
   * 登记过的文件按各自记录的上限判，没登记过的文件一旦越过 FLOOR_LINES 即失败；
-  * 低于记录值不报告警——那是改进，改完把基线一起降下来（--write 重新生成）。
+  * 低于记录值不报告警——那是改进，改完把基线一起降下来（--write 重新生成）；
+  * 一个文件都没量到（src 被挪走、SCAN_DIRS 或后缀被改错）判红而不是判过——「门没跑」不能读成「门通过」；
+  * 基线里指向已消失文件的条目单独点名（不判红）：它们是没人认领的天花板，随 --write 才会清掉。
 
 为什么是一道脚本而不是 clang-tidy 的一条检查：仓库里那个 tidy 作业是「只报告不阻塞」档，
 挂上去的东西不会让任何人流红；冻结判据必须有牙齿。
@@ -254,6 +257,14 @@ def main():
         baseline = json.load(handle)["files"]
 
     violations = []
+    if not measured:
+        # 实测集为空就是这道门没跑到：src 被挪走、SCAN_DIRS 写错、后缀判据改掉都会走到这里。
+        # 早先的形状是「只对实测集判」，于是量到 0 个文件也报 OK——把「没跑」读成「通过」
+        sys.stderr.write("一个源文件都没量到（SCAN_DIRS=%s，后缀=%s）：这道门没有跑到东西，判红\n"
+                         % ("/".join(SCAN_DIRS), "/".join(SOURCE_SUFFIXES)))
+        print("COMPLEXITY_GATE=FAIL")
+        return 2
+
     for path, longest in sorted(measured.items()):
         ceiling = baseline.get(path)
         if ceiling is None:
@@ -261,7 +272,15 @@ def main():
         elif longest > ceiling:
             violations.append("%s 最长函数 %d 行 > 基线 %d 行" % (path, longest, ceiling))
 
-    print("MEASURED_FILES=%d FLOOR=%d" % (len(measured), FLOOR_LINES))
+    # 基线里的死条目：文件已删或已降到地板以下，这一项就没人再判。它们不会让任何作业变红，
+    # 于是「天花板」名单只会越来越长——点名出来，随下一次 --write 收敛
+    dead_entries = sorted(path for path in baseline if path not in measured)
+
+    print("MEASURED_FILES=%d FLOOR=%d DEAD_BASELINE_ENTRIES=%d" % (len(measured), FLOOR_LINES, len(dead_entries)))
+    for path in dead_entries[:15]:
+        print("WARN 基线里有这一项而实测集里没有（文件已删/改名或已降到地板下）：%s" % path)
+    if len(dead_entries) > 15:
+        print("WARN …另有 %d 项同样对不上" % (len(dead_entries) - 15))
     for offender in violations:
         print("VIOLATION " + offender)
     if violations:
