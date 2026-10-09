@@ -355,6 +355,15 @@ namespace AsynGyanis::Net
         void pumpStreamCallbacks();
 
         /**
+         * @brief 把一轮攒出的报文交出去：配了批次出口就整批交，没配就逐条发
+         * @details 两条出口的返回值口径一致（「是不是每条都发出去了」），调用方据此决定要不要收口。
+         *          分窗、计数与「没发完就从下一条重交」都留在批次出口自己的封装里，本层不再重复。
+         * @param outboundBatch 本轮从状态机待发队列掏出的报文，必须活到本方法 await 结束
+         * @return Core::Task<bool> 全部发出为真，有一条没出去为假
+         */
+        [[nodiscard]] Core::Task<bool> sendOutboundBatch(const std::vector<std::string> &outboundBatch);
+
+        /**
          * @brief 握手完成时记一条日志（带协商出的 ALPN），一条连接只记一次
          * @details 状态机不碰日志——它要能在没有输出的条件下于内存里跑完，这条观测因此留在外壳这一侧
          */

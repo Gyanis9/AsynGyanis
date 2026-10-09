@@ -384,25 +384,7 @@ namespace AsynGyanis::Net
 
             if (sentDatagramCount > 0)
             {
-                bool isEveryDatagramSent = false;
-                if (m_configuration.sendDatagramBatch)
-                {
-                    // std::string 在本仓里当字节缓冲用，这里只是把整批交出去；一条连接只有一个对端
-                    isEveryDatagramSent = co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const std::string>(outboundBatch));
-                } else
-                {
-                    isEveryDatagramSent = true;
-                    for (const std::string &datagram: outboundBatch)
-                    {
-                        // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
-                        if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.data()), datagram.size()))
-                        {
-                            isEveryDatagramSent = false;
-                            break;
-                        }
-                    }
-                }
-                if (!isEveryDatagramSent)
+                if (!co_await sendOutboundBatch(outboundBatch))
                 {
                     LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
                     m_isClosed = true;
@@ -428,6 +410,24 @@ namespace AsynGyanis::Net
                 break;
             }
         }
+    }
+
+    Core::Task<bool> QuicConnection::sendOutboundBatch(const std::vector<std::string> &outboundBatch)
+    {
+        if (m_configuration.sendDatagramBatch)
+        {
+            // std::string 在本仓里当字节缓冲用，这里只是把整批交出去；一条连接只有一个对端
+            co_return co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const std::string>(outboundBatch));
+        }
+        for (const std::string &datagram: outboundBatch)
+        {
+            // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
+            if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.data()), datagram.size()))
+            {
+                co_return false;
+            }
+        }
+        co_return true;
     }
 
     std::chrono::steady_clock::time_point QuicConnection::nextExpiry() const noexcept

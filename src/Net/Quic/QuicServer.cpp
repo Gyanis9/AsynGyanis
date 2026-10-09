@@ -807,6 +807,39 @@ namespace AsynGyanis::Net
             }
         }
 
+        // 配置与各个发送出口在这一处摆好：路由这条协程因此只剩「认身份 → 派发 → 建连接」三段
+        const QuicConnection::Configuration connectionConfiguration = configurationForAcceptedConnection();
+
+        std::unique_ptr<QuicConnection> connection = QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram);
+        if (connection == nullptr)
+        {
+            co_return;
+        }
+
+        const std::string sourceConnectionId = connection->sourceConnectionId();
+        QuicConnection   *rawConnection      = connection.get();
+        m_connections.emplace(sourceConnectionId, std::move(connection));
+        // 键是本端刚生成的 SCID，走到这里必然真的插进去一条（同一报文在更上面就按已有连接认走了），
+        // 因此这一侧无条件 +1，与摘除侧的 -1 成对；镜像与表的偏差只会来自漏掉一处，不会来自重复计数
+        m_connectionCountMirror.fetch_add(1, std::memory_order_relaxed);
+        // 名额凭据与连接同寿命：摘连接时必须一起摘，否则那个来源的计数只增不减（等价于把
+        // 限额变成了一次性配额）
+        if (perIpLease.has_value())
+        {
+            m_perIpConnectionLeases.emplace(sourceConnectionId, std::move(*perIpLease));
+        }
+        // 同时按「客户端最初选的 DCID」登记一份：重传的 Initial 靠这一路认回同一条连接。
+        // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
+        m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
+        // 新连接同样要记账：它随时可能在下面几次 await 里被判成收口（会话层判定不可用、对端
+        // 立刻发来 CONNECTION_CLOSE 等），而收报文路径收尾与清扫节拍都会尝试摘除它
+        const QuicConnection::ActivityGuard activityGuard(*rawConnection);
+        co_await rawConnection->handleDatagram(peerAddress, datagram);
+        co_await pumpHttp3For(*rawConnection);
+    }
+
+    QuicConnection::Configuration QuicServer::configurationForAcceptedConnection()
+    {
         QuicConnection::Configuration connectionConfiguration;
         // 与 reloadCertificate() 定序：取一份快照再往外传，连接建好之后它自己持有 OpenSSL 的引用
         SSL_CTX *tlsContextSnapshot = nullptr;
@@ -891,33 +924,7 @@ namespace AsynGyanis::Net
             const ssize_t sentLength = co_await m_socket->asyncSendTo(targetAddress, data, length);
             co_return sentLength == static_cast<ssize_t>(length);
         };
-
-        std::unique_ptr<QuicConnection> connection = QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram);
-        if (connection == nullptr)
-        {
-            co_return;
-        }
-
-        const std::string sourceConnectionId = connection->sourceConnectionId();
-        QuicConnection   *rawConnection      = connection.get();
-        m_connections.emplace(sourceConnectionId, std::move(connection));
-        // 键是本端刚生成的 SCID，走到这里必然真的插进去一条（同一报文在更上面就按已有连接认走了），
-        // 因此这一侧无条件 +1，与摘除侧的 -1 成对；镜像与表的偏差只会来自漏掉一处，不会来自重复计数
-        m_connectionCountMirror.fetch_add(1, std::memory_order_relaxed);
-        // 名额凭据与连接同寿命：摘连接时必须一起摘，否则那个来源的计数只增不减（等价于把
-        // 限额变成了一次性配额）
-        if (perIpLease.has_value())
-        {
-            m_perIpConnectionLeases.emplace(sourceConnectionId, std::move(*perIpLease));
-        }
-        // 同时按「客户端最初选的 DCID」登记一份：重传的 Initial 靠这一路认回同一条连接。
-        // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
-        m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
-        // 新连接同样要记账：它随时可能在下面几次 await 里被判成收口（会话层判定不可用、对端
-        // 立刻发来 CONNECTION_CLOSE 等），而收报文路径收尾与清扫节拍都会尝试摘除它
-        const QuicConnection::ActivityGuard activityGuard(*rawConnection);
-        co_await rawConnection->handleDatagram(peerAddress, datagram);
-        co_await pumpHttp3For(*rawConnection);
+        return connectionConfiguration;
     }
 
     void QuicServer::reapClosedConnections()

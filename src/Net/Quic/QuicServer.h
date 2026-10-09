@@ -493,6 +493,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
 
         /**
+         * @brief 给一条正要新建的连接摆好外壳要的那些出口与回调
+         * @details 单独成一条是因为这张配置里的每个回调都要抓住 `this`（流数据、流收口、发送空间
+         *          可用、单条与批次两条发送出口），写在收报文的协程里会让那个函数长到读不出「路由」
+         *          这条主线，而它自己一次 await 都没有。TLS 上下文在这里取一次快照，连接建好后
+         *          由它自己持有 OpenSSL 的引用（与 `reloadCertificate()` 的定序同在这一处）
+         * @return QuicConnection::Configuration 交给 `QuicConnection::accept` 的那份配置
+         */
+        [[nodiscard]] QuicConnection::Configuration configurationForAcceptedConnection();
+
+        /**
          * @brief 把已收口的连接摘出路由表
          */
         void reapClosedConnections();
