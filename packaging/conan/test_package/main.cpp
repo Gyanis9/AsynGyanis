@@ -86,8 +86,8 @@ int main()
 #error "Redis 驱动两处不同解：模块宏与能力清单给出了相反答案"
 #endif
 
-    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d 调用栈=%d MySQL=%d Redis=%d\n",
-                head.size(), compressed->size(), ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD, ASYN_HAS_STACKTRACE_SUPPORT,
-                ASYN_HAS_MYSQL_DRIVER, ASYN_HAS_REDIS_DRIVER);
+    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d 调用栈=%d MySQL=%d Redis=%d\n", head.size(),
+                compressed->size(), ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD, ASYN_HAS_STACKTRACE_SUPPORT, ASYN_HAS_MYSQL_DRIVER,
+                ASYN_HAS_REDIS_DRIVER);
     return 0;
 }
