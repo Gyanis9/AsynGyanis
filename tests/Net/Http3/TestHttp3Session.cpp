@@ -3097,7 +3097,8 @@ namespace AsynGyanis::Net
     {
         FakeStreamOpener                opener;
         std::vector<CapturedStreamData> sentStreamData;
-        const auto                      budget = std::make_shared<HttpMemoryBudget>(8); // 只够 8 字节正文
+        const auto                      budget  = std::make_shared<HttpMemoryBudget>(8); // 只够 8 字节正文
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
 
         Http3Session session(
                 std::ref(opener),
@@ -3106,7 +3107,7 @@ namespace AsynGyanis::Net
                     sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
                     return data.size();
                 },
-                Http3Session::StreamCrediter{}, nullptr, budget);
+                Http3Session::StreamCrediter{}, metrics, budget);
 
         bool   isHandlerEntered = false;
         Router router;
@@ -3150,6 +3151,13 @@ namespace AsynGyanis::Net
         EXPECT_NE(retryAfterHeader, peer.response().headers.end()) << "预算用尽的 503 没带 Retry-After";
         EXPECT_EQ(retryAfterHeader == peer.response().headers.end() ? std::string{} : retryAfterHeader->second, "1") << "Retry-After 的取值要与 h1/h2 同为一秒";
         EXPECT_EQ(budget->reservedByteCount(), 0U) << "被拒的请求不该占着额度（记录析构即归还）";
+
+        // 账本口径与文案都得跟 h1/h2 同解：503 不是「对端的报文不合规」，计进坏请求就让同一份超预算
+        // 请求随对端选了 h1/h2/h3 而给出不同的 bad_requests_total；正文换语言是同一处的另一半
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.badRequestCount, 0U) << "预算用尽的 503 进了坏请求那本账：h1/h2 都不计，只有 h3 计就是三条通道不同解";
+        EXPECT_EQ(snapshot.totalRequestCount, 0U) << "没交给业务的请求不该计入请求数";
+        EXPECT_EQ(peer.response().body, "服务繁忙，请稍后重试") << "同一台服务器换一条协议就换一种语言：h1/h2 的 503 正文都是这句中文";
     }
 
     /**

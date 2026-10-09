@@ -36,7 +36,7 @@ namespace AsynGyanis::Net
          *          分支里各写三行——少写一行就是又一次跨协议不一致
          * @param response 要填的响应对象
          * @param status 状态码
-         * @param body 一句英文正文（与 h1/h2 同文案）
+         * @param body 一句正文：越限那几张沿用 HTTP 状态短语（与 h1/h2 一致），503 那张与 h1/h2 同为中文
          */
         void fillRejectedResponse(HttpResponse &response, const int status, const std::string_view body)
         {
@@ -527,10 +527,11 @@ namespace AsynGyanis::Net
                 fillRejectedResponse(response, rejectionStatus, rejectionBody);
             } else if (rejection == Rejection::BudgetExceeded)
             {
-                // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求
-                noteBadRequest();
+                // 与 h1/h2 同一处置：全局在途正文预算不足时回 503，把剩余额度留给已经收下正文的请求。
+                // 这一笔不落坏请求那本账（503 是 5xx，`badRequestCount` 的口径是「解析失败或协议错误、
+                // 回的是 4xx」）；要问被预算挡下多少条，看进程级的 asyn_http_memory_budget_rejections_total
                 LOG_ERROR_FMT("Http3Session: 流 {} 的请求正文超出全局在途预算，已按 503 应答且不交给业务", streamId);
-                fillRejectedResponse(response, 503, "Service Unavailable");
+                fillRejectedResponse(response, 503, "服务繁忙，请稍后重试");
                 // Retry-After 与 h1/h2 的同一出口同值：全局预算是本端此刻没余量，一秒后重试是真实预期。
                 // 少了它，同一台服务器换一条协议就对端就只能自己猜退避多久（h1 在 HttpSession.h、
                 // h2 在 Http2Session.cpp 的 overloadedResponse 上都带着这一项）

@@ -41,8 +41,11 @@ namespace AsynGyanis::Net
      * @details 纯数据，不持有任何同步设施，可由调用方按值取走、跨线程传递或落进监控上报。
      *          各字段分别读取，因此不是严格同一瞬间的一致切面（跨字段求和可能与某次采样略有偏差）。
      * @note 请求计数口径：totalRequestCount 只统计**交给业务处理的那批请求**；解析失败的、以及被协议层
-     *       挡在业务之外的（头部/请求目标/正文越限、在途正文预算不足）都只进 badRequestCount 那一笔，
+     *       挡在业务之外的（头部/请求目标/正文越限，回的是 4xx）都只进 badRequestCount 那一笔，
      *       三条通道在这一条上同解——否则同一份越界请求，`requests_total` 会随对端选了 h1/h2/h3 而不同。
+     *       「在途正文预算不足」不在这一笔里：它回的是 503，而本字段口径是「对端的报文不合规」，
+     *       全局预算用尽不是对端的错。那一格的读数是进程级的 `asyn_http_memory_budget_rejections_total`
+     *       （三条通道共用同一份预算账，被拒次数一律记在那里）。
      *       状态码类计数同样只对应已发出的响应，故 status1xxCount 至
      *       status5xxCount 之和在稳态下等于 totalRequestCount（发送失败的应答不计入）。
      * @note 升级到 WebSocket 的连接是上述口径的例外：升级请求计入 totalRequestCount 与
