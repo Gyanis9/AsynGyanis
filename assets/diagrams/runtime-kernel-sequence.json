@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c998f1753158f76f0a73016dc0d77860edb6511d"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -51,8 +51,8 @@
       "label": "IoWatcher",
       "sublabel": "就绪派发",
       "sources": [
-        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 227, "label": "写侧先 resume" },
-        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 165, "label": "handleEvents" }
+        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 267, "label": "写侧先 resume" },
+        { "path": "src/Core/EventLoop/IoWatcher.cpp", "line": 197, "label": "handleEvents" }
       ]
     },
     {

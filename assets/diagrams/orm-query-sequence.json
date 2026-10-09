@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -63,7 +63,7 @@
       "sublabel": "渲染与占位符",
       "sources": [
         { "path": "src/Database/Dialect/StandardSqlDialect.cpp", "line": 420, "label": "translate" },
-        { "path": "src/Database/Dialect/SqliteDialect.cpp", "line": 14, "label": "LIMIT -1 内联" },
+        { "path": "src/Database/Dialect/SqliteDialect.cpp", "line": 34, "label": "LIMIT -1 内联" },
         { "path": "src/Database/Dialect/DialectRegistry.cpp", "line": 11, "label": "dialectFor" }
       ]
     },
@@ -105,7 +105,7 @@
       "label": "RowMapper",
       "sublabel": "值到字段",
       "sources": [
-        { "path": "src/Database/Queryable/RowMapper.h", "line": 651, "label": "mapResultRows" },
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 682, "label": "mapResultRows" },
         { "path": "src/Database/Queryable/RowMapper.h", "line": 354, "label": "bool 只认 0/1" }
       ]
     }

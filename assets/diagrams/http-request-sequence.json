@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -67,7 +67,7 @@
       "sources": [
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 177, "label": "SSL_connect/accept" },
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 425, "label": "读 ALPN 结果" },
-        { "path": "src/Core/Tls/TlsContext.cpp", "line": 286, "label": "挂 ALPN 回调" }
+        { "path": "src/Core/Tls/TlsContext.cpp", "line": 313, "label": "挂 ALPN 回调" }
       ]
     },
     {
@@ -98,7 +98,7 @@
       "sublabel": "手写增量",
       "sources": [
         { "path": "src/Net/Http/HttpParser.cpp", "line": 53, "label": "parse" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 1293, "label": "Done 相位取请求" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 1294, "label": "Done 相位取请求" }
       ]
     },
     {

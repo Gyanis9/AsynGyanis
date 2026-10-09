@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -62,7 +62,7 @@
       "stage": 0,
       "row": 1,
       "sources": [
-        { "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp", "line": 269, "label": "processEvents" },
+        { "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp", "line": 300, "label": "processEvents" },
         { "path": "src/Platform/FileSystem/Win32FileWatcher.cpp", "line": 368, "label": "watchLoop" }
       ]
     },
@@ -109,7 +109,7 @@
       "row": 1,
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1597, "label": "handleFileChange" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1600, "label": "Rescan 先于扩展名过滤" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1606, "label": "Rescan 先于扩展名过滤" },
         { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 37, "label": "不漏轮" }
       ]
     },
@@ -122,7 +122,7 @@
       "stage": 1,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 985, "label": "yamlNodeToConfigValue" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 990, "label": "yamlNodeToConfigValue" },
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 1542, "label": "flattenValue" }
       ]
     },
@@ -158,7 +158,7 @@
       "stage": 2,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2091, "label": "commitConfigData" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2096, "label": "commitConfigData" },
         { "path": "src/Base/Config/ConfigManager.h", "line": 393, "label": "m_data" }
       ]
     },
@@ -183,7 +183,7 @@
       "stage": 2,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Tracer.h", "line": 170, "label": "m_pending" }
+        { "path": "src/Net/Tracing/Tracer.h", "line": 163, "label": "m_pending" }
       ]
     },
     {
@@ -206,7 +206,7 @@
       "row": 1,
       "sources": [
         { "path": "src/Base/Config/ConfigLoadResult.h", "line": 55, "label": "HotReloadCallback" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1684, "label": "runReloadTask" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1689, "label": "runReloadTask" }
       ]
     },
     {

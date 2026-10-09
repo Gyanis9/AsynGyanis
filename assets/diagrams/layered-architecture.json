@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c56339af27df21240007fbc643efe42c5fe171e9"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -131,7 +131,7 @@
       "pos": [320, 300],
       "size": [410, 60],
       "sources": [
-        { "path": "src/Core/CMakeLists.txt", "line": 17, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Core/CMakeLists.txt", "line": 21, "label": "${ASYN_LIBRARY_KIND}" },
         { "path": "src/Core/CMakeLists.txt", "line": 27, "label": "PUBLIC Base/Platform/OpenSSL" }
       ]
     },

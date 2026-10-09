@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -203,7 +203,7 @@
       "label": "标记监听",
       "sublabel": "close 不 shutdown",
       "sources": [
-        { "path": "src/Core/Socket/AsyncSocket.h", "line": 115, "end_line": 126, "label": "markAsListening" },
+        { "path": "src/Core/Socket/AsyncSocket.h", "line": 128, "label": "markAsListening" },
         { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 496, "label": "仅非监听才 shutdown" }
       ]
     },

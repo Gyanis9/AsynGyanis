@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7378b50456f6f498a6f9b90c1a635798f0f3bfcf"
+      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
     },
     "views": [
       {
@@ -63,7 +63,7 @@
       "col": 1,
       "step": "02",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 486, "label": "有持久 URL 先探针" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 510, "label": "有持久 URL 先探针" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 542, "label": "否则新建账户" },
         { "path": "src/Net/Acme/AcmeClient.h", "line": 156, "label": "badNonce 重发上限 3" }
       ]
@@ -78,7 +78,7 @@
       "step": "03",
       "sources": [
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 610, "label": "提交标识符" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 628, "label": "取 authorization" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 639, "label": "取 authorization" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 719, "label": "没有 http-01 即失败" }
       ]
     },
@@ -91,7 +91,7 @@
       "col": 3,
       "step": "04",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 659, "label": "POST 空体触发" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 745, "label": "POST 空体触发" }
       ]
     },
     {
@@ -103,7 +103,7 @@
       "col": 4,
       "step": "05",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 615, "label": "提交 CSR" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 816, "label": "提交 CSR" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 873, "label": "轮询订单" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 885, "label": "取证书链" }
       ]
@@ -166,7 +166,7 @@
       "lane": "fault",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 744, "end_line": 761, "label": "invalid/expired/revoked" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 768, "end_line": 771, "label": "invalid/expired/revoked" },
         { "path": "src/Net/Acme/AcmeError.h", "line": 39, "label": "ChallengeNotAnswered" }
       ]
     },
@@ -286,7 +286,7 @@
       "title": "节拍与阈值",
       "items": [
         "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:145 的 renewBeforeExpiry、.cpp:419 落成的 graceWindow）",
-        "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者是两段轮询的总时限，单次出站时限由它折算得出（AcmeClient.cpp:487 走 boundedRequestTimeout），整轮耗时不硬卡在这个数上",
+        "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者是两段轮询的总时限，单次出站时限由它折算得出（AcmeCertificateManager.cpp:487 走 boundedRequestTimeout），整轮耗时不硬卡在这个数上",
         "实际唤醒取 max(now+12h, 上次失败秒+1)；minimumRetryInterval 就落在这一步（AcmeCertificateManager.cpp:229），机构的 Retry-After 与本端下限谁大听谁",
         "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:156）"
       ]
