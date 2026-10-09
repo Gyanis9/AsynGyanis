@@ -5718,7 +5718,7 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.6.0...HEAD
 [2.5.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.2.0...v2.3.0
