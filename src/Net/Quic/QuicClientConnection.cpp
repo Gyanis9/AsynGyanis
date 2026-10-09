@@ -95,10 +95,12 @@ namespace AsynGyanis::Net
         static_cast<void>(m_socket->enableEcnFieldVisibility());
 
         QuicConnection::Configuration connectionConfiguration;
-        connectionConfiguration.tlsContext   = m_tlsContext->nativeHandle();
-        connectionConfiguration.idleTimeout  = m_configuration.idleTimeout;
-        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data, const std::size_t length,
-                                                      const std::uint8_t ecnCodepoint) -> Core::Task<bool>
+        connectionConfiguration.tlsContext  = m_tlsContext->nativeHandle();
+        connectionConfiguration.idleTimeout = m_configuration.idleTimeout;
+        // QUIC 的数据报不得在 IP 层分片（RFC 9000 §14 的 MUST）：设上了这条连接才允许探更大的尺寸
+        connectionConfiguration.pathMtuProbeAllowed = m_socket->enableDoNotFragment();
+        connectionConfiguration.sendDatagram        = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data, const std::size_t length,
+                                                             const std::uint8_t ecnCodepoint) -> Core::Task<bool>
         {
             const ssize_t sentByteCount = co_await m_socket->asyncSendTo(peerAddress, data, length, ecnCodepoint);
             co_return sentByteCount >= 0 && static_cast<std::size_t>(sentByteCount) == length;

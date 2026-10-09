@@ -324,7 +324,7 @@ namespace AsynGyanis::Net
         m_configuration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
     }
 
-    void QuicConnectionCore::confirmHandshake()
+    void QuicConnectionCore::confirmHandshake(const Timestamp now)
     {
         if (m_isHandshakeConfirmed)
         {
@@ -334,6 +334,13 @@ namespace AsynGyanis::Net
         const std::uint64_t peerMaximumDelayMilliseconds =
                 m_peerParameters.has_value() ? m_peerParameters->maximumAcknowledgmentDelayMilliseconds : kQuicDefaultMaximumAcknowledgmentDelayMilliseconds;
         m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
+        // §14.3.1：BASE 态的起点就是握手完成。BASE_PLPMTU（1200）在这条路上已经被 §14.1 的补足要求真实
+        // 确认过了，所以状态机不必为它单发一条探针，直接从这里开始往更大的尺寸探。DF 没设上时整台机器
+        // 留在 Disabled：不探就不需要那两个计时器，也就不会有定时器为一条探不了的路一直亮着
+        if (m_configuration.pathMtuProbeAllowed)
+        {
+            m_pathMtu.onHandshakeConfirmed(now);
+        }
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime,
@@ -509,7 +516,7 @@ namespace AsynGyanis::Net
         {
             // §4.1.2 给客户端的那条判据：能解开一条 1-RTT 报文，说明服务端的 Finished 已被 TLS 验过
             // （应用密钥就在那之后才导出），握手至此可算确认
-            confirmHandshake();
+            confirmHandshake(arrivalTime);
         }
         // §10.1：「收到并处理成功」才算活动，解不开的包不能拿来续命。自发的那一份活动在下面
         // emitPacket 里按「收包之后第一次发触发确认的包」补上
@@ -597,7 +604,7 @@ namespace AsynGyanis::Net
                             beginClose(kQuicProtocolViolation, "对端向服务端发了 HANDSHAKE_DONE（RFC 9000 §19.20）", arrivalTime);
                         } else
                         {
-                            confirmHandshake();
+                            confirmHandshake(arrivalTime);
                         }
                     }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
@@ -641,9 +648,12 @@ namespace AsynGyanis::Net
         if (update.isPersistentCongestionDetected)
         {
             // §7.6.2：排在同一帧的普通降窗之后，否则这一轮的「减半」会把最小窗那份重启盖掉。
-            // 本层不打日志（纯计算件，日志归外壳），因此把次数留在读数上供外壳与用例取
+            // 本层不打日志（日志归外壳），因此把次数留在读数上供外壳与用例取
             m_congestion.restartAfterPersistentCongestion();
             ++m_persistentCongestionEventCount;
+            // 「发出去的东西一概没人答」在 RFC 8899 图 5 里就是「PL indicates loss of connectivity」那一格，
+            // QUIC 里的对应物正是持久拥塞：尺寸可能已经过不去（路被改了 MTU），掉回 BASE 从头再探
+            m_pathMtu.onConnectivityLost(arrivalTime);
         }
         for (const QuicSentPacketInfo &packet: update.acknowledged)
         {
@@ -656,6 +666,12 @@ namespace AsynGyanis::Net
                 m_isHandshakeDoneInFlight     = false;
             }
         }
+        if (std::ranges::any_of(update.acknowledged, [](const QuicSentPacketInfo &packet) { return packet.isPathMtuProbe; }))
+        {
+            // §14.4：只有被确认的那个尺寸才算证据，所以这一步排在本帧的确认账之后、判丢那一段之前——
+            // 同一帧里探针既可能被确认也可能被别的包牵连判丢，确认优先（探针活着走过去就是走过去）
+            m_pathMtu.onProbeAcknowledged(arrivalTime);
+        }
         for (const QuicSentPacketInfo &packet: update.lost)
         {
             m_streams.onSendRangesLost(packet.streamRanges);
@@ -665,7 +681,7 @@ namespace AsynGyanis::Net
         // 进入用空间武装 PTO，也才该发 HANDSHAKE_DONE
         if (space == PacketNumberSpace::Handshake && !update.acknowledged.empty())
         {
-            confirmHandshake();
+            confirmHandshake(arrivalTime);
         }
         if (!update.lost.empty())
         {
@@ -760,6 +776,9 @@ namespace AsynGyanis::Net
         m_peerParameters = *decoded;
         // 流层的发送额度全部来自对端参数：到手之前一条流数据也发不出去（§4.1）
         m_streams.adoptPeerParameters(*decoded);
+        // §14.2 / RFC 8899 §5.3.1：MAX_PLPMTU 是「本端愿意收的下限」与「对端宣告的上限」的较小者，
+        // 对端这一半到手之前不探——探一个对面明说收不下的尺寸，只是白丢一条探针
+        m_pathMtu.onPeerMaximumPayload(decoded->maximumUdpPayloadSize);
     }
 
     void QuicConnectionCore::reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, const Timestamp now)
@@ -841,6 +860,9 @@ namespace AsynGyanis::Net
 
         if (m_phase != QuicConnectionPhase::Closing)
         {
+            // 拥塞层的计量单位跟着已确认的数据报尺寸走：窗口增减与最小窗都以 max_datagram_size 为一格
+            // （§B.2、§7.2），探到更大的尺寸却不换它，涨窗就按比线上实际小的那一格算，长期偏慢
+            m_congestion.setMaximumDatagramByteLength(m_pathMtu.maximumDatagramPayloadByteLength());
             for (const PacketNumberSpace space: {PacketNumberSpace::Initial, PacketNumberSpace::Handshake, PacketNumberSpace::Application})
             {
                 queueSpacePackets(space, now);
@@ -861,6 +883,11 @@ namespace AsynGyanis::Net
         {
             // 连一个包头都装不进 3 倍额度：本空间这一轮什么都发不出去，等对端多打些字节再来（§8.1）
             return;
+        }
+        if (space == PacketNumberSpace::Application)
+        {
+            // 探针只走 1-RTT：状态机在握手完成前不离开 Disabled，而那时应用空间的写密钥本来就还没武装
+            queuePathMtuProbe(now);
         }
         // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 **1-RTT
         // 帧**（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
@@ -1022,23 +1049,39 @@ namespace AsynGyanis::Net
         return !m_isHandshakeDoneAcknowledged && !m_isHandshakeDoneInFlight;
     }
 
+    void QuicConnectionCore::queuePathMtuProbe(const Timestamp now)
+    {
+        // 探针照样吃拥塞窗口（§14.4 明写 probes consume congestion window），所以交给状态机的预算是
+        // 窗口余量：腾不出待探尺寸就不算这次到点，免得把「窗口小」记成「这个尺寸走不通」连着三次
+        const std::optional<std::size_t> probeByteLength = m_pathMtu.probeByteLengthIfDue(now, m_congestion.remainingByteBudget());
+        if (!probeByteLength.has_value())
+        {
+            return;
+        }
+        std::string frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, probeByteLength);
+    }
+
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now, const bool isAckEliciting,
                                         const std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone,
-                                        std::vector<QuicStreamAnnouncement> streamAnnouncements)
+                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const std::optional<std::size_t> paddedDatagramByteLength)
     {
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
-        // 客户端握手期的 Initial 要按 §14.1 补到最小尺寸：补的是 PADDING 帧（0x00 一字节一帧），
-        // 落在受保护载荷里，所以长度要等包头与标签都算得出来之后才知道差多少
-        std::string minimumSizeFrameAssembly;
-        if (!isLocalServer() && space == PacketNumberSpace::Initial)
+        // 两处补尺寸补的都是 PADDING 帧（0x00 一字节一帧），落在受保护载荷里，所以差多少要等包头与标签
+        // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针按 §14.4
+        // 补到待探的那个尺寸——探针的意义就在这个数上，凑不到就没有「这个尺寸走过去了」这条证据
+        const std::size_t plainOverheadByteLength = packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application) - kQuicCryptoFrameHeaderByteLimit;
+        std::string       paddedFrameAssembly;
+        if (!isLocalServer() && space == PacketNumberSpace::Initial && plainOverheadByteLength + frames.size() < kQuicMinimumInitialDatagramByteLength)
         {
-            const std::size_t projectedByteLength = packetOverheadByteLength(m_configuration, true) - kQuicCryptoFrameHeaderByteLimit + frames.size();
-            if (projectedByteLength < kQuicMinimumInitialDatagramByteLength)
-            {
-                minimumSizeFrameAssembly = frames;
-                minimumSizeFrameAssembly.append(kQuicMinimumInitialDatagramByteLength - projectedByteLength, '\0');
-            }
+            paddedFrameAssembly = frames;
+            paddedFrameAssembly.append(kQuicMinimumInitialDatagramByteLength - plainOverheadByteLength - frames.size(), '\0');
+        } else if (paddedDatagramByteLength.has_value() && plainOverheadByteLength + frames.size() < *paddedDatagramByteLength)
+        {
+            paddedFrameAssembly = frames;
+            paddedFrameAssembly.append(*paddedDatagramByteLength - plainOverheadByteLength - frames.size(), '\0');
         }
         QuicOutboundPacket packet;
         packet.isLongHeader            = space != PacketNumberSpace::Application;
@@ -1049,7 +1092,7 @@ namespace AsynGyanis::Net
         packet.packetNumber            = packetNumber;
         packet.packetNumberByteCount   = 1;
         packet.isKeyPhaseBitSet        = m_isSendKeyPhaseSet;
-        packet.frames                  = minimumSizeFrameAssembly.empty() ? asBytes(frames) : asBytes(minimumSizeFrameAssembly);
+        packet.frames                  = paddedFrameAssembly.empty() ? asBytes(frames) : asBytes(paddedFrameAssembly);
 
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
@@ -1073,6 +1116,9 @@ namespace AsynGyanis::Net
         record.streamRanges         = std::move(streamRanges);
         record.streamAnnouncements  = std::move(streamAnnouncements);
         record.carriesHandshakeDone = carriesHandshakeDone;
+        // 探针被丢不算拥塞证据、也不算 §7.6.2 那一段的端点（RFC 9000 §14.4），所以这一格要留在凭据上；
+        // 被确认时它又是「这个尺寸走过去了」的唯一证据，两条出口都靠它分辨
+        record.isPathMtuProbe = paddedDatagramByteLength.has_value();
         if (carriesHandshakeDone)
         {
             m_isHandshakeDoneInFlight = true;
@@ -1091,7 +1137,9 @@ namespace AsynGyanis::Net
 
     std::size_t QuicConnectionCore::sendByteBudget(const std::size_t reservedByteLength, const bool ignoresCongestionWindow) const
     {
-        std::size_t budget = saturatingSubtract(kQuicMaximumDatagramPayloadByteLength, reservedByteLength);
+        // 上限听路径 MTU 状态机的：没探到更大的尺寸时它就是 1200（§14.1 的那个下限），
+        // 探到了就按被真实确认过的那一格发
+        std::size_t budget = saturatingSubtract(m_pathMtu.maximumDatagramPayloadByteLength(), reservedByteLength);
         if (!ignoresCongestionWindow)
         {
             // 窗口余量也得先减掉这一包的固定开销，否则算出来的分片一定超窗
@@ -1191,6 +1239,10 @@ namespace AsynGyanis::Net
     std::optional<QuicConnectionCore::Timestamp> QuicConnectionCore::nextTimeout() const noexcept
     {
         std::optional<Timestamp> deadline = m_recovery.nextDeadline();
+        if (const std::optional<Timestamp> pathDeadline = m_pathMtu.nextDeadline(); pathDeadline.has_value() && (!deadline.has_value() || *pathDeadline < *deadline))
+        {
+            deadline = pathDeadline;
+        }
         if (const std::optional<Timestamp> idleDeadline = idleDeadlineTime(); idleDeadline.has_value() && (!deadline.has_value() || *idleDeadline < *deadline))
         {
             deadline = idleDeadline;
@@ -1290,6 +1342,9 @@ namespace AsynGyanis::Net
             m_outboundDatagrams.clear();
             return;
         }
+        // 路径 MTU 那两个计时器都记在这里：探针到点没被确认算一次失败（连满三条才收口），抬升计时器到点
+        // 就重新往上找。真正把探针发出去的是下面那次按空间排队——它从 Application 那格走进 queuePathMtuProbe
+        m_pathMtu.onDeadlineReached(now);
         const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
         if (!action.lost.empty())
         {
@@ -1448,6 +1503,21 @@ namespace AsynGyanis::Net
     std::size_t QuicConnectionCore::persistentCongestionEventCount() const noexcept
     {
         return m_persistentCongestionEventCount;
+    }
+
+    std::size_t QuicConnectionCore::maximumDatagramPayloadByteLength() const noexcept
+    {
+        return m_pathMtu.maximumDatagramPayloadByteLength();
+    }
+
+    QuicPathMtuPhase QuicConnectionCore::pathMtuPhase() const noexcept
+    {
+        return m_pathMtu.phase();
+    }
+
+    std::pair<std::size_t, std::size_t> QuicConnectionCore::pathMtuProbeState() const noexcept
+    {
+        return {m_pathMtu.probedDatagramPayloadByteLength(), m_pathMtu.failedProbeCount()};
     }
 
     bool QuicConnectionCore::isFinished() const noexcept

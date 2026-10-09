@@ -15,7 +15,7 @@
 
 ## [Unreleased]
 
-自 2.6.0 起的累计变化（新增 3、变更 2、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，以及 ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数。三件事都留了对外读数，不是只在内部记账。
+自 2.6.0 起的累计变化（新增 4、变更 3、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，以及路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899）。四件事都留了对外读数，不是只在内部记账。
 
 ### 新增
 
@@ -46,9 +46,25 @@
   `QuicConnectionCoreConfiguration::supportsPerDatagramEcnField` 为假时核心一建好就落在 Failed；
   读不到字段的平台一条计数都不报（§13.4.1 允许）。与 RFC 9002 附录 A.4 的偏离写明在枚举文档里：不按包数
   停标（握手常常吃掉十条，等不到应用数据被标过），收口交给两个失败探测器，另一个是「标过的包全被判丢」。
+- **路径 MTU 探测（DPLPMTUD）**：一条 QUIC 连接的数据报尺寸此前永远是 1200——以太网 1500 的链路明明装得下
+  1452，巨型帧更是白浪费，而 h3 的每条流都按这个上限切帧。现在按 RFC 9000 §14.3/§14.4 与 RFC 8899 §5 主动
+  探测：握手完成后从 BASE 起步，沿阶梯 {1232, 1452, 8952} 往上试，**被确认**的那个尺寸才立为本端上限
+  （路由器按尺寸丢的不算证据，ICMP 那条通路一律不参与——§14.3.3 要求先验证再用）。天花板取「对端宣告的
+  `max_udp_payload_size` 与阶梯顶格」的较小者，对端改小立刻折回；同一尺寸连丢三条（MAX_PROBES）才收口，
+  之后等 PMTU_RAISE_TIMER（600 秒）再抬一次。探针是**单独一包**（一条 PING 补 PADDING 到待探的尺寸），
+  跟普通数据挤在同一包里就没有「这个尺寸走过去了」这条证据；它照样吃拥塞窗口（§14.4 明写 probes consume
+  congestion window），窗口装不下时只把下一次尝试推迟、不记失败。探针被判丢既不降窗（§7.3.2 那次减半）
+  也不算 §7.6.2 那一段的两个端点。持久拥塞（发出去的东西一概没人答）时掉回 BASE 从头再探。同时按 §14 的
+  MUST 在 QUIC 的套接字上设「不要在 IP 层分片」（Linux 走 `IP_MTU_DISCOVER=IP_PMTUDISC_DO`、Windows 走
+  `IP_DONTFRAGMENT`）：设不上就不探，尺寸停在 1200——没有 DF 的探测会把「这个尺寸走不通」和「被分片后丢了
+  一片」混成一格。读数三格：`maximumDatagramPayloadByteLength()`、`pathMtuPhase()`、`pathMtuProbeState()`。
 
 ### 变更
 
+- **QUIC 的数据报上限不再是编译期常数**：发包预算改听路径 MTU 状态机的，拥塞层 §B.2 的
+  `max_datagram_size`（慢启动增量与最小窗的计量单位）也跟着已确认的尺寸换。没探到更大尺寸时两者仍是
+  1200，与这一格之前的行为逐字节一致；`kQuicMaximumDatagramPayloadByteLength` 现在是 BASE_PLPMTU，
+  不再是上限本身。
 - **`QuicConnection` 的出站口可以给一批**：`Configuration` 新增可选的 `sendDatagramBatch`，设置后一轮攒出的
   报文按窗交出（窗上限是批次的 8 条）；`sendDatagram` 与它给一个即可，都不给才报「配置不完整」，告警点名的
   是这两条口。没设置的调用方（出站客户端、探针）照旧逐条。

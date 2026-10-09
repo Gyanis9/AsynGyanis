@@ -145,6 +145,26 @@ namespace AsynGyanis::Platform
         [[nodiscard]] bool isEcnFieldVisible() const noexcept;
 
         /**
+         * @brief 让内核不要在 IP 层分片本端发出的数据报
+         * @details RFC 9000 §14 的硬要求：QUIC 数据报**不得**在 IP 层分片，IPv4 要设 DF 位。理由是分片
+         *          会把「这个尺寸走不走得通」这条证据拆掉——一条 1452 字节的报文被切成两片后，路径上那台
+         *          只吃得下 1280 的路由器只会丢，而丢的是分片而不是整条，探测读到的形状就说不清是谁的错。
+         *          Linux 走 `IP_MTU_DISCOVER = IP_PMTUDISC_DO` / `IPV6_MTU_DISCOVER = IPV6_PMTUDISC_DO`，
+         *          Windows 走 `IP_DONTFRAGMENT` / `IPV6_DONTFRAG`（两侧都有，不像 ECN 那一格只有一侧）。
+         * @param doNotFragment true 设 DF；false 回到内核默认（按路径 MTU 决定要不要分片）
+         * @return bool 成功返回 true；套接字无效或 setsockopt 失败返回 false 并置错误码
+         * @note 设了 DF 之后，超过路径 MTU 的报文会以 `EMSGSIZE` 失败而不是被分片——这正是端点主动探测
+         *       想要的形状，也是 `Net/Quic/QuicPathMtuDiscovery.h` 那台状态机存在的依据
+         */
+        [[nodiscard]] bool setDoNotFragment(bool doNotFragment) noexcept;
+
+        /**
+         * @brief 本端此刻是否真的设了「不要在 IP 层分片」
+         * @return true 表示上一次 `setDoNotFragment(true)` 成功落到了内核上
+         */
+        [[nodiscard]] bool isDoNotFragmentSet() const noexcept;
+
+        /**
          * @brief 收一条报文（不改动本对象，可在 const 套接字上调用）
          * @param buffer 接收缓冲
          * @param capacity 缓冲容量
@@ -258,7 +278,8 @@ namespace AsynGyanis::Platform
         void close() noexcept;
 
     private:
-        int  m_fileDescriptor{-1};     ///< 描述符；负数表示无效
-        bool m_ecnFieldVisible{false}; ///< 是否已向内核申请「把收到报文的 ECN 字段交上来」，见 setEcnFieldVisible
+        int  m_fileDescriptor{-1};        ///< 描述符；负数表示无效
+        bool m_ecnFieldVisible{false};    ///< 是否已向内核申请「把收到报文的 ECN 字段交上来」，见 setEcnFieldVisible
+        bool m_isDoNotFragmentSet{false}; ///< 是否已设「不要在 IP 层分片」，见 setDoNotFragment
     };
 } // namespace AsynGyanis::Platform

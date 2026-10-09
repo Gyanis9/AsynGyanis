@@ -49,6 +49,16 @@ namespace AsynGyanis::Core
         return m_socket.isEcnFieldVisible();
     }
 
+    bool AsyncUdpSocket::enableDoNotFragment() noexcept
+    {
+        return m_socket.setDoNotFragment(true);
+    }
+
+    bool AsyncUdpSocket::isDoNotFragmentSet() const noexcept
+    {
+        return m_socket.isDoNotFragmentSet();
+    }
+
     Platform::SocketAddress AsyncUdpSocket::localAddress() const noexcept
     {
         return m_socket.localAddress();

@@ -78,6 +78,18 @@ namespace AsynGyanis::Core
         /// 本端现在是否读得到收到数据报的 ECN 字段
         [[nodiscard]] bool isEcnFieldVisible() const noexcept;
 
+        /**
+         * @brief 设「本端发出的数据报不要在 IP 层分片」
+         * @details QUIC 的硬性要求（RFC 9000 §14：IPv4 要设 DF 位），因此这一格归传输层的外壳开，
+         *          不归调用方挑。设失败（少见：某些内核不允许）时返回 false，外壳照旧工作但不发
+         *          PMTU 探针——没有 DF 的探测会把「这个尺寸走不通」和「被分片后丢了一片」混成一格。
+         * @return true 表示已经设上
+         */
+        [[nodiscard]] bool enableDoNotFragment() noexcept;
+
+        /// 本端现在是否设了「不要在 IP 层分片」
+        [[nodiscard]] bool isDoNotFragmentSet() const noexcept;
+
         [[nodiscard]] Platform::SocketAddress localAddress() const noexcept;
 
         /**

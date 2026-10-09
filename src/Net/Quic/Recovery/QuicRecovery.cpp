@@ -488,10 +488,12 @@ namespace AsynGyanis::Net
     {
         for (const QuicSentPacketInfo &packet: lost)
         {
-            if (!packet.isAckEliciting)
+            if (!packet.isAckEliciting || packet.isPathMtuProbe)
             {
                 // §7.6.2 明写那两个包必须都是触发确认的：对端只承诺在 max_ack_delay 内确认这种包，
-                // 只带 ACK 的包本来就可能没人答，把它算进「这条路不通」的一段会误判（§B.2 也不把它计入在途）
+                // 只带 ACK 的包本来就可能没人答，把它算进「这条路不通」的一段会误判（§B.2 也不把它计入在途）。
+                // PMTU 探针同样不算：它就是拿去试一个更大的尺寸的，按尺寸被丢是预期结局，
+                // 而这条判据要说的是「正常尺寸的包也没人答了」（RFC 9000 §14.4）
                 continue;
             }
             if (!m_firstRoundTripSampleTime.has_value() || packet.timeSent < *m_firstRoundTripSampleTime)

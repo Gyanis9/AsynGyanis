@@ -395,6 +395,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 路径 MTU 探针不算那两个端点：按尺寸被丢是预期结局，不是「这条路不通」（RFC 9000 §14.4）
+     * @details 形状与上面那条「定时器把段推开之后建立持久拥塞」逐字节相同——包 1 在 20ms、包 2 在 200ms，
+     *          跨度 180ms 越过 150ms 的时长——只把那两个端点换成探针。探针就是拿去撞一个更大尺寸的，
+     *          路由器照尺寸丢正是它的工作方式；把它算进「两个包之间一个确认都没有」的那一段，一条
+     *          8952 字节的探针就足以把一条好路判死并按最小窗重启。对照：同一形状换成正常包会建立
+     *          （见 `EstablishesPersistentCongestionOnTheAcknowledgementAfterTheLossTimerExtendedTheGap`）。
+     */
+    TEST(QuicRecovery, IgnoresPathMtuProbesWhenAnchoringThePersistentCongestionGap)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        QuicSentPacketInfo firstProbe = makeSentPacket(1, milliseconds(20));
+        firstProbe.isPathMtuProbe     = true;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, firstProbe);
+        QuicSentPacketInfo secondProbe = makeSentPacket(2, milliseconds(200));
+        secondProbe.isPathMtuProbe     = true;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, secondProbe);
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(201)));
+
+        const QuicAcknowledgementUpdate first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(3, {{3, 3}}), milliseconds(210), QuicTime{0});
+        ASSERT_EQ(first.lost.size(), 1U) << "这一帧该按时间阈值把包 1 判掉，实判 " << first.lost.size() << " 个";
+        EXPECT_FALSE(first.isPersistentCongestionDetected) << "只有一个判丢的包，构不成「两个相隔超过时长」";
+
+        const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
+        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        ASSERT_EQ(recovery.onDeadlineReached(*lossDeadline).lost.size(), 1U) << "到点该把包 2 判丢";
+
+        const QuicAcknowledgementUpdate afterTimer = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(3), milliseconds(220), QuicTime{0});
+        EXPECT_TRUE(afterTimer.acknowledged.empty()) << "这条重复确认不该再产出样本，也不该有新判丢";
+        EXPECT_FALSE(afterTimer.isPersistentCongestionDetected) << "段的两个端点都是探针：尺寸过不去不等于这条路不通";
+    }
+
+    /**
      * @brief 落下第一个 RTT 样本的那一帧不建立持久拥塞，哪怕这一帧判丢的包相隔 1010ms（§7.6.2 的样本那一格）
      * @details 段里的两个端点必须是「发出时已有一个先前的样本」的那些：第一样本之前用的是 kInitialRtt
      *          （333ms），拿它算出来的时长去比这段空白，等于用一把还没校准的尺判死这条路——规范那句

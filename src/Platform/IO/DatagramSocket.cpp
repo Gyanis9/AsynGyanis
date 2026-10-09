@@ -10,6 +10,7 @@
 
 #if ASYN_PLATFORM_WIN32
 #include <windows.h>
+#include <ws2ipdef.h> // IP_DONTFRAG 与 IPV6_DONTFRAG 长在这里，windows.h 与 winsock2.h 都不带
 #else
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -376,6 +377,46 @@ namespace AsynGyanis::Platform
     bool DatagramSocket::isEcnFieldVisible() const noexcept
     {
         return m_ecnFieldVisible;
+    }
+
+    bool DatagramSocket::setDoNotFragment(const bool doNotFragment) noexcept
+    {
+        if (!isValid())
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return false;
+        }
+        // 两侧选项名不同、取值也不同：Linux 那一档是「怎么发现 MTU」的枚举，Windows 才是布尔开关
+#if ASYN_PLATFORM_WIN32
+        const int optionValue = doNotFragment ? 1 : 0;
+        const int ipv4Option  = IP_DONTFRAGMENT; // Winsock 的这个名字带 -MENT，Linux 那个 IP_DONTFRAG 是另一码事
+        const int ipv6Option  = IPV6_DONTFRAG;
+#else
+        const int optionValue = doNotFragment ? IP_PMTUDISC_DO : IP_PMTUDISC_DONT;
+        const int ipv4Option  = IP_MTU_DISCOVER;
+        const int ipv6Option  = IPV6_MTU_DISCOVER;
+#endif
+        const SocketAddress boundAddress = localAddress();
+        const int           option       = boundAddress.storage.ss_family == AF_INET6 ? ipv6Option : ipv4Option;
+        if (boundAddress.storage.ss_family != AF_INET && boundAddress.storage.ss_family != AF_INET6)
+        {
+            // 还没 bind（或地址族不认识）：不知道该开哪一档选项，与其猜一个不如说清是用法错误
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return false;
+        }
+        const int level = boundAddress.storage.ss_family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
+        if (::setsockopt(m_fileDescriptor, level, option, reinterpret_cast<const char *>(&optionValue), sizeof(optionValue)) != 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+            return false;
+        }
+        m_isDoNotFragmentSet = doNotFragment;
+        return true;
+    }
+
+    bool DatagramSocket::isDoNotFragmentSet() const noexcept
+    {
+        return m_isDoNotFragmentSet;
     }
 
     ssize_t DatagramSocket::receive(void *const buffer, const std::size_t capacity, SocketAddress &peerAddress, std::uint8_t &ecnCodepoint) const noexcept

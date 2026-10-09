@@ -40,6 +40,17 @@ namespace AsynGyanis::Net
     {
     }
 
+    void QuicCongestionControl::setMaximumDatagramByteLength(const std::size_t maximumDatagramByteLength) noexcept
+    {
+        if (maximumDatagramByteLength == 0)
+        {
+            // 0 会把最小窗折成 0，也就把「判成持久拥塞」变成「这条连接再也发不出东西」：留着旧尺寸
+            return;
+        }
+        // 只换单位，不折算当前窗口：窗口本身是字节数，换尺寸之后涨窗与最小窗都按新的那格算
+        m_maximumDatagramByteLength = maximumDatagramByteLength;
+    }
+
     void QuicCongestionControl::onPacketSent(const QuicSentPacketInfo &packet) noexcept
     {
         // 只带 ACK 的包不计在途（§B.2）：它是纯反馈，把它算进负荷会让窗口越用越小
@@ -76,9 +87,11 @@ namespace AsynGyanis::Net
             m_recoveryStartTime = std::nullopt;
         }
 
-        if (!lost.empty())
+        if (std::ranges::any_of(lost, [](const QuicSentPacketInfo &packet) { return !packet.isPathMtuProbe; }))
         {
-            // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）——CE 那条路也走这同一个判据
+            // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）——CE 那条路也走这同一个判据。
+            // PMTU 探针被判丢不算拥塞证据（RFC 9000 §14.4）：那条包本来就是拿去撞一个更大的尺寸的，
+            // 把它算进降窗会让一次正常的探测试探凭空把窗口砍掉一半
             startCongestionEvent(eventTime);
             return;
         }

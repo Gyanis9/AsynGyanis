@@ -1108,6 +1108,25 @@ namespace AsynGyanis::Net
             return datagrams;
         }
 
+        /**
+         * @brief 这一批出站数据报里最大的那条有多大
+         * @details 出站报文不许超过已确认的 PLPMTU，而路径 MTU 探针是唯一会超过 1200 的那一条，所以
+         *          「最大的一条正好是待探的那一格」这一条判据同时钉住两件事：探针发出去了，且它的尺寸
+         *          凑满了待探的那一格（凑不满就没有「这个尺寸走得通」这条证据）。
+         */
+        std::size_t largestDatagramByteLength(const std::vector<QuicOutboundDatagram> &datagrams)
+        {
+            std::size_t largest = 0;
+            for (const QuicOutboundDatagram &datagram: datagrams)
+            {
+                largest = std::max(largest, datagram.bytes.size());
+            }
+            return largest;
+        }
+
+        /// 缺省 PROBE_TIMER 是 16 秒（RFC 8899 §5.1.1 那条 SHOULD 的下限），跨过它才允许发下一条探针
+        constexpr Timestamp kPastProbeTimer{20LL * 1000 * 1000};
+
         /// 一轮往返里服务端出包的延迟：ACK 的延迟字段与 RTT 样本都以此为基准，取 1 毫秒便于口算
         constexpr Timestamp kServerSendLatency{1000};
 
@@ -1659,7 +1678,12 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        // 这一条测的是「整段没有确认 ⇒ 判死 ⇒ 窗口落到最小窗重启」，把路径 MTU 探针关掉：开着它，
+        // 已确认的尺寸就是 1232，出包的条数与每包大小都会挪动段的边界（「段内出现过确认就不判死」
+        // 那一格在恢复层有用例按微秒钉住，见 TestQuicRecovery 的 WithholdsPersistentCongestion...）
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         finishHandshake(core, client);
 
@@ -1774,7 +1798,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
 
         // 这里刻意不走 exchange：那条路会把服务端每个包都确认掉，DONE 一出门就「已确认」，
@@ -1861,7 +1889,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         ASSERT_FALSE(core.nextTimeout().has_value()) << "一个包都没发出去之前不该武装定时器";
         // 头两轮把飞行与 DONE 发完，后两轮是静默往返：客户端把最后收到的包确认掉，服务端才算「全部确认」
@@ -2034,7 +2066,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         exchange(core, client, Timestamp{0});
         client.suppressAcknowledgements(QuicEncryptionLevel::Initial);
@@ -2081,7 +2117,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get(), kClientConnectionId, 30000);
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
         for (int round = 0; round < 4; ++round)
         {
@@ -2216,7 +2256,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(clientContext.get(), nullptr);
 
         // 本端不宣告（0），让那个天文数字成为唯一来源，免得「两端取小」先把它挡在闸门外
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get(), kClientConnectionId));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get(), kClientConnectionId);
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, kQuicMaximumIntegerValue);
         for (int round = 0; round < 4; ++round)
         {
@@ -2394,7 +2438,11 @@ namespace AsynGyanis::Net
         ASSERT_NE(serverContext.get(), nullptr);
         ASSERT_NE(clientContext.get(), nullptr);
 
-        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        // 这一条测的是 PTO/空闲那一把钟，关掉路径 MTU 探测：探针到点会发一条带 PING 的报文，
+        // 也会占住 nextTimeout()，两件事各自都成立，混进来就分不清是谁的判据在响
+        configuration.pathMtuProbeAllowed = false;
+        QuicConnectionCore core(std::move(configuration));
         // 流级额度只有 4096，比一个拥塞窗口小：正文一长必然停在窗口上
         InMemoryQuicClient client(*clientContext.get(), kClientConnectionId, false, 0, 4096);
         finishHandshake(core, client);
@@ -3018,5 +3066,51 @@ namespace AsynGyanis::Net
         EXPECT_LT(windowAfter, windowBefore) << "CE 计数涨了却没降窗：§7.1 那条比丢包更早的拥塞信号没接到动作上";
         EXPECT_GE(windowAfter, windowBefore / 2U) << "只该减半，不该跌到最小窗——那是 §7.6.2 持久拥塞的处置，这里是两回事";
         EXPECT_EQ(core.ecnState(), QuicEcnState::Capable) << "CE 是拥塞信号，不该把 ECN 验证判失败";
+    }
+
+    TEST(QuicConnectionCore, ProbesALargerDatagramOnceTheHandshakeIsDone)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        // 握手完成的那一轮就把探针发了出去，`exchange` 里对端照例确认上一轮的包——被确认之后这一格
+        // 才升为本端尺寸（§14.4：只有被确认的尺寸才算 PLPMTU）
+        EXPECT_EQ(core.maximumDatagramPayloadByteLength(), 1232U);
+        EXPECT_EQ(core.pathMtuPhase(), QuicPathMtuPhase::Searching);
+
+        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(8U * 1024U, 'x')), true), 0U);
+        core.drive(kPastProbeTimer);
+        // 阶梯的下一格 1452 = 以太网 1500 按 IPv6 扣头；正文那几包仍按已确认的 1232 切
+        EXPECT_EQ(largestDatagramByteLength(drainMarked(core)), 1452U);
+        const auto [probedSize, failedCount] = core.pathMtuProbeState();
+        EXPECT_EQ(probedSize, 1452U) << "待探的尺寸要等它被确认才往上推（RFC 8899 §5.3.1：确认之后才改 PLPMTU 与 PROBED_SIZE）";
+        EXPECT_EQ(failedCount, 0U);
+    }
+
+    TEST(QuicConnectionCore, KeepsTheBasePayloadWhenTheSocketCannotSetDontFragment)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        configuration.pathMtuProbeAllowed             = false; // 套接字设不上 DF：探测的证据链不成立（RFC 9000 §14 的 MUST）
+        QuicConnectionCore core(std::move(configuration));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        EXPECT_EQ(core.pathMtuPhase(), QuicPathMtuPhase::Disabled);
+        EXPECT_EQ(core.maximumDatagramPayloadByteLength(), 1200U);
+
+        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(8U * 1024U, 'x')), true), 0U);
+        core.drive(kPastProbeTimer);
+        // 跨过 PROBE_TIMER 也没有超尺寸的报文：DF 没设上就不探，正文一律按 BASE 那一格切
+        EXPECT_LE(largestDatagramByteLength(drainMarked(core)), 1200U);
+        EXPECT_EQ(core.pathMtuPhase(), QuicPathMtuPhase::Disabled);
     }
 } // namespace AsynGyanis::Net

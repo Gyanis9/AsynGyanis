@@ -625,11 +625,14 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
         /// 上面四笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
         std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
-        /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
-        /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
         /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
         /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
         bool m_isEcnFieldVisible{false};
+        /// 套接字有没有设上「发出的数据报不要在 IP 层分片」：设上了各条连接才允许发路径 MTU 探针
+        /// （RFC 9000 §14 的 MUST，理由见 `QuicConnection::Configuration::pathMtuProbeAllowed`）
+        bool m_isDoNotFragmentSet{false};
+        /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
+        /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
         bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写
 
         /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接

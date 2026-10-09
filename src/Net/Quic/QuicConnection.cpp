@@ -133,6 +133,8 @@ namespace AsynGyanis::Net
         // 本平台能不能按单条报文读写 IP 的 ECN 字段是平台事实（Windows 两侧都没有入口），由外壳带给状态机：
         // 状态机自己是纯计算件，让它去问平台就等于让用例的结果跟着编译它的那台机器变。理由见配置里那一格
         coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
+        // DF 设没设上是套接字的事实，只有外壳知道：交给核心去决定要不要发路径 MTU 探针
+        coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
@@ -183,6 +185,8 @@ namespace AsynGyanis::Net
         coreConfiguration.clientTlsSettings               = clientTlsSettings;
         // 同服务端那一侧：按平台事实决定这条连接用不用 ECN
         coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
+        // DF 设没设上是套接字的事实，只有外壳知道：交给核心去决定要不要发路径 MTU 探针
+        coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));

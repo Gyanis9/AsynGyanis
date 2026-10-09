@@ -54,6 +54,15 @@ namespace AsynGyanis::Net
         explicit QuicCongestionControl(std::size_t maximumDatagramByteLength) noexcept;
 
         /**
+         * @brief 换一条数据报尺寸：§B.2 的 max_datagram_size 是窗口增减与最小窗的计量单位
+         * @details 路径 MTU 探到更大的尺寸之后必须跟着换，否则慢启动按 1200 一格格长、实际每条报文
+         *          有 1452 字节，窗口涨的速度就比线上花的速度快。0 一律不收——那是个会把最小窗
+         *          折成 0 的取值，宁可留着旧尺寸
+         * @param maximumDatagramByteLength 本端当前允许的数据报净载荷上限
+         */
+        void setMaximumDatagramByteLength(std::size_t maximumDatagramByteLength) noexcept;
+
+        /**
          * @brief 记下一个刚发出去的包
          * @details 只有触发确认的包计入在途；探针也计（§7.5：探针不被窗口阻塞，但要算进负荷）
          * @param packet 发包凭据，取其中的字节数与是否触发确认

@@ -337,6 +337,14 @@ namespace AsynGyanis::Net
         // 先申请「把收到报文的 ECN 字段交上来」：读到才报计数，读不到就按 §13.4.1 不报。
         // 失败不是错误（Windows 就没有这个入口），所以只记一次结论，不改控制流
         m_isEcnFieldVisible = m_socket->enableEcnFieldVisibility();
+        // QUIC 的数据报不得在 IP 层分片（RFC 9000 §14 的 MUST，IPv4 要设 DF 位）。设上了才允许各条连接
+        // 发路径 MTU 探针；设不上就停在 1200 那一档——探测的证据链没有 DF 就不成立（理由见配置里那一格）
+        m_isDoNotFragmentSet = m_socket->enableDoNotFragment();
+        if (!m_isDoNotFragmentSet)
+        {
+            LOG_WARN_FMT("QuicServer：套接字设不上「不要在 IP 层分片」（错误码 {}），本监听下的连接不做路径 MTU 探测，数据报尺寸停在 1200",
+                         Platform::PlatformError::lastErrorCode());
+        }
 
         std::vector<std::uint8_t> receiveBuffers(Platform::DatagramSocket::kMaximumBatchSlotCount * Platform::DatagramSocket::kMaximumDatagramBytes);
         std::array<Platform::DatagramSocket::BatchSlot, Platform::DatagramSocket::kMaximumBatchSlotCount> slots{};
@@ -855,6 +863,8 @@ namespace AsynGyanis::Net
         }
         connectionConfiguration.tlsContext  = tlsContextSnapshot;
         connectionConfiguration.idleTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
+        // DF 是这台套接字的事实，不是每条连接各自决定的：listen 时设一次，接进来的连接照它走
+        connectionConfiguration.pathMtuProbeAllowed = m_isDoNotFragmentSet;
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         {

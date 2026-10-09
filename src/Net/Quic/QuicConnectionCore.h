@@ -11,7 +11,8 @@
  *          帧 → 组包发出。时间戳一律由调用方注入，因此整条链可以在单测里逐字节复现，不需要真实网络。
  *
  * @note 能力范围：两个角色各自的握手、1-RTT 的流与流量控制、1-RTT 密钥更新，以及恢复层的发包记账、
- *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可与 Initial 空间的退休。
+ *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可、Initial 空间的退休、ECN 验证与 CE 反应，
+ *       以及路径 MTU 探测（DPLPMTUD）。
  *       刻意不做：0-RTT、RETRY、版本协商、连接迁移与本端签发额外连接标识——收到对应的报文按各自
  *       章节丢弃或忽略。作客户端时因此**不能接住服务端下发的 Retry**：挑一个 8 字节以上的随机目的标识
  *       （§7.3 建议的最小长度）是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路。
@@ -30,6 +31,7 @@
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/QuicConnectionRole.h"
 #include "Net/Quic/QuicOutboundDatagram.h"
+#include "Net/Quic/QuicPathMtuDiscovery.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/QuicReceivedPacketNumbers.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
@@ -46,6 +48,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -85,6 +88,14 @@ namespace AsynGyanis::Net
          *          外壳一律显式填，不留给缺省值去猜平台
          */
         bool supportsPerDatagramEcnField{true};
+        /**
+         * @brief 本端的套接字有没有设上「发出的数据报不要在 IP 层分片」
+         * @details 由外壳按 `Core::AsyncUdpSocket::enableDoNotFragment()` 的结果填。这是 RFC 9000 §14 的
+         *          MUST（IPv4 要设 DF 位），也是路径 MTU 探测成立的前提：没设上时超尺寸的报文会被内核
+         *          悄悄切开，探针被确认就再也不能说明「这个尺寸整条走得通」。设不上就不探，尺寸停在
+         *          BASE——那是 §14.1 本来就允许的最小值，功能不失效，结论也不谎报
+         */
+        bool pathMtuProbeAllowed{true};
     };
 
     /**
@@ -247,6 +258,29 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::array<std::uint64_t, 3> receivedEcnCount(QuicEncryptionLevel level) const noexcept;
 
         /**
+         * @brief 本端此刻允许的最大数据报净载荷（PLPMTU，RFC 9000 §14.4 / RFC 8899）
+         * @return std::size_t 不小于 1200；握手没完成或没探到更大的尺寸时就是 BASE
+         * @details 发包预算按它算，所以这一格就是「这条路径上本端敢写多大的数据报」。运维与用例靠它分辨
+         *          「对端只肯收 1200」与「还没探过」——两者的数一样，`pathMtuPhase()` 不一样
+         */
+        [[nodiscard]] std::size_t maximumDatagramPayloadByteLength() const noexcept;
+
+        /**
+         * @brief 路径 MTU 探测走到哪一格
+         * @return QuicPathMtuPhase 见 `QuicPathMtuDiscovery.h`；Disabled 就是握手还没完成
+         */
+        [[nodiscard]] QuicPathMtuPhase pathMtuPhase() const noexcept;
+
+        /**
+         * @brief 当前待探的数据报尺寸，以及本尺寸已经连丢几条探针
+         * @return std::pair<std::size_t, std::size_t> 待探尺寸与失败条数；收口（SearchComplete）时
+         *         失败条数归零，等抬升计时器再来一轮
+         * @details 探针被丢不是拥塞证据（§14.4），所以这条读数与拥塞那两格各说各的事：窗口减半是路在堵，
+         *          这一格涨是尺寸过不去
+         */
+        [[nodiscard]] std::pair<std::size_t, std::size_t> pathMtuProbeState() const noexcept;
+
+        /**
          * @brief 是否已经没有下文了
          * @return true 已收口且待发队列空，外层可以销毁本连接
          */
@@ -370,8 +404,9 @@ namespace AsynGyanis::Net
          * @details 两型各有一条成立路径，都收在这个入口里：服务端看对端确认过 Handshake 空间的包，
          *          客户端看自己解开了第一条 1-RTT 报文（那之前拿不到应用密钥，也就解不开）或收到
          *          HANDSHAKE_DONE。重复调用无副作用
+         * @param now 确认时刻；路径 MTU 探测以它为起点（RFC 9000 §14.3.1 把 BASE 态放在握手完成之后）
          */
-        void                                   confirmHandshake();
+        void                                   confirmHandshake(Timestamp now);
         [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
@@ -400,6 +435,15 @@ namespace AsynGyanis::Net
         void discardSpace(PacketNumberSpace space);
         void adoptTlsRecords();
         void queueSpacePackets(PacketNumberSpace space, Timestamp now);
+        /**
+         * @brief 到点的话发一条路径 MTU 探针（RFC 9000 §14.4、RFC 8899 §5.2）
+         * @details 探针是**单独一包**：只带一条 PING 再补 PADDING 到待探的尺寸。跟普通数据挤在同一包里就
+         *          没有「这个尺寸走过去了」这条证据可言——被确认的是那个尺寸，不是那次巧合的拼车。
+         *          它照样要吃拥塞窗口（§14.4 明写 probes consume congestion window），所以窗口腾不出待探
+         *          尺寸时状态机不算这次到点，也不会把「窗口小」记成「这个尺寸走不通」
+         * @param now 当前时刻
+         */
+        void queuePathMtuProbe(Timestamp now);
         /**
          * @brief 把这些包带过的握手字节区间并进本空间的重发队列
          * @details 两个来源：判丢的包（已经从在途账里划掉，只能由调用方交进来）与探测超时时仍在途的包。
@@ -433,9 +477,12 @@ namespace AsynGyanis::Net
          * @param streamRanges 本包带的流数据区间，确认与判丢都按它回收额度
          * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
          * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
+         * @param paddedDatagramByteLength 非空就把整包补到这个尺寸（PADDING 帧），并在发包凭据上标
+         *        「这是路径 MTU 探针」——被确认时才是 PLPMTU 可以抬到这一格的证据（§14.4）
          */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange,
-                        std::vector<QuicStreamRange> streamRanges = {}, bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {});
+                        std::vector<QuicStreamRange> streamRanges = {}, bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {},
+                        std::optional<std::size_t> paddedDatagramByteLength = std::nullopt);
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -484,6 +531,8 @@ namespace AsynGyanis::Net
         std::unique_ptr<QuicTlsContext> m_tls;                                               ///< 每连接的 TLS 上下文
         QuicRecovery                    m_recovery{};                                        ///< 发包记账、RTT、判丢与探测超时
         QuicCongestionControl           m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        /// 路径 MTU 探测（RFC 9000 §14.4 / RFC 8899）：发包上限由它给，握手完成时进 BASE、对端参数到手时收天花板
+        QuicPathMtuDiscovery m_pathMtu{};
         /// 判成持久拥塞的累计次数：只有「收到确认」那一条出口会加一（§7.6.2 把建立放在收到确认之后），
         /// 只由所属循环线程读写
         std::size_t                                     m_persistentCongestionEventCount{0};

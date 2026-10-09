@@ -264,4 +264,29 @@ namespace AsynGyanis::Net
         const QuicCongestionControl large{9000};
         EXPECT_EQ(large.congestionWindowByteLength(), 18000) << "两倍的 9000 已经大过 14720，取较大者（§7.2）";
     }
+
+    /**
+     * @brief 只有 PMTU 探针被判丢时不降窗；同一形状的正常包判丢必须降（RFC 9000 §14.4）
+     * @details 探针是拿去撞一个更大尺寸的包，路由器按尺寸丢正是它的工作方式。把它算进 §7.3.2 那次
+     *          「一轮只降一次」的降窗，等于一次正常的探测试探凭空把这条连接砍掉一半容量。
+     *          在途账照旧要销——那包确实没了指望，只是它不算拥塞证据，两件事分得开才留得住这条判据。
+     */
+    TEST(QuicCongestionControl, IgnoresPathMtuProbeLossWhenReactingToCongestion)
+    {
+        QuicCongestionControl probeOnly{kDatagramSize};
+        QuicSentPacketInfo    probe = makePacket(0, 0, kDatagramSize);
+        probe.isPathMtuProbe        = true;
+        probeOnly.onPacketSent(probe);
+        ASSERT_EQ(probeOnly.bytesInFlight(), kDatagramSize) << "探针照样要吃拥塞窗口（§14.4），在途账先要记上";
+        probeOnly.onCongestionUpdate({}, {probe}, QuicTime{1000});
+        EXPECT_EQ(probeOnly.congestionWindowByteLength(), 12000U) << "只有探针被判丢，窗口一格都不该掉";
+        EXPECT_EQ(probeOnly.bytesInFlight(), 0U) << "在途账仍要销掉：那包没了指望，只是不算拥塞证据";
+
+        // 对照组：同一形状、同一时刻，只把探针标记摘掉，窗口必须减半
+        QuicCongestionControl    normal{kDatagramSize};
+        const QuicSentPacketInfo data = makePacket(0, 0, kDatagramSize);
+        normal.onPacketSent(data);
+        normal.onCongestionUpdate({}, {data}, QuicTime{1000});
+        EXPECT_EQ(normal.congestionWindowByteLength(), 6000U) << "对照组没降窗，上面那条「不降」就只是什么都没做";
+    }
 } // namespace AsynGyanis::Net

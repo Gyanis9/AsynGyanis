@@ -119,6 +119,14 @@ namespace AsynGyanis::Net
             /// 没有它，「对端只给窗口不发数据」的连接上生产者会一直挂在背压闸门上（丢唤醒）
             std::function<void(QuicConnection &connection)> onSendSpaceAvailable;
             std::chrono::milliseconds                       idleTimeout{30000}; ///< 空闲超时，也是本端宣告的 max_idle_timeout
+            /**
+             * @brief 这条连接的套接字有没有设上「发出的数据报不要在 IP 层分片」
+             * @details 由外壳按 `Core::AsyncUdpSocket::enableDoNotFragment()` 的结果填。路径 MTU 探测只有
+             *          在 DF 设上之后才成立（RFC 9000 §14 的 MUST，理由见核心配置里同名那一格），设不上
+             *          就不探，尺寸停在 1200。缺省给真是因为有单测直接造这份配置模拟设上了的套接字，
+             *          外壳一律显式填
+             */
+            bool pathMtuProbeAllowed{true};
         };
 
         /**

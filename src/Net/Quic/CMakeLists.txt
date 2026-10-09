@@ -21,6 +21,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicReassemblyBuffer.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicReceivedPacketNumbers.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicReceivedPacketNumbers.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPathMtuDiscovery.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicPathMtuDiscovery.cpp
 )
 
 add_subdirectory(Codec)

@@ -1032,4 +1032,39 @@ namespace AsynGyanis::Platform
         // 整批当场拒掉之后路上应该一条都没有：这里读到的是超时（0 条），不是「第一条已经发了」
         EXPECT_EQ(receiveBatchWithTimeout(receiver, slots.data(), slots.size()), 0) << "被拒的那一批里第一条其实已经上路了";
     }
+
+    /**
+     * @brief 「不要在 IP 层分片」这一档两侧都设得上去，而且读数与内核同解
+     * @details QUIC 的这条是 RFC 9000 §14 的 MUST（IPv4 要设 DF 位），也是路径 MTU 探测成立的前提。
+     *          与 ECN 那一格不同：Linux 有 `IP_MTU_DISCOVER`，Windows 有 `IP_DONTFRAGMENT`，两侧都有入口，
+     *          所以这里要求的是**成功**而不是退化——设不上就说明这一档在本仓根本没接对，探测会静默停摆。
+     * @details 另一条判据是「没 bind 之前不许假装成功」：地址族还不认识，选项该开在 IPPROTO_IP 还是
+     *          IPPROTO_IPV6 上无从决定，外壳一律是绑好端口再调，这里钉住那个用法错误的出口。
+     */
+    TEST(DatagramSocket, SetsAndClearsTheDoNotFragmentOption)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(socket.isValid());
+        EXPECT_FALSE(socket.isDoNotFragmentSet()) << "刚绑好的套接字不该自称设了 DF：那会让 QUIC 白等一条不会来的探针";
+
+        ASSERT_TRUE(socket.setDoNotFragment(true)) << "两侧都有设 DF 的入口，设不上就是本层接错了（Linux IP_MTU_DISCOVER / Windows IP_DONTFRAGMENT）";
+        EXPECT_TRUE(socket.isDoNotFragmentSet());
+        // 错误码不该留着上一次的失败：调用方按返回值为真就不去读它，但读数串了会让日志指错地方
+        EXPECT_TRUE(socket.setDoNotFragment(false));
+        EXPECT_FALSE(socket.isDoNotFragmentSet()) << "撤不掉就是读数在说谎，探测会被永久挡在门外";
+
+        // 设上 DF 之后正常尺寸的数据报照旧走得通：这一档只改「超尺寸怎么办」，不改收发本身
+        DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+        ASSERT_TRUE(sender.setDoNotFragment(true));
+        const std::array<std::uint8_t, 64> payload{};
+        ASSERT_EQ(sender.send(socket.localAddress(), payload.data(), payload.size()), static_cast<ssize_t>(payload.size())) << "设了 DF 之后连回环上的小数据报都发不出去";
+
+        // 没 bind 的套接字地址族还不认识：该报用法错误，而不是挑一档设上去再报成功
+        DatagramSocket unbound{};
+        EXPECT_FALSE(unbound.setDoNotFragment(true)) << "地址族未知时不该猜一个选项";
+        EXPECT_FALSE(unbound.isDoNotFragmentSet());
+    }
 } // namespace AsynGyanis::Platform
