@@ -193,7 +193,7 @@
       "lane": "terminal",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1065, "label": "发出 CLOSE" }
+        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1141, "label": "发出 CLOSE" }
       ]
     },
     {
@@ -236,7 +236,7 @@
       "title": "相位与空间是两套账",
       "items": [
         "连接相位只有三个：Handshaking、Established、Closing（QuicConnectionCore.h:53）",
-        "包号空间也只有三个：Initial、Handshake、Application，用 spaceOf/levelOf 与相位换算（QuicConnectionCore.h:293、414、.cpp:189）",
+        "包号空间也只有三个：Initial、Handshake、Application，用 spaceOf/levelOf 与相位换算（QuicConnectionCore.h:347、479、.cpp:191）",
         "Initial 空间在 Handshake 密钥就位后退休（discardSpace(Initial)，.cpp:764），此后入站不再解 Initial 包"
       ]
     },

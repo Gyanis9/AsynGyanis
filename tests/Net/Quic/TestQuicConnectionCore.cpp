@@ -40,6 +40,7 @@
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/QuicPacketBuilder.h"
 #include "NetTestSupport.h"
+#include "Platform/IO/DatagramSocket.h"
 
 #include "AllocationProbe.h"
 
@@ -163,6 +164,8 @@ namespace AsynGyanis::Net
             std::optional<QuicPacketKeys>                      nextWriteKeys{};                   ///< 本端发起更新时要改用的写密钥
             bool                                               isSendKeyPhaseSet{false};          ///< 本端出 1-RTT 包时带的相位位
             bool                                               isReadKeyPhaseSet{false};          ///< 本端当前读密钥属于哪个相位，与发的是两套账（§6.5）
+            std::array<std::uint64_t, 3>                       receivedEcnCounts{};               ///< 本空间收到的 ECT(0)、ECT(1)、CE 各几条，回 ACK 时原样报（§19.3.2）
+            bool                                               isEcnFieldReadable{false};         ///< 本端是否读到过 ECN 字段；读不到就不报计数（§13.4.1 允许）
         };
 
         /// @return std::optional<QuicEncryptionLevel> 报文头对应的加密级别；本端不收的形态返回空
@@ -594,6 +597,29 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 之后 consume 到的服务端数据报都按这个 ECN 取值计数；交空表示本端读不到那个字段
+             * @details 这是替身唯一能表达的「中间节点做了什么」：给出 `kEcnCodepointCe` 就是本端标了
+             *          ECT(0) 的包在路由器被染色，给出空则是 Windows 那类读不到 ECN 字段的平台——
+             *          那种情况下本端不报计数（RFC 9000 §13.4.1 明确允许），服务端的 ACK 也就该是 0x02。
+             * @param ecnCodepoint 每条数据报的 ECN 字段取值
+             */
+            void setIncomingEcnCodepoint(const std::optional<std::uint8_t> ecnCodepoint) noexcept
+            {
+                m_incomingEcnCodepoint = ecnCodepoint;
+            }
+
+            /**
+             * @brief 服务端在某个空间的 ACK 里报的 ECN 计数
+             * @details 空表示服务端那一帧是 0x02（不带计数）——它读不到 ECN 字段时就该这样
+             * @param level 看哪个空间发来的确认（计数按空间各一份，§19.3.2）
+             * @return std::optional<std::array<std::uint64_t, 3>> 依序是 ECT(0)、ECT(1)、CE 的累计条数
+             */
+            [[nodiscard]] const std::optional<std::array<std::uint64_t, 3>> &serverReportedEcnCounts(const QuicEncryptionLevel level) const noexcept
+            {
+                return m_serverReportedEcnCounts[spaceIndexOf(level)];
+            }
+
+            /**
              * @brief 收一条服务端数据报：逐包解密、记账、把 CRYPTO 字节按级别喂给 TLS
              * @param datagram 服务端产出的一条数据报
              */
@@ -798,7 +824,22 @@ namespace AsynGyanis::Net
                 }
                 m_sawServerKeyPhase = refreshed.isKeyPhaseBitSet;
                 plaintext.resize(*opened);
-                space.receivedPacketNumbers.insert(packetNumber);
+                // 计数只在「这一包是新的」时走：重复收到的包不重复计（RFC 9000 §13.4.1 的最后一句），
+                // 而一条数据报只有一个 IP 头，合包里的每个包都吃同一个取值（§13.4.1 要求合包标记一致）
+                if (space.receivedPacketNumbers.insert(packetNumber).second && m_incomingEcnCodepoint.has_value())
+                {
+                    space.isEcnFieldReadable = true;
+                    if (*m_incomingEcnCodepoint == Platform::kEcnCodepointEctZero)
+                    {
+                        ++space.receivedEcnCounts[0];
+                    } else if (*m_incomingEcnCodepoint == Platform::kEcnCodepointEctOne)
+                    {
+                        ++space.receivedEcnCounts[1];
+                    } else if (*m_incomingEcnCodepoint == Platform::kEcnCodepointCe)
+                    {
+                        ++space.receivedEcnCounts[2];
+                    }
+                }
                 if (!space.largestReceived.has_value() || packetNumber > *space.largestReceived)
                 {
                     space.largestReceived = packetNumber;
@@ -871,6 +912,8 @@ namespace AsynGyanis::Net
                 {
                     m_largestServerAcknowledged  = acknowledgement->largestAcknowledgedPacketNumber;
                     m_serverAcknowledgementDelay = acknowledgement->acknowledgementDelay;
+                    m_serverReportedEcnCounts[spaceIndexOf(level)] =
+                            acknowledgement->hasEcnCounts ? std::optional<std::array<std::uint64_t, 3>>{acknowledgement->ecnCounts} : std::nullopt;
                 } else if (std::holds_alternative<QuicHandshakeDoneFrame>(frame))
                 {
                     ++m_handshakeDoneFrameCount;
@@ -942,7 +985,14 @@ namespace AsynGyanis::Net
                 {
                     static_cast<void>(tracked.insert(packetNumber));
                 }
-                acknowledgement.ranges = buildQuicAcknowledgementRanges(tracked, largest);
+                acknowledgement.ranges   = buildQuicAcknowledgementRanges(tracked, largest);
+                const ClientSpace &space = spaceOf(level);
+                if (space.isEcnFieldReadable)
+                {
+                    // 读得到才报（RFC 9000 §13.4.1）：报一份全 0 会让服务端把一条好路判成不支持 ECN
+                    acknowledgement.ecnCounts    = space.receivedEcnCounts;
+                    acknowledgement.hasEcnCounts = true;
+                }
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{acknowledgement});
                 return buildDatagram(level, frames);
@@ -999,6 +1049,10 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t>       m_serverMaxData{};                                  ///< 服务端最近一条 MAX_DATA 的上限
             std::optional<std::uint64_t>       m_serverMaxStreamData{};                            ///< 服务端最近一条 MAX_STREAM_DATA 的上限
             std::optional<std::uint64_t>       m_serverCloseErrorCode{};                           ///< 服务端 CONNECTION_CLOSE 的错误码
+            /// 「网络」给本端读到的 ECN 字段取值，空表示这个平台读不到；每条数据报都按它计（§13.4.1）
+            std::optional<std::uint8_t> m_incomingEcnCodepoint{};
+            /// 服务端各空间 ACK 里报的三个 ECN 计数；该空间最近一帧不带计数时为空
+            std::array<std::optional<std::array<std::uint64_t, 3>>, 3> m_serverReportedEcnCounts{};
         };
 
         /**
@@ -1033,7 +1087,23 @@ namespace AsynGyanis::Net
             std::vector<std::vector<std::uint8_t>> datagrams;
             while (const auto datagram = core.takeOutboundDatagram())
             {
-                datagrams.emplace_back(datagram->begin(), datagram->end());
+                datagrams.emplace_back(datagram->bytes.begin(), datagram->bytes.end());
+            }
+            return datagrams;
+        }
+
+        /**
+         * @brief 取核心当前产出的全部待发数据报，连本端给它们标的 ECN 取值一起留下
+         * @details ECN 的发送侧判据就落在这条通道上：`drain` 把那一格丢掉了，用它才看得见
+         * @param core 服务端状态机
+         * @return std::vector<QuicOutboundDatagram> 每条数据报连同它的 ECN 标记
+         */
+        std::vector<QuicOutboundDatagram> drainMarked(QuicConnectionCore &core)
+        {
+            std::vector<QuicOutboundDatagram> datagrams;
+            while (const auto datagram = core.takeOutboundDatagram())
+            {
+                datagrams.emplace_back(std::move(*datagram));
             }
             return datagrams;
         }
@@ -2773,5 +2843,180 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(profile.totalAllocations, 0ULL) << "新包号那一支的逐包分配超过阈值：读数为每次 "
                                                   << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
+    }
+
+    /**
+     * @brief 一条确认都没回来之前，核心产的每条数据报都标着 ECT(0)（RFC 9000 §13.4.2 的「先标再验」）
+     * @details 恢复层与套接字层各自有用例钉自己那一格，这一格钉的是「核心把恢复层的读数接到了出包通道上」：
+     *          这条接线没通的话表现是所有下层用例照样全绿，而线上一个标记都没有——ECN 整件等于没做。
+     *          时刻停在第一轮：这时还没有任何确认进来，状态必须还挂在 Testing。
+     */
+    TEST(QuicConnectionCore, MarksOutgoingDatagramsBeforeTheEcnVerdictIsOpen)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+
+        for (const auto &datagram: client.buildFlight())
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
+        }
+        core.drive(Timestamp{1000});
+
+        const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+        ASSERT_FALSE(outbound.empty()) << "收到 ClientHello 就该产出 ServerHello 那一批";
+        EXPECT_EQ(core.ecnState(), QuicEcnState::Testing) << "一条确认都还没收到，验证不该已经出结论";
+        for (const auto &datagram: outbound)
+        {
+            EXPECT_EQ(datagram.ecnCodepoint, Platform::kEcnCodepointEctZero) << "试探期每条出包都要带标：本端一停标，这条路就永远验不出来";
+        }
+    }
+
+    /**
+     * @brief 平台不能按单条报文设 ECN 字段时，本端一上来就不标，状态直接落在 Failed（Windows 那一臂的真实形状）
+     * @details 这条钉的是外壳带进来的那个平台事实。少了它，本端会在发包凭据里记着「带标」而线上一个字节
+     *          都没标：§13.4.2.1 的增量校验于是拿本端这份错账把一条好路判成验证失败，读数上看不出
+     *          原因是平台而不是路。判据取两处——出包那一格是 NotCapable，且状态一进核心就是 Failed，
+     *          不是等对端把计数报回来才发现。
+     */
+    TEST(QuicConnectionCore, KeepsEcnDisabledWhenThePlatformCannotMarkDatagrams)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        configuration.supportsPerDatagramEcnField     = false;
+        QuicConnectionCore core(std::move(configuration));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+
+        EXPECT_EQ(core.ecnState(), QuicEcnState::Failed) << "平台标不了就该一上来落在 Failed，别等对端的计数来揭穿本端";
+
+        for (const auto &datagram: client.buildFlight())
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, Timestamp{0}).has_value());
+        }
+        core.drive(Timestamp{1000});
+        const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+        ASSERT_FALSE(outbound.empty()) << "这一条只是要拿到出包，没产出就无法判那一格";
+        for (const auto &datagram: outbound)
+        {
+            EXPECT_EQ(datagram.ecnCodepoint, Platform::kEcnCodepointNotCapable) << "本平台设不了那一格，本端就不该在账上假装标过";
+        }
+    }
+
+    /**
+     * @brief 收到的报文按 ECN 字段分格计数并在确认帧里原样报出去；读不到字段的平台一条都不报（§13.4.1、§19.3.2）
+     * @details 三臂同用一台状态机，按「先不给字段、再给字段、最后重发一条重复的」的顺序走：
+     *          ①本端从没读到过 ECN 字段时，ACK 必须是 0x02 而不是报一份全 0——报全 0 会让对端把一条好路
+     *          判成不支持 ECN（§13.4.1 明确允许读不到的端点不报）；
+     *          ②按 ECT(0)、ECT(0)、ECT(1)、CE 各喂一条，ACK 就该报 {2, 1, 1}；
+     *          ③把其中一条重复喂一遍再补一条新的，计数只许涨那一条新的（§13.4.1 末句：重复包不重复计）。
+     *          为什么挑 Application 空间：计数按空间各一份（§19.3.2），而握手空间在握手一确认就整体退休，
+     *          那一侧的 ACK 再也不会发出来。
+     */
+    TEST(QuicConnectionCore, ReportsReceivedEcnCountsInItsAcknowledgements)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        Timestamp now{70000};
+        // ①这一轮之前从没交过 ECN 字段：本端读不到，就该回一条不带计数的 ACK
+        const std::vector<std::uint8_t> blindPing = client.buildPing(QuicEncryptionLevel::Application);
+        ASSERT_TRUE(core.onDatagramReceived(blindPing, now).has_value());
+        core.drive(now + Timestamp{1000});
+        for (const auto &datagram: drain(core))
+        {
+            client.consume(datagram);
+        }
+        EXPECT_FALSE(client.serverReportedEcnCounts(QuicEncryptionLevel::Application).has_value()) << "读不到 ECN 字段却报一份全 0，对端会把好路判死（§13.4.1）";
+        EXPECT_EQ(core.receivedEcnCount(QuicEncryptionLevel::Application), (std::array<std::uint64_t, 3>{0, 0, 0})) << "没读到字段就不该有计数";
+
+        // ②四条各带一格标记：ECT(0) 两条、ECT(1) 一条、CE 一条
+        std::vector<std::vector<std::uint8_t>> markedPings;
+        markedPings.reserve(4);
+        for (int index = 0; index < 4; ++index)
+        {
+            markedPings.push_back(client.buildPing(QuicEncryptionLevel::Application));
+        }
+        const std::array<std::uint8_t, 4> codepoints{Platform::kEcnCodepointEctZero, Platform::kEcnCodepointEctZero, Platform::kEcnCodepointEctOne, Platform::kEcnCodepointCe};
+        for (std::size_t index = 0; index < markedPings.size(); ++index)
+        {
+            now += Timestamp{10};
+            ASSERT_TRUE(core.onDatagramReceived(markedPings[index], now, codepoints[index]).has_value()) << "第 " << index + 1 << " 条带标记的 PING 没被收下";
+        }
+
+        // ③把第二条原样再喂一次（同一个包号），另加一条新的 ECT(0)：计数只许涨新那条
+        const std::vector<std::uint8_t> laterPing = client.buildPing(QuicEncryptionLevel::Application);
+        now += Timestamp{10};
+        ASSERT_TRUE(core.onDatagramReceived(markedPings[1], now, Platform::kEcnCodepointEctZero).has_value()) << "重复包应当被正常收下，只是不重复计数";
+        now += Timestamp{10};
+        ASSERT_TRUE(core.onDatagramReceived(laterPing, now, Platform::kEcnCodepointEctZero).has_value());
+        core.drive(now + Timestamp{1000});
+        for (const auto &datagram: drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        EXPECT_EQ(core.receivedEcnCount(QuicEncryptionLevel::Application), (std::array<std::uint64_t, 3>{3, 1, 1})) << "ECT(0) 该是 3 条（重复那条不重复计）、ECT(1) 1 条、CE 1 条";
+        const std::optional<std::array<std::uint64_t, 3>> reported = client.serverReportedEcnCounts(QuicEncryptionLevel::Application);
+        ASSERT_TRUE(reported.has_value()) << "本端读得到字段了，ACK 就该带三个计数（帧类型 0x03，§19.3.2）";
+        EXPECT_EQ(*reported, (std::array<std::uint64_t, 3>{3, 1, 1})) << "ACK 报的数与核心自己收到的计数不是同一份，对端的校验就会拿假账去比";
+    }
+
+    /**
+     * @brief 对端报的 CE 计数一涨就把窗口减半，不必等到判丢（RFC 9002 §7.1 的接线）
+     * @details 恢复层与拥塞层各钉各的判据，这一格钉的是核心那条线：CE 从「对端的 ACK」走到「本端窗口减半」。
+     *          两臂合在同一台状态机上：前一轮对端只报 ECT(0) 不报 CE，窗口只许涨不许降（少了这组对照，
+     *          那句「减半」可能只是别的原因造成的）；接着把「网络」的取值换成 CE，走两轮——ACK 滞后一轮，
+     *          本端这轮发的包要到下一轮才被确认——之后窗口必须落到大约一半，且状态还是 Capable：
+     *          CE 是拥塞信号，不是验证失败。
+     */
+    TEST(QuicConnectionCore, HalvesCongestionWindowWhenThePeerReportsCongestionExperienced)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        // 握手期间就按 ECT(0) 计并报计数：不然 §13.4.2.1 第一条会把「带标的包被一帧不带计数的确认收走」
+        // 判成验证失败，后面根本没有 Capable 这一格可言
+        client.setIncomingEcnCodepoint(Platform::kEcnCodepointEctZero);
+        finishHandshake(core, client);
+        ASSERT_EQ(core.ecnState(), QuicEcnState::Capable) << "对端报的计数对得上、且有带标的包被确认，就该转入 Capable";
+
+        // 一段比一个拥塞窗口长得多的正文：切换标记之后服务端还得连着发好几轮，那些包才够被按 CE 计
+        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(32U * 1024U, 'x')), true), 0U);
+        exchange(core, client, Timestamp{80000});
+        const std::size_t windowBefore = core.congestionWindowByteLength();
+        ASSERT_GT(windowBefore, 4U * 1200U) << "窗口还贴着最小窗的话减半这件事看不出来，实读 " << windowBefore;
+
+        exchange(core, client, Timestamp{90000});
+        EXPECT_GE(core.congestionWindowByteLength(), windowBefore) << "对端只报 ECT(0)、一条 CE 都没报，本端不该降窗";
+
+        // 路由器开始染色：本端发出的包被按 CE 收下，而它们在恢复层里仍记着发出时的 ECT(0)。
+        // 走三轮：ACK 比数据晚一轮，第二、三轮才看得到 CE 计数涨起来
+        client.setIncomingEcnCodepoint(Platform::kEcnCodepointCe);
+        exchange(core, client, Timestamp{100000});
+        exchange(core, client, Timestamp{110000});
+        exchange(core, client, Timestamp{120000});
+
+        const std::size_t windowAfter = core.congestionWindowByteLength();
+        EXPECT_LT(windowAfter, windowBefore) << "CE 计数涨了却没降窗：§7.1 那条比丢包更早的拥塞信号没接到动作上";
+        EXPECT_GE(windowAfter, windowBefore / 2U) << "只该减半，不该跌到最小窗——那是 §7.6.2 持久拥塞的处置，这里是两回事";
+        EXPECT_EQ(core.ecnState(), QuicEcnState::Capable) << "CE 是拥塞信号，不该把 ECN 验证判失败";
     }
 } // namespace AsynGyanis::Net

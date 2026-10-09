@@ -334,6 +334,10 @@ namespace AsynGyanis::Net
 
         // 一次批次收多少条：每槽一份「单条报文上限」的缓冲，条数上限来自 Platform 那层的常量。
         // 缓冲在循环外一次性备好（每条报文再分配一次就是本仓反复清掉的那类热路径开销）
+        // 先申请「把收到报文的 ECN 字段交上来」：读到才报计数，读不到就按 §13.4.1 不报。
+        // 失败不是错误（Windows 就没有这个入口），所以只记一次结论，不改控制流
+        m_isEcnFieldVisible = m_socket->enableEcnFieldVisibility();
+
         std::vector<std::uint8_t> receiveBuffers(Platform::DatagramSocket::kMaximumBatchSlotCount * Platform::DatagramSocket::kMaximumDatagramBytes);
         std::array<Platform::DatagramSocket::BatchSlot, Platform::DatagramSocket::kMaximumBatchSlotCount> slots{};
         for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
@@ -380,7 +384,10 @@ namespace AsynGyanis::Net
                     continue;
                 }
                 isAnyDatagramRouted = true;
-                co_await routeDatagram(slot.peerAddress, std::span<const std::uint8_t>(static_cast<const std::uint8_t *>(slot.buffer), slot.receivedByteCount));
+                // 整条 UDP 数据报只有一个 IP 头，里面合包的各段 QUIC 报文共用这一格读数（§13.4.1）
+                const std::optional<std::uint8_t> datagramEcnCodepoint = m_isEcnFieldVisible ? std::optional<std::uint8_t>{slot.ecnCodepoint} : std::nullopt;
+                co_await routeDatagram(slot.peerAddress, std::span<const std::uint8_t>(static_cast<const std::uint8_t *>(slot.buffer), slot.receivedByteCount),
+                                       datagramEcnCodepoint);
             }
             // 一批收完再回收一次：逐条收口时同批里后几条的活儿会被重复驱一遍
             if (isAnyDatagramRouted)
@@ -724,7 +731,7 @@ namespace AsynGyanis::Net
         return m_listeningPort.load(std::memory_order_acquire);
     }
 
-    Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
+    Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram, const std::optional<std::uint8_t> ecnCodepoint)
     {
         if (m_isStopped.load(std::memory_order_acquire))
         {
@@ -745,11 +752,7 @@ namespace AsynGyanis::Net
                                                        decodedHeader->destinationConnectionId.size());
         if (const auto existing = m_connections.find(destinationConnectionId); existing != m_connections.end())
         {
-            // 记账：下面几次 await 都可能在挂起中被定时循环判成「已收口」并试图摘掉它——守卫
-            // 让那次摘除推迟（见 reapClosedConnections）。迭代器与本引用因此在整个区间内有效
-            const QuicConnection::ActivityGuard activityGuard(*existing->second);
-            co_await existing->second->handleDatagram(peerAddress, datagram);
-            co_await pumpHttp3For(*existing->second);
+            co_await serveMatchedConnection(*existing->second, peerAddress, datagram, ecnCodepoint);
             co_return;
         }
 
@@ -758,11 +761,7 @@ namespace AsynGyanis::Net
         // 重传都会被当成新连接（实测：一个客户端握手却建出 8 条连接，握手因此永远收不了口）
         if (const auto byAliasConnectionId = m_connectionsByAliasConnectionId.find(destinationConnectionId); byAliasConnectionId != m_connectionsByAliasConnectionId.end())
         {
-            QuicConnection *const matchedConnection = byAliasConnectionId->second;
-            // 与上面同一条记账：别名表里存的是裸指针，摘除会把这条一起抹掉
-            const QuicConnection::ActivityGuard activityGuard(*matchedConnection);
-            co_await matchedConnection->handleDatagram(peerAddress, datagram);
-            co_await pumpHttp3For(*matchedConnection);
+            co_await serveMatchedConnection(*byAliasConnectionId->second, peerAddress, datagram, ecnCodepoint);
             co_return;
         }
 
@@ -831,11 +830,18 @@ namespace AsynGyanis::Net
         // 同时按「客户端最初选的 DCID」登记一份：重传的 Initial 靠这一路认回同一条连接。
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
-        // 新连接同样要记账：它随时可能在下面几次 await 里被判成收口（会话层判定不可用、对端
-        // 立刻发来 CONNECTION_CLOSE 等），而收报文路径收尾与清扫节拍都会尝试摘除它
-        const QuicConnection::ActivityGuard activityGuard(*rawConnection);
-        co_await rawConnection->handleDatagram(peerAddress, datagram);
-        co_await pumpHttp3For(*rawConnection);
+        co_await serveMatchedConnection(*rawConnection, peerAddress, datagram, ecnCodepoint);
+    }
+
+    Core::Task<> QuicServer::serveMatchedConnection(QuicConnection &connection, const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram,
+                                                    const std::optional<std::uint8_t> ecnCodepoint)
+    {
+        // 守卫是这一段的全部要点：下面两次 await 都可能在挂起中被定时循环判成「已收口」并试图摘掉这条
+        // 连接（见 reapClosedConnections），而别名表里存的是裸指针——摘除会把这条一起抹掉。
+        // 守卫让那次摘除推迟到本区间结束，引用与指针因此全程有效
+        const QuicConnection::ActivityGuard activityGuard(connection);
+        co_await connection.handleDatagram(peerAddress, datagram, ecnCodepoint);
+        co_await pumpHttp3For(connection);
     }
 
     QuicConnection::Configuration QuicServer::configurationForAcceptedConnection()
@@ -883,7 +889,8 @@ namespace AsynGyanis::Net
                 session->flushPendingStreamData();
             }
         };
-        connectionConfiguration.sendDatagramBatch = [this](const Platform::SocketAddress &targetAddress, const std::span<const std::string> datagrams) -> Core::Task<bool>
+        connectionConfiguration.sendDatagramBatch = [this](const Platform::SocketAddress                          &targetAddress,
+                                                           const std::span<const QuicConnection::OutboundDatagram> datagrams) -> Core::Task<bool>
         {
             // 一轮最多攒 64 个报文，而单次批次交 8 个：分窗交出去，最后一窗不满也照样交。
             // 每个窗口的条目摆在栈上（协程帧里放得下），不为热路径再引入一次分配
@@ -899,8 +906,10 @@ namespace AsynGyanis::Net
                 {
                     // 一条连接只有一个对端，整批同归一处；报文由调用方的批次缓冲持有，活到本窗口交出为止
                     items[windowIndex].peerAddress = targetAddress;
-                    items[windowIndex].buffer      = datagrams[beginIndex + windowIndex].data();
-                    items[windowIndex].length      = datagrams[beginIndex + windowIndex].size();
+                    items[windowIndex].buffer      = datagrams[beginIndex + windowIndex].bytes.data();
+                    items[windowIndex].length      = datagrams[beginIndex + windowIndex].bytes.size();
+                    // 标记按条带：这一批可能横跨本端 ECN 状态变化前后的两批报文
+                    items[windowIndex].ecnCodepoint = datagrams[beginIndex + windowIndex].ecnCodepoint;
                 }
 
                 const Core::AsyncUdpSocket::DatagramBatchSendResult sent = co_await m_socket->asyncSendBatch(items.data(), windowLength);
@@ -918,10 +927,11 @@ namespace AsynGyanis::Net
             co_return isEveryWindowComplete;
         };
 
-        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data, const std::size_t length) -> Core::Task<bool>
+        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data, const std::size_t length,
+                                                      const std::uint8_t ecnCodepoint) -> Core::Task<bool>
         {
             // 出口只认「发出去多少字节」：整条发出为 true，出错（对端不可达、套接字已关）为 false
-            const ssize_t sentLength = co_await m_socket->asyncSendTo(targetAddress, data, length);
+            const ssize_t sentLength = co_await m_socket->asyncSendTo(targetAddress, data, length, ecnCodepoint);
             co_return sentLength == static_cast<ssize_t>(length);
         };
         return connectionConfiguration;

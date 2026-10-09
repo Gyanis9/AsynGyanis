@@ -144,6 +144,31 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 对端报的 ECN-CE 计数涨了就走与丢包同一个降窗，并共用「一轮只降一次」那道闸（§7.1、§B.6、§7.3.2）
+     * @details 两臂都在判事：CE 那一格要真的把窗降一半并进 Recovery（这是早于丢包的拥塞信号），
+     *          而随后同轮的丢包不许再降一次——这正是调用方要把 CE 排在 `onCongestionUpdate` 之前的理由
+     *          （与 §A.7 把 ECN 那一步排在判丢之前同形）。第三臂是销账：CE 不是丢包，一格在途都不许动。
+     */
+    TEST(QuicCongestionControl, EcnCongestionEventHalvesWindowAndSharesTheOncePerRoundGuard)
+    {
+        QuicCongestionControl congestion{kDatagramSize};
+        for (std::uint64_t packetNumber = 0; packetNumber < 5; ++packetNumber)
+        {
+            congestion.onPacketSent(makePacket(packetNumber, 1000 * static_cast<std::int64_t>(packetNumber), kDatagramSize));
+        }
+
+        congestion.noteEcnCongestionEvent(QuicTime{9000});
+        EXPECT_EQ(congestion.congestionWindowByteLength(), kInitialWindow / 2) << "CE 上升要按一次拥塞事件处置（§B.7 → §B.6）";
+        EXPECT_EQ(congestion.slowStartThresholdByteLength(), kInitialWindow / 2);
+        EXPECT_EQ(congestion.phase(), QuicCongestionPhase::Recovery);
+        EXPECT_EQ(congestion.bytesInFlight(), 5 * kDatagramSize) << "CE 不是丢包：在途字节一格都不该动";
+
+        congestion.onCongestionUpdate({}, {makePacket(0, 0, kDatagramSize)}, QuicTime{12000});
+        EXPECT_EQ(congestion.congestionWindowByteLength(), kInitialWindow / 2) << "CE 已经降过一次的这一轮不该被丢包再降一遍";
+        EXPECT_EQ(congestion.bytesInFlight(), 4 * kDatagramSize) << "同一轮的丢包仍要把那一包从在途里销掉";
+    }
+
+    /**
      * @brief 恢复期靠「恢复期之后发出的包被确认」结束，之后按 AIMD 加法增长
      */
     TEST(QuicCongestionControl, LeavesRecoveryOnPacketSentAfterItAndGrowsAdditively)

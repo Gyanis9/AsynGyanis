@@ -42,6 +42,26 @@ namespace AsynGyanis::Net
         Application,
     };
 
+    /**
+     * @brief 本端对这条路径的 ECN 验证走到哪一格
+     * @details 规范在 RFC 9000 附录 A.4 给了四态（testing / unknown / capable / failed），但明写过
+     *          「Endpoints can implement different methods」与 §13.4.2 的「可以只标前十条包，或标三个
+     *          PTO」——那一格 unknown 存在的唯一理由是「试探窗用完就先停标，等结论」。本仓不按包数停标：
+     *          握手本身就常常吃掉十条，等不到应用数据的包被标过，ECN 对真正要保护的那段流量等于没做。
+     *          这里改成「一路标到有结论」，靠两个失败探测器收口：
+     *          §13.4.2.1 的计数校验不过（含「标过的包被一帧不带计数的确认收走」），或
+     *          §13.4.2 那条「带标的包全被判丢」。两者都判 Failed，从此不标（§13.4.2.2 的 MUST disable）。
+     *          Testing：还没出结论，带标发；Capable：校验通过且确有带标的包被确认过，继续带标发；
+     *          Failed：任一探测器命中，或外壳在建连接时按平台事实调过 `disableEcn()`（Windows 两侧都
+     *          没有按报文读写 ECN 的入口，那时无所谓「验证」，本端从一开始就不标）。
+     */
+    enum class QuicEcnState
+    {
+        Testing,
+        Capable,
+        Failed,
+    };
+
     /// 一个包里握手字节的区间，判丢之后调用方按它重发对应的 CRYPTO 帧
     struct ASYN_NET_API QuicCryptoRange
     {
@@ -56,12 +76,18 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API QuicSentPacketInfo
     {
-        std::uint64_t                  packetNumber{0};       ///< 完整包号，不是线上截断的那个
-        QuicTime                       timeSent{};            ///< 发出时刻，RTT 样本与时间阈值判定都靠它
-        std::size_t                    byteCount{0};          ///< 计入在途的字节数；交 0 表示本包不计入（例如服务端在地址验证前的包）
-        bool                           isAckEliciting{false}; ///< 是否触发确认：只有这种包才武装探测超时
-        std::optional<QuicCryptoRange> cryptoRange{};         ///< 本包带的握手字节区间；没带就为空
-        std::vector<QuicStreamRange>   streamRanges{};        ///< 本包带的流数据区间；确认与判丢都按它回收额度
+        std::uint64_t packetNumber{0};       ///< 完整包号，不是线上截断的那个
+        QuicTime      timeSent{};            ///< 发出时刻，RTT 样本与时间阈值判定都靠它
+        std::size_t   byteCount{0};          ///< 计入在途的字节数；交 0 表示本包不计入（例如服务端在地址验证前的包）
+        bool          isAckEliciting{false}; ///< 是否触发确认：只有这种包才武装探测超时
+        /**
+         * @brief 本包出去时 IP 头里标的 ECN 取值（`Platform::kEcnCodepoint*`），没标就是 NotCapable
+         * @details §13.4.2.1 的两条「增加量不得少于本帧新确认的带标包数」要按包查当时标了哪一格，
+         *          所以这份凭据必须与发包时交给内核的那个值是同一个
+         */
+        std::uint8_t                   ecnCodepoint{0}; ///< 当时的标记；0 表示这条没标
+        std::optional<QuicCryptoRange> cryptoRange{};   ///< 本包带的握手字节区间；没带就为空
+        std::vector<QuicStreamRange>   streamRanges{};  ///< 本包带的流数据区间；确认与判丢都按它回收额度
         /// 本包带出的流收口宣告（RESET_STREAM / STOP_SENDING）：这两类帧要发到被确认为止（RFC 9000 §13.3），
         /// 所以和流数据一样得由发包方标出来，让上层按确认落定、按判丢补发
         std::vector<QuicStreamAnnouncement> streamAnnouncements{};
@@ -88,6 +114,14 @@ namespace AsynGyanis::Net
          *          窗口只会一路减半贴着最小窗，重传堆在那里而读数上看不出「这条路径已经不行了」。
          */
         bool isPersistentCongestionDetected{false};
+        /**
+         * @brief 本帧的对端 ECN 计数上升要在哪一刻触发一次拥塞事件（空表示本帧没有）
+         * @details RFC 9002 §B.7：`ack.ce_counter` 比上次看到的高，就按 `OnCongestionEvent(largest_acked
+         *          那条的发出时刻)` 处置——拥塞信号到得比丢包早，等到判丢再降窗就把这条路的容量用完了。
+         *          只有**计数校验通过**之后才给这一格：§13.4.2.1 明写「用之前先校验」，
+         *          而时刻取的是本帧最大确认值那条包的发出时刻（重复确认没这条记录，那就什么都不给）。
+         */
+        std::optional<QuicTime> ecnCongestionEventTime{};
     };
 
     /// 定时器到期的处理结果
@@ -151,6 +185,34 @@ namespace AsynGyanis::Net
         void onHandshakeConfirmed(QuicTime peerMaximumAcknowledgmentDelay) noexcept;
 
         /**
+         * @brief 本端出包该标哪一格 ECN
+         * @details Testing 与 Capable 都发带标（ECT(0)）的包，Failed 不标（§13.4.2.2 的 MUST disable）。
+         *          发包侧拿这一格填数据报的 ECN 字段，并原样记进 `QuicSentPacketInfo::ecnCodepoint`——
+         *          §13.4.2.1 的校验要按「这条当时标了什么」算，标与记必须是同一个值，否则校验会拿错的
+         *          那一份去比。
+         * @return std::uint8_t 要标的 ECN 取值；不标时是 `Platform::kEcnCodepointNotCapable`
+         */
+        [[nodiscard]] std::uint8_t outgoingEcnCodepoint() const noexcept;
+
+        /**
+         * @brief 本端 ECN 验证走到哪一格了
+         * @details 比「有没有在标」更准：Testing 与 Capable 都在标，区别是计数校验有没有通过；
+         *          Failed 不标，原因可能是验证失败，也可能是外壳调过 `disableEcn()`（平台不支持）
+         */
+        [[nodiscard]] QuicEcnState ecnState() const noexcept;
+
+        /**
+         * @brief 本端从此不用 ECN：状态直接落到 Failed
+         * @details 给外壳用的，原因是「本平台没法按报文读写 IP 的 ECN 字段」（Windows，见
+         *          `Platform::DatagramSocket::supportsPerDatagramEcnField()`）。不许由恢复层自己在构造时
+         *          决定：本层是纯计算件，平台差异进了构造函数就会让用例里的行为跟着编译它的机器变。
+         *          为什么不能让「照标不误、由对端的计数去揭穿」：本端账上记着带标而线上没带，
+         *          §13.4.2.1 那条增量校验会因为本端自己这份错账判成验证失败，读数上就说不出
+         *          「是平台不支持」而不是「这条路不传标记」
+         */
+        void disableEcn() noexcept;
+
+        /**
          * @brief 下一次该醒的时刻
          * @return 不需要定时器时返回空；否则返回「时间阈值丢包」与「探测超时」中更早的那个
          */
@@ -193,6 +255,13 @@ namespace AsynGyanis::Net
     private:
         static constexpr std::size_t kSpaceCount = 3; ///< 包号空间个数
 
+        /**
+         * @brief 「带标的包全被判丢」这条失败判据要求的样本数（§13.4.2 建议的十条）
+         * @details 一条带标的包丢了不代表路不通（本来就会丢包），要的是「全丢且够多条」这个形状：
+         *          它正是中间节点直接丢掉带 ECN 标记的包的表现。取规范自己给的那个十，不再自造数。
+         */
+        static constexpr std::size_t kEcnMinimumMarkedPacketCount = 10;
+
         /// 一个空间的记账
         struct SpaceState
         {
@@ -202,7 +271,33 @@ namespace AsynGyanis::Net
         };
 
         [[nodiscard]] static std::size_t spaceIndex(QuicRecoverySpace space) noexcept;
-        void                             updateRoundTripTime(QuicTime latestRoundTripTime, QuicTime acknowledgementDelay);
+        /**
+         * @brief 按 §13.4.2.1 校验本帧报告的 ECN 计数，通过则按 §B.7 决定要不要触发拥塞事件
+         * @details 五条判据一次走完：新确认里有本端标过的包而这帧不带计数即失败；本帧没抬高最大确认值时
+         *          **不据它判失败也不据它反应**（乱序到达的 ACK 没法校验，§13.4.2.1 的 MUST NOT）；
+         *          两格增量之和盖不住新确认的对应带标包数即失败（能抓到中间节点把 ECT 抹成 CE 或倒过来）；
+         *          报告总量超过本端发出去带过这一格的包总数即失败（抓到中间节点凭空加标）。
+         * @param space 本帧所属的包号空间：计数按空间各记一份（§19.3.2）
+         * @param acknowledgement 解好的 ACK 帧
+         * @param acknowledged 本帧新确认的包
+         * @param largestAcknowledgedSentTime 本帧最大确认值那条包的发出时刻；没有确认可查的包时为空
+         * @param increasesLargestAcknowledged 本帧是否抬高了该空间的最大确认值
+         * @param update  inout：命中拥塞反应时写 `ecnCongestionEventTime`
+         */
+        void processEcnFeedback(QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement, const std::vector<QuicSentPacketInfo> &acknowledged,
+                                const std::optional<QuicTime> &largestAcknowledgedSentTime, bool increasesLargestAcknowledged, QuicAcknowledgementUpdate &update) noexcept;
+        /**
+         * @brief 记一笔「这条带标的包已经有了定论」，并顺手走 §13.4.2 那条全丢判据
+         * @details 定论有三条形态：被确认、被判丢、随所在空间的密钥一起退休。只有第二条算失败证据，
+         *          但三条都要计入分母——退休掉的那些既没被确认也没被判丢，不计进去的话分母永远追不上
+         *          分子，「带标的包全被判丢」这条在握手之后再也点不着。
+         *          反过来，一旦有条带标的包活着被确认，这条判据就永久不再命中：那条包已经证明这条路
+         *          能把带标的数据报送到目的地，之后再丢几包只是普通丢包。
+         * @param packet 离开未确认表的那条包；没带标（ecnCodepoint 为 NotCapable 或 CE）的直接忽略
+         * @param isLost 定论是否为「判丢」
+         */
+        void noteEcnMarkedResolution(const QuicSentPacketInfo &packet, bool isLost) noexcept;
+        void updateRoundTripTime(QuicTime latestRoundTripTime, QuicTime acknowledgementDelay);
         /// 按 §6.1 的判据扫描一个空间：包号阈值或时间阈值命中即判丢，否则记下待判的时刻
         [[nodiscard]] std::vector<QuicSentPacketInfo>                       detectLostPackets(QuicRecoverySpace space, QuicTime now);
         [[nodiscard]] std::pair<std::optional<QuicTime>, QuicRecoverySpace> earliestLossTime() const noexcept;
@@ -254,5 +349,18 @@ namespace AsynGyanis::Net
         /// 第一个 RTT 样本被收到的时刻：§7.6.2 要那两个包**发出时**就已有先前的样本，
         /// 只判「手上有没有样本」会把这一帧刚采到的样本算成先前的
         std::optional<QuicTime> m_firstRoundTripSampleTime{};
+        /// 本端 ECN 验证走到哪一格；开局就是 Testing，所以第一条包就带 ECT(0)，一路标到出结论为止
+        QuicEcnState m_ecnState{QuicEcnState::Testing};
+        /// 本端发出去时标了 ECT(0) / ECT(1) 的包总数，按包号空间各记一份（§13.4.2.1 的「总量」判据用）
+        std::array<std::array<std::uint64_t, 2>, kSpaceCount> m_ecnMarkedSentTotals{};
+        /// 已定论（被确认、被判丢或随空间退休消失）的带标包总数：下面那条失败判据的分母
+        std::size_t m_ecnMarkedResolvedCount{0};
+        /// 定论为「判丢」的带标包数：与分母相等且分母不少于 `kEcnMinimumMarkedPacketCount` 即命中
+        /// §13.4.2 那条「标过的包全被判丢」（中间节点直接丢掉带标的包就是这个形状）
+        std::size_t m_ecnMarkedLostCount{0};
+        /// 上一份**校验通过**的 ACK 报的三个计数（ECT0、ECT1、CE），按空间各一份：增量都跟它比
+        std::array<std::array<std::uint64_t, 3>, kSpaceCount> m_ecnReportedCounts{};
+        /// 有没有至少一条本端标过的包被确认过：附录 A.4 要求「一条都没确认过」时不许转入 Capable
+        bool m_isAnyMarkedPacketAcknowledged{false};
     };
 } // namespace AsynGyanis::Net

@@ -24,6 +24,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Quic/QuicOutboundDatagram.h"
 #include "Platform/IO/Socket.h"
 
 #include <chrono>
@@ -59,16 +60,20 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kSourceConnectionIdLength = 18;
 
         /// 发送一条报文的出口：由服务端提供（内部就是 AsyncUdpSocket::asyncSendTo）
-        using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data, std::size_t length)>;
+        /// 核心产出的那条待发数据报（报文体 + 这一条要带的 ECN 标记），本层的出口按它交出去
+        using OutboundDatagram = QuicOutboundDatagram;
+
+        using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data, std::size_t length, std::uint8_t ecnCodepoint)>;
 
         /**
          * @brief 一次交出一批报文的出口：一轮 flush 攒出的多个报文由此一次交给内核
          * @param peerAddress 目标地址（一条连接只有一个对端，整批同归一处）
-         * @param datagrams 本批报文，按编帧顺序给出；每条是一个字节缓冲
+         * @param datagrams 本批报文，按编帧顺序给出；每条自带「这一条要标的 ECN 取值」，
+         *        所以同一批里可以混着标与不标（本端刚转出 ECN 状态时就会这样）
          * @return true 表示整批都交给了内核；false 表示这一路发不出去（连接据此收口）
          * @note 每条报文的生命周期只到本回调返回为止：实现要在返回前把它交出去或拷走
          */
-        using DatagramBatchSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, std::span<const std::string> datagrams)>;
+        using DatagramBatchSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, std::span<const OutboundDatagram> datagrams)>;
 
         /**
          * @brief 收到流数据时的回调
@@ -199,7 +204,15 @@ namespace AsynGyanis::Net
          *                 本层不复制它
          * @return Core::Task<> 处理并写出完成
          */
-        [[nodiscard]] Core::Task<> handleDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
+        /**
+         * @brief 收一条数据报
+         * @param peerAddress 来源地址
+         * @param datagram 数据报字节
+         * @param ecnCodepoint 这条数据报的 IP ECN 字段；空表示本端读不到（规则见核心的同名参数）
+         * @return 与不带这一格时同义
+         */
+        [[nodiscard]] Core::Task<> handleDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram,
+                                                  std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
 
         /**
          * @brief 把待发字节写出去（ACK、握手、流数据都从这里走）
@@ -361,7 +374,7 @@ namespace AsynGyanis::Net
          * @param outboundBatch 本轮从状态机待发队列掏出的报文，必须活到本方法 await 结束
          * @return Core::Task<bool> 全部发出为真，有一条没出去为假
          */
-        [[nodiscard]] Core::Task<bool> sendOutboundBatch(const std::vector<std::string> &outboundBatch);
+        [[nodiscard]] Core::Task<bool> sendOutboundBatch(const std::vector<OutboundDatagram> &outboundBatch);
 
         /**
          * @brief 握手完成时记一条日志（带协商出的 ALPN），一条连接只记一次

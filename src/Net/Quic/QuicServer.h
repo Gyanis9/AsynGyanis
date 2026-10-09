@@ -490,7 +490,29 @@ namespace AsynGyanis::Net
          *       分成「排进就绪队列 + 由对象持有」那条路也能走通，但收报文本来就是串行的，
          *       直接 co_await 更简单，也少一份任务表的记账
          */
-        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
+        /**
+         * @brief 按目的连接标识把一个数据报派给对应的连接，没有就按新连接处理
+         * @param peerAddress 来源地址
+         * @param datagram 数据报字节
+         * @param ecnCodepoint 这条数据报的 IP ECN 字段；空表示本端读不到（见核心的同名参数）
+         * @return Core::Task<> 派发结束时完成；本方法不产出值
+         */
+        [[nodiscard]] Core::Task<> routeDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram,
+                                                 std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
+
+        /**
+         * @brief 把一个数据报交给一条已在册的连接，随后把它的 HTTP/3 会话推一步
+         * @details 三处调用点（按本端标识命中、按别名命中、刚刚新建的那一条）要做的是同一件事，
+         *          写成一处而不是三份：那条 `ActivityGuard` 少了任何一份都会让定时循环在 await 期间
+         *          把连接摘掉，而别名表存的是裸指针（见 `routeDatagram` 里那一格）
+         * @param connection 要收这个数据报的连接
+         * @param peerAddress 来源地址
+         * @param datagram 数据报字节
+         * @param ecnCodepoint 这条数据报的 IP ECN 字段；空表示本端读不到
+         * @return Core::Task<> 报文交付与会话推进结束时完成；本方法不产出值
+         */
+        [[nodiscard]] Core::Task<> serveMatchedConnection(QuicConnection &connection, const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram,
+                                                          std::optional<std::uint8_t> ecnCodepoint);
 
         /**
          * @brief 给一条正要新建的连接摆好外壳要的那些出口与回调
@@ -605,6 +627,9 @@ namespace AsynGyanis::Net
         std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
         /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
         /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
+        /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
+        /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
+        bool m_isEcnFieldVisible{false};
         bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写
 
         /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接

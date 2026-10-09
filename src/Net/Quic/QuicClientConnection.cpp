@@ -91,12 +91,16 @@ namespace AsynGyanis::Net
             co_return false;
         }
 
+        // 读得到才报 ECN 计数；读不到（Windows）就按 §13.4.1 不报，对端会因此不在这条路上用 ECN
+        static_cast<void>(m_socket->enableEcnFieldVisibility());
+
         QuicConnection::Configuration connectionConfiguration;
         connectionConfiguration.tlsContext   = m_tlsContext->nativeHandle();
         connectionConfiguration.idleTimeout  = m_configuration.idleTimeout;
-        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data, const std::size_t length) -> Core::Task<bool>
+        connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &peerAddress, const std::uint8_t *data, const std::size_t length,
+                                                      const std::uint8_t ecnCodepoint) -> Core::Task<bool>
         {
-            const ssize_t sentByteCount = co_await m_socket->asyncSendTo(peerAddress, data, length);
+            const ssize_t sentByteCount = co_await m_socket->asyncSendTo(peerAddress, data, length, ecnCodepoint);
             co_return sentByteCount >= 0 && static_cast<std::size_t>(sentByteCount) == length;
         };
         connectionConfiguration.onStreamData = [this](QuicConnection &, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
@@ -122,35 +126,8 @@ namespace AsynGyanis::Net
             co_return false;
         }
 
-        // 看门狗刻意限定在这块作用域里：本框架的协程帧是在**调用方丢掉 Task 时**才销毁的，帧内局部量
-        // 跟着一起走。放在函数体上就会出现「握手已完成、看门狗却还醒着，到点把这条连接的套接字关掉」
-        // 这种极难复现的形态——块结尾即撤销，之后不再有掐套接字的协程
-        bool isHandshakeDone = false;
-        {
-            const Core::DeadlineGuard<Core::AsyncUdpSocket> handshakeWatchdog(m_loop, *m_socket, m_configuration.handshakeTimeout, "QUIC 出站握手");
-            // 第一个 Initial 由 flush 里的 drive 产出：本端先出声，与「收到报文才推进」的服务端侧相反
-            co_await m_connection->flush();
-            while (!m_connection->isHandshakeComplete() && !m_connection->isClosed())
-            {
-                const Core::AsyncUdpSocket::DatagramReceiveResult received = co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
-                if (received.receivedByteCount <= 0)
-                {
-                    // -1 且带错误码＝对端不可达那一类 ICMP 回声：套接字还能用，QUIC 自己的丢包与
-                    // 空闲计时器才是这条连接的裁判，这里不据此收场。
-                    // 0 长报文对 QUIC 没有意义、-1 且无码＝套接字被关（时限掐断）：两种都收场
-                    if (received.socketErrorCode != 0)
-                    {
-                        continue;
-                    }
-                    break;
-                }
-                co_await m_connection->handleDatagram(received.peerAddress,
-                                                      std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
-            }
-            isHandshakeDone = m_connection->isHandshakeComplete();
-        }
-
-        if (!isHandshakeDone)
+        // 看门狗与握手收包都在 `driveHandshake()` 里：那一条协程帧结束就是看门狗撤销的时刻
+        if (!co_await driveHandshake())
         {
             // 前缀按本件的名（原先写成 QuicConnection:，按名 grep 的人会翻到另一个文件）；
             // 等级从 DEBUG 抬到 WARN：调用方拿到的只是一句 false，而「被对端拒绝」这条通路
@@ -159,6 +136,37 @@ namespace AsynGyanis::Net
             co_return false;
         }
         co_return true;
+    }
+
+    Core::Task<bool> QuicClientConnection::driveHandshake()
+    {
+        // 看门狗刻意限定在本协程的作用域里：本框架的协程帧是在**调用方丢掉 Task 时**才销毁的，帧内局部量
+        // 跟着一起走。放在 connect() 的函数体上就会出现「握手已完成、看门狗却还醒着，到点把这条连接的
+        // 套接字关掉」这种极难复现的形态——本条协程一收场即撤销，之后不再有掐套接字的动作
+        const Core::DeadlineGuard<Core::AsyncUdpSocket> handshakeWatchdog(m_loop, *m_socket, m_configuration.handshakeTimeout, "QUIC 出站握手");
+        // 第一个 Initial 由 flush 里的 drive 产出：本端先出声，与「收到报文才推进」的服务端侧相反
+        co_await m_connection->flush();
+        while (!m_connection->isHandshakeComplete() && !m_connection->isClosed())
+        {
+            const Core::AsyncUdpSocket::DatagramReceiveResult received = co_await m_socket->asyncReceiveFrom(m_receiveBuffer.data(), m_receiveBuffer.size());
+            if (received.receivedByteCount <= 0)
+            {
+                // -1 且带错误码＝对端不可达那一类 ICMP 回声：套接字还能用，QUIC 自己的丢包与
+                // 空闲计时器才是这条连接的裁判，这里不据此收场。
+                // 0 长报文对 QUIC 没有意义、-1 且无码＝套接字被关（时限掐断）：两种都收场
+                if (received.socketErrorCode != 0)
+                {
+                    continue;
+                }
+                break;
+            }
+            // 读得到才把这一格交下去（Windows 读不到，那一侧恒为「非 ECN」且不该报计数，RFC 9000 §13.4.1）：
+            // 服务端外壳同一条判据，见 QuicServer 里 datagramEcnCodepoint 那一格
+            const std::optional<std::uint8_t> ecnCodepoint = m_socket->isEcnFieldVisible() ? std::optional<std::uint8_t>{received.ecnCodepoint} : std::nullopt;
+            co_await m_connection->handleDatagram(received.peerAddress, std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)),
+                                                  ecnCodepoint);
+        }
+        co_return m_connection->isHandshakeComplete();
     }
 
     Core::Task<> QuicClientConnection::pumpOnce()

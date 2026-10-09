@@ -248,6 +248,17 @@ namespace AsynGyanis::Net
         /// 流数据回调的落点：按流号记账，供 `takeReceivedData` 取走
         void noteStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
+        /**
+         * @brief 带着握手看门狗把握手跑到完成或收场
+         * @details 单独成一条协程有两个理由：看门狗的守卫对象要在**这条协程的帧**销毁时一起撤销
+         *          （放在 `connect()` 的函数体上会让它活过握手，到点掐掉已经可用的套接字），而
+         *          `connect()` 还要管套接字与 TLS 的装配，两段混在一起读不出「谁在掐表」。
+         *          收进来的每条数据报都按本端能否读到 ECN 字段决定交不交那一格（Windows 读不到，
+         *          那一侧就该不报计数，RFC 9000 §13.4.1）。
+         * @return Core::Task<bool> 握手是否完成；被对端拒绝、时限掐断或本端已关都交 false
+         */
+        [[nodiscard]] Core::Task<bool> driveHandshake();
+
         Core::EventLoop                                                       &m_loop;             ///< 所属事件循环（非拥有）
         Configuration                                                          m_configuration;    ///< 建好本对象时那份配置
         std::unique_ptr<Core::TlsContext>                                      m_tlsContext{};     ///< 客户端 TLS 上下文，连接销毁前一直持有

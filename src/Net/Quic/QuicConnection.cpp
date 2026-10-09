@@ -7,6 +7,7 @@
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/QuicConnectionCore.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
+#include "Platform/IO/DatagramSocket.h"
 
 #include <openssl/rand.h>
 
@@ -129,6 +130,9 @@ namespace AsynGyanis::Net
         coreConfiguration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
         // 客户端首个 Initial 的目的标识是它自己造的：Initial 密钥与参数里的 ODCID 都由它算
         coreConfiguration.originalDestinationConnectionId.assign(header.destinationConnectionId.begin(), header.destinationConnectionId.end());
+        // 本平台能不能按单条报文读写 IP 的 ECN 字段是平台事实（Windows 两侧都没有入口），由外壳带给状态机：
+        // 状态机自己是纯计算件，让它去问平台就等于让用例的结果跟着编译它的那台机器变。理由见配置里那一格
+        coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
@@ -177,6 +181,8 @@ namespace AsynGyanis::Net
         coreConfiguration.peerConnectionId                = initialDestinationConnectionId;
         coreConfiguration.originalDestinationConnectionId = std::move(initialDestinationConnectionId);
         coreConfiguration.clientTlsSettings               = clientTlsSettings;
+        // 同服务端那一侧：按平台事实决定这条连接用不用 ECN
+        coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
@@ -299,7 +305,8 @@ namespace AsynGyanis::Net
         m_needsFlush = true;
     }
 
-    Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
+    Core::Task<> QuicConnection::handleDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram,
+                                                const std::optional<std::uint8_t> ecnCodepoint)
     {
         if (m_core == nullptr || m_isClosed)
         {
@@ -313,7 +320,7 @@ namespace AsynGyanis::Net
             m_peerAddress = peerAddress;
         }
 
-        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime());
+        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint);
         if (!handled.has_value())
         {
             LOG_DEBUG_FMT("QuicConnection: 报文不合协议（{}），已按协议收口", handled.error().message);
@@ -370,10 +377,10 @@ namespace AsynGyanis::Net
             std::size_t sentDatagramCount = 0;
             // 一轮里攒出的报文先收在这条栈上的临时缓冲里：设了批次出口就一次交出去，没设就逐条发。
             // 报文本身从核心层的队列移交过来由本 vector 持有，因此整次 await 期间地址都有效
-            std::vector<std::string> outboundBatch;
+            std::vector<OutboundDatagram> outboundBatch;
             while (sentDatagramCount < kMaximumDatagramsPerFlush)
             {
-                std::optional<std::string> datagram = m_core->takeOutboundDatagram();
+                std::optional<OutboundDatagram> datagram = m_core->takeOutboundDatagram();
                 if (!datagram.has_value())
                 {
                     break;
@@ -412,17 +419,17 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<bool> QuicConnection::sendOutboundBatch(const std::vector<std::string> &outboundBatch)
+    Core::Task<bool> QuicConnection::sendOutboundBatch(const std::vector<OutboundDatagram> &outboundBatch)
     {
         if (m_configuration.sendDatagramBatch)
         {
-            // std::string 在本仓里当字节缓冲用，这里只是把整批交出去；一条连接只有一个对端
-            co_return co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const std::string>(outboundBatch));
+            // 整批一次交出：每条报文带的 ECN 标记随条目一起过去，本层不再替它改写
+            co_return co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const OutboundDatagram>(outboundBatch));
         }
-        for (const std::string &datagram: outboundBatch)
+        for (const OutboundDatagram &datagram: outboundBatch)
         {
             // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
-            if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.data()), datagram.size()))
+            if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.bytes.data()), datagram.bytes.size(), datagram.ecnCodepoint))
             {
                 co_return false;
             }

@@ -18,6 +18,7 @@
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
 #include "Net/Quic/Codec/QuicFrame.h"
+#include "Platform/IO/DatagramSocket.h"
 
 #include <gtest/gtest.h>
 
@@ -58,14 +59,30 @@ namespace AsynGyanis::Net
          * @brief 造一个 ACK 帧
          * @param largestAcknowledged 最大确认包号
          * @param ranges 区间列表（递减、闭区间）
+         * @param ecnCounts 交空表示这一帧**不带**三个计数（帧类型 0x02）；给出则置 `hasEcnCounts`
+         *                  并按 ECT(0)、ECT(1)、ECN-CE 的顺序填进去（§19.3.2）
          * @return QuicAcknowledgementFrame 交给恢复层的帧
          */
-        QuicAcknowledgementFrame makeAcknowledgement(const std::uint64_t largestAcknowledged, const std::vector<QuicAcknowledgementRange> &ranges)
+        QuicAcknowledgementFrame makeAcknowledgement(const std::uint64_t largestAcknowledged, const std::vector<QuicAcknowledgementRange> &ranges,
+                                                     const std::optional<std::array<std::uint64_t, 3>> &ecnCounts = std::nullopt)
         {
             QuicAcknowledgementFrame acknowledgement;
             acknowledgement.largestAcknowledgedPacketNumber = largestAcknowledged;
             acknowledgement.ranges                          = ranges;
+            if (ecnCounts.has_value())
+            {
+                acknowledgement.ecnCounts    = *ecnCounts;
+                acknowledgement.hasEcnCounts = true;
+            }
             return acknowledgement;
+        }
+
+        /// 造一条本端**标了 ECT(0)** 的已发包（ECN 试探期就长这样）
+        QuicSentPacketInfo makeMarkedSentPacket(const std::uint64_t packetNumber, const QuicTime timeSent)
+        {
+            QuicSentPacketInfo packet = makeSentPacket(packetNumber, timeSent);
+            packet.ecnCodepoint       = Platform::kEcnCodepointEctZero;
+            return packet;
         }
 
         /// 只确认单个包号的 ACK
@@ -400,6 +417,229 @@ namespace AsynGyanis::Net
         ASSERT_GE(update.lost.size(), 2U) << "这一帧该把包 1 与包 2 都判丢，实判 " << update.lost.size() << " 个";
         EXPECT_TRUE(update.isRoundTripSampled) << "这一帧应当落下本连接第一个 RTT 样本";
         EXPECT_FALSE(update.isPersistentCongestionDetected) << "段里这两个包的发出时刻都早于第一个 RTT 样本，不该建立持久拥塞";
+    }
+
+
+    /**
+     * @brief 标够 §13.4.2 建议的十条也接着标，直到某个失败探测器出结论（本仓对附录 A.4 的有意偏离）
+     * @details 规范那一格「unknown」的作用是「试探窗用完先停标、等已标出去那些包的回话」，代价是
+     *          **握手本身就常常吃掉十条**：等不到应用数据的包被标过，ECN 对真正要保护的那段流量等于没做。
+     *          §13.4.2 明写「Endpoints can implement different methods」，这里改成一路标到有结论，
+     *          靠两条失败判据收口（见下面两个用例）。这一格钉的就是「不按包数停标」。
+     */
+    TEST(QuicRecovery, KeepsMarkingEcnUntilAVerdictIsReached)
+    {
+        QuicRecovery recovery;
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointEctZero) << "开局在 Testing，第一条就该标 ECT(0)";
+
+        for (std::uint64_t packetNumber = 0; packetNumber < 20; ++packetNumber)
+        {
+            recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(packetNumber, milliseconds(packetNumber)));
+            EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointEctZero) << "第 " << packetNumber + 1 << " 条已发，没有结论就不该提前停标";
+            EXPECT_EQ(recovery.ecnState(), QuicEcnState::Testing) << "只发包没收确认，验证还没走到任何一格";
+        }
+    }
+
+    /**
+     * @brief 标过的包全被判丢且够 §13.4.2 建议的十条，判验证失败并从此不标
+     * @details 这是「本端不停标」的另一半代价：得有个探测器把「中间节点直接丢掉带标的包」这种路认出来。
+     *          单条带标的包丢了不算证据（本来就会丢包），要的是「全丢且够多条」这个形状。
+     *          12 条带标的包（0..11）之后再发一条没标的并确认它，判丢会把 12 条一起带走——越过十条这一格。
+     */
+    TEST(QuicRecovery, FailsEcnWhenEveryMarkedPacketIsDeclaredLost)
+    {
+        QuicRecovery recovery;
+        for (std::uint64_t packetNumber = 0; packetNumber < 12; ++packetNumber)
+        {
+            recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(packetNumber, milliseconds(packetNumber)));
+        }
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(12, milliseconds(12)));
+
+        // 确认的是那条没标的包，所以这一帧不带计数不会走 §13.4.2.1 第一条；判丢把 12 条带标的包全带走
+        const QuicAcknowledgementUpdate update =
+                recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(12, {{12, 12}}), milliseconds(13), QuicTime{0});
+        ASSERT_EQ(update.lost.size(), 12U) << "这一帧该把 12 条带标的包全判丢，实判 " << update.lost.size() << " 个";
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed) << "带标的包全被判丢，且条数越过 §13.4.2 建议的十条";
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointNotCapable) << "§13.4.2.2：验证失败必须停标";
+    }
+
+    /**
+     * @brief 有条带标的包活着被确认过，其余全丢也不关 ECN：那条包已经证明这条路传得出带标的包
+     * @details 这一格钉的是判据里的「相等」而不是「够十条」：只留条数那一格的话，一次普通丢包突发
+     *          就把 ECN 关了，而那正是 ECN 最该起作用的时候（拥塞丢包与「路不支持标记」是两件事）。
+     */
+    TEST(QuicRecovery, KeepsEcnEnabledWhenOneMarkedPacketSurvivesTheRest)
+    {
+        QuicRecovery recovery;
+        for (std::uint64_t packetNumber = 0; packetNumber < 12; ++packetNumber)
+        {
+            recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(packetNumber, milliseconds(packetNumber)));
+        }
+        // 包 0 被确认，且这一帧带着计数（ECT(0) 累计 1）：校验通过，转入 Capable
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(0, {{0, 0}}, std::array<std::uint64_t, 3>{1, 0, 0}), milliseconds(13),
+                                                         QuicTime{0});
+        ASSERT_EQ(recovery.ecnState(), QuicEcnState::Capable);
+
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(12, milliseconds(30)));
+        const QuicAcknowledgementUpdate update =
+                recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(12, {{12, 12}}), milliseconds(50), QuicTime{0});
+        ASSERT_EQ(update.lost.size(), 11U) << "剩下的 11 条带标的包全被判丢，实判 " << update.lost.size() << " 个";
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Capable) << "已有带标的包被确认，全丢判据的分母与分子不再相等，不该关 ECN";
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointEctZero) << "还开着就该继续标";
+    }
+
+    /**
+     * @brief 外壳说本平台用不了 ECN 之后，恢复层从此不标，对端报回来的计数再漂亮也不改结论（disableEcn 的直测）
+     * @details 这一格钉的是「关掉之后不会再被打开」：`processEcnFeedback` 转入 Capable 的条件里带着
+     *          「本端确实标过包并被确认」，而关掉之后一条带标的包都没发出去，那条前提永远不成立。
+     *          CE 那一格同理——没标过就没有认证过的带标包，§7.1 的反应不该发生。
+     */
+    TEST(QuicRecovery, KeepsEcnDisabledOnceTheShellTurnedItOff)
+    {
+        QuicRecovery recovery;
+        recovery.disableEcn();
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed);
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointNotCapable);
+
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(0, QuicTime{0}));
+        QuicAcknowledgementUpdate update;
+        {
+            // 交回一份「ECT(0) 1 条、CE 1 条」的计数：换作没关掉的本端，这会同时点亮 Capable 与拥塞事件
+            const QuicAcknowledgementFrame acknowledgement = makeAcknowledgement(0, {{0, 0}}, std::array<std::uint64_t, 3>{1, 0, 1});
+            update                                         = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, acknowledgement, milliseconds(10), QuicTime{0});
+        }
+        ASSERT_EQ(update.acknowledged.size(), 1U);
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed) << "本端从没标过包，对端报什么都不能把它拉回 Capable";
+        EXPECT_FALSE(update.ecnCongestionEventTime.has_value()) << "没标过就没有认证过的带标包，§7.1 的反应不该发生";
+    }
+
+    /**
+     * @brief 本端标过的包被一帧不带计数的确认收走，判验证失败并从此不标（§13.4.2.1 第一条）
+     * @details 这一格抓的是「路上有元件把 ECN 字段抹成 0」与「对端压根不报标记」——两种都在规范列出的
+     *          检测对象里。另一臂同样要紧：确认的是**没标过**的包而不带计数，什么都不许发生，
+     *          否则任何普通 ACK 都会把 ECN 判死。
+     */
+    TEST(QuicRecovery, FailsEcnValidationWhenMarkedPacketsAreAcknowledgedWithoutCounts)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(0, QuicTime{0}));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(1, QuicTime{0}));
+
+        // 区间要盖住包 0 与包 1：只确认包 1 的话本帧没确认到任何带标的包，那一格反而不该触发
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(1, {{0, 1}}), milliseconds(10), QuicTime{0});
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed) << "包 0 是标着 ECT(0) 发出去的，这一帧却没带计数";
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointNotCapable) << "§13.4.2.2：验证失败必须停标";
+    }
+
+    /**
+     * @brief 计数校验通过且确有带标的包被确认，才转入 Capable 并据 CE 增量触发一次拥塞事件（§7.1 + §B.7）
+     * @details 拥塞信号到得比丢包早：CE 出现时那条包还被确认着，等判丢再降窗就把这条路的容量用完了。
+     *          时刻取本帧最大确认值那条包的发出时刻（§B.7 的那一行），§7.3.2 的「一轮只降一次」据此判。
+     */
+    TEST(QuicRecovery, ReportsEcnCongestionEventWhenTheCeCountIncreases)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(0, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(1, milliseconds(30)));
+
+        // ECT(0) 累计 2、CE 累计 1：增量盖得住本帧新确认的两条带标包，校验通过
+        const QuicAcknowledgementUpdate first = recovery.onAcknowledgementReceived(
+                QuicRecoverySpace::Application, makeAcknowledgement(1, {{1, 1}}, std::array<std::uint64_t, 3>{2, 0, 1}), milliseconds(40), QuicTime{0});
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Capable) << "校验通过且确有带标的包被确认，就该转入 Capable";
+        ASSERT_TRUE(first.ecnCongestionEventTime.has_value()) << "CE 从 0 涨到 1，这一帧要触发一次拥塞事件";
+        EXPECT_EQ(*first.ecnCongestionEventTime, milliseconds(30)) << "§B.7 取的是最大确认值那条包（包 1）的发出时刻";
+
+        // 抬高最大确认值、再报一份 CE 没涨的计数：CE 不涨就不该再降一次窗（否则一条信号能被反复兑现）
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(2, milliseconds(50)));
+        const QuicAcknowledgementUpdate second = recovery.onAcknowledgementReceived(
+                QuicRecoverySpace::Application, makeAcknowledgement(2, {{2, 2}}, std::array<std::uint64_t, 3>{3, 0, 1}), milliseconds(60), QuicTime{0});
+        EXPECT_FALSE(second.ecnCongestionEventTime.has_value()) << "CE 计数没涨，不该重复触发拥塞事件";
+    }
+
+    /**
+     * @brief 计数盖不住本帧新确认的带标包数时判验证失败，且失败的那一份不许污染基准（§13.4.2.1 的增量判据）
+     * @details 三条带标的包被这一帧一起确认（区间 {{0, 2}}），而对端只报「ECT(0) + CE 一共 1 条」——
+     *          中间节点改写过标记。
+     *          顺带钉住「失败即停标」：这一格红的是状态而不是时刻。
+     */
+    TEST(QuicRecovery, FailsEcnValidationWhenTheReportedIncreaseCannotCoverMarkedPackets)
+    {
+        QuicRecovery recovery;
+        for (std::uint64_t packetNumber = 0; packetNumber < 3; ++packetNumber)
+        {
+            recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(packetNumber, milliseconds(packetNumber)));
+        }
+
+        const QuicAcknowledgementUpdate update = recovery.onAcknowledgementReceived(
+                QuicRecoverySpace::Application, makeAcknowledgement(2, {{0, 2}}, std::array<std::uint64_t, 3>{1, 0, 0}), milliseconds(10), QuicTime{0});
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed) << "三条带标的包被确认，报上来的 ECT(0)+CE 只有 1 条";
+        EXPECT_FALSE(update.ecnCongestionEventTime.has_value()) << "校验没过就不该拿这份计数去做拥塞反应";
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointNotCapable);
+    }
+
+    /**
+     * @brief 没抬高最大确认值的那一帧不许用来判 ECN 验证失败（§13.4.2.1 的 MUST NOT）
+     * @details 乱序后到的旧 ACK 报了一份比现在小的计数：拿它比增量会判出一个假失败，从此停标。
+     *          要让先到的那一帧先把基准立起来，再让旧帧撞上去——这一格红的是「状态被假失败改掉」。
+     */
+    TEST(QuicRecovery, DoesNotFailEcnValidationFromAReorderedAcknowledgement)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(0, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(1, milliseconds(30)));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(2, milliseconds(40)));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(2, {{2, 2}}, std::array<std::uint64_t, 3>{3, 0, 0}), milliseconds(50),
+                                                         QuicTime{0});
+        ASSERT_EQ(recovery.ecnState(), QuicEcnState::Capable) << "先让校验通过的那一帧把基准立起来";
+
+        // 同一空间再来一帧只确认到包 1 的旧 ACK：计数比基准小，但它没抬高最大确认值
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(1, {{1, 1}}, std::array<std::uint64_t, 3>{1, 0, 0}), milliseconds(60),
+                                                         QuicTime{0});
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Capable) << "乱序后到的旧帧把 ECN 判成失败了，规范明写不许";
+        EXPECT_EQ(recovery.outgoingEcnCodepoint(), Platform::kEcnCodepointEctZero) << "状态没被改坏，标也就没停";
+    }
+
+    /**
+     * @brief 报上来的 ECT 总量超过本端发出去带过这一格的包总数，判验证失败（§13.4.2.1 末段）
+     * @details 这一格抓的是「中间节点凭空把包改成 ECT(0)」：本端一条都没标，对端却报了 ECT(0) 计数。
+     *          规范同时明写计数**允许大于**本帧新确认的包数（确认帧可能丢过），所以只有超总量才失败——
+     *          另一臂（未确认的包带标，报得比本帧确认数大仍然算通过）一并钉在这里。
+     */
+    TEST(QuicRecovery, FailsEcnValidationWhenReportedEctTotalExceedsWhatThisEndSent)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(0, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(1, milliseconds(30)));
+
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Application, makeAcknowledgement(1, {{1, 1}}, std::array<std::uint64_t, 3>{5, 0, 0}), milliseconds(40),
+                                                         QuicTime{0});
+
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Failed) << "本端一条都没标 ECT(0)，对端却报了 5 条";
+    }
+
+    /**
+     * @brief 对端一条都没报过时不触发 CE 反应，即使 CE 计数在涨（§7.1 的第一句限定）
+     * @details 规范那句「只有路径已验证支持 ECN 才把 CE 当拥塞信号」挡的就是这一形：包都没被确认过，
+     *          涨上来的 CE 无从校验，据此降窗等于让一份来历不明的计数决定拥塞。
+     */
+    TEST(QuicRecovery, WithholdsEcnCongestionReactionBeforeAnyMarkedPacketIsAcknowledged)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeSentPacket(0, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Application, makeMarkedSentPacket(1, milliseconds(30)));
+
+        // 这一帧只确认到没标过的包 0，带标的那条还悬着；CE 却已经报上来了
+        const QuicAcknowledgementUpdate update = recovery.onAcknowledgementReceived(
+                QuicRecoverySpace::Application, makeAcknowledgement(0, {{0, 0}}, std::array<std::uint64_t, 3>{0, 0, 4}), milliseconds(40), QuicTime{0});
+
+        EXPECT_FALSE(update.ecnCongestionEventTime.has_value()) << "一条带标的包都还没被确认，不该据这份来路不明的 CE 降窗";
+        EXPECT_EQ(recovery.ecnState(), QuicEcnState::Testing) << "没确认到带标的包就不该转入 Capable（§A.4 的那一除句）";
     }
 
     /**

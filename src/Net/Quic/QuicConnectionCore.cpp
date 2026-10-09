@@ -6,6 +6,8 @@
 
 #include "Net/Quic/QuicConnectionCore.h"
 
+#include "Platform/IO/DatagramSocket.h"
+
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
@@ -289,6 +291,13 @@ namespace AsynGyanis::Net
         // 从第一次解密成功起算：解不开的报文按 §10.1 不算活动，若截止时刻也只在解密成功后才亮，
         // 一个只发无法解密报文就消失的对端会让这条表项永远留在服务端的路由表里
         restartIdleTimer(Timestamp{});
+
+        // 平台按不了标就把 ECN 这一格关掉，别让发包凭据记着「带标」而线上没带：§13.4.2.1 的校验是拿
+        // 本端记的那一格比对端报上来的计数，本端记错就等于自己把一条好路判成验证失败
+        if (!m_configuration.supportsPerDatagramEcnField)
+        {
+            m_recovery.disableEcn();
+        }
     }
 
     bool QuicConnectionCore::isLocalServer() const noexcept
@@ -327,8 +336,15 @@ namespace AsynGyanis::Net
         m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
     }
 
-    std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime)
+    std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime,
+                                                                                const std::optional<std::uint8_t> ecnCodepoint)
     {
+        // §13.4.1：整条 UDP 数据报只有一个 IP 头，里面那些合包的 QUIC 报文共用这一格读数
+        m_incomingEcnCodepoint = ecnCodepoint;
+        if (ecnCodepoint.has_value())
+        {
+            m_isEcnFieldReadable = true;
+        }
         // 反放大额度按「收到的整条数据报」算，不看解没解出来：对端确实把这些字节打到了我们地址上
         m_receivedByteCount += datagram.size();
         std::size_t offset = 0;
@@ -349,6 +365,36 @@ namespace AsynGyanis::Net
             offset += decodedHeader->packetByteCount;
         }
         return {};
+    }
+
+    bool QuicConnectionCore::noteReceivedPacket(const PacketNumberSpace space, const std::uint64_t packetNumber) noexcept
+    {
+        SpaceState &state = m_spaces[spaceIndex(space)];
+        if (!state.receivedPacketNumbers.insert(packetNumber))
+        {
+            return false;
+        }
+        if (m_incomingEcnCodepoint.has_value())
+        {
+            // §13.4.1：计数只在「这条 QUIC 报文真的被处理」时涨，重复包一条都不算
+            if (*m_incomingEcnCodepoint == Platform::kEcnCodepointEctZero)
+            {
+                ++m_receivedEcnCounts[spaceIndex(space)][0];
+            } else if (*m_incomingEcnCodepoint == Platform::kEcnCodepointEctOne)
+            {
+                ++m_receivedEcnCounts[spaceIndex(space)][1];
+            } else if (*m_incomingEcnCodepoint == Platform::kEcnCodepointCe)
+            {
+                ++m_receivedEcnCounts[spaceIndex(space)][2];
+            }
+        }
+        // 额度按「记了多少个包号」算而不是「几段」：连号流量下几十万个包号也只占一段
+        state.receivedPacketNumbers.dropOldestUntil(kQuicMaximumTrackedPacketNumbers);
+        if (!state.largestReceivedPacketNumber.has_value() || packetNumber > *state.largestReceivedPacketNumber)
+        {
+            state.largestReceivedPacketNumber = packetNumber;
+        }
+        return true;
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::handlePacket(const std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader,
@@ -449,16 +495,10 @@ namespace AsynGyanis::Net
             applyPeerKeyUpdate(state, arrivalTime);
         }
 
-        // 到这一步包才是「认证过」的，包号记账与重复判定都只在这个前提下推进
-        if (!state.receivedPacketNumbers.insert(packetNumber))
+        // 到这一步包才是「认证过」的：包号记账、重复判定与 ECN 计数都只在这个前提下推进
+        if (!noteReceivedPacket(space, packetNumber))
         {
             return {};
-        }
-        // 额度按「记了多少个包号」算而不是「几段」：连号流量下几十万个包号也只占一段
-        state.receivedPacketNumbers.dropOldestUntil(kQuicMaximumTrackedPacketNumbers);
-        if (!state.largestReceivedPacketNumber.has_value() || packetNumber > *state.largestReceivedPacketNumber)
-        {
-            state.largestReceivedPacketNumber = packetNumber;
         }
         if (*level == QuicEncryptionLevel::Initial && !m_peerFirstInitialSourceConnectionId.has_value())
         {
@@ -590,6 +630,12 @@ namespace AsynGyanis::Net
                     break;
                 }
             }
+        }
+        if (update.ecnCongestionEventTime.has_value())
+        {
+            // §B.7 的反应排在 §B.8（丢包那一步）之前：CE 是早到的拥塞信号，先按它降窗；
+            // 同一帧里真的也丢了包时，§7.3.2 那道「一轮只降一次」的闸由拥塞层统一判
+            m_congestion.noteEcnCongestionEvent(*update.ecnCongestionEventTime);
         }
         m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
         if (update.isPersistentCongestionDetected)
@@ -841,6 +887,14 @@ namespace AsynGyanis::Net
                 const std::int64_t elapsedMicroseconds = std::max<std::int64_t>(0, (now - *state.largestAckElicitingArrival).count());
                 acknowledgement.acknowledgementDelay =
                         static_cast<std::uint64_t>(elapsedMicroseconds) >> std::min<std::uint64_t>(m_configuration.transportParameters.acknowledgmentDelayExponent, 20U);
+                if (m_isEcnFieldReadable)
+                {
+                    // 本端读得到 ECN 字段就报计数（§13.4.1 的「即使本端不标也要报收到的标记」）。
+                    // 读不到的平台交回普通 ACK（类型 0x02）：规范明确允许不报，而对端会因此把这条
+                    // 路的 ECN 判成不可用——那是诚实的退化，比报一份全是 0 的假计数好
+                    acknowledgement.ecnCounts    = m_receivedEcnCounts[spaceIndex(space)];
+                    acknowledgement.hasEcnCounts = true;
+                }
                 appendQuicFrame(frames, QuicFrame{acknowledgement});
             }
             bool carriesHandshakeDone = false;
@@ -999,17 +1053,22 @@ namespace AsynGyanis::Net
 
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
+        // 试探期与已验证期带 ECT(0)，只有验证失败才不标（这一格由恢复层的 ECN 状态机定，见 QuicRecovery.h）。
+        // 这里取一次、同时交给队列与下面的发包凭据：§13.4.2.1 的校验拿「当时标了哪一格」比对端报的计数，
+        // 线上与账上错开一格就会让校验判出假结论
+        const std::uint8_t outgoingEcnCodepoint = m_recovery.outgoingEcnCodepoint();
         ++state.nextPacketNumber;
         const std::size_t datagramByteCount = datagram.size();
         // 待发队列拿的是这条报文的本体而不是它的副本：下面 record 与字节数都只需要长度，
         // 整包再抄一遍是白付的一次分配加一次 memcpy
-        m_outboundDatagrams.push_back(std::move(datagram));
+        m_outboundDatagrams.push_back(QuicOutboundDatagram{std::move(datagram), outgoingEcnCodepoint});
 
         QuicSentPacketInfo record;
         record.packetNumber         = packetNumber;
         record.timeSent             = now;
         record.byteCount            = datagramByteCount;
         record.isAckEliciting       = isAckEliciting;
+        record.ecnCodepoint         = outgoingEcnCodepoint;
         record.cryptoRange          = cryptoRange;
         record.streamRanges         = std::move(streamRanges);
         record.streamAnnouncements  = std::move(streamAnnouncements);
@@ -1256,13 +1315,13 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::optional<std::string> QuicConnectionCore::takeOutboundDatagram()
+    auto QuicConnectionCore::takeOutboundDatagram() -> std::optional<QuicOutboundDatagram>
     {
         if (m_outboundDatagrams.empty())
         {
             return std::nullopt;
         }
-        std::optional<std::string> datagram = std::move(m_outboundDatagrams.front());
+        std::optional<QuicOutboundDatagram> datagram = std::move(m_outboundDatagrams.front());
         m_outboundDatagrams.pop_front();
         return datagram;
     }
@@ -1374,6 +1433,16 @@ namespace AsynGyanis::Net
     std::size_t QuicConnectionCore::congestionWindowByteLength() const noexcept
     {
         return m_congestion.congestionWindowByteLength();
+    }
+
+    QuicEcnState QuicConnectionCore::ecnState() const noexcept
+    {
+        return m_recovery.ecnState();
+    }
+
+    std::array<std::uint64_t, 3> QuicConnectionCore::receivedEcnCount(const QuicEncryptionLevel level) const noexcept
+    {
+        return m_receivedEcnCounts[spaceIndex(spaceOf(level))];
     }
 
     std::size_t QuicConnectionCore::persistentCongestionEventCount() const noexcept

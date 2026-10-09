@@ -1,5 +1,7 @@
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
+#include "Platform/IO/DatagramSocket.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -55,6 +57,7 @@ namespace AsynGyanis::Net
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = packet.packetNumber;
         const std::size_t   byteCount    = packet.byteCount;
+        const std::uint8_t  ecnCodepoint = packet.ecnCodepoint;
 
         const auto existing = state.unacknowledged.find(packetNumber);
         if (existing != state.unacknowledged.end())
@@ -67,6 +70,15 @@ namespace AsynGyanis::Net
             state.unacknowledged.emplace(packetNumber, std::move(packet));
         }
         m_inFlightByteCount += byteCount;
+
+        // 本端标了 ECT 的包要按空间累计进「发出去过多少带标的包」：§13.4.2.1 的总量判据拿它当上界，
+        // 「本帧新确认的带标包数」那条增量判据也以它为准。同包号重复登记会多计一次——方向上只会让
+        // 上界更宽、不会误判校验失败，而重复登记本身在本层是不该发生的形状（见上面那条冲账分支）
+        if (ecnCodepoint == Platform::kEcnCodepointEctZero || ecnCodepoint == Platform::kEcnCodepointEctOne)
+        {
+            const std::size_t codepointIndex = ecnCodepoint == Platform::kEcnCodepointEctZero ? 0U : 1U;
+            ++m_ecnMarkedSentTotals[spaceIndex(space)][codepointIndex];
+        }
     }
 
     QuicAcknowledgementUpdate QuicRecovery::onAcknowledgementReceived(const QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement,
@@ -74,6 +86,8 @@ namespace AsynGyanis::Net
     {
         SpaceState         &state               = m_spaces[spaceIndex(space)];
         const std::uint64_t largestAcknowledged = acknowledgement.largestAcknowledgedPacketNumber;
+        // §13.4.2.1 末段：乱序后到的那一帧不许用来判 ECN 验证失败，所以要先记住本帧有没有抬高最大确认值
+        const bool increasesLargestAcknowledged = !state.largestAcknowledged.has_value() || largestAcknowledged > *state.largestAcknowledged;
         state.largestAcknowledged               = std::max(state.largestAcknowledged.value_or(largestAcknowledged), largestAcknowledged);
 
         QuicAcknowledgementUpdate         update;
@@ -88,6 +102,7 @@ namespace AsynGyanis::Net
             const QuicSentPacketInfo acknowledged = packetIterator->second;
             m_inFlightByteCount -= acknowledged.byteCount;
             update.acknowledged.push_back(acknowledged);
+            noteEcnMarkedResolution(acknowledged, false);
             // 区间列表按包号递增地扫过这张表，最后进来的那个就是本次确认里的最大包号
             if (!largestAcknowledgedPacket.has_value() || acknowledged.packetNumber > largestAcknowledgedPacket->packetNumber)
             {
@@ -99,6 +114,9 @@ namespace AsynGyanis::Net
         {
             // 重复的 ACK 不更新 RTT（§5.1），但判丢照做：§A.7 的 OnAckReceived 无条件走第 5 步，
             // 否则「时间阈值已经到了、却又没有新包要确认」的局面只能等定时器，重发会晚一个粒度
+            // 重复确认不能拿来做 ECN 校验（§13.4.2.1 的 MUST NOT），但那一格「对端标过的包被确认而
+            // 这帧不带计数」还是要判：本帧没确认到新包时 acknowledgedEct*Count 自然为 0，不会误判
+            processEcnFeedback(space, acknowledgement, update.acknowledged, std::nullopt, false, update);
             update.lost = detectLostPackets(space, acknowledgementTime);
             // 持久拥塞恰恰常在「一帧新确认都没有」的这段里成形：判据要的是「两次判丢之间没有确认」，
             // 所以这条出口同样要评估一次——规范要的「收到确认之后」这一格它是满足的
@@ -117,6 +135,12 @@ namespace AsynGyanis::Net
             }
             updateRoundTripTime(acknowledgementTime - largestAcknowledgedPacket->timeSent, acknowledgementDelay);
         }
+
+        // §A.7 把 ECN 那一步排在 RTT 更新之后、判丢之前：拥塞事件要拿「本帧最大确认值那条包的发出
+        // 时刻」当时刻，而这个包在判丢之后就已经不在表里了
+        const std::optional<QuicTime> largestAcknowledgedSentTime =
+                largestAcknowledgedPacket.has_value() ? std::optional<QuicTime>{largestAcknowledgedPacket->timeSent} : std::nullopt;
+        processEcnFeedback(space, acknowledgement, update.acknowledged, largestAcknowledgedSentTime, increasesLargestAcknowledged, update);
 
         update.lost = detectLostPackets(space, acknowledgementTime);
 
@@ -167,6 +191,125 @@ namespace AsynGyanis::Net
         m_peerMaximumAcknowledgmentDelay = peerMaximumAcknowledgmentDelay;
     }
 
+    std::uint8_t QuicRecovery::outgoingEcnCodepoint() const noexcept
+    {
+        // Testing 与 Capable 都在标，只有 Failed 停手（§13.4.2.2 的 MUST disable ECN）
+        return m_ecnState == QuicEcnState::Testing || m_ecnState == QuicEcnState::Capable ? Platform::kEcnCodepointEctZero : Platform::kEcnCodepointNotCapable;
+    }
+
+    QuicEcnState QuicRecovery::ecnState() const noexcept
+    {
+        return m_ecnState;
+    }
+
+    void QuicRecovery::disableEcn() noexcept
+    {
+        // 与「验证失败」共用同一格：两者的对外行为完全一样（不标、不据 CE 反应），差别只在原因，
+        // 而原因归外壳说（它才知道是平台还是路）。已经在 Capable 也被关掉是有意为之——外壳只会在
+        // 建连接那一刻调这里，那时不可能已经有过验证通过的确认
+        m_ecnState = QuicEcnState::Failed;
+    }
+
+    void QuicRecovery::processEcnFeedback(const QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement, const std::vector<QuicSentPacketInfo> &acknowledged,
+                                          const std::optional<QuicTime> &largestAcknowledgedSentTime, const bool increasesLargestAcknowledged,
+                                          QuicAcknowledgementUpdate &update) noexcept
+    {
+        std::size_t acknowledgedEctZeroCount = 0;
+        std::size_t acknowledgedEctOneCount  = 0;
+        for (const QuicSentPacketInfo &packet: acknowledged)
+        {
+            if (packet.ecnCodepoint == Platform::kEcnCodepointEctZero)
+            {
+                ++acknowledgedEctZeroCount;
+            } else if (packet.ecnCodepoint == Platform::kEcnCodepointEctOne)
+            {
+                ++acknowledgedEctOneCount;
+            }
+        }
+        const bool hasMarkedAcknowledgements = acknowledgedEctZeroCount + acknowledgedEctOneCount > 0;
+
+        if (!acknowledgement.hasEcnCounts)
+        {
+            // §13.4.2.1 的第一条：本端标过的包被确认而这一帧不带三个计数。要么路上有元件把 ECN 字段抹成
+            // 0，要么对端不报标记——两种都一样：验证失败，本端从此不再标（§13.4.2.2 的 MUST disable）
+            if (hasMarkedAcknowledgements)
+            {
+                m_ecnState = QuicEcnState::Failed;
+            }
+            return;
+        }
+        if (!increasesLargestAcknowledged)
+        {
+            // 规范这一句是 MUST NOT：「不抬高最大确认值的那一帧」不许据以判验证失败。增量要跟上一份
+            // **校验通过**的计数比，而后到的旧帧比的会是更新过的基准，判出来的失败是假的；同理也不据它反应
+            return;
+        }
+
+        const std::array<std::uint64_t, 3> reported  = acknowledgement.ecnCounts;
+        std::array<std::uint64_t, 3>      &previous  = m_ecnReportedCounts[spaceIndex(space)];
+        const std::array<std::uint64_t, 2> sentTotal = m_ecnMarkedSentTotals[spaceIndex(space)];
+
+        // 三个计数按 §19.3.2 是该空间内的**累计**总数，因此只会不降；降了就是对端报错了一份
+        const bool isNonDecreasing = reported[0] >= previous[0] && reported[1] >= previous[1] && reported[2] >= previous[2];
+        if (!isNonDecreasing)
+        {
+            m_ecnState = QuicEcnState::Failed;
+            return;
+        }
+        const std::array<std::uint64_t, 3> increase{reported[0] - previous[0], reported[1] - previous[1], reported[2] - previous[2]};
+
+        // 「ECT(*) 与 CE 两格的增量之和盖不住本帧新确认的对应带标包数」——抓的是中间节点把
+        // ECT 改成 CE 之外的形状（例如把 ECT(0) 抹成 0 又只报一部分）
+        const bool coversMarkedPackets = increase[0] + increase[2] >= acknowledgedEctZeroCount && increase[1] + increase[2] >= acknowledgedEctOneCount;
+        // 「报告总量不得超过本端发出去带过这一格的包总数」：凭空加标的中间节点会在这里露出来。
+        // 规范同时明写计数**允许大于**本帧新确认的包数（确认帧可能丢过），所以只有超总量才判失败
+        const bool isWithinSentTotals = reported[0] <= sentTotal[0] && reported[1] <= sentTotal[1];
+        if (!coversMarkedPackets || !isWithinSentTotals)
+        {
+            m_ecnState = QuicEcnState::Failed;
+            return;
+        }
+
+        // 校验通过才把这一份立为下一次的基准：失败的帧不许污染基准，否则下一帧会拿错的那份去比
+        previous = reported;
+        if (hasMarkedAcknowledgements)
+        {
+            // 附录 A.4：转入 Capable 要以「至少有一条本端标过的包被确认」为前提，否则只是对端会报数而已
+            m_isAnyMarkedPacketAcknowledged = true;
+            if (m_ecnState == QuicEcnState::Testing)
+            {
+                m_ecnState = QuicEcnState::Capable;
+            }
+        }
+        if (increase[2] > 0 && m_isAnyMarkedPacketAcknowledged && largestAcknowledgedSentTime.has_value())
+        {
+            // §7.1 的第一句限定在「路径已验证支持 ECN」，§B.7 的反应因此要等这一格成立；
+            // 时刻取本帧最大确认值那条包的发出时刻，让 §7.3.2 的「本轮只降一次」按同一把尺判
+            update.ecnCongestionEventTime = largestAcknowledgedSentTime;
+        }
+    }
+
+    void QuicRecovery::noteEcnMarkedResolution(const QuicSentPacketInfo &packet, const bool isLost) noexcept
+    {
+        if (packet.ecnCodepoint != Platform::kEcnCodepointEctZero && packet.ecnCodepoint != Platform::kEcnCodepointEctOne)
+        {
+            return;
+        }
+        ++m_ecnMarkedResolvedCount;
+        if (isLost)
+        {
+            ++m_ecnMarkedLostCount;
+        }
+        // §13.4.2 的第二条失败探测器：「标过的包全被判丢」。单条带标的包丢了不算证据（本来就会丢包），
+        // 要的是「够多条且一条都没活着回来」这个形状——中间节点直接丢掉带 ECN 标记的数据报就是这样的。
+        // 有条带标的包被确认过之后等式永久不再成立，这正是想要的：那条包已经证明这条路传得出带标的包，
+        // 之后的丢包按普通丢包处理，不该把 ECN 关掉
+        if (m_ecnState != QuicEcnState::Failed && m_ecnMarkedResolvedCount >= kEcnMinimumMarkedPacketCount && m_ecnMarkedLostCount == m_ecnMarkedResolvedCount)
+        {
+            m_ecnState = QuicEcnState::Failed;
+        }
+    }
+
     std::vector<QuicSentPacketInfo> QuicRecovery::detectLostPackets(const QuicRecoverySpace space, const QuicTime now)
     {
         SpaceState                     &state = m_spaces[spaceIndex(space)];
@@ -196,6 +339,7 @@ namespace AsynGyanis::Net
             {
                 lost.push_back(packet);
                 m_inFlightByteCount -= packet.byteCount;
+                noteEcnMarkedResolution(packet, true);
                 packetIterator = state.unacknowledged.erase(packetIterator);
                 continue;
             }
@@ -324,6 +468,9 @@ namespace AsynGyanis::Net
         for (const auto &[packetNumber, packet]: state.unacknowledged)
         {
             m_inFlightByteCount -= packet.byteCount;
+            // 密钥退休带走的包既不是确认也不是判丢，但它不再有机会成为「活着回来的带标包」：
+            // 计入定论、不计入丢包，这样 §13.4.2 那条全丢判据的分母才追得上（否则握手包永远悬在外面）
+            noteEcnMarkedResolution(packet, false);
         }
         state.unacknowledged.clear();
         state.lossTime = std::nullopt;

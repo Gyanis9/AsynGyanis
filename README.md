@@ -47,7 +47,7 @@
   失败时交回的那句原因点名真正断在哪一段——本端判定的畸形响应不再被说成「对端复位了这条流」，而对端复位时它给的应用层错误码也一路交上来；
   规范保证「这条请求没被处理过」的那几种收法（h2 的 REFUSED_STREAM 与 GOAWAY 通告值之上、h3 的 GOAWAY 与 H3_REQUEST_REJECTED）会让**非幂等**方法也敢换条连接重来一次，
   其余形状一律按「可能已经执行过」处置，绝不重发
-- **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复、NewReno 拥塞控制与持久拥塞重启（RFC 9002 §7.6）、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3。出站一侧也在：`HttpClient::setHttp3Enabled`（默认关；每条 https 出站先试 h3，探不通、起步没走完或那条流没答话都回落到 TCP，明文与流式上传恒走 TCP）。收包与发包都按批交付：一次就绪用 `recvmmsg` 收多条、一轮 flush 攒出的多个报文用 `sendmmsg` 交出（Windows 两个方向都没有批量入口、按逐条退化，交付语义同形而系统调用次数不同，见 `Platform::DatagramSocket::receiveBatch` 与 `sendBatch`）；报文大小不齐，所以发送侧不套 `UDP_SEGMENT`——GSO 要整批等长，为凑等长去补 PADDING 是把系统调用省在发包侧、把字节加在线路上
+- **HTTP/3 + QUIC** — 自研 QUIC 传输层（RFC 9000/9001：握手、流与流量控制、丢包恢复、NewReno 拥塞控制、持久拥塞重启与 ECN 处置（RFC 9002 §7.1/§7.6：出包带 ECT(0)、确认里报三个 ECN 计数、对端报的 CE 一涨就按一次拥塞事件降窗，不等判丢；Windows 既读不到 IP 头的 ECN 字段也没有按报文设它的入口，外壳把这条平台事实带进状态机，那一侧从一开始就不带标、也不报计数，见 `Platform::DatagramSocket::supportsPerDatagramEcnField()`）、1-RTT 密钥更新）+ 自研 HTTP/3 会话（帧层、QPACK 含动态表、流式正文、GOAWAY 优雅排空、RFC 9220 隧道）；同一个端口号的 UDP 上提供 h3。出站一侧也在：`HttpClient::setHttp3Enabled`（默认关；每条 https 出站先试 h3，探不通、起步没走完或那条流没答话都回落到 TCP，明文与流式上传恒走 TCP）。收包与发包都按批交付：一次就绪用 `recvmmsg` 收多条、一轮 flush 攒出的多个报文用 `sendmmsg` 交出（Windows 两个方向都没有批量入口、按逐条退化，交付语义同形而系统调用次数不同，见 `Platform::DatagramSocket::receiveBatch` 与 `sendBatch`）；报文大小不齐，所以发送侧不套 `UDP_SEGMENT`——GSO 要整批等长，为凑等长去补 PADDING 是把系统调用省在发包侧、把字节加在线路上
 - **WebSocket** — RFC 6455 握手与帧编解码、文本帧的 UTF-8 两个方向都把关（对端发来非法序列的按 1007 收口，
   本端要发非法的那条当场拒——自己不收的帧不发）、分片重组、有界收帧队列、permessage-deflate（RFC 7692，
   按对端声明的窗口位数协商，本端无法履约就不接受该扩展而不是带着解不开的窗口开连接；要约里出现没定义的
@@ -650,7 +650,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Http/` | `HttpRequest` / `HttpResponse` / `HttpMethod`、`HttpParser`（手写增量解析）、`Router` 与 `Middleware`、`HttpSession` / `HttpServer`、`HttpsServer`（TLS 一侧不另设会话类：`HttpsServer` 统一建 `Http2/` 里的 `Http2Session`，握手完成后按 ALPN 结果跑 h2 循环或同一份 HTTP/1.1 事务循环）、`FileSender`（静态文件）、`SseStream`、`HttpMetricsEndpoint`、`HttpMemoryBudget`、压缩协商（`Gzip` / `Compression`）、`Client/`（`HttpClient`、`HttpOutboundConnectionPool` 与响应解析器） |
 | `Http2/` | `Http2Session` / `Http2Connection`、`Http2ClientConnection`（出站一侧的帧与 HPACK）、`Http2Frame`、`Hpack`（含 Huffman） |
 | `Http3/` | `Http3Session` + 自研帧层 / QPACK / `Http3Connection`（含 RFC 9220 隧道） |
-| `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复、NewReno 与持久拥塞重启）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
+| `Quic/` | 自研 QUIC 传输层：`Codec/`（变长整数、报文头、帧、传输参数）、`Crypto/`（密钥调度、头/包保护、TLS 胶水）、`Recovery/`（RFC 9002 丢包恢复、NewReno、ECN 验证与持久拥塞重启）、`Streams/`（流与流量控制）、`QuicConnectionCore`（状态机）、`QuicPacketBuilder`、`QuicServer` / `QuicConnection`（数据报路由与外壳） |
 | `WebSocket/` | `WebSocketHandshake` / `WebSocketFrame` / `WebSocketPeer`、`WebSocketUtf8`、`PerMessageDeflate` |
 | `Acme/` | `AcmeKeyPair`（账户与域名密钥、JWK 与 RFC 7638 指纹、RS256/ES256 的 JWS 签名、CSR）、`AcmeClient`（RFC 8555 状态机：目录 / 账户 / 下单 / 自证 / 定稿 / 取证）、`AcmeHttp01ChallengeStore`（令牌暂存与路由注册）、`AcmeCertificateManager`（到期判定、原子落盘、常驻续期循环与装回服务的回调） |
 

@@ -16,6 +16,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicOutboundDatagram.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicReassemblyBuffer.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicReassemblyBuffer.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicReceivedPacketNumbers.h

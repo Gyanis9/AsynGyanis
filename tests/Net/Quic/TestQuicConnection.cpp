@@ -86,7 +86,8 @@ namespace AsynGyanis::Net
             QuicConnection::Configuration configuration;
             configuration.tlsContext   = &tlsContext;
             configuration.idleTimeout  = kIdleTimeout;
-            configuration.sendDatagram = [&sentDatagramLengths](const Platform::SocketAddress &, const std::uint8_t *, const std::size_t length) -> Core::Task<bool>
+            configuration.sendDatagram = [&sentDatagramLengths](const Platform::SocketAddress &, const std::uint8_t *, const std::size_t length,
+                                                                const std::uint8_t) -> Core::Task<bool>
             {
                 sentDatagramLengths.push_back(length);
                 co_return true;

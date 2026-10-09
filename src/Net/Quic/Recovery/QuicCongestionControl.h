@@ -12,11 +12,11 @@
  *
  * @note 探针不受本类阻塞（§7.5）：调用方自己决定发不发，本类只把它算进在途字节。
  *       只带 ACK 的包同样不计入在途（§B.2），否则两端会因为互相确认而把窗口吃光。
- * @warning 不处理 ECN：本端出包不标 ECT(0)，对端也就没有 CE 可报，§7.1 那条
- *          「对端报上来的 ECN-CE 计数上升就按拥塞处置（配合 QUIC-TRANSPORT §13.4.2）」因此无所依附。
- *          要接的是三格：出包带上 ECT(0)、确认里改用带三个计数的 ACK（帧类型 0x03，本仓编解码已有）、
- *          以及恢复层把「被确认的包里有 CE」并进拥塞事件。持久拥塞（§7.6.2）已经接上：恢复层判成之后
- *          调 `restartAfterPersistentCongestion()`，窗口与阈值一起落到最小窗并退出恢复期。
+ * @note ECN 的拥塞信号从 `noteEcnCongestionEvent()` 进来（RFC 9002 §7.1 + §B.7）：对端报的 ECN-CE
+ *       计数一涨就按一次拥塞事件处置，与丢包共用「一轮只降一次」那道闸（§7.3.2）。出包带不带标、
+ *       确认里报不报计数都不在本类，归恢复层与连接核心。
+ *       持久拥塞（§7.6.2）已经接上：恢复层判成之后调 `restartAfterPersistentCongestion()`，
+ *       窗口与阈值一起落到最小窗并退出恢复期。
  */
 
 #pragma once
@@ -68,6 +68,9 @@ namespace AsynGyanis::Net
          */
         void onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, QuicTime eventTime);
 
+        /// 降窗并进入恢复期（§7.3.2 的「已在恢复期就不二次降窗」由这一处统一判），丢包与 ECN 两条路共用
+        void startCongestionEvent(QuicTime eventTime) noexcept;
+
         /**
          * @brief 持久拥塞成立后按 §7.6.2 重启：窗口与慢启动阈值都落到最小窗
          * @details 与「降一半」的普通丢包反应不是一回事：停滞足够久说明这条路径大概已经不通，
@@ -84,6 +87,16 @@ namespace AsynGyanis::Net
          * @param discardedPackets 该空间里尚未确认的包
          */
         void onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept;
+
+        /**
+         * @brief 对端报上来的 ECN-CE 计数涨了：按一次拥塞事件处置（RFC 9002 §7.1 + §B.7）
+         * @details 与丢包那条路同一个动作、同一道闸：CE 是「网络还没丢包但已经堵」的早到信号，
+         *          等到判丢再降窗就把这条路的容量用完了。共用 §7.3.2 的「一轮拥塞只降一次」判据，
+         *          所以同一帧里 CE 与丢包同时出现也只降一次——这就是调用方要把本方法排在
+         *          `onCongestionUpdate` **之前**的原因（与 §A.7 里 ECN 那一步排在判丢之前同形）。
+         * @param eventTime 拥塞事件的时刻：规范取的是本帧最大确认值那条包的发出时刻（§B.7）
+         */
+        void noteEcnCongestionEvent(QuicTime eventTime) noexcept;
 
         /**
          * @brief 当前还能往网络上压多少字节

@@ -76,12 +76,10 @@ namespace AsynGyanis::Net
             m_recoveryStartTime = std::nullopt;
         }
 
-        if (!lost.empty() && !isInRecovery())
+        if (!lost.empty())
         {
-            // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）
-            m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor, kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength);
-            m_congestionWindowByteLength   = m_slowStartThresholdByteLength;
-            m_recoveryStartTime            = eventTime;
+            // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）——CE 那条路也走这同一个判据
+            startCongestionEvent(eventTime);
             return;
         }
 
@@ -111,6 +109,24 @@ namespace AsynGyanis::Net
         m_congestionWindowByteLength              = minimumWindowByteLength;
         m_slowStartThresholdByteLength            = minimumWindowByteLength;
         m_recoveryStartTime                       = std::nullopt;
+    }
+
+    void QuicCongestionControl::startCongestionEvent(const QuicTime eventTime) noexcept
+    {
+        if (isInRecovery())
+        {
+            return;
+        }
+        m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor, kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength);
+        m_congestionWindowByteLength   = m_slowStartThresholdByteLength;
+        m_recoveryStartTime            = eventTime;
+    }
+
+    void QuicCongestionControl::noteEcnCongestionEvent(const QuicTime eventTime) noexcept
+    {
+        // §7.1 的第一句把 CE 当拥塞信号的前提是「这条路的 ECN 已验证」，那一格在恢复层判，
+        // 到这里的都已经是校验过的计数；降窗动作与丢包那条完全共用
+        startCongestionEvent(eventTime);
     }
 
     void QuicCongestionControl::onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept

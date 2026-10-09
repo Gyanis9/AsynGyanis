@@ -29,6 +29,7 @@
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/QuicConnectionRole.h"
+#include "Net/Quic/QuicOutboundDatagram.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/QuicReceivedPacketNumbers.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
@@ -75,6 +76,15 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t>            originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识，Initial 密钥由它推导
         QuicTransportParameters              transportParameters{};             ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
         std::optional<QuicClientTlsSettings> clientTlsSettings{};               ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
+        /**
+         * @brief 本端的平台能不能按单条报文读写 IP 头的 ECN 字段
+         * @details 由外壳按 `Platform::DatagramSocket::supportsPerDatagramEcnField()` 填（Windows 为假）。
+         *          为假时本端 ECN 直接落在 `QuicEcnState::Failed`：出包不带标、发包凭据里也不记带标——
+         *          本端记什么就要线上是什么，否则 §13.4.2.1 的计数校验会拿本端这份错账把一条好路
+         *          判成验证失败。缺省给真是因为有单测直接构造本结构模拟一台支持的平台机器；
+         *          外壳一律显式填，不留给缺省值去猜平台
+         */
+        bool supportsPerDatagramEcnField{true};
     };
 
     /**
@@ -107,6 +117,10 @@ namespace AsynGyanis::Net
         QuicConnectionCore(QuicConnectionCore &&)                 = delete;
         QuicConnectionCore &operator=(QuicConnectionCore &&)      = delete;
 
+    public:
+        /// 待发数据报的类型在 `QuicOutboundDatagram.h`（两侧的公共面都要用它，见那里的 @note）
+        using QuicOutboundDatagram = ::AsynGyanis::Net::QuicOutboundDatagram;
+
         /**
          * @brief 处理一个收到的 UDP 数据报净载荷：只收不发
          * @details 先逐个拆出里面的报文（合包合法），逐条认证；解不开的按 RFC 9001 §4.1.4 静默丢弃，
@@ -118,13 +132,23 @@ namespace AsynGyanis::Net
          * @return 失败返回 `QuicDecodeError`：报文违反 v1 的硬性规则（保留位非 0 等）。本类会同时自行
          *         发出 CONNECTION_CLOSE（§10.2 要求连接错误必须通知对端），错误值供调用方记日志
          */
-        [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime);
+        /**
+         * @brief 处理一个收到的 UDP 数据报净载荷
+         * @param datagram 数据报字节
+         * @param arrivalTime 本数据报的到达时刻，用于 ACK 帧的延迟字段
+         * @param ecnCodepoint 这条数据报 IP 头里的 ECN 字段；**交空表示本端读不到这个字段**（Windows，
+         *        或套接字没开那个选项）。读不到与读到 0 是两件事：前者不许在 ACK 里报 ECN 计数
+         *        （RFC 9000 §13.4.1 明确允许读不到的端点不报），后者要按 §19.3.2 计入 ECT(0) 那一格
+         * @return 与不带这一格时同义：失败返回 `QuicDecodeError`，本类自行发出 CONNECTION_CLOSE
+         */
+        [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime,
+                                                                              std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
 
         /**
          * @brief 取走一条待发数据报
          * @return 有数据报时返回它（取走即出队，缓冲随所有权一起交出去），队列空时返回空
          */
-        [[nodiscard]] std::optional<std::string> takeOutboundDatagram();
+        [[nodiscard]] std::optional<QuicOutboundDatagram> takeOutboundDatagram();
 
         /**
          * @brief 推进一步握手，并把产出编成待发数据报
@@ -206,6 +230,21 @@ namespace AsynGyanis::Net
          *          外壳与用例都靠它判断窗口那次收缩是重启而不是减半
          */
         [[nodiscard]] std::size_t persistentCongestionEventCount() const noexcept;
+
+        /**
+         * @brief 本端对这条路径的 ECN 验证走到哪一格
+         * @return QuicEcnState 见恢复层的枚举；外壳与 /metrics 靠它把「还在标」与「标过且验证过」分开报
+         */
+        [[nodiscard]] QuicEcnState ecnState() const noexcept;
+
+        /**
+         * @brief 某个包号空间收到的 ECN 计数（ECT(0)、ECT(1)、ECN-CE 三条累计）
+         * @details 就是会被写进该空间 ACK 帧的那一份（§19.3.2 的累计口径）。留成读数是为了让用例与运维
+         *          都能直接问「对端标了多少、其中被改成 CE 的有几条」，而不是只能从降窗反推
+         * @param level 加密级别（包号空间由它定，本类的外部口径一直是级别）
+         * @return std::array<std::uint64_t, 3> 三条累计值
+         */
+        [[nodiscard]] std::array<std::uint64_t, 3> receivedEcnCount(QuicEncryptionLevel level) const noexcept;
 
         /**
          * @brief 是否已经没有下文了
@@ -337,10 +376,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
         std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime);
-        void                                 handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
-        void                                 handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
-        void                                 handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
-        void                                 adoptTlsKeys();
+        /**
+         * @brief 把一条**认证过**的报文落进本空间的账：包号记账与 ECN 字段计数
+         * @details 两件事必须同进同出，顺序也只有一种正确写法：§13.4.1 末句要求重复包不重复计数，
+         *          而「是不是重复」正是靠本空间的包号集合判的——先去重再计数。拆成两个调用点就会有人
+         *          漏掉那一格，把同一报文收两遍当成路上堵了两遍。计数按空间各一份（§19.3.2），
+         *          合包里的每一段各自计一次，因为它们共用同一个 IP 头。
+         * @param space 本包所属的包号空间
+         * @param packetNumber 还原后的完整包号
+         * @return bool 本包是新的（true）还是重复收到的（false）；重复的那些调用方直接交空、不再解帧
+         */
+        bool noteReceivedPacket(PacketNumberSpace space, std::uint64_t packetNumber) noexcept;
+        void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
+        void adoptTlsKeys();
         /**
          * @brief 清掉一个空间的密钥、握手流与在途账
          * @details 密钥没了就等于这个空间不再存在：后续报文按 §5.1 丢弃，出包按「没有写密钥」跳过，
@@ -443,7 +493,13 @@ namespace AsynGyanis::Net
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};             ///< 三个包号空间
         /// 待发数据报队列：元素就是报文本体（std::string 在本仓里当字节缓冲用，与帧序列同一个口径），
         /// 组包器直接往里写，取出时按所有权移交
-        std::deque<std::string>                  m_outboundDatagrams{};                     ///< 待发数据报队列
+        /// 各包号空间**收到**的 ECN 计数（ECT(0)、ECT(1)、CE 三条累计），发 ACK 时按 §19.3.2 原样带上
+        std::array<std::array<std::uint64_t, 3>, kPacketNumberSpaceCount> m_receivedEcnCounts{};
+        /// 本次 `onDatagramReceived` 那条数据报的 ECN 字段；空表示本端读不到，因此一条都不许计
+        std::optional<std::uint8_t> m_incomingEcnCodepoint{};
+        /// 本端是否至少真的读到过一次 ECN 字段：没读到过就不在 ACK 里报计数（§13.4.1 的许可）
+        bool                                     m_isEcnFieldReadable{false};
+        std::deque<QuicOutboundDatagram>         m_outboundDatagrams{};                     ///< 待发数据报队列
         QuicConnectionPhase                      m_phase{QuicConnectionPhase::Handshaking}; ///< 当前阶段
         std::optional<std::uint64_t>             m_localCloseErrorCode{};                   ///< 待发的 CONNECTION_CLOSE 错误码
         std::string                              m_localCloseReasonPhrase{};                ///< 随错误码一起发出的原因文案
