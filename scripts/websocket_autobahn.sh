@@ -79,6 +79,21 @@ mount_source() {
     (cd "$1" && pwd -W 2>/dev/null) || (cd "$1" && pwd)
 }
 
+# 拉镜像排在跑裁判之前，并给单次尝试加时限：runner 到 Docker Hub 的 token 请求会整片超时
+# （2026-10-09 那一轮 h2spec/Autobahn 与 Redis 两档就是这么红的），一次超时不等于「裁判不存在」。
+# 三次都不成才退 2，明说「拿不到裁判」——退 1 会被读成服务端有问题，那条出口上面已经写过分档
+pull_attempt=0
+until timeout 240 docker pull "${image}"; do
+    pull_attempt=$((pull_attempt + 1))
+    if [ "${pull_attempt}" -ge 3 ]; then
+        echo "三次拉取 ${image} 都没成功（Docker Hub 侧超时），本档按「裁判取不到」退出" >&2
+        exit 2
+    fi
+    wait_seconds=$((pull_attempt * 10))
+    echo "第 ${pull_attempt} 次拉取 ${image} 失败，${wait_seconds} 秒后重试" >&2
+    sleep "${wait_seconds}"
+done
+
 # MSYS_NO_PATHCONV：Git Bash 会把以 / 开头的参数（这里是容器内路径）换算成 Windows 路径，
 # 换算完容器里就没有这个文件了。挂载源已用 pwd -W 写成 Windows 形式，无需再换算。
 # 不再写 --entrypoint /usr/local/bin/wstest：官方 latest 镜像把它从 /usr/local/bin 搬到了

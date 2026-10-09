@@ -117,7 +117,20 @@ jobs:
           REDIS_PASSWORD="$(openssl rand -hex 16)"
           echo "::add-mask::$REDIS_PASSWORD"
           echo "REDIS_PASSWORD=$REDIS_PASSWORD" >> "$GITHUB_ENV"
-          docker run -d --name ci-redis -p 6379:6379 redis:7 redis-server --requirepass "$REDIS_PASSWORD"
+          # 到 Docker Hub 的 token 请求会整片超时（2026-10-09 这一档与 Autobahn 那一档同因红过），
+          # 一次超时不等于镜像不存在：给三次带时限的尝试，退避后仍不成才让作业响
+          for attempt in 1 2 3; do
+            if timeout 240 docker run -d --name ci-redis -p 6379:6379 redis:7 redis-server --requirepass "$REDIS_PASSWORD"; then
+              break
+            fi
+            # 拉取中断会留下同名却没起来的容器，不清掉下一次必然名字冲突
+            docker rm -f ci-redis >/dev/null 2>&1 || true
+            if [ "$attempt" = 3 ]; then
+              echo "::error::redis:7 三次都没能拉起（Docker Hub 侧超时），Redis 集成用例没有裁判可用" >&2
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           for attempt in $(seq 1 30); do
             if docker exec ci-redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG; then
               exit 0
