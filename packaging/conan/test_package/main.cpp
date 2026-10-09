@@ -73,7 +73,21 @@ int main()
     static_assert(ASYN_IS_SANITIZED == 0 || ASYN_IS_SANITIZED == 1, "sanitizer 的读数不是 0/1");
     static_assert(ASYN_IS_SHARED_BUILD == 0 || ASYN_IS_SHARED_BUILD == 1, "共享形态的读数不是 0/1");
 
-    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d\n", head.size(), compressed->size(),
-                ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD);
+    // 上面四条只判形状，判不出「宏与库体分叉」（取值翻转它们照样绿）。这三条拿**另一处真源**对：
+    // 模块按现场探测发出去的 PUBLIC 宏，与清单里那一项必须同解——配方复述一遍条件、或者清单漏接一项，
+    // 红的是编译而不是线上第一次调用
+#if (defined(ASYN_HAS_STACKTRACE) ? 1 : 0) != ASYN_HAS_STACKTRACE_SUPPORT
+#error "调用栈形状两处不同解：模块宏与能力清单给出了相反答案"
+#endif
+#if (defined(DATABASE_HAS_MYSQL) ? 1 : 0) != ASYN_HAS_MYSQL_DRIVER
+#error "MySQL 驱动两处不同解：模块宏与能力清单给出了相反答案"
+#endif
+#if (defined(DATABASE_HAS_REDIS) ? 1 : 0) != ASYN_HAS_REDIS_DRIVER
+#error "Redis 驱动两处不同解：模块宏与能力清单给出了相反答案"
+#endif
+
+    std::printf("consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d 调用栈=%d MySQL=%d Redis=%d\n",
+                head.size(), compressed->size(), ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD, ASYN_HAS_STACKTRACE_SUPPORT,
+                ASYN_HAS_MYSQL_DRIVER, ASYN_HAS_REDIS_DRIVER);
     return 0;
 }

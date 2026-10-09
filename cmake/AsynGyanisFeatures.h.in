@@ -41,3 +41,14 @@
 
 /// 是否建立了模糊测试目标（只有测试树关心，读数同样给出，免得使用方靠猜）
 #cmakedefine01 ASYN_HAS_FUZZ_TARGETS
+
+/// Database 侧是否链上了真 MySQL 客户端（0 = 每个入口只给中文原因的报错桩）
+#cmakedefine01 ASYN_HAS_MYSQL_DRIVER
+
+/// Database 侧是否链上了真 Redis 客户端（0 = 同上，退化为报错桩）
+#cmakedefine01 ASYN_HAS_REDIS_DRIVER
+
+/// 本构建的 `std::stacktrace` 是否可用（决定 `CapturedStackTrace` 是真实栈别名还是空替身类，
+/// 两种形状的 ABI 不同，因此这一项必须与库体同一次取值；与模块内部的 ASYN_HAS_STACKTRACE 宏同义，
+/// 换个名字是为了让这份清单里没有构建侧词汇）
+#cmakedefine01 ASYN_HAS_STACKTRACE_SUPPORT
