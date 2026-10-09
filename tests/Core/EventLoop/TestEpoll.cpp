@@ -2,6 +2,8 @@
 // Windows 侧另测完成端口的探针重投记账会不会把日志写成噪声
 
 #include "Core/EventLoop/Epoll.h"
+#include "Core/Coroutine/Scheduler.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
 
@@ -14,8 +16,11 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
@@ -1055,8 +1060,20 @@ namespace AsynGyanis::Core
         std::atomic<bool> isStopping{false};
         std::atomic<int>  rejectionCount{0};
 
+        // 报错文本要当场核一遍：这条 throw 是违约者唯一看得见的指引，它点名的补救动作必须真按得下去
+        std::mutex  messageGuard;
+        std::string firstRejectionMessage;
+        const auto  noteRejection = [&messageGuard, &firstRejectionMessage](const Base::LogicException &error)
+        {
+            const std::lock_guard<std::mutex> guard(messageGuard);
+            if (firstRejectionMessage.empty())
+            {
+                firstRejectionMessage = error.what();
+            }
+        };
+
         // 占位的一路：wait(1) 每次都在内核里停约 1 毫秒，占空比接近九成
-        std::thread holder{[&backend, &isStopping, &rejectionCount]
+        std::thread holder{[&backend, &isStopping, &rejectionCount, &noteRejection]
                            {
                                // 线程入口必须接住：被拒的一方如果让它抛出，整个测试进程当场就没（terminate）
                                try
@@ -1065,23 +1082,25 @@ namespace AsynGyanis::Core
                                    {
                                        static_cast<void>(backend.wait(1));
                                    }
-                               } catch (const Base::LogicException &)
+                               } catch (const Base::LogicException &error)
                                {
                                    ++rejectionCount;
+                                   noteRejection(error);
                                }
                            }};
 
         // 探路的一路：拿「未注册的描述符只回 false」这个无副作用入口反复敲门，被拒就记账
-        std::thread poker{[&backend, &isStopping, &rejectionCount]
+        std::thread poker{[&backend, &isStopping, &rejectionCount, &noteRejection]
                           {
                               while (!isStopping.load(std::memory_order_acquire))
                               {
                                   try
                                   {
                                       static_cast<void>(backend.delFileDescriptor(0x7FFF));
-                                  } catch (const Base::LogicException &)
+                                  } catch (const Base::LogicException &error)
                                   {
                                       ++rejectionCount;
+                                      noteRejection(error);
                                   }
                               }
                           }};
@@ -1095,6 +1114,19 @@ namespace AsynGyanis::Core
                                                "而报错位置离肇因隔着几层（实测报成另一处 vector 的 negative-size-param）";
 
         EXPECT_NO_THROW(static_cast<void>(backend.delFileDescriptor(0x7FFF))) << "顺序交接也被拒了：本检查只该管「同时在场」";
+
+        // 同一处抛出的文案也是判据对象：违约者只能照着它找补救入口，指错路比不说更伤
+        {
+            const std::lock_guard<std::mutex> guard(messageGuard);
+            EXPECT_NE(firstRejectionMessage.find("Scheduler::postRemote()"), std::string::npos)
+                    << "拒因点名的补救动作按不下去：这份文案曾写成 EventLoop::postRemote()，而 EventLoop 只交出 scheduler()";
+        }
+
+        // 判据先自证：前者证明那个入口真存在，后者证明它不在 EventLoop 上——把文案改回旧名字会红在这里
+        static_assert(std::is_member_function_pointer_v<decltype(&Scheduler::postRemote)>);
+        // 探测参数写成 auto 占位（依赖表达式）：直接给 EventLoop & 时 MSVC 会把「没这个成员」报成硬错误而不是判假
+        // 将来若真给 EventLoop 加一条 postRemote 转发，撤掉这条反向 static_assert 并把上面的期望一起挪过去
+        static_assert(!requires(auto loopObject) { loopObject.postRemote(std::function<void()>{}); });
     }
 #endif
 } // namespace AsynGyanis::Core

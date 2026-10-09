@@ -261,7 +261,7 @@ namespace AsynGyanis::Core
         const std::uint64_t selfFingerprint   = threadFingerprint(std::this_thread::get_id());
         throw Base::LogicException("IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 " + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 " +
                                    std::to_string(holderFingerprint) + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）") +
-                                   " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 EventLoop::postRemote()");
+                                   " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 Scheduler::postRemote()（经 EventLoop::scheduler() 取得）");
     }
 
     Iocp::ExclusiveUse::~ExclusiveUse() noexcept
