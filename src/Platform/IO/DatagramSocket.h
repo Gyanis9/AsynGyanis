@@ -127,7 +127,9 @@ namespace AsynGyanis::Platform
             std::size_t   receivedByteCount{0}; ///< 输出：交付的字节数；0 是合法的空报文
         };
 
-        /// 一次批次能交出的槽位数上限；`receiveBatch` 把超出的请求夹到这里
+        /// 一次批次能交出的条数上限（收包与发包共用）：收包侧被缓冲撑着（每槽一份「单条报文上限」），
+        /// 发包侧跟着它同形是为了让两侧的批次语义读起来是一回事；QUIC 一轮攒 64 个报文因此分几窗交出，
+        /// 省的是「每包一次系统调用」而不是「每轮一次」
         static constexpr std::size_t kMaximumBatchSlotCount = 8;
 
         /**
@@ -155,6 +157,35 @@ namespace AsynGyanis::Platform
          * @return ssize_t 实际发出的字节数；失败返回 -1 并置错误码
          */
         [[nodiscard]] ssize_t send(const SocketAddress &peerAddress, const void *buffer, std::size_t length) const noexcept;
+
+        /**
+         * @brief 一次批次发包里的一条：目标地址 + 一段完整报文
+         * @note 缓冲由调用方持有，必须活到本次批次调用返回；本层不复制也不接管
+         */
+        struct BatchSendItem
+        {
+            SocketAddress peerAddress{};   ///< 目标地址（每条自带，允许一次批次发给不同对端）
+            const void   *buffer{nullptr}; ///< 报文体
+            std::size_t   length{0};       ///< 报文长度；0 是合法的空报文
+        };
+
+        /**
+         * @brief 发一批报文：一次系统调用尽量交出多条
+         * @param items 条目数组首元素，至少 itemCount 个
+         * @param itemCount 条目数；超过 kMaximumBatchSlotCount 时按上限发
+         * @return ssize_t **被内核接下的条数**（可能小于请求数）；一条都没接下且是真错误时返回 -1 并置错误码
+         *
+         * @details Linux 走 `sendmmsg`：QUIC 一轮 flush 攒出的多个报文由此一次交给内核。
+         *          Windows 没有对位入口（`WSASendMsg` 一次仍是一条），退化为逐条 `send()`——
+         *          返回条数的语义同形，但每条目仍付一次系统调用。
+         * @note 发送缓冲暂时放不下时，本方法交出「已经发出的条数」（可能是 0）并把错误码置成
+         *       `kWouldBlock`：**剩下的报文没有被本层重发**，续发的责任在调用方
+         *       （Core 的 `AsyncUdpSocket::asyncSendBatch` 会等可写再从剩下那条接着发）。
+         *       数据报要么整条要么不交，所以「前 k 条已发出、第 k+1 条起未发」是唯一可能的切分形状。
+         * @note 单条超过 `kMaximumDatagramBytes`、地址没设置或缓冲为空都算用法错误：整批当场判错
+         *       （返回 -1 + `kInvalidArgument`），不做「发一半再说」。
+         */
+        [[nodiscard]] ssize_t sendBatch(const BatchSendItem *items, std::size_t itemCount) const noexcept;
 
         /**
          * @brief 关闭套接字（幂等）

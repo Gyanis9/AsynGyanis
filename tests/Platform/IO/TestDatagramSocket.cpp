@@ -416,6 +416,95 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 一次批次发包把多条报文一起交给内核，接收侧按发出顺序逐条收到
+     * @details 与收包那格配对：QUIC 一轮 flush 攒出的多个报文（ACK + 加密握手包 + 若干流数据帧）
+     *          由此一次 `sendmmsg` 交出去，而不是每包一次 `sendto`。判据取「三条都到、顺序保持、
+     *          返回值就是交出的条数」——把实现退回逐条发时这三条照样绿，红的是下面那格「用法错误
+     *          要整批当场拒」：那条一旦写成「发一半再拒」就会让对端收到半批报文。
+     */
+    TEST(DatagramSocket, SendsQueuedDatagramsInOneBatch)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+
+        const std::array<std::string_view, 3> payloads{std::string_view{"send-batch-one"}, std::string_view{"send-batch-two"}, std::string_view{"send-batch-three"}};
+        std::array<DatagramSocket::BatchSendItem, payloads.size()> items{};
+        for (std::size_t index = 0; index < payloads.size(); ++index)
+        {
+            items[index].peerAddress = receiver.localAddress();
+            items[index].buffer      = payloads[index].data();
+            items[index].length      = payloads[index].size();
+        }
+
+        const ssize_t sentCount = sender.sendBatch(items.data(), items.size());
+        ASSERT_EQ(sentCount, static_cast<ssize_t>(payloads.size())) << "一次批次没把三条都交给内核，套接字错误码 " << PlatformError::lastSocketErrorCode();
+
+        std::vector<std::string>                                                      receivedContents{};
+        std::array<std::vector<std::uint8_t>, DatagramSocket::kMaximumBatchSlotCount> slotBuffers{};
+        std::array<DatagramSocket::BatchSlot, DatagramSocket::kMaximumBatchSlotCount> slots{};
+        for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
+        {
+            slotBuffers[slotIndex].resize(64);
+            slots[slotIndex].buffer   = slotBuffers[slotIndex].data();
+            slots[slotIndex].capacity = slotBuffers[slotIndex].size();
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+        while (receivedContents.size() < payloads.size() && std::chrono::steady_clock::now() < deadline)
+        {
+            const ssize_t batchCount = receiveBatchWithTimeout(receiver, slots.data(), slots.size());
+            for (std::size_t slotIndex = 0; slotIndex < static_cast<std::size_t>(std::max(batchCount, static_cast<ssize_t>(0))); ++slotIndex)
+            {
+                receivedContents.emplace_back(std::string(static_cast<const char *>(slots[slotIndex].buffer), slots[slotIndex].receivedByteCount));
+            }
+        }
+
+        ASSERT_EQ(receivedContents.size(), payloads.size()) << "批次发出的报文有没到达的（实收 " << receivedContents.size() << " 条）";
+        for (std::size_t payloadIndex = 0; payloadIndex < payloads.size(); ++payloadIndex)
+        {
+            EXPECT_EQ(receivedContents[payloadIndex], payloads[payloadIndex]) << "第 " << payloadIndex << " 条与发出顺序不符：数据报要按序交付";
+        }
+    }
+
+    /**
+     * @brief 批次发包的用法错误整批当场拒，一条也不许先发出去
+     * @details 「前 k 条已交、第 k+1 条起未交」是这条通道唯一可能的切分形状（数据报不会部分写出），
+     *          所以「发一半再拒第 3 条」会留下一个对端无从分辨的半批。本层选的是动手之前判完。
+     */
+    TEST(DatagramSocket, SendBatchRejectsTheWholeBatchBeforeSending)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+
+        const std::string                            first = "should-not-go-out";
+        const std::string                            third = "bad-shape";
+        std::array<DatagramSocket::BatchSendItem, 3> items{};
+        items[0].peerAddress = receiver.localAddress();
+        items[0].buffer      = first.data();
+        items[0].length      = first.size();
+        items[1].peerAddress = receiver.localAddress();
+        items[1].buffer      = nullptr;
+        items[1].length      = 0; // 空报文是合法形状（见 SendsAndReceivesAnEmptyDatagram），这一格要让它照样通过判据
+        items[2].peerAddress = receiver.localAddress();
+        items[2].buffer      = nullptr;
+        items[2].length      = third.size(); // 说有字节却没给缓冲：非法形状排在第三位
+
+        EXPECT_EQ(sender.sendBatch(items.data(), items.size()), static_cast<ssize_t>(-1)) << "整批里有一条非法形状却没当场拒";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument) << "整批拒掉的错码不是「参数不合法」";
+
+        std::array<char, 64> probeBuffer{};
+        SocketAddress        probePeer;
+        EXPECT_LT(receiver.receive(probeBuffer.data(), probeBuffer.size(), probePeer), 0) << "非法形状被拒之前，前面那些合法报文已经发出去了（半批）";
+    }
+
+    /**
      * @brief 批次接口对非法形状当场判错，不等系统调用去报
      * @details 与 `receive()`/`send()` 同一条口径：本端自己能决定的失败要在这层说清并给出改法，
      *          否则调用方拿到的是一个不含起因的 errno。

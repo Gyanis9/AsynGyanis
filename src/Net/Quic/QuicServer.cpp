@@ -154,7 +154,7 @@ namespace AsynGyanis::Net
         }
         m_tlsContext = std::move(*built);
 
-        // 收包侧的两笔账在构造时就登记，不等第一次读数才出现（与 ACME、TLS 握手、worker 崩溃那几族同形）。
+        // 收包与发包两侧的账在构造时就登记，不等第一次读数才出现（与 ACME、TLS 握手、worker 崩溃那几族同形）。
         // 排在两道构造期校验之后：构造抛出后析构不跑，登记放在会留下没人认领的把手
         m_metricHandles = {
                 Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagram_batches_total", "QUIC 服务端批次收包的调用数（Linux 一次 recvmmsg 算一次）",
@@ -163,6 +163,12 @@ namespace AsynGyanis::Net
                 Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagrams_received_total", "QUIC 服务端收到的数据报条数（与上一条相除就是「一次就绪收了几条」）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return m_datagramCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagram_batches_sent_total", "QUIC 服务端批次发包的调用数（一轮 flush 攒出的报文分窗交出，每窗一次）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_datagramBatchSendCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagrams_sent_total", "QUIC 服务端交给内核的数据报条数（与上一条相除就是「一次调用交了几条」）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_datagramSentCount.load(std::memory_order_relaxed); }),
         };
     }
 
@@ -691,6 +697,16 @@ namespace AsynGyanis::Net
         return m_datagramCount.load(std::memory_order_relaxed);
     }
 
+    std::uint64_t QuicServer::datagramBatchSendCount() const noexcept
+    {
+        return m_datagramBatchSendCount.load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t QuicServer::datagramSentCount() const noexcept
+    {
+        return m_datagramSentCount.load(std::memory_order_relaxed);
+    }
+
     std::size_t QuicServer::maximumConnections() const noexcept
     {
         // 配置在构造后不再变（与 TcpServer 的 m_maxConnections 同一形状），读它不需要原子量
@@ -834,6 +850,41 @@ namespace AsynGyanis::Net
                 session->flushPendingStreamData();
             }
         };
+        connectionConfiguration.sendDatagramBatch = [this](const Platform::SocketAddress &targetAddress, const std::span<const std::string> datagrams) -> Core::Task<bool>
+        {
+            // 一轮最多攒 64 个报文，而单次批次交 8 个：分窗交出去，最后一窗不满也照样交。
+            // 每个窗口的条目摆在栈上（协程帧里放得下），不为热路径再引入一次分配
+            bool isEveryWindowComplete = true;
+            for (std::size_t beginIndex = 0; beginIndex < datagrams.size(); beginIndex += Platform::DatagramSocket::kMaximumBatchSlotCount)
+            {
+                const std::size_t windowLength = datagrams.size() - beginIndex < Platform::DatagramSocket::kMaximumBatchSlotCount
+                                                         ? datagrams.size() - beginIndex
+                                                         : Platform::DatagramSocket::kMaximumBatchSlotCount;
+
+                std::array<Platform::DatagramSocket::BatchSendItem, Platform::DatagramSocket::kMaximumBatchSlotCount> items{};
+                for (std::size_t windowIndex = 0; windowIndex < windowLength; ++windowIndex)
+                {
+                    // 一条连接只有一个对端，整批同归一处；报文由调用方的批次缓冲持有，活到本窗口交出为止
+                    items[windowIndex].peerAddress = targetAddress;
+                    items[windowIndex].buffer      = datagrams[beginIndex + windowIndex].data();
+                    items[windowIndex].length      = datagrams[beginIndex + windowIndex].size();
+                }
+
+                const Core::AsyncUdpSocket::DatagramBatchSendResult sent = co_await m_socket->asyncSendBatch(items.data(), windowLength);
+                if (sent.sentDatagramCount > 0)
+                {
+                    m_datagramBatchSendCount.fetch_add(1U, std::memory_order_relaxed);
+                    m_datagramSentCount.fetch_add(sent.sentDatagramCount, std::memory_order_relaxed);
+                }
+                if (!sent.isComplete)
+                {
+                    isEveryWindowComplete = false;
+                    break;
+                }
+            }
+            co_return isEveryWindowComplete;
+        };
+
         connectionConfiguration.sendDatagram = [this](const Platform::SocketAddress &targetAddress, const std::uint8_t *data, const std::size_t length) -> Core::Task<bool>
         {
             // 出口只认「发出去多少字节」：整条发出为 true，出错（对端不可达、套接字已关）为 false

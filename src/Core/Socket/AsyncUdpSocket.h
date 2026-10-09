@@ -134,6 +134,35 @@ namespace AsynGyanis::Core
         [[nodiscard]] Task<DatagramBatchReceiveResult> asyncReceiveBatch(Platform::DatagramSocket::BatchSlot *slots, std::size_t slotCount);
 
         /**
+         * @brief 一次批次发包的交付
+         */
+        struct DatagramBatchSendResult
+        {
+            std::size_t sentDatagramCount{0}; ///< 交给内核的条数（可能少于请求数）
+            bool        isComplete{false};    ///< 请求的条数是否全部交出
+            /**
+             * @brief 没全部交出时的平台错误码；0 表示「等可写期间套接字已不可用」这类无码收场
+             * @note 数据报要么整条交出要么不交，所以「前 k 条已交、第 k+1 条起未交」是唯一可能的切分形状
+             */
+            int socketErrorCode{0};
+        };
+
+        /**
+         * @brief 一次发出一批报文（吸收「发送缓冲暂时放不下」）
+         * @param items 条目数组，每条自带目标地址、缓冲与长度
+         * @param itemCount 条目数；超过 `Platform::DatagramSocket::kMaximumBatchSlotCount` 按上限发
+         * @return 已交出的条数、是否全部交出，以及没交出时的错误码
+         *
+         * @details 发送缓冲满时等可写，再从**没交出的那一条**接着发（已交出的不重发——数据报没有
+         *          「部分写出」，重发就是让对端收到两条）。
+         * @note 与 `asyncSendTo` 同一条不抛的口径：平台错误按结果交出。抛会给不出错误通道，
+         *       而连接侧需要的是「这几条到底出去了没有」。
+         * @throws Base::InvalidArgumentException 条目数组为空或条数为 0
+         * @throws Base::SystemException 套接字无效（已被移动走或关闭）
+         */
+        [[nodiscard]] Task<DatagramBatchSendResult> asyncSendBatch(const Platform::DatagramSocket::BatchSendItem *items, std::size_t itemCount);
+
+        /**
          * @brief 发一条报文，内部吸收「发送缓冲暂时放不下」
          * @param peerAddress 目标地址（按值收：本方法是惰性协程，到首次恢复才读参数，
          *        按引用接临时量会让它在那之前就已亡故——ASan 实测为 stack-use-after-scope）

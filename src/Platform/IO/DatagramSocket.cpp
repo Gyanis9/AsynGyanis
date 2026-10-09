@@ -3,6 +3,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
 
+#include <array>
 #include <cstdint>
 #include <utility>
 
@@ -371,6 +372,93 @@ namespace AsynGyanis::Platform
             return -1;
         }
         return sentByteCount;
+    }
+
+    ssize_t DatagramSocket::sendBatch(const BatchSendItem *const items, const std::size_t itemCount) const noexcept
+    {
+        if (items == nullptr || itemCount == 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return -1;
+        }
+
+        const std::size_t wantedCount = itemCount > kMaximumBatchSlotCount ? kMaximumBatchSlotCount : itemCount;
+
+        // 整批的用法错误在动手之前判完：发一半才发现第 5 条不合法，交回的是「发了 4 条」这种
+        // 谁也说不清的中间态，而调用方没法把那条非法的挑出来重发
+        for (std::size_t index = 0; index < wantedCount; ++index)
+        {
+            const BatchSendItem &item = items[index];
+            if (item.buffer == nullptr && item.length > 0)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            if (item.length > kMaximumDatagramBytes)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            if (!isAddressSet(item.peerAddress))
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+        }
+
+#if !ASYN_PLATFORM_WIN32
+        std::array<::mmsghdr, kMaximumBatchSlotCount> messages{};
+        std::array<::iovec, kMaximumBatchSlotCount>   buffers{};
+        for (std::size_t index = 0; index < wantedCount; ++index)
+        {
+            const BatchSendItem &item = items[index];
+            // 内核只读这份内存，iov_base 与 msg_name 的类型是历史遗留的非 const——按 const_cast 交出，
+            // 不改写一个字节（与 recvmsg 那侧处理 msghdr 的手法同一条）
+            buffers[index].iov_base                = const_cast<void *>(item.buffer);
+            buffers[index].iov_len                 = item.length;
+            messages[index].msg_hdr.msg_name       = const_cast<sockaddr *>(reinterpret_cast<const sockaddr *>(&item.peerAddress.storage));
+            messages[index].msg_hdr.msg_namelen    = static_cast<socklen_t>(item.peerAddress.length);
+            messages[index].msg_hdr.msg_iov        = &buffers[index];
+            messages[index].msg_hdr.msg_iovlen     = 1;
+            messages[index].msg_hdr.msg_control    = nullptr;
+            messages[index].msg_hdr.msg_controllen = 0;
+            messages[index].msg_hdr.msg_flags      = 0;
+            messages[index].msg_len                = 0;
+        }
+
+        const int sentCount = ::sendmmsg(m_fileDescriptor, messages.data(), static_cast<unsigned int>(wantedCount), MSG_DONTWAIT);
+        if (sentCount < 0)
+        {
+            const int errorCode = PlatformError::lastSocketErrorCode();
+            PlatformError::setLastErrorCode(errorCode);
+            // 发送缓冲此刻放不下：交出「已发出的条数」（这里是 0），剩下的归调用方续发
+            if (errorCode == PlatformError::kWouldBlock)
+            {
+                return 0;
+            }
+            return -1;
+        }
+        return sentCount;
+#else
+        // Windows 没有批量入口：逐条 send()，但返回形状与 Linux 一致（已交出的条数 + 是否卡在可写上）
+        for (std::size_t index = 0; index < wantedCount; ++index)
+        {
+            const BatchSendItem &item = items[index];
+            const ssize_t        sent = send(item.peerAddress, item.buffer, item.length);
+            if (sent >= 0)
+            {
+                continue;
+            }
+            const int errorCode = PlatformError::lastSocketErrorCode();
+            PlatformError::setLastErrorCode(errorCode);
+            if (errorCode == PlatformError::kWouldBlock)
+            {
+                return static_cast<ssize_t>(index);
+            }
+            return -1;
+        }
+        return static_cast<ssize_t>(wantedCount);
+#endif
     }
 
     void DatagramSocket::close() noexcept

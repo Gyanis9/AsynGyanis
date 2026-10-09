@@ -62,6 +62,15 @@ namespace AsynGyanis::Net
         using DatagramSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, const std::uint8_t *data, std::size_t length)>;
 
         /**
+         * @brief 一次交出一批报文的出口：一轮 flush 攒出的多个报文由此一次交给内核
+         * @param peerAddress 目标地址（一条连接只有一个对端，整批同归一处）
+         * @param datagrams 本批报文，按编帧顺序给出；每条是一个字节缓冲
+         * @return true 表示整批都交给了内核；false 表示这一路发不出去（连接据此收口）
+         * @note 每条报文的生命周期只到本回调返回为止：实现要在返回前把它交出去或拷走
+         */
+        using DatagramBatchSender = std::function<Core::Task<bool>(const Platform::SocketAddress &peerAddress, std::span<const std::string> datagrams)>;
+
+        /**
          * @brief 收到流数据时的回调
          * @param connection 数据所属的连接（回调可能要在这条连接上开流或回写）
          * @param streamId QUIC 流号
@@ -75,9 +84,19 @@ namespace AsynGyanis::Net
          */
         struct Configuration
         {
-            SSL_CTX          *tlsContext{nullptr}; ///< 已配好证书与 ALPN 的上下文，生命周期须覆盖本连接
-            DatagramSender    sendDatagram;        ///< 报文出口
-            StreamDataHandler onStreamData;        ///< 流数据回调（HTTP/3 层接在这里）
+            SSL_CTX       *tlsContext{nullptr}; ///< 已配好证书与 ALPN 的上下文，生命周期须覆盖本连接
+            DatagramSender sendDatagram;        ///< 报文出口
+            /**
+             * @brief 可选的批次报文出口：设置后一轮 flush 攒出的多个报文一次交出去
+             * @details 没设置时走 `sendDatagram` 逐条发（客户端与单连接探针都留在这一档）。
+             *          两者只需给一个：本类的构造在两个都为空时报「配置不完整」。
+             * @note 一条连接一轮攒出的报文常见是 2~5 个（ACK + 加密握手包 + 若干流数据帧），
+             *       逐条发就是每个包一次系统调用；QUIC 的包大小不齐，因此这一批走 `sendmmsg`
+             *       而不是 GSO——`UDP_SEGMENT` 要整批等长（末段除外），为了凑等长去补 PADDING
+             *       是把系统调用省在发包侧、把字节加在线路上，本层不做这笔交换。
+             */
+            DatagramBatchSender sendDatagramBatch;
+            StreamDataHandler   onStreamData; ///< 流数据回调（HTTP/3 层接在这里）
             /**
              * @brief 对端打断了某条请求流（RESET_STREAM / STOP_SENDING）时的通知
              * @details 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**请求流**触发（流号低两位为 0，

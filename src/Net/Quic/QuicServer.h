@@ -330,6 +330,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::uint64_t datagramCount() const noexcept;
 
         /**
+         * @brief 发包侧的两笔读数：批次调用数与其中交出的报文条数
+         * @details 与收包那两条同形，判的也是同一件事：一轮 flush 攒出的多个报文一次交出去。
+         *          一轮最多攒 64 个，而单次批次上限是 8 个，所以长轮要分几窗——比值读的是
+         *          「一次系统调用平均交几条」，不是「一轮一条」。
+         * @return std::uint64_t 自本对象建立以来的累计值
+         */
+        [[nodiscard]] std::uint64_t datagramBatchSendCount() const noexcept;
+
+        /// 发包侧交给内核的报文条数累计
+        [[nodiscard]] std::uint64_t datagramSentCount() const noexcept;
+
+        /**
          * @brief 取本服务端实际生效的最大并发连接数
          * @details 与 `TcpServer::maximumConnections()` 同一条问句：`connectionCount()` 给的是分子，
          *          没有这一句就算不出「这台 h3 是不是已经贴着上限跑」。报的是**构造时下发到本台的值**
@@ -576,8 +588,11 @@ namespace AsynGyanis::Net
         /// `datagramBatchCount()` 的 @details）；同一份读数经 ProcessMetricsRegistry 进 /metrics
         std::atomic<std::uint64_t> m_datagramBatchCount{0}; ///< 批次收包的调用数
         std::atomic<std::uint64_t> m_datagramCount{0};      ///< 其中交付的报文条数
-        /// 上面两笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
-        std::array<Core::ProcessMetricHandle, 2> m_metricHandles{};
+        /// 发包侧的同形两笔账：一轮 flush 攒出的报文按窗交出，这里的批次数是**窗口调用数**
+        std::atomic<std::uint64_t> m_datagramBatchSendCount{0}; ///< 批次发包的调用数
+        std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
+        /// 上面四笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
+        std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
         /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
         /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
         bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写

@@ -94,11 +94,12 @@ namespace AsynGyanis::Net
     std::unique_ptr<QuicConnection> QuicConnection::accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
                                                            const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> clientInitial)
     {
-        if (configuration.tlsContext == nullptr || !configuration.sendDatagram)
+        if (configuration.tlsContext == nullptr || (!configuration.sendDatagram && !configuration.sendDatagramBatch))
         {
             // 点名缺的是哪一件：原先「缺 SSL_CTX 或报文出口」这种写法等于把两种完全不同的
-            // 装配错误合成一条看不出名目的告警
-            LOG_ERROR_FMT("QuicConnection: 连接配置不完整（缺{}），连接未建立", configuration.tlsContext == nullptr ? " TLS 上下文" : " 报文出口（sendDatagram）");
+            // 装配错误合成一条看不出名目的告警。报文出口给逐条与批次两条口任一即可
+            LOG_ERROR_FMT("QuicConnection: 连接配置不完整（缺{}），连接未建立",
+                          configuration.tlsContext == nullptr ? " TLS 上下文" : " 报文出口（sendDatagram 或 sendDatagramBatch）");
             return nullptr;
         }
 
@@ -152,7 +153,7 @@ namespace AsynGyanis::Net
     std::unique_ptr<QuicConnection> QuicConnection::connect(const Configuration &configuration, const Platform::SocketAddress &localAddress,
                                                             const Platform::SocketAddress &peerAddress, const QuicClientTlsSettings &clientTlsSettings)
     {
-        if (configuration.tlsContext == nullptr || !configuration.sendDatagram)
+        if (configuration.tlsContext == nullptr || (!configuration.sendDatagram && !configuration.sendDatagramBatch))
         {
             LOG_ERROR("QuicConnection: 连接配置不完整（缺 SSL_CTX 或报文出口），出站连接未建立");
             return nullptr;
@@ -367,17 +368,41 @@ namespace AsynGyanis::Net
             pumpStreamCallbacks();
 
             std::size_t sentDatagramCount = 0;
+            // 一轮里攒出的报文先收在这条栈上的临时缓冲里：设了批次出口就一次交出去，没设就逐条发。
+            // 报文本身从核心层的队列移交过来由本 vector 持有，因此整次 await 期间地址都有效
+            std::vector<std::string> outboundBatch;
             while (sentDatagramCount < kMaximumDatagramsPerFlush)
             {
-                const std::optional<std::string> datagram = m_core->takeOutboundDatagram();
+                std::optional<std::string> datagram = m_core->takeOutboundDatagram();
                 if (!datagram.has_value())
                 {
                     break;
                 }
+                outboundBatch.push_back(std::move(*datagram));
                 ++sentDatagramCount;
-                // 报文本体从队列移交到这条栈上的 optional，因此这份指针在整次 await 期间都有效。
-                // std::string 在本仓里当字节缓冲用，这里只是把字符指针按线上字节解释
-                if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram->data()), datagram->size()))
+            }
+
+            if (sentDatagramCount > 0)
+            {
+                bool isEveryDatagramSent = false;
+                if (m_configuration.sendDatagramBatch)
+                {
+                    // std::string 在本仓里当字节缓冲用，这里只是把整批交出去；一条连接只有一个对端
+                    isEveryDatagramSent = co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const std::string>(outboundBatch));
+                } else
+                {
+                    isEveryDatagramSent = true;
+                    for (const std::string &datagram: outboundBatch)
+                    {
+                        // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
+                        if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.data()), datagram.size()))
+                        {
+                            isEveryDatagramSent = false;
+                            break;
+                        }
+                    }
+                }
+                if (!isEveryDatagramSent)
                 {
                     LOG_WARN("QuicConnection: 报文发送失败（对端可能已不可达），连接收口");
                     m_isClosed = true;

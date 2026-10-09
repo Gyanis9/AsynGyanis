@@ -170,6 +170,48 @@ namespace AsynGyanis::Core
         }
     }
 
+    Task<AsyncUdpSocket::DatagramBatchSendResult> AsyncUdpSocket::asyncSendBatch(const Platform::DatagramSocket::BatchSendItem *const items, const std::size_t itemCount)
+    {
+        if (!m_socket.isValid())
+        {
+            throw Base::SystemException("数据报批次发送失败：套接字无效或已被移动走（本对象不再持有描述符）");
+        }
+        if (items == nullptr || itemCount == 0)
+        {
+            throw Base::InvalidArgumentException("数据报批次发送失败：条目数组为空或条数为 0：批次至少要有一条带地址、缓冲与长度的报文");
+        }
+
+        std::size_t sentDatagramCount = 0;
+        while (sentDatagramCount < itemCount)
+        {
+            const ssize_t batchSentCount = m_socket.sendBatch(items + sentDatagramCount, itemCount - sentDatagramCount);
+            if (batchSentCount > 0)
+            {
+                sentDatagramCount += static_cast<std::size_t>(batchSentCount);
+                continue;
+            }
+
+            const int errorCode = Platform::PlatformError::lastSocketErrorCode();
+            if (batchSentCount == 0 && errorCode == Platform::PlatformError::kWouldBlock)
+            {
+                // 发送缓冲暂时放不下：等可写，然后从**没交出的那一条**接着发。已交出的绝不重发——
+                // 数据报没有「部分写出」，重发就是让对端收到两条同样的报文
+                if (!co_await waitWritable())
+                {
+                    co_return DatagramBatchSendResult{.sentDatagramCount = sentDatagramCount, .isComplete = false, .socketErrorCode = 0};
+                }
+                continue;
+            }
+            if (batchSentCount < 0 && errorCode == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            co_return DatagramBatchSendResult{.sentDatagramCount = sentDatagramCount, .isComplete = false, .socketErrorCode = errorCode};
+        }
+
+        co_return DatagramBatchSendResult{.sentDatagramCount = sentDatagramCount, .isComplete = true};
+    }
+
     Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer, const std::size_t length)
     {
         // 同 asyncReceiveFrom：超限与空缓冲在这一层就报出可操作的原文，不等底层回 EINVAL

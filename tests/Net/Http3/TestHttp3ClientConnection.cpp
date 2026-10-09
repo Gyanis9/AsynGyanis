@@ -220,6 +220,18 @@ namespace AsynGyanis::Net
                 return m_server->datagramCount();
             }
 
+            /// 发包侧的批次调用数（一轮 flush 攒出的报文分窗交出，每窗一次）
+            [[nodiscard]] std::uint64_t datagramBatchSendCount() const noexcept
+            {
+                return m_server->datagramBatchSendCount();
+            }
+
+            /// 发包侧交给内核的报文条数
+            [[nodiscard]] std::uint64_t datagramSentCount() const noexcept
+            {
+                return m_server->datagramSentCount();
+            }
+
             /// 测试线程直接读服务端的在线连接数：这条通道本来就是给循环外的线程用的（采集端、
             /// 探活工具都这么读），因此读它的用例也必须从测试线程读，而不是绕回循环里读
             [[nodiscard]] std::size_t connectionCount() const noexcept
@@ -1049,6 +1061,10 @@ namespace AsynGyanis::Net
         // 条数不少于批次数是同一处记账的不变式（一批至少交一条，判据见 Platform 侧的批次用例）
         EXPECT_GE(server.datagramBatchCount(), 1U) << "一次往返之后批次读数还是 0：h3 的收循环没走批次那条口";
         EXPECT_GE(server.datagramCount(), server.datagramBatchCount()) << "报文条数少于批次调用数：两笔账不同源，或有一批交出了零条";
+
+        // 发送侧同一形：一轮 flush 攒出的报文走批次那条口，没接线时这两笔会停在 0
+        EXPECT_GE(server.datagramBatchSendCount(), 1U) << "一次往返之后批次发包读数还是 0：连接没走 sendDatagramBatch 那条口";
+        EXPECT_GE(server.datagramSentCount(), server.datagramBatchSendCount()) << "交出的条数少于批次调用数：发包那两笔账不同源";
 
         // 尾字段走的是正文之后那一段（RFC 9114 §4.3）：本端要把它落在 trailers 里，而不是与响应头部
         // 混成一张表——混表时这条 x-checksum 看着就像一条普通头部，消费方读不出「这是收完正文才知道的结果」
