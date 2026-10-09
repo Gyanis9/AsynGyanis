@@ -17,6 +17,7 @@
 #include "Platform/IO/DatagramSocket.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 namespace AsynGyanis::Core
@@ -65,6 +66,18 @@ namespace AsynGyanis::Core
          * @brief 取本端绑定地址
          * @return Platform::SocketAddress 本端地址；无效套接字返回未设置的地址
          */
+        /**
+         * @brief 打开「把收到数据报的 IP ECN 字段交上来」，并回报本端到底读不读得到
+         * @details 读不到时（Windows）返回 false，调用方据此决定 ACK 里要不要带 ECN 计数——
+         *          RFC 9000 §13.4.1 明确允许读不到的端点不报，硬报一份全 0 的计数反而会让对端
+         *          把好好的路判成不支持 ECN。
+         * @return true 表示已经能读到
+         */
+        [[nodiscard]] bool enableEcnFieldVisibility() noexcept;
+
+        /// 本端现在是否读得到收到数据报的 ECN 字段
+        [[nodiscard]] bool isEcnFieldVisible() const noexcept;
+
         [[nodiscard]] Platform::SocketAddress localAddress() const noexcept;
 
         /**
@@ -82,6 +95,13 @@ namespace AsynGyanis::Core
              *          （ICMP 带回来的错误，套接字本身还好好的，该继续读）。混为一谈的代价见 @note
              */
             int socketErrorCode{0};
+            /**
+             * @brief 这条报文的 IP ECN 字段（`Platform::kEcnCodepoint*`），规则同 `DatagramSocket::BatchSlot::ecnCodepoint`
+             * @details 只有套接字上开过 `DatagramSocket::setEcnFieldVisible(true)` 才可能拿到非零值；
+             *          没开、平台读不到、这条本来没标，三种情况的 0 含义不同，上层要按自己有没有开过那个
+             *          选项来解释（QUIC 侧的判据是「本端在不在报 ECN 计数」）
+             */
+            std::uint8_t ecnCodepoint{Platform::kEcnCodepointNotCapable};
         };
 
         /**
@@ -168,13 +188,16 @@ namespace AsynGyanis::Core
          *        按引用接临时量会让它在那之前就已亡故——ASan 实测为 stack-use-after-scope）
          * @param buffer 待发数据；调用方必须让它活到 await 结束
          * @param length 数据长度；0 表示合法的空报文
+         * @param ecnCodepoint 要在 IP 头里标的 ECN 取值，`Platform::kEcnCodepointNotCapable`（默认）表示不标；
+         *        平台与按条目的规则见 `Platform::DatagramSocket::BatchSendItem::ecnCodepoint`
          * @return 实际发出的字节数（与 length 相等即成功）；等待可写期间套接字被关闭时返回 -1
          * @note 数据报不会部分写出，因此等待可写后是**整条重发**
          * @throws Base::InvalidArgumentException 缓冲为空，或单条报文超过
          *         Platform::DatagramSocket::kMaximumDatagramBytes（不会被内核切开，须自行分片）
          * @throws Base::SystemException 套接字无效（已被移动走或关闭），或平台层报错
          */
-        [[nodiscard]] Task<ssize_t> asyncSendTo(Platform::SocketAddress peerAddress, const void *buffer, std::size_t length);
+        [[nodiscard]] Task<ssize_t> asyncSendTo(Platform::SocketAddress peerAddress, const void *buffer, std::size_t length,
+                                                std::uint8_t ecnCodepoint = Platform::kEcnCodepointNotCapable);
 
         /**
          * @brief 关闭套接字

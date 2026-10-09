@@ -11,6 +11,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/Socket.h"
+#include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
 #include "CoreTestSupport.h"
@@ -96,6 +97,43 @@ namespace AsynGyanis::Core
                 {
                     observation.receivedPayload.assign(buffer.data(), static_cast<std::size_t>(receivedByteCount));
                 }
+            } catch (const Base::Exception &exception)
+            {
+                observation.failureMessage = exception.what();
+            }
+            co_return;
+        }
+
+        /**
+         * @brief 「带标发送 + 读回字段」场景的观测结果
+         */
+        struct EcnTransferObservation
+        {
+            std::optional<ssize_t> sentByteCount;                            ///< 发送返回的字节数
+            std::optional<ssize_t> receivedByteCount;                        ///< 接收返回的字节数；空表示还没收到
+            std::uint8_t           readCodepoint{Platform::kEcnCodepointCe}; ///< 收侧交回的 ECN 字段；先污染成 CE，读不到就会露成 CE
+            std::string            failureMessage;                           ///< 协程内捕获到的异常文本；空表示没出异常
+        };
+
+        /**
+         * @brief 「带标先发、随后读回」场景：两个动作都走异步接口
+         * @param sender 发送套接字
+         * @param receiver 接收套接字
+         * @param payload 报文内容
+         * @param ecnCodepoint 这条报文要标的取值
+         * @param observation 观测结果
+         */
+        Task<void> markedSendThenReceiveTask(AsyncUdpSocket &sender, AsyncUdpSocket &receiver, std::string payload, const std::uint8_t ecnCodepoint,
+                                             EcnTransferObservation &observation)
+        {
+            try
+            {
+                observation.sentByteCount = co_await sender.asyncSendTo(receiver.localAddress(), payload.data(), payload.size(), ecnCodepoint);
+
+                std::array<char, 256>                       buffer{};
+                const AsyncUdpSocket::DatagramReceiveResult received = co_await receiver.asyncReceiveFrom(buffer.data(), buffer.size());
+                observation.receivedByteCount                        = received.receivedByteCount;
+                observation.readCodepoint                            = received.ecnCodepoint;
             } catch (const Base::Exception &exception)
             {
                 observation.failureMessage = exception.what();
@@ -496,6 +534,48 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(receiving.isReady()) << "关掉套接字之后，卡在等可读上的协程仍未被唤醒：等它的人只能一直等";
         const AsyncUdpSocket::DatagramReceiveResult received = receiving.handle().promise().result();
         EXPECT_LE(received.receivedByteCount, static_cast<ssize_t>(0)) << "是被关掉叫醒的，却报成收到了字节：等待结果没区分「关闭」与「就绪」";
+    }
+
+    /**
+     * @brief 带标的报文经等待通道把 ECN 字段交回来；读不到的平台必须明说读不到
+     * @details 这一层名义上只是转发，而「转发」正是最容易长错的一格：核心拿这一格的**空与非空**决定
+     *          ACK 里报不报三个计数（RFC 9000 §13.4.1），把它写成「恒 0」会让一条好路被对端判成
+     *          不支持 ECN，写成「恒有值」则 Windows 侧会报一份假账。两臂都是真判据：Linux 臂标
+     *          ECT(0) 读回 1；Windows 臂要求 `enableEcnFieldVisibility()` 回 false、
+     *          `isEcnFieldVisible()` 保持 false，且收发照旧、读数一律交回非 ECN。
+     */
+    TEST(AsyncUdpSocket, CarriesTheEcnFieldThroughTheAwaitedReceive)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket receiver = bindLoopbackSocket(loop);
+        ASSERT_TRUE(receiver.isValid()) << "接收端绑定失败，套接字错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        AsyncUdpSocket sender = bindLoopbackSocket(loop);
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败";
+
+        constexpr std::string_view kPayload = "asyn-ecn-datagram";
+        EcnTransferObservation     observation;
+
+#if !ASYN_PLATFORM_WIN32
+        ASSERT_TRUE(receiver.enableEcnFieldVisibility()) << "Linux 上应当能把收到报文的 ECN 字段接出来";
+        EXPECT_TRUE(receiver.isEcnFieldVisible());
+#else
+        EXPECT_FALSE(receiver.enableEcnFieldVisibility()) << "Windows 没有按报文读 ECN 的入口，这里必须报失败而不是静默成功";
+        EXPECT_FALSE(receiver.isEcnFieldVisible());
+#endif
+        Task<void> scenario = markedSendThenReceiveTask(sender, receiver, std::string(kPayload), Platform::kEcnCodepointEctZero, observation);
+        loop.scheduler().schedule(scenario.handle());
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.receivedByteCount.has_value(); })) << "没有在时限内收到报文，ECN 那一格无从判起";
+
+        ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
+        ASSERT_TRUE(observation.sentByteCount.has_value()) << "发送没有走到";
+        ASSERT_EQ(*observation.receivedByteCount, static_cast<ssize_t>(kPayload.size()));
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(observation.readCodepoint, Platform::kEcnCodepointEctZero) << "标的是 ECT(0)，等待通道交回来的却是另一格";
+#else
+        EXPECT_EQ(observation.readCodepoint, Platform::kEcnCodepointNotCapable) << "这一侧读不到字段，就该交回「非 ECN」而不是上一次的余值";
+#endif
     }
 
 } // namespace AsynGyanis::Core

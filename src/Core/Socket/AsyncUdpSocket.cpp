@@ -39,6 +39,16 @@ namespace AsynGyanis::Core
         return m_socket.fileDescriptor();
     }
 
+    bool AsyncUdpSocket::enableEcnFieldVisibility() noexcept
+    {
+        return m_socket.setEcnFieldVisible(true);
+    }
+
+    bool AsyncUdpSocket::isEcnFieldVisible() const noexcept
+    {
+        return m_socket.isEcnFieldVisible();
+    }
+
     Platform::SocketAddress AsyncUdpSocket::localAddress() const noexcept
     {
         return m_socket.localAddress();
@@ -92,13 +102,14 @@ namespace AsynGyanis::Core
         }
 
         Platform::SocketAddress peerAddress;
+        std::uint8_t            ecnCodepoint = Platform::kEcnCodepointNotCapable;
         while (true)
         {
-            const ssize_t receivedByteCount = m_socket.receive(buffer, capacity, peerAddress);
+            const ssize_t receivedByteCount = m_socket.receive(buffer, capacity, peerAddress, ecnCodepoint);
             if (receivedByteCount >= 0)
             {
                 // 0 是合法的空报文（对端确实发了一条零长数据报），不能当成「没收到」处理
-                co_return DatagramReceiveResult{.receivedByteCount = receivedByteCount, .peerAddress = peerAddress};
+                co_return DatagramReceiveResult{.receivedByteCount = receivedByteCount, .peerAddress = peerAddress, .ecnCodepoint = ecnCodepoint};
             }
 
             const int errorCode = Platform::PlatformError::lastSocketErrorCode();
@@ -212,7 +223,7 @@ namespace AsynGyanis::Core
         co_return DatagramBatchSendResult{.sentDatagramCount = sentDatagramCount, .isComplete = true};
     }
 
-    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer, const std::size_t length)
+    Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer, const std::size_t length, const std::uint8_t ecnCodepoint)
     {
         // 同 asyncReceiveFrom：超限与空缓冲在这一层就报出可操作的原文，不等底层回 EINVAL
         if (!m_socket.isValid())
@@ -232,7 +243,7 @@ namespace AsynGyanis::Core
 
         while (true)
         {
-            const ssize_t sentByteCount = m_socket.send(peerAddress, buffer, length);
+            const ssize_t sentByteCount = m_socket.send(peerAddress, buffer, length, ecnCodepoint);
             if (sentByteCount >= 0)
             {
                 // 数据报不会部分写出：返回长度即整条已交给内核。真出现短写说明平台语义与预期不符，
