@@ -121,6 +121,55 @@ namespace AsynGyanis::Core
         }
     }
 
+    Task<AsyncUdpSocket::DatagramBatchReceiveResult> AsyncUdpSocket::asyncReceiveBatch(Platform::DatagramSocket::BatchSlot *const slots, const std::size_t slotCount)
+    {
+        // 与 asyncReceiveFrom 同一组前置判定：本端自己能决定的失败不等系统调用去报
+        if (!m_socket.isValid())
+        {
+            throw Base::SystemException("数据报批次接收失败：套接字无效或已被移动走（本对象不再持有描述符）");
+        }
+        if (slots == nullptr || slotCount == 0)
+        {
+            throw Base::InvalidArgumentException("数据报批次接收失败：槽位数组为空或条数为 0：批次至少要有一个带好缓冲与容量的槽位");
+        }
+
+        while (true)
+        {
+            const ssize_t deliveredCount = m_socket.receiveBatch(slots, slotCount);
+            if (deliveredCount > 0)
+            {
+                co_return DatagramBatchReceiveResult{.receivedDatagramCount = static_cast<std::size_t>(deliveredCount)};
+            }
+            if (deliveredCount == 0)
+            {
+                // 「此刻没有可读的报文」不算错误：等下一次可读再来，别让调用方拿着 0 条空转
+                if (!co_await waitReadable())
+                {
+                    co_return DatagramBatchReceiveResult{};
+                }
+                continue;
+            }
+
+            const int errorCode = Platform::PlatformError::lastSocketErrorCode();
+            if (errorCode == Platform::PlatformError::kWouldBlock)
+            {
+                // 平台层没把它折成 0 条的那一侧（Windows 的逐条退化档）走这里，语义同「等可读再来」
+                if (!co_await waitReadable())
+                {
+                    co_return DatagramBatchReceiveResult{};
+                }
+                continue;
+            }
+            if (errorCode == Platform::PlatformError::kInterrupted)
+            {
+                continue;
+            }
+            // 见 asyncReceiveFrom 的那条 @note：抛出去会让正在 await 的监听循环当场消失，
+            // 一个消失的对端就能让整台服务器不再接受任何来源，因此按「0 条 + 错误码」交出
+            co_return DatagramBatchReceiveResult{.receivedDatagramCount = 0, .socketErrorCode = errorCode};
+        }
+    }
+
     Task<ssize_t> AsyncUdpSocket::asyncSendTo(const Platform::SocketAddress peerAddress, const void *const buffer, const std::size_t length)
     {
         // 同 asyncReceiveFrom：超限与空缓冲在这一层就报出可操作的原文，不等底层回 EINVAL

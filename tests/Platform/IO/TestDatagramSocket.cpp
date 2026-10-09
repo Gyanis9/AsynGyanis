@@ -102,6 +102,34 @@ namespace AsynGyanis::Platform
         }
 
         /**
+         * @brief 在时限内做一次批次收包（套接字非阻塞，因此要轮询）
+         * @param socket 接收套接字
+         * @param slots 槽位数组（每槽带好缓冲与容量）
+         * @param slotCount 槽位数
+         * @return ssize_t 交付条数；超时或真错误分别交回 0 与 -1
+         * @details 与 `receiveWithTimeout` 同一形状：本用例要判的是「一次批次能交出几条」，
+         *          因此这里只在**一次**调用里等出条目，拿到几条就算几条，不替被测代码合批。
+         */
+        ssize_t receiveBatchWithTimeout(const DatagramSocket &socket, DatagramSocket::BatchSlot *const slots, const std::size_t slotCount)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                const ssize_t batchCount = socket.receiveBatch(slots, slotCount);
+                if (batchCount > 0)
+                {
+                    return batchCount;
+                }
+                if (batchCount < 0)
+                {
+                    return -1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            }
+            return 0;
+        }
+
+        /**
          * @brief 造一个已绑定的回环数据报套接字，交回来的是**裸描述符**
          * @param port 输出：内核分配的端口
          * @return int 描述符；负值表示没造出来
@@ -316,6 +344,122 @@ namespace AsynGyanis::Platform
         const ssize_t        receivedByteCount = receiveWithTimeout(receiver, payloadBuffer.data(), payloadBuffer.size(), peerAddress);
         ASSERT_EQ(receivedByteCount, static_cast<ssize_t>(0)) << "没收到空报文（-1 表示压根没到，不是收到零字节）";
         EXPECT_TRUE(isSameIpv4Endpoint(peerAddress, sender.localAddress())) << "空报文也该带来源地址";
+    }
+
+    /**
+     * @brief 一次批次收包把排在套接字上的多条报文一起交付，内容、顺序与来源地址都要如实
+     * @details 这是 QUIC 收包侧的那笔账：一条连接上的几个包本来每包付一次 `recvfrom` 加一次就绪
+     *          等待。本层对外的承诺是「一次调用把已经排在套接字上的报文一起交出来」，两侧同形——
+     *          实测 Windows 的逐条退化档同样一次交出排好的三条，所以本用例判的是这条共同语义，
+     *          把实现退回「每次一条」时红在第一条批次调用只交 1 上。两侧的差别只在**付几次系统调用**
+     *          （Linux 一次 `recvmmsg`，Windows 三次 `recvfrom`），那一格不在这里判，写在头文件的
+     *          @note 里供读数时对照。
+     */
+    TEST(DatagramSocket, DeliversQueuedDatagramsAcrossBatchSlots)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+
+        const std::array<std::string_view, 3> payloads{std::string_view{"batch-one"}, std::string_view{"batch-two"}, std::string_view{"batch-three"}};
+        for (const std::string_view payload: payloads)
+        {
+            ASSERT_EQ(sender.send(receiver.localAddress(), payload.data(), payload.size()), static_cast<ssize_t>(payload.size()))
+                    << "发送失败，套接字错误码 " << PlatformError::lastSocketErrorCode();
+        }
+
+        std::array<std::vector<std::uint8_t>, DatagramSocket::kMaximumBatchSlotCount> slotBuffers{};
+        std::array<DatagramSocket::BatchSlot, DatagramSocket::kMaximumBatchSlotCount> slots{};
+        for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
+        {
+            slotBuffers[slotIndex].resize(64);
+            slots[slotIndex].buffer   = slotBuffers[slotIndex].data();
+            slots[slotIndex].capacity = slotBuffers[slotIndex].size();
+        }
+
+        // 第一批：本层对外的承诺是「一次调用把已经排在套接字上的报文一起交出来」，两侧同形
+        const ssize_t firstBatchCount = receiveBatchWithTimeout(receiver, slots.data(), slots.size());
+        ASSERT_GT(firstBatchCount, 0) << "一次都没收到：批次接口连排好的报文都交不出来";
+        EXPECT_EQ(firstBatchCount, static_cast<ssize_t>(payloads.size())) << "一次批次没把排好的三条全交出来（退回「每次一条」的收法时这一格会红在 1）";
+
+        std::vector<std::string> collectedContents{};
+        const auto noteBatch = [&collectedContents](const DatagramSocket::BatchSlot *const batchSlots, const std::size_t batchCount, const DatagramSocket &senderSocket)
+        {
+            for (std::size_t slotIndex = 0; slotIndex < batchCount; ++slotIndex)
+            {
+                collectedContents.emplace_back(std::string(static_cast<const char *>(batchSlots[slotIndex].buffer), batchSlots[slotIndex].receivedByteCount));
+                EXPECT_TRUE(isSameIpv4Endpoint(batchSlots[slotIndex].peerAddress, senderSocket.localAddress())) << "第 " << slotIndex << " 槽的来源地址不是发送方";
+            }
+        };
+        noteBatch(slots.data(), static_cast<std::size_t>(firstBatchCount), sender);
+
+        // 余下的（Windows 那一档要分三批收完）：按截止时刻轮询，不靠调度运气
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+        while (collectedContents.size() < payloads.size() && std::chrono::steady_clock::now() < deadline)
+        {
+            const ssize_t batchCount = receiveBatchWithTimeout(receiver, slots.data(), slots.size());
+            if (batchCount <= 0)
+            {
+                continue;
+            }
+            noteBatch(slots.data(), static_cast<std::size_t>(batchCount), sender);
+        }
+
+        ASSERT_EQ(collectedContents.size(), payloads.size()) << "批次收包把排好的报文漏掉了（实收 " << collectedContents.size() << " 条）";
+        for (std::size_t payloadIndex = 0; payloadIndex < payloads.size(); ++payloadIndex)
+        {
+            EXPECT_EQ(collectedContents[payloadIndex], payloads[payloadIndex]) << "第 " << payloadIndex << " 条内容与顺序不符：数据报按到达顺序交付";
+        }
+    }
+
+    /**
+     * @brief 批次接口对非法形状当场判错，不等系统调用去报
+     * @details 与 `receive()`/`send()` 同一条口径：本端自己能决定的失败要在这层说清并给出改法，
+     *          否则调用方拿到的是一个不含起因的 errno。
+     */
+    TEST(DatagramSocket, ReceiveBatchRejectsInvalidArguments)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(socket.isValid());
+
+        std::array<DatagramSocket::BatchSlot, 2> slots{};
+        slots[0].buffer   = nullptr;
+        slots[0].capacity = 16;
+        EXPECT_EQ(socket.receiveBatch(nullptr, 1), static_cast<ssize_t>(-1)) << "空槽位数组没被判错";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument) << "空槽位数组的错码不是「参数不合法」";
+        EXPECT_EQ(socket.receiveBatch(slots.data(), 0), static_cast<ssize_t>(-1)) << "条数 0 没被判错";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument) << "条数 0 的错码不是「参数不合法」";
+        EXPECT_EQ(socket.receiveBatch(slots.data(), 1), static_cast<ssize_t>(-1)) << "槽位没带缓冲就该判错：交给内核是 EINVAL，读起来不像本层的错";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument) << "空缓冲槽位的错码不是「参数不合法」";
+    }
+
+    /**
+     * @brief 没有可读报文时批次交回 0 条，而不是 -1 加一个要调用方猜的错码
+     * @details 「此刻没数据」在这条通道上是常态而不是错误：QUIC 的收循环据此等下一次可读再来。
+     *          把它报成 -1 会让每一个空闲唤醒都长得像一次读数失败。
+     */
+    TEST(DatagramSocket, ReceiveBatchReturnsZeroWhenNothingIsQueued)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket socket = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(socket.isValid());
+
+        std::array<std::vector<std::uint8_t>, 2> slotBuffers{};
+        std::array<DatagramSocket::BatchSlot, 2> slots{};
+        for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
+        {
+            slotBuffers[slotIndex].resize(32);
+            slots[slotIndex].buffer   = slotBuffers[slotIndex].data();
+            slots[slotIndex].capacity = slotBuffers[slotIndex].size();
+        }
+
+        EXPECT_EQ(socket.receiveBatch(slots.data(), slots.size()), static_cast<ssize_t>(0)) << "空闲套接字的批次该交 0 条";
     }
 
     /**

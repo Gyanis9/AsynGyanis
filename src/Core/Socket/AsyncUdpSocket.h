@@ -103,6 +103,37 @@ namespace AsynGyanis::Core
         [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
 
         /**
+         * @brief 一次批次收包的交付
+         */
+        struct DatagramBatchReceiveResult
+        {
+            std::size_t receivedDatagramCount{0}; ///< 本批交付的条数；0 表示没等到（套接字不可用或已收手）
+            /**
+             * @brief 真错误时的平台错误码；0 表示没有错误
+             * @note 与 `DatagramReceiveResult::socketErrorCode` 同一条判据：那些 ICMP 回声错误
+             *       （WSAECONNRESET / EHOSTUNREACH / ECONNREFUSED）不是「该收手」，调用方要继续读
+             */
+            int socketErrorCode{0};
+        };
+
+        /**
+         * @brief 一次就绪尽量收多条报文（吸收「暂时没有数据」）
+         * @param slots 调用方准备的槽位数组，每槽须带好 buffer 与容量
+         * @param slotCount 槽位数；超过 `Platform::DatagramSocket::kMaximumBatchSlotCount` 按上限收
+         * @return 交付条数与错误码（按值返回，理由同 `asyncReceiveFrom`）
+         *
+         * @details Linux 侧一次 `recvmmsg` 收完已排好的多条：一条 QUIC 连接上的几个包由此一次系统调用
+         *          加一次就绪等待解决，而不是每包各付一次。Windows 侧没有批量入口，退化为逐条
+         *          `receive()`，接口与语义同形但每槽仍付一次系统调用。
+         * @note 至少收到一条才返回；一次都没收到而等待被打断（套接字关闭或循环停止）时条数为 0、
+         *       错误码为 0——与 `asyncReceiveFrom` 的那条「无码收场」同形。
+         * @note 真错误按 0 条 + 错误码交出，**不抛**（抛会让监听循环当场消失，见 `asyncReceiveFrom` 的 @note）
+         * @throws Base::InvalidArgumentException 槽位数组为空或条数为 0
+         * @throws Base::SystemException 套接字无效（已被移动走或关闭）
+         */
+        [[nodiscard]] Task<DatagramBatchReceiveResult> asyncReceiveBatch(Platform::DatagramSocket::BatchSlot *slots, std::size_t slotCount);
+
+        /**
          * @brief 发一条报文，内部吸收「发送缓冲暂时放不下」
          * @param peerAddress 目标地址（按值收：本方法是惰性协程，到首次恢复才读参数，
          *        按引用接临时量会让它在那之前就已亡故——ASan 实测为 stack-use-after-scope）

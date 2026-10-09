@@ -153,6 +153,17 @@ namespace AsynGyanis::Net
             throw Base::SystemException("QUIC 服务端启动失败：" + built.error());
         }
         m_tlsContext = std::move(*built);
+
+        // 收包侧的两笔账在构造时就登记，不等第一次读数才出现（与 ACME、TLS 握手、worker 崩溃那几族同形）。
+        // 排在两道构造期校验之后：构造抛出后析构不跑，登记放在会留下没人认领的把手
+        m_metricHandles = {
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagram_batches_total", "QUIC 服务端批次收包的调用数（Linux 一次 recvmmsg 算一次）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_datagramBatchCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagrams_received_total", "QUIC 服务端收到的数据报条数（与上一条相除就是「一次就绪收了几条」）",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_datagramCount.load(std::memory_order_relaxed); }),
+        };
     }
 
     QuicServer::~QuicServer()
@@ -315,14 +326,21 @@ namespace AsynGyanis::Net
         Core::Task<> expiryTask = runExpiryTicker();
         m_eventLoop.scheduler().schedule(expiryTask.handle());
 
-        std::vector<std::uint8_t> receiveBuffer(Platform::DatagramSocket::kMaximumDatagramBytes);
+        // 一次批次收多少条：每槽一份「单条报文上限」的缓冲，条数上限来自 Platform 那层的常量。
+        // 缓冲在循环外一次性备好（每条报文再分配一次就是本仓反复清掉的那类热路径开销）
+        std::vector<std::uint8_t> receiveBuffers(Platform::DatagramSocket::kMaximumBatchSlotCount * Platform::DatagramSocket::kMaximumDatagramBytes);
+        std::array<Platform::DatagramSocket::BatchSlot, Platform::DatagramSocket::kMaximumBatchSlotCount> slots{};
+        for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
+        {
+            slots[slotIndex].buffer   = receiveBuffers.data() + slotIndex * Platform::DatagramSocket::kMaximumDatagramBytes;
+            slots[slotIndex].capacity = Platform::DatagramSocket::kMaximumDatagramBytes;
+        }
+
         while (!m_isStopped.load(std::memory_order_acquire))
         {
             // 结果按值回来（惰性协程不往调用方的引用里写：实参可能比 await 先亡）
-            const Core::AsyncUdpSocket::DatagramReceiveResult received       = co_await m_socket->asyncReceiveFrom(receiveBuffer.data(), receiveBuffer.size());
-            const ssize_t                                     receivedLength = received.receivedByteCount;
-            const Platform::SocketAddress                    &peerAddress    = received.peerAddress;
-            if (receivedLength < 0)
+            const Core::AsyncUdpSocket::DatagramBatchReceiveResult received = co_await m_socket->asyncReceiveBatch(slots.data(), slots.size());
+            if (received.receivedDatagramCount == 0)
             {
                 // 「对端已经不在了」那一类 socket 错误（Windows 的 WSAECONNRESET、Linux 的
                 // EHOSTUNREACH/ECONNREFUSED）是 ICMP 替某个已消失的对端捎来的回声：报文层面没改变本端
@@ -342,14 +360,27 @@ namespace AsynGyanis::Net
                 // 退出收循环，收尾交给析构
                 break;
             }
-            if (receivedLength == 0)
-            {
-                // 空报文：QUIC 没有意义，丢掉即可（UDP 允许零长报文，收到它不算错误）
-                continue;
-            }
 
-            co_await routeDatagram(peerAddress, std::span<const std::uint8_t>(receiveBuffer.data(), static_cast<std::size_t>(receivedLength)));
-            reapClosedConnections();
+            m_datagramBatchCount.fetch_add(1U, std::memory_order_relaxed);
+            m_datagramCount.fetch_add(received.receivedDatagramCount, std::memory_order_relaxed);
+
+            bool isAnyDatagramRouted = false;
+            for (std::size_t slotIndex = 0; slotIndex < received.receivedDatagramCount; ++slotIndex)
+            {
+                const Platform::DatagramSocket::BatchSlot &slot = slots[slotIndex];
+                if (slot.receivedByteCount == 0)
+                {
+                    // 空报文：QUIC 没有意义，丢掉即可（UDP 允许零长报文，收到它不算错误）
+                    continue;
+                }
+                isAnyDatagramRouted = true;
+                co_await routeDatagram(slot.peerAddress, std::span<const std::uint8_t>(static_cast<const std::uint8_t *>(slot.buffer), slot.receivedByteCount));
+            }
+            // 一批收完再回收一次：逐条收口时同批里后几条的活儿会被重复驱一遍
+            if (isAnyDatagramRouted)
+            {
+                reapClosedConnections();
+            }
         }
 
         // 等定时循环退出：它下次醒来就会发现停止标志
@@ -648,6 +679,16 @@ namespace AsynGyanis::Net
         // 就是数据竞争。这里用 relaxed：这个数只报「这一刻大约有多少条在册」，不承担「读到非零就
         // 确信别的东西也已就位」这类发布语义（那是 listeningPort() 的 acquire/release 配对）
         return m_connectionCountMirror.load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t QuicServer::datagramBatchCount() const noexcept
+    {
+        return m_datagramBatchCount.load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t QuicServer::datagramCount() const noexcept
+    {
+        return m_datagramCount.load(std::memory_order_relaxed);
     }
 
     std::size_t QuicServer::maximumConnections() const noexcept

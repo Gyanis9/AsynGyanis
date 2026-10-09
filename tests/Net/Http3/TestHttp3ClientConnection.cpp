@@ -204,6 +204,22 @@ namespace AsynGyanis::Net
                 return m_server->stats().totalRequestCount;
             }
 
+            /**
+             * @brief 收包侧的批次调用数
+             * @details 与 `datagramCount()` 成对读：往返用例用它证明这两笔账真的挂在收循环上
+             *          （没接线的一路会停在 0），而不是构造期填好的数
+             */
+            [[nodiscard]] std::uint64_t datagramBatchCount() const noexcept
+            {
+                return m_server->datagramBatchCount();
+            }
+
+            /// 收包侧交付的报文条数（与批次调用数同一处记账）
+            [[nodiscard]] std::uint64_t datagramCount() const noexcept
+            {
+                return m_server->datagramCount();
+            }
+
             /// 测试线程直接读服务端的在线连接数：这条通道本来就是给循环外的线程用的（采集端、
             /// 探活工具都这么读），因此读它的用例也必须从测试线程读，而不是绕回循环里读
             [[nodiscard]] std::size_t connectionCount() const noexcept
@@ -1028,6 +1044,11 @@ namespace AsynGyanis::Net
                 << "响应头段里没找到路由带出的那一项";
         EXPECT_TRUE(attempt.response().isOk()) << "结论不自洽：" << attempt.response().errorMessage;
         EXPECT_EQ(server.servedRequestCount(), 1U) << "服务端没数到这条请求：本端的结论是自己拼的";
+
+        // 收包侧那两笔账要随真实往返动起来：读口接的是收循环本身，没接线的一路会停在 0。
+        // 条数不少于批次数是同一处记账的不变式（一批至少交一条，判据见 Platform 侧的批次用例）
+        EXPECT_GE(server.datagramBatchCount(), 1U) << "一次往返之后批次读数还是 0：h3 的收循环没走批次那条口";
+        EXPECT_GE(server.datagramCount(), server.datagramBatchCount()) << "报文条数少于批次调用数：两笔账不同源，或有一批交出了零条";
 
         // 尾字段走的是正文之后那一段（RFC 9114 §4.3）：本端要把它落在 trailers 里，而不是与响应头部
         // 混成一张表——混表时这条 x-checksum 看着就像一条普通头部，消费方读不出「这是收完正文才知道的结果」

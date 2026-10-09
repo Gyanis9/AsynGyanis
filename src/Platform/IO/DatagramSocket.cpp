@@ -8,6 +8,8 @@
 
 #if ASYN_PLATFORM_WIN32
 #include <windows.h>
+#else
+#include <sys/socket.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -238,6 +240,101 @@ namespace AsynGyanis::Platform
             return -1;
         }
         return receivedByteCount;
+    }
+
+    ssize_t DatagramSocket::receiveBatch(BatchSlot *const slots, const std::size_t slotCount) const noexcept
+    {
+        if (slots == nullptr || slotCount == 0)
+        {
+            PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+            return -1;
+        }
+
+        const std::size_t wantedCount = slotCount > kMaximumBatchSlotCount ? kMaximumBatchSlotCount : slotCount;
+
+#if !ASYN_PLATFORM_WIN32
+        // 一次 recvmmsg 把已排好的多条报文收完：一条 QUIC 连接上的几个包由此付一次系统调用，
+        // 而不是每包一次 recvfrom 加一次就绪等待。MSG_DONTWAIT 显式带上，让「0 条」这条出口
+        // 不依赖文件状态位有没有置上（接手来的描述符两侧形状不一）
+        ::mmsghdr messages[kMaximumBatchSlotCount]{};
+        ::iovec   buffers[kMaximumBatchSlotCount]{};
+        for (std::size_t index = 0; index < wantedCount; ++index)
+        {
+            BatchSlot &slot = slots[index];
+            if (slot.buffer == nullptr || slot.capacity == 0)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            buffers[index].iov_base = slot.buffer;
+            // 与 receive() 同一条钳制：把交给内核的长度收进单条报文上限里，大缓冲不多拿
+            buffers[index].iov_len = slot.capacity > kMaximumDatagramBytes ? kMaximumDatagramBytes : slot.capacity;
+
+            slot.peerAddress                       = SocketAddress{};
+            slot.peerAddress.length                = sizeof(slot.peerAddress.storage);
+            slot.receivedByteCount                 = 0;
+            messages[index].msg_hdr.msg_name       = &slot.peerAddress.storage;
+            messages[index].msg_hdr.msg_namelen    = static_cast<socklen_t>(slot.peerAddress.length);
+            messages[index].msg_hdr.msg_iov        = &buffers[index];
+            messages[index].msg_hdr.msg_iovlen     = 1;
+            messages[index].msg_hdr.msg_control    = nullptr;
+            messages[index].msg_hdr.msg_controllen = 0;
+            messages[index].msg_hdr.msg_flags      = 0;
+            messages[index].msg_len                = 0;
+        }
+
+        const int receivedCount = ::recvmmsg(m_fileDescriptor, messages, static_cast<unsigned int>(wantedCount), MSG_DONTWAIT, nullptr);
+        if (receivedCount < 0)
+        {
+            const int errorCode = PlatformError::lastSocketErrorCode();
+            if (errorCode == PlatformError::kWouldBlock || errorCode == PlatformError::kInterrupted)
+            {
+                // 此刻没有可读的报文不算错误：交 0 条，调用方等下一次可读再来
+                return 0;
+            }
+            PlatformError::setLastErrorCode(errorCode);
+            for (std::size_t index = 0; index < wantedCount; ++index)
+            {
+                slots[index].peerAddress = SocketAddress{};
+            }
+            return -1;
+        }
+        for (int index = 0; index < receivedCount; ++index)
+        {
+            // msg_len 已经是内核交付的字节数：缓冲比报文小时按容量截断，与 receive() 的
+            // 「多出的字节被丢弃、返回值即容量」同口径，这里不去做 MSG_TRUNC 的纠正
+            slots[static_cast<std::size_t>(index)].receivedByteCount = messages[index].msg_len;
+        }
+        return receivedCount;
+#else
+        // Windows 没有批量入口（WSARecvMsg 一次仍是一条），这里退化为逐条收：接口与语义同形，
+        // 但每槽仍付一次系统调用。自述里不把「一次调用」写给两侧共同使用，就是这个原因
+        std::size_t collectedCount = 0;
+        for (std::size_t index = 0; index < wantedCount; ++index)
+        {
+            BatchSlot &slot = slots[index];
+            if (slot.buffer == nullptr || slot.capacity == 0)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kInvalidArgument);
+                return -1;
+            }
+            const ssize_t receivedByteCount = receive(slot.buffer, slot.capacity, slot.peerAddress);
+            if (receivedByteCount < 0)
+            {
+                const int errorCode = PlatformError::lastSocketErrorCode();
+                if (errorCode == PlatformError::kWouldBlock)
+                {
+                    // 已经收到的条数照交：调用方按返回条数遍历，剩下的槽位没被写过
+                    return static_cast<ssize_t>(collectedCount);
+                }
+                PlatformError::setLastErrorCode(errorCode);
+                return -1;
+            }
+            slot.receivedByteCount = static_cast<std::size_t>(receivedByteCount);
+            ++collectedCount;
+        }
+        return static_cast<ssize_t>(collectedCount);
+#endif
     }
 
     ssize_t DatagramSocket::send(const SocketAddress &peerAddress, const void *const buffer, const std::size_t length) const noexcept

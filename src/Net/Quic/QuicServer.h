@@ -14,6 +14,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
@@ -28,6 +29,7 @@
 #include "Platform/IO/DatagramSocket.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -314,6 +316,20 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t connectionCount() const noexcept;
 
         /**
+         * @brief 收包侧「一次批次交付」的两笔读数：批次数与报文条数
+         * @details 这两个数要一起看才有含义：`datagramCount() / datagramBatchCount()` 就是
+         *          「一次就绪平均收了几条」。Linux 侧走 `recvmmsg`，这个比值随链路负载上去；
+         *          Windows 侧没有批量入口（逐条 `recvfrom` 的退化档），比值恒为 1——
+         *          把两侧写成同一个承诺就会说谎，因此这里只交读数不交结论。
+         *          原子量因为采集端与用例都在循环外的线程上读
+         * @return std::uint64_t 自本对象建立以来的累计值
+         */
+        [[nodiscard]] std::uint64_t datagramBatchCount() const noexcept;
+
+        /// 收包侧交付的报文条数累计（含被当作空报文丢弃的零长报文，那也是一次真实的读数）
+        [[nodiscard]] std::uint64_t datagramCount() const noexcept;
+
+        /**
          * @brief 取本服务端实际生效的最大并发连接数
          * @details 与 `TcpServer::maximumConnections()` 同一条问句：`connectionCount()` 给的是分子，
          *          没有这一句就算不出「这台 h3 是不是已经贴着上限跑」。报的是**构造时下发到本台的值**
@@ -555,6 +571,13 @@ namespace AsynGyanis::Net
         /// 撞本监听器并发上限而被拒的新连接累计数：与 h1/h2 侧同一口径进 /metrics
         /// （`over_limit_rejected_connections_total`），原子量因为 stats() 允许从别的线程读
         std::atomic<std::uint64_t> m_overLimitRejectedConnections{0};
+        /// 收包侧「一次批次交付」的两笔账：批次数与其中交付的报文条数。两笔要一起看才是
+        /// 「一次就绪收了几条」，只报条数看不出批次，只报批次数看不出负载（读口与两侧差异见
+        /// `datagramBatchCount()` 的 @details）；同一份读数经 ProcessMetricsRegistry 进 /metrics
+        std::atomic<std::uint64_t> m_datagramBatchCount{0}; ///< 批次收包的调用数
+        std::atomic<std::uint64_t> m_datagramCount{0};      ///< 其中交付的报文条数
+        /// 上面两笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
+        std::array<Core::ProcessMetricHandle, 2> m_metricHandles{};
         /// 上限告警是否已经报过（只由循环线程读写）：满载时每条 Initial 都报一条会把日志刷满，
         /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
         bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写

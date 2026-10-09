@@ -116,6 +116,36 @@ namespace AsynGyanis::Platform
         [[nodiscard]] ssize_t receive(void *buffer, std::size_t capacity, SocketAddress &peerAddress) const noexcept;
 
         /**
+         * @brief 一次批次收包里的一个槽位：自带缓冲与容量，收齐后连来源地址一起交回
+         * @note buffer 与 capacity 由调用方准备并保持到本批收完；本层不分配也不持有
+         */
+        struct BatchSlot
+        {
+            void         *buffer{nullptr};      ///< 接收缓冲，必须指向至少 capacity 字节
+            std::size_t   capacity{0};          ///< 缓冲容量；报文大于容量时按 UDP 语义截断交付，返回值即容量
+            SocketAddress peerAddress{};        ///< 输出：这条报文的来源地址
+            std::size_t   receivedByteCount{0}; ///< 输出：交付的字节数；0 是合法的空报文
+        };
+
+        /// 一次批次能交出的槽位数上限；`receiveBatch` 把超出的请求夹到这里
+        static constexpr std::size_t kMaximumBatchSlotCount = 8;
+
+        /**
+         * @brief 收一批报文：一次就绪尽量交付多条
+         * @param slots 槽位数组首元素；至少 slotCount 个，每个都要带好 buffer 与 capacity
+         * @param slotCount 请求交付的条数；超过 kMaximumBatchSlotCount 时按上限收
+         * @return ssize_t 实际交付的条数（0 表示此刻没有可收的报文）；真错误返回 -1 并置错误码
+         *
+         * @details Linux 走 `recvmmsg`（带 MSG_DONTWAIT）：一条连接上的多个 QUIC 包由此一次系统调用收完，
+         *          而不是每条付一次 `recvfrom` 加一次就绪等待。
+         * @note Windows 上没有对应的批量入口（`WSARecvMsg` 一次仍是一条），本方法在那一侧退化为
+         *       循环 `receive()`：接口同形、语义同形，但**每槽仍付一次系统调用**——读数要如实分开，
+         *       不要把「一次调用」写进两侧共同的自述里。
+         * @note 截断交付与来源地址的规则同 `receive()`；调用方按返回条数遍历槽位，未填的槽位保持原样。
+         */
+        [[nodiscard]] ssize_t receiveBatch(BatchSlot *slots, std::size_t slotCount) const noexcept;
+
+        /**
          * @brief 发一条报文
          * @param peerAddress 目标地址
          * @param buffer 待发数据；length 为 0 时允许 nullptr（那正是空报文的自然写法）
