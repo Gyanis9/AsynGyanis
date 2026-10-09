@@ -193,6 +193,14 @@ namespace AsynGyanis::Net
         {
             [[maybe_unused]] const bool isSendBufferSet = Platform::Socket::setSendBufferSize(descriptor, m_tuning.sendBufferBytes);
         }
+        if (m_tuning.keepAliveIdleSeconds > 0)
+        {
+            // 保活是给半开会话兜底的：置不上只是这条连接回到「等对端 FIN」的旧形状，
+            // 连接本身可用，因此仍按「设置失败只影响这一项、不丢弃连接」处理。
+            // 只对接受到的连接下发——监听套接字上还没有连接，探测无处可发
+            [[maybe_unused]] const bool isKeepAliveSet =
+                    Platform::Socket::setKeepAlive(descriptor, m_tuning.keepAliveIdleSeconds, m_tuning.keepAliveIntervalSeconds, m_tuning.keepAliveProbeCount);
+        }
     }
 
     Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()

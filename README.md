@@ -65,6 +65,10 @@
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
+- **接受连接的套接字调参** — `TcpServer::setSocketTuning()` 一处配置同时下发到监听套接字与每条接受的连接：
+  收发缓冲上限、Linux 的延迟接受、TFO 队列长度，以及 **TCP 保活**（`SO_KEEPALIVE` 加空闲／间隔／次数三格时刻表）。
+  保活兜的是半开会话：对端断电、拔线、中间 NAT 提前回收映射都不会发 FIN，没有它这条连接会一直占着描述符与
+  每连接状态。不设就是系统默认（Linux 要空闲两小时才探第一次），设了才由内核在连续探测失败到达上限时报错回收
 - **静态文件服务** — `staticFileDir()` 一行接入；条件请求一并给出（`ETag` + `Last-Modified`，
   `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.2），
   两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份

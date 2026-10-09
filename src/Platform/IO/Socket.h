@@ -160,6 +160,26 @@ namespace AsynGyanis::Platform
         static bool setNoDelay(int descriptor) noexcept;
 
         /**
+         * @brief 开启 TCP 保活（SO_KEEPALIVE），并按给定取值覆盖内核的探测时刻表
+         * @details 半开会话（对端断电、拔线、中间 NAT 提前回收映射）不会发来 FIN，本端于是一直
+         *          占着描述符与每连接状态；开启保活后内核在连接空闲若干秒起自行发探测包，
+         *          连续失败到达探测上限即以 ETIMEDOUT 报错，连接这才被回收。
+         *          idleSeconds 是本函数唯一的开关：非正直接拒绝，因为「开了保活但时刻表全按系统
+         *          默认」等于空闲两小时才探第一次，服务器要的兜底并没有发生。
+         * @param descriptor 目标套接字描述符
+         * @param idleSeconds 连接空闲多少秒之后开始探测，必须为正
+         * @param intervalSeconds 两次探测之间的间隔秒数；非正表示保持系统默认
+         * @param probeCount 连续失败多少次判定连接已死；非正表示保持系统默认
+         * @return true 保活已开启，且「本平台有此入口」的参数都下发成功
+         * @note 探测时刻表两侧走的不是同一个接口：POSIX 是 TCP_KEEPIDLE / TCP_KEEPINTVL /
+         *       TCP_KEEPCNT 三个选项，Windows 只有 SIO_KEEPALIVE_VALS 一次调用、且没有探测次数的
+         *       入口（次数由系统固定）。因此 Windows 上 intervalSeconds 非正时只开启保活而不改时刻表，
+         *       probeCount 一律忽略，且新时刻表读不回来（getsockopt 只反映 SO_KEEPALIVE 的开关）。
+         *       跨平台的判据因此只能押「保活开没开」，探测次数与时刻表取值各按平台单独断言
+         */
+        static bool setKeepAlive(int descriptor, int idleSeconds, int intervalSeconds, int probeCount) noexcept;
+
+        /**
          * @brief 设置发送缓冲上限（SO_SNDBUF）
          * @details 上限偏小会限制单连接的带宽时延积（高延迟链路上吞吐下降），偏大则在高并发下
          *          按连接放大内存占用。取值只是上限提示：内核会按自身策略取整（Linux 的实际值

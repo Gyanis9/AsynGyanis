@@ -1,9 +1,12 @@
-// 套接字调参面：缓冲区上限（SO_SNDBUF/SO_RCVBUF）的读写、监听器下发与连接继承、 延迟接受（TCP_DEFER_ACCEPT）的平台支持约定
+// 套接字调参面：缓冲区上限（SO_SNDBUF/SO_RCVBUF）的读写、监听器下发与连接继承、延迟接受
+// （TCP_DEFER_ACCEPT）与 TFO（TCP_FASTOPEN）的平台支持约定、TCP 保活（SO_KEEPALIVE 与探测时刻表）
 // 覆盖场景：
 //   一. Platform::Socket 的缓冲区 setter：正值下发成功且 getsockopt 可读回不小于请求值；
 //       非正值被拒绝（不把含糊取值交给内核）
 //   二. 延迟接受的平台约定：Windows 无该选项（返回 false，按不支持降级），Linux 应成功
 //   三. TcpAcceptor 调参下发：监听套接字与每条接受到的连接都带上配置的缓冲区上限
+//   四. TFO 的平台约定与监听器下发
+//   五. 保活的时刻表读回、非正 idle 被拒，以及「只对接受到的连接下发、不配置就不开」
 
 #include "Net/Tcp/TcpAcceptor.h"
 
@@ -96,6 +99,27 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 查询 SO_KEEPALIVE 开关的读回值
+         * @details 不能复用 queryIntegerOption()：它把缓冲区预置成 -1 以便识别读取失败，而 Windows 的
+         *          getsockopt(SO_KEEPALIVE) 只写回 1 字节布尔值，落在预置的 0xFFFFFFFF 上会读成
+         *          -256（关）/-255（开）这种「看着有值却是负的」假象（与 queryFastOpenValue() 同一坑）。
+         *          这里零初始化缓冲区，读回值按 0/非 0 判定；读取失败交回 -1，因此「已开启」一侧
+         *          要按 EXPECT_GT 而不是 EXPECT_NE 断，否则失败也会读成非 0 而假绿
+         * @param descriptor 目标套接字描述符
+         * @return int 0 = 未开启，正数 = 已开启，-1 = 读取失败
+         */
+        int queryKeepAliveSwitch(const int descriptor)
+        {
+            int       optionValue  = 0;
+            socklen_t optionLength = static_cast<socklen_t>(sizeof(optionValue));
+            if (::getsockopt(descriptor, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<char *>(&optionValue), &optionLength) != 0)
+            {
+                return -1;
+            }
+            return optionValue;
+        }
+
+        /**
          * @brief 查询监听描述符上由内核实际分配的本地地址（端口 0 场景拿真实端口）
          * @param descriptor 监听描述符
          * @return Core::InetAddress 成功时为实际地址，失败时为空地址
@@ -140,6 +164,27 @@ namespace AsynGyanis::Net
             }
             outcome.completed.store(true, std::memory_order_release);
             co_return;
+        }
+
+        /**
+         * @brief 起一次循环线程、驱动一次 accept()，把接受到的连接交回调用方
+         * @details 声明顺序保证 EventLoopThread 先于协程帧与结果槽销毁（析构即停循环并 join），
+         *          因此超时路径也不会让驱动协程写到已销毁的结果槽上；返回之后调用方只碰描述符
+         * @param acceptor 已 bind()/listen() 的监听器
+         * @param loop 与 acceptor 关联的事件循环，须比本函数的返回活得久
+         * @return std::optional<Core::AsyncSocket> 时限内接受到的连接；超时或没接受到为空
+         */
+        std::optional<Core::AsyncSocket> acceptOneConnection(TcpAcceptor &acceptor, Core::EventLoop &loop)
+        {
+            AcceptOutcome   outcome;
+            Core::Task<>    acceptTask = driveAcceptOnce(acceptor, outcome);
+            EventLoopThread loopThread(loop);
+            loopThread.schedule(acceptTask);
+            if (!waitUntil([&outcome] { return outcome.completed.load(std::memory_order_acquire); }, kWaitTimeout) || outcome.acceptedSockets.empty())
+            {
+                return std::nullopt;
+            }
+            return std::move(outcome.acceptedSockets.front());
         }
 
         /**
@@ -318,5 +363,99 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(acceptor.listen(kDefaultListenBacklog));
 
         EXPECT_GT(queryFastOpenValue(acceptor.fileDescriptor()), 0) << "TFO 队列长度没有下发到监听套接字";
+    }
+
+    /**
+     * @brief 钉住：保活的时刻表按平台各自的入口落地，而 idle 是唯一的开关
+     * @details 判据取 getsockopt 读回而不是 setter 返回值（同 NoDelay 那条的理由）。POSIX 把
+     *          idle／间隔／次数拆成三个选项，Windows 只有一次 SIO_KEEPALIVE_VALS 且事后读不回时刻表，
+     *          所以那一侧只断言开关；系统默认的探测次数两侧取值不同，本用例不把它钉成某个数
+     */
+    TEST(SocketTuning, KeepAliveIdleIsTheSwitchAndScheduleIsReadableBackWhereThePlatformExposesIt)
+    {
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
+
+        // 新建的 TCP 套接字默认不开保活：后半段「开了之后读回非 0」要有这条对照才不是恒真
+        EXPECT_EQ(queryKeepAliveSwitch(probeDescriptor), 0);
+
+        // idle 非正即拒，且拒绝发生在动套接字之前
+        EXPECT_FALSE(Platform::Socket::setKeepAlive(probeDescriptor, 0, 10, 3));
+        EXPECT_FALSE(Platform::Socket::setKeepAlive(probeDescriptor, -1, 10, 3));
+        EXPECT_EQ(queryKeepAliveSwitch(probeDescriptor), 0) << "被拒的调用不该已经把保活置上";
+
+        ASSERT_TRUE(Platform::Socket::setKeepAlive(probeDescriptor, 30, 10, 4));
+        EXPECT_GT(queryKeepAliveSwitch(probeDescriptor), 0) << "setKeepAlive 报成功却没开启保活";
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(queryIntegerOption(probeDescriptor, IPPROTO_TCP, TCP_KEEPIDLE), 30);
+        EXPECT_EQ(queryIntegerOption(probeDescriptor, IPPROTO_TCP, TCP_KEEPINTVL), 10);
+        EXPECT_EQ(queryIntegerOption(probeDescriptor, IPPROTO_TCP, TCP_KEEPCNT), 4);
+#endif
+
+        // 只给 idle 时其余两格保持系统默认：把 0 下发出去，Linux 上内核直接 EINVAL（三个时刻表选项
+        // 都如此，另用独立探针验过），Windows 上则是一条读不回的路——实测把 0 递进 SIO_KEEPALIVE_VALS
+        // 照样回成功，所以这一格只能靠「非正不下发」来守，不能靠返回值发现问题
+        Core::AsyncSocket idleOnlySocket     = Core::AsyncSocket::create(loop);
+        const int         idleOnlyDescriptor = idleOnlySocket.fileDescriptor();
+        ASSERT_GE(idleOnlyDescriptor, 0) << "TCP 探针套接字没有创建成功";
+        ASSERT_TRUE(Platform::Socket::setKeepAlive(idleOnlyDescriptor, 45, 0, 0));
+        EXPECT_GT(queryKeepAliveSwitch(idleOnlyDescriptor), 0);
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(queryIntegerOption(idleOnlyDescriptor, IPPROTO_TCP, TCP_KEEPIDLE), 45);
+        EXPECT_GT(queryIntegerOption(idleOnlyDescriptor, IPPROTO_TCP, TCP_KEEPINTVL), 0) << "调用方没给间隔时不该把 0 下发给内核";
+        EXPECT_GT(queryIntegerOption(idleOnlyDescriptor, IPPROTO_TCP, TCP_KEEPCNT), 0) << "调用方没给次数时不该把 0 下发给内核";
+#endif
+    }
+
+    /**
+     * @brief 钉住：监听器把保活下发到每条接受到的连接，监听套接字与未配置时都不开
+     * @details 半开会话的兜底落在连接上——监听套接字上还没有连接可探。对照那一段（不配置保活的
+     *          监听器，其接受到的连接读回必须是 0）是这条判据的另一半：没有它，「无条件给每条连接
+     *          开保活」这种实现同样测不出来
+     */
+    TEST(SocketTuning, AcceptorAppliesKeepAliveToAcceptedConnectionsOnly)
+    {
+        Core::EventLoop           loop;
+        TcpAcceptor               acceptor(loop, Core::InetAddress::localhost(0));
+        TcpAcceptor::SocketTuning tuning;
+        tuning.keepAliveIdleSeconds     = 30;
+        tuning.keepAliveIntervalSeconds = 10;
+        tuning.keepAliveProbeCount      = 4;
+        acceptor.setSocketTuning(tuning);
+        EXPECT_EQ(acceptor.socketTuning().keepAliveIdleSeconds, 30);
+
+        ASSERT_TRUE(acceptor.bind());
+        ASSERT_TRUE(acceptor.listen(kDefaultListenBacklog));
+        EXPECT_EQ(queryKeepAliveSwitch(acceptor.fileDescriptor()), 0) << "监听套接字上没有连接，不该下发保活";
+
+        const Core::InetAddress boundAddress = queryBoundAddress(acceptor.fileDescriptor());
+        ASSERT_NE(boundAddress.port(), 0);
+        LoopbackClient client(boundAddress.port());
+        ASSERT_TRUE(client.isValid());
+
+        const std::optional<Core::AsyncSocket> accepted = acceptOneConnection(acceptor, loop);
+        ASSERT_TRUE(accepted.has_value()) << "accept() 未在时限内交回连接";
+        const int acceptedDescriptor = accepted->fileDescriptor();
+        EXPECT_GT(queryKeepAliveSwitch(acceptedDescriptor), 0) << "配置的保活没有下发到接受到的连接";
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(queryIntegerOption(acceptedDescriptor, IPPROTO_TCP, TCP_KEEPIDLE), 30);
+        EXPECT_EQ(queryIntegerOption(acceptedDescriptor, IPPROTO_TCP, TCP_KEEPCNT), 4);
+#endif
+
+        // 对照：同形状但不配置保活，接受到的连接必须仍是系统默认（不开）
+        Core::EventLoop plainLoop;
+        TcpAcceptor     plainAcceptor(plainLoop, Core::InetAddress::localhost(0));
+        ASSERT_TRUE(plainAcceptor.bind());
+        ASSERT_TRUE(plainAcceptor.listen(kDefaultListenBacklog));
+        const Core::InetAddress plainAddress = queryBoundAddress(plainAcceptor.fileDescriptor());
+        ASSERT_NE(plainAddress.port(), 0);
+        LoopbackClient plainClient(plainAddress.port());
+        ASSERT_TRUE(plainClient.isValid());
+
+        const std::optional<Core::AsyncSocket> plainAccepted = acceptOneConnection(plainAcceptor, plainLoop);
+        ASSERT_TRUE(plainAccepted.has_value()) << "accept() 未在时限内交回连接";
+        EXPECT_EQ(queryKeepAliveSwitch(plainAccepted->fileDescriptor()), 0) << "没配置的监听器不该替连接开启保活";
     }
 } // namespace AsynGyanis::Net

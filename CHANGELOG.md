@@ -15,7 +15,7 @@
 
 ## [Unreleased]
 
-自 2.6.0 起的累计变化（新增 4、变更 3、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，以及路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899）。四件事都留了对外读数，不是只在内部记账。
+自 2.6.0 起的累计变化（新增 5、变更 3、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899），以及 TCP 保活接进接受连接的套接字调参——半开会话从此有内核侧的兜底。前四件都留了对外读数，不是只在内部记账。
 
 ### 新增
 
@@ -58,6 +58,20 @@
   MUST 在 QUIC 的套接字上设「不要在 IP 层分片」（Linux 走 `IP_MTU_DISCOVER=IP_PMTUDISC_DO`、Windows 走
   `IP_DONTFRAGMENT`）：设不上就不探，尺寸停在 1200——没有 DF 的探测会把「这个尺寸走不通」和「被分片后丢了
   一片」混成一格。读数三格：`maximumDatagramPayloadByteLength()`、`pathMtuPhase()`、`pathMtuProbeState()`。
+- **TCP 保活接进接受连接的调参（半开会话兜底）**：对端断电、拔线、中间 NAT 提前回收映射都不会发 FIN，
+  这条连接于是一直占着描述符与每连接状态；此前引擎只设 `TCP_NODELAY`，裸 TCP 服务没有任何内核侧兜底。
+  `Platform::Socket::setKeepAlive()` 开 `SO_KEEPALIVE` 并按需覆盖探测时刻表，`TcpAcceptor::SocketTuning`
+  相应新增 `keepAliveIdleSeconds` / `keepAliveIntervalSeconds` / `keepAliveProbeCount` 三格，只下发到
+  **接受到的连接**（监听套接字上还没有连接可探）。`idleSeconds` 是唯一的开关：非正直接拒绝，且拒绝发生在
+  动套接字之前——「开了保活但时刻表全按系统默认」等于空闲两小时才探一次，那不是调用方要的兜底；
+  间隔与次数留 0 就是**不下发**，本层不替调用方编一个默认值。Linux 上把 0 交给内核会直接 EINVAL
+  （三个时刻表选项都如此，用独立的 `setsockopt` 探针现验，不靠自家代码自证）；Windows 那侧
+  `SIO_KEEPALIVE_VALS` 是只写的一次调用（SDK 里它的编号是 `_WSAIOW` 形式，没有对应的读回入口），
+  时刻表交出去就再也核不了——实测把 0 递上去调用照样回成功，正因为读不回来，才更不能替调用方填一个 0。两侧入口不同写明在文档里并据此定判据：POSIX 是
+  `TCP_KEEPIDLE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT` 三个选项、可读回逐项核对，Windows 只有一次
+  `SIO_KEEPALIVE_VALS`（毫秒）、没有探测次数的入口、且事后读不回时刻表——所以跨平台的断言只押「开关」，
+  时刻表的三格各按平台单独钉（Windows 侧另有一条实测：`getsockopt(SO_KEEPALIVE)` 只写回 1 字节，
+  按 4 字节缓冲区预置 -1 去读会把「关」读成 -256，新加的读回助手零初始化缓冲区）。
 
 ### 变更
 

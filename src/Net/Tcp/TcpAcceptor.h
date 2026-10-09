@@ -113,20 +113,27 @@ namespace AsynGyanis::Net
          * @brief 监听与接受套接字的调参项
          * @details 各项 0 表示保持系统默认、不下发对应的 setsockopt。缓冲区上限同时作用于
          *          监听套接字与每条接受到的连接；延迟接受与 TFO 只对监听套接字有意义。
+         *          保活只对接受到的连接有意义（监听套接字上还没有连接可探），其中
+         *          keepAliveIdleSeconds 是开关：0 关闭保活，非 0 按给定的时刻表开启。
          */
         struct SocketTuning
         {
-            int receiveBufferBytes{0};  ///< SO_RCVBUF 上限（字节），0 = 系统默认
-            int sendBufferBytes{0};     ///< SO_SNDBUF 上限（字节），0 = 系统默认
-            int deferAcceptSeconds{0};  ///< TCP_DEFER_ACCEPT 等待秒数（仅 Linux），0 = 关闭
-            int fastOpenQueueLength{0}; ///< TFO 队列长度（Windows/Linux），0 = 关闭
+            int receiveBufferBytes{0};       ///< SO_RCVBUF 上限（字节），0 = 系统默认
+            int sendBufferBytes{0};          ///< SO_SNDBUF 上限（字节），0 = 系统默认
+            int deferAcceptSeconds{0};       ///< TCP_DEFER_ACCEPT 等待秒数（仅 Linux），0 = 关闭
+            int fastOpenQueueLength{0};      ///< TFO 队列长度（Windows/Linux），0 = 关闭
+            int keepAliveIdleSeconds{0};     ///< 空闲多少秒后开始探测（SO_KEEPALIVE + TCP_KEEPIDLE），0 = 关闭保活
+            int keepAliveIntervalSeconds{0}; ///< 两次探测的间隔秒数，0 = 系统默认（Windows 上没有这一格入口时不下发）
+            int keepAliveProbeCount{0};      ///< 连续失败几次判定连接已死，0 = 系统默认（仅 POSIX 有此入口）
         };
 
         /**
          * @brief 设置套接字调参，须在 bind()/listen() 之前调用
          * @details 监听套接字的缓冲区在 listen() 时统一下发（接受到的连接可继承），每条接受到的
          *          连接另按同一取值显式设置一遍以保证跨平台一致；延迟接受在 Windows 上被 Platform
-         *          层按「不支持」降级（返回 false），不影响监听本身。
+         *          层按「不支持」降级（返回 false），不影响监听本身。保活只在接受到的连接上下发
+         *          （监听套接字上还没有连接可探），其探测次数在 Windows 没有入口、被忽略，
+         *          详见 Platform::Socket::setKeepAlive()。
          * @param tuning 调参项，见 SocketTuning
          */
         void setSocketTuning(const SocketTuning &tuning) noexcept;

@@ -12,6 +12,11 @@
 #include <mutex>
 #include <system_error>
 
+#if ASYN_PLATFORM_WIN32
+// tcp_keepalive 与 SIO_KEEPALIVE_VALS 长在 mstcpip.h 里，而 WS2tcpip.h 并不包含它
+#include <mstcpip.h>
+#endif
+
 #if !ASYN_PLATFORM_WIN32
 #include <cerrno>
 #include <csignal>
@@ -153,6 +158,56 @@ namespace AsynGyanis::Platform
     bool Socket::setNoDelay(const int descriptor) noexcept
     {
         return setIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, 1);
+    }
+
+    bool Socket::setKeepAlive(const int descriptor, const int idleSeconds, const int intervalSeconds, const int probeCount) noexcept
+    {
+        if (idleSeconds <= 0)
+        {
+            // 非正的 idle 不构成「开启保活」：时刻表会退回系统默认的空闲两小时，半开会话的兜底
+            // 等于没做。与其下发一份语义含糊的取值，不如拒绝并让调用方按「未开启」处理
+            return false;
+        }
+        if (!setIntegerOption(descriptor, SOL_SOCKET, SO_KEEPALIVE, 1))
+        {
+            return false;
+        }
+
+        // 以下每一块都按「平台有此入口才下发」判定（用特性宏而不是操作系统宏，理由同 setReusePort()）：
+        // 调用方没给的那一格留系统默认，本函数不替它编一个默认值
+#ifdef TCP_KEEPIDLE
+        if (!setIntegerOption(descriptor, IPPROTO_TCP, TCP_KEEPIDLE, idleSeconds))
+        {
+            return false;
+        }
+#endif
+#ifdef TCP_KEEPINTVL
+        if (intervalSeconds > 0 && !setIntegerOption(descriptor, IPPROTO_TCP, TCP_KEEPINTVL, intervalSeconds))
+        {
+            return false;
+        }
+#endif
+#ifdef TCP_KEEPCNT
+        if (probeCount > 0 && !setIntegerOption(descriptor, IPPROTO_TCP, TCP_KEEPCNT, probeCount))
+        {
+            return false;
+        }
+#endif
+#ifdef SIO_KEEPALIVE_VALS
+        // Windows 没有 TCP_KEEPIDLE 这一组选项名，整张时刻表只能由 SIO_KEEPALIVE_VALS 一次给出（毫秒），
+        // 且结构体里没有探测次数那一格：调用方只给了 idle 就没法凑出时刻表，此时只保留上面已置上的开关
+        if (intervalSeconds > 0)
+        {
+            tcp_keepalive request{};
+            request.onoff             = 1;
+            request.keepalivetime     = static_cast<u_long>(idleSeconds) * 1000U;
+            request.keepaliveinterval = static_cast<u_long>(intervalSeconds) * 1000U;
+
+            unsigned long returnedByteCount = 0;
+            return ::WSAIoctl(descriptor, SIO_KEEPALIVE_VALS, &request, static_cast<DWORD>(sizeof(request)), nullptr, 0, &returnedByteCount, nullptr, nullptr) == 0;
+        }
+#endif
+        return true;
     }
 
     bool Socket::setSendBufferSize(const int descriptor, const int byteCount) noexcept

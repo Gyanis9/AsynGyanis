@@ -246,10 +246,13 @@ namespace AsynGyanis::Net
         void setProxyProtocolRequired(bool required) noexcept;
 
         /**
-         * @brief 设置监听与接受套接字的调参（缓冲区上限、Linux 的延迟接受）
+         * @brief 设置监听与接受套接字的调参（缓冲区上限、Linux 的延迟接受、TFO、TCP 保活）
          * @details 转发给内部 TcpAcceptor：缓冲区上限对监听套接字与每条接受到的连接都生效，
-         *          延迟接受仅 Linux 支持（Windows 按「不支持」降级，不影响监听）。
-         * @param tuning 调参项，见 TcpAcceptor::SocketTuning；各项 0 表示保持系统默认
+         *          延迟接受仅 Linux 支持（Windows 按「不支持」降级，不影响监听），TFO 只在监听
+         *          套接字上有意义，保活只在接受到的连接上有意义（半开会话的兜底；Windows 没有
+         *          探测次数的入口，那一格被忽略）。
+         * @param tuning 调参项，见 TcpAcceptor::SocketTuning；各项 0 表示保持系统默认，
+         *        其中 keepAliveIdleSeconds 是保活的开关（0 = 不开）
          * @note 必须在 start()/startAccepting() 之前调用：绑定与监听发生在那一刻
          */
         void setSocketTuning(const TcpAcceptor::SocketTuning &tuning);
