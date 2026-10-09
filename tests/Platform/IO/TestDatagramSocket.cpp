@@ -102,6 +102,36 @@ namespace AsynGyanis::Platform
         }
 
         /**
+         * @brief 在时限内收一条报文并带回它的 ECN 字段（套接字非阻塞，因此要轮询）
+         * @param socket 接收套接字
+         * @param buffer 接收缓冲
+         * @param capacity 缓冲容量
+         * @param peerAddress 输出：来源地址
+         * @param ecnCodepoint 输出：这条报文的 ECN 字段
+         * @return ssize_t 收到的字节数；超时返回 -1
+         * @details 与上面那条同形，只是多带一格读数——ECN 的判据正落在这一格上，
+         *          用三参版收完再去猜「那条到底标了什么」等于没有判据
+         */
+        ssize_t receiveWithEcnTimeout(const DatagramSocket &socket, void *buffer, const std::size_t capacity, SocketAddress &peerAddress, std::uint8_t &ecnCodepoint)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kWaitTimeoutMilliseconds);
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                const ssize_t receivedByteCount = socket.receive(buffer, capacity, peerAddress, ecnCodepoint);
+                if (receivedByteCount >= 0)
+                {
+                    return receivedByteCount;
+                }
+                if (PlatformError::lastSocketErrorCode() != PlatformError::kWouldBlock)
+                {
+                    return -1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+            }
+            return -1;
+        }
+
+        /**
          * @brief 在时限内做一次批次收包（套接字非阻塞，因此要轮询）
          * @param socket 接收套接字
          * @param slots 槽位数组（每槽带好缓冲与容量）
@@ -392,6 +422,10 @@ namespace AsynGyanis::Platform
             {
                 collectedContents.emplace_back(std::string(static_cast<const char *>(batchSlots[slotIndex].buffer), batchSlots[slotIndex].receivedByteCount));
                 EXPECT_TRUE(isSameIpv4Endpoint(batchSlots[slotIndex].peerAddress, senderSocket.localAddress())) << "第 " << slotIndex << " 槽的来源地址不是发送方";
+                // 长度也要是内核交回的那个实际长度，而不是「缓冲区有多大」：上层按长度搬运地址，
+                // 多出来的一截是填充字节。Linux 的 recvmmsg 把长度写在 msg_namelen 里，不读回来
+                // 这一格就会停在 sizeof(sockaddr_storage)（Windows 走 recvfrom 就地改，天然对）
+                EXPECT_EQ(batchSlots[slotIndex].peerAddress.length, senderSocket.localAddress().length) << "第 " << slotIndex << " 槽的来源地址长度不是内核交回的那一个";
             }
         };
         noteBatch(slots.data(), static_cast<std::size_t>(firstBatchCount), sender);
@@ -862,5 +896,140 @@ namespace AsynGyanis::Platform
         // 拒的时候仍然不动调用方的句柄：这条与上一档共用同一条所有权纪律
         static_cast<void>(FileDescriptor::close(fileHandle));
 #endif
+    }
+
+    /**
+     * @brief 标了 ECN 的报文能被收侧读回那 2 位；读不到的平台必须明说读不到
+     * @details 两臂都是真判据，不是「跳过就算过」：
+     *          Linux 臂——发 ECT(0) 读回 1、发 ECT(1) 读回 2、不标读回 0。三格都要是因为中间节点会把
+     *          ECT(*) 改成 CE，而计数那一侧要能认出四个取值里的每一个；「不标也读成 0」这一格还同时
+     *          钉住 0 不是残留值——每一轮先把出参污染成 CE 再收，读不到就会露成 CE。
+     *          Windows 臂——`setEcnFieldVisible(true)` 必须**回 false** 且 `isEcnFieldVisible()` 保持 false。
+     *          上层靠这一格决定 ACK 里要不要带 ECN 计数（RFC 9000 §13.4.1 明确允许读不到的端点不报），
+     *          而「静默成功但其实全是 0」会让上层报一份零计数、对端据此把一条好好的路判成不支持 ECN。
+     */
+    TEST(DatagramSocket, ReadsBackEcnFieldWhenPlatformSupportsIt)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+        const SocketAddress receiverAddress = receiver.localAddress();
+
+        std::array<std::uint8_t, 4>                                     payload{0x11, 0x22, 0x33, 0x44};
+        std::array<std::uint8_t, DatagramSocket::kMaximumDatagramBytes> inbox{};
+        SocketAddress                                                   peer{};
+        std::uint8_t                                                    readCodepoint = kEcnCodepointCe;
+
+#if !ASYN_PLATFORM_WIN32
+        ASSERT_TRUE(receiver.setEcnFieldVisible(true)) << "Linux 上应当能开 IP_RECVTOS";
+        EXPECT_TRUE(receiver.isEcnFieldVisible());
+
+        for (const std::uint8_t codepoint: {kEcnCodepointEctZero, kEcnCodepointEctOne, kEcnCodepointNotCapable})
+        {
+            readCodepoint = kEcnCodepointCe;
+            ASSERT_EQ(sender.send(receiverAddress, payload.data(), payload.size(), codepoint), static_cast<ssize_t>(payload.size()))
+                    << "标记值 " << static_cast<int>(codepoint) << " 的报文没发出去";
+            ASSERT_EQ(receiveWithEcnTimeout(receiver, inbox.data(), inbox.size(), peer, readCodepoint), static_cast<ssize_t>(payload.size())) << "报文没收到，ECN 那一格无从判起";
+            EXPECT_EQ(readCodepoint, codepoint) << "标的是 " << static_cast<int>(codepoint) << "，读回来却是另一格";
+        }
+#else
+        EXPECT_FALSE(receiver.setEcnFieldVisible(true)) << "Windows 没有按报文读 ECN 的入口，这里必须报失败而不是静默成功";
+        EXPECT_FALSE(receiver.isEcnFieldVisible());
+        ASSERT_EQ(sender.send(receiverAddress, payload.data(), payload.size(), kEcnCodepointEctZero), static_cast<ssize_t>(payload.size())) << "读不到 ECN 不该把收发本身弄坏";
+        ASSERT_EQ(receiveWithEcnTimeout(receiver, inbox.data(), inbox.size(), peer, readCodepoint), static_cast<ssize_t>(payload.size()));
+        EXPECT_EQ(readCodepoint, kEcnCodepointNotCapable) << "这一侧读不到，就该交回「非 ECN」而不是别的取值";
+#endif
+        // 静态那格与内核给的答案必须同解：上层拿 `supportsPerDatagramEcnField()` 决定标不标，
+        // 它要是和真实的开关结果分家，QUIC 那侧就会在账上记着带标而线上没标（或反过来白标一路）
+        EXPECT_EQ(DatagramSocket::supportsPerDatagramEcnField(), receiver.setEcnFieldVisible(true)) << "声明的平台能力与真实的 setsockopt 结果不是同一个答案";
+    }
+
+    /**
+     * @brief 一次批次里的每条各带各的 ECN 标记，收侧按条读回
+     * @details 一个 UDP 端口面对多条连接，而 ECN 是按路径各自验证的：「整批共用一个标记」不够用。
+     *          这一条把 标 ECT(0) / 不标 / 标 ECT(1) 三条混进同一次 `sendBatch`，要求三个槽位读回
+     *          三个不同的取值而且顺序不错。Windows 那一臂只要求「三条都到、读数一律是非 ECN」——
+     *          那一侧的批次发包会静默忽略标记（没有按报文设 TOS 的入口），这是 documented 的退化。
+     */
+    TEST(DatagramSocket, CarriesPerItemEcnMarkingThroughOneBatch)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+        const SocketAddress receiverAddress = receiver.localAddress();
+#if !ASYN_PLATFORM_WIN32
+        ASSERT_TRUE(receiver.setEcnFieldVisible(true));
+#endif
+
+        std::array<std::uint8_t, 4>                  first{0xA1, 0xA2, 0xA3, 0xA4};
+        std::array<std::uint8_t, 4>                  second{0xB1, 0xB2, 0xB3, 0xB4};
+        std::array<std::uint8_t, 4>                  third{0xC1, 0xC2, 0xC3, 0xC4};
+        std::array<DatagramSocket::BatchSendItem, 3> items{DatagramSocket::BatchSendItem{receiverAddress, first.data(), first.size(), kEcnCodepointEctZero},
+                                                           DatagramSocket::BatchSendItem{receiverAddress, second.data(), second.size(), kEcnCodepointNotCapable},
+                                                           DatagramSocket::BatchSendItem{receiverAddress, third.data(), third.size(), kEcnCodepointEctOne}};
+        ASSERT_EQ(sender.sendBatch(items.data(), items.size()), 3) << "三条里有一条没被内核接下，后面的读数就没有意义";
+
+        std::array<std::array<std::uint8_t, 64>, 3> inbox{};
+        std::array<DatagramSocket::BatchSlot, 3>    slots{};
+        for (std::size_t index = 0; index < slots.size(); ++index)
+        {
+            slots[index].buffer   = inbox[index].data();
+            slots[index].capacity = inbox[index].size();
+        }
+        ASSERT_EQ(receiveBatchWithTimeout(receiver, slots.data(), slots.size()), 3) << "批次收包没把三条都交付";
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(slots[0].ecnCodepoint, kEcnCodepointEctZero) << "第一条标的是 ECT(0)";
+        EXPECT_EQ(slots[1].ecnCodepoint, kEcnCodepointNotCapable) << "第二条没标，读数被污染成别的取值就是串了条";
+        EXPECT_EQ(slots[2].ecnCodepoint, kEcnCodepointEctOne) << "第三条标的是 ECT(1)，与第一条混不成同一格才说明标记是按条带的";
+#else
+        for (std::size_t index = 0; index < slots.size(); ++index)
+        {
+            EXPECT_EQ(slots[index].ecnCodepoint, kEcnCodepointNotCapable) << "这一侧读不到 ECN，槽位必须交回「非 ECN」而不是上一次的余值";
+        }
+#endif
+    }
+
+    /**
+     * @brief 端点要求把 ECN-CE 发出去时当场拒：单条与整批两条出口都拒，且整批一条都不发出
+     * @details CE 只有网络中间节点能置（RFC 9000 §13.4.1）。让端点发出去会两头坏事：对端把
+     *          「本端自己判的拥塞」当成网络拥塞来反应，而这种报文在路上还会被中间节点二次改写。
+     *          整批那一臂要的是「第 2 条非法时第 1 条也没上路」——与批次预校验同一条纪律：
+     *          交回「发了 1 条」这种中间态，调用方没法把那条非法的挑出来重发。
+     */
+    TEST(DatagramSocket, RejectsCongestionExperienceMarkingOnSend)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        const DatagramSocket receiver = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(receiver.isValid());
+        const DatagramSocket sender = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(sender.isValid());
+        const SocketAddress receiverAddress = receiver.localAddress();
+
+        std::array<std::uint8_t, 4> payload{0x01, 0x02, 0x03, 0x04};
+        EXPECT_EQ(sender.send(receiverAddress, payload.data(), payload.size(), kEcnCodepointCe), static_cast<ssize_t>(-1)) << "要发 CE 的单条请求没被判错";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument) << "CE 那条的错码不是「参数不合法」";
+
+        std::array<std::uint8_t, 4>                  other{0x05, 0x06, 0x07, 0x08};
+        std::array<DatagramSocket::BatchSendItem, 2> items{DatagramSocket::BatchSendItem{receiverAddress, payload.data(), payload.size(), kEcnCodepointEctZero},
+                                                           DatagramSocket::BatchSendItem{receiverAddress, other.data(), other.size(), kEcnCodepointCe}};
+        EXPECT_EQ(sender.sendBatch(items.data(), items.size()), static_cast<ssize_t>(-1)) << "整批里有一条要发 CE 却只报了「发了一半」";
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kInvalidArgument);
+
+        std::array<std::array<std::uint8_t, 64>, 2> inbox{};
+        std::array<DatagramSocket::BatchSlot, 2>    slots{};
+        for (std::size_t index = 0; index < slots.size(); ++index)
+        {
+            slots[index].buffer   = inbox[index].data();
+            slots[index].capacity = inbox[index].size();
+        }
+        // 整批当场拒掉之后路上应该一条都没有：这里读到的是超时（0 条），不是「第一条已经发了」
+        EXPECT_EQ(receiveBatchWithTimeout(receiver, slots.data(), slots.size()), 0) << "被拒的那一批里第一条其实已经上路了";
     }
 } // namespace AsynGyanis::Platform

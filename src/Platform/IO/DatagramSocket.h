@@ -14,11 +14,23 @@
 #include "Platform/IO/Socket.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <system_error>
 
 namespace AsynGyanis::Platform
 {
+    /**
+     * @brief IP 头 ECN 字段的四个取值（RFC 9000 §13.4.1 引用的 RFC 4301 / RFC 3168 那一格）
+     * @details 本层只搬运这 2 位数值，不解释协议含义：谁是发送方该标的（ECT(0)）、谁是网络中间节点
+     *          可能改成的（ECN-CE），由上层按各自的规范判断。写成常量而不是枚举是为了与内核接口
+     *          （`IP_TOS` / `IPV6_TCLASS` 的低 2 位）同形，也避免上层拿到枚举再去换算。
+     */
+    inline constexpr std::uint8_t kEcnCodepointNotCapable = 0x00; ///< 非 ECN 报文：内核不给 cmsg 或对方没标时的取值
+    inline constexpr std::uint8_t kEcnCodepointEctZero    = 0x01; ///< ECT(0)，QUIC 发送方默认用的那一格（RFC 9000 §13.4.2）
+    inline constexpr std::uint8_t kEcnCodepointEctOne     = 0x02; ///< ECT(1)，本仓不用，但计数与校验要能认出
+    inline constexpr std::uint8_t kEcnCodepointCe         = 0x03; ///< ECN-CE，只有网络中间节点能置，端点不得自己发出去
+
     /**
      * @brief 已绑定的 UDP 套接字（RAII）
      *
@@ -103,15 +115,55 @@ namespace AsynGyanis::Platform
         [[nodiscard]] SocketAddress localAddress() const noexcept;
 
         /**
+         * @brief 本平台能不能按**单条报文**读写 IP 头的 ECN 字段（读与写在这一格上是同一个前提）
+         * @details Linux 两侧都有入口：收侧 `IP_RECVTOS` / `IPV6_RECVTCLASS` 随控制报文交回，发侧
+         *          `sendmsg` 带一条 `IP_TOS` / `IPV6_TCLASS` 控制报文。Windows 两侧都没有：`WSARecvMsg`
+         *          不交这一项，发送也没有按报文设 TOS 的入口。一个 UDP 端口面对多条连接（QUIC 就是这样），
+         *          把 `IP_TOS` 设在套接字上不算补救——ECN 的结论是按路径各验的，全端口共用一格会把
+         *          已经验败的那条路重新标上去。
+         * @return bool Windows 返回 false；Linux 返回 true
+         * @note 上层据此决定「要不要标」，别让账上记着带标而线上没带：RFC 9000 §13.4.2.1 的计数校验
+         *       是按「这条当时标了哪一格」比对端报上来的计数，本端自己记错就会把一条好路判成验证失败
+         */
+        [[nodiscard]] static bool supportsPerDatagramEcnField() noexcept;
+
+        /**
+         * @brief 让内核把收到报文的 ECN 字段交上来（`receive` 与 `receiveBatch` 里那一格由此才有意义）
+         * @details Linux 上 IPv4 走 `IP_RECVTOS`、IPv6 走 `IPV6_RECVTCLASS`，取值随控制报文一起回来，
+         *          本层截出低 2 位。Windows 上没有对应的「按报文读 ECN」入口（`WSARecvMsg` 不交这一项），
+         *          因此那边本方法**必然失败**并置 `kUnsupported`——上层据此走 RFC 9000 §13.4.1 明确允许的
+         *          退化：读不到就不报 ECN 计数，对端因此关闭这条路径上的 ECN，功能不失效、结论也不谎报。
+         * @param isVisible true 打开；false 关闭并回到「ECN 字段一律读成 0」
+         * @return bool 成功打开返回 true；平台不支持或 setsockopt 失败返回 false 并置错误码
+         */
+        [[nodiscard]] bool setEcnFieldVisible(bool isVisible) noexcept;
+
+        /**
+         * @brief 本端此刻是否真的在读收到报文的 ECN 字段
+         * @return true 表示 `ecnCodepoint` 的 0 可以当成「这条没被标记」；false 表示那个 0 没有信息量
+         */
+        [[nodiscard]] bool isEcnFieldVisible() const noexcept;
+
+        /**
          * @brief 收一条报文（不改动本对象，可在 const 套接字上调用）
          * @param buffer 接收缓冲
          * @param capacity 缓冲容量
          * @param peerAddress 输出参数：来源地址；传入时先被清零，失败时保持未设置
+         * @param ecnCodepoint 输出参数：这条报文的 ECN 字段，规则同 `BatchSlot::ecnCodepoint`
          * @return ssize_t 收到的字节数；无数据返回 -1 并置 kWouldBlock；缓冲小于报文时多出的字节
          *         被丢弃（UDP 语义），返回值即 capacity
          * @note 截断交付时来源地址照旧有效：Windows 上这一形状由 WSAEMSGSIZE（即「调用失败」）
          *       报回来，内核却已把来源地址写好，调用方据此回包。整条报文算已消费，后续读不会
          *       拿到被截掉的后半截
+         */
+        [[nodiscard]] ssize_t receive(void *buffer, std::size_t capacity, SocketAddress &peerAddress, std::uint8_t &ecnCodepoint) const noexcept;
+
+        /**
+         * @brief 收一条报文，不关心 ECN 字段的那一格
+         * @param buffer 接收缓冲
+         * @param capacity 缓冲容量
+         * @param peerAddress 输出参数：来源地址
+         * @return ssize_t 见上面那条四参数的说明
          */
         [[nodiscard]] ssize_t receive(void *buffer, std::size_t capacity, SocketAddress &peerAddress) const noexcept;
 
@@ -125,6 +177,14 @@ namespace AsynGyanis::Platform
             std::size_t   capacity{0};          ///< 缓冲容量；报文大于容量时按 UDP 语义截断交付，返回值即容量
             SocketAddress peerAddress{};        ///< 输出：这条报文的来源地址
             std::size_t   receivedByteCount{0}; ///< 输出：交付的字节数；0 是合法的空报文
+            /**
+             * @brief 输出：这条报文 IP 头里的 ECN 字段（见 `kEcnCodepoint*`）
+             * @details 只有先调过 `setEcnFieldVisible(true)` 才可能拿到非零值；没开启、平台读不到
+             *          （Windows）、或这条本来就是非 ECN 报文，三种情况都交回 `kEcnCodepointNotCapable`。
+             *          上层因此不能把 0 读成「网络没标记」的证据——它要先确认本端确实在读这个字段，
+             *          这正是 RFC 9000 §13.4.1 允许「读不到就不报 ECN 计数」的那一格
+             */
+            std::uint8_t ecnCodepoint{kEcnCodepointNotCapable};
         };
 
         /// 一次批次能交出的条数上限（收包与发包共用）：收包侧被缓冲撑着（每槽一份「单条报文上限」），
@@ -154,9 +214,13 @@ namespace AsynGyanis::Platform
          * @param length 数据长度；0 表示空报文（合法，接收侧照收），
          *        超过 kMaximumDatagramBytes 时当场判错（不交给系统调用去报 EMSGSIZE，
          *        那样在两端会得到不同的错误码，不如这一层统一说清）
+         * @param ecnCodepoint 要在 IP 头 ECN 字段里标的取值；`kEcnCodepointNotCapable` 表示不标。
+         *        取非零值时 Linux 按报文带 `IP_TOS` / `IPV6_TCLASS` 控制报文（IPv4 那一格低 2 位就是这个
+         *        取值）；Windows 不支持按报文设 TOS，该值被**静默忽略**——所以调用方要先问
+         *        `supportsPerDatagramEcnField()` 再决定请求不请求，别在这里等一个不会发生的报错
          * @return ssize_t 实际发出的字节数；失败返回 -1 并置错误码
          */
-        [[nodiscard]] ssize_t send(const SocketAddress &peerAddress, const void *buffer, std::size_t length) const noexcept;
+        [[nodiscard]] ssize_t send(const SocketAddress &peerAddress, const void *buffer, std::size_t length, std::uint8_t ecnCodepoint = kEcnCodepointNotCapable) const noexcept;
 
         /**
          * @brief 一次批次发包里的一条：目标地址 + 一段完整报文
@@ -164,9 +228,10 @@ namespace AsynGyanis::Platform
          */
         struct BatchSendItem
         {
-            SocketAddress peerAddress{};   ///< 目标地址（每条自带，允许一次批次发给不同对端）
-            const void   *buffer{nullptr}; ///< 报文体
-            std::size_t   length{0};       ///< 报文长度；0 是合法的空报文
+            SocketAddress peerAddress{};                         ///< 目标地址（每条自带，允许一次批次发给不同对端）
+            const void   *buffer{nullptr};                       ///< 报文体
+            std::size_t   length{0};                             ///< 报文长度；0 是合法的空报文
+            std::uint8_t  ecnCodepoint{kEcnCodepointNotCapable}; ///< 这条要标的 ECN 取值，规则同 `send()` 的那个参数
         };
 
         /**
@@ -193,6 +258,7 @@ namespace AsynGyanis::Platform
         void close() noexcept;
 
     private:
-        int m_fileDescriptor{-1}; ///< 描述符；负数表示无效
+        int  m_fileDescriptor{-1};     ///< 描述符；负数表示无效
+        bool m_ecnFieldVisible{false}; ///< 是否已向内核申请「把收到报文的 ECN 字段交上来」，见 setEcnFieldVisible
     };
 } // namespace AsynGyanis::Platform
