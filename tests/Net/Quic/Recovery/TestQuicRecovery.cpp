@@ -1,4 +1,4 @@
-// TestQuicRecovery.cpp —— 恢复层（RFC 9002 §5–§6）用例
+// TestQuicRecovery.cpp —— 恢复层（RFC 9002 §5–§6 与 §7.6）用例
 //
 // 时间全部注入，所以每条断言都是可精确复算的整数：RTT 的三个统计量、PTO 周期、按包号与按时间的
 // 两种丢包判据、退避倍数、以及确认/判丢后在途字节的回收。
@@ -12,6 +12,8 @@
 //   4) 包号阈值判丢（kPacketThreshold=3）与时间阈值判丢（9/8 + 粒度下限）各自的边界（§6.1）；
 //   5) 重复 ACK 不再采样本但照样判丢（§5.1 + §A.7 第 5 步）、PTO 到期翻倍退避并在收到确认时归零（§6.2.1）；
 //   6) 进入用空间在握手确认前不武装 PTO（§6.2.1）、丢弃空间时清账（§A.11）。
+//   7) 持久拥塞（§7.6）：端点条件各自的对照（段内出现过确认、只带 ACK 的包、时长不足、第一个样本之前
+//      不开段）、定时器那一侧只并段不下结论、判成之后清账不许连着判第二次。
 
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
@@ -227,6 +229,177 @@ namespace AsynGyanis::Net
         ASSERT_EQ(action.lost.size(), 1U);
         EXPECT_EQ(action.lost[0].packetNumber, 0U);
         EXPECT_FALSE(action.isProbeTimeout) << "时间阈值判丢优先于探测超时，两者不该同时报（§6.2.1）";
+    }
+
+    /**
+     * @brief 两个被判丢的包之间没有任何确认、且相隔超过持久拥塞时长时判成持久拥塞（§7.6.2）
+     * @details 时长这条判据要能算出来才算数：先采一个 10ms 的样本（首样本直接重置估算 →
+     *          smoothed=10ms、rttvar=5ms），§7.6.1 的时长一律带上对端的 max_ack_delay（没交进来就按
+     *          RFC 9000 §18.2 的默认 25ms），于是本帧之前的基准 = 10ms + max(4×5ms, 1ms) + 25ms = 60ms，
+     *          时长 = 60ms × 3 = 180ms；本帧又先采了一个 10ms 样本（rttvar 折到 3.75ms），
+     *          判据按更新后的估算比 = (10 + 15 + 25) × 3 = 150ms。
+     *          包 1 在 20ms 发出、包 4 在 220ms 发出 ⇒ 相隔 200ms，越过两个数中的哪一个都够。
+     */
+    TEST(QuicRecovery, DeclaresPersistentCongestionWhenLossesSpanMoreThanThreeProbes)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(200)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(210)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(4, milliseconds(220)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(5, milliseconds(230)));
+
+        const QuicAcknowledgementUpdate update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(5, {{5, 5}}), milliseconds(240), QuicTime{0});
+
+        ASSERT_GE(update.lost.size(), 2U) << "至少要判掉包 1 与包 2 这两个触发确认的包，实判 " << update.lost.size() << " 个";
+        EXPECT_TRUE(update.isPersistentCongestionDetected) << "两次判丢相隔 200ms、持久拥塞时长 150ms，这一帧就该判成持久拥塞";
+
+        // 判成之后那一段必须清账：同一对包不许连着判第二次，否则每帧都把窗口按回最小窗
+        const QuicAcknowledgementUpdate followUp = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(5), milliseconds(250), QuicTime{0});
+        EXPECT_FALSE(followUp.isPersistentCongestionDetected) << "上一次判成之后锚点没清，同一对判丢被重复计入持久拥塞";
+    }
+
+    /**
+     * @brief 相隔不足持久拥塞时长时不判：普通判丢的「减半」处置就够（§7.6.1 的时长那一格）
+     * @details 与对照那条只差一个数——最后一个被判丢的包在 80ms 发出而不是 220ms ⇒ 相隔 60ms，
+     *          而时长是 150ms（同一套估算，见对照那条的算法）。
+     *          这一格是「时长判据不是摆设」的对照：把倍率写成 1、或把比较写成 `>=` 都会在这里露出来。
+     */
+    TEST(QuicRecovery, WithholdsPersistentCongestionInsideTheDuration)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(60)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(70)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(4, milliseconds(80)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(5, milliseconds(90)));
+
+        const QuicAcknowledgementUpdate update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(5, {{5, 5}}), milliseconds(100), QuicTime{0});
+
+        ASSERT_GE(update.lost.size(), 2U) << "判丢集合应当与对照那条一致（至少两个）";
+        EXPECT_FALSE(update.isPersistentCongestionDetected) << "相隔 60ms 没到 150ms 的时长，不该把窗口按回最小窗";
+    }
+
+    /**
+     * @brief 段里出现过一次确认就不判：那说明这条路在段内通过过（§7.6.2 的第一条并列条件）
+     * @details 这一格盯的是「先并段、再记确认、最后比时长」这个顺序。按旧写法（拿**上一趟**的段终点筛本帧
+     *          的确认）会是另一副样子：第一趟判掉包 1 与包 4（20ms 与 50ms），本帧确认到的包 5 在 60ms
+     *          发出、落在段外 ⇒ 水位记成 60ms；第二趟判掉包 6 与包 8（100ms 与 210ms）把段终点推到 210ms，
+     *          于是 60ms 这个确认就落进了 (20ms, 210ms] 这段里 ⇒ 规范要的答案是「不判」。
+     *          时长这边是够的（相隔 190ms > 150ms），所以这条红的只能怪那格「段内有没有确认」。
+     */
+    TEST(QuicRecovery, WithholdsPersistentCongestionWhenAPacketInsideTheGapWasAcknowledged)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(30)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(40)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(4, milliseconds(50)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(5, milliseconds(60)));
+        const QuicAcknowledgementUpdate first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(5, {{5, 5}}), milliseconds(70), QuicTime{0});
+        ASSERT_GE(first.lost.size(), 2U) << "第一趟就要判掉两个包把这一段开起来，否则后面那格无从谈起";
+        EXPECT_FALSE(first.isPersistentCongestionDetected) << "相隔 30ms 远没到时长，也不该在这趟判成";
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(6, milliseconds(100)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(7, milliseconds(200)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(8, milliseconds(210)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(9, milliseconds(220)));
+        const QuicAcknowledgementUpdate second = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(9, {{9, 9}}), milliseconds(230), QuicTime{0});
+
+        ASSERT_GE(second.lost.size(), 2U) << "第二趟该把包 6 到包 8 判丢，实判 " << second.lost.size() << " 个";
+        EXPECT_FALSE(second.isPersistentCongestionDetected) << "段内 (20ms, 210ms] 出现过一次 60ms 发出的确认，这条路通过过，不该按持久拥塞重启";
+    }
+
+    /**
+     * @brief 定时器那条路只把新判丢并进这一段，结论要等下一帧确认（§7.6.2 的「收到确认之后」）
+     * @details 包 1（20ms）由第一帧判丢并把段开起来；包 2（200ms）当时还没到时间阈值，恢复层把
+     *          211.25ms 那个时刻记成待判丢的闹钟（200ms + 9/8×10ms）。定时器到点把它判掉，段的跨度
+     *          推到 180ms——这一趟**不给**结论（`QuicRecoveryTimeoutAction` 里根本没有那一格）；
+     *          紧接着的一帧重复确认什么新包都没确认到，但规范那一格「收到确认之后」满足了 ⇒ 就在这里建立。
+     *          两格各自都要：漏了定时器那一侧的并进锚点，这条要等下一次真判丢才判得出；
+     *          在定时器那一侧就下结论，红的是「到点了却没重启」那一格。
+     */
+    TEST(QuicRecovery, EstablishesPersistentCongestionOnTheAcknowledgementAfterTheLossTimerExtendedTheGap)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(20)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(200)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(201)));
+        const QuicAcknowledgementUpdate first = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(3, {{3, 3}}), milliseconds(210), QuicTime{0});
+        ASSERT_EQ(first.lost.size(), 1U) << "这一帧只该判掉包 1：包 2 在 200ms 发出，还没到时间阈值";
+        EXPECT_FALSE(first.isPersistentCongestionDetected) << "只有一个判丢的包，构不成「两个相隔超过时长」";
+
+        const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
+        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        const QuicRecoveryTimeoutAction timer = recovery.onDeadlineReached(*lossDeadline);
+        ASSERT_EQ(timer.lost.size(), 1U) << "到点该把包 2 判丢";
+
+        const QuicAcknowledgementUpdate afterTimer = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(3), milliseconds(220), QuicTime{0});
+        EXPECT_TRUE(afterTimer.acknowledged.empty()) << "这条重复确认不该再产出样本，也不该有新判丢";
+        EXPECT_TRUE(afterTimer.isPersistentCongestionDetected) << "定时器把段推到 180ms（>150ms 的时长），下一帧确认就该建立持久拥塞";
+    }
+
+    /**
+     * @brief 只带 ACK 的包不算那两个端点：对端本来就不必按时确认它（§7.6.2「MUST be ack-eliciting」）
+     * @details 包 2 在 200ms 发出但不触发确认。它被判丢之后段的跨度会到 180ms，越过时长——
+     *          把这种包当端点就等于拿「对端本来就没答应要确认」的那段空白去判死这条路。
+     */
+    TEST(QuicRecovery, IgnoresNonAckElicitingPacketsWhenAnchoringTheLossGap)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(0, QuicTime{0}));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(0), milliseconds(10), QuicTime{0});
+
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, milliseconds(20)));
+        QuicSentPacketInfo acknowledgementOnly = makeSentPacket(2, milliseconds(200));
+        acknowledgementOnly.isAckEliciting     = false;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, acknowledgementOnly);
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(201)));
+        std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(3, {{3, 3}}), milliseconds(210), QuicTime{0});
+
+        const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
+        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        ASSERT_EQ(recovery.onDeadlineReached(*lossDeadline).lost.size(), 1U) << "到点该把包 2 判丢";
+
+        const QuicAcknowledgementUpdate afterTimer = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(3), milliseconds(220), QuicTime{0});
+        EXPECT_FALSE(afterTimer.isPersistentCongestionDetected) << "段里只有一个触发确认的包（包 1），不该拿只带 ACK 的那一条当第二个端点";
+    }
+
+    /**
+     * @brief 落下第一个 RTT 样本的那一帧不建立持久拥塞，哪怕这一帧判丢的包相隔 1010ms（§7.6.2 的样本那一格）
+     * @details 段里的两个端点必须是「发出时已有一个先前的样本」的那些：第一样本之前用的是 kInitialRtt
+     *          （333ms），拿它算出来的时长去比这段空白，等于用一把还没校准的尺判死这条路——规范那句
+     *          「The persistent congestion period SHOULD NOT start until there is at least one RTT sample」
+     *          说的就是这件事，理由是那样可能只用上太少几条探针。
+     *          这一格钉的是「早于第一样本的判丢根本不开段」：时长那一格在这里是拦不住的
+     *          （跨度 1010ms，而按本帧新估算算出的时长只有 (10 + 4×5 + 25) × 3 = 150ms）。
+     */
+    TEST(QuicRecovery, DoesNotStartThePersistentCongestionPeriodBeforeTheFirstRoundTripSample)
+    {
+        QuicRecovery recovery;
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(1, QuicTime{0}));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(2, milliseconds(1000)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(3, milliseconds(1010)));
+        recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(4, milliseconds(1020)));
+
+        // 这一帧既是本连接第一个 RTT 样本（1030 − 1020 = 10ms），又把包 1 到包 3 一起判丢
+        const QuicAcknowledgementUpdate update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(4, {{4, 4}}), milliseconds(1030), QuicTime{0});
+
+        ASSERT_GE(update.lost.size(), 2U) << "这一帧该把包 1 与包 2 都判丢，实判 " << update.lost.size() << " 个";
+        EXPECT_TRUE(update.isRoundTripSampled) << "这一帧应当落下本连接第一个 RTT 样本";
+        EXPECT_FALSE(update.isPersistentCongestionDetected) << "段里这两个包的发出时刻都早于第一个 RTT 样本，不该建立持久拥塞";
     }
 
     /**

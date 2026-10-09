@@ -12,8 +12,9 @@
  *
  * @note 探针不受本类阻塞（§7.5）：调用方自己决定发不发，本类只把它算进在途字节。
  *       只带 ACK 的包同样不计入在途（§B.2），否则两端会因为互相确认而把窗口吃光。
- * @warning 不处理 ECN-CE 计数与持久拥塞（§7.6）：本端出包不设 IP ECN 位，对端也就没有 CE 可报；
- *          §7.6 那条「停滞足够久就把窗口当没有拥塞过」的窗口重置同样不做，停滞后的恢复靠慢启动。
+ * @warning 不处理 ECN-CE 计数：本端出包不设 IP ECN 位，对端也就没有 CE 可报，§7.5.3 那条
+ *          「收到 CE 标记就按丢包处置」因此无所依附。持久拥塞（§7.6）已经接上：恢复层判成之后
+ *          调 `restartAfterPersistentCongestion()`，窗口与阈值一起落到最小窗并退出恢复期。
  */
 
 #pragma once
@@ -64,6 +65,14 @@ namespace AsynGyanis::Net
          * @param eventTime 触发本次更新的时刻：收到确认或定时器到期，进入恢复期时记的就是它
          */
         void onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, QuicTime eventTime);
+
+        /**
+         * @brief 持久拥塞成立后按 §7.6.2 重启：窗口与慢启动阈值都落到最小窗
+         * @details 与「降一半」的普通丢包反应不是一回事：停滞足够久说明这条路径大概已经不通，
+         *          继续按半窗爬只会让重传一直堆在那里，规范给的解法是回到最小窗重新慢启动。
+         *          在途字节不动（那些包该销的账由确认与判丢那两条路去销）。
+         */
+        void restartAfterPersistentCongestion() noexcept;
 
         /**
          * @brief 某个包号空间的密钥退休了：把其中的在途字节销账，但不动窗口

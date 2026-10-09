@@ -76,9 +76,23 @@ namespace AsynGyanis::Net
         std::vector<QuicSentPacketInfo> acknowledged{};            ///< 本次新确认的包，按包号递增
         std::vector<QuicSentPacketInfo> lost{};                    ///< 因此次确认而判丢的包
         bool                            isRoundTripSampled{false}; ///< 是否按 §5.1 的条件更新过 RTT 估算
+        /**
+         * @brief 本次确认是否把这条连接判进了**持久拥塞**（RFC 9002 §7.6.2）
+         * @details 规范的三条并列条件都在这里核：两个**触发确认的**包被判丢、这两个包发出时刻之间发出的
+         *          包一个都没被确认（跨三个空间一起看）、两者发出时刻之差超过持久拥塞时长；另外还要求
+         *          这两个包发出时已经有一个先前的 RTT 样本。规范把「建立」这件事明确放在**收到确认之后**，
+         *          所以这条信号只有这一个出口——定时器那条路只把新判丢并进这一段、不下判定（§7.6.1 末段
+         *          还专门说了「不拿连续几次探测超时来建立持久拥塞」）。
+         *          与普通判丢的差别在处置：普通判丢是窗口减半继续爬，持久拥塞是认定这条路已经不通，
+         *          按 §7.6.2 把窗口与慢启动阈值一起落到最小窗重新慢启动。缺了这一格，链路真断了的话
+         *          窗口只会一路减半贴着最小窗，重传堆在那里而读数上看不出「这条路径已经不行了」。
+         */
+        bool isPersistentCongestionDetected{false};
     };
 
     /// 定时器到期的处理结果
+    /// @note 这里没有持久拥塞那一格：§7.6.2 明写「A sender establishes persistent congestion after the
+    ///       receipt of an acknowledgment」，定时器这条出口只负责把新判丢并进那一段（`extendLossGap`）
     struct ASYN_NET_API QuicRecoveryTimeoutAction
     {
         std::vector<QuicSentPacketInfo> lost{};                                 ///< 按时间阈值新判丢的包
@@ -195,13 +209,50 @@ namespace AsynGyanis::Net
         /// 该空间里还在途的、最后一个触发确认的包的发出时刻；没有就表示无需武装 PTO
         [[nodiscard]] std::optional<QuicTime>                               lastAckElicitingSentTime(const SpaceState &state) const noexcept;
         [[nodiscard]] std::pair<std::optional<QuicTime>, QuicRecoverySpace> probeTimeoutDeadline() const noexcept;
+        /**
+         * @brief 把这一趟新判丢的包并进 §7.6.2 那一段「没有确认打断的判丢」里
+         * @details 只收**触发确认的**包：规范那句「These two packets MUST be ack-eliciting」的理由是
+         *          对端只承诺在 max_ack_delay 内确认触发确认的包，只含 ACK 的包本来就可能没人答，
+         *          把它算进「这条路死了」的那一段会误判。锚点跨三个包号空间共用（规范同样要求
+         *          「across all packet number spaces」一起看）。
+         * @param lost 这一趟新判丢的包（可为空）
+         */
+        void extendLossGap(const std::vector<QuicSentPacketInfo> &lost) noexcept;
+        /**
+         * @brief 按 §7.6.2 回答「这一帧确认是否建立了持久拥塞」
+         * @details 先把本趟的判丢并进锚点，再把本帧新确认的包记进「晚于锚点起点的最早一次确认」，
+         *          最后才比时长。这个顺序是有讲究的：段里的终点会随后续判丢继续往后长，此刻落在段外
+         *          （本帧那条最新确认的包必然晚于本趟所有判丢）的确认，之后可能落进段内 ⇒ 那段不再
+         *          「一个都没被确认」，必须扣掉。所以只留一个水位（晚于起点的最早一次确认），
+         *          不必存下全部确认时刻。
+         * @param acknowledged 本帧新确认的包：发出时刻落在锚点两段之间就打断这一段
+         * @param lost 本趟新判丢的包
+         * @return true 建立持久拥塞（调用方据此按 §7.6.2 重启窗口）
+         */
+        bool notePersistentCongestionSpan(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost) noexcept;
+        /// 持久拥塞时长：(smoothed_rtt + max(4×rttvar, kGranularity) + 对端的 max_ack_delay) × 3。
+        /// §7.6.1 明写这里的报告延迟**不论丢包在哪个空间都要算进去**（与 §6.2 的 PTO 相反），
+        /// 所以没有「握手空间按 0 算」那一格；倍率取 §7.2 推荐的 3
+        [[nodiscard]] QuicTime persistentCongestionDuration() const noexcept;
 
-        std::array<SpaceState, kSpaceCount> m_spaces{};                         ///< 三个包号空间
-        QuicRoundTripTimeEstimate           m_estimate{};                       ///< RTT 统计量
-        bool                                m_hasRoundTripSample{false};        ///< 第一个样本走重置路径，之后才走加权
-        std::size_t                         m_probeBackoffExponent{0};          ///< 退避倍数是 2 的几次方
-        std::size_t                         m_inFlightByteCount{0};             ///< 在途字节总数，拥塞层与用例都要看
-        bool                                m_isHandshakeConfirmed{false};      ///< §4.1.2 意义上的握手确认，决定延迟夹取与 PTO 空间
-        QuicTime                            m_peerMaximumAcknowledgmentDelay{}; ///< 对端声明的 max_ack_delay
+        std::array<SpaceState, kSpaceCount> m_spaces{};                    ///< 三个包号空间
+        QuicRoundTripTimeEstimate           m_estimate{};                  ///< RTT 统计量
+        bool                                m_hasRoundTripSample{false};   ///< 第一个样本走重置路径，之后才走加权
+        std::size_t                         m_probeBackoffExponent{0};     ///< 退避倍数是 2 的几次方
+        std::size_t                         m_inFlightByteCount{0};        ///< 在途字节总数，拥塞层与用例都要看
+        bool                                m_isHandshakeConfirmed{false}; ///< §4.1.2 意义上的握手确认，决定延迟夹取与 PTO 空间
+        /// 对端声明的 max_ack_delay：没拿到对端参数之前按 RFC 9000 §18.2 的默认 25ms 取。
+        /// 这里宁可把时长算大：§7.6.1 明写「太小会让本端不必要地判成持久拥塞」，而误判的代价是把窗口按回最小窗
+        QuicTime m_peerMaximumAcknowledgmentDelay{std::chrono::duration_cast<QuicTime>(std::chrono::milliseconds{25})};
+        /// §7.6.2 的那两个判丢包：这一段没有确认的区间里最早 / 最近一个被判丢的触发确认包的发出时刻。
+        /// 用 `std::optional` 而不是「0 表示没有」：0 在这里是合法的发出时刻（用例从 0 起算）
+        std::optional<QuicTime> m_lossGapEarliestSentTime{}; ///< 这一段里最早被判丢的触发确认包的发出时刻
+        std::optional<QuicTime> m_lossGapLatestSentTime{};   ///< 这一段里最近被判丢的触发确认包的发出时刻
+        /// 这一段开着之后、发出时刻**晚于**锚点起点的被确认包里最早的那个：段里的终点会随后续判丢往后长，
+        /// 所以留一个「最早的一次晚于起点的确认」就够判「这两个包之间有没有包被确认过」
+        std::optional<QuicTime> m_lossGapAckedAfterStart{};
+        /// 第一个 RTT 样本被收到的时刻：§7.6.2 要那两个包**发出时**就已有先前的样本，
+        /// 只判「手上有没有样本」会把这一帧刚采到的样本算成先前的
+        std::optional<QuicTime> m_firstRoundTripSampleTime{};
     };
 } // namespace AsynGyanis::Net

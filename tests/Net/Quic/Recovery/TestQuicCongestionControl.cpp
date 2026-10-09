@@ -6,7 +6,8 @@
 //   3) 只带 ACK 的包不计在途（§B.2），探针计在途但不被窗口阻塞（§7.5）；
 //   4) 一次丢包把阈值与窗口各降一半、并进入恢复期；恢复期内既不再降也不涨（§7.3.2）；
 //   5) 恢复期在「恢复期之后发出的包被确认」时结束，之后走 AIMD 的加法增长（§7.3.3）；
-//   6) 降窗不会跌破最小窗口；在途超过窗口时余额收成 0 而不是回绕。
+//   6) 降窗不会跌破最小窗口；在途超过窗口时余额收成 0 而不是回绕；
+//   7) 持久拥塞重启把窗口与阈值都落到最小窗、并退出恢复期（§7.6.2）。
 // 纯计算，不起网络也不依赖外部服务。
 
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
@@ -200,6 +201,36 @@ namespace AsynGyanis::Net
     /**
      * @brief 数据报上限换小之后（学到对端的 max_udp_payload_size），初始窗口跟着换算法
      */
+    /**
+     * @brief 持久拥塞重启把窗口与阈值一起落到最小窗，并退出恢复期（§7.6.2）
+     * @details 与「减半」的普通降窗要分得开：减半是阈值=窗口/2 并进恢复期，重启是两者都到最小窗
+     *          且**退出**恢复期。留在恢复期里等于白重启——恢复期内窗口纹丝不动（§7.3.2），
+     *          链路恢复之后这条连接会一直趴在原处，下一帧确认也不会替它涨回去。
+     */
+    TEST(QuicCongestionControl, RestartAfterPersistentCongestionCollapsesToMinimumWindowAndExitsRecovery)
+    {
+        constexpr std::size_t kMinimumWindow = 2 * kDatagramSize;
+
+        QuicCongestionControl congestion{kDatagramSize};
+        ASSERT_GT(congestion.congestionWindowByteLength(), kMinimumWindow) << "初始窗就等于最小窗时，本用例的判据是空的";
+
+        std::vector<QuicSentPacketInfo> lost;
+        lost.push_back(makePacket(0, 1000, kDatagramSize, true));
+        congestion.onCongestionUpdate({}, lost, QuicTime{1000});
+        ASSERT_EQ(congestion.phase(), QuicCongestionPhase::Recovery) << "普通判丢应当进恢复期";
+        ASSERT_GT(congestion.congestionWindowByteLength(), kMinimumWindow) << "这一轮只减半一次，还没贴到最小窗";
+
+        congestion.restartAfterPersistentCongestion();
+        EXPECT_EQ(congestion.congestionWindowByteLength(), kMinimumWindow) << "持久拥塞没把窗口落到最小窗（§7.6.2）";
+        EXPECT_EQ(congestion.slowStartThresholdByteLength(), kMinimumWindow) << "阈值留在原地会让下一帧确认按旧的半窗阈值涨回去";
+        EXPECT_NE(congestion.phase(), QuicCongestionPhase::Recovery) << "重启后仍在恢复期：窗口从此不再随确认增长";
+
+        std::vector<QuicSentPacketInfo> acknowledged;
+        acknowledged.push_back(makePacket(7, 5000, kDatagramSize, true));
+        congestion.onCongestionUpdate(acknowledged, {}, QuicTime{6000});
+        EXPECT_GT(congestion.congestionWindowByteLength(), kMinimumWindow) << "退出恢复期之后一个确认就该把窗口抬一格（慢启动）";
+    }
+
     TEST(QuicCongestionControl, DerivesTheInitialWindowFromTheDatagramSize)
     {
         const QuicCongestionControl small{1000};

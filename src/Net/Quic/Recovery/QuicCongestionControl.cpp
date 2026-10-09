@@ -102,6 +102,17 @@ namespace AsynGyanis::Net
         m_congestionWindowByteLength += std::max<std::size_t>(1, m_maximumDatagramByteLength * acknowledgedByteCount / m_congestionWindowByteLength);
     }
 
+    void QuicCongestionControl::restartAfterPersistentCongestion() noexcept
+    {
+        // §7.6.2：窗口与慢启动阈值都落到最小窗，并退出恢复期重新走慢启动。
+        // 必须清掉恢复期标记，否则重启后这一轮又被「一轮只降一次」那道闸挡住，
+        // 新窗口就只是名义上的——降窗与涨窗的判据都以那枚标记为准（§7.3.2）
+        const std::size_t minimumWindowByteLength = kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength;
+        m_congestionWindowByteLength              = minimumWindowByteLength;
+        m_slowStartThresholdByteLength            = minimumWindowByteLength;
+        m_recoveryStartTime                       = std::nullopt;
+    }
+
     void QuicCongestionControl::onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept
     {
         // 只销账不涨窗：退休一个空间不是「网络变好了」的信号，把它当确认来涨窗口会让拥塞控制白送一段

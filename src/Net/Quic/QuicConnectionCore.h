@@ -193,6 +193,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t bytesInFlightByteCount() const noexcept;
 
         /**
+         * @brief 拥塞层的当前窗口字节数
+         * @return std::size_t 与 `QuicCongestionControl::congestionWindowByteLength()` 同源的读数
+         * @details 与 `bytesInFlightByteCount()` 成对：只有负荷看不出拥塞状态，判成持久拥塞时
+         *          窗口该落到最小窗（§7.6.2），运维与用例都靠这一格分辨「窗口本来就小」与「刚被重启」
+         */
+        [[nodiscard]] std::size_t congestionWindowByteLength() const noexcept;
+
+        /**
+         * @brief 判成持久拥塞的次数（RFC 9002 §7.6）
+         * @details 本层不打日志（纯计算件，日志归外壳），这条连接「曾经把路判死过」就得从读数上问得出来；
+         *          外壳与用例都靠它判断窗口那次收缩是重启而不是减半
+         */
+        [[nodiscard]] std::size_t persistentCongestionEventCount() const noexcept;
+
+        /**
          * @brief 是否已经没有下文了
          * @return true 已收口且待发队列空，外层可以销毁本连接
          */
@@ -415,14 +430,17 @@ namespace AsynGyanis::Net
         [[nodiscard]] static QuicEncryptionLevel                levelOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] PacketNumberSpace                         highestSpaceWithWriteKeys() const noexcept;
 
-        QuicConnectionCoreConfiguration                 m_configuration;                                     ///< 建连接时给的那些值，发包要反复用
-        std::unique_ptr<QuicTlsContext>                 m_tls;                                               ///< 每连接的 TLS 上下文
-        QuicRecovery                                    m_recovery{};                                        ///< 发包记账、RTT、判丢与探测超时
-        QuicCongestionControl                           m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
-        QuicStreamLayer                                 m_streams;                                           ///< 流与流量控制；额度取自本端参数，出站要等对端参数
-        std::size_t                                     m_receivedByteCount{0};                              ///< 已收字节，反放大上限按它算（§8.1）
-        std::size_t                                     m_sentByteCount{0};                                  ///< 已发字节，与上面那项一起决定还剩多少额度
-        std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};                                          ///< 三个包号空间
+        QuicConnectionCoreConfiguration m_configuration;                                     ///< 建连接时给的那些值，发包要反复用
+        std::unique_ptr<QuicTlsContext> m_tls;                                               ///< 每连接的 TLS 上下文
+        QuicRecovery                    m_recovery{};                                        ///< 发包记账、RTT、判丢与探测超时
+        QuicCongestionControl           m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        /// 判成持久拥塞的累计次数：只有「收到确认」那一条出口会加一（§7.6.2 把建立放在收到确认之后），
+        /// 只由所属循环线程读写
+        std::size_t                                     m_persistentCongestionEventCount{0};
+        QuicStreamLayer                                 m_streams;              ///< 流与流量控制；额度取自本端参数，出站要等对端参数
+        std::size_t                                     m_receivedByteCount{0}; ///< 已收字节，反放大上限按它算（§8.1）
+        std::size_t                                     m_sentByteCount{0};     ///< 已发字节，与上面那项一起决定还剩多少额度
+        std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};             ///< 三个包号空间
         /// 待发数据报队列：元素就是报文本体（std::string 在本仓里当字节缓冲用，与帧序列同一个口径），
         /// 组包器直接往里写，取出时按所有权移交
         std::deque<std::string>                  m_outboundDatagrams{};                     ///< 待发数据报队列

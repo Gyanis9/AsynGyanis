@@ -592,6 +592,13 @@ namespace AsynGyanis::Net
             }
         }
         m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
+        if (update.isPersistentCongestionDetected)
+        {
+            // §7.6.2：排在同一帧的普通降窗之后，否则这一轮的「减半」会把最小窗那份重启盖掉。
+            // 本层不打日志（纯计算件，日志归外壳），因此把次数留在读数上供外壳与用例取
+            m_congestion.restartAfterPersistentCongestion();
+            ++m_persistentCongestionEventCount;
+        }
         for (const QuicSentPacketInfo &packet: update.acknowledged)
         {
             m_streams.onSendRangesAcknowledged(packet.streamRanges);
@@ -1227,6 +1234,8 @@ namespace AsynGyanis::Net
         const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
         if (!action.lost.empty())
         {
+            // 这一侧不重启窗口：§7.6.2 把「建立持久拥塞」放在收到确认之后，恢复层在这里只把新判丢
+            // 并进那一段的锚点，等到下一帧确认再给结论
             m_congestion.onCongestionUpdate({}, action.lost, now);
             queueRetransmissions(spaceOf(action.lostSpace), action.lost);
             for (const QuicSentPacketInfo &packet: action.lost)
@@ -1360,6 +1369,16 @@ namespace AsynGyanis::Net
     std::size_t QuicConnectionCore::bytesInFlightByteCount() const noexcept
     {
         return m_congestion.bytesInFlight();
+    }
+
+    std::size_t QuicConnectionCore::congestionWindowByteLength() const noexcept
+    {
+        return m_congestion.congestionWindowByteLength();
+    }
+
+    std::size_t QuicConnectionCore::persistentCongestionEventCount() const noexcept
+    {
+        return m_persistentCongestionEventCount;
     }
 
     bool QuicConnectionCore::isFinished() const noexcept

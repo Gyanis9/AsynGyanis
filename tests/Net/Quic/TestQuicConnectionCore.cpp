@@ -333,6 +333,25 @@ namespace AsynGyanis::Net
                 m_skippedPacketNumber = packetNumber;
             }
 
+            /**
+             * @brief 把某个级别的报文在本端一律当作「在路上丢了」，可撤销
+             * @details 与 `suppressesAcknowledgements` 的分工要说清：那条是「收到了但扣着不 ACK」，
+             *          那些包既升不了最大确认值也就永远判不成丢；本条是真的没收到，于是它们在下一次
+             *          确认里成为「最大确认值之前的空洞」而被判丢。RFC 9002 §7.6 的持久拥塞要的正是
+             *          这种成段黑洞，所以配套留一个放行的口子（`clearPacketBlackhole`）。
+             * @param level 要黑洞化的级别
+             */
+            void blackholePackets(const QuicEncryptionLevel level) noexcept
+            {
+                m_blackholedLevel = level;
+            }
+
+            /// 撤销上面的黑洞：这个级别的新报文又能被收下、计入确认
+            void clearPacketBlackhole() noexcept
+            {
+                m_blackholedLevel = std::nullopt;
+            }
+
             /// 推进 TLS 并把产出的握手字节编成一批数据报
             [[nodiscard]] std::vector<std::vector<std::uint8_t>> buildFlight()
             {
@@ -679,10 +698,14 @@ namespace AsynGyanis::Net
                 return m_spaces[spaceIndexOf(level)];
             }
 
-            /// 这条报文是不是本端故意不看的：整级丢弃，或只挑掉某个级别的某一个包号
+            /// 这条报文是不是本端故意不看的：整级丢弃、整级黑洞，或只挑掉某个级别的某一个包号
             [[nodiscard]] bool isPacketToSkip(const QuicEncryptionLevel level, const std::uint64_t packetNumber) const noexcept
             {
                 if (level == QuicEncryptionLevel::Handshake && m_dropsAllHandshakePackets)
+                {
+                    return true;
+                }
+                if (m_blackholedLevel == level)
                 {
                     return true;
                 }
@@ -966,6 +989,7 @@ namespace AsynGyanis::Net
             bool                               m_dropsAllHandshakePackets{false};                  ///< 是否把 Handshake 级报文一律不看
             std::optional<std::uint64_t>       m_skippedPacketNumber{};                            ///< 要跳过的那个包号，空表示不挑
             QuicEncryptionLevel                m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
+            std::optional<QuicEncryptionLevel> m_blackholedLevel{};                                ///< 这个级别的报文一律当作在路上丢了，空表示不黑洞
             std::size_t                        m_pingFrameCount{0};                                ///< 收到过的 PING 帧数
             bool                               m_sawServerKeyUpdate{false};                        ///< 本端是否被迫提升过读密钥代际
             bool                               m_sawServerKeyPhase{false};                         ///< 服务端最近一包带的相位位
@@ -1545,6 +1569,59 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(core.phase(), QuicConnectionPhase::Established);
         EXPECT_GT(client.serverReceivedPacketCount(QuicEncryptionLevel::Handshake), 0U);
+    }
+
+    /**
+     * @brief Application 空间被整段黑洞之后判成持久拥塞，拥塞窗口落到最小窗（RFC 9002 §7.6.2 的接线）
+     * @details 恢复层与拥塞层各自有用例钉自己的判据，这一格钉的是「核心层把那条信号接到了动作上」。
+     *          形状照 §7.6.1 的例子来：Application 的报文在客户端整段收不到（黑洞），服务端只能靠 PTO
+     *          不停重发——包号一路涨、发出时刻被退避越拉越开，而这一段里没有任何包被确认。放行之后
+     *          那条探针终于收到，客户端拿它回一次确认，最大确认值一次抬过整段 ⇒ 一趟判丢就把这段按包号
+     *          阈值全部判丢，最旧与最新被判丢的包相隔越过 3 倍 PTO ⇒ 持久拥塞，窗口按 §7.6.2 落到
+     *          2×1200，而不是停在 NewReno 那一档（实测放行前窗口还涨到 14898）。
+     *          为什么挑 Application 而不是 Handshake：握手一确认 Handshake 空间就整体退休，那里的在途
+     *          既不会被确认也不会被判丢，永远攒不出这段跨度（同一理由见 `RetiresTheInitialSpaceOnce...`）。
+     */
+    TEST(QuicConnectionCore, RestartsCongestionWindowAfterPersistentCongestion)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 一段比一个拥塞窗口短、但够发好几轮的正文：黑洞里服务端总有东西要发，判丢的跨度才攒得起来
+        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(32U * 1024U, 'x')), true), 0U);
+        core.drive(Timestamp{50000});
+
+        client.blackholePackets(QuicEncryptionLevel::Application);
+        const std::size_t windowBefore = core.congestionWindowByteLength();
+        ASSERT_GT(core.bytesInFlightByteCount(), 0U) << "黑洞开始之前在途就该非空，否则这一段没有东西可判丢";
+
+        Timestamp now{60000};
+        for (int round = 0; round < 8; ++round)
+        {
+            exchange(core, client, now);
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            ASSERT_TRUE(deadline.has_value()) << "第 " << round << " 轮没有定时器，phase=" << static_cast<int>(core.phase()) << " now=" << now.count()
+                                              << " inFlight=" << core.bytesInFlightByteCount() << " window=" << core.congestionWindowByteLength();
+            now = *deadline;
+            core.onTimeout(now);
+        }
+
+        // 放行：黑洞之后服务端那条探针终于被收下，紧接着一次确认把最大确认值抬过整段
+        client.clearPacketBlackhole();
+        exchange(core, client, now + Timestamp{1000});
+        const Timestamp releaseTime = now + Timestamp{3000};
+        ASSERT_TRUE(core.onDatagramReceived(client.buildRepeatedAcknowledgement(QuicEncryptionLevel::Application), releaseTime).has_value());
+        core.drive(releaseTime);
+
+        EXPECT_GT(core.persistentCongestionEventCount(), 0U) << "整段没有确认的判丢没被算成持久拥塞：恢复层或核心层那条接线没通";
+        EXPECT_EQ(core.congestionWindowByteLength(), 2U * 1200U) << "判成持久拥塞之后窗口应当落到最小窗（2×数据报上限）";
+        EXPECT_LT(core.congestionWindowByteLength(), windowBefore) << "重启前的窗口还比最小窗大，说明上面那格是巧合而不是重启的结果";
     }
 
     /**
