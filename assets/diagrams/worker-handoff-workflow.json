@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
+      "revision": "25f4311af6ea8ed7c622dfc9dea8c60dcd3e2acc"
     },
     "views": [
       {
@@ -138,7 +138,7 @@
       "label": "开通道",
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 714, "end_line": 718, "label": "通道文件与权限" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 769, "end_line": 773, "label": "通道文件与权限" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 358, "label": "UpgradeChannel::open" }
       ]
     },
@@ -151,8 +151,8 @@
       "label": "定长头",
       "sublabel": "family/type/blob 8B",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 313, "label": "HandoffHeader" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 481, "label": "Windows blob 长度" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 368, "label": "HandoffHeader" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 536, "label": "Windows blob 长度" }
       ]
     },
     {
@@ -165,8 +165,8 @@
       "sublabel": "POSIX 传描述符",
       "tag": "blob 归 0",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 497, "end_line": 510, "label": "控制数据装载" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 659, "label": "接手后置不可继承" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 552, "end_line": 565, "label": "控制数据装载" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 714, "label": "接手后置不可继承" }
       ]
     },
     {

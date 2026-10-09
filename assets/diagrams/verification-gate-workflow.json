@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c56339af27df21240007fbc643efe42c5fe171e9"
+      "revision": "25f4311af6ea8ed7c622dfc9dea8c60dcd3e2acc"
     },
     "views": [
       {
@@ -82,7 +82,7 @@
       "sublabel": "只报告不阻塞",
       "sources": [
         { "path": "CONTRIBUTING.md", "line": 44, "label": "静态检查一步" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 596, "label": "CI 里的 clang-tidy 作业" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 609, "label": "CI 里的 clang-tidy 作业" }
       ]
     },
     {
@@ -152,8 +152,8 @@
       "sublabel": "h2spec · Autobahn",
       "tag": "另起对端",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 222, "label": "h2spec 步骤" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 275, "label": "Autobahn 互操作探针" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 235, "label": "h2spec 步骤" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 288, "label": "Autobahn 互操作探针" }
       ]
     },
     {
@@ -166,9 +166,9 @@
       "sublabel": "TSan · libFuzzer",
       "tag": "覆盖率 ≥60%",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 466, "label": "TSan 另起 build/tsan" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 709, "label": "模糊各档每档 90 秒" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 749, "label": "覆盖率总行下限的取值处" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 479, "label": "TSan 另起 build/tsan" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 722, "label": "模糊各档每档 90 秒" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 767, "label": "覆盖率总行下限的取值处" }
       ]
     },
     {
@@ -221,9 +221,9 @@
       "sublabel": "mysql-driver-compile",
       "tag": "不设跳过开关",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 303, "label": "作业本体" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 310, "label": "这个作业存在就是因为不设 ASYN_SKIP_MYSQL_DEPS" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 338, "label": "-DDATABASE_WITH_MYSQL=ON" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 316, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 323, "label": "这个作业存在就是因为不设 ASYN_SKIP_MYSQL_DEPS" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 351, "label": "-DDATABASE_WITH_MYSQL=ON" }
       ]
     },
     {
@@ -236,8 +236,8 @@
       "sublabel": "io-uring-compile",
       "tag": "不放行则 SKIP",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 353, "label": "作业本体" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 384, "label": "-DASYN_WITH_IO_URING=ON 且带上用例" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 366, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 397, "label": "-DASYN_WITH_IO_URING=ON 且带上用例" }
       ]
     },
     {
@@ -250,8 +250,8 @@
       "sublabel": "acme-pebble",
       "tag": "另起容器",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 902, "label": "作业本体" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 969, "label": "拉 pebble 镜像后跑跨实现脚本" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 915, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 982, "label": "拉 pebble 镜像后跑跨实现脚本" }
       ]
     }
   ],
@@ -279,8 +279,8 @@
         "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:33-48）",
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
-        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:709 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
-        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:303），io-uring-compile 编 + 跑（:353），acme-pebble 拉真机构镜像做跨实现验收（:902）"
+        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:722 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
+        "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:316），io-uring-compile 编 + 跑（:366），acme-pebble 拉真机构镜像做跨实现验收（:915）"
       ]
     },
     {
@@ -289,7 +289,7 @@
       "items": [
         "四条工作流的作业之间零 needs：全部平铺并行，串行只发生在作业内部（checkout → 配置 → 构建 → ctest）",
         "develop 与 PR 不消耗分钟数：要看某个提交就 gh workflow run \"Linux CI\" --ref develop；三条流还 paths-ignore 掉纯文档改动",
-        "示例矩阵两档 CI 都跑（linux-ci.yml:884 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
+        "示例矩阵两档 CI 都跑（linux-ci.yml:897 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
         "外部裁判要另起进程或容器：Autobahn 在另一网络命名空间经 host-gateway 回宿主，服务端须绑 0.0.0.0 另开端口"
       ]
     },

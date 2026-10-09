@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "63b5a932a5978e741739fb1585730a95ffb4f241"
+      "revision": "25f4311af6ea8ed7c622dfc9dea8c60dcd3e2acc"
     },
     "views": [
       {
@@ -54,7 +54,7 @@
       "label": "TcpServer",
       "sublabel": "accept · 分发器",
       "sources": [
-        { "path": "src/Net/Tcp/TcpAcceptor.cpp", "line": 198, "label": "accept 协程" },
+        { "path": "src/Net/Tcp/TcpAcceptor.cpp", "line": 206, "label": "accept 协程" },
         { "path": "src/Net/Tcp/TcpServer.cpp", "line": 396, "end_line": 397, "label": "投递连接协程" },
         { "path": "src/Core/EventLoop/ConnectionDistributor.cpp", "line": 112, "label": "adopter 收下描述符" }
       ]
