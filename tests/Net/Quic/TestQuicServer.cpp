@@ -645,4 +645,41 @@ namespace AsynGyanis::Net
         EXPECT_EQ(server.listeningPort(), servingPort) << "被拒的第二次启动换了端口：那次启动并非无害";
     }
 
+    /**
+     * @brief 监听协程在自己的首次派发里跑到收尾时，不许在就绪队列里留下一条已销毁帧的句柄
+     * @details CI 上的形状是 h3 大正文那几条：回环把接收缓冲塞满，收报文那一趟每次 await 都立即就绪、
+     *          一次都不让出，父协程因此在**首次派发里**就跑到了收尾——而定时器协程的句柄那时还排在队列里
+     *          等着第一次派发，它所属的帧又只由父协程的局部 Task 拿着，于是先被销毁、后被 resume。
+     *          TSan 的三条报告同指那一帧（resume 已释放的帧、帧内字段读到 1103 的收尾段、promise 里
+     *          exception_ptr 的析构读）。
+     *          本用例把这个竞态拉成确定形状：停止排在首次派发之前，收报文的 while 当场为假，父协程同样
+     *          在一趟里跑到收尾。判据按「这一趟派发跑完还剩没剩没派发的句柄」问，不借 sanitizer 也红得起来。
+     * @note 手泵是有意的：这条判据要的就是派发次序由用例决定，循环真跑起来会把两拍并进同一趟，形状反倒不成立
+     * @note 证伪：把启动改回投调度器（`scheduler().schedule(expiryTask.handle())`）→ 红在「还剩一条」那句；
+     *       只把收尾那次 co_await 摘掉而保留就地起首拍 → 本条仍绿，它钉的是「句柄归属 must 活过派发」这一条，
+     *       等它退出那一条由上面第二句（监听协程一趟跑完）与容器 TSan/ASan 档的 h3 用例共同兜住
+     */
+    TEST(QuicServer, LeavesNoUndispatchedTickerHandleWhenListeningEndsInOnePass)
+    {
+        // 声明顺序照本文件其它用例：循环最先（最后销毁），socket 库、服务端、驱动帧依次随后
+        Core::EventLoop                        loop;
+        const Platform::Socket::Initialization network;
+        QuicServer::Configuration              configuration = makeServerConfiguration();
+        QuicServer                             server(loop, configuration);
+        std::optional<Core::Task<void>>        listenTask;
+
+        listenTask.emplace(server.listen(Core::InetAddress("127.0.0.1", 0)));
+        loop.scheduler().schedule(listenTask->handle());
+        // 停止排在首次派发之前：这一拍进去就会出来，父协程不会在任何 await 上让出
+        server.stop();
+
+        ASSERT_TRUE(loop.scheduler().runOne()) << "首次派发没跑起来：后面两句判据都是空的";
+        EXPECT_TRUE(listenTask->isReady()) << "监听协程没在一趟里跑完，本用例要钉的形状没立住";
+        EXPECT_FALSE(loop.scheduler().hasWork()) << "收尾后就绪队列里还剩没派发的句柄：那是定时器协程的帧，"
+                                                    "而它已经随监听协程一起销毁，下一趟派发就是读已释放的内存";
+
+        // 旧写法在这里 resume 那块已释放的帧（容器 ASan/TSan 报 heap-use-after-free，CI 三条报告都出自这一步）
+        static_cast<void>(loop.scheduler().runOne());
+    }
+
 } // namespace AsynGyanis::Net

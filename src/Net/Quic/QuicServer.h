@@ -422,6 +422,16 @@ namespace AsynGyanis::Net
         void requireFreshStart() const;
 
         /**
+         * @brief 把监听这条数据报通道要的两项套接字选项接上：ECN 字段可见性与「不要在 IP 层分片」
+         * @details 两项都在这里一次定论并记进成员，之后各连接只读成员不再碰套接字：ECN 决定收报文时
+         *          报不报拥塞标记（§13.4.1），DF 决定允不允许各条连接发路径 MTU 探针（RFC 9000 §14）。
+         *          设不上都不是错误（Windows 就没有 ECN 那个入口），所以只把结论与原因记成一行日志，
+         *          不改控制流。
+         * @pre `m_socket` 已建好（两项选项都经它下发）
+         */
+        void applyDatagramSocketOptions();
+
+        /**
          * @brief 两条 listen 的共用主体：在已就绪的套接字上问回端口、建封装并跑收循环
          * @details 端口与本地地址都从套接字问回来（接手来的口没有别的来源），把「端口从哪来」与
          *          「收到报文后做什么」分开，才不会出现两种形状各有一份派发的分叉。
@@ -438,7 +448,10 @@ namespace AsynGyanis::Net
          *          `nextTickerWakePoint()` 那条算法定睡眠点：早于节拍的截止按时到，晚于节拍的仍按
          *          节拍到（needsFlush 那一档补刀与 h3 请求的读时限没有可查的截止时刻，只能靠轮询兜），
          *          零连接时退到 kIdleTickerSleep。
-         * @note 本协程不被 stop() 等待（听天由命地看到停止标志即收手），因此睡眠上界不影响关停时延
+         * @note 本协程由收报文那一路就地起第一拍（不投调度器）并在 stop() 之后 co_await 到它退出：
+         *       它的帧因此从启动到结束只由那一条协程拿着，队列里不会出现指向已销毁帧的句柄（TSan 抓到过
+         *       投调度器那一版的这条）。代价是收报文那一路的收尾最晚延后一拍——这只延后监听协程自己完成
+         *       的时刻，循环若在收尾前就停了，两帧一起由调用方销毁，不会把谁卡住
          * @return Core::Task<> 停止时完成
          */
         [[nodiscard]] Core::Task<> runExpiryTicker();

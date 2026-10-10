@@ -309,6 +309,21 @@ namespace AsynGyanis::Net
         }
     }
 
+    void QuicServer::applyDatagramSocketOptions()
+    {
+        // 先申请「把收到报文的 ECN 字段交上来」：读到才报计数，读不到就按 §13.4.1 不报。
+        // 失败不是错误（Windows 就没有这个入口），所以只记一次结论，不改控制流
+        m_isEcnFieldVisible = m_socket->enableEcnFieldVisibility();
+        // QUIC 的数据报不得在 IP 层分片（RFC 9000 §14 的 MUST，IPv4 要设 DF 位）。设上了才允许各条连接
+        // 发路径 MTU 探针；设不上就停在 1200 那一档——探测的证据链没有 DF 就不成立（理由见配置里那一格）
+        m_isDoNotFragmentSet = m_socket->enableDoNotFragment();
+        if (!m_isDoNotFragmentSet)
+        {
+            LOG_WARN_FMT("QuicServer：套接字设不上「不要在 IP 层分片」（错误码 {}），本监听下的连接不做路径 MTU 探测，数据报尺寸停在 1200",
+                         Platform::PlatformError::lastErrorCode());
+        }
+    }
+
     Core::Task<> QuicServer::serveOnBoundSocket()
     {
         const Platform::SocketAddress boundAddress = m_datagramSocket.localAddress();
@@ -328,24 +343,20 @@ namespace AsynGyanis::Net
         LOG_INFO_FMT("QuicServer: 已在 UDP 端口 {} 上监听（ALPN {}）", boundPort, m_configuration.applicationProtocol);
 
         // 两个循环并发跑：收报文的与驱动定时器的。定时器不能只挂在收报文上，否则空闲期（对端在等超时）
-        // 就没人推进 PTO/空闲超时
+        // 就没人推进 PTO/空闲超时。
+        // 起这一路用「就地首拍」而不是投调度器：投进去的是裸句柄，而本协程的这个局部 Task 是它唯一的
+        // 持有者——收报文这一趟可能一路跑到收尾（回环上报文塞满缓冲时每次 await 都立即就绪，一次都不让出），
+        // 帧于是可能在那次派发之前就被销毁，调度器随后 resume 的已是释放了的内存（TSan 在 h3 大正文用例
+        // 上抓到的正是这条：三处报告同指 runExpiryTicker 的帧）。就地跑第一拍，这条句柄就永远不进队列，
+        // 收尾也就真能等到它退出（见下方 co_await）；首拍只会挂上定时器并让出，此刻连接表还是空的
         Core::Task<> expiryTask = runExpiryTicker();
-        m_eventLoop.scheduler().schedule(expiryTask.handle());
+        expiryTask.handle().resume(); // 惰性协程：手动启动
+
+        // 两项套接字选项在这里一次定论（ECN 字段可见性与不许 IP 层分片，理由见该方法）
+        applyDatagramSocketOptions();
 
         // 一次批次收多少条：每槽一份「单条报文上限」的缓冲，条数上限来自 Platform 那层的常量。
         // 缓冲在循环外一次性备好（每条报文再分配一次就是本仓反复清掉的那类热路径开销）
-        // 先申请「把收到报文的 ECN 字段交上来」：读到才报计数，读不到就按 §13.4.1 不报。
-        // 失败不是错误（Windows 就没有这个入口），所以只记一次结论，不改控制流
-        m_isEcnFieldVisible = m_socket->enableEcnFieldVisibility();
-        // QUIC 的数据报不得在 IP 层分片（RFC 9000 §14 的 MUST，IPv4 要设 DF 位）。设上了才允许各条连接
-        // 发路径 MTU 探针；设不上就停在 1200 那一档——探测的证据链没有 DF 就不成立（理由见配置里那一格）
-        m_isDoNotFragmentSet = m_socket->enableDoNotFragment();
-        if (!m_isDoNotFragmentSet)
-        {
-            LOG_WARN_FMT("QuicServer：套接字设不上「不要在 IP 层分片」（错误码 {}），本监听下的连接不做路径 MTU 探测，数据报尺寸停在 1200",
-                         Platform::PlatformError::lastErrorCode());
-        }
-
         std::vector<std::uint8_t> receiveBuffers(Platform::DatagramSocket::kMaximumBatchSlotCount * Platform::DatagramSocket::kMaximumDatagramBytes);
         std::array<Platform::DatagramSocket::BatchSlot, Platform::DatagramSocket::kMaximumBatchSlotCount> slots{};
         for (std::size_t slotIndex = 0; slotIndex < slots.size(); ++slotIndex)
@@ -404,9 +415,11 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 等定时循环退出：它下次醒来就会发现停止标志
+        // 等定时循环退出：它下一次醒来就看到停止标志并收尾。有意不是「直接销毁挂起中的帧」——那样
+        // 本协程先结束、定时循环却还挂在某条连接的 flush 或某个定时器上，醒来时面对的是一条已经没有
+        // 收报文循环的连接表；也呼应上面那句「就地跑第一拍」：帧从启动到退出都只由本协程拿着
         stop();
-        static_cast<void>(expiryTask);
+        co_await expiryTask;
         co_return;
     }
 
