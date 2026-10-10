@@ -133,6 +133,21 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
+         * @brief 执行一条 SQL 命令并交出**流式**结果集（行留在服务端，每调用一次 next() 取一行）
+         * @details 重写 DatabaseConnection::executeStreaming()：命令照旧由 mysql_real_query 送出，
+         *          区别只在收回结果用 mysql_use_result 而非 mysql_store_result——客户端因此只持有当前这一行，
+         *          大结果集不再等额占内存。三条与预读不同的契约按基类落地：结果集比连接短命、它消费完（或析构）
+         *          之前这条连接不能再执行任何语句（服务端回 Commands out of sync，本驱动不另设拦截）、
+         *          rowCount() 回 0 表示「未知」。
+         * @warning **没有返回列的语句一律拒**（INSERT/UPDATE/DDL 与事务语句）：那种命令本来就没有可流式的
+         *          结果集，悄悄退回预读的「空回执」会让调用方把写语句当查询用，比报一条错难查得多。
+         * @param command SQL 文本，例如 "SELECT id, payload FROM blobs"
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；未连接、命令为空或超长、语句无返回列、
+         *         执行失败这几条都返回 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
+
+        /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::MySql，不依赖连接状态。
          * @return DatabaseType DatabaseType::MySql

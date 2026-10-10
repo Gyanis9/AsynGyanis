@@ -59,6 +59,25 @@ namespace AsynGyanis::Database
         m_columnCount = static_cast<size_t>(mysql_num_fields(m_result));
     }
 
+    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle, const Detail::StreamingTag) noexcept :
+        m_result(ownedResult), m_connectionHandle(connectionHandle), m_isStreaming(true)
+    {
+        // 列元数据在流式结果上是即时可用的（回复的头一段就是列定义），所以列数照常快照；
+        // 行数**不快照**：mysql_num_rows 在取完全部行之前给的是 0，这里把它留成 0 并在 rowCount() 的
+        // 文档里说明「0 是未知」，比等到读完再更新诚实——本类也不假装能提供随机定位
+        if (m_result != nullptr)
+        {
+            m_columnCount = static_cast<size_t>(mysql_num_fields(m_result));
+        }
+    }
+
+    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle)
+    {
+        // 刻意不用 make_unique：那个 new 表达式发生在标准库的函数体里，拿不到本类的私有构造访问权。
+        // 失败路径的所有权仍在调用方手上（它带着 ResultReleaser 守卫，构造抛出时由守卫释放），这里不多释放一次
+        return std::unique_ptr<MySqlResult>(new MySqlResult(ownedResult, connectionHandle, Detail::StreamingTag{}));
+    }
+
     MySqlResult::~MySqlResult()
     {
         // 结果集由本对象独占所有权：mysql_free_result 一次性回收行缓冲与列元数据。
@@ -83,7 +102,31 @@ namespace AsynGyanis::Database
         // 预读结果集的行都在客户端内存里，返回空指针只可能是已到末尾，不会再有「读取出错」这一分支。
         // 按基类契约本方法属只读路径，不改写 m_lastError
         m_currentRow = mysql_fetch_row(m_result);
-        return m_currentRow != nullptr;
+        if (m_currentRow != nullptr)
+        {
+            return true;
+        }
+
+        if (!m_isStreaming)
+        {
+            return false;
+        }
+
+        // 流式的空指针有两解：回复流真的读完了，或者中途断了。二者对调用方是完全不同的事——后者意味着
+        // 它拿到的是一份**残缺**结果，按「读完了」收尾就是把截断当成完整。判据是连接上的错误状态：
+        // 读完时 mysql_errno(连接) 为 0，断了则带着服务端/客户端的错误码
+        const unsigned int errorNumber = m_connectionHandle != nullptr ? mysql_errno(m_connectionHandle) : 0U;
+        if (errorNumber == 0U)
+        {
+            return false;
+        }
+
+        const char *const nativeText = mysql_error(m_connectionHandle);
+        m_lastError                  = std::format("MySQL 流式读取中断（错误码 {}{}）：剩下的行取不到了，"
+                                                   "已读到的部分不构成完整结果集。这不是「读完了」，"
+                                                   "请按需要重查或改用 execute() 的预读路径",
+                                                   errorNumber, nativeText != nullptr && nativeText[0] != '\0' ? std::format("，{}", nativeText) : std::string{});
+        return false;
     }
 
     std::optional<std::string> MySqlResult::columnName(const size_t index) const
@@ -181,6 +224,16 @@ namespace AsynGyanis::Database
         // 先清掉上一轮的错误：本函数代表一次新的尝试，不能让历史文本冒充本次结果
         m_lastError.clear();
 
+        // 流式结果没有可退回的位置：行已经从服务端流过来就收不回去，官方的随机定位也只对预读结果有效。
+        // 这里不假装能重扫（游标原地不动、继续 next() 仍回 false），并把原因留给调用方
+        if (m_isStreaming)
+        {
+            m_currentRow = nullptr;
+            m_lastError  = "流式结果集不支持重扫：行是一次性流过来的，收不回也定位不了；"
+                           "要重扫请把数据读进自己的容器，或改用 execute() 的预读路径";
+            return;
+        }
+
         // 预读结果集才支持随机定位（本驱动一律用 mysql_store_result，所以恒满足该前提）。
         // mysql_data_seek 是 void 接口，失败也无从知晓，这是它与 sqlite3_reset 的差别
         mysql_data_seek(m_result, 0);
@@ -212,6 +265,18 @@ namespace AsynGyanis::Database
     // 桩下 connect() 必失败，任何写语句都执行不了，报出非零行数只会是假信息
     MySqlResult::MySqlResult(MYSQL_RES *, const std::int64_t, const std::uint64_t)
     {
+    }
+
+    // 桩构建里既没有 MYSQL_RES 也没有连接句柄：流式构造退化成与预读构造同一份「永远为空」的对象，
+    // 因此 forStreaming() 给出的仍是可用的空结果集（0 行 0 列、next() 恒 false），调用方在桩下
+    // 本来就取不到数据，判据不必为流式另开一条
+    MySqlResult::MySqlResult(MYSQL_RES *, MYSQL *, const Detail::StreamingTag) noexcept
+    {
+    }
+
+    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *, MYSQL *)
+    {
+        return std::make_unique<MySqlResult>(nullptr);
     }
 
     MySqlResult::~MySqlResult()
@@ -261,6 +326,8 @@ namespace AsynGyanis::Database
 
     size_t MySqlResult::rowCount() const
     {
+        // 预读档这里是构造时快照的精确值；流式档恒为 0，含义是「未知」而不是「没有行」，
+        // 判口径写在头文件与 isEmpty() 上，这里不多存一份状态
         return m_rowCount;
     }
 
@@ -300,7 +367,14 @@ namespace AsynGyanis::Database
     bool MySqlResult::isEmpty() const
     {
         // 预读结果的行数恒为精确值（写回执没有游标，行数也是 0），因此空与非空直接由行数判定，
-        // 不再另存一份标志位——同一事实两处真值来源迟早会对不上
+        // 不再另存一份标志位——同一事实两处真值来源迟早会对不上。
+        // 流式档反过来：没读完就没有「这堆行是空的」的依据，一律回 false（不宣称自己空）。
+        // 误报「空」会让调用方整段跳过它本该处理的数据，这个方向比白跑一次 next() 贵得多
+        if (m_isStreaming)
+        {
+            return false;
+        }
+
         return m_rowCount == 0;
     }
 

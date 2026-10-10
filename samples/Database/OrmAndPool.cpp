@@ -1468,6 +1468,36 @@ namespace
         const std::string                               duplicateError   = connection.lastError();
         Samples::checklist().check(isMySqlCommitEffective && duplicateReceipt == nullptr && containsChinese(duplicateError) && duplicateError.find("错误码") != std::string::npos,
                                    "MySQL 提交让第三行可见；重复主键以 nullptr + 中文原因（含错误码）暴露而不是崩掉");
+        // 流式读：行留在服务端，每 next() 取一行。三步按顺序判：整份读完 → 只取一行时被占住 → 丢掉之后交还。
+        // 「只取一行就试新命令」必须被拒，这一步是「真的没在客户端整份预读」的可证形式；
+        // 被拒之后不再继续读那条流（那条流已被停在原地），只验它能被安全丢弃
+        std::int64_t streamedIdSum           = 0;
+        bool         isReleasedAfterFullRead = false;
+        bool         isHeldWhileOpenAndFreed = false;
+        {
+            const std::unique_ptr<Database::DatabaseResult> stream = connection.executeStreaming("SELECT `id` FROM " + tableName + " ORDER BY `id`");
+            if (stream != nullptr)
+            {
+                while (stream->next())
+                {
+                    if (const auto id = cellAs<std::int64_t>(*stream, std::size_t{0}); id.has_value())
+                    {
+                        streamedIdSum += *id;
+                    }
+                }
+                isReleasedAfterFullRead = stream->lastError().empty() && connection.execute("SELECT 1") != nullptr;
+            }
+
+            std::unique_ptr<Database::DatabaseResult> partial = connection.executeStreaming("SELECT `id` FROM " + tableName + " ORDER BY `id`");
+            if (partial != nullptr && partial->next())
+            {
+                isHeldWhileOpenAndFreed = connection.execute("SELECT 1") == nullptr;
+                partial.reset();
+                isHeldWhileOpenAndFreed = isHeldWhileOpenAndFreed && connection.execute("SELECT 1") != nullptr;
+            }
+        }
+        Samples::checklist().check(streamedIdSum == 1 + 2 + 4 && isReleasedAfterFullRead && isHeldWhileOpenAndFreed,
+                                   "MySQL 流式读逐行交出同一份数据：未读完时连接被占住、丢掉结果集就交还（退回整份预读的实现过不了这一格）");
         // 表的删除与断开连接都交给作用域收尾：删表守卫先跑，连接的析构随后关连接
     }
 

@@ -373,6 +373,83 @@ namespace AsynGyanis::Database
         return result;
     }
 
+    std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view command)
+    {
+        m_lastError.clear();
+
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 MySQL 数据库，命令未执行";
+            return nullptr;
+        }
+
+        if (command.empty())
+        {
+            m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+        // 与预读那条同一份窄化判定（说明见它上面的中文注释）：超长命令会被静默截断成半条语句
+        if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
+        {
+            if (command.size() > kMaximumNativeLength)
+            {
+                m_lastError = "数据库命令过长：" + std::to_string(command.size()) + " 字节，超出 MySQL 客户端协议上限";
+                return nullptr;
+            }
+        }
+
+        if (mysql_real_query(m_mysqlHandle, command.data(), static_cast<unsigned long>(command.size())) != 0)
+        {
+            const unsigned int errorNumber = mysql_errno(m_mysqlHandle);
+            captureError("执行 SQL 命令失败");
+            if (errorNumber == CR_SERVER_GONE_ERROR || errorNumber == CR_SERVER_LOST)
+            {
+                disconnect();
+            }
+            return nullptr;
+        }
+
+        // 语句被服务端接受才记账，与预读路径同一顺序
+        noteSessionScopedStatement(command);
+
+        // 与 mysql_store_result 的唯一差别：不把行复制进客户端，行留在服务端的回复流里，
+        // 每调用一次 mysql_fetch_row 才发一段、取一行。代价是这份结果集与这条连接绑死，
+        // 且在它消费完（或析构）之前这条连接不能再发任何命令
+        MYSQL_RES *rawResult = mysql_use_result(m_mysqlHandle);
+        if (rawResult == nullptr)
+        {
+            // 判据与预读路径同一份：mysql_field_count()==0 表示这条命令本就没有返回列。
+            // 那种命令没有可流式的东西，明确拒，而不是悄悄退回预读交出「空回执」
+            if (mysql_field_count(m_mysqlHandle) == 0)
+            {
+                m_lastError = "这条语句没有返回列（写语句、DDL 或事务语句），流式执行无从谈起：请改用 execute()";
+                return nullptr;
+            }
+
+            // 有返回列却拿不到句柄，且服务端报了错（3024 语句超时这一类）：ERR 包已被本次调用消化，
+            // 链路完好，连接必须留着——与预读路径同一处置
+            if (const unsigned int useError = mysql_errno(m_mysqlHandle); useError != 0)
+            {
+                captureError("执行 SQL 命令失败");
+                return nullptr;
+            }
+
+            // errno 为 0 只剩「客户端分配不出结果集结构」这一种：回复流的位置已不可知，这条连接不能再用于发命令
+            captureError("读取 MySQL 结果集失败");
+            disconnect();
+            return nullptr;
+        }
+
+        // 同样的所有权真空守卫：make_unique 抛异常时由释放器回收这份 MYSQL_RES
+        std::unique_ptr<MYSQL_RES, ResultReleaser> guardedResult{rawResult};
+        auto                                       result = MySqlResult::forStreaming(guardedResult.get(), m_mysqlHandle);
+
+        // 构造成功才解绑守卫：此后由结果集负责 mysql_free_result（它同时把没读完的回复流吃掉）
+        guardedResult.release();
+        return result;
+    }
+
     std::unique_ptr<DatabaseResult> MySqlConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
     {
         // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
@@ -1067,6 +1144,13 @@ namespace AsynGyanis::Database
         // 参数化路径与不带参数的路径在桩里没有区别：连客户端库都没有，既无法预处理也无法绑定参数。
         // 明确报出「驱动缺失」而不是基类默认的「暂不支持参数化查询」，
         // 否则使用者会以为问题出在「这个驱动没实现参数绑定」而不是「当前构建没编译驱动」
+        m_lastError = kMissingDriverError;
+        return nullptr;
+    }
+
+    std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view)
+    {
+        // 与上面两条同一判据：桩里报的是「当前构建没编译驱动」，不是基类默认的「该驱动不支持流式结果集」
         m_lastError = kMissingDriverError;
         return nullptr;
     }

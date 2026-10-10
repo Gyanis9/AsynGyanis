@@ -105,6 +105,10 @@
 - **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）；已有表可按结构体补上缺的列（`SchemaMigrator::addMissingColumns`，现有列直接问引擎，重复调用幂等）；非有限的浮点取值（NaN、±Infinity）在绑定前就拒并点名列名——它们落库之后是哪个数由引擎决定，而 `insert()` 会照样报成功，空值请写 `std::optional`（绑成 SQL NULL）
 - **SQL 方言层** — 查询树渲染与参数收集只有一份实现（`StandardSqlDialect`），SQLite 与 MySQL 各自只覆写引擎知识；写语句与事务语句一律由方言生成，ORM 不含 SQL 拼接
 - **参数化执行** — 取值一律以绑定参数送出，不拼进 SQL 文本（含引号、`--`、分号的文本只会被当作数据）
+- **大结果集可以逐行取** — `DatabaseConnection::executeStreaming()` 把行留在服务端，每调用一次 `next()` 才取一行
+  （MySQL 文本协议走 `mysql_use_result`），读一千万行与读十行不再是同一个内存量级。代价明写在契约里：结果集必须比
+  连接短命、它消费完之前那条连接不再接受新命令、`rowCount()` 回 0 表示「未知」、不能重扫；没实现这条入口的驱动
+  明确回「不支持」，不偷偷退化成整份预读
 - **高性能连接池** — LIFO 复用、惰性创建、双机制清理（空闲回收 + 上限保护）；借出的连接可以
   `PooledConnection::discard()` 主动丢弃（驱动侧报过错、事务半路失败那一类脏会话），名额照旧腾出来
 - **异步执行器** — 数据库阻塞调用挪出事件循环线程，完成后经 `Scheduler::scheduleRemote` 投回指定 `EventLoop`

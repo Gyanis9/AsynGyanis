@@ -2824,4 +2824,126 @@ namespace AsynGyanis::Database
         EXPECT_EQ(rows[4].name, "第五张");
     }
 
+    // ============================================================================
+    // 流式结果集（executeStreaming / mysql_use_result）
+    // ============================================================================
+
+    namespace
+    {
+        /**
+         * @brief 两条协议路径共用的探集语句：1000 行、三列（整数 / 文本 / 可空小数）
+         * @details 刻意不建表：判据要的是「同一份数据走两遍取数路径」，建表与清理只会把注意力
+         *          引到 DDL 上，还会与别的用例抢表名。可空那一列每 7 行给一个 NULL，
+         *          这样「NULL 与空串与 0 是三件事」这条映射在两条路径上都被比到。
+         */
+        constexpr const char *kStreamingProbeQuery = "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 1000)"
+                                                     " SELECT n AS id, CONCAT('row-', n) AS label,"
+                                                     " CASE WHEN MOD(n, 7) = 0 THEN NULL ELSE n * 1.5 END AS weight"
+                                                     " FROM seq ORDER BY n";
+
+        /// 上面那句该交出的行数（预读那一份按它断言，流式那一份按它逐行对照）
+        constexpr std::size_t kStreamingProbeRowCount = 1000U;
+    } // namespace
+
+    /**
+     * @brief 流式读与预读交出**同一份数据**，三条契约差异按文档落地
+     * @details 两条路径共用 MySqlValueConversion 的列值映射，但数据来源不同（客户端缓冲 vs 服务端回复流），
+     *          最容易坏在「流式那一份悄悄少读了几行」或「NULL 被读成空串」。因此判据按行逐格比对，
+     *          行数以预读那一份为基准，而流式那一份必须老实说「行数未知」（rowCount() 回 0）且
+     *          绝不宣称自己是空的——这两个 0 / false 的含义不同，都指向同一件事：没读完就不知道。
+     * @note 证伪：把 MySqlConnection::executeStreaming 里的 mysql_use_result 换回 mysql_store_result，
+     *       rowCount()==0 与「不宣称空」这两条仍绿，但下一条用例的「未读完就发新语句被拒」会转绿（即本组
+     *       判据失去分辨力）；把流式分支的 isEmpty() 改成按 m_rowCount 判定，本条的 isEmpty 断言当场红
+     */
+    TEST_F(MySqlIntegrationTest, StreamingSelectAgreesWithTheBufferedPathRowByRow)
+    {
+        MySqlConnection bufferedConnection(configuration());
+        ASSERT_TRUE(bufferedConnection.connect()) << bufferedConnection.lastError();
+        MySqlConnection streamingConnection(configuration());
+        ASSERT_TRUE(streamingConnection.connect()) << streamingConnection.lastError();
+
+        const std::unique_ptr<DatabaseResult> buffered = bufferedConnection.execute(kStreamingProbeQuery);
+        ASSERT_NE(buffered, nullptr) << bufferedConnection.lastError();
+        ASSERT_EQ(buffered->rowCount(), kStreamingProbeRowCount) << "预读那一份的行数是两条路径对照的基准，它错了后面都不用比";
+
+        const std::unique_ptr<DatabaseResult> stream = streamingConnection.executeStreaming(kStreamingProbeQuery);
+        ASSERT_NE(stream, nullptr) << streamingConnection.lastError();
+
+        EXPECT_EQ(stream->rowCount(), 0U) << "流式结果的 rowCount() 含义是「未知」：给一个凭空数出来的值会让调用方按它预留容器";
+        EXPECT_FALSE(stream->isEmpty()) << "没读完就没有宣称「这是空的」的依据";
+        ASSERT_EQ(stream->columnCount(), buffered->columnCount());
+        EXPECT_EQ(stream->columnNames(), buffered->columnNames()) << "列名与列序两条路径必须一字不差";
+
+        std::size_t comparedRowCount = 0;
+        while (true)
+        {
+            const bool bufferedHasRow = buffered->next();
+            const bool streamHasRow   = stream->next();
+            ASSERT_EQ(bufferedHasRow, streamHasRow) << "第 " << comparedRowCount << " 行之后两条路径的总行数对不上";
+            if (!bufferedHasRow)
+            {
+                break;
+            }
+
+            for (size_t columnIndex = 0; columnIndex < stream->columnCount(); ++columnIndex)
+            {
+                EXPECT_EQ(stream->getValue(columnIndex), buffered->getValue(columnIndex)) << "第 " << comparedRowCount << " 行第 " << columnIndex << " 列分歧";
+            }
+            ++comparedRowCount;
+        }
+
+        EXPECT_EQ(comparedRowCount, kStreamingProbeRowCount);
+        EXPECT_TRUE(stream->lastError().empty()) << "读到末尾不该留下错误：" << stream->lastError();
+
+        // 流读完了，回复流已尽：同一条连接不必等结果集析构就能继续用
+        const std::unique_ptr<DatabaseResult> followUp = streamingConnection.execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "读完之后连接不可用：" << streamingConnection.lastError();
+        EXPECT_TRUE(followUp->next());
+    }
+
+    /**
+     * @brief 流式结果未消费完之前占住这条连接，丢掉之后又把它交还
+     * @details 这一条同时干两件事。前半是**本组判据的分辨力来源**：如果 executeStreaming 其实还在客户端
+     *          整份预读，未读完就发新语句根本不会失败——所以「服务端拒绝新命令」正是「行确实留在服务端」
+     *          的可证形式，不是我们对调用方的刁难。后半是收口的安全性：只取前几行就丢弃结果集时，
+     *          析构里的 mysql_free_result 会把剩下的回复流吃掉，连接因此可继续使用
+     *          （「只要前 10 行」是流式读最常见的用法，不能要求调用方自己读完）。
+     */
+    TEST_F(MySqlIntegrationTest, StreamingResultHoldsItsConnectionUntilItIsGone)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 这一份故意不是 const：本用例后半要提前丢掉它，验证「只读前几行」之后连接能交还
+        std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(kStreamingProbeQuery);
+        ASSERT_NE(stream, nullptr) << connection.lastError();
+        ASSERT_TRUE(stream->next());
+
+        ASSERT_EQ(connection.execute("SELECT 1"), nullptr) << "上一条流还没读完就接受了新命令：那份结果其实被整份读进了客户端";
+        EXPECT_NE(connection.lastNativeErrorCode(), 0) << "拒绝没有留下错误码，读起来会像驱动坏了：" << connection.lastError();
+
+        // 丢掉未读完的结果集即交还连接：这一步失败的话「只读前几行」就成了不可用的用法
+        stream.reset();
+        const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "丢掉未读完的流之后连接不可用：" << connection.lastError();
+        ASSERT_TRUE(followUp->next());
+        EXPECT_TRUE(connection.lastError().empty()) << followUp->lastError();
+
+        // 零行的流式结果：next() 立刻 false，isEmpty() 仍不宣称空（方向见 MySqlResult::isEmpty 的注释）
+        const std::unique_ptr<DatabaseResult> emptyStream = connection.executeStreaming("SELECT typed.n FROM (SELECT 1 AS n) typed WHERE typed.n = 0");
+        ASSERT_NE(emptyStream, nullptr) << connection.lastError();
+        EXPECT_FALSE(emptyStream->next());
+        EXPECT_FALSE(emptyStream->isEmpty());
+        EXPECT_EQ(emptyStream->rowCount(), 0U);
+
+        // 没有返回列的语句在流式入口上明确拒，而不是退回预读那条路径交一个「空回执」哄调用方
+        EXPECT_EQ(connection.executeStreaming("DO 1"), nullptr) << "写语句没有可流式的结果集，这里不该装作成功";
+        EXPECT_NE(connection.lastError().find("没有返回列"), std::string::npos) << connection.lastError();
+
+        // 拒了之后连接照旧可用：那条语句本来就执行成功了，只是没有结果集可流
+        const std::unique_ptr<DatabaseResult> afterRejected = connection.execute("SELECT 2");
+        ASSERT_NE(afterRejected, nullptr) << connection.lastError();
+        EXPECT_TRUE(afterRejected->next());
+    }
+
 } // namespace AsynGyanis::Database

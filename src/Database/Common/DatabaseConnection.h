@@ -242,6 +242,31 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 执行命令并交出**流式**结果集（行留在服务端，每调用一次 next() 才取一行）
+         *
+         * @details 它存在的唯一理由是大结果集的内存量级：execute() 走预读，整份行数据一次复制进客户端，
+         *          而「读一千万行」与「读十行」在本框架里不该花同一份内存。默认实现把 lastError()
+         *          置为中文提示并返回 nullptr，**刻意不退化成预读的 execute()**——那会让调用方以为自己在
+         *          流式读、实际却把整份结果搬进内存，是最难排查的那类静默退化（与上面参数化那条同一判据）。
+         *
+         * @warning 实现方要接受三条与预读不同的契约（逐条的理由写在 MySqlResult 的类注释与它自己的方法上）：
+         *          结果集必须比产出它的连接短命；在它消费完或析构之前，那条连接不能再执行任何语句；
+         *          rowCount() 回 0 的含义是「未知」，isEmpty() 不许据此宣称结果为空。
+         *
+         * @param command 命令文本（只对**有返回列**的语句有意义；写语句没有可流式的结果集）
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败或驱动不支持时返回 nullptr，
+         *         原因见 lastError()
+         */
+        [[nodiscard]] virtual std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command)
+        {
+            // 入参不使用：本实现只负责给出明确的中文原因，不执行任何命令
+            static_cast<void>(command);
+
+            m_lastError = std::string("该驱动暂不支持流式结果集（") + databaseTypeName(databaseType()) + "）：请改用 execute()（整份预读），或为该驱动实现逐行取数";
+            return nullptr;
+        }
+
+        /**
          * @brief 获取数据库类型
          * @return DatabaseType 具体驱动对应的类型枚举
          */

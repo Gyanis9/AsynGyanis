@@ -32,8 +32,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 一个把「错误」按用例摆好的驱动替身
          * @details 只用来打包装自身的三条形状：lastError() 与 lastNativeErrorCode() 读的是同一份
-         *          ErrorRecord，替身按真驱动的写法填它即可。**刻意不重写带参数的 execute()**，
-         *          那样基类那条「暂不支持参数化查询」的默认实现才走得到。
+         *          ErrorRecord，替身按真驱动的写法填它即可。**刻意不重写带参数的 execute()，
+         *          也不重写 executeStreaming()**，那样基类那两条默认实现（「暂不支持参数化查询」与
+         *          「暂不支持流式结果集」）才走得到。
          */
         class StubConnection final : public DatabaseConnection
         {
@@ -148,6 +149,23 @@ namespace AsynGyanis::Database
         ASSERT_FALSE(outcome.has_value());
         EXPECT_TRUE(containsLocalizedText(outcome.error().message)) << outcome.error().message;
         EXPECT_NE(outcome.error().message.find("Sqlite"), std::string::npos) << "提示里没说是哪个驱动不支持";
+    }
+
+    /**
+     * @brief 钉住基类那条「暂不支持流式结果集」的默认实现：不退化成预读，也不把命令发出去
+     * @details 退化成 execute() 是这条接口最坏的失败形态——调用方以为自己按行取数，实际整份结果
+     *          仍被搬进内存，而内存量级正是它选择流式读的唯一理由。因此默认实现只写原因、交空指针。
+     * @note 证伪：把默认实现改成 `return execute(command);`，本条红在「交出了结果集」与「命令被发了出去」两句上
+     */
+    TEST(DatabaseConnectionTest, StreamingExecutionReportsTheBaseClassRefusalForDriversThatDoNotImplementIt)
+    {
+        StubConnection connection;
+
+        const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming("SELECT 1");
+        EXPECT_EQ(stream, nullptr) << "驱动没实现流式读却交出了结果集：默认实现退化成了预读";
+        EXPECT_EQ(connection.executeCallCount(), 0U) << "默认实现把命令交给 execute() 发出去了，那正是「静默退回整份预读」";
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+        EXPECT_NE(connection.lastError().find("Sqlite"), std::string::npos) << "提示里没说是哪个驱动不支持";
     }
 
     // ============================================================================
