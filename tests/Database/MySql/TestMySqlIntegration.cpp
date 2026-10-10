@@ -2843,6 +2843,21 @@ namespace AsynGyanis::Database
 
         /// 上面那句该交出的行数（预读那一份按它断言，流式那一份按它逐行对照）
         constexpr std::size_t kStreamingProbeRowCount = 1000U;
+
+        /**
+         * @brief 「流被中途掐断」那一条用的探集语句：5 万行、每行约 700 字节，总量远超任何套接字缓冲
+         * @details 尺寸是这条判据的前提。服务端被 KILL 之后，客户端仍会把**已经在途**的那些行读完
+         *          （它们早就进了套接字缓冲），才撞上断链——所以一份只有 1000 行、约 30 KB 的结果
+         *          完全可能整体落在缓冲里，让「读完」与「断了」在客户端看不出差别，用例就变成
+         *          赌时序。按 5 万行 × 700 字节（约 34 MB）走，客户端能读到的前缀必然远小于总量，
+         *          「读到了中断」这一侧才成立。递归深度靠 `SET SESSION cte_max_recursion_depth` 抬上去
+         *          （默认 1000，正是上面那份的由来）。
+         */
+        constexpr const char *kBrokenLinkProbeQuery = "WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 50000)"
+                                                      " SELECT n AS id, REPEAT('x', 700) AS payload FROM seq ORDER BY n";
+
+        /// 上面那句本该交出的行数（本用例断言的是「远远读不到这个数就断了」）
+        constexpr std::size_t kBrokenLinkProbeRowCount = 50000U;
     } // namespace
 
     /**
@@ -2944,6 +2959,63 @@ namespace AsynGyanis::Database
         const std::unique_ptr<DatabaseResult> afterRejected = connection.execute("SELECT 2");
         ASSERT_NE(afterRejected, nullptr) << connection.lastError();
         EXPECT_TRUE(afterRejected->next());
+    }
+
+    /**
+     * @brief 流读到一半服务端把这条会话杀掉：next() 报「中断」而不是「读完」
+     *
+     * @details 这条用例补的是上一条判据的另一半。`mysql_fetch_row` 交出空指针有两解——回复流读完了，
+     *          或者中途断了；驱动靠 `mysql_errno(连接)` 分辨（见 MySqlResult::next()），而**两个方向都要有人钉**：
+     *          上一条用例读到底并断言「错误状态是空的」，本条把会话打死并断言「错误状态不是空的、且点名中断」。
+     *          只留前者会让「一概当读完」的实现照样全绿，而那种实现把残缺结果交给调用方当完整数据用——
+     *          按行数预留容器、按「拿齐了」提交业务后果，都是这一格决定的。
+     *
+     * @details 故障注入走服务端而不是本层：从**另一条连接**发 `KILL <线程号>`，服务端随即关闭这条会话，
+     *          客户端下一次读就撞上「查询期间连接中断」。刻意不做进程内模拟——真要覆盖的是
+     *          「驱动读到的是网络层的断」，自己造的状态位证明不了这件事。
+     *
+     * @note 证伪：把 next() 里那句 `mysql_errno` 判定删掉（空指针一律当读完），本条当场红；
+     *       上一条用例仍绿，因为它的方向是「读完时不该有错误」。
+     */
+    TEST_F(MySqlIntegrationTest, StreamingNextReportsBrokenLinkInsteadOfEndOfRows)
+    {
+        MySqlConnection victim(configuration());
+        ASSERT_TRUE(victim.connect()) << victim.lastError();
+
+        // 线程号要在开流之前取：流没消费完之前这条连接不接受新命令，那是上一条用例钉住的规矩
+        const std::unique_ptr<DatabaseResult> identity = victim.execute("SELECT CONNECTION_ID()");
+        ASSERT_NE(identity, nullptr) << victim.lastError();
+        ASSERT_TRUE(identity->next());
+        const std::int64_t victimThreadId = std::get<std::int64_t>(identity->getValue(0));
+
+        // 递归 CTE 默认只长到 1000 行，而这条判据要的是「远超套接字缓冲」的那一份（理由见常量注释）
+        ASSERT_NE(victim.execute("SET SESSION cte_max_recursion_depth = 200000"), nullptr) << victim.lastError();
+
+        std::unique_ptr<DatabaseResult> stream = victim.executeStreaming(kBrokenLinkProbeQuery);
+        ASSERT_NE(stream, nullptr) << victim.lastError();
+        // 先确认真读到过行：一条都没读到的话，后面的 false 就成了「本来就没数据」而非「中途断了」，
+        // 它同时证明服务端已经把首行发进了链路——于是 KILL 落在流的中段，不是在物化 CTE 那一步
+        ASSERT_TRUE(stream->next());
+
+        MySqlConnection executioner(configuration());
+        ASSERT_TRUE(executioner.connect()) << executioner.lastError();
+        ASSERT_NE(executioner.execute("KILL " + std::to_string(victimThreadId)), nullptr) << executioner.lastError();
+
+        // 把在途的那些行读完，直到 next() 交出 false。循环带上限：真要是「断」没发生，
+        // 用例该停在「整份都读完了」这条红上，而不是把 5 万行跑成一分钟空转
+        std::size_t rowsBeforeBreak = 1U;
+        while (rowsBeforeBreak < kBrokenLinkProbeRowCount && stream->next())
+        {
+            ++rowsBeforeBreak;
+        }
+
+        EXPECT_LT(rowsBeforeBreak, kBrokenLinkProbeRowCount) << "整份 5 万行都读到了：这条流压根没被掐断，下面两条断言测的就不是断链";
+        EXPECT_FALSE(stream->lastError().empty()) << "断链被当成「读完了」：调用方会把残缺结果当完整数据";
+        EXPECT_NE(stream->lastError().find("流式读取中断"), std::string::npos) << stream->lastError();
+
+        // 会话已经没了，这条连接上的后续命令同样拿不到结果。刻意放在流还活着的时候执行：
+        // 驱动的「连接级错误顺手断开」会走到 mysql_close，而那正是下面这条 ASan 判据要盯的顺序
+        EXPECT_EQ(victim.execute("SELECT 1"), nullptr) << "被服务端杀掉的会话还能继续执行";
     }
 
 } // namespace AsynGyanis::Database
