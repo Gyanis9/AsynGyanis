@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "a86c8db3bf2d2b1224120a8db767537556ef4d1d"
+      "revision": "89038a70b55519b289f8fdf2d6ad70151f11f7aa"
     },
     "views": [
       {
@@ -243,7 +243,7 @@
       "sublabel": "GracefulShutdown 接住 CTRL_BREAK",
       "tag": "没接住就是默认处置当场终止",
       "sources": [
-        { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 160, "label": "子进程自己挂控制台处理器" },
+        { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 161, "label": "子进程自己挂控制台处理器" },
         { "path": "src/Platform/System/Process.cpp", "line": 461, "label": "父代按进程组投 CTRL_BREAK" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 348, "label": "进程组是这条腿的前提" }
       ]
