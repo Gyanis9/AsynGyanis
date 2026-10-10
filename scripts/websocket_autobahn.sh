@@ -24,6 +24,9 @@ set -euo pipefail
 #   AUTOBAHN_CASES      JSON 数组字面量，默认 '["*"]'；只跑几条快速回归时就填具体号
 #   AUTOBAHN_EXCLUDE    逗号分隔的用例号，默认排掉超容量的那两条（见下）
 #   AUTOBAHN_REPORT_DIR 报告落点，默认仓库外的临时目录
+#   AUTOBAHN_MIN_CASES  用例面下限，默认 500（官方镜像 517 条减去默认排除的 2 条）；
+#                       落盘的报告数低于它就退 2——裁判中途断掉时剩下的报告照样全绿，
+#                       不数这一格就看不出覆盖面掉了
 #
 # 判据：报告里 behavior=FAILED 的条数必须为 0。默认排除 9.1.6 与 9.2.6——那两条发 16 MiB 的
 # 消息，超本端单条消息 8 MiB 的上限，按 RFC 6455 §7.1.6 回 1009 收口属规范许可的拒绝，
@@ -130,6 +133,25 @@ if [ "${case_count}" = "0" ]; then
 fi
 
 echo "跑了 ${case_count} 条，FAILED ${failed_count} 条；报告在 ${report_dir}"
+
+# 只判「有没有报告」不够：裁判中途断掉时，已经跑完的那几十条照样是全绿的落盘文件，
+# 52 条与 515 条在这条判据里没有区别——覆盖面掉了九成而作业仍 success，这种形状
+# 是本仓最忌的「门禁没跑却被读成跑过」。于是把落盘数与官方用例总数比对，
+# 低于下限就按「裁判没执行完」退 2（与「某条用例没过」的退 1 分开：那不是服务端的规范失败，
+# 重跑这一档作业即可复核，不该把人引去查 WebSocket 实现）。
+# 默认下限 500：官方镜像的 WS 服务端用例是 517 条，扣掉本脚本默认排除的 2 条得 515，
+# 留 15 条余量给上游版本的小幅增减；要按自己的用例面收紧或放宽，用 AUTOBAHN_MIN_CASES 覆盖。
+attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
+min_cases="${AUTOBAHN_MIN_CASES:-500}"
+if [ "${case_count}" -lt "${min_cases}" ]; then
+    echo "裁判只交出 ${case_count} 份报告，低于下限 ${min_cases}：wstest 分派过 ${attempted:-0} 条、退出码 ${wstest_rc}" >&2
+    echo "这一档按「裁判没跑完」处理，不判服务端——先重跑本作业，再决定是否查被测面" >&2
+    echo "---- wstest.log 结尾 20 行（断在哪儿在这）----" >&2
+    tail -20 "${work_dir}/wstest.log" >&2
+    exit 2
+fi
+echo "用例面核对通过：${case_count} 条 ≥ 下限 ${min_cases}（分派 ${attempted:-0} 条）"
+
 if [ "${failed_count}" != "0" ]; then
     for path in $(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json); do
         sed -n 's/^ *"id": "\(.*\)",/\1/p; s/^ *"result": "\(.*\)",/\1/p' "${path}" | paste -sd ' | ' -
