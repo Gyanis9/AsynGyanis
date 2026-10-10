@@ -14,8 +14,11 @@
 #include "Base/Exception/Exception.h"
 #include "Net/Http/HttpRequest.h"
 
+#include <expected>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -47,6 +50,12 @@ namespace AsynGyanis::Net
 
     /// 拒绝版本不合的握手时必须带的那条头部名（RFC 6455 §4.2.2）
     inline constexpr std::string_view kWebSocketVersionHeaderName = "sec-websocket-version";
+
+    /// 握手两侧用来回显「这次升级成了哪个子协议」的头部名（RFC 6455 §4.1 第 4 条与 §4.2.2 第 4 条）
+    inline constexpr std::string_view kWebSocketSubprotocolHeaderName = "sec-websocket-protocol";
+
+    /// 服务端算回那一条的头部名（RFC 6455 §1.3）：客户端核对的就是它
+    inline constexpr std::string_view kWebSocketAcceptHeaderName = "sec-websocket-accept";
 
     /**
      * @brief 计算握手应答里的 Sec-WebSocket-Accept 值
@@ -141,6 +150,58 @@ namespace AsynGyanis::Net
         }
         return protocolValue == kWebSocketProtocolName ? ExtendedConnectKind::WebSocket : ExtendedConnectKind::Unsupported;
     }
+
+    /**
+     * @brief 客户端升级请求的线上形态（RFC 6455 §4.1 的客户端侧）
+     *
+     * @details 必发的几段（请求行、Host、Upgrade、Connection、Sec-WebSocket-Key、Sec-WebSocket-Version）
+     *          由本函数一次拼好；两条可选的（子协议与扩展）按调用方给的取值决定发不发。
+     *          行分隔符一律 CRLF，末尾带一个空行，可整块写入连接。
+     * @param host 权威标识（`host:port`，默认端口不写端口）；含 CR/LF/NUL 一律拒绝
+     * @param requestTarget origin-form 的请求目标（`/chat?room=1`）；含 CR/LF/NUL 一律拒绝
+     * @param clientKey 本端取的 `Sec-WebSocket-Key`（16 字节随机数的标准 base64）
+     * @param subprotocols 依优先级排列的子协议名，为空就不发那条头部；名字里带分隔符或控制字符一律拒绝
+     * @param extensionsOffer `Sec-WebSocket-Extensions` 的取值原文（本端目前只发 permessage-deflate 那一族），
+     *        为空就不发那条头部
+     * @return std::expected<std::string, std::string> 完整的升级请求；拒绝时给中文原因（点明是哪一条取值不合用）
+     * @note 拒绝而不是清洗：把 CR/LF 从 Host 或子协议名里悄悄去掉等于替调用方编了一条它没打算发的请求，
+     *       留着就是响应拆分与缓存投毒的入口
+     */
+    [[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> buildWebSocketUpgradeRequest(std::string_view host, std::string_view requestTarget,
+                                                                                                    std::string_view clientKey, const std::vector<std::string> &subprotocols = {},
+                                                                                                    std::string_view extensionsOffer = {});
+
+    /**
+     * @brief 服务端握手应答里本端要落地的几个事实
+     *
+     * @details 只收「与后续收发光景有关」的两条：选了哪个子协议、扩展有没有被接受。其余头部
+     *          （如服务端自加的普通头部）不在这一格里，需要时由调用方自己回看响应。
+     */
+    struct ASYN_NET_API WebSocketUpgradeAgreement
+    {
+        std::string acceptedSubprotocol;                ///< 对端选定的子协议原文；空表示它没选（本端发了要约而对端不回时，这是要出声的）
+        bool        isPerMessageDeflateAccepted{false}; ///< 对端是否回了 permessage-deflate
+    };
+
+    /**
+     * @brief 核对一条 101 应答（RFC 6455 §4.2.2 与 §5.1 的客户端侧判据）
+     *
+     * @details 逐条判：状态码必须 101；`Upgrade` 必须含 token "websocket"（大小写无关）；
+     *          `Connection` 必须含 token "upgrade"；`Sec-WebSocket-Accept` 必须等于本端 key 算出来的那个值。
+     *          同名头部出现多条一律按不成立处理——两条 accept 意味着这条应答不属于本端这次握手。
+     *          扩展回显里出现本端没提议过的扩展名也一律拒（RFC 6455 §9.1 要客户端把这种握手判成失败）。
+     * @param statusCode 应答的状态码
+     * @param headers 应答的头部（按到达顺序的名值对；名按大小写无关比对）
+     * @param clientKey 本端发出去的 `Sec-WebSocket-Key` 原文
+     * @param offeredExtensions 本端发出去的 `Sec-WebSocket-Extensions` 取值原文；为空表示没提议任何扩展
+     * @return std::expected<WebSocketUpgradeAgreement, std::string> 成立时交回达成的那一小份一致；
+     *         不成立时给中文原因，点明判不过的是哪一条
+     * @note accept 不等必须拒：那是「对端把这条连接当成别的服务器的续接」的唯一信号，放行等于把后续
+     *       每一帧建立在一个没被证实的通道上
+     */
+    [[nodiscard]] ASYN_NET_API std::expected<WebSocketUpgradeAgreement, std::string>
+                               validateWebSocketUpgradeResponse(int statusCode, const std::vector<std::pair<std::string, std::string>> &headers, std::string_view clientKey,
+                                                                std::string_view offeredExtensions = {});
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文

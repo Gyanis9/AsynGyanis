@@ -107,4 +107,8 @@ namespace AsynGyanis::Net
     /// 扩展所在的头部名（RFC 7692 §7.1）：h1 的请求/响应头与 h2 的头字段名都是它，
     /// 因此协商的读入口与写出口共用同一个出处
     inline constexpr std::string_view kWebSocketExtensionsHeaderName = "sec-websocket-extensions";
+
+    /// 本端在扩展要约里唯一提议、也唯一会接受的那个扩展名（RFC 7692 §7.1）：
+    /// 要约与回显两侧都按它比对，不再在别处写第二份字面量
+    inline constexpr std::string_view kPerMessageDeflateExtensionName = "permessage-deflate";
 } // namespace AsynGyanis::Net

@@ -146,7 +146,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isPerMessageDeflateName(const std::string_view extensionName)
         {
-            return tokenEqualsIgnoringCase(extensionName, "permessage-deflate");
+            return tokenEqualsIgnoringCase(extensionName, kPerMessageDeflateExtensionName);
         }
 
         /**

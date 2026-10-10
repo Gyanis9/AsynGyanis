@@ -49,9 +49,9 @@ namespace AsynGyanis::Net
         /// 无效描述符的取值：与 Core::AsyncSocket::close() 之后的 fileDescriptor() 一致
         constexpr int kInvalidSocketDescriptor = -1;
 
-        /// 扩展 CONNECT 的升级应答：状态码与应答头名（RFC 8441 §5 用 2xx 而不是 101）
-        constexpr std::uint32_t    kWebSocketAcceptedStatusCode = 200U;
-        constexpr std::string_view kWebSocketAcceptHeaderName   = "sec-websocket-accept";
+        /// 扩展 CONNECT 的升级应答状态码（RFC 8441 §5 用 2xx 而不是 101）；accept 那条头名
+        /// 与 101 握手用的是同一份出处，见 WebSocketHandshake.h 的 kWebSocketAcceptHeaderName
+        constexpr std::uint32_t kWebSocketAcceptedStatusCode = 200U;
 
         /// 响应头自动补齐规则要认出的三个头名（与 HttpResponse::appendHead() 同一套）
         constexpr std::string_view kContentTypeHeaderName   = "content-type";

@@ -1,7 +1,9 @@
 // TestWebSocketHandshake.cpp —— WebSocket 握手（RFC 6455 §4）的单元测试
 //
-// 覆盖三块：Accept 值的 RFC 黄金样本、升级请求六条校验的通过与拒绝面（每条都要给出可操作的中文
-// 原因）、101 应答报文的逐字节形态。用例都是纯计算，不起网络、不依赖任何外部服务。
+// 覆盖四块：Accept 值的 RFC 黄金样本、升级请求六条校验的通过与拒绝面（每条都要给出可操作的中文
+// 原因）、101 应答报文的逐字节形态，以及出站客户端方向的两件事——升级请求的逐字节构造（含
+// 拒绝能被用来断行的输入）与 §4.2.2 五条核对的通过与拒绝面。用例都是纯计算，不起网络、不依赖
+// 任何外部服务；accept 的期望值取 RFC 原文给定的那一对样本，不是拿本端函数反推。
 
 #include "Net/WebSocket/WebSocketHandshake.h"
 
@@ -15,6 +17,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -391,6 +394,219 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.find("Sec-WebSocket-Extensions"), response.rfind("Sec-WebSocket-Extensions")) << "扩展只能声明一次";
         EXPECT_NE(response.find("Sec-WebSocket-Accept: "), std::string::npos) << "扩展头不能挤掉 Accept：" << response;
         EXPECT_TRUE(response.ends_with("\r\n\r\n")) << "结束空行不能被扩展头挤掉：" << response;
+    }
+
+    // ============================================================================
+    // 出站客户端方向：升级请求的构造与 101 应答的核对
+    // ============================================================================
+
+    /**
+     * @brief 钉住必发六行的逐字节形态，以及「没提议就不发可选头部」
+     * @details 期望值按 RFC 6455 §4.1 的字段顺序手写，不是拿被测的拼装结果反推——否则改顺序
+     *          与漏发头部这两类坏都红不出来。
+     */
+    TEST(WebSocketHandshake, UpgradeRequestCarriesExactlyTheMandatoryLines)
+    {
+        const auto request = buildWebSocketUpgradeRequest("example.com:8443", "/chat?room=1", kRfcExampleClientKey);
+
+        ASSERT_TRUE(request.has_value()) << request.error();
+        EXPECT_EQ(*request, "GET /chat?room=1 HTTP/1.1\r\n"
+                            "Host: example.com:8443\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                            "Sec-WebSocket-Version: 13\r\n"
+                            "\r\n");
+    }
+
+    /**
+     * @brief 钉住两条可选头部只在有要约时出现，且顺序与结束空行都不被挤掉
+     */
+    TEST(WebSocketHandshake, UpgradeRequestAppendsOfferedSubprotocolsAndExtensions)
+    {
+        const auto request = buildWebSocketUpgradeRequest("example.com", "/ws", kRfcExampleClientKey, std::vector<std::string>{"chat", "superchat"},
+                                                          "permessage-deflate; client_max_window_bits=12");
+
+        ASSERT_TRUE(request.has_value()) << request.error();
+        EXPECT_NE(request->find("Sec-WebSocket-Protocol: chat, superchat\r\n"), std::string::npos) << *request;
+        EXPECT_NE(request->find("Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=12\r\n"), std::string::npos) << *request;
+        EXPECT_TRUE(request->ends_with("\r\n\r\n")) << "结束空行必须还是那一个空行：" << *request;
+    }
+
+    /**
+     * @brief 钉住三段由调用方拼进来的文本都不许带断行符或空白
+     * @details 这类输入来自 URL 或配置，最容易混进 CR/LF；悄悄去掉等于替调用方发了一条它没打算发的
+     *          请求，因此一律拒绝并把不合用的那一段点名。
+     */
+    TEST(WebSocketHandshake, UpgradeRequestRejectsHeaderSplittingInput)
+    {
+        if (const auto injectedHost = buildWebSocketUpgradeRequest("example.com\r\nX-Injected: 1", "/ws", kRfcExampleClientKey); injectedHost.has_value())
+        {
+            FAIL() << "Host 里的 CRLF 必须被拒掉，而不是被清洗后发出";
+        } else
+        {
+            EXPECT_TRUE(injectedHost.error().find("Host") != std::string::npos) << injectedHost.error();
+        }
+
+        if (const auto spacedTarget = buildWebSocketUpgradeRequest("example.com", "/a b", kRfcExampleClientKey); spacedTarget.has_value())
+        {
+            FAIL() << "请求目标里的空格会把请求行拆成三段，必须拒";
+        }
+
+        if (const auto badSubprotocol = buildWebSocketUpgradeRequest("example.com", "/ws", kRfcExampleClientKey, std::vector<std::string>{"bad name"}); badSubprotocol.has_value())
+        {
+            FAIL() << "子协议名不是合法 token，必须拒而不是照发";
+        }
+    }
+
+    /**
+     * @brief 钉住一次合格的 101 握手被核对通过，且没有要约时两个结论都是空/假
+     */
+    TEST(WebSocketHandshake, UpgradeResponseAcceptsRfcGoldenHandshake)
+    {
+        const std::vector<std::pair<std::string, std::string>> headers{
+                {"Upgrade", "WebSocket"}, {"Connection", "keep-alive, Upgrade"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}};
+
+        const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey);
+
+        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        EXPECT_TRUE(agreement->acceptedSubprotocol.empty());
+        EXPECT_FALSE(agreement->isPerMessageDeflateAccepted);
+    }
+
+    /**
+     * @brief 逐条钉住 §4.2.2 的拒绝面：每条都要出声且点名判不过的是哪一条
+     */
+    TEST(WebSocketHandshake, UpgradeResponseRejectsEveryFailedValidationCheck)
+    {
+        const std::vector<std::pair<std::string, std::string>> goodHeaders{
+                {"Upgrade", "websocket"}, {"Connection", "Upgrade"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}};
+
+        // 状态码不是 101：升级不成立，本端要按普通 HTTP 响应处理
+        EXPECT_FALSE(validateWebSocketUpgradeResponse(200, goodHeaders, kRfcExampleClientKey).has_value());
+
+        // Upgrade 缺 / 值不是 websocket
+        EXPECT_FALSE(validateWebSocketUpgradeResponse(101, {{"Connection", "Upgrade"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}}, kRfcExampleClientKey)
+                             .has_value());
+        if (const auto wrongUpgrade = validateWebSocketUpgradeResponse(
+                    101, {{"Upgrade", "h2c"}, {"Connection", "Upgrade"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}}, kRfcExampleClientKey);
+            wrongUpgrade.has_value())
+        {
+            FAIL() << "Upgrade 升的不是 websocket 时必须拒";
+        }
+
+        // Connection 里没有 upgrade 这个 token（列表里得有它，中间设施才会放行协议切换）
+        if (const auto badConnection = validateWebSocketUpgradeResponse(
+                    101, {{"Upgrade", "websocket"}, {"Connection", "keep-alive"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}}, kRfcExampleClientKey);
+            badConnection.has_value())
+        {
+            FAIL() << "Connection 缺 upgrade token 时必须拒";
+        } else
+        {
+            EXPECT_TRUE(badConnection.error().find("Connection") != std::string::npos) << badConnection.error();
+        }
+
+        // Accept 缺、错值、以及同名两条：都不成立
+        EXPECT_FALSE(validateWebSocketUpgradeResponse(101, {{"Upgrade", "websocket"}, {"Connection", "Upgrade"}}, kRfcExampleClientKey).has_value());
+        if (const auto wrongAccept = validateWebSocketUpgradeResponse(
+                    101, {{"Upgrade", "websocket"}, {"Connection", "Upgrade"}, {"sec-websocket-accept", "AAAAAAAAAAAAAAAAAAAAAAAAAAA="}}, kRfcExampleClientKey);
+            wrongAccept.has_value())
+        {
+            FAIL() << "accept 与本端算出的值不一致时必须拒——这是「这条应答是不是回给我这次握手」的唯一信号";
+        }
+        if (const auto doubledAccept = validateWebSocketUpgradeResponse(101,
+                                                                        {{"Upgrade", "websocket"},
+                                                                         {"Connection", "Upgrade"},
+                                                                         {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)},
+                                                                         {"Sec-WebSocket-Accept", std::string(kRfcExampleAcceptValue)}},
+                                                                        kRfcExampleClientKey);
+            doubledAccept.has_value())
+        {
+            FAIL() << "两条 accept 意味着应答不属于这次握手，不能挑一条信";
+        }
+    }
+
+    /**
+     * @brief 钉住回显结论会被落地：选中的子协议与接受的扩展都要交回会话层
+     */
+    TEST(WebSocketHandshake, UpgradeResponseReportsSelectedSubprotocolAndDeflate)
+    {
+        const std::vector<std::pair<std::string, std::string>> headers{{"Upgrade", "websocket"},
+                                                                       {"Connection", "Upgrade"},
+                                                                       {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)},
+                                                                       {"Sec-WebSocket-Protocol", " chat "},
+                                                                       {"Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover"}};
+
+        const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate; client_max_window_bits=12");
+
+        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        EXPECT_EQ(agreement->acceptedSubprotocol, "chat") << "回显值两侧的空白不属于内容，要折掉再交回";
+        EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
+    }
+
+    /**
+     * @brief 钉住「回显了本端没提议的扩展」判失败（RFC 6455 §9.1）
+     * @details 这一条不能放行：接受一个自己没提议的扩展等于让对面决定本端的收发光景，
+     *          而本端连那个扩展的实现都没有。
+     */
+    TEST(WebSocketHandshake, UpgradeResponseRejectsExtensionThatWasNotOffered)
+    {
+        const std::vector<std::pair<std::string, std::string>> headers{{"Upgrade", "websocket"},
+                                                                       {"Connection", "Upgrade"},
+                                                                       {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)},
+                                                                       {"Sec-WebSocket-Extensions", "permessage-deflate"}};
+
+        if (const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey); agreement.has_value())
+        {
+            FAIL() << "本端没提议扩展时，对面回了 permessage-deflate 必须判失败";
+        } else
+        {
+            EXPECT_TRUE(agreement.error().find("没提议") != std::string::npos) << agreement.error();
+        }
+    }
+
+    /**
+     * @brief 钉住列表型头部按 token 比对、扩展名按整名比对
+     * @details 两条都是「前缀命中不等于命中」的形状：Connection 写成 upgrademe 不算带了 upgrade
+     *          这个 token（RFC 6455 §4.2.2 第 3 条要的是 token），对面回一个更长的扩展名也不是
+     *          本端提议过的那个扩展（§9.1）。用子串比较的实现两条都放行，而线上表现是「握手成功
+     *          但后续行为由对面决定」。
+     */
+    TEST(WebSocketHandshake, UpgradeResponseRequiresWholeTokensNotSubstrings)
+    {
+        if (const auto fakeConnection = validateWebSocketUpgradeResponse(
+                    101, {{"Upgrade", "websocket"}, {"Connection", "upgrademe"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}}, kRfcExampleClientKey);
+            fakeConnection.has_value())
+        {
+            FAIL() << "Connection 里的 upgrademe 不是 upgrade 这个 token，不能放行";
+        }
+
+        if (const auto longerExtension = validateWebSocketUpgradeResponse(101,
+                                                                          {{"Upgrade", "websocket"},
+                                                                           {"Connection", "Upgrade"},
+                                                                           {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)},
+                                                                           {"Sec-WebSocket-Extensions", "permessage-deflate-experimental"}},
+                                                                          kRfcExampleClientKey, "permessage-deflate");
+            longerExtension.has_value())
+        {
+            FAIL() << "回显的扩展名以本端提议者为前缀、但不是同一个名字，必须判失败";
+        }
+    }
+
+    /**
+     * @brief 钉住扩展参数可以不同但名字必须对得上：名字之后的参数由扩展自己判
+     */
+    TEST(WebSocketHandshake, UpgradeResponseComparesExtensionNameNotWholeParameterList)
+    {
+        const std::vector<std::pair<std::string, std::string>> headers{{"Upgrade", "websocket"},
+                                                                       {"Connection", "Upgrade"},
+                                                                       {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)},
+                                                                       {"Sec-WebSocket-Extensions", "permessage-deflate; client_no_context_takeover"}};
+
+        const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate");
+
+        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
     }
 
 } // namespace AsynGyanis::Net

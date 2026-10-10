@@ -3,7 +3,9 @@
 #include "Base/Coding/Base64.h"
 #include "Core/Crypto/Digest.h"
 #include "Net/Http/HttpHeaderRules.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +15,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -24,6 +27,36 @@ namespace AsynGyanis::Net
 
         /// Sec-WebSocket-Key 解码后的字节数（RFC 6455 §4.1 第 7 条），即客户端随机数长度
         constexpr std::size_t kWebSocketKeyByteLength = 16;
+
+        /**
+         * @brief 把一份 `Sec-WebSocket-Extensions` 取值拆成扩展名序列（参数段丢掉）
+         * @details 要约侧与回显侧共用这一份：两边的线格式都是「扩展名 [; 参数] , ...」（RFC 6455 §9.1、
+         *          RFC 7692 §7.1），比对只看名字；参数是否可用归扩展自己判。
+         * @param fieldValue 头部取值原文
+         * @return std::vector<std::string> 依出现顺序的扩展名，空白段与空名被跳过
+         */
+        std::vector<std::string> splitExtensionNames(const std::string_view fieldValue)
+        {
+            std::vector<std::string> names;
+            std::size_t              cursor = 0;
+            while (cursor <= fieldValue.size())
+            {
+                const std::size_t      commaPosition     = fieldValue.find_first_of(',', cursor);
+                const std::string_view item              = fieldValue.substr(cursor, (commaPosition == std::string_view::npos ? fieldValue.size() : commaPosition) - cursor);
+                const std::size_t      semicolonPosition = item.find(';');
+                const std::string      name(trimOptionalWhitespace(item.substr(0, semicolonPosition)));
+                if (!name.empty())
+                {
+                    names.push_back(name);
+                }
+                if (commaPosition == std::string_view::npos)
+                {
+                    break;
+                }
+                cursor = commaPosition + 1;
+            }
+            return names;
+        }
 
         /**
          * @brief 解析「HTTP/主版本.次版本」形式的版本串
@@ -97,6 +130,160 @@ namespace AsynGyanis::Net
                                                                         kSupportedWebSocketVersion, kSupportedWebSocketVersion);
             }
             return false;
+        }
+
+        /**
+         * @brief 一段由调用方喂进来的文本里是否出现控制字符（可选地连空格也算）
+         * @details CR/LF 会终止一行从而凭空多出一条头部或一条请求，空格会把请求行拆成三段，NUL 让
+         *          后续字节被截断读走。判「拒绝」而不是「顺手清一下」：清过就等于发了一条调用方没打算发的请求。
+         * @param text 待检文本
+         * @param allowSpace 是否允许 0x20：头部取值内部要留空格分隔参数，请求行与 Host 不接受
+         * @return true 含禁止出现的字节
+         */
+        bool hasForbiddenCharacter(const std::string_view text, const bool allowSpace)
+        {
+            for (const char character: text)
+            {
+                const auto byte = static_cast<unsigned char>(character);
+                if (byte <= 0x1FU || byte == 0x7FU)
+                {
+                    return true;
+                }
+                if (!allowSpace && byte == 0x20U)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 升级请求各段取值的合法性判定，产出「第一条不该发出去的理由」
+         * @details 只判不发：把这些检查留在拼装之前，失败时一个字节都没写进缓冲区，调用方也就没有
+         *          半条请求要收尾。各段判据的出处见 buildWebSocketUpgradeRequest() 的注释。
+         * @param host Host 头部取值
+         * @param requestTarget 请求行的目标
+         * @param clientKey Sec-WebSocket-Key 取值
+         * @param subprotocols 提议的子协议名，可为空
+         * @param extensionsOffer Sec-WebSocket-Extensions 取值，可为空
+         * @return std::optional<std::string> 有值即非法，值为中文可操作的拒因
+         */
+        std::optional<std::string> findUpgradeOfferProblem(const std::string_view host, const std::string_view requestTarget, const std::string_view clientKey,
+                                                           const std::vector<std::string> &subprotocols, const std::string_view extensionsOffer)
+        {
+            if (host.empty())
+            {
+                return std::string("WebSocket 升级请求缺 Host：请给出对端的权威标识（形如 example.com 或 example.com:8443）");
+            }
+            if (hasForbiddenCharacter(host, false))
+            {
+                return std::format("WebSocket 升级请求的 Host「{}」含控制字符或空白：这会在请求头里断开出一行，请改成纯权威标识", host);
+            }
+            if (requestTarget.empty() || (!requestTarget.starts_with('/') && requestTarget != "*"))
+            {
+                return std::format("WebSocket 升级请求的目标「{}」不是 origin-form：请以 / 开头（如 /chat?room=1），RFC 9110 §5.3", requestTarget);
+            }
+            if (hasForbiddenCharacter(requestTarget, false))
+            {
+                return std::format("WebSocket 升级请求的目标「{}」含控制字符或空白：请先按 RFC 3986 §2.1 把非法字节百分号编码", requestTarget);
+            }
+            if (clientKey.empty())
+            {
+                return std::string("WebSocket 升级请求缺 Sec-WebSocket-Key：请交来 16 字节随机数按 RFC 4648 标准 base64 后的文本");
+            }
+            if (hasForbiddenCharacter(clientKey, false))
+            {
+                return std::string("WebSocket 升级请求的 Sec-WebSocket-Key 含控制字符：它必须是单个 base64 token，不能带换行");
+            }
+
+            // 子协议名按 RFC 6455 §4.1 是 1#token：不是 token 的名字既进不了列表，也可能把 CR/LF
+            // 或分隔符混进头部，因此逐个按 tchar 集合判
+            for (const std::string &subprotocol: subprotocols)
+            {
+                if (subprotocol.empty())
+                {
+                    return std::string("Sec-WebSocket-Protocol 里有一条空取值：请去掉空的子协议名，或整条不发");
+                }
+                for (const char character: subprotocol)
+                {
+                    if (!isTokenCharacter(static_cast<unsigned char>(character)))
+                    {
+                        return std::format("子协议名「{}」含 RFC 9110 §5.1 之外的字符 {}：它必须是单个 token，请改用合规的名字", subprotocol,
+                                           static_cast<int>(static_cast<unsigned char>(character)));
+                    }
+                }
+            }
+            if (hasForbiddenCharacter(extensionsOffer, true))
+            {
+                return std::string("Sec-WebSocket-Extensions 的取值含控制字符：扩展参数之间只能用「;」与「,」分隔，不能带换行");
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 取出一组应答头里所有同名的取值
+         * @details 头部名按 ASCII 大小写无关比对（RFC 9110 §5.1）；同名多条要逐条看，因为列表型头部允许
+         *          分多行发（Connection 就是常见的一条），而 accept 这类单值头部多条则是不合规范的应答。
+         * @param headers 应答头部序列
+         * @param name 要查的头部名，大小写不敏感
+         * @return std::vector<std::string_view> 依出现顺序的同名取值，指回 headers 内部
+         */
+        std::vector<std::string_view> headerValues(const std::vector<std::pair<std::string, std::string>> &headers, const std::string_view name)
+        {
+            std::vector<std::string_view> matches;
+            for (const auto &[headerName, headerValue]: headers)
+            {
+                if (equalsIgnoringCase(headerName, name))
+                {
+                    matches.push_back(headerValue);
+                }
+            }
+            return matches;
+        }
+
+        /**
+         * @brief 同名多行的取值里，是否有任意一条含指定 token
+         * @details 按整 token 比对而非子串：Upgrade: xwebsocket 不含 websocket 这个 token。
+         * @param values 同名取值集合
+         * @param token 要找的 token，大小写不敏感
+         * @return true 至少一条含该 token
+         */
+        bool anyValueContainsToken(const std::vector<std::string_view> &values, const std::string_view token)
+        {
+            return std::any_of(values.begin(), values.end(), [token](const std::string_view value) { return containsFieldValueToken(value, token); });
+        }
+
+        /**
+         * @brief 核对 101 回显的扩展名全部是本端提议过的，并把落地的那一个标进 agreement
+         * @details 判据是「回显里出现的每个扩展名都必须在提议过的名单里」（RFC 6455 §9.1 要客户端把这种
+         *          握手判成失败）。参数差异不在这一格判：那属于扩展自己的口径，本端只落地
+         *          permessage-deflate 一个扩展，它的窗口位数由会话侧按回显原文再解一次。
+         * @param extensionValues 应答里 Sec-WebSocket-Extensions 的同名取值，可为空
+         * @param offeredExtensions 本端这次提议的扩展原文，拒因里要原样回显给用户看
+         * @param agreement 出参：命中 permessage-deflate 时置 isPerMessageDeflateAccepted
+         * @return std::expected<void, std::string> 失败即回显了未提议过的扩展
+         */
+        std::expected<void, std::string> checkExtensionEcho(const std::vector<std::string_view> &extensionValues, const std::string_view offeredExtensions,
+                                                            WebSocketUpgradeAgreement &agreement)
+        {
+            const std::vector<std::string> offeredExtensionNames = splitExtensionNames(offeredExtensions);
+            for (const std::string_view extensionValue: extensionValues)
+            {
+                for (const std::string &extensionName: splitExtensionNames(extensionValue))
+                {
+                    const bool wasOffered = std::any_of(offeredExtensionNames.begin(), offeredExtensionNames.end(),
+                                                        [&extensionName](const std::string &offered) { return equalsIgnoringCase(offered, extensionName); });
+                    if (!wasOffered)
+                    {
+                        return std::unexpected(std::format("101 应答回了本端没提议过的扩展「{}」（RFC 6455 §9.1）：本端只提议了「{}」", extensionName, offeredExtensions));
+                    }
+                    if (equalsIgnoringCase(extensionName, kPerMessageDeflateExtensionName))
+                    {
+                        agreement.isPerMessageDeflateAccepted = true;
+                    }
+                }
+            }
+            return {};
         }
     } // namespace
 
@@ -271,5 +458,116 @@ namespace AsynGyanis::Net
         // 结束空行：没有它，对端会把后续的帧字节当成头部继续读
         response.append("\r\n");
         return response;
+    }
+
+    std::expected<std::string, std::string> buildWebSocketUpgradeRequest(const std::string_view host, const std::string_view requestTarget, const std::string_view clientKey,
+                                                                         const std::vector<std::string> &subprotocols, const std::string_view extensionsOffer)
+    {
+        // 各段取值先整体判一遍再拼装：拒因的判据收在 findUpgradeOfferProblem() 里
+        if (const std::optional<std::string> problem = findUpgradeOfferProblem(host, requestTarget, clientKey, subprotocols, extensionsOffer); problem.has_value())
+        {
+            return std::unexpected(*problem);
+        }
+
+        std::string request;
+        request.reserve(256 + requestTarget.size() + host.size());
+        // 行分隔符一律 CRLF（RFC 9112 §3.2 的硬性要求），末尾那个空行是头部块的终止符
+        request.append("GET ");
+        request.append(requestTarget);
+        request.append(" HTTP/1.1\r\n");
+        request.append("Host: ");
+        request.append(host);
+        request.append("\r\n");
+        request.append("Upgrade: websocket\r\n");
+        request.append("Connection: Upgrade\r\n");
+        request.append("Sec-WebSocket-Key: ");
+        request.append(clientKey);
+        request.append("\r\n");
+        request.append("Sec-WebSocket-Version: ");
+        request.append(kSupportedWebSocketVersion);
+        request.append("\r\n");
+
+        // 两条可选头部只在有内容时才发：发一条空值的 Sec-WebSocket-Protocol 会让某些服务端把
+        // 「我提议了但没有可用协议」读成一次必须回 404 的握手（§4.1 第 4 条的写法就是 1#token）
+        if (!subprotocols.empty())
+        {
+            request.append("Sec-WebSocket-Protocol: ");
+            for (std::size_t index = 0; index < subprotocols.size(); ++index)
+            {
+                if (index != 0)
+                {
+                    request.append(", ");
+                }
+                request.append(subprotocols[index]);
+            }
+            request.append("\r\n");
+        }
+        if (!extensionsOffer.empty())
+        {
+            request.append("Sec-WebSocket-Extensions: ");
+            request.append(extensionsOffer);
+            request.append("\r\n");
+        }
+        request.append("\r\n");
+        return request;
+    }
+
+    std::expected<WebSocketUpgradeAgreement, std::string> validateWebSocketUpgradeResponse(const int statusCode, const std::vector<std::pair<std::string, std::string>> &headers,
+                                                                                           const std::string_view clientKey, const std::string_view offeredExtensions)
+    {
+        if (statusCode != 101)
+        {
+            return std::unexpected(std::format("对端没回 101 Switching Protocols，而是 {}：这次升级不成立，请核对地址、端口与 TLS 配置", statusCode));
+        }
+
+        if (!anyValueContainsToken(headerValues(headers, "upgrade"), "websocket"))
+        {
+            return std::unexpected("101 应答的 Upgrade 头里没有 websocket 这个 token（RFC 6455 §4.2.2 第 2 条）：对面升上去的不是 WebSocket 协议");
+        }
+
+        // Connection 必须显式带上 upgrade：它是让中间设施放行这次协议切换的开关，缺了它后续帧
+        // 可能被按 HTTP 报文缓存下来
+        if (!anyValueContainsToken(headerValues(headers, "connection"), "upgrade"))
+        {
+            return std::unexpected("101 应答的 Connection 头里没有 upgrade 这个 token（RFC 6455 §4.2.2 第 3 条）：中间设施不会放行这条协议切换");
+        }
+
+        const std::vector<std::string_view> acceptValues = headerValues(headers, kWebSocketAcceptHeaderName);
+        if (acceptValues.size() != 1)
+        {
+            return std::unexpected(std::format("101 应答里的 {} 头部有 {} 条（必须是恰好一条）：两条 accept 意味着这条应答不是回给本端这次握手的", kWebSocketAcceptHeaderName,
+                                               acceptValues.size()));
+        }
+        const std::string expectedAcceptValue = computeWebSocketAcceptValue(clientKey);
+        if (acceptValues.front() != expectedAcceptValue)
+        {
+            // 逐字节比（base64 大小写有意义）：这里不能折大小写，折了就把「对端算了另一把 key」
+            // 误判成「只是排版不同」
+            return std::unexpected(std::format("101 应答的 {} 与本端算出的值不一致（RFC 6455 §4.2.2 第 4 条）：本端算的是 {}，对面回的是 {}", kWebSocketAcceptHeaderName,
+                                               expectedAcceptValue, acceptValues.front()));
+        }
+
+        WebSocketUpgradeAgreement agreement;
+
+        const std::vector<std::string_view> protocolValues = headerValues(headers, kWebSocketSubprotocolHeaderName);
+        if (protocolValues.size() > 1)
+        {
+            return std::unexpected(
+                    std::format("101 应答里的 {} 头部有 {} 条：子协议只能选定一个，请核对对面是不是把多条拼了过来", kWebSocketSubprotocolHeaderName, protocolValues.size()));
+        }
+        if (!protocolValues.empty())
+        {
+            agreement.acceptedSubprotocol = trimOptionalWhitespace(protocolValues.front());
+        }
+
+        if (const std::vector<std::string_view> extensionValues = headerValues(headers, kWebSocketExtensionsHeaderName); !extensionValues.empty())
+        {
+            if (const auto echoResult = checkExtensionEcho(extensionValues, offeredExtensions, agreement); !echoResult)
+            {
+                return std::unexpected(echoResult.error());
+            }
+        }
+
+        return agreement;
     }
 } // namespace AsynGyanis::Net
