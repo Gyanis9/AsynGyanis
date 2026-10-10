@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "741b2a80d43b3eac67f7a0b86aea4bb96a4ca669"
+      "revision": "330d197b26541becaeffb612f09dfdc61a2b2b93"
     },
     "views": [
       {
@@ -120,7 +120,7 @@
       "sources": [
         { "path": "src/Net/Http2/Http2Session.cpp", "line": 180, "label": "读 ALPN 后分岔" },
         { "path": "src/Net/Http2/Http2Session.cpp", "line": 193, "label": "runHttp2Loop" },
-        { "path": "src/Net/Http/HttpsServer.cpp", "line": 117, "end_line": 118, "label": "服务端只建 h2 会话" }
+        { "path": "src/Net/Http/HttpsServer.cpp", "line": 124, "end_line": 125, "label": "服务端只建 h2 会话" }
       ]
     }
   ],
@@ -169,7 +169,7 @@
         "start()：每个工作循环各自 bind 同一端口，由内核按 SO_REUSEPORT 分摊（Linux only）",
         "startAccepting(distributor)：单监听器 + 用户态轮转投递，Windows 多线程只能用这条",
         "过载与按 IP 限额在 takeOverConnection 里先判，通过了才建会话（src/Net/Tcp/TcpServer.cpp:174-178）",
-      "HTTP/3 不走这张图：它没有 TcpServer 接手、没有 TlsSocket 握手、也没有 HttpParser——每条 QUIC 连接按需挂一个 Http3Session（src/Net/Quic/QuicServer.cpp:588），传输侧的形状看 quic-connection-lifecycle 那张。三条通道在业务侧读到的是同一组字段，来源地址靠构造会话时交下去的出口而不是套接字（:597）"
+      "HTTP/3 不走这张图：它没有 TcpServer 接手、没有 TlsSocket 握手、也没有 HttpParser——每条 QUIC 连接按需挂一个 Http3Session（src/Net/Quic/QuicServer.cpp:595），传输侧的形状看 quic-connection-lifecycle 那张。三条通道在业务侧读到的是同一组字段，来源地址靠构造会话时交下去的出口而不是套接字（:612）"
       ]
     },
     {
@@ -178,7 +178,7 @@
       "items": [
         "ALPN 偏好表是 {h2, http/1.1}：客户端没带列表给 NO_ACK，全不匹配直接 ALERT_FATAL（src/Core/Tls/TlsContext.cpp:61、:285）",
         "握手按 WANT_READ/WANT_WRITE 挂回事件循环（TlsSocket.cpp:177-196）；m_isWritePending 是 SSL_read/SSL_write 的唯一串行闸，反方向占槽走 5ms 让路",
-        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:117、src/Net/Http2/Http2Session.cpp:180-193）",
+        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:124、src/Net/Http2/Http2Session.cpp:180-193）",
         "热轮换整台换 SSL_CTX，在跑的连接各持旧上下文不受影响，只影响新连接（src/Core/Tls/TlsContext.cpp:619）"
       ]
     },
