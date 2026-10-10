@@ -89,6 +89,13 @@ namespace AsynGyanis::Net
         m_staticFiles.setCacheControl(cacheControl);
     }
 
+    void HttpsServer::staticPrecompressedVariants(const bool enabled)
+    {
+        // 与 HttpServer/QuicServer 同一条路：本体在 StaticFileService，这里只转发
+        ensureStaticFileSettings();
+        m_staticFiles.setPrecompressedVariants(enabled);
+    }
+
     std::optional<std::string> HttpsServer::staticFileCacheControl() const
     {
         const std::shared_ptr<StaticFileSettings> settings = m_staticFiles.settings();

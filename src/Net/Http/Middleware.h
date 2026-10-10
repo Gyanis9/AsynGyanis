@@ -1052,22 +1052,33 @@ namespace AsynGyanis::Net
         }
 
 
-        /// 压缩算法偏好顺序（对端都接受时按此挑选）：zstd 压缩率与速度综合最好、brotli 次之
-        /// （静态内容尤佳）、gzip 兜底兼容。加算法按偏好插进这张表即可
-        inline constexpr std::string_view kCompressionPreference[] = {"zstd", "br", "gzip"};
+        /**
+         * @brief 一种响应压缩算法的两件对外事实：编码名与静态预压缩副本的后缀
+         * @details 只在这张表里登记过的算法才会被协商选中，也才会被静态服务的变体查找认出来
+         */
+        struct CompressionCodec
+        {
+            std::string_view name;       ///< 写进 `Content-Encoding` 的编码名
+            std::string_view fileSuffix; ///< 静态预压缩副本的后缀约定（如 `.br`）
+        };
+
+        /// 压缩算法表：**表的顺序就是服务器偏好**——zstd 压缩率与速度综合最好、brotli 次之（静态内容
+        /// 尤佳）、gzip 兜底兼容。在线协商与静态预压缩的变体查找读的都是这一张表，于是「本端认为 br
+        /// 比 gz 好」这件事只有一处结论；加算法改这一行，两处一起跟上
+        inline constexpr std::array<CompressionCodec, 3> kCompressionCodecs{{{"zstd", ".zst"}, {"br", ".br"}, {"gzip", ".gz"}}};
 
         /**
          * @brief 按偏好顺序挑出本请求要用的编码
          * @param acceptEncoding 请求的 Accept-Encoding 原文
-         * @return std::string_view 选中的编码名（取值见 kCompressionPreference）；空表示按未压缩的原文发
+         * @return std::string_view 选中的编码名（取值见 kCompressionCodecs 的 `name`）；空表示按未压缩的原文发
          */
         [[nodiscard]] inline std::string_view selectPreferredEncoding(const std::string_view acceptEncoding)
         {
-            for (const std::string_view candidate: kCompressionPreference)
+            for (const CompressionCodec &codec: kCompressionCodecs)
             {
-                if (acceptsEncoding(acceptEncoding, candidate))
+                if (acceptsEncoding(acceptEncoding, codec.name))
                 {
-                    return candidate;
+                    return codec.name;
                 }
             }
             return {};
@@ -1113,7 +1124,7 @@ namespace AsynGyanis::Net
          * @brief 按选定编码压一次正文，没压成或压完不更短都返回空
          * @details 就地压与外置到工作线程压共用这一份实现：两条路径的产物必须逐字节相同，
          *          否则开关一拨就换了一套编码语义
-         * @param encoding 选定的编码名，取值见 kCompressionPreference
+         * @param encoding 选定的编码名，取值见 kCompressionCodecs 的 `name`
          * @param body 待压的正文
          * @param options 各算法的档位
          * @return std::optional<std::string> 压缩结果；为空表示没压成，或压了不会更短

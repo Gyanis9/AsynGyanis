@@ -133,6 +133,20 @@ namespace AsynGyanis::Net
         void staticDirectoryListing(bool enabled);
 
         /**
+         * @brief 设置静态服务要不要按 `Accept-Encoding` 挑选同目录的预压缩副本
+         *
+         * @details 默认关闭，关闭时静态响应与加这一格之前逐字相同。打开后按服务器偏好
+         *          （zstd > br > gzip，与在线压缩同一张表）挑第一个「对端接受且磁盘上有副本」的算法，
+         *          正文即副本的字节，并带上 `Content-Encoding` 与 `Vary: Accept-Encoding`；
+         *          副本由部署方自己生成，引擎不压盘上的文件。完整语义见
+         *          `StaticFileService::setPrecompressedVariants()`。
+         * @param enabled true 参与变体协商；false（默认）只发请求路径本身那份
+         * @note 必须在 start() 之前配置，与静态目录本身同一时限
+         * @see staticFileDir(), StaticFileService::setPrecompressedVariants()
+         */
+        void staticPrecompressedVariants(bool enabled);
+
+        /**
          * @brief 查询当前配置的静态文件 Cache-Control 值。
          * @return 已设置的值；未设置或从未配置过静态目录时为空 optional
          */

@@ -575,6 +575,13 @@ namespace AsynGyanis::Net
         m_staticFiles.setCacheControl(cacheControl);
     }
 
+    void QuicServer::staticPrecompressedVariants(const bool enabled)
+    {
+        // 与 HttpServer/HttpsServer 同一条路：本体在 StaticFileService，这里只转发
+        ensureStaticFileSettings();
+        m_staticFiles.setPrecompressedVariants(enabled);
+    }
+
     std::optional<std::string> QuicServer::staticFileCacheControl() const
     {
         // 本体在 StaticFileService，这里与 HttpServer/HttpsServer 那两份读口取的是同一个 settings 对象：

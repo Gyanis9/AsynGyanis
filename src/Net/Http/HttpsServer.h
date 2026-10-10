@@ -133,6 +133,17 @@ namespace AsynGyanis::Net
          */
         void staticDirectoryListing(bool enabled);
 
+        /**
+         * @brief 设置静态服务要不要按 `Accept-Encoding` 挑选同目录的预压缩副本
+         * @details 与 `HttpServer::staticPrecompressedVariants()` 同一语义、同一份实现
+         *          （本体在 `StaticFileService`）：三条通道若在表示协商上给出不同答案，
+         *          表现就是换个协议换个形状。默认关闭。
+         * @param enabled true 参与变体协商；false（默认）只发请求路径本身那份
+         * @note 必须在 start() 之前配置，与静态目录本身同一时限
+         * @see staticFileDir(), StaticFileService::setPrecompressedVariants()
+         */
+        void staticPrecompressedVariants(bool enabled);
+
         /// @brief 读回当前生效的 Cache-Control 配置；未设置时为空 optional
         [[nodiscard]] std::optional<std::string> staticFileCacheControl() const;
 

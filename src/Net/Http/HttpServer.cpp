@@ -12,6 +12,7 @@
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpSession.h"
+#include "Net/Http/Middleware.h"
 #include "Net/Http2/Http2Session.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/FileSystem/FileSystem.h"
@@ -700,6 +701,37 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 这个名字是不是某个已存在资源的预压缩副本
+         * @details 判据是「剥掉已知后缀之后，同目录里有那份基名文件」：`release.tar.gz` 只有在
+         *          `release.tar` 也在场时才算变体，否则它就是一个人家要原样下载的归档，照常列出。
+         *          算变体就不列——列出来等于邀请一条 `GET /app.js.br`，那种请求按 `.br` 这个没人认识
+         *          的扩展名给 octet-stream 且不带 `Content-Encoding`，是一份自相矛盾的表示；同一份
+         *          字节真正的入口是它的基名 `app.js`，那里才会带上正确的编码声明。
+         * @param entryPath 目录里那条目的路径
+         * @return true 剥掉某个已登记算法后缀后能找到基名文件
+         */
+        [[nodiscard]] bool isPrecompressedVariantOfExistingBase(const std::filesystem::path &entryPath)
+        {
+            // 名字按 UTF-8 出串再比后缀：Windows 上 path::string() 走本地代码页，中文资源名会在那里
+            // 抛出，而这条站在列表的每个条目上。剥掉后缀之后的那段要还原成路径，因此再走一次
+            // pathFromUtf8——两边都用 UTF-8 刻度，非 ASCII 的名字才不会一半是代码页一半是 UTF-8
+            const std::string fileName = Platform::FileSystem::utf8FromPath(entryPath.filename());
+            for (const Detail::CompressionCodec &codec: Detail::kCompressionCodecs)
+            {
+                if (fileName.size() <= codec.fileSuffix.size() || !fileName.ends_with(codec.fileSuffix))
+                {
+                    continue;
+                }
+                const std::filesystem::path basePath = entryPath.parent_path() / Platform::FileSystem::pathFromUtf8(fileName.substr(0, fileName.size() - codec.fileSuffix.size()));
+                if (const std::optional<Platform::FileBasicInfo> baseInfo = Platform::queryFileBasicInfo(basePath); baseInfo.has_value() && baseInfo->isRegularFile)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
          * @brief 生成一份 HTML 目录列表并写进响应
          *
          * @details 三条刻意的口径，都写进用例：
@@ -712,8 +744,10 @@ namespace AsynGyanis::Net
          * @param directory 要列出的目录（调用方已确认它在静态根之内）
          * @param requestPath 请求路径原文，用于标题、条目链接的前缀与「上一级」的判定
          * @param response 待填的响应
+         * @param hidePrecompressedVariants 变体协商开着时传 true：副本不再作为独立条目列出（见
+         *        `isPrecompressedVariantOfExistingBase`），它们通过基名与 `Accept-Encoding` 到达
          */
-        void renderDirectoryListing(const std::filesystem::path &directory, const std::string_view requestPath, HttpResponse &response)
+        void renderDirectoryListing(const std::filesystem::path &directory, const std::string_view requestPath, HttpResponse &response, const bool hidePrecompressedVariants)
         {
             std::vector<DirectoryEntry> entries;
             entries.reserve(kMaximumListedDirectoryEntries);
@@ -733,6 +767,12 @@ namespace AsynGyanis::Net
             std::size_t observedEntryCount = 0;
             for (const std::filesystem::directory_entry &candidate: iterator)
             {
+                // 变体藏在基名后面：不列、也不计入「未列出」那条尾巴——它不是被条目上限挤掉的，是不该出现的
+                if (hidePrecompressedVariants && isPrecompressedVariantOfExistingBase(candidate.path()))
+                {
+                    continue;
+                }
+
                 ++observedEntryCount;
                 if (entries.size() >= kMaximumListedDirectoryEntries)
                 {
@@ -945,6 +985,96 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 写一条静态服务的错误应答：状态码、固定正文与纯文本类型
+         * @details 正文是那句不带信息的短笺：不透露目录结构、不带验证器，也不回显请求原文。
+         *          收成一次调用是为了给「表示」那一段腾出行数预算——本文件的最长函数按复杂度基线
+         *          只准降不准升，而静态这一格要往里加变体协商，挤预算只能靠收掉已有的重复
+         * @param response 待填的响应
+         * @param status 状态码
+         * @param reason 正文原文
+         */
+        void writeStaticErrorResponse(HttpResponse &response, const int status, const std::string_view reason)
+        {
+            response.setStatus(status);
+            response.setBody(reason);
+            response.setHeader("content-type", kPlainTextContentType);
+        }
+
+        /**
+         * @brief 写静态表示的验证器、Cache-Control、编码声明与 Vary
+         * @details 200、206、304 与 multipart 那四条出口共用这一份实现：四边各写一遍迟早漂移，
+         *          而这里的每一条口径都是有判据的（见下面两段注释）。
+         * @param response 待填的响应
+         * @param entityTagText 由**实际发出去那份文件**的大小与整秒修改时间构出的强 ETag
+         * @param lastModifiedText 同一个时间戳的 HTTP 日期文本
+         * @param contentEncodingToken 选中的预压缩算法名；空表示发的是明文那份
+         * @param settings 静态服务配置（读 Cache-Control 与变体协商开关）
+         */
+        void appendStaticRepresentationHeaders(HttpResponse &response, const std::string_view entityTagText, const std::string_view lastModifiedText,
+                                               const std::string_view contentEncodingToken, const StaticFileSettings &settings)
+        {
+            response.setHeader("etag", entityTagText);
+            response.setHeader("last-modified", lastModifiedText);
+            if (settings.cacheControl.has_value())
+            {
+                response.setHeader("cache-control", *settings.cacheControl);
+            }
+            // 预压缩副本是部署方离线产出的另一份表示，不是这一请求就地转换出来的，因此 ETag 保持强
+            // （在线压缩那条要降级成 W/，是因为它把同一份字节改了形；这里两份字节本来就不同）。
+            // Vary 则无条件跟着发：开着这一格，同一 URL 的答案就取决于 Accept-Encoding，
+            // 哪怕这条请求最后发的是明文也一样——漏发才是缺陷，多发只是啰嗦。
+            // 304 补 Vary 而不补 Content-Encoding：§15.4.5 的必带清单里有前者、没有后者，而这条路径
+            // 的既有口径是「304 只带验证器」（content-type 与 accept-ranges 同样不发），缓存要恢复
+            // 编码信息靠的是它自己存着的那条 200，不是这条空正文的 304
+            if (!contentEncodingToken.empty() && response.status() != 304)
+            {
+                response.setHeader("content-encoding", contentEncodingToken);
+            }
+            if (settings.precompressedVariantsEnabled)
+            {
+                Detail::appendVaryAcceptEncoding(response);
+            }
+        }
+
+        /// 一份预压缩变体的三件事实：副本文件、它的元数据、要写进 `Content-Encoding` 的算法名
+        struct PrecompressedVariant
+        {
+            std::filesystem::path   path;         ///< 实际发出去的那份字节所在的文件
+            Platform::FileBasicInfo basicInfo;    ///< 同一次查询给出的元数据，验证器与长度都从它构出
+            std::string_view        encodingName; ///< 静态字面量，取自 `Detail::kCompressionCodecs`
+        };
+
+        /**
+         * @brief 按服务器偏好挑第一个「对端接受且磁盘上有副本」的预压缩变体
+         * @details 算法顺序与后缀都读 `Detail::kCompressionCodecs` 那一张表——在线压缩认为 br 比 gz 好，
+         *          静态这一路就必须认为 br 比 gz 好，两处各写一遍迟早分叉。
+         *          探测与取元数据是同一次 `queryFileBasicInfo`：副本的存在性本来就要问文件系统，
+         *          再问一次只是多一趟系统调用。
+         * @param requestedPath 已通过包含判定的请求路径（`weakly_canonical` 之后的绝对路径）
+         * @param acceptEncoding 请求的 `Accept-Encoding` 原文；空串按「没带这个头」处理
+         * @return std::optional<PrecompressedVariant> 选中的变体；一个都不成立时空
+         */
+        [[nodiscard]] std::optional<PrecompressedVariant> findPrecompressedVariant(const std::filesystem::path &requestedPath, const std::string_view acceptEncoding)
+        {
+            for (const Detail::CompressionCodec &codec: Detail::kCompressionCodecs)
+            {
+                if (!Detail::acceptsEncoding(acceptEncoding, codec.name))
+                {
+                    continue;
+                }
+                // 后缀是表里的 ASCII 字面量，拼在已归一化的路径末尾：这一段带不出根目录，
+                // 也就用不上 pathFromUtf8（那条是给 URI 解码来的 UTF-8 文本用的）
+                std::filesystem::path variantPath = requestedPath;
+                variantPath += std::filesystem::path(codec.fileSuffix);
+                if (const std::optional<Platform::FileBasicInfo> variantInfo = Platform::queryFileBasicInfo(variantPath); variantInfo.has_value() && variantInfo->isRegularFile)
+                {
+                    return PrecompressedVariant{std::move(variantPath), *variantInfo, codec.name};
+                }
+            }
+            return std::nullopt;
+        }
+
+        /**
          * @brief 把一条请求当作静态文件请求处理，填充响应
          * @details 除路径清洗与文件查找外，还负责缓存验证（ETag / Last-Modified 与 304）
          *          与单区间 Range（206/416）；只读取方法、路径与条件请求/区间头部。
@@ -960,9 +1090,7 @@ namespace AsynGyanis::Net
             // 静态目录只读：非 GET/HEAD 一律 405 并如实声明支持的方法，不落到后面的「文件不存在」
             if (requestMethod != HttpMethod::GET && requestMethod != HttpMethod::HEAD)
             {
-                response.setStatus(405);
-                response.setBody("Method Not Allowed");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 405, "Method Not Allowed");
                 response.setHeader("allow", "GET, HEAD");
                 co_return;
             }
@@ -970,9 +1098,7 @@ namespace AsynGyanis::Net
             // 未启用（含根目录规范化失败）时按「无此资源」处理：不把「服务器配置有问题」告诉客户端
             if (settings == nullptr || !settings->isEnabled)
             {
-                response.setStatus(404);
-                response.setBody("Not Found");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 404, "Not Found");
                 co_return;
             }
 
@@ -983,17 +1109,13 @@ namespace AsynGyanis::Net
             if (verdict == PathVerdict::Malformed)
             {
                 // 400：路径本身畸形，客户端改对了才有下一次
-                response.setStatus(400);
-                response.setBody("Bad Request: Malformed Path");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 400, "Bad Request: Malformed Path");
                 co_return;
             }
             if (verdict == PathVerdict::Forbidden)
             {
                 // 403：形态合法但意图越权，明确告知是被拒绝而不是找不到
-                response.setStatus(403);
-                response.setBody("Forbidden");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 403, "Forbidden");
                 co_return;
             }
 
@@ -1002,12 +1124,10 @@ namespace AsynGyanis::Net
             {
                 if (!settings->listingEnabled)
                 {
-                    response.setStatus(404);
-                    response.setBody("Not Found");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 404, "Not Found");
                     co_return;
                 }
-                renderDirectoryListing(settings->rootDirectory, request.path(), response);
+                renderDirectoryListing(settings->rootDirectory, request.path(), response, settings->precompressedVariantsEnabled);
                 co_return;
             }
 
@@ -1018,18 +1138,14 @@ namespace AsynGyanis::Net
             if (pathError)
             {
                 // 归一化失败多因路径过长、字符集不支持或中途权限不足：与「不存在」同权重，回 404
-                response.setStatus(404);
-                response.setBody("Not Found");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 404, "Not Found");
                 co_return;
             }
 
             // 归一化之后的第二道包含判定：拦住 ..\、符号链接、大小写与平台分隔符的一切花样
             if (!isWithinRootDirectory(candidatePath, settings->rootDirectory))
             {
-                response.setStatus(403);
-                response.setBody("Forbidden");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 403, "Forbidden");
                 co_return;
             }
 
@@ -1038,46 +1154,59 @@ namespace AsynGyanis::Net
             // 这是静态文件服务的固有代价（nginx 同形态）。要连这份现读一起消掉得加一层
             // 「路径 → 元数据」缓存并配失效策略（交给 file watcher 或 TTL），实测表明它成为瓶颈
             // 之前不做：缓存失效写错会把「文件更新后仍旧 ETag」变成真缺陷
-            const std::optional<Platform::FileBasicInfo> fileBasicInfo = Platform::queryFileBasicInfo(candidatePath);
-            if (!fileBasicInfo.has_value())
+            const std::optional<Platform::FileBasicInfo> requestedInfo = Platform::queryFileBasicInfo(candidatePath);
+            if (!requestedInfo.has_value())
             {
                 // 查不到元数据（不存在、权限不足或查询本身失败）：按「没有这个资源」处理
-                response.setStatus(404);
-                response.setBody("Not Found");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 404, "Not Found");
                 co_return;
             }
-            if (!fileBasicInfo->isRegularFile)
+            if (!requestedInfo->isRegularFile)
             {
                 // 目录与设备文件都到不了「把文件正文发出去」那一步。只有显式开了目录列表才多问一次
                 // 「这是目录吗」：列表关着时（默认）探测者拿到的仍是一条普通 404，不泄露目录结构
                 std::error_code directoryError;
                 if (settings->listingEnabled && std::filesystem::is_directory(candidatePath, directoryError) && !directoryError)
                 {
-                    renderDirectoryListing(candidatePath, request.path(), response);
+                    renderDirectoryListing(candidatePath, request.path(), response, settings->precompressedVariantsEnabled);
                     co_return;
                 }
-                response.setStatus(404);
-                response.setBody("Not Found");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 404, "Not Found");
                 co_return;
             }
 
-            const std::uintmax_t fileSize = fileBasicInfo->sizeBytes;
+            // 预压缩变体协商（默认关闭）：只有请求路径本身这份存在才谈变体，一条 `.br` 副本不能凭空
+            // 造出一个资源。选定之后，正文、验证器与长度一律改用**实际发出去那一份**——下面每一处
+            // fileSize / lastWriteSeconds / identityTag 都取自 representation，就不会出现「发的是副本
+            // 的字节、配的是明文的 ETag」这种跨表示的错配
+            std::filesystem::path                  servedPath = candidatePath;
+            std::string_view                       contentEncodingToken{};
+            std::optional<Platform::FileBasicInfo> representationInfo = requestedInfo;
+            if (settings->precompressedVariantsEnabled)
+            {
+                if (const std::optional<PrecompressedVariant> variant = findPrecompressedVariant(candidatePath, request.getHeader("accept-encoding").value_or(std::string{}));
+                    variant.has_value())
+                {
+                    servedPath           = std::move(variant->path);
+                    representationInfo   = variant->basicInfo;
+                    contentEncodingToken = variant->encodingName;
+                }
+            }
+
+            const Platform::FileBasicInfo &fileBasicInfo = *representationInfo;
+            const std::uintmax_t           fileSize      = fileBasicInfo.sizeBytes;
 
             // 内存保护：超限的大文件不映射，也不给半截正文
             if (fileSize > kMaximumStaticFileSize)
             {
-                response.setStatus(413);
-                response.setBody("Payload Too Large");
-                response.setHeader("content-type", kPlainTextContentType);
+                writeStaticErrorResponse(response, 413, "Payload Too Large");
                 co_return;
             }
 
             // 验证器：ETag 由「大小 + 修改时间整秒」构出，Last-Modified 由同一个整秒格式化而来。
             // 三样取自同一次查询，因此大小与修改时间必然描述同一个版本；分三次查时中间被改过
             // 就会拼出一对来自不同版本的验证器，那才是原先两处 500 分支想挡的东西
-            const std::int64_t lastWriteSeconds = fileBasicInfo->lastWriteSeconds;
+            const std::int64_t lastWriteSeconds = fileBasicInfo.lastWriteSeconds;
             // 两份验证器文本都落在栈上：它们只活到 setHeader 把内容拷进响应的头部存储为止，
             // 按 std::string 交回就是每请求两次超出内联缓冲的堆分配（ETag 最长 36、日期定长 29）
             std::array<char, kMaximumEtagTextBytes> etagBuffer{};
@@ -1089,18 +1218,11 @@ namespace AsynGyanis::Net
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上
             // 查表返回的是静态字面量，直接交给 setHeader 的 string_view 形参；再拷一份进 std::string
             // 等于把「application/octet-stream」这种超出内联的长度白付一次堆分配
+            // 这里**故意**用请求路径（candidatePath）而不是 servedPath 的扩展名：`app.js.br` 的媒体类型
+            // 是内层那份 `app.js` 的（text/javascript），外层后缀交给 Content-Encoding 表达
             const char *const mimeType = FileSender::contentTypeForFile(Platform::FileSystem::utf8FromPath(candidatePath.extension()));
 
             // 缓存验证器与 Cache-Control 只在 200/206/304 上写一次，避免三处各写一遍而漂移
-            const auto appendCacheHeaders = [&response, &entityTagText, &lastModifiedText, &settings]()
-            {
-                response.setHeader("etag", entityTagText);
-                response.setHeader("last-modified", lastModifiedText);
-                if (settings->cacheControl.has_value())
-                {
-                    response.setHeader("cache-control", *settings->cacheControl);
-                }
-            };
 
             const bool isHeadRequest = (requestMethod == HttpMethod::HEAD);
 
@@ -1108,9 +1230,7 @@ namespace AsynGyanis::Net
             // 先判 If-Match 才能把「前提不成立」与「没变化」这两种答复分清楚
             if (preconditionFails(request, entityTagText))
             {
-                response.setStatus(412);
-                response.setBody("Precondition Failed");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                writeStaticErrorResponse(response, 412, "Precondition Failed");
                 co_return;
             }
 
@@ -1118,7 +1238,7 @@ namespace AsynGyanis::Net
             if (isNotModified(request, entityTagText, lastWriteSeconds))
             {
                 response.setStatus(304);
-                appendCacheHeaders();
+                appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
                 // 304 里的 content-length 只允许取「同一请求的 200 会发出的正文长度」（RFC 9112 §6.2），
                 // 这里正是唯一知道那个长度的位置（正文已被清空，自动补缺只会补出 0——那是禁止的取值）
                 response.setHeader("content-length", std::to_string(fileSize));
@@ -1144,10 +1264,10 @@ namespace AsynGyanis::Net
             // 200 全量：一份自相矛盾的 206 比让对端重取整份文件糟得多
             if (rangeVerdict == RangeVerdict::MultiSatisfiable)
             {
-                if (co_await writeMultipartByteRangesBody(candidatePath, byteRanges, fileSize, mimeType, *fileBasicInfo, isHeadRequest, response))
+                if (co_await writeMultipartByteRangesBody(servedPath, byteRanges, fileSize, mimeType, fileBasicInfo, isHeadRequest, response))
                 {
                     response.setHeader("accept-ranges", "bytes");
-                    appendCacheHeaders();
+                    appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
                     co_return;
                 }
                 byteRanges.clear();
@@ -1170,27 +1290,23 @@ namespace AsynGyanis::Net
 #if !ASYN_PLATFORM_WIN32
             const auto prepareMappedFile = [&]() -> std::shared_ptr<const Platform::MemoryMappedFile>
             {
-                if (const std::shared_ptr<const Platform::MemoryMappedFile> cached = settings->mappingCache->find(candidatePath, *fileBasicInfo); cached != nullptr)
+                if (const std::shared_ptr<const Platform::MemoryMappedFile> cached = settings->mappingCache->find(servedPath, fileBasicInfo); cached != nullptr)
                 {
                     return cached;
                 }
 
-                auto mappedFile = std::make_shared<Platform::MemoryMappedFile>(Platform::MemoryMappedFile::open(candidatePath));
+                auto mappedFile = std::make_shared<Platform::MemoryMappedFile>(Platform::MemoryMappedFile::open(servedPath));
                 if (!mappedFile->isValid())
                 {
                     // 文件在 stat 之后被并发删除、改权限或占满句柄（TOCTOU 窗口）：按服务端故障处理，不回半个文件
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 500, "Internal Server Error");
                     return nullptr;
                 }
                 // 映射长度才是正文的真实字节数。文件在 stat 与映射之间被换成更大的版本时，
                 // 上面的上限判定已经过期，这里按新长度复查一次，避免绕过限制
                 if (mappedFile->bytes().size() > kMaximumStaticFileSize)
                 {
-                    response.setStatus(413);
-                    response.setBody("Payload Too Large");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 413, "Payload Too Large");
                     return nullptr;
                 }
 
@@ -1199,17 +1315,15 @@ namespace AsynGyanis::Net
                 // 这里在登记之前判，对不上就不登记（登记了会让后续请求按旧元数据命中这份新映射）
                 const std::optional<Platform::FileBasicInfo> mappedAs = mappedFile->openedFileInfo();
                 if (!mappedAs.has_value() || mappedAs->sizeBytes != fileSize || mappedAs->lastWriteSeconds != lastWriteSeconds ||
-                    mappedAs->identityTag != fileBasicInfo->identityTag)
+                    mappedAs->identityTag != fileBasicInfo.identityTag)
                 {
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 500, "Internal Server Error");
                     return nullptr;
                 }
 
                 // 登记的元数据就是刚查到的那一份：下一次请求带着新的 size/mtime 来比，
                 // 文件被换掉即不命中，不需要额外的失效通知通道
-                settings->mappingCache->store(candidatePath, mappedFile, *fileBasicInfo);
+                settings->mappingCache->store(servedPath, mappedFile, fileBasicInfo);
                 return mappedFile;
             };
 #endif
@@ -1234,21 +1348,19 @@ namespace AsynGyanis::Net
             {
                 std::string                                      &bodyBuffer = response.prepareBodyBuffer(bodyLength);
                 Platform::FileBasicInfo                           openedBody;
-                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(candidatePath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
+                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(servedPath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
                 // 验证器取自查元数据那一次，正文取自这一次打开：两次之间文件被原子替换时，发出去的是
                 // 新版本的字节配的却是旧版本的 ETag/Last-Modified，客户端会把这份内容长期挂在旧验证器
                 // 下。两处必须是同一个对象，否则与短读一样按服务端故障收口
                 // 正文长度为 0 时那一步压根没打开文件（少一次系统调用），openedBody 也就无从填起：
                 // 空文件是一条合法表示，不能因为「比不了」被判成服务端故障
                 const bool isVersionMismatch = bodyLength > 0U && (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
-                                                                   openedBody.identityTag != fileBasicInfo->identityTag);
+                                                                   openedBody.identityTag != fileBasicInfo.identityTag);
                 if (!readResult.has_value() || *readResult < bodyLength || isVersionMismatch)
                 {
                     // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
                     // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 500, "Internal Server Error");
                     co_return;
                 }
             }
@@ -1266,9 +1378,7 @@ namespace AsynGyanis::Net
                 // 不让越界区间走到正文校验里变成异常
                 if (rangeVerdict == RangeVerdict::Satisfiable && mappedFile->bytes().size() < static_cast<std::size_t>(byteRange.end) + 1)
                 {
-                    response.setStatus(500);
-                    response.setBody("Internal Server Error");
-                    response.setHeader("content-type", kPlainTextContentType);
+                    writeStaticErrorResponse(response, 500, "Internal Server Error");
                     co_return;
                 }
             }
@@ -1277,7 +1387,7 @@ namespace AsynGyanis::Net
             // 200 与 206 共有的表示头部：都要声明支持按字节取区间
             response.setHeader("content-type", mimeType);
             response.setHeader("accept-ranges", "bytes");
-            appendCacheHeaders();
+            appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
 
             if (rangeVerdict == RangeVerdict::Satisfiable)
             {
@@ -1588,6 +1698,11 @@ namespace AsynGyanis::Net
         m_settings->listingEnabled = enabled;
     }
 
+    void StaticFileService::setPrecompressedVariants(const bool enabled)
+    {
+        m_settings->precompressedVariantsEnabled = enabled;
+    }
+
     std::shared_ptr<StaticFileSettings> StaticFileService::settings() const noexcept
     {
         return m_settings;
@@ -1621,6 +1736,14 @@ namespace AsynGyanis::Net
     {
         ensureStaticFileSettings();
         m_staticFiles.setCacheControl(cacheControl);
+    }
+
+    void HttpServer::staticPrecompressedVariants(const bool enabled)
+    {
+        // 与目录列表那格同一条路：本体在 StaticFileService，服务器一侧只转发。三条通道若在
+        // 「同一 URL 发哪一份表示」上给出不同答案，换个协议就换个形状，那种分叉最难归因
+        ensureStaticFileSettings();
+        m_staticFiles.setPrecompressedVariants(enabled);
     }
 
     std::optional<std::string> HttpServer::staticFileCacheControl() const

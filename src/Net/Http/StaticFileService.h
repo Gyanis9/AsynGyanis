@@ -42,6 +42,18 @@ namespace AsynGyanis::Net
          */
         bool listingEnabled{false};
         /**
+         * @brief 是否按 `Accept-Encoding` 挑选同目录的预压缩副本（`.zst` / `.br` / `.gz`）作为表示
+         * @details false（默认）时静态服务与加这一格之前逐字相同：即使目录里躺着 `app.js.br`，
+         *          发出去的仍是 `app.js`。打开后按服务器偏好（见 `Detail::kCompressionCodecs` 的顺序）
+         *          挑第一个「对端接受且磁盘上有副本」的算法，正文就是那份副本的字节，并如实带
+         *          `Content-Encoding` 与 `Vary: Accept-Encoding`。
+         * @note 默认关闭对齐业界惯例（nginx 的 `gzip_static` 也是 off）：它会改变同一 URL 的响应字节，
+         *       而部署里叫 `.gz` 的同名文件未必是表示副本——可能是别人要原样下载的文件。
+         * @note 代价是每请求多一次存在性探测（按偏好顺序试到命中为止，最多每算法一次），
+         *       这份探测只在开着这一格时发生
+         */
+        bool precompressedVariantsEnabled{false};
+        /**
          * @brief 映射缓存，由 StaticFileService::install() 按当时的限额建立，之后只读
          * @note 条目上限取自登记那一刻的 HttpServerLimits::maximumMappedStaticFiles，
          *       因此要改上限必须先 setLimits() 再设静态目录
@@ -106,6 +118,19 @@ namespace AsynGyanis::Net
          * @see StaticFileSettings::listingEnabled
          */
         void setDirectoryListing(bool enabled);
+
+        /**
+         * @brief 设置静态服务要不要按 `Accept-Encoding` 挑选同目录的预压缩副本
+         * @param enabled true 时按服务器偏好挑「对端接受且磁盘上有副本」的那份；false（默认）只发请求路径本身
+         * @details 打开后同一 URL 存在两个表示，于是 `Vary: Accept-Encoding` 无条件跟着发——哪怕这一条
+         *          请求最终发的是明文：缓存见过 br 那份再把它发给不接受 br 的客户端就是投毒。
+         *          验证器随表示变：ETag 由**实际发出去那份文件**的大小与整秒修改时间构出，明文与副本
+         *          天然不同，跨变体的 `If-None-Match` 因此不会互相命中。
+         * @note 副本由部署方自己生成（引擎不压盘上的文件），算法名与后缀的对应见 `Detail::kCompressionCodecs`
+         * @note 请求路径本身不存在时**不会**退回去发某个副本，仍按 404：变体不能凭空造出一个资源
+         * @see StaticFileSettings::precompressedVariantsEnabled
+         */
+        void setPrecompressedVariants(bool enabled);
 
         /**
          * @brief 取配置本体（兜底路由的处理函数持有的就是它）

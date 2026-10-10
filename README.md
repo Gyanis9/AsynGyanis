@@ -82,7 +82,10 @@
   每连接状态。不设就是系统默认（Linux 要空闲两小时才探第一次），设了才由内核在连续探测失败到达上限时报错回收
 - **静态文件服务** — `staticFileDir()` 一行接入；条件请求一并给出（`ETag` + `Last-Modified`，
   `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.2），
-  两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份
+  两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份；
+  `staticPrecompressedVariants()` 打开后按 `Accept-Encoding` 直接发构建时压好的那份副本（`.zst` / `.br` /
+  `.gz`，默认关闭），正文、长度、区间与验证器一律取自**实际发出去那一份**，所以两份表示各有自己的 ETag，
+  跨变体的条件请求不会互相命中；开着这一格就无条件发 `Vary: Accept-Encoding`
 - **大文件上传落盘** — 流式路由（`postStreaming()` / `putStreaming()`）边收边交，`RequestBodySpool::capture()`
   再把这条正文一段段写进临时文件：内存里永远只有当前那一段，写动作经 `Core::AsyncExecutor` 离开事件循环线程。
   超过上限或正文没收齐就**拒掉并删掉半份文件**（不把半份上传交给业务，也不在盘上留没人收的尾巴）；

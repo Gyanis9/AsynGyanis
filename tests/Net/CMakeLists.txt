@@ -101,6 +101,7 @@ add_executable(TestNet
         Http/TestMiddleware.cpp
         Http/TestSecurityHeadersWiring.cpp
         Http/TestBasicAuthWiring.cpp
+        Http/TestHttpPrecompressedStatic.cpp
         Http/TestRequestBodySpool.cpp
         Http/TestFileSender.cpp
         Http/TestHttpsServer.cpp
