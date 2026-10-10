@@ -59,7 +59,7 @@
   越界丢**最新**的一条并从 `droppedMessageCount()` 读得到；文本与二进制两种帧各走各的通道（`publish()` /
   `publishBinary()`），队列里每条自带帧类型；被队满挡下的条数挂在 `/metrics` 的 `asyn_websocket_hub_dropped_messages_total`
   上（进程内多个集线器求和），构造时就登记，不等第一次丢弃才出现；对端收口或写失败而整队作废的条数是**另一本账**
-  （`abandonedMessageCount()` / `asyn_websocket_hub_abandoned_messages_total`）——合成一条就分不出「该调上界」与「只是断连」
+  （`abandonedMessageCount()` / `asyn_websocket_hub_abandoned_messages_total`）——合成一条就分不出「该调上界」与「只是断连」；**出站方向也在这条线上**——`WebSocketClient` 主动连出去（明文与 wss 共用这一套帧机制），发出去的帧逐帧换掩码键、收回来的帧要求对端不带掩码（RFC 6455 §5.1 给两个方向定的是相反的规矩），收到的 Ping 按原负载回答、Close 按对端那个码回，扩展这一面还没接到出站方向因此不提议
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型；命中的模式原文经 `HttpRequest::matchedRoute()` 交回业务与中间件，按路由分组打点不必自己再拼一遍
 - **安全响应头** — `securityHeadersMiddleware()` 一处挂载给每条响应挂上 `X-Content-Type-Options: nosniff`、
   `X-Frame-Options`、`Referrer-Policy`，按需再加 CSP / Permissions-Policy / Cross-Origin-Resource-Policy；
