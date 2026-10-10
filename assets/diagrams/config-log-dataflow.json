@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "25f4311af6ea8ed7c622dfc9dea8c60dcd3e2acc"
+      "revision": "db2b4d667b9deec9cd59d12f4b89a9455bd8dce2"
     },
     "views": [
       {
@@ -85,7 +85,7 @@
       "stage": 0,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 1036, "label": "h1 每响应计数" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 1039, "label": "h1 每响应计数" }
       ]
     },
     {
@@ -277,7 +277,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Net/Http/HttpServerAssembly.h", "line": 145, "label": "探针为什么不进那道令牌闸" },
-        { "path": "src/Net/Http/Middleware.h", "line": 1414, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
+        { "path": "src/Net/Http/Middleware.h", "line": 1415, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
         { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 125, "label": "循环诊断口的注册函数" }
       ]
     },
