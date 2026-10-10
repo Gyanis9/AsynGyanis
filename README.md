@@ -122,7 +122,9 @@
 - **配置管理** — YAML/JSON 加载、目录递归装载、热重载（inotify / ReadDirectoryChangesW）
 - **服务管理器的状态通知** — `Platform::ServiceNotification` 按 sd_notify(3) 的形状把 `READY=1` / `STOPPING=1` 与一行 `STATUS=`
   交进 `$NOTIFY_SOCKET`（文件系统路径与 Linux 抽象命名空间两种地址都支持，`vsock:` 那种明确拒，不当路径去连一个不存在的文件名）；
-  没有这个变量时报「本进程不在监督之下」而不是静默成功
+  没有这个变量时报「本进程不在监督之下」而不是静默成功；多 worker 形态下由 master 在整池 worker 起来后统一报一次
+  `READY=1`（`WorkerSupervisor` 的 `onAllWorkersRunning`），worker 自己不再碰这条通路——它们继承的是父进程那份
+  `$NOTIFY_SOCKET`，各报一条就会让监督者收到 N 份重复就绪
 - **服务管理器的看门狗节拍** — `Core::ServiceWatchdog` 按 sd_watchdog_enabled(3) 读 `$WATCHDOG_USEC`（窗口折半就是要喂的节拍），
   把这条心跳**挂在事件循环上**：线程池的每条循环各跑一拍拍协程，全部循环都在本轮里醒过一次才发一条 `WATCHDOG=1`，任何一条停摆都让
   这一轮永远凑不齐——用一条独立线程喂等于把「循环卡死」报成健康，而那正是这条通道唯一要抓的形态。`$WATCHDOG_PID` 指的不是本进程
@@ -130,7 +132,9 @@
   并且一条协程都不挂
 - **SIGHUP 的重载入口** — `Core::ReloadSignal` 把运维那枚「换一份配置继续跑」的信号接到注册的重载动作上（systemd 的
   `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`）：`ReferenceServer --config` 之下，一次 HUP 重读配置文件并重装 `logging` 段，
-  同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。注册表跨轮次保留（重载不是一次性的）；Windows 没有这条约定，
+  同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。注册表跨轮次保留（重载不是一次性的）；多 worker 形态下 HUP 落在
+  master 上，重读的是 master 那份配置、状态也只由 master 报（worker 各有一份 `ConfigManager`，要逐位重读请分别对
+  各 worker 的 pid 发信号）；Windows 没有这条约定，
   `isInstalled()` 恒假并说明原因，那边的重载入口仍是文件监听
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
 - **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`、`ReloadSignal`），它们与循环生命周期同生死，再抽一层只多一次间接

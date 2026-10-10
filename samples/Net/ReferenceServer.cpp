@@ -547,18 +547,28 @@ int main(int argc, char **argv)
     // --config」分成两种语义——同一条信号在两种部署里行为不同，是最难归因的那一类。没配文件时
     // 它回一条状态说明为什么什么都没重读，而不是悄悄什么都不做
     reloadSignal.onReload(
-            [configFile, &serviceStatus]
+            [configFile, &serviceStatus, isWorkerProcess]
             {
+                // worker 不替 master 报状态：它继承的是父进程那一份 NOTIFY_SOCKET，报出去的每条都是
+                // 第 2..N 份，而监督者认的是主进程。重读本身照做——每个 worker 各有一份 ConfigManager
+                const bool reportsStatus = !isWorkerProcess;
+
                 if (configFile.empty())
                 {
-                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState("没配 --config：没有可重读的配置")));
+                    if (reportsStatus)
+                    {
+                        static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState("没配 --config：没有可重读的配置")));
+                    }
                     LOG_WARN("SIGHUP 到了，但本进程没配 --config：没有可重读的文件（要热重载请带 --config，或走文件监听那一路）");
                     return;
                 }
 
                 // systemd 的 reload 握手是两条一对：RELOADING=1 让监督者推迟超时，重读结束再补一条
                 // READY=1 收尾。只发前一条，那一侧会等到超时再把进程杀掉
-                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReloadingState));
+                if (reportsStatus)
+                {
+                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReloadingState));
+                }
 
                 const Base::ConfigLoadResult reloaded = Base::ConfigManager::instance().reload();
                 if (reloaded.success)
@@ -578,8 +588,11 @@ int main(int argc, char **argv)
                     LOG_ERROR_FMT("SIGHUP：配置重读失败（{}），仍按原配置继续服务", reasons);
                 }
 
-                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReadyState));
-                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(reloaded.success ? "配置已重读" : "配置重读失败，仍按原配置继续服务")));
+                if (reportsStatus)
+                {
+                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReadyState));
+                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(reloaded.success ? "配置已重读" : "配置重读失败，仍按原配置继续服务")));
+                }
             });
     LOG_INFO("SIGHUP 已接管：kill -HUP <pid> 会重读配置文件并重新装载 logging 段（Windows 没有这条约定，走文件监听那一路）");
 
@@ -703,14 +716,49 @@ int main(int argc, char **argv)
             // 一次抓一个进程并把各进程的数加总，而不是随机命中某一台
             supervisorConfiguration.workerIndexArgument = "--worker-index";
             supervisorConfiguration.workerCount         = workerProcessCount;
+            // 就绪由 master 替整池报一次：被监督的是 master（systemd 的 Type=notify 认的是主进程），
+            // 而 worker 各自继承同一份 NOTIFY_SOCKET——让它们都报就会收到 N 条 READY=1，第二条起只是噪声。
+            // 这一格的判据是「N 个 worker 进程都在跑」，不是「端口已在应答」：后者要一条 worker→master
+            // 的通道才拿得到，本引擎的多进程分工里没有那条路（POSIX 侧各 worker 自己 bind）。
+            // 因此 STATUS= 里写清是按进程报的就绪，端口那一段仍由各 worker 自己的日志与 healthz 交代
+            supervisorConfiguration.onAllWorkersRunning = [&serviceStatus, workerProcessCount]
+            {
+                if (!serviceStatus.open())
+                {
+                    LOG_INFO_FMT("多进程模式未向服务管理器上报就绪：{}（这不是错误——不在监督下跑时没有可通知的对象）", serviceStatus.lastError());
+                    return;
+                }
+                if (!serviceStatus.send(Platform::ServiceNotification::kReadyState))
+                {
+                    LOG_WARN_FMT("READY=1 没有送达服务管理器：{}（那一侧会按启动超时处理本进程）", serviceStatus.lastError());
+                }
+                static_cast<void>(serviceStatus.send(
+                        Platform::ServiceNotification::statusState(std::format("{} 个 worker 进程都在跑，pid {}", workerProcessCount, Platform::ProcessInfo::currentProcessId()))));
+                // 看门狗在多 worker 形态下不挂：那条节拍要由事件循环 own 着发，而 master 只做编排、
+                // 没有循环可挂。此时服务单元里的 WatchdogSec= 会把这条通道变成「没人喂的超时」，
+                // 所以把话说在前面而不是等第一次重启
+                if (Platform::ProcessInfo::environmentVariable("WATCHDOG_USEC").has_value())
+                {
+                    LOG_WARN("多进程模式没有看门狗节拍可挂（master 不跑事件循环，worker 按 WATCHDOG_PID 也不喂）："
+                             "请把服务单元的 WatchdogSec= 关掉，或按单进程形态跑（--workers 1）");
+                }
+            };
+            // 收尾那一报要落在 worker 还没被通知退出之前：监督者从 STOPPING=1 起才开始计停机超时
+            supervisorConfiguration.onStopRequested = [&serviceStatus, workerProcessCount]
+            {
+                if (!serviceStatus.isOpen())
+                {
+                    return;
+                }
+                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kStoppingState));
+                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(std::format("正在收尾，{} 个 worker", workerProcessCount))));
+            };
 
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
             LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）", workerProcessCount,
                          Platform::ProcessInfo::currentProcessId());
-            // 这条形态不向服务管理器报就绪：被监督的是 master，而 worker 各报一次会让那一侧收到
-            // N 条 READY=1，第二条起只是噪声。要用 Type=notify 就按单进程跑，或者用 Type=exec
-            // （master 起来即算成功，配合本引擎自己的收尾顺序）
-            LOG_INFO("多进程模式不向服务管理器上报 READY=1：监督对象是 master 进程，而 worker 各报一次会变成重复上报");
+            // 就绪报在这里而不像单进程那样等监听确认：整池起来之后由编排线程回调（判据见上面那段）
+            LOG_INFO("多进程模式由 master 在整池 worker 起来后报一次 READY=1；worker 自己不再上报状态");
             if (!supervisor.run())
             {
                 // 整池 worker 都「起来就崩」：原因上一条条记在日志里，这里只把结果落到退出码上，
@@ -1390,7 +1438,12 @@ int main(int argc, char **argv)
 
         // 只有真正确认过监听器在听了才报 READY=1：报早了，监督者会把「端口上其实没人」这一形态
         // 读成启动成功，而这条通道存在的意义恰恰是别让部署方看到第二种样子
-        if (!serviceStatus.open())
+        if (isWorkerProcess)
+        {
+            // worker 一条都不报：被监督的是 master，而它继承的是父进程那份 NOTIFY_SOCKET。
+            // 各 worker 都报就会收到 N 条 READY=1，第二条起只是噪声，还会盖住真出问题的那一格
+            LOG_INFO("worker 进程不上报服务管理器状态：监督对象是 master 进程，整池的就绪由 master 统一报一次");
+        } else if (!serviceStatus.open())
         {
             // 「没有 NOTIFY_SOCKET」是按约定的正常形态，不是缺陷，所以这一句按信息级出：
             // 不在监督下跑（开发机、容器、sysvinit）时它就该这么响

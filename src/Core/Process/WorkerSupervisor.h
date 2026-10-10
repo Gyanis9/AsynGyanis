@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -94,6 +95,28 @@ namespace AsynGyanis::Core
              * @note 名字由调用方定：参数约定属于应用，不属于编排层
              */
             std::string workerIndexArgument{};
+
+            /**
+             * @brief 每个槽位都各有一个活着的 worker 时回调一次；空 = 不回调
+             * @details 「活着」按进程号判：`Platform::Process::isRunning` 说的是这个子进程还没退出并已被
+             *          回收，**不**说明它已经绑上监听端口——那一段还要等它自己起完循环。所以这一格能给的是
+             *          「整池都到位了」，端口上真有人应答要由调用方自己再验一次（`ReferenceServer` 就是
+             *          先等这条回调、再对本机端口做一次 TCP 连接试探，然后才向服务管理器报就绪）。
+             * @note 回调跑在**编排线程**上，不得长时间阻塞：那条线程同时负责补崩掉的 worker 与响应停止请求。
+             *       每轮重数一遍个数，凑齐那一刻只回调一次；worker 后来崩了不再补起也不会二次回调——
+             *       「就绪」是一次性陈述，不是持续状态。
+             */
+            std::function<void()> onAllWorkersRunning{};
+
+            /**
+             * @brief 编排开始收口时回调一次（停止请求到达或整池被放弃）；空 = 不回调
+             * @details 给「要告诉监督者我在收尾」那一类调用方用：这一刻 worker 还没被通知退出，
+             *          整池仍在跑，正是一次 `STOPPING=1` 该有的位置。放在 `stopAllWorkers()` 之前而不是
+             *          `run()` 返回之后——后者已经收尾完了，再报就成了事后说明。
+             * @note 同样跑在编排线程上；由信号触发的停止里，本回调是在**循环线程**而不是信号处理函数里跑的
+             *       （处理函数只置原子标记，见 `requestStop()`）。
+             */
+            std::function<void()> onStopRequested{};
         };
 
         /**
@@ -186,6 +209,13 @@ namespace AsynGyanis::Core
          * @return true 该槽位已放弃（连续崩太多次）
          */
         [[nodiscard]] bool reapWorker(Worker &worker, std::size_t workerIndex);
+
+        /**
+         * @brief 把每个槽位看一遍：缺进程的补上、已退出的收尸
+         * @details 单列成一个是因为它做的是一个完整决定（该不该退避、要不要补），而编排循环只关心
+         *          「这一轮结束了没有」。只在编排线程上调用，动的是那张只归本线程的槽位表。
+         */
+        void launchMissingAndReapExited();
 
         /**
          * @brief 送走全部 worker：先请求体面退出，超期强杀

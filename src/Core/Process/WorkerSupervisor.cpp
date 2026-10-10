@@ -39,6 +39,31 @@ namespace AsynGyanis::Core
         /// 仍缺同步语义；is_always_lock_free 由上面的 static_assert 钉住
         std::atomic<WorkerSupervisor *> g_runningSupervisor{nullptr};
 
+        /**
+         * @brief 在编排线程上跑一个观察者回调，抛出的异常就地接住
+         * @param callback 回调本体；空对象是空操作
+         * @param what 日志里写的回调名，报错时要能认出是哪一格
+         */
+        void runObserver(const std::function<void()> &callback, const char *what) noexcept
+        {
+            if (!callback)
+            {
+                return;
+            }
+            try
+            {
+                callback();
+            } catch (const std::exception &failure)
+            {
+                // 让一条坏回调带走整池 worker 是不可接受的：抛出之后 worker 一个都没被通知退出，
+                // 而 run() 的调用方看到的是一个异常，端口上却还有一堆进程在服务
+                LOG_ERROR_FMT("WorkerSupervisor: {} 的观察者抛出异常并被接住：{}（后面的编排照跑）", what, std::string(failure.what()));
+            } catch (...)
+            {
+                LOG_ERROR_FMT("WorkerSupervisor: {} 的观察者抛出非标准异常并被接住（后面的编排照跑）", what);
+            }
+        }
+
 #if !ASYN_PLATFORM_WIN32
         /**
          * @brief 停止信号的处理函数：只置原子标记，退出流程留给 run() 的循环
@@ -249,40 +274,14 @@ namespace AsynGyanis::Core
         // 「整池子都起不来」与「按请求停掉」是两种结果：前者调用方要报非 0 退出码，
         // 否则进程管理器与脚本只看退出码的话，会把一次彻底失败当成一次正常停机
         bool isPoolGivenUp = false;
+        // 就绪只报一次：那一格是给监督者的陈述，不是持续状态。补起一个崩掉的 worker 之后
+        // 再报一次 READY=1，在 systemd 那侧只是第二条噪声，而它已经按这条通道放行后续单元了
+        bool hasAnnouncedReadiness = false;
 
         while (!m_isStopRequested.load(std::memory_order_acquire))
         {
             // 每一轮把每个槽位看一遍：没在跑的补上、已退出的收尸并决定要不要补
-            for (std::size_t workerIndex = 0; workerIndex < m_workers.size(); ++workerIndex)
-            {
-                Worker &worker = m_workers[workerIndex];
-                if (worker.isGivenUp)
-                {
-                    continue;
-                }
-
-                if (!worker.handle.isValid())
-                {
-                    // 退避只加在「这个槽位已经崩过」之后：崩溃循环里不留一段满速重启的窗口。
-                    // 首轮起进程时崩计数还是 0，若照样退避，N 个 worker 的冷启动就要串行等
-                    // N × restartBackoff（默认 500 毫秒），进程池要空转几秒才开始接活
-                    if (worker.crashCount > 0)
-                    {
-                        std::this_thread::sleep_for(m_configuration.restartBackoff);
-                        if (m_isStopRequested.load(std::memory_order_acquire))
-                        {
-                            break;
-                        }
-                    }
-                    static_cast<void>(startWorker(worker, workerIndex));
-                    continue;
-                }
-
-                if (!Platform::Process::isRunning(worker.handle))
-                {
-                    static_cast<void>(reapWorker(worker, workerIndex));
-                }
-            }
+            launchMissingAndReapExited();
 
             // 全部槽位都放弃了就不再空转：日志已经交代过原因，交给调用方决定怎么处理。
             // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份。
@@ -303,6 +302,14 @@ namespace AsynGyanis::Core
             }
             m_runningWorkerCount.store(runningWorkerCount, std::memory_order_release);
 
+            // 凑齐整池才报就绪，且报过就不再报：有一格被放弃时这条回调永远不发生——
+            // 那一格起不来本身就是要让人看见的失败，把「服务已就绪」报出去反而是错的
+            if (!hasAnnouncedReadiness && runningWorkerCount == m_workers.size() && m_configuration.onAllWorkersRunning)
+            {
+                hasAnnouncedReadiness = true;
+                runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
+            }
+
             if (givenUpWorkerCount >= m_workers.size())
             {
                 LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）", givenUpWorkerCount);
@@ -313,11 +320,51 @@ namespace AsynGyanis::Core
             std::this_thread::sleep_for(m_configuration.pollInterval);
         }
 
+        // 收口的这一刻报给调用方：worker 还都在跑，正是「我在收尾」这句话该出去的位置。
+        // 放在 run() 返回之后就晚了——那会儿整池已经送走，监督者等的是一条事后说明
+        runObserver(m_configuration.onStopRequested, "onStopRequested");
+
         stopAllWorkers();
 
         // 停止信号的登记由 signalRegistration 在离开作用域时撤销：正常返回与异常展开走同一条
         LOG_INFO_FMT("WorkerSupervisor: 编排结束");
         return !isPoolGivenUp;
+    }
+
+    void WorkerSupervisor::launchMissingAndReapExited()
+    {
+        for (std::size_t workerIndex = 0; workerIndex < m_workers.size(); ++workerIndex)
+        {
+            Worker &worker = m_workers[workerIndex];
+            if (worker.isGivenUp)
+            {
+                continue;
+            }
+
+            if (!worker.handle.isValid())
+            {
+                // 退避只加在「这个槽位已经崩过」之后：崩溃循环里不留一段满速重启的窗口。
+                // 首轮起进程时崩计数还是 0，若照样退避，N 个 worker 的冷启动就要串行等
+                // N × restartBackoff（默认 500 毫秒），进程池要空转几秒才开始接活
+                if (worker.crashCount > 0)
+                {
+                    std::this_thread::sleep_for(m_configuration.restartBackoff);
+                    // 退避期间来了停止请求就到此为止：剩下那些槽位不该在收尾时补出新的 worker，
+                    // 交给外层的循环条件收（少补一个是「收尾更快」，多补一个是「收尾时还得起新进程」）
+                    if (m_isStopRequested.load(std::memory_order_acquire))
+                    {
+                        return;
+                    }
+                }
+                static_cast<void>(startWorker(worker, workerIndex));
+                continue;
+            }
+
+            if (!Platform::Process::isRunning(worker.handle))
+            {
+                static_cast<void>(reapWorker(worker, workerIndex));
+            }
+        }
     }
 
     void WorkerSupervisor::requestStop() noexcept

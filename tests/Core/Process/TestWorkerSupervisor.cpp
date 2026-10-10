@@ -733,6 +733,100 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "worker 是被本层强杀送走的，不该报成「整池起不来」";
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U);
     }
+
+    /**
+     * @brief 就绪回调只在整池到位那一刻发生一次，且报的是「两个都在跑」这个现场
+     * @details 这一格是给服务管理器的 `READY=1` 用的：报早了那一侧会把「worker 还没起来」读成启动成功，
+     *          重复报则让第二条起全是噪声。把「只在凑齐时一次」做成可判的形态，是回调里当场记下快照——
+     *          条件写坏成「每轮都调」或「有槽位就调」时，记到的快照就不是 2。
+     */
+    TEST(WorkerSupervisor, ReadinessCallbackFiresOnceWhenTheWholePoolIsUp)
+    {
+        const WorkerLaunchLog           launchLog;
+        WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 2, WorkerBehaviour::SleepUntilTerminated);
+
+        std::atomic<std::int32_t> readyCallCount{0};
+        std::atomic<std::size_t>  countAtReadyCall{0};
+        const WorkerSupervisor   *supervisorPointer{nullptr}; // 回调在编排线程上跑，读的是那份原子快照
+        configuration.onAllWorkersRunning = [&]
+        {
+            readyCallCount.fetch_add(1, std::memory_order_relaxed);
+            // 快照由编排线程在同一轮的上一句发布，因此这一刻它一定已是本轮的数
+            countAtReadyCall.store(supervisorPointer == nullptr ? 0U : supervisorPointer->runningWorkerCount(), std::memory_order_relaxed);
+        };
+
+        WorkerSupervisor supervisor(configuration);
+        supervisorPointer = &supervisor;
+        std::thread supervisorThread([&supervisor] { static_cast<void>(supervisor.run()); });
+
+        ASSERT_TRUE(waitForCondition([&readyCallCount] { return readyCallCount.load(std::memory_order_acquire) >= 1; }, kWaitTimeout)) << "整池起来后没报就绪";
+        EXPECT_EQ(countAtReadyCall.load(std::memory_order_acquire), 2U) << "报就绪时快照里不是整池，说明这条回调发早了";
+
+        // 池子稳定后再等两拍：重复触发会在这里露出来（补位、崩溃都不该让它再报第二次）
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
+        EXPECT_EQ(readyCallCount.load(std::memory_order_acquire), 1) << "就绪是一次性陈述，凑齐之后每轮都报就成了重复上报";
+
+        supervisor.requestStop();
+        supervisorThread.join();
+    }
+
+    /**
+     * @brief 收尾回调落在 worker 还没被通知退出之前
+     * @details 它是 `STOPPING=1` 的位置：监督者从那一秒起才开始计停机超时，等整池送走再报就成了事后说明。
+     *          判据是回调里记下的快照——挪到 `stopAllWorkers()` 之后就归零，这条会红。
+     */
+    TEST(WorkerSupervisor, StopCallbackFiresWhileWorkersAreStillRunning)
+    {
+        const WorkerLaunchLog           launchLog;
+        WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 2, WorkerBehaviour::SleepUntilTerminated);
+
+        std::atomic<std::int32_t> stopCallCount{0};
+        std::atomic<std::size_t>  countAtStopCall{0};
+        const WorkerSupervisor   *supervisorPointer{nullptr};
+        configuration.onStopRequested = [&]
+        {
+            stopCallCount.fetch_add(1, std::memory_order_relaxed);
+            countAtStopCall.store(supervisorPointer == nullptr ? 0U : supervisorPointer->runningWorkerCount(), std::memory_order_relaxed);
+        };
+
+        WorkerSupervisor supervisor(configuration);
+        supervisorPointer = &supervisor;
+        std::thread supervisorThread([&supervisor] { static_cast<void>(supervisor.run()); });
+
+        ASSERT_TRUE(waitForCondition([&launchLog] { return launchLog.launchCount() >= 2; }, kWaitTimeout)) << "两个 worker 没有都起来";
+        ASSERT_TRUE(waitForCondition([&supervisor] { return supervisor.runningWorkerCount() >= 2U; }, kWaitTimeout)) << "快照里还没整池，收尾现场就没前提";
+
+        supervisor.requestStop();
+        supervisorThread.join();
+
+        EXPECT_EQ(stopCallCount.load(std::memory_order_acquire), 1) << "收尾只该报一次";
+        EXPECT_EQ(countAtStopCall.load(std::memory_order_acquire), 2U) << "报收尾时 worker 已经不在了：这一刻晚于「我在收尾」该有的位置";
+        EXPECT_EQ(supervisor.runningWorkerCount(), 0U) << "run() 返回后整池应当已送走";
+    }
+
+    /**
+     * @brief 有槽位根本起不来的时候，就绪一次都不报
+     * @details 这一格钉的是条件的另一半：报「整池就绪」而其中一格永远补不起来，等于让监督者按一条
+     *          假陈述放行后续单元。用「可执行文件不存在」造这个现场——进程起不来的判据在 `startWorker`
+     *          里就落了，不会像「起来就崩」那样与父线程的回收窗口抢先后，因此这条判据是确定的。
+     */
+    TEST(WorkerSupervisor, ReadinessCallbackNeverFiresWhenAWorkerSlotCannotStart)
+    {
+        const WorkerLaunchLog           launchLog;
+        WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 2, WorkerBehaviour::SleepUntilTerminated);
+        configuration.executablePath                  = "/nonexistent-asyn-worker-ka13"; // 起不来的那一格：连进程都没有
+        configuration.crashLoopLimit                  = 1;
+
+        std::atomic<std::int32_t> readyCallCount{0};
+        configuration.onAllWorkersRunning = [&readyCallCount] { readyCallCount.fetch_add(1, std::memory_order_relaxed); };
+
+        WorkerSupervisor supervisor(configuration);
+        const bool       isOrderedShutdown = supervisor.run();
+
+        EXPECT_FALSE(isOrderedShutdown) << "全部槽位都起不来，这次编排不该报成按请求收口";
+        EXPECT_EQ(readyCallCount.load(std::memory_order_acquire), 0) << "有一格永远补不起来，却报了整池就绪";
+    }
+
 #endif
 
     /**
