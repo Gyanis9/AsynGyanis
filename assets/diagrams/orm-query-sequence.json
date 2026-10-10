@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "f1cd88d582b1afa6401b7d32c9f3e0f01327775d"
+      "revision": "f9b87dc099f83799ec47c75a76868b77a0723200"
     },
     "views": [
       {
@@ -96,7 +96,7 @@
       "sources": [
         { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 211, "label": "未命中才 prepare" },
         { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 536, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 471, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 548, "label": "命中直 bindAndExecute" }
       ]
     },
     {
@@ -157,7 +157,7 @@
       "dot": "amber",
       "title": "语句缓存的两条分支",
       "items": [
-        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:420 / MySqlConnection.h:442）",
+        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:420 / MySqlConnection.h:457）",
         "SQLite 命中刷 stamp 并整趟跳过编译与边界探测；行没跑完先 detachCachedStatement，超 256 行快照界退回游标即不回缓存",
         "MySQL 任何失败一律 discardCachedStatement，刻意不做重编重试——写语句重试就是二次写入"
       ]
