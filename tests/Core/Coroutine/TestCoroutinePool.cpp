@@ -71,15 +71,14 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 小档装不下的帧由大档接手：仍然整段可写，且指针归属本池而不是一次性全局堆分配
+     * @brief 小档装不下的帧由更高的档接手：仍然整段可写，且指针归属本池而不是一次性全局堆分配
      *
-     * @details 池按帧大小分两档：小档 256 B 装得下的小帧不浪费，大档 2048 B 接住框架里
-     *          路由、会话那类 1.2–2.2 KB 的帧。实测过：不分档时每请求有 5–7 个帧落到全局堆，
-     *          占每请求分配字节数的大头。
+     * @details 池按帧大小分三档（256 / 2048 / 3072）：小档装得下的小帧不浪费，往上各档接住框架里
+     *          会话与路由那类帧。实测过：不分档时每请求有 5–7 个帧落到全局堆，占每请求分配字节数的大头。
      */
     TEST(CoroutinePool, ServesOversizedFramesFromTheLargeTier)
     {
-        // 顶满之后大档只能从全局堆拿块，那时 owns() 为假并不代表分档退化（独立进程里跑必不发生）
+        // 顶满之后高档只能从全局堆拿块，那时 owns() 为假并不代表分档退化（独立进程里跑必不发生）
         if (poolBlockCeilingReached())
         {
             GTEST_SKIP() << "共享帧池已被同进程先前的用例顶到块数上限，本用例「从池里拿大块」的前提不成立";
@@ -87,7 +86,7 @@ namespace AsynGyanis::Core
 
         auto &pool = CoroutinePool::instance();
 
-        // 两倍小档：小档装不下，应当由大档接手
+        // 两倍小档：小档装不下，应当由第二档接手
         const size_t oversized = pool.blockSize() * 2;
         void        *pointer   = pool.allocate(oversized);
         ASSERT_NE(pointer, nullptr);
@@ -105,13 +104,48 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 两档都装不下的请求回退到全局堆：仍然整段可写，归还也不报错（超大帧不因池的规格而不可用）
+     * @brief 顶档要盖住实测最大的那个热帧：路由派发帧（2704 字节）必须从池里拿，不回退全局堆
+     * @details 这条是 2026-10-10 那笔变红的直接护栏：`Router::route` 的帧涨到 2704 字节后越过当时
+     *          只有两档时的顶档 2048，于是**每条被派发的请求**都要向全局分配器要一次内存——
+     *          台账 `TestHotPathAllocations.RouterDispatchExactPathAllocations`（钉「一千次共 0 次」）
+     *          当场变红。2704 是 MSVC 14.51 Release 的实测帧尺寸（用分配追踪探针量出：只创建帧、
+     *          不恢复执行，窗口里就剩这一笔），写在这里判的是**池的规格**——顶档必须容得下它，
+     *          而不是断言路由帧将来还这么大（那是编译器的槽位排布，本仓钉不住）。
+     *          证伪：把顶档规格降回 2048，这条与那条台账一起红。
+     */
+    TEST(CoroutinePool, ServesRouterSizedFramesWithoutFallingBackToGlobalNew)
+    {
+        if (poolBlockCeilingReached())
+        {
+            GTEST_SKIP() << "共享帧池已被同进程先前的用例顶到块数上限，本用例「从池里拿顶档块」的前提不成立";
+        }
+
+        auto &pool = CoroutinePool::instance();
+
+        constexpr size_t routerFrameBytes = 2704U; ///< MSVC 14.51 Release 实测的 Router::route 帧尺寸
+        void            *pointer          = pool.allocate(routerFrameBytes);
+        ASSERT_NE(pointer, nullptr);
+        EXPECT_TRUE(pool.owns(pointer)) << "热帧落到全局堆就是每请求一次分配器调用，顶档没盖住实测尺寸";
+
+        std::memset(pointer, 0xA5, routerFrameBytes);
+        pool.deallocate(pointer, routerFrameBytes);
+
+        // 归还后再取一次：同一档的缓存复用路径也要认这块
+        void *reused = pool.allocate(routerFrameBytes);
+        ASSERT_NE(reused, nullptr);
+        EXPECT_TRUE(pool.owns(reused));
+        std::memset(reused, 0xA5, routerFrameBytes);
+        pool.deallocate(reused, routerFrameBytes);
+    }
+
+    /**
+     * @brief 各档都装不下的请求回退到全局堆：仍然整段可写，归还也不报错（超大帧不因池的规格而不可用）
      */
     TEST(CoroutinePool, AllocateAboveEveryTierFallsBackToGlobalNew)
     {
         auto &pool = CoroutinePool::instance();
 
-        // 十六倍小档（默认 4 KiB）：超过大档规格，只能向全局分配器要
+        // 十六倍小档（默认 4 KiB）：超过顶档规格，只能向全局分配器要
         const size_t hugeSize = pool.blockSize() * 16;
         void        *pointer  = pool.allocate(hugeSize);
         ASSERT_NE(pointer, nullptr);

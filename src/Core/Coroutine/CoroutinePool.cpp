@@ -5,9 +5,9 @@
 
 namespace AsynGyanis::Core
 {
-    CoroutinePool::CoroutinePool(const size_t blockSize, const size_t initialBlocks) : m_blockSize(blockSize)
+    CoroutinePool::CoroutinePool(const size_t initialBlocks)
     {
-        // 启动时先备一批块：把「首次分配就扩容」这条冷路径提前到构造期
+        // 启动时先备一批小档块：把「首次分配就扩容」这条冷路径提前到构造期
         const std::lock_guard lock(m_mutex);
         expand(0, initialBlocks);
     }
@@ -25,7 +25,7 @@ namespace AsynGyanis::Core
     {
         // 单例刻意不进入 RAII 销毁队列：协程帧的销毁时机可能晚于任何函数局部静态对象，
         // 一旦池先退出，回收路径就无从判断块归属，只能泄漏少量池内存换取绝对安全
-        static CoroutinePool *const pool = new CoroutinePool(kDefaultBlockSize, kDefaultInitialBlocks);
+        static CoroutinePool *const pool = new CoroutinePool(kDefaultInitialBlocks);
         return *pool;
     }
 
@@ -124,13 +124,21 @@ namespace AsynGyanis::Core
 
     size_t CoroutinePool::tierForSize(const size_t requiredSize) const noexcept
     {
-        // 小档之外一律进大档：档位判定在分配与回收两侧走同一份代码，因此不会串档。
-        // 超过大档的极少数帧（更大的会话帧、未来 HTTP/2 类实现）返回 kTierCount 交给全局堆
-        if (requiredSize <= m_blockSize)
+        // 取第一个装得下的档：档位判定在分配与回收两侧走同一份代码，因此不会串档。
+        // 超过最后一档的帧（实测分布之外的大帧）返回 kTierCount 交给全局堆
+        for (size_t tier = 0; tier < kTierCount; ++tier)
         {
-            return 0;
+            if (requiredSize <= tierBlockSize(tier))
+            {
+                return tier;
+            }
         }
-        return requiredSize <= kLargeBlockSize ? 1 : kTierCount;
+        return kTierCount;
+    }
+
+    size_t CoroutinePool::tierBlockSize(const size_t tier) noexcept
+    {
+        return kTierBlockSizes[tier];
     }
 
     bool CoroutinePool::owns(const void *const pointer) const noexcept
@@ -140,7 +148,7 @@ namespace AsynGyanis::Core
 
     size_t CoroutinePool::blockSize() const noexcept
     {
-        return m_blockSize;
+        return kTierBlockSizes[0];
     }
 
     size_t CoroutinePool::allocatedCount() const noexcept
@@ -166,7 +174,7 @@ namespace AsynGyanis::Core
 
         // 段内块规格由档位决定，段描述里必须记下这一点——归属判定要按「本段自己的块大小」算边界，
         // 用全池某一个规格去乘会把前一段的区间越到后一段上
-        const size_t chunkBlockSize = tier == 0 ? m_blockSize : kLargeBlockSize;
+        const size_t chunkBlockSize = tierBlockSize(tier);
 
         // 默认对齐即可满足协程帧要求：x64 上 ::operator new 的默认对齐为 16 字节，
         // 与 delete 的自然配对，避免带 align_val_t 分配却用不带对齐参数的释放
@@ -192,8 +200,8 @@ namespace AsynGyanis::Core
         const std::lock_guard lock(m_mutex);
 
         // 该档的全局链表为空时先扩容：按本档已切分的块数翻倍，摊薄连续分配时的扩容次数。
-        // 不能用两档合计的块数做基数——大档规格是小档的 8 倍，一个被小帧跑热过的池第一次
-        // 碰到大帧就会一次要下十几 MiB，既是一记长缺页停顿也一口吃满共享的总块数预算
+        // 不能用各档合计的块数做基数——档间规格差到十六倍，一个被小帧跑热过的池第一次
+        // 碰到热帧就会一次要下十几 MiB，既是一记长缺页停顿也一口吃满共享的总块数预算
         if (m_globalFreeHeads[tier] == nullptr)
         {
             const size_t tierAllocatedBlocks = m_tierAllocatedCount[tier];
