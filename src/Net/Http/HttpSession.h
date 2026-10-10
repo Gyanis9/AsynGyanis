@@ -786,6 +786,9 @@ namespace AsynGyanis::Net
                 // 而「这条请求从哪来」只有会话知道。取的是按连接缓存的那一份（每连接一次取址、一次格式化），
                 // 派发路径上因此一次堆分配也不付。开了 PROXY 协议时这里就是代理交来的真实来源
                 request.setRemoteAddress(connection.cachedRemoteAddress());
+                // 传输层这一格也排在派发之前：h1 的保活循环被模板复用到 TLS 与明文两种套接字上
+                // （HttpsServer 认不出 h2 的 ALPN 就走这条路），会话自己报得出加密与否，业务不必猜
+                request.setOverTls(connection.isSecureTransport());
                 response.reset();
                 response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
                 // HEAD 的响应只有头部、没有正文（RFC 9112 §6.1）：流式路径下分块帧与终止块都算正文，

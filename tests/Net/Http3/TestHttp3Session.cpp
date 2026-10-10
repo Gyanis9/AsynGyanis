@@ -1040,11 +1040,13 @@ namespace AsynGyanis::Net
                 });
 
         std::vector<std::string> observedPeers;
+        std::vector<bool>        observedTransports;
         Router                   router;
         router.get("/hello",
-                   [&observedPeers](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                   [&observedPeers, &observedTransports](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                    {
                        observedPeers.push_back(request.remoteAddress());
+                       observedTransports.push_back(request.overTls());
                        response.setStatus(200);
                        response.setBody("hi");
                        co_return;
@@ -1073,6 +1075,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(observedPeers[0], "203.0.113.9:44000") << "承载层给的来源没有落到请求里";
         EXPECT_EQ(observedPeers[1], observedPeers[0]) << "同一条连接上两条请求读到了不同来源";
         EXPECT_EQ(providerCalls, 1U) << "每条请求都重新问了一次承载层：这条缓存没生效";
+        // h3 恒在加密之上（QUIC 只跑 TLS 1.3，见 QuicServer.h 的同一说明），这一格是 HSTS
+        // 在 h3 上发得出的依据；漏掉它时 h3 的响应会像明文一样被跳过
+        ASSERT_EQ(observedTransports.size(), 2U) << "两条请求没有都读到传输层事实";
+        EXPECT_TRUE(observedTransports[0] && observedTransports[1]) << "h3 的会话把连接报成了明文";
     }
 
     /**

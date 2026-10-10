@@ -229,6 +229,26 @@ namespace AsynGyanis::Net
         return m_tlsSocket.has_value() ? m_tlsSocket->localAddress().toString() : HttpSession::localAddress();
     }
 
+    bool Http2Session::isSecureTransport() const noexcept
+    {
+        // 与 remoteAddress()/localAddress() 同一判据：本会话持有 TlsSocket 就是加密那一侧，
+        // 没有就是 h2c 先验知识的明文连接
+        return m_tlsSocket.has_value();
+    }
+
+    void Http2Session::attachSessionFactsToRequest(HttpRequest &request)
+    {
+        // 三条「只有会话知道」的事实排在派发之前，与 h1 侧 prepareRequestDispatch 同一处口径：
+        // 业务处理器的签名里只有请求与响应两个对象，没有第三条通道把连接身份带过去
+        if (m_requestIdGenerator != nullptr)
+        {
+            m_requestIdGenerator->resolveInto(request);
+        }
+        // h2 一条连接上并发跑多条流，取址只按连接做一次，逐流只指过去
+        request.setRemoteAddress(cachedRemoteAddress());
+        request.setOverTls(isSecureTransport());
+    }
+
     void Http2Session::onGracefulShutdownRequested()
     {
         // 通道已经不可用就不必尝试了：调用方紧接着会 close()，写出去也没人收
@@ -968,12 +988,7 @@ namespace AsynGyanis::Net
                          streamId, request.requestId(), request.uri());
         };
 
-        if (m_requestIdGenerator != nullptr)
-        {
-            m_requestIdGenerator->resolveInto(request);
-        }
-        // 来源地址与 h1 排在同一处：h2 一条连接上并发跑多条流，取址只按连接做一次，逐流只指过去
-        request.setRemoteAddress(cachedRemoteAddress());
+        attachSessionFactsToRequest(request);
 
         // HEAD 只发头部，一个正文字节都不发（RFC 9110 §9.1）：抑制放在这里而不是响应层——
         // 响应层的「无正文」语义只由状态码决定，与请求方法无关

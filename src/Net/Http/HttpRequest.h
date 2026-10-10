@@ -417,6 +417,25 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string remoteAddress() const;
 
         /**
+         * @brief 记下这条请求所在的连接是否跑在 TLS 上
+         * @param isSecure 由会话在派发之前落定（`Core::Connection::isSecureTransport()`）
+         * @details 与 setRemoteAddress() 排在同一处：「这条请求走没走 HTTPS」只有会话知道，
+         *          而业务处理器的签名里只有请求与响应两个对象。h2/h1-over-TLS 由 Http2Session 报出
+         *          自己有没有持有 TlsSocket，h3 恒为真（QUIC 只跑 TLS 1.3）。
+         * @note 报的是**本端这一跳**的事实，刻意不看 X-Forwarded-Proto：那一句谁都能写，把它当可信来源
+         *       会让一条明文连接拿到 HSTS 与 Secure 判定
+         */
+        void setOverTls(bool isSecure) noexcept;
+
+        /**
+         * @brief 这条请求是否经由 TLS 到达
+         * @return true 加密（HTTPS / h3），false 明文（h1 over TCP、h2c）
+         * @details 三个用途：HSTS 头（RFC 6797 §7.2 要求非安全传输上收到的该头被浏览器忽略，明文发出去
+         *          等于写一句没人执行的承诺）、业务侧构造 https 跳转、以及给 Cookie 置 Secure 前的判据
+         */
+        [[nodiscard]] bool overTls() const noexcept;
+
+        /**
          * @brief 发起这条请求的对端 IP，**不带端口**
          * @return std::string IP 文本；地址为空时返回空串，形状认不出来时原样交回整条文本
          * @details 「按来源限流、按地区放行、审计落的是谁」要的键是不带端口的 IP：`remoteAddress()` 里那段
@@ -586,6 +605,10 @@ namespace AsynGyanis::Net
         /// 对端地址文本，指向**会话按连接缓存的那一份**（见 setRemoteAddress()）：按连接复用的请求对象
         /// 因此不为它付一次堆分配，reset() 只把视图清回去
         std::string_view m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
+        /// 这条请求所在的连接是否跑在 TLS 上，由会话在派发之前落定（见 setOverTls()）。
+        /// 与其余会话注入的事实一起在 reset() 里清回未落定的一侧：一条连接不会中途换传输层，
+        /// 但把正确性押在「每条协议通道都记得重新落定」上，将来漏一条就会发出无人执行的 HSTS
+        bool m_overTls{false}; ///< 传输层是否加密（true = HTTPS / h3）
         /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
         /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
         std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定

@@ -164,6 +164,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string localAddress() const override;
 
         /**
+         * @brief 这条会话是否跑在 TLS 上：看本会话自己有没有持有 TlsSocket
+         * @details h2 的两种起手式共用这一个会话类——TLS（ALPN 认出 h2，或认不出协议时退回 h1 的
+         *          保活循环）持有 TlsSocket，明文 h2c（先验知识，没有 CONNECTING/Upgrade 那一段）
+         *          不持有任何 TLS 对象。判据因此就是 `m_tlsSocket.has_value()`，不需要额外的状态位，
+         *          也不会有「两个来源不一致」的可能。
+         * @note 这一格决定 HSTS 能不能发、业务侧 https 跳转与 Cookie 的 Secure 判得对不对，
+         *       所以不能沿用基类的默认 false（那样一条真正的 HTTPS 连接会被答成明文）
+         * @return true 表示经过 TLS，false 表示 h2c 明文
+         */
+        [[nodiscard]] bool isSecureTransport() const noexcept override;
+
+        /**
          * @brief 服务器要优雅收口本连接时，发一条收尾 GOAWAY 告诉对端「不再受理新流」
          *
          * @details 重写 onGracefulShutdownRequested()：服务器决定结束无在途工作的连接时、在 close() 之前调用，
@@ -755,6 +767,15 @@ namespace AsynGyanis::Net
          * @return true 描述符有效（TLS 模式下 SSL 对象仍在、底层描述符没被关掉）
          */
         [[nodiscard]] bool isTransportOpen() const noexcept;
+
+        /**
+         * @brief 把「只有会话知道」的三条事实落进一条请求：request-id、来源地址、传输层是否加密
+         * @details 与 h1 侧 `prepareRequestDispatch` 同一处口径（业务处理器只拿到请求与响应两个对象）。
+         *          单独成函数而不是摊在 serveOneRequest 里，是因为那条协程还要按流做取消转发、
+         *          HEAD 判定与限额结算——这几行归它自己管，读起来也才对得上 h1 那一处
+         * @param request 待派发的那条请求
+         */
+        void attachSessionFactsToRequest(HttpRequest &request);
 
         /**
          * @brief 取当前传输通道的描述符

@@ -1,8 +1,10 @@
-// HttpRequest::remoteAddress() / remoteIp() 的直测：业务处理器只拿到请求与响应两个对象，来源地址必须由
-// 会话在派发之前落进请求里。这里钉四层——字段本身的形状（默认空、设置后读得到、reset() 清掉）、
-// remoteIp() 的剥端口规则（只认本框架产出的三种形状，认不出来就原样交回）、h1 真回环连接上业务读到的
-// 是这条连接的地址、以及开了 PROXY 协议之后读到的是**代理交来的真实
-// 来源**而不是代理记账。h2 与 h3 的同一判据分别落在 tests/Net/Http2 与 tests/Net/Http3。
+// 来源地址（HttpRequest::remoteAddress() / remoteIp()）与传输层是否加密（overTls()）的直测：业务处理器
+// 只拿到请求与响应两个对象，这两条只有会话知道的事实必须由会话在派发之前落进请求里。这里钉四层——
+// 字段本身的形状（默认空 / 默认明文、设置后读得到、reset() 一并清掉）、remoteIp() 的剥端口规则
+// （只认本框架产出的三种形状，认不出来就原样交回）、h1 真回环连接上业务读到的是这条连接的地址**且是
+// 明文**、以及开了 PROXY 协议之后读到的是**代理交来的真实来源**而不是代理记账。
+// h2 与 h3 的同一判据分别落在 tests/Net/Http2 与 tests/Net/Http3，TLS 那一侧的「读到加密」在
+// TestHttpsServer.cpp。
 
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -36,7 +38,7 @@ namespace AsynGyanis::Net
                                          {
                                              // 两个字段一起回显：按来源限流要的键是不带端口的那一段，
                                              // 端口每条连接都换，拿整条地址当键会得到「每条连接一个桶」
-                                             response.setBody("peer=" + request.remoteAddress() + " ip=" + request.remoteIp());
+                                             response.setBody("peer=" + request.remoteAddress() + " ip=" + request.remoteIp() + " tls=" + (request.overTls() ? "1" : "0"));
                                              co_return;
                                          }));
         }
@@ -174,5 +176,54 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.waitForText(responseText, "peer=", kWaitTimeout)) << "业务没有回显来源地址：" << responseText;
         EXPECT_EQ(fieldOf(responseText, "peer="), "203.0.113.7:44000") << "业务读到的还是代理自己的地址";
         EXPECT_EQ(fieldOf(responseText, "ip="), "203.0.113.7") << "按来源限流的键没跟着 PROXY 头改写";
+    }
+
+    // ============================================================================
+    // 传输层是否加密（overTls）：同一条注入通路，HSTS 与 https 跳转的判据
+    // ============================================================================
+
+    /**
+     * @brief 钉住：未经会话落定的请求答「明文」
+     * @details 默认值必须是 false 而不是「不知道」：这一格决定 HSTS 发不发，含糊的默认值会朝
+     *          不安全的一侧倒
+     */
+    TEST(HttpRequestOverTls, DefaultsToCleartextUntilTheSessionSetsIt)
+    {
+        HttpRequest request;
+        EXPECT_FALSE(request.overTls()) << "没落定传输层的请求谎称自己加密过";
+
+        request.setOverTls(true);
+        EXPECT_TRUE(request.overTls());
+    }
+
+    /**
+     * @brief 钉住：reset() 把这一格清回未落定的一侧
+     * @details 与来源地址、request-id 同一条纪律——会话注入的事实都得随报文一起作废
+     */
+    TEST(HttpRequestOverTls, IsClearedByResetAlongWithTheOtherSessionInjectedFacts)
+    {
+        HttpRequest request;
+        request.setOverTls(true);
+        request.reset();
+        EXPECT_FALSE(request.overTls()) << "reset() 没有把传输层这一格清回未落定";
+    }
+
+    /**
+     * @brief 钉住：明文 h1 回环连接上业务读到的是 false
+     * @details 这条与 HttpsServer 那侧「TLS 连接读到 true」的用例是一对：只有两边都钉住，
+     *          `Core::Connection::isSecureTransport()` 的默认值与重写才都不至于悄悄走反
+     */
+    TEST(HttpRequestOverTls, HandlerSeesCleartextOnAnH1LoopbackConnection)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {}, [](Router &router, Core::EventLoop &) { registerEchoRoute(router); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /who HTTP/1.1"), kWaitTimeout)) << "请求未能写入";
+
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "peer=", kWaitTimeout)) << "业务没有回显来源地址：" << responseText;
+        EXPECT_EQ(fieldOf(responseText, "tls="), "0") << "明文 h1 连接被报成加密：HSTS 会跟着发错一侧";
     }
 } // namespace AsynGyanis::Net

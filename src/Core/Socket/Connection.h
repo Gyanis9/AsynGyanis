@@ -115,6 +115,19 @@ namespace AsynGyanis::Core
         [[nodiscard]] virtual std::string localAddress() const;
 
         /**
+         * @brief 这条连接承载请求的传输通道是否加密（TLS）
+         * @details 默认 false——基类持有的是普通 TCP 套接字，本来就跑在明文上。把描述符交给自有
+         *          传输层的派生类（TLS 会话是这一类）必须像重写 remoteAddress() 那样重写本函数，
+         *          否则「这条请求走没走 HTTPS」会被答成 false。
+         * @note 报的是**本端这一跳的事实**，不看 X-Forwarded-Proto：头里那一句谁都能写，代理侧的
+         *       声明只有 PROXY 协议这类可信通路才采纳（见 Net::TcpServer::setProxyProtocolRequired()）
+         * @note 用途是 HSTS（RFC 6797 §7.2 要求非安全传输上收到的该头被忽略，所以明文发出去就是撒谎）、
+         *       业务侧构造 https 跳转与 Cookie 的 Secure 判定
+         * @return true 表示经过 TLS，false 表示明文
+         */
+        [[nodiscard]] virtual bool isSecureTransport() const noexcept;
+
+        /**
          * @brief 与 remoteAddress() 同一个值，但**按连接只取一次**且**不抛**
          * @return 对端地址文本的视图，形如 "IP:Port"；取不到地址时为空视图
          * @details 给「每条请求都要带上来源」这一路用（HttpRequest::setRemoteAddress()）：那条路上

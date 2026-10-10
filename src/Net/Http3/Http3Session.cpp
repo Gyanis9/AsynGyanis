@@ -2051,6 +2051,10 @@ namespace AsynGyanis::Net
         }
         // 来源地址与它排在一起，三条协议通道的业务因此不需要按协议分叉写法
         request.setRemoteAddress(cachedRemoteAddress());
+        // h3 这一路恒为加密：QUIC 只有 TLS 1.3 这一档（QuicServer 的构造要求交来 SSL_CTX，
+        // 见 QuicServer.h 的「QUIC 只跑 TLS 1.3」与 QuicConnectionCoreConfiguration 的上下文），
+        // 本仓也没有第二条构造 h3 会话的生产通路——不写这行的话明文假设会一路带到 HSTS 与 Secure 判定里
+        request.setOverTls(true);
     }
 
     bool Http3Session::sendInformationalResponse(const std::int64_t streamId, const int statusCode, const std::vector<HttpResponse::InformationalHeaderField> &fields)

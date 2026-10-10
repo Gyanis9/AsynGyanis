@@ -326,6 +326,16 @@ namespace AsynGyanis::Net
         return std::string(m_remoteAddress);
     }
 
+    void HttpRequest::setOverTls(const bool isSecure) noexcept
+    {
+        m_overTls = isSecure;
+    }
+
+    bool HttpRequest::overTls() const noexcept
+    {
+        return m_overTls;
+    }
+
     void HttpRequest::setMatchedRoute(const std::string_view routePattern) noexcept
     {
         // 只记一个视图：模式原文住在路由表里，比本请求活得久（路由器不被改的前提下），
@@ -558,6 +568,10 @@ namespace AsynGyanis::Net
         m_requestId.clear();
         // 来源地址同理：它是会话为「这一条」落定的事实。清的是视图，指向的那份文本归会话按连接持有
         m_remoteAddress = {};
+        // 传输层这一格跟着回落到「未落定」。它按连接复用本来不会变（一条连接不会中途换传输层），
+        // 但会话注入的事实就得由 reset() 一次清干净：漏掉这一行时正确性全靠每条通道都记得重新落定，
+        // 将来新增一条协议通道忘了落定，复用的对象就会带着上一条的 true 去发 HSTS
+        m_overTls = false;
         // 命中的路由也一样：上一条命中的模式不能冒到这一条上，否则按路由打点会把两条混进同一个桶
         m_matchedRoute = {};
         m_params.clear();

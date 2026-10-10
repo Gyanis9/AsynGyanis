@@ -670,7 +670,7 @@ namespace AsynGyanis::Net
                     static_cast<void>(router.get("/who",
                                                  [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                                                  {
-                                                     response.setBody("peer=" + request.remoteAddress());
+                                                     response.setBody("peer=" + request.remoteAddress() + " tls=" + (request.overTls() ? "1" : "0"));
                                                      co_return;
                                                  }));
                 },
@@ -698,6 +698,9 @@ namespace AsynGyanis::Net
         // 回环上客户端的地址是确定的，端口由内核分配，因此判「带端口且不是 0」
         EXPECT_NE(payload.find("peer=127.0.0.1:"), std::string::npos) << "业务没读到这条连接的对端：" << payload;
         EXPECT_NE(payload, "peer=127.0.0.1:0") << "端口没带上来：" << payload;
+        // 顺带钉这一路传输层：h2c 是「先验知识的明文」，Http2Session 的判据是「有没有持有 TlsSocket」，
+        // 这条就是那一侧的false——TLS 那一侧的 true 在 TestHttpsServer 钉
+        EXPECT_NE(payload.find("tls=0"), std::string::npos) << "h2c 明文连接被报成加密：" << payload;
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

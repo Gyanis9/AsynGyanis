@@ -1245,6 +1245,49 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：同一份路由在明文与 TLS 两侧各读到自己那条传输层事实
+     * @details 成对写而不是各写一条：`Core::Connection::isSecureTransport()` 有一条默认值与一处重写，
+     *          只钉一侧时另一侧走反可能看不出来（默认恒 false 时 TLS 那条会红，但把默认改成恒 true 时
+     *          只有明文这条看得见）。HTTPS 这一路用的是不带 ALPN 的裸握手，走的正是
+     *          「TLS 套接字 + h1 保活循环」那条派发——HSTS、https 跳转与 Cookie 的 Secure 判定都落在这格上
+     */
+    TEST(HttpsServer, ReportsSecureTransportToBusinessWhilePlainHttpReportsCleartext)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        const auto registerTransportProbe = [](Router &router, Core::EventLoop &)
+        {
+            static_cast<void>(router.get("/tls",
+                                         [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             response.setBody(std::string("tls=") + (request.overTls() ? "1" : "0"));
+                                             co_return;
+                                         }));
+        };
+
+        RunningHttpServerFixture httpFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, registerTransportProbe);
+        ASSERT_TRUE(httpFixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        LoopbackClient httpClient(httpFixture.listeningPort());
+        ASSERT_TRUE(httpClient.isValid()) << "HTTP 回环连接失败";
+        ASSERT_TRUE(httpClient.sendText(makeRequestText("GET /tls HTTP/1.1"), kWaitTimeout)) << "HTTP 请求未能写入";
+        std::string httpText;
+        ASSERT_TRUE(httpClient.waitForText(httpText, "tls=", kWaitTimeout)) << "明文侧业务没有回显传输层事实：" << httpText;
+        EXPECT_NE(httpText.find("tls=0"), std::string::npos) << "明文 h1 被报成加密：" << httpText;
+
+        RunningHttpsServerFixture httpsFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, registerTransportProbe);
+        ASSERT_TRUE(httpsFixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        TlsLoopbackClient httpsClient(httpsFixture.listeningPort());
+        ASSERT_TRUE(httpsClient.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+        ASSERT_TRUE(httpsClient.sendText(makeRequestText("GET /tls HTTP/1.1"), kWaitTimeout)) << "HTTPS 请求未能写入";
+        std::string httpsText;
+        ASSERT_TRUE(httpsClient.waitForTextOccurrences(httpsText, "tls=", 1, kWaitTimeout)) << "加密侧业务没有回显传输层事实：" << httpsText;
+        EXPECT_NE(httpsText.find("tls=1"), std::string::npos) << "TLS 连接被报成明文：HSTS 会在该发的地方缺席：" << httpsText;
+
+        httpClient.closeNow();
+        httpsClient.closeNow();
+    }
+
+    /**
      * @brief 钉住 HTTPS 那一份 enableMetricsEndpoint 也当场拒非法前缀
      * @details 这条规则在两个服务器类上各有一个接线点（路径形状那道闸原本就各写一遍），
      *          只钉 HTTP 那一侧的话，HTTPS 的副本随时可以漂回去——非法前缀的表现是端点回 200
@@ -1379,6 +1422,12 @@ namespace AsynGyanis::Net
                                     response.setBody(request.body());
                                     co_return;
                                 });
+                    router.get("/tls",
+                               [](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                               {
+                                   response.setBody(std::string("tls=") + (request.overTls() ? "1" : "0"));
+                                   co_return;
+                               });
                 },
                 HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
@@ -1396,6 +1445,14 @@ namespace AsynGyanis::Net
         ASSERT_NE(posted, nullptr) << "带正文的 h2 出站请求失败";
         EXPECT_EQ(posted->statusCode, 200);
         EXPECT_EQ(posted->body, payload) << "方法或正文在换乘 h2 时丢了";
+
+        // 第三条专门问传输层：h2-over-TLS 的落定走的是 Http2Session 自己的重写（有没有持有 TlsSocket），
+        // 与上面 h1-over-TLS 那条走的是同一份判据但不同的一处调用——两处都要有用例，否则
+        // 「默认恒 false」与「重写恒 false」这两种走反法分别只被一侧看得见
+        const std::unique_ptr<HttpClientResponse> transport = doHttpsGet(host + "/tls");
+        ASSERT_NE(transport, nullptr) << "问传输层这一趟没走通";
+        EXPECT_EQ(transport->body, "tls=1") << "h2 over TLS 被报成明文：HSTS 会在该发的地方缺席";
+        EXPECT_TRUE(transport->reasonPhrase.empty()) << "这一趟退回 HTTP/1.1，传输层那条没验到 h2";
     }
 
     /**

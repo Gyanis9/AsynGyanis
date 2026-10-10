@@ -89,6 +89,12 @@ namespace AsynGyanis::Core
         return m_socket.localAddress().toString();
     }
 
+    bool Connection::isSecureTransport() const noexcept
+    {
+        // 基类只有那条普通 TCP 套接字，本身就是明文；加密与否由持有自有传输层的派生类改写
+        return false;
+    }
+
     void Connection::refreshIdleDeadline(const std::chrono::milliseconds timeout) noexcept
     {
         // 非正数一律按「关闭本项保护」处理：设一个已经过去的截止时间会让清扫协程立刻关掉连接，
