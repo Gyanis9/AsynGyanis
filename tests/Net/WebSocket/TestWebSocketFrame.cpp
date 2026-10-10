@@ -4,6 +4,9 @@
 // 往返与三档长度边界、以及拒绝面（未掩码、RSV 非 0、未定义操作码、控制帧越界与分片、孤立继续帧、
 // 单帧与消息超限、非最短长度编码）。另有用例钉住「逐字节切分等价」「错误态粘滞且不消费字节」
 // 两条契约，以及「文本负载的 UTF-8 校验不在帧层做」这一职责边界（非法字节原样交给会话层）。
+// 出站客户端方向另覆盖七块：带键的编码器产出规范示例 2 的逐字节形态、三档长度域各自的 MASK 位与
+// 键位、掩码帧在服务端那一档的原样往返、客户端那一档接受未掩码（示例 1）与拒绝带掩码、零长度未掩码
+// 帧当场交付，以及「未掩码那一路一个异或都不做」在整段与逐字节两种喂法下的等价性。
 // 用例都是纯计算，不起网络、不依赖任何外部服务。
 
 #include "Net/WebSocket/WebSocketFrame.h"
@@ -1076,6 +1079,166 @@ namespace AsynGyanis::Net
             }
             EXPECT_EQ(reassembled, plaintext) << "步长 " << stride << " 下解掩码结果与原文不一致";
         }
+    }
+
+    // ============================================================================
+    // 出站客户端方向：掩码由编码器加，解码器按「对端不得带掩码」那一档判
+    // ============================================================================
+
+    /**
+     * @brief 钉住带键的编码器产出 RFC 6455 §5.7 示例 2 那一帧的逐字节形态
+     * @details 判据是规范原文给定的线上字节（键 0x37 0xfa 0x21 0x3d、负载 "Hello"），不是拿被测的
+     *          异或代码再算一遍期望值——否则掩码怎么改这条用例都不会红。
+     */
+    TEST(WebSocketFrame, EncoderMasksPayloadToRfc6455ExampleTwoBytes)
+    {
+        const WebSocketMaskKey rfcExampleKey{{0x37, 0xfa, 0x21, 0x3d}};
+
+        const std::string frame = encodeWebSocketFrame(WebSocketOpCode::Text, "Hello", true, false, rfcExampleKey);
+
+        EXPECT_EQ(frame, makeBytes({0x81, 0x85, 0x37, 0xFA, 0x21, 0x3D, 0x7F, 0x9F, 0x4D, 0x51, 0x58})) << "MASK 位、键的位置与被异或后的负载都要与规范示例逐字节相同";
+    }
+
+    /**
+     * @brief 钉住三档长度域都各自打上掩码位，且键紧跟在长度域之后
+     * @details 掩码位写在每个档位自己的那个转义字节上（125 / 126 / 64 位三档），漏掉任何一档
+     *          都会让对端把带键的帧读成「未掩码 + 键的前几个字节是负载」——那不是协议错误而是一条乱码消息。
+     */
+    TEST(WebSocketFrame, EncoderSetsMaskBitAndPlacesKeyAfterLengthInEveryTier)
+    {
+        const WebSocketMaskKey key{{0x01, 0x02, 0x03, 0x04}};
+
+        const std::string shortFrame = encodeWebSocketFrame(WebSocketOpCode::Binary, std::string(5, 'a'), true, false, key);
+        EXPECT_EQ(static_cast<unsigned char>(shortFrame[1]), 0x85U) << "7 位档：MASK 位与长度 5 在同一个字节上";
+        EXPECT_EQ(shortFrame.substr(2, 4), makeBytes({0x01, 0x02, 0x03, 0x04})) << "键紧跟长度域";
+
+        const std::string mediumFrame = encodeWebSocketFrame(WebSocketOpCode::Binary, std::string(200, 'b'), true, false, key);
+        EXPECT_EQ(mediumFrame.substr(0, 2), makeBytes({0x82, 0xFE})) << "16 位档：转义字节 126 要与 MASK 位同置";
+        EXPECT_EQ(mediumFrame.substr(4, 4), makeBytes({0x01, 0x02, 0x03, 0x04})) << "16 位档的键跟在两字节扩展长度之后";
+        EXPECT_EQ(mediumFrame.size(), 4U + 4U + 200U);
+
+        const std::string largeFrame = encodeWebSocketFrame(WebSocketOpCode::Binary, std::string(65536, 'c'), true, false, key);
+        EXPECT_EQ(largeFrame.substr(0, 2), makeBytes({0x82, 0xFF})) << "64 位档：转义字节 127 要与 MASK 位同置";
+        EXPECT_EQ(largeFrame.substr(10, 4), makeBytes({0x01, 0x02, 0x03, 0x04})) << "64 位档的键跟在八字节扩展长度之后";
+        EXPECT_EQ(largeFrame.size(), 10U + 4U + 65536U);
+    }
+
+    /**
+     * @brief 钉住带掩码的帧能被服务端那一档原样解回（编解码两侧是同一条规则）
+     * @details 这条是出站客户端最容易「本地看着对、上线被服务端断连」的形状：编码产出必须正好落在
+     *          服务端解码器的接受面里。
+     */
+    TEST(WebSocketFrame, MaskedFrameRoundTripsThroughServerRoleDecoder)
+    {
+        const WebSocketMaskKey key{{0xAA, 0xBB, 0xCC, 0xDD}};
+        const std::string      payload = "分段负载：一段中文与\t制表符与 NUL";
+
+        const std::string wire = encodeWebSocketFrame(WebSocketOpCode::Text, payload, true, false, key);
+        // 上线的负载必须已被异或过：逐字节相同的掩码等于没掩（RFC 6455 §5.3 要的就是这一格）
+        EXPECT_NE(wire.compare(6 + key.bytes.size(), payload.size(), payload), 0) << "线上负载段必须与原文不同";
+
+        WebSocketFrameDecoder serverDecoder;
+        const WebSocketFrame  frame = feedAndTakeFrame(serverDecoder, wire);
+
+        expectFrameEquals(frame, WebSocketOpCode::Text, payload);
+    }
+
+    /**
+     * @brief 钉住客户端那一档接受服务端方向的未掩码帧（RFC 6455 §5.7 示例 1 的线上字节）
+     */
+    TEST(WebSocketFrame, ClientRoleDecoderAcceptsUnmaskedServerFrame)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+
+        const WebSocketFrame frame = feedAndTakeFrame(decoder, "\x81\x05Hello");
+
+        expectFrameEquals(frame, WebSocketOpCode::Text, "Hello");
+        EXPECT_EQ(decoder.consumedByteCount(), 7U) << "未掩码那一路没有键域要吃，两个字节的头加五个字节的负载就该收完";
+    }
+
+    /**
+     * @brief 钉住客户端那一档拒绝带掩码的服务端帧，并把「对面不是本端认识的那套规则」说清
+     */
+    TEST(WebSocketFrame, ClientRoleDecoderRejectsMaskedServerFrame)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+
+        const std::string reason = feedAndExpectError(decoder, "\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58");
+
+        EXPECT_TRUE(containsText(reason, "服务端")) << "原因要点名是哪一侧的帧不合规矩：" << reason;
+        EXPECT_TRUE(containsText(reason, "掩码")) << "原因要写清违的是掩码这一条：" << reason;
+    }
+
+    /**
+     * @brief 钉住未掩码的零长度帧当场交付，不再等下一个字节
+     * @details 带掩码那一路是靠「键收齐且长度为零」交付的；未掩码那一路没有键可收，若不在长度定下时
+     *          补一次交付，一条 Pong 的 ping 会永远停在半帧——而空负载的控制帧恰恰是最常见的形态。
+     */
+    TEST(WebSocketFrame, ClientRoleDecoderCompletesZeroLengthUnmaskedFrameWithoutAnotherByte)
+    {
+        WebSocketFrameDecoder decoder;
+        decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+
+        const WebSocketDecodeStatus status = feed(decoder, makeBytes({0x89, 0x00}));
+        ASSERT_EQ(status, WebSocketDecodeStatus::Frame) << "两个字节就是完整的一帧 Ping，不该还要东西才交付";
+
+        const WebSocketFrame frame = decoder.takeFrame();
+        EXPECT_EQ(frame.opCode, WebSocketOpCode::Ping);
+        EXPECT_TRUE(frame.payload.empty());
+        EXPECT_EQ(decoder.consumedByteCount(), 2U);
+    }
+
+    /**
+     * @brief 钉住未掩码那一路的字节账：键域不存在，任意切分下负载都逐字节原样交付
+     * @details 这条判得住的是「未掩码的帧被当成带键的帧解」——那一坏会多吃 4 个字节并把负载开头读丢，
+     *          而**不**是「多做一次异或」：未掩码那一路本帧没读过键，全零的键异或是空操作，
+     *          实测那条突变（去掉 m_isMasked 判断）红不出来。逐字节喂法是为了让长度域、键域与负载
+     *          的边界都出现在一次喂入只给一个字节的位置上。
+     */
+    TEST(WebSocketFrame, UnmaskedPayloadIsNeverTransformedWhateverTheFeedingStride)
+    {
+        std::string payload(300, '\0');
+        for (std::size_t index = 0; index < payload.size(); ++index)
+        {
+            payload[index] = static_cast<char>((index % 251) + 1);
+        }
+        const std::string wire = encodeWebSocketFrame(WebSocketOpCode::Binary, payload);
+
+        WebSocketFrameDecoder wholeFeedDecoder;
+        wholeFeedDecoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+        expectFrameEquals(feedAndTakeFrame(wholeFeedDecoder, wire), WebSocketOpCode::Binary, payload);
+
+        WebSocketFrameDecoder byteByByteDecoder;
+        byteByByteDecoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+        std::string reassembled;
+        for (std::size_t offset = 0; offset < wire.size(); ++offset)
+        {
+            if (feed(byteByByteDecoder, std::string_view(wire).substr(offset, 1)) == WebSocketDecodeStatus::Frame)
+            {
+                reassembled.append(byteByByteDecoder.takeFrame().payload);
+            }
+        }
+        EXPECT_EQ(reassembled, payload) << "逐字节喂入的未掩码负载必须与原文逐字节相同";
+    }
+
+    /**
+     * @brief 钉住档位默认是服务端那一档，且读回的档位与实际生效的一致
+     * @details 默认值不能变：会话层（服务端）没有设过档位，靠的就是这个默认。这条与上面那条
+     *          「未掩码一律判错」一起，把重构前后服务端行为的一致性钉住。
+     */
+    TEST(WebSocketFrame, MaskingRequirementDefaultsToServerRoleAndReadsBack)
+    {
+        WebSocketFrameDecoder decoder;
+        EXPECT_EQ(decoder.maskingRequirement(), WebSocketMaskingRequirement::PeerMustMask);
+
+        decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
+        EXPECT_EQ(decoder.maskingRequirement(), WebSocketMaskingRequirement::PeerMustNotMask);
+
+        // 换了档位不等于换了别的判据：RSV 与操作码这些规则照旧生效
+        decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustMask);
+        EXPECT_TRUE(containsText(feedAndExpectError(decoder, "\xC1\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58"), "RSV1")) << "换档位不该把别的判据一起换掉：RSV 那一条照旧要判";
     }
 
 } // namespace AsynGyanis::Net

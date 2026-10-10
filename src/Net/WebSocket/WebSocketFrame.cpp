@@ -93,6 +93,25 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把掩码键与异或后的负载追加到帧尾（客户端 → 服务端方向）
+         * @details 键先原样写出、负载整段追加后就地异或：复用的是解码那一路已经钉过的对齐例程，
+         *          于是「按 4 字节循环」这件事在编码与解码两侧只有一份实现。
+         * @param frame 目标帧串（调用方保证长度域已写完且 MASK 位已置）
+         * @param payload 负载原文
+         * @param maskKey 本帧的 4 字节掩码键
+         */
+        void appendMaskedPayloadTail(std::string &frame, const std::string_view payload, const std::array<std::uint8_t, kMaskKeyLength> &maskKey)
+        {
+            for (const std::uint8_t keyByte: maskKey)
+            {
+                frame.push_back(static_cast<char>(keyByte));
+            }
+            const std::size_t payloadBegin = frame.size();
+            frame.append(payload);
+            unmaskPayloadInPlace(frame.data() + payloadBegin, payload.size(), 0, maskKey);
+        }
+
+        /**
          * @brief 把整数按大端追加到目标串末尾
          * @param frame 目标串
          * @param value 待写入的数值
@@ -109,7 +128,8 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal, const bool isCompressed)
+    std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal, const bool isCompressed,
+                                     const std::optional<WebSocketMaskKey> maskKey)
     {
         const auto opCodeValue = static_cast<std::uint8_t>(opCode);
         if (!isKnownOpCodeValue(opCodeValue))
@@ -150,14 +170,15 @@ namespace AsynGyanis::Net
         // RSV1（0x40）只在负载确实被压缩时置位；RSV2/RSV3 永远为 0
         frame.push_back(static_cast<char>(opCodeValue | (isFinal ? 0x80U : 0x00U) | (isCompressed ? 0x40U : 0x00U)));
 
-        // 长度按 7 / 16 / 64 位三档编码，服务端发出的帧一律不置掩码位（RFC 6455 §5.1），
-        // 因此第二个字节的最高位恒为 0
+        // 长度按 7 / 16 / 64 位三档编码。掩码位打在第二个字节的最高位：不传键就是服务端方向
+        // （一律不掩码，RFC 6455 §5.1 只要求客户端加掩码），传了键就是客户端方向，必须置位
+        const auto maskBit = maskKey.has_value() ? 0x80U : 0x00U;
         if (payload.size() < kSixteenBitLengthEscape)
         {
-            frame.push_back(static_cast<char>(payload.size()));
+            frame.push_back(static_cast<char>(static_cast<std::uint8_t>(payload.size()) | maskBit));
         } else if (payload.size() < kSixtyFourBitLengthThreshold)
         {
-            frame.push_back(static_cast<char>(kSixteenBitLengthEscape));
+            frame.push_back(static_cast<char>(kSixteenBitLengthEscape | maskBit));
             appendBigEndian(frame, payload.size(), 2);
         } else
         {
@@ -167,11 +188,17 @@ namespace AsynGyanis::Net
             {
                 throw Base::InvalidArgumentException(std::format("负载长度 {} 字节超出 64 位长度域可表示的范围（RFC 6455 §5.2 要求最高位为 0）", payload.size()));
             }
-            frame.push_back(static_cast<char>(kSixtyFourBitLengthEscape));
+            frame.push_back(static_cast<char>(kSixtyFourBitLengthEscape | maskBit));
             appendBigEndian(frame, payload.size(), 8);
         }
 
-        frame.append(payload);
+        if (!maskKey.has_value())
+        {
+            frame.append(payload);
+            return frame;
+        }
+
+        appendMaskedPayloadTail(frame, payload, maskKey->bytes);
         return frame;
     }
 
@@ -235,7 +262,7 @@ namespace AsynGyanis::Net
                 {
                     break;
                 }
-                m_stage = Stage::MaskKey;
+                enterKeyOrPayloadStage();
                 continue;
             }
 
@@ -263,15 +290,13 @@ namespace AsynGyanis::Net
             const std::size_t remainingLength = static_cast<std::size_t>(m_payloadLength - m_framePayloadBytesSeen);
             const std::size_t chunkLength     = std::min(remainingLength, length - consumed);
 
-            // 先整段追加、再就地解掩码：一次 append 比逐字节 push_back 少若干次扩容判断，
-            // 而掩码必须解除（RFC 6455 §5.3），键按 4 字节循环、每个帧用自己的键。
-            // 控制帧的负载落在自己的缓冲里：它可能插在分片消息中间，共用一块会把
-            // 已重组的那半条消息冲掉（RFC 6455 §5.4）
+            // 先整段追加、再就地解掩码：一次 append 比逐字节 push_back 少若干次扩容判断。
+            // 控制帧的负载落自己的缓冲：它可能插在分片消息中间，共用一块会冲掉已攒的那半条（§5.4）
             std::string      &payloadSink   = isControlOpCodeValue(m_opCodeValue) ? m_controlPayloadBuffer : m_payloadBuffer;
             const std::size_t appendedBegin = payloadSink.size();
             payloadSink.append(data + consumed, chunkLength);
-            // 本段首字节的键下标 = 本帧已收字节数 mod 4：分片输入可能停在键中间，相位要接着上一段
-            unmaskPayloadInPlace(payloadSink.data() + appendedBegin, chunkLength, m_framePayloadBytesSeen % kMaskKeyLength, m_maskKey);
+            // 异或与否按本帧的 MASK 位定：判据与相位都在 applyMaskToAppendedPayload 里，只有一份
+            applyMaskToAppendedPayload(payloadSink, appendedBegin, chunkLength);
             m_framePayloadBytesSeen += chunkLength;
             consumed += chunkLength;
 
@@ -447,13 +472,22 @@ namespace AsynGyanis::Net
         const bool isMasked         = (secondByte & 0x80U) != 0;
         const auto lengthFieldValue = static_cast<std::uint8_t>(secondByte & 0x7FU);
 
-        // RFC 6455 §5.1：客户端发来的帧必须带掩码，服务端收到未掩码帧必须关闭连接。
-        // 这里当场判错而不是「容忍一下」——掩码是这条连接上防止中间设施预测与重放帧内容的唯一防线
-        if (!isMasked)
+        // 掩码位按本端站的那一侧判（RFC 6455 §5.1）：服务端要求客户端帧必须带掩码，出站客户端
+        // 要求服务端帧必须不带。这里当场判错而不是「容忍一下」——掩码是这条连接上防止中间设施
+        // 预测与重放帧内容的唯一防线；而反过来「服务端发来的帧带掩码」意味着对面根本没照
+        // §5.1 的方向说话，继续解只会把一条协议分歧读成一条正常消息
+        if (m_maskingRequirement == WebSocketMaskingRequirement::PeerMustMask && !isMasked)
         {
             recordFailure(false, "客户端发来的帧必须带掩码（RFC 6455 §5.1）：请把帧第二个字节的 MASK 位置 1 后重发");
             return false;
         }
+        if (m_maskingRequirement == WebSocketMaskingRequirement::PeerMustNotMask && isMasked)
+        {
+            recordFailure(false, "服务端发来的帧不得带掩码（RFC 6455 §5.1）：对面置了 MASK 位，这条连接的另一端不是本端认识的那套规则");
+            return false;
+        }
+        // 记下来给负载阶段用：未掩码那一路没有键域要收，也没有东西该被异或
+        m_isMasked = isMasked;
 
         if (isControlOpCodeValue(m_opCodeValue))
         {
@@ -489,8 +523,47 @@ namespace AsynGyanis::Net
         {
             return false;
         }
-        m_stage = Stage::MaskKey;
+        enterKeyOrPayloadStage();
         return true;
+    }
+
+    void WebSocketFrameDecoder::applyMaskToAppendedPayload(std::string &payloadSink, const std::size_t appendedBegin, const std::size_t chunkLength)
+    {
+        // 未掩码那一路本帧没读过键，一个异或都不该做（RFC 6455 §5.1：服务端 → 客户端的帧不掩码）
+        if (!m_isMasked)
+        {
+            return;
+        }
+        // 本段首字节的键下标 = 本帧已收字节数 mod 4：分片输入可能停在键中间，相位要接着上一段
+        unmaskPayloadInPlace(payloadSink.data() + appendedBegin, chunkLength, m_framePayloadBytesSeen % kMaskKeyLength, m_maskKey);
+    }
+
+    void WebSocketFrameDecoder::enterKeyOrPayloadStage()
+    {
+        // 带掩码的帧先收 4 字节键；未掩码的帧没有键域，直接进负载
+        if (m_isMasked)
+        {
+            m_stage = Stage::MaskKey;
+            return;
+        }
+
+        m_stage = Stage::Payload;
+        // 零长度负载在这一刻就算收完：掩码那一路是靠「键收齐且长度为零」触发的，未掩码这一路
+        // 没有键可收，不在这里补一次交付就会一直等下一个字节（Ping 帧的负载正是空的居多）
+        if (m_payloadLength == 0)
+        {
+            completeFrame();
+        }
+    }
+
+    void WebSocketFrameDecoder::setMaskingRequirement(const WebSocketMaskingRequirement requirement) noexcept
+    {
+        m_maskingRequirement = requirement;
+    }
+
+    WebSocketMaskingRequirement WebSocketFrameDecoder::maskingRequirement() const noexcept
+    {
+        return m_maskingRequirement;
     }
 
     bool WebSocketFrameDecoder::acceptPayloadLength(const std::uint64_t payloadLength)

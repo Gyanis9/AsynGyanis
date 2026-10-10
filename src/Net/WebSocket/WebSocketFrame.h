@@ -17,6 +17,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -25,8 +26,10 @@ namespace AsynGyanis::Net
     // ============================================================================
     // WebSocket 帧编解码（RFC 6455 §5）
     //
-    // 尚未接入会话：帧编解码只提供协议机制，谁调用编码器（握手成功后的发送路径）与谁把解码器
-    // 接到连接读取循环上都还没做，因此引入本文件不会改变任何既有 HTTP 会话的行为。
+    // 两个方向都在这里：服务端会话用 encodeWebSocketFrame（不带掩码）与 WebSocketFrameDecoder
+    // （要求对端带掩码），出站客户端用带掩码键的编码与同一台解码器的「对端不得带掩码」档。
+    // 一台解码器加一个方向档，而不是另写一份客户端解码器：掩码校验、分片重组与上限判定这三件事
+    // 必须两个方向逐字同解，两份实现早晚会在某个边界上分叉。
     // ============================================================================
 
     /**
@@ -64,21 +67,35 @@ namespace AsynGyanis::Net
     inline constexpr std::size_t kWebSocketMaximumControlPayloadLength = 125;
 
     /**
-     * @brief 把一帧编码成线上的字节序列（服务端 → 客户端方向）
+     * @brief 一帧的 4 字节掩码键（RFC 6455 §5.3）
+     * @details 出站客户端每帧要换一个**由密码学随机源取出的**键；写成独立类型是为了让
+     *          「谁去取随机数」留在会话层，编码器只管按给定键异或——编码器因此仍可被用例用固定键驱动。
+     */
+    struct ASYN_NET_API WebSocketMaskKey
+    {
+        std::array<std::uint8_t, 4> bytes{}; ///< 键的 4 字节，按线上顺序（帧头的掩码键域是大端原样）
+    };
+
+    /**
+     * @brief 把一帧编码成线上的字节序列
      *
-     * @details 服务端发出的帧一律不置掩码位（RFC 6455 §5.1 只要求客户端加掩码）；负载长度按
-     *          7 / 16 / 64 位三档编码，64 位档的最高位必须为 0（RFC 6455 §5.2）。
+     * @details 负载长度按 7 / 16 / 64 位三档编码，64 位档的最高位必须为 0（RFC 6455 §5.2）。
+     *          掩码位与键由 `maskKey` 决定：不传就是服务端 → 客户端方向（该方向一律不掩码），
+     *          传了就是客户端 → 服务端方向，MASK 位置 1 并把负载按 4 字节循环异或（RFC 6455 §5.1/§5.3）。
      * @param opCode 操作码
      * @param payload 负载字节，按「指针 + 长度」取，可以含 NUL 与任意二进制
      * @param isFinal 是否末帧；数据帧分片时后续片段要传 false 并改用 Continuation
      * @param isCompressed 负载是否已按 permessage-deflate 压缩（RFC 7692）：置位即写出 RSV1。
      *        只有协商过该扩展时才可传 true，且只能用在数据消息的首帧上
-     * @return std::string 完整帧字节（首字节 + 长度 + 无掩码负载），可直接写入连接
+     * @param maskKey 本帧的掩码键；空表示不掩码（服务端方向）。键必须由密码学随机源逐帧新取，
+     *        复用同一把键或全零键都等于放弃 §5.3 要防的那种中间设施重放
+     * @return std::string 完整帧字节（首字节 + 长度 [+ 掩码键] + 负载），可直接写入连接
      * @throws Base::InvalidArgumentException 用法错误：控制帧负载超 125 字节、控制帧要求分片
      *         （isFinal 为 false）、opCode 不是 RFC 6455 定义过的取值，或要求压缩的不是数据消息首帧
      * @note 文本帧负载的 UTF-8 合法性不在本层校验：编码器只保证帧格式，内容语义由上层负责
      */
-    [[nodiscard]] ASYN_NET_API std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true, bool isCompressed = false);
+    [[nodiscard]] ASYN_NET_API std::string encodeWebSocketFrame(WebSocketOpCode opCode, std::string_view payload, bool isFinal = true, bool isCompressed = false,
+                                                                std::optional<WebSocketMaskKey> maskKey = std::nullopt);
 
     /**
      * @brief 一次 WebSocketFrameDecoder::parse() 调用的结论状态
@@ -96,14 +113,31 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 服务端侧的 WebSocket 帧增量解码器
+     * @brief 解码器对「对端这一帧该不该带掩码」的判据档位（RFC 6455 §5.1）
+     *
+     * @details 掩码方向是协议规定的，不是可协商的：客户端 → 服务端**必须**带掩码，
+     *          服务端 → 客户端**必须不带**。两个方向共用一台解码器，各取一档，
+     *          于是这一条协议规则在两个方向上只有一份实现。
+     * @note 新增取值一律追加在末尾：档位写进了用例的断言与配置文案。
+     */
+    enum class WebSocketMaskingRequirement
+    {
+        PeerMustMask,   ///< 对端是客户端（服务端的默认档）：未掩码一律判错
+        PeerMustNotMask ///< 对端是服务端（出站客户端的档）：带掩码一律判错
+    };
+
+    /**
+     * @brief WebSocket 帧增量解码器（两个方向共用一台；掩码档位见 `WebSocketMaskingRequirement`）
      *
      * @details 逐字节推进，任意字节边界都能切开续上（含切在掩码键中间、扩展长度中间、负载中间）。
      *          产出的是**完整消息**：分片消息在此重组后才交付，因此 takeFrame() 交出的帧 opCode
      *          绝不是 Continuation、isFinal 恒为 true；控制帧各自单独成帧。
      *
-     * @note 服务端收到的帧必须带掩码（RFC 6455 §5.1），未掩码一律判错：掩码是这条连接上防止
-     *       中间设施按 HTTP 报文缓存并重放帧内容的唯一防线。掩码按 4 字节循环异或解除。
+     * @note 掩码这一格按档位判（RFC 6455 §5.1）：默认档 `PeerMustMask` 是服务端视角——客户端帧
+     *       未掩码一律判错；`PeerMustNotMask` 是出站客户端视角——服务端帧带掩码一律判错。
+     *       两边都当场判错而不是「容忍一下」：掩码是这条连接上防止中间设施按 HTTP 报文缓存并重放
+     *       帧内容的唯一防线，而「服务端发来的帧带掩码」意味着对面根本不是本端认识的那套规则。
+     *       掩码按 4 字节循环异或解除；未掩码那一路一个异或都不做。
      * @note RSV 位的口径：RSV2/RSV3 一律必须为 0；RSV1 只有在协商过 permessage-deflate
      *       （见 setPerMessageDeflateEnabled()）且出现在数据消息首帧上时才允许。
      * @note 控制帧插在分片消息中间是允许的（RFC 6455 §5.4：control frames MAY be injected in the
@@ -155,6 +189,24 @@ namespace AsynGyanis::Net
          *       判断不一致
          */
         void setPerMessageDeflateEnabled(bool enabled) noexcept;
+
+        /**
+         * @brief 设定本端要求对端遵守的掩码档位（默认 `PeerMustMask`，即服务端视角）
+         *
+         * @details 出站客户端要把它换成 `PeerMustNotMask`：那一侧的帧来自服务端，按 RFC 6455 §5.1
+         *          必须不带掩码，带掩码就是对面没照本端的规则说话。
+         * @param requirement 本端所站的一侧对掩码的要求
+         * @note 与 `setPerMessageDeflateEnabled()` 同一条纪律：必须在喂入任何字节之前设置。
+         *       档位是「我是哪一方」的事实，不是可以中途改的胃口——改在一帧的中间会让同一帧的
+         *       头与体按两套规则解读。
+         */
+        void setMaskingRequirement(WebSocketMaskingRequirement requirement) noexcept;
+
+        /**
+         * @brief 读回当下生效的掩码档位
+         * @return WebSocketMaskingRequirement 生效档位；构造后未设过就是 `PeerMustMask`
+         */
+        [[nodiscard]] WebSocketMaskingRequirement maskingRequirement() const noexcept;
 
         /**
          * @brief 析构函数：成员都是按值的标准容器，无额外资源需要回收。
@@ -257,6 +309,20 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool acceptLengthFirstByte(std::uint8_t secondByte);
 
         /**
+         * @brief 把刚追加进缓冲的那段负载按本帧的键相位解掩码（未掩码那一路是空操作）
+         * @param payloadSink 本帧负载落点的引用（控制帧与数据帧各自的缓冲）
+         * @param appendedBegin 本段在落点里的起始下标
+         * @param chunkLength 本段长度，单位字节
+         */
+        void applyMaskToAppendedPayload(std::string &payloadSink, std::size_t appendedBegin, std::size_t chunkLength);
+
+        /**
+         * @brief 长度定下之后进入哪一站：带掩码的收 4 字节键，不带的直接进负载
+         * @details 未掩码且长度为零时在这里就交付帧——键域不存在，等不到「键收齐」那一刻。
+         */
+        void enterKeyOrPayloadStage();
+
+        /**
          * @brief 按定下来的负载长度校验单帧上限与消息总上限
          * @param payloadLength 本帧声明的负载长度，单位字节
          * @return true 未超限
@@ -286,9 +352,11 @@ namespace AsynGyanis::Net
         std::uint64_t               m_payloadLength{0};           ///< 本帧声明的负载长度，单位字节
         std::size_t                 m_extendedLengthByteCount{0}; ///< 扩展长度还需读的字节数（16 位档 2、64 位档 8）
         std::size_t                 m_extendedLengthBytesSeen{0}; ///< 扩展长度已读字节数
-        std::array<std::uint8_t, 4> m_maskKey{};                  ///< 本帧的 4 字节掩码键
-        std::size_t                 m_maskKeyBytesSeen{0};        ///< 掩码键已读字节数
-        std::size_t                 m_framePayloadBytesSeen{0};   ///< 本帧已收负载字节数（掩码按它循环取值）
+        std::array<std::uint8_t, 4> m_maskKey{};                  ///< 本帧的 4 字节掩码键（未掩码那一路是全零，且一个异或都不做）
+        bool                        m_isMasked{false};            ///< 本帧是否带掩码键：决定要不要走 MaskKey 阶段与要不要异或，逐帧从长度首字节取
+        WebSocketMaskingRequirement m_maskingRequirement{WebSocketMaskingRequirement::PeerMustMask}; ///< 本端要求对端遵守的掩码档位
+        std::size_t                 m_maskKeyBytesSeen{0};                                           ///< 掩码键已读字节数
+        std::size_t                 m_framePayloadBytesSeen{0};                                      ///< 本帧已收负载字节数（掩码按它循环取值）
 
         /// 负载落点：未分片时是本帧负载，分片消息进行中时是「已重组的部分」，
         /// 因此重组不需要第二份缓冲，也不会多一次拷贝
