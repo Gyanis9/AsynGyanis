@@ -1773,4 +1773,142 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(successCount.load(), kCapacity) << "并发取令牌的成功次数必须恰好等于桶容量";
     }
+
+    // ============================================================================
+    // securityHeadersMiddleware：安全响应头
+    // ============================================================================
+
+    namespace
+    {
+        /**
+         * @brief 用给定的安全响应头配置跑一趟管道，交回响应
+         * @param options 待测的安全响应头取值
+         * @param isSecure 这条请求是否经由 TLS（HSTS 的唯一开关）
+         * @param outerOverride 排在安全头之前的那层中间件要写的头（名字, 取值）；空名字表示没有这一层
+         * @return HttpResponse 链路跑完后的响应
+         */
+        HttpResponse runSecurityHeaders(const SecurityHeadersOptions &options, const bool isSecure, const std::pair<std::string_view, std::string> &outerOverride = {})
+        {
+            MiddlewarePipeline pipeline;
+            if (!outerOverride.first.empty())
+            {
+                const std::string fieldName  = std::string(outerOverride.first);
+                const std::string fieldValue = outerOverride.second;
+                pipeline.use(
+                        [fieldName, fieldValue](HttpRequest &, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+                        {
+                            static_cast<void>(response.setHeader(fieldName, fieldValue));
+                            co_await next();
+                        });
+            }
+            pipeline.use(securityHeadersMiddleware(options));
+
+            HttpRequest  request = makeRequest(HttpMethod::GET, "/guarded");
+            HttpResponse response;
+            request.setOverTls(isSecure);
+            runPipeline(pipeline, request, response, terminalWriting(response, "guarded"));
+            return response;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：默认档把三条「收紧」的头挂上，没配的三条一条都不发
+     * @details 这三条（nosniff / DENY / no-referrer）默认取收紧侧是刻意的：它们兜的是「浏览器多做一步
+     *          猜测」，放松的代价远大于收紧。而 CSP 与 HSTS 各部署结论相反，本层不替调用方选边
+     */
+    TEST(SecurityHeadersMiddleware, AppliesHardenedDefaultsAndSkipsUnconfiguredOnes)
+    {
+        const HttpResponse response = runSecurityHeaders(SecurityHeadersOptions{}, false);
+
+        EXPECT_EQ(response.getHeader("x-content-type-options"), "nosniff");
+        EXPECT_EQ(response.getHeader("x-frame-options"), "DENY");
+        EXPECT_EQ(response.getHeader("referrer-policy"), "no-referrer");
+        EXPECT_FALSE(response.hasHeader("content-security-policy")) << "没配策略却发了一张空 CSP：浏览器按「什么都不许」执行";
+        EXPECT_FALSE(response.hasHeader("strict-transport-security"));
+        EXPECT_FALSE(response.hasHeader("permissions-policy"));
+        EXPECT_FALSE(response.hasHeader("cross-origin-resource-policy"));
+        // 刻意不发的一条：那条早被规范废弃，发它会诱导人以为有防护
+        EXPECT_FALSE(response.hasHeader("x-xss-protection")) << "X-XSS-Protection 早已废弃，不该由本层继续发";
+    }
+
+    /**
+     * @brief 钉住：明文连接上不发 HSTS
+     * @details RFC 6797 §7.2 要求浏览器忽略非安全传输上收到的这一条，明文发出去既不生效，
+     *          又会让运维以为站点已经有了这道保护——比不发更糟
+     */
+    TEST(SecurityHeadersMiddleware, DoesNotAdvertiseHstsOnACleartextRequest)
+    {
+        SecurityHeadersOptions options;
+        options.strictTransportSecurityMaxAgeSeconds     = 31'536'000;
+        options.strictTransportSecurityIncludeSubDomains = true;
+        const HttpResponse response                      = runSecurityHeaders(options, false);
+
+        EXPECT_FALSE(response.hasHeader("strict-transport-security")) << "明文连接被挂了 HSTS";
+        EXPECT_TRUE(response.hasHeader("x-frame-options")) << "其余的头不该被这一条连带不发";
+    }
+
+    /**
+     * @brief 钉住：TLS 连接上 HSTS 的文案逐格拼对
+     * @details 指令顺序与分隔符都是浏览器解析的对象；includeSubDomains 与 preload 两格各自只在
+     *          被显式要求时出现（默认不扩大到子域）
+     */
+    TEST(SecurityHeadersMiddleware, AdvertisesHstsOnASecureRequestWithTheExactDirectives)
+    {
+        SecurityHeadersOptions options;
+        options.strictTransportSecurityMaxAgeSeconds = 31'536'000;
+        EXPECT_EQ(runSecurityHeaders(options, true).getHeader("strict-transport-security"), "max-age=31536000") << "只配了秒数时不该带上子域";
+
+        options.strictTransportSecurityIncludeSubDomains = true;
+        EXPECT_EQ(runSecurityHeaders(options, true).getHeader("strict-transport-security"), "max-age=31536000; includeSubDomains");
+
+        options.strictTransportSecurityPreload = true;
+        EXPECT_EQ(runSecurityHeaders(options, true).getHeader("strict-transport-security"), "max-age=31536000; includeSubDomains; preload");
+    }
+
+    /**
+     * @brief 钉住：配了 preload 却没配 includeSubDomains 当场抛
+     * @details preload 是提交给浏览器内置名单的声明，那份名单硬性要求同时带 includeSubDomains；
+     *          少这一格的表现是「配了 preload 却永远进不了名单」，静默放行比构造期拒绝难查得多
+     */
+    TEST(SecurityHeadersMiddleware, RefusesPreloadWithoutIncludeSubDomains)
+    {
+        SecurityHeadersOptions options;
+        options.strictTransportSecurityMaxAgeSeconds = 31'536'000;
+        options.strictTransportSecurityPreload       = true;
+        EXPECT_THROW(securityHeadersMiddleware(options), Base::InvalidArgumentException);
+
+        options.strictTransportSecurityIncludeSubDomains = true;
+        EXPECT_NO_THROW(securityHeadersMiddleware(options));
+    }
+
+    /**
+     * @brief 钉住：带 CR/LF/NUL 的取值在构造期就被拒
+     * @details 这类文案常由配置拼出来；写进响应头就是 HTTP 响应拆分——同一份判据与
+     *          HttpResponse::setHeader() 拒这三个字节同源，这里要在**拼串之前**响
+     */
+    TEST(SecurityHeadersMiddleware, RefusesValuesCarryingHeaderBreakingBytes)
+    {
+        SecurityHeadersOptions withSplit;
+        withSplit.contentSecurityPolicy = "default-src 'self';\r\nX-Fake: 1";
+        EXPECT_THROW(securityHeadersMiddleware(withSplit), Base::InvalidArgumentException);
+
+        SecurityHeadersOptions withNul;
+        withNul.frameOptions = std::string("SAMEORIGIN") + '\0';
+        EXPECT_THROW(securityHeadersMiddleware(withNul), Base::InvalidArgumentException);
+
+        SecurityHeadersOptions withLineFeedOnly;
+        withLineFeedOnly.referrerPolicy = "no-referrer\n";
+        EXPECT_THROW(securityHeadersMiddleware(withLineFeedOnly), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 钉住：已经存在的头不覆盖，业务与外层中间件才是取值的主人
+     * @details 需要内嵌 iframe 的管理台会把 DENY 改成 SAMEORIGIN 或干脆不发；这一层如果无条件
+     *          setHeader，就会把改过的值又刷回默认，那种「改了没用」最难归因到中间件
+     */
+    TEST(SecurityHeadersMiddleware, LeavesHeadersAlreadySetByOuterLayersAlone)
+    {
+        const HttpResponse overridden = runSecurityHeaders(SecurityHeadersOptions{}, false, {"x-frame-options", "SAMEORIGIN"});
+        EXPECT_EQ(overridden.getHeader("x-frame-options"), "SAMEORIGIN") << "外层写定的值被安全头中间件刷回了 DENY";
+    }
 } // namespace AsynGyanis::Net

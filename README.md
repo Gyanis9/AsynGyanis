@@ -60,6 +60,11 @@
   上（进程内多个集线器求和），构造时就登记，不等第一次丢弃才出现；对端收口或写失败而整队作废的条数是**另一本账**
   （`abandonedMessageCount()` / `asyn_websocket_hub_abandoned_messages_total`）——合成一条就分不出「该调上界」与「只是断连」
 - **路由与中间件** — 精确匹配、参数化路径（`:id`）、通配符（`*`）、洋葱模型；命中的模式原文经 `HttpRequest::matchedRoute()` 交回业务与中间件，按路由分组打点不必自己再拼一遍
+- **安全响应头** — `securityHeadersMiddleware()` 一处挂载给每条响应挂上 `X-Content-Type-Options: nosniff`、
+  `X-Frame-Options`、`Referrer-Policy`，按需再加 CSP / Permissions-Policy / Cross-Origin-Resource-Policy；
+  `Strict-Transport-Security` 只在**加密连接**上发（`HttpRequest::overTls()` 报的是本端这一跳的事实，
+  刻意不看 `X-Forwarded-Proto`——那句谁都能写）。取值含 CR/LF/NUL 在构造期就抛（那类文案常由配置拼出来），
+  配了 `preload` 却没配 `includeSubDomains` 同样当场拒绝；已经存在的头不覆盖，业务与外层中间件是取值的主人
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz`、`/readyz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点

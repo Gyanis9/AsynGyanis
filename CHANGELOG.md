@@ -15,7 +15,7 @@
 
 ## [Unreleased]
 
-自 2.6.0 起的累计变化（新增 5、变更 3、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899），以及 TCP 保活接进接受连接的套接字调参——半开会话从此有内核侧的兜底。前四件都留了对外读数，不是只在内部记账。
+自 2.6.0 起的累计变化（新增 7、变更 3、修复 3）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899），TCP 保活接进接受连接的调参（半开会话从此有内核侧的兜底），请求带上「这条连接走没走 TLS」这一承载层事实，以及按这份事实发 HSTS 的安全响应头中间件。前四件都留了对外读数，不是只在内部记账。
 
 ### 新增
 
@@ -72,6 +72,24 @@
   `SIO_KEEPALIVE_VALS`（毫秒）、没有探测次数的入口、且事后读不回时刻表——所以跨平台的断言只押「开关」，
   时刻表的三格各按平台单独钉（Windows 侧另有一条实测：`getsockopt(SO_KEEPALIVE)` 只写回 1 字节，
   按 4 字节缓冲区预置 -1 去读会把「关」读成 -256，新加的读回助手零初始化缓冲区）。
+- **请求知道自己走没走 TLS（`HttpRequest::overTls()`）**：这一格此前整个 HTTP 层都没有——`:scheme`
+  在 h2/h3  decoding 时被丢掉，理由写的就是「服务端已知自己在 TLS 上」，可业务处理器只拿到请求与响应
+  两个对象，没有任何一条通道把这件事递过去。现在 `Core::Connection::isSecureTransport()` 报出承载层事实
+  （基类答明文，`Http2Session` 按「有没有持有 `TlsSocket`」答，同一条判据也服务 ALPN 认不出 h2 而退回
+  h1 保活循环的那一路），h3 恒为加密（QUIC 只跑 TLS 1.3），三条通道都在派发之前与来源地址排在同一处
+  落进请求，并随 `reset()` 一起作废。刻意**不看** `X-Forwarded-Proto`：那一句谁都能写，把它当可信来源
+  会让一条明文连接拿到 HSTS 与 Secure 判定。用例成对钉（明文侧 0 与加密侧 1、h1-over-TLS 与 h2-over-TLS
+  各一条），因为「基类默认恒 false」与「重写恒 false」这两种走反法分别只被一侧看得见。
+- **安全响应头中间件（`securityHeadersMiddleware()`）**：引擎此前一条都不发（全仓找不到
+  `Strict-Transport-Security` / `Content-Security-Policy` 这些字段名），业务要自己逐条 setHeader，
+  很容易在某个路由上漏掉。默认档发三条收紧的：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、
+  `Referrer-Policy: no-referrer`；CSP / Permissions-Policy / Cross-Origin-Resource-Policy 留空即不发
+  （各部署结论相反，本层不替调用方选边）。HSTS 只在加密连接上发（读上面那条 `overTls()`）。两处构造期
+  拦截：取值含 CR/LF/NUL/DEL 直接抛（这类文案常由配置拼出来，写进响应头就是 HTTP 响应拆分），
+  配了 `preload` 却没配 `includeSubDomains` 也抛——浏览器内置名单硬性要求同时带后者，少了那一格的表现是
+  「配了 preload 却永远进不了名单」。已存在的头不覆盖（外层中间件与业务才是取值的主人）；
+  刻意不发早已废弃的 `X-XSS-Protection`。接线证据另有两条：真回环连接上逐条核对线上响应头，
+  以及不挂中间件时这些头一条都不出现。
 
 ### 变更
 

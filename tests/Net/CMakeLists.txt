@@ -99,6 +99,7 @@ add_executable(TestNet
         Http/TestLoopDiagnosticsEndpoint.cpp
         Http/TestRouter.cpp
         Http/TestMiddleware.cpp
+        Http/TestSecurityHeadersWiring.cpp
         Http/TestFileSender.cpp
         Http/TestHttpsServer.cpp
 

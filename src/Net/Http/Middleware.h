@@ -30,6 +30,7 @@
 #include "Base/Log/SourceLocation.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -1487,6 +1488,119 @@ namespace AsynGyanis::Net
             // 不回显「你差在哪一位」也不区分「没给/给错/给了多条」之外的细节：这些差别只帮攻击者缩小搜索面
             response.setBody("运维端点需要 Bearer 令牌（Authorization: Bearer <token>）");
             co_return;
+        };
+    }
+
+    /**
+     * @brief 安全响应头的取值
+     * @details 给 `securityHeadersMiddleware()` 用。留空即**不发这一条**——这些头各自的默认值在不同
+     *          部署里结论相反（内嵌 iframe 的管理台会把 DENY 改成 SAMEORIGIN 或干脆不发），
+     *          本层不替调用方选边；只有 nosniff / DENY / no-referrer 这三条取「默认收紧」，
+     *          因为它们是「浏览器多做一步猜测」这类风险的兜底，收紧的代价远小于放松。
+     * @note 取值在构造中间件时逐条按 RFC 9110 §5.6.2 的字段值集合校验，含 CR/LF/NUL 的直接抛——
+     *       这类文案常由配置拼出来，写进响应头就是 HTTP 响应拆分
+     */
+    struct ASYN_NET_API SecurityHeadersOptions
+    {
+        std::string contentSecurityPolicy{};                         ///< Content-Security-Policy 的策略原文；空 = 不发
+        std::string frameOptions{"DENY"};                            ///< X-Frame-Options（DENY / SAMEORIGIN）；空 = 不发
+        std::string referrerPolicy{"no-referrer"};                   ///< Referrer-Policy；空 = 不发
+        std::string contentTypeOptions{"nosniff"};                   ///< X-Content-Type-Options；空 = 不发
+        std::string permissionsPolicy{};                             ///< Permissions-Policy；空 = 不发
+        std::string crossOriginResourcePolicy{};                     ///< Cross-Origin-Resource-Policy；空 = 不发
+        std::size_t strictTransportSecurityMaxAgeSeconds{0};         ///< HSTS 的 max-age 秒数；0 = 不发这一条
+        bool        strictTransportSecurityIncludeSubDomains{false}; ///< HSTS 是否带 includeSubDomains
+        bool        strictTransportSecurityPreload{false};           ///< HSTS 是否带 preload（要求同时带 includeSubDomains）
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 安全响应头的「字段名 ↔ 取值槽」对照表
+         * @details 校验与下发共用同一张表：写两张就会有一张先动，结果是「校验过的字段没下发」
+         *          或「下发的字段没校验」，两种都静默
+         * @return 每项是（响应头字段名，SecurityHeadersOptions 里对应的取值成员）
+         */
+        inline const std::array<std::pair<std::string_view, std::string SecurityHeadersOptions::*>, 6> &securityHeaderFieldTable()
+        {
+            static const std::array<std::pair<std::string_view, std::string SecurityHeadersOptions::*>, 6> table = {
+                    {{"content-security-policy", &SecurityHeadersOptions::contentSecurityPolicy},
+                     {"x-frame-options", &SecurityHeadersOptions::frameOptions},
+                     {"referrer-policy", &SecurityHeadersOptions::referrerPolicy},
+                     {"x-content-type-options", &SecurityHeadersOptions::contentTypeOptions},
+                     {"permissions-policy", &SecurityHeadersOptions::permissionsPolicy},
+                     {"cross-origin-resource-policy", &SecurityHeadersOptions::crossOriginResourcePolicy}}};
+            return table;
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给每条响应挂上一组安全响应头
+     * @details 这些头的共同点是「服务端一句声明，换浏览器一类行为的收紧」：不嗅探内容类型、
+     *          不被别人框进 iframe、不把来源 URL 递给第三方、只在 HTTPS 上继续访问本站。
+     *          此前引擎一条都不发（本仓从未出现 Strict-Transport-Security / Content-Security-Policy
+     *          这些字段名），业务要自己一条条 setHeader，且很容易在某个路由上漏掉。
+     *          已存在的头部**不覆盖**：排在更外层的中间件或已经写定策略的业务才是取值的主人。
+     *          HSTS 只在加密连接上发（见 HttpRequest::overTls()）：RFC 6797 §7.2 要求浏览器忽略
+     *          非安全传输上收到的这一条，明文发出去不但不生效，还会让人以为这个站点已经有了这道保护。
+     * @param options 各条头的取值，按值捕获进中间件
+     * @return MiddlewareFunc 中间件；在下游之前把配好的头挂上响应
+     * @throws Base::InvalidArgumentException 取值含非法字段值字节；或 preload 没配 includeSubDomains
+     * @note 刻意不发 `X-XSS-Protection`：那条早已被规范废弃（浏览器已停用这一过滤器），
+     *       继续发它会诱导人把「有这行头」当成有防护，反而盖住真正该配的 CSP
+     * @note 这一层只管响应头：CSP 的内容对不对、`frame-ancestors` 与 X-Frame-Options 是否互相矛盾，
+     *       本层不判（判也判不准），交给写策略的人
+     */
+    inline MiddlewareFunc securityHeadersMiddleware(SecurityHeadersOptions options)
+    {
+        for (const auto &[fieldName, fieldMember]: Detail::securityHeaderFieldTable())
+        {
+            const std::string &value = options.*fieldMember;
+            if (value.empty() || containsOnlyFieldValueCharacters(value))
+            {
+                continue;
+            }
+            throw Base::InvalidArgumentException("securityHeadersMiddleware: " + std::string(fieldName) + " 的取值含非法字段值字节（CR/LF/NUL 或 DEL）");
+        }
+        if (options.strictTransportSecurityPreload && !options.strictTransportSecurityIncludeSubDomains)
+        {
+            // preload 是提交给浏览器内置名单的声明，那份名单硬性要求同时带 includeSubDomains：
+            // 少了那一格就是「配了 preload 却永远进不了名单」，构造期拦下来比线上静默无效好查
+            throw Base::InvalidArgumentException("securityHeadersMiddleware: strictTransportSecurityPreload 要求同时置 strictTransportSecurityIncludeSubDomains");
+        }
+
+        // HSTS 的整条文案在这里拼一次：中间件按值捕获，每条响应不再重复拼串
+        std::string strictTransportSecurityValue;
+        if (options.strictTransportSecurityMaxAgeSeconds > 0)
+        {
+            strictTransportSecurityValue = "max-age=" + std::to_string(options.strictTransportSecurityMaxAgeSeconds);
+            if (options.strictTransportSecurityIncludeSubDomains)
+            {
+                strictTransportSecurityValue += "; includeSubDomains";
+            }
+            if (options.strictTransportSecurityPreload)
+            {
+                strictTransportSecurityValue += "; preload";
+            }
+        }
+
+        return [options = std::move(options), strictTransportSecurityValue = std::move(strictTransportSecurityValue)](HttpRequest &request, HttpResponse &response,
+                                                                                                                      const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            for (const auto &[fieldName, fieldMember]: Detail::securityHeaderFieldTable())
+            {
+                const std::string &value = options.*fieldMember;
+                if (!value.empty() && !response.hasHeader(fieldName))
+                {
+                    static_cast<void>(response.setHeader(fieldName, value));
+                }
+            }
+            if (!strictTransportSecurityValue.empty() && request.overTls() && !response.hasHeader("strict-transport-security"))
+            {
+                static_cast<void>(response.setHeader("strict-transport-security", strictTransportSecurityValue));
+            }
+
+            co_await next();
         };
     }
 
