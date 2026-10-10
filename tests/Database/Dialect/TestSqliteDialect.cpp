@@ -1473,6 +1473,16 @@ TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
     // 上限来自 SQLITE_MAX_VARIABLE_NUMBER 的默认值，批量写入据此分块
     EXPECT_EQ(dialect.maximumStatementParameters(), SqliteDialect::kMaximumStatementParameters);
     EXPECT_EQ(dialect.maximumStatementParameters(), 999U);
+
+    // 三条保存点语句：名字一律被双引号包起来（SQLite 的引用符）。期望写成字面量而不是调
+    // quoteIdentifier() 算出来——那等于用被测的那只手判它自己
+    EXPECT_EQ(dialect.savepointStatement("keep"), R"(SAVEPOINT "keep")");
+    EXPECT_EQ(dialect.rollbackToSavepointStatement("keep"), R"(ROLLBACK TO SAVEPOINT "keep")");
+    EXPECT_EQ(dialect.releaseSavepointStatement("keep"), R"(RELEASE SAVEPOINT "keep")");
+    // 名字里带着引用符：内部的同字符翻倍，于是它仍然只是一个名字而不是两条语句的边界
+    EXPECT_EQ(dialect.savepointStatement("a\"b"), R"(SAVEPOINT "a""b")");
+    // 三条都不带分号：驱动的「一次一条语句」判据会把带分号的串判成两条
+    EXPECT_EQ(dialect.savepointStatement("keep").find(';'), std::string::npos);
 }
 
 // ========================================================================

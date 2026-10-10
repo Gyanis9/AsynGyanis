@@ -7,7 +7,7 @@
 // - BIT 列在文本协议与预处理协议上都按整数读出（BitColumnsAreReadAsIntegersOnBothProtocolPaths）
 // - 自增标识挂在写回执上：两条协议路径同口径、非插入语句与无自增列都回 0、宽不进 int64 时如实报 0 并写明原因
 // - 自增主键端到端：SchemaMigrator 生成的 DDL 被 InnoDB 接受，单条与批量两条写入路径都省略主键、标识连着排成 1..N
-// - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构与会话复位
+// - 二进制列按 BLOB 存取而文本列仍按文本读回；异步读写链路与同步结果逐项一致；事务提交/回滚/析构/保存点与会话复位
 //   （复位按服务端自报的状态位判事务，因此绕过 beginTransaction() 手工 START TRANSACTION 也滚得掉）
 // - 多语句文本在两条协议路径上都整次拒绝且首条不落库（这是「握手不开 CLIENT_MULTI_STATEMENTS」的可证形式）
 // - 语句表到顶时逐出最久没被读到的那一条：条数停在上界、热语句第二轮仍逐条命中
@@ -152,6 +152,10 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionRawBeginTableName = "Asyn_Mysql_Tx_RawBegin";
         // 嵌套事务用例同样各持一张表：它要在第一笔里留一行未提交的记录
         constexpr std::string_view kTransactionNestedTableName = "Asyn_Mysql_Tx_Nested";
+        // 保存点的三条用例也各持一张表（并行不得共用，理由与上面两条注释相同）
+        constexpr std::string_view kTransactionSavepointTableName     = "Asyn_Mysql_Tx_Savepoint";
+        constexpr std::string_view kTransactionSavepointMissTableName = "Asyn_Mysql_Tx_Savepoint_Miss";
+        constexpr std::string_view kTransactionSavepointLateTableName = "Asyn_Mysql_Tx_Savepoint_Late";
         // 非有限取值用例的表：DOUBLE 列必须**可空**，否则旧实现会撞 NOT NULL 约束而「看起来也在拒绝」
         constexpr std::string_view kNonFiniteTableName = "Asyn_Mysql_NonFinite_Double";
         constexpr std::string_view kTransactionColumns = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
@@ -2200,6 +2204,102 @@ namespace AsynGyanis::Database
         // 判据落在「第一笔仍然是未提交事务」：若第二笔真的发出去了，这一行就被隐式提交，回滚之后还在
         EXPECT_EQ(connection->rollback(), true) << connection->lastError();
         EXPECT_EQ(countRows(*connection, kTransactionNestedTableName), 0) << "嵌套的第二笔把第一笔隐式提交了";
+    }
+
+    /**
+     * @brief 真机上验证回退到保存点只撤那一段，而事务照旧开着
+     * @details MySQL 的 `ROLLBACK TO SAVEPOINT` 与 `ROLLBACK` 的差别正是这条用例存在的原因：
+     *          前者保住更早的工作、后者整笔作废。判据分两层——事务内先读到「退掉的那条已经不在了」
+     *          （走的是同一条连接，看得见未提交的工作），再由旁观连接确认最终只落了该落的两个号。
+     *          真机才测得出这一条：桩件不实现服务端的事务状态机。
+     */
+    TEST_F(MySqlIntegrationTest, SavepointRollbackKeepsEarlierWorkAndLeavesTransactionOpen)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionSavepointTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        {
+            Transaction transaction(*pool);
+
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointTableName, 1, "保存点之前", 1.5)) << transaction.connection().lastError();
+            ASSERT_TRUE(transaction.savepoint("keep")) << transaction.lastError();
+            EXPECT_TRUE(transaction.isActive());
+
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointTableName, 2, "要被退掉", 2.5)) << transaction.connection().lastError();
+            EXPECT_EQ(countRows(transaction.connection(), kTransactionSavepointTableName), 2);
+
+            ASSERT_TRUE(transaction.rollbackToSavepoint("keep")) << transaction.lastError();
+            EXPECT_TRUE(transaction.isActive()) << "回退到保存点把整笔事务结束了";
+            // 同一条连接上读得到未提交的工作：退掉的那条此刻应当真的不在了
+            EXPECT_EQ(countRows(transaction.connection(), kTransactionSavepointTableName), 1) << "ROLLBACK TO SAVEPOINT 没撤掉那之后的写入";
+
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointTableName, 3, "回退之后又写的", 3.5)) << transaction.connection().lastError();
+            ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+        }
+
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionSavepointTableName), 2);
+    }
+
+    /**
+     * @brief 真机上验证回退一个没立过的名字是失败而不是结束事务
+     * @details 服务端报的是「SAVEPOINT does not exist」（1735），事务仍在——调用方因此可以在同一条
+     *          连接上继续把工作做完并提交。证伪：让失败路径复用 `rollback()` 的收尾（断开连接、
+     *          置假 m_isActive），这里随后的 commit() 就会红。
+     */
+    TEST_F(MySqlIntegrationTest, UnknownSavepointRollbackFailsWithoutEndingTransaction)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionSavepointMissTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        {
+            Transaction transaction(*pool);
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointMissTableName, 1, "留在事务里", 1.5)) << transaction.connection().lastError();
+            ASSERT_TRUE(transaction.savepoint("known")) << transaction.lastError();
+
+            EXPECT_FALSE(transaction.rollbackToSavepoint("ghost"));
+            EXPECT_FALSE(transaction.lastError().empty()) << "失败没有给出可读原因";
+            EXPECT_TRUE(transaction.isActive());
+
+            ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointMissTableName, 2, "失败之后写的", 2.5)) << transaction.connection().lastError();
+            ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+        }
+
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionSavepointMissTableName), 2);
+    }
+
+    /**
+     * @brief 真机上验证事务结束后不再发保存点语句，连接上没有半个事务压着
+     * @details 判据问的是「这条连接现在是不是在自动提交」：在一个已结束的事务上再要保存点时，
+     *          若拒绝路径真把 `SAVEPOINT` 发了出去，MySQL 当场起一笔新事务，那么紧接着同一条连接的
+     *          写入就仍压在未提交状态——旁观连接读到的行数会少一条，这里就红。
+     *          （不读 `MySqlConnection::isTransactionOpenNow()`：它是私有成员，测试够不着，
+     *          而这条判据本来也不需要多一个出口。）
+     */
+    TEST_F(MySqlIntegrationTest, SavepointAfterCommitRefusesToSendAnything)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionSavepointLateTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        Transaction                     transaction(*pool);
+        ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointLateTableName, 1, "已提交", 1.5)) << transaction.connection().lastError();
+        ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+        ASSERT_FALSE(transaction.isActive());
+
+        EXPECT_FALSE(transaction.savepoint("late"));
+        EXPECT_NE(transaction.lastError().find("已结束"), std::string::npos) << transaction.lastError();
+        EXPECT_FALSE(transaction.rollbackToSavepoint("late"));
+        EXPECT_FALSE(transaction.releaseSavepoint("late"));
+
+        // 事务已结束后这条连接应当回到自动提交：这一行写完立刻对旁观连接可见
+        ASSERT_TRUE(insertTransactionRow(transaction.connection(), kTransactionSavepointLateTableName, 9, "本条应立刻可见", 9.5)) << transaction.connection().lastError();
+
+        std::unique_ptr<MySqlConnection> observer = makeConnection();
+        ASSERT_TRUE(observer->connect()) << observer->lastError();
+        EXPECT_EQ(countRows(*observer, kTransactionSavepointLateTableName), 2) << "拒绝路径留下了一笔没人负责的事务：这条写入还压在未提交状态";
     }
 
     /**

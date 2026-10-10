@@ -155,6 +155,50 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view rollbackStatement() const noexcept = 0;
 
         /**
+         * @brief 获取在事务里立一个保存点的语句文本
+         *
+         * @details 保存点是「事务内部的可回退点」：`ROLLBACK TO SAVEPOINT` 只撤到那一点而**不结束事务**，
+         *          所以嵌套回滚不必再开第二个事务——两个引擎都不吃嵌套 BEGIN（MySQL 的 START TRANSACTION
+         *          会隐式提交上一笔，SQLite 直接报错），而再借一条连接开的更是另一笔事务。
+         *
+         * @note 默认实现放在接口上而不是某个方言里：这三条语法 SQLite 与 MySQL 通用，收在这里就只有一份
+         *       文本；名字一律经本引擎的 `quoteIdentifier()` 包起来（内部的同字符翻倍），所以调用方给的串
+         *       不会变成语句的一部分。哪天真出现不同写法的引擎，在它自己的方言里覆写即可。
+         *
+         * @param name 保存点名，非空且不含 NUL（那两道检查在事务对象那一层，见 `Transaction::savepoint`）
+         * @return std::string 语句文本，保证不含分号
+         */
+        [[nodiscard]] virtual std::string savepointStatement(const std::string_view name) const
+        {
+            return "SAVEPOINT " + quoteIdentifier(name);
+        }
+
+        /**
+         * @brief 获取「回退到某个保存点而保留事务」的语句文本
+         * @details 写全 `TO SAVEPOINT` 而不是 SQLite 也接受的裸 `TO`：MySQL 只认带关键字的那条写法，
+         *          一份文本两边都能跑。回退之后事务仍然开着——这是它与 `rollbackStatement()` 唯一而关键
+         *          的区别。
+         * @param name 保存点名
+         * @return std::string 语句文本，保证不含分号
+         */
+        [[nodiscard]] virtual std::string rollbackToSavepointStatement(const std::string_view name) const
+        {
+            return "ROLLBACK TO SAVEPOINT " + quoteIdentifier(name);
+        }
+
+        /**
+         * @brief 获取丢弃某个保存点的语句文本
+         * @details 丢弃只是让这个名字之后不能被回退，**不提交也不回滚**它之后的工作；
+         *          不调用也可以，事务结束时保存点随之消失，所以它只在需要早回收命名空间时有用。
+         * @param name 保存点名
+         * @return std::string 语句文本，保证不含分号
+         */
+        [[nodiscard]] virtual std::string releaseSavepointStatement(const std::string_view name) const
+        {
+            return "RELEASE SAVEPOINT " + quoteIdentifier(name);
+        }
+
+        /**
          * @brief 把一个逻辑列类型翻译成本引擎的物理类型名
          *
          * @details 建表迁移（SchemaMigrator）只按成员类型给出逻辑类型（ColumnType），

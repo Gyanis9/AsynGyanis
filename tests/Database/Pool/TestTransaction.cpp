@@ -16,7 +16,13 @@
 // - StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
 // - ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch（分块批量插入整批占住使用权，块间不插进别的语句）
 // - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
+// - SavepointRollbackKeepsEarlierWorkAndLeavesTransactionOpen（保存点回退只退那一段，事务照旧开着）
+// - ReleaseSavepointKeepsWorkAfterIt（丢弃名字不回滚也不提交）
+// - RollbackToUnknownSavepointFailsWithoutEndingTransaction（回退不存在的点是失败而不是结束事务）
+// - SavepointAfterCommitRefusesToSendAnything（已结束的事务上一条都不发，尤其不能顺手起一个新事务）
+// - SavepointNameRejectsBlankAndNul / SavepointNameIsQuotedNotSpliced（名字是数据不是 SQL 片段）
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
@@ -44,6 +50,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // ========================================================================
@@ -672,4 +679,175 @@ TEST_F(TransactionTest, SequentialStatementsFromDifferentThreadsBothRun)
 
     EXPECT_TRUE(transaction.commit());
     EXPECT_EQ(countCommittedRows(), 2);
+}
+
+// ========================================================================
+// 保存点：同一笔事务内部的可回退点
+// ========================================================================
+
+/**
+ * @brief 回退到保存点只撤那一段，事务照旧开着，提交带走更早与更晚的工作
+ * @details 这条钉的是「嵌套回滚」的整个卖点：`ROLLBACK TO SAVEPOINT` 之后
+ *          `isActive()` 必须仍为真（否则调用方退一段就丢掉整笔），而退掉的只有那一点之后的写入。
+ *          证伪：把 `rollbackToSavepoint` 发成 `ROLLBACK`（少写 TO SAVEPOINT 那截），
+ *          事务当场结束、第三条写不进、`commit()` 失败——红在这一条上。
+ */
+TEST_F(TransactionTest, SavepointRollbackKeepsEarlierWorkAndLeavesTransactionOpen)
+{
+    {
+        Transaction          transaction(*m_pool);
+        Queryable<LedgerRow> transactionalQuery(transaction);
+
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "保存点之前", 1.0, std::nullopt)), 1);
+        ASSERT_TRUE(transaction.savepoint("keep")) << transaction.lastError();
+        EXPECT_TRUE(transaction.isActive()) << "立保存点不该改变事务状态";
+
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(2, "要被退掉", 2.0, std::nullopt)), 1);
+        ASSERT_TRUE(transaction.rollbackToSavepoint("keep")) << transaction.lastError();
+        EXPECT_TRUE(transaction.isActive()) << "回退到保存点把整笔事务结束了";
+
+        // 退完之后还能接着在同一笔事务里写，并一次提交
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(3, "回退之后又写的", 3.0, std::nullopt)), 1);
+        // 三段工作都还在同一笔未提交的事务里：旁观连接什么都看不到
+        EXPECT_EQ(countCommittedRows(), 0);
+
+        ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    }
+
+    ASSERT_EQ(countCommittedRows(), 2);
+    ASSERT_TRUE(findCommittedRow(1).has_value()) << "保存点之前的工作被一起退掉了：回退范围写错";
+    EXPECT_FALSE(findCommittedRow(2).has_value()) << "回退到保存点没有撤掉那之后的写入";
+    ASSERT_TRUE(findCommittedRow(3).has_value()) << "回退之后的写入没被提交带走";
+}
+
+/**
+ * @brief 丢弃保存点只让名字消失，不回滚也不提交它之后的工作
+ * @details 证伪：把 `RELEASE SAVEPOINT x` 发成 `COMMIT`，第二条写入会在 `commit()` 之前就被
+ *          旁观连接看到（那条断言正是本用例的判据之一）。
+ */
+TEST_F(TransactionTest, ReleaseSavepointKeepsWorkAfterIt)
+{
+    {
+        Transaction          transaction(*m_pool);
+        Queryable<LedgerRow> transactionalQuery(transaction);
+
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "第一段", 1.0, std::nullopt)), 1);
+        ASSERT_TRUE(transaction.savepoint("step")) << transaction.lastError();
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(2, "第二段", 2.0, std::nullopt)), 1);
+
+        ASSERT_TRUE(transaction.releaseSavepoint("step")) << transaction.lastError();
+        EXPECT_TRUE(transaction.isActive());
+        // 丢弃之后名字不再可用，这条是「只让名字消失」的反面判据：引擎报的是没有这个保存点
+        EXPECT_FALSE(transaction.rollbackToSavepoint("step")) << "名字丢弃后仍可回退：RELEASE 什么都没做";
+
+        // 还没提交：丢弃保存点不能把工作一起落库
+        EXPECT_EQ(countCommittedRows(), 0);
+        ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    }
+
+    EXPECT_EQ(countCommittedRows(), 2) << "丢弃保存点把已写入的行一起弄没了";
+}
+
+/**
+ * @brief 回退一个没立过的名字是失败，而不是把事务结束掉
+ * @details 两个引擎对未知保存点回的都是「没有这个保存点」这一类错误，事务照旧开着——
+ *          调用方据此可以「试一下回退，不行就继续干活」。证伪：让失败路径也走 `rollback()`
+ *          那条（把 `m_isActive` 一起置假），本用例里随后的 `commit()` 会红。
+ */
+TEST_F(TransactionTest, RollbackToUnknownSavepointFailsWithoutEndingTransaction)
+{
+    Transaction          transaction(*m_pool);
+    Queryable<LedgerRow> transactionalQuery(transaction);
+
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "留在事务里", 1.0, std::nullopt)), 1);
+    ASSERT_TRUE(transaction.savepoint("known")) << transaction.lastError();
+
+    EXPECT_FALSE(transaction.rollbackToSavepoint("ghost"));
+    EXPECT_FALSE(transaction.lastError().empty()) << "失败没有给出可读原因";
+    EXPECT_TRUE(transaction.isActive()) << "回退不存在的保存点把整笔事务结束了";
+
+    // 失败之后事务仍然可用：继续写、继续提交
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(2, "失败之后写的", 2.0, std::nullopt)), 1);
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+
+    ASSERT_EQ(countCommittedRows(), 2);
+    ASSERT_TRUE(findCommittedRow(2).has_value()) << "失败的回退把已经写入的那行一起弄丢了";
+}
+
+/**
+ * @brief 事务结束后再要保存点：一条语句都不发
+ * @details 这条不是「参数校验」那类洁癖，而是 SQLite 的真行为：没有活动事务时 `SAVEPOINT` 等价于
+ *          `BEGIN DEFERRED`，会**另起一个事务**。而本对象的 `m_isActive` 已假，之后没人提交也没人回滚，
+ *          那条连接就带着一个没人负责的事务回到池里（下一位借用者的语句悄悄并进它）。
+ *          判据直接问这条连接「还有事务可收尾吗」：拒绝到位就答「没有」（回滚失败）。
+ *          证伪：删掉 `checkSavepointPremises` 里 `m_isActive` 那一段，这里会红。
+ */
+TEST_F(TransactionTest, SavepointAfterCommitRefusesToSendAnything)
+{
+    Transaction          transaction(*m_pool);
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "已提交", 1.0, std::nullopt)), 1);
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    ASSERT_FALSE(transaction.isActive());
+
+    EXPECT_FALSE(transaction.savepoint("late"));
+    // 本仓库的用例只链 gtest（没有 gmock），因此按「我们自己那句话里的关键词」判：
+    // 这句话是本类写的，不跟着底层库的措辞变
+    EXPECT_NE(transaction.lastError().find("已结束"), std::string::npos) << transaction.lastError();
+    EXPECT_FALSE(transaction.rollbackToSavepoint("late"));
+    EXPECT_FALSE(transaction.releaseSavepoint("late"));
+
+    auto *sqliteConnection = dynamic_cast<SqliteConnection *>(&transaction.connection());
+    ASSERT_TRUE(sqliteConnection != nullptr) << "池交出的不是 SQLite 连接，本用例的判据无从落地";
+    EXPECT_FALSE(sqliteConnection->rollback()) << "拒绝路径照样发了 SAVEPOINT：它在 SQLite 上会另起一个没人负责的事务";
+
+    EXPECT_EQ(countCommittedRows(), 1);
+}
+
+/**
+ * @brief 名字为空、全是空白或含 NUL 时当场抛，而不是发出去让引擎报错
+ * @details 抛完之后事务必须仍然完好——判据是名字检查发生在发语句之前：本用例随后照常写入并提交。
+ */
+TEST_F(TransactionTest, SavepointNameRejectsBlankAndNul)
+{
+    Transaction transaction(*m_pool);
+
+    EXPECT_THROW(static_cast<void>(transaction.savepoint("")), AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(transaction.savepoint("   \t\r\n ")), AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(transaction.savepoint(std::string_view("a\0b", 3))), AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(transaction.rollbackToSavepoint("")), AsynGyanis::Base::InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(transaction.releaseSavepoint("  ")), AsynGyanis::Base::InvalidArgumentException);
+
+    // 三次拒绝都没碰过这条连接：事务仍在进行，写入与提交照常
+    EXPECT_TRUE(transaction.isActive());
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "名字被拒之后写的", 1.0, std::nullopt)), 1);
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 1);
+}
+
+/**
+ * @brief 调用方给的保存点名是数据，不是 SQL 片段
+ * @details 方言一律把名字包进本引擎的引用符（内部的同字符翻倍），因此带着引号、分号与注释符的串
+ *          只能是一个名字。这条同时是「改天有人图省事把名字直接拼进文本」的反注入判据：
+ *          那样一来 `;` 之后的内容就会变成第二条语句（SQLite 的 `execute()` 与 MySQL 的文本协议
+ *          都刻意不执行多条语句，会当场拒——红在本用例的「表还在、行还在」这两句上）。
+ */
+TEST_F(TransactionTest, SavepointNameIsQuotedNotSpliced)
+{
+    constexpr std::string_view hostileName = R"(x"; DROP TABLE ledger; --)";
+
+    Transaction          transaction(*m_pool);
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "带着怪名字", 1.0, std::nullopt)), 1);
+
+    ASSERT_TRUE(transaction.savepoint(hostileName)) << transaction.lastError();
+    ASSERT_TRUE(transaction.rollbackToSavepoint(hostileName)) << transaction.lastError();
+    ASSERT_TRUE(transaction.releaseSavepoint(hostileName)) << transaction.lastError();
+
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+
+    // 表没被 drop，行也没少：那句 SQL 片段自始至终只是个名字
+    ASSERT_EQ(countCommittedRows(), 1);
+    ASSERT_TRUE(findCommittedRow(1).has_value());
 }

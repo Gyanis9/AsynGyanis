@@ -108,7 +108,9 @@
 - **高性能连接池** — LIFO 复用、惰性创建、双机制清理（空闲回收 + 上限保护）；借出的连接可以
   `PooledConnection::discard()` 主动丢弃（驱动侧报过错、事务半路失败那一类脏会话），名额照旧腾出来
 - **异步执行器** — 数据库阻塞调用挪出事件循环线程，完成后经 `Scheduler::scheduleRemote` 投回指定 `EventLoop`
-- **事务与建表迁移** — `Transaction` RAII（析构未提交自动回滚）、`SchemaMigrator` 从表结构生成 DDL
+- **事务与建表迁移** — `Transaction` RAII（析构未提交自动回滚），同一笔事务内可回退的段由保存点给出
+  （`savepoint()` / `rollbackToSavepoint()` / `releaseSavepoint()`——两个引擎都不吃嵌套 BEGIN，
+  回退到保存点不会结束事务）；`SchemaMigrator` 从表结构生成 DDL
 
 **基础（Platform / Base）**
 
@@ -257,7 +259,7 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 | `NetHttpsH2Demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
 | `NetHttp3Demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
 | `NetUdpDemo` | UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付与零长报文、主动下发、统计、处理器抛异常后的存活、两种顺序混用被拒、收口叫醒挂着的协程 | 13 |
-| `DatabaseDemo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 79 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
+| `DatabaseDemo` | SQLite 文件库/内存库、方言、ORM、事务、blob、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 82 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
 
 表内步数是两侧各自实测：Windows 一轮 `run_samples.py --repeat 2` 逐对一致，POSIX 侧在容器
 `ubuntu24` 里跑同一份源码。两台的差只来自平台专属步骤（本轮逐条比对过步骤名）：`PlatformPrimitives` 在
@@ -752,6 +754,7 @@ AsynGyanis/
 | 日志等级与滚动 | `Base::LoggerConfigLoader` 的 `global_level` 与 `sinks`（`rolling_file`：`directory`/`policy`/`max_size_mb`/`max_backup`） | 未配置前 root 是 Trace 且**零 sink → 全部丢弃**；`global_level` 缺失回落 INFO；滚动按 `size`、单文件 10 MiB、留 10 份 | `LoggerRegistry` 的 sink 快照；`AsyncSink::droppedEventCount()`（每条通道各计各的）与 `Base::droppedAsyncLogEventCount()`（进程级合计）；`FileSink::skippedLineCount()`（文件没打开或流已失效时按行累计的「落不下盘」数）；开着 `/metrics` 时合计落在 `asyn_http_log_dropped_events_total`——队列满按策略丢、Block 策略等位超时、下游落地抛异常三种口径都算进去 | 越界值会被钳制并打到 `stderr`（不中断启动）；`policy` 拼错会回退成 `size` 并说明原因——启动日志要留着看；**本实现不认识的字段（含 `max_backups` 这类拼错的键）同样打一行 `stderr`，并报出这一层认识哪些字段**：`server` / `acme` 段是未知键当场拒，`logging` 这一段刻意只报不拒（sink 的字段集按类型多态，因一个多余字段就丢掉整条 sink 比现状更伤）；`ReferenceServer --config` 会连同 `logging` 段一起装上（不装就只有 `server` 段生效） |
 | worker 起法 | `Core::WorkerSupervisor::Configuration` | `workerCount` 必须 ≥ 2；崩溃窗口 3s、连续 5 次「起来就崩」不再补；`shutdownTimeout` 10s | 构造期就校验：Windows 缺 `handoff`、POSIX 给了 `handoff` 都直接抛 | Windows 上 worker 靠 master 移交监听描述符（不是 `SO_REUSEPORT`），配错的表现是「只有一个进程收得到连接」；`ReferenceServer --workers` 只走 POSIX 那条（Windows 上缺移交档位，构造即抛），移交形状见 `samples/Core/Worker.cpp`（目标名仍是 `CoreWorker`）；master 被硬杀时 worker 随作业对象一起被终止（Windows `killWithParent`、POSIX `PDEATHSIG`），主机不让挂作业时保护缺席会落一条 WARN |
 | 优雅停机 | 各服务器的 `stop()` / `drain(timeout)`；`WorkerSupervisor` 的 `shutdownTimeout` | `drain` 的时长由调用方给（库不设默认）；到点后强关并在途请求作废 | 停机时观察：在册连接归零、`/metrics` 的丢弃计数不再涨 | 超时给小了会掐断在途长请求；worker 的体面退出在 POSIX 是 SIGTERM，Windows 没有信号——编排者给每个 worker 独立进程组再发 `CTRL_BREAK`（`Process::requestTermination()`），宿主没有控制台时发不出去，会记一条 WARN 再强杀 |
+| 编译与链接加固 | CMake 开关 `ASYN_ENABLE_HARDENING`（默认 ON）；门禁 `scripts/check-hardening.py` | 开。GCC/Clang 落 `-fstack-protector-strong`（每个非 sanitizer 档）+ Release 的 `-D_FORTIFY_SOURCE=2` + 链接侧 `-z relro,-z now`；MSVC 编译与链接都带 `/guard:cf`（只进 Release）。**开 sanitizer 时整体不叠**（配置期打一行说明） | 现跑一次那道门禁：`python scripts/check-hardening.py --build <构建目录>`。它的期望从**该构建目录自己的 `CMakeCache.txt` 现读**，先核 `compile_commands.json` 里每个 `src/` 翻译单元带着该带的开关，再核产物镜像头（ELF 的 `GNU_RELRO`/`BIND_NOW`/不可执行栈，PE 的 NX/DYNAMIC_BASE/CFG）；「配了没重新 configure」「找不到 readelf」「这一档根本没链接出产物」都退 2，不会被读成通过 | 加固只落**本仓自己的产物**，且全部 `PRIVATE`：链接期策略（`-z now`、CFG）刻意不推给消费者——静态库的消费者可能用 `--no-pie`、纯静态 glibc 或自己一套 CET 策略。所以**最终可执行体那侧要自己开**：只在库里加选项而可执行体没带链接期 CFG / FULL RELRO，读到的是「库编过了」而线上镜像照样没有那道防线 |
 
 配置键到服务器的对接只有一处：`applyHttpServerConfiguration(server, configuration, context)`（`Net/Http/HttpServerAssembly.h`）。
 `server` 段的键此前只能靠调用方逐台手接六七个 setter，`expose_metrics` 就是这样变成了「配置里打了勾、
@@ -776,7 +779,7 @@ AsynGyanis/
 - **GoogleTest**（`gtest_discover_tests`，每个用例独立进程），测试目录与 `src` 逐级对齐
 - 当前规模（**读数取 `develop` 的 `b8aad4e2` 那一轮 CI 运行**，2026-10-10 手动触发，TCP 保活、承载层 TLS 事实、安全响应头、请求正文落盘与 Basic 认证五段落地之后；`main` 还停在 2.6.0 的 `a9837e4b`，下一次发版才跟上）：**Windows `构建与全量用例（MSVC + ASan）` 4068 条全绿、零告警**（93 条按 SKIP 记账、ctest 实测 499.03 秒——CI 里没有真机凭据，MySQL 与 Redis 那几族和 ACME 的实机签发都跳过；同档本机 Debug + ASan 那一轮是 4077 例全过、92 条 SKIP，差的 9 条正是 CI 没建真机驱动的那几族）；Linux 三条构建分片 `Database` 647、`Platform / Base / Core` 1293（按模块三段：243 + 657 + 393）、`Net` 2142，**合计 4082 条全绿、零告警、零 sanitizer 命中**（GCC 13 + ASan/LSan/UBSan，`-Wall -Wextra -Werror`）；覆盖率档那一轮把整树一次跑完，同样 4082 条全绿、82 条按门控 SKIP、170.75 秒。示例矩阵 Linux 13 次运行 0 失败、Windows 12 次运行 0 失败（少一条 `CoreUpgrade`，它只在 POSIX 侧构建）。其余作业逐条数过、**0 条非 `success`**：`HTTP/3 跨实现验收：aioquic` 11 条场景全过；`规范裁判：h2spec 与 Autobahn` 常规与 `--strict` 各一轮「全部核对通过」，Autobahn 515 条、FAILED 0；`ACME 真机构验收：Pebble` 8 个场景全过；`协议解码器持续模糊` 合计 18,147,206 次执行、零崩溃；`ThreadSanitizer：线程契约` 筛面命中 1475 / 全量 4082；`覆盖率门禁` 总行 77.56%、总函数 86.33%、总分枝 61.99%（可执行行 41683）；`格式门禁：clang-format` 参与检查的跟踪源文件 724 个、复杂度基线 47 项越地板、图引追溯门 237 条 `sources` + 115 条正文引用 0 违例；Windows 静态档 194/194 个翻译单元标记齐全、本仓解析失败 0；共享形态（`BUILD_SHARED_LIBS=ON`）4068 条全绿。再往前那一轮 `25d715a4` 两面门红在**同一个成因**：Linux 的格式档与 Windows 静态档的「全仓格式检查」都退 123，落点是上一笔刚提交的 `src/Net/Http/RequestBodySpool.cpp`——钉版格式化的结果没进那一笔提交，而那一轮的提交信息按「本轮改过哪些文件」的逐文件复检写了「全树 0 违例」。修法是两半：把那份文件按钉版重排，并把本机这条判据改成与 CI 同形状的整树跑（清单取自 `git ls-files`、先自证条数不低于 500）；从 `b8aad4e2` 起两面门重新绿。更早两次红在另一处：runner 到 `auth.docker.io` 的请求整片超时，Redis 与 Autobahn 两个裁判镜像没拉下来，门禁本身没跑（重跑一次仍超时）——于是给两处拉取各加三次带时限的尝试与退避；这类红的形状是「一步都没跑成」而不是「某项判据失败」，判据本身没被改过。裁判的先决条件是「服务端真的活着」：跑之前先取 healthz 与 /metrics 自证，跑完再拿「打死监听端口必全线红」当反向对照。版本号三处一致（2.6.0，本机跑 `scripts/check-release-version.py`：CMake 版本号 / 更新日志最新发布段 / 最新标签同为 2.6.0）。
 - 零编译器告警是提交判据；Debug 构建在 AddressSanitizer 下跑通且无报告
-- 真机套件：MySQL 42 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
+- 真机套件：MySQL 45 例、Redis 31 例（两族都按 ctest 名单现数；覆盖认证、参数化往返、事务、批量插入、异步读写链路、管道与回复类型映射）
 - **CI 触发面**：四条工作流（Linux CI / Windows CI / 发布门禁 / 供应链）都只在 `main` 推送与手动触发上跑，
   `develop` 不消耗分钟数——要看某个提交就 `gh workflow run linux-ci.yml --ref develop`（按**文件名**触发，
   作业名已是中文；`--ref` 只认分支/标签，直接给提交号会报 `No ref found`）。两条构建作业还带

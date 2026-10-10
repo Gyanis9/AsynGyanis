@@ -1,11 +1,13 @@
 #include "Database/Pool/Transaction.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/QueryExecutionException.h"
 #include "Database/Dialect/DialectRegistry.h"
 
+#include <algorithm>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -110,6 +112,64 @@ namespace AsynGyanis::Database
     {
         // 独占语义由 unique_lock 自己承担：拿到即独占这条连接，离开作用域即交还
         return std::unique_lock<std::mutex>(m_statementMutex);
+    }
+
+    bool Transaction::savepoint(const std::string_view name)
+    {
+        if (!checkSavepointPremises(name, "建立"))
+        {
+            return false;
+        }
+        return executeControlStatement(m_dialect->savepointStatement(name));
+    }
+
+    bool Transaction::rollbackToSavepoint(const std::string_view name)
+    {
+        if (!checkSavepointPremises(name, "回退到"))
+        {
+            return false;
+        }
+        // 这里不动 m_isActive：回退到保存点撤掉的是那一点之后的写入，事务本身仍然开着，
+        // 之后 commit() 照常把那一点之前的工作落库——这正是它能替代「嵌套事务」的原因
+        return executeControlStatement(m_dialect->rollbackToSavepointStatement(name));
+    }
+
+    bool Transaction::releaseSavepoint(const std::string_view name)
+    {
+        if (!checkSavepointPremises(name, "丢弃"))
+        {
+            return false;
+        }
+        return executeControlStatement(m_dialect->releaseSavepointStatement(name));
+    }
+
+    bool Transaction::checkSavepointPremises(const std::string_view name, const std::string_view action)
+    {
+        // 坏名字是调用方的输入问题，当场抛而不是回 false：回 false 会把注意力引向数据库，
+        // 而那两条语句本身都没错。NUL 单独判是因为它会让串在驱动侧被截断成另一个名字
+        if (name.empty() || name.find('\0') != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException("数据库事务：" + std::string(action) + "保存点需要一个非空且不含 NUL 的名字");
+        }
+        // 空白判定只认 ASCII 的那几个字符，不用 std::isspace：它跟着 locale 走，
+        // 换一档 locale 就可能多认或少认一个字符，而「这个名字能不能发出去」不该随环境变
+        const bool isAllWhitespace =
+                std::ranges::all_of(name, [](const char character)
+                                    { return character == ' ' || character == '\t' || character == '\n' || character == '\r' || character == '\f' || character == '\v'; });
+        if (isAllWhitespace)
+        {
+            throw Base::InvalidArgumentException("数据库事务：" + std::string(action) + "保存点的名字不能全是空白字符（它会被原样引起来送进语句）");
+        }
+
+        // 事务已结束就一条都不发。这一步不是形式主义：SQLite 上没有活动事务时 SAVEPOINT 会**另起一个**
+        // 事务（文档明写等价于 BEGIN DEFERRED），而这个对象的 m_isActive 已假、析构不再回滚也不再提交，
+        // 那条连接就会带着一个没人负责的事务回到池里——把「保存点」变成一次意外的开事务
+        if (!m_isActive)
+        {
+            m_lastError = "数据库事务：事务已结束（已提交或已回滚），无法" + std::string(action) + "保存点";
+            return false;
+        }
+        return true;
     }
 
     bool Transaction::executeControlStatement(const std::string_view statement)

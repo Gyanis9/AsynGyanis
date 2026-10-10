@@ -911,6 +911,49 @@ namespace
         Samples::checklist().check(survivingQuery.count() == 2 && !escapedReason.empty() && containsChinese(escapedReason),
                                    "唯一约束违例抛出的异常里带着中文原因，且那一笔新行随事务一起被回滚");
 
+        // 保存点：一笔事务内部的可回退段。两个引擎都不吃嵌套 BEGIN（MySQL 会隐式提交上一笔、SQLite 直接报错），
+        // 所以「退掉一小段而保住其余工作」只有这条路，而不是再套一个 Transaction 对象
+        {
+            Database::Transaction transaction(pool);
+            OrmQuery<AccountRow>  transactionalQuery(transaction);
+            static_cast<void>(transactionalQuery.insert(AccountRow{.id = 7, .name = "保存点之前", .balance = 9.0, .note = std::nullopt, .active = true}));
+            const bool isPointOpened = transaction.savepoint("step");
+            static_cast<void>(transactionalQuery.insert(AccountRow{.id = 8, .name = "要被退掉", .balance = 10.0, .note = std::nullopt, .active = true}));
+            const bool isRolledBackToPoint  = transaction.rollbackToSavepoint("step");
+            const bool isStillOpenAfterThat = transaction.isActive();
+            const bool isCommitted          = transaction.commit();
+
+            Samples::checklist().check(isPointOpened && isRolledBackToPoint && isStillOpenAfterThat && isCommitted && bystanderCount() == 3,
+                                       "回退到保存点只撤那一段（8 号没留下、7 号在），事务照旧开着并被一次提交带走");
+        }
+
+        {
+            Database::Transaction transaction(pool);
+            static_cast<void>(transaction.savepoint("known"));
+            // 名字没立过：失败而不是把整笔事务结束掉——调用方因此可以先试再继续干活
+            const bool isMissRejected = !transaction.rollbackToSavepoint("ghost") && containsChinese(transaction.lastError());
+            const bool isStillOpen    = transaction.isActive();
+            static_cast<void>(transaction.rollback());
+
+            Samples::checklist().check(isMissRejected && isStillOpen, "回退一个没立过的保存点是失败而不是结束事务，原因带着中文说明");
+        }
+
+        {
+            Database::Transaction transaction(pool);
+            bool                  isBlankNameRejected = false;
+            try
+            {
+                // 名字是数据：空串与全是空白都在发语句之前被拒（真发出去的话引擎只会说语法不对，指不回这一步）
+                static_cast<void>(transaction.savepoint("   "));
+            } catch (const Base::InvalidArgumentException &)
+            {
+                isBlankNameRejected = true;
+            }
+
+            Samples::checklist().check(isBlankNameRejected && transaction.isActive() && transaction.rollback(),
+                                       "全是空白的保存点名抛 InvalidArgumentException，而事务本身没被碰过");
+        }
+
         // 连接对象上的事务入口（不经池）：语句文本取自方言的 BEGIN IMMEDIATE，嵌套 BEGIN 被拒但不破坏已有事务
         Database::SqliteConnection connection(Database::ConnectionConfig::sqliteDefault());
         static_cast<void>(connection.connect());

@@ -1123,6 +1123,14 @@ TEST(MySqlDialectWrite, TransactionStatements)
     EXPECT_EQ(dialect.beginTransactionStatement(), "START TRANSACTION");
     EXPECT_EQ(dialect.commitStatement(), "COMMIT");
     EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
+
+    // 保存点的三条文本与 SQLite 侧同形（同一份实现），差别只在引用符是反引号。
+    // 写全 "TO SAVEPOINT" 是刻意的：MySQL 只认带关键字的那条写法，而 SQLite 两种都吃
+    EXPECT_EQ(dialect.savepointStatement("keep"), "SAVEPOINT `keep`");
+    EXPECT_EQ(dialect.rollbackToSavepointStatement("keep"), "ROLLBACK TO SAVEPOINT `keep`");
+    EXPECT_EQ(dialect.releaseSavepointStatement("keep"), "RELEASE SAVEPOINT `keep`");
+    EXPECT_EQ(dialect.savepointStatement("a`b"), "SAVEPOINT `a``b`");
+    EXPECT_EQ(dialect.savepointStatement("keep").find(';'), std::string::npos);
 }
 
 // ========================================================================

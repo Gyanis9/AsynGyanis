@@ -13,7 +13,10 @@
  *
  * @note 析构必须自动回滚：异常会跨过作用域跳走，显式 rollback() 常常来不及执行，而未结束的事务
  *       会污染下一个使用者。回滚是幂等的，已提交/已回滚的事务不会再发语句（m_isActive 为假）。
- *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。不支持嵌套事务；
+ *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。
+ *       **嵌套不是再开一个 Transaction**（两个引擎都不吃嵌套 BEGIN：MySQL 的 START TRANSACTION 会
+ *       隐式提交上一笔、SQLite 直接报错，而再借一条连接更是另一个事务），要的是同一笔事务里的
+ *       保存点：savepoint() / rollbackToSavepoint() / releaseSavepoint()，见那三个方法的说明。
  *       走本事务的语句由 m_statementMutex 串行落在那一条连接上（驱动连接不是线程安全的）。
  */
 #pragma once
@@ -103,6 +106,57 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool rollback();
 
         /**
+         * @brief 在本事务里立一个保存点（事务内部的可回退点）
+         *
+         * @details 用途是「一笔事务里回退一小段而不要整笔作废」：批量写入里某一条坏了，可以只退到
+         *          这一批之前的那个点，前面已经做的工作保住。两个引擎都**不支持嵌套 BEGIN**（MySQL 的
+         *          START TRANSACTION 会隐式提交上一笔，SQLite 直接报错），所以嵌套这一层只能由保存点回答，
+         *          而不是再构造一个 Transaction 对象——后者会去池里再借一条连接，那是另一个事务。
+         *
+         * @note 名称怎么进 SQL：交给方言的 `savepointStatement()`，那里一律用本引擎的引用符把名字包起来
+         *       （内部的同字符翻倍），所以调用方给的串不会变成语句的一部分。名字本身只要求非空、
+         *       不全是空白、不含 NUL——长度上限由各引擎回答（MySQL 标识符 64 字符），拒绝时原因走
+         *       lastError() 而不是我们替它编一个数。
+         * @note SQLite 的语句缓存按语句文本存：不同名字各占一格（上限 64 的 LRU），所以别把保存点名
+         *       当循环计数器无限增长地起，复用几个稳定的名字即可。
+         *
+         * @param name 保存点名
+         * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（是调用方的输入问题，
+         *         不是运行时状态，因此当场抛而不留一个「返回 false 但没人知道为什么」的口子）
+         * @return true 保存点已建立
+         * @return false 本事务已结束（此时一条语句都不发）或引擎拒绝，原因见 lastError()
+         */
+        [[nodiscard]] bool savepoint(std::string_view name);
+
+        /**
+         * @brief 回退到本事务里的某个保存点，**事务仍然开着**
+         *
+         * @details 与 `rollback()` 的关键区别就在这里：这条语句撤掉的是「那个点之后」的写入，
+         *          而那个点之前的工作照旧留在未提交状态，之后仍然可以 `commit()`。
+         *          回退成功后 `isActive()` 为真——这是它能替代嵌套事务的前提。
+         *
+         * @param name 之前立过的保存点名
+         * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（同 `savepoint()`）
+         * @return true 已回退到该点
+         * @return false 本事务已结束（不发语句）、名字没立过或引擎拒绝，原因见 lastError()；
+         *         失败不会把事务结束掉（引擎报的是「没有这个保存点」而不是「事务没了」）
+         */
+        [[nodiscard]] bool rollbackToSavepoint(std::string_view name);
+
+        /**
+         * @brief 丢弃一个保存点（不回滚、也不提交它之后的工作）
+         *
+         * @details 语义只是「这个名字之后不能被回退了」。省略这一步没有正确性代价：
+         *          保存点随事务结束一并消失，因此它只在需要早释放命名空间时有用。
+         *
+         * @param name 之前立过的保存点名
+         * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（同 `savepoint()`）
+         * @return true 已丢弃
+         * @return false 本事务已结束（不发语句）、名字没立过或引擎拒绝，原因见 lastError()
+         */
+        [[nodiscard]] bool releaseSavepoint(std::string_view name);
+
+        /**
          * @brief 判断事务是否仍在进行
          * @return true 事务已开启且尚未提交/回滚成功
          */
@@ -152,6 +206,23 @@ namespace AsynGyanis::Database
          * @return false 执行失败，原因见 lastError()
          */
         [[nodiscard]] bool executeControlStatement(std::string_view statement);
+
+        /**
+         * @brief 三条保存点语句共用的两道前置检查
+         *
+         * @details 分两件事是因为它们的性质不同：**名字坏**是调用方的输入错误（空串、全是空白、
+         *          含 NUL），当场抛，不留「返回 false 但没人知道为什么」的口子；**事务已经结束**是
+         *          运行期状态（提交过了或已经回滚过），按本类的错误通道回 false 并写 lastError()，
+         *          且此时一条语句都不发——在一个已结束的事务上立保存点，引擎给的是「没有这个保存点」
+         *          之类的误导信息，而我们说得清是哪种。
+         *
+         * @param name 调用方给的保存点名
+         * @param action 错误文本里的动作名（「建立」「回退到」「丢弃」），让报错指着实际那一步
+         * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL
+         * @return true 名字可用且事务仍在进行，可以发语句
+         * @return false 事务已结束，原因已写进 lastError()
+         */
+        [[nodiscard]] bool checkSavepointPremises(std::string_view name, std::string_view action);
 
         PooledConnection            m_connection;       ///< 事务独占的连接，析构时归还池
         std::shared_ptr<SqlDialect> m_dialect;          ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
