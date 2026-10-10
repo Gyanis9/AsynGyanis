@@ -89,6 +89,36 @@ if(ASYN_WITH_IO_URING AND WIN32)
     message(FATAL_ERROR "ASYN_WITH_IO_URING 只对 Linux 有效：Windows 侧的事件后端是完成端口（Iocp）")
 endif()
 
+# ============================================================================
+# 部署形态的编译期与链接期加固
+# ============================================================================
+# 此前整棵构建里 `-fstack-protector-strong`、`_FORTIFY_SOURCE`、`/guard:cf`、FULL RELRO 一条都没有
+# （现查 CMakeLists / presets / Conan 配方为空）：一个常驻公网的服务器引擎把「缓冲区被打穿之后还算不算
+# 控制流劫持」整段交给工具链默认值，等于这道题空着。
+#
+# 三条边界写在这里，因为它们决定了下面为什么长成这样：
+# - **只落在本仓自己的目标上**，用的是上面那条告警门同一份目标清单。全局 `add_compile_options` 会一并
+#   命中将来 vendor 进来的第三方源码，而加固位落在它们身上既不是我们要修的，也会改变它们的性能形状；
+# - **不把链接期策略推给消费者**：全部 PRIVATE。`-z now` 与 `/guard:cf` 是「最终可执行体的所有者」该做的
+#   决定——静态库的消费者可能用 `--no-pie`、纯静态 glibc，或干脆自己有一套 CET 策略，替他决定只会在
+#   他的链接线上炸出一段难读的错；
+# - **sanitizer 档自动不叠**：ASan/UBSan/TSan 自带一套栈与内存检查，再叠 `_FORTIFY_SOURCE` 与栈保护，
+#   一次 trap 到底是哪一层报的就说不清了（本仓的判据一贯是「谁触发要能归因」）。因此 sanitizer 开着时
+#   本开关整体失效，并在配置期打一行说明，不让它悄悄变成「配了却没生效」。
+option(ASYN_ENABLE_HARDENING "给本仓产出的目标加上加固位（栈保护、_FORTIFY_SOURCE、FULL RELRO、MSVC 的 CFG）" ON)
+
+if(ASYN_ENABLE_HARDENING AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
+    message(STATUS "AsynGyanis: 加固随 sanitizer 关闭（两份检查叠在一起会让一次 trap 归因不清）")
+endif()
+
+# 生效判定收成一处：下面施加加固的函数与任何想问「这一刻加固到底落没落」的地方都读这个变量，
+# 不各自重算一遍 `NOT ENABLE_SANITIZERS AND ...`——两处算式分叉是最难发现的那种漂移
+if(ASYN_ENABLE_HARDENING AND NOT ENABLE_SANITIZERS AND NOT SANITIZE_THREADS)
+    set(asynHardeningActive TRUE)
+else()
+    set(asynHardeningActive FALSE)
+endif()
+
 # 把 ASan 运行时拷到可执行文件旁边。
 # MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
 # 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以
@@ -252,9 +282,41 @@ if(ASYN_BUILD_SAMPLES)
     list(APPEND asynStrictWarningTargets ReferenceServer)
 endif()
 
+# 给单个目标施加加固位。用 generator expression 按配置分档：`_FORTIFY_SOURCE` 要求真的优化过才有意义
+# （-O0 下 glibc 的那些 *_chk 包装会一路退到未检查版本，白担一次「以为加固了」的名），MSVC 的 CFG
+# 同理只在 Release 上开——Debug 档还要它做验证工具链的对照。链接期的 FULL RELRO 与配置无关，
+# 它改变的是镜像的段属性，不改变生成代码。
+function(asyn_apply_hardening target_name)
+    if(NOT asynHardeningActive)
+        return()
+    endif()
+
+    if(MSVC)
+        # /guard:cf 编译侧只产出受保护的间接调用序列，真正的 CFG 是**链接器**策略：静态库这一档
+        # CMake 不会把 link options 传给消费者（PRIVATE），因此本仓自己的可执行体（测试、示例、探针）
+        # 会真的开起来，而库的消费者按自己的部署口径决定
+        target_compile_options(${target_name} PRIVATE $<$<CONFIG:Release>:/guard:cf>)
+        target_link_options(${target_name} PRIVATE $<$<CONFIG:Release>:/guard:cf>)
+    else()
+        # 栈保护与优化级别无关（它是往栈帧里插金丝雀），因此每个非 sanitizer 档都落；
+        # -U 在前：部分发行版的工具链已把 _FORTIFY_SOURCE 预定义进来说明手册里的默认值，
+        # 直接 -D 会撞重定义警告，而本仓开着 -Werror——那道门会把「加固开关」变成构建失败。
+        # 而 _FORTIFY_SOURCE 只有真的优化过才有意义：-O0 下 glibc 的那些 *_chk 包装会一路退到
+        # 未检查版本，白担一次「以为加固了」的名，因此它只进 Release
+        target_compile_options(${target_name} PRIVATE
+                -fstack-protector-strong
+                $<$<CONFIG:Release>:-U_FORTIFY_SOURCE>
+                $<$<CONFIG:Release>:-D_FORTIFY_SOURCE=2>)
+        # 只加在本仓链接出的镜像上：READONLY-after-relocation + 加载期解析完所有符号，
+        # GOT 覆盖这类打法就没有可写的重定位表可用
+        target_link_options(${target_name} PRIVATE -Wl,-z,relro -Wl,-z,now)
+    endif()
+endfunction()
+
 foreach(asynWarningTarget IN LISTS asynStrictWarningTargets)
     if(TARGET ${asynWarningTarget})
         asyn_enable_strict_warnings(${asynWarningTarget})
+        asyn_apply_hardening(${asynWarningTarget})
     endif()
 endforeach()
 

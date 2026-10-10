@@ -820,6 +820,17 @@ AsynGyanis/
   三后端共用一套契约、多数断言在 epoll 下恒绿，所以对齐是靠 CI 里那条 `io-uring-compile` 作业**带着用例**
   跑出来的（内核不放行时跳过运行，不放行就等于没测）。要评估收益请在支持它的环境里显式打开。
 
+与那两档相反，**`ASYN_ENABLE_HARDENING` 默认开**：它是部署形态该有的底色，关掉才需要理由。
+GCC/Clang 侧是 `-fstack-protector-strong`（每个非 sanitizer 档都带）+ Release 的 `-D_FORTIFY_SOURCE=2`
++ 链接侧 `-z relro,-z now`；MSVC 侧编译与链接都带 `/guard:cf`，只进 Release。三条口径：只落在
+本仓自己的目标上（与告警门同一份清单，将来 vendor 的第三方源码不参与）；全部 `PRIVATE`，
+不把链接期策略推给消费者（`-z now` 与 CFG 归最终可执行体的所有者决定）；**开 sanitizer 时自动不叠**
+——ASan/UBSan/TSan 自带一套栈与内存检查，叠上来之后一次 trap 是谁报的就说不清了，配置期会打一行说明。
+配套门禁 `scripts/check-hardening.py` 判两层：`compile_commands.json` 里每个 `src/` 翻译单元都要带着
+该带的开关，产物镜像头要真带上 `GNU_RELRO`/`BIND_NOW`/不可执行栈（PE 侧是 NX/DYNAMIC_BASE/CFG）。
+它的期望从**构建目录自己的 `CMakeCache.txt` 现读**，因此「配了没重新 configure」「找不到 readelf」
+「这一档根本没链接出产物」都是退 2 而不是被读成通过。接线在 Linux 覆盖率档与 Windows 静态档。
+
 单进程、同机回环，客户端与被测服务共享同一台机器。这类数字只能用于**同一台机器上的前后对比**：
 换一次会话、换个邻居负载都能差出近一倍，跨机器比没有意义，因此这里不写「比谁快」的结论。
 

@@ -213,6 +213,13 @@ jobs:
       - name: 配置（Release，只为出编译数据库）
         run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+      - name: 加固位核对（只核编译命令行；这一档不链接产物）
+        run: |
+          # 这一档只 configure 出不构建，没有 .exe/.dll 可读镜像头，因此 --no-binaries；
+          # 正面判据仍拿到了：Release 的 compile_commands.json 里每个 src/ 翻译单元都要带 /guard:cf。
+          # 镜像侧的 CFG/NX 位在本地 Release 上核（脚本同一条，去掉 --no-binaries）
+          python scripts/check-hardening.py --build build/release --no-binaries
+
       - name: clang-tidy（报告形式，当前不阻塞）
         shell: bash
         run: |

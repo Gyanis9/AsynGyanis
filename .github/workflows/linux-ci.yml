@@ -836,6 +836,14 @@ jobs:
           # 聚合数会替死角掩护（本轮实测 Net 89.94 / Platform 87.08 / Core 84.98 / Base 75.74 / Database 50.50）
           python3 scripts/check-coverage-gate.py --csv /tmp/gcovr.csv --line-floor "$COVERAGE_LINE_FLOOR"
 
+      - name: 加固位核对（编译命令行与镜像头，取本档自己的 CMakeCache 为期望）
+        run: |
+          # 挂在这一档而不是另起一档：它是 Linux 侧唯一「非 sanitizer 且真的链接出产物」的构建，
+          #  sanitizer 那几档按设计不叠加固位（一次 trap 归因不清），核不到正面的位。
+          # 判据分两层：CMakeLists 说加了 ≠ 编译命令行里有；命令行里有 ≠ 镜像真的带上
+          # RELRO / BIND_NOW / 不可执行栈。缺 readelf 或没有产物都退 2，不交一张空表被读成通过
+          python3 scripts/check-hardening.py --build build/coverage
+
   # 示例矩阵：把 samples/ 下每个自检程序各跑一遍、按退出码判——它们是「库外消费者」形状的用例，
   # 公开契约好不好用、中间件挂法对不对，只有把这些当程序跑一遍才知道。此前 .github 里一条引用都没有，
   # 改坏一个示例不会有任何作业变红。用 Debug 档：它带 ASan + UBSan（Linux 上 ASan 默认开泄漏检测），
