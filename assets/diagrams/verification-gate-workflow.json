@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "ee430f8fc15dd880e37cc676b28d6fcf51bc5082"
+      "revision": "fff0e81d3241b7deab1a8ef01ebe013b4e131e64"
     },
     "views": [
       {
@@ -250,8 +250,8 @@
       "sublabel": "acme-pebble",
       "tag": "另起容器",
       "sources": [
-        { "path": ".github/workflows/linux-ci.yml", "line": 923, "label": "作业本体" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 990, "label": "拉 pebble 镜像后跑跨实现脚本" }
+        { "path": ".github/workflows/linux-ci.yml", "line": 927, "label": "作业本体" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 994, "label": "拉 pebble 镜像后跑跨实现脚本" }
       ]
     }
   ],
@@ -289,7 +289,7 @@
       "items": [
         "四条工作流的作业之间零 needs：全部平铺并行，串行只发生在作业内部（checkout → 配置 → 构建 → ctest）",
         "develop 与 PR 不消耗分钟数：要看某个提交就 gh workflow run \"Linux CI\" --ref develop；三条流还 paths-ignore 掉纯文档改动",
-        "示例矩阵两档 CI 都跑（linux-ci.yml:897 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
+        "示例矩阵两档 CI 都跑（linux-ci.yml:857 的 samples 作业、windows-ci.yml:91 的示例矩阵步骤），本地与容器同样要跑；示例每条 check 都要能红",
         "外部裁判要另起进程或容器：Autobahn 在另一网络命名空间经 host-gateway 回宿主，服务端须绑 0.0.0.0 另开端口"
       ]
     },
