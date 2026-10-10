@@ -119,6 +119,9 @@ while :; do
     attempt=$((attempt + 1))
     rm -rf "${report_dir:?}"/*
     wstest_rc=0
+    # 先把这一趟喊出来再跑：一次跑完要 20 分钟上下，而报告是收尾才整体落盘的——如果只在跑完之后打印，
+    # runner 中途把作业关机（实测退出码 143）时日志里一个字都没有，那条红就归不出是第几趟出的事
+    echo "第 ${attempt} 次跑裁判（用例面下限 ${min_cases}；这一趟的结论要等它跑完才打，中途被掐就没输出）"
     MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i \
         --add-host=host.docker.internal:host-gateway \
         -v "$(mount_source "${work_dir}")/fuzzingclient.json:/fuzzingclient.json:ro" \
