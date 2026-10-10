@@ -77,6 +77,11 @@
 - **静态文件服务** — `staticFileDir()` 一行接入；条件请求一并给出（`ETag` + `Last-Modified`，
   `If-None-Match`/`If-Modified-Since` 成立回 304、`If-Match` 不成立回 412，判定顺序按 RFC 9110 §13.2.2），
   两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份
+- **大文件上传落盘** — 流式路由（`postStreaming()` / `putStreaming()`）边收边交，`RequestBodySpool::capture()`
+  再把这条正文一段段写进临时文件：内存里永远只有当前那一段，写动作经 `Core::AsyncExecutor` 离开事件循环线程。
+  超过上限或正文没收齐就**拒掉并删掉半份文件**（不把半份上传交给业务，也不在盘上留没人收的尾巴）；
+  `release()` 之前文件随对象析构消失。注意它不改协议判定——`server.parser_limits.maximum_body_size`
+  那道声明长度的闸照旧先落，要接更大的上传仍是先抬那一项，抬起来之后不再按连接吃内存才是这一格负责的
 - **证书自动化（ACME / RFC 8555）** — `AcmeCertificateManager` 走完目录、账户、下单、自证、定稿与
   取证这一整台状态机：私钥与证书原子落盘（私钥 0600），到期前自主续，签好后经回调装回服务；
   协议层（`AcmeClient`）与密钥层（`AcmeKeyPair`：JWK、RFC 7638 指纹、JWS、CSR）都能单独用。
