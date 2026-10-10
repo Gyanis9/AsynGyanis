@@ -801,8 +801,12 @@ AsynGyanis/
 ## 性能
 
 表中读数来自**未开** `ASYN_WITH_MIMALLOC`、**未开** `ASYN_WITH_IO_URING` 的 Release 构建（epoll / 完成端口后端 +
-系统分配器）。把这一句写在这里是为了别让「Release + LTO」被读成「全部性能开关都开了」：这两档的开/关差异
-尚未实测，没测过的收益不写。
+系统分配器）。Release 也**不开全程序优化**：`f37d3035` 实地开过 `/GL` + `/LTCG` 做对照，hpack-decode 快
+12.6%、http2-frame-decode 快 14.9%、http-date-format 快 17.3%，而 http1-parse-request 反慢 3.5%、hpack-encode
+慢 0.6%——收益是散的；而且 `/GL` 编出的静态库是 CGALLIB（同批实测 `Net.lib` 达 232 MB），非 `/LTCG` 的消费者
+链不动它，本仓对外交付的恰恰是静态库与 Conan 包。这一档的口径记在 `benchmarks/microbench-baseline.json` 的
+`build` 字段。把这两句写在这里是为了别让「Release」被读成「全部性能开关都开了」：没测过的收益不写，测过但
+划不来的也不开。
 
 两档都默认关，各有明确理由，不是没来得及打开：
 
@@ -819,7 +823,7 @@ AsynGyanis/
 单进程、同机回环，客户端与被测服务共享同一台机器。这类数字只能用于**同一台机器上的前后对比**：
 换一次会话、换个邻居负载都能差出近一倍，跨机器比没有意义，因此这里不写「比谁快」的结论。
 
-`ReferenceServer`（Release：MSVC `/O2` + LTO、无插桩），`--threads 4`，2026-09-24 实测，三轮取中位：
+`ReferenceServer`（Release：MSVC `/O2`、不开全程序优化、无插桩），`--threads 4`，2026-09-24 实测，三轮取中位：
 
 | 场景 | 中位吞吐 | 三轮范围 | p50 | p95 |
 |------|----------|----------|-----|-----|
