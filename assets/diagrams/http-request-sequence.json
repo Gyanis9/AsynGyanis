@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "fff0e81d3241b7deab1a8ef01ebe013b4e131e64"
+      "revision": "f1cd88d582b1afa6401b7d32c9f3e0f01327775d"
     },
     "views": [
       {
@@ -169,7 +169,7 @@
         "start()：每个工作循环各自 bind 同一端口，由内核按 SO_REUSEPORT 分摊（Linux only）",
         "startAccepting(distributor)：单监听器 + 用户态轮转投递，Windows 多线程只能用这条",
         "过载与按 IP 限额在 takeOverConnection 里先判，通过了才建会话（src/Net/Tcp/TcpServer.cpp:174-178）",
-      "HTTP/3 不走这张图：它没有 TcpServer 接手、没有 TlsSocket 握手、也没有 HttpParser——每条 QUIC 连接按需挂一个 Http3Session（src/Net/Quic/QuicServer.cpp:595），传输侧的形状看 quic-connection-lifecycle 那张。三条通道在业务侧读到的是同一组字段，来源地址靠构造会话时交下去的出口而不是套接字（:612）"
+      "HTTP/3 不走这张图：它没有 TcpServer 接手、没有 TlsSocket 握手、也没有 HttpParser——每条 QUIC 连接按需挂一个 Http3Session（src/Net/Quic/QuicServer.cpp:608），传输侧的形状看 quic-connection-lifecycle 那张。三条通道在业务侧读到的是同一组字段，来源地址靠构造会话时交下去的出口而不是套接字（:625）"
       ]
     },
     {
