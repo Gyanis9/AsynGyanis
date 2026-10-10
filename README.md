@@ -72,6 +72,10 @@
   这一跳的本端事实，不看反代声明的头，要放开就显式置 `requireSecureTransport=false`。同名多条 `Authorization`
   按未授权处理，口令按**第一个**冒号切分（user-id 里不允许出现冒号，含冒号的口令因此能用而用户名不能），
   `realm` 含引号或 CR/LF/NUL 在构造期就抛——那是要拼进响应头的文本，留着就是拆分口子
+- **通用 Bearer 令牌认证（RFC 6750）** — `bearerAuthMiddleware()` 把「这条令牌算不算」交回 `verify`（自有令牌存储、
+  会话服务、带签名的凭据都接得住），本层管拆头、路径名单、明文连接上的传输层判据与挑战头。挑战按 §3.1 分两种
+  形状：没给凭据只带 `realm`，给了但不接受才附 `error="invalid_token"`——合成一条就是对没登录的客户端谎报
+  「你手里那条被拒了」；空凭据与「方案不是 Bearer」一起按没给处置，不拿空串去问 `verify`
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz`、`/readyz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点

@@ -1739,4 +1739,93 @@ namespace AsynGyanis::Net
         };
     }
 
+    /**
+     * @brief Bearer 令牌认证（RFC 6750 §2、§3）的取值
+     * @details 引擎此前有两道相关的闸：`opsAccessMiddleware()` 比的是**一个写死的令牌**且只守运维端点名单，
+     *          `basicAuthMiddleware()` 走的是 `user:secret`。业务侧要按自己的令牌存储、会话服务或签名
+     *          校验来保护一条路由，仍然得在处理器里手写拆头、多条判定与挑战头——而「忘了写的那条路由」
+     *          是最难发现的暴露面。判定交给 `verify`（引擎不猜令牌存在哪里），本层只负责把
+     *          `Authorization` 拆对、按规范答 401/403，以及把「明文连接上不该收凭据」这条默认守住。
+     * @note 令牌的比较时机安全**在 verify 里**：要比对字面令牌，请用 `Base::constantTimeEquals`，
+     *       短路比较会把「前几位猜对了」泄漏进响应耗时里
+     */
+    struct ASYN_NET_API BearerAuthOptions
+    {
+        std::string                                      realm{"restricted"};          ///< WWW-Authenticate 的 realm 提示文本
+        std::vector<std::string>                         protectedPaths{};             ///< 需要鉴权的路径，逐条精确匹配；空表示全部路径都要鉴权
+        bool                                             requireSecureTransport{true}; ///< false 才允许在明文连接上收 Bearer 凭据
+        std::function<bool(std::string_view credential)> verify{};                     ///< 凭据判定，空是用法错误（等于挂一道永远拒的闸）
+    };
+
+    /**
+     * @brief 给路由挂一道 Bearer 令牌认证闸
+     * @details 与运维端点那道（`opsAccessMiddleware()`）的分工：那道守固定名单、比固定令牌、构造时就要求
+     *          给出令牌；这道守调用方给的路径名单（空名单=整台服务）、把「这个令牌算不算数」交回调用方，
+     *          因此能接查表、查库、验签名这三种完全不同的令牌来源。两条纪律是共用的：方案判定走同一个
+     *          `Detail::extractBearerCredential()`，同名多条 `Authorization` 一律按未授权处理。
+     * @details 挑战头按 RFC 6750 §3.1 分两种形状：**没给凭据**时只带 realm（此时客户端该去取凭据），
+     *          **给了但不被接受**时才带 `error="invalid_token"`（此时客户端该停下重试循环）。把两者合成
+     *          一条发出去，等于对没登录的客户端谎报「你那条令牌被拒了」。正文固定，不回显令牌本身，
+     *          也不区分「没给/给了不对/给了多条」之外的细节——那些差别只帮攻击者缩小搜索面。
+     * @details 默认**拒绝在明文连接上收凭据**（回 403 而不是 401：401 附带的那句提示等于邀请客户端把
+     *          令牌发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，报的是本端这一跳的传输层
+     *          事实，不看 `X-Forwarded-Proto`。确实要在明文上放开（本机调试、或已在反代之后），
+     *          显式置 `requireSecureTransport=false`。
+     * @param options 认证取值；`verify` 为空即抛
+     * @return MiddlewareFunc 中间件
+     * @throws Base::InvalidArgumentException verify 缺席；或 realm 含引号、CR/LF/NUL 这类会破坏头取值的字节
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     */
+    inline MiddlewareFunc bearerAuthMiddleware(BearerAuthOptions options)
+    {
+        if (!options.verify)
+        {
+            throw Base::InvalidArgumentException("bearerAuthMiddleware: 没有 verify 就等于挂一道永远拒绝的闸；不需要鉴权就不要注册本中间件");
+        }
+        // realm 会被拼进 WWW-Authenticate 的引号里：带引号或控制字符就不是「提示文本写错了」，而是
+        // 响应头被注入——与 basicAuthMiddleware、securityHeadersMiddleware 同一类构造期判据
+        if (options.realm.find('"') != std::string::npos || !containsOnlyFieldValueCharacters(options.realm))
+        {
+            throw Base::InvalidArgumentException("bearerAuthMiddleware: realm 不能含引号或 CR/LF/NUL 这类非法字段值字节");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isProtected = options.protectedPaths.empty() ? true : std::ranges::find(options.protectedPaths, request.path()) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            if (options.requireSecureTransport && !request.overTls())
+            {
+                response.setStatus(403);
+                response.setHeader("content-type", kPlainTextContentType);
+                response.setBody("Bearer 凭据不在明文连接上接受：请走 HTTPS，或在配置里显式置 requireSecureTransport=false");
+                co_return;
+            }
+
+            const bool             isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto             presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const std::string_view credential         = presented.has_value() ? Detail::extractBearerCredential(*presented) : std::string_view{};
+            // 空串是「没给凭据」与「方案不是 Bearer」的共用形状：extractBearerCredential 对后者交回空，
+            // 本层不顺着另一种方案去解释那段字符串
+            const bool hasCredential = !credential.empty();
+            const bool isAuthorized  = hasCredential && options.verify(credential);
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", hasCredential ? "Bearer realm=\"" + options.realm + "\", error=\"invalid_token\"" : "Bearer realm=\"" + options.realm + '"');
+            response.setHeader("content-type", kPlainTextContentType);
+            response.setBody(hasCredential ? "Bearer 凭据不被接受" : "需要 Bearer 凭据（Authorization: Bearer <token>）");
+            co_return;
+        };
+    }
+
 } // namespace AsynGyanis::Net

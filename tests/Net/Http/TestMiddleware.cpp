@@ -2138,4 +2138,176 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status(), 401) << "两条互相矛盾的凭据不该被当成一条";
         EXPECT_EQ(handlerCalls.load(), 0);
     }
+
+    /**
+     * @brief 走一遍 Bearer 中间件，把响应交回来；authorization 为空表示不带这一条头
+     * @details verify 被问了几次由用例自己的 `RecordingVerifier` 记，本函数不转述——把处理器调用次数
+     *          当成判定次数报出去，断言就会指错对象
+     */
+    HttpResponse runBearerAuth(const BearerAuthOptions &options, const std::string &authorization, const bool isSecure, const std::string &path = "/api")
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(bearerAuthMiddleware(options));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, path);
+        HttpResponse response;
+        request.setOverTls(isSecure);
+        if (!authorization.empty())
+        {
+            if (!request.setHeader("authorization", authorization))
+            {
+                ADD_FAILURE() << "这条 Authorization 原文被头部校验拒了，用例测的就不再是中间件：" << authorization;
+            }
+        }
+
+        std::atomic<int> handlerCalls{0};
+        runPipeline(pipeline, request, response, terminalWriting(response, "granted", &handlerCalls));
+        return response;
+    }
+
+    /// 一条只会认 "good-token" 的判定，顺带记下它被喂进去的原文与被问的次数
+    struct RecordingVerifier
+    {
+        std::string        credential;
+        std::atomic<int>   callCount{0};
+        [[nodiscard]] bool operator()(const std::string_view token)
+        {
+            ++callCount;
+            credential.assign(token);
+            return token == "good-token";
+        }
+    };
+
+    /// 把一条 RecordingVerifier 接成中间件取值
+    [[nodiscard]] BearerAuthOptions bearerOptionsWith(RecordingVerifier &verifier)
+    {
+        BearerAuthOptions options;
+        options.verify = [&verifier](const std::string_view token) { return verifier(token); };
+        return options;
+    }
+
+    TEST(BearerAuthMiddleware, AdmitsTheCredentialTheVerifierAcceptsAndPassesTheRawToken)
+    {
+        RecordingVerifier  verifier;
+        const HttpResponse granted = runBearerAuth(bearerOptionsWith(verifier), "Bearer good-token", true);
+        EXPECT_EQ(granted.status(), 200);
+        EXPECT_EQ(verifier.credential, "good-token") << "verify 拿到的应是剥掉方案前缀后的原文，不该带 scheme 也不该被折小写";
+        EXPECT_EQ(verifier.callCount.load(), 1);
+    }
+
+    /**
+     * @brief RFC 6750 §3.1 的两种挑战形状：没给凭据只带 realm，给了但不接受才带 error
+     * @details 合并发出去等于对没登录的客户端谎报「你那条令牌被拒了」，客户端会以为手里那条还有救
+     */
+    TEST(BearerAuthMiddleware, ShapesTheChallengeByWhetherACredentialWasPresented)
+    {
+        RecordingVerifier  missingCase;
+        const HttpResponse missing = runBearerAuth(bearerOptionsWith(missingCase), "", true);
+        EXPECT_EQ(missing.status(), 401);
+        EXPECT_EQ(missing.getHeader("www-authenticate"), "Bearer realm=\"restricted\"") << "没给凭据时不该报 invalid_token";
+        EXPECT_EQ(missingCase.callCount.load(), 0) << "没给凭据时不该去问 verify";
+
+        RecordingVerifier  rejectedCase;
+        const HttpResponse rejected = runBearerAuth(bearerOptionsWith(rejectedCase), "Bearer bad-token", true);
+        EXPECT_EQ(rejected.status(), 401);
+        EXPECT_EQ(rejected.getHeader("www-authenticate"), "Bearer realm=\"restricted\", error=\"invalid_token\"") << "给了但不接受时才带 error";
+        EXPECT_EQ(rejectedCase.callCount.load(), 1);
+    }
+
+    TEST(BearerAuthMiddleware, DoesNotInterpretAnotherSchemeOrAnEmptyTokenAsACredential)
+    {
+        RecordingVerifier  otherSchemeCase;
+        const HttpResponse otherScheme = runBearerAuth(bearerOptionsWith(otherSchemeCase), "Basic Z29vZC10b2tlbg==", true);
+        EXPECT_EQ(otherScheme.status(), 401) << "方案不是 Bearer 时不该顺着它解释那段 base64";
+        EXPECT_EQ(otherSchemeCase.callCount.load(), 0) << "同上：verify 不该被喂进别的方案的凭据";
+        EXPECT_EQ(otherScheme.getHeader("www-authenticate"), "Bearer realm=\"restricted\"") << "别方案的凭据按「没给」处置";
+
+        RecordingVerifier  emptyCase;
+        const HttpResponse emptyToken = runBearerAuth(bearerOptionsWith(emptyCase), "Bearer ", true);
+        EXPECT_EQ(emptyToken.status(), 401);
+        EXPECT_EQ(emptyToken.getHeader("www-authenticate"), "Bearer realm=\"restricted\"") << "空凭据是「没给」，不是「给了但不对」";
+        EXPECT_EQ(emptyCase.callCount.load(), 0) << "空串不该被当成一条候选凭据去问 verify";
+    }
+
+    TEST(BearerAuthMiddleware, AcceptsAnySpellingOfTheSchemeName)
+    {
+        // 方案名大小写不敏感（RFC 9110 §11.2），但前缀之后的那段一律按原文交给 verify
+        RecordingVerifier verifier;
+        BearerAuthOptions options;
+        options.verify = [&verifier](const std::string_view token) { return verifier(token); };
+
+        for (const std::string_view scheme: {"Bearer ", "bearer ", "BEARER ", "bEaReR "})
+        {
+            EXPECT_EQ(runBearerAuth(options, std::string(scheme) + "good-token", true).status(), 200) << "方案拼法：" << scheme;
+        }
+        EXPECT_EQ(verifier.credential, "good-token");
+    }
+
+    TEST(BearerAuthMiddleware, KeepsCredentialsOffCleartextUntilTheOperatorOptsIn)
+    {
+        RecordingVerifier verifier;
+        BearerAuthOptions options;
+        options.verify = [&verifier](const std::string_view token) { return verifier(token); };
+
+        const HttpResponse refused = runBearerAuth(options, "Bearer good-token", false);
+        EXPECT_EQ(refused.status(), 403) << "明文通路上的凭据当场拒，而不是回 401 邀请客户端把令牌发进不加密的信道";
+        EXPECT_FALSE(refused.hasHeader("www-authenticate")) << "403 还附要凭据的提示，等于一边拒一边催";
+        EXPECT_EQ(verifier.callCount.load(), 0) << "明文这一跳连凭据都不该去判定";
+
+        BearerAuthOptions optedOut      = options;
+        optedOut.requireSecureTransport = false;
+        EXPECT_EQ(runBearerAuth(optedOut, "Bearer good-token", false).status(), 200) << "显式放开之后明文通路该照常走";
+    }
+
+    TEST(BearerAuthMiddleware, LeavesPathsOutsideTheListAlone)
+    {
+        RecordingVerifier verifier;
+        BearerAuthOptions options;
+        options.verify         = [&verifier](const std::string_view token) { return verifier(token); };
+        options.protectedPaths = {"/api"};
+
+        EXPECT_EQ(runBearerAuth(options, "", true, "/public").status(), 200) << "名单之外的路径被顺带闸住了";
+        EXPECT_EQ(runBearerAuth(options, "", true, "/api").status(), 401);
+
+        BearerAuthOptions emptyList;
+        emptyList.verify = [&verifier](const std::string_view token) { return verifier(token); };
+        EXPECT_EQ(runBearerAuth(emptyList, "", true, "/anything").status(), 401) << "空名单是「全部都要鉴权」，不是「都不鉴权」";
+    }
+
+    TEST(BearerAuthMiddleware, TreatsAmbiguousHeadersAsNoCredential)
+    {
+        RecordingVerifier verifier;
+        BearerAuthOptions options;
+        options.verify = [&verifier](const std::string_view token) { return verifier(token); };
+
+        MiddlewarePipeline pipeline;
+        pipeline.use(bearerAuthMiddleware(options));
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/api");
+        HttpResponse response;
+        request.setOverTls(true);
+        ASSERT_TRUE(request.setHeader("authorization", "Bearer good-token"));
+        request.addHeader("authorization", "Bearer other-token");
+        std::atomic<int> handlerCalls{0};
+        runPipeline(pipeline, request, response, terminalWriting(response, "granted", &handlerCalls));
+
+        EXPECT_EQ(response.status(), 401) << "两条互相矛盾的凭据不该被当成一条";
+        EXPECT_EQ(handlerCalls.load(), 0);
+        EXPECT_EQ(verifier.callCount.load(), 0) << "歧义时不该去判定任何一条";
+    }
+
+    TEST(BearerAuthMiddleware, RefusesAMissingVerifierAndAnInjectableRealm)
+    {
+        BearerAuthOptions noVerifier;
+        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(noVerifier)), Base::InvalidArgumentException);
+
+        BearerAuthOptions quotedRealm;
+        quotedRealm.verify = [](const std::string_view) { return true; };
+        quotedRealm.realm  = "troublesome\"realm";
+        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(quotedRealm)), Base::InvalidArgumentException) << "realm 会被拼进引号里，带引号就是响应头注入";
+
+        BearerAuthOptions lineFeedRealm;
+        lineFeedRealm.verify = [](const std::string_view) { return true; };
+        lineFeedRealm.realm  = "two\r\nlines";
+        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(lineFeedRealm)), Base::InvalidArgumentException);
+    }
 } // namespace AsynGyanis::Net
