@@ -282,14 +282,16 @@
   **没有节拍可挂**（master 不跑事件循环，worker 按 `WATCHDOG_PID` 也不喂），请按 `WatchdogSec=0` 或改跑单进程——
   不写出来的话，部署方看到的是「服务被无理由重启」。回调抛出的异常在编排线程上就地接住并记一条 ERROR：一条坏回调
   不该带走整池 worker。
-  判据分三层：容器 GCC 13（ASan/UBSan）`WorkerSupervisor` 12 例全过（新增三条——整池到位报一次、报到的快照就是
-  那一轮的个数、有槽位永远起不来时一次都不报）；端到端真起一台 `--workers 2` 的 `ReferenceServer`，收到的正好是
-  `READY=1` + `STATUS=2 个 worker 进程都在跑`，`SIGTERM` 后 `STOPPING=1` + `STATUS=正在收尾，2 个 worker`，两条各一条，
-  两个 worker 各自日志里都有一条「不上报服务管理器状态」。证伪三格各红自己那条：闩锁不生效红在「只报一次」，
-  去掉「整池齐了」这一半条件红在「起不来的一格不许报就绪」，把收尾回调挪到 `stopAllWorkers()` 之后红在
-  「报收尾时 worker 还在跑」；示例那侧另有一格——把 worker 的闸门打开，端到端读到的就变成 3 条 `READY=1` 与
-  3 条 `STOPPING=1`，判据当场不成立。Windows 上这几条用例走的是 shell 假 worker（多进程编排要移交监听套接字），
-  因此按平台跳过，真实跨进程编排在 Windows 侧由 `handoff_worker` 夹具那条用例覆盖。
+  判据分三层：条件本身收成一个纯换算 `isPoolComplete(在跑个数, 槽位数)`——每个槽位都要有一个活着的 worker，
+  空池永远不算齐；这一格不等任何进程起来，因此可以确定复跑。端到端两条各判自己能稳的部分（整池到位报一次、
+  报到的快照就是那一轮的个数；同一次编排里就绪最多一份）。容器 GCC 13（ASan/UBSan）`WorkerSupervisor` 13 例
+  全过、连跑 10 轮零失败；再真起一台 `--workers 2` 的 `ReferenceServer`，收到的正好是 `READY=1` +
+  `STATUS=2 个 worker 进程都在跑` 一条，`SIGTERM` 后 `STOPPING=1` + `STATUS=正在收尾，2 个 worker` 一条，
+  两个 worker 的日志里各有一条「不上报服务管理器状态」。证伪四格各红自己那条、另三条照绿：把
+  `isPoolComplete` 改成恒真红在纯函数那格，闩锁不生效红在「只报一次」，把收尾回调挪到 `stopAllWorkers()`
+  之后红在「报收尾时 worker 还在跑」（那一刻个数已是 0），把示例里 worker 的闸门打开则端到端读到 3 条
+  `READY=1` 与 3 条 `STOPPING=1`、worker 侧说明 0 条。Windows 上这几条用例走的是 shell 假 worker（多进程编排
+  要移交监听套接字），因此按平台跳过——那边真实的跨进程编排由 `handoff_worker` 夹具那条用例覆盖。
 
 
 ### 变更

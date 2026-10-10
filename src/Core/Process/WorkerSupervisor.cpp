@@ -304,7 +304,7 @@ namespace AsynGyanis::Core
 
             // 凑齐整池才报就绪，且报过就不再报：有一格被放弃时这条回调永远不发生——
             // 那一格起不来本身就是要让人看见的失败，把「服务已就绪」报出去反而是错的
-            if (!hasAnnouncedReadiness && runningWorkerCount == m_workers.size() && m_configuration.onAllWorkersRunning)
+            if (!hasAnnouncedReadiness && isPoolComplete(runningWorkerCount, m_workers.size()) && m_configuration.onAllWorkersRunning)
             {
                 hasAnnouncedReadiness = true;
                 runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
@@ -329,6 +329,16 @@ namespace AsynGyanis::Core
         // 停止信号的登记由 signalRegistration 在离开作用域时撤销：正常返回与异常展开走同一条
         LOG_INFO_FMT("WorkerSupervisor: 编排结束");
         return !isPoolGivenUp;
+    }
+
+    bool WorkerSupervisor::isPoolComplete(const std::size_t runningWorkerCount, const std::size_t slotCount) noexcept
+    {
+        // 空池不算「都到位」：槽位数为 0 时任何个数都「等于」它，而一条READY=1 说的是「有人能接活」
+        if (slotCount == 0)
+        {
+            return false;
+        }
+        return runningWorkerCount == slotCount;
     }
 
     void WorkerSupervisor::launchMissingAndReapExited()

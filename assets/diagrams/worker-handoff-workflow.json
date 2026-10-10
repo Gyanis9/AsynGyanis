@@ -85,8 +85,8 @@
       "sublabel": "waitForPeer 预算",
       "tag": "拿到就关通道",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 455, "label": "waitForPeer" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 462, "label": "peer 立即 close" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 465, "label": "waitForPeer" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 472, "label": "peer 立即 close" }
       ]
     },
     {
@@ -98,8 +98,8 @@
       "label": "收尸",
       "sublabel": "存活 < 3s 算快退",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 487, "label": "isFastExit" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 508, "label": "跑稳则清零" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 497, "label": "isFastExit" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 518, "label": "跑稳则清零" }
       ]
     },
     {
@@ -112,8 +112,8 @@
       "sublabel": "500ms 后重交",
       "tag": "满 5 次放弃",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 349, "end_line": 351, "label": "首轮不退避" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 478, "label": "crashLoopLimit" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 359, "end_line": 361, "label": "首轮不退避" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 488, "label": "crashLoopLimit" }
       ]
     },
     {
@@ -125,8 +125,8 @@
       "label": "停机",
       "sublabel": "先请体面退出，等不到才强杀",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 512, "label": "stopAllWorkers" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 590, "label": "等强杀落地" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 522, "label": "stopAllWorkers" },
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 600, "label": "等强杀落地" }
       ]
     },
     {
@@ -139,7 +139,7 @@
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
         { "path": "src/Platform/IO/Socket.cpp", "line": 769, "end_line": 773, "label": "通道文件与权限" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 405, "label": "UpgradeChannel::open" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 415, "label": "UpgradeChannel::open" }
       ]
     },
     {
@@ -178,7 +178,7 @@
       "label": "交砸了就退",
       "sublabel": "强杀 + 等收尸",
       "sources": [
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 416, "end_line": 429, "label": "retireWithoutListener" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 426, "end_line": 429, "label": "retireWithoutListener" }
       ]
     },
     {
@@ -245,7 +245,7 @@
       "sources": [
         { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 161, "label": "子进程自己挂控制台处理器" },
         { "path": "src/Platform/System/Process.cpp", "line": 461, "label": "父代按进程组投 CTRL_BREAK" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 395, "label": "进程组是这条腿的前提" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 405, "label": "进程组是这条腿的前提" }
       ]
     }
   ],
@@ -294,7 +294,7 @@
         "存活小于 crashLoopWindow（默认 3000ms）算快退，快退才加计数；跑稳一轮后清零",
         "补位前先退避 500ms，首轮崩溃不退避；计满 5 次置 isGivenUp",
         "全部 worker 都 isGivenUp 时 run() 返回 false，这与「按请求收口」的 true 是两种结局",
-        "停机顺序固定：POSIX 走 SIGTERM → 等 shutdownTimeout → 强杀 → 等落地；Windows 发进程组 CTRL_BREAK（WorkerSupervisor.cpp:395、Process.cpp:461，前提是 CREATE_NEW_PROCESS_GROUP:266），Ctrl+C 不再把 worker 硬杀"
+        "停机顺序固定：POSIX 走 SIGTERM → 等 shutdownTimeout → 强杀 → 等落地；Windows 发进程组 CTRL_BREAK（WorkerSupervisor.cpp:405、Process.cpp:461，前提是 CREATE_NEW_PROCESS_GROUP:266），Ctrl+C 不再把 worker 硬杀"
       ]
     },
     {

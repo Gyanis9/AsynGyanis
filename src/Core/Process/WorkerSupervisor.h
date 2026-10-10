@@ -168,6 +168,18 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::size_t runningWorkerCount() const noexcept;
 
+        /**
+         * @brief 判断「整池都到位」这一格（纯换算，不读状态）
+         * @param runningWorkerCount 本轮数出来的在跑个数
+         * @param slotCount 槽位总数
+         * @return true 每个槽位此刻都有一个活着的 worker
+         * @return false 还缺人，或槽位总数为 0（空池没有「都到位」这回事）
+         * @details 单列成纯函数是因为真造一个「永远补不起来」的池子并不确定：`posix_spawn` 对不存在的
+         *          可执行文件可能先报成功、子进程随后以 127 退出，那一轮「整池看起来齐了」确实发生过
+         *          （CI 上就这么红过一次）。把条件本身钉成可确定复跑的判据，端到端那几条只判自己能稳的形状。
+         */
+        [[nodiscard]] static bool isPoolComplete(std::size_t runningWorkerCount, std::size_t slotCount) noexcept;
+
     private:
         /**
          * @brief 一个被跟踪的 worker

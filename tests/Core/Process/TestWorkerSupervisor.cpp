@@ -1,4 +1,4 @@
-// WorkerSupervisor 单元测试：配置校验、补齐 worker、崩溃退避、收尾送走
+// WorkerSupervisor 单元测试：配置校验、补齐 worker、崩溃退避、收尾送走，以及整池到位/开始收口那两条观察者回调
 
 #include "Core/Process/WorkerSupervisor.h"
 
@@ -805,12 +805,12 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 有槽位根本起不来的时候，就绪一次都不报
-     * @details 这一格钉的是条件的另一半：报「整池就绪」而其中一格永远补不起来，等于让监督者按一条
-     *          假陈述放行后续单元。用「可执行文件不存在」造这个现场——进程起不来的判据在 `startWorker`
-     *          里就落了，不会像「起来就崩」那样与父线程的回收窗口抢先后，因此这条判据是确定的。
+     * @brief 一个 worker 都起不来时，编排报「整池起不来」而不是按请求收口
+     * @details 这条只判返回值与闩锁。就绪该不该报不押在这里：`posix_spawn` 对不存在的可执行文件在有的
+     *          机器上先报成功、子进程随后以 127 退出，那一轮「整池看起来齐了」是真切发生过的（CI 上就
+     *          这么红过一次），把条件本身钉成可确定复跑的判据交给下面那条纯函数用例。
      */
-    TEST(WorkerSupervisor, ReadinessCallbackNeverFiresWhenAWorkerSlotCannotStart)
+    TEST(WorkerSupervisor, GivesUpWhenNoWorkerCanBeStarted)
     {
         const WorkerLaunchLog           launchLog;
         WorkerSupervisor::Configuration configuration = makeConfiguration(launchLog, 2, WorkerBehaviour::SleepUntilTerminated);
@@ -821,10 +821,23 @@ namespace AsynGyanis::Core
         configuration.onAllWorkersRunning = [&readyCallCount] { readyCallCount.fetch_add(1, std::memory_order_relaxed); };
 
         WorkerSupervisor supervisor(configuration);
-        const bool       isOrderedShutdown = supervisor.run();
+        EXPECT_FALSE(supervisor.run()) << "全部槽位都起不来，这次编排不该报成按请求收口";
+        // 闩锁在这条上也要成立：无论池子看起来齐过几次，同一次编排里就绪最多报一份
+        EXPECT_LE(readyCallCount.load(std::memory_order_acquire), 1) << "同一次编排里就绪报了多份";
+    }
 
-        EXPECT_FALSE(isOrderedShutdown) << "全部槽位都起不来，这次编排不该报成按请求收口";
-        EXPECT_EQ(readyCallCount.load(std::memory_order_acquire), 0) << "有一格永远补不起来，却报了整池就绪";
+    /**
+     * @brief 就绪条件本身：每个槽位都要有一个活着的 worker，空池永远不算齐
+     * @details 这一格不等任何进程起来，因此可以确定复跑；上面那两条端到端的形状只判自己能稳的部分。
+     */
+    TEST(WorkerSupervisor, PoolCompletenessRequiresOneLiveWorkerPerSlot)
+    {
+        EXPECT_TRUE(WorkerSupervisor::isPoolComplete(2, 2));
+        EXPECT_TRUE(WorkerSupervisor::isPoolComplete(1, 1));
+        EXPECT_FALSE(WorkerSupervisor::isPoolComplete(1, 2)) << "还缺一格就把就绪报出去，监督者会按整池在服务放行后续单元";
+        EXPECT_FALSE(WorkerSupervisor::isPoolComplete(0, 2));
+        EXPECT_FALSE(WorkerSupervisor::isPoolComplete(3, 2)) << "个数多于槽位说明这一轮数错了，不该当成齐";
+        EXPECT_FALSE(WorkerSupervisor::isPoolComplete(0, 0)) << "空池没有「都到位」这回事";
     }
 
 #endif
