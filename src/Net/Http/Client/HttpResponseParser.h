@@ -36,6 +36,24 @@ namespace AsynGyanis::Net
         /// 混进头部就让消费方分不清「请求时就定的属性」与「收完正文才知道的结果」
         std::vector<std::pair<std::string, std::string>> trailers;
     };
+    enum class ASYN_NET_API OutboundInformationalDisposition
+    {
+        DiscardAndWaitForFinal, ///< 招呼过后继续等最终响应：100 Continue 与 103 Early Hints 这一族
+        CompletesResponse       ///< 这一条就是本次请求的收尾响应：101 Switching Protocols（RFC 6455 §4.1）
+    };
+
+    /**
+     * @brief 把出站侧的 1xx 分成「招呼」与「收尾」两档
+     * @details 判据只有一条线上事实：101 之后这条连接的协议就换了，后面不会再有一条 HTTP 响应，
+     *          所以它不能按 RFC 9110 §15.2 那套「丢掉再等下一条」处理——那样会把升级读成一次永久挂起。
+     * @param statusCode 刚解析出来的状态码
+     * @return OutboundInformationalDisposition 该按哪一档处置
+     */
+    [[nodiscard]] ASYN_NET_API constexpr OutboundInformationalDisposition classifyOutboundInformational(const int statusCode) noexcept
+    {
+        return statusCode == 101 ? OutboundInformationalDisposition::CompletesResponse : OutboundInformationalDisposition::DiscardAndWaitForFinal;
+    }
+
     /**
      * @brief 自顶向下解析 HTTP 响应报文
      * @details 状态行 → 头部 → 正文。正文定界按 RFC 9112 §6 取信：有 Transfer-Encoding
@@ -98,6 +116,19 @@ namespace AsynGyanis::Net
         }
         /// 通知对端已关闭（close-delimited 模式下据此完成解析）
         void endOfStream();
+
+        /**
+         * @brief 把 101 这类「本次请求的收尾响应」就地收尾
+         * @details 101 之后这条连接的协议已经换了，既没有正文也没有下一条 HTTP 响应；
+         *          定界标志必须一起复位，否则残留的 chunked 会把后续读帧的形状带歪。
+         */
+        void finishAsFinalInformationalResponse() noexcept;
+
+        /**
+         * @brief 丢掉一条过渡响应（100/102/103），回到状态行等最终响应
+         * @details 招呼带来的头部与定界标志随它一起作废——留着就会把最终响应的正文按错的定界解读。
+         */
+        void discardInterimInformationalResponse() noexcept;
 
         /**
          * @brief 头部是否已收齐（状态行与头部完整，正文可以开始逐批交付）

@@ -385,6 +385,43 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 101 是「本次请求的收尾响应」而不是招呼：必须交付，且不期待正文
+     * @details RFC 6455 §4.2.2 第 1 步要求服务端以 101 应答升级请求，而 1xx 那一族的
+     *          「丢掉再等下一条」（RFC 9110 §15.2）把 101 也吞进去的话，一次握手就会被读成
+     *          永久挂起——后面再没有「下一条响应」了，协议已经切换，之后到达的字节是帧。
+     */
+    TEST(HttpResponseParser, DeliversSwitchingProtocolsAsFinalResponseWithoutBody)
+    {
+        HttpResponseParser parser;
+        const std::string  message = "HTTP/1.1 101 Switching Protocols\r\n"
+                                     "Upgrade: websocket\r\n"
+                                     "Connection: Upgrade\r\n"
+                                     "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+                                     "\r\n";
+
+        EXPECT_TRUE(feedAll(parser, message));
+        EXPECT_TRUE(parser.isComplete()) << "101 之后既没有正文也没有下一条响应，不收尾就是挂死";
+        EXPECT_EQ(parser.result().statusCode, 101);
+        EXPECT_TRUE(parser.result().body.empty());
+        EXPECT_TRUE(parser.isHeadComplete());
+    }
+
+    /**
+     * @brief 钉住「招呼」与「收尾」这两档的划分只在 101 上分叉
+     * @details 这条纯函数判据是上面那条的出处：100/102/103 走丢弃，101 走收尾；把 101 划错档
+     *          会让出站侧的所有升级式握手一起挂死，而挂死的形状与「对端不应答」完全同形。
+     */
+    TEST(HttpResponseParser, ClassifiesOnlySwitchingProtocolsAsCompletingResponse)
+    {
+        EXPECT_EQ(classifyOutboundInformational(100), OutboundInformationalDisposition::DiscardAndWaitForFinal);
+        EXPECT_EQ(classifyOutboundInformational(102), OutboundInformationalDisposition::DiscardAndWaitForFinal);
+        EXPECT_EQ(classifyOutboundInformational(103), OutboundInformationalDisposition::DiscardAndWaitForFinal);
+        EXPECT_EQ(classifyOutboundInformational(101), OutboundInformationalDisposition::CompletesResponse);
+        // 非 1xx 不进这条分类通路（调用方在 1xx 分支里才问它），此处只钉它不会被误判成收尾
+        EXPECT_NE(classifyOutboundInformational(200), OutboundInformationalDisposition::CompletesResponse);
+    }
+
+    /**
      * @brief 钉住过渡响应的跨馈送分段：1xx 与最终响应分两次喂入结果一致
      */
     TEST(HttpResponseParser, SkipsInterimResponseAcrossFeedBoundaries)

@@ -929,7 +929,7 @@ TEST(Http3Connection, PeerGoAwayRejectsTheUnprocessedRequestStreamsAndBarsNewOne
 /**
  * @brief 过渡响应（1xx）占不掉「这条流唯一的头段」那一位，随后的最终响应照常交付
  * @details 本端服务端三条通道都能发过渡响应（`HttpResponse::sendInformational`，且带
- *          `Expect: 100-continue` 的 h2/h3 请求由会话自动补一个 100），h1 的出站解析器按 RFC 9112 §6.4
+ *          `Expect: 100-continue` 的 h2/h3 请求由会话自动补一个 100），h1 的出站解析器按 RFC 9110 §15.2
  *          把它当「最终响应之前的一声招呼」丢掉。h3 入站此前没有这一支：第一段被交给判定器并记下
  *          「头段已过」，于是那条真响应按 RFC 9114 §4.1 判成「同一消息里出现了第二个头段」——
  *          一个用 Expect 的出站请求被自家服务端的 100 打死。RFC 9114 §4.1/§5.1 说清过渡响应是一份

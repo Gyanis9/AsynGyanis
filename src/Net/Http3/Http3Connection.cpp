@@ -702,8 +702,9 @@ namespace AsynGyanis::Net
 
     bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, const bool isTrailers)
     {
-        // 过渡响应（1xx：100 Continue、103 Early Hints）是一份**独立**的消息（RFC 9114 §4.1、§5.1，
-        // h1 那侧同一读法在 RFC 9112 §6.4）：它占不掉「这条流唯一的头段」那一位，字段也不该交给业务。
+        // 过渡响应（1xx：100 Continue、103 Early Hints）是一份**独立**的消息（RFC 9114 §4.1、§5.1；
+        // h1 那侧的同一读法见 RFC 9110 §15.2「1xx 是最终响应之前的招呼」与 RFC 9112 §6.3「1xx 不带正文」）：
+        // 它占不掉「这条流唯一的头段」那一位，字段也不该交给业务。
         // 本端服务端三条通道都会发它（带 Expect: 100-continue 的请求由会话自动补一个 100，处理器还能自己
         // 发 102/103），收侧漏了这一支就等于自家的 100 把自家的 200 打成「第二个头段」
         const bool isInformationalInbound = isInboundInformationalSection(fields, isTrailers);

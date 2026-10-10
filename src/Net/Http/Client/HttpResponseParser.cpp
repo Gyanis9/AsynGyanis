@@ -301,21 +301,16 @@ namespace AsynGyanis::Net
                         }
                         if (m_result.statusCode >= 100 && m_result.statusCode < 200)
                         {
-                            // 1xx 是过渡响应（100 Continue、103 Early Hints）：它只是最终响应之前的一声招呼，
-                            // 当成最终响应收尾会让调用方拿着 103 当结果、真正的响应被整条丢掉。
-                            // 清掉本轮的状态与头部，回到状态行接着解析后面那一条
-                            m_result.statusCode = 0;
-                            m_result.reasonPhrase.clear();
-                            m_result.headers.clear();
-                            // 定界标志也要复位：过渡响应若带了 Transfer-Encoding，留在成员上会把
-                            // 随后那条真正响应的正文按分块解读
-                            m_isChunked            = false;
-                            m_isCloseDelimited     = false;
-                            m_headerBlockByteCount = 0;
-                            m_expectedBodyBytes    = 0;
-                            m_chunkSize            = 0;
-                            m_chunkPhase           = ChunkPhase::SizeLine;
-                            m_stage                = Stage::StatusLine;
+                            // 1xx 分两档：101 是本次请求的收尾响应（RFC 6455 §4.1 与 §4.2.2 第 1 步），
+                            // 按招呼丢掉就等于让一次升级永久挂起；其余 1xx 才是最终响应之前的一声招呼
+                            // （RFC 9110 §15.2）
+                            if (classifyOutboundInformational(m_result.statusCode) == OutboundInformationalDisposition::CompletesResponse)
+                            {
+                                finishAsFinalInformationalResponse();
+                            } else
+                            {
+                                discardInterimInformationalResponse();
+                            }
                             break;
                         }
                         if (statusHasNoBody(m_result.statusCode))
@@ -578,5 +573,29 @@ namespace AsynGyanis::Net
         {
             m_stage = Stage::Failed;
         }
+    }
+
+
+    void HttpResponseParser::finishAsFinalInformationalResponse() noexcept
+    {
+        m_isChunked         = false;
+        m_isCloseDelimited  = false;
+        m_expectedBodyBytes = 0;
+        m_stage             = Stage::Complete;
+    }
+
+    void HttpResponseParser::discardInterimInformationalResponse() noexcept
+    {
+        m_result.statusCode = 0;
+        m_result.reasonPhrase.clear();
+        m_result.headers.clear();
+        // 招呼带的定界标志随它一起作废：留在成员上会把随后那条真正响应的正文按分块解读
+        m_isChunked            = false;
+        m_isCloseDelimited     = false;
+        m_headerBlockByteCount = 0;
+        m_expectedBodyBytes    = 0;
+        m_chunkSize            = 0;
+        m_chunkPhase           = ChunkPhase::SizeLine;
+        m_stage                = Stage::StatusLine;
     }
 } // namespace AsynGyanis::Net
