@@ -796,7 +796,11 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
             -DDATABASE_WITH_MYSQL=OFF \
             -DASYN_BUILD_SAMPLES=OFF \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
+          # EXPORT_COMPILE_COMMANDS 是给下面那道加固核对用的：它判「编译命令行里有没有该带的开关」，
+          # 判据来源就是这份编译数据库。2026-10-10 首跑时这里没开，脚本按设计退 2（前置缺件不当通过），
+          # 红的正是接线本身——那条 fail-safe 第一次真跑就把自己钉在了一档没有数据库的构建上
 
       - name: 编译全部用例（-k 0 收集式失败，一次看全所有编译错误）
         run: cmake --build build/coverage -- -k 0

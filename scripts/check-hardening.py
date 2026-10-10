@@ -27,6 +27,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 两个流固定按 UTF-8 写：这张表的每一行都是中文，而 Windows 侧的默认编码可能是 cp1252
+# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，脚本会在**打印第一行读数时**
+# 抛 UnicodeEncodeError 退 1——看上去像「加固落空」，实际一条判据都没跑完。
+# 这条门第一次上 CI 就红在这里（2026-10-10，Linux 侧同一件跑过），所以补得不算早。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ELF_FLAGS = {
     "stackProtector": "-fstack-protector-strong",
     "fortify": "-D_FORTIFY_SOURCE=2",
