@@ -1241,4 +1241,35 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(containsText(feedAndExpectError(decoder, "\xC1\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58"), "RSV1")) << "换档位不该把别的判据一起换掉：RSV 那一条照旧要判";
     }
 
+    TEST(WebSocketFrame, CloseCodeAllowanceCoversRegisteredAndPrivateRanges)
+    {
+        // §7.4.1 已定义的那些码，加上 §7.4.2 留给实现自定的 3000-4999 段。表要写成 uint16_t 的：
+        // 花括号里全是整面量的话推导出的元素类型是 int，MSVC 对范围变量的窄化按 C4244 告警（GCC 不报），
+        // 这份判据在两侧都得同解
+        constexpr std::array<std::uint16_t, 14> kAllowedCodes{1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 3000, 4999};
+        for (const std::uint16_t code: kAllowedCodes)
+        {
+            EXPECT_TRUE(isAllowedWebSocketCloseCode(code)) << code;
+        }
+        // 保留哨兵（1005/1006/1015）、未定义（1004）与未注册段（1016-2999、5000 以上）都不得上线：
+        // 这张表的边界就是两个方向共同的那道闸，服务端会话与出站客户端都读它
+        constexpr std::array<std::uint16_t, 10> kRejectedCodes{0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535};
+        for (const std::uint16_t code: kRejectedCodes)
+        {
+            EXPECT_FALSE(isAllowedWebSocketCloseCode(code)) << code;
+        }
+    }
+
+    TEST(WebSocketFrame, ClosePayloadPutsTheCodeFirstInNetworkByteOrder)
+    {
+        const std::string payload = buildWebSocketClosePayload(0x1234, "hi");
+        ASSERT_EQ(payload.size(), 4U);
+        EXPECT_EQ(static_cast<unsigned char>(payload[0]), 0x12U);
+        EXPECT_EQ(static_cast<unsigned char>(payload[1]), 0x34U);
+        EXPECT_EQ(payload.substr(2), "hi");
+
+        // 没给原因时仍交回两个字节：「只有状态码」与「什么也没给」在线上是两件事（§5.5.1）
+        EXPECT_EQ(buildWebSocketClosePayload(1000, {}).size(), 2U);
+    }
+
 } // namespace AsynGyanis::Net

@@ -12,9 +12,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 关闭帧负载里状态码占用的字节数（RFC 6455 §5.5.1）
-        constexpr std::size_t kCloseCodeByteLength = 2;
-
         /**
          * @brief 作用域结束时把「有一帧在写」标记复位，异常路径也不例外
          * @details 发送回调可以抛（写路径的框架异常正是从这里穿出的）：标记卡在 true 会让会话收尾
@@ -43,46 +40,6 @@ namespace AsynGyanis::Net
             bool &m_flag; ///< 被守护的标记本体，属于 peer 对象，活到会话收尾
         };
 
-        /**
-         * @brief 对端 Close 里的状态码是否合法（RFC 6455 §7.4.1）
-         * @param closeCode 线上收到的状态码
-         * @return true 合法：1000-1003、1007-1014、3000-4999
-         * @return false 非法：1004/1005/1006/1015 等保留值、1000 以下与 1016-2999 段
-         */
-        bool isValidReceivedCloseCode(const std::uint16_t closeCode) noexcept
-        {
-            if (closeCode >= 3000 && closeCode <= 4999)
-                return true;
-            switch (closeCode)
-            {
-                case 1000:
-                case 1001:
-                case 1002:
-                case 1003:
-                case 1007:
-                case 1008:
-                case 1009:
-                case 1010:
-                case 1011:
-                case 1012:
-                case 1013:
-                case 1014:
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        /**
-         * @brief 本端主动 Close 的状态码是否可上线（RFC 6455 §7.4.1、§7.4.2）
-         * @param closeCode 业务给出的状态码
-         * @return true 可发送；false 为保留值或落在保留区间
-         * @note 1005/1006/1015 是「不得出现在线上」的哨兵值，1016-2999 段未经注册不可发
-         */
-        bool isValidCloseCodeToSend(const std::uint16_t closeCode) noexcept
-        {
-            return isValidReceivedCloseCode(closeCode);
-        }
     } // namespace
 
     WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics) : m_frameSender(std::move(frameSender)), m_metrics(metrics)
@@ -261,19 +218,19 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> WebSocketPeer::close(const std::uint16_t code, const std::string_view reason)
     {
-        constexpr std::size_t kMaximumReasonLength = kWebSocketMaximumControlPayloadLength - kCloseCodeByteLength;
+        constexpr std::size_t kMaximumReasonLength = kWebSocketMaximumControlPayloadLength - kWebSocketCloseCodeByteLength;
         if (reason.size() > kMaximumReasonLength)
         {
             // 超长有意抛异常而不是截断：截断会悄悄改掉业务给出的原因，而这条帧正是对端判断
             // 「为什么被关」的唯一依据
             throw Base::InvalidArgumentException(std::format("WebSocketPeer::close：关闭原因 {} 字节超过上限 {} 字节（控制帧整体不得超过 {} 字节，"
                                                              "其中状态码占 {} 字节，RFC 6455 §5.5）：请缩短原因，或把长说明改用 sendText() 作为消息发出",
-                                                             reason.size(), kMaximumReasonLength, kWebSocketMaximumControlPayloadLength, kCloseCodeByteLength));
+                                                             reason.size(), kMaximumReasonLength, kWebSocketMaximumControlPayloadLength, kWebSocketCloseCodeByteLength));
         }
 
         // 状态码同样按用法错误当场拒绝：1005/1006/1015 是「不得上线」的哨兵值，1016-2999 段
         // 未经注册不可发。发出去对端只能按协议错误收口，改掉正是调用方该做的事
-        if (!isValidCloseCodeToSend(code))
+        if (!isAllowedWebSocketCloseCode(code))
         {
             throw Base::InvalidArgumentException(std::format("WebSocketPeer::close：状态码 {} 不允许出现在线上（RFC 6455 §7.4.1/§7.4.2：1005/1006/1015 为保留哨兵值，"
                                                              "1016-2999 段未经注册）：请改用 1000-1003、1007-1014 或 3000-4999 段的值",
@@ -308,12 +265,9 @@ namespace AsynGyanis::Net
             m_metrics->countWebSocketServerClose();
         }
 
-        std::string payload;
-        payload.reserve(kCloseCodeByteLength + reason.size());
-        // 负载 = 2 字节大端状态码 + 原因（RFC 6455 §5.7.1）
-        payload.push_back(static_cast<char>((code >> 8) & 0xFFU));
-        payload.push_back(static_cast<char>(code & 0xFFU));
-        payload.append(reason);
+        // 负载 = 2 字节大端状态码 + 原因（RFC 6455 §5.5.1）：线上顺序只有 `buildWebSocketClosePayload`
+        // 那一份实现，出站客户端与本机共用，写反字节序这种事不会再只发生在一侧
+        const std::string payload = buildWebSocketClosePayload(code, reason);
 
         co_return co_await sendFrame(WebSocketOpCode::Close, payload);
     }
@@ -362,12 +316,12 @@ namespace AsynGyanis::Net
         if (payload.size() == 1)
         {
             closeCode = kWebSocketProtocolErrorCode;
-        } else if (payload.size() >= kCloseCodeByteLength)
+        } else if (payload.size() >= kWebSocketCloseCodeByteLength)
         {
             // 线上是大端：第一个字节是高位
             const std::uint16_t    receivedCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
                                                                              static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
-            const std::string_view reason       = payload.substr(kCloseCodeByteLength);
+            const std::string_view reason       = payload.substr(kWebSocketCloseCodeByteLength);
             const bool             isReasonUtf8 = findInvalidWebSocketUtf8ByteOffset(reason) == std::string_view::npos;
 
             // 记下「对端说了什么」，与下面决定「本侧回什么」分开：非法状态码与非 UTF-8 的原因都会让
@@ -380,7 +334,7 @@ namespace AsynGyanis::Net
                 m_remoteCloseReason = std::string(reason);
             }
 
-            if (!isValidReceivedCloseCode(receivedCode))
+            if (!isAllowedWebSocketCloseCode(receivedCode))
             {
                 closeCode = kWebSocketProtocolErrorCode;
             } else if (!isReasonUtf8)

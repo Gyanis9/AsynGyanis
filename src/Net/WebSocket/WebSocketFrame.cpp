@@ -128,6 +128,46 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
+    bool isAllowedWebSocketCloseCode(const std::uint16_t closeCode) noexcept
+    {
+        // 3000-4999 是实现自定段（RFC 6455 §7.4.2）；1016-2999 段未经注册，一律不许上线
+        if (closeCode >= 3000 && closeCode <= 4999)
+        {
+            return true;
+        }
+        switch (closeCode)
+        {
+            case 1000:
+            case 1001:
+            case 1002:
+            case 1003:
+            case 1007:
+            case 1008:
+            case 1009:
+            case 1010:
+            case 1011:
+            case 1012:
+            case 1013:
+            case 1014:
+                return true;
+            default:
+                // 1004（未定义）、1005/1006（只能由本地推断）、1015（TLS 握手失败的哨兵）与
+                // 1000 以下、2999-1016 之间的空段都落在这里
+                return false;
+        }
+    }
+
+    std::string buildWebSocketClosePayload(const std::uint16_t statusCode, const std::string_view reason)
+    {
+        std::string payload;
+        payload.reserve(kWebSocketCloseCodeByteLength + reason.size());
+        // 状态码是大端两字节（RFC 6455 §5.5.1）：先高字节，与帧里的长度字段同一套线上字节序
+        payload.push_back(static_cast<char>((statusCode >> 8U) & 0xFFU));
+        payload.push_back(static_cast<char>(statusCode & 0xFFU));
+        payload.append(reason);
+        return payload;
+    }
+
     std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal, const bool isCompressed,
                                      const std::optional<WebSocketMaskKey> maskKey)
     {

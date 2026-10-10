@@ -66,6 +66,35 @@ namespace AsynGyanis::Net
     /// 控制帧负载上限 125 字节（RFC 6455 §5.5）：控制帧要能塞进一个 IP 分片，故不随消息体积增长
     inline constexpr std::size_t kWebSocketMaximumControlPayloadLength = 125;
 
+    /// Close 帧负载里状态码占的字节数（大端，RFC 6455 §5.5.1）：原因文本从它之后开始
+    inline constexpr std::size_t kWebSocketCloseCodeByteLength = 2;
+
+    /**
+     * @brief Close 帧的状态码能不能出现在线上（收与发共用同一张表）
+     *
+     * @details 两个方向的合法集合在规范里就是同一份：§7.4.1 列出的那些码，加上 §7.4.2 留给实现自定的
+     *          3000-4999 段。1004、1005、1006、1015 与 1016-2999 段都不得上线——收侧遇到非法码要按协议
+     *          错误收口，发侧发出非法码会把一次正常关闭变成对端的协议错误，业务想看的关闭原因也就丢了。
+     *          判据只在这一处：服务端会话与出站客户端各写一张表，迟早会在某个保留段上分叉。
+     *
+     * @param closeCode 状态码原值（从线上或业务参数取来）
+     * @return true 允许出现在线上
+     */
+    [[nodiscard]] ASYN_NET_API bool isAllowedWebSocketCloseCode(const std::uint16_t closeCode) noexcept;
+
+    /**
+     * @brief 拼一条 Close 帧的负载：两字节大端状态码 + 原因文本（RFC 6455 §5.5.1）
+     *
+     * @details 只做拼装，不判状态码能不能上线、也不判原因是不是合法 UTF-8——那两个判据属于会话层，
+     *          服务端与出站客户端各有自己的拒绝文案。线上顺序只有这一份实现：把字节序写反的帧
+     *          对端只会读出一个不相干的号码，而这正是「为什么被关」的唯一依据。
+     *
+     * @param statusCode 状态码原值，本函数不校验它的取值
+     * @param reason 原因文本，按「指针 + 长度」取，可为空；长度上限由调用方判
+     * @return std::string 2 + reason.size() 字节的负载
+     */
+    [[nodiscard]] ASYN_NET_API std::string buildWebSocketClosePayload(const std::uint16_t statusCode, const std::string_view reason);
+
     /**
      * @brief 一帧的 4 字节掩码键（RFC 6455 §5.3）
      * @details 出站客户端每帧要换一个**由密码学随机源取出的**键；写成独立类型是为了让
