@@ -32,6 +32,7 @@ add_executable(TestCore
         Coroutine/TestAsyncExecutor.cpp
 
         Process/TestGracefulShutdown.cpp
+        Process/TestReloadSignal.cpp
         Process/TestUpgradeChannel.cpp
         Process/TestWorkerSupervisor.cpp
 

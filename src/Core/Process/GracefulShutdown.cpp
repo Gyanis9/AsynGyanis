@@ -3,6 +3,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Process/ReloadSignal.h"
 #include "Platform/Platform.h"
 
 #include <algorithm>
@@ -177,6 +178,10 @@ namespace AsynGyanis::Core
         m_waiter = std::jthread(
                 [this, watchSet](const std::stop_token &stopToken)
                 {
+                    // 与重载观察者互为对称的一条：屏蔽字只被子线程继承，两个观察者的构造顺序不固定。
+                    // 不补这一步，先起的这条线程就会成为 SIGHUP 的缺省动作受害者（那一枚本该触发重载）
+                    static_cast<void>(ReloadSignal::blockReloadSignal());
+
                     for (;;)
                     {
                         if (stopToken.stop_requested())

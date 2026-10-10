@@ -48,6 +48,9 @@ namespace AsynGyanis::Platform
         /// 监听器已经就绪、可以接流量（`Type=notify` 的服务单元靠这一条判定启动完成）
         static constexpr std::string_view kReadyState = "READY=1";
 
+        /// 正在重读配置：监督者据此推迟它的超时判定，直到再次收到 `READY=1`（这两条成对发，见下）
+        static constexpr std::string_view kReloadingState = "RELOADING=1";
+
         /// 正在收尾：监督者从这一刻起开始计算停机超时
         static constexpr std::string_view kStoppingState = "STOPPING=1";
 

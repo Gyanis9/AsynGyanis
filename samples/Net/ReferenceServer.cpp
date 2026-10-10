@@ -16,6 +16,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/GracefulShutdown.h"
+#include "Core/Process/ReloadSignal.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
@@ -532,6 +533,55 @@ int main(int argc, char **argv)
     Net::TracingConfiguration    tracingConfiguration;
     /// 证书自动化：段没写就是关着（默认值即「不建管理器」），其余一切不合法在读配置那一刻抛出
     Net::AcmeAutomationConfiguration acmeConfiguration;
+
+    // 这两个都要早于任何工作线程：POSIX 的信号屏蔽字由子线程继承，先起的线程没被打上屏蔽，
+    // 那之后一枚 SIGHUP 会按缺省动作直接把进程干掉。声明顺序也有讲究——serviceStatus 在前、
+    // reloadSignal 在后，于是析构时重载观察者先停、通知套接字后关，动作里那几个 send() 不会碰到已关的描述符。
+    // 接管是无条件的：装了之后 SIGHUP 不再终止进程，所以不能按「有没有 --config」分成两种语义
+    // ——那会让同一条信号在两种部署里行为不同，最难查。没配文件时它回一条状态说明为什么什么都没重读
+    Platform::ServiceNotification serviceStatus;
+    Core::ReloadSignal            reloadSignal;
+
+    // SIGHUP 这条运维入口无条件装着：接管装上之后它不再按缺省动作终止进程，所以不能按「有没有
+    // --config」分成两种语义——同一条信号在两种部署里行为不同，是最难归因的那一类。没配文件时
+    // 它回一条状态说明为什么什么都没重读，而不是悄悄什么都不做
+    reloadSignal.onReload(
+            [configFile, &serviceStatus]
+            {
+                if (configFile.empty())
+                {
+                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState("没配 --config：没有可重读的配置")));
+                    LOG_WARN("SIGHUP 到了，但本进程没配 --config：没有可重读的文件（要热重载请带 --config，或走文件监听那一路）");
+                    return;
+                }
+
+                // systemd 的 reload 握手是两条一对：RELOADING=1 让监督者推迟超时，重读结束再补一条
+                // READY=1 收尾。只发前一条，那一侧会等到超时再把进程杀掉
+                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReloadingState));
+
+                const Base::ConfigLoadResult reloaded = Base::ConfigManager::instance().reload();
+                if (reloaded.success)
+                {
+                    // logging 段重新装载——这条路上真正会变的运行时行为就是等级与滚动参数。
+                    // 限额、TLS 证书路径、监听地址与线程数都在启动期定型，不随这次重载改变：
+                    // 说清哪几样会生效，比让人以为 reload 等于 nginx 那种整服重建重要
+                    Base::LoggerConfigLoader::loadFromConfig("logging", std::filesystem::path(configFile).parent_path());
+                    LOG_INFO_FMT("SIGHUP：配置已重读（{}），logging 段按新值生效；server 段与 acme 段是启动期定型的，这次不改", configFile);
+                } else
+                {
+                    std::string reasons;
+                    for (const auto &reason: reloaded.errors)
+                    {
+                        reasons += reasons.empty() ? reason : "；" + reason;
+                    }
+                    LOG_ERROR_FMT("SIGHUP：配置重读失败（{}），仍按原配置继续服务", reasons);
+                }
+
+                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReadyState));
+                static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(reloaded.success ? "配置已重读" : "配置重读失败，仍按原配置继续服务")));
+            });
+    LOG_INFO("SIGHUP 已接管：kill -HUP <pid> 会重读配置文件并重新装载 logging 段（Windows 没有这条约定，走文件监听那一路）");
+
     if (!configFile.empty())
     {
         // 整块都在 try 里：读文件、取段、校验任何一步失败都只让这次启动失败并说明原因。
@@ -757,9 +807,7 @@ int main(int argc, char **argv)
     // 停机信号的接管交给库：屏蔽字必须在工作线程起来之前设好（子线程继承掩码），所以这两句
     // 紧挨在算出线程数之后、造 IoContext 之前。动作本身只是把一个原子量置假，
     // 与循环无关，因此用不绑事件循环的那种构造（绑了反而要求那时已经有循环在跑）
-    // 服务管理器的状态通知通路先建对象再开：对象的析构因此晚于下面那个观察者，
-    // 收尾动作里那条 STOPPING=1 不会碰到已经关掉的描述符
-    Platform::ServiceNotification serviceStatus;
+    // 通知对象与重载观察者都在读配置之前那一段就建好了（信号屏蔽字必须早于工作线程），这里只装停机接管
     static_cast<void>(Core::GracefulShutdown::blockStopSignals());
     Core::GracefulShutdown shutdown;
     shutdown.onShutdown([] { g_running.store(false); });

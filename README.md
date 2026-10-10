@@ -124,8 +124,12 @@
   交进 `$NOTIFY_SOCKET`（文件系统路径与 Linux 抽象命名空间两种地址都支持，`vsock:` 那种明确拒，不当路径去连一个不存在的文件名）；
   没有这个变量时报「本进程不在监督之下」而不是静默成功。看门狗那条节拍（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意没接：它必须由事件循环
   own 着发才算数，而读到却不发等于让监督者按一个没人喂的超时杀进程
+- **SIGHUP 的重载入口** — `Core::ReloadSignal` 把运维那枚「换一份配置继续跑」的信号接到注册的重载动作上（systemd 的
+  `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`）：`ReferenceServer --config` 之下，一次 HUP 重读配置文件并重装 `logging` 段，
+  同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。注册表跨轮次保留（重载不是一次性的）；Windows 没有这条约定，
+  `isInstalled()` 恒假并说明原因，那边的重载入口仍是文件监听
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
-- **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`），它们与循环生命周期同生死，再抽一层只多一次间接
+- **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`、`ReloadSignal`），它们与循环生命周期同生死，再抽一层只多一次间接
 
 ## 架构
 
@@ -752,7 +756,7 @@ AsynGyanis/
 
 | 核对项 | 键 / 入口 | 默认值 | 怎么确认生效 | 配错的后果 |
 | --- | --- | --- | --- | --- |
-| 服务管理器的就绪上报 | systemd 单元 `Type=notify`；进程侧 `Platform::ServiceNotification`（`ReferenceServer` 在**监听器确认之后**上报，环境变量 `NOTIFY_SOCKET` 决定往哪发） | 没有 `NOTIFY_SOCKET` 时一条都不发，并打一行「未向服务管理器上报状态」；多 worker 形态由 master 受监督，本形态**不上报**（启动时打一行说明） | 别只看 `Active: active (running)`——那一句只证明监督者收到了东西。要拿一条独立证据：把 `NOTIFY_SOCKET` 指到自己 bind 的一个 AF_UNIX 数据报套接字，应当逐条收到 `READY=1`、`STATUS=…`，发 `SIGTERM` 后收到 `STOPPING=1`；`vsock:` 那种地址会被明确拒而不是当路径去连 | 上报点若在监听确认之前，就等于骗过监督者：`Type=notify` 会在端口上还没人守的时候判定启动完成，`TimeoutStartSec` 随之失去意义。看门狗（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意没接：那条节拍必须由事件循环 own 着发，读到却不发等于让监督者按一个没人喂的超时杀进程 |
+| 服务管理器的就绪上报 | systemd 单元 `Type=notify`；进程侧 `Platform::ServiceNotification`（`ReferenceServer` 在**监听器确认之后**上报，环境变量 `NOTIFY_SOCKET` 决定往哪发） | 没有 `NOTIFY_SOCKET` 时一条都不发，并打一行「未向服务管理器上报状态」；多 worker 形态由 master 受监督，本形态**不上报**（启动时打一行说明） | 别只看 `Active: active (running)`——那一句只证明监督者收到了东西。要拿一条独立证据：把 `NOTIFY_SOCKET` 指到自己 bind 的一个 AF_UNIX 数据报套接字，应当逐条收到 `READY=1`、`STATUS=…`，发 `SIGHUP` 后收到 `RELOADING=1` 与 `READY=1`（这两条成对：只发前者，那一侧会等到超时才把进程杀掉），再发 `SIGTERM` 后收到 `STOPPING=1`；`vsock:` 那种地址会被明确拒而不是当路径去连 | 上报点若在监听确认之前，就等于骗过监督者：`Type=notify` 会在端口上还没人守的时候判定启动完成，`TimeoutStartSec` 随之失去意义。看门狗（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意没接：那条节拍必须由事件循环 own 着发，读到却不发等于让监督者按一个没人喂的超时杀进程 |
 | TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
 | ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
 | `acme` 配置段 | `Net::readAcmeConfiguration(root)` + `Net::buildDns01TxtWriter(loop, cfg)` + `Net::validateAcmeAssembly(cfg, facts)`；消费方是签发探针 `acme_issuance_probe --config <file>` 与 `ReferenceServer --config <file>`（后者装常驻续期循环，签完的新证书热装回本进程每一台 TLS 监听器） | 整段缺失 = `enabled` 为 false，谁都不去签；`challenge` 默认 `http-01`、`dns.record_ttl_seconds` 默认 600（下限也是 600：这一家实测拒更小值，配低了在**读配置**时就拒，不留到第一次签发才在 API 上报 `The specified TTL is invalid`）、`renew_before_expiry_days` 30、`renewal_check_interval_minutes` 720 | 探针打一行 `CHALLENGE <种类> PROVIDER … ZONE … TTL … FROM cli\|config`，`FROM config` 才说明文件里那份在生效；`--domain` / `--contact` / `--challenge` 显式给出时才覆盖文件。服务侧另打一行「证书自动化：开（… 装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在）」，N 按真能转成 TLS 服务器的对象数，不按开关猜 | 段内未知键当场拒（13 键 + `dns` 那 3 键）；`dns` 段与 `challenge: http-01` 同时出现两边都拒；**AccessKey 刻意不认配置文件**，只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `_SECRET` 读，缺一条就在建写入器时拒——能改域名记录的钥匙进版本库等于把域名交出去；服务侧的三条边界同属「配了不生效」这一族，一律启动即拒或启动即说清：开着 `acme` 时证书身份以 `acme` 落点为准（`--cert/--key` 不一致会被顶掉并打 WARN）、`http-01` 在本示例没有公网明文口可用（一个端口只服务一种协议，拒并指回 `dns-01`）、多 worker 进程里签发归槽位 0、其余进程靠 `Net::followCertificateRotation` 跟盘（两条都没装的部署照样拒）|
