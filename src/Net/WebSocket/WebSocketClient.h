@@ -46,11 +46,9 @@ namespace AsynGyanis
          *
          * @note 与 `WebSocketPeer` 的分工：peer 是服务端那一面（等别人升上来），本类是客户端这一面；
          *       两者共用同一台帧编解码器与同一份 Close 状态码判据，不在本类里另写一套帧格式。
-         * @warning `handshakeTimeout` 只覆盖「建 TCP 连接」与「TLS 握手」两段；**发出升级请求之后等 101
-         *          的那一段本轮没有时限**——对端一言不发时 `connect()` 会一直等，要收口只能由调用方撤掉
-         *          整条循环。为什么先不接：看门狗叫醒挂起的读这条通路，在 HttpClient 与 QUIC 出站两处都有
-         *          用例钉住，本类的自建通路上却现场复现不出「到点把读叫醒」（用例停在等待里，根因未定位）。
-         *          宁可写明边界，也不留一个看着生效、实际静默失效的旋钮。
+         * @note `handshakeTimeout` 管住 `connect()` 全程：建 TCP 连接、TLS 握手、以及发出升级请求后
+         *       等 101 那三段各拿剩余预算。对端一言不发时看门狗到点把通路关掉，`connect()` 带着点明
+         *       阶段的中文原因回来，不会把调用方的协程留在那里等一个永远不会到的应答。
          * @warning 本对象属于构造它的那个事件循环：`connect()`、`receive()`、`send*()`、`close()` 与析构
          *          都必须在循环自己的线程上调用。跨线程请先 `postRemote()` 把动作送过去。
          */
@@ -71,7 +69,7 @@ namespace AsynGyanis
                 std::string               requestTarget{"/"};     ///< origin-form 的请求目标，如 `/chat?room=1`
                 std::vector<std::string>  subprotocols{};         ///< 提议的子协议名，按优先级；空表示不提
                 const Core::TlsContext   *clientTls{nullptr};     ///< 非空即走 wss；上下文由调用方持有并须活过本会话
-                std::chrono::milliseconds handshakeTimeout{5000}; ///< 建 TCP 连接与 TLS 握手两段的总时限，各拿剩余预算；必须是正数（等 101 那一段不含，见类注释）
+                std::chrono::milliseconds handshakeTimeout{5000}; ///< `connect()` 全程（建 TCP、TLS 握手、等到 101）的总时限，各段拿剩余预算；必须是正数
                 std::size_t               maximumMessageSize{WebSocketFrameDecoder::kMaximumMessagePayloadLength}; ///< 一条消息的字节上限；0 表示不设
             };
 

@@ -857,4 +857,33 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(outcome.is_connected);
         EXPECT_NE(outcome.failure_reason.find("之前就把连接关了"), std::string::npos) << outcome.failure_reason;
     }
+
+    /**
+     * @brief 对端收了升级请求却一言不发时，connect() 必须按时限带着原因回来
+     * @details 钉住的是「等 101 那一段有出口」与「那个出口是时限而不是别处」：看门狗到点把通路关掉，
+     *          挂在读上的协程被叫醒并把「等待期间套接字被关」落成拒因。判据落在**拒因点名时限**上，
+     *          因为「提前失败」（对端先收线、通路出错）同样是秒回，只有原因能把这两种分开。
+     */
+    TEST(WebSocketClient, HandshakeWithSilentPeerHasAnExit)
+    {
+        constexpr auto   kHandshakeTimeout = std::chrono::milliseconds{400};
+        const PeerScript script            = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.readUpgradeRequest());
+            // 收下请求就一个字节都不回，但要活得比客户端那道时限长：脚本先收摊的话，
+            // 客户端读到的是「对端关了」那条出口，这条用例要判的那一段就永远不会被走到
+            std::this_thread::sleep_for(std::chrono::milliseconds{700});
+        };
+        WebSocketClient::Configuration configuration = baseConfiguration();
+        configuration.handshakeTimeout               = kHandshakeTimeout;
+        std::pair<std::string, std::string> wireBytes;
+        const auto                          startedAt = std::chrono::steady_clock::now();
+        const ClientRunOutcome              outcome   = runClientAgainst(script, kNoAction, configuration, wireBytes);
+        const auto                          elapsed   = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+
+        EXPECT_FALSE(outcome.is_connected);
+        EXPECT_NE(outcome.failure_reason.find("101"), std::string::npos) << outcome.failure_reason;
+        EXPECT_NE(outcome.failure_reason.find("时限"), std::string::npos) << outcome.failure_reason;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{3000}) << "等了 " << elapsed.count() << " 毫秒：时限没管住等 101 这一段";
+    }
 } // namespace AsynGyanis::Net

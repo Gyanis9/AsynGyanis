@@ -170,14 +170,25 @@ namespace AsynGyanis::Net
         /**
          * @brief 把一条应答读到底：明文通路
          * @details 刻意不走 HttpOutboundConnection：那条通路的 parser 是按「带正文的响应」设计的，
-         *          而升级交换之后这条连接就不再是 HTTP 了。这一段本轮不设时限（理由见类注释的 @warning）
+         *          而升级交换之后这条连接就不再是 HTTP 了。
+         * @param loop 所属事件循环（看门狗要挂在它上面定时）
          * @param stream 已连上的明文流
+         * @param exchangeBudget 本段（写出请求 + 等到 101）可用的剩余时限；空表示预算已用尽
          * @param requestText 升级请求原文
          * @param target 目标描述，只进拒因文本
          * @return Core::Task<std::expected<UpgradeExchange, std::string>> 一条完整应答与它之后的那截字节
          */
-        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverPlain(TcpStream &stream, const std::string_view requestText, const std::string target)
+        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverPlain(Core::EventLoop &loop, TcpStream &stream,
+                                                                                  const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
+                                                                                  const std::string target)
         {
+            if (!exchangeBudget.has_value())
+            {
+                co_return std::unexpected(std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target));
+            }
+            // 对端收了请求一言不发时，这条通路上的等待没有别的出口：看门狗到点把套接字关掉，
+            // 挂在读上的协程因此被叫醒（关掉描述符本身不会唤醒 epoll 的等待者）
+            const Core::DeadlineGuard<TcpStream>       upgradeDeadline(loop, stream, *exchangeBudget, "WebSocketClient");
             std::array<char, kExchangeChunkByteLength> chunk{};
             UpgradeExchange                            exchange;
             HttpResponseParser                         parser;
@@ -190,7 +201,18 @@ namespace AsynGyanis::Net
             }
             while (true)
             {
-                const auto received = co_await stream.read(chunk.data(), chunk.size());
+                // 看门狗掐出来的那条出口是**抛出**（等待期间套接字被关），而本函数的出口是
+                // std::expected：抛出必须在这里落成拒因。让它穿过 connect() 的 expected 契约，
+                // 调用方既拿不到结局也等不到协程收尾，现场看着就像「时限到了也不回」
+                ssize_t received = 0;
+                try
+                {
+                    received = co_await stream.read(chunk.data(), chunk.size());
+                } catch (const Base::Exception &failure)
+                {
+                    co_return std::unexpected(
+                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what()));
+                }
                 if (received < 0)
                 {
                     co_return std::unexpected(std::format("读取 101 应答时通路出错（目标 {}）：被对端复位或本端被撤", target));
@@ -214,14 +236,23 @@ namespace AsynGyanis::Net
         }
         /**
          * @brief 把一条应答读到底：TLS 通路
-         * @details 与明文那一条同一条判定，只是读写走 TlsSocket；这一段同样不设时限（见类注释 @warning）
+         * @details 与明文那一条同一条判定，只是读写走 TlsSocket，时限也照明文那一条挂。
+         * @param loop 所属事件循环（看门狗要挂在它上面定时）
          * @param tlsSocket 已完成握手的客户端 TLS 套接字
+         * @param exchangeBudget 本段（写出请求 + 等到 101）可用的剩余时限；空表示预算已用尽
          * @param requestText 升级请求原文
          * @param target 目标描述，只进拒因文本
          * @return Core::Task<std::expected<UpgradeExchange, std::string>> 一条完整应答与它之后的那截字节
          */
-        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverTls(Core::TlsSocket &tlsSocket, const std::string_view requestText, const std::string target)
+        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverTls(Core::EventLoop &loop, Core::TlsSocket &tlsSocket,
+                                                                                const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
+                                                                                const std::string target)
         {
+            if (!exchangeBudget.has_value())
+            {
+                co_return std::unexpected(std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target));
+            }
+            const Core::DeadlineGuard<Core::TlsSocket> upgradeDeadline(loop, tlsSocket, *exchangeBudget, "WebSocketClient");
             std::array<char, kExchangeChunkByteLength> chunk{};
             UpgradeExchange                            exchange;
             HttpResponseParser                         parser;
@@ -362,9 +393,10 @@ namespace AsynGyanis::Net
         }
         if (configuration.handshakeTimeout <= std::chrono::milliseconds::zero())
         {
-            co_return std::unexpected(std::format("WebSocket 出站的 handshakeTimeout 是 {} 毫秒：建连与 TLS 握手这两段必须各有时限，0 或负数会让协程停在那两段里出不来。"
-                                                  "要放宽就写一个更大的正数；等 101 那一段本轮不设时限（类注释的 @warning 写明）",
-                                                  configuration.handshakeTimeout.count()));
+            co_return std::unexpected(
+                    std::format("WebSocket 出站的 handshakeTimeout 是 {} 毫秒：建 TCP 连接、TLS 握手与等 101 这三段必须各有时限，0 或负数会让协程停在这三段里出不来。"
+                                "要放宽就写一个更大的正数",
+                                configuration.handshakeTimeout.count()));
         }
         const auto startedAt = std::chrono::steady_clock::now();
         // 三段共用一份总时限，各拿「此刻还剩下多少」：连接、TLS 握手、等 101 缺一段都会让总时限形同虚设
@@ -418,11 +450,11 @@ namespace AsynGyanis::Net
                 co_return std::unexpected(secured.error());
             }
             tlsSocket = std::move(*secured);
-            exchanged = co_await exchangeOverTls(*tlsSocket, *requestText, target);
+            exchanged = co_await exchangeOverTls(loop, *tlsSocket, remainingBudget(), *requestText, target);
         } else
         {
             plainStream.emplace(std::move(candidate->socket));
-            exchanged = co_await exchangeOverPlain(*plainStream, *requestText, target);
+            exchanged = co_await exchangeOverPlain(loop, *plainStream, remainingBudget(), *requestText, target);
         }
         if (!exchanged->has_value())
         {
