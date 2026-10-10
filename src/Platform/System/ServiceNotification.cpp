@@ -3,11 +3,16 @@
 #include "Platform/System/PlatformError.h"
 #include "Platform/System/ProcessInfo.h"
 
+#include <charconv>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #if !ASYN_PLATFORM_WIN32
 // 数据报套接字与 sockaddr_un 的声明：本类的全部系统调用都在这两个头里
@@ -29,6 +34,33 @@ namespace
 
     /// 单行状态里替掉控制字符的字符
     constexpr char kControlReplacement = ' ';
+
+#if !ASYN_PLATFORM_WIN32
+    // 看门狗那两枚变量与它们的换算只在 POSIX 侧有读者：Windows 分支直接回平台事实，
+    // 把这些留在两边都会编会招来「未引用」的告警，而那道门是零告警
+    constexpr const char *kWatchdogUsecVariable = "WATCHDOG_USEC";
+
+    /// 环境变量名：这条看门狗属于哪个进程。多进程形态下子进程会继承父进程的环境，
+    /// 靠这一枚认出「不是该我喂」，否则每个 worker 都按自己的窗口喂，监督者看的是另一个 pid 的超时
+    constexpr const char *kWatchdogPidVariable = "WATCHDOG_PID";
+
+    /// 节拍的最低精度：事件循环的定时器队列按毫秒武装，折不到 1 毫秒的窗口折不出可用的节拍
+    constexpr std::uint64_t kMinimumPingMicroseconds = 1000;
+
+    /**
+     * @brief 把一个环境变量值读成无符号十进制整数
+     * @param text 变量原文
+     * @param value 读出来的数（失败时不保证被写过）
+     * @return true 整串都是数字；空格、正负号、前缀与尾随字符一律算否
+     */
+    bool parseUnsignedVariable(const std::string &text, std::uint64_t &value) noexcept
+    {
+        const auto       *begin  = text.data();
+        const auto *const end    = begin + text.size();
+        const auto        parsed = std::from_chars(begin, end, value);
+        return parsed.ec == std::errc{} && parsed.ptr == end;
+    }
+#endif
 
     /// 平台事实那一句：Windows 分支的所有入口都回它，避免同一件事在四处写出四种说法
     constexpr const char *kUnsupportedPlatformText = "当前平台没有服务管理器的这条通知通路（NOTIFY_SOCKET 是 systemd 一侧的约定）："
@@ -54,6 +86,67 @@ namespace AsynGyanis::Platform
         }
 
         return state;
+    }
+
+    std::expected<WatchdogConfiguration, std::string> ServiceNotification::readWatchdogConfiguration() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return std::unexpected("当前平台没有服务管理器的看门狗约定（WATCHDOG_USEC 与 WATCHDOG_PID 是 systemd 一侧的变量）："
+                               "本引擎在 Windows 上不喂看门狗，也没有按超时重启本进程的监督者");
+#else
+        const auto windowText = ProcessInfo::environmentVariable(kWatchdogUsecVariable);
+        if (!windowText.has_value() || windowText->empty())
+        {
+            // 与 open() 那句同一条判据：没有这一枚就是不喂，把「不在监督下跑」报成缺陷会让人
+            // 在开发机上追一个不存在的问题
+            return std::unexpected("没有配置 WATCHDOG_USEC：本进程不在带看门狗的服务管理器监督之下，没有要喂的超时（按 systemd 的约定这不是失败）");
+        }
+
+        std::uint64_t windowMicroseconds = 0;
+        if (!parseUnsignedVariable(*windowText, windowMicroseconds))
+        {
+            return std::unexpected(std::format("WATCHDOG_USEC 的值「{}」读不出一个十进制微秒数：这一档按没配看门狗处理，"
+                                               "而监督者那边可能正在等一个没人喂的超时。核对服务单元里的 WatchdogSec=，"
+                                               "它由 systemd 折成这一枚变量",
+                                               *windowText));
+        }
+        if (windowMicroseconds == 0)
+        {
+            return std::unexpected("WATCHDOG_USEC 写的是 0：这一档按关掉看门狗处理，本进程不喂（0 不是一个可以折成节拍的窗口）");
+        }
+
+        // WATCHDOG_PID 指的是「这条看门狗属于哪个进程」。子进程继承父进程的环境，多 worker 形态下
+        // 每个 worker 都会读到父进程那一份窗口——按这一枚认出「不该我喂」，否则 N 条各自喂的节拍
+        // 喂的是一个监督者看不到的进程，而被监督的那个 pid 反而一直没声
+        const auto pidText = ProcessInfo::environmentVariable(kWatchdogPidVariable);
+        if (pidText.has_value() && !pidText->empty())
+        {
+            std::uint64_t supervisedProcessId = 0;
+            if (!parseUnsignedVariable(*pidText, supervisedProcessId))
+            {
+                return std::unexpected(std::format("WATCHDOG_PID 的值「{}」不是一个进程号：分不清这条看门狗该由谁喂，本档按没配处理", *pidText));
+            }
+            const auto currentProcessId = static_cast<std::uint64_t>(ProcessInfo::currentProcessId());
+            if (supervisedProcessId != currentProcessId)
+            {
+                // 这不是缺陷而是分工：被监督的是那个 pid，本进程该由它的父进程管
+                return std::unexpected(
+                        std::format("WATCHDOG_PID 指的是进程 {}，本进程是 {}：这条看门狗不由本进程喂（多进程形态下被监督的是主进程）", supervisedProcessId, currentProcessId));
+            }
+        }
+
+        // 节拍取窗口的一半：那份文档写明应在「返回时长的一半」上发一条，贴着窗口发等于把
+        // 一次调度抖动算成超时
+        const std::uint64_t pingMicroseconds = windowMicroseconds / 2;
+        if (pingMicroseconds < kMinimumPingMicroseconds)
+        {
+            return std::unexpected(std::format("WATCHDOG_USEC 只有 {} 微秒，折出的节拍不足 1 毫秒：本层节拍走毫秒精度的定时器队列，"
+                                               "宁可拒绝也不把它折成 0（那会把这条常驻协程变成忙等）。把 WatchdogSec= 调到秒级以上",
+                                               windowMicroseconds));
+        }
+
+        return WatchdogConfiguration{.timeoutWindow = std::chrono::microseconds(windowMicroseconds), .pingInterval = std::chrono::microseconds(pingMicroseconds)};
+#endif
     }
 
     ServiceNotification::~ServiceNotification()

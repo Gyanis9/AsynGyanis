@@ -17,6 +17,7 @@
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/GracefulShutdown.h"
 #include "Core/Process/ReloadSignal.h"
+#include "Core/Process/ServiceWatchdog.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
@@ -851,6 +852,11 @@ int main(int argc, char **argv)
 
     LOG_INFO_FMT("Actual worker threads: {} (logical cores: {})", actualThreads, std::thread::hardware_concurrency());
 
+    // 看门狗的节拍挂在循环上：喂出去的那条 WATCHDOG=1 说的是「这批循环还在转」，用一条独立线程喂
+    // 就等于把卡死的循环报成健康——那正是这条通道唯一要抓的形态。声明在 context 之后，于是析构时
+    // 本对象先走、循环已经 stop() 过（帧只能在没人再恢复它们的时候销毁），通知套接字最后关。
+    Core::ServiceWatchdog serviceWatchdog(pool, serviceStatus);
+
     // 每线程一个服务器实例（SO_REUSEPORT 内核级负载均衡）
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
     std::vector<Core::Task<>>                    acceptTasks;
@@ -1398,6 +1404,14 @@ int main(int argc, char **argv)
             }
             static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(
                     std::format("{} 个监听器已就绪，{} 线程，pid {}", listenerCount, actualThreads, Platform::ProcessInfo::currentProcessId()))));
+
+            // 就绪报过之后才挂看门狗：监督者从 READY=1 起才开始计这条超时，先报就绪再喂才不错位。
+            // 挂不上就报一句原因——没配窗口时那本来就是空操作，而「配了窗口却没开通路」这种半套
+            // 环境要看得见，否则运维看到的服务被无理由重启就是最难归因的那种现场
+            if (!serviceWatchdog.arm())
+            {
+                LOG_INFO_FMT("未挂服务管理器的看门狗：{}（这不是错误——没配 WatchdogSec= 时本就没有要喂的超时）", serviceWatchdog.lastError());
+            }
 
             // 停机那条注册在确认之后：监督者从 STOPPING=1 起开始计停机超时，越早上报，
             // 正在排空的请求被硬切的机会越小。发送失败在这一刻已经没有通道可报告（日志器可能

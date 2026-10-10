@@ -122,8 +122,12 @@
 - **配置管理** — YAML/JSON 加载、目录递归装载、热重载（inotify / ReadDirectoryChangesW）
 - **服务管理器的状态通知** — `Platform::ServiceNotification` 按 sd_notify(3) 的形状把 `READY=1` / `STOPPING=1` 与一行 `STATUS=`
   交进 `$NOTIFY_SOCKET`（文件系统路径与 Linux 抽象命名空间两种地址都支持，`vsock:` 那种明确拒，不当路径去连一个不存在的文件名）；
-  没有这个变量时报「本进程不在监督之下」而不是静默成功。看门狗那条节拍（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意没接：它必须由事件循环
-  own 着发才算数，而读到却不发等于让监督者按一个没人喂的超时杀进程
+  没有这个变量时报「本进程不在监督之下」而不是静默成功
+- **服务管理器的看门狗节拍** — `Core::ServiceWatchdog` 按 sd_watchdog_enabled(3) 读 `$WATCHDOG_USEC`（窗口折半就是要喂的节拍），
+  把这条心跳**挂在事件循环上**：线程池的每条循环各跑一拍拍协程，全部循环都在本轮里醒过一次才发一条 `WATCHDOG=1`，任何一条停摆都让
+  这一轮永远凑不齐——用一条独立线程喂等于把「循环卡死」报成健康，而那正是这条通道唯一要抓的形态。`$WATCHDOG_PID` 指的不是本进程
+  （多 worker 形态下继承环境的子进程）就一条都不喂；窗口读不出、小到折不出 1 毫秒、通知通路没开，各退在自己那一句原因上，
+  并且一条协程都不挂
 - **SIGHUP 的重载入口** — `Core::ReloadSignal` 把运维那枚「换一份配置继续跑」的信号接到注册的重载动作上（systemd 的
   `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`）：`ReferenceServer --config` 之下，一次 HUP 重读配置文件并重装 `logging` 段，
   同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。注册表跨轮次保留（重载不是一次性的）；Windows 没有这条约定，

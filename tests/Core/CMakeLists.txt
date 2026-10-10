@@ -33,6 +33,7 @@ add_executable(TestCore
 
         Process/TestGracefulShutdown.cpp
         Process/TestReloadSignal.cpp
+        Process/TestServiceWatchdog.cpp
         Process/TestUpgradeChannel.cpp
         Process/TestWorkerSupervisor.cpp
 

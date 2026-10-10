@@ -11,13 +11,26 @@
 
 #include "AsynGyanisExport.h"
 
+#include <chrono>
 #include <cstddef>
+#include <expected>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Platform
 {
+    /**
+     * @brief 服务管理器给出的看门狗窗口，以及由它折出的发节拍间隔
+     * @details 两个量都是「监督者给的那个数」的换算结果，不在本层之外再算第二遍：
+     *          同一阈值在多处各自折算，改动规范那句话时就会有一处没跟上。
+     */
+    struct ASYN_PLATFORM_API WatchdogConfiguration
+    {
+        std::chrono::microseconds timeoutWindow{0}; ///< 监督者给的窗口（`$WATCHDOG_USEC`），超时不喂就重启
+        std::chrono::microseconds pingInterval{0};  ///< 该发一条 `WATCHDOG=1` 的节拍：窗口的二分之一
+    };
+
     /**
      * @brief 服务管理器（systemd 一类的监督者）的状态通知出口
      *
@@ -37,10 +50,10 @@ namespace AsynGyanis::Platform
      * @note Windows 侧没有这套约定：所有入口都失败并给出同一句平台事实，不做静默成功——
      *       静默成功的后果是部署方以为通知发出去了，而 systemd 那侧的 Type=notify 永远等不到
      *       READY=1，这种缺陷要到第一次真上线才暴露。
-     * @note 本类不碰看门狗（`WATCHDOG_USEC` / `WATCHDOG=1`）。那条节拍必须由事件循环 own 着发，
-     *       才配得上它的作用——「主线程还活着而循环卡死」正是要被重启的那种状态；在没有接上
-     *       循环内节拍之前读到 `WATCHDOG_USEC` 却不发 `WATCHDOG=1`，等于让监督者按一个没人喂的
-     *       超时把进程杀掉。所以这里刻意不读它。
+     * @note 看门狗这条通道由本类**读**、由运行时**发**：`readWatchdogConfiguration()` 只把监督者给的
+     *       窗口折成节拍间隔，节拍本身在 `Core::ServiceWatchdog` 里挂在事件循环上。分这么两层是因为
+     *       那条必须由循环 own 着发才起作用——「主线程还活着而循环卡死」正是要被重启的那种状态，
+     *       用一条独立线程喂表等于把这条通道变成常态成功的证明。
      */
     class ASYN_PLATFORM_API ServiceNotification
     {
@@ -53,6 +66,22 @@ namespace AsynGyanis::Platform
 
         /// 正在收尾：监督者从这一刻起开始计算停机超时
         static constexpr std::string_view kStoppingState = "STOPPING=1";
+
+        /// 喂看门狗：只说明「这个进程还在推进」，不改变任何状态，可重复发
+        static constexpr std::string_view kWatchdogPingState = "WATCHDOG=1";
+
+        /**
+         * @brief 读监督者给出的看门狗窗口，并折成该发节拍的间隔
+         * @details 判据按 sd_watchdog_enabled(3)：`$WATCHDOG_USEC` 存在**且**
+         *          `$WATCHDOG_PID` 未设置或等于本进程才算启用；节拍取窗口的二分之一（那份文档写明
+         *          应在「返回时长的一半」上发一条）。刻意不调用 libsystemd：那条依赖不该由一个
+         *          跨平台的引擎背上，而这两条判据本来就是读环境变量。
+         * @return 启用时返回窗口与折算出的节拍；未启用时返回中文原因，其中区分「本来不在监督下」、
+         *         「`$WATCHDOG_PID` 指的是别的进程」与「窗口读不出一个非零微秒数」三种，
+         *         第三种意味着监督者正在等一个没人喂的超时
+         * @note Windows 恒返回未启用并给出平台事实：那一侧没有这套约定，不是待办。
+         */
+        [[nodiscard]] static std::expected<WatchdogConfiguration, std::string> readWatchdogConfiguration() noexcept;
 
         /**
          * @brief 拼一条 `STATUS=` 状态文本
