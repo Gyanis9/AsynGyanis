@@ -9,7 +9,8 @@
  * @details 参数化执行（mysql_stmt_*）走的是二进制协议，结果没法包成 MYSQL_RES，因此连接在
  *          mysql_stmt_store_result() 之后把全部行读进内存再交给本类，语句随即被 mysql_stmt_close
  *          释放：结果集不引用任何句柄，可以比连接活得更久，代价是大结果集等额占内存
- *          （需要流式读取的场景应改用游标型语句，本驱动不提供）。
+ *          （逐行取数只在文本协议那条入口上有，见 MySqlConnection::executeStreaming()；
+ *          带参数的这条至今按整份预读，预编译结果的预取窗口要单独设计，不是漏掉的）。
  *
  * @note 游标没停在有效行上（构造后、reset() 后、遍历结束后）时取值一律返回 std::monostate，
  *       与 MySqlResult 的约定一致；isEmpty() 描述结果集本身有没有行，不随游标推进改变。

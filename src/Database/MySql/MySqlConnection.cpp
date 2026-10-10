@@ -331,7 +331,7 @@ namespace AsynGyanis::Database
 
         // store_result 把整份结果（行数据 + 列元数据）一次性复制进客户端内存：
         // 之后结果集与连接再无关系，可以比连接活得更久，遍历过程中也不会再有任何网络往返。
-        // 代价是大结果集等额占内存；需要流式读取的场景应改用 mysql_use_result，本驱动不提供
+        // 代价是大结果集等额占内存；要按行取请把这里换成 executeStreaming()（mysql_use_result）
         MYSQL_RES *rawResult = mysql_store_result(m_mysqlHandle);
         if (rawResult == nullptr)
         {
