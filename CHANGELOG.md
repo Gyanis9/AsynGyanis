@@ -217,11 +217,14 @@
   （判据按无符号位走——`signed char` 直接喂进按值的判定是未定义行为，中文的每一字节都落在负区）。
   **没有 `$NOTIFY_SOCKET` 时报「不在监督之下」而不是静默成功**：那是文档认可的正常形态（没有这个变量就没有可通知的对象），
   而「静默成功」的形态是部署方以为 READY=1 发出去了、监督者那侧永远等不到，这种缺陷要到第一次真上线才暴露；Windows 侧
-  所有入口回同一句平台事实。看门狗（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意不读：那条节拍必须由事件循环 own 着发，
-  才配得上它的作用——「主线程还活着而循环卡死」正是它要重启的形态，读到却不发等于让监督者按一个没人喂的超时杀进程。
+  所有入口回同一句平台事实。看门狗的两枚变量（`WATCHDOG_USEC` / `WATCHDOG_PID`）由本类的
+  `readWatchdogConfiguration()` 按 sd_watchdog_enabled(3) 读、把窗口折半成交代节拍的间隔，本类只到「读」为止——
+  发那条 `WATCHDOG=1` 的位置在 `Core::ServiceWatchdog`，它必须挂在事件循环上才算数（「主线程还活着而循环卡死」
+  正是监督者要重启的那种形态，另起一条线程按时喂就报不出这件事了）。
   接进去的位置：`ReferenceServer` 单进程形态在**确认过监听器真的在听之后**才报 `READY=1`（报早了就把这通道存在的意义反着用了），
-  随后一条 `STATUS=`；收尾动作里报 `STOPPING=1`，因为监督者的停机超时从那一刻起算。多 worker 形态不报：被监督的是 master，
-  worker 各报一次会变成 N 条 READY=1，master 那侧的就绪上报还没接，启动时打一行说明。
+  随后一条 `STATUS=`；收尾动作里报 `STOPPING=1`，因为监督者的停机超时从那一刻起算。多 worker 形态由 **master** 在整池
+  worker 到位时报一条 `READY=1`（判据是进程级的），worker 自己不再碰这条通路——它们继承的是父进程那份 `NOTIFY_SOCKET`，
+  各报一次就变成 N 条重复上报。
   读数（本机现测）：容器 GCC 13（ASan/UBSan，`-Wall -Wextra -Werror`）`ServiceNotification` 14 例全过、零告警；Windows MSVC
   Debug（含 ASan）编出 2 例全过（跨平台的单行化那条，加上平台事实那条），余下 13 例按平台只在 POSIX 侧编译。端到端接线用一份
   真跑起来的裁判脚本证：把 `ReferenceServer` 挂到一个测试自己 bind 的数据报套接字上，收到的序列逐条为
