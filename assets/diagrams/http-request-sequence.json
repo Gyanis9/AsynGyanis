@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "db2b4d667b9deec9cd59d12f4b89a9455bd8dce2"
+      "revision": "741b2a80d43b3eac67f7a0b86aea4bb96a4ca669"
     },
     "views": [
       {
@@ -109,7 +109,7 @@
       "sources": [
         { "path": "src/Net/Http/Router.cpp", "line": 409, "label": "route" },
         { "path": "src/Net/Http/Router.cpp", "line": 565, "label": "pipeline.run" },
-        { "path": "src/Net/Http/Middleware.h", "line": 148, "label": "invoke 逐层进入" }
+        { "path": "src/Net/Http/Middleware.h", "line": 149, "label": "invoke 逐层进入" }
       ]
     },
     {
