@@ -120,6 +120,10 @@
 
 - **原生格式库** — JSON 与 YAML 直接使用 [nlohmann_json](https://github.com/nlohmann/json) 与 [yaml-cpp](https://github.com/jbeder/yaml-cpp) 的接口（DOM、Pointer/Patch、多文档、事件），不再自研解析与值模型
 - **配置管理** — YAML/JSON 加载、目录递归装载、热重载（inotify / ReadDirectoryChangesW）
+- **服务管理器的状态通知** — `Platform::ServiceNotification` 按 sd_notify(3) 的形状把 `READY=1` / `STOPPING=1` 与一行 `STATUS=`
+  交进 `$NOTIFY_SOCKET`（文件系统路径与 Linux 抽象命名空间两种地址都支持，`vsock:` 那种明确拒，不当路径去连一个不存在的文件名）；
+  没有这个变量时报「本进程不在监督之下」而不是静默成功。看门狗那条节拍（`WATCHDOG_USEC` / `WATCHDOG=1`）刻意没接：它必须由事件循环
+  own 着发才算数，而读到却不发等于让监督者按一个没人喂的超时杀进程
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
 - **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`），它们与循环生命周期同生死，再抽一层只多一次间接
 

@@ -35,6 +35,7 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
+#include "Platform/System/ServiceNotification.h"
 #include "common/SampleSupport.h"
 
 #include <atomic>
@@ -655,6 +656,10 @@ int main(int argc, char **argv)
             Core::WorkerSupervisor supervisor(std::move(supervisorConfiguration));
             LOG_INFO_FMT("多进程模式：{} 个 worker（master 进程号 {} 只做编排；Ctrl+C 或 SIGTERM 会让 worker 各自体面退出）", workerProcessCount,
                          Platform::ProcessInfo::currentProcessId());
+            // 这条形态不向服务管理器报就绪：被监督的是 master，而 worker 各报一次会让那一侧收到
+            // N 条 READY=1，第二条起只是噪声。要用 Type=notify 就按单进程跑，或者用 Type=exec
+            // （master 起来即算成功，配合本引擎自己的收尾顺序）
+            LOG_INFO("多进程模式不向服务管理器上报 READY=1：监督对象是 master 进程，而 worker 各报一次会变成重复上报");
             if (!supervisor.run())
             {
                 // 整池 worker 都「起来就崩」：原因上一条条记在日志里，这里只把结果落到退出码上，
@@ -752,6 +757,9 @@ int main(int argc, char **argv)
     // 停机信号的接管交给库：屏蔽字必须在工作线程起来之前设好（子线程继承掩码），所以这两句
     // 紧挨在算出线程数之后、造 IoContext 之前。动作本身只是把一个原子量置假，
     // 与循环无关，因此用不绑事件循环的那种构造（绑了反而要求那时已经有循环在跑）
+    // 服务管理器的状态通知通路先建对象再开：对象的析构因此晚于下面那个观察者，
+    // 收尾动作里那条 STOPPING=1 不会碰到已经关掉的描述符
+    Platform::ServiceNotification serviceStatus;
     static_cast<void>(Core::GracefulShutdown::blockStopSignals());
     Core::GracefulShutdown shutdown;
     shutdown.onShutdown([] { g_running.store(false); });
@@ -1325,6 +1333,34 @@ int main(int argc, char **argv)
         LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
         LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
         LOG_INFO("Press Ctrl+C to exit");
+
+        // 只有真正确认过监听器在听了才报 READY=1：报早了，监督者会把「端口上其实没人」这一形态
+        // 读成启动成功，而这条通道存在的意义恰恰是别让部署方看到第二种样子
+        if (!serviceStatus.open())
+        {
+            // 「没有 NOTIFY_SOCKET」是按约定的正常形态，不是缺陷，所以这一句按信息级出：
+            // 不在监督下跑（开发机、容器、sysvinit）时它就该这么响
+            LOG_INFO_FMT("未向服务管理器上报状态：{}（这不是错误——不在监督下跑时没有可通知的对象）", serviceStatus.lastError());
+        } else
+        {
+            const auto listenerCount = listeningServers.size();
+            if (!serviceStatus.send(Platform::ServiceNotification::kReadyState))
+            {
+                LOG_WARN_FMT("READY=1 没有送达服务管理器：{}（那一侧会按启动超时处理本进程）", serviceStatus.lastError());
+            }
+            static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(
+                    std::format("{} 个监听器已就绪，{} 线程，pid {}", listenerCount, actualThreads, Platform::ProcessInfo::currentProcessId()))));
+
+            // 停机那条注册在确认之后：监督者从 STOPPING=1 起开始计停机超时，越早上报，
+            // 正在排空的请求被硬切的机会越小。发送失败在这一刻已经没有通道可报告（日志器可能
+            // 已经收口），留在监督者那一侧的超时表现为「收尾超时后被 SIGKILL」，看得见
+            shutdown.onShutdown(
+                    [&serviceStatus, listenerCount]
+                    {
+                        static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kStoppingState));
+                        static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(std::format("正在收尾，{} 个监听器", listenerCount))));
+                    });
+        }
 
         // 指标端点是进程内的口径：多 worker 进程共用同一个监听端口时，一次抓取只命中其中一个进程，
         // 计数器会在两次抓取之间回落（同一进程内的多个监听器已在装配时共用一份采集端，跨进程没有

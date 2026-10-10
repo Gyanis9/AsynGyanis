@@ -1,4 +1,4 @@
-# Platform/System —— 操作系统信息：错误码、本地时间、进程信息、子进程、文本编码、线程绑核
+# Platform/System —— 操作系统信息：错误码、本地时间、进程信息、子进程、文本编码、线程绑核、服务管理器通知
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/CpuAffinity.h
         ${CMAKE_CURRENT_LIST_DIR}/CpuAffinity.cpp
@@ -10,6 +10,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/Process.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ProcessInfo.h
         ${CMAKE_CURRENT_LIST_DIR}/ProcessInfo.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ServiceNotification.h
+        ${CMAKE_CURRENT_LIST_DIR}/ServiceNotification.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TextEncoding.h
         ${CMAKE_CURRENT_LIST_DIR}/TextEncoding.cpp
 )

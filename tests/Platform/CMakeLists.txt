@@ -31,6 +31,7 @@ add_executable(TestPlatform
         System/TestPlatformTime.cpp
         System/TestProcess.cpp
         System/TestProcessInfo.cpp
+        System/TestServiceNotification.cpp
         System/TestTextEncoding.cpp
 )
 
