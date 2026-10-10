@@ -50,8 +50,8 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Core::Task<std::expected<RequestBodySpool, std::string>> RequestBodySpool::capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor,
-                                                                                      HttpRequestBody &body, RequestBodySpoolOptions options)
+    Core::Task<std::expected<RequestBodySpool, std::string>> RequestBodySpool::capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,
+                                                                                       RequestBodySpoolOptions options)
     {
         if (options.maximumByteCount == 0)
         {
@@ -60,7 +60,7 @@ namespace AsynGyanis::Net
             co_return std::unexpected("落盘上限不能为 0：那既不是「不限」也没有可落的正文");
         }
 
-        std::error_code directoryError;
+        std::error_code       directoryError;
         std::filesystem::path directory = options.directory;
         if (directory.empty())
         {
@@ -95,12 +95,13 @@ namespace AsynGyanis::Net
                 co_return std::unexpected("正文超过落盘上限 " + std::to_string(options.maximumByteCount) + " 字节");
             }
 
-            const std::size_t writtenLength = co_await writerExecutor.submit<std::size_t>(completionLoop, [state, chunk]
-                                                                                           {
-                                                                                               state->stream.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-                                                                                               state->stream.flush();
-                                                                                               return state->stream.good() ? chunk.size() : static_cast<std::size_t>(0);
-                                                                                           });
+            const std::size_t writtenLength = co_await writerExecutor.submit<std::size_t>(completionLoop,
+                                                                                          [state, chunk]
+                                                                                          {
+                                                                                              state->stream.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+                                                                                              state->stream.flush();
+                                                                                              return state->stream.good() ? chunk.size() : static_cast<std::size_t>(0);
+                                                                                          });
             if (writtenLength != chunk.size())
             {
                 // 半截段落不进第二次重试（文件位置已经不确定了），删掉整份重来是唯一干净的选择
