@@ -15,6 +15,7 @@
 - **三后端统一事件循环** — Linux epoll、Windows 完成端口（IOCP，完成通知翻译成 epoll 事件位）、Linux 可选 io_uring（`ASYN_WITH_IO_URING`）；语义一律水平触发 + 按需摘除关注位
 - **C++20 协程** — `Task<T>` 惰性启动，`co_await` 挂起与恢复；等待描述符就绪、定时到期、跨线程投递都是可等待对象
 - **每线程一个事件循环** — `IoContext` 持有 `ThreadPool`，每个工作线程绑定独立的 `EventLoop`
+- **并行度按本进程真跑得动的量定** — `ThreadPool` 的线程数传 0 就取「硬件核数、许可核集合、cgroup CPU 配额」三者里最小的那个（`Platform::CpuAffinity::recommendedWorkerCount()`）；`hardware_concurrency()` 只看机器，容器里 `--cpus` 与 `--cpuset-cpus` 两边都不被它看见，于是在 2 核配额的 Pod 上按宿主核数起循环——每条循环自带一份 epoll 与定时器描述符，白占内存与文件描述符还把上下文切换拉满。`setThreadsPinnedToCores(true)` 让 `start()` 在各线程体内按下标绑核以稳住尾延迟，绑的是许可集合里的编号，线程数多于许可核数时只绑前若干条、其余保持可迁移并记一条 WARN（绑不动不是错误，静默不绑才是）
 - **两级就绪队列调度** — `Scheduler` 本地队列 + 全局队列，跨线程投递按归属循环投递
 - **协作式取消与优雅启停** — `std::stop_token` 贯穿，`stop()` 后各线程收敛退出
 - **多进程 worker** — `WorkerSupervisor` 拉起 N 个 worker 同端口服务、崩溃即补位；进程间不共享状态。
@@ -137,7 +138,7 @@
   各 worker 的 pid 发信号）；Windows 没有这条约定，
   `isInstalled()` 恒假并说明原因，那边的重载入口仍是文件监听
 - **结构化日志** — 6 级、4 种 Sink（控制台/文件/滚动/异步）、C++20 `std::format`、源码位置
-- **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`、`ReloadSignal`），它们与循环生命周期同生死，再抽一层只多一次间接
+- **平台隔离** — 跨平台的系统能力收在 `Platform`（进程与信号、文件监听、文本编码、套接字地址、原子写、CPU 亲和与并行度测算、服务状态通知）；两处例外是有意的：事件循环的三套后端与多进程看护直接打 Win32/POSIX（`Iocp` / `Epoll` / `Uring`、`WorkerSupervisor`、`GracefulShutdown`、`ReloadSignal`），它们与循环生命周期同生死，再抽一层只多一次间接
 
 ## 架构
 
@@ -147,7 +148,7 @@
 
 | 模块 | 库 | 职责 |
 |------|----|------|
-| `Platform` | `AsynGyanis::Platform` | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 |
+| `Platform` | `AsynGyanis::Platform` | 描述符 / socket / 事件通知 / 定时器 / 文件监听 / 原子写 / 编码转换 / 进程与时间 / CPU 亲和与并行度测算 / 服务状态通知 |
 | `Base` | `AsynGyanis::Base` | 日志、配置、异常层次、JSON/YAML 原生库的传递依赖 |
 | `Core` | `AsynGyanis::Core` | 事件循环、协程运行时、socket、TLS、多进程编排 |
 | `Net` | `AsynGyanis::Net` | TCP 服务基类、HTTP/1.1/2/3、WebSocket、QUIC、路由与中间件、ACME |
@@ -171,8 +172,11 @@
 `cmake/Findbrotli.cmake`：Conan 的 brotli 直接给 `brotli::brotli`，不需要退化路径。
 
 依赖清单只有一份 `conandata.yml`（配 `packaging/conan/conanfile.py` 这份配方），改依赖只改这里，
-CI 也只跑这一条路线。MySQL 驱动是配方里的 `with_mysql` 选项（默认关）：不带它时相关入口给一条
-中文错误而不是编不过，因此「少一个可选依赖」从来不是构建失败的理由。
+CI 也只跑这一条路线。MySQL 驱动编不编由 CMake 的 `DATABASE_WITH_MYSQL` 决定（**默认 ON**；判定走
+`if(TARGET ...)` 而不是 `find_package(... REQUIRED)`，所以缺 libmysqlclient 时那一族的入口退化成「每个入口给一条
+中文错误」的报错桩，整个工程的 configure 不会因此失败）。配方侧另有一个环境变量 `ASYN_SKIP_MYSQL_DEPS`：置成非空
+就把 libmysqlclient 从依赖里摘掉，让不需要这条驱动的环境不必为它付出构建代价。因此「少一个可选依赖」从来不是
+构建失败的理由。
 
 ### 构建与测试
 
@@ -765,7 +769,7 @@ AsynGyanis/
 | 核对项 | 键 / 入口 | 默认值 | 怎么确认生效 | 配错的后果 |
 | --- | --- | --- | --- | --- |
 | 服务管理器的就绪上报 | systemd 单元 `Type=notify`；进程侧 `Platform::ServiceNotification`（`ReferenceServer` 在**监听器确认之后**上报，环境变量 `NOTIFY_SOCKET` 决定往哪发） | 没有 `NOTIFY_SOCKET` 时一条都不发，并打一行「未向服务管理器上报状态」；多 worker 形态由 **master** 报一条：`WorkerSupervisor` 的 `onAllWorkersRunning` 在整池 worker 都到位时触发，worker 自己不再碰这条通路 | 别只看 `Active: active (running)`——那一句只证明监督者收到了东西。要拿一条独立证据：把 `NOTIFY_SOCKET` 指到自己 bind 的一个 AF_UNIX 数据报套接字，应当逐条收到 `READY=1`、`STATUS=…`，发 `SIGHUP` 后收到 `RELOADING=1` 与 `READY=1`（这两条成对：只发前者，那一侧会等到超时才把进程杀掉），再发 `SIGTERM` 后收到 `STOPPING=1`；`--workers N` 时收到的 `READY=1` 必须**只有一条**（配 `STATUS=<N> 个 worker 进程都在跑`），多条就是 worker 在替 master 说话；`vsock:` 那种地址会被明确拒而不是当路径去连 | 上报点若在监听确认之前，就等于骗过监督者：`Type=notify` 会在端口上还没人守的时候判定启动完成，`TimeoutStartSec` 随之失去意义。多 worker 形态的这条就绪只到**进程级**（N 个 worker 都在跑），端口是否已在应答由各 worker 自己的日志与 healthz 交代——要一条 worker→master 的准备完成通道才能把它收紧到端口级，本引擎 POSIX 侧各 worker 自己 bind，没有那条路 |
-| 服务管理器的看门狗 | `Core::ServiceWatchdog`（节拍挂在事件循环上）＋ `Platform::ServiceNotification::readWatchdogConfiguration()`（按 sd_watchdog_enabled(3) 读 `$WATCHDOG_USEC`、窗口折半） | 没配 `WATCHDOG_USEC`、`$WATCHDOG_PID` 指的是别的进程、窗口读不出或折不出 1 毫秒、通知通路没 `open()`——四种都**不挂**且各打一句原因；Windows 恒不挂；多 worker 形态不挂并明说（`WatchdogSec=` 要么关掉，要么改跑 `--workers 1`） | 把 `NOTIFY_SOCKET` 指到自己 bind 的数据报套接字并给 `WATCHDOG_USEC=2000000`：应当每 1 秒收到一条 `WATCHDOG=1`。再拿一条独立证据证它真由循环驱动——把任一条循环占住（压一个几百毫秒的长任务），节拍必须**停下来**，放开后恢复；只喂不判的实现对这一格会照样绿 | 这条通道的内容不是「进程还活着」而是「这批循环还在转」，所以节拍必须由循环 own 着发：另起一条线程按时喂，循环卡死时它照喂不误，监督者就永远不会重启一个已经不服务进程。`WATCHDOG_PID` 那一半是给多进程形态的：子进程继承父进程的环境，都按父进程那枚窗口喂就会喂一个监督者看不见的进程 |
+| 服务管理器的看门狗 | `Core::ServiceWatchdog`（节拍挂在事件循环上）＋ `Platform::ServiceNotification::readWatchdogConfiguration()`（按 sd_watchdog_enabled(3) 读 `$WATCHDOG_USEC`、窗口折半） | 没配 `WATCHDOG_USEC`、`$WATCHDOG_PID` 指的是别的进程、窗口读不出或折不出 1 毫秒、通知通路没 `open()`——四种都**不挂**且各打一句原因；Windows 恒不挂；多 worker 形态不挂并明说（`WatchdogSec=` 要么关掉，要么改跑 `--workers 1`） | 把 `NOTIFY_SOCKET` 指到自己 bind 的数据报套接字并给 `WATCHDOG_USEC=2000000`：应当每 1 秒收到一条 `WATCHDOG=1`。再拿一条独立证据证它真由循环驱动——把任一条循环占住（压一个几百毫秒的长任务），节拍必须**停下来**，放开后恢复；只喂不判的实现对这一格会照样绿 | 这条通道的内容不是「进程还活着」而是「这批循环还在转」，所以节拍必须由循环 own 着发：另起一条线程按时喂，循环卡死时它照喂不误，监督者就永远不会重启一个已经不服务的进程。`WATCHDOG_PID` 那一半是给多进程形态的：子进程继承父进程的环境，都按父进程那枚窗口喂就会喂一个监督者看不见的进程 |
 | TLS 下限 | `Core::TlsPolicy::minimumProtocolVersion`（出站走 `HttpClient(loop, poolConfig, tlsPolicy)`） | 服务端 TLS 1.2；QUIC 恒 1.3；**客户端角色不补下限**（刻意：替调用方发明下限会把本可以连上的对端拒掉） | `TlsContext` 建好后读 `SSL_CTX_get_min_proto_version`，或抓一次握手看协商版本 | TLS 1.0/1.1 没有档位可填（RFC 8996 已废弃）。要给出站也钉下限，就显式传 `minimumProtocolVersion` |
 | ACME 联系人 / 条款 | `AcmeCertificateManager::Configuration::contactEmailAddress` / `isTermsOfServiceAccepted` | 联系人为空；条款未接受时**新建账户直接拒绝** | 看 `status()` 与账户 URL 是否落盘 | 没有联系人 = 机构无法在到期或账户异常时找到你；90 天寿命的证书漏续一次就是一次线上告警 |
 | `acme` 配置段 | `Net::readAcmeConfiguration(root)` + `Net::buildDns01TxtWriter(loop, cfg)` + `Net::validateAcmeAssembly(cfg, facts)`；消费方是签发探针 `acme_issuance_probe --config <file>` 与 `ReferenceServer --config <file>`（后者装常驻续期循环，签完的新证书热装回本进程每一台 TLS 监听器） | 整段缺失 = `enabled` 为 false，谁都不去签；`challenge` 默认 `http-01`、`dns.record_ttl_seconds` 默认 600（下限也是 600：这一家实测拒更小值，配低了在**读配置**时就拒，不留到第一次签发才在 API 上报 `The specified TTL is invalid`）、`renew_before_expiry_days` 30、`renewal_check_interval_minutes` 720 | 探针打一行 `CHALLENGE <种类> PROVIDER … ZONE … TTL … FROM cli\|config`，`FROM config` 才说明文件里那份在生效；`--domain` / `--contact` / `--challenge` 显式给出时才覆盖文件。服务侧另打一行「证书自动化：开（… 装回目标 N 台 HTTPS 监听器 + HTTP/3 在/不在）」，N 按真能转成 TLS 服务器的对象数，不按开关猜 | 段内未知键当场拒（13 键 + `dns` 那 3 键）；`dns` 段与 `challenge: http-01` 同时出现两边都拒；**AccessKey 刻意不认配置文件**，只从 `ASYN_ACME_DNS_ACCESS_KEY_ID` / `_SECRET` 读，缺一条就在建写入器时拒——能改域名记录的钥匙进版本库等于把域名交出去；服务侧的三条边界同属「配了不生效」这一族，一律启动即拒或启动即说清：开着 `acme` 时证书身份以 `acme` 落点为准（`--cert/--key` 不一致会被顶掉并打 WARN）、`http-01` 在本示例没有公网明文口可用（一个端口只服务一种协议，拒并指回 `dns-01`）、多 worker 进程里签发归槽位 0、其余进程靠 `Net::followCertificateRotation` 跟盘（两条都没装的部署照样拒）|
