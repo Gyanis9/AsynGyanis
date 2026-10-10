@@ -23,6 +23,7 @@
 #include "Net/Http/TraceContext.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Coding/Base64.h"
 #include "Base/Coding/SecureCompare.h"
 #include "Base/Log/LogEscaping.h"
 #include "Base/Log/LogMacros.h"
@@ -1418,6 +1419,30 @@ namespace AsynGyanis::Net
     namespace Detail
     {
         /**
+         * @brief 按 auth-scheme 前缀剥出 Authorization 头的凭据段（RFC 9110 §11.2）
+         * @details 方案名大小写不敏感，但**整段前缀都要对上**才剥：按固定偏移顺手切一刀，会把另一种
+         *          方案里恰好合法的 base64 也当成凭据收下。对不上就交回「没有凭据」，不替非法输入猜解释
+         * @param headerValue 头取值原文
+         * @param lowerCaseSchemePrefix 小写书写、含尾随空格的方案前缀（如 `"basic "`）
+         * @return std::optional<std::string_view> 凭据段原文；方案不符或长度不足时空
+         */
+        [[nodiscard]] inline std::optional<std::string_view> stripAuthScheme(const std::string_view headerValue, const std::string_view lowerCaseSchemePrefix)
+        {
+            if (headerValue.size() < lowerCaseSchemePrefix.size())
+            {
+                return std::nullopt;
+            }
+            for (std::size_t index = 0; index < lowerCaseSchemePrefix.size(); ++index)
+            {
+                if (std::tolower(static_cast<unsigned char>(headerValue[index])) != lowerCaseSchemePrefix[index])
+                {
+                    return std::nullopt;
+                }
+            }
+            return headerValue.substr(lowerCaseSchemePrefix.size());
+        }
+
+        /**
          * @brief 从 Authorization 头里取出 Bearer 凭据
          * @details auth-scheme 大小写不敏感（RFC 9110 §11.2）；方案不是 Bearer 时视为「没给凭据」，
          *          不顺着别的方案去解释那段字符串
@@ -1426,21 +1451,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] inline std::string_view extractBearerCredential(const std::string_view headerValue) noexcept
         {
-            constexpr std::string_view kBearerScheme = "bearer ";
-            if (headerValue.size() < kBearerScheme.size())
-            {
-                return {};
-            }
-            for (std::size_t index = 0; index < kBearerScheme.size(); ++index)
-            {
-                const char left  = headerValue[index];
-                const char right = kBearerScheme[index];
-                if (std::tolower(static_cast<unsigned char>(left)) != right)
-                {
-                    return {};
-                }
-            }
-            return headerValue.substr(kBearerScheme.size());
+            return stripAuthScheme(headerValue, "bearer ").value_or(std::string_view{});
         }
     } // namespace Detail
 
@@ -1601,6 +1612,119 @@ namespace AsynGyanis::Net
             }
 
             co_await next();
+        };
+    }
+
+    /**
+     * @brief HTTP Basic 认证（RFC 7617）的取值
+     * @details 引擎不猜口令存在哪里：`verify` 是调用方的判定入口（查表、查库、比对哈希都行），
+     *          本层只负责把 `Authorization` 那一段拆对、按规范答 401/403，以及把「明文连接上
+     *          不该收 Basic 凭据」这条默认守住。
+     * @note 口令的比较时机安全**在 verify 里**：要比对字面口令，请用 `Base::constantTimeEquals`，
+     *       不要用 `operator==`——短路比较会把「前几位猜对了」泄漏进响应耗时里
+     */
+    struct ASYN_NET_API BasicAuthOptions
+    {
+        std::string                                                         realm{"restricted"};          ///< WWW-Authenticate 的 realm 提示文本
+        std::vector<std::string>                                            protectedPaths{};             ///< 需要鉴权的路径，逐条精确匹配；空表示全部路径都要鉴权
+        bool                                                                requireSecureTransport{true}; ///< false 才允许在明文连接上收 Basic 凭据
+        std::function<bool(std::string_view user, std::string_view secret)> verify{};                     ///< 凭据判定，空是用法错误（等于挂一道永远拒的闸）
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 从 Authorization 头里取出 Basic 凭据的解码原文
+         * @details 方案判定共用 `stripAuthScheme()`（与 Bearer 那道同一实现，同一条纪律不写两遍）；
+         *          方案不是 Basic、或那段不是合法 base64，都按「没给凭据」处理——不去替非法输入猜一个解释
+         * @param headerValue 头取值原文
+         * @return std::optional<std::string> `user:secret` 原文；不是 Basic 方案或解不开时空
+         */
+        [[nodiscard]] inline std::optional<std::string> extractBasicCredential(const std::string_view headerValue)
+        {
+            const auto credential = stripAuthScheme(headerValue, "basic ");
+            return credential.has_value() ? Base::base64Decode(*credential) : std::optional<std::string>{};
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给路由挂一道 HTTP Basic 认证闸
+     * @details 引擎此前只有 `opsAccessMiddleware()` 那一道闸：它比的是**单个 Bearer 令牌**，守的是固定
+     *          名单里的运维端点；业务侧要按 `user:secret` 保护一条管理路由，仍得自己在处理器里写一遍
+     *          ——而「忘了写的那条路由」正是最难发现的暴露面，所以这一件也做成按路径名单挂的中间件，
+     *          与运维端点那道共用同一套纪律（方案判定、多条凭据按未授权处理、构造期校验入参）。
+     *          未授权时回 401 并带上 `WWW-Authenticate: Basic realm="...", charset="US-ASCII"`
+     *          （RFC 7617 §2.1 的 charset 参数），正文固定、不回显「差在哪一位」。
+     * @details 默认**拒绝在明文连接上收 Basic 凭据**（回 403 而不是 401：401 附带的那句提示等于
+     *          邀请客户端把口令发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，
+     *          报的是本端这一跳的传输层事实，不看 `X-Forwarded-Proto`。确实要在明文上放开
+     *          （本机调试、或已在反代之后），显式置 `requireSecureTransport=false`。
+     * @param options 认证取值；`verify` 为空即抛
+     * @return MiddlewareFunc 中间件
+     * @throws Base::InvalidArgumentException verify 缺席；或 realm 含 CR/LF/NUL/引号那类会破坏头取值的字节
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     * @note 切分按**第一个**冒号：user-id 里不允许出现冒号（RFC 7617 §2），所以冒号之后的整体都是口令，
+     *       含冒号的口令因此能用，而用户名不能
+     */
+    inline MiddlewareFunc basicAuthMiddleware(BasicAuthOptions options)
+    {
+        if (!options.verify)
+        {
+            throw Base::InvalidArgumentException("basicAuthMiddleware: 没有 verify 就等于挂一道永远拒绝的闸；不需要鉴权就不要注册本中间件");
+        }
+        // realm 会被拼进 WWW-Authenticate 的引号里：带引号或控制字符就不是「提示文本写错了」，
+        // 而是响应头被注入——与 securityHeadersMiddleware 同一类构造期判据
+        if (options.realm.find('"') != std::string::npos || !containsOnlyFieldValueCharacters(options.realm))
+        {
+            throw Base::InvalidArgumentException("basicAuthMiddleware: realm 不能含引号或 CR/LF/NUL 这类非法字段值字节");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isProtected = options.protectedPaths.empty() ? true : std::ranges::find(options.protectedPaths, request.path()) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            if (options.requireSecureTransport && !request.overTls())
+            {
+                response.setStatus(403);
+                response.setHeader("content-type", kPlainTextContentType);
+                response.setBody("Basic 凭据不在明文连接上接受：请走 HTTPS，或在配置里显式置 requireSecureTransport=false");
+                co_return;
+            }
+
+            const bool    isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto    presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const auto    decoded            = presented.has_value() ? Detail::extractBasicCredential(*presented) : std::optional<std::string>{};
+            bool          isAuthorized       = false;
+            std::uint64_t attemptedUserLength{0};
+            if (decoded.has_value())
+            {
+                const std::size_t separator = decoded->find(':');
+                if (separator != std::string::npos)
+                {
+                    const std::string_view secret = std::string_view{*decoded}.substr(separator + 1);
+                    attemptedUserLength           = decoded->size() - secret.size() - 1;
+                    isAuthorized                  = options.verify(std::string_view{*decoded}.substr(0, separator), secret);
+                }
+            }
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", "Basic realm=\"" + options.realm + "\", charset=\"US-ASCII\"");
+            response.setHeader("content-type", kPlainTextContentType);
+            // 长度只用来把「没给凭据」与「给了但不对」分开报给用户看，不回显用户名本身
+            response.setBody(isSingleCredential && decoded.has_value() && attemptedUserLength > 0 ? "用户名或口令不对"
+                                                                                                  : "需要 Basic 凭据（Authorization: Basic <base64(user:secret)>）");
+            co_return;
         };
     }
 

@@ -11,6 +11,7 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpServerStats.h"
 
+#include "Base/Coding/Base64.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
@@ -18,6 +19,7 @@
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -1285,6 +1287,59 @@ namespace AsynGyanis::Net
 
         httpClient.closeNow();
         httpsClient.closeNow();
+    }
+
+    /**
+     * @brief 钉住：默认闸门的 Basic 认证在 TLS 那一侧放行、在明文那一侧拒收，同一份中间件配置
+     * @details 与 `BasicAuthWiring.RefusesCredentialsOverCleartextUntilTheOperatorOptsIn` 配成一对：
+     *          中间件读的是会话从**连接**上取下来的 `HttpRequest::overTls()`，只有两种真传输各跑一遍
+     *          才看得出它取的是本端事实而不是常量——把 `overTls` 恒置 false 会红在这一条（TLS 侧回 403），
+     *          恒置 true 会红在明文那一条。明文侧还断言「不带 `WWW-Authenticate`」：回挑战等于一边拒一边催
+     */
+    TEST(HttpsServer, BasicAuthGateAdmitsCredentialsOnlyOverTls)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        BasicAuthOptions options;
+        options.realm          = "ops-backend";
+        options.protectedPaths = {"/admin"};
+        options.verify         = [](const std::string_view user, const std::string_view secret) { return user == "ops" && secret == "s3cr3t"; };
+
+        const auto registerGuardedRoute = [](Router &router, Core::EventLoop &)
+        {
+            static_cast<void>(router.get("/admin",
+                                         [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                         {
+                                             response.setBody("admin-granted");
+                                             co_return;
+                                         }));
+        };
+
+        const std::string authedRequestText = makeRequestText("GET /admin HTTP/1.1", {"Authorization: Basic " + Base::base64Encode("ops:s3cr3t")});
+
+        RunningHttpServerFixture plainFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, registerGuardedRoute, HttpParserLimits{},
+                                              [&options](TestHttpServer &server) { server.router().addMiddleware(basicAuthMiddleware(options)); });
+        ASSERT_TRUE(plainFixture.awaitRunning(kWaitTimeout)) << "明文服务器未在时限内进入接受循环";
+        LoopbackClient plainClient(plainFixture.listeningPort());
+        ASSERT_TRUE(plainClient.isValid()) << "明文回环连接失败";
+        ASSERT_TRUE(plainClient.sendText(authedRequestText, kWaitTimeout)) << "明文请求未能写入";
+        std::string plainText;
+        ASSERT_TRUE(plainClient.waitForText(plainText, "HTTP/1.1", kWaitTimeout)) << "明文侧没有响应回来：" << plainText;
+        EXPECT_NE(plainText.find("HTTP/1.1 403"), std::string::npos) << "明文连接收下了 Basic 凭据（默认闸门该拒）：" << plainText.substr(0, 60);
+        EXPECT_EQ(plainText.find("www-authenticate"), std::string::npos) << "明文侧回的是挑战而不是拒绝：" << plainText;
+
+        RunningHttpsServerFixture secureFixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, registerGuardedRoute, HttpParserLimits{},
+                                                [&options](HttpsServer &server) { server.router().addMiddleware(basicAuthMiddleware(options)); });
+        ASSERT_TRUE(secureFixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        TlsLoopbackClient secureClient(secureFixture.listeningPort());
+        ASSERT_TRUE(secureClient.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+        ASSERT_TRUE(secureClient.sendText(authedRequestText, kWaitTimeout)) << "HTTPS 请求未能写入";
+        std::string secureText;
+        ASSERT_TRUE(secureClient.waitForTextOccurrences(secureText, "admin-granted", 1, kWaitTimeout)) << "TLS 侧的凭据没被认下：" << secureText;
+        EXPECT_NE(secureText.find("HTTP/1.1 200"), std::string::npos) << "TLS 侧回的不是 200：" << secureText.substr(0, 60);
+
+        plainClient.closeNow();
+        secureClient.closeNow();
     }
 
     /**

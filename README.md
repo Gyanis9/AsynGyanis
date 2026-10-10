@@ -65,6 +65,12 @@
   `Strict-Transport-Security` 只在**加密连接**上发（`HttpRequest::overTls()` 报的是本端这一跳的事实，
   刻意不看 `X-Forwarded-Proto`——那句谁都能写）。取值含 CR/LF/NUL 在构造期就抛（那类文案常由配置拼出来），
   配了 `preload` 却没配 `includeSubDomains` 同样当场拒绝；已经存在的头不覆盖，业务与外层中间件是取值的主人
+- **HTTP Basic 认证（RFC 7617）** — `basicAuthMiddleware()` 按路径名单挂一道闸，凭据判定交给 `verify`
+  （查表、查库、比对哈希都行，引擎不猜口令存在哪里）。默认**不在明文连接上收 Basic 凭据**：回的是 403 而不是
+  401，因为 401 那句「请给凭据」等于邀请客户端把口令发进一条不加密的信道；判据取 `HttpRequest::overTls()`
+  这一跳的本端事实，不看反代声明的头，要放开就显式置 `requireSecureTransport=false`。同名多条 `Authorization`
+  按未授权处理，口令按**第一个**冒号切分（user-id 里不允许出现冒号，含冒号的口令因此能用而用户名不能），
+  `realm` 含引号或 CR/LF/NUL 在构造期就抛——那是要拼进响应头的文本，留着就是拆分口子
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz`、`/readyz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
 - **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点

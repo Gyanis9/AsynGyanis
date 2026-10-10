@@ -1911,4 +1911,231 @@ namespace AsynGyanis::Net
         const HttpResponse overridden = runSecurityHeaders(SecurityHeadersOptions{}, false, {"x-frame-options", "SAMEORIGIN"});
         EXPECT_EQ(overridden.getHeader("x-frame-options"), "SAMEORIGIN") << "外层写定的值被安全头中间件刷回了 DENY";
     }
+
+    /**
+     * @brief 把 Basic 认证中间件跑一趟管道，交回响应
+     * @param options 认证取值
+     * @param authorization 要送出的 Authorization 头原文；空串表示根本不带这个头
+     * @param isSecure 这条请求是否经由 TLS（Basic 的默认闸门）
+     * @param observedUser / observedSecret 可空的出参：verify 实际看到的拆分结果
+     * @param path 请求路径
+     * @return HttpResponse 链路跑完后的响应
+     */
+    HttpResponse runBasicAuth(const BasicAuthOptions &options, const std::string &authorization, const bool isSecure, const std::string &path = "/admin")
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(basicAuthMiddleware(options));
+
+        HttpRequest  request = makeRequest(HttpMethod::GET, path);
+        HttpResponse response;
+        request.setOverTls(isSecure);
+        if (!authorization.empty())
+        {
+            if (!request.setHeader("authorization", authorization))
+            {
+                ADD_FAILURE() << "这条 Authorization 原文被头部校验拒了，用例测的就不再是中间件：" << authorization;
+            }
+        }
+
+        runPipeline(pipeline, request, response, terminalWriting(response, "granted"));
+        return response;
+    }
+
+    /**
+     * @brief 钉住：verify 认下的凭据放行，且它拿到的拆分正是 `user:secret`
+     */
+    TEST(BasicAuthMiddleware, AdmitsTheCredentialsTheVerifierAccepts)
+    {
+        std::string      seenUser;
+        std::string      seenSecret;
+        BasicAuthOptions options;
+        options.realm  = "admin";
+        options.verify = [&](std::string_view user, std::string_view secret)
+        {
+            seenUser   = std::string(user);
+            seenSecret = std::string(secret);
+            return user == "ops" && secret == "s3cr3t";
+        };
+
+        const HttpResponse granted = runBasicAuth(options, "Basic " + Base::base64Encode("ops:s3cr3t"), true);
+        EXPECT_EQ(granted.status(), 200);
+        EXPECT_EQ(granted.body(), "granted");
+        EXPECT_EQ(seenUser, "ops");
+        EXPECT_EQ(seenSecret, "s3cr3t");
+    }
+
+    /**
+     * @brief 钉住：没给凭据时回 401 带 realm 与 charset，且不调用下游
+     * @details 401 的形状是给客户端「重一次」用的：少了 `WWW-Authenticate` 客户端就无从知道该问谁要凭据
+     */
+    TEST(BasicAuthMiddleware, ChallengesWithRealmAndCharsetWhenNothingIsPresented)
+    {
+        BasicAuthOptions options;
+        options.realm  = "metrics-box";
+        options.verify = [](std::string_view, std::string_view) { return false; };
+
+        const HttpResponse challenged = runBasicAuth(options, "", true);
+        EXPECT_EQ(challenged.status(), 401);
+        EXPECT_EQ(challenged.getHeader("www-authenticate"), "Basic realm=\"metrics-box\", charset=\"US-ASCII\"");
+        EXPECT_EQ(challenged.body().find("口令不对"), std::string::npos) << "没给凭据时不该说「口令不对」：" << challenged.body();
+    }
+
+    /**
+     * @brief 钉住：另一种方案不被顺着手解释成 Basic
+     * @details `Bearer xxx` 那一段是令牌不是 base64(user:secret)；顺手解会把一段任意字节当成凭据，
+     *          现场还会表现成「口令怎么都不对」
+     */
+    TEST(BasicAuthMiddleware, RefusesAnotherSchemeAsIfNothingWereGiven)
+    {
+        BasicAuthOptions options;
+        options.verify = [](std::string_view, std::string_view) { return true; };
+
+        EXPECT_EQ(runBasicAuth(options, "Bearer sometoken", true).status(), 401);
+        EXPECT_EQ(runBasicAuth(options, "Basic @@not-base64@@", true).status(), 401) << "解不开的 base64 该按没给凭据处理";
+        EXPECT_EQ(runBasicAuth(options, "Token " + Base::base64Encode("ops:s3cr3t"), true).status(), 401) << "凭据段本身合法也不是 Basic 方案：按固定偏移顺手剥前缀就会把它收下";
+    }
+
+    /**
+     * @brief 钉住：auth-scheme 大小写不敏感（RFC 9110 §11.2）
+     * @details 客户端写 `Basic`/`basic`/`BASIC` 都合规，只认一种拼法就是按实现细节挑客户端
+     */
+    TEST(BasicAuthMiddleware, AcceptsTheSchemeInAnyCase)
+    {
+        BasicAuthOptions options;
+        options.verify = [](std::string_view user, std::string_view secret) { return user == "ops" && secret == "s3cr3t"; };
+
+        const std::string credential = Base::base64Encode("ops:s3cr3t");
+        for (const std::string_view scheme: {"Basic ", "basic ", "BASIC ", "bAsIc "})
+        {
+            EXPECT_EQ(runBasicAuth(options, std::string(scheme) + credential, true).status(), 200) << "方案拼法：" << scheme;
+        }
+    }
+
+    /**
+     * @brief 钉住：按第一个冒号切分，含冒号的口令因此可用
+     * @details RFC 7617 §2 规定 user-id 里不许出现冒号，所以冒号之后的整体都是口令；
+     *          反过来切最后一刀会把口令截短，表现成「明明对了却不通」
+     */
+    TEST(BasicAuthMiddleware, SplitsOnTheFirstColonOnly)
+    {
+        std::string      seenUser;
+        std::string      seenSecret;
+        BasicAuthOptions options;
+        options.verify = [&](std::string_view user, std::string_view secret)
+        {
+            seenUser   = std::string(user);
+            seenSecret = std::string(secret);
+            return true;
+        };
+
+        static_cast<void>(runBasicAuth(options, "Basic " + Base::base64Encode("root:a:b:c"), true));
+        EXPECT_EQ(seenUser, "root");
+        EXPECT_EQ(seenSecret, "a:b:c");
+    }
+
+    /**
+     * @brief 钉住：默认不在明文连接上收 Basic 凭据，回的是 403 而不是 401
+     * @details 401 会附那句「请给 Basic 凭据」的提示，等于邀请客户端把口令发进不加密的信道；
+     *          403 明确「这条路不接受」，同时放开的方式是显式置 requireSecureTransport=false
+     */
+    TEST(BasicAuthMiddleware, KeepsCredentialsOffCleartextUntilTheOperatorOptsIn)
+    {
+        BasicAuthOptions options;
+        options.verify = [](std::string_view, std::string_view) { return true; };
+
+        const HttpResponse refused = runBasicAuth(options, "Basic " + Base::base64Encode("ops:pw"), false);
+        EXPECT_EQ(refused.status(), 403);
+        EXPECT_FALSE(refused.hasHeader("www-authenticate")) << "403 还附要凭据的提示，等于一边拒一边催";
+
+        BasicAuthOptions optedOut       = options;
+        optedOut.requireSecureTransport = false;
+        EXPECT_EQ(runBasicAuth(optedOut, "Basic " + Base::base64Encode("ops:pw"), false).status(), 200) << "显式放开之后明文通路该照常走";
+    }
+
+    /**
+     * @brief 钉住：名单之外的路径不被闸住
+     * @details `protectedPaths` 逐条精确匹配，与运维端点那道闸同一口径；默认「空名单＝全部都要鉴权」
+     *          是收紧侧，反过来就会让忘记填名单的配置静默全放行
+     */
+    TEST(BasicAuthMiddleware, LeavesPathsOutsideTheListAlone)
+    {
+        BasicAuthOptions options;
+        options.protectedPaths = {"/admin"};
+        options.verify         = [](std::string_view, std::string_view) { return false; };
+
+        EXPECT_EQ(runBasicAuth(options, "", true, "/public").status(), 200) << "名单之外的路径被顺带闸住了";
+        EXPECT_EQ(runBasicAuth(options, "", true, "/admin").status(), 401);
+        const BasicAuthOptions emptyList = []
+        {
+            BasicAuthOptions fresh;
+            fresh.verify = [](std::string_view, std::string_view) { return false; };
+            return fresh;
+        }();
+        EXPECT_EQ(runBasicAuth(emptyList, "", true, "/anything").status(), 401);
+    }
+
+    /**
+     * @brief 钉住：缺 verify 与可注入的 realm 在构造期就抛
+     * @details 缺回调的表现是「所有人都被拒」，比放行危险但更难归因；realm 会被拼进带引号的头取值里，
+     *          自己带引号或控制字符就是在写响应头的时候开口子
+     */
+    TEST(BasicAuthMiddleware, RefusesAMissingVerifierAndAnInjectableRealm)
+    {
+        BasicAuthOptions noVerifier;
+        EXPECT_THROW(basicAuthMiddleware(noVerifier), Base::InvalidArgumentException);
+
+        BasicAuthOptions quotedRealm;
+        quotedRealm.verify = [](std::string_view, std::string_view) { return true; };
+        quotedRealm.realm  = "a\", Set-Cookie: x=1";
+        EXPECT_THROW(basicAuthMiddleware(quotedRealm), Base::InvalidArgumentException);
+
+        BasicAuthOptions lineFeedRealm;
+        lineFeedRealm.verify = [](std::string_view, std::string_view) { return true; };
+        lineFeedRealm.realm  = "two\r\nlines";
+        EXPECT_THROW(basicAuthMiddleware(lineFeedRealm), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 钉住：解出来但没有冒号的凭据按未授权处理，且不把异常漏给上层
+     * @details 冒号切分找不到分隔符时若不设这道闸，`substr(separator + 1)` 就是 `npos + 1`，
+     *          抛的是 `std::out_of_range`——现场表现成「带某个奇怪口令就 500」
+     */
+    TEST(BasicAuthMiddleware, TreatsACredentialWithoutColonAsMalformedRatherThanThrowing)
+    {
+        int              verifierCalls = 0;
+        BasicAuthOptions options;
+        options.verify = [&](std::string_view, std::string_view)
+        {
+            ++verifierCalls;
+            return true;
+        };
+
+        const HttpResponse malformed = runBasicAuth(options, "Basic " + Base::base64Encode("nocolonuser"), true);
+        EXPECT_EQ(malformed.status(), 401);
+        EXPECT_EQ(verifierCalls, 0) << "连用户与口令都分不开时不该把任意一段字节当成 user 去问 verify";
+    }
+
+    /**
+     * @brief 钉住：多条 Authorization 按未授权处理，不回显差在哪一位
+     * @details 与运维端点那道闸同一条纪律：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *          随头部顺序时通时不通
+     */
+    TEST(BasicAuthMiddleware, TreatsAmbiguousHeadersAsNoCredential)
+    {
+        BasicAuthOptions options;
+        options.verify = [](std::string_view user, std::string_view secret) { return user == "ops" && secret == "pw"; };
+
+        MiddlewarePipeline pipeline;
+        pipeline.use(basicAuthMiddleware(options));
+        HttpRequest  request = makeRequest(HttpMethod::GET, "/admin");
+        HttpResponse response;
+        request.setOverTls(true);
+        ASSERT_TRUE(request.setHeader("authorization", "Basic " + Base::base64Encode("ops:pw")));
+        request.addHeader("authorization", "Basic " + Base::base64Encode("ops:wrong"));
+        std::atomic<int> handlerCalls{0};
+        runPipeline(pipeline, request, response, terminalWriting(response, "granted", &handlerCalls));
+
+        EXPECT_EQ(response.status(), 401) << "两条互相矛盾的凭据不该被当成一条";
+        EXPECT_EQ(handlerCalls.load(), 0);
+    }
 } // namespace AsynGyanis::Net
