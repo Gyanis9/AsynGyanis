@@ -24,9 +24,14 @@ set -euo pipefail
 #   AUTOBAHN_CASES      JSON 数组字面量，默认 '["*"]'；只跑几条快速回归时就填具体号
 #   AUTOBAHN_EXCLUDE    逗号分隔的用例号，默认排掉超容量的那两条（见下）
 #   AUTOBAHN_REPORT_DIR 报告落点，默认仓库外的临时目录
-#   AUTOBAHN_MIN_CASES  用例面下限，默认 500（官方镜像 517 条减去默认排除的 2 条）；
-#                       落盘的报告数低于它就退 2——裁判中途断掉时剩下的报告照样全绿，
-#                       不数这一格就看不出覆盖面掉了
+#   AUTOBAHN_MIN_CASES  用例面下限，默认 500（官方镜像 517 条减去默认排除的 2 条，实测裁判自己
+#                       打「Ok, will run 515 test cases」）；落盘的报告数低于它就退 2——裁判提前
+#                       收尾时交出的那几十份照样全绿，不数这一格就看不出覆盖面掉了
+#   AUTOBAHN_ATTEMPTS   裁判最多跑几次，默认 2。这个数被时间预算钉住，不是随手取的：一次跑完实测
+#                       21m38s（2026-10-10 那轮 develop，从镜像拉好到 515 份落盘），作业自己的
+#                       timeout-minutes 是 60，两次加退避约 47 分钟还留余量，三次就要顶到 69 分钟
+#                       以上——那样红的就不是这条判据而是「runner 取消作业」。要加次数就连着
+#                       timeout-minutes 一起调
 #
 # 判据：报告里 behavior=FAILED 的条数必须为 0。默认排除 9.1.6 与 9.2.6——那两条发 16 MiB 的
 # 消息，超本端单条消息 8 MiB 的上限，按 RFC 6455 §7.1.6 回 1009 收口属规范许可的拒绝，
@@ -103,54 +108,53 @@ done
 # /opt/pypy/bin（镜像的 CMD 用的是裸名 wstest，说明它在 PATH 里），猜安装路径不如让镜像自己解析。
 # --add-host 是给 Linux 侧（CI runner）用的：那里默认没有 host.docker.internal 这一条，
 # 不加就是「裁判起来了但连不上服务端」，一条用例都跑不完
-wstest_rc=0
-MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i \
-    --add-host=host.docker.internal:host-gateway \
-    -v "$(mount_source "${work_dir}")/fuzzingclient.json:/fuzzingclient.json:ro" \
-    -v "$(mount_source "${report_dir}"):/reports" \
-    "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || wstest_rc=$?
-
-failed_count="$(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
-case_count="$(find "${report_dir}" -name '*case_*.json' | wc -l | tr -d ' ')"
-if [ "${case_count}" = "0" ]; then
-    # 「报告目录里一条判据都没有」有两种完全不同的成因，混成一句红会让人去查根本没问题的一侧：
-    #   ① 裁判容器没跑起来或中途被打断（镜像拉不到、docker 掉线、runner 掉线）——
-    #      特征是 wstest 退出码非 0，或退出码 0 但日志里出现过分派行（跑过却没落盘）；
-    #   ② 裁判起来了却一条都没分派——这才是「服务端没接上/路径不对」，要查被测面。
-    # 只贴日志尾巴分不出这两档，所以先把退出码与「分派过多少条」数出来，再两头各贴一段。
-    attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
-    echo "一条用例都没跑完：wstest 退出码 ${wstest_rc}、日志里出现过的分派行 ${attempted:-0} 条" >&2
-    if [ "${wstest_rc}" != "0" ] || [ "${attempted:-0}" != "0" ]; then
-        echo "判据按「裁判没执行完」处理（退出码非 0 或跑过却被中断），不当成服务端的规范失败；重跑这一作业即可复核" >&2
-    else
-        echo "wstest 退出码 0 且一条都没分派：这才像裁判连不上服务端" >&2
-    fi
-    echo "---- wstest.log 开头 12 行（镜像与连接问题在这）----" >&2
-    head -12 "${work_dir}/wstest.log" >&2
-    echo "---- wstest.log 结尾 20 行 ----" >&2
-    tail -20 "${work_dir}/wstest.log" >&2
-    exit 1
-fi
-
-echo "跑了 ${case_count} 条，FAILED ${failed_count} 条；报告在 ${report_dir}"
-
-# 只判「有没有报告」不够：裁判中途断掉时，已经跑完的那几十条照样是全绿的落盘文件，
-# 52 条与 515 条在这条判据里没有区别——覆盖面掉了九成而作业仍 success，这种形状
-# 是本仓最忌的「门禁没跑却被读成跑过」。于是把落盘数与官方用例总数比对，
-# 低于下限就按「裁判没执行完」退 2（与「某条用例没过」的退 1 分开：那不是服务端的规范失败，
-# 重跑这一档作业即可复核，不该把人引去查 WebSocket 实现）。
-# 默认下限 500：官方镜像的 WS 服务端用例是 517 条，扣掉本脚本默认排除的 2 条得 515，
-# 留 15 条余量给上游版本的小幅增减；要按自己的用例面收紧或放宽，用 AUTOBAHN_MIN_CASES 覆盖。
-attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
 min_cases="${AUTOBAHN_MIN_CASES:-500}"
-if [ "${case_count}" -lt "${min_cases}" ]; then
-    echo "裁判只交出 ${case_count} 份报告，低于下限 ${min_cases}：wstest 分派过 ${attempted:-0} 条、退出码 ${wstest_rc}" >&2
-    echo "这一档按「裁判没跑完」处理，不判服务端——先重跑本作业，再决定是否查被测面" >&2
-    echo "---- wstest.log 结尾 20 行（断在哪儿在这）----" >&2
-    tail -20 "${work_dir}/wstest.log" >&2
-    exit 2
-fi
-echo "用例面核对通过：${case_count} 条 ≥ 下限 ${min_cases}（分派 ${attempted:-0} 条）"
+# 官方镜像的 WS 服务端用例是 517 条，扣掉本脚本默认排除的 2 条得 515（裁判自己打的「Ok, will run
+# 515 test cases」就是这条算式），留 15 条余量给上游版本的小幅增减；要按自己的用例面收紧或放宽，
+# 用 AUTOBAHN_MIN_CASES 覆盖。只判「有没有报告」不够：报告是收尾才整体落盘的，裁判被掐死时一份
+# 都没有，而它中途只跑掉 52 条就跑完收尾时，那 52 份照样全绿——52 与 515 在旧判据里没有区别。
+wstest_attempts="${AUTOBAHN_ATTEMPTS:-2}"
+attempt=0
+while :; do
+    attempt=$((attempt + 1))
+    rm -rf "${report_dir:?}"/*
+    wstest_rc=0
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker run --rm -i \
+        --add-host=host.docker.internal:host-gateway \
+        -v "$(mount_source "${work_dir}")/fuzzingclient.json:/fuzzingclient.json:ro" \
+        -v "$(mount_source "${report_dir}"):/reports" \
+        "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || wstest_rc=$?
+
+    failed_count="$(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
+    case_count="$(find "${report_dir}" -name '*case_*.json' | wc -l | tr -d ' ')"
+    attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
+    echo "第 ${attempt} 次跑裁判：落盘 ${case_count} 份报告、分派 ${attempted:-0} 条、wstest 退出码 ${wstest_rc}（用例面下限 ${min_cases}）"
+
+    if [ "${case_count}" -ge "${min_cases}" ]; then
+        break
+    fi
+
+    if [ "${attempt}" -ge "${wstest_attempts}" ]; then
+        # 退 2 而不是退 1：这一档的红说的是「裁判没跑完」，不是「服务端有规范问题」。两种成因的
+        # 下一步完全不同——前者重跑或换 runner，后者才去查 WebSocket 实现
+        echo "裁判连跑 ${wstest_attempts} 次都没交够用例面（最后一轮落盘 ${case_count} 份、分派 ${attempted:-0} 条、退出码 ${wstest_rc}）" >&2
+        if [ "${attempted:-0}" = "0" ]; then
+            echo "一条都没分派：这才像裁判连不上服务端（先确认 ${port} 上真的在听、路径是 ${ws_path}）" >&2
+            echo "---- wstest.log 开头 12 行（镜像与连接问题在这）----" >&2
+            head -12 "${work_dir}/wstest.log" >&2
+        else
+            echo "分派过 ${attempted:-0} 条却没跑完：退出码 137/143 这类是 runner 把容器掐了（2026-10-10 实测同一份镜像摘要下 515→52→0），不是服务端的规范失败" >&2
+        fi
+        echo "---- wstest.log 结尾 20 行（断在哪儿在这）----" >&2
+        tail -20 "${work_dir}/wstest.log" >&2
+        exit 2
+    fi
+
+    wait_seconds=$((attempt * 20))
+    echo "落盘 ${case_count} 份低于下限 ${min_cases}，${wait_seconds} 秒后重跑裁判" >&2
+    sleep "${wait_seconds}"
+done
+echo "用例面核对通过：${case_count} 条 ≥ 下限 ${min_cases}（第 ${attempt} 次跑成，分派 ${attempted:-0} 条）"
 
 if [ "${failed_count}" != "0" ]; then
     for path in $(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json); do
