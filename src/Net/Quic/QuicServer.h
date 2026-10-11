@@ -327,6 +327,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::size_t connectionCount() const noexcept;
 
         /**
+         * @brief 取「尚未完成握手」的在线连接数
+         * @details 与 connectionCount() 同一条跨线程口径（读原子镜像，relaxed）：两者之差就是
+         *          **已验证**的那部分。未验证连接与已验证连接共用同一份 maximumConnections 是刻意的
+         *          （理由见 QuicConnection.h 的刻意清单），本读数把「名额被谁占着」变成看得见的数——
+         *          它在涨而 connectionCount() 不动，说明来的是只发 Initial 不推进握手的流量
+         * @note 镜像按定时器节拍重算（完成点埋在状态机内部，散布加减迟早漏一处），最迟一个节拍
+         *       （默认 10ms）内反映
+         * @return std::size_t 未完成握手的在册连接数
+         */
+        [[nodiscard]] std::size_t handshakingConnectionCount() const noexcept;
+
+        /**
          * @brief 收包侧「一次批次交付」的两笔读数：批次数与报文条数
          * @details 这两个数要一起看才有含义：`datagramCount() / datagramBatchCount()` 就是
          *          「一次就绪平均收了几条」。Linux 侧走 `recvmmsg`，这个比值随链路负载上去；
@@ -634,7 +646,8 @@ namespace AsynGyanis::Net
         /// 上面那张表的在册条数的跨线程镜像：只在表增删的那两处随表刷新（各一条 relaxed 加减），
         /// 供 connectionCount() 在循环外的线程上读——表本体只归循环线程，外部线程读它即为数据竞争。
         /// 每条连接建立与摘除才各动一次，不值得为它做缓存行填充
-        std::atomic<std::size_t> m_connectionCountMirror{0}; ///< 在册连接数（与连接表同步维护）
+        std::atomic<std::size_t> m_connectionCountMirror{0};            ///< 在册连接数（与连接表同步维护）
+        std::atomic<std::size_t> m_handshakingConnectionCountMirror{0}; ///< 其中未完成握手的条数：按定时器节拍重算（完成点埋在状态机内部，散布加减迟早漏一处）
 
         /// 撞本监听器并发上限而被拒的新连接累计数：与 h1/h2 侧同一口径进 /metrics
         /// （`over_limit_rejected_connections_total`），原子量因为 stats() 允许从别的线程读
@@ -648,7 +661,7 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_datagramBatchSendCount{0}; ///< 批次发包的调用数
         std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
         /// 上面四笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
-        std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 5> m_metricHandles{};
         /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
         /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
         bool m_isEcnFieldVisible{false};

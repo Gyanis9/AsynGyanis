@@ -10,6 +10,10 @@
 #include "Net/Http/Router.h"
 #include "Net/Quic/QuicServer.h"
 #include "Platform/IO/Socket.h"
+#include "Platform/IO/DatagramSocket.h"
+#include "Platform/System/PlatformError.h"
+#include "NetTestSupport.h"
+#include "QuicRfcVectors.h"
 
 #include "CommonTestSupport.h"
 
@@ -35,6 +39,8 @@ namespace AsynGyanis::Net
     {
         using AsynGyanis::TestSupport::waitForCondition;
         using namespace std::chrono_literals;
+        using AsynGyanis::Net::TestSupport::kAppendixA2ProtectedPacketHex;
+        using AsynGyanis::Net::TestSupport::makeBytesFromHex;
 
         /// 一般等待上限：回环上的 QUIC 握手是毫秒级的，超时即判失败
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
@@ -110,6 +116,12 @@ namespace AsynGyanis::Net
             RunningServerPeer(const RunningServerPeer &) = delete;
 
             RunningServerPeer &operator=(const RunningServerPeer &) = delete;
+
+            /// 本服务端（跨线程读它的两个计数只走原子镜像：connectionCount / handshakingConnectionCount）
+            [[nodiscard]] const QuicServer &server() const noexcept
+            {
+                return *m_server;
+            }
 
             /// 实际绑定到的端口
             [[nodiscard]] std::uint16_t listeningPort() const noexcept
@@ -322,6 +334,44 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "出站握手既没成也没失败，挂在那里";
         EXPECT_TRUE(attempt.isSuccessful()) << "握手没完成：" << attempt.elapsed().count() << " 毫秒后收场";
         EXPECT_EQ(attempt.negotiatedApplicationProtocol(), "h3") << "握手成了但 ALPN 没谈定，出站侧不知道该按哪套协议说话";
+    }
+
+    /**
+     * @brief 名额归因（B-1）：未完成握手的连接与已验证连接是两个可分的数
+     * @details 两半：① 真握完一条之后，在线数 ≥1 而「未验证」归零——两个读数按验证状态分开，
+     *          这就是归因；② 只发 Initial、握手谈不成的流量（RFC 9001 附录 A.2 的整包，ALPN 不是
+     *          h3）不留下僵尸条目：服务端拒绝它，等待之后两数复原。两类连接共用同一份
+     *          maximumConnections 是刻意的（理由见 QuicConnection.h 的清单），本用例钉的是归因那一半。
+     */
+    TEST(QuicServer, AttributesHandshakingConnectionsSeparatelyFromEstablishedOnes)
+    {
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+        EXPECT_EQ(server.server().connectionCount(), 0U);
+        EXPECT_EQ(server.server().handshakingConnectionCount(), 0U);
+
+        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "基线握手没成";
+        // ① 握手完成后：在线 ≥1、「未验证」归零——两个读数按状态分开。
+        // 归因镜像由定时循环按拍重算，而空闲起步的第一拍要等满 kIdleTickerSleep（1 秒，见 QuicServer.h）才落地：
+        // **固定睡满那一拍再加余量**，让本条的断言读的是重算之后的值。只等「条件成立」不行——镜像初值就是 0，
+        // 条件在重算前恒真；正确实现下这段等待不改变结论（重算前后都是 0），把归因写错（例如拿在线数当
+        // 未验证数）才会在重算后读出大于 0 的值，本条即钉住它
+        ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() >= 1U; }, kWaitTimeout)) << "完成的握手没让服务端记上在线连接";
+        std::this_thread::sleep_for(std::chrono::milliseconds{1200});
+        EXPECT_EQ(server.server().handshakingConnectionCount(), 0U) << "已完成的握手仍留在「未验证」名下";
+        const std::size_t onlineAfterHandshake = server.server().connectionCount();
+
+        // ② 谈不成握手的 Initial 流量：拒绝之后不留条目（ALPN 不是 h3，服务端按握手失败收口）
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const std::vector<std::uint8_t> badHandshakeInitial = makeBytesFromHex(kAppendixA2ProtectedPacketHex);
+        ASSERT_EQ(badHandshakeInitial.size(), 1200U) << "附录 A.2 整包长度不是 1200：向量用法不对";
+        const Core::InetAddress serverAddress("127.0.0.1", server.listeningPort());
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), badHandshakeInitial.data(), badHandshakeInitial.size()), 0);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        EXPECT_EQ(server.server().handshakingConnectionCount(), 0U) << "谈不成握手的 Initial 在「未验证」名下有残留";
+        EXPECT_EQ(server.server().connectionCount(), onlineAfterHandshake) << "坏握手流量改变了在线数：条目没被收干净";
     }
 
     /**

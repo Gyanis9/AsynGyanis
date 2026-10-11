@@ -13,6 +13,11 @@
  *
  * @note 能力边界之外刻意没有做几项：无状态重置令牌与 STATELESS RESET、连接标识轮换（本端全程
  *       只用一个连接标识）、路径迁移与 PATH_CHALLENGE、0-RTT、RETRY、版本协商包。
+ * **未验证连接与已验证连接共用同一份名额**（`QuicServer::Configuration::maximumConnections`），
+ *       不设「握手未完成单独占额」也是刻意的：握手有超时（PTO 与空闲两把钟都会收掉僵尸位）、
+ *       未验证期的字节面另有 3× 放大帽压着（RFC 9000 §8.1），且这与 TCP 侧同一口径（那边连接
+ *       同样在 TLS 完成前就占着名额）。要按验证状态归因，看 `QuicServer::handshakingConnectionCount()`
+ *       与 `asyn_quic_handshaking_connections` 两条读数——归因看得见，配额有意不分家。
  *       协议侧的同一份清单见 `QuicConnectionCore.h` 的 @note。
  * @warning 线程契约与 TCP 侧一致：本对象只在其所属事件循环线程上创建、使用与销毁。
  * @note 建连接要用客户端首个 Initial 报文里的原始目的连接标识，因此没有空构造这一说，

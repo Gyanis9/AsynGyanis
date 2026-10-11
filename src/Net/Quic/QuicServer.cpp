@@ -169,6 +169,11 @@ namespace AsynGyanis::Net
                 Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagrams_sent_total", "QUIC 服务端交给内核的数据报条数（与上一条相除就是「一次调用交了几条」）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return m_datagramSentCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_quic_handshaking_connections",
+                        "此刻在册但尚未完成握手的 QUIC 连接数（与 asyn_quic 连接总数之差给已验证的那部分归因）。"
+                        "它在涨而在线数不动，说明来的是只发 Initial 不推进握手的流量；两类连接共用同一份 maximumConnections 是刻意的（见 QuicConnection.h 的清单）",
+                        Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum, [this] { return handshakingConnectionCount(); }),
         };
     }
 
@@ -722,6 +727,12 @@ namespace AsynGyanis::Net
         return m_connectionCountMirror.load(std::memory_order_relaxed);
     }
 
+    std::size_t QuicServer::handshakingConnectionCount() const noexcept
+    {
+        // 与 connectionCount() 同一口径（relaxed 镜像）：只报「这一刻大约有多少条未验证」
+        return m_handshakingConnectionCountMirror.load(std::memory_order_relaxed);
+    }
+
     std::uint64_t QuicServer::datagramBatchCount() const noexcept
     {
         return m_datagramBatchCount.load(std::memory_order_relaxed);
@@ -1073,6 +1084,20 @@ namespace AsynGyanis::Net
             }
 
             const auto now = std::chrono::steady_clock::now();
+
+            // 名额归因镜像按本拍重算：握手完成点埋在状态机内部，在插入/摘除以外再散布加减
+            // 迟早漏一处；这一拍顺手数一遍（在线数 ≤ 上限，量级可忽略），最迟一个节拍内反映
+            {
+                std::size_t handshakingCount = 0;
+                for (const auto &connectionEntry: m_connections)
+                {
+                    if (!connectionEntry.second->isHandshakeComplete())
+                    {
+                        ++handshakingCount;
+                    }
+                }
+                m_handshakingConnectionCountMirror.store(handshakingCount, std::memory_order_relaxed);
+            }
 
             // 直接遍历连接表，不做标识快照：本循环里每一次挂起都被下面那枚守卫罩着，而摘除已收口
             // 的连接只有 reapClosedConnections() 一处、它见到守卫就跳过——这条因此不会在挂起期间被
