@@ -44,6 +44,9 @@ namespace AsynGyanis::Core::TestSupport
      * @brief 取回一批就绪事件并交给各自的注册对象
      * @details 与 EventLoop::run() 的分发那一步同构：事件里挂载的就是注册对象地址，
      *          用例自驱分发因此不引入事件循环线程，时序完全确定。
+     * @note 必须过存活表再派发，与 run() 同一道闸门：唤醒套接字的哨兵事件也挂在 data.ptr 上
+     *       （它不是 IoWatcher、也不在存活表里），免检直发就是往一个非法对象里写成员——
+     *       实测 postRemote 的唤醒让手泵当场 SEGV
      * @param loop 事件循环
      * @param timeoutMilliseconds 等待就绪的超时（毫秒）；0 表示只取当前已就绪的
      * @return std::size_t 本次分发的事件数
@@ -55,7 +58,12 @@ namespace AsynGyanis::Core::TestSupport
         {
             if (event.data.ptr != nullptr)
             {
-                static_cast<IoWatcher *>(event.data.ptr)->handleEvents(event.events);
+                auto *const watcher = static_cast<IoWatcher *>(event.data.ptr);
+                if (!loop.isWatcherAlive(watcher))
+                {
+                    continue;
+                }
+                watcher->handleEvents(event.events);
                 ++dispatchedCount;
             }
         }

@@ -15,11 +15,14 @@
 //    也不得牵连别的注册对象）。
 // 6、协程恢复抛出的异常不得穿出 handleEvents 这道 noexcept 边界：兜不住就是 terminate，
 //    而一条连接的坏帧也不该带走整条循环。
+// 7、带取消令牌的等待在 requestStop() 之后会被取消唤醒、按「被取消」交付（不再只能靠关描述符
+//    收尾）；迟到（该次等待已结束）的取消不得扰到下一次等待；令牌在挂起前已停止时不挂起。
 
 #include "Core/EventLoop/IoWatcher.h"
 
 #include "Base/Exception/LogicException.h"
 #include "Base/Exception/SystemException.h"
+#include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -32,6 +35,7 @@
 #include <coroutine>
 #include <exception>
 #include <memory>
+#include <stop_token>
 #include <stdexcept>
 #include <system_error>
 
@@ -39,7 +43,9 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        using TestSupport::advanceUntil;
         using TestSupport::dispatchOnce;
+        using TestSupport::stepLoopOnce;
 
         /// 等待结果：true 表示事件就绪，false 表示注册已失效
         using WaitOutcome = bool;
@@ -52,6 +58,46 @@ namespace AsynGyanis::Core
         Task<WaitOutcome> waitReadableOnce(IoWatcher &watcher)
         {
             co_return co_await watcher.waitReadable();
+        }
+
+        /**
+         * @brief 一次「带取消令牌」的等待结果
+         */
+        struct CancellableWaitResult
+        {
+            bool isReady     = false; ///< 事件是否就绪（await_resume 的返回值）
+            bool isCancelled = false; ///< 取消是否被请求过（等待器上的原子标记）
+        };
+
+        /**
+         * @brief 带令牌等待指定注册对象的可读事件
+         * @param watcher 目标注册对象
+         * @param stopToken 协作取消令牌
+         * @return Task<CancellableWaitResult> 就绪位与取消标记
+         */
+        Task<CancellableWaitResult> waitReadableCancellable(IoWatcher &watcher, std::stop_token stopToken)
+        {
+            IoWatcher::Awaiter awaiter = watcher.waitReadable(stopToken);
+            const bool         isReady = co_await awaiter;
+            co_return CancellableWaitResult{isReady, awaiter.isCancellationRequested()};
+        }
+
+        /**
+         * @brief 带令牌挂起一次可读等待，把结果与完成标记写到调用方的变量里
+         * @details 刻意用命名函数而不是「立即调用的捕获式 lambda」：lambda 起协程时帧里存的是
+         *          闭包对象的引用，而闭包随那条完整表达式结束就销毁了——协程恢复得晚一步就是
+         *          跨栈帧的释放后使用（ASan 的 stack-use-after-scope 实测抓过这个形状）。
+         *          这里的引用参数指向调用方的局部量，测试体活着它们就活着
+         * @param watcher 目标注册对象
+         * @param stopToken 协作取消令牌
+         * @param outResult 等待结果写到这里
+         * @param outFinished 完成标记写到这里（协程走完才置真）
+         * @return Task<void> 惰性协程，首次恢复即挂到等待上
+         */
+        Task<void> waitReadableCancellableInto(IoWatcher &watcher, std::stop_token stopToken, CancellableWaitResult &outResult, bool &outFinished)
+        {
+            outResult   = co_await waitReadableCancellable(watcher, stopToken);
+            outFinished = true;
         }
 
         /// 单轮分发的时限（毫秒）：等待唤醒这类判据必须落在有限时间内出结果，
@@ -139,9 +185,9 @@ namespace AsynGyanis::Core
      * @brief 同一批里的后一条事件不得派发给已被前一条销毁的注册对象
      * @details 事件是从内核一批批取回来的：派发循环拿的是取回那一刻的快照，而先处理的那条完全
      *          可能销毁后一条所属的对象。这里刻意走 EventLoop::run() 而不是测试自己的分发步骤
-     *          ——存活闸门只长在 run() 里，自己分发等于绕过被测代码。
-     *          两条连接各挂一个等待者、醒来后互为对方去销毁：于是无论内核把哪条排在前面，
-     *          后一条一定是「已经死了的那个」，本用例的前提不依赖批内顺序。
+     *          ——本用例要的是一批事件里先后派发的真实时序，只有真循环给得出；自己分发等于把
+     *          被测时序换掉。两条连接各挂一个等待者、醒来后互为对方去销毁：于是无论内核把哪条
+     *          排在前面，后一条一定是「已经死了的那个」，本用例的前提不依赖批内顺序。
      * @note 判据是「两个结果必然一真一假」：被事件叫醒的那个交回 true，另一个只能是被对面板
      *       销毁时叫醒的（交回 false）。若哪天两条事件不再同批，两个都会是 true，本用例就会红——
      *       它不会静默地退化成一个不测任何东西的用例。
@@ -580,6 +626,121 @@ namespace AsynGyanis::Core
         EXPECT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "一次抛出带走了整条循环：后续等待再也收不到事件";
         ASSERT_TRUE(nextWait.isReady());
         EXPECT_TRUE(nextWait.handle().promise().result());
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief requestStop() 必须把挂在等待器上的协程叫醒，而不是只能靠关描述符收尾
+     * @details 审计点出的缺口：取消此前是纯标志，挂起中的等待要解除只能把描述符关掉
+     *          （让等待以「注册失效」失败收场）。本用例钉住新契约——令牌停止后，取消投递
+     *          在下一轮事件处理时把等待唤醒，结果按「被取消」而不是「就绪」交付。
+     */
+    TEST(IoWatcher, RequestStopWakesSuspendedWaiter)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+        Cancelable cancelable;
+
+        CancellableWaitResult waitResult;
+        bool                  isFinished = false;
+        Task<void>            waiter     = waitReadableCancellableInto(watcher, cancelable.stopToken(), waitResult, isFinished);
+        waiter.handle().resume();
+        ASSERT_FALSE(isFinished) << "没有数据也没有取消时应当挂起";
+
+        // 同线程 requestStop：停止回调就地开火，把「核一核这一代等待还在不在」投回调度器队列——
+        // 等待的解除发生在下一轮 runAll，而不是靠描述符事件
+        cancelable.requestStop();
+
+        EXPECT_TRUE(advanceUntil(loop, [&] { return isFinished; })) << "requestStop 之后等待没有在时限内被唤醒";
+        EXPECT_FALSE(waitResult.isReady) << "取消唤醒不该被报成「就绪」";
+        EXPECT_TRUE(waitResult.isCancelled) << "醒了却没标出取消来源：消费方分不出「被取消」与「描述符没了」";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 令牌在挂起前已停止：不挂起、不占等待槽，直接以「被取消」收尾
+     */
+    TEST(IoWatcher, AlreadyStoppedTokenEndsWaitWithoutSuspending)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+        Cancelable cancelable;
+        cancelable.requestStop();
+
+        CancellableWaitResult waitResult;
+        bool                  isFinished = false;
+        Task<void>            waiter     = waitReadableCancellableInto(watcher, cancelable.stopToken(), waitResult, isFinished);
+        waiter.handle().resume();
+        EXPECT_TRUE(isFinished) << "令牌已停止时不该挂起";
+        EXPECT_FALSE(waitResult.isReady);
+        EXPECT_TRUE(waitResult.isCancelled);
+        EXPECT_FALSE(watcher.isWaitingFor(EPOLLIN)) << "已取消的等待占了等待槽：下一次等待会被抢槽判错拦下";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 迟到的取消不得扰到下一次等待
+     * @details 现场形状：第一次等待被事件正常唤醒（就绪），而 requestStop 的投递此时还躺在
+     *          调度器队列里——稍后它才被执行，槽里已经换了人。没有代次号核验时，这记迟到的
+     *          取消会打在新等待者身上（协程帧地址被复用，指针相等分不开两代）。
+     */
+    TEST(IoWatcher, LateCancellationDoesNotDisturbTheNextWait)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        IoWatcher watcher(loop, localDescriptor);
+        ASSERT_TRUE(watcher.isValid());
+        Cancelable cancelable;
+
+        // 第一条等待：挂上（带令牌），但让事件先到、按「就绪」交付
+        CancellableWaitResult firstResult;
+        bool                  isFirstFinished = false;
+        Task<void>            first           = waitReadableCancellableInto(watcher, cancelable.stopToken(), firstResult, isFirstFinished);
+        first.handle().resume();
+        ASSERT_FALSE(isFirstFinished);
+
+        cancelable.requestStop();
+        makeReadable(peerDescriptor);
+        ASSERT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "事件没被分发，第一条等待的结局没发生";
+        ASSERT_TRUE(isFirstFinished);
+        EXPECT_TRUE(firstResult.isReady) << "事件先到就该按就绪交付";
+        EXPECT_TRUE(firstResult.isCancelled) << "取消确实被请求过（只是输给了事件）；标记的口径是「请求过」";
+
+        // 取走字节，让描述符回到不可读；再跑那记迟到的取消——它必须打空
+        consumeReadable(localDescriptor);
+        stepLoopOnce(loop);
+
+        // 第二条等待：普通等待（无令牌），必须照常挂起、照常被自己的事件唤醒
+        Task<WaitOutcome> nextWait = waitReadableOnce(watcher);
+        nextWait.handle().resume();
+        ASSERT_FALSE(nextWait.isReady()) << "第二次等待应当正常挂起——说明槽位与就绪缓存都干净";
+
+        makeReadable(peerDescriptor);
+        ASSERT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "第二次等待没等到自己的事件";
+        ASSERT_TRUE(nextWait.isReady());
+        EXPECT_TRUE(nextWait.handle().promise().result()) << "迟到的取消把下一次等待带走了";
 
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);

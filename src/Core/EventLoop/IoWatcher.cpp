@@ -42,7 +42,8 @@ namespace AsynGyanis::Core
         }
     } // namespace
 
-    IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event) noexcept : m_watcher(&watcher), m_event(event)
+    IoWatcher::Awaiter::Awaiter(IoWatcher &watcher, const std::uint32_t event, std::stop_token stopToken) noexcept :
+        m_watcher(&watcher), m_loop(watcher.m_loop), m_event(event), m_stopToken(std::move(stopToken))
     {
     }
 
@@ -70,12 +71,26 @@ namespace AsynGyanis::Core
 
     bool IoWatcher::Awaiter::await_suspend(const std::coroutine_handle<> handle)
     {
+        // 令牌在挂起前已停止：不占坑也不武装，直接以「被取消」结束等待——挂上再取消只会白付一次往返
+        if (m_stopToken.stop_requested())
+        {
+            markCancelled();
+            return false;
+        }
         if (!m_watcher->attachWaiter(m_event, handle, *this))
         {
             // 注册已失效或关注位武装不上：不挂起，直接以「未就绪」结束等待
             return false;
         }
-        m_isAttached = true;
+        m_isAttached       = true;
+        m_attachGeneration = m_watcher->slotFor(m_event).generation;
+        // 登记之后才注册停止回调：回调一开火就按本代投递取消，先在登记保证它到循环线程上找得到
+        // 等待槽。上面刚判过「未停止」，但「判完之后、注册之前」有人按下 requestStop 是允许的——
+        // stop_callback 的构造语义会当场把回调跑掉，投递出去的取消在下一轮取事件前生效
+        if (m_stopToken.stop_possible())
+        {
+            m_stopCallback.emplace(m_stopToken, StopWake{this});
+        }
         return true;
     }
 
@@ -92,6 +107,50 @@ namespace AsynGyanis::Core
     void IoWatcher::Awaiter::markDetached() noexcept
     {
         m_isAttached = false;
+    }
+
+    bool IoWatcher::Awaiter::isCancellationRequested() const noexcept
+    {
+        return m_cancelRequested.load(std::memory_order_acquire);
+    }
+
+    void IoWatcher::Awaiter::markCancelled() noexcept
+    {
+        m_cancelRequested.store(true, std::memory_order_release);
+    }
+
+    void IoWatcher::Awaiter::onStopRequested() noexcept
+    {
+        // 先发布取消标记：哪怕下面的投递落空（循环在拆、分配不出来），被其它路径唤醒时
+        // 消费方仍会看到「取消请求过」这件事
+        m_cancelRequested.store(true, std::memory_order_release);
+
+        EventLoop *const loop    = m_loop;
+        IoWatcher *const watcher = m_watcher;
+        if (loop == nullptr || watcher == nullptr)
+        {
+            return;
+        }
+        const std::uint32_t event      = m_event;
+        const std::uint64_t generation = m_attachGeneration;
+        try
+        {
+            // 到循环线程上再动手：存活表判定与等待槽摘除都不是本线程（可能是按下 requestStop 的
+            // 任意线程）的账；代次号随投递带走，到那边核「还是不是那一次等待」
+            loop->scheduler().postRemote(
+                    [loop, watcher, event, generation]
+                    {
+                        if (!loop->isWatcherAlive(watcher))
+                        {
+                            return;
+                        }
+                        watcher->cancelWaiterIfMatches(event, generation);
+                    });
+        } catch (...)
+        {
+            // 投递失败：本次取消落空，等待者仍由描述符事件、关闭或注册对象析构路径收尾。
+            // 宁可收尾慢一拍，也不能让异常从这里（可能正身处某个 noexcept 边界）穿出去
+        }
     }
 
     IoWatcher::IoWatcher(EventLoop &loop, const int fileDescriptor) : m_loop(&loop), m_fileDescriptor(fileDescriptor)
@@ -178,14 +237,14 @@ namespace AsynGyanis::Core
         return m_fileDescriptor;
     }
 
-    IoWatcher::Awaiter IoWatcher::waitReadable() noexcept
+    IoWatcher::Awaiter IoWatcher::waitReadable(std::stop_token stopToken) noexcept
     {
-        return Awaiter(*this, EPOLLIN);
+        return Awaiter(*this, EPOLLIN, std::move(stopToken));
     }
 
-    IoWatcher::Awaiter IoWatcher::waitWritable() noexcept
+    IoWatcher::Awaiter IoWatcher::waitWritable(std::stop_token stopToken) noexcept
     {
-        return Awaiter(*this, EPOLLOUT);
+        return Awaiter(*this, EPOLLOUT, std::move(stopToken));
     }
 
     bool IoWatcher::isWaitingFor(const std::uint32_t event) const noexcept
@@ -210,8 +269,8 @@ namespace AsynGyanis::Core
         // 先记下「本次上报时谁在等」：掩码收敛要用它区分「刚被唤醒」与「本来就没人等」
         const bool              hadReadWaiter  = m_readWaiter.handle != nullptr;
         const bool              hadWriteWaiter = m_writeWaiter.handle != nullptr;
-        std::coroutine_handle<> resumableRead  = isReadable ? takeWaiter(EPOLLIN, true) : std::coroutine_handle<>();
-        std::coroutine_handle<> resumableWrite = isWritable ? takeWaiter(EPOLLOUT, true) : std::coroutine_handle<>();
+        std::coroutine_handle<> resumableRead  = isReadable ? takeWaiter(EPOLLIN, WakeReason::Ready) : std::coroutine_handle<>();
+        std::coroutine_handle<> resumableWrite = isWritable ? takeWaiter(EPOLLOUT, WakeReason::Ready) : std::coroutine_handle<>();
 
         if (isReadable && !resumableRead)
         {
@@ -240,11 +299,11 @@ namespace AsynGyanis::Core
         {
             if (!resumableRead)
             {
-                resumableRead = takeWaiter(EPOLLIN, false);
+                resumableRead = takeWaiter(EPOLLIN, WakeReason::Closed);
             }
             if (!resumableWrite)
             {
-                resumableWrite = takeWaiter(EPOLLOUT, false);
+                resumableWrite = takeWaiter(EPOLLOUT, WakeReason::Closed);
             }
         }
 
@@ -307,6 +366,9 @@ namespace AsynGyanis::Core
 
         slot.handle  = handle;
         slot.awaiter = &awaiter;
+        // 代次号每次登记自增：取消投递到循环线程后按它核「还是不是那一次等待」——
+        // 协程帧的地址会被复用，单靠等待器指针相等分不开两代
+        slot.generation = ++m_attachGeneration;
 
         // 关注位只在有人等的时候武装：这才是「内核在盯着什么」与「现在谁在等」一致的含义
         const std::uint32_t needed = (m_readWaiter.handle ? EPOLLIN : 0U) | (m_writeWaiter.handle ? EPOLLOUT : 0U);
@@ -319,7 +381,7 @@ namespace AsynGyanis::Core
         return true;
     }
 
-    std::coroutine_handle<> IoWatcher::takeWaiter(const std::uint32_t event, const bool isReady) noexcept
+    std::coroutine_handle<> IoWatcher::takeWaiter(const std::uint32_t event, const WakeReason reason) noexcept
     {
         WaiterSlot                   &slot   = slotFor(event);
         const std::coroutine_handle<> handle = std::exchange(slot.handle, nullptr);
@@ -327,14 +389,50 @@ namespace AsynGyanis::Core
         {
             // 先写回结果与「已摘除」，再恢复协程；此后再不访问等待器指针
             // （它随协程帧，可能已被销毁）。摘除标记是必需的：否则等待器析构时会回来调本对象
-            if (isReady)
+            switch (reason)
             {
-                slot.awaiter->markReady();
+                case WakeReason::Ready:
+                    slot.awaiter->markReady();
+                    break;
+                case WakeReason::Cancelled:
+                    slot.awaiter->markCancelled();
+                    break;
+                case WakeReason::Closed:
+                    break;
             }
             slot.awaiter->markDetached();
             slot.awaiter = nullptr;
         }
         return handle;
+    }
+
+    void IoWatcher::cancelWaiterIfMatches(const std::uint32_t event, const std::uint64_t generation) noexcept
+    {
+        const WaiterSlot &slot = slotFor(event);
+        if (slot.handle == nullptr || slot.generation != generation)
+        {
+            // 那次等待已经不在了（就绪、关闭，或已换成了新一代）：迟到的取消按打空处理。
+            // 不比对等待器指针——协程帧的地址会被复用，指针相等认不出两代
+            return;
+        }
+        const std::coroutine_handle<> resumable = takeWaiter(event, WakeReason::Cancelled);
+        if (!resumable)
+        {
+            return;
+        }
+
+        // 恢复放在最后：被恢复的代码可能立刻销毁本对象（读到取消后收口连接），那之后对成员的
+        // 每一次访问都是释放后使用。与 handleEvents 同一处置，也同在那道 noexcept 边界上
+        try
+        {
+            resumable.resume();
+        } catch (const std::exception &failure)
+        {
+            reportResumedCoroutineFailure("取消唤醒", failure.what());
+        } catch (...)
+        {
+            reportResumedCoroutineFailure("取消唤醒", "非标准异常");
+        }
     }
 
     void IoWatcher::detachWaiter(const std::uint32_t event) noexcept

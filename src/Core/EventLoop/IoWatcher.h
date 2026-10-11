@@ -11,8 +11,11 @@
 
 #include "AsynGyanisExport.h"
 
+#include <atomic>
 #include <coroutine>
 #include <cstdint>
+#include <optional>
+#include <stop_token>
 
 namespace AsynGyanis::Core
 {
@@ -46,8 +49,10 @@ namespace AsynGyanis::Core
              * @brief 构造等待器
              * @param watcher 目标注册对象
              * @param event 关注的事件位（EPOLLIN 或 EPOLLOUT）
+             * @param stopToken 协作取消令牌，可为空；非空且可停止时，requestStop() 会把挂起中的
+             *                  本次等待唤醒并以「被取消」结束（见 isCancellationRequested）
              */
-            Awaiter(IoWatcher &watcher, std::uint32_t event) noexcept;
+            Awaiter(IoWatcher &watcher, std::uint32_t event, std::stop_token stopToken = {}) noexcept;
 
             Awaiter(const Awaiter &) = delete;
 
@@ -70,7 +75,8 @@ namespace AsynGyanis::Core
              * @brief 登记为本方向的等待者、武装关注位并挂起协程
              * @param handle 当前协程句柄，事件到达时由注册对象恢复
              * @return true 已登记，可以挂起
-             * @return false 注册已失效（描述符已关闭或武装失败），不挂起、立即以「未就绪」结束等待
+             * @return false 不挂起、立即收尾：注册已失效（描述符已关闭或武装失败，按「未就绪」结束），
+             *         或令牌在挂起前已停止（按「被取消」结束）
              * @throws Base::LogicException 该方向已有另一个等待者
              */
             [[nodiscard]] bool await_suspend(std::coroutine_handle<> handle);
@@ -78,9 +84,18 @@ namespace AsynGyanis::Core
             /**
              * @brief 取回等待结果
              * @return true 事件已就绪（调用方应立刻重试系统调用）
-             * @return false 注册已失效（描述符已关闭），调用方应停止重试并收尾
+             * @return false 未就绪：注册已失效（描述符已关闭），或本次等待被取消唤醒（令牌被
+             *         requestStop，见 isCancellationRequested() 区分两者）。两种情形调用方
+             *         都应停止重试并收尾
              */
             [[nodiscard]] bool await_resume() const noexcept;
+
+            /**
+             * @brief 本次等待是否被取消唤醒（令牌被 requestStop）
+             * @return true 取消已请求且本等待因此结束；false 其余情形
+             * @note 线程安全：停止回调可能来自任意线程，本读数按原子量取
+             */
+            [[nodiscard]] bool isCancellationRequested() const noexcept;
 
         private:
             friend class IoWatcher;
@@ -91,6 +106,11 @@ namespace AsynGyanis::Core
             void markReady() noexcept;
 
             /**
+             * @brief 由注册对象（或挂起前的自检）标记本次等待被取消
+             */
+            void markCancelled() noexcept;
+
+            /**
              * @brief 由注册对象告知「你已不在我的登记槽里」
              * @details 注册对象一旦把等待者从槽里取走（无论是为了恢复它，还是它自己在析构），
              *          都必须调用本方法。否则等待器析构时会以为自己还挂在注册对象上，
@@ -98,10 +118,33 @@ namespace AsynGyanis::Core
              */
             void markDetached() noexcept;
 
-            IoWatcher    *m_watcher;           ///< 目标注册对象（非拥有）
-            std::uint32_t m_event;             ///< 本次关注的事件位
-            bool          m_isAttached{false}; ///< 是否已登记到注册对象上
-            bool          m_isReady{false};    ///< 结果：事件是否就绪
+            /**
+             * @brief 停止回调的落点：可能运行在任意线程（谁调 requestStop 就谁跑）
+             * @details 只做两件线程安全的事——发布取消标记（原子量），再把「到循环线程上核一核
+             *          这一代等待还在不在」投递回所属循环。不在此处碰注册对象与等待槽：那是循环
+             *          线程的账（见 IoWatcher::cancelWaiterIfMatches），投递侧先经存活表判过再动手
+             */
+            void onStopRequested() noexcept;
+
+            /// 停止回调的载体：std::stop_callback 要求可调用体类型固定，值语义的一层壳最省
+            struct StopWake
+            {
+                Awaiter *awaiter; ///< 所属等待器；回调调用期它必然活着（~stop_callback 会等在建回调跑完）
+                void     operator()() const noexcept
+                {
+                    awaiter->onStopRequested();
+                }
+            };
+
+            IoWatcher                                  *m_watcher;                ///< 目标注册对象（非拥有）
+            EventLoop                                  *m_loop;                   ///< 所属事件循环（取自注册对象；取消投递要用）
+            std::uint32_t                               m_event;                  ///< 本次关注的事件位
+            std::stop_token                             m_stopToken;              ///< 协作取消令牌；默认构造 = 不接取消唤醒
+            std::uint64_t                               m_attachGeneration{0};    ///< 登记时的代次号：取消投递据此确认「还是那一次等待」
+            bool                                        m_isAttached{false};      ///< 是否已登记到注册对象上
+            bool                                        m_isReady{false};         ///< 结果：事件是否就绪
+            std::atomic<bool>                           m_cancelRequested{false}; ///< 结果：是否被取消唤醒（回调可能来自任意线程）
+            std::optional<std::stop_callback<StopWake>> m_stopCallback;           ///< 停止回调：挂起时注册，随等待器析构注销
         };
 
         /**
@@ -145,15 +188,18 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 等待该描述符可读（EPOLLIN）
+         * @param stopToken 协作取消令牌，可为空；非空且可停止时，requestStop() 把挂起中的等待
+         *                  唤醒并以「被取消」结束（消费方据 Awaiter::isCancellationRequested() 收口）
          * @return Awaiter 等待器；已就绪时 co_await 立即返回
          */
-        [[nodiscard]] Awaiter waitReadable() noexcept;
+        [[nodiscard]] Awaiter waitReadable(std::stop_token stopToken = {}) noexcept;
 
         /**
          * @brief 等待该描述符可写（EPOLLOUT）
+         * @param stopToken 语义同 waitReadable()
          * @return Awaiter 等待器；已就绪时 co_await 立即返回
          */
-        [[nodiscard]] Awaiter waitWritable() noexcept;
+        [[nodiscard]] Awaiter waitWritable(std::stop_token stopToken = {}) noexcept;
 
         /**
          * @brief 该方向上是否已有协程在等待
@@ -175,6 +221,14 @@ namespace AsynGyanis::Core
         void handleEvents(std::uint32_t events) noexcept;
 
     private:
+        /// 唤醒等待者的三种结局：就绪置位、未就绪不置位、取消置位（见 takeWaiter）
+        enum class WakeReason
+        {
+            Ready,     ///< 事件就绪
+            Closed,    ///< 注册失效（描述符已关闭或武装失败）
+            Cancelled, ///< 令牌被停止
+        };
+
         /**
          * @brief 一个方向上的等待者登记
          */
@@ -182,6 +236,7 @@ namespace AsynGyanis::Core
         {
             std::coroutine_handle<> handle{};         ///< 等待中的协程，空表示当前无人等待
             Awaiter                *awaiter{nullptr}; ///< 对应的等待器，用于把结果写回它
+            std::uint64_t           generation{0};    ///< 本槽位每次登记的代次号；取消投递据此拒掉迟到者（协程帧地址会被复用，指针相等分不开两代）
         };
 
         /// 「内核掩码未知」的哨兵：mod 失败时账本记它，保证下一次 armEvents 必定再下发一次 mod。
@@ -200,12 +255,22 @@ namespace AsynGyanis::Core
         [[nodiscard]] bool attachWaiter(std::uint32_t event, std::coroutine_handle<> handle, Awaiter &awaiter);
 
         /**
-         * @brief 把某个方向的等待者从登记槽摘下，并按结果通知它
+         * @brief 把某个方向的等待者从登记槽摘下，并按结局通知它
          * @param event 事件位（EPOLLIN 或 EPOLLOUT）
-         * @param isReady 是否以「就绪」通知（false 表示按未就绪收尾）
+         * @param reason 唤醒结局：Ready 置就绪位、Closed 不置位、Cancelled 置取消位
          * @return 需要恢复的协程句柄，无人等待时为空
          */
-        [[nodiscard]] std::coroutine_handle<> takeWaiter(std::uint32_t event, bool isReady) noexcept;
+        [[nodiscard]] std::coroutine_handle<> takeWaiter(std::uint32_t event, WakeReason reason) noexcept;
+
+        /**
+         * @brief 若该方向的等待者正是「那一代」的那一次等待，就地把取消外发出去
+         * @details 由取消投递在循环线程上调用（投递侧已用存活表确认本对象还在）。代次号对不上
+         *          说明那次等待早已结束（事件、关闭或又挂上了新一代），迟到的取消不许打在新等待者
+         *          身上——协程帧的地址会被复用，单靠指针相等分不开两代
+         * @param event 事件位（EPOLLIN 或 EPOLLOUT）
+         * @param generation 登记时的代次号
+         */
+        void cancelWaiterIfMatches(std::uint32_t event, std::uint64_t generation) noexcept;
 
         /**
          * @brief 摘除某个方向上的等待者登记（等待器析构、等待登记作废时调用）
@@ -240,6 +305,7 @@ namespace AsynGyanis::Core
         bool          m_isRegistered{false}; ///< 是否已成功注册到 epoll
         std::uint32_t m_armedEvents{0};      ///< 当前在核心里武装着的事件位（EPOLLIN / EPOLLOUT）
         std::uint32_t m_readyEvents{0};      ///< 已上报但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
+        std::uint64_t m_attachGeneration{0}; ///< 等待者登记的代次号计数器：每次登记自增，取消投递据此认代
         WaiterSlot    m_readWaiter;          ///< 读方向等待者
         WaiterSlot    m_writeWaiter;         ///< 写方向等待者
     };
