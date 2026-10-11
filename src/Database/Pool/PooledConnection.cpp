@@ -77,7 +77,7 @@ namespace AsynGyanis::Database
         // 只判一个原子量的话，并发销毁时判活刚通过、调用就踩空
         if (m_pool != nullptr)
         {
-            m_pool->returnConnectionIfAlive(m_connection, m_poolLiveness, false, isDiscard);
+            m_pool->returnConnectionIfAlive(m_connection, m_poolLiveness, isDiscard);
         }
 
         // 清空所有状态，防止重复归还。连接已被移走（或池已析构）时，

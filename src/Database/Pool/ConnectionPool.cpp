@@ -939,8 +939,7 @@ namespace AsynGyanis::Database
         m_totalDiscarded.fetch_add(1, std::memory_order_relaxed);
     }
 
-    bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, const bool countAsActive,
-                                                 const bool isDiscard) noexcept
+    bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, const bool isDiscard) noexcept
     {
         if (liveness == nullptr)
         {
@@ -954,11 +953,6 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 交接发生在归还路径减过活跃计数之后，等待器取出时要把它补回去
-        if (countAsActive)
-        {
-            m_activeCount.fetch_add(1);
-        }
         returnConnection(std::move(connection), isDiscard);
         return true;
     }
