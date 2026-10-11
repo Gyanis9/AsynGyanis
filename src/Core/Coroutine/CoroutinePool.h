@@ -218,8 +218,10 @@ namespace AsynGyanis::Core
      *          「帧已销毁、却又恢复同一个句柄」这类 use-after-free 落在一块仍然有效、
      *          且多半已被另一个协程帧占住的内存上 —— ASan 把整段 slab 看成常驻存活，
      *          报不出来，本仓库若干「在 ASan 下应报 heap-use-after-free」的证伪判据因此是空的。
-     *          只在带 sanitizer 的编译里绕开池（GCC/Clang 自带 __SANITIZE_* 宏；MSVC 的
-     *          /fsanitize=address 不提供这一宏，也不做泄漏检测，那些结论本来就不在它上面）。
+     *          只在带 sanitizer 的编译里绕开池。这一探测对 GCC/Clang 与 MSVC 同样成立：
+     *          cl 的 /fsanitize=address 也定义 __SANITIZE_ADDRESS__（实测于 cl 19.51），
+     *          所以 Windows 的 ASan 档里帧确实直送全局堆。不成立的是后半句——那一档
+     *          不带泄漏检测，泄漏类的结论仍只在 Linux 档上取。
      * @param size 帧字节数
      * @return void* 帧内存
      */
