@@ -164,7 +164,7 @@ namespace AsynGyanis::Core
         {
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
-            runGuarded([handle] { handle.resume(); });
+            dispatchHandle(handle);
             return true;
         }
 
@@ -182,7 +182,7 @@ namespace AsynGyanis::Core
 
         if (globalHandle)
         {
-            runGuarded([globalHandle] { globalHandle.resume(); });
+            dispatchHandle(globalHandle);
             return true;
         }
 
@@ -214,7 +214,7 @@ namespace AsynGyanis::Core
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
             ++drainedCount;
-            runGuarded([handle] { handle.resume(); });
+            dispatchHandle(handle);
         }
         return drainedCount;
     }
@@ -292,7 +292,7 @@ namespace AsynGyanis::Core
 
             for (const auto &handle: batch)
             {
-                runGuarded([handle] { handle.resume(); });
+                dispatchHandle(handle);
             }
 
             // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）；
@@ -337,6 +337,47 @@ namespace AsynGyanis::Core
     std::size_t Scheduler::failedDispatchCount() const noexcept
     {
         return m_failedDispatchCount.load(std::memory_order_relaxed);
+    }
+
+    std::size_t Scheduler::skippedCompletedHandleCount() const noexcept
+    {
+        return m_skippedCompletedHandleCount.load(std::memory_order_relaxed);
+    }
+
+    void Scheduler::dispatchHandle(const std::coroutine_handle<> handle)
+    {
+        // 句柄入队到派发之间，帧的生死不由队列掌握：持有者可能已经就地首拍过同一条句柄、
+        // 或把它排了两次，帧于是停在终结点上。对已结束的协程 resume 是未定义行为——Task 的
+        // FinalAwaiter 会沿 continuation 再恢复一次已经结束的父协程。这里只跳过并落账，
+        // 碰都不碰那个帧；仍在挂起或尚未启动的照常恢复
+        if (handle.done())
+        {
+            noteSkippedCompletedHandle();
+            return;
+        }
+
+        runGuarded([handle] { handle.resume(); });
+    }
+
+    void Scheduler::noteSkippedCompletedHandle() noexcept
+    {
+        // 计数排在告警之前：一条每次都命中的坏句柄来源不该因为日志通路出问题而丢账
+        const std::size_t ordinal = m_skippedCompletedHandleCount.fetch_add(1, std::memory_order_relaxed);
+        if (ordinal != 0)
+        {
+            // 只取上升沿：与 noteDispatchFailure() 同一条口径，逐条打等于让日志被同一来源刷
+            return;
+        }
+
+        try
+        {
+            LOG_WARN_FMT("调度器: 一条就绪句柄在派发时对应的协程已经结束（帧停在终结点上），已跳过、未重复恢复；"
+                         "此后同类只计数不再逐条告警。句柄入队之后到派发之前，帧被别处提前恢复过——"
+                         "持有者要保证同一条句柄只被派发一次（就地首拍与排队派发二选一）");
+        } catch (...)
+        {
+            // 日志通路自己失败时只吞掉这条告警：计数已经落定
+        }
     }
 
     void Scheduler::noteDispatchFailure()

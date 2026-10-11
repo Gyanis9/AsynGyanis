@@ -657,4 +657,81 @@ namespace AsynGyanis::Core
                 << "循环线程就地排队被误拦：守卫把合法的派发也拒了";
     }
 
+    /**
+     * @brief 本地队列里的句柄若在派发前已完成，两条本地派发口只跳过、不重复恢复，并落账
+     * @details 钉住的是「帧归属」判据的派发侧兜底：句柄入队之后、派发之前，帧可能已被
+     *          持有者就地首拍过并停在终结点上（旧版超时中间件看门狗就是这种形状）。对
+     *          停在终结点的协程 resume 是未定义行为：Task 的 FinalAwaiter 会沿 continuation
+     *          再恢复一次已经结束的父协程。runOne() 与 runAll()（经 drainLocalTasks）是
+     *          两条独立实现路径，只守一条等于没守
+     */
+    TEST(Scheduler, SkipsCompletedFrameInLocalQueueOnBothEntryPoints)
+    {
+        Scheduler scheduler;
+
+        // 路径①：runOne() 的本地分支
+        std::atomic<bool> firstFinished{false};
+        Task<void>        first = markTask(firstFinished);
+        scheduler.schedule(first.handle());
+        first.handle().resume();
+        ASSERT_TRUE(first.handle().done()) << "用例前提没造出来：帧没被提前跑完";
+
+        EXPECT_TRUE(scheduler.runOne()) << "队列里明明取走过一件（跳过也算处置过），却报「没跑到任务」";
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 1U) << "已完成的帧被重复恢复，或跳过没有落账";
+
+        // 路径②：runAll() 第一阶段的本地排空
+        std::atomic<bool> secondFinished{false};
+        Task<void>        second = markTask(secondFinished);
+        scheduler.schedule(second.handle());
+        second.handle().resume();
+        ASSERT_TRUE(second.handle().done());
+
+        scheduler.runAll();
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 2U) << "本地排空路径漏了同一道判据";
+
+        // 正常（仍挂起或未启动）的帧照常恢复：判据只该拦「已结束」这一种形状，不能被写成一律跳过
+        std::atomic<int> executed{0};
+        auto             live = incrementTask(executed);
+        scheduler.schedule(live.handle());
+        scheduler.runAll();
+        EXPECT_EQ(executed.load(), 1) << "正常帧被守卫误跳过：派发路径被打死";
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 2U) << "正常派发也被计入跳过数：这条账不能再用来判重复恢复";
+    }
+
+    /**
+     * @brief 跨线程队列里的句柄若在派发前已完成，runOne() 与 runAll() 两条远端派发口同样只跳过、落账
+     */
+    TEST(Scheduler, SkipsCompletedFrameInRemoteQueueOnBothEntryPoints)
+    {
+        Scheduler scheduler;
+
+        // 路径①：runOne() 的全局分支
+        std::atomic<bool> firstFinished{false};
+        Task<void>        first = markTask(firstFinished);
+        scheduler.scheduleRemote(first.handle());
+        first.handle().resume();
+        ASSERT_TRUE(first.handle().done());
+
+        EXPECT_TRUE(scheduler.runOne());
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 1U) << "runOne() 的跨线程分支漏了已结束判定";
+
+        // 路径②：runAll() 的批处理分支
+        std::atomic<bool> secondFinished{false};
+        Task<void>        second = markTask(secondFinished);
+        scheduler.scheduleRemote(second.handle());
+        second.handle().resume();
+        ASSERT_TRUE(second.handle().done());
+
+        scheduler.runAll();
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 2U) << "批处理分支漏了已结束判定";
+
+        // 对照：正常跨线程帧照常执行
+        std::atomic<int> executed{0};
+        auto             live = incrementTask(executed);
+        scheduler.scheduleRemote(live.handle());
+        scheduler.runAll();
+        EXPECT_EQ(executed.load(), 1);
+        EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 2U);
+    }
+
 } // namespace AsynGyanis::Core

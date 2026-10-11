@@ -49,6 +49,9 @@ namespace AsynGyanis::Core
      *          局部 Task 出作用域就把还在队列里的帧一起销毁了；②**先入表、后排度**，反过来的话入表那一步
      *          抛 bad_alloc 就留下一个没人持有、却已经能被打发的句柄。这两条都不是推演：本仓库曾在
      *          「隧道随帧销毁」上真出过一次业务帧丢失（收口改成先唤醒再销毁的那一轮）。
+     *          派发侧另有一道兜底：帧若在被派发前已经停在终结点上，句柄只被跳过并落账
+     *          （见 skippedCompletedHandleCount()），绝不重复恢复——把「同一条句柄被派发两次」
+     *          从静默的未定义行为收敛成可观测的计数。
      * @see schedule(), scheduleRemote()
      */
     class ASYN_CORE_API Scheduler
@@ -129,7 +132,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 执行一个就绪协程
-         * @return true 表示成功执行了一个协程，false 表示无任务可执行
+         * @return true 表示处置了一件待办（正常恢复，或已完成的帧被跳过），false 表示无任务可执行
          * @note 被执行的协程或可调用对象抛出时就地收下并计数，不向调用方传播（与 runAll() 同一口径）
          */
         bool runOne();
@@ -173,7 +176,34 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::size_t failedDispatchCount() const noexcept;
 
+        /**
+         * @brief 派发时因「帧已停在终结点」被跳过的句柄数（本地与跨线程合并计数）
+         * @details 句柄入队之后、派发之前，帧可能已被别处提前恢复过并结束（持有者先就地首拍了
+         *          同一条句柄、或同一句柄被排了两次）：对停在终结点的协程 resume 是未定义行为
+         *          （Task 的 FinalAwaiter 会沿 continuation 再恢复一次已经结束的父协程）。本计数
+         *          让这类重复派发从静默 UB 变成可观测的账。与 failedDispatchCount() 同理，
+         *          本函数只读原子计数，因此任意线程可调。
+         * @return std::size_t 累计条数
+         */
+        [[nodiscard]] std::size_t skippedCompletedHandleCount() const noexcept;
+
     private:
+        /**
+         * @brief 记下一条被跳过的已完成句柄：先计数，再在首条时告警
+         * @note 只取上升沿（理由与 noteDispatchFailure() 相同）：句柄来源可能每批都命中，
+         *       逐条打等于把日志交给它刷。告警自身失败只吞掉告警，计数已经落定
+         */
+        void noteSkippedCompletedHandle() noexcept;
+
+        /**
+         * @brief 派发一条就绪协程：停在终结点上的帧只跳过、不恢复
+         * @details 四条派发路径（runOne() 的本地与跨线程分支、drainLocalTasks()、runAll() 的
+         *          批处理）都经这里收口：句柄在队列里的窗口期内，帧的状态不由队列掌握，
+         *          重复派发必须收敛成跳过而不是未定义行为。
+         * @param handle 待派发的句柄（调用方已保证非空，且运行在所属循环线程上）
+         */
+        void dispatchHandle(std::coroutine_handle<> handle);
+
         /**
          * @brief 记下一条被派发级守卫收下的抛出：先计数，再在首条时告警
          * @note 必须在 catch 块内调用（要取 std::current_exception() 的原文）。告警自身失败时
@@ -221,15 +251,16 @@ namespace AsynGyanis::Core
          */
         std::size_t drainLocalTasks(std::size_t budget);
 
-        std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
-        std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）
-        std::deque<std::coroutine_handle<>>  m_globalQueue;            ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
-        std::deque<std::function<void()>>    m_remoteCallables;        ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
-        std::mutex                           m_globalMutex;            ///< 保护全局队列与跨线程回调队列的互斥锁
-        std::atomic<size_t>                  m_globalCount{0};         ///< 全局队列长度（原子变量，用于快速判空）
-        std::atomic<size_t>                  m_remoteCallableCount{0}; ///< 跨线程回调条数（同上，用于快速判空）
-        std::atomic<std::size_t>             m_failedDispatchCount{0}; ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
-        Platform::EventNotifier             *m_wakeup{nullptr};        ///< 唤醒器指针，nullptr 表示未启用唤醒
-        EventLoop                           *m_ownerLoop{nullptr};     ///< 所属循环（非拥有），nullptr 表示未接线、不做线程判据
+        std::vector<std::coroutine_handle<>> m_localQueue;                     ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
+        std::deque<std::function<void()>>    m_localCallables;                 ///< 本地待执行代码（同上无锁，先进先出）
+        std::deque<std::coroutine_handle<>>  m_globalQueue;                    ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
+        std::deque<std::function<void()>>    m_remoteCallables;                ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
+        std::mutex                           m_globalMutex;                    ///< 保护全局队列与跨线程回调队列的互斥锁
+        std::atomic<size_t>                  m_globalCount{0};                 ///< 全局队列长度（原子变量，用于快速判空）
+        std::atomic<size_t>                  m_remoteCallableCount{0};         ///< 跨线程回调条数（同上，用于快速判空）
+        std::atomic<std::size_t>             m_failedDispatchCount{0};         ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
+        std::atomic<std::size_t>             m_skippedCompletedHandleCount{0}; ///< 派发时因帧已停在终结点被跳过的句柄数（任意线程可读，见 skippedCompletedHandleCount()）
+        Platform::EventNotifier             *m_wakeup{nullptr};                ///< 唤醒器指针，nullptr 表示未启用唤醒
+        EventLoop                           *m_ownerLoop{nullptr};             ///< 所属循环（非拥有），nullptr 表示未接线、不做线程判据
     };
 } // namespace AsynGyanis::Core
