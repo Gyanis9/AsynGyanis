@@ -306,8 +306,9 @@ namespace AsynGyanis::Net::Fuzz
          *          纯随机字节只会停在「首行凑不齐两个空格」那一层。所以先拼自洽骨架再变异：请求目标在
          *          普通路径、带查询、绝对形式、`*`、含空白与控制字符、超长这几档里轮转；头部条数 0..5，
          *          名与值偶尔掺控制字符或拍一段随机字节；正文形态轮转「无 / Content-Length 相符 /
-         *          声称比实给多 / 零长 / 分块合法 / 分块大小是垃圾 / 分块永不收尾 / 分块后带 trailer」——
-         *          这几档正是历史缺陷的形状（长度域与实际字节不符、分块大小溢出、收完之后的剩余字节）。
+         *          声称比实给多 / 零长 / 分块合法 / 分块大小是垃圾 / 分块永不收尾 / 分块后带 trailer /
+         *          urlencoded / JSON / multipart」——前八档是历史缺陷的形状，后三档专门配出触发头与
+         *          可解正文，让 Cookie / 表单 / multipart / JSON 四个已链解码器每轮都有机会真跑。
          */
         std::string makeHttp1RequestInput(DeterministicRandom &random)
         {
@@ -385,8 +386,15 @@ namespace AsynGyanis::Net::Fuzz
                 input += "Host: example.com\r\n";
             }
 
+            // 触发头：上面那张名字表只有 7 个、头部条数最多 5 条，模不出来 Cookie；而没有它，
+            // describeHttp1Request 里的 cookies() 调用恒走早退（「调用了」不等于「驱动了」）
+            if (random.nextBelow(2U) == 0U)
+            {
+                input += "Cookie: session=abc; theme=dark-mode\r\n";
+            }
+
             std::string body;
-            switch (const std::size_t framing = random.nextBelow(8U); framing)
+            switch (const std::size_t framing = random.nextBelow(11U); framing)
             {
                 case 1U:
                     input += "Content-Length: 5\r\n";
@@ -415,6 +423,24 @@ namespace AsynGyanis::Net::Fuzz
                     input += "Transfer-Encoding: chunked\r\n";
                     body = "5\r\nhello\r\n0\r\nX-Trail: 1\r\n\r\n"; // 收完还带 trailer 段
                     break;
+                case 8U:
+                    // 表单形态：urlencoded 的触发头与正文配对，formFields 的解析器才真跑
+                    input += "Content-Type: application/x-www-form-urlencoded\r\n";
+                    body = "a=1&b=%20two&empty=";
+                    input += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+                    break;
+                case 9U:
+                    // JSON 形态：jsonBody 走完整的配置值解析（对象、数组、null 三支都进）
+                    input += "Content-Type: application/json\r\n";
+                    body = "{\"a\":[1,2],\"b\":{\"c\":\"d\"},\"e\":null}";
+                    input += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+                    break;
+                case 10U:
+                    // multipart 形态：分段器跑到收尾边界才算解出，边界名与正文里成对
+                    input += "Content-Type: multipart/form-data; boundary=fuzzb\r\n";
+                    body = "--fuzzb\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--fuzzb--";
+                    input += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+                    break;
                 default:
                     break;
             }
@@ -434,7 +460,9 @@ namespace AsynGyanis::Net::Fuzz
 
         /// 一条解出的 HTTP/1 请求的可比对标识：方法、版本、路径、逐条头部、正文，以及四个已链进
         /// 闭包却从没被调用过的解码入口（Cookie / 表单 / multipart / JSON）的解码结果
-        std::string describeHttp1Request(const HttpRequest &request)
+        /// @param request 解出的请求
+        /// @param stats 分项命中账（可空）：四个解码器各自解出过东西才计数，供防空转断言判「真驱动了」
+        std::string describeHttp1Request(const HttpRequest &request, RunStats *stats)
         {
             std::string text =
                     std::to_string(static_cast<int>(request.method())) + '/' + request.httpVersion() + '/' + std::string(request.path()) + '/' + std::string(request.body());
@@ -443,15 +471,25 @@ namespace AsynGyanis::Net::Fuzz
             // HttpCookie.cpp 与 MultipartForm.cpp 本来就在模糊闭包里（fuzz-net.sh 列它们是为了链接期不报
             // 未定义符号），可这两个解码器一次都没被模糊器推到过——链上不等于覆盖。这里真调一遍，把解出的
             // 形状并进同一条可比对标识：解错或解崩都会当场体现在 trace 上，差分判据也就覆盖到这一段
-            for (const auto &cookie: request.cookies())
+            const std::vector<HttpCookie> cookies = request.cookies();
+            if (stats != nullptr && !cookies.empty())
+            {
+                ++stats->cookieDecodeHitCount;
+            }
+            for (const auto &cookie: cookies)
             {
                 text += " [cookie:" + cookie.name() + '=' + cookie.value() + ']';
             }
 
             // unordered_map 的两份实例不保证同序，直接拼会让「按值出口 vs 出参出口」那类比对出现假差异
+            const std::unordered_map<std::string, std::string> formFields = request.formFields();
+            if (stats != nullptr && !formFields.empty())
+            {
+                ++stats->formDecodeHitCount;
+            }
             std::vector<std::string> formPairs;
-            formPairs.reserve(request.formFields().size());
-            for (const auto &[name, value]: request.formFields())
+            formPairs.reserve(formFields.size());
+            for (const auto &[name, value]: formFields)
             {
                 formPairs.push_back(name + '=' + value);
             }
@@ -464,6 +502,10 @@ namespace AsynGyanis::Net::Fuzz
             // 段数与每段名足以逼 multipart 分段器跑完整条状态机；非法边界由它自己回空，不在这里判
             if (const auto multipart = request.multipartForm(); multipart.has_value())
             {
+                if (stats != nullptr)
+                {
+                    ++stats->multipartDecodeHitCount;
+                }
                 const auto &parts = multipart->parts();
                 text += " [multipart:" + std::to_string(parts.size()) + ']';
                 for (const auto &part: parts)
@@ -476,6 +518,10 @@ namespace AsynGyanis::Net::Fuzz
             // JSON 值模型太大且在本层之外验过，这里只要「解得开」这件事进 trace：语法错误回空，不进这一支
             if (request.jsonBody().has_value())
             {
+                if (stats != nullptr)
+                {
+                    ++stats->jsonDecodeHitCount;
+                }
                 text += " [json]";
             }
             return text;
@@ -489,7 +535,7 @@ namespace AsynGyanis::Net::Fuzz
          * @tparam Parser HttpParser
          */
         template<typename Parser>
-        RunTrace driveHttp1(Parser &parser, const std::string &input, const std::size_t chunkSize, std::string &errorText)
+        RunTrace driveHttp1(Parser &parser, const std::string &input, const std::size_t chunkSize, std::string &errorText, RunStats *stats)
         {
             RunTrace    trace;
             std::size_t offset = 0;
@@ -515,7 +561,7 @@ namespace AsynGyanis::Net::Fuzz
 
                 if (status == ParseStatus::Done)
                 {
-                    trace.frameKeys.push_back(describeHttp1Request(parser.request()));
+                    trace.frameKeys.push_back(describeHttp1Request(parser.request(), stats));
                     parser.reset(); // 流水线：一条报文解完即复位，剩余字节属于下一条
                     continue;
                 }
@@ -1130,7 +1176,7 @@ namespace AsynGyanis::Net::Fuzz
             case Target::Http1Request:
             {
                 HttpParser     wholeParser;
-                const RunTrace whole = driveHttp1(wholeParser, input, input.size(), errorText);
+                const RunTrace whole = driveHttp1(wholeParser, input, input.size(), errorText, stats);
                 collect(whole);
                 if (!errorText.empty())
                 {
@@ -1138,7 +1184,7 @@ namespace AsynGyanis::Net::Fuzz
                 }
 
                 HttpParser     byteWiseParser;
-                const RunTrace byteWise = driveHttp1(byteWiseParser, input, 1U, errorText);
+                const RunTrace byteWise = driveHttp1(byteWiseParser, input, 1U, errorText, stats);
                 if (!errorText.empty())
                 {
                     return errorText;
@@ -1165,7 +1211,7 @@ namespace AsynGyanis::Net::Fuzz
                 // I5 复位可用：同一个解析器 reset() 后必须还能解出一条完整请求（见 WebSocket 分支里同样的说明）
                 wholeParser.reset();
                 const std::string probe      = validInput(target);
-                const RunTrace    resetTrace = driveHttp1(wholeParser, probe, probe.size(), errorText);
+                const RunTrace    resetTrace = driveHttp1(wholeParser, probe, probe.size(), errorText, stats);
                 if (resetTrace.isEndedInError || resetTrace.frameKeys.empty())
                 {
                     return "reset() 后合法请求解不出报文（I5）";

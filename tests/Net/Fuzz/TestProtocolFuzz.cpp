@@ -98,9 +98,13 @@ namespace AsynGyanis::Net::Fuzz
         void runRandomRounds(const Target target, const std::uint64_t seed)
         {
             DeterministicRandom random(seed);
-            std::size_t         producedFrameCount = 0;
-            std::size_t         rejectedRoundCount = 0;
-            const int           roundCount         = randomRoundCount();
+            std::size_t         producedFrameCount      = 0;
+            std::size_t         rejectedRoundCount      = 0;
+            std::size_t         cookieDecodeHitCount    = 0;
+            std::size_t         formDecodeHitCount      = 0;
+            std::size_t         multipartDecodeHitCount = 0;
+            std::size_t         jsonDecodeHitCount      = 0;
+            const int           roundCount              = randomRoundCount();
 
             for (int round = 0; round < roundCount; ++round)
             {
@@ -114,6 +118,10 @@ namespace AsynGyanis::Net::Fuzz
                 }
                 producedFrameCount += stats.producedFrameCount;
                 rejectedRoundCount += stats.isErrorEnd ? 1U : 0U;
+                cookieDecodeHitCount += stats.cookieDecodeHitCount;
+                formDecodeHitCount += stats.formDecodeHitCount;
+                multipartDecodeHitCount += stats.multipartDecodeHitCount;
+                jsonDecodeHitCount += stats.jsonDecodeHitCount;
             }
 
             // 防空转：既要真解出过帧，也要真判过错。只有前者说明输入太规整（打不到拒绝分支），
@@ -123,6 +131,16 @@ namespace AsynGyanis::Net::Fuzz
             {
                 EXPECT_GT(producedFrameCount, 0U) << targetName(target) << " 全程没解出过一帧：输入生成器或驱动退化";
                 EXPECT_GT(rejectedRoundCount, 0U) << targetName(target) << " 全程没判过一次错：输入太规整，拒绝分支没被覆盖";
+            }
+
+            // HTTP/1 独有的一格：四个「已链进闭包」的解码器（Cookie / 表单 / multipart / JSON）必须真被
+            // 推到过——只补调用而不产触发头时这四个数恒为 0，F-6b 的四个调用就等于空转
+            if (target == Target::Http1Request && roundCount >= kAntiIdleMinimumRoundCount)
+            {
+                EXPECT_GT(cookieDecodeHitCount, 0U) << "全程没解出过一条 Cookie：生成器没产 Cookie 触发头，四个解码器的调用等于空转";
+                EXPECT_GT(formDecodeHitCount, 0U) << "全程没解出过一个表单字段：urlencoded 的触发头或正文没配上";
+                EXPECT_GT(multipartDecodeHitCount, 0U) << "全程没解出过一段 multipart：边界名与正文的成对关系断了";
+                EXPECT_GT(jsonDecodeHitCount, 0U) << "全程没解出过一份 JSON 正文：content-type 或正文没配上";
             }
         }
 

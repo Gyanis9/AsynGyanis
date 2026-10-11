@@ -95,6 +95,12 @@ namespace AsynGyanis::Net::Fuzz
     {
         std::size_t producedFrameCount{0}; ///< 本轮解出的帧数（HPACK 记解出的字段数）
         bool        isErrorEnd{false};     ///< 本轮是否以「拒绝」收场
+        /// HTTP/1 那四段「已链进闭包」的解码器真正解出过东西的次数（Cookie / 表单 / multipart / JSON）。
+        /// 生成器不产触发头时这四个数恒为 0——防空转断言据此把「调用了」升级成「驱动了」
+        std::size_t cookieDecodeHitCount{0};
+        std::size_t formDecodeHitCount{0};
+        std::size_t multipartDecodeHitCount{0};
+        std::size_t jsonDecodeHitCount{0};
     };
 
     /**
