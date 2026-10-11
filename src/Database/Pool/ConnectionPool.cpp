@@ -37,7 +37,8 @@ namespace AsynGyanis::Database
                                                              Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_created_total",
-                                                             "同 asyn_db_pool_connections_held（旧名，随 v2.4.0 发布过：留着不让既有面板断线，新面板请取 held）",
+                                                             "同 asyn_db_pool_connections_held（旧名，随 v2.4.0 发布过：留着不让既有面板断线，新面板请取 held）；"
+                                                             "**本 `_total` 是 Gauge（池收缩时会降），勿用 rate()**",
                                                              Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCreated.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connections_discarded_total",
