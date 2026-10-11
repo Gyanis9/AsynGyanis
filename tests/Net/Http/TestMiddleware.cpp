@@ -9,6 +9,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Gzip.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -1550,6 +1551,75 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(handlerCalls.load(), 0) << "解不了的编码不该因为正文没到齐就被放行";
         EXPECT_EQ(response.status(), 415);
+    }
+
+    /**
+     * @brief 解出来的正文进「在途正文字节」预算：链上可见、链后归还；超限按 503 收口
+     * @details E-5 钉的是「解出的缓冲不进账」这条缝：① 接了预算时，处理器在链上能看到预算是
+     *          解压后的量级（≥ 明文长度），链跑完归还归零——预留在中间件协程帧里，帧亡账销；
+     *          ② 预算不够时当场 503，**正文保持原样**（不换半份）、处理器不跑、残账归零。
+     *          对照即本组其余用例：不接预算时解压照常（那条路径整个不发生）。
+     */
+    TEST(RequestDecompressionMiddleware, DecompressedBodyEntersAndLeavesTheInflightBudget)
+    {
+        std::string payload;
+        while (payload.size() < 4000)
+        {
+            payload += R"({"items":[1,2,3],"note":"budget accounting needs a body worth counting"})";
+        }
+        const std::string compressed = gzipCompress(payload).value();
+        ASSERT_LT(compressed.size(), payload.size()) << "前提：这份正文真的被压缩过";
+
+        // ① 预算够：链上看得见、链后归还
+        {
+            HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+            request.addHeader("content-encoding", "gzip");
+            request.addHeader("content-length", std::to_string(compressed.size()));
+            request.setBody(compressed);
+
+            const auto            budget              = std::make_shared<HttpMemoryBudget>(1024U * 1024U);
+            std::size_t           reservedDuringChain = 0;
+            const TerminalHandler handler             = [&budget, &reservedDuringChain]() -> Core::Task<void>
+            {
+                reservedDuringChain = budget->reservedByteCount();
+                co_return;
+            };
+
+            MiddlewarePipeline pipeline;
+            pipeline.use(requestDecompressionMiddleware({}, budget));
+            HttpResponse response;
+            runPipeline(pipeline, request, response, handler);
+
+            EXPECT_GE(reservedDuringChain, 4000U) << "链上没看到解压后的字节进账：解出的缓冲又没记账";
+            EXPECT_EQ(std::string(request.body()), payload) << "解压本身照旧：记账不该改变交付";
+            EXPECT_EQ(budget->reservedByteCount(), 0U) << "中间件协程结束后没归还：这笔账会一路漏下去";
+        }
+
+        // ② 预算不够：503、正文不换、处理器不跑、无残账
+        {
+            HttpRequest request = makeRequest(HttpMethod::POST, "/ingest");
+            request.addHeader("content-encoding", "gzip");
+            request.addHeader("content-length", std::to_string(compressed.size()));
+            request.setBody(compressed);
+
+            const auto            tightBudget = std::make_shared<HttpMemoryBudget>(compressed.size() + 16U);
+            bool                  handlerRan  = false;
+            const TerminalHandler handler     = [&handlerRan]() -> Core::Task<void>
+            {
+                handlerRan = true;
+                co_return;
+            };
+
+            MiddlewarePipeline pipeline;
+            pipeline.use(requestDecompressionMiddleware({}, tightBudget));
+            HttpResponse response;
+            runPipeline(pipeline, request, response, handler);
+
+            EXPECT_EQ(response.status(), 503) << "解压后的正文超预算却放行了";
+            EXPECT_FALSE(handlerRan) << "超预算还往下走：业务会拿到一份不在账上的正文";
+            EXPECT_EQ(std::string(request.body()), compressed) << "被拒时正文不该换成解出的那半份";
+            EXPECT_EQ(tightBudget->reservedByteCount(), 0U) << "失败的预留留下了残账";
+        }
     }
 
     // ============================================================================

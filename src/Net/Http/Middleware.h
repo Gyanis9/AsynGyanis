@@ -18,6 +18,7 @@
 #include "Net/Http/Compression.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/TraceContext.h"
@@ -1334,12 +1335,16 @@ namespace AsynGyanis::Net
      *       自己解——把一段合法上传判成 400 比不解更坏。编码本身不合规那两档（链式、没有解码器）
      *       与正文到没到齐无关，照旧先判 415。
      * @param options 解压档位
+     * @param inflatedBodyBudget 解出来的正文要计入的「在途正文字节」预算，可为空；
+     *        三条会话收正文时各自记同一份预算（HttpServer::memoryBudget()），装配处把同一份传进来即可。
+     *        为空时解出的缓冲不进这份账——正文仍受会话侧**收进来那份**的约束，只是解压多出的那一截不在账上
      * @return MiddlewareFunc 中间件
      * @see compressionMiddleware()（响应方向的那一半）
      */
-    inline MiddlewareFunc requestDecompressionMiddleware(const RequestDecompressionOptions options = {})
+    inline MiddlewareFunc requestDecompressionMiddleware(const RequestDecompressionOptions options = {}, std::shared_ptr<HttpMemoryBudget> inflatedBodyBudget = nullptr)
     {
-        return [options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        return [options, inflatedBodyBudget = std::move(inflatedBodyBudget)](HttpRequest &request, HttpResponse &response,
+                                                                             const std::function<Core::Task<void>()> next) -> Core::Task<>
         {
             // 只看首条而不是合并视图：与出站那一份、bodySizeLimitMiddleware 同一口径
             const std::optional<std::string_view> declaredEncoding = request.firstHeaderValueView("content-encoding");
@@ -1399,6 +1404,17 @@ namespace AsynGyanis::Net
             }
 
             const std::size_t decodedByteCount = decompressed->size();
+
+            // 解出来的正文同样占「在途正文字节」预算（与三条会话收正文的同一条口径：growTo 只增不减，
+            // 压缩原文已腾出的空间照旧算着——保守方向）。超限按 503 收口，与会话侧「超预算立刻 503」
+            // 同一条判据；预留在本中间件协程帧里，链跑完随帧归还。没接预算（空）时这一步整个不发生
+            HttpMemoryBudget::Reservation inflatedBodyReservation(inflatedBodyBudget.get());
+            if (inflatedBodyReservation.hasBudget() && !inflatedBodyReservation.growTo(decodedByteCount))
+            {
+                reject(503, "Service Unavailable", "解压后的请求正文超出全局在途正文预算（与会话侧同一条账），已按 503 收口");
+                co_return;
+            }
+
             // 先换正文再改头部：decompressed 是独立缓冲，视图不指向 request.body()，两步之间没有悬垂
             request.setBody(std::move(decompressed.value()));
             request.removeHeader("content-encoding");
