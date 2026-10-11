@@ -26,13 +26,15 @@ namespace AsynGyanis::Database
      *
      * @details 所有超时/间隔类字段均使用 size_t 以避免符号转换警告，
      *          实际取值不应超过 uint64_t 上限（默认值为通用服务场景取值）。
-     * @warning 本结构有**四个** 0 值，含义各不相同，且都写在取值那一行而不是靠猜：
+     * @warning 本结构有**五个** 0 值，含义各不相同，且都写在取值那一行而不是靠猜：
      *          idleTimeoutSeconds 为 0 = 该项不生效（不因空闲被驱逐）；
      *          maximumLifetimeSeconds 为 0 = 每条连接一归还就过期（等于禁用复用）——这是刻意留出来的
      *          （微基准的 churn 形态与若干用例都靠它构造「每次归还都丢弃」），想「不限存活期」请给一个
      *          足够大的值，别填 0；maximumPoolSize 为 0 = 不允许创建任何连接（每条借出都拿空）；
-     *          acquireTimeoutMilliseconds 为 0 = 不排队，两次乐观尝试后立即返回空。
-     *          最后这一条与 `Database` 里其余超时字段的读法**相反**（MySQL/Redis 的 connectTimeout 与
+     *          acquireTimeoutMilliseconds 为 0 = 不排队，两次乐观尝试后立即返回空；
+     *          maximumWaitingRequests 为 0 = 同样不排队——等待名额判据是「合计等待数 >= 上限」，
+     *          0 让该式恒真，两条取出路径都直接空手返回。
+     *          最后这两条与 `Database` 里其余超时字段的读法**相反**（MySQL/Redis 的 connectTimeout 与
      *          queryTimeout 都把非正值读成「不超时」），因为这里的 0 是「等不起」而不是「不限等待」——
      *          一个无限的借用时限会把调用方的协程永久挂住，那不是任何配置想要的意思。
      */
@@ -51,6 +53,13 @@ namespace AsynGyanis::Database
         /// 超出即在 ConnectionPool 构造时被拒绝——这条时长要直接加到 `steady_clock::now()` 上，
         /// 越过 2^63 会绕成负时长，两条等待路径算出的截止时刻都落在「现在之前」：配得越大反倒一条都不等
         std::size_t acquireTimeoutMilliseconds = 5000;
+        /// 等待获取的连接数上限（同步等待与协程等待的**合计**）：到顶后新来的借用请求不再排队、
+        /// 立即空手返回（含异步路径：不挂起）。队列的深度由请求到达速率与 acquireTimeoutMilliseconds
+        /// 相乘决定，坏日子里它是一条不受池容量约束的内存放大路径——这条上限把它封在「默认池容量
+        /// （32）的两倍」这一档：至多两轮轮换的排队深度，再深说明请求方该降级而不是继续等。
+        /// 0 表示不排队（见上面 0 值清单）。命中它意味着池容量或下游耗时出了问题，
+        /// 要修的是那一头，不该靠调大这个数绕开
+        std::size_t maximumWaitingRequests = 64;
     };
 
 } // namespace AsynGyanis::Database

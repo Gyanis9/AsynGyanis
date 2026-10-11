@@ -21,7 +21,7 @@ namespace AsynGyanis::Database
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
-        // 登记的七条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
+        // 登记的八条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
         // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
         // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
         // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
@@ -50,6 +50,11 @@ namespace AsynGyanis::Database
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_borrow_timeouts_total", "等到截止时刻仍没拿到连接的次数（停摆期与不等待的取用不计）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_borrowTimeoutCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_waiting_rejections_total",
+                                                             "等待名额已满（maximumWaitingRequests）而不再排队的借出次数（同步与协程合并，当场空手、不等待）。"
+                                                             "它与 borrow_timeouts_total 分开：这里根本没等，混进去会把「池不够用」这个容量信号打成假的",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_waitingRejectedCount.load(std::memory_order_relaxed)); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_session_reset_failures_total",
                                                              "归还时驱动报告「会话没复位干净」而被丢弃的连接数：它是 connections_discarded_total 的一个子集，"
                                                              "专指「驱动清不掉上一个借用者留下的状态」那一条去向。其余去向各有成因——对端掐线与到轮换期属正常生命周期，"
@@ -173,62 +178,83 @@ namespace AsynGyanis::Database
         // 同一口径（本函数此前只判了失联，睡在栈里过了存活期的那条会直接被交给刚被唤醒的借用者）
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
 
-        std::unique_ptr<DatabaseConnection> connection;
+        // 等待名额判据（见 PoolConfig::maximumWaitingRequests）：两次乐观尝试都没拿到、且合计等待数
+        // 已到上限时，本次借出不再排队、当场空手返回——宁可快速失败让调用方降级，也不排一条
+        // 只会等满 acquireTimeout 的队。合计判据带一次瞬时误差：异步那份计数在 m_asyncMutex 下
+        // 维护，两把锁按约定不互相嵌套（次序见 wakeWaitersForFreedSlot），因此两个原子读数之间
+        // 必然差着此刻正在入表/摘表的那一两位；安全阀方向取「宁可多放进几个」——误放只多一点内存，
+        // 误杀会白白掐掉一个本来能等到连接的业务请求
+        bool isWaitingRefused = false;
         {
-            std::unique_lock lock(m_mutex);
-            m_syncWaitingCount.fetch_add(1);
-
-            while (!m_isShuttingDown.load(std::memory_order_acquire))
-            {
-                // 出锁再取：tryAcquireOrCreateInternal 自己会拿 m_mutex（握着它再拿一次就是同线程二次
-                // 加锁），而它内部的建连与丢弃都是会阻塞的调用
-                lock.unlock();
-                connection = tryAcquireOrCreateInternal();
-                lock.lock();
-                if (connection || m_isShuttingDown.load(std::memory_order_acquire))
-                {
-                    break;
-                }
-                // 复检一次空闲栈再决定睡不睡：出锁试一轮的空档里可能已经有人归还入栈，而那一次
-                // notify_one 正好落在这位借用者「还没睡下」的时刻——条件变量不会补发，通知就此丢掉。
-                // 只把通知挪进锁内堵不住这个窗口（等待侧本来就不在队列里），必须两侧配成一对
-                if (!m_idleStack.empty())
-                {
-                    continue;
-                }
-                // 每次醒来重试一轮：唤醒源是「有人归还入栈」「有人丢弃腾出名额」与池停摆三处
-                if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
-                {
-                    break;
-                }
-            }
-
-            // 记账必须排在「同步等待者计数减一」之前且留在锁内：池析构等的就是这条计数归零，计数一降
-            // 它随时可能把本对象释放掉，此后再碰任何成员都是踩已释放内存（TSan 实测报出过一次）。
-            // 第一、二段的成功返回各记自己那一次，这里只负责等待段的出口
-            if (connection)
-            {
-                m_activeCount.fetch_add(1);
-            } else if (!m_isShuttingDown.load(std::memory_order_acquire))
-            {
-                // 只记「等到截止时刻仍空手」：停摆期空手是正常收尾，混进来会让这道容量指标在每次
-                // 优雅停机时虚涨
-                m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
-            }
-
-            m_syncWaitingCount.fetch_sub(1);
-            // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
-            m_idleCondition.notify_all();
+            const std::lock_guard lock(m_mutex);
+            isWaitingRefused = m_syncWaitingCount.load(std::memory_order_relaxed) + m_asyncWaitingCount.load(std::memory_order_relaxed) >= m_config.maximumWaitingRequests;
+        }
+        if (isWaitingRefused)
+        {
+            // 计数与告警放在锁外：日志通路可能阻塞，不能带进 m_mutex
+            noteWaitingRefusal();
+            return {};
         }
 
+        std::unique_ptr<DatabaseConnection> connection = waitForConnectionUnderDeadline(deadline);
         if (!connection)
         {
             // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常。
-            // 账已在锁内记过，这里只交出空的包装
+            // 账已在等待段记过，这里只交出空的包装
             return {};
         }
 
         return PooledConnection(std::move(connection), this);
+    }
+
+    std::unique_ptr<DatabaseConnection> ConnectionPool::waitForConnectionUnderDeadline(const std::chrono::steady_clock::time_point deadline)
+    {
+        std::unique_ptr<DatabaseConnection> connection;
+        std::unique_lock                    lock(m_mutex);
+        m_syncWaitingCount.fetch_add(1);
+
+        while (!m_isShuttingDown.load(std::memory_order_acquire))
+        {
+            // 出锁再取：tryAcquireOrCreateInternal 自己会拿 m_mutex（握着它再拿一次就是同线程二次
+            // 加锁），而它内部的建连与丢弃都是会阻塞的调用
+            lock.unlock();
+            connection = tryAcquireOrCreateInternal();
+            lock.lock();
+            if (connection || m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                break;
+            }
+            // 复检一次空闲栈再决定睡不睡：出锁试一轮的空档里可能已经有人归还入栈，而那一次
+            // notify_one 正好落在这位借用者「还没睡下」的时刻——条件变量不会补发，通知就此丢掉。
+            // 只把通知挪进锁内堵不住这个窗口（等待侧本来就不在队列里），必须两侧配成一对
+            if (!m_idleStack.empty())
+            {
+                continue;
+            }
+            // 每次醒来重试一轮：唤醒源是「有人归还入栈」「有人丢弃腾出名额」与池停摆三处
+            if (m_idleCondition.wait_until(lock, deadline) == std::cv_status::timeout)
+            {
+                break;
+            }
+        }
+
+        // 记账必须排在「同步等待者计数减一」之前且留在锁内：池析构等的就是这条计数归零，计数一降
+        // 它随时可能把本对象释放掉，此后再碰任何成员都是踩已释放内存（TSan 实测报出过一次）。
+        // 取出主流程的第一、二段各记自己那一次，这里只负责等待段的出口
+        if (connection)
+        {
+            m_activeCount.fetch_add(1);
+        } else if (!m_isShuttingDown.load(std::memory_order_acquire))
+        {
+            // 只记「等到截止时刻仍空手」：停摆期空手是正常收尾，混进来会让这道容量指标在每次
+            // 优雅停机时虚涨
+            m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        m_syncWaitingCount.fetch_sub(1);
+        // 池析构可能在等最后一位同步等待者离开（它睡在同一把 m_idleCondition 上等计数归零）
+        m_idleCondition.notify_all();
+        return connection;
     }
 
     // ========================================================================
@@ -252,6 +278,14 @@ namespace AsynGyanis::Database
             if (awaiter.m_isQueueingFailed)
             {
                 LOG_ERROR("ConnectionPool: 异步借出排队时分配失败（恢复票据或等待表建不出来），本次借出按空手收尾，不计入超时");
+                co_return std::move(result);
+            }
+
+            // 等待名额已满：不再重挂（重挂只会立刻再撞一次同一道判据），按空手结账并落账。
+            // 同样不计入超时账：截止时刻根本没到
+            if (awaiter.m_isWaitingCapReached)
+            {
+                noteWaitingRefusal();
                 co_return std::move(result);
             }
 
@@ -359,6 +393,16 @@ namespace AsynGyanis::Database
             m_result = m_pool->tryAcquireInternal();
             if (m_result)
             {
+                return false;
+            }
+
+            // 等待名额判据（与同步 acquire() 同一条、同一笔计数）：合计等待数已到上限就不再入表，
+            // 置标记按空手收尾——acquireAsync() 看到标记会直接结账，不会另造等待体重走这一步。
+            // 合计判据带一次瞬时误差（同步那份计数在 m_mutex 下维护，两把锁按约定不互相嵌套），
+            // 安全阀方向取「宁可多放进几个」：误放只多一点内存，误杀会白白掐掉一个本可等到连接的请求
+            if (m_pool->m_asyncWaiters.size() + m_pool->m_syncWaitingCount.load(std::memory_order_relaxed) >= m_pool->m_config.maximumWaitingRequests)
+            {
+                m_isWaitingCapReached = true;
                 return false;
             }
             // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据。
@@ -669,6 +713,32 @@ namespace AsynGyanis::Database
     std::size_t ConnectionPool::borrowTimeoutCount() const noexcept
     {
         return m_borrowTimeoutCount.load(std::memory_order_relaxed);
+    }
+
+    std::size_t ConnectionPool::waitingRejectedCount() const noexcept
+    {
+        return m_waitingRejectedCount.load(std::memory_order_relaxed);
+    }
+
+    void ConnectionPool::noteWaitingRefusal() noexcept
+    {
+        // 计数排在告警之前：持续涌入的请求方会条条命中，不该因为日志通路出问题而丢账
+        const std::size_t ordinal = m_waitingRejectedCount.fetch_add(1, std::memory_order_relaxed);
+        if (ordinal != 0)
+        {
+            // 只取上升沿：与调度器两条饱和计数同一口径
+            return;
+        }
+
+        try
+        {
+            LOG_WARN_FMT("ConnectionPool: 等待借出的请求数已达上限（{}），本条借出不再排队、当场空手返回；"
+                         "此后同类只计数不再逐条告警。命中它意味着池容量或下游耗时出了问题——要修的是那一头",
+                         m_config.maximumWaitingRequests);
+        } catch (...)
+        {
+            // 日志通路自己失败时只吞掉这条告警：计数已经落定
+        }
     }
 
     // ========================================================================

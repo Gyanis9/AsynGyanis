@@ -102,9 +102,12 @@ namespace AsynGyanis::Database
          *          忙时等待最多 acquireTimeoutMs 毫秒，超时返回空；等待期间每次被叫醒都会重走一遍
          *          「从栈里取（判过期与判存活）／未达上限就新建」，因此任何一次腾出名额——包括
          *          归还的那条被判失联或过存活期而当场丢弃——都能把等待者救出来，不必白等满超时。
+         *          合计等待数已达 PoolConfig::maximumWaitingRequests 时**不排队**：两次乐观尝试
+         *          之后直接返回空（宁可快速失败让调用方降级，也不排一条只会等满超时的队），
+         *          该情形计入 waitingRejectedCount()，不混进借出超时账。
          *
          * @return PooledConnection 持有有效连接时 operator bool() 返回 true；
-         *         超时或创建失败时返回空
+         *         超时、创建失败或等待名额已满时返回空
          */
         PooledConnection acquire();
 
@@ -128,6 +131,8 @@ namespace AsynGyanis::Database
          * @note 与同步 acquire() 同口径：等待中被叫醒（有人归还入栈、也有人把连接判失联或过存活期
          *       当场丢弃而腾出名额）后都会再走一遍「从栈里取 / 未达上限就新建」，两种取法的
          *       过期与失联判定一致，因此过期的连接不会被直接交接给协程。
+         * @note 合计等待数已达 PoolConfig::maximumWaitingRequests 时**不挂起**：与同步路径同一条
+         *       判据、同一笔 waitingRejectedCount() 计数，当场以空连接收尾（也不记进借出超时账）
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
 
@@ -165,6 +170,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 当前等待获取的连接数（同步 + 异步等待者总数）
+         * @details 上限见 `PoolConfig::maximumWaitingRequests`：触顶后新来的借用请求直接空手
+         *          返回、不进入本数（被拒次数看 `waitingRejectedCount()`）。
          * @return std::size_t 等待获取的连接数
          */
         [[nodiscard]] std::size_t waitingCount() const noexcept;
@@ -206,6 +213,17 @@ namespace AsynGyanis::Database
          * @return std::size_t 借出超时次数
          */
         [[nodiscard]] std::size_t borrowTimeoutCount() const noexcept;
+
+        /**
+         * @brief 因等待名额已满（`PoolConfig::maximumWaitingRequests`）而不再排队的借出次数
+         * @details 同步与异步两条取出路径共用这一笔：两者都是「两次乐观尝试之后没等到位置，
+         *          当场空手返回」。被拒**不等待**，因此刻意不混进 borrowTimeoutCount()——
+         *          混进去会让「池不够用」这个容量信号在队列封顶后反而失真。它与
+         *          `waitingCount()` 对着读可分诊：等待数贴着上限、本数在涨 = 队列成了瓶颈，
+         *          该看的是池容量与下游耗时。
+         * @return std::size_t 被拒次数
+         */
+        [[nodiscard]] std::size_t waitingRejectedCount() const noexcept;
 
         // ========================================================================
         // 内部接口（被 PooledConnection 调用）
@@ -355,7 +373,10 @@ namespace AsynGyanis::Database
             bool                                m_inList{false}; ///< 是否已加入等待列表，用于析构时判断
             /// 排队这一步是否分配失败：`await_suspend` 的 catch 置真，`acquireAsync()` 据此按空手收尾
             /// 而不再重挂（内存持续吃紧时重挂就是「造票据→抛出→再造」的空转，一直转到截止时刻为止）
-            bool                                  m_isQueueingFailed{false};
+            bool m_isQueueingFailed{false};
+            /// 等待名额已满（`maximumWaitingRequests`）而没有入表：`acquireAsync()` 据此按空手收尾。
+            /// 与 m_isQueueingFailed 分开记是因为成因不同——这一格是容量信号、那格是内存信号
+            bool                                  m_isWaitingCapReached{false};
             std::shared_ptr<ResumeTicket>         m_resumeTicket; ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
             std::chrono::steady_clock::time_point m_deadline{};   ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
         };
@@ -380,6 +401,17 @@ namespace AsynGyanis::Database
          * @return std::unique_ptr<DatabaseConnection> 获取成功返回连接，否则空
          */
         std::unique_ptr<DatabaseConnection> tryAcquireInternal() noexcept;
+
+        /**
+         * @brief 同步等待路径：睡到拿到连接、截止时刻到或池停摆，全程负责等待者记账
+         * @details 从 acquire() 抽出的理由：一段「出锁试一轮、回锁复检、睡到截止时刻」的循环
+         *          内嵌在取出主流程里，主流程就再看不见自己的三段形状了（复杂度门对函数体行数
+         *          的上限也在盯这件事）。语义一字未动——调用方必须已确认过等待名额（计数与上限
+         *          判据留在 acquire()），本方法只管等待本身
+         * @param deadline 本次借出的截止时刻（由 acquire() 一次算定，重试轮次不顺延）
+         * @return 连接；空手返回表示等满截止时刻或池已停摆（超时账在本方法内记，停摆不计）
+         */
+        std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadline(std::chrono::steady_clock::time_point deadline);
 
         /**
          * @brief 创建新连接（调用工厂 + connect）
@@ -477,6 +509,13 @@ namespace AsynGyanis::Database
         void expireTimedOutWaiters() noexcept;
 
         /**
+         * @brief 记一次「等待名额已满、借出被拒」：计数 + 首条告警
+         * @note 只取上升沿（告警一次）：队列封顶意味着请求方在持续涌入，逐条打等于把日志
+         *       交给它刷；计数在锁外自增，不与任何一把池锁嵌套
+         */
+        void noteWaitingRefusal() noexcept;
+
+        /**
          * @brief 取存活令牌的副本（供 PooledConnection 归还时判活）
          * @return std::shared_ptr<PoolLiveness> 与池共享的令牌；池析构前会先置假
          */
@@ -510,8 +549,9 @@ namespace AsynGyanis::Database
         /// 归还时那一格空闲栈没分配出来则是内存吃紧——它只在丢弃这本账上留痕，别混进那两类里去读。
         /// 混在总数里的话，现场只看得到「丢弃在涨」，分不清是轮换到了还是有人在还脏连接
         std::atomic<std::size_t> m_sessionResetFailures{0};
-        std::atomic<std::size_t> m_syncWaitingCount{0};   ///< 同步等待者数量
-        std::atomic<std::size_t> m_borrowTimeoutCount{0}; ///< 借出超时次数：只记「等到截止时刻仍空手」，停摆与 tryAcquire 不计
+        std::atomic<std::size_t> m_syncWaitingCount{0};     ///< 同步等待者数量
+        std::atomic<std::size_t> m_borrowTimeoutCount{0};   ///< 借出超时次数：只记「等到截止时刻仍空手」，停摆与 tryAcquire 不计
+        std::atomic<std::size_t> m_waitingRejectedCount{0}; ///< 等待名额满被拒次数：不排队、当场空手的借出（两条取出路径合并）
 
         // ----- 异步等待列表（受 m_asyncMutex 保护） -----
         mutable std::mutex           m_asyncMutex;   ///< 保护异步等待列表
@@ -530,12 +570,12 @@ namespace AsynGyanis::Database
         std::jthread m_healthThread; ///< 后台健康检查线程
 
         /**
-         * @brief 七条池内读数挂在进程级指标注册表上的把手
+         * @brief 八条池内读数挂在进程级指标注册表上的把手
          * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
          *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
          *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */
-        std::array<Core::ProcessMetricHandle, 7> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 8> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database

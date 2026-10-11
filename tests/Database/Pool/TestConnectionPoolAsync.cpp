@@ -12,6 +12,7 @@
 // - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
 // - WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
 // - AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
+// - RefusedByWaitingCapSettlesEmptyWithoutSuspending（等待名额满时不挂起、当场空手收尾并落账，先到的等待者不被顶掉）
 // - WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
 // - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
 // - AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
@@ -303,6 +304,65 @@ namespace AsynGyanis::Database
         EXPECT_EQ(pool.createdCount(), 1U) << "空手收尾不该再建一条连接";
 
         loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 钉住异步侧同一条等待名额上限：名额满时不挂起，当场空手收尾并落账
+     *
+     * @details 「当场」由探针的 finished 标记证明：正常慢路径在这一步会挂起、要等归还才完成，
+     *          而名额满的这一次必须在 resume() 返回时就已完成（且恢复点就在调用线程上，
+     *          没有线程切换）。已在场的等待者不许被这次拒绝动到；被拒也不进超时账——
+     *          队列封顶后「池不够用」这个容量信号要还认得出。
+     */
+    TEST(ConnectionPoolAsync, RefusedByWaitingCapSettlesEmptyWithoutSuspending)
+    {
+        ConnectionCounter counter;
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 5000; // 先到的等待者一直挂着，直到用例放行
+        configuration.maximumWaitingRequests     = 1;    // 只放行一位等待者
+
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        // 甲：占住唯一等待名额（挂起在等待表里，等归还）
+        AcquireProbe     firstProbe;
+        Core::Task<void> firstDriver = probeAcquireAsync(pool, loopThread.loop(), firstProbe);
+        firstDriver.handle().resume();
+        ASSERT_TRUE(waitForCondition([&pool]() { return pool.waitingCount() == 1; })) << "先到的协程没有挂上：用例前提不成立";
+        ASSERT_FALSE(firstProbe.finished.load(std::memory_order_acquire));
+
+        // 乙：等待名额已满——不挂起，当场以空连接收尾
+        AcquireProbe     secondProbe;
+        Core::Task<void> secondDriver = probeAcquireAsync(pool, loopThread.loop(), secondProbe);
+        secondDriver.handle().resume();
+
+        ASSERT_TRUE(secondProbe.finished.load(std::memory_order_acquire)) << "名额满的异步借出挂起了：它应当当场空手收尾";
+        ASSERT_TRUE(secondProbe.connection.has_value());
+        EXPECT_FALSE(static_cast<bool>(secondProbe.connection.value())) << "当场收尾应当交回空连接";
+        EXPECT_EQ(secondProbe.resumeThreadId, std::this_thread::get_id()) << "没挂起意味着没有线程切换";
+        EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "被拒的借出没有落账";
+        EXPECT_EQ(pool.waitingCount(), 1U) << "拒绝动了在场的等待者（顶掉或提前叫醒）";
+        EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "当场被拒被记进借出超时账：容量信号失真";
+        EXPECT_EQ(pool.createdCount(), 1U) << "被拒的借出不该再建连接";
+
+        // 放行甲：它拿到归还的连接，被拒数保持不动
+        occupying.release();
+        ASSERT_TRUE(waitForCondition([&firstProbe]() { return firstProbe.finished.load(std::memory_order_acquire); })) << "归还之后甲没被叫醒";
+        EXPECT_TRUE(firstProbe.connection.value()) << "甲应当拿到刚归还的连接";
+        EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "后续正常借出也被计入被拒数";
+
+        loopThread.parkDriver(std::move(firstDriver));
+        loopThread.parkDriver(std::move(secondDriver));
     }
 
     /** @brief 钉住池析构就地唤醒等待者并交回空连接，不把它永久挂在等待列表上 */

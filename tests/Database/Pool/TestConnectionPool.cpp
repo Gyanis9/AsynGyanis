@@ -14,6 +14,7 @@
 // - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
 // - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
 // - WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
+// - RefusesBorrowWhenWaitingSlotsAreFull：等待名额满（maximumWaitingRequests）后新借出当场被拒并落账，在场的等待者不被顶掉
 // - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 // - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
@@ -261,8 +262,68 @@ namespace AsynGyanis::Database
         }
 
         // ========================================================================
-        // AcquireTimeout
+        // WaitingCap
         // ========================================================================
+
+        /**
+         * @brief 钉住等待名额上限：名额满了之后新来的借出不再排队，当场空手返回并落账
+         * @details 判据全是「先后 + 计数」而不是掐表：被拒的那次返回时，先到的等待者必须仍在
+         *          等待（既没被顶掉、也没被叫醒）——它之后拿到连接，把「拒绝」与「挤掉别人」
+         *          两种走法分开。被拒还要能跟「排队等满超时」分开看：拒绝不计入
+         *          borrowTimeoutCount()，否则队列封顶之后「池不够用」这个容量信号反而失真。
+         *          最后钉一格正向对照：归还放行后甲拿到连接，被拒数不再动
+         */
+        TEST(ConnectionPool, RefusesBorrowWhenWaitingSlotsAreFull)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+
+            PoolConfig configuration;
+            configuration.maximumPoolSize            = 1;
+            configuration.maximumLifetimeSeconds     = 3600;
+            configuration.idleTimeoutSeconds         = 3600;
+            configuration.healthCheckIntervalSeconds = 3600; // 后台驱逐不参与本用例的时序
+            configuration.acquireTimeoutMilliseconds = 5000; // 先到的等待者一直挂着，直到用例放行
+            configuration.maximumWaitingRequests     = 1;    // 只放行一位等待者
+
+            ConnectionPool pool(factory, configuration);
+
+            PooledConnection occupying = pool.acquire();
+            ASSERT_TRUE(occupying);
+
+            // 线程甲：占住那唯一一个等待名额（归还之前它会一直等）
+            std::atomic<bool> waiterGotIt{false};
+            std::thread       waiterThread(
+                    [&pool, &waiterGotIt]
+                    {
+                        const PooledConnection got = pool.acquire();
+                        waiterGotIt.store(static_cast<bool>(got), std::memory_order_relaxed);
+                    });
+
+            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            ASSERT_EQ(pool.waitingCount(), 1U) << "先到的等待者没有挂上：用例前提不成立";
+
+            // 本线程（乙）：等待名额已满——当场空手返回，且不许动甲
+            const PooledConnection refused = pool.acquire();
+            EXPECT_FALSE(refused) << "等待名额已满的借出没有当场被拒（要么排了队、要么等到了东西）";
+            EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "被拒的借出没有落账";
+            EXPECT_EQ(registryValue("asyn_db_pool_waiting_rejections_total"), 1U) << "被拒数没有出现在进程级导出里";
+            EXPECT_EQ(pool.waitingCount(), 1U) << "拒绝动了在场的等待者（顶掉或提前叫醒）";
+            EXPECT_FALSE(waiterGotIt.load(std::memory_order_relaxed)) << "甲还没等到归还就被放走了";
+            EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "当场被拒被记进借出超时账：容量信号失真";
+            EXPECT_EQ(counter.totalCreated.load(), 1) << "被拒的借出不该再建连接";
+
+            // 放行：甲拿到连接，被拒数保持不动
+            occupying.release();
+            waiterThread.join();
+            EXPECT_TRUE(waiterGotIt.load(std::memory_order_relaxed)) << "归还之后甲没被叫醒：被拒的程序动到了归还路径";
+            EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "后续正常借出也被计入被拒数";
+        }
+
 
         /**
          * @brief 容量为 0（工厂可创建但池不让建），超时内拿不到，返回空
@@ -1155,10 +1216,13 @@ namespace AsynGyanis::Database
         configuration.maximumPoolSize = 2;
 
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_borrow_timeouts_total"));
+        ASSERT_FALSE(hasRegistrySample("asyn_db_pool_waiting_rejections_total"));
         {
             ConnectionPool pool(factory, configuration);
             EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U);
             EXPECT_TRUE(hasRegistrySample("asyn_db_pool_connections_created_total"));
+            // 被拒数这条与超时数同样单开：拒绝根本没等，混进超时账会把「池不够用」的信号打成假的
+            EXPECT_EQ(registryValue("asyn_db_pool_waiting_rejections_total"), 0U) << "没人被拒的池不该在这条上留下读数";
 
             {
                 const PooledConnection borrowed = pool.acquire();
@@ -1190,6 +1254,7 @@ namespace AsynGyanis::Database
         }
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_active_connections")) << "池析构后这几条还挂在导出里";
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_session_reset_failures_total")) << "池析构后这几条还挂在导出里";
+        EXPECT_FALSE(hasRegistrySample("asyn_db_pool_waiting_rejections_total")) << "池析构后这几条还挂在导出里";
     }
 
     /**
