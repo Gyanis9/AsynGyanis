@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "7aefdde0e2b36a2505909131f3b53d1324eb55c6"
+      "revision": "afa03f7f1092f914e6d11c585ac77995d67914fe"
     },
     "views": [
       {
@@ -73,9 +73,9 @@
       "label": "ConnectionPool",
       "sublabel": "空闲栈 LIFO",
       "sources": [
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 147, "label": "acquire 三段" },
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 174, "label": "acquireTimeout" },
-        { "path": "src/Database/Pool/PoolConfig.h", "line": 41, "end_line": 43, "label": "32 / 5000ms / 四个 0" }
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 152, "label": "acquire 三段" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 179, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/PoolConfig.h", "line": 43, "end_line": 45, "label": "32 / 5000ms / 五个 0" }
       ]
     },
     {
@@ -168,7 +168,7 @@
       "items": [
         "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:961、ConnectionPool 的 acquireStatementLock）",
         "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:79、81、104）",
-        "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有四个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空（PoolConfig.h:29-37）"
+        "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有五个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空、maximumWaitingRequests 0=同样不排队（PoolConfig.h:29-39）"
       ]
     },
     {
