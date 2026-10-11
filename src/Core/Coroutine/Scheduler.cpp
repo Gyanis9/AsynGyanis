@@ -158,16 +158,12 @@ namespace AsynGyanis::Core
         return false;
     }
 
-    void Scheduler::runAll()
+    void Scheduler::drainLocalTasks()
     {
-        assertLocalQueueUse("Scheduler::runAll()");
-        // 第一阶段：排空本地待执行代码与本地队列。两段都反复回到开头，因为前一段执行期间
-        // 可能又投来新的代码（例如定时器在恢复途中又判出新的到期项）
-        //
-        // 逐条兜住：这一段原先没有守卫，而同函数里第二趟的同一份本地排空（见下面「批量处理期间
-        // 可能重新产生本地任务」那段）是兜住的——同一条循环因此对本地投递与跨线程投递给出两种
-        // 失败语义。少兜的那一种会让一条抛出的本地投递直接穿出 runAll，落到事件循环的泵上，
-        // 而剩余尚未执行的本地代码会连同其持有物一起被静默析构。
+        // 两处调用点（runAll 的第一阶段与批量处理后的补排空）都要反复回到开头，因为执行期间可能
+        // 又投来新的代码（例如定时器在恢复途中又判出新的到期项）；两处都逐条经 runGuarded 兜住——
+        // 少兜的那一种会让一条抛出的本地投递直接穿出 runAll 落到事件循环的泵上，剩余尚未执行的
+        // 本地代码会连同其持有物一起被静默析构
         while (true)
         {
             while (!m_localCallables.empty())
@@ -184,6 +180,13 @@ namespace AsynGyanis::Core
             m_localQueue.pop_back();
             runGuarded([handle] { handle.resume(); });
         }
+    }
+
+    void Scheduler::runAll()
+    {
+        assertLocalQueueUse("Scheduler::runAll()");
+        // 第一阶段：排空本地待执行代码与本地队列
+        drainLocalTasks();
 
         // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；累计取件数不超过
         // kMaximumRemoteItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
@@ -254,22 +257,7 @@ namespace AsynGyanis::Core
             }
 
             // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）
-            while (true)
-            {
-                while (!m_localCallables.empty())
-                {
-                    std::function<void()> callable = std::move(m_localCallables.front());
-                    m_localCallables.pop_front();
-                    runGuarded(callable);
-                }
-                if (m_localQueue.empty())
-                {
-                    break;
-                }
-                const auto handle = m_localQueue.back();
-                m_localQueue.pop_back();
-                runGuarded([handle] { handle.resume(); });
-            }
+            drainLocalTasks();
 
             // 本趟累计取件数已到上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
             if (takenTotalCount >= kMaximumRemoteItemsPerPass)

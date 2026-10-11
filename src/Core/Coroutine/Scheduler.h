@@ -208,6 +208,15 @@ namespace AsynGyanis::Core
          */
         void assertLocalQueueUse(const char *operation) const;
 
+        /**
+         * @brief 排空本地待执行代码与本地队列，逐条经派发级守卫执行
+         * @details runAll() 的第一阶段与「批量处理期间可能重新产生本地任务」的补排空共用这一段：
+         *          两处都要反复回到开头（执行期间可能又投来新的代码），且都逐条兜住抛出——
+         *          少兜的那一种会让一条抛出的本地投递直接穿出 runAll 落到事件循环的泵上，
+         *          剩余尚未执行的本地代码会连同其持有物一起被静默析构。原因详见实现处注释
+         */
+        void drainLocalTasks();
+
         std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
         std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）
         std::deque<std::coroutine_handle<>>  m_globalQueue;            ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
