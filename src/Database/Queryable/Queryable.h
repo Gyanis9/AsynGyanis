@@ -147,6 +147,8 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param order 使用 asc()/desc() 创建的排序子句
          * @return Queryable& 自身引用，支持链式调用
+         * @warning 排序字段文本与 select() 走同一条信任边界（表达式按原样拼进 SQL）：只接受编译期常量
+         *          或可信文本，任何来自用户输入的片段都必须走参数绑定，否则就是 SQL 注入面
          */
         Queryable &orderBy(OrderByClause order)
         {
@@ -235,7 +237,8 @@ namespace AsynGyanis::Database::Queryable
          *          GROUP BY 为空时仍然合法——两个引擎都把整份结果当成一组。
          * @param condition 分组过滤条件，可含聚合表达式（如 "COUNT(*)" 作为左值）
          * @return Queryable& 自身引用，支持链式调用
-         * @note 条件里的字段与表达式文本沿用 select()/groupBy() 的同一条信任边界：表达式按原样拼进 SQL
+         * @warning 条件里的字段与表达式文本沿用 select()/groupBy() 的同一条信任边界（表达式按原样拼
+         *          进 SQL）：只接受编译期常量或可信文本，用户输入一律走参数绑定，否则就是注入面
          */
         Queryable &having(WhereCondition condition)
         {

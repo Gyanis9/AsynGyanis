@@ -508,6 +508,8 @@ namespace AsynGyanis::Database::Queryable
      *
      * @param columnName 列名
      * @return OrderByClause 升序排序子句
+     * @warning `columnName` 按原样拼进 SQL（见 Queryable::select() 的信任边界说明）：只接受编译期常量
+     *          或可信文本，用户输入一律走参数绑定
      */
     inline OrderByClause asc(const std::string_view columnName)
     {
@@ -519,6 +521,8 @@ namespace AsynGyanis::Database::Queryable
      *
      * @param columnName 列名
      * @return OrderByClause 降序排序子句
+     * @warning `columnName` 按原样拼进 SQL（见 Queryable::select() 的信任边界说明）：只接受编译期常量
+     *          或可信文本，用户输入一律走参数绑定
      */
     inline OrderByClause desc(const std::string_view columnName)
     {
