@@ -221,6 +221,8 @@ namespace AsynGyanis::Database
          *          返回的引用在本对象析构前始终有效，调用方不得保存到本对象之后使用。
          * @return DatabaseConnection& 事务持有的连接
          * @throws Base::LogicException 对象未持有连接（构造失败后继续使用等，正常流程不可达）
+         * @warning 经本通道自组的语句**不受 `setTimeLimit()` 拒点覆盖**：那闸只挂 Queryable 取租约、
+         *          `commit()` 与三条保存点语句三处出口，这条通道照发不误；要时限兜底请自查 `isTimeLimitExceeded()`。
          */
         [[nodiscard]] DatabaseConnection &connection() const;
 
