@@ -420,10 +420,13 @@ namespace AsynGyanis::Database
         if (rawResult == nullptr)
         {
             // 判据与预读路径同一份：mysql_field_count()==0 表示这条命令本就没有返回列。
-            // 那种命令没有可流式的东西，明确拒，而不是悄悄退回预读交出「空回执」
+            // 那种命令没有可流式的东西，明确拒，而不是悄悄退回预读交出「空回执」。
+            // C API 无从预判有没有返回列，这条拒绝发生在 mysql_real_query 已经把语句送出去之后——
+            // 文案里把这件事实说清楚，免得调用方按「没执行过」重试写语句
             if (mysql_field_count(m_mysqlHandle) == 0)
             {
-                m_lastError = "这条语句没有返回列（写语句、DDL 或事务语句），流式执行无从谈起：请改用 execute()";
+                m_lastError = "这条语句没有返回列（写语句、DDL 或事务语句），流式执行无从谈起：请改用 "
+                              "execute()。注意这条语句已经被服务端执行过，副作用可能已经发生，不要按「没执行过」重试";
                 return nullptr;
             }
 

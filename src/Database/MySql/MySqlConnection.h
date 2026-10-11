@@ -141,9 +141,12 @@ namespace AsynGyanis::Database
          *          rowCount() 回 0 表示「未知」。
          * @warning **没有返回列的语句一律拒**（INSERT/UPDATE/DDL 与事务语句）：那种命令本来就没有可流式的
          *          结果集，悄悄退回预读的「空回执」会让调用方把写语句当查询用，比报一条错难查得多。
+         *          拒收发生在命令已送到服务端之后（C API 无从预判有没有返回列）：写语句的副作用可能
+         *          已经发生，不要按「没执行过」重试。
          * @param command SQL 文本，例如 "SELECT id, payload FROM blobs"
          * @return std::unique_ptr<DatabaseResult> 流式结果集；未连接、命令为空或超长、语句无返回列、
-         *         执行失败这几条都返回 nullptr，原因见 lastError()
+         *         执行失败这几条都返回 nullptr，原因见 lastError()（前三条未曾发送，后两条发生在
+         *         命令已送出之后）
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
 
