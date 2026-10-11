@@ -47,6 +47,18 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 追加一族 gauge 的 HELP/TYPE 与单条样本
+         * @param out 输出缓冲
+         * @param metricName 完整指标名
+         * @param help 中文说明（该格式是 UTF-8，无需转义）
+         * @param value 瞬时读数
+         */
+        void appendGauge(std::string &out, const std::string &metricName, const std::string_view help, const std::uint64_t value)
+        {
+            out += std::format("# HELP {} {}\n# TYPE {} gauge\n{} {}\n", metricName, help, metricName, metricName, value);
+        }
+
+        /**
          * @brief 把线程标识折成定宽十六进制指纹
          * @details 这一列只用来把快照里的行与 OS 线程对上（两条循环的线程不同，行因此可区分），
          *          不要求能反推回 native id——平台间的线程号本来就不是一套。
@@ -92,21 +104,16 @@ namespace AsynGyanis::Net
         // 口径要说清：多台监听器共用同一份采集端时这一条是**相加的那一份**（刻意如此，否则抓取随机
         // 命中一台会看到 1/N 与计数器回落），而下面那条 maximum_connections 是**本监听器**的上限——
         // 两者不同源，别直接相除当「负载率」；要负载率就按监听器条数折算，或每台各抓各的口
-        const std::string activeConnectionsName = makeMetricName(metricNamePrefix, "active_connections");
-        out += std::format("# HELP {} 取快照那一刻的活跃连接数（多条监听器共用一份采集端时是各台相加）\n# TYPE {} gauge\n{} {}\n", activeConnectionsName, activeConnectionsName,
-                           activeConnectionsName, stats.activeConnectionCount);
+        appendGauge(out, makeMetricName(metricNamePrefix, "active_connections"), "取快照那一刻的活跃连接数（多条监听器共用一份采集端时是各台相加）", stats.activeConnectionCount);
 
         // 两个分母：只有分子画不出「离上限还有多远」这种提前预警，只能等人记得配置文件写过什么。
         // 0 的含义各有一条：并发上限 0 = 本监听器不设这道限；单来源上限 0 = 那道闸门没装
-        const std::string maximumConnectionsName = makeMetricName(metricNamePrefix, "maximum_connections");
-        out += std::format("# HELP {} 本监听器的并发连接上限（下发到本监听器的实际值；0 = 不设这道限）。"
-                           "多进程部署里配置的是整机数，这里报摊到本进程那一份\n# TYPE {} gauge\n{} {}\n",
-                           maximumConnectionsName, maximumConnectionsName, maximumConnectionsName, stats.maximumConnections);
+        appendGauge(out, makeMetricName(metricNamePrefix, "maximum_connections"),
+                    "本监听器的并发连接上限（下发到本监听器的实际值；0 = 不设这道限）。多进程部署里配置的是整机数，这里报摊到本进程那一份", stats.maximumConnections);
 
-        const std::string maximumPerIpName = makeMetricName(metricNamePrefix, "maximum_connections_per_ip");
-        out += std::format("# HELP {} 单个来源 IP 的并发上限（按 IP 的那道准入闸门按什么挡；0 = 这道闸门没装）。"
-                           "限额器可以被多条通道共用一份，因此抓哪台都是同一个值\n# TYPE {} gauge\n{} {}\n",
-                           maximumPerIpName, maximumPerIpName, maximumPerIpName, stats.maximumConnectionsPerIp);
+        appendGauge(out, makeMetricName(metricNamePrefix, "maximum_connections_per_ip"),
+                    "单个来源 IP 的并发上限（按 IP 的那道准入闸门按什么挡；0 = 这道闸门没装）。限额器可以被多条通道共用一份，因此抓哪台都是同一个值",
+                    stats.maximumConnectionsPerIp);
 
         // 状态码分类：一族带 status_class 标签的计数器，采集侧可直接按类聚合
         const std::string responsesName = makeMetricName(metricNamePrefix, "responses_total");
@@ -173,11 +180,8 @@ namespace AsynGyanis::Net
 
         // 运行期积压：读的是进程级共享的那台执行器，多条通道报的是同一份读数（不是各自的份额）。
         // 自建执行器（`Queryable::useAsyncExecutor()`）不在这份读数的口径里，见 HttpServerStats 的取数处
-        const std::string queueDepthName = makeMetricName(metricNamePrefix, "blocking_task_queue_depth");
-        out += std::format("# HELP {} 取快照那一刻排在共享阻塞任务执行器队列里的任务条数（只含进程级共享那台，"
-                           "自建执行器不计入；多条通道报同一份）\n"
-                           "# TYPE {} gauge\n{} {}\n",
-                           queueDepthName, queueDepthName, queueDepthName, stats.blockingTaskQueueDepth);
+        appendGauge(out, makeMetricName(metricNamePrefix, "blocking_task_queue_depth"),
+                    "取快照那一刻排在共享阻塞任务执行器队列里的任务条数（只含进程级共享那台，自建执行器不计入；多条通道报同一份）", stats.blockingTaskQueueDepth);
         appendCounter(out, makeMetricName(metricNamePrefix, "blocking_task_rejected_total"),
                       "因排队已满被拒的阻塞任务条数（只含进程级共享那台执行器，自建的不计——全部执行器的合计在 "
                       "asyn_executor_rejected_total；提交方当场收到异常，涨了就说明该降并发或加工作线程）",
@@ -192,25 +196,16 @@ namespace AsynGyanis::Net
                       Base::droppedAsyncLogEventCount());
 
         // 常驻内存：进程级读数，抓哪台都是同一份。名字跟着 Prometheus 的既成约定走（process_*）
-        const std::string residentMemoryName = makeMetricName(metricNamePrefix, "process_resident_memory_bytes");
-        out += std::format("# HELP {} 本进程此刻占住的常驻字节数（进程级；0 表示平台读不出，不代表没有内存）\n"
-                           "# TYPE {} gauge\n{} {}\n",
-                           residentMemoryName, residentMemoryName, residentMemoryName, stats.residentMemoryBytes);
+        appendGauge(out, makeMetricName(metricNamePrefix, "process_resident_memory_bytes"), "本进程此刻占住的常驻字节数（进程级；0 表示平台读不出，不代表没有内存）",
+                    stats.residentMemoryBytes);
 
         // process_* 三件套：CPU 计数器、打开的句柄数、启动时刻。都是进程级，抓哪台监听器都是同一份；
         // 0 一律表示「平台读不出」，与常驻内存同口径。抓取端拿它们对 CPU 饱和、句柄泄漏与进程重启设告警
-        const std::string processCpuName = makeMetricName(metricNamePrefix, "process_cpu_seconds_total");
-        out += std::format("# HELP {} 本进程累计消耗的 CPU 时间（用户态加内核态，整数秒；进程级；0 表示平台读不出）\n"
-                           "# TYPE {} counter\n{} {}\n",
-                           processCpuName, processCpuName, processCpuName, stats.processCpuSeconds);
-        const std::string processOpenFdsName = makeMetricName(metricNamePrefix, "process_open_fds");
-        out += std::format("# HELP {} 本进程此刻打开的句柄/文件描述符数（进程级；0 表示平台读不出）\n"
-                           "# TYPE {} gauge\n{} {}\n",
-                           processOpenFdsName, processOpenFdsName, processOpenFdsName, stats.openHandleCount);
-        const std::string processStartTimeName = makeMetricName(metricNamePrefix, "process_start_time_seconds");
-        out += std::format("# HELP {} 本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启\n"
-                           "# TYPE {} gauge\n{} {}\n",
-                           processStartTimeName, processStartTimeName, processStartTimeName, stats.processStartTimeSeconds);
+        appendCounter(out, makeMetricName(metricNamePrefix, "process_cpu_seconds_total"), "本进程累计消耗的 CPU 时间（用户态加内核态，整数秒；进程级；0 表示平台读不出）",
+                      stats.processCpuSeconds);
+        appendGauge(out, makeMetricName(metricNamePrefix, "process_open_fds"), "本进程此刻打开的句柄/文件描述符数（进程级；0 表示平台读不出）", stats.openHandleCount);
+        appendGauge(out, makeMetricName(metricNamePrefix, "process_start_time_seconds"),
+                    "本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启", stats.processStartTimeSeconds);
 
         // 进程级登记的读数：名字是登记时给的**完整名字**，不套本监听器的业务前缀——
         // 这些数不属于某台 HTTP 服务器，抓哪台监听器都该是同一份（口径与上面那几条进程级读数一致）
