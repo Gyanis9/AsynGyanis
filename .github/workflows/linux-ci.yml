@@ -635,12 +635,22 @@ jobs:
       - name: 运行 clang-tidy（报告形式，不阻塞）
         run: |
           run-clang-tidy -p build/debug -header-filter '.*[\\/]src[\\/].*' -quiet src/ 2>&1 | tee /tmp/clang-tidy.log
+          # 退出码要能穿过管道活下来：判据不押在 runner 给不给 pipefail/-e 上，显式取 PIPESTATUS[0]
+          clang_tidy_rc=${PIPESTATUS[0]}
+          diagnostic_count=$(grep -cE "warning:|error:" /tmp/clang-tidy.log || true)
           {
             echo "## clang-tidy 摘要（报告形式，当前不阻塞）"
             echo '```'
-            grep -cE "warning:|error:" /tmp/clang-tidy.log || echo 0
+            echo "退出码 ${clang_tidy_rc}、诊断 ${diagnostic_count} 行"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # 「报告形式」不等于怎么坏都绿：rc>=2 是工具的硬错误（编译数据库缺、工具崩），
+          # rc=1 却一条诊断都没有同样是「没跑成」的形状（跑出发现项的 rc=1 必然带着诊断行）——
+          # 把 rc 丢掉时这两种都会读成「零诊断=干净」。发现项本身（rc=1 且有诊断）照旧不阻塞
+          if [ "$clang_tidy_rc" -ge 2 ] || { [ "$clang_tidy_rc" -ne 0 ] && [ "$diagnostic_count" -eq 0 ]; }; then
+            echo "run-clang-tidy 退出码 ${clang_tidy_rc}、诊断 ${diagnostic_count} 行：这道步按没跑成处理"
+            exit "$clang_tidy_rc"
+          fi
 
       - name: 上传 clang-tidy 报告
         if: always()
@@ -772,11 +782,11 @@ jobs:
           if-no-files-found: ignore
 
   # 覆盖率：先补上「CI 里根本没有数字」这件事——跑一遍全量用例收 .gcda，gcovr 出行/函数/分支三份读数，
-  # 再由 scripts/check-coverage-gate.py 把关：总行下限取在这里的 COVERAGE_LINE_FLOOR，
-  # **逐模块**行下限与函数/分支下限取在那个脚本里（默认值按 2026-10-01 实测往下留一档：
-  # 总行 77.08 / 函数 85.44 / 分支 62.38；Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50）。
-  # 分模块这条是重点：本作业不带 MySQL/Redis 真库分支，Database 天然低一截，只看总数它会一直隐身。
-  # 阈值故意取在实测下游——首日就红的门禁只会教会人忽略红；要提阈值，先实测，两处（env 与脚本默认值）必须同解。
+  # 再由 scripts/check-coverage-gate.py 把关。四条下限（总行 / 总函数 / 总分枝 / 逐模块行）全部取在
+  # 那个脚本里（默认值按 2026-10-01 实测往下留一档：总行 77.08 / 函数 85.44 / 分支 62.38；
+  # Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50）——原先总行下限另放在这里的一个
+  # env 里，「两处必须同解」只能靠口头守而值守不住；收进脚本后阈值只有一个落点。分模块这条是重点：
+  # 本作业不带 MySQL/Redis 真库分支，Database 天然低一截只看总数会隐身；阈值故意取在实测下游，要提先实测。
   coverage:
     name: 覆盖率门禁
     runs-on: ubuntu-latest
@@ -785,7 +795,6 @@ jobs:
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
       ASYN_SKIP_MYSQL_DEPS: "1"
-      COVERAGE_LINE_FLOOR: "60"
 
     steps:
       - uses: actions/checkout@v4
@@ -856,10 +865,10 @@ jobs:
           }
           echo "### 行覆盖率（本轮实测）" >> "$GITHUB_STEP_SUMMARY"
           grep -E "TOTAL.*[0-9]+%" /tmp/gcovr.txt | tail -1 >> "$GITHUB_STEP_SUMMARY"
-          # 阈值只在这一处判：gcovr 自己的 --fail-under-line 撤了，改由脚本吃同一个环境变量把关，
-          # 另加函数/分支两条与**逐模块**下限——总数 77% 达标时 Database 只有 50.5%，
+          # 阈值只在这一处判：gcovr 自己的 --fail-under-line 撤了，改由脚本把四条下限（总行 / 总函数 /
+          # 总分枝 / 逐模块行）全部收在自己身上把关——总数 77% 达标时 Database 只有 50.5%，
           # 聚合数会替死角掩护（本轮实测 Net 89.94 / Platform 87.08 / Core 84.98 / Base 75.74 / Database 50.50）
-          python3 scripts/check-coverage-gate.py --csv /tmp/gcovr.csv --line-floor "$COVERAGE_LINE_FLOOR"
+          python3 scripts/check-coverage-gate.py --csv /tmp/gcovr.csv
 
       - name: 加固位核对（编译命令行与镜像头，取本档自己的 CMakeCache 为期望）
         run: |

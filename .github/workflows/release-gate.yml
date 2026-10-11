@@ -25,5 +25,8 @@ jobs:
       # 只跑一条脚本，不装任何依赖：版本漂移要在几秒钟内暴露，而不是等几分钟的构建
       - name: 校验发布版本号（CMake / CHANGELOG / 标签）
         run: |
-          git fetch --tags --force --quiet || true
+          # 标签取不到就要红：脚本对「一个标签都没有」按首个版本发布前的正常态放行，而浅克隆
+          # 恰好也长成那个样子——把 fetch 失败吞掉（曾经的 `|| true`）就等于把「取不到裁判」
+          # 读成「三处一致」。fetch 失败让这一步本身失败，别让它降级成一次静默跳过
+          git fetch --tags --force --quiet
           python3 scripts/check-release-version.py
