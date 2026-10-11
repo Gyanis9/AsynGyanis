@@ -9,7 +9,13 @@
   * 顶点类元素（components/nodes/states/participants）一条 sources 都没有 → WARN（图上的说法没有
     可回读的证据）；边与泳道不查——本仓的图里它们从不单独挂引用，硬要求只会造出噪声；
   * 新鲜度：按 meta.repository.revision 那一版做反向索引，被引文件自那之后改过就把受影响的
-    节点列出来——这一条只列不拦，因为图落后于代码是常态，拦不住也不该由图来决定提交能不能合。
+    节点列出来——这一条只列不拦，因为图落后于代码是常态，拦不住也不该由图来决定提交能不能合；
+  * 台账正文同判：`.github/SECURITY.md` 全篇与 `CHANGELOG.md` 的最新发布段里手写的「路径:行号」
+    走同一组规则。更早的 CHANGELOG 段落是点时刻的叙述，不回判——历史条目随文件演进必然失效，
+    硬判只会让这道门变成哭狼的门。写全仓相对路径而读不到 → FAIL；只写裸文件名（可能是仓库外的
+    依赖头，如 zlib 的 zconf.h）而树里找不到同名文件 → WARN，不算死引用；
+  * 空集防护：总提取数低于地板、或有图一条 sources 都没有 → 退 2。字段改名/结构变化会让提取数
+    悄悄塌到 0 而门照绿，与覆盖率、复杂度两道门同一条规矩：「什么都没查」不许被读成通过。
 
 为什么是一道脚本而不是「记得改图」：383 笔提交里零次回图，靠人记住在这个变更速率下不成立。
 判据必须自己会红。
@@ -52,6 +58,13 @@ PROSE_REF_RE = re.compile(
 PROSE_RANGE_RE = re.compile(r"^(?:-(?P<dash>\d+)|\.\.(?P<dots>\d+))")
 PROSE_TEXT_FIELDS = ("label", "sublabel", "tag", "note")
 PROSE_ELEMENT_COLLECTIONS = VERTEX_COLLECTIONS + ("edges", "lanes")
+# 台账正文里也手写「路径:行号」，同一条底线要同判：SECURITY 全篇（安全面承诺的行号要活到兑现）
+# 与 CHANGELOG 的最新发布段（发布说明里的引用是对该版本交付物的主张）。旧发布段不回判，原因见文件头
+LEDGER_PROSE_FILES = (".github/SECURITY.md", "CHANGELOG.md")
+# 提取数下限：字段改名、正则失配、图件被换掉都会让提取数塌下来而门照绿，按「门没跑成」退 2。
+# 地板取历史档（refs 237 / prose 115）往下留一截：正常增删碰不到，结构性变化一定触发
+MINIMUM_TOTAL_REFS = 200
+MINIMUM_TOTAL_PROSE_REFS = 100
 
 
 def load_diagrams():
@@ -193,6 +206,80 @@ def git_changed_files(revision):
     return {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
 
 
+def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_external_bare_names=False):
+    """对一段正文跑「路径:行号」判据。
+
+    @param trail 这段正文在图或台账里的位置（进消息用）
+    @param allow_external_bare_names 只写裸文件名（不含 '/'）且对不到树内文件时，按「可能是仓库外的
+           依赖头」记 WARN 跳过（SECURITY 里引 zlib 的 zconf.h 就属这类）；写全仓相对路径而读不到
+           一律 FAIL。图那边的既有口径是两者都 FAIL，行为不变
+    @return (已核对的引用条数, 新增 FAIL 列表, 新增 WARN 列表)
+    """
+    failures = []
+    warnings = []
+    matchedCount = 0
+    owner = None
+    for match in PROSE_REF_RE.finditer(text):
+        line = prose_ref_line(match)
+        rel = prose_ref_path(match, owner, index)
+        if match.group("path") and rel:
+            owner = rel
+        if rel is None or line is None:
+            if match.group("path"):
+                if allow_external_bare_names and "/" not in match.group("path"):
+                    warnings.append("REF_OUTSIDE_TREE %s -> %s（裸文件名且树内无同名文件：按仓库外引用跳过）" % (trail, match.group("path")))
+                else:
+                    failures.append("PROSE_MISSING_PATH %s -> %s（正文点名的文件不在树里）" % (trail, match.group("path")))
+            # 只写了 `:123` 或 `、123` 而前面没有完整路径：续写没有可继承的对象，这条压根
+            # 无法定位。判红等于逼人重写文案，所以略过——但它不等于「已核对过」
+            continue
+        matchedCount += 1
+        if rel not in line_cache:
+            absolute = os.path.join(REPO, rel)
+            with open(absolute, encoding="utf-8", errors="replace") as handle:
+                line_cache[rel] = handle.read().splitlines()
+        lines = line_cache[rel]
+        cited_by_path.setdefault(rel, set()).add(trail)
+        cited = "%s:%d" % (rel, line)
+        verdict, _ = classify_line(lines, line)
+        if verdict == "BEYOND_EOF":
+            failures.append("PROSE_LINE_BEYOND_EOF %s -> %s（文件只有 %d 行）" % (trail, cited, len(lines)))
+        elif verdict == "BLANK":
+            failures.append("PROSE_LINE_BLANK %s -> %s（引到空行，等于没有证据）" % (trail, cited))
+        elif verdict == "COMMENT":
+            warnings.append("PROSE_LINE_ON_COMMENT %s -> %s" % (trail, cited))
+        range_match = PROSE_RANGE_RE.match(text[match.end():])
+        if range_match is None:
+            continue
+        end_line = int(range_match.group("dash") or range_match.group("dots"))
+        end_verdict, _ = classify_line(lines, end_line)
+        if end_verdict == "BEYOND_EOF":
+            failures.append("PROSE_END_LINE_BEYOND_EOF %s -> %s..%d" % (trail, cited, end_line))
+        elif end_line < line:
+            failures.append("PROSE_END_LINE_BEFORE_START %s -> %s..%d" % (trail, cited, end_line))
+    return matchedCount, failures, warnings
+
+
+def iter_ledger_prose_texts():
+    """台账正文里的手写引用：SECURITY 全篇 + CHANGELOG 最新发布段。产出 (位置, 文本)。"""
+    for relative in LEDGER_PROSE_FILES:
+        absolute = os.path.join(REPO, relative)
+        if not os.path.isfile(absolute):
+            continue  # 缺文件：从「一份都没扫到」的地板里看得见，不必在这里另发错
+        with open(absolute, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        insideLatestRelease = relative != "CHANGELOG.md"
+        for number, text in enumerate(lines, 1):
+            if relative == "CHANGELOG.md":
+                if text.startswith("## ["):
+                    if insideLatestRelease:
+                        break  # 最新发布段到此结束
+                    insideLatestRelease = True
+                if not insideLatestRelease:
+                    continue
+            yield "%s:%d" % (relative, number), text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="架构图 sources 引用的可追溯性检查")
     parser.add_argument("--stale-since", help="新鲜度基准修订号，默认取每张图 meta.repository.revision")
@@ -258,42 +345,28 @@ def main() -> int:
     index = tracked_file_index()
     for name, data in diagrams:
         for trail, text in iter_prose_texts(data, name):
-            owner = None
-            for match in PROSE_REF_RE.finditer(text):
-                line = prose_ref_line(match)
-                rel = prose_ref_path(match, owner, index)
-                if match.group("path") and rel:
-                    owner = rel
-                if rel is None or line is None:
-                    if match.group("path"):
-                        failures.append("PROSE_MISSING_PATH %s -> %s（正文点名的文件不在树里）" % (trail, match.group("path")))
-                    # 只写了 `:123` 或 `、123` 而前面没有完整路径：续写没有可继承的对象，这条压根
-                    # 无法定位。判红等于逼人重写文案，所以略过——但它不等于「已核对过」
-                    continue
-                total_prose += 1
-                if rel not in line_cache:
-                    absolute = os.path.join(REPO, rel)
-                    with open(absolute, encoding="utf-8", errors="replace") as handle:
-                        line_cache[rel] = handle.read().splitlines()
-                lines = line_cache[rel]
-                cited_by_path.setdefault(rel, set()).add(trail)
-                cited = "%s:%d" % (rel, line)
-                verdict, _ = classify_line(lines, line)
-                if verdict == "BEYOND_EOF":
-                    failures.append("PROSE_LINE_BEYOND_EOF %s -> %s（文件只有 %d 行）" % (trail, cited, len(lines)))
-                elif verdict == "BLANK":
-                    failures.append("PROSE_LINE_BLANK %s -> %s（引到空行，等于没有证据）" % (trail, cited))
-                elif verdict == "COMMENT":
-                    warnings.append("PROSE_LINE_ON_COMMENT %s -> %s" % (trail, cited))
-                range_match = PROSE_RANGE_RE.match(text[match.end():])
-                if range_match is None:
-                    continue
-                end_line = int(range_match.group("dash") or range_match.group("dots"))
-                end_verdict, _ = classify_line(lines, end_line)
-                if end_verdict == "BEYOND_EOF":
-                    failures.append("PROSE_END_LINE_BEYOND_EOF %s -> %s..%d" % (trail, cited, end_line))
-                elif end_line < line:
-                    failures.append("PROSE_END_LINE_BEFORE_START %s -> %s..%d" % (trail, cited, end_line))
+            matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path)
+            total_prose += matchedCount
+            failures.extend(newFailures)
+            warnings.extend(newWarnings)
+
+    # 台账正文那一半（见 LEDGER_PROSE_FILES 与文件头）：裸文件名对不到树内文件只记警告（可能是
+    # 仓库外的依赖头），全仓相对路径读不到仍是死引用
+    for trail, text in iter_ledger_prose_texts():
+        matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_external_bare_names=True)
+        total_prose += matchedCount
+        failures.extend(newFailures)
+        warnings.extend(newWarnings)
+
+    # 空集防护（见文件头）：提取数塌到地板以下、或有图一条 sources 都没有，都是「门没跑成」
+    if total_refs < MINIMUM_TOTAL_REFS or total_prose < MINIMUM_TOTAL_PROSE_REFS:
+        sys.stderr.write("提取数低于地板（refs=%d/%d，prose=%d/%d）：判据没吃到东西，按「门没跑成」退 2\n"
+                         % (total_refs, MINIMUM_TOTAL_REFS, total_prose, MINIMUM_TOTAL_PROSE_REFS))
+        return 2
+    emptyDiagrams = sorted(name for name, count in per_diagram_refs.items() if count == 0)
+    if emptyDiagrams:
+        sys.stderr.write("这些图一条 sources 都没有（图件被换掉或结构改名了）：%s\n" % "、".join(emptyDiagrams))
+        return 2
 
     for name in sorted(per_diagram_refs):
         print("DIAGRAM %s refs=%d" % (name, per_diagram_refs[name]))
