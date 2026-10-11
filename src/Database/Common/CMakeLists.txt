@@ -20,4 +20,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseSources
         ${CMAKE_CURRENT_LIST_DIR}/QueryExecutionException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/RowMappingException.h
         ${CMAKE_CURRENT_LIST_DIR}/RowMappingException.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/TransactionTimeoutException.h
+        ${CMAKE_CURRENT_LIST_DIR}/TransactionTimeoutException.cpp
 )

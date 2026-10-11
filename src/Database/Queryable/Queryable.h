@@ -19,6 +19,7 @@
 #include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/QueryExecutionException.h"
+#include "Database/Common/TransactionTimeoutException.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqlStatement.h"
@@ -56,7 +57,8 @@ namespace AsynGyanis::Database::Queryable
      * @note 全部执行器方法（含异步版本）均要求在线模式：未绑定连接池或事务时抛 Base::LogicException。
      * @note 各方法文档里的 `@throws DatabaseException` 是家族根类型，具体子类按失败原因对应：
      *       取连接失败 → ConnectionUnavailableException（可重试）；语句执行失败 → QueryExecutionException
-     *       （重试无意义，应记日志让请求失败）；结果集映射失败 → RowMappingException（表结构与结构体声明不一致）。
+     *       （重试无意义，应记日志让请求失败）；结果集映射失败 → RowMappingException（表结构与结构体声明不一致）；
+     *       绑定事务且整笔时限已到期 → TransactionTimeoutException（再发语句与提交都被拒，另起一笔）。
      * @note 本类不是线程安全的：异步方法只保证阻塞执行发生在工作线程上，调用方仍应避免在
      *       同一个查询对象上并发地构建查询与发起执行。
      */
@@ -939,12 +941,21 @@ namespace AsynGyanis::Database::Queryable
          * @param transaction 事务指针，非空时全部语句走事务连接
          * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
          * @throws DatabaseException 池已达上限且等待超时，或连接工厂创建失败
+         * @throws TransactionTimeoutException 绑定了事务且整笔时限已到期——此时一条语句都不发，
+         *         也不去排那把连接使用权锁
          */
         [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, const Transaction *transaction)
         {
             ConnectionLease lease;
             if (transaction != nullptr)
             {
+                // 整笔事务时限的闸挂在这一处而不是各条语句里：走事务的语句有同步、异步、批量好几条出口，
+                // 全都经过这一个取租约的函数，挂这里是一处生效；漏挂一处就是让一条语句悄悄落进已经
+                // 超时的事务。判在取锁之前——一笔注定不能再往前走的事务，不值得先排队等它的锁
+                if (transaction->isTimeLimitExceeded())
+                {
+                    throw TransactionTimeoutException(transaction->timeLimitExceededReason());
+                }
                 // 先取连接的使用权再交出连接：异步路径会把语句投到工作线程上，两条并发语句
                 // 不能同时踩同一条驱动连接（一个句柄一条协议流，交错发送即协议错乱）
                 lease.statementLock = transaction->acquireStatementLock();
@@ -1339,6 +1350,7 @@ namespace AsynGyanis::Database::Queryable
          * @param rows 待插入的全部行（非空，空集合由调用方提前返回）
          * @return std::int64_t 累计受影响行数
          * @throws DatabaseException 取连接失败、任意一块执行失败，或本地事务提交失败
+         * @throws TransactionTimeoutException 绑定了事务且整笔时限已到期（分块与非分块两条路都在发语句前判）
          */
         [[nodiscard]] static std::int64_t insertBatchOn(ConnectionPool *pool, const Transaction *transaction, const SqlDialect &dialect, const std::span<const T> rows,
                                                         const InsertConflict conflict = InsertConflict::Fail)
@@ -1370,10 +1382,12 @@ namespace AsynGyanis::Database::Queryable
             if (transaction != nullptr)
             {
                 // 已绑定事务：块之间共用事务连接，提交/回滚的决定权仍在调用方手里。
-                // 分块是「多条语句落在同一条连接上」，与单条语句一样要占住连接使用权：
-                // 调用方可能在另一条语句（或另一条批量插入）执行到一半时踩进同一个驱动句柄
-                const std::unique_lock<std::mutex> statementLock = transaction->acquireStatementLock();
-                return executeBatchOn(transaction->connection(), dialect, batchNode, rows, rowsPerStatement);
+                // 走 acquireConnection() 而不是自己取锁加取连接：整笔时限的闸挂在那个函数里，
+                // 分块插入也是「往这笔事务里发语句」，绕过它就是让一批语句悄悄落进已超时的事务。
+                // 租约同时带来这条连接的使用权——分块是「多条语句落在同一条连接上」，调用方可能在
+                // 另一条语句（或另一条批量插入）执行到一半时踩进同一个驱动句柄
+                const ConnectionLease lease = acquireConnection(pool, transaction);
+                return executeBatchOn(*lease.connection, dialect, batchNode, rows, rowsPerStatement);
             }
 
             Transaction        localTransaction(*pool);

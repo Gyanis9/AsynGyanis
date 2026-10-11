@@ -3,9 +3,10 @@
 // - EveryRuntimeFailureDerivesFromProjectExceptionBase / UsageErrorsStayOutsideTheRuntimeFailureFamily
 // - OneCatchOfProjectBaseCoversEverySubclass / EachSubclassIsCatchableOnItsOwn / RootAndStandardBaseAlsoCatchSubclasses
 // - MessageKeepsOriginalTextAndCarriesThrowSite
-// 钉住的契约：运行期故障家族（DatabaseException 及其三个子类）全部派生自 Base::Exception，调用方能用一个 catch 网住
-// 整个框架的可恢复故障，且都能被根类型与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
+// 钉住的契约：运行期故障家族（DatabaseException 及其全部子类）都派生自 Base::Exception，调用方能用一个 catch
+// 网住整个框架的可恢复故障，且都能被根类型与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
 // Base::InvalidArgumentException）刻意不在本家族内，该边界由本文件与 tests/Base/Exception/TestException.cpp 共同钉住。
+// 子类之间也不互相捕获——「整笔事务超时」不是「语句执行失败」，重试逻辑按后者分支时不能被前者误命中。
 // 全部用例都不触碰数据库：只构造异常对象并断言继承关系与捕获结果。
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
@@ -14,6 +15,7 @@
 #include "Database/Common/DatabaseException.h"
 #include "Database/Common/QueryExecutionException.h"
 #include "Database/Common/RowMappingException.h"
+#include "Database/Common/TransactionTimeoutException.h"
 
 #include <gtest/gtest.h>
 
@@ -42,14 +44,15 @@ namespace AsynGyanis::Database
     // 家族继承关系
     // ============================================================================
 
-    /** @brief 钉住运行期故障家族的继承面：四类故障都能被 Base::Exception 一条 catch 网住，且不脱离 std::runtime_error 分类 */
+    /** @brief 钉住运行期故障家族的继承面：家族里的每个类型都能被 Base::Exception 一条 catch 网住，且不脱离 std::runtime_error 分类 */
     TEST(DatabaseExceptionFamily, EveryRuntimeFailureDerivesFromProjectExceptionBase)
     {
-        // 断言这四条都派生自框架异常基类：调用方才能用一条 catch 兜住框架的运行期故障
+        // 断言这些都派生自框架异常基类：调用方才能用一条 catch 兜住框架的运行期故障
         static_assert(std::is_base_of_v<Base::Exception, DatabaseException>);
         static_assert(std::is_base_of_v<Base::Exception, ConnectionUnavailableException>);
         static_assert(std::is_base_of_v<Base::Exception, QueryExecutionException>);
         static_assert(std::is_base_of_v<Base::Exception, RowMappingException>);
+        static_assert(std::is_base_of_v<Base::Exception, TransactionTimeoutException>);
 
         // 同时仍是标准库的 runtime_error：按标准分类的上游处理器不受影响
         static_assert(std::is_base_of_v<std::runtime_error, DatabaseException>);
@@ -58,6 +61,7 @@ namespace AsynGyanis::Database
         static_assert(std::is_base_of_v<DatabaseException, ConnectionUnavailableException>);
         static_assert(std::is_base_of_v<DatabaseException, QueryExecutionException>);
         static_assert(std::is_base_of_v<DatabaseException, RowMappingException>);
+        static_assert(std::is_base_of_v<DatabaseException, TransactionTimeoutException>);
     }
 
     /** @brief 钉住用法错误与运行期故障家族互不相交：参数/状态错误不得被「可恢复故障」的捕获面吞掉 */
@@ -95,15 +99,37 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(contains(catchThroughProjectBase(ConnectionUnavailableException("池已达上限")), "池已达上限"));
         EXPECT_TRUE(contains(catchThroughProjectBase(QueryExecutionException("表不存在")), "表不存在"));
         EXPECT_TRUE(contains(catchThroughProjectBase(RowMappingException("列类型不符")), "列类型不符"));
+        EXPECT_TRUE(contains(catchThroughProjectBase(TransactionTimeoutException("整笔事务超时")), "整笔事务超时"));
     }
 
-    /** @brief 钉住三类故障各自可精确捕获——重试、记日志、对齐结构体等不同处置方式的前提 */
+    /** @brief 钉住各类故障各自可精确捕获，且超时不落在「语句执行失败」的捕获面里——不同处置方式的前提 */
     TEST(DatabaseExceptionFamily, EachSubclassIsCatchableOnItsOwn)
     {
-        // 三类失败的处置方式不同（重试 / 记日志失败 / 对齐结构体），因此必须能各自精确捕获
+        // 各类失败的处置方式不同（重试 / 记日志失败 / 对齐结构体 / 另起一笔），因此必须能各自精确捕获
         EXPECT_THROW(throw ConnectionUnavailableException("池已达上限"), ConnectionUnavailableException);
         EXPECT_THROW(throw QueryExecutionException("语句被拒"), QueryExecutionException);
         EXPECT_THROW(throw RowMappingException("列类型不符"), RowMappingException);
+        EXPECT_THROW(throw TransactionTimeoutException("整笔事务超时"), TransactionTimeoutException);
+
+        // 子类之间也不互相捕获。这条边界是给重试逻辑划的：那些代码按 QueryExecutionException 分支、
+        // 再查 isRetryable() 决定重来一次；若超时异常也是它的子类，一笔注定被拒的事务就会被拿去
+        // 重试同一条语句，把连接与行锁一直占着
+        static_assert(!std::is_base_of_v<QueryExecutionException, TransactionTimeoutException>);
+        const bool timeoutCaughtAsStatementFailure = []
+        {
+            try
+            {
+                throw TransactionTimeoutException("整笔事务超时");
+            } catch (const QueryExecutionException &)
+            {
+                // 被语句失败的捕获面接走了，正是这条断言要拒绝的形状
+                return true;
+            } catch (const Base::Exception &)
+            {
+                return false;
+            }
+        }();
+        EXPECT_FALSE(timeoutCaughtAsStatementFailure) << "整笔事务超时不该落进「语句执行失败」的捕获面——重试逻辑会据此重试一条注定被拒的语句";
     }
 
     /** @brief 钉住放宽捕获面不漏失败：子类同样能被根类型与 std::exception 捕获 */
@@ -112,6 +138,7 @@ namespace AsynGyanis::Database
         // 捕获根类型或 std::exception 同样能命中子类：放宽捕获面不会漏掉任何一类失败
         EXPECT_THROW(throw RowMappingException("列类型不符"), DatabaseException);
         EXPECT_THROW(throw QueryExecutionException("语句被拒"), DatabaseException);
+        EXPECT_THROW(throw TransactionTimeoutException("整笔事务超时"), DatabaseException);
         EXPECT_THROW(throw ConnectionUnavailableException("池已达上限"), std::exception);
     }
 

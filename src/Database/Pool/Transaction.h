@@ -28,6 +28,7 @@
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -87,9 +88,11 @@ namespace AsynGyanis::Database
          *
          * @details 幂等：事务已经结束（已提交或已回滚）时直接返回 true，不重复发送 COMMIT。
          *          提交失败时事务仍被标记为活动，析构阶段还会尝试回滚，不会把失败静默成成功。
+         *          设过 `setTimeLimit()` 且整笔时限已到期时 COMMIT 一条都不发——落不了库是时限的本职，
+         *          而回滚仍被放行，因此这条路是「拒提交」不是「拒收尾」。
          *
          * @return true 提交成功，或事务已经结束
-         * @return false 提交失败（如连接已断开），原因见 lastError()
+         * @return false 提交被拒（整笔时限已到期）或失败（如连接已断开），原因见 lastError()
          */
         [[nodiscard]] bool commit();
 
@@ -124,7 +127,7 @@ namespace AsynGyanis::Database
          * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（是调用方的输入问题，
          *         不是运行时状态，因此当场抛而不留一个「返回 false 但没人知道为什么」的口子）
          * @return true 保存点已建立
-         * @return false 本事务已结束（此时一条语句都不发）或引擎拒绝，原因见 lastError()
+         * @return false 本事务已结束或整笔时限已到期（此时一条语句都不发）、或引擎拒绝，原因见 lastError()
          */
         [[nodiscard]] bool savepoint(std::string_view name);
 
@@ -138,7 +141,7 @@ namespace AsynGyanis::Database
          * @param name 之前立过的保存点名
          * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（同 `savepoint()`）
          * @return true 已回退到该点
-         * @return false 本事务已结束（不发语句）、名字没立过或引擎拒绝，原因见 lastError()；
+         * @return false 本事务已结束或整笔时限已到期（不发语句）、名字没立过或引擎拒绝，原因见 lastError()；
          *         失败不会把事务结束掉（引擎报的是「没有这个保存点」而不是「事务没了」）
          */
         [[nodiscard]] bool rollbackToSavepoint(std::string_view name);
@@ -152,7 +155,7 @@ namespace AsynGyanis::Database
          * @param name 之前立过的保存点名
          * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL（同 `savepoint()`）
          * @return true 已丢弃
-         * @return false 本事务已结束（不发语句）、名字没立过或引擎拒绝，原因见 lastError()
+         * @return false 本事务已结束或整笔时限已到期（不发语句）、名字没立过或引擎拒绝，原因见 lastError()
          */
         [[nodiscard]] bool releaseSavepoint(std::string_view name);
 
@@ -164,6 +167,49 @@ namespace AsynGyanis::Database
         {
             return m_isActive;
         }
+
+        /**
+         * @brief 给这一整笔事务定时限（本端计时，不发语句给引擎）
+         *
+         * @details 两家引擎都没有「一笔事务最多跑多久」的开关（MySQL 的 `MAX_EXECUTION_TIME` 只管单条
+         *          SELECT、`innodb_lock_wait_timeout` 只管等锁，SQLite 更没有），而真正伤人的形状是「事务开着、
+         *          一边等人一边占着连接与行锁」——时限把它变成一个确定的失败。计时起点是 BEGIN 成功那一刻，
+         *          因此构造与设时限的先后不影响额度。拒的出口有三处：走本事务的每条语句（由 `Queryable` 取
+         *          连接租约时问一句）、`commit()`、三条保存点语句；`rollback()` 与析构永远放行——拦住收尾
+         *          等于让超时反而把事务钉得更死。
+         *
+         * @param limit 从 BEGIN 起允许的时长；0 或负数表示不设限（默认就是不设限）
+         * @note 时限到期不会中断正在执行的那条语句：那是语句级超时（驱动的查询超时）的活，
+         *       本方法管的是「这条事务别再往下走」
+         */
+        void setTimeLimit(const std::chrono::milliseconds limit) noexcept
+        {
+            m_timeLimit = limit;
+        }
+
+        /**
+         * @brief 当前设着的事务时限
+         * @return std::chrono::milliseconds 0 或负数表示不设限
+         */
+        [[nodiscard]] std::chrono::milliseconds timeLimit() const noexcept
+        {
+            return m_timeLimit;
+        }
+
+        /**
+         * @brief 这一整笔事务是否已到时限
+         * @return true 设过正的时限且从 BEGIN 起已用满；false 没设限或还在额度内
+         * @note 事务已经结束时也回 false：那一段的判据是「已结束」，两条原因不该混成一句
+         */
+        [[nodiscard]] bool isTimeLimitExceeded() const noexcept;
+
+        /**
+         * @brief 到时限时写给调用方的那句原因（Queryable 拒语句时用的就是这一句）
+         * @return std::string 中文原因，点明设的额度与实际用去的毫秒数
+         * @note 只在 `isTimeLimitExceeded()` 为真时调用：没设限或没走过 BEGIN 时，那句「用去了多少毫秒」
+         *       读的是一枚没被戳过的计时起点，报出来的数字没有意义
+         */
+        [[nodiscard]] std::string timeLimitExceededReason() const;
 
         /**
          * @brief 获取事务持有的连接
@@ -188,7 +234,9 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_lock<std::mutex> acquireStatementLock() const;
 
         /**
-         * @brief 获取最后一次事务控制语句失败的原因
+         * @brief 最后一次收尾动作为何没做成
+         * @details 覆盖面比「事务控制语句报错」宽：整笔时限到期被拒时写的是时限那句（那条路根本没发语句），
+         *          引擎拒绝 COMMIT/ROLLBACK/保存点时写的是语句文本加驱动原文。
          * @return const std::string& 中文错误描述的常引用；无失败时为空串
          */
         [[nodiscard]] const std::string &lastError() const
@@ -208,26 +256,31 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool executeControlStatement(std::string_view statement);
 
         /**
-         * @brief 三条保存点语句共用的两道前置检查
+         * @brief 三条保存点语句共用的三道前置检查
          *
-         * @details 分两件事是因为它们的性质不同：**名字坏**是调用方的输入错误（空串、全是空白、
-         *          含 NUL），当场抛，不留「返回 false 但没人知道为什么」的口子；**事务已经结束**是
-         *          运行期状态（提交过了或已经回滚过），按本类的错误通道回 false 并写 lastError()，
-         *          且此时一条语句都不发——在一个已结束的事务上立保存点，引擎给的是「没有这个保存点」
-         *          之类的误导信息，而我们说得清是哪种。
+         * @details 分三件事是因为它们的性质不同：**名字坏**是调用方的输入错误（空串、全是空白、
+         *          含 NUL），当场抛，不留「返回 false 但没人知道为什么」的口子；**事务已经结束**与
+         *          **整笔时限已到**是运行期状态，按本类的错误通道回 false 并写 lastError()，
+         *          且此时一条语句都不发——在已结束的事务上立保存点，SQLite 会**另起一个**事务
+         *          （等价于 BEGIN DEFERRED）而不是报错，而超时那条引擎给的是误导信息，两种我们都说得清。
          *
          * @param name 调用方给的保存点名
          * @param action 错误文本里的动作名（「建立」「回退到」「丢弃」），让报错指着实际那一步
          * @throws Base::InvalidArgumentException 名字为空、全是空白或含 NUL
-         * @return true 名字可用且事务仍在进行，可以发语句
-         * @return false 事务已结束，原因已写进 lastError()
+         * @return true 名字可用、事务仍在进行且未越时限，可以发语句
+         * @return false 事务已结束或整笔时限已到，原因已写进 lastError()
          */
         [[nodiscard]] bool checkSavepointPremises(std::string_view name, std::string_view action);
 
         PooledConnection            m_connection;       ///< 事务独占的连接，析构时归还池
         std::shared_ptr<SqlDialect> m_dialect;          ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
         bool                        m_isActive = false; ///< 事务是否仍在进行，决定析构是否回滚
-        std::string                 m_lastError;        ///< 最后一次事务控制语句的失败原因
+        std::string                 m_lastError;        ///< 最后一次收尾动作没做成的原因（引擎拒绝或整笔时限到期）
+
+        // 时限是本端计时：计时起点在 BEGIN 成功那一刻戳下，因此「先构造后设时限」与「设了时限再构造」
+        // 拿到的是同一份额度。两者都只在 m_isActive 为真时被读到，默认值是「不设限 + 未戳起点」
+        std::chrono::milliseconds             m_timeLimit{0}; ///< 整笔事务允许的时长；0 或负数表示不设限
+        std::chrono::steady_clock::time_point m_beganAt{};    ///< BEGIN 成功的时刻，时限的计时起点
 
         // 驱动连接不是线程安全的（一个句柄一条协议流），而 Queryable 的异步接口会把语句投到
         // 工作线程上执行，因此同一事务上的语句必须串行落在这条连接里。锁由 Queryable 取用。

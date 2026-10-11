@@ -39,6 +39,9 @@ namespace AsynGyanis::Database
 
         // 走到这里数据库确实进入了事务，标记为活动；析构时会据此决定是否回滚
         m_isActive = true;
+        // 时限的计时起点：从「BEGIN 真的成功了」这一刻算，而不是从对象构造算——构造里那段取连接与
+        // 发 BEGIN 本身可能等了一段时间（池被借干时的等待、驱动建连），那部分不该吃掉事务的额度
+        m_beganAt = std::chrono::steady_clock::now();
     }
 
     Transaction::~Transaction()
@@ -63,6 +66,14 @@ namespace AsynGyanis::Database
         if (!m_isActive)
         {
             return true;
+        }
+
+        // 整笔时限已到期就不发 COMMIT：这行的意义是把「一笔跑飞了的事务还能落库」变成不可能。
+        // 不发语句也不改 m_isActive——剩下的工作交给析构去 ROLLBACK，因此这条路是「拒提交」而不是「拒收尾」
+        if (isTimeLimitExceeded())
+        {
+            m_lastError = timeLimitExceededReason();
+            return false;
         }
 
         if (!executeControlStatement(m_dialect->commitStatement()))
@@ -169,7 +180,33 @@ namespace AsynGyanis::Database
             m_lastError = "数据库事务：事务已结束（已提交或已回滚），无法" + std::string(action) + "保存点";
             return false;
         }
+        // 整笔时限已到期：保存点也是往前走的一步（它要在同一笔事务里再发一条语句），所以与时限同判。
+        // 判据放在名字检查之后：坏名字是使用错误，无论时限有没有到都该当场抛
+        if (isTimeLimitExceeded())
+        {
+            m_lastError = timeLimitExceededReason();
+            return false;
+        }
         return true;
+    }
+
+    bool Transaction::isTimeLimitExceeded() const noexcept
+    {
+        // 没设限（0 或负数）与已结束的事务一律回 false：后者已经有「已结束」那条判据在前面挡着，
+        // 把两条原因混成一句会让人去查错的分支
+        if (!m_isActive || m_timeLimit <= std::chrono::milliseconds::zero())
+        {
+            return false;
+        }
+        return std::chrono::steady_clock::now() - m_beganAt >= m_timeLimit;
+    }
+
+    std::string Transaction::timeLimitExceededReason() const
+    {
+        const auto usedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_beganAt).count();
+        return "数据库事务：这一整笔事务已越过 setTimeLimit 设的 " + std::to_string(m_timeLimit.count()) + " 毫秒时限（从 BEGIN 起实际用去 " + std::to_string(usedMilliseconds) +
+               " 毫秒），该事务的后续语句与提交都不再被接受。请另起一笔，或把额度放宽到实际需要的时长；正在执行的"
+               "那一条语句不会被这里打断，那件事归驱动的语句级超时管";
     }
 
     bool Transaction::executeControlStatement(const std::string_view statement)

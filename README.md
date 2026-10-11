@@ -123,8 +123,8 @@
   `PooledConnection::discard()` 主动丢弃（驱动侧报过错、事务半路失败那一类脏会话），名额照旧腾出来
 - **异步执行器** — 数据库阻塞调用挪出事件循环线程，完成后经 `Scheduler::scheduleRemote` 投回指定 `EventLoop`
 - **事务与建表迁移** — `Transaction` RAII（析构未提交自动回滚），同一笔事务内可回退的段由保存点给出
-  （`savepoint()` / `rollbackToSavepoint()` / `releaseSavepoint()`——两个引擎都不吃嵌套 BEGIN，
-  回退到保存点不会结束事务）；`SchemaMigrator` 从表结构生成 DDL
+  （`savepoint()` / `rollbackToSavepoint()` / `releaseSavepoint()`，两个引擎都不吃嵌套 BEGIN，回退不结束事务），
+  整笔事务可设时限（`setTimeLimit()`，到点后语句与提交都被拒，而回滚与析构照常收尾）；`SchemaMigrator` 从表结构生成 DDL
 
 **基础（Platform / Base）**
 

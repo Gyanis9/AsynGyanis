@@ -21,11 +21,19 @@
 // - RollbackToUnknownSavepointFailsWithoutEndingTransaction（回退不存在的点是失败而不是结束事务）
 // - SavepointAfterCommitRefusesToSendAnything（已结束的事务上一条都不发，尤其不能顺手起一个新事务）
 // - SavepointNameRejectsBlankAndNul / SavepointNameIsQuotedNotSpliced（名字是数据不是 SQL 片段）
+// - StatementAfterTimeLimitIsRejected（整笔时限到期后续语句被拒，已写入的行没落库）
+// - CommitAfterTimeLimitIsRefused（时限把「跑飞的事务还能落库」变成不可能）
+// - RollbackAfterTimeLimitStillWorks（收尾永不被拒：拦住回滚等于把事务钉得更死）
+// - SavepointStatementsAfterTimeLimitAreRefused（保存点也是往前走的一步）
+// - ChunkedBatchInsertAfterTimeLimitSendsNoChunk（分块那条分支同样过闸）
+// - TransactionHasNoTimeLimitByDefault / NonPositiveTimeLimitMeansNoLimit（默认与 0／负数都是不设限）
+// - EndedTransactionIsNotReportedAsTimedOut（「已结束」与「超时」两条原因不混成一句）
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
+#include "Database/Common/TransactionTimeoutException.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -42,6 +50,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -51,6 +60,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 // ========================================================================
@@ -113,8 +123,22 @@ namespace
     using AsynGyanis::Database::SqliteConnection;
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Transaction;
+    using AsynGyanis::Database::TransactionTimeoutException;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::TestSupport::TemporaryDatabaseFile;
+
+    /**
+     * @brief 时限用例的额度：只用来「让一笔事务能写成、另一笔注定越限」
+     * @details 单条本地 SQLite 语句实测只用亚毫秒，200 毫秒留了三个数量级的余量，
+     *          因此额度内那次插入不会被满载的 runner 误判成越限
+     */
+    constexpr std::chrono::milliseconds kShortTransactionTimeLimit{200};
+
+    /**
+     * @brief 睡过时限用的时长：必须显著大于 kShortTransactionTimeLimit
+     * @details `sleep_for` 只可能超时而不会不足，所以这个数只管「已经越限」这一侧成立
+     */
+    constexpr std::chrono::milliseconds kSleepPastTheLimit{500};
 
     /**
      * @brief 归还时不做任何会话复位的 SQLite 连接，只用于把「兜底回滚」从池手里摘掉
@@ -850,4 +874,262 @@ TEST_F(TransactionTest, SavepointNameIsQuotedNotSpliced)
     // 表没被 drop，行也没少：那句 SQL 片段自始至终只是个名字
     ASSERT_EQ(countCommittedRows(), 1);
     ASSERT_TRUE(findCommittedRow(1).has_value());
+}
+
+// ========================================================================
+// 整笔事务时限：跑飞的事务不能再往前走
+// ========================================================================
+
+/**
+ * @brief 时限到期后走这笔事务的下一条语句被拒，而额度内那次写入照旧有效
+ * @details 钉住时限的卖点本身：拒的是「再往前发一条语句」，不是把已做过的工作悄悄落库。
+ *          拒绝之后事务必须仍算活动（`isActive()` 为真），否则析构就不去补那次 ROLLBACK。
+ *          证伪：删掉 `Queryable::acquireConnection()` 里 `isTimeLimitExceeded()` 那一段，
+ *          越限后的插入会照常发出去，这里的 `EXPECT_TRUE(rejected)` 当场变红。
+ */
+TEST_F(TransactionTest, StatementAfterTimeLimitIsRejected)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "额度内写的", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+    bool        rejectedWithTimeout = false;
+    std::string failureReason;
+    try
+    {
+        static_cast<void>(transactionalQuery.insert(makeLedgerRow(2, "越限之后写的", 2.0, std::nullopt)));
+    } catch (const TransactionTimeoutException &failure)
+    {
+        rejectedWithTimeout = true;
+        failureReason       = failure.what();
+    }
+    EXPECT_TRUE(rejectedWithTimeout) << "整笔时限已到期，这条语句却照样发给了数据库";
+    EXPECT_NE(failureReason.find("时限"), std::string::npos) << failureReason;
+
+    // 拒绝不改变事务状态：调用方还得靠收尾那一步把这条连接上的行锁放掉
+    EXPECT_TRUE(transaction.isActive());
+    EXPECT_EQ(countCommittedRows(), 0) << "被拒的语句还是把第二行写进了库";
+
+    ASSERT_TRUE(transaction.rollback()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 整笔时限到期时 COMMIT 一条都不发：一笔跑飞的事务落不了库
+ * @details 与上一条合起来才是完整语义——只挡语句不挡提交，等于允许「等到时限到了再一次性提交」。
+ *          拒提交之后 `m_isActive` 必须仍为真，让析构去补那次 ROLLBACK。
+ *          证伪：删掉 `Transaction::commit()` 里 `isTimeLimitExceeded()` 那一段，
+ *          `EXPECT_FALSE` 与末尾那句「库里 0 行」会同时变红。
+ */
+TEST_F(TransactionTest, CommitAfterTimeLimitIsRefused)
+{
+    {
+        Transaction transaction(*m_pool);
+        transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "越限前要提交的", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+        std::this_thread::sleep_for(kSleepPastTheLimit);
+        ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+        EXPECT_FALSE(transaction.commit()) << "时限到期后 COMMIT 照样发了出去";
+        EXPECT_NE(transaction.lastError().find("时限"), std::string::npos) << transaction.lastError();
+        EXPECT_TRUE(transaction.isActive()) << "拒提交却把事务标成已结束：析构就不会补那次回滚了";
+    }
+
+    EXPECT_EQ(countCommittedRows(), 0) << "被拒的提交还是把数据落了库";
+}
+
+/**
+ * @brief 时限只挡「往前走」：越限之后的 rollback() 永远放行
+ * @details 三条拒绝出口之外的第四条判据，也是最容易写反的一条——把回滚也拒了，超时反而把事务钉得更死：
+ *          行锁一直留到连接被池丢弃，调用方连放掉它的入口都没有。
+ *          证伪：在 `Transaction::rollback()` 开头补一段与 `commit()` 相同的时限判断，
+ *          这里的 `EXPECT_TRUE` 会红，且 `lastError()` 变成那句超时原因。
+ */
+TEST_F(TransactionTest, RollbackAfterTimeLimitStillWorks)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "等着被回滚", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+    EXPECT_TRUE(transaction.rollback()) << transaction.lastError();
+    EXPECT_FALSE(transaction.isActive());
+    EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 三条保存点语句同样是「往前走」：越限之后一条都不发
+ * @details 保存点容易被当成回退工具而以为该放行，但它同样是发往那笔事务的语句；而且越限之后
+ *          唯一出路是整笔作废——退到一个点上再提交仍会被 `commit()` 那道闸拒掉。
+ *          名字检查排在时限之前：坏名字是使用错误，无论越限与否都当场抛。
+ *          证伪：删掉 `Transaction::checkSavepointPremises()` 里第三段时限判断，
+ *          三个 `EXPECT_FALSE` 会同时变红（SQLite 上这些保存点语句是真能成功的）。
+ */
+TEST_F(TransactionTest, SavepointStatementsAfterTimeLimitAreRefused)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "额度内写的", 1.0, std::nullopt)), 1) << transaction.lastError();
+    ASSERT_TRUE(transaction.savepoint("early")) << transaction.lastError();
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+    EXPECT_FALSE(transaction.savepoint("late"));
+    EXPECT_NE(transaction.lastError().find("时限"), std::string::npos) << transaction.lastError();
+    EXPECT_FALSE(transaction.rollbackToSavepoint("early")) << transaction.lastError();
+    EXPECT_FALSE(transaction.releaseSavepoint("early")) << transaction.lastError();
+
+    // 坏名字仍按使用错误当场抛，不被「时限已到」那条回 false 的通道吃掉
+    EXPECT_THROW(static_cast<void>(transaction.savepoint("")), AsynGyanis::Base::InvalidArgumentException);
+
+    EXPECT_TRUE(transaction.isActive());
+    EXPECT_TRUE(transaction.rollback()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 分块批量插入同样过闸：越限之后一块都不发
+ * @details 专门盯分块那条分支：它原先不经 `acquireConnection()`（自己取锁、自己拿连接），
+ *          整笔时限的闸会漏在它身上，于是一批语句悄悄落进已经超时的事务。
+ *          500 行 × 4 列贴近 SQLite 的 999 参数上限，会拆成三块，单条语句的粒度盖不住这种形状。
+ *          证伪：把该分支改回直接 `transaction->acquireStatementLock()` + `transaction->connection()`，
+ *          这里的 `EXPECT_THROW` 变红（三块会照常写完，只是随后被回滚掉）。
+ */
+TEST_F(TransactionTest, ChunkedBatchInsertAfterTimeLimitSendsNoChunk)
+{
+    std::vector<LedgerRow> rows;
+    rows.reserve(500);
+    for (std::int64_t id = 1; id <= 500; ++id)
+    {
+        // 主键从 1001 起：额度内那条写入占着 1，越限批量不能与它撞主键——
+        // 否则缺闸时失败会以「唯一约束冲突」的面目出现，把这条判据指向错的分支
+        rows.push_back(makeLedgerRow(1000 + id, "越限批量", static_cast<double>(id), std::nullopt));
+    }
+
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "额度内写的", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+    EXPECT_THROW(static_cast<void>(transactionalQuery.insertBatch(rows)), TransactionTimeoutException);
+
+    EXPECT_TRUE(transaction.rollback()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 0);
+}
+
+/**
+ * @brief 默认不设限：调用方没喊过时限的事务，行为与加这个功能之前逐字一致
+ * @details 「加功能不许改变既有语义」的对照用例——同一个夹具、同样的睡眠时长，
+ *          但一次都没调 `setTimeLimit()`，写入与提交都必须成功。
+ *          证伪：把 `m_timeLimit` 的默认值改成任何正数，或让 `isTimeLimitExceeded()` 把 0 当成「立刻到期」。
+ */
+TEST_F(TransactionTest, TransactionHasNoTimeLimitByDefault)
+{
+    Transaction transaction(*m_pool);
+    EXPECT_EQ(transaction.timeLimit(), std::chrono::milliseconds(0)) << "默认必须是 0（不设限）";
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    EXPECT_FALSE(transaction.isTimeLimitExceeded());
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "不设限照旧可写", 1.0, std::nullopt)), 1) << transaction.lastError();
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 1);
+}
+
+/**
+ * @brief 0 与负数一律当作不设限，而不是「额度为零、当场到期」
+ * @details `setTimeLimit()` 是 noexcept 的设值通道，把非正数解释成立即到期，
+ *          「用 0 关掉时限」这种写法就会静默把整笔事务废掉。
+ *          证伪：把 `isTimeLimitExceeded()` 的守卫从 `m_timeLimit <= 0` 改成 `m_timeLimit == 0`
+ *          （让负数落到下面的时长比较），非正时限里的那一半会红。
+ */
+TEST_F(TransactionTest, NonPositiveTimeLimitMeansNoLimit)
+{
+    constexpr std::array<std::chrono::milliseconds, 2> kNonPositiveLimits{std::chrono::milliseconds(0), std::chrono::milliseconds(-1)};
+
+    for (std::size_t index = 0; index < kNonPositiveLimits.size(); ++index)
+    {
+        const std::chrono::milliseconds limit = kNonPositiveLimits[index];
+        const std::int64_t              rowId = static_cast<std::int64_t>(index) + 1;
+
+        Transaction transaction(*m_pool);
+        transaction.setTimeLimit(limit);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        ASSERT_FALSE(transaction.isTimeLimitExceeded()) << "时限设为 " << limit.count() << " 毫秒却被判成已到期";
+
+        Queryable<LedgerRow> transactionalQuery(transaction);
+        ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(rowId, "非正时限仍可写", 1.0, std::nullopt)), 1) << transaction.lastError();
+        ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    }
+
+    EXPECT_EQ(countCommittedRows(), 2) << "0 与负数没有都按「不设限」处理";
+}
+
+/**
+ * @brief 到点之后把额度放宽，这笔事务随即恢复可用——错误文案里那条出路必须真能走
+ * @details 时限每次都现算（steady_clock 与 `m_timeLimit` 比），不是一次性闩住的标志，因此抬额度就能继续。
+ *          超时原因里写着「或把额度放宽到实际需要的时长」，本用例就是那句话的兑现。
+ *          证伪：把越限状态闩成成员（首次判到期后立 flag、之后只在 flag 上判），抬额度后的插入仍会被拒。
+ */
+TEST_F(TransactionTest, QuotaWideningResumesTheTransaction)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+    EXPECT_FALSE(transaction.commit()) << transaction.lastError();
+
+    transaction.setTimeLimit(std::chrono::seconds(30));
+    EXPECT_FALSE(transaction.isTimeLimitExceeded()) << "额度抬起来之后仍被判成越限：时限被闩住了";
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "放宽额度后写的", 1.0, std::nullopt)), 1) << transaction.lastError();
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+    EXPECT_EQ(countCommittedRows(), 1);
+}
+
+/**
+ * @brief 已经结束的事务不被报成「超时」：两条原因各归各的判据
+ * @details `isTimeLimitExceeded()` 在 `m_isActive` 为假时恒回 false。这不是省事：时限到期与事务已结束
+ *          在收尾上是两件事——已结束要回「幂等成功」，越限要回「被拒」。混起来之后，正常提交完的事务
+ *          睡过时限会得到一个假的超时读数，调用方的重试与报警随即收到一条不存在的故障。
+ *          证伪：删掉 `isTimeLimitExceeded()` 里 `!m_isActive` 那半截守卫，这里的 `EXPECT_FALSE` 变红。
+ */
+TEST_F(TransactionTest, EndedTransactionIsNotReportedAsTimedOut)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    Queryable<LedgerRow> transactionalQuery(transaction);
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "按时提交的", 1.0, std::nullopt)), 1) << transaction.lastError();
+    ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+
+    EXPECT_FALSE(transaction.isTimeLimitExceeded()) << "已结束的事务被报成整笔超时";
+    EXPECT_TRUE(transaction.commit()) << "已提交的事务再次提交该回幂等成功，而不是被时限拒掉";
+    EXPECT_TRUE(transaction.rollback());
+    EXPECT_EQ(countCommittedRows(), 1) << "已结束的事务再走一遍收尾，把已提交的数据撤掉了";
 }
