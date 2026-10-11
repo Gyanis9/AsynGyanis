@@ -67,6 +67,18 @@ namespace AsynGyanis::Core
         static constexpr std::size_t kMaximumItemsPerPass = 256;
 
         /**
+         * @brief 两条跨线程队列的合计在途上限（协程句柄与投递的可调用体合并计数）
+         * @details 队列无界时，「投递方比取件方快」会把它变成一条内存放大路径：循环被一条长任务
+         *          占住、或投递方失控（每条完成的活都再投一条），在途件数就会一路涨到把进程撑死。
+         *          越过上限的投递**当场拒绝**并计入 saturatedRemoteRejectionCount()（首条告警）——
+         *          不排一条永远排不到的队。拒绝只落在新来者身上，已受理的件一条不丢，
+         *          「投了就一定会跑」对它们仍然成立。取 65536 的锚点是「256 件/趟的取件预算 ×
+         *          256 趟」：取件方还在正常工作时几毫秒就能清掉这个量级，真触到它只可能是
+         *          取件方停摆或投递方失控，两种都要计数与告警来归因，而不是继续无界地收
+         */
+        static constexpr std::size_t kMaximumRemoteBacklog = 65536;
+
+        /**
          * @brief 默认构造调度器，内部结构为空
          */
         Scheduler() = default;
@@ -99,6 +111,9 @@ namespace AsynGyanis::Core
          * @brief 跨线程调度：将协程推入全局队列（线程安全）
          * @param handle 准备调度的协程句柄；空句柄同样被就地忽略
          * @note 帧的归属与 schedule() 同一条：跨线程排队的这一拍里，帧必须仍由它的持有者管着
+         * @note 队列已达 kMaximumRemoteBacklog 时本次投递被拒：不阻塞调用方、不抛异常，
+         *       拒绝条数计入 saturatedRemoteRejectionCount() 并打首条告警。命中上限意味着
+         *       取件方已停摆或投递方失控，那是要人来归因的状态，不是可以重试绕开的抖动
          * @note 本函数解引用调度器自身：调用方（执行器工作线程、解析线程等）必须在整个投递期间
          *       保证目标循环还活着。要么按「先拆执行器再拆循环」的顺序释放资源，要么先判
          *       「等待方还在不在」再投（AsyncResolver 就是这么收口窗口的）
@@ -127,6 +142,8 @@ namespace AsynGyanis::Core
          *       守卫里被就地收下（计入 failedDispatchCount()，首条告警）。此前这里是「异常向目标循环
          *       传播」，而那条传播链的终点是线程入口——一条坏投递会带走整条循环和它上面的全部连接。
          * @note 目标循环若在轮到它之前就退出，队列里尚未执行的对象会被丢弃——持有系统资源的投递方应包在 RAII 句柄里
+         * @note 队列已达 kMaximumRemoteBacklog 时本次投递被拒（与 scheduleRemote() 同一条上限、
+         *       同一笔计数）：可调用体随拒绝在本函数返回时释放，捕获的 RAII 句柄按自己的语义收尾
          */
         void postRemote(std::function<void()> callable);
 
@@ -187,7 +204,24 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::size_t skippedCompletedHandleCount() const noexcept;
 
+        /**
+         * @brief 因跨线程队列已满（kMaximumRemoteBacklog）被拒的累计条数（句柄与可调用体合并计数）
+         * @details 拒绝当场既不阻塞也不抛异常：这些调用点多在完成回调与取消路径上，抛出去
+         *          只会把失败换个地方炸。本计数因此是运维看趋势用的——它在涨说明取件方停摆
+         *          或投递方失控，要修的是那一头。与 failedDispatchCount() 同理，本函数只读
+         *          原子计数，因此任意线程可调。
+         * @return std::size_t 累计条数
+         */
+        [[nodiscard]] std::size_t saturatedRemoteRejectionCount() const noexcept;
+
     private:
+        /**
+         * @brief 记下一条被拒的跨线程投递：先计数，再在首条时告警
+         * @note 只取上升沿（理由与 noteDispatchFailure() 相同）：失控的投递方会条条命中，
+         *       逐条打等于把日志交给它刷。必须在锁外调用：日志通路可能阻塞，不能带进互斥量
+         */
+        void noteRemoteQueueSaturation() noexcept;
+
         /**
          * @brief 记下一条被跳过的已完成句柄：先计数，再在首条时告警
          * @note 只取上升沿（理由与 noteDispatchFailure() 相同）：句柄来源可能每批都命中，
@@ -251,16 +285,17 @@ namespace AsynGyanis::Core
          */
         std::size_t drainLocalTasks(std::size_t budget);
 
-        std::vector<std::coroutine_handle<>> m_localQueue;                     ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
-        std::deque<std::function<void()>>    m_localCallables;                 ///< 本地待执行代码（同上无锁，先进先出）
-        std::deque<std::coroutine_handle<>>  m_globalQueue;                    ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
-        std::deque<std::function<void()>>    m_remoteCallables;                ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
-        std::mutex                           m_globalMutex;                    ///< 保护全局队列与跨线程回调队列的互斥锁
-        std::atomic<size_t>                  m_globalCount{0};                 ///< 全局队列长度（原子变量，用于快速判空）
-        std::atomic<size_t>                  m_remoteCallableCount{0};         ///< 跨线程回调条数（同上，用于快速判空）
-        std::atomic<std::size_t>             m_failedDispatchCount{0};         ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
-        std::atomic<std::size_t>             m_skippedCompletedHandleCount{0}; ///< 派发时因帧已停在终结点被跳过的句柄数（任意线程可读，见 skippedCompletedHandleCount()）
-        Platform::EventNotifier             *m_wakeup{nullptr};                ///< 唤醒器指针，nullptr 表示未启用唤醒
-        EventLoop                           *m_ownerLoop{nullptr};             ///< 所属循环（非拥有），nullptr 表示未接线、不做线程判据
+        std::vector<std::coroutine_handle<>> m_localQueue;                       ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
+        std::deque<std::function<void()>>    m_localCallables;                   ///< 本地待执行代码（同上无锁，先进先出）
+        std::deque<std::coroutine_handle<>>  m_globalQueue;                      ///< 全局就绪队列（跨线程安全，受 m_globalMutex 保护）
+        std::deque<std::function<void()>>    m_remoteCallables;                  ///< 跨线程投递的普通代码（同上受 m_globalMutex 保护，FIFO）
+        std::mutex                           m_globalMutex;                      ///< 保护全局队列与跨线程回调队列的互斥锁
+        std::atomic<size_t>                  m_globalCount{0};                   ///< 全局队列长度（原子变量，用于快速判空）
+        std::atomic<size_t>                  m_remoteCallableCount{0};           ///< 跨线程回调条数（同上，用于快速判空）
+        std::atomic<std::size_t>             m_failedDispatchCount{0};           ///< 被派发级守卫就地收下的抛出条数（任意线程可读，见 failedDispatchCount()）
+        std::atomic<std::size_t>             m_skippedCompletedHandleCount{0};   ///< 派发时因帧已停在终结点被跳过的句柄数（任意线程可读，见 skippedCompletedHandleCount()）
+        std::atomic<std::size_t>             m_saturatedRemoteRejectionCount{0}; ///< 因跨线程队列已满被拒的累计条数（任意线程可读，见 saturatedRemoteRejectionCount()）
+        Platform::EventNotifier             *m_wakeup{nullptr};                  ///< 唤醒器指针，nullptr 表示未启用唤醒
+        EventLoop                           *m_ownerLoop{nullptr};               ///< 所属循环（非拥有），nullptr 表示未接线、不做线程判据
     };
 } // namespace AsynGyanis::Core

@@ -75,10 +75,24 @@ namespace AsynGyanis::Core
         {
             return;
         }
+        bool isAccepted = false;
         {
             std::lock_guard lock(m_globalMutex);
-            m_globalQueue.push_back(handle);
-            m_globalCount.fetch_add(1, std::memory_order_relaxed);
+            // 上限判与推入同锁（两条 deque 的合计在途量）：锁外先查长度再进锁推是 TOCTOU，
+            // 判据会随负载漂、还能超卖。到顶就拒新来者，已受理的件一条不动
+            isAccepted = m_globalQueue.size() + m_remoteCallables.size() < kMaximumRemoteBacklog;
+            if (isAccepted)
+            {
+                m_globalQueue.push_back(handle);
+                m_globalCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        if (!isAccepted)
+        {
+            // 告警排在锁外：日志通路可能阻塞，不能把它带进互斥量
+            noteRemoteQueueSaturation();
+            return;
         }
 
         if (m_wakeup)
@@ -109,10 +123,23 @@ namespace AsynGyanis::Core
         {
             return;
         }
+        bool isAccepted = false;
         {
             std::lock_guard lock(m_globalMutex);
-            m_remoteCallables.push_back(std::move(callable));
-            m_remoteCallableCount.fetch_add(1, std::memory_order_relaxed);
+            // 与 scheduleRemote() 同一条合计上限、同一笔拒绝计数；被拒时 callable 在本函数
+            // 返回时释放，其捕获的 RAII 句柄按自己的语义收尾（与「循环退出丢队列」同一口径）
+            isAccepted = m_globalQueue.size() + m_remoteCallables.size() < kMaximumRemoteBacklog;
+            if (isAccepted)
+            {
+                m_remoteCallables.push_back(std::move(callable));
+                m_remoteCallableCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        if (!isAccepted)
+        {
+            noteRemoteQueueSaturation();
+            return;
         }
 
         if (m_wakeup)
@@ -342,6 +369,32 @@ namespace AsynGyanis::Core
     std::size_t Scheduler::skippedCompletedHandleCount() const noexcept
     {
         return m_skippedCompletedHandleCount.load(std::memory_order_relaxed);
+    }
+
+    std::size_t Scheduler::saturatedRemoteRejectionCount() const noexcept
+    {
+        return m_saturatedRemoteRejectionCount.load(std::memory_order_relaxed);
+    }
+
+    void Scheduler::noteRemoteQueueSaturation() noexcept
+    {
+        // 计数排在告警之前：失控的投递方会条条命中，不该因为日志通路出问题而丢账
+        const std::size_t ordinal = m_saturatedRemoteRejectionCount.fetch_add(1, std::memory_order_relaxed);
+        if (ordinal != 0)
+        {
+            // 只取上升沿：与 noteDispatchFailure() 同一条口径，逐条打等于让日志被同一来源刷
+            return;
+        }
+
+        try
+        {
+            LOG_WARN_FMT("调度器: 跨线程投递已在途 {} 件、到达上限，本条被拒、未入队；此后同类只计数不再逐条告警。"
+                         "命中它意味着取件方停摆或投递方失控——要归因的是那一头，不该靠调大上限绕开",
+                         kMaximumRemoteBacklog);
+        } catch (...)
+        {
+            // 日志通路自己失败时只吞掉这条告警：计数已经落定
+        }
     }
 
     void Scheduler::dispatchHandle(const std::coroutine_handle<> handle)

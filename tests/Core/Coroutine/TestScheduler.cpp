@@ -734,4 +734,52 @@ namespace AsynGyanis::Core
         EXPECT_EQ(scheduler.skippedCompletedHandleCount(), 2U);
     }
 
+    /**
+     * @brief 跨线程在途件数触顶后新投递被拒并落账；已受理的件一条不丢，排空后容量恢复
+     * @details 钉住两条跨线程队列的合计上限（kMaximumRemoteBacklog）与拒绝语义：拒绝只落在
+     *          新来者身上——不挤掉已受理的件，「投了就一定会跑」对它们仍然成立；被拒当场
+     *          不阻塞、不抛异常，只计数 + 首条告警（调用点都在完成回调与取消路径上）。
+     *          上限是「取件方停摆或投递方失控」的判据，不是常规运行点：修的是那一头
+     */
+    TEST(Scheduler, RefusesRemoteSubmissionsBeyondTheBacklogCap)
+    {
+        Scheduler             scheduler;
+        std::atomic<int>      executed{0};
+        constexpr std::size_t kCap      = Scheduler::kMaximumRemoteBacklog;
+        constexpr std::size_t kOverflow = 8;
+
+        // 先用可调用体把两条队列的合计在途量喂到顶
+        for (std::size_t index = 0; index < kCap; ++index)
+        {
+            scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
+        }
+
+        // 到顶之后的条条被拒：协程句柄与可调用体共用同一笔上限与同一笔计数
+        std::atomic<bool> refusedHandleRan{false};
+        Task<void>        refusedTask = markTask(refusedHandleRan);
+        scheduler.scheduleRemote(refusedTask.handle());
+        for (std::size_t index = 0; index < kOverflow; ++index)
+        {
+            scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
+        }
+
+        EXPECT_EQ(scheduler.remotePendingCount(), kCap) << "在途计数越过上限（拒绝没生效）或有件被挤掉";
+        EXPECT_EQ(scheduler.saturatedRemoteRejectionCount(), 1U + kOverflow) << "被拒的条数没落账";
+        EXPECT_FALSE(refusedHandleRan.load(std::memory_order_acquire)) << "被拒的句柄仍被恢复：它不该进任何队列";
+
+        // 排空调度器：已受理的件必须一条不少地跑完
+        while (scheduler.hasWork())
+        {
+            scheduler.runAll();
+        }
+        EXPECT_EQ(executed.load(), static_cast<int>(kCap)) << "已受理的投递丢了或没取完";
+        EXPECT_EQ(scheduler.saturatedRemoteRejectionCount(), 1U + kOverflow) << "排空过程动了拒绝计数";
+
+        // 容量恢复后正常投递重新被接受：上限是安全阀，不是粘性熔断
+        std::atomic<int> afterDrainRan{0};
+        scheduler.postRemote([&afterDrainRan] { afterDrainRan.store(1, std::memory_order_relaxed); });
+        EXPECT_TRUE(scheduler.runOne());
+        EXPECT_EQ(afterDrainRan.load(), 1) << "排空之后仍拒收：容量没有随取出恢复";
+    }
+
 } // namespace AsynGyanis::Core
