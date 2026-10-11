@@ -4754,4 +4754,82 @@ namespace AsynGyanis::Net
         EXPECT_EQ(rejectedStats.badRequestCount, 1U) << "越限要留下一笔坏请求，否则指标上像没发生过";
         EXPECT_EQ(rejectedStats.totalRequestCount, 0U) << "没交给业务的收口不进请求数：三条协议同解";
     }
+
+    /**
+     * @brief 钉住：h3 流式路由的尾字段也记同一份 parser_limits 预算，越限字段拦在业务之外
+     * @details 落点二（请求已派发）与落点一的差别只在处置：431 回不出去，只拦字段 + 一条 WARN
+     *          （见 addTrailerFieldToStream 的 @details）。数字沿用上一条用例的口径：头段那 5 条
+     *          （四条伪头 + content-length）之后，上限 8 放行 3 条尾字段、上限 7 在第 3 条起越限。
+     *          撤掉落点二的记账（回到无条件 addTrailerField）时，本条会以「c=v」读到不该交付的字段。
+     *          最后一格钉头段本身越限（上限 3 < 5 条头）：流式派发也要让路，431 走 END_STREAM 那一路。
+     */
+    TEST(Http3Session, StreamingRouteDropsTrailerFieldsBeyondTheHeaderBudget)
+    {
+        // 跑一遍：给 trailerCount 条尾字段（x-a/x-b/x-c）、按 countLimit 判，回「状态码 / 业务读到的三条尾字段」
+        const auto serveOnce = [](const std::size_t trailerCount, const std::size_t countLimit)
+        {
+            FakeStreamOpener                opener;
+            std::vector<CapturedStreamData> sentStreamData;
+
+            Http3Session session(std::ref(opener),
+                                 [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                                 {
+                                     sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                     return data.size();
+                                 });
+
+            HttpParserLimits limits;
+            limits.maximumHeaderCount = countLimit;
+            session.setParserLimits(limits);
+
+            Router router;
+            router.postStreaming("/tail",
+                                 [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                 {
+                                     // 流式路由先把正文读到收尾，尾段才落在这一份请求上（见上一条流式尾段用例）
+                                     while (co_await request.bodyStream()->readNext())
+                                     {
+                                     }
+                                     response.setStatus(200);
+                                     response.setBody("a=" + request.getTrailerField("x-a").value_or("-") + "+b=" + request.getTrailerField("x-b").value_or("-") +
+                                                      "+c=" + request.getTrailerField("x-c").value_or("-"));
+                                     co_return;
+                                 });
+            session.attachRouter(router);
+
+            std::vector<QpackHeaderField> trailerFields;
+            for (std::size_t index = 0; index < trailerCount; ++index)
+            {
+                trailerFields.push_back(QpackHeaderField{std::string("x-") + static_cast<char>('a' + static_cast<int>(index)), "v"});
+            }
+
+            Http3ClientPeer peer;
+            for (const CapturedStreamData &step: peer.submitRequestWithBodyAndTrailers("POST", "/tail", "example.com", "abc", trailerFields))
+            {
+                session.onStreamData(step.streamId, step.bytes, step.isEndStream);
+            }
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            return std::make_pair(peer.response().status, peer.response().body);
+        };
+
+        // 对照：5 + 3 = 恰好等于上限 8，三条尾字段都交到业务手上
+        const auto [okStatus, okBody] = serveOnce(3U, 8U);
+        EXPECT_EQ(okStatus, 200);
+        EXPECT_EQ(okBody, "a=v+b=v+c=v") << "上限内的尾字段该原样落到 trailer 档：" << okBody;
+
+        // 判据：5 + 3 = 8 越过上限 7。请求早已派发，响应照旧 200，但第 3 条尾字段不得进业务
+        const auto [status, body] = serveOnce(3U, 7U);
+        EXPECT_EQ(status, 200) << "流式路由的请求在头收齐时已派发，越限尾字段不该改动已定的响应";
+        EXPECT_EQ(body, "a=v+b=v+c=-") << "越限的尾字段没有被拦下（或把上限内的前两条也一起拦了）：" << body;
+
+        // 头段本身越限（上限 3 < 头段的 5 条）：流式路由也不得派发，按与常规路径同一个 431 收口
+        const auto [oversizedStatus, oversizedBody] = serveOnce(3U, 3U);
+        EXPECT_EQ(oversizedStatus, 431) << "头段越限的记录不该从流式路径派发出去：431 要在 END_STREAM 那一路出";
+        EXPECT_EQ(oversizedBody, "Request Header Fields Too Large");
+    }
 } // namespace AsynGyanis::Net

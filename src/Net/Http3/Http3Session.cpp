@@ -801,12 +801,17 @@ namespace AsynGyanis::Net
         incoming.request.addHeader(name, value);
     }
 
+    bool Http3Session::exceedsHeaderFieldBudget(const std::size_t fieldCount, const std::size_t blockByteCount, const std::string_view name, const std::string_view value) const
+    {
+        return (exceedsBudget(fieldCount, m_parserLimits.maximumHeaderCount)) || (exceedsBudget(name.size(), m_parserLimits.maximumHeaderFieldNameLength)) ||
+               (exceedsBudget(value.size(), m_parserLimits.maximumHeaderFieldValueLength)) || (exceedsBudget(blockByteCount, m_parserLimits.maximumHeaderBlockLength));
+    }
+
     void Http3Session::accountHeaderFieldBudget(IncomingRequest &incoming, const std::string_view name, const std::string_view value)
     {
         ++incoming.headerFieldCount;
         incoming.headerBlockByteCount += name.size() + value.size();
-        if ((exceedsBudget(incoming.headerFieldCount, m_parserLimits.maximumHeaderCount)) || (exceedsBudget(name.size(), m_parserLimits.maximumHeaderFieldNameLength)) ||
-            (exceedsBudget(value.size(), m_parserLimits.maximumHeaderFieldValueLength)) || (exceedsBudget(incoming.headerBlockByteCount, m_parserLimits.maximumHeaderBlockLength)))
+        if (exceedsHeaderFieldBudget(incoming.headerFieldCount, incoming.headerBlockByteCount, name, value))
         {
             static_cast<void>(incoming.rejectWith(Rejection::HeaderListTooLarge));
         }
@@ -826,14 +831,27 @@ namespace AsynGyanis::Net
         }
 
         // 落点二：流式路径。请求记录在头收齐那一刻就搬走了，尾字段要落到搬走后的那一份上。
-        // 这里不再记头部预算——计数器随头段一起留在了上面那份记录里，而请求早已派发，此刻判越限也
-        // 回不出 431（h2 的流式路径同处境）。单个字段段的体量由 QPACK 解码侧的
-        // `maximumFieldSectionSizeByteCount` 兜住（超了整段判错，出厂 64 KiB；把它配成 0 就是不限，
-        // 这条兜底随之消失），不会一路长下去
+        // 这里同样记账（计数在搬记录时一并带了过来，口径与落点一完全同源）：与落点一的差别只在处置——
+        // 请求早已派发，431 回不出去（h2 已派发那支同形），越限的字段拦下不进业务、WARN 只报一次。
+        // 单个字段段的体量另有 QPACK 解码侧的 `maximumFieldSectionSizeByteCount` 兜底（超了整段判错，
+        // 出厂 64 KiB；把它配成 0 就是不限）
         if (const auto streaming = m_streamingRequests.find(streamId); streaming != m_streamingRequests.end())
         {
-            streaming->second->deadline = nextRequestDeadline();
-            streaming->second->request.addTrailerField(name, value);
+            StreamingRequest &request = *streaming->second;
+            request.deadline          = nextRequestDeadline();
+            ++request.headerFieldCount;
+            request.headerBlockByteCount += name.size() + value.size();
+            if (exceedsHeaderFieldBudget(request.headerFieldCount, request.headerBlockByteCount, name, value))
+            {
+                // 对端可以逐字段发，每字段一条 WARN 就是日志放大面：每条流只报第一条越限
+                if (!request.hasWarnedTrailerBudget)
+                {
+                    request.hasWarnedTrailerBudget = true;
+                    LOG_WARN_FMT("Http3Session: 流 {} 的尾部字段把头部预算顶过本端上限，而这条请求已经派发出去：431 回不出去，本端只把越限的尾字段拦下、不交给业务", streamId);
+                }
+                return;
+            }
+            request.request.addTrailerField(name, value);
         }
 
         // 两处都没有：这条流已经派发完（或已被取消丢掉），没有请求对象可落。原样忽略——
@@ -1288,6 +1306,12 @@ namespace AsynGyanis::Net
         {
             return;
         }
+        // 头段本身越限的记录不从流式路径派发：这条路径没有回 431 的时机，留给 END_STREAM 那一路
+        // 按 parser_limits 的既有口径收口（enqueueRequest 会把 rejection 带进收口那一支）
+        if (found->second.hasRejection())
+        {
+            return;
+        }
 
         // 判定要用的东西先取出来：判定通过后这份记录就要从 m_incomingRequests 里搬走
         IncomingRequest          &incoming        = found->second;
@@ -1326,8 +1350,11 @@ namespace AsynGyanis::Net
             return;
         }
 
-        auto streamingRequest     = std::make_unique<StreamingRequest>();
-        streamingRequest->request = std::move(incoming.request);
+        auto streamingRequest = std::make_unique<StreamingRequest>();
+        // 头部预算计数随记录一起搬走：尾段到达时（落点二）接着这份账往下算，两条落点的口径同源
+        streamingRequest->headerFieldCount     = incoming.headerFieldCount;
+        streamingRequest->headerBlockByteCount = incoming.headerBlockByteCount;
+        streamingRequest->request              = std::move(incoming.request);
         streamingRequest->request.setMethod(method);
         streamingRequest->request.setUri(uri);
         streamingRequest->request.setHttpVersion(std::string(kHttp3RequestVersion));

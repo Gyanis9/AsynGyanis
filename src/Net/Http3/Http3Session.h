@@ -263,6 +263,8 @@ namespace AsynGyanis::Net
          * @details 两条可能的落点：非流式路径的记录还在 @c m_incomingRequests（要等 END_STREAM 才派发），
          *          流式路径的记录已搬进 @c m_streamingRequests。两处都没有就说明这条流已经派发或已被丢掉，
          *          原样忽略——不能用 operator[] 去补，那会给一条已经没有请求对象的流留下一条空记录。
+         *          两条落点都记同一份头部预算（计数随记录一起搬家）；差别只在处置——未派发的置 431，
+         *          已派发的请求回不出 431，只把越限字段拦下（WARN 每条流一次）。
          * @param streamId 流号
          * @param name 字段名（QPACK 解出来就是小写）
          * @param value 字段值
@@ -459,19 +461,33 @@ namespace AsynGyanis::Net
         void accountHeaderFieldBudget(IncomingRequest &incoming, std::string_view name, std::string_view value);
 
         /**
+         * @brief 头部预算的四条判定（累计条数、单名长、单值长、整块净字节），三处记账共用这一份
+         * @param fieldCount 含本次的累计条数
+         * @param blockByteCount 含本次的累计净字节
+         * @param name 本次字段名
+         * @param value 本次字段值
+         * @return true 本次越过任一上限
+         */
+        [[nodiscard]] bool exceedsHeaderFieldBudget(std::size_t fieldCount, std::size_t blockByteCount, std::string_view name, std::string_view value) const;
+
+        /**
          * @brief 一条流式请求的本地状态：本流的正文来源、读取器，以及它自己的派发协程
          */
         struct StreamingRequest
         {
-            HttpStreamBody              body;                   ///< 本流正文（HttpBodySource，兼「消费才还窗口」）
-            HttpRequestBody             reader;                 ///< 交付给 request.bodyStream()
-            HttpRequest                 request;                ///< 头部收齐时填好的请求
-            std::optional<Core::Task<>> serveTask;              ///< 本流自己的派发协程（等正文时挂起）
-            std::coroutine_handle<>     bodyWaiter{};           ///< 正在等正文的协程（本流最多一个）
-            bool                        isServeStarted{false};  ///< 派发协程是否已经起过
-            bool                        isServeFinished{false}; ///< 派发协程已跑完（记录可随流关闭一起摘掉）
-            bool                        isStreamClosed{false};  ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
-            bool                        hasPendingWake{false};  ///< 有新正文/收尾/断开，等回到安全点再唤醒
+            HttpStreamBody  body;    ///< 本流正文（HttpBodySource，兼「消费才还窗口」）
+            HttpRequestBody reader;  ///< 交付给 request.bodyStream()
+            HttpRequest     request; ///< 头部收齐时填好的请求
+            /// 头部预算计数随头段从 IncomingRequest 搬过来：尾段与头段共用同一份账（口径见 HttpParserLimits）
+            std::size_t                 headerFieldCount{0};           ///< 已收到的头字段条数（头段 + 尾段）
+            std::size_t                 headerBlockByteCount{0};       ///< 头块净字节（名与值的长度，不含帧头）
+            bool                        hasWarnedTrailerBudget{false}; ///< 尾段越限的 WARN 只报一次：对端可逐字段发，别做日志放大面
+            std::optional<Core::Task<>> serveTask;                     ///< 本流自己的派发协程（等正文时挂起）
+            std::coroutine_handle<>     bodyWaiter{};                  ///< 正在等正文的协程（本流最多一个）
+            bool                        isServeStarted{false};         ///< 派发协程是否已经起过
+            bool                        isServeFinished{false};        ///< 派发协程已跑完（记录可随流关闭一起摘掉）
+            bool                        isStreamClosed{false};         ///< 承载侧的流已关闭（此后不会再有 DATA 到达）
+            bool                        hasPendingWake{false};         ///< 有新正文/收尾/断开，等回到安全点再唤醒
             /// 正文还没收完时「下一次该有进展」的时刻，随每段到达按 readTimeout 往后推；收完之后不再判
             Deadline deadline{std::chrono::steady_clock::now()};
             /// 本流「收下这条请求」的时刻（头部收齐、派发协程建立那一刻），用于耗时直方图的起点。
