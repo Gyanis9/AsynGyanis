@@ -380,6 +380,42 @@ namespace AsynGyanis::Platform
     }
 #endif
 
+    /**
+     * @brief 钉住：按「集合内序号」取核编号与真实许可集合同解，序号数尽即报「数不出」
+     * @details 线程池按这个序号取绑核编号：集合不以 0 起始或整段落在 64 以上时，只有按平台自己的
+     *          集合数才对（64 位掩码表达不了后者，掩码那份视图只用于诊断）。判据两半——序号在集合
+     *          大小内必须取到编号、且与掩码同解；序号数尽必须回 nullopt，而不是回一个集合外的编号，
+     *          把兜底推给下游的绑定拒绝（那会退化成「每条线程一行 WARN、一条都没绑」）。
+     */
+    TEST(CpuAffinity, AllowedCoreIndexAtFollowsTheAllowedSet)
+    {
+        const std::size_t allowedCoreCount = CpuAffinity::availableCoreCount();
+        if (allowedCoreCount == 0U)
+        {
+            // 查询失败、或线程落在第 1 组起（Windows 掩码表达不了）：前提不成立，按 SKIP 处理而不是判坏
+            GTEST_SKIP() << "本机读不出许可集合，这条用例的前提不成立";
+        }
+
+        const std::uint64_t        allowedMask       = CpuAffinity::currentThreadCoreMask();
+        std::optional<std::size_t> previousCoreIndex = std::nullopt;
+        for (std::size_t ordinal = 0; ordinal < allowedCoreCount; ++ordinal)
+        {
+            const std::optional<std::size_t> coreIndex = CpuAffinity::allowedCoreIndexAt(ordinal);
+            ASSERT_TRUE(coreIndex.has_value()) << "集合里有 " << allowedCoreCount << " 枚核，第 " << ordinal << " 枚却数不出来";
+            if (previousCoreIndex.has_value())
+            {
+                EXPECT_GT(*coreIndex, *previousCoreIndex) << "按序号取出的编号不递增：序号语义坏了";
+            }
+            previousCoreIndex = coreIndex;
+            // 掩码能表达的那一段（<64）必须与掩码同解；核整段 ≥64 时掩码为空，只能信平台集合
+            if (allowedMask != 0U && *coreIndex < 64U)
+            {
+                EXPECT_TRUE((allowedMask & (std::uint64_t{1} << *coreIndex)) != 0U) << "取回的核 " << *coreIndex << " 不在许可掩码里";
+            }
+        }
+        EXPECT_FALSE(CpuAffinity::allowedCoreIndexAt(allowedCoreCount).has_value()) << "序号数尽还给编号：把兜底推给了绑定拒绝";
+    }
+
     TEST(CpuAffinity, PinningRefusesCoresOutsideTheAllowedSet)
     {
         const std::uint64_t              maskBefore     = CpuAffinity::currentThreadCoreMask();

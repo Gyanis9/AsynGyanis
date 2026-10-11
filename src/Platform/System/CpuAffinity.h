@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -83,6 +84,17 @@ namespace AsynGyanis::Platform
          *         查询失败时返回 0
          */
         [[nodiscard]] static std::uint64_t currentThreadCoreMask() noexcept;
+
+        /**
+         * @brief 取本线程许可集合里第 ordinal 枚核的编号（按集合内顺序数，不是编号本身）
+         * @details 「绑第 i 条线程」要的是许可集合里的第 i 枚核：集合可以不以 0 起始（`taskset -c 4-7`），
+         *          也可以整段落在 64 以上（宽机器上的 cpuset）——后者 64 位掩码表达不了，掩码那份
+         *          紧凑视图只该用于诊断，按集合自己数才数得对。
+         * @param ordinal 集合内序号，0 起
+         * @return 该核在本平台集合里的编号
+         * @return 集合里的核不足 ordinal+1 枚（含查询失败）时返回 std::nullopt，调用方按「不绑」处理
+         */
+        [[nodiscard]] static std::optional<std::size_t> allowedCoreIndexAt(std::size_t ordinal) noexcept;
 
         /**
          * @brief 把当前线程绑到指定逻辑核上

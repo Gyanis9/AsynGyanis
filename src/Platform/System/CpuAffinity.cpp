@@ -215,6 +215,54 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    std::optional<std::size_t> CpuAffinity::allowedCoreIndexAt(const std::size_t ordinal) noexcept
+    {
+#if ASYN_PLATFORM_LINUX
+        // 按平台自己的整份集合数：cpu_set_t 有 1024 位，编号 ≥64 的核在这里看得见（掩码里看不见）
+        cpu_set_t allowedSet;
+        if (!readAllowedCoreSet(allowedSet))
+        {
+            return std::nullopt;
+        }
+        std::size_t seenCoreCount = 0;
+        for (std::size_t coreIndex = 0; coreIndex < CPU_SETSIZE; ++coreIndex)
+        {
+            if (!CPU_ISSET(coreIndex, &allowedSet))
+            {
+                continue;
+            }
+            if (seenCoreCount == ordinal)
+            {
+                return coreIndex;
+            }
+            ++seenCoreCount;
+        }
+        // 集合里的核不足 ordinal+1 枚：调用方按「不绑」处理，而不是绑到集合外的编号上
+        return std::nullopt;
+#else
+        // Windows 只能表达一个处理器组内的 0-63；组不是第 0 组或掩码读不到时如实报「数不出」
+        const std::uint64_t allowedMask = currentThreadCoreMask();
+        if (allowedMask == 0)
+        {
+            return std::nullopt;
+        }
+        std::size_t seenCoreCount = 0;
+        for (std::size_t coreIndex = 0; coreIndex < kMaximumAddressableCoreIndex; ++coreIndex)
+        {
+            if ((allowedMask & (std::uint64_t{1} << coreIndex)) == 0)
+            {
+                continue;
+            }
+            if (seenCoreCount == ordinal)
+            {
+                return coreIndex;
+            }
+            ++seenCoreCount;
+        }
+        return std::nullopt;
+#endif
+    }
+
     std::expected<void, std::string> CpuAffinity::pinCurrentThreadToCore(const std::size_t coreIndex)
     {
         // 可表达的核编号范围取各平台自己那套集合的宽度，而不是诊断掩码的 64 位：
