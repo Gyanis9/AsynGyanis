@@ -995,6 +995,68 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：控制帧洪泛被每连接频次额度打穿，按 ENHANCE_YOUR_CALM 收口（RFC 9113 §10.5）
+     * @details 额度是令牌桶（容量 1000 帧、每秒回填 100 帧）：合法瞬时风暴（浏览器导航取消一批流、
+     *          客户端重启后补一轮心跳）全落在桶里，持续洪泛在秒级内被打穿。这里只发 PING——
+     *          它最便宜，且每条非 ACK 的 PING 都强制本端生成一条回帧，是 §10.5 点名的放大器
+     */
+    TEST(Http2CleartextSession, CutsOffControlFrameFloodWithEnhanceYourCalm)
+    {
+        RunningHttpServerFixture fixture(makeCleartextLimits(), std::chrono::milliseconds{30}, {}, {}, {}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        // 先完成协商：前奏 + 客户端 SETTINGS 会被正常处理（各只占桶里 1 帧）
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+
+        // 超过桶容量的一批 PING：回填只有每秒 100 帧，秒级以内的这一串必然把桶打穿
+        std::string        floodBytes;
+        const std::int64_t floodFrameCount = Http2Connection::kControlFrameBucketCapacityMilliFrames / 1000 + 2;
+        for (std::int64_t frameIndex = 0; frameIndex < floodFrameCount; ++frameIndex)
+        {
+            floodBytes += encodeHttp2PingFrame(Http2PingPayload{});
+        }
+        ASSERT_TRUE(client.sendBytes(floodBytes, kWaitTimeout));
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    for (const Http2Frame &frame: receivedFrames)
+                    {
+                        if (frame.header.type == Http2FrameType::GoAway)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "控制帧洪泛没有被频次额度截断，也没收到 GOAWAY";
+
+        const Http2Frame *goAwayFrame = nullptr;
+        for (const Http2Frame &frame: frames)
+        {
+            if (frame.header.type == Http2FrameType::GoAway)
+            {
+                goAwayFrame = &frame;
+                break;
+            }
+        }
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(goAwayFrame->header.streamId, 0U) << "GOAWAY 必须是连接级帧（流号 0）";
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "过量控制帧应按 ENHANCE_YOUR_CALM 收口（RFC 9113 §10.5）";
+        EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：默认（未打开 h2c）明文连接仍按 HTTP/1.1 服务——开关的默认值不改变既有行为
      */
     TEST(Http2CleartextSession, KeepsHttp11ServingWhenCleartextHttp2IsDisabled)

@@ -198,6 +198,22 @@ namespace AsynGyanis::Net
     {
     public:
         /**
+         * @brief 每连接控制帧（PING / SETTINGS / RST_STREAM）令牌桶：桶容量（毫帧单位，1 帧 = 1000）
+         * @details RFC 9113 §10.5 点名的洪泛源里，这三类直接花本端的时间或强制本端生成回帧
+         *          （PING 必须应答、SETTINGS 每条都要 ACK、RST_STREAM 要停止流并结账）；原文明写
+         *          **"Implementations SHOULD track the use of these features and set limits on their
+         *          use. An endpoint MAY treat activity that is suspicious as a connection error
+         *          (Section 5.4.1) of type ENHANCE_YOUR_CALM."** 容量取 1000 帧：合法瞬时风暴
+         *          （浏览器导航取消一批流、客户端重启后补一轮 PING）全落在桶里；洪泛（每秒万级
+         *          起步）会在秒级内把桶打穿。单位取毫帧是为了回填能走整数：每秒回填的**帧数**
+         *          恰好等于每毫秒回填的**毫帧数**
+         */
+        static constexpr std::int64_t kControlFrameBucketCapacityMilliFrames = 1000 * 1000;
+
+        /// 令牌桶回填速率（帧/秒，同时也是毫帧/毫秒），语义见上一条
+        static constexpr std::int64_t kControlFrameBucketRefillPerSecondFrames = 100;
+
+        /**
          * @brief 构造连接状态机：本端取一份配置，协议状态回到「等前奏」
          * @param configuration 连接层配置；默认值对应规范的初始 SETTINGS 取值与本端策略上限
          * @param parserLimits 请求 intake 的资源上限，与 h1/h3 共用同一份配置：本层据此判
@@ -890,6 +906,16 @@ namespace AsynGyanis::Net
         void fail(Http2ErrorCode errorCode, std::string reason);
 
         /**
+         * @brief 记一帧控制帧并判它是否越过每连接频次额度（RFC 9113 §10.5 的 SHOULD）
+         * @details 整数令牌桶：按距上次的毫秒数回填（毫帧 = 毫秒数 × 每秒帧数），封顶桶容量；
+         *          扣不出 1 帧即判超量，fail(ENHANCE_YOUR_CALM) 并返回 false。桶只在所属事件
+         *          循环线程上碰（本类线程契约），不需要同步
+         * @param frameKindName 帧类型名（只进失败原因文本）
+         * @return true 额度内（本帧已扣）；false 已超量（连接已被置成失败态，调用方直接收口）
+         */
+        [[nodiscard]] bool consumeControlFrameBudget(std::string_view frameKindName);
+
+        /**
          * @brief 统一记一次流级失败：回 RST_STREAM 并终止该流，连接继续
          * @param stream 目标流
          * @param errorCode 要回给对端的错误码
@@ -908,6 +934,8 @@ namespace AsynGyanis::Net
         std::string                           m_errorMessage;                                 ///< 连接级失败的中文原因
         std::string                           m_lastStreamErrorMessage;                       ///< 最近一次流级错误的中文原因
         std::uint64_t                         m_rejectedRequestHeaderFieldCount{0};           ///< 因请求头不合规被拒的流条数，见 rejectedRequestHeaderFieldCount()
+        std::int64_t                          m_controlFrameBucketMilliFrames{kControlFrameBucketCapacityMilliFrames}; ///< 控制帧令牌桶余额（毫帧），见 consumeControlFrameBudget
+        std::chrono::steady_clock::time_point m_controlFrameBucketRefreshedAt{}; ///< 上次回填时刻；默认零值在首次消费时按「已过去很久」封顶成满桶
 
         Http2FrameDecoder m_frameDecoder; ///< 帧解码器：单帧合法性由它把关
         HpackDecoder      m_hpackDecoder; ///< 请求方向的头块解码器，动态表与对端编码器同步演进

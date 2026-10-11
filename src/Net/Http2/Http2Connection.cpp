@@ -1044,8 +1044,33 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    bool Http2Connection::consumeControlFrameBudget(const std::string_view frameKindName)
+    {
+        // 回填单位恰好对齐：每秒的帧数 == 每毫秒的毫帧数，整数运算即可，不需要浮点
+        const auto now                  = std::chrono::steady_clock::now();
+        const auto elapsedMilliseconds  = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_controlFrameBucketRefreshedAt).count();
+        m_controlFrameBucketRefreshedAt = now;
+        m_controlFrameBucketMilliFrames =
+                std::min(kControlFrameBucketCapacityMilliFrames, m_controlFrameBucketMilliFrames + elapsedMilliseconds * kControlFrameBucketRefillPerSecondFrames);
+
+        if (m_controlFrameBucketMilliFrames < 1000)
+        {
+            fail(Http2ErrorCode::EnhanceYourCalm, std::format("对端持续发送控制帧（{}）越过每连接频次额度：RFC 9113 §10.5 要求跟踪并限制 PING/SETTINGS/RST_STREAM 的使用，"
+                                                              "本端按 ENHANCE_YOUR_CALM 收口（额度：容量 {} 帧、每秒回填 {} 帧）",
+                                                              frameKindName, kControlFrameBucketCapacityMilliFrames / 1000, kControlFrameBucketRefillPerSecondFrames));
+            return false;
+        }
+        m_controlFrameBucketMilliFrames -= 1000;
+        return true;
+    }
+
     bool Http2Connection::handleRstStreamFrame(const Http2Frame &frame)
     {
+        // 先记频次再谈内容：洪泛判决与帧本身合不合规无关（RFC 9113 §10.5 的 SHOULD 按用量而不是按对错）
+        if (!consumeControlFrameBudget("RST_STREAM"))
+        {
+            return false;
+        }
         const std::uint32_t streamId = frame.header.streamId;
         std::string         errorText;
         if (!acceptPeerStreamIdParity(streamId, &errorText))
@@ -1087,6 +1112,11 @@ namespace AsynGyanis::Net
 
     bool Http2Connection::handleSettingsFrame(const Http2Frame &frame)
     {
+        // 每帧 SETTINGS（含 ACK）都要花本端的处理时间并要求回 ACK：频次同样按用量记（§10.5）
+        if (!consumeControlFrameBudget("SETTINGS"))
+        {
+            return false;
+        }
         Http2SettingsPayload payload;
         std::string          errorText;
         if (!parseHttp2SettingsPayload(frame, payload, &errorText))
@@ -1125,6 +1155,11 @@ namespace AsynGyanis::Net
 
     bool Http2Connection::handlePingFrame(const Http2Frame &frame)
     {
+        // 非 ACK 的 PING 强制本端生成回帧，是最便宜的放大器：频次先记再谈应答（§10.5）
+        if (!consumeControlFrameBudget("PING"))
+        {
+            return false;
+        }
         Http2PingPayload payload;
         std::string      errorText;
         if (!parseHttp2PingPayload(frame, payload, &errorText))
