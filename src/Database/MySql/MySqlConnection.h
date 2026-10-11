@@ -208,6 +208,9 @@ namespace AsynGyanis::Database
          *       两个关键字（见 noteSessionCommand 里那段说明）。这两格也没有 server_status 那种自报位可判，
          *       而「退回基线」要先读回基线：sql_mode 得发一条 SELECT @@session.sql_mode 才拿得到，
          *       隔离级别同理。为了不让下一位继承上一位的严格度/隔离度，借用者改了它们请自己改回去再归还。
+         * @note 还有一格的归属容易误判：`LAST_INSERT_ID()` 是会话级且复位路径不重设——下一位在插入之前
+         *       查询会读到**上一位**的值（这是 MySQL 的会话语义，本层不做旧值清除）。框架自身的写回执
+         *       走 `mysql_insert_id()` 快照，不受它影响；要跨借用者读它的部署方，请自己在插入后再查。
          * @note 只读语句时限有两条来路，各归一处：走 `setQueryTimeout()` 的那条由连接池在归还时按建连时的
          *       取值退回（`DatabaseConnection::restoreQueryTimeoutBaseline()`，命令超时是基类的账）；
          *       绕过 setter 直接发 `SET SESSION max_execution_time=…` 的那条由本方法按语句文本记下来并重申
@@ -368,12 +371,12 @@ namespace AsynGyanis::Database
         void noteSessionScopedStatement(std::string_view command) noexcept;
 
         /**
-         * @brief 把记账记到的那两格会话状态退回配置里的取值（默认库与连接字符集）
-         * @details 由 resetSessionState() 在事务与自动提交都处理完之后调用：`USE` 与 `SET NAMES` 都是
-         *          会话级设置，而本类没有对应 setter，借用者只能发原始语句——不退回就会出现
-         *          「下一位的元数据查询查的是别人的库」与「中文列被按别的字符集读」两类静默错位。
-         *          没记到改动时什么都不发，稳态归还因此不付额外往返。
-         * @return true 没有要退的，或两条都退成了
+         * @brief 把记账记到的三格会话状态退回配置里的取值（默认库、连接字符集与只读语句时限）
+         * @details 由 resetSessionState() 在事务与自动提交都处理完之后调用：`USE`、`SET NAMES` 与
+         *          `SET SESSION max_execution_time=…` 都是会话级设置，而本类没有对应 setter，不退回
+         *          就会出现「下一位的元数据查询查的是别人的库」「中文列被按别的字符集读」与「被上
+         *          一位的只读时限卡住」三类静默错位；没记到改动时什么都不发，稳态归还因此不付额外往返。
+         * @return true 没有要退的，或都退成了
          * @return false 退不掉（配置没有默认库、句柄已断、服务端拒绝），原因留在 lastError()，
          *         调用方应把这条会话判成「没复位干净」
          */

@@ -187,6 +187,9 @@ namespace AsynGyanis::Database
          *       借用者可以绕开 setter 直接发 `PRAGMA busy_timeout=1`，而两者落的是同一份存储，
          *       基类那份账察觉不到这种改法，「退回基线」那一步因此什么都不会发——下一位只等 1 毫秒
          *       就报 SQLITE_BUSY，看着像「库太忙」而不是像被人改过
+         * @note `ATTACH DATABASE` 挂上来的库与 `PRAGMA query_only=ON` 同样不在复位名单里：前者让下一位
+         *       看到本不该挂的库（`PRAGMA database_list` 判得出，复位路径没做），后者把下一位的写全变成
+         *       SQLITE_READONLY——两格都按「谁改了谁自己退」，与上面两格同一口径。
          * @note 日志模式（WAL）不在此列——那是每库文件的持久设置，不属于「上一个借用者留下的会话状态」
          * @note 与基类契约一致：不抛异常、幂等；未连接时不做任何事
          * @return 未连接或本就干净时为 true；确实去滚了事务、重申外键或退回过那两格中任何一格则按结果交回——

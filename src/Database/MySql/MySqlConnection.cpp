@@ -1375,7 +1375,7 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // `SET` 之后按关键字认三格：`NAMES`（连接字符集）、`max_execution_time`（只读语句时限）。
+        // `SET` 之后按关键字认两格：`NAMES`（连接字符集）、`max_execution_time`（只读语句时限）。
         // 这里用「只看前 80 个字符的不区分大小写子串」而不是逐词切：`SET @@session.max_execution_time=…`
         // 这类写法里标识符带着 @ 与 . ，按字母切词会切出空串而整个漏判。代价是极罕见的误判
         // （把某个取值写成这些词的语句多退一次），而误判的方向是「重申一遍本来就有的基线」，无害
