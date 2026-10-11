@@ -96,7 +96,7 @@
       "sources": [
         { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 211, "label": "未命中才 prepare" },
         { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 536, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 548, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 551, "label": "命中直 bindAndExecute" }
       ]
     },
     {
