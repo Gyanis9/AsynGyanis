@@ -36,10 +36,10 @@ namespace AsynGyanis::Core
      *          两处适配：`EPOLLONESHOT` 与一次性天然对应，完成送达后不自动重投、由上层重新武装；
      *          水平触发（IoWatcher 的注册全是这一类）在上报后要补投，补投只按登记下来的描述符做，
      *          不遍历整张注册表——每轮全表扫描会把单事件循环的开销做成连接数的线性函数。
-     * @warning 本后端只在 `ASYN_WITH_IO_URING=ON` 时参与构建，而 CI 那条作业是**只编译不运行**的：
-     *          语义漂移（就绪事件迟一拍交付、空闲注册对象被反复唤醒这类）不会由默认门禁发现。
-     *          要实跑得在放行 io_uring 的容器里执行同一批用例：io_uring 系统调用会被 Docker 默认
-     *          seccomp 挡掉（`io_uring_setup` 返回 EPERM），需 `--security-opt seccomp=unconfined`。
+     * @warning 本后端只在 `ASYN_WITH_IO_URING=ON` 时参与构建；CI 的 `io_uring 的编译档` 会在内核放行时
+     *          **真跑一遍**契约用例（`io_uring_disabled` 非 0 时退化为只编译，并把这件事写进作业摘要）。
+     *          本地容器要实跑得放开 seccomp：默认挡掉 `io_uring_setup`（返回 EPERM），
+     *          需 `--security-opt seccomp=unconfined`。
      */
     class ASYN_CORE_API Uring
     {

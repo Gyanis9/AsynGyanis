@@ -409,19 +409,24 @@ jobs:
         id: uring-usable
         run: |
           disabled=$(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 0)
+          # 两个分支都把结论写进摘要：跳过跑用例是「这一轮没验过」，不能只在日志里留一句警告
           if [ "$disabled" != "0" ]; then
             echo "isUsable=false" >> "$GITHUB_OUTPUT"
             echo "::warning::内核已禁用 io_uring（io_uring_disabled=$disabled），本作业退化为只编译"
+            echo "io_uring 的编译档：内核禁用（io_uring_disabled=$disabled），本轮只编译、未跑用例" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "isUsable=true" >> "$GITHUB_OUTPUT"
+            echo "io_uring 的编译档：内核放行，本轮真跑事件循环与后端契约用例" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: 跑事件循环与后端契约用例（io_uring 后端）
         if: steps.uring-usable.outputs.isUsable == 'true'
         run: |
+          # --no-tests=error：筛面失配（一条都没选中）判红而不是静默绿——「什么都没跑」与
+          # 「全跑绿」外观同形；筛面词表被改坏或 ctest 名单为空都由这一条兜住
           ctest --test-dir build/io-uring-check \
             -R "Epoll|IoWatcher|Timer|TimerQueue|EventLoop|Scheduler|ThreadPool|IoContext|Uring" \
-            -j 4 --output-on-failure
+            -j 4 --no-tests=error --output-on-failure
 
   # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
