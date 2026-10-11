@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "84788acad8cd4452cc88335d6a83e13ddd256941"
+      "revision": "c8ecbe11a813e7bd2bfd59ffb25027e15695e8f4"
     },
     "views": [
       {
@@ -51,7 +51,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Base/Config/ConfigManager.cpp", "line": 286, "label": "loadFromDirectory" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1229, "label": "按后缀选解析器" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1256, "label": "按后缀选解析器" }
       ]
     },
     {
@@ -108,8 +108,8 @@
       "stage": 1,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1597, "label": "handleFileChange" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1606, "label": "Rescan 先于扩展名过滤" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1624, "label": "handleFileChange" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1633, "label": "Rescan 先于扩展名过滤" },
         { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 37, "label": "不漏轮" }
       ]
     },
@@ -122,8 +122,8 @@
       "stage": 1,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 990, "label": "yamlNodeToConfigValue" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1542, "label": "flattenValue" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1015, "label": "yamlNodeToConfigValue" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1569, "label": "flattenValue" }
       ]
     },
     {
@@ -158,7 +158,7 @@
       "stage": 2,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2096, "label": "commitConfigData" },
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2123, "label": "commitConfigData" },
         { "path": "src/Base/Config/ConfigManager.h", "line": 393, "label": "m_data" }
       ]
     },
@@ -194,7 +194,7 @@
       "stage": 3,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2002, "label": "环境变量覆盖" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2029, "label": "环境变量覆盖" }
       ]
     },
     {
@@ -206,7 +206,7 @@
       "row": 1,
       "sources": [
         { "path": "src/Base/Config/ConfigLoadResult.h", "line": 55, "label": "HotReloadCallback" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1689, "label": "runReloadTask" }
+        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1716, "label": "runReloadTask" }
       ]
     },
     {
