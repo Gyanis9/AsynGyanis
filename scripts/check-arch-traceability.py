@@ -14,6 +14,9 @@
     走同一组规则。更早的 CHANGELOG 段落是点时刻的叙述，不回判——历史条目随文件演进必然失效，
     硬判只会让这道门变成哭狼的门。写全仓相对路径而读不到 → FAIL；只写裸文件名（可能是仓库外的
     依赖头，如 zlib 的 zconf.h）而树里找不到同名文件 → WARN，不算死引用；
+  * 交付 HTML 与源 JSON 同解：每张图旁挂的 `<slug>.html`（README 链接的交互版）内嵌一份
+    source-evidence 块——修订号、引用总数、每元素的引用行位逐一与 JSON 比。两者由不同的手
+    （改图 / 重出）推进，不同解就是「对外交付的是旧图」；HTML 缺失只记 WARN；
   * 空集防护：总提取数低于地板、或有图一条 sources 都没有 → 退 2。字段改名/结构变化会让提取数
     悄悄塌到 0 而门照绿，与覆盖率、复杂度两道门同一条规矩：「什么都没查」不许被读成通过。
 
@@ -280,6 +283,61 @@ def iter_ledger_prose_texts():
             yield "%s:%d" % (relative, number), text
 
 
+def iter_json_element_sources(data):
+    """json 里带 id 与 sources 的元素 → {id: [(path, line)]}（交付 HTML 的证据块按这个分组）。"""
+    out = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "id" in node and isinstance(node.get("sources"), list):
+                out[str(node["id"])] = [(str(source.get("path")), source.get("line")) for source in node["sources"]]
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return out
+
+
+HTML_EVIDENCE_RE = re.compile(r'<script id="archify-source-evidence-data" type="application/json">(.*?)</script>', re.S)
+
+
+def check_delivery_html(name, data, failures, warnings):
+    """交付 HTML 的内嵌证据块要与源 JSON 同解（见文件头那一条）。HTML 缺失只记警告。"""
+    html_path = os.path.join(DIAGRAM_DIR, name[:-5] + ".html")
+    if not os.path.isfile(html_path):
+        warnings.append("DELIVERY_HTML_MISSING %s（没有同名 .html 交付件）" % name)
+        return
+    with open(html_path, encoding="utf-8", errors="replace") as handle:
+        html = handle.read()
+    match = HTML_EVIDENCE_RE.search(html)
+    if match is None:
+        failures.append("DELIVERY_HTML_NO_EVIDENCE %s（HTML 里没有 source-evidence 块：交付件不是这套工具链出的？）" % name)
+        return
+    try:
+        blob = json.loads(match.group(1))
+    except ValueError as error:
+        failures.append("DELIVERY_HTML_BAD_EVIDENCE %s（证据块解不开：%s）" % (name, error))
+        return
+
+    pinned = str((data.get("meta") or {}).get("repository", {}).get("revision", "")).strip()
+    htmlRevision = str((blob.get("repository") or {}).get("revision", ""))
+    if htmlRevision != pinned:
+        failures.append("DELIVERY_HTML_STALE_REVISION %s（HTML 钉 %s，JSON 钉 %s：交付件停在旧修订）"
+                        % (name, htmlRevision[:8], pinned[:8]))
+
+    jsonSources = iter_json_element_sources(data)
+    htmlNodes = {str(key): [(str(item.get("path")), item.get("line")) for item in value] for key, value in (blob.get("nodes") or {}).items()}
+    jsonTotal = sum(len(value) for value in jsonSources.values())
+    if blob.get("referenceCount") != jsonTotal:
+        failures.append("DELIVERY_HTML_STALE_COUNT %s（HTML 记 %s 条引用，JSON 现有 %d 条）" % (name, blob.get("referenceCount"), jsonTotal))
+    for elementId in sorted(set(jsonSources) | set(htmlNodes)):
+        if sorted(jsonSources.get(elementId, [])) != sorted(htmlNodes.get(elementId, [])):
+            failures.append("DELIVERY_HTML_STALE_LINES %s/%s（HTML 与 JSON 的引用行位不同解）" % (name, elementId))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="架构图 sources 引用的可追溯性检查")
     parser.add_argument("--stale-since", help="新鲜度基准修订号，默认取每张图 meta.repository.revision")
@@ -341,6 +399,8 @@ def main() -> int:
         iter_elements(data, name, bare)
         for element in bare:
             warnings.append("VERTEX_WITHOUT_SOURCES %s" % element)
+
+        check_delivery_html(name, data, failures, warnings)
 
     index = tracked_file_index()
     for name, data in diagrams:
