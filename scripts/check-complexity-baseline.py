@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""复杂度基线冻禁：最长函数只准降不准升。
+"""复杂度基线冻禁：超地板的函数只准降不准升、只准少不准多。
 
 判据的形状：
-  * 任何 .cpp 里「一个函数体的行数」超过 FLOOR_LINES 就要在基线里登记过（头文件刻意不量，理由见
-    SOURCE_SUFFIXES 那段注释：类内内联体的花括号计数会被模板与深层协程带偏，量出谁都不信的数）；
-  * 登记过的文件按各自记录的上限判，没登记过的文件一旦越过 FLOOR_LINES 即失败；
+  * 任何 .cpp 里「一个函数体的行数」超过 FLOOR_LINES 的**每一个**都要在基线里登记过（头文件刻意不量，
+    理由见 SOURCE_SUFFIXES 那段注释：类内内联体的花括号计数会被模板与深层协程带偏，量出谁都不信的数）；
+  * 登记过的文件按各自记录的列表**降序按位比对**：第 i 长函数不得涨过基线第 i 长，且不得多出新的
+    超地板函数（早先每文件只记单一最大值，往一个有 393 行函数的文件里新塞 150 行函数门禁毫无反应
+    ——101 到 max-1 之间整个是盲区；列表化之后，多一个超地板函数就多一格，按位立刻看得见）；
+  * 拆分大函数也会让列表变长一位——那不是增漏，门一样会红：形状变了就跑 --write 重录（重录前确认
+    每一格确实变小了，重录是「收下新形状」，不是「洗掉差值」）；
   * 低于记录值不报告警——那是改进，改完把基线一起降下来（--write 重新生成）；
   * 一个文件都没量到（src 被挪走、SCAN_DIRS 或后缀被改错）判红而不是判过——「门没跑」不能读成「门通过」；
   * 基线里指向已消失文件的条目单独点名（不判红）：它们是没人认领的天花板，随 --write 才会清掉。
@@ -161,9 +165,9 @@ def codeOnly(line, state):
     return "".join(out), state
 
 
-def longest_body(lines):
-    """返回文件里最长的一个函数体行数（整条签名 + 配对的花括号）。"""
-    best = 0
+def bodies_above_floor(lines, floor):
+    """返回文件里所有「函数体行数 > floor」的读数，按长度降序（体行数＝整条签名 + 配对的花括号）。"""
+    bodies = []
     index = 0
     total = len(lines)
     state = set()
@@ -203,17 +207,18 @@ def longest_body(lines):
                 elif char == '}':
                     depth -= 1
             if depth <= 0:
-                best = max(best, scan - index + 1)
+                if scan - index + 1 > floor:
+                    bodies.append(scan - index + 1)
                 index = scan + 1
                 break
             scan += 1
         else:
             break
-    return best
+    return sorted(bodies, reverse=True)
 
 
 def measure(root):
-    """扫出每个源文件的最长函数体行数，只保留越过地板的那些。"""
+    """扫出每个源文件里全部超地板的函数体行数（降序），只保留非空的那些文件。"""
     measured = {}
     for directory in SCAN_DIRS:
         base = os.path.join(root, directory)
@@ -225,9 +230,9 @@ def measure(root):
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 with open(full, encoding="utf-8", errors="replace") as handle:
                     lines = handle.read().splitlines()
-                longest = longest_body(lines)
-                if longest > FLOOR_LINES:
-                    measured[rel] = longest
+                bodies = bodies_above_floor(lines, FLOOR_LINES)
+                if bodies:
+                    measured[rel] = bodies
     return measured
 
 
@@ -242,11 +247,11 @@ def main():
     if args.write:
         with open(BASELINE, "w", encoding="utf-8") as handle:
             json.dump({"floor-lines": FLOOR_LINES,
-                       "note": "每个文件登记的是本轮实测的最长函数体行数；只准降不准升",
+                       "note": "每个文件登记的是本轮实测的全部超地板函数行数（降序）；判定按位比对：不得涨、不得多",
                        "files": dict(sorted(measured.items()))},
                       handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
-        print("BASELINE_FILES=%d written" % len(measured))
+        print("BASELINE_FILES=%d BASELINE_FUNCTIONS=%d written" % (len(measured), sum(len(sizes) for sizes in measured.values())))
         return 0
 
     if not os.path.exists(BASELINE):
@@ -265,12 +270,19 @@ def main():
         print("COMPLEXITY_GATE=FAIL")
         return 2
 
-    for path, longest in sorted(measured.items()):
-        ceiling = baseline.get(path)
-        if ceiling is None:
-            violations.append("%s 最长函数 %d 行：新越线文件，基线里没有这一项" % (path, longest))
-        elif longest > ceiling:
-            violations.append("%s 最长函数 %d 行 > 基线 %d 行" % (path, longest, ceiling))
+    for path, bodies in sorted(measured.items()):
+        recorded = baseline.get(path)
+        if recorded is None:
+            violations.append("%s 新越线：基线里没有这一项（超地板函数 %d 个，最长 %d 行）" % (path, len(bodies), bodies[0]))
+            continue
+        # 降序按位比对：位置照旧不许涨。计数单独报一条而不是逐位展开——多出来的那一位会把后面
+        # 全体下移，逐位报会把老函数说成「新增的」；多几位就只说总数，谁新谁来读犯不着门禁来猜
+        for position, size in enumerate(bodies[:len(recorded)]):
+            if size > recorded[position]:
+                violations.append("%s 第 %d 长函数 %d 行 > 基线 %d 行" % (path, position + 1, size, recorded[position]))
+        if len(bodies) > len(recorded):
+            violations.append("%s 超地板函数比基线多 %d 个（基线 %d 个，本轮 %d 个，最短 %d 行）"
+                              % (path, len(bodies) - len(recorded), len(recorded), len(bodies), bodies[-1]))
 
     # 基线里的死条目：文件已删或已降到地板以下，这一项就没人再判。它们不会让任何作业变红，
     # 于是「天花板」名单只会越来越长——点名出来，随下一次 --write 收敛
