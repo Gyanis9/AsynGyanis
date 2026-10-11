@@ -30,9 +30,6 @@ class ConanApplication(ConanFile):
         skipMySQLDependency = bool(os.environ.get(SKIP_MYSQL_DEPENDENCY_ENVIRONMENT_VARIABLE))
         requirements = self.conan_data.get('requirements', [])
         for requirement in requirements:
-            # jemalloc 在 Windows 上不可用，跳过
-            if 'jemalloc' in requirement and self.settings.os == 'Windows':
-                continue
             if 'libmysqlclient' in requirement and skipMySQLDependency:
                 continue
             self.requires(requirement)
