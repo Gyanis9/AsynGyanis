@@ -67,7 +67,7 @@
       "sources": [
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 177, "label": "SSL_connect/accept" },
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 425, "label": "读 ALPN 结果" },
-        { "path": "src/Core/Tls/TlsContext.cpp", "line": 313, "label": "挂 ALPN 回调" }
+        { "path": "src/Core/Tls/TlsContext.cpp", "line": 330, "label": "挂 ALPN 回调" }
       ]
     },
     {
