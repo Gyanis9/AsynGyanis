@@ -236,8 +236,13 @@ jobs:
         run: |
           set -euo pipefail
           h2spec_version=v2.6.0
+          # 官方发布包的 sha256（2026-10-11 现下现算，两次独立完成的下载同值）：钉住它，
+          # 「同一提交两个日子被不同内容的裁判判定」与中间链路换包都会在下载那一刻红。
+          # 升级版本时连它一起换（换完用 sha256sum 现算，并复核 h2spec --version 报的版本）
+          h2spec_sha256=157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318
           curl -sSfL -o /tmp/h2spec.tgz \
             "https://github.com/summerwind/h2spec/releases/download/${h2spec_version}/h2spec_linux_amd64.tar.gz"
+          echo "${h2spec_sha256}  /tmp/h2spec.tgz" | sha256sum -c -
           tar -xzf /tmp/h2spec.tgz -C /tmp
           /tmp/h2spec --version
 
@@ -997,7 +1002,10 @@ jobs:
 
       - name: 取出 Pebble（镜像里的 app 与 test/）
         run: |
-          image="ghcr.io/letsencrypt/pebble:latest"
+          # 裁判钉定到内容摘要：:latest 会随时间换内容，同一提交两个日子跑出两种判决，就说不清
+          # 「这份报告到底谁判的」。@sha256 取自本机现存副本（镜像自报 revision b1e1ca4f）；
+          # 升级 = 换摘要，并复核下面两条 docker cp 的路径没变
+          image="ghcr.io/letsencrypt/pebble:latest@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199"
           docker pull "$image"
           cid="$(docker create "$image")"
           mkdir -p /tmp/pebble-lab

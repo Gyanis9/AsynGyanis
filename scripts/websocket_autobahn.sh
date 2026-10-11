@@ -40,7 +40,9 @@ set -euo pipefail
 
 port="${1:-18081}"
 ws_path="${2:-/ws}"
-image="${AUTOBAHN_IMAGE:-crossbario/autobahn-testsuite:latest}"
+# 裁判钉定到内容摘要：:latest 会随时间换内容，同一提交两个日子跑出两种判决，就说不清「这份报告
+# 到底谁判的」。@sha256 取自本机现存副本的 manifest 摘要（镜像自报 25.10.1）；升级 = 换摘要重跑
+image="${AUTOBAHN_IMAGE:-crossbario/autobahn-testsuite:latest@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074}"
 cases="${AUTOBAHN_CASES:-[\"*\"]}"
 exclude="${AUTOBAHN_EXCLUDE-9.1.6,9.2.6}"
 
