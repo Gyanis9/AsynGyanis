@@ -107,8 +107,14 @@ def main() -> int:
         if floor is not None and covered < floor:
             failures.append(f"{module} 行覆盖 {covered:.2f}% 低于下限 {floor:.0f}%（共 {bucket[0]} 行）")
         lines.append((module, f"{bucket[0]}", f"{covered:.2f}", "—" if floor is None else f"{floor:.0f}%", verdict))
-    for module in sorted(set(moduleFloors) - set(totals)):
-        failures.append(f"模块 {module} 在 CSV 里一条记录都没有：它整个没被统计进去（目录改名或 filter 漂移）")
+    # 声明的模块缺席＝这道门没吃全（目录改名、filter 漂移），与「空表 / src 零记录 / 可执行行过少」
+    # 同一档：按「没跑成」退 2，不混进下面的逐项越界里被当成普通覆盖率失败——两种成因的下一步不同
+    missingModules = sorted(set(moduleFloors) - set(totals))
+    if missingModules:
+        for module in missingModules:
+            print(f"模块 {module} 在 CSV 里一条记录都没有：它整个没被统计进去（目录改名或 filter 漂移）")
+        print("覆盖率门禁无法判定：声明的模块缺席，按「没跑成」退 2")
+        return 2
 
     totalLine = percent(grand[1], grand[0])
     totalFunction = percent(grand[3], grand[2])
