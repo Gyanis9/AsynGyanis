@@ -140,6 +140,23 @@ class ServerMonitor(threading.Thread):
     def stop(self):
         self._stopRequested = True
 
+    def snapshotSample(self):
+        """就地取一次读数（不经后台线程）；采样不可用或这一次读失败时返回 None。
+
+        扫描档要在「连接全部建好」那一刻取资源读数，而后台线程是每秒一采、够不着毫秒级的档位。
+        """
+        if not self.available or self._sampler is None:
+            return None
+        return self._sampler()
+
+
+def workingSetBytesNow(monitor) -> int:
+    """就地取一次工作集字节读数；没开采样或这一次读失败返回 0（0 表示没读到，不落盘）。"""
+    if monitor is None:
+        return 0
+    sample = monitor.snapshotSample()
+    return sample[2] if sample else 0
+
 
 def latencySummary(sortedSeconds: list) -> dict:
     """把排好序的秒级延迟折算成门禁认的那几档分位（单位 us）。
@@ -558,17 +575,20 @@ def runSlowClientResilience(host: str, port: int, connectionCount: int, holdSeco
     return failures
 
 
-def runConnectionSweep(host: str, port: int, levels) -> tuple:
+def runConnectionSweep(host: str, port: int, levels, monitor=None) -> tuple:
     """连接数扫描：按并发档位建立 keep-alive 连接并各做一次请求，全部必须成功。
 
     每个档位先把该档连接全部建好、再逐条发请求，用来观察「并发连接数」维度下有没有
     建连失败或请求失败；返回值是失败项条数与各档位测量值（供 JSON 落盘比对）。
+    monitor 给了才记每档的工作集峰值：并发档的资源峰值正是容量规划要看的量，取「档起、
+    连接全部在手、档末」三次就地读数的最大者（后台采样每秒一采，够不着毫秒级的档位）。
     """
     print("== 阶段：连接数扫描 " + "/".join(str(level) for level in levels) + " ==")
     failures = 0
     summary = {}
     for level in levels:
         started = time.perf_counter()
+        peakBytes = workingSetBytesNow(monitor)
         connections = []
         levelFailures = 0
         for _ in range(level):
@@ -577,6 +597,8 @@ def runConnectionSweep(host: str, port: int, levels) -> tuple:
             except OSError as exception:
                 levelFailures += 1
                 print(f"  并发 {level}：建连失败 {type(exception).__name__}: {exception}")
+        # 此刻该档连接全部在手，是这个档位的意义点：先取读数，再逐条发请求
+        peakBytes = max(peakBytes, workingSetBytesNow(monitor))
         for connection in connections:
             try:
                 requestOnce(connection, b"", b"/bench", host=host)
@@ -585,15 +607,21 @@ def runConnectionSweep(host: str, port: int, levels) -> tuple:
                 print(f"  并发 {level}：请求失败 {type(exception).__name__}: {exception}")
             finally:
                 connection.close()
+        peakBytes = max(peakBytes, workingSetBytesNow(monitor))
         elapsed = time.perf_counter() - started
         failures += levelFailures
-        summary[f"connections-{level}"] = {
+        tierSummary = {
             "requested": level,
             "established": len(connections),
             "failures": levelFailures,
             "elapsedMilliseconds": round(elapsed * 1000.0, 2),
         }
-        print(f"  并发 {level}：失败 {levelFailures} 条，建连+请求用时 {elapsed * 1000:.1f} ms")
+        # 没有采样（没给 --pid 或进程打不开）时不落这个键：缺键与「峰值是 0」要分得开
+        if peakBytes > 0:
+            tierSummary["workingSetPeakKib"] = peakBytes // 1024
+        summary[f"connection-sweep-{level}"] = tierSummary
+        peakText = f"，工作集峰值 {peakBytes // 1024} KiB" if peakBytes > 0 else ""
+        print(f"  并发 {level}：失败 {levelFailures} 条，建连+请求用时 {elapsed * 1000:.1f} ms{peakText}")
     return failures, summary
 
 
@@ -699,9 +727,10 @@ def main() -> int:
 
             sweepLevels = arguments.connection_sweep
             if sweepLevels:
-                sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels)
+                sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels, monitor)
                 failures += sweepFailures
-                measurements["connection-sweep"] = sweepSummary
+                # 每档单独成项（connection-sweep-<档位>）：门禁按项跨多份实测取中位数、单独判工作集峰值
+                measurements.update(sweepSummary)
         except (OSError, ValueError) as probeError:
             # 探针跑不通要报成「一条失败」并给出下一步，不能让 Python 回溯把结论糊掉：
             # 最常见的原因是这个端口按 h2c 专用启动（ReferenceServer --h2c），HTTP/1.1 探针被
@@ -735,6 +764,7 @@ def main() -> int:
                 "handleCountPeak": max(sample[0] for sample in monitor.samples),
                 "workingSetFirstKib": first[2] // 1024,
                 "workingSetLastKib": last[2] // 1024,
+                "workingSetPeakKib": max(sample[2] for sample in monitor.samples) // 1024,
             }
 
     print(f"== 汇总：失败项 {failures} 条 ==")

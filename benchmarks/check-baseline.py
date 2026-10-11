@@ -7,6 +7,7 @@
                                     [--maximum-p50-ratio 1.5]
                                     [--maximum-p95-ratio 2.0]
                                     [--maximum-p99-ratio 2.5]
+                                    [--maximum-working-set-ratio 1.5]
 
 判定口径：
     · 实测 JSON 里的 failures 必须为 0（协议不变式与负载失败都算）——先修正确性，再看性能；
@@ -22,6 +23,10 @@
     · 两套基线同吃：soak 基线（每项带 p50/p95/p99 分位键）按上面那条判；微基准那种「点式」基线
       （每项只有 throughputPerSecond/nanosecondsPerOperation）只判吞吐，不套「缺分位档即红」——
       那条规则只服务于 soak 侧的分位补录历史，套到点式上会把 microbench 那条入口变成恒红。
+    · `connection-sweep-*` 档（并发扫描）判的是工作集峰值这个容量规划量（键 workingSetPeakKib）：
+      基线录了该档就按 --maximum-working-set-ratio 判，没录只打印读数、不硬造阈值；建成数与档内
+      失败由文档级 failures 统一判（它们本就计进那份账），这里不重复。工作集峰值是绝对值量，
+      没有基线值就没有参照系——「不判」与「判过」要分得开。
 
 **这道门禁能抓什么、不能抓什么**：它抓的是量级回归；抓不住 10% 级的漂移——那需要更严谨的测量方法
 （固定 CPU 频率、绑核、关后台负载、多轮取中位数），不是脚本能补的。默认阈值是按本机实测噪声定的：
@@ -45,6 +50,8 @@ DESCRIPTIVE_KEYS = ("connections", "pipeline", "requests", "throughputUnit")
 # 每个受判定分位的默认上限倍数。新增一档只要在这里加一行，参数与循环都跟着长——
 # 避免出现「测量脚本已经产出 p99，而门禁只认 p50/p95」这种两头各写一份的漂移
 LATENCY_RATIO_DEFAULTS = {"p50Microseconds": 1.5, "p95Microseconds": 2.0, "p99Microseconds": 2.5}
+# 连接数扫描档（soak.py 的 connection-sweep-<档位>）不走分位那套，判工作集峰值，见 compareSweepTier
+SWEEP_NAME_PREFIX = "connection-sweep-"
 
 
 def loadJson(path: str) -> dict:
@@ -67,6 +74,9 @@ def accumulateMeasurement(samples: dict, incoming: dict, sourcePath: str) -> dic
     for key in GAUGED_KEYS:
         if key in incoming:
             samples.setdefault(key, []).append(incoming[key])
+    # 扫描档的工作集峰值同理攒样本；它不在 GAUGED_KEYS 里（单位 KiB，判定口径见 compareSweepTier）
+    if "workingSetPeakKib" in incoming:
+        samples.setdefault("workingSetPeakKib", []).append(incoming["workingSetPeakKib"])
     samples.setdefault("sources", []).append(sourcePath)
     for key in DESCRIPTIVE_KEYS:
         if key in incoming:
@@ -99,8 +109,43 @@ def dispersionRatio(samples: dict) -> tuple:
     return widestRatio, widestKey
 
 
+def compareSweepTier(name: str, expected: dict | None, samples: dict, arguments) -> list:
+    """连接数扫描档的判定：工作集峰值。
+
+    扫描档判的不是吞吐与分位，而是「并发 N 条连接时服务端驻留多少」——容量规划看的就是这个量。
+    它是绝对值读数，没有基线值就没有参照系，所以基线录了 workingSetPeakKib 才判；没录时只打印
+    读数并标明「只落盘不判」——把「这一档还没进基线」如实说出来，而不是硬造一个阈值或静默跳过。
+    建成数与档内失败不在这里判：它们计进文档级 failures，由「实测本身报告 N 条失败」统一拦。
+    """
+    violations = []
+    runCount = len(samples["sources"])
+    print(f"  -- {name}（{runCount} 份实测）")
+    peakSamples = samples.get("workingSetPeakKib", [])
+    expectedPeak = (expected or {}).get("workingSetPeakKib")
+    if expectedPeak and not peakSamples:
+        print(f"     [FAIL] 基线要求判定工作集峰值，实测里没有 workingSetPeakKib（采集那次没带 --pid？）")
+        violations.append(f"{name}：基线要求判定工作集峰值，实测里没有 workingSetPeakKib 样本")
+    elif expectedPeak:
+        actualPeak = median(peakSamples)
+        maximum = expectedPeak * arguments.maximum_working_set_ratio
+        passed = actualPeak <= maximum
+        print(f"     [{'OK  ' if passed else 'FAIL'}] 工作集峰值 {actualPeak:.0f}KiB / 基线 {expectedPeak:.0f}KiB"
+              f" = {actualPeak / expectedPeak:.2f}x（上限 {arguments.maximum_working_set_ratio:.2f}x，"
+              f"样本 {'/'.join(f'{value:.0f}' for value in peakSamples)}）")
+        if not passed:
+            violations.append(f"{name}：工作集峰值 {actualPeak:.0f}KiB 高于基线的 {arguments.maximum_working_set_ratio:.2f} 倍"
+                              f"（上限 {maximum:.0f}KiB）")
+    elif peakSamples:
+        print(f"     [记录] 工作集峰值 {median(peakSamples):.0f}KiB（基线未录这一档的峰值，只落盘不判）")
+    else:
+        print(f"     [记录] 这一档既没有基线值也没有工作集峰值读数（采集那次没带 --pid？）")
+    return violations
+
+
 def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> list:
     """比对单项：返回违反项的中文描述列表（空列表表示通过）。"""
+    if name.startswith(SWEEP_NAME_PREFIX):
+        return compareSweepTier(name, expected, samples, arguments)
     violations = []
     runCount = len(samples["sources"])
     print(f"  -- {name}（{runCount} 份实测取中位数）")
@@ -175,6 +220,8 @@ def main() -> int:
         parser.add_argument(f"--maximum-{latencyKey[:-len('Microseconds')].lower()}-ratio", type=float, default=defaultRatio,
                             dest=f"maximum_{latencyKey[:-len('Microseconds')].lower()}_ratio",
                             help=f"{latencyKey[:-len('Microseconds')]} 上限倍数，默认 {defaultRatio}")
+    parser.add_argument("--maximum-working-set-ratio", type=float, default=1.5,
+                        help="connection-sweep 档工作集峰值上限倍数，默认 1.5（基线录了该档才生效）")
     arguments = parser.parse_args()
 
     baseline = loadJson(arguments.baseline)
@@ -207,7 +254,11 @@ def main() -> int:
         violations.extend(compareMeasurement(name, expected, samples, arguments))
 
     for name in sorted(set(measured) - set(baselineBenchmarks)):
-        print(f"  -- {name}：基线里没有这一项（来自 {measured[name]['sources'][0]}），仅提示不判失败")
+        # 扫描档即使没进基线也要走一遍判据处理：工作集峰值要打印读数、带上 --pid 的读数才看得见
+        if name.startswith(SWEEP_NAME_PREFIX):
+            violations.extend(compareSweepTier(name, None, measured[name], arguments))
+        else:
+            print(f"  -- {name}：基线里没有这一项（来自 {measured[name]['sources'][0]}），仅提示不判失败")
 
     print(f"== 汇总：违反项 {len(violations)} 条 ==")
     for violation in violations:
