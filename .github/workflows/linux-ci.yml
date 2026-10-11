@@ -446,10 +446,10 @@ jobs:
       CCACHE_COMPRESS: "true"
       # 筛面只在这一处定义：数命中的条数与真正跑它用的是同一个串，两处不会各说一套。
       # `ServiceWatchdog` 是 2026-10-10 补进来的：那批用例把拍协程挂在多条循环上、多条线程读写同一张
-      # 进度表与那份非线程安全的通知发送，是本轮新增的跨线程面，而类名不在旧 21 个词里就一条都不跑
-      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog"
+      # 进度表与那份非线程安全的通知发送，是本轮新增的跨线程面，而类名不在旧 21 个词里就一条都不跑。2026-10-11 再补六类词：`Tracer`（出口线程）、`Reload`（SIGHUP 移交）、`Http3`、`Middleware`、`Budget`、`CoroutinePool`——这几类的跨线程用例此前一条都不进 TSan 档（审计 F2-14）
+      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool"
       # 筛面下限：2026-10-01 实测命中 1325 / 全量 3669，往下留一档。
-      # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 22 个词里——
+      # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 28 个词里——
       # 两者的外观都与「TSan 全绿」同形，所以判据必须钉在条数上而不是只跑一次
       TSAN_MIN_MATCHED: "1200"
 
@@ -499,7 +499,7 @@ jobs:
         # 与编排线程碰同一批 worker 句柄。这类竞态只有 TSan 看得见，MSVC 侧根本不编这个用例
         run: |
           # 先数「这条正则实际筛到多少条」：TSan 是按类名筛的，一个新增的跨线程面只要名字里
-          # 不含那 21 个词就一条都不跑，而作业照样全绿。把条数打进摘要并钉下限，才有东西可红。
+          # 不含那 28 个词就一条都不跑，而作业照样全绿。把条数打进摘要并钉下限，才有东西可红。
           # 条数取 ctest 自己那行 Total Tests：按 grep -c "Test #" 数会漏掉编号不足四位的那些
           # （ctest 给 #1..#999 打两个空格、#1000 起打一个空格），本机实测两种数法差 999 条
           totalCount="$(ctest --test-dir build/tsan -N | sed -n 's/^Total Tests: //p')"
