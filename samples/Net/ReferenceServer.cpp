@@ -15,6 +15,7 @@
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoContext.h"
+#include "Core/Process/CrashScene.h"
 #include "Core/Process/GracefulShutdown.h"
 #include "Core/Process/ReloadSignal.h"
 #include "Core/Process/ServiceWatchdog.h"
@@ -563,6 +564,10 @@ int main(int argc, char **argv)
     // ——那会让同一条信号在两种部署里行为不同，最难查。没配文件时它回一条状态说明为什么什么都没重读
     Platform::ServiceNotification serviceStatus;
     Core::ReloadSignal            reloadSignal;
+
+    // 崩溃现场：段错误/断言失败/未捕获异常至少要在 stderr 上留下「怎么死的、死在哪」，
+    // 而不是只留下「进程没了」。安装是进程级且幂等的，装完仍以默认处置死（coredump 语义保留）
+    [[maybe_unused]] const bool isCrashSceneInstalled = Core::CrashScene::install();
 
     // SIGHUP 这条运维入口无条件装着：接管装上之后它不再按缺省动作终止进程，所以不能按「有没有
     // --config」分成两种语义——同一条信号在两种部署里行为不同，是最难归因的那一类。没配文件时

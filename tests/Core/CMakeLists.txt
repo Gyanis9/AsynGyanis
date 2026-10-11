@@ -36,6 +36,7 @@ add_executable(TestCore
         Process/TestServiceWatchdog.cpp
         Process/TestUpgradeChannel.cpp
         Process/TestWorkerSupervisor.cpp
+        Process/TestCrashScene.cpp
 
         Socket/TestAsyncSocket.cpp
         Socket/TestConnectionRace.cpp
