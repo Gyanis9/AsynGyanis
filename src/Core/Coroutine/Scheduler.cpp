@@ -4,12 +4,36 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/EventNotifier.h"
 
+#include <atomic>
 #include <exception>
 #include <string>
 #include <vector>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 唤醒写失败只报首条：坏掉的唤醒器会让每次投递都失败，逐条打等于把日志刷满
+         */
+        void reportWakeupWriteFailure() noexcept
+        {
+            static std::atomic<bool> hasWarned{false};
+            if (hasWarned.exchange(true, std::memory_order_relaxed))
+            {
+                return;
+            }
+
+            try
+            {
+                LOG_WARN_FMT("调度器: 唤醒写入失败——投递已入队，但目标事件循环可能正睡在无限等待里，"
+                             "要等下一次唤醒（更多投递或事件）才会被处理；同一失败只报这一条");
+            } catch (...)
+            {
+            }
+        }
+    } // namespace
+
     void Scheduler::setWakeupNotifier(Platform::EventNotifier *const notifier) noexcept
     {
         m_wakeup = notifier;
@@ -59,9 +83,12 @@ namespace AsynGyanis::Core
 
         if (m_wakeup)
         {
-            // 唤醒可能阻塞在 epoll_wait 中的目标 EventLoop
-            // 唤醒失败时目标线程仍会在下次 epoll_wait 超时后处理全局队列任务，不会永久丢失
-            m_wakeup->notify();
+            // 唤醒可能阻塞在 epoll_wait 中的目标 EventLoop。写失败必须当场看见：循环空闲时
+            // 睡的是无限等待（timeoutMs == -1），没有「下次超时兜底」这回事
+            if (!m_wakeup->notify())
+            {
+                reportWakeupWriteFailure();
+            }
         }
     }
 
@@ -90,8 +117,12 @@ namespace AsynGyanis::Core
 
         if (m_wakeup)
         {
-            // 与 scheduleRemote() 同一套保证：唤醒失败也不会丢，目标线程下次从 epoll_wait 醒来时照样处理
-            m_wakeup->notify();
+            // 与 scheduleRemote() 同一套保证与同一条告警：写失败=本记唤醒没送出去，队列不丢东西，
+            // 但没人把睡着的循环叫起来，队列就不会被看一眼
+            if (!m_wakeup->notify())
+            {
+                reportWakeupWriteFailure();
+            }
         }
     }
 

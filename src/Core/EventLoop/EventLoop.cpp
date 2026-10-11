@@ -12,6 +12,26 @@ namespace AsynGyanis::Core
     namespace
     {
         /**
+         * @brief 唤醒写失败只报首条：坏掉的唤醒器会让每次唤醒都失败，逐条打等于把日志刷满
+         */
+        void reportWakeupWriteFailure() noexcept
+        {
+            static std::atomic<bool> hasWarned{false};
+            if (hasWarned.exchange(true, std::memory_order_relaxed))
+            {
+                return;
+            }
+
+            try
+            {
+                LOG_WARN_FMT("事件循环: 唤醒写入失败——本次 stop/唤醒请求可能送不出去，循环会继续睡在等待里；"
+                             "同一失败只报这一条");
+            } catch (...)
+            {
+            }
+        }
+
+        /**
          * @brief 观测槽位表的上限
          * @details 一槽一条循环，取 1024 是「比任何真实部署都宽」的整数：这张表只为观测存在，
          *          占满了既不拦构造也不丢循环，只是那几条循环不出现在快照里（差额由
@@ -239,7 +259,10 @@ namespace AsynGyanis::Core
 
     void EventLoop::wake() const
     {
-        m_wakeup.notify();
+        if (!m_wakeup.notify())
+        {
+            reportWakeupWriteFailure();
+        }
     }
 
     Epoll &EventLoop::epoll() noexcept

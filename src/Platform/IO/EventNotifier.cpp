@@ -1,6 +1,7 @@
 #include "Platform/IO/EventNotifier.h"
 
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/PlatformError.h"
 
 #include <cstdint>
 
@@ -44,11 +45,13 @@ namespace AsynGyanis::Platform
         return FileDescriptor::isValid(m_readDescriptor) && FileDescriptor::isValid(m_writeDescriptor);
     }
 
-    void EventNotifier::notify() const noexcept
+    bool EventNotifier::notify() const noexcept
     {
         if (!isValid())
         {
-            return;
+            // 构造期就无效的通知器是装配处已知的降级（见类注释的「空操作」约定），
+            // 不是「本记唤醒没送出去」——报 false 只会把同一个事实在每条投递上重复告警
+            return true;
         }
 
         // 合并唤醒：只有把标记从「无人待处理」翻成「已有待处理」的那一次才真正写描述符。
@@ -56,17 +59,37 @@ namespace AsynGyanis::Platform
         // 而这一次写成字节的唤醒已经足够让目标循环醒来查看队列
         if (m_wakeupPending.exchange(true, std::memory_order_acq_rel))
         {
-            return;
+            return true;
         }
 
+        const auto writeWakeupMarker = [this]() -> ssize_t
+        {
 #if ASYN_PLATFORM_LINUX
-        // eventfd 要求写入 sizeof(std::uint64_t) 字节，短写会返回 EINVAL
-        constexpr std::uint64_t increment = 1;
-        FileDescriptor::write(m_writeDescriptor, &increment, sizeof(increment));
+            // eventfd 要求写入 sizeof(std::uint64_t) 字节，短写会返回 EINVAL
+            constexpr std::uint64_t increment = 1;
+            return FileDescriptor::write(m_writeDescriptor, &increment, sizeof(increment));
 #else
-        constexpr char kmarker = 1;
-        FileDescriptor::write(m_writeDescriptor, &kmarker, sizeof(kmarker));
+            constexpr char kmarker = 1;
+            return FileDescriptor::write(m_writeDescriptor, &kmarker, sizeof(kmarker));
 #endif
+        };
+
+        ssize_t writtenBytes = writeWakeupMarker();
+        // 被信号打断不算失败：重试一次即可等价完成（与 InotifyFileWatcher 对 EINTR 的处置同一口径）
+        if (writtenBytes < 0 && PlatformError::lastErrorCode() == PlatformError::kInterrupted)
+        {
+            writtenBytes = writeWakeupMarker();
+        }
+        if (writtenBytes < 0)
+        {
+            // 写失败=这一记唤醒没送出去，而合并标记已置位：不复位它，后续 notify 会一路
+            // 「已有人待处理」直接返回、目标循环可能永远睡在无限等待里（这才是真正的卡死形态）。
+            // 复位让下一次 notify 重新尝试写；此刻之前被合并掉的几记没有第二次机会——它们要
+            // 送达的只是「队列里有活」，队列本身没丢东西
+            m_wakeupPending.store(false, std::memory_order_release);
+            return false;
+        }
+        return true;
     }
 
     void EventNotifier::drain() const noexcept

@@ -1,8 +1,14 @@
 // EventNotifier 单元测试：跨线程唤醒、排空与无效状态
 #include "Platform/IO/EventNotifier.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
+
+#if ASYN_PLATFORM_LINUX
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include <thread>
 #include <vector>
@@ -155,4 +161,31 @@ namespace AsynGyanis::Platform
         notifier.drain();
         EXPECT_FALSE(TestSupport::waitForReadable(notifier.readDescriptor(), 100));
     }
+
+#if ASYN_PLATFORM_LINUX
+    /**
+     * @brief 写失败必须被报出来，且不把「待处理」标记卡死
+     * @details 此前写返回值被丢弃：失败的那一记把合并标记留在 true 上，此后所有 notify 都被
+     *          合并吞掉——目标循环若正睡在无限等待的 epoll_wait（timeoutMs == -1）里，就再也
+     *          没人叫得醒它。Linux 上读端与写端同源（同一个 eventfd），把一个只读文件的描述符
+     *          用 dup2 换到那个号码上即可稳定复现「fcntl 仍判 fd 有效、write 必然 EBADF」的
+     *          那条路；Windows 一侧的通知器是 socketpair、拿不到可换的写端，本用例因此只守 Linux
+     */
+    TEST(EventNotifier, FailedWakeupWriteIsReportedAndDoesNotWedgeLaterNotifies)
+    {
+        const EventNotifier notifier;
+        ASSERT_TRUE(notifier.isValid());
+
+        const int eventFileDescriptor = notifier.readDescriptor();
+        const int readOnlyDescriptor  = ::open("/dev/null", O_RDONLY);
+        ASSERT_GE(readOnlyDescriptor, 0);
+        ASSERT_NE(::dup2(readOnlyDescriptor, eventFileDescriptor), -1);
+        ::close(readOnlyDescriptor);
+
+        EXPECT_FALSE(notifier.notify()) << "写必然失败（EBADF），通知却报「没有需要报告的问题」";
+        // 关键性质：失败没有把标记卡死——第二次 notify 仍会真的去写（也就仍会失败），
+        // 而不是被「已有人待处理」合并吞掉、让唤醒通路从此哑掉
+        EXPECT_FALSE(notifier.notify()) << "第二记被合并吞掉了：标记卡在上一次失败里，唤醒通路从此哑掉";
+    }
+#endif
 } // namespace AsynGyanis::Platform
