@@ -577,6 +577,13 @@ jobs:
           # 管不住的那一半（行还在、说的已经不是那件事）由它打印的 stale 清单接手，回图时按清单逐条复核
           python3 scripts/check-arch-traceability.py
 
+      - name: 台账日期机检（紧形状「提交号（日期）」与 git 作者日期同解）
+        run: |
+          # 只吃「`提交号`（YYYY-MM-DD）」这一种紧形状：散句里的日期常说的是别的事，硬判会做出哭狼的门。
+          # 挂在格式档而不是别处：这一步已经 fetch-depth: 0，脚本要拿被引提交自己的作者日期。
+          # 取不到 git、扫描清单为空、文件读不到都退 2——「什么都没查」不许被读成通过
+          python3 scripts/check-ledger-dates.py
+
   clang-tidy:
     name: 静态检查：clang-tidy
     runs-on: ubuntu-latest
