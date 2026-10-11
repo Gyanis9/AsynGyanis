@@ -1086,11 +1086,12 @@ namespace AsynGyanis::Database
         }
 
         // MONITOR / 订阅 / HELLO 之后本类退不回「一条命令一次回复」：这条连接读到的下一段字节不属于
-        // 下一个借用者。断开比把错位的回复流交出去便宜——池看到 isConnected() 为假就会另起一条
+        // 下一个借用者。断开比把错位的回复流交出去便宜；交回 false 而不是 true——池把「复位没干净」
+        // 单独记进 session_reset_failures，只看 discarded_total 分不出「轮换到了」与「有人在还脏连接」
         if (needsFreshSession)
         {
             disconnect();
-            return true; // 断开本身就是收口：池随后按健康判据把这条摘掉，不会交给下一位
+            return false;
         }
 
         try

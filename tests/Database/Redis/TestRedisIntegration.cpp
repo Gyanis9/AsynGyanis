@@ -808,24 +808,26 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 钉住「退不回去的会话模式」在归还时被断开，而不是带着错位的回复流回池
+     * @brief 钉住「退不回去的会话模式」在归还时被断开，且按「复位没干净」记账
      * @details MONITOR 之后服务端持续推送，本类按「一条命令一次回复」读，下一位借用者读到的
-     *          会是别人的跟踪行。这类模式没有可靠的撤销命令（RESET 要 6.2+），因此判据就是
-     *          isConnected() 转假：池的健康检查看到假就会另起一条。
+     *          会是别人的跟踪行。这类模式没有可靠的撤销命令（RESET 要 6.2+），因此判据是两半：
+     *          isConnected() 转假、且 resetSessionState() 交回 false——后者让池把它记进
+     *          session_reset_failures；两者缺一，这种污染在指标上都会混进普通轮换里。
      */
     TEST_F(RedisIntegrationTest, MonitorStyleSessionIsDroppedOnReturn)
     {
         ASSERT_NE(m_connection->executeCommand({"MONITOR"}), nullptr) << m_connection->lastError();
         ASSERT_TRUE(m_connection->isConnected());
 
-        m_connection->resetSessionState();
+        const bool wasResetClean = m_connection->resetSessionState();
 
+        EXPECT_FALSE(wasResetClean) << "断开式收口被报成「复位干净」：session_reset_failures 看不到这种污染";
         EXPECT_FALSE(m_connection->isConnected()) << "MONITOR 之后的连接被当成健康连接交还给下一个借用者";
 
         // 对照：没进过这种模式的连接复位后照常可用（否则上面的断开看不出差别）
         RedisConnection cleanConnection(m_configuration);
         ASSERT_TRUE(cleanConnection.connect()) << cleanConnection.lastError();
-        cleanConnection.resetSessionState();
+        EXPECT_TRUE(cleanConnection.resetSessionState()) << "干净的连接被复位路径当成了失败";
         EXPECT_TRUE(cleanConnection.isConnected()) << "干净的连接也被复位路径断开了";
         cleanConnection.disconnect();
     }
@@ -842,14 +844,15 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_connection->executeCommand({"CLIENT", "TRACKING", "ON"}), nullptr) << m_connection->lastError();
         ASSERT_TRUE(m_connection->isConnected());
 
-        m_connection->resetSessionState();
+        const bool wasTrackingResetClean = m_connection->resetSessionState();
 
+        EXPECT_FALSE(wasTrackingResetClean) << "开了 TRACKING 的断开式收口被报成「复位干净」：这种污染在指标上会混进普通轮换";
         EXPECT_FALSE(m_connection->isConnected()) << "开了 TRACKING 的连接被当成健康连接交还给下一个借用者：它之后读到的第一份回复可能是失效推送";
 
         RedisConnection nameOnly(m_configuration);
         ASSERT_TRUE(nameOnly.connect()) << nameOnly.lastError();
         ASSERT_NE(nameOnly.executeCommand({"CLIENT", "GETNAME"}), nullptr) << nameOnly.lastError();
-        nameOnly.resetSessionState();
+        EXPECT_TRUE(nameOnly.resetSessionState()) << "只问了一个名字的 CLIENT 子命令被报成了复位失败";
         EXPECT_TRUE(nameOnly.isConnected()) << "只问了一个名字的 CLIENT 子命令也被断开了：按子命令分档的判据没生效";
         nameOnly.disconnect();
     }
@@ -870,8 +873,9 @@ namespace AsynGyanis::Database
             ASSERT_NE(protectedConnection.executeCommand({"CLIENT", std::string(subcommand), "ON"}), nullptr) << subcommand << ": " << protectedConnection.lastError();
             ASSERT_TRUE(protectedConnection.isConnected());
 
-            protectedConnection.resetSessionState();
+            const bool wasProtectedResetClean = protectedConnection.resetSessionState();
 
+            EXPECT_FALSE(wasProtectedResetClean) << "开了 " << subcommand << " 的断开式收口被报成「复位干净」：这种污染在指标上会混进普通轮换";
             EXPECT_FALSE(protectedConnection.isConnected()) << "开了 " << subcommand << " ON 的连接被当成健康连接交还给下一个借用者：它的淘汰保护会跟着串出去";
             protectedConnection.disconnect();
         }
@@ -895,8 +899,9 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_connection->executeCommand({"AUTH", m_configuration.password}), nullptr) << m_connection->lastError();
         ASSERT_TRUE(m_connection->isConnected());
 
-        m_connection->resetSessionState();
+        const bool wasAuthResetClean = m_connection->resetSessionState();
 
+        EXPECT_FALSE(wasAuthResetClean) << "重发过 AUTH 的断开式收口被报成「复位干净」：这种污染在指标上会混进普通轮换";
         EXPECT_FALSE(m_connection->isConnected()) << "重发过 AUTH 的连接被当成健康连接交还给下一个借用者：下一位就此在别人的 ACL 身份下执行命令";
     }
 
