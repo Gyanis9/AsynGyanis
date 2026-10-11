@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "a21e7de39a2c991cd3bfff6c2f82878fe61bf571"
+      "revision": "dff55479e0f77fce13d7170524c54182294248d1"
     },
     "views": [
       {
@@ -167,7 +167,7 @@
       "title": "事务与串行的真因",
       "items": [
         "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:961、ConnectionPool 的 acquireStatementLock）",
-        "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:79、81、104）",
+        "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:101、103、126）",
         "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有五个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空、maximumWaitingRequests 0=同样不排队（PoolConfig.h:29-39）"
       ]
     },
