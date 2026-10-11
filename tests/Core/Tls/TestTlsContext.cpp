@@ -157,7 +157,8 @@ namespace AsynGyanis::Core
          */
         HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientOffersAlpn, const bool clientPresentsCertificate,
                                                const unsigned char *clientAlpnWireFormat     = kHttp11AlpnWireFormat,
-                                               const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat), const bool clientRequestsOcspStatus = false)
+                                               const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat), const bool clientRequestsOcspStatus = false,
+                                               const std::filesystem::path &clientCertificatePath = kTestCertificatePath, const std::filesystem::path &clientKeyPath = kTestKeyPath)
         {
             HandshakeOutcome outcome;
 
@@ -192,9 +193,10 @@ namespace AsynGyanis::Core
             }
             if (clientPresentsCertificate)
             {
-                // 客户端证书安装在 SSL 对象上：夹具证书自签且已在服务端信任库中，可被验通
-                const int certificateResult = SSL_use_certificate_file(clientSsl.get(), kTestCertificatePath.string().c_str(), SSL_FILETYPE_PEM);
-                const int keyResult         = SSL_use_PrivateKey_file(clientSsl.get(), kTestKeyPath.string().c_str(), SSL_FILETYPE_PEM);
+                // 客户端证书安装在 SSL 对象上：默认夹具证书自签且已在服务端信任库中，可被验通；
+                // 路径参数化的场合由调用方保证同一条前提（指纹名单用例要换一张链上同样有效的证书）
+                const int certificateResult = SSL_use_certificate_file(clientSsl.get(), clientCertificatePath.string().c_str(), SSL_FILETYPE_PEM);
+                const int keyResult         = SSL_use_PrivateKey_file(clientSsl.get(), clientKeyPath.string().c_str(), SSL_FILETYPE_PEM);
                 // 记下装载结果：夹具缺失时让用例以「客户端根本没证书」失败，而不是伪装成服务端拒绝
                 outcome.clientCertificateInstalled = certificateResult == 1 && keyResult == 1;
             }
@@ -671,6 +673,204 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
         EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
         EXPECT_EQ(outcome.serverVerifyResult, X509_V_OK);
+    }
+
+    namespace
+    {
+        /// 临时文件路径工厂在文件更靠下处定义（与其它临时件共用一份命名规则）：这里先声明后引用
+        [[nodiscard]] std::filesystem::path makeUniqueTemporaryPath(std::string_view tag);
+
+        /**
+         * @brief 计算一份 PEM 证书的 SHA-256 指纹（64 位小写十六进制；与名单格式同一口径）
+         * @param certificatePath 证书文件路径
+         * @return 指纹文本；读不出证书时为空串
+         */
+        [[nodiscard]] std::string sha256FingerprintOfCertificateFile(const std::filesystem::path &certificatePath)
+        {
+            std::ifstream source(certificatePath, std::ios::binary);
+            if (!source)
+            {
+                return {};
+            }
+            // 逐行读齐（PEM 是 ASCII 文本；不引 <iterator> 只为免一处多余依赖）
+            std::string pemText;
+            std::string line;
+            while (std::getline(source, line))
+            {
+                pemText += line;
+                pemText.push_back('\n');
+            }
+            const std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new_mem_buf(pemText.data(), static_cast<int>(pemText.size())), &BIO_free);
+            if (bio == nullptr)
+            {
+                return {};
+            }
+            const std::unique_ptr<X509, decltype(&X509_free)> certificate(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr), &X509_free);
+            if (certificate == nullptr)
+            {
+                return {};
+            }
+            unsigned char digest[EVP_MAX_MD_SIZE] = {};
+            unsigned int  digestLength            = 0;
+            if (X509_digest(certificate.get(), EVP_sha256(), digest, &digestLength) != 1)
+            {
+                return {};
+            }
+            std::string fingerprint;
+            fingerprint.reserve(64);
+            constexpr char kHexDigits[] = "0123456789abcdef";
+            for (unsigned int index = 0; index < digestLength; ++index)
+            {
+                fingerprint.push_back(kHexDigits[digest[index] >> 4U]);
+                fingerprint.push_back(kHexDigits[digest[index] & 0x0FU]);
+            }
+            return fingerprint;
+        }
+
+        /**
+         * @brief 把若干份 PEM 证书按序拼成一份临时 CA 包（信任库支持一文件多证书）
+         * @param sourcePaths 待拼接的证书文件
+         * @return std::filesystem::path 临时文件路径；任一源读不出时为空
+         */
+        [[nodiscard]] std::filesystem::path makeCertificateBundleFile(const std::vector<std::filesystem::path> &sourcePaths)
+        {
+            std::string bundle;
+            for (const std::filesystem::path &sourcePath: sourcePaths)
+            {
+                std::ifstream source(sourcePath, std::ios::binary);
+                if (!source)
+                {
+                    return {};
+                }
+                std::string line;
+                while (std::getline(source, line))
+                {
+                    bundle += line;
+                    bundle.push_back('\n');
+                }
+            }
+            const std::filesystem::path bundlePath = makeUniqueTemporaryPath("ca_bundle");
+            std::ofstream               output(bundlePath, std::ios::binary);
+            if (!output)
+            {
+                return {};
+            }
+            output << bundle;
+            output.close();
+            return bundlePath;
+        }
+    } // namespace
+
+    /**
+     * @brief 指纹名单的两端：链上有效且被点名的放行，链上有效但未被点名的拒绝
+     * @details 判别力的关键在对照组：先不设名单跑一次**同样链上有效**的未点名证书，它必须握手成功——
+     *          这才证明后面的拒绝来自名单，而不是链校验顺手把它挡了。证书对用「同一信任库里两张自签
+     *          证书」构造：信任库装一份两证书的 CA 包，客户端分别出示 `test_cert.pem`（被点名）与
+     *          `test_localhost_cert.pem`（未点名）。
+     */
+    TEST(TlsContext, PeerFingerprintAllowlistAcceptsListedAndRejectsUnlistedCertificate)
+    {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
+        const std::filesystem::path unlistedCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem";
+        const std::filesystem::path unlistedKeyPath         = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_key.pem";
+        const std::string           listedFingerprint       = sha256FingerprintOfCertificateFile(kTestCertificatePath);
+        ASSERT_EQ(listedFingerprint.size(), 64U) << "被点名证书的指纹没算出来：用例前提不成立";
+
+        const std::filesystem::path bundlePath = makeCertificateBundleFile({kTestCertificatePath, unlistedCertificatePath});
+        ASSERT_FALSE(bundlePath.empty()) << "CA 包没造出来：用例前提不成立";
+
+        // 对照组：不设名单时，未点名的那张证书链上有效，握手必须成功
+        {
+            TlsContext withoutList;
+            ASSERT_TRUE(withoutList.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+            ASSERT_TRUE(withoutList.loadClientCertificateAuthority(bundlePath.string()));
+            withoutList.setClientCertificateRequired(true);
+
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(withoutList.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat,
+                                                                   sizeof(kHttp11AlpnWireFormat), false, unlistedCertificatePath, unlistedKeyPath);
+            ASSERT_FALSE(outcome.setupFailed);
+            ASSERT_TRUE(outcome.clientCertificateInstalled) << "对照组客户端未能装载证书/私钥：用例前提不成立";
+            ASSERT_TRUE(outcome.serverCompleted) << "对照组：链上有效的未点名证书在**未设名单**时也必须通过，否则后面的拒绝证明不了是名单干的：" << outcome.serverErrorText;
+        }
+
+        TlsContext withList;
+        ASSERT_TRUE(withList.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(withList.loadClientCertificateAuthority(bundlePath.string()));
+        withList.setClientCertificateRequired(true);
+        ASSERT_NO_THROW(withList.setPeerFingerprintAllowlist({listedFingerprint}));
+
+        // 被点名的那张：放行
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(withList.nativeHandle(), clientContext.get(), false, true);
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_TRUE(outcome.serverCompleted) << "被点名的客户端证书被拒了：" << outcome.serverErrorText;
+            EXPECT_EQ(outcome.serverVerifyResult, static_cast<long>(X509_V_OK));
+        }
+
+        // 链上有效但未被点名的那张：拒绝（对照组的成功证明这个拒绝来自名单）
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(withList.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat),
+                                                                   false, unlistedCertificatePath, unlistedKeyPath);
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_FALSE(outcome.serverCompleted) << "链上有效但未被点名的证书握手成功了：名单没有生效";
+        }
+
+        std::filesystem::remove(bundlePath);
+    }
+
+    /**
+     * @brief 名单项的形态与就绪顺序都在设置那一刻当场拒绝，不留一份不会执行的判据
+     */
+    TEST(TlsContext, PeerFingerprintAllowlistRejectsMalformedEntriesAndWrongOrder)
+    {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
+
+        const std::string validFingerprint = sha256FingerprintOfCertificateFile(kTestCertificatePath);
+        ASSERT_EQ(validFingerprint.size(), 64U);
+
+        // 顺序：校验没开时名单一次都不会执行——当场拒，而不是埋一份死判据
+        try
+        {
+            tlsContext.setPeerFingerprintAllowlist({validFingerprint});
+            FAIL() << "未开启客户端证书校验时设置名单本该被拒";
+        } catch (const CoreException &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_NE(message.find("setClientCertificateRequired"), std::string::npos) << message;
+        }
+
+        tlsContext.setClientCertificateRequired(true);
+        ASSERT_NO_THROW(tlsContext.setPeerFingerprintAllowlist({validFingerprint}));
+
+        // 形态：大写、短一截、非十六进制都当场拒，文案点名格式与取指纹的命令
+        for (const std::string &malformed: {std::string(64, 'A'), validFingerprint.substr(0, 63), std::string("zz") + validFingerprint.substr(2)})
+        {
+            try
+            {
+                tlsContext.setPeerFingerprintAllowlist({malformed});
+                FAIL() << "形态不合法的名单项本该被拒";
+            } catch (const CoreException &failure)
+            {
+                EXPECT_NE(std::string(failure.what()).find("64 位小写十六进制"), std::string::npos) << failure.what();
+            }
+        }
+
+        // 反向：名单还在时不许关校验（关了它就成死判据）；清空名单后可以关
+        EXPECT_THROW(tlsContext.setClientCertificateRequired(false), CoreException);
+        ASSERT_NO_THROW(tlsContext.setPeerFingerprintAllowlist({}));
+        EXPECT_NO_THROW(tlsContext.setClientCertificateRequired(false));
     }
 
     /**

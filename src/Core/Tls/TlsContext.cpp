@@ -244,6 +244,23 @@ namespace AsynGyanis::Core
 
     } // namespace
 
+    namespace
+    {
+        /**
+         * @brief 判断字符串是否是 64 位小写十六进制的 SHA-256 指纹（名单格式的单一判据）
+         * @param text 待判断的文本
+         * @return true 形态合法
+         */
+        [[nodiscard]] bool isSha256HexFingerprint(const std::string_view text) noexcept
+        {
+            if (text.size() != 64)
+            {
+                return false;
+            }
+            return std::ranges::all_of(text, [](const char character) noexcept { return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'); });
+        }
+    } // namespace
+
     TlsContext::TlsContext(const TlsPolicy &policy, const Role role) : m_policy(policy), m_role(role)
     {
 #ifndef _WIN32
@@ -655,7 +672,8 @@ namespace AsynGyanis::Core
         // 那是「续期看起来成功、安全性反而降级」的典型形态
         if (m_clientCertificateRequired)
         {
-            SSL_CTX_set_verify(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+            // 名单随策略复现（applyPeerVerification 读策略），续期不会把它悄悄丢掉
+            applyPeerVerification(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
         }
 
         // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径**重读**而不是沿用旧字节；
@@ -751,6 +769,13 @@ namespace AsynGyanis::Core
 
         if (!required)
         {
+            // 已设指纹名单时不允许关闭：关掉校验，名单就成了一份永远不会执行的判据——
+            // 那种「配置看着还在、判据已经没了」的状态比拒绝更坏，因此在这里当场说不
+            if (!m_policy.allowedPeerSha256Fingerprints.empty())
+            {
+                throw CoreException("关闭客户端证书校验失败：本上下文已设置对端指纹名单，关掉校验会让名单变成一份永远不会执行的判据。请先调用 setPeerFingerprintAllowlist({}) "
+                                    "清空名单，再关闭校验");
+            }
             // 关闭校验：回到不要求、也不校验对端证书的默认模式，此时 CA 有没有加载都无所谓
             SSL_CTX_set_verify(m_context, SSL_VERIFY_NONE, nullptr);
             m_clientCertificateRequired = false;
@@ -765,8 +790,9 @@ namespace AsynGyanis::Core
                                 "或改用 setClientCertificateRequired(false) 关闭该校验）");
         }
 
-        // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」
-        SSL_CTX_set_verify(m_context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+        // FAIL_IF_NO_PEER_CERT：对端不出示证书时立即终止握手，而不是退化成「可选校验」；
+        // 指纹名单（若已设）由同一处 helper 挂上，两条路径不会分叉
+        applyPeerVerification(m_context, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
         m_clientCertificateRequired = true;
     }
 
@@ -780,8 +806,88 @@ namespace AsynGyanis::Core
         {
             SSL_CTX_set_default_verify_paths(m_context);
         }
-        // 出站一侧恒要校验：不验对端等于任何受信 CA 给他域签的证书都能冒充目标主机
-        SSL_CTX_set_verify(m_context, SSL_VERIFY_PEER, nullptr);
+        // 出站一侧恒要校验：不验对端等于任何受信 CA 给他域签的证书都能冒充目标主机；
+        // 指纹名单（若已设）由同一处 helper 挂上
+        applyPeerVerification(m_context, SSL_VERIFY_PEER);
+    }
+
+    void TlsContext::applyPeerVerification(SSL_CTX *const context, const int mode) const
+    {
+        // app_data 占位给回调取回本对象：本类此前不使用 app_data，占位无冲突（回调只读策略）
+        SSL_CTX_set_app_data(context, const_cast<TlsContext *>(this));
+        SSL_CTX_set_verify(context, mode, m_policy.allowedPeerSha256Fingerprints.empty() ? nullptr : &TlsContext::verifyPeerAllowlistCallback);
+    }
+
+    int TlsContext::verifyPeerAllowlistCallback(const int preverifyOK, X509_STORE_CTX *const storeContext) noexcept
+    {
+        // 默认链校验的结论先算数：名单是「在链验通之上再点名」，不是替代
+        if (preverifyOK == 0)
+        {
+            return 0;
+        }
+        // 只对叶子证书判名单：链上中间 CA 在不在名单里不是调用方要表达的事
+        if (X509_STORE_CTX_get_error_depth(storeContext) != 0)
+        {
+            return 1;
+        }
+
+        // 取回宿主对象：取不到就拒绝（fail-closed）——宁可不放行，也不静默退回只看链
+        SSL *const        ssl  = static_cast<SSL *>(X509_STORE_CTX_get_ex_data(storeContext, SSL_get_ex_data_X509_STORE_CTX_idx()));
+        const auto *const self = ssl != nullptr ? static_cast<const TlsContext *>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl))) : nullptr;
+        X509 *const       leaf = X509_STORE_CTX_get_current_cert(storeContext);
+        if (self == nullptr || leaf == nullptr)
+        {
+            return 0;
+        }
+
+        unsigned char digest[EVP_MAX_MD_SIZE] = {};
+        unsigned int  digestLength            = 0;
+        if (X509_digest(leaf, EVP_sha256(), digest, &digestLength) != 1 || digestLength != 32U)
+        {
+            return 0;
+        }
+        std::string fingerprint;
+        fingerprint.reserve(64);
+        constexpr char kHexDigits[] = "0123456789abcdef";
+        for (unsigned int index = 0; index < digestLength; ++index)
+        {
+            fingerprint.push_back(kHexDigits[digest[index] >> 4U]);
+            fingerprint.push_back(kHexDigits[digest[index] & 0x0FU]);
+        }
+        return std::ranges::find(self->m_policy.allowedPeerSha256Fingerprints, fingerprint) != self->m_policy.allowedPeerSha256Fingerprints.end() ? 1 : 0;
+    }
+
+    void TlsContext::setPeerFingerprintAllowlist(std::vector<std::string> sha256HexFingerprints) const
+    {
+        std::lock_guard<std::mutex> guard(m_contextMutex);
+
+        for (const std::string &fingerprint: sha256HexFingerprints)
+        {
+            if (!isSha256HexFingerprint(fingerprint))
+            {
+                throw CoreException("设置对端证书指纹名单失败：「" + fingerprint +
+                                    "」不是 64 位小写十六进制的 SHA-256 指纹"
+                                    "（可用 `openssl x509 -noout -fingerprint -sha256` 取得）");
+            }
+        }
+
+        // 服务端角色：名单挂在「要求并校验客户端证书」上，校验没开时设名单＝埋一份不会执行的判据；
+        // 顺序判据与 setClientCertificateRequired(true) 缺 CA 那条同一口径：用错了顺序当场说、不留半成品
+        if (m_role == Role::Server && !m_clientCertificateRequired && !sha256HexFingerprints.empty())
+        {
+            throw CoreException("设置对端证书指纹名单失败：服务端尚未要求客户端证书（请先调用 setClientCertificateRequired(true)，"
+                                "并要求此前成功加载过 CA）；名单挂在证书校验上，校验没开它一次都不会执行");
+        }
+
+        m_policy.allowedPeerSha256Fingerprints = std::move(sha256HexFingerprints);
+
+        // 立即作用到当前上下文（下一次握手就按新名单判）：只对已启用的校验模式重挂——
+        // 客户端角色在 enableClientPeerVerification() 那一刻随策略装上，此处不替它提前开启校验。
+        // 换代由 reloadCertificate() 按策略自动复现，此处的即时生效只管当前上下文
+        if (const int currentMode = SSL_CTX_get_verify_mode(m_context); currentMode != SSL_VERIFY_NONE)
+        {
+            applyPeerVerification(m_context, currentMode);
+        }
     }
 
     SSL *TlsContext::createSSL(const int fileDescriptor) const

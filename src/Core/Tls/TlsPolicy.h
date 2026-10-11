@@ -15,6 +15,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -88,6 +89,18 @@ namespace AsynGyanis::Core
         /// 是否启用会话票据。关掉它多用于「恢复只靠 session id 缓存」或合规要求；关掉后多进程间
         /// 也就无从共享恢复能力，票据密钥文件那条配置随之失去作用
         bool areSessionTicketsEnabled{true};
+
+        /**
+         * @brief 对端证书的 SHA-256 指纹名单（64 位小写十六进制）；**空 = 不做点名**
+         *
+         * @details mTLS 的默认信任是「CA 签的都对」——一个 CA 签了很多客户端时，任何一张被签的
+         *          证书都能进来，而部署方常常要的是「只点名这几张」。名单不替代链校验：它是
+         *          在链验通之上**再点名**（就绪顺序与语义见 TlsContext::setPeerFingerprintAllowlist）。
+         *          用指纹而不是 SAN/CN 是刻意的：名字解析带编码与通配符的坑，指纹是确定性字节。
+         * @note 挂在策略里而不是上下文单拷一份：reloadCertificate() 按策略重建整台上下文，
+         *       名单随之自动复现——另起一份就是「续期把名单悄悄丢了」的藏身处
+         */
+        std::vector<std::string> allowedPeerSha256Fingerprints;
     };
 
     /**

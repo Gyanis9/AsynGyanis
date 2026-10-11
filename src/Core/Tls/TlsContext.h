@@ -135,6 +135,27 @@ namespace AsynGyanis::Core
         void setClientCertificateRequired(bool required) const;
 
         /**
+         * @brief 设置对端证书的 SHA-256 指纹名单（在链验通之上再点名；空列表 = 清除名单）
+         * @details mTLS 的默认信任是「CA 签的都对」：一个 CA 签了很多客户端时，任何一张被签的
+         *          证书都能进来。本方法把信任收窄到点名的几张——判定用**叶子证书的 SHA-256 指纹**
+         *          （64 位小写十六进制，`openssl x509 -noout -fingerprint -sha256 -in cert.pem` 取得），
+         *          链校验照旧先跑：名单是加法不是替代。
+         *          名单进策略（TlsPolicy::allowedPeerSha256Fingerprints），reloadCertificate() 换代时
+         *          随之自动复现——续期不会把它悄悄丢掉。
+         * @param sha256HexFingerprints 允许的对端证书指纹；空列表表示清除（回到「只看 CA 链」）
+         * @throws CoreException 任一字符串不是 64 位小写十六进制；或服务端角色在
+         *         `setClientCertificateRequired(true)` 之前设非空名单——名单挂在证书校验上，
+         *         校验没开时它一次都不会执行，属于配置错误，故当场拒绝而不是留一份死判据
+         * @note 服务端角色作用于客户端证书校验；客户端角色作用于对端（服务端）证书校验，
+         *       在 `enableClientPeerVerification()` 那一刻随策略装上（本方法的即时生效分支按
+         *       当前已启用的校验模式走）
+         * @note 必须在任何 SSL 对象创建之前调用：校验回调挂在 SSL_CTX 上，createSSL() 建好的
+         *       SSL 不会看到本次变更
+         * @see setClientCertificateRequired(), enableClientPeerVerification()
+         */
+        void setPeerFingerprintAllowlist(std::vector<std::string> sha256HexFingerprints) const;
+
+        /**
          * @brief 为已建立的连接创建一个新的 SSL 对象。
          * @param fileDescriptor 已连接的 socket 文件描述符（用于 SSL_set_fd 设置底层描述符）
          * @return SSL 对象指针，所有权转移给调用者（通常由 TlsSocket 持有）；
@@ -228,6 +249,25 @@ namespace AsynGyanis::Core
          * @throws CoreException 创建失败或策略里某一项无法生效（调用方负责先释放已建的句柄）
          */
         [[nodiscard]] static SSL_CTX *createHardenedContext(Role role, const TlsPolicy &policy);
+
+        /**
+         * @brief 按当前策略施加「校验对端证书」模式：名单为空装默认校验，非空装指纹点名回调
+         * @details 三处启用校验的地方（要求客户端证书、出站校验、换代复现）共用这一份，
+         *          少走一处就是「某条路径上名单不生效」的藏身处。回调经 SSL_CTX 的 app_data
+         *          取回本对象（本类不使用 app_data，占位无冲突）
+         * @param context 目标上下文（SSL_CTX 或换代时的新上下文）
+         * @param mode SSL_VERIFY_* 位组合
+         */
+        void applyPeerVerification(SSL_CTX *context, int mode) const;
+
+        /**
+         * @brief 指纹点名回调：链验通之后，叶子证书的 SHA-256 必须落在名单里
+         * @details 取不到宿主对象时**拒绝**（fail-closed）：宁可不放行也不静默退回只看链
+         * @param preverifyOK OpenSSL 默认链校验的结论
+         * @param storeContext 校验上下文
+         * @return 1 放行；0 终止握手
+         */
+        [[nodiscard]] static int verifyPeerAllowlistCallback(int preverifyOK, X509_STORE_CTX *storeContext) noexcept;
 
         /**
          * @brief 把证书与私钥装进指定上下文并校验两者配对
