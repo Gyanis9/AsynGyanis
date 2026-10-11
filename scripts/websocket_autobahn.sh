@@ -33,8 +33,9 @@ set -euo pipefail
 #                       以上——那样红的就不是这条判据而是「runner 取消作业」。要加次数就连着
 #                       timeout-minutes 一起调
 #
-# 判据：报告里 behavior=FAILED 的条数必须为 0。默认排除 9.1.6 与 9.2.6——那两条发 16 MiB 的
-# 消息，超本端单条消息 8 MiB 的上限，按 RFC 6455 §7.1.6 回 1009 收口属规范许可的拒绝，
+# 判据：报告里 behavior **或 behaviorClose** 为 FAILED 的条数必须为 0——两个字段是独立判词，
+# 只查 behavior 会漏掉「数据面全过、关闭握手不达标」那一类。默认排除 9.1.6 与 9.2.6——那两条发
+# 16 MiB 的消息，超本端单条消息 8 MiB 的上限，按 RFC 6455 §7.1.6 回 1009 收口属规范许可的拒绝，
 # Autobahn 却仍按「没收到回显」记 FAILED。要连它们一起看，AUTOBAHN_EXCLUDE= 传空即可。
 
 port="${1:-18081}"
@@ -128,7 +129,7 @@ while :; do
         -v "$(mount_source "${report_dir}"):/reports" \
         "${image}" wstest -m fuzzingclient -s /fuzzingclient.json > "${work_dir}/wstest.log" 2>&1 || wstest_rc=$?
 
-    failed_count="$(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
+    failed_count="$(grep -lE '"(behavior|behaviorClose)": "FAILED"' "${report_dir}"/*case_*.json 2>/dev/null | wc -l | tr -d ' ' || true)"
     case_count="$(find "${report_dir}" -name '*case_*.json' | wc -l | tr -d ' ')"
     attempted="$(grep -ac 'Running test case ID' "${work_dir}/wstest.log" 2>/dev/null || true)"
     echo "第 ${attempt} 次跑裁判：落盘 ${case_count} 份报告、分派 ${attempted:-0} 条、wstest 退出码 ${wstest_rc}（用例面下限 ${min_cases}）"
@@ -160,7 +161,7 @@ done
 echo "用例面核对通过：${case_count} 条 ≥ 下限 ${min_cases}（第 ${attempt} 次跑成，分派 ${attempted:-0} 条）"
 
 if [ "${failed_count}" != "0" ]; then
-    for path in $(grep -l '"behavior": "FAILED"' "${report_dir}"/*case_*.json); do
+    for path in $(grep -lE '"(behavior|behaviorClose)": "FAILED"' "${report_dir}"/*case_*.json); do
         sed -n 's/^ *"id": "\(.*\)",/\1/p; s/^ *"result": "\(.*\)",/\1/p' "${path}" | paste -sd ' | ' -
     done
     exit 1
