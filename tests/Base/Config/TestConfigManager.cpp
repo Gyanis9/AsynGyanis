@@ -1411,6 +1411,25 @@ port: 9090
         EXPECT_TRUE(anyEntryContains(result.errors, "节点总数超过上限"));
     }
 
+    TEST_F(ConfigManagerTest, LoadFromDirectoryCutsOffScalarByteAmplification)
+    {
+        // 字节侧的同族形状：节点数远没超而文本量能乘出来——一个 1 MiB 标量被别名引用 16 次，
+        // 展开文本 17 MiB 越过 16 MiB 的展开字节预算；节点数只有 18、深度只有 1，
+        // 既有两道闸门（深度、节点数）都拦不住它
+        const std::string bigScalar(1024U * 1024U, 'x');
+        std::string       yamlText = "big: &big \"" + bigScalar + "\"\n";
+        for (int referenceIndex = 0; referenceIndex < 16; ++referenceIndex)
+        {
+            yamlText += "copy" + std::to_string(referenceIndex) + ": *big\n";
+        }
+        writeFile("amplified.yaml", yamlText);
+
+        const ConfigLoadResult result = configuration().loadFromDirectory(directory());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_TRUE(anyEntryContains(result.errors, "文本总量超过上限"));
+    }
+
     TEST_F(ConfigManagerTest, LoadAcceptsEmptyFileWithoutProducingKeys)
     {
         writeFile("empty.yaml", "");

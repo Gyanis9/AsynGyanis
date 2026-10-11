@@ -680,6 +680,11 @@ namespace AsynGyanis::Base
         /// YAML 文档展开后的节点总数上限：别名炸弹（引用同一锚点逐层放大）靠这道预算拦下
         constexpr std::size_t kMaximumYamlNodeCount = 200000;
 
+        /// YAML 展开文本的字节预算（键与标量文本的展开总量，16 MiB）。节点数预算按「个数」算，
+        /// 挡不住「一个大标量被别名引用很多次」：每次引用都深拷贝一份文本，节点数远没超而字节数
+        /// 能乘出来；输入文件的体积上限（64 MiB）只约束文本本身，同样管不住这份乘出来的展开量
+        constexpr std::size_t kMaximumYamlExpandedBytes = 16ULL * 1024ULL * 1024ULL;
+
         /**
          * @brief 读取或转换配置文档时的失败（嵌套超限、不支持的标签、数值越界等）
          * @details 只在本翻译单元内抛出并被 loadConfigFile 捕获后转成中文错误文案，
@@ -701,6 +706,22 @@ namespace AsynGyanis::Base
             {
             }
         };
+
+        /**
+         * @brief 扣减 YAML 展开的字节预算，不够就抛出
+         * @param byteCount 本次要计入的字节数（键或标量的文本长度）
+         * @param remainingByteBudget 剩余预算，逐次扣减
+         * @throws DocumentConversionException 预算不够
+         */
+        void consumeYamlExpandedBytes(const std::size_t byteCount, std::size_t &remainingByteBudget)
+        {
+            if (byteCount > remainingByteBudget)
+            {
+                throw DocumentConversionException(std::format("文档展开后的文本总量超过上限 {} MiB：引用同一锚点的别名会被逐份复制文本，请减少别名引用或拆分文件",
+                                                              kMaximumYamlExpandedBytes / (1024ULL * 1024ULL)));
+            }
+            remainingByteBudget -= byteCount;
+        }
 
         /**
          * @brief 把库的位置标记格式化为可读文本
@@ -914,13 +935,15 @@ namespace AsynGyanis::Base
          *          核心 schema 的 str/int/float/bool/null，其余（如 !!binary、!!timestamp）
          *          明确报错而不是静默丢成字符串。
          * @param node 标量节点
+         * @param remainingByteBudget 剩余展开字节预算；标量文本正是别名乘法所复制的东西，在这里扣
          * @return ConfigValue 转换结果
-         * @throws DocumentConversionException 标签不受支持、整数或浮点越界、显式 bool/float 的取值不合法
+         * @throws DocumentConversionException 标签不受支持、整数或浮点越界、显式 bool/float 的取值不合法、展开字节超限
          */
-        [[nodiscard]] ConfigValue yamlScalarToConfigValue(const YAML::Node &node)
+        [[nodiscard]] ConfigValue yamlScalarToConfigValue(const YAML::Node &node, std::size_t &remainingByteBudget)
         {
             const std::string &tag  = node.Tag();
             const std::string &text = node.Scalar();
+            consumeYamlExpandedBytes(text.size(), remainingByteBudget);
 
             if (tag == "!" || tag == "tag:yaml.org,2002:str")
             {
@@ -978,16 +1001,18 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 递归把 yaml-cpp 节点转换为 JSON 值
-         * @details 别名在 yaml-cpp 的 DOM 里是共享引用、在 JSON 里只能深拷贝，故用深度与节点总数
-         *          两道上限拦住循环别名与别名炸弹；重复键在 DOM 里保留为两份，这里明确报错
+         * @details 别名在 yaml-cpp 的 DOM 里是共享引用、在 JSON 里只能深拷贝，故用深度、节点总数
+         *          与展开文本字节三道上限拦住循环别名与别名炸弹（后两道分工：节点数拦「逐层放大」、
+         *          字节数拦「一个大标量被抄很多份」）；重复键在 DOM 里保留为两份，这里明确报错
          *          而不让后者静默覆盖前者。
          * @param node 当前节点
          * @param depth 当前嵌套深度（根为 0）
          * @param remainingNodeBudget 剩余可转换节点数，逐节点扣减
+         * @param remainingByteBudget 剩余可展开的文本字节数（键与标量），逐份扣减
          * @return ConfigValue 转换结果
-         * @throws DocumentConversionException 超过深度或节点数上限、映射键不是标量、映射存在重复键
+         * @throws DocumentConversionException 超过深度、节点数或展开字节上限、映射键不是标量、映射存在重复键
          */
-        [[nodiscard]] ConfigValue yamlNodeToConfigValue(const YAML::Node &node, const std::size_t depth, std::size_t &remainingNodeBudget)
+        [[nodiscard]] ConfigValue yamlNodeToConfigValue(const YAML::Node &node, const std::size_t depth, std::size_t &remainingNodeBudget, std::size_t &remainingByteBudget)
         {
             if (depth > kMaximumDocumentDepth)
             {
@@ -1010,7 +1035,7 @@ namespace AsynGyanis::Base
                 ConfigValue elements = ConfigValue::array();
                 for (const YAML::Node &element: node)
                 {
-                    elements.push_back(yamlNodeToConfigValue(element, depth + 1, remainingNodeBudget));
+                    elements.push_back(yamlNodeToConfigValue(element, depth + 1, remainingNodeBudget, remainingByteBudget));
                 }
                 return elements;
             }
@@ -1025,17 +1050,18 @@ namespace AsynGyanis::Base
                         throw DocumentConversionException(std::format("映射的键必须是标量（{}）：复杂键无法表示为 JSON 对象键", describeYamlMark(entry.first.Mark())));
                     }
                     const std::string key = entry.first.Scalar();
+                    consumeYamlExpandedBytes(key.size(), remainingByteBudget);
                     if (members.contains(key))
                     {
                         throw DocumentConversionException(std::format("映射中存在重复键 '{}'（{}）：请删除重复定义", key, describeYamlMark(entry.first.Mark())));
                     }
-                    members[key] = yamlNodeToConfigValue(entry.second, depth + 1, remainingNodeBudget);
+                    members[key] = yamlNodeToConfigValue(entry.second, depth + 1, remainingNodeBudget, remainingByteBudget);
                 }
                 return members;
             }
 
             // 到这里只剩标量：未定义与 null 已在前面处理
-            return yamlScalarToConfigValue(node);
+            return yamlScalarToConfigValue(node, remainingByteBudget);
         }
 
         /**
@@ -1056,7 +1082,8 @@ namespace AsynGyanis::Base
             }
 
             std::size_t remainingNodeBudget = kMaximumYamlNodeCount;
-            return yamlNodeToConfigValue(document, 0, remainingNodeBudget);
+            std::size_t remainingByteBudget = kMaximumYamlExpandedBytes;
+            return yamlNodeToConfigValue(document, 0, remainingNodeBudget, remainingByteBudget);
         }
 
         /**
