@@ -181,6 +181,9 @@ namespace AsynGyanis::Database
          * @param limit 从 BEGIN 起允许的时长；0 或负数表示不设限（默认就是不设限）
          * @note 时限到期不会中断正在执行的那条语句：那是语句级超时（驱动的查询超时）的活，
          *       本方法管的是「这条事务别再往下走」
+         * @note 不得与在飞的语句并发调用：语句执行在工作线程上读这枚额度，而读发生在连接使用权锁之外
+         *       （锁保护的是驱动句柄，不是这个值）。要改额度就改在第一条语句之前，或等所有已发出的
+         *       语句都返回之后——与本类「对象不跨线程使用」那条承诺同源
          */
         void setTimeLimit(const std::chrono::milliseconds limit) noexcept
         {
