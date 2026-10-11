@@ -258,7 +258,8 @@ namespace AsynGyanis::Net
                     received = co_await tlsSocket.asyncReceive(chunk.data(), chunk.size());
                 } catch (const Base::Exception &failure)
                 {
-                    co_return std::unexpected(std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——被对端复位，或本端把会话撤了。底层原因：{}", target, failure.what()));
+                    co_return std::unexpected(
+                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what()));
                 }
                 const auto outcome = feedUpgradeBytes(parser, exchange.leftover, chunk.data(), received == 0 ? 0 : static_cast<std::size_t>(received), received == 0);
                 if (outcome == UpgradeReadOutcome::NeedsMoreBytes)
