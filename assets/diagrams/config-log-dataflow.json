@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "c8ecbe11a813e7bd2bfd59ffb25027e15695e8f4"
+      "revision": "47f68d55aabe13b0c35323c0f686acc6a634306b"
     },
     "views": [
       {
@@ -277,7 +277,7 @@
       "row": 0,
       "sources": [
         { "path": "src/Net/Http/HttpServerAssembly.h", "line": 145, "label": "探针为什么不进那道令牌闸" },
-        { "path": "src/Net/Http/Middleware.h", "line": 1427, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
+        { "path": "src/Net/Http/Middleware.h", "line": 1421, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
         { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 125, "label": "循环诊断口的注册函数" }
       ]
     },
