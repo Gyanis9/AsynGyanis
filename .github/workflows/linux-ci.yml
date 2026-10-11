@@ -274,25 +274,27 @@ jobs:
             > /tmp/tls.log 2>&1 &
           tls_pid=$!
 
-          # 都要跑完再收：任一失败就让作业红，并把服务端日志留成产物
+          # 都要跑完再收：任一失败就让作业红，并把服务端日志留成产物。
+          # 退码保真：用 `status=$?` 而不是 `status=1`——autobahn 的 2（拿不到裁判/没跑完）与 1（某条
+          # 用例没过）成因不同、下一步不同，折成一个 1 会让「runner 掐了容器」看起来像服务端规范失败
           status=0
           wait_ready --http2-prior-knowledge "http://127.0.0.1:18080/json" \
-            && bash scripts/h2_adversarial_probe.sh 18080 || status=1
+            && bash scripts/h2_adversarial_probe.sh 18080 || status=$?
           # 同一台 h2c 服务端再过一次外部裁判；--strict 把那几条「实现可选」的也一并判了
           wait_ready --http2-prior-knowledge "http://127.0.0.1:18080/json" \
-            && /tmp/h2spec -h 127.0.0.1 -p 18080 --strict || status=1
+            && /tmp/h2spec -h 127.0.0.1 -p 18080 --strict || status=$?
           # TLS 侧走 ALPN 挑出 h2：与明文那条判的是同一套规则，但走的是另一条协商路径
           wait_ready -k "https://127.0.0.1:18443/json" \
-            && /tmp/h2spec -h 127.0.0.1 -p 18443 --tls --insecure || status=1
+            && /tmp/h2spec -h 127.0.0.1 -p 18443 --tls --insecure || status=$?
           wait_ready "http://127.0.0.1:18081/json" \
-            && python scripts/ws_interop_probe.py 127.0.0.1 18081 || status=1
+            && python scripts/ws_interop_probe.py 127.0.0.1 18081 || status=$?
           # Autobahn|Testsuite：另一家独立实现的 517 条用例，判的是「期望的事件序列」。
           # 本机这一轮由它查出「回显不分类型一律发文本帧」与「单帧上限比消息上限还小」两处。
           # 默认排掉超本端 8 MiB 消息上限的那两条（按 §7.1.6 回 1009 属规范许可的拒绝），见脚本头
           wait_ready "http://127.0.0.1:18081/json" \
-            && bash scripts/websocket_autobahn.sh 18081 || status=1
+            && bash scripts/websocket_autobahn.sh 18081 || status=$?
           wait_ready -k "https://127.0.0.1:18443/json" \
-            && python scripts/ws_interop_probe.py 127.0.0.1 18443 --wss || status=1
+            && python scripts/ws_interop_probe.py 127.0.0.1 18443 --wss || status=$?
 
           kill "$h2c_pid" "$plain_pid" "$tls_pid" 2>/dev/null
           wait "$h2c_pid" "$plain_pid" "$tls_pid" 2>/dev/null
