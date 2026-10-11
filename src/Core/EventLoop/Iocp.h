@@ -11,6 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/EventLoop/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 // 只借 wepoll 的 epoll_event 与 epoll 事件位定义：本后端不经过它的 AFD 轮询，
@@ -355,4 +356,7 @@ namespace AsynGyanis::Core
         /// 因此存原子量而不是 thread::id——后者读写没有同步就是一次数据竞争，而这里只想要个名字
         std::atomic<std::uint64_t> m_inUseByHash{0};
     };
+
+    // 契约复检：完成端口后端必须与 epoll / io_uring 同构（EventLoop 与 IoWatcher 因此无平台分支）
+    static_assert(EventBackend<Iocp>);
 } // namespace AsynGyanis::Core

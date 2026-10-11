@@ -11,6 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/EventLoop/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 #include <cstddef>
@@ -282,4 +283,7 @@ namespace AsynGyanis::Core
 
         std::vector<epoll_event> m_readyEvents; ///< wait() 的落地缓冲：构造时一次定容，改容量会让已交出去的视图悬垂
     };
+
+    // 契约复检：io_uring 后端必须与 epoll / IOCP 同构（EventLoop 与 IoWatcher 因此无平台分支）
+    static_assert(EventBackend<Uring>);
 } // namespace AsynGyanis::Core

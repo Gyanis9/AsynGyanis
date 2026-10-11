@@ -7,6 +7,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/ConnectionDistributor.h
         ${CMAKE_CURRENT_LIST_DIR}/ConnectionDistributor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Epoll.h
+        ${CMAKE_CURRENT_LIST_DIR}/EventBackendContract.h
         ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.h
         ${CMAKE_CURRENT_LIST_DIR}/IoWatcher.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Timer.h

@@ -10,7 +10,7 @@
 
 #include "AsynGyanisExport.h"
 
-
+#include "Core/EventLoop/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 #include <cstdint>
@@ -32,6 +32,9 @@ namespace AsynGyanis::Core
      *          只能由它取走，见 TcpAcceptor 的接受路径。
      */
     using Epoll = Iocp;
+
+    // 契约复检：走这一步的平台也把概念钉一次，本头文件在每个平台分支里都自己站得住
+    static_assert(EventBackend<Epoll>);
 } // namespace AsynGyanis::Core
 
 #elif defined(ASYN_WITH_IO_URING)
@@ -47,6 +50,9 @@ namespace AsynGyanis::Core
      *          因此 EventLoop / IoWatcher 不需要任何分支；由构建开关选用（默认走 epoll）。
      */
     using Epoll = Uring;
+
+    // 契约复检：走这一步的平台也把概念钉一次，本头文件在每个平台分支里都自己站得住
+    static_assert(EventBackend<Epoll>);
 } // namespace AsynGyanis::Core
 
 #else
@@ -86,7 +92,7 @@ namespace AsynGyanis::Core
          * @param userData       挂载到 epoll_event.data.ptr 的用户数据，通常为协程句柄地址
          * @return 成功返回 true，失败返回 false（errno 会被保留）
          */
-        bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr) const;
+        bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr);
 
         /**
          * @brief 修改已监听文件描述符的事件掩码
@@ -95,14 +101,14 @@ namespace AsynGyanis::Core
          * @param userData       新的用户数据（若需保持不变，可传入原值）
          * @return 成功返回 true，失败返回 false
          */
-        bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr) const;
+        bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr);
 
         /**
          * @brief 从 epoll 移除文件描述符
          * @param fileDescriptor 目标文件描述符
          * @return 成功返回 true，失败返回 false
          */
-        bool delFileDescriptor(int fileDescriptor) const;
+        bool delFileDescriptor(int fileDescriptor);
 
         /**
          * @brief 阻塞等待 IO 事件
@@ -136,6 +142,9 @@ namespace AsynGyanis::Core
         std::vector<epoll_event> m_events;                  ///< wait() 的落地缓冲：构造时一次定容为 kMaximumEventCount，此后不再改容量（改容量会让已交出去的视图悬垂）
         static constexpr int     kMaximumEventCount = 1024; ///< 单次 wait 最多返回的事件数，同时也是缓冲的固定容量
     };
+
+    // 契约复检：Linux epoll 分支自己的编译期判据（另两个分支在各自的后端头里钉同一个概念）
+    static_assert(EventBackend<Epoll>);
 } // namespace AsynGyanis::Core
 
 #endif

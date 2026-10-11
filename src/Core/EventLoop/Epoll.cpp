@@ -40,7 +40,7 @@ namespace AsynGyanis::Core
         return *this;
     }
 
-    bool Epoll::addFileDescriptor(const int fileDescriptor, const uint32_t events, void *const userData) const
+    bool Epoll::addFileDescriptor(const int fileDescriptor, const uint32_t events, void *const userData)
     {
         epoll_event ev{};
         ev.events   = events;
@@ -54,7 +54,7 @@ namespace AsynGyanis::Core
                          &ev) == 0;
     }
 
-    bool Epoll::modFileDescriptor(const int fileDescriptor, const uint32_t events, void *const userData) const
+    bool Epoll::modFileDescriptor(const int fileDescriptor, const uint32_t events, void *const userData)
     {
         epoll_event ev{};
         ev.events   = events;
@@ -68,7 +68,7 @@ namespace AsynGyanis::Core
                          &ev) == 0;
     }
 
-    bool Epoll::delFileDescriptor(const int fileDescriptor) const
+    bool Epoll::delFileDescriptor(const int fileDescriptor)
     {
         return epoll_ctl(m_fileDescriptor, EPOLL_CTL_DEL,
 #ifdef _WIN32
