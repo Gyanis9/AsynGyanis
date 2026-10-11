@@ -1,4 +1,5 @@
 #include "Net/WebSocket/WebSocketFrame.h"
+#include "Net/WebSocket/WebSocketUtf8.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -166,6 +167,49 @@ namespace AsynGyanis::Net
         payload.push_back(static_cast<char>(statusCode & 0xFFU));
         payload.append(reason);
         return payload;
+    }
+
+    WebSocketCloseVerdict classifyWebSocketClosePayload(const std::string_view payload)
+    {
+        WebSocketCloseVerdict verdict;
+        if (payload.size() == 1U)
+        {
+            // 状态码只来了半截：协议错误收口，且没有可记的号码（对端没交出一个完整的码）
+            verdict.replyCode = kWebSocketProtocolErrorCode;
+            return verdict;
+        }
+        if (payload.size() < kWebSocketCloseCodeByteLength)
+        {
+            // 空负载：对端没交码——回 1000，什么都不记
+            return verdict;
+        }
+
+        // 线上是大端：先高字节，与 buildWebSocketClosePayload 的写侧逐字对应
+        const std::uint16_t    receivedCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
+                                                                         static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
+        const std::string_view reason       = payload.substr(kWebSocketCloseCodeByteLength);
+        const bool             isReasonUtf8 = findInvalidWebSocketUtf8ByteOffset(reason) == std::string_view::npos;
+
+        // 记「对端说了什么」与定「本侧回什么」分开：非法码与非 UTF-8 原因都会让回帧变成 1002/1007，
+        // 而业务要看见的是对端原本那个号码；原因只在合法 UTF-8 时留下（非法串可能带控制码）
+        verdict.peerCode = receivedCode;
+        if (isReasonUtf8)
+        {
+            verdict.peerReason = std::string(reason);
+        }
+
+        if (!isAllowedWebSocketCloseCode(receivedCode))
+        {
+            verdict.replyCode = kWebSocketProtocolErrorCode;
+        } else if (!isReasonUtf8)
+        {
+            // 原因不是 UTF-8：按负载非法收口（RFC 6455 §7.4.1 的 1007）
+            verdict.replyCode = kWebSocketInvalidPayloadDataCode;
+        } else
+        {
+            verdict.replyCode = receivedCode;
+        }
+        return verdict;
     }
 
     std::string encodeWebSocketFrame(const WebSocketOpCode opCode, const std::string_view payload, const bool isFinal, const bool isCompressed,

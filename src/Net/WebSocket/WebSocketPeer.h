@@ -39,15 +39,8 @@ namespace AsynGyanis::Net
      */
     using WebSocketHandler = std::function<Core::Task<>(WebSocketPeer &)>;
 
-    /// 正常关闭状态码（RFC 6455 §7.4.1）
-    inline constexpr std::uint16_t kWebSocketNormalClosureCode = 1000;
-
-    /// 协议错误状态码：帧格式违规（掩码缺失、RSV 非 0、未定义操作码等）
-    inline constexpr std::uint16_t kWebSocketProtocolErrorCode = 1002;
-
-    /// 负载数据非法状态码：文本帧负载不是合法 UTF-8（RFC 6455 §7.4.1）
-    inline constexpr std::uint16_t kWebSocketInvalidPayloadDataCode = 1007;
-
+    /// 关闭类状态码（正常 / 协议错误 / 负载非法）定义在 WebSocketFrame.h：收侧判定两端共用一处；
+    /// 消息过大那一条只有本层用，留在这里
     /// 消息过大状态码：单帧或重组后的消息超出解码层上限
     inline constexpr std::uint16_t kWebSocketMessageTooBigCode = 1009;
 

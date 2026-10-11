@@ -69,6 +69,15 @@ namespace AsynGyanis::Net
     /// Close 帧负载里状态码占的字节数（大端，RFC 6455 §5.5.1）：原因文本从它之后开始
     inline constexpr std::size_t kWebSocketCloseCodeByteLength = 2;
 
+    /// 正常关闭状态码（RFC 6455 §7.4.1）
+    inline constexpr std::uint16_t kWebSocketNormalClosureCode = 1000;
+
+    /// 协议错误状态码：帧格式违规（掩码缺失、RSV 非 0、未定义操作码等）
+    inline constexpr std::uint16_t kWebSocketProtocolErrorCode = 1002;
+
+    /// 负载数据非法状态码：文本帧负载不是合法 UTF-8（RFC 6455 §7.4.1）
+    inline constexpr std::uint16_t kWebSocketInvalidPayloadDataCode = 1007;
+
     /**
      * @brief Close 帧的状态码能不能出现在线上（收与发共用同一张表）
      *
@@ -94,6 +103,28 @@ namespace AsynGyanis::Net
      * @return std::string 2 + reason.size() 字节的负载
      */
     [[nodiscard]] ASYN_NET_API std::string buildWebSocketClosePayload(const std::uint16_t statusCode, const std::string_view reason);
+
+    /**
+     * @brief 「对端 Close 负载」的裁定结果（见 classifyWebSocketClosePayload）
+     */
+    struct ASYN_NET_API WebSocketCloseVerdict
+    {
+        std::uint16_t                replyCode{kWebSocketNormalClosureCode}; ///< 本侧回帧要写的状态码
+        std::optional<std::uint16_t> peerCode{};                             ///< 对端交来的原始状态码（没交时为空）
+        std::string                  peerReason{};                           ///< 对端的原因文本（仅合法 UTF-8 时保留）
+    };
+
+    /**
+     * @brief 按 RFC 6455 §5.5.1 / §7.4.1 裁定「对端 Close 的负载」：回什么码、记什么值
+     * @details 收侧判定只在这一处，服务端会话与出站客户端共用（两张表迟早会在某个保留段上分叉）：
+     *          负载只有 1 字节（状态码缺失）与禁止上线的保留码回 1002，原因文本不是合法 UTF-8 回 1007，
+     *          其余把对端那个码原样答回；空负载回 1000 且不记码。`peerCode` 是**原值**、与回帧分档
+     *          独立（业务据此分档收尾）；`peerReason` 只在合法 UTF-8 时非空——非法那串可能带控制码，
+     *          交出去等于把日志注入的原料递给业务。
+     * @param payload Close 帧的负载原文
+     * @return WebSocketCloseVerdict 回帧码与要记录的对端原值
+     */
+    [[nodiscard]] ASYN_NET_API WebSocketCloseVerdict classifyWebSocketClosePayload(std::string_view payload);
 
     /**
      * @brief 一帧的 4 字节掩码键（RFC 6455 §5.3）

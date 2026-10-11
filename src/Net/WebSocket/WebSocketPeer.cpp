@@ -309,48 +309,19 @@ namespace AsynGyanis::Net
 
     Core::Task<> WebSocketPeer::echoCloseFrame(const std::string_view payload)
     {
-        // 对端 Close 的负载要按 RFC 6455 §5.5.1 / §7.4.1 校验：状态码缺失（只有 1 字节）、
-        // 禁止上线的状态码（1005/1006/1015 等）、原因文本不是 UTF-8 都是协议错误。
-        // 这类关闭不能原样回送对端的码，否则一次非法关闭会被当成正常关闭放过去
-        std::uint16_t closeCode = kWebSocketNormalClosureCode;
-        if (payload.size() == 1)
-        {
-            closeCode = kWebSocketProtocolErrorCode;
-        } else if (payload.size() >= kWebSocketCloseCodeByteLength)
-        {
-            // 线上是大端：第一个字节是高位
-            const std::uint16_t    receivedCode = static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8) |
-                                                                             static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
-            const std::string_view reason       = payload.substr(kWebSocketCloseCodeByteLength);
-            const bool             isReasonUtf8 = findInvalidWebSocketUtf8ByteOffset(reason) == std::string_view::npos;
-
-            // 记下「对端说了什么」，与下面决定「本侧回什么」分开：非法状态码与非 UTF-8 的原因都会让
-            // 回帧变成 1002/1007，而业务要看见的是对端原本那个号码（见 remoteCloseCode() 的口径）。
-            // 原因只在它是合法 UTF-8 时留下：非法的那串原始字节可能带着控制码，交出去等于把
-            // 日志注入的原料递给业务
-            m_remoteCloseCode = receivedCode;
-            if (isReasonUtf8)
-            {
-                m_remoteCloseReason = std::string(reason);
-            }
-
-            if (!isAllowedWebSocketCloseCode(receivedCode))
-            {
-                closeCode = kWebSocketProtocolErrorCode;
-            } else if (!isReasonUtf8)
-            {
-                // 原因不是 UTF-8：按负载非法收口（RFC 6455 §7.4.1 的 1007）
-                closeCode = kWebSocketInvalidPayloadDataCode;
-            } else
-            {
-                closeCode = receivedCode;
-            }
-        }
+        // 对端 Close 的负载按 RFC 6455 §5.5.1 / §7.4.1 裁定：收侧判定与出站客户端共用
+        // classifyWebSocketClosePayload（两张表迟早会在某个保留段上分叉，所以只留一处）。
+        // 「记下对端说了什么」与「决定本侧回什么」在返回结构里分开：非法码回 1002、原因非 UTF-8 回
+        // 1007，而业务要看见的是对端原本那个号码（见 remoteCloseCode() 的口径）；原因只在合法
+        // UTF-8 时留下（非法串可能带控制码，交出去等于把日志注入的原料递给业务）
+        const WebSocketCloseVerdict verdict = classifyWebSocketClosePayload(payload);
+        m_remoteCloseCode                   = verdict.peerCode;
+        m_remoteCloseReason                 = verdict.peerReason;
 
         // 回帧即收口。结果不看：对端往往已经断开，这条回帧写不出去也不影响收尾
         // 先立标记再回帧：本次关闭来自对端，计数归它那一侧，close() 据此不再记一次本侧发起
         m_isEchoingPeerClose                    = true;
-        [[maybe_unused]] const bool isCloseSent = co_await close(closeCode);
+        [[maybe_unused]] const bool isCloseSent = co_await close(verdict.replyCode);
         co_return;
     }
 

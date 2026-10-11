@@ -700,6 +700,81 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(closeCodeOf(*echo).has_value());
         EXPECT_EQ(*closeCodeOf(*echo), 1001U) << "回帧要把对端那个码原样答回去（RFC 6455 §5.5.1）";
     }
+
+    TEST(WebSocketClient, AnswersReservedPeerCloseCodeWithProtocolError)
+    {
+        // 保留码 1005（§7.4.1 禁止上线）不得被原样答回、也不得被当成正常关闭收口：本端按 1002 回答
+        // （与服务端同一条收侧判定），而业务仍看得到对端原本交来的号码
+        std::optional<std::uint16_t> observedRemoteCode;
+        const PeerScript             script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            static_cast<void>(wire.write(makeServerFrame(kCloseFrameFirstByte, makeClosePayload(1005, ""))));
+            wire.readOneClientFrame();
+        };
+        const Action action = [&observedRemoteCode](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (received.has_value())
+            {
+                outcome.delivered.push_back(*received);
+            } else
+            {
+                outcome.receive_error = received.error();
+            }
+            observedRemoteCode = client.remoteCloseCode();
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.receive_error, "");
+        EXPECT_FALSE(outcome.is_open_after_actions);
+        const auto echo = frameAt(wireBytes.second, 0);
+        ASSERT_TRUE(echo.has_value()) << "本端没回 Close";
+        ASSERT_TRUE(closeCodeOf(*echo).has_value());
+        EXPECT_EQ(*closeCodeOf(*echo), 1002U) << "保留码被原样答回或按正常关闭收口：对端读到的像一次合规关闭";
+        ASSERT_TRUE(observedRemoteCode.has_value()) << "对端原本那个码没有留给业务";
+        EXPECT_EQ(*observedRemoteCode, 1005U);
+    }
+
+    TEST(WebSocketClient, AnswersNonUtf8CloseReasonWithInvalidPayloadCode)
+    {
+        // 原因不是合法 UTF-8：按负载非法收口（1007），且那串原始字节不留给业务（防日志注入）
+        std::optional<std::uint16_t> observedRemoteCode;
+        std::string                  observedReason;
+        const PeerScript             script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            static_cast<void>(wire.write(makeServerFrame(kCloseFrameFirstByte, makeClosePayload(1000, std::string_view("\x80", 1)))));
+            wire.readOneClientFrame();
+        };
+        const Action action = [&observedRemoteCode, &observedReason](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (received.has_value())
+            {
+                outcome.delivered.push_back(*received);
+            } else
+            {
+                outcome.receive_error = received.error();
+            }
+            observedRemoteCode = client.remoteCloseCode();
+            observedReason     = std::string(client.remoteCloseReason());
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.receive_error, "");
+        const auto echo = frameAt(wireBytes.second, 0);
+        ASSERT_TRUE(echo.has_value()) << "本端没回 Close";
+        ASSERT_TRUE(closeCodeOf(*echo).has_value());
+        EXPECT_EQ(*closeCodeOf(*echo), 1007U) << "非 UTF-8 的原因没有按负载非法收口";
+        ASSERT_TRUE(observedRemoteCode.has_value());
+        EXPECT_EQ(*observedRemoteCode, 1000U) << "记的应当是对端交来的原值";
+        EXPECT_TRUE(observedReason.empty()) << "非法 UTF-8 的原因原文被交回业务：那是日志注入的原料";
+    }
     TEST(WebSocketClient, StopsSendingAfterLocalCloseAndCarriesReason)
     {
         const PeerScript script = [](PeerWire &wire)

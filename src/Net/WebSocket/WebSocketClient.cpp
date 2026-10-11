@@ -41,8 +41,6 @@ namespace AsynGyanis::Net
         constexpr std::size_t kMaskKeyByteLength = 4;
         /// 关闭原因的长度上限：控制帧整体不得过 125 字节，其中状态码占 2（RFC 6455 §5.5、§5.5.1）
         constexpr std::size_t kMaximumCloseReasonLength = kWebSocketMaximumControlPayloadLength - kWebSocketCloseCodeByteLength;
-        /// 正常收口那一个码：对端给的码不能上线时按 §5.5.1 回它
-        constexpr std::uint16_t kNormalClosureCode = 1000;
         /**
          * @brief 从系统的密码学随机源取 length 字节
          * @details 取不到就抛出：全零或复用的键等于放弃 §5.3 要防的那种中间设施缓存重放，
@@ -97,21 +95,6 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isIpLiteralAddress(const std::string &hostName)
         {
             return Core::InetAddress::parseLiteral(hostName, 0).has_value();
-        }
-        /**
-         * @brief 从 Close 帧的负载里取出对端那个状态码
-         * @param payload 控制帧负载；不足 2 字节表示对端没给码（RFC 6455 §5.5.1 允许）
-         * @return std::optional<std::uint16_t> 状态码原值；没给码时为空
-         */
-        [[nodiscard]] std::optional<std::uint16_t> readPeerCloseCode(const std::string_view payload)
-        {
-            if (payload.size() < kWebSocketCloseCodeByteLength)
-            {
-                return std::nullopt;
-            }
-            // 大端：先高字节，与 buildWebSocketClosePayload 的写侧逐字对应
-            return static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(payload[0])) << 8U) |
-                                              static_cast<std::uint16_t>(static_cast<unsigned char>(payload[1])));
         }
         /// 一次交换用的读块大小：与 HttpClient 同档，够让 101 的头块在少数几轮里读完
         constexpr std::size_t kExchangeChunkByteLength = 4096;
@@ -485,6 +468,16 @@ namespace AsynGyanis::Net
     {
         return m_isOpen;
     }
+
+    std::optional<std::uint16_t> WebSocketClient::remoteCloseCode() const noexcept
+    {
+        return m_remoteCloseCode;
+    }
+
+    std::string_view WebSocketClient::remoteCloseReason() const noexcept
+    {
+        return m_remoteCloseReason;
+    }
     Core::Task<std::expected<WebSocketFrame, std::string>> WebSocketClient::receive()
     {
         // 收侧只看通路活着没有：本端发过 Close 之后仍然要能读回对端那条 Close（§5.5.1 的握手是双向的），
@@ -552,15 +545,13 @@ namespace AsynGyanis::Net
     }
     Core::Task<std::expected<WebSocketFrame, std::string>> WebSocketClient::answerPeerClose(const WebSocketFrame &closeFrame)
     {
-        // 回一条 Close 并把对端那个码原样答回去（RFC 6455 §5.5.1）；码不能上线时改回 1000——
-        // 把保留值发出去只会让对面把这次收口读成协议错误
-        std::uint16_t echoCode = kNormalClosureCode;
-        if (const std::optional<std::uint16_t> peerCode = readPeerCloseCode(closeFrame.payload); peerCode.has_value() && isAllowedWebSocketCloseCode(*peerCode))
-        {
-            echoCode = *peerCode;
-        }
+        // 收侧判定与服务端共用一处（RFC 6455 §5.5.1 / §7.4.1）：非法码回 1002、原因非 UTF-8 回 1007、
+        // 合规的原样答回；对端那个码**原值**记进 remoteCloseCode()，业务据此看得见「对端是违例关闭的」
+        const WebSocketCloseVerdict verdict = classifyWebSocketClosePayload(closeFrame.payload);
+        m_remoteCloseCode                   = verdict.peerCode;
+        m_remoteCloseReason                 = verdict.peerReason;
         // 原因不回送：§5.5.1 只要求把状态码答回去，而对面那条原因是给对面自己看的
-        co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(echoCode, {})));
+        co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(verdict.replyCode, {})));
         m_isOpen = false;
         m_transport->close();
         co_return closeFrame;

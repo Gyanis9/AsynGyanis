@@ -110,6 +110,25 @@ namespace AsynGyanis
             [[nodiscard]] bool isOpen() const noexcept;
 
             /**
+             * @brief 对端 Close 帧交来的状态码原值
+             * @details 交回的是**原值**，包括本规范禁止上线的取值（1004、1005、1006、1015 等）：那种
+             *          情况下本端回帧按协议错误收口（1002），而「对端到底说了什么」仍然留得住，业务
+             *          据此分档收尾（该不该重试、要不要告警、要不要记审计）。
+             * @return std::optional<std::uint16_t> 有值＝对端交来了状态码；空＝对端没交出号码——
+             *         Close 帧只带空负载、链路被直接切断（那样的帧根本没到过），或 Close 还没到
+             */
+            [[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept;
+
+            /**
+             * @brief 对端 Close 帧交来的原因文本
+             * @details 只有当它是合法 UTF-8 时才交回：原因不是 UTF-8 时这条关闭按负载非法收口
+             *          （RFC 6455 §7.4.1 的 1007），而那串原始字节不交给业务——它一旦被写进日志，
+             *          就是把控制码注入日志的原料。
+             * @return std::string_view 对端的原因（合法 UTF-8 时）；对端没交、或非法时为空
+             */
+            [[nodiscard]] std::string_view remoteCloseReason() const noexcept;
+
+            /**
              * @brief 收下一条**数据消息**（文本或二进制）
              * @details 分片消息由解码器重组完才交；控制帧在这一格处理掉：收到的 Ping 自动按原负载回 Pong，
              *          收到的 Pong 就地消费，收到的 Close 会按同一状态码回一条 Close（RFC 6455 §5.5.1）
@@ -208,6 +227,10 @@ namespace AsynGyanis
             /// 本端还能不能发出帧：发过 Close、收到对端 Close、或通路出错都把它置为假。
             /// 收侧不看它——本端发起关闭之后，对端那条回帧仍要能读
             bool m_isOpen{true};
+            /// 对端 Close 帧里交来的状态码原值（见 remoteCloseCode()）：对端没交码、或链路被直接切断时保持空
+            std::optional<std::uint16_t> m_remoteCloseCode{};
+            /// 对端 Close 帧里交来的原因文本（仅在合法 UTF-8 时保留，见 remoteCloseReason()）
+            std::string m_remoteCloseReason{};
         };
     } // namespace Net
 } // namespace AsynGyanis
