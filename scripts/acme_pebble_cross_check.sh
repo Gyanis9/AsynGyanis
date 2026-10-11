@@ -103,9 +103,10 @@ for _ in $(seq 1 60); do
     fi
 done
 if [[ "$directory_ready" != 1 ]]; then
-    note "Pebble 在 30 秒内没把目录交出来，日志尾："
+    # 对面没起来属于「拿不到裁判」，与「缺二进制」同档退 2：这一档的红不该被读成被测面的问题
+    note "Pebble 在 30 秒内没把目录交出来（拿不到裁判），日志尾："
     tail -8 "$pebble_log"
-    exit 1
+    exit 2
 fi
 scenarios=$((scenarios + 1))
 note "场景 1 过：对面起来了，目录可取"
@@ -161,7 +162,7 @@ note "场景 6 过：续期拿到的是另一张证书"
 # ---- 用对面本次启动的根验那张链：这一步的判据完全在对面那侧 ----
 # 签发根是每次启动新生成的，镜像里那份 minica 只签 API 证书，所以根要从管理接口取
 curl -sk --max-time 5 "https://localhost:$management_port/roots/0" >"$state_dir/root.pem" || {
-    note "取不到对面的根（管理接口 $management_port）"; exit 1
+    note "取不到对面的根（管理接口 $management_port；拿不到裁判，退 2）"; exit 2
 }
 cd "$state_dir" || exit 1
 csplit -z -f cert- chain.pem '/BEGIN CERTIFICATE/' '{*}' >/dev/null 2>&1
@@ -179,10 +180,10 @@ fi
 scenarios=$((scenarios + 1))
 note "场景 7 过：链能验到对面本次的根（$verify_output）"
 
-# 证书里的身份必须就是下单的那个域名——签错了身份也算失败
-san=$(openssl x509 -in leaf.pem -noout -ext subjectAltName 2>/dev/null)
-if ! grep -q "DNS:$domain" <<<"$san"; then
-    note "证书的 SAN 里没有下单的域名：$san"
+# 证书里的身份必须就是下单的那个域名——签错了身份也算失败。
+# 判据取 x509 -checkhost 而不是 grep：后者未锚定、点号还当通配，`DNS:…前缀` 与 `host.evil` 形状都能蒙混
+if ! openssl x509 -in leaf.pem -noout -checkhost "$domain" >/dev/null 2>&1; then
+    note "证书的 SAN 与下单的域名不等（x509 -checkhost $domain 不过）：$(openssl x509 -in leaf.pem -noout -ext subjectAltName 2>/dev/null)"
     exit 1
 fi
 scenarios=$((scenarios + 1))
