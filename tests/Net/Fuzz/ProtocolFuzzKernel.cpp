@@ -394,7 +394,21 @@ namespace AsynGyanis::Net::Fuzz
             }
 
             std::string body;
-            switch (const std::size_t framing = random.nextBelow(11U); framing)
+            // 先定分帧形态：8/9/10 是三档解码器触发（urlencoded / JSON / multipart），
+            // 它们要走一条自洽骨架而不是穿过上面的随机头段
+            const std::size_t framing                 = random.nextBelow(11U);
+            const bool        isDecoderTriggerFraming = framing >= 8U;
+            if (isDecoderTriggerFraming)
+            {
+                // 触发档把随机头段的产出整体换掉：那张表按设计就放着重名与垃圾值（Host/host 与
+                // Content-Length/content-length 成对出现、值有 1/4 概率带 \x01），重名头与坏值头
+                // 都会被解析器拒；触发轮再自带 Content-Type/Content-Length，于是没有一轮到得了
+                // Done——四个解码器的命中计数结构性恒零，「补了调用」等于空转（实测 21/21 轮全
+                // 死在重复头/坏值上）。已消耗的抽样照旧消耗（随机流不动），只是这段产出换掉，
+                // 让触发轮判的是解码器而不是头表的拒绝面
+                input = "POST /upload HTTP/1.1\r\nHost: example.com\r\n";
+            }
+            switch (framing)
             {
                 case 1U:
                     input += "Content-Length: 5\r\n";
@@ -446,7 +460,9 @@ namespace AsynGyanis::Net::Fuzz
             }
 
             input += "\r\n"; // 头部块收尾
-            if (random.nextBelow(3U) == 0U)
+            // 触发档不插流水线：插在头与正文之间时，那条「下一条请求」会被当成本条请求的正文吃掉，
+            // 解码器解到的是乱串（字段恒空），触发轮的命中又会归零
+            if (!isDecoderTriggerFraming && random.nextBelow(3U) == 0U)
             {
                 input += "GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n"; // 流水线里的下一条
             }
