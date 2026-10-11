@@ -1766,6 +1766,158 @@ namespace AsynGyanis::Net
                 co_return std::move(exchange.response);
             }
         }
+
+        /// 可自动跟随的重定向：300 要人来选，304 根本不是跳转（它说的是「你手里那份还有效」）
+        [[nodiscard]] constexpr bool isAutoFollowableRedirectStatus(const int statusCode) noexcept
+        {
+            return statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308;
+        }
+
+        /// 头部名按 ASCII 折小写（RFC 9110 §5.1 大小写不敏感，且不跟 locale 走）
+        [[nodiscard]] std::string lowerFieldName(const std::string_view name)
+        {
+            std::string folded(name);
+            std::transform(folded.begin(), folded.end(), folded.begin(),
+                           [](const unsigned char byte) { return (byte >= 'A' && byte <= 'Z') ? static_cast<char>(byte + ('a' - 'A')) : byte; });
+            return folded;
+        }
+
+        /// 折成 GET 之后正文没了，留着那些声明等于让对端按一份不存在的正文处理
+        void stripBodyDescribingFields(HttpClientRequest &request)
+        {
+            std::erase_if(request.headers,
+                          [](const HttpClientHeaderField &field)
+                          {
+                              // 名单写在闭包里：GCC 不许闭包捕获静态存储期的对象（-Werror 直接拒），而这张表只服务这一处判断
+                              static constexpr std::array<std::string_view, 4> kBodyFieldNames{"content-length", "content-type", "content-encoding", "transfer-encoding"};
+                              const std::string                                folded = lowerFieldName(field.first);
+                              return std::any_of(kBodyFieldNames.begin(), kBodyFieldNames.end(), [&folded](const std::string_view name) { return folded == name; });
+                          });
+        }
+
+        /// 跨源时剥掉凭据：Authorization 跟着对端挑的主机走，等于把口令交给另一台机器（RFC 9110 §11.5.3）
+        void stripCredentials(HttpClientRequest &request)
+        {
+            std::erase_if(request.headers, [](const HttpClientHeaderField &field) { return lowerFieldName(field.first) == "authorization"; });
+        }
+
+        /// 一条 3xx 折算出来的下一跳：URL 与请求两份都要换
+        struct RedirectStep
+        {
+            ParsedUrl         url;
+            HttpClientRequest request;
+        };
+
+        /// 协议、主机、端口任一变了就算跨源
+        [[nodiscard]] constexpr bool isCrossOrigin(const ParsedUrl &from, const ParsedUrl &to) noexcept
+        {
+            return from.scheme != to.scheme || from.host != to.host || from.port != to.port;
+        }
+
+        /**
+         * @brief 按 RFC 9110 §15.4 把一条 3xx 折算成下一跳；折不出来交回空并把停在哪儿写进 stopReason
+         * @details 交回空不等于失败：调用方仍拿得到对端真实给过的那条 3xx，看得境停在哪一格。
+         */
+        [[nodiscard]] std::optional<RedirectStep> planRedirectStep(const HttpClientResponse &response, const HttpClientRequest &current, const ParsedUrl &currentUrl,
+                                                                   std::string &stopReason)
+        {
+            // 接收口是对「这一条响应」的约定：跟随会让同一个口子先收一段 3xx 正文、再收一段终局正文，
+            // 两种读法都不对，所以宁可不跟
+            if (current.responseBodyReceiver)
+            {
+                stopReason = "设了响应正文接收口，跟随重定向会让同一个接收口收两段互不相干的正文";
+                return std::nullopt;
+            }
+            const auto location = response.headerValue("location");
+            if (!location.has_value())
+            {
+                stopReason = "对端没给 Location";
+                return std::nullopt;
+            }
+            const auto absolute = resolveUrlReference(currentUrl, *location);
+            if (!absolute.has_value())
+            {
+                stopReason = "Location 不是能解析成 http(s) 的引用";
+                return std::nullopt;
+            }
+            RedirectStep step;
+            try
+            {
+                step.url = parseUrl(*absolute);
+            } catch (const Base::Exception &)
+            {
+                // resolveUrlReference 已经核过写法，这里正常到不了；到了也不能让异常穿过这条协程
+                stopReason = "Location 解出的绝对 URL 仍读不出（对端给的引用超出可跟随的范围）";
+                return std::nullopt;
+            }
+            // 303 见 GET，HEAD 例外（它本来就是「只要头」的问法）；301/302 只折 POST，那是历史上唯一
+            // 被普遍改写成 GET 的方法；307/308 明写不许改方法——它们要的重放就是同一个请求
+            const bool isFoldToGet = response.statusCode == 303 ? current.method != "HEAD" : (response.statusCode == 301 || response.statusCode == 302) && current.method == "POST";
+            step.request           = current;
+            if (isFoldToGet)
+            {
+                step.request.method      = "GET";
+                step.request.body        = {};
+                step.request.contentType = {};
+                step.request.bodySource  = {};
+                stripBodyDescribingFields(step.request);
+            } else if (current.bodySource)
+            {
+                // 方法要保住就意味着正文也要保住，而拉取来源是一次性的：再拉一遍交出去的不是同一份字节
+                stopReason = "下一跳要原样重放正文，而这份正文是一次性的拉取来源";
+                return std::nullopt;
+            }
+            if (isCrossOrigin(currentUrl, step.url))
+            {
+                stripCredentials(step.request);
+            }
+            return step;
+        }
+
+        /**
+         * @brief `performRequest()` 的重定向包一层：单次与连接池两条出口共用这一份跟随逻辑
+         * @details 时限按**整条请求**算：每一跳只拿此刻剩下的预算，所以跟几跳都不会把 requestTimeout
+         *          乘上跳数（这条纪律与 h3 探测吃预算那处同一个口径）。开关关着时第一趟就原样透传。
+         */
+        Core::Task<std::unique_ptr<HttpClientResponse>> performRequestFollowingRedirects(Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &url,
+                                                                                         const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool,
+                                                                                         std::string &failureReason, const Core::TlsContext *clientTls,
+                                                                                         const Http3OutboundContext *http3)
+        {
+            const auto        deadline   = std::chrono::steady_clock::now() + requestTimeout;
+            HttpClientRequest current    = request;
+            ParsedUrl         currentUrl = url;
+            for (std::size_t hop = 0;; ++hop)
+            {
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+                if (remaining <= std::chrono::milliseconds::zero())
+                {
+                    failureReason = "本次请求已到时限：前面 " + std::to_string(hop) + " 跳重定向把整条预算用尽（最后一条来自 " + currentUrl.host + "）";
+                    co_return nullptr;
+                }
+                std::unique_ptr<HttpClientResponse> response = co_await performRequest(loop, current, currentUrl, remaining, pool, failureReason, clientTls, http3);
+                if (response == nullptr || !request.followRedirects || !isAutoFollowableRedirectStatus(response->statusCode))
+                {
+                    co_return std::move(response);
+                }
+                if (hop >= request.maximumRedirectCount)
+                {
+                    // 交回最后那条 3xx 而不是编一个失败：它是对端真实给过的响应，调用方看得见停在第几跳
+                    LOG_WARN_FMT("HttpClient: 停在第 {} 跳重定向（上限 {}，主机 {}）：跳数到顶，继续跟下去多半是环", hop, request.maximumRedirectCount, currentUrl.host);
+                    co_return std::move(response);
+                }
+                std::string stopReason;
+                auto        step = planRedirectStep(*response, current, currentUrl, stopReason);
+                if (!step.has_value())
+                {
+                    LOG_WARN_FMT("HttpClient: 没有跟随这条 {} 重定向（主机 {}）：{}", response->statusCode, currentUrl.host, stopReason);
+                    co_return std::move(response);
+                }
+                LOG_DEBUG_FMT("HttpClient: 跟随 {} 重定向到 {}{}（第 {} 跳）", response->statusCode, step->url.host, step->url.path, hop + 1);
+                current    = std::move(step->request);
+                currentUrl = std::move(step->url);
+            }
+        }
     } // namespace
 
     Core::Task<std::expected<HttpClientResponse, std::string>> HttpClient::send(Core::EventLoop &loop, const std::string_view url, HttpClientRequest request,
@@ -1781,7 +1933,7 @@ namespace AsynGyanis::Net
         }
         std::string failureReason;
         // 静态那一路不带池、也没有承载 TLS 策略与 h3 开关的地方，因此永不走 h3（两个空指针即此意）
-        std::unique_ptr<HttpClientResponse> response = co_await performRequest(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr, nullptr);
+        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr, nullptr);
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
@@ -1966,7 +2118,7 @@ namespace AsynGyanis::Net
         http3Context.rejectedEndpoints     = &m_http3RejectedEndpoints;
 
         std::unique_ptr<HttpClientResponse> response =
-                co_await performRequest(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get(), &http3Context);
+                co_await performRequestFollowingRedirects(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason, m_clientTls.get(), &http3Context);
         if (!response)
         {
             if (m_circuitBreaker != nullptr)

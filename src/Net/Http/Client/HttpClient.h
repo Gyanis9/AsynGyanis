@@ -137,6 +137,27 @@ namespace AsynGyanis::Net
         HttpResponseBodyReceiver responseBodyReceiver{};
 
         /**
+         * @brief 自动跟随 3xx 重定向；默认**关**（关着时本客户端的行为与加这一项之前逐字相同）
+         * @details 开着时交回的是**最后一跳**的响应。方法折算按 RFC 9110 §15.4：303 折成 GET（HEAD 仍按
+         *          §15.4.4 的例外保持 HEAD）、301/302 只把 POST 折成 GET、307/308 方法与正文都不动；
+         *          `Location` 可以是相对引用，按 §10.2.2 对基准 URL 解析（`resolveUrlReference()`）。
+         * @note 三处边界一律「交回那一条 3xx 并打一行原因」，不静默换成别的请求：整条时限被前面几跳
+         *       吃光、跳数越过 `maximumRedirectCount`、下一跳要重放正文而这份正文是一次性的
+         *       （`bodySource` 拉着），或设了 `responseBodyReceiver`（跟随会让同一个口子收两段互不相干的正文）。
+         * @note 跨源重定向（协议、主机、端口任一变了）会剥掉 `Authorization`：凭据只能发给调用方本来
+         *       打算发的那台机器，跟着对端挑的地址走等于把凭据交出去（RFC 9110 §11.5.3）
+         */
+        bool followRedirects{false};
+
+        /**
+         * @brief 自动跟随的跳数上限，只在 `followRedirects` 为真时被读
+         * @details 环检测靠的就是这个数，不需要识别环：`Location` 指回自己、两跳互指这类形状数到顶就停，
+         *          交回最后那条 3xx。5 跳够走完「临时→永久→鉴权」这类链；给 0 是「一跳都不跟」的显式写法。
+         * @note 越界不当失败处理：那几条 3xx 都是对端真实给过的响应，交回最后一条比编一个空响应更有用
+         */
+        std::size_t maximumRedirectCount{5};
+
+        /**
          * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部
          * @details 装的是**本端这一跳的上下文**——通常就是当前那一节的 `Span::identifiers()`，
          *          或入站请求归一化后读到的那份（`extractTraceContext()`）。标识按原样渲染，

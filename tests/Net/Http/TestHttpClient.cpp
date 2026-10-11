@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 #include "HttpTestSupport.h"
+#include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
@@ -917,5 +919,548 @@ namespace AsynGyanis::Net
 
         const ParsedUrl defaultPortBase = parseUrl("https://a.example/docs/page.html");
         EXPECT_EQ(resolveUrlReference(defaultPortBase, "/x"), "https://a.example/x") << "443 是默认端口，写出来只会让 Host 头与基准不一致";
+    }
+    namespace
+    {
+        /// 服务端一侧逐跳记下的事实：请求目标、方法是不是 GET、有没有带凭据、正文多长
+        struct RedirectHop
+        {
+            std::string target;
+            bool        isGet{false};
+            bool        hasAuthorization{false};
+            std::size_t bodyLength{0};
+        };
+
+        /// 多条用例的处理器与断言在两条线程上读写同一张台账，所以按锁过
+        class RedirectLedger
+        {
+        public:
+            void record(RedirectHop hop)
+            {
+                const std::lock_guard guard(m_mutex);
+                m_hops.push_back(std::move(hop));
+            }
+            [[nodiscard]] std::vector<RedirectHop> snapshot() const
+            {
+                const std::lock_guard guard(m_mutex);
+                return m_hops;
+            }
+
+        private:
+            mutable std::mutex       m_mutex;
+            std::vector<RedirectHop> m_hops;
+        };
+
+        /// 一次跟随的读数：状态码（0 是没拿到响应）、正文、失败原因
+        struct RedirectOutcome
+        {
+            int         status{0};
+            std::string body;
+            std::string reason;
+        };
+
+        Core::Task<void> followOnceTask(Core::EventLoop &loop, RedirectOutcome &outcome, const std::string url, HttpClientRequest request, const std::chrono::milliseconds timeout)
+        {
+            try
+            {
+                const auto sent = co_await HttpClient::send(loop, url, std::move(request), timeout);
+                if (sent.has_value())
+                {
+                    outcome.status = sent->statusCode;
+                    outcome.body   = sent->body;
+                } else
+                {
+                    outcome.reason = sent.error();
+                }
+            } catch (const Base::Exception &failure)
+            {
+                outcome.reason = failure.what();
+            }
+            loop.stop();
+        }
+
+        /// 在调用方的线程上起一条循环跑一次请求（与 doGet 同一形状）
+        RedirectOutcome followOnce(const std::string &url, HttpClientRequest request, const std::chrono::milliseconds timeout = HttpClient::kDefaultRequestTimeout)
+        {
+            Core::EventLoop loop;
+            RedirectOutcome outcome;
+            auto            work = followOnceTask(loop, outcome, url, std::move(request), timeout);
+            if (!work.isReady())
+            {
+                loop.scheduler().schedule(work.handle());
+            }
+            loop.run();
+            return outcome;
+        }
+
+        /// 记一笔台账并答复：location 为空就不带这一条头（那是「304/坏应答」那一格的形状）
+        void answerRedirect(const std::shared_ptr<RedirectLedger> &ledger, HttpRequest &request, HttpResponse &response, const int status, const std::string_view location)
+        {
+            RedirectHop hop;
+            hop.target           = std::string(request.path());
+            hop.isGet            = request.method() == HttpMethod::GET;
+            hop.hasAuthorization = request.firstHeaderValueView("authorization").has_value();
+            hop.bodyLength       = request.body().size();
+            ledger->record(std::move(hop));
+            response.setStatus(status);
+            if (!location.empty())
+            {
+                static_cast<void>(response.setHeader("location", location));
+            }
+            response.setBody("redirected");
+        }
+
+        /// 记一笔台账并答复 200
+        void answerLanded(const std::shared_ptr<RedirectLedger> &ledger, HttpRequest &request, HttpResponse &response)
+        {
+            RedirectHop hop;
+            hop.target           = std::string(request.path());
+            hop.isGet            = request.method() == HttpMethod::GET;
+            hop.hasAuthorization = request.firstHeaderValueView("authorization").has_value();
+            hop.bodyLength       = request.body().size();
+            ledger->record(std::move(hop));
+            response.setStatus(200);
+            response.setBody("landed");
+        }
+
+        std::string urlFor(const RunningHttpServerFixture &fixture, const std::string_view path)
+        {
+            return "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + std::string(path);
+        }
+
+        HttpClientRequest followingRequest(const std::string_view method, const std::size_t hopLimit = 10)
+        {
+            HttpClientRequest request;
+            request.method               = std::string(method);
+            request.followRedirects      = true;
+            request.maximumRedirectCount = hopLimit;
+            return request;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：开关关着时那条 302 原样交回，一条都不跟
+     * @details 默认关是本改动的兼容底线——已有调用方靠「拿到 3xx 自己处置」活着，
+     *          替它们改成自动跟随等于把响应体换掉还不打招呼。
+     */
+    TEST(HttpClientRedirects, OffByDefaultReturnsTheRedirectItself)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/r302",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerRedirect(ledger, request, response, 302, "/landed");
+                                                            co_return;
+                                                        });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r302"), HttpClientRequest{});
+        EXPECT_EQ(outcome.status, 302) << outcome.reason;
+        EXPECT_EQ(ledger->snapshot().size(), 1U) << "关着就不该有第二跳";
+    }
+
+    TEST(HttpClientRedirects, FollowsARelativeLocationWhenEnabled)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/r302",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerRedirect(ledger, request, response, 302, "/landed");
+                                                            co_return;
+                                                        });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r302"), followingRequest("GET"));
+        EXPECT_EQ(outcome.status, 200) << outcome.reason;
+        EXPECT_EQ(outcome.body, "landed");
+        const auto hops = ledger->snapshot();
+        ASSERT_EQ(hops.size(), 2U);
+        EXPECT_EQ(hops[1].target, "/landed") << "相对引用要按基准解析成这条路径";
+        EXPECT_TRUE(hops[1].isGet);
+    }
+
+    /**
+     * @brief 钉住：303 之后一律见 GET（RFC 9110 §15.4.4），正文与正文声明一起丢
+     * @details 带着正文的 GET 是非法形状：留着 Content-Length 而正文没了，对端会等一段不存在的字节。
+     */
+    TEST(HttpClientRedirects, Status303FoldsPostIntoGetAndDropsTheBody)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.post("/r303",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerRedirect(ledger, request, response, 303, "/landed");
+                                                             co_return;
+                                                         });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        auto request                  = followingRequest("POST");
+        request.body                  = "payload=1";
+        request.contentType           = "application/x-www-form-urlencoded";
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r303"), request);
+        EXPECT_EQ(outcome.status, 200) << outcome.reason;
+        const auto hops = ledger->snapshot();
+        ASSERT_EQ(hops.size(), 2U);
+        EXPECT_FALSE(hops[0].isGet);
+        EXPECT_EQ(hops[0].bodyLength, 9U);
+        EXPECT_TRUE(hops[1].isGet) << "303 的下一跳必须是 GET";
+        EXPECT_EQ(hops[1].bodyLength, 0U) << "换 GET 还带着正文，等于发一条非法请求";
+    }
+
+    TEST(HttpClientRedirects, Status301FoldsOnlyPostIntoGet)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.post("/r301",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerRedirect(ledger, request, response, 301, "/landed");
+                                                             co_return;
+                                                         });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        auto request                  = followingRequest("POST");
+        request.body                  = "x=1";
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r301"), request);
+        EXPECT_EQ(outcome.status, 200) << outcome.reason;
+        const auto hops = ledger->snapshot();
+        ASSERT_EQ(hops.size(), 2U);
+        EXPECT_TRUE(hops[1].isGet) << "301 把 POST 折成 GET 是 §15.4.2 写下的历史一致行为";
+    }
+
+    /**
+     * @brief 钉住：307 原样重放方法与正文（§15.4.8 明写不许改方法）
+     * @details 这一条与 303 是反着的：把 307 也折成 GET 就等于替调用方换掉了语义（同一个请求再问一次）。
+     */
+    TEST(HttpClientRedirects, Status307ReplaysMethodAndBody)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.post("/r307",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerRedirect(ledger, request, response, 307, "/landed");
+                                                             co_return;
+                                                         });
+                                             router.post("/landed",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerLanded(ledger, request, response);
+                                                             co_return;
+                                                         });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        auto request                  = followingRequest("POST");
+        request.body                  = "again";
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r307"), request);
+        EXPECT_EQ(outcome.status, 200) << outcome.reason;
+        const auto hops = ledger->snapshot();
+        ASSERT_EQ(hops.size(), 2U);
+        EXPECT_FALSE(hops[1].isGet) << "307 的下一跳仍是 POST";
+        EXPECT_EQ(hops[1].bodyLength, 5U) << "正文要重放同一份字节";
+    }
+
+    /**
+     * @brief 钉住：跨源重定向剥掉 Authorization，同源的不剥
+     * @details RFC 9110 §11.5.3 要求凭据只能发给原请求那台主机。端口不同也算跨源——
+     *          「同一台机器上的另一个服务」正是这种泄漏最容易生效的形状。
+     */
+    TEST(HttpClientRedirects, CrossOriginRedirectStripsCredentialsWhileSameOriginKeepsThem)
+    {
+        auto                     sourceLedger = std::make_shared<RedirectLedger>();
+        auto                     targetLedger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture target(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                        [targetLedger](Router &router, Core::EventLoop &)
+                                        {
+                                            router.get("/landed",
+                                                       [targetLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerLanded(targetLedger, request, response);
+                                                           co_return;
+                                                       });
+                                        });
+        ASSERT_TRUE(target.awaitRunning(kTimeout));
+
+        RunningHttpServerFixture source(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                        [sourceLedger, targetPort = target.listeningPort()](Router &router, Core::EventLoop &)
+                                        {
+                                            router.get("/away",
+                                                       [sourceLedger, targetPort](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerRedirect(sourceLedger, request, response, 302, "http://127.0.0.1:" + std::to_string(targetPort) + "/landed");
+                                                           co_return;
+                                                       });
+                                            router.get("/keep",
+                                                       [sourceLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerRedirect(sourceLedger, request, response, 302, "/landed");
+                                                           co_return;
+                                                       });
+                                            router.get("/landed",
+                                                       [sourceLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerLanded(sourceLedger, request, response);
+                                                           co_return;
+                                                       });
+                                        });
+        ASSERT_TRUE(source.awaitRunning(kTimeout));
+
+        auto crossing = followingRequest("GET");
+        crossing.headers.emplace_back("authorization", "Bearer secret-token");
+        const RedirectOutcome crossOutcome = followOnce(urlFor(source, "/away"), crossing);
+        EXPECT_EQ(crossOutcome.status, 200) << crossOutcome.reason;
+        const auto crossHops = targetLedger->snapshot();
+        ASSERT_EQ(crossHops.size(), 1U);
+        EXPECT_FALSE(crossHops[0].hasAuthorization) << "跨源还带着凭据，等于把令牌交给对端挑的那台机器";
+
+        auto staying = followingRequest("GET");
+        staying.headers.emplace_back("authorization", "Bearer secret-token");
+        const RedirectOutcome sameOutcome = followOnce(urlFor(source, "/keep"), staying);
+        EXPECT_EQ(sameOutcome.status, 200) << sameOutcome.reason;
+        const auto sameHops = sourceLedger->snapshot();
+        ASSERT_EQ(sameHops.size(), 3U) << "两次请求共用同一张台账：/away 那跳也在里面";
+        EXPECT_TRUE(sameHops.back().hasAuthorization) << "同源下一跳仍该带上调用方给的凭据";
+    }
+
+    /**
+     * @brief 钉住：要重放一次性拉取的正文时不跟随，把那条 307 原样交回
+     * @details 拉取来源已经被抽干了；再拉一遍交出去的是另一份字节，而对端以为收到的是同一份请求。
+     *          宁可不跟，也不悄悄发一条没正文或内容不同的请求。
+     */
+    TEST(HttpClientRedirects, DoesNotReplayAOneShotBodySource)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.post("/r307",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerRedirect(ledger, request, response, 307, "/landed");
+                                                             co_return;
+                                                         });
+                                             router.post("/landed",
+                                                         [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             answerLanded(ledger, request, response);
+                                                             co_return;
+                                                         });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        auto request = followingRequest("POST");
+        auto cursor  = std::make_shared<bool>(false);
+        // 一次性来源：第一口给出字节，第二口就是终点——抽干了就没有「同一份正文」可重放
+        request.bodySource = [cursor]() -> Core::Task<std::optional<std::string>>
+        {
+            if (*cursor)
+            {
+                co_return std::nullopt;
+            }
+            *cursor = true;
+            co_return std::optional<std::string>{"streamed-once"};
+        };
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r307"), request);
+        EXPECT_EQ(outcome.status, 307) << outcome.reason;
+        EXPECT_EQ(ledger->snapshot().size(), 1U) << "不该发出第二跳";
+    }
+
+    TEST(HttpClientRedirects, DoesNotFollowWhileAResponseBodyReceiverIsAttached)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/r303",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerRedirect(ledger, request, response, 303, "/landed");
+                                                            co_return;
+                                                        });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        auto        request = followingRequest("GET");
+        std::string delivered;
+        request.responseBodyReceiver = [&delivered](const HttpResponseInfo &, const std::string_view batch, const bool) -> Core::Task<bool>
+        {
+            delivered.append(batch);
+            co_return true;
+        };
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/r303"), request);
+        EXPECT_EQ(outcome.status, 303) << outcome.reason;
+        EXPECT_EQ(delivered, "redirected") << "接收口该只收到那条 303 自己的正文";
+        EXPECT_EQ(ledger->snapshot().size(), 1U) << "同一个接收口不能收两段互不相干的正文";
+    }
+
+    /**
+     * @brief 钉住：跳数上限就是环检测，停在顶上时交回最后那条 302
+     * @details `Location` 指回自己不需要识别环：数到顶就停。交回 3xx 而不是编一个失败——
+     *          那几条都是对端真实给过的响应，调用方看得见停在第几跳。
+     */
+    TEST(HttpClientRedirects, StopsAtTheHopLimitAndReturnsTheLastRedirect)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/loop",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerRedirect(ledger, request, response, 302, "/loop");
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/loop"), followingRequest("GET", 2));
+        EXPECT_EQ(outcome.status, 302) << outcome.reason;
+        EXPECT_EQ(ledger->snapshot().size(), 3U) << "上限 2 跳 = 首发一次 + 跟随两次，第三次仍带着 302 交回";
+    }
+
+    /**
+     * @brief 钉住：跟随重定向不会把总时限乘成「时限 × 跳数」
+     * @details 这条断的是**结局**（整条链必须在调用方给的预算内收场），不是某一行算术：包里有两道闸
+     *          在做同一件事——发下一跳前先看剩余（不够就当场停），以及把「此刻剩余」当作下一跳的时限。
+     *          只拆掉后者（每跳重新给一份满预算）这条用例照样绿，因为前者仍然把总时长兜住；要把这条
+     *          用例逼红，得两道一起拆（`no-budget-at-all` 那次突变就是这么做的，实测红在本条）。
+     *          慢机器只会让它更早停下来，所以断言里不放时间上界。
+     */
+    TEST(HttpClientRedirects, SharesOneTimeoutBudgetAcrossHops)
+    {
+        constexpr auto           kHopDelay    = std::chrono::milliseconds{80};
+        constexpr auto           kWholeBudget = std::chrono::milliseconds{250};
+        constexpr int            kChainLength = 5;
+        auto                     ledger       = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &loop)
+                                         {
+                                             for (int index = 0; index < kChainLength; ++index)
+                                             {
+                                                 const std::string from = "/h" + std::to_string(index);
+                                                 const std::string to   = index + 1 == kChainLength ? "/landed" : "/h" + std::to_string(index + 1);
+                                                 router.get(from,
+                                                            [ledger, &loop, to](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                            {
+                                                                Core::Timer pause(loop);
+                                                                co_await pause.waitFor(kHopDelay);
+                                                                answerRedirect(ledger, request, response, 302, to);
+                                                                co_return;
+                                                            });
+                                             }
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const RedirectOutcome outcome = followOnce(urlFor(fixture, "/h0"), followingRequest("GET", 10), kWholeBudget);
+        EXPECT_EQ(outcome.status, 0) << "共享预算下这条链该在时限内跑不完，交回 200 就是每跳重新给了预算";
+        EXPECT_NE(outcome.reason.find("时限"), std::string::npos) << outcome.reason;
+        const auto hops = ledger->snapshot();
+        EXPECT_GE(hops.size(), 1U) << "至少要走完第一跳，才有「预算被跳数吃掉」这件事";
+        EXPECT_LE(hops.size(), static_cast<std::size_t>(kChainLength - 1)) << "走完全部跳数说明预算没被共享";
+    }
+
+    /**
+     * @brief 钉住：带池那一条出口也吃到同一份跟随逻辑（不是只接了静态 send()）
+     */
+    TEST(HttpClientRedirects, PooledClientFollowsToo)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/r302",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerRedirect(ledger, request, response, 302, "/landed");
+                                                            co_return;
+                                                        });
+                                             router.get("/landed",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        Core::EventLoop loop;
+        int             observedStatus = 0;
+        std::string     observedBody;
+        auto            task = [&loop, &observedStatus, &observedBody, url = urlFor(fixture, "/r302")](HttpClient &client) -> Core::Task<void>
+        {
+            const std::unique_ptr<HttpClientResponse> response = co_await client.send(url, followingRequest("GET"));
+            if (response != nullptr)
+            {
+                observedStatus = response->statusCode;
+                observedBody   = response->body;
+            }
+            loop.stop();
+            co_return;
+        };
+        HttpClient client(loop);
+        // 协程帧按值收引用参数会被销毁的闭包顶在手里（这条形状此前咬过一次），所以把客户端活到循环结束
+        auto work = task(client);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+        EXPECT_EQ(observedStatus, 200);
+        EXPECT_EQ(observedBody, "landed");
+        EXPECT_EQ(ledger->snapshot().size(), 2U);
     }
 } // namespace AsynGyanis::Net
