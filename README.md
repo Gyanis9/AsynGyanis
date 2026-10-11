@@ -884,6 +884,11 @@ GCC/Clang 侧是 `-fstack-protector-strong`（每个非 sanitizer 档都带）+ 
 而是排队延迟（64 条并发连接压在 4 个工作线程上，Python 客户端自身也是瓶颈之一），所以它适合看前后
 变化，不适合当单次请求延迟的绝对值。
 
+短连接 churn 一路更是**发压端封顶**：客户端是 8 条阻塞式 Python 线程、每条连接只发一条请求就关，
+Windows 与 Linux 两份基线里同一格差出一倍多（容器侧反而更快），p95/p99 又受本机临时端口与
+2MSL/TIME_WAIT 支配——它只够确认 accept/close 通路没有成片失败，不能从吞吐或分位推断这条路径
+有没有退化（两份基线的 note 同此口径）。
+
 ```bat
 cmake --build build/release --target ReferenceServer
 set ASYN_SOAK_BUILD=release && benchmarks\run-soak.bat
