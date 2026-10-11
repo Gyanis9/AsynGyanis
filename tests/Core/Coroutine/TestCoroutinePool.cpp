@@ -534,8 +534,12 @@ namespace AsynGyanis::Core
         const bool      isFrameFromPool = pool.owns(task.handle().address());
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+        // 指纹打在分支里：这条判据与实现共用同一个编译期条件，所以它钉得住「实现有没有听宏」，
+        // 钉不住「某一台编译器上这宏到底有没有定义」——后者只能靠这行读数在两边各看一眼
+        SCOPED_TRACE("检测构建：__SANITIZE_ADDRESS__ 已定义，帧走全局堆");
         EXPECT_FALSE(isFrameFromPool) << "检测构建里协程帧仍从帧池取内存：ASan 看不见 slab 内的帧被回收后再恢复这类 use-after-free";
 #else
+        SCOPED_TRACE("常规构建：宏未定义，帧走 CoroutinePool");
         EXPECT_TRUE(isFrameFromPool) << "常规构建里协程帧没走帧池，帧内存的复用被悄悄关掉了";
 #endif
     }
