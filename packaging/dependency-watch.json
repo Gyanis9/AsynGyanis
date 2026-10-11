@@ -4,7 +4,7 @@
   "dependencies": {
     "openssl": {
       "upstream": "OpenSSL",
-      "pinnedVersion": "3.6.2",
+      "pinnedVersion": "3.6.5",
       "advisories": ["https://openssl-library.org/news/secadv/"],
       "备注": "TLS 与 QUIC 的密钥编排都走它；本仓库另有一层自研 QUIC 栈，OpenSSL 出问题时要同时核对我们的扩展名/回调用法。"
     },
