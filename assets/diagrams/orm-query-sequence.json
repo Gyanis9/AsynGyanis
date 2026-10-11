@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "afa03f7f1092f914e6d11c585ac77995d67914fe"
+      "revision": "a21e7de39a2c991cd3bfff6c2f82878fe61bf571"
     },
     "views": [
       {
@@ -73,8 +73,8 @@
       "label": "ConnectionPool",
       "sublabel": "空闲栈 LIFO",
       "sources": [
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 152, "label": "acquire 三段" },
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 179, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 158, "label": "acquire 三段" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 185, "label": "acquireTimeout" },
         { "path": "src/Database/Pool/PoolConfig.h", "line": 43, "end_line": 45, "label": "32 / 5000ms / 五个 0" }
       ]
     },
@@ -85,7 +85,7 @@
       "sublabel": "RAII 租约",
       "sources": [
         { "path": "src/Database/Queryable/Queryable.h", "line": 964, "label": "事务里持语句锁" },
-        { "path": "src/Database/Pool/PooledConnection.cpp", "line": 67, "label": "doReturnToPool" }
+        { "path": "src/Database/Pool/PooledConnection.cpp", "line": 94, "label": "doReturnToPool" }
       ]
     },
     {
