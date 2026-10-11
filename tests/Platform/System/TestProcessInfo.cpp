@@ -7,8 +7,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
+#include <format>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <utility>
@@ -194,5 +198,75 @@ namespace AsynGyanis::Platform
 
         held.clear();
         held.shrink_to_fit();
+    }
+
+    /**
+     * @brief 钉住：CPU 时间是读数成真的计数器——忙等推得动它，且永不回落
+     * @details 只钉方向不钉增量口径：忙等 1.1 秒后整秒数至少涨 1（Windows 的时钟粒度约 15.6ms，
+     *          给足余量），恒返回 0 或缺省值的实现在这里会红。
+     */
+    TEST(ProcessInfo, CpuSecondsIsAMonotonicCounterThatTracksBurnedCpu)
+    {
+        const std::uint64_t beforeSeconds = ProcessInfo::cpuSeconds();
+
+        // 纯自旋烧本进程的 CPU：睡过去是拿不到 CPU 时间的，这里要的是真烧
+        const auto    spinUntil   = std::chrono::steady_clock::now() + std::chrono::milliseconds(1100);
+        std::uint64_t accumulator = 0;
+        while (std::chrono::steady_clock::now() < spinUntil)
+        {
+            accumulator += 1;
+        }
+        ASSERT_GT(accumulator, 0U) << "循环被优化掉了：忙等根本不存在，这条用例没测到东西";
+
+        const std::uint64_t afterSeconds = ProcessInfo::cpuSeconds();
+        EXPECT_GE(afterSeconds, beforeSeconds) << "CPU 时间是计数器，不许回落";
+        EXPECT_GE(afterSeconds, beforeSeconds + 1) << "烧了 1.1 秒 CPU，整数秒却没动：读数没接上，或恒定为一个值";
+    }
+
+    /**
+     * @brief 钉住：打开的句柄数跟着真实开合走——本进程的下限不为零，开一批文件后涨、关掉后落
+     */
+    TEST(ProcessInfo, OpenHandleCountSeesOpenedAndClosedFiles)
+    {
+        const std::uint64_t baselineCount = ProcessInfo::openHandleCount();
+        ASSERT_GT(baselineCount, 0U) << "正在跑的进程至少打着自己的标准流：这句读数是零说明没接上";
+
+        const std::filesystem::path        scratchDirectory = std::filesystem::temp_directory_path();
+        std::vector<std::ofstream>         openedStreams;
+        std::vector<std::filesystem::path> openedPaths;
+        for (std::size_t index = 0; index < 16U; ++index)
+        {
+            const std::filesystem::path path = scratchDirectory / std::format("asyn-procinfo-{}-{}.tmp", ProcessInfo::currentProcessId(), index);
+            std::ofstream               stream(path, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(stream.is_open()) << "临时文件开不了，这条用例的前提不成立：" << path.string();
+            stream << "x";
+            openedStreams.push_back(std::move(stream));
+            openedPaths.push_back(path);
+        }
+
+        const std::uint64_t holdingCount = ProcessInfo::openHandleCount();
+        EXPECT_GT(holdingCount, baselineCount) << "开了 16 个文件，句柄数没涨：读数不跟开合走";
+
+        openedStreams.clear();
+        for (const std::filesystem::path &path: openedPaths)
+        {
+            std::error_code removeError;
+            static_cast<void>(std::filesystem::remove(path, removeError));
+        }
+        const std::uint64_t closedCount = ProcessInfo::openHandleCount();
+        EXPECT_LT(closedCount, holdingCount) << "文件都关掉了，句柄数没落";
+    }
+
+    /**
+     * @brief 钉住：启动时刻是进程事实——两次读数相同、落在可信区间里
+     */
+    TEST(ProcessInfo, StartTimeIsStableAndInThePast)
+    {
+        const std::uint64_t firstRead  = ProcessInfo::startTimeSeconds();
+        const std::uint64_t secondRead = ProcessInfo::startTimeSeconds();
+
+        ASSERT_GT(firstRead, 1600000000ULL) << "启动时刻读不到，或落在 2020 年之前：这条读数没接上";
+        EXPECT_EQ(firstRead, secondRead) << "同一进程的启动时刻两次读数不同解";
+        EXPECT_LE(firstRead, static_cast<std::uint64_t>(std::time(nullptr))) << "启动时刻晚于现在：时钟换算坏了";
     }
 } // namespace AsynGyanis::Platform

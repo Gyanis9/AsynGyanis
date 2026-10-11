@@ -152,6 +152,15 @@ namespace AsynGyanis::Net
          */
         std::uint64_t residentMemoryBytes{0};
 
+        /// 取快照这一刻本进程累计消耗的 CPU 时间（整数秒；进程级，0 表示平台读不出）——计数器口径，配合 rate() 看趋势
+        std::uint64_t processCpuSeconds{0};
+
+        /// 取快照这一刻本进程打开的句柄/文件描述符数（进程级，0 表示平台读不出）——连接/文件泄漏的通用信号
+        std::uint64_t openHandleCount{0};
+
+        /// 本进程的启动时刻（Unix epoch 秒；进程级，0 表示平台读不出）——计数器回落时据它判断「进程重启过」
+        std::uint64_t processStartTimeSeconds{0};
+
         /**
          * @brief 取延迟直方图的样本总数
          * @return std::uint64_t 各档累计值之和；与 totalRequestCount 的差即「已收齐但响应未落账」的

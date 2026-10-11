@@ -18,6 +18,11 @@ namespace AsynGyanis::Net
         stats.blockingTaskRejectedCount = static_cast<std::uint64_t>(Core::AsyncExecutor::shared().saturatedRejectionCount());
         // 常驻内存是同一类「进程级、不住在采集端里」的读数：三条通道共用一份，才有「抓哪台都一样」
         stats.residentMemoryBytes = Platform::ProcessInfo::residentMemoryBytes();
+        // 同族的另外三件套（Prometheus 惯例的 process_* 三件）：CPU 计数器、打开的句柄数、启动时刻。
+        // 启动时刻读的是进程事实，取快照多次读数相同；另两条随进程状态走
+        stats.processCpuSeconds       = Platform::ProcessInfo::cpuSeconds();
+        stats.openHandleCount         = Platform::ProcessInfo::openHandleCount();
+        stats.processStartTimeSeconds = Platform::ProcessInfo::startTimeSeconds();
     }
 
     void applyAdmissionSnapshot(HttpServerStats &stats, const std::size_t maximumConnections, const std::size_t maximumConnectionsPerIp,

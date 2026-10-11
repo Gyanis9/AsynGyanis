@@ -74,5 +74,32 @@ namespace AsynGyanis::Platform
          *       因此它读的是**趋势**而不是「当前活跃分配了多少字节」
          */
         static std::uint64_t residentMemoryBytes() noexcept;
+
+        /**
+         * @brief 取当前进程累计消耗的 CPU 时间（用户态加内核态）
+         * @details 与常驻内存同属「泄漏与饱和」的最小读数：Prometheus 惯例里 process_cpu_seconds_total
+         *          是计数器，配合 rate() 看占用趋势。Windows 取 GetProcessTimes 的 user+kernel，
+         *          POSIX 取 getrusage(RUSAGE_SELF) 两个字段的和。
+         * @return std::uint64_t 累计 CPU 时间的整数秒；平台读不出时返回 0（按「不知道」处理）
+         * @note 只交出整数秒：计数器口径下 rate() 会把小数抹平，短命进程早段读到 0 属语义而非缺陷
+         */
+        static std::uint64_t cpuSeconds() noexcept;
+
+        /**
+         * @brief 取当前进程此刻打开的句柄/文件描述符数量
+         * @details 连接、文件、监听口泄漏的通用信号。Windows 取 GetProcessHandleCount，
+         *          POSIX 数 /proc/self/fd 的目录项（含列举本身占的那一个，噪声 ±1）。
+         * @return std::uint64_t 当前打开的句柄数；平台读不出时返回 0（按「不知道」处理）
+         */
+        static std::uint64_t openHandleCount() noexcept;
+
+        /**
+         * @brief 取当前进程的启动时刻（Unix epoch 秒）
+         * @details Prometheus 惯例里 process_start_time_seconds 用来识别「进程重启过」——计数器回落时
+         *          有它才能判断是新进程从零开始还是真的掉了。Windows 取 GetProcessTimes 的创建时间；
+         *          POSIX 由 /proc/self/stat 的 starttime 节拍数加 /proc/stat 的 btime 折算。
+         * @return std::uint64_t 启动时刻（epoch 秒）；平台读不出时返回 0（按「不知道」处理）
+         */
+        static std::uint64_t startTimeSeconds() noexcept;
     };
 } // namespace AsynGyanis::Platform

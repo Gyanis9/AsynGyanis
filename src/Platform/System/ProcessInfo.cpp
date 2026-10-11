@@ -4,6 +4,7 @@
 #include "Platform/System/TextEncoding.h"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdlib>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,7 @@
 // PROCESS_MEMORY_COUNTERS 与 K32GetProcessMemoryInfo 的声明都在这里（库不用另链：K32* 在 kernel32）
 #include <psapi.h>
 #else
+#include <sys/resource.h>
 #include <unistd.h>
 // environ 在 glibc 与 BSD 上都由 unistd.h 给出声明，这里再声明一次是为了不依赖各家的特性宏组合：
 // 少了它，整表枚举会在没开 _GNU_SOURCE 的构建里编不过
@@ -21,6 +23,20 @@ extern "C" char **environ;
 
 namespace AsynGyanis::Platform
 {
+#if ASYN_PLATFORM_WIN32
+    namespace
+    {
+        /**
+         * @brief FILETIME 的高低 32 位拼成 64 位计数
+         * @param value Windows 文件时间
+         * @return std::uint64_t 自 1601-01-01 起的 100 纳秒数
+         */
+        std::uint64_t fileTimeUnits(const FILETIME &value) noexcept
+        {
+            return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32U) | static_cast<std::uint64_t>(value.dwLowDateTime);
+        }
+    } // namespace
+#endif
     std::filesystem::path ProcessInfo::applicationDirectory()
     {
 #if ASYN_PLATFORM_WIN32
@@ -186,6 +202,145 @@ namespace AsynGyanis::Platform
             return 0;
         }
         return residentPages * static_cast<std::uint64_t>(pageSize);
+#endif
+    }
+
+    std::uint64_t ProcessInfo::cpuSeconds() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        if (::GetProcessTimes(::GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime) == 0)
+        {
+            return 0;
+        }
+        // 两枚计数各自是 100 纳秒，和之后再折成整秒；nanosecond 级的小数在计数器口径里没有意义
+        constexpr std::uint64_t kUnitsPerSecond = 10000000ULL;
+        return (fileTimeUnits(userTime) + fileTimeUnits(kernelTime)) / kUnitsPerSecond;
+#else
+        rusage usage{};
+        if (::getrusage(RUSAGE_SELF, &usage) != 0)
+        {
+            return 0;
+        }
+        const std::uint64_t wholeSeconds = static_cast<std::uint64_t>(usage.ru_utime.tv_sec) + static_cast<std::uint64_t>(usage.ru_stime.tv_sec);
+        const std::uint64_t microseconds = static_cast<std::uint64_t>(usage.ru_utime.tv_usec) + static_cast<std::uint64_t>(usage.ru_stime.tv_usec);
+        return wholeSeconds + microseconds / 1000000ULL;
+#endif
+    }
+
+    std::uint64_t ProcessInfo::openHandleCount() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        DWORD handleCount = 0;
+        // 伪句柄自带全部访问权，不必先 OpenProcess；查询失败按「不知道」交回 0
+        if (::GetProcessHandleCount(::GetCurrentProcess(), &handleCount) == 0)
+        {
+            return 0;
+        }
+        return static_cast<std::uint64_t>(handleCount);
+#else
+        // /proc/self/fd 每个目录项就是一枚打开的描述符；遍历失败（含中途出错）按「不知道」交回 0。
+        // 走 error_code 重载而不是抛出：本函数声明 noexcept，且 procfs 的目录语义本就有失败面
+        std::error_code                     enumerationError;
+        std::filesystem::directory_iterator iterator("/proc/self/fd", enumerationError);
+        if (enumerationError)
+        {
+            return 0;
+        }
+        std::uint64_t                             handleCount = 0;
+        const std::filesystem::directory_iterator end;
+        for (; iterator != end; iterator.increment(enumerationError))
+        {
+            ++handleCount;
+            if (enumerationError)
+            {
+                break;
+            }
+        }
+        return handleCount;
+#endif
+    }
+
+    std::uint64_t ProcessInfo::startTimeSeconds() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        if (::GetProcessTimes(::GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime) == 0)
+        {
+            return 0;
+        }
+        // FILETIME 是 1601-01-01 起的 100 纳秒；转到 Unix epoch 要扣掉 11644473600 秒的差值
+        constexpr std::uint64_t kUnitsPerSecond         = 10000000ULL;
+        constexpr std::uint64_t kUnixEpochFileTimeUnits = 11644473600ULL * kUnitsPerSecond;
+        const std::uint64_t     creationUnits           = fileTimeUnits(creationTime);
+        if (creationUnits < kUnixEpochFileTimeUnits)
+        {
+            return 0;
+        }
+        return creationUnits / kUnitsPerSecond - kUnixEpochFileTimeUnits / kUnitsPerSecond;
+#else
+        // /proc/self/stat 的第 22 列 starttime 是「自系统启动起的时钟节拍数」，配上 /proc/stat 的
+        // btime（启动时刻，epoch 秒）才是绝对时刻。comm（第 2 列）可能含空格与括号，先跨过最后一个 ')'
+        constexpr std::size_t                             kProcProbeLength = 4096;
+        const std::expected<std::string, std::error_code> statContents     = readFileContents("/proc/self/stat", 0, kProcProbeLength);
+        if (!statContents.has_value())
+        {
+            return 0;
+        }
+        const std::string_view statLine(*statContents);
+        const std::size_t      closeParenthesis = statLine.rfind(')');
+        if (closeParenthesis == std::string_view::npos || closeParenthesis + 2 >= statLine.size())
+        {
+            return 0;
+        }
+        // 跳过 ") "：comm 之后第一列是状态（第 3 列），starttime 是第 22 列，即余下部分的第 19 个下标
+        const std::string_view afterComm  = statLine.substr(closeParenthesis + 2);
+        std::uint64_t          startTicks = 0;
+        std::size_t            cursor     = 0;
+        for (std::size_t fieldIndex = 0; fieldIndex <= 19; ++fieldIndex)
+        {
+            while (cursor < afterComm.size() && afterComm[cursor] == ' ')
+            {
+                ++cursor;
+            }
+            const std::from_chars_result parsed = std::from_chars(afterComm.begin() + static_cast<std::ptrdiff_t>(cursor), afterComm.end(), startTicks);
+            if (parsed.ec != std::errc{})
+            {
+                return 0;
+            }
+            cursor = static_cast<std::size_t>(parsed.ptr - afterComm.begin());
+        }
+
+        const std::expected<std::string, std::error_code> bootContents = readFileContents("/proc/stat", 0, kProcProbeLength);
+        if (!bootContents.has_value())
+        {
+            return 0;
+        }
+        const std::size_t btimeOffset = bootContents->find("btime ");
+        if (btimeOffset == std::string::npos)
+        {
+            return 0;
+        }
+        std::uint64_t bootTimeSeconds = 0;
+        const auto bootParsed = std::from_chars(bootContents->data() + static_cast<std::ptrdiff_t>(btimeOffset) + 6, bootContents->data() + bootContents->size(), bootTimeSeconds);
+        if (bootParsed.ec != std::errc{})
+        {
+            return 0;
+        }
+
+        // 节拍按 HZ 折算成秒：USER_HZ 在 Linux 上恒为 100，sysconf 读不到时按它兜底而不是放弃读数
+        long ticksPerSecond = ::sysconf(_SC_CLK_TCK);
+        if (ticksPerSecond <= 0)
+        {
+            ticksPerSecond = 100;
+        }
+        return bootTimeSeconds + startTicks / static_cast<std::uint64_t>(ticksPerSecond);
 #endif
     }
 } // namespace AsynGyanis::Platform

@@ -197,6 +197,21 @@ namespace AsynGyanis::Net
                            "# TYPE {} gauge\n{} {}\n",
                            residentMemoryName, residentMemoryName, residentMemoryName, stats.residentMemoryBytes);
 
+        // process_* 三件套：CPU 计数器、打开的句柄数、启动时刻。都是进程级，抓哪台监听器都是同一份；
+        // 0 一律表示「平台读不出」，与常驻内存同口径。抓取端拿它们对 CPU 饱和、句柄泄漏与进程重启设告警
+        const std::string processCpuName = makeMetricName(metricNamePrefix, "process_cpu_seconds_total");
+        out += std::format("# HELP {} 本进程累计消耗的 CPU 时间（用户态加内核态，整数秒；进程级；0 表示平台读不出）\n"
+                           "# TYPE {} counter\n{} {}\n",
+                           processCpuName, processCpuName, processCpuName, stats.processCpuSeconds);
+        const std::string processOpenFdsName = makeMetricName(metricNamePrefix, "process_open_fds");
+        out += std::format("# HELP {} 本进程此刻打开的句柄/文件描述符数（进程级；0 表示平台读不出）\n"
+                           "# TYPE {} gauge\n{} {}\n",
+                           processOpenFdsName, processOpenFdsName, processOpenFdsName, stats.openHandleCount);
+        const std::string processStartTimeName = makeMetricName(metricNamePrefix, "process_start_time_seconds");
+        out += std::format("# HELP {} 本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启\n"
+                           "# TYPE {} gauge\n{} {}\n",
+                           processStartTimeName, processStartTimeName, processStartTimeName, stats.processStartTimeSeconds);
+
         // 进程级登记的读数：名字是登记时给的**完整名字**，不套本监听器的业务前缀——
         // 这些数不属于某台 HTTP 服务器，抓哪台监听器都该是同一份（口径与上面那几条进程级读数一致）
         for (const Core::ProcessMetricSample &sample: Core::ProcessMetricsRegistry::samples())
