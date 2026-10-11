@@ -286,6 +286,77 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 许可集合不以 0 起始时（容器 cpuset 的真实形状），绑核要分到集合内的第 i 枚编号
+     * @details `--cpuset-cpus=1,2` 与 K8s static policy 交出来的集合不含 0 号核。旧写法把线程下标
+     *          当绝对编号交出去，第 0 条线程会被许可校验当场拒掉、只剩一行 WARN，而第 1 条恰好编号
+     *          在集合内会绑上——两条线程的掩码因此一个是整个集合、一个是一枚核，正是本用例抓的形状。
+     * @note 本用例只在「集合确实不含 0 号核」时才有区分度，所以它自带环境门控：默认集合含 0 的机器
+     *       （含 CI runner）上按 SKIP 记账而不是假绿。要让它真跑，用
+     *       `taskset -c 1,2 ./TestCore --gtest_filter=ThreadPool.PinnedThreadsLandInsideCpusetThatDoesNotStartAtZero`
+     */
+    TEST(ThreadPool, PinnedThreadsLandInsideCpusetThatDoesNotStartAtZero)
+    {
+        const std::uint64_t allowedMask = Platform::CpuAffinity::currentThreadCoreMask();
+        if (allowedMask == 0U)
+        {
+            GTEST_SKIP() << "本机读不到进程许可的 CPU 集合，绑核无从验证";
+        }
+        if ((allowedMask & 1U) != 0U)
+        {
+            GTEST_SKIP() << "本进程许可集合含 0 号核，构造不出「编号 0 被排除」的形状（请用 taskset -c 1,2 跑这条用例）";
+        }
+        if ((allowedMask & (allowedMask - 1U)) == 0U)
+        {
+            GTEST_SKIP() << "许可集合只放行一枚核，两条线程必然落在同一枚上，无从区分「第 0 枚」与「第 1 枚」";
+        }
+
+        // 环境是否允许写亲和性：按集合内的第一枚核试，而不是照搬 canPinAnyThread()——那条探针绑的是
+        // 0 号核，而本用例的集合恰恰不含 0 号核，用它会把「允许绑核」误判成「沙箱不允许」
+        std::atomic<bool> isPinningAllowed{false};
+        std::size_t       lowestAllowedCore = 0;
+        for (; lowestAllowedCore < 64; ++lowestAllowedCore)
+        {
+            if ((allowedMask & (std::uint64_t{1} << lowestAllowedCore)) != 0U)
+            {
+                break;
+            }
+        }
+        std::thread probe(
+                [&isPinningAllowed, lowestAllowedCore]
+                {
+                    const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(lowestAllowedCore);
+                    const auto maskAfter = Platform::CpuAffinity::currentThreadCoreMask();
+                    isPinningAllowed.store(pinResult.has_value() && maskAfter == (std::uint64_t{1} << lowestAllowedCore), std::memory_order_release);
+                });
+        probe.join();
+        if (!isPinningAllowed.load(std::memory_order_acquire))
+        {
+            GTEST_SKIP() << "本环境不允许把线程绑到许可集合内的核上，跳过绑核断言";
+        }
+
+        ThreadPool pool(2);
+        pool.setThreadsPinnedToCores(true);
+        pool.start();
+
+        std::atomic<std::uint64_t> firstMask{0};
+        std::atomic<std::uint64_t> secondMask{0};
+        const bool isFirstRead  = runOnPoolThread(pool, 0, [&firstMask] { firstMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed); });
+        const bool isSecondRead = runOnPoolThread(pool, 1, [&secondMask] { secondMask.store(Platform::CpuAffinity::currentThreadCoreMask(), std::memory_order_relaxed); });
+        pool.stop();
+
+        ASSERT_TRUE(isFirstRead && isSecondRead) << "投递到工作线程的读数任务没跑完";
+        const std::uint64_t first  = firstMask.load();
+        const std::uint64_t second = secondMask.load();
+        for (const std::uint64_t workerMask: {first, second})
+        {
+            EXPECT_NE(workerMask, 0U);
+            EXPECT_EQ(workerMask & (workerMask - 1), 0U) << "绑核后掩码应当只剩一枚核，实际 " << std::hex << workerMask << "（许可集合 " << allowedMask << "）";
+            EXPECT_NE(workerMask & allowedMask, 0U) << "绑到的核必须落在许可集合内，实际 " << std::hex << workerMask;
+        }
+        EXPECT_NE(first, second) << "两条线程该分到许可集合里不同的两枚核（第 0 枚与第 1 枚），实际同为 " << std::hex << first;
+    }
+
+    /**
      * @brief 对照：开关不动就谁都不绑，多核机器上工作线程仍保持可迁移
      * @details 绑核是可选行为，默认关闭必须是真的关闭——否则「线程多于核数时互相挤在同一枚核」
      *          这类问题就无从归因了。单核机器上掩码天然只剩一位，那条对照没有区分度，跳过。

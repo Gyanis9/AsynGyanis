@@ -5,9 +5,45 @@
 #include "Platform/System/CpuAffinity.h"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 把「线程池下标」折成「本线程被许可的核集合里第 slotInSet 枚核的编号」
+         * @details 许可集合可以不以 0 起始：`--cpuset-cpus=4-7` 与 K8s static policy 交出来的就是
+         *          {4,5,6,7}。按下标当编号绑，每条线程都会顶到集合外被当场拒掉，结果是一条都没绑上、
+         *          只剩几行 WARN——声称的尾延迟收益静默归零。
+         * @param allowedMask 本线程的许可核掩码（`currentThreadCoreMask()` 的读数）
+         * @param slot 线程下标
+         * @return std::size_t 掩码里第 slot 枚置位核的编号；掩码数不出第 slot 枚时退回 slot 本身，
+         *         那台机器的编号语义仍由 `pinCurrentThreadToCore()` 复核（掩码只覆盖 0-63 这一段）
+         */
+        std::size_t coreNumberForSlot(const std::uint64_t allowedMask, const std::size_t slot)
+        {
+            if (allowedMask == 0U)
+            {
+                return slot;
+            }
+            std::size_t seenCoreCount = 0;
+            for (std::size_t candidate = 0; candidate < 64; ++candidate)
+            {
+                if ((allowedMask & (std::uint64_t{1} << candidate)) == 0U)
+                {
+                    continue;
+                }
+                if (seenCoreCount == slot)
+                {
+                    return candidate;
+                }
+                ++seenCoreCount;
+            }
+            return slot;
+        }
+    } // namespace
+
     ThreadPool::ThreadPool(const size_t threadCount) :
         // 自动档按「本进程实际能跑到多少并行」定容，而不是宿主核数：容器里每条循环都自带一份
         // epoll 与定时器描述符，按宿主核数起会把内存、文件描述符和上下文切换一起拉满
@@ -76,7 +112,9 @@ namespace AsynGyanis::Core
                         // 绑核要在各自线程体内做：亲和性是线程级属性，在启动线程里调只会绑到调用方
                         if (m_pinsThreadsToCores && i < availableCoreCount)
                         {
-                            if (const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(i); !pinResult)
+                            // 绑的是许可集合里第 i 枚核的编号，不是编号等于 i 的那枚（见 coreNumberForSlot 的说明）
+                            const std::size_t targetCoreIndex = coreNumberForSlot(Platform::CpuAffinity::currentThreadCoreMask(), i);
+                            if (const auto pinResult = Platform::CpuAffinity::pinCurrentThreadToCore(targetCoreIndex); !pinResult)
                             {
                                 LOG_WARN_FMT("ThreadPool：第 {} 个工作线程绑核失败，该线程保持可迁移：{}", i, pinResult.error());
                             }
