@@ -3,7 +3,7 @@
 // 覆盖场景：
 // - 标识符引用与内部引号转义
 // - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
-// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名）
+// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名 / 弱形式判定边界：中文与空格名与纯数字与非法字节都落引用桶）
 // - 空字段名与空表名在翻译阶段就被拒绝（残缺 SQL 不该留给服务端去报）
 // - FROM 与表别名
 // - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
@@ -205,6 +205,47 @@ TEST(SqliteDialectSelect, QualifiedNameWithEmptySegmentIsPassedThrough)
     // 空段不是合法标识符：把它引用成 "" 会造出一个无名列，与「这压根不是限定名」是两回事。
     // 整段按表达式交给数据库报错，比在这一层替它猜一个意思更可靠
     EXPECT_EQ(statement.sql, "SELECT users., .id, a..b FROM \"users\"");
+}
+
+/**
+ * @brief 钉住标识符判定的弱形式边界：高位字节、空格名与纯数字文本都落「引用桶」
+ * @details 判定是允许表（字母/数字/下划线/≥0x80/引用符/空格）而不是「真标识符」的证明，
+ *          被它放行的一切都按**引用**处理——引用是安全桶：最坏生成一个带引号的怪名字、
+ *          由服务端拒绝，而表达式桶会**原样拼进 SQL**。三个边界：
+ *          ① 中文列名（≥0x80 连续区）逐段引用；② 含空格列名整体引用（"full name" 这类
+ *          列名真实存在，且空格不会改变表达式结构）；③ 纯数字文本也引用——本层不替
+ *          调用方猜「序号还是列名」，序号请走编译期常量而不是运行时字符串 API
+ */
+TEST(SqliteDialectSelect, WeakFormIdentifierBucketQuotesHighBytesSpacesAndDigits)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"名字", "full name", "123", "用户.名"};
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT \"名字\", \"full name\", \"123\", \"用户\".\"名\" FROM \"users\"");
+}
+
+/**
+ * @brief 钉住高位非法字节的去向：落引用桶（被引号包住），**不是**表达式桶
+ * @details 0xFF 不成 UTF-8，但它 ≥0x80，仍进引用桶——这正是弱形式的兜底方向：原文若
+ *          落进表达式桶就会原样拼进 SQL；落引用桶最坏只是服务端拒绝一个怪名字。
+ *          行为要改必须先在这一条上红，再讨论新方向是否更安全
+ */
+TEST(SqliteDialectSelect, MalformedUtf8BytesAreQuotedNotPassedThrough)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {std::string("a\xFF")};
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, std::string("SELECT \"a\xFF\" FROM \"users\""));
 }
 
 /**
