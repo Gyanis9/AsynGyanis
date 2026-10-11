@@ -5,9 +5,10 @@
 # 猜错方向的后果是「绿着漏掉一条真漏洞」，比不跑更糟。它钉的是三件可机器判定的事：
 #   1) 每条依赖都在台账里登记了公告入口（新增依赖忘了登记 → 红）；
 #   2) 台账里的 pinnedVersion 与 conandata.yml 一致（升了版本没复核 → 红）；
-#   3) 台账里没有已消失的依赖（改名/移除没同步 → 红）。
+#   3) 台账里没有已消失的依赖（改名/移除没同步 → 红）；
+#   4) README「外部依赖」表的版本与 conandata.yml 同解（那是第三份拷贝，此前没有机检看着）。
 # 加 --fetch 时另做一次「公告入口链接还活着」的连通性核对；网络不通只提示，不判红——
-# 上游页面挂掉不是本仓库的缺陷，但也不能因此把前三条一起跳过。
+# 上游页面挂掉不是本仓库的缺陷，但也不能因此把前几条一起跳过。
 
 import argparse
 import json
@@ -20,6 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONAN_DATA = REPO_ROOT / "conandata.yml"
 WATCH_LIST = REPO_ROOT / "packaging" / "dependency-watch.json"
+README = REPO_ROOT / "README.md"
 
 
 def read_requirements() -> dict:
@@ -52,6 +54,41 @@ def read_watch_list() -> dict:
     if not isinstance(dependencies, dict) or not dependencies:
         raise SystemExit("台账里没有 dependencies 段，或它是空的")
     return dependencies
+
+
+def read_readme_table_versions() -> set:
+    """README「外部依赖」表的版本列 → 版本号集合（一格可带多个版本，用 / 分隔）。"""
+    if not README.exists():
+        raise SystemExit("缺少 README.md")
+    versions = set()
+    insideTable = False
+    for line in README.read_text(encoding="utf-8").splitlines():
+        if not insideTable:
+            if line.strip() == "| 库 | 版本 | 用途 |":
+                insideTable = True
+            continue
+        # 表格在遇到第一行非表格行时结束；只取版本列（第一格是库名、第二格是版本）
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        versions.update(re.findall(r"\d+\.\d+(?:\.\d+)*", cells[1]))
+    if not versions:
+        raise SystemExit("README 里没解析出依赖版本：表头或列序变了，请同步改这个脚本")
+    return versions
+
+
+def check_readme_versions(requirements: dict, readmeVersions: set) -> list:
+    """README「外部依赖」表与 conandata.yml 的版本同解（升版漏跟这张表是最常出的一格）。"""
+    problems = []
+    expectedVersions = set(requirements.values())
+    for name, version in sorted(requirements.items()):
+        if version not in readmeVersions:
+            problems.append(f"README「外部依赖」表里找不到 {name} 的版本 {version}（升版时这张表最容易漏）")
+    for version in sorted(readmeVersions - expectedVersions):
+        problems.append(f"README「外部依赖」表写着 {version}，conandata.yml 里没有任何依赖钉这个版本（表或清单有一边是旧的）")
+    return problems
 
 
 def check_offline(requirements: dict, dependencies: dict) -> list:
@@ -97,14 +134,15 @@ def main() -> int:
     requirements = read_requirements()
     dependencies = read_watch_list()
     problems = check_offline(requirements, dependencies)
+    problems += check_readme_versions(requirements, read_readme_table_versions())
 
     for problem in problems:
         print(f"错误：{problem}", file=sys.stderr)
     if problems:
-        print(f"共 {len(problems)} 项不一致；台账与清单必须同解，别只改一边", file=sys.stderr)
+        print(f"共 {len(problems)} 项不一致；台账、清单与 README 依赖表必须同解，别只改一边", file=sys.stderr)
         return 1
 
-    print(f"台账与清单同解：{len(requirements)} 条依赖，每条都有 https 公告入口")
+    print(f"台账、清单与 README 依赖表同解：{len(requirements)} 条依赖，每条都有 https 公告入口")
     if arguments.fetch:
         notices = check_links(dependencies, arguments.timeout)
         if notices:

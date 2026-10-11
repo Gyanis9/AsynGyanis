@@ -757,7 +757,7 @@ AsynGyanis/
 |----|------|------|
 | [nlohmann_json](https://github.com/nlohmann/json) | 3.12.0 | JSON 值模型与解析/序列化（Base 公开接口） |
 | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | 0.9.0 | YAML 解析（配置加载） |
-| [OpenSSL](https://www.openssl.org/) | 3.6.2 | TLS/HTTPS，兼作 QUIC 的加密胶水 |
+| [OpenSSL](https://www.openssl.org/) | 3.6.5 | TLS/HTTPS，兼作 QUIC 的加密胶水 |
 | [zlib](https://zlib.net/) / [zstd](https://facebook.github.io/zstd/) / [brotli](https://github.com/google/brotli) | 1.3.1 / 1.5.7 / 1.1.0 | 响应正文与 WebSocket 压缩 |
 | [mimalloc](https://microsoft.github.io/mimalloc/) | 3.5.1 | 可选全局分配器（`ASYN_WITH_MIMALLOC`） |
 | [GoogleTest](https://github.com/google/googletest) | 1.17.0 | 单元测试 |
