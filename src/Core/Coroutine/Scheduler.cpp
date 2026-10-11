@@ -185,11 +185,14 @@ namespace AsynGyanis::Core
             runGuarded([handle] { handle.resume(); });
         }
 
-        // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；每批不超过
+        // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；累计取件数不超过
         // kMaximumRemoteItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
         // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
         std::vector<std::coroutine_handle<>> batch;
         std::deque<std::function<void()>>    callableBatch;
+        // 本趟累计取走的投递数：上限按「一趟」而不是「一批」算——生产者滴灌（每轮只投几件，
+        // 单批永远填不满）时，只看本批是否取满的判据永远不生效，一趟 runAll 会吃到生产者停手为止
+        std::size_t takenTotalCount = 0;
         while (true)
         {
             std::size_t takenHandleCount   = 0;
@@ -230,6 +233,8 @@ namespace AsynGyanis::Core
             if (batch.empty() && callableBatch.empty())
                 break;
 
+            takenTotalCount += takenHandleCount + takenCallableCount;
+
             // 单个回调/协程抛出不能把整批剩下的丢掉：全部跑完，抛出的那几条就地收下并计数。
             // 直接让异常穿透循环的话，未执行的投递会被静默销毁、那些协程帧永远不会被恢复
             // （调用方按「投了就一定会跑」写代码）。
@@ -266,8 +271,8 @@ namespace AsynGyanis::Core
                 runGuarded([handle] { handle.resume(); });
             }
 
-            // 这一批已做满上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
-            if (takenHandleCount + takenCallableCount >= kMaximumRemoteItemsPerPass)
+            // 本趟累计取件数已到上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
+            if (takenTotalCount >= kMaximumRemoteItemsPerPass)
             {
                 break;
             }

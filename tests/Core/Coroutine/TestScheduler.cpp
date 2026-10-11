@@ -20,6 +20,7 @@
 #include <chrono>
 #include <coroutine>
 #include <cstdio>
+#include <functional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -312,6 +313,44 @@ namespace AsynGyanis::Core
             scheduler.runAll();
         }
         EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把投递弄丢了或没有取完";
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    /**
+     * @brief 滴灌式投递下「一趟 runAll() 的上限」同样成立：上界按本趟累计算，而不是按单批算
+     * @details 上一条用例覆盖的是「先攒满再跑」的 burst 形状——那种形状每批都能取满上限，两种判法
+     *          等效。滴灌（每轮只投 1 件）时单批永远填不满：只有按「本趟累计」判才拦得住，否则
+     *          一趟 runAll 会跑到投递方停手为止，同循环的 IO 事件被饿死。本用例让每条被执行的回调
+     *          再投下一条，投满 kPostCount 条自然停手，用例不会无限跑。
+     */
+    TEST(Scheduler, SingleRunAllPassIsBoundedUnderDripFeeding)
+    {
+        Scheduler        scheduler;
+        std::atomic<int> executed{0};
+        constexpr int    kPostCount = static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass) + 44;
+
+        std::function<void()> drip;
+        drip = [&scheduler, &executed, &drip]()
+        {
+            if (executed.fetch_add(1, std::memory_order_relaxed) + 1 < kPostCount)
+            {
+                scheduler.postRemote(drip);
+            }
+        };
+        scheduler.postRemote(drip);
+
+        scheduler.runAll();
+
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass))
+                << "滴灌投递下一趟 runAll() 吃掉了超过上限的条数：只按单批判的判据在单批填不满时永不生效，调用方拿不回控制权";
+        EXPECT_TRUE(scheduler.hasWork()) << "剩下的投递没被算成待办：循环会带着积压睡在 epoll 上";
+
+        // 分趟取用必须最终把所有投递做完：上界不能变成丢任务或取不完
+        for (int pass = 0; pass < kPostCount && scheduler.hasWork(); ++pass)
+        {
+            scheduler.runAll();
+        }
+        EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把滴灌投递弄丢了或没有取完";
         EXPECT_FALSE(scheduler.hasWork());
     }
 
