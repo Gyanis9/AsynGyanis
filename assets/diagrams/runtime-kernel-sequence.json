@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "47f68d55aabe13b0c35323c0f686acc6a634306b"
+      "revision": "ec45340e31ca567bef80a8c69a866c3416a4fd5f"
     },
     "views": [
       {
@@ -92,7 +92,7 @@
       "label": "Scheduler",
       "sublabel": "本地 + 全局队列",
       "sources": [
-        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 163, "label": "先本地" },
+        { "path": "src/Core/Coroutine/Scheduler.cpp", "line": 190, "label": "先本地" },
         { "path": "src/Core/Coroutine/Scheduler.h", "line": 67, "label": "全局按批 ≤256" },
         { "path": "src/Core/Coroutine/Scheduler.h", "line": 31, "end_line": 35, "label": "无工作窃取" }
       ]
