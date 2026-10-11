@@ -13,9 +13,9 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
-## [Unreleased]
+## [3.0.0] - 2026-10-11
 
-自 2.6.0 起的累计变化（新增 23、变更 4、修复 7）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899），TCP 保活接进接受连接的调参（半开会话从此有内核侧的兜底），请求带上「这条连接走没走 TLS」这一承载层事实，按这份事实发 HSTS 的安全响应头中间件，把流式正文一段段写进临时文件的落盘器（大上传不再按连接吃内存），一道按路径名单挂的 Basic 认证闸（明文连接默认不收凭据），静态资源直接发预压缩副本（构建时压好的那份从此不必按连接重压），再加默认打开的部署形态加固位与核它的门禁，事务里可以单独回退的一段（回退它不结束事务），大结果集逐行取的入口（行留在服务端，读完之前那条连接被它占住），以及服务管理器收得到的那句「就绪了」与「我在收尾」（`$NOTIFY_SOCKET` 上的数据报），再加一枚 SIGHUP 换一次配置重读（`RELOADING=1` 与 `READY=1` 成对交回监督者），一条由事件循环自己喂的看门狗节拍（`$WATCHDOG_USEC` 折半、凑齐一轮才发），以及把多 worker 形态的那一条就绪改由 master 统一报（worker 不再各报各的），再往外是出站 WebSocket：帧的掩码两个方向都判得对、要约发得出去、101 核得住，并且有一条会话语义（`WebSocketClient`）把这几块接到通路上；同一批里还有出站的两道闸（通用 Bearer 令牌认证，挑战按 RFC 6750 分两种形状；默认不跟、开了就把跨站凭据摘掉的重定向跟随），再往里是数据库那一笔的整笔时限（到点后语句与提交都被拒，而回滚与析构照常收尾）。前四件都留了对外可读的出口（批量收发是 `/metrics` 上的条数，持久拥塞重启、ECN 处置与路径 MTU 探测是每条连接的公开 accessor），不是只在内部记账。
+自 2.6.0 起的累计变化（新增 23、变更 3、修复 7、破坏性变更 1，四个数按本文件 `### 新增/变更/修复/破坏性变更` 四段的顶层条目现数得出）：UDP 侧一次就绪收完一批数据报、一轮 flush 发完一批数据报（Linux 走 `recvmmsg` / `sendmmsg`，Windows 没有批量入口就逐条退化，两侧交付语义同形），QUIC 被网络判死之后拥塞窗口按 RFC 9002 §7.6.2 落到最小窗重新慢启动，ECN（RFC 9002 §7.1 与 RFC 9000 §13.4.2）从 IP 头里那两位一路接到拥塞反应与 ACK 计数，路径 MTU 的主动探测（RFC 9000 §14.3/§14.4 与 RFC 8899），TCP 保活接进接受连接的调参（半开会话从此有内核侧的兜底），请求带上「这条连接走没走 TLS」这一承载层事实，按这份事实发 HSTS 的安全响应头中间件，把流式正文一段段写进临时文件的落盘器（大上传不再按连接吃内存），一道按路径名单挂的 Basic 认证闸（明文连接默认不收凭据），静态资源直接发预压缩副本（构建时压好的那份从此不必按连接重压），再加默认打开的部署形态加固位与核它的门禁，事务里可以单独回退的一段（回退它不结束事务），大结果集逐行取的入口（行留在服务端，读完之前那条连接被它占住），以及服务管理器收得到的那句「就绪了」与「我在收尾」（`$NOTIFY_SOCKET` 上的数据报），再加一枚 SIGHUP 换一次配置重读（`RELOADING=1` 与 `READY=1` 成对交回监督者），一条由事件循环自己喂的看门狗节拍（`$WATCHDOG_USEC` 折半、凑齐一轮才发），以及把多 worker 形态的那一条就绪改由 master 统一报（worker 不再各报各的），再往外是出站 WebSocket：帧的掩码两个方向都判得对、要约发得出去、101 核得住，并且有一条会话语义（`WebSocketClient`）把这几块接到通路上；同一批里还有出站的两道闸（通用 Bearer 令牌认证，挑战按 RFC 6750 分两种形状；默认不跟、开了就把跨站凭据摘掉的重定向跟随），再往里是数据库那一笔的整笔时限（到点后语句与提交都被拒，而回滚与析构照常收尾）。前四件都留了对外可读的出口（批量收发是 `/metrics` 上的条数，持久拥塞重启、ECN 处置与路径 MTU 探测是每条连接的公开 accessor），不是只在内部记账。**含一处 QUIC 出站口的签名变更**（发送回调多带一个 ECN 码点、取报文换成结构体），迁移指引见本段最后的《破坏性变更》。
 
 ### 新增
 
@@ -378,14 +378,6 @@
 - **`QuicConnection` 的出站口可以给一批**：`Configuration` 新增可选的 `sendDatagramBatch`，设置后一轮攒出的
   报文按窗交出（窗上限是批次的 8 条）；`sendDatagram` 与它给一个即可，都不给才报「配置不完整」，告警点名的
   是这两条口。没设置的调用方（出站客户端、探针）照旧逐条。
-- **`QuicConnection::DatagramSender` 与 `QuicConnectionCore::takeOutboundDatagram()` 的签名变了**（破坏性）：
-  回调多一个 `std::uint8_t ecnCodepoint` 实参，取报文的返回从 `std::optional<std::string>` 换成
-  `std::optional<QuicOutboundDatagram>`（新公开头 `Net/Quic/QuicOutboundDatagram.h`，字段 `.bytes` /
-  `.ecnCodepoint`）。迁移：自建发送回调的把这一格转交 `Core::AsyncUdpSocket::asyncSendTo` 的第四个参数；
-  直接抽核心队列的读 `.bytes` 拿字节、读 `.ecnCodepoint` 拿标记。为什么必须同生共死：§13.4.2.1 的校验拿
-  「当时标了哪一格」去比对端报的计数，分两次取就会错开一格，判出的是假结论。旧写法在编译期即暴露——回调
-  别名签名不符、按 `std::string` 用的那几行也不再成立，不会留下静默少标的运行时形状。外壳的
-  `routeDatagram` / `handleDatagram` 与 `sendBatch` 的条目只多了带默认值的参数，旧写法照编。
 - **压缩算法从一份名单变成一张表**：`Detail::kCompressionPreference`（只有编码名）换成
   `Detail::kCompressionCodecs`（编码名 + 预压缩副本的后缀，表的顺序仍是偏好序）。在线协商与静态变体查找
   读的是同一张表，「本端认为 br 比 gz 好」这件事从此只有一处结论；加一种算法改一行，两处一起跟上——
@@ -453,10 +445,22 @@
 - **出站的 101 不再被当过渡应答丢掉**：`HttpResponseParser` 收 h1 应答时把整个 1xx 段按「最终响应之前的一声
   招呼」丢掉（RFC 9110 §15.2），对 100/103 这是对的，但 101 是**本次请求的收尾响应**——RFC 6455 §4.1 要客户端
   等它才继续发帧。按招呼丢掉就等于让一次升级永久挂起：握手在线上已经成了，本端却还在等同一个响应的「最终」那份。
-  现在按状态码分两档（`classifyOutboundInformational()`）：101 走「完成为最终响应」，顺带清掉分块与正文长度这些
-  不该挂在 101 上的状态；其余 1xx 仍丢弃并回到等最终响应。服务端入站侧本来就把 1xx 当独立消息处理（h2/h3 各有
-  一条判据），不受这一改动影响。同一轮把文档里那条不存在的「RFC 9112 §6.4」引文改成它的真出处
-  （RFC 9110 §15.2 讲客户端怎么对待 1xx，RFC 9112 只有 §6.3 讲 1xx 不带正文）。
+
+### 破坏性变更
+
+- **`QuicConnection::DatagramSender` 与 `QuicConnectionCore::takeOutboundDatagram()` 的签名变了**：
+  回调多一个 `std::uint8_t ecnCodepoint` 实参，取报文的返回从 `std::optional<std::string>` 换成
+  `std::optional<QuicOutboundDatagram>`（新公开头 `Net/Quic/QuicOutboundDatagram.h`，字段 `.bytes` /
+  `.ecnCodepoint`）。迁移：自建发送回调的把这一格转交 `Core::AsyncUdpSocket::asyncSendTo` 的第四个参数；
+  直接抽核心队列的读 `.bytes` 拿字节、读 `.ecnCodepoint` 拿标记。为什么必须同生共死：§13.4.2.1 的校验拿
+  「当时标了哪一格」去比对端报的计数，分两次取就会错开一格，判出的是假结论。旧写法在编译期即暴露——回调
+  别名签名不符、按 `std::string` 用的那几行也不再成立，不会留下静默少标的运行时形状。外壳的
+  `routeDatagram` / `handleDatagram` 与 `sendBatch` 的条目只多了带默认值的参数，旧写法照编。
+
+  `Detail::kCompressionCodecs`（编码名 + 预压缩副本的后缀，表的顺序仍是偏好序）。在线协商与静态变体查找
+  读的是同一张表，「本端认为 br 比 gz 好」这件事从此只有一处结论；加一种算法改一行，两处一起跟上——
+  两份各自写死的名单会出现「同一站点换个协议换个编码」那种分叉。`Detail` 是本层内部命名空间，
+  对外签名与依赖关系都没变。
 
 ## [2.6.0] - 2026-10-08
 
@@ -6163,7 +6167,9 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.6.0...v3.0.0
+[2.6.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.2.0...v2.3.0
