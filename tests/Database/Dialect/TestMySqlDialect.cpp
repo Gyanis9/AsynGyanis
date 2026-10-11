@@ -43,6 +43,7 @@ namespace
     using AsynGyanis::Database::MySqlDialect;
     using AsynGyanis::Database::SqlDialect;
     using AsynGyanis::Database::SqlStatement;
+    using AsynGyanis::Database::TransactionIsolationLevel;
     using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::JoinClause;
     using AsynGyanis::Database::Queryable::JoinType;
@@ -1131,6 +1132,24 @@ TEST(MySqlDialectWrite, TransactionStatements)
     EXPECT_EQ(dialect.releaseSavepointStatement("keep"), "RELEASE SAVEPOINT `keep`");
     EXPECT_EQ(dialect.savepointStatement("a`b"), "SAVEPOINT `a``b`");
     EXPECT_EQ(dialect.savepointStatement("keep").find(';'), std::string::npos);
+}
+
+/**
+ * @brief 验证隔离级别语句按级别逐个映射，Default 不发生成语句
+ */
+TEST(MySqlDialectWrite, IsolationLevelStatements)
+{
+    const MySqlDialect dialect;
+
+    // 四条语句都是逐字形态：级别名不能凭枚举名拼接（READ UNCOMMITTED 带空格，
+    // READ COMMITTED 也不能写成 READ-COMMITTED），这里钉死文本与顺序
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::ReadUncommitted), "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::ReadCommitted), "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::RepeatableRead), "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::Serializable), "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+
+    // Default = 引擎默认：没有语句可发，也不能拿空串之外的任何东西冒充「设置成功」
+    EXPECT_TRUE(dialect.isolationLevelStatement(TransactionIsolationLevel::Default).empty());
 }
 
 // ========================================================================

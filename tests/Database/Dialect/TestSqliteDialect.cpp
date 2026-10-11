@@ -44,9 +44,11 @@ namespace
     using AsynGyanis::Database::DatabaseType;
     using AsynGyanis::Database::DatabaseValue;
     using AsynGyanis::Database::DialectRegistry;
+    using AsynGyanis::Database::isolationLevelName;
     using AsynGyanis::Database::SqlDialect;
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::SqlStatement;
+    using AsynGyanis::Database::TransactionIsolationLevel;
     using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::JoinClause;
     using AsynGyanis::Database::Queryable::JoinType;
@@ -1483,6 +1485,23 @@ TEST(SqliteDialectWrite, TransactionStatementsAndParameterLimit)
     EXPECT_EQ(dialect.savepointStatement("a\"b"), R"(SAVEPOINT "a""b")");
     // 三条都不带分号：驱动的「一次一条语句」判据会把带分号的串判成两条
     EXPECT_EQ(dialect.savepointStatement("keep").find(';'), std::string::npos);
+}
+
+/**
+ * @brief 验证 SQLite 对「按事务请求隔离级别」一律拒绝（空串），Default 同样无语句
+ * @details 拒绝的形状是「给空串」：Transaction 构造见到空串会点名抛出，而不是替引擎
+ *          编一条语句或静默降级。SQLite 的隔离级别由日志模式决定，没有按事务设置的语句
+ */
+TEST(SqliteDialectWrite, IsolationLevelIsAlwaysRefusedAndDefaultNeedsNoStatement)
+{
+    const SqliteDialect dialect;
+
+    for (const auto level:
+         {TransactionIsolationLevel::ReadUncommitted, TransactionIsolationLevel::ReadCommitted, TransactionIsolationLevel::RepeatableRead, TransactionIsolationLevel::Serializable})
+    {
+        EXPECT_TRUE(dialect.isolationLevelStatement(level).empty()) << "SQLite 给「" << isolationLevelName(level) << "」编出了设置语句：这正是要避免的静默变形";
+    }
+    EXPECT_TRUE(dialect.isolationLevelStatement(TransactionIsolationLevel::Default).empty());
 }
 
 // ========================================================================

@@ -36,6 +36,27 @@ namespace AsynGyanis::Database
         return "START TRANSACTION";
     }
 
+    std::string_view MySqlDialect::isolationLevelStatement(const TransactionIsolationLevel level) const noexcept
+    {
+        // MySQL 的 SET TRANSACTION（不带 SESSION/GLOBAL）按文档只设置「下一笔事务」的隔离级别，
+        // 恰好就是紧跟着的那条 START TRANSACTION 要用的；本级不支持时不返回空串的场合，
+        // 由 Transaction 构造按「拒绝」处置（空串 = 该引擎给不了这条语句）
+        switch (level)
+        {
+            case TransactionIsolationLevel::ReadUncommitted:
+                return "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED";
+            case TransactionIsolationLevel::ReadCommitted:
+                return "SET TRANSACTION ISOLATION LEVEL READ COMMITTED";
+            case TransactionIsolationLevel::RepeatableRead:
+                return "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ";
+            case TransactionIsolationLevel::Serializable:
+                return "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE";
+            case TransactionIsolationLevel::Default:
+                break;
+        }
+        return {};
+    }
+
     std::string_view MySqlDialect::insertKeywordPhrase(const Queryable::InsertConflict conflict) const
     {
         // REPLACE INTO 与 SQLite 的 OR REPLACE 同族（先删后插），但它是独立语句而不是 INSERT 的修饰：

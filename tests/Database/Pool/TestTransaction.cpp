@@ -13,6 +13,7 @@
 // - TransactionHoldsItsConnectionUntilItEnds
 // - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt / BatchInsertEdgeCases
 // - StatementsComeFromTheDialect（事务控制语句来自方言）
+// - RefusesUnsupportedIsolationLevelWithoutLeakingTheConnection（SQLite 拒绝非默认级别并点名，被拒的连接还回池；Default 照常开局）
 // - StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
 // - ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch（分块批量插入整批占住使用权，块间不插进别的语句）
 // - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
@@ -123,6 +124,7 @@ namespace
     using AsynGyanis::Database::SqliteConnection;
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Transaction;
+    using AsynGyanis::Database::TransactionIsolationLevel;
     using AsynGyanis::Database::TransactionTimeoutException;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::TestSupport::TemporaryDatabaseFile;
@@ -599,6 +601,44 @@ TEST(TransactionDialectStatements, StatementsComeFromTheDialect)
     EXPECT_EQ(dialect.beginTransactionStatement(), "BEGIN IMMEDIATE");
     EXPECT_EQ(dialect.commitStatement(), "COMMIT");
     EXPECT_EQ(dialect.rollbackStatement(), "ROLLBACK");
+}
+
+// ========================================================================
+// 隔离级别入口
+// ========================================================================
+
+/**
+ * @brief 钉住隔离级别入口的两端：SQLite 拒绝非默认级别（点名引擎与级别、连接不泄漏），Default 照常开局
+ * @details 拒绝发生在 BEGIN 之前，且已借出的连接要随构造失败还回池——用例把这一点变成可见事实：
+ *          拒一次之后池仍能借满两条（夹具池上限为 2），说明那具半成品对象的栈展开把连接交了回来。
+ *          能给的引擎照发设置语句（MySQL 侧文本由方言单测逐条钉死），给不出的当场拒，
+ *          不静默降级成引擎默认
+ */
+TEST_F(TransactionTest, RefusesUnsupportedIsolationLevelWithoutLeakingTheConnection)
+{
+    try
+    {
+        Transaction unsupported(*m_pool, TransactionIsolationLevel::ReadCommitted);
+        FAIL() << "SQLite 不支持按事务请求隔离级别，构造本该被拒";
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find("Sqlite"), std::string::npos) << "拒绝文案没点名引擎：" << message;
+        EXPECT_NE(message.find("读已提交"), std::string::npos) << "拒绝文案没点名级别：" << message;
+    }
+
+    // 连接不泄漏：被拒一次之后，上限 2 的池仍能借满两条
+    PooledConnection first  = m_pool->acquire();
+    PooledConnection second = m_pool->acquire();
+    ASSERT_TRUE(first) << "被拒构造把连接留在了手里：池少了一条";
+    ASSERT_TRUE(second) << "被拒构造把连接留在了手里：池少了一条";
+    first.release();
+    second.release();
+
+    // 正向对照：Default（单参构造的语义）照常开启，拒绝没有把整条路打死
+    Transaction defaulted(*m_pool, TransactionIsolationLevel::Default);
+    EXPECT_TRUE(defaulted.isActive()) << "默认级别的事务没能开启";
+    EXPECT_TRUE(defaulted.commit());
 }
 
 // ========================================================================

@@ -12,7 +12,11 @@
 
 namespace AsynGyanis::Database
 {
-    Transaction::Transaction(ConnectionPool &pool)
+    Transaction::Transaction(ConnectionPool &pool) : Transaction(pool, TransactionIsolationLevel::Default)
+    {
+    }
+
+    Transaction::Transaction(ConnectionPool &pool, const TransactionIsolationLevel isolationLevel)
     {
         // 构造的第一步就锁定连接：事务期间的每一条语句都必须落在同一条连接上，
         // 若拖到第一条语句再去池里取，BEGIN 与后续语句就可能分属不同连接（见文件头说明）
@@ -27,6 +31,24 @@ namespace AsynGyanis::Database
         // 写死在事务对象里等于把方言知识放到了错误的层。方言在此解析一次并缓存，
         // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
+
+        // 请求了非默认隔离级别：先落一条设置语句（标准语法 SET TRANSACTION ISOLATION LEVEL …，
+        // MySQL 同名语句同解：只作用于下一笔事务——正是紧跟着的这条 BEGIN）。
+        // 引擎给不出设置语句（SQLite 不支持按事务请求）时拒绝并点名，不静默降级；
+        // 此处抛出安全：连接是成员，栈展开时它会照常归还池，不会留下半开状态
+        if (isolationLevel != TransactionIsolationLevel::Default)
+        {
+            const std::string_view isolationStatement = m_dialect->isolationLevelStatement(isolationLevel);
+            if (isolationStatement.empty())
+            {
+                throw Base::InvalidArgumentException("数据库事务：引擎 " + std::string(databaseTypeName(m_connection->databaseType())) + " 不支持按事务请求隔离级别「" +
+                                                     std::string(isolationLevelName(isolationLevel)) + "」；请用默认级别（Default），或换用支持 SET TRANSACTION 的引擎");
+            }
+            if (!executeControlStatement(isolationStatement))
+            {
+                throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
+            }
+        }
 
         // BEGIN 失败（例如同一连接上已有未结束的事务）必须让构造失败：返回一个「看起来在事务里、
         // 实际没有事务」的对象，会让后续每一条语句都静默运行在自动提交模式下

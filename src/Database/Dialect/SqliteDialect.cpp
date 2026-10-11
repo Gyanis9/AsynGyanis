@@ -45,6 +45,15 @@ namespace AsynGyanis::Database
         return "BEGIN IMMEDIATE";
     }
 
+    std::string_view SqliteDialect::isolationLevelStatement(const TransactionIsolationLevel /*level*/) const noexcept
+    {
+        // SQLite 没有「按事务请求隔离级别」这条路：它全库一把写锁，隔离级别由日志模式决定
+        // （回滚日志下是串行化、WAL 下是可重复读级快照），且 PRAGMA read_uncommitted 改的是
+        // **连接**的持续状态而不是单笔事务——在借出期间改它会留给下一个借用者。
+        // 因此一律给空串（= 拒绝），由 Transaction 构造带级别名抛出；Default 同样走这条零语句的路
+        return {};
+    }
+
     std::string_view SqliteDialect::insertKeywordPhrase(const Queryable::InsertConflict conflict) const
     {
         // 短语含结尾空格：共用渲染层拼完它就接表名，两处的拼接形状只在这一处约定

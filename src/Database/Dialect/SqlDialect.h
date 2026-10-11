@@ -29,6 +29,44 @@
 namespace AsynGyanis::Database
 {
     /**
+     * @brief 事务隔离级别（SQL:1992 的四档 + 「随引擎默认」）
+     * @details Default 表示引擎自己的默认（MySQL 是 REPEATABLE READ、SQLite 是 SERIALIZABLE），
+     *          不额外发任何语句；其余四档由各方言翻译成「BEGIN 之前的设置语句」。
+     *          引擎不支持按事务请求时**拒绝并点名**（见 `Transaction` 的构造说明），不静默降级
+     */
+    enum class TransactionIsolationLevel
+    {
+        Default,         ///< 引擎默认（不额外发语句）
+        ReadUncommitted, ///< 读未提交（脏读可见）
+        ReadCommitted,   ///< 读已提交
+        RepeatableRead,  ///< 可重复读
+        Serializable,    ///< 串行化
+    };
+
+    /**
+     * @brief 隔离级别的人类可读名字（错误文案与日志用；不是 SQL 关键字文本）
+     * @param level 隔离级别
+     * @return 名字；未知枚举值给「未知」
+     */
+    [[nodiscard]] constexpr std::string_view isolationLevelName(const TransactionIsolationLevel level) noexcept
+    {
+        switch (level)
+        {
+            case TransactionIsolationLevel::Default:
+                return "引擎默认";
+            case TransactionIsolationLevel::ReadUncommitted:
+                return "读未提交（READ UNCOMMITTED）";
+            case TransactionIsolationLevel::ReadCommitted:
+                return "读已提交（READ COMMITTED）";
+            case TransactionIsolationLevel::RepeatableRead:
+                return "可重复读（REPEATABLE READ）";
+            case TransactionIsolationLevel::Serializable:
+                return "串行化（SERIALIZABLE）";
+        }
+        return "未知";
+    }
+
+    /**
      * @brief SQL 方言抽象基类
      *
      * @details 每个受支持的数据库对应一个实现（当前只有 SqliteDialect）。
@@ -141,6 +179,20 @@ namespace AsynGyanis::Database
          * @return std::string_view 本方言的开启事务语句
          */
         [[nodiscard]] virtual std::string_view beginTransactionStatement() const noexcept = 0;
+
+        /**
+         * @brief 开启事务**之前**要发的隔离级别设置语句
+         *
+         * @details 事务对象在 BEGIN 之前执行它，语句本身只影响紧随其后的那一笔事务
+         *          （标准语法 `SET TRANSACTION ISOLATION LEVEL …` 即此语义，MySQL 同名语句同解）。
+         *          引擎不提供「按事务请求隔离级别」这条路时给出**空串**——这是「拒绝」而不是
+         *          「不支持就当默认」：调用方（Transaction 构造）见到空串就地抛出并点名，
+         *          不静默降级成引擎默认。
+         *
+         * @param level 请求的隔离级别；传 Default 时一律给空串（无需设置语句）
+         * @return std::string_view 设置语句；该引擎不支持该级别时为空
+         */
+        [[nodiscard]] virtual std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept = 0;
 
         /**
          * @brief 获取提交事务的语句文本

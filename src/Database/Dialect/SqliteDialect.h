@@ -68,6 +68,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
 
         /**
+         * @brief SQLite 的隔离级别设置语句：恒为空（本引擎不支持按事务请求）
+         * @details 重写 SqlDialect::isolationLevelStatement()：SQLite 的隔离级别由日志模式决定
+         *          （回滚日志下串行化、WAL 下可重复读级快照），没有「按事务设置」的语句；
+         *          `PRAGMA read_uncommitted` 改的是连接持续状态，会留给下一个借用者，不加采用。
+         *          空串在 Transaction 构造里按「拒绝并点名」处置，不静默降级
+         * @param level 请求的隔离级别（本实现不使用）
+         * @return std::string_view 恒为空串
+         */
+        [[nodiscard]] std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept override;
+
+        /**
          * @brief 把逻辑列类型翻译成 SQLite 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：SQLite 只有 5 个存储类，UInt64 只能退化为
          *          有符号 INTEGER（超过 int64 上限的取值由绑定期降级为十进制文本）；不用 TEXT

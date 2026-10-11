@@ -54,13 +54,31 @@ namespace AsynGyanis::Database
          * @brief 从连接池借出连接并开启事务
          *
          * @param pool 提供连接的连接池，本对象在析构前一直占用其中一条连接
+         * @param isolationLevel 请求的事务隔离级别；Default 表示引擎默认（不发额外语句）
          *
+         * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时，
+         *         或连接工厂创建失败）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现，取不到开启事务的语句文本；
+         *         或**引擎不支持所请求的隔离级别**（如 SQLite 不支持按事务请求）——抛出文案点名
+         *         引擎与级别，不静默降级成引擎默认
+         * @throws QueryExecutionException 驱动拒绝 BEGIN 或隔离级别设置语句（例如同一连接上已有
+         *         未结束的事务）
+         * @note 构造成功即代表数据库已经进入了事务；构造失败不会留下半开状态，
+         *       已借出的连接由 PooledConnection 在栈展开时归还池。请求非默认隔离级别时，
+         *       BEGIN 之前会先执行方言的 `SET TRANSACTION ISOLATION LEVEL …`（只作用于本笔事务）
+         * @note 单参数版本是本构造的 Default 委托：多个公开构造必须汇进同一个（见仓库约定），
+         *       参数校验（含隔离级别可用性）排在任何**语句**发出之前
+         */
+        explicit Transaction(ConnectionPool &pool, TransactionIsolationLevel isolationLevel);
+
+        /**
+         * @brief 从连接池借出连接并开启事务（引擎默认隔离级别）
+         * @param pool 提供连接的连接池，本对象在析构前一直占用其中一条连接
          * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时，
          *         或连接工厂创建失败）
          * @throws QueryExecutionException 驱动拒绝 BEGIN（例如同一连接上已有未结束的事务）
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现，取不到开启事务的语句文本
-         * @note 构造成功即代表数据库已经进入了事务；构造失败不会留下半开状态，
-         *       已借出的连接由 PooledConnection 在栈展开时归还池
+         * @note 等价于 `Transaction(pool, TransactionIsolationLevel::Default)`
          */
         explicit Transaction(ConnectionPool &pool);
 

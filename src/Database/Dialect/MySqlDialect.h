@@ -70,6 +70,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
 
         /**
+         * @brief 获取 MySQL 的隔离级别设置语句
+         * @details 重写 SqlDialect::isolationLevelStatement()：返回
+         *          `SET TRANSACTION ISOLATION LEVEL <级别>`。不带 SESSION/GLOBAL 的 `SET TRANSACTION`
+         *          按 MySQL 文档只作用于**下一笔**事务——正是本方言开启事务那一条要用的；
+         *          Default 返回空串（无语句可发），未知枚举值同样返回空串（按「拒绝」处置）
+         * @param level 请求的隔离级别
+         * @return std::string_view 设置语句；Default 与未知值时为空
+         */
+        [[nodiscard]] std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept override;
+
+        /**
          * @brief 把逻辑列类型翻译成 MySQL 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：整数按位宽与符号分家，选与 C++ 类型位宽
          *          对齐的成员；Bool→"TINYINT(1)" 是官方保留的「是否型」写法
