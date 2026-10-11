@@ -19,6 +19,9 @@
       倍数按「分位越靠后越抖」递增。`maximumMicroseconds` 只录不判——单次调度抖动就能让它翻倍，
       判它等于判机器状态；
     · 基线里有、实测里没有的项判失败（漏测等于没测）；实测里多出来的项只提示。
+    · 两套基线同吃：soak 基线（每项带 p50/p95/p99 分位键）按上面那条判；微基准那种「点式」基线
+      （每项只有 throughputPerSecond/nanosecondsPerOperation）只判吞吐，不套「缺分位档即红」——
+      那条规则只服务于 soak 侧的分位补录历史，套到点式上会把 microbench 那条入口变成恒红。
 
 **这道门禁能抓什么、不能抓什么**：它抓的是量级回归；抓不住 10% 级的漂移——那需要更严谨的测量方法
 （固定 CPU 频率、绑核、关后台负载、多轮取中位数），不是脚本能补的。默认阈值是按本机实测噪声定的：
@@ -35,8 +38,7 @@ import sys
 
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline.json")
 
-LATENCY_KEYS = ("p50Microseconds", "p95Microseconds", "p99Microseconds", "maximumMicroseconds")
-# `maximumMicroseconds` 在 LATENCY_KEYS 里但**不判**：它是整段最坏的一次，单次调度抖动就能翻倍，
+# `maximumMicroseconds` 刻意不在判定面上：它是整段最坏的一次，单次调度抖动就能翻倍，
 # 判它等于判机器状态。分位这条线判到 p99 为止，max 只作描述性读数
 GAUGED_KEYS = ("throughputPerSecond", "p50Microseconds", "p95Microseconds", "p99Microseconds")
 DESCRIPTIVE_KEYS = ("connections", "pipeline", "requests", "throughputUnit")
@@ -119,28 +121,39 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
             violations.append(f"{name}：吞吐 {actualThroughput:.0f} 低于基线的 {arguments.minimum_throughput_ratio:.2f} 倍"
                               f"（下限 {minimum:.0f}）")
 
-    for key, ratioLimit, label in ((key, getattr(arguments, f"maximum_{key[:-len('Microseconds')].lower()}_ratio"),
-                                    key[:-len('Microseconds')]) for key in LATENCY_RATIO_DEFAULTS):
-        expectedValue = expected.get(key)
-        latencySamples = samples.get(key)
-        if not expectedValue:
-            # 基线里缺这一档＝这道判据从未生效，得当场上报而不是静默跳过：
-            # p99 刚加进测量侧时，基线还没录它，「门禁判 p99」那句话就是空的
-            print(f"     [FAIL] 基线里没有 {key}：这一档没人判，得补录")
-            violations.append(f"{name}：基线缺少 {key}，这道门对该档从未生效")
-            continue
-        if not latencySamples:
-            print(f"     [FAIL] 基线要求判定 {label}，实测里没有 {key}")
-            violations.append(f"{name}：基线要求判定 {label}，实测里没有 {key} 样本")
-            continue
-        actualValue = median(latencySamples)
-        maximum = expectedValue * ratioLimit
-        passed = actualValue <= maximum
-        print(f"     [{'OK  ' if passed else 'FAIL'}] {label} {actualValue:.1f}us / 基线 {expectedValue:.1f}us"
-              f" = {actualValue / expectedValue:.2f}x（上限 {ratioLimit:.2f}x，"
-              f"样本 {'/'.join(f'{value:.1f}' for value in latencySamples)}）")
-        if not passed:
-            violations.append(f"{name}：{label} {actualValue:.1f}us 高于基线的 {ratioLimit:.2f} 倍（上限 {maximum:.1f}us）")
+    # 点式基线（每项只有 nanosecondsPerOperation/throughputPerSecond 的微基准形态）没有分位键：
+    # 对它跑「基线缺档即红」那一组会把 81 项 × 3 键全报成违反，完美复现也恒红。那条规则只服务
+    # soak 基线（p99 刚加进测量侧、基线还没录它时得当场催补录），点式这一支只判吞吐
+    if "nanosecondsPerOperation" in expected:
+        if expected.get("throughputPerSecond"):
+            print(f"     [点式基线] 只判吞吐；基线登记的纳秒/次 {expected['nanosecondsPerOperation']:.1f} ns 作描述性读数")
+        else:
+            # 与上面 soak 侧同一条规矩：一道判据都没有的基线项要当场出声，不许静默通过
+            print(f"     [FAIL] 点式基线里没有 throughputPerSecond：这一档没人判，得补录")
+            violations.append(f"{name}：点式基线缺少 throughputPerSecond，这道门对该档从未生效")
+    else:
+        for key, ratioLimit, label in ((key, getattr(arguments, f"maximum_{key[:-len('Microseconds')].lower()}_ratio"),
+                                        key[:-len('Microseconds')]) for key in LATENCY_RATIO_DEFAULTS):
+            expectedValue = expected.get(key)
+            latencySamples = samples.get(key)
+            if not expectedValue:
+                # 基线里缺这一档＝这道判据从未生效，得当场上报而不是静默跳过：
+                # p99 刚加进测量侧时，基线还没录它，「门禁判 p99」那句话就是空的
+                print(f"     [FAIL] 基线里没有 {key}：这一档没人判，得补录")
+                violations.append(f"{name}：基线缺少 {key}，这道门对该档从未生效")
+                continue
+            if not latencySamples:
+                print(f"     [FAIL] 基线要求判定 {label}，实测里没有 {key}")
+                violations.append(f"{name}：基线要求判定 {label}，实测里没有 {key} 样本")
+                continue
+            actualValue = median(latencySamples)
+            maximum = expectedValue * ratioLimit
+            passed = actualValue <= maximum
+            print(f"     [{'OK  ' if passed else 'FAIL'}] {label} {actualValue:.1f}us / 基线 {expectedValue:.1f}us"
+                  f" = {actualValue / expectedValue:.2f}x（上限 {ratioLimit:.2f}x，"
+                  f"样本 {'/'.join(f'{value:.1f}' for value in latencySamples)}）")
+            if not passed:
+                violations.append(f"{name}：{label} {actualValue:.1f}us 高于基线的 {ratioLimit:.2f} 倍（上限 {maximum:.1f}us）")
 
     # 可信度自检放在判定之后：它不改变本项的输赢，只标出「这次的中位数不值得信」
     widestRatio, widestKey = dispersionRatio(samples)
