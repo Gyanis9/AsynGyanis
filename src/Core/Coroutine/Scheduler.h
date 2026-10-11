@@ -55,12 +55,13 @@ namespace AsynGyanis::Core
     {
     public:
         /**
-         * @brief 单趟 runAll() 从跨线程队列里取走的任务上限
-         * @details 投递方可以长期不断流（执行器完成回调、别的循环移交的连接），不设上界的一趟
-         *          会吃到生产者停手为止，事件循环因此再也回不到 epoll_wait，同循环上的套接字
-         *          一个事件都收不到。超出部分的投递不丢：hasWork() 仍为真，循环下一趟接着取
+         * @brief 单趟 runAll() 取走的任务上限（本地与跨线程共用一份预算）
+         * @details 投递方可以长期不断流（执行器完成回调、别的循环移交的连接），本地一侧还能
+         *          「自己再投自己」——不设上界的一趟会吃到生产者停手为止，事件循环因此再也
+         *          回不到 epoll_wait，同循环上的套接字一个事件都收不到。超出部分的投递不丢：
+         *          hasWork() 仍为真，循环下一趟接着取
          */
-        static constexpr std::size_t kMaximumRemoteItemsPerPass = 256;
+        static constexpr std::size_t kMaximumItemsPerPass = 256;
 
         /**
          * @brief 默认构造调度器，内部结构为空
@@ -134,8 +135,8 @@ namespace AsynGyanis::Core
         bool runOne();
 
         /**
-         * @brief 执行所有就绪协程：本地队列清空，跨线程队列每趟最多取 kMaximumRemoteItemsPerPass 件就返回
-         * @note 返回时若跨线程队列还有剩余，hasWork() 仍为真，调用方下一趟接着取（不会丢也不会误判空闲）
+         * @brief 执行所有就绪协程：本地与跨线程队列每趟合计最多取 kMaximumItemsPerPass 件就返回
+         * @note 返回时若还有剩余，hasWork() 仍为真，调用方下一趟接着取（不会丢也不会误判空闲）
          * @note 每一批**全部跑完**，单条抛出既不丢掉同批其余、也不向调用方传播：计入
          *       failedDispatchCount() 并在首条告警。早先是「跑完整批再把首个异常重抛」，
          *       而 runAll() 的调用点是事件循环的泵——那等于让一条坏投递停掉整条循环
@@ -209,13 +210,16 @@ namespace AsynGyanis::Core
         void assertLocalQueueUse(const char *operation) const;
 
         /**
-         * @brief 排空本地待执行代码与本地队列，逐条经派发级守卫执行
+         * @brief 排空本地待执行代码与本地队列（至多 budget 件），逐条经派发级守卫执行
          * @details runAll() 的第一阶段与「批量处理期间可能重新产生本地任务」的补排空共用这一段：
          *          两处都要反复回到开头（执行期间可能又投来新的代码），且都逐条兜住抛出——
          *          少兜的那一种会让一条抛出的本地投递直接穿出 runAll 落到事件循环的泵上，
          *          剩余尚未执行的本地代码会连同其持有物一起被静默析构。原因详见实现处注释
+         * @param budget 本次至多执行的条数：本地投递同样能「自己再投自己」把一趟喂到无穷，
+         *               预算与跨线程那份共用（见 kMaximumItemsPerPass 的说明）
+         * @return std::size_t 本次实际执行的条数
          */
-        void drainLocalTasks();
+        std::size_t drainLocalTasks(std::size_t budget);
 
         std::vector<std::coroutine_handle<>> m_localQueue;             ///< 本地就绪队列（本线程独享，无锁，使用 vector 模拟栈）
         std::deque<std::function<void()>>    m_localCallables;         ///< 本地待执行代码（同上无锁，先进先出）

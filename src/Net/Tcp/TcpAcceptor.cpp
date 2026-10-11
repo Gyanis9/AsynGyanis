@@ -24,6 +24,11 @@ namespace AsynGyanis::Net
          */
         constexpr int kResourcePressureBackoffMs = 5;
 
+        /// 一轮等待最多从监听队列里多抽几条进暂存队列。监听是水平触发：本轮没抽完的剩余连接
+        /// 只要队列非空就会再次上报（没人等待期间就绪位还会被缓存、下一次等待立即完成），
+        /// 不抽完不会丢；上界防的是对端连打时这一条循环被无界抽取占满，定时器与别的连接全排在后面
+        constexpr std::size_t kMaximumPendingAcceptsPerRound = 64;
+
         /**
          * @brief 判断 socket 错误码是否属于「内核资源暂时不足、稍后重试即可恢复」一类
          * @param socketErrorCode Platform::PlatformError::lastSocketErrorCode() 的返回值
@@ -205,8 +210,8 @@ namespace AsynGyanis::Net
 
     Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()
     {
-        // 暂存队列的连接其就绪事件已在上一次抽干时被消费，不会再产生新事件，
-        // 因此必须优先出队；若先去等 epoll 会把它们永久留在队列里
+        // 暂存队列里还有连接时优先出队：真去等 epoll 也没有错（队列未空时水平触发会再次上报），
+        // 但那白跑一趟；先出队则这一步是 O(1) 的
         if (!m_pending.empty())
         {
             Core::AsyncSocket pendingSocket = std::move(m_pending.front());
@@ -260,9 +265,9 @@ namespace AsynGyanis::Net
                 // 描述符所有权自此刻交给 AsyncSocket：后续任何提前返回都由它负责关闭
                 Core::AsyncSocket acceptedSocket(m_loop, acceptedDescriptor);
 
-                // 事件循环用边沿触发：只在「变为可读」的一刻给一次通知。若此处只收一条就返回，
-                // 监听队列里的其余连接不会再产生事件，会一直滞留到对端超时，所以必须一次抽干
-                while (true)
+                // 监听描述符是水平触发：本轮只抽一批就返回不会丢连接——队列里还有的话下一次等待
+                // 会再次上报。批量抽取只为少付几次「回到等待」的往返；上界防对端连打把这条循环占满
+                for (std::size_t drainedCount = 0; drainedCount < kMaximumPendingAcceptsPerRound; ++drainedCount)
                 {
                     sockaddr_storage pendingAddress{};
                     socklen_t        pendingAddressLength = static_cast<socklen_t>(sizeof(pendingAddress));
@@ -299,8 +304,8 @@ namespace AsynGyanis::Net
 
             // 暂无待接受连接：等监听描述符可读，而不是按固定间隔轮询。
             // 监听套接字是 AsyncSocket，它已经常驻注册在 epoll 上（一次注册、反复等待），
-            // 因此这里既不产生 epoll_ctl，也不会丢边沿——空闲监听器从此零唤醒，
-            // 新连接的接受延迟也不再受轮询周期限制
+            // 因此这里既不产生 epoll_ctl，也不会丢掉就绪（水平触发下队列未空就会再上报）——
+            // 空闲监听器从此零唤醒，新连接的接受延迟也不再受轮询周期限制
             if (socketErrorCode == Platform::PlatformError::kWouldBlock)
             {
                 // 描述符已失效（close() 或从未创建）时按契约返回空值让服务器循环正常收尾。

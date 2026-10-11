@@ -495,8 +495,9 @@ namespace AsynGyanis::Net
         }
         ASSERT_EQ(clientPorts.size(), kClientCount) << "三条回环连接未全部建立，批量 accept 无从验证";
 
-        // 事件循环是边沿触发：一次就绪必须把队列抽干，否则残留连接不会再次产生事件。
-        // 三条连接在本轮 accept 之前就已握手完成并全部入队，因此三次 accept() 都应直接返回。
+        // 事件循环对监听描述符是水平触发：本轮没抽完的剩余连接会因队列非空被再次上报，
+        // 不抽干也不会滞留。三条连接在本轮 accept 之前就已握手完成并全部入队，且远小于
+        // 一轮的抽取上界，因此三次 accept() 都应直接返回。
         // 时序说明：若某条连接尚未及入队，第 3 次 accept 会挂起等待可读事件，
         // 由 kWaitTimeout 兜住并判失败——上界 2 秒。
         AcceptOutcome   outcome;

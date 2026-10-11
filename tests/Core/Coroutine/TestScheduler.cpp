@@ -296,7 +296,7 @@ namespace AsynGyanis::Core
         Scheduler        scheduler;
         std::atomic<int> executed{0};
 
-        constexpr int kPostCount = static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass) * 3;
+        constexpr int kPostCount = static_cast<int>(Scheduler::kMaximumItemsPerPass) * 3;
         for (int index = 0; index < kPostCount; ++index)
         {
             scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
@@ -304,7 +304,7 @@ namespace AsynGyanis::Core
 
         scheduler.runAll();
 
-        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass)) << "一趟 runAll() 吃掉了超过上限的跨线程投递：调用方拿不回控制权，IO 事件会被饿死";
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumItemsPerPass)) << "一趟 runAll() 吃掉了超过上限的跨线程投递：调用方拿不回控制权，IO 事件会被饿死";
         EXPECT_TRUE(scheduler.hasWork()) << "剩下的投递没被算成待办：循环会带着积压睡在 epoll 上";
 
         // 分趟取用必须最终把所有投递做完：上界不能变成丢任务或取不完
@@ -327,7 +327,7 @@ namespace AsynGyanis::Core
     {
         Scheduler        scheduler;
         std::atomic<int> executed{0};
-        constexpr int    kPostCount = static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass) + 44;
+        constexpr int    kPostCount = static_cast<int>(Scheduler::kMaximumItemsPerPass) + 44;
 
         std::function<void()> drip;
         drip = [&scheduler, &executed, &drip]()
@@ -341,7 +341,7 @@ namespace AsynGyanis::Core
 
         scheduler.runAll();
 
-        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumRemoteItemsPerPass))
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumItemsPerPass))
                 << "滴灌投递下一趟 runAll() 吃掉了超过上限的条数：只按单批判的判据在单批填不满时永不生效，调用方拿不回控制权";
         EXPECT_TRUE(scheduler.hasWork()) << "剩下的投递没被算成待办：循环会带着积压睡在 epoll 上";
 
@@ -351,6 +351,41 @@ namespace AsynGyanis::Core
             scheduler.runAll();
         }
         EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把滴灌投递弄丢了或没有取完";
+        EXPECT_FALSE(scheduler.hasWork());
+    }
+
+    /**
+     * @brief 本地投递的自续链同样按趟截住：本地与跨线程共用一份预算
+     * @details 上一条钉的是跨线程那份；本地排空此前无上限——一条本地可调用体在每次执行时再投
+     *          一条本地可调用体，就能把一趟 runAll 喂到无穷，事件循环回不到 epoll_wait。
+     *          判据形状与跨线程那条一致：本趟不超上限、剩余仍算待办、分趟取完一条不丢
+     */
+    TEST(Scheduler, SingleRunAllPassIsBoundedForSelfRepostingLocalDrip)
+    {
+        Scheduler        scheduler;
+        std::atomic<int> executed{0};
+        constexpr int    kPostCount = static_cast<int>(Scheduler::kMaximumItemsPerPass) + 44;
+
+        std::function<void()> drip;
+        drip = [&scheduler, &executed, &drip]()
+        {
+            if (executed.fetch_add(1, std::memory_order_relaxed) + 1 < kPostCount)
+            {
+                scheduler.postLocal(drip);
+            }
+        };
+        scheduler.postLocal(drip);
+
+        scheduler.runAll();
+
+        EXPECT_LE(executed.load(), static_cast<int>(Scheduler::kMaximumItemsPerPass)) << "自续本地投递一趟 runAll() 吃掉了超过预算的条数：本地排空无上限时事件循环拿不回控制权";
+        EXPECT_TRUE(scheduler.hasWork()) << "剩下的本地投递没被算成待办：循环会带着积压睡在 epoll 上";
+
+        for (int pass = 0; pass < kPostCount && scheduler.hasWork(); ++pass)
+        {
+            scheduler.runAll();
+        }
+        EXPECT_EQ(executed.load(), kPostCount) << "分趟取用把本地自续链弄丢了或没有取完";
         EXPECT_FALSE(scheduler.hasWork());
     }
 

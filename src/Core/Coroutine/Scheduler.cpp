@@ -189,44 +189,52 @@ namespace AsynGyanis::Core
         return false;
     }
 
-    void Scheduler::drainLocalTasks()
+    std::size_t Scheduler::drainLocalTasks(const std::size_t budget)
     {
         // 两处调用点（runAll 的第一阶段与批量处理后的补排空）都要反复回到开头，因为执行期间可能
         // 又投来新的代码（例如定时器在恢复途中又判出新的到期项）；两处都逐条经 runGuarded 兜住——
         // 少兜的那一种会让一条抛出的本地投递直接穿出 runAll 落到事件循环的泵上，剩余尚未执行的
-        // 本地代码会连同其持有物一起被静默析构
-        while (true)
+        // 本地代码会连同其持有物一起被静默析构。
+        // 上界是必需的：本地投递同样能「自己再投自己」，不封顶的一趟会把事件循环喂到回不到
+        // epoll_wait；预算与跨线程那份共用（见 kMaximumItemsPerPass 的说明），取满即交还控制权
+        std::size_t drainedCount = 0;
+        while (drainedCount < budget)
         {
-            while (!m_localCallables.empty())
+            while (!m_localCallables.empty() && drainedCount < budget)
             {
                 std::function<void()> callable = std::move(m_localCallables.front());
                 m_localCallables.pop_front();
+                ++drainedCount;
                 runGuarded(callable);
             }
-            if (m_localQueue.empty())
+            if (m_localQueue.empty() || drainedCount >= budget)
             {
                 break;
             }
             const auto handle = m_localQueue.back();
             m_localQueue.pop_back();
+            ++drainedCount;
             runGuarded([handle] { handle.resume(); });
         }
+        return drainedCount;
     }
 
     void Scheduler::runAll()
     {
         assertLocalQueueUse("Scheduler::runAll()");
-        // 第一阶段：排空本地待执行代码与本地队列
-        drainLocalTasks();
 
-        // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；累计取件数不超过
-        // kMaximumRemoteItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
+        // 第一阶段：排空本地待执行代码与本地队列（至多本趟预算的条数）；
+        // 本趟累计取件数：本地与远端共用一份——两类来源都能「自己再投自己」续上，
+        // 只限一类等于给另一类留着同一条饿死 epoll 的路
+        std::size_t takenTotalCount = drainLocalTasks(kMaximumItemsPerPass);
+
+        // 第二阶段：分批取用全局队列，防止本地任务持续产生导致全局饥饿；累计取件数（含上面
+        // 本地那一半）不超过 kMaximumItemsPerPass 件，取满就把控制权还给调用方（见该常量的说明）。
+        // 上限按「一趟」而不是「一批」算——生产者滴灌（每轮只投几件，单批永远填不满）时，
+        // 只看本批是否取满的判据永远不生效，一趟 runAll 会吃到生产者停手为止。
         // 批处理缓冲提到循环外：跨批次复用已申请的容量，避免每轮都做一次堆分配
         std::vector<std::coroutine_handle<>> batch;
         std::deque<std::function<void()>>    callableBatch;
-        // 本趟累计取走的投递数：上限按「一趟」而不是「一批」算——生产者滴灌（每轮只投几件，
-        // 单批永远填不满）时，只看本批是否取满的判据永远不生效，一趟 runAll 会吃到生产者停手为止
-        std::size_t takenTotalCount = 0;
         while (true)
         {
             std::size_t takenHandleCount   = 0;
@@ -237,14 +245,14 @@ namespace AsynGyanis::Core
                 callableBatch.clear();
 
                 // 回调先取、协程句柄补满剩余额度：与 runOne() 的优先级口径保持一致
-                while (callableBatch.size() < kMaximumRemoteItemsPerPass && !m_remoteCallables.empty())
+                while (callableBatch.size() < kMaximumItemsPerPass && !m_remoteCallables.empty())
                 {
                     callableBatch.push_back(std::move(m_remoteCallables.front()));
                     m_remoteCallables.pop_front();
                 }
                 takenCallableCount = callableBatch.size();
 
-                const std::size_t remainingCapacity = kMaximumRemoteItemsPerPass - takenCallableCount;
+                const std::size_t remainingCapacity = kMaximumItemsPerPass - takenCallableCount;
                 while (batch.size() < remainingCapacity && !m_globalQueue.empty())
                 {
                     batch.push_back(m_globalQueue.front());
@@ -287,11 +295,15 @@ namespace AsynGyanis::Core
                 runGuarded([handle] { handle.resume(); });
             }
 
-            // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）
-            drainLocalTasks();
+            // 批量处理期间可能重新产生本地任务，再次排空（含新投来的本地代码，同一处理口径）；
+            // 预算按「本趟还剩多少」给：本地与远端合起来不超过一趟的上限
+            if (takenTotalCount < kMaximumItemsPerPass)
+            {
+                takenTotalCount += drainLocalTasks(kMaximumItemsPerPass - takenTotalCount);
+            }
 
             // 本趟累计取件数已到上限：把控制权交回调用方，让它有机会去取 IO 事件，剩下的下一趟再取
-            if (takenTotalCount >= kMaximumRemoteItemsPerPass)
+            if (takenTotalCount >= kMaximumItemsPerPass)
             {
                 break;
             }
