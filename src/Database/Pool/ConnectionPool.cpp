@@ -21,7 +21,8 @@ namespace AsynGyanis::Database
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
-        // 登记的八条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
+
+        // 登记的九条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
         // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
         // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
         // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
@@ -55,6 +56,11 @@ namespace AsynGyanis::Database
                                                              "它与 borrow_timeouts_total 分开：这里根本没等，混进去会把「池不够用」这个容量信号打成假的",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_waitingRejectedCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_oldest_borrow_start_seconds",
+                                                             "当下在借连接里最久的一条的借出时刻（Unix 秒，0 = 没有在借）。`time() - 本值` 就是最久持有期："
+                                                             "它贴着 acquireTimeout 的量级不降，说明有人拖住连接不放——配合池上限与等待数对着读，可分诊「池太小」与「借用者太慢」",
+                                                             Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::MinNonZero,
+                                                             [this] { return oldestBorrowStartEpochSeconds(); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_session_reset_failures_total",
                                                              "归还时驱动报告「会话没复位干净」而被丢弃的连接数：它是 connections_discarded_total 的一个子集，"
                                                              "专指「驱动清不掉上一个借用者留下的状态」那一条去向。其余去向各有成因——对端掐线与到轮换期属正常生命周期，"
@@ -718,6 +724,37 @@ namespace AsynGyanis::Database
     std::size_t ConnectionPool::waitingRejectedCount() const noexcept
     {
         return m_waitingRejectedCount.load(std::memory_order_relaxed);
+    }
+
+    std::uint64_t ConnectionPool::oldestBorrowStartEpochSeconds() const noexcept
+    {
+        std::int64_t oldestStartNanos = 0;
+        for (const std::atomic<std::int64_t> &slot: m_liveness->borrowStartNanos)
+        {
+            const std::int64_t startNanos = slot.load(std::memory_order_relaxed);
+            if (startNanos != 0 && (oldestStartNanos == 0 || startNanos < oldestStartNanos))
+            {
+                oldestStartNanos = startNanos;
+            }
+        }
+        if (oldestStartNanos == 0)
+        {
+            return 0;
+        }
+
+        // 账本记的是 steady 起点，监控侧要的是 Unix 秒：在抓取这一刻用 (steady, system) 同时刻
+        // 对齐折算成「借出时刻」，持有期内被 NTP 拨表也不会把这条读数弄歪。时钟异常回退时按 0 秒算
+        const auto         nowSteady         = std::chrono::steady_clock::now();
+        const std::int64_t nowSteadyNanos    = std::chrono::duration_cast<std::chrono::nanoseconds>(nowSteady.time_since_epoch()).count();
+        const std::int64_t heldSeconds       = nowSteadyNanos > oldestStartNanos ? (nowSteadyNanos - oldestStartNanos) / 1000000000 : 0;
+        const std::int64_t nowSystemSeconds  = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::int64_t startEpochSeconds = nowSystemSeconds - heldSeconds;
+        if (startEpochSeconds <= 0)
+        {
+            // 0 在指标语义里是「没有在借」：算不到正数就报 0，宁可不报也不占用那个哨兵值
+            return 0;
+        }
+        return static_cast<std::uint64_t>(startEpochSeconds);
     }
 
     void ConnectionPool::noteWaitingRefusal() noexcept

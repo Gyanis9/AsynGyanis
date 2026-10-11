@@ -17,6 +17,7 @@
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/PoolLiveness.h"
 
+#include <chrono>
 #include <memory>
 
 namespace AsynGyanis::Database
@@ -109,6 +110,21 @@ namespace AsynGyanis::Database
          */
         void discard();
 
+        /**
+         * @brief 拿到这条连接的时刻（steady 时钟）
+         * @return 借出时刻；空包装返回 clock 的纪元值，不可当作真实借出时刻
+         * @note 用途是把「超时该报哪一条」这类排查从猜变成读数：配合 heldDuration() 就能在
+         *       业务日志里写明这条连接被持有了多久，而不必另拿一个计时器自己记
+         */
+        [[nodiscard]] std::chrono::steady_clock::time_point borrowedAt() const noexcept;
+
+        /**
+         * @brief 这条连接已被本包装持有了多久
+         * @return 持有期；空包装返回 0
+         * @note 同一连接被归还后再借出会重新起算（持有期属于「这次借出」而不是「这条连接」）
+         */
+        [[nodiscard]] std::chrono::milliseconds heldDuration() const noexcept;
+
     private:
         /**
          * @brief 归还连接的内部实现
@@ -123,6 +139,9 @@ namespace AsynGyanis::Database
 
         std::shared_ptr<PoolLiveness>
                 m_poolLiveness; ///< 池存活令牌（与池共享）：池已（或正在）析构时归还路径据此直接关闭连接；归还时会持令牌内的互斥量判活并调用池，因此与析构不会交错
+
+        std::size_t                           m_borrowSlot{PoolLiveness::kNoBorrowSlot}; ///< 借出账本槽位（登记在令牌上，见 PoolLiveness::borrowStartNanos）；空包装/未登记时是哨兵
+        std::chrono::steady_clock::time_point m_borrowedAt{};                            ///< 本次借出的起始时刻（steady）；空包装是纪元值
     };
 
 } // namespace AsynGyanis::Database

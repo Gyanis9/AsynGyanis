@@ -15,6 +15,7 @@
 // - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
 // - WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
 // - RefusesBorrowWhenWaitingSlotsAreFull：等待名额满（maximumWaitingRequests）后新借出当场被拒并落账，在场的等待者不被顶掉
+// - HeldDurationAndOldestBorrowReadoutTrackTheOldestBorrower：借用时间戳/持有期从拿到那刻起算，池级「最久在借」读数取最久的一条
 // - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
 // - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
 // - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
@@ -324,6 +325,61 @@ namespace AsynGyanis::Database
             EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "后续正常借出也被计入被拒数";
         }
 
+        // ========================================================================
+        // Borrow age
+        // ========================================================================
+
+        /**
+         * @brief 钉住借用时间戳与「最久在借」读数：持有期从拿到那一刻起算，池级读数取最久的那条
+         * @details 判据形状是先后与相对比较，不掐秒表：第一段断「后拿的持有期不可能超过先拿的」，
+         *          第二段断「最久的释放后读数只可能变新、不可能更旧」。1.1 秒的睡眠只把秒级读数
+         *          从 0 推过 1（哨兵 0 与真实值的分界），不作上界断言
+         */
+        TEST(ConnectionPool, HeldDurationAndOldestBorrowReadoutTrackTheOldestBorrower)
+        {
+            ConnectionCounter counter;
+            auto              factory = makeMockFactory(counter);
+            PoolConfig        configuration;
+            configuration.maximumPoolSize = 2;
+
+            ConnectionPool pool(factory, configuration);
+            EXPECT_EQ(registryValue("asyn_db_pool_oldest_borrow_start_seconds"), 0U) << "没有在借时这条读数必须是 0（它是哨兵值）";
+
+            PooledConnection first = pool.acquire();
+            ASSERT_TRUE(first) << "首次获取应成功";
+            const auto firstBorrowedAt  = first.borrowedAt();
+            const auto firstWindowStart = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+            // 把「最久的一条」推过秒级分界：1.1 秒后读数应仍指向第一段的借出时刻
+            std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+
+            PooledConnection second = pool.acquire();
+            ASSERT_TRUE(second);
+            EXPECT_GT(second.borrowedAt(), firstBorrowedAt) << "第二次借出的时刻不可能早于第一次";
+            EXPECT_GE(first.heldDuration().count(), 1100) << "持有期没从拿到那一刻起算";
+            EXPECT_LT(second.heldDuration().count(), 1000) << "后拿到的持有期不该把前面那段也算进来";
+
+            const std::uint64_t oldestStart = registryValue("asyn_db_pool_oldest_borrow_start_seconds");
+            EXPECT_GE(oldestStart, static_cast<std::uint64_t>(firstWindowStart)) << "最久的是第一条：读数不该早于它借出前抓的时刻";
+            EXPECT_LE(oldestStart, static_cast<std::uint64_t>(firstWindowStart) + 2U) << "读数偏离了第一条的借出窗口：最久判定取错了对象";
+
+            // 释放最久的那条：读数只可能变新（剩下那条更晚借出），不可能更旧
+            first.release();
+            const std::uint64_t afterReleaseOldest = registryValue("asyn_db_pool_oldest_borrow_start_seconds");
+            EXPECT_GE(afterReleaseOldest, oldestStart) << "最久的一条归还后读数反而更旧：注销路径没生效";
+
+            second.release();
+            EXPECT_EQ(registryValue("asyn_db_pool_oldest_borrow_start_seconds"), 0U) << "全部归还后读数必须回到哨兵值 0";
+
+            // 空包装的读数有意义的分界：持有期 0、时刻是纪元（不是「刚刚借出」）
+            const PooledConnection empty;
+            EXPECT_EQ(empty.heldDuration().count(), 0) << "空包装的持有期必须是 0";
+            EXPECT_EQ(empty.borrowedAt(), std::chrono::steady_clock::time_point{}) << "空包装的借出时刻必须是纪元值";
+        }
+
+        // ========================================================================
+        // AcquireTimeout
+        // ========================================================================
 
         /**
          * @brief 容量为 0（工厂可创建但池不让建），超时内拿不到，返回空
@@ -1217,12 +1273,15 @@ namespace AsynGyanis::Database
 
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_borrow_timeouts_total"));
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_waiting_rejections_total"));
+        ASSERT_FALSE(hasRegistrySample("asyn_db_pool_oldest_borrow_start_seconds"));
         {
             ConnectionPool pool(factory, configuration);
             EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U);
             EXPECT_TRUE(hasRegistrySample("asyn_db_pool_connections_created_total"));
             // 被拒数这条与超时数同样单开：拒绝根本没等，混进超时账会把「池不够用」的信号打成假的
             EXPECT_EQ(registryValue("asyn_db_pool_waiting_rejections_total"), 0U) << "没人被拒的池不该在这条上留下读数";
+            // 「最久在借」的哨兵：一条都没借出时读数是 0，而不是某个假的时刻
+            EXPECT_EQ(registryValue("asyn_db_pool_oldest_borrow_start_seconds"), 0U) << "没有在借时这条读数必须是 0";
 
             {
                 const PooledConnection borrowed = pool.acquire();
@@ -1255,6 +1314,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_active_connections")) << "池析构后这几条还挂在导出里";
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_session_reset_failures_total")) << "池析构后这几条还挂在导出里";
         EXPECT_FALSE(hasRegistrySample("asyn_db_pool_waiting_rejections_total")) << "池析构后这几条还挂在导出里";
+        EXPECT_FALSE(hasRegistrySample("asyn_db_pool_oldest_borrow_start_seconds")) << "池析构后这几条还挂在导出里";
     }
 
     /**

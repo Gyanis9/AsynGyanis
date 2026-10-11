@@ -516,6 +516,17 @@ namespace AsynGyanis::Database
         void noteWaitingRefusal() noexcept;
 
         /**
+         * @brief 当下在借连接里最久的一条的借出时刻（Unix 秒；没有在借时 0）
+         * @details 扫令牌上与池共享的借出账本（PoolLiveness::borrowStartNanos），全程只读原子量、
+         *          不碰池的任何一把锁——这是给指标抓取线程用的。时刻换算按「抓取瞬间的两钟差」
+         *          折算：账本记的是 steady 起点，而监控侧要的是能被 `time() - 本值` 直接算持有期的
+         *          Unix 秒；换算在抓取那一刻用 (system, steady) 同时刻对齐，因此持有期内被 NTP
+         *          拨表也不会把这条读数弄歪
+         * @return std::uint64_t 最早那条在借连接的借出时刻（Unix 秒）；账本全空时为 0
+         */
+        [[nodiscard]] std::uint64_t oldestBorrowStartEpochSeconds() const noexcept;
+
+        /**
          * @brief 取存活令牌的副本（供 PooledConnection 归还时判活）
          * @return std::shared_ptr<PoolLiveness> 与池共享的令牌；池析构前会先置假
          */
@@ -530,7 +541,8 @@ namespace AsynGyanis::Database
         std::function<std::unique_ptr<DatabaseConnection>()> m_factory; ///< 连接工厂，每次调用的返回值应是已 connect() 的状态
         PoolConfig                                           m_config;  ///< 连接池配置
 
-        std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>()}; ///< 池存活令牌：析构一开始就置假并持锁到收尾结束，与之共享的 PooledConnection 归还时据此决定
+        std::shared_ptr<PoolLiveness> m_liveness{std::make_shared<PoolLiveness>(
+                m_config.maximumPoolSize)}; ///< 池存活令牌（含借出账本，槽位按池上限开）：析构一开始就置假并持锁到收尾结束，与之共享的 PooledConnection 归还时据此决定
 
         // ----- 空闲栈（受 m_mutex 保护） -----
         std::vector<IdleEntry>  m_idleStack;     ///< LIFO 空闲连接栈
@@ -570,12 +582,12 @@ namespace AsynGyanis::Database
         std::jthread m_healthThread; ///< 后台健康检查线程
 
         /**
-         * @brief 八条池内读数挂在进程级指标注册表上的把手
+         * @brief 九条池内读数挂在进程级指标注册表上的把手
          * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
          *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
          *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */
-        std::array<Core::ProcessMetricHandle, 8> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 9> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database
