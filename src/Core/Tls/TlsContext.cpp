@@ -669,10 +669,9 @@ namespace AsynGyanis::Core
 
         // 复现「要求并校验对端证书」这一档：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
         // 但校验模式是 setClientCertificateRequired() 单独设的，漏掉这一步会让一次续期把 mTLS 悄悄关掉——
-        // 那是「续期看起来成功、安全性反而降级」的典型形态
+        // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单也在这条路上随策略复现，不会丢
         if (m_clientCertificateRequired)
         {
-            // 名单随策略复现（applyPeerVerification 读策略），续期不会把它悄悄丢掉
             applyPeerVerification(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
         }
 

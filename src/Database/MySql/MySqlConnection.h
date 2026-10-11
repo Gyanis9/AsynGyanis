@@ -467,6 +467,18 @@ namespace AsynGyanis::Database
          */
         void noteStreamClosed() noexcept;
 
+        /**
+         * @brief 新命令发送之前的统一前置：清 lastError → 连接 → 空命令 → 在途未清流
+         * @details 每条发送入口都是独立尝试：先清上一轮错误，成功路径不残留失败文本。
+         *          在途未清流时回复流停在中途，新语句会与它交错（服务端回 Commands out of sync）；
+         *          判在**发送之前**——语句一条不发、不改变任何服务端状态，这类拒绝因此可以安全重试。
+         *          计数在流读完或结果析构时归位（见 noteStreamClosed）
+         * @param command 待发送的命令原文（这里只判它是否为空）
+         * @return true 可以发送新命令
+         * @return false 已写明 lastError()，调用方直接回 nullptr
+         */
+        [[nodiscard]] bool isReadyToSendCommand(std::string_view command);
+
         friend class MySqlResult; ///< 流式结果按上面这条通知回来对账（计数是私有的）
 
         /**

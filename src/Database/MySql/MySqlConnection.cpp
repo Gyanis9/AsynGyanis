@@ -281,29 +281,9 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseResult> MySqlConnection::execute(const std::string_view command)
     {
-        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
-        m_lastError.clear();
-
-        if (!isConnected())
+        // 发送前的统一前置（清错误、连接、空命令、在途未清流）收在 helper，细节见声明处
+        if (!isReadyToSendCommand(command))
         {
-            m_lastError = "未连接到 MySQL 数据库，命令未执行";
-            return nullptr;
-        }
-
-        if (command.empty())
-        {
-            m_lastError = "数据库命令为空";
-            return nullptr;
-        }
-
-
-        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
-        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
-        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
-        if (m_openStreamCount != 0)
-        {
-            m_lastError =
-                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
             return nullptr;
         }
 
@@ -386,28 +366,9 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view command)
     {
-        m_lastError.clear();
-
-        if (!isConnected())
+        // 与预读路径同一份发送前前置（细节见 isReadyToSendCommand 的声明）
+        if (!isReadyToSendCommand(command))
         {
-            m_lastError = "未连接到 MySQL 数据库，命令未执行";
-            return nullptr;
-        }
-
-        if (command.empty())
-        {
-            m_lastError = "数据库命令为空";
-            return nullptr;
-        }
-
-
-        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
-        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
-        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
-        if (m_openStreamCount != 0)
-        {
-            m_lastError =
-                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
             return nullptr;
         }
 
@@ -479,30 +440,9 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseResult> MySqlConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
     {
-        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
-        m_lastError.clear();
-
-        // 未连接时绝不触碰 mysql_stmt_init：空句柄会得到含义不明的底层错误
-        if (!isConnected())
+        // 与不带参数的 execute() 同一份发送前前置（细节见 isReadyToSendCommand 的声明）
+        if (!isReadyToSendCommand(command))
         {
-            m_lastError = "未连接到 MySQL 数据库，命令未执行";
-            return nullptr;
-        }
-
-        if (command.empty())
-        {
-            m_lastError = "数据库命令为空";
-            return nullptr;
-        }
-
-
-        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
-        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
-        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
-        if (m_openStreamCount != 0)
-        {
-            m_lastError =
-                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
             return nullptr;
         }
 
@@ -1351,6 +1291,37 @@ namespace AsynGyanis::Database
         {
             --m_openStreamCount;
         }
+    }
+
+    bool MySqlConnection::isReadyToSendCommand(const std::string_view command)
+    {
+        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
+        m_lastError.clear();
+
+        // 未连接时不往下走：空句柄上的底层调用只会得到含义不明的错误（mysql_stmt_init 那类
+        // 尤其如此——它会先分配一个客户端对象，错误来源于是被埋进更深一层）
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 MySQL 数据库，命令未执行";
+            return false;
+        }
+
+        if (command.empty())
+        {
+            m_lastError = "数据库命令为空";
+            return false;
+        }
+
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。
+        // 在**发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试
+        if (m_openStreamCount != 0)
+        {
+            m_lastError =
+                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return false;
+        }
+
+        return true;
     }
 
     void MySqlConnection::noteSessionScopedStatement(const std::string_view command) noexcept
