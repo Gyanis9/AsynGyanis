@@ -299,23 +299,36 @@ namespace AsynGyanis::Platform
         {
             return 0;
         }
-        // 跳过 ") "：comm 之后第一列是状态（第 3 列），starttime 是第 22 列，即余下部分的第 19 个下标
+        // 跳过 ") "：comm 之后第一列是状态（第 3 列）——它是 R/S/D 这类单字符，**不是数字**；
+        // starttime 是第 22 列，即余下部分的第 19 个下标。状态列必须先按「非空白段」跨过：
+        // 直接对它跑 from_chars 会当场报无效字符，整条读数恒回 0
         const std::string_view afterComm  = statLine.substr(closeParenthesis + 2);
-        std::uint64_t          startTicks = 0;
+        std::int64_t           tokenValue = 0;
         std::size_t            cursor     = 0;
-        for (std::size_t fieldIndex = 0; fieldIndex <= 19; ++fieldIndex)
+        while (cursor < afterComm.size() && afterComm[cursor] != ' ')
+        {
+            ++cursor;
+        }
+        for (std::size_t tokenIndex = 1; tokenIndex <= 19; ++tokenIndex)
         {
             while (cursor < afterComm.size() && afterComm[cursor] == ' ')
             {
                 ++cursor;
             }
-            const std::from_chars_result parsed = std::from_chars(afterComm.begin() + static_cast<std::ptrdiff_t>(cursor), afterComm.end(), startTicks);
+            // 逐列按**有符号**解析：这份表里的 tpgid（无控制终端时是 -1）与 nice（可为负）
+            // 都是合法负数，无符号目标会让 from_chars 在它们身上当场报无效字符
+            const std::from_chars_result parsed = std::from_chars(afterComm.begin() + static_cast<std::ptrdiff_t>(cursor), afterComm.end(), tokenValue);
             if (parsed.ec != std::errc{})
             {
                 return 0;
             }
             cursor = static_cast<std::size_t>(parsed.ptr - afterComm.begin());
         }
+        if (tokenValue < 0)
+        {
+            return 0;
+        }
+        const std::uint64_t startTicks = static_cast<std::uint64_t>(tokenValue);
 
         const std::expected<std::string, std::error_code> bootContents = readFileContents("/proc/stat", 0, kProcProbeLength);
         if (!bootContents.has_value())
