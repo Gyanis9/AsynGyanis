@@ -432,12 +432,52 @@ namespace AsynGyanis::Net::Fuzz
             return input;
         }
 
-        /// 一条解出的 HTTP/1 请求的可比对标识：方法、版本、路径、逐条头部与正文
+        /// 一条解出的 HTTP/1 请求的可比对标识：方法、版本、路径、逐条头部、正文，以及四个已链进
+        /// 闭包却从没被调用过的解码入口（Cookie / 表单 / multipart / JSON）的解码结果
         std::string describeHttp1Request(const HttpRequest &request)
         {
             std::string text =
                     std::to_string(static_cast<int>(request.method())) + '/' + request.httpVersion() + '/' + std::string(request.path()) + '/' + std::string(request.body());
             request.forEachHeaderField([&text](const std::string_view name, const std::string_view value) { text += " {" + std::string(name) + ':' + std::string(value) + '}'; });
+
+            // HttpCookie.cpp 与 MultipartForm.cpp 本来就在模糊闭包里（fuzz-net.sh 列它们是为了链接期不报
+            // 未定义符号），可这两个解码器一次都没被模糊器推到过——链上不等于覆盖。这里真调一遍，把解出的
+            // 形状并进同一条可比对标识：解错或解崩都会当场体现在 trace 上，差分判据也就覆盖到这一段
+            for (const auto &cookie: request.cookies())
+            {
+                text += " [cookie:" + cookie.name() + '=' + cookie.value() + ']';
+            }
+
+            // unordered_map 的两份实例不保证同序，直接拼会让「按值出口 vs 出参出口」那类比对出现假差异
+            std::vector<std::string> formPairs;
+            formPairs.reserve(request.formFields().size());
+            for (const auto &[name, value]: request.formFields())
+            {
+                formPairs.push_back(name + '=' + value);
+            }
+            std::ranges::sort(formPairs);
+            for (const auto &pair: formPairs)
+            {
+                text += " [form:" + pair + ']';
+            }
+
+            // 段数与每段名足以逼 multipart 分段器跑完整条状态机；非法边界由它自己回空，不在这里判
+            if (const auto multipart = request.multipartForm(); multipart.has_value())
+            {
+                const auto &parts = multipart->parts();
+                text += " [multipart:" + std::to_string(parts.size()) + ']';
+                for (const auto &part: parts)
+                {
+                    // 三个文本成员都拼进去：filename 的目录剥离与 Content-Type 的空值分支也在被推的那条路上
+                    text += " [part:" + part.name + '/' + part.fileName + '/' + part.contentType + '/' + std::to_string(part.content.size()) + ']';
+                }
+            }
+
+            // JSON 值模型太大且在本层之外验过，这里只要「解得开」这件事进 trace：语法错误回空，不进这一支
+            if (request.jsonBody().has_value())
+            {
+                text += " [json]";
+            }
             return text;
         }
 
