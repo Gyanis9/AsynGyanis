@@ -117,6 +117,20 @@ namespace AsynGyanis::Net
                 }
             }
 
+            /**
+             * @brief 在静态根目录里建一条指向根外探针文件的符号链接
+             * @details 建不出链（平台不支持、Windows 没开开发者模式或没提权、文件系统不给）时返回 false，
+             *          由用例自己决定 SKIP——判据不把「链建不出来」与「链被拦下」混成同一种绿
+             * @param linkName 链接文件名（落在静态根目录之内）
+             * @return true 链接已建成
+             */
+            [[nodiscard]] bool createSymlinkToLeakFile(const std::string &linkName) const
+            {
+                std::error_code error;
+                std::filesystem::create_symlink(m_baseDirectory / "leak.txt", m_staticRoot / linkName, error);
+                return !error;
+            }
+
             /// 目录是否真的建起来了（建不起来时用例应当立即失败，而不是把「404」误读成「拦截成功」）
             [[nodiscard]] bool isReady() const
             {
@@ -534,6 +548,28 @@ namespace AsynGyanis::Net
             EXPECT_EQ(response.status(), 403) << "攻击路径：" << attackPath;
             EXPECT_EQ(response.body().find(kLeakedFileContent), std::string_view::npos) << "攻击路径：" << attackPath;
         }
+    }
+
+    TEST(HttpServer, BlocksSymlinkEscapingTheRootWith403)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirSymlink");
+        ASSERT_TRUE(tree.isReady());
+
+        // 根之外的探针文件的符号链接：路径文本里没有任何「花样」，清洗一步看不出来；
+        // 让它现形的是归一化之后的包含判定——weakly_canonical 会跟随符号链接，
+        // 链到根外的文件因此落进「相对路径以 .. 开头」的那一支
+        if (!tree.createSymlinkToLeakFile("escape.txt"))
+        {
+            GTEST_SKIP() << "本平台或当前权限不允许创建符号链接（Windows 需开发者模式或提权），这条判据在本档没有鉴别力";
+        }
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/escape.txt");
+        EXPECT_EQ(response.status(), 403) << "指向根外的符号链接没有被包含判定拦下";
+        EXPECT_EQ(response.body().find(kLeakedFileContent), std::string_view::npos) << "符号链接把根目录之外的内容送出服务器了";
     }
 
     TEST(HttpServer, BlocksWindowsAndAbsoluteFormPathsWith403)
