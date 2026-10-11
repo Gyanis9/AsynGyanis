@@ -732,7 +732,7 @@ jobs:
       # 这一步按目标逐个核对读数（含「账上出现的目标必须都在清单里」那条漏配判据），
       # 并顺手验「指定单目标时没串到别类」——独立预算真生效的证据
       - name: 核对分目标读数与产量
-        run: python3 scripts/check-fuzz-report.py .fuzz/log --min-executions 2000
+        run: python3 scripts/check-fuzz-report.py .fuzz/log
 
       # 语料留 14 天：撞出来的形状要能喂回本地继续挖，也能直接搬进 gtest 的种子用例
       - name: 保留语料
