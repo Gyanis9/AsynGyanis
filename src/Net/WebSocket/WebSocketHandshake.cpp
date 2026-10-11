@@ -557,7 +557,24 @@ namespace AsynGyanis::Net
         }
         if (!protocolValues.empty())
         {
-            agreement.acceptedSubprotocol = trimOptionalWhitespace(protocolValues.front());
+            const std::string_view selectedProtocol = trimOptionalWhitespace(protocolValues.front());
+            // 空值是「不是合法值」而不是「没选子协议」（RFC 6455 §4.1：空串与空值不是一回事、
+            // 且明写它不是这个字段的合法值）；形态按 §4.3 的 ABNF 是单个 token——逗号列表属于
+            // 「对面把多条拼在了一条里」，不是「选定了一个」
+            if (selectedProtocol.empty())
+            {
+                return std::unexpected(
+                        std::format("101 应答的 {} 是一段空值：空串不是「没选子协议」的等价写法（RFC 6455 §4.1 明写它不是这个字段的合法值）", kWebSocketSubprotocolHeaderName));
+            }
+            for (const char character: selectedProtocol)
+            {
+                if (!isTokenCharacter(static_cast<unsigned char>(character)))
+                {
+                    return std::unexpected(std::format("101 应答的 {} 取值「{}」含 token 之外的字符（RFC 6455 §4.3 的 ABNF 是 (token)）：选定一个子协议要单独占一条头，不拼列表",
+                                                       kWebSocketSubprotocolHeaderName, selectedProtocol));
+                }
+            }
+            agreement.acceptedSubprotocol = std::string(selectedProtocol);
         }
 
         if (const std::vector<std::string_view> extensionValues = headerValues(headers, kWebSocketExtensionsHeaderName); !extensionValues.empty())
