@@ -136,9 +136,12 @@ namespace AsynGyanis::Database
          * @brief 执行一条 SQL 命令并交出**流式**结果集（行留在服务端，每调用一次 next() 取一行）
          * @details 重写 DatabaseConnection::executeStreaming()：命令照旧由 mysql_real_query 送出，
          *          区别只在收回结果用 mysql_use_result 而非 mysql_store_result——客户端因此只持有当前这一行，
-         *          大结果集不再等额占内存。三条与预读不同的契约按基类落地：结果集比连接短命、它消费完（或析构）
-         *          之前这条连接不能再执行任何语句（服务端回 Commands out of sync，本驱动不另设拦截）、
-         *          rowCount() 回 0 表示「未知」。
+         *          大结果集不再等额占内存。三条与预读不同的契约按基类落地：结果集比连接短命、它结束
+         *          （读完或析构）之前这条连接不能再执行任何语句、rowCount() 回 0 表示「未知」。
+         *          中间那条由本驱动**本地拦截**：在途未清的流式结果按计数记着（m_openStreamCount），
+         *          期间任何 execute()/executeStreaming() 都在发送前被拒并说明原因；流式结果读完
+         *          或析构时计数归位（见 MySqlResult 的结束通知）。替代了此前「让服务端回
+         *          Commands out of sync 再说」的走法——那时语句已经在线上了
          * @warning **没有返回列的语句一律拒**（INSERT/UPDATE/DDL 与事务语句）：那种命令本来就没有可流式的
          *          结果集，悄悄退回预读的「空回执」会让调用方把写语句当查询用，比报一条错难查得多。
          *          拒收发生在命令已送到服务端之后（C API 无从预判有没有返回列）：写语句的副作用可能
@@ -193,6 +196,9 @@ namespace AsynGyanis::Database
          *          SERVER_STATUS_IN_TRANS——只有后者认得出绕过本类入口手工执行的 "START TRANSACTION"
          *          与关掉 autocommit 之后被语句隐式带出来的事务。SQLite 侧按 sqlite3_get_autocommit
          *          判，两边同一判据：读引擎真值，而不是只读本类记了多少账。
+         *          **在途未清流直接判脏**：还有流式结果没读完/没析构时，回包流停在中途，
+         *          连 ROLLBACK 都发不出去（服务端回 Commands out of sync），这条连接已不可复位——
+         *          一步不做、当场回 false，由池归还路径按「没复位干净」丢弃它（见 m_openStreamCount）。
          * @note 与基类契约一致：不抛异常、幂等；未连接、且下面这几格都说「与建连时一致」时不做任何事
          * @note **复位范围是「事务 + 自动提交 + 默认库 + 连接字符集 + 只读语句时限」这五格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
@@ -453,6 +459,17 @@ namespace AsynGyanis::Database
         void discardCachedStatement(std::string_view statementText) noexcept;
 
         /**
+         * @brief 流式结果结束（读完或析构）时的通知：在途未清流计数归位
+         * @details 由 MySqlResult 在两个终态各调一次（终态去重由它自己的标记保证）：读完全部行时
+         *          回复流已经排空、析构走 mysql_free_result 时客户端库把没读完的回复流一并吃掉，
+         *          两种情况下这条连接都重新可发命令，计数随之归零。低于零不出现（每次开流
+         *          都配一次通知），真漏进来也只是把拦截多留一拍，宁可保守
+         */
+        void noteStreamClosed() noexcept;
+
+        friend class MySqlResult; ///< 流式结果按上面这条通知回来对账（计数是私有的）
+
+        /**
          * @brief 关闭表中全部语句并清空缓存
          * @details 必须在 mysql_close 之前调用：语句句柄由调用方负责关闭，客户端库不会替我们在
          *          关连接时释放它们，留着就是服务端语句与客户端内存双双泄漏。
@@ -489,6 +506,12 @@ namespace AsynGyanis::Database
         bool m_isDefaultSchemaChanged{false};
         bool m_isCharacterSetChanged{false};
         bool m_isStatementTimeLimitChanged{false};
+
+        /// 在途未清流的流式结果条数（每个 executeStreaming 成功开流 +1，结果读完或析构时 -1）：
+        /// 大于 0 时回复流停在中途，本连接不能再发任何语句——execute 两条路径与 executeStreaming
+        /// 都据此在**发送之前**拒绝，resetSessionState 也据此拒复位（那条连接已不可复用，交回池
+        /// 只会让下一个借用者的第一条语句撞上协议错位）
+        std::size_t m_openStreamCount{0};
     };
 
 } // namespace AsynGyanis::Database

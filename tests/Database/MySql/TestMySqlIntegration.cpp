@@ -2918,11 +2918,13 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 流式结果未消费完之前占住这条连接，丢掉之后又把它交还
-     * @details 这一条同时干两件事。前半是**本组判据的分辨力来源**：如果 executeStreaming 其实还在客户端
-     *          整份预读，未读完就发新语句根本不会失败——所以「服务端拒绝新命令」正是「行确实留在服务端」
-     *          的可证形式，不是我们对调用方的刁难。后半是收口的安全性：只取前几行就丢弃结果集时，
-     *          析构里的 mysql_free_result 会把剩下的回复流吃掉，连接因此可继续使用
-     *          （「只要前 10 行」是流式读最常见的用法，不能要求调用方自己读完）。
+     * @details 这一条同时干两件事。前半是**本组的本地拦截**：未读完就发新语句在**发送之前**被拒
+     *          （文案点名「未消费完的流式结果」）——此前这一拒来自服务端 Commands out of sync，语句已经
+     *          上了线；现在语句一条都不发，因此这类拒绝不改变任何服务端状态、可安全重试。
+     *          「use_result 的行确实留在服务端」这条分辨力改由断链那条用例承担（它按「远超套接字缓冲」
+     *          的 34 MB 结果设计：预读实现会把 5 万行整份读进来，断链断言当场失效）。
+     *          后半是收口的安全性：只取前几行就丢弃结果集时，析构里的 mysql_free_result 会把剩下的
+     *          回复流吃掉，连接因此可继续使用（「只要前 10 行」是流式读最常见的用法，不能要求调用方自己读完）。
      */
     TEST_F(MySqlIntegrationTest, StreamingResultHoldsItsConnectionUntilItIsGone)
     {
@@ -2935,7 +2937,9 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(stream->next());
 
         ASSERT_EQ(connection.execute("SELECT 1"), nullptr) << "上一条流还没读完就接受了新命令：那份结果其实被整份读进了客户端";
-        EXPECT_NE(connection.lastNativeErrorCode(), 0) << "拒绝没有留下错误码，读起来会像驱动坏了：" << connection.lastError();
+        // 拒绝是本地给出的（发送前拦截）：点名「未消费完的流式结果」，且不产生服务端错误码——
+        // 语句根本没发出去，留一个原生码只会是上一轮的旧值，读起来才是真的像驱动坏了
+        EXPECT_NE(connection.lastError().find("未消费完的流式结果"), std::string::npos) << connection.lastError();
 
         // 丢掉未读完的结果集即交还连接：这一步失败的话「只读前几行」就成了不可用的用法
         stream.reset();
@@ -3016,6 +3020,39 @@ namespace AsynGyanis::Database
         // 会话已经没了，这条连接上的后续命令同样拿不到结果。刻意放在流还活着的时候执行：
         // 驱动的「连接级错误顺手断开」会走到 mysql_close，而那正是下面这条 ASan 判据要盯的顺序
         EXPECT_EQ(victim.execute("SELECT 1"), nullptr) << "被服务端杀掉的会话还能继续执行";
+    }
+
+    /**
+     * @brief 在途未清流同样拦住**流式入口**与复位路径：计数与拒绝覆盖三条发送路径、一处复位出口
+     * @details 前半：流开着时 executeStreaming() 也在发送前被拒（此前那一拒要等语句上线、由服务端回
+     *          Commands out of sync）；后半：这条连接此时**复位不出干净状态**——resetSessionState()
+     *          必须回 false 并说明原因，池归还路径据此按「没复位干净」丢弃它，而不是把一条回包流停在
+     *          中途的连接交给下一个借用者。结果集析构后两处都放开。
+     * @note 证伪：把 m_openStreamCount 的读取改成恒 0（拦不住、也不判脏），本条两处断言当场红。
+     */
+    TEST_F(MySqlIntegrationTest, OpenStreamBlocksBothTheStreamingEntryAndSessionReset)
+    {
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(kStreamingProbeQuery);
+        ASSERT_NE(stream, nullptr) << connection.lastError();
+        ASSERT_TRUE(stream->next());
+
+        // 流式入口同样被拦：拒绝发生在发送之前，语句一条不发
+        EXPECT_EQ(connection.executeStreaming("SELECT 2"), nullptr) << "流没读完时流式入口又开了一条";
+        EXPECT_NE(connection.lastError().find("未消费完的流式结果"), std::string::npos) << connection.lastError();
+
+        // 复位路径判脏：这条连接回不到可复用状态，必须由池丢弃而不是交出去
+        EXPECT_FALSE(connection.resetSessionState()) << "流开着时复位却报成功：下一位会拿到一条回包流停在中途的连接";
+        EXPECT_NE(connection.lastError().find("流式结果"), std::string::npos) << connection.lastError();
+
+        // 丢掉结果集（free_result 吃掉剩余回复流）之后两处都放开
+        stream.reset();
+        EXPECT_TRUE(connection.resetSessionState()) << "流已收回，复位不该再被拒：" << connection.lastError();
+        const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 3");
+        ASSERT_NE(followUp, nullptr) << connection.lastError();
+        EXPECT_TRUE(followUp->next());
     }
 
 } // namespace AsynGyanis::Database

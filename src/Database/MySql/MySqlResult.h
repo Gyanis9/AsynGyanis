@@ -23,6 +23,8 @@
 
 namespace AsynGyanis::Database
 {
+    class MySqlConnection; ///< 流式结果结束时要回去对账（在途未清流计数归位）
+
     namespace Detail
     {
         /**
@@ -91,7 +93,7 @@ namespace AsynGyanis::Database
          *        结果集因此必须比这条连接短命
          * @return std::unique_ptr<MySqlResult> 结果集（构造私有，只有本工厂能造，见私有构造的说明）
          */
-        [[nodiscard]] static std::unique_ptr<MySqlResult> forStreaming(MYSQL_RES *ownedResult, MYSQL *connectionHandle);
+        [[nodiscard]] static std::unique_ptr<MySqlResult> forStreaming(MYSQL_RES *ownedResult, MYSQL *connectionHandle, MySqlConnection *owner);
 
         /**
          * @brief 析构时释放所持有的 MYSQL_RES（行缓冲与列元数据一并回收）
@@ -237,23 +239,34 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue convertValue(const char *rawValue, size_t byteLength, size_t index) const;
 
         /**
+         * @brief 流走到终态时通知产出它的连接：把「在途未清流」计数归位（幂等，只发一次）
+         * @details 两个终态各调一次：next() 判出流已结束（读完或中断——中断时连接同样不再处于流中）、
+         *         析构里 mysql_free_result 把没读完的回复流吃掉之后。非流式档不发
+         */
+        void noteStreamEnd() noexcept;
+
+        /**
          * @brief 流式结果的构造：只由 forStreaming() 调用
          * @details 私有是有意为之：流式那份必须带着产出它的连接句柄才有意义（next() 靠它分辨
          *          「取完」与「断链」），让调用点自由拼这两个参数就会造出一个自己判不出截断的结果集。
          * @param ownedResult 移交所有权的 MYSQL_RES（由 mysql_use_result 交出）
          * @param connectionHandle 非拥有的连接句柄
+         * @param owner 产出这条流的连接（非拥有，见类注释里「流式结果必须比连接短命」那条）：
+         *        流结束（读完或析构）时按 noteStreamEnd() 通知它把「在途未清流」计数归位
          * @param tag 与预读构造区分的标签，无它义
          */
-        MySqlResult(MYSQL_RES *ownedResult, MYSQL *connectionHandle, Detail::StreamingTag tag) noexcept;
+        MySqlResult(MYSQL_RES *ownedResult, MYSQL *connectionHandle, MySqlConnection *owner, Detail::StreamingTag tag) noexcept;
 
-        MYSQL_RES   *m_result{nullptr};           ///< MySQL 结果集句柄（预读或流式），非空时由本对象负责 mysql_free_result
-        MYSQL_ROW    m_currentRow{nullptr};       ///< 当前行的列指针数组，空表示游标未停在有效行上
-        size_t       m_rowCount{0};               ///< 构造时快照的行数；写回执与**流式结果**都是 0（后者含义是「未知」）
-        size_t       m_columnCount{0};            ///< 构造时快照的列数，写回执结果为 0
-        std::int64_t m_affectedRowCount{0};       ///< 构造时快照的语句级影响行数，只读结果集与写回执之外恒为 0
-        std::int64_t m_lastInsertRowId{0};        ///< 构造时快照的语句级自增标识，非插入语句与宽不进 int64 时为 0
-        MYSQL       *m_connectionHandle{nullptr}; ///< 流式结果的生产者连接（非拥有），只用于 next() 分辨「取完」与「断链」
-        bool         m_isStreaming{false};        ///< 数据来源是否为 mysql_use_result；决定 rowCount/isEmpty/reset 的三处口径
+        MYSQL_RES       *m_result{nullptr};            ///< MySQL 结果集句柄（预读或流式），非空时由本对象负责 mysql_free_result
+        MYSQL_ROW        m_currentRow{nullptr};        ///< 当前行的列指针数组，空表示游标未停在有效行上
+        size_t           m_rowCount{0};                ///< 构造时快照的行数；写回执与**流式结果**都是 0（后者含义是「未知」）
+        size_t           m_columnCount{0};             ///< 构造时快照的列数，写回执结果为 0
+        std::int64_t     m_affectedRowCount{0};        ///< 构造时快照的语句级影响行数，只读结果集与写回执之外恒为 0
+        std::int64_t     m_lastInsertRowId{0};         ///< 构造时快照的语句级自增标识，非插入语句与宽不进 int64 时为 0
+        MYSQL           *m_connectionHandle{nullptr};  ///< 流式结果的生产者连接（非拥有），只用于 next() 分辨「取完」与「断链」
+        MySqlConnection *m_streamOwner{nullptr};       ///< 产出这条流的连接对象（非拥有）：流结束时通知它归位「在途未清流」计数
+        bool             m_isStreamEndNotified{false}; ///< 流结束通知是否已发过（读干与析构两处都可能到，通知只发一次）
+        bool             m_isStreaming{false};         ///< 数据来源是否为 mysql_use_result；决定 rowCount/isEmpty/reset 的三处口径
     };
 
 } // namespace AsynGyanis::Database

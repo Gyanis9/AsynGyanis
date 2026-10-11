@@ -5,6 +5,7 @@
 #endif
 
 #include "Database/MySql/MySqlResult.h"
+#include "Database/MySql/MySqlConnection.h"
 
 #ifdef DATABASE_HAS_MYSQL
 
@@ -59,8 +60,8 @@ namespace AsynGyanis::Database
         m_columnCount = static_cast<size_t>(mysql_num_fields(m_result));
     }
 
-    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle, const Detail::StreamingTag) noexcept :
-        m_result(ownedResult), m_connectionHandle(connectionHandle), m_isStreaming(true)
+    MySqlResult::MySqlResult(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle, MySqlConnection *const owner, const Detail::StreamingTag) noexcept :
+        m_result(ownedResult), m_connectionHandle(connectionHandle), m_streamOwner(owner), m_isStreaming(true)
     {
         // 列元数据在流式结果上是即时可用的（回复的头一段就是列定义），所以列数照常快照；
         // 行数**不快照**：mysql_num_rows 在取完全部行之前给的是 0，这里把它留成 0 并在 rowCount() 的
@@ -71,11 +72,11 @@ namespace AsynGyanis::Database
         }
     }
 
-    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle)
+    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *const ownedResult, MYSQL *const connectionHandle, MySqlConnection *const owner)
     {
         // 刻意不用 make_unique：那个 new 表达式发生在标准库的函数体里，拿不到本类的私有构造访问权。
         // 失败路径的所有权仍在调用方手上（它带着 ResultReleaser 守卫，构造抛出时由守卫释放），这里不多释放一次
-        return std::unique_ptr<MySqlResult>(new MySqlResult(ownedResult, connectionHandle, Detail::StreamingTag{}));
+        return std::unique_ptr<MySqlResult>(new MySqlResult(ownedResult, connectionHandle, owner, Detail::StreamingTag{}));
     }
 
     MySqlResult::~MySqlResult()
@@ -87,6 +88,22 @@ namespace AsynGyanis::Database
         {
             mysql_free_result(m_result);
             m_result = nullptr;
+        }
+        // free_result 之后回复流才真正排空（它把没读完的行一并吃掉），此刻通知连接放行后续语句；
+        // 流已读完的场合这次通知是幂等重复，由 m_isStreamEndNotified 拦下
+        noteStreamEnd();
+    }
+
+    void MySqlResult::noteStreamEnd() noexcept
+    {
+        if (!m_isStreaming || m_isStreamEndNotified)
+        {
+            return;
+        }
+        m_isStreamEndNotified = true;
+        if (m_streamOwner != nullptr)
+        {
+            m_streamOwner->noteStreamClosed();
         }
     }
 
@@ -118,6 +135,8 @@ namespace AsynGyanis::Database
         const unsigned int errorNumber = m_connectionHandle != nullptr ? mysql_errno(m_connectionHandle) : 0U;
         if (errorNumber == 0U)
         {
+            // 读完最后一行：回复流已排空，连接重新可发命令
+            noteStreamEnd();
             return false;
         }
 
@@ -126,6 +145,8 @@ namespace AsynGyanis::Database
                                                    "已读到的部分不构成完整结果集。这不是「读完了」，"
                                                    "请按需要重查或改用 execute() 的预读路径",
                                                    errorNumber, nativeText != nullptr && nativeText[0] != '\0' ? std::format("，{}", nativeText) : std::string{});
+        // 中断同样算终止态：这条连接不再是「中流」状态（错误状态与预读路径同一处置）
+        noteStreamEnd();
         return false;
     }
 
@@ -270,11 +291,11 @@ namespace AsynGyanis::Database
     // 桩构建里既没有 MYSQL_RES 也没有连接句柄：流式构造退化成与预读构造同一份「永远为空」的对象，
     // 因此 forStreaming() 给出的仍是可用的空结果集（0 行 0 列、next() 恒 false），调用方在桩下
     // 本来就取不到数据，判据不必为流式另开一条
-    MySqlResult::MySqlResult(MYSQL_RES *, MYSQL *, const Detail::StreamingTag) noexcept
+    MySqlResult::MySqlResult(MYSQL_RES *, MYSQL *, MySqlConnection *, const Detail::StreamingTag) noexcept
     {
     }
 
-    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *, MYSQL *)
+    std::unique_ptr<MySqlResult> MySqlResult::forStreaming(MYSQL_RES *, MYSQL *, MySqlConnection *)
     {
         return std::make_unique<MySqlResult>(nullptr);
     }

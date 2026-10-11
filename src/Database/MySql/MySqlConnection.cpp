@@ -296,6 +296,17 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
+        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
+        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError =
+                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
         // mysql_real_query 的长度形参是 unsigned long：Windows(LLP64) 上它是 32 位，超过上限的命令
         // 会被静默截断成半条语句，宁可报错也不执行残缺命令。LP64 数据模型（本仓目前即 Linux）上两者等宽，
         // 这条比较恒假（会招来 -Wtype-limits 告警），因此只在确实存在窄化风险的平台上判
@@ -389,6 +400,17 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
+        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
+        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError =
+                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
         // 与预读那条同一份窄化判定（说明见它上面的中文注释）：超长命令会被静默截断成半条语句
         if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
         {
@@ -446,10 +468,12 @@ namespace AsynGyanis::Database
 
         // 同样的所有权真空守卫：make_unique 抛异常时由释放器回收这份 MYSQL_RES
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedResult{rawResult};
-        auto                                       result = MySqlResult::forStreaming(guardedResult.get(), m_mysqlHandle);
+        auto                                       result = MySqlResult::forStreaming(guardedResult.get(), m_mysqlHandle, this);
 
         // 构造成功才解绑守卫：此后由结果集负责 mysql_free_result（它同时把没读完的回复流吃掉）
         guardedResult.release();
+        // 开流成功才记账：这一格在结果读完或析构时归位（见 noteStreamClosed）
+        ++m_openStreamCount;
         return result;
     }
 
@@ -468,6 +492,17 @@ namespace AsynGyanis::Database
         if (command.empty())
         {
             m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。在
+        // **发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试。
+        // 计数由流式结果读完或析构时归位（见 noteStreamClosed）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError =
+                    "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
             return nullptr;
         }
 
@@ -1268,6 +1303,15 @@ namespace AsynGyanis::Database
             return true;
         }
 
+        // 在途未清流直接判脏（见 m_openStreamCount）：回复流停在中途，连 ROLLBACK 都发不出去
+        // （服务端回 Commands out of sync）。一步不做、当场回 false，由池归还路径按「没复位干净」
+        // 丢弃这条连接——它已经不可复用，交回池只会让下一个借用者的第一条语句撞上协议错位
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果，会话无法复位：流式结果必须读完或析构，连接才能回到可复用状态";
+            return false;
+        }
+
         // 两种「事务开着」都要滚：本类的记账，加上服务端在上一条应答里自报的 SERVER_STATUS_IN_TRANS
         // （判据收在 isTransactionOpenNow()，与 beginTransaction() 共用一份）。后者认得出上一个借用者
         // 绕过本类入口手工执行的 "START TRANSACTION"，也认得出把 autocommit 关掉之后被语句隐式带出来
@@ -1297,6 +1341,15 @@ namespace AsynGyanis::Database
         } catch (...)
         {
             return false;
+        }
+    }
+
+    void MySqlConnection::noteStreamClosed() noexcept
+    {
+        // 两处调用（流读完、结果析构）可能先后都到：这里是幂等地递减，不重复超发
+        if (m_openStreamCount != 0)
+        {
+            --m_openStreamCount;
         }
     }
 
