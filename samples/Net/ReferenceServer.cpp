@@ -170,6 +170,27 @@ namespace
                        co_return;
                    });
 
+        // 对抗探针的正例落点：把 `x-echo-value` 这条头的原文当正文吐回。上限之内的头值「送达并
+        // 被接受」与「收到但静默丢弃」在只看状态码时同形——探针拿这里的回显逐字比对，服务端在
+        // 某个大小以上悄悄丢字段的实现会当场现形（scripts/h2_adversarial_probe.sh 第 4 项）。
+        // 缺这条头回 400：这个出口只做回显这一件事，没有可回显的东西就不装作成功
+        router.get("/echo-header",
+                   [](Net::HttpRequest &request, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       const std::optional<std::string> headerValue = request.getHeader("x-echo-value");
+                       if (!headerValue.has_value())
+                       {
+                           response.setStatus(400);
+                           response.setHeader("Content-Type", "text/plain");
+                           response.setBody("缺少 x-echo-value 头：本出口原样回显它的取值");
+                           co_return;
+                       }
+                       response.setStatus(200);
+                       response.setHeader("Content-Type", "text/plain");
+                       response.setBody(*headerValue);
+                       co_return;
+                   });
+
         // 流式响应（SSE）验收用：分两段写出，客户端逐段收到就说明分块路径真的通
         router.get("/sse",
                    [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
