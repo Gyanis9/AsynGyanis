@@ -115,10 +115,14 @@ namespace AsynGyanis::Database
         constexpr std::string_view kReusedStatementTableName = "Asyn_Mysql_ReuseStmt";
         constexpr std::string_view kReusedStatementColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
 
-        /// 带参流式用例的表：行数跨过预取窗口（64 行），列含长 TEXT（逐列补取路径）与 NULL
-        constexpr std::string_view kParameterizedStreamingTableName = "Asyn_Mysql_ParamStream";
-        constexpr std::string_view kParameterizedStreamingColumns   = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
-        constexpr std::size_t      kParameterizedStreamingRowCount  = 150;
+        /// 带参流式用例的表：行数跨过预取窗口（64 行），列含长 TEXT（逐列补取路径）与 NULL。
+        /// **每个用例一张独立表名**：ctest 逐用例并行起进程，同名表会在对方 Drop/Create 时被抽走
+        constexpr std::string_view kParameterizedStreamingColumns = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
+        constexpr std::size_t      kParameterizedStreamingRowCount = 150;
+        constexpr std::string_view kParameterizedStreamingReadTableName    = "Asyn_Mysql_ParamStream";
+        constexpr std::string_view kParameterizedStreamingHoldTableName    = "Asyn_Mysql_ParamStreamHold";
+        constexpr std::string_view kParameterizedStreamingDiscardTableName = "Asyn_Mysql_ParamStreamDiscard";
+        constexpr std::string_view kParameterizedStreamingWriteTableName   = "Asyn_Mysql_ParamStreamWrite";
 
         /// 带参流式用例第 1 行的大载荷：远超最小取值缓冲，逼出 mysql_stmt_fetch_column 逐列补取那条路
         [[nodiscard]] std::string makeStreamingBigPayload()
@@ -3106,16 +3110,16 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, ParameterizedStreamingReadsEveryRowAcrossPrefetchWindows)
     {
-        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingReadTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
 
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
         const std::string bigPayload = makeStreamingBigPayload();
-        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, bigPayload)) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingReadTableName, bigPayload)) << connection.lastError();
 
         const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
-                "SELECT `id`, `label`, `payload` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
+                "SELECT `id`, `label`, `payload` FROM " + quote(kParameterizedStreamingReadTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
         ASSERT_NE(stream, nullptr) << connection.lastError();
 
         // 流式档的歧义哨兵取不漏检一侧：行数未知回 0、isEmpty 回 false（不诱导「没有行」的短路径）
@@ -3153,15 +3157,15 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, StreamingResultHoldsTheConnectionUntilDrainedOrDisposed)
     {
-        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingHoldTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
 
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
-        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingHoldTableName, "x")) << connection.lastError();
 
         {
             const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
-                    "SELECT `id` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
+                    "SELECT `id` FROM " + quote(kParameterizedStreamingHoldTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
             ASSERT_NE(stream, nullptr) << connection.lastError();
             ASSERT_TRUE(stream->next());
 
@@ -3183,13 +3187,13 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, DiscardingAParameterizedStreamMidwayDrainsThePrefetchWindow)
     {
-        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingDiscardTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
 
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
-        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingDiscardTableName, "x")) << connection.lastError();
 
-        const std::string selectStatement = "SELECT `id` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`";
+        const std::string selectStatement = "SELECT `id` FROM " + quote(kParameterizedStreamingDiscardTableName) + " WHERE `id` >= ? ORDER BY `id`";
         {
             const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(selectStatement, std::vector<DatabaseValue>{std::int64_t{1}});
             ASSERT_NE(stream, nullptr) << connection.lastError();
@@ -3213,13 +3217,13 @@ namespace AsynGyanis::Database
      */
     TEST_F(MySqlIntegrationTest, StreamingEntryHandlesParameterizedWritesAsReceipts)
     {
-        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingWriteTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
 
         MySqlConnection connection(configuration());
         ASSERT_TRUE(connection.connect()) << connection.lastError();
-        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingWriteTableName, "x")) << connection.lastError();
 
-        const std::unique_ptr<DatabaseResult> receipt = connection.executeStreaming("UPDATE " + quote(kParameterizedStreamingTableName) + " SET `label` = ? WHERE `id` = ?",
+        const std::unique_ptr<DatabaseResult> receipt = connection.executeStreaming("UPDATE " + quote(kParameterizedStreamingWriteTableName) + " SET `label` = ? WHERE `id` = ?",
                                                                                     std::vector<DatabaseValue>{std::string("renamed"), std::int64_t{3}});
         ASSERT_NE(receipt, nullptr) << connection.lastError();
         EXPECT_EQ(receipt->rowCount(), 0U);
