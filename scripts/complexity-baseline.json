@@ -25,8 +25,8 @@
     ],
     "src/Database/MySql/MySqlConnection.cpp": [
       144,
-      142,
-      141
+      141,
+      132
     ],
     "src/Database/Pool/ConnectionPool.cpp": [
       115
@@ -124,9 +124,6 @@
     "src/Net/Quic/QuicConnectionCore.cpp": [
       156,
       135
-    ],
-    "src/Net/Quic/QuicServer.cpp": [
-      101
     ],
     "src/Net/Quic/Streams/QuicStreamLayer.cpp": [
       109
