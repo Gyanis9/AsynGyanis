@@ -13,6 +13,46 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；Linux CI 已接入这一步，避免出现「打了标签但版本号没改」这类漂移。
 
+## [3.1.0] - 2026-10-12
+
+自 3.0.1 起的累计变化（新增 13、变更 4、修复 10，三个数按本段 `### 新增/变更/修复` 三段的顶层条目现数得出）：一次以「可观测面补齐 + 安全与可靠性收口」为主的版本——mTLS 从「CA 签的都对」收窄到指纹点名，入站解压与 h3 流式头预算进同一份内存账，连接池与 QUIC 各补一组归因读数，等待器开始响应取消，致命崩溃死前留下现场；模糊档位从八档扩到十一档，告警抗洪补上两处。**没有破坏性变更，源码级公开签名保持兼容**；两处默认行为变化已在条目里点名（池等待名额默认 64、跨线程投递在途上限 65536）。
+
+### 新增
+
+- **mTLS 指纹名单**（`Core::TlsContext::setPeerFingerprintAllowlist()`）：链校验之上再按叶子证书的 SHA-256（64 位小写十六进制）点名——名单进 `TlsPolicy`、随 `reloadCertificate()` 复现，判定走自建 verify 回调且只判叶子深度、取不到宿主对象即拒（fail-closed）。两个「不会执行/静默惰性」的口子当场拒绝：服务端角色在 `setClientCertificateRequired(true)` 之前设名单，以及名单还在时关校验。
+- **入站解压的字节进在途正文预算**：`requestDecompressionMiddleware` 的装配口新增可选预算参数（不传保持旧行为）；解压成功后解出的字节按与会话收正文同一条口径记账，超限按 503 收口且正文保持原样——此前一份几百字节的 gzip 能解出几 MB 而不进任何账。
+- **事务隔离级别入口**：`Transaction(pool, TransactionIsolationLevel)`；MySQL 方言出 `SET TRANSACTION ISOLATION LEVEL …` 语句，出不了语句的引擎（SQLite）点名拒绝而不是静默按默认档跑。不传级别＝改动前的行为。
+- **连接池的等待名额上限**（`PoolConfig::maximumWaitingRequests`，默认 64）：到顶后同步与协程两条取出路径都不再排队、当场空手，计入 `asyn_db_pool_waiting_rejections_total` 并打首条告警；被拒不计入借出超时。**默认值 64 是一处行为变化**：此前等待只受时长约束；0 ＝不排队（与 `acquireTimeoutMilliseconds` 的 0 同解）。
+- **借用时间戳与「最久在借」读数**：`PooledConnection::borrowedAt()` / `heldDuration()`，以及指标 `asyn_db_pool_oldest_borrow_start_seconds`（Unix 秒，全部空闲时为 0）——「等待数不高而最久持有很旧」＝有人拿住连接不放，与「池太小」从此可分诊。
+- **QUIC 未完成握手归因**：`QuicServer::handshakingConnectionCount()` 与指标 `asyn_quic_handshaking_connections`（Gauge）——名额被只发 Initial 不推进握手的流量占住时不再只能看见「在线数在涨」。两类连接共用同一份 `maximumConnections` 是刻意的，理由写在 `QuicConnection.h`。
+- **跨线程投递的在途上限**（`Scheduler`，65536）：循环被长任务占住或投递方失控时，两条跨线程队列不再无界增长——到顶拒绝新投递、计入 `saturatedRemoteRejectionCount()` 并打首条告警；已受理的件一条不丢。
+- **崩溃现场捕获**：`Core::CrashScene::install()`（进程级、幂等）覆盖 `SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS` 与 `std::set_terminate`，死前把「致因 + 进程号 + 线程指纹 + 调用栈」写进 **stderr**（崩溃时刻日志器可能正持锁），随后恢复默认处置并重发信号——`WIFSIGNALED` 与 coredump 语义、以及 `WorkerSupervisor` 的补位口径都不受影响；受限于信号处理器，现场是 best-effort。
+- **h2 控制帧频次账**：PING / SETTINGS / RST_STREAM 三类控制帧按连接记令牌桶（容量 1000、每秒回填 100），越限按 RFC 9113 §10.5 明写的 MAY 以 `ENHANCE_YOUR_CALM` 收口——此前对端可以拿非 ACK 的 PING 无限逼本端回帧。
+- **等待器响应取消**：`IoWatcher` 的等待入口收可选 `stop_token`；`requestStop`（任意线程）发布原子取消标记并把存活核验投回所属循环，等待按「被取消」交付——挂起中的等待不再只能靠关描述符收尾。
+- **进程读数三件套进 `/metrics`**：`process_cpu_seconds_total`（累计 CPU 秒）、`process_open_fds`（打开句柄数）、`process_start_time_seconds`（启动时刻，Prometheus 惯例的重启标记），`Platform::ProcessInfo` 相应补读口；读不出的平台报 0 并在 help 里说明。
+- **派发侧跳过已结束的帧**：四条派发路径收口到 `handle.done()` 判据——停在终结点的帧只跳过、不恢复（对已结束协程 resume 是未定义行为，容器实测跳到地址 0），计入 `skippedCompletedHandleCount()` 并打首条告警；超时中间件的看门狗随之改为**就地首拍**。
+- **微基准串行收口**与并发扫描档的**工作集峰值落盘并进判定**（`benchmarks/`）：容量规划要看的那一列不再只存在于跑完的终端滚动里。
+
+### 变更
+
+- **模糊档位从八档扩到十一档**：新增 QPACK 解码器（编码器流指令 + 头块两条对端可控字节流）、permessage-deflate（要约解析 + 解压上限防爆闸 + 往返互逆）、出站 HTTP/1 响应解析器三档；闭包清单补上 `WebSocketUtf8.cpp`（此前一处跨文件调用让它断链，CI 一推就红）；permessage-deflate 把 zlib 带进闭包（Linux `-lz`、Windows 用 `ASYN_FUZZ_ZLIB_DIR` 指路）。
+- **告警抗洪两处新接时间窗闸门**：QUIC 单来源准入拒绝（每个被拒 Initial 一条且重传反复触发）与「本端发起的流上收到数据」（对端每帧一条）改为 10 秒窗放行、同条带被压条数；对端可触发告警做过一轮全量清点（85 处调用点），跳变告警与逐流一次性保护的点位经核不再重复接。
+- **README 新增「运行手册」一节**：停机与换代的固定序列（`/readyz` 摘流量窗口 → drain → POSIX 侧 `CoreUpgrade` 的 SCM_RIGHTS 零停机换代 → SIGHUP 重载）与「症状 → 先看哪里」八行（含 `/debug/loops` 定位被占住的循环）；非 HTTP 读数行同步补上本轮新增的三条指标。
+- **工程与门禁一批**：供应链新增 **gitleaks 全树密钥扫描**（钉版本与 sha256，豁免面写死在 `.gitleaks.toml`）、SBOM 组件补 SPDX 许可字段且漏登记即自检红、复杂度门按函数粒度登记、台账日期机检接进格式档、README 依赖表纳入版本同解机检、Autobahn 判定把 `behaviorClose` 算进失败面、微基准点式基线走点式判据、io_uring 档空转与「没跑也没声」都堵上、ACME 脚本就绪失败归「拿不到裁判」且 SAN 改锚定比对。
+
+### 修复
+
+- **MySQL 流式结果在途时拦住新语句与复位**：回复流停在中途时，`execute` 两条路径与 `executeStreaming` 在**发送之前**拒绝新命令（点名原因、语句一条不发、可安全重试），`resetSessionState` 见到在途未清流直接判脏、池侧按「没复位干净」丢弃——此前那条带着半条回复流的连接会干干净净地回池，下一个借用者的第一条语句撞上协议错位。同族另改了「无返回列语句流式拒收」的文案（命令已送出，别按未执行重试）。
+- **h3 流式路径的头部预算与 h1/h2 同解**：尾字段越限与 h1/h2 一样拦下（越限字段不再进业务），修正了注释里「h2 同处境」的事实错误。
+- **Linux 上进程启动时刻恒为 0**：`/proc/<pid>/stat` 的解析跳过状态列后按 19 个数值字段逐段取值（其中有可负字段须按有符号解析）——多数进程名带空格的场景此前会把字段读串。
+- **YAML 别名展开加字节预算**（`kMaximumYamlExpandedBytes`，16 MiB）：深度与节点总数两道闸都按「个数」算，挡不住「一个大标量被别名抄很多份」的乘法效应；合法配置是 KB 量级，超限按既有通道抛中文原因并点名成因。
+- **事件循环的唤醒写失败不再卡死**：`EventNotifier::notify()` 此前丢弃写入返回值——失败的那一记把合并标记留在 true 上，此后所有唤醒都被吞掉，而空闲循环睡的是无限等待。现在 EINTR 重试一次、持久失败就地复位标记并返回 false，三个调用点在拿到 false 时打首条告警（告警落在能说话的上层）。
+- **本地排空与监听抽取都加上界**：`Scheduler` 的本地与跨线程队列共用每趟预算（一条回调再投一条不再能把一趟 runAll 喂到无穷），`TcpAcceptor` 每轮至多抽 64 条——两种「自己喂自己」不再让循环回不到 `epoll_wait`。
+- **绑核按许可集合取编号**：`cpuset` 整段落在 64 以上（`--cpuset-cpus=64-95`、K8s static policy）或稀疏集（如 `{0,70}`）时，此前整池静默绑不上只留一行 WARN；`CpuAffinity::allowedCoreIndexAt()` 按整份许可集合数编号，Windows 按组内掩码。
+- **`runAll` 的每趟上限按本趟累计算**：滴灌投递（每轮 1–255 件）下旧判据永不生效、一趟会吃到生产者停手为止；burst 形状行为不变。
+- **WebSocket 收侧与 101 回显三处**：收侧 Close 判定两端收成共用一处（客户端不再把违例关闭当正常关闭）、101 回显空值 `Sec-WebSocket-Protocol` 不再被当成「没选」（逗号列表同拒）、wss 侧「等 101 被时限掐断」的拒因点名时限与明文侧同款。
+- **Redis 断开式收口计进会话复位失败**：订阅/MONITOR 等污染后的连接被断开判不健康时计入 `session_reset_failures_total`（此前只涨普通轮换的丢弃计数，「驱动清不掉状态」两种收口只有一种可见）。
+
 ## [3.0.1] - 2026-10-11
 
 自 3.0.0 起的累计变化（修复 3、变更 3，两个数按本段 `### 修复/变更` 两段的顶层条目现数得出）：把 OpenSSL 从 3.6.2 升到 3.6.5——三批后续公告里命中的那一条正是「握手里用 `SSL_set_SSL_CTX()` 换上下文后的越界读写」，而本仓的多证书 SNI 分派就是在握手里换；修掉容器里 `cpuset` 不以 0 起始时**一条线程都绑不上**的绑核缺陷（改绑「许可集合里的第 i 枚编号」）；给台账补一根日期机检并把两处自相矛盾的提交日期改对；另外把模糊测试里四个「链进闭包却从没被调用过」的解码器真驱动起来，把产量下限收进脚本单处真源，并改掉帧池注释里那句关于 MSVC 的错断言（它让一次审计误判 Windows 那档的内存结论）。**没有破坏性变更，公开签名一个没动。**
@@ -6183,7 +6223,8 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.6.0...v3.0.0
 [2.6.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.5.0...v2.6.0
