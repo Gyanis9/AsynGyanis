@@ -102,14 +102,16 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 发起握手并跑完它
-         * @param serverAddress 服务端地址（取它的地址族挑本端绑定，并向它发包）
+         * @param serverAddress 服务端地址（取它的地址族挑本端绑定，并向它发包）。**按值收**：本方法是
+         *        惰性协程，收引用会把「调用方传的临时量」（如 `resolve(...).value()`）留到协程恢复时
+         *        再用，那是悬空引用（实测 ASan 报过 stack-use-after-scope）
          * @return true 握手完成，此后可以开流收发；false 失败（对端不说话被时限掐断、握手被服务端拒绝、
          *         或收不到可信的证书）。失败时本连接已不可用，应直接销毁
          * @throws Base::SystemException 运行期故障：UDP 套接字建不起来
          * @note 地址按 `Core::InetAddress` 收：与本仓库其余出站入口（`HttpClient`、`AsyncResolver`
          *       的产出）同一口径，调用方不必自己再拼一次平台结构体
          */
-        [[nodiscard]] Core::Task<bool> connect(const Core::InetAddress &serverAddress);
+        [[nodiscard]] Core::Task<bool> connect(Core::InetAddress serverAddress);
 
         /**
          * @brief 收一条报文、交给本连接处理、再把攒下的写出去

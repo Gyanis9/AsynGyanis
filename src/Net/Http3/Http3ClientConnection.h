@@ -304,11 +304,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 握一条 QUIC 连接并把 h3 层起起来（三条本端单向流 + SETTINGS）
-         * @param serverAddress 目标地址
+         * @param serverAddress 目标地址。**按值收**：本方法是惰性协程，收引用会把「调用方传的临时量」
+         *        （如 `resolve(...).value()`）留到协程恢复时再用，那是悬空引用（实测 ASan 报过
+         *        stack-use-after-scope）
          * @return true 这条链路已经可以提请求
          * @return false 握手或 h3 起步没成；调用方按「换一条通路」处置（本对象此后不会再变健康）
          */
-        [[nodiscard]] Core::Task<bool> connect(const Core::InetAddress &serverAddress);
+        [[nodiscard]] Core::Task<bool> connect(Core::InetAddress serverAddress);
 
         /// h3 会话本体（提请求、礼貌收尾都走它）
         [[nodiscard]] Http3ClientConnection &http3() noexcept

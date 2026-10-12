@@ -431,7 +431,7 @@ namespace AsynGyanis::Net
     {
     }
 
-    Core::Task<bool> Http3OutboundLink::connect(const Core::InetAddress &serverAddress)
+    Core::Task<bool> Http3OutboundLink::connect(Core::InetAddress serverAddress)
     {
         if (!co_await m_quic->connect(serverAddress))
         {

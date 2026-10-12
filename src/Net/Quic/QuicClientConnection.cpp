@@ -61,7 +61,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<bool> QuicClientConnection::connect(const Core::InetAddress &serverAddress)
+    Core::Task<bool> QuicClientConnection::connect(Core::InetAddress serverAddress)
     {
         const Platform::SocketAddress destination = serverAddress.platformAddress();
         m_serverAddress                           = destination;
