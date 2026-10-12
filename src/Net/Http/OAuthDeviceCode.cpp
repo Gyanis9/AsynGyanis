@@ -1,6 +1,5 @@
 #include "Net/Http/OAuthDeviceCode.h"
 
-#include "Base/Coding/Base64.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/OAuthSupport.h"
@@ -8,7 +7,6 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cstdint>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -23,112 +21,6 @@ namespace AsynGyanis::Net
 
         /// RFC 8628 §3.2：服务端没给 interval 时客户端必须用的默认值
         constexpr std::chrono::seconds kDefaultPollingInterval{5};
-
-        /// 读必填的正整数秒字段（expires_in 这类）：缺失、错类型、非正都失败并点名
-        [[nodiscard]] std::expected<std::chrono::seconds, std::string> requiredPositiveSeconds(const nlohmann::json &document, const char *name)
-        {
-            const auto field = document.find(name);
-            if (field == document.end())
-            {
-                return std::unexpected(std::string{"必填字段「"} + name + "」缺失");
-            }
-            if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
-            {
-                return std::unexpected(std::string{"必填字段「"} + name + "」不是正整数");
-            }
-            return std::chrono::seconds{field->get<std::int64_t>()};
-        }
-
-        /// 读可选的正整数秒字段：缺失交回 defaultValue（§3.2 的「没给才回默认」），给了荒谬值失败并点名
-        [[nodiscard]] std::expected<std::chrono::seconds, std::string> optionalPositiveSeconds(const nlohmann::json &document, const char *name,
-                                                                                               const std::chrono::seconds defaultValue)
-        {
-            const auto field = document.find(name);
-            if (field == document.end())
-            {
-                return defaultValue;
-            }
-            if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
-            {
-                return std::unexpected(std::string{"字段「"} + name + "」不是正整数");
-            }
-            return std::chrono::seconds{field->get<std::int64_t>()};
-        }
-
-        /// 把 RFC 6749 §5.2 形状的正文摘成一行原因：`（error=…：描述）`；取不到交回空串
-        [[nodiscard]] std::string describeOauthError(const std::string &body)
-        {
-            const nlohmann::json                          document  = nlohmann::json::parse(body, nullptr, false);
-            const std::expected<std::string, std::string> errorCode = optionalJsonString(document, "error");
-            if (!errorCode.has_value() || errorCode->empty())
-            {
-                return {};
-            }
-            const std::string description = optionalJsonString(document, "error_description").value_or(std::string{});
-            return "（error=" + *errorCode + (description.empty() ? std::string{} : "：" + description) + "）";
-        }
-
-        /// 组一条表单 POST：正文落在调用方的局部串上（HttpClientRequest 的 body 是视图），凭据可选走 Basic
-        [[nodiscard]] HttpClientRequest makeFormPost(const std::string &formBody, const OAuthDeviceCodeOptions &options)
-        {
-            HttpClientRequest request;
-            request.method      = "POST";
-            request.contentType = "application/x-www-form-urlencoded";
-            request.body        = formBody;
-            if (!options.clientSecret.empty())
-            {
-                request.headers.emplace_back("authorization", "Basic " + Base::base64Encode(options.clientId + ":" + options.clientSecret));
-            }
-            return request;
-        }
-
-        /// 解析 2xx 的令牌正文（RFC 6749 §5.1）：access_token 与 token_type 必填，其余可选
-        [[nodiscard]] std::expected<OAuthDeviceToken, std::string> parseDeviceTokenBody(const std::string &body)
-        {
-            const nlohmann::json document = nlohmann::json::parse(body, nullptr, false);
-            if (document.is_discarded() || !document.is_object())
-            {
-                return std::unexpected("令牌响应的正文不是 JSON 对象");
-            }
-
-            OAuthDeviceToken                              token;
-            const std::expected<std::string, std::string> accessToken = requiredJsonString(document, "access_token");
-            if (!accessToken.has_value())
-            {
-                return std::unexpected("令牌响应：" + accessToken.error());
-            }
-            token.accessToken = *accessToken;
-
-            const std::expected<std::string, std::string> tokenType = requiredJsonString(document, "token_type");
-            if (!tokenType.has_value())
-            {
-                return std::unexpected("令牌响应：" + tokenType.error());
-            }
-            token.tokenType = *tokenType;
-
-            const std::expected<std::string, std::string> refreshToken = optionalJsonString(document, "refresh_token");
-            if (!refreshToken.has_value())
-            {
-                return std::unexpected("令牌响应：" + refreshToken.error());
-            }
-            token.refreshToken = *refreshToken;
-
-            const std::expected<std::string, std::string> grantedScope = optionalJsonString(document, "scope");
-            if (!grantedScope.has_value())
-            {
-                return std::unexpected("令牌响应：" + grantedScope.error());
-            }
-            token.scope = *grantedScope;
-
-            // expires_in 是 RECOMMENDED：没给按 0（「端点未给出」），给了坏值按协议不符拒
-            const std::expected<std::chrono::seconds, std::string> expiresIn = optionalPositiveSeconds(document, "expires_in", std::chrono::seconds{0});
-            if (!expiresIn.has_value())
-            {
-                return std::unexpected("令牌响应：" + expiresIn.error());
-            }
-            token.expiresIn = *expiresIn;
-            return token;
-        }
     } // namespace
 
     OAuthDeviceCodeClient::OAuthDeviceCodeClient(EventLoop &loop, OAuthDeviceCodeOptions options) : m_loop(loop), m_timer(loop), m_options(std::move(options))
@@ -160,7 +52,8 @@ namespace AsynGyanis::Net
             formBody += "&scope=" + percentEncodeFormComponent(m_options.scope);
         }
 
-        const auto sent = co_await HttpClient::send(m_loop, m_options.deviceAuthorizationUrl, makeFormPost(formBody, m_options), m_options.requestTimeout);
+        const auto sent = co_await HttpClient::send(m_loop, m_options.deviceAuthorizationUrl, makeOAuthFormPost(formBody, m_options.clientId, m_options.clientSecret),
+                                                    m_options.requestTimeout);
         if (!sent.has_value())
         {
             co_return std::unexpected("设备授权请求（" + m_options.deviceAuthorizationUrl + "）失败：" + sent.error());
@@ -224,7 +117,7 @@ namespace AsynGyanis::Net
         co_return authorization;
     }
 
-    Core::Task<std::expected<OAuthDeviceToken, std::string>> OAuthDeviceCodeClient::waitForToken(OAuthDeviceAuthorization authorization)
+    Core::Task<std::expected<OAuthAccessToken, std::string>> OAuthDeviceCodeClient::waitForToken(OAuthDeviceAuthorization authorization)
     {
         // 取值校验放最前：手拼的 authorization（不经 requestDeviceAuthorization）不该把轮询带进无界状态
         if (authorization.interval.count() <= 0)
@@ -260,7 +153,8 @@ namespace AsynGyanis::Net
             formBody += "&device_code=" + percentEncodeFormComponent(authorization.deviceCode);
             formBody += "&client_id=" + percentEncodeFormComponent(m_options.clientId);
 
-            const auto sent = co_await HttpClient::send(m_loop, m_options.tokenUrl, makeFormPost(formBody, m_options), m_options.requestTimeout);
+            const auto sent =
+                    co_await HttpClient::send(m_loop, m_options.tokenUrl, makeOAuthFormPost(formBody, m_options.clientId, m_options.clientSecret), m_options.requestTimeout);
             if (!sent.has_value())
             {
                 co_return std::unexpected("轮询令牌端点（" + m_options.tokenUrl + "）失败：" + sent.error());
@@ -269,7 +163,7 @@ namespace AsynGyanis::Net
             // 2xx：拿到令牌就交回
             if (sent->statusCode >= 200 && sent->statusCode < 300)
             {
-                std::expected<OAuthDeviceToken, std::string> token = parseDeviceTokenBody(sent->body);
+                std::expected<OAuthAccessToken, std::string> token = parseOAuthTokenResponse(sent->body);
                 if (!token.has_value())
                 {
                     co_return std::unexpected("令牌端点（" + m_options.tokenUrl + "）：" + token.error());

@@ -24,6 +24,7 @@ add_executable(TestNet
         Http/TestOAuthIntrospection.cpp
         Http/TestOAuthSupport.cpp
         Http/TestOAuthDeviceCode.cpp
+        Http/TestOAuthToken.cpp
         Http/TestHttpConditionalValidators.cpp
         Http/TestHttpCookie.cpp
         Http/TestHttpCookieJar.cpp

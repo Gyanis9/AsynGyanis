@@ -12,6 +12,11 @@
  */
 #pragma once
 
+#include "Base/Coding/Base64.h"
+#include "Net/Http/Client/HttpClient.h"
+
+#include <chrono>
+#include <cstdint>
 #include <expected>
 #include <string>
 #include <string_view>
@@ -109,6 +114,85 @@ namespace AsynGyanis::Net
             return std::unexpected(std::string{"必填字段「"} + name + "」是空串");
         }
         return value;
+    }
+
+    /**
+     * @brief 读必填的正整数秒字段（expires_in 这类）：缺失、错类型、非正都失败并点名
+     * @param document 待读的 JSON 对象
+     * @param name 字段名
+     * @return std::expected<std::chrono::seconds, std::string> 成功交回秒数；失败交回原因
+     */
+    [[nodiscard]] inline std::expected<std::chrono::seconds, std::string> requiredPositiveSeconds(const nlohmann::json &document, const char *name)
+    {
+        const auto field = document.find(name);
+        if (field == document.end())
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」缺失");
+        }
+        if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」不是正整数");
+        }
+        return std::chrono::seconds{field->get<std::int64_t>()};
+    }
+
+    /**
+     * @brief 读可选的正整数秒字段：缺失交回 defaultValue（RFC 8628 §3.2 的「没给才回默认」），给了荒谬值失败并点名
+     * @param document 待读的 JSON 对象
+     * @param name 字段名
+     * @param defaultValue 字段缺失时交回的值
+     * @return std::expected<std::chrono::seconds, std::string> 成功交回秒数；失败交回原因
+     */
+    [[nodiscard]] inline std::expected<std::chrono::seconds, std::string> optionalPositiveSeconds(const nlohmann::json &document, const char *name,
+                                                                                                  const std::chrono::seconds defaultValue)
+    {
+        const auto field = document.find(name);
+        if (field == document.end())
+        {
+            return defaultValue;
+        }
+        if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
+        {
+            return std::unexpected(std::string{"字段「"} + name + "」不是正整数");
+        }
+        return std::chrono::seconds{field->get<std::int64_t>()};
+    }
+
+    /**
+     * @brief 把 RFC 6749 §5.2 形状的正文摘成一行原因：`（error=…：描述）`；取不到交回空串
+     * @param body 响应正文原文
+     * @return std::string 可直接拼进失败原因的一行；正文里没有 error 字段时为空串
+     */
+    [[nodiscard]] inline std::string describeOauthError(const std::string &body)
+    {
+        const nlohmann::json                          document  = nlohmann::json::parse(body, nullptr, false);
+        const std::expected<std::string, std::string> errorCode = optionalJsonString(document, "error");
+        if (!errorCode.has_value() || errorCode->empty())
+        {
+            return {};
+        }
+        const std::string description = optionalJsonString(document, "error_description").value_or(std::string{});
+        return "（error=" + *errorCode + (description.empty() ? std::string{} : "：" + description) + "）";
+    }
+
+    /**
+     * @brief 组一条 OAuth 表单 POST：正文落在调用方的局部串上，凭据可选走 Basic（RFC 6749 §2.3.1）
+     * @param formBody 已编码好的表单正文（HttpClientRequest 的 body 是视图，调用方须让它活到 send 用完为止）
+     * @param clientId 客户端标识（Basic 的用户名侧）
+     * @param clientSecret 客户端口令；空 = 公开客户端，不发认证头
+     * @return HttpClientRequest 组好的请求
+     */
+    [[nodiscard]] inline HttpClientRequest makeOAuthFormPost(const std::string &formBody, const std::string_view clientId, const std::string_view clientSecret)
+    {
+        HttpClientRequest request;
+        request.method      = "POST";
+        request.contentType = "application/x-www-form-urlencoded";
+        request.body        = formBody;
+        if (!clientSecret.empty())
+        {
+            request.headers.emplace_back("authorization", "Basic " + Base::base64Encode(std::string{clientId} + ":" + std::string{clientSecret}));
+        }
+        return request;
     }
 
 } // namespace AsynGyanis::Net

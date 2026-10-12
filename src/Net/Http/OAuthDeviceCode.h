@@ -26,6 +26,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Net/Http/OAuthToken.h"
 
 #include <chrono>
 #include <expected>
@@ -64,18 +65,6 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 令牌响应的常用字段（RFC 6749 §5.1）
-     */
-    struct OAuthDeviceToken
-    {
-        std::string          accessToken;  ///< 访问令牌（必填）
-        std::string          tokenType;    ///< 令牌类型（如 Bearer；必填）
-        std::string          refreshToken; ///< 刷新令牌（可空）
-        std::string          scope;        ///< 实际授予的范围（可空）
-        std::chrono::seconds expiresIn{0}; ///< 有效期（秒）；0 = 端点未给出
-    };
-
-    /**
      * @brief OAuth 2.0 设备码流程客户端（RFC 8628）
      *
      * @details 无状态：两次调用都是成员协程，期间的会话信息全在 `OAuthDeviceAuthorization`
@@ -111,9 +100,9 @@ namespace AsynGyanis::Net
          *          其余错误码与传输失败一律终止（error 原文带在原因里，不猜可重试性）。
          * @param authorization requestDeviceAuthorization 的结果。**按值收**：协程到首次恢复才读
          *        入参，按引用/视图接临时量会静默读到已释放内存
-         * @return std::expected<OAuthDeviceToken, std::string> 令牌；失败为中文原因
+         * @return std::expected<OAuthAccessToken, std::string> 令牌（RFC 6749 §5.1 的共用形状）；失败为中文原因
          */
-        [[nodiscard]] Core::Task<std::expected<OAuthDeviceToken, std::string>> waitForToken(OAuthDeviceAuthorization authorization);
+        [[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> waitForToken(OAuthDeviceAuthorization authorization);
 
         /**
          * @brief §3.5 的轮询间隔规则：slow_down 时加 5 秒（此后每个请求都用新值），其余不动
