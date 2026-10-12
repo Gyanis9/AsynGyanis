@@ -16,6 +16,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/OAuthDeviceCode.cpp
         ${CMAKE_CURRENT_LIST_DIR}/OAuthToken.h
         ${CMAKE_CURRENT_LIST_DIR}/OAuthToken.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthAuthorizationCode.h
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthAuthorizationCode.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerLimits.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMemoryBudget.h

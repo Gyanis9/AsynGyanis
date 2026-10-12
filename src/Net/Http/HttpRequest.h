@@ -503,6 +503,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::unordered_map<std::string, std::string> formFields() const;
 
         /**
+         * @brief 按 www-form-urlencoded 的形状拆一段文本（查询串与表单正文共用）
+         * @details 先按 '&' 拆分对，每对再按「第一个 '='」拆键值，键值都做百分号解码。
+         * @param text 待解析文本（不含前导 '?'）
+         * @return 解码后的键值表；重复键后出现的覆盖先出现的
+         * @note 摆成公开静态是为了让库外也拿到同一份解码：OAuth 的授权回调查询串就与入站查询串
+         *       同解——两处各写一版必然在边角规则上分叉
+         */
+        [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
+
+        /**
          * @brief 把请求正文按 JSON 解析成一份配置值（与 `Base::ConfigValue` 同一个类型，不做二次搬运）。
          * @details 媒体类型不是 `application/json` 时交回空，语法不合法也交回空：调用方判空即可，
          *          不需要接异常——外部输入不该靠异常否定一次调用。
@@ -582,14 +592,6 @@ namespace AsynGyanis::Net
          * @return 解码后的文本
          */
         static std::string percentDecode(std::string_view source);
-
-        /**
-         * @brief 按 www-form-urlencoded 的形状拆一段文本（查询串与表单正文共用）
-         * @details 先按 '&' 拆分对，每对再按「第一个 '='」拆键值，键值都做百分号解码。
-         * @param queryText 待解析文本（不含前导 '?'）
-         * @return 解码后的键值表；重复键后出现的覆盖先出现的
-         */
-        [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
 
         HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
         std::string          m_uri;                         ///< 原始 URI，含查询串
