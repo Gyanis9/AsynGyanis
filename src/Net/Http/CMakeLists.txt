@@ -8,6 +8,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/JwtVerifier.cpp
         ${CMAKE_CURRENT_LIST_DIR}/JwksKeyProvider.h
         ${CMAKE_CURRENT_LIST_DIR}/JwksKeyProvider.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.h
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerLimits.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMemoryBudget.h

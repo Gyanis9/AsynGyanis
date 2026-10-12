@@ -21,6 +21,7 @@ add_executable(TestNet
         Http/TestHttpDate.cpp
         Http/TestJwtVerifier.cpp
         Http/TestJwksKeyProvider.cpp
+        Http/TestOAuthIntrospection.cpp
         Http/TestHttpConditionalValidators.cpp
         Http/TestHttpCookie.cpp
         Http/TestHttpCookieJar.cpp
