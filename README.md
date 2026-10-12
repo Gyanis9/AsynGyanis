@@ -861,9 +861,10 @@ AsynGyanis/
   签出的链还要拿对面**本次启动**的根（管理接口 `/roots/0`）用 openssl 验一遍。
   为什么值得跑：进程内的桩与实现同源、一起被改，两边错在同一种理解上时会一起绿；这一轮它就抓出了两个
   桩不会拒的缺陷（请求缺 `User-Agent`、机构复用已 valid 的授权时又被触发一次挑战）
-- **供应链**：`scripts/generate-sbom.py` 出 CycloneDX 1.6 清单（含 `SHA256SUMS`），
+- **供应链**：`scripts/generate-sbom.py` 出 CycloneDX 1.6 清单（含 `SHA256SUMS`，每条组件带 SPDX 许可），
   `scripts/check-dependency-advisories.py` 钉「`conandata.yml` 的固定版本与 `packaging/dependency-watch.json`
-  的公告台账同解」；两者由 `supply-chain.yml` 作业跑（`main` 推送、手动触发、每周一凌晨），SBOM 作为制品保留
+  的公告台账同解」；两者加 gitleaks 全树密钥扫描（豁免面在 `.gitleaks.toml`）由 `supply-chain.yml` 作业跑
+  （`main` 推送、手动触发、每周一凌晨），SBOM 作为制品保留
   90 天。它交的是**依赖清单与来源**，不是签名后的二进制——要制品级 provenance 需另配签名构建
 - 代码所有权见 `.github/CODEOWNERS`（按目录路由，协议层与平台层的改动自动点名）；漏洞响应时限与披露节奏见
   `.github/SECURITY.md`
