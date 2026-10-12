@@ -1231,6 +1231,52 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住重复 host 必须指向同一实体（RFC 9110 §7.2）：取值不一致按畸形中止这条流
+     * @details 没有 :authority 可判时正是缺的那半格：两条不同的 host 此前会原样交给业务、选站取首条，
+     *          而前端与共享缓存可能按另一条分诊——两份说法各走各的就是请求走私的入口。反向那一半
+     *          同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的多条 host **不能**被拒。
+     */
+    TEST(Http2Connection, RejectsConflictingDuplicateHostHeaders)
+    {
+        const auto expectStreamRejected = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_TRUE(connection.takeRequests().empty()) << "权威说法有分歧的请求不得交给业务";
+
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            ASSERT_EQ(resetFrames.size(), 1U) << "应当中止这条流";
+            Http2RstStreamPayload payload;
+            std::string           errorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
+            EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
+            EXPECT_FALSE(connection.hasFailed()) << "流错误不该终止连接：" << connection.errorMessage();
+        };
+
+        const auto expectStreamAccepted = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_EQ(connection.takeRequests().size(), 1U) << "归一化之后同一个实体，不该被自家闸门拒掉";
+        };
+
+        // 不带 :authority 的最小 GET（:method GET + :scheme http + :path /）：把判据逼到「多条 host 之间」那一半
+        const auto makeAuthoritylessGetBlock = []() { return hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4); };
+
+        // 两份 host 各说一套：必须在 intake 就被拒
+        expectStreamRejected(makeAuthoritylessGetBlock() + hpackLiteralField("host", "first.example") + hpackLiteralField("host", "second.example"));
+        // 带 :authority 时两条 host 里有一条与它不一致：与权威判据合起来覆盖两半
+        expectStreamRejected(makeMinimalGetRequestBlock() + hpackLiteralField("host", "example.com") + hpackLiteralField("host", "other.example"));
+
+        // 归一化之后同一实体：大小写、结尾根点、端口都不构成新的实体（与 :authority 那条判据同一份口径）
+        expectStreamAccepted(makeAuthoritylessGetBlock() + hpackLiteralField("host", "EXAMPLE.com.") + hpackLiteralField("host", "example.com:8443"));
+        // 与 :authority 指向同一实体的重复 host：取值一致即放行
+        expectStreamAccepted(makeMinimalGetRequestBlock() + hpackLiteralField("host", "example.com") + hpackLiteralField("host", "EXAMPLE.com."));
+    }
+
+    /**
      * @brief 钉住：正文按 DATA 帧逐片交出，末片的 END_STREAM 把对端方向半关
      */
     TEST(Http2Connection, DeliversReceivedBodyDataAsSeparateEvents)

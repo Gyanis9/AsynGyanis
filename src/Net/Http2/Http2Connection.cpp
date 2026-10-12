@@ -68,6 +68,49 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 校验一条 host 请求头：多条 host 之间、以及与 :authority（在场且非空时）都必须指向同一实体
+         * @details 两份指向不同实体的权威说法就是请求走私的入口：本端选虚拟主机读的是 host，而按另一条
+         *          分诊的前端会把请求送到非预期站点。比较走与选站同一份归一化（normalizeHostComparisonKey）——
+         *          两处各自折一遍，就会出现「协议判据说一致、选站说不同」的分叉，那分叉本身又是一个洞。
+         *          firstHostValue 与 hasHostField 由本函数就地维护：首条写入，后续只比对。
+         * @param hostValue 本条 host 头的取值
+         * @param hasAuthorityField 请求是否带了 :authority
+         * @param authority :authority 的取值（未带时为空串）
+         * @param firstHostValue 首条 host 的取值；首条时由本函数写入
+         * @param hasHostField 是否已见过 host；首条时由本函数置真
+         * @param errorText 失败原因出参，为空时什么都不做
+         * @return true 本条 host 通过
+         * @return false 已写入原因，调用方按流错误收口
+         */
+        bool acceptRequestHostField(const std::string_view hostValue, const bool hasAuthorityField, const std::string_view authority, std::string_view &firstHostValue,
+                                    bool &hasHostField, std::string *const errorText)
+        {
+            if (hasAuthorityField && !authority.empty() && normalizeHostComparisonKey(hostValue) != normalizeHostComparisonKey(authority))
+            {
+                writeError(errorText, std::format("请求头 host 的取值 \"{}\" 与 :authority \"{}\" 不是同一个实体：RFC 9113 §8.3.1 要求两者一致"
+                                                  "（比较前按 RFC 3986 §6.2 归一化——去端口、折小写、去结尾的根点），请让对端只保留一种说法",
+                                                  printableFieldText(hostValue), printableFieldText(authority)));
+                return false;
+            }
+            // 重复出现的 host 之间也必须指向同一实体（RFC 9110 §7.2：发送方不得生成多条 Host）：本端
+            // 选站取首条，而前端与共享缓存可能按另一条分诊、记缓存键——两份说法各走各的，与 host↔:authority
+            // 那条判据同形；归一化后取值一致的多条按同一实体放行（与 h3 头校验器的判据同解）
+            if (hasHostField && normalizeHostComparisonKey(hostValue) != normalizeHostComparisonKey(firstHostValue))
+            {
+                writeError(errorText, std::format("请求头 host 出现了取值不一致的多条：\"{}\" 与 \"{}\" 折出的比对键不同"
+                                                  "（RFC 9110 §7.2 要求发送方不得生成多条 Host；比较与 :authority 那条判据、选站共用同一份归一化），请让对端只保留一条",
+                                                  printableFieldText(firstHostValue), printableFieldText(hostValue)));
+                return false;
+            }
+            if (!hasHostField)
+            {
+                firstHostValue = hostValue;
+                hasHostField   = true;
+            }
+            return true;
+        }
+
+        /**
          * @brief 判断字符是否含 ASCII 大写字母
          * @param text 待检查的文本
          * @return true 表示含 A-Z
@@ -1480,14 +1523,16 @@ namespace AsynGyanis::Net
             request.isHeaderListTooLarge = true;
         }
 
-        bool        hasSeenRegularHeader  = false;
-        bool        hasMethodField        = false;
-        bool        hasSchemeField        = false;
-        bool        hasPathField          = false;
-        bool        hasAuthorityField     = false;
-        bool        hasProtocolField      = false;
-        bool        hasContentLengthField = false;
-        std::size_t contentLengthValue    = 0;
+        bool             hasSeenRegularHeader  = false;
+        bool             hasMethodField        = false;
+        bool             hasSchemeField        = false;
+        bool             hasPathField          = false;
+        bool             hasAuthorityField     = false;
+        bool             hasProtocolField      = false;
+        bool             hasContentLengthField = false;
+        bool             hasHostField          = false;
+        std::size_t      contentLengthValue    = 0;
+        std::string_view firstHostValue;
         for (const HpackHeaderField &field: headerFields)
         {
             // 头名必须全小写（§8.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
@@ -1647,16 +1692,10 @@ namespace AsynGyanis::Net
                 hasContentLengthField = true;
                 contentLengthValue    = declaredLength;
             }
-            // Host 与 :authority 同时在场时必须指向同一个实体（RFC 9113 §8.3.1：客户端不得生成两者不一致的
-            // 请求，服务端「应当」把这种请求按畸形处理；比较前先按 RFC 3986 §6.2 归一化）。本端还有一层
-            // 实害：选虚拟主机读的是 Host（Router::selectVirtualHostTable），而一个按 :authority 分诊的前端
-            // 会把请求送到另一个站点——两份说法就是请求走私的入口。归一化与选站共用同一份实现：两处各自
-            // 折一遍，就会出现「协议判据说一致、选站说不同」或反过来，那分叉本身又是一个洞
-            if (field.name == "host" && hasAuthorityField && !request.authority.empty() && normalizeHostComparisonKey(field.value) != normalizeHostComparisonKey(request.authority))
+            // host 的两条一致性判据（多条 host 之间、与 :authority 之间）收在 acceptRequestHostField 里，
+            // 「首条 host」那两份状态也由它维护。比较走与选站同一份归一化，理由见该函数
+            if (field.name == "host" && !acceptRequestHostField(field.value, hasAuthorityField, request.authority, firstHostValue, hasHostField, errorText))
             {
-                writeError(errorText, std::format("请求头 host 的取值 \"{}\" 与 :authority \"{}\" 不是同一个实体：RFC 9113 §8.3.1 要求两者一致"
-                                                  "（比较前按 RFC 3986 §6.2 归一化——去端口、折小写、去结尾的根点），请让对端只保留一种说法",
-                                                  printableFieldText(field.value), printableFieldText(request.authority)));
                 return false;
             }
             request.headerFields.append(field.name, field.value);
