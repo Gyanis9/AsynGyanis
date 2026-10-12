@@ -343,10 +343,13 @@ namespace AsynGyanis::Net
      *          这就是归因；② 只发 Initial、握手谈不成的流量（RFC 9001 附录 A.2 的整包，ALPN 不是
      *          h3）不留下僵尸条目：服务端拒绝它，等待之后两数复原。两类连接共用同一份
      *          maximumConnections 是刻意的（理由见 QuicConnection.h 的清单），本用例钉的是归因那一半。
+     *          ③ 半程握手（Initial 发出后不再有任何后续）让「未验证」出现真正大于 0 的时刻——
+     *          把重算块整段删掉，本用例必须在③第一个断言上转红。
      */
     TEST(QuicServer, AttributesHandshakingConnectionsSeparatelyFromEstablishedOnes)
     {
-        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
+        // 空闲时限收到 3 秒：③里半程握手的连接靠它收口，收口之后两数回零也靠它兑现
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration) { configuration.idleTimeout = std::chrono::seconds{3}; }};
         ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
         EXPECT_EQ(server.server().connectionCount(), 0U);
         EXPECT_EQ(server.server().handshakingConnectionCount(), 0U);
@@ -373,6 +376,29 @@ namespace AsynGyanis::Net
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
         EXPECT_EQ(server.server().handshakingConnectionCount(), 0U) << "谈不成握手的 Initial 在「未验证」名下有残留";
         EXPECT_EQ(server.server().connectionCount(), onlineAfterHandshake) << "坏握手流量改变了在线数：条目没被收干净";
+
+        // ③ 半程握手：连接进表、挂在「未验证」名下——归因镜像到底有没有在算，只有这一刻看得见。
+        //    半程客户端 = 只把手泵到 Initial 发出就停：服务端收下 ClientHello、在等对端后续，而这一位
+        //    永远不来。此前本用例没有任何读数必须大于 0 的时刻，把重算块整段删掉也全绿
+        {
+            Core::EventLoop      halfClientLoop;
+            QuicClientConnection halfClient(halfClientLoop, makeConfiguration("127.0.0.1", kIpCertificatePath, std::chrono::milliseconds{4000}));
+            Core::Task<bool>     halfAttempt = halfClient.connect(Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value());
+            halfAttempt.handle().resume(); // 只推进到 Initial 发出；此后不再泵这具循环，握手上不去
+
+            ASSERT_TRUE(waitForCondition([&] { return server.server().handshakingConnectionCount() >= 1U; }, kWaitTimeout))
+                    << "半程握手的连接没被算进「未验证」：归因镜像没在按拍重算";
+            EXPECT_LE(server.server().handshakingConnectionCount(), server.server().connectionCount()) << "「未验证」超过了在线总数";
+            EXPECT_GE(server.server().connectionCount(), onlineAfterHandshake + 1U) << "半程握手没有让在线数上涨";
+        } // 半程客户端退场：套接字关了，服务端那条连接等空闲时限收口
+
+        // 空闲时限过后两数都要回零，且「未验证」的归零不得滞后于在线数。判据分两层：在线数照常等到零；
+        // 「未验证」则给 100ms 宽限（空闲拍长 1s 的十分之一）后当场核对——重算排在摘除之后，
+        // 最后一条离表当拍就归零。重算排在拍首（先于摘除）的实现在这 100ms 里读到的是上一拍的陈旧值 1
+        // （要等下一拍、最坏 1s 后才清），本断言因此转红；「等到条件成立为止」的写法会白给它一秒追上来的机会
+        ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() == 0U; }, kWaitTimeout)) << "半程连接没有被空闲时限收干净";
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        EXPECT_EQ(server.server().handshakingConnectionCount(), 0U) << "在线数已归零 100ms 后「未验证」仍带着陈旧值：归因重算排在摘除之前，最后一条离表的那一拍没跟上";
     }
 
     /**
