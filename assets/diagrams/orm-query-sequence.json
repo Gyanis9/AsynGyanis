@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "758ff6478d5c36de1b084cfd160b2a26f05f6323"
+      "revision": "4558e28ecb554b734b947b1a4c66fc8bc1b3ec8a"
     },
     "views": [
       {
@@ -94,9 +94,9 @@
       "label": "驱动连接",
       "sublabel": "Sqlite / MySQL",
       "sources": [
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 220, "label": "未命中才 prepare" },
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 545, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 526, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 366, "label": "未命中才 prepare" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 634, "label": "findCachedStatement" },
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 502, "label": "命中直 bindAndExecute" }
       ]
     },
     {
@@ -157,7 +157,7 @@
       "dot": "amber",
       "title": "语句缓存的两条分支",
       "items": [
-        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:423 / MySqlConnection.h:499）",
+        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:468 / MySqlConnection.h:528）",
         "SQLite 命中刷 stamp 并整趟跳过编译与边界探测；行没跑完先 detachCachedStatement，超 256 行快照界退回游标即不回缓存",
         "MySQL 任何失败一律 discardCachedStatement，刻意不做重编重试——写语句重试就是二次写入"
       ]
