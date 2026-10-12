@@ -970,15 +970,15 @@ namespace AsynGyanis::Database::Queryable
             lease.pooled                           = pool->acquire();
             if (!lease.pooled)
             {
-                // 「可能是池已达上限或连接创建失败」是把两种处置完全不同的失败合成一句猜话：
-                // 前者要抬上限或减少并发借用，后者要查连接参数与服务可达性。池自己已经把这两件事
+                // 「可能是池已达上限或连接创建失败」是把几种处置完全不同的失败合成一句猜话：
+                // 前者要抬上限或减少并发借用，后者要查连接参数与服务可达性，等待名额被拒则是排队上限该调。池把这几件事
                 // 分开计了（借出等待超时计数只在等满截止时刻那一路增加），所以这里报数而不是猜
-                throw ConnectionUnavailableException(std::string("Queryable: 从连接池借不到连接。借出等待超时计数从 ") + std::to_string(borrowTimeoutsBefore) + " 变成 " +
-                                                     std::to_string(pool->borrowTimeoutCount()) +
-                                                     "（增加了就是等满了截止时刻——池被借干；没增加就是新建连接失败）；"
-                                                     "当前池内 " +
-                                                     std::to_string(pool->totalCount()) + " 条、活跃 " + std::to_string(pool->activeCount()) + " 条、排队等待 " +
-                                                     std::to_string(pool->waitingCount()) + " 条");
+                throw ConnectionUnavailableException(
+                        std::string("Queryable: 从连接池借不到连接。借出等待超时计数从 ") + std::to_string(borrowTimeoutsBefore) + " 变成 " +
+                        std::to_string(pool->borrowTimeoutCount()) +
+                        "（增加了就是等满了截止时刻——池被借干；没增加要再分两路查：新建连接失败——查连接参数与服务可达性；等待名额被拒——看 waiting_rejections_total 有没有在涨）；"
+                        "当前池内 " +
+                        std::to_string(pool->totalCount()) + " 条、活跃 " + std::to_string(pool->activeCount()) + " 条、排队等待 " + std::to_string(pool->waitingCount()) + " 条");
             }
             lease.connection = lease.pooled.operator->();
             return lease;

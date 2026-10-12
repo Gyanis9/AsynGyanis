@@ -23,8 +23,8 @@ namespace AsynGyanis::Database
         m_connection = pool.acquire();
         if (!m_connection)
         {
-            throw ConnectionUnavailableException("数据库事务：无法从连接池获取连接（池已达上限且等待超时，"
-                                                 "或连接工厂创建失败），事务未开启");
+            throw ConnectionUnavailableException("数据库事务：无法从连接池获取连接（池已达上限且等待超时、"
+                                                 "连接工厂创建失败或等待名额被拒），事务未开启");
         }
 
         // 事务控制语句的文本由方言提供：SQLite 用 BEGIN IMMEDIATE、MySQL 用 START TRANSACTION，

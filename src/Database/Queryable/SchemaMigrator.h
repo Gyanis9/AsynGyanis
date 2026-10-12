@@ -260,7 +260,7 @@ namespace AsynGyanis::Database::Queryable
             PooledConnection connection = pool.acquire();
             if (!connection)
             {
-                writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限或连接创建失败）");
+                writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限、连接创建失败或等待名额被拒）");
                 return false;
             }
 
@@ -415,7 +415,7 @@ namespace AsynGyanis::Database::Queryable
                 PooledConnection connection = pool.acquire();
                 if (!connection)
                 {
-                    writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限或连接创建失败）");
+                    writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限、连接创建失败或等待名额被拒）");
                     return false;
                 }
 
@@ -476,7 +476,7 @@ namespace AsynGyanis::Database::Queryable
                                     PooledConnection connection = pool.acquire();
                                     if (!connection)
                                     {
-                                        writeError(errorText, "SchemaMigrator: 补列 \"" + columnName + "\" 时取不到连接（池已达上限或连接创建失败）");
+                                        writeError(errorText, "SchemaMigrator: 补列 \"" + columnName + "\" 时取不到连接（池已达上限、连接创建失败或等待名额被拒）");
                                         isAborted = true;
                                         return;
                                     }
@@ -688,7 +688,7 @@ namespace AsynGyanis::Database::Queryable
             if (!probeConnection)
             {
                 writeError(errorText, "SchemaMigrator: 从连接池获取连接失败，无法推导数据库类型"
-                                      "（池已达上限或连接创建失败）");
+                                      "（池已达上限、连接创建失败或等待名额被拒）");
                 return nullptr;
             }
 
@@ -711,7 +711,7 @@ namespace AsynGyanis::Database::Queryable
             const PooledConnection connection = pool.acquire();
             if (!connection)
             {
-                writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限或连接创建失败）");
+                writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限、连接创建失败或等待名额被拒）");
                 return false;
             }
 

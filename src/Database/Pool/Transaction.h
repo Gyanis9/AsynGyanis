@@ -56,8 +56,8 @@ namespace AsynGyanis::Database
          * @param pool 提供连接的连接池，本对象在析构前一直占用其中一条连接
          * @param isolationLevel 请求的事务隔离级别；Default 表示引擎默认（不发额外语句）
          *
-         * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时，
-         *         或连接工厂创建失败）
+         * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时、
+         *         连接工厂创建失败，或等待名额被拒）
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现，取不到开启事务的语句文本；
          *         或**引擎不支持所请求的隔离级别**（如 SQLite 不支持按事务请求）——抛出文案点名
          *         引擎与级别，不静默降级成引擎默认
