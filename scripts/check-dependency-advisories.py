@@ -6,7 +6,8 @@
 #   1) 每条依赖都在台账里登记了公告入口（新增依赖忘了登记 → 红）；
 #   2) 台账里的 pinnedVersion 与 conandata.yml 一致（升了版本没复核 → 红）；
 #   3) 台账里没有已消失的依赖（改名/移除没同步 → 红）；
-#   4) README「外部依赖」表的版本与 conandata.yml 同解（那是第三份拷贝，此前没有机检看着）；
+#   4) README「外部依赖」表与 conandata.yml 逐行同解（库名与版本配对都要对上——只比版本集合的话，
+#      两行版本对调这种错位照样绿；那是第三份拷贝）；
 #   5) packaging/conan/conanfile.py 的交付配方里写版本的四处与 conandata.yml 同解
 #      （第四份拷贝：升 conandata 而漏跟配方，交付出去的包就钉在旧版本上）。
 # 加 --fetch 时另做一次「公告入口链接还活着」的连通性核对；网络不通只提示，不判红——
@@ -58,38 +59,51 @@ def read_watch_list() -> dict:
     return dependencies
 
 
-def read_readme_table_versions() -> set:
-    """README「外部依赖」表的版本列 → 版本号集合（一格可带多个版本，用 / 分隔）。"""
+# README 表里的展示名 → conandata.yml 的配方名：只列对不上的，其余按同名映射
+README_NAME_ALIASES = {"OpenSSL": "openssl", "GoogleTest": "gtest", "SQLite3": "sqlite3"}
+
+
+def read_readme_table_pairs() -> dict:
+    """README「外部依赖」表 → {配方名: 版本}（一行多库时版本列同样用 / 分隔且一一对应）。"""
     if not README.exists():
         raise SystemExit("缺少 README.md")
-    versions = set()
+    pairs = {}
     insideTable = False
     for line in README.read_text(encoding="utf-8").splitlines():
         if not insideTable:
             if line.strip() == "| 库 | 版本 | 用途 |":
                 insideTable = True
             continue
-        # 表格在遇到第一行非表格行时结束；只取版本列（第一格是库名、第二格是版本）
+        # 表格在遇到第一行非表格行时结束；第一格是库名（带链接、一行多库用 / 分隔）、第二格是版本
         if not line.startswith("|"):
             break
+        if set(line.strip()) <= set("|-: "):
+            continue  # 表头下的分隔行（|---|------|------|）
         cells = [cell.strip() for cell in line.strip("|").split("|")]
         if len(cells) < 2:
             continue
-        versions.update(re.findall(r"\d+\.\d+(?:\.\d+)*", cells[1]))
-    if not versions:
+        names = re.findall(r"\[([^\]]+)\]", cells[0]) or [name.strip() for name in cells[0].split("/") if name.strip()]
+        versions = [version.strip() for version in cells[1].split("/") if version.strip()]
+        if len(names) != len(versions):
+            raise SystemExit(f"README「外部依赖」表这一行的库名与版本条数对不上（{cells[0]} / {cells[1]}）：请同步改这个脚本或补齐表")
+        for name, version in zip(names, versions):
+            pairs[README_NAME_ALIASES.get(name, name)] = version
+    if not pairs:
         raise SystemExit("README 里没解析出依赖版本：表头或列序变了，请同步改这个脚本")
-    return versions
+    return pairs
 
 
-def check_readme_versions(requirements: dict, readmeVersions: set) -> list:
-    """README「外部依赖」表与 conandata.yml 的版本同解（升版漏跟这张表是最常出的一格）。"""
+def check_readme_versions(requirements: dict, readmePairs: dict) -> list:
+    """README「外部依赖」表与 conandata.yml 逐行同解（库名↔版本配对也要对上，不只比版本集合）。"""
     problems = []
-    expectedVersions = set(requirements.values())
     for name, version in sorted(requirements.items()):
-        if version not in readmeVersions:
-            problems.append(f"README「外部依赖」表里找不到 {name} 的版本 {version}（升版时这张表最容易漏）")
-    for version in sorted(readmeVersions - expectedVersions):
-        problems.append(f"README「外部依赖」表写着 {version}，conandata.yml 里没有任何依赖钉这个版本（表或清单有一边是旧的）")
+        listed = readmePairs.get(name)
+        if listed is None:
+            problems.append(f"README「外部依赖」表里没有 {name} 这一行（升版或新增依赖漏跟这张表）")
+        elif listed != version:
+            problems.append(f"README「外部依赖」表里 {name} 写的是 {listed}，conandata.yml 是 {version}（表或清单有一边是旧的）")
+    for name in sorted(set(readmePairs) - set(requirements)):
+        problems.append(f"README「外部依赖」表里的 {name} 不在 conandata.yml 里（改名或移除没同步）")
     return problems
 
 
@@ -176,7 +190,7 @@ def main() -> int:
     requirements = read_requirements()
     dependencies = read_watch_list()
     problems = check_offline(requirements, dependencies)
-    problems += check_readme_versions(requirements, read_readme_table_versions())
+    problems += check_readme_versions(requirements, read_readme_table_pairs())
     problems += check_packaging_recipe_versions(requirements, read_packaging_recipe_requirements())
 
     for problem in problems:
