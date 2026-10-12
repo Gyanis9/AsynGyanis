@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "dd48deff1618be20ded2f44e1edbac992e369ba0"
+      "revision": "40fe36ba3803f302720f8fca5931f03ffc0cfef5"
     },
     "views": [
       {
@@ -124,7 +124,7 @@
       "sublabel": "main 或手动跑",
       "tag": "develop 是空档",
       "sources": [
-        { "path": ".github/SECURITY.md", "line": 96, "label": "别把作业存在当跑过" },
+        { "path": ".github/SECURITY.md", "line": 97, "label": "别把作业存在当跑过" },
         { "path": ".github/workflows/linux-ci.yml", "line": 33, "label": "分片与 fail-fast" }
       ]
     },
