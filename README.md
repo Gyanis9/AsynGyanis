@@ -803,6 +803,38 @@ AsynGyanis/
 三条形态边界（无 macOS/BSD、共享库的 ABI 与 OpenSSL 双副本、CI 触发面因免费分钟数收到 `main` + 手动
 触发、供应链另加每周一定时）分别写在上面的「交付形态」与下面的「测试与验证」里，这里不重复。
 
+## 运行手册（Runbook）
+
+「投产前核对」管的是**配置对不对**；这一节管**跑起来之后出什么事、先看哪里、做什么**。每条只引用仓库里
+现成的出口（端点、`asyn_*` 读数、命令行开关与示例），不要求任何仓库外工具。
+
+**停机与换代的固定序列**（先摘流量再收口；顺序反了会把在途请求丢掉）：
+
+1. **摘流量**：打 `/readyz` 应回 **503 + `retry-after: 1`**（`stop()` / `drain()` 之后即如此）。这就是
+   编排器把本台移出负载的窗口——这期间 `/healthz` 仍回 200，把存活探针接成「readyz 非 200 就杀进程」
+   才会真丢请求。
+2. **收口**：`drain(时长)` 等在册连接归零，到点后强关。多 worker 形态的 `shutdownTimeout` 要大于最长
+   在途请求，否则时限先到、请求被掐。
+3. **零停机换代**（POSIX 侧）：新代带 `--takeover` 派生，经 AF_UNIX + SCM_RIGHTS 把正在监听的套接字交
+   过去，新代开始答话后旧代才 drain——端口全程不关。完整可跑的形状是 `CoreUpgrade` 示例（它自己 bind
+   一并把整条链自检完）。Windows 没有这套移交，走多 worker 的进程组停机（`CTRL_BREAK`）。
+4. **配置重读**：给主进程发 `SIGHUP`（`Core::ReloadSignal`；systemd `ExecReload=` 的默认形状）。装上之后
+   SIGHUP 不再按缺省动作杀进程；没配 `--config` 时会明确打一句「没有可重读的文件」而不是假装重载了。
+   文件监听（`enableHotReload`）是另一路（盘上文件变了自己触发），两者互不替代。
+
+**症状 → 先看哪里**：
+
+| 症状 | 先看 | 怎么读 / 做什么 |
+|---|---|---|
+| 端口在听、握手能完成，请求却迟迟不应答 | `/debug/loops`：进程内**每条循环一行 JSON**（当前相位、这一相已驻留多久、跑完过多少工作段、最慢一段、门口积压的外来投递） | 某条循环的「相位驻留」远大于工作段耗时＝它被一个长任务占住了。本仓真出过一例：每请求一条同步日志、stdout 被重定向到无人读的管道，整条循环停在写管道上（现象就是「在监听但不应答」，backlog 灌满后客户端拿到连接拒绝）。这条端点读的全是原子量，停住的循环正是没法应答的那条，隔着线程读它不受影响；顺带看 `asyn_http_log_dropped_events_total` 是否也在涨 |
+| 新连接被拒 | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按来源挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满） | 先分「整机满」还是「单来源满」：前者调 `maximum_connections` 或加 worker 进程（多进程按台摊分、启动两行读数写着本台生效值）；后者先确认是不是共享出口（运营商 NAT / 企业代理）再抬单来源限额。**「来源 X 的并发连接已达上限」这类告警现在受 10 秒窗压重，同一条里带着被压条数**——它一直响＝有来源在反复重传 |
+| h3 在线数不动，但 `asyn_quic_handshaking_connections` 在涨 | 该 gauge + 「来源 … 新的 Initial 被拒绝」的告警 | 涨＝只发 Initial 不推进握手的流量在占名额（QUIC 没有内核 backlog 可挡，这种流量直接是进程的账）。两类连接共用同一份 `maximumConnections` 是刻意的（理由见 `QuicConnection.h`），先按来源定性，再决定抬限额还是挡来源；`connectionCount()` / `handshakingConnectionCount()` 两个读口随时可问同一件事 |
+| 借连接的请求变慢或空手而归 | `/metrics`：`asyn_db_pool_waiting_requests`（等待数）、`asyn_db_pool_waiting_rejections_total`（等待名额被拒）、`asyn_db_pool_borrow_timeouts_total`（借出超时）、`asyn_db_pool_oldest_borrow_start_seconds`（最久在借的起点） | **后两条要一起读**：等待数不高、借出超时也不涨，但「最久在借」的起点很旧＝有人拿住连接不放（事务没结束、流式结果没读完）——`time() - 起点` 贴着 acquireTimeout 量级不降就是这个形状；等待名额被拒连涨＝池容或 `maximumWaitingRequests` 该调。`session_reset_failures_total` 涨说明有连接因复位不干净被丢弃，会连着「已丢弃」一起动 |
+| worker 进程反复被补位 | `asyn_worker_crashes_total`（补位次数）与 `asyn_worker_slots_given_up`（放弃的槽位） | 崩溃现场是**尽力**写 stderr 的（信号处理器里，不保证送达），先去那里找。「起来就崩」连续 5 次会停止补位——此时看最后一版的启动日志与配置，别等下一次补位；被放弃的槽位不涨回来，要么修因重启 master，要么这台就用剩下的 worker 继续跑 |
+| 证书相关告警 | `asyn_acme_certificate_expiry_seconds`、`asyn_acme_issuances_total` / `asyn_acme_failures_total`、`asyn_acme_dns01_*` | 到期读数**为 0 不是「已到期」而是「读不出」**（还没签出、或那条路径上真没有读得出的证书）；「没跑成」与「还没跑」在面板上同形，区分看 `issuances_total` 有没有在动。dns-01 写入失败会把随后的撤回也记进 `asyn_acme_dns01_*` 两族 |
+| 内存曲线一路涨 | `asyn_http_inflight_body_bytes`（在途正文字节）、`asyn_http_memory_budget_rejections_total`（被预算拒的预留）、进程工作集 | 在途字节贴着 `memory_budget_bytes` 且拒绝数猛涨＝真实需求超预算（调预算）或对端在压大正文（限额/限流先收口）。**ASan 构建下长期曲线的渐近饱和是 quarantine 不是泄漏**——判泄漏要用 `quarantine_size_mb=1` 之类的对照重跑 |
+| 日志里出现「（过去 N 秒内另有 M 条同类被压掉）」 | 那条告警本身 | 这是被时间窗压住的**重条**，量级在 M 里；连响说明对应的事件流（对端在刷某个形状）还在持续。对端可触发告警的清点（哪些接闸门、哪些按「每流/每请求至多一条」刻意不接）在 `.github/SECURITY.md` 与审计报告 §9.23 |
+
 ## 测试与验证
 
 一笔提交要过的闸门：本地串行四道 → CI 十五条作业并行铺开（Linux 十二条 + Windows 三条，构建那一档按三分片展开成十七个作业实例）→ 发布与供应链。
