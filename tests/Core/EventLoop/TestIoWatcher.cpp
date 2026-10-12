@@ -794,6 +794,7 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+#if !ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住：注册对象在同一地址上重建后，旧对象的迟到取消打不到新等待者
      * @details 取消核验按「地址 + 代次号」认代：地址会被复用，代次号是两代之间唯一的区分。
@@ -801,6 +802,11 @@ namespace AsynGyanis::Core
      *          按地址判存活会命中重建后的对象，代次号又刚好相等，迟到取消便打在新等待者上
      *          （ABA）。本用例把两代对象放在同一块对齐存储上强制地址复用，先让旧对象的取消
      *          投递留在队列里，再重建、挂新等待，最后放行投递——它必须被代次号打空。
+     * @note 该场景只在 epoll 语义下成立：IOCP 的句柄-完成端口关联是内核对象级且**不可解除**的
+     *       （同一个 fd 二次注册在 Windows 上必然失败，见同文件 DescriptorOnAnotherCompletionPortThrows
+     *       WithWin32Reason 那条 Windows 专属用例），「同一描述符重建后重新注册」因此不可达，
+     *       整块按平台门控。代次号判据在 Windows 上仍由同批的
+     *       LateCancellationDoesNotDisturbTheNextWait（同一对象两次等待）继续承重
      */
     TEST(IoWatcher, LateCancellationCannotHitARecreatedWatcherAtTheSameAddress)
     {
@@ -850,5 +856,6 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);
     }
+#endif // !ASYN_PLATFORM_WIN32
 
 } // namespace AsynGyanis::Core
