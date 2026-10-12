@@ -117,8 +117,8 @@ namespace AsynGyanis::Database
 
         /// 带参流式用例的表：行数跨过预取窗口（64 行），列含长 TEXT（逐列补取路径）与 NULL。
         /// **每个用例一张独立表名**：ctest 逐用例并行起进程，同名表会在对方 Drop/Create 时被抽走
-        constexpr std::string_view kParameterizedStreamingColumns = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
-        constexpr std::size_t      kParameterizedStreamingRowCount = 150;
+        constexpr std::string_view kParameterizedStreamingColumns          = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
+        constexpr std::size_t      kParameterizedStreamingRowCount         = 150;
         constexpr std::string_view kParameterizedStreamingReadTableName    = "Asyn_Mysql_ParamStream";
         constexpr std::string_view kParameterizedStreamingHoldTableName    = "Asyn_Mysql_ParamStreamHold";
         constexpr std::string_view kParameterizedStreamingDiscardTableName = "Asyn_Mysql_ParamStreamDiscard";
@@ -3118,8 +3118,9 @@ namespace AsynGyanis::Database
         const std::string bigPayload = makeStreamingBigPayload();
         ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingReadTableName, bigPayload)) << connection.lastError();
 
-        const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
-                "SELECT `id`, `label`, `payload` FROM " + quote(kParameterizedStreamingReadTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
+        const std::unique_ptr<DatabaseResult> stream =
+                connection.executeStreaming("SELECT `id`, `label`, `payload` FROM " + quote(kParameterizedStreamingReadTableName) + " WHERE `id` >= ? ORDER BY `id`",
+                                            std::vector<DatabaseValue>{std::int64_t{1}});
         ASSERT_NE(stream, nullptr) << connection.lastError();
 
         // 流式档的歧义哨兵取不漏检一侧：行数未知回 0、isEmpty 回 false（不诱导「没有行」的短路径）
