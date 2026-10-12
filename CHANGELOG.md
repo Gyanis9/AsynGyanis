@@ -50,7 +50,7 @@
 - **`619fd925`**：可重试判定表改用 `std::array`，GCC 下不再拒编。
 - **OAuth 对端字段类型不符按协议拒**（`8e05794a`）：自省的控制协程与 JWKS 的后台轮换不再被单条坏字段打死（异常不再穿进协程）。
 
-- **发布点的修复束（封存后落笔）**：`d510731b` DatabaseDemo 的 `guessType` 断言跟上 PostgreSQL 已恢复（5432 改判 PostgreSql、未登记端口样本换 1521——该断言写于 PostgreSQL 移除期，恢复轮只更新了用例侧而漏了示例，而示例矩阵门禁只在 `main` 触发）；`d8c73564` PostgreSQL 三个类（`PostgresDialect`/`PostgresConnection`/`PostgresResult`）补 `ASYN_DATABASE_API`——共享形态下 29 个 `PostgresDialect` 符号未解析而静态档看不见；`ad1fa9ee` TlsContext 并发用例的换代窗口改为「至少覆盖首条握手完成（有界 10 秒）」（慢 runner 上 150 轮几毫秒就结束）。本版累计至此 **71 笔**（标签注记按封存点 67 笔）。
+- **发布点的修复束（封存后落笔）**：`d510731b` DatabaseDemo 的 `guessType` 断言跟上 PostgreSQL 已恢复（5432 改判 PostgreSql、未登记端口样本换 1521——该断言写于 PostgreSQL 移除期，恢复轮只更新了用例侧而漏了示例，而示例矩阵门禁只在 `main` 触发）；`d8c73564` PostgreSQL 三个类（`PostgresDialect`/`PostgresConnection`/`PostgresResult`）补 `ASYN_DATABASE_API`——共享形态下 29 个 `PostgresDialect` 符号未解析而静态档看不见；`ad1fa9ee` TlsContext 并发用例的换代窗口改为「至少覆盖首条握手完成（有界 10 秒）」（慢 runner 上 150 轮几毫秒就结束）；`6b2c43f9` ProcessInfo 的 CPU 秒用例改为「烧到读数真推进（有界 15 秒）」（分片并发下忙等 1.1 秒挂钟抢不到整整 1 秒 CPU 时间）。本版累计至此 **73 笔**（标签注记按封存点 67 笔）。
 
 ## [3.1.0] - 2026-10-12
 
