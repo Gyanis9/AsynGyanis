@@ -9,6 +9,8 @@
 
 #include "Database/Dialect/PostgresDialect.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include <string>
 #include <string_view>
 
@@ -53,11 +55,30 @@ namespace AsynGyanis::Database
                 break;
         }
 
-        // Replace → DO UPDATE：不带冲突目标时对所有唯一冲突生效；SET 列出本次插入的全部列，
-        // 未列出的列保持旧值（见头文件里与 MySQL REPLACE 的语义差异说明）。
-        // 列名的渲染与 INSERT 列清单同源（appendFieldReference：含点的名字逐段引用、表达式原样
-        // 输出），两处不会一个逐段引用一个整段引用；EXCLUDED 是伪表，其后只跟列名本身
-        sqlText += " ON CONFLICT DO UPDATE SET ";
+        // Replace → DO UPDATE：**必须给出冲突目标**（推断列或约束名）——真机实测：不带目标的
+        // DO UPDATE 被服务端以 42601「requires inference specification or constraint name」拒绝
+        // （只有 DO NOTHING 能省目标）。目标列由调用方经 conflictTargetColumns 提供（ORM 从
+        // TableSchema 的主键自动带上）；缺了就当场拒绝，不生成一条服务端必拒的语句。
+        // SET 列出本次插入的全部列，未列出的列保持旧值（见头文件里与 MySQL REPLACE 的语义差异）；
+        // 列名的渲染与 INSERT 列清单同源（appendFieldReference），EXCLUDED 是伪表、其后只跟列名本身
+        if (query.conflictTargetColumns.empty())
+        {
+            throw Base::InvalidArgumentException("PostgreSQL 方言：ON CONFLICT DO UPDATE 需要冲突目标（唯一键的列名），而查询树的 "
+                                                 "conflictTargetColumns 为空。请填入唯一键列（ORM 会从 TableSchema 的主键自动带上），"
+                                                 "或改用 Ignore 档（DO NOTHING 不需要目标）");
+        }
+
+        sqlText += " ON CONFLICT (";
+        for (std::size_t index = 0; index < query.conflictTargetColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            appendFieldReference(sqlText, query.conflictTargetColumns[index]);
+        }
+        sqlText += ") DO UPDATE SET ";
+
         for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
         {
             if (index > 0)

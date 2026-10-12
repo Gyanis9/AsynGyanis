@@ -125,14 +125,17 @@ namespace AsynGyanis::Database
          * @brief 追加 PostgreSQL 的冲突处置尾部子句（ON CONFLICT …）
          * @details 重写 SqlDialect::appendInsertConflictTail()：
          *          - Fail → 不追加（普通 INSERT，冲突就报错）；
-         *          - Ignore → " ON CONFLICT DO NOTHING"；
-         *          - Replace → " ON CONFLICT DO UPDATE SET 列 = EXCLUDED.列, …"：不带冲突目标的
-         *            DO UPDATE 对所有唯一约束冲突生效；SET 列出本次插入的全部列，未列出的列保持旧值
-         *            ——与 MySQL REPLACE 的整行替换在未列出的列上语义不同，这正是「按业务键覆盖」
-         *            的常规写法（覆盖一行里被显式给出的部分，不动其余列）。
+         *          - Ignore → " ON CONFLICT DO NOTHING"（不需要冲突目标）；
+         *          - Replace → `ON CONFLICT (目标列) DO UPDATE SET 列 = EXCLUDED.列, …`：
+         *            目标列取自 query.conflictTargetColumns（ORM 从 TableSchema 的主键自动带上），
+         *            缺失时**当场拒绝**——不带目标的 DO UPDATE 会被服务端以 42601 拒绝（真机实测，
+         *            只有 DO NOTHING 能省目标），生成它是把必拒的语句送到服务端才失败。SET 列出
+         *            本次插入的全部列，未列出的列保持旧值——与 MySQL REPLACE 的整行替换在未列出的
+         *            列上语义不同，这正是「按业务键覆盖」的常规写法（覆盖一行里被显式给出的部分）。
          * @param sqlText 已渲染完 VALUES 行的 INSERT 文本，子句追加在其末尾
          * @param conflict 唯一键冲突的处置意图
-         * @param query 提供待写列的查询树（Replace 档的 SET 子句取这里的列清单）
+         * @param query 提供待写列与冲突目标列的查询树（Replace 档两者都要）
+         * @throws Base::InvalidArgumentException Replace 档缺 conflictTargetColumns 时
          */
         void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const override;
 

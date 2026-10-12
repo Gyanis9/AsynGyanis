@@ -400,8 +400,17 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在**发送之前**就拒——语句一条都不发，
+        // 因此这类拒绝不改变任何服务端状态，可以安全重试；连事务控制语句也不放行（流与连接绑定）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，"
+                          "本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
         // PQexecParams 的命令文本同样是零终止 C 字符串，而 std::string_view 不保证末尾有 '\0'
-        //（它可能是另一个更长缓冲的切片），直接交出 data() 会读到越界内存，因此必须先拷成 std::string
+        // （它可能是另一个更长缓冲的切片），直接交出 data() 会读到越界内存，因此必须先拷成 std::string
         const std::string commandText(command);
 
         // 无参数路径也走扩展查询协议（零参数）：简单查询协议（PQexec）会把文本里的**多条语句全部执行**
@@ -488,6 +497,15 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在**发送之前**就拒——语句一条都不发，
+        // 因此这类拒绝不改变任何服务端状态，可以安全重试；连事务控制语句也不放行（流与连接绑定）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，"
+                          "本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
         // PQexecParams 的 nParams 形参是 int：参数个数超出 int 上限时会被静默窄化成一个错误的
         // 数字，进而让服务端按错误的个数解码后续数据，宁可当场失败也不送出畸形报文
         // （PostgresDialect 的协议上限 65535 远低于此，这里只兜住绕过方言直接调用的极端情形）
@@ -541,6 +559,96 @@ namespace AsynGyanis::Database
                                            valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0);
 
         return takeResult(rawResult, "执行带参数的 SQL 命令失败");
+    }
+
+    std::unique_ptr<DatabaseResult> PostgresConnection::executeStreaming(const std::string_view command)
+    {
+        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
+        m_lastError.clear();
+
+        // 本地校验（纯判定，不向服务端发任何字节）先于发送：顺序与两条 execute 一致
+        if (command.empty())
+        {
+            m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+        if (postgresCommandContainsNul(command))
+        {
+            m_lastError = "数据库命令含 NUL 字节：libpq 按零终止 C 字符串解析命令，内嵌 NUL 会把命令"
+                          "静默截断成前半句（可能执行出一条不完整的语句而不报错），请先清理命令文本";
+            return nullptr;
+        }
+
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 PostgreSQL 数据库，命令未执行";
+            return nullptr;
+        }
+
+        // 在途未清流：在同一条连接上再开一条流会让两股回复交错，发送前就拒（含本方法自己）
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，"
+                          "本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
+        const std::string commandText(command);
+
+        // 与两条 execute 同一协议（扩展查询）：多语句在解析阶段被服务端整次拒绝
+        if (PQsendQueryParams(m_connection, commandText.c_str(), 0, nullptr, nullptr, nullptr, nullptr, 0) == 0)
+        {
+            captureError("发送流式查询失败");
+            return nullptr;
+        }
+
+        // 单行模式必须在「已发送、还没取任何结果」的窗口里打开：这是 libpq 的硬性顺序
+        if (PQsetSingleRowMode(m_connection) == 0)
+        {
+            // 进不了单行模式（正常路径只在连接状态不对时发生）：查询已经发出，必须把回复收干
+            // 再失败——残留的回复会让下一条语句读到本次查询的行，协议就此错位
+            while (PGresult *pendingChunk = PQgetResult(m_connection))
+            {
+                PQclear(pendingChunk);
+            }
+            captureError("切换到单行取数模式失败");
+            return nullptr;
+        }
+
+        // 先取首块：它要么是第一行（PGRES_SINGLE_TUPLE），要么直接是收尾块（0 行的 PGRES_TUPLES_OK）
+        PGresult *firstChunk = PQgetResult(m_connection);
+        if (firstChunk == nullptr)
+        {
+            captureError("读取流式查询的首块失败");
+            return nullptr;
+        }
+
+        const ExecStatusType firstChunkStatus = PQresultStatus(firstChunk);
+
+        // 空结果：没有「流」可言，交一份普通的预读空结果集（列元数据与行数快照在它的构造里就绪）
+        if (firstChunkStatus == PGRES_TUPLES_OK)
+        {
+            return takeResult(firstChunk, "执行 SQL 命令失败");
+        }
+
+        if (firstChunkStatus != PGRES_SINGLE_TUPLE)
+        {
+            // 首块即失败（语法错、表不存在等）：错误文本与 SQLSTATE 挂在这一块上，按与 execute
+            // 失败路径同一口径采集，链路已断则顺手断开
+            captureResultError(firstChunk, "执行流式 SQL 命令失败");
+            PQclear(firstChunk);
+            if (PQstatus(m_connection) == CONNECTION_BAD)
+            {
+                disconnect();
+            }
+            return nullptr;
+        }
+
+        // 开流成功：计数 +1 表示「这条连接在流读完或结果析构之前不可发新语句」，
+        // 归位由结果集在读完、中断或析构收干时经 noteStreamClosed() 完成
+        ++m_openStreamCount;
+        return PostgresResult::forStreaming(m_connection, this, firstChunk);
     }
 
     std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const rawResult, const std::string_view description)
@@ -668,6 +776,15 @@ namespace AsynGyanis::Database
             return true;
         }
 
+        // 在途未清流直接判脏（见 m_openStreamCount）：回复流停在中途，连 ROLLBACK 都发不出去。
+        // 一步不做、当场回 false，由池归还路径按「没复位干净」丢弃这条连接——它已经不可复用，
+        // 交回池只会让下一个借用者的第一条语句撞上协议错位
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果，会话无法复位：流式结果必须读完或析构，连接才能回到可复用状态";
+            return false;
+        }
+
         // rollback 与 execute 都会构造 std::string（内存分配失败即抛），而本方法按接口约定是 noexcept：
         // 不接住就是 terminate，因此显式吞掉，并把「没复位干净」如实交回池（池据此丢弃这条连接，
         // 而不是让下一位借用者接着上一笔事务或上一套会话变量执行语句）
@@ -760,8 +877,7 @@ namespace AsynGyanis::Database
             return;
         }
 
-        m_lastError.assignNative("PostgreSQL 驱动：" + std::string(description) + "：" + resultMessage + "（SQLSTATE " + sqlState + "）",
-                                 postgresSqlStateNativeCode(sqlState));
+        m_lastError.assignNative("PostgreSQL 驱动：" + std::string(description) + "：" + resultMessage + "（SQLSTATE " + sqlState + "）", postgresSqlStateNativeCode(sqlState));
     }
 
 #else // DATABASE_HAS_POSTGRES —— 桩实现：CMake 未找到 libpq 时编译，所有入口明确失败
@@ -807,6 +923,14 @@ namespace AsynGyanis::Database
         // 参数化路径与不带参数的路径在桩里没有区别：连客户端库都没有，既无法预处理也无法绑定参数。
         // 明确报出「驱动缺失」而不是基类默认的「暂不支持参数化查询」，
         // 否则使用者会以为问题出在「这个驱动没实现参数绑定」而不是「当前构建没编译驱动」
+        m_lastError = kMissingDriverError;
+        return nullptr;
+    }
+
+    std::unique_ptr<DatabaseResult> PostgresConnection::executeStreaming(const std::string_view)
+    {
+        // 与两条 execute 同一判据：桩里报的是「当前构建没编译驱动」，而不是基类默认的
+        // 「该驱动不支持流式结果集」
         m_lastError = kMissingDriverError;
         return nullptr;
     }
@@ -871,6 +995,15 @@ namespace AsynGyanis::Database
     DatabaseType PostgresConnection::databaseType() const
     {
         return DatabaseType::PostgreSql;
+    }
+
+    void PostgresConnection::noteStreamClosed() noexcept
+    {
+        // 两处调用（流读完/中断、结果析构收干）可能先后都到：幂等地递减，不重复超发
+        if (m_openStreamCount != 0)
+        {
+            --m_openStreamCount;
+        }
     }
 
     bool PostgresConnection::beginTransaction()

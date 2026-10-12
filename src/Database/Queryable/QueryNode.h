@@ -214,6 +214,14 @@ namespace AsynGyanis::Database::Queryable
         /// 唯一键冲突的处置，只在 INSERT 方向参与渲染（SELECT/UPDATE/DELETE 一侧读完即弃）；
         /// 刻意不放进「查询树必须有默认值才好用」的其它档：默认 Fail 与标准 SQL 完全等价
         InsertConflict insertConflict{InsertConflict::Fail}; ///< 冲突处置，默认按标准 SQL 报错
+
+        /// 冲突处置的目标列（唯一键的列名），只在 INSERT 方向、
+        /// 且只被「需要推断冲突目标」的方言读取——PostgreSQL 的
+        /// `ON CONFLICT DO UPDATE` 必须给出推断列或约束名（`DO NOTHING` 才能省），
+        /// 因此 Replace 档在 PG 上必须有它；MySQL / SQLite 的处置写作前缀（REPLACE INTO
+        /// 之类），读完即弃。为空表示调用方没有提供：方言据此拒绝而不是生成一条
+        /// 服务端必拒的语句（同层的纪律：宁可失败也不送畸形 SQL）
+        std::vector<std::string> conflictTargetColumns;
     };
 
 } // namespace AsynGyanis::Database::Queryable

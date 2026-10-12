@@ -82,7 +82,8 @@ namespace AsynGyanis::Database
      * 结果集：PostgresResult 在构造时把整份 PGresult 读进内存快照（行、列名、影响行数），
      *        因此结果集不引用连接，可以比连接对象活得更久；代价是大结果集会等额占用内存。
      *        写语句交出的空回执携带语句级影响行数（affectedRowCount()），只读结果集按约定返回 0。
-     *        流式结果（executeStreaming）当前走基类默认的显式拒绝并给出中文原因。
+     *        流式结果（executeStreaming）走 libpq 的单行模式：行留在服务端、每次 next() 取一块一行，
+     *        客户端内存只装当前行；只读查询的大结果集因此不再等额占内存。
      *
      * 生命周期：构造（不分配句柄、不做 IO）→ connect() → execute() / 事务 → disconnect() → 析构。
      *          析构自动调用 disconnect()。本对象独占 PGconn 句柄，拷贝或移动后的源对象析构时会
@@ -232,6 +233,30 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
+         * @brief 执行命令并交出**流式**结果集（行留在服务端，每 next() 取一行）
+         * @details 重写 DatabaseConnection::executeStreaming()：走 libpq 的单行模式——
+         *          PQsendQueryParams 送出（与另两条 execute 同一扩展协议，多语句同样被整次拒绝）
+         *          后调 PQsetSingleRowMode，每次 PQgetResult 交出一块一行的结果，结果集只装当前行。
+         *          代价是三条契约（与基类的 @warning 逐条对应）：
+         *          - 结果集必须比本连接短命：在它读完或析构之前，本连接不能再执行任何语句——
+         *            execute 两条路径与 executeStreaming 都在**发送之前**拒绝（见 m_openStreamCount），
+         *            在途未清的时刻连事务控制语句也不放行；
+         *          - rowCount() 回 0 的含义是「未知」，isEmpty() 恒回 false（不宣称自己空）；
+         *          - 不支持 reset() 重扫（行是一次性流过来的）。
+         * @param command 命令文本（只对有返回列的语句有意义）
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败返回 nullptr，原因见 lastError()
+         * @note 0 行结果在首块就是收尾块时被识别，交出的是一份普通的预读空结果集：空结果没有
+         *       「流」可言，调用方不必为它走流式口径
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
+
+        /**
+         * @brief 流式结果收尾时通知连接归位「在途未清流」计数（结果集调用，用户代码不要直接调）
+         * @details 幂等递减：读完、中断与析构收干三处可能先后到（与 MySqlConnection 同名方法同口径）
+         */
+        void noteStreamClosed() noexcept;
+
+        /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::PostgreSql，
          *          不依赖连接状态，桩构建下同样返回本类型。
@@ -357,6 +382,11 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description);
 
         PGconn *m_connection{nullptr}; ///< libpq 连接句柄，本对象独占所有权，未连接时为 nullptr
+
+        /// 在途未清流的条数（每个 executeStreaming 成功开流 +1，结果读完/中断/析构收干时 -1）：
+        /// 大于 0 时三条执行路径都在**发送之前**拒绝，resetSessionState 也据此判脏——回复流停在
+        /// 中途的连接不可复用，交回池只会让下一位借用者的第一条语句撞上协议错位
+        std::size_t m_openStreamCount{0};
     };
 
 } // namespace AsynGyanis::Database

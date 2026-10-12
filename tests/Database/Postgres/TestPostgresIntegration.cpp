@@ -982,4 +982,223 @@ namespace AsynGyanis::Database
         EXPECT_EQ(countRows(*observer, kTransactionDestructorTableName), 0);
     }
 
+    // ========================================================================
+    // 本轮新增：多语句拒 / 冲突处置 / 流式 / 命令超时 / 池复位（真机）
+    // ========================================================================
+
+    namespace
+    {
+        /// 冲突处置用例的表
+        constexpr std::string_view kConflictTableName = "Asyn_Pg_Conflict";
+
+        /**
+         * @brief 冲突处置用例的结构体：主键 + 业务列
+         */
+        struct IntegrationConflictRow
+        {
+            std::int64_t id;   ///< 主键（BIGINT NOT NULL PRIMARY KEY）
+            std::string  name; ///< 业务列（TEXT NOT NULL）
+        };
+    } // namespace
+
+    template<>
+    struct Queryable::TableSchema<IntegrationConflictRow>
+    {
+        static constexpr std::string_view kTableName  = kConflictTableName;
+        static constexpr auto             kColumns    = std::tuple{Column(&IntegrationConflictRow::id, "id"), Column(&IntegrationConflictRow::name, "name")};
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    /**
+     * @brief 钉住「带第二条语句的文本整次被拒，且第一条也不执行」——多语句注入那道防线要可证
+     *
+     * @details 两条 execute 都走扩展查询协议（PQexecParams），服务端在解析阶段拒绝多语句；
+     *          首条是 DDL 时「首条没落库」由「随后查这张表失败」直接证明。与 MySQL 侧
+     *          CLIENT_MULTI_STATEMENTS 的姿态对齐：半执行状态比整次报错危险得多。
+     */
+    TEST_F(PostgresIntegrationTest, MultipleStatementsAreRejectedWithoutRunningTheFirst)
+    {
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        static constexpr std::string_view kNeverCreatedTable = "Asyn_Pg_MultiStatementProbe";
+        static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(kNeverCreatedTable)));
+
+        const std::string script = "CREATE TABLE " + quote(kNeverCreatedTable) + " (id BIGINT); SELECT 1";
+        EXPECT_EQ(connection.execute(script), nullptr) << "多语句文本没被拒绝（扩展协议应当在解析阶段整次拒）";
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+        EXPECT_EQ(connection.execute("SELECT * FROM " + quote(kNeverCreatedTable)), nullptr) << "第二条被拒了但第一条已经执行：留下半执行状态";
+        EXPECT_TRUE(connection.isConnected()) << "服务端拒绝一条语句不该把链路判断：" << connection.lastError();
+    }
+
+    /**
+     * @brief 钉住 PG 的冲突处置真机语义：Ignore 跳过、Replace 覆盖、Fail 报 23505，且都只留一行
+     *
+     * @details 走 ORM → 方言的完整链路（translateInsert 的 ON CONFLICT 尾部子句），冲突键是主键。
+     *          Fail 档顺带验证「原生码与文本成对写入」：SQLSTATE 23505 经
+     *          postgresSqlStateNativeCode() 落到异常的 nativeErrorCode() 上。
+     */
+    TEST_F(PostgresIntegrationTest, InsertConflictUpsertsThroughDoNothingAndDoUpdate)
+    {
+        m_preparedTableNames.emplace_back(kConflictTableName);
+        ASSERT_TRUE(prepareTable(kConflictTableName, "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL")) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        OrmQuery<IntegrationConflictRow> query(*pool);
+        EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "first"}), 1);
+
+        // Ignore（ON CONFLICT DO NOTHING）：冲突行跳过，不覆盖旧值，影响行数是 0
+        EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "ignored"}, Queryable::InsertConflict::Ignore), 0);
+        // Replace（ON CONFLICT DO UPDATE SET 列 = EXCLUDED.列）：按列清单覆盖，影响行数是 1
+        EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "replaced"}, Queryable::InsertConflict::Replace), 1);
+
+        // Fail：主键冲突报错，且异常的 nativeErrorCode() 必须是 SQLSTATE 23505 的打包值
+        bool nativeCodeMatched = false;
+        try
+        {
+            static_cast<void>(query.insert(IntegrationConflictRow{.id = 1, .name = "boom"}));
+            FAIL() << "主键冲突没有报错";
+        } catch (const QueryExecutionException &error)
+        {
+            nativeCodeMatched = error.nativeErrorCode() == postgresSqlStateNativeCode("23505");
+            EXPECT_TRUE(nativeCodeMatched) << "原生码不是 23505：" << error.what();
+        }
+
+        const std::vector<IntegrationConflictRow> rows = query.orderBy(asc("id")).toList();
+        ASSERT_EQ(rows.size(), 1U) << "upsert 留下了多行";
+        EXPECT_EQ(rows[0].name, "replaced");
+    }
+
+    /**
+     * @brief 钉住流式读取：逐行取全、未读完即释放时连接仍可复用、在途期间拒发新语句、reset 拒重扫
+     *
+     * @details 单行模式（PQsetSingleRowMode）下每 next() 取一块一行；本用例把四条契约一次钉死——
+     *          行数回 0 的含义是「未知」、isEmpty() 不宣称空、析构收干后连接恢复可用、
+     *          在途未清时新语句在发送前被拒。
+     */
+    TEST_F(PostgresIntegrationTest, StreamingReadsEveryRowAndReleasesTheConnectionWhenDisposed)
+    {
+        static constexpr std::string_view kStreamingTableName = "Asyn_Pg_Streaming";
+        m_preparedTableNames.emplace_back(kStreamingTableName);
+        ASSERT_TRUE(prepareTable(kStreamingTableName, "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL")) << m_lastSetupError;
+
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        for (std::int64_t rowIndex = 1; rowIndex <= 5; ++rowIndex)
+        {
+            ASSERT_NE(connection.execute("INSERT INTO " + quote(kStreamingTableName) + " (\"id\", \"name\") VALUES ($1, $2)",
+                                         std::vector<DatabaseValue>{rowIndex, std::string("第" + std::to_string(rowIndex) + "行")}),
+                      nullptr)
+                    << connection.lastError();
+        }
+
+        // ---- 读完：行序、取值与两条流式口径 ----
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming("SELECT \"id\", \"name\" FROM " + quote(kStreamingTableName) + " ORDER BY \"id\"");
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+
+            // 流式口径：rowCount() 回 0 的含义是「未知」，且不宣称自己空
+            EXPECT_EQ(stream->rowCount(), 0U);
+            EXPECT_FALSE(stream->isEmpty());
+
+            std::int64_t expectedId = 1;
+            while (stream->next())
+            {
+                EXPECT_EQ(std::get<std::int64_t>(stream->getValue("id")), expectedId);
+                EXPECT_EQ(std::get<std::string>(stream->getValue("name")), "第" + std::to_string(expectedId) + "行");
+                ++expectedId;
+            }
+            EXPECT_EQ(expectedId, 6) << "流没有读全";
+        }
+
+        // 读完之后连接恢复可用（在途计数已归位）
+        {
+            const std::unique_ptr<DatabaseResult> countResult = connection.execute("SELECT COUNT(*) FROM " + quote(kStreamingTableName));
+            ASSERT_NE(countResult, nullptr) << "流读完后连接仍不可用：" << connection.lastError();
+            ASSERT_TRUE(countResult->next());
+            EXPECT_EQ(std::get<std::int64_t>(countResult->getValue(0)), 5);
+        }
+
+        // ---- 未读完即释放：析构把剩余块收干，连接同样恢复可用 ----
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming("SELECT \"id\" FROM " + quote(kStreamingTableName) + " ORDER BY \"id\"");
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+            ASSERT_TRUE(stream->next()); // 只读一行就走
+        } // 结果集在这里析构（收干剩余块）
+
+        const std::unique_ptr<DatabaseResult> afterDrop = connection.execute("SELECT COUNT(*) FROM " + quote(kStreamingTableName));
+        ASSERT_NE(afterDrop, nullptr) << "未读完的流析构后连接仍不可用：" << connection.lastError();
+
+        // ---- 在途期间拒发新语句；reset 拒绝重扫 ----
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming("SELECT \"id\" FROM " + quote(kStreamingTableName));
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+
+            EXPECT_EQ(connection.execute("SELECT 1"), nullptr) << "在途未清流时连接不该放行新语句";
+            EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+            stream->reset();
+            EXPECT_NE(stream->lastError().find("重扫"), std::string::npos) << stream->lastError();
+        }
+    }
+
+    /**
+     * @brief 钉住 setQueryTimeout 在已建立的连接上当场生效：慢语句被打断且原生码是 57014
+     *
+     * @details statement_timeout 是服务端会话变量（建连时下发、存续期可改）；超时打断的
+     *          SQLSTATE 是 57014（query_canceled），本驱动把它成对写进原生码——本用例同时
+     *          验证「查询被取消」与「码与文本配对」两件事，并确认打断只是语句级处置、
+     *          解除时限后同一条连接照常可用。
+     */
+    TEST_F(PostgresIntegrationTest, QueryTimeoutInterruptsSlowStatementOnEstablishedConnection)
+    {
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        connection.setQueryTimeout(200);
+
+        const std::unique_ptr<DatabaseResult> interrupted = connection.execute("SELECT pg_sleep(5)");
+        EXPECT_EQ(interrupted, nullptr) << "慢语句没有被语句时限打断";
+        EXPECT_EQ(connection.lastNativeErrorCode(), postgresSqlStateNativeCode("57014")) << connection.lastError();
+
+        // 解除时限后同一条连接仍然可用
+        connection.setQueryTimeout(0);
+        const std::unique_ptr<DatabaseResult> afterReset = connection.execute("SELECT 1");
+        ASSERT_NE(afterReset, nullptr) << "时限打断后连接不可用：" << connection.lastError();
+    }
+
+    /**
+     * @brief 钉住池归还时的会话复位：借用者留下的会话变量不会串给下一位
+     *
+     * @details 归还路径走本驱动的 resetSessionState（DISCARD ALL）；这里用 application_name
+     *          作可观察的会话变量：借出者设定它，归还后下一位借用者读到的必须是复位后的默认值。
+     */
+    TEST_F(PostgresIntegrationTest, PooledReturnClearsSessionStateForNextBorrower)
+    {
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+
+            // application_name 是普通 GUC：借用者留下的值若不复位就会串给下一位
+            ASSERT_NE(connection->execute("SET application_name = 'asyn-integration-borrower'"), nullptr) << connection->lastError();
+
+            const std::unique_ptr<DatabaseResult> probe = connection->execute("SHOW application_name");
+            ASSERT_NE(probe, nullptr) << connection->lastError();
+            ASSERT_TRUE(probe->next());
+            EXPECT_EQ(std::get<std::string>(probe->getValue(0)), "asyn-integration-borrower");
+        } // 归还：池在这里调用 resetSessionState（DISCARD ALL）
+
+        PooledConnection next = pool->acquire();
+        ASSERT_TRUE(next);
+
+        const std::unique_ptr<DatabaseResult> afterReturn = next->execute("SHOW application_name");
+        ASSERT_NE(afterReturn, nullptr) << next->lastError();
+        ASSERT_TRUE(afterReturn->next());
+        EXPECT_NE(std::get<std::string>(afterReturn->getValue(0)), "asyn-integration-borrower") << "会话变量跟着连接串给了下一位借用者";
+    }
+
 } // namespace AsynGyanis::Database

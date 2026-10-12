@@ -948,23 +948,48 @@ TEST(PostgresDialectConflict, IgnoreAppendsDoNothingWithoutConflictTarget)
 }
 
 /**
- * @brief 验证 Replace 档生成 DO UPDATE SET 列 = EXCLUDED.列 的逐列覆盖
+ * @brief 验证 Replace 档生成 DO UPDATE SET 列 = EXCLUDED.列 的逐列覆盖，且冲突目标按列引用
  */
 TEST(PostgresDialectConflict, ReplaceAppendsDoUpdatePerInsertedColumn)
 {
     const PostgresDialect dialect;
 
     QueryNode node;
-    node.tableName      = "users";
-    node.selectColumns  = {"id", "name"};
-    node.insertConflict = InsertConflict::Replace;
+    node.tableName             = "users";
+    node.selectColumns         = {"id", "name"};
+    node.insertConflict        = InsertConflict::Replace;
+    node.conflictTargetColumns = {"id"};
 
     const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")});
 
-    // SET 列出本次插入的全部列（未列出的列保持旧值）；列名的渲染与 INSERT 列清单同源（逐段引用）
+    // PostgreSQL 的 ON CONFLICT DO UPDATE 必须给出推断列（真机实测：不带目标时服务端以 42601
+    // 拒绝整条语句）；SET 列出本次插入的全部列（未列出的列保持旧值），列的渲染与列清单同源
     EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) "
-                             "ON CONFLICT DO UPDATE SET \"id\" = EXCLUDED.\"id\", \"name\" = EXCLUDED.\"name\"");
+                             "ON CONFLICT (\"id\") DO UPDATE SET \"id\" = EXCLUDED.\"id\", \"name\" = EXCLUDED.\"name\"");
     EXPECT_EQ(statement.parameters.size(), 2U);
+}
+
+/**
+ * @brief 钉住 Replace 档缺冲突目标时在翻译阶段被拒，而不是生成一条服务端必拒的语句
+ *
+ * @details PostgreSQL 的 `ON CONFLICT DO UPDATE` 要求推断列或约束名（只有 DO NOTHING 能省），
+ *          目标缺失时服务端以 42601 拒整条语句。本方言在本地就拒绝并点名缺的是哪一项——
+ *          与「宁可失败也不送畸形 SQL」同一纪律。
+ */
+TEST(PostgresDialectConflict, ReplaceWithoutConflictTargetIsRejectedInsteadOfGeneratingInvalidSql)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName      = "users";
+    node.selectColumns  = {"id", "name"};
+    node.insertConflict = InsertConflict::Replace; // 刻意不填 conflictTargetColumns
+
+    const std::string rejectionText =
+            captureInvalidArgument([&dialect, &node] { static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")})); });
+
+    EXPECT_FALSE(rejectionText.empty()) << "缺冲突目标的 Replace 没有被拒（会生成服务端必拒的语句）";
+    EXPECT_NE(rejectionText.find("conflictTargetColumns"), std::string::npos) << rejectionText;
 }
 
 /**

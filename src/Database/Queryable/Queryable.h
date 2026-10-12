@@ -1194,6 +1194,13 @@ namespace AsynGyanis::Database::Queryable
             insertNode.selectColumns = insertColumnNames();
             // 冲突处置只参与 INSERT 方向的渲染，默认 Fail 时关键词与改前逐字相同
             insertNode.insertConflict = conflict;
+            // Replace 档要带上冲突目标：PostgreSQL 的 ON CONFLICT DO UPDATE 必须给出推断列
+            // （不带目标时服务端以 42601 拒绝——真机实测），这里从 TableSchema 的主键自动填上；
+            // MySQL / SQLite 的 Replace 写作前缀（REPLACE INTO / OR REPLACE），不读这个字段
+            if (conflict == InsertConflict::Replace)
+            {
+                insertNode.conflictTargetColumns.emplace_back(TableSchema<T>::kPrimaryKey);
+            }
 
             // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂
             return requireDialect().translateInsert(insertNode, insertValuesOf(row));
@@ -1361,6 +1368,11 @@ namespace AsynGyanis::Database::Queryable
             QueryNode batchNode      = makeWriteQueryNode();
             batchNode.selectColumns  = insertColumnNames();
             batchNode.insertConflict = conflict;
+            // 与单行插入同款：Replace 档带上冲突目标（PG 的 DO UPDATE 必须给推断列）
+            if (conflict == InsertConflict::Replace)
+            {
+                batchNode.conflictTargetColumns.emplace_back(TableSchema<T>::kPrimaryKey);
+            }
 
             // 每行的参数个数就是待写列数（自增主键不进 INSERT，因此这里必须用写入侧的列数）；
             // insertColumnNames() 已经保证它非空，除法不会除零

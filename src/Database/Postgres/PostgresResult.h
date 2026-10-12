@@ -39,15 +39,24 @@ namespace AsynGyanis::Database
      * - OID 到 DatabaseValue 的解析只在构造时做一遍，不随调用方的取值次数重复解析。
      * 代价与大结果集的取舍：整份数据等额占用内存（与 MySQL 驱动的 mysql_store_result 预读同源）。
      *
-     * ## 两种形态
-     * - 查询结果：行数与列数在构造时快照，可反复遍历；
-     * - 写回执：INSERT/UPDATE/DELETE/DDL/事务语句没有返回列，0 行 0 列，isEmpty() 恒为 true，
-     *   affectedRowCount() 给出 PQcmdTuples 快照下来的语句级影响行数。
+     * ## 两种数据来源（与 MySqlResult 的预读/流式同形）
+     * - **预读**（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
+     *   定死，可反复遍历、可 reset 重扫；代价是大结果集等额占用内存；
+     * - **流式**（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
+     *   一行（libpq 的单行模式把每次 PQgetResult 变成一块一行的结果），客户端内存只装当前
+     *   这一行。列元数据在首块到达时就绪；行数按基类契约回 0（含义是「无法预先知道」）；
+     *   不可重扫。**流式结果必须比产出它的连接短命**，且在它读完或析构之前那条连接不能再执行
+     *   任何语句（连接的 execute/executeStreaming 在发送前拒绝，见 PostgresConnection）。
+     *
+     * ## 写回执
+     * INSERT/UPDATE/DELETE/DDL/事务语句没有返回列，结果为 0 行 0 列的空集（构造时传空句柄），
+     * isEmpty() 恒为 true，affectedRowCount() 给出 PQcmdTuples 快照下来的语句级影响行数。
      *
      * ## 游标语义
-     * m_currentRow 指向内存快照里的一行，为空表示游标没有停在有效行上（未 next()、已走完或
-     * 刚 reset()），此时取值一律回 std::monostate。行数据在构造后不再变动，指向元素的指针
-     * 因此始终有效，"有没有当前行" 与 "指针是否为空" 是同一件事，不需要额外的有效标志。
+     * m_currentRow 指向「当前行」——预读时是内存快照里的一行，流式时是 m_streamingRow（每
+     * next() 覆写一次的当前行缓冲）。为空表示游标没有停在有效行上（未 next()、已走完或
+     * 刚 reset()），此时取值一律回 std::monostate。"有没有当前行" 与 "指针是否为空" 是同一
+     * 件事，不需要额外的有效标志。
      *
      * ## 值映射规则（实现全部收敛在 PostgresValueConversion.h，只有一份真值）
      * SQL NULL→std::monostate、BOOLEAN→bool（文本形态是 't'/'f'）、
@@ -87,7 +96,25 @@ namespace AsynGyanis::Database
         explicit PostgresResult(PGresult *ownedResult);
 
         /**
+         * @brief 接管一条**流式**查询的首块结果并交出所有权
+         * @details 行留在服务端，每调用一次 next() 才取一行（libpq 单行模式：每次 PQgetResult
+         *          给出一块一行的结果）。列元数据从首块快照；行数不快照——按基类契约回 0
+         *          （含义是「无法预先知道」）。首块在这里就转成当前行缓冲并在构造内释放，
+         *          之后的块由 next() 逐块取。
+         * @param connectionHandle 产出这份结果的连接句柄（**非拥有**）：后续块要经它用
+         *        PQgetResult 取回，且「取完最后一块」与「链路中断」只能靠它区分
+         * @param owner 产出这条流的连接对象（非拥有）：流结束（读完、中断或析构收干）时通知它
+         *        归位「在途未清流」计数，连接据此恢复可发语句
+         * @param firstRowResult 流式查询的**首块**（PGRES_SINGLE_TUPLE，一块一行）；所有块都带
+         *        完整列定义，因此列快照从它取
+         * @return std::unique_ptr<PostgresResult> 结果集（构造私有，只有本工厂能造）
+         */
+        [[nodiscard]] static std::unique_ptr<PostgresResult> forStreaming(PGconn *connectionHandle, PostgresConnection *owner, PGresult *firstRowResult);
+
+        /**
          * @brief 析构时释放所持有的 PGresult（行缓冲与列元数据一并回收）
+         * @details 流式那份多一步：未读完时把剩余块读干（PQgetResult 循环到空指针）再通知连接
+         *          放行后续语句——半途而废的流会让下一条语句读到上一查询的行，协议就此错位
          */
         ~PostgresResult() override;
 
@@ -208,12 +235,46 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
 
     private:
-        PGresult *m_result{nullptr}; ///< libpq 结果集句柄，非空时由本对象负责 PQclear（数据已在构造时读进内存）
+        /**
+         * @brief 流式结果集构造的区分标签
+         * @details 与 MySqlResult 的同名标签同一用途：让「流式那份」走一个语义明确的构造重载，
+         *          而不是往既有构造后面再挂默认参数——挂默认参数会让老调用点在改顺序时悄悄换掉含义
+         */
+        struct StreamingTag
+        {
+        };
+
+        /**
+         * @brief 流式结果的构造：只由 forStreaming() 调用
+         */
+        PostgresResult(PGconn *connectionHandle, PostgresConnection *owner, PGresult *firstRowResult, StreamingTag tag) noexcept;
+
+        /**
+         * @brief 流式推进一块：首块缓冲、逐块取值、收尾与中断的处置都在这里
+         * @return true 游标停在新取到的一行上；false 读完了、中断了或已无更多行
+         */
+        bool advanceStreaming();
+
+        /**
+         * @brief 通知连接「这条流结束了」（幂等）
+         * @details 读完、中断与析构收干三处都会到；连接侧按幂等递减处理，这里再用一个标志
+         *          拦住重复通知，语义与 MySqlResult::noteStreamEnd() 一致
+         */
+        void noteStreamEnd() noexcept;
+
+        PGresult *m_result{nullptr}; ///< libpq 结果集句柄，非空时由本对象负责 PQclear（预读时数据已在构造时读进内存；流式时恒为空）
+
+        PGconn                    *m_connectionHandle{nullptr};  ///< 流式：产出这份结果的连接句柄（非拥有，用于取后续块）
+        PostgresConnection        *m_streamOwner{nullptr};       ///< 流式：通知归位「在途未清流」计数的连接对象（非拥有）
+        bool                       m_isStreaming{false};         ///< 数据来源是否为单行模式；决定行数/isEmpty/reset 的流式口径
+        bool                       m_isStreamEndNotified{false}; ///< 流已收尾并通知过连接（幂等标记）
+        bool                       m_hasBufferedFirstRow{false}; ///< 首块已转成当前行缓冲、等第一次 next() 交付
+        std::vector<DatabaseValue> m_streamingRow;               ///< 流式的当前行缓冲，每 next() 覆写一次
 
         std::vector<std::string>                m_columnNames; ///< 构造时快照的列名，长度即列数，缺名列补空串
-        std::vector<std::vector<DatabaseValue>> m_rows;        ///< 构造时快照的全部行，每行长度恒等于列数
+        std::vector<std::vector<DatabaseValue>> m_rows;        ///< 预读快照的全部行，每行长度恒等于列数；流式时为空
 
-        const std::vector<DatabaseValue> *m_currentRow{nullptr}; ///< 指向当前行（内存快照中的一行），空表示游标未停在有效行上
+        const std::vector<DatabaseValue> *m_currentRow{nullptr}; ///< 指向当前行（预读的行或流式的行缓冲），空表示游标未停在有效行上
         size_t                            m_nextRowIndex{0};     ///< 下一次 next() 将返回的行下标，走完即等于行数
 
         std::int64_t m_affectedRowCount{0}; ///< 构造时快照的语句级影响行数；只读结果集（含写回执之外的查询）恒为 0

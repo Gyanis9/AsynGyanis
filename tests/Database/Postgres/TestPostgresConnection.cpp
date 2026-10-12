@@ -223,6 +223,37 @@ namespace AsynGyanis::Database
         EXPECT_NE(connection.lastError().find("PostgreSQL"), std::string::npos) << connection.lastError();
     }
 
+    TEST(PostgresConnection, StreamingExecuteWithoutConnectionReturnsNullResult)
+    {
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+
+        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("SELECT id FROM users");
+
+        // 与两条 execute 同款契约：失败交回空指针、原因写进 lastError()。未连接与「驱动缺失」
+        // 两种形态的文案都点名 PostgreSQL，因此不做「未连接」的字面断言
+        EXPECT_EQ(result, nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("PostgreSQL"), std::string::npos) << connection.lastError();
+        EXPECT_FALSE(connection.isConnected());
+    }
+
+    TEST(PostgresConnection, StreamingExecuteRejectsNulCommandLocally)
+    {
+        if (!kPostgresDriverCompiled)
+        {
+            GTEST_SKIP() << "当前构建未编译 PostgreSQL 驱动，本判定只在真实驱动里生效";
+        }
+
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+        ASSERT_FALSE(connection.isConnected());
+
+        // 流式路径的命令文本同样交给 libpq 的 C 字符串接口，NUL 判定与两条 execute 同源、独立生效
+        const std::string truncatedCommand = std::string("SELECT 1") + '\0' + "; DROP TABLE important";
+        EXPECT_EQ(connection.executeStreaming(truncatedCommand), nullptr);
+        EXPECT_NE(connection.lastError().find("NUL"), std::string::npos) << connection.lastError();
+    }
+
     TEST(PostgresConnection, ParameterizedExecuteWithoutConnectionReturnsNullResult)
     {
         PostgresConnection               connection(ConnectionConfig::postgresDefault());
