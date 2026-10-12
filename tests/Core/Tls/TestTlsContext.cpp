@@ -828,6 +828,66 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 握手在途时并发更新指纹名单是安全的（TSan 档的固定观察点）
+     * @details 校验回调在握手线程上读名单，setPeerFingerprintAllowlist 在配置线程上整体替换——
+     *          名单放进 SSL_CTX 的共享登记（读持共享锁、换持独占锁）之后，这条用例用「一条线程
+     *          反复握手 × 主线程反复换名单」把两面拉到重叠：TSan 档下这里固定口径观测数据竞争，
+     *          本档（ASan/LSan）断言不崩、终态语义仍成立
+     */
+    TEST(TlsContext, ConcurrentHandshakeAndAllowlistUpdatesRemainSafeWithSharedRegistry)
+    {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
+        TlsContext tlsContext;
+        ASSERT_TRUE(tlsContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(tlsContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
+        tlsContext.setClientCertificateRequired(true);
+
+        const std::string listedFingerprint = sha256FingerprintOfCertificateFile(kTestCertificatePath);
+        ASSERT_EQ(listedFingerprint.size(), 64U) << "被点名证书的指纹没算出来：用例前提不成立";
+        tlsContext.setPeerFingerprintAllowlist({listedFingerprint});
+
+        std::atomic<bool> stopHandshakes{false};
+        std::atomic<int>  completedHandshakes{0};
+        std::thread       handshakeLoop(
+                [&]
+                {
+                    while (!stopHandshakes.load(std::memory_order_relaxed))
+                    {
+                        SslContextPointer clientContext = createClientContext();
+                        if (clientContext == nullptr)
+                        {
+                            continue;
+                        }
+                        static_cast<void>(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION));
+                        const HandshakeOutcome outcome = runInProcessHandshake(tlsContext.nativeHandle(), clientContext.get(), false, true);
+                        if (!outcome.setupFailed && outcome.serverCompleted)
+                        {
+                            completedHandshakes.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                });
+
+        // 主线程反复换代名单（点名 → 清空 → 再点名）：与在途握手的校验回调持续重叠
+        for (int round = 0; round < 150; ++round)
+        {
+            tlsContext.setPeerFingerprintAllowlist({});
+            tlsContext.setPeerFingerprintAllowlist({listedFingerprint});
+        }
+        stopHandshakes.store(true, std::memory_order_relaxed);
+        handshakeLoop.join();
+
+        EXPECT_GT(completedHandshakes.load(), 0) << "一条握手都没跑成：用例没把两面拉到重叠";
+
+        // 终态语义：名单回到「点名」，一次全新握手仍放行
+        SslContextPointer finalClient = createClientContext();
+        ASSERT_NE(finalClient, nullptr);
+        static_cast<void>(SSL_CTX_set_max_proto_version(finalClient.get(), TLS1_2_VERSION));
+        const HandshakeOutcome finalOutcome = runInProcessHandshake(tlsContext.nativeHandle(), finalClient.get(), false, true);
+        ASSERT_FALSE(finalOutcome.setupFailed);
+        EXPECT_TRUE(finalOutcome.serverCompleted) << "并发换代之后终态名单没有生效：" << finalOutcome.serverErrorText;
+    }
+
+    /**
      * @brief 名单项的形态与就绪顺序都在设置那一刻当场拒绝，不留一份不会执行的判据
      */
     TEST(TlsContext, PeerFingerprintAllowlistRejectsMalformedEntriesAndWrongOrder)

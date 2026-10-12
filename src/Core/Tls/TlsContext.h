@@ -149,8 +149,10 @@ namespace AsynGyanis::Core
          * @note 服务端角色作用于客户端证书校验；客户端角色作用于对端（服务端）证书校验，
          *       在 `enableClientPeerVerification()` 那一刻随策略装上（本方法的即时生效分支按
          *       当前已启用的校验模式走）
-         * @note 必须在任何 SSL 对象创建之前调用：校验回调挂在 SSL_CTX 上，createSSL() 建好的
-         *       SSL 不会看到本次变更
+         * @note 名单本身即时生效：校验回调读的是挂在 SSL_CTX 上的共享登记，本次替换之后的
+         *       下一次校验（含已建连接上的后续握手）读到的就是新名单；**校验模式不追溯**——
+         *       按 `SSL_VERIFY_NONE` 建好的 SSL 不会因为这次调用开始校验，要新连接都校验就先
+         *       调 `setClientCertificateRequired(true)` / `enableClientPeerVerification()`
          * @see setClientCertificateRequired(), enableClientPeerVerification()
          */
         void setPeerFingerprintAllowlist(std::vector<std::string> sha256HexFingerprints) const;
@@ -291,6 +293,20 @@ namespace AsynGyanis::Core
             std::unordered_map<std::string, std::shared_ptr<SSL_CTX>> contexts; ///< 主机名 → 该主名的上下文
         };
 
+        /// 对端指纹名单的共享登记：校验回调与 setter 之间的唯一交汇点
+        /**
+         * @details 与 VirtualHostRegistry 同形同理由：回调在**握手线程**上读名单，而 setter 在配置
+         *          线程上整体替换——状态不能放在宿主 TlsContext 里（回调运行时宿主可能已析构，
+         *          裸读成员又是一场无同步数据竞争）。读写各持共享/独占锁；名单是「链验之上再点名」，
+         *          读错一次就放错人。
+         */
+        struct PeerFingerprintRegistry
+        {
+            /// 每条握手的叶子证书校验都要读一次，只有设置与换代才写
+            mutable std::shared_mutex mutex;
+            std::vector<std::string>  fingerprints; ///< 允许的叶子证书 SHA-256（64 位小写十六进制）
+        };
+
         /// 一份站点证书的路径对：reloadCertificate() 按它重读并重建上下文（与默认证书同为「路径即身份」）
         struct HostCertificateFiles
         {
@@ -325,6 +341,26 @@ namespace AsynGyanis::Core
          * @return 登记表指针；ex_data 注册失败时为空指针（此时 SNI 能力整体不可用）
          */
         [[nodiscard]] static VirtualHostRegistry *ensureRegistry(SSL_CTX *context);
+
+        /**
+         * @brief 取对端指纹登记的 ex_data 下标（首次调用时注册，释放回调 delete 持有者）
+         * @return int 下标；注册失败返回 -1，调用方据此让名单判据整体 fail-closed
+         */
+        [[nodiscard]] static int peerFingerprintRegistryIndex();
+
+        /**
+         * @brief 取指定上下文上的对端指纹登记
+         * @param context 目标上下文
+         * @return 登记指针；还没挂过（或 ex_data 注册失败）时为空指针
+         */
+        [[nodiscard]] static PeerFingerprintRegistry *peerFingerprintRegistryOf(SSL_CTX *context);
+
+        /**
+         * @brief 在指定上下文上备好对端指纹登记（已有则原样交回）
+         * @param context 目标上下文
+         * @return 登记指针；ex_data 注册失败时为空指针（此时名单判据整体 fail-closed）
+         */
+        [[nodiscard]] static PeerFingerprintRegistry *ensurePeerFingerprintRegistry(SSL_CTX *context);
 
         /**
          * @brief OpenSSL 的 servername 回调：按 ClientHello 里的 server_name 换成该站点的上下文

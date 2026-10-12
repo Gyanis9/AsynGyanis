@@ -452,6 +452,50 @@ namespace AsynGyanis::Core
         return static_cast<VirtualHostRegistry *>(SSL_CTX_get_ex_data(context, index));
     }
 
+    int TlsContext::peerFingerprintRegistryIndex()
+    {
+        // 与 SNI 登记同一条理由：登记的生死跟着 SSL_CTX 走，回调在握手线程上才不会碰到已析构的 TlsContext
+        static const int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
+                                                          { delete static_cast<PeerFingerprintRegistry *>(pointer); });
+        return index;
+    }
+
+    TlsContext::PeerFingerprintRegistry *TlsContext::peerFingerprintRegistryOf(SSL_CTX *context)
+    {
+        if (context == nullptr)
+        {
+            return nullptr;
+        }
+        const int index = peerFingerprintRegistryIndex();
+        if (index < 0)
+        {
+            return nullptr;
+        }
+        return static_cast<PeerFingerprintRegistry *>(SSL_CTX_get_ex_data(context, index));
+    }
+
+    TlsContext::PeerFingerprintRegistry *TlsContext::ensurePeerFingerprintRegistry(SSL_CTX *context)
+    {
+        if (PeerFingerprintRegistry *existing = peerFingerprintRegistryOf(context); existing != nullptr)
+        {
+            return existing;
+        }
+
+        const int index = peerFingerprintRegistryIndex();
+        if (index < 0)
+        {
+            return nullptr;
+        }
+
+        auto *registry = new PeerFingerprintRegistry();
+        if (SSL_CTX_set_ex_data(context, index, registry) != 1)
+        {
+            delete registry;
+            return nullptr;
+        }
+        return registry;
+    }
+
     TlsContext::VirtualHostRegistry *TlsContext::ensureRegistry(SSL_CTX *context)
     {
         if (VirtualHostRegistry *existing = registryOf(context); existing != nullptr)
@@ -812,8 +856,13 @@ namespace AsynGyanis::Core
 
     void TlsContext::applyPeerVerification(SSL_CTX *const context, const int mode) const
     {
-        // app_data 占位给回调取回本对象：本类此前不使用 app_data，占位无冲突（回调只读策略）
-        SSL_CTX_set_app_data(context, const_cast<TlsContext *>(this));
+        // 名单搬进 SSL_CTX 的共享登记：回调只碰登记、不解引用宿主对象（回调在握手线程上跑，
+        // 宿主可能已析构），替换持独占锁——与 VirtualHostRegistry 同一条理由、同一个形状
+        if (PeerFingerprintRegistry *const registry = ensurePeerFingerprintRegistry(context); registry != nullptr)
+        {
+            const std::lock_guard<std::shared_mutex> guard(registry->mutex);
+            registry->fingerprints = m_policy.allowedPeerSha256Fingerprints;
+        }
         SSL_CTX_set_verify(context, mode, m_policy.allowedPeerSha256Fingerprints.empty() ? nullptr : &TlsContext::verifyPeerAllowlistCallback);
     }
 
@@ -830,11 +879,11 @@ namespace AsynGyanis::Core
             return 1;
         }
 
-        // 取回宿主对象：取不到就拒绝（fail-closed）——宁可不放行，也不静默退回只看链
-        SSL *const        ssl  = static_cast<SSL *>(X509_STORE_CTX_get_ex_data(storeContext, SSL_get_ex_data_X509_STORE_CTX_idx()));
-        const auto *const self = ssl != nullptr ? static_cast<const TlsContext *>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl))) : nullptr;
-        X509 *const       leaf = X509_STORE_CTX_get_current_cert(storeContext);
-        if (self == nullptr || leaf == nullptr)
+        // 取回本上下文挂的共享登记：取不到就拒绝（fail-closed）——宁可不放行，也不静默退回只看链
+        SSL *const                           ssl      = static_cast<SSL *>(X509_STORE_CTX_get_ex_data(storeContext, SSL_get_ex_data_X509_STORE_CTX_idx()));
+        X509 *const                          leaf     = X509_STORE_CTX_get_current_cert(storeContext);
+        const PeerFingerprintRegistry *const registry = ssl != nullptr ? peerFingerprintRegistryOf(SSL_get_SSL_CTX(ssl)) : nullptr;
+        if (registry == nullptr || leaf == nullptr)
         {
             return 0;
         }
@@ -853,7 +902,9 @@ namespace AsynGyanis::Core
             fingerprint.push_back(kHexDigits[digest[index] >> 4U]);
             fingerprint.push_back(kHexDigits[digest[index] & 0x0FU]);
         }
-        return std::ranges::find(self->m_policy.allowedPeerSha256Fingerprints, fingerprint) != self->m_policy.allowedPeerSha256Fingerprints.end() ? 1 : 0;
+        // 读持共享锁：setter 在配置线程上持独占锁整体替换，两面不再裸读同一份 vector
+        const std::shared_lock<std::shared_mutex> guard(registry->mutex);
+        return std::ranges::find(registry->fingerprints, fingerprint) != registry->fingerprints.end() ? 1 : 0;
     }
 
     void TlsContext::setPeerFingerprintAllowlist(std::vector<std::string> sha256HexFingerprints) const
