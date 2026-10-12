@@ -11,6 +11,15 @@
 
 #include "Platform/Platform.h"
 
+// 概念签名里用到 epoll_event：这里必须自含所用类型，不能指望包含方先引了各自的平台头——
+// Windows 侧的 Iocp.h 正是先引本头、后引 wepoll.h，漏了这一段整批 TU 编不过（Linux 侧
+// Platform.h 恰好带了 <sys/epoll.h>，所以这个缺口只在 Windows 上现形）
+#ifdef _WIN32
+#include "wepoll.h"
+#else
+#include <sys/epoll.h>
+#endif
+
 #include <concepts>
 #include <cstdint>
 #include <span>
