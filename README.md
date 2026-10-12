@@ -864,7 +864,9 @@ AsynGyanis/
 - **供应链**：`scripts/generate-sbom.py` 出 CycloneDX 1.6 清单（含 `SHA256SUMS`，每条组件带 SPDX 许可），
   `scripts/check-dependency-advisories.py` 钉「`conandata.yml` 的固定版本与 `packaging/dependency-watch.json`
   的公告台账同解」；两者加 gitleaks 全树密钥扫描（豁免面在 `.gitleaks.toml`）由 `supply-chain.yml` 作业跑
-  （`main` 推送、手动触发、每周一凌晨），SBOM 作为制品保留
+  （`main` 推送、手动触发、每周一凌晨）；本地复跑按该作业三步——从钉版地址下载 gitleaks 8.30.1 并按
+  `supply-chain.yml` 里的 sha256 校验，再 `gitleaks dir . --no-banner --redact --config .gitleaks.toml --exit-code 1`。
+  SBOM 作为制品保留
   90 天。它交的是**依赖清单与来源**，不是签名后的二进制——要制品级 provenance 需另配签名构建
 - 代码所有权见 `.github/CODEOWNERS`（按目录路由，协议层与平台层的改动自动点名）；漏洞响应时限与披露节奏见
   `.github/SECURITY.md`
