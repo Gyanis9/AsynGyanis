@@ -200,7 +200,7 @@ def git_changed_files(revision):
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", "%s..HEAD" % revision, "--", "src", "tests", "samples", "CMakeLists.txt", "cmake",
-             "scripts", ".github", "README.md", "CONTRIBUTING.md", "packaging", "benchmarks"],
+             "scripts", ".github", "README.md", "CONTRIBUTING.md", "packaging", "benchmarks", "CMakePresets.json"],
             cwd=REPO, capture_output=True, text=True, check=True,
         )
     except (OSError, subprocess.CalledProcessError) as error:
