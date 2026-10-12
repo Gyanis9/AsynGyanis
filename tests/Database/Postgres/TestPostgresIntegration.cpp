@@ -10,7 +10,9 @@
  *          - ORM 端到端（SQL 由 PostgreSql 方言生成）：SchemaMigrator 建表 → insert →
  *            toList（WHERE + ORDER BY + LIMIT + OFFSET）→ count → tableExists → dropTable，
  *            以及 NUMERIC(20) 列被服务端接受、取值以精确十进制文本交回；
- *          - Transaction 的提交可见、回滚不可见、析构自动回滚。
+ *          - Transaction 的提交可见、回滚不可见、析构自动回滚；
+ *          - 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
+ *            NULL 与长文本、流式档两条哨兵，以及「在途流封锁连接」与析构收干。
  *
  * ## 口令绝不进仓库（本文件的第一条硬规矩）
  * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
@@ -1142,6 +1144,100 @@ namespace AsynGyanis::Database
             stream->reset();
             EXPECT_NE(stream->lastError().find("重扫"), std::string::npos) << stream->lastError();
         }
+    }
+
+    /**
+     * @brief 带参流式：参数绑定 + 单行模式——行序、长文本、NULL 与流式档两条哨兵都要对
+     */
+    TEST_F(PostgresIntegrationTest, ParameterizedStreamingReadsEveryRowWithBoundParameters)
+    {
+        static constexpr std::string_view kTableName = "Asyn_Pg_ParamStream";
+        m_preparedTableNames.emplace_back(kTableName);
+        ASSERT_TRUE(prepareTable(kTableName, "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL, \"payload\" TEXT NULL")) << m_lastSetupError;
+
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        std::string bigPayload;
+        for (int index = 0; index < 2000; ++index)
+        {
+            bigPayload += "流式";
+            bigPayload += std::to_string(index);
+        }
+
+        const std::string insertStatement = "INSERT INTO " + quote(kTableName) + " (\"id\", \"name\", \"payload\") VALUES ($1, $2, $3)";
+        for (std::int64_t rowIndex = 1; rowIndex <= 8; ++rowIndex)
+        {
+            std::vector<DatabaseValue> row{rowIndex, std::string("第" + std::to_string(rowIndex) + "行"), std::string("small")};
+            if (rowIndex == 1)
+            {
+                row[2] = bigPayload;
+            } else if (rowIndex == 4)
+            {
+                row[2] = std::monostate{};
+            }
+            ASSERT_NE(connection.execute(insertStatement, row), nullptr) << connection.lastError();
+        }
+
+        // 与不带参的流式同一条契约：行数未知回 0、不宣称自己空；参数经 $1 真实绑定参与过滤
+        const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
+                "SELECT \"id\", \"name\", \"payload\" FROM " + quote(kTableName) + " WHERE \"id\" >= $1 ORDER BY \"id\"", std::vector<DatabaseValue>{std::int64_t{1}});
+        ASSERT_NE(stream, nullptr) << connection.lastError();
+        EXPECT_EQ(stream->rowCount(), 0U);
+        EXPECT_FALSE(stream->isEmpty());
+
+        std::int64_t expectedId = 1;
+        while (stream->next())
+        {
+            EXPECT_EQ(std::get<std::int64_t>(stream->getValue("id")), expectedId) << "行序错乱";
+            EXPECT_EQ(std::get<std::string>(stream->getValue("name")), "第" + std::to_string(expectedId) + "行");
+            if (expectedId == 1)
+            {
+                const std::string payload = std::get<std::string>(stream->getValue("payload"));
+                EXPECT_EQ(payload.size(), bigPayload.size());
+                EXPECT_EQ(payload, bigPayload);
+            }
+            if (expectedId == 4)
+            {
+                EXPECT_TRUE(std::holds_alternative<std::monostate>(stream->getValue("payload"))) << "NULL 被读成了别的值";
+            }
+            ++expectedId;
+        }
+        EXPECT_EQ(expectedId, 9) << "流没有读全";
+
+        // 读完即收口：连接接着可用
+        const std::unique_ptr<DatabaseResult> afterDrain = connection.execute("SELECT 1");
+        ASSERT_NE(afterDrain, nullptr) << connection.lastError();
+    }
+
+    /**
+     * @brief 带参流在途封锁连接：没读完之前执行入口都在发送之前拒，析构收干后恢复
+     */
+    TEST_F(PostgresIntegrationTest, ParameterizedStreamingBlocksTheConnectionUntilDisposed)
+    {
+        static constexpr std::string_view kTableName = "Asyn_Pg_ParamStreamHold";
+        m_preparedTableNames.emplace_back(kTableName);
+        ASSERT_TRUE(prepareTable(kTableName, "\"id\" BIGINT PRIMARY KEY")) << m_lastSetupError;
+
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        for (std::int64_t rowIndex = 1; rowIndex <= 5; ++rowIndex)
+        {
+            ASSERT_NE(connection.execute("INSERT INTO " + quote(kTableName) + " (\"id\") VALUES ($1)", std::vector<DatabaseValue>{rowIndex}), nullptr) << connection.lastError();
+        }
+
+        {
+            const std::unique_ptr<DatabaseResult> stream =
+                    connection.executeStreaming("SELECT \"id\" FROM " + quote(kTableName) + " WHERE \"id\" >= $1 ORDER BY \"id\"", std::vector<DatabaseValue>{std::int64_t{1}});
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+            ASSERT_TRUE(stream->next());
+
+            EXPECT_EQ(connection.execute("SELECT 1"), nullptr) << "流没读完时又发了一条语句";
+            EXPECT_NE(connection.lastError().find("未消费完"), std::string::npos) << connection.lastError();
+        } // 析构把剩余单行块收干
+
+        const std::unique_ptr<DatabaseResult> afterDisposal = connection.execute("SELECT 1");
+        ASSERT_NE(afterDisposal, nullptr) << connection.lastError();
     }
 
     /**

@@ -251,6 +251,20 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
 
         /**
+         * @brief 执行带参数的命令并交出流式结果集：参数绑定 + libpq 单行模式
+         * @details 重写 DatabaseConnection::executeStreaming() 的带参重载：与 execute(command, parameters)
+         *          共用同一套参数材料（容器/NUL 本地判定顺序一致、平行数组构造同一个助手），发送改走
+         *          PQsendQueryParams + PQsetSingleRowMode，行留在服务端、每次 next() 取一块一行；
+         *          空结果（0 行）交回普通预读空结果集，首块即失败按与 execute 同一口径采集错误
+         *          （链路已断则顺手断开）。契约与不带参的流式档完全一致：在途未清流时三个执行入口
+         *          都在发送之前拒。
+         * @param command 命令文本（$n 占位符）
+         * @param parameters 绑定参数（语义与 execute(command, parameters) 逐条一致）
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败返回 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters) override;
+
+        /**
          * @brief 流式结果收尾时通知连接归位「在途未清流」计数（结果集调用，用户代码不要直接调）
          * @details 幂等递减：读完、中断与析构收干三处可能先后到（与 MySqlConnection 同名方法同口径）
          */
@@ -352,6 +366,15 @@ namespace AsynGyanis::Database
          * @return true 已下发；false 被服务端拒（原因在 lastError()，并追加一句「时限未能下发」的说明）
          */
         bool applyStatementTimeout();
+
+        /**
+         * @brief 单行模式的收尾工序：切单行模式 → 取首块 → 按首块状态分派（空结果/失败/开流）
+         * @details 发送已由调用方完成（两条流式入口的 PQsendQueryParams 参数不同），本方法只做
+         *          发送之后的工序，两条入口共用一份：进不了单行模式先把回复收干再失败、空结果交
+         *          预读空结果集、首块即失败按 execute 口径采集（链路已断顺手断开）、开流成功计数 +1。
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；空结果交预读结果集；失败返回 nullptr
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> openSingleRowStream();
 
         /**
          * @brief 采集连接级错误文本并写入 m_lastError

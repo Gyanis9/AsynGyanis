@@ -238,6 +238,20 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.isConnected());
     }
 
+    TEST(PostgresConnection, ParameterizedStreamingExecuteWithoutConnectionReturnsNullResult)
+    {
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+
+        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("SELECT id FROM users WHERE id = $1", std::vector<DatabaseValue>{std::int64_t{1}});
+
+        // 新入口与其余执行入口共用同一份发送前前置：未连接时同样明确失败
+        EXPECT_EQ(result, nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("PostgreSQL"), std::string::npos) << connection.lastError();
+        EXPECT_FALSE(connection.isConnected());
+    }
+
     TEST(PostgresConnection, StreamingExecuteRejectsNulCommandLocally)
     {
         if (!kPostgresDriverCompiled)

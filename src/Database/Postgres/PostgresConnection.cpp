@@ -682,6 +682,88 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 发送之后的工序（单行模式、首块分派、开流计数）与带参入口共用一份
+        return openSingleRowStream();
+    }
+
+    std::unique_ptr<DatabaseResult> PostgresConnection::executeStreaming(const std::string_view command, const std::span<const DatabaseValue> parameters)
+    {
+        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
+        m_lastError.clear();
+
+        // 参数的两条本地判定（容器、NUL）放在连接状态之前：与 execute(带参) 同一顺序、同一批助手
+        std::vector<Detail::PostgresTextParameter> textParameters;
+        if (std::optional<std::string> reason = convertParametersToText(parameters, textParameters); reason.has_value())
+        {
+            m_lastError = std::move(*reason);
+            return nullptr;
+        }
+        if (std::optional<std::string> reason = rejectNulByteParameters(parameters); reason.has_value())
+        {
+            m_lastError = std::move(*reason);
+            return nullptr;
+        }
+
+        // 命令级本地校验（空、NUL）与连接/在途流判定：与另三条执行入口逐条同款
+        if (command.empty())
+        {
+            m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+        if (postgresCommandContainsNul(command))
+        {
+            m_lastError = "数据库命令含 NUL 字节：libpq 按零终止 C 字符串解析命令，内嵌 NUL 会把命令"
+                          "静默截断成前半句（可能执行出一条不完整的语句而不报错），请先清理命令文本";
+            return nullptr;
+        }
+
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 PostgreSQL 数据库，命令未执行";
+            return nullptr;
+        }
+
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果：流式结果与产出它的连接绑定，在它读完或析构之前，"
+                          "本连接不能再发任何语句（含事务控制）。请先把它读完或释放，再执行新命令";
+            return nullptr;
+        }
+
+        if (parameters.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            m_lastError = "参数个数过多：" + std::to_string(parameters.size()) + " 个，超出 PostgreSQL 扩展查询协议可表达的范围";
+            return nullptr;
+        }
+
+        const std::string commandText(command);
+
+        // paramValues 与 paramLengths 两个平行数组的构造与 execute(带参) 共用同一个助手；
+        // 数组元素是 textParameters 里取值文本的视图，活到本函数返回为止（libpq 在 send 时复制）
+        std::vector<const char *> valuePointers;
+        std::vector<int>          valueLengths;
+        if (std::optional<std::string> reason = buildParameterArrays(textParameters, valuePointers, valueLengths); reason.has_value())
+        {
+            m_lastError = std::move(*reason);
+            return nullptr;
+        }
+
+        // 与两条 execute 同一协议（扩展查询：多语句在解析阶段被服务端整次拒绝）；之后的单行模式
+        // 工序与不带参的流式档逐条相同（顺序、错误处置、收尾口径都一致）
+        if (PQsendQueryParams(m_connection, commandText.c_str(), static_cast<int>(parameters.size()), nullptr, valuePointers.empty() ? nullptr : valuePointers.data(),
+                              valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0) == 0)
+        {
+            captureError("发送流式查询失败");
+            return nullptr;
+        }
+
+        // 发送之后的工序与不带参入口共用一份
+        return openSingleRowStream();
+    }
+
+    std::unique_ptr<DatabaseResult> PostgresConnection::openSingleRowStream()
+    {
         // 单行模式必须在「已发送、还没取任何结果」的窗口里打开：这是 libpq 的硬性顺序
         if (PQsetSingleRowMode(m_connection) == 0)
         {
@@ -1010,6 +1092,13 @@ namespace AsynGyanis::Database
     {
         // 与两条 execute 同一判据：桩里报的是「当前构建没编译驱动」，而不是基类默认的
         // 「该驱动不支持流式结果集」
+        m_lastError = kMissingDriverError;
+        return nullptr;
+    }
+
+    std::unique_ptr<DatabaseResult> PostgresConnection::executeStreaming(const std::string_view, const std::span<const DatabaseValue>)
+    {
+        // 带参流式同样按「没编译驱动」报，而不是基类默认的「不支持这条路径」
         m_lastError = kMissingDriverError;
         return nullptr;
     }
