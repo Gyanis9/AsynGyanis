@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Postgres/PostgresConnection.h" // 复用其中全局作用域的 PGconn / PGresult 前置声明
 
@@ -80,7 +82,7 @@ namespace AsynGyanis::Database
      *   }
      * @endcode
      */
-    class PostgresResult : public DatabaseResult
+    class ASYN_DATABASE_API PostgresResult : public DatabaseResult
     {
     public:
         /**

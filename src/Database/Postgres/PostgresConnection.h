@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "AsynGyanisExport.h"
+
 #include "Database/Common/DatabaseConnection.h"
 
 #include <cstdint>
@@ -110,7 +112,7 @@ namespace AsynGyanis::Database
      *   }
      * @endcode
      */
-    class PostgresConnection : public DatabaseConnection
+    class ASYN_DATABASE_API PostgresConnection : public DatabaseConnection
     {
     public:
         /**
