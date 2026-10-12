@@ -622,9 +622,12 @@ namespace
                                            cellAs<std::string>(*selection, std::size_t{0}) == std::optional<std::string>("工厂写入"),
                                    "经基类指针读写文件库：虚派发把 SQL 真的送到了 SQLite 驱动");
 
+        // 5432 自 PostgreSQL 接入起被识别成 PostgreSql（不再当归「未登记」样本）；
+        // 未登记端口的样本改用 1521——Oracle 的默认端口，不在驱动表里
         Samples::checklist().check(Database::DatabaseFactory::guessType(3306) == std::optional<Database::DatabaseType>(Database::DatabaseType::MySql) &&
+                                           Database::DatabaseFactory::guessType(5432) == std::optional<Database::DatabaseType>(Database::DatabaseType::PostgreSql) &&
                                            Database::DatabaseFactory::guessType(6379) == std::optional<Database::DatabaseType>(Database::DatabaseType::Redis) &&
-                                           !Database::DatabaseFactory::guessType(5432).has_value(),
+                                           !Database::DatabaseFactory::guessType(1521).has_value(),
                                    "guessType 只认已实现引擎的默认端口，未知端口给空而不是回退成 MySQL");
 
         Database::ConnectionConfig redisStyleConfiguration;
