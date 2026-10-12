@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -185,8 +186,11 @@ namespace AsynGyanis::Database
         // MySQL ER_LOCK_WAIT_TIMEOUT(1205) / ER_LOCK_DEADLOCK(1213)；SQLite BUSY(5) / LOCKED(6)；
         // PostgreSQL 40P01（deadlock_detected，服务端已回滚本事务、与 MySQL 1213 同语义）与
         // 40001（serialization_failure）——后两者的码是 SQLSTATE 文本的打包值，见
-        // postgresSqlStateNativeCode；两处必须同解，调用方对表比较才成立
-        for (const std::int64_t retryableCode: {1205LL, 1213LL, 5LL, 6LL, postgresSqlStateNativeCode("40P01"), postgresSqlStateNativeCode("40001")})
+        // postgresSqlStateNativeCode；两处必须同解，调用方对表比较才成立。
+        // 表用 std::array 显式定长：花括号列表混着 LL 字面量与 int64_t 时 GCC 会
+        // 因「long long 与 long 推导冲突」拒编（MSVC 的 int64_t 恰是 long long，两处不同形）
+        const std::array<std::int64_t, 6> retryableCodes{1205, 1213, 5, 6, postgresSqlStateNativeCode("40P01"), postgresSqlStateNativeCode("40001")};
+        for (const std::int64_t retryableCode: retryableCodes)
         {
             const QueryExecutionException exception("语句被拒", retryableCode);
             EXPECT_TRUE(exception.isRetryable()) << "码 " << retryableCode << " 应判可重试";
@@ -195,7 +199,8 @@ namespace AsynGyanis::Database
         // 约束冲突（MySQL 1062 / SQLite 19 / PostgreSQL 23505）、语法与对象不存在（SQLite 1）、
         // 权限不足（MySQL 1142）、连接类（2002/2003/2005）、超时打断（MySQL 3024 / SQLite 9 INTERRUPT）、
         // 连接中断（2006/2013，语句可能已在服务端生效，跨连接重放不是本函数能替调用方拍的）
-        for (const std::int64_t nonRetryableCode: {1062LL, 19LL, 1LL, 1142LL, 2002LL, 2003LL, 2005LL, 3024LL, 9LL, 2006LL, 2013LL, postgresSqlStateNativeCode("23505")})
+        const std::array<std::int64_t, 12> nonRetryableCodes{1062, 19, 1, 1142, 2002, 2003, 2005, 3024, 9, 2006, 2013, postgresSqlStateNativeCode("23505")};
+        for (const std::int64_t nonRetryableCode: nonRetryableCodes)
         {
             const QueryExecutionException exception("语句被拒", nonRetryableCode);
             EXPECT_FALSE(exception.isRetryable()) << "码 " << nonRetryableCode << " 不该判可重试";
