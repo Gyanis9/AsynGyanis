@@ -1942,6 +1942,74 @@ namespace AsynGyanis::Net::Fuzz
                 {
                     return "生产编码器产出的头块解不回同样的字段（编解码互逆对照）";
                 }
+
+                // I6 双流对拍：编码器产出的两组字节（编码器流指令 + 引用它们的头块）分开喂给同一个
+                // 解码器——头块先到时必须 Blocked 且一行不交付（半截产出即失真）；指令流补齐、按报出
+                // 的流标识 resume 之后必须逐字段解回。resume 交付此前在模糊闭包里零覆盖：喂进去的
+                // 从来只是单路字节流，「解除阻塞」这条 §2.2.1 正常路径从没走到过
+                {
+                    const std::vector<QpackHeaderField> pairedFields = sampleQpackFields();
+                    QpackEncoder                        pairedEncoder(4096U, 4U, 4096U);
+                    std::string                         pairedBlock;
+                    std::string                         pairedEncoderStream;
+                    if (!pairedEncoder.encodeFieldSection(1U, pairedFields, pairedBlock, pairedEncoderStream).has_value())
+                    {
+                        return "双流对拍：生产编码器组不出配对样本（I6 前提）";
+                    }
+
+                    QpackDecoder                        pairedDecoder(kQpackFuzzDecoderSettings);
+                    std::vector<QpackHeaderField>       pairedDecoded;
+                    std::string                         pairedDecoderStream;
+                    const std::span<const std::uint8_t> pairedBlockBytes(reinterpret_cast<const std::uint8_t *>(pairedBlock.data()), pairedBlock.size());
+                    const auto                          pairedFirst = pairedDecoder.decodeFieldSection(1U, pairedBlockBytes, pairedDecoded, pairedDecoderStream);
+                    if (!pairedFirst.has_value())
+                    {
+                        return "双流对拍：头块先到时报错（应先 Blocked，I6）";
+                    }
+                    if (*pairedFirst != QpackFieldSectionDecodeStatus::Blocked || !pairedDecoded.empty())
+                    {
+                        return "双流对拍：指令流未到就交出了字段（I6）";
+                    }
+
+                    std::vector<std::uint64_t>          unblockedStreamIds;
+                    std::string                         feedDecoderStream;
+                    const std::span<const std::uint8_t> pairedStreamBytes(reinterpret_cast<const std::uint8_t *>(pairedEncoderStream.data()), pairedEncoderStream.size());
+                    if (!pairedDecoder.feedEncoderStream(pairedStreamBytes, unblockedStreamIds, feedDecoderStream).has_value())
+                    {
+                        return "双流对拍：配对指令流喂不进（I6）";
+                    }
+
+                    bool isResumed = false;
+                    for (const std::uint64_t streamId: unblockedStreamIds)
+                    {
+                        std::string resumeDecoderStream;
+                        const auto  pairedResumed = pairedDecoder.resumeBlockedFieldSection(streamId, pairedDecoded, resumeDecoderStream);
+                        if (!pairedResumed.has_value() || *pairedResumed != QpackFieldSectionDecodeStatus::Decoded)
+                        {
+                            return "双流对拍：指令流补齐后续解没有交付（I6）";
+                        }
+                        isResumed = true;
+                    }
+                    if (!isResumed || pairedDecoder.hasBlockedFieldSection(1U))
+                    {
+                        return "双流对拍：指令流喂完却没有走通续解（I6）";
+                    }
+
+                    std::vector<std::string> pairedFieldTexts;
+                    for (const auto &field: pairedDecoded)
+                    {
+                        pairedFieldTexts.push_back(field.name + '=' + field.value);
+                    }
+                    std::vector<std::string> expectedPairedFieldTexts;
+                    for (const auto &field: pairedFields)
+                    {
+                        expectedPairedFieldTexts.push_back(field.name + '=' + field.value);
+                    }
+                    if (pairedFieldTexts != expectedPairedFieldTexts)
+                    {
+                        return "双流对拍：续解出的字段与编码输入不同（I6）";
+                    }
+                }
                 return {};
             }
 
