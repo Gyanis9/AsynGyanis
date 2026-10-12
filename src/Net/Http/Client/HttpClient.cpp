@@ -1006,19 +1006,91 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 与 https 代理做一次客户端 TLS 握手（按**代理**主机名校验；刻意不声明 ALPN）
+         * @param socket 已连到代理的套接字（所有权移入返回的 TlsSocket）
+         * @param loop 所属事件循环
+         * @param route 代理路由（主机与端口用于 SNI 与校验）
+         * @param clientTls 复用的 TLS 客户端上下文，可空
+         * @param startedAt 本次请求的开始时刻
+         * @param requestTimeout 整体时限
+         * @param failureReason 输出：失败在哪一段、点名到「代理」这一层
+         * @return std::optional<std::unique_ptr<Core::TlsSocket>> 握手成功交出 TlsSocket；失败返回空
+         * @details 外层 TLS 的对端是代理而不是目标：SNI 与主机名校验都按代理主机走（目标的证书
+         *          在 https 目标的 CONNECT 隧道里由内层 TLS 各自校验）。证书链用的是与目标同一份
+         *          TLS 策略（同一 CA 信任库与客户端证书）——独立代理证书不做，触发条件见 README。
+         *          不声明 ALPN 是有意为之：到代理的连接按 HTTP/1.1 语义说话（CONNECT 与绝对形式
+         *          都是 h1 的），声明 h2 只会把协商引向本端没实现的通路
+         */
+        Core::Task<std::optional<std::unique_ptr<Core::TlsSocket>>> openTlsToProxy(Core::AsyncSocket socket, Core::EventLoop &loop, const HttpProxyRoute &route,
+                                                                                   const Core::TlsContext *clientTls, const std::chrono::steady_clock::time_point startedAt,
+                                                                                   const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+        {
+            auto *ctx = clientTls != nullptr ? clientTls->nativeHandle() : clientSslCtx();
+            if (!ctx)
+            {
+                failureReason = "TLS 上下文创建失败：OpenSSL 没能给出 client method，通常是库未正确初始化";
+                co_return std::nullopt;
+            }
+            SSL *ssl = SSL_new(ctx);
+            if (!ssl)
+            {
+                failureReason = "TLS 会话对象创建失败：OpenSSL 内存不足";
+                co_return std::nullopt;
+            }
+            if (::SSL_set_fd(ssl, socket.fileDescriptor()) == 0)
+            {
+                SSL_free(ssl);
+                failureReason = "TLS 无法绑定套接字描述符：OpenSSL 的 BIO 创建失败";
+                co_return std::nullopt;
+            }
+
+            // SNI 与主机名校验都按代理主机：外层 TLS 的对端是代理，不是请求的目标
+            SSL_set_tlsext_host_name(ssl, route.host.c_str());
+            if (isIpLiteral(route.host))
+            {
+                X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), route.host.c_str());
+            } else
+            {
+                SSL_set1_host(ssl, route.host.c_str());
+            }
+
+            auto                                           tlsSocket       = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(socket), Core::TlsSocket::Role::Client);
+            const std::optional<std::chrono::milliseconds> handshakeBudget = remainingBudget(startedAt, requestTimeout);
+            if (!handshakeBudget.has_value())
+            {
+                tlsSocket->close();
+                failureReason = "本次请求已到时限：还没与代理做 TLS 握手（代理 " + route.host + ":" + std::to_string(route.port) + "）";
+                co_return std::nullopt;
+            }
+            const Core::DeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, *handshakeBudget, "HttpClient 代理 TLS");
+            try
+            {
+                co_await tlsSocket->handshake();
+            } catch (const Base::Exception &failure)
+            {
+                LOG_WARN_FMT("HttpClient: 与代理 {}:{} 的 TLS 握手失败。底层原因：{}", route.host, route.port, failure.what());
+                failureReason = "与代理「" + route.host + ":" + std::to_string(route.port) + "」的 TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线";
+                co_return std::nullopt;
+            }
+            co_return std::optional<std::unique_ptr<Core::TlsSocket>>{std::move(tlsSocket)};
+        }
+
+        /**
          * @brief 建一条明文连接
          * @param loop 所属事件循环
          * @param key 目标身份（主机与端口；TLS 位由调用方按 scheme 定）
          * @param failureReason 输出：连不上时点明断在哪一段
          * @param startedAt 本次请求的开始时刻，用于把整体时限摊到剩下那一段
          * @param requestTimeout 整体时限
-         * @param proxyRoute 非空即经代理：拨的是代理地址，请求走绝对形式（池键仍是目标）
+         * @param proxyRoute 非空即经代理：拨的是代理地址，请求走绝对形式（池键仍是目标）；
+         *        路由是 `https://` 代理时连上之后先与代理做一次 TLS 握手再说话
+         * @param clientTls 复用的 TLS 客户端上下文（https 代理那一路要用），可空
          * @return std::unique_ptr<HttpOutboundConnection> 连上了就交出连接，连接失败返回空
          */
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop, const HttpOutboundEndpointKey &key,
                                                                                      const std::chrono::steady_clock::time_point startedAt,
                                                                                      const std::chrono::milliseconds requestTimeout, std::string &failureReason,
-                                                                                     const std::optional<HttpProxyRoute> &proxyRoute)
+                                                                                     const std::optional<HttpProxyRoute> &proxyRoute, const Core::TlsContext *clientTls)
         {
             // 经代理的明文请求拨的是**代理**地址，池键仍是目标——连接的身份按用途记，拨号按路由走
             const auto [dialHost, dialPort] = dialTargetForConnection(key.host, key.port, proxyRoute);
@@ -1034,6 +1106,19 @@ namespace AsynGyanis::Net
             {
                 noteProxyDialFailure(failureReason, dialHost, dialPort, proxyRoute.has_value());
                 co_return nullptr;
+            }
+
+            // https 代理（TLS 连到代理自身）：连上之后先做外层 TLS 握手，再在其上说话；
+            // 请求形状不变（绝对形式 + Proxy-Authorization 都在 TLS 里走），凭据不再明文过网
+            if (proxyRoute.has_value() && proxyRoute->isTls)
+            {
+                std::optional<std::unique_ptr<Core::TlsSocket>> tlsSocket =
+                        co_await openTlsToProxy(std::move(*socket), loop, *proxyRoute, clientTls, startedAt, requestTimeout, failureReason);
+                if (!tlsSocket.has_value())
+                {
+                    co_return nullptr;
+                }
+                co_return HttpOutboundConnection::forTlsToProxy(key, std::move(*tlsSocket));
             }
             co_return HttpOutboundConnection::forPlain(key, TcpStream(std::move(*socket)));
         }
@@ -1173,6 +1258,14 @@ namespace AsynGyanis::Net
                                                                                       const std::chrono::milliseconds requestTimeout, std::string &failureReason,
                                                                                       const Core::TlsContext *clientTls, const std::optional<HttpProxyRoute> &proxyRoute)
         {
+            // https 目标经 https 代理要 TLS-in-TLS（外层到代理、内层到目标），这一路尚未接线：
+            // 明确拒绝并点名，绝不把明文 CONNECT 发给一个等 TLS 的代理（那种失败看着像对端坏了）
+            if (proxyRoute.has_value() && proxyRoute->isTls)
+            {
+                failureReason = "https 目标经 https 代理（TLS-in-TLS）这一路尚未接线：请暂时把该目标的代理换成 http:// 形式，或等这一路补上（目标 " + u.host + "）";
+                co_return nullptr;
+            }
+
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
             // 经代理的 TLS 连接拨的是**代理**地址，CONNECT 之后的 TLS 与 SNI 仍按目标走（代理只搬字节）
@@ -1889,7 +1982,8 @@ namespace AsynGyanis::Net
                     connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls, decision.route);
                 } else
                 {
-                    connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout, failureReason, decision.route);
+                    // clientTls 在明文目标这一路只被 https 代理用（连代理的 TLS 握手），直连时为空放行
+                    connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout, failureReason, decision.route, clientTls);
                 }
                 if (!connection)
                 {

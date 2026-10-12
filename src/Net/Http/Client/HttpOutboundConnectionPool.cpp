@@ -45,6 +45,12 @@ namespace AsynGyanis::Net
         return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
     }
 
+    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forTlsToProxy(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket)
+    {
+        // 与 forSecure 同一份构造：差别只在语义（TLS 到代理、其上走绝对形式），分发逻辑完全一致
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
+    }
+
     HttpOutboundConnection::~HttpOutboundConnection()
     {
         close();

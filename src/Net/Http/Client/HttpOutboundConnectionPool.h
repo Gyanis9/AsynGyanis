@@ -87,6 +87,17 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forSecure(HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket);
 
+        /**
+         * @brief 接管一条「TLS 到代理」的连接（http 目标经 https 代理）
+         * @param endpointKey 这条连接的可复用身份（isTls 仍为 false——身份按**目标**记）
+         * @param socket 与代理完成握手的 TLS 套接字（本对象接管其所有权）
+         * @return std::unique_ptr<HttpOutboundConnection> 池化连接
+         * @details 与 forSecure 同构但语义不同：TLS 的对端是**代理**，其上跑的请求按绝对形式
+         *          （RFC 9112 §3.2.2）。单独摆一个工厂是为了让调用点说清「这条 TLS 到谁」——
+         *          两者在收发分发上没有任何差别，池的身份只取决于目标与用途
+         */
+        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forTlsToProxy(HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket);
+
         HttpOutboundConnection(const HttpOutboundConnection &)            = delete;
         HttpOutboundConnection &operator=(const HttpOutboundConnection &) = delete;
         HttpOutboundConnection(HttpOutboundConnection &&)                 = delete;

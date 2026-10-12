@@ -43,6 +43,7 @@ namespace AsynGyanis::Net
     {
         std::string   host;                ///< 代理主机（IPv6 已去方括号）
         std::uint16_t port{0};             ///< 代理端口；0 表示未解析
+        bool          isTls{false};        ///< 是否 TLS 连到代理自身（代理地址写作 `https://` 时为真）
         std::string   authorizationHeader; ///< 预拼的 `Basic …` 值；空 = 代理 URL 未带凭据
 
         /**
@@ -77,11 +78,14 @@ namespace AsynGyanis::Net
                                                                                                               std::string_view host, std::uint16_t port);
 
     /**
-     * @brief 解析一条代理地址：`http://[user[:pass]@]host[:port]` 或裸 `host[:port]`
+     * @brief 解析一条代理地址：`http://`/`https://`/裸 `[user[:pass]@]host[:port]`
      * @param proxyUrl 代理地址文本（来自显式策略或环境变量）
-     * @return HttpProxyRoute 主机、端口（缺省 80）与预拼的认证头；非法时给出点名原因
-     * @details `https://` 代理（TLS 连到代理自身）当前不支持，遇到即拒并写明——静默降级成明文连代理
-     *          比拒绝更糟。凭据段支持 `%XX` 转义；口令原文绝不回显进任何错误文案（见 redactProxyCredentials）。
+     * @return HttpProxyRoute 主机、端口（http 缺省 80、https 缺省 443）、TLS 标志与预拼的认证头；非法时给出点名原因
+     * @details `https://` 代理表示 **TLS 连到代理自身**（与目标的 scheme 无关）：建立侧据此先按代理
+     *          主机名做一次 TLS 握手再说话；http 目标写绝对形式、https 目标在外层 TLS 里再发 CONNECT。
+     *          凭据段支持 `%XX` 转义；口令原文绝不回显进任何错误文案（见 redactProxyCredentials）。
+     * @note 代理地址的 scheme 只决定「怎么连代理」：目标走 http 还是 https 由请求 URL 定，
+     *       两者互不影响（curl 的 `-x https://…` 同此语义）
      */
     [[nodiscard]] ASYN_NET_API std::expected<HttpProxyRoute, std::string> parseProxyUrl(std::string_view proxyUrl);
 

@@ -114,8 +114,8 @@ namespace AsynGyanis::Net
             return std::nullopt;
         }
 
-        /// 拆 `host[:port]`（host 允许方括号包 IPv6）；端口缺省 80，非法时写下点名原因
-        bool splitHostPort(const std::string_view authority, std::string &host, std::uint16_t &port, std::string &failureReason)
+        /// 拆 `host[:port]`（host 允许方括号包 IPv6）；端口缺省按 scheme 定（http 80、https 443），非法时写下点名原因
+        bool splitHostPort(const std::string_view authority, const std::uint16_t defaultPort, std::string &host, std::uint16_t &port, std::string &failureReason)
         {
             std::string_view hostPart = authority;
             std::string_view portPart;
@@ -166,7 +166,7 @@ namespace AsynGyanis::Net
             }
             host = std::string(hostPart);
 
-            port = 80;
+            port = defaultPort;
             if (!hasExplicitPort)
             {
                 return true;
@@ -235,21 +235,26 @@ namespace AsynGyanis::Net
         const std::string_view text = trimmed(proxyUrl);
         if (text.empty())
         {
-            return std::unexpected("代理地址是空串（请给出 http://主机[:端口]，或清掉这一项走直连）");
+            return std::unexpected("代理地址是空串（请给出 http:// 或 https:// 主机[:端口]，或清掉这一项走直连）");
         }
 
-        std::string_view authority = text;
+        std::string_view authority    = text;
+        bool             isTlsToProxy = false;
         if (const std::size_t schemeSeparator = text.find("://"); schemeSeparator != std::string_view::npos)
         {
             const std::string_view scheme = text.substr(0U, schemeSeparator);
             authority                     = text.substr(schemeSeparator + 3U);
-            if (!equalsIgnoreCase(scheme, "http"))
+            if (equalsIgnoreCase(scheme, "https"))
             {
-                return std::unexpected("代理地址的协议「" + std::string(scheme) +
-                                       "」不支持：当前只支持 http:// 代理（https:// 代理是 TLS 连到代理自身，"
-                                       "凭据暴露面与校验语义是另一套；要它就单独提需求）");
+                // https:// 代理 = TLS 连到代理自身：建立侧据此先做外层 TLS 握手再说话
+                isTlsToProxy = true;
+            } else if (!equalsIgnoreCase(scheme, "http"))
+            {
+                return std::unexpected("代理地址的协议「" + std::string(scheme) + "」不支持：只认 http://（明文连代理）与 https://（TLS 连到代理自身）两种");
             }
         }
+        // 端口缺省随 scheme 走：http 代理系 80、https 代理系 443（写错的那一侧连不上，不做猜测）
+        const std::uint16_t defaultPort = isTlsToProxy ? 443U : 80U;
 
         // 尾随一个 '/' 是常见写法，去掉；再出现路径/查询/片段就是形状不对
         if (!authority.empty() && authority.back() == '/')
@@ -258,10 +263,11 @@ namespace AsynGyanis::Net
         }
         if (authority.find_first_of("/?#") != std::string_view::npos)
         {
-            return std::unexpected("代理地址带了路径或查询：只接受 [http://][用户[:口令]@]主机[:端口]");
+            return std::unexpected("代理地址带了路径或查询：只接受 [http://|https://][用户[:口令]@]主机[:端口]");
         }
 
         HttpProxyRoute route;
+        route.isTls = isTlsToProxy;
         if (const std::size_t at = authority.rfind('@'); at != std::string_view::npos)
         {
             const std::string_view userInfo = authority.substr(0U, at);
@@ -284,7 +290,7 @@ namespace AsynGyanis::Net
         }
 
         std::string failureReason;
-        if (!splitHostPort(authority, route.host, route.port, failureReason))
+        if (!splitHostPort(authority, defaultPort, route.host, route.port, failureReason))
         {
             return std::unexpected("代理地址非法：" + failureReason);
         }

@@ -7,6 +7,7 @@
 #include "HttpTestSupport.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/Tls/TlsContext.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpsServer.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -15,6 +16,8 @@
 #include "Platform/System/ProcessInfo.h"
 
 #include <gtest/gtest.h>
+
+#include <openssl/ssl.h>
 
 #include <atomic>
 #include <chrono>
@@ -103,13 +106,46 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 不支持的形状一律拒绝并点名（不静默变形）：https 代理、空主机、越界端口、空值
+     * @brief https:// 代理：TLS 连到代理自身的标志位与 443 缺省端口
+     * @details 代理地址的 scheme 决定「怎么连代理」，与目标 scheme 无关：https:// 代理的
+     *          isTls 必须为真（建立侧据此先做外层 TLS 握手），显式端口与凭据段照旧生效。
+     *          证伪：把 scheme 判定退回「只认 http」，三条 isTls 断言全红。
+     */
+    TEST(HttpProxyPolicy, AcceptsHttpsProxySchemeWithTlsFlagAndPort443)
+    {
+        const auto defaultPort = parseProxyUrl("https://proxy.example");
+        ASSERT_TRUE(defaultPort.has_value()) << defaultPort.error();
+        EXPECT_TRUE(defaultPort->isTls) << "https:// 代理没有置 TLS 标志";
+        EXPECT_EQ(defaultPort->port, 443U) << "https:// 代理没有落到 443 缺省端口";
+
+        const auto explicitPort = parseProxyUrl("https://proxy.example:8443");
+        ASSERT_TRUE(explicitPort.has_value()) << explicitPort.error();
+        EXPECT_TRUE(explicitPort->isTls);
+        EXPECT_EQ(explicitPort->port, 8443U);
+
+        const auto uppercase = parseProxyUrl("HTTPS://Proxy.Example");
+        ASSERT_TRUE(uppercase.has_value()) << uppercase.error();
+        EXPECT_TRUE(uppercase->isTls) << "scheme 比较区分了大小写";
+
+        const auto withCredentials = parseProxyUrl("https://alice:s3cret@proxy.example:8443");
+        ASSERT_TRUE(withCredentials.has_value()) << withCredentials.error();
+        EXPECT_TRUE(withCredentials->isTls);
+        EXPECT_EQ(withCredentials->authorizationHeader, "Basic YWxpY2U6czNjcmV0");
+
+        // 明文代理仍是默认档：没有 https:// 前缀时按 80 且不置 TLS 位
+        const auto plain = parseProxyUrl("http://proxy.example:3128");
+        ASSERT_TRUE(plain.has_value()) << plain.error();
+        EXPECT_FALSE(plain->isTls) << "http:// 代理被误置 TLS 标志";
+    }
+
+    /**
+     * @brief 不支持的形状一律拒绝并点名（不静默变形）：socks5 代理、空主机、越界端口、空值
      */
     TEST(HttpProxyPolicy, RejectsUnsupportedOrMalformedProxyUrls)
     {
-        const auto httpsProxy = parseProxyUrl("https://proxy.example:443");
-        ASSERT_FALSE(httpsProxy.has_value()) << "https 代理（TLS 到代理）当前不支持，必须拒绝";
-        EXPECT_NE(httpsProxy.error().find("https"), std::string::npos) << httpsProxy.error();
+        const auto socksProxy = parseProxyUrl("socks5://proxy.example:1080");
+        ASSERT_FALSE(socksProxy.has_value()) << "socks5 代理必须拒绝（本层只认 http/https 代理）";
+        EXPECT_NE(socksProxy.error().find("socks5"), std::string::npos) << socksProxy.error();
 
         const auto emptyHost = parseProxyUrl("http://:3128");
         ASSERT_FALSE(emptyHost.has_value()) << "空主机被放行";
@@ -228,10 +264,10 @@ namespace AsynGyanis::Net
 
         HttpProxyPolicy broken;
         broken.consultEnvironment = false;
-        broken.httpProxy          = "https://bad.example:443";
+        broken.httpProxy          = "socks5://bad.example:1080";
         const auto refusal        = resolveOutboundProxy(broken, "http", "origin.example", 80);
         ASSERT_FALSE(refusal.has_value()) << "坏代理地址被静默放行（应当拒绝请求）";
-        EXPECT_NE(refusal.error().find("https"), std::string::npos) << refusal.error();
+        EXPECT_NE(refusal.error().find("socks5"), std::string::npos) << refusal.error();
 
         HttpProxyPolicy none;
         none.consultEnvironment = false;
@@ -265,8 +301,11 @@ namespace AsynGyanis::Net
         /// 证书夹具：与 TestHttpsServer 同一套自签材料（含 127.0.0.1 的 SAN）
         const std::filesystem::path kProxyFixtureCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
         const std::filesystem::path kProxyFixturePrivateKeyPath  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
-        constexpr auto              kProxyWaitTimeout            = std::chrono::milliseconds{10000};
-        constexpr auto              kProxyScriptTimeout          = std::chrono::seconds{5};
+        /// SAN 只有 IP:127.0.0.1 的那张夹具证书：TLS 代理夹具监听在回环 IP 上，客户端按 IP 字面量校验
+        const std::filesystem::path kLoopbackFixtureCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem";
+        const std::filesystem::path kLoopbackFixturePrivateKeyPath  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
+        constexpr auto              kProxyWaitTimeout               = std::chrono::milliseconds{10000};
+        constexpr auto              kProxyScriptTimeout             = std::chrono::seconds{5};
 
         /// 把整段字节送出去；对端收口时放弃（SIGPIPE 由 Socket::Initialization 在进程级忽略）
         bool sendAll(const int socket, const std::string_view bytes)
@@ -509,6 +548,247 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief ScriptedTlsPeer 交到剧本手里的一条已握手连接：读头 / 写响应都经 SSL
+         */
+        class ScriptedTlsPeerConnection
+        {
+        public:
+            ScriptedTlsPeerConnection(SSL *ssl, const int socket, std::string &headSink, std::mutex &sinkMutex, const std::atomic<bool> &isStopping) :
+                m_ssl(ssl), m_socket(socket), m_headSink(headSink), m_sinkMutex(sinkMutex), m_isStopping(isStopping)
+            {
+            }
+
+            ScriptedTlsPeerConnection(const ScriptedTlsPeerConnection &)            = delete;
+            ScriptedTlsPeerConnection &operator=(const ScriptedTlsPeerConnection &) = delete;
+
+            /// 读到头区结束（CRLFCRLF，含）；超时或对端收口交出已读部分，并把全部读数记进台账
+            std::string readRequestHead()
+            {
+                std::string buffer;
+                const auto  deadline = std::chrono::steady_clock::now() + kProxyScriptTimeout;
+                while (buffer.find("\r\n\r\n") == std::string::npos && !m_isStopping.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(m_socket, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(m_socket + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    char      chunk[4096];
+                    const int received = SSL_read(m_ssl, chunk, static_cast<int>(sizeof(chunk)));
+                    if (received <= 0)
+                    {
+                        if (const int error = SSL_get_error(m_ssl, received); error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
+                    buffer.append(chunk, static_cast<std::size_t>(received));
+                }
+                {
+                    const std::lock_guard guard(m_sinkMutex);
+                    m_headSink += buffer;
+                }
+                return buffer;
+            }
+
+            /// 经 TLS 把整段字节写出去；对端收口时放弃
+            bool sendText(const std::string_view text)
+            {
+                std::size_t written = 0;
+                while (written < text.size())
+                {
+                    const int result = SSL_write(m_ssl, text.data() + written, static_cast<int>(text.size() - written));
+                    if (result <= 0)
+                    {
+                        const int error = SSL_get_error(m_ssl, result);
+                        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE)
+                        {
+                            continue;
+                        }
+                        return false;
+                    }
+                    written += static_cast<std::size_t>(result);
+                }
+                return true;
+            }
+
+        private:
+            SSL                     *m_ssl;        ///< 已握手的服务端会话（不拥有）
+            int                      m_socket;     ///< 底层描述符（只用于 select 前置等待）
+            std::string             &m_headSink;   ///< 请求头区读数落点（跨线程经 m_sinkMutex）
+            std::mutex              &m_sinkMutex;  ///< 保护落点
+            const std::atomic<bool> &m_isStopping; ///< 收摊标志
+        };
+
+        /**
+         * @brief 脚本化 TLS 对端（https 代理夹具）：accept 一条、先做服务端 TLS 握手、再跑一条剧本
+         * @details 与 ScriptedTcpPeer 同骨架，多出的三件事：每连接先用夹具证书完成一次服务端握手、
+         *          记录本次协商出的 ALPN（外层到代理的 TLS 不含 ALPN，用例据此钉住「外层恒走
+         *          HTTP/1.1 语义」）、剧本收发一律经 SSL（fd 只用于 select 前置等待）。
+         *          证书用 SAN=IP:127.0.0.1 的那张：客户端按回环 IP 字面量校验主机名。
+         */
+        class ScriptedTlsPeer
+        {
+        public:
+            using TlsPeerScript = std::function<void(SSL *ssl, class ScriptedTlsPeerConnection &connection)>;
+
+            explicit ScriptedTlsPeer() = default;
+
+            ScriptedTlsPeer(const ScriptedTlsPeer &)            = delete;
+            ScriptedTlsPeer &operator=(const ScriptedTlsPeer &) = delete;
+
+            ~ScriptedTlsPeer()
+            {
+                m_isStopping.store(true, std::memory_order_release);
+                if (m_worker.joinable())
+                {
+                    m_worker.join();
+                }
+            }
+
+            /// 指定证书以后台 TLS 服务端身份起监听（剧本在 start 之前装好）
+            bool start(TlsPeerScript script, const std::filesystem::path &certificatePath = kLoopbackFixtureCertificatePath,
+                       const std::filesystem::path &privateKeyPath = kLoopbackFixturePrivateKeyPath)
+            {
+                m_script = std::move(script);
+                Core::TlsPolicy policy;
+                m_context = std::make_unique<Core::TlsContext>(policy, Core::TlsContext::Role::Server);
+                if (!m_context->loadCertificate(certificatePath.string(), privateKeyPath.string()))
+                {
+                    return false;
+                }
+                m_worker = std::thread([this] { run(); });
+                return waitFor([this] { return m_port.load(std::memory_order_acquire) != 0U; });
+            }
+
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port.load(std::memory_order_acquire);
+            }
+
+            [[nodiscard]] std::size_t acceptedConnectionCount() const noexcept
+            {
+                return m_acceptedCount.load(std::memory_order_acquire);
+            }
+
+            [[nodiscard]] std::size_t completedHandshakeCount() const noexcept
+            {
+                return m_handshakeCount.load(std::memory_order_acquire);
+            }
+
+            [[nodiscard]] std::string recordedHeadBytes() const
+            {
+                const std::lock_guard guard(m_sinkMutex);
+                return m_headBytes;
+            }
+
+            /// 最近一条连接上协商出的 ALPN；外层到代理的 TLS 不声明 ALPN，因此这里应为空串
+            [[nodiscard]] std::string recordedNegotiatedAlpn() const
+            {
+                const std::lock_guard guard(m_sinkMutex);
+                return m_negotiatedAlpn;
+            }
+
+        private:
+            static bool waitFor(const std::function<bool()> &condition)
+            {
+                const auto deadline = std::chrono::steady_clock::now() + kProxyWaitTimeout;
+                while (!condition() && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                return condition();
+            }
+
+            void run()
+            {
+                const Platform::Socket::Initialization network;
+                const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(listener))
+                {
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = 0;
+                if (::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 8) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                sockaddr_in bound{};
+                socklen_t   boundLength = static_cast<socklen_t>(sizeof(bound));
+                if (::getsockname(listener, reinterpret_cast<sockaddr *>(&bound), &boundLength) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                m_port.store(ntohs(bound.sin_port), std::memory_order_release);
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(listener, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(listener + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    sockaddr_in peer{};
+                    socklen_t   peerLength = static_cast<socklen_t>(sizeof(peer));
+                    const int   client     = static_cast<int>(::accept(listener, reinterpret_cast<sockaddr *>(&peer), &peerLength));
+                    if (!Platform::FileDescriptor::isValid(client))
+                    {
+                        continue;
+                    }
+                    m_acceptedCount.fetch_add(1, std::memory_order_acq_rel);
+                    serveOneConnection(client);
+                    Platform::FileDescriptor::close(client);
+                }
+                Platform::FileDescriptor::close(listener);
+            }
+
+            void serveOneConnection(const int client)
+            {
+                std::unique_ptr<SSL, void (*)(SSL *)> ssl(m_context->createSSL(client), [](SSL *session) { SSL_free(session); });
+                if (ssl == nullptr || SSL_accept(ssl.get()) != 1)
+                {
+                    return;
+                }
+                m_handshakeCount.fetch_add(1, std::memory_order_acq_rel);
+
+                const unsigned char *negotiated      = nullptr;
+                unsigned int         negotiatedBytes = 0;
+                SSL_get0_alpn_selected(ssl.get(), &negotiated, &negotiatedBytes);
+                {
+                    const std::lock_guard guard(m_sinkMutex);
+                    m_negotiatedAlpn.assign(negotiated != nullptr ? reinterpret_cast<const char *>(negotiated) : "", negotiatedBytes);
+                }
+
+                ScriptedTlsPeerConnection connection(ssl.get(), client, m_headBytes, m_sinkMutex, m_isStopping);
+                m_script(ssl.get(), connection);
+                SSL_shutdown(ssl.get());
+            }
+
+            TlsPeerScript                     m_script;
+            std::unique_ptr<Core::TlsContext> m_context;
+            std::thread                       m_worker;
+            std::atomic<bool>                 m_isStopping{false};
+            std::atomic<std::uint16_t>        m_port{0};
+            std::atomic<std::size_t>          m_acceptedCount{0};
+            std::atomic<std::size_t>          m_handshakeCount{0};
+            mutable std::mutex                m_sinkMutex;
+            std::string                       m_headBytes;
+            std::string                       m_negotiatedAlpn;
+        };
+
+        /**
          * @brief 把监听描述符透出成测试访问器的 HttpsServer（模板夹具的 listeningPort 需要它）
          */
         class AddressableHttpsServer final : public HttpsServer
@@ -670,6 +950,126 @@ namespace AsynGyanis::Net
         EXPECT_NE(head.find("GET http://example.test/echo?x=1 HTTP/1.1"), std::string::npos) << "请求行不是绝对形式：" << head;
         EXPECT_NE(head.find("Host: example.test"), std::string::npos) << head;
         EXPECT_NE(head.find("Proxy-Authorization: Basic YWxpY2U6czNjcmV0"), std::string::npos) << "代理认证头没带上或值不对：" << head;
+    }
+
+    /**
+     * @brief http 目标经 https 代理：先与代理做 TLS 握手（按代理主机名校验），绝对形式请求走 TLS
+     * @details 代理地址的 scheme 决定「怎么连代理」：https:// 代理要先 TLS 再说话，请求形状不变
+     *          （绝对形式 + Proxy-Authorization，RFC 9112 §3.2.2）。外层 TLS 刻意不声明 ALPN——
+     *          到代理的连接恒按 HTTP/1.1 语义（CONNECT 与绝对形式都是 h1 的），代理侧读数为空
+     *          是这条取舍的线上判据。
+     *          证伪：让建立侧忽略 isTls 按明文连代理，代理侧握手计数停在 0、请求头是裸字节，全红。
+     */
+    TEST(HttpProxyE2E, HttpOverTlsProxyHandshakesTlsFirstAndStaysHttp11)
+    {
+        ScriptedTlsPeer proxy;
+        ASSERT_TRUE(proxy.start(
+                [](SSL *, ScriptedTlsPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nvia-tls"));
+                }))
+                << "TLS 代理对端没起来";
+
+        Core::TlsPolicy tlsPolicy;
+        tlsPolicy.certificateAuthorityFile = kLoopbackFixtureCertificatePath.string();
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "https://alice:s3cret@127.0.0.1:" + std::to_string(proxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, tlsPolicy, policy);
+
+        RequestOutcome   outcome;
+        Core::Task<void> task = clientGetTask(loop, client, "http://example.test/echo?x=1", outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(outcome.reason.empty()) << outcome.reason;
+        EXPECT_EQ(outcome.body, "via-tls") << "响应没有从 TLS 代理那条路回来";
+        EXPECT_EQ(proxy.completedHandshakeCount(), 1U) << "与代理之间没有完成 TLS 握手";
+        EXPECT_TRUE(proxy.recordedNegotiatedAlpn().empty()) << "外层到代理的 TLS 声明了 ALPN，协商出「" << proxy.recordedNegotiatedAlpn() << "」";
+        const std::string head = proxy.recordedHeadBytes();
+        EXPECT_NE(head.find("GET http://example.test/echo?x=1 HTTP/1.1"), std::string::npos) << "TLS 里的请求行不是绝对形式：" << head;
+        EXPECT_NE(head.find("Proxy-Authorization: Basic YWxpY2U6czNjcmV0"), std::string::npos) << "代理认证头没带上或值不对：" << head;
+    }
+
+    /**
+     * @brief https 代理的证书校验按代理主机名走：链已受信而名字不符同样拒
+     * @details 客户端信任库注入的正是代理出示那张证书的签发者（自签），链校验因此会过——
+     *          挡下它必须靠主机名校验（对端 127.0.0.1 vs CN=asyngyanis-test）。实例路径的失败原因
+     *          走 ERROR 日志（get() 的契约），这里钉的是「连上了代理、TLS 没成」这一形状：
+     *          接受计数为 1 排除「根本没连上」，握手计数为 0 说明败在 TLS 层。
+     *          证伪：给外层 TLS 摘掉 SSL_set1_host/set1_ip_asc 那一段，握手被放行，全红。
+     */
+    TEST(HttpProxyE2E, TlsProxyWithMismatchedHostnameIsRejected)
+    {
+        ScriptedTlsPeer mismatchProxy;
+        // 故意用 CN=asyngyanis-test 的那张：客户端按 IP 127.0.0.1 校验，必须验不过
+        ASSERT_TRUE(mismatchProxy.start(
+                [](SSL *, ScriptedTlsPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+                },
+                kProxyFixtureCertificatePath, kProxyFixturePrivateKeyPath))
+                << "TLS 代理对端没起来";
+
+        Core::TlsPolicy tlsPolicy;
+        // 信任库收下那张证书的签发者（自签即它自己）：链校验会过，只剩主机名一关挡着
+        tlsPolicy.certificateAuthorityFile = kProxyFixtureCertificatePath.string();
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "https://127.0.0.1:" + std::to_string(mismatchProxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, tlsPolicy, policy);
+
+        RequestOutcome   outcome;
+        Core::Task<void> task = clientGetTask(loop, client, "http://example.test/hello", outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_FALSE(outcome.reason.empty()) << "证书不符的代理握手被放行，请求成功了";
+        EXPECT_EQ(mismatchProxy.acceptedConnectionCount(), 1U) << "请求没连到代理，失败原因不在本用例要考的那一格";
+        EXPECT_EQ(mismatchProxy.completedHandshakeCount(), 0U) << "客户端没通过校验，代理侧却完成了握手";
+    }
+
+    /**
+     * @brief 静态入口经 https 代理遇到不受信的代理证书：失败原因点名「代理」这一层
+     * @details 静态入口没有注入 TLS 策略的口，用的是**进程级**信任库（惰性创建并缓存，
+     *          见 HttpsServer 那批静态用例的同一约定）：本用例按约定在**首个**静态 HTTPS 请求
+     *          之前把信任库设成 SAN=IP:127.0.0.1 的夹具证书，代理出示另一张自签（CN=asyngyanis-test）
+     *          因此不受信。失败要点到「与代理的 TLS 握手」：排查时这正是「代理证书有问题」
+     *          与「起点证书有问题」的分界。
+     */
+    TEST(HttpProxyE2E, UntrustedTlsProxyFailsWithProxyNamedReason)
+    {
+        ScriptedTlsPeer untrustedProxy;
+        // 代理出示 CN=asyngyanis-test 的那张：与下面设的信任库（IP 那张）不是同一份签发者
+        ASSERT_TRUE(untrustedProxy.start(
+                [](SSL *, ScriptedTlsPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+                },
+                kProxyFixtureCertificatePath, kProxyFixturePrivateKeyPath))
+                << "TLS 代理对端没起来";
+
+        // 进程级信任库的既有约定：必须是进程内首个静态 HTTPS 请求之前设好；取 IP 那张夹具证书
+        const ScopedEnvironmentVariable trustedFile{"SSL_CERT_FILE", kLoopbackFixtureCertificatePath.string()};
+        const ScopedEnvironmentVariable httpProxy{"http_proxy", std::string("https://127.0.0.1:") + std::to_string(untrustedProxy.port())};
+        const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+        const StaticSendResult result = runStaticSend("http://example.test/hello");
+        EXPECT_FALSE(result.succeeded) << "不受信的代理证书被放行了";
+        EXPECT_NE(result.reason.find("TLS"), std::string::npos) << result.reason;
+        EXPECT_NE(result.reason.find("代理"), std::string::npos) << "失败原因没有点到「代理」这一层：" << result.reason;
+        EXPECT_EQ(untrustedProxy.completedHandshakeCount(), 0U) << "客户端没通过校验，代理侧却完成了握手";
     }
 
     /**
@@ -846,7 +1246,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 坏代理配置（https:// 代理）拒绝请求而不是静默直连：起点一个连接都不该收到
+     * @brief 坏代理配置（socks5 代理）拒绝请求而不是静默直连：起点一个连接都不该收到
      */
     TEST(HttpProxyE2E, UnsupportedProxySchemeFailsInsteadOfFallingBackToDirect)
     {
@@ -858,12 +1258,12 @@ namespace AsynGyanis::Net
                 });
         ASSERT_TRUE(origin.start()) << "起点对端没起来";
 
-        const ScopedEnvironmentVariable httpProxy{"http_proxy", std::string("https://127.0.0.1:1")};
+        const ScopedEnvironmentVariable httpProxy{"http_proxy", std::string("socks5://127.0.0.1:1")};
         const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
 
         const StaticSendResult result = runStaticSend("http://127.0.0.1:" + std::to_string(origin.port()) + "/hello");
         EXPECT_FALSE(result.succeeded) << "坏代理配置被静默绕过、请求直连成功了";
-        EXPECT_NE(result.reason.find("https"), std::string::npos) << result.reason;
+        EXPECT_NE(result.reason.find("socks5"), std::string::npos) << result.reason;
         EXPECT_EQ(origin.acceptedConnectionCount(), 0U) << "坏代理配置下仍然发生了直连";
     }
 } // namespace AsynGyanis::Net
