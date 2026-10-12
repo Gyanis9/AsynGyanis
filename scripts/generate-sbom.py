@@ -21,41 +21,23 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONAN_DATA = REPO_ROOT / "conandata.yml"
 ROOT_CMAKE = REPO_ROOT / "CMakeLists.txt"
+WATCH_LIST = REPO_ROOT / "packaging" / "dependency-watch.json"
 
-# Conan 配方名与上游生态的对应：purl 的 namespace 要按上游项目的正名写，
-# 否则审计方拿我们的名字去查公告会查不到（libmysqlclient 的上游是 MySQL Connector/C）
-UPSTREAM_NAMES = {
-    "nlohmann_json": ("nlohmann_json", "github"),
-    "yaml-cpp": ("yaml-cpp", "github"),
-    "zlib": ("zlib", "apache"),
-    "zstd": ("zstd", "facebook"),
-    "brotli": ("brotli", "google"),
-    "mimalloc": ("mimalloc", "microsoft"),
-    "openssl": ("openssl", None),
-    "gtest": ("googletest", "google"),
-    "sqlite3": ("sqlite", None),
-    "hiredis": ("hiredis", "redis"),
-    "libmysqlclient": ("mysql-connector-c", None),
-}
 
-# 每条依赖的 SPDX 许可标识（含表达式的按 SPDX 表达式写）。第三方台账的「许可」一面：
-# 这份映射是**受自检把关**的——新增依赖而没在这儿落一行的，SBOM 自检当场红（见 main 的 problems）。
-# 事实来源是各上游仓库的许可文件（2026-10-12 逐条核过）：libmysqlclient 是 GPL-2.0 带
-# Universal FOSS Exception（Connector/C 的发行条款），不要写成裸 GPL-2.0。
-LICENSE_BY_RECIPE = {
-    "nlohmann_json": "MIT",
-    "yaml-cpp": "MIT",
-    "zlib": "Zlib",
-    "zstd": "BSD-3-Clause",
-    "brotli": "MIT",
-    "mimalloc": "MIT",
-    "openssl": "Apache-2.0",
-    "gtest": "BSD-3-Clause",
-    "sqlite3": "blessing",
-    "hiredis": "BSD-3-Clause",
-    "libmysqlclient": "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
-    "libpq": "PostgreSQL",
-}
+def load_watch_entries() -> dict:
+    """读 packaging/dependency-watch.json 的 dependencies 段。
+
+    每条依赖的静态元数据（上游正名、许可、官网）都住在这儿——这是**单源**：加依赖时
+    在 conandata.yml 与这份台账各补一条（台账本身有公告入口检查守着），SBOM 不再维护
+    第二份名字/许可映射。许可缺失不在这里判，留给 main 的自检统一报。
+    """
+    if not WATCH_LIST.exists():
+        raise SystemExit("缺少 packaging/dependency-watch.json，依赖元数据无从生成")
+    document = json.loads(WATCH_LIST.read_text(encoding="utf-8"))
+    entries = document.get("dependencies")
+    if not isinstance(entries, dict) or not entries:
+        raise SystemExit("台账里没有 dependencies 段，或它是空的")
+    return entries
 
 
 def project_version() -> str:
@@ -111,10 +93,11 @@ def parse_requirements() -> list:
     return entries
 
 
-def build_component(name: str, version: str) -> dict:
-    """一个依赖 → 一个 CycloneDX component。"""
-    upstreamName, upstreamOrg = UPSTREAM_NAMES.get(name, (name, None))
-    website = f"https://github.com/{upstreamOrg}/{upstreamName}" if upstreamOrg else ""
+def build_component(name: str, version: str, entry: dict) -> dict:
+    """一个依赖 → 一个 CycloneDX component（名字、官网与许可都取自台账条目）。"""
+    # purl 与展示名按上游正名写（台账的 purlName），否则审计方拿我们的配方名去查公告会查不到
+    upstreamName = entry.get("purlName") or name
+    website = entry.get("homepage", "")
     component = {
         "type": "library",
         "name": upstreamName,
@@ -129,7 +112,7 @@ def build_component(name: str, version: str) -> dict:
     if website:
         component["externalReferences"] = [{"type": "website", "url": website}]
     # 许可：表达式（含 WITH 的）按 CycloneDX 的 expression 写，单一标识按 id 写
-    licenseValue = LICENSE_BY_RECIPE.get(name, "")
+    licenseValue = entry.get("license", "")
     if licenseValue:
         component["licenses"] = [{"expression": licenseValue}] if " " in licenseValue else [{"license": {"id": licenseValue}}]
     return component
@@ -142,7 +125,13 @@ def main() -> int:
 
     version = project_version()
     revision = git_revision()
-    components = [build_component(name, pinned) for name, pinned in parse_requirements()]
+    watchEntries = load_watch_entries()
+    requirements = parse_requirements()
+    # 每条依赖都要在台账里有条目：名与许可从那里读，缺了就是「新增依赖没走登记」
+    missingEntries = [name for name, _ in requirements if name not in watchEntries]
+    if missingEntries:
+        raise SystemExit("这些依赖没在 packaging/dependency-watch.json 里登记：" + "、".join(missingEntries))
+    components = [build_component(name, pinned, watchEntries[name]) for name, pinned in requirements]
     # 组件按 purl 排序：同一份输入要产出逐字节相同的文件，否则 diff 里全是噪声
     components.sort(key=lambda item: item["purl"])
 
@@ -188,16 +177,20 @@ def main() -> int:
     for component in parsedComponents:
         if not component.get("version") or not component.get("purl"):
             problems.append("存在缺 version/purl 的组件：" + str(component.get("name")))
-        # 许可必须在：新增依赖而许可证台账没跟上时，这里当场红——第三方台账的「许可」一面
-        # 不能靠人记着补（LICENSE_BY_RECIPE 的说明）
+        # 许可必须在：新增依赖而台账没补 license 字段时，这里当场红——第三方台账的「许可」一面
+        # 不能靠人记着补（台账的 license 字段与 SBOM 的 licenses 是同一份数据的两个出口）
         if not component.get("licenses"):
-            problems.append("存在缺 licenses 的组件（补 LICENSE_BY_RECIPE）：" + str(component.get("name")))
+            problems.append("存在缺 licenses 的组件（补 packaging/dependency-watch.json 的 license 字段）：" + str(component.get("name")))
+
+    checksumFile = outputDirectory / "SHA256SUMS"
     if problems:
+        # 失败时连校验和文件一起收掉：留着它是上一轮（或本次已写出的）同名产物的残凭据，
+        # 下游按 SHA256SUMS 核验时会拿它对着一个已被删除（或压根不完整）的 SBOM 报「通过」
         target.unlink(missing_ok=True)
+        checksumFile.unlink(missing_ok=True)
         print("SBOM 自检失败：" + "；".join(problems), file=sys.stderr)
         return 1
 
-    checksumFile = outputDirectory / "SHA256SUMS"
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     checksumFile.write_text(f"{digest}  {target.name}\n", encoding="utf-8", newline="\n")
 
