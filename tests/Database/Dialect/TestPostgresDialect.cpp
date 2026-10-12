@@ -54,7 +54,9 @@ namespace
     using AsynGyanis::Database::PostgresDialect;
     using AsynGyanis::Database::SqlDialect;
     using AsynGyanis::Database::SqlStatement;
+    using AsynGyanis::Database::TransactionIsolationLevel;
     using AsynGyanis::Database::Queryable::FieldReference;
+    using AsynGyanis::Database::Queryable::InsertConflict;
     using AsynGyanis::Database::Queryable::JoinClause;
     using AsynGyanis::Database::Queryable::JoinType;
     using AsynGyanis::Database::Queryable::OrderByClause;
@@ -888,4 +890,155 @@ TEST(DialectRegistryTest, PostgresDialectIsAvailable)
     // 与另两个方言必须是不同实例：占位符风格完全不同（$n vs ?），混用会生成非法 SQL
     EXPECT_NE(dialect.get(), DialectRegistry::dialectFor(DatabaseType::Sqlite).get());
     EXPECT_NE(dialect.get(), DialectRegistry::dialectFor(DatabaseType::MySql).get());
+}
+
+// ========================================================================
+// 引擎知识：冲突处置、隔离级别位置、自增主键与列清单
+// ========================================================================
+
+/**
+ * @brief 验证三档冲突处置的前缀都是普通 INSERT INTO（PostgreSQL 没有开头形式）
+ */
+TEST(PostgresDialectConflict, KeywordPhraseIsAlwaysPlainInsertInto)
+{
+    const PostgresDialect dialect;
+
+    // PG 没有 INSERT IGNORE / REPLACE INTO 这类开头写法，处置全部由 VALUES 之后的子句表达，
+    // 因此任何档位的前缀都必须与 Fail 逐字相同（既有调用的线上字节不因此改变）
+    EXPECT_EQ(dialect.insertKeywordPhrase(InsertConflict::Fail), "INSERT INTO ");
+    EXPECT_EQ(dialect.insertKeywordPhrase(InsertConflict::Ignore), "INSERT INTO ");
+    EXPECT_EQ(dialect.insertKeywordPhrase(InsertConflict::Replace), "INSERT INTO ");
+}
+
+/**
+ * @brief 验证 Fail 档不追加任何尾部子句，文本与普通单行插入逐字一致
+ */
+TEST(PostgresDialectConflict, FailAppendsNoTailClause)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName      = "users";
+    node.selectColumns  = {"id", "name"};
+    node.insertConflict = InsertConflict::Fail;
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")});
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)");
+    EXPECT_EQ(statement.sql.find("ON CONFLICT"), std::string::npos);
+}
+
+/**
+ * @brief 验证 Ignore 档在 VALUES 之后追加 DO NOTHING，且不引入任何冲突目标
+ */
+TEST(PostgresDialectConflict, IgnoreAppendsDoNothingWithoutConflictTarget)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName      = "users";
+    node.selectColumns  = {"id", "name"};
+    node.insertConflict = InsertConflict::Ignore;
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")});
+
+    // 不带冲突目标：对任意唯一约束冲突都跳过，不去猜哪一列是业务键；参数与占位符不受尾部子句影响
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT DO NOTHING");
+    EXPECT_EQ(statement.parameters.size(), 2U);
+}
+
+/**
+ * @brief 验证 Replace 档生成 DO UPDATE SET 列 = EXCLUDED.列 的逐列覆盖
+ */
+TEST(PostgresDialectConflict, ReplaceAppendsDoUpdatePerInsertedColumn)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName      = "users";
+    node.selectColumns  = {"id", "name"};
+    node.insertConflict = InsertConflict::Replace;
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")});
+
+    // SET 列出本次插入的全部列（未列出的列保持旧值）；列名的渲染与 INSERT 列清单同源（逐段引用）
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) "
+                             "ON CONFLICT DO UPDATE SET \"id\" = EXCLUDED.\"id\", \"name\" = EXCLUDED.\"name\"");
+    EXPECT_EQ(statement.parameters.size(), 2U);
+}
+
+/**
+ * @brief 验证批量插入同样接上冲突处置（两条方向不能只有一条接）
+ */
+TEST(PostgresDialectConflict, BatchInsertAlsoCarriesTheTailClause)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName      = "users";
+    node.selectColumns  = {"id", "name"};
+    node.insertConflict = InsertConflict::Ignore;
+
+    const std::vector<std::vector<DatabaseValue>> rows{{std::int64_t{1}, std::string("a")}, {std::int64_t{2}, std::string("b")}};
+
+    const SqlStatement statement = dialect.translateInsertBatch(node, rows);
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2), ($3, $4) ON CONFLICT DO NOTHING");
+    EXPECT_EQ(statement.parameters.size(), 4U);
+}
+
+/**
+ * @brief 验证隔离级别语句文本与「紧跟 BEGIN」的位置声明
+ */
+TEST(PostgresDialectTransaction, IsolationStatementsFollowTheServerSyntax)
+{
+    const PostgresDialect dialect;
+
+    // Default 不需要设置语句（引擎默认档）；其余四档与 PostgreSQL 文档的写法逐字一致
+    EXPECT_TRUE(dialect.isolationLevelStatement(TransactionIsolationLevel::Default).empty());
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::ReadUncommitted), "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::ReadCommitted), "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::RepeatableRead), "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    EXPECT_EQ(dialect.isolationLevelStatement(TransactionIsolationLevel::Serializable), "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+
+    // 事务块外发 SET TRANSACTION 只有警告且不生效，因此位置声明必须是「紧跟 BEGIN」
+    EXPECT_TRUE(dialect.isolationLevelStatementFollowsBegin());
+}
+
+/**
+ * @brief 验证自增主键生成 IDENTITY 定义，非整数类型给不出写法时返回空串
+ */
+TEST(PostgresDialectIdentity, OnlyInt64ColumnsGetIdentityDefinition)
+{
+    const PostgresDialect dialect;
+
+    // PostgreSQL 10 起用标准标识列；BY DEFAULT 允许显式插入指定值（迁移与修复常用）
+    EXPECT_EQ(dialect.autoIncrementPrimaryKeyDefinition("\"id\"", ColumnType::Int64), "\"id\" BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY");
+
+    // 标识列只接受整数类型：其余取值必须给空串让建表方拒绝，而不是建出一张主键不会自增的表
+    EXPECT_TRUE(dialect.autoIncrementPrimaryKeyDefinition("\"id\"", ColumnType::UInt64).empty());
+    EXPECT_TRUE(dialect.autoIncrementPrimaryKeyDefinition("\"id\"", ColumnType::Text).empty());
+    EXPECT_TRUE(dialect.autoIncrementPrimaryKeyDefinition("\"id\"", ColumnType::Blob).empty());
+}
+
+/**
+ * @brief 验证列清单查询限定在 current_schema() 内，且表名走 $1 绑定参数
+ */
+TEST(PostgresDialectMetadata, ColumnListingStaysInsideCurrentSchema)
+{
+    const PostgresDialect dialect;
+
+    const SqlStatement statement = dialect.columnListingStatement("users");
+
+    // 与 tableExistsStatement 同一套限定：information_schema 覆盖全库所有模式，
+    // 不加 current_schema() 会把其它模式里的同名表算进来，那份「本表已有列」的清单是假的
+    EXPECT_EQ(statement.sql, "SELECT column_name FROM information_schema.columns "
+                             "WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position");
+    ASSERT_EQ(statement.parameters.size(), 1U);
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "users");
+
+    // 恶意表名只是普通文本：落在参数里，不改变语句结构也不多出占位符
+    const SqlStatement hostileStatement = dialect.columnListingStatement("x\"; DROP TABLE users; --");
+    EXPECT_EQ(hostileStatement.sql, statement.sql);
+    EXPECT_EQ(countPlaceholders(hostileStatement.sql), 1U);
 }

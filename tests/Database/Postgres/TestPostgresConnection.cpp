@@ -287,6 +287,15 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(connection.lastError().empty());
     }
 
+    TEST(PostgresConnection, ResetSessionStateIsSafeWhileDisconnected)
+    {
+        PostgresConnection connection(makeOfflineConfiguration());
+
+        // 未连接时按「没有会话可复位」处理：池的归还路径会无条件调用它，
+        // 把「没连上」当成「没复位干净」会让池白白丢弃一条本来要重连的连接
+        EXPECT_TRUE(connection.resetSessionState());
+    }
+
     // ------------------------------------------------------------------------
     // 参数校验发生在任何连接动作之前（真实驱动专属）
     // ------------------------------------------------------------------------

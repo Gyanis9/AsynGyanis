@@ -55,7 +55,8 @@ namespace AsynGyanis::Database
 
         // Replace → DO UPDATE：不带冲突目标时对所有唯一冲突生效；SET 列出本次插入的全部列，
         // 未列出的列保持旧值（见头文件里与 MySQL REPLACE 的语义差异说明）。
-        // 列名的引用规则与 INSERT 列清单同源（quoteIdentifier），两处不会一个引用一个裸写
+        // 列名的渲染与 INSERT 列清单同源（appendFieldReference：含点的名字逐段引用、表达式原样
+        // 输出），两处不会一个逐段引用一个整段引用；EXCLUDED 是伪表，其后只跟列名本身
         sqlText += " ON CONFLICT DO UPDATE SET ";
         for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
         {
@@ -63,10 +64,9 @@ namespace AsynGyanis::Database
             {
                 sqlText += ", ";
             }
-            const std::string quotedColumn = quoteIdentifier(query.selectColumns[index]);
-            sqlText += quotedColumn;
+            appendFieldReference(sqlText, query.selectColumns[index]);
             sqlText += " = EXCLUDED.";
-            sqlText += quotedColumn;
+            appendFieldReference(sqlText, query.selectColumns[index]);
         }
     }
 
