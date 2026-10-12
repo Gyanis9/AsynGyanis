@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "ff0aad9e647e48efba03dac238796f286fe54185"
+      "revision": "758ff6478d5c36de1b084cfd160b2a26f05f6323"
     },
     "views": [
       {
@@ -94,8 +94,8 @@
       "label": "驱动连接",
       "sublabel": "Sqlite / MySQL",
       "sources": [
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 211, "label": "未命中才 prepare" },
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 536, "label": "findCachedStatement" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 220, "label": "未命中才 prepare" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 545, "label": "findCachedStatement" },
         { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 526, "label": "命中直 bindAndExecute" }
       ]
     },
@@ -157,7 +157,7 @@
       "dot": "amber",
       "title": "语句缓存的两条分支",
       "items": [
-        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:423 / MySqlConnection.h:491）",
+        "缓存键是 SQL 全文，容量 64 条按 LRU 逐出（SqliteConnection.h:423 / MySqlConnection.h:499）",
         "SQLite 命中刷 stamp 并整趟跳过编译与边界探测；行没跑完先 detachCachedStatement，超 256 行快照界退回游标即不回缓存",
         "MySQL 任何失败一律 discardCachedStatement，刻意不做重编重试——写语句重试就是二次写入"
       ]
@@ -175,9 +175,9 @@
       "dot": "violet",
       "title": "Redis 借这张图的会话位",
       "items": [
-        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:206、801、634、598）",
-        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1066）",
-        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1338）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
+        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:219、1086、772、736）",
+        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1351）",
+        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1623）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
         "可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate"
       ]
     }
