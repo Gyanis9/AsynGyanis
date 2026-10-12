@@ -2,6 +2,7 @@
 // 覆盖：
 // - PercentEncodeFormComponentMatchesTheFormRules（未保留字符原样、保留字符 %XX、空格 %20 不用 '+'、UTF-8 按字节）
 // - OptionalJsonStringDistinguishesAbsentFromWrongType（缺失为空串；字符串取回；数字与 null 交回原因；非对象按缺失兜底）
+// - RequiredJsonStringRejectsMissingWrongTypedAndEmpty（必填口径：缺失、错类型、空串三者各点名拒）
 
 #include "Net/Http/OAuthSupport.h"
 
@@ -56,6 +57,27 @@ namespace AsynGyanis::Net
         const auto notObject = optionalJsonString(arrayDocument, "text");
         ASSERT_TRUE(notObject.has_value());
         EXPECT_TRUE(notObject->empty());
+    }
+
+    TEST(OAuthSupportTest, RequiredJsonStringRejectsMissingWrongTypedAndEmpty)
+    {
+        const nlohmann::json document = nlohmann::json::parse(R"({"text":"值","number":42,"blank":""})", nullptr, false);
+        ASSERT_FALSE(document.is_discarded());
+
+        const auto text = requiredJsonString(document, "text");
+        ASSERT_TRUE(text.has_value());
+        EXPECT_EQ(*text, "值");
+
+        // 缺失、类型不符、空串三者都不可用：各交回点名原因，不让任何一格静默借道
+        for (const char *unusable: {"missing", "number", "blank"})
+        {
+            const auto field = requiredJsonString(document, unusable);
+            EXPECT_FALSE(field.has_value()) << unusable;
+            if (!field.has_value())
+            {
+                EXPECT_NE(field.error().find(unusable), std::string::npos) << field.error();
+            }
+        }
     }
 
 } // namespace AsynGyanis::Net

@@ -80,4 +80,35 @@ namespace AsynGyanis::Net
         return field->get<std::string>();
     }
 
+    /**
+     * @brief 读 JSON 对象的必填字符串字段
+     * @details 缺失、类型不符、空串三者都不可用，各交回点名原因——必填字段没有「缺省」可取，
+     *          不让任何一格静默借道（与可选字段的读取同一套不抛口径）。
+     * @param object 待读的 JSON 对象
+     * @param name 字段名
+     * @return std::expected<std::string, std::string> 成功交回字段值；失败交回原因
+     */
+    [[nodiscard]] inline std::expected<std::string, std::string> requiredJsonString(const nlohmann::json &object, const char *name)
+    {
+        if (!object.is_object())
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」缺失（正文不是 JSON 对象）");
+        }
+        const auto field = object.find(name);
+        if (field == object.end())
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」缺失");
+        }
+        if (!field->is_string())
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」不是字符串");
+        }
+        std::string value = field->get<std::string>();
+        if (value.empty())
+        {
+            return std::unexpected(std::string{"必填字段「"} + name + "」是空串");
+        }
+        return value;
+    }
+
 } // namespace AsynGyanis::Net
