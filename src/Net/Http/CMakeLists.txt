@@ -83,6 +83,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpResponseParser.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpProxyPolicy.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpProxyPolicy.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpProxyPumpedTls.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpProxyPumpedTls.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpCookieJar.h

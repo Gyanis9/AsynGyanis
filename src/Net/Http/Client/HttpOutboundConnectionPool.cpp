@@ -3,6 +3,7 @@
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 
 #include "Core/Tls/TlsSocket.h"
+#include "Net/Http/Client/HttpProxyPumpedTls.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Http3/Http3ClientConnection.h"
 
@@ -29,26 +30,32 @@ namespace AsynGyanis::Net
         return host < other.host;
     }
 
-    HttpOutboundConnection::HttpOutboundConnection(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket) :
-        m_plainSocket(std::move(plainSocket)), m_tlsSocket(std::move(tlsSocket)), m_endpointKey(endpointKey)
+    HttpOutboundConnection::HttpOutboundConnection(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket,
+                                                   std::unique_ptr<HttpProxyPumpedTls> pumpedSocket) :
+        m_plainSocket(std::move(plainSocket)), m_tlsSocket(std::move(tlsSocket)), m_pumpedSocket(std::move(pumpedSocket)), m_endpointKey(endpointKey)
     {
     }
 
     std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forPlain(const HttpOutboundEndpointKey endpointKey, TcpStream stream)
     {
         // 堆上是必需的而不是习惯：连接要进池、要被取出，地址得稳定（挂起的收发协程持有它的引用）
-        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, std::make_unique<TcpStream>(std::move(stream)), nullptr));
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, std::make_unique<TcpStream>(std::move(stream)), nullptr, nullptr));
     }
 
     std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forSecure(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket)
     {
-        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket), nullptr));
     }
 
     std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forTlsToProxy(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket)
     {
         // 与 forSecure 同一份构造：差别只在语义（TLS 到代理、其上走绝对形式），分发逻辑完全一致
-        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket)));
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, std::move(socket), nullptr));
+    }
+
+    std::unique_ptr<HttpOutboundConnection> HttpOutboundConnection::forPumpedTls(const HttpOutboundEndpointKey endpointKey, std::unique_ptr<HttpProxyPumpedTls> socket)
+    {
+        return std::unique_ptr<HttpOutboundConnection>(new HttpOutboundConnection(endpointKey, nullptr, nullptr, std::move(socket)));
     }
 
     HttpOutboundConnection::~HttpOutboundConnection()
@@ -70,6 +77,25 @@ namespace AsynGyanis::Net
             try
             {
                 const ssize_t receivedByteCount = co_await m_tlsSocket->asyncReceive(buffer, length);
+                if (receivedByteCount == 0)
+                {
+                    m_isOpen = false;
+                }
+                co_return receivedByteCount;
+            } catch (const std::exception &)
+            {
+                m_isOpen = false;
+                co_return -1;
+            }
+        }
+
+        if (m_pumpedSocket != nullptr)
+        {
+            // 泵与 TlsSocket 同一套口径（0 收口、其余失败抛异常）；这里同样把异常折成 -1，
+            // 让「这条连接不能再复用」成为唯一的结论
+            try
+            {
+                const ssize_t receivedByteCount = co_await m_pumpedSocket->asyncReceive(buffer, length);
                 if (receivedByteCount == 0)
                 {
                     m_isOpen = false;
@@ -122,6 +148,25 @@ namespace AsynGyanis::Net
                 continue;
             }
 
+            if (m_pumpedSocket != nullptr)
+            {
+                try
+                {
+                    const ssize_t segmentWrittenByteCount = co_await m_pumpedSocket->asyncSend(segmentBegin, remainingByteCount);
+                    if (segmentWrittenByteCount <= 0)
+                    {
+                        m_isOpen = false;
+                        co_return false;
+                    }
+                    writtenByteCount += static_cast<std::size_t>(segmentWrittenByteCount);
+                } catch (const std::exception &)
+                {
+                    m_isOpen = false;
+                    co_return false;
+                }
+                continue;
+            }
+
             const ssize_t segmentWrittenByteCount = co_await m_plainSocket->write(segmentBegin, remainingByteCount);
             if (segmentWrittenByteCount <= 0)
             {
@@ -140,8 +185,13 @@ namespace AsynGyanis::Net
 
     std::string HttpOutboundConnection::selectedAlpnProtocol() const
     {
-        // 明文侧没有 ALPN 这回事（h2c 要靠 prior-knowledge 或 Upgrade，都不在这一层）
-        return m_tlsSocket != nullptr ? m_tlsSocket->selectedAlpnProtocol() : std::string{};
+        // 明文侧没有 ALPN 这回事（h2c 要靠 prior-knowledge 或 Upgrade，都不在这一层）；
+        // 泵承载的是内层 TLS 的协商结果（外层到代理的会话不声明 ALPN）
+        if (m_tlsSocket != nullptr)
+        {
+            return m_tlsSocket->selectedAlpnProtocol();
+        }
+        return m_pumpedSocket != nullptr ? m_pumpedSocket->selectedAlpnProtocol() : std::string{};
     }
 
     void HttpOutboundConnection::close() noexcept
@@ -150,6 +200,10 @@ namespace AsynGyanis::Net
         if (m_tlsSocket != nullptr)
         {
             m_tlsSocket->close();
+        }
+        if (m_pumpedSocket != nullptr)
+        {
+            m_pumpedSocket->close();
         }
         if (m_plainSocket != nullptr)
         {

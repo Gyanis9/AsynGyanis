@@ -32,6 +32,7 @@ namespace AsynGyanis::Net
 {
     class Http2ClientConnection;
     class Http3OutboundLink;
+    class HttpProxyPumpedTls;
 
     /**
      * @brief 一条出站连接的可复用身份：主机、端口与是否 TLS
@@ -97,6 +98,14 @@ namespace AsynGyanis::Net
          *          两者在收发分发上没有任何差别，池的身份只取决于目标与用途
          */
         [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forTlsToProxy(HttpOutboundEndpointKey endpointKey, std::unique_ptr<Core::TlsSocket> socket);
+
+        /**
+         * @brief 接管一条 TLS-in-TLS 连接（https 目标经 https 代理）
+         * @param endpointKey 这条连接的可复用身份（isTls 为 true——身份是**目标**）
+         * @param socket 内层 TLS 已握手完成的泵（外层到代理、内层到目标，本对象接管其所有权）
+         * @return std::unique_ptr<HttpOutboundConnection> 池化连接
+         */
+        [[nodiscard]] static std::unique_ptr<HttpOutboundConnection> forPumpedTls(HttpOutboundEndpointKey endpointKey, std::unique_ptr<HttpProxyPumpedTls> socket);
 
         HttpOutboundConnection(const HttpOutboundConnection &)            = delete;
         HttpOutboundConnection &operator=(const HttpOutboundConnection &) = delete;
@@ -168,13 +177,15 @@ namespace AsynGyanis::Net
         void prepareForNextRequest() noexcept;
 
     private:
-        HttpOutboundConnection(HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket);
+        HttpOutboundConnection(HttpOutboundEndpointKey endpointKey, std::unique_ptr<TcpStream> plainSocket, std::unique_ptr<Core::TlsSocket> tlsSocket,
+                               std::unique_ptr<HttpProxyPumpedTls> pumpedSocket);
 
-        /// 两条通路各持其一，另一个恒为空——分发方式与 HTTP/2 会话里的传输选择一致（按 has_value 分支）
-        std::unique_ptr<TcpStream>       m_plainSocket;
-        std::unique_ptr<Core::TlsSocket> m_tlsSocket;
-        HttpOutboundEndpointKey          m_endpointKey;
-        HttpResponseParser               m_parser;
+        /// 三条通路各持其一，其余恒为空——分发方式与 HTTP/2 会话里的传输选择一致（按 has_value 分支）
+        std::unique_ptr<TcpStream>          m_plainSocket;
+        std::unique_ptr<Core::TlsSocket>    m_tlsSocket;
+        std::unique_ptr<HttpProxyPumpedTls> m_pumpedSocket; ///< TLS-in-TLS：外层到代理、内层到目标
+        HttpOutboundEndpointKey             m_endpointKey;
+        HttpResponseParser                  m_parser;
         /// 一次收发失败或对端收口就置否：连接能不能复用只看这个字，不看描述符还在不在——
         /// 描述符健在而字节序已经乱了（读到半条响应、写到一半被拒）的连接绝不能再交给别人
         bool m_isOpen{true};

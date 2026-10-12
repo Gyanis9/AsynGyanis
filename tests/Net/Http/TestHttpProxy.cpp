@@ -25,10 +25,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -306,6 +309,46 @@ namespace AsynGyanis::Net
         const std::filesystem::path kLoopbackFixturePrivateKeyPath  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem";
         constexpr auto              kProxyWaitTimeout               = std::chrono::milliseconds{10000};
         constexpr auto              kProxyScriptTimeout             = std::chrono::seconds{5};
+
+        /**
+         * @brief 把多张自签夹具证书拼成一个 PEM 信任库（TLS-in-TLS 用例：外层验代理、内层验起点）
+         * @details 两层 TLS 各出示一张不同的自签证书，而客户端只有一份 TlsPolicy——把两张都写进
+         *          同一个 CA 文件即可。文件落在系统临时目录，析构即删。
+         */
+        class CombinedCertificateAuthorityFile
+        {
+        public:
+            CombinedCertificateAuthorityFile(const std::filesystem::path &firstCertificate, const std::filesystem::path &secondCertificate)
+            {
+                std::string combinedText;
+                for (const std::filesystem::path *source: {&firstCertificate, &secondCertificate})
+                {
+                    std::ifstream input(*source, std::ios::binary);
+                    combinedText += std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+                    combinedText += '\n';
+                }
+                m_path = std::filesystem::temp_directory_path() / ("asyngyanis-proxy-ca-" + std::to_string(std::random_device{}()) + ".pem");
+                std::ofstream output(m_path, std::ios::binary);
+                output << combinedText;
+            }
+
+            ~CombinedCertificateAuthorityFile()
+            {
+                std::error_code failure;
+                std::filesystem::remove(m_path, failure);
+            }
+
+            CombinedCertificateAuthorityFile(const CombinedCertificateAuthorityFile &)            = delete;
+            CombinedCertificateAuthorityFile &operator=(const CombinedCertificateAuthorityFile &) = delete;
+
+            [[nodiscard]] const std::filesystem::path &path() const noexcept
+            {
+                return m_path;
+            }
+
+        private:
+            std::filesystem::path m_path;
+        };
 
         /// 把整段字节送出去；对端收口时放弃（SIGPIPE 由 Socket::Initialization 在进程级忽略）
         bool sendAll(const int socket, const std::string_view bytes)
@@ -598,10 +641,86 @@ namespace AsynGyanis::Net
             /// 经 TLS 把整段字节写出去；对端收口时放弃
             bool sendText(const std::string_view text)
             {
-                std::size_t written = 0;
-                while (written < text.size())
+                return sslWriteAll(text.data(), text.size());
+            }
+
+            /// 把 TLS 会话与 loopback:targetPort 拼起来双向转发（TLS-in-TLS 用例里代理的行为）
+            /// @details 逐段转发解密后的字节：TLS 侧收到什么就原样送往上游、上游回什么就经 SSL_write 送回。
+            ///          阻塞模型（worker 线程专用），select 50ms 轮询给收摊标志留出口
+            void spliceToLoopback(const std::uint16_t targetPort)
+            {
+                const int upstream = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(upstream))
                 {
-                    const int result = SSL_write(m_ssl, text.data() + written, static_cast<int>(text.size() - written));
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = htons(targetPort);
+                if (::connect(upstream, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0)
+                {
+                    Platform::FileDescriptor::close(upstream);
+                    return;
+                }
+
+                bool upstreamOpen = true;
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(upstream, &readSet);
+                    FD_SET(m_socket, &readSet);
+                    const int highest = (upstream > m_socket ? upstream : m_socket) + 1;
+                    timeval   pollInterval{0, 50 * 1000};
+                    if (::select(highest, &readSet, nullptr, nullptr, &pollInterval) < 0)
+                    {
+                        break;
+                    }
+
+                    if (upstreamOpen && FD_ISSET(upstream, &readSet))
+                    {
+                        char          buffer[8192];
+                        const ssize_t received = ::recv(upstream, buffer, sizeof(buffer), 0);
+                        if (received <= 0)
+                        {
+                            upstreamOpen = false;
+                        } else if (!sslWriteAll(buffer, static_cast<std::size_t>(received)))
+                        {
+                            break;
+                        }
+                    }
+
+                    // TLS 侧可读两层含义：网络上有记录，或解密缓冲里还留着上次没读走的明文
+                    if (FD_ISSET(m_socket, &readSet) || SSL_pending(m_ssl) > 0)
+                    {
+                        char      buffer[8192];
+                        const int received = SSL_read(m_ssl, buffer, static_cast<int>(sizeof(buffer)));
+                        if (received <= 0)
+                        {
+                            if (const int error = SSL_get_error(m_ssl, received); error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE)
+                            {
+                                continue;
+                            }
+                            break;
+                        }
+                        if (!upstreamOpen || !sendAll(upstream, std::string_view(buffer, static_cast<std::size_t>(received))))
+                        {
+                            break;
+                        }
+                    }
+                }
+                Platform::FileDescriptor::close(upstream);
+            }
+
+        private:
+            /// 循环写全一段字节（SSL_write 允许部分写）；失败返回 false
+            bool sslWriteAll(const char *bytes, const std::size_t byteCount)
+            {
+                std::size_t written = 0;
+                while (written < byteCount)
+                {
+                    const int result = SSL_write(m_ssl, bytes + written, static_cast<int>(byteCount - written));
                     if (result <= 0)
                     {
                         const int error = SSL_get_error(m_ssl, result);
@@ -1070,6 +1189,105 @@ namespace AsynGyanis::Net
         EXPECT_NE(result.reason.find("TLS"), std::string::npos) << result.reason;
         EXPECT_NE(result.reason.find("代理"), std::string::npos) << "失败原因没有点到「代理」这一层：" << result.reason;
         EXPECT_EQ(untrustedProxy.completedHandshakeCount(), 0U) << "客户端没通过校验，代理侧却完成了握手";
+    }
+
+    /**
+     * @brief https 目标经 https 代理：TLS-in-TLS 全链（外层到代理、内层到起点），第二条复用同一条隧道
+     * @details 拔号目标是代理（外层 TLS 按代理主机名 127.0.0.1 校验、出示 IP 那张夹具证书），
+     *          CONNECT 在外层 TLS 里发，内层 TLS 按目标主机名 asyngyanis-test 校验（出示 CN 那张）。
+     *          客户端只有一份 TlsPolicy，因此信任库是把两张自签证书拼在一个文件里的临时 PEM。
+     *          代理侧的桥接逐段转发解密字节——两条 TLS 会话各自独立，泵（内层）只要把字节原样搬运。
+     *          证伪：拆掉内层泵的任何一半（不把 SSL 的输出排出、或不把外层字节灌进去），握手当场卡死。
+     */
+    TEST(HttpProxyE2E, TlsTargetThroughTlsProxyCompletesTlsInTls)
+    {
+        RunningTlsOriginFixture origin;
+        ASSERT_TRUE(origin.awaitRunning(kProxyWaitTimeout)) << "TLS 起点没起来";
+
+        ScriptedTlsPeer tlsProxy;
+        ASSERT_TRUE(tlsProxy.start(
+                [&origin](SSL *, ScriptedTlsPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 Connection Established\r\n\r\n"));
+                    connection.spliceToLoopback(origin.listeningPort());
+                }))
+                << "TLS 代理对端没起来";
+
+        const CombinedCertificateAuthorityFile trustStore(kLoopbackFixtureCertificatePath, kProxyFixtureCertificatePath);
+        Core::TlsPolicy                        tlsPolicy;
+        tlsPolicy.certificateAuthorityFile = trustStore.path().string();
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpsProxy         = "https://127.0.0.1:" + std::to_string(tlsProxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, tlsPolicy, policy);
+
+        const std::string url = "https://asyngyanis-test:" + std::to_string(origin.listeningPort()) + "/hello";
+        RequestOutcome    first;
+        RequestOutcome    second;
+        Core::Task<void>  task = clientTwoGetsTask(loop, client, url, first, second);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(first.reason.empty()) << first.reason;
+        EXPECT_TRUE(second.reason.empty()) << second.reason;
+
+        EXPECT_EQ(first.body, "served-hello") << "TLS-in-TLS 第一条没到达起点";
+        EXPECT_EQ(second.body, "served-hello") << "TLS-in-TLS 第二条没到达起点";
+        EXPECT_EQ(tlsProxy.completedHandshakeCount(), 1U) << "与代理的外层 TLS 没完成";
+        EXPECT_EQ(tlsProxy.acceptedConnectionCount(), 1U) << "两条请求没有复用同一条外层隧道";
+        EXPECT_TRUE(tlsProxy.recordedNegotiatedAlpn().empty()) << "外层到代理的 TLS 声明了 ALPN，协商出「" << tlsProxy.recordedNegotiatedAlpn() << "」";
+        const std::string head = tlsProxy.recordedHeadBytes();
+        EXPECT_NE(head.find("CONNECT asyngyanis-test:" + std::to_string(origin.listeningPort()) + " HTTP/1.1"), std::string::npos)
+                << "CONNECT 不是 authority-form 或没发进外层 TLS：" << head;
+    }
+
+    /**
+     * @brief TLS-in-TLS 的内层照常声明 ALPN：谈出 h2 时多路复用经两层 TLS 走通
+     * @details 内层 TLS 的字节流由泵搬运，而 h2 的读写是并发协程——这条用例是泵「方向分离」
+     *          设计的实战检验（写侧排空与读侧灌入互不挡道）。起点夹具的 ALPN 偏好是 h2，
+     *          因此谈出 h2 之后请求必须真的按 h2 说话并拿到响应。
+     */
+    TEST(HttpProxyE2E, TlsInTlsInnerAlpnNegotiatesHttp2AndRequestsFlowThrough)
+    {
+        RunningTlsOriginFixture origin;
+        ASSERT_TRUE(origin.awaitRunning(kProxyWaitTimeout)) << "TLS 起点没起来";
+
+        ScriptedTlsPeer tlsProxy;
+        ASSERT_TRUE(tlsProxy.start(
+                [&origin](SSL *, ScriptedTlsPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 Connection Established\r\n\r\n"));
+                    connection.spliceToLoopback(origin.listeningPort());
+                }))
+                << "TLS 代理对端没起来";
+
+        const CombinedCertificateAuthorityFile trustStore(kLoopbackFixtureCertificatePath, kProxyFixtureCertificatePath);
+        Core::TlsPolicy                        tlsPolicy;
+        tlsPolicy.certificateAuthorityFile = trustStore.path().string();
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpsProxy         = "https://127.0.0.1:" + std::to_string(tlsProxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, tlsPolicy, policy);
+
+        const std::string url = "https://asyngyanis-test:" + std::to_string(origin.listeningPort()) + "/hello";
+        RequestOutcome    outcome;
+        Core::Task<void>  task = clientGetTask(loop, client, url, outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(outcome.reason.empty()) << outcome.reason;
+        EXPECT_EQ(outcome.body, "served-hello") << "内层 ALPN 谈出 h2 之后请求没走通";
+        EXPECT_EQ(client.idleHttp2ConnectionCount(), 1U) << "内层没谈出 h2（或没留下 h2 连接）——ALPN 没有被照常转发";
     }
 
     /**
