@@ -2,11 +2,13 @@
 # 依赖公告台账的核对：conandata.yml 与 packaging/dependency-watch.json 必须同解。
 #
 # 这条门禁刻意**不**宣称「已核对无 CVE」——自动判定命中需要解析各家公告正文的格式，
-# 猜错方向的后果是「绿着漏掉一条真漏洞」，比不跑更糟。它钉的是三件可机器判定的事：
+# 猜错方向的后果是「绿着漏掉一条真漏洞」，比不跑更糟。它钉的是下面这几件可机器判定的事：
 #   1) 每条依赖都在台账里登记了公告入口（新增依赖忘了登记 → 红）；
 #   2) 台账里的 pinnedVersion 与 conandata.yml 一致（升了版本没复核 → 红）；
 #   3) 台账里没有已消失的依赖（改名/移除没同步 → 红）；
-#   4) README「外部依赖」表的版本与 conandata.yml 同解（那是第三份拷贝，此前没有机检看着）。
+#   4) README「外部依赖」表的版本与 conandata.yml 同解（那是第三份拷贝，此前没有机检看着）；
+#   5) packaging/conan/conanfile.py 的交付配方里写版本的四处与 conandata.yml 同解
+#      （第四份拷贝：升 conandata 而漏跟配方，交付出去的包就钉在旧版本上）。
 # 加 --fetch 时另做一次「公告入口链接还活着」的连通性核对；网络不通只提示，不判红——
 # 上游页面挂掉不是本仓库的缺陷，但也不能因此把前几条一起跳过。
 
@@ -91,6 +93,46 @@ def check_readme_versions(requirements: dict, readmeVersions: set) -> list:
     return problems
 
 
+def read_packaging_recipe_requirements() -> dict:
+    """packaging/conan/conanfile.py 里写版本的四处 → {配方名: 版本}。
+
+    四处＝BASE_REQUIREMENTS 列表与 JSON / YAML / MYSQL 三个 *_REQUIREMENT 常量。
+    """
+    recipe = REPO_ROOT / "packaging" / "conan" / "conanfile.py"
+    if not recipe.exists():
+        raise SystemExit("缺少 packaging/conan/conanfile.py")
+    entries = {}
+    insideBaseRequirements = False
+    for line in recipe.read_text(encoding="utf-8").splitlines():
+        if insideBaseRequirements:
+            if line.startswith("]"):
+                insideBaseRequirements = False
+                continue
+            match = re.match(r'^\s*"([A-Za-z0-9_.+-]+)/([0-9][^"\s]*)"\s*,?\s*$', line)
+        else:
+            if re.match(r"^BASE_REQUIREMENTS\s*=\s*\[", line):
+                insideBaseRequirements = True
+                continue
+            match = re.match(r'^[A-Z_]+REQUIREMENT\s*=\s*"([A-Za-z0-9_.+-]+)/([0-9][^"\s]*)"\s*$', line)
+        if match:
+            entries[match.group(1)] = match.group(2)
+    if not entries:
+        raise SystemExit("交付配方里没解析出带版本的依赖：配方结构变了，请同步改这个脚本")
+    return entries
+
+
+def check_packaging_recipe_versions(requirements: dict, recipeRequirements: dict) -> list:
+    """交付用配方的依赖版本与 conandata.yml 同解（第四份拷贝：升版漏跟这一处，包就钉在旧版本上）。"""
+    problems = []
+    for name, version in sorted(recipeRequirements.items()):
+        knownVersion = requirements.get(name)
+        if knownVersion is None:
+            problems.append(f"交付配方里的 {name}/{version} 没在 conandata.yml 里登记（新增依赖要一并补清单与公告台账）")
+        elif knownVersion != version:
+            problems.append(f"交付配方 packaging/conan/conanfile.py 里 {name} 钉的是 {version}，conandata.yml 是 {knownVersion}（升版要四处同改，否则交付包停在旧版）")
+    return problems
+
+
 def check_offline(requirements: dict, dependencies: dict) -> list:
     """前三条机器可判定规则，返回问题列表（空＝通过）。"""
     problems = []
@@ -135,14 +177,15 @@ def main() -> int:
     dependencies = read_watch_list()
     problems = check_offline(requirements, dependencies)
     problems += check_readme_versions(requirements, read_readme_table_versions())
+    problems += check_packaging_recipe_versions(requirements, read_packaging_recipe_requirements())
 
     for problem in problems:
         print(f"错误：{problem}", file=sys.stderr)
     if problems:
-        print(f"共 {len(problems)} 项不一致；台账、清单与 README 依赖表必须同解，别只改一边", file=sys.stderr)
+        print(f"共 {len(problems)} 项不一致；台账、清单、README 依赖表与交付配方必须同解，别只改一边", file=sys.stderr)
         return 1
 
-    print(f"台账、清单与 README 依赖表同解：{len(requirements)} 条依赖，每条都有 https 公告入口")
+    print(f"台账、清单、README 依赖表与交付配方同解：{len(requirements)} 条依赖，每条都有 https 公告入口")
     if arguments.fetch:
         notices = check_links(dependencies, arguments.timeout)
         if notices:

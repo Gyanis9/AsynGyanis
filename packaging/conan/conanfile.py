@@ -45,11 +45,13 @@ from conan.tools.files import copy
 # 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
 # HTTP/3 的帧与 QPACK 已全部自研，测试的对端也是自带的字节级实现，仓库任何一侧都不再链接
 # 第三方 h3 实现，因此它既不进库包也不进测试依赖。
+# **本文件里写版本的四处（这份列表与下面三个 *_REQUIREMENT）都必须与 conandata.yml 同解**：
+# 升 conandata 而漏跟这里，交付包就钉在旧版本上，scripts/check-dependency-advisories.py 机检这一面。
 BASE_REQUIREMENTS = [
     "zlib/1.3.1",
     "zstd/1.5.7",
     "brotli/1.1.0",
-    "openssl/3.6.2",
+    "openssl/3.6.5",
     "sqlite3/3.51.3",
     "hiredis/1.3.0",
 ]
