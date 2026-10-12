@@ -727,7 +727,7 @@ Core::Task<void> startCertificateAutomation(Core::EventLoop &loop)
 | `Dialect/` | `SqlDialect` 契约、`StandardSqlDialect`（共用渲染）、`SqliteDialect`、`MySqlDialect`、`SqlStatement`、`ColumnType`、`DialectRegistry` |
 | `Pool/` | `PoolConfig`、`PooledConnection`（RAII 租约）、`ConnectionPool`、`Transaction` |
 | `Queryable/` | `Column` / `TableSchema` / `QueryNode` / `Expression`、`Queryable<T>`、`RowMapper`、`SchemaMigrator` |
-| `Sqlite/` `MySql/` `Redis/` | 三种驱动实现（可选依赖缺失时退化为「每个入口给中文错误」的桩） |
+| `Sqlite/` `MySql/` `Postgres/` `Redis/` | 四种驱动实现（可选依赖缺失时退化为「每个入口给中文错误」的桩） |
 
 ## 目录结构
 
@@ -767,11 +767,12 @@ AsynGyanis/
 | [SQLite3](https://www.sqlite.org/) | 3.51.3 | 嵌入式数据库驱动 |
 | [hiredis](https://github.com/redis/hiredis) | 1.3.0 | Redis 客户端 |
 | [libmysqlclient](https://dev.mysql.com/doc/c-api/) | 8.1.0 | MySQL 客户端 |
+| [libpq](https://www.postgresql.org/docs/current/libpq.html) | 17.11 | PostgreSQL 客户端 |
 
 - YAML 与 JSON 使用 nlohmann_json 与 yaml-cpp（均为必选依赖，随 `Base` 公开传递其头文件与链接）。YAML 转配置值模型的口径：引号标量按字符串、`!!str/!!int/!!float/!!bool/!!null` 之外的自定义标签直接报错、重复键报错、别名展开设深度与节点总数上限。
 - [wepoll](https://github.com/piscisaureus/wepoll) 的**头文件**（`src/Core/EventLoop/wepoll.h`）随仓库分发，供
   Windows 完成端口后端（`Iocp.cpp`）借用 `epoll_event` 与事件位定义；AFD 轮询实现已删除，不再参与轮询。
-- SQLite3 为必选；hiredis 与 libmysqlclient 为**可选**：探测不到时对应驱动退化为报错桩，不会让配置阶段失败。
+- SQLite3 为必选；hiredis、libmysqlclient 与 libpq 为**可选**：探测不到时对应驱动退化为报错桩，不会让配置阶段失败。
 
 ## 投产前核对
 

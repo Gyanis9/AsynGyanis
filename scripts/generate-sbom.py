@@ -54,6 +54,7 @@ LICENSE_BY_RECIPE = {
     "sqlite3": "blessing",
     "hiredis": "BSD-3-Clause",
     "libmysqlclient": "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
+    "libpq": "PostgreSQL",
 }
 
 

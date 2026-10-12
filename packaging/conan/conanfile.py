@@ -65,6 +65,11 @@ YAML_REQUIREMENT = "yaml-cpp/0.9.0"
 # 不开这个选项时库照常构建，MySQL 驱动退化为报错桩（-DDATABASE_WITH_MYSQL=OFF）
 MYSQL_REQUIREMENT = "libmysqlclient/8.1.0"
 
+# PostgreSQL 驱动同为可选依赖，理由与形状和 MySQL 完全一致（不开则退化为报错桩，
+# -DDATABASE_WITH_POSTGRES=OFF）。ConanCenter 上它各平台有预编译的 Release 二进制，
+# 只有 Debug 档要现场源码构建（meson，约一分钟量级）
+POSTGRES_REQUIREMENT = "libpq/17.11"
+
 
 class AsynGyanisLibrary(ConanFile):
     name = "asyngyanis"
@@ -74,8 +79,8 @@ class AsynGyanisLibrary(ConanFile):
     license = "MIT"
     settings = "os", "compiler", "build_type", "arch"
 
-    options = {"with_mysql": [True, False]}
-    default_options = {"with_mysql": False}
+    options = {"with_mysql": [True, False], "with_postgres": [True, False]}
+    default_options = {"with_mysql": False, "with_postgres": False}
 
     def set_version(self):
         # 版本号只有一个来源：根 CMakeLists 的 project(AsynGyanis VERSION x.y.z)。读不到就当场拒，
@@ -112,6 +117,8 @@ class AsynGyanisLibrary(ConanFile):
         self.requires(YAML_REQUIREMENT, transitive_libs=True)
         if self.options.with_mysql:
             self.requires(MYSQL_REQUIREMENT)
+        if self.options.with_postgres:
+            self.requires(POSTGRES_REQUIREMENT)
 
     def generate(self):
         CMakeDeps(self).generate()
@@ -125,6 +132,7 @@ class AsynGyanisLibrary(ConanFile):
         toolchain.cache_variables["ASYN_BUILD_TESTS"] = "OFF"
         toolchain.cache_variables["ASYN_BUILD_SAMPLES"] = "OFF"
         toolchain.cache_variables["DATABASE_WITH_MYSQL"] = "ON" if self.options.with_mysql else "OFF"
+        toolchain.cache_variables["DATABASE_WITH_POSTGRES"] = "ON" if self.options.with_postgres else "OFF"
         toolchain.generate()
 
     def build(self):
@@ -231,6 +239,10 @@ class AsynGyanisLibrary(ConanFile):
         database.set_property("cmake_target_name", "AsynGyanis::Database")
         if self.options.with_mysql:
             database.requires.append("libmysqlclient::libmysqlclient")
+        if self.options.with_postgres:
+            # 组件名是 libpq 包里的 "pq"（它的 cmake_target_name 属性指向 PostgreSQL::PostgreSQL），
+            # 写成 libpq::libpq 会在 CMakeDeps 生成期报「找不到该组件」——这条已经用最小消费者探针实测过
+            database.requires.append("libpq::pq")
 
         # 公开头文件是 UTF-8（含中文注释），而 MSVC 默认按系统代码页解码源码：在 GBK 环境里
         # 会把注释字节吃进下一行，报出「找不到标识符」这类假语法错误。库在 CMake 里把它作为

@@ -2,6 +2,12 @@
   "说明": "第三方依赖的安全公告台账。conandata.yml 是「装哪个版本」，本文件是「这个依赖的公告在哪、我们核对到哪一步」。",
   "核对口径": "pinnedVersion 必须与 conandata.yml 一致（漂移即红，说明升级没走复核）；每条依赖必须有 advisories 入口，否则新增依赖绕过了登记。公告正文由人读，脚本只保证「入口在、版本对、链接没死」，不假装能自动判定有没有命中 CVE。",
   "dependencies": {
+    "libpq": {
+      "upstream": "PostgreSQL",
+      "pinnedVersion": "17.11",
+      "advisories": ["https://www.postgresql.org/support/security/"],
+      "备注": "PostgreSQL 客户端（wire 协议、SCRAM 认证与链路 TLS 都在库里）；服务端报文直接驱动它的解析路径。"
+    },
     "openssl": {
       "upstream": "OpenSSL",
       "pinnedVersion": "3.6.5",
