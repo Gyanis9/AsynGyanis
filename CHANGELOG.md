@@ -13,6 +13,43 @@
 - **一致性由脚本把关**：`scripts/check-release-version.py` 比对「CMake 版本号 / 本文件最新发布段 / 最新标签」
   三者，不一致即退出码非 0；发布门禁（`release-gate.yml`）已接入这一步（它不被路径过滤跳过），避免出现「打了标签但版本号没改」这类漂移。
 
+## [4.0.0] - 2026-10-12
+
+自 3.1.0 起的累计变化（新增 5、变更 4、修复 11，三个数按本段 `### 新增/变更/修复` 三段的顶层条目现数得出）：一次以「数据库半场补齐 + 出站传输补全 + 认证家族到齐」为主的版本——PostgreSQL 驱动恢复并补齐流式与 TLS，MySQL 与 Redis 接上链路 TLS，三驱动的带参流式把「大结果集」这条路走完；出站代理从明文扩到 https 代理两态（含 TLS-in-TLS）；OAuth 半场四块（JWT / JWKS / 自省 / 设备码与授权码）到齐；整笔事务时限的剩余预算开始透传进引擎。**一处破坏性变更**：`SqlDialect` 的占位符接口改为 `appendPlaceholder(sqlText, index)`——实现自定义方言的消费者需要改这一处，迁移指引见「破坏性变更」一节。
+
+### 破坏性变更
+
+- **`SqlDialect` 占位符接口改签名**（`7ef88a33`）：PostgreSQL 的恢复要求占位符按序号生成（`$1`、`$2`…），旧接口既表达不了序号、也把「参数收集」与「文本渲染」两件事绑在了一处。新接口 `appendPlaceholder(sqlText, index)` 由方言把第 `index` 个占位符追加进文本，参数侧照旧按收集顺序排（顺序约定不变）。**需要动的地方**：实现自定义方言（覆写 `SqlDialect`）的消费者改这一处；本仓内置方言（SQLite 的 `?`、MySQL 的 `?`、PG 的 `$n`）已全部迁移。
+
+### 新增
+
+- **PostgreSQL 驱动恢复**（`7ef88a33`、`0b6f8e86`、`fb388e8d`）：libpq 17.11 接线回来（依赖台账与包配方同步恢复），`sslmode` 五档与连接配置 1:1 直译（`Disabled`/`Preferred`/`Required`/`VerifyCa`/`VerifyIdentity`）；两条 `execute` 统一走扩展协议（多语句文本当场拒，不留半执行状态），`statement_timeout` 映射命令超时，`DISCARD ALL` 复位会话（会话变量、`PREPARE` 与临时表一并清掉）。流式结果走 `PQsetSingleRowMode` 单行模式 + 在途流守卫（三条执行路径在发送前拒、复位判脏、析构收干）；`INSERT … ON CONFLICT DO NOTHING / DO UPDATE` 冲突处置补完。真机取证五条（含并发与事务语义）。
+- **MySQL 与 Redis 的链路 TLS**（`758ff647`）：`ConnectionConfig::tls` 五档（命名对齐 MySQL 的 `ssl-mode`；默认 `Preferred` ≡ 库既有默认、零行为变化；`redisDefault()` 显式落 `Disabled` 对齐 Redis 生态默认明文）+ CA 与双向 TLS 三路。MySQL 映射 `MYSQL_OPT_SSL_MODE` 等；Redis 自建阻塞握手后换 hiredis 读/写/关闭钩子（IP 走 `set1_ip`、域名走 SNI + `set1_host`，终止器端到端往返已验）；SQLite 配 `Required`/`Verify*` 即拒；MySQL 8 的 `caching_sha2_password` 在明文下被服务端拒（错误 2061）如实交出。
+- **带参流式（三驱动补齐）**（`ffdaf969`、`c430be4e`、`4558e28e`）：MySQL 走预处理语句——不 `store_result`、按 `STMT_ATTR_PREFETCH_ROWS`（64 行窗口）逐批取回，超绑定缓冲的列按实际长度补取（绝不交出截断值），语句留缓存复用；PG 走 `PQsendQueryParams` + 单行模式；SQLite 两个流式入口都出真游标（跳过预扫描，内存只有当前一行）。三条新的结果集与文本流式同契约：`rowCount()` 0＝未知、不可重扫、收口把剩余回复流吃掉并归还在途计数；Redis 是唯一走基类默认拒绝（点名）的驱动。两条有意差异写进文档：SQLite 本地游标不锁连接、`reset` 可重扫。
+- **https 代理两态**（`3f335a88`、`2b81534c`）：`https://` 代理表示 **TLS 连到代理自身**（缺省端口 443）——先与代理按**代理主机名**做客户端 TLS 握手（证书链用与目标同一份 `TlsPolicy`；到代理的一路刻意不声明 ALPN，恒按 h1 语义）；http 目标在其上走绝对形式、https 目标在其上发 `CONNECT` 并做内层 TLS（**TLS-in-TLS**：内层会话经内存 BIO 泵架在外层隧道的明文流上，两个方向独立无跨挂起点锁、单 drainer 仲裁发送；内层按目标的 SNI/主机名校验/ALPN 照常，h2 经两层 TLS 的并发读写已实测走通）。独立代理证书（`--proxy-cacert` 等价）刻意不做。
+- **OAuth 半场到齐**（`2659d6ac`、`e08f9618`、`1688a599`、`8dcad2f2`、`fac5e2bf`）：**JWT（RS256）验签纯函数层**——三段解析 + JWK→公钥（`OSSL_PARAM_BLD` 建参）+ 验签 + 声明校验（exp/nbf 两侧收 skew、iss、aud 两形态；alg 白名单钉死 RS256，none/HS256 先于验签拒）；**JWKS 密钥供给器**——后台按周期（未知 kid 请求时提前一个分片）刷新不可变键集，verify 只读原子快照（无锁无 IO），拉取失败保留旧快照；**令牌自省（RFC 7662）**——表单编码 POST + Basic 凭据、`active` 缺失按协议不符报错；**设备码流程（RFC 8628）**——每次新请求前等满 interval（含第一次）、`slow_down` 间隔 +5 秒且此后叠加、本地对 `expiresIn` 也设上界；**授权码流程（RFC 6749 §4.1 + PKCE）**——随机 state 与 PKCE 材料（只发 S256，RFC 7636 附录 B 官方向量钉住）、回调解析（整条 URL 或裸查询）、交换前先核对 state。
+
+### 变更
+
+- **整笔事务时限的剩余预算透传进引擎**（`1f0d07b6`）：走事务的语句在下发前把「剩余预算与连接自身会话级超时的更严者」交给引擎（PG 的 `statement_timeout`、MySQL 的 `max_execution_time`、SQLite 的 `busy_timeout` 与执行时限、Redis 的收发超时）——正在执行的语句在预算耗尽时被引擎打断，而不是等它跑完才由本端拒下一条。三条边界钉死：预算不足 1 毫秒按 1 毫秒发（0 的口径是「不设限」，不得翻反）、不设限或已结束的事务不碰连接、取更严者（调用方设过的更小值不放大）；取到使用权后的复查顺带补上「排队前没超、排到后超」的缝。
+- **出站 HTTP 代理**（`12769cc3`）：`HttpProxyPolicy` 认 `http_proxy`/`https_proxy`/`no_proxy` 环境（大小写都认、小写优先，`no_proxy` 支持 `*`、域后缀含子域与 `:port` 限定），显式策略优先、实例构造时冻结环境（静态入口每次现读）；明文目标走绝对形式请求目标、`https` 目标先发 `CONNECT`（头区上限、吃剩余预算、非 2xx 与 407 各自点名）；被代理命中的请求跳过 h3；坏配置拒绝而**不静默直连**、错误文案里凭据一律打码；重定向逐跳按当跳 URL 重解析代理与豁免表。
+- **驱动层工程收敛**：驱动目录收成一张表、四处消费点不再各写 `switch`（`7200d8fb`）；Database 可选驱动接线收进一个函数、能力清单按驱动表遍历（`fbdd4c0c`）；依赖台账收纳许可与上游信息、SBOM 改从台账单源读取（`73a72a8e`）。
+- **工程与门禁一批**（`dd26adc5`、`9483cc2c`、`30a0f9fd`、`5f368045`、`28531400`、`836e43d5`、`fdb092e9`）：追溯门新鲜度白名单补 `CMakePresets.json`；SBOM 与 SHA256SUMS 行尾钉 LF（跨平台逐字节同解）；基准门读不到基线/实测按前置缺件退 2；依赖同解门改为 README 表逐行配对；模糊门禁认 LeakSanitizer 输出、档位清单两处真源对表；TSan 筛面补 `Tls` 与 `Crash` 并配两条跨线程用例当观察点。
+
+### 修复
+
+- **出站 connect 改按值收地址**（`ae9cb1a0`）：惰性协程在首次恢复时才读入参，按引用会读到已析构的地址列表——改为按值持有，悬空引用不复存在。
+- **QUIC 归因镜像的重算时机**（`e1c11a7a`）：镜像从「摘除之前」移到「摘除之后」重算——最后一条离表的当拍归零，`handshakingConnectionCount()` 不再把刚离开的算作还在。
+- **崩溃现场三处**（`ac4074e2`、`d1d01115`、`d35cb9fa`）：现场读取移出信号路径的分配与锁（完整现场交子进程补写）；指纹名单进 `SSL_CTX` 共享登记、回调与 setter 以读写锁交汇（`reloadCertificate()` 换代期间的校验不再读旧名单）；取消代次号改进程级单调（迟到取消在跨轮后不再被误判成新一轮）。
+- **`runAll` 单趟预算在本地与跨线程来源间真正共用**（`03f0c6a1`）：一条回调再投一条不再能把一趟 runAll 喂到无穷。
+- **唤醒写失败的 EINTR 比较改用 socket 错误空间**（`b805865c`）：此前按 errno 空间比较，EINTR 重试分支在部分平台永不命中。
+- **借不到连接时报明是哪一路失败**（`0682a7b7`）：等待超时、建连失败、等待名额被拒三条处置分开报数，不再合成一句猜话。
+- **被腾名额唤醒的等待者重挂时不再被上限二次拒**（`96efc25b`）：名额计数与等待队列之间的缝隙收口。
+- **h2 拒收取值不一致的重复 Host**（`ad1b5068`）：与 h1/h3 同解（RFC 9113 §8.3.1 的 `:authority` 校验）。
+- **ReferenceServer 的解压出口上限跟随 parser limits**（`4b303cec`）：示例不再自带一份写死的上限。
+- **`619fd925`**：可重试判定表改用 `std::array`，GCC 下不再拒编。
+- **OAuth 对端字段类型不符按协议拒**（`8e05794a`）：自省的控制协程与 JWKS 的后台轮换不再被单条坏字段打死（异常不再穿进协程）。
+
 ## [3.1.0] - 2026-10-12
 
 自 3.0.1 起的累计变化（新增 13、变更 4、修复 11，三个数按本段 `### 新增/变更/修复` 三段的顶层条目现数得出）：一次以「可观测面补齐 + 安全与可靠性收口」为主的版本——mTLS 从「CA 签的都对」收窄到指纹点名，入站解压与 h3 流式头预算进同一份内存账，连接池与 QUIC 各补一组归因读数，等待器开始响应取消，致命崩溃死前留下现场；模糊档位从八档扩到十一档，告警抗洪补上两处。**没有破坏性变更，源码级公开签名保持兼容**；两处默认行为变化已在条目里点名（池等待名额默认 64、跨线程投递在途上限 65536）。
@@ -6224,7 +6261,8 @@ DLL 落点）写在 README 的「交付形态」一节。
 - 单请求分配画像压到 33 次 / 816 B（起点 48 次 / 4228 B）。
 - Linux CI（GCC + ASan/UBSan + Redis 真机）与 Windows CI（MSVC + ASan）；解析器模糊冒烟测试。
 
-[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/Gyanis9/AsynGyanis/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v3.1.0...v4.0.0
 [3.1.0]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/Gyanis9/AsynGyanis/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/Gyanis9/AsynGyanis/compare/v2.6.0...v3.0.0
