@@ -276,9 +276,12 @@ namespace AsynGyanis::Database
              * @param completionLoop 协程恢复时要回到的事件循环，由 acquireAsync() 的调用方给出
              * @param deadline 本次异步获取的截止时刻，由 acquireAsync() 按配置定一次并逐轮传下来：
              *               被「腾出名额」叫醒却没拿到连接时会重挂一轮，截止时刻不随之顺延
+             * @param returnedFromWake 本轮是不是「刚被腾名额唤醒」的回来，由 acquireAsync() 从上一轮
+             *               的等待体读回后喂进来。等待体逐轮新造，唤醒方写的标志只落在旧实例上，
+             *               不跨轮搬运时下一轮的新实例看不到它，豁免形同虚设
              */
-            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop, const std::chrono::steady_clock::time_point deadline) noexcept :
-                m_pool(pool), m_completionLoop(completionLoop), m_liveness(pool->livenessToken()), m_deadline(deadline)
+            AcquireAwaiter(ConnectionPool *pool, Core::EventLoop *completionLoop, const std::chrono::steady_clock::time_point deadline, const bool returnedFromWake) noexcept :
+                m_pool(pool), m_completionLoop(completionLoop), m_liveness(pool->livenessToken()), m_returnedFromWake(returnedFromWake), m_deadline(deadline)
             {
             }
 
@@ -376,7 +379,12 @@ namespace AsynGyanis::Database
             bool m_isQueueingFailed{false};
             /// 等待名额已满（`maximumWaitingRequests`）而没有入表：`acquireAsync()` 据此按空手收尾。
             /// 与 m_isQueueingFailed 分开记是因为成因不同——这一格是容量信号、那格是内存信号
-            bool                                  m_isWaitingCapReached{false};
+            bool m_isWaitingCapReached{false};
+            /// 本次重挂是「刚被腾名额唤醒」的回来：上限判据对它放行——那一位正是为它腾的，
+            /// 让新来者把它挤掉会让队列位置与「等到过」的语义一起失真（安全阀方向同「宁可多放进几个」）。
+            /// 来源有两处：唤醒方（wakeWaitersForFreedSlot）写当前在表实例，acquireAsync() 在
+            /// co_await 之后读回、喂给下一轮新造的实例——沿用哪个实例都能到，但搬运只有帧里能做到
+            bool                                  m_returnedFromWake{false};
             std::shared_ptr<ResumeTicket>         m_resumeTicket; ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
             std::chrono::steady_clock::time_point m_deadline{};   ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
         };

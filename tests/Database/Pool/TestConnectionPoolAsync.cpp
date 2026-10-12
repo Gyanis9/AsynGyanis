@@ -365,6 +365,75 @@ namespace AsynGyanis::Database
         loopThread.parkDriver(std::move(secondDriver));
     }
 
+    /**
+     * @brief 钉住：被「腾名额」唤醒的等待者重挂时不被上限判据二次拒绝
+     * @details 唤醒只说「有名额了」、结果留空，拿不拿得到要它自己回来再试——而回来之前若有新来者
+     *          补占了等待名额，旧判据会把这名等待者当场拒掉：队列位置丢失、还被记进「当场空手」
+     *          那本账。本用例用一具不跑的完成循环把时序钉死：丢弃连接制造「有名额了」的唤醒把甲
+     *          送到在途、新来者新建连接占回池位、丙先入等待表占满名额、再放行甲的恢复——它必须
+     *          重新入表（等待数允许短暂越过上限），被拒计数一动不动
+     */
+    TEST(ConnectionPoolAsync, WokenWaiterIsNotRefusedByTheWaitingCapWhenItRequeues)
+    {
+        ConnectionCounter counter;
+
+        PoolConfig configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 60000;
+        configuration.maximumWaitingRequests     = 1;
+
+        ConnectionPool pool(makeMockFactory(counter), configuration);
+
+        // 完成循环刻意不跑：甲的恢复投递会留在队列里，等下面把新来者摆好再放行
+        Core::EventLoop completionLoop;
+
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        // 甲：挂上唯一等待名额
+        AcquireProbe     firstProbe;
+        Core::Task<void> firstDriver = probeAcquireAsync(pool, completionLoop, firstProbe);
+        firstDriver.handle().resume();
+        ASSERT_EQ(pool.waitingCount(), 1U) << "先到的协程没有挂上：用例前提不成立";
+
+        // 丢弃：腾名额的唤醒把甲弹出、恢复投进上面那具不跑的循环——甲此刻「在途未回」，
+        // 而连接本身已关掉，没有实体可交接（这正是「唤醒只说有名额了」的由来）
+        occupying.discard();
+        ASSERT_EQ(pool.waitingCount(), 0U) << "丢弃腾名额没有把甲从等待表里取走";
+
+        // 乙：新建一条连接占回池位（丢弃之后池内为零，上限允许新建）
+        AcquireProbe     secondProbe;
+        Core::Task<void> secondDriver = probeAcquireAsync(pool, completionLoop, secondProbe);
+        secondDriver.handle().resume();
+        ASSERT_TRUE(secondProbe.connection.has_value() && static_cast<bool>(secondProbe.connection.value())) << "新来者没有拿到新建的连接：用例前提不成立";
+
+        // 丙：池位被乙占着，丙入等待表——名额（1）此刻被丙占满
+        AcquireProbe     thirdProbe;
+        Core::Task<void> thirdDriver = probeAcquireAsync(pool, completionLoop, thirdProbe);
+        thirdDriver.handle().resume();
+        ASSERT_EQ(pool.waitingCount(), 1U) << "丙没有入等待表：用例前提不成立";
+
+        // 放行甲的恢复：它重新挂起时必须被上限判据放行（这一位正是为它腾的）
+        completionLoop.scheduler().runAll();
+        EXPECT_FALSE(firstProbe.finished.load(std::memory_order_acquire)) << "甲被腾名额唤醒了却没能重新挂上";
+        EXPECT_EQ(pool.waitingRejectedCount(), 0U) << "被唤醒重挂的等待者被上限判据二次拒绝并落了账";
+        EXPECT_EQ(pool.waitingCount(), 2U) << "甲没有重新入表（等待数允许短暂越过上限）";
+
+        // 收尾：归还乙的连接，队列里最早的丙先被唤醒、随后轮到甲
+        secondProbe.connection.value().release();
+        completionLoop.scheduler().runAll();
+        EXPECT_TRUE(thirdProbe.finished.load(std::memory_order_acquire)) << "归还之后丙没被叫醒";
+        EXPECT_TRUE(thirdProbe.connection.value()) << "丙应当拿到归还的连接";
+
+        thirdProbe.connection.value().release();
+        completionLoop.scheduler().runAll();
+        EXPECT_TRUE(firstProbe.finished.load(std::memory_order_acquire)) << "再归还之后甲没被叫醒";
+        EXPECT_TRUE(firstProbe.connection.value()) << "甲应当拿到最终归还的连接";
+    }
+
     /** @brief 钉住池析构就地唤醒等待者并交回空连接，不把它永久挂在等待列表上 */
     TEST(ConnectionPoolAsync, DestructorWakesWaitersWithEmptyConnection)
     {

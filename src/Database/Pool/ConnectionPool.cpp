@@ -272,10 +272,17 @@ namespace AsynGyanis::Database
         // 截止时刻在这里定一次，重挂的每一轮共用它：被叫醒却没拿到连接不会把等待上限往后推
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
 
+        // 「上一轮是不是被腾名额唤醒的」存在帧里跨轮存活：等待体每轮都是新造的，唤醒方写的标志
+        // 落在旧实例上，只写在那里的话下一轮的新实例看不到它——豁免形同虚设（用例实测被二次拒绝）
+        bool isReturnedFromWake = false;
         while (true)
         {
-            AcquireAwaiter   awaiter(this, &loop, deadline);
+            AcquireAwaiter   awaiter(this, &loop, deadline, isReturnedFromWake);
             PooledConnection result = co_await awaiter;
+
+            // 消费掉唤醒来源再走下一轮：本轮被唤醒后若重挂入表，await_suspend 已把标志清零，
+            // 这里读回的就是常态——豁免只保「被唤醒后的第一次重挂」
+            isReturnedFromWake = awaiter.m_returnedFromWake;
 
             // 排队这一步分配不出来：不再重挂。内存持续吃紧时重挂就是「造票据→抛出→再造」的空转，
             // 一直转到截止时刻为止，而这条协程正跑在调用方的线程上；就地按空手结账，让调用方自己
@@ -406,11 +413,12 @@ namespace AsynGyanis::Database
             // 置标记按空手收尾——acquireAsync() 看到标记会直接结账，不会另造等待体重走这一步。
             // 合计判据带一次瞬时误差（同步那份计数在 m_mutex 下维护，两把锁按约定不互相嵌套），
             // 安全阀方向取「宁可多放进几个」：误放只多一点内存，误杀会白白掐掉一个本可等到连接的请求
-            if (m_pool->m_asyncWaiters.size() + m_pool->m_syncWaitingCount.load(std::memory_order_relaxed) >= m_pool->m_config.maximumWaitingRequests)
+            if (!m_returnedFromWake && m_pool->m_asyncWaiters.size() + m_pool->m_syncWaitingCount.load(std::memory_order_relaxed) >= m_pool->m_config.maximumWaitingRequests)
             {
                 m_isWaitingCapReached = true;
                 return false;
             }
+            m_returnedFromWake = false; // 只保被唤醒后的第一次重挂：入表即消费（acquireAsync() 读回的就是清零后的值）
             // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据。
             // 截止时刻不在这儿定：它由 acquireAsync() 造出本等待体时给一次，重挂的每轮共用，
             // 因此「反复失败的重试把超时无限顺延」这条路根本不存在；它在入表之前就已写好，
@@ -656,9 +664,10 @@ namespace AsynGyanis::Database
                 AcquireAwaiter *const waiter = m_asyncWaiters.front();
                 m_asyncWaiters.pop_front();
                 refreshAsyncWaitingCount();
-                waiter->m_inList = false; // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
-                ticket           = waiter->m_resumeTicket;
-                completionLoop   = waiter->m_completionLoop;
+                waiter->m_inList           = false; // 结果留空：这次叫醒只说「有名额了」，拿到拿不到由它自己再试
+                waiter->m_returnedFromWake = true;  // 重挂时上限判据对它放行（acquireAsync() 读回后喂给下一轮）：这一位正是为它腾的
+                ticket                     = waiter->m_resumeTicket;
+                completionLoop             = waiter->m_completionLoop;
             }
         }
         // 两把锁只顺序取、不嵌套：await_suspend 里是「m_asyncMutex → m_mutex」，反过来嵌套就是 AB-BA
