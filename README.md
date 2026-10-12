@@ -115,6 +115,7 @@
 **数据（Database）**
 
 - **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）；已有表可按结构体补上缺的列（`SchemaMigrator::addMissingColumns`，现有列直接问引擎，重复调用幂等）；非有限的浮点取值（NaN、±Infinity）在绑定前就拒并点名列名——它们落库之后是哪个数由引擎决定，而 `insert()` 会照样报成功，空值请写 `std::optional`（绑成 SQL NULL）
+- **数据库链路 TLS** — `ConnectionConfig::tls`（`DatabaseTlsPolicy`：`Disabled`/`Preferred`/`Required`/`VerifyCa`/`VerifyIdentity`，档位名与 MySQL 的 `ssl-mode` 一一对应；另有 CA 与双向 TLS 的证书/私钥三路路径）。默认 `Preferred`——与 MySQL 客户端库的既有默认档一致（服务器支持就加密、谈不成回落明文），对既有部署零行为变化，而「加不加密」从此由本配置显式下发、不再随客户端库的默认档漂移；`ConnectionConfig::redisDefault()` 例外地把默认落成 `Disabled`（对齐 Redis 生态的默认明文，明文连接不付一次注定失败的 TLS 试探）。MySQL 侧映射到客户端库的 `MYSQL_OPT_SSL_MODE`/CA/CERT/KEY；Redis 侧在明文建连之后由引擎自己的 `TlsContext` 做阻塞握手并换掉 hiredis 的读/写/关闭三只钩子（认证与全部命令因此落在密文里），SNI 与主机名校验按「IP 走 `set1_ip`、域名走 SNI + `set1_host`」与出站 HTTP 同一口径；`Preferred` 两条驱动同义（谈不成 TLS 弃连重拨、回落明文）。双向 TLS 的客户端证书目前只在 MySQL 侧有活体覆盖（Redis 侧缺一台要客户端证书的服务端夹具，仓内不假装测过）。`VerifyCa`/`VerifyIdentity` 缺 CA、证书与私钥单给一半、路径含内嵌 NUL 都在拨号前拒绝；`Disabled` 是真关：MySQL 8 的 `caching_sha2_password` 会在明文通道上拒绝口令认证（错误 2061），那是服务端的安全姿态、如实交出；SQLite 是进程内文件库，配了非 `Disabled` 档即拒并点名
 - **SQL 方言层** — 查询树渲染与参数收集只有一份实现（`StandardSqlDialect`），SQLite 与 MySQL 各自只覆写引擎知识；写语句与事务语句一律由方言生成，ORM 不含 SQL 拼接
 - **参数化执行** — 取值一律以绑定参数送出，不拼进 SQL 文本（含引号、`--`、分号的文本只会被当作数据）
 - **大结果集可以逐行取** — `DatabaseConnection::executeStreaming()` 把行留在服务端，每调用一次 `next()` 才取一行
