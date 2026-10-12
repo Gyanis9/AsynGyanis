@@ -18,6 +18,7 @@
 #include <thread>
 
 #if ASYN_PLATFORM_WIN32
+#include <io.h> // ::_write 的声明在这里（现场写 stderr 走 CRT 低层写，见 writeSceneText）
 #include <windows.h>
 #else
 #include <pthread.h>
