@@ -65,7 +65,8 @@ namespace AsynGyanis::Database
          *         未结束的事务）
          * @note 构造成功即代表数据库已经进入了事务；构造失败不会留下半开状态，
          *       已借出的连接由 PooledConnection 在栈展开时归还池。请求非默认隔离级别时，
-         *       BEGIN 之前会先执行方言的 `SET TRANSACTION ISOLATION LEVEL …`（只作用于本笔事务）
+         *       方言的 `SET TRANSACTION ISOLATION LEVEL …`（只作用于本笔事务）按引擎要求在
+         *       BEGIN 之前或之后执行（见 `SqlDialect::isolationLevelStatementFollowsBegin()`）
          * @note 单参数版本是本构造的 Default 委托：多个公开构造必须汇进同一个（见仓库约定），
          *       参数校验（含隔离级别可用性）排在任何**语句**发出之前
          */

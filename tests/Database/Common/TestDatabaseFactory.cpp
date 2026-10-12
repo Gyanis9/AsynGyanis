@@ -39,7 +39,9 @@ namespace AsynGyanis::Database
         constexpr std::uint16_t kUnknownPort = 46379;
 
         /// guessType 应当返回空值的端口样本：含未指定哨兵 0、他厂引擎端口与已知端口的邻近值
-        const std::vector<std::uint16_t> kUnrecognizedPorts = {0, 80, 1433, 3307, 5432, 6380, 27017, 65535};
+        /// @note 5432 自 PostgreSQL 接入起被识别成 PostgreSql，因此不再属于本样本，
+        ///       它的取值由 GuessTypeRecognizesPostgreSqlDefaultPort 单独钉住
+        const std::vector<std::uint16_t> kUnrecognizedPorts = {0, 80, 1433, 3307, 6380, 27017, 65535};
 
         /**
          * @brief 执行一段预期抛 std::invalid_argument 的调用并取回异常文本
@@ -75,6 +77,15 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection->databaseType(), DatabaseType::MySql);
     }
 
+    /** @brief 钉住按显式类型拿到 PostgreSQL 驱动，且连接的 databaseType() 如实回显 */
+    TEST(DatabaseFactory, CreateByTypeReturnsPostgresDriver)
+    {
+        const std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::create(DatabaseType::PostgreSql, ConnectionConfig::postgresDefault());
+
+        ASSERT_NE(connection, nullptr);
+        EXPECT_EQ(connection->databaseType(), DatabaseType::PostgreSql);
+    }
+
     /** @brief 钉住按显式类型拿到 Redis 驱动，且连接的 databaseType() 如实回显 */
     TEST(DatabaseFactory, CreateByTypeReturnsRedisDriver)
     {
@@ -97,11 +108,13 @@ namespace AsynGyanis::Database
     TEST(DatabaseFactory, CreateByTypeKeepsEveryDriverDisconnected)
     {
         // 工厂只挑驱动不做连接：返回的连接一律处于未连接状态，connect() 才是发起 IO 的唯一入口
-        const std::unique_ptr<DatabaseConnection> mySqlConnection  = DatabaseFactory::create(DatabaseType::MySql, ConnectionConfig::mySqlDefault());
-        const std::unique_ptr<DatabaseConnection> redisConnection  = DatabaseFactory::create(DatabaseType::Redis, ConnectionConfig::redisDefault());
-        const std::unique_ptr<DatabaseConnection> sqliteConnection = DatabaseFactory::create(DatabaseType::Sqlite, ConnectionConfig::sqliteDefault());
+        const std::unique_ptr<DatabaseConnection> mySqlConnection    = DatabaseFactory::create(DatabaseType::MySql, ConnectionConfig::mySqlDefault());
+        const std::unique_ptr<DatabaseConnection> postgresConnection = DatabaseFactory::create(DatabaseType::PostgreSql, ConnectionConfig::postgresDefault());
+        const std::unique_ptr<DatabaseConnection> redisConnection    = DatabaseFactory::create(DatabaseType::Redis, ConnectionConfig::redisDefault());
+        const std::unique_ptr<DatabaseConnection> sqliteConnection   = DatabaseFactory::create(DatabaseType::Sqlite, ConnectionConfig::sqliteDefault());
 
         EXPECT_FALSE(mySqlConnection->isConnected());
+        EXPECT_FALSE(postgresConnection->isConnected());
         EXPECT_FALSE(redisConnection->isConnected());
         EXPECT_FALSE(sqliteConnection->isConnected());
     }
@@ -139,7 +152,7 @@ namespace AsynGyanis::Database
     /** @brief 钉住越界类型枚举按「无法判定」抛出，而不是静默给出默认驱动 */
     TEST(DatabaseFactory, CreateByTypeThrowsForOutOfRangeEnumValue)
     {
-        // 三个 case 覆盖完之后没有 default 返回值，越界取值必须抛而不是给出静默默认驱动
+        // 全部 case 覆盖完之后没有 default 返回值，越界取值必须抛而不是给出静默默认驱动
         const DatabaseType     unknownType   = static_cast<DatabaseType>(99);
         const ConnectionConfig configuration = ConnectionConfig::sqliteDefault();
 
@@ -171,6 +184,14 @@ namespace AsynGyanis::Database
         const std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::create(ConnectionConfig::redisDefault());
 
         EXPECT_EQ(connection->databaseType(), DatabaseType::Redis);
+    }
+
+    /** @brief 钉住 5432 按端口推断成 PostgreSQL（guessType 的判据） */
+    TEST(DatabaseFactory, CreateFromConfigUsesPostgresDefaultPort)
+    {
+        const std::unique_ptr<DatabaseConnection> connection = DatabaseFactory::create(ConnectionConfig::postgresDefault());
+
+        EXPECT_EQ(connection->databaseType(), DatabaseType::PostgreSql);
     }
 
     /** @brief 钉住 port 为 0 且有库名时按嵌入式 SQLite 处理，库路径原样交给驱动 */
@@ -304,6 +325,16 @@ namespace AsynGyanis::Database
 
         ASSERT_TRUE(guessed.has_value());
         EXPECT_EQ(*guessed, DatabaseType::Redis);
+    }
+
+    /** @brief 钉住 guessType 精确识别 PostgreSQL 默认端口 5432 */
+    TEST(DatabaseFactory, GuessTypeRecognizesPostgreSqlDefaultPort)
+    {
+        // 5432 在 PostgreSQL 驱动接入后成为第三个被识别的默认端口（枚举里已登记 PostgreSql）
+        const std::optional<DatabaseType> guessed = DatabaseFactory::guessType(5432);
+
+        ASSERT_TRUE(guessed.has_value());
+        EXPECT_EQ(*guessed, DatabaseType::PostgreSql);
     }
 
     /** @brief 钉住 guessType 不做模糊匹配：哨兵 0、他厂端口与已知端口的邻近值都返回空 */

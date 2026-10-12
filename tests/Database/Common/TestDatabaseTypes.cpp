@@ -4,7 +4,7 @@
 // - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
 // - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
 // - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
-// - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / RedisDefault* / SqliteDefault*
+// - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / PostgresDefault* / RedisDefault* / SqliteDefault*
 // 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
 // databaseValueTypeName 给出 DatabaseValue 八个备选各自的类型名；ConnectionConfig 默认构造全空，
 // 三个 *Default 工厂只填本驱动真正读取的字段。全部用例不触碰任何驱动与网络，属于零依赖的纯函数断言。
@@ -32,6 +32,7 @@ namespace AsynGyanis::Database
                 DatabaseType::MySql,
                 DatabaseType::Redis,
                 DatabaseType::Sqlite,
+                DatabaseType::PostgreSql,
         };
 
         /// 合法枚举值与类型名的完整映射表，是 databaseTypeName 的唯一断言依据
@@ -39,11 +40,12 @@ namespace AsynGyanis::Database
                 {DatabaseType::MySql, "MySql"},
                 {DatabaseType::Redis, "Redis"},
                 {DatabaseType::Sqlite, "Sqlite"},
+                {DatabaseType::PostgreSql, "PostgreSql"},
         };
 
         /// 超出枚举定义范围的取值：枚举值可能来自反序列化或内存被写坏，用于驱动 default 分支
         /// @note 起点必须等于枚举成员个数：新增成员后要把它上移，否则会把新成员当成越界值
-        const std::vector<int> kOutOfRangeDatabaseTypeValues = {3, 4, 99, 127, 255, -1};
+        const std::vector<int> kOutOfRangeDatabaseTypeValues = {4, 5, 99, 127, 255, -1};
 
         /**
          * @brief 构造覆盖全部七个备选的数据库值样本
@@ -243,6 +245,20 @@ namespace AsynGyanis::Database
         EXPECT_EQ(configuration.userName, "root");
         EXPECT_EQ(configuration.database, "test");
         // 默认配置不携带密码：本机开发库通常免密，把空密码写死成明文反而危险
+        EXPECT_TRUE(configuration.password.empty());
+    }
+
+    /** @brief 钉住 PostgreSQL 默认配置指向本机 5432，且账号与库名都取初始化集群时必有的 postgres */
+    TEST(ConnectionConfig, PostgresDefaultTargetsLocalServerOnStandardPort)
+    {
+        const ConnectionConfig configuration = ConnectionConfig::postgresDefault();
+
+        // 5432 同时是 DatabaseFactory::guessType 的判据，改动这里要同步核对工厂用例
+        EXPECT_EQ(configuration.host, "127.0.0.1");
+        EXPECT_EQ(configuration.port, 5432);
+        EXPECT_EQ(configuration.userName, "postgres");
+        EXPECT_EQ(configuration.database, "postgres");
+        // 与 MySQL 侧同一条纪律：默认配置不携带明文密码（口令走 PGPASSWORD / ~/.pgpass 或调用方显式填充）
         EXPECT_TRUE(configuration.password.empty());
     }
 

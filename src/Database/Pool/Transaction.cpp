@@ -32,22 +32,25 @@ namespace AsynGyanis::Database
         // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
 
-        // 请求了非默认隔离级别：先落一条设置语句（标准语法 SET TRANSACTION ISOLATION LEVEL …，
-        // MySQL 同名语句同解：只作用于下一笔事务——正是紧跟着的这条 BEGIN）。
+        // 请求了非默认隔离级别：取出方言的设置语句并检查可用性。语句文本的**执行位置**由方言决定
+        // （MySQL / SQLite 的 SET TRANSACTION 必须在事务开始前生效；PostgreSQL 恰恰相反，
+        // 事务块外发它只会得到警告且不生效，见 SqlDialect::isolationLevelStatementFollowsBegin()）。
         // 引擎给不出设置语句（SQLite 不支持按事务请求）时拒绝并点名，不静默降级；
         // 此处抛出安全：连接是成员，栈展开时它会照常归还池，不会留下半开状态
-        if (isolationLevel != TransactionIsolationLevel::Default)
+        const bool             isolationRequested  = isolationLevel != TransactionIsolationLevel::Default;
+        const bool             isolationAfterBegin = isolationRequested && m_dialect->isolationLevelStatementFollowsBegin();
+        const std::string_view isolationStatement  = isolationRequested ? m_dialect->isolationLevelStatement(isolationLevel) : std::string_view{};
+
+        if (isolationRequested && isolationStatement.empty())
         {
-            const std::string_view isolationStatement = m_dialect->isolationLevelStatement(isolationLevel);
-            if (isolationStatement.empty())
-            {
-                throw Base::InvalidArgumentException("数据库事务：引擎 " + std::string(databaseTypeName(m_connection->databaseType())) + " 不支持按事务请求隔离级别「" +
-                                                     std::string(isolationLevelName(isolationLevel)) + "」；请用默认级别（Default），或换用支持 SET TRANSACTION 的引擎");
-            }
-            if (!executeControlStatement(isolationStatement))
-            {
-                throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
-            }
+            throw Base::InvalidArgumentException("数据库事务：引擎 " + std::string(databaseTypeName(m_connection->databaseType())) + " 不支持按事务请求隔离级别「" +
+                                                 std::string(isolationLevelName(isolationLevel)) + "」；请用默认级别（Default），或换用支持 SET TRANSACTION 的引擎");
+        }
+
+        // BEGIN 前置的引擎：设置语句先发，失败时事务尚未开始，直接抛出即可
+        if (isolationRequested && !isolationAfterBegin && !executeControlStatement(isolationStatement))
+        {
+            throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
         }
 
         // BEGIN 失败（例如同一连接上已有未结束的事务）必须让构造失败：返回一个「看起来在事务里、
@@ -59,8 +62,17 @@ namespace AsynGyanis::Database
             throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
         }
 
-        // 走到这里数据库确实进入了事务，标记为活动；析构时会据此决定是否回滚
+        // BEGIN 成功即已进入事务：先标记为活动，使随后任何失败路径（含下面 BEGIN 后置的隔离级别
+        // 语句）在栈展开时都被析构回滚，而不是把开着的事务随连接还回池
         m_isActive = true;
+
+        // BEGIN 后置的引擎（PostgreSQL）：必须在事务第一条语句之前发出，失败同样让构造抛出，
+        // 由上面的标记保证回滚
+        if (isolationRequested && isolationAfterBegin && !executeControlStatement(isolationStatement))
+        {
+            throw QueryExecutionException(m_lastError, m_connection->lastNativeErrorCode());
+        }
+
         // 时限的计时起点：从「BEGIN 真的成功了」这一刻算，而不是从对象构造算——构造里那段取连接与
         // 发 BEGIN 本身可能等了一段时间（池被借干时的等待、驱动建连），那部分不该吃掉事务的额度
         m_beganAt = std::chrono::steady_clock::now();

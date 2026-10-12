@@ -1,9 +1,9 @@
 # ============================================================================
-# Database 模块 — 统一数据库抽象层与三种驱动实现
+# Database 模块 — 统一数据库抽象层与四种驱动实现
 # ============================================================================
 # Common  定义 DatabaseConnection / DatabaseResult / ConnectionConfig / 工厂契约
 # Sqlite  嵌入式驱动，无需外部服务，故为必选依赖
-# MySql / Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
+# MySql / Postgres / Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
 #         Conan 能提供时编译真实驱动，缺失时编译返回明确错误的桩实现
 # ============================================================================
 
@@ -26,6 +26,7 @@ set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
 add_subdirectory(Common)
 add_subdirectory(Sqlite)
 add_subdirectory(MySql)
+add_subdirectory(Postgres)
 add_subdirectory(Redis)
 add_subdirectory(Pool)
 add_subdirectory(Dialect)
@@ -72,6 +73,25 @@ if (TARGET hiredis::hiredis)
     message(STATUS "Database: 启用 Redis 驱动（hiredis）")
 else ()
     message(STATUS "Database: 未找到 hiredis，Redis 驱动退化为报错桩")
+endif ()
+
+# PostgreSQL 同样按可选依赖处理，三段式与 MySQL 一致。注意目标名是 PostgreSQL::PostgreSQL
+# 而不是 libpq::*：Conan 侧组件引用写作 libpq::pq（见 packaging/conan/conanfile.py 的说明）
+option(DATABASE_WITH_POSTGRES "编译 PostgreSQL 驱动（需要可用的 libpq）" ON)
+
+if (DATABASE_WITH_POSTGRES)
+    find_package(PostgreSQL QUIET)
+endif ()
+
+if (TARGET PostgreSQL::PostgreSQL)
+    target_link_libraries(Database PUBLIC PostgreSQL::PostgreSQL)
+    target_compile_definitions(Database PUBLIC DATABASE_HAS_POSTGRES=1)
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database PostgreSQL)
+    message(STATUS "Database: 启用 PostgreSQL 驱动（libpq）")
+elseif (DATABASE_WITH_POSTGRES)
+    message(STATUS "Database: 未找到 libpq，PostgreSQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
+else ()
+    message(STATUS "Database: PostgreSQL 驱动未启用（-DDATABASE_WITH_POSTGRES=ON 可开启），退化为报错桩")
 endif ()
 
 target_include_directories(Database PUBLIC

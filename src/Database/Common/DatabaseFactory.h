@@ -55,6 +55,13 @@ namespace AsynGyanis::Database
         [[nodiscard]] static std::unique_ptr<DatabaseConnection> createMySql(const ConnectionConfig &config);
 
         /**
+         * @brief 创建 PostgreSQL 连接
+         * @param config 连接配置，读取 host/port/userName/password/database
+         * @return std::unique_ptr<DatabaseConnection> PostgreSQL 驱动实例
+         */
+        [[nodiscard]] static std::unique_ptr<DatabaseConnection> createPostgres(const ConnectionConfig &config);
+
+        /**
          * @brief 创建 Redis 连接
          * @param config 连接配置，读取 host/port/password
          * @return std::unique_ptr<DatabaseConnection> Redis 驱动实例
@@ -70,8 +77,8 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 按默认端口推断数据库类型
-         * @details 只认识本框架已实现的引擎默认端口：3306 → MySQL，6379 → Redis；
-         *          未知端口一律返回空值，由调用方显式决定类型——回退成 MySQL 会把
+         * @details 只认识本框架已实现的引擎默认端口：3306 → MySQL，5432 → PostgreSQL，
+         *          6379 → Redis；未知端口一律返回空值，由调用方显式决定类型——回退成 MySQL 会把
          *          SQLite 之类误判成永远连不上的 MySQL，属于最难排查的一类配置错误。
          * @param port 端口号
          * @return std::optional<DatabaseType> 推断结果；无法判定时为空

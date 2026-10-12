@@ -27,7 +27,7 @@
 namespace AsynGyanis::Database
 {
     /**
-     * @brief 标准 SQL 方言基类（SQLite / MySQL 的共用实现）
+     * @brief 标准 SQL 方言基类（SQLite / MySQL / PostgreSQL 的共用实现）
      *
      * @details 无状态实现，可被多线程并发调用。子类只需覆写引擎知识，
      *          查询树渲染与参数收集行为因此在校验层面天然一致。
@@ -115,7 +115,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 用本引擎的引用字符引用标识符，并翻倍转义内部引用字符
          *
-         * @details 重写 SqlDialect::quoteIdentifier()：引用字符由 identifierQuoteCharacter() 给出，
+         * @details 重写 SqlDialect::quoteIdentifier()：引用字符由 identifierQuoteCharacter()
+         *          给出（SQLite / PostgreSQL 是双引号，MySQL 是反引号），
          *          内部同字符按 SQL 规则翻倍表示（"a""b" / `a``b`）。反斜杠不能作为转义字符：
          *          它在三种引擎里都是普通字符，用它既无效又会引入字面反斜杠。
          *
@@ -127,26 +128,29 @@ namespace AsynGyanis::Database
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
          *
-         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL 都原生支持关键字形式的分页，
-         *          因此恒为 true；「OFFSET 能否单独出现」这类细节由 appendLimitOffsetClause() 各自处理。
+         * @details 重写 SqlDialect::supportsLimitOffset()：SQLite / MySQL / PostgreSQL
+         *          都原生支持关键字形式的分页，因此恒为 true；「OFFSET 能否单独出现」这类细节
+         *          由 appendLimitOffsetClause() 各自处理。
          *
          * @return true 恒为 true
          */
         [[nodiscard]] bool supportsLimitOffset() const noexcept override;
 
         /**
-         * @brief 生成一个参数占位符
+         * @brief 把一个参数占位符追加到 SQL 文本末尾
          *
-         * @details 重写 SqlDialect::placeholder()：SQLite 与 MySQL 的位置参数都写作 "?"，
+         * @details 重写 SqlDialect::appendPlaceholder()：SQLite 与 MySQL 的位置参数都写作 "?"，
          *          参数与占位符的对应关系由「按出现顺序依次压入 parameters」保证（见参数顺序契约）。
-         *          实现内联在头文件：一条 150 行 × 6 列的批量语句要取用它 900 次，而两个派生方言
+         *          实现内联在头文件：一条 150 行 × 6 列的批量语句要写它 900 次，而两个派生方言
          *          各自的建表/存在性渲染也用它，放在实现文件里会让这些循环各吃一次跨编译单元调用。
          *
-         * @return std::string_view 占位符文本，恒为 "?"
+         * @param sqlText 目标 SQL 文本，占位符追加在其末尾
+         * @note 序号形参刻意匿名：标准 "?" 不读它，只有 $n 风格方言（PostgreSQL）使用。语义上
+         *       它仍必须传对——它是该占位符对应参数在 parameters 中的下标
          */
-        [[nodiscard]] std::string_view placeholder() const override
+        void appendPlaceholder(std::string &sqlText, std::size_t) const override
         {
-            return std::string_view{"?"};
+            sqlText += '?';
         }
 
         /**

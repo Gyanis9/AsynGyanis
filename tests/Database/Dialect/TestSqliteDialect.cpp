@@ -97,15 +97,17 @@ TEST(SqliteDialectIdentifier, QuoteIdentifierDoublesEmbeddedQuote)
 }
 
 /**
- * @brief 验证占位符文本恒为 '?'（接口不含序号信息）
+ * @brief 验证占位符文本恒为 '?'，且与传入的序号无关
  */
 TEST(SqliteDialectIdentifier, PlaceholderIsAlwaysQuestionMark)
 {
     const SqliteDialect dialect;
 
-    // 同一方言无论调用几次都返回同一个文本：参数与占位符的对应靠压入顺序，不靠序号
-    EXPECT_EQ(dialect.placeholder(), "?");
-    EXPECT_EQ(dialect.placeholder(), "?");
+    // 对任意序号都追加同一个 "?"：参数与占位符的对应靠压入顺序，不靠序号
+    std::string sqlText;
+    dialect.appendPlaceholder(sqlText, 0);
+    dialect.appendPlaceholder(sqlText, 41);
+    EXPECT_EQ(sqlText, "??");
 }
 
 /**

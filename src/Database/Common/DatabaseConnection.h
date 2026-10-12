@@ -28,7 +28,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 数据库连接抽象基类
      *
-     * @details 所有驱动（MySQL、Redis、SQLite）都继承本类，调用方只依赖本接口。
+     * @details 所有驱动（MySQL、PostgreSQL、Redis、SQLite）都继承本类，调用方只依赖本接口。
      *          生命周期：构造 → connect() → execute() → disconnect() → 析构。m_isConnected 是
      *          连接状态的唯一真值来源，派生类必须在 connect()/disconnect() 里同步维护它；
      *          isConnected() 必须是纯状态查询（各驱动均刻意不发网络探活），池在获取/归还热路径上调用它。
@@ -461,5 +461,27 @@ namespace AsynGyanis::Database
         bool                                  m_isConnected          = false;                            ///< 连接状态，由派生类同步维护
         std::chrono::steady_clock::time_point m_establishedAt        = std::chrono::steady_clock::now(); ///< 最近一次建立成功的时刻，池在 connect() 成功后改写
     };
+
+    /**
+     * @brief 把 PostgreSQL 的 SQLSTATE 文本打包成「驱动原生码」整数
+     *
+     * @details libpq 给出的原生错误码就是 5 字符的 SQLSTATE 字符串（`PQresultErrorField` 的
+     *          `PG_DIAG_SQLSTATE`），没有数字形式；而 ErrorRecord / QueryExecutionException 的原生码
+     *          是 std::int64_t。打包规则：5 个字符各占一字节、高位在前，`"23505"` 得到 `0x3233353035`。
+     *          调用方判分支时用本函数生成期望值（`error.nativeErrorCode() == postgresSqlStateNativeCode("23505")`），
+     *          不要硬编码数字——规则变了这处会跟着变。本函数为 constexpr，可作 switch 的 case 常量。
+     *
+     * @param sqlState SQLSTATE 文本（约定 5 字符；其余长度同样可打包，规则不依赖长度）
+     * @return std::int64_t 打包后的原生码
+     */
+    [[nodiscard]] constexpr std::int64_t postgresSqlStateNativeCode(const std::string_view sqlState) noexcept
+    {
+        std::int64_t nativeCode = 0;
+        for (const char character: sqlState)
+        {
+            nativeCode = (nativeCode << 8) | static_cast<unsigned char>(character);
+        }
+        return nativeCode;
+    }
 
 } // namespace AsynGyanis::Database

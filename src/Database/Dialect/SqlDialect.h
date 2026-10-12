@@ -170,6 +170,27 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view insertKeywordPhrase(Queryable::InsertConflict conflict) const = 0;
 
         /**
+         * @brief 把冲突处置的尾部子句追加到 INSERT 文本末尾（默认不给子句）
+         *
+         * @details 与 insertKeywordPhrase() 相对：那一份表达写在**最前面**的处置
+         *          （如 MySQL 的 `REPLACE INTO`），本方法表达只能写在 **VALUES 之后**的处置——
+         *          PostgreSQL 的 `ON CONFLICT …` 就是后者，它没有可用的开头形式。
+         *          默认实现什么也不追加，SQLite / MySQL 的处置全部在前缀里表达；
+         *          `Fail` 档在两种位置都必须是空档，否则既有调用的线上字节会变。
+         *
+         * @param sqlText 已渲染完 VALUES 行的 INSERT 文本，子句追加在其末尾
+         * @param conflict 唯一键冲突的处置意图
+         * @param query 提供表名与待写列的查询树（`ON CONFLICT DO UPDATE` 的 SET 子句需要列清单）
+         */
+        virtual void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const
+        {
+            // 默认空实现：本库覆盖的引擎里只有 PostgreSQL 的处置以尾部子句表达
+            static_cast<void>(sqlText);
+            static_cast<void>(conflict);
+            static_cast<void>(query);
+        }
+
+        /**
          * @brief 获取开启事务的语句文本
          *
          * @details 各引擎语法不同（SQLite 用 "BEGIN IMMEDIATE" 立刻取写锁，
@@ -195,6 +216,23 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept = 0;
 
         /**
+         * @brief 隔离级别设置语句该在 BEGIN **之后**（而不是之前）执行吗
+         *
+         * @details 「设置语句相对 BEGIN 的位置」是引擎知识而不是调用方偏好：MySQL / SQLite 的
+         *          `SET TRANSACTION …` 必须在事务开始前发出才对下一笔事务生效；PostgreSQL 恰好相反——
+         *          事务块外发 `SET TRANSACTION` 只会得到「can only be used in transaction blocks」
+         *          警告且不生效，它要求在 BEGIN 之后、本事务的第一条语句之前发出。
+         *          默认 false（BEGIN 之前），PostgreSQL 覆写为 true；事务对象按此决定补发时机，
+         *          失败路径与前置路径一致（BEGIN 后置时事务已开启，构造抛出前先标记活动，析构负责回滚）。
+         *
+         * @return true 表示事务对象应在 BEGIN 成功之后立刻执行 isolationLevelStatement()
+         */
+        [[nodiscard]] virtual bool isolationLevelStatementFollowsBegin() const noexcept
+        {
+            return false;
+        }
+
+        /**
          * @brief 获取提交事务的语句文本
          * @return std::string_view 本方言的提交语句，保证语句本身不含分号
          */
@@ -213,9 +251,9 @@ namespace AsynGyanis::Database
          *          所以嵌套回滚不必再开第二个事务——两个引擎都不吃嵌套 BEGIN（MySQL 的 START TRANSACTION
          *          会隐式提交上一笔，SQLite 直接报错），而再借一条连接开的更是另一笔事务。
          *
-         * @note 默认实现放在接口上而不是某个方言里：这三条语法 SQLite 与 MySQL 通用，收在这里就只有一份
-         *       文本；名字一律经本引擎的 `quoteIdentifier()` 包起来（内部的同字符翻倍），所以调用方给的串
-         *       不会变成语句的一部分。哪天真出现不同写法的引擎，在它自己的方言里覆写即可。
+         * @note 默认实现放在接口上而不是某个方言里：这三条语法 SQLite、MySQL 与 PostgreSQL 通用，
+         *       收在这里就只有一份文本；名字一律经本引擎的 `quoteIdentifier()` 包起来（内部的同字符翻倍），
+         *       所以调用方给的串不会变成语句的一部分。哪天真出现不同写法的引擎，在它自己的方言里覆写即可。
          *
          * @param name 保存点名，非空且不含 NUL（那两道检查在事务对象那一层，见 `Transaction::savepoint`）
          * @return std::string 语句文本，保证不含分号
@@ -344,21 +382,23 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string quoteIdentifier(std::string_view identifier) const = 0;
 
         /**
-         * @brief 生成一个参数占位符
+         * @brief 把一个参数占位符追加到 SQL 文本末尾
          *
-         * @details 现有两个方言的位置参数都写作 "?"，不含序号信息；参数与占位符的对应关系
-         *          由「按出现顺序依次压入 parameters」保证（见本文件的参数顺序契约），
-         *          因此本接口不需要知道自己是第几个参数。
-         *          返回视图而不是字符串：批量写入时每个占位符都要取一次，一次一条 150 行
-         *          × 6 列的语句就是 900 次，临时 std::string 会白占掉这条路径上一大块成本。
+         * @details 两种风格：SQLite 与 MySQL 的位置参数写作 "?"（不读 index），PostgreSQL 的
+         *          扩展查询协议要求 "$1" "$2" 这类显式带序号的写法并因此真正使用 index。
+         *          写成「追加到缓冲」而不是「返回文本」：批量写入时每个占位符都要写一次，
+         *          一次一条 150 行 × 6 列的语句就是 900 次；返回文本要么让各实现构造中间对象，
+         *          要么让 $n 方言去持有一块共享缓冲——方言被多线程共享，实例成员缓冲即数据竞争。
+         *          调用方必须先调用本方法、再压入对应的绑定参数，两处顺序一致（见本文件的参数顺序契约）。
          *
-         * @return std::string_view 占位符文本，当前恒为 "?"
+         * @param sqlText 目标 SQL 文本，占位符追加在其末尾
+         * @param index 参数序号，从 0 开始，等于该占位符对应参数在 parameters 中的下标
          */
-        [[nodiscard]] virtual std::string_view placeholder() const = 0;
+        virtual void appendPlaceholder(std::string &sqlText, std::size_t index) const = 0;
 
         /**
          * @brief 查询本方言是否支持 LIMIT / OFFSET 分页语法
-         * @return true 支持（SQLite / MySQL）；false 需要各实现自行改写分页
+         * @return true 支持（SQLite / MySQL / PostgreSQL）；false 需要各实现自行改写分页
          */
         [[nodiscard]] virtual bool supportsLimitOffset() const noexcept = 0;
 
@@ -366,7 +406,8 @@ namespace AsynGyanis::Database
          * @brief 获取单条语句允许的最大绑定参数个数
          *
          * @details 各引擎的上限不同（SQLite 的 SQLITE_MAX_VARIABLE_NUMBER 默认 999，
-         *          MySQL 的占位符上限则是 65535），属于典型的引擎知识，因此由方言回答。
+         *          MySQL 的占位符上限是 65535，PostgreSQL 同为 65535——后两者依据的都是
+         *          各自协议里参数个数为 Int16 的报文字段），属于典型的引擎知识，因此由方言回答。
          *          批量写入的调用方据此把行数与列数换算成每批行数，避免一次绑定过多参数而被引擎拒绝。
          *
          * @return std::size_t 单条语句的参数个数上限，恒大于 0

@@ -134,7 +134,7 @@ namespace AsynGyanis::Database
         // DATABASE() 取当前会话的默认库，正是本条连接操作的那个库
         statement.sql = "SELECT COUNT(*) FROM information_schema.tables "
                         "WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' AND table_name = ";
-        statement.sql += placeholder();
+        appendPlaceholder(statement.sql, statement.parameters.size());
         statement.parameters.emplace_back(std::string(tableName));
 
         return statement;
@@ -149,7 +149,7 @@ namespace AsynGyanis::Database
         // 决定哪些列要补，错了就是重复加列（引擎报错）或该补的列没补（读写随后报列不存在）
         statement.sql = "SELECT column_name FROM information_schema.COLUMNS "
                         "WHERE table_schema = DATABASE() AND table_name = ";
-        statement.sql += placeholder();
+        appendPlaceholder(statement.sql, statement.parameters.size());
         statement.sql += " ORDER BY ordinal_position";
         statement.parameters.emplace_back(std::string(tableName));
 

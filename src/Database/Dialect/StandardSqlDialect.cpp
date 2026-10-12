@@ -361,7 +361,7 @@ namespace AsynGyanis::Database
                 sqlText += ", ";
             }
             // 占位符与参数按同一顺序成对产出，两处顺序必须一致（见 appendParameter 的说明）
-            sqlText += placeholder();
+            appendPlaceholder(sqlText, parameters.size());
             parameters.push_back(rowValues[index]);
         }
         sqlText += ')';
@@ -402,8 +402,8 @@ namespace AsynGyanis::Database
         if (query.limit.has_value())
         {
             sqlText += " LIMIT ";
-            // 先取序号再压参数，保证 parameters[i] 与第 i 个占位符严格对应
-            sqlText += placeholder();
+            // 先写占位符再压参数，保证 parameters[i] 与第 i 个占位符严格对应
+            appendPlaceholder(sqlText, parameters.size());
             parameters.push_back(pageNumberToDatabaseValue(query.limit.value()));
         }
 
@@ -412,7 +412,7 @@ namespace AsynGyanis::Database
             // OFFSET 单独出现是本实现的合法输入；引擎不允许这种写法的方言
             // （MySQL / SQLite）自行覆写本方法补出 LIMIT
             sqlText += " OFFSET ";
-            sqlText += placeholder();
+            appendPlaceholder(sqlText, parameters.size());
             parameters.push_back(pageNumberToDatabaseValue(query.offset.value()));
         }
     }
@@ -575,6 +575,9 @@ namespace AsynGyanis::Database
         // 单行插入就是「只有一行 VALUES」的批量插入，占位符与参数的收集规则完全一致
         appendValueRow(sqlText, statement.parameters, values);
 
+        // 冲突处置的尾部子句由方言给（默认空串；PostgreSQL 的 ON CONFLICT 只能写在 VALUES 之后）
+        appendInsertConflictTail(sqlText, query.insertConflict, query);
+
         requireWithinParameterBudget(statement.parameters.size());
 
         return statement;
@@ -611,7 +614,7 @@ namespace AsynGyanis::Database
             }
             appendFieldReference(sqlText, query.selectColumns[index]);
             sqlText += " = ";
-            sqlText += placeholder();
+            appendPlaceholder(sqlText, parameters.size());
             // 赋值取值由 ORM 以 DatabaseValue 形式给出，已经是驱动可直接绑定的形态，无需再转换
             parameters.push_back(values[index]);
         }
@@ -704,6 +707,10 @@ namespace AsynGyanis::Database
             }
             appendValueRow(sqlText, parameters, rows[rowIndex]);
         }
+
+        // 冲突处置的尾部子句由方言给（默认空串；PostgreSQL 的 ON CONFLICT 只能写在 VALUES 之后）——
+        // 单行插入与批量插入两条方向共用同一份处置表达，不能只有一条接上
+        appendInsertConflictTail(sqlText, query.insertConflict, query);
 
         // 写方向同样判上限：分块是 ORM 的职责，直接调方言的调用方也要拿到中文原因，
         // 而不是驱动在 execute 阶段回一句引擎原文
@@ -864,7 +871,7 @@ namespace AsynGyanis::Database
     void StandardSqlDialect::appendParameter(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::ParameterValue &parameter) const
     {
         // 先写占位符再压参数：两处顺序一致，SQL 文本里的第 i 个占位符就对应 parameters[i]
-        sqlText += placeholder();
+        appendPlaceholder(sqlText, parameters.size());
         parameters.push_back(convertParameter(parameter));
     }
 

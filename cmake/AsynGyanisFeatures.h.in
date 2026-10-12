@@ -45,6 +45,9 @@
 /// Database 侧是否链上了真 MySQL 客户端（0 = 每个入口只给中文原因的报错桩）
 #cmakedefine01 ASYN_HAS_MYSQL_DRIVER
 
+/// Database 侧是否链上了真 PostgreSQL 客户端（0 = 同上，退化为报错桩）
+#cmakedefine01 ASYN_HAS_POSTGRES_DRIVER
+
 /// Database 侧是否链上了真 Redis 客户端（0 = 同上，退化为报错桩）
 #cmakedefine01 ASYN_HAS_REDIS_DRIVER
 

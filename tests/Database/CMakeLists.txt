@@ -19,6 +19,7 @@ add_executable(TestDatabase
 
         Dialect/TestSqliteDialect.cpp
         Dialect/TestMySqlDialect.cpp
+        Dialect/TestPostgresDialect.cpp
 
         Queryable/TestQueryable.cpp
         Queryable/TestQueryableExecution.cpp
@@ -37,6 +38,8 @@ add_executable(TestDatabase
         MySql/TestMySqlIntegration.cpp
         MySql/TestMySqlTls.cpp
 
+        Postgres/TestPostgresConnection.cpp
+        Postgres/TestPostgresIntegration.cpp
 
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp

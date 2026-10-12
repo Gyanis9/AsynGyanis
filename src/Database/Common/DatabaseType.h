@@ -15,7 +15,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 受支持的数据库类型
      *
-     * @details 只收录本框架已有驱动实现的引擎：MySQL、Redis、SQLite 各自都有连接实现。
+     * @details 只收录本框架已有驱动实现的引擎：MySQL、PostgreSQL、Redis、SQLite 各自都有连接实现。
      *          没有驱动实现的引擎一律不列在这里——否则工厂会出现永远走不到的分支，
      *          端口猜测也会返回一个用不了的类型。
      *
@@ -24,9 +24,10 @@ namespace AsynGyanis::Database
      */
     enum class DatabaseType
     {
-        MySql, ///< MySQL / MariaDB 服务
-        Redis, ///< Redis 键值存储
-        Sqlite ///< SQLite 嵌入式数据库
+        MySql,     ///< MySQL / MariaDB 服务
+        Redis,     ///< Redis 键值存储
+        Sqlite,    ///< SQLite 嵌入式数据库
+        PostgreSql ///< PostgreSQL 服务（经 libpq 官方 C 客户端访问）
     };
 
     /**

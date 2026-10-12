@@ -2,6 +2,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Database/MySql/MySqlConnection.h"
+#include "Database/Postgres/PostgresConnection.h"
 #include "Database/Redis/RedisConnection.h"
 #include "Database/Sqlite/SqliteConnection.h"
 
@@ -44,6 +45,8 @@ namespace AsynGyanis::Database
         {
             case DatabaseType::MySql:
                 return createMySql(config);
+            case DatabaseType::PostgreSql:
+                return createPostgres(config);
             case DatabaseType::Redis:
                 return createRedis(config);
             case DatabaseType::Sqlite:
@@ -52,12 +55,17 @@ namespace AsynGyanis::Database
 
         // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
         throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) + "（枚举值 " + std::to_string(static_cast<int>(type)) +
-                                             "）：请改用 MySql / Sqlite / Redis 三者之一，或修正反序列化来源");
+                                             "）：请改用 MySql / PostgreSql / Redis / Sqlite 四者之一，或修正反序列化来源");
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)
     {
         return std::make_unique<MySqlConnection>(config);
+    }
+
+    std::unique_ptr<DatabaseConnection> DatabaseFactory::createPostgres(const ConnectionConfig &config)
+    {
+        return std::make_unique<PostgresConnection>(config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createRedis(const ConnectionConfig &config)
@@ -77,6 +85,8 @@ namespace AsynGyanis::Database
         {
             case 3306:
                 return DatabaseType::MySql;
+            case 5432:
+                return DatabaseType::PostgreSql;
             case 6379:
                 return DatabaseType::Redis;
             default:

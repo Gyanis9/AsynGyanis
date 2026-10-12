@@ -1,5 +1,7 @@
 #include "Database/Common/QueryExecutionException.h"
 
+#include "Database/Common/DatabaseConnection.h"
+
 namespace AsynGyanis::Database
 {
     QueryExecutionException::QueryExecutionException(const std::string &message, const std::source_location &sourceLocation) : DatabaseException(message, sourceLocation)
@@ -34,6 +36,14 @@ namespace AsynGyanis::Database
             // 因此只会退化成「不重试」，方向是安全的
             case 5:
             case 6:
+                return true;
+
+            // PostgreSQL：SQLSTATE 40P01（deadlock_detected——服务端已回滚本事务，与 MySQL 1213
+            // 同语义）、40001（serialization_failure——可串行化事务因并发冲突失败，规范要求重放）。
+            // 码的取值是 SQLSTATE 文本的打包值，见 postgresSqlStateNativeCode()；序列化失败只会在
+            // SERIALIZABLE 级别出现，重放前调用方应确认自己的事务逻辑允许重来（幂等或可重入）
+            case postgresSqlStateNativeCode("40P01"):
+            case postgresSqlStateNativeCode("40001"):
                 return true;
 
             default:

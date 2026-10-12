@@ -116,7 +116,7 @@ namespace AsynGyanis::Database
         // sqlite_master 是当前库文件的只读元数据表：type='table' 过滤掉索引/视图/触发器，
         // 再按 name 精确匹配。表名走占位符，含引号或分号的表名也只是普通文本
         statement.sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ";
-        statement.sql += placeholder();
+        appendPlaceholder(statement.sql, statement.parameters.size());
         statement.parameters.emplace_back(std::string(tableName));
 
         return statement;
@@ -130,7 +130,7 @@ namespace AsynGyanis::Database
         // 表名以绑定参数送入，因此带引号或分号的表名只被当成一次查询目标，不改变语句结构；
         // 表不存在时结果集为空（SQLite 不会为不存在的表报错），调用方据此先判表在不在
         statement.sql = "SELECT name FROM pragma_table_info(";
-        statement.sql += placeholder();
+        appendPlaceholder(statement.sql, statement.parameters.size());
         statement.sql += ") ORDER BY cid";
         statement.parameters.emplace_back(std::string(tableName));
 
