@@ -75,8 +75,10 @@ namespace AsynGyanis::Platform
         };
 
         ssize_t writtenBytes = writeWakeupMarker();
-        // 被信号打断不算失败：重试一次即可等价完成（与 InotifyFileWatcher 对 EINTR 的处置同一口径）
-        if (writtenBytes < 0 && PlatformError::lastErrorCode() == PlatformError::kInterrupted)
+        // 被信号打断不算失败：重试一次即可等价完成（与 InotifyFileWatcher 对 EINTR 的处置同一口径）。
+        // 错误码取 socket 空间：写路径在 Windows 上是 ::send（错误落 WSA 空间），lastErrorCode() 在那
+        // 一侧恒读 errno、比较恒假；lastSocketErrorCode() 在 Linux 下返回的仍是 errno，两边同解
+        if (writtenBytes < 0 && PlatformError::lastSocketErrorCode() == PlatformError::kInterrupted)
         {
             writtenBytes = writeWakeupMarker();
         }
