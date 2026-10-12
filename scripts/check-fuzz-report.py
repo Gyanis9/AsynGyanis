@@ -20,7 +20,38 @@ from pathlib import Path
 EXECUTIONS_DONE_PATTERN = re.compile(r"#(\d+)\s+DONE")
 # 本仓的入口在退出前打的一行账：`FUZZ-TARGET-CALLS WebSocketFrame=12 Http2Frame=34 ...`
 TARGET_CALLS_PATTERN = re.compile(r"FUZZ-TARGET-CALLS((?:\s+\w+=\d+)+)")
-CRASH_PATTERN = re.compile(r"ERROR: (libFuzzer|AddressSanitizer)|Test unit written|SUMMARY: (?:lib)?Fuzzer")
+# 崩溃/违例标记：泄漏报告的两条固定形状（`ERROR: LeakSanitizer: …` 与 `SUMMARY: AddressSanitizer: … leaked …`）
+# 必须在这里也认出来——`-jobs` 下父进程不保证把 worker 的退出码带出来，日志面是漏检的最后一道
+CRASH_PATTERN = re.compile(r"ERROR: (libFuzzer|AddressSanitizer|LeakSanitizer)|Test unit written|SUMMARY: (?:lib)?Fuzzer|SUMMARY: AddressSanitizer")
+
+# 档位清单的两处真源：内核枚举与 fuzz-net.sh 的默认目标清单。单目标模式下新档若只加进内核
+# 而两处清单都没跟，它不出现在任何日志里，下面四条判据一条都不响——全绿而那一档预算恒为 0
+REPO_ROOT = Path(__file__).resolve().parent.parent
+KERNEL_TARGETS_HEADER = REPO_ROOT / "tests" / "Net" / "Fuzz" / "ProtocolFuzzKernel.h"
+FUZZ_SCRIPT = REPO_ROOT / "scripts" / "fuzz-net.sh"
+
+
+def readKernelTargets() -> list:
+    """ProtocolFuzzKernel.h 的 Target 枚举 → 目标名列表（不含 Count 哨兵）。"""
+    if not KERNEL_TARGETS_HEADER.is_file():
+        raise SystemExit(f"缺少 {KERNEL_TARGETS_HEADER.relative_to(REPO_ROOT)}：档位真源不在，清单同解无从核对")
+    text = KERNEL_TARGETS_HEADER.read_text(encoding="utf-8")
+    match = re.search(r"enum\s+class\s+Target[^\{]*\{([^}]*)\}", text)
+    if not match:
+        raise SystemExit("ProtocolFuzzKernel.h 里找不到 Target 枚举：结构变了，请同步改这个脚本")
+    names = re.findall(r"^\s*([A-Za-z_]\w*)\s*,", match.group(1), re.MULTILINE)
+    return [name for name in names if name != "Count"]
+
+
+def readScriptDefaultTargets() -> list:
+    """scripts/fuzz-net.sh 的默认目标清单（ASYN_FUZZ_TARGETS 的 :- 默认值）。"""
+    if not FUZZ_SCRIPT.is_file():
+        raise SystemExit("缺少 scripts/fuzz-net.sh：档位清单的另一处真源不在")
+    text = FUZZ_SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r'ASYN_FUZZ_TARGETS:-([^}"]*)\}', text)
+    if not match:
+        raise SystemExit("fuzz-net.sh 里找不到默认目标清单：结构变了，请同步改这个脚本")
+    return match.group(1).split()
 
 
 def parseLog(path: Path) -> tuple:
@@ -52,6 +83,18 @@ def main() -> int:
                         help="每类的执行次数下限，本默认值是这条判据的单一真源（CI 那一步不再另传一份）；"
                              "只用来抓「根本没跑起来」，不拿机器快慢当回归判据")
     arguments = parser.parse_args()
+
+    # 配置同解先于读数：清单缺项意味着某一档的预算恒为 0，那种「全绿」比一条红线更危险
+    kernelTargets = readKernelTargets()
+    scriptTargets = readScriptDefaultTargets()
+    missingInScript = sorted(set(kernelTargets) - set(scriptTargets))
+    extraInScript = sorted(set(scriptTargets) - set(kernelTargets))
+    if missingInScript or extraInScript:
+        if missingInScript:
+            print(f"清单缺项：Target 枚举里的 {'、'.join(missingInScript)} 不在 fuzz-net.sh 默认清单里——新增档位要两处一起加，否则 CI 一直不推它", file=sys.stderr)
+        if extraInScript:
+            print(f"清单多项：fuzz-net.sh 默认清单里的 {'、'.join(extraInScript)} 不在 Target 枚举里", file=sys.stderr)
+        return 2
 
     logDirectory = Path(arguments.logDirectory)
     if not logDirectory.is_dir():

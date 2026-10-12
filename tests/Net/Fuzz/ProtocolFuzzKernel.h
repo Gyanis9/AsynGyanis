@@ -21,7 +21,8 @@ namespace AsynGyanis::Net::Fuzz
      * @brief 被模糊的目标解码器
      *
      * @details 新增一个解码器就往这里加一项：随机驱动用例与 libFuzzer 入口都只跟着这一个枚举扩，
-     *          不会出现「CI 跑了三个目标、本地用例只覆盖两个」的错位
+     *          不会出现「CI 跑了三个目标、本地用例只覆盖两个」的错位；**清单同解有门禁看着**——
+     *          check-fuzz-report.py 会把本枚举与 fuzz-net.sh 的默认目标清单对表，漏加一处即退 2
      */
     enum class Target : std::uint8_t
     {
