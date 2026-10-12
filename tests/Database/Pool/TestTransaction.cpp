@@ -29,6 +29,11 @@
 // - ChunkedBatchInsertAfterTimeLimitSendsNoChunk（分块那条分支同样过闸）
 // - TransactionHasNoTimeLimitByDefault / NonPositiveTimeLimitMeansNoLimit（默认与 0／负数都是不设限）
 // - EndedTransactionIsNotReportedAsTimedOut（「已结束」与「超时」两条原因不混成一句）
+// - StatementExecutionForwardsRemainingBudgetToQueryTimeout（剩余预算透传到语句级超时的读数）
+// - ForwardingBudgetNeverLoosensTheConnectionsOwnTimeout（取更严者：预算比会话超时宽时不动它）
+// - ForwardingBudgetTightensAnUnlimitedSessionTimeout（会话超时 0＝不设限，透传不能把预算吞掉）
+// - NoTimeLimitLeavesTheConnectionsTimeoutAlone（不设限的事务不碰连接的会话超时）
+// - BudgetCheckedAgainAfterWaitingForTheConnectionLock（排队等锁期间越限，取到锁后又被拒）
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"
@@ -1172,4 +1177,163 @@ TEST_F(TransactionTest, EndedTransactionIsNotReportedAsTimedOut)
     EXPECT_TRUE(transaction.commit()) << "已提交的事务再次提交该回幂等成功，而不是被时限拒掉";
     EXPECT_TRUE(transaction.rollback());
     EXPECT_EQ(countCommittedRows(), 1) << "已结束的事务再走一遍收尾，把已提交的数据撤掉了";
+}
+
+// ========================================================================
+// 剩余预算透传：整笔时限收紧语句级超时，正在执行的语句也能被打断
+// ========================================================================
+
+/**
+ * @brief 走事务的语句在下发前把剩余预算透传成连接的语句级超时（SQLite 面读数）
+ * @details 「到期不中断正在执行的那条语句」只靠本端计时解决不了：语句已经发给引擎，本端拒的是
+ *          下一条。透传把剩余预算（与连接自身的会话级超时取更严者）写成连接的 queryTimeout，
+ *          各驱动再把它落到引擎（SQLite 是 busy_timeout 与执行时限两道界），正在执行的语句因此
+ *          会在预算耗尽时被打断。本用例钉住「透传真的发生了」这一读数：10 秒的整笔预算比
+ *          夹具连接的默认超时（30 秒）更严，语句执行后连接上的读数必须向预算收紧。
+ *          证伪：让 Queryable 只复查时限而不调用透传，读数仍是 30 秒，断言当场变红。
+ */
+TEST_F(TransactionTest, StatementExecutionForwardsRemainingBudgetToQueryTimeout)
+{
+    constexpr std::chrono::milliseconds kForwardedTimeLimit{10000};
+
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kForwardedTimeLimit);
+    Queryable<LedgerRow> transactionalQuery(transaction);
+
+    const int baselineTimeout = transaction.connection().queryTimeout();
+    ASSERT_GT(baselineTimeout, static_cast<int>(kForwardedTimeLimit.count())) << "前提不成立：连接的默认超时不比整笔预算更宽，透传无从观察";
+
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "透传读数", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    const int forwardedTimeout = transaction.connection().queryTimeout();
+    EXPECT_LE(forwardedTimeout, static_cast<int>(kForwardedTimeLimit.count())) << "语句执行后连接上的语句级超时仍比整笔预算宽：剩余预算没有透传";
+    EXPECT_GT(forwardedTimeout, 0) << "透传把语句级超时设成了 0＝不设限";
+    EXPECT_LT(forwardedTimeout, baselineTimeout) << "读数没有向预算收紧，恰是基线值";
+
+    EXPECT_TRUE(transaction.commit()) << transaction.lastError();
+}
+
+/**
+ * @brief 预算比连接自身的会话级超时更宽时取更严者：透传不放松既有约束
+ * @details 调用方可以在借用期间把连接的语句级超时设得比整笔预算更严（例如这条会话上的查询
+ *          本来就该在 1.5 秒内说话）。透传是「给正在执行的语句加一道界」，不是「用预算顶掉
+ *          调用方设的界」——取两者更严的那个，相等时连 SET 都不重发。
+ *          证伪：把透传改成无条件 `setQueryTimeout(预算)`，这里 1.5 秒的读数会被放大成 30 秒，变红。
+ */
+TEST_F(TransactionTest, ForwardingBudgetNeverLoosensTheConnectionsOwnTimeout)
+{
+    constexpr int kStricterSessionTimeout = 1500;
+
+    Transaction transaction(*m_pool);
+    transaction.connection().setQueryTimeout(kStricterSessionTimeout);
+    // 预算（30 秒）比会话超时（1.5 秒）宽松：透传该不动声色的那一侧
+    transaction.setTimeLimit(std::chrono::seconds(30));
+    Queryable<LedgerRow> transactionalQuery(transaction);
+
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "更严者保留", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    EXPECT_EQ(transaction.connection().queryTimeout(), kStricterSessionTimeout) << "透传把调用方设的更严会话超时顶掉了";
+
+    EXPECT_TRUE(transaction.commit()) << transaction.lastError();
+}
+
+/**
+ * @brief 连接的会话级超时是 0（不设限）时，透传必须把预算装上去：0 不得被翻成「无限预算」
+ * @details queryTimeout 的口径里 0 与负数是「不设限」，而整笔预算是有限的一笔钱——把两者取
+ *          「更严者」时，0 绝不能参与比较（0 在整数意义上最严、在语义上最宽）。透传的正确行为
+ *          是：会话级不设限时直接下发预算本身。写反的形状（`current <= 0` 时跳过、或把
+ *          `min` 直接用在 0 上）会让整笔预算失去引擎侧的界，「越限被打断」当场落空。
+ *          证伪：在透传里加一句「会话超时非正就返回」，这里读数停在 0，变红。
+ */
+TEST_F(TransactionTest, ForwardingBudgetTightensAnUnlimitedSessionTimeout)
+{
+    constexpr std::chrono::milliseconds kForwardedTimeLimit{10000};
+
+    Transaction transaction(*m_pool);
+    transaction.connection().setQueryTimeout(0);
+    transaction.setTimeLimit(kForwardedTimeLimit);
+    Queryable<LedgerRow> transactionalQuery(transaction);
+
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "无界会话装上界", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    const int forwardedTimeout = transaction.connection().queryTimeout();
+    EXPECT_GT(forwardedTimeout, 0) << "会话级 0＝不设限，透传把整笔预算一起吞掉了";
+    EXPECT_LE(forwardedTimeout, static_cast<int>(kForwardedTimeLimit.count()));
+
+    EXPECT_TRUE(transaction.commit()) << transaction.lastError();
+}
+
+/**
+ * @brief 不设限的事务不碰连接的会话超时：透传的守门条件写反会误伤所有既有用法
+ * @details 没调过 `setTimeLimit()` 的事务走语句时，连接上的超时读数必须原样不动——包括调用方
+ *          自己设过的更严值。这是「加功能不许改变既有语义」的对照判据：透传若把「不设限」
+ *          误当成「预算 0」再按 0＝不设限的语义写回去，调用方设的 1.5 秒就被静默放松成无限。
+ *          证伪：把透传的守门从 `m_timeLimit <= 0 时返回` 改成「无守门、预算按 0 算」，
+ *          这里 1.5 秒的读数会被写回 0，变红。
+ */
+TEST_F(TransactionTest, NoTimeLimitLeavesTheConnectionsTimeoutAlone)
+{
+    constexpr int kStricterSessionTimeout = 1500;
+
+    Transaction transaction(*m_pool);
+    transaction.connection().setQueryTimeout(kStricterSessionTimeout);
+    // 刻意不设整笔时限
+    Queryable<LedgerRow> transactionalQuery(transaction);
+
+    ASSERT_EQ(transactionalQuery.insert(makeLedgerRow(1, "不设限不动读数", 1.0, std::nullopt)), 1) << transaction.lastError();
+
+    EXPECT_EQ(transaction.connection().queryTimeout(), kStricterSessionTimeout) << "没设整笔时限的事务，语句执行却动了连接的超时读数";
+
+    EXPECT_TRUE(transaction.commit()) << transaction.lastError();
+}
+
+/**
+ * @brief 排队等锁期间越过时限：取到使用权后复查再拒，语句一条都不发
+ * @details 「拒的出口」语义是越限之后一条语句都不发，而不只是「在取锁之前查一次」。连接使用权
+ *          是排队的（另一条语句可能占着几十秒），排队前的检查通过不等于拿到锁时还在预算内——
+ *          少了取锁后的复查，这段缝里发出的语句正好落在「注定不能再往前走」的事务上。
+ *          判据不赌调度：主线程先占住使用权，在锁未交还时断言后台查询**不可能**完成（它正
+ *          阻塞在取锁上，而不是以别的路径失败），睡过时限后才交还；后台随即在复查处被拒。
+ *          证伪：删掉 `Queryable::acquireConnection()` 里取锁后的那次 `isTimeLimitExceeded()`，
+ *          后台的查询照常跑完，返回的消息为空串，第一个断言变红。
+ */
+TEST_F(TransactionTest, BudgetCheckedAgainAfterWaitingForTheConnectionLock)
+{
+    Transaction transaction(*m_pool);
+    transaction.setTimeLimit(kShortTransactionTimeLimit);
+
+    std::unique_lock<std::mutex> heldLock = transaction.acquireStatementLock();
+    ASSERT_TRUE(heldLock.owns_lock());
+
+    std::future<std::string> pendingOutcome = std::async(std::launch::async,
+                                                         [&transaction]() -> std::string
+                                                         {
+                                                             try
+                                                             {
+                                                                 Queryable<LedgerRow> transactionalQuery(transaction);
+                                                                 static_cast<void>(transactionalQuery.toList());
+                                                             } catch (const TransactionTimeoutException &failure)
+                                                             {
+                                                                 return failure.what();
+                                                             }
+                                                             return std::string{};
+                                                         });
+
+    // 锁没交还之前后台到不了终点：既把它「已在排队」这一前提变成可判定的事实，
+    // 也保证它走的是「排队前通过、取到锁时已越限」这条缝，而不是「排队前就被拒」那条近路
+    EXPECT_EQ(pendingOutcome.wait_for(std::chrono::milliseconds(100)), std::future_status::timeout) << "后台查询没在等使用权：它离开了本用例要考的那条路径";
+
+    // 越限发生在后台阻塞于取锁的期间
+    std::this_thread::sleep_for(kSleepPastTheLimit);
+    ASSERT_TRUE(transaction.isTimeLimitExceeded()) << "睡眠没睡过时限，本用例的判据无从落地";
+
+    heldLock.unlock();
+
+    const std::string rejectionReason = pendingOutcome.get();
+    EXPECT_FALSE(rejectionReason.empty()) << "排队等锁越限之后，语句照样发了出去";
+    EXPECT_NE(rejectionReason.find("时限"), std::string::npos) << rejectionReason;
+
+    // 拒绝不改变事务状态：收尾仍要由调用方（或析构）完成
+    EXPECT_TRUE(transaction.isActive());
+    EXPECT_TRUE(transaction.rollback()) << transaction.lastError();
 }

@@ -129,10 +129,11 @@ namespace AsynGyanis::Database
         constexpr std::string_view kInjectionTableName = "Asyn_Pg_Injection";
         constexpr std::string_view kInjectionColumns   = "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL";
 
-        /// 事务用例的三张表（提交可见 / 回滚不可见 / 析构自动回滚）
+        /// 事务用例的表（提交可见 / 回滚不可见 / 析构自动回滚 / 时限透传读数）
         constexpr std::string_view kTransactionCommitTableName     = "Asyn_Pg_Tx_Commit";
         constexpr std::string_view kTransactionRollbackTableName   = "Asyn_Pg_Tx_Rollback";
         constexpr std::string_view kTransactionDestructorTableName = "Asyn_Pg_Tx_Destructor";
+        constexpr std::string_view kTransactionBudgetTableName     = "Asyn_Pg_Tx_Budget";
         constexpr std::string_view kTransactionColumns             = "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL, \"amount\" DOUBLE PRECISION NOT NULL";
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
@@ -202,6 +203,19 @@ namespace AsynGyanis::Database
             double       amount; ///< 金额
         };
 
+        /**
+         * @brief 时限透传用例的行型：与事务列同形，但 TableSchema 绑定到本用例专属的表
+         * @details 预算透传只在经 Queryable 的语句上发生，因此这条用例必须走 ORM 而不是
+         *          insertTransactionRow() 的直连通道；TableSchema 的表名是编译期常量、
+         *          一个行型只能绑一张表，于是给它单起一个行型（并行用例不得共表）
+         */
+        struct IntegrationBudgetRow
+        {
+            std::int64_t id;     ///< 主键
+            std::string  name;   ///< 名称
+            double       amount; ///< 金额
+        };
+
     } // namespace
 
     // ========================================================================
@@ -242,6 +256,20 @@ namespace AsynGyanis::Database
                 Column(&IntegrationTransactionRow::id, "id"),
                 Column(&IntegrationTransactionRow::name, "name"),
                 Column(&IntegrationTransactionRow::amount, "amount"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationBudgetRow>
+    {
+        // 预算用例必须经 Queryable 才有透传，因此不能像其他事务用例那样走直连通道：
+        // 单起一个行型把它绑到本用例专属的表上（并行执行时不得与别的用例共用表名）
+        static constexpr std::string_view kTableName = kTransactionBudgetTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationBudgetRow::id, "id"),
+                Column(&IntegrationBudgetRow::name, "name"),
+                Column(&IntegrationBudgetRow::amount, "amount"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -931,6 +959,42 @@ namespace AsynGyanis::Database
         const std::optional<std::string> committedName = readTransactionRowName(*observer, kTransactionCommitTableName, 1);
         ASSERT_TRUE(committedName.has_value());
         EXPECT_EQ(committedName.value(), "事务提交");
+    }
+
+    /**
+     * @brief 钉住：整笔事务的剩余预算透传到服务端的 statement_timeout
+     *
+     * @details 走事务的语句在下发前把「剩余预算与连接会话级超时的更严者」交给引擎，
+     *          正在执行的语句因此能在预算耗尽时被服务端打断（打断能力本身由
+     *          QueryTimeoutInterruptsSlowStatementOnEstablishedConnection 钉住，
+     *          本条只钉「预算确实到了服务端」这一环）。读数取 pg_settings 的数字形式而不是
+     *          SHOW 的 "10s" 文本，判据不依赖文本渲染。直连通道读这条变量不经 Queryable，
+     *          不会再触发一次透传，读到的就是上一条语句下发的结果。
+     *          证伪：拆掉 Queryable 取租约时的透传调用，statement_timeout 停在基线 30000，变红。
+     */
+    TEST_F(PostgresIntegrationTest, TransactionTimeBudgetReachesTheServerStatementTimeout)
+    {
+        ASSERT_TRUE(prepareTable(kTransactionBudgetTableName, kTransactionColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            Transaction transaction(*pool);
+            transaction.setTimeLimit(std::chrono::seconds(10));
+
+            OrmQuery<IntegrationBudgetRow> transactionalQuery(transaction);
+            ASSERT_EQ(1, transactionalQuery.insert(IntegrationBudgetRow{.id = 1, .name = "预算透传", .amount = 1.0}));
+
+            const std::unique_ptr<DatabaseResult> probe = transaction.connection().execute("SELECT setting::bigint FROM pg_settings WHERE name = 'statement_timeout'");
+            ASSERT_NE(probe, nullptr) << transaction.connection().lastError();
+            ASSERT_TRUE(probe->next());
+            const DatabaseValue probeValue   = probe->getValue(0);
+            const auto         *milliseconds = std::get_if<std::int64_t>(&probeValue);
+            ASSERT_NE(milliseconds, nullptr) << "statement_timeout 的读数不是整数毫秒";
+            EXPECT_LE(*milliseconds, 10000) << "预算没有收紧服务端的语句时限，读数 " << *milliseconds;
+            EXPECT_GT(*milliseconds, 5000) << "读数 " << *milliseconds << " 不像 10 秒预算刚走掉几毫秒的样子";
+
+            ASSERT_TRUE(transaction.commit()) << transaction.lastError();
+        }
     }
 
     /**

@@ -945,7 +945,8 @@ namespace AsynGyanis::Database::Queryable
          * @return ConnectionLease 连接租约；池连接在租约析构时自动归还，事务连接不归还
          * @throws DatabaseException 池已达上限且等待超时，或连接工厂创建失败
          * @throws TransactionTimeoutException 绑定了事务且整笔时限已到期——此时一条语句都不发，
-         *         也不去排那把连接使用权锁
+         *         也不去排那把连接使用权锁；排队等锁本身可能等过时限，取到使用权后还会复查一次，
+         *         复查不过同样在此拒绝（语句尚未发出）
          */
         [[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, const Transaction *transaction)
         {
@@ -962,7 +963,17 @@ namespace AsynGyanis::Database::Queryable
                 // 先取连接的使用权再交出连接：异步路径会把语句投到工作线程上，两条并发语句
                 // 不能同时踩同一条驱动连接（一个句柄一条协议流，交错发送即协议错乱）
                 lease.statementLock = transaction->acquireStatementLock();
-                lease.connection    = std::addressof(transaction->connection());
+                // 取到使用权后复查：排队等锁可能等过了时限（排队时长不受时限约束）。少了这一查，
+                // 「排队前没超、排到后超」这条缝里的语句会照发进一笔注定不能再往前走的事务；
+                // 此刻语句还未发出，拒得掉——lease 是局部对象，栈展开随即交还使用权
+                if (transaction->isTimeLimitExceeded())
+                {
+                    throw TransactionTimeoutException(transaction->timeLimitExceededReason());
+                }
+                lease.connection = std::addressof(transaction->connection());
+                // 剩余预算透传到语句级超时：正在执行的语句因此会在预算耗尽时被引擎打断，
+                // 而不是等它跑完才由本端拒下一条（各引擎的落点见 applyRemainingTimeBudget）
+                transaction->applyRemainingTimeBudget(*lease.connection);
                 return lease;
             }
 

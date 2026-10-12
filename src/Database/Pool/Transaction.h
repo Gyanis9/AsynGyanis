@@ -194,12 +194,15 @@ namespace AsynGyanis::Database
          *          SELECT、`innodb_lock_wait_timeout` 只管等锁，SQLite 更没有），而真正伤人的形状是「事务开着、
          *          一边等人一边占着连接与行锁」——时限把它变成一个确定的失败。计时起点是 BEGIN 成功那一刻，
          *          因此构造与设时限的先后不影响额度。拒的出口有三处：走本事务的每条语句（由 `Queryable` 取
-         *          连接租约时问一句）、`commit()`、三条保存点语句；`rollback()` 与析构永远放行——拦住收尾
-         *          等于让超时反而把事务钉得更死。
+         *          连接租约时问一句，含排队等锁后的复查）、`commit()`、三条保存点语句；`rollback()` 与析构
+         *          永远放行——拦住收尾等于让超时反而把事务钉得更死。
          *
          * @param limit 从 BEGIN 起允许的时长；0 或负数表示不设限（默认就是不设限）
-         * @note 时限到期不会中断正在执行的那条语句：那是语句级超时（驱动的查询超时）的活，
-         *       本方法管的是「这条事务别再往下走」
+         * @note 剩余预算会透传到语句级超时：走本事务的语句在下发前把「剩余预算与连接自身会话级超时
+         *       的更严者」交给引擎（PostgreSQL 的 statement_timeout、MySQL 的 max_execution_time、
+         *       SQLite 的 busy_timeout 与执行时限、Redis 的收发超时），正在执行的语句因此会在预算
+         *       耗尽时被引擎打断。覆盖面随引擎能力：MySQL 的 max_execution_time 只约束只读语句，
+         *       写语句与等锁不受它约束；被打断的语句报的是语句级超时，整笔时限那道拒绝留给下一条语句
          * @note 不得与在飞的语句并发调用：语句执行在工作线程上读这枚额度，而读发生在连接使用权锁之外
          *       （锁保护的是驱动句柄，不是这个值）。要改额度就改在第一条语句之前，或等所有已发出的
          *       语句都返回之后——与本类「对象不跨线程使用」那条承诺同源
@@ -234,6 +237,27 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string timeLimitExceededReason() const;
 
         /**
+         * @brief 把整笔事务的剩余时间预算下发到连接的单条语句超时上
+         *
+         * @details 由 `Queryable` 在取到本事务连接的使用权之后、语句发出之前调用（走本事务的语句
+         *          全部经 `Queryable::acquireConnection()`，挂那里一处生效）：剩余预算与连接自身的
+         *          会话级超时**取更严者**写回连接（`DatabaseConnection::setQueryTimeout()`），各驱动
+         *          再把它落到引擎上——PostgreSQL 的 statement_timeout、MySQL 的 max_execution_time、
+         *          SQLite 的 busy_timeout 与执行时限两道界、Redis 的收发超时。正在执行的语句因此会在
+         *          预算耗尽时被引擎打断，而不是等它跑完才由本端拒下一条。
+         *
+         * @param connection 本事务持有的连接；调用方已取到它的使用权（本方法会向它发 SET 语句）
+         * @note 没设过时限（0 或负数）或事务已结束时不动连接：透传只发生在有预算要守的事务上。
+         *       连接上的会话级超时是 0（不设限）时直接下发预算本身——0 在 queryTimeout 口径里是
+         *       「不设限」，绝不能当「最严」参与比较。预算不足 1 毫秒（取锁复查后的瞬时越限）按
+         *       1 毫秒下发，理由同上：把「几乎没有预算」写回成 0 会把这道界翻成无限
+         * @warning 覆盖面随引擎能力：MySQL 的 max_execution_time 只约束只读语句，写语句与等锁不受
+         *          它约束；被打断的语句以语句级超时的面目报错（如 PostgreSQL 的 57014），整笔时限
+         *          那道拒绝留给下一条语句
+         */
+        void applyRemainingTimeBudget(DatabaseConnection &connection) const noexcept;
+
+        /**
          * @brief 获取事务持有的连接
          *
          * @details Queryable 通过本方法让全部语句都落在同一条连接上，这是事务正确性的前提。
@@ -242,6 +266,8 @@ namespace AsynGyanis::Database
          * @throws Base::LogicException 对象未持有连接（构造失败后继续使用等，正常流程不可达）
          * @warning 经本通道自组的语句**不受 `setTimeLimit()` 拒点覆盖**：那闸只挂 Queryable 取租约、
          *          `commit()` 与三条保存点语句三处出口，这条通道照发不误；要时限兜底请自查 `isTimeLimitExceeded()`。
+         *          剩余预算的透传同样只发生在 Queryable 出口（本通道不发那条 SET），不过连接上留着
+         *          上一次透传收紧的读数，引擎侧的界照常守着
          */
         [[nodiscard]] DatabaseConnection &connection() const;
 

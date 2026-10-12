@@ -8,6 +8,7 @@
 #include "Database/Dialect/DialectRegistry.h"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -239,8 +240,35 @@ namespace AsynGyanis::Database
     {
         const auto usedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_beganAt).count();
         return "数据库事务：这一整笔事务已越过 setTimeLimit 设的 " + std::to_string(m_timeLimit.count()) + " 毫秒时限（从 BEGIN 起实际用去 " + std::to_string(usedMilliseconds) +
-               " 毫秒），该事务的后续语句与提交都不再被接受。请另起一笔，或把额度放宽到实际需要的时长；正在执行的"
-               "那一条语句不会被这里打断，那件事归驱动的语句级超时管";
+               " 毫秒），该事务的后续语句与提交都不再被接受。请另起一笔，或把额度放宽到实际需要的时长；已经发出的语句靠"
+               "透传下去的语句级超时被打断（掩盖不住的时刻以引擎的中断报错为准）";
+    }
+
+    void Transaction::applyRemainingTimeBudget(DatabaseConnection &connection) const noexcept
+    {
+        // 没有预算要守（不设限，或事务已结束）就别碰连接的会话级设置：不设限时误把「预算 0」
+        // 写回去，正好会把调用方设过的更严超时静默放松成无限
+        if (!m_isActive || m_timeLimit <= std::chrono::milliseconds::zero())
+        {
+            return;
+        }
+
+        const auto elapsed   = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_beganAt);
+        const auto remaining = m_timeLimit - elapsed;
+        // 夹到 [1, INT_MAX]：非正（取锁复查通过后的瞬时越限）按 1 毫秒下发——0 在 queryTimeout 的
+        // 口径里是「不设限」，把「几乎没有预算」写回成 0 正好把这道界翻反；超出 int 的长预算夹到
+        // 上限，差异只出现在以天计的额度上
+        const auto budget             = std::clamp<std::int64_t>(remaining.count(), 1, std::numeric_limits<int>::max());
+        const int  budgetMilliseconds = static_cast<int>(budget);
+
+        const int currentTimeout = connection.queryTimeout();
+        // 取更严者：调用方（或池基线）设过的更小值不放大；会话级 0＝不设限，直接让预算顶上
+        const int effectiveTimeout = currentTimeout > 0 ? std::min(currentTimeout, budgetMilliseconds) : budgetMilliseconds;
+        // 相等就不重发：改值要走驱动的一条 SET（PostgreSQL / MySQL 会话变量），白付一趟往返没有回报
+        if (effectiveTimeout != currentTimeout)
+        {
+            connection.setQueryTimeout(effectiveTimeout);
+        }
     }
 
     bool Transaction::executeControlStatement(const std::string_view statement)
