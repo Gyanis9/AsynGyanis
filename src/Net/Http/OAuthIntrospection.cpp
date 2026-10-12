@@ -3,6 +3,7 @@
 #include "Base/Coding/Base64.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/OAuthSupport.h"
 
 #include <nlohmann/json.hpp>
 
@@ -10,33 +11,6 @@
 
 namespace AsynGyanis::Net
 {
-    namespace
-    {
-        /// form-urlencoded 的百分号编码：未经保留字符原样、其余按 %XX；空格编 %20（不用 '+'，免与真值里的加号混淆）
-        [[nodiscard]] std::string percentEncodeFormComponent(const std::string_view text)
-        {
-            constexpr char kHexDigits[] = "0123456789ABCDEF";
-
-            std::string encoded;
-            encoded.reserve(text.size());
-            for (const char character: text)
-            {
-                const unsigned char byte = static_cast<unsigned char>(character);
-                const bool          isUnreserved =
-                        (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' || byte == '_' || byte == '~';
-                if (isUnreserved)
-                {
-                    encoded.push_back(character);
-                    continue;
-                }
-                encoded.push_back('%');
-                encoded.push_back(kHexDigits[(byte >> 4) & 0x0FU]);
-                encoded.push_back(kHexDigits[byte & 0x0FU]);
-            }
-            return encoded;
-        }
-    } // namespace
-
     OAuthIntrospectionClient::OAuthIntrospectionClient(EventLoop &loop, OAuthIntrospectionOptions options) : m_loop(loop), m_options(std::move(options))
     {
         if (m_options.introspectionUrl.empty())

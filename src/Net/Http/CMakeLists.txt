@@ -10,6 +10,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/JwksKeyProvider.cpp
         ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.h
         ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.cpp
+        # 只有头文件：OAuth 家族各 .cpp 共用的表单编码件（实现侧头，头内 inline，见文件注释）
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthSupport.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMethod.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerLimits.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpMemoryBudget.h
