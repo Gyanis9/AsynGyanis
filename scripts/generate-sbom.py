@@ -173,7 +173,8 @@ def main() -> int:
     outputDirectory = Path(arguments.out)
     outputDirectory.mkdir(parents=True, exist_ok=True)
     target = outputDirectory / f"AsynGyanis-{version}.cdx.json"
-    target.write_text(json.dumps(bom, ensure_ascii=False, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    # 行尾钉成 LF：跨平台逐字节稳定（Windows 文本模式默认写 CRLF，POSIX 侧 sha256sum -c 会读不了）
+    target.write_text(json.dumps(bom, ensure_ascii=False, indent=2, sort_keys=False) + "\n", encoding="utf-8", newline="\n")
 
     # 自检：能解析、组件数与清单条数一致、每个组件都有版本与 purl。过不了就删掉产物并非零退出，
     # 免得一份「看着有其实是空壳」的 SBOM 被当成审计证据交出去
@@ -197,7 +198,7 @@ def main() -> int:
 
     checksumFile = outputDirectory / "SHA256SUMS"
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    checksumFile.write_text(f"{digest}  {target.name}\n", encoding="utf-8")
+    checksumFile.write_text(f"{digest}  {target.name}\n", encoding="utf-8", newline="\n")
 
     print(f"已生成 {target}（{len(parsedComponents)} 个组件，版本 {version}，提交 {revision[:8]}）")
     print(f"SHA256 {digest}")
