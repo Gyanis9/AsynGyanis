@@ -1,8 +1,10 @@
 #include "Net/Http3/Http3Connection.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <ranges>
@@ -37,6 +39,9 @@ namespace AsynGyanis::Net
         {
             return errorKind == Http3FrameErrorKind::LimitExceeded ? Http3ErrorCode::ExcessiveLoad : Http3ErrorCode::FrameError;
         }
+
+        /// 「本端发起流上收到数据」的告警放行间隔：对端每发一帧就走到这里，一帧一条即远端可驱动的刷屏面
+        constexpr std::chrono::seconds kIgnoredDataOnLocalStreamLogWindow{10};
 
         /**
          * @brief 这份字段行是不是 1xx 信息性响应的段
@@ -291,8 +296,13 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 本端发起的流不会带回字节；真带回来说明承载层接线错了，照实记一条并还额度而不是静默吞掉
-        LOG_WARN_FMT("Http3Connection: 收到本端发起的流 {} 上的数据，已按忽略处理", streamId);
+        // 本端发起的流不会带回字节；真带回来说明承载层接线错了，照实记一条并还额度而不是静默吞掉。
+        // 压重条不压信号：对端每发一帧就会走到这里，一条数据帧一条 WARN 是远端可驱动的刷屏面
+        if (auto &throttle = ASYN_LOG_THROTTLED(kIgnoredDataOnLocalStreamLogWindow); throttle.acquire())
+        {
+            LOG_WARN_FMT("Http3Connection: 收到本端发起的流 {} 上的数据，已按忽略处理（过去 {} 秒内另有 {} 条同类被压掉）", streamId, kIgnoredDataOnLocalStreamLogWindow.count(),
+                         throttle.droppedCount());
+        }
         if (m_streamCrediter && !data.empty())
         {
             m_streamCrediter(streamId, data.size());

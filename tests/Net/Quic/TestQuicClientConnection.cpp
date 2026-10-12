@@ -12,6 +12,7 @@
 #include "Platform/IO/Socket.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
+#include "HttpTestSupport.h"
 #include "NetTestSupport.h"
 #include "QuicRfcVectors.h"
 
@@ -372,6 +373,42 @@ namespace AsynGyanis::Net
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
         EXPECT_EQ(server.server().handshakingConnectionCount(), 0U) << "谈不成握手的 Initial 在「未验证」名下有残留";
         EXPECT_EQ(server.server().connectionCount(), onlineAfterHandshake) << "坏握手流量改变了在线数：条目没被收干净";
+    }
+
+    /**
+     * @brief 钉住：单来源名额拒绝的告警被时间窗压住，不是每个被拒的 Initial 一条
+     * @details 被拒的连接不进别名索引，对端的握手重传会以新 Initial 反复走到这个判定点——不压重条时
+     *          这是**一条报文一条日志**的远端可驱动刷屏面。与 PROXY 组同一形状：量级进那一条放行的
+     *          日志（同窗压掉了多少条），重复条目才被丢掉；撤掉闸门时本用例的「恰一条」当场红。
+     */
+    TEST(QuicServer, ThrottlesRepeatedPerIpRejectionWarnings)
+    {
+        const HttpTestSupport::LogCapture logCapture; // 先挂再开服：日志走根日志器，晚一步就漏掉前面几条
+
+        const std::shared_ptr<PerIpConnectionLimiter> limiter = std::make_shared<PerIpConnectionLimiter>(2);
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [&limiter](QuicServer::Configuration &configuration) { configuration.perIpConnectionLimiter = limiter; }};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        // 先把手上的两个名额占满：两条完成握手的连接都从 127.0.0.1 来，同一份单来源账
+        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "第一条基线握手没成";
+        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "第二条基线握手没成";
+        ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() >= 2U; }, kWaitTimeout)) << "两条完成的握手没让服务端记上在线连接";
+
+        // 名额已满：新 Initial 一律被单来源闸拒掉（附录 A.2 的整包就够——走到这层不需要能解开的握手）
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const std::vector<std::uint8_t> rejectedInitial = makeBytesFromHex(kAppendixA2ProtectedPacketHex);
+        const Core::InetAddress         serverAddress("127.0.0.1", server.listeningPort());
+        for (std::size_t attempt = 0; attempt < 5U; ++attempt)
+        {
+            ASSERT_GT(sender.send(serverAddress.platformAddress(), rejectedInitial.data(), rejectedInitial.size()), 0);
+        }
+
+        // 等第一条放行的日志落地、再给整批一点消费时间：窗口 10 秒，五条串行发送至多一条
+        ASSERT_TRUE(waitForCondition([&] { return logCapture.countContaining("的并发连接已达上限") >= 1U; }, kWaitTimeout))
+                << "被拒的 Initial 一条告警都没留：闸门把这条信号整个吞了";
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        EXPECT_EQ(logCapture.countContaining("的并发连接已达上限"), 1U) << "一批同类拒绝写出了多条告警：这个调用点没接闸门";
     }
 
     /**

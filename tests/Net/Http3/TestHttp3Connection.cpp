@@ -6,6 +6,8 @@
 
 #include "Net/Http3/Http3Connection.h"
 
+#include "HttpTestSupport.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1557,4 +1559,30 @@ TEST(Http3Connection, StillSubmitsLargeFieldSectionsWhenThePeerAdvertisesNoLimit
     const std::vector<QpackHeaderField> largeFields{QpackHeaderField{":status", "200"}, QpackHeaderField{"x-big", std::string(3000U, 'v')}};
     EXPECT_TRUE(connection->submitResponseHead(kRequestStreamId, largeFields, true).has_value());
     EXPECT_FALSE(connection->isBroken());
+}
+
+/**
+ * @brief 钉住：往本端发起的单向流上写数据时的告警被时间窗压住，不是一帧一条
+ * @details 对端每发一帧数据就会走到这个判定点，不压重条时一条连接上的连续帧能把日志刷满——这正是
+ *          「远端可驱动的告警不该把日志与事件循环一起淹掉」那一类。量级不丢：同窗压掉的条数写进
+ *          放行的那一条里；撤掉闸门时本用例的「恰一条」当场红。
+ */
+TEST(Http3Connection, ThrottlesRepeatedDataWarningsOnServerInitiatedStreams)
+{
+    const AsynGyanis::Net::HttpTestSupport::LogCapture logCapture; // 先挂再跑：日志走根日志器，晚一步就漏掉前面几条
+
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    constexpr std::int64_t kLocalControlStreamId = 3; // 本端发起的单向流：夹具在构造里开出来的第一条
+    const std::string      dataFrame             = makeFrame(0x00, "x");
+    constexpr std::size_t  kFrameCount           = 5U;
+    for (std::size_t index = 0; index < kFrameCount; ++index)
+    {
+        connection->consumeStreamData(kLocalControlStreamId, bytesOfText(dataFrame), false);
+    }
+
+    // 同一窗口内的五帧恰一条（首条放行、其余压掉）；一条都没有则说明这条信号被整个吞了
+    EXPECT_EQ(logCapture.countContaining("本端发起的流"), 1U) << "五帧同类数据写出了多条告警（或一条都没有）：这个调用点没接闸门";
 }

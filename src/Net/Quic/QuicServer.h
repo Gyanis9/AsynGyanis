@@ -486,6 +486,25 @@ namespace AsynGyanis::Net
         [[nodiscard]] static bool admitsNewConnection(std::size_t onlineConnectionCount, std::size_t maximumConnections) noexcept;
 
         /**
+         * @brief 单来源准入的一次判定：名额租约与「被拒」两个出口
+         */
+        struct PerIpAdmission
+        {
+            std::optional<PerIpConnectionLimiter::Lease> lease{};          ///< 拿到的名额租约；未配置限额器或取不到来源键时为空
+            bool                                         isRefused{false}; ///< 被单来源闸拒绝，调用方应立即收手
+        };
+
+        /**
+         * @brief 尝试占用一个单来源名额
+         * @details 被拒的连接不进别名索引，对端握手重传会以新 Initial 反复走到这里——被拒时的告警在
+         *          本方法内按时间窗压住（理由见 .cpp 里窗口常量的说明）
+         * @param peerAddress 对端地址（键取纯 IP，与 TcpServer 同一口径）
+         * @return PerIpAdmission lease 非空＝拿到；isRefused＝被拒；两者皆空＝不适用（无限额器或取不到
+         *         来源键），照常放行
+         */
+        [[nodiscard]] PerIpAdmission admitPerIpConnection(const Platform::SocketAddress &peerAddress);
+
+        /**
          * @brief 算出定时器驱动下一次该在什么时候醒来（纯换算，不读状态）
          * @details 单列成一张纯函数是为了能被确定性地测出来：读时钟的分支在测试里只能靠等，
          *          而「什么时候该醒」这件事恰恰是这条改动的全部判据。放在 protected 而不是 private，

@@ -31,6 +31,10 @@ namespace AsynGyanis::Net
         /// 同类读数报错的放行间隔：报文本里带着对端不可达的具体原因，逐条落盘会把日志刷满，
         /// 而这类错误的发生率本身就受对端控制（见收包循环里的说明）
         constexpr std::chrono::seconds kReceiveErrorLogWindow{10};
+
+        /// 单来源限额拒绝的放行间隔：**每个被拒的 Initial 一条**就是一条报文一条日志，
+        /// 而且被拒的连接不进别名索引，握手重传会以新 Initial 反复走到这里——不压就是远端可驱动的刷屏面
+        constexpr std::chrono::seconds kPerIpRejectionLogWindow{10};
     } // namespace
 
     namespace
@@ -770,6 +774,33 @@ namespace AsynGyanis::Net
         return m_listeningPort.load(std::memory_order_acquire);
     }
 
+    QuicServer::PerIpAdmission QuicServer::admitPerIpConnection(const Platform::SocketAddress &peerAddress)
+    {
+        PerIpAdmission admission;
+        if (m_configuration.perIpConnectionLimiter == nullptr)
+        {
+            return admission;
+        }
+        const std::optional<std::string> ipKey = peerIpKey(peerAddress);
+        if (!ipKey.has_value())
+        {
+            return admission;
+        }
+        admission.lease = m_configuration.perIpConnectionLimiter->tryAcquire(*ipKey);
+        if (!admission.lease.has_value())
+        {
+            admission.isRefused = true;
+            // 与 PROXY 那组同款的时间窗闸门（见 kPerIpRejectionLogWindow 的说明）：量级照旧可见，
+            // 丢的只是同一条拒绝的重复条目
+            if (auto &throttle = ASYN_LOG_THROTTLED(kPerIpRejectionLogWindow); throttle.acquire())
+            {
+                LOG_WARN_FMT("QuicServer: 来源 {} 的并发连接已达上限，新的 Initial 被拒绝（过去 {} 秒内另有 {} 条同类被压掉）", *ipKey, kPerIpRejectionLogWindow.count(),
+                             throttle.droppedCount());
+            }
+        }
+        return admission;
+    }
+
     Core::Task<> QuicServer::routeDatagram(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram, const std::optional<std::uint8_t> ecnCodepoint)
     {
         if (m_isStopped.load(std::memory_order_acquire))
@@ -831,19 +862,12 @@ namespace AsynGyanis::Net
 
         // 不认识的目的连接标识：只有「可开新连接的 Initial」才值得开一条新连接
         // 先占单来源名额再建连接：名额拿不到就不建，避免「建了又拆」白付一次握手成本
-        std::optional<PerIpConnectionLimiter::Lease> perIpLease;
-        if (m_configuration.perIpConnectionLimiter != nullptr)
+        PerIpAdmission perIpAdmission = admitPerIpConnection(peerAddress);
+        if (perIpAdmission.isRefused)
         {
-            if (const std::optional<std::string> ipKey = peerIpKey(peerAddress); ipKey.has_value())
-            {
-                perIpLease = m_configuration.perIpConnectionLimiter->tryAcquire(*ipKey);
-                if (!perIpLease.has_value())
-                {
-                    LOG_WARN_FMT("QuicServer: 来源 {} 的并发连接已达上限，新的 Initial 被拒绝", *ipKey);
-                    co_return;
-                }
-            }
+            co_return;
         }
+        std::optional<PerIpConnectionLimiter::Lease> perIpLease = std::move(perIpAdmission.lease);
 
         // 配置与各个发送出口在这一处摆好：路由这条协程因此只剩「认身份 → 派发 → 建连接」三段
         const QuicConnection::Configuration connectionConfiguration = configurationForAcceptedConnection();
