@@ -81,7 +81,7 @@ ctest --test-dir build/debug --output-on-failure
 ## 依赖、SBOM 与安全公告
 
 - **加/升第三方依赖要走四处**：`conandata.yml` 的固定版本、`packaging/dependency-watch.json` 的公告入口与
-  `pinnedVersion`、README「外部依赖」表的版本、以及交付配方 `packaging/conan/conanfile.py` 里写版本的四处；
+  `pinnedVersion`（台账每条还要带 `license` / `purlName` / `homepage` 三栏：SBOM 的上游正名、官网与许可只从这一份读，缺 license 会被 SBOM 自检判红）、README「外部依赖」表的版本、以及交付配方 `packaging/conan/conanfile.py` 里写版本的四处；
   可选依赖还要另动根 `conanfile.py` 的选项（要给降级路径）。忘掉其中一处会被当场判红：
   `python scripts/check-dependency-advisories.py` 钉的是「四处同解」——缺登记、版本漂移、台账残留已删依赖、交付配方与真源不一致都算；这条不与构建混跑，几秒钟就能暴露。
 - **SBOM**：`python scripts/generate-sbom.py --out sbom` 产出 CycloneDX 1.6（组件按 purl 排序、
