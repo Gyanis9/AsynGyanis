@@ -66,14 +66,31 @@ namespace AsynGyanis::Net
         }
 
         OAuthTokenIntrospection introspection;
-        introspection.active    = activeField->get<bool>();
-        introspection.scope     = document.value("scope", std::string{});
-        introspection.clientId  = document.value("client_id", std::string{});
-        introspection.username  = document.value("username", std::string{});
-        introspection.subject   = document.value("sub", std::string{});
-        introspection.tokenType = document.value("token_type", std::string{});
-        if (const auto expiration = document.find("exp"); expiration != document.end() && expiration->is_number_integer())
+        introspection.active = activeField->get<bool>();
+
+        // 可选文本字段逐个读：缺失是缺省（空串），类型不符是协议不符——不静默按缺省、也不抛异常
+        const std::pair<const char *, std::string *> optionalTextFields[] = {{"scope", &introspection.scope},
+                                                                             {"client_id", &introspection.clientId},
+                                                                             {"username", &introspection.username},
+                                                                             {"sub", &introspection.subject},
+                                                                             {"token_type", &introspection.tokenType}};
+        for (const auto &[fieldName, target]: optionalTextFields)
         {
+            std::expected<std::string, std::string> field = optionalJsonString(document, fieldName);
+            if (!field.has_value())
+            {
+                co_return std::unexpected("自省响应：" + field.error());
+            }
+            *target = std::move(*field);
+        }
+
+        // exp 是可选整数：给了但类型不对同样按协议不符拒——0 的语义是「端点未给出」，不让错类型借道
+        if (const auto expiration = document.find("exp"); expiration != document.end())
+        {
+            if (!expiration->is_number_integer())
+            {
+                co_return std::unexpected("自省响应：字段「exp」不是整数（RFC 7662 §2.2 的 exp 是 Number）");
+            }
             introspection.expiresAt = expiration->get<std::int64_t>();
         }
 

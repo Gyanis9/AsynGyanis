@@ -12,8 +12,11 @@
  */
 #pragma once
 
+#include <expected>
 #include <string>
 #include <string_view>
+
+#include <nlohmann/json.hpp>
 
 namespace AsynGyanis::Net
 {
@@ -45,6 +48,36 @@ namespace AsynGyanis::Net
             encoded.push_back(kHexDigits[byte & 0x0FU]);
         }
         return encoded;
+    }
+
+    /**
+     * @brief 读 JSON 对象的可选字符串字段
+     * @details 「缺失」是可选字段的常态，交回空串；类型不是字符串则是**协议不符**，交回中文原因
+     *          而不是把它静默按缺省处理。刻意不走 nlohmann 的 `value()`：它在类型不符时会抛类型
+     *          异常，穿出以 expected/optional 为契约的调用面——同步调用方还能靠 catch 兜住，协程里
+     *          的抛出会顺着 co_await 链把调用链打死，分离投递的后台协程（如 JWKS 轮换）更是只留
+     *          一行日志、再也不会重来。对端给的字节不可信，这类读取一律不抛。
+     * @param object 待读的 JSON 对象
+     * @param name 字段名
+     * @return std::expected<std::string, std::string> 成功交回字段值（缺失为空串）；类型不符交回原因
+     * @note object 不是 JSON 对象时按缺失处理：find 对非对象是未定义行为，这条兜底不留给调用方记
+     */
+    [[nodiscard]] inline std::expected<std::string, std::string> optionalJsonString(const nlohmann::json &object, const char *name)
+    {
+        if (!object.is_object())
+        {
+            return std::string{};
+        }
+        const auto field = object.find(name);
+        if (field == object.end())
+        {
+            return std::string{};
+        }
+        if (!field->is_string())
+        {
+            return std::unexpected(std::string{"字段「"} + name + "」不是字符串");
+        }
+        return field->get<std::string>();
     }
 
 } // namespace AsynGyanis::Net

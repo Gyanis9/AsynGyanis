@@ -3,6 +3,7 @@
 // - ReportsActiveTokenWithItsClaims（字段逐项 + 表单编码与 Basic 头的请求侧断言）
 // - ReportsInactiveToken（active:false 是正常回答，不是失败）
 // - FailsOnNon2xxAndOnMissingActiveField（协议不符要带原因，而不是猜成「不活跃」）
+// - 字段类型不符（scope 是数字、exp 是字符串）：按失败返回并点名，不抛异常穿出 expected 契约
 
 #include "Net/Http/OAuthIntrospection.h"
 
@@ -203,8 +204,6 @@ namespace AsynGyanis::Net
 
         Core::Task<void> introspectionScenario(Core::EventLoop &loop, OAuthIntrospectionClient &client, MiniIntrospectionServer &server, std::string &lastFailure)
         {
-            (void) server;
-
             // 正例：active 令牌的字段逐项解析
             auto active = co_await client.introspect("tok+en/With=Specials");
             EXPECT_TRUE(active.has_value()) << active.error();
@@ -252,6 +251,40 @@ namespace AsynGyanis::Net
             if (!missingActive.has_value())
             {
                 EXPECT_NE(missingActive.error().find("active"), std::string::npos) << missingActive.error();
+            }
+
+            // 字段类型不符：属协议不符、要按失败返回——绝不能抛异常穿出（expected 契约）。
+            // 抛出来会顺着 co_await 链把本协程当场打死，后面的阶段一个也跑不到
+            server.setResponse("200 OK", R"({"active":true,"scope":42})");
+            bool        wrongScopeThrew    = false;
+            bool        wrongScopeRejected = false;
+            std::string wrongScopeReason;
+            try
+            {
+                const auto wrongScope = co_await client.introspect("opaque-token");
+                wrongScopeRejected    = !wrongScope.has_value();
+                if (!wrongScope.has_value())
+                {
+                    wrongScopeReason = wrongScope.error();
+                }
+            } catch (const std::exception &)
+            {
+                wrongScopeThrew = true;
+            }
+            EXPECT_FALSE(wrongScopeThrew) << "字段类型不符要按失败返回，抛异常会穿出 expected 契约";
+            if (!wrongScopeThrew)
+            {
+                EXPECT_TRUE(wrongScopeRejected) << "scope 是数字属协议不符，不能静默当成缺省";
+                EXPECT_NE(wrongScopeReason.find("scope"), std::string::npos) << wrongScopeReason;
+            }
+
+            // exp 给了但不是整数：同样是协议不符（0 的语义是「端点未给出」，不让错类型借道）
+            server.setResponse("200 OK", R"({"active":true,"exp":"1791550800"})");
+            const auto wrongTypedExp = co_await client.introspect("opaque-token");
+            EXPECT_FALSE(wrongTypedExp.has_value());
+            if (!wrongTypedExp.has_value())
+            {
+                EXPECT_NE(wrongTypedExp.error().find("exp"), std::string::npos) << wrongTypedExp.error();
             }
 
             loop.stop();

@@ -2,6 +2,7 @@
 // 覆盖场景：
 // - FetchesKeysAndVerifiesSignedToken（首次拉取 → 缓存可见 → 真令牌验过）
 // - UnknownKidRequestsEarlierRefresh（未知 kid 拒 → 请求提前刷新 → 换键集后轮上）
+// - MalformedKeyFieldsAreSkippedInsteadOfKillingTheRefreshLoop（坏字段只跳过那条键，轮换照常）
 // - UnreachableEndpointReportsFailureAndRefusesBeforeFirstFetch（拉不到：lastError 有因、verify 拒）
 // - DestroyingProviderWithSuspendedCoroutineIsSafe（挂起中选择析构——ASan 下无 UAF 即判据）
 
@@ -332,6 +333,34 @@ namespace AsynGyanis::Net
                     << "未知 kid 的提前刷新没有在期限内跟上，lastError=" << provider->lastError();
             loop.stop();
         }
+
+        /// 坏字段场景：文档里同时有「n 被写成数字」的坏键与完好的键；阶段 2 再验证轮换仍然工作
+        Core::Task<void> malformedKeyScenario(Core::EventLoop &loop, const std::shared_ptr<JwksKeyProvider> &provider, MiniJwksServer &server,
+                                              const std::pair<std::string, std::string> &modulusExponent, const std::string &rotatedToken)
+        {
+            Core::Timer timer(loop);
+            const auto  nowTimePoint = TimePoint{std::chrono::seconds{kNowSeconds}};
+
+            // 阶段 1：坏键跳过、好键入缓存。旧行为是读坏键的 n 时抛类型异常——后台拉取协程当场死掉
+            // （分离投递的任务只留一行日志），这里就永远等不到 0 以外的键数
+            const auto phaseOneDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (provider->cachedKeyCount() == 0U && std::chrono::steady_clock::now() < phaseOneDeadline)
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{20});
+            }
+            EXPECT_EQ(provider->cachedKeyCount(), 1U) << "一份含坏字段的文档里，完好的键应照常入缓存；lastError=" << provider->lastError();
+
+            // 阶段 2：轮换仍要工作——坏文档没有把后台循环打死（未知 kid 触发提前刷新，换键集后验过）
+            server.setBody(jwksDocument("k2", modulusExponent));
+            const auto phaseTwoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (provider->verify(rotatedToken, JwtClaimExpectations{}, nowTimePoint).has_value() && std::chrono::steady_clock::now() < phaseTwoDeadline)
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{20});
+            }
+            EXPECT_FALSE(provider->verify(rotatedToken, JwtClaimExpectations{}, nowTimePoint).has_value())
+                    << "未知 kid 的提前刷新没有在期限内跟上——拉取循环可能已被坏字段打死，lastError=" << provider->lastError();
+            loop.stop();
+        }
     } // namespace
 
     TEST(JwksKeyProviderTest, FetchesKeysAndVerifiesSignedToken)
@@ -380,6 +409,28 @@ namespace AsynGyanis::Net
 
         const std::string rotatedToken = makeToken("k2", signingKey.get(), kNowSeconds + 3600);
         runControlTask(loop, rotationScenario(loop, provider, server, modulusExponent, rotatedToken));
+    }
+
+    TEST(JwksKeyProviderTest, MalformedKeyFieldsAreSkippedInsteadOfKillingTheRefreshLoop)
+    {
+        const std::shared_ptr<EVP_PKEY> signingKey = generateRsaKeyPair();
+        ASSERT_NE(signingKey, nullptr);
+        const auto modulusExponent = exportModulusExponent(signingKey.get());
+
+        MiniJwksServer server;
+        // 两条键：第一条的 n 是数字（类型不符），第二条完好。文档整体仍是合法 JSON——
+        // 单条坏记录不该把整次轮换判失败，更不该让读字段的异常把拉取循环带走
+        server.setBody(R"({"keys":[{"kty":"RSA","kid":"broken","n":42,"e":"AQAB"},{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":")" + modulusExponent.first + R"(","e":")" +
+                       modulusExponent.second + R"("}]})");
+        ASSERT_TRUE(server.start());
+
+        Core::EventLoop loop;
+        auto            provider = JwksKeyProvider::start(loop, JwksKeyProviderOptions{.jwksUrl             = "http://127.0.0.1:" + std::to_string(server.port()) + "/jwks",
+                                                                                       .refreshInterval     = std::chrono::seconds{60},
+                                                                                       .refreshRequestSlice = std::chrono::milliseconds{50}});
+
+        const std::string rotatedToken = makeToken("k2", signingKey.get(), kNowSeconds + 3600);
+        runControlTask(loop, malformedKeyScenario(loop, provider, server, modulusExponent, rotatedToken));
     }
 
     TEST(JwksKeyProviderTest, UnreachableEndpointReportsFailureAndRefusesBeforeFirstFetch)

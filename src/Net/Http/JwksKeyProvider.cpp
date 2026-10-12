@@ -2,6 +2,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/OAuthSupport.h"
 
 #include <nlohmann/json.hpp>
 
@@ -78,14 +79,25 @@ namespace AsynGyanis::Net
         {
             // 只收 RSA 公钥（本件配套 RS256 验签）；其余 kty 静默跳过属于「还有别的键类型」的常态，
             // 但若整份文档一条 RSA 都没有，下面会以「解析出 0 条」失败——不放过空壳文档
-            if (!key.is_object() || key.value("kty", std::string{}) != "RSA")
+            if (!key.is_object())
             {
                 continue;
             }
-            const std::string         kid       = key.value("kid", std::string{});
-            const std::string         modulus   = key.value("n", std::string{});
-            const std::string         exponent  = key.value("e", std::string{});
-            std::shared_ptr<EVP_PKEY> publicKey = rsaPublicKeyFromJwk(modulus, exponent);
+            const std::expected<std::string, std::string> keyType = optionalJsonString(key, "kty");
+            if (!keyType.has_value() || *keyType != "RSA")
+            {
+                continue;
+            }
+            // n / e 类型不符的键跳过（与不认识的 kty 同处置）：单条坏记录不该让整次轮换判失败，
+            // 更不该把读字段的异常带进这条后台协程——它死了没有任何人会重来
+            const std::expected<std::string, std::string> modulus  = optionalJsonString(key, "n");
+            const std::expected<std::string, std::string> exponent = optionalJsonString(key, "e");
+            if (!modulus.has_value() || !exponent.has_value())
+            {
+                continue;
+            }
+            const std::string         kid       = optionalJsonString(key, "kid").value_or(std::string{});
+            std::shared_ptr<EVP_PKEY> publicKey = rsaPublicKeyFromJwk(*modulus, *exponent);
             if (publicKey == nullptr)
             {
                 continue;
@@ -135,9 +147,10 @@ namespace AsynGyanis::Net
             return "JWT 形状或编码非法（需要三段 base64url、头与载荷为 JSON 对象）";
         }
 
-        // 算法白名单与纯层同一条纪律：只认 RS256（none/HS256 在验签之前就拒）
+        // 算法白名单与纯层同一条纪律：只认 RS256（none/HS256 在验签之前就拒）；
+        // alg 类型不符按「不是 RS256」拒——读取口不抛异常，同一条判据接住
         const nlohmann::json header = nlohmann::json::parse(parsed->headerJson, nullptr, false);
-        if (header.is_discarded() || !header.is_object() || header.value("alg", std::string{}) != "RS256")
+        if (header.is_discarded() || !header.is_object() || optionalJsonString(header, "alg").value_or(std::string{}) != "RS256")
         {
             return "JWT 的签名算法不是 RS256（本件只认 RS256，alg=none 与 HS256 一律拒）";
         }
