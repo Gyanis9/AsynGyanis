@@ -34,6 +34,18 @@ namespace AsynGyanis::Database
      * @warning 本类持有 sqlite3_stmt 的所有权（析构 finalize），同时持有 sqlite3 的非拥有指针；
      *          连接对象必须比结果集活得更久。基类已删除拷贝与移动，这里不再放开。
      */
+    /**
+     * @brief 流式取数的构造标签
+     * @details 只用来让「跳过预扫描的那一份结果集」走一个语义明确的构造重载，而不是往既有构造后面
+     *          再挂默认参数——挂默认参数会让老调用点在改顺序时悄悄换掉含义（与 MySqlResult 同一手法）。
+     */
+    namespace Detail
+    {
+        struct StreamingTag
+        {
+        };
+    } // namespace Detail
+
     class ASYN_DATABASE_API SqliteResult : public DatabaseResult
     {
     public:
@@ -51,6 +63,18 @@ namespace AsynGyanis::Database
          *        直接快照等于把上一条 DML 的行数当作这条 CREATE TABLE 的回执（连接由池共享，那个数可能来自另一个请求）
          */
         explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database = nullptr, std::optional<int> affectedRowCountOverride = std::nullopt);
+
+        /**
+         * @brief 流式取数的构造：**跳过预扫描**，游标从首行开始由调用方逐行推进
+         * @details executeStreaming 入口专用：不整趟遍历（不做行数统计、不存快照），大结果集的
+         *          内存代价因此只有一行；代价是流式档语义——rowCount() 回 0 表示未知、
+         *          isEmpty() 回 false，与网线驱动的流式档同一条口径。reset() 在本地游标上仍可重扫
+         *          （sqlite3_reset 的天然能力，与 MySQL/PG 的「拒重扫」有意不同）。
+         * @param statement 已 prepare 并绑定参数的语句句柄，所有权移交本对象
+         * @param database 语句所属的数据库句柄，仅用于读取错误文本与连接级计数器
+         * @param streaming 流式构造标签
+         */
+        explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database, Detail::StreamingTag streaming);
 
         /**
          * @brief 析构时 finalize 语句，释放游标占用的语句与页锁资源
@@ -201,6 +225,12 @@ namespace AsynGyanis::Database
         // 语句缓存收回游标是「连接 ↔ 结果集」之间的协作，不对外放开：
         // 只有 SqliteConnection::execute() 会在确认游标已 idle 之后取走它
         friend class SqliteConnection;
+
+        /**
+         * @brief 两个公开构造共用的初始化：快照计数器、缓存列数、按需预扫描
+         * @param shouldPrefetch 是否做预扫描（只读语句且非流式档为真）
+         */
+        void initializeFromStatement(bool shouldPrefetch);
 
         /**
          * @brief 行是否已整份物化（此时游标已被 reset 且本对象此后再不碰它）

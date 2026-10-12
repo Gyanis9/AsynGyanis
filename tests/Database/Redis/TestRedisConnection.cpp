@@ -209,6 +209,20 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 带参流式的基类口径：未实现该路径的驱动明确拒绝并点名，不悄悄退化成整份预读
+     */
+    TEST(RedisConnection, ParameterizedStreamingIsRejectedByNameInsteadOfMaterializing)
+    {
+        RedisConnection connection(ConnectionConfig::redisDefault());
+
+        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("GET ?", std::vector<DatabaseValue>{std::string("key")});
+        EXPECT_EQ(result, nullptr);
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("Redis"), std::string::npos) << connection.lastError();
+        EXPECT_NE(connection.lastError().find("带参数"), std::string::npos) << connection.lastError();
+    }
+
+    /**
      * @brief 钉住主机名里的内嵌 NUL 在本地就被拒：hiredis 按 C 字符串读地址，会把它截成前半截
      * @details 截断后连上的是**另一个**主机（这台机器上真跑着 Redis 时甚至能连成功），而报错看起来
      *          像 DNS 或认证问题。MySQL 驱动对连接配置的同一件事早有这道闸，两条驱动必须同一口径

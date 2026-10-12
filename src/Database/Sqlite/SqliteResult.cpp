@@ -21,6 +21,29 @@ namespace AsynGyanis::Database
             m_lastInsertRowId  = sqlite3_last_insert_rowid(m_database);
         }
 
+        // 只有只读语句能被安全地跑一遍（带写副作用的语句例如 INSERT ... RETURNING，
+        // 预扫描会把数据改两次，坚决不做）；流式档由另一支构造进来，永远不预扫描
+        initializeFromStatement(m_statement != nullptr && sqlite3_stmt_readonly(m_statement) != 0);
+    }
+
+    SqliteResult::SqliteResult(sqlite3_stmt *const statement, sqlite3 *const database, const Detail::StreamingTag streaming) : m_statement(statement), m_database(database)
+    {
+        static_cast<void>(streaming);
+
+        // 连接级计数器的快照口径与预读构造一致：取值时点上没有区别
+        if (m_database != nullptr)
+        {
+            m_affectedRowCount = sqlite3_changes(m_database);
+            m_lastInsertRowId  = sqlite3_last_insert_rowid(m_database);
+        }
+
+        // 流式档绝不预扫描：行数保持 0（unknown）、isEmpty 保持「带列即非空」的假定；
+        // 游标停在首行之前，由调用方逐行推进
+        initializeFromStatement(false);
+    }
+
+    void SqliteResult::initializeFromStatement(const bool shouldPrefetch)
+    {
         // 空游标即「写操作成功回执」：没有列也没有行，isEmpty() 保持构造默认值 true
         if (m_statement == nullptr)
         {
@@ -34,14 +57,13 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 只要语句带返回列就先假设非空，随后由预扫描纠正
+        // 只要语句带返回列就先假设非空，随后由预扫描纠正（流式档不扫描，保持这个假定）
         m_isEmpty = false;
 
-        // 只有只读语句能被安全地跑一遍（带写副作用的语句例如 INSERT ... RETURNING，
-        // 预扫描会把数据改两次，坚决不做）。只读语句本来就要为 rowCount() 整趟走完，
-        // 顺带把行值存进快照，之后遍历读快照即可，同一条查询不再执行第二遍；
-        // 超限的语句退回游标遍历，此时按基类契约 rowCount() 仍给精确值（计数与存值分开）
-        if (sqlite3_stmt_readonly(m_statement) != 0)
+        // 只读语句本来就要为 rowCount() 整趟走完，顺带把行值存进快照，之后遍历读快照即可，
+        // 同一条查询不再执行第二遍；超限的语句退回游标遍历，此时按基类契约 rowCount() 仍给精确值
+        // （计数与存值分开）
+        if (shouldPrefetch)
         {
             prefetchRows();
         }

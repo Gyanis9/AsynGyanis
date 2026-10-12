@@ -1120,17 +1120,89 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 带参流式的基类口径：未实现该路径的驱动明确拒绝并点名，不悄悄退化成整份预读
+     * @brief 流式入口跳过预扫描：小结果集也保持「行数未知」，行值逐行正确
      */
-    TEST(SqliteConnection, ParameterizedStreamingIsRejectedByNameInsteadOfMaterializing)
+    TEST_F(SqliteConnectedMemoryDatabase, StreamingEntrySkipsThePrescanEvenForSmallResults)
     {
-        SqliteConnection connection(ConnectionConfig::sqliteDefault());
-        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        // 样本只有 3 行（远低于 256 的物化上限）：走 execute() 会被整份物化、rowCount 精确；
+        // 流式入口必须保持未知（0），这就是「跳过预扫描」的可观测判据
+        const std::unique_ptr<DatabaseResult> stream = connection().executeStreaming("SELECT id, name FROM users ORDER BY id");
+        ASSERT_NE(stream, nullptr) << connection().lastError();
+        EXPECT_EQ(stream->rowCount(), 0U) << "流式档不预扫描，行数必须是未知的 0";
+        EXPECT_FALSE(stream->isEmpty());
 
-        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("SELECT 1 WHERE 1 = ?", std::vector<DatabaseValue>{std::int64_t{1}});
-        EXPECT_EQ(result, nullptr);
-        EXPECT_TRUE(containsText(connection.lastError(), "Sqlite")) << connection.lastError();
-        EXPECT_TRUE(containsText(connection.lastError(), "带参数")) << connection.lastError();
+        std::int64_t expectedId = 1;
+        while (stream->next())
+        {
+            EXPECT_EQ(std::get<std::int64_t>(stream->getValue("id")), expectedId);
+            ++expectedId;
+        }
+        EXPECT_EQ(expectedId, 4) << "流没有读全（样本 3 行）";
+
+        // 本地游标允许重扫（与 MySQL/PG 的拒重扫有意不同）：reset 之后能再走一遍
+        stream->reset();
+        EXPECT_TRUE(stream->lastError().empty()) << stream->lastError();
+        std::size_t reread = 0;
+        while (stream->next())
+        {
+            ++reread;
+        }
+        EXPECT_EQ(reread, 3U);
+    }
+
+    /**
+     * @brief 带参流式：绑定参数生效、流开着时连接不锁（有意差异）、命中缓存的游标被摘键后同文本可复用
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, ParameterizedStreamingBindsAndSurvivesMidwayDisposal)
+    {
+        constexpr const char *kSelectionSql = "SELECT id, name FROM users WHERE id > ? ORDER BY id";
+
+        // 先用 execute() 同一文本跑一遍：把缓存预热（物化档跑完游标回表），
+        // 下面那条流式才会真的命中缓存——「从表里摘键」那条分支只在这条路径上存在
+        {
+            const std::unique_ptr<DatabaseResult> priming = connection().execute(kSelectionSql, std::vector<DatabaseValue>{std::int64_t{1}});
+            ASSERT_NE(priming, nullptr) << connection().lastError();
+        }
+
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection().executeStreaming(kSelectionSql, std::vector<DatabaseValue>{std::int64_t{1}});
+            ASSERT_NE(stream, nullptr) << connection().lastError();
+            EXPECT_EQ(stream->rowCount(), 0U);
+            ASSERT_TRUE(stream->next());
+            EXPECT_EQ(std::get<std::int64_t>(stream->getValue("id")), 2);
+
+            // 与 MySQL/PG 的有意差异：本地游标不占连接，流开着时别的语句照常可发
+            const std::unique_ptr<DatabaseResult> interleaved = connection().execute("SELECT COUNT(*) FROM users");
+            ASSERT_NE(interleaved, nullptr) << "SQLite 的本地游标不该锁住连接：" << connection().lastError();
+        } // 中途丢弃：结果集析构 finalize 这条游标（它已被从缓存摘键，不会二次释放）
+
+        // 同一条文本再来一遍：缓存里那条已被摘键（不是悬空指针），重编译与复用都正常
+        const std::unique_ptr<DatabaseResult> second = connection().executeStreaming(kSelectionSql, std::vector<DatabaseValue>{std::int64_t{1}});
+        ASSERT_NE(second, nullptr) << connection().lastError();
+        std::size_t count = 0;
+        while (second->next())
+        {
+            ++count;
+        }
+        EXPECT_EQ(count, 2U);
+    }
+
+    /**
+     * @brief 写语句走流式入口：给出写回执（0 行 0 列 + 影响行数），数据真的改了
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, StreamingEntryHandlesWritesAsReceipts)
+    {
+        const std::unique_ptr<DatabaseResult> receipt =
+                connection().executeStreaming("UPDATE users SET name = ? WHERE id = ?", std::vector<DatabaseValue>{std::string("renamed"), std::int64_t{2}});
+        ASSERT_NE(receipt, nullptr) << connection().lastError();
+        EXPECT_EQ(receipt->rowCount(), 0U);
+        EXPECT_TRUE(receipt->isEmpty());
+        EXPECT_EQ(receipt->affectedRowCount(), 1);
+
+        const std::unique_ptr<DatabaseResult> verify = connection().execute("SELECT name FROM users WHERE id = 2");
+        ASSERT_NE(verify, nullptr) << connection().lastError();
+        ASSERT_TRUE(verify->next());
+        EXPECT_EQ(std::get<std::string>(verify->getValue(0)), "renamed");
     }
 
     /**

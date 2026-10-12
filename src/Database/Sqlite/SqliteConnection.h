@@ -135,6 +135,29 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
+         * @brief 执行命令并交出流式结果集：跳过预扫描，游标从首行起由调用方逐行推进
+         * @details 重写 DatabaseConnection::executeStreaming()：与 execute(command) 共用同一条管线
+         *          （缓存、边界校验、绑定、写回执），差别只在查询结果集**不做预扫描**——
+         *          行数保持未知（rowCount() 回 0）、isEmpty() 回 false，内存里只有当前一行。
+         * @note 与 MySQL/PG 的流式档有一条**有意差异**：本驱动不锁连接——回包流只存在于网线上，
+         *       SQLite 的本地游标可以与其他语句共存（游标会被从缓存摘走，析构时 finalize）。
+         *       另外 reset() 在本地游标上仍可重扫（sqlite3_reset 的天然能力），不做拒绝。
+         * @param command 命令文本
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败为 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
+
+        /**
+         * @brief 带参的流式入口：参数绑定 + 跳过预扫描（口径与上一支完全相同）
+         * @details 重写 DatabaseConnection::executeStreaming() 的带参重载：绑定参数后走与上支
+         *          同一条流式管线；写语句同样给出 0 行 0 列的写回执（写没有「流」可言）。
+         * @param command 命令文本
+         * @param parameters 绑定参数
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败为 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters) override;
+
+        /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::Sqlite，未连接时同样可用。
          * @return DatabaseType DatabaseType::Sqlite
@@ -328,6 +351,28 @@ namespace AsynGyanis::Database
          * @return sqlite3_stmt* 命中时返回已 reset 到可重跑状态的游标；未命中为 nullptr
          */
         [[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) noexcept;
+
+        /**
+         * @brief 取得可执行的语句：查缓存 → 未命中则编译 + 单语句边界校验 → 交回（入表与否由调用方在收尾时定）
+         * @details execute 两条入口与流式入口共用的中段：缓存命中的判定与「只执行一条语句」的
+         *          边界校验只此一份，三条执行入口不会在边界语义上分叉。
+         * @param commandText 带零终止符的命令文本副本（sqlite3_prepare_v2 依赖零终止符界定边界）
+         * @param isFromCache 输出：true 表示命中缓存（调用方收尾时不得 finalize，只能 reset 回表）
+         * @return sqlite3_stmt* 可直接绑定的语句；失败为 nullptr（原因已写进 lastError()，
+         *         表外新编译的那条已就地 finalize）
+         */
+        [[nodiscard]] sqlite3_stmt *prepareSingleStatement(const std::string &commandText, bool &isFromCache);
+
+        /**
+         * @brief 写语句的执行与收尾：一次 step 跑完 + reset 回可复用状态 + 入表，交回 0 行 0 列回执
+         * @details execute 两条入口与流式入口共用：写路径没有「流」可言，三处收尾口径（错误文本、
+         *          reset 失败处置、影响行数增量判定）只此一份。
+         * @param statement 已绑定参数、尚未 step 的语句句柄
+         * @param isFromCache 该语句是否来自缓存（决定收尾时 reset 还是 finalize）
+         * @param commandText 语句文本（收尾成功时随游标一起入表）
+         * @return std::unique_ptr<DatabaseResult> 写回执；失败为 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeWriteStatement(sqlite3_stmt *statement, bool isFromCache, std::string commandText);
 
         /**
          * @brief 把一条查询游标从表里摘走，但不释放它

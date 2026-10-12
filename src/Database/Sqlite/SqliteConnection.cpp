@@ -209,64 +209,12 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 写语句缓存命中就整趟跳过编译：一条参数化语句里 sqlite3_prepare_v2 占约八成耗时
-        // （单文件探针实测：只编译再释放 2613 ns、编译+绑定+推进+取列 3219 ns、复用游标 605 ns）
-        sqlite3_stmt *statement   = findCachedStatement(commandText);
-        const bool    isFromCache = (statement != nullptr);
-
-        if (!isFromCache)
+        // 取得可执行的语句（查缓存 / 编译 + 单语句边界校验 / 入表）：与流式入口共用同一份中段
+        bool          isFromCache = false;
+        sqlite3_stmt *statement   = prepareSingleStatement(commandText, isFromCache);
+        if (statement == nullptr)
         {
-            const char *unusedTail    = commandText.c_str();
-            const int   prepareResult = sqlite3_prepare_v2(m_database, commandText.c_str(), static_cast<int>(commandText.size()), &statement, &unusedTail);
-            if (prepareResult != SQLITE_OK)
-            {
-                // 编译失败时 SQLite 约定把 *ppStmt 置空，无需再 finalize
-                captureError("编译 SQL 语句失败");
-                return nullptr;
-            }
-
-            if (statement == nullptr)
-            {
-                // 编译成功却没产出语句：输入只剩空白、注释或分号，对数据库没有任何作用。
-                // 这里报错而不是返回空结果集，否则调用方会把「什么都没执行」当成执行成功
-                m_lastError = "数据库命令中没有可执行的 SQL 语句";
-                return nullptr;
-            }
-
-            // 一次调用只执行一条语句：让 SQLite 自己再编译一次剩余文本来判断其后是否还有语句。
-            // 手工裁剪 tail 需要重造词法器（要认得 -- 行注释与 /* */ 块注释），交给库判断最不容易出错。
-            // 缓存命中时这一步整个跳过：同一段文本上次已确认只含一条语句，语法不会自己变
-            if (unusedTail != nullptr && *unusedTail != '\0')
-            {
-                const int     remainingLength   = static_cast<int>(commandText.c_str() + commandText.size() - unusedTail);
-                sqlite3_stmt *trailingStatement = nullptr;
-                // pTail 出参传 nullptr 是 SQLite 明确允许的：本次探测只关心「还有没有语句」，不需要剩余位置
-                const int  trailingResult    = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
-                const bool hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
-
-                if (trailingStatement != nullptr)
-                {
-                    sqlite3_finalize(trailingStatement); // 探测用的游标绝不外抛
-                }
-
-                if (trailingResult != SQLITE_OK)
-                {
-                    // 先抓错误文本再释放首条语句：finalize 会重置连接的错误状态，顺序反了就取不到真实原因
-                    captureError("额外的 SQL 语句编译失败");
-                    sqlite3_finalize(statement);
-                    return nullptr;
-                }
-
-                if (hasExtraStatement)
-                {
-                    // 静默丢掉后半段语句会让调用方误以为整段脚本都已生效
-                    sqlite3_finalize(statement);
-                    m_lastError = "一次调用只执行一条 SQL 语句，检测到额外语句，请拆成多次 execute() 调用";
-                    return nullptr;
-                }
-
-                // 走到这里说明剩余文本只有空白、注释或多余分号：首条语句依然有效，继续正常执行
-            }
+            return nullptr;
         }
 
         // 绑定参数必须发生在语句首次 step 之前（写语句的副作用就发生在 step 上），
@@ -331,6 +279,147 @@ namespace AsynGyanis::Database
             return result;
         }
 
+        // 无返回列 = 写操作：与流式入口共用同一份收尾（一次 step 跑完 + reset 回可复用 + 入表 + 回执）
+        return executeWriteStatement(statement, isFromCache, std::move(commandText));
+    }
+
+    std::unique_ptr<DatabaseResult> SqliteConnection::executeStreaming(const std::string_view command)
+    {
+        // 不带参数的路径等价于「参数列表为空」的参数化路径：与 execute 的 1 参重载同一手法
+        return executeStreaming(command, std::span<const DatabaseValue>{});
+    }
+
+    std::unique_ptr<DatabaseResult> SqliteConnection::executeStreaming(const std::string_view command, const std::span<const DatabaseValue> parameters)
+    {
+        // 每次调用都是独立尝试：先清空错误，成功调用不会残留上一轮的失败文本
+        m_lastError.clear();
+
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 SQLite，命令未执行：请先调用 connect() 建立连接";
+            return nullptr;
+        }
+
+        // 语句时限与 execute 同款：只管本次调用同步进行的那段（流式档的交出之后由调用方接管）
+        const StatementDeadlineGuard deadlineGuard{*this};
+
+        if (command.empty())
+        {
+            m_lastError = "数据库命令为空";
+            return nullptr;
+        }
+
+        // 与 execute 同一份长度守卫与副本落法（sqlite3_prepare_v2 依赖零终止符，必须交副本的 c_str）
+        const std::string commandText(command);
+        if (commandText.size() > kMaximumNativeLength)
+        {
+            m_lastError = "数据库命令过长：" + std::to_string(commandText.size()) + " 字节，超出 SQLite 单条语句上限";
+            return nullptr;
+        }
+
+        bool          isFromCache = false;
+        sqlite3_stmt *statement   = prepareSingleStatement(commandText, isFromCache);
+        if (statement == nullptr)
+        {
+            return nullptr;
+        }
+
+        if (!bindParameters(statement, parameters))
+        {
+            // 与 execute 同一份收尾分岔：缓存来的 reset 回表，新编译的 finalize
+            retireStatement(statement, isFromCache);
+            return nullptr;
+        }
+
+        // 带返回列 = 查询：流式档**跳过预扫描**——不整趟遍历、不存快照，行数保持未知（rowCount
+        // 回 0）、isEmpty 保持 false（都是流式档的既定哨兵）；游标从首行起由调用方逐行推进
+        if (sqlite3_column_count(statement) > 0)
+        {
+            auto result = std::make_unique<SqliteResult>(statement, m_database, Detail::StreamingTag{});
+            if (isFromCache)
+            {
+                // 游标要随结果集活到调用方手里，结果集析构时 finalize 它。表里那个键必须先行摘掉，
+                // 否则同一条游标会被释放两次（口径与 execute 里「超快照上限」那条分支相同）
+                detachCachedStatement(commandText);
+            }
+            return result;
+        }
+
+        // 无返回列 = 写操作：与 execute 共用同一份收尾；写语句没有「流」可言，交回执
+        return executeWriteStatement(statement, isFromCache, std::move(commandText));
+    }
+
+    sqlite3_stmt *SqliteConnection::prepareSingleStatement(const std::string &commandText, bool &isFromCache)
+    {
+        // 写语句缓存命中就整趟跳过编译：一条参数化语句里 sqlite3_prepare_v2 占约八成耗时
+        // （单文件探针实测：只编译再释放 2613 ns、编译+绑定+推进+取列 3219 ns、复用游标 605 ns）
+        sqlite3_stmt *statement = findCachedStatement(commandText);
+        isFromCache             = (statement != nullptr);
+
+        if (isFromCache)
+        {
+            return statement;
+        }
+
+        {
+            const char *unusedTail    = commandText.c_str();
+            const int   prepareResult = sqlite3_prepare_v2(m_database, commandText.c_str(), static_cast<int>(commandText.size()), &statement, &unusedTail);
+            if (prepareResult != SQLITE_OK)
+            {
+                // 编译失败时 SQLite 约定把 *ppStmt 置空，无需再 finalize
+                captureError("编译 SQL 语句失败");
+                return nullptr;
+            }
+
+            if (statement == nullptr)
+            {
+                // 编译成功却没产出语句：输入只剩空白、注释或分号，对数据库没有任何作用。
+                // 这里报错而不是返回空结果集，否则调用方会把「什么都没执行」当成执行成功
+                m_lastError = "数据库命令中没有可执行的 SQL 语句";
+                return nullptr;
+            }
+
+            // 一次调用只执行一条语句：让 SQLite 自己再编译一次剩余文本来判断其后是否还有语句。
+            // 手工裁剪 tail 需要重造词法器（要认得 -- 行注释与 /* */ 块注释），交给库判断最不容易出错。
+            // 缓存命中时这一步整个跳过：同一段文本上次已确认只含一条语句，语法不会自己变
+            if (unusedTail != nullptr && *unusedTail != '\0')
+            {
+                const int     remainingLength   = static_cast<int>(commandText.c_str() + commandText.size() - unusedTail);
+                sqlite3_stmt *trailingStatement = nullptr;
+                // pTail 出参传 nullptr 是 SQLite 明确允许的：本次探测只关心「还有没有语句」，不需要剩余位置
+                const int  trailingResult    = sqlite3_prepare_v2(m_database, unusedTail, remainingLength, &trailingStatement, nullptr);
+                const bool hasExtraStatement = (trailingResult == SQLITE_OK && trailingStatement != nullptr);
+
+                if (trailingStatement != nullptr)
+                {
+                    sqlite3_finalize(trailingStatement); // 探测用的游标绝不外抛
+                }
+
+                if (trailingResult != SQLITE_OK)
+                {
+                    // 先抓错误文本再释放首条语句：finalize 会重置连接的错误状态，顺序反了就取不到真实原因
+                    captureError("额外的 SQL 语句编译失败");
+                    sqlite3_finalize(statement);
+                    return nullptr;
+                }
+
+                if (hasExtraStatement)
+                {
+                    // 静默丢掉后半段语句会让调用方误以为整段脚本都已生效
+                    sqlite3_finalize(statement);
+                    m_lastError = "一次调用只执行一条 SQL 语句，检测到额外语句，请拆成多次 execute() 调用";
+                    return nullptr;
+                }
+
+                // 走到这里说明剩余文本只有空白、注释或多余分号：首条语句依然有效，继续正常执行
+            }
+        }
+
+        return statement;
+    }
+
+    std::unique_ptr<DatabaseResult> SqliteConnection::executeWriteStatement(sqlite3_stmt *const statement, const bool isFromCache, std::string commandText)
+    {
         // 无返回列 = 写操作（INSERT/UPDATE/DELETE/DDL）：SQLite 保证一条写语句一次 step 即可跑完。
         // 行改变总数在这里取一次，用于分辨「本条语句到底改过行没有」：sqlite3_changes() 是语句级
         // 计数器却只在 DML 上刷新，DDL 走过后它留着上一条 DML 的数；这一格增量分得出两者
