@@ -46,13 +46,15 @@ namespace AsynGyanis::Net
                     .serialNumber = serialNumber,
                     .snapshot =
                             Core::EventLoopSnapshot{
-                                    .ownerThread              = std::thread::id{},
-                                    .isRunning                = isRunning,
-                                    .phase                    = phase,
-                                    .phaseStartedAt           = kRenderMoment - phaseAge,
-                                    .completedWorkingSegments = 42,
-                                    .slowestWorkingSegment    = std::chrono::microseconds{7},
-                                    .remotePendingCount       = 3,
+                                    .ownerThread                   = std::thread::id{},
+                                    .isRunning                     = isRunning,
+                                    .phase                         = phase,
+                                    .phaseStartedAt                = kRenderMoment - phaseAge,
+                                    .completedWorkingSegments      = 42,
+                                    .slowestWorkingSegment         = std::chrono::microseconds{7},
+                                    .remotePendingCount            = 3,
+                                    .saturatedRemoteRejectionCount = 5,
+                                    .skippedCompletedHandleCount   = 6,
                             },
             };
         }
@@ -102,6 +104,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(loops.at(0).at("completedWorkingSegments"), 42);
         EXPECT_EQ(loops.at(0).at("slowestWorkingSegmentMicroseconds"), 7);
         EXPECT_EQ(loops.at(0).at("remotePendingCount"), 3);
+        EXPECT_EQ(loops.at(0).at("saturatedRemoteRejectionCount"), 5);
+        EXPECT_EQ(loops.at(0).at("skippedCompletedHandleCount"), 6);
         EXPECT_TRUE(loops.at(0).at("thread").is_string());
         EXPECT_EQ(loops.at(0).at("thread").get<std::string>().size(), 16U) << "线程标识折成定宽十六进制指纹，行与行之间要能分开";
     }

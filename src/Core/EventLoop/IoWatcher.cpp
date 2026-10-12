@@ -215,15 +215,16 @@ namespace AsynGyanis::Core
         // 唤醒仍挂在等待器上的协程：不能让它永远等一个再也不会到来的事件
         // （关闭描述符不会让 epoll 唤醒挂在它上面的等待者，这类等待只能由本类自己收尾）。
         // 只登记、不就地恢复：本对象还在析构中，就地恢复会让协程在析构完成前回来访问成员。
-        // 选 scheduleRemote 而不是 schedule，是因为它自带唤醒——能把正睡在等待里的那个循环叫起来；
-        // 线程契约仍要求析构发生在所属循环线程上（见类注释），这里挑的只是两条路都成立的那个入口
+        // 走本地队列而不是跨线程队列：后者有在途上限、到顶当场拒收且调用点无感，而这记唤醒是
+        // 悬停帧的唯一唤醒路径（存活表已摘、epoll 已删、迟到取消打不进）——队列满时它永久滞留。
+        // 本地队列无上限，析构本就要求发生在所属循环线程上（见类注释），后继轮次自查待办不会漏它
         if (readWaiter)
         {
-            m_loop->scheduler().scheduleRemote(readWaiter);
+            m_loop->scheduler().schedule(readWaiter);
         }
         if (writeWaiter)
         {
-            m_loop->scheduler().scheduleRemote(writeWaiter);
+            m_loop->scheduler().schedule(writeWaiter);
         }
     }
 

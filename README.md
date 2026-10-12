@@ -826,7 +826,7 @@ AsynGyanis/
 
 | 症状 | 先看 | 怎么读 / 做什么 |
 |---|---|---|
-| 端口在听、握手能完成，请求却迟迟不应答 | `/debug/loops`：进程内**每条循环一行 JSON**（当前相位、这一相已驻留多久、跑完过多少工作段、最慢一段、门口积压的外来投递） | 某条循环的「相位驻留」远大于工作段耗时＝它被一个长任务占住了。本仓真出过一例：每请求一条同步日志、stdout 被重定向到无人读的管道，整条循环停在写管道上（现象就是「在监听但不应答」，backlog 灌满后客户端拿到连接拒绝）。这条端点读的全是原子量，停住的循环正是没法应答的那条，隔着线程读它不受影响；顺带看 `asyn_http_log_dropped_events_total` 是否也在涨 |
+| 端口在听、握手能完成，请求却迟迟不应答 | `/debug/loops`：进程内**每条循环一行 JSON**（当前相位、这一相已驻留多久、跑完过多少工作段、最慢一段、门口积压的外来投递、跨线程被拒的投递与被跳过的已结束帧两个计数） | 某条循环的「相位驻留」远大于工作段耗时＝它被一个长任务占住了。本仓真出过一例：每请求一条同步日志、stdout 被重定向到无人读的管道，整条循环停在写管道上（现象就是「在监听但不应答」，backlog 灌满后客户端拿到连接拒绝）。这条端点读的全是原子量，停住的循环正是没法应答的那条，隔着线程读它不受影响；顺带看 `asyn_http_log_dropped_events_total` 是否也在涨 |
 | 新连接被拒 | `/metrics` 的 `asyn_http_admission_rejected_connections_total`（按来源挡）与 `asyn_http_over_limit_rejected_connections_total`（整机满） | 先分「整机满」还是「单来源满」：前者调 `maximum_connections` 或加 worker 进程（多进程按台摊分、启动两行读数写着本台生效值）；后者先确认是不是共享出口（运营商 NAT / 企业代理）再抬单来源限额。**「来源 X 的并发连接已达上限」这类告警现在受 10 秒窗压重，同一条里带着被压条数**——它一直响＝有来源在反复重传 |
 | h3 在线数不动，但 `asyn_quic_handshaking_connections` 在涨 | 该 gauge + 「来源 … 新的 Initial 被拒绝」的告警 | 涨＝只发 Initial 不推进握手的流量在占名额（QUIC 没有内核 backlog 可挡，这种流量直接是进程的账）。两类连接共用同一份 `maximumConnections` 是刻意的（理由见 `QuicConnection.h`），先按来源定性，再决定抬限额还是挡来源；`connectionCount()` / `handshakingConnectionCount()` 两个读口随时可问同一件事 |
 | 借连接的请求变慢或空手而归 | `/metrics`：`asyn_db_pool_waiting_requests`（等待数）、`asyn_db_pool_waiting_rejections_total`（等待名额被拒）、`asyn_db_pool_borrow_timeouts_total`（借出超时）、`asyn_db_pool_oldest_borrow_start_seconds`（最久在借的起点） | **后两条要一起读**：等待数不高、借出超时也不涨，但「最久在借」的起点很旧＝有人拿住连接不放（事务没结束、流式结果没读完）——`time() - 起点` 贴着 acquireTimeout 量级不降就是这个形状；等待名额被拒连涨＝池容或 `maximumWaitingRequests` 该调。`session_reset_failures_total` 涨说明有连接因复位不干净被丢弃，会连着「已丢弃」一起动 |

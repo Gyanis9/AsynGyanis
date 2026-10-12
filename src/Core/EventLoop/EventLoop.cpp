@@ -352,15 +352,17 @@ namespace AsynGyanis::Core
     {
         const auto phase = m_phase.load(std::memory_order_acquire);
         return EventLoopSnapshot{
-                .ownerThread              = m_ownerThread.load(std::memory_order_relaxed),
-                .isRunning                = m_running.load(std::memory_order_acquire),
-                .phase                    = phase,
-                .phaseStartedAt           = steadyMoment(m_phaseStartedAtNanos.load(std::memory_order_relaxed)),
-                .completedWorkingSegments = m_completedWorkingSegments.load(std::memory_order_relaxed),
-                .slowestWorkingSegment    = std::chrono::microseconds{m_slowestWorkingSegmentMicros.load(std::memory_order_relaxed)},
-                .remotePendingCount       = m_scheduler.remotePendingCount(),
-                .stoppedByFailure         = m_stoppedByFailure.load(std::memory_order_acquire),
-                .failedDispatchCount      = m_scheduler.failedDispatchCount(),
+                .ownerThread                   = m_ownerThread.load(std::memory_order_relaxed),
+                .isRunning                     = m_running.load(std::memory_order_acquire),
+                .phase                         = phase,
+                .phaseStartedAt                = steadyMoment(m_phaseStartedAtNanos.load(std::memory_order_relaxed)),
+                .completedWorkingSegments      = m_completedWorkingSegments.load(std::memory_order_relaxed),
+                .slowestWorkingSegment         = std::chrono::microseconds{m_slowestWorkingSegmentMicros.load(std::memory_order_relaxed)},
+                .remotePendingCount            = m_scheduler.remotePendingCount(),
+                .stoppedByFailure              = m_stoppedByFailure.load(std::memory_order_acquire),
+                .failedDispatchCount           = m_scheduler.failedDispatchCount(),
+                .saturatedRemoteRejectionCount = m_scheduler.saturatedRemoteRejectionCount(),
+                .skippedCompletedHandleCount   = m_scheduler.skippedCompletedHandleCount(),
         };
     }
 

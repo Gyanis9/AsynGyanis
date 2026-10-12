@@ -52,15 +52,17 @@ namespace AsynGyanis::Core
      */
     struct ASYN_CORE_API EventLoopSnapshot
     {
-        std::thread::id                       ownerThread{};                ///< run() 所在线程；未启动过则是默认值
-        bool                                  isRunning{};                  ///< 是否正处于 run() 的循环体里
-        LoopPhase                             phase{LoopPhase::NotStarted}; ///< 当前相
-        std::chrono::steady_clock::time_point phaseStartedAt{};             ///< 当前这一相的起点
-        std::uint64_t                         completedWorkingSegments{};   ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
-        std::chrono::microseconds             slowestWorkingSegment{};      ///< 历史最慢的一条工作段（高水位，只升不降）
-        std::size_t                           remotePendingCount{};         ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
-        bool                                  stoppedByFailure{};           ///< run() 是否因逃逸到循环层的异常而收口（区别于 stop() 的正常停止）
-        std::size_t                           failedDispatchCount{};        ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
+        std::thread::id                       ownerThread{};                   ///< run() 所在线程；未启动过则是默认值
+        bool                                  isRunning{};                     ///< 是否正处于 run() 的循环体里
+        LoopPhase                             phase{LoopPhase::NotStarted};    ///< 当前相
+        std::chrono::steady_clock::time_point phaseStartedAt{};                ///< 当前这一相的起点
+        std::uint64_t                         completedWorkingSegments{};      ///< 已跑完的工作段条数，一条等于「一轮里不含等待的那段」
+        std::chrono::microseconds             slowestWorkingSegment{};         ///< 历史最慢的一条工作段（高水位，只升不降）
+        std::size_t                           remotePendingCount{};            ///< 跨线程投递里还没被取走的件数（本地就绪队列不在内）
+        bool                                  stoppedByFailure{};              ///< run() 是否因逃逸到循环层的异常而收口（区别于 stop() 的正常停止）
+        std::size_t                           failedDispatchCount{};           ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
+        std::size_t                           saturatedRemoteRejectionCount{}; ///< 跨线程在途队列满被拒的累计条数（见 Scheduler::saturatedRemoteRejectionCount）
+        std::size_t                           skippedCompletedHandleCount{};   ///< 派发时因帧已停在终结点被跳过的累计条数（见 Scheduler::skippedCompletedHandleCount）
     };
 
     /**

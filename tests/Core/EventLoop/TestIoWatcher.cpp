@@ -454,6 +454,47 @@ namespace AsynGyanis::Core
         Platform::FileDescriptor::close(peerDescriptor);
     }
 
+    /**
+     * @brief 钉住：跨线程在途队列打满时，析构仍必须叫醒挂起的等待者
+     * @details 悬停帧的最后一条唤醒路径只有析构这一条（存活表已摘、epoll 已删、迟到取消打不进）：
+     *          它若走有上限的跨线程队列，队列满时那记唤醒被当场拒收且调用点无感，这一帧永久滞留。
+     *          本用例先把跨线程队列灌到上限，再析构挂着等待者的 watcher，排空后断言等待者被恢复。
+     */
+    TEST(IoWatcher, WakesPendingWaiterEvenWhenRemoteQueueIsSaturated)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        // 灌满跨线程在途队列（合计上限 kMaximumRemoteBacklog）：多投的那些被当场拒收，
+        // 拒绝计数非零就是「已达到上限」的判据
+        constexpr std::size_t kOverflowCount = 8;
+        for (std::size_t index = 0; index < Scheduler::kMaximumRemoteBacklog + kOverflowCount; ++index)
+        {
+            loop.scheduler().postRemote([] {});
+        }
+        ASSERT_EQ(loop.scheduler().saturatedRemoteRejectionCount(), kOverflowCount) << "没造出满队列：本用例的前置不成立";
+
+        auto watcher = std::make_unique<IoWatcher>(loop, localDescriptor);
+        ASSERT_TRUE(watcher->isValid());
+
+        Task<WaitOutcome> waiting = waitReadableOnce(*watcher);
+        waiting.handle().resume();
+        ASSERT_FALSE(waiting.isReady());
+
+        watcher.reset();
+
+        // 本地队列无上限且排在跨线程队列之前：一两次推进就够
+        loop.scheduler().runAll();
+        ASSERT_TRUE(waiting.isReady()) << "满队列时析构的唤醒被拒了：这一帧再没有别的唤醒路径";
+        EXPECT_FALSE(waiting.handle().promise().result()) << "注册已失效，等待应当以「未就绪」收尾";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
     TEST(IoWatcher, SecondWaiterOnSameDirectionThrows)
     {
         EventLoop loop;

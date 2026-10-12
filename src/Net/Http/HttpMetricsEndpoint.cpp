@@ -234,9 +234,11 @@ namespace AsynGyanis::Net
             const bool isStalled = snapshot.isRunning && snapshot.phase == Core::LoopPhase::Working && phaseMicroseconds > thresholdMicroseconds;
 
             out += std::format("{}{{\"serial\":{},\"thread\":\"{}\",\"running\":{},\"phase\":\"{}\",\"phaseMicroseconds\":{},"
-                               "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},\"stalled\":{}}}",
+                               "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},"
+                               "\"saturatedRemoteRejectionCount\":{},\"skippedCompletedHandleCount\":{},\"stalled\":{}}}",
                                rowIndex++ == 0 ? "" : ",", serialNumber, threadFingerprint(snapshot.ownerThread), snapshot.isRunning, phaseName(snapshot.phase), phaseMicroseconds,
-                               snapshot.completedWorkingSegments, snapshot.slowestWorkingSegment.count(), snapshot.remotePendingCount, isStalled);
+                               snapshot.completedWorkingSegments, snapshot.slowestWorkingSegment.count(), snapshot.remotePendingCount, snapshot.saturatedRemoteRejectionCount,
+                               snapshot.skippedCompletedHandleCount, isStalled);
         }
 
         out += "]}";

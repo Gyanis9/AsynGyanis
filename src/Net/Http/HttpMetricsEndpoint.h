@@ -73,7 +73,7 @@ namespace AsynGyanis::Net
      * @param nowMoment 算「这一相已持续多久」的基准时刻，由调用方给，渲染因此可复现可断言
      * @return std::string 紧凑 JSON：顶层给 stallThresholdMicroseconds 与 unregisteredLoopCount，
      *         loops 数组一条循环一行（serial/thread/running/phase/phaseMicroseconds/
-     *         completedWorkingSegments/slowestWorkingSegmentMicroseconds/remotePendingCount/stalled）
+     *         completedWorkingSegments/slowestWorkingSegmentMicroseconds/remotePendingCount/saturatedRemoteRejectionCount/skippedCompletedHandleCount/stalled）
      * @note stalled 与 Core 那条「工作段超阈值就落 ERROR」用的是同一个阈值（kSlowWorkingSegmentAlertThreshold），
      *       两边口径不同就会一个报警一个不报，那比没有更糟
      * @see Core::eventLoopSnapshots(), HttpServer::enableLoopDiagnosticsEndpoint()
