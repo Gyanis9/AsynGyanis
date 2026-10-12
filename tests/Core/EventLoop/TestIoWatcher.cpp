@@ -33,8 +33,10 @@
 
 #include <atomic>
 #include <coroutine>
+#include <cstddef>
 #include <exception>
 #include <memory>
+#include <new>
 #include <stop_token>
 #include <stdexcept>
 #include <system_error>
@@ -740,8 +742,9 @@ namespace AsynGyanis::Core
     /**
      * @brief 迟到的取消不得扰到下一次等待
      * @details 现场形状：第一次等待被事件正常唤醒（就绪），而 requestStop 的投递此时还躺在
-     *          调度器队列里——稍后它才被执行，槽里已经换了人。没有代次号核验时，这记迟到的
-     *          取消会打在新等待者身上（协程帧地址被复用，指针相等分不开两代）。
+     *          调度器队列里——它要等第二条等待挂上之后才被执行，那一刻槽里已经换了人。没有
+     *          代次号核验时，这记迟到的取消会打在新等待者身上（协程帧地址被复用，指针相等
+     *          分不开两代）。
      */
     TEST(IoWatcher, LateCancellationDoesNotDisturbTheNextWait)
     {
@@ -769,19 +772,80 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(firstResult.isReady) << "事件先到就该按就绪交付";
         EXPECT_TRUE(firstResult.isCancelled) << "取消确实被请求过（只是输给了事件）；标记的口径是「请求过」";
 
-        // 取走字节，让描述符回到不可读；再跑那记迟到的取消——它必须打空
+        // 取走字节让描述符回到不可读；**先挂上第二条等待**——迟到的那记取消还躺在队列里，
+        // 它稍后执行时槽里已经换了人，必须被代次号核验打空（若先把队列排空，取消会落在空槽上，
+        // 代次号判据就一点都不承重）
         consumeReadable(localDescriptor);
-        stepLoopOnce(loop);
 
-        // 第二条等待：普通等待（无令牌），必须照常挂起、照常被自己的事件唤醒
         Task<WaitOutcome> nextWait = waitReadableOnce(watcher);
         nextWait.handle().resume();
         ASSERT_FALSE(nextWait.isReady()) << "第二次等待应当正常挂起——说明槽位与就绪缓存都干净";
+
+        // 此刻才放行那记迟到的取消：它必须打空，不许把新等待者带走
+        stepLoopOnce(loop);
+        EXPECT_FALSE(nextWait.isReady()) << "迟到的取消打在了新的等待者身上";
 
         makeReadable(peerDescriptor);
         ASSERT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "第二次等待没等到自己的事件";
         ASSERT_TRUE(nextWait.isReady());
         EXPECT_TRUE(nextWait.handle().promise().result()) << "迟到的取消把下一次等待带走了";
+
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 钉住：注册对象在同一地址上重建后，旧对象的迟到取消打不到新等待者
+     * @details 取消核验按「地址 + 代次号」认代：地址会被复用，代次号是两代之间唯一的区分。
+     *          代次号若取自对象内计数器，重建对象的「首次登记」与旧等待者都从 1 开始——核验
+     *          按地址判存活会命中重建后的对象，代次号又刚好相等，迟到取消便打在新等待者上
+     *          （ABA）。本用例把两代对象放在同一块对齐存储上强制地址复用，先让旧对象的取消
+     *          投递留在队列里，再重建、挂新等待，最后放行投递——它必须被代次号打空。
+     */
+    TEST(IoWatcher, LateCancellationCannotHitARecreatedWatcherAtTheSameAddress)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        // 同一块对齐存储：两次构造落在同一地址，强制造出「地址复用」这一场景（堆分配复不复用是运气）
+        alignas(IoWatcher) std::byte storage[sizeof(IoWatcher)];
+
+        Cancelable cancelable;
+
+        // 旧对象：挂一个带令牌的等待，随即按下 requestStop——取消核验被投回循环队列，先不泵，
+        // 让它成为「迟到的那记」
+        CancellableWaitResult firstResult;
+        bool                  isFirstFinished = false;
+        IoWatcher            *firstWatcher    = new (storage) IoWatcher(loop, localDescriptor);
+        ASSERT_TRUE(firstWatcher->isValid());
+        Task<void> first = waitReadableCancellableInto(*firstWatcher, cancelable.stopToken(), firstResult, isFirstFinished);
+        first.handle().resume();
+        ASSERT_FALSE(isFirstFinished);
+        cancelable.requestStop();
+        firstWatcher->~IoWatcher(); // 手动析构：把挂起帧交回调度队列，同时腾出地址
+
+        // 新对象落在同一地址并挂上普通等待：取消核验按地址判存活时会把它认成「还活着」
+        IoWatcher *const secondWatcher = new (storage) IoWatcher(loop, localDescriptor);
+        ASSERT_TRUE(secondWatcher->isValid());
+        EXPECT_EQ(static_cast<const void *>(firstWatcher), static_cast<const void *>(secondWatcher)) << "两次构造没落在同一地址：用例的 ABA 前提不成立";
+        Task<WaitOutcome> nextWait = waitReadableOnce(*secondWatcher);
+        nextWait.handle().resume();
+        ASSERT_FALSE(nextWait.isReady());
+
+        // 放行迟到的那记取消：它不许把重建后的新等待者带走
+        stepLoopOnce(loop);
+        EXPECT_TRUE(isFirstFinished) << "旧对象退场应当把挂起的帧收尾";
+        EXPECT_FALSE(nextWait.isReady()) << "迟到的取消打在了重建后的新等待者上：代次号没有跨对象唯一";
+
+        makeReadable(peerDescriptor);
+        ASSERT_GT(dispatchOnce(loop, kDispatchTimeoutMilliseconds), 0U) << "重建后的等待没等到自己的事件";
+        ASSERT_TRUE(nextWait.isReady());
+        EXPECT_TRUE(nextWait.handle().promise().result());
+
+        secondWatcher->~IoWatcher();
 
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);

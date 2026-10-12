@@ -238,7 +238,8 @@ namespace AsynGyanis::Core
         {
             std::coroutine_handle<> handle{};         ///< 等待中的协程，空表示当前无人等待
             Awaiter                *awaiter{nullptr}; ///< 对应的等待器，用于把结果写回它
-            std::uint64_t           generation{0};    ///< 本槽位每次登记的代次号；取消投递据此拒掉迟到者（协程帧地址会被复用，指针相等分不开两代）
+            std::uint64_t           generation{
+                    0}; ///< 本槽位每次登记的代次号（进程级单调计数，见 IoWatcher.cpp 的 g_attachGeneration）；取消投递据此拒掉迟到者（协程帧地址会被复用，指针相等分不开两代）
         };
 
         /// 「内核掩码未知」的哨兵：mod 失败时账本记它，保证下一次 armEvents 必定再下发一次 mod。
@@ -307,7 +308,6 @@ namespace AsynGyanis::Core
         bool          m_isRegistered{false}; ///< 是否已成功注册到 epoll
         std::uint32_t m_armedEvents{0};      ///< 当前在核心里武装着的事件位（EPOLLIN / EPOLLOUT）
         std::uint32_t m_readyEvents{0};      ///< 已上报但尚未被取走的就绪位（EPOLLIN / EPOLLOUT）
-        std::uint64_t m_attachGeneration{0}; ///< 等待者登记的代次号计数器：每次登记自增，取消投递据此认代
         WaiterSlot    m_readWaiter;          ///< 读方向等待者
         WaiterSlot    m_writeWaiter;         ///< 写方向等待者
     };

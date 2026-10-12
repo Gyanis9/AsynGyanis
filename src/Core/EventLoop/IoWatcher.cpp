@@ -16,6 +16,16 @@ namespace AsynGyanis::Core
     namespace
     {
         /**
+         * @brief 等待槽的代次号计数器（**进程级**单调）
+         *
+         * @details 取消核验按「地址 + 代次号」认「还是不是那一次等待」：地址会被复用（连接关闭又
+         *          新建落在同一块内存上），代次号是两代之间唯一的区分。计数器若留在注册对象内，
+         *          重建对象的「首次登记」与旧等待者都从 1 开始，旧对象的迟到取消会命中新等待者
+         *          （ABA）。进程级计数器让任何两次登记都不会拿到同一个号。
+         */
+        std::atomic<std::uint64_t> g_attachGeneration{0};
+
+        /**
          * @brief 协程恢复抛穿 noexcept 边界时的告警：只在首次出声
          *
          * @details 本函数的调用点拿不到 this（恢复动作可能已经把注册对象连同连接销毁），
@@ -367,9 +377,10 @@ namespace AsynGyanis::Core
 
         slot.handle  = handle;
         slot.awaiter = &awaiter;
-        // 代次号每次登记自增：取消投递到循环线程后按它核「还是不是那一次等待」——
-        // 协程帧的地址会被复用，单靠等待器指针相等分不开两代
-        slot.generation = ++m_attachGeneration;
+        // 代次号每次登记自增，取进程级单调计数：取消投递到循环线程后按它核「还是不是那一次等待」——
+        // 协程帧与注册对象的地址都会被复用，单靠指针相等分不开两代；计数器留在对象内时，重建
+        // 对象与旧对象的「首次登记」都是 1，迟到的取消会命中新等待者（ABA）
+        slot.generation = g_attachGeneration.fetch_add(1, std::memory_order_relaxed) + 1U;
 
         // 关注位只在有人等的时候武装：这才是「内核在盯着什么」与「现在谁在等」一致的含义
         const std::uint32_t needed = (m_readWaiter.handle ? EPOLLIN : 0U) | (m_writeWaiter.handle ? EPOLLOUT : 0U);
