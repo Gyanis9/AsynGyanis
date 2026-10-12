@@ -22,9 +22,17 @@ namespace AsynGyanis::Core
      *          信号**——进程仍以「信号致死」退出，WIFSIGNALED 与 coredump 的语义都保留，
      *          上层看护（WorkerSupervisor 的补位计数）照常工作。
      *
-     * @warning 现场是 **best-effort**：栈捕获（std::stacktrace）与符号解析都会分配内存，
-     *          在信号上下文里不保证重入安全——崩在分配器里时这份现场可能残缺，但「写不写得全」
-     *          不影响「死得正确」：任何一步失败都退回最小现场或直接放行到默认处置。
+     * @warning 现场是 **best-effort**，且「死得正确」不再依赖它写不写得全：信号处理器内先只走无分配的
+     *          一条（静态文本 + 手工转写的最小现场）；会分配/加锁的完整现场（std::format 与
+     *          std::stacktrace 的符号解析）在 Linux 侧移进 fork 出来的子进程写——子进程被继承的锁
+     *          锁死也只锁它自己（alarm 兜底收走），进程仍以「信号致死」退出，WIFSIGNALED 与 coredump
+     *          不受影响。崩溃发生在分配器持锁处时，完整现场可能残缺，最小现场必有。
+     * @note Linux 侧处理器经 SA_ONSTACK 落在**每条线程各自**的备用栈上（128 KiB，随该线程第一次调用
+     *       install() 时挂上）：爆栈引发的 SIGSEGV 因此也进得来——其余线程要各自调一次 install()
+     *       才有这份落脚处（信号处置是进程级的，重复调用只补备用栈）。
+     * @note Windows 侧没有 fork：完整现场在进程内尽力写（最小现场先落，stderr 走 CRT 的 _write）。
+     *       该侧 CRT 对硬件异常的信号路由与 raise 路径没有本仓用例覆盖，属未验证面
+     *       （Linux 侧由 TestCrashScene 的用例覆盖）。
      * @note 现场写 stderr 而不是日志器：崩溃时刻日志器可能正持锁或有未刷出的缓冲，
      *       而服务的 stderr 按部署口径本来就该落到文件（run-soak 与 CI 都是这么接的）。
      */

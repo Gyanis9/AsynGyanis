@@ -12,11 +12,13 @@
 #include <gtest/gtest.h>
 
 #if !ASYN_PLATFORM_WIN32
+#include <atomic>
 #include <csignal>
 #include <cstdlib>
 #include <functional>
 #include <stdexcept>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #endif
 
@@ -113,6 +115,39 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(WIFSIGNALED(outcome.status)) << "terminate 之后没有按「信号致死」收尾（状态字 " << outcome.status << "）";
         EXPECT_NE(outcome.standardErrorText.find("terminate"), std::string::npos) << "现场没有点出 terminate，收到：" << outcome.standardErrorText;
         EXPECT_NE(outcome.standardErrorText.find("测试用的逃逸异常原文"), std::string::npos) << "现场没有带出逃逸异常的原文，收到：" << outcome.standardErrorText;
+    }
+
+    /**
+     * @brief 多线程运行中一条线程崩：现场照旧、死亡语义不变（TSan 筛面含 Crash 后的观察点）
+     * @details 处理器可能在任意线程上被投递：子进程里起一条空转线程，再由另一条线程 raise(SIGSEGV)
+     *          ——最小现场与完整现场都要照常落出，进程仍以该信号致死
+     */
+    TEST(CrashScene, FatalSignalFromOneOfMultipleThreadsStillLeavesSceneAndDiesBySignal)
+    {
+        CrashScene::install();
+
+        const ChildCrashOutcome outcome = runCrashInChildProcess(
+                []
+                {
+                    std::atomic<bool> workerShouldStop{false};
+                    std::thread       background(
+                            [&workerShouldStop]
+                            {
+                                while (!workerShouldStop.load(std::memory_order_relaxed))
+                                {
+                                    std::this_thread::yield();
+                                }
+                            });
+                    std::thread crasher([] { std::raise(SIGSEGV); });
+                    crasher.join(); // 到不了这里：进程已随信号致死；留着只是让「没死成」的局面可控
+                    workerShouldStop.store(true, std::memory_order_relaxed);
+                    background.join();
+                });
+
+        ASSERT_TRUE(WIFSIGNALED(outcome.status)) << "多线程进程里崩溃处理器把死亡语义改掉了（状态字 " << outcome.status << "）";
+        EXPECT_EQ(WTERMSIG(outcome.status), SIGSEGV);
+        EXPECT_NE(outcome.standardErrorText.find("崩溃现场"), std::string::npos) << "stderr 上没有现场，收到：" << outcome.standardErrorText;
+        EXPECT_NE(outcome.standardErrorText.find("线程指纹"), std::string::npos) << "现场没有交出线程指纹，收到：" << outcome.standardErrorText;
     }
 #endif
 
