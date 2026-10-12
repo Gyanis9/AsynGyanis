@@ -92,8 +92,8 @@
       "pos": [560, 170],
       "size": [170, 60],
       "sources": [
-        { "path": "src/Database/CMakeLists.txt", "line": 36, "label": "${ASYN_LIBRARY_KIND}" },
-        { "path": "src/Database/CMakeLists.txt", "line": 42, "label": "直接声明 Base/Platform/Core" }
+        { "path": "src/Database/CMakeLists.txt", "line": 37, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Database/CMakeLists.txt", "line": 43, "label": "直接声明 Base/Platform/Core" }
       ]
     },
     {
@@ -118,8 +118,8 @@
       "pos": [810, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Database/CMakeLists.txt", "line": 48, "label": "SQLite 必选" },
-        { "path": "src/Database/CMakeLists.txt", "line": 53, "end_line": 74, "label": "可选驱动与报错桩" }
+        { "path": "src/Database/CMakeLists.txt", "line": 49, "label": "SQLite 必选" },
+        { "path": "src/Database/CMakeLists.txt", "line": 54, "end_line": 95, "label": "可选驱动与报错桩" }
       ]
     },
     {
@@ -285,7 +285,7 @@
       "title": "依赖可见性口径",
       "items": [
         "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:48、:62）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
-        "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:42-49）",
+        "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:43-50）",
         "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
         "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",
         "ASYN_WITH_MIMALLOC 与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR；接管是进程级的"
