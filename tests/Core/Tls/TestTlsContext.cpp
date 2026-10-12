@@ -867,11 +867,21 @@ namespace AsynGyanis::Core
                     }
                 });
 
-        // 主线程反复换代名单（点名 → 清空 → 再点名）：与在途握手的校验回调持续重叠
-        for (int round = 0; round < 150; ++round)
+        // 主线程反复换代名单（点名 → 清空 → 再点名）：与在途握手的校验回调持续重叠。
+        // 窗口至少要覆盖「握手线程跑成一条」——慢 runner（Windows 两核）上 150 轮换代几毫秒
+        // 就结束了，而首条握手的冷启动（新建 SSL_CTX + 逐轮推进）更慢：因此至少换 150 轮，
+        // 且一直换到出现第一条完成为止（有界 10 秒；超时仍为零则断言自然变红）
+        const auto stopAfter = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        int        rounds    = 0;
+        while (rounds < 150 || completedHandshakes.load(std::memory_order_relaxed) == 0)
         {
             tlsContext.setPeerFingerprintAllowlist({});
             tlsContext.setPeerFingerprintAllowlist({listedFingerprint});
+            ++rounds;
+            if (std::chrono::steady_clock::now() >= stopAfter)
+            {
+                break;
+            }
         }
         stopHandshakes.store(true, std::memory_order_relaxed);
         handshakeLoop.join();
