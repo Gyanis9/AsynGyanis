@@ -38,6 +38,24 @@ UPSTREAM_NAMES = {
     "libmysqlclient": ("mysql-connector-c", None),
 }
 
+# 每条依赖的 SPDX 许可标识（含表达式的按 SPDX 表达式写）。第三方台账的「许可」一面：
+# 这份映射是**受自检把关**的——新增依赖而没在这儿落一行的，SBOM 自检当场红（见 main 的 problems）。
+# 事实来源是各上游仓库的许可文件（2026-10-12 逐条核过）：libmysqlclient 是 GPL-2.0 带
+# Universal FOSS Exception（Connector/C 的发行条款），不要写成裸 GPL-2.0。
+LICENSE_BY_RECIPE = {
+    "nlohmann_json": "MIT",
+    "yaml-cpp": "MIT",
+    "zlib": "Zlib",
+    "zstd": "BSD-3-Clause",
+    "brotli": "MIT",
+    "mimalloc": "MIT",
+    "openssl": "Apache-2.0",
+    "gtest": "BSD-3-Clause",
+    "sqlite3": "blessing",
+    "hiredis": "BSD-3-Clause",
+    "libmysqlclient": "GPL-2.0-only WITH Universal-FOSS-exception-1.0",
+}
+
 
 def project_version() -> str:
     """从根 CMakeLists 读 project(AsynGyanis VERSION x.y.z) 的版本号。
@@ -109,6 +127,10 @@ def build_component(name: str, version: str) -> dict:
     }
     if website:
         component["externalReferences"] = [{"type": "website", "url": website}]
+    # 许可：表达式（含 WITH 的）按 CycloneDX 的 expression 写，单一标识按 id 写
+    licenseValue = LICENSE_BY_RECIPE.get(name, "")
+    if licenseValue:
+        component["licenses"] = [{"expression": licenseValue}] if " " in licenseValue else [{"license": {"id": licenseValue}}]
     return component
 
 
@@ -164,6 +186,10 @@ def main() -> int:
     for component in parsedComponents:
         if not component.get("version") or not component.get("purl"):
             problems.append("存在缺 version/purl 的组件：" + str(component.get("name")))
+        # 许可必须在：新增依赖而许可证台账没跟上时，这里当场红——第三方台账的「许可」一面
+        # 不能靠人记着补（LICENSE_BY_RECIPE 的说明）
+        if not component.get("licenses"):
+            problems.append("存在缺 licenses 的组件（补 LICENSE_BY_RECIPE）：" + str(component.get("name")))
     if problems:
         target.unlink(missing_ok=True)
         print("SBOM 自检失败：" + "；".join(problems), file=sys.stderr)
