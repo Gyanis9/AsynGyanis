@@ -389,6 +389,31 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(scheduler.hasWork());
     }
 
+    /**
+     * @brief 单趟预算在本地与跨线程两个来源之间是共用的一份
+     * @details 上两条各钉一个来源的滴灌自续；这一条钉「合计」：两个来源一次各取满时，
+     *          第二阶段的首个取批若只看本批而不看本趟已取数，单趟会执行到两倍预算
+     */
+    TEST(Scheduler, SingleRunAllPassBudgetIsSharedAcrossBothSources)
+    {
+        Scheduler             scheduler;
+        std::atomic<int>      executed{0};
+        constexpr std::size_t kBudget = Scheduler::kMaximumItemsPerPass;
+
+        for (std::size_t index = 0; index < kBudget; ++index)
+        {
+            scheduler.postLocal([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
+        }
+        for (std::size_t index = 0; index < kBudget; ++index)
+        {
+            scheduler.postRemote([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
+        }
+
+        scheduler.runAll();
+
+        EXPECT_EQ(executed.load(), static_cast<int>(kBudget)) << "单趟预算没有在两个来源之间共享：一次 runAll 取走的本趟件数超过了 kMaximumItemsPerPass";
+    }
+
     namespace
     {
         /**

@@ -271,15 +271,19 @@ namespace AsynGyanis::Core
                 batch.clear();
                 callableBatch.clear();
 
+                // 本趟还剩的预算（已扣掉本趟此前各批与本地那一半）：两个取批都要按它封顶——
+                // 只看「本批」时，第二阶段的首个取批不看本趟已取数，单趟最坏会撑到两倍预算
+                const std::size_t passRemaining = kMaximumItemsPerPass - takenTotalCount;
+
                 // 回调先取、协程句柄补满剩余额度：与 runOne() 的优先级口径保持一致
-                while (callableBatch.size() < kMaximumItemsPerPass && !m_remoteCallables.empty())
+                while (callableBatch.size() < passRemaining && !m_remoteCallables.empty())
                 {
                     callableBatch.push_back(std::move(m_remoteCallables.front()));
                     m_remoteCallables.pop_front();
                 }
                 takenCallableCount = callableBatch.size();
 
-                const std::size_t remainingCapacity = kMaximumItemsPerPass - takenCallableCount;
+                const std::size_t remainingCapacity = passRemaining - takenCallableCount;
                 while (batch.size() < remainingCapacity && !m_globalQueue.empty())
                 {
                     batch.push_back(m_globalQueue.front());
