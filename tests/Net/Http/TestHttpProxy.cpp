@@ -1,0 +1,869 @@
+// HttpProxyPolicy 测试：出站代理策略的纯函数面（URL 解析 / NO_PROXY 匹配 / 环境合成 / 凭据打码）
+// 与 e2e 面（绝对形式、NO_PROXY 直连、CONNECT 隧道与复用、拒因）。期望值凡涉及 Basic 值的都用
+// python base64 现算后硬编码（独立于被测实现的口径）。
+#include "Net/Http/Client/HttpProxyPolicy.h"
+
+#include "CommonTestSupport.h"
+#include "HttpTestSupport.h"
+#include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/HttpsServer.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
+#include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+
+namespace AsynGyanis::Net
+{
+    namespace
+    {
+        /// 进程环境变量的临时改写：析构恢复原值（含「原本没有这条」）
+        class ScopedEnvironmentVariable
+        {
+        public:
+            ScopedEnvironmentVariable(std::string name, const std::optional<std::string> &value) : m_name(std::move(name))
+            {
+                m_previous = Platform::ProcessInfo::environmentVariable(m_name);
+                apply(value);
+            }
+
+            ~ScopedEnvironmentVariable()
+            {
+                apply(m_previous);
+            }
+
+            ScopedEnvironmentVariable(const ScopedEnvironmentVariable &)            = delete;
+            ScopedEnvironmentVariable &operator=(const ScopedEnvironmentVariable &) = delete;
+
+        private:
+            void apply(const std::optional<std::string> &value)
+            {
+#if ASYN_PLATFORM_WIN32
+                // 与 ProcessInfo::environmentVariable() 的读侧同一条 CRT 通道（_dupenv_s ↔ _putenv_s）
+                static_cast<void>(::_putenv_s(m_name.c_str(), value.has_value() ? value->c_str() : ""));
+#else
+                if (value.has_value())
+                {
+                    static_cast<void>(::setenv(m_name.c_str(), value->c_str(), 1));
+                } else
+                {
+                    static_cast<void>(::unsetenv(m_name.c_str()));
+                }
+#endif
+            }
+
+            std::string                m_name;
+            std::optional<std::string> m_previous;
+        };
+    } // namespace
+
+    /**
+     * @brief 代理地址解析的三类形状：带 scheme、裸 host:port、裸 host（缺省 80）
+     */
+    TEST(HttpProxyPolicy, ParsesHttpUrlsAndBareAuthorities)
+    {
+        const auto full = parseProxyUrl("http://proxy.example.com:3128");
+        ASSERT_TRUE(full.has_value()) << full.error();
+        EXPECT_EQ(full->host, "proxy.example.com");
+        EXPECT_EQ(full->port, 3128U);
+        EXPECT_TRUE(full->authorizationHeader.empty()) << "没有凭据段却拼出了认证头";
+
+        const auto bare = parseProxyUrl("proxy.internal:8080");
+        ASSERT_TRUE(bare.has_value()) << bare.error();
+        EXPECT_EQ(bare->host, "proxy.internal");
+        EXPECT_EQ(bare->port, 8080U);
+
+        const auto defaultPort = parseProxyUrl("proxy.internal");
+        ASSERT_TRUE(defaultPort.has_value()) << defaultPort.error();
+        EXPECT_EQ(defaultPort->host, "proxy.internal");
+        EXPECT_EQ(defaultPort->port, 80U) << "裸主机名没有落到 http 的默认端口";
+
+        const auto v6 = parseProxyUrl("http://[::1]:3128");
+        ASSERT_TRUE(v6.has_value()) << v6.error();
+        EXPECT_EQ(v6->host, "::1") << "IPv6 方括号没有剥掉";
+        EXPECT_EQ(v6->port, 3128U);
+    }
+
+    /**
+     * @brief 不支持的形状一律拒绝并点名（不静默变形）：https 代理、空主机、越界端口、空值
+     */
+    TEST(HttpProxyPolicy, RejectsUnsupportedOrMalformedProxyUrls)
+    {
+        const auto httpsProxy = parseProxyUrl("https://proxy.example:443");
+        ASSERT_FALSE(httpsProxy.has_value()) << "https 代理（TLS 到代理）当前不支持，必须拒绝";
+        EXPECT_NE(httpsProxy.error().find("https"), std::string::npos) << httpsProxy.error();
+
+        const auto emptyHost = parseProxyUrl("http://:3128");
+        ASSERT_FALSE(emptyHost.has_value()) << "空主机被放行";
+
+        const auto badPort = parseProxyUrl("proxy.example:70000");
+        ASSERT_FALSE(badPort.has_value()) << "越界端口被放行";
+
+        const auto empty = parseProxyUrl("");
+        ASSERT_FALSE(empty.has_value()) << "空代理地址被放行";
+    }
+
+    /**
+     * @brief 凭据段折成 Basic 头：原文、%XX 转义、非法转义拒绝
+     */
+    TEST(HttpProxyPolicy, TurnsUserInfoIntoBasicAuthorizationHeader)
+    {
+        const auto route = parseProxyUrl("http://alice:s3cret@proxy.example.com:3128");
+        ASSERT_TRUE(route.has_value()) << route.error();
+        EXPECT_EQ(route->host, "proxy.example.com") << "凭据段没有从主机名里剥掉";
+        EXPECT_EQ(route->port, 3128U);
+        EXPECT_EQ(route->authorizationHeader, "Basic YWxpY2U6czNjcmV0");
+
+        const auto escaped = parseProxyUrl("http://alice:p%40ss@proxy.example.com:3128");
+        ASSERT_TRUE(escaped.has_value()) << escaped.error();
+        EXPECT_EQ(escaped->authorizationHeader, "Basic YWxpY2U6cEBzcw==") << "%XX 没有解码：p%40ss 应当解回 p@ss";
+
+        const auto badEscape = parseProxyUrl("http://alice:p%ZZ@proxy.example.com:3128");
+        ASSERT_FALSE(badEscape.has_value()) << "非法 %XX 被静默放过";
+    }
+
+    /**
+     * @brief 豁免表：通配、后缀（含子域）、点边界、端口限定、大小写、空表
+     */
+    TEST(HttpProxyPolicy, NoProxyMatchingCoversWildcardSuffixAndPort)
+    {
+        EXPECT_TRUE(matchesNoProxy("anything.example", 80, "*"));
+        EXPECT_TRUE(matchesNoProxy("example.com", 80, "example.com"));
+        EXPECT_TRUE(matchesNoProxy("api.example.com", 443, "example.com"));
+        EXPECT_TRUE(matchesNoProxy("api.example.com", 80, ".example.com")) << "前导点写法应当等效于裸后缀";
+        EXPECT_TRUE(matchesNoProxy("example.com", 80, ".example.com")) << "前导点写法还应当命中域本身（curl 语义）";
+        EXPECT_FALSE(matchesNoProxy("notexample.com", 80, "example.com")) << "后缀匹配越过了点边界";
+        EXPECT_FALSE(matchesNoProxy("example.com", 80, "other.com, api.internal"));
+        EXPECT_TRUE(matchesNoProxy("api.internal", 80, "other.com, api.internal"));
+        EXPECT_TRUE(matchesNoProxy("example.com", 8080, "example.com:8080"));
+        EXPECT_FALSE(matchesNoProxy("example.com", 80, "example.com:8080")) << "带端口的条目没有按端口限制";
+        EXPECT_TRUE(matchesNoProxy("API.Example.COM", 80, "example.com")) << "主机比较区分了大小写";
+        EXPECT_FALSE(matchesNoProxy("example.com", 80, "")) << "空豁免表被当成全豁免";
+    }
+
+    /**
+     * @brief 环境合成：空字段取环境、显式值优先、consultEnvironment=false 整体不读
+     */
+    TEST(HttpProxyPolicy, EnvironmentFillsEmptyFieldsAndExplicitValuesWin)
+    {
+        const ScopedEnvironmentVariable httpLower{"http_proxy", std::string("http://env-http:3128")};
+        const ScopedEnvironmentVariable httpsLower{"https_proxy", std::string("http://env-https:3129")};
+        const ScopedEnvironmentVariable noLower{"no_proxy", std::string("env.example")};
+
+        const HttpProxyPolicy frozen = applyProxyEnvironment(HttpProxyPolicy{});
+        EXPECT_EQ(frozen.httpProxy, "http://env-http:3128");
+        EXPECT_EQ(frozen.httpsProxy, "http://env-https:3129");
+        EXPECT_EQ(frozen.noProxy, "env.example");
+
+        HttpProxyPolicy explicitPolicy;
+        explicitPolicy.httpProxy    = "http://explicit:1111";
+        const HttpProxyPolicy mixed = applyProxyEnvironment(explicitPolicy);
+        EXPECT_EQ(mixed.httpProxy, "http://explicit:1111") << "显式值被环境覆盖了";
+        EXPECT_EQ(mixed.httpsProxy, "http://env-https:3129") << "另一支的空字段没有取到环境";
+
+        HttpProxyPolicy optOut;
+        optOut.consultEnvironment       = false;
+        const HttpProxyPolicy untouched = applyProxyEnvironment(optOut);
+        EXPECT_TRUE(untouched.httpProxy.empty()) << "consultEnvironment=false 仍读了环境";
+        EXPECT_TRUE(untouched.httpsProxy.empty());
+        EXPECT_TRUE(untouched.noProxy.empty());
+    }
+
+    /**
+     * @brief 大写变量同样认（小写缺失时回落到大写）
+     */
+    TEST(HttpProxyPolicy, UppercaseEnvironmentNamesAreRecognized)
+    {
+        const ScopedEnvironmentVariable httpLower{"http_proxy", std::nullopt};
+        const ScopedEnvironmentVariable httpUpper{"HTTP_PROXY", std::string("http://upper:2222")};
+
+        const HttpProxyPolicy frozen = applyProxyEnvironment(HttpProxyPolicy{});
+        EXPECT_EQ(frozen.httpProxy, "http://upper:2222") << "大写 HTTP_PROXY 没有被识别";
+    }
+
+    /**
+     * @brief 每请求解析：按 scheme 选支、豁免表短路、坏地址报错（而非静默直连）、未配置直连
+     */
+    TEST(HttpProxyPolicy, ResolvePicksSchemeSpecificProxyAndHonorsNoProxy)
+    {
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "http://plain-proxy:3128";
+        policy.httpsProxy         = "http://tls-proxy:3129";
+        policy.noProxy            = "direct.example";
+
+        const auto plain = resolveOutboundProxy(policy, "http", "origin.example", 80);
+        ASSERT_TRUE(plain.has_value()) << plain.error();
+        ASSERT_TRUE(plain->has_value()) << "http 目标没有选中 http_proxy 那一支";
+        EXPECT_EQ(plain->value().host, "plain-proxy");
+        EXPECT_EQ(plain->value().port, 3128U);
+
+        const auto secure = resolveOutboundProxy(policy, "https", "origin.example", 443);
+        ASSERT_TRUE(secure.has_value()) << secure.error();
+        ASSERT_TRUE(secure->has_value()) << "https 目标没有选中 https_proxy 那一支";
+        EXPECT_EQ(secure->value().host, "tls-proxy");
+        EXPECT_EQ(secure->value().port, 3129U);
+
+        const auto exempt = resolveOutboundProxy(policy, "http", "direct.example", 80);
+        ASSERT_TRUE(exempt.has_value()) << exempt.error();
+        EXPECT_FALSE(exempt->has_value()) << "豁免表命中的目标仍在走代理";
+
+        HttpProxyPolicy broken;
+        broken.consultEnvironment = false;
+        broken.httpProxy          = "https://bad.example:443";
+        const auto refusal        = resolveOutboundProxy(broken, "http", "origin.example", 80);
+        ASSERT_FALSE(refusal.has_value()) << "坏代理地址被静默放行（应当拒绝请求）";
+        EXPECT_NE(refusal.error().find("https"), std::string::npos) << refusal.error();
+
+        HttpProxyPolicy none;
+        none.consultEnvironment = false;
+        const auto direct       = resolveOutboundProxy(none, "http", "origin.example", 80);
+        ASSERT_TRUE(direct.has_value()) << direct.error();
+        EXPECT_FALSE(direct->has_value()) << "没有配置代理时没有直连";
+
+        const auto otherScheme = resolveOutboundProxy(policy, "ftp", "origin.example", 21);
+        ASSERT_TRUE(otherScheme.has_value()) << otherScheme.error();
+        EXPECT_FALSE(otherScheme->has_value()) << "非 http(s) 的 scheme 不该套代理";
+    }
+
+    /**
+     * @brief 打码：凭据段换成 ***（带 scheme 与裸权威两种形状），无凭据原样
+     */
+    TEST(HttpProxyPolicy, RedactsCredentialsInEchoedProxyText)
+    {
+        EXPECT_EQ(redactProxyCredentials("http://alice:s3cret@proxy.example:3128"), "http://***@proxy.example:3128");
+        EXPECT_EQ(redactProxyCredentials("alice:pass@proxy.example:3128"), "***@proxy.example:3128");
+        EXPECT_EQ(redactProxyCredentials("http://proxy.example:3128"), "http://proxy.example:3128");
+        EXPECT_EQ(redactProxyCredentials(""), "");
+    }
+
+    // ============================================================================
+    // e2e 面：脚本化 TCP 对端（当代理或当起点）+ 真 TLS 起点，判据落在线上字节与响应上
+    // ============================================================================
+    namespace
+    {
+        using AsynGyanis::TestSupport::waitForCondition;
+
+        /// 证书夹具：与 TestHttpsServer 同一套自签材料（含 127.0.0.1 的 SAN）
+        const std::filesystem::path kProxyFixtureCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem";
+        const std::filesystem::path kProxyFixturePrivateKeyPath  = std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem";
+        constexpr auto              kProxyWaitTimeout            = std::chrono::milliseconds{10000};
+        constexpr auto              kProxyScriptTimeout          = std::chrono::seconds{5};
+
+        /// 把整段字节送出去；对端收口时放弃（SIGPIPE 由 Socket::Initialization 在进程级忽略）
+        bool sendAll(const int socket, const std::string_view bytes)
+        {
+            std::size_t sentByteCount = 0;
+            while (sentByteCount < bytes.size())
+            {
+                const ssize_t justSent = ::send(socket, bytes.data() + sentByteCount, static_cast<int>(bytes.size() - sentByteCount), 0);
+                if (justSent <= 0)
+                {
+                    return false;
+                }
+                sentByteCount += static_cast<std::size_t>(justSent);
+            }
+            return true;
+        }
+
+        /**
+         * @brief 剧本拿着的那条已接受连接：读请求头区、回文、拼接转发
+         */
+        class ScriptedPeerConnection
+        {
+        public:
+            ScriptedPeerConnection(const int socket, std::string &headSink, std::mutex &sinkMutex, const std::atomic<bool> &isStopping) noexcept :
+                m_socket(socket), m_headSink(headSink), m_sinkMutex(sinkMutex), m_isStopping(isStopping)
+            {
+            }
+
+            /// 读到头区结束（CRLFCRLF，含）；超时或对端收口则把已读到的部分交出来，并把全部读数记进台账
+            std::string readRequestHead()
+            {
+                std::string buffer;
+                const auto  deadline = std::chrono::steady_clock::now() + kProxyScriptTimeout;
+                while (buffer.find("\r\n\r\n") == std::string::npos && !m_isStopping.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(m_socket, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(m_socket + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    char          chunk[4096];
+                    const ssize_t received = ::recv(m_socket, chunk, static_cast<int>(sizeof(chunk)), 0);
+                    if (received <= 0)
+                    {
+                        break;
+                    }
+                    buffer.append(chunk, static_cast<std::size_t>(received));
+                }
+                {
+                    const std::lock_guard guard(m_sinkMutex);
+                    m_headSink += buffer;
+                }
+                return buffer;
+            }
+
+            bool sendText(const std::string_view text)
+            {
+                return sendAll(m_socket, text);
+            }
+
+            /// 把本连接与 loopback:targetPort 拼起来双向转发，直到任一侧收口或收到收摊标志
+            void spliceToLoopback(const std::uint16_t targetPort)
+            {
+                const int upstream = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(upstream))
+                {
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = htons(targetPort);
+                if (::connect(upstream, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0)
+                {
+                    Platform::FileDescriptor::close(upstream);
+                    return;
+                }
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(m_socket, &readSet);
+                    FD_SET(upstream, &readSet);
+                    const int highest = (m_socket > upstream ? m_socket : upstream) + 1;
+                    timeval   pollInterval{0, 50 * 1000};
+                    if (::select(highest, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    bool isDone = false;
+                    for (const int readable: {m_socket, upstream})
+                    {
+                        if (FD_ISSET(readable, &readSet) == 0)
+                        {
+                            continue;
+                        }
+                        char          chunk[16384];
+                        const ssize_t received = ::recv(readable, chunk, static_cast<int>(sizeof(chunk)), 0);
+                        if (received <= 0 || !sendAll(readable == m_socket ? upstream : m_socket, std::string_view(chunk, static_cast<std::size_t>(received))))
+                        {
+                            isDone = true;
+                            break;
+                        }
+                    }
+                    if (isDone)
+                    {
+                        break;
+                    }
+                }
+                Platform::FileDescriptor::close(upstream);
+            }
+
+        private:
+            int                      m_socket;     ///< 已接受的连接
+            std::string             &m_headSink;   ///< 请求头区读数落点（跨线程经 m_sinkMutex）
+            std::mutex              &m_sinkMutex;  ///< 保护落点
+            const std::atomic<bool> &m_isStopping; ///< 收摊标志
+        };
+
+        /**
+         * @brief 只在 127.0.0.1 随机端口上说话的脚本化 TCP 对端：accept 一条跑一条剧本，剧本自己收口
+         */
+        class ScriptedTcpPeer
+        {
+        public:
+            using PeerScript = std::function<void(ScriptedPeerConnection &)>;
+
+            explicit ScriptedTcpPeer(PeerScript script) : m_script(std::move(script))
+            {
+            }
+
+            ScriptedTcpPeer(const ScriptedTcpPeer &)            = delete;
+            ScriptedTcpPeer &operator=(const ScriptedTcpPeer &) = delete;
+
+            ~ScriptedTcpPeer()
+            {
+                m_isStopping.store(true, std::memory_order_release);
+                if (m_worker.joinable())
+                {
+                    m_worker.join();
+                }
+            }
+
+            /// 起工作线程并等它把端口报回来
+            bool start()
+            {
+                m_worker = std::thread([this] { run(); });
+                return waitFor([this] { return m_port.load(std::memory_order_acquire) != 0U; });
+            }
+
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port.load(std::memory_order_acquire);
+            }
+
+            [[nodiscard]] std::size_t acceptedConnectionCount() const noexcept
+            {
+                return m_acceptedCount.load(std::memory_order_acquire);
+            }
+
+            [[nodiscard]] std::string recordedHeadBytes() const
+            {
+                const std::lock_guard guard(m_sinkMutex);
+                return m_headBytes;
+            }
+
+        private:
+            static bool waitFor(const std::function<bool()> &condition)
+            {
+                const auto deadline = std::chrono::steady_clock::now() + kProxyWaitTimeout;
+                while (!condition() && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                return condition();
+            }
+
+            void run()
+            {
+                const Platform::Socket::Initialization network;
+                const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(listener))
+                {
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = 0;
+                if (::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 8) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                sockaddr_in bound{};
+                socklen_t   boundLength = static_cast<socklen_t>(sizeof(bound));
+                if (::getsockname(listener, reinterpret_cast<sockaddr *>(&bound), &boundLength) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                m_port.store(ntohs(bound.sin_port), std::memory_order_release);
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(listener, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(listener + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    sockaddr_in peer{};
+                    socklen_t   peerLength = static_cast<socklen_t>(sizeof(peer));
+                    const int   client     = static_cast<int>(::accept(listener, reinterpret_cast<sockaddr *>(&peer), &peerLength));
+                    if (!Platform::FileDescriptor::isValid(client))
+                    {
+                        continue;
+                    }
+                    m_acceptedCount.fetch_add(1, std::memory_order_acq_rel);
+                    ScriptedPeerConnection connection(client, m_headBytes, m_sinkMutex, m_isStopping);
+                    m_script(connection);
+                    Platform::FileDescriptor::close(client);
+                }
+                Platform::FileDescriptor::close(listener);
+            }
+
+            PeerScript                 m_script;
+            std::thread                m_worker;
+            std::atomic<bool>          m_isStopping{false};
+            std::atomic<std::uint16_t> m_port{0};
+            std::atomic<std::size_t>   m_acceptedCount{0};
+            mutable std::mutex         m_sinkMutex;
+            std::string                m_headBytes;
+        };
+
+        /**
+         * @brief 把监听描述符透出成测试访问器的 HttpsServer（模板夹具的 listeningPort 需要它）
+         */
+        class AddressableHttpsServer final : public HttpsServer
+        {
+        public:
+            using HttpsServer::HttpsServer;
+
+            [[nodiscard]] int listenDescriptor() const
+            {
+                return m_acceptor.fileDescriptor();
+            }
+
+            [[nodiscard]] std::size_t activeConnectionCount() const
+            {
+                return m_connectionManager.activeCount();
+            }
+        };
+
+        /**
+         * @brief 跑起一台真 TLS 起点（自签夹具证书）的夹具；起点上有基类注册的 /hello → served-hello
+         */
+        class RunningTlsOriginFixture final : public HttpTestSupport::RunningServerFixture<AddressableHttpsServer>
+        {
+        public:
+            RunningTlsOriginFixture() :
+                RunningServerFixture<AddressableHttpsServer>(HttpServerLimits{}, std::chrono::milliseconds{100}, HttpParserLimits{},
+                                                             [](Core::EventLoop &serverLoop)
+                                                             {
+                                                                 return AddressableHttpsServer(serverLoop, Core::InetAddress::localhost(0), kProxyFixtureCertificatePath.string(),
+                                                                                               kProxyFixturePrivateKeyPath.string());
+                                                             })
+            {
+                startServer();
+            }
+        };
+
+        /// 一次实例路径请求的结局：成功留正文，失败留原因
+        struct RequestOutcome
+        {
+            std::string body;
+            std::string reason;
+        };
+
+        Core::Task<void> clientGetTask(Core::EventLoop &loop, HttpClient &client, std::string url, RequestOutcome &outcome)
+        {
+            try
+            {
+                if (std::unique_ptr<HttpClientResponse> response = co_await client.get(url); response != nullptr)
+                {
+                    outcome.body = response->body;
+                } else
+                {
+                    outcome.reason = "客户端返回空响应（原因见日志）";
+                }
+            } catch (const std::exception &failure)
+            {
+                outcome.reason = failure.what();
+            }
+            loop.stop();
+        }
+
+        Core::Task<void> clientTwoGetsTask(Core::EventLoop &loop, HttpClient &client, std::string url, RequestOutcome &first, RequestOutcome &second)
+        {
+            try
+            {
+                if (std::unique_ptr<HttpClientResponse> response = co_await client.get(url); response != nullptr)
+                {
+                    first.body = response->body;
+                } else
+                {
+                    first.reason = "客户端返回空响应（原因见日志）";
+                }
+                if (std::unique_ptr<HttpClientResponse> response = co_await client.get(url); response != nullptr)
+                {
+                    second.body = response->body;
+                } else
+                {
+                    second.reason = "客户端返回空响应（原因见日志）";
+                }
+            } catch (const std::exception &failure)
+            {
+                second.reason = failure.what();
+            }
+            loop.stop();
+        }
+
+        /// 静态路径（每次调用现读环境）的结局：成功/失败 + 正文或原因
+        struct StaticSendResult
+        {
+            bool        succeeded{false};
+            std::string body;
+            std::string reason;
+        };
+
+        Core::Task<void> staticSendTask(Core::EventLoop &loop, std::string url, StaticSendResult &result)
+        {
+            try
+            {
+                std::expected<HttpClientResponse, std::string> sent = co_await HttpClient::send(loop, url, HttpClientRequest{});
+                if (sent.has_value())
+                {
+                    result.succeeded = true;
+                    result.body      = sent->body;
+                } else
+                {
+                    result.reason = sent.error();
+                }
+            } catch (const std::exception &failure)
+            {
+                result.reason = failure.what();
+            }
+            loop.stop();
+        }
+
+        StaticSendResult runStaticSend(std::string url)
+        {
+            Core::EventLoop  loop;
+            StaticSendResult result;
+            Core::Task<void> task = staticSendTask(loop, std::move(url), result);
+            if (!task.isReady())
+            {
+                loop.scheduler().schedule(task.handle());
+            }
+            loop.run();
+            return result;
+        }
+    } // namespace
+
+    /**
+     * @brief 明文请求经代理：请求行必须是绝对形式（RFC 9112 §3.2.2），并带上代理认证头
+     */
+    TEST(HttpProxyE2E, PlainRequestGoesThroughProxyInAbsoluteForm)
+    {
+        ScriptedTcpPeer proxy(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 7\r\nContent-Type: text/plain\r\n\r\nvia-prx"));
+                });
+        ASSERT_TRUE(proxy.start()) << "代理对端没起来";
+
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "http://alice:s3cret@127.0.0.1:" + std::to_string(proxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, Core::TlsPolicy{}, policy);
+
+        RequestOutcome   outcome;
+        Core::Task<void> task = clientGetTask(loop, client, "http://example.test/echo?x=1", outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(outcome.reason.empty()) << outcome.reason;
+        EXPECT_EQ(outcome.body, "via-prx") << "响应没有从代理那条路回来";
+        const std::string head = proxy.recordedHeadBytes();
+        EXPECT_NE(head.find("GET http://example.test/echo?x=1 HTTP/1.1"), std::string::npos) << "请求行不是绝对形式：" << head;
+        EXPECT_NE(head.find("Host: example.test"), std::string::npos) << head;
+        EXPECT_NE(head.find("Proxy-Authorization: Basic YWxpY2U6czNjcmV0"), std::string::npos) << "代理认证头没带上或值不对：" << head;
+    }
+
+    /**
+     * @brief NO_PROXY 命中：直连起点（origin-form），代理一个连接都不该收到
+     */
+    TEST(HttpProxyE2E, NoProxyEntryBypassesTheProxyForOriginFormRequests)
+    {
+        ScriptedTcpPeer origin(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\ndirect"));
+                });
+        ASSERT_TRUE(origin.start()) << "起点对端没起来";
+
+        ScriptedTcpPeer proxy(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"));
+                });
+        ASSERT_TRUE(proxy.start()) << "代理对端没起来";
+
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "http://127.0.0.1:" + std::to_string(proxy.port());
+        policy.noProxy            = "127.0.0.1";
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, Core::TlsPolicy{}, policy);
+
+        RequestOutcome   outcome;
+        Core::Task<void> task = clientGetTask(loop, client, "http://127.0.0.1:" + std::to_string(origin.port()) + "/hello", outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(outcome.reason.empty()) << outcome.reason;
+        EXPECT_EQ(outcome.body, "direct") << "豁免表命中的请求没有直连";
+        EXPECT_EQ(proxy.acceptedConnectionCount(), 0U) << "豁免表命中的请求仍然连了代理";
+        const std::string head = origin.recordedHeadBytes();
+        EXPECT_NE(head.find("GET /hello HTTP/1.1"), std::string::npos) << "直连请求的请求行不是 origin-form：" << head;
+        EXPECT_EQ(head.find("http://"), std::string::npos) << "直连请求被写成了绝对形式：" << head;
+    }
+
+    /**
+     * @brief 环境驱动：静态入口每次调用现读 http_proxy，明文请求经代理（绝对形式）
+     */
+    TEST(HttpProxyE2E, EnvironmentDrivenProxyAppliesToStaticRequests)
+    {
+        ScriptedTcpPeer proxy(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nenv-via!"));
+                });
+        ASSERT_TRUE(proxy.start()) << "代理对端没起来";
+
+        const ScopedEnvironmentVariable httpProxy{"http_proxy", std::string("http://127.0.0.1:") + std::to_string(proxy.port())};
+        const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+        const StaticSendResult result = runStaticSend("http://env-target.test/hello");
+        ASSERT_TRUE(result.succeeded) << result.reason;
+        EXPECT_EQ(result.body, "env-via!") << "环境里的代理没有被静态入口采用";
+        const std::string head = proxy.recordedHeadBytes();
+        EXPECT_NE(head.find("GET http://env-target.test/hello HTTP/1.1"), std::string::npos) << head;
+    }
+
+    /**
+     * @brief https 经 CONNECT 隧道到真 TLS 起点；第二条请求复用同一条隧道（代理侧连接计数钉住）
+     */
+    TEST(HttpProxyE2E, ConnectTunnelCarriesHttpsAndThePoolReusesTheTunnel)
+    {
+        RunningTlsOriginFixture origin;
+        ASSERT_TRUE(origin.awaitRunning(kProxyWaitTimeout)) << "TLS 起点没起来";
+
+        ScriptedTcpPeer proxy(
+                [&origin](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 Connection Established\r\n\r\n"));
+                    connection.spliceToLoopback(origin.listeningPort());
+                });
+        ASSERT_TRUE(proxy.start()) << "代理对端没起来";
+
+        Core::TlsPolicy tlsPolicy;
+        tlsPolicy.certificateAuthorityFile = kProxyFixtureCertificatePath.string();
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpsProxy         = "http://alice:s3cret@127.0.0.1:" + std::to_string(proxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, tlsPolicy, policy);
+
+        const std::string url = "https://asyngyanis-test:" + std::to_string(origin.listeningPort()) + "/hello";
+        RequestOutcome    first;
+        RequestOutcome    second;
+        Core::Task<void>  task = clientTwoGetsTask(loop, client, url, first, second);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        EXPECT_TRUE(first.reason.empty()) << first.reason;
+        EXPECT_TRUE(second.reason.empty()) << second.reason;
+        EXPECT_EQ(first.body, "served-hello") << "第一条 https 请求没有经隧道到达起点";
+        EXPECT_EQ(second.body, "served-hello") << "第二条 https 请求没有经隧道到达起点";
+        EXPECT_EQ(proxy.acceptedConnectionCount(), 1U) << "两条请求没有复用同一条隧道";
+        const std::string head = proxy.recordedHeadBytes();
+        EXPECT_NE(head.find("CONNECT asyngyanis-test:" + std::to_string(origin.listeningPort()) + " HTTP/1.1"), std::string::npos) << "CONNECT 不是 authority-form：" << head;
+        EXPECT_NE(head.find("Proxy-Authorization: Basic YWxpY2U6czNjcmV0"), std::string::npos) << "CONNECT 没带代理认证头：" << head;
+    }
+
+    /**
+     * @brief CONNECT 被拒：失败原因点名代理给的状态码，407 的措辞指向凭据写法
+     */
+    TEST(HttpProxyE2E, ConnectRejectionSurfacesTheProxyStatus)
+    {
+        {
+            ScriptedTcpPeer reject(
+                    [](ScriptedPeerConnection &connection)
+                    {
+                        static_cast<void>(connection.readRequestHead());
+                        static_cast<void>(connection.sendText("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"));
+                    });
+            ASSERT_TRUE(reject.start()) << "代理对端没起来";
+            const ScopedEnvironmentVariable httpsProxy{"https_proxy", std::string("http://127.0.0.1:") + std::to_string(reject.port())};
+            const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+            const StaticSendResult result = runStaticSend("https://origin.test/hello");
+            EXPECT_FALSE(result.succeeded) << "407 之后请求仍然成功了";
+            EXPECT_NE(result.reason.find("407"), std::string::npos) << result.reason;
+            EXPECT_NE(result.reason.find("身份验证"), std::string::npos) << "407 的措辞没有指向凭据写法：" << result.reason;
+            EXPECT_EQ(reject.acceptedConnectionCount(), 1U);
+        }
+        {
+            ScriptedTcpPeer reject(
+                    [](ScriptedPeerConnection &connection)
+                    {
+                        static_cast<void>(connection.readRequestHead());
+                        static_cast<void>(connection.sendText("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"));
+                    });
+            ASSERT_TRUE(reject.start()) << "代理对端没起来";
+            const ScopedEnvironmentVariable httpsProxy{"https_proxy", std::string("http://127.0.0.1:") + std::to_string(reject.port())};
+            const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+            const StaticSendResult result = runStaticSend("https://origin.test/hello");
+            EXPECT_FALSE(result.succeeded) << "502 之后请求仍然成功了";
+            EXPECT_NE(result.reason.find("502"), std::string::npos) << result.reason;
+        }
+    }
+
+    /**
+     * @brief 代理读了 CONNECT 直接收线：拒因说清是代理先关（而不是「握手失败」一类含糊词）
+     */
+    TEST(HttpProxyE2E, ProxyClosingBeforeTunnelResponseFailsCleanly)
+    {
+        ScriptedTcpPeer closer(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    // 读完 CONNECT 就收摊：剧本返回后夹具把这条连接关掉
+                });
+        ASSERT_TRUE(closer.start()) << "代理对端没起来";
+
+        const ScopedEnvironmentVariable httpsProxy{"https_proxy", std::string("http://127.0.0.1:") + std::to_string(closer.port())};
+        const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+        const StaticSendResult result = runStaticSend("https://origin.test/hello");
+        EXPECT_FALSE(result.succeeded) << "代理早关之后请求仍然成功了";
+        EXPECT_NE(result.reason.find("代理"), std::string::npos) << result.reason;
+        EXPECT_NE(result.reason.find("关闭"), std::string::npos) << "拒因没有说清是代理先关：" << result.reason;
+    }
+
+    /**
+     * @brief 坏代理配置（https:// 代理）拒绝请求而不是静默直连：起点一个连接都不该收到
+     */
+    TEST(HttpProxyE2E, UnsupportedProxySchemeFailsInsteadOfFallingBackToDirect)
+    {
+        ScriptedTcpPeer origin(
+                [](ScriptedPeerConnection &connection)
+                {
+                    static_cast<void>(connection.readRequestHead());
+                    static_cast<void>(connection.sendText("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\ndirect"));
+                });
+        ASSERT_TRUE(origin.start()) << "起点对端没起来";
+
+        const ScopedEnvironmentVariable httpProxy{"http_proxy", std::string("https://127.0.0.1:1")};
+        const ScopedEnvironmentVariable noProxy{"no_proxy", std::nullopt};
+
+        const StaticSendResult result = runStaticSend("http://127.0.0.1:" + std::to_string(origin.port()) + "/hello");
+        EXPECT_FALSE(result.succeeded) << "坏代理配置被静默绕过、请求直连成功了";
+        EXPECT_NE(result.reason.find("https"), std::string::npos) << result.reason;
+        EXPECT_EQ(origin.acceptedConnectionCount(), 0U) << "坏代理配置下仍然发生了直连";
+    }
+} // namespace AsynGyanis::Net

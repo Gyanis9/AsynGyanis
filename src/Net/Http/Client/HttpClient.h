@@ -23,6 +23,7 @@
 #include <vector>
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
+#include "Net/Http/Client/HttpProxyPolicy.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpBodyChunk.h"
@@ -304,6 +305,18 @@ namespace AsynGyanis::Net
         explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy);
 
         /**
+         * @brief 同上，外加出站代理策略
+         * @param loop 所属事件循环，口径同上面那支
+         * @param poolConfig 池的规模参数
+         * @param tlsPolicy 出站 TLS 的策略与信任库
+         * @param proxyPolicy 出站代理策略：显式值为空时按 consultEnvironment 取进程环境，构造时读一次冻结
+         * @note 前三支构造不带代理策略，等价于传一份默认的 `HttpProxyPolicy`（即**默认就认
+         *       `http_proxy`/`https_proxy`/`no_proxy` 环境**，与 curl/Go 的出站口径一致）；要整体
+         *       关掉环境识别就传 `consultEnvironment=false` 的那一份
+         */
+        explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy, HttpProxyPolicy proxyPolicy);
+
+        /**
          * @brief 给出站连接带上自己的客户端证书（双向 TLS 的出站侧）
          * @details 服务端要求出示证书时（HttpsServer::setClientCertificateRequired(true)），
          *          本端不配身份就连不上。证书与私钥装在**本实例的上下文**上，之后每条 HTTPS 连接
@@ -483,6 +496,9 @@ namespace AsynGyanis::Net
         /// 上面那份策略的副本，用指针留着是为了让本头文件继续只前向声明 TlsPolicy（见构造函数的说明）。
         /// 副本存在的理由：h3 的 QUIC 连接要**自己建**一份 TLS 上下文，它吃的是策略而不是现成的上下文
         std::unique_ptr<Core::TlsPolicy> m_tlsPolicy;
+        /// 出站代理策略（构造时把环境读一次冻结的副本）：每个请求按目标 scheme 与豁免表解析成一条
+        /// 路由；未解析出路由即直连。静态便捷入口没有实例承载它，每次调用现读一份环境
+        HttpProxyPolicy m_proxyPolicy;
         /// setClientCertificate() 给过的身份路径：TCP 侧已经装在 m_clientTls 上，
         /// QUIC 侧建连接时要按同样的路径带身份（双向 TLS 的两侧不能一个带一个不带）
         std::string m_clientCertificateFile{};

@@ -45,6 +45,7 @@ add_executable(TestNet
         Http/TestHttpClientHttp3.cpp
         Http/TestHttpClientTraceContext.cpp
         Http/TestHttpClientStreamingResponse.cpp
+        Http/TestHttpProxy.cpp
         Http/TestSseEventParser.cpp
         Http/TestHttpOutboundConnectionPool.cpp
         Http/TestHttpResponseParser.cpp
