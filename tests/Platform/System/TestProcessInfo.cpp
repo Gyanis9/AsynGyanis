@@ -202,25 +202,32 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 钉住：CPU 时间是读数成真的计数器——忙等推得动它，且永不回落
-     * @details 只钉方向不钉增量口径：忙等 1.1 秒后整秒数至少涨 1（Windows 的时钟粒度约 15.6ms，
-     *          给足余量），恒返回 0 或缺省值的实现在这里会红。
+     * @details 只钉方向不钉增量口径：忙等烧到整秒数至少涨 1（Windows 的时钟粒度约 15.6ms，
+     *          给足余量），恒返回 0 或缺省值的实现在这里会红。烧的时长不按挂钟固定——分片内
+     *          并发的测试进程会分走 CPU，1.1 秒挂钟在双核 runner 上可能只烧到零点几秒 CPU，
+     *          整数秒不动（实测 Linux CI 偶发）；改为「一直烧到读数真的推进一秒」（有界 15 秒），
+     *          构造成立条件而不是赌调度余量
      */
     TEST(ProcessInfo, CpuSecondsIsAMonotonicCounterThatTracksBurnedCpu)
     {
         const std::uint64_t beforeSeconds = ProcessInfo::cpuSeconds();
 
         // 纯自旋烧本进程的 CPU：睡过去是拿不到 CPU 时间的，这里要的是真烧
-        const auto    spinUntil   = std::chrono::steady_clock::now() + std::chrono::milliseconds(1100);
-        std::uint64_t accumulator = 0;
-        while (std::chrono::steady_clock::now() < spinUntil)
+        const auto    burnDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        std::uint64_t accumulator  = 0;
+        while (std::chrono::steady_clock::now() < burnDeadline && ProcessInfo::cpuSeconds() < beforeSeconds + 1)
         {
-            accumulator += 1;
+            // 每查一轮读数之间连续自旋一小段：把 syscall 开销摊薄，烧 CPU 的效率不打折
+            for (std::uint32_t spinRound = 0; spinRound < 4096U; ++spinRound)
+            {
+                accumulator += 1;
+            }
         }
         ASSERT_GT(accumulator, 0U) << "循环被优化掉了：忙等根本不存在，这条用例没测到东西";
 
         const std::uint64_t afterSeconds = ProcessInfo::cpuSeconds();
         EXPECT_GE(afterSeconds, beforeSeconds) << "CPU 时间是计数器，不许回落";
-        EXPECT_GE(afterSeconds, beforeSeconds + 1) << "烧了 1.1 秒 CPU，整数秒却没动：读数没接上，或恒定为一个值";
+        EXPECT_GE(afterSeconds, beforeSeconds + 1) << "烧满一整秒 CPU 之后整数秒仍未动（15 秒上限）：读数没接上，或恒定为一个值";
     }
 
     /**
