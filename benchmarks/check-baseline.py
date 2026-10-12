@@ -224,7 +224,11 @@ def main() -> int:
                         help="connection-sweep 档工作集峰值上限倍数，默认 1.5（基线录了该档才生效）")
     arguments = parser.parse_args()
 
-    baseline = loadJson(arguments.baseline)
+    try:
+        baseline = loadJson(arguments.baseline)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"门禁无法执行：基线 {arguments.baseline} 读不了（{error}）——属前置缺件，不是回归结论", file=sys.stderr)
+        return 2
     baselineBenchmarks = baseline.get("benchmarks", {})
     if not baselineBenchmarks:
         print(f"门禁无法执行：基线 {arguments.baseline} 里没有 benchmarks 段")
@@ -237,7 +241,11 @@ def main() -> int:
     measured = {}
     violations = []
     for path in arguments.measured:
-        document = loadJson(path)
+        try:
+            document = loadJson(path)
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"门禁无法执行：实测 {path} 读不了（{error}）——属前置缺件，不是回归结论", file=sys.stderr)
+            return 2
         documentFailures = int(document.get("failures", 0))
         if documentFailures:
             violations.append(f"{path}：实测本身报告 {documentFailures} 条失败（先修正确性再看性能）")
