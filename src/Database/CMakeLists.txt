@@ -8,17 +8,47 @@
 # ============================================================================
 
 find_package(SQLite3 REQUIRED)
-find_package(hiredis QUIET)
 
 # 登记随包导出的外部依赖（按组件记）：消费方链接 Database 时也要能找到 SQLite::SQLite3
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database SQLite3)
 
-# libmysqlclient 是可选依赖：Conan 缓存或系统里存在匹配本 profile 的包时编译真实驱动，
-# 探测不到就退化为「每个入口都给出中文错误」的桩实现。因此这里用 QUIET 探测 +
-# if(TARGET ...) 判定，绝不写 find_package(... REQUIRED)：
-# 缺一个可选驱动不该让整个工程的 configure 失败（旧的 OPTION 默认 OFF 写法让真实驱动
-# 从未被编译过，真实分支里的编译错误也就无从发现）
-option(DATABASE_WITH_MYSQL "编译 MySQL 驱动（需要可用的 libmysqlclient）" ON)
+# 可选驱动的统一接线：每个驱动都是「缓存或系统里有客户端包就编译真实实现，探测不到就
+# 退化为每个入口都给中文错误的桩」。探测（QUIET + TARGET 判定，绝不 REQUIRED——缺一个
+# 可选驱动不该让整个工程的 configure 失败）、链接、PUBLIC 宏、依赖登记与 status 五件事
+# 收在一个函数里，新增驱动只需在下面加一行调用。
+#
+# 参数：driverName 是大写词干（同时是 option 名与宏名：option(DATABASE_WITH_<名>)、
+# DATABASE_HAS_<名>）；cmakePackage 是 find_package 的名字（也是消费方要 find_dependency
+# 的名字）；cmakeTarget 是它导出的目标；libraryName 是文案里点名的客户端库（用户要去装的
+# 那个包名，PostgreSQL 上它与 find_package 名不同：包叫 libpq、配置叫 PostgreSQL）。
+# 清单经 GLOBAL 属性给根 CMakeLists 的能力清单段遍历——加驱动而没同步
+# cmake/AsynGyanisFeatures.h.in 的宏，配置期当场拒绝而不是静默给 0。
+set_property(GLOBAL PROPERTY AsynGyanisDatabaseDrivers "")
+function(asyn_configure_database_driver driverName cmakePackage cmakeTarget libraryName displayName)
+    set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseDrivers "${driverName}")
+    option(DATABASE_WITH_${driverName} "编译 ${displayName} 驱动（需要可用的 ${libraryName}）" ON)
+    if (DATABASE_WITH_${driverName})
+        find_package(${cmakePackage} QUIET)
+    endif ()
+
+    if (TARGET ${cmakeTarget})
+        target_link_libraries(Database PUBLIC ${cmakeTarget})
+        target_compile_definitions(Database PUBLIC DATABASE_HAS_${driverName}=1)
+        set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database ${cmakePackage})
+        message(STATUS "Database: 启用 ${displayName} 驱动（${libraryName}）")
+    elseif (DATABASE_WITH_${driverName})
+        message(STATUS "Database: 未找到 ${libraryName}，${displayName} 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
+    else ()
+        message(STATUS "Database: ${displayName} 驱动未启用（-DDATABASE_WITH_${driverName}=ON 可开启），退化为报错桩")
+    endif ()
+
+    # 能力清单的宏必须与这份清单同解：模板缺这一行时 configure_file 会静默落成 0，
+    # 「库编了真驱动、清单说没有」要等到使用方在自己机器上分叉时才发现
+    file(READ ${CMAKE_SOURCE_DIR}/cmake/AsynGyanisFeatures.h.in asynFeaturesTemplate)
+    if (NOT asynFeaturesTemplate MATCHES "ASYN_HAS_${driverName}_DRIVER")
+        message(FATAL_ERROR "cmake/AsynGyanisFeatures.h.in 缺 ASYN_HAS_${driverName}_DRIVER：新增驱动时能力清单要一并补上")
+    endif ()
+endfunction()
 
 # 分层构建：叶子目录只登记本层源文件，逐层汇总后产出一个静态库
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseSources "")
@@ -49,50 +79,12 @@ target_link_libraries(Database PUBLIC
         SQLite::SQLite3
 )
 
-# 可选驱动只在启用时才探测客户端库，并用对应宏切换真实实现与报错桩。
-# QUIET + TARGET 判定：探测失败是预期路径（没装客户端库的机器），不打印红色告警也不中断
-if (DATABASE_WITH_MYSQL)
-    find_package(libmysqlclient QUIET)
-endif ()
-
-if (TARGET libmysqlclient::libmysqlclient)
-    target_link_libraries(Database PUBLIC libmysqlclient::libmysqlclient)
-    target_compile_definitions(Database PUBLIC DATABASE_HAS_MYSQL=1)
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database libmysqlclient)
-    message(STATUS "Database: 启用 MySQL 驱动（libmysqlclient）")
-elseif (DATABASE_WITH_MYSQL)
-    message(STATUS "Database: 未找到 libmysqlclient，MySQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
-else ()
-    message(STATUS "Database: MySQL 驱动未启用（-DDATABASE_WITH_MYSQL=ON 可开启），退化为报错桩")
-endif ()
-
-if (TARGET hiredis::hiredis)
-    target_link_libraries(Database PUBLIC hiredis::hiredis)
-    target_compile_definitions(Database PUBLIC DATABASE_HAS_REDIS=1)
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database hiredis)
-    message(STATUS "Database: 启用 Redis 驱动（hiredis）")
-else ()
-    message(STATUS "Database: 未找到 hiredis，Redis 驱动退化为报错桩")
-endif ()
-
-# PostgreSQL 同样按可选依赖处理，三段式与 MySQL 一致。注意目标名是 PostgreSQL::PostgreSQL
-# 而不是 libpq::*：Conan 侧组件引用写作 libpq::pq（见 packaging/conan/conanfile.py 的说明）
-option(DATABASE_WITH_POSTGRES "编译 PostgreSQL 驱动（需要可用的 libpq）" ON)
-
-if (DATABASE_WITH_POSTGRES)
-    find_package(PostgreSQL QUIET)
-endif ()
-
-if (TARGET PostgreSQL::PostgreSQL)
-    target_link_libraries(Database PUBLIC PostgreSQL::PostgreSQL)
-    target_compile_definitions(Database PUBLIC DATABASE_HAS_POSTGRES=1)
-    set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database PostgreSQL)
-    message(STATUS "Database: 启用 PostgreSQL 驱动（libpq）")
-elseif (DATABASE_WITH_POSTGRES)
-    message(STATUS "Database: 未找到 libpq，PostgreSQL 驱动退化为报错桩（装上客户端库后重新 configure 即可启用）")
-else ()
-    message(STATUS "Database: PostgreSQL 驱动未启用（-DDATABASE_WITH_POSTGRES=ON 可开启），退化为报错桩")
-endif ()
+# 三个可选驱动各一行：探测、链接、PUBLIC 宏、依赖登记与 status 全在函数里（见文件上部）。
+# 目标名不是包名：PostgreSQL 包的 cmake_target_name 指向 PostgreSQL::PostgreSQL
+#（Conan 侧组件引用写作 libpq::pq，见 packaging/conan/conanfile.py 的说明）
+asyn_configure_database_driver(MYSQL libmysqlclient libmysqlclient::libmysqlclient libmysqlclient "MySQL")
+asyn_configure_database_driver(POSTGRES PostgreSQL PostgreSQL::PostgreSQL libpq "PostgreSQL")
+asyn_configure_database_driver(REDIS hiredis hiredis::hiredis hiredis "Redis")
 
 target_include_directories(Database PUBLIC
         # 构建期用仓库内的 src；安装后改用 <前缀>/include，两者都是各模块头文件的根
