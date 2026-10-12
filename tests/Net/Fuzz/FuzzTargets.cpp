@@ -14,7 +14,8 @@
 // 这里是持续探索（输入由模糊器按覆盖率反馈生成，撞出来的语料落盘后可回填进 gtest 的种子用例）。
 //
 // 每类解码器要单独预算时设 `ASYN_FUZZ_TARGET=<targetName>`（名字与 `targetName()` 一一对应：
-// Http3Frame / HpackBlock / QuicPacket / QuicFrameSequence / QuicParameters）：本进程只喂那一个目标，语料目录也各自一份。不设就是全部轮转共享一次运行。
+// Http3Frame / HpackBlock / QpackBlock / QuicPacket / QuicFrameSequence / QuicParameters /
+// PerMessageDeflate / HttpResponse 等）：本进程只喂那一个目标，语料目录也各自一份。不设就是全部轮转共享一次运行。
 // 退出前打一行 `FUZZ-TARGET-CALLS 名字=次数 …`，CI 用它判「是不是每一档都在推进」——光看总执行次数，
 // 某一类根本没被走到是看不出来的。
 #include "Fuzz/ProtocolFuzzKernel.h"

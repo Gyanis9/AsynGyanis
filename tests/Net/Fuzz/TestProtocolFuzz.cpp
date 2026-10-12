@@ -89,6 +89,9 @@ namespace AsynGyanis::Net::Fuzz
         constexpr std::uint64_t kSeedQuicPacket     = 20261001ULL;
         constexpr std::uint64_t kSeedQuicFrames     = 20261002ULL;
         constexpr std::uint64_t kSeedQuicParameters = 20261003ULL;
+        constexpr std::uint64_t kSeedQpack          = 20261012ULL;
+        constexpr std::uint64_t kSeedPerMessage     = 20261013ULL;
+        constexpr std::uint64_t kSeedHttpResponse   = 20261014ULL;
 
         /**
          * @brief 对某个目标跑一轮随机模糊
@@ -215,6 +218,24 @@ namespace AsynGyanis::Net::Fuzz
     {
         runRandomRounds(Target::QuicParameters, kSeedQuicParameters);
         runTruncationMatrix(Target::QuicParameters);
+    }
+
+    TEST(ProtocolFuzz, QpackDecoderKeepsInvariants)
+    {
+        runRandomRounds(Target::QpackBlock, kSeedQpack);
+        runTruncationMatrix(Target::QpackBlock);
+    }
+
+    TEST(ProtocolFuzz, PerMessageDeflateKeepsInvariants)
+    {
+        runRandomRounds(Target::PerMessageDeflate, kSeedPerMessage);
+        runTruncationMatrix(Target::PerMessageDeflate);
+    }
+
+    TEST(ProtocolFuzz, HttpResponseParserKeepsInvariants)
+    {
+        runRandomRounds(Target::HttpResponse, kSeedHttpResponse);
+        runTruncationMatrix(Target::HttpResponse);
     }
 
     /**

@@ -3,7 +3,7 @@
 #
 # 为什么不是「把项目里的 Net.lib 拿来链」：LLVM 官方 Windows 包里 compiler-rt 的 fuzzer 运行时是
 # 按**静态 CRT**（/MT）编的，而本仓的 MSVC 构建一律是 /MD——lld-link 会以
-# `/failifmismatch: RuntimeLibrary` 直接拒绝混链。所以这里只编「模糊内核 + 四个解码器 + 它们的
+# `/failifmismatch: RuntimeLibrary` 直接拒绝混链。所以这里只编「模糊内核 + 各档解码器 + 它们的
 # 真实依赖闭包」这一小组翻译单元，整份产物自洽为 /MT，不碰项目里任何一份现成库。
 # 闭包是一项一项按链接器报的未定义符号补齐的（最后一项是 HttpDate 需要的 PlatformTime::utcTime），
 # 因此这份清单本身就是「模糊目标到底依赖哪些代码」的答案。Linux 侧没有 /MT 这层约束，但沿用同一份
@@ -20,6 +20,9 @@
 #   CXX=clang++-19 scripts/fuzz-net.sh 300                       # Linux 侧换一个 clang（要 19 以上）
 #   ASYN_FUZZ_INCLUDE_DIRS="D:/conan/p/nlohma.../p/include"  scripts/fuzz-net.sh 300
 #       # nlohmann/json 的头目录不在本仓里，Conan 环境没进 INCLUDE 时用它指路（Windows 侧尤其）
+#   ASYN_FUZZ_ZLIB_DIR="D:/conan/p/zlib.../p" scripts/fuzz-net.sh 300
+#       # permessage-deflate 档包着 zlib：Linux 侧有系统 zlib 就不用给（链 -lz）；
+#       # Windows clang-cl 侧用这个变量指一份包目录（取 <目录>/include 与 <目录>/lib/zlib.lib）
 # 额外的 libFuzzer 参数按位置透传，例如 -jobs=4 -workers=4。
 #
 # 为什么默认按目标拆开跑：混合跑只有一份总预算，摊到每档的目标只剩几分之一，
@@ -40,7 +43,7 @@ shift || true
 # 目标清单：默认每档各跑一整轮（每档预算都是 durationSeconds），这样「哪档在推进」看得见。
 # 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一个进程轮转全部目标），本机快速冒烟用得上。
 # 每档的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
-targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QuicPacket QuicFrameSequence QuicParameters}"
+targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QpackBlock PerMessageDeflate HttpResponse QuicPacket QuicFrameSequence QuicParameters}"
 corpusRoot="${ASYN_FUZZ_CORPUS_DIR:-${projectRoot}/.fuzz/corpus}"
 logRoot="${projectRoot}/.fuzz/log"
 
@@ -100,9 +103,22 @@ sources=(
     "tests/Net/Fuzz/FuzzTargets.cpp"
     "tests/Net/Fuzz/ProtocolFuzzKernel.cpp"
     "src/Net/WebSocket/WebSocketFrame.cpp"
+    # WebSocketFrame.cpp 的 Close 判定要按 UTF-8 校验原因短语（分类器收在 WebSocketUtf8.cpp）：
+    # 漏了这一项链不过——60df028f 把两端的收侧判定收成共用一处时，闭包清单没有跟着加，
+    # 本地实跑在链接期当场报 findInvalidWebSocketUtf8ByteOffset 未定义
+    "src/Net/WebSocket/WebSocketUtf8.cpp"
     "src/Net/Http2/Http2Frame.cpp"
     "src/Net/Http2/Hpack.cpp"
     "src/Net/Http3/Http3Frame.cpp"
+    # QPACK 档：解码器本体 + 它复用的 HPACK 整数/字符串助手（后者已在上面），另有错误码映射
+    "src/Net/Http3/Qpack.cpp"
+    "src/Net/Http3/Http3Error.cpp"
+    # permessage-deflate 档：协商解析与压缩/解压的包装。它包着 zlib（`<zlib.h>`），是本闭包里
+    # 唯一一份仓外**库**依赖——Linux 侧链 `-lz`，Windows clang-cl 侧用 ASYN_FUZZ_ZLIB_DIR 指路
+    # （见文件头的跑法说明）
+    "src/Net/WebSocket/PerMessageDeflate.cpp"
+    # 出站响应解析器档：状态行/头部/chunked 三相位。头部规则与 HttpDate 已在上面对应位置列出
+    "src/Net/Http/Client/HttpResponseParser.cpp"
     "src/Net/Quic/Codec/QuicVariableLengthInteger.cpp"
     # QUIC 那三档解码器各自一个 .cpp：本闭包不链 Net 库，漏一项就在链接期报未定义符号
     # （Windows 侧编不出 libFuzzer 目标，所以这种缺失只有 Linux 跑批或 CI 会暴露）
@@ -190,7 +206,9 @@ if [[ "$(uname -s)" == Linux* ]]; then
     # 帧指针留着，崩溃栈才带得出行号。编译与链接用同一个 ${chosenFlags}：标准库两侧必须同一条，
     # 上面那次「能编也能链」的探针判的就是这一条
     compileFlags=("${chosenFlags}" -O1 -g -fno-omit-frame-pointer -fsanitize=fuzzer,address -Isrc -Itests/Net "${nlohmannIncludes[@]}")
-    linkFlags=("${chosenFlags}" -fsanitize=fuzzer,address)
+    # -lz 是闭包里唯一一份仓外库依赖：permessage-deflate 档包着 zlib（见 sources 处说明）。
+    # Ubuntu runner 自带 libz，CI 的 apt 步骤里也显式装了 zlib1g-dev
+    linkFlags=("${chosenFlags}" -fsanitize=fuzzer,address -lz)
     objectSuffix="o"
 
     mkdir -p "${objDir}" "${artifacts}"
@@ -247,7 +265,15 @@ nlohmannIncludes=()
 for includeDir in "${nlohmannIncludeDirs[@]}"; do
     nlohmannIncludes+=("/I${includeDir}")
 done
-compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net "${nlohmannIncludes[@]}")
+# zlib 同样不在本仓里（permessage-deflate 档包着它）。取包目录根：include 给编译器、lib/zlib.lib 给链接器
+zlibDir="${ASYN_FUZZ_ZLIB_DIR:-}"
+zlibFlags=()
+zlibLinkFlags=()
+if [[ -n "${zlibDir}" ]]; then
+    zlibFlags=("/I${zlibDir}/include")
+    zlibLinkFlags=("${zlibDir}/lib/zlib.lib")
+fi
+compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net "${nlohmannIncludes[@]}" "${zlibFlags[@]}")
 objects=()
 for source in "${sources[@]}"; do
     objectName="$(basename "${source}" .cpp).obj"
@@ -262,7 +288,7 @@ for source in "${sources[@]}"; do
 done
 
 echo "链接 ${binary}"
-MSYS_NO_PATHCONV=1 "${clangCl}" -fsanitize=fuzzer "/Fe${binary}" "${objects[@]}" || exit 1
+MSYS_NO_PATHCONV=1 "${clangCl}" -fsanitize=fuzzer "/Fe${binary}" "${objects[@]}" "${zlibLinkFlags[@]}" || exit 1
 
 MSYS_NO_PATHCONV=1 runAllTargets "${binary}" "${artifacts}" "$@"
 exit $?

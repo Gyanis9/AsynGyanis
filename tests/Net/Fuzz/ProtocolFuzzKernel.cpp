@@ -9,13 +9,16 @@
 
 #include "Fuzz/ProtocolFuzzKernel.h"
 
+#include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Http3Frame.h"
+#include "Net/Http3/Qpack.h"
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/Codec/QuicTransportParameters.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 
 #include <algorithm>
@@ -787,6 +790,356 @@ namespace AsynGyanis::Net::Fuzz
             return input;
         }
 
+        /// QPACK 合法样本共用的字段集：validInput 与「编解码互逆」对照必须逐字段对得上，故只此一份
+        std::vector<QpackHeaderField> sampleQpackFields()
+        {
+            std::vector<QpackHeaderField> fields;
+            fields.push_back(QpackHeaderField{.name = ":method", .value = "GET"});
+            fields.push_back(QpackHeaderField{.name = "x-qpack-probe", .value = "reset"});
+            return fields;
+        }
+
+        /// QPACK 解码器的本端约束（模糊档）：容量与阻塞流数都取非零，让插入/Blocked 两条路都能被随机字节走到；
+        /// 字段段上限 64 KiB 与 h3 侧默认同档，越限本就会判 FieldSectionTooLarge（拒绝面之一，不是违例）
+        constexpr QpackDecoderSettings kQpackFuzzDecoderSettings{
+                .maximumTableCapacityByteCount = 4096U, .maximumBlockedStreamCount = 4U, .maximumFieldSectionSizeByteCount = 64U * 1024U};
+
+        /**
+         * @brief 为 QPACK 目标造输入
+         * @details 对端在 QPACK 上有两条可控字节流：编码器流指令与头块。生成器按这两种语境轮转产合法样本
+         *          （各由生产编码器产出：容量 0 → 纯字面量头块；容量 4096 → 含容量指令与插入的指令流），
+         *          其余轮用近失败与纯随机字节打拒绝与挂起分支
+         */
+        std::string makeQpackInput(DeterministicRandom &random)
+        {
+            static constexpr char kAlphabet[] = "abcxyz019:/- ";
+
+            std::vector<QpackHeaderField> fields;
+            const std::size_t             fieldCount = 1U + random.nextBelow(3U);
+            for (std::size_t index = 0; index < fieldCount; ++index)
+            {
+                QpackHeaderField  field;
+                const std::size_t nameLength = 1U + random.nextBelow(6U);
+                for (std::size_t character = 0; character < nameLength; ++character)
+                {
+                    field.name.push_back(kAlphabet[random.nextBelow(sizeof(kAlphabet) - 1U)]);
+                }
+                const std::size_t valueLength = random.nextBelow(8U);
+                for (std::size_t character = 0; character < valueLength; ++character)
+                {
+                    field.value.push_back(kAlphabet[random.nextBelow(sizeof(kAlphabet) - 1U)]);
+                }
+                fields.push_back(std::move(field));
+            }
+
+            std::string input;
+            switch (random.nextBelow(5U))
+            {
+                case 0U:
+                {
+                    // 合法头块：对端容量为 0 的编码器产出的纯字面量表示，打解码成功路径
+                    QpackEncoder encoder(0U, 0U, 0U);
+                    std::string  headerBlock;
+                    std::string  encoderStreamBytes;
+                    if (encoder.encodeFieldSection(0U, fields, headerBlock, encoderStreamBytes).has_value())
+                    {
+                        input = headerBlock;
+                    }
+                    break;
+                }
+                case 1U:
+                {
+                    // 合法编码器流指令：容量变更 + 插入 + 引用，打 feedEncoderStream 的成功路径
+                    QpackEncoder encoder(4096U, 4U, 4096U);
+                    std::string  headerBlock;
+                    std::string  encoderStreamBytes;
+                    if (encoder.encodeFieldSection(0U, fields, headerBlock, encoderStreamBytes).has_value())
+                    {
+                        input = encoderStreamBytes;
+                    }
+                    break;
+                }
+                default:
+                {
+                    // 近失败与纯随机：首字节偶尔顶成索引型表示，打越界索引与 Required Insert Count 两道前缀闸
+                    appendFuzzRandomBytes(input, random, 1U + random.nextBelow(24U));
+                    if (random.nextBelow(2U) == 0U && !input.empty())
+                    {
+                        input[0] = static_cast<char>(static_cast<unsigned char>(0x80U | random.nextBelow(0x80U)));
+                    }
+                    break;
+                }
+            }
+            if (input.empty())
+            {
+                appendFuzzRandomBytes(input, random, 8U);
+            }
+            return input;
+        }
+
+        /**
+         * @brief 为 permessage-deflate 目标造输入
+         * @details 两个面共用同一份字节：扩展要约头（对端可写任意值时不会被回显/接受）与压缩负载
+         *          （对端发来的压缩消息）。生成器按两种成功语境轮转——合法要约头（带窗口参数），
+         *          以及本端压缩器产出的真实 deflate 负载（解压成功路径的参照）——其余轮是近失败与随机
+         */
+        std::string makePerMessageDeflateInput(DeterministicRandom &random)
+        {
+            switch (random.nextBelow(5U))
+            {
+                case 0U:
+                {
+                    // 合法要约：窗口参数按 §7.1 的取值区间
+                    std::string input = "permessage-deflate; client_max_window_bits=" + std::to_string(kWebSocketMinimumWindowBits + random.nextBelow(8));
+                    if (random.nextBelow(2U) == 0U)
+                    {
+                        input += "; server_no_context_takeover";
+                    }
+                    return input;
+                }
+                case 1U:
+                {
+                    // 本端压缩器产出的真实负载：解压成功路径与往返互逆的参照。载荷刻意跨过 64 字节一档——
+                    // 小载荷解出来太小，「上限是防爆闸」那一条永远触不到，挡板失效也没人看得出来
+                    std::string payload;
+                    appendFuzzRandomBytes(payload, random, 1U + random.nextBelow(256U));
+                    const auto deflated = deflateWebSocketMessage(payload, kWebSocketDefaultWindowBits);
+                    if (deflated.has_value())
+                    {
+                        return *deflated;
+                    }
+                    return payload;
+                }
+                case 2U:
+                {
+                    // 要约头的拒绝面形状：未知参数名、越界窗口位数、重复参数
+                    static constexpr const char *kMalformedOffers[] = {"permessage-deflate; x-unknown=1", "permessage-deflate; server_max_window_bits=7",
+                                                                       "permessage-deflate; client_max_window_bits=16", "permessage-deflate; server_no_context_takeover=1",
+                                                                       "permessage-deflate; client_max_window_bits=8; client_max_window_bits=9"};
+                    std::string                  input              = kMalformedOffers[random.nextBelow(sizeof(kMalformedOffers) / sizeof(kMalformedOffers[0]))];
+                    if (random.nextBelow(2U) == 0U && !input.empty())
+                    {
+                        input[random.nextBelow(input.size())] = static_cast<char>(static_cast<unsigned char>(random.next()));
+                    }
+                    return input;
+                }
+                default:
+                {
+                    // 纯随机压缩负载：zlib 的拒绝面（头部、校验与回溯三类都有）
+                    std::string input;
+                    appendFuzzRandomBytes(input, random, 1U + random.nextBelow(48U));
+                    return input;
+                }
+            }
+        }
+
+        /**
+         * @brief 为出站 HTTP/1 响应解析器造输入
+         * @details 三种定界的成功样本（定长 / chunked / 读到连接关闭）各占一份，其余轮打畸形拒绝面
+         */
+        std::string makeHttpResponseInput(DeterministicRandom &random)
+        {
+            switch (random.nextBelow(5U))
+            {
+                case 0U:
+                {
+                    const std::size_t bodyLength = random.nextBelow(16U);
+                    std::string       input      = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(bodyLength) + "\r\n\r\n";
+                    appendFuzzRandomBytes(input, random, bodyLength);
+                    return input;
+                }
+                case 1U:
+                {
+                    // chunked：块大小行与块数据两条相位，末块后空 trailer 收尾
+                    std::string       input      = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+                    const std::size_t chunkCount = 1U + random.nextBelow(3U);
+                    for (std::size_t chunk = 0; chunk < chunkCount; ++chunk)
+                    {
+                        const std::size_t chunkLength = 1U + random.nextBelow(8U);
+                        input += std::format("{:x}\r\n", chunkLength);
+                        appendFuzzRandomBytes(input, random, chunkLength);
+                        input += "\r\n";
+                    }
+                    input += "0\r\n\r\n";
+                    return input;
+                }
+                case 2U:
+                {
+                    // 无定界头：读到连接关闭（endOfStream 收尾）；头部行本身随机，打头部解析
+                    std::string       input       = "HTTP/1.1 200 OK\r\n";
+                    const std::size_t headerCount = random.nextBelow(4U);
+                    for (std::size_t index = 0; index < headerCount; ++index)
+                    {
+                        input += "x-fuzz-" + std::to_string(random.nextBelow(100U)) + ": ";
+                        appendFuzzRandomBytes(input, random, random.nextBelow(8U));
+                        input += "\r\n";
+                    }
+                    input += "\r\n";
+                    appendFuzzRandomBytes(input, random, random.nextBelow(16U));
+                    return input;
+                }
+                default:
+                {
+                    // 畸形：状态行/长度头/定界头冲突/分块大小行四个拒绝面各一条
+                    static constexpr const char *kMalformedResponses[] = {
+                            "HTTP/1.1 20",                                                                // 状态码不足三位
+                            "HTTP/1.1 2000 OK\r\n\r\n",                                                   // 状态码超过三位
+                            "HTTP/1.1 2x0 OK\r\n\r\n",                                                    // 状态码非数字
+                            "HTTP/1.1 200 OK\r\nContent-Length: 12x\r\n\r\n",                             // 长度不是十进制
+                            "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nTransfer-Encoding: chunked\r\n\r\n", // 双定界头
+                            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nz\r\n",                 // 非法块大小行
+                    };
+                    std::string input = kMalformedResponses[random.nextBelow(sizeof(kMalformedResponses) / sizeof(kMalformedResponses[0]))];
+                    if (random.nextBelow(2U) == 0U && !input.empty())
+                    {
+                        input[random.nextBelow(input.size())] = static_cast<char>(static_cast<unsigned char>(random.next()));
+                    }
+                    return input;
+                }
+            }
+        }
+
+        /**
+         * @brief 跑一遍 QPACK 编码器流会话：对端指令字节喂给一个全新解码器，把结果折成可比对的轨迹
+         * @details 编码器流与头块是两条独立字节流、两条独立语境，因此各起一个全新会话（见下一条同族函数）。
+         *          「同一个解码器把两种字节都吃一遍」会把两条语境搅在一起，确定性对照就说不清查的是谁
+         */
+        RunTrace driveQpackFeedSession(const std::string &input, std::string &errorText)
+        {
+            QpackDecoder                        decoder(kQpackFuzzDecoderSettings);
+            const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t *>(input.data()), input.size());
+
+            std::vector<std::uint64_t> unblockedStreamIds;
+            std::string                decoderStreamBytes;
+            const auto                 fed = decoder.feedEncoderStream(bytes, unblockedStreamIds, decoderStreamBytes);
+
+            RunTrace trace;
+            if (!fed.has_value())
+            {
+                trace.isEndedInError = true;
+                trace.frameKeys.push_back(std::format("feed-error={}", static_cast<int>(fed.error().kind)));
+                return trace;
+            }
+            if (*fed > input.size())
+            {
+                errorText = "单次消费超过本次喂入（I2）";
+                return trace;
+            }
+            // 表记账折成摘要：两遍会话的插入数/表大小/项数必须逐个相同，否则就是状态在会话间泄漏
+            trace.frameKeys.push_back(std::format("feed-ok={}/{}/{}/{}", *fed, decoder.insertCount(), decoder.dynamicTableSizeByteCount(), decoder.dynamicTableEntries().size()));
+            return trace;
+        }
+
+        /**
+         * @brief 跑一遍 QPACK 头块会话：对端头块字节喂给一个全新解码器
+         * @details 契约：只有 Decoded 才交付字段行；Blocked（§2.2.1 的正常路径）与失败都不得留下半截产出
+         */
+        RunTrace driveQpackSectionSession(const std::string &input, std::string &errorText)
+        {
+            QpackDecoder                        decoder(kQpackFuzzDecoderSettings);
+            const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t *>(input.data()), input.size());
+
+            std::vector<QpackHeaderField> fields;
+            std::string                   decoderStreamBytes;
+            const auto                    decoded = decoder.decodeFieldSection(0U, bytes, fields, decoderStreamBytes);
+
+            RunTrace trace;
+            if (!decoded.has_value())
+            {
+                trace.isEndedInError = true;
+                trace.frameKeys.push_back(std::format("decode-error={}", static_cast<int>(decoded.error().kind)));
+                if (!fields.empty())
+                {
+                    errorText = "头块解码失败却留下了字段（I6）";
+                }
+                return trace;
+            }
+            if (*decoded == QpackFieldSectionDecodeStatus::Blocked)
+            {
+                trace.frameKeys.push_back("blocked");
+                if (!fields.empty())
+                {
+                    errorText = "头块挂起（Blocked）却留下了字段（I6）";
+                }
+                return trace;
+            }
+            for (const auto &field: fields)
+            {
+                trace.frameKeys.push_back(field.name + '=' + field.value);
+            }
+            return trace;
+        }
+
+        /**
+         * @brief 用 feed + 三态阶段机的出站响应解析器把 input 跑一遍
+         * @details consumed 的契约是「本趟实际吃掉多少」，未吃掉的余量由调用方拼下次一起再喂——
+         *          驱动就按这个走法维护 pending。喂完仍不完整时调 endOfStream()（读到连接关闭那条路的收尾）
+         * @param parser 目标解析器（调用方持有：I5 要在**同一个**对象上 reset() 后复跑）
+         * @param input 输入字节
+         * @param chunkSize 每次取入的字节数；1 就是「一次一字节」
+         * @param errorText 输出：不变量违例文案（空表示没违例）
+         * @return RunTrace 本轮轨迹
+         */
+        RunTrace driveHttpResponse(HttpResponseParser &parser, const std::string &input, const std::size_t chunkSize, std::string &errorText)
+        {
+            RunTrace    trace;
+            std::string pending;
+            std::size_t offset = 0;
+            std::size_t step   = 0;
+
+            for (; step <= maximumDriveSteps(input.size()); ++step)
+            {
+                if (parser.isComplete() || parser.hasFailed())
+                {
+                    break;
+                }
+                if (pending.empty() && offset >= input.size())
+                {
+                    break;
+                }
+                if (offset < input.size())
+                {
+                    const std::size_t chunkLength = std::min(chunkSize, input.size() - offset);
+                    pending.append(input, offset, chunkLength);
+                    offset += chunkLength;
+                }
+
+                const std::size_t pendingBefore = pending.size();
+                const std::size_t consumed      = parser.feed(pending);
+                if (consumed > pendingBefore)
+                {
+                    errorText = "单次消费超过本次喂入（I2）";
+                    return trace;
+                }
+                trace.consumedByteCount += consumed;
+                pending.erase(0, consumed);
+
+                // 余量非空且已无新字节可拼：解析器需要比手上更多才能推进，属正常等待，交给 endOfStream 收尾
+                if (consumed == 0U && offset >= input.size())
+                {
+                    break;
+                }
+            }
+            if (step > maximumDriveSteps(input.size()))
+            {
+                errorText = "解析器不推进，驱动被判卡死（I2）";
+                return trace;
+            }
+            if (!parser.isComplete() && !parser.hasFailed())
+            {
+                parser.endOfStream();
+            }
+
+            trace.isEndedInError  = parser.hasFailed();
+            trace.isEndedNeedMore = !parser.isComplete() && !parser.hasFailed();
+            if (parser.isComplete())
+            {
+                const HttpResponseInfo &result = parser.result();
+                trace.frameKeys.push_back(std::format("{}/{}/{}/{}", result.statusCode, result.headers.size(), result.body.size(), result.trailers.size()));
+            }
+            return trace;
+        }
+
         /**
          * @brief 用 feed + nextFrame 形状的 h3 解码器把 input 跑一遍
          * @details h3 侧没有「本次消费多少」的出口，因此推进判据是喂入偏移、卡死判据是步数上限：
@@ -1038,6 +1391,12 @@ namespace AsynGyanis::Net::Fuzz
                 return "QuicFrameSequence";
             case Target::QuicParameters:
                 return "QuicParameters";
+            case Target::QpackBlock:
+                return "QpackBlock";
+            case Target::PerMessageDeflate:
+                return "PerMessageDeflate";
+            case Target::HttpResponse:
+                return "HttpResponse";
             case Target::Count:
                 break;
         }
@@ -1072,6 +1431,15 @@ namespace AsynGyanis::Net::Fuzz
                 break;
             case Target::QuicParameters:
                 input = makeQuicParametersInput(random);
+                break;
+            case Target::QpackBlock:
+                input = makeQpackInput(random);
+                break;
+            case Target::PerMessageDeflate:
+                input = makePerMessageDeflateInput(random);
+                break;
+            case Target::HttpResponse:
+                input = makeHttpResponseInput(random);
                 break;
             case Target::Count:
                 break;
@@ -1143,6 +1511,28 @@ namespace AsynGyanis::Net::Fuzz
                 appendQuicTransportParameters(bytes, parameters);
                 return bytes;
             }
+            case Target::QpackBlock:
+            {
+                // 用生产编码器生成（对端容量 0 → 纯字面量表示）：编解码互逆本就是契约，
+                // 手写位模式一旦与实现的表示口径有差，I5 判的就是「我自己的假设」而不是解码器
+                QpackEncoder encoder(0U, 0U, 0U);
+                std::string  headerBlock;
+                std::string  encoderStreamBytes;
+                if (!encoder.encodeFieldSection(0U, sampleQpackFields(), headerBlock, encoderStreamBytes).has_value())
+                {
+                    return {};
+                }
+                return headerBlock;
+            }
+            case Target::PerMessageDeflate:
+            {
+                // 本端压缩器产出的真实负载：解压成功路径与往返互逆都靠它作参照
+                const auto deflated = deflateWebSocketMessage("permessage-deflate reset probe", kWebSocketDefaultWindowBits);
+                return deflated.has_value() ? *deflated : std::string{"permessage-deflate"};
+            }
+            case Target::HttpResponse:
+                // 一条自洽的完整响应：定长正文收齐即 Complete，截断矩阵的每个前缀都落在某个相位上
+                return "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi";
             case Target::Count:
                 break;
         }
@@ -1493,6 +1883,198 @@ namespace AsynGyanis::Net::Fuzz
                 return {};
             }
 
+            case Target::QpackBlock:
+            {
+                // 编码器流与头块是两条独立字节流、两条独立语境：各起全新会话、各跑两遍，比的是确定性
+                std::string    feedViolation;
+                const RunTrace firstFeed = driveQpackFeedSession(input, feedViolation);
+                if (!feedViolation.empty())
+                {
+                    return feedViolation;
+                }
+                std::string    secondFeedViolation;
+                const RunTrace secondFeed = driveQpackFeedSession(input, secondFeedViolation);
+                if (!secondFeedViolation.empty())
+                {
+                    return secondFeedViolation;
+                }
+                if (firstFeed.frameKeys != secondFeed.frameKeys || firstFeed.isEndedInError != secondFeed.isEndedInError)
+                {
+                    return "同一份指令字节两个独立会话结论不同（确定性）";
+                }
+
+                std::string    sectionViolation;
+                const RunTrace firstSection = driveQpackSectionSession(input, sectionViolation);
+                if (!sectionViolation.empty())
+                {
+                    return sectionViolation;
+                }
+                std::string    secondSectionViolation;
+                const RunTrace secondSection = driveQpackSectionSession(input, secondSectionViolation);
+                if (!secondSectionViolation.empty())
+                {
+                    return secondSectionViolation;
+                }
+                if (firstSection.frameKeys != secondSection.frameKeys || firstSection.isEndedInError != secondSection.isEndedInError)
+                {
+                    return "同一份头块字节两个独立会话结论不同（确定性）";
+                }
+                collect(firstSection);
+
+                // I5 对照：生产编码器产出的头块必须能被全新解码器逐字段解回（编解码互逆是这一层的契约）
+                const std::string probe = validInput(target);
+                if (probe.empty())
+                {
+                    return "生产编码器产不出合法样本，I5 对照无从判定";
+                }
+                std::string    probeViolation;
+                const RunTrace probeTrace = driveQpackSectionSession(probe, probeViolation);
+                if (!probeViolation.empty())
+                {
+                    return probeViolation;
+                }
+                std::vector<std::string> expectedFieldTexts;
+                for (const auto &field: sampleQpackFields())
+                {
+                    expectedFieldTexts.push_back(field.name + '=' + field.value);
+                }
+                if (probeTrace.frameKeys != expectedFieldTexts)
+                {
+                    return "生产编码器产出的头块解不回同样的字段（编解码互逆对照）";
+                }
+                return {};
+            }
+
+            case Target::PerMessageDeflate:
+            {
+                RunTrace trace;
+                // 「拒绝收场」对这对自由函数取「本轮至少撞上一个拒绝面」：要约未接受，或两级解压上限下
+                // 都没解出来。防空转断言据此确认拒绝分支确实被覆盖（这个目标没有单一的三态终态）
+                bool isAnyRejectionObserved = false;
+
+                // ① 扩展要约解析：同一份头值两次必须同一结论；接受与拒绝各自的伴随产物必须自洽
+                const PerMessageDeflateNegotiation firstNegotiation  = negotiatePerMessageDeflate(input);
+                const PerMessageDeflateNegotiation secondNegotiation = negotiatePerMessageDeflate(input);
+                if (firstNegotiation.accepted != secondNegotiation.accepted || firstNegotiation.responseValue != secondNegotiation.responseValue ||
+                    firstNegotiation.window.has_value() != secondNegotiation.window.has_value() ||
+                    (firstNegotiation.window.has_value() && (firstNegotiation.window->compressBits != secondNegotiation.window->compressBits ||
+                                                             firstNegotiation.window->decompressBits != secondNegotiation.window->decompressBits)))
+                {
+                    return "同一份要约头两次协商结论不同（确定性）";
+                }
+                if (firstNegotiation.accepted)
+                {
+                    if (!firstNegotiation.window.has_value() || firstNegotiation.responseValue.empty())
+                    {
+                        return "接受要约却不给窗口位数或不回参数";
+                    }
+                    const int compressBits   = firstNegotiation.window->compressBits;
+                    const int decompressBits = firstNegotiation.window->decompressBits;
+                    if (compressBits < kWebSocketMinimumWindowBits || compressBits > kWebSocketDefaultWindowBits || decompressBits < kWebSocketMinimumWindowBits ||
+                        decompressBits > kWebSocketDefaultWindowBits)
+                    {
+                        return "接受要约却给出区间外的窗口位数（§7.1 只允许 8..15）";
+                    }
+                } else
+                {
+                    isAnyRejectionObserved = true;
+                    if (!firstNegotiation.responseValue.empty() || firstNegotiation.window.has_value())
+                    {
+                        return "拒绝要约却留下回执或窗口位数";
+                    }
+                }
+
+                // ② 解压闸门：压缩比可以做到几百倍，输出上限是这一层唯一的防爆闸——解成功就绝不允许越过它
+                for (const std::size_t capBytes: {std::size_t{64U}, std::size_t{64U * 1024U}})
+                {
+                    const auto firstInflated  = inflateWebSocketMessage(input, capBytes);
+                    const auto secondInflated = inflateWebSocketMessage(input, capBytes);
+                    if (firstInflated.has_value() != secondInflated.has_value() || (firstInflated.has_value() && *firstInflated != *secondInflated))
+                    {
+                        return "同一份负载两次解压结论不同（确定性）";
+                    }
+                    if (firstInflated.has_value())
+                    {
+                        if (firstInflated->size() > capBytes)
+                        {
+                            return "解压越过输出上限：防爆闸失效";
+                        }
+                        trace.frameKeys.push_back(std::format("inflate-ok={}", firstInflated->size()));
+                    } else
+                    {
+                        isAnyRejectionObserved = true;
+                    }
+                }
+
+                // ③ 往返：本端压出去的必须解得回原负载（两个函数互为逆运算是这一对的契约）
+                for (const int windowBits: {kWebSocketMinimumWindowBits, kWebSocketDefaultWindowBits})
+                {
+                    const auto deflated = deflateWebSocketMessage(input, windowBits);
+                    if (!deflated.has_value())
+                    {
+                        continue; // 压缩失败是文档允许的结论（调用方原样发送），不是违例
+                    }
+                    const auto roundTripped = inflateWebSocketMessage(*deflated, input.size() + 64U, windowBits);
+                    if (!roundTripped.has_value() || *roundTripped != input)
+                    {
+                        return "压缩再解压与原负载不同（编解码互逆）";
+                    }
+                    trace.frameKeys.push_back(std::format("roundtrip-ok={}", windowBits));
+                }
+                trace.isEndedInError = isAnyRejectionObserved;
+                collect(trace);
+                return {};
+            }
+
+            case Target::HttpResponse:
+            {
+                HttpResponseParser wholeParser;
+                const RunTrace     whole = driveHttpResponse(wholeParser, input, input.size(), errorText);
+                if (!errorText.empty())
+                {
+                    return errorText;
+                }
+
+                HttpResponseParser byteWiseParser;
+                const RunTrace     byteWise = driveHttpResponse(byteWiseParser, input, 1U, errorText);
+                if (!errorText.empty())
+                {
+                    return errorText;
+                }
+                if (whole.frameKeys != byteWise.frameKeys || whole.isEndedInError != byteWise.isEndedInError || whole.isEndedNeedMore != byteWise.isEndedNeedMore)
+                {
+                    return "整体喂与逐字节喂结论不同（I3）";
+                }
+                collect(whole);
+
+                // I4 粘滞 + I6：失败之后继续喂任何字节必须一个字节不吃且结论不变，「收齐」形状不得出现
+                if (whole.isEndedInError)
+                {
+                    if (wholeParser.feed("tail-more-bytes") != 0U || !wholeParser.hasFailed())
+                    {
+                        return "错误态没粘住，或还在消费字节（I4/I6）";
+                    }
+                    if (wholeParser.isComplete() || wholeParser.isHeadComplete())
+                    {
+                        return "失败态却给出「收齐」形状（I6）";
+                    }
+                }
+
+                // I5 复位可用：同一个解析器 reset() 后必须还能解出一条完整响应
+                wholeParser.reset();
+                const std::string probe = validInput(target);
+                std::string       probeError;
+                const RunTrace    probeTrace = driveHttpResponse(wholeParser, probe, probe.size(), probeError);
+                if (!probeError.empty())
+                {
+                    return probeError;
+                }
+                if (probeTrace.isEndedInError || !wholeParser.isComplete() || wholeParser.result().statusCode != 200)
+                {
+                    return "reset() 后合法响应解不出（I5）";
+                }
+                return {};
+            }
 
             case Target::Count:
                 break;

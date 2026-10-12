@@ -722,7 +722,7 @@ jobs:
           if-no-files-found: ignore
 
   # 协议解码器的持续模糊：按目标分档（h1 请求、WebSocket 帧、h2 帧、h3 帧、HPACK/QPACK 头块、
-  # QUIC 报文头、QUIC 帧序列、QUIC 传输参数）连同它们的
+  # permessage-deflate 压缩、出站 h1 响应、QUIC 报文头、QUIC 帧序列、QUIC 传输参数）连同它们的
   # 依赖闭包自成一组翻译单元，不需要 Conan、不需要配置构建——脚本自己用 clang 的 libFuzzer 编一份独立
   # 产物。此前这一步只有本机手工跑（`scripts/fuzz-net.sh` 当初是为 Windows 侧写的，一轮 60 秒），
   # 回归时没有任何流水线会替我们喂随机字节，而这类解码器的历史缺陷全是越界与释放后读。
@@ -747,12 +747,13 @@ jobs:
       # 所以这里装的是 clang-19 加它自己那份 fuzzer 运行时。nlohmann-json3-dev 是闭包里那处仓外
       # 头文件（Base::ConfigValue 包着它）。装包失败也会让这条作业红，但那是「拿不到裁判」，
       # 与「解码器有问题」同样需要被人看见
-      - name: 装 clang-19 与它的 fuzzer 运行时（外加 nlohmann-json）
+      - name: 装 clang-19 与它的 fuzzer 运行时（外加 nlohmann-json 与 zlib）
         run: |
           # 那 28 分钟里连接是「卡住但没报错」那种慢：给 apt 设重试与单次超时，让它断掉重连而不是
           # 抱着一条死连接磨到作业上限
           sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 update
-          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev
+          # zlib1g-dev：permessage-deflate 档包着 zlib，闭包链接要 -lz（见 scripts/fuzz-net.sh 的 sources 说明）
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=25 install -y clang-19 libfuzzer-19-dev nlohmann-json3-dev zlib1g-dev
 
       - name: 各档解码器各跑一轮（每档 90 秒）
         run: bash scripts/fuzz-net.sh 90 -error_exitcode=1 -workers=2 -jobs=2

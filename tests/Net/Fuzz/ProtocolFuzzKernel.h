@@ -33,6 +33,9 @@ namespace AsynGyanis::Net::Fuzz
         QuicPacket,        ///< QUIC 报文头解码器（RFC 9000 §17；UDP 上最先被外部打到的一段，不需要任何密钥）
         QuicFrameSequence, ///< QUIC 帧序列解码器（§12.4/§19；解出的帧持有指向载荷的视图，视图越界即野指针）
         QuicParameters,    ///< QUIC 传输参数解码器（§7.3；来自对端 TLS 扩展，未识别项必须忽略）
+        QpackBlock,        ///< QPACK 解码器（RFC 9204）：编码器流指令与头块的增量解析（动态表 + 阻塞流两条语境一起过）
+        PerMessageDeflate, ///< permessage-deflate（RFC 7692）：扩展要约的解析 + 对端压缩消息的解压（含解压上限那一道闸）
+        HttpResponse,      ///< 出站 HTTP/1 响应解析器：客户端侧吃对端字节的那一段（状态行/头部/chunked/trailer）
         Count,             ///< 哨兵：目标总数，用于遍历，不是可解码的目标
     };
 

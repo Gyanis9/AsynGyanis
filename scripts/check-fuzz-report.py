@@ -44,8 +44,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("logDirectory", help="fuzz-net.sh 写日志的目录（.fuzz/log）")
     parser.add_argument("--targets", nargs="+",
-                        default=["Http1Request", "WebSocketFrame", "Http2Frame", "Http3Frame", "HpackBlock",
-                                   "QuicPacket", "QuicFrameSequence", "QuicParameters"],
+                        default=["Http1Request", "WebSocketFrame", "Http2Frame", "Http3Frame", "HpackBlock", "QpackBlock",
+                                   "PerMessageDeflate", "HttpResponse", "QuicPacket", "QuicFrameSequence", "QuicParameters"],
                         help="必须都被推到的目标名（与 ProtocolFuzzKernel.h 的 Target 同名，"
                              "并与 scripts/fuzz-net.sh 的默认目标清单同列——两处不一致时这一档会判漏配）")
     parser.add_argument("--min-executions", type=int, default=2000,
