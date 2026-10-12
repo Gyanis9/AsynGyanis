@@ -20,6 +20,7 @@ add_executable(TestNet
         Http/TestHttpParserFuzzSmoke.cpp
         Http/TestHttpDate.cpp
         Http/TestJwtVerifier.cpp
+        Http/TestJwksKeyProvider.cpp
         Http/TestHttpConditionalValidators.cpp
         Http/TestHttpCookie.cpp
         Http/TestHttpCookieJar.cpp
