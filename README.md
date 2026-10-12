@@ -833,7 +833,7 @@ AsynGyanis/
 | worker 进程反复被补位 | `asyn_worker_crashes_total`（补位次数）与 `asyn_worker_slots_given_up`（放弃的槽位） | 崩溃现场是**尽力**写 stderr 的（信号处理器里，不保证送达），先去那里找。「起来就崩」连续 5 次会停止补位——此时看最后一版的启动日志与配置，别等下一次补位；被放弃的槽位不涨回来，要么修因重启 master，要么这台就用剩下的 worker 继续跑 |
 | 证书相关告警 | `asyn_acme_certificate_expiry_seconds`、`asyn_acme_issuances_total` / `asyn_acme_failures_total`、`asyn_acme_dns01_*` | 到期读数**为 0 不是「已到期」而是「读不出」**（还没签出、或那条路径上真没有读得出的证书）；「没跑成」与「还没跑」在面板上同形，区分看 `issuances_total` 有没有在动。dns-01 写入失败会把随后的撤回也记进 `asyn_acme_dns01_*` 两族 |
 | 内存曲线一路涨 | `asyn_http_inflight_body_bytes`（在途正文字节）、`asyn_http_memory_budget_rejections_total`（被预算拒的预留）、进程工作集 | 在途字节贴着 `memory_budget_bytes` 且拒绝数猛涨＝真实需求超预算（调预算）或对端在压大正文（限额/限流先收口）。**ASan 构建下长期曲线的渐近饱和是 quarantine 不是泄漏**——判泄漏要用 `quarantine_size_mb=1` 之类的对照重跑 |
-| 日志里出现「（过去 N 秒内另有 M 条同类被压掉）」 | 那条告警本身 | 这是被时间窗压住的**重条**，量级在 M 里；连响说明对应的事件流（对端在刷某个形状）还在持续。对端可触发告警的清点（哪些接闸门、哪些按「每流/每请求至多一条」刻意不接）在 `.github/SECURITY.md` 与审计报告 §9.23 |
+| 日志里出现「（过去 N 秒内另有 M 条同类被压掉）」 | 那条告警本身 | 这是被时间窗压住的**重条**，量级在 M 里；连响说明对应的事件流（对端在刷某个形状）还在持续。对端可触发告警的清点（哪些接闸门、哪些按「每流/每请求至多一条」刻意不接）见 `CHANGELOG.md` 的告警抗洪条目与审计报告 §9.23 |
 
 ## 测试与验证
 

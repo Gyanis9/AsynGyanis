@@ -42,14 +42,14 @@ ctest --test-dir build/debug --output-on-failure
    （clang-format 版本钉到 23.1.1）：改动过的文件提交前跑 `clang-format --dry-run --Werror <文件>`，
    有差异就 `-i` 排齐再提。判据以 CI 同版为准——版本不同折行结果就变，那种红与你的改动无关
 3. **静态检查**: 运行 `clang-tidy -p build/debug src/<changed-file>`。另有一条有牙齿的判据：
-   `python3 scripts/check-complexity-baseline.py` 按文件比「最长函数体行数」，**只准降不准升**，
-   越过地板又没有登记项的文件即判红（它挂在 CI 的格式作业而不是 tidy 档——tidy 那一档按设计不阻塞，
-   挂上去等于没有门）。基线要重录就跑 `--write`，但那等于公开承认「这一档我放松了」
+   `python3 scripts/check-complexity-baseline.py` 按文件记**函数长度列表**：超过地板（100 行）的每个函数都要
+   登记，登记过的文件按列表降序**按位比对**（第 i 长者不得涨过基线第 i 长）、**不得多出新的超地板函数**，
+   **只准降不准升**（它挂在 CI 的格式作业而不是 tidy 档——tidy 那一档按设计不阻塞，挂上去等于没有门）。基线要重录就跑 `--write`，但那等于公开承认「这一档我放松了」
    还有一条管架构工件的：`python3 scripts/check-arch-traceability.py` 把 `assets/diagrams/*.json` 里每一条
    `路径:行号` 当场回读——`sources` 挂的与卡片正文手写的都算（正文里 `:123`、`.cpp:123`、`、123` 这三种续写按
-   前一个完整路径继承，只写文件名时按仓库内唯一同名文件补全，重名不猜）。路径不存在、行号越过文件末尾、
-   引到空行都判红。它管不住「行还在、说的已经不是那件事」（那由它打印的 stale 清单交给人回图时复核），
-   但「引用落得下一行真实代码」这条底线不该靠人记
+   前一个完整路径继承，只写文件名时按仓库内唯一同名文件补全，重名不猜）；`.github/SECURITY.md` 全篇与 CHANGELOG
+   最新发布段里的手写引用同判。路径不存在、行号越过文件末尾、引到空行都判红。它管不住「行还在、说的已经不是
+   那件事」（那由它打印的 stale 清单交给人回图时复核），但「引用落得下一行真实代码」这条底线不该靠人记
 4. **测试**: 确保 `ctest --output-on-failure` 全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
 6. **PR**: 提交 Pull Request，填写模板，等待审核
@@ -80,14 +80,14 @@ ctest --test-dir build/debug --output-on-failure
 
 ## 依赖、SBOM 与安全公告
 
-- **加/升第三方依赖要走三处**：`conandata.yml` 的固定版本、`packaging/dependency-watch.json` 的公告入口与
-  `pinnedVersion`、以及 `conanfile.py` 的选项（可选依赖要给降级路径）。只改前两处之外的一处会被当场判红：
-  `python scripts/check-dependency-advisories.py` 钉的是「台账与清单同解」——缺登记、版本漂移、台账里残留
-  已删依赖都算。这条不与构建混跑，所以几秒钟就能暴露问题。
+- **加/升第三方依赖要走四处**：`conandata.yml` 的固定版本、`packaging/dependency-watch.json` 的公告入口与
+  `pinnedVersion`、README「外部依赖」表的版本、以及交付配方 `packaging/conan/conanfile.py` 里写版本的四处；
+  可选依赖还要另动根 `conanfile.py` 的选项（要给降级路径）。忘掉其中一处会被当场判红：
+  `python scripts/check-dependency-advisories.py` 钉的是「四处同解」——缺登记、版本漂移、台账残留已删依赖、交付配方与真源不一致都算；这条不与构建混跑，几秒钟就能暴露。
 - **SBOM**：`python scripts/generate-sbom.py --out sbom` 产出 CycloneDX 1.6（组件按 purl 排序、
   不带构建时刻，所以两次生成可逐字节比对）与 `SHA256SUMS`。它记的是**清单与来源**，不是哈希后的二进制；
   需要制品级 provenance/签名时另配，别把这份 SBOM 当成那一层证据。
-- **供应链作业**：`.github/workflows/supply-chain.yml`（`main` 推送、手动触发、每周一凌晨定时）跑上面两件事，
+- **供应链作业**：`.github/workflows/supply-chain.yml`（`main` 推送、手动触发、每周一凌晨定时）跑上面三件事（第三件是 2026-10-12 起的 gitleaks 全树密钥扫描；豁免面在 `.gitleaks.toml`），
   并把 SBOM 作为制品上传（保留 90 天）。
 - **漏洞响应**：见 `.github/SECURITY.md` 的严重度时限表与披露节奏；「我们靠哪些持续验证」那张表列了每条门禁
   覆盖什么、在哪个作业里跑——新加门禁时要一并更新它，否则「最近一次真实运行」又要靠人记。
