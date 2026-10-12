@@ -1,11 +1,9 @@
 #include "Database/Common/DatabaseFactory.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
-#include "Database/MySql/MySqlConnection.h"
-#include "Database/Postgres/PostgresConnection.h"
-#include "Database/Redis/RedisConnection.h"
-#include "Database/Sqlite/SqliteConnection.h"
+#include "Database/Common/DatabaseDriverCatalog.h"
 
+#include <optional>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -41,57 +39,57 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::create(const DatabaseType type, const ConnectionConfig &config)
     {
-        switch (type)
+        // 构造入口在驱动目录里（表里一行一条）：新增驱动只要登记进目录，本函数与下面的
+        // 名字/端口映射都自动跟随，不再各补一个 switch 分支
+        const std::optional<std::size_t> index = databaseDriverIndex(type);
+        if (!index.has_value())
         {
-            case DatabaseType::MySql:
-                return createMySql(config);
-            case DatabaseType::PostgreSql:
-                return createPostgres(config);
-            case DatabaseType::Redis:
-                return createRedis(config);
-            case DatabaseType::Sqlite:
-                return createSqlite(config);
+            // 枚举取值超出已知范围（反序列化出错或内存被写坏），或新增枚举成员却忘了加表行——
+            // 两种都当场拒绝，不给静默默认值
+            throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) + "（枚举值 " + std::to_string(static_cast<int>(type)) +
+                                                 "）：请改用 MySql / PostgreSql / Redis / Sqlite 四者之一，或修正反序列化来源");
         }
 
-        // 枚举取值超出已知范围（反序列化出错或内存被写坏）时不给静默默认值
-        throw Base::InvalidArgumentException(std::string("不支持的数据库类型：") + databaseTypeName(type) + "（枚举值 " + std::to_string(static_cast<int>(type)) +
-                                             "）：请改用 MySql / PostgreSql / Redis / Sqlite 四者之一，或修正反序列化来源");
+        return databaseDriverCatalog()[*index].createConnection(config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createMySql(const ConnectionConfig &config)
     {
-        return std::make_unique<MySqlConnection>(config);
+        // 便利入口只是 create(类型) 的转发：构造口径（目录里的工厂）只有一份
+        return create(DatabaseType::MySql, config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createPostgres(const ConnectionConfig &config)
     {
-        return std::make_unique<PostgresConnection>(config);
+        // 与 create(DatabaseType::PostgreSql) 同源，见 createMySql 的说明
+        return create(DatabaseType::PostgreSql, config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createRedis(const ConnectionConfig &config)
     {
-        return std::make_unique<RedisConnection>(config);
+        // 与 create(DatabaseType::Redis) 同源，见 createMySql 的说明
+        return create(DatabaseType::Redis, config);
     }
 
     std::unique_ptr<DatabaseConnection> DatabaseFactory::createSqlite(const ConnectionConfig &config)
     {
-        return std::make_unique<SqliteConnection>(config);
+        // 与 create(DatabaseType::Sqlite) 同源，见 createMySql 的说明
+        return create(DatabaseType::Sqlite, config);
     }
 
     std::optional<DatabaseType> DatabaseFactory::guessType(const std::uint16_t port) noexcept
     {
-        // 只识别已实现驱动的默认端口，其余一律返回空值交由调用方显式指定
-        switch (port)
+        // 端口表也在驱动目录里（每行的 defaultPort；0 表示该引擎没有网络端口，不参与匹配）。
+        // 未登记的端口一律返回空值交由调用方显式指定
+        for (const DatabaseDriverEntry &entry: databaseDriverCatalog())
         {
-            case 3306:
-                return DatabaseType::MySql;
-            case 5432:
-                return DatabaseType::PostgreSql;
-            case 6379:
-                return DatabaseType::Redis;
-            default:
-                return std::nullopt;
+            if (entry.defaultPort != 0 && entry.defaultPort == port)
+            {
+                return entry.type;
+            }
         }
+
+        return std::nullopt;
     }
 
 } // namespace AsynGyanis::Database

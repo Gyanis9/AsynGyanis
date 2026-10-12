@@ -1,57 +1,55 @@
 #include "Database/Dialect/DialectRegistry.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
-#include "Database/Dialect/MySqlDialect.h"
-#include "Database/Dialect/PostgresDialect.h"
-#include "Database/Dialect/SqliteDialect.h"
+#include "Database/Common/DatabaseDriverCatalog.h"
 
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Database
 {
     std::shared_ptr<SqlDialect> DialectRegistry::dialectFor(const DatabaseType type)
     {
-        switch (type)
+        const std::optional<std::size_t> index = databaseDriverIndex(type);
+        if (!index.has_value())
         {
-            case DatabaseType::Sqlite:
-            {
-                // 函数内静态对象：初始化由编译器保证只执行一次且线程安全，
-                // 方言无状态，因此全局共用一个实例即可，不需要每次 new 一个。
-                // 必须用花括号圈出独立作用域：static 局部变量的初始化不允许跨越 case 标签
-                static const std::shared_ptr<SqlDialect> kSqliteDialectInstance = std::make_shared<SqliteDialect>();
-                return kSqliteDialectInstance;
-            }
-
-            case DatabaseType::MySql:
-            {
-                // 与 SQLite 分支同构：反引号引用、START TRANSACTION 事务、LIMIT ? OFFSET ? 分页，
-                // 这些差异全部封在 MySqlDialect 里，上层只认 DatabaseType
-                static const std::shared_ptr<SqlDialect> kMySqlDialectInstance = std::make_shared<MySqlDialect>();
-                return kMySqlDialectInstance;
-            }
-
-            case DatabaseType::PostgreSql:
-            {
-                // 与另两个分支同构：$n 占位符、BEGIN 事务、NUMERIC(20) 承接无符号 64 位，
-                // 这些差异全部封在 PostgresDialect 里，上层只认 DatabaseType
-                static const std::shared_ptr<SqlDialect> kPostgresDialectInstance = std::make_shared<PostgresDialect>();
-                return kPostgresDialectInstance;
-            }
-
-            case DatabaseType::Redis:
-                throw Base::InvalidArgumentException("方言注册表：Redis 是键值存储，不参与 SQL 查询树翻译，请改用 RedisConnection 的命令接口");
-
-            default:
-                // 新增枚举值却忘了登记方言时走这里，异常文本带上数值便于定位
-                throw Base::InvalidArgumentException("方言注册表：不支持的数据库类型（枚举值 " + std::to_string(static_cast<int>(type)) +
-                                                     "）：请为该类型实现 SqlDialect 后在本注册表登记");
+            // 新增枚举值却忘了登记驱动目录时走这里，异常文本带上数值便于定位
+            throw Base::InvalidArgumentException("方言注册表：不支持的数据库类型（枚举值 " + std::to_string(static_cast<int>(type)) +
+                                                 "）：请为该类型实现 SqlDialect 并登记进驱动目录（DatabaseDriverCatalog.h）");
         }
+
+        const DatabaseDriverEntry &entry = databaseDriverCatalog()[*index];
+        if (entry.createDialect == nullptr)
+        {
+            throw Base::InvalidArgumentException("方言注册表：" + std::string(entry.name) + " 不参与 SQL 查询树翻译，请改用该驱动的命令接口");
+        }
+
+        // 每驱动的共享实例：函数内静态表在首次调用时进程级构造一次（初始化由编译器保证线程
+        // 安全），方言无状态——共享一份与每次新建等价，用例钉着「两次取得同一对象」
+        static const std::vector<std::shared_ptr<SqlDialect>> kDialectInstances = []
+        {
+            const std::span<const DatabaseDriverEntry> catalog = databaseDriverCatalog();
+            std::vector<std::shared_ptr<SqlDialect>>   instances(catalog.size());
+            for (std::size_t catalogIndex = 0; catalogIndex < catalog.size(); ++catalogIndex)
+            {
+                if (catalog[catalogIndex].createDialect != nullptr)
+                {
+                    instances[catalogIndex] = catalog[catalogIndex].createDialect();
+                }
+            }
+            return instances;
+        }();
+
+        return kDialectInstances[*index];
     }
 
     bool DialectRegistry::supports(const DatabaseType type) noexcept
     {
-        // 与 dialectFor() 的分支保持一一对应：新增方言时两处必须同步修改
-        return type == DatabaseType::Sqlite || type == DatabaseType::MySql || type == DatabaseType::PostgreSql;
+        // 与 dialectFor() 同一判据：目录里有方言工厂才算「参与 SQL 查询树翻译」——
+        // Redis 有目录条目、没有方言工厂，因此为假
+        const std::optional<std::size_t> index = databaseDriverIndex(type);
+        return index.has_value() && databaseDriverCatalog()[*index].createDialect != nullptr;
     }
 
 } // namespace AsynGyanis::Database

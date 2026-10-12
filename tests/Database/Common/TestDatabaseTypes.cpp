@@ -1,6 +1,6 @@
 // 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值。
 // 覆盖场景：
-// - MapsEverySupportedTypeToItsOwnName / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
+// - MapsEverySupportedTypeToItsOwnName / EverySupportedTypeHasACatalogEntry / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
 // - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
 // - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
 // - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
@@ -79,6 +79,18 @@ namespace AsynGyanis::Database
         for (const auto &[type, expectedName]: kDatabaseTypeNameTable)
         {
             EXPECT_STREQ(databaseTypeName(type), expectedName);
+        }
+    }
+
+    /** @brief 钉住每个受支持类型都登记在驱动目录里：新增驱动忘加表行时当场红 */
+    TEST(DatabaseType, EverySupportedTypeHasACatalogEntry)
+    {
+        // 名字、默认端口、连接工厂与方言工厂都从驱动目录（DatabaseDriverCatalog）读：
+        // 新增枚举成员却忘了加表行时，名字会回落成 "Unknown"，这里立刻红——否则要等到
+        // 工厂拒绝建连（"不支持的数据库类型：Unknown"）才发现漏登记
+        for (const DatabaseType type: kAllDatabaseTypes)
+        {
+            EXPECT_STRNE(databaseTypeName(type), "Unknown") << "受支持类型没登记进驱动目录（DatabaseDriverCatalog 的表里加一行）";
         }
     }
 

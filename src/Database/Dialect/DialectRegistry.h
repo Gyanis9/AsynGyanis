@@ -25,7 +25,8 @@ namespace AsynGyanis::Database
     /**
      * @brief SQL 方言注册表
      *
-     * @details 纯静态类，不允许实例化。当前注册的方言有 SQLite 与 MySQL。
+     * @details 纯静态类，不允许实例化。方言的清单一处维护：驱动目录（DatabaseDriverCatalog）里
+     *          带了方言工厂的那些就是本注册表能回答的类型，新增驱动不必改本文件。
      */
     class ASYN_DATABASE_API DialectRegistry
     {
@@ -39,8 +40,8 @@ namespace AsynGyanis::Database
          *
          * @param type 数据库类型
          * @return std::shared_ptr<SqlDialect> 该类型的方言实现，恒非空
-         * @throws Base::InvalidArgumentException 该类型尚未提供方言实现（如 Oracle），
-         *         或该类型不是 SQL 数据库（Redis），异常文本为中文提示
+         * @throws Base::InvalidArgumentException 该类型没有登记方言工厂（键值存储类引擎，或
+         *         新增枚举忘了登记驱动目录），异常文本为中文提示
          */
         [[nodiscard]] static std::shared_ptr<SqlDialect> dialectFor(DatabaseType type);
 
@@ -48,7 +49,8 @@ namespace AsynGyanis::Database
          * @brief 判断指定类型是否已有方言实现
          * @details 供调用方在不想捕获异常时预判，例如构造连接池后先校验再执行查询。
          * @param type 数据库类型
-         * @return true 已有方言实现（SQLite / MySQL），dialectFor() 必定成功
+         * @return true 已有方言实现（驱动目录里有方言工厂；SQLite / MySQL / PostgreSQL），
+         *         dialectFor() 必定成功
          */
         [[nodiscard]] static bool supports(DatabaseType type) noexcept;
     };
