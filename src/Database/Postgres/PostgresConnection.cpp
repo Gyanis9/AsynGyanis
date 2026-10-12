@@ -184,6 +184,206 @@ namespace AsynGyanis::Database
             const char *keyword; ///< 关键字名，例如 "host"，取自 libpq 的常量字符串，生命周期长于本结构
             std::string text;    ///< 取值文本，由本结构持有，保证交给 PQconnectdbParams 的指针有效
         };
+
+        /**
+         * @brief 把连接配置摊成 libpq 的关键字/取值对序列
+         * @details 空取值一律**省略**而不是原样送出：在 libpq 里「省略」表示用默认规则（用户名取操作
+         *          系统账号、口令走 PGPASSWORD 或 ~/.pgpass、库名取用户名），而「送出空串」表示
+         *          「值就是空」，服务端会直接回 database "" does not exist 一类错误。
+         *          TLS 五档显式下发（含 disable）：不下发时客户端库按自己的默认档走，「这条链路
+         *          有没有加密」就成了随环境漂移的隐变量，把决定权收回配置面。
+         * @param configuration 连接配置（唯一真值来源）
+         * @param connectionTimeoutSeconds 已换算为整秒的建连超时；非正表示不下发（与省略同义）
+         * @return std::vector<ConnectionParameter> 参数序列；取值文本由返回的结构持有，
+         *         调用方须让它活到 PQconnectdbParams 返回为止
+         */
+        [[nodiscard]] std::vector<ConnectionParameter> collectConnectionParameters(const ConnectionConfig &configuration, const int connectionTimeoutSeconds)
+        {
+            std::vector<ConnectionParameter> connectionParameters;
+
+            connectionParameters.push_back(ConnectionParameter{.keyword = "host", .text = configuration.host});
+
+            // port 为 0 表示「配置未指定端口」：省略该关键字让 libpq 回落到编译期默认端口 5432，
+            // 而不是把 0 当成端口号送出去（服务端只会回一句语法错误）
+            if (configuration.port != 0)
+            {
+                connectionParameters.push_back(ConnectionParameter{.keyword = "port", .text = std::to_string(configuration.port)});
+            }
+
+            if (!configuration.userName.empty())
+            {
+                connectionParameters.push_back(ConnectionParameter{.keyword = "user", .text = configuration.userName});
+            }
+
+            if (!configuration.password.empty())
+            {
+                // 口令按字节原样送出：libpq 的参数化接口不需要也不允许值里有任何转义
+                connectionParameters.push_back(ConnectionParameter{.keyword = "password", .text = configuration.password});
+            }
+
+            if (!configuration.database.empty())
+            {
+                connectionParameters.push_back(ConnectionParameter{.keyword = "dbname", .text = configuration.database});
+            }
+
+            connectionParameters.push_back(ConnectionParameter{.keyword = "sslmode", .text = tlsModeToLibpqSslMode(configuration.tls.mode)});
+
+            if (!configuration.tls.certificateAuthorityFile.empty())
+            {
+                // sslrootcert 是 TLS 校验链的信任锚（也是 verify-ca / verify-full 的判据来源）
+                connectionParameters.push_back(ConnectionParameter{.keyword = "sslrootcert", .text = configuration.tls.certificateAuthorityFile});
+            }
+
+            if (!configuration.tls.clientCertificateFile.empty())
+            {
+                // 证书与私钥由 ConnectionConfig::validate() 保证成对给出，这里按 libpq 的关键字名逐个下发
+                connectionParameters.push_back(ConnectionParameter{.keyword = "sslcert", .text = configuration.tls.clientCertificateFile});
+                connectionParameters.push_back(ConnectionParameter{.keyword = "sslkey", .text = configuration.tls.clientPrivateKeyFile});
+            }
+
+            if (connectionTimeoutSeconds > 0)
+            {
+                // 只在正数时下发：0 与「省略」在 libpq 里同义（无限等待），显式送出只会多一个无意义的键
+                connectionParameters.push_back(ConnectionParameter{.keyword = "connect_timeout", .text = std::to_string(connectionTimeoutSeconds)});
+            }
+
+            return connectionParameters;
+        }
+
+        /// 由连接参数序列生成的两组指针（两个以空指针收尾的平行数组）
+        struct ConnectionParameterPointers
+        {
+            std::vector<const char *> keywords; ///< 关键字指针数组，末尾一个空指针
+            std::vector<const char *> values;   ///< 取值指针数组，末尾一个空指针
+        };
+
+        /**
+         * @brief 由参数序列生成两个以空指针收尾的平行数组
+         * @details libpq 靠空指针判断参数列表结束：漏掉它就会越界读取后面的栈内容。数组元素是取值
+         *          文本的视图，**源序列必须活到 PQconnectdbParams 返回为止**——不要把本函数直接
+         *          套在 collectConnectionParameters(...) 的临时量上。
+         * @param parameters 参数序列（须活到使用完）
+         * @return ConnectionParameterPointers 两组指针
+         */
+        [[nodiscard]] ConnectionParameterPointers pointAtConnectionParameters(const std::vector<ConnectionParameter> &parameters)
+        {
+            ConnectionParameterPointers pointers;
+            // 取指针这一步与「收集」分离是有意的：收集期容器的扩容会搬移 std::string 元素，
+            // SSO 短字符串的内部缓冲随之失效，边收集边取的指针就成了悬垂指针
+            // 末尾各留一个空指针终止符，多留一位保证下面的 push_back 不会触发扩容
+            pointers.keywords.reserve(parameters.size() + 1U);
+            pointers.values.reserve(parameters.size() + 1U);
+
+            for (const ConnectionParameter &connectionParameter: parameters)
+            {
+                pointers.keywords.push_back(connectionParameter.keyword);
+                pointers.values.push_back(connectionParameter.text.c_str());
+            }
+
+            pointers.keywords.push_back(nullptr);
+            pointers.values.push_back(nullptr);
+            return pointers;
+        }
+
+        /**
+         * @brief 把实参逐个转成可绑定的文本参数；容器类型当场拒绝
+         * @details 容器的正确用法是展开成多个标量参数（如 IN 列表，方言已负责展开），而不是当成单个
+         *          参数绑定：静默绑成 NULL 会让调用方以为条件生效了，属于最难排查的一类静默错误。
+         *          参数序号按 1 开始计数，与语句里的 $n 编号一致，调用方可直接对照语句定位。
+         * @param parameters 全部实参
+         * @param textParameters 输出：转换结果；搬进容器后不再改动，交给 libpq 的指针在整个执行期间有效
+         * @return std::optional<std::string> 有值即失败原因（调用方写入 lastError()）
+         */
+        [[nodiscard]] std::optional<std::string> convertParametersToText(const std::span<const DatabaseValue>        parameters,
+                                                                         std::vector<Detail::PostgresTextParameter> &textParameters)
+        {
+            textParameters.clear();
+            textParameters.reserve(parameters.size());
+
+            for (std::size_t index = 0; index < parameters.size(); ++index)
+            {
+                std::optional<Detail::PostgresTextParameter> convertedParameter = Detail::toPostgresTextParameter(parameters[index]);
+                if (!convertedParameter.has_value())
+                {
+                    return "参数化查询不支持容器类型的参数（第 " + std::to_string(index + 1U) + " 个参数，类型 " + std::string(databaseValueTypeName(parameters[index])) +
+                           "）：请改用不带参数的 execute()，或先把容器自行序列化成一个标量文本参数后重试";
+                }
+
+                textParameters.push_back(std::move(*convertedParameter));
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 参数文本的 NUL 字节本地判定
+         * @details PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）在编码层面就不允许 NUL：
+         *          服务端会以「invalid byte sequence for encoding "UTF8": 0x00」这类报文拒绝整条
+         *          语句，调用方看到的只是一个与编码有关的报错，很难定位到「某个字符串里混进了 '\0'」。
+         *          本驱动本就用「指针 + 长度」送出参数，'\0' 不会被截断，是服务端按类型拒绝——要做
+         *          字节级二进制存储应使用 BYTEA 列，并按十六进制文本（'\x…'，纯 ASCII、不含 NUL）
+         *          作为普通文本参数送出。
+         * @param parameters 全部实参
+         * @return std::optional<std::string> 有值即失败原因（调用方写入 lastError()）
+         */
+        [[nodiscard]] std::optional<std::string> rejectNulByteParameters(const std::span<const DatabaseValue> parameters)
+        {
+            for (std::size_t index = 0; index < parameters.size(); ++index)
+            {
+                const auto *textValue = std::get_if<std::string>(&parameters[index]);
+                if (textValue == nullptr || textValue->find('\0') == std::string::npos)
+                {
+                    continue;
+                }
+
+                return "参数化查询的文本参数不支持 NUL 字节（第 " + std::to_string(index + 1U) +
+                       " 个参数）：PostgreSQL 的文本类型（TEXT / VARCHAR 等）无法存储 NUL 字节。"
+                       "需要承载任意二进制请改用 BYTEA 列，并把取值按十六进制文本（形如 \\x48656c6c6f）"
+                       "作为普通参数送出；若该字符串只是意外含 NUL，请在调用方清理掉";
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 组 PQexecParams 的两个平行数组（取值指针与长度）
+         * @details 长度数组非空时 libpq 按「指针 + 长度」取字节，不依赖零终止符，因此内嵌 '\0' 的
+         *          文本与空串都能被精确表达（只给 C 字符串会截断前者，省掉长度数组则连后者都表达不出来）。
+         *          SQL NULL 只能靠空指针表达：送空串会让 "IS NULL" 不再成立，NULL 与空串也会被混淆。
+         *          长度形参是 int，文本超出即失败——宁可当场失败也不送出被截断的数据。
+         * @param textParameters 已转换好的参数（须活到 PQexecParams 返回为止，数组元素是它的视图）
+         * @param valuePointers 输出：取值指针数组
+         * @param valueLengths 输出：长度数组（与指针数组平行）
+         * @return std::optional<std::string> 有值即失败原因（调用方写入 lastError()）
+         */
+        [[nodiscard]] std::optional<std::string> buildParameterArrays(const std::vector<Detail::PostgresTextParameter> &textParameters, std::vector<const char *> &valuePointers,
+                                                                      std::vector<int> &valueLengths)
+        {
+            valuePointers.clear();
+            valueLengths.clear();
+            valuePointers.reserve(textParameters.size());
+            valueLengths.reserve(textParameters.size());
+
+            for (const Detail::PostgresTextParameter &textParameter: textParameters)
+            {
+                if (textParameter.isNull)
+                {
+                    // SQL NULL 只能靠空指针表达：送空串会让 "IS NULL" 不再成立，NULL 与空串也会被混淆
+                    valuePointers.push_back(nullptr);
+                    valueLengths.push_back(0);
+                    continue;
+                }
+
+                // 长度形参是 int：超出即会被窄化成另一个长度，宁可当场失败也不送出被截断的数据
+                if (textParameter.text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+                {
+                    return "文本参数过长：" + std::to_string(textParameter.text.size()) + " 字节，超出 PostgreSQL 单参数上限";
+                }
+
+                // data() 而非 c_str()：长度由下面的数组单独给出，beyond 零终止符的字节同样会被取用
+                valuePointers.push_back(textParameter.text.data());
+                valueLengths.push_back(static_cast<int>(textParameter.text.size()));
+            }
+            return std::nullopt;
+        }
     } // namespace
 
     PostgresConnection::PostgresConnection(const ConnectionConfig &configuration)
@@ -219,86 +419,18 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 参数先全部收集到一个局部容器，再统一取指针：libpq 要求两个以空指针结尾的平行数组，
-        // 而取值文本又必须活到 PQconnectdbParams 返回为止。若边收集边取指针，容器的扩容
-        // 会搬移 std::string 元素，SSO 短字符串的内部缓冲随之失效，交出去的指针就成了悬垂指针
-        std::vector<ConnectionParameter> connectionParameters;
-
-        connectionParameters.push_back(ConnectionParameter{.keyword = "host", .text = m_configuration.host});
-
-        // port 为 0 表示「配置未指定端口」：省略该关键字让 libpq 回落到编译期默认端口 5432，
-        // 而不是把 0 当成端口号送出去（服务端只会回一句语法错误）
-        if (m_configuration.port != 0)
-        {
-            connectionParameters.push_back(ConnectionParameter{.keyword = "port", .text = std::to_string(m_configuration.port)});
-        }
-
-        // 空串的取值一律省略而不是原样送出：在 libpq 里「省略」表示用默认规则
-        // （用户名取操作系统账号、口令走 PGPASSWORD 或 ~/.pgpass、库名取用户名），
-        // 而「送出空串」表示「值就是空」，服务端会直接回 database "" does not exist 一类错误
-        if (!m_configuration.userName.empty())
-        {
-            connectionParameters.push_back(ConnectionParameter{.keyword = "user", .text = m_configuration.userName});
-        }
-
-        if (!m_configuration.password.empty())
-        {
-            // 口令按字节原样送出：libpq 的参数化接口不需要也不允许值里有任何转义
-            connectionParameters.push_back(ConnectionParameter{.keyword = "password", .text = m_configuration.password});
-        }
-
-        if (!m_configuration.database.empty())
-        {
-            connectionParameters.push_back(ConnectionParameter{.keyword = "dbname", .text = m_configuration.database});
-        }
-
-        // ---- 链路 TLS：五档直译成 sslmode，与 MySQL 侧的 ssl-mode 一一对应 ----
-        // 显式下发（含 disable）：不下发时客户端库按自己的默认档走，"这条链路有没有加密"
-        // 就成了随环境漂移的隐变量；把决定权收回配置面
-        connectionParameters.push_back(ConnectionParameter{.keyword = "sslmode", .text = tlsModeToLibpqSslMode(m_configuration.tls.mode)});
-
-        if (!m_configuration.tls.certificateAuthorityFile.empty())
-        {
-            // sslrootcert 是 TLS 校验链的信任锚（也是 verify-ca / verify-full 的判据来源）
-            connectionParameters.push_back(ConnectionParameter{.keyword = "sslrootcert", .text = m_configuration.tls.certificateAuthorityFile});
-        }
-
-        if (!m_configuration.tls.clientCertificateFile.empty())
-        {
-            // 证书与私钥由 ConnectionConfig::validate() 保证成对给出，这里按 libpq 的关键字名逐个下发
-            connectionParameters.push_back(ConnectionParameter{.keyword = "sslcert", .text = m_configuration.tls.clientCertificateFile});
-            connectionParameters.push_back(ConnectionParameter{.keyword = "sslkey", .text = m_configuration.tls.clientPrivateKeyFile});
-        }
-
-        // 建连超时每次建连都重新读取：外部 setter 因此在下一次 connect() 上生效
-        const int connectionTimeoutSeconds = toLibrarySeconds(connectTimeout());
-        if (connectionTimeoutSeconds > 0)
-        {
-            // 只在正数时下发：0 与「省略」在 libpq 里同义（无限等待），显式送出只会多一个无意义的键
-            connectionParameters.push_back(ConnectionParameter{.keyword = "connect_timeout", .text = std::to_string(connectionTimeoutSeconds)});
-        }
-
-        std::vector<const char *> keywordPointers;
-        std::vector<const char *> valuePointers;
-        // 末尾各留一个空指针终止符，多留一位保证下面的 push_back 不会触发扩容
-        keywordPointers.reserve(connectionParameters.size() + 1U);
-        valuePointers.reserve(connectionParameters.size() + 1U);
-
-        for (const ConnectionParameter &connectionParameter: connectionParameters)
-        {
-            keywordPointers.push_back(connectionParameter.keyword);
-            valuePointers.push_back(connectionParameter.text.c_str());
-        }
-
-        // libpq 靠空指针判断参数列表结束：漏掉它就会越界读取后面的栈内容
-        keywordPointers.push_back(nullptr);
-        valuePointers.push_back(nullptr);
+        // 建连超时每次建连都重新读取：外部 setter 因此在下一次 connect() 上生效。
+        // 参数序列必须落在具名局部量上：下面生成的指针数组存的是它的取值文本的视图，
+        // 直接套在临时量上（pointAtConnectionParameters(collectConnectionParameters(...))）
+        // 会让那些指针在整条表达式结束时指向已销毁的字符串
+        const std::vector<ConnectionParameter> connectionParameters = collectConnectionParameters(m_configuration, toLibrarySeconds(connectTimeout()));
+        const ConnectionParameterPointers      connectionPointers   = pointAtConnectionParameters(connectionParameters);
 
         // expand_dbname 传 0：不允许把 dbname 的取值当成连接串再展开一次。本驱动的取值全部来自
         // ConnectionConfig 的普通字段，展开只会让「库名里恰好含有 = 与空格」这类输入变成对连接
         // 参数的改写，属于多余且危险的语义
         constexpr int expandDatabaseName = 0;
-        m_connection                     = PQconnectdbParams(keywordPointers.data(), valuePointers.data(), expandDatabaseName);
+        m_connection                     = PQconnectdbParams(connectionPointers.keywords.data(), connectionPointers.values.data(), expandDatabaseName);
 
         // PQconnectdbParams 只在内存分配失败时返回空指针，此时连接句柄根本不存在，
         // 也就没有 PQfinish 要做的事，直接给出可读原因即可
@@ -430,50 +562,17 @@ namespace AsynGyanis::Database
         m_lastError.clear();
 
         // 参数能否绑定是纯本地判定（不向服务端发任何字节），因此放在连接状态之前：越早给出
-        // 越省一次网络往返，也让「容器参数被拒」这条判定不需要服务端即可验证。
+        // 越省一次网络往返，也让这两条判据不需要服务端即可验证。
         // 这是与 MySqlConnection（先判连接、再判参数）的有意差异
         std::vector<Detail::PostgresTextParameter> textParameters;
-        textParameters.reserve(parameters.size());
-
-        for (std::size_t index = 0; index < parameters.size(); ++index)
+        if (std::optional<std::string> reason = convertParametersToText(parameters, textParameters); reason.has_value())
         {
-            std::optional<Detail::PostgresTextParameter> convertedParameter = Detail::toPostgresTextParameter(parameters[index]);
-            if (!convertedParameter.has_value())
-            {
-                // 容器的正确用法是展开成多个标量参数（如 IN 列表，方言已负责展开），而不是当成单个
-                // 参数绑定。这里明确失败并给出替代做法：静默绑成 NULL 会让调用方以为条件生效了，
-                // 属于最难排查的一类静默错误。
-                // 参数序号按 1 开始计数，与语句里的 $n 编号一致，调用方可直接对照语句定位
-                m_lastError = "参数化查询不支持容器类型的参数（第 " + std::to_string(index + 1U) + " 个参数，类型 " + std::string(databaseValueTypeName(parameters[index])) +
-                              "）：请改用不带参数的 execute()，或先把容器自行序列化成一个标量文本参数后重试";
-                return nullptr;
-            }
-
-            // 转换结果按值搬进容器：此后容器不再改动，交给 libpq 的指针在整个执行期间都有效
-            textParameters.push_back(std::move(*convertedParameter));
+            m_lastError = std::move(*reason);
+            return nullptr;
         }
-
-        // NUL 字节同样是纯本地判定，因此与容器判定并列放在连接状态之前。
-        // PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）在编码层面就不允许 NUL：
-        // 服务端会以「invalid byte sequence for encoding "UTF8": 0x00」这类报文拒绝整条语句，
-        // 而调用方看到的只是一个与编码有关的报错，很难定位到「某个字符串里混进了 '\0'」。
-        // 这里提前拦下并说清替代做法，比让服务端报编码错误有用得多。
-        //
-        // 注意这不是本驱动的取舍：本驱动本来就用「指针 + 长度」送出参数，'\0' 不会被截断，
-        // 是服务端按类型拒绝。要做字节级二进制存储应使用 BYTEA 列，并按 PostgreSQL 的
-        // 十六进制文本格式（'\x…'，纯 ASCII、不含 NUL）作为普通文本参数送出。
-        for (std::size_t index = 0; index < parameters.size(); ++index)
+        if (std::optional<std::string> reason = rejectNulByteParameters(parameters); reason.has_value())
         {
-            const auto *textValue = std::get_if<std::string>(&parameters[index]);
-            if (textValue == nullptr || textValue->find('\0') == std::string::npos)
-            {
-                continue;
-            }
-
-            m_lastError = "参数化查询的文本参数不支持 NUL 字节（第 " + std::to_string(index + 1U) +
-                          " 个参数）：PostgreSQL 的文本类型（TEXT / VARCHAR 等）无法存储 NUL 字节。"
-                          "需要承载任意二进制请改用 BYTEA 列，并把取值按十六进制文本（形如 \\x48656c6c6f）"
-                          "作为普通参数送出；若该字符串只是意外含 NUL，请在调用方清理掉";
+            m_lastError = std::move(*reason);
             return nullptr;
         }
 
@@ -520,34 +619,14 @@ namespace AsynGyanis::Database
         // 扩展查询协议要求的写法，parameters[i] 天然对应第 i+1 个占位符
         const std::string commandText(command);
 
-        // paramValues 与 paramLengths 是两个平行数组：长度数组非空时 libpq 按「指针 + 长度」
-        // 取字节，不依赖零终止符，因此内嵌 '\0' 的文本与空串都能被精确表达
-        // （只给 C 字符串会截断前者，省掉长度数组则连后者都表达不出来）
+        // paramValues 与 paramLengths 是两个平行数组（元素是 textParameters 里取值文本的视图，
+        // textParameters 在本调用期间不再改动；参数过长的判定在 buildParameterArrays 里）
         std::vector<const char *> valuePointers;
         std::vector<int>          valueLengths;
-        valuePointers.reserve(textParameters.size());
-        valueLengths.reserve(textParameters.size());
-
-        for (const Detail::PostgresTextParameter &textParameter: textParameters)
+        if (std::optional<std::string> reason = buildParameterArrays(textParameters, valuePointers, valueLengths); reason.has_value())
         {
-            if (textParameter.isNull)
-            {
-                // SQL NULL 只能靠空指针表达：送空串会让 "IS NULL" 不再成立，NULL 与空串也会被混淆
-                valuePointers.push_back(nullptr);
-                valueLengths.push_back(0);
-                continue;
-            }
-
-            // 长度形参是 int：超出即会被窄化成另一个长度，宁可当场失败也不送出被截断的数据
-            if (textParameter.text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-            {
-                m_lastError = "文本参数过长：" + std::to_string(textParameter.text.size()) + " 字节，超出 PostgreSQL 单参数上限";
-                return nullptr;
-            }
-
-            // data() 而非 c_str()：长度由下面的数组单独给出，beyond 零终止符的字节同样会被取用
-            valuePointers.push_back(textParameter.text.data());
-            valueLengths.push_back(static_cast<int>(textParameter.text.size()));
+            m_lastError = std::move(*reason);
+            return nullptr;
         }
 
         // paramTypes 传空指针：让服务端从语句上下文推断每个参数的类型（$1 出现在 WHERE id = $1
