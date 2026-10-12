@@ -1068,7 +1068,8 @@ int main(int argc, char **argv)
         advertiseHttp3IfEnabled(server->router());
         enableTraceContextIfRequested(server->router());
         // 入站正文解压进的在途正文预算与压缩响应同一口径：解出来的字节和收进来的一样记同一本账
-        server->router().addMiddleware(Net::requestDecompressionMiddleware({}, server->memoryBudget()));
+        server->router().addMiddleware(Net::requestDecompressionMiddleware(
+                Net::RequestDecompressionOptions{.maximumDecompressedByteCount = configuration.parserLimits.maximumBodySize}, server->memoryBudget()));
         assembleServer(server);
         // 静态目录要在 start() 之前登记：它往本监听器的路由器上挂兜底路由
         if (!staticDirectory.empty())
@@ -1112,7 +1113,8 @@ int main(int argc, char **argv)
         advertiseHttp3IfEnabled(server->router());
         enableTraceContextIfRequested(server->router());
         // 入站正文解压进的在途正文预算与压缩响应同一口径：解出来的字节和收进来的一样记同一本账
-        server->router().addMiddleware(Net::requestDecompressionMiddleware({}, server->memoryBudget()));
+        server->router().addMiddleware(Net::requestDecompressionMiddleware(
+                Net::RequestDecompressionOptions{.maximumDecompressedByteCount = configuration.parserLimits.maximumBodySize}, server->memoryBudget()));
         if (compressResponses)
         {
             server->router().addMiddleware(makeCompressionMiddleware(loop));
@@ -1245,8 +1247,10 @@ int main(int argc, char **argv)
     {
         setupRoutes(http3Router);
         enableTraceContextIfRequested(http3Router);
-        // 与 h1/h2 同一份口径：h3 的入站解压同样进这台服务器的在途正文预算
-        http3Router.addMiddleware(Net::requestDecompressionMiddleware({}, inflightBodyBudget));
+        // 与 h1/h2 同一份口径：解压出口上限对准同一份配置的 parser_limits（两处不同值会出现
+        // 「收得下但解不出」或「解得出但收不下」），解出的字节同样进这台服务器的在途正文预算
+        http3Router.addMiddleware(Net::requestDecompressionMiddleware(Net::RequestDecompressionOptions{.maximumDecompressedByteCount = configuration.parserLimits.maximumBodySize},
+                                                                      inflightBodyBudget));
         if (compressResponses)
         {
             // 三条通道一律走外置版：h3 的会话收口现在会先叫醒并等完挂在业务协程上的在途动作

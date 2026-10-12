@@ -1309,7 +1309,8 @@ namespace AsynGyanis::Net
          * @details gzip 的压缩比可以到上千倍，不设上界等于让对端用几百字节决定本进程分配多少内存。
          *          默认与 `inflateHttpBody` 的默认同一档（8 MiB，与 `HttpParserLimits::maximumBodySize`
          *          同档）：解出来的东西最终也要过那一道闸，两处不同值只会让「收得下但解不出」或
-         *          「解得出但收不下」这两种半截形态出现
+         *          「解得出但收不下」这两种半截形态出现。**装配时把它对准同一份配置**——示例按
+         *          `configuration.parserLimits.maximumBodySize` 传入，收紧线上正文上限即同步收紧解压出口
          */
         std::size_t maximumDecompressedByteCount = kDefaultInflateOutputLimitBytes;
     };
