@@ -525,7 +525,7 @@ namespace AsynGyanis::Net
             FAIL() << "两条 accept 意味着应答不属于这次握手，不能挑一条信";
         }
 
-        // 子协议回显了空值：空串不是「没选子协议」的等价写法（RFC 6455 §4.1 明写它不是合法值）
+        // 子协议回显了空值：空串不是「没选子协议」的等价写法（RFC 6455 §4.2.2 明写它不是合法值）
         if (const auto emptyProtocol = validateWebSocketUpgradeResponse(
                     101, {{"Upgrade", "websocket"}, {"Connection", "Upgrade"}, {"sec-websocket-accept", std::string(kRfcExampleAcceptValue)}, {"Sec-WebSocket-Protocol", ""}},
                     kRfcExampleClientKey);
