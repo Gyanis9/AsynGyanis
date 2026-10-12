@@ -1109,20 +1109,6 @@ namespace AsynGyanis::Net
 
             const auto now = std::chrono::steady_clock::now();
 
-            // 名额归因镜像按本拍重算：握手完成点埋在状态机内部，在插入/摘除以外再散布加减
-            // 迟早漏一处；这一拍顺手数一遍（在线数 ≤ 上限，量级可忽略），最迟一个节拍内反映
-            {
-                std::size_t handshakingCount = 0;
-                for (const auto &connectionEntry: m_connections)
-                {
-                    if (!connectionEntry.second->isHandshakeComplete())
-                    {
-                        ++handshakingCount;
-                    }
-                }
-                m_handshakingConnectionCountMirror.store(handshakingCount, std::memory_order_relaxed);
-            }
-
             // 直接遍历连接表，不做标识快照：本循环里每一次挂起都被下面那枚守卫罩着，而摘除已收口
             // 的连接只有 reapClosedConnections() 一处、它见到守卫就跳过——这条因此不会在挂起期间被
             // 销毁；std::map 里别处摘除条目也不影响手里的迭代器。省下的是每拍一份快照：每条连接
@@ -1160,6 +1146,21 @@ namespace AsynGyanis::Net
                 }
             }
             reapClosedConnections();
+
+            // 名额归因镜像在本拍收尾处、**摘除之后**重算：握手完成点埋在状态机内部，在插入/摘除
+            // 以外再散布加减迟早漏一处；排在摘除之后，最后一条离表当拍镜像就归零——放在拍首会让
+            // 「已摘除但还没重算」的窗口里读到 1 而在线数已是 0（相减回绕成负值）
+            {
+                std::size_t handshakingCount = 0;
+                for (const auto &connectionEntry: m_connections)
+                {
+                    if (!connectionEntry.second->isHandshakeComplete())
+                    {
+                        ++handshakingCount;
+                    }
+                }
+                m_handshakingConnectionCountMirror.store(handshakingCount, std::memory_order_relaxed);
+            }
         }
         co_return;
     }

@@ -332,8 +332,9 @@ namespace AsynGyanis::Net
          *          **已验证**的那部分。未验证连接与已验证连接共用同一份 maximumConnections 是刻意的
          *          （理由见 QuicConnection.h 的刻意清单），本读数把「名额被谁占着」变成看得见的数——
          *          它在涨而 connectionCount() 不动，说明来的是只发 Initial 不推进握手的流量
-         * @note 镜像按定时器节拍重算（完成点埋在状态机内部，散布加减迟早漏一处），最迟一个节拍
-         *       （默认 10ms）内反映
+         * @note 镜像在每拍末尾、**摘除收口之后**重算（完成点埋在状态机内部，散布加减迟早漏一处；
+         *       排在摘除之后，最后一条离表当拍就归零）：连接在表时最迟一个节拍（默认 10ms）内反映；
+         *       空表期间新到的连接最坏等满一拍空闲上界（kIdleTickerSleep，1s）才被算上
          * @return std::size_t 未完成握手的在册连接数
          */
         [[nodiscard]] std::size_t handshakingConnectionCount() const noexcept;
