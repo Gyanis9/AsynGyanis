@@ -248,8 +248,9 @@ namespace AsynGyanis::Database
          *          而「读一千万行」与「读十行」在本框架里不该花同一份内存。默认实现把 lastError()
          *          置为中文提示并返回 nullptr，**刻意不退化成预读的 execute()**——那会让调用方以为自己在
          *          流式读、实际却把整份结果搬进内存，是最难排查的那类静默退化（与上面参数化那条同一判据）。
-         *          当前覆写只有 MySQL 文本协议一条（逐行取数，见 MySqlConnection 的同名方法）；SQLite 与
-         *          Redis、以及参数化与 ORM 链路一律走本默认实现的拒绝。SQLite 的素材已具备——它的结果集
+         *          当前覆写有三处：MySQL 的文本协议（mysql_use_result 逐行取数）与带参路径
+         *          （预处理语句 + 预取窗口，见同名带参重载）、PostgreSQL 的单行模式；SQLite 与
+         *          Redis、以及 ORM 链路走本默认实现的拒绝。SQLite 的素材已具备——它的结果集
          *          本就按游标取行（SqliteResult），接上它是排期问题而不是能力缺口。
          *
          * @warning 实现方要接受三条与预读不同的契约（逐条的理由写在 MySqlResult 的类注释与它自己的方法上）：
@@ -266,6 +267,27 @@ namespace AsynGyanis::Database
             static_cast<void>(command);
 
             m_lastError = std::string("该驱动暂不支持流式结果集（") + databaseTypeName(databaseType()) + "）：请改用 execute()（整份预读），或为该驱动实现逐行取数";
+            return nullptr;
+        }
+
+        /**
+         * @brief 执行带参数的命令并交出**流式**结果集（参数绑定与大结果集同时成立时用）
+         *
+         * @details 默认实现与上一支同一条口径：把 lastError() 置为中文提示并返回 nullptr，
+         *          **刻意不退化成** execute(command, parameters) 的整份预读——那会让调用方以为
+         *          自己在流式读、实际却把整份结果搬进内存。「带参解绑」与「长结果集」撞在一起时，
+         *          调用方要么显式落回预读（看见了内存代价），要么换一条实现了本路径的驱动。
+         * @param command 命令文本
+         * @param parameters 绑定参数（个别驱动的绑定语义与 execute(command, parameters) 同口径）
+         * @return std::unique_ptr<DatabaseResult> 流式结果集；失败或驱动不支持时返回 nullptr，
+         *         原因见 lastError()
+         */
+        [[nodiscard]] virtual std::unique_ptr<DatabaseResult> executeStreaming(const std::string_view command, const std::span<const DatabaseValue> parameters)
+        {
+            static_cast<void>(command);
+            static_cast<void>(parameters);
+
+            m_lastError = std::string("该驱动暂不支持带参数的流式结果集（") + databaseTypeName(databaseType()) + "）：请改用 execute()（整份预读），或为该驱动实现带参逐行取数";
             return nullptr;
         }
 

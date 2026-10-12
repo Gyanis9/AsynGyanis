@@ -1120,6 +1120,20 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 带参流式的基类口径：未实现该路径的驱动明确拒绝并点名，不悄悄退化成整份预读
+     */
+    TEST(SqliteConnection, ParameterizedStreamingIsRejectedByNameInsteadOfMaterializing)
+    {
+        SqliteConnection connection(ConnectionConfig::sqliteDefault());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("SELECT 1 WHERE 1 = ?", std::vector<DatabaseValue>{std::int64_t{1}});
+        EXPECT_EQ(result, nullptr);
+        EXPECT_TRUE(containsText(connection.lastError(), "Sqlite")) << connection.lastError();
+        EXPECT_TRUE(containsText(connection.lastError(), "带参数")) << connection.lastError();
+    }
+
+    /**
      * @brief 缓存涨到上限时逐条淘汰，此后旧文本要能重新编译、手里的游标不受影响
      *
      * @details kMaximumCachedStatements 之上那一格此前从没被踩过：表满即逐出「最久没被读到」的一条，

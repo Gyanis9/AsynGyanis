@@ -6,5 +6,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseSources
         ${CMAKE_CURRENT_LIST_DIR}/MySqlResult.cpp
         ${CMAKE_CURRENT_LIST_DIR}/MySqlStatementResult.h
         ${CMAKE_CURRENT_LIST_DIR}/MySqlStatementResult.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/MySqlStreamingStatementResult.h
+        ${CMAKE_CURRENT_LIST_DIR}/MySqlStreamingStatementResult.cpp
         ${CMAKE_CURRENT_LIST_DIR}/MySqlValueConversion.h
 )

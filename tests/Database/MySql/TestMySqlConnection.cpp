@@ -237,6 +237,22 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 钉住带参流式入口在未连接时同样明确失败（新入口与其余执行入口共用同一份发送前前置）
+     */
+    TEST(MySqlConnection, ParameterizedStreamingWithoutConnectionReturnsNullResult)
+    {
+        MySqlConnection                  connection(ConnectionConfig::mySqlDefault());
+        const std::vector<DatabaseValue> parameters{std::int64_t{1}};
+
+        const std::unique_ptr<DatabaseResult> result = connection.executeStreaming("SELECT ?", parameters);
+
+        EXPECT_EQ(result, nullptr);
+        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_TRUE(containsLocalizedText(connection.lastError()));
+        EXPECT_NE(connection.lastError().find("MySQL"), std::string::npos) << connection.lastError();
+    }
+
+    /**
      * @brief 钉住未连接时 disconnect() 是幂等空操作，析构依赖这条路径
      */
     TEST(MySqlConnection, DisconnectWithoutConnectionIsSafe)

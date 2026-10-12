@@ -154,6 +154,21 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override;
 
         /**
+         * @brief 执行带参数的命令并交出流式结果集：预处理语句逐行取数，行留在服务端按预取窗口取回
+         * @details 重写 DatabaseConnection::executeStreaming() 的带参重载：走预处理语句接口
+         *          （mysql_stmt_*）真正绑定参数；执行后**不** store_result，行留在服务端按预取窗口
+         *          （STMT_ATTR_PREFETCH_ROWS，64 行）逐批取回，客户端内存只装窗口与当前行。
+         *          列元数据取完即释放，语句句柄留在语句缓存里复用——取数期间在途流计数锁着整条连接，
+         *          缓存不会逐出这条语句。与文本协议流式档同一套契约：行数未知（rowCount() 回 0、
+         *          isEmpty() 回 false）、不可重扫、结果集必须比连接短命、收口之前连接不能再发任何语句。
+         * @param command 命令文本
+         * @param parameters 绑定参数（语义与 execute(command, parameters) 逐条一致）
+         * @return std::unique_ptr<DatabaseResult> 查询给出流式结果集、写语句给出 0 行 0 列的写回执；
+         *         未连接、命令为空或超长、预处理/绑定/执行失败都返回 nullptr，原因见 lastError()
+         */
+        [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters) override;
+
+        /**
          * @brief 获取数据库类型
          * @details 重写 DatabaseConnection::databaseType()：恒定返回 DatabaseType::MySql，不依赖连接状态。
          * @return DatabaseType DatabaseType::MySql
@@ -441,6 +456,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] MYSQL_STMT *findCachedStatement(std::string_view statementText) noexcept;
 
         /**
+         * @brief 取得（命中缓存或新预处理入表）这条命令的语句句柄——带参的两个执行入口共用
+         * @details 所有权的两种形态一次讲清：命中缓存时句柄归表；未命中时 init → 属性 → prepare →
+         *          cacheStatement，表未接管（分配失败）的那条须由调用方的作用域兜底关闭。取得时
+         *          顺带打开 STMT_ATTR_UPDATE_MAX_LENGTH（只影响元数据；理由见实现处注释）。
+         * @param statementText 语句文本，与预处理时交给客户端库的完全一致
+         * @param tableOwnsStatement 输出：true 表示句柄归缓存（失败路径按文本弃掉）；
+         *        false 表示表未接管，调用方须在退出前关闭它
+         * @return MYSQL_STMT* 语句句柄；失败为 nullptr（原因已写进 lastError()）
+         */
+        [[nodiscard]] MYSQL_STMT *acquireStatementForCommand(std::string_view statementText, bool &tableOwnsStatement);
+
+        /**
          * @brief 把一条刚预处理成功的语句放进缓存，成功即由表接管它的所有权
          * @details 表满时逐出最久没被读到的一条（见 evictLeastRecentlyUsedStatement()）：条数与内存
          *          仍有常数上界，而热语句不会被一批一次性语句整批挤掉。
@@ -488,6 +515,8 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool isReadyToSendCommand(std::string_view command);
 
         friend class MySqlResult; ///< 流式结果按上面这条通知回来对账（计数是私有的）
+
+        friend class MySqlStreamingStatementResult; ///< 带参流式结果同一条对账；清不干净时按文本弃掉缓存语句
 
         /**
          * @brief 关闭表中全部语句并清空缓存

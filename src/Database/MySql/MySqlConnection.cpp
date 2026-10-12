@@ -14,6 +14,7 @@
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/MySql/MySqlResult.h"
 #include "Database/MySql/MySqlStatementResult.h"
+#include "Database/MySql/MySqlStreamingStatementResult.h"
 
 #ifdef DATABASE_HAS_MYSQL
 
@@ -135,6 +136,35 @@ namespace AsynGyanis::Database
 
         /// 取值缓冲区的下限：max_length 为 0 的列（整列都是 NULL 或空串）也必须拿到一个合法指针
         constexpr unsigned long kMinimumColumnBufferBytes = 1UL;
+
+        /// 带参流式的预取窗口（行数）：不预读的那条路径每取一行都要一次网络往返（默认预取 1），
+        /// 窗口把它降到 1/64。代价是客户端要多留「窗口 × 单行字节」的缓冲——上界随窗口线性涨，
+        /// 64 是「典型行（百字节级）几乎不占内存」与「大行不比整份预读更糟」之间的中值
+        constexpr unsigned long kStatementPrefetchRows = 64UL;
+
+        /**
+         * @brief 表未接管的那条语句的作用域兜底：各条失败出口不必逐个补关闭
+         * @details 表没收下的句柄得有收尾：调用方各条出口靠 discardCachedStatement(command) 按键
+         *          关闭，而它对「表里没有这个键」是空操作——缓存插入因分配失败没接管时，句柄既
+         *          没人关也没人记。这枚守卫把表外的那条接走，不与表内的那条抢所有权
+         */
+        struct UnclaimedStatement
+        {
+            MYSQL_STMT *statement; ///< 待收尾的语句句柄
+            bool        unclaimed; ///< 语句缓存未接管本条时为真
+
+            /**
+             * @brief 离开作用域时关掉表外的那条语句；已被表接管时空操作
+             */
+            ~UnclaimedStatement()
+            {
+                // mysql_stmt_close 是 C 调用、不抛，因此在析构里收尾安全
+                if (unclaimed && statement != nullptr)
+                {
+                    mysql_stmt_close(statement);
+                }
+            }
+        };
     } // namespace
 
     MySqlConnection::MySqlConnection(const ConnectionConfig &configuration)
@@ -456,69 +486,15 @@ namespace AsynGyanis::Database
             }
         }
 
-        // 预处理语句按文本复用：mysql_stmt_prepare 是一趟实打实的网络往返（COM_STMT_PREPARE），
-        // mysql_stmt_close 又是一趟（COM_STMT_CLOSE）。真机实测同一条主键查询「每次重编」414 µs、
-        // 「备好复用」197 µs，省掉的正是这两趟。
-        MYSQL_STMT *rawStatement = findCachedStatement(command);
-        // 命中缓存时所有权本就在表里；新建的那条要等 cacheStatement 回报接管结果
-        bool takenByCache = true;
+        // 语句按文本取（命中缓存或新预处理入表）：取得与收尾的细节收在 acquireStatementForCommand，
+        // 带参的流式入口共用同一份；表外的那条由作用域兜底关闭
+        bool        tableOwnsStatement = true;
+        MYSQL_STMT *rawStatement       = acquireStatementForCommand(command, tableOwnsStatement);
         if (rawStatement == nullptr)
         {
-            // 句柄刚创建时尚未入表，本函数负责把它收干净：init 只有内存不足才会返回空，
-            // 之后的 attr_set / prepare 失败路径都显式 mysql_stmt_close，不留服务端资源
-            rawStatement = mysql_stmt_init(m_mysqlHandle);
-            if (rawStatement == nullptr)
-            {
-                // mysql_stmt_init 只在内存不足时返回空，错误状态仍记在连接句柄上
-                captureError("创建 MySQL 预处理语句句柄失败");
-                return nullptr;
-            }
-
-            // 打开「store_result 时顺带更新每列 max_length」这一属性：取值缓冲区正是按 max_length 分配的，
-            // 而实测本客户端库对 BLOB/TEXT 列给出的初始 max_length 是 0（不是类型上限）。少了这个属性，
-            // 每行每列都会因长度超出 1 字节的最小缓冲而改走 mysql_stmt_fetch_column 逐列补取——结果仍对，
-            // 但每列多搬一次。该属性只影响元数据，且入表后一路保留，只需在首次编译时设一次
-            constexpr bool kUpdateMaximumLength = true;
-            if (mysql_stmt_attr_set(rawStatement, STMT_ATTR_UPDATE_MAX_LENGTH, &kUpdateMaximumLength) != 0)
-            {
-                captureStatementError(rawStatement, "设置 MySQL 预处理语句属性失败");
-                mysql_stmt_close(rawStatement); // 还没入表，由本函数负责收尾
-                return nullptr;
-            }
-
-            // 语句文本按「指针 + 长度」交给客户端库，本身二进制安全，不要求零终止
-            if (mysql_stmt_prepare(rawStatement, command.data(), static_cast<unsigned long>(command.size())) != 0)
-            {
-                // 语法错误、表不存在、占位符写法不被支持等都在这一步暴露，错误挂在语句句柄上
-                captureStatementError(rawStatement, "预处理 SQL 语句失败");
-                mysql_stmt_close(rawStatement); // 同上：这条从未进过表
-                return nullptr;
-            }
-
-            // 编译成功即由表接管所有权：此后任何失败路径都不得 close 本地这份指针，只能 discard
-            takenByCache = cacheStatement(std::string{command}, rawStatement);
+            return nullptr;
         }
-
-        // 表没收下的那一条得有收尾：下面每一条出口都靠 discardCachedStatement(command) 按键关闭，
-        // 而它对「表里没有这个键」是空操作——缓存插入因分配失败没接管时，句柄既没人关也没人记。
-        // 一枚作用域兜底把表外的那条接走，各条出口就不必逐个改动，也不与表内的那条抢所有权
-        struct UnclaimedStatement
-        {
-            MYSQL_STMT *statement; ///< 待收尾的语句句柄
-            bool        unclaimed; ///< 语句缓存未接管本条时为真
-
-            /**
-             * @brief 离开作用域时关掉表外的那条语句；已被表接管时空操作
-             */
-            ~UnclaimedStatement()
-            {
-                // mysql_stmt_close 是 C 调用、不抛，因此在析构里收尾安全
-                if (unclaimed && statement != nullptr)
-                {
-                    mysql_stmt_close(statement);
-                }
-            }
-        } unclaimedStatement{rawStatement, !takenByCache};
+        UnclaimedStatement unclaimedStatement{rawStatement, !tableOwnsStatement};
 
         // 绑定与执行必须成对完成：绑定缓冲区是 bindAndExecuteStatement 的局部变量，
         // 只有在该函数内部（mysql_stmt_execute 期间）才是有效的
@@ -568,6 +544,118 @@ namespace AsynGyanis::Database
         }
 
         return result;
+    }
+
+    std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view command, const std::span<const DatabaseValue> parameters)
+    {
+        // 与其余执行入口同一份发送前前置（未连接、空命令、在途未清流都在发送之前拒）
+        if (!isReadyToSendCommand(command))
+        {
+            return nullptr;
+        }
+
+        // 与另两条路径同一条窄化判定：mysql_stmt_prepare 的长度形参也是 unsigned long
+        if constexpr (sizeof(std::string_view::size_type) > sizeof(unsigned long))
+        {
+            if (command.size() > kMaximumNativeLength)
+            {
+                m_lastError = "数据库命令过长：" + std::to_string(command.size()) + " 字节，超出 MySQL 客户端协议上限";
+                return nullptr;
+            }
+        }
+
+        bool        tableOwnsStatement = true;
+        MYSQL_STMT *statement          = acquireStatementForCommand(command, tableOwnsStatement);
+        if (statement == nullptr)
+        {
+            return nullptr;
+        }
+        UnclaimedStatement unclaimedStatement{statement, !tableOwnsStatement};
+
+        // 预取窗口：只对「不预读、逐行取数」的本条路径有意义（store_result 过的结果用不到它）。
+        // attr_set 只在取值非法时失败（窗口恒为正，正常不会发生），失败即弃这条语句
+        const unsigned long prefetchWindowRows = kStatementPrefetchRows;
+        if (mysql_stmt_attr_set(statement, STMT_ATTR_PREFETCH_ROWS, &prefetchWindowRows) != 0)
+        {
+            captureStatementError(statement, "设置 MySQL 预处理语句的预取窗口失败");
+            discardCachedStatement(command);
+            return nullptr;
+        }
+
+        if (!bindAndExecuteStatement(statement, parameters))
+        {
+            discardCachedStatement(command);
+            return nullptr;
+        }
+
+        // 无返回列 = 写语句：与预读路径同款的 0 行 0 列写回执（影响行数就地快照）；
+        // 这不是「流」，连接不会被它卡住
+        if (mysql_stmt_field_count(statement) == 0)
+        {
+            return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(statement)), mysql_stmt_insert_id(statement));
+        }
+
+        // 有返回列：**不** store_result——行留在服务端，此后按预取窗口逐批取回；列元数据取完即释放
+        MYSQL_RES *rawMetadata = mysql_stmt_result_metadata(statement);
+        if (rawMetadata == nullptr)
+        {
+            captureStatementError(statement, "读取预处理语句的列元数据失败");
+            discardCachedStatement(command);
+            return nullptr;
+        }
+        std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
+
+        const auto   columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
+        MYSQL_FIELD *fields      = mysql_fetch_fields(rawMetadata);
+        if (fields == nullptr && columnCount > 0)
+        {
+            m_lastError = "读取 MySQL 结果集失败：列元数据不可用";
+            discardCachedStatement(command);
+            return nullptr;
+        }
+
+        std::vector<std::string>       columnNames;
+        std::vector<std::vector<char>> columnBuffers(columnCount);
+        std::vector<unsigned long>     columnLengths(columnCount, 0UL);
+        std::vector<int>               columnTypes(columnCount, 0);
+        std::vector<unsigned int>      columnCharacterSets(columnCount, 0U);
+        columnNames.reserve(columnCount);
+
+        // is_null 形参是 bool*，位压缩的 vector<bool> 取不到元素地址，因此动态分配一段定长数组
+        std::unique_ptr<bool[]> columnNullFlags = std::make_unique<bool[]>(columnCount);
+
+        std::vector<MYSQL_BIND> resultBindings(columnCount);
+        for (std::size_t index = 0; index < columnCount; ++index)
+        {
+            const MYSQL_FIELD &field = fields[index];
+            columnNames.emplace_back(field.name != nullptr ? field.name : "");
+            columnTypes[index]         = static_cast<int>(field.type);
+            columnCharacterSets[index] = static_cast<unsigned int>(field.charsetnr);
+
+            // 流式路径取不到 store_result 更新过的 max_length，缓冲一律从最小容量起步；
+            // 超出容量的列在取行时按实际长度补取（buildCurrentRow 与预读路径同一判据）
+            columnBuffers[index].assign(kMinimumColumnBufferBytes, '\0');
+
+            MYSQL_BIND &binding   = resultBindings[index];
+            binding.buffer_type   = MYSQL_TYPE_STRING;
+            binding.buffer        = columnBuffers[index].data();
+            binding.buffer_length = kMinimumColumnBufferBytes;
+            binding.length        = &columnLengths[index];
+            binding.is_null       = &columnNullFlags[index];
+        }
+
+        if (mysql_stmt_bind_result(statement, resultBindings.data()) != 0)
+        {
+            captureStatementError(statement, "绑定预处理语句结果缓冲区失败");
+            discardCachedStatement(command);
+            return nullptr;
+        }
+
+        // 绑定成功才记账：这一格在结果读完、中断或析构时归位（见 MySqlStreamingStatementResult::endStream）。
+        // 构造之后缓冲与元数据的地址都归结果集持有（vector 移动不改元素地址），绑定的指针始终有效
+        ++m_openStreamCount;
+        return std::make_unique<MySqlStreamingStatementResult>(statement, this, std::string{command}, std::move(columnNames), std::move(columnTypes),
+                                                               std::move(columnCharacterSets), std::move(columnBuffers), std::move(columnLengths), std::move(columnNullFlags));
     }
 
     std::string MySqlConnection::serverVersion() const
@@ -763,6 +851,55 @@ namespace AsynGyanis::Database
         // 才能判「1213 死锁可重试 / 1062 唯一键冲突不可重试」，而不是去匹配中文
         m_lastError.assignNative(composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber),
                                  static_cast<std::int64_t>(errorNumber));
+    }
+
+    MYSQL_STMT *MySqlConnection::acquireStatementForCommand(const std::string_view statementText, bool &tableOwnsStatement)
+    {
+        // 预处理语句按文本复用：mysql_stmt_prepare 是一趟实打实的网络往返（COM_STMT_PREPARE），
+        // mysql_stmt_close 又是一趟（COM_STMT_CLOSE）。真机实测同一条主键查询「每次重编」414 µs、
+        // 「备好复用」197 µs，省掉的正是这两趟
+        MYSQL_STMT *statement = findCachedStatement(statementText);
+        // 命中缓存时所有权本就在表里；新建的那条要等 cacheStatement 回报接管结果
+        tableOwnsStatement = true;
+        if (statement != nullptr)
+        {
+            return statement;
+        }
+
+        // 句柄刚创建时尚未入表，本函数负责把它收干净：init 只有内存不足才会返回空，
+        // 之后的 attr_set / prepare 失败路径都显式 mysql_stmt_close，不留服务端资源
+        statement = mysql_stmt_init(m_mysqlHandle);
+        if (statement == nullptr)
+        {
+            // mysql_stmt_init 只在内存不足时返回空，错误状态仍记在连接句柄上
+            captureError("创建 MySQL 预处理语句句柄失败");
+            return nullptr;
+        }
+
+        // 打开「store_result 时顺带更新每列 max_length」这一属性：取值缓冲区正是按 max_length 分配的，
+        // 而实测本客户端库对 BLOB/TEXT 列给出的初始 max_length 是 0（不是类型上限）。少了这个属性，
+        // 每行每列都会因长度超出 1 字节的最小缓冲而改走 mysql_stmt_fetch_column 逐列补取——结果仍对，
+        // 但每列多搬一次。该属性只影响元数据，且入表后一路保留，只需在首次编译时设一次
+        constexpr bool kUpdateMaximumLength = true;
+        if (mysql_stmt_attr_set(statement, STMT_ATTR_UPDATE_MAX_LENGTH, &kUpdateMaximumLength) != 0)
+        {
+            captureStatementError(statement, "设置 MySQL 预处理语句属性失败");
+            mysql_stmt_close(statement); // 还没入表，由本函数负责收尾
+            return nullptr;
+        }
+
+        // 语句文本按「指针 + 长度」交给客户端库，本身二进制安全，不要求零终止
+        if (mysql_stmt_prepare(statement, statementText.data(), static_cast<unsigned long>(statementText.size())) != 0)
+        {
+            // 语法错误、表不存在、占位符写法不被支持等都在这一步暴露，错误挂在语句句柄上
+            captureStatementError(statement, "预处理 SQL 语句失败");
+            mysql_stmt_close(statement); // 同上：这条从未进过表
+            return nullptr;
+        }
+
+        // 编译成功即由表接管所有权；表未接管（分配失败）时由调用方的作用域兜底关闭
+        tableOwnsStatement = cacheStatement(std::string{statementText}, statement);
+        return statement;
     }
 
     MYSQL_STMT *MySqlConnection::findCachedStatement(const std::string_view statementText) noexcept
@@ -1188,6 +1325,13 @@ namespace AsynGyanis::Database
     std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view)
     {
         // 与上面两条同一判据：桩里报的是「当前构建没编译驱动」，不是基类默认的「该驱动不支持流式结果集」
+        m_lastError = kMissingDriverError;
+        return nullptr;
+    }
+
+    std::unique_ptr<DatabaseResult> MySqlConnection::executeStreaming(const std::string_view, const std::span<const DatabaseValue>)
+    {
+        // 带参流式同样按「没编译驱动」报，而不是基类默认的「不支持这条路径」
         m_lastError = kMissingDriverError;
         return nullptr;
     }

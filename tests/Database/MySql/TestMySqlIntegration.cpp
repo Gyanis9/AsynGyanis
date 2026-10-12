@@ -12,6 +12,8 @@
 // - 多语句文本在两条协议路径上都整次拒绝且首条不落库（这是「握手不开 CLIENT_MULTI_STATEMENTS」的可证形式）
 // - 语句表到顶时逐出最久没被读到的那一条：条数停在上界、热语句第二轮仍逐条命中
 // - 预处理结果的取值缓冲区跟着「本次数据长度」走：先读 1 MiB 再读 20 字节，同一句缓存语句的读数要收缩回百字节级
+// - 带参流式（executeStreaming(command, parameters)）：跨预取窗口读全每一行（含逐列补取路径与 NULL）、
+//   在途流封锁三个执行入口、中途丢弃不串流、写语句给出写回执
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
 
@@ -112,6 +114,50 @@ namespace AsynGyanis::Database
         /// 语句复用用例的表：同一文本要连跑多次，列故意少到能一眼看出读到的是哪一版
         constexpr std::string_view kReusedStatementTableName = "Asyn_Mysql_ReuseStmt";
         constexpr std::string_view kReusedStatementColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
+
+        /// 带参流式用例的表：行数跨过预取窗口（64 行），列含长 TEXT（逐列补取路径）与 NULL
+        constexpr std::string_view kParameterizedStreamingTableName = "Asyn_Mysql_ParamStream";
+        constexpr std::string_view kParameterizedStreamingColumns   = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
+        constexpr std::size_t      kParameterizedStreamingRowCount  = 150;
+
+        /// 带参流式用例第 1 行的大载荷：远超最小取值缓冲，逼出 mysql_stmt_fetch_column 逐列补取那条路
+        [[nodiscard]] std::string makeStreamingBigPayload()
+        {
+            std::string bigPayload;
+            for (int index = 0; index < 2000; ++index)
+            {
+                bigPayload += "流式";
+                bigPayload += std::to_string(index);
+            }
+            return bigPayload;
+        }
+
+        /// 往带参流式的表里灌 kParameterizedStreamingRowCount 行：第 1 行大载荷、第 8 行 NULL、其余小载荷
+        [[nodiscard]] bool seedParameterizedStreamingRows(MySqlConnection &connection, const std::string_view tableName, const std::string &bigPayload)
+        {
+            const MySqlDialect dialect;
+            const std::string  insertStatement = "INSERT INTO " + dialect.quoteIdentifier(tableName) + " (`id`, `label`, `payload`) VALUES (?, ?, ?)";
+            for (std::size_t index = 0; index < kParameterizedStreamingRowCount; ++index)
+            {
+                const std::int64_t         rowId = static_cast<std::int64_t>(index + 1U);
+                std::vector<DatabaseValue> row{rowId, std::string("row-") + std::to_string(rowId)};
+                if (rowId == 1)
+                {
+                    row.emplace_back(bigPayload);
+                } else if (rowId == 8)
+                {
+                    row.emplace_back(std::monostate{});
+                } else
+                {
+                    row.emplace_back(std::string("small"));
+                }
+                if (connection.execute(insertStatement, row) == nullptr)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         /// 注入证明用例的表
         constexpr std::string_view kInjectionTableName = "Asyn_Mysql_Injection";
@@ -3051,6 +3097,137 @@ namespace AsynGyanis::Database
         stream.reset();
         EXPECT_TRUE(connection.resetSessionState()) << "流已收回，复位不该再被拒：" << connection.lastError();
         const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 3");
+        ASSERT_NE(followUp, nullptr) << connection.lastError();
+        EXPECT_TRUE(followUp->next());
+    }
+
+    /**
+     * @brief 带参流式跨预取窗口读全每一行：行序、大载荷（逐列补取路径）、NULL 与流式档哨兵都要对
+     */
+    TEST_F(MySqlIntegrationTest, ParameterizedStreamingReadsEveryRowAcrossPrefetchWindows)
+    {
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::string bigPayload = makeStreamingBigPayload();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, bigPayload)) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
+                "SELECT `id`, `label`, `payload` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
+        ASSERT_NE(stream, nullptr) << connection.lastError();
+
+        // 流式档的歧义哨兵取不漏检一侧：行数未知回 0、isEmpty 回 false（不诱导「没有行」的短路径）
+        EXPECT_EQ(stream->rowCount(), 0U);
+        EXPECT_FALSE(stream->isEmpty());
+        EXPECT_EQ(stream->columnCount(), 3U);
+        EXPECT_EQ(stream->columnNames(), (std::vector<std::string>{"id", "label", "payload"}));
+
+        std::size_t readRows = 0;
+        while (stream->next())
+        {
+            ++readRows;
+            EXPECT_EQ(std::get<std::int64_t>(stream->getValue("id")), static_cast<std::int64_t>(readRows)) << "行序错乱";
+            if (readRows == 1)
+            {
+                // 大载荷走的是「绑定缓冲装不下 → mysql_stmt_fetch_column 逐列补取」那条路，逐字节复核
+                const std::string payload = std::get<std::string>(stream->getValue("payload"));
+                EXPECT_EQ(payload.size(), bigPayload.size());
+                EXPECT_EQ(payload, bigPayload);
+            }
+            if (readRows == 8)
+            {
+                EXPECT_TRUE(std::holds_alternative<std::monostate>(stream->getValue("payload"))) << "NULL 被读成了别的值";
+            }
+        }
+        EXPECT_EQ(readRows, kParameterizedStreamingRowCount);
+
+        // 读完即收口：同一连接接着执行别的语句
+        const std::unique_ptr<DatabaseResult> afterDrain = connection.execute("SELECT 1");
+        ASSERT_NE(afterDrain, nullptr) << connection.lastError();
+    }
+
+    /**
+     * @brief 流在途封锁连接：没读完之前三个执行入口都在发送之前拒，读完（或析构）后恢复
+     */
+    TEST_F(MySqlIntegrationTest, StreamingResultHoldsTheConnectionUntilDrainedOrDisposed)
+    {
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(
+                    "SELECT `id` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`", std::vector<DatabaseValue>{std::int64_t{1}});
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+            ASSERT_TRUE(stream->next());
+
+            EXPECT_EQ(connection.execute("SELECT 1"), nullptr) << "流没读完时又发了一条语句";
+            EXPECT_NE(connection.lastError().find("未消费完"), std::string::npos) << connection.lastError();
+            EXPECT_EQ(connection.execute("SELECT ?", std::vector<DatabaseValue>{std::int64_t{1}}), nullptr);
+            EXPECT_NE(connection.lastError().find("未消费完"), std::string::npos) << connection.lastError();
+            EXPECT_EQ(connection.executeStreaming("SELECT ?", std::vector<DatabaseValue>{std::int64_t{1}}), nullptr) << "带参流式入口没被在途流拦住";
+            EXPECT_NE(connection.lastError().find("未消费完"), std::string::npos) << connection.lastError();
+        } // 析构 = free_result 吃掉剩余回复流
+
+        const std::unique_ptr<DatabaseResult> afterDisposal = connection.execute("SELECT 1");
+        ASSERT_NE(afterDisposal, nullptr) << connection.lastError();
+        EXPECT_TRUE(afterDisposal->next());
+    }
+
+    /**
+     * @brief 中途丢弃带参流后连接仍可用且下一条结果新鲜：预取窗里多读来的行要被吞干净
+     */
+    TEST_F(MySqlIntegrationTest, DiscardingAParameterizedStreamMidwayDrainsThePrefetchWindow)
+    {
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+
+        const std::string selectStatement = "SELECT `id` FROM " + quote(kParameterizedStreamingTableName) + " WHERE `id` >= ? ORDER BY `id`";
+        {
+            const std::unique_ptr<DatabaseResult> stream = connection.executeStreaming(selectStatement, std::vector<DatabaseValue>{std::int64_t{1}});
+            ASSERT_NE(stream, nullptr) << connection.lastError();
+            ASSERT_TRUE(stream->next()); // 只读一行就收手
+        }
+
+        // 再来一遍并读全：预取窗残留没有串进下一条结果（行数精确、首行仍是第一行）
+        const std::unique_ptr<DatabaseResult> secondStream = connection.executeStreaming(selectStatement, std::vector<DatabaseValue>{std::int64_t{1}});
+        ASSERT_NE(secondStream, nullptr) << connection.lastError();
+        std::size_t count = 0;
+        while (secondStream->next())
+        {
+            ++count;
+            EXPECT_EQ(std::get<std::int64_t>(secondStream->getValue("id")), static_cast<std::int64_t>(count));
+        }
+        EXPECT_EQ(count, kParameterizedStreamingRowCount);
+    }
+
+    /**
+     * @brief 写语句走带参流式入口：给出写回执（0 行 0 列 + 影响行数），不把连接卡在流态
+     */
+    TEST_F(MySqlIntegrationTest, StreamingEntryHandlesParameterizedWritesAsReceipts)
+    {
+        ASSERT_TRUE(prepareTable(kParameterizedStreamingTableName, kParameterizedStreamingColumns)) << m_lastSetupError;
+
+        MySqlConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        ASSERT_TRUE(seedParameterizedStreamingRows(connection, kParameterizedStreamingTableName, "x")) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> receipt = connection.executeStreaming("UPDATE " + quote(kParameterizedStreamingTableName) + " SET `label` = ? WHERE `id` = ?",
+                                                                                    std::vector<DatabaseValue>{std::string("renamed"), std::int64_t{3}});
+        ASSERT_NE(receipt, nullptr) << connection.lastError();
+        EXPECT_EQ(receipt->rowCount(), 0U);
+        EXPECT_TRUE(receipt->isEmpty());
+        EXPECT_EQ(receipt->affectedRowCount(), 1);
+
+        // 写回执不是流：连接立刻可用
+        const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 1");
         ASSERT_NE(followUp, nullptr) << connection.lastError();
         EXPECT_TRUE(followUp->next());
     }
