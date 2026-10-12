@@ -76,6 +76,8 @@
   会话服务、带签名的凭据都接得住），本层管拆头、路径名单、明文连接上的传输层判据与挑战头。挑战按 §3.1 分两种
   形状：没给凭据只带 `realm`，给了但不接受才附 `error="invalid_token"`——合成一条就是对没登录的客户端谎报
   「你手里那条被拒了」；空凭据与「方案不是 Bearer」一起按没给处置，不拿空串去问 `verify`
+- **出站 HTTP 代理** — `HttpClient` 认 `http_proxy` / `https_proxy` / `no_proxy` 环境（大小写都认、小写优先，`no_proxy` 支持 `*`、域后缀含子域与 `:port` 限定），也可用第 4 个构造参数传一份显式 `HttpProxyPolicy`（显式值优先；`consultEnvironment=false` 即整体关掉环境识别；构造时把环境读一次冻结，静态 `get/post/send` 每次调用现读）。明文目标按 RFC 9112 §3.2.2 走绝对形式请求目标；`https` 目标先发 `CONNECT host:port`（头区 8 KiB 上限、吃请求剩余预算、非 2xx 与 407 各自点名，200 之后抢跑的坏代理当场拒绝），隧道里的 TLS 仍按**目标**的 SNI 与主机名校验走，ALPN 谈出的 h2 天然复用同一条隧道。代理地址支持 `http://[用户[:口令]@]主机[:端口]`（凭据折成 `Proxy-Authorization: Basic`、`%XX` 转义解码、错误文案里凭据一律打码；`https://` 代理当前不支持、遇到拒绝而**不静默直连**）；被代理命中的请求跳过 h3（QUIC 不经 HTTP 代理）；重定向逐跳按当跳 URL 重解析代理与豁免表
+
 - **出站重定向跟随（RFC 9110 §15.4）** — `HttpClientRequest::followRedirects` 默认关；开着时按状态码折算下一跳
   （303→GET、301/302 只折 POST、307/308 原样重放方法与正文），`Location` 允许相对引用（按 §10.2.2 对基准解析），
   跨源那一跳会剥掉 `Authorization`。时限按整条请求算——每跳只花剩下的预算，不会变成「总时限 × 跳数」；
