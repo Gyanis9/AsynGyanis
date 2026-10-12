@@ -1,7 +1,8 @@
-# 供应链门禁：生成可交付的 SBOM，并核对「每条第三方依赖都有公告入口、且台账版本与固定版本同解」。
+# 供应链门禁：生成可交付的 SBOM、核对「每条第三方依赖都有公告入口、且台账版本与固定版本同解」，
+# 并以 gitleaks 全树扫一遍明文凭据（豁免面写死在与代码同一提交维护的 .gitleaks.toml 里）。
 #
-# 这条作业刻意做得很轻（不装编译器、不构建，几十秒），所以它可以按周跑：
-# 依赖公告与 SBOM 的有效性来自「每次都在跑」，而不是「发版前想起来跑一次」。
+# 这几条作业刻意做得很轻（不装编译器、不构建，几十秒），所以它可以按周跑：
+# 依赖公告、SBOM 与密钥扫描的有效性来自「每次都在跑」，而不是「发版前想起来跑一次」。
 # 与两条重型工作流一样在 main 推送与手动触发上跑，另加每周一的定时；develop 上的日常改动不消耗分钟数。
 
 name: 供应链
@@ -76,3 +77,27 @@ jobs:
         # 脚本只在「台账缺登记 / 版本漂移 / 残留已删依赖」时返回非 0；
         # 上游页面取不到只打提示，不判红——上游临时不可用不是本仓库的缺陷
         run: python3 scripts/check-dependency-advisories.py --fetch
+
+  secret-scan:
+    name: 密钥扫描（gitleaks，钉版本与内容摘要）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与 h2spec / Autobahn 同一条纪律：扫描器下载一次就钉住版本与内容摘要
+      # （摘要 = 官方 checksums 文件里那一行，本地实跑时逐字节核过），
+      # 之后同一提交在哪台机器上判的都是同一份扫描器
+      - name: 取 gitleaks 8.30.1 并核 sha256
+        run: |
+          set -euo pipefail
+          curl -sSLO --retry 5 --retry-delay 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
+          ./gitleaks version
+
+      - name: 全树扫描（豁免面与理由在 .gitleaks.toml）
+        # --redact：万一将来有命中，作业日志里也不出现命中值本身
+        run: ./gitleaks dir . --no-banner --redact --config .gitleaks.toml --exit-code 1

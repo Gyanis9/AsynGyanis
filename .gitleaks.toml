@@ -1,0 +1,29 @@
+# gitleaks 的仓库配置（CI 由 supply-chain.yml 的 secret-scan 作业使用；本地跑法见 README「测试与验证」）。
+#
+# 扫描面是**当前工作树**（`gitleaks dir`），不是 git 历史：门禁判的是「这一刻的树里有没有凭据」。
+# 历史另一路一次性核过（2026-10-12，git bundle 全史 2144 个提交）：6 处命中全部是已从仓库删除的
+# third_party/ngtcp2 源码上的熵规则假阳性（`rx_secret` / `tx_secret` 这类标识符），零真凭据——
+# 历史不可变，triaged 过就不放进每次运行。
+#
+# 豁免面的两条纪律：**路径写死**（不按规则名全放行）、**只豁免测试与示例里的协议规范向量与
+# 自签材料**。private-key 等其余规则在所有路径上照查——真凭据落在别处照样会被扫出来。
+# 新增豁免必须在这里写明理由。
+
+# 内建规则全量载入（自定配置不写这句就只剩本文件里定义的规则——全树会「一条都扫不出来」
+# 而不是报错，那种绿最危险）
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "自签测试证书与配套私钥（tests/Core/fixtures/）：回环用例用的测试材料，仓库存在起就公开，不是凭据"
+paths = [
+    '''^tests/Core/fixtures/''',
+]
+
+[[allowlists]]
+description = "测试与示例里的协议规范向量与合成样例：RFC 6455 §1.3 的 Sec-WebSocket-Key 黄金样本（解码即「the sample nonce」）、RFC 9001 附录 A 的密钥/IV 向量、合成配置串等。只对 generic-api-key 这一条熵启发式规则放行（private-key 等其余规则在 tests/ 与 samples/ 照查），路径面限定这两处"
+targetRules = ["generic-api-key"]
+paths = [
+    '''^tests/''',
+    '''^samples/''',
+]
