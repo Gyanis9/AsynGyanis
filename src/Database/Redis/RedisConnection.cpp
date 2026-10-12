@@ -17,14 +17,27 @@
 // hiredis 是 C 库，只在本实现文件里包含；对外只暴露 RedisConnection.h 里的前置声明
 #include <hiredis/hiredis.h>
 
+// 链路 TLS 走本引擎自己的上下文与校验口径（CA、最低版本、SNI/主机名分 IP 与域名两条规则），
+// 与 MySQL 驱动那侧「交给客户端库映射」不同：hiredis 没有内建 TLS，这里在明文建连之后
+// 自己握手并换掉它的读/写/关闭三只钩子，认证与全部命令自然落在密文里
+#include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
+#include "Platform/IO/FileDescriptor.h"
+
 #include "Database/Redis/RedisReplyText.h"
+
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
 #include <cstddef>
+#include <cstdio>
+#include <cstring>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -294,6 +307,145 @@ namespace AsynGyanis::Database
         m_configuration = configuration;
     }
 
+    namespace
+    {
+        /**
+         * @brief 链路 TLS 的会话（挂在 hiredis 上下文的 privctx 上）
+         * @details hiredis 的读/写钩子只拿到上下文，本结构就是「从 privctx 取回 SSL 与描述符」那一格；
+         *          释放走 funcs->free_privctx——redisFree 的固定顺序是先 close 再 free_privctx
+         */
+        struct RedisTlsSession
+        {
+            SSL *ssl{nullptr};       ///< 已完成的 TLS 会话（由本会话负责 SSL_free）
+            int  fileDescriptor{-1}; ///< 底层描述符（建立时从上下文带走，关闭与 SSL 一起归 close 钩子管）
+        };
+
+        /// 把错误写进 hiredis 的公开错误槽（与 net.c 里 __redisSetError 的可见效果一致；那是内部符号，不链接它）
+        void setContextError(redisContext *const context, const int errorCode, const char *const text) noexcept
+        {
+            context->err = errorCode;
+            std::snprintf(context->errstr, sizeof(context->errstr), "%s", text);
+        }
+
+        /// 主机的文本是不是 IP 字面量（IP 与域名的 SNI 与主机校验规则不同，必须分开走）
+        bool isIpLiteralText(const std::string &host)
+        {
+            std::array<std::uint8_t, 16> addressBytes{};
+            return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 || ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
+        }
+
+        /// errno 的可读文本（MSVC 把 strerror 判为弃用；同族的 strerror_s 只在 Windows 侧存在）
+        void describeErrno(char *const output, const size_t outputCapacity, const int errorNumber) noexcept
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::strerror_s(output, outputCapacity, errorNumber));
+#else
+            std::snprintf(output, outputCapacity, "%s", std::strerror(errorNumber));
+#endif
+        }
+
+        /// 读写钩子共用的失败出口：把 OpenSSL 的读数摘成一段话（超时与协议错误分开写）
+        void setContextErrorFromSsl(redisContext *const context, const int sslError, const char *const action) noexcept
+        {
+            char message[256]{};
+            if (sslError == SSL_ERROR_SYSCALL && errno == ETIMEDOUT)
+            {
+                std::snprintf(message, sizeof(message), "%s超时：对端在命令时限内没有回应", action);
+                setContextError(context, REDIS_ERR_TIMEOUT, message);
+                return;
+            }
+            if (sslError == SSL_ERROR_SYSCALL)
+            {
+                char syscallDetail[128]{};
+                describeErrno(syscallDetail, sizeof(syscallDetail), errno);
+                std::snprintf(message, sizeof(message), "%s失败：系统调用错误：%.120s", action, syscallDetail);
+            } else
+            {
+                char sslDetail[128]{};
+                ERR_error_string_n(ERR_get_error(), sslDetail, sizeof(sslDetail));
+                std::snprintf(message, sizeof(message), "%s失败：%.120s（SSL 错误码 %d）", action, sslDetail[0] == '\0' ? "无错误详情" : sslDetail, sslError);
+            }
+            setContextError(context, REDIS_ERR_IO, message);
+        }
+
+        /// 读钩子：契约见 hiredis 的 redisContextFuncs（>0 字节数；0=可重试；<0=不可恢复且错误已写进上下文）
+        ssize_t redisTlsRead(redisContext *context, char *buffer, const size_t bufferCapacity) noexcept
+        {
+            auto *const session       = static_cast<RedisTlsSession *>(context->privctx);
+            const int   receivedBytes = SSL_read(session->ssl, buffer, static_cast<int>(bufferCapacity));
+            if (receivedBytes > 0)
+            {
+                return receivedBytes;
+            }
+            const int sslError = SSL_get_error(session->ssl, receivedBytes);
+            if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE)
+            {
+                return 0;
+            }
+            if (sslError == SSL_ERROR_ZERO_RETURN)
+            {
+                setContextError(context, REDIS_ERR_EOF, "TLS 层报对端正常关闭（收到 close_notify）");
+                return -1;
+            }
+            setContextErrorFromSsl(context, sslError, "TLS 读");
+            return -1;
+        }
+
+        /// 写钩子：从上下文的 obuf 里续写（与 hiredis 默认写钩子同一取材口径），部分写由上层游标推进
+        ssize_t redisTlsWrite(redisContext *context) noexcept
+        {
+            auto *const  session      = static_cast<RedisTlsSession *>(context->privctx);
+            const size_t pendingBytes = sdslen(context->obuf);
+            if (pendingBytes == 0)
+            {
+                return 0;
+            }
+            const int writtenBytes = SSL_write(session->ssl, context->obuf, static_cast<int>(pendingBytes));
+            if (writtenBytes > 0)
+            {
+                return writtenBytes;
+            }
+            const int sslError = SSL_get_error(session->ssl, writtenBytes);
+            if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE)
+            {
+                return 0;
+            }
+            setContextErrorFromSsl(context, sslError, "TLS 写");
+            return -1;
+        }
+
+        /// 关闭钩子：收 TLS 会话与服务端描述符（redisFree 第一步就调它，此后 free_privctx 收本结构）
+        void redisTlsClose(redisContext *context) noexcept
+        {
+            auto *const session = static_cast<RedisTlsSession *>(context->privctx);
+            if (session == nullptr)
+            {
+                return;
+            }
+            if (session->ssl != nullptr)
+            {
+                // best-effort 的 close_notify：发不出去也不影响本端收尾（对端多半已经走了）
+                static_cast<void>(SSL_shutdown(session->ssl));
+                SSL_free(session->ssl);
+                session->ssl = nullptr;
+            }
+            if (session->fileDescriptor >= 0)
+            {
+                Platform::FileDescriptor::close(session->fileDescriptor);
+                session->fileDescriptor = -1;
+            }
+        }
+
+        void redisTlsFreeSession(void *const privctx) noexcept
+        {
+            delete static_cast<RedisTlsSession *>(privctx);
+        }
+
+        const redisContextFuncs kRedisContextTlsFuncs{
+                redisTlsClose, redisTlsFreeSession, nullptr, nullptr, redisTlsRead, redisTlsWrite,
+        };
+    } // namespace
+
     bool RedisConnection::connect()
     {
         // 已连接时直接返回，满足基类对 connect() 幂等的要求：
@@ -323,29 +475,15 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 基类的 connectTimeout() 换算成「秒 + 微秒」交给 redisConnectWithTimeout。
-        // 该接口只有内存分配失败才返回 nullptr，网络/拒绝连接类失败会返回带 err 的有效上下文，
-        // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
-        const int connectionTimeoutMilliseconds = connectTimeout();
-        m_redisContext = connectionTimeoutMilliseconds > 0
-                                 ? redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), makeTimeval(connectionTimeoutMilliseconds))
-                                 // 非正值是「不设连接超时」（与 setQueryTimeout、MySQL 驱动同一口径）：
-                                 // 折算成 {0, -1000} 交给 select() 只会得到一次无效或零窗口的等待，
-                                 // 对着活着的服务器也报连接失败。redisConnect 这条路径不带等待窗口
-                                 : redisConnect(m_configuration.host.c_str(), static_cast<int>(m_configuration.port));
-        if (m_redisContext == nullptr)
+        // 链路 TLS 策略自洽性前置拦一道（VerifyCa 缺 CA 这类配置错误与「连不上」是两回事）
+        if (const std::optional<std::string> tlsReason = m_configuration.tls.validate(); tlsReason.has_value())
         {
-            // redisConnectWithTimeout 只在内存分配失败时返回空（网络类失败会给出带 err 的上下文），
-            // 文案据此给出唯一可行动作，不要罗列与实现不符的「无法访问」
-            m_lastError = "创建 Redis 连接上下文失败：客户端库内存分配失败（" + m_configuration.host + ":" + std::to_string(m_configuration.port) + "）——请检查进程内存后重试";
+            m_lastError = "连接 Redis 服务失败：" + *tlsReason;
             return false;
         }
 
-        if (m_redisContext->err != 0)
+        if (!establishTransport())
         {
-            // captureError 已经把 errstr 拷进 m_lastError，才可以让 disconnect 释放上下文
-            captureError("连接 Redis 服务失败");
-            disconnect();
             return false;
         }
 
@@ -751,6 +889,153 @@ namespace AsynGyanis::Database
         // 设不上超时就不算连接成功：一条没有上界的阻塞命令能把整个调用线程挂死
         captureError("设置 Redis 命令超时失败");
         return false;
+    }
+
+    bool RedisConnection::openPlainSocket()
+    {
+        // 基类的 connectTimeout() 换算成「秒 + 微秒」交给 redisConnectWithTimeout。
+        // 该接口只有内存分配失败才返回 nullptr，网络/拒绝连接类失败会返回带 err 的有效上下文，
+        // 两条失败路径都必须先摘错误文本再释放上下文——顺序反了就是在读已释放内存
+        const int connectionTimeoutMilliseconds = connectTimeout();
+        m_redisContext = connectionTimeoutMilliseconds > 0
+                                 ? redisConnectWithTimeout(m_configuration.host.c_str(), static_cast<int>(m_configuration.port), makeTimeval(connectionTimeoutMilliseconds))
+                                 // 非正值是「不设连接超时」（与 setQueryTimeout、MySQL 驱动同一口径）：
+                                 // 折算成 {0, -1000} 交给 select() 只会得到一次无效或零窗口的等待，
+                                 // 对着活着的服务器也报连接失败。redisConnect 这条路径不带等待窗口
+                                 : redisConnect(m_configuration.host.c_str(), static_cast<int>(m_configuration.port));
+        if (m_redisContext == nullptr)
+        {
+            // redisConnectWithTimeout 只在内存分配失败时返回空（网络类失败会给出带 err 的上下文），
+            // 文案据此给出唯一可行动作，不要罗列与实现不符的「无法访问」
+            m_lastError = "创建 Redis 连接上下文失败：客户端库内存分配失败（" + m_configuration.host + ":" + std::to_string(m_configuration.port) + "）——请检查进程内存后重试";
+            return false;
+        }
+
+        if (m_redisContext->err != 0)
+        {
+            // captureError 已经把 errstr 拷进 m_lastError，才可以让 disconnect 释放上下文
+            captureError("连接 Redis 服务失败");
+            disconnect();
+            return false;
+        }
+        return true;
+    }
+
+    bool RedisConnection::establishTransport()
+    {
+        if (!openPlainSocket())
+        {
+            return false;
+        }
+        if (m_configuration.tls.mode == DatabaseTlsPolicy::Mode::Disabled)
+        {
+            return true;
+        }
+        if (secureSocketWithTls())
+        {
+            return true;
+        }
+        if (m_configuration.tls.mode != DatabaseTlsPolicy::Mode::Preferred)
+        {
+            disconnect();
+            return false;
+        }
+        // Preferred：TLS 没谈成就回落明文——但握手字节已经把这条流弄脏，弃掉重拨一次
+        const std::string tlsFailure{lastError()};
+        disconnect();
+        if (!openPlainSocket())
+        {
+            return false;
+        }
+        LOG_WARN_FMT("RedisConnection: 链路 TLS 未谈成（{}），按 Preferred 档回落明文重连", tlsFailure);
+        m_lastError.clear();
+        return true;
+    }
+
+    bool RedisConnection::secureSocketWithTls()
+    {
+        // 从共享策略派生一条客户端上下文：CA 装在这里；最低协议版本与套件口径与引擎其余出站一致
+        Core::TlsPolicy tlsPolicy;
+        if (!m_configuration.tls.certificateAuthorityFile.empty())
+        {
+            tlsPolicy.certificateAuthorityFile = m_configuration.tls.certificateAuthorityFile;
+        }
+        m_tlsContext = std::make_unique<Core::TlsContext>(tlsPolicy, Core::TlsContext::Role::Client);
+        if (!m_configuration.tls.clientCertificateFile.empty() &&
+            !m_tlsContext->loadCertificate(m_configuration.tls.clientCertificateFile, m_configuration.tls.clientPrivateKeyFile))
+        {
+            m_lastError = "Redis 链路 TLS 客户端证书装载失败：certificateFile / privateKeyFile 至少一项读不到，或两者不配对";
+            return false;
+        }
+
+        SSL *const ssl = SSL_new(m_tlsContext->nativeHandle());
+        if (ssl == nullptr)
+        {
+            m_lastError = "Redis 链路 TLS 会话对象创建失败：OpenSSL 内存不足";
+            return false;
+        }
+        if (const int socketDescriptor = static_cast<int>(m_redisContext->fd); ::SSL_set_fd(ssl, socketDescriptor) == 0)
+        {
+            SSL_free(ssl);
+            m_lastError = "Redis 链路 TLS 无法绑定套接字描述符：OpenSSL 的 BIO 创建失败";
+            return false;
+        }
+
+        // 档位到校验面的映射：Required 只要求加密（不校链），VerifyCa 校链不校主机名，
+        // VerifyIdentity 两者都校。CA 只在需要校链的档位下参与，且 validate() 已保证 Verify* 必有 CA
+        const DatabaseTlsPolicy::Mode mode            = m_configuration.tls.mode;
+        const bool                    isChainVerified = mode == DatabaseTlsPolicy::Mode::VerifyCa || mode == DatabaseTlsPolicy::Mode::VerifyIdentity;
+        SSL_set_verify(ssl, isChainVerified ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
+
+        if (mode == DatabaseTlsPolicy::Mode::VerifyIdentity)
+        {
+            // SNI 与主机名校验：链校验只证明「证书由受信 CA 签发」，不证明「签发的对象就是这台主机」；
+            // IP 字面量与域名的匹配规则不同，必须分开设置（与 HttpClient 出站同一口径）
+            if (isIpLiteralText(m_configuration.host))
+            {
+                static_cast<void>(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), m_configuration.host.c_str()));
+            } else
+            {
+                static_cast<void>(SSL_set_tlsext_host_name(ssl, m_configuration.host.c_str()));
+                static_cast<void>(SSL_set1_host(ssl, m_configuration.host.c_str()));
+            }
+        }
+
+        // 握手也要有时限：SO_RCVTIMEO/SNDTIMEO 先借 connectTimeout() 的预算，黑洞服务器不会把连接挂死。
+        // 认证与命令随后由 applyQueryTimeout() 改用命令预算（connect() 把本函数排在它之前）
+        if (const int connectionTimeoutMilliseconds = connectTimeout(); connectionTimeoutMilliseconds > 0)
+        {
+            static_cast<void>(redisSetTimeout(m_redisContext, makeTimeval(connectionTimeoutMilliseconds)));
+        }
+
+        ERR_clear_error();
+        if (SSL_connect(ssl) != 1)
+        {
+            char sslDetail[160]{};
+            ERR_error_string_n(ERR_get_error(), sslDetail, sizeof(sslDetail));
+            if (sslDetail[0] == '\0')
+            {
+                char syscallDetail[128]{};
+                describeErrno(syscallDetail, sizeof(syscallDetail), errno);
+                std::snprintf(sslDetail, sizeof(sslDetail), "系统调用错误：%.120s", syscallDetail);
+            }
+            m_lastError = "Redis 链路 TLS 握手失败（档位 " + std::string(databaseTlsModeName(mode)) + "）：" + sslDetail;
+            SSL_free(ssl);
+            return false;
+        }
+
+        // 换钩子：会话挂到 privctx，读/写/关闭三处此后全走 TLS。redisFree 会按
+        // close → free_privctx 的固定顺序把会话与描述符一起收掉，本函数不再持有 SSL 的所有权
+        auto *const session = new (std::nothrow) RedisTlsSession{ssl, static_cast<int>(m_redisContext->fd)};
+        if (session == nullptr)
+        {
+            m_lastError = "Redis 链路 TLS 会话登记失败：内存不足";
+            SSL_free(ssl);
+            return false;
+        }
+        m_redisContext->privctx = session;
+        m_redisContext->funcs   = &kRedisContextTlsFuncs;
+        return true;
     }
 
     void RedisConnection::applyQueryTimeoutNow() noexcept

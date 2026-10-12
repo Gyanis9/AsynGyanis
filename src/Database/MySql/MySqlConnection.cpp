@@ -156,10 +156,9 @@ namespace AsynGyanis::Database
         // 清掉上一轮的失败文本，避免成功路径上 lastError() 仍报旧错
         m_lastError.clear();
 
-        // 空主机交给客户端库只会得到一条难懂的底层错误（而且不同版本行为还不一致），这里前置拦一道
-        if (m_configuration.host.empty())
+        // 连接前的配置闸：空主机与 TLS 策略自洽性（两类都是配置错误，与「连不上」分开口径）
+        if (!validateConfigurationBeforeConnect())
         {
-            m_lastError = "MySQL 主机地址未配置";
             return false;
         }
 
@@ -583,6 +582,24 @@ namespace AsynGyanis::Database
         return rawVersion != nullptr ? std::string(rawVersion) : std::string{};
     }
 
+    bool MySqlConnection::validateConfigurationBeforeConnect()
+    {
+        // 空主机交给客户端库只会得到一条难懂的底层错误（而且不同版本行为还不一致），这里前置拦一道
+        if (m_configuration.host.empty())
+        {
+            m_lastError = "MySQL 主机地址未配置";
+            return false;
+        }
+
+        // 链路 TLS 策略自洽性同理：VerifyCa 缺 CA 这类配置错误要在拨号之前点名
+        if (const std::optional<std::string> tlsReason = m_configuration.tls.validate(); tlsReason.has_value())
+        {
+            m_lastError = "连接 MySQL 服务失败：" + *tlsReason;
+            return false;
+        }
+        return true;
+    }
+
     bool MySqlConnection::applyConnectionOptions()
     {
         // 三个超时选项的参数类型都是 unsigned int、单位都是秒，与基类的毫秒语义差一个量纲。
@@ -622,6 +639,48 @@ namespace AsynGyanis::Database
         if (!applyOption(MYSQL_OPT_WRITE_TIMEOUT, &ioTimeoutSeconds, "设置 MySQL 写超时"))
         {
             return false;
+        }
+
+        // ---- 链路 TLS：档位与证书路径必须在握手之前一次性下发 ----
+        // 显式写档位（含 Disabled）是刻意的：不下发时客户端库按自己的默认档走（PREFERRED），
+        // 「这条链路有没有加密」就成了随服务端能力漂移的隐变量；把决定权收回配置面
+        unsigned int sslMode = SSL_MODE_DISABLED;
+        switch (m_configuration.tls.mode)
+        {
+            case DatabaseTlsPolicy::Mode::Disabled:
+                sslMode = SSL_MODE_DISABLED;
+                break;
+            case DatabaseTlsPolicy::Mode::Preferred:
+                sslMode = SSL_MODE_PREFERRED;
+                break;
+            case DatabaseTlsPolicy::Mode::Required:
+                sslMode = SSL_MODE_REQUIRED;
+                break;
+            case DatabaseTlsPolicy::Mode::VerifyCa:
+                sslMode = SSL_MODE_VERIFY_CA;
+                break;
+            case DatabaseTlsPolicy::Mode::VerifyIdentity:
+                sslMode = SSL_MODE_VERIFY_IDENTITY;
+                break;
+        }
+        if (!applyOption(MYSQL_OPT_SSL_MODE, &sslMode, "设置 MySQL 链路 TLS 档位"))
+        {
+            return false;
+        }
+        if (!m_configuration.tls.certificateAuthorityFile.empty() && !applyOption(MYSQL_OPT_SSL_CA, m_configuration.tls.certificateAuthorityFile.c_str(), "设置 MySQL CA 证书"))
+        {
+            return false;
+        }
+        if (!m_configuration.tls.clientCertificateFile.empty())
+        {
+            if (!applyOption(MYSQL_OPT_SSL_CERT, m_configuration.tls.clientCertificateFile.c_str(), "设置 MySQL 客户端证书"))
+            {
+                return false;
+            }
+            if (!applyOption(MYSQL_OPT_SSL_KEY, m_configuration.tls.clientPrivateKeyFile.c_str(), "设置 MySQL 客户端私钥"))
+            {
+                return false;
+            }
         }
 
         // 字符集在握手期一次定成 utf8mb4：服务端不认识该字符集时这里就会失败，

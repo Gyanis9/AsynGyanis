@@ -60,6 +60,15 @@ namespace AsynGyanis::Database
         // 清掉上一轮的失败文本，避免成功路径上 lastError() 仍报旧错
         m_lastError.clear();
 
+        // 进程内文件库没有网络链路：Preferred 视同不设（「能加密就加密」没有对象可加），
+        // 而「必须加密」与两个校验档是对配置面的误用，当场点名而不是静默忽略
+        if (m_configuration.tls.mode != DatabaseTlsPolicy::Mode::Disabled && m_configuration.tls.mode != DatabaseTlsPolicy::Mode::Preferred)
+        {
+            m_lastError = "SQLite 是进程内文件库，没有可加密的网络链路：Required / VerifyCa / VerifyIdentity 这类「必须加密」的档位无从兑现（当前档位 " +
+                          std::string(databaseTlsModeName(m_configuration.tls.mode)) + "）；要不表态请用 Disabled";
+            return false;
+        }
+
         // sqlite3_open 只接受零终止的 C 字符串：库路径里内嵌 '\0' 会让它静默截断成前半截，于是
         // 「打开 prod.db\0x」变成在 prod.db 上开（甚至新建）一个库，一条报错都不留。
         // MySQL 驱动对连接配置的同一件事早有这道闸，两条驱动必须同一口径

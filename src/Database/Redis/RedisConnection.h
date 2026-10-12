@@ -31,6 +31,11 @@
 struct redisContext;
 struct redisReply;
 
+namespace AsynGyanis::Core
+{
+    class TlsContext;
+}
+
 namespace AsynGyanis::Database
 {
     /**
@@ -369,6 +374,26 @@ namespace AsynGyanis::Database
         bool applyQueryTimeout();
 
         /**
+         * @brief 明文建连（redisConnectWithTimeout / redisConnect 两条路），失败原因进 m_lastError
+         * @return true 连接已建立且上下文完好；false 失败（句柄已按失败纪律收掉）
+         */
+        [[nodiscard]] bool openPlainSocket();
+
+        /**
+         * @brief 建立传输：明文建连，档位要求 TLS 时握手；Preferred 谈不成弃连重拨回落明文
+         * @return true 通道就绪（此时尚未认证）；false 失败，原因进 m_lastError
+         */
+        [[nodiscard]] bool establishTransport();
+
+        /**
+         * @brief 在已建立的明文连接上做链路 TLS：阻塞握手 + 把 hiredis 的读/写/关闭钩子换到 SSL 上
+         * @details 失败原因进 m_lastError。此刻尚未换钩子，调用方按档位决定弃连（Required/Verify*）
+         *          还是弃掉重拨回落明文（Preferred）
+         * @return true 握手完成、认证与后续命令都在密文里走
+         */
+        [[nodiscard]] bool secureSocketWithTls();
+
+        /**
          * @brief 用已切分好的参数数组发送一条命令并封装结果（execute/executeCommand 的共同路径）
          * @param argumentValues 参数数组，第一个元素为命令名，调用期间必须保持存活且不被修改。
          *        按视图接收：hiredis 的 argv 接口要的就是「指针 + 长度」，把参数落回 std::string
@@ -404,6 +429,9 @@ namespace AsynGyanis::Database
         bool startSubscription(std::string_view commandName, std::span<const std::string_view> targets);
 
         redisContext *m_redisContext{nullptr}; ///< hiredis 连接上下文，本对象独占所有权，未连接时为 nullptr
+        /// 链路 TLS 上下文（CA 与客户端证书装在这上面）；档位为 Disabled 或未连过时为空。
+        /// SSL 会话本体挂在上下文的 privctx 上、随 redisFree 释放；这份上下文要活到会话释放之后
+        std::unique_ptr<Core::TlsContext> m_tlsContext;
 
         // 之所以在登记时就切词而不是原样缓存命令文本：命令文本的合法性错误能在 pipelineCommand()
         // 当场反馈，不必等到 flush 时才发现「N 条里有一条引号没闭合」

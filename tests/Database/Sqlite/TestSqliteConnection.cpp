@@ -1363,4 +1363,23 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.lastNativeErrorCode(), DatabaseConnection::ErrorRecord::kUnknownNativeCode) << "只写文本的失败路径没清掉上一条的原生码：码与文本就不再配对了";
     }
 
+    /**
+     * @brief 进程内文件库配了「必须加密」类档位即拒（点名档位）；Preferred 视同不设、照常可用
+     */
+    TEST(SqliteConnection, RefusesTlsConfigurationOnAnInProcessDatabase)
+    {
+        ConnectionConfig configuration = ConnectionConfig::sqliteDefault(":memory:");
+        configuration.tls.mode         = DatabaseTlsPolicy::Mode::Required;
+
+        SqliteConnection connection(configuration);
+        EXPECT_FALSE(connection.connect()) << "配了 Required 的 SQLite 连接本应被拒";
+        EXPECT_NE(connection.lastError().find("进程内"), std::string::npos) << connection.lastError();
+        EXPECT_NE(connection.lastError().find("Required"), std::string::npos) << "拒因要点出当前档位：" << connection.lastError();
+
+        // Preferred 是尽力而为档：进程内库没有对象可加密，视同不设而不是误用
+        ConnectionConfig preferredConfiguration = ConnectionConfig::sqliteDefault(":memory:");
+        preferredConfiguration.tls.mode         = DatabaseTlsPolicy::Mode::Preferred;
+        SqliteConnection tolerantConnection(preferredConfiguration);
+        EXPECT_TRUE(tolerantConnection.connect()) << tolerantConnection.lastError();
+    }
 } // namespace AsynGyanis::Database

@@ -11,6 +11,7 @@ add_executable(TestDatabase
         Common/TestDatabaseFactory.cpp
         Common/TestDatabaseException.cpp
         Common/TestDatabaseConnection.cpp
+        Common/TestDatabaseTlsPolicy.cpp
 
         Pool/TestConnectionPool.cpp
         Pool/TestConnectionPoolAsync.cpp
@@ -34,11 +35,13 @@ add_executable(TestDatabase
         MySql/TestMySqlStatementResult.cpp
         MySql/TestMySqlValueConversion.cpp
         MySql/TestMySqlIntegration.cpp
+        MySql/TestMySqlTls.cpp
 
 
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp
         Redis/TestRedisIntegration.cpp
+        Redis/TestRedisTls.cpp
         Redis/TestRedisSubscription.cpp
 )
 
@@ -58,6 +61,11 @@ target_include_directories(TestDatabase PRIVATE
 )
 
 target_compile_features(TestDatabase PRIVATE cxx_std_23)
+
+# 仓库自签证书夹具目录（TestMySqlTls 的「错误 CA」用例要指一个真实存在但与服务端不同源的证书）
+target_compile_definitions(TestDatabase PRIVATE
+        TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/Core/fixtures"
+)
 
 include(GoogleTest)
 # RedisSubscriptionIntegration 这一族要改**服务端全局**配置（notify-keyspace-events），

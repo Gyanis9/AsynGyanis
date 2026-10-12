@@ -344,6 +344,14 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool restoreAutocommitBaseline() noexcept;
 
         /**
+         * @brief 连接前的配置闸：空主机与链路 TLS 策略的自洽性
+         * @details 两类都是「本端配置错」而不是「连不上」，分开更利于排查；失败原因写进 m_lastError
+         * @return true 配置可用，可以继续拨号
+         * @return false 配置错误，调用方直接按失败收尾
+         */
+        [[nodiscard]] bool validateConfigurationBeforeConnect();
+
+        /**
          * @brief 在握手前把超时与字符集选项下发到句柄
          * @details 读取 connectTimeout() / queryTimeout() 的当前毫秒值，换算成客户端需要的整秒。
          * @return true 全部选项都被客户端库接受
