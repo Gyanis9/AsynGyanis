@@ -317,6 +317,17 @@ namespace AsynGyanis::Net
          */
         void staticPrecompressedVariants(bool enabled);
 
+        /**
+         * @brief 设置 RFC 9842 的压缩字典：静态资源按 `Available-Dictionary` 协商发 `.dcz` 副本
+         * @details 与 `HttpServer::staticCompressionDictionary()` 同一语义、同一份实现（本体在
+         *          `StaticFileService`）。本通道天然满足「安全上下文」那条门（h3 恒为 TLS）。
+         * @param relativePath 字典文件相对静态根的路径；空串表示关闭
+         * @param matchPattern `Use-As-Dictionary` 的 match 取值；空串一并表示关闭
+         * @note 必须在 start() 之前配置，与静态目录本身同一时限
+         * @see staticFileDir(), StaticFileService::setCompressionDictionary()
+         */
+        void staticCompressionDictionary(const std::string &relativePath, const std::string &matchPattern);
+
 
         /**
          * @brief 当前在线连接数

@@ -87,7 +87,7 @@
   正文是一次性拉取的、设了响应正文接收口、或跳数越过 `maximumRedirectCount` 时**不跟**，把那条 3xx 原样交回
   并打一行原因，而不是换个写法硬跟
 - **观测与限额** — `/metrics`（Prometheus 文本 0.0.4）、`/healthz`、`/readyz` 与 `/debug/loops`（进程内每条事件循环一行的 JSON，看哪条被处理器占住、当前挂在哪个作业上）内建端点、状态码与延迟直方图统计、令牌桶限流、按来源 IP 并发限额
-- **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate）
+- **响应压缩** — gzip / zstd / br 协商（含 WebSocket 的 permessage-deflate；静态资源的 RFC 9842 字典编码 `dcz` 见下条静态文件服务）
 - **按线程一个监听 socket** — `SO_REUSEPORT` 由内核分摊连接，避免 accept 单点
 - **接受分发（跨平台多核扩展）** — 一个监听器接受、按轮转把连接交给 N 个工作循环，不依赖
   `SO_REUSEPORT`；Windows 上这是唯一可用的多核形态（`ConnectionDistributor` + `TcpServer::startAccepting()`）
@@ -100,7 +100,12 @@
   两种验证器比较规则公开在 `HttpConditionalValidators.h`，业务侧要判 PUT/PATCH 的前提读同一份；
   `staticPrecompressedVariants()` 打开后按 `Accept-Encoding` 直接发构建时压好的那份副本（`.zst` / `.br` /
   `.gz`，默认关闭），正文、长度、区间与验证器一律取自**实际发出去那一份**，所以两份表示各有自己的 ETag，
-  跨变体的条件请求不会互相命中；开着这一格就无条件发 `Vary: Accept-Encoding`
+  跨变体的条件请求不会互相命中；开着这一格就无条件发 `Vary: Accept-Encoding`。
+  `staticCompressionDictionary()` 再叠一层 RFC 9842 的压缩字典：字典文件自身的响应带
+  `Use-As-Dictionary: match="..."`（客户端据此缓存，此后按 `Available-Dictionary` 回送哈希），
+  「连接是 TLS + 变体协商开着 + 哈希逐字节相等 + 同目录有 `.dcz` 副本」四条齐了才优先发它
+  （`Content-Encoding: dcz`，`Vary` 补上 `Available-Dictionary`）；缺一条就退回上面的常规协商，
+  明文连接上既不宣告字典也不发 dcz（RFC 9842 §8 只许安全上下文）。`.dcz` 副本由部署方用同一本字典离线压出
 - **大文件上传落盘** — 流式路由（`postStreaming()` / `putStreaming()`）边收边交，`RequestBodySpool::capture()`
   再把这条正文一段段写进临时文件：内存里永远只有当前那一段，写动作经 `Core::AsyncExecutor` 离开事件循环线程。
   超过上限或正文没收齐就**拒掉并删掉半份文件**（不把半份上传交给业务，也不在盘上留没人收的尾巴）；

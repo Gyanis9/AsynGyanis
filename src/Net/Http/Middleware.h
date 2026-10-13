@@ -13,6 +13,7 @@
 
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Compression.h"
@@ -909,9 +910,13 @@ namespace AsynGyanis::Net
          *          发该编码的正文等于违反协商。
          * @param acceptEncoding Accept-Encoding 头部的值，缺头时传空串
          * @param targetEncoding 待判定的编码名（小写，如 "gzip"/"br"/"zstd"）
+         * @param honorWildcard 传 false 时 `*` 不参选、只认显式列出的编码名：RFC 9842 §6.1 的模型是
+         *        「客户端把支持的字典编码**显式加进** Accept-Encoding」，`*` 是「其余编码都行」的
+         *        历史语法，替它推断「支持字典解码」超出了题干；代价是漏掉不合规客户端，换来的是
+         *        绝不把 dcz 发给不认识它的对端
          * @return true 可以使用该编码
          */
-        [[nodiscard]] inline bool acceptsEncoding(const std::string_view acceptEncoding, const std::string_view targetEncoding)
+        [[nodiscard]] inline bool acceptsEncoding(const std::string_view acceptEncoding, const std::string_view targetEncoding, const bool honorWildcard = true)
         {
             std::size_t offset           = 0;
             bool        wildcardAccepted = false;
@@ -977,7 +982,11 @@ namespace AsynGyanis::Net
 
                 if (encodingName == "*")
                 {
-                    wildcardAccepted = !isRejected;
+                    // 不认通配时整条跳过：`*` 不是「显式列出了这个编码」，而字典编码只认显式列出
+                    if (honorWildcard)
+                    {
+                        wildcardAccepted = !isRejected;
+                    }
                     continue;
                 }
 
@@ -1053,24 +1062,33 @@ namespace AsynGyanis::Net
          */
         struct CompressionCodec
         {
-            std::string_view name;       ///< 写进 `Content-Encoding` 的编码名
-            std::string_view fileSuffix; ///< 静态预压缩副本的后缀约定（如 `.br`）
+            std::string_view name;               ///< 写进 `Content-Encoding` 的编码名
+            std::string_view fileSuffix;         ///< 静态预压缩副本的后缀约定（如 `.br`）
+            bool             requiresDictionary; ///< 该编码必须带着字典才解得出（RFC 9842 的 dcz）；在线压缩产不出它
         };
 
         /// 压缩算法表：**表的顺序就是服务器偏好**——zstd 压缩率与速度综合最好、brotli 次之（静态内容
         /// 尤佳）、gzip 兜底兼容。在线协商与静态预压缩的变体查找读的都是这一张表，于是「本端认为 br
-        /// 比 gz 好」这件事只有一处结论；加算法改这一行，两处一起跟上
-        inline constexpr std::array<CompressionCodec, 3> kCompressionCodecs{{{"zstd", ".zst"}, {"br", ".br"}, {"gzip", ".gz"}}};
+        /// 比 gz 好」这件事只有一处结论；加算法改这一行，两处一起跟上。
+        /// dcz（RFC 9842 的字典压缩 zstd）排在最前：只有对端手里确有匹配字典时它才参选，而那种场合
+        /// 它必然比不带字典的 zstd 小；`selectPreferredEncoding` 在线协商一路直接跳过标了
+        /// `requiresDictionary` 的表项——在线路径没有字典，发 dcz 等于给对端一份解不开的字节
+        inline constexpr std::array<CompressionCodec, 4> kCompressionCodecs{{{"dcz", ".dcz", true}, {"zstd", ".zst", false}, {"br", ".br", false}, {"gzip", ".gz", false}}};
 
         /**
          * @brief 按偏好顺序挑出本请求要用的编码
          * @param acceptEncoding 请求的 Accept-Encoding 原文
          * @return std::string_view 选中的编码名（取值见 kCompressionCodecs 的 `name`）；空表示按未压缩的原文发
+         * @note 字典编码（requiresDictionary）不在本函数的候选里：在线压缩没有字典可用
          */
         [[nodiscard]] inline std::string_view selectPreferredEncoding(const std::string_view acceptEncoding)
         {
             for (const CompressionCodec &codec: kCompressionCodecs)
             {
+                if (codec.requiresDictionary)
+                {
+                    continue;
+                }
                 if (acceptsEncoding(acceptEncoding, codec.name))
                 {
                     return codec.name;
@@ -1093,6 +1111,67 @@ namespace AsynGyanis::Net
                 response.setHeader("etag", "W/" + *entityTag);
             }
             appendVaryAcceptEncoding(response);
+        }
+
+        /**
+         * @brief 解析请求的 Available-Dictionary（RFC 9842 §2.2 的 sf-binary），取出 32 字节 SHA-256
+         * @details 形态固定为 `:<base64>:`——冒号包裹的标准字母表 Base64（RFC 8941 §4.2.7 引用
+         *          RFC 4648 §4，带填充）。严格解码（Base::base64Decode 的那套判据），且解码结果
+         *          **必须恰好 32 字节**：多一字节少一字节都不是 SHA-256，按「没有匹配字典」处置，
+         *          而不是报错——这条头部来自由公网驱动的客户端，含糊的输入不该换回非 2xx 的差异。
+         * @param headerValue Available-Dictionary 头部的值；缺头时传空串
+         * @return std::optional<Core::Digest::Sha256Value> 解码出的 32 字节哈希；形态不对或长度不对时为空
+         */
+        [[nodiscard]] inline std::optional<Core::Digest::Sha256Value> parseAvailableDictionaryHash(const std::string_view headerValue)
+        {
+            std::string_view payload = headerValue;
+            while (!payload.empty() && (payload.front() == ' ' || payload.front() == '\t'))
+            {
+                payload.remove_prefix(1);
+            }
+            while (!payload.empty() && (payload.back() == ' ' || payload.back() == '\t'))
+            {
+                payload.remove_suffix(1);
+            }
+
+            // sf-binary 的定界符：两端各一个冒号；base64 字母表里没有冒号，中段可以整段取
+            if (payload.size() < 2 || payload.front() != ':' || payload.back() != ':')
+            {
+                return std::nullopt;
+            }
+            const std::optional<std::string> decoded = Base::base64Decode(payload.substr(1, payload.size() - 2));
+            if (!decoded.has_value() || decoded->size() != Core::Digest::kSha256Length)
+            {
+                return std::nullopt;
+            }
+
+            Core::Digest::Sha256Value hash{};
+            std::copy(decoded->begin(), decoded->end(), hash.begin());
+            return hash;
+        }
+
+        /**
+         * @brief 写 Use-As-Dictionary 响应头（RFC 9842 §2.1）：本响应即此后匹配请求可用的压缩字典
+         * @details 值是一个 sf-dictionary 的 `match="..."`（sf-string 转义 `"` 与 `\`，RFC 8941 §4.2.5）。
+         *          控制字符（< 0x20 与 0x7f）在 sf-string 里非法，由配置期把关拒绝——本函数信任入参
+         *          已经过那道闸，只做转义不做校验。
+         * @param response 待改写的响应
+         * @param matchPattern 字典匹配的 URL 模式（"/" 开头的路径模式）
+         */
+        inline void appendUseAsDictionaryHeader(HttpResponse &response, const std::string_view matchPattern)
+        {
+            std::string value = "match=\"";
+            value.reserve(matchPattern.size() + 9);
+            for (const char character: matchPattern)
+            {
+                if (character == '"' || character == '\\')
+                {
+                    value.push_back('\\');
+                }
+                value.push_back(character);
+            }
+            value += '"';
+            response.setHeader("use-as-dictionary", std::move(value));
         }
     } // namespace Detail
 

@@ -5,6 +5,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Crypto/Digest.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpConditionalValidators.h"
@@ -20,12 +21,16 @@
 #include "Platform/IO/MemoryMappedFile.h"
 #include "Platform/Platform.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1009,9 +1014,10 @@ namespace AsynGyanis::Net
          * @param lastModifiedText 同一个时间戳的 HTTP 日期文本
          * @param contentEncodingToken 选中的预压缩算法名；空表示发的是明文那份
          * @param settings 静态服务配置（读 Cache-Control 与变体协商开关）
+         * @param isDictionaryResource 本响应即字典文件本身（带 TLS 门判定，见 serveStaticFileRequest）
          */
         void appendStaticRepresentationHeaders(HttpResponse &response, const std::string_view entityTagText, const std::string_view lastModifiedText,
-                                               const std::string_view contentEncodingToken, const StaticFileSettings &settings)
+                                               const std::string_view contentEncodingToken, const StaticFileSettings &settings, const bool isDictionaryResource)
         {
             response.setHeader("etag", entityTagText);
             response.setHeader("last-modified", lastModifiedText);
@@ -1034,6 +1040,16 @@ namespace AsynGyanis::Net
             {
                 Detail::appendVaryAcceptEncoding(response);
             }
+            // 字典压缩表示的答案还取决于「对端手里有没有那本字典」（RFC 9842 §6.2 的 MUST）：
+            // 只按 accept-encoding 分桶的缓存会把 dcz 那份发给手里没有字典的客户端，对端解不开
+            if (contentEncodingToken == "dcz")
+            {
+                Detail::appendVaryToken(response, "available-dictionary");
+            }
+            if (isDictionaryResource && settings.dictionary.has_value())
+            {
+                Detail::appendUseAsDictionaryHeader(response, settings.dictionary->matchPattern);
+            }
         }
 
         /// 一份预压缩变体的三件事实：副本文件、它的元数据、要写进 `Content-Encoding` 的算法名
@@ -1052,13 +1068,23 @@ namespace AsynGyanis::Net
          *          再问一次只是多一趟系统调用。
          * @param requestedPath 已通过包含判定的请求路径（`weakly_canonical` 之后的绝对路径）
          * @param acceptEncoding 请求的 `Accept-Encoding` 原文；空串按「没带这个头」处理
+         * @param dictionaryMatches 请求是否带来「与本端字典逐字节相等」的哈希且连接是 TLS（字典编码的参赛资格，
+         *        见 serveStaticFileRequest 的三条门）；标了 `requiresDictionary` 的表项只在它为真时参选
          * @return std::optional<PrecompressedVariant> 选中的变体；一个都不成立时空
          */
-        [[nodiscard]] std::optional<PrecompressedVariant> findPrecompressedVariant(const std::filesystem::path &requestedPath, const std::string_view acceptEncoding)
+        [[nodiscard]] std::optional<PrecompressedVariant> findPrecompressedVariant(const std::filesystem::path &requestedPath, const std::string_view acceptEncoding,
+                                                                                   const bool dictionaryMatches)
         {
             for (const Detail::CompressionCodec &codec: Detail::kCompressionCodecs)
             {
-                if (!Detail::acceptsEncoding(acceptEncoding, codec.name))
+                // 字典编码的资格由调用方核完压成一个布尔；常规编码不看它
+                if (codec.requiresDictionary && !dictionaryMatches)
+                {
+                    continue;
+                }
+                // 字典编码只认显式列出（`honorWildcard=false`，见 Detail::acceptsEncoding 的说明）；
+                // 常规编码保持 `*` 通配的既有语义
+                if (!Detail::acceptsEncoding(acceptEncoding, codec.name, !codec.requiresDictionary))
                 {
                     continue;
                 }
@@ -1072,6 +1098,75 @@ namespace AsynGyanis::Net
                 }
             }
             return std::nullopt;
+        }
+
+        /// RFC 9842 的两条判定结果：本请求能不能用字典发 dcz、本响应是不是字典文件自身
+        struct DictionaryNegotiation
+        {
+            bool dictionaryMatches{false};        ///< 连接是 TLS 且请求哈希与本端字典逐字节相等
+            bool servesDictionaryResource{false}; ///< 请求的正是字典文件本身（响应带 Use-As-Dictionary）
+        };
+
+        /**
+         * @brief 把 RFC 9842 的三条门一次算清：配了字典、连接是 TLS（§8 要求安全上下文）、哈希相等
+         * @details 抽成文件级助手是给 serveStaticFileRequest 减负：那一段已经有路径清洗、条件请求、
+         *          Range 与四条出口，判定再铺在那里就超过本仓给单函数设的行数地板了。
+         *          字典文件自身排除在 dcz 参选之外——给它找 `.dcz` 副本等于「用字典再压字典」，
+         *          没有这回事；但它仍要拿 `servesDictionaryResource=true` 去带 `Use-As-Dictionary`。
+         * @param request 本次请求（读 overTls 与 available-dictionary）
+         * @param settings 静态服务配置
+         * @param requestedPath 已通过包含判定的请求路径
+         * @return DictionaryNegotiation 两条判定；任一前置条件不成立时两条都是假
+         */
+        [[nodiscard]] DictionaryNegotiation negotiateCompressionDictionary(const HttpRequest &request, const StaticFileSettings &settings,
+                                                                           const std::filesystem::path &requestedPath)
+        {
+            DictionaryNegotiation result;
+            if (!settings.precompressedVariantsEnabled || !settings.dictionary.has_value() || !request.overTls())
+            {
+                return result;
+            }
+
+            result.servesDictionaryResource = requestedPath == settings.dictionary->path;
+            if (result.servesDictionaryResource)
+            {
+                return result;
+            }
+
+            if (const std::optional<std::string> offeredHash = request.getHeader("available-dictionary"); offeredHash.has_value())
+            {
+                const std::optional<Core::Digest::Sha256Value> parsedHash = Detail::parseAvailableDictionaryHash(*offeredHash);
+                result.dictionaryMatches                                  = parsedHash.has_value() && *parsedHash == settings.dictionary->contentHash;
+            }
+            return result;
+        }
+
+        /**
+         * @brief 解析请求的 Range 头（仅在 If-Range 放行时），判决与首个区间一并交回
+         * @details 抽成文件级助手是给 serveStaticFileRequest 减负：Range 的判定与后面的正文选择
+         *          各成一段，判据逐条可对表。
+         * @param request 本次请求（读 range 与 If-Range 头部）
+         * @param entityTag 实际发出去那份表示的强 ETag（If-Range 的比较对象）
+         * @param lastWriteSeconds 同一份表示的整秒修改时间（If-Range 的日期形态比较对象）
+         * @param representationSize 实际发出去那份表示的长度
+         * @param byteRanges 输出：解析出的区间表（多区间时逐段用）
+         * @param firstRange 输出：可满足时写入首个区间，否则保持默认值
+         * @return RangeVerdict 判决；Ignored 表示没带 Range 头或 If-Range 不放行，按 200 全量
+         */
+        [[nodiscard]] RangeVerdict resolveStaticRange(const HttpRequest &request, const std::string_view entityTag, const std::int64_t lastWriteSeconds,
+                                                      const std::uintmax_t representationSize, std::vector<ByteRange> &byteRanges, ByteRange &firstRange)
+        {
+            const std::optional<std::string> rangeHeader = request.getHeader("range");
+            if (!rangeHeader.has_value() || !isRangeApplicable(request, entityTag, lastWriteSeconds))
+            {
+                return RangeVerdict::Ignored;
+            }
+            const RangeVerdict verdict = parseByteRanges(*rangeHeader, representationSize, byteRanges);
+            if (verdict == RangeVerdict::Satisfiable)
+            {
+                firstRange = byteRanges.front();
+            }
+            return verdict;
         }
 
         /**
@@ -1179,12 +1274,15 @@ namespace AsynGyanis::Net
             // 造出一个资源。选定之后，正文、验证器与长度一律改用**实际发出去那一份**——下面每一处
             // fileSize / lastWriteSeconds / identityTag 都取自 representation，就不会出现「发的是副本
             // 的字节、配的是明文的 ETag」这种跨表示的错配
+            const DictionaryNegotiation dictionaryNegotiation = negotiateCompressionDictionary(request, *settings, candidatePath);
+
             std::filesystem::path                  servedPath = candidatePath;
             std::string_view                       contentEncodingToken{};
             std::optional<Platform::FileBasicInfo> representationInfo = requestedInfo;
             if (settings->precompressedVariantsEnabled)
             {
-                if (const std::optional<PrecompressedVariant> variant = findPrecompressedVariant(candidatePath, request.getHeader("accept-encoding").value_or(std::string{}));
+                if (const std::optional<PrecompressedVariant> variant =
+                            findPrecompressedVariant(candidatePath, request.getHeader("accept-encoding").value_or(std::string{}), dictionaryNegotiation.dictionaryMatches);
                     variant.has_value())
                 {
                     servedPath           = std::move(variant->path);
@@ -1238,26 +1336,18 @@ namespace AsynGyanis::Net
             if (isNotModified(request, entityTagText, lastWriteSeconds))
             {
                 response.setStatus(304);
-                appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
+                appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings, dictionaryNegotiation.servesDictionaryResource);
                 // 304 里的 content-length 只允许取「同一请求的 200 会发出的正文长度」（RFC 9112 §6.2），
                 // 这里正是唯一知道那个长度的位置（正文已被清空，自动补缺只会补出 0——那是禁止的取值）
                 response.setHeader("content-length", std::to_string(fileSize));
                 co_return;
             }
 
-            // Range：仅在 If-Range 放行时解析，不放行时按 200 全量
-            std::vector<ByteRange>           byteRanges{};
-            ByteRange                        byteRange{};
-            RangeVerdict                     rangeVerdict = RangeVerdict::Ignored;
-            const std::optional<std::string> rangeHeader  = request.getHeader("range");
-            if (rangeHeader.has_value() && isRangeApplicable(request, entityTagText, lastWriteSeconds))
-            {
-                rangeVerdict = parseByteRanges(*rangeHeader, fileSize, byteRanges);
-                if (rangeVerdict == RangeVerdict::Satisfiable)
-                {
-                    byteRange = byteRanges.front();
-                }
-            }
+            // Range：仅在 If-Range 放行时解析，不放行时按 200 全量（判定收在 resolveStaticRange 里；
+            // multipart 拼不成时下面会把判决回掣成 Ignored，故这里不 const）
+            std::vector<ByteRange> byteRanges{};
+            ByteRange              byteRange{};
+            RangeVerdict           rangeVerdict = resolveStaticRange(request, entityTagText, lastWriteSeconds, fileSize, byteRanges, byteRange);
 
             // 多个区间：拼一份 multipart/byteranges 交出去（RFC 9110 §14.6）。拼不成——正文里撞上了
             // 分隔符、文件在两次读之间换了版本、某段读失败——就把这条 Range 当没接，照常往下走回
@@ -1267,7 +1357,7 @@ namespace AsynGyanis::Net
                 if (co_await writeMultipartByteRangesBody(servedPath, byteRanges, fileSize, mimeType, fileBasicInfo, isHeadRequest, response))
                 {
                     response.setHeader("accept-ranges", "bytes");
-                    appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
+                    appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings, dictionaryNegotiation.servesDictionaryResource);
                     co_return;
                 }
                 byteRanges.clear();
@@ -1387,7 +1477,7 @@ namespace AsynGyanis::Net
             // 200 与 206 共有的表示头部：都要声明支持按字节取区间
             response.setHeader("content-type", mimeType);
             response.setHeader("accept-ranges", "bytes");
-            appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings);
+            appendStaticRepresentationHeaders(response, entityTagText, lastModifiedText, contentEncodingToken, *settings, dictionaryNegotiation.servesDictionaryResource);
 
             if (rangeVerdict == RangeVerdict::Satisfiable)
             {
@@ -1626,6 +1716,9 @@ namespace AsynGyanis::Net
 
     void StaticFileService::setDirectory(const std::string &directoryPath)
     {
+        // 根目录一变，字典解析出的绝对路径就指向旧根：无论下面走哪条分支，先把这本字典撤掉
+        m_settings->dictionary.reset();
+
         // 空串按「关闭静态服务」处理：比让调用方传一个不存在的目录再等它规范化失败更直白
         if (directoryPath.empty())
         {
@@ -1703,6 +1796,82 @@ namespace AsynGyanis::Net
         m_settings->precompressedVariantsEnabled = enabled;
     }
 
+    void StaticFileService::setCompressionDictionary(const std::string &relativePath, const std::string &matchPattern)
+    {
+        // 空参即关闭：与 setDirectory("") 同一写法
+        if (relativePath.empty() || matchPattern.empty())
+        {
+            m_settings->dictionary.reset();
+            return;
+        }
+
+        // 模式校验两道：URL 模式至少要是 "/" 开头的路径；sf-string 里控制字符非法（RFC 8941 §4.2.5），
+        // 发出去就是坏 sf-value——头部渲染层信任这道闸，只做转义不做校验
+        const bool hasControlCharacter = std::ranges::any_of(matchPattern, [](const char character)
+                                                             { return static_cast<unsigned char>(character) < 0x20U || static_cast<unsigned char>(character) == 0x7FU; });
+        if (matchPattern.front() != '/' || hasControlCharacter)
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典的 match 模式「{}」不是以 / 开头的路径模式（或含控制字符），字典不启用", matchPattern);
+            return;
+        }
+
+        // 相对路径在根内解析：接上根目录、规范化，再过与请求路径同一道包含判定——
+        // ".." 之类的花样在这里就出局，不留到请求期
+        std::error_code             canonicalError;
+        const std::filesystem::path canonicalPath = std::filesystem::weakly_canonical(m_settings->rootDirectory / Platform::FileSystem::pathFromUtf8(relativePath), canonicalError);
+        if (canonicalError || !isWithinRootDirectory(canonicalPath, m_settings->rootDirectory))
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典路径「{}」没有落在静态根内，字典不启用。原因：{}", relativePath,
+                         canonicalError ? canonicalError.message() : std::string{"规范化之后落在根目录之外"});
+            return;
+        }
+
+        const std::optional<Platform::FileBasicInfo> basicInfo = Platform::queryFileBasicInfo(canonicalPath);
+        if (!basicInfo.has_value() || !basicInfo->isRegularFile)
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典文件「{}」不是静态根内的常规文件，字典不启用", relativePath);
+            return;
+        }
+        // 与静态文件的发送上限同一条：比它更大的字典文件本身会被 413 挡下，配了也发不出去
+        if (basicInfo->sizeBytes > kMaximumStaticFileSize)
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典文件「{}」有 {} 字节，超过静态文件 {} 字节的上限，字典不启用", relativePath, basicInfo->sizeBytes, kMaximumStaticFileSize);
+            return;
+        }
+
+        // 读全文算 SHA-256：只在配置期做这一次，之后每请求比对的是冻结的 32 字节。
+        // 摘要算不出来（EVP 初始化失败这类）与其余校验失败同一条出路：不启用并告警
+        std::ifstream dictionaryFile(canonicalPath, std::ios::in | std::ios::binary);
+        if (!dictionaryFile.is_open())
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典文件「{}」读不开，字典不启用", relativePath);
+            return;
+        }
+        const std::string dictionaryBytes{std::istreambuf_iterator<char>(dictionaryFile), std::istreambuf_iterator<char>()};
+
+        Core::Digest::Sha256Value contentHash{};
+        try
+        {
+            contentHash = Core::Digest::sha256(dictionaryBytes);
+        } catch (const std::exception &digestError)
+        {
+            m_settings->dictionary.reset();
+            LOG_WARN_FMT("StaticFile: 压缩字典文件「{}」的 SHA-256 算不出来，字典不启用。原因：{}", relativePath, digestError.what());
+            return;
+        }
+
+        StaticFileCompressionDictionary dictionary;
+        dictionary.path         = canonicalPath;
+        dictionary.matchPattern = matchPattern;
+        dictionary.contentHash  = contentHash;
+        m_settings->dictionary  = std::move(dictionary);
+    }
+
     std::shared_ptr<StaticFileSettings> StaticFileService::settings() const noexcept
     {
         return m_settings;
@@ -1744,6 +1913,13 @@ namespace AsynGyanis::Net
         // 「同一 URL 发哪一份表示」上给出不同答案，换个协议就换个形状，那种分叉最难归因
         ensureStaticFileSettings();
         m_staticFiles.setPrecompressedVariants(enabled);
+    }
+
+    void HttpServer::staticCompressionDictionary(const std::string &relativePath, const std::string &matchPattern)
+    {
+        // 本体在 StaticFileService（含配置期校验与哈希冻结），这里只转发
+        ensureStaticFileSettings();
+        m_staticFiles.setCompressionDictionary(relativePath, matchPattern);
     }
 
     std::optional<std::string> HttpServer::staticFileCacheControl() const

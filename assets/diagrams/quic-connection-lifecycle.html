@@ -5572,7 +5572,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <li>idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:116、QuicConnectionCore.cpp:1339）</li>
           <li>「不启用」有两种来路，走的是同一条出口：两端都宣告 0，以及宣告得大到折不进 Timestamp（微秒域的一半让给「现在」）——后者不报错也不夹到上界，因为一个折不进计时器的天数说的就是「没设这一项」（QuicConnectionCore.cpp:1313-1317 的注）</li>
           <li>服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（QuicConnectionCore.cpp:1156、529）</li>
-          <li>待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:93、101）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:118、477、418）</li>
+          <li>待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:93、101）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:118、488、429）</li>
         </ul>
       </div>
 

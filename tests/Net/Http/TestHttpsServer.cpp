@@ -12,6 +12,7 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Coding/Base64.h"
+#include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
@@ -2548,6 +2549,181 @@ namespace AsynGyanis::Net
         EXPECT_NE(outcome.followUpBody.find("served-hello"), std::string::npos) << "第二条的正文不对：连接被收口弄脏了";
         EXPECT_EQ(outcome.heldHttp2Count, 1U) << "收口把整条连接丢了：h2 只需要结掉那一条流";
         EXPECT_EQ(outcome.inFlightAfterRun, 0U) << "收口的流没从在途表里摘走：这条连接再也进不了「空闲可复用」那一档";
+    }
+
+    namespace
+    {
+        /// 字典压缩协商用例的静态站点：`app.js` 带 zstd 与字典压缩（`.dcz`）两份副本，外加 `app.dict`
+        struct DictionarySiteFixture
+        {
+            static constexpr std::string_view kPlainContent    = "dictionary-static-demo-body";             ///< app.js 的正文
+            static constexpr std::string_view kZstdCopyBytes   = "zstd-copy-bytes";                         ///< app.js.zst 的正文（内容随意，判的是「发的是哪一份」）
+            static constexpr std::string_view kDictCopyBytes   = "dict-compressed-copy-bytes";              ///< app.js.dcz 的正文
+            static constexpr std::string_view kDictionaryBytes = "compression-dictionary-fixture-bytes-v1"; ///< app.dict 的正文
+
+            AsynGyanis::TestSupport::TemporaryDirectory site{"HttpsDictionarySite"}; ///< 本次用例独占的静态根
+
+            DictionarySiteFixture()
+            {
+                if (!site.writeBinaryFile("app.js", std::string(kPlainContent)) || !site.writeBinaryFile("app.js.zst", std::string(kZstdCopyBytes)) ||
+                    !site.writeBinaryFile("app.js.dcz", std::string(kDictCopyBytes)) || !site.writeBinaryFile("app.dict", std::string(kDictionaryBytes)))
+                {
+                    throw std::runtime_error("字典用例的静态站点文件写入失败");
+                }
+            }
+        };
+
+        /**
+         * @brief 把字典字节编成 `Available-Dictionary` 的头部取值（`:base64(SHA-256):`），即客户端侧的写法
+         * @param dictionaryBytes 字典文件的字节（与静态根里那份逐字节相同）
+         * @return std::string sf-binary 形态的头部取值
+         */
+        [[nodiscard]] std::string dictionaryHashHeaderValue(const std::string_view dictionaryBytes)
+        {
+            const Core::Digest::Sha256Value hash     = Core::Digest::sha256(dictionaryBytes);
+            const std::string_view          hashView = std::string_view{reinterpret_cast<const char *>(hash.data()), hash.size()};
+            return ":" + Base::base64Encode(hashView) + ":";
+        }
+
+        /// 一份合法但必然不匹配的哈希：32 字节全零（长度对不对由解析单测钉，这里只用来换一个不同值）
+        [[nodiscard]] std::string unrelatedDictionaryHashHeaderValue()
+        {
+            return ":" + Base::base64Encode(std::string(32, '\0')) + ":";
+        }
+
+        /// 起一台挂好静态目录、开着变体协商并配了字典的 HTTPS 服务器，返回夹具与站点目录（目录要活到断言完）
+        [[nodiscard]] std::unique_ptr<RunningHttpsServerFixture> makeDictionaryTlsFixture(const DictionarySiteFixture &dictionarySite)
+        {
+            const std::string siteDirectory = Platform::FileSystem::utf8FromPath(dictionarySite.site.path());
+            auto              fixture = std::make_unique<RunningHttpsServerFixture>(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, RouteRegistrar{}, HttpParserLimits{},
+                                                                                    [siteDirectory](HttpsServer &server)
+                                                                                    {
+                                                                           server.staticFileDir(siteDirectory);
+                                                                           server.staticPrecompressedVariants(true);
+                                                                           server.staticCompressionDictionary("app.dict", "/*");
+                                                                                    });
+            EXPECT_TRUE(fixture->awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+            return fixture;
+        }
+
+        /// 从响应文本的头部块里取出 etag 的取值原文；没有这条头时交回空串
+        [[nodiscard]] std::string tlsEtagValueOf(const std::string &responseText)
+        {
+            constexpr std::string_view kEtagPrefix = "\r\netag: ";
+            const std::size_t          position    = responseText.find(kEtagPrefix);
+            if (position == std::string::npos)
+            {
+                return {};
+            }
+            const std::size_t valueStart = position + kEtagPrefix.size();
+            return responseText.substr(valueStart, responseText.find("\r\n", valueStart) - valueStart);
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：TLS 上哈希匹配 + 显式列出 dcz 时发字典压缩副本，两支协商都进 Vary（RFC 9842 §6.2）
+     * @details 判据三样互不冗余：正文等于磁盘上 `.dcz` 那份、`content-encoding: dcz`、Vary 同时含
+     *          `accept-encoding` 与 `available-dictionary`；外加字典文件自身带 `Use-As-Dictionary`——
+     *          没有它客户端根本不知道回送哪个哈希，前三样也就无从谈起
+     */
+    TEST(HttpsServer, ServesTheDictionaryCompressedVariantWhenTheClientOffersMatchingHash)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        const DictionarySiteFixture                      dictionarySite;
+        const std::unique_ptr<RunningHttpsServerFixture> fixture = makeDictionaryTlsFixture(dictionarySite);
+
+        TlsLoopbackClient client(fixture->listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::string variantText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1",
+                                                    {"Accept-Encoding: dcz, zstd", "Available-Dictionary: " + dictionaryHashHeaderValue(DictionarySiteFixture::kDictionaryBytes)}),
+                                    kWaitTimeout))
+                << "字典协商请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(variantText, DictionarySiteFixture::kDictCopyBytes, 1, kWaitTimeout))
+                << "TLS 上哈希匹配时没有发字典压缩副本：「" << variantText << "」";
+        EXPECT_NE(variantText.find("content-encoding: dcz"), std::string::npos) << variantText;
+        EXPECT_NE(variantText.find("accept-encoding"), std::string::npos) << "字典压缩响应要在 Vary 上分 accept-encoding：" << variantText;
+        EXPECT_NE(variantText.find("available-dictionary"), std::string::npos) << "字典压缩响应必须 Vary 在 available-dictionary 上：" << variantText;
+
+        std::string dictionaryText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.dict HTTP/1.1"), kWaitTimeout)) << "字典文件请求未能写入";
+        ASSERT_TRUE(client.waitForTextOccurrences(dictionaryText, DictionarySiteFixture::kDictionaryBytes, 1, kWaitTimeout)) << "字典文件没有回正文：「" << dictionaryText << "」";
+        EXPECT_NE(dictionaryText.find("use-as-dictionary: match=\"/*\""), std::string::npos) << "TLS 上字典文件必须宣告 Use-As-Dictionary：" << dictionaryText;
+    }
+
+    /**
+     * @brief 钉住：三个门的任一条不成立都退回常规协商——哈希不匹配、AE 没显式列 dcz、压根没带哈希
+     * @details 三种请求的响应都必须落到 zstd 副本上，且 Vary 不虚增 `available-dictionary`：
+     *          只有真的可能发 dcz 的那些响应才需要在它上面分桶
+     */
+    TEST(HttpsServer, FallsBackWhenTheDictionaryIsNotExplicitlyAcceptedOrDoesNotMatch)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        const DictionarySiteFixture                      dictionarySite;
+        const std::unique_ptr<RunningHttpsServerFixture> fixture = makeDictionaryTlsFixture(dictionarySite);
+
+        TlsLoopbackClient client(fixture->listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        // (a) 合法但不同的哈希：那是别家的字典
+        std::string mismatchText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1", {"Accept-Encoding: dcz, zstd", "Available-Dictionary: " + unrelatedDictionaryHashHeaderValue()}),
+                                    kWaitTimeout));
+        ASSERT_TRUE(client.waitForTextOccurrences(mismatchText, DictionarySiteFixture::kZstdCopyBytes, 1, kWaitTimeout))
+                << "哈希不匹配时没有退回 zstd 副本：「" << mismatchText << "」";
+        EXPECT_EQ(mismatchText.find("content-encoding: dcz"), std::string::npos) << "别家的哈希不该命中本端字典：" << mismatchText;
+        EXPECT_EQ(mismatchText.find("available-dictionary"), std::string::npos) << "没有哪一份表示依赖字典，Vary 不该多这一项：" << mismatchText;
+
+        // (b) 哈希匹配但 dcz 只在通配 `*` 里：字典编码只认显式列出（§6.1）
+        std::string wildcardText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1",
+                                                    {"Accept-Encoding: zstd, *", "Available-Dictionary: " + dictionaryHashHeaderValue(DictionarySiteFixture::kDictionaryBytes)}),
+                                    kWaitTimeout));
+        ASSERT_TRUE(client.waitForTextOccurrences(wildcardText, DictionarySiteFixture::kZstdCopyBytes, 1, kWaitTimeout)) << "通配不该让 dcz 参选：「" << wildcardText << "」";
+        EXPECT_EQ(wildcardText.find("content-encoding: dcz"), std::string::npos) << wildcardText;
+
+        // (c) 列了 dcz 但没带哈希：客户端没说手里有哪本字典，退常规协商
+        std::string noHashText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1", {"Accept-Encoding: dcz, zstd"}), kWaitTimeout));
+        ASSERT_TRUE(client.waitForTextOccurrences(noHashText, DictionarySiteFixture::kZstdCopyBytes, 1, kWaitTimeout)) << "没带哈希时不该发 dcz：「" << noHashText << "」";
+        EXPECT_EQ(noHashText.find("content-encoding: dcz"), std::string::npos) << noHashText;
+    }
+
+    /**
+     * @brief 钉住：字典压缩表示的 304 也把 Vary 补齐（RFC 9110 §15.4.5 要求回带 200 该给的头部）
+     * @details 缓存拿到一条不带 `available-dictionary` 的 304，就会按「只按 accept-encoding 分桶」
+     *          去复用字典压缩表示——把它发给手里没有字典的客户端，那一份正文对端解不开
+     */
+    TEST(HttpsServer, DictionaryVariantKeepsTheVaryOnTheNotModifiedReply)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        const DictionarySiteFixture                      dictionarySite;
+        const std::unique_ptr<RunningHttpsServerFixture> fixture = makeDictionaryTlsFixture(dictionarySite);
+
+        TlsLoopbackClient client(fixture->listeningPort());
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        const std::vector<std::string> dictionaryHeaders{"Accept-Encoding: dcz, zstd",
+                                                         "Available-Dictionary: " + dictionaryHashHeaderValue(DictionarySiteFixture::kDictionaryBytes)};
+
+        std::string firstText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1", dictionaryHeaders), kWaitTimeout));
+        ASSERT_TRUE(client.waitForTextOccurrences(firstText, DictionarySiteFixture::kDictCopyBytes, 1, kWaitTimeout)) << "第一次请求没拿到字典压缩副本：「" << firstText << "」";
+        const std::string etagValue = tlsEtagValueOf(firstText);
+        ASSERT_FALSE(etagValue.empty()) << "字典压缩表示的响应没有 ETag：" << firstText;
+
+        std::vector<std::string> conditionalHeaders = dictionaryHeaders;
+        conditionalHeaders.push_back("If-None-Match: " + etagValue);
+        std::string notModifiedText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /app.js HTTP/1.1", conditionalHeaders), kWaitTimeout));
+        // 以 Vary 那一项为读齐的判据：它在头部块里，304 没有正文可等
+        ASSERT_TRUE(client.waitForTextOccurrences(notModifiedText, "available-dictionary", 1, kWaitTimeout))
+                << "304 没有带上 available-dictionary（缓存会把它发给没有字典的客户端）：「" << notModifiedText << "」";
+        EXPECT_NE(notModifiedText.find("HTTP/1.1 304"), std::string::npos) << "带匹配验证器的条件请求应当回 304：" << notModifiedText;
     }
 
 } // namespace AsynGyanis::Net

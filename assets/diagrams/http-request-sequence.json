@@ -109,7 +109,7 @@
       "sources": [
         { "path": "src/Net/Http/Router.cpp", "line": 410, "label": "route" },
         { "path": "src/Net/Http/Router.cpp", "line": 579, "label": "pipeline.run" },
-        { "path": "src/Net/Http/Middleware.h", "line": 150, "label": "invoke 逐层进入" }
+        { "path": "src/Net/Http/Middleware.h", "line": 151, "label": "invoke 逐层进入" }
       ]
     },
     {
@@ -120,7 +120,7 @@
       "sources": [
         { "path": "src/Net/Http2/Http2Session.cpp", "line": 180, "label": "读 ALPN 后分岔" },
         { "path": "src/Net/Http2/Http2Session.cpp", "line": 193, "label": "runHttp2Loop" },
-        { "path": "src/Net/Http/HttpsServer.cpp", "line": 124, "end_line": 125, "label": "服务端只建 h2 会话" }
+        { "path": "src/Net/Http/HttpsServer.cpp", "line": 132, "end_line": 133, "label": "服务端只建 h2 会话" }
       ]
     }
   ],
@@ -178,7 +178,7 @@
       "items": [
         "ALPN 偏好表是 {h2, http/1.1}：客户端没带列表给 NO_ACK，全不匹配直接 ALERT_FATAL（src/Core/Tls/TlsContext.cpp:63、:302）",
         "握手按 WANT_READ/WANT_WRITE 挂回事件循环（TlsSocket.cpp:177-196）；m_isWritePending 是 SSL_read/SSL_write 的唯一串行闸，反方向占槽走 5ms 让路",
-        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:124、src/Net/Http2/Http2Session.cpp:180-193）",
+        "服务端在握手前只建 Http2Session：此刻 ALPN 必空，分岔交给会话自己判（src/Net/Http/HttpsServer.cpp:132、src/Net/Http2/Http2Session.cpp:180-193）",
         "热轮换整台换 SSL_CTX，在跑的连接各持旧上下文不受影响，只影响新连接（src/Core/Tls/TlsContext.cpp:680）"
       ]
     },

@@ -7,6 +7,8 @@
 
 #include "HttpTestSupport.h"
 
+#include "Base/Coding/Base64.h"
+#include "Core/Crypto/Digest.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Middleware.h"
@@ -431,5 +433,210 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(hasHeaderLine(reply->headers, "content-encoding: zstd")) << reply->headers;
         // 只出现一次编码声明：叠两层会出现第二条或改写取值
         EXPECT_EQ(reply->headers.find("content-encoding", reply->headers.find("content-encoding") + 1), std::string::npos) << reply->headers;
+    }
+
+    namespace
+    {
+        /// 字典文件的字节：内容本身无所谓，唯一要有的是「服务端与客户端从同一份字节出发」
+        constexpr std::string_view kDictionaryFixtureBytes = "compression-dictionary-fixture-bytes-v1";
+
+        /**
+         * @brief 字典用例的临时静态站点：`app.js` 带 zstd 与字典压缩（`.dcz`）两份副本，外加 `app.dict`
+         * @details 与 TemporaryVariantTree 各自独立：把那棵树扩成带字典的，会让既有列表用例多出条目。
+         *          目录名自带盐值，gtest 按用例起进程并行跑时不会撞同一棵树
+         */
+        class TemporaryDictionaryTree
+        {
+        public:
+            TemporaryDictionaryTree()
+            {
+                static std::atomic<unsigned int> sequenceCounter{0};
+                const std::string salt = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(sequenceCounter.fetch_add(1)) + "_" +
+                                         std::to_string(static_cast<unsigned int>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+                m_baseDirectory        = std::filesystem::temp_directory_path() / ("AsynGyanis_Net_Dictionary_" + salt);
+
+                std::error_code error;
+                std::filesystem::create_directories(m_baseDirectory, error);
+                if (error)
+                {
+                    throw std::runtime_error("临时字典夹具目录创建失败");
+                }
+
+                m_plainText = plainJavaScriptBody();
+                m_zstd      = zstdCompress(m_plainText).value_or(std::string{});
+                // 字典压缩副本的字节刻意不是真 zstd：本用例判的是「发的是磁盘上哪一份文件」，
+                // 正文内容不影响这个判据，构造一份可读且与其余两份都不同的就够
+                m_dictionaryCompressed = "dcz-variant-bytes:" + m_plainText.substr(0, 64);
+                m_dictionary           = std::string(kDictionaryFixtureBytes);
+
+                writeBytes(m_baseDirectory / "app.js", m_plainText);
+                writeBytes(m_baseDirectory / "app.js.zst", m_zstd);
+                writeBytes(m_baseDirectory / "app.js.dcz", m_dictionaryCompressed);
+                writeBytes(m_baseDirectory / "app.dict", m_dictionary);
+            }
+
+            ~TemporaryDictionaryTree()
+            {
+                std::error_code error;
+                std::filesystem::remove_all(m_baseDirectory, error);
+            }
+
+            TemporaryDictionaryTree(const TemporaryDictionaryTree &)            = delete;
+            TemporaryDictionaryTree &operator=(const TemporaryDictionaryTree &) = delete;
+
+            [[nodiscard]] const std::filesystem::path &directory() const noexcept
+            {
+                return m_baseDirectory;
+            }
+            [[nodiscard]] const std::string &plainText() const noexcept
+            {
+                return m_plainText;
+            }
+            [[nodiscard]] const std::string &zstdBytes() const noexcept
+            {
+                return m_zstd;
+            }
+            [[nodiscard]] const std::string &dictionaryCompressedBytes() const noexcept
+            {
+                return m_dictionaryCompressed;
+            }
+            [[nodiscard]] const std::string &dictionaryBytes() const noexcept
+            {
+                return m_dictionary;
+            }
+
+        private:
+            static void writeBytes(const std::filesystem::path &filePath, const std::string &content)
+            {
+                std::ofstream file(filePath, std::ios::out | std::ios::binary | std::ios::trunc);
+                if (!file.is_open())
+                {
+                    throw std::runtime_error("临时字典夹具文件创建失败");
+                }
+                file.write(content.data(), static_cast<std::streamsize>(content.size()));
+            }
+
+            std::filesystem::path m_baseDirectory;        ///< 本次用例独占的静态根
+            std::string           m_plainText;            ///< app.js 的正文
+            std::string           m_zstd;                 ///< app.js.zst 的正文
+            std::string           m_dictionaryCompressed; ///< app.js.dcz 的正文
+            std::string           m_dictionary;           ///< app.dict 的正文
+        };
+
+        /**
+         * @brief 把字典字节编成 `Available-Dictionary` 的头部取值（`:base64(SHA-256):`），即客户端侧的写法
+         * @param dictionaryBytes 字典文件的字节（与静态根里那份逐字节相同）
+         * @return std::string sf-binary 形态的头部取值
+         */
+        [[nodiscard]] std::string availableDictionaryHeaderValue(const std::string_view dictionaryBytes)
+        {
+            const Core::Digest::Sha256Value hash     = Core::Digest::sha256(dictionaryBytes);
+            const std::string_view          hashView = std::string_view{reinterpret_cast<const char *>(hash.data()), hash.size()};
+            return ":" + Base::base64Encode(hashView) + ":";
+        }
+
+        /**
+         * @brief 起一台挂了静态目录并配好字典的明文服务器（变体协商固定开着）
+         * @param directory 静态根目录
+         * @param dictionaryRelativePath 字典文件相对根的路径
+         * @param matchPattern Use-As-Dictionary 的 match 取值
+         * @return 已进入接受循环的夹具
+         */
+        [[nodiscard]] std::unique_ptr<RunningHttpServerFixture> makeDictionaryFixture(const std::filesystem::path &directory, const std::string &dictionaryRelativePath,
+                                                                                      const std::string &matchPattern)
+        {
+            const std::string        directoryText   = directory.string();
+            const ServerConfigurator configureServer = [directoryText, dictionaryRelativePath, matchPattern](TestHttpServer &server)
+            {
+                server.staticFileDir(directoryText);
+                server.staticPrecompressedVariants(true);
+                server.staticCompressionDictionary(dictionaryRelativePath, matchPattern);
+            };
+
+            auto fixture = std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, RouteRegistrar{}, HttpParserLimits{},
+                                                                      configureServer);
+            EXPECT_TRUE(fixture->awaitRunning(kWaitTimeout));
+            return fixture;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：Available-Dictionary 只认完整形状 `:<base64>:` 且恰好 32 字节（RFC 9842 §2.2）
+     * @details 期望值是 RFC 9842 正文示例的**独立解码**（Python 的 base64 一次算回），不是本端
+     *          再编一遍——拿被测同源当预期，解析与编码一起错也照样绿
+     */
+    TEST(HttpPrecompressedStatic, AvailableDictionaryParserAcceptsOnlyTheFullSfBinaryForm)
+    {
+        const std::optional<Core::Digest::Sha256Value> parsed = Detail::parseAvailableDictionaryHash(":pZGm1Av0IEBKARczz7exkNYsZb8LzaMrV7J32a2fFG4=:");
+        ASSERT_TRUE(parsed.has_value()) << "RFC 9842 的示例取值没解析出来";
+        const Core::Digest::Sha256Value expected{0xa5, 0x91, 0xa6, 0xd4, 0x0b, 0xf4, 0x20, 0x40, 0x4a, 0x01, 0x17, 0x33, 0xcf, 0xb7, 0xb1, 0x90,
+                                                 0xd6, 0x2c, 0x65, 0xbf, 0x0b, 0xcd, 0xa3, 0x2b, 0x57, 0xb2, 0x77, 0xd9, 0xad, 0x9f, 0x14, 0x6e};
+        EXPECT_EQ(*parsed, expected) << "解出来的字节与独立解码的期望不符";
+
+        // 头部值两侧的 OWS 由解析器自己裁（HTTP 头部的常见形态）
+        EXPECT_EQ(Detail::parseAvailableDictionaryHash("  :pZGm1Av0IEBKARczz7exkNYsZb8LzaMrV7J32a2fFG4=:  "), parsed);
+
+        // 负例：剥掉定界冒号 / 只有一个冒号 / 坏 base64 / 解码后不足 32 字节 / 空载荷
+        EXPECT_FALSE(Detail::parseAvailableDictionaryHash("pZGm1Av0IEBKARczz7exkNYsZb8LzaMrV7J32a2fFG4=").has_value()) << "没带定界冒号的裸 base64 不是 sf-binary";
+        EXPECT_FALSE(Detail::parseAvailableDictionaryHash(":pZGm1Av0IEBKARczz7exkNYsZb8LzaMrV7J32a2fFG4=").has_value()) << "只有前冒号也是残缺的 sf-binary";
+        EXPECT_FALSE(Detail::parseAvailableDictionaryHash(":!!!not-base64!!!:").has_value());
+        EXPECT_FALSE(Detail::parseAvailableDictionaryHash(":AAAAAAAAAAAAAAAAAAAAAA==:").has_value()) << "16 字节不是 SHA-256，必须判否";
+        EXPECT_FALSE(Detail::parseAvailableDictionaryHash("::").has_value()) << "空载荷判否（本仓 base64Decode 的既定口径）";
+    }
+
+    /**
+     * @brief 钉住：Use-As-Dictionary 的 match 按 sf-string 转义（RFC 8941 §4.2.5：`"` 与 `\` 前置反斜杠）
+     */
+    TEST(HttpPrecompressedStatic, UseAsDictionaryEscapesQuotesAndBackslashes)
+    {
+        HttpResponse response;
+        Detail::appendUseAsDictionaryHeader(response, "/assets/*");
+        EXPECT_EQ(response.getHeader("use-as-dictionary").value_or(std::string{}), "match=\"/assets/*\"") << "普通模式不该被无谓改写";
+
+        Detail::appendUseAsDictionaryHeader(response, "/a\"b\\c");
+        EXPECT_EQ(response.getHeader("use-as-dictionary").value_or(std::string{}), "match=\"/a\\\"b\\\\c\"") << "引号与反斜杠必须转义，否则正文撕成坏 sf-value";
+    }
+
+    /**
+     * @brief 钉住：在线协商永不选中字典编码；`*` 不为字典编码充当「已列出」（RFC 9842 §6.1）
+     */
+    TEST(HttpPrecompressedStatic, OnlineNegotiationNeverSelectsTheDictionaryEncoding)
+    {
+        // 表里 dcz 在第一位（静态路径上字典可用时它最小）；在线路径必须跳过它，退到客户端独立能解的编码
+        EXPECT_EQ(Detail::selectPreferredEncoding("dcz, gzip"), "gzip") << "在线压缩产不出 dcz，不许选中";
+        EXPECT_EQ(Detail::selectPreferredEncoding("dcz"), std::string_view{}) << "只列 dcz 时应回未压缩，而不是发一份解不开的字节";
+        EXPECT_EQ(Detail::selectPreferredEncoding("dcZ, zstd"), "zstd") << "编码名按 token 语义大小写不敏感";
+
+        // 字典编码只认显式列出：`*` 不算，q=0 的拒绝语义照常
+        EXPECT_FALSE(Detail::acceptsEncoding("*", "dcz", false)) << "通配不能替客户端宣称「支持字典解码」";
+        EXPECT_TRUE(Detail::acceptsEncoding("gzip, dcz", "dcz", false));
+        EXPECT_TRUE(Detail::acceptsEncoding("dcZ;q=0.5", "dcz", false));
+        EXPECT_FALSE(Detail::acceptsEncoding("dcz;q=0", "dcz", false)) << "q=0 是明确拒绝";
+        // 通配在常规编码上的既有语义一字未动
+        EXPECT_TRUE(Detail::acceptsEncoding("*", "zstd"));
+    }
+
+    /**
+     * @brief 钉住：明文 HTTP 一概不发字典形态——既不宣告字典、也不发 dcz（RFC 9842 §8 安全上下文）
+     * @details 请求把「客户端有一本匹配的字典」这件事给全（哈希逐字节相等、AE 也列了 dcz），
+     *          明文连接上仍必须退回常规协商；字典文件自身的响应也不得带 Use-As-Dictionary
+     */
+    TEST(HttpPrecompressedStatic, CleartextHttpNeverAdvertisesNorServesTheDictionaryForm)
+    {
+        TemporaryDictionaryTree                         tree;
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeDictionaryFixture(tree.directory(), "app.dict", "/*");
+
+        const std::optional<ParsedResponse> reply =
+                requestStatic(*fixture, "/app.js", {"Accept-Encoding: dcz, zstd", "Available-Dictionary: " + availableDictionaryHeaderValue(tree.dictionaryBytes())});
+        ASSERT_TRUE(reply.has_value()) << "请求没有响应回来";
+        EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << reply->headers.substr(0, 60);
+        EXPECT_TRUE(hasHeaderLine(reply->headers, "content-encoding: zstd")) << "明文连接上不该出现 dcz：" << reply->headers;
+        EXPECT_EQ(reply->body, tree.zstdBytes()) << "明文连接上应发常规 zstd 副本";
+        EXPECT_EQ(reply->headers.find("available-dictionary"), std::string::npos) << "没有哪一份表示依赖字典协商，Vary 不该多出这一项：" << reply->headers;
+
+        const std::optional<ParsedResponse> dictionaryReply = requestStatic(*fixture, "/app.dict", {"Accept-Encoding: zstd"});
+        ASSERT_TRUE(dictionaryReply.has_value());
+        EXPECT_EQ(dictionaryReply->body, tree.dictionaryBytes()) << "字典文件本身要能照常下载";
+        EXPECT_EQ(dictionaryReply->headers.find("use-as-dictionary"), std::string::npos) << "明文连接上不得宣告字典：" << dictionaryReply->headers;
     }
 } // namespace AsynGyanis::Net

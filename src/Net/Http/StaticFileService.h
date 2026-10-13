@@ -11,6 +11,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Crypto/Digest.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -22,6 +24,21 @@ namespace AsynGyanis::Net
 {
     class Router;
     class StaticFileMappingCache;
+
+    /**
+     * @brief RFC 9842 的压缩字典登记：一本字典一份，哈希是配置时算好的正文 SHA-256
+     *
+     * @details 两个消费点都读这里：字典文件自身的响应带上 `Use-As-Dictionary: match="..."` 供客户端
+     *          缓存，之后客户端按 `Available-Dictionary` 回送哈希，服务端与这里的 contentHash 逐字节
+     *          比对决定能不能发 `.dcz` 副本。哈希在**配置期**算好并冻结——运行期每请求读字典文件
+     *          重算，等于把一次整文件读加进请求路径。
+     */
+    struct ASYN_NET_API StaticFileCompressionDictionary
+    {
+        std::filesystem::path     path;          ///< 字典文件在静态根内的绝对路径（配置时解析、规范化）
+        std::string               matchPattern;  ///< Use-As-Dictionary 的 match 取值（"/" 开头的路径模式）
+        Core::Digest::Sha256Value contentHash{}; ///< 配置时读文件算出的正文 SHA-256（与客户端哈希比对）
+    };
 
     /**
      * @brief 静态文件服务的运行时配置：开关、规范化后的根目录、Cache-Control 与映射缓存
@@ -59,6 +76,13 @@ namespace AsynGyanis::Net
          *       因此要改上限必须先 setLimits() 再设静态目录
          */
         std::shared_ptr<StaticFileMappingCache> mappingCache;
+
+        /**
+         * @brief RFC 9842 的压缩字典；空表示未配置
+         * @note 生效面比其余各格窄：只有「变体协商开着 + 连接是 TLS + 客户端哈希匹配」三条同时成立
+         *       时它才改变响应的形状（见 setCompressionDictionary 的说明）
+         */
+        std::optional<StaticFileCompressionDictionary> dictionary;
     };
 
     /**
@@ -131,6 +155,30 @@ namespace AsynGyanis::Net
          * @see StaticFileSettings::precompressedVariantsEnabled
          */
         void setPrecompressedVariants(bool enabled);
+
+        /**
+         * @brief 设置（或关闭）RFC 9842 的压缩字典：静态资源按 `Available-Dictionary` 协商发 `.dcz` 副本
+         * @param relativePath 字典文件相对静态根的路径（如 `"assets/app.dict"`）；空串表示关闭
+         * @param matchPattern `Use-As-Dictionary` 的 match 取值（URL 路径模式，如 `"/assets/*"`）；
+         *        空串一并表示关闭
+         * @details 配置期做四件事：把相对路径解析到根内并确认是常规文件、读全文算 SHA-256、校验模式
+         *          （非空、以 `/` 开头、无控制字符——sf-string 里它们非法）、把三件事实冻进
+         *          `StaticFileSettings::dictionary`。任何一件不成立就**不启用**并记一条中文告警，
+         *          与 setDirectory 同一条口径：把 surprise 留在配置期，不留给第一个请求。
+         *
+         *          生效面（RFC 9842 §8 要求安全上下文，三条缺一不可）：
+         *          @li 连接是 TLS（明文 HTTP 既不发 `Use-As-Dictionary` 也不发 `dcz`）；
+         *          @li 变体协商开着（`.dcz` 是副本形态之一，靠 setPrecompressedVariants 这一格）；
+         *          @li 请求带 `Available-Dictionary` 且哈希与本字典逐字节相等。
+         *          三条成立且磁盘上有 `.dcz` 副本时它优先于其余副本；任一条不成立就退回既有协商，
+         *          响应与没配这本字典时逐字相同。
+         * @note `.dcz` 副本由部署方用同一本字典离线压出（`zstd -D assets/app.dict app.js` 之类），
+         *       引擎不压盘上的文件——与其余预压缩副本同一条分工
+         * @note 一本表只支持一本字典：多本（各带自己的 match 域）等真有部署这么用时再谈，届时按
+         *       §2.2.3 的「最长 match 优先」挑
+         * @see StaticFileCompressionDictionary
+         */
+        void setCompressionDictionary(const std::string &relativePath, const std::string &matchPattern);
 
         /**
          * @brief 取配置本体（兜底路由的处理函数持有的就是它）

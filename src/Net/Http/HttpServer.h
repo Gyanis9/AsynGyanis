@@ -147,6 +147,24 @@ namespace AsynGyanis::Net
         void staticPrecompressedVariants(bool enabled);
 
         /**
+         * @brief 设置 RFC 9842 的压缩字典：静态资源按 `Available-Dictionary` 协商发 `.dcz` 副本
+         *
+         * @details 配置成功后：字典文件自身的响应带 `Use-As-Dictionary: match="..."`，客户端据此缓存
+         *          并在此后带 `Available-Dictionary` 回送哈希；哈希与服务端配置期算好的逐字节相等、
+         *          且磁盘上有同名字典压缩副本（`.dcz`）时优先发那份（`Content-Encoding: dcz` 与
+         *          `Vary: accept-encoding, available-dictionary`）。三条门缺一不可：连接是 TLS
+         *          （RFC 9842 §8 要求安全上下文）、变体协商开着（`.dcz` 是副本形态之一）、哈希匹配；
+         *          任一条不成立就退回既有协商，响应与没配这本字典时逐字相同。校验失败（路径不在
+         *          根内、文件缺失、模式含控制字符）会关掉这本字典并记告警，不把 surprise 留给请求。
+         *          完整语义见 `StaticFileService::setCompressionDictionary()`。
+         * @param relativePath 字典文件相对静态根的路径（如 `"assets/app.dict"`）；空串表示关闭
+         * @param matchPattern `Use-As-Dictionary` 的 match 取值（如 `"/assets/*"`）；空串一并表示关闭
+         * @note 必须在 start() 之前配置，与静态目录本身同一时限
+         * @see staticFileDir(), staticPrecompressedVariants(), StaticFileService::setCompressionDictionary()
+         */
+        void staticCompressionDictionary(const std::string &relativePath, const std::string &matchPattern);
+
+        /**
          * @brief 查询当前配置的静态文件 Cache-Control 值。
          * @return 已设置的值；未设置或从未配置过静态目录时为空 optional
          */
