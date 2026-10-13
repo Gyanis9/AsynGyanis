@@ -2784,4 +2784,32 @@ namespace AsynGyanis::Net
                                                           << " 字节：一次 SSL_write 的部分返回被当成整条写完，剩余正文永久丢失";
     }
 
+    /**
+     * @brief HTTPS 侧运维端点 setter 的拒绝面与 /debug/loops 注册
+     * @details 既有的 HTTPS 端点用例走的是完整装配钩子，只把「合法路径 + 抓端点」这一侧跑到；这里
+     *          单独钉四条 setter 的路径判据（空串或非 / 开头必须当场拒，否则会静默注册出一个抓不到的端点）
+     *          与 /debug/loops 的注册——后者此前在 TLS 侧没有任何直测。另钉 setMetricsCollector 收到空采集端
+     *          当场拒：留着它等于让这条服务器没有计数出口而读数恒零。全是同步 setter/校验，服务器不启动，
+     *          与库内既有的「构造后直接下发配置」同一形状。
+     */
+    TEST(HttpsServer, GuardsOperationEndpointPathsAndRejectsNullMetricsCollector)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        Core::EventLoop loop;
+        HttpsServer     server(loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string());
+
+        // 四条 setter 的路径判据：不以 / 开头（含空串）一律当场拒
+        EXPECT_THROW(server.enableMetricsEndpoint("metrics"), Base::InvalidArgumentException);
+        EXPECT_THROW(server.enableHealthEndpoint(""), Base::InvalidArgumentException);
+        EXPECT_THROW(server.enableReadinessEndpoint("readyz"), Base::InvalidArgumentException);
+        EXPECT_THROW(server.enableLoopDiagnosticsEndpoint("loops"), Base::InvalidArgumentException);
+
+        // /debug/loops 的合法注册：TLS 侧此前无直测，补上钉住「这条路径确实挂得上去、不抛」
+        EXPECT_NO_THROW(server.enableLoopDiagnosticsEndpoint("/debug/loops"));
+
+        // 空采集端等于没有计数出口，读出来恒零却与「没流量」看不出差别，按用法错误直接拒绝
+        EXPECT_THROW(server.setMetricsCollector(nullptr), Base::InvalidArgumentException);
+    }
+
 } // namespace AsynGyanis::Net
