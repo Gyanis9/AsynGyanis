@@ -16,6 +16,7 @@
 #include "Net/Metrics/OtlpHttpMetricsExporter.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -57,6 +58,9 @@ namespace AsynGyanis::Net
     /**
      * @brief 按读出的配置装出出口；快照来源固定为本进程的读数注册表
      * @param configuration 已读出的读数导出配置
+     * @param extraReadings 每期追加的读数批（可选）：与注册表快照在三路上合并后一起送出——
+     *        给的是「注册表表达不了的读数」（如某台 HTTP 服务器的统计与延迟直方图，经
+     *        buildOtlpMetricsFromHttpStats 折成批）；空函数对象表示只用注册表
      * @return std::unique_ptr<OtlpHttpMetricsExporter> enabled 为真时交出出口；为假交出空指针（调用方据此不挂）
      * @throws Base::LogicException 服务名为空（enabled 时的守卫；读取器已先拦一道）
      * @throws Base::InvalidArgumentException otlp.endpoint 为空或畸形、附加头部写法会撕裂请求行
@@ -64,5 +68,6 @@ namespace AsynGyanis::Net
      *       出口的所有权交给调用方（进程级对象，与进程同生共死最省事）
      * @see readMetricsExportConfiguration(), OtlpHttpMetricsExporter
      */
-    [[nodiscard]] ASYN_NET_API std::unique_ptr<OtlpHttpMetricsExporter> buildMetricsExporter(const MetricsExportConfiguration &configuration);
+    [[nodiscard]] ASYN_NET_API std::unique_ptr<OtlpHttpMetricsExporter> buildMetricsExporter(const MetricsExportConfiguration &configuration,
+                                                                                             std::function<OtlpMetricsBatch()> extraReadings = {});
 } // namespace AsynGyanis::Net

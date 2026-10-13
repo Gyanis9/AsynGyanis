@@ -35,7 +35,11 @@ namespace
 {
     using AsynGyanis::Core::ProcessMetricKind;
     using AsynGyanis::Core::ProcessMetricSample;
+    using AsynGyanis::Net::OtlpHistogramSample;
     using AsynGyanis::Net::OtlpHttpMetricsExporter;
+    using AsynGyanis::Net::OtlpLabeledPoint;
+    using AsynGyanis::Net::OtlpLabeledSample;
+    using AsynGyanis::Net::OtlpMetricsBatch;
     using AsynGyanis::Net::TraceResource;
     using AsynGyanis::Net::HttpTestSupport::RunningHttpServerFixture;
     using AsynGyanis::Net::TestSupport::jsonTextOf;
@@ -138,10 +142,10 @@ namespace
         };
     }
 
-    /// 固定返回同一份快照的来源（按值捕获，返回时拷贝一份）
+    /// 固定返回同一份快照的来源（按值捕获，返回时拷贝一份；标量装进批的标量一路）
     OtlpHttpMetricsExporter::SnapshotProvider fixedSnapshot(std::vector<ProcessMetricSample> samples)
     {
-        return [samples = std::move(samples)] { return samples; };
+        return [samples = std::move(samples)] { return OtlpMetricsBatch{.scalars = samples}; };
     }
 } // namespace
 
@@ -290,4 +294,40 @@ TEST(OtlpHttpMetricsExporter, RejectsUnusableConfigurationAtConstruction)
                     << "拒绝原因里要点名「" << testCase.expectedFragment << "」：" << exception.what();
         }
     }
+}
+
+/**
+ * @brief 带维度读数与直方图随同一周期发出：正文里 attributes 与直方图桶逐项在位
+ */
+TEST(OtlpHttpMetricsExporter, PostsLabeledAndHistogramReadingsOnTheSameCadence)
+{
+    CollectorState state;
+    const auto     fixture = startCollector(&state);
+    ASSERT_TRUE(fixture != nullptr);
+
+    OtlpMetricsBatch batch;
+    batch.scalars.push_back(ProcessMetricSample{.name = "asyn_test_scalar", .help = "标量", .kind = ProcessMetricKind::Gauge, .value = 5U});
+    batch.labeled.push_back(OtlpLabeledSample{
+            .name = "asyn_test_responses_total", .help = "按状态码类聚合", .kind = ProcessMetricKind::Counter, .points = {{.attributes = {{"status_class", "2xx"}}, .value = 9U}}});
+    batch.histograms.push_back(OtlpHistogramSample{
+            .name = "asyn_test_duration_seconds", .help = "耗时分布", .explicitBoundsSeconds = {0.001, 0.1}, .bucketCounts = {4U, 2U, 1U}, .count = 7U, .sumSeconds = 0.3});
+
+    OtlpHttpMetricsExporter exporter(testResource(), makeCollectorConfiguration(fixture->listeningPort()), [batch] { return batch; });
+    ASSERT_TRUE(waitUntil([&exporter] { return exporter.deliveredExportCount() >= 1U; })) << "含三路条目的批没能送达：" << exporter.lastFailureReason();
+
+    std::string body;
+    {
+        const std::lock_guard lock(state.m_mutex);
+        body = state.m_body;
+    }
+    const auto parsed = AsynGyanis::Base::parseConfigValue(body);
+    ASSERT_TRUE(parsed.has_value()) << body;
+    const auto &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
+    ASSERT_EQ(metrics.size(), 3U) << "三路条目应当都在同一份正文里";
+    EXPECT_EQ(jsonTextOf(metrics.at(0).at("name")), "asyn_test_scalar");
+    EXPECT_EQ(jsonTextOf(metrics.at(1).at("sum").at("dataPoints").at(0).at("attributes").at(0).at("value").at("stringValue")), "2xx");
+    const auto &histogramPoint = metrics.at(2).at("histogram").at("dataPoints").at(0);
+    EXPECT_EQ(jsonTextOf(histogramPoint.at("count")), "7");
+    EXPECT_EQ(histogramPoint.at("bucketCounts").size(), 3U) << "每格条数 + 末格溢出";
+    EXPECT_DOUBLE_EQ(histogramPoint.at("sum").get<double>(), 0.3);
 }

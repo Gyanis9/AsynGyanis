@@ -29,8 +29,10 @@
 #include "Net/Http/HttpServerAssembly.h"
 #include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpsServer.h"
+#include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
+#include "Net/Metrics/HttpStatsOtlp.h"
 #include "Net/Metrics/MetricsExportConfiguration.h"
 #include "Net/Quic/QuicServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
@@ -708,11 +710,16 @@ int main(int argc, char **argv)
     }
 
     // 读数导出装配：开关在配置里（metrics.enabled），没配就是 nullptr——推送线程随出口生、随出口死。
-    // 服务名缺失、地址写错这类问题在这里当场终止启动：留着一个发不出东西的出口，比不报读数更糟
+    // 服务名缺失、地址写错这类问题在这里当场终止启动：留着一个发不出东西的出口，比不报读数更糟。
+    // 采集端在这里就预建：出口的读数来源要在服务器创建之前接好（HTTP 面的读数由它现取）
+    const auto                                    sharedMetricsCollector = std::make_shared<Net::HttpMetricsCollector>();
     std::unique_ptr<Net::OtlpHttpMetricsExporter> metricsExporter;
     try
     {
-        metricsExporter = Net::buildMetricsExporter(metricsConfiguration);
+        // 额外读数来源：HTTP 面的计数、状态码标签族与延迟直方图；前缀与 /metrics 的默认前缀同取
+        // "asyn_http"，推拉两面对同一件事同名前缀，面板从一处切到另一处不用改查询
+        metricsExporter = Net::buildMetricsExporter(metricsConfiguration,
+                                                    [sharedMetricsCollector] { return Net::buildOtlpMetricsFromHttpStats(sharedMetricsCollector->snapshot(), "asyn_http"); });
     } catch (const std::exception &metricsException)
     {
         LOG_ERROR_EXCEPTION(metricsException, "读数导出装配失败，服务未启动。原因：{}", metricsException.what());
@@ -986,18 +993,12 @@ int main(int argc, char **argv)
     // 计数器还会在两次抓取之间变小，采集侧的 rate() 与告警都会失真，因此这里刻意共用
     std::shared_ptr<Net::HttpMetricsCollector> http3MetricsCollector;
     // 所有监听器共用的那一份采集端：由第一台建起来的服务器交出，之后的每台都换接到它上面
-    std::shared_ptr<Net::HttpMetricsCollector> sharedMetricsCollector;
-    // 把这台服务器的采集端接到全进程共用的那一份：第一台交出它自己的，之后的都换接过去。
+    // 全进程共用的那一份采集端在读数导出装配处就预建好了（推进模式要在服务器创建前接上读数来源），
+    // 这里把每一台服务器都换接到它上面——第一台原来自带的那份在重接后释放。
     // 明文与 TLS 两条通道都调它，因此按泛型收参数（HttpServer 与 HttpsServer 各自实现同名接口）
     const auto joinSharedMetricsCollector = [&](auto &server)
     {
-        if (sharedMetricsCollector == nullptr)
-        {
-            sharedMetricsCollector = server->metricsCollector();
-        } else
-        {
-            server->setMetricsCollector(sharedMetricsCollector);
-        }
+        server->setMetricsCollector(sharedMetricsCollector);
         // h3 也并进同一份：抓一次 /metrics 就覆盖 TCP 与 QUIC 两条服务路径
         http3MetricsCollector = sharedMetricsCollector;
     };

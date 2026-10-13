@@ -213,8 +213,8 @@ namespace AsynGyanis::Net
                 break;
             }
 
-            std::vector<Core::ProcessMetricSample> snapshot = m_snapshotProvider();
-            if (snapshot.empty())
+            const OtlpMetricsBatch snapshot = m_snapshotProvider();
+            if (snapshot.isEmpty())
             {
                 // 「没有指标可报」不是「通路坏了」：跳过本次并计数；发一份没有指标的正文没有意义
                 static_cast<void>(m_emptySnapshotCount.fetch_add(1, std::memory_order_relaxed));

@@ -6,4 +6,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/OtlpHttpMetricsExporter.cpp
         ${CMAKE_CURRENT_LIST_DIR}/MetricsExportConfiguration.h
         ${CMAKE_CURRENT_LIST_DIR}/MetricsExportConfiguration.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/HttpStatsOtlp.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpStatsOtlp.cpp
 )

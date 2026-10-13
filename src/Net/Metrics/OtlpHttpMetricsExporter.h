@@ -14,6 +14,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Metrics/OtlpMetricsJson.h"
 #include "Net/Tracing/SpanExporter.h"
 
 #include <atomic>
@@ -43,7 +44,7 @@ namespace AsynGyanis::Net
      *          二是**周期驱动**——导出由本类自带的事件循环线程上的定时器按 `exportInterval` 发起，
      *          不依赖任何调用方投递。采集端慢或失联时，生产线不受影响（快照在导出线程上现取，
      *          注册表的读锁只在那一次取样本的瞬间被拿）。
-     * @note 读数取不到（provider 空快照）的周期直接跳过并计 emptySnapshotCount：注册表为空时
+     * @note 读数取不到（provider 交回空批）的周期直接跳过并计 emptySnapshotCount：三路条目全空时
      *       发一份结构完整但没有指标的正文没有意义，那不是「通路坏了」的信号。
      * @see formatOtlpMetricsJson(), Core::ProcessMetricsRegistry::samples()
      */
@@ -62,10 +63,10 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 取一次读数快照的动作
+         * @brief 取一期读数批的动作
          * @note 调用发生在出口自己的循环线程上；实现必须快——它跑在导出路径上，阻塞会推迟下一次周期
          */
-        using SnapshotProvider = std::function<std::vector<Core::ProcessMetricSample>()>;
+        using SnapshotProvider = std::function<OtlpMetricsBatch()>;
 
         /**
          * @brief 建出口并起它的循环线程（TLS 用默认档：按系统信任库校验对端）
@@ -134,7 +135,7 @@ namespace AsynGyanis::Net
 
         Configuration               m_configuration;           ///< 生效的出口参数
         TraceResource               m_resource;                ///< 快照的出处
-        SnapshotProvider            m_snapshotProvider;        ///< 取快照的动作
+        SnapshotProvider            m_snapshotProvider;        ///< 取一期读数批的动作
         ParsedUrl                   m_target;                  ///< 构造期就拆好的采集端地址
         Core::EventLoop             m_loop;                    ///< 导出用的事件循环（活在本类的循环线程上）
         std::unique_ptr<HttpClient> m_client;                  ///< 复用的出站客户端（一条采集端连接足矣）

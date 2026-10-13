@@ -225,7 +225,7 @@ namespace AsynGyanis::Net
         return configuration;
     }
 
-    std::unique_ptr<OtlpHttpMetricsExporter> buildMetricsExporter(const MetricsExportConfiguration &configuration)
+    std::unique_ptr<OtlpHttpMetricsExporter> buildMetricsExporter(const MetricsExportConfiguration &configuration, std::function<OtlpMetricsBatch()> extraReadings)
     {
         if (!configuration.enabled)
         {
@@ -243,8 +243,21 @@ namespace AsynGyanis::Net
         exporterConfiguration.exportInterval = configuration.exportInterval;
         exporterConfiguration.extraHeaders   = configuration.otlpHeaders;
 
-        // 快照来源固定为本进程的读数注册表：注册表登记的是「现取」的回调，每个导出周期自然拿到最新值
+        // 快照来源固定为本进程的读数注册表（登记的是「现取」的回调，每个导出周期自然拿到最新值）：
+        // 它出标量那一路；额外来源（如某台 HTTP 服务器的统计与延迟直方图）由调用方折好后在三路合并
+        auto snapshotProvider = [extraReadings = std::move(extraReadings)]
+        {
+            OtlpMetricsBatch batch{.scalars = Core::ProcessMetricsRegistry::samples()};
+            if (extraReadings)
+            {
+                OtlpMetricsBatch extra = extraReadings();
+                batch.scalars.insert(batch.scalars.end(), extra.scalars.begin(), extra.scalars.end());
+                batch.labeled    = std::move(extra.labeled);
+                batch.histograms = std::move(extra.histograms);
+            }
+            return batch;
+        };
         return std::make_unique<OtlpHttpMetricsExporter>(TraceResource{.serviceName = configuration.serviceName, .serviceVersion = configuration.serviceVersion},
-                                                         std::move(exporterConfiguration), [] { return Core::ProcessMetricsRegistry::samples(); });
+                                                         std::move(exporterConfiguration), std::move(snapshotProvider));
     }
 } // namespace AsynGyanis::Net
