@@ -1484,4 +1484,47 @@ namespace AsynGyanis::Net
         EXPECT_NE(result.reason.find("socks5"), std::string::npos) << result.reason;
         EXPECT_EQ(origin.acceptedConnectionCount(), 0U) << "坏代理配置下仍然发生了直连";
     }
+
+    /**
+     * @brief 钉住豁免表本身的匹配规则：条目形态、点边界后缀、端口参与、畸形条目不牵连整张表
+     * @details 期望值取自 HttpProxyPolicy.h 写明的契约（与 curl 的 NO_PROXY 同语义），不是照着实现的
+     *          分支凑出来的。既有用例只在端到端那一层走过 `*` 一条，函数本体从没被执行过——而这一层
+     *          判错的后果是「本该走代理的流量直连出去」或「该豁免的内网地址被送去代理」，两头都静默。
+     */
+    TEST(HttpProxyNoProxy, MatchesByEntryFormDotBoundaryAndPort)
+    {
+        EXPECT_TRUE(matchesNoProxy("anywhere.invalid", 443, "*")) << "* 应当豁免一切目标";
+
+        // 裸域名命中自己与子域；后缀只是「长得像」的不算
+        EXPECT_TRUE(matchesNoProxy("example.com", 80, "example.com"));
+        EXPECT_TRUE(matchesNoProxy("api.example.com", 80, "example.com"));
+        EXPECT_TRUE(matchesNoProxy("deep.api.example.com", 80, ".example.com")) << "前导点等价于裸域名，子域要命中";
+        EXPECT_FALSE(matchesNoProxy("notexample.com", 80, "example.com")) << "点边界被当成子串包含：外部的同名后缀会被误豁免";
+
+        // 主机名比较不区分大小写，两个方向都要
+        EXPECT_TRUE(matchesNoProxy("API.Example.COM", 80, "api.example.com"));
+        EXPECT_TRUE(matchesNoProxy("api.example.com", 80, "API.EXAMPLE.COM"));
+
+        // 带端口的条目：端口参与匹配，不符就不豁免
+        EXPECT_TRUE(matchesNoProxy("intranet.local", 8443, "intranet.local:8443"));
+        EXPECT_FALSE(matchesNoProxy("intranet.local", 9999, "intranet.local:8443")) << "端口不符却命中，会把该走代理的流量直连出去";
+
+        // 端口文本越界或不是数字：宁可判不命中，也不回绕成一个能凑上的值
+        EXPECT_FALSE(matchesNoProxy("intranet.local", 80, "intranet.local:99999")) << "超出 65535 的端口文本被折成了能凑上的值";
+        EXPECT_FALSE(matchesNoProxy("intranet.local", 80, "intranet.local:http")) << "非数字的端口文本被静默当成 0";
+
+        // IPv6 条目用方括号，host 参数本身不带括号
+        EXPECT_TRUE(matchesNoProxy("::1", 8080, "[::1]:8080"));
+        EXPECT_FALSE(matchesNoProxy("::1", 80, "[::1]:8080"));
+
+        // 空条目与两侧空白跳过：表里只要有正常条目命中就算命中
+        EXPECT_TRUE(matchesNoProxy("a.local", 80, " , a.local , ")) << "条目两侧的空白或空条目把整张表带坏了";
+
+        // 缺收尾方括号的畸形条目只让那一条不命中，后面的正常条目照常有效
+        EXPECT_TRUE(matchesNoProxy("b.local", 80, "[b.local, b.local")) << "一条畸形条目牵连了整张表";
+        EXPECT_FALSE(matchesNoProxy("c.local", 80, "[b.local")) << "整张表都是畸形条目时不该豁免任何东西";
+
+        // 空表谁都不豁免
+        EXPECT_FALSE(matchesNoProxy("example.com", 80, "")) << "空豁免表被当成了通配";
+    }
 } // namespace AsynGyanis::Net
