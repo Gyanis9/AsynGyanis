@@ -1182,4 +1182,54 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoder.totalConsumedByteCount(), frame.size());
         EXPECT_FALSE(decoder.hasError());
     }
+
+    /**
+     * @brief 钉住错误码的**线上数值**取自 RFC 9113 §7（NO_ERROR 起于 0x00，逐档加一）
+     * @details RST_STREAM 与 GOAWAY 把这个枚举原样写成 4 字节大端整数，所以这里的数字就是报文里的数字。
+     *          既有的线格式用例只钉了 Cancel 一格，其余 13 档挪动了也不会红；本条把整张表抄成正文取值。
+     */
+    TEST(Http2ErrorCode, WireValuesFollowRfcNineOneThreeSectionSeven)
+    {
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::NoError), 0x00U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::ProtocolError), 0x01U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::InternalError), 0x02U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::FlowControlError), 0x03U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::SettingsTimeout), 0x04U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::StreamClosed), 0x05U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::FrameSizeError), 0x06U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::RefusedStream), 0x07U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::Cancel), 0x08U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::CompressionError), 0x09U);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::ConnectError), 0x0aU);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::EnhanceYourCalm), 0x0bU);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::InadequateSecurity), 0x0cU);
+        EXPECT_EQ(static_cast<std::uint32_t>(Http2ErrorCode::Http11Required), 0x0dU);
+    }
+
+    /**
+     * @brief 钉住每个错误码的诊断名，以及未知取值「不触发特殊行为」那一档
+     * @details 名称是日志与运维读数里唯一能认出「哪一档」的东西，全部 14 个都得能念出来。
+     *          §7 末段要求未知码不得引发特殊行为，所以它必须落到「未定义」这个名上，
+     *          既不能抛，也不能冒充某个已知码（冒充会让读数指错方向）。
+     */
+    TEST(Http2ErrorCode, NameCoversEveryDefinedCodeAndRejectsUnknown)
+    {
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::NoError), "NO_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::ProtocolError), "PROTOCOL_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::InternalError), "INTERNAL_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::FlowControlError), "FLOW_CONTROL_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::SettingsTimeout), "SETTINGS_TIMEOUT");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::StreamClosed), "STREAM_CLOSED");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::FrameSizeError), "FRAME_SIZE_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::RefusedStream), "REFUSED_STREAM");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::Cancel), "CANCEL");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::CompressionError), "COMPRESSION_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::ConnectError), "CONNECT_ERROR");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::EnhanceYourCalm), "ENHANCE_YOUR_CALM");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::InadequateSecurity), "INADEQUATE_SECURITY");
+        EXPECT_EQ(http2ErrorCodeName(Http2ErrorCode::Http11Required), "HTTP_1_1_REQUIRED");
+
+        // 枚举有固定底层类型，取一个规范没分配的 0x0e 是良构的：收侧要认得出「未知」而不是猜
+        EXPECT_EQ(http2ErrorCodeName(static_cast<Http2ErrorCode>(0x0e)), "未定义错误码");
+    }
 } // namespace AsynGyanis::Net
