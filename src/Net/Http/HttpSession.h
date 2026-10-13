@@ -167,6 +167,34 @@ namespace AsynGyanis::Net
         inline constexpr std::size_t kZeroCopySendMinimumBytes = 64ull * 1024;
 #endif
 
+        /**
+         * @brief 把一整块字节按游标写到出门为止
+         * @details `asyncSend` 允许部分返回：发送缓冲的余量吃完就返回已发字节数（TLS 侧一次
+         *          `SSL_write` 的容量尤其有限），所以「返回值是正的」只等于「这一段发出去了一些」，
+         *          不等于「整块发完了」。按一次返回收工会把截断的字节流当成已交付——响应这边最危险：
+         *          状态仍是 200、`content-length` 与实收不符，而本层不记任何失败，两端都看不见。
+         *          WebSocket 帧路径同一条理由，见 `sendFrameBytes`。
+         * @tparam Socket 传输类型（明文 `AsyncSocket` 与 TLS 的 `TlsSocket` 都有 `asyncSend`）
+         * @param transport 要写入的传输
+         * @param payload 待发送的整块字节
+         * @return true 整块已交给传输；false 传输以非正返回值报「不可再用」，调用方应停止继续发送
+         * @note 传输层异常不在这里收：由调用点的 catch 统一折成「一次失败只记一条日志」的发送契约
+         */
+        template<typename Socket>
+        Core::Task<bool> sendBlockCompletely(Socket &transport, const std::string_view payload)
+        {
+            for (std::size_t sentByteCount = 0; sentByteCount < payload.size();)
+            {
+                const ssize_t writtenByteCount = co_await transport.asyncSend(payload.data() + sentByteCount, payload.size() - sentByteCount);
+                if (writtenByteCount <= 0)
+                {
+                    // 明文侧以非正返回值报「对端已关闭」（TLS 侧同样的情形走异常），两条都折成失败交给调用点
+                    co_return false;
+                }
+                sentByteCount += static_cast<std::size_t>(writtenByteCount);
+            }
+            co_return true;
+        }
 
         /**
          * @brief 把解析失败类别翻译成要发的 4xx 响应（状态码与正文全 ASCII）
@@ -595,10 +623,12 @@ namespace AsynGyanis::Net
                         isSucceeded                    = (co_await socket.asyncSendVectored(buffers, segmentCount)) > 0;
                     } else
                     {
-                        // TLS 只接受单块明文：头部与正文分两次顺序发送，头部没出门就不必再发正文
-                        if ((co_await socket.asyncSend(head.data(), head.size())) > 0)
+                        // TLS 只接受单块明文：头部与正文分两次顺序发送，头部没出门就不必再发正文。
+                        // 两段各自都要按游标推到发完：一次 SSL_write 只能吃掉发送缓冲的余量，
+                        // 只判返回值正负等于把截断的响应当成已交付（状态 200、content-length 与实收不符）
+                        if (co_await sendBlockCompletely(socket, head))
                         {
-                            isSucceeded = body.empty() || (co_await socket.asyncSend(body.data(), body.size())) > 0;
+                            isSucceeded = body.empty() || co_await sendBlockCompletely(socket, body);
                         }
                     }
                 } catch (const Base::Exception &exception)

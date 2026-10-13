@@ -2726,4 +2726,62 @@ namespace AsynGyanis::Net
         EXPECT_NE(notModifiedText.find("HTTP/1.1 304"), std::string::npos) << "带匹配验证器的条件请求应当回 304：" << notModifiedText;
     }
 
+    /**
+     * @brief 钉住：TLS 会话要把「超过一次写出容量」的响应正文完整交付
+     * @details `TlsSocket::asyncSend` 按设计返回**实际发送的字节数**——发送缓冲的余量被吃掉后就是
+     *          部分返回（它的重试循环只管 WANT_READ/WANT_WRITE 让轮，不管把整块发完）。把一次正值
+     *          返回当成「整条正文已发出」，剩余字节就永久丢失，而服务端不记任何失败：状态仍是 200，
+     *          `content-length` 与实收不符，客户端只看到文件被下坏。
+     * @details 判据点由两件事凑出来，不赌调度：正文取 MiB 量级（远大于两侧套接字缓冲与单次写出的
+     *          容量），且发出请求后先停读 200ms 让缓冲积压——两者合起来保证「一次写不完」必然发生。
+     */
+    TEST(HttpsServer, DeliversWholeTlsBodyBeyondOneWriteCapacity)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        // 2 MiB：回环两侧的缓冲与单次 SSL_write 的容量都远小于它，必然出现部分返回
+        constexpr std::size_t kBodyByteCount = 2U * 1024U * 1024U;
+
+        RunningHttpsServerFixture fixture{makeLongTimeoutLimits(), std::chrono::milliseconds{50}, [](Router &router, Core::EventLoop &)
+                                          {
+                                              static_cast<void>(router.get("/bulk",
+                                                                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                                           {
+                                                                               response.setHeader("Content-Type", "text/plain");
+                                                                               response.setBody(std::string(2U * 1024U * 1024U, 'Z'));
+                                                                               co_return;
+                                                                           }));
+                                          }};
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        TlsLoopbackClient client{fixture.listeningPort()};
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+        ASSERT_TRUE(client.sendText("GET /bulk HTTP/1.1\r\nHost: localhost\r\n\r\n", kWaitTimeout)) << "请求没写进 TLS 通路";
+
+        // 先停读：两侧缓冲填满之后服务端那次写出只能吞下一部分，这正是本条用例要钉的那一格
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+        std::string receivedText;
+        std::size_t deliveredBodyByteCount = 0;
+        const auto  deadlineAt             = std::chrono::steady_clock::now() + kWaitTimeout;
+        while (std::chrono::steady_clock::now() < deadlineAt)
+        {
+            if (const std::size_t headerEnd = receivedText.find("\r\n\r\n"); headerEnd != std::string::npos)
+            {
+                deliveredBodyByteCount = receivedText.size() - (headerEnd + 4);
+                if (deliveredBodyByteCount >= kBodyByteCount)
+                {
+                    break;
+                }
+            }
+            if (client.readOnce(receivedText) == ReadOutcome::PeerClosed)
+            {
+                break;
+            }
+        }
+
+        EXPECT_GE(deliveredBodyByteCount, kBodyByteCount) << "TLS 响应只交付了 " << deliveredBodyByteCount << " 字节，而声明是 " << kBodyByteCount
+                                                          << " 字节：一次 SSL_write 的部分返回被当成整条写完，剩余正文永久丢失";
+    }
+
 } // namespace AsynGyanis::Net
