@@ -22,6 +22,7 @@ add_subdirectory(Http2)
 add_subdirectory(Quic)
 add_subdirectory(Http3)
 add_subdirectory(Tracing)
+add_subdirectory(Metrics)
 add_subdirectory(Acme)
 
 get_property(NET_SOURCES GLOBAL PROPERTY AsynGyanisNetSources)

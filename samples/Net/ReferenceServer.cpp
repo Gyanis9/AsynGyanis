@@ -31,6 +31,7 @@
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
+#include "Net/Metrics/MetricsExportConfiguration.h"
 #include "Net/Quic/QuicServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 #include "Net/Tracing/HttpTracingMiddleware.h"
@@ -554,6 +555,8 @@ int main(int argc, char **argv)
     // 命令行是「这一次运行的临时改动」，临时改动优先
     Net::HttpServerConfiguration configuration;
     Net::TracingConfiguration    tracingConfiguration;
+    /// 读数导出：段没写就是关着；开了就必须有服务名与采集端地址，写不出来的写法在读那一刻抛出
+    Net::MetricsExportConfiguration metricsConfiguration;
     /// 证书自动化：段没写就是关着（默认值即「不建管理器」），其余一切不合法在读配置那一刻抛出
     Net::AcmeAutomationConfiguration acmeConfiguration;
 
@@ -645,6 +648,7 @@ int main(int argc, char **argv)
             Base::ConfigObject document;
             document.emplace(std::string(Net::kHttpServerConfigSection), Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
             document.emplace(std::string(Net::kTracingConfigSection), Base::ConfigManager::instance().getSection(Net::kTracingConfigSection));
+            document.emplace(std::string(Net::kMetricsExportConfigSection), Base::ConfigManager::instance().getSection(Net::kMetricsExportConfigSection));
             document.emplace(std::string(Net::kAcmeConfigSection), Base::ConfigManager::instance().getSection(Net::kAcmeConfigSection));
             // 这里必须用圆括号：花括号会去配 initializer_list 那个构造，整份文档就变成一个数组，
             // 各读取器都找不到自己的段而全部走默认值——现象只是「配置写了没生效」
@@ -652,6 +656,8 @@ int main(int argc, char **argv)
             configuration = Net::readHttpServerConfiguration(configurationDocument);
             // 链路段与 server 段同批读：读不出来的写法（未知键、类型不符）不该等到装配出口时才炸
             tracingConfiguration = Net::readTracingConfiguration(configurationDocument);
+            // metrics 段同批读：与 tracing 段同一套「未知键即拒」的口径，同样不该等到装配出口时才炸
+            metricsConfiguration = Net::readMetricsExportConfiguration(configurationDocument);
             // acme 段也在这一批读：证书自动化最常见的现场是「写了但没生效」，而它的第一处出口是几天之后
             // 第一次查到期，那时候没人还记得配置文件里写过什么。读不出、交叉判据不过都当场终止启动
             acmeConfiguration = Net::readAcmeConfiguration(configurationDocument);
@@ -699,6 +705,28 @@ int main(int argc, char **argv)
     {
         LOG_INFO_FMT("链路：关（tracing.enabled 未开，或服务未给出服务名；当前读到 enabled={}、service_name={}）", tracingConfiguration.enabled ? "true" : "false",
                      tracingConfiguration.serviceName.empty() ? "未配" : tracingConfiguration.serviceName);
+    }
+
+    // 读数导出装配：开关在配置里（metrics.enabled），没配就是 nullptr——推送线程随出口生、随出口死。
+    // 服务名缺失、地址写错这类问题在这里当场终止启动：留着一个发不出东西的出口，比不报读数更糟
+    std::unique_ptr<Net::OtlpHttpMetricsExporter> metricsExporter;
+    try
+    {
+        metricsExporter = Net::buildMetricsExporter(metricsConfiguration);
+    } catch (const std::exception &metricsException)
+    {
+        LOG_ERROR_EXCEPTION(metricsException, "读数导出装配失败，服务未启动。原因：{}", metricsException.what());
+        return 1;
+    }
+    // 关着也要说一句：理由与上面 tracing 那一段相同——「写了 metrics 段却没生效」只有一行启动日志能分辨
+    if (metricsExporter != nullptr)
+    {
+        LOG_INFO_FMT("读数导出：开（服务名 {}，周期 {}ms，采集端 {}）", metricsConfiguration.serviceName, metricsConfiguration.exportInterval.count(),
+                     metricsConfiguration.otlpEndpoint);
+    } else
+    {
+        LOG_INFO_FMT("读数导出：关（metrics.enabled 未开；当前读到 enabled={}、service_name={}）", metricsConfiguration.enabled ? "true" : "false",
+                     metricsConfiguration.serviceName.empty() ? "未配" : metricsConfiguration.serviceName);
     }
 
     // 命令行覆盖：显式给出的开关优先于文件里的同名项。这里必须用「有没有给」而不是「是否 > 0」判：
