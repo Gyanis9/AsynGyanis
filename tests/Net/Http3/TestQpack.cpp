@@ -1731,4 +1731,122 @@ namespace AsynGyanis::Net
         EXPECT_LE(profile.totalAllocations, kMeasurementIterations * requestLines.size() * 4U)
                 << "解一段请求头块的逐条分配超线：读数为每次 " << static_cast<unsigned long long>(profile.totalAllocations / kMeasurementIterations) << " 次";
     }
+
+    // ============================================================================
+    // 越界与未定义表示：对端递来的畸形字节要拒，且拒因要说得出钉的是哪一条
+    // ============================================================================
+
+    namespace
+    {
+        /**
+         * @brief 按 RFC 7541 §5.1 把一个数值编成前缀整数，用于造规范里不存在的越界输入
+         * @details 造输入的手不能是被测对象本身：本助手先在用例里对 RFC 7541 §5.1 的算例
+         *          （5 位前缀编 1337 = 1F 9A 0A）自证，再用它拼出越界取值。
+         * @param value 待编的数值
+         * @param prefixBitCount 前缀位数，取 1..8
+         * @param patternBits 已并进首字节的模式位（含 H 位时一并给出）
+         * @return std::vector<std::uint8_t> 线上字节
+         */
+        [[nodiscard]] std::vector<std::uint8_t> encodePrefixIntegerBytes(std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t patternBits)
+        {
+            const std::uint64_t       prefixMaximum = (std::uint64_t{1} << prefixBitCount) - 1;
+            std::vector<std::uint8_t> bytes;
+            if (value < prefixMaximum)
+            {
+                bytes.push_back(static_cast<std::uint8_t>(patternBits | value));
+                return bytes;
+            }
+            bytes.push_back(static_cast<std::uint8_t>(patternBits | prefixMaximum));
+            std::uint64_t remaining = value - prefixMaximum;
+            while (remaining >= 0x80)
+            {
+                bytes.push_back(static_cast<std::uint8_t>((remaining % 0x80) | 0x80));
+                remaining /= 0x80;
+            }
+            bytes.push_back(static_cast<std::uint8_t>(remaining));
+            return bytes;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住 §4.1.1 的 62 位上限：Required Insert Count 越界即判非法，不截断也不回绕
+     */
+    TEST(Qpack, FieldSectionRejectsIntegerBeyondSixtyTwoBits)
+    {
+        // 先自证助手：RFC 7541 §5.1 的算例，5 位前缀编 1337
+        EXPECT_EQ(encodePrefixIntegerBytes(1337, 5, 0), (std::vector<std::uint8_t>{0x1F, 0x9A, 0x0A})) << "前缀整数助手对不上规范算例，下面造的向量就不可信";
+
+        // 8 位前缀的 Required Insert Count 取 2^62：比本层上限大 1，落在「既不截断也不回绕、只能拒」那一档
+        std::vector<std::uint8_t> section = encodePrefixIntegerBytes(std::uint64_t{1} << 62, 8, 0);
+        section.push_back(0x00);
+
+        QpackDecoder                  decoder(makeDecoderSettings(4096, 100));
+        std::vector<QpackHeaderField> fields;
+        std::string                   controlBytes;
+        const auto                    result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+        ASSERT_FALSE(result.has_value()) << "越界的 Required Insert Count 被收下，索引换算会落到另一项上";
+        EXPECT_EQ(result.error().kind, QpackErrorKind::DecompressionFailed) << result.error().message;
+        EXPECT_TRUE(containsText(result.error().message, "超过 62 位上限")) << result.error().message;
+    }
+
+    /**
+     * @brief 钉住 §4.1.2 的字面量长度上限：声明超过本端 1 MiB 即拒，不等正文到齐
+     * @details 长度先到手就能判错，所以这里刻意只给前缀、不给正文——若实现改成「先收满再说」，
+     *          对端一句话就能把本端内存吃光。
+     */
+    TEST(Qpack, EncoderStreamRejectsLiteralLengthBeyondLocalCap)
+    {
+        // '01' + H=0 + 5 位前缀的名字长度：Insert With Literal Name（§4.3.3）
+        const std::vector<std::uint8_t> instruction = encodePrefixIntegerBytes(kQpackMaximumStringLengthByteCount + 1, 5, 0x40);
+
+        QpackDecoder               decoder(makeDecoderSettings(4096, 100));
+        std::vector<std::uint64_t> unblockedStreamIds;
+        std::string                controlBytes;
+        const auto                 result = decoder.feedEncoderStream(asSpan(instruction), unblockedStreamIds, controlBytes);
+        ASSERT_FALSE(result.has_value()) << "声明长度超过本端上限的插入被当成合法指令收下";
+        EXPECT_EQ(result.error().kind, QpackErrorKind::EncoderStreamError) << result.error().message;
+        EXPECT_TRUE(containsText(result.error().message, "超过本端上限")) << result.error().message;
+    }
+
+    /**
+     * @brief 钉住字段行与编码器流的模式位划分是**全覆盖**的：每个首字节都落进一种已定义表示
+     * @details 本层在两条通道末尾各留了一条「不属于任何已定义表示 / 无法识别的指令」的兜底拒绝，
+     *          但按 §4.5 与 §4.3 的模式位算，五种字段行表示（'1'、'01'、'001'、'0001'、'0000'）与
+     *          四种编码器流指令（'1'、'01'、'001'、'000'）已经把 0x00..0xFF 分完，那两条兜底按规范
+     *          走不到的——所以这里不假装能注入一条「未定义首字节」的用例，改成逐格验证划分没有缝：
+     *          谁改动掩码或模式位而留下空档时，就会有一个首字节掉进兜底文案，本条当场红。
+     *          其余字节报的是「字节不够」或某个具体的越界拒因，都算路由成功。
+     */
+    TEST(Qpack, EveryFirstByteRoutesIntoADefinedRepresentation)
+    {
+        constexpr std::string_view kFieldSectionFallback  = "不属于任何已定义表示";
+        constexpr std::string_view kEncoderStreamFallback = "无法识别的指令";
+
+        for (int byteValue = 0; byteValue <= 0xFF; ++byteValue)
+        {
+            // 字段行：RIC 0 + Delta Base 0 是空表下的合法前缀，末尾这一个字节就是被路由的首字节
+            const std::vector<std::uint8_t> section = {0x00, 0x00, static_cast<std::uint8_t>(byteValue)};
+            QpackDecoder                    decoder(makeDecoderSettings(4096, 100));
+            std::vector<QpackHeaderField>   fields;
+            std::string                     controlBytes;
+            const auto                      result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
+            if (!result.has_value())
+            {
+                EXPECT_FALSE(containsText(result.error().message, kFieldSectionFallback))
+                        << "首字节 " << byteValue << " 没落进任何一种已定义的字段行表示：" << result.error().message;
+            }
+
+            // 编码器流：单独一份解码器，免得上一格的半个指令留在缓冲里影响这一格
+            const std::vector<std::uint8_t> instruction = {static_cast<std::uint8_t>(byteValue)};
+            QpackDecoder                    streamDecoder(makeDecoderSettings(4096, 100));
+            std::vector<std::uint64_t>      unblockedStreamIds;
+            std::string                     streamBytes;
+            const auto                      streamResult = streamDecoder.feedEncoderStream(asSpan(instruction), unblockedStreamIds, streamBytes);
+            if (!streamResult.has_value())
+            {
+                EXPECT_FALSE(containsText(streamResult.error().message, kEncoderStreamFallback))
+                        << "首字节 " << byteValue << " 没落进任何一种已定义的编码器流指令：" << streamResult.error().message;
+            }
+        }
+    }
 } // namespace AsynGyanis::Net
