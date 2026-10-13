@@ -218,6 +218,23 @@ namespace AsynGyanis::Core
         [[nodiscard]] static bool allHeartbeatsFresh(const std::vector<bool> &heartbeatFreshBySlot, const std::vector<bool> &isGivenUpBySlot) noexcept;
 
         /**
+         * @brief 判断一个槽位的心跳此刻算不算新鲜（纯换算，不读状态）
+         * @details 账本记的是「上一拍什么时候到的」而不是「这一轮读到过没有」：判定与出拍共用同一个周期
+         *          （都取窗口折半），只说「读到过没有」的布尔会在检查抢到拍子的那一轮被清掉，而下一轮的
+         *          相位关系一模一样，于是永远喂不出去。单列成纯函数是因为这一格的真形只有「真进程 +
+         *          真时钟」才造得出来，端到端复跑它只能靠睡。
+         * @param lastBeatAt 本槽位上一次读到心跳字节的时刻；空表示成立以来还没读到过拍
+         * @param now 判定时刻
+         * @param startupGraceUntil 起拍宽限截止，只在「还没读到过拍」时起作用（worker 启动与起拍本身要时间）
+         * @param pingInterval 心跳节拍；允许的陈旧时长取 1.5× 节拍——正常到点的拍子最坏也只老一个节拍多一点，
+         *        而连着两拍没到的一定越过这条线，于是真停摆仍在一个看门狗窗口内停喂
+         * @return true 新鲜，本轮喂
+         * @return false 陈旧（停摆，或首拍没赶上宽限），本轮不喂并由监督者按超时接手
+         */
+        [[nodiscard]] static bool isHeartbeatFresh(const std::optional<std::chrono::steady_clock::time_point> &lastBeatAt, std::chrono::steady_clock::time_point now,
+                                                   std::chrono::steady_clock::time_point startupGraceUntil, std::chrono::milliseconds pingInterval) noexcept;
+
+        /**
          * @brief 判断「具备喂狗资格」（纯换算，不读状态）：启用过、就绪已报、未收停机请求
          * @details 就绪门防的是「池缺人还喂健康」——有槽位被放弃时池永远不齐、就绪永不报，
          *          这一格让监督者按超时接手；停机门防的是「收尾流程里假装服务健康」。
@@ -242,9 +259,10 @@ namespace AsynGyanis::Core
             bool                                  isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
             /// 心跳管道的读端（-1 = 该槽位没有心跳通道：没启用看门狗，或是 Windows）；只在编排线程上碰
             int heartbeatReadFd{-1};
-            /// 本窗口内读到过拍没有；「放弃」的槽位不参与判定，新起的 worker 从 grace 起步（见 pollWorkerHeartbeats）
-            bool heartbeatFresh{true};
-            /// 刚（重）起之后的宽限截止：宽限内没读到拍也算新鲜——worker 启动与起拍本身要时间，
+            /// 上一次读到心跳字节的时刻；空表示这个槽位成立以来还没读到过拍。
+            /// 「本窗口读到过没有」那种布尔表达在这里会输掉相位赛跑（判据见 `isHeartbeatFresh`）
+            std::optional<std::chrono::steady_clock::time_point> lastHeartbeatAt{};
+            /// 刚（重）起之后的宽限截止：还没读到过拍时，宽限内也算新鲜——worker 启动与起拍本身要时间，
             /// 而这份时间不该由监督者的超时来赔
             std::chrono::steady_clock::time_point heartbeatGraceUntil{};
         };

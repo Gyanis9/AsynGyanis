@@ -1015,6 +1015,28 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 钉住：心跳新鲜度按「距上一拍多久」判，晚到不到半拍的拍子不许被判陈旧
+     * @details master 的喂狗检查与 worker 的出拍共用同一个周期（都取窗口折半），谁先谁后取决于 fork 与
+     *          挂节拍的毫秒级相位。新鲜度若只记「这一轮读到新字节没有」，检查抢到拍子之前完成的那一轮就把它
+     *          清掉，而下一轮的相位关系一模一样，于是永远喂不出去、单元被自己的看门狗循环重启。按经过的
+     *          时间判之后，晚到不足半拍的拍子仍作数，真停摆（连着两拍没到）照样停喂。
+     */
+    TEST(WorkerSupervisor, HeartbeatStaysFreshUntilAWholeBeatIsMissed)
+    {
+        using namespace std::chrono;
+        constexpr steady_clock::time_point nowPoint{}; ///< 判定时刻取零点，偏移全用相对量表达
+        constexpr milliseconds             pingInterval{1000};
+
+        EXPECT_TRUE(WorkerSupervisor::isHeartbeatFresh(nowPoint - milliseconds{10}, nowPoint, nowPoint + milliseconds{1}, pingInterval)) << "上一拍就在眼前，必须新鲜";
+        EXPECT_TRUE(WorkerSupervisor::isHeartbeatFresh(nowPoint - milliseconds{1100}, nowPoint, nowPoint + milliseconds{1}, pingInterval))
+                << "晚到不到半拍的这一拍被判陈旧，就是「永远喂不出去」那条路";
+        EXPECT_FALSE(WorkerSupervisor::isHeartbeatFresh(nowPoint - milliseconds{2600}, nowPoint, nowPoint + milliseconds{1}, pingInterval)) << "连着两拍没到还喂，等于对停摆报健康";
+
+        EXPECT_TRUE(WorkerSupervisor::isHeartbeatFresh(std::nullopt, nowPoint, nowPoint + milliseconds{500}, pingInterval)) << "起拍要时间：宽限内没读到拍不该算停摆";
+        EXPECT_FALSE(WorkerSupervisor::isHeartbeatFresh(std::nullopt, nowPoint, nowPoint - milliseconds{1}, pingInterval)) << "宽限过了还一拍没到，就是这条 worker 没在推进";
+    }
+
+    /**
      * @brief 看门狗汇聚用例的夹具：进出都把三枚环境变量恢复原样
      * @details 这组用例会动它们；不复原的话后跑的用例读到的是上一个用例留下的窗口，
      *          表现为「突然开始喂狗」这种随执行顺序而变的形态
@@ -1093,9 +1115,10 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 反例：worker 从不拍心跳（不是本仓库的心跳工具）时，master 就绪后不再喂
-     * @details 「停喂」是这条通道的判据本体：假收端在就绪后的一整个窗口加余量内都收不到东西，
-     *          说明汇聚真的在看心跳而不是「时间到了就喂」
+     * @brief 反例：worker 从不拍心跳（不是本仓库的心跳工具）时，master 在起拍宽限之后不再喂
+     * @details 「停喂」是这条通道的判据本体。就绪后头一个节拍之内可以放行（worker 起拍本身要时间，
+     *          这条放行由 `isHeartbeatFresh` 的宽限分支兑现），但放行条数被喂狗门的算术钉住；
+     *          宽限之后还收得到东西，就说明汇聚没在看心跳而是「时间到了就喂」
      */
     TEST_F(WorkerSupervisorWatchdogTest, StopsFeedingWhenWorkersNeverHeartbeat)
     {
@@ -1130,12 +1153,21 @@ namespace AsynGyanis::Core
         std::atomic<bool> isOrchestrationSettled{false};
         std::thread       supervisorThread([&supervisor, &isOrchestrationSettled] { isOrchestrationSettled.store(supervisor.run(), std::memory_order_release); });
 
-        // 等到就绪快照到位（编排线程每轮发布），再给一整个窗口加余量观察「有没有喂」：
-        // 判据是「收不到」——等待窗口取得比节拍宽得多，慢机器只会让它更容易成立
+        // 等到就绪快照到位（编排线程每轮发布），再睡过起拍宽限：宽限内可以放行一条（worker 起拍本身要
+        // 时间），所以判据不是「一条都没喂过」而是「宽限之后不再喂」。放行条数由喂狗门的算术钉住——
+        // 节拍 500 毫秒、宽限 1000 毫秒，检查至少相隔一个节拍，因而第二个节拍上的判定已过了宽限
         ASSERT_TRUE(waitForCondition([&supervisor] { return supervisor.runningWorkerCount() >= 2U; }, kWaitTimeout)) << "两条假 worker 没有都起来";
         std::this_thread::sleep_for(std::chrono::milliseconds{2000});
-        const std::string unexpectedPing = receiveOneWatchdogDatagram(listener, std::chrono::milliseconds{200});
-        EXPECT_TRUE(unexpectedPing.empty()) << "worker 从不拍心跳，master 却喂了：「" << unexpectedPing << "」";
+        int permittedDuringGrace = 0;
+        while (!receiveOneWatchdogDatagram(listener, std::chrono::milliseconds{20}).empty())
+        {
+            ++permittedDuringGrace;
+        }
+        EXPECT_LE(permittedDuringGrace, 1) << "起拍宽限放行了 " << permittedDuringGrace << " 条：宽限只该覆盖到第一个节拍之后";
+
+        // 停喂那一段：观察窗取得比一整个窗口还宽，慢机器只会让它更容易成立
+        const std::string unexpectedPing = receiveOneWatchdogDatagram(listener, std::chrono::milliseconds{1500});
+        EXPECT_TRUE(unexpectedPing.empty()) << "worker 从不拍心跳，宽限过后 master 却还在喂：「" << unexpectedPing << "」";
 
         supervisor.requestStop();
         supervisorThread.join();

@@ -402,18 +402,33 @@ namespace AsynGyanis::Core
         runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
 
         // 看门狗从就绪起计：此前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
-        // 同一轮把各槽位的心跳账本翻到「宽限中」：worker 启动与起拍本身要时间，
-        // 那份时间不该由监督者的超时来赔
+        // 同一轮把各槽位的心跳账本翻到「宽限中」，宽限给一整个窗口（2×节拍）：监督者第一次判超时的时点
+        // 就是就绪之后一整个窗口，而首拍落在什么时候取决于 fork 与挂节拍的毫秒级相位——宽限只给半程时，
+        // 首拍晚到几毫秒就把第一次喂狗压到窗口末尾
         if (m_isWatchdogFeedingEnabled)
         {
-            const auto graceUntil = std::chrono::steady_clock::now() + m_watchdogPingInterval;
+            const auto graceUntil = std::chrono::steady_clock::now() + m_watchdogPingInterval * 2;
             for (Worker &worker: m_workers)
             {
-                worker.heartbeatFresh      = true;
+                // 账本翻回「还没拍到、但在宽限内」：起拍要时间，这段时间不该由监督者的超时来赔
+                worker.lastHeartbeatAt     = std::nullopt;
                 worker.heartbeatGraceUntil = graceUntil;
             }
             m_lastWatchdogFeed = std::chrono::steady_clock::now();
         }
+    }
+
+    bool WorkerSupervisor::isHeartbeatFresh(const std::optional<std::chrono::steady_clock::time_point> &lastBeatAt, const std::chrono::steady_clock::time_point now,
+                                            const std::chrono::steady_clock::time_point startupGraceUntil, const std::chrono::milliseconds pingInterval) noexcept
+    {
+        if (!lastBeatAt.has_value())
+        {
+            // 成立以来一拍都没读到过：只认启动宽限，宽限之外就是这条 worker 没在推进
+            return now < startupGraceUntil;
+        }
+        // 允许陈旧到一个半节拍：正常到点的拍子最坏也只老一个节拍多一点（检查与出拍共用同一周期，
+        // 相位差是毫秒级），而连着两拍没到的一定超过这条线 → 真停摆照样在一个看门狗窗口内停喂
+        return now - *lastBeatAt < pingInterval + pingInterval / 2;
     }
 
     bool WorkerSupervisor::attachWatchdogPipe(Worker &worker, const std::size_t workerIndex, Platform::Process::LaunchOptions &launchOptions)
@@ -464,20 +479,11 @@ namespace AsynGyanis::Core
                 continue;
             }
             // 把攒下的字节一次读干：只要本窗口内有过一拍就够，读到的条数本身没有意义
-            bool sawBytes = false;
             while (::read(worker.heartbeatReadFd, drainBuffer.data(), drainBuffer.size()) > 0)
             {
-                sawBytes = true;
-            }
-            if (sawBytes)
-            {
-                worker.heartbeatFresh = true;
-                continue;
-            }
-            // 没读到新字节：还在宽限内（worker 刚起，起拍要时间）就继续算新鲜；过了宽限就是陈旧
-            if (now >= worker.heartbeatGraceUntil)
-            {
-                worker.heartbeatFresh = false;
+                // 记的是「上一拍什么时候到的」而不是「这一轮读到过没有」：后者与出拍共用同一个周期，
+                // 检查抢到拍子之前完成的那一轮会把标志清掉，于是永远喂不出去（判据见 isHeartbeatFresh）
+                worker.lastHeartbeatAt = now;
             }
         }
 #else
@@ -508,7 +514,8 @@ namespace AsynGyanis::Core
         givenUpBySlot.reserve(m_workers.size());
         for (const Worker &worker: m_workers)
         {
-            freshBySlot.push_back(worker.heartbeatFresh);
+            freshBySlot.push_back(isHeartbeatFresh(worker.lastHeartbeatAt, now, worker.heartbeatGraceUntil, m_watchdogPingInterval));
+
             givenUpBySlot.push_back(worker.isGivenUp);
         }
         if (!allHeartbeatsFresh(freshBySlot, givenUpBySlot))
