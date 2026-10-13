@@ -755,7 +755,9 @@ namespace AsynGyanis::Net
             case 410:
                 return "Gone";
             case 413:
-                return "Payload Too Large";
+                // RFC 9110 §15.5.14 把这一格登记成 Content Too Large（旧名 Payload Too Large 出自 RFC 7231）；
+                // 短语是客户端会原样显示的登记文本，按当前规范走
+                return "Content Too Large";
             case 414:
                 return "URI Too Long";
             case 415:

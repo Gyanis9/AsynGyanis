@@ -1516,4 +1516,103 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(HttpResponse::isBodylessStatusCode(withBody)) << withBody << " 被误判成无正文，响应会被清空";
         }
     }
+
+    /**
+     * @brief 钉住状态行里的原因短语逐格取自规范登记名，不是本端表自己念给自己听
+     * @details 期望值抄自 RFC 9110 §15.2–§15.6 的条目名，另四格另有出处：102 Processing（RFC 2518
+     *          §10.1）、103 Early Hints（RFC 8297）、429 Too Many Requests（RFC 6585 §4）、
+     *          451 Unavailable For Legal Reasons（RFC 7725 §3）。其中 413 取的是 RFC 9110 的
+     *          「Content Too Large」，不是 RFC 7231 的旧名「Payload Too Large」。
+     */
+    TEST(HttpResponse, StatusLineUsesRegisteredReasonPhrases)
+    {
+        static constexpr std::pair<int, std::string_view> kExpectations[] = {
+                {100, "Continue"},
+                {101, "Switching Protocols"},
+                {102, "Processing"},
+                {103, "Early Hints"},
+                {200, "OK"},
+                {201, "Created"},
+                {202, "Accepted"},
+                {204, "No Content"},
+                {206, "Partial Content"},
+                {301, "Moved Permanently"},
+                {302, "Found"},
+                {304, "Not Modified"},
+                {307, "Temporary Redirect"},
+                {308, "Permanent Redirect"},
+                {400, "Bad Request"},
+                {401, "Unauthorized"},
+                {403, "Forbidden"},
+                {404, "Not Found"},
+                {405, "Method Not Allowed"},
+                {406, "Not Acceptable"},
+                {408, "Request Timeout"},
+                {409, "Conflict"},
+                {410, "Gone"},
+                {413, "Content Too Large"},
+                {414, "URI Too Long"},
+                {415, "Unsupported Media Type"},
+                {416, "Range Not Satisfiable"},
+                {422, "Unprocessable Content"},
+                {426, "Upgrade Required"},
+                {429, "Too Many Requests"},
+                {451, "Unavailable For Legal Reasons"},
+                {500, "Internal Server Error"},
+                {501, "Not Implemented"},
+                {502, "Bad Gateway"},
+                {503, "Service Unavailable"},
+                {504, "Gateway Timeout"},
+                {505, "HTTP Version Not Supported"},
+        };
+
+        for (const auto &[code, phrase]: kExpectations)
+        {
+            HttpResponse response;
+            response.setStatus(code);
+            const std::string expectedLine = "HTTP/1.1 " + std::to_string(code) + " " + std::string(phrase) + "\r\n";
+            const std::string head         = response.serializeHead();
+            EXPECT_EQ(head.substr(0, expectedLine.size()), expectedLine) << "状态码 " << code << " 的短语与登记名不符，整行前缀是「" << head.substr(0, expectedLine.size()) << "」";
+        }
+    }
+
+    /**
+     * @brief 钉住未收录状态码给空短语，而不是编一个规范里没登记的名字
+     * @details RFC 9112 §4 允许 reason-phrase 为空，状态行照样合法；本端只收录自己会发出的那些码，
+     *          余下的宁可留空，也不发一个听起来合理却无登记依据的短语。
+     */
+    TEST(HttpResponse, StatusLineLeavesPhraseEmptyForUnlistedStatusCodes)
+    {
+        for (const int code: {203, 300, 303, 402, 407, 411, 412, 417, 421})
+        {
+            HttpResponse response;
+            response.setStatus(code);
+            const std::string expectedLine = "HTTP/1.1 " + std::to_string(code) + " \r\n";
+            const std::string head         = response.serializeHead();
+            EXPECT_EQ(head.rfind(expectedLine, 0), 0U) << "未收录的 " << code << " 应给空短语，实际前缀是「" << head.substr(0, expectedLine.size() + 8U) << "」";
+        }
+    }
+
+    /**
+     * @brief 钉住每一个可上线的状态码都只产出一行状态行——短语里不许夹带 CR/LF
+     * @details 状态行之后紧跟头部，短语若含换行就等于凭空多出一行，那既是解析错位也是响应切分的入口。
+     *          这一条按整段取值范围扫，比逐格点名更能挡住「以后有人往表里塞带控制字符的文案」。
+     */
+    TEST(HttpResponse, EveryWireStatusCodeSerializesToOneWellFormedStatusLine)
+    {
+        for (int code = 100; code <= 999; ++code)
+        {
+            HttpResponse response;
+            response.setStatus(code);
+            const std::string head           = response.serializeHead();
+            const std::string expectedPrefix = "HTTP/1.1 " + std::to_string(code);
+            ASSERT_EQ(head.rfind(expectedPrefix, 0), 0U) << code << " 的状态行开头不对";
+            const std::size_t lineEnd = head.find("\r\n");
+            ASSERT_NE(lineEnd, std::string::npos) << code << " 的状态行没有以 CRLF 收尾";
+            // 短语是状态行里唯一由本端填的文本：行内不能再有裸 CR 或 LF
+            const std::string statusLine = head.substr(0, lineEnd);
+            EXPECT_EQ(statusLine.find('\r'), std::string::npos) << code << " 的状态行里出现了 CR";
+            EXPECT_EQ(statusLine.find('\n'), std::string::npos) << code << " 的状态行里出现了 LF";
+        }
+    }
 } // namespace AsynGyanis::Net
