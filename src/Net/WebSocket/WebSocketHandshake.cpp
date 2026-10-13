@@ -256,8 +256,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 核对 101 回显的扩展名全部是本端提议过的，并把落地的那一个标进 agreement
          * @details 判据是「回显里出现的每个扩展名都必须在提议过的名单里」（RFC 6455 §9.1 要客户端把这种
-         *          握手判成失败）。参数差异不在这一格判：那属于扩展自己的口径，本端只落地
-         *          permessage-deflate 一个扩展，它的窗口位数由会话侧按回显原文再解一次。
+         *          握手判成失败）。参数差异不在这一格判：那属于扩展自己的口径，permessage-deflate 的
+         *          参数级判据（RFC 7692 §7.1 的四类客户端失败条件）由 validateWebSocketUpgradeResponse
+         *          在其后接 acceptPerMessageDeflateResponse() 完成。
          * @param extensionValues 应答里 Sec-WebSocket-Extensions 的同名取值，可为空
          * @param offeredExtensions 本端这次提议的扩展原文，拒因里要原样回显给用户看
          * @param agreement 出参：命中 permessage-deflate 时置 isPerMessageDeflateAccepted
@@ -582,6 +583,26 @@ namespace AsynGyanis::Net
             if (const auto echoResult = checkExtensionEcho(extensionValues, offeredExtensions, agreement); !echoResult)
             {
                 return std::unexpected(echoResult.error());
+            }
+            // 回显通过之后才谈参数：多条同名头部按逗号接续拼成一段（语义等价），参数级判据
+            // （RFC 7692 §7.1 的四类客户端失败条件）收在 acceptPerMessageDeflateResponse 一处
+            if (agreement.isPerMessageDeflateAccepted)
+            {
+                std::string joinedResponseValues;
+                for (const std::string_view extensionValue: extensionValues)
+                {
+                    if (!joinedResponseValues.empty())
+                    {
+                        joinedResponseValues += ", ";
+                    }
+                    joinedResponseValues += extensionValue;
+                }
+                const auto accepted = acceptPerMessageDeflateResponse(joinedResponseValues, offeredExtensions);
+                if (!accepted.has_value())
+                {
+                    return std::unexpected(accepted.error());
+                }
+                agreement.deflateWindow = accepted.value();
             }
         }
 

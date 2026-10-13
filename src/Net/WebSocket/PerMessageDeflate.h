@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include <cstddef>
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -111,4 +112,43 @@ namespace AsynGyanis::Net
     /// 本端在扩展要约里唯一提议、也唯一会接受的那个扩展名（RFC 7692 §7.1）：
     /// 要约与回显两侧都按它比对，不再在别处写第二份字面量
     inline constexpr std::string_view kPerMessageDeflateExtensionName = "permessage-deflate";
+
+    /**
+     * @brief 客户端要约的线上形态（RFC 7692 §7.1.1/§7.1.2）
+     *
+     * @details 四段各有出处：`permessage-deflate` 是扩展名；`server_no_context_takeover` 是本端
+     *          对服务端的硬要求（本端解压器无状态、不保留跨消息的 z_stream，服务端不承诺每条
+     *          消息重置上下文时本端无法安全解压，见 acceptPerMessageDeflateResponse 的拒因）；
+     *          `client_no_context_takeover` 是对称的承诺类 hint（本端发送本就不复用上下文）；
+     *          `client_max_window_bits` 不带值＝声明本端接受服务端在响应里指定客户端的压缩窗口
+     *          （§7.1.2.2 的无值形态）。刻意**不**带 `server_max_window_bits`：那会向服务端提出
+     *          「你压缩窗口不得大于 N」的限定，而服务端即使要约没带也可在响应里主动声明自己的
+     *          压缩窗口（§7.1.2.1 的 MAY），本端按声明值解压即可。
+     */
+    inline constexpr std::string_view kPerMessageDeflateClientOffer = "permessage-deflate; server_no_context_takeover; client_no_context_takeover; client_max_window_bits";
+
+    /**
+     * @brief 客户端接受服务端对 permessage-deflate 的响应结论（RFC 7692 §7.1 的客户端判据）
+     *
+     * @details 逐条落实 §7.1 列出的四类「客户端必须让连接失败」的响应形态：含本扩展未定义的
+     *          参数名、含取值非法的参数（no_context_takeover 两条带值、窗口位数不是 8..15 的
+     *          无前导零十进制）、同名参数重复出现、以及响应代表的配置本端支持不了。后者在本实现
+     *          里具体化为两条：①要约带了 `server_no_context_takeover` 而响应没带——服务端没承诺
+     *          每条消息重置上下文，本端解压器（无状态）接不住这种配置；②响应带
+     *          `client_max_window_bits` 而要约为没带——§7.1.2.2 明写这种响应 MUST NOT 出现，
+     *          对上了说明对面实现不对。窗口取值的两处方向各按 §7.1.2 归位：本端解压窗口按响应的
+     *          `server_max_window_bits`（服务端按它为压缩窗口）、本端压缩窗口按响应的
+     *          `client_max_window_bits`（服务端限制本端压缩窗口），缺省都是 15。服务端即使要约
+     *          没带 `server_max_window_bits` 也可在响应里主动带它（§7.1.2.1 的 MAY），因此这条
+     *          不要求要约先带过。
+     * @param responseHeaderValue 101 应答里 Sec-WebSocket-Extensions 的全部取值拼成的一段文本
+     * @param offerHeaderValue 本端发出去的同名头部原文（含参数；用于校验响应与要约的一致性）
+     * @return std::expected<std::optional<PerMessageDeflateWindow>, std::string>
+     *         响应里没有 permessage-deflate 时交回空 optional（未启用扩展，连接按明文继续）；
+     *         无法接受时交回中文原因（点明判不过的是哪一条）；可接受时交回两侧窗口位数
+     * @note 响应里出现两段 permessage-deflate 元素按「同名重复」拒绝：哪一段是服务端真正的意思
+     *       无从判断，带着猜出来的配置开连接是「看起来成功了」的最坏形态
+     */
+    [[nodiscard]] ASYN_NET_API std::expected<std::optional<PerMessageDeflateWindow>, std::string> acceptPerMessageDeflateResponse(std::string_view responseHeaderValue,
+                                                                                                                                  std::string_view offerHeaderValue);
 } // namespace AsynGyanis::Net

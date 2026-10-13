@@ -168,13 +168,20 @@ namespace AsynGyanis::Net
          *
          * @details 只接受纯十进制且落在 RFC 7692 §7.1.1/§7.1.2 允许的那八档。带符号、带小数、
          *          非数字、越界一律判为「无法履约」：这些形状说明对端要么实现不对、要么在探本端，
-         *          按缺省窗口继续开连接会把一条解不开的流发到线上。
+         *          按缺省窗口继续开连接会把一条解不开的流发到线上。前导零同样判非法——§7.1.2.1 与
+         *          §7.1.2.2 明写取值是「without leading zeroes」的十进制数，「09」这种写法只在
+         *          语法上沾边，放行等于把一条对不上规范的表当真。
          * @param rawValue 等号右侧已去引号的文本；空表示参数不带值（本端按 15 处理，另判）
          * @return std::optional<int> 合法位数；非法时为空
          */
         [[nodiscard]] std::optional<int> parseWindowBits(const std::string_view rawValue)
         {
             if (rawValue.empty())
+            {
+                return std::nullopt;
+            }
+            // 前导零：多位数以 '0' 开头即非法（「09」「015」）；单个 '0' 走下面的值域判定挡住
+            if (rawValue.size() > 1 && rawValue.front() == '0')
             {
                 return std::nullopt;
             }
@@ -519,5 +526,212 @@ namespace AsynGyanis::Net
         // 成功路径不再 inflateEnd：留给下一条消息 reset 复用
 
         return output;
+    }
+
+    namespace
+    {
+        /// 一侧参数扫描的产出：四个参数的出现情况与取值；problem 非空表示这一侧本身不合法
+        struct ScanResult
+        {
+            bool               foundExtension{false}; ///< 找到了 permessage-deflate 元素
+            std::string        problem{};             ///< 非空即这一侧违反 §7.1 的参数规则（未定义名/重复/非法值）
+            bool               hasServerNoContext{false};
+            bool               hasClientNoContext{false};
+            bool               hasServerWindowParameter{false};
+            bool               hasClientWindowParameter{false};
+            std::optional<int> serverWindowBits{}; ///< 只在带值时填
+            std::optional<int> clientWindowBits{}; ///< 只在带值时填
+        };
+
+        /**
+         * @brief 把两侧的参数扫描结果合成最终结论（RFC 7692 §7.1 的四类客户端失败条件）
+         * @details 响应本身的坏形态（第 1-3 类）、响应未提及扩展、以及响应与要约的一致性（第 4 类）
+         *          都收在这一处；与扫描器分开是让「两侧对照的那一段判据」独立成段、逐条可对表。
+         * @param response 响应侧扫描结果
+         * @param offer 要约侧扫描结果（本端自己拼的，坏形态按内部不一致拒）
+         * @return std::expected<std::optional<PerMessageDeflateWindow>, std::string> 同 acceptPerMessageDeflateResponse 的约定
+         */
+        std::expected<std::optional<PerMessageDeflateWindow>, std::string> reconcilePerMessageDeflateParameters(const ScanResult &response, const ScanResult &offer)
+        {
+            if (!response.problem.empty())
+            {
+                return std::unexpected("101 应答的 permessage-deflate 无法接受：" + response.problem + "（RFC 7692 §7.1 的客户端失败条件）");
+            }
+            if (!response.foundExtension)
+            {
+                // 响应没回这个扩展：连接按明文继续，这不是失败
+                return std::optional<PerMessageDeflateWindow>{};
+            }
+
+            if (!offer.problem.empty() || !offer.foundExtension)
+            {
+                // 要约是本端自己拼的：走到这里说明两张表脱节，按内部不一致拒并点名（不该发生）
+                return std::unexpected("本端发出的 permessage-deflate 要约不合规（" + (offer.problem.empty() ? "要约里没有这个扩展" : offer.problem) + "）：本端内部实现不一致");
+            }
+
+            // 第四类失败条件之一：要约要求了 server_no_context_takeover，响应却没承诺。本端解压器按
+            // 「每条消息独立」实现（PerMessageDeflateWindow 的窗口参数就是全部跨消息状态），服务端保留
+            // 上下文时本端接不住（RFC 7692 §7.1.1：接受带该参数要约的方式就是在响应里带上它）
+            if (offer.hasServerNoContext && !response.hasServerNoContext)
+            {
+                return std::unexpected("响应对要约没有回 server_no_context_takeover（RFC 7692 §7.1.1）：服务端不承诺每条消息重置上下文，"
+                                       "而本端解压器无状态、接不住可能跨消息复用上下文的配置，本次握手按失败处理");
+            }
+
+            // §7.1.2.2：要约没带 client_max_window_bits 时响应 MUST NOT 带它——对上了说明对面实现不对
+            if (response.hasClientWindowParameter && !offer.hasClientWindowParameter)
+            {
+                return std::unexpected("响应带了 client_max_window_bits 而本端要约里没有这一项（RFC 7692 §7.1.2.2 明写这种响应 MUST NOT 出现）："
+                                       "对端实现有问题，本次握手按失败处理");
+            }
+
+            // §7.1.2.1：要约限了服务端压缩窗口时，响应只能 same or smaller
+            if (offer.serverWindowBits.has_value() && response.serverWindowBits.has_value() && *response.serverWindowBits > *offer.serverWindowBits)
+            {
+                return std::unexpected("响应的 server_max_window_bits=" + std::to_string(*response.serverWindowBits) + " 大于本端要约限制的 " +
+                                       std::to_string(*offer.serverWindowBits) + "（RFC 7692 §7.1.2.1 要求 same or smaller）：本次握手按失败处理");
+            }
+
+            // 窗口各归各位：本端压缩窗口按响应的 client_max_window_bits 收（服务端限制本端）、
+            // 本端解压窗口按响应的 server_max_window_bits 开（服务端按它为压缩窗口），缺省都是 15
+            return std::optional<PerMessageDeflateWindow>{PerMessageDeflateWindow{.compressBits   = response.clientWindowBits.value_or(kWebSocketDefaultWindowBits),
+                                                                                  .decompressBits = response.serverWindowBits.value_or(kWebSocketDefaultWindowBits)}};
+        }
+        /**
+         * @brief 扫描单个 permessage-deflate 元素的参数段并就地判掉前三类失败条件（问题写进 result.problem）
+         * @details 从 scanPerMessageDeflateParameters 里拆出：这一段是「单元素四参数」的完整判据，
+         *          独立成段才与 §7.1 的条款逐条对得上表。
+         * @param item 该元素的原文（名字 + 分号参数段）
+         * @param semicolonPosition 名字后第一个分号的位置；npos 表示没有参数段
+         * @param isResponse 这一侧是不是响应（响应里的 client_max_window_bits 必须带值）
+         * @param result 出参：参数的出现情况与取值；遇到坏形态时写入 problem 并返回
+         */
+        void scanPerMessageDeflateElementParameters(const std::string_view item, const std::size_t semicolonPosition, const bool isResponse, ScanResult &result)
+        {
+            int         serverWindowOccurrences    = 0;
+            int         clientWindowOccurrences    = 0;
+            int         serverNoContextOccurrences = 0;
+            int         clientNoContextOccurrences = 0;
+            std::size_t parameterOffset            = semicolonPosition == std::string_view::npos ? item.size() : semicolonPosition + 1;
+            while (parameterOffset < item.size())
+            {
+                const std::string_view parameter      = takeNextParameter(item, parameterOffset);
+                const std::size_t      equalsPosition = parameter.find('=');
+                const std::string_view parameterName  = parameter.substr(0, equalsPosition);
+                const bool             hasValue       = equalsPosition != std::string_view::npos;
+                const std::string_view rawValue       = hasValue ? unquote(parameter.substr(equalsPosition + 1)) : std::string_view{};
+
+                if (tokenEqualsIgnoringCase(parameterName, "server_no_context_takeover"))
+                {
+                    result.hasServerNoContext = true;
+                    if (++serverNoContextOccurrences > 1 || hasValue)
+                    {
+                        result.problem = "参数 server_no_context_takeover 重复出现或带了取值（它是布尔参数，不带值）";
+                        return;
+                    }
+                } else if (tokenEqualsIgnoringCase(parameterName, "client_no_context_takeover"))
+                {
+                    result.hasClientNoContext = true;
+                    if (++clientNoContextOccurrences > 1 || hasValue)
+                    {
+                        result.problem = "参数 client_no_context_takeover 重复出现或带了取值（它是布尔参数，不带值）";
+                        return;
+                    }
+                } else if (tokenEqualsIgnoringCase(parameterName, "server_max_window_bits"))
+                {
+                    result.hasServerWindowParameter = true;
+                    if (++serverWindowOccurrences > 1)
+                    {
+                        result.problem = "参数 server_max_window_bits 重复出现";
+                        return;
+                    }
+                    // 这一参数两侧都必须带值（RFC 7692 §7.1.2.1：offer 与 response 里都有值）
+                    if (!hasValue)
+                    {
+                        result.problem = "参数 server_max_window_bits 没有带值：它必须是 8..15 的十进制位数";
+                        return;
+                    }
+                    const std::optional<int> bits = parseWindowBits(rawValue);
+                    if (!bits.has_value())
+                    {
+                        result.problem = "参数 server_max_window_bits 的取值「" + std::string(rawValue) + "」不是 8..15 的十进制位数（无前导零）";
+                        return;
+                    }
+                    result.serverWindowBits = *bits;
+                } else if (tokenEqualsIgnoringCase(parameterName, "client_max_window_bits"))
+                {
+                    result.hasClientWindowParameter = true;
+                    if (++clientWindowOccurrences > 1)
+                    {
+                        result.problem = "参数 client_max_window_bits 重复出现";
+                        return;
+                    }
+                    if (hasValue)
+                    {
+                        const std::optional<int> bits = parseWindowBits(rawValue);
+                        if (!bits.has_value())
+                        {
+                            result.problem = "参数 client_max_window_bits 的取值「" + std::string(rawValue) + "」不是 8..15 的十进制位数（无前导零）";
+                            return;
+                        }
+                        result.clientWindowBits = *bits;
+                    } else if (isResponse)
+                    {
+                        // 响应里这一参数必须带值；无值形态只在要约里合法（§7.1.2.2）
+                        result.problem = "响应里的 client_max_window_bits 没有带值：响应形态必须是 8..15 的十进制位数";
+                        return;
+                    }
+                } else
+                {
+                    // 未定义的参数名不能当「与本端无关」放过（§7.1 的第一类失败条件）
+                    result.problem = "permessage-deflate 出现了未定义的参数「" + std::string(parameterName) + "」";
+                    return;
+                }
+            }
+        }
+
+    } // namespace
+
+    std::expected<std::optional<PerMessageDeflateWindow>, std::string> acceptPerMessageDeflateResponse(const std::string_view responseHeaderValue,
+                                                                                                       const std::string_view offerHeaderValue)
+    {
+        // 两侧共用同一套参数判据：名字集合、重名、取值形态（RFC 7692 §7.1 的前三类失败条件）
+        const auto scan = [](const std::string_view headerValue, const bool isResponse) -> ScanResult
+        {
+            ScanResult  result;
+            std::size_t offset = 0;
+            while (offset < headerValue.size())
+            {
+                const std::string_view item = takeNextItem(headerValue, offset);
+                if (item.empty())
+                {
+                    continue;
+                }
+                const std::size_t      semicolonPosition = item.find(';');
+                const std::string_view extensionName     = item.substr(0, semicolonPosition);
+                if (!isPerMessageDeflateName(extensionName))
+                {
+                    continue;
+                }
+                if (result.foundExtension)
+                {
+                    // 两段 permessage-deflate 元素：哪一段是真正的意思无从判断，按同名重复拒绝
+                    result.problem = "同一份头部里出现了两段 permessage-deflate 元素，无法判断对端真正的意思";
+                    return result;
+                }
+                result.foundExtension = true;
+
+                scanPerMessageDeflateElementParameters(item, semicolonPosition, isResponse, result);
+                if (!result.problem.empty())
+                {
+                    return result;
+                }
+            }
+            return result;
+        };
+
+        const ScanResult response = scan(responseHeaderValue, true);
+        const ScanResult offer    = scan(offerHeaderValue, false);
+        return reconcilePerMessageDeflateParameters(response, offer);
     }
 } // namespace AsynGyanis::Net

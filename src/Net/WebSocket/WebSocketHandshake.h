@@ -13,8 +13,10 @@
 
 #include "Base/Exception/Exception.h"
 #include "Net/Http/HttpRequest.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -180,8 +182,9 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API WebSocketUpgradeAgreement
     {
-        std::string acceptedSubprotocol;                ///< 对端选定的子协议原文；空表示它没选（本端发了要约而对端不回时，这是要出声的）
-        bool        isPerMessageDeflateAccepted{false}; ///< 对端是否回了 permessage-deflate
+        std::string                            acceptedSubprotocol;                ///< 对端选定的子协议原文；空表示它没选（本端发了要约而对端不回时，这是要出声的）
+        bool                                   isPerMessageDeflateAccepted{false}; ///< 对端是否回了 permessage-deflate
+        std::optional<PerMessageDeflateWindow> deflateWindow{};                    ///< 扩展被接受时两侧的窗口位数（由 acceptPerMessageDeflateResponse 解析）；未接受为空
     };
 
     /**

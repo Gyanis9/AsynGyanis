@@ -59,8 +59,6 @@ namespace AsynGyanis
              * @brief 一次出站握手的参数
              *
              * @details 只收「线上要写出去」与「本端要判」的那几项；没有对应消费方的开关不列在这里。
-             *          刻意不提供 `Sec-WebSocket-Extensions` 的要约位：出站方向的 permessage-deflate
-             *          还没接到本类上，给出选项却不吃它才是真缺陷（本端收到带 RSV1 的帧会按协议错误收口）。
              */
             struct Configuration
             {
@@ -70,7 +68,10 @@ namespace AsynGyanis
                 std::vector<std::string>  subprotocols{};         ///< 提议的子协议名，按优先级；空表示不提
                 const Core::TlsContext   *clientTls{nullptr};     ///< 非空即走 wss；上下文由调用方持有并须活过本会话
                 std::chrono::milliseconds handshakeTimeout{5000}; ///< `connect()` 全程（建 TCP、TLS 握手、等到 101）的总时限，各段拿剩余预算；必须是正数
-                std::size_t               maximumMessageSize{WebSocketFrameDecoder::kMaximumMessagePayloadLength}; ///< 一条消息的字节上限；0 表示不设
+                std::size_t               maximumMessageSize{WebSocketFrameDecoder::kMaximumMessagePayloadLength}; ///< 一条消息的字节上限；0 表示不设（解压输出上限同吃这一格）
+                bool                      negotiatePerMessageDeflate{true}; ///< 是否在升级请求里提议 permessage-deflate（RFC 7692，要约形态见 kPerMessageDeflateClientOffer）。
+                                                                            ///< 默认开＝与主流客户端一致；对端不回应约时连接照常按明文收发。对端回出可接受的参数后，
+                                                                            ///< 数据消息按协商窗口压缩发送、带 RSV1 的帧按协商窗口解压（上限取 maximumMessageSize）
             };
 
             /**
@@ -217,10 +218,12 @@ namespace AsynGyanis
             /// 取一条消息用的读缓冲大小：与 TcpStream 同档，够让一帧在少数几轮里读完
             static constexpr std::size_t kReadChunkByteLength = 16384;
 
-            std::unique_ptr<HttpOutboundConnection> m_transport;  ///< 已经换了协议的通路（明文或 TLS 都由它承载）
-            WebSocketUpgradeAgreement               m_agreement;  ///< 握手谈成的事实
-            WebSocketFrameDecoder                   m_decoder;    ///< 帧解码器，已按客户端档位配置
-            std::string                             m_readBuffer; ///< 一次读取的落地缓冲，容量固定为 kReadChunkByteLength
+            std::unique_ptr<HttpOutboundConnection> m_transport; ///< 已经换了协议的通路（明文或 TLS 都由它承载）
+            WebSocketUpgradeAgreement               m_agreement; ///< 握手谈成的事实
+            WebSocketFrameDecoder                   m_decoder;   ///< 帧解码器，已按客户端档位配置
+            /// 协商出的两侧窗口位数（未协商成功为空）：发送侧据此压缩数据消息、接收侧据此解压带 RSV1 的帧
+            std::optional<PerMessageDeflateWindow> m_deflateWindow{};
+            std::string                            m_readBuffer; ///< 一次读取的落地缓冲，容量固定为 kReadChunkByteLength
             /// 读进来还没交给解码器的字节：解码器一次只消化到帧尾为止，帧之后的字节必须留到下一次
             /// `receive()` 再喂，丢掉就等于把对端连着发的那条消息截掉
             std::string m_inboundBytes;

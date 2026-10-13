@@ -12,6 +12,7 @@
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Tcp/TcpStream.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -340,12 +341,15 @@ namespace AsynGyanis::Net
          * @param response 交换到的应答（状态码与头部）
          * @param clientKey 本端这次握手发出去的 key
          * @param subprotocols 本端提议过的子协议名单
+         * @param offeredExtensions 本端提议过的扩展原文（空表示没提议）；传进校验是为了回显核对
+         *        与扩展参数级判据（RFC 7692 §7.1）都按同一次要约对表
          * @return std::expected<WebSocketUpgradeAgreement, std::string> 谈成的事实，或中文拒因
          */
         [[nodiscard]] std::expected<WebSocketUpgradeAgreement, std::string> checkUpgradeAgreement(const HttpResponseInfo &response, const std::string_view clientKey,
-                                                                                                  const std::vector<std::string> &subprotocols)
+                                                                                                  const std::vector<std::string> &subprotocols,
+                                                                                                  const std::string_view          offeredExtensions)
         {
-            auto agreement = validateWebSocketUpgradeResponse(response.statusCode, response.headers, clientKey);
+            auto agreement = validateWebSocketUpgradeResponse(response.statusCode, response.headers, clientKey, offeredExtensions);
             if (!agreement.has_value())
             {
                 return std::unexpected(agreement.error());
@@ -360,11 +364,14 @@ namespace AsynGyanis::Net
     } // namespace
     WebSocketClient::WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration,
                                      std::string pendingBytes) :
-        m_transport(std::move(transport)), m_agreement(std::move(agreement)), m_readBuffer(kReadChunkByteLength, '\0'), m_inboundBytes(std::move(pendingBytes))
+        m_transport(std::move(transport)), m_agreement(std::move(agreement)), m_deflateWindow(m_agreement.deflateWindow), m_readBuffer(kReadChunkByteLength, '\0'),
+        m_inboundBytes(std::move(pendingBytes))
     {
         // 本端是客户端：对端（服务端）发来的帧必须不带掩码，带了就当场判错（RFC 6455 §5.1）
         m_decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
         m_decoder.setMaximumMessagePayloadLength(configuration.maximumMessageSize);
+        // 协商成功才放行带 RSV1 的帧（RFC 7692 §6）：未协商时这类帧按协议错误收口，是解码器的默认行为
+        m_decoder.setPerMessageDeflateEnabled(m_deflateWindow.has_value());
     }
     WebSocketClient::~WebSocketClient() = default;
     Core::Task<std::expected<std::unique_ptr<WebSocketClient>, std::string>> WebSocketClient::connect(Core::EventLoop &loop, Configuration configuration)
@@ -415,7 +422,11 @@ namespace AsynGyanis::Net
         // 时限从「连上了」这一刻起算：握手那一段（写出请求 + 等到 101）拿剩余的预算
         // 这把 key 只用于本次握手：accept 由它算出，核对 101 全靠这条对应关系
         const std::string clientKey = Base::base64Encode(cryptographicRandomBytes(kClientKeyByteLength));
-        auto requestText = buildWebSocketUpgradeRequest(hostHeaderFor(configuration.hostName, port, isTls), configuration.requestTarget, clientKey, configuration.subprotocols);
+        // 扩展要约按开关给：默认提议 permessage-deflate（形态见 kPerMessageDeflateClientOffer），
+        // 关掉时升级请求里连那条头部都不发
+        const std::string extensionsOffer = configuration.negotiatePerMessageDeflate ? std::string{kPerMessageDeflateClientOffer} : std::string{};
+        auto requestText = buildWebSocketUpgradeRequest(hostHeaderFor(configuration.hostName, port, isTls), configuration.requestTarget, clientKey, configuration.subprotocols,
+                                                        extensionsOffer);
         if (!requestText.has_value())
         {
             // 用法错误（Host、请求目标或子协议名里带了控制字符之类）：拒因原样交给调用方，
@@ -454,7 +465,7 @@ namespace AsynGyanis::Net
             // TcpStream 内部的读缓冲留着没消费的字节：换到通路之后它们仍在同一条流上，不会丢
             transport = HttpOutboundConnection::forPlain(endpointKey, std::move(*plainStream));
         }
-        auto agreement = checkUpgradeAgreement((*exchanged)->response, clientKey, configuration.subprotocols);
+        auto agreement = checkUpgradeAgreement((*exchanged)->response, clientKey, configuration.subprotocols, extensionsOffer);
         if (!agreement.has_value())
         {
             co_return std::unexpected(agreement.error());
@@ -507,7 +518,27 @@ namespace AsynGyanis::Net
             }
             if (status == WebSocketDecodeStatus::Frame)
             {
-                const WebSocketFrame frame = m_decoder.takeFrame();
+                WebSocketFrame frame = m_decoder.takeFrame();
+                // 压缩消息先解压再交付（RFC 7692 §7.2.2）：解不开的连接按协议错误收口——
+                // 字节流本端解不了，留在连接上只会越走越偏（与 WebSocketPeer 的收侧同一条口径）
+                if (frame.isCompressed)
+                {
+                    // 窗口位数按协商走（服务端声明它按多大压缩）；未协商时带 RSV1 的帧已被解码器判错，
+                    // 这里按满窗口兜底只是不让一个不可能的组合变成崩溃点
+                    const int                  decompressBits = m_deflateWindow.has_value() ? m_deflateWindow->decompressBits : kWebSocketDefaultWindowBits;
+                    const std::size_t          maximumPayload = m_decoder.maximumMessagePayloadLength();
+                    std::optional<std::string> inflated       = inflateWebSocketMessage(frame.payload, maximumPayload, decompressBits);
+                    if (!inflated.has_value())
+                    {
+                        const std::string errorText = "对端发来的压缩消息解压失败，或解压结果超过上限（RFC 7692 §7.2.2）：请核对对端的压缩实现与协商参数";
+                        // 先把「为什么收口」发出去，再把本端置成不可用（口径同上面解码错误那一段）
+                        static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(kWebSocketProtocolErrorCode, {}))));
+                        m_isOpen = false;
+                        m_transport->close();
+                        co_return std::unexpected(errorText);
+                    }
+                    frame.payload = std::move(*inflated);
+                }
                 if (frame.opCode == WebSocketOpCode::Ping)
                 {
                     // 心跳必须按原负载回 Pong（RFC 6455 §5.5.3）：不回就是让对端把这条连接判成死的
@@ -595,8 +626,22 @@ namespace AsynGyanis::Net
     }
     std::string WebSocketClient::prepareFrame(const WebSocketOpCode opCode, const std::string_view payload)
     {
+        // 压缩只对数据消息生效（控制帧从不压缩，RFC 7692 §6.1）；压不动或压完更大就原样发——
+        // 压缩是带宽优化，而发一条对端解不开的帧比不压严重得多（与 WebSocketPeer::sendFrame 同口径）
+        const bool                 isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
+        std::optional<std::string> compressedPayload;
+        if (m_deflateWindow.has_value() && isDataMessage)
+        {
+            compressedPayload = deflateWebSocketMessage(payload, m_deflateWindow->compressBits);
+            if (compressedPayload.has_value() && compressedPayload->size() >= payload.size())
+            {
+                compressedPayload.reset();
+            }
+        }
+        const std::string_view payloadToSend = compressedPayload.has_value() ? std::string_view(*compressedPayload) : payload;
+
         // 本帧现取一把新键：编码里对控制帧长度与操作码的用法判据也在这一步抛出，调用点当场就能看见
-        return encodeWebSocketFrame(opCode, payload, true, false, nextMaskKey());
+        return encodeWebSocketFrame(opCode, payloadToSend, true, compressedPayload.has_value(), nextMaskKey());
     }
     Core::Task<bool> WebSocketClient::sendCloseBytes(std::string frameBytes)
     {

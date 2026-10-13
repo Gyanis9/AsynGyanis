@@ -13,6 +13,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
+#include "Net/WebSocket/PerMessageDeflate.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include <gtest/gtest.h>
@@ -543,7 +544,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.delivered.front().payload, "hi");
         EXPECT_TRUE(outcome.delivered.front().isFinal);
         EXPECT_TRUE(outcome.is_open_after_actions);
-        // 请求原文里的五条必发头部（RFC 6455 §4.1）：本端没提扩展与子协议，就不该有那两条出去
+        // 请求原文里的五条必发头部（RFC 6455 §4.1）：本端没提子协议就不该有那一条出去
         EXPECT_NE(wireBytes.first.find("GET /ws HTTP/1.1\r\n"), std::string::npos) << wireBytes.first;
         // 端口是非默认的（回环上的随机端口），权威标识必须把它带上（RFC 9110 §4.2.2）
         EXPECT_NE(wireBytes.first.find("Host: 127.0.0.1:"), std::string::npos) << wireBytes.first;
@@ -551,7 +552,9 @@ namespace AsynGyanis::Net
         EXPECT_NE(wireBytes.first.find("Connection: Upgrade\r\n"), std::string::npos);
         EXPECT_NE(wireBytes.first.find("Sec-WebSocket-Key: "), std::string::npos);
         EXPECT_NE(wireBytes.first.find("Sec-WebSocket-Version: 13\r\n"), std::string::npos);
-        EXPECT_EQ(wireBytes.first.find("Sec-WebSocket-Extensions"), std::string::npos);
+        // 扩展要约默认在（negotiatePerMessageDeflate 默认开），逐字为 kPerMessageDeflateClientOffer；
+        // 对端这条 101 没回扩展，会话按明文收发（见本文件里协商成功的对偶用例）
+        EXPECT_NE(wireBytes.first.find(std::string{"Sec-WebSocket-Extensions: "} + std::string{kPerMessageDeflateClientOffer} + "\r\n"), std::string::npos) << wireBytes.first;
         EXPECT_EQ(wireBytes.first.find("Sec-WebSocket-Protocol"), std::string::npos);
     }
     TEST(WebSocketClient, EveryOutboundFrameIsMaskedWithItsOwnKey)
@@ -960,5 +963,173 @@ namespace AsynGyanis::Net
         EXPECT_NE(outcome.failure_reason.find("101"), std::string::npos) << outcome.failure_reason;
         EXPECT_NE(outcome.failure_reason.find("时限"), std::string::npos) << outcome.failure_reason;
         EXPECT_LT(elapsed, std::chrono::milliseconds{3000}) << "等了 " << elapsed.count() << " 毫秒：时限没管住等 101 这一段";
+    }
+
+    /**
+     * @brief 协商成功后数据消息按 RSV1 压缩发出：判据落在线上字节上（首字节的 RSV1 位与负载可被独立解码器解回原文）
+     */
+    TEST(WebSocketClient, OffersPerMessageDeflateAndCompressesDataMessagesAfterAcceptance)
+    {
+        const std::string payload = []
+        {
+            std::string text;
+            for (int index = 0; index < 256; ++index)
+            {
+                text += "permessage-deflate client roundtrip/";
+            }
+            return text;
+        }();
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()),
+                                                             "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n")));
+            wire.readOneClientFrame();
+        };
+        const Action action = [&payload](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            outcome.send_results.push_back(co_await client.sendText(payload));
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        ASSERT_EQ(outcome.send_results, (std::vector<bool>{true}));
+
+        // 要约逐字在位（对端脚本能按规范回扩展，正是因为它在请求原文里读到了这条）
+        EXPECT_NE(wireBytes.first.find(std::string{"Sec-WebSocket-Extensions: "} + std::string{kPerMessageDeflateClientOffer} + "\r\n"), std::string::npos) << wireBytes.first;
+
+        const auto frame = frameAt(wireBytes.second, 0);
+        ASSERT_TRUE(frame.has_value()) << "帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
+        EXPECT_TRUE(frame->isMasked) << "压缩与否不影响客户端帧必须带掩码（RFC 6455 §5.1）";
+        EXPECT_EQ(frame->firstByte, static_cast<std::uint8_t>(0xC1)) << "协商成功后数据消息要置 RSV1（FIN+RSV1+Text = 0xC1，RFC 7692 §6）";
+        ASSERT_LT(frame->payload.size(), payload.size()) << "这份重复文本本该压得更短";
+        const std::optional<std::string> restored = inflateWebSocketMessage(frame->payload, payload.size() + 16);
+        ASSERT_TRUE(restored.has_value()) << "线上负载不是一截合法的 permessage-deflate 流";
+        EXPECT_EQ(*restored, payload);
+    }
+
+    /**
+     * @brief 压了反而更大时按原样发：RSV1 不置位、负载就是原文（RFC 7692 §7.3 的口径）
+     */
+    TEST(WebSocketClient, KeepsShortMessagesUncompressedWhenCompressionWouldGrowThem)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()),
+                                                             "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n")));
+            wire.readOneClientFrame();
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            outcome.send_results.push_back(co_await client.sendText("hi"));
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        ASSERT_EQ(outcome.send_results, (std::vector<bool>{true}));
+
+        const auto frame = frameAt(wireBytes.second, 0);
+        ASSERT_TRUE(frame.has_value());
+        EXPECT_EQ(frame->firstByte, kTextFrameFirstByte) << "两个字节的消息压完更大，不该置 RSV1";
+        EXPECT_EQ(frame->payload, "hi") << "未压缩帧的负载必须是原文";
+    }
+
+    /**
+     * @brief 对端发来的压缩帧在协商成功后被放行并还原成原文交付
+     */
+    TEST(WebSocketClient, InflatesCompressedFramesFromThePeer)
+    {
+        const std::string payload = []
+        {
+            std::string text;
+            for (int index = 0; index < 128; ++index)
+            {
+                text += "peer-side compression sample/";
+            }
+            return text;
+        }();
+        const PeerScript script = [&payload](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()),
+                                                             "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n")));
+            const std::optional<std::string> compressed = deflateWebSocketMessage(payload);
+            if (compressed.has_value())
+            {
+                // FIN+RSV1+Text = 0xC1：对端按协商结果发压缩帧（§6 的线上形态）
+                static_cast<void>(wire.write(makeServerFrame(0xC1, *compressed)));
+            }
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (received.has_value())
+            {
+                outcome.delivered.push_back(*received);
+            } else
+            {
+                outcome.receive_error = received.error();
+            }
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.receive_error, "");
+        ASSERT_EQ(outcome.delivered.size(), 1U);
+        EXPECT_EQ(outcome.delivered.front().payload, payload) << "压缩帧没有被还原成原文交付";
+    }
+
+    /**
+     * @brief 本端支持不了的响应配置（缺 server_no_context_takeover）当场拒握手，拒因点名那一条
+     */
+    TEST(WebSocketClient, RejectsACompressionResponseTheClientCannotSupport)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            // 只回扩展名、不承诺 no_context_takeover：本端解压器无状态，接不住服务端可能跨消息复用上下文的配置
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()), "Sec-WebSocket-Extensions: permessage-deflate\r\n")));
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, kNoAction, baseConfiguration(), wireBytes);
+        expectFailure(outcome, "server_no_context_takeover");
+    }
+
+    /**
+     * @brief 关掉开关后既不提要约也不压缩：请求无扩展头，数据消息原样发
+     */
+    TEST(WebSocketClient, SendsNoOfferAndNoCompressionWhenNegotiationIsDisabled)
+    {
+        const std::string payload = []
+        {
+            std::string text;
+            for (int index = 0; index < 256; ++index)
+            {
+                text += "uncompressed by configuration/";
+            }
+            return text;
+        }();
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            wire.readOneClientFrame();
+        };
+        const Action action = [&payload](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            outcome.send_results.push_back(co_await client.sendText(payload));
+            co_return;
+        };
+        WebSocketClient::Configuration configuration = baseConfiguration();
+        configuration.negotiatePerMessageDeflate     = false;
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, configuration, wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        ASSERT_EQ(outcome.send_results, (std::vector<bool>{true}));
+        EXPECT_EQ(wireBytes.first.find("Sec-WebSocket-Extensions"), std::string::npos) << "关掉开关后不该再提扩展";
+
+        const auto frame = frameAt(wireBytes.second, 0);
+        ASSERT_TRUE(frame.has_value());
+        EXPECT_EQ(frame->firstByte, kTextFrameFirstByte) << "没协商过就不该出现 RSV1 帧";
+        EXPECT_EQ(frame->payload, payload);
     }
 } // namespace AsynGyanis::Net
