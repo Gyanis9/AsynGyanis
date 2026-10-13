@@ -24,6 +24,7 @@
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Session.h"
 #include "Net/Quic/QuicConnection.h"
+#include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "Platform/IO/DatagramSocket.h"
@@ -116,6 +117,10 @@ namespace AsynGyanis::Net
             std::chrono::seconds      idleTimeout{30};           ///< 空闲超时：超过即由传输层收口
             std::string               applicationProtocol{"h3"}; ///< 必须协商出的 ALPN；本实现只服务 h3（RFC 9114 §3.2），配成别的值在构造期即被拒
             std::chrono::milliseconds expiryTickInterval{10};    ///< 定时器驱动的节拍（见 runExpiryTicker 的说明）
+            /// 每条连接用哪一家拥塞控制算法：缺省 NewReno（与这一格落地之前的部署逐字一致），
+            /// CUBIC 见 RFC 9438。逐连接透传给传输状态机，理由与取值见
+            /// `QuicConnectionCoreConfiguration::congestionAlgorithm`
+            QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
             /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
             HttpParserLimits parserLimits{};

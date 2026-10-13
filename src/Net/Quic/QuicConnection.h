@@ -30,6 +30,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Net/Quic/QuicOutboundDatagram.h"
+#include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Platform/IO/Socket.h"
 
 #include <chrono>
@@ -132,6 +133,12 @@ namespace AsynGyanis::Net
              *          外壳一律显式填
              */
             bool pathMtuProbeAllowed{true};
+            /**
+             * @brief 这条连接用哪一家拥塞控制算法（透传给传输状态机）
+             * @details 缺省 NewReno（与这一格落地之前的部署逐字一致）；CUBIC 见 RFC 9438。
+             *          完整语义与理由见 `QuicConnectionCoreConfiguration::congestionAlgorithm`
+             */
+            QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
         };
 
         /**

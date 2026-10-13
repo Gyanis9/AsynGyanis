@@ -39,6 +39,8 @@
 #include "Net/Quic/Crypto/QuicPacketProtection.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Net/Quic/QuicPacketBuilder.h"
+#include "Net/Quic/Recovery/QuicCongestionControl.h"
+#include "Net/Quic/Recovery/QuicCubicCongestion.h"
 #include "NetTestSupport.h"
 #include "Platform/IO/DatagramSocket.h"
 
@@ -3112,5 +3114,25 @@ namespace AsynGyanis::Net
         // 跨过 PROBE_TIMER 也没有超尺寸的报文：DF 没设上就不探，正文一律按 BASE 那一格切
         EXPECT_LE(largestDatagramByteLength(drainMarked(core)), 1200U);
         EXPECT_EQ(core.pathMtuPhase(), QuicPathMtuPhase::Disabled);
+    }
+
+    /**
+     * @brief 钉住：核心构造按配置选拥塞算法——缺省 NewReno、显式选 Cubic 就真的走 CUBIC
+     * @details 选择点在构造期（此后连接上每个窗口动作都走选定那家），因此不需要任何报文就能钉：
+     *          造出核心读它的 `congestionAlgorithm()`，取型对不上就是没接上
+     */
+    TEST(QuicConnectionCore, HonorsTheConfiguredCongestionAlgorithm)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        ASSERT_NE(serverContext.get(), nullptr) << "夹具证书加载失败";
+
+        QuicConnectionCoreConfiguration cubicConfiguration = makeServerConfiguration(*serverContext.get());
+        cubicConfiguration.congestionAlgorithm             = QuicCongestionAlgorithmKind::Cubic;
+        QuicConnectionCore cubicCore(std::move(cubicConfiguration));
+        EXPECT_NE(dynamic_cast<const QuicCubicCongestion *>(&cubicCore.congestionAlgorithm()), nullptr) << "选了 Cubic 就必须真的造出 CUBIC";
+        EXPECT_EQ(cubicCore.congestionWindowByteLength(), 12000U) << "初始窗与另一家同值（min(10×1200, max(2×1200, 14720))）";
+
+        QuicConnectionCore defaultCore(makeServerConfiguration(*serverContext.get()));
+        EXPECT_NE(dynamic_cast<const QuicCongestionControl *>(&defaultCore.congestionAlgorithm()), nullptr) << "缺省必须保持 NewReno（与这一格落地之前的部署逐字一致）";
     }
 } // namespace AsynGyanis::Net

@@ -251,6 +251,10 @@ namespace AsynGyanis::Net
     QuicConnectionCore::QuicConnectionCore(QuicConnectionCoreConfiguration configuration) :
         m_configuration(std::move(configuration)), m_streams(m_configuration.transportParameters, m_configuration.role)
     {
+        // 拥塞算法在构造期一次选好（可插拔点见 makeQuicCongestionAlgorithm）：此后这条连接上
+        // 的每一个窗口动作都走它，运行期不再换
+        m_congestion = makeQuicCongestionAlgorithm(m_configuration.congestionAlgorithm, kQuicMaximumDatagramPayloadByteLength);
+
         if (m_configuration.tlsContext == nullptr)
         {
             throw Base::InvalidArgumentException("QUIC 连接建立失败：配置里的 TLS 上下文为空，调用方须先配好证书与 ALPN");
@@ -638,18 +642,21 @@ namespace AsynGyanis::Net
                 }
             }
         }
+        // 每帧确认前把恢复层的 srtt 刷给拥塞算法：CUBIC 的友好区与「下一个 RTT 的目标窗」都要用它，
+        // NewReno 不读这一格。放在 ECN 与更新之前——两者之后的算法计算都该看到本帧最新的 RTT 估计
+        m_congestion->setSmoothedRoundTripTime(m_recovery.roundTripTimeEstimate().smoothed);
         if (update.ecnCongestionEventTime.has_value())
         {
             // §B.7 的反应排在 §B.8（丢包那一步）之前：CE 是早到的拥塞信号，先按它降窗；
             // 同一帧里真的也丢了包时，§7.3.2 那道「一轮只降一次」的闸由拥塞层统一判
-            m_congestion.noteEcnCongestionEvent(*update.ecnCongestionEventTime);
+            m_congestion->noteEcnCongestionEvent(*update.ecnCongestionEventTime);
         }
-        m_congestion.onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
+        m_congestion->onCongestionUpdate(update.acknowledged, update.lost, arrivalTime);
         if (update.isPersistentCongestionDetected)
         {
             // §7.6.2：排在同一帧的普通降窗之后，否则这一轮的「减半」会把最小窗那份重启盖掉。
             // 本层不打日志（日志归外壳），因此把次数留在读数上供外壳与用例取
-            m_congestion.restartAfterPersistentCongestion();
+            m_congestion->restartAfterPersistentCongestion();
             ++m_persistentCongestionEventCount;
             // 「发出去的东西一概没人答」在 RFC 8899 图 5 里就是「PL indicates loss of connectivity」那一格，
             // QUIC 里的对应物正是持久拥塞：尺寸可能已经过不去（路被改了 MTU），掉回 BASE 从头再探
@@ -823,7 +830,7 @@ namespace AsynGyanis::Net
         m_recovery.discardSpace(retiredSpace);
         // 恢复层与拥塞层各记一本在途账，只清一本就让这条连接永久背着退休空间的字节：
         // Initial 空间几乎总在握手期退休，之后每次算可用窗口都要少几十 KB（RFC 9002 §7.2 的负荷口径）
-        m_congestion.onPacketsDiscarded(retiredPackets);
+        m_congestion->onPacketsDiscarded(retiredPackets);
     }
 
     void QuicConnectionCore::drive(const Timestamp now)
@@ -862,7 +869,7 @@ namespace AsynGyanis::Net
         {
             // 拥塞层的计量单位跟着已确认的数据报尺寸走：窗口增减与最小窗都以 max_datagram_size 为一格
             // （§B.2、§7.2），探到更大的尺寸却不换它，涨窗就按比线上实际小的那一格算，长期偏慢
-            m_congestion.setMaximumDatagramByteLength(m_pathMtu.maximumDatagramPayloadByteLength());
+            m_congestion->setMaximumDatagramByteLength(m_pathMtu.maximumDatagramPayloadByteLength());
             for (const PacketNumberSpace space: {PacketNumberSpace::Initial, PacketNumberSpace::Handshake, PacketNumberSpace::Application})
             {
                 queueSpacePackets(space, now);
@@ -1053,7 +1060,7 @@ namespace AsynGyanis::Net
     {
         // 探针照样吃拥塞窗口（§14.4 明写 probes consume congestion window），所以交给状态机的预算是
         // 窗口余量：腾不出待探尺寸就不算这次到点，免得把「窗口小」记成「这个尺寸走不通」连着三次
-        const std::optional<std::size_t> probeByteLength = m_pathMtu.probeByteLengthIfDue(now, m_congestion.remainingByteBudget());
+        const std::optional<std::size_t> probeByteLength = m_pathMtu.probeByteLengthIfDue(now, m_congestion->remainingByteBudget());
         if (!probeByteLength.has_value())
         {
             return;
@@ -1130,7 +1137,7 @@ namespace AsynGyanis::Net
             m_idleDeadline                    = now + *m_idlePeriod;
             m_hasSentAckElicitingSinceReceipt = true;
         }
-        m_congestion.onPacketSent(record);
+        m_congestion->onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
         m_sentByteCount += datagramByteCount;
     }
@@ -1143,7 +1150,7 @@ namespace AsynGyanis::Net
         if (!ignoresCongestionWindow)
         {
             // 窗口余量也得先减掉这一包的固定开销，否则算出来的分片一定超窗
-            budget = std::min(budget, saturatingSubtract(m_congestion.remainingByteBudget(), reservedByteLength));
+            budget = std::min(budget, saturatingSubtract(m_congestion->remainingByteBudget(), reservedByteLength));
         }
         if (isAmplificationLimited())
         {
@@ -1350,7 +1357,7 @@ namespace AsynGyanis::Net
         {
             // 这一侧不重启窗口：§7.6.2 把「建立持久拥塞」放在收到确认之后，恢复层在这里只把新判丢
             // 并进那一段的锚点，等到下一帧确认再给结论
-            m_congestion.onCongestionUpdate({}, action.lost, now);
+            m_congestion->onCongestionUpdate({}, action.lost, now);
             queueRetransmissions(spaceOf(action.lostSpace), action.lost);
             for (const QuicSentPacketInfo &packet: action.lost)
             {
@@ -1482,12 +1489,17 @@ namespace AsynGyanis::Net
 
     std::size_t QuicConnectionCore::bytesInFlightByteCount() const noexcept
     {
-        return m_congestion.bytesInFlight();
+        return m_congestion->bytesInFlight();
     }
 
     std::size_t QuicConnectionCore::congestionWindowByteLength() const noexcept
     {
-        return m_congestion.congestionWindowByteLength();
+        return m_congestion->congestionWindowByteLength();
+    }
+
+    const QuicCongestionAlgorithm &QuicConnectionCore::congestionAlgorithm() const noexcept
+    {
+        return *m_congestion;
     }
 
     QuicEcnState QuicConnectionCore::ecnState() const noexcept

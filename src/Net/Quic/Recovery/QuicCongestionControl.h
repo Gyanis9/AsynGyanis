@@ -1,6 +1,6 @@
 /**
  * @file QuicCongestionControl.h
- * @brief QUIC 拥塞控制（RFC 9002 §7.2–§7.6）：NewReno 的慢启动、恢复期、拥塞避免与持久拥塞重启
+ * @brief NewReno 拥塞控制（RFC 9002 §7.2–§7.6）：慢启动、恢复期、拥塞避免与持久拥塞重启
  * @author Gyanis
  * @date 2026-09-19
  * @version 1.0.0
@@ -10,40 +10,30 @@
  *          「确认了多少字节」长、随「丢了多少」减半。时刻由调用方注入，因此每个整数都能
  *          在单测里复算。
  *
+ *          骨架（在途记账、恢复期闸、慢启动、读口）收在基类 `QuicCongestionAlgorithm`，
+ *          本类只给三处虚点：降窗取半（§7.3.2）、拥塞避免期线性加一（§7.3.3）、
+ *          持久拥塞重启后无事可清。另一家算法见 `QuicCubicCongestion`（RFC 9438），
+ *          选择键落在 `QuicConnectionCoreConfiguration::congestionAlgorithm`。
+ *
  * @note 探针不受本类阻塞（§7.5）：调用方自己决定发不发，本类只把它算进在途字节。
  *       只带 ACK 的包同样不计入在途（§B.2），否则两端会因为互相确认而把窗口吃光。
- * @note ECN 的拥塞信号从 `noteEcnCongestionEvent()` 进来（RFC 9002 §7.1 + §B.7）：对端报的 ECN-CE
- *       计数一涨就按一次拥塞事件处置，与丢包共用「一轮只降一次」那道闸（§7.3.2）。出包带不带标、
- *       确认里报不报计数都不在本类，归恢复层与连接核心。
- *       持久拥塞（§7.6.2）已经接上：恢复层判成之后调 `restartAfterPersistentCongestion()`，
- *       窗口与阈值一起落到最小窗并退出恢复期。
  */
 
 #pragma once
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Quic/Recovery/QuicRecovery.h"
-
-#include <cstddef>
+#include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 
 namespace AsynGyanis::Net
 {
-    /// NewReno 的三个状态，判据按 §7.3 的图 1：是否已过恢复期、窗口与慢启动阈值谁大
-    enum class QuicCongestionPhase
-    {
-        SlowStart,           ///< 窗口低于慢启动阈值：每个确认按确认到的字节数增长
-        Recovery,            ///< 刚判丢：窗口不动，直到一个恢复期之后发出的包被确认
-        CongestionAvoidance, ///< 窗口到顶：按每个窗口最多涨一个数据报的加法增长
-    };
-
     /**
      * @brief NewReno 拥塞窗口
      *
      * @details 只有一个「在途字节数 + 窗口许可」的概念，不区分包号空间：拥塞窗口按整条连接算
      *          （RFC 9002 §7 的变量都是全局的），三个空间的包都记在同一本账上。
      */
-    class ASYN_NET_API QuicCongestionControl
+    class ASYN_NET_API QuicCongestionControl : public QuicCongestionAlgorithm
     {
     public:
         /**
@@ -53,86 +43,18 @@ namespace AsynGyanis::Net
          */
         explicit QuicCongestionControl(std::size_t maximumDatagramByteLength) noexcept;
 
+    protected:
         /**
-         * @brief 换一条数据报尺寸：§B.2 的 max_datagram_size 是窗口增减与最小窗的计量单位
-         * @details 路径 MTU 探到更大的尺寸之后必须跟着换，否则慢启动按 1200 一格格长、实际每条报文
-         *          有 1452 字节，窗口涨的速度就比线上花的速度快。0 一律不收——那是个会把最小窗
-         *          折成 0 的取值，宁可留着旧尺寸
-         * @param maximumDatagramByteLength 本端当前允许的数据报净载荷上限
+         * @brief 降窗取半（§7.3.2）：阈值 = max(当前窗口 / 2, 最小窗)，窗口一并落到阈值
+         * @details 已在恢复期就不再二次降窗的闸在基类 `startCongestionEvent()`——丢包与 ECN 两条路共用
          */
-        void setMaximumDatagramByteLength(std::size_t maximumDatagramByteLength) noexcept;
+        void applyCongestionWindowDecrease() noexcept override;
 
         /**
-         * @brief 记下一个刚发出去的包
-         * @details 只有触发确认的包计入在途；探针也计（§7.5：探针不被窗口阻塞，但要算进负荷）
-         * @param packet 发包凭据，取其中的字节数与是否触发确认
+         * @brief 拥塞避免期线性加一（§7.3.3）：每个「确认掉整个窗口」的时间涨一个数据报
+         * @param acknowledgedByteCount 本次确认到的字节数
+         * @note 整数除法向下取整、最少 1 字节；时刻与 srtt 都不参与 NewReno 的这条算式
          */
-        void onPacketSent(const QuicSentPacketInfo &packet) noexcept;
-
-        /**
-         * @brief 一次确认的处理结果落到窗口上：销账、必要时进入恢复期、再按状态涨窗口
-         * @param acknowledged 本次新确认的包，按包号递增
-         * @param lost 因此次确认（或定时器）判丢的包，可为空
-         * @param eventTime 触发本次更新的时刻：收到确认或定时器到期，进入恢复期时记的就是它
-         */
-        void onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, QuicTime eventTime);
-
-        /// 降窗并进入恢复期（§7.3.2 的「已在恢复期就不二次降窗」由这一处统一判），丢包与 ECN 两条路共用
-        void startCongestionEvent(QuicTime eventTime) noexcept;
-
-        /**
-         * @brief 持久拥塞成立后按 §7.6.2 重启：窗口与慢启动阈值都落到最小窗
-         * @details 与「降一半」的普通丢包反应不是一回事：停滞足够久说明这条路径大概已经不通，
-         *          继续按半窗爬只会让重传一直堆在那里，规范给的解法是回到最小窗重新慢启动。
-         *          在途字节不动（那些包该销的账由确认与判丢那两条路去销）。
-         */
-        void restartAfterPersistentCongestion() noexcept;
-
-        /**
-         * @brief 某个包号空间的密钥退休了：把其中的在途字节销账，但不动窗口
-         * @details 这些包既不会被确认也不会再判丢（RFC 9001 §4.9.1）。恢复层本就清了自己的在途表，
-         *          拥塞层若不同步就永久背着这笔账——Initial 空间通常在握手期就退休，几十 KB 的旧包
-         *          会把这条连接之后所有 `remainingByteBudget` 都扣掉那么多人。
-         * @param discardedPackets 该空间里尚未确认的包
-         */
-        void onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept;
-
-        /**
-         * @brief 对端报上来的 ECN-CE 计数涨了：按一次拥塞事件处置（RFC 9002 §7.1 + §B.7）
-         * @details 与丢包那条路同一个动作、同一道闸：CE 是「网络还没丢包但已经堵」的早到信号，
-         *          等到判丢再降窗就把这条路的容量用完了。共用 §7.3.2 的「一轮拥塞只降一次」判据，
-         *          所以同一帧里 CE 与丢包同时出现也只降一次——这就是调用方要把本方法排在
-         *          `onCongestionUpdate` **之前**的原因（与 §A.7 里 ECN 那一步排在判丢之前同形）。
-         * @param eventTime 拥塞事件的时刻：规范取的是本帧最大确认值那条包的发出时刻（§B.7）
-         */
-        void noteEcnCongestionEvent(QuicTime eventTime) noexcept;
-
-        /**
-         * @brief 当前还能往网络上压多少字节
-         * @return std::size_t 窗口减去在途；在途已超窗时返回 0 而不是回绕
-         */
-        [[nodiscard]] std::size_t remainingByteBudget() const noexcept;
-
-        /**
-         * @brief 是否还许可发一个指定大小的包
-         * @param byteCount 这个包连头带尾的字节数
-         * @return true 许可；false 表示该等下一个确认
-         */
-        [[nodiscard]] bool maySend(std::size_t byteCount) const noexcept;
-
-        [[nodiscard]] QuicCongestionPhase phase() const noexcept;
-        [[nodiscard]] std::size_t         congestionWindowByteLength() const noexcept;
-        [[nodiscard]] std::size_t         slowStartThresholdByteLength() const noexcept;
-        [[nodiscard]] std::size_t         bytesInFlight() const noexcept;
-
-    private:
-        /// 恢复期什么时候算结束：一个在 recoveryStartTime 之后发出的包被确认（§7.3.2）
-        [[nodiscard]] bool isInRecovery() const noexcept;
-
-        std::size_t             m_maximumDatagramByteLength{0};    ///< §B.2 的 max_datagram_size，窗口增减都以它为单位
-        std::size_t             m_congestionWindowByteLength{0};   ///< 拥塞窗口
-        std::size_t             m_slowStartThresholdByteLength{0}; ///< 慢启动阈值；初始为「无穷大」
-        std::size_t             m_bytesInFlight{0};                ///< 在途字节数
-        std::optional<QuicTime> m_recoveryStartTime{};             ///< 有值即在本轮恢复期内
+        void applyCongestionAvoidanceGrowth(std::size_t acknowledgedByteCount, QuicTime eventTime) override;
     };
 } // namespace AsynGyanis::Net

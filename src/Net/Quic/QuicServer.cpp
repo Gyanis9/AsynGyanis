@@ -927,6 +927,7 @@ namespace AsynGyanis::Net
         connectionConfiguration.idleTimeout = std::chrono::duration_cast<std::chrono::milliseconds>(m_configuration.idleTimeout);
         // DF 是这台套接字的事实，不是每条连接各自决定的：listen 时设一次，接进来的连接照它走
         connectionConfiguration.pathMtuProbeAllowed = m_isDoNotFragmentSet;
+        connectionConfiguration.congestionAlgorithm = m_configuration.congestionAlgorithm;
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         {

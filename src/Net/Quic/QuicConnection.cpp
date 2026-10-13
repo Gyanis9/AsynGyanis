@@ -135,6 +135,8 @@ namespace AsynGyanis::Net
         coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
         // DF 设没设上是套接字的事实，只有外壳知道：交给核心去决定要不要发路径 MTU 探针
         coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
+        // 拥塞算法是调用方的选择（缺省 NewReno）：外壳不猜、原样透传给状态机
+        coreConfiguration.congestionAlgorithm = configuration.congestionAlgorithm;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
@@ -187,6 +189,8 @@ namespace AsynGyanis::Net
         coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();
         // DF 设没设上是套接字的事实，只有外壳知道：交给核心去决定要不要发路径 MTU 探针
         coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
+        // 拥塞算法是调用方的选择（缺省 NewReno）：外壳不猜、原样透传给状态机
+        coreConfiguration.congestionAlgorithm = configuration.congestionAlgorithm;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));

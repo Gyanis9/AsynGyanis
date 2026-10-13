@@ -2,6 +2,10 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicRecovery.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicRecovery.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCongestionAlgorithm.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCongestionAlgorithm.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicCongestionControl.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicCongestionControl.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCubicCongestion.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicCubicCongestion.cpp
 )

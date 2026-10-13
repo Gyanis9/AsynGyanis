@@ -27,6 +27,7 @@
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
 #include "Net/Quic/QuicConnection.h"
+#include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Platform/IO/Socket.h"
 
 #include <chrono>
@@ -74,6 +75,9 @@ namespace AsynGyanis::Net
             Core::TlsPolicy           tlsPolicy{};            ///< TLS 策略：信任库/吊销名单/版本区间等，出站侧校验恒开
             std::chrono::milliseconds handshakeTimeout{5000}; ///< 握手时限，到点直接收场（对端不说话时靠它）
             std::chrono::milliseconds idleTimeout{30000};     ///< 空闲超时，同时是本端宣告的 max_idle_timeout
+            /// 本连接用哪一家拥塞控制算法：缺省 NewReno（与这一格落地之前的部署逐字一致），
+            /// CUBIC 见 RFC 9438。理由与取值见 `QuicConnectionCoreConfiguration::congestionAlgorithm`
+            QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
         };
 
         /**

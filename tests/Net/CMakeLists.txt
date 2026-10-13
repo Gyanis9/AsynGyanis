@@ -75,6 +75,7 @@ add_executable(TestNet
         Quic/TestQuicConnectionCore.cpp
         Quic/Recovery/TestQuicRecovery.cpp
         Quic/Recovery/TestQuicCongestionControl.cpp
+        Quic/Recovery/TestQuicCubicCongestion.cpp
         Quic/TestQuicPathMtuDiscovery.cpp
         Quic/TestQuicReassemblyBuffer.cpp
         Quic/TestQuicReceivedPacketNumbers.cpp

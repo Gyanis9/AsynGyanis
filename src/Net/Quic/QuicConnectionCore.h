@@ -34,7 +34,7 @@
 #include "Net/Quic/QuicPathMtuDiscovery.h"
 #include "Net/Quic/QuicReassemblyBuffer.h"
 #include "Net/Quic/QuicReceivedPacketNumbers.h"
-#include "Net/Quic/Recovery/QuicCongestionControl.h"
+#include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Net/Quic/Recovery/QuicRecovery.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 
@@ -96,6 +96,15 @@ namespace AsynGyanis::Net
          *          BASE——那是 §14.1 本来就允许的最小值，功能不失效，结论也不谎报
          */
         bool pathMtuProbeAllowed{true};
+        /**
+         * @brief 这条连接用哪一家拥塞控制算法（RFC 9002 §7 的窗口许可，算法可插拔）
+         * @details 缺省 NewReno：与这一格落地之前的全部部署逐字一致（换默认值等于把所有既有
+         *          连接的线上行为重标一次，不夹带做）。要 CUBIC（RFC 9438：乘性减 0.7、
+         *          三次曲线增长、Reno 友好区与快收敛）在此显式选 `QuicCongestionAlgorithmKind::Cubic`；
+         *          外壳按各自配置逐层传下来，想按连接试算法的探针也直接造这份配置
+         * @see makeQuicCongestionAlgorithm
+         */
+        QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
     };
 
     /**
@@ -234,6 +243,13 @@ namespace AsynGyanis::Net
          *          窗口该落到最小窗（§7.6.2），运维与用例都靠这一格分辨「窗口本来就小」与「刚被重启」
          */
         [[nodiscard]] std::size_t congestionWindowByteLength() const noexcept;
+
+        /**
+         * @brief 这条连接实际在用的拥塞控制算法（构造期按 `congestionAlgorithm` 选定，之后不再换）
+         * @return const QuicCongestionAlgorithm& 引用有效期同本对象；观测与用例据它核对选了哪一家
+         * @see QuicConnectionCoreConfiguration::congestionAlgorithm
+         */
+        [[nodiscard]] const QuicCongestionAlgorithm &congestionAlgorithm() const noexcept;
 
         /**
          * @brief 判成持久拥塞的次数（RFC 9002 §7.6）
@@ -527,10 +543,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] static QuicEncryptionLevel                levelOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] PacketNumberSpace                         highestSpaceWithWriteKeys() const noexcept;
 
-        QuicConnectionCoreConfiguration m_configuration;                                     ///< 建连接时给的那些值，发包要反复用
-        std::unique_ptr<QuicTlsContext> m_tls;                                               ///< 每连接的 TLS 上下文
-        QuicRecovery                    m_recovery{};                                        ///< 发包记账、RTT、判丢与探测超时
-        QuicCongestionControl           m_congestion{kQuicMaximumDatagramPayloadByteLength}; ///< NewReno 拥塞窗口
+        QuicConnectionCoreConfiguration m_configuration; ///< 建连接时给的那些值，发包要反复用
+        std::unique_ptr<QuicTlsContext> m_tls;           ///< 每连接的 TLS 上下文
+        QuicRecovery                    m_recovery{};    ///< 发包记账、RTT、判丢与探测超时
+        /// 拥塞窗口：算法在构造期按 `m_configuration.congestionAlgorithm` 选（见 makeQuicCongestionAlgorithm）
+        std::unique_ptr<QuicCongestionAlgorithm> m_congestion;
         /// 路径 MTU 探测（RFC 9000 §14.4 / RFC 8899）：发包上限由它给，握手完成时进 BASE、对端参数到手时收天花板
         QuicPathMtuDiscovery m_pathMtu{};
         /// 判成持久拥塞的累计次数：只有「收到确认」那一条出口会加一（§7.6.2 把建立放在收到确认之后），

@@ -1,195 +1,28 @@
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
 
 #include <algorithm>
-#include <limits>
 
 namespace AsynGyanis::Net
 {
     namespace
     {
-        /// §7.2 里那个「较大者」的字节数：UDP 只算 8 字节开销，比 TCP 的 20 字节少一截
-        constexpr std::size_t kInitialWindowFloorByteLength = 14720;
-
-        /// 初始窗口的倍数上限（§7.2：十倍最大数据报）
-        constexpr std::size_t kInitialWindowDatagramMultiple = 10;
-
-        /// 最小窗口的倍数（§7.2：两倍最大数据报）
-        constexpr std::size_t kMinimumWindowDatagramMultiple = 2;
-
         /// 降窗比例（§7.3.2：阈值取当前窗口的一半）
         constexpr std::size_t kLossReductionDivisor = 2;
-
-        /**
-         * @brief 减去一个不应超过被减数的量
-         * @param total 被减数
-         * @param part 减数
-         * @return std::size_t 差；算出负数说明两边记账不配对，收成 0 而不是回绕成天文数字
-         */
-        std::size_t saturatingSubtract(const std::size_t total, const std::size_t part)
-        {
-            return part > total ? 0 : total - part;
-        }
     } // namespace
 
-    QuicCongestionControl::QuicCongestionControl(const std::size_t maximumDatagramByteLength) noexcept :
-        m_maximumDatagramByteLength(maximumDatagramByteLength),
-        m_congestionWindowByteLength(std::min(kInitialWindowDatagramMultiple * maximumDatagramByteLength,
-                                              std::max(kMinimumWindowDatagramMultiple * maximumDatagramByteLength, kInitialWindowFloorByteLength))),
-        // 阈值先取「无穷大」，慢启动这才从第一个确认开始涨（§7.3.1）
-        m_slowStartThresholdByteLength(std::numeric_limits<std::size_t>::max())
+    QuicCongestionControl::QuicCongestionControl(const std::size_t maximumDatagramByteLength) noexcept : QuicCongestionAlgorithm(maximumDatagramByteLength)
     {
     }
 
-    void QuicCongestionControl::setMaximumDatagramByteLength(const std::size_t maximumDatagramByteLength) noexcept
+    void QuicCongestionControl::applyCongestionWindowDecrease() noexcept
     {
-        if (maximumDatagramByteLength == 0)
-        {
-            // 0 会把最小窗折成 0，也就把「判成持久拥塞」变成「这条连接再也发不出东西」：留着旧尺寸
-            return;
-        }
-        // 只换单位，不折算当前窗口：窗口本身是字节数，换尺寸之后涨窗与最小窗都按新的那格算
-        m_maximumDatagramByteLength = maximumDatagramByteLength;
-    }
-
-    void QuicCongestionControl::onPacketSent(const QuicSentPacketInfo &packet) noexcept
-    {
-        // 只带 ACK 的包不计在途（§B.2）：它是纯反馈，把它算进负荷会让窗口越用越小
-        if (packet.isAckEliciting)
-        {
-            m_bytesInFlight += packet.byteCount;
-        }
-    }
-
-    void QuicCongestionControl::onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, const QuicTime eventTime)
-    {
-        std::size_t acknowledgedByteCount = 0;
-        for (const QuicSentPacketInfo &packet: acknowledged)
-        {
-            if (!packet.isAckEliciting)
-            {
-                continue;
-            }
-            m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
-            acknowledgedByteCount += packet.byteCount;
-        }
-        for (const QuicSentPacketInfo &packet: lost)
-        {
-            if (packet.isAckEliciting)
-            {
-                m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
-            }
-        }
-
-        // §7.3.2：恢复期在「恢复期之后发出的包被确认」时结束。先看这一帧有没有把恢复期结掉，
-        // 再判新的丢包，否则同一轮里既出圈又进圈会被漏掉
-        if (m_recoveryStartTime.has_value() && std::ranges::any_of(acknowledged, [this](const QuicSentPacketInfo &packet) { return packet.timeSent > *m_recoveryStartTime; }))
-        {
-            m_recoveryStartTime = std::nullopt;
-        }
-
-        if (std::ranges::any_of(lost, [](const QuicSentPacketInfo &packet) { return !packet.isPathMtuProbe; }))
-        {
-            // 已经在恢复期里就不再二次降窗：一轮拥塞只降一次（§7.3.2）——CE 那条路也走这同一个判据。
-            // PMTU 探针被判丢不算拥塞证据（RFC 9000 §14.4）：那条包本来就是拿去撞一个更大的尺寸的，
-            // 把它算进降窗会让一次正常的探测试探凭空把窗口砍掉一半
-            startCongestionEvent(eventTime);
-            return;
-        }
-
-        if (isInRecovery() || acknowledgedByteCount == 0)
-        {
-            // 恢复期内窗口纹丝不动（§7.3.2），慢启动与拥塞避免都只在圈外算（§7.3.1、§7.3.3）
-            return;
-        }
-
-        if (m_congestionWindowByteLength < m_slowStartThresholdByteLength)
-        {
-            // 慢启动：按本次确认到的字节数长，但一次最多长一个数据报——多个包合并在同一帧里
-            // 被确认时，指数增长才不会被算成好几倍（§7.3.1 与 §B.2 的口径）
-            m_congestionWindowByteLength += std::min(acknowledgedByteCount, m_maximumDatagramByteLength);
-            return;
-        }
-        // 拥塞避免：每个「确认掉整个窗口」的时间才涨一个数据报，整数除法向下取整，最少 1 字节
-        m_congestionWindowByteLength += std::max<std::size_t>(1, m_maximumDatagramByteLength * acknowledgedByteCount / m_congestionWindowByteLength);
-    }
-
-    void QuicCongestionControl::restartAfterPersistentCongestion() noexcept
-    {
-        // §7.6.2：窗口与慢启动阈值都落到最小窗，并退出恢复期重新走慢启动。
-        // 必须清掉恢复期标记，否则重启后这一轮又被「一轮只降一次」那道闸挡住，
-        // 新窗口就只是名义上的——降窗与涨窗的判据都以那枚标记为准（§7.3.2）
-        const std::size_t minimumWindowByteLength = kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength;
-        m_congestionWindowByteLength              = minimumWindowByteLength;
-        m_slowStartThresholdByteLength            = minimumWindowByteLength;
-        m_recoveryStartTime                       = std::nullopt;
-    }
-
-    void QuicCongestionControl::startCongestionEvent(const QuicTime eventTime) noexcept
-    {
-        if (isInRecovery())
-        {
-            return;
-        }
-        m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor, kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength);
+        m_slowStartThresholdByteLength = std::max(m_congestionWindowByteLength / kLossReductionDivisor, minimumWindowByteLength());
         m_congestionWindowByteLength   = m_slowStartThresholdByteLength;
-        m_recoveryStartTime            = eventTime;
     }
 
-    void QuicCongestionControl::noteEcnCongestionEvent(const QuicTime eventTime) noexcept
+    void QuicCongestionControl::applyCongestionAvoidanceGrowth(const std::size_t acknowledgedByteCount, const QuicTime)
     {
-        // §7.1 的第一句把 CE 当拥塞信号的前提是「这条路的 ECN 已验证」，那一格在恢复层判，
-        // 到这里的都已经是校验过的计数；降窗动作与丢包那条完全共用
-        startCongestionEvent(eventTime);
-    }
-
-    void QuicCongestionControl::onPacketsDiscarded(const std::vector<QuicSentPacketInfo> &discardedPackets) noexcept
-    {
-        // 只销账不涨窗：退休一个空间不是「网络变好了」的信号，把它当确认来涨窗口会让拥塞控制白送一段
-        for (const QuicSentPacketInfo &packet: discardedPackets)
-        {
-            if (packet.isAckEliciting)
-            {
-                m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
-            }
-        }
-    }
-
-    std::size_t QuicCongestionControl::remainingByteBudget() const noexcept
-    {
-        return saturatingSubtract(m_congestionWindowByteLength, m_bytesInFlight);
-    }
-
-    bool QuicCongestionControl::maySend(const std::size_t byteCount) const noexcept
-    {
-        return byteCount <= remainingByteBudget();
-    }
-
-    QuicCongestionPhase QuicCongestionControl::phase() const noexcept
-    {
-        if (isInRecovery())
-        {
-            return QuicCongestionPhase::Recovery;
-        }
-        return m_congestionWindowByteLength < m_slowStartThresholdByteLength ? QuicCongestionPhase::SlowStart : QuicCongestionPhase::CongestionAvoidance;
-    }
-
-    std::size_t QuicCongestionControl::congestionWindowByteLength() const noexcept
-    {
-        return m_congestionWindowByteLength;
-    }
-
-    std::size_t QuicCongestionControl::slowStartThresholdByteLength() const noexcept
-    {
-        return m_slowStartThresholdByteLength;
-    }
-
-    std::size_t QuicCongestionControl::bytesInFlight() const noexcept
-    {
-        return m_bytesInFlight;
-    }
-
-    bool QuicCongestionControl::isInRecovery() const noexcept
-    {
-        return m_recoveryStartTime.has_value();
+        // 每个「确认掉整个窗口」的时间才涨一个数据报，整数除法向下取整，最少 1 字节
+        m_congestionWindowByteLength += std::max<std::size_t>(1, m_maximumDatagramByteLength * acknowledgedByteCount / m_congestionWindowByteLength);
     }
 } // namespace AsynGyanis::Net
