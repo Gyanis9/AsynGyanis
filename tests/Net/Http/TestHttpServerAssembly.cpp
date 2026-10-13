@@ -4,6 +4,7 @@
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerAssembly.h"
+#include "Net/Http/HttpsServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "HttpTestSupport.h"
@@ -11,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <string>
@@ -391,6 +393,55 @@ namespace AsynGyanis::Net
 
         const std::string metricsText = fetchPath(fixture.listeningPort(), "/metrics");
         EXPECT_NE(metricsText.find("HTTP/1.1 404"), std::string::npos) << "没打开 expose_metrics 却注册了指标端点：「" << metricsText << "」";
+    }
+
+    /**
+     * @brief 钉住：装配走 HttpsServer 那一侧重载时，配置项同样落到服务器上
+     * @details 装配模板对 HttpServer 与 HttpsServer 各实例化一份，二者共用同一段 applyOnto 逻辑。
+     *          HttpsServer 侧重载此前从无直测：它虽被编译（159 行的调用点会实例化模板），却一次也没执行过，
+     *          于是「配置在明文服务器上生效、在 TLS 服务器上没接上」这一整类错无人守护。这里只构造不启动，
+     *          装配走的都是纯 setter（与 HttpServer 侧既有用例同一形状），不在循环线程外碰套接字。
+     */
+    TEST(HttpServerAssembly, AppliesConfigurationToHttpsServerOverload)
+    {
+        const std::string certificateFile = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem").string();
+        const std::string keyFile         = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_key.pem").string();
+
+        Core::EventLoop loop;
+        HttpsServer     server(loop, Core::InetAddress::localhost(0), certificateFile, keyFile);
+
+        // 快乐路径把自建那几条 else-if 分支都走一遍：限额器/限流桶/在途预算都只给标量、不给共享对象
+        HttpServerConfiguration configuration;
+        configuration.limits.idleTimeout              = std::chrono::seconds{41};
+        configuration.parserLimits.maximumHeaderCount = 77;
+        configuration.maximumConnections              = 100;
+        configuration.maximumConnectionsPerIp         = 20;
+        configuration.requestsPerSecond               = 100.0;
+        configuration.rateLimitBurstCapacity          = 8.0;
+        configuration.memoryBudgetBytes               = 4000;
+
+        const auto outcome = applyHttpServerConfiguration(server, configuration);
+        ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        EXPECT_EQ(server.limits().idleTimeout, std::chrono::seconds{41}) << "HTTPS 侧没接住 limits.idle_timeout";
+        EXPECT_EQ(server.parserLimits().maximumHeaderCount, 77u) << "HTTPS 侧没接住 parser_limits";
+        EXPECT_EQ(server.maximumConnections(), 100u) << "单进程不摊，整机数原样落到本台";
+        ASSERT_NE(server.memoryBudget().get(), nullptr) << "HTTPS 侧配了字节数却没建账";
+        EXPECT_EQ(server.memoryBudget()->maximumTotalBytes(), 4000u);
+
+        // 摊到 0 个进程在 HttpsServer 侧重载上同样必须当场拒，而不是悄悄当成「不摊」
+        HttpServerAssemblyContext zeroContext;
+        zeroContext.workerProcessCount = 0;
+        const auto zeroOutcome         = applyHttpServerConfiguration(server, configuration, zeroContext);
+        ASSERT_FALSE(zeroOutcome.has_value()) << "HTTPS 侧把 0 进程当成了不摊";
+        EXPECT_NE(zeroOutcome.error().find("workerProcessCount"), std::string::npos) << zeroOutcome.error();
+
+        // 共享限额器与配置不一致的拒绝面也要在 HTTPS 侧走一遍：装配模板的两个实例都得有拒绝守护
+        HttpServerAssemblyContext mismatchedContext;
+        mismatchedContext.workerProcessCount = 1;
+        mismatchedContext.sharedPerIpLimiter = std::make_shared<PerIpConnectionLimiter>(999);
+        const auto mismatchedOutcome         = applyHttpServerConfiguration(server, configuration, mismatchedContext);
+        ASSERT_FALSE(mismatchedOutcome.has_value()) << "HTTPS 侧静默收下了不一致的共享限额器";
+        EXPECT_NE(mismatchedOutcome.error().find("装配冲突"), std::string::npos) << mismatchedOutcome.error();
     }
 
 } // namespace AsynGyanis::Net
