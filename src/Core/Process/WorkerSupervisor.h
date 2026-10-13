@@ -13,6 +13,7 @@
 
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Platform/System/Process.h"
+#include "Platform/System/ServiceNotification.h"
 
 #include <array>
 #include <atomic>
@@ -33,6 +34,20 @@ namespace AsynGyanis::Core
      *          调用方把自己那份 listen() 之后就没本类的事了——本层只负责送，不负责收。
      */
     inline constexpr std::string_view kHandedOverListenerArgument = "--handed-over-listener";
+
+    /**
+     * @brief 编排器交给 worker 的心跳管道写端参数名（仅 POSIX + 配了看门狗窗口时自动追加，值是 fd 号）
+     * @details worker 侧要认它：拿到 fd 后建 `Core::WorkerHeartbeat` 并 `arm()`。描述符由 fork 继承、
+     *          参数里只有号码——这条通道只在多 worker + systemd 看门狗同时在场时存在
+     */
+    inline constexpr std::string_view kWatchdogPipeArgument = "--watchdog-pipe-fd";
+
+    /**
+     * @brief 编排器交给 worker 的心跳拍间隔参数名（毫秒，自动追加，值由窗口折半而来）
+     * @details worker 不知道窗口，只按这个间隔拍：折半这一步与 `ServiceWatchdog` 同源
+     *          （`Platform::ServiceNotification::readWatchdogConfiguration()`），编排器算一次传下去
+     */
+    inline constexpr std::string_view kWatchdogPingArgument = "--watchdog-ping-ms";
 
     /**
      * @brief 多进程 worker 的编排器（master 侧）：起进程、盯退出、按需重启、收尾送走；worker 参数全部由调用方给
@@ -117,6 +132,18 @@ namespace AsynGyanis::Core
              *       （处理函数只置原子标记，见 `requestStop()`）。
              */
             std::function<void()> onStopRequested{};
+
+            /**
+             * @brief 看门狗通知通路（可空 = 不启用汇聚喂狗）
+             * @details 非空且窗口读得出（`readWatchdogConfiguration()`）时，本类为每个槽位建一条心跳管道
+             *          并把写端经 `kWatchdogPipeArgument`/`kWatchdogPingArgument` 传给 worker：就绪之后，
+             *          只有**每个未放弃槽位都在本窗口内有过拍**才向该通路喂一条 `WATCHDOG=1`。任何一条
+             *          worker 的心跳停摆（事件循环卡死、进程僵住）都会让判定失败而停喂，监督者按超时
+             *          重启整个单元——与单进程形态「循环停摆就不再喂」同一语义。
+             * @note 本类不拥有通知通路；它须比本对象活得久。Windows 侧整条路径不启用（没有 systemd
+             *       看门狗，读窗口那一步自然为空）
+             */
+            Platform::ServiceNotification *watchdogNotification{nullptr};
         };
 
         /**
@@ -180,6 +207,29 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] static bool isPoolComplete(std::size_t runningWorkerCount, std::size_t slotCount) noexcept;
 
+        /**
+         * @brief 判断「各槽位的心跳是否全部新鲜」（纯换算，不读状态）
+         * @details 单列成纯函数与 `isPoolComplete` 同一个理由：什么时候该喂、什么时候不该喂是这条
+         *          汇聚通道的全部判据，而端到端造「某条 worker 的心跳恰好停摆」要靠真进程与真时钟。
+         * @param heartbeatFreshBySlot 每槽位本窗口读到过拍没有
+         * @param isGivenUpBySlot 每槽位是否已放弃补它（放弃的槽位不再参与——它那一路由「整池放弃」处理）
+         * @return true 每个未放弃的槽位都新鲜，可以喂；表不配对或空池时 false（空池没有「都健康」可言）
+         */
+        [[nodiscard]] static bool allHeartbeatsFresh(const std::vector<bool> &heartbeatFreshBySlot, const std::vector<bool> &isGivenUpBySlot) noexcept;
+
+        /**
+         * @brief 判断「具备喂狗资格」（纯换算，不读状态）：启用过、就绪已报、未收停机请求
+         * @details 就绪门防的是「池缺人还喂健康」——有槽位被放弃时池永远不齐、就绪永不报，
+         *          这一格让监督者按超时接手；停机门防的是「收尾流程里假装服务健康」。
+         *          单列成纯函数是因为就绪前那段窗口在端到端里短到观察不到（池比一次轮询还齐得快），
+         *          这一格只有确定性的判据钉得住。
+         * @param enabled 汇聚是否已启用
+         * @param readinessAnnounced 整池就绪是否已报过
+         * @param stopRequested 是否已收停机请求
+         * @return true 可以进入心跳新鲜判定与喂发
+         */
+        [[nodiscard]] static bool isEligibleToFeed(bool enabled, bool readinessAnnounced, bool stopRequested) noexcept;
+
     private:
         /**
          * @brief 一个被跟踪的 worker
@@ -190,6 +240,13 @@ namespace AsynGyanis::Core
             std::chrono::steady_clock::time_point startTime;        ///< 启动时刻：判「起来就崩」用
             std::size_t                           crashCount{0};    ///< 该位连续「起来就崩」的次数
             bool                                  isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
+            /// 心跳管道的读端（-1 = 该槽位没有心跳通道：没启用看门狗，或是 Windows）；只在编排线程上碰
+            int heartbeatReadFd{-1};
+            /// 本窗口内读到过拍没有；「放弃」的槽位不参与判定，新起的 worker 从 grace 起步（见 pollWorkerHeartbeats）
+            bool heartbeatFresh{true};
+            /// 刚（重）起之后的宽限截止：宽限内没读到拍也算新鲜——worker 启动与起拍本身要时间，
+            /// 而这份时间不该由监督者的超时来赔
+            std::chrono::steady_clock::time_point heartbeatGraceUntil{};
         };
 
         /**
@@ -240,8 +297,92 @@ namespace AsynGyanis::Core
          */
         void waitForForcedTerminationsToLand();
 
+        /**
+         * @brief 每轮扫一遍各槽位的心跳管道：有字节就把该槽位标新鲜，宽限过了还没字节就标陈旧
+         * @param now 本轮的时刻（编排线程算一次传进来，免得各槽位读数落在不同的钟点上）
+         * @note 只在编排线程上调用；未启用看门狗时是空操作
+         */
+        void pollWorkerHeartbeats(std::chrono::steady_clock::time_point now) noexcept;
+
+        /**
+         * @brief 到点（窗口折出的节拍）且资格成立就喂一条 WATCHDOG=1
+         * @details 资格三件：就绪已报过（`m_hasAnnouncedReadiness`）、没收到停机请求、
+         *          `allHeartbeatsFresh` 为真。任一不成立就留到下一轮再看，并把这一轮的原因按节拍
+         *          限频打出来——「为什么没喂」正是排障要的第一句。
+         * @param now 本轮的时刻
+         * @note 只在编排线程上调用；未启用看门狗时是空操作
+         */
+        void feedWatchdogIfDue(std::chrono::steady_clock::time_point now);
+
+        /**
+         * @brief 读窗口并按需启用看门狗汇聚，返回编排循环的轮询粒度
+         * @details 调用方给了通知通路才谈启用；窗口读得出才真正启用（没配 WatchdogSec= 是常态，按信息级
+         *          交代一句）。启用后轮询粒度取 `min(pollInterval, 节拍/2)`——喂点判定的分辨率必须细于
+         *          节拍的一半，否则「到点」会被睡眠粒度量成「晚点」
+         * @return std::chrono::milliseconds 编排循环每轮该睡多久
+         * @note 只在 run() 的启动段调用一次
+         */
+        std::chrono::milliseconds enableWatchdogFeeding();
+
+        /**
+         * @brief 整池就绪那一刻的一次性处理：回调观察者、然后把心跳账本翻到「宽限中」
+         * @details 看门狗从就绪起计：此前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
+         *          宽限让 worker 启动与起拍的时间不算陈旧——那份时间不该由监督者的超时来赔
+         * @note 只在编排线程上调用；`m_hasAnnouncedReadiness` 由本方法置真
+         */
+        void handlePoolReady();
+
+        /**
+         * @brief 给一个槽位建心跳管道并把写端参数注入 worker 启动参数（仅 POSIX + 看门狗启用时）
+         * @param worker 目标槽位（读端描述符记在它身上）
+         * @param workerIndex 槽位序号，仅用于日志
+         * @param launchOptions 待派生的启动参数（就地向其 arguments 追加两个参数）
+         * @return true 不需要管道或管道已就绪；false 表示开不出来（已按一次「起来就崩」记账）
+         * @note Windows 上恒为 true（没有该通道）；调用方在 spawn 之后负责关掉 master 侧的写端副本
+         */
+        [[nodiscard]] bool attachWatchdogPipe(Worker &worker, std::size_t workerIndex, Platform::Process::LaunchOptions &launchOptions);
+
+        /// 收掉某个槽位的心跳管道读端（重起前、放弃时、收尾时共用；关 -1 是空操作）
+        void closeWorkerHeartbeatPipe(Worker &worker) noexcept;
+
+        /// 一轮槽位扫描的读数：在跑的个数与已放弃的个数
+        struct SlotScanResult
+        {
+            std::size_t runningCount{0}; ///< 句柄有效且在跑的槽位数
+            std::size_t givenUpCount{0}; ///< 已放弃补位的槽位数
+        };
+
+        /**
+         * @brief 扫一遍槽位表：数出在跑与已放弃的个数，并把在跑个数发布到观察者读的原子量上
+         * @return SlotScanResult 两种个数
+         * @note 只在编排线程上调用；不探句柄之外的任何状态
+         */
+        [[nodiscard]] SlotScanResult scanWorkerSlots() noexcept;
+
+        /// 看门狗启用后，spawn 成功时要关掉的 master 侧写端副本（attachWatchdogPipe 记下；-1 = 没有）
+        int m_pendingWatchdogWriteFd{-1};
+
+        /**
+         * @brief 组装一个槽位的启动参数：可执行文件、固定参数、槽位序号、进程组与随父终止
+         * @param workerIndex 槽位序号（补起的 worker 沿用同一号）
+         * @return Platform::Process::LaunchOptions 可直接交给 spawn 的启动参数（心跳/移交参数由调用方追加）
+         */
+        [[nodiscard]] Platform::Process::LaunchOptions buildLaunchOptions(std::size_t workerIndex) const;
+
         Configuration       m_configuration; ///< 编排参数（构造时已校验）
         std::vector<Worker> m_workers;       ///< worker 槽位；下标即序号，槽位固定不搬
+
+        /**
+         * @brief 看门狗汇聚的启用状态与节拍（仅通知通路非空且窗口可读时启用）
+         * @details 喂点判据是「距上次喂已过一个节拍」；失败只报首条，理由与 worker 心跳那条相同
+         */
+        bool                                  m_isWatchdogFeedingEnabled{false};
+        std::chrono::milliseconds             m_watchdogPingInterval{0};
+        std::chrono::steady_clock::time_point m_lastWatchdogFeed{};
+        bool                                  m_hasLoggedWatchdogFeedFailure{false};
+
+        /// 整池就绪只报一次：那一格是给监督者的陈述，不是持续状态（提升为成员是为了让看门狗资格判定读得到）
+        bool m_hasAnnouncedReadiness{false};
 
         /**
          * @brief 全进程口径的崩溃计数与「已放弃补位」的槽位数

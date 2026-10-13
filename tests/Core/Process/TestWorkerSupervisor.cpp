@@ -24,9 +24,18 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !ASYN_PLATFORM_WIN32
+// 看门狗汇聚用例的假收端要的几样（POSIX 专有，Windows 上那几条用例整段不编译）
+#include <cstring>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#endif
 
 namespace AsynGyanis::Core
 {
@@ -875,6 +884,264 @@ namespace AsynGyanis::Core
         EXPECT_FALSE(hasRegistrySample("asyn_worker_crashes_total")) << "编排器析构后这条读数还挂在导出里";
 #if ASYN_PLATFORM_WIN32
         ::closesocket(listener);
+#endif
+    }
+
+    namespace
+    {
+        /// 看门狗汇聚用例要摆的三枚环境变量（与 Platform 实现按 sd_watchdog_enabled(3) 的约定同名）
+        constexpr const char *kWatchdogWindowVariable   = "WATCHDOG_USEC";
+        constexpr const char *kWatchdogPidVariable      = "WATCHDOG_PID";
+        constexpr const char *kNotifySocketVariableName = "NOTIFY_SOCKET";
+
+        /// 1 秒窗口：折出的节拍 500 毫秒——正反两条判据都在秒级内可判
+        constexpr const char *kWatchdogWindowText = "1000000";
+
+        void setWatchdogVariable(const char *name, const std::optional<std::string> &value)
+        {
+#if ASYN_PLATFORM_WIN32
+            static_cast<void>(::_putenv_s(name, value.has_value() ? value->c_str() : ""));
+#else
+            if (value.has_value())
+            {
+                static_cast<void>(::setenv(name, value->c_str(), 1));
+            } else
+            {
+                static_cast<void>(::unsetenv(name));
+            }
+#endif
+        }
+
+#if !ASYN_PLATFORM_WIN32
+        /// 抽象命名空间的名字按进程与序号唯一：并行跑的用例进程抢同一个名字会互相收到对方的数据报
+        std::string makeWatchdogSocketName()
+        {
+            static std::atomic<std::uint64_t> sequence{0};
+            return std::format("asyn-worker-watchdog-{}-{}", static_cast<std::uint64_t>(::getpid()), sequence.fetch_add(1));
+        }
+
+        /**
+         * @brief 建一个「假的服务管理器」：按抽象命名空间 bind 一个数据报套接字
+         * @details 地址是独立写的一份，不复用被测代码里的发送端——两边共用同一段时一起错也抓不到
+         * @param name 不带前导 '@' 的名字
+         * @return int 已 bind 的描述符；失败返回 -1
+         */
+        int bindWatchdogReceiver(const std::string &name)
+        {
+            const int descriptor = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+            if (descriptor < 0)
+            {
+                return -1;
+            }
+
+            sockaddr_un address{};
+            address.sun_family  = AF_UNIX;
+            address.sun_path[0] = '\0';
+            std::memcpy(address.sun_path + 1, name.data(), name.size());
+
+            const auto length = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + name.size());
+            if (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), length) != 0)
+            {
+                static_cast<void>(::close(descriptor));
+                return -1;
+            }
+            return descriptor;
+        }
+
+        /**
+         * @brief 有界收一条数据报：等到点为止没有就交回空串（用例自己判红，不把作业挂在永久阻塞上）
+         * @param descriptor 收端描述符
+         * @param budget 等待预算
+         * @return std::string 收到的字节；没等到时为空
+         */
+        std::string receiveOneWatchdogDatagram(const int descriptor, const std::chrono::milliseconds budget)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + budget;
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                pollfd pollDescriptor{};
+                pollDescriptor.fd     = descriptor;
+                pollDescriptor.events = POLLIN;
+                if (::poll(&pollDescriptor, 1, 50) > 0 && (pollDescriptor.revents & POLLIN) != 0)
+                {
+                    std::array<char, 256> buffer{};
+                    const auto            received = ::recv(descriptor, buffer.data(), buffer.size(), 0);
+                    if (received > 0)
+                    {
+                        return std::string(buffer.data(), static_cast<std::size_t>(received));
+                    }
+                }
+            }
+            return {};
+        }
+#endif
+    } // namespace
+
+    /**
+     * @brief 纯判据：每个未放弃的槽位都新鲜才算齐；空池与长度不配都不算
+     */
+    TEST(WorkerSupervisor, AllHeartbeatsFreshJudgesEveryNonGivenUpSlot)
+    {
+        // 具名局部量而不是内联花括号：gtest 宏会把花括号列表里的逗号当参数分隔符拆开
+        const std::vector<bool> emptyTable{};
+        const std::vector<bool> noGivenUp{false, false};
+        const std::vector<bool> secondGivenUp{false, true};
+        const std::vector<bool> allFresh{true, true};
+        const std::vector<bool> secondStale{true, false};
+        const std::vector<bool> allStale{false, false};
+
+        EXPECT_FALSE(WorkerSupervisor::allHeartbeatsFresh(emptyTable, emptyTable)) << "空池没有「都新鲜」可言";
+        EXPECT_FALSE(WorkerSupervisor::allHeartbeatsFresh(secondStale, emptyTable)) << "两张表长度不配是装配坏了，不许当真";
+        EXPECT_FALSE(WorkerSupervisor::allHeartbeatsFresh(emptyTable, noGivenUp)) << "同上（另一侧空）";
+        EXPECT_TRUE(WorkerSupervisor::allHeartbeatsFresh(allFresh, noGivenUp));
+        EXPECT_FALSE(WorkerSupervisor::allHeartbeatsFresh(secondStale, noGivenUp)) << "有一个陈旧就不齐";
+        EXPECT_TRUE(WorkerSupervisor::allHeartbeatsFresh(secondStale, secondGivenUp)) << "已放弃的槽位不参与：它那一路由「整池放弃」处理";
+        EXPECT_FALSE(WorkerSupervisor::allHeartbeatsFresh(allStale, noGivenUp));
+    }
+
+    /**
+     * @brief 纯判据：喂狗资格三件——启用过、就绪已报、未收停机请求
+     * @details 就绪前那段窗口在端到端里短到观察不到（池比一次轮询还齐得快），这一格的确定性只在
+     *          这里钉得住；就绪门防「池缺人（有槽位被放弃、池永远不齐）还喂健康」，停机门防
+     *          「收尾流程里假装服务健康」
+     */
+    TEST(WorkerSupervisor, IsEligibleToFeedShutsOffBeforeReadinessAndAfterStop)
+    {
+        EXPECT_FALSE(WorkerSupervisor::isEligibleToFeed(false, true, false)) << "没启用不谈资格";
+        EXPECT_FALSE(WorkerSupervisor::isEligibleToFeed(true, false, false)) << "就绪没报不给喂（池缺人时让监督者按超时接手）";
+        EXPECT_FALSE(WorkerSupervisor::isEligibleToFeed(true, true, true)) << "停机请求之后不喂";
+        EXPECT_FALSE(WorkerSupervisor::isEligibleToFeed(true, false, true));
+        EXPECT_TRUE(WorkerSupervisor::isEligibleToFeed(true, true, false));
+    }
+
+    /**
+     * @brief 看门狗汇聚用例的夹具：进出都把三枚环境变量恢复原样
+     * @details 这组用例会动它们；不复原的话后跑的用例读到的是上一个用例留下的窗口，
+     *          表现为「突然开始喂狗」这种随执行顺序而变的形态
+     */
+    class WorkerSupervisorWatchdogTest : public ::testing::Test
+    {
+    protected:
+        void SetUp() override
+        {
+            m_savedWindow = Platform::ProcessInfo::environmentVariable(kWatchdogWindowVariable);
+            m_savedPid    = Platform::ProcessInfo::environmentVariable(kWatchdogPidVariable);
+            m_savedNotify = Platform::ProcessInfo::environmentVariable(kNotifySocketVariableName);
+            setWatchdogVariable(kWatchdogWindowVariable, std::nullopt);
+            setWatchdogVariable(kWatchdogPidVariable, std::nullopt);
+            setWatchdogVariable(kNotifySocketVariableName, std::nullopt);
+        }
+
+        void TearDown() override
+        {
+            setWatchdogVariable(kWatchdogWindowVariable, m_savedWindow);
+            setWatchdogVariable(kWatchdogPidVariable, m_savedPid);
+            setWatchdogVariable(kNotifySocketVariableName, m_savedNotify);
+        }
+
+        std::optional<std::string> m_savedWindow{};
+        std::optional<std::string> m_savedPid{};
+        std::optional<std::string> m_savedNotify{};
+    };
+
+    /**
+     * @brief 汇聚的整链：真 worker 工具拍心跳经管道到 master，假服务管理器收到 WATCHDOG=1
+     * @details 走的是完整跨进程路径：编排器建管道 → 参数传 fd → fork 继承 → worker 侧起拍 →
+     *          master 收齐两条才喂。同进程内自造管道测不到「参数传递 + 继承」那一段
+     */
+    TEST_F(WorkerSupervisorWatchdogTest, FeedsWatchdogWhenEveryWorkerHeartbeatIsFresh)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "本平台没有 systemd 看门狗这条通道";
+#else
+        const std::string socketName = makeWatchdogSocketName();
+        const int         listener   = bindWatchdogReceiver(socketName);
+        ASSERT_GE(listener, 0) << "假的服务管理器 bind 不上，这条用例没法判";
+
+        setWatchdogVariable(kWatchdogWindowVariable, kWatchdogWindowText);
+        setWatchdogVariable(kWatchdogPidVariable, std::to_string(static_cast<std::uint64_t>(::getpid())));
+        setWatchdogVariable(kNotifySocketVariableName, std::string("@") + socketName);
+
+        Platform::ServiceNotification notification;
+        ASSERT_TRUE(notification.open()) << notification.lastError();
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath       = ASYN_HEARTBEAT_WORKER_TOOL;
+        configuration.workerCount          = 2;
+        configuration.pollInterval         = std::chrono::milliseconds{20};
+        configuration.restartBackoff       = std::chrono::milliseconds{50};
+        configuration.shutdownTimeout      = std::chrono::milliseconds{2000};
+        configuration.crashLoopWindow      = std::chrono::milliseconds{300};
+        configuration.crashLoopLimit       = 3;
+        configuration.watchdogNotification = &notification;
+
+        WorkerSupervisor  supervisor(std::move(configuration));
+        std::atomic<bool> isOrchestrationSettled{false};
+        std::thread       supervisorThread([&supervisor, &isOrchestrationSettled] { isOrchestrationSettled.store(supervisor.run(), std::memory_order_release); });
+
+        // 假服务管理器的收端：窗口 1 秒、节拍 500 毫秒，给 8 秒预算收第一条 WATCHDOG=1——
+        // worker 起进程 + 起池 + 起拍本身要秒级时间，这里不赌调度只等事实
+        const std::string firstPing = receiveOneWatchdogDatagram(listener, std::chrono::seconds{8});
+        EXPECT_EQ(firstPing, "WATCHDOG=1") << "两条 worker 的心跳都新鲜时，master 该喂一条 WATCHDOG=1";
+
+        supervisor.requestStop();
+        supervisorThread.join();
+        EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "按请求收口应当报成功";
+
+        static_cast<void>(::close(listener));
+#endif
+    }
+
+    /**
+     * @brief 反例：worker 从不拍心跳（不是本仓库的心跳工具）时，master 就绪后不再喂
+     * @details 「停喂」是这条通道的判据本体：假收端在就绪后的一整个窗口加余量内都收不到东西，
+     *          说明汇聚真的在看心跳而不是「时间到了就喂」
+     */
+    TEST_F(WorkerSupervisorWatchdogTest, StopsFeedingWhenWorkersNeverHeartbeat)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "本平台没有 systemd 看门狗这条通道";
+#else
+        const std::string socketName = makeWatchdogSocketName();
+        const int         listener   = bindWatchdogReceiver(socketName);
+        ASSERT_GE(listener, 0) << "假的服务管理器 bind 不上，这条用例没法判";
+
+        setWatchdogVariable(kWatchdogWindowVariable, kWatchdogWindowText);
+        setWatchdogVariable(kWatchdogPidVariable, std::to_string(static_cast<std::uint64_t>(::getpid())));
+        setWatchdogVariable(kNotifySocketVariableName, std::string("@") + socketName);
+
+        Platform::ServiceNotification notification;
+        ASSERT_TRUE(notification.open()) << notification.lastError();
+
+        // 假 worker：一条只睡着的 shell（末尾的参数会被 master 追加成 $0/$1，脚本不读它们）。
+        // 它不会拍任何心跳——正是「worker 活着但心跳停摆」这一形态
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath       = "/bin/sh";
+        configuration.workerArguments      = {"-c", "exec sleep 5"};
+        configuration.workerCount          = 2;
+        configuration.pollInterval         = std::chrono::milliseconds{20};
+        configuration.restartBackoff       = std::chrono::milliseconds{50};
+        configuration.shutdownTimeout      = std::chrono::milliseconds{2000};
+        configuration.crashLoopWindow      = std::chrono::milliseconds{300};
+        configuration.crashLoopLimit       = 3;
+        configuration.watchdogNotification = &notification;
+
+        WorkerSupervisor  supervisor(std::move(configuration));
+        std::atomic<bool> isOrchestrationSettled{false};
+        std::thread       supervisorThread([&supervisor, &isOrchestrationSettled] { isOrchestrationSettled.store(supervisor.run(), std::memory_order_release); });
+
+        // 等到就绪快照到位（编排线程每轮发布），再给一整个窗口加余量观察「有没有喂」：
+        // 判据是「收不到」——等待窗口取得比节拍宽得多，慢机器只会让它更容易成立
+        ASSERT_TRUE(waitForCondition([&supervisor] { return supervisor.runningWorkerCount() >= 2U; }, kWaitTimeout)) << "两条假 worker 没有都起来";
+        std::this_thread::sleep_for(std::chrono::milliseconds{2000});
+        const std::string unexpectedPing = receiveOneWatchdogDatagram(listener, std::chrono::milliseconds{200});
+        EXPECT_TRUE(unexpectedPing.empty()) << "worker 从不拍心跳，master 却喂了：「" << unexpectedPing << "」";
+
+        supervisor.requestStop();
+        supervisorThread.join();
+        EXPECT_TRUE(isOrchestrationSettled.load(std::memory_order_acquire)) << "按请求收口应当报成功";
+
+        static_cast<void>(::close(listener));
 #endif
     }
 

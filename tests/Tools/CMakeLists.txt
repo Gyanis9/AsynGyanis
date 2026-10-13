@@ -25,6 +25,14 @@ add_executable(handoff_worker
 
 target_link_libraries(handoff_worker PRIVATE Core Base Platform)
 
+# worker 侧心跳的跨进程夹具：认 --watchdog-pipe-fd/--watchdog-ping-ms，挂上 WorkerHeartbeat 后活着
+# 直到被终止。由 TestWorkerSupervisor.cpp 当子进程派生——master 的看门狗汇聚要求「另一个进程真的在拍」，
+# 同进程内自造管道测不到「建管道 → fork 继承 → worker 起拍」这条完整路径
+add_executable(heartbeat_worker
+        HeartbeatWorker.cpp)
+
+target_link_libraries(heartbeat_worker PRIVATE Core Base Platform)
+
 # ACME 真签发探针的被测端：对着 Pebble（Let's Encrypt 官方那套 ACME 测试服务端，Go 写的独立实现）
 # 把整台状态机走到「签出一张链」，只把每步结果打成 stdout 事件行。判据刻意不在本仓库这一侧：
 # 接受不接受我们的 JWS 与 CSR、签不签得出证书，都由对面说了算

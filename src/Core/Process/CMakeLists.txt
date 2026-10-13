@@ -9,6 +9,10 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/ReloadSignal.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ServiceWatchdog.h
         ${CMAKE_CURRENT_LIST_DIR}/ServiceWatchdog.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/RoundTicker.h
+        ${CMAKE_CURRENT_LIST_DIR}/RoundTicker.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WorkerHeartbeat.h
+        ${CMAKE_CURRENT_LIST_DIR}/WorkerHeartbeat.cpp
         ${CMAKE_CURRENT_LIST_DIR}/UpgradeChannel.h
         ${CMAKE_CURRENT_LIST_DIR}/UpgradeChannel.cpp
         ${CMAKE_CURRENT_LIST_DIR}/CrashScene.h

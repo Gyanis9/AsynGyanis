@@ -34,6 +34,8 @@ add_executable(TestCore
         Process/TestGracefulShutdown.cpp
         Process/TestReloadSignal.cpp
         Process/TestServiceWatchdog.cpp
+        Process/TestRoundTicker.cpp
+        Process/TestWorkerHeartbeat.cpp
         Process/TestUpgradeChannel.cpp
         Process/TestWorkerSupervisor.cpp
         Process/TestCrashScene.cpp
@@ -65,11 +67,14 @@ target_compile_definitions(TestCore PRIVATE
         # 多进程编排用例要派生的 worker 侧夹具（tests/Tools/HandoffWorker.cpp）：用例只拿到路径，
         # 判定留在自己这一侧，避免「同一个进程里自己测自己」把跨进程那条路径测成同进程
         ASYN_HANDOFF_WORKER_TOOL="$<TARGET_FILE:handoff_worker>"
+        # 看门狗汇聚用例要派生的心跳 worker 夹具（tests/Tools/HeartbeatWorker.cpp）：同上，跨进程
+        # 那条路径（建管道 → fork 继承 → worker 起拍）只有真的另起一个进程才走得到
+        ASYN_HEARTBEAT_WORKER_TOOL="$<TARGET_FILE:heartbeat_worker>"
 )
 
 # 夹具必须在 TestCore 之前建出来：上面那条定义按生成期展开，路径指向的产物不存在时用例会在
 # 派生子进程那一步红，红成「编排坏了」而不是「没构建齐」
-add_dependencies(TestCore handoff_worker)
+add_dependencies(TestCore handoff_worker heartbeat_worker)
 
 target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src

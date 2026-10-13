@@ -17,6 +17,8 @@
 #include <windows.h>
 #else
 #include <csignal>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace AsynGyanis::Core
@@ -271,53 +273,41 @@ namespace AsynGyanis::Core
 
         LOG_INFO_FMT("WorkerSupervisor: 开始编排 {} 个 worker，可执行文件 {}", m_configuration.workerCount, m_configuration.executablePath);
 
+        // 看门狗汇聚与轮询粒度（细节见 enableWatchdogFeeding 的说明）
+        const std::chrono::milliseconds pollSleep = enableWatchdogFeeding();
+
         // 「整池子都起不来」与「按请求停掉」是两种结果：前者调用方要报非 0 退出码，
         // 否则进程管理器与脚本只看退出码的话，会把一次彻底失败当成一次正常停机
         bool isPoolGivenUp = false;
-        // 就绪只报一次：那一格是给监督者的陈述，不是持续状态。补起一个崩掉的 worker 之后
-        // 再报一次 READY=1，在 systemd 那侧只是第二条噪声，而它已经按这条通道放行后续单元了
-        bool hasAnnouncedReadiness = false;
 
         while (!m_isStopRequested.load(std::memory_order_acquire))
         {
             // 每一轮把每个槽位看一遍：没在跑的补上、已退出的收尸并决定要不要补
             launchMissingAndReapExited();
 
-            // 全部槽位都放弃了就不再空转：日志已经交代过原因，交给调用方决定怎么处理。
-            // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份。
-            // 在运行的个数在同一趟里数出来再发布：观察者线程只读那份原子量，不碰句柄
-            std::size_t givenUpWorkerCount = 0;
-            std::size_t runningWorkerCount = 0;
-            for (const Worker &worker: m_workers)
-            {
-                if (worker.isGivenUp)
-                {
-                    ++givenUpWorkerCount;
-                    continue;
-                }
-                if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
-                {
-                    ++runningWorkerCount;
-                }
-            }
-            m_runningWorkerCount.store(runningWorkerCount, std::memory_order_release);
+            const SlotScanResult slotScan = scanWorkerSlots();
 
-            // 凑齐整池才报就绪，且报过就不再报：有一格被放弃时这条回调永远不发生——
-            // 那一格起不来本身就是要让人看见的失败，把「服务已就绪」报出去反而是错的
-            if (!hasAnnouncedReadiness && isPoolComplete(runningWorkerCount, m_workers.size()) && m_configuration.onAllWorkersRunning)
+            // 凑齐整池就算就绪（回调有没有人订不影响这一格）：有一格被放弃时永远不进这里——
+            // 那一格起不来本身就是要让人看见的失败。就绪回调在 handlePoolReady 里按需触发，
+            // 而看门狗汇聚以这一格为起点，所以它不能挂在「有没有观察者」上
+            if (!m_hasAnnouncedReadiness && isPoolComplete(slotScan.runningCount, m_workers.size()))
             {
-                hasAnnouncedReadiness = true;
-                runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
+                handlePoolReady();
             }
 
-            if (givenUpWorkerCount >= m_workers.size())
+            if (slotScan.givenUpCount >= m_workers.size())
             {
-                LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）", givenUpWorkerCount);
+                LOG_ERROR_FMT("WorkerSupervisor: {} 个 worker 全部因「起来就崩」被放弃，编排退出（请检查可执行文件与配置）", slotScan.givenUpCount);
                 isPoolGivenUp = true;
                 break;
             }
 
-            std::this_thread::sleep_for(m_configuration.pollInterval);
+            // 心跳汇聚与喂狗：未启用时两条都是空操作（见各自的说明）
+            const auto watchdogNow = std::chrono::steady_clock::now();
+            pollWorkerHeartbeats(watchdogNow);
+            feedWatchdogIfDue(watchdogNow);
+
+            std::this_thread::sleep_for(pollSleep);
         }
 
         // 收口的这一刻报给调用方：worker 还都在跑，正是「我在收尾」这句话该出去的位置。
@@ -339,6 +329,227 @@ namespace AsynGyanis::Core
             return false;
         }
         return runningWorkerCount == slotCount;
+    }
+
+    bool WorkerSupervisor::allHeartbeatsFresh(const std::vector<bool> &heartbeatFreshBySlot, const std::vector<bool> &isGivenUpBySlot) noexcept
+    {
+        // 空池不算「都健康」：与 isPoolComplete 同一条口径——没有槽位时「全部新鲜」是句空话，
+        // 而喂出去的每一条 WATCHDOG=1 都是对监督者的陈述
+        if (heartbeatFreshBySlot.empty() || heartbeatFreshBySlot.size() != isGivenUpBySlot.size())
+        {
+            return false;
+        }
+        for (std::size_t index = 0; index < heartbeatFreshBySlot.size(); ++index)
+        {
+            // 放弃的槽位不参与：它那一路的归宿是「整池放弃」的判定，不该在这里再拦一道
+            if (!isGivenUpBySlot[index] && !heartbeatFreshBySlot[index])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    WorkerSupervisor::SlotScanResult WorkerSupervisor::scanWorkerSlots() noexcept
+    {
+        SlotScanResult scan;
+        // 每轮重新数一遍（而不是累加计数）：同一个槽位连续失败只算它自己那一份。
+        // 在运行的个数在同一趟里数出来再发布：观察者线程只读那份原子量，不碰句柄
+        for (const Worker &worker: m_workers)
+        {
+            if (worker.isGivenUp)
+            {
+                ++scan.givenUpCount;
+                continue;
+            }
+            if (worker.handle.isValid() && Platform::Process::isRunning(worker.handle))
+            {
+                ++scan.runningCount;
+            }
+        }
+        m_runningWorkerCount.store(scan.runningCount, std::memory_order_release);
+        return scan;
+    }
+
+    std::chrono::milliseconds WorkerSupervisor::enableWatchdogFeeding()
+    {
+#if !ASYN_PLATFORM_WIN32
+        if (m_configuration.watchdogNotification != nullptr)
+        {
+            const auto watchdogWindow = Platform::ServiceNotification::readWatchdogConfiguration();
+            if (watchdogWindow.has_value())
+            {
+                // 显式折算：微秒→毫秒是可能截断的转换，不给编译器留「隐式放行」的口实（GCC 在这里是硬错）
+                m_watchdogPingInterval     = std::chrono::duration_cast<std::chrono::milliseconds>(watchdogWindow->pingInterval);
+                m_isWatchdogFeedingEnabled = true;
+                LOG_INFO_FMT("WorkerSupervisor: 看门狗汇聚已启用：窗口 {} 微秒，每 {} 毫秒喂一条 WATCHDOG=1，待 {} 个槽位的心跳全部新鲜", watchdogWindow->timeoutWindow.count(),
+                             std::chrono::duration_cast<std::chrono::milliseconds>(watchdogWindow->pingInterval).count(), m_workers.size());
+            } else
+            {
+                LOG_INFO_FMT("多进程模式未启用看门狗汇聚：{}（这不是错误——没配 WatchdogSec= 时本就没有要喂的超时）", watchdogWindow.error());
+            }
+        }
+#endif
+        // 轮询粒度：喂点判定的分辨率必须细于节拍的一半，否则「到点」会被睡眠粒度量成「晚点」。
+        // 没启用时保持调用方给的 pollInterval
+        return m_isWatchdogFeedingEnabled ? std::min(m_configuration.pollInterval, std::max(m_watchdogPingInterval / 2, std::chrono::milliseconds{1}))
+                                          : m_configuration.pollInterval;
+    }
+
+    void WorkerSupervisor::handlePoolReady()
+    {
+        m_hasAnnouncedReadiness = true;
+        runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
+
+        // 看门狗从就绪起计：此前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
+        // 同一轮把各槽位的心跳账本翻到「宽限中」：worker 启动与起拍本身要时间，
+        // 那份时间不该由监督者的超时来赔
+        if (m_isWatchdogFeedingEnabled)
+        {
+            const auto graceUntil = std::chrono::steady_clock::now() + m_watchdogPingInterval;
+            for (Worker &worker: m_workers)
+            {
+                worker.heartbeatFresh      = true;
+                worker.heartbeatGraceUntil = graceUntil;
+            }
+            m_lastWatchdogFeed = std::chrono::steady_clock::now();
+        }
+    }
+
+    bool WorkerSupervisor::attachWatchdogPipe(Worker &worker, const std::size_t workerIndex, Platform::Process::LaunchOptions &launchOptions)
+    {
+#if !ASYN_PLATFORM_WIN32
+        if (!m_isWatchdogFeedingEnabled)
+        {
+            return true;
+        }
+        // 读端归本进程（CLOEXEC + 非阻塞——凑齐判定只看「有没有新字节」，阻塞读会把编排循环钉死），
+        // 写端随 fork 继承给 worker，号码进参数。重起同一槽位每次都开新的一条：旧管道随旧 worker
+        // 一起作废（reapWorker 里关），不复用
+        int pipeDescriptors[2]{-1, -1};
+        if (::pipe(pipeDescriptors) != 0)
+        {
+            noteFailedStart(worker, workerIndex, "开不出心跳管道，平台错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
+            return false;
+        }
+        worker.heartbeatReadFd = pipeDescriptors[0];
+        static_cast<void>(::fcntl(worker.heartbeatReadFd, F_SETFD, FD_CLOEXEC));
+        static_cast<void>(::fcntl(worker.heartbeatReadFd, F_SETFL, O_NONBLOCK));
+        m_pendingWatchdogWriteFd = pipeDescriptors[1];
+
+        launchOptions.arguments.push_back(std::string{kWatchdogPipeArgument});
+        launchOptions.arguments.push_back(std::to_string(m_pendingWatchdogWriteFd));
+        launchOptions.arguments.push_back(std::string{kWatchdogPingArgument});
+        launchOptions.arguments.push_back(std::to_string(m_watchdogPingInterval.count()));
+#else
+        static_cast<void>(worker);
+        static_cast<void>(workerIndex);
+        static_cast<void>(launchOptions);
+#endif
+        return true;
+    }
+
+    void WorkerSupervisor::pollWorkerHeartbeats(const std::chrono::steady_clock::time_point now) noexcept
+    {
+#if !ASYN_PLATFORM_WIN32
+        if (!m_isWatchdogFeedingEnabled)
+        {
+            return;
+        }
+        std::array<char, 128> drainBuffer{};
+        for (Worker &worker: m_workers)
+        {
+            if (worker.heartbeatReadFd < 0)
+            {
+                continue;
+            }
+            // 把攒下的字节一次读干：只要本窗口内有过一拍就够，读到的条数本身没有意义
+            bool sawBytes = false;
+            while (::read(worker.heartbeatReadFd, drainBuffer.data(), drainBuffer.size()) > 0)
+            {
+                sawBytes = true;
+            }
+            if (sawBytes)
+            {
+                worker.heartbeatFresh = true;
+                continue;
+            }
+            // 没读到新字节：还在宽限内（worker 刚起，起拍要时间）就继续算新鲜；过了宽限就是陈旧
+            if (now >= worker.heartbeatGraceUntil)
+            {
+                worker.heartbeatFresh = false;
+            }
+        }
+#else
+        static_cast<void>(now);
+#endif
+    }
+
+    bool WorkerSupervisor::isEligibleToFeed(const bool enabled, const bool readinessAnnounced, const bool stopRequested) noexcept
+    {
+        return enabled && readinessAnnounced && !stopRequested;
+    }
+
+    void WorkerSupervisor::feedWatchdogIfDue(const std::chrono::steady_clock::time_point now)
+    {
+        if (!isEligibleToFeed(m_isWatchdogFeedingEnabled, m_hasAnnouncedReadiness, m_isStopRequested.load(std::memory_order_acquire)))
+        {
+            return;
+        }
+        if (now - m_lastWatchdogFeed < m_watchdogPingInterval)
+        {
+            return;
+        }
+        m_lastWatchdogFeed = now;
+
+        std::vector<bool> freshBySlot;
+        std::vector<bool> givenUpBySlot;
+        freshBySlot.reserve(m_workers.size());
+        givenUpBySlot.reserve(m_workers.size());
+        for (const Worker &worker: m_workers)
+        {
+            freshBySlot.push_back(worker.heartbeatFresh);
+            givenUpBySlot.push_back(worker.isGivenUp);
+        }
+        if (!allHeartbeatsFresh(freshBySlot, givenUpBySlot))
+        {
+            // 判定本身每节拍至多一次，这条 WARN 因此天然被限频；点名陈旧槽位——「哪条 worker 的心跳
+            // 停了」正是排障要的第一句。停喂的后果由监督者执行（按超时重启整个单元）
+            std::string staleSlots;
+            for (std::size_t index = 0; index < m_workers.size(); ++index)
+            {
+                if (!givenUpBySlot[index] && !freshBySlot[index])
+                {
+                    staleSlots += (staleSlots.empty() ? "" : "、") + std::to_string(index);
+                }
+            }
+            LOG_WARN_FMT("WorkerSupervisor: worker {} 的心跳已停摆，本轮不喂看门狗（{} 毫秒后监督者会按超时重启本单元）", staleSlots, m_watchdogPingInterval.count());
+            return;
+        }
+
+        if (m_configuration.watchdogNotification->send(Platform::ServiceNotification::kWatchdogPingState))
+        {
+            return;
+        }
+        // 发失败只报首条：每节拍一条会把日志刷满，而这一档的后果同样由监督者执行（超时重启）
+        if (!m_hasLoggedWatchdogFeedFailure)
+        {
+            m_hasLoggedWatchdogFeedFailure = true;
+            LOG_WARN_FMT("WorkerSupervisor: WATCHDOG=1 没有送达通知通路：{}（监督者会按看门狗超时处理本进程）", m_configuration.watchdogNotification->lastError());
+        }
+    }
+
+    void WorkerSupervisor::closeWorkerHeartbeatPipe(Worker &worker) noexcept
+    {
+#if !ASYN_PLATFORM_WIN32
+        if (worker.heartbeatReadFd >= 0)
+        {
+            static_cast<void>(::close(worker.heartbeatReadFd));
+            worker.heartbeatReadFd = -1;
+        }
+#else
+        static_cast<void>(worker);
+#endif
     }
 
     void WorkerSupervisor::launchMissingAndReapExited()
@@ -389,7 +600,7 @@ namespace AsynGyanis::Core
         return m_runningWorkerCount.load(std::memory_order_acquire);
     }
 
-    bool WorkerSupervisor::startWorker(Worker &worker, const std::size_t workerIndex)
+    Platform::Process::LaunchOptions WorkerSupervisor::buildLaunchOptions(const std::size_t workerIndex) const
     {
         Platform::Process::LaunchOptions launchOptions;
         launchOptions.executablePath = m_configuration.executablePath;
@@ -409,6 +620,12 @@ namespace AsynGyanis::Core
         // 子进程随 master 消失：master 被硬杀（Taskkill /F、OOM killer、容器被删）时不留一群还在占端口
         // 却没人编排的 worker。POSIX 侧这条由 spawn 内装的 PDEATHSIG 兜住，Windows 靠作业句柄
         launchOptions.killWithParent = true;
+        return launchOptions;
+    }
+
+    bool WorkerSupervisor::startWorker(Worker &worker, const std::size_t workerIndex)
+    {
+        Platform::Process::LaunchOptions launchOptions = buildLaunchOptions(workerIndex);
 
 #if ASYN_PLATFORM_WIN32
         // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
@@ -440,14 +657,32 @@ namespace AsynGyanis::Core
         };
 #endif
 
+#if !ASYN_PLATFORM_WIN32
+        // 心跳管道（细节见 attachWatchdogPipe）：没启用看门狗时它什么都不做
+        if (!attachWatchdogPipe(worker, workerIndex, launchOptions))
+        {
+            return false;
+        }
+#endif
+
         worker.handle    = Platform::Process::spawn(launchOptions);
         worker.startTime = std::chrono::steady_clock::now();
         if (!worker.handle.isValid())
         {
             // 起不来不重试：把该槽位按「起来就崩」记一次，连续到上限就放弃，免得把日志刷满
+            closeWorkerHeartbeatPipe(worker);
             noteFailedStart(worker, workerIndex, "平台错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
             return false;
         }
+
+#if !ASYN_PLATFORM_WIN32
+        if (m_pendingWatchdogWriteFd >= 0)
+        {
+            // master 侧不留写端副本：留着的副本会让「worker 是不是还在写」这件事永远为真
+            static_cast<void>(::close(m_pendingWatchdogWriteFd));
+            m_pendingWatchdogWriteFd = -1;
+        }
+#endif
 
         LOG_INFO_FMT("WorkerSupervisor: worker {} 已启动，进程号 {}", workerIndex, worker.handle.processId());
 
@@ -500,6 +735,7 @@ namespace AsynGyanis::Core
                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - worker.startTime).count(),
                      isFastExit ? "，按「起来就崩」记一次" : "");
         worker.handle.close();
+        closeWorkerHeartbeatPipe(worker);
 
         if (isFastExit)
         {
@@ -590,6 +826,7 @@ namespace AsynGyanis::Core
                 LOG_WARN_FMT("WorkerSupervisor: worker 进程号 {} 在强杀后仍未结束，句柄已释放但没回收（POSIX 上可能留下僵尸）", worker.handle.processId());
             }
             worker.handle.close();
+            closeWorkerHeartbeatPipe(worker);
         }
 
         // 收尾把句柄全交还了：此后没有「还在跟踪且在运行」的 worker，快照归零。

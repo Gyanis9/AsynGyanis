@@ -19,6 +19,7 @@
 #include "Core/Process/GracefulShutdown.h"
 #include "Core/Process/ReloadSignal.h"
 #include "Core/Process/ServiceWatchdog.h"
+#include "Core/Process/WorkerHeartbeat.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
@@ -378,6 +379,10 @@ int main(int argc, char **argv)
     std::string              configFile;
     /// 本进程在 worker 池里的序号：由 master 逐份传下来（见 WorkerSupervisor），用来给管理口错开端口
     unsigned workerIndex = 0;
+    /// 心跳管道写端（内部开关，多 worker + WatchdogSec= 时由 master 传下来）：-1 = 没有这条通道
+    int watchdogPipeFd = -1;
+    /// 心跳拍间隔（毫秒，同上由 master 按窗口折半传来）；0 = 没传
+    unsigned watchdogPingMilliseconds = 0;
     /// 静态目录（--static）：空表示不提供服务。三条通道（h1/h2/h3）共用同一个目录，与 --metrics、
     /// --compress 一样是「一份配置喂三个监听器」，不给某一条留后门
     std::string staticDirectory;
@@ -467,6 +472,17 @@ int main(int argc, char **argv)
             // 由 master 逐份传下来的槽位序号（内部开关，用户不必手写）：worker 补起时序号不变，
             // 所以它的管理口号也不变，采集端抓到的始终是同一个进程
             workerIndex = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, "--worker-index", 0U, 4095U));
+            ++i;
+        } else if (arg == std::string{Core::kWatchdogPipeArgument})
+        {
+            // 由 master 传下来的心跳管道写端（内部开关，用户不必手写）：配了 WatchdogSec= 的多 worker
+            // 形态才会出现。描述符随 fork 继承，这里只拿到号码
+            watchdogPipeFd = static_cast<int>(Samples::readNumericOption(argc, argv, i, std::string{Core::kWatchdogPipeArgument}, 0U, 4096U));
+            ++i;
+        } else if (arg == std::string{Core::kWatchdogPingArgument})
+        {
+            // 由 master 按窗口折半后传下来的拍间隔（毫秒，内部开关）：worker 不知道窗口，只按它拍
+            watchdogPingMilliseconds = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, std::string{Core::kWatchdogPingArgument}, 1U, 600'000U));
             ++i;
         } else if (arg == "--help")
         {
@@ -777,6 +793,9 @@ int main(int argc, char **argv)
             // 一次抓一个进程并把各进程的数加总，而不是随机命中某一台
             supervisorConfiguration.workerIndexArgument = "--worker-index";
             supervisorConfiguration.workerCount         = workerProcessCount;
+            // 看门狗汇聚：配了 WatchdogSec= 时由 master 收齐所有 worker 的心跳再喂（worker 自己不喂，
+            // WATCHDOG_PID 指的是 master）。窗口与折半都在 supervisor 里读，这里是唯一入口
+            supervisorConfiguration.watchdogNotification = &serviceStatus;
             // 就绪由 master 替整池报一次：被监督的是 master（systemd 的 Type=notify 认的是主进程），
             // 而 worker 各自继承同一份 NOTIFY_SOCKET——让它们都报就会收到 N 条 READY=1，第二条起只是噪声。
             // 这一格的判据是「N 个 worker 进程都在跑」，不是「端口已在应答」：后者要一条 worker→master
@@ -795,14 +814,6 @@ int main(int argc, char **argv)
                 }
                 static_cast<void>(serviceStatus.send(
                         Platform::ServiceNotification::statusState(std::format("{} 个 worker 进程都在跑，pid {}", workerProcessCount, Platform::ProcessInfo::currentProcessId()))));
-                // 看门狗在多 worker 形态下不挂：那条节拍要由事件循环 own 着发，而 master 只做编排、
-                // 没有循环可挂。此时服务单元里的 WatchdogSec= 会把这条通道变成「没人喂的超时」，
-                // 所以把话说在前面而不是等第一次重启
-                if (Platform::ProcessInfo::environmentVariable("WATCHDOG_USEC").has_value())
-                {
-                    LOG_WARN("多进程模式没有看门狗节拍可挂（master 不跑事件循环，worker 按 WATCHDOG_PID 也不喂）："
-                             "请把服务单元的 WatchdogSec= 关掉，或按单进程形态跑（--workers 1）");
-                }
             };
             // 收尾那一报要落在 worker 还没被通知退出之前：监督者从 STOPPING=1 起才开始计停机超时
             supervisorConfiguration.onStopRequested = [&serviceStatus, workerProcessCount]
@@ -965,6 +976,11 @@ int main(int argc, char **argv)
     // 就等于把卡死的循环报成健康——那正是这条通道唯一要抓的形态。声明在 context 之后，于是析构时
     // 本对象先走、循环已经 stop() 过（帧只能在没人再恢复它们的时候销毁），通知套接字最后关。
     Core::ServiceWatchdog serviceWatchdog(pool, serviceStatus);
+
+    // worker 侧心跳：master 配了看门狗窗口时会把管道写端与拍间隔传下来（见 WorkerSupervisor）。
+    // 没传（单进程、没配窗口、Windows）时它是没挂上的空件；构造与析构与 serviceWatchdog 同一纪律——
+    // 排在池 stop() 之后
+    Core::WorkerHeartbeat workerHeartbeat(pool, watchdogPipeFd, std::chrono::milliseconds{watchdogPingMilliseconds});
 
     // 每线程一个服务器实例（SO_REUSEPORT 内核级负载均衡）
     std::vector<std::unique_ptr<Net::TcpServer>> servers;
@@ -1508,6 +1524,16 @@ int main(int argc, char **argv)
             // worker 一条都不报：被监督的是 master，而它继承的是父进程那份 NOTIFY_SOCKET。
             // 各 worker 都报就会收到 N 条 READY=1，第二条起只是噪声，还会盖住真出问题的那一格
             LOG_INFO("worker 进程不上报服务管理器状态：监督对象是 master 进程，整池的就绪由 master 统一报一次");
+
+            // 心跳：master 传下了管道才拍。「拍了它」= 本进程的每条循环都醒过一轮会写进管道，
+            // 卡死即停拍；master 收齐整池才喂 WATCHDOG=1。挂不上报一句原因，不静默
+            if (watchdogPipeFd >= 0)
+            {
+                if (!workerHeartbeat.arm())
+                {
+                    LOG_WARN_FMT("worker 的心跳没有挂上：{}（master 因心跳停摆会停喂看门狗，单元将按超时重启）", workerHeartbeat.lastError());
+                }
+            }
         } else if (!serviceStatus.open())
         {
             // 「没有 NOTIFY_SOCKET」是按约定的正常形态，不是缺陷，所以这一句按信息级出：
