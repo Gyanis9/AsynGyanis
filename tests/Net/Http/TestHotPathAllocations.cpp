@@ -71,30 +71,48 @@ namespace AsynGyanis::Net
         // 下面这些数是 Release（发布形态真正跑的那套配置）下的实测分配数。只在 Release 上钉死：
         // Debug 的 STL 迭代器调试代理会给每个容器对象多挂一块代理，读数被实现细节放大一个量级，
         // 钉它等于钉噪声。Debug 侧仍跑同样的形状，把读数打出来供对照，并保留两条与配置无关的结构判据。
-        // 名字里带 Total 的钉的是「一千次一共多少次」（原值），其余是摊平到每次操作的读数
-        constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand    = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
-        constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand  = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
-        constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand = 0U; ///< 命中精确路由不建参数表，派发本身不再碰堆
-        constexpr std::uint64_t kDispatchPatternAllocationsPerRequest     = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
-        constexpr std::uint64_t kRequestIdTotalAllocationsPerThousand     = 0U; ///< id 就地写进请求自己的缓冲，两侧容量都留着
-        constexpr std::uint64_t kHeadSerializeAllocationsFresh            = 1U;
-        constexpr std::uint64_t kHeadSerializeTotalAllocationsReused      = 0U;
-        constexpr std::uint64_t kFrameDecodeAllocationsPerFrame           = 1U;
-        constexpr std::uint64_t kChunkFrameAllocationsFresh               = 1U; ///< 每次新建一个帧串：一次分配
-        constexpr std::uint64_t kChunkFrameTotalAllocationsReused         = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
-        // 收一条 h2 请求（7 条头部）：解出来的字段串、整块头部的两份缓冲、流记录。交出请求的那份向量
-        // 按会话的节奏还回来复用容量，因此不再计一次容器重建。
-        // 同一条语料在 h1 那条形状上是 0 次——差值里剩的是「每条请求各要一套存储」这一条结构性成本
-        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand = 14000U;
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand       = 1325000U;
-        // 一条请求新建一个 HttpRequest 装 10 条头部：记录表与字节缓冲都从 0 按倍长上去的代价。
-        // 预留那一档只留 4 条 / 128 字节（HTTP/3 收头实际用的猜测值），超出部分照常扩容
-        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 24000U;
-        constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;
+        // 名字里带 Total 的钉的是「一千次一共多少次」（原值），其余是摊平到每次操作的读数。
+        //
+        // 这批数还跟**工具链**走：下面这几条在 MSVC 与 libstdc++ 上读数不同（同一段代码在 -O3 下
+        // 的内联与扩容节奏不一样），按工具链各存一份实测值。其余各条两家同数，只写一份。
+        // 换编译器、换配置、改这批用例形状，都要在对应的一列上各自重录。
+        //
+        // 这六条各自的形状：收一条 h2 请求（7 条头部）＝字段串 + 整块头部两份缓冲 + 流记录（交出请求的
+        // 向量按会话节奏还回来复用容量，不计容器重建；同一语料在 h1 那条形状上是 0 次，差值里剩的是
+        // 「每条请求各要一套存储」这条结构性成本）；装 10 条头部＝新建 HttpRequest 的记录表与字节缓冲
+        // 从 0 按倍长上去的代价（预留那档只留 4 条 / 128 字节，即 HTTP/3 收头实际用的猜测值，超出照常
+        // 扩容）；答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 1 次 /
+        // 163 字节，连接侧按千次原值钉（HPACK 动态表的插入与逐出不是每轮一次，摊平会把抖动抹平）
+#if defined(_MSC_VER)
+        /// MSVC Release 实测
+        constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand            = 0U;       ///< 命中精确路由不建参数表，派发本身不再碰堆
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 14000U;   ///< 收一条 h2 请求的分配数
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 1325000U; ///< 同上，按字节
+        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 24000U;   ///< 装 10 条头部、不预留
+        constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;   ///< 同一形状、预留 4 条 128 字节
+        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand             = 1014U;    ///< 连接侧发一条 h2 响应
+#else
+        /// libstdc++（GCC 13，-O3）Release 实测：-O3 下记录表与字节缓冲的扩容节奏与 MSVC 不同，
+        /// 同一条形状的千次原值差出几千（ECS 上这一档全量用例第一次跑时抓到的就是这几条）
+        constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand            = 1000U;   ///< 命中精确路由不建参数表，派发本身不再碰堆
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 8000U;   ///< 收一条 h2 请求的分配数
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 688000U; ///< 同上，按字节
+        constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 15000U;  ///< 装 10 条头部、不预留
+        constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 6000U;   ///< 同一形状、预留 4 条 128 字节
+        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand             = 1009U;   ///< 连接侧发一条 h2 响应
+#endif
+        constexpr std::uint64_t kHttp1ParseTotalAllocationsPerThousand   = 0U; ///< URI、头部、正文都整块交接，暂存容量跨报文留着
+        constexpr std::uint64_t kHeaderRefillTotalAllocationsPerThousand = 0U; ///< clear 只清内容、留着容量，整块头部写进同一条字节缓冲
+        constexpr std::uint64_t kDispatchPatternAllocationsPerRequest    = 4U; ///< 复用的候选表 2 + 候选里那一条 ":id" 1 + 提交给请求 1
+        constexpr std::uint64_t kRequestIdTotalAllocationsPerThousand    = 0U; ///< id 就地写进请求自己的缓冲，两侧容量都留着
+        constexpr std::uint64_t kHeadSerializeAllocationsFresh           = 1U;
+        constexpr std::uint64_t kHeadSerializeTotalAllocationsReused     = 0U;
+        constexpr std::uint64_t kFrameDecodeAllocationsPerFrame          = 1U;
+        constexpr std::uint64_t kChunkFrameAllocationsFresh              = 1U; ///< 每次新建一个帧串：一次分配
+        constexpr std::uint64_t kChunkFrameTotalAllocationsReused        = 0U; ///< 复用帧缓冲：容量长够之后一次都不碰堆
         // 答一条 h2 响应分两段：会话侧摊字段行 3 次 / 576 字节，连接侧组帧发出摊平 1 次 / 163 字节。
         // 连接侧按一千次的原值钉：HPACK 动态表的插入与逐出不是每轮一次，摊平会把这点抖动抹平
         constexpr std::uint64_t kResponseCollectTotalAllocationsPerThousand = 3000U;
-        constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand    = 1014U;
         // 每条额外头部应当不额外向堆要一次：HPACK 解出的字段直接落进请求的头部存储，
         // 名字与值都短到进小串内联，所以这里钉 0——哪天逐字段暂存容器回来了，这条先红
         constexpr std::uint64_t kMarginalAllocationsPerHeaderField = 0U;

@@ -84,6 +84,11 @@ namespace AsynGyanis::Database
             return ConnectionPool(makeMockFactory(counter), configuration);
         }
 
+        /// 让「申请了又立刻丢掉」的那几次分配活过优化：只写 static_cast<void>(x) 时 -O3 会把 new/delete
+        /// 整对消掉（分配消除），下面那条尺寸档自证就永远掐不到东西——Release 档实测 threwInWindow=false。
+        /// 把指针记进一个 volatile 落点，编译器就再证明不了这次分配没有可观察效果
+        volatile std::uintptr_t g_allocationSink = 0U;
+
     } // namespace
 
     /** @brief 钉住快路径：池未满时异步获取直接建连返回，不挂起、不切换线程 */
@@ -666,7 +671,7 @@ namespace AsynGyanis::Database
             try
             {
                 const std::unique_ptr<std::array<char, 64>> first = std::make_unique<std::array<char, 64>>();
-                static_cast<void>(first);
+                g_allocationSink                                  = reinterpret_cast<std::uintptr_t>(first.get());
             } catch (const std::bad_alloc &)
             {
                 didThrow = true;
@@ -675,7 +680,7 @@ namespace AsynGyanis::Database
             try
             {
                 const std::unique_ptr<std::array<char, 64>> second = std::make_unique<std::array<char, 64>>();
-                static_cast<void>(second);
+                g_allocationSink                                   = reinterpret_cast<std::uintptr_t>(second.get());
             } catch (...)
             {
                 recoveredOk = false;
@@ -691,7 +696,7 @@ namespace AsynGyanis::Database
         try
         {
             const std::unique_ptr<std::array<char, 64>> third = std::make_unique<std::array<char, 64>>();
-            static_cast<void>(third);
+            g_allocationSink                                  = reinterpret_cast<std::uintptr_t>(third.get());
         } catch (...)
         {
             throwsAfterScope = true;
@@ -705,7 +710,7 @@ namespace AsynGyanis::Database
             try
             {
                 const std::unique_ptr<std::array<char, 24>> inWindow = std::make_unique<std::array<char, 24>>();
-                static_cast<void>(inWindow);
+                g_allocationSink                                     = reinterpret_cast<std::uintptr_t>(inWindow.get());
             } catch (const std::bad_alloc &)
             {
                 threwInWindow = true;
@@ -714,7 +719,7 @@ namespace AsynGyanis::Database
             try
             {
                 const std::unique_ptr<std::array<char, 24>> again = std::make_unique<std::array<char, 24>>();
-                static_cast<void>(again);
+                g_allocationSink                                  = reinterpret_cast<std::uintptr_t>(again.get());
             } catch (...)
             {
                 threwAgain = true;
