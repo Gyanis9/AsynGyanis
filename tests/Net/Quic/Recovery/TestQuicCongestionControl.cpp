@@ -2,7 +2,8 @@
 //
 // 时间、包号、字节数全部注入，所以每条断言都是能手算的整数。覆盖：
 //   1) 初始窗口与最小窗口的取值（§7.2：min(10×上限, max(2×上限, 14720))，最小 2×上限）；
-//   2) 慢启动按确认到的字节数涨，但一帧最多涨一个数据报（§7.3.1）；
+//   2) 慢启动按确认到的字节数涨，一帧里确认多少就涨多少（§7.3.1）；「一帧最多涨一个数据报」那条
+//      上限在 §7.3.3，管的是拥塞避免的加法增长，慢启动不适用；
 //   3) 只带 ACK 的包不计在途（§B.2），探针计在途但不被窗口阻塞（§7.5）；
 //   4) 一次丢包把阈值与窗口各降一半、并进入恢复期；恢复期内既不再降也不涨（§7.3.2）；
 //   5) 恢复期在「恢复期之后发出的包被确认」时结束，之后走 AIMD 的加法增长（§7.3.3）；
@@ -90,9 +91,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 慢启动一帧最多涨一个数据报，否则同一帧确认多个包会被算成好几倍
+     * @brief 慢启动按确认到的字节数涨：一帧里确认多少个包，就涨多少字节
+     * @details 依据是 §7.3.1 的原话「increases by the number of bytes acknowledged when each acknowledgment
+     *          is processed」。真实对端把十几个包并进一帧确认是常态，「一帧最多涨一个数据报」会把每个
+     *          往返翻一倍压成线性，几 MiB 的响应要发到分钟级（大正文实测：4 MiB 25 秒）
      */
-    TEST(QuicCongestionControl, GrowsSlowStartByAtMostOneDatagramPerAcknowledgement)
+    TEST(QuicCongestionControl, GrowsSlowStartByEveryAcknowledgedByte)
     {
         QuicCongestionControl congestion{kDatagramSize};
         congestion.onPacketSent(makePacket(0, 0, 300));
@@ -105,7 +109,7 @@ namespace AsynGyanis::Net
         congestion.onCongestionUpdate(coalesced, {}, QuicTime{11000});
         EXPECT_EQ(congestion.congestionWindowByteLength(), kInitialWindow + 800);
 
-        // 一帧里确认掉 5 个数据报：只该涨一个数据报的量
+        // 一帧里确认掉 5 个数据报：这 5 个的字节全都要算进窗口（§7.3.1；上限那条属于 §7.3.3）
         std::vector<QuicSentPacketInfo> burst;
         for (std::uint64_t packetNumber = 2; packetNumber <= 6; ++packetNumber)
         {
@@ -113,8 +117,47 @@ namespace AsynGyanis::Net
             congestion.onPacketSent(makePacket(packetNumber, 20000, kDatagramSize));
         }
         congestion.onCongestionUpdate(burst, {}, QuicTime{30000});
-        EXPECT_EQ(congestion.congestionWindowByteLength(), kInitialWindow + 800 + kDatagramSize);
+        EXPECT_EQ(congestion.congestionWindowByteLength(), kInitialWindow + 800 + 5 * kDatagramSize) << "合并确认的每一包都要计进来";
         EXPECT_EQ(congestion.phase(), QuicCongestionPhase::SlowStart);
+
+        // 一个往返把整个窗口确认掉，窗口就该翻倍——这条指数增长正是「一帧一格」压掉的那一格
+        const std::size_t               windowBeforeDoubling = congestion.congestionWindowByteLength();
+        std::vector<QuicSentPacketInfo> wholeWindow;
+        std::size_t                     promotedByteCount = 0;
+        std::uint64_t                   packetNumber      = 100;
+        while (promotedByteCount < windowBeforeDoubling)
+        {
+            const std::size_t byteCount = windowBeforeDoubling - promotedByteCount >= kDatagramSize ? kDatagramSize : windowBeforeDoubling - promotedByteCount;
+            wholeWindow.push_back(makePacket(packetNumber, 40000, byteCount));
+            congestion.onPacketSent(makePacket(packetNumber, 40000, byteCount));
+            promotedByteCount += byteCount;
+            ++packetNumber;
+        }
+        congestion.onCongestionUpdate(wholeWindow, {}, QuicTime{50000});
+        EXPECT_EQ(congestion.congestionWindowByteLength(), windowBeforeDoubling * 2) << "一个往返确认掉整个窗口，慢启动必须翻倍（§7.3.1 与 §B.2 的握手方）";
+        EXPECT_EQ(congestion.phase(), QuicCongestionPhase::SlowStart) << "阈值还是无穷大，翻倍之后仍在慢启动";
+    }
+
+    /**
+     * @brief 恢复期内发出的包被确认时不涨窗，恢复期之后发出的包才涨（§7.3.2 的按包判据）
+     * @details 按帧聚合会把「恢复期内那批包」的字节和「恢复期之后那批」一起加进窗口：拥塞刚降下来的窗
+     *          被同一帧里的旧包又涨回去，等于拥塞信号没接到动作上（核心那格 ECN 用例正是被这条打红的）
+     */
+    TEST(QuicCongestionControl, DoesNotGrowForPacketsSentDuringRecovery)
+    {
+        // 两条臂只差「那包是恢复期内发的还是之后发的」，判据因此不依赖走的是哪条增长律
+        const auto windowAfterAcknowledgingPacketSentAt = [](const std::int64_t sentAt)
+        {
+            QuicCongestionControl congestion{kDatagramSize};
+            congestion.onPacketSent(makePacket(0, 1000, kDatagramSize));
+            congestion.onCongestionUpdate({}, {makePacket(0, 1000, kDatagramSize)}, QuicTime{2000});
+            congestion.onPacketSent(makePacket(1, sentAt, kDatagramSize));
+            congestion.onCongestionUpdate({makePacket(1, sentAt, kDatagramSize)}, {}, QuicTime{4000});
+            return congestion.congestionWindowByteLength();
+        };
+
+        EXPECT_EQ(windowAfterAcknowledgingPacketSentAt(1500), kInitialWindow / 2) << "恢复期内发出的包被确认时不该涨窗";
+        EXPECT_GT(windowAfterAcknowledgingPacketSentAt(3000), kInitialWindow / 2) << "恢复期之后发出的包被确认时要涨窗，且这一轮到它就结束了";
     }
 
     /**

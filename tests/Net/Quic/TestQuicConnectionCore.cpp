@@ -3048,8 +3048,9 @@ namespace AsynGyanis::Net
         finishHandshake(core, client);
         ASSERT_EQ(core.ecnState(), QuicEcnState::Capable) << "对端报的计数对得上、且有带标的包被确认，就该转入 Capable";
 
-        // 一段比一个拥塞窗口长得多的正文：切换标记之后服务端还得连着发好几轮，那些包才够被按 CE 计
-        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(32U * 1024U, 'x')), true), 0U);
+        // 一段比一个拥塞窗口长得多的正文：切换标记之后服务端还得连着发好几轮，那些包才够被按 CE 计。
+        // 窗口在慢启动里每往返翻一倍，而 CE 计数比数据晚两轮才到，所以正文必须够发到那之后
+        ASSERT_GT(core.streamLayer().writeStreamData(0x00, payloadBytes(std::string(512U * 1024U, 'x')), true), 0U);
         exchange(core, client, Timestamp{80000});
         const std::size_t windowBefore = core.congestionWindowByteLength();
         ASSERT_GT(windowBefore, 4U * 1200U) << "窗口还贴着最小窗的话减半这件事看不出来，实读 " << windowBefore;
@@ -3058,15 +3059,21 @@ namespace AsynGyanis::Net
         EXPECT_GE(core.congestionWindowByteLength(), windowBefore) << "对端只报 ECT(0)、一条 CE 都没报，本端不该降窗";
 
         // 路由器开始染色：本端发出的包被按 CE 收下，而它们在恢复层里仍记着发出时的 ECT(0)。
-        // 走三轮：ACK 比数据晚一轮，第二、三轮才看得到 CE 计数涨起来
+        // 判据按**逐轮**的形状：CE 计数一到，那一轮必然把窗口压下去——同一帧里被确认的包都发在
+        // 这次拥塞事件之前，按 §7.3.2 一条都不涨窗。写成「几轮之后比 windowBefore 小」就等于把
+        // 「窗口这几轮涨了多少」编进判据，涨得快的那版实现反而会被判红
         client.setIncomingEcnCodepoint(Platform::kEcnCodepointCe);
-        exchange(core, client, Timestamp{100000});
-        exchange(core, client, Timestamp{110000});
-        exchange(core, client, Timestamp{120000});
-
-        const std::size_t windowAfter = core.congestionWindowByteLength();
-        EXPECT_LT(windowAfter, windowBefore) << "CE 计数涨了却没降窗：§7.1 那条比丢包更早的拥塞信号没接到动作上";
-        EXPECT_GE(windowAfter, windowBefore / 2U) << "只该减半，不该跌到最小窗——那是 §7.6.2 持久拥塞的处置，这里是两回事";
+        std::size_t windowAfterEachRound = core.congestionWindowByteLength();
+        bool        decreasedInSomeRound = false;
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{100000 + round * 10000});
+            const std::size_t windowNow = core.congestionWindowByteLength();
+            decreasedInSomeRound        = decreasedInSomeRound || windowNow < windowAfterEachRound;
+            windowAfterEachRound        = windowNow;
+        }
+        EXPECT_TRUE(decreasedInSomeRound) << "CE 计数已经报到本端，窗口却一轮都没降过：§7.1 那条比丢包更早的拥塞信号没接到动作上";
+        EXPECT_GT(core.congestionWindowByteLength(), 4U * 1200U) << "CE 只该减半，不该跌到最小窗——那是 §7.6.2 持久拥塞的处置，这里是两回事";
         EXPECT_EQ(core.ecnState(), QuicEcnState::Capable) << "CE 是拥塞信号，不该把 ECN 验证判失败";
     }
 

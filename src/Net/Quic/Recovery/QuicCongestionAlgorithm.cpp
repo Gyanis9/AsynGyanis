@@ -67,7 +67,6 @@ namespace AsynGyanis::Net
 
     void QuicCongestionAlgorithm::onCongestionUpdate(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost, const QuicTime eventTime)
     {
-        std::size_t acknowledgedByteCount = 0;
         for (const QuicSentPacketInfo &packet: acknowledged)
         {
             if (!packet.isAckEliciting)
@@ -75,7 +74,6 @@ namespace AsynGyanis::Net
                 continue;
             }
             m_bytesInFlight = saturatingSubtract(m_bytesInFlight, packet.byteCount);
-            acknowledgedByteCount += packet.byteCount;
         }
         for (const QuicSentPacketInfo &packet: lost)
         {
@@ -85,9 +83,25 @@ namespace AsynGyanis::Net
             }
         }
 
-        // §7.3.2：恢复期在「恢复期之后发出的包被确认」时结束。先看这一帧有没有把恢复期结掉，
-        // 再判新的丢包，否则同一轮里既出圈又进圈会被漏掉
-        if (m_recoveryStartTime.has_value() && std::ranges::any_of(acknowledged, [this](const QuicSentPacketInfo &packet) { return packet.timeSent > *m_recoveryStartTime; }))
+        // §7.3.2：恢复期是按**每个包发出时**判的——恢复期内发出的包被确认时不涨窗，恢复期之后发出的
+        // 包一被确认就把这一轮恢复期结掉（§B.2 的 OnPacketAcked 逐包判）。按帧聚合会把两种包混在一起：
+        // 拥塞刚降下来的窗被同一帧里那批旧包又涨回去，等于拥塞信号没接到动作上
+        std::size_t growthByteCount = 0;
+        bool        endsRecovery    = false;
+        for (const QuicSentPacketInfo &packet: acknowledged)
+        {
+            if (!packet.isAckEliciting)
+            {
+                continue;
+            }
+            if (m_recoveryStartTime.has_value() && packet.timeSent <= *m_recoveryStartTime)
+            {
+                continue;
+            }
+            growthByteCount += packet.byteCount;
+            endsRecovery = true;
+        }
+        if (endsRecovery)
         {
             m_recoveryStartTime = std::nullopt;
         }
@@ -101,22 +115,24 @@ namespace AsynGyanis::Net
             return;
         }
 
-        if (isInRecovery() || acknowledgedByteCount == 0)
+        if (isInRecovery() || growthByteCount == 0)
         {
-            // 恢复期内窗口纹丝不动（§7.3.2），慢启动与拥塞避免都只在圈外算（§7.3.1、§7.3.3）
+            // 恢复期内窗口纹丝不动（§7.3.2），慢启动与拥塞避免都只在圈外算（§7.3.1、§7.3.3）；
+            // 这一帧确认的全是恢复期内的包时同样不涨
             return;
         }
 
         if (m_congestionWindowByteLength < m_slowStartThresholdByteLength)
         {
-            // 慢启动：按本次确认到的字节数长，但一次最多长一个数据报——多个包合并在同一帧里
-            // 被确认时，指数增长才不会被算成好几倍（§7.3.1 与 §B.2 的口径）。两家算法同为 Reno 慢启动
-            // （RFC 9438 §4.10 允许），差异全部在拥塞避免期
-            m_congestionWindowByteLength += std::min(acknowledgedByteCount, m_maximumDatagramByteLength);
+            // 慢启动就是「每个确认到的字节都算进窗口」（§7.3.1）：一个往返把整个窗口确认掉，窗口翻一倍。
+            // 「一帧最多涨一个数据报」那条上限在 §7.3.3，管的是拥塞避免的加法增长——放到这里会把指数
+            // 增长压成线性，而对端把十几个包并进一帧确认是常态（实测：4 MiB 响应因此要发 25 秒）。
+            // 两家算法同为 Reno 慢启动（RFC 9438 §4.10 允许），差异全部在拥塞避免期
+            m_congestionWindowByteLength += growthByteCount;
             return;
         }
         // 拥塞避免：增长律由算法自己给（NewReno 线性、CUBIC 三次曲线 + 友好区）
-        applyCongestionAvoidanceGrowth(acknowledgedByteCount, eventTime);
+        applyCongestionAvoidanceGrowth(growthByteCount, eventTime);
     }
 
     void QuicCongestionAlgorithm::restartAfterPersistentCongestion() noexcept
