@@ -11,6 +11,15 @@ namespace AsynGyanis::Core
 {
     namespace
     {
+        /// 本线程正在跑的事件循环（run() 期间发布、返回前清除）：currentEventLoop() 与 WorkloadScope 读它
+        thread_local EventLoop *t_currentEventLoop = nullptr;
+
+        /// @brief 探针读数的视图化：空指针交回空视图（先取一份指针再判，避免两次 load 撞出空构造）
+        [[nodiscard]] std::string_view workloadViewOf(const char *const workloadName) noexcept
+        {
+            return workloadName != nullptr ? std::string_view{workloadName} : std::string_view{};
+        }
+
         /**
          * @brief 唤醒写失败只报首条：坏掉的唤醒器会让每次唤醒都失败，逐条打等于把日志刷满
          */
@@ -159,6 +168,10 @@ namespace AsynGyanis::Core
         // 相位与计时仍排在发布之后：那两个是状态位，提前写会把「还没跑」读成「正在工作」。
         m_ownerThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
 
+        // 同一条纪律：本线程正在跑的循环也要排在 m_running 发布之前挂上——currentEventLoop() 的
+        // 读者先看 isRunning 再问「是谁」，反了会有一拍读到「在跑却问不出是谁」
+        t_currentEventLoop = this;
+
         m_running.store(true, std::memory_order_release);
 
         m_phaseStartedAtNanos.store(steadyNanos(std::chrono::steady_clock::now()), std::memory_order_relaxed);
@@ -195,35 +208,7 @@ namespace AsynGyanis::Core
                 auto events = m_epoll.wait(timeoutMs);
                 // 醒过来即回到工作相。等待那一段单独记成一相，不算进工作段耗时——空闲不是停顿
                 enterPhase(LoopPhase::Working);
-                for (const auto &ev: events)
-                {
-                    if (ev.data.ptr == &m_wakeupSentinel)
-                    {
-                        m_wakeup.drain();
-                        continue;
-                    }
-
-                    if (ev.data.ptr)
-                    {
-                        // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
-                        // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
-                        // （它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
-                        // **派发前先确认对象还活着**：这一批是批量取回来的，先前处理的那条事件
-                        // 可能已经把它所属的连接关掉（会话收口就是这么做的），此时再派发就是
-                        // 往已释放对象里写成员。登记表正是为这一种情形而设。
-                        // 查表与派发之间**不持锁**：handleEvents() 里的业务会关连接、销毁
-                        // IoWatcher，而注销登记要拿同一把非递归锁——持锁派发就是自死锁。
-                        // 因此这道检查只覆盖「同一批内已被销毁」；跨线程的销毁不在线程契约内
-                        // （循环对象只在所属循环上构造/销毁，见 EventLoop 的类说明）
-                        auto *const watcher = static_cast<IoWatcher *>(ev.data.ptr);
-                        if (isWatcherAlive(watcher))
-                        {
-                            watcher->handleEvents(ev.events);
-                        }
-                    }
-                }
-
-                m_scheduler.runAll();
+                dispatchReadyEvents(events);
             } catch (const std::exception &loopError)
             {
                 LOG_ERROR_EXCEPTION(loopError, "EventLoop: 事件循环里逃出的异常已就地收口（本条循环停止，进程继续）：{}", loopError.what());
@@ -244,7 +229,43 @@ namespace AsynGyanis::Core
             }
         }
 
+        // 与发布同一条纪律反向：先摘掉「本线程的循环」，再落下「不在跑」——问它的人不至于
+        // 拿到一条已经不再驱动的循环
+        t_currentEventLoop = nullptr;
         m_running.store(false, std::memory_order_release);
+    }
+
+    void EventLoop::dispatchReadyEvents(const std::span<epoll_event> readyEvents)
+    {
+        for (const auto &ev: readyEvents)
+        {
+            if (ev.data.ptr == &m_wakeupSentinel)
+            {
+                m_wakeup.drain();
+                continue;
+            }
+
+            if (ev.data.ptr)
+            {
+                // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
+                // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
+                // （它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
+                // **派发前先确认对象还活着**：这一批是批量取回来的，先前处理的那条事件
+                // 可能已经把它所属的连接关掉（会话收口就是这么做的），此时再派发就是
+                // 往已释放对象里写成员。登记表正是为这一种情形而设。
+                // 查表与派发之间**不持锁**：handleEvents() 里的业务会关连接、销毁
+                // IoWatcher，而注销登记要拿同一把非递归锁——持锁派发就是自死锁。
+                // 因此这道检查只覆盖「同一批内已被销毁」；跨线程的销毁不在线程契约内
+                // （循环对象只在所属循环上构造/销毁，见 EventLoop 的类说明）
+                auto *const watcher = static_cast<IoWatcher *>(ev.data.ptr);
+                if (isWatcherAlive(watcher))
+                {
+                    watcher->handleEvents(ev.events);
+                }
+            }
+        }
+
+        m_scheduler.runAll();
     }
 
     void EventLoop::stop()
@@ -331,15 +352,23 @@ namespace AsynGyanis::Core
                 m_slowestWorkingSegmentMicros.store(segmentMicroseconds.count(), std::memory_order_relaxed);
             }
 
+            // 占用归因收段：本段内标注过的作业名成为「最近完成段」的读数，同时清空段内格子——
+            // 下一段没标注时它不该继承上一段的名字（报警读的是段内的那格）
+            const char *const workloadInThisSegment = m_lastWorkloadInSegment.load(std::memory_order_relaxed);
+            m_lastCompletedWorkload.store(workloadInThisSegment, std::memory_order_relaxed);
+            m_lastWorkloadInSegment.store(nullptr, std::memory_order_relaxed);
+
             // 一条工作段吃掉阈值这么多，说明有处理器把循环线程占死了：这段时间里同一条循环上的
             // 其余连接一个事件都收不到。每段各报一条，不按调用点合并——八条循环一起卡的时候，
-            // 压成一行就看不出卡的是哪条（正文里的时长与条数条条不同，正是 LogThrottle 的适用面之外）
+            // 压成一行就看不出卡的是哪条（正文里的时长与条数条条不同，正是 LogThrottle 的适用面之外）。
+            // 正文里点名「被谁占住」：标注过作业名的一段直接报名字，没标注的报「未标注」——
+            // 不打空，免得读者把「没标」当成「读坏了」
             if (segmentMicroseconds > kSlowWorkingSegmentAlertThreshold)
             {
                 LOG_ERROR_FMT("EventLoop: 一条工作段耗时 {} 毫秒，超过 {} 毫秒的告警阈值：这时长里循环线程被占住，"
-                              "同一条循环上的其余连接都在等它（累计工作段 {} 条）",
+                              "同一条循环上的其余连接都在等它（累计工作段 {} 条；该段被占期间的作业：{}）",
                               std::chrono::duration_cast<std::chrono::milliseconds>(segmentMicroseconds).count(), kSlowWorkingSegmentAlertThreshold.count(),
-                              m_completedWorkingSegments.load(std::memory_order_relaxed));
+                              m_completedWorkingSegments.load(std::memory_order_relaxed), workloadInThisSegment != nullptr ? workloadInThisSegment : "未标注");
             }
         }
 
@@ -363,6 +392,8 @@ namespace AsynGyanis::Core
                 .failedDispatchCount           = m_scheduler.failedDispatchCount(),
                 .saturatedRemoteRejectionCount = m_scheduler.saturatedRemoteRejectionCount(),
                 .skippedCompletedHandleCount   = m_scheduler.skippedCompletedHandleCount(),
+                .activeWorkload                = workloadViewOf(m_activeWorkload.load(std::memory_order_relaxed)),
+                .lastCompletedWorkload         = workloadViewOf(m_lastCompletedWorkload.load(std::memory_order_relaxed)),
         };
     }
 
@@ -389,4 +420,40 @@ namespace AsynGyanis::Core
         return g_unregisteredLoopCount.load(std::memory_order_relaxed);
     }
 
+    EventLoop *EventLoop::currentEventLoop() noexcept
+    {
+        return t_currentEventLoop;
+    }
+
+    void EventLoop::setActiveWorkload(const char *const workloadName) noexcept
+    {
+        m_activeWorkload.store(workloadName, std::memory_order_relaxed);
+        if (workloadName != nullptr)
+        {
+            // 段内那一格只被非空标注刷新：清除（nullptr）不该把「本段标过谁」一并抹掉——
+            // 收段时刻（enterPhase）才读它并清它
+            m_lastWorkloadInSegment.store(workloadName, std::memory_order_relaxed);
+        }
+    }
+
+    std::string_view EventLoop::activeWorkload() const noexcept
+    {
+        return workloadViewOf(m_activeWorkload.load(std::memory_order_relaxed));
+    }
+
+    WorkloadScope::WorkloadScope(const char *const workloadName) noexcept : m_loop(EventLoop::currentEventLoop())
+    {
+        if (m_loop != nullptr)
+        {
+            m_loop->setActiveWorkload(workloadName);
+        }
+    }
+
+    WorkloadScope::~WorkloadScope()
+    {
+        if (m_loop != nullptr)
+        {
+            m_loop->setActiveWorkload(nullptr);
+        }
+    }
 } // namespace AsynGyanis::Core

@@ -55,6 +55,8 @@ namespace AsynGyanis::Net
                                     .remotePendingCount            = 3,
                                     .saturatedRemoteRejectionCount = 5,
                                     .skippedCompletedHandleCount   = 6,
+                                    .activeWorkload                = "/slow/handler",
+                                    .lastCompletedWorkload         = "/slow/handler",
                             },
             };
         }
@@ -106,6 +108,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(loops.at(0).at("remotePendingCount"), 3);
         EXPECT_EQ(loops.at(0).at("saturatedRemoteRejectionCount"), 5);
         EXPECT_EQ(loops.at(0).at("skippedCompletedHandleCount"), 6);
+        EXPECT_EQ(loops.at(0).at("activeWorkload").get<std::string>(), "/slow/handler") << "占用归因：此刻在跑的作业名要随行报出";
+        EXPECT_EQ(loops.at(0).at("lastCompletedWorkload").get<std::string>(), "/slow/handler") << "最近一段被谁占住同一格要看得见";
         EXPECT_TRUE(loops.at(0).at("thread").is_string());
         EXPECT_EQ(loops.at(0).at("thread").get<std::string>().size(), 16U) << "线程标识折成定宽十六进制指纹，行与行之间要能分开";
     }

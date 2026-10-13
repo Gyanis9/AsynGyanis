@@ -71,6 +71,30 @@ namespace AsynGyanis::Net
             return std::format("{:016x}", hasher(id));
         }
 
+        /// @brief 把探针文本转义成 JSON 串内安全的形态（引号与反斜杠照转义、控制字符折成空格）
+        /// @details 作业名来自路由模式或调用方标注，理论上可能含引号；不转义就会把 /debug/loops
+        ///          的正文撕成坏 JSON——渲染层的底线是不产出读不回的正文
+        [[nodiscard]] std::string escapedWorkloadText(const std::string_view text)
+        {
+            std::string escaped;
+            escaped.reserve(text.size());
+            for (const char character: text)
+            {
+                if (character == '"' || character == '\\')
+                {
+                    escaped.push_back('\\');
+                    escaped.push_back(character);
+                } else if (static_cast<unsigned char>(character) < 0x20U)
+                {
+                    escaped.push_back(' ');
+                } else
+                {
+                    escaped.push_back(character);
+                }
+            }
+            return escaped;
+        }
+
         /// 相位名：与 Core::LoopPhase 一一对应，写成 JSON 里可直接比对的常量文本
         [[nodiscard]] std::string_view phaseName(const Core::LoopPhase phase) noexcept
         {
@@ -233,12 +257,13 @@ namespace AsynGyanis::Net
             // 正在干活（等事件的那一相再久也只是空闲）、且超过了 Core 落 ERROR 用的同一个阈值
             const bool isStalled = snapshot.isRunning && snapshot.phase == Core::LoopPhase::Working && phaseMicroseconds > thresholdMicroseconds;
 
-            out += std::format("{}{{\"serial\":{},\"thread\":\"{}\",\"running\":{},\"phase\":\"{}\",\"phaseMicroseconds\":{},"
-                               "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},"
-                               "\"saturatedRemoteRejectionCount\":{},\"skippedCompletedHandleCount\":{},\"stalled\":{}}}",
-                               rowIndex++ == 0 ? "" : ",", serialNumber, threadFingerprint(snapshot.ownerThread), snapshot.isRunning, phaseName(snapshot.phase), phaseMicroseconds,
-                               snapshot.completedWorkingSegments, snapshot.slowestWorkingSegment.count(), snapshot.remotePendingCount, snapshot.saturatedRemoteRejectionCount,
-                               snapshot.skippedCompletedHandleCount, isStalled);
+            out += std::format(
+                    "{}{{\"serial\":{},\"thread\":\"{}\",\"running\":{},\"phase\":\"{}\",\"phaseMicroseconds\":{},"
+                    "\"completedWorkingSegments\":{},\"slowestWorkingSegmentMicroseconds\":{},\"remotePendingCount\":{},"
+                    "\"saturatedRemoteRejectionCount\":{},\"skippedCompletedHandleCount\":{},\"activeWorkload\":\"{}\",\"lastCompletedWorkload\":\"{}\",\"stalled\":{}}}",
+                    rowIndex++ == 0 ? "" : ",", serialNumber, threadFingerprint(snapshot.ownerThread), snapshot.isRunning, phaseName(snapshot.phase), phaseMicroseconds,
+                    snapshot.completedWorkingSegments, snapshot.slowestWorkingSegment.count(), snapshot.remotePendingCount, snapshot.saturatedRemoteRejectionCount,
+                    snapshot.skippedCompletedHandleCount, escapedWorkloadText(snapshot.activeWorkload), escapedWorkloadText(snapshot.lastCompletedWorkload), isStalled);
         }
 
         out += "]}";

@@ -33,6 +33,9 @@ namespace AsynGyanis::Core
         /// 用例里制造的那条「被占住的工作段」时长：阈值 100 ms 的三倍，慢机器上只会更长不会更短
         constexpr std::chrono::milliseconds kBlockedWorkingSegment{300};
 
+        /// 慢段归因用例的作业名：长命文本（探针只存指针，不拷贝）
+        constexpr const char *kSlowWorkloadName = "/reports/:id/aggregate";
+
         /**
          * @brief 与 Sink 共享的消息表
          * @details 表与锁放在一起：用例侧要轮询「告警报了没有」，而写侧是循环线程，
@@ -235,4 +238,81 @@ namespace AsynGyanis::Core
         EXPECT_GE(snapshot.slowestWorkingSegment, kBlockedWorkingSegment) << "最慢工作段的高水位没记下这一段";
     }
 
+    /**
+     * @brief 钉住：currentEventLoop() 只在循环自己的线程上非空
+     */
+    TEST(EventLoopObservability, CurrentEventLoopIsAnswerableOnlyOnItsOwnThread)
+    {
+        EventLoopThread driver;
+        ASSERT_TRUE(driver.waitUntilRunning());
+
+        // 主线程不是任何循环的线程：空
+        EXPECT_EQ(EventLoop::currentEventLoop(), nullptr) << "不在循环线程上不该问出一条循环";
+
+        // 循环线程上：指向那条循环本体（先等读数落地，不赌调度）
+        std::atomic<EventLoop *> observed{nullptr};
+        driver.loop().scheduler().postRemote([&observed] { observed.store(EventLoop::currentEventLoop(), std::memory_order_release); });
+        ASSERT_TRUE(waitForCondition([&observed] { return observed.load(std::memory_order_acquire) != nullptr; })) << "投递的活儿没有在循环线程上执行";
+        EXPECT_EQ(observed.load(std::memory_order_acquire), &driver.loop());
+    }
+
+    /**
+     * @brief 钉住：WorkloadScope 在作用域内标注、退出即清；不在循环线程上构造是空操作
+     */
+    TEST(EventLoopObservability, WorkloadScopeLabelsWithinItsScopeOnly)
+    {
+        EventLoopThread driver;
+        ASSERT_TRUE(driver.waitUntilRunning());
+
+        // 非循环线程上构造：不崩、也不假装标到某条循环上
+        {
+            const WorkloadScope offLoopScope("/should/not/stick");
+            EXPECT_TRUE(driver.loop().snapshot().activeWorkload.empty()) << "不在循环线程上构造的作用域不该标到任何循环";
+        }
+
+        std::atomic<bool> inScopeObserved{false};
+        std::atomic<bool> scopeExited{false};
+        driver.loop().scheduler().postRemote(
+                [&driver, &inScopeObserved, &scopeExited]
+                {
+                    {
+                        const WorkloadScope scope(kSlowWorkloadName);
+                        inScopeObserved.store(driver.loop().snapshot().activeWorkload == kSlowWorkloadName);
+                    }
+                    scopeExited.store(true);
+                });
+        ASSERT_TRUE(waitForCondition([&scopeExited] { return scopeExited.load(); }));
+        EXPECT_TRUE(inScopeObserved.load()) << "作用域内循环上应标注着作业名";
+        EXPECT_TRUE(waitForCondition([&driver] { return driver.loop().snapshot().activeWorkload.empty(); })) << "作用域退出后标注没有清掉";
+    }
+
+    /**
+     * @brief 钉住：慢段告警点名「被谁占住」——标注过的作业名进告警文案，也进快照的最近作业字段
+     * @note 两头各钉一头：只钉文案会放过「字段恒空」，只钉字段会放过「告警还是不问是谁」
+     */
+    TEST(EventLoopObservability, SlowSegmentAlertNamesTheWorkload)
+    {
+        RootSinkScope sinkScope;
+        const auto    messages = std::make_shared<MessageTable>();
+        Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<RecordingSink>(messages));
+
+        EventLoopThread driver;
+        ASSERT_TRUE(driver.waitUntilRunning());
+
+        driver.loop().scheduler().postRemote(
+                []
+                {
+                    const WorkloadScope scope(kSlowWorkloadName);
+                    std::this_thread::sleep_for(kBlockedWorkingSegment);
+                });
+
+        const auto alertNamedTheWorkload = waitForCondition(
+                [messages]
+                {
+                    const std::vector<std::string> snapshotOfMessages = messagesOf(*messages);
+                    return std::ranges::any_of(snapshotOfMessages, [](const std::string &message) { return message.find(kSlowWorkloadName) != std::string::npos; });
+                });
+        ASSERT_TRUE(alertNamedTheWorkload) << "慢段告警没有点名被占住的作业";
+        EXPECT_EQ(driver.loop().snapshot().lastCompletedWorkload, std::string_view{kSlowWorkloadName}) << "快照里的最近作业字段没跟上";
+    }
 } // namespace AsynGyanis::Core

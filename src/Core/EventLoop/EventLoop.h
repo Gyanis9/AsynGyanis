@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -63,6 +64,12 @@ namespace AsynGyanis::Core
         std::size_t                           failedDispatchCount{};           ///< 本循环派发时被守卫就地收下的抛出条数（见 Scheduler::failedDispatchCount）
         std::size_t                           saturatedRemoteRejectionCount{}; ///< 跨线程在途队列满被拒的累计条数（见 Scheduler::saturatedRemoteRejectionCount）
         std::size_t                           skippedCompletedHandleCount{};   ///< 派发时因帧已停在终结点被跳过的累计条数（见 Scheduler::skippedCompletedHandleCount）
+        /// 此刻标注在跑的作业名（占用归因探针，见 setActiveWorkload）；空表示未标注。
+        /// @warning 视图指向调用方交出的**长命零终止**文本（如路由的模式原文），不是本类保存的副本
+        std::string_view activeWorkload{};
+        /// 最近一条工作段期间标注过的作业名：慢段报警与读取方据此点名「那一段被谁占住」；
+        /// 从未标注过为空。同样只是视图（生命周期同 activeWorkload）
+        std::string_view lastCompletedWorkload{};
     };
 
     /**
@@ -137,6 +144,29 @@ namespace AsynGyanis::Core
          *       逐条收下了，走到这里说明是循环自身的设施出问题（例如后端 wait 失败）。
          */
         void run();
+
+        /**
+         * @brief 本线程正在跑的事件循环；不在任何循环的线程上时为空指针
+         * @details `run()` 期间由循环自己发布，供运行在该线程上的代码问「我在谁的线上」——
+         *          占用归因探针（WorkloadScope）靠它免去沿途传引用。`run()` 返回后即清
+         * @return EventLoop* 本线程正在跑的循环；空表示本线程不是循环线程
+         */
+        [[nodiscard]] static ASYN_CORE_API EventLoop *currentEventLoop() noexcept;
+
+        /**
+         * @brief 标注本循环正在跑的作业名（占用归因探针；传空指针清除）
+         * @details 慢工作段报警与 `/debug/loops` 据此点名「循环被谁占住」——没有它，一次超阈
+         *          只能报出「占了多少毫秒」，报不出被什么占的。多路复用（同一循环上多条协程
+         *          交错）下这是**近似读数**：取「最近进入、尚未退出」的那一个，精确到每协程的
+         *          归因需要标签随协程帧走，那是更大一层的活（刻意不做）
+         * @param workloadName 作业名文本，必须是**长命且零终止**的（例如路由表持有的模式原文）；
+         *        本函数只存指针不拷贝——临时串交给它等于留一个读已释放内存的读数
+         * @note 只在所属循环线程上调用（与其它成员同一纪律）
+         */
+        ASYN_CORE_API void setActiveWorkload(const char *workloadName) noexcept;
+
+        /// @brief 此刻标注的作业名；未标注为空
+        [[nodiscard]] ASYN_CORE_API std::string_view activeWorkload() const noexcept;
 
         /**
          * @brief 请求停止事件循环（非阻塞）
@@ -226,6 +256,13 @@ namespace AsynGyanis::Core
          */
         void enterPhase(LoopPhase phase) noexcept;
 
+        /**
+         * @brief 把一批就绪事件派发出去：唤醒哨兵先 drain，IoWatcher 逐个查活再分发
+         * @param readyEvents 刚从 epoll 取回的一批（视图仅本次调用内有效，见 Epoll::wait 的说明）
+         * @details 从 run() 拆出：派发这一段与循环体的取事件/记账各成一段，判据逐条可对表
+         */
+        void dispatchReadyEvents(std::span<epoll_event> readyEvents);
+
         /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着
         mutable std::mutex                    m_liveWatcherMutex; ///< 保护下面那张表的锁，跨线程注销也要用
         std::unordered_set<const IoWatcher *> m_liveWatchers;     ///< 当前还活着的 IoWatcher
@@ -243,8 +280,44 @@ namespace AsynGyanis::Core
         std::atomic<std::uint64_t>   m_completedWorkingSegments{0};    ///< 已结束的工作段条数
         std::atomic<std::int64_t>    m_slowestWorkingSegmentMicros{0}; ///< 最慢工作段的高水位（微秒）
         std::atomic<std::thread::id> m_ownerThread{};                  ///< 跑 run() 的那条线程，进入时写
+        /// 占用归因探针的三个读数（只存指针、不拷贝文本；空指针＝未标注）
+        std::atomic<const char *> m_activeWorkload{nullptr};        ///< 此刻标注在跑的作业名
+        std::atomic<const char *> m_lastWorkloadInSegment{nullptr}; ///< 本工作段内最后标注过的作业名（进入下一段时清）
+        std::atomic<const char *> m_lastCompletedWorkload{nullptr}; ///< 最近一条工作段结束时在标的作业名（跨段保留，进快照）
         /// 定时器队列。声明在最后 = 最先销毁：驱动协程与循环唯一的 timerfd 先于其余部件退出，
         /// 收尾时不会再向调度器投递等待者
         TimerQueue m_timerQueue;
+    };
+
+    /**
+     * @brief 作用域化地标注「本线程正在跑哪个作业」（占用归因探针）
+     *
+     * @details 构造时把名字挂到 `currentEventLoop()` 上、析构清回空——异常展开也能清干净，
+     *          不必在每个出口手写清理。路由派发是参考用法：包住一次 handler 链，慢段报警
+     *          与 `/debug/loops` 就能点名「这一段被谁占住」。不在循环线程上构造时是空操作
+     *          （探针不假装能标）。多路复用时析构直接清空而不是恢复上一层：协程不是栈式嵌套，
+     *          「上一个是谁」在交错场景里没有可靠答案（见 EventLoop::setActiveWorkload 的说明）。
+     * @note `workloadName` 必须是**长命且零终止**的文本（如路由表持有的模式原文）；传空指针
+     *       等于只用本作用域清场、不标注
+     */
+    class ASYN_CORE_API WorkloadScope
+    {
+    public:
+        /**
+         * @brief 标注开始
+         * @param workloadName 作业名（长命零终止文本），或空指针（不标注，只清场）
+         */
+        explicit WorkloadScope(const char *workloadName) noexcept;
+
+        /// @brief 清回未标注（构造时不在循环线程则什么都不做）
+        ~WorkloadScope();
+
+        WorkloadScope(const WorkloadScope &)            = delete;
+        WorkloadScope &operator=(const WorkloadScope &) = delete;
+        WorkloadScope(WorkloadScope &&)                 = delete;
+        WorkloadScope &operator=(WorkloadScope &&)      = delete;
+
+    private:
+        EventLoop *m_loop{nullptr}; ///< 挂到哪条循环上；空表示构造时不在循环线程（析构无事可做）
     };
 } // namespace AsynGyanis::Core

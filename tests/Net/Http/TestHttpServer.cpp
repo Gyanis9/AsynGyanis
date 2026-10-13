@@ -1385,4 +1385,52 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serveRequestWithHeaders(server, HttpMethod::GET, "/hello.txt", {{"if-match", "W/" + etag}, {"if-none-match", etag}}).status(), 412)
                 << "两个条件同时在场时要同时成立，前提不成立就不能回 304";
     }
+
+    /**
+     * @brief 钉住：经真实循环跑一次路由后，服务循环上带着命中模式的占用归因
+     * @details handler 在循环线程上读 currentEventLoop() 的标注——与「慢段报警点名谁占住」用的是同一条读数
+     */
+    TEST(HttpServer, ServingLoopIsLabeledWithTheMatchedPattern)
+    {
+        Core::EventLoop loop;
+        HttpServer      server(loop, Core::InetAddress::localhost(0));
+
+        std::atomic<bool> labeledInsideHandler{false};
+        server.router().get("/labeled/:id",
+                            [&labeledInsideHandler](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                            {
+                                const Core::EventLoop *loopNow = Core::EventLoop::currentEventLoop();
+                                labeledInsideHandler.store(loopNow != nullptr && loopNow->activeWorkload() == "/labeled/:id");
+                                EXPECT_EQ(request.matchedRoute(), "/labeled/:id");
+                                response.setStatus(200);
+                                co_return;
+                            });
+
+        std::thread loopThread([&loop] { loop.run(); });
+        const auto  runDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{3000};
+        while (!loop.snapshot().isRunning && std::chrono::steady_clock::now() < runDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        ASSERT_TRUE(loop.snapshot().isRunning) << "承载循环的线程没起来";
+
+        std::atomic<bool> served{false};
+        loop.scheduler().postRemote(
+                [&server, &served]
+                {
+                    HttpRequest  request = makeRequest(HttpMethod::GET, "/labeled/42");
+                    HttpResponse response;
+                    routeRequestSync(server.router(), request, response);
+                    served.store(response.status() == 200);
+                });
+        const auto servedDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{3000};
+        while (!served.load() && std::chrono::steady_clock::now() < servedDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        loop.stop();
+        loopThread.join();
+        ASSERT_TRUE(served.load()) << "投递到循环上的那条路由没有跑完";
+        EXPECT_TRUE(labeledInsideHandler.load()) << "handler 执行期间循环上应标注着命中的模式原文";
+    }
 } // namespace AsynGyanis::Net

@@ -1,6 +1,7 @@
 #include "Net/Http/Router.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/EventLoop/EventLoop.h"
 
 #include <algorithm>
 #include <array>
@@ -557,7 +558,14 @@ namespace AsynGyanis::Net
 
             // 终点回调把「请求 + 响应 + 命中的 handler」绑成管道要求的无参可调用对象。
             // 它只在下面这次 co_await 期间存在，故引用捕获即可，无需 shared_ptr 续命。
-            const TerminalHandler terminalHandler = [&request, &response, selectedHandler]() -> Core::Task<void> { co_await (*selectedHandler)(request, response); };
+            // 占用归因：把命中的模式原文挂到本循环上（它归路由表所有、长命且零终止），
+            // 慢工作段报警与 /debug/loops 据此点名「循环被谁占住」；作用域对象随本协程帧走，
+            // 中间件与 handler 的挂起期间标注始终有效
+            const TerminalHandler terminalHandler = [&request, &response, selectedHandler, &selectedPattern]() -> Core::Task<void>
+            {
+                const Core::WorkloadScope workloadScope(selectedPattern.empty() ? nullptr : selectedPattern.data());
+                co_await (*selectedHandler)(request, response);
+            };
 
             // 中间件与 handler 的异常一律向上传播，由会话统一重置成 500，路由器不吞也不翻译
             if (hostTable == nullptr)
@@ -604,6 +612,15 @@ namespace AsynGyanis::Net
             }
         }
 
+        // 未命中的收尾整体在 routeUnmatchedRequest 里：与命中路径的终点处理各成一段，判据逐条可对表
+        co_await routeUnmatchedRequest(request, response, hostTable, isMethodNotAllowed, allowedMethods);
+        finalizeResponse(response);
+        co_return;
+    }
+
+    Core::Task<> Router::routeUnmatchedRequest(HttpRequest &request, HttpResponse &response, Router *const hostTable, const bool isMethodNotAllowed,
+                                               const std::string &allowedMethods)
+    {
         // 未命中也走同一条中间件管道：CORS、访问日志、限流这类横切逻辑必须对 404/405 一视同仁，
         // 否则跨域请求撞到 404 会退化成浏览器侧的 opaque 错误，日志里也看不到任何未命中的请求。
         //
@@ -631,7 +648,6 @@ namespace AsynGyanis::Net
             // 未命中同样要跑两层中间件：CORS 与访问日志对 404 一视同仁，虚拟主机不例外
             co_await m_pipeline.run(request, response, wrapWithHostPipeline(hostTable, request, response, unmatchedTerminalHandler));
         }
-        finalizeResponse(response);
         co_return;
     }
 

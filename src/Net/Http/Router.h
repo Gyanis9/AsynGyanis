@@ -408,6 +408,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] static TerminalHandler wrapWithHostPipeline(Router *hostTable, HttpRequest &request, HttpResponse &response, const TerminalHandler &terminalHandler);
 
         /**
+         * @brief 未命中的收尾：跑同一条中间件管道，由终点补 404/405 与 Allow
+         * @param request 请求
+         * @param response 响应
+         * @param hostTable 命中的虚拟主机表；空表示走根表（根表这一侧先 reset 再跑管道）
+         * @param isMethodNotAllowed 是否因方法不允许而未命中（真＝405，假＝404）
+         * @param allowedMethods 405 的 Allow 头取值（已按固定顺序拼好）
+         * @details 从 route() 拆出：与命中路径的终点处理各成一段，判据段落逐条可对表
+         */
+        [[nodiscard]] Core::Task<> routeUnmatchedRequest(HttpRequest &request, HttpResponse &response, Router *hostTable, bool isMethodNotAllowed,
+                                                         const std::string &allowedMethods);
+
+        /**
          * @brief 按请求的 Host 选出该由哪张表服务
          * @param request 待派发的请求（读它的 host 头部，零拷贝）
          * @return 命中的主机表指针；本表没登记虚拟主机、或该请求不落在任何主机上时为空指针（交回根表）
