@@ -79,8 +79,8 @@
       "pos": [320, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Net/CMakeLists.txt", "line": 29, "label": "${ASYN_LIBRARY_KIND}" },
-        { "path": "src/Net/CMakeLists.txt", "line": 47, "label": "只 PUBLIC 链 Core" }
+        { "path": "src/Net/CMakeLists.txt", "line": 30, "label": "${ASYN_LIBRARY_KIND}" },
+        { "path": "src/Net/CMakeLists.txt", "line": 48, "label": "只 PUBLIC 链 Core" }
       ]
     },
     {
@@ -105,8 +105,8 @@
       "pos": [40, 170],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Net/CMakeLists.txt", "line": 52, "end_line": 54, "label": "PRIVATE 即可" },
-        { "path": "src/Net/CMakeLists.txt", "line": 42, "end_line": 45, "label": "仍要登记导出" }
+        { "path": "src/Net/CMakeLists.txt", "line": 53, "end_line": 55, "label": "PRIVATE 即可" },
+        { "path": "src/Net/CMakeLists.txt", "line": 43, "end_line": 46, "label": "仍要登记导出" }
       ]
     },
     {
@@ -169,7 +169,7 @@
       "size": [190, 60],
       "sources": [
         { "path": "src/Core/CMakeLists.txt", "line": 30, "end_line": 31, "label": "Core 链入" },
-        { "path": "src/Net/CMakeLists.txt", "line": 61, "end_line": 62, "label": "Net 显式声明" }
+        { "path": "src/Net/CMakeLists.txt", "line": 62, "end_line": 63, "label": "Net 显式声明" }
       ]
     },
     {
@@ -284,7 +284,7 @@
       "dot": "rose",
       "title": "依赖可见性口径",
       "items": [
-        "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:48、:62）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
+        "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:49、:63）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
         "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:43-50）",
         "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
         "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",
