@@ -348,19 +348,20 @@ namespace AsynGyanis::Net
         /// 一条流的待发字节
         struct OutboundStream
         {
-            std::string bytes{};            ///< 尚未交给传输层的字节
+            std::string bytes{};            ///< 待发缓冲；`sentByteCount` 之前的那段已经交给传输层（它自己留重传副本）
+            std::size_t sentByteCount{0};   ///< 已经交出去的字节数：续交从它起手，不必把余量再拷一份
             bool        isEndStream{false}; ///< 交完这些字节本端就在该流上收尾
         };
 
         /**
-         * @brief 把传输层没收下的那段字节放回本流的待发缓冲，并重新排进轮转序
+         * @brief 把传输层没收下的那段缓冲放回本流占位，并重新排进轮转序
          * @details 传输层的待发队列有上界（`QuicStreamLayer::kMaximumPendingSendByteCount`），
-         *          对端长期不授窗口时会拒收；这段字节既不能丢（丢就是截断响应）也不该在本类之外另存一份
+         *          对端长期不授窗口时会拒收；这段字节既不能丢（丢就是截断响应）也不该在本类之外另存一份。
+         *          放回去的仍是原来那份缓冲（游标已随本次交出去的量前移），不重拷——见 `sentByteCount`
          * @param streamId 目标流号
-         * @param outbound 本次没能全交出去的那份缓冲
-         * @param acceptedByteCount 传输层实际收下的字节数
+         * @param outbound 本次没能全交出去的那份缓冲（连同已推进的游标）
          */
-        void retainUnsentOutboundBytes(std::int64_t streamId, const OutboundStream &outbound, std::size_t acceptedByteCount);
+        void retainUnsentOutboundBytes(std::int64_t streamId, OutboundStream outbound);
 
         /// 归类一条对端单向流：类型前缀可能跨多次交付，凑齐一个变长整数之后才分派
         void consumePeerUnidirectionalTypePrefix(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);

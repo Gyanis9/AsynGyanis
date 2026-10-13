@@ -55,6 +55,8 @@ namespace
             const std::size_t roomByteCount         = pendingQueueByteLimit > writtenSoFarByteCount ? pendingQueueByteLimit - writtenSoFarByteCount : 0;
             const std::size_t acceptedByteCount     = std::min(data.size(), roomByteCount);
             writtenByteCounts[streamId]             = writtenSoFarByteCount + acceptedByteCount;
+            // 记下这次拿到的首字节地址：续交有没有换缓冲，只有这一格看得见（字节内容两种写法都一模一样）
+            handedSpanAddresses[streamId].push_back(data.data());
             outboundBytes[streamId].append(reinterpret_cast<const char *>(data.data()), acceptedByteCount);
             // 收尾只随整段收下一起落定（真实流层就是这么判的：半段就 FIN 等于截断正文还骗对端发完了）
             if (endStream && acceptedByteCount == data.size())
@@ -102,10 +104,12 @@ namespace
         std::vector<std::int64_t>           openedUnidirectionalStreamIds{};
         std::vector<std::int64_t>           endedStreams{};
         std::map<std::int64_t, std::string> outboundBytes{};
-        std::map<std::int64_t, std::size_t> writtenByteCounts{};
-        std::map<std::int64_t, std::size_t> creditedByteCounts{};
-        int                                 writeCallCount{0};
-        bool                                isCrediterProvided{true};
+        /// 每次 write 拿到的首字节地址：续交的判据看「同一份余量有没有换过缓冲」
+        std::map<std::int64_t, std::vector<const void *>> handedSpanAddresses{};
+        std::map<std::int64_t, std::size_t>               writtenByteCounts{};
+        std::map<std::int64_t, std::size_t>               creditedByteCounts{};
+        int                                               writeCallCount{0};
+        bool                                              isCrediterProvided{true};
         /// 这条流在假传输层的待发队列里最多压多少字节：默认无限（全收），调到已交出的量即「队列已满」
         std::size_t pendingQueueByteLimit{std::numeric_limits<std::size_t>::max()};
 
@@ -467,6 +471,44 @@ TEST(Http3Connection, PartiallyAcceptedBodyIsRetainedAndResentInOrder)
     EXPECT_EQ(transport.endedStreams.size(), 1u);
     EXPECT_GT(transport.writtenOf(kRequestStreamId), totalByteCount);
     EXPECT_EQ(transport.writtenOf(kRequestStreamId), transport.bytesOf(kRequestStreamId).size());
+}
+
+/**
+ * @brief 传输层一直不收时，续交只在原缓冲上推进游标，不逐轮重拷余量
+ * @details 每一轮把余量 append 进新缓冲的话，flush 的每一轮都是 O(余量) 的重拷，而 flush 每收一个报文
+ *          就跑一次：实测 4 MiB 正文在待发队列满时的一轮 flush 里拷了 199 MB（64 轮 × 3 MB），
+ *          服务器一个核被烧在拷贝上、线上几乎不动——h3 大正文超线性停摆的主因。判据取「交给传输层的
+ *          首字节地址」：同一份余量续交时它必须不变，换了缓冲就是又重拷了一遍
+ */
+TEST(Http3Connection, RetainedBodyKeepsTheSameBufferWhileTheTransportRefusesIt)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+    std::string   encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), false);
+    ASSERT_TRUE(connection->submitResponseHead(kRequestStreamId, {QpackHeaderField{":status", "200"}}, false).has_value());
+    ASSERT_TRUE(connection->appendResponseBody(kRequestStreamId, bytesOfText(std::string(65536, 'x')), false).has_value());
+    const std::size_t totalByteCount = connection->pendingOutputByteCount(kRequestStreamId);
+
+    // 队列一律拒收：一轮 flush 里同一条流会被反复续交，正是重拷发生的形状
+    transport.pendingQueueByteLimit = 0;
+    connection->flush();
+
+    const auto &addresses = transport.handedSpanAddresses[kRequestStreamId];
+    ASSERT_GE(addresses.size(), 2u) << "队列全满时一轮 flush 里该出现多次续交";
+    for (const void *address: addresses)
+    {
+        EXPECT_EQ(address, addresses.front()) << "同一份余量换了缓冲：又重拷了一遍";
+    }
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), 0u) << "队列满时一个字节都不该收下";
+    EXPECT_EQ(connection->pendingOutputByteCount(kRequestStreamId), totalByteCount) << "没收下多少，待发读数就该留着多少";
+
+    // 队列放开后仍要整段交付：游标只能改「从哪起手」，不能改字节本身
+    transport.pendingQueueByteLimit = std::numeric_limits<std::size_t>::max();
+    connection->flush();
+    EXPECT_EQ(transport.writtenOf(kRequestStreamId), totalByteCount);
+    EXPECT_EQ(connection->pendingOutputByteCount(kRequestStreamId), 0u);
 }
 
 TEST(Http3Connection, UnknownUnidirectionalStreamTypeIsDiscardedButStillCredited)

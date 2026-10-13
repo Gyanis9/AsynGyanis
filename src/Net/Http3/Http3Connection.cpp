@@ -1027,7 +1027,7 @@ namespace AsynGyanis::Net
     std::size_t Http3Connection::pendingOutputByteCount(const std::int64_t streamId) const noexcept
     {
         const auto entry = m_outbound.find(streamId);
-        return entry == m_outbound.end() ? 0 : entry->second.bytes.size();
+        return entry == m_outbound.end() ? 0 : entry->second.bytes.size() - entry->second.sentByteCount;
     }
 
     bool Http3Connection::isLocalStreamFinished(const std::int64_t streamId) const noexcept
@@ -1108,12 +1108,13 @@ namespace AsynGyanis::Net
                 }
                 continue;
             }
-            // 一次把这流的待发字节全交出去，传输层按它自己的上界收下能收的那一段（它会留重传副本
+            // 一次把这流还没交出去的字节全交出去，传输层按它自己的上界收下能收的那一段（它会留重传副本
             // 并按流控发包，本类不必主动分批）。收不下的余数连同收尾标记留在本类缓冲里下一轮续交
-            const std::size_t acceptedByteCount = m_streamWriter(streamId, asBytes(outbound.bytes), outbound.isEndStream);
-            if (acceptedByteCount < outbound.bytes.size())
+            const std::size_t acceptedByteCount = m_streamWriter(streamId, asBytes(outbound.bytes).subspan(outbound.sentByteCount), outbound.isEndStream);
+            outbound.sentByteCount += acceptedByteCount;
+            if (outbound.sentByteCount < outbound.bytes.size())
             {
-                retainUnsentOutboundBytes(streamId, outbound, acceptedByteCount);
+                retainUnsentOutboundBytes(streamId, std::move(outbound));
                 continue;
             }
             if (outbound.isEndStream)
@@ -1123,13 +1124,11 @@ namespace AsynGyanis::Net
         }
     }
 
-    void Http3Connection::retainUnsentOutboundBytes(const std::int64_t streamId, const OutboundStream &outbound, const std::size_t acceptedByteCount)
+    void Http3Connection::retainUnsentOutboundBytes(const std::int64_t streamId, OutboundStream outbound)
     {
         // 收尾标记跟着最后那几个字节走：只交出一半就把 END_STREAM 记成「已本地收尾」，
-        // 上层便以为这条流结束了，而线上那段正文永远没出去
-        OutboundStream &retained = m_outbound[streamId];
-        retained.bytes.append(outbound.bytes, acceptedByteCount, std::string::npos);
-        retained.isEndStream = outbound.isEndStream;
+        // 上层便以为这条流结束了，而线上那段正文永远没出去——标记随整个 OutboundStream 一起留在这里
+        m_outbound[streamId] = std::move(outbound);
         // 重新排队放在队尾：这条流凭什么占着地方不该让别的流跟着等
         if (std::ranges::find(m_outboundOrder, streamId) == m_outboundOrder.end())
         {
