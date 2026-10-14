@@ -3437,4 +3437,69 @@ namespace AsynGyanis::Net
         feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{140000});
         EXPECT_TRUE(drain(core).empty()) << "一条谁都没签发的标识也把报文收了：路由结论与签发记录对不上";
     }
+
+    /**
+     * @brief §19 表 3 的 Pkts 列：连接标识与路径验证这几类帧不许出现在 Initial/Handshake 包里
+     * @details 表里 0x18（NEW_CONNECTION_ID）、0x19（RETIRE_CONNECTION_ID）、0x1a（PATH_CHALLENGE）
+     *          的 Pkts 是 `__01`，0x1b（PATH_RESPONSE）是 `___1`；本端没有 0-RTT 空间，两者都归并成
+     *          「只许 1-RTT」。§12.4 对这类错放的处置写死了是 PROTOCOL_VIOLATION
+     */
+    TEST(QuicConnectionCore, RejectsConnectionIdAndPathFramesCarriedInHandshakePackets)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        const auto frameInSpaceCloses = [&](const QuicEncryptionLevel level, const std::string &frames, const std::string_view name, const bool expectClose)
+        {
+            QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+            InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+            finishHandshake(core, client);
+            feed(core, client.buildDatagramWith(level, frames), Timestamp{120000});
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+            if (expectClose)
+            {
+                ASSERT_TRUE(client.serverCloseErrorCode().has_value()) << name << " 打进 Handshake 包却没被拒（§19 表 3 的 Pkts 列）";
+                EXPECT_EQ(*client.serverCloseErrorCode(), 0x0AU) << name << " 该按 PROTOCOL_VIOLATION 收口（§12.4）";
+            } else
+            {
+                EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << name << " 在 1-RTT 包里是合法形态，不该被拒（原因："
+                                                                        << client.serverCloseReasonPhrase() << "）";
+            }
+        };
+        const auto frameInHandshakeCloses = [&](const std::string &frames, const std::string_view name, const bool expectClose)
+        { frameInSpaceCloses(QuicEncryptionLevel::Handshake, frames, name, expectClose); };
+
+        {
+            std::string                    frames;
+            const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token{};
+            appendQuicFrame(frames, QuicFrame{QuicNewConnectionIdFrame{.sequenceNumber = 1, .retirePriorTo = 0, .connectionId = std::span<const std::uint8_t>(kServerConnectionId),
+                                                                       .statelessResetToken = std::span<const std::uint8_t>(token)}});
+            frameInHandshakeCloses(frames, "NEW_CONNECTION_ID", true);
+        }
+        {
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicRetireConnectionIdFrame{.sequenceNumber = 0}});
+            frameInHandshakeCloses(frames, "RETIRE_CONNECTION_ID", true);
+        }
+        {
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
+            frameInHandshakeCloses(frames, "PATH_CHALLENGE", true);
+        }
+        {
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicPathResponseFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
+            frameInHandshakeCloses(frames, "PATH_RESPONSE", true);
+        }
+        // 正向对照：同样一条 PATH_CHALLENGE 打进 1-RTT 包必须照常收下，门不能拦过头
+        {
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
+            frameInSpaceCloses(QuicEncryptionLevel::Application, frames, "PATH_CHALLENGE(1-RTT)", false);
+        }
+    }
 } // namespace AsynGyanis::Net

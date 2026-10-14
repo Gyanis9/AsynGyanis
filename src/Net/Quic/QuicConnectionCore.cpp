@@ -130,16 +130,17 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 这类帧是不是只有 1-RTT 包才允许携带
-         * @details 覆盖 §19.4–§19.14 的全部流与流量控制帧：RESET_STREAM、STOP_SENDING、STREAM 家族
-         *          （0x08..0x0f 按低位变体）以及 0x10..0x17。连接标识与路径验证那几类不在其中，
-         *          它们按 §19.15–§19.18 可以在任意级别出现。
+         * @details 依据是 §19 表 3 的 Pkts 列：0x04（RESET_STREAM）、0x05（STOP_SENDING）与
+         *          0x08–0x1a 那一段是 `__01`（0-RTT 与 1-RTT），0x1b（PATH_RESPONSE）与
+         *          0x1e（HANDSHAKE_DONE）是 `___1`（只 1-RTT）。本端没有 0-RTT 空间，两种写法
+         *          在这里归并成同一件事：Initial 与 Handshake 包里出现即违规。
          * @param frameType §12.4 表 3 的取值
          * @return true 出现在 Initial 或 Handshake 包里即为 PROTOCOL_VIOLATION
          */
         bool isOneRttOnlyFrameType(const std::uint64_t frameType) noexcept
         {
             return frameType == static_cast<std::uint64_t>(QuicFrameType::ResetStream) || frameType == static_cast<std::uint64_t>(QuicFrameType::StopSending) ||
-                   (frameType >= 0x08 && frameType <= 0x17);
+                   (frameType >= 0x08 && frameType <= 0x1b) || frameType == static_cast<std::uint64_t>(QuicFrameType::HandshakeDone);
         }
 
         /**
@@ -608,8 +609,8 @@ namespace AsynGyanis::Net
             const std::uint64_t frameType = quicFrameTypeValue(frame);
             if (isOneRttOnlyFrameType(frameType) && space != PacketNumberSpace::Application)
             {
-                // §19.4–§19.14 逐条写明这些帧不得出现在 Initial/Handshake 包里
-                beginClose(kQuicProtocolViolation, std::format("流与流量控制帧 0x{:x} 出现在非 1-RTT 包里（RFC 9000 §19.4–§19.14）", frameType), arrivalTime);
+                // §19 表 3 的 Pkts 列逐条写明这些帧不许出现在 Initial/Handshake 包里
+                beginClose(kQuicProtocolViolation, std::format("帧 0x{:x} 出现在非 1-RTT 包里（RFC 9000 §19 表 3 的 Pkts 列）", frameType), arrivalTime);
                 return {};
             }
             hasAckElicitingFrame = hasAckElicitingFrame || isAcknowledgementEliciting(frame);
