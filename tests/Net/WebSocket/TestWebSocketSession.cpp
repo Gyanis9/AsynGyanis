@@ -11,6 +11,7 @@
 
 #include "HttpTestSupport.h"
 
+#include "Core/EventLoop/Timer.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/WebSocket/WebSocketUpgradePolicy.h"
@@ -389,6 +390,76 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 起一台「升级后先发一帧 Ping，再走回显」的服务器，并把心跳时限设成给定值
+         * @details 空闲时限拉到 30 秒：这样「这条连接被收掉」只可能来自心跳那把钟，用例不会误把空闲
+         *          超时当成心跳超时。清扫节拍沿用本文件的 50 毫秒档（实际收口 = 心跳时限 + 一拍）。
+         *          心跳在业务一上来就发，因此它落在会话读循环的**同一拍**里——这一形状钉的是时限的
+         *          折算与撤销，钉不到「武装时的那次通知」（见 makeHeartbeatWebSocketServer 的那一层）。
+         * @param record 回显业务的消息记录槽
+         * @param pongTimeout 本端发出 Ping 后等 Pong 的时限
+         * @return std::unique_ptr<RunningHttpServerFixture> 已投递 start() 的服务器夹具
+         */
+        std::unique_ptr<RunningHttpServerFixture> makePingingWebSocketServer(const std::shared_ptr<MessageRecord> &record, const std::chrono::milliseconds pongTimeout)
+        {
+            const HttpTestSupport::RouteRegistrar registrar = [record](Router &router, Core::EventLoop &)
+            {
+                router.any(std::string(kHandshakePath),
+                           [record](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.upgradeToWebSocket(
+                                       [record](WebSocketPeer &peer) -> Core::Task<>
+                                       {
+                                           [[maybe_unused]] const bool isPingSent = co_await peer.sendPing("asyn");
+                                           co_await echoHandler(record, peer);
+                                       });
+                               co_return;
+                           });
+            };
+
+            HttpServerLimits limits;
+            limits.webSocketPongTimeout = pongTimeout;
+            limits.idleTimeout          = std::chrono::seconds{30};
+            return std::make_unique<RunningHttpServerFixture>(limits, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, HttpParserLimits{});
+        }
+
+        /**
+         * @brief 起一台「按拍自发 Ping、不回显」的服务器：心跳由处理器自己的定时器驱动
+         * @details 钉的是武装那一刻的通知。会话协程此刻正挂在套接字的读等待上，而读循环只在**收到字节之后**
+         *          才会重刷空闲截止——对端不回 Pong 也就不会再来字节，那一拍永远不来；少了那次通知，
+         *          这条连接只能等满 30 秒的空闲时限，心跳时限就成了摆设。
+         * @param pongTimeout 本端发出 Ping 后等 Pong 的时限
+         * @param heartbeatInterval 处理器发心跳的节拍，必须明显短于 pongTimeout
+         * @return std::unique_ptr<RunningHttpServerFixture> 已投递 start() 的服务器夹具
+         */
+        std::unique_ptr<RunningHttpServerFixture> makeHeartbeatWebSocketServer(const std::chrono::milliseconds pongTimeout, const std::chrono::milliseconds heartbeatInterval)
+        {
+            const HttpTestSupport::RouteRegistrar registrar = [heartbeatInterval](Router &router, Core::EventLoop &loop)
+            {
+                router.any(std::string(kHandshakePath),
+                           [&loop, heartbeatInterval](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.upgradeToWebSocket(
+                                       [&loop, heartbeatInterval](WebSocketPeer &peer) -> Core::Task<>
+                                       {
+                                           Core::Timer heartbeatTimer(loop);
+                                           while (peer.isOpen())
+                                           {
+                                               [[maybe_unused]] const bool isPingSent = co_await peer.sendPing("asyn");
+                                               co_await heartbeatTimer.waitFor(heartbeatInterval);
+                                           }
+                                           co_return;
+                                       });
+                               co_return;
+                           });
+            };
+
+            HttpServerLimits limits;
+            limits.webSocketPongTimeout = pongTimeout;
+            limits.idleTimeout          = std::chrono::seconds{30};
+            return std::make_unique<RunningHttpServerFixture>(limits, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, HttpParserLimits{});
+        }
+
+        /**
          * @brief 断言升级请求被拒：回 400、响应里带中文原因、并且按 close 收口
          * @param port 服务端端口
          * @param requestText 待发出的请求报文
@@ -635,6 +706,70 @@ namespace AsynGyanis::Net
         EXPECT_EQ(accumulated.substr(handshake.size(), expectedPong.size()), expectedPong);
         EXPECT_EQ(accumulated.size(), handshake.size() + expectedPong.size()) << "Pong 之后不应有别的字节";
         EXPECT_EQ(record->count(), 0U) << "Ping 是控制帧，不应交付业务";
+    }
+
+    /**
+     * @brief 钉住心跳看门狗端到端：本端按拍发 Ping 而对端不回 Pong，这条连接由心跳那把钟收掉
+     * @details 夹具的空闲时限 30 秒、心跳时限 300 毫秒、心跳节拍 100 毫秒，因此「在等待上限内断开」
+     *          只能归因于心跳那一路；会话协程此刻正挂在读等待上、对端又不发字节，能提前收掉它的
+     *          只有武装那一刻刷进连接空闲截止的那一次通知。先等本端真的发出去一帧 Ping，判据才不是
+     *          「夹具碰巧没发心跳」。死因同时钉日志：清扫协程只报「空闲超过截止时间」，现场得有一条
+     *          把死因说对的。
+     */
+    TEST(WebSocketSession, ClosesConnectionWhenPeerNeverAnswersThePing)
+    {
+        const HttpTestSupport::LogCapture logCapture;
+
+        const std::unique_ptr<RunningHttpServerFixture> server = makeHeartbeatWebSocketServer(std::chrono::milliseconds{300}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string pingFrame = serverFrameBytes(0x9, "asyn");
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + pingFrame.size(), kWaitTimeout)) << "收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(handshake.size(), pingFrame.size()), pingFrame) << "本端发出的该是一帧负载原样的 Ping";
+
+        // 既不回 Pong、也不再发任何字节：连接应在心跳时限 + 一拍清扫之内被收掉，而不是挂到 30 秒空闲
+        EXPECT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "对端不回 Pong 而这条连接一直不断：心跳那把钟没接到连接的空闲截止上";
+        EXPECT_GE(logCapture.countContaining("没有收到 Pong"), 1u) << "收口原因没写成「心跳没回」，现场只能看到一条空闲超时";
+    }
+
+    /**
+     * @brief 反向对照：对端按原样回了 Pong，时限走过去之后这条连接仍然能收发
+     * @details 睡过心跳时限是**构造前提**（让「已到期」这个条件成立），断言判的是之后还能round-trip
+     *          一条消息——它不掐秒表，因此机器快慢只会让前提更早成立，不会让判据翻面。
+     *          「收到 Pong 就撤表」这一步坏掉时，这条连接会被自己的看门狗在时限处收掉，回显读不到。
+     */
+    TEST(WebSocketSession, KeepsConnectionWhenPeerAnswersThePing)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makePingingWebSocketServer(record, std::chrono::milliseconds{300});
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string handshake = expectedHandshakeResponseText();
+        const std::string pingFrame = serverFrameBytes(0x9, "asyn");
+
+        LoopbackClient client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + pingFrame.size(), kWaitTimeout)) << "收到 " << accumulated.size() << " 字节";
+
+        // 按 RFC 6455 §5.5.3 把 Ping 的负载原样回成一帧 Pong
+        ASSERT_TRUE(client.sendText(maskedClientFrame(0xA, "asyn"), kWaitTimeout));
+        std::this_thread::sleep_for(std::chrono::milliseconds{700});
+
+        const std::string expectedEcho = serverFrameBytes(0x1, "still-here");
+        ASSERT_TRUE(client.sendText(maskedClientFrame(0x1, "still-here"), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + pingFrame.size() + expectedEcho.size(), kWaitTimeout))
+                << "回过 Pong 之后这条连接没能把消息答回来，收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(handshake.size() + pingFrame.size(), expectedEcho.size()), expectedEcho);
     }
 
     /**
@@ -1446,6 +1581,109 @@ namespace AsynGyanis::Net
         }
         EXPECT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::DecodeError) << "零负载帧没有计入积压上界：对端可用它把待交付队列撑到无界";
         EXPECT_EQ(peer.decodeErrorCloseCode(), kWebSocketPolicyViolationCode);
+    }
+
+    /**
+     * @brief 钉住心跳看门狗的换算：武装、折进空闲预算、收到 Pong 后撤销
+     * @details 两个查询都取调用方给的 now，因此这条用例判的是换算而不是机器当时的负载：
+     *          过点一侧取「一小时之后」，未到一侧取「此刻」，两侧都留了整数量级的余量。
+     *          通知按次数钉——它是「停在读等待里的连接能不能提前醒过来」的唯一接线证据。
+     */
+    TEST(WebSocketPeerContract, ArmsThePongDeadlineAndClearsItWhenThePeerAnswers)
+    {
+        int           notifierCallCount = 0;
+        WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
+        peer.setPongTimeout(std::chrono::seconds{5}, [&notifierCallCount] { ++notifierCallCount; });
+
+        constexpr std::chrono::milliseconds kPhaseTimeout{std::chrono::seconds{75}};
+
+        // 还没发过心跳：这把钟与相位时限无关，一次通知也没响过
+        EXPECT_EQ(notifierCallCount, 0);
+        EXPECT_EQ(peer.idleBudgetWithin(kPhaseTimeout, std::chrono::steady_clock::now()), kPhaseTimeout) << "没有在途心跳时不该折进心跳那把钟";
+        EXPECT_FALSE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now() + std::chrono::hours{1})) << "没发过 Ping 就永不判死";
+
+        Core::Task<bool> pingTask = peer.sendPing("asyn");
+        pingTask.handle().resume();
+        ASSERT_TRUE(pingTask.await_resume());
+
+        // 武装：通知响一次（会话据此把连接的空闲截止刷短），截止落在时限之内而非之外
+        EXPECT_EQ(notifierCallCount, 1) << "发过 Ping 却没通知会话，停在读等待上的这条连接只能等空闲超时";
+        EXPECT_FALSE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now())) << "刚武装就判过期会掐死健康连接";
+        EXPECT_TRUE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now() + std::chrono::hours{1}));
+        const std::chrono::milliseconds foldedBudget = peer.idleBudgetWithin(kPhaseTimeout, std::chrono::steady_clock::now());
+        EXPECT_LE(foldedBudget, std::chrono::seconds{5}) << "空闲预算没被在途心跳折短";
+        EXPECT_GT(foldedBudget, std::chrono::seconds{4}) << "折得太狠：那条连接会在时限到点之前就被清扫收掉";
+
+        // 对端回了 Pong：控制帧不交给业务（这里紧跟一条文本，receive() 才不会挂在等待上），
+        // 撤表同样要通知——不还回去的话，一条健康而安静的连接会被自己那把心跳钟提前收掉
+        const std::string pongThenText = maskedClientFrame(0xA, "asyn") + maskedClientFrame(0x1, "still-here");
+        ASSERT_EQ(peer.feedBytes(pongThenText.data(), pongThenText.size()), WebSocketFeedStatus::Accepted);
+        Core::Task<std::optional<WebSocketMessage>> receiveTask = peer.receive();
+        receiveTask.handle().resume();
+        const std::optional<WebSocketMessage> delivered = receiveTask.await_resume();
+        ASSERT_TRUE(delivered.has_value()) << "Pong 之后的那条文本应照常交付";
+        EXPECT_EQ(delivered->payload, "still-here");
+        EXPECT_EQ(notifierCallCount, 2) << "撤掉看门狗没通知会话，被刷短的空闲截止还得不到还原";
+        EXPECT_EQ(peer.idleBudgetWithin(kPhaseTimeout, std::chrono::steady_clock::now()), kPhaseTimeout);
+        EXPECT_FALSE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now() + std::chrono::hours{1}));
+    }
+
+    /**
+     * @brief 钉住「后发的 Ping 不把截止往后推」：连发心跳的处理器不能把判死的钟一圈圈续走
+     * @details 时限 300 毫秒，两帧之间隔 100 毫秒，判读时刻取第二帧之后 250 毫秒。最早那条绑定时
+     *          第一帧的截止已到量；「每发一帧重新计时」的实现要到第二帧之后 300 毫秒才到量，于是判假。
+     *          睡眠只会超出 100 毫秒，而多出来的那段在两侧同号、相互抵消，因此判据不随调度抖动翻面。
+     */
+    TEST(WebSocketPeerContract, KeepsTheEarliestOutstandingPingDeadlineWhenAnotherPingGoesOut)
+    {
+        int           notifierCallCount = 0;
+        WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
+        peer.setPongTimeout(std::chrono::milliseconds{300}, [&notifierCallCount] { ++notifierCallCount; });
+
+        Core::Task<bool> firstPing = peer.sendPing();
+        firstPing.handle().resume();
+        ASSERT_TRUE(firstPing.await_resume());
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+        Core::Task<bool> secondPing = peer.sendPing();
+        secondPing.handle().resume();
+        ASSERT_TRUE(secondPing.await_resume());
+        // 两次重刷：一次来自第一帧的武装，一次来自第二帧写出之后的回折（发送回调刚把截止按「等可写」
+        // 的相位时限刷走）。第二帧没有再武装——截止仍是第一帧那条，下面那句判读钉的就是这件事
+        EXPECT_EQ(notifierCallCount, 2) << "重刷次数与「武装一次 + 每帧回折一次」的口径不一致";
+
+        EXPECT_TRUE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now() + std::chrono::milliseconds{250})) << "第一帧的 300 毫秒到量却没判过期：截止被第二帧推到后面";
+    }
+
+    /**
+     * @brief 钉住拒绝面：时限为 0 时发过 Ping 也不判死，而一条没人应答的 Pong 不产生任何通知
+     * @details 「0 表示不设这项保护」是 HttpServerLimits 各项的既有口径，这条用例判的是它退化成一档
+     *          「默认就判死」的形状；顺带钉住「没有在途心跳时撤表是空操作」——否则对端乱发 Pong
+     *          就能反复把本端的空闲截止往后推，把「慢攻击」变成「续命攻击」。
+     */
+    TEST(WebSocketPeerContract, DoesNotArmOrClearAnythingWhenThePongTimeoutIsZero)
+    {
+        int           notifierCallCount = 0;
+        WebSocketPeer peer([](const std::string_view) -> Core::Task<bool> { co_return true; });
+        peer.setPongTimeout(std::chrono::milliseconds::zero(), [&notifierCallCount] { ++notifierCallCount; });
+
+        constexpr std::chrono::milliseconds kPhaseTimeout{std::chrono::seconds{75}};
+        Core::Task<bool>                    pingTask = peer.sendPing();
+        pingTask.handle().resume();
+        ASSERT_TRUE(pingTask.await_resume());
+
+        EXPECT_EQ(notifierCallCount, 0) << "时限为 0 却武装了看门狗";
+        EXPECT_EQ(peer.idleBudgetWithin(kPhaseTimeout, std::chrono::steady_clock::now()), kPhaseTimeout);
+        EXPECT_FALSE(peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now() + std::chrono::hours{1})) << "关掉这项保护之后仍然判死，等于不给保护留档位";
+
+        const std::string pongFrame = maskedClientFrame(0xA, "") + maskedClientFrame(0x1, "still-here");
+        ASSERT_EQ(peer.feedBytes(pongFrame.data(), pongFrame.size()), WebSocketFeedStatus::Accepted);
+        Core::Task<std::optional<WebSocketMessage>> receiveTask = peer.receive();
+        receiveTask.handle().resume();
+        const std::optional<WebSocketMessage> delivered = receiveTask.await_resume();
+        ASSERT_TRUE(delivered.has_value()) << "Pong 之后的那条文本应照常交付";
+        EXPECT_EQ(delivered->payload, "still-here") << "Pong 被当成消息交给了业务";
+        EXPECT_EQ(notifierCallCount, 0) << "没有在途心跳时撤表也刷了通知：对端可用一帧 Pong 把本端的空闲截止往后推";
     }
 
     // ============================================================================

@@ -117,6 +117,7 @@ namespace AsynGyanis::Net
                                                 {"read_timeout_ms", integer(15000)},
                                                 {"write_timeout_ms", integer(20000)},
                                                 {"settings_acknowledgement_timeout_ms", integer(5000)},
+                                                {"web_socket_pong_timeout_ms", integer(8000)},
                                                 {"maximum_requests_per_connection", integer(100)},
                                         }));
         serverMembers.emplace("parser_limits", object(Base::ConfigObject{
@@ -147,6 +148,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
         EXPECT_EQ(configuration.limits.settingsAcknowledgementTimeout, std::chrono::milliseconds(5000));
+        EXPECT_EQ(configuration.limits.webSocketPongTimeout, std::chrono::milliseconds(8000));
         EXPECT_EQ(configuration.limits.maximumRequestsPerConnection, 100u);
         EXPECT_EQ(configuration.parserLimits.maximumUriLength, 4096u);
         EXPECT_EQ(configuration.parserLimits.maximumHeaderFieldNameLength, 128u);

@@ -4,6 +4,8 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <format>
 #include <utility>
@@ -101,6 +103,82 @@ namespace AsynGyanis::Net
         return m_payloadErrorMessage.empty() ? m_decoder.errorMessage() : m_payloadErrorMessage;
     }
 
+    void WebSocketPeer::setPongTimeout(const std::chrono::milliseconds timeout, IdleDeadlineRefresh idleDeadlineRefresh)
+    {
+        // 装配点只此一处：时限与重刷动作成套给出。拆成两个 setter 就会留下「有时限、没动作」这一格——
+        // 看门狗记下了截止却没人把连接的空闲钟折短，那种通道只能靠逐条查判死（h3 正是刻意这么走的）
+        m_pongTimeout         = timeout;
+        m_idleDeadlineRefresh = std::move(idleDeadlineRefresh);
+    }
+
+    std::chrono::milliseconds WebSocketPeer::idleBudgetWithin(const std::chrono::milliseconds phaseTimeout, const std::chrono::steady_clock::time_point now) const noexcept
+    {
+        // 没有在途心跳：这把钟只剩相位时限那一个来源，本条连接与心跳时限无关
+        if (!m_outstandingPongDeadline.has_value())
+        {
+            return phaseTimeout;
+        }
+
+        // 剩余时长向上取整：向下取整会让清扫协程看到的截止比真正的截止早最多 1 毫秒，落在那一毫秒里的
+        // 清扫把连接按「空闲超时」关掉，而收口处判 isPongDeadlinePassedAt 还是「没到期」，死因被记错档。
+        // 向上取整保证清扫只会在到期之后动手
+        const std::chrono::milliseconds remainingTime = std::chrono::ceil<std::chrono::milliseconds>(*m_outstandingPongDeadline - now);
+        // 已经过点也得给出正数：0 在连接的空闲截止语义里是「清除截止时间」，等于把这条连接交还给不设时限
+        constexpr std::chrono::milliseconds kMinimumIdleBudget{1};
+        const std::chrono::milliseconds     pongBudget = std::max(remainingTime, kMinimumIdleBudget);
+        // 相位时限为 0 表示那一侧不设时限（连接可以永远安静），此时只剩心跳这一把钟管着
+        if (phaseTimeout <= std::chrono::milliseconds::zero())
+        {
+            return pongBudget;
+        }
+        return std::min(phaseTimeout, pongBudget);
+    }
+
+    bool WebSocketPeer::isPongDeadlinePassedAt(const std::chrono::steady_clock::time_point now) const noexcept
+    {
+        return m_outstandingPongDeadline.has_value() && *m_outstandingPongDeadline <= now;
+    }
+
+    void WebSocketPeer::armPongDeadline()
+    {
+        // 未装配时限（或时限为 0）：这条通道不设这项保护，一发 Pong 也不等
+        if (m_pongTimeout <= std::chrono::milliseconds::zero())
+        {
+            return;
+        }
+        // 已有在途 Ping：那张表记的是最早那条的截止，后发的心跳不能把它往后推——否则一条每 5 秒发一次
+        // 心跳的处理器，在时限大于 5 秒时会把这把钟永远续下去，一个不回 Pong 的对端就再也判不死
+        if (m_outstandingPongDeadline.has_value())
+        {
+            return;
+        }
+
+        m_outstandingPongDeadline = std::chrono::steady_clock::now() + m_pongTimeout;
+        // 重刷排在记下截止之后：会话在那一步立刻用 idleBudgetWithin() 重算，看不到新值就会刷成相位时限
+        refreshSessionIdleDeadline();
+    }
+
+    void WebSocketPeer::clearPongDeadline()
+    {
+        // 没有在途心跳时不重刷：一条没发过 Ping 的连接每收一帧 Pong 都白刷一遍空闲截止，
+        // 而那次刷新会把相位时限的截止点往后推——正是「对端乱发 Pong 就能让本端永不超时」的缝
+        if (!m_outstandingPongDeadline.has_value())
+        {
+            return;
+        }
+
+        m_outstandingPongDeadline.reset();
+        refreshSessionIdleDeadline();
+    }
+
+    void WebSocketPeer::refreshSessionIdleDeadline() const
+    {
+        if (m_idleDeadlineRefresh)
+        {
+            m_idleDeadlineRefresh();
+        }
+    }
+
     WebSocketPeer::DeliveryAwaiter::DeliveryAwaiter(WebSocketPeer &peer) noexcept : m_peer(&peer)
     {
     }
@@ -153,7 +231,10 @@ namespace AsynGyanis::Net
             }
             if (frame->opCode == WebSocketOpCode::Pong)
             {
-                // 对端对我们心跳的回应，没有业务语义，直接忽略
+                // 心跳的回音：撤掉看门狗那把钟，会话据此把连接的空闲截止还回相位时限。不看载荷是否
+                // 与本端发出的 Ping 逐字相同——对端按 §5.5.3 把负载原样带回来是常态而非义务，
+                // 而这帧本身到场就是「对端应用还活着」的证据
+                clearPongDeadline();
                 continue;
             }
             if (frame->opCode == WebSocketOpCode::Close)
@@ -213,7 +294,14 @@ namespace AsynGyanis::Net
             co_return false;
         }
         // 负载超长的用法错误由编码层当场拒绝，不在这里重复判一次
-        co_return co_await sendFrame(WebSocketOpCode::Ping, payload);
+        const bool isPingSent = co_await sendFrame(WebSocketOpCode::Ping, payload);
+        // 这一帧真的交出去了才开始等回音：编码层拒绝（载荷超长）与写出失败都不武装——前者是本端的
+        // 用法错误，后者连接已按不可用收口，两种都不该再留下一把判死的钟
+        if (isPingSent)
+        {
+            armPongDeadline();
+        }
+        co_return isPingSent;
     }
 
     Core::Task<bool> WebSocketPeer::close(const std::uint16_t code, const std::string_view reason)
@@ -297,6 +385,14 @@ namespace AsynGyanis::Net
         // 置位「有一帧在写」：会话收尾据此避免把自己的 Close 插进这次写里（两条写路径的字节会互相穿插）
         const WriteInFlightScope writeGuard(m_isWriteInFlight);
         const bool               isSucceeded = co_await m_frameSender(frameBytes);
+
+        // 发送回调按「等可写」的相位时限刷了这条连接的空闲截止（会话侧干的）：本端要是有在途心跳，
+        // 那一刻就把判死的钟刷走了，因此交回控制权之后立刻按「帧间空闲 + 心跳剩余」折回来一次。
+        // 没有在途心跳时不折——那一段该由会话自己的相位时限说话
+        if (m_outstandingPongDeadline.has_value())
+        {
+            refreshSessionIdleDeadline();
+        }
 
         if (!isSucceeded)
         {

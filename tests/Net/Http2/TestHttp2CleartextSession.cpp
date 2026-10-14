@@ -2065,6 +2065,72 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 h2 隧道的心跳看门狗：本端发出 Ping 而对端不回 Pong 时，这条连接被清扫那一拍收掉
+     * @details 与 h1 同一把钟、同一处装配，差别只在收口的单位：本端把连接级的空闲截止刷到心跳时限上，
+     *          到点由清扫协程掐整条 TCP 连接（同一个对端不回心跳，那条连接上没有什么还值得留）。
+     *          先按字节确认本端真发过那一帧 Ping，判据才不是「处理器碰巧没发心跳」；空闲时限拉到 30 秒，
+     *          因此「在等待上限内断开」只可能来自心跳那一路，而不是空闲超时。
+     */
+    TEST(Http2CleartextSession, ClosesConnectionWhenTunnelPeerNeverAnswersThePing)
+    {
+        HttpServerLimits limits     = makeCleartextLimits();
+        limits.idleTimeout          = std::chrono::seconds{30};
+        limits.webSocketPongTimeout = std::chrono::milliseconds{300};
+
+        RunningHttpServerFixture fixture(
+                limits, std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/ping-chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               [[maybe_unused]] const bool isPingSent = co_await peer.sendPing("asyn");
+                                               while (const std::optional<WebSocketMessage> message = co_await peer.receive())
+                                               {
+                                                   static_cast<void>(message);
+                                               }
+                                               co_return;
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/ping-chat"), false), kWaitTimeout));
+
+        // 本端那帧心跳落在这条流的 DATA 里：FIN|操作码 9 + 长度 4 + 负载原样（服务端方向不带掩码）
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseDataPayload(receivedFrames, 1U).empty(); }, kWaitTimeout))
+                << "隧道里没有本端发出的心跳帧";
+        EXPECT_NE(responseDataPayload(frames, 1U)
+                          .find(std::string("\x89\x04"
+                                            "asyn",
+                                            6)),
+                  std::string::npos)
+                << "那条 DATA 里不是本端发出的 Ping";
+
+        // 不回 Pong、也不再发任何字节：连接应在心跳时限加一拍清扫之内被收掉，而不是挂到 30 秒空闲
+        EXPECT_TRUE(client.waitForClosure(frames, kWaitTimeout)) << "对端不回 Pong 而这条 h2 连接一直不断：心跳那把钟没接到会话的空闲截止";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住 h2 隧道真的吃到 `parser_limits` 里的入站消息上限
      * @details 上限压到 8 字节，隧道里交一条声明 20 字节的掩码文本帧：本端应按下 1009（消息过大）回一条
      *          Close 并收尾，越限的内容不得交付业务（没有回显）。这条通道若没把配置交给对端对象，它会继续

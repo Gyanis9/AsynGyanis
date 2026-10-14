@@ -1349,6 +1349,49 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 造一条带掩码的 WebSocket 控制帧（9 是 Ping、10 是 Pong）
+     * @details 拼法与 makeMaskedTextFrame 一致，只换首字节的操作码：控制帧的负载不得超过 125 字节
+     *          （RFC 6455 §5.5），用例里都是几字节的心跳载荷，用不上扩展长度档。
+     *          测试侧自己拼一份，比借用本端的编码器独立——编码器出错时两侧会一起错。
+     * @param opCodeValue 操作码的线上值
+     * @param payload 控制帧负载，可为空
+     * @param maskBytes 4 字节掩码
+     * @return std::vector<std::uint8_t> 帧字节
+     */
+    std::vector<std::uint8_t> makeMaskedControlFrame(const std::uint8_t opCodeValue, const std::string_view payload, const std::array<std::uint8_t, 4> &maskBytes)
+    {
+        std::vector<std::uint8_t> frame{static_cast<std::uint8_t>(0x80U | opCodeValue), static_cast<std::uint8_t>(0x80U | payload.size())};
+        frame.insert(frame.end(), maskBytes.begin(), maskBytes.end());
+        for (std::size_t payloadIndex = 0; payloadIndex < payload.size(); ++payloadIndex)
+        {
+            frame.push_back(static_cast<std::uint8_t>(static_cast<unsigned char>(payload[payloadIndex]) ^ maskBytes[payloadIndex % maskBytes.size()]));
+        }
+        return frame;
+    }
+
+    /**
+     * @brief 在写给某条流的字节里找一段连续序列
+     * @details h3 的隧道载荷散在若干 DATA 帧里（应答头、心跳帧各占一段），按整段比对会随分片方式变；
+     *          用例只关心「那一帧心跳有没有交出去」，因此用子序列判定而不是逐格对齐。
+     * @param sentStreamData 本端写给各条流的字节
+     * @param streamId 目标流号
+     * @param sequence 待找的连续字节
+     * @return true 该流上出现过这段字节
+     */
+    bool wroteBytesToStream(const std::vector<CapturedStreamData> &sentStreamData, const std::int64_t streamId, const std::vector<std::uint8_t> &sequence)
+    {
+        std::vector<std::uint8_t> streamBytes;
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            if (chunk.streamId == streamId)
+            {
+                streamBytes.insert(streamBytes.end(), chunk.bytes.begin(), chunk.bytes.end());
+            }
+        }
+        return std::search(streamBytes.begin(), streamBytes.end(), sequence.begin(), sequence.end()) != streamBytes.end();
+    }
+
+    /**
      * @brief 可重复头逐条上线，且整段字段行的次序就是业务的设置顺序
      * @details 单值视图是「一名一值」，可重复头只在 headerValues() 里逐条给出：采集时直接用视图，
      *          业务设的第二条 Cookie 会静默消失（h1/h2 都会发全）。按名回查虽然能把值取全，
@@ -4922,5 +4965,124 @@ namespace AsynGyanis::Net
         const auto [oversizedStatus, oversizedBody] = serveOnce(3U, 3U);
         EXPECT_EQ(oversizedStatus, 431) << "头段越限的记录不该从流式路径派发出去：431 要在 END_STREAM 那一路出";
         EXPECT_EQ(oversizedBody, "Request Header Fields Too Large");
+    }
+
+    /**
+     * @brief 起一条「业务先回一帧 Ping」的 h3 隧道，并把隧道建立时的入站字节一并喂进去
+     * @details 心跳帧要真的从本端出去，看门狗才有东西可等；用例因此先按字节确认那帧 Ping 在线上，
+     *          而不是假定处理器跑过了。
+     * @param session 目标会话（已 setServerLimits）
+     * @param inboundWebSocketBytes 隧道建立时同批到达的入站帧字节（对照组用它交一帧 Pong）；空表示对端静默
+     * @param sentStreamData 本端写出的字节，供调用方判读
+     * @return true 隧道建成且本端发出了那一帧 Ping
+     */
+    bool establishTunnelWithOutstandingPing(Http3Session &session, const std::vector<std::uint8_t> &inboundWebSocketBytes, std::vector<CapturedStreamData> &sentStreamData)
+    {
+        Router router;
+        router.get("/chat",
+                   [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       response.upgradeToWebSocket(
+                               [](WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   [[maybe_unused]] const bool isPingSent = co_await peer.sendPing("asyn");
+                                   while (const auto message = co_await peer.receive())
+                                   {
+                                       static_cast<void>(message);
+                                   }
+                                   co_return;
+                               });
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer                       peer;
+        const std::string                     inboundText(inboundWebSocketBytes.begin(), inboundWebSocketBytes.end());
+        const std::vector<CapturedStreamData> requestChunks = peer.submitWebSocketTunnel("/chat", "example.com", inboundText);
+        if (requestChunks.empty())
+        {
+            return false;
+        }
+        for (const CapturedStreamData &chunk: requestChunks)
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        if (peer.response().status != 200)
+        {
+            return false;
+        }
+
+        // 服务端发出的 Ping：FIN|9 + 长度 4 + 负载原样（不带掩码，RFC 6455 §5.1 给服务端定的是这一档）
+        return wroteBytesToStream(sentStreamData, kFirstRequestStreamId,
+                                  {0x89U, 0x04U, static_cast<std::uint8_t>('a'), static_cast<std::uint8_t>('s'), static_cast<std::uint8_t>('y'), static_cast<std::uint8_t>('n')});
+    }
+
+    /**
+     * @brief 钉住 h3 隧道的心跳看门狗：本端发出 Ping 而对端不回 Pong 时，会话那一拍收掉这条隧道
+     * @details 时限与「过点」都由用例注入（expireStaleRequests 的 now 形参），因此这条用例不等时钟：
+     *          取「本端发出 Ping 之后一小时」当作本拍时刻，判的是换算而不是机器当时的负载。
+     *          收口的观察点是那条流上的 END_STREAM——closeTunnel 的出向收尾正落在那上面；
+     *          同时钉「与 h1/h2 同一本账」：按时限收口要进 timeoutClosedCount。
+     */
+    TEST(Http3Session, ClosesWebSocketTunnelWhenPeerNeverAnswersThePing)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(opener, sentStreamData, nullptr, {}, metrics);
+
+        // 读时限与产出预算都取 0（关掉那两项）：本拍取的是「一小时之后」，留着它们会连那两趟一起触发，
+        // 「按时限收口」的账就成了两笔，而这条用例要判的只有心跳那一趟
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::milliseconds::zero();
+        limits->writeTimeout         = std::chrono::milliseconds::zero();
+        limits->webSocketPongTimeout = std::chrono::seconds{5};
+        session.setServerLimits(limits);
+
+        ASSERT_TRUE(establishTunnelWithOutstandingPing(session, {}, sentStreamData)) << "隧道没建成，或本端那一帧 Ping 没发出去";
+        ASSERT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == kFirstRequestStreamId && chunk.isEndStream; }))
+                << "用例前提：收口之前这条隧道不该结束出向";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::hours{1});
+
+        EXPECT_TRUE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == kFirstRequestStreamId && chunk.isEndStream; }))
+                << "心跳到点而这条隧道没收口：看门狗没接到会话那一拍";
+        EXPECT_EQ(metrics->snapshot().timeoutClosedCount, 1U) << "h3 的心跳时限到期没进与 h1/h2 同一本账";
+    }
+
+    /**
+     * @brief 反向对照：对端按原样回了 Pong，时限走过去之后这条隧道仍然挂着
+     * @details 撤表那一步坏掉时，这一拍会把还活着的隧道一起收掉——回显之外的判据（挂不挂着）只有这条
+     *          对照能给。Pong 随隧道建立的入站字节同批喂进：那里正是对端抢发帧的位置。
+     */
+    TEST(Http3Session, KeepsWebSocketTunnelWhenPeerAnswersThePing)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(opener, sentStreamData, nullptr, {}, metrics);
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::milliseconds::zero();
+        limits->writeTimeout         = std::chrono::milliseconds::zero();
+        limits->webSocketPongTimeout = std::chrono::seconds{5};
+        session.setServerLimits(limits);
+
+        const std::array<std::uint8_t, 4> mask{0x11U, 0x22U, 0x33U, 0x44U};
+        const std::vector<std::uint8_t>   pongFrame = makeMaskedControlFrame(0xA, "asyn", mask);
+        ASSERT_TRUE(establishTunnelWithOutstandingPing(session, pongFrame, sentStreamData)) << "隧道没建成，或本端那一帧 Ping 没发出去";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::hours{1});
+
+        EXPECT_FALSE(std::ranges::any_of(sentStreamData, [](const CapturedStreamData &chunk) { return chunk.streamId == kFirstRequestStreamId && chunk.isEndStream; }))
+                << "对端回了 Pong 而这条隧道仍被那一拍收掉：撤表没生效";
+        EXPECT_EQ(metrics->snapshot().timeoutClosedCount, 0U) << "没到期也不该进「按时限收口」那本账";
     }
 } // namespace AsynGyanis::Net

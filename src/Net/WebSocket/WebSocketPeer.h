@@ -16,6 +16,7 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -104,6 +105,15 @@ namespace AsynGyanis::Net
          *          一条中文日志）。失败一律折成 false 不抛异常；回调是协程，写不下时挂起等待可写。
          */
         using FrameSender = std::function<Core::Task<bool>(std::string_view)>;
+
+        /**
+         * @brief 会话注入的「重刷这条连接的空闲截止」动作
+         *
+         * @details 通知里不带时长：会话拿 idleBudgetWithin() 自己按本相位重算，于是「这一刻该不该收掉
+         *          这条连接」的算法始终只有一份出处。对端对象在武装心跳、撤掉心跳表、以及写完一帧
+         *          （发送回调刚把截止按「等可写」的相位时限刷走）之后各调一次。
+         */
+        using IdleDeadlineRefresh = std::function<void()>;
 
         /**
          * @brief 构造对端对象并注入发送路径与统计采集端
@@ -256,6 +266,40 @@ namespace AsynGyanis::Net
         void setMaximumInboundMessageBytes(std::size_t maximumInboundMessageBytes) noexcept;
 
         /**
+         * @brief 会话侧：装配「本端发出 Ping 后多久没收到 Pong 就判这条连接已死」
+         *
+         * @details 计时起点是本端把这一帧 Ping 写出去之后，与「收到过字节」无关：一直发数据却不回 Pong
+         *          的对端同样判死——RFC 6455 §5.5.3 要求收到 Ping 后尽快回 Pong，那是唯一的应用层存活证据。
+         *          本对象只记下截止时刻并按时机请会话重刷那条截止（见 IdleDeadlineRefresh），不自持定时器也不
+         *          新起线程：到点由各通道既有的那一拍落实（h1/h2 的连接空闲清扫、h3 的会话到期节拍）。
+         * @param timeout 时限，单位毫秒；0 表示不设这项保护
+         * @param idleDeadlineRefresh 会话注入的重刷动作，见 IdleDeadlineRefresh 的说明；h1/h2 用它把连接
+         *        的空闲截止折短，h3 逐条查 isPongDeadlinePassedAt()，不给这个动作
+         * @note 同一时刻只记最早那条未被应答的 Ping（后发的心跳不把截止往后推），收到任何一帧 Pong 即撤表
+         */
+        void setPongTimeout(std::chrono::milliseconds timeout, IdleDeadlineRefresh idleDeadlineRefresh = {});
+
+        /**
+         * @brief 把相位时限与在途心跳的剩余预算合成一个要刷给连接空闲截止的时长
+         * @details 没有在途心跳时原样交回 phaseTimeout，因此这条通道上没发过心跳的连接与本时限无关。
+         * @param phaseTimeout 本相位的常规时限；0 表示那一侧不设时限
+         * @param now 比较时刻（由调用方给出，使这条换算能被确定性地测出来）
+         * @return std::chrono::milliseconds 两者里更早的那一个；已过期时给 1 毫秒（0 是「清除截止时间」，
+         *         会被清扫协程当成不设时限放行）
+         */
+        [[nodiscard]] std::chrono::milliseconds idleBudgetWithin(std::chrono::milliseconds phaseTimeout, std::chrono::steady_clock::time_point now) const noexcept;
+
+        /**
+         * @brief 在途心跳是否已经过了截止时刻
+         * @details 过点之后由调用方收口：h1/h2 的会话在读循环退出时据此把死因写成「心跳没回」而不是
+         *          「空闲超时」，h3 由会话的到期节拍逐条查它并收掉那一条隧道。
+         * @param now 比较时刻（由调用方给出，使这条判定能被确定性地测出来）
+         * @return true 有在途 Ping 且已过截止
+         * @return false 没有在途 Ping、或未启用这项保护、或还没到截止
+         */
+        [[nodiscard]] bool isPongDeadlinePassedAt(std::chrono::steady_clock::time_point now) const noexcept;
+
+        /**
          * @brief 会话侧：把一段网络字节喂进解码器
          *
          * @details 本段字节一定被全部消费：解码器产出一帧就取走并排队，剩下的字节接着解，
@@ -371,6 +415,23 @@ namespace AsynGyanis::Net
          */
         Core::Task<> echoCloseFrame(std::string_view payload);
 
+        /**
+         * @brief 武装在途心跳：记下截止时刻并请会话重刷连接的空闲截止
+         * @details 未启用（时限为 0）或有在途 Ping 时什么都不做：后者不把最早那条的截止往后推，
+         *          否则连发心跳的处理器会把一把判死的钟一圈圈续走。
+         */
+        void armPongDeadline();
+
+        /**
+         * @brief 撤掉心跳看门狗并通知会话
+         * @details 撤表也要通知：此前被刷短的空闲截止得按相位时限还回去，否则一条健康而安静的
+         *          连接会被那把心跳钟提前收掉。
+         */
+        void clearPongDeadline();
+
+        /// 请会话按本相位重算并刷回连接的空闲截止；未注入该动作时是空操作
+        void refreshSessionIdleDeadline() const;
+
         FrameSender                m_frameSender;      ///< 发送路径，由会话注入
         HttpMetricsCollector      *m_metrics{nullptr}; ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
         WebSocketFrameDecoder      m_decoder;          ///< 帧解码器：掩码校验、分片重组都在它内部完成
@@ -383,6 +444,11 @@ namespace AsynGyanis::Net
         std::string                            m_payloadErrorMessage;       ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
         std::uint16_t                          m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
         std::optional<PerMessageDeflateWindow> m_deflateWindow{}; ///< 协商出的两侧窗口位数；空表示未协商 permessage-deflate，决定收发两侧是否压缩
+
+        std::chrono::milliseconds m_pongTimeout{};         ///< 「发出 Ping 后多久没收到 Pong」的时限；0 表示不设这项保护
+        IdleDeadlineRefresh       m_idleDeadlineRefresh{}; ///< 会话注入的「重刷本连接空闲截止」动作；空表示这条通道不靠它落实时限
+        /// 最早那条未被应答 Ping 的截止时刻；空表示没有在途心跳（没发过 Ping、Pong 已回、或本通道未装配时限）
+        std::optional<std::chrono::steady_clock::time_point> m_outstandingPongDeadline{};
 
         /// 本次关闭是对端 Close 的应答：一次对端发起的关闭只记在对端一侧，
         /// 回帧不再重复记成本侧发起。粘性标记——对端关闭后本对象即收口，不存在需要复位的下一轮

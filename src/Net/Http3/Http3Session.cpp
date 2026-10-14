@@ -1153,6 +1153,49 @@ namespace AsynGyanis::Net
             // 被收口的流上可能挂着等正文的处理器：当场叫醒，让它们看到终止而不是挂到连接结束
             wakeStreamingRequests();
         }
+
+        // 隧道的那把钟同拍查：它不归上面三趟管——三趟判的是「这条流挂了多久没进展」，隧道本就该长期挂着，
+        // 而这一趟判的是「本端发出的 Ping 有没有回音」
+        expireStaleWebSocketTunnels(now);
+    }
+
+    void Http3Session::expireStaleWebSocketTunnels(const Deadline now)
+    {
+        // 未装配时限（没有连接级限额、或那一项为 0）：这条通道不设这项保护，发过 Ping 也不判死
+        if (m_serverLimits == nullptr || m_serverLimits->webSocketPongTimeout <= std::chrono::milliseconds::zero())
+        {
+            return;
+        }
+
+        // 先把过点的流号挑出来：下面收口时会叫醒业务，它跑完的收尾连着摘表，边遍历边摘会踩到迭代器
+        std::vector<std::int64_t> pongExpiredStreamIds;
+        for (const auto &[streamId, tunnel]: m_webSocketTunnels)
+        {
+            if (tunnel->peer != nullptr && tunnel->peer->isOpen() && tunnel->peer->isPongDeadlinePassedAt(now))
+            {
+                pongExpiredStreamIds.push_back(streamId);
+            }
+        }
+
+        for (const std::int64_t streamId: pongExpiredStreamIds)
+        {
+            // 挑出来之后可能已被别的路径收口（对端在这期间重置了这条流、或上一趟已把它带走）：表里认不出
+            // 就跳过。已经 markClosed 的同样跳过——收口这件事已经有人办过，不再补一条日志、也不再计一笔。
+            // 这一格 isOpen() 判据与 h1/h2 的收尾处不同解是刻意的：本趟每 expiryTickInterval 就来一遍，
+            // 不靠它收口就会每一拍重记一次同样的死因，而 h1/h2 的收尾一生只走一次
+            const auto found = m_webSocketTunnels.find(streamId);
+            if (found == m_webSocketTunnels.end() || found->second->peer == nullptr || !found->second->peer->isOpen())
+            {
+                continue;
+            }
+            LOG_WARN_FMT("Http3Session: 流 {} 的隧道里本端发出 Ping 后 {} 毫秒没有收到 Pong，判定对端已死，本侧收口这条隧道", streamId,
+                         m_serverLimits->webSocketPongTimeout.count());
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countTimeoutClosedConnection();
+            }
+            closeTunnel(streamId);
+        }
     }
 
     void Http3Session::dropRequest(const std::int64_t streamId)
@@ -1740,6 +1783,13 @@ namespace AsynGyanis::Net
         tunnel->peer->setPerMessageDeflate(deflateNegotiation.window);
         // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
         tunnel->peer->setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
+        // 心跳看门狗：本端发出 Ping 后等不到 Pong 即到点，由 expireStaleWebSocketTunnels() 那一拍逐条查并
+        // 收掉这条隧道。这里不给会话侧的通知回调（h1/h2 那两路靠它把同一个截止刷进连接的空闲钟）：
+        // h3 没有可等的读协程，本拍每 expiryTickInterval 就来一遍，时限由这张表自己落实
+        if (m_serverLimits != nullptr)
+        {
+            tunnel->peer->setPongTimeout(m_serverLimits->webSocketPongTimeout);
+        }
 
         WebSocketTunnel &created = *tunnel;
         m_webSocketTunnels.emplace(streamId, std::move(tunnel));

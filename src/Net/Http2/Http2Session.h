@@ -655,6 +655,17 @@ namespace AsynGyanis::Net
                                                                                      WebSocketHandshakeRejection rejection, const std::string &reason);
 
         /**
+         * @brief 隧道读循环退出后给对端对象定稿：按死因决定补不补那条 Close
+         * @details 三条出口按 h1 阶段同一判据分档：帧违规按具体码、心跳到点判死（不给不回心跳的对端
+         *          补 Close，本侧此刻收口）、其余主动发正常关闭帧。刻意**不唤醒**等待者——那是调用方
+         *          在 markClosed 之后要做的事，顺序在 h1 那侧已钉过（先唤醒再销毁）。
+         * @param streamId 隧道所属的流（只进日志）
+         * @param peer 这条隧道的对端对象
+         * @param feedStatus 读循环最后一次喂字节的结论
+         */
+        Core::Task<> finishWebSocketTunnelPeer(std::uint32_t streamId, WebSocketPeer &peer, WebSocketFeedStatus feedStatus);
+
+        /**
          * @brief 隧道期间就地服务同连接其它流上已收齐的请求（隧道协程即本连接的驱动者）
          * @details 隧道内联驱动期间，驱动者职责（喂正文、还窗口、服务请求）都由隧道协程承担：
          *          这里把「正文已收齐」的普通请求逐条 co_await 服务掉，响应随即随本轮写出上线。

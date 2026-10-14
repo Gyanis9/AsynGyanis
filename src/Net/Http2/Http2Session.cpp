@@ -1505,6 +1505,12 @@ namespace AsynGyanis::Net
         // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
         peer.setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
 
+        // 空闲钟按「相位时限与在途心跳的剩余预算里更早的那一个」武装：本端发过 Ping 而 Pong 没回来时
+        // 截止点落在心跳时限上，到点由清扫协程按既有的那一拍收掉这条连接——不新起线程，也不在这里
+        // 另挂一个定时器协程（那要把唤醒打在别人正挂着的读等待上）
+        const auto armIdleDeadline = [this, &peer] { refreshIdleDeadline(peer.idleBudgetWithin(m_limits->idleTimeout, std::chrono::steady_clock::now())); };
+        peer.setPongTimeout(m_limits->webSocketPongTimeout, armIdleDeadline);
+
         bool       isBusinessFinished = false;
         const auto runBusiness        = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
         {
@@ -1537,8 +1543,9 @@ namespace AsynGyanis::Net
         bool              isRemoteEndStream = false;
         while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen() && !isRemoteEndStream)
         {
-            // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径
-            refreshIdleDeadline(m_limits->idleTimeout);
+            // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径；
+            // 本端发过 Ping 而 Pong 还没回来时，那一拍由 armIdleDeadline 折进心跳时限，取两者里更早的一个
+            armIdleDeadline();
 
             ssize_t receivedLength = 0;
             try
@@ -1606,23 +1613,8 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 收尾与 h1 阶段同一判据：协议错误按具体码收口，否则主动发正常关闭帧（本侧已收口时不补发）
-        if (feedStatus == WebSocketFeedStatus::DecodeError)
-        {
-            const std::uint16_t errorCode = peer.decodeErrorCloseCode();
-            LOG_ERROR_FMT("Http2Session: WebSocket 隧道里对端违反 RFC 6455，按状态码 {} 收口。原因：{}", errorCode, peer.decodeErrorText());
-            if (m_metrics != nullptr)
-            {
-                m_metrics->countWebSocketProtocolErrorClose();
-            }
-            if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
-            {
-                [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
-            }
-        } else if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
-        {
-            [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
-        }
+        // 收尾与 h1 阶段同一判据：协议错误按具体码收口、心跳到点判死，否则主动发正常关闭帧
+        co_await finishWebSocketTunnelPeer(streamId, peer, feedStatus);
         peer.markClosed();
 
         // 收口与 h1 阶段同一顺序（先唤醒再销毁）：业务可能正挂在 receive() 上，而 markClosed() 有意不唤醒它。
@@ -1645,6 +1637,40 @@ namespace AsynGyanis::Net
         LOG_INFO_FMT("Http2Session: WebSocket 隧道已收尾（流 {}，存活 {}ms）。request-id {}，路径 {}", streamId,
                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tunnelStartTime).count(), request.requestId(), request.uri());
         co_return RequestServeOutcome::Served;
+    }
+
+    Core::Task<> Http2Session::finishWebSocketTunnelPeer(const std::uint32_t streamId, WebSocketPeer &peer, const WebSocketFeedStatus feedStatus)
+    {
+        if (feedStatus == WebSocketFeedStatus::DecodeError)
+        {
+            const std::uint16_t errorCode = peer.decodeErrorCloseCode();
+            LOG_ERROR_FMT("Http2Session: WebSocket 隧道里对端违反 RFC 6455，按状态码 {} 收口。原因：{}", errorCode, peer.decodeErrorText());
+            if (m_metrics != nullptr)
+            {
+                m_metrics->countWebSocketProtocolErrorClose();
+            }
+            if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
+            {
+                [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
+            }
+            co_return;
+        }
+
+        if (peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now()))
+        {
+            // 死因是「Ping 发出去了而 Pong 没回来」，与「这条隧道一直很闲」不是一回事：日志按前者写，
+            // 而不给一个不回心跳的对端补 Close。判据刻意不看 isOpen()/业务是否已跑完：清扫关掉描述符之后，
+            // 业务侧的写出失败与会话的读失败谁先落地由调度决定，看了就会在一侧漏记（与 h1 同一条理由）
+            LOG_ERROR_FMT("Http2Session: 流 {} 的隧道里本端发出 Ping 后 {} 毫秒没有收到 Pong，判定对端已死，本侧收口", streamId, m_limits->webSocketPongTimeout.count());
+            peer.markClosed();
+            co_return;
+        }
+
+        if (peer.isOpen() && !peer.isWriteInFlight() && isTransportOpen())
+        {
+            [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
+        }
+        co_return;
     }
 
     Core::Task<bool> Http2Session::serveOtherStreamsDuringTunnel(const std::uint32_t tunnelStreamId)

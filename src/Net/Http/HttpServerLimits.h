@@ -43,6 +43,14 @@ namespace AsynGyanis::Net
         /// （RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）。握手期等待与业务空闲是两件事，故单列一项；0 表示不设这项保护
         std::chrono::milliseconds settingsAcknowledgementTimeout{std::chrono::seconds(10)};
 
+        /// WebSocket 心跳专项：本端发出一帧 Ping 后，等多久没收到 Pong 就把那条连接判为已死，单位毫秒；
+        /// 0 表示不设这项保护（默认，与其余各项的 0 语义一致）。计时与「收到过字节」无关：对端一直发数据
+        /// 却不回 Pong 同样判死（RFC 6455 §5.5.3 要求尽快回 Pong，那是唯一的应用层存活证据）。
+        /// 三条通道都吃这一格，但收口的单位不同：h1/h2 走连接的空闲清扫那一拍，收的是整条 TCP 连接
+        /// （隧道之外若还有别的流会一起断开——同一个对端不回心跳，那条连接上没有什么还值得留）；
+        /// h3 走会话的到期节拍，只收那一条隧道流。两处节拍（250 毫秒与 10 毫秒）就是本项的误差上界
+        std::chrono::milliseconds webSocketPongTimeout{0};
+
         std::size_t maximumRequestsPerConnection{1000}; ///< 单连接最多处理的请求条数，达到后回完当前响应即收口；0 表示不限
 
         /// 静态文件的映射缓存条数上限：同时保留多少份已建好的映射。命中一次即省掉「打开文件 + 建立映射」

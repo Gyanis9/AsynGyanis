@@ -164,7 +164,8 @@ namespace AsynGyanis::Net
          * @details 由承载层的节拍循环按拍调用（h3 会话没有套接字可等，也没有自己的定时器）。
          *          h1/h2 撞到这个时限是掐掉整条连接，这里只处置那一条流（RESET_STREAM +
          *          STOP_SENDING）：多路复用是 h3 的常态，一条慢客户端不该连坐其它请求。
-         *          处理器相位刻意不判：流式响应与隧道本就该长期挂着，没有「产出即刷新」的钩子。
+         *          处理器相位刻意不判：隧道本就该长期挂着，只按心跳时限收口，见
+         *          expireStaleWebSocketTunnels()。
          * @param now 本拍时刻（由调用方注入，用例据此精确复现「过点」）
          */
         void expireStaleRequests(Deadline now);
@@ -799,6 +800,16 @@ namespace AsynGyanis::Net
 
         /// 把已经跑完的业务协程随记录一起摘掉（业务跑完且流已关闭）
         void reapFinishedTunnels();
+
+        /**
+         * @brief 按时限收掉「本端 Ping 没等到 Pong」的隧道
+         * @details 判的不是「这条流挂了多久」——隧道本就该长期挂着——而是「本端发出的心跳有没有回音」：
+         *          RFC 6455 §5.5.3 要求收到 Ping 后尽快回 Pong，那是这条流上唯一的应用层存活证据。
+         *          时限取 `HttpServerLimits::webSocketPongTimeout`，装配点见 serveWebSocketTunnel()。
+         *          只收那一条隧道（h1/h2 那两路收的是整条 TCP 连接）：h3 上一条连接可以载多条流。
+         * @param now 本拍时刻（由调用方注入，用例据此精确复现「过点」）
+         */
+        void expireStaleWebSocketTunnels(Deadline now);
 
         /**
          * @brief 在安全点把攒下的入向字节交给各条隧道的对端对象
