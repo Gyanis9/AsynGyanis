@@ -442,12 +442,6 @@ namespace AsynGyanis::Net
         return kQpackNoAbsoluteIndex;
     }
 
-    void QpackDynamicTable::clearEntries() noexcept
-    {
-        m_entries.clear();
-        m_sizeByteCount = 0;
-    }
-
     std::size_t QpackDynamicTable::entrySizeByteCountOf(const QpackHeaderField &field) noexcept
     {
         // §3.2.1：按名与值未做 Huffman 编码的长度算，再加 32 字节固定开销

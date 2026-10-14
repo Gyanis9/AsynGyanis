@@ -190,9 +190,6 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::uint64_t findNameEntry(std::string_view name) const;
 
-        /// 清空表内容；累计插入计数不回退，绝对索引空间与对端保持一致（RFC 9204 §3.2.4）
-        void clearEntries() noexcept;
-
         /**
          * @brief 算一项占的大小（RFC 9204 §3.2.1）
          * @param field 待算的字段行
