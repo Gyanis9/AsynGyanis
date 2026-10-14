@@ -8,6 +8,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Router.h"
+#include "Net/Quic/QuicAddressValidationToken.h"
 #include "Net/Quic/QuicServer.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/IO/DatagramSocket.h"
@@ -317,6 +318,37 @@ namespace AsynGyanis::Net
             configuration.handshakeTimeout                   = handshakeTimeout;
             return configuration;
         }
+        /**
+         * @brief 手拼一条客户端 Initial：目的/源标识与 Token 字段都由调用方给
+         * @details 刻意不借被测的组包器：这条报文是「对端发来的东西」，用自家编码器拼就等于让实现
+         *          自己给自己出题。长度字段按「包号 1 字节 + 载荷」算，载荷是纯垃圾——本文件的判据
+         *          只到「头部读得懂、令牌验得过」为止，后面的解密注定失败。
+         * @param destinationConnectionId 目的标识（本端在此识别连接）
+         * @param sourceConnectionId 本端自报的源标识
+         * @param token 令牌字段，空即「还没验过地址」
+         * @param payloadByteCount 垃圾载荷字节数
+         */
+        std::vector<std::uint8_t> makeClientInitial(const std::vector<std::uint8_t> &destinationConnectionId, const std::vector<std::uint8_t> &sourceConnectionId,
+                                                    const std::vector<std::uint8_t> &token, const std::size_t payloadByteCount)
+        {
+            std::vector<std::uint8_t> packet{0xC0U, 0x00U, 0x00U, 0x00U, 0x01U};
+            packet.push_back(static_cast<std::uint8_t>(destinationConnectionId.size()));
+            packet.insert(packet.end(), destinationConnectionId.begin(), destinationConnectionId.end());
+            packet.push_back(static_cast<std::uint8_t>(sourceConnectionId.size()));
+            packet.insert(packet.end(), sourceConnectionId.begin(), sourceConnectionId.end());
+            // 两处长度都用变长整数的一字节档（本文件的取值都小于 64）
+            packet.push_back(static_cast<std::uint8_t>(token.size()));
+            packet.insert(packet.end(), token.begin(), token.end());
+            packet.push_back(static_cast<std::uint8_t>(1U + payloadByteCount));
+            packet.push_back(0x00U); // 包号：一字节档的 0
+            for (std::size_t index = 0; index < payloadByteCount; ++index)
+            {
+                packet.push_back(static_cast<std::uint8_t>(0x20U + index));
+            }
+            return packet;
+        }
+        /// 地址验证用例的固定密钥：服务端与用例里的核验器共用同一把，才能就地判「回包里那张令牌验得过」
+        const std::vector<std::uint8_t> kAddressValidationTestKey(32U, 0x5AU);
     } // namespace
 
     /**
@@ -691,5 +723,152 @@ namespace AsynGyanis::Net
                 static_cast<std::uint32_t>((static_cast<std::uint32_t>(reply[offset]) << 24U) | (static_cast<std::uint32_t>(reply[offset + 1U]) << 16U) |
                                            (static_cast<std::uint32_t>(reply[offset + 2U]) << 8U) | static_cast<std::uint32_t>(reply[offset + 3U]));
         EXPECT_EQ(advertisedVersion, 0x00000001U) << "列表里列的不是 v1，客户端按列表去连就连到别处了";
+    }
+
+    /**
+     * @brief 钉住地址验证：不带令牌的第一包 Initial 先吃一条 Retry，把令牌带回来才建连接
+     * @details 这一格要判的是**公网 UDP 端口上的成本账**：一条 Initial 就能让本端建一份 TLS 会话、
+     *          一张流表与一套拥塞状态，而发的人不必是自己。判据分三段，每段各钉一种失败形状：
+     *          ① 没令牌→回 Retry 且**不建任何状态**（少了这条，Retry 就成了白加一轮握手）；
+     *          ② 带真令牌回来→不再回 Retry（§8.1.2 禁止第二轮）且这条连接被受理；受理这一步读服务端写的
+     *          那条日志而不是在线数——这一包的载荷注定解不开，本端会把它连同连接一起收口，在线数只在
+     *          同一批里存在一瞬，拿它判就是赌调度；
+     *          ③ 令牌被改过一个比特→不回 Retry 也不建连接（§8.1.2：此时只能拒或放行），且这一格必须
+     *          出声——运维靠那条记录分辨「洪水带着自造的令牌」与「密钥不合」。
+     *          回包按 RFC 9000 §17.2.5 那张图手工解析，不用自家解码器——两侧同源就查不出「都理解错」；
+     *          两格标识的换位（线上目的标识＝本端自报的源标识，线上源标识＝本端新挑的那一条）也在这一格
+     *          逐字节钉住，那是对端认领这条 Retry 的唯一凭据。
+     */
+    TEST(QuicServer, DemandsAddressValidationBeforeAcceptingANewConnection)
+    {
+        const HttpTestSupport::LogCapture logCapture; // 服务端按档位出声，读它才知道被拒的是哪一格
+        constexpr std::uint8_t            kProbeConnectionIdByte = 0xD0U;
+        /// Retry 末尾的完整性标签长度（RFC 9001 §5.8 定死 128 位）。本用例手工解析回包，因此按规范
+        /// 的字面值取，不引实现侧的同名常量——同源就把「都算错」这种情况钉不出来
+        constexpr std::size_t kRetryIntegrityTagByteLength = 16U;
+
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration)
+                                 {
+                                     configuration.addressValidationTokenLifetime = std::chrono::seconds{30};
+                                     configuration.addressValidationKey           = std::vector<std::uint8_t>(32, 0x5AU);
+                                 }};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Core::InetAddress serverAddress("127.0.0.1", server.listeningPort());
+
+        const std::vector<std::uint8_t> clientDestinationConnectionId(8U, kProbeConnectionIdByte);
+        // 客户端自报的源标识取「逐字节递增」而不是全同：这样既能把「本端把目的与源两格填反」查出来，
+        // 也能把「抄回去但顺序错了」查出来。§17.2.5.1 要求 Retry 的线上目的标识原样回显这一格
+        std::vector<std::uint8_t> clientSourceConnectionId;
+        for (std::uint8_t index = 0; index < 8U; ++index)
+        {
+            clientSourceConnectionId.push_back(static_cast<std::uint8_t>(0x50U + index));
+        }
+        const std::vector<std::uint8_t> firstInitial = makeClientInitial(clientDestinationConnectionId, clientSourceConnectionId, {}, 40U);
+
+        // ① 不带令牌
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), firstInitial.data(), firstInitial.size()), 0);
+        std::vector<std::uint8_t> retryPacket(1200U);
+        std::size_t               retryLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress retryFrom{};
+                    const ssize_t           received = sender.receive(retryPacket.data(), retryPacket.size(), retryFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    retryLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kWaitTimeout))
+                << "没带令牌的 Initial 什么都没收到：本端直接开始握手，等于把成本账留给对端";
+
+        ASSERT_GE(retryLength, 5U + 1U + clientSourceConnectionId.size() + 1U + QuicConnection::kSourceConnectionIdLength + 1U + kRetryIntegrityTagByteLength)
+                << "回包短于一条 Retry 应有的最小形状（§17.2.5 的字段表：版本 4 字节加长头固定段 1 字节，两条标识各带一个长度字节，令牌至少 1 字节，末尾 16 字节标签）";
+        EXPECT_NE(retryPacket[0] & 0x80U, 0U) << "Retry 不是长头";
+        EXPECT_EQ((retryPacket[0] >> 4U) & 0x03U, 3U) << "长头类型位不是 3（Retry）：对端按自己认得的形态解这条";
+        EXPECT_EQ(static_cast<std::uint32_t>((static_cast<std::uint32_t>(retryPacket[1]) << 24U) | (static_cast<std::uint32_t>(retryPacket[2]) << 16U) |
+                                             (static_cast<std::uint32_t>(retryPacket[3]) << 8U) | static_cast<std::uint32_t>(retryPacket[4])),
+                  0x00000001U)
+                << "Retry 里的版本要照抄收到那一包";
+        std::size_t offset = 5U;
+        EXPECT_EQ(retryPacket[offset], static_cast<std::uint8_t>(clientSourceConnectionId.size())) << "回包的目的标识长度该等于我发出的源标识长度";
+        ++offset;
+        for (const std::uint8_t sourceConnectionIdByte: clientSourceConnectionId)
+        {
+            ASSERT_LT(offset, retryLength) << "回包在目的标识中途结束：这条 Retry 对端解不完";
+            EXPECT_EQ(retryPacket[offset], sourceConnectionIdByte) << "线上目的标识没有原样回显本端自报的源标识（§17.2.5.1）：对端按那一格认领回包，填错就把它当无主报文丢掉";
+            ++offset;
+        }
+        EXPECT_EQ(retryPacket[offset], static_cast<std::uint8_t>(QuicConnection::kSourceConnectionIdLength))
+                << "回包的源标识长度必须等于本端短头定长：短头线上没有长度字段，换了长度后续报文就再也路由不回来";
+        ++offset;
+        std::vector<std::uint8_t> retrySourceConnectionId(retryPacket.begin() + static_cast<std::ptrdiff_t>(offset),
+                                                          retryPacket.begin() + static_cast<std::ptrdiff_t>(offset + QuicConnection::kSourceConnectionIdLength));
+        offset += retrySourceConnectionId.size();
+        const std::size_t tokenByteCount = retryLength - offset - kRetryIntegrityTagByteLength;
+        ASSERT_GT(tokenByteCount, 0U) << "Retry 带了零长令牌：客户端必须丢这种报文（§17.2.5.2），等于这项保护没开";
+        std::vector<std::uint8_t> addressValidationToken(retryPacket.begin() + static_cast<std::ptrdiff_t>(offset),
+                                                         retryPacket.begin() + static_cast<std::ptrdiff_t>(offset + tokenByteCount));
+        EXPECT_EQ(server.server().connectionCount(), 0U) << "回了一条 Retry 却已经把连接建起来了：这一项保护的成本没省下来";
+
+        // 这张令牌要能被「同一把配置密钥」验过——否则后面那步「带令牌重来」根本不该放行。放在这里判一次，
+        // 失败时点名的是令牌本身而不是「连接没建起来」那条远端后果
+        const QuicAddressValidationTokenCodec verifier(std::span<const std::uint8_t>(kAddressValidationTestKey), std::chrono::seconds{30});
+        const auto locallyVerified = verifier.verify(std::span<const std::uint8_t>(addressValidationToken), sender.localAddress(), std::chrono::system_clock::now());
+        ASSERT_TRUE(locallyVerified.has_value()) << "回包里那张令牌自家验不过，状态是 " << static_cast<int>(locallyVerified.error());
+        EXPECT_EQ(locallyVerified->originalDestinationConnectionId.size(), 8U) << "令牌恢复的原始目的标识长度不对";
+
+        // ② 带着这张令牌重来，目的标识换成本端给出去的那一条
+        const std::vector<std::uint8_t> retriedInitial = makeClientInitial(retrySourceConnectionId, clientSourceConnectionId, addressValidationToken, 40U);
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), retriedInitial.data(), retriedInitial.size()), 0);
+        // 这一包的载荷是故意的垃圾：本端去掉头部保护后看到保留位非 0，按 §17.3.1 把这条连接判成收口，
+        // 它在表里因此只活到同一批的回收那一拍。按在线数判等于赌调度，改读受理那一刻写的日志——accept
+        // 成功就无条件写一条，随后的入表与在线数 +1 在同一条直线上，没有别的出口
+        EXPECT_GE(logCapture.countContainingWithin("已接受一条连接", kWaitTimeout), 1U) << "令牌验过了却没建连接：这条握手再也走不下去（受理这一步只看令牌，不看载荷）";
+        EXPECT_EQ(logCapture.countContaining("地址验证没通过"), 0U) << "带着合法令牌的这一包被判成验不过：§8.1.2 只许可拒伪造的令牌，不许可把真令牌也拒掉";
+        // 这一格的回话不止一种：载荷是垃圾，本端受理之后按 §17.3.1 收口，会有一条收口报文回来。
+        // 因此判的不是「有没有回话」而是「回来的是不是第二条 Retry」——§8.1.2 明写带了本端签的令牌
+        // 就只有拒或放行两条出口，再回一条 Retry 就是把对端按回第一轮
+        std::vector<std::uint8_t> secondReply(1200U);
+        bool                      gotSecondRetry = false;
+        const auto                drainDeadline  = std::chrono::steady_clock::now() + std::chrono::milliseconds{300};
+        while (std::chrono::steady_clock::now() < drainDeadline && !gotSecondRetry)
+        {
+            Platform::SocketAddress secondFrom{};
+            const ssize_t           received = sender.receive(secondReply.data(), secondReply.size(), secondFrom);
+            if (received <= 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                continue;
+            }
+            gotSecondRetry = (secondReply[0] & 0x80U) != 0U && ((secondReply[0] >> 4U) & 0x03U) == 3U;
+        }
+        EXPECT_FALSE(gotSecondRetry) << "对端已经把令牌带回来了，却又收到一条 Retry：§8.1.2 明写这一轮之后只能拒或放行";
+
+        // ③ 令牌被改过一个比特：不回 Retry，也不建连接
+        const std::size_t onlineBeforeTamper = server.server().connectionCount();
+        // 受理这条记号是单调的：上一段刚受理过一条，这一段的判据因此是「计数不涨」而不是「表是空的」
+        const std::size_t         acceptedBeforeTamper = logCapture.countContaining("已接受一条连接");
+        std::vector<std::uint8_t> forgedToken          = addressValidationToken;
+        // 改的是令牌正文里「原始目的标识」的第一字节（种类 1 + 签发秒 4 + 该标识长度 1，正文从第 6 字节起）。
+        // 挑这一格是因为只有正文的 HMAC 拦得住它：种类没动、长度字段没动、地址认证码没动、签发秒也没动，
+        // 于是形状检查与地址检查一律照过——换到别的字节上，红就落在「形状不合」或「地址不合」上，
+        // 这一格判的就不再是「伪造」
+        forgedToken[6] ^= 0x01U;
+        const std::vector<std::uint8_t> tamperedInitial =
+                makeClientInitial(std::vector<std::uint8_t>(QuicConnection::kSourceConnectionIdLength, 0xB0U), clientSourceConnectionId, forgedToken, 40U);
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), tamperedInitial.data(), tamperedInitial.size()), 0);
+        // 这一格的丢弃必须出声：只有它和计数一起在场，运维才看得出被拦下的这条是「自造的令牌」还是
+        // 「别处的令牌搬了来」。那条记录写在服务端处理这条数据报的那一刻，可能晚于本端的 send 返回，
+        // 所以按等待读而不是当场读
+        EXPECT_GE(logCapture.countContainingWithin("地址验证没通过", kWaitTimeout), 1U) << "验失败的令牌被静默丢弃：这一格与「没收到包」在读数上看不出区别";
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
+        EXPECT_EQ(server.server().connectionCount(), onlineBeforeTamper) << "改了比特的令牌被当成验过：这道 HMAC 没在拦伪造";
+        EXPECT_EQ(logCapture.countContaining("已接受一条连接"), acceptedBeforeTamper) << "改了比特的令牌被当成验过：这道 HMAC 没在拦伪造";
     }
 } // namespace AsynGyanis::Net

@@ -71,6 +71,7 @@ add_executable(TestNet
         Quic/Crypto/TestQuicPacketProtection.cpp
         Quic/Crypto/TestQuicTlsContext.cpp
         Quic/TestQuicPacketBuilder.cpp
+        Quic/TestQuicAddressValidationToken.cpp
         Quic/TestQuicConnection.cpp
         Quic/TestQuicConnectionCore.cpp
         Quic/Recovery/TestQuicRecovery.cpp

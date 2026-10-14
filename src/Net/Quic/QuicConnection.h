@@ -142,16 +142,33 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief 本端对这条连接回过 Retry 之后，接受那份 Initial 时要用的两样凭据
+         *
+         * @details 走没走过 Retry 决定了本端标识与参数里的原始目的标识从哪来，理由见 `accept` 的同名说明。
+         */
+        struct ASYN_NET_API RetryContext
+        {
+            std::vector<std::uint8_t> retrySourceConnectionId{};         ///< 本端在 Retry 报文里给的源标识
+            std::vector<std::uint8_t> originalDestinationConnectionId{}; ///< 从令牌里恢复的、客户端第一个 Initial 的目的标识
+        };
+
+        /**
          * @brief 服务端接受一条新连接
          * @param configuration 连接配置
          * @param localAddress 本端地址
          * @param peerAddress 对端地址
          * @param clientInitial 客户端首个 Initial 报文，只用来取版本与两条连接标识
+         * @param retryContext 本端对这条连接回过 Retry 时交那份凭据；空＝没走过 Retry，照旧自造本端标识
          * @return std::unique_ptr<QuicConnection> 新连接；报文不可接受（非 Initial、版本不支持等）
          *         时返回 nullptr。首包本身不在这里交付，调用方随后照常调 `handleDatagram`
+         * @details 走过 Retry 之后有两处要换个来源：本端签发的标识就是 Retry 里给出去的那一条——客户端
+         *          此后所有包都按它路由，自造一条新的会让这封重传的 Initial 认不回来；而参数里的原始目的
+         *          标识要的是客户端**第一个** Initial 里那个值，它由令牌恢复，不再取自此刻报文里的目的标识
+         *          （§17.2.5.2 之后两者已经不同，RFC 9000 §18.2 认的是前者，Initial 的密钥认的是前者）。
          */
         [[nodiscard]] static std::unique_ptr<QuicConnection> accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
-                                                                    const Platform::SocketAddress &peerAddress, std::span<const std::uint8_t> clientInitial);
+                                                                    const Platform::SocketAddress &peerAddress, std::span<const std::uint8_t> clientInitial,
+                                                                    const std::optional<RetryContext> &retryContext = std::nullopt);
 
         /**
          * @brief 作客户端起一条新连接

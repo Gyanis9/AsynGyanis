@@ -93,7 +93,8 @@ namespace AsynGyanis::Net
     } // namespace
 
     std::unique_ptr<QuicConnection> QuicConnection::accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
-                                                           const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> clientInitial)
+                                                           const Platform::SocketAddress &peerAddress, const std::span<const std::uint8_t> clientInitial,
+                                                           const std::optional<RetryContext> &retryContext)
     {
         if (configuration.tlsContext == nullptr || (!configuration.sendDatagram && !configuration.sendDatagramBatch))
         {
@@ -121,6 +122,20 @@ namespace AsynGyanis::Net
             return nullptr;
         }
 
+        // 走过 Retry 的这一条：本端标识就是 Retry 里给出去的那一条，参数与 Initial 密钥要的原始目的标识
+        // 由令牌恢复。长度不合（不是 kSourceConnectionIdLength）说明交来的凭据不是本端签的那条标识，
+        // 短头又没有长度字段，收下就会让后续报文再也认不回来——宁可不建这条连接
+        if (retryContext.has_value() && retryContext->retrySourceConnectionId.size() != kSourceConnectionIdLength)
+        {
+            LOG_ERROR_FMT("QuicConnection: Retry 凭据里的源标识有 {} 字节，与本端约定的 {} 字节不符，连接未建立", retryContext->retrySourceConnectionId.size(),
+                          kSourceConnectionIdLength);
+            return nullptr;
+        }
+        if (retryContext.has_value())
+        {
+            sourceConnectionIdBytes = retryContext->retrySourceConnectionId;
+        }
+
         QuicConnectionCoreConfiguration coreConfiguration;
         coreConfiguration.role              = QuicConnectionRole::Server;
         coreConfiguration.tlsContext        = configuration.tlsContext;
@@ -130,6 +145,13 @@ namespace AsynGyanis::Net
         coreConfiguration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
         // 客户端首个 Initial 的目的标识是它自己造的：Initial 密钥与参数里的 ODCID 都由它算
         coreConfiguration.originalDestinationConnectionId.assign(header.destinationConnectionId.begin(), header.destinationConnectionId.end());
+        if (retryContext.has_value())
+        {
+            // 走过 Retry：报文里的目的标识已是本端给出去的那一条，ODCID 得用令牌恢复的那个原值；
+            // 而 Initial 的包密钥跟着换成本端给的那一条（§17.2.5.2），两件事都由核心按这两格算
+            coreConfiguration.originalDestinationConnectionId = retryContext->originalDestinationConnectionId;
+            coreConfiguration.retrySourceConnectionId         = retryContext->retrySourceConnectionId;
+        }
         // 本平台能不能按单条报文读写 IP 的 ECN 字段是平台事实（Windows 两侧都没有入口），由外壳带给状态机：
         // 状态机自己是纯计算件，让它去问平台就等于让用例的结果跟着编译它的那台机器变。理由见配置里那一格
         coreConfiguration.supportsPerDatagramEcnField = Platform::DatagramSocket::supportsPerDatagramEcnField();

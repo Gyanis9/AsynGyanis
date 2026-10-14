@@ -127,6 +127,10 @@ port="$(startServer garbage --idle-timeout 30)" || exit 2
 runCase garbage-tolerant garbage garbage-tolerant "$port"
 stopServer
 
+port="$(startServer address-validation --address-validation 30)" || exit 2
+runCase retry-handshake address-validation retry-handshake "$port"
+stopServer
+
 port="$(startServer alpn)" || exit 2
 runCase alpn-refusal alpn alpn-refusal "$port"
 stopServer

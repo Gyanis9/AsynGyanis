@@ -271,6 +271,12 @@ namespace AsynGyanis::Net
         if (isLocalServer())
         {
             localParameters.originalDestinationConnectionId = m_configuration.originalDestinationConnectionId;
+            // §18.2：发过 Retry 的服务端必须把 Retry 里那条源标识写进参数，客户端拿它核对这条 Retry
+            // 确实出自看过自己第一个 Initial 的那台服务端；没发过 Retry 时这一项必须不出现
+            if (!m_configuration.retrySourceConnectionId.empty())
+            {
+                localParameters.retrySourceConnectionId = m_configuration.retrySourceConnectionId;
+            }
         } else
         {
             localParameters.originalDestinationConnectionId.reset();
@@ -284,12 +290,15 @@ namespace AsynGyanis::Net
                                                  m_configuration.clientTlsSettings.has_value() ? &*m_configuration.clientTlsSettings : nullptr);
 
         // Initial 密钥只由客户端第一个 Initial 的目的标识决定（RFC 9001 §5.2），两个方向各自的标签
-        // 由角色定：服务端读的是「客户端→服务端」那套，客户端反过来
+        // 由角色定：服务端读的是「客户端→服务端」那套，客户端反过来。走过 Retry 的那条连接例外——
+        // §17.2.5.2 明写「换了目的标识就换了保护这一包的密钥」，此刻的算据是本端在 Retry 里给的源标识
+        const std::vector<std::uint8_t> &initialKeyConnectionId =
+                m_configuration.retrySourceConnectionId.empty() ? m_configuration.originalDestinationConnectionId : m_configuration.retrySourceConnectionId;
         const QuicPacketDirection inboundInitialDirection  = isLocalServer() ? QuicPacketDirection::ClientToServer : QuicPacketDirection::ServerToClient;
         const QuicPacketDirection outboundInitialDirection = isLocalServer() ? QuicPacketDirection::ServerToClient : QuicPacketDirection::ClientToServer;
         SpaceState               &initialSpace             = m_spaces[spaceIndex(PacketNumberSpace::Initial)];
-        initialSpace.readKeys                              = deriveQuicInitialPacketKeys(m_configuration.originalDestinationConnectionId, inboundInitialDirection);
-        initialSpace.writeKeys                             = deriveQuicInitialPacketKeys(m_configuration.originalDestinationConnectionId, outboundInitialDirection);
+        initialSpace.readKeys                              = deriveQuicInitialPacketKeys(initialKeyConnectionId, inboundInitialDirection);
+        initialSpace.writeKeys                             = deriveQuicInitialPacketKeys(initialKeyConnectionId, outboundInitialDirection);
 
         // 建状态本身就是「收到了一份看起来属于本连接的报文」，因此这条连接的寿命从此刻起算，而不是
         // 从第一次解密成功起算：解不开的报文按 §10.1 不算活动，若截止时刻也只在解密成功后才亮，

@@ -11,6 +11,8 @@
 #include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/Router.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Net/Quic/QuicAddressValidationToken.h"
+#include "Net/Quic/QuicPacketBuilder.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
@@ -35,6 +37,46 @@ namespace AsynGyanis::Net
         /// 单来源限额拒绝的放行间隔：**每个被拒的 Initial 一条**就是一条报文一条日志，
         /// 而且被拒的连接不进别名索引，握手重传会以新 Initial 反复走到这里——不压就是远端可驱动的刷屏面
         constexpr std::chrono::seconds kPerIpRejectionLogWindow{10};
+
+        /// 令牌验不过的放行间隔：与上面那格同一理由——洪水带着自造的令牌打到这一格，逐条落盘就是
+        /// 远端可驱动的刷屏面，而量级已经在读数里了
+        constexpr std::chrono::seconds kAddressValidationRejectionLogWindow{10};
+
+        /**
+         * @brief 取一段密码学随机字节做 Retry 的源连接标识
+         * @details 随机失败没有安全的降级路径：拿一条可猜的标识回出去，旁观者就能提前把后续报文路由到
+         *          它自己想去的地方，这与 Retry 的存在理由正好相反。失败交回空 vector 由调用方丢包
+         */
+        std::vector<std::uint8_t> randomConnectionIdBytes(const std::size_t byteLength)
+        {
+            std::vector<std::uint8_t> bytes(byteLength);
+            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            {
+                return {};
+            }
+            return bytes;
+        }
+
+        /// 验不过的原因怎么说给运维：三格的措辞各自带着「下一步该查什么」，别合成一句「令牌不合」
+        [[nodiscard]] std::string_view addressValidationTokenStatusText(const QuicAddressValidationTokenStatus status) noexcept
+        {
+            switch (status)
+            {
+                case QuicAddressValidationTokenStatus::Malformed:
+                    return "格式或类别不合（不是本端签的那一类，或字段被截过）";
+                case QuicAddressValidationTokenStatus::IntegrityFailed:
+                    return "认证码不合（被改过、凭空造的，或本端换过密钥而旧密钥已不在窗口内）";
+                case QuicAddressValidationTokenStatus::AddressMismatch:
+                    return "令牌是从别的地址搬来的";
+                case QuicAddressValidationTokenStatus::Expired:
+                    return "令牌已过期或签发时刻在未来";
+                case QuicAddressValidationTokenStatus::Absent:
+                    return "报文没带令牌";
+                case QuicAddressValidationTokenStatus::Valid:
+                    return "已通过";
+            }
+            return "未知原因";
+        }
     } // namespace
 
     namespace
@@ -149,6 +191,27 @@ namespace AsynGyanis::Net
                                                  m_configuration.applicationProtocol + "」不会改变协商结果，只会让启动日志说谎；请写 h3");
         }
 
+        // 地址验证这一项的开关与密钥在**建 TLS 上下文之前**定死：令牌的签发器一旦配错就当场抛，
+        // 而构造期抛出后析构不跑——排在上下文建立之后就留下一份没人认领的 SSL_CTX（见上面 ALPN 那格）
+        if (m_configuration.addressValidationTokenLifetime > std::chrono::seconds{0})
+        {
+            if (m_configuration.addressValidationKey.empty())
+            {
+                m_addressValidation = QuicAddressValidationTokenCodec::createWithRandomKey(m_configuration.addressValidationTokenLifetime);
+                if (m_addressValidation == nullptr)
+                {
+                    throw Base::SystemException("QUIC 服务端配置无效：地址验证令牌要随机自造密钥，而系统的随机源取不到字节："
+                                                "没有密钥签出的令牌谁都验不过，这项保护就成了纯粹的丢包器");
+                }
+                LOG_WARN("QuicServer: 地址验证已开启但没配 addressValidationKey，本次启动随机自造了一把："
+                         "多进程 worker 各自一把时，客户端带着别的进程签的令牌撞过来必然验不过——请按部署共享同一份密钥");
+            } else
+            {
+                m_addressValidation = std::make_unique<QuicAddressValidationTokenCodec>(std::span<const std::uint8_t>(m_configuration.addressValidationKey),
+                                                                                        m_configuration.addressValidationTokenLifetime);
+            }
+        }
+
         // 上下文（连带证书、策略、ALPN 与票据密钥）由那一份唯一的构建函数交出。失败仍然当场抛：
         // 构造没有错误通道，而「在监听却谁也不应答」比启动失败难查得多
         auto built = buildTlsContext(m_configuration);
@@ -178,6 +241,16 @@ namespace AsynGyanis::Net
                                                              "它在涨而连接数不动，说明来的是别的版本的探测流量——这一格与「名额已满」的账分开，两者对运维是两个问题",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return m_versionNegotiationSentCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_retries_sent_total",
+                                                             "QUIC 服务端交出去的 Retry 条数（RFC 9000 §8.1.2：不给它建任何状态，先让它证明自己能收到回包）。"
+                                                             "开了地址验证而这一格不涨，说明来的每个 Initial 都已经带令牌；与「验不过」那格合起来就是这条端口上的握手画像",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_retrySentCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_retry_tokens_rejected_total",
+                                                             "QUIC 服务端验不过的地址验证令牌条数（RFC 9000 §8.1.2：带令牌而来但被改过、从别处搬来、"
+                                                             "或已过期）。它在涨而 Retry 数不动，多半是多份进程各自随机自造了密钥——先查 addressValidationKey 有没有共享",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_retryTokenRejectedCount.load(std::memory_order_relaxed); }),
                 Core::ProcessMetricsRegistry::registerMetric(
                         "asyn_quic_handshaking_connections",
                         "此刻在册但尚未完成握手的 QUIC 连接数（与 asyn_quic 连接总数之差给已验证的那部分归因）。"
@@ -875,7 +948,29 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 不认识的目的连接标识：只有「可开新连接的 Initial」才值得开一条新连接
+        co_await acceptNewConnection(peerAddress, destinationConnectionId, *decodedHeader, datagram, ecnCodepoint);
+    }
+
+    Core::Task<> QuicServer::acceptNewConnection(const Platform::SocketAddress peerAddress, const std::string_view destinationConnectionId, const QuicPacketHeader header,
+                                                 const std::span<const std::uint8_t> datagram, const std::optional<std::uint8_t> ecnCodepoint)
+    {
+        // 地址验证排在单来源名额之前：这一档的判定不花任何 per-connection 成本，而名额一旦拿走就得
+        // 连着连接一起还（见下面那句注释），先用一条不建状态的 Retry 把人挡在外面更省
+        // 三档出口的语义见 validateNewConnectionAddress
+        QuicConnection::RetryContext retryContext{};
+        switch (co_await validateNewConnectionAddress(peerAddress, header, retryContext))
+        {
+            case QuicAddressValidationDecision::RetrySent:
+                co_return;
+            case QuicAddressValidationDecision::TokenRejected:
+                co_return;
+            case QuicAddressValidationDecision::Proceed:
+                break;
+        }
+        // 只有走过 Retry 的那条连接才带凭据进来：本端标识与参数里的原始目的标识都由它定
+        const std::optional<QuicConnection::RetryContext> acceptedRetryContext =
+                m_addressValidation != nullptr && !retryContext.retrySourceConnectionId.empty() ? std::optional<QuicConnection::RetryContext>(retryContext) : std::nullopt;
+
         // 先占单来源名额再建连接：名额拿不到就不建，避免「建了又拆」白付一次握手成本
         PerIpAdmission perIpAdmission = admitPerIpConnection(peerAddress);
         if (perIpAdmission.isRefused)
@@ -884,10 +979,10 @@ namespace AsynGyanis::Net
         }
         std::optional<PerIpConnectionLimiter::Lease> perIpLease = std::move(perIpAdmission.lease);
 
-        // 配置与各个发送出口在这一处摆好：路由这条协程因此只剩「认身份 → 派发 → 建连接」三段
+        // 配置与各个发送出口在这一处摆好
         const QuicConnection::Configuration connectionConfiguration = configurationForAcceptedConnection();
 
-        std::unique_ptr<QuicConnection> connection = QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram);
+        std::unique_ptr<QuicConnection> connection = QuicConnection::accept(connectionConfiguration, m_localSocketAddress, peerAddress, datagram, acceptedRetryContext);
         if (connection == nullptr)
         {
             co_return;
@@ -909,6 +1004,100 @@ namespace AsynGyanis::Net
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
         co_await serveMatchedConnection(*rawConnection, peerAddress, datagram, ecnCodepoint);
+    }
+
+    void QuicServer::rotateAddressValidationKey(const std::span<const std::uint8_t> newSigningKey)
+    {
+        if (m_addressValidation == nullptr)
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端轮换地址验证密钥失败：这台服务端没开地址验证"
+                                                 "（address_validation_token_lifetime_seconds 为 0），它一张令牌也不签，轮换无从谈起");
+        }
+        m_addressValidation->rotateSigningKey(newSigningKey);
+        LOG_INFO_FMT("QuicServer: 已换用新的地址验证令牌密钥，旧密钥签出的令牌还会被认 {} 秒", m_addressValidation->lifetime().count());
+    }
+
+    Core::Task<QuicServer::QuicAddressValidationDecision> QuicServer::validateNewConnectionAddress(const Platform::SocketAddress &peerAddress, const QuicPacketHeader &header,
+                                                                                                   QuicConnection::RetryContext &retryContext)
+    {
+        if (m_addressValidation == nullptr)
+        {
+            co_return QuicAddressValidationDecision::Proceed;
+        }
+
+        const std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus> verified =
+                m_addressValidation->verify(header.token, peerAddress, std::chrono::system_clock::now());
+        if (verified.has_value())
+        {
+            // 令牌里恢复的原始目的标识才是参数与 Initial 密钥要的 ODCID；报文里那条目的标识已经是本端
+            // 在 Retry 中给出去的标识，两件事各归一处（见 QuicConnection::accept 的那段说明）
+            retryContext.originalDestinationConnectionId = verified->originalDestinationConnectionId;
+            retryContext.retrySourceConnectionId.assign(header.destinationConnectionId.begin(), header.destinationConnectionId.end());
+            co_return QuicAddressValidationDecision::Proceed;
+        }
+
+        if (verified.error() == QuicAddressValidationTokenStatus::Absent)
+        {
+            // 本端新挑一条标识回出去：客户端此后所有包都按它路由，而 accept 会把它认成本端标识，
+            // 于是这条连接从 Retry 起就有一个固定的路由键（§17.2.5.1 的另一层作用：换标识本身就是
+            // 「本端看过第一个 Initial」的凭据）。长度必须等于 kSourceConnectionIdLength，短头没有
+            // 长度字段，收包侧按这个定长切标识，换了长度就再也认不回来
+            const std::vector<std::uint8_t> retrySourceConnectionId = randomConnectionIdBytes(QuicConnection::kSourceConnectionIdLength);
+            if (retrySourceConnectionId.empty())
+            {
+                LOG_ERROR("QuicServer: 生成 Retry 的源连接标识失败（随机数不可用），本条 Initial 已丢弃："
+                          "没有一条没人用过的标识就不能宣称本端收下了这次握手");
+                co_return QuicAddressValidationDecision::TokenRejected;
+            }
+            const std::vector<std::uint8_t> issuedToken = m_addressValidation->issue(peerAddress, header.destinationConnectionId, std::chrono::system_clock::now());
+            if (issuedToken.empty())
+            {
+                LOG_ERROR("QuicServer: 地址验证令牌签发失败（HMAC 不可用），本条 Initial 已丢弃：发一张没有认证的令牌等于这项保护没开");
+                co_return QuicAddressValidationDecision::TokenRejected;
+            }
+
+            std::string           packet;
+            const QuicRetryPacket retryPacket{
+                    .originalDestinationConnectionId = header.destinationConnectionId,
+                    // 线上目的标识抄这条 Initial 的**源**标识（§17.2.5.1）：客户端按那一格认领回包，
+                    // 它自报过标识却收到一条目的标识为空的 Retry，只会把这条当成无主报文丢掉
+                    .destinationConnectionId = header.sourceConnectionId,
+                    .sourceConnectionId      = std::span<const std::uint8_t>(retrySourceConnectionId),
+                    .token                   = std::span<const std::uint8_t>(issuedToken),
+            };
+            appendQuicRetryPacket(packet, retryPacket);
+            // Retry 没有包号也不进任何空间，本端不为这条数据报留状态，因此这一发不占反放大的账：
+            // 收到的是一条补齐到 1200 字节的 Initial，回出去的不足一百字节，比值远在 §8.1 的三倍之内
+            // 交不出去就按「丢弃」这一档回：读数只计真发出去的条数，否则运维看到的比线上多
+            co_return co_await sendRetryPacket(peerAddress, std::vector<std::uint8_t>(packet.begin(), packet.end())) ? QuicAddressValidationDecision::RetrySent
+                                                                                                                     : QuicAddressValidationDecision::TokenRejected;
+        }
+
+        // 带了令牌而验不过。这一格必须出声且可数：它既可能是洪水带着自造的令牌，也可能是多份进程
+        // 各持一把密钥——两种成因要做的动作完全不同，静默丢弃会让运维只能猜
+        m_retryTokenRejectedCount.fetch_add(1, std::memory_order_relaxed);
+        if (auto &throttle = ASYN_LOG_THROTTLED(kAddressValidationRejectionLogWindow); throttle.acquire())
+        {
+            LOG_WARN_FMT("QuicServer: 一条 Initial 的地址验证没通过（{}），已丢弃；过去 {} 秒内另有 {} 条同类被压掉", addressValidationTokenStatusText(verified.error()),
+                         kAddressValidationRejectionLogWindow.count(), throttle.droppedCount());
+        }
+        co_return QuicAddressValidationDecision::TokenRejected;
+    }
+
+    Core::Task<bool> QuicServer::sendRetryPacket(const Platform::SocketAddress peerAddress, std::vector<std::uint8_t> retryPacket)
+    {
+        if (m_socket == nullptr)
+        {
+            co_return false;
+        }
+        const ssize_t sentLength = co_await m_socket->asyncSendTo(peerAddress, retryPacket.data(), retryPacket.size(), 0);
+        if (sentLength != static_cast<ssize_t>(retryPacket.size()))
+        {
+            co_return false;
+        }
+        m_retrySentCount.fetch_add(1, std::memory_order_relaxed);
+        LOG_DEBUG_FMT("QuicServer: 已向一条 Initial 的来源回出 Retry（令牌 {} 字节），本端未为这条握手建任何状态", retryPacket.size());
+        co_return true;
     }
 
     Core::Task<> QuicServer::respondToUnsupportedVersion(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)

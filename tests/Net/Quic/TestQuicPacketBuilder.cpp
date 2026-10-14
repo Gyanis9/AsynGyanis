@@ -42,6 +42,9 @@ namespace AsynGyanis::Net
         using AsynGyanis::Net::TestSupport::kAppendixA2AdditionalDataHex;
         using AsynGyanis::Net::TestSupport::kAppendixA2PacketNumber;
         using AsynGyanis::Net::TestSupport::kAppendixA2ProtectedPacketHex;
+        using AsynGyanis::Net::TestSupport::kAppendixA4RetryPacketHex;
+        using AsynGyanis::Net::TestSupport::kAppendixA4RetrySourceConnectionIdHex;
+        using AsynGyanis::Net::TestSupport::kAppendixA4RetryTokenHex;
         using AsynGyanis::Net::TestSupport::kAppendixA5AdditionalDataHex;
         using AsynGyanis::Net::TestSupport::kAppendixA5HeaderProtectionKeyHex;
         using AsynGyanis::Net::TestSupport::kAppendixA5InitializationVectorHex;
@@ -289,6 +292,69 @@ namespace AsynGyanis::Net
         packet.packetNumber = kQuicMaximumIntegerValue + 1ULL;
         EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
         EXPECT_TRUE(datagram.empty()) << "校验在建头之前，五种非法输入都不该留下半个字节";
+    }
+
+    /**
+     * @brief 附录 A.4（RFC 9001）的 Retry 报文：组出来的 36 字节与规范逐字节相同
+     * @details 期望那 36 字节整段抄自规范，不由本仓的算法算出——两侧同源就查不出「都理解错」。
+     *          完整性标签的关联数据**含**首字节与全部头部字段，所以这一条同时钉住四件事：伪包的摆法
+     *          （长度一字节 + 原始目的标识在前）、§5.8 那把与连接无关的定值密钥、空明文的 AEAD 只出标签、
+     *          以及标签落在整包末尾。首字节的 Unused 位取全 1 的理由见组包侧的注释。
+     */
+    TEST(QuicPacketBuilder, BuildsAppendixA4RetryPacketByteForByte)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto retrySourceConnectionId         = makeBytesFromHex(kAppendixA4RetrySourceConnectionIdHex);
+        const auto retryToken                      = makeBytesFromHex(kAppendixA4RetryTokenHex);
+
+        const QuicRetryPacket packet{
+                // A.2 那条 Initial 没自报源标识，于是 Retry 线上的目的标识就是零长——这条样例正好把
+                // 「标识长度可以为 0」这一格也钉住
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+
+        std::string datagram;
+        appendQuicRetryPacket(datagram, packet);
+
+        EXPECT_EQ(toUnsignedBytes(datagram), makeBytesFromHex(kAppendixA4RetryPacketHex)) << "首字节、两条标识、令牌或 16 字节标签里任一处错位，整条 Retry 就对不上官方样例";
+    }
+
+    /**
+     * @brief 三种「发出去也没用」的 Retry 描述当场抛，且不在缓冲里留下半条报文
+     */
+    TEST(QuicPacketBuilder, RejectsUnsendableRetryPackets)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto retrySourceConnectionId         = makeBytesFromHex(kAppendixA4RetrySourceConnectionIdHex);
+        const auto retryToken                      = makeBytesFromHex(kAppendixA4RetryTokenHex);
+        const auto oversizedConnectionId           = makeBytesFromHex("00112233445566778899aabbccddeeff0011223344");
+
+        std::string datagram;
+        // 令牌为空：客户端必须丢这种 Retry（§17.2.5.2），发出去只是白跑一趟
+        const QuicRetryPacket emptyTokenPacket{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+        };
+        EXPECT_THROW(appendQuicRetryPacket(datagram, emptyTokenPacket), Base::InvalidArgumentException);
+
+        // 本端新选的标识与客户端 Initial 的目的标识相同：§17.2.5.1 的 MUST NOT
+        const QuicRetryPacket unchangedConnectionIdPacket{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+        EXPECT_THROW(appendQuicRetryPacket(datagram, unchangedConnectionIdPacket), Base::InvalidArgumentException);
+
+        const QuicRetryPacket oversizedPacket{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(oversizedConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+        EXPECT_THROW(appendQuicRetryPacket(datagram, oversizedPacket), Base::InvalidArgumentException);
+
+        EXPECT_TRUE(datagram.empty()) << "三条非法描述都排在写字节之前，一条也不该留下残余";
     }
 
     /**

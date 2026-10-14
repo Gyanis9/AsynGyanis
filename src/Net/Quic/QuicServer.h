@@ -23,6 +23,7 @@
 #include "Net/Http/StaticFileService.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Session.h"
+#include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/QuicConnection.h"
 #include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
@@ -40,6 +41,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <openssl/types.h>
@@ -47,6 +49,13 @@
 namespace AsynGyanis::Net
 {
     class Router;
+
+    /**
+     * @brief 地址验证令牌的签发器（定义见 `QuicAddressValidationToken.h`）
+     * @details 这里只前向声明：令牌的算法与密钥都关在本服务端里，读 Retry 这一格的用法不需要
+     *          把 HMAC 的细节带进每个 include 本头文件的地方
+     */
+    class QuicAddressValidationTokenCodec;
 
     /**
      * @brief QUIC 服务端：绑定一条 UDP 端口，把报文按连接标识分派给各自的连接
@@ -147,9 +156,43 @@ namespace AsynGyanis::Net
             /// 单来源并发连接上限的限额器（可空：空表示不按来源限制）。与两条 TCP 通道共用一个实例时，
             /// 同一来源不管从 TCP 还是 QUIC 进来都算在同一个名额里
             std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter;
+            /**
+             * @brief 地址验证令牌的有效期（秒）；**0 表示不开这项保护**（缺省，逐字保持这一格落地之前的行为）
+             *
+             * @details 开了之后，每个不带令牌的新连接 Initial 都先吃一条 Retry（RFC 9000 §8.1.2）：本端
+             *          不为它建任何状态，等它带着令牌重来才建。这一格的存在理由是公网 UDP 端口上的成本
+             *          不对称——一条 Initial 就能让本端建一份 TLS 会话、一张流表与一套拥塞状态，而发的人
+             *          不必是自己。测试计划里「放大/反射字节比 ≤3」与「Initial 洪水」两格都靠它收口。
+             * @note 开了之后**自家出站客户端连不上**：本实现的客户端不处理 Retry 报文（见 §17.2.5.2 那格
+             *       未落地），所以要由能接 Retry 的客户端来连（跨实现核对用的 aioquic 就能）。
+             * @note 令牌由 HMAC 算出，密钥见 `addressValidationKey`。有效期就是密钥轮换的窗口：
+             *       旧密钥签出的令牌最长活到这里，之后就没人再认它。
+             */
+            std::chrono::seconds addressValidationTokenLifetime{0};
+            /**
+             * @brief 令牌 HMAC 的签发密钥；留空＝启动时随机自造一把
+             *
+             * @details **多进程 worker 必须配同一份**（同一台机器上的几份进程共享一把密钥，或从同一份
+             *          密钥文件读）：各进程随机自造时，客户端带着 A 签的令牌撞到 B 必然验不过，症状是
+             *          「同样的握手偶尔要重来一次」——与 `sessionTicketKeyFiles` 那格同一条道理。
+             *          低于 16 字节在构造期即被拒（RFC 9000 §8.1.4 的「难猜」要求）。
+             */
+            std::vector<std::uint8_t> addressValidationKey{};
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);
+
+        /**
+         * @brief 换一把令牌签发密钥：新令牌按新密钥签，旧密钥留着验它签过的那批
+         *
+         * @details 轮换不需要停监听，也不需要清任何连接表——令牌本身带着签发时刻与有效期，旧密钥的读者
+         *          最多再存在一个有效期。这是运维侧「密钥泄露了就换一把」的入口；本实现不把密钥写进磁盘，
+         *          也不做定时自动轮换：那是调度方的事，交给它按自己的窗口调这里。
+         * @param newSigningKey 新密钥，至少 16 字节
+         * @throws Base::InvalidArgumentException 用法错误：这一项保护没开（`addressValidationTokenLifetime`
+         *         为 0 时本服务端不签令牌，轮换无从谈起）、或新密钥短于下限
+         */
+        void rotateAddressValidationKey(std::span<const std::uint8_t> newSigningKey);
 
         /**
          * @brief 建一台**接手别人已经绑好的数据报套接字**的服务端（一条 UDP 端口交多个进程的那一步）
@@ -537,6 +580,18 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 新建连接前那道地址验证的三档出口
+         * @details 有值的是「这一档怎么走」而不是「成不成功」：放行、回 Retry、丢弃各算一种，
+         *          三档在读数与日志上是三件事，混成一档就看不出端口上到底来的是什么流量
+         */
+        enum class QuicAddressValidationDecision
+        {
+            Proceed,       ///< 令牌验过（或这项保护没开）：照旧建连接
+            RetrySent,     ///< 没带令牌：已回一条 Retry，本条数据报到此为止
+            TokenRejected, ///< 带了令牌但验不过：已计数并丢弃
+        };
+
+        /**
          * @brief 确保静态目录配置本体与 "*" 兜底路由已建立（幂等）
          * @details 与两条 TCP 服务器同一个形状：建立动作在 StaticFileService::install() 里，
          *          这里只递本服务端的路由器与映射缓存上限。路由器还没接上时当场抛出——
@@ -573,6 +628,22 @@ namespace AsynGyanis::Net
                                                  std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
 
         /**
+         * @brief 收下这条「目的标识本端还不认识」的数据报：先验来源地址，再占单来源名额，再建连接入表
+         * @details 从 `routeDatagram` 里分出来，是因为这一串各有不往下走的出口：地址验证没过（回过 Retry
+         *          或丢弃）、单来源名额已满、以及 `QuicConnection::accept` 判这条报文不可接受——三段合在
+         *          路由里读起来就是四五种「什么都没发生」。分出来还保住一条顺序：先验地址再占名额，
+         *          因为名额一旦拿走就得连着连接一起还，而一条 Retry 不建任何状态
+         * @param peerAddress 来源地址
+         * @param destinationConnectionId 报文里的目的标识（字符串视图，指向上面的数据报字节）：按别名登记时用
+         * @param header 解好的包头：令牌、目的标识与源标识都从它取，按值收是因为惰性协程不留引用
+         * @param datagram 数据报字节，交给新建的连接解
+         * @param ecnCodepoint 这条数据报的 IP ECN 字段；空表示本端读不到
+         * @return Core::Task<> 建连接并把这一报文派发结束时完成；本方法不产出值
+         */
+        [[nodiscard]] Core::Task<> acceptNewConnection(const Platform::SocketAddress peerAddress, std::string_view destinationConnectionId, QuicPacketHeader header,
+                                                       std::span<const std::uint8_t> datagram, std::optional<std::uint8_t> ecnCodepoint);
+
+        /**
          * @brief 对「版本本端不支持」的长头报文回一条版本协商包（RFC 9000 §6.1、§17.2.1）
          * @details 只在报文头解不开时调它：解得开的报文要么是本端支持的版本（走正常路由），
          *          要么是违反 v1 硬规则的坏包（那些规则与版本无关，回版本协商反而误导对端）。
@@ -581,6 +652,34 @@ namespace AsynGyanis::Net
          * @param datagram 收到的数据报字节
          */
         Core::Task<> respondToUnsupportedVersion(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
+
+        /**
+         * @brief 新建连接之前先按 RFC 9000 §8.1.2 验一次来源地址
+         *
+         * @details 三档出口：报文带着本端签的令牌且验过＝放行建连接（并把令牌里恢复的原始目的标识交给外壳）；
+         *          没带令牌＝回一条 Retry 并把这条数据报用掉；带了但验不过（被改过、搬来别处、或已过期）＝丢弃并计数。
+         *          验不过时**不再回第二条 Retry**：§8.1.2 明写「对一份来自 Retry 的令牌，服务端只能拒或放行」，
+         *          而对端此时已认定自己验过地址了，再回一条只会让它以为还在第一轮。
+         *          按 §8.1.2 的 SHOULD 本应回一条 INVALID_TOKEN 收口，那要先为这条连接算出 Initial 密钥——
+         *          本端刻意不在建连接之前算任何东西（那正是 Retry 要省掉的成本），因此走同节允许的另一条：
+         *          丢弃、让对端自己的握手超时。这一格必须有读数，否则它与「静默丢包」看不出区别。
+         *          回出去的 Retry 按 §17.2.5.1 把线上目的标识填成这条 Initial 的源标识：对端按那一格认领
+         *          回包，填错（含一律填空）就把对端自报过标识的那一类客户端全挡在门外。
+         * @param peerAddress 来源地址：令牌把它绑进认证码
+         * @param header 这条 Initial 的包头：令牌字段、目的标识与源标识都从它取
+         * @param retryContext 出参：放行时填好交给 `QuicConnection::accept` 的凭据
+         * @return Core::Task<QuicAddressValidationDecision> 三档出口之一；本方法要 co_await 一次发包
+         */
+        [[nodiscard]] Core::Task<QuicAddressValidationDecision> validateNewConnectionAddress(const Platform::SocketAddress &peerAddress, const QuicPacketHeader &header,
+                                                                                             QuicConnection::RetryContext &retryContext);
+
+        /**
+         * @brief 把一条 Retry 报文打回来源地址
+         * @param peerAddress 来源地址
+         * @param retryPacket 已组好的 Retry 报文
+         * @return bool 整条是否交给了内核；只有交出去才计一笔
+         */
+        [[nodiscard]] Core::Task<bool> sendRetryPacket(const Platform::SocketAddress peerAddress, std::vector<std::uint8_t> retryPacket);
 
         /**
          * @brief 把一个数据报交给一条已在册的连接，随后把它的 HTTP/3 会话推一步
@@ -709,8 +808,14 @@ namespace AsynGyanis::Net
         /// 交出去的版本协商包条数：公网端口上「版本不合就礼貌地拒」这件事必须可数，否则它与「静默丢了」
         /// 长得一模一样（G-17 的判据就是这个数在涨而连接表不动）
         std::atomic<std::uint64_t> m_versionNegotiationSentCount{0};
+        /// 交出去的 Retry 条数：地址验证是否真在生效就看这一格，它与「名额已满」也是两本账
+        std::atomic<std::uint64_t> m_retrySentCount{0};
+        /// 验不过的令牌条数：涨了说明端口上有人在搬令牌或自造令牌，也可能是密钥没共享的那几份进程
+        std::atomic<std::uint64_t> m_retryTokenRejectedCount{0};
+        /// 地址验证令牌的签发器；空＝这一项保护没开（`addressValidationTokenLifetime` 为 0）
+        std::unique_ptr<QuicAddressValidationTokenCodec> m_addressValidation{};
         /// 上面几笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
-        std::array<Core::ProcessMetricHandle, 6> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 8> m_metricHandles{};
         /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
         /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
         bool m_isEcnFieldVisible{false};

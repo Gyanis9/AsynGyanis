@@ -14,6 +14,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicOpenSslError.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicPacketBuilder.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/QuicAddressValidationToken.h
+        ${CMAKE_CURRENT_LIST_DIR}/QuicAddressValidationToken.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicOutboundDatagram.h

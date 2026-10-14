@@ -36,6 +36,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -51,20 +53,23 @@ namespace
      */
     struct Options
     {
-        std::uint16_t            port{0U};            ///< 0 表示由内核分配，实际端口打在 PORT 行
-        std::string              certificateFile{};   ///< 证书 PEM
-        std::string              privateKeyFile{};    ///< 私钥 PEM
-        std::string              alpn{"h3"};          ///< 服务端要求的 ALPN，对端不提它就拒握手
-        std::string              echoPrefix{"pong:"}; ///< 回显正文的前缀
-        std::string              abortMarker{};       ///< 命中该正文即按错误码收口这条流；空即不启用
-        std::uint64_t            abortCode{0x010BU};  ///< 收口用的应用错误码（RFC 9114 §8.1 的一档）
-        std::string              largeReplyMarker{};  ///< 命中该正文即回一大块**不收口**的数据
-        std::size_t              largeReplyBytes{2U * 1024U * 1024U};
-        std::size_t              perIpLimit{0U};          ///< 单来源并发上限，0 表示不限
-        long                     idleTimeoutSeconds{30};  ///< 传输层空闲超时
-        long                     drainAfterRequestMs{-1}; ///< 答完第一条请求后多久收口；负数表示不
-        bool                     drainImmediately{false}; ///< 启动即收口：新连接不该握手完成
-        std::vector<std::string> ticketKeyFiles{};        ///< 会话票据密钥文件，可重复
+        std::uint16_t port{0U};            ///< 0 表示由内核分配，实际端口打在 PORT 行
+        std::string   certificateFile{};   ///< 证书 PEM
+        std::string   privateKeyFile{};    ///< 私钥 PEM
+        std::string   alpn{"h3"};          ///< 服务端要求的 ALPN，对端不提它就拒握手
+        std::string   echoPrefix{"pong:"}; ///< 回显正文的前缀
+        std::string   abortMarker{};       ///< 命中该正文即按错误码收口这条流；空即不启用
+        std::uint64_t abortCode{0x010BU};  ///< 收口用的应用错误码（RFC 9114 §8.1 的一档）
+        std::string   largeReplyMarker{};  ///< 命中该正文即回一大块**不收口**的数据
+        std::size_t   largeReplyBytes{2U * 1024U * 1024U};
+        std::size_t   perIpLimit{0U}; ///< 单来源并发上限，0 表示不限
+        /// 地址验证令牌的有效期秒数：0＝不开这项保护；大于 0＝每个新连接的第一个 Initial 都先吃一条 Retry
+        long                     addressValidationTokenSeconds{0};
+        std::string              addressValidationKeyFile{}; ///< 令牌 HMAC 的密钥文件（二进制）；留空＝随机自造
+        long                     idleTimeoutSeconds{30};     ///< 传输层空闲超时
+        long                     drainAfterRequestMs{-1};    ///< 答完第一条请求后多久收口；负数表示不
+        bool                     drainImmediately{false};    ///< 启动即收口：新连接不该握手完成
+        std::vector<std::string> ticketKeyFiles{};           ///< 会话票据密钥文件，可重复
 
         /// 接手档：服务端不自己 bind，而是用「交回本进程的一份已绑好的数据报套接字」起服务。
         /// 判的是跨进程共享端口在 worker 侧那一格——h3 的对外行为在接手来的口上不许有差别
@@ -80,6 +85,8 @@ namespace
                      "  --idle-timeout <秒>          默认 30\n"
                      "  --ticket-key <文件>          可重复，跨实例共享会话票据\n"
                      "  --per-ip-limit <条数>        单来源并发上限，0 为不限\n"
+                     "  --address-validation <秒>    新连接的第一个 Initial 先吃一条 Retry，令牌只活这么多秒；0 为不开\n"
+                     "  --address-validation-key <文件>  令牌 HMAC 的密钥文件；多进程共享同一份才验得过彼此的令牌\n"
                      "  --echo-prefix <文本>         默认 pong:\n"
                      "  --abort-on <文本> --abort-code <数>   命中正文即按该错误码收口这条流\n"
                      "  --large-reply-on <文本> [--large-reply-bytes <n>]  回一大块不收口的数据\n"
@@ -154,6 +161,12 @@ namespace
             } else if (flag == "--per-ip-limit")
             {
                 options.perIpLimit = parseSize(needValue(argc, argv, index, flag), flag);
+            } else if (flag == "--address-validation")
+            {
+                options.addressValidationTokenSeconds = parseLong(needValue(argc, argv, index, flag), flag);
+            } else if (flag == "--address-validation-key")
+            {
+                options.addressValidationKeyFile = needValue(argc, argv, index, flag);
             } else if (flag == "--echo-prefix")
             {
                 options.echoPrefix = needValue(argc, argv, index, flag);
@@ -374,6 +387,21 @@ int main(const int argc, char **argv)
     if (options.perIpLimit > 0U)
     {
         configuration.perIpConnectionLimiter = std::make_shared<AsynGyanis::Net::PerIpConnectionLimiter>(options.perIpLimit);
+    }
+    if (options.addressValidationTokenSeconds > 0)
+    {
+        configuration.addressValidationTokenLifetime = std::chrono::seconds{options.addressValidationTokenSeconds};
+        if (!options.addressValidationKeyFile.empty())
+        {
+            // 密钥从文件读：跨进程共享同一份才验得过彼此的令牌（与会话票据密钥同一道理）。整份文件
+            // 都要用上，长短都按原样交给配置——太短由服务端构造期拒掉，不在这里悄悄截断或补齐
+            std::ifstream keyStream(options.addressValidationKeyFile, std::ios::binary);
+            if (!keyStream)
+            {
+                failWith("--address-validation-key 指向的文件读不出来：" + options.addressValidationKeyFile);
+            }
+            configuration.addressValidationKey = std::vector<std::uint8_t>(std::istreambuf_iterator<char>(keyStream), std::istreambuf_iterator<char>());
+        }
     }
 
     // 接手档：先把一份自己绑好的数据报套接字沿通道交回本进程、再接手，服务端这一侧不再 bind。

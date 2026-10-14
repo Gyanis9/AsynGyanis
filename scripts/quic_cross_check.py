@@ -57,7 +57,7 @@ class Probe(QuicConnectionProtocol):
     """一条 QUIC 客户端连接：把 aioquic 的事件攒成探针可读的结论。"""
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__( *args, **kwargs)
         self.handshake_done = asyncio.Event()
         self.terminated = None
         self.reset_codes = {}
@@ -66,6 +66,18 @@ class Probe(QuicConnectionProtocol):
         self.session_resumed = False
         self._next_event_stream_id = 0
         self.tickets = []
+        # 有没有见过 Retry 报文：由 datagram_received 在喂给 aioquic 之前自己认（长头且类型位为 3）
+        self.saw_retry = False
+
+    def datagram_received(self, data, addr):
+        """先把这一批字节认一下形态，再原样交给 aioquic。
+
+        Retry 不是 aioquic 抛给应用的事件，而这一格要的判据正是「服务端真的回过一条 Retry」——
+        于是只能在看包的地方自己认：首字节最高位是长头，其下的类型位（0x30 那两位）为 3 即 Retry。
+        """
+        if len(data) >= 1 and (data[0] & 0x80) and ((data[0] >> 4) & 0x03) == 0x03:
+            self.saw_retry = True
+        super().datagram_received(data, addr)
 
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
@@ -263,6 +275,23 @@ async def scenario_handshake_abandon(port: int) -> None:
     await asyncio.sleep(REAP_WAIT_SECONDS)
 
 
+async def scenario_retry_handshake(port: int) -> None:
+    """服务端开了地址验证：本端必须先收到一条 Retry，带令牌重来才握上手、回上显。
+
+    「收到过 Retry」由客户端自己在原始字节上认（长头且类型位为 3），不看 aioquic 的内部状态。
+    aioquic 会核 Retry 的完整性标签——标签算错就直接丢掉这条报文，握手就会停在这里，
+    因此「握上了」本身就是对 §17.2.5 与 RFC 9001 §5.8 那套算法的跨实现认可。
+    """
+    transport = await open_connection(port, make_configuration())
+    if not transport.saw_retry:
+        raise AssertionError("握手成了但没见过 Retry：服务端的地址验证没生效，或压根没回令牌")
+    stream_id = transport.send_request(b"ping")
+    await transport.wait_stream_closed(stream_id)
+    got = bytes(transport.stream_data[stream_id])
+    if got != b"pong:ping":
+        raise AssertionError(f"走过 Retry 之后的回显不是 pong:ping，拿到 {got!r}")
+
+
 SCENARIOS = {
     "handshake-echo": lambda rest: scenario_handshake_echo(int(rest[0])),
     "garbage-tolerant": lambda rest: scenario_garbage_tolerant(int(rest[0])),
@@ -276,6 +305,7 @@ SCENARIOS = {
     "resume-miss": lambda rest: scenario_resume(int(rest[0]), int(rest[1]), False),
     "idle-reap": lambda rest: scenario_idle_reap(int(rest[0])),
     "handshake-abandon": lambda rest: scenario_handshake_abandon(int(rest[0])),
+    "retry-handshake": lambda rest: scenario_retry_handshake(int(rest[0])),
 }
 
 

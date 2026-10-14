@@ -72,13 +72,22 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API QuicConnectionCoreConfiguration
     {
-        QuicConnectionRole                   role{QuicConnectionRole::Server};  ///< 本端角色；缺省值与既有服务端调用点一致
-        SSL_CTX                             *tlsContext{nullptr};               ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
-        std::vector<std::uint8_t>            localConnectionId{};               ///< 本端签发的源连接标识：短头按它定长度，路由表也认它
-        std::vector<std::uint8_t>            peerConnectionId{};                ///< 回包的目的连接标识：对端自报的源标识（§7.2）
-        std::vector<std::uint8_t>            originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识，Initial 密钥由它推导
-        QuicTransportParameters              transportParameters{};             ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
-        std::optional<QuicClientTlsSettings> clientTlsSettings{};               ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
+        QuicConnectionRole        role{QuicConnectionRole::Server};  ///< 本端角色；缺省值与既有服务端调用点一致
+        SSL_CTX                  *tlsContext{nullptr};               ///< 已配好证书与 ALPN 的 TLS 上下文，生命周期须覆盖本对象
+        std::vector<std::uint8_t> localConnectionId{};               ///< 本端签发的源连接标识：短头按它定长度，路由表也认它
+        std::vector<std::uint8_t> peerConnectionId{};                ///< 回包的目的连接标识：对端自报的源标识（§7.2）
+        std::vector<std::uint8_t> originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识，参数里的 ODCID 由它写
+        /**
+         * @brief 本端刚用这条标识回过 Retry 时填它：Initial 的包密钥改由它推导，参数里也要带上它
+         *
+         * @details RFC 9000 §17.2.5.2：客户端把 Retry 的源标识抄进后续 Initial 的目的标识，
+         *          「改了目的标识也就换了保护这一包的密钥」；§18.2 另要求发过 Retry 的服务端把这一条写进
+         *          `retry_source_connection_id`，客户端拿它核对「这台服务端确实看过我的第一个 Initial」。
+         *          留空＝这条连接没走过 Retry，密钥仍按上面那个原始目的标识算，参数里也不出现这一项。
+         */
+        std::vector<std::uint8_t>            retrySourceConnectionId{};
+        QuicTransportParameters              transportParameters{}; ///< 本端要声明的传输参数；两个必填的连接标识项由本类按上面三个值补齐
+        std::optional<QuicClientTlsSettings> clientTlsSettings{};   ///< 作客户端时按连接生效的身份（SNI、校验名、ALPN）；服务端一侧留空
         /**
          * @brief 本端的平台能不能按单条报文读写 IP 头的 ECN 字段
          * @details 由外壳按 `Platform::DatagramSocket::supportsPerDatagramEcnField()` 填（Windows 为假）。

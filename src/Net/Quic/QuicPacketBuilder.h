@@ -59,4 +59,38 @@ namespace AsynGyanis::Net
      * @throws Base::Exception 运行期故障：OpenSSL 侧的加密或掩码计算失败
      */
     ASYN_NET_API void appendQuicPacket(std::string &datagram, const QuicOutboundPacket &packet, const QuicPacketKeys &keys);
+
+    /**
+     * @brief 一条 Retry 报文的明文侧描述（RFC 9000 §17.2.5）
+     *
+     * @details 三字段的映射照 §17.2.5.1，方向容易记反：线上的**目的**标识填客户端 Initial 里的**源**标识，
+     *          线上的**源**标识是本端新选的那一条，客户端此后所有包都按它路由。原始目的标识**不上线**，
+     *          它只进完整性标签的关联数据（RFC 9001 §5.8 的伪包）——这样没看见第一个 Initial 的旁观者
+     *          就造不出这条 Retry。
+     * @warning 各 span 字段都是视图，本结构活多久它们就要活多久（与 `QuicOutboundPacket` 同一条纪律）
+     */
+    struct ASYN_NET_API QuicRetryPacket
+    {
+        std::span<const std::uint8_t> originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识，只进伪包
+        std::span<const std::uint8_t> destinationConnectionId{};         ///< 线上目的标识＝客户端 Initial 的源标识
+        std::span<const std::uint8_t> sourceConnectionId{};              ///< 本端新选的标识，客户端照它路由
+        std::span<const std::uint8_t> token{};                           ///< 地址验证令牌，不得为空
+        std::uint32_t                 version{kQuicVersion1};            ///< 照抄收到那一包的版本
+    };
+
+    /**
+     * @brief 组一条 Retry 报文并追写到数据报缓冲末尾（RFC 9000 §17.2.5）
+     *
+     * @details 布局是「首字节 + 32 位版本 + 两条长度与标识 + 令牌 + 16 字节完整性标签」：这形态既没有
+     *          包号也没有 Length 域，更不做头部保护（§17.2.5 明写「Retry 报文不含任何受保护字段」），
+     *          因此**一条数据报只装得下它自己**。标签按 RFC 9001 §5.8 用 v1 定死的密钥与 IV 做一次
+     *          AEAD，明文为空、关联数据是「原始目的标识长度 + 原始目的标识 + 本包去掉标签的字节」。
+     * @param datagram 目标数据报缓冲，二进制安全
+     * @param packet 明文侧描述
+     * @throws Base::InvalidArgumentException 用法错误：连接标识超过 v1 的 20 字节、令牌为空（§17.2.5.2
+     *         要求客户端丢弃零长令牌的 Retry，发出去只是白跑）、或本端新选的标识与客户端 Initial 的目的
+     *         标识相同（§17.2.5.1 的 MUST NOT——那样客户端无从判断本端真的收过它的第一包）
+     * @throws Base::Exception 运行期故障：OpenSSL 侧的加密失败
+     */
+    ASYN_NET_API void appendQuicRetryPacket(std::string &datagram, const QuicRetryPacket &packet);
 } // namespace AsynGyanis::Net
