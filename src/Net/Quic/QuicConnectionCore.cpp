@@ -8,7 +8,9 @@
 
 #include "Platform/IO/DatagramSocket.h"
 
+#include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Crypto/Digest.h"
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
 #include "Net/Quic/Crypto/QuicPacketProtection.h"
@@ -19,6 +21,8 @@
 #include <ranges>
 #include <type_traits>
 #include <utility>
+
+#include <openssl/rand.h>
 
 namespace AsynGyanis::Net
 {
@@ -37,6 +41,7 @@ namespace AsynGyanis::Net
         constexpr std::uint64_t kQuicNoError                 = 0x00;
         constexpr std::uint64_t kQuicFrameEncodingError      = 0x07;
         constexpr std::uint64_t kQuicTransportParameterError = 0x08;
+        constexpr std::uint64_t kQuicConnectionIdLimitError  = 0x09;
         constexpr std::uint64_t kQuicProtocolViolation       = 0x0a;
         constexpr std::uint64_t kQuicCryptoBufferExceeded    = 0x0d;
         constexpr std::uint64_t kQuicCryptoErrorBase         = 0x0100;
@@ -60,6 +65,23 @@ namespace AsynGyanis::Net
         std::span<const std::uint8_t> asBytes(const std::string &text)
         {
             return text.empty() ? std::span<const std::uint8_t>{} : std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(text.data()), text.size());
+        }
+
+        /**
+         * @brief 取一串密码学随机的字节（连接标识与无状态重置密钥都用它）
+         * @details 随机失败没有安全的降级路径：拿一条可猜的标识签出去，旁观者就能提前把后续报文
+         *          路由到它自己想去的地方。失败交回空 vector 由调用方处置
+         * @param byteLength 要多少字节
+         * @return std::vector<std::uint8_t> 取到的字节；随机数不可用时为空
+         */
+        std::vector<std::uint8_t> randomBytes(const std::size_t byteLength)
+        {
+            std::vector<std::uint8_t> bytes(byteLength);
+            if (byteLength > 0 && RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            {
+                return {};
+            }
+            return bytes;
         }
 
         /**
@@ -263,6 +285,25 @@ namespace AsynGyanis::Net
         requireConnectionIdWithinLimit(m_configuration.peerConnectionId, "对端自报");
         requireConnectionIdWithinLimit(m_configuration.originalDestinationConnectionId, "客户端第一个 Initial 的目的");
 
+        // §5.1.1：握手期那条标识就是序列号 0 的那一条，它随长头隐含发出（不必再发 NEW_CONNECTION_ID），
+        // 但同样要有一条无状态重置令牌（§10.3.2）——对端从传输参数里读它，本端按同一把密钥算
+        if (m_configuration.statelessResetKey.empty())
+        {
+            // 配置没给密钥就本连接随机取一把：单进程与单测够用，多进程 worker 要共享时由外壳显式给
+            m_statelessResetKey = randomBytes(32);
+        } else
+        {
+            m_statelessResetKey = m_configuration.statelessResetKey;
+        }
+        m_issuedConnectionIds.push_back(IssuedConnectionId{
+                .id = m_configuration.localConnectionId, .sequence = 0, .statelessResetToken = statelessResetTokenOf(m_configuration.localConnectionId), .isAdvertised = true});
+        // 服务端在构造期就知道对端第一条标识（客户端首个 Initial 的源标识，accept 时填进配置）；
+        // 客户端要等服务端自报之后才知道，由 followPeerConnectionId 补种
+        if (isLocalServer())
+        {
+            m_peerConnectionIds.push_back(PeerConnectionId{.id = m_configuration.peerConnectionId, .sequence = 0});
+        }
+
         // §7.3 要求**服务端**把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
         // 这两项由本类按配置补齐，调用方漏了也照样合法，免得每条连接都要手抄一遍再抄错。
         // 客户端一侧相反：原始目的标识只有在接住 Retry 之后才允许出现（本实现不做 Retry，故必须不写），
@@ -335,6 +376,10 @@ namespace AsynGyanis::Net
         // 只跟第一次：服务端此后按 §5.1 可以换标识，跟错一次会把整条连接打成「对端认不出」
         m_hasAdoptedPeerConnectionId = true;
         m_configuration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
+        // 本端此前那条「目的标识」是自己挑的初始目的标识，不是对端签发的，因此不进集合；
+        // 服务端自报的这一条才是它的序列号 0（§5.1.1）
+        m_peerConnectionIds.clear();
+        m_peerConnectionIds.push_back(PeerConnectionId{.id = m_configuration.peerConnectionId, .sequence = 0});
     }
 
     void QuicConnectionCore::confirmHandshake(const Timestamp now)
@@ -619,10 +664,17 @@ namespace AsynGyanis::Net
                         {
                             confirmHandshake(arrivalTime);
                         }
+                    } else if constexpr (std::same_as<FrameType, QuicNewConnectionIdFrame>)
+                    {
+                        handleNewConnectionIdFrame(specificFrame, arrivalTime);
+                    } else if constexpr (std::same_as<FrameType, QuicRetireConnectionIdFrame>)
+                    {
+                        handleRetireConnectionIdFrame(specificFrame, arrivalTime);
                     }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
                     // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14）。
-                    // 连接标识与路径验证那几类本实现没有对应能力（不轮换标识、不迁移路径），收到即忽略。
+                    // 路径验证那两帧（PATH_CHALLENGE/PATH_RESPONSE）要等迁移那一笔落地才接，
+                    // 收到即忽略——本端两侧都还没有「探测另一条路」的动作。
                 },
                 frame);
     }
@@ -691,6 +743,13 @@ namespace AsynGyanis::Net
         for (const QuicSentPacketInfo &packet: update.lost)
         {
             m_streams.onSendRangesLost(packet.streamRanges);
+            if (packet.carriesConnectionIdFrames)
+            {
+                // §13.3：NEW_CONNECTION_ID 与 RETIRE_CONNECTION_ID 判丢要重发。这两类帧允许重复
+                // （§19.15 明写同一条帧收两遍不算错，RETIRE 一个已退的序列号是幂等动作），因此不必
+                // 记住「哪一条在哪个包里」——下一次出包整批发一遍就够
+                m_isConnectionIdFramesDirty = true;
+            }
         }
 
         // §4.1.2：服务端「握手已确认」的判据就是对端确认了 Handshake 空间的包。确认之后才允许给
@@ -886,6 +945,42 @@ namespace AsynGyanis::Net
         }
     }
 
+    void QuicConnectionCore::appendAcknowledgementIfPending(SpaceState &state, const PacketNumberSpace space, const Timestamp now, std::string &frames)
+    {
+        if (!std::exchange(state.isAcknowledgementPending, false) || !state.largestAckElicitingReceived.has_value())
+        {
+            return;
+        }
+        QuicAcknowledgementFrame acknowledgement;
+        acknowledgement.largestAcknowledgedPacketNumber = *state.largestAckElicitingReceived;
+        acknowledgement.ranges                          = buildQuicAcknowledgementRanges(state.receivedPacketNumbers, *state.largestAckElicitingReceived);
+        // §19.3：线上值是微秒数右移本端声明的 ack_delay_exponent，指数上限 20 由参数校验保证
+        const std::int64_t elapsedMicroseconds = std::max<std::int64_t>(0, (now - *state.largestAckElicitingArrival).count());
+        acknowledgement.acknowledgementDelay =
+                static_cast<std::uint64_t>(elapsedMicroseconds) >> std::min<std::uint64_t>(m_configuration.transportParameters.acknowledgmentDelayExponent, 20U);
+        if (m_isEcnFieldReadable)
+        {
+            // 本端读得到 ECN 字段就报计数（§13.4.1 的「即使本端不标也要报收到的标记」）。读不到的平台
+            // 交回普通 ACK（类型 0x02）：规范明确允许不报，对端会因此把这条路判成不可用——诚实的退化
+            acknowledgement.ecnCounts    = m_receivedEcnCounts[spaceIndex(space)];
+            acknowledgement.hasEcnCounts = true;
+        }
+        appendQuicFrame(frames, QuicFrame{acknowledgement});
+    }
+
+    void QuicConnectionCore::prepareOneRttPackets(const Timestamp now)
+    {
+        // 探针只走 1-RTT：状态机在握手完成前不离开 Disabled，而那时应用空间的写密钥本来就还没武装
+        queuePathMtuProbe(now);
+        // §5.1.1 的 SHOULD：给对端留一条**没在用的**标识，它才可能换一条来迁移（§9.5 明写不许拿同一条
+        // 标识打两个目的地址，池子耗尽就等于迁移被锁死）。上限由对端通告的 active_connection_id_limit
+        // 把住：本端从不超发，退了一条才补一条
+        if (hasRoomForAnotherConnectionId())
+        {
+            static_cast<void>(issueConnectionId(false));
+        }
+    }
+
     void QuicConnectionCore::queueSpacePackets(const PacketNumberSpace space, const Timestamp now)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
@@ -902,8 +997,8 @@ namespace AsynGyanis::Net
         }
         if (space == PacketNumberSpace::Application)
         {
-            // 探针只走 1-RTT：状态机在握手完成前不离开 Disabled，而那时应用空间的写密钥本来就还没武装
-            queuePathMtuProbe(now);
+            // 1-RTT 才有的两件事：路径 MTU 探针与「给对端补一条没用过的标识」，理由见各自的方法
+            prepareOneRttPackets(now);
         }
         // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 **1-RTT
         // 帧**（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
@@ -921,26 +1016,11 @@ namespace AsynGyanis::Net
         {
             frames.clear();
             bool elicitsAcknowledgement = false;
-            if (std::exchange(state.isAcknowledgementPending, false) && state.largestAckElicitingReceived.has_value())
-            {
-                QuicAcknowledgementFrame acknowledgement;
-                acknowledgement.largestAcknowledgedPacketNumber = *state.largestAckElicitingReceived;
-                acknowledgement.ranges                          = buildQuicAcknowledgementRanges(state.receivedPacketNumbers, *state.largestAckElicitingReceived);
-                // §19.3：线上值是微秒数右移本端声明的 ack_delay_exponent，指数上限 20 由参数校验保证
-                const std::int64_t elapsedMicroseconds = std::max<std::int64_t>(0, (now - *state.largestAckElicitingArrival).count());
-                acknowledgement.acknowledgementDelay =
-                        static_cast<std::uint64_t>(elapsedMicroseconds) >> std::min<std::uint64_t>(m_configuration.transportParameters.acknowledgmentDelayExponent, 20U);
-                if (m_isEcnFieldReadable)
-                {
-                    // 本端读得到 ECN 字段就报计数（§13.4.1 的「即使本端不标也要报收到的标记」）。
-                    // 读不到的平台交回普通 ACK（类型 0x02）：规范明确允许不报，而对端会因此把这条
-                    // 路的 ECN 判成不可用——那是诚实的退化，比报一份全是 0 的假计数好
-                    acknowledgement.ecnCounts    = m_receivedEcnCounts[spaceIndex(space)];
-                    acknowledgement.hasEcnCounts = true;
-                }
-                appendQuicFrame(frames, QuicFrame{acknowledgement});
-            }
+            appendAcknowledgementIfPending(state, space, now, frames);
             bool carriesHandshakeDone = false;
+            // 连接标识那两类帧只许出现在 1-RTT 里（§19 表 3），编进去的都触发确认
+            const bool carriesConnectionIdFrames = space == PacketNumberSpace::Application && appendPendingConnectionIdFrames(frames);
+            elicitsAcknowledgement               = elicitsAcknowledgement || carriesConnectionIdFrames;
             if (owesHandshakeDone)
             {
                 appendQuicFrame(frames, QuicFrame{QuicHandshakeDoneFrame{}});
@@ -1013,7 +1093,7 @@ namespace AsynGyanis::Net
             }
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
             const bool hasMoreWork   = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
-            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone, std::move(announcements));
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone, std::move(announcements), carriesConnectionIdFrames);
             if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
                 // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
@@ -1076,12 +1156,13 @@ namespace AsynGyanis::Net
         }
         std::string frames;
         appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
-        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, probeByteLength);
+        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, probeByteLength);
     }
 
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now, const bool isAckEliciting,
                                         const std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone,
-                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const std::optional<std::size_t> paddedDatagramByteLength)
+                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const bool carriesConnectionIdFrames,
+                                        const std::optional<std::size_t> paddedDatagramByteLength)
     {
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
@@ -1123,15 +1204,16 @@ namespace AsynGyanis::Net
         m_outboundDatagrams.push_back(QuicOutboundDatagram{std::move(datagram), outgoingEcnCodepoint});
 
         QuicSentPacketInfo record;
-        record.packetNumber         = packetNumber;
-        record.timeSent             = now;
-        record.byteCount            = datagramByteCount;
-        record.isAckEliciting       = isAckEliciting;
-        record.ecnCodepoint         = outgoingEcnCodepoint;
-        record.cryptoRange          = cryptoRange;
-        record.streamRanges         = std::move(streamRanges);
-        record.streamAnnouncements  = std::move(streamAnnouncements);
-        record.carriesHandshakeDone = carriesHandshakeDone;
+        record.packetNumber              = packetNumber;
+        record.timeSent                  = now;
+        record.byteCount                 = datagramByteCount;
+        record.isAckEliciting            = isAckEliciting;
+        record.ecnCodepoint              = outgoingEcnCodepoint;
+        record.cryptoRange               = cryptoRange;
+        record.streamRanges              = std::move(streamRanges);
+        record.streamAnnouncements       = std::move(streamAnnouncements);
+        record.carriesHandshakeDone      = carriesHandshakeDone;
+        record.carriesConnectionIdFrames = carriesConnectionIdFrames;
         // 探针被丢不算拥塞证据、也不算 §7.6.2 那一段的端点（RFC 9000 §14.4），所以这一格要留在凭据上；
         // 被确认时它又是「这个尺寸走过去了」的唯一证据，两条出口都靠它分辨
         record.isPathMtuProbe = paddedDatagramByteLength.has_value();
@@ -1445,6 +1527,219 @@ namespace AsynGyanis::Net
     QuicConnectionCore::Timestamp QuicConnectionCore::probeTimeoutPeriod() const noexcept
     {
         return m_recovery.roundTripTimeEstimate().probeTimeout;
+    }
+
+    std::size_t QuicConnectionCore::issuedConnectionIdCount() const noexcept
+    {
+        return m_issuedConnectionIds.size();
+    }
+
+    std::size_t QuicConnectionCore::peerConnectionIdCount() const noexcept
+    {
+        return m_peerConnectionIds.size();
+    }
+
+    std::span<const std::uint8_t> QuicConnectionCore::activePeerConnectionId() const noexcept
+    {
+        return std::span<const std::uint8_t>(m_configuration.peerConnectionId);
+    }
+
+    std::array<std::uint8_t, 16> QuicConnectionCore::statelessResetTokenOf(const std::span<const std::uint8_t> connectionId) const
+    {
+        // §10.3.2：令牌 = 静态密钥与连接标识的 HMAC 截前 16 字节。这样任何一份进程只要拿着同一把
+        // 密钥，就能为一条已经不存在的连接算出「它当初发的令牌该是什么」——无状态重置的全部前提。
+        // 算不出来（HMAC 上下文建不起来）时不抛：这条路径在出包循环里，抛出去会带着半个包离开
+        // 驱动；而令牌此刻本来就只是 NEW_CONNECTION_ID 的必填字段（本端还不发送无状态重置），
+        // 全零不改变任何线上行为，等 §10.3 那一半落地时再按「令牌算不出就等于这一档没开」处置
+        try
+        {
+            const Core::Digest::Sha256Value digest =
+                    Core::Digest::hmacSha256(std::string_view(reinterpret_cast<const char *>(m_statelessResetKey.data()), m_statelessResetKey.size()),
+                                             std::string_view(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()));
+            std::array<std::uint8_t, 16> token{};
+            std::copy_n(digest.begin(), token.size(), token.begin());
+            return token;
+        } catch (const Base::Exception &)
+        {
+            return std::array<std::uint8_t, 16>{};
+        }
+    }
+
+    std::size_t QuicConnectionCore::issueConnectionId(const bool isAdvertised)
+    {
+        // 长度必须与握手那条一致：短头线上没有长度字段，收包侧按定长切标识（§5.1 不禁止换长度，
+        // 但换了就再也认不回来，本实现因此把长度钉成握手那条的长度）
+        const std::vector<std::uint8_t> id = randomBytes(m_configuration.localConnectionId.size());
+        if (id.empty())
+        {
+            // 随机数不可用：不签一条可猜的标识出去（旁观者能提前把报文路由到自己想去的地方），
+            // 交回表尾表示这次没签成——调用方本轮就不再补位
+            return m_issuedConnectionIds.size();
+        }
+        const std::size_t index = m_issuedConnectionIds.size();
+        m_issuedConnectionIds.push_back(
+                IssuedConnectionId{.id = id, .sequence = m_nextConnectionIdSequence++, .statelessResetToken = statelessResetTokenOf(id), .isAdvertised = isAdvertised});
+        // 登记早于上线：通知之后才可能被编进 NEW_CONNECTION_ID（见 appendPendingConnectionIdFrames）
+        if (m_configuration.onConnectionIdIssued)
+        {
+            m_configuration.onConnectionIdIssued(std::span<const std::uint8_t>(m_issuedConnectionIds[index].id));
+        }
+        return index;
+    }
+
+    bool QuicConnectionCore::hasRoomForAnotherConnectionId() const noexcept
+    {
+        // 对端没送这一项参数时按 §18.2 的缺省值 2 算（也就是本端自己通告的那一档）
+        const std::uint64_t peerLimit = m_peerParameters.has_value() ? m_peerParameters->activeConnectionIdLimit : kQuicDefaultActiveConnectionIdLimit;
+        return m_issuedConnectionIds.size() < peerLimit;
+    }
+
+    void QuicConnectionCore::retirePeerConnectionIdsBelow(const std::uint64_t retirePriorTo)
+    {
+        for (auto iterator = m_peerConnectionIds.begin(); iterator != m_peerConnectionIds.end();)
+        {
+            if (iterator->sequence >= retirePriorTo)
+            {
+                ++iterator;
+                continue;
+            }
+            // §5.1.2：不许不打招呼就忘掉一条标识——每退一条都要发一条 RETIRE_CONNECTION_ID。
+            // 序列号进「已通报」表而不是当场出队：判丢要整批重发（§13.3）
+            if (iterator->sequence > m_largestRetiredSequenceSent)
+            {
+                m_largestRetiredSequenceSent = iterator->sequence;
+            }
+            if (std::ranges::find(m_retiredSequencesSent, iterator->sequence) == m_retiredSequencesSent.end())
+            {
+                m_retiredSequencesSent.push_back(iterator->sequence);
+            }
+            iterator = m_peerConnectionIds.erase(iterator);
+        }
+    }
+
+    void QuicConnectionCore::ensureActivePeerConnectionIdIsStillHeld()
+    {
+        // 在用的那条不在了（本端把它退了、或对端用 Retire Prior To 收回了）就换到剩下序列号最小的一条上：
+        // 本端此后仍要回包，手上必须有标识可打。调用点排在「添新的那条」之后——§5.1.2 要求先退再添，
+        // 而换用的对象正是刚添进来的那条
+        const bool isActiveStillHeld =
+                std::ranges::any_of(m_peerConnectionIds, [this](const PeerConnectionId &candidate) { return candidate.id == m_configuration.peerConnectionId; });
+        if (isActiveStillHeld || m_peerConnectionIds.empty())
+        {
+            return;
+        }
+        const auto lowest                = std::ranges::min_element(m_peerConnectionIds, {}, [](const PeerConnectionId &candidate) { return candidate.sequence; });
+        m_configuration.peerConnectionId = lowest->id;
+    }
+
+    void QuicConnectionCore::handleNewConnectionIdFrame(const QuicNewConnectionIdFrame &frame, const Timestamp arrivalTime)
+    {
+        // §19.15：Retire Prior To 大于序列号＝这一帧自己坏了，按 FRAME_ENCODING_ERROR 收口
+        if (frame.retirePriorTo > frame.sequenceNumber)
+        {
+            beginClose(kQuicFrameEncodingError, "对端 NEW_CONNECTION_ID 的 Retire Prior To 大于序列号（RFC 9000 §19.15）", arrivalTime);
+            return;
+        }
+        // 序列号与标识的对应关系是这条帧的骨架：同一个号报另一条标识、或同一条标识报成两个号，
+        // 都会让「退哪一条」失去依据。§19.15 给的是 MAY（可按 PROTOCOL_VIOLATION 收口），本端从严
+        for (const PeerConnectionId &existing: m_peerConnectionIds)
+        {
+            if (existing.sequence == frame.sequenceNumber)
+            {
+                if (!std::ranges::equal(existing.id, frame.connectionId) || !std::ranges::equal(existing.statelessResetToken, frame.statelessResetToken))
+                {
+                    beginClose(kQuicProtocolViolation, "对端用同一个序列号报了另一条连接标识（RFC 9000 §19.15）", arrivalTime);
+                    return;
+                }
+                // 重复收到同一条帧：同节明写不算错，静默忽略（重发是常态，见 §13.3）
+                return;
+            }
+            if (std::ranges::equal(existing.id, frame.connectionId))
+            {
+                beginClose(kQuicProtocolViolation, "对端用两个序列号报了同一条连接标识（RFC 9000 §19.15）", arrivalTime);
+                return;
+            }
+        }
+        // Retire Prior To 只认递增的值：较小的那些不再有效（§19.15），本端按「先退再添」的顺序办
+        if (frame.retirePriorTo > m_peerRetirePriorTo)
+        {
+            m_peerRetirePriorTo = frame.retirePriorTo;
+            retirePeerConnectionIdsBelow(frame.retirePriorTo);
+        }
+        m_peerConnectionIds.push_back(PeerConnectionId{});
+        PeerConnectionId &added = m_peerConnectionIds.back();
+        added.id.assign(frame.connectionId.begin(), frame.connectionId.end());
+        added.sequence = frame.sequenceNumber;
+        std::copy_n(frame.statelessResetToken.begin(), added.statelessResetToken.size(), added.statelessResetToken.begin());
+        // 换用排在添新之后：§5.1.2 要求先退再添，而「在用那条被退了」时要换过去的正是刚添的这条
+        ensureActivePeerConnectionIdIsStillHeld();
+        // §5.1.1：处理完这一帧之后，本端持有的条数超出本端通告的 active_connection_id_limit 就只能收口。
+        // 本端通告的是 2，正常客户端按它发就不会走到这里；走到这里说明对端多给了
+        if (m_peerConnectionIds.size() > m_configuration.transportParameters.activeConnectionIdLimit)
+        {
+            beginClose(kQuicConnectionIdLimitError, "对端给的连接标识条数超过本端通告的 active_connection_id_limit（RFC 9000 §5.1.1）", arrivalTime);
+        }
+    }
+
+    void QuicConnectionCore::handleRetireConnectionIdFrame(const QuicRetireConnectionIdFrame &frame, const Timestamp arrivalTime)
+    {
+        // §19.16：撤回一个本端从没发出去过的序列号＝PROTOCOL_VIOLATION
+        if (frame.sequenceNumber >= m_nextConnectionIdSequence)
+        {
+            beginClose(kQuicProtocolViolation, "对端撤回了一条本端从未签发的连接标识（RFC 9000 §19.16）", arrivalTime);
+            return;
+        }
+        const auto retired = std::ranges::find(m_issuedConnectionIds, frame.sequenceNumber, [](const IssuedConnectionId &issued) { return issued.sequence; });
+        if (retired == m_issuedConnectionIds.end())
+        {
+            // 退一条已经退过的：重发导致的重复帧，无害（幂等），按同一条帧收两遍处理
+            return;
+        }
+        if (m_configuration.onConnectionIdRetired)
+        {
+            m_configuration.onConnectionIdRetired(std::span<const std::uint8_t>(retired->id));
+        }
+        m_issuedConnectionIds.erase(retired);
+        // §5.1.1 的 SHOULD（对端退回来一条就补一条）不在这里办：补位统一由 1-RTT 出包前的
+        // prepareOneRttPackets 按「在册条数 < 对端上限」补齐——退一条与丢一条因此走同一条补位路径，
+        // 少一处会忘、也就少一处会与上限打架
+    }
+
+    bool QuicConnectionCore::appendPendingConnectionIdFrames(std::string &frames)
+    {
+        bool appendedAny = false;
+        for (const IssuedConnectionId &issued: m_issuedConnectionIds)
+        {
+            // 握手那条随长头隐含（isAdvertised 为真且不重发）；判丢整批重发时连它也不用发
+            if (issued.isAdvertised && !m_isConnectionIdFramesDirty)
+            {
+                continue;
+            }
+            QuicNewConnectionIdFrame frame;
+            frame.sequenceNumber      = issued.sequence;
+            frame.retirePriorTo       = 0;
+            frame.connectionId        = issued.id;
+            frame.statelessResetToken = issued.statelessResetToken;
+            appendQuicFrame(frames, QuicFrame{frame});
+            appendedAny = true;
+        }
+        for (const std::uint64_t retiredSequence: m_retiredSequencesSent)
+        {
+            QuicRetireConnectionIdFrame frame;
+            frame.sequenceNumber = retiredSequence;
+            appendQuicFrame(frames, QuicFrame{frame});
+            appendedAny = true;
+        }
+        if (appendedAny)
+        {
+            // 上线了：把「还没上线」的标记清掉，并把整批重发标记复位——这一包就是那批重发
+            for (IssuedConnectionId &issued: m_issuedConnectionIds)
+            {
+                issued.isAdvertised = true;
+            }
+            m_isConnectionIdFramesDirty = false;
+        }
+        return appendedAny;
     }
 
     const QuicPacketKeys *QuicConnectionCore::applicationWriteKeys() const noexcept

@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <deque>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -114,6 +115,29 @@ namespace AsynGyanis::Net
          * @see makeQuicCongestionAlgorithm
          */
         QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
+        /**
+         * @brief 本端签发一条新连接标识时的通知：外壳拿它把这条标识登记进路由表（RFC 9000 §5.1.1）
+         * @details §5.1.1 明写「签发的标识要么认到连接结束、要么认到对端用 RETIRE_CONNECTION_ID
+         *          撤回为止」：标识一旦上线就可能出现在下一包的短头里，路由表必须在那一包到达之前就认它。
+         *          本类在**造出这条标识的那一刻**通知，广告它的 NEW_CONNECTION_ID 要等到下一次 1-RTT
+         *          出包，因此登记永远早于上线。空回调＝不登记（单测与不需要按标识路由的用法）
+         */
+        std::function<void(std::span<const std::uint8_t> connectionId)> onConnectionIdIssued{};
+        /**
+         * @brief 对端 RETIRE_CONNECTION_ID 撤回一条标识之后的通知：外壳据此把它从路由表摘掉
+         * @details 撤回之后本端不再接受落在它上面的报文（§5.1.1 的另一半）。与上一条成对：
+         *          登记与摘除各一处，外壳不必去猜本端此刻有哪些标识在册
+         */
+        std::function<void(std::span<const std::uint8_t> connectionId)> onConnectionIdRetired{};
+        /**
+         * @brief 无状态重置令牌的派生密钥；留空＝本连接随机取一把
+         * @details 令牌按 RFC 9000 §10.3.2 由「端点静态密钥 + 标识」派生，签发的每条标识在
+         *          NEW_CONNECTION_ID 里都要带一个。本端目前只签发、不发送无状态重置（§10.3 那一半
+         *          见账目），但派生方式按规范摆好，等重置那一半落地时这批令牌不需要重签。
+         *          **多进程 worker 必须共享同一把**：无状态重置的用处正是「连接没了还能答话」，
+         *          而那一刻报文可能落到另一个进程手里（与 `addressValidationKey` 同一条道理）。
+         */
+        std::vector<std::uint8_t> statelessResetKey{};
     };
 
     /**
@@ -366,6 +390,28 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Timestamp probeTimeoutPeriod() const noexcept;
 
+        /**
+         * @brief 本端此刻签发的、仍有效的连接标识条数（含握手期那一条）
+         * @details 判据落在这一格上：签发要看得见（`NEW_CONNECTION_ID` 真发出去了）、撤回也要看得见
+         *          （对端 RETIRE 之后条数真的减了）。运维与用例都靠它分辨「签了没上线」与「退休了没摘掉」
+         * @return std::size_t 有效标识条数；握手期恒为 1
+         */
+        [[nodiscard]] std::size_t issuedConnectionIdCount() const noexcept;
+
+        /**
+         * @brief 本端此刻持有的、对端给的可用连接标识条数（含握手期那一条）
+         * @return std::size_t 条数；对端一条 NEW_CONNECTION_ID 都没发过时是 1
+         */
+        [[nodiscard]] std::size_t peerConnectionIdCount() const noexcept;
+
+        /**
+         * @brief 本端此刻用来回包的目的连接标识（§7.2）
+         * @details 握手期是「对端自报的源标识」，此后可能因 RETIRE_CONNECTION_ID 换到另一条上；
+         *          换用与迁移的关系见 §9.5
+         * @return std::span<const std::uint8_t> 视图有效期同本对象
+         */
+        [[nodiscard]] std::span<const std::uint8_t> activePeerConnectionId() const noexcept;
+
     private:
         /// 包号空间：0-RTT 借用 Initial 的空间，所以只有三个
         enum class PacketNumberSpace : std::size_t
@@ -401,6 +447,23 @@ namespace AsynGyanis::Net
             std::vector<QuicCryptoRange> pendingRetransmissions{}; ///< 出站：判丢或探针后要重发的区间，按偏移递增
 
             QuicReassemblyBuffer reassembly{}; ///< 入站：按覆盖区合并的 CRYPTO 分片，交付点就是已喂给 TLS 的字节数
+        };
+
+        /// 本端签发的一条连接标识：序列号（§5.1.1）与随它一起发出去的无状态重置令牌（§10.3.2）
+        struct IssuedConnectionId
+        {
+            std::vector<std::uint8_t>    id{};                  ///< 标识本体；长度恒与握手那条一致（短头按定长切，换了长度对端就认不回来）
+            std::uint64_t                sequence{0};           ///< 序列号；握手期那条是 0
+            std::array<std::uint8_t, 16> statelessResetToken{}; ///< NEW_CONNECTION_ID 必带的 128 位令牌
+            bool                         isAdvertised{false};   ///< 己方是否已把 NEW_CONNECTION_ID 发出去过（握手那条随长头隐含，恒真）
+        };
+
+        /// 对端给过来的一条连接标识：本端持有，随时可以改用（换用的判据见 §9.5）
+        struct PeerConnectionId
+        {
+            std::vector<std::uint8_t>    id{};                  ///< 标识本体
+            std::uint64_t                sequence{0};           ///< 序列号；握手期那条是 0
+            std::array<std::uint8_t, 16> statelessResetToken{}; ///< 对端给的令牌（本端目前只存不带外）
         };
 
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
@@ -450,6 +513,84 @@ namespace AsynGyanis::Net
         void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
         void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
         void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
+        /**
+         * @brief 对端报来一条标识（§19.15）：验形状、按 Retire Prior To 退休旧条目、加入本端持有的集合
+         * @details 三条判据各自的去向：Retire Prior To 大于序列号＝FRAME_ENCODING_ERROR（§19.15 的 MUST）；
+         *          同一条标识换个令牌或换个序列号报上来＝PROTOCOL_VIOLATION（同节的 MAY，本端从严）；
+         *          加完之后本端持有的条数超过本端通告的 `active_connection_id_limit` 门槛＝
+         *          CONNECTION_ID_LIMIT_ERROR（§5.1.1 明写这一条按"处理完这一帧之后"的数算）。
+         *          重复收到同一条帧（相同令牌、相同序列号）按同节要求**不算错**，静默忽略
+         * @param frame 这一帧
+         * @param arrivalTime 收口报文要用它当发送时刻
+         */
+        void handleNewConnectionIdFrame(const QuicNewConnectionIdFrame &frame, Timestamp arrivalTime);
+        /**
+         * @brief 对端撤回一条本端签发的标识（§19.16）：从在册表摘掉、通知外壳、并补一条新的
+         * @details 撤回一个从未发出去的序列号＝PROTOCOL_VIOLATION（§19.16 的 MUST）。补发是 §5.1.1 的
+         *          SHOULD：对端主动退回一条，说明它在为将来留位置，而本端持有的余量低于它的上限时
+         *          就该把这个位置填上
+         * @param frame 这一帧
+         * @param arrivalTime 收口报文要用它当发送时刻
+         */
+        void handleRetireConnectionIdFrame(const QuicRetireConnectionIdFrame &frame, Timestamp arrivalTime);
+        /**
+         * @brief 造一条新标识并登记进在册表：随机 18 字节 + 按 §10.3.2 派生的令牌
+         * @details 只造不改线：真正上线要等下一次 1-RTT 出包把它编成 NEW_CONNECTION_ID。
+         *          造的同时通知外壳登记路由——那一定早于它出现在线上
+         * @param isAdvertised 省去一次广告用：握手期那条随长头隐含，直接标成已上线
+         * @return 新条目在表里的位置
+         */
+        std::size_t issueConnectionId(bool isAdvertised);
+        /**
+         * @brief 本端还有没有余量可以再发几条标识：在册条数低于对端通告的上限就会补
+         * @details 上限取对端参数里的 `active_connection_id_limit`（缺席时按 §18.2 的缺省 2——
+         *          就是本端自己通告的那一档）。§5.1.1 的 MUST NOT：给出的条数不许超过对端的上限
+         * @return true 还可以再签一条
+         */
+        [[nodiscard]] bool hasRoomForAnotherConnectionId() const noexcept;
+        /// §10.3.2：令牌 = HMAC(静态密钥, 标识) 的前 16 字节
+        [[nodiscard]] std::array<std::uint8_t, 16> statelessResetTokenOf(std::span<const std::uint8_t> connectionId) const;
+        /**
+         * @brief 按 Retire Prior To 退休本端持有的对端标识（§19.15 的处理顺序：先退再加）
+         * @details 每退一条都要发一条 RETIRE_CONNECTION_ID（§5.1.2：不许不打招呼就忘掉一条标识）。
+         *          如果退掉的正是本端在用的那条，就换到剩下序列号最小的那条上——手上一条都不剩时
+         *          保持原值（此后回包仍打旧标识，对端若真把它退了，那是对端自己制造的僵局）
+         * @param retirePriorTo 对端给的阈值：序列号小于它的都要退
+         */
+        void retirePeerConnectionIdsBelow(std::uint64_t retirePriorTo);
+        /**
+         * @brief 在用的那条对端标识不再被本端持有时，换到剩下序列号最小的一条上
+         * @details 调用点排在「添新的那条」之后（§5.1.2 的「先退再添」顺序），因为被退掉的那条常常
+         *          正是同一条帧里刚添进来的替代者。只要列表里还有一条就不会出现「无标识可打」：
+         *          真被清空时保持原值，回包仍打旧标识，对端若真把它退了那是对端自己制造的僵局
+         */
+        void ensureActivePeerConnectionIdIsStillHeld();
+        /**
+         * @brief 把待发的连接标识帧编进这一包（§19.15 的 NEW_CONNECTION_ID 与 §19.16 的 RETIRE）
+         * @details 两类帧都只允许出现在 1-RTT 里（§19 表 3 的 Protection 列），所以只有一个调用点。
+         *          重发不做确认跟踪：§19.15 明写同一条帧收两遍不算错、RETIRE 一个已退的序列号也是
+         *          无害的幂等动作，因此「判丢后整批再发一遍」就足以满足 §13.3 的重发要求
+         * @param frames 帧序列缓冲，编进去的都接在它后面
+         * @return bool 是否至少编进了一帧
+         */
+        bool appendPendingConnectionIdFrames(std::string &frames);
+        /**
+         * @brief 1-RTT 出包前的两件准备事：路径 MTU 探针与「给对端补一条没在用的标识」
+         * @details 两件事都只在 1-RTT 里做（探针要应用空间的写密钥，标识帧只许出现在 1-RTT 包里），
+         *          时机相同、各自独立，合成一处省得每次出包都记两遍
+         * @param now 当前时刻
+         */
+        void prepareOneRttPackets(Timestamp now);
+        /**
+         * @brief 欠着确认时把 ACK 帧编进这一包（§13.2）
+         * @details 取数（最大确认包号、区间、延迟、ECN 计数）都在这里；帧只在这一处产出，
+         *          确认的「欠」与「还」因此不会各写一份判据
+         * @param state 哪个包号空间的状态
+         * @param space 空间枚举（ECN 计数按空间各一份）
+         * @param now 出包时刻，ACK 延迟字段由它算
+         * @param frames 帧序列缓冲
+         */
+        void appendAcknowledgementIfPending(SpaceState &state, PacketNumberSpace space, Timestamp now, std::string &frames);
         void adoptTlsKeys();
         /**
          * @brief 清掉一个空间的密钥、握手流与在途账
@@ -507,7 +648,7 @@ namespace AsynGyanis::Net
          */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange,
                         std::vector<QuicStreamRange> streamRanges = {}, bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {},
-                        std::optional<std::size_t> paddedDatagramByteLength = std::nullopt);
+                        bool carriesConnectionIdFrames = false, std::optional<std::size_t> paddedDatagramByteLength = std::nullopt);
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -595,5 +736,25 @@ namespace AsynGyanis::Net
         bool                                     m_isKeyPhaseAcknowledged{false};           ///< 对端确认了本相位里的某个包，才允许再来一次更新
         std::optional<QuicTransportParameters>   m_peerParameters{};                        ///< 验过的对端参数
         std::optional<std::vector<std::uint8_t>> m_peerFirstInitialSourceConnectionId{};    ///< 对端第一个 Initial 里的源标识，§7.3 的绑定校验靠它
+        /**
+         * @brief 本端签发的连接标识在册表（§5.1.1）：握手期那条是序列号 0，其后逐条 +1
+         * @details 「在册」＝已签发且未被对端 RETIRE。撤回的条目直接从表里摘掉，序列号不回收
+         *          （§5.1.1 要求逐条 +1，复用序列号等于把两条不同的标识说成同一条）
+         */
+        std::vector<IssuedConnectionId> m_issuedConnectionIds{};
+        /// 下一个要用的序列号：握手那条占 0，之后从 1 起递增。只增不减，与在册表分开记
+        std::uint64_t m_nextConnectionIdSequence{1};
+        /// 对端给过来的连接标识（§5.1.2 的「本端持有、随时可改用」），序列号 0 是握手期那条
+        std::vector<PeerConnectionId> m_peerConnectionIds{};
+        /// 对端声明过的、最大的 Retire Prior To：只认递增的值（§19.15「较小的值不再有效」）
+        std::uint64_t m_peerRetirePriorTo{0};
+        /// 本端发出去的 RETIRE_CONNECTION_ID 里最大的序列号；对端撤回一个比这还大的号即越界（§19.16）
+        std::uint64_t m_largestRetiredSequenceSent{0};
+        /// 本端退休过的、已通报给对端的序列号：判丢后整批重发时按它再发一遍（§13.3）
+        std::vector<std::uint64_t> m_retiredSequencesSent{};
+        /// 有一包带连接标识帧的包被判丢：下一次出包把在册的标识与已退序列整批再发一遍（§13.3）
+        bool m_isConnectionIdFramesDirty{false};
+        /// 无状态重置令牌的派生密钥（§10.3.2）：配置没给就在这里随机取一把
+        std::vector<std::uint8_t> m_statelessResetKey{};
     };
 } // namespace AsynGyanis::Net

@@ -139,6 +139,23 @@ namespace AsynGyanis::Net
              *          完整语义与理由见 `QuicConnectionCoreConfiguration::congestionAlgorithm`
              */
             QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
+            /**
+             * @brief 本端签发一条新连接标识时的通知（RFC 9000 §5.1.1）
+             * @details 服务端一侧拿它把这条标识登记进路由表：标识一上线就可能出现在下一包的短头里，
+             *          路由表必须在那一包到达之前就认它。核心在**造出标识的那一刻**回调，早于它被
+             *          编进 NEW_CONNECTION_ID 上线，因此登记永远来得及
+             * @param connection 这条标识所属的连接
+             * @param connectionId 新签发的标识字节
+             */
+            std::function<void(QuicConnection &connection, std::span<const std::uint8_t> connectionId)> onConnectionIdIssued;
+            /**
+             * @brief 对端撤回一条本端签发的标识时的通知（RFC 9000 §5.1.1 的另一半）
+             * @details 服务端据此把它从路由表摘掉：撤回之后本端不再接受落在它上面的报文。
+             *          与上一条成对，外壳不必去猜本端此刻有哪些标识在册
+             * @param connection 这条标识所属的连接
+             * @param connectionId 被撤回的标识字节
+             */
+            std::function<void(QuicConnection &connection, std::span<const std::uint8_t> connectionId)> onConnectionIdRetired;
         };
 
         /**

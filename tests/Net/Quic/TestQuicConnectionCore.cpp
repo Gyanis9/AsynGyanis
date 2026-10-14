@@ -85,6 +85,9 @@ namespace AsynGyanis::Net
         /// 一个明显不等于任何已签发标识的连接标识
         const std::vector<std::uint8_t> kUnknownConnectionId = makeBytesFromHex("1122334455667788");
 
+        /// 16 字节的占位无状态重置令牌：对端给过来的令牌本端目前只存不核（§10.3 的接收侧还没做）
+        const std::vector<std::uint8_t> kPlaceholderResetToken = makeBytesFromHex("000102030405060708090a0b0c0d0e0f");
+
         /**
          * @brief 测试夹具的 SSL 上下文持有者
          * @details 与 TLS 胶水用例同一套写法：服务端装仓库内的自签证书，客户端关掉校验才握得上手
@@ -598,6 +601,18 @@ namespace AsynGyanis::Net
                 return m_serverCloseErrorCode;
             }
 
+            /// 服务端发过的 NEW_CONNECTION_ID：序列号与标识本体，按到达顺序
+            [[nodiscard]] const std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> &serverNewConnectionIds() const noexcept
+            {
+                return m_serverNewConnectionIds;
+            }
+
+            /// 服务端发过的 RETIRE_CONNECTION_ID 的序列号，按到达顺序
+            [[nodiscard]] const std::vector<std::uint64_t> &serverRetiredConnectionIdSequences() const noexcept
+            {
+                return m_serverRetiredConnectionIdSequences;
+            }
+
             /**
              * @brief 之后 consume 到的服务端数据报都按这个 ECN 取值计数；交空表示本端读不到那个字段
              * @details 这是替身唯一能表达的「中间节点做了什么」：给出 `kEcnCodepointCe` 就是本端标了
@@ -899,10 +914,12 @@ namespace AsynGyanis::Net
 
             void observeFrame(const QuicFrame &frame, const QuicEncryptionLevel level)
             {
-                // §19 表 3 的 Protection 列：这些帧只许出现在 1-RTT 包里。放错空间的帧，真实对端
-                // （aioquic 实测）会直接判 PROTOCOL_VIOLATION，因此本端一律当失败处理
+                // §19 表 3 的 Pkts 列：这一段帧（0x04/0x05、0x08–0x1a、0x1e）在表里都不含 I 与 H，
+                // 也就是 Initial 与 Handshake 空间里一律不许出现。放错空间的帧，真实对端（aioquic 实测）
+                // 会直接判 PROTOCOL_VIOLATION，因此本端一律当失败处理。本替身没有 0-RTT 空间，
+                // 因此「不许出现在 I/H」与「只许出现在 1-RTT」在这里是同一件事
                 const std::uint64_t frameType         = quicFrameTypeValue(frame);
-                const bool          isOneRttOnlyFrame = frameType == 0x04U || frameType == 0x05U || frameType == 0x1eU || (frameType >= 0x08U && frameType <= 0x17U);
+                const bool          isOneRttOnlyFrame = frameType == 0x04U || frameType == 0x05U || frameType == 0x1eU || (frameType >= 0x08U && frameType <= 0x1aU);
                 if (isOneRttOnlyFrame && level != QuicEncryptionLevel::Application)
                 {
                     ADD_FAILURE() << "帧类型 " << frameType << " 出现在级别序号 " << static_cast<int>(level) << " 的包里：这类帧只许在 1-RTT 包里出现（RFC 9000 §19 表 3）";
@@ -944,6 +961,14 @@ namespace AsynGyanis::Net
                 } else if (const auto *maxStreamData = std::get_if<QuicMaxStreamDataFrame>(&frame); maxStreamData != nullptr)
                 {
                     m_serverMaxStreamData = maxStreamData->maximumStreamData;
+                } else if (const auto *newConnectionId = std::get_if<QuicNewConnectionIdFrame>(&frame); newConnectionId != nullptr)
+                {
+                    // 标识与令牌都是指向报文缓冲的视图：记下来就得拷一份（缓冲随下一次收包就被覆盖）
+                    m_serverNewConnectionIds.emplace_back(newConnectionId->sequenceNumber,
+                                                          std::vector<std::uint8_t>(newConnectionId->connectionId.begin(), newConnectionId->connectionId.end()));
+                } else if (const auto *retireConnectionId = std::get_if<QuicRetireConnectionIdFrame>(&frame); retireConnectionId != nullptr)
+                {
+                    m_serverRetiredConnectionIdSequences.push_back(retireConnectionId->sequenceNumber);
                 }
             }
 
@@ -1051,6 +1076,10 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t>       m_serverMaxData{};                                  ///< 服务端最近一条 MAX_DATA 的上限
             std::optional<std::uint64_t>       m_serverMaxStreamData{};                            ///< 服务端最近一条 MAX_STREAM_DATA 的上限
             std::optional<std::uint64_t>       m_serverCloseErrorCode{};                           ///< 服务端 CONNECTION_CLOSE 的错误码
+            /// 服务端发来的 NEW_CONNECTION_ID（序列号 + 标识），按到达顺序
+            std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> m_serverNewConnectionIds{};
+            /// 服务端发来的 RETIRE_CONNECTION_ID 序列号，按到达顺序
+            std::vector<std::uint64_t> m_serverRetiredConnectionIdSequences{};
             /// 「网络」给本端读到的 ECN 字段取值，空表示这个平台读不到；每条数据报都按它计（§13.4.1）
             std::optional<std::uint8_t> m_incomingEcnCodepoint{};
             /// 服务端各空间 ACK 里报的三个 ECN 计数；该空间最近一帧不带计数时为空
@@ -3141,5 +3170,220 @@ namespace AsynGyanis::Net
 
         QuicConnectionCore defaultCore(makeServerConfiguration(*serverContext.get()));
         EXPECT_NE(dynamic_cast<const QuicCongestionControl *>(&defaultCore.congestionAlgorithm()), nullptr) << "缺省必须保持 NewReno（与这一格落地之前的部署逐字一致）";
+    }
+
+    /**
+     * @brief 握完手就补一条没在用的标识，并且只在 1-RTT 里发（RFC 9000 §5.1.1、§19 表 3）
+     * @details 这一格是「通告了 active_connection_id_limit = 2 却只给一条」的直接反面：本端必须真的
+     *          把第二条标识发出去，对端才可能换一条来迁移（§9.5 不许拿同一条标识打两个目的地址）。
+     *          判据两面：① 对端那条替身真的收到了 NEW_CONNECTION_ID（序列号 1、长度与握手那条一致、
+     *          内容不同）；② 在册条数是 2。发在哪个空间由替身的 1-RTT 守卫看着
+     */
+    TEST(QuicConnectionCore, AdvertisesASpareConnectionIdOnceOneRttIsReady)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        // 补位与广告可能就发生在握手最后那一轮 drive（应用空间的写密钥在那一轮才武装），因此这里
+        // 只看形状不看早晚：至多一条、序列号 1、长度与握手那条一致、内容不同
+        ASSERT_LE(client.serverNewConnectionIds().size(), 1U) << "同一轮里重复广告：一条标识发了两遍 NEW_CONNECTION_ID";
+
+        exchange(core, client, Timestamp{120000});
+        ASSERT_EQ(client.serverNewConnectionIds().size(), 1U) << "1-RTT 就绪后没补第二条标识：对端的池子只有一个，迁移被锁死";
+        EXPECT_EQ(client.serverNewConnectionIds().front().first, 1U) << "新标识的序列号该从 1 起（握手那条是 0）";
+        EXPECT_EQ(client.serverNewConnectionIds().front().second.size(), kServerConnectionId.size()) << "长度必须与握手那条一致：短头按定长切标识";
+        EXPECT_NE(client.serverNewConnectionIds().front().second, kServerConnectionId) << "补的那条与握手那条相同＝等于没补";
+        EXPECT_EQ(core.issuedConnectionIdCount(), 2U) << "对端通告的上限是 2，本端正好签 2 条";
+
+        // 上限到了就不再签：再走一轮也不该多出第三条
+        exchange(core, client, Timestamp{121000});
+        EXPECT_EQ(client.serverNewConnectionIds().size(), 1U) << "同一批里重复广告；或者超发了：对端只会按上限算，多出来的那条是无效承诺";
+        EXPECT_EQ(core.issuedConnectionIdCount(), 2U);
+    }
+
+    /**
+     * @brief 对端退一条本端签发的标识：立刻从在册表掉出去，并补一条新的（§5.1.1 的 SHOULD）
+     * @details 判据三面：① 序列号越界（从没签发过的号）按 §19.16 判 PROTOCOL_VIOLATION 收口；
+     *          ② 退一条真签发过的，在册条数不变（退一条补一条）、补出来的那条序列号继续 +1 且内容不同；
+     *          ③ 退一条已经退过的（重发导致的重复帧）不报错
+     */
+    TEST(QuicConnectionCore, ReplacesARetiredConnectionIdAndRefusesUnknownSequences)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        // ③ 先单独验「退一个从没签发过的序列号」：越界即收口，错误码是 PROTOCOL_VIOLATION
+        {
+            QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+            InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+            finishHandshake(core, client);
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicRetireConnectionIdFrame{.sequenceNumber = 7}});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{120000});
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+            ASSERT_TRUE(client.serverCloseErrorCode().has_value()) << "退一个本端从没签发的序列号却没回话";
+            EXPECT_EQ(*client.serverCloseErrorCode(), 0x0AU) << "该按 PROTOCOL_VIOLATION 收口（§19.16）";
+        }
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{120000});
+        ASSERT_EQ(client.serverNewConnectionIds().size(), 1U) << "前置没成立：第二条标识没发出去";
+
+        const std::uint64_t             spareSequence = client.serverNewConnectionIds().front().first;
+        const std::vector<std::uint8_t> spareId       = client.serverNewConnectionIds().front().second;
+
+        // ② 退掉它：在册条数不变（退一条补一条），补出来的序列号 +1 且是另一条标识
+        std::string retireFrames;
+        appendQuicFrame(retireFrames, QuicFrame{QuicRetireConnectionIdFrame{.sequenceNumber = spareSequence}});
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, retireFrames), Timestamp{121000});
+        EXPECT_EQ(core.issuedConnectionIdCount(), 2U) << "退了一条却没补位：对端手上的池子会越用越空";
+        exchange(core, client, Timestamp{122000});
+        ASSERT_EQ(client.serverNewConnectionIds().size(), 2U) << "补位没上线";
+        EXPECT_EQ(client.serverNewConnectionIds().back().first, spareSequence + 1U) << "序列号必须逐条 +1（§5.1.1）";
+        EXPECT_NE(client.serverNewConnectionIds().back().second, spareId) << "补位与刚退掉的那条相同：等于把一条要退休的标识又发了一遍";
+
+        // ③ 重复退同一条（重发导致的重复帧）：幂等，不报错、不再补位
+        const std::size_t onlineBefore = client.serverNewConnectionIds().size();
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, retireFrames), Timestamp{123000});
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << "退一条已经退过的标识报了错：重复帧是常态（§13.3）";
+        EXPECT_EQ(core.issuedConnectionIdCount(), 2U);
+        exchange(core, client, Timestamp{124000});
+        EXPECT_EQ(client.serverNewConnectionIds().size(), onlineBefore) << "重复退一次又补了一条：池子被撑到超过对端上限";
+    }
+
+    /**
+     * @brief 对端给的标识本端照收、按上限卡住；同号异标识、RPT 大于序列号两类坏帧各有自己的错误码
+     * @details 四条判据各自钉一种形状：① 正常收一条 → 持有条数涨到 2；② 再来第三条 → 超过本端通告的
+     *          `active_connection_id_limit` → CONNECTION_ID_LIMIT_ERROR（§5.1.1 的 MUST）；③ 换个标识
+     *          报同一个序列号 → PROTOCOL_VIOLATION（§19.15 的 MAY，本端从严）；④ RPT 大于序列号 →
+     *          FRAME_ENCODING_ERROR（§19.15 的 MUST）
+     */
+    TEST(QuicConnectionCore, TracksPeerConnectionIdsAndEnforcesItsOwnLimit)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        const auto newConnectionIdDatagram =
+                [&](QuicConnectionCore &core, InMemoryQuicClient &client, const std::uint64_t sequence, const std::uint64_t retirePriorTo, const std::vector<std::uint8_t> &id)
+        {
+            std::string              frames;
+            QuicNewConnectionIdFrame frame;
+            frame.sequenceNumber      = sequence;
+            frame.retirePriorTo       = retirePriorTo;
+            frame.connectionId        = id;
+            frame.statelessResetToken = std::span<const std::uint8_t>(kPlaceholderResetToken); // 16 字节占位令牌：本端只存不核（§10.3 那一半还没做）
+            appendQuicFrame(frames, QuicFrame{frame});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{120000});
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+        };
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        EXPECT_EQ(core.peerConnectionIdCount(), 1U) << "握手那条（对端自报的源标识）该算序列号 0";
+
+        const std::vector<std::uint8_t> firstPeerId(18U, 0x11U);
+        newConnectionIdDatagram(core, client, 1, 0, firstPeerId);
+        EXPECT_EQ(core.peerConnectionIdCount(), 2U) << "对端给的第二条标识没收下";
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << "正常的一条 NEW_CONNECTION_ID 不该让本端收口";
+
+        // 重复收同一条帧：§19.15 明写不算错
+        newConnectionIdDatagram(core, client, 1, 0, firstPeerId);
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << "同一条帧收两遍被当成错误：重发是常态";
+        EXPECT_EQ(core.peerConnectionIdCount(), 2U);
+
+        // 同号异标识 → PROTOCOL_VIOLATION
+        newConnectionIdDatagram(core, client, 1, 0, std::vector<std::uint8_t>(18U, 0x22U));
+        ASSERT_TRUE(client.serverCloseErrorCode().has_value()) << "同一个序列号报另一条标识却被收下了";
+        EXPECT_EQ(*client.serverCloseErrorCode(), 0x0AU);
+
+        // RPT 大于序列号 → FRAME_ENCODING_ERROR
+        {
+            QuicConnectionCore rptCore(makeServerConfiguration(*serverContext.get()));
+            InMemoryQuicClient rptClient(*clientContext.get(), kClientConnectionId);
+            finishHandshake(rptCore, rptClient);
+            newConnectionIdDatagram(rptCore, rptClient, 1, 2, std::vector<std::uint8_t>(18U, 0x33U));
+            ASSERT_TRUE(rptClient.serverCloseErrorCode().has_value()) << "Retire Prior To 大于序列号却被收下了";
+            EXPECT_EQ(*rptClient.serverCloseErrorCode(), 0x07U) << "该按 FRAME_ENCODING_ERROR 收口（§19.15）";
+        }
+
+        // 第三条：超过本端通告的 active_connection_id_limit=2 → CONNECTION_ID_LIMIT_ERROR
+        {
+            QuicConnectionCore limitCore(makeServerConfiguration(*serverContext.get()));
+            InMemoryQuicClient limitClient(*clientContext.get(), kClientConnectionId);
+            finishHandshake(limitCore, limitClient);
+            newConnectionIdDatagram(limitCore, limitClient, 1, 0, std::vector<std::uint8_t>(18U, 0x44U));
+            EXPECT_FALSE(limitClient.serverCloseErrorCode().has_value());
+            newConnectionIdDatagram(limitCore, limitClient, 2, 0, std::vector<std::uint8_t>(18U, 0x55U));
+            ASSERT_TRUE(limitClient.serverCloseErrorCode().has_value()) << "第三条标识（共 3 条）超过了本端通告的 2 条却被收下";
+            EXPECT_EQ(*limitClient.serverCloseErrorCode(), 0x09U) << "该按 CONNECTION_ID_LIMIT_ERROR 收口（§5.1.1）";
+        }
+    }
+
+    /**
+     * @brief Retire Prior To 递增时：先退后添、退回的每条都发 RETIRE_CONNECTION_ID、在用的那条被退就换一条
+     * @details §5.1.2 的「先退再添」顺序是这一格的全部要点——对端（或一份中间设备）用一个更大的 RPT
+     *          把自己此前给的标识一次性收回去，本端要按序办：退掉序列号小于 RPT 的那些（各发一条
+     *          RETIRE_CONNECTION_ID，且不许不打招呼就忘掉），再把新的那条加进来。握手那条是客户端自报的
+     *          源标识、也是本端回包打的那条，它被退之后本端必须换到剩下最小序列号的那条上，否则回包
+     *          会继续打在一条已经作废的标识上
+     */
+    TEST(QuicConnectionCore, RetiresPeerConnectionIdsBeforeAddingTheNewOne)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        ASSERT_EQ(core.activePeerConnectionId().size(), kClientConnectionId.size());
+
+        // 对端先给一条（序列号 1），再用 RPT=2 把 0 与 1 都收回去，同时给出序列号 2 的那条
+        const auto advertise = [&](const std::uint64_t sequence, const std::uint64_t retirePriorTo, const std::vector<std::uint8_t> &id)
+        {
+            std::string              frames;
+            QuicNewConnectionIdFrame frame;
+            frame.sequenceNumber      = sequence;
+            frame.retirePriorTo       = retirePriorTo;
+            frame.connectionId        = id;
+            frame.statelessResetToken = std::span<const std::uint8_t>(kPlaceholderResetToken);
+            appendQuicFrame(frames, QuicFrame{frame});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{120000});
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+        };
+        // 长度跟客户端自报的那条一致：短头没有长度字段，对端（包括这份替身）按自己标识的长度切 DCID，
+        // 换了长度它就解不开本端打过去的包
+        const std::vector<std::uint8_t> secondId(kClientConnectionId.size(), 0x66U);
+        advertise(1, 0, secondId);
+        ASSERT_EQ(core.peerConnectionIdCount(), 2U);
+
+        const std::vector<std::uint8_t> thirdId(kClientConnectionId.size(), 0x77U);
+        advertise(2, 2, thirdId);
+
+        // 先退后添：序列号 0 与 1 都退掉，只留序列号 2 的那条
+        EXPECT_EQ(core.peerConnectionIdCount(), 1U) << "Retire Prior To=2 之后手上还留着该退的标识";
+        ASSERT_EQ(client.serverRetiredConnectionIdSequences().size(), 2U) << "退回的每一条都要发一条 RETIRE_CONNECTION_ID（§5.1.2：不许不打招呼就忘掉）";
+        EXPECT_EQ(client.serverRetiredConnectionIdSequences()[0], 0U);
+        EXPECT_EQ(client.serverRetiredConnectionIdSequences()[1], 1U);
+        // 在用的那条（握手时对端自报的源标识）被退：必须换到剩下的那条上，否则回包打在一条件作废的标识上
+        EXPECT_TRUE(std::ranges::equal(core.activePeerConnectionId(), thirdId)) << "在用的标识被退了却没换：此后回包全打在一条已作废的标识上";
     }
 } // namespace AsynGyanis::Net

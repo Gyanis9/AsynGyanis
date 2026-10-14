@@ -1145,9 +1145,8 @@ namespace AsynGyanis::Net
 
     QuicConnection::Configuration QuicServer::configurationForAcceptedConnection()
     {
-        QuicConnection::Configuration connectionConfiguration;
-        // 与 reloadCertificate() 定序：取一份快照再往外传，连接建好之后它自己持有 OpenSSL 的引用
-        SSL_CTX *tlsContextSnapshot = nullptr;
+        QuicConnection::Configuration connectionConfiguration; // 与 reloadCertificate() 定序：取一份快照再往外传，连接建好之后它自己持有 OpenSSL 的引用
+        SSL_CTX                      *tlsContextSnapshot = nullptr;
         {
             std::lock_guard guard(m_tlsContextMutex);
             tlsContextSnapshot = m_tlsContext.get();
@@ -1157,6 +1156,12 @@ namespace AsynGyanis::Net
         // DF 是这台套接字的事实，不是每条连接各自决定的：listen 时设一次，接进来的连接照它走
         connectionConfiguration.pathMtuProbeAllowed = m_isDoNotFragmentSet;
         connectionConfiguration.congestionAlgorithm = m_configuration.congestionAlgorithm;
+        // 每签发一条新标识就登记进别名索引：报文按它路由回来时才能认到这条连接（§5.1.1 的「签了就得认」）。
+        // 摘除那一路反着来。两张表都只归收报文那条循环线程，这两个回调也从同一线程发出（核心在出包时回调）
+        connectionConfiguration.onConnectionIdIssued = [this](QuicConnection &connection, const std::span<const std::uint8_t> connectionId)
+        { m_connectionsByAliasConnectionId.emplace(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection); };
+        connectionConfiguration.onConnectionIdRetired = [this](QuicConnection &, const std::span<const std::uint8_t> connectionId)
+        { m_connectionsByAliasConnectionId.erase(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size())); };
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         {

@@ -166,6 +166,18 @@ namespace AsynGyanis::Net
         connection->m_localAddress = localAddress;
         connection->m_timeOrigin   = std::chrono::steady_clock::now();
         connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()), coreConfiguration.localConnectionId.size());
+        // 标识通知要转一道：核心给的是「哪条标识」，外壳的调用方要的是「这条标识属于哪条连接」，
+        // 而连接对象此刻才存在（配置在它之前建好，回调又要指回它），所以在这里才接得上
+        if (configuration.onConnectionIdIssued)
+        {
+            coreConfiguration.onConnectionIdIssued = [rawConnection = connection.get()](const std::span<const std::uint8_t> connectionId)
+            { rawConnection->m_configuration.onConnectionIdIssued(*rawConnection, connectionId); };
+        }
+        if (configuration.onConnectionIdRetired)
+        {
+            coreConfiguration.onConnectionIdRetired = [rawConnection = connection.get()](const std::span<const std::uint8_t> connectionId)
+            { rawConnection->m_configuration.onConnectionIdRetired(*rawConnection, connectionId); };
+        }
         try
         {
             connection->m_core = std::make_unique<QuicConnectionCore>(std::move(coreConfiguration));
