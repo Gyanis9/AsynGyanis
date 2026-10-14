@@ -85,6 +85,16 @@ namespace AsynGyanis::Net
         bool acceptRequestHostField(const std::string_view hostValue, const bool hasAuthorityField, const std::string_view authority, std::string_view &firstHostValue,
                                     bool &hasHostField, std::string *const errorText)
         {
+            // 先判语法再判一致性：一条语法就不对的 Host 折不出比对键，后面那两条「必须指向同一实体」
+            // 的比较会拿一个垃圾键去比一个正常键，报出来的原因是「两边不一致」——把真正的病因（这条本身
+            // 就不合法）盖掉。语法与 h1 的 Host、h2/h3 的 :authority 共用 findAuthorityFieldDefect
+            if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(hostValue); defect.has_value())
+            {
+                writeError(errorText, std::format("请求头 host 的取值 \"{}\" 不是合法的权威段（{}）：RFC 9110 §7.2 规定它是 uri-host[:端口]，"
+                                                  "不带 userinfo、空白与路径",
+                                                  printableFieldText(hostValue), *defect));
+                return false;
+            }
             if (hasAuthorityField && !authority.empty() && normalizeHostComparisonKey(hostValue) != normalizeHostComparisonKey(authority))
             {
                 writeError(errorText, std::format("请求头 host 的取值 \"{}\" 与 :authority \"{}\" 不是同一个实体：RFC 9113 §8.3.1 要求两者一致"
@@ -108,6 +118,30 @@ namespace AsynGyanis::Net
                 hasHostField   = true;
             }
             return true;
+        }
+
+        /**
+         * @brief 校验一条 :authority 伪头的取值语法
+         * @details 判据与 h1 的 Host、h3 的 :authority 与 host 共用 `findAuthorityFieldDefect`：权威段是
+         *          选站与缓存键的输入，同一个字节串走不同通道得出两种结论，等于由承载方式决定「这条请求
+         *          送到哪个站点」。空值这里不判——RFC 9113 没有「出现就必须非空」那半句（RFC 9114 §4.3.1
+         *          才有），两条通道各按各自那一版判，差异写在 findAuthorityFieldDefect 的 @note。
+         * @param authorityValue 伪头取值原文
+         * @param errorText 失败原因出参，进入调用时先清空，仅失败时写入
+         * @return true 语法合法
+         * @return false 原因见 errorText
+         */
+        bool acceptRequestAuthorityField(const std::string_view authorityValue, std::string *const errorText)
+        {
+            const std::optional<std::string_view> defect = findAuthorityFieldDefect(authorityValue);
+            if (!defect.has_value())
+            {
+                return true;
+            }
+            writeError(errorText, std::format(":authority 取值 \"{}\" 不是合法的权威段（{}）：RFC 9113 §8.3.1 禁止 http/https 的 :authority 带 userinfo，"
+                                              "其余按 RFC 9110 §7.2 的 uri-host[:端口] 判",
+                                              printableFieldText(authorityValue), *defect));
+            return false;
         }
 
         /**
@@ -1618,6 +1652,10 @@ namespace AsynGyanis::Net
                     if (hasAuthorityField)
                     {
                         writeError(errorText, ":authority 伪头出现了两次：RFC 9113 §8.3.1 要求每个请求最多带一个");
+                        return false;
+                    }
+                    if (!acceptRequestAuthorityField(field.value, errorText))
+                    {
                         return false;
                     }
                     hasAuthorityField = true;

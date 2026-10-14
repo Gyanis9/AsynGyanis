@@ -68,6 +68,8 @@ namespace AsynGyanis::Net
         AuthorityConflict,          ///< :authority 与 host 取值冲突，或 host 重复且不一致：RFC 9114 §4.3.1
         ProhibitedFieldInTrailers,  ///< 尾段里出现 content-length/host/连接特定字段：RFC 9110 §6.5
         InvalidMessageSequence,     ///< 头块序列非法（同一条消息里出现第二个非尾段头块）：RFC 9114 §4.1
+        AuthorityFieldMalformed,    ///< :authority 或 host 的取值不合 `uri-host [ ":" port ]` 语法（RFC 9110 §7.2、
+                                    ///< RFC 9113 §8.3.1 禁 userinfo）：与 h1/h2 共用同一份判据，判在「空不空」之外
     };
 
     /**

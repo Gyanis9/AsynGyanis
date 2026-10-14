@@ -339,11 +339,13 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
 
 TEST(Http3HeaderValidation, AuthorityCannotCarryUserInfoOrPath)
 {
+    // 语法不合的 :authority 归 AuthorityFieldMalformed，与「取值为空」那一格分开判：空不空是
+    // RFC 9114 §4.3.1 的一条规则，语法是 RFC 9110 §7.2 的另一条，混在一个类别里就看不出拒的是哪一半
     for (const std::string_view invalidAuthority: {"user@example.com", "example.com/path", "example.com?x", "example.com#f", "exa mple"})
     {
         Http3HeaderValidator validator(Http3MessageKind::Request);
         const auto           result = feedRequest(validator, requestWithFieldReplaced(2, ":authority", invalidAuthority));
-        expectRejected(result, Http3HeaderErrorKind::EmptyAuthority, invalidAuthority);
+        expectRejected(result, Http3HeaderErrorKind::AuthorityFieldMalformed, invalidAuthority);
     }
 
     Http3HeaderValidator empty(Http3MessageKind::Request);
@@ -351,6 +353,39 @@ TEST(Http3HeaderValidation, AuthorityCannotCarryUserInfoOrPath)
 
     Http3HeaderValidator ipv6(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(ipv6, requestWithFieldReplaced(2, ":authority", "[::1]:8443")).has_value()) << "带方括号的 IPv6 权威应放行";
+}
+
+/**
+ * @brief 权威段的语法判据在 h3 的 :authority 与 host 两条通路上一字不差（与 h1/h2 同一份实现）
+ *
+ * @details 钉的是「同一个取值换一种写法不改变结论」：`:authority: a:b:c` 被拒而 `host: a:b:c` 被收，
+ *          就等于把「这条请求要送到哪个站点」交给请求怎么拼字节。判据本体住在
+ *          `findAuthorityFieldDefect`，h1 与 h2 那条用例打的是同一批样本。
+ */
+TEST(Http3HeaderValidation, AuthoritySyntaxIsJudgedTheSameOnHostAndAuthority)
+{
+    // 端口与转义那一格：多于一个冒号、非数字端口、半截百分号，都是「各家切法不同」的写法
+    for (const std::string_view invalidAuthority: {"example.com:80:80", "example.com:http", "ex%a.com", "[::1", "[::1]x"})
+    {
+        Http3HeaderValidator viaAuthority(Http3MessageKind::Request);
+        expectRejected(feedRequest(viaAuthority, requestWithFieldReplaced(2, ":authority", invalidAuthority)), Http3HeaderErrorKind::AuthorityFieldMalformed, invalidAuthority);
+
+        // 同一条取值写在 host 上：先过重复与空值两格，再落到语法判据，类别必须一样
+        Http3HeaderValidator viaHost(Http3MessageKind::Request);
+        expectRejected(feedRequest(viaHost, requestWithExtraField("host", invalidAuthority)), Http3HeaderErrorKind::AuthorityFieldMalformed, invalidAuthority);
+    }
+
+    // 正向对照：合语法的写法两条通路都要收，否则上面那批拒绝只是「什么都拒」。
+    // 两条通路在同一次喂入里一起判、取值写成一样的——不一致的 :authority 与 host 会先撞上
+    // RFC 9114 §4.3.1 那条一致性规则，那是另一道题
+    for (const std::string_view goodAuthority: {"example.com", "example.com.", "example.com:8443", "[::1]:8443", "xn--80ak6aa92e.com", "a_b.example.com", "127.0.0.1"})
+    {
+        auto fields = requestWithFieldReplaced(2, ":authority", goodAuthority);
+        fields.emplace_back("host", goodAuthority);
+
+        Http3HeaderValidator validator(Http3MessageKind::Request);
+        EXPECT_TRUE(feedRequest(validator, fields).has_value()) << "合法的权威段被拒了：" << goodAuthority;
+    }
 }
 
 TEST(Http3HeaderValidation, SchemeMustBeAlphaFirstAndTokenCharactersOnly)

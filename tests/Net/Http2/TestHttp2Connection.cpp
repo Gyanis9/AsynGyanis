@@ -1231,6 +1231,61 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 :authority 与 host 的取值必须合 `uri-host[:端口]` 语法（与 h1 的 Host、h3 的两条通路同一份判据）
+     * @details RFC 9113 §8.3.1 明写 http/https 的 :authority MUST NOT 带 userinfo，其余字符集取自
+     *          RFC 9110 §7.2 的 `Host = uri-host [ ":" port ]`。判据本体住在 `findAuthorityFieldDefect`，
+     *          h1/h2/h3 三条通道共用——同一个字节串走不同通道得出两种权威结论，就等于把「这条请求送到
+     *          哪个站点」交给承载方式决定。两条通路各打一遍：只判 :authority 而放过同样非法的 host，
+     *          是本端自己造出的分歧。
+     */
+    TEST(Http2Connection, RejectsAuthorityFieldsViolatingHostGrammar)
+    {
+        const auto expectStreamRejected = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            static_cast<void>(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)));
+            EXPECT_TRUE(connection.takeRequests().empty()) << "权威段不合法的请求不得交给业务";
+
+            const std::vector<Http2Frame> resetFrames = takeRstStreamFrames(connection);
+            ASSERT_EQ(resetFrames.size(), 1U) << "应当中止这条流";
+            Http2RstStreamPayload payload;
+            std::string           errorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(resetFrames.front(), payload, &errorText)) << errorText;
+            EXPECT_EQ(payload.errorCode, Http2ErrorCode::ProtocolError);
+        };
+
+        const auto expectStreamAccepted = [](const std::string &headerBlock)
+        {
+            Http2Connection connection;
+            completeHandshake(connection);
+            EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+            EXPECT_EQ(connection.takeRequests().size(), 1U) << "合语法的权威段被自家闸门拒了";
+        };
+
+        // 只改 :authority 的那一份写法：伪头带值
+        const auto makeBlockWithAuthority = [](const std::string_view authorityValue)
+        { return hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4) + hpackLiteralField(1, authorityValue); };
+        // 只改 host 的那一份写法：不带 :authority，把判据逼到普通字段那一支
+        const auto makeBlockWithHost = [](const std::string_view hostValue)
+        { return hpackIndexedField(2) + hpackIndexedField(6) + hpackIndexedField(4) + hpackLiteralField("host", hostValue); };
+
+        for (const std::string_view invalidAuthority:
+             {"user@example.com", "example.com/path", "example.com?x=1", "example.com#frag", "exa mple.com", "example.com:80:80", "example.com:http", "ex%a.com", "[::1", "[::1]x"})
+        {
+            expectStreamRejected(makeBlockWithAuthority(invalidAuthority));
+            expectStreamRejected(makeBlockWithHost(invalidAuthority));
+        }
+
+        for (const std::string_view validAuthority:
+             {"example.com", "Example.COM", "example.com.", "example.com:8443", "[::1]:8443", "xn--80ak6aa92e.com", "a_b.example.com", "127.0.0.1"})
+        {
+            expectStreamAccepted(makeBlockWithAuthority(validAuthority));
+            expectStreamAccepted(makeBlockWithHost(validAuthority));
+        }
+    }
+
+    /**
      * @brief 钉住重复 host 必须指向同一实体（RFC 9110 §7.2）：取值不一致按畸形中止这条流
      * @details 没有 :authority 可判时正是缺的那半格：两条不同的 host 此前会原样交给业务、选站取首条，
      *          而前端与共享缓存可能按另一条分诊——两份说法各走各的就是请求走私的入口。反向那一半

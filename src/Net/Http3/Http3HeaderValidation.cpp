@@ -171,15 +171,12 @@ namespace AsynGyanis::Net
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyAuthority, ":authority 取值为空：出现就必须非空（RFC 9114 §4.3.1）"));
             }
-            for (const char character: value)
+            // 语法判据与 h1 的 Host、h2 的 :authority 共用一份（findAuthorityFieldDefect）：权威段是选站
+            // 与缓存键的输入，同一个取值不能因为写在 :authority 上就被拒、写在 host 上就被收
+            if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
             {
-                // 权威段里出现这些字符说明对端把整条 URI 或带 userinfo 的目标塞了进来：
-                // RFC 9114 §4.3.1 明确禁止 http/https 的 userinfo，而 '/' '?' '#' 会让路由读到越界的目标
-                if (character == '@' || character == '/' || character == '\\' || character == '?' || character == '#' || character == ' ' || character == '\t')
-                {
-                    return std::unexpected(
-                            makeHeaderError(Http3HeaderErrorKind::EmptyAuthority, ":authority 取值 \"" + printableFieldText(value) + "\" 含权威段不允许的字符（RFC 9114 §4.3.1）"));
-                }
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, ":authority 取值 \"" + printableFieldText(value) + "\" 不是合法的权威段（" +
+                                                                                                              std::string(*defect) + "）：RFC 9110 §7.2 规定它是 uri-host[:端口]"));
             }
             m_authorityText.assign(value);
             return {};
@@ -294,6 +291,13 @@ namespace AsynGyanis::Net
             if (value.empty())
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyAuthority, "host 字段取值为空：出现就必须非空（RFC 9114 §4.3.1）"));
+            }
+            // 语法判据与 :authority 那一支、以及 h1 的 Host、h2 的 host 共用同一份：权威段写在 host 上
+            // 还是写在 :authority 上是同一个问题，两条通路折出的是同一个选站键
+            if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
+            {
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, "host 字段取值 \"" + printableFieldText(value) + "\" 不是合法的权威段（" +
+                                                                                                              std::string(*defect) + "）：RFC 9110 §7.2 规定它是 uri-host[:端口]"));
             }
             m_hasHostHeader = true;
             m_hostText.assign(value);
