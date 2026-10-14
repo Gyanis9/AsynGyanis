@@ -23,6 +23,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 namespace AsynGyanis::Net
@@ -343,6 +344,10 @@ namespace AsynGyanis::Net
             {
                 localParameters.retrySourceConnectionId = m_configuration.retrySourceConnectionId;
             }
+            // §10.3：服务端可以给它握手期选的那条标识配一个无状态重置令牌（§10.3.2 派生）。客户端在
+            // 收到任何 NEW_CONNECTION_ID 之前只有靠它才认得出「服务端已经没了这条连接」；客户端的
+            // 参数没有机密性保护，所以这一项只许服务端发（§18.2，解码侧也照此拒绝）
+            localParameters.statelessResetToken = statelessResetTokenOf(m_configuration.localConnectionId);
         } else
         {
             localParameters.originalDestinationConnectionId.reset();
@@ -766,6 +771,13 @@ namespace AsynGyanis::Net
         if (ecnCodepoint.has_value())
         {
             m_isEcnFieldReadable = true;
+        }
+        // §10.3.1：末 16 字节与「在用的那条对端标识的令牌」比对（常数时间），对上即整条连接进 draining。
+        // 这一格必须排在解析之前：一条重置长得就像普通的短头包，真按短头去解只会当成无主报文静静丢掉
+        if (datagram.size() >= kQuicStatelessResetTokenByteLength && isStatelessResetDatagram(datagram))
+        {
+            enterDrainingAfterStatelessReset();
+            return {};
         }
         // 反放大额度按「收到的整条数据报」算，不看解没解出来：对端确实把这些字节打到了我们地址上
         m_receivedByteCount += datagram.size();
@@ -1238,6 +1250,12 @@ namespace AsynGyanis::Net
             }
         }
         m_peerParameters = *decoded;
+        // §10.3：对端（服务端）在参数里给握手标识配了无状态重置令牌就收下——本端此后一直拿那条
+        // 标识当发送目标，「服务端进程没了」这件事才有一条不靠计时器的判据
+        if (decoded->statelessResetToken.has_value())
+        {
+            notePeerHandshakeStatelessResetToken(*decoded->statelessResetToken);
+        }
         // 流层的发送额度全部来自对端参数：到手之前一条流数据也发不出去（§4.1）
         m_streams.adoptPeerParameters(*decoded);
         // §14.2 / RFC 8899 §5.3.1：MAX_PLPMTU 是「本端愿意收的下限」与「对端宣告的上限」的较小者，
@@ -1969,23 +1987,72 @@ namespace AsynGyanis::Net
 
     std::array<std::uint8_t, 16> QuicConnectionCore::statelessResetTokenOf(const std::span<const std::uint8_t> connectionId) const
     {
-        // §10.3.2：令牌 = 静态密钥与连接标识的 HMAC 截前 16 字节。这样任何一份进程只要拿着同一把
+        return deriveQuicStatelessResetToken(std::span<const std::uint8_t>(m_statelessResetKey), connectionId);
+    }
+
+    std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> deriveQuicStatelessResetToken(const std::span<const std::uint8_t> staticKey,
+                                                                                               const std::span<const std::uint8_t> connectionId) noexcept
+    {
+        // 密钥过短就算不出来：§8.1.4 那条「难猜」是给这类令牌定的，而全零令牌会把「末尾 16 个零
+        // 字节的报文」变成一条人人可发的掐线指令（§10.3.1 只许认对端真发过来的令牌）
+        if (staticKey.size() < kQuicMinimumStatelessResetKeyByteLength || connectionId.empty())
+        {
+            return std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>{};
+        }
+        // §10.3.2：令牌 = HMAC-SHA256(静态密钥, 标识) 截前 16 字节。这样任何一份进程只要拿着同一把
         // 密钥，就能为一条已经不存在的连接算出「它当初发的令牌该是什么」——无状态重置的全部前提。
-        // 算不出来（HMAC 上下文建不起来）时不抛：这条路径在出包循环里，抛出去会带着半个包离开
-        // 驱动；而令牌此刻本来就只是 NEW_CONNECTION_ID 的必填字段（本端还不发送无状态重置），
-        // 全零不改变任何线上行为，等 §10.3 那一半落地时再按「令牌算不出就等于这一档没开」处置
+        // 算不出来时不抛：签署路径在出包循环与收包路径上，抛出去会带着半个包离开驱动；交全零由调用方
+        // 按「这一档没开」处置（签发侧与发送侧都按全零即无效处理）
         try
         {
-            const Core::Digest::Sha256Value digest =
-                    Core::Digest::hmacSha256(std::string_view(reinterpret_cast<const char *>(m_statelessResetKey.data()), m_statelessResetKey.size()),
-                                             std::string_view(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()));
-            std::array<std::uint8_t, 16> token{};
+            const Core::Digest::Sha256Value digest = Core::Digest::hmacSha256(std::string_view(reinterpret_cast<const char *>(staticKey.data()), staticKey.size()),
+                                                                              std::string_view(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()));
+            std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token{};
             std::copy_n(digest.begin(), token.size(), token.begin());
             return token;
         } catch (const Base::Exception &)
         {
-            return std::array<std::uint8_t, 16>{};
+            return std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>{};
         }
+    }
+
+    bool QuicConnectionCore::isStatelessResetDatagram(const std::span<const std::uint8_t> datagram) const noexcept
+    {
+        const auto active = std::ranges::find(m_peerConnectionIds, m_configuration.peerConnectionId, &PeerConnectionId::id);
+        if (active == m_peerConnectionIds.end() || !active->hasStatelessResetToken)
+        {
+            return false;
+        }
+        // 常数时间比对（§10.3.1 的 MUST：不得通过计时泄露令牌取值；正文给的另一条路是把令牌变换后存，
+        // 这里走第一条路）。CRYPTO_memcmp 在首个不等字节处也走完全程
+        return CRYPTO_memcmp(active->statelessResetToken.data(), datagram.data() + datagram.size() - kQuicStatelessResetTokenByteLength, kQuicStatelessResetTokenByteLength) == 0;
+    }
+
+    void QuicConnectionCore::enterDrainingAfterStatelessReset()
+    {
+        // §10.3.1 末段：对上令牌即进 draining——此后不再往这条连接上发任何东西，也不发 CLOSE
+        // （向一个显然已经不认识我们的对端继续付出，全是白费）。形状与空闲静默收口一致
+        m_phase               = QuicConnectionPhase::Closing;
+        m_localCloseErrorCode = std::nullopt;
+        m_localCloseReasonPhrase.clear();
+        m_outboundDatagrams.clear();
+        if (m_configuration.onStatelessResetDetected)
+        {
+            m_configuration.onStatelessResetDetected();
+        }
+    }
+
+    void QuicConnectionCore::notePeerHandshakeStatelessResetToken(const std::array<std::uint8_t, 16> &token) noexcept
+    {
+        // 令牌随它对应的那条标识走，而传输参数里这一份只配给握手期那条（序列号 0）。此刻它还没被
+        // 收下（客户端要等服务端自报源标识之后才补种）也没关系：参数到手时那条一定在册了
+        const auto handshakeConnectionId = std::ranges::find(m_peerConnectionIds, std::uint64_t{0}, &PeerConnectionId::sequence);
+        if (handshakeConnectionId == m_peerConnectionIds.end())
+        {
+            return;
+        }
+        handshakeConnectionId->statelessResetToken    = token;
+        handshakeConnectionId->hasStatelessResetToken = true;
     }
 
     std::size_t QuicConnectionCore::issueConnectionId(const bool isAdvertised)
@@ -2094,6 +2161,7 @@ namespace AsynGyanis::Net
         added.id.assign(frame.connectionId.begin(), frame.connectionId.end());
         added.sequence = frame.sequenceNumber;
         std::copy_n(frame.statelessResetToken.begin(), added.statelessResetToken.size(), added.statelessResetToken.begin());
+        added.hasStatelessResetToken = true; // §10.3.1：这一帧带来的令牌是「对端真发过来的」，从此可以拿它比对
         // 换用排在添新之后：§5.1.2 要求先退再添，而「在用那条被退了」时要换过去的正是刚添的这条
         ensureActivePeerConnectionIdIsStillHeld();
         // §5.1.1：处理完这一帧之后，本端持有的条数超出本端通告的 active_connection_id_limit 就只能收口。

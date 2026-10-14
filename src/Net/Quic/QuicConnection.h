@@ -11,10 +11,11 @@
  *          而这里只负责真实世界的那一层。流数据由 `QuicStreamLayer` 拷贝入队，交出后即可释放，
  *          不再有「指针必须活到对端确认」的那份跨层承诺。
  *
- * @note 能力边界之外刻意没有做几项：无状态重置的**发送**（§10.3；令牌派生已按 §10.3.2 摆好）、
- *       0-RTT、NEW_TOKEN、版本协商包，以及 §9.6 的首选地址。路径迁移按 §9.3 应答（跟地址、验新路、
- *       退回旧路），但本端不主动发起迁移（§9.2 那一半）。来源地址表与 §9.3.3 的旧路复验探测
- *       成对做在 `handleDatagram` 与 `sendOutboundBatch` 上。
+ * @note 能力边界之外刻意没有做几项：0-RTT、NEW_TOKEN、版本协商包，以及 §9.6 的首选地址。
+ *       路径迁移按 §9.3 应答（跟地址、验新路、退回旧路），但本端不主动发起迁移（§9.2 那一半）。
+ *       来源地址表与 §9.3.3 的旧路复验探测成对做在 `handleDatagram` 与 `sendOutboundBatch` 上；
+ *       无状态重置的识别在核心（§10.3.1），发送在服务端外壳（§10.3：目的标识不属于任何在册连接
+ *       的短头报文换一条重置）。
  * **未验证连接与已验证连接共用同一份名额**（`QuicServer::Configuration::maximumConnections`），
  *       不设「握手未完成单独占额」也是刻意的：握手有超时（PTO 与空闲两把钟都会收掉僵尸位）、
  *       未验证期的字节面另有 3× 放大帽压着（RFC 9000 §8.1），且这与 TCP 侧同一口径（那边连接
@@ -144,6 +145,13 @@ namespace AsynGyanis::Net
              *          完整语义与理由见 `QuicConnectionCoreConfiguration::congestionAlgorithm`
              */
             QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
+            /**
+             * @brief 无状态重置令牌的派生密钥（RFC 9000 §10.3.2）；留空＝本连接随机取一把
+             * @details 服务端要把**同一把**喂给它的每条连接：令牌按「密钥 + 标识」派生，而一条连接
+             *          没了之后，指望的是另一个进程或下一次启动能替它算出同一个值——每连接一把随机
+             *          密钥时那个值谁都算不出来，本端发出去的重置也就没人认（见 `QuicServer` 同名配置）
+             */
+            std::vector<std::uint8_t> statelessResetKey{};
             /**
              * @brief 本端签发一条新连接标识时的通知（RFC 9000 §5.1.1）
              * @details 服务端一侧拿它把这条标识登记进路由表：标识一上线就可能出现在下一包的短头里，

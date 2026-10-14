@@ -182,6 +182,8 @@ namespace AsynGyanis::Net
         coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
         // 拥塞算法是调用方的选择（缺省 NewReno）：外壳不猜、原样透传给状态机
         coreConfiguration.congestionAlgorithm = configuration.congestionAlgorithm;
+        // 无状态重置的派生密钥同样原样透传：服务端一份密钥喂给它的每条连接，令牌才算得出来（§10.3.2）
+        coreConfiguration.statelessResetKey = configuration.statelessResetKey;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));
@@ -258,6 +260,8 @@ namespace AsynGyanis::Net
         coreConfiguration.pathMtuProbeAllowed = configuration.pathMtuProbeAllowed;
         // 拥塞算法是调用方的选择（缺省 NewReno）：外壳不猜、原样透传给状态机
         coreConfiguration.congestionAlgorithm = configuration.congestionAlgorithm;
+        // 无状态重置的派生密钥同样原样透传：服务端一份密钥喂给它的每条连接，令牌才算得出来（§10.3.2）
+        coreConfiguration.statelessResetKey = configuration.statelessResetKey;
         announceLocalLimits(coreConfiguration, configuration);
 
         std::unique_ptr<QuicConnection> connection(new QuicConnection(configuration));

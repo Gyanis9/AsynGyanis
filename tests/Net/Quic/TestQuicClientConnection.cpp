@@ -871,4 +871,121 @@ namespace AsynGyanis::Net
         EXPECT_EQ(server.server().connectionCount(), onlineBeforeTamper) << "改了比特的令牌被当成验过：这道 HMAC 没在拦伪造";
         EXPECT_EQ(logCapture.countContaining("已接受一条连接"), acceptedBeforeTamper) << "改了比特的令牌被当成验过：这道 HMAC 没在拦伪造";
     }
+    /**
+     * @brief §10.3：目的标识不属于任何在册连接的短头报文换回一条无状态重置（丢状态的最后一招）
+     * @details 判据三条，每条钉一种失败形状：
+     *          ① 形状：短头（首字节高两位 0b01，§10.3 图 10）、末 16 字节是**按那个目的标识派生**的
+     *             令牌——期望值用 Python 的 hmac 现算（独立实现），拿本仓的派生函数自己给自己出题，
+     *             算错了也看不出来；
+     *          ② 尺寸：比触发它的报文小一字节（§10.3.3 的 MUST，循环里尺寸一路衰减，本端因此不必维护
+     *             防循环的状态），且不小于 21 字节（图 10 的下限）；22 字节的触发报文恰好换回 21 字节的
+     *             重置，这一格把下限钉住；
+     *          ③ 反面：长头（令牌那时还没发给对端，§10.3 明写静静丢掉同样有效）与 ≤21 字节的触发
+     *             报文都不该换回任何东西——少了这两条，一个「见谁打谁」的回包器也能过前两条
+     */
+    TEST(QuicServer, AnswersUnknownShortHeaderDatagramsWithAStatelessReset)
+    {
+        constexpr std::uint8_t          kProbeConnectionIdFirstByte = 0xE0U;
+        const std::vector<std::uint8_t> resetKey(32, 0x5BU); // 固定密钥：令牌因此是可预算的常量
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [&](QuicServer::Configuration &configuration) { configuration.statelessResetKey = resetKey; }};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Core::InetAddress serverAddress("127.0.0.1", server.listeningPort());
+
+        // 一条 100 字节的短头报文：18 字节的「谁都不认识」目的标识 + 其余内容
+        std::vector<std::uint8_t> probe(100, 0x11U);
+        probe.front() = 0x40U;
+        for (std::size_t index = 0; index < 18; ++index)
+        {
+            probe[1 + index] = static_cast<std::uint8_t>(kProbeConnectionIdFirstByte + index);
+        }
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), probe.data(), probe.size()), 0);
+
+        std::vector<std::uint8_t> reply(1500);
+        std::size_t               replyLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    const ssize_t           received = sender.receive(reply.data(), reply.size(), replyFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    replyLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kWaitTimeout))
+                << "无主的短头报文没换回任何东西：对端认不出「连接没了」，只能等它自己的超时";
+
+        EXPECT_EQ(replyLength, probe.size() - 1U) << "重置该比触发它的报文小一字节（§10.3.3 的 MUST 防循环）";
+        EXPECT_EQ(reply[0] & 0xC0U, 0x40U) << "重置的首字节高两位该是 0b01（§10.3 图 10：短头 + 固定位）";
+        // 令牌 = HMAC-SHA256(0x5b×32, 那条目的标识) 截前 16 字节；
+        // python3 -c "import hmac,hashlib;print(hmac.new(bytes([0x5b])*32, bytes(0xE0+i for i in range(18)), hashlib.sha256).hexdigest()[:32])"
+        const std::vector<std::uint8_t> expectedToken = makeBytesFromHex("3df37528f89c86db584f6cee0ff44c4d");
+        ASSERT_GE(replyLength, expectedToken.size());
+        EXPECT_TRUE(std::ranges::equal(std::span<const std::uint8_t>(reply.data() + replyLength - expectedToken.size(), expectedToken.size()),
+                                       std::span<const std::uint8_t>(expectedToken)))
+                << "末 16 字节不是「HMAC(静态密钥, 报文里的目的标识)」——对端照它比对，认不出来等于白发（§10.3.2）";
+
+        // 反面一：22 字节的触发报文恰好换回 21 字节（图 10 的下限），再短一档就不该有回话
+        std::vector<std::uint8_t> floorProbe(22, 0x22U);
+        floorProbe.front() = 0x40U;
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), floorProbe.data(), floorProbe.size()), 0);
+        std::size_t floorReplyLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    const ssize_t           received = sender.receive(reply.data(), reply.size(), replyFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    floorReplyLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kWaitTimeout));
+        EXPECT_EQ(floorReplyLength, 21U) << "22 字节的触发报文该换回 21 字节的重置（§10.3 图 10 的下限）";
+
+        std::vector<std::uint8_t> tooSmallProbe(21, 0x33U);
+        tooSmallProbe.front() = 0x40U;
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), tooSmallProbe.data(), tooSmallProbe.size()), 0);
+        EXPECT_FALSE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    return sender.receive(reply.data(), reply.size(), replyFrom) > 0;
+                },
+                std::chrono::milliseconds{300}))
+                << "装不下 21 字节重置的触发报文也回了话：§10.3.3 的「比触发报文小」与图 10 的下限必须同时满足，宁可不发";
+
+        // 反面二：长头（Handshake 型）的无主报文不该换回任何东西（§10.3：那时的令牌还没发给对端）
+        std::vector<std::uint8_t> longHeaderProbe{0xA1U, 0x00U, 0x00U, 0x00U, 0x01U};
+        longHeaderProbe.push_back(18U);
+        for (std::size_t index = 0; index < 18; ++index)
+        {
+            longHeaderProbe.push_back(static_cast<std::uint8_t>(kProbeConnectionIdFirstByte + index));
+        }
+        longHeaderProbe.push_back(8U);
+        for (std::uint8_t index = 0; index < 8; ++index)
+        {
+            longHeaderProbe.push_back(static_cast<std::uint8_t>(0x10U + index));
+        }
+        longHeaderProbe.push_back(0x02); // Length：包号 1 字节 + 载荷 1 字节
+        longHeaderProbe.push_back(0x00); // 包号
+        longHeaderProbe.push_back(0x00); // 载荷
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), longHeaderProbe.data(), longHeaderProbe.size()), 0);
+        EXPECT_FALSE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    return sender.receive(reply.data(), reply.size(), replyFrom) > 0;
+                },
+                std::chrono::milliseconds{300}))
+                << "长头也换回了无状态重置：§10.3 只把重置留给「连接已经没了」那一档，长头那时的令牌还没发给对端";
+    }
+
 } // namespace AsynGyanis::Net

@@ -625,6 +625,29 @@ namespace AsynGyanis::Net
                 return m_serverPathChallenges;
             }
 
+            /// 与 `serverNewConnectionIds()` 逐条对应的令牌（§19.15 里那条帧带来的 16 字节）
+            [[nodiscard]] const std::vector<std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>> &serverNewConnectionIdTokens() const noexcept
+            {
+                return m_serverNewConnectionIdTokens;
+            }
+
+            /**
+             * @brief 服务端传输参数里那一份无状态重置令牌（§10.3 的 0x02 项）
+             * @details 服务端把令牌配给「握手期选的那条标识」，客户端收下它才认得出服务端进程没了；
+             *          这一格从 TLS 交出的对端参数里解，是替身专为这一条判据补的口子
+             * @return std::optional<std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>> 缺项时为空
+             */
+            [[nodiscard]] std::optional<std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>> serverTransportParameterToken() const
+            {
+                const std::expected<QuicTransportParameters, QuicDecodeError> decoded =
+                        decodeQuicTransportParameters(m_tls->peerTransportParameters(), QuicTransportParameterSenderRole::Server);
+                if (!decoded.has_value())
+                {
+                    return std::nullopt;
+                }
+                return decoded->statelessResetToken;
+            }
+
             /// 服务端发来的 PATH_RESPONSE 的 8 字节数据，按到达顺序
             [[nodiscard]] const std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> &serverPathResponses() const noexcept
             {
@@ -985,6 +1008,9 @@ namespace AsynGyanis::Net
                     // 标识与令牌都是指向报文缓冲的视图：记下来就得拷一份（缓冲随下一次收包就被覆盖）
                     m_serverNewConnectionIds.emplace_back(newConnectionId->sequenceNumber,
                                                           std::vector<std::uint8_t>(newConnectionId->connectionId.begin(), newConnectionId->connectionId.end()));
+                    std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> recordedToken{};
+                    std::copy_n(newConnectionId->statelessResetToken.begin(), recordedToken.size(), recordedToken.begin());
+                    m_serverNewConnectionIdTokens.push_back(recordedToken);
                 } else if (const auto *retireConnectionId = std::get_if<QuicRetireConnectionIdFrame>(&frame); retireConnectionId != nullptr)
                 {
                     m_serverRetiredConnectionIdSequences.push_back(retireConnectionId->sequenceNumber);
@@ -1106,6 +1132,8 @@ namespace AsynGyanis::Net
             std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> m_serverNewConnectionIds{};
             /// 服务端发来的 RETIRE_CONNECTION_ID 序列号，按到达顺序
             std::vector<std::uint64_t> m_serverRetiredConnectionIdSequences{};
+            /// 与 `m_serverNewConnectionIds` 逐条对应的令牌（§10.3.1 的比对对象）
+            std::vector<std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>> m_serverNewConnectionIdTokens{};
             /// 服务端发来的 PATH_CHALLENGE 的 8 字节数据，按到达顺序（迁移用例按它回 PATH_RESPONSE）
             std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> m_serverPathChallenges{};
             /// 服务端发来的 PATH_RESPONSE 的 8 字节数据，按到达顺序
@@ -1320,6 +1348,51 @@ namespace AsynGyanis::Net
         void consumeOutbound(InMemoryQuicClient &client, const QuicOutboundDatagram &datagram)
         {
             client.consume(std::vector<std::uint8_t>(datagram.bytes.begin(), datagram.bytes.end()));
+        }
+
+        /**
+         * @brief 对端广告一条带令牌的连接标识（§19.15）：重置用例里「令牌从哪来」的那条路
+         * @details 传输参数里那一份只配给握手标识（且只有服务端能发，见 §18.2 的角色门），
+         *          因此其余标识的令牌都从这条帧来
+         * @param core 服务端状态机
+         * @param client 客户端替身
+         * @param sequence 序列号
+         * @param retirePriorTo Retire Prior To 字段（0 表示不退休任何已有标识）
+         * @param connectionId 标识本体
+         * @param token 随它一起给的 16 字节无状态重置令牌
+         * @param arrivalTime 到达时刻
+         */
+        void advertisePeerConnectionId(QuicConnectionCore &core, InMemoryQuicClient &client, const std::uint64_t sequence, const std::uint64_t retirePriorTo,
+                                       const std::vector<std::uint8_t> &connectionId, const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> &token,
+                                       const Timestamp arrivalTime)
+        {
+            QuicNewConnectionIdFrame frame;
+            frame.sequenceNumber      = sequence;
+            frame.retirePriorTo       = retirePriorTo;
+            frame.connectionId        = connectionId;
+            frame.statelessResetToken = std::span<const std::uint8_t>(token);
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{frame});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), arrivalTime);
+            for (const QuicOutboundDatagram &datagram: drainMarked(core))
+            {
+                consumeOutbound(client, datagram);
+            }
+        }
+
+        /**
+         * @brief 造一条「末 16 字节是指定令牌」的数据报
+         * @details 重置的判据只看末尾那 16 字节（§10.3.1），前面的字节是随机的不可预测位；
+         *          造得大一点（默认 60 字节）是让它同时长得像一条普通的 1-RTT 报文
+         * @param token 末尾那份令牌
+         * @param byteLength 整条数据报的字节数
+         * @return std::vector<std::uint8_t> 数据报
+         */
+        std::vector<std::uint8_t> makeStatelessResetShapedDatagram(const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> &token, const std::size_t byteLength = 60)
+        {
+            std::vector<std::uint8_t> datagram(byteLength, 0x5AU);
+            std::copy(token.begin(), token.end(), datagram.end() - static_cast<std::ptrdiff_t>(token.size()));
+            return datagram;
         }
 
         /// @return 文本对应的字节 vector，造 STREAM 帧用
@@ -3925,5 +3998,197 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(core.isFinished()) << "没有已验证地址可退时该静默收口（§9.3.2 末段）";
         EXPECT_TRUE(drainMarked(core).empty()) << "静默收口不该留下任何待发报文";
         EXPECT_FALSE(client.sawConnectionClose()) << "静默收口不许发 CONNECTION_CLOSE";
+    }
+
+    /**
+     * @brief §10.3.2：令牌 = HMAC-SHA256(静态密钥, 标识) 截前 16 字节
+     * @details 期望值用 Python 的 `hmac.new(key, cid, hashlib.sha256)` 现算（独立实现、钉在下面的
+     *          常量里）：拿本仓的派生函数自己给自己出题，算错了也看不出来——而这一格算错的症状是
+     *          「对端收到重置却认不出」，两侧各自的用例都还能全绿
+     */
+    TEST(QuicConnectionCore, DerivesStatelessResetTokensAsHmacSha256TruncatedTo16Bytes)
+    {
+        const std::vector<std::uint8_t> key          = makeBytesFromHex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        const std::vector<std::uint8_t> connectionId = makeBytesFromHex("0610c9aedfc9e2edb1");
+        // python3 -c "import hmac,hashlib;print(hmac.new(bytes(range(32)), bytes.fromhex('0610c9aedfc9e2edb1'), hashlib.sha256).hexdigest()[:32])"
+        const std::vector<std::uint8_t> expected = makeBytesFromHex("4241012b5e9ede902bfa9b6441670c0e");
+
+        EXPECT_TRUE(std::ranges::equal(deriveQuicStatelessResetToken(key, connectionId), expected))
+                << "派生出来的不是 HMAC-SHA256(静态密钥, 标识) 的前 16 字节（RFC 9000 §10.3.2）";
+
+        // 密钥短于 16 字节＝算不出来：交全零由调用方按「这一档没开」处置。全零令牌绝不能拿去比对，
+        // 否则「末尾 16 个零字节」的报文就成了一条人人可发的掐线指令
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> zeroToken{};
+        EXPECT_TRUE(std::ranges::equal(deriveQuicStatelessResetToken(std::span<const std::uint8_t>(key).first(8), connectionId), zeroToken));
+    }
+
+    /**
+     * @brief 通告的令牌必须配在它自己那条标识上：拿错标识去派生，对端收到重置认不出
+     * @details 两处来源都要核：NEW_CONNECTION_ID 里那条（新标识自己的令牌）与传输参数里那条
+     *          （握手标识的令牌，§10.3 的 0x02 项）。期望值用一个固定的静态密钥现算——
+     *          密钥固定，令牌也就是个常量，可以直接拿 Python 算一遍钉住
+     */
+    TEST(QuicConnectionCore, AttachesEachAdvertisedTokenToItsOwnConnectionId)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*serverContext.get());
+        configuration.statelessResetKey               = std::vector<std::uint8_t>(32, 0x7CU); // 固定密钥，令牌因此是可预算的常量
+        QuicConnectionCore core(configuration);
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        ASSERT_EQ(client.serverNewConnectionIds().size(), 1U) << "前置没成立：备用标识没发出来";
+        ASSERT_EQ(client.serverNewConnectionIdTokens().size(), 1U);
+        const std::vector<std::uint8_t> spareId            = client.serverNewConnectionIds().front().second;
+        const auto                      expectedSpareToken = deriveQuicStatelessResetToken(configuration.statelessResetKey, spareId);
+        EXPECT_TRUE(std::ranges::equal(client.serverNewConnectionIdTokens().front(), expectedSpareToken))
+                << "通告的令牌不是「HMAC(密钥, 那条标识)」——对端照它比对，真重置来了认不出";
+
+        // 握手那条（序列号 0）的令牌在传输参数里：同一把密钥、同一条标识，
+        // python3 -c "import hmac,hashlib;print(hmac.new(bytes([0x7c])*32, bytes.fromhex('f0eec687a7eb7f48c311'), hashlib.sha256).hexdigest()[:32])"
+        const std::vector<std::uint8_t> expectedHandshakeToken = makeBytesFromHex("5b60aa9563883cc7aceb9883d8f1fdee");
+        ASSERT_TRUE(client.serverTransportParameterToken().has_value())
+                << "服务端传输参数里没有无状态重置令牌（§10.3 的 0x02 项）：客户端在收到任何 NEW_CONNECTION_ID 之前对重置是聋的";
+        EXPECT_TRUE(std::ranges::equal(*client.serverTransportParameterToken(), expectedHandshakeToken)) << "传输参数里那份令牌不是按握手标识派生的";
+    }
+
+    /**
+     * @brief 没带过令牌的标识：末尾 16 个零字节不许当成重置（§10.3.1 只许认对端真发过来的令牌）
+     * @details 「令牌全零」与「压根没有令牌」在结构里长得一样，差一个布尔标记。少掉那个标记，
+     *          一条末尾 16 个零字节的报文就成了一条人人可发的掐线指令；而握手那条标识从来没带过
+     *          令牌（客户端不许发 §18.2 的 0x02 参数），这里盯的正是它
+     */
+    TEST(QuicConnectionCore, DoesNotTreatSixteenZeroBytesAsAResetForATokenlessConnectionId)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        bool                            isResetDetected = false;
+        QuicConnectionCoreConfiguration configuration   = makeServerConfiguration(*serverContext.get());
+        configuration.onStatelessResetDetected          = [&isResetDetected] { isResetDetected = true; };
+        QuicConnectionCore core(configuration);
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        std::vector<std::uint8_t> zeroTailed(60, 0x5AU);
+        std::fill(zeroTailed.end() - static_cast<std::ptrdiff_t>(kQuicStatelessResetTokenByteLength), zeroTailed.end(), 0x00U);
+        feed(core, zeroTailed, Timestamp{130000});
+        EXPECT_FALSE(isResetDetected) << "末尾 16 个零字节的报文把连接掐断了：没令牌的标识被按「全零令牌」放行了";
+        EXPECT_FALSE(core.isFinished());
+    }
+
+    /**
+     * @brief §10.3.1：末 16 字节对上在册令牌即进 draining——不再发任何报文、也不回 CLOSE
+     */
+    TEST(QuicConnectionCore, ClosesQuietlyWhenAStatelessResetArrives)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        bool                            isResetDetected = false;
+        QuicConnectionCoreConfiguration configuration   = makeServerConfiguration(*serverContext.get());
+        configuration.onStatelessResetDetected          = [&isResetDetected] { isResetDetected = true; };
+        QuicConnectionCore core(configuration);
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        // 在用的那条必须是「带过令牌」的那条：把握手那条退掉，让带令牌的新标识顶上
+        // （§10.3.1 的 MUST NOT：不许拿没用过的标识的令牌放行，反过来说在用的那条必须认得出来）
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token{0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
+        const std::vector<std::uint8_t>                                    activeId(kClientConnectionId.size(), 0x66U);
+        advertisePeerConnectionId(core, client, 1, 1, activeId, token, Timestamp{120000});
+        ASSERT_TRUE(std::ranges::equal(core.activePeerConnectionId(), activeId)) << "前置没成立：在用的标识没换到带令牌的那条上";
+
+        feed(core, makeStatelessResetShapedDatagram(token), Timestamp{130000});
+        EXPECT_TRUE(isResetDetected) << "对上令牌没通知外壳（§10.3.1 的判据是末 16 字节逐字节相同）";
+        EXPECT_TRUE(core.isFinished()) << "对上令牌要进 draining（§10.3.1 末段）";
+        EXPECT_TRUE(drainMarked(core).empty()) << "draining 之后还有产出";
+
+        // 之后再来一条正常报文也一样：这条连接「不再发任何东西」
+        std::string pingFrames;
+        appendQuicFrame(pingFrames, QuicFrame{QuicPingFrame{}});
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames), Timestamp{140000});
+        EXPECT_TRUE(drainMarked(core).empty()) << "draining 之后又往这条连接上发包了";
+    }
+
+    /**
+     * @brief 令牌只差一比特就不算：连接照常活着（§10.3.1 的判据是逐字节相同，不是「像」）
+     */
+    TEST(QuicConnectionCore, KeepsTheConnectionWhenATokenShapedDatagramDoesNotMatch)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        bool                            isResetDetected = false;
+        QuicConnectionCoreConfiguration configuration   = makeServerConfiguration(*serverContext.get());
+        configuration.onStatelessResetDetected          = [&isResetDetected] { isResetDetected = true; };
+        QuicConnectionCore core(configuration);
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token{0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F};
+        const std::vector<std::uint8_t>                                    activeId(kClientConnectionId.size(), 0x77U);
+        advertisePeerConnectionId(core, client, 1, 1, activeId, token, Timestamp{120000});
+        ASSERT_TRUE(std::ranges::equal(core.activePeerConnectionId(), activeId));
+
+        std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> nearMissToken = token;
+        nearMissToken.front() ^= 0x01U;
+        feed(core, makeStatelessResetShapedDatagram(nearMissToken), Timestamp{130000});
+        EXPECT_FALSE(isResetDetected) << "差一个比特的令牌也算数了（§10.3.1 的判据是逐字节相同）";
+        EXPECT_FALSE(core.isFinished()) << "没对上令牌的连接被掐断了";
+
+        // 连接照常：一条正常报文仍换得回确认
+        std::string pingFrames;
+        appendQuicFrame(pingFrames, QuicFrame{QuicPingFrame{}});
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames), Timestamp{140000});
+        EXPECT_FALSE(drainMarked(core).empty()) << "没对上令牌的那条报文把这条连接也废了";
+    }
+
+    /**
+     * @brief §10.3.1 的 MUST NOT：退休标识的令牌不许再拿来比对
+     * @details 「退役即失效」（§10.3 第二段：令牌随标识被 RETIRE 而作废）。旧令牌还能掐断连接的话，
+     *          一个还记得旧令牌的旁观者就等于握着一条永不过期的掐线指令
+     */
+    TEST(QuicConnectionCore, DoesNotHonorTheTokenOfARetiredConnectionId)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        bool                            isResetDetected = false;
+        QuicConnectionCoreConfiguration configuration   = makeServerConfiguration(*serverContext.get());
+        configuration.onStatelessResetDetected          = [&isResetDetected] { isResetDetected = true; };
+        QuicConnectionCore core(configuration);
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> retiredToken{0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+                                                                                        0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F};
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> currentToken{0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+                                                                                        0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F};
+        const std::vector<std::uint8_t>                                    firstAdvertisedId(kClientConnectionId.size(), 0x88U);
+        const std::vector<std::uint8_t>                                    secondAdvertisedId(kClientConnectionId.size(), 0x99U);
+        advertisePeerConnectionId(core, client, 1, 1, firstAdvertisedId, retiredToken, Timestamp{120000});
+        advertisePeerConnectionId(core, client, 2, 2, secondAdvertisedId, currentToken, Timestamp{121000});
+        ASSERT_TRUE(std::ranges::equal(core.activePeerConnectionId(), secondAdvertisedId)) << "前置没成立：在用的标识不是最后那条";
+
+        feed(core, makeStatelessResetShapedDatagram(retiredToken), Timestamp{130000});
+        EXPECT_FALSE(isResetDetected) << "一条已经退休的标识的令牌还能掐断连接（§10.3.1 的 MUST NOT）";
+        EXPECT_FALSE(core.isFinished());
+
+        feed(core, makeStatelessResetShapedDatagram(currentToken), Timestamp{131000});
+        EXPECT_TRUE(isResetDetected) << "在用的那条标识的令牌反倒不认了";
+        EXPECT_TRUE(core.isFinished());
     }
 } // namespace AsynGyanis::Net

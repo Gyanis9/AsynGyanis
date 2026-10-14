@@ -12,6 +12,7 @@
 #include "Net/Http/Router.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 #include "Net/Quic/QuicAddressValidationToken.h"
+#include "Net/Quic/QuicConnectionCore.h"
 #include "Net/Quic/QuicPacketBuilder.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
@@ -43,9 +44,10 @@ namespace AsynGyanis::Net
         constexpr std::chrono::seconds kAddressValidationRejectionLogWindow{10};
 
         /**
-         * @brief 取一段密码学随机字节做 Retry 的源连接标识
+         * @brief 取一段密码学随机字节（Retry 的源连接标识与无状态重置的静态密钥都走它）
          * @details 随机失败没有安全的降级路径：拿一条可猜的标识回出去，旁观者就能提前把后续报文路由到
-         *          它自己想去的地方，这与 Retry 的存在理由正好相反。失败交回空 vector 由调用方丢包
+         *          它自己想去的地方；拿一把可猜的密钥算令牌，那条令牌就成了人人可用的掐线指令。
+         *          失败交回空 vector 由调用方处置（丢包或当场拒启）
          */
         std::vector<std::uint8_t> randomConnectionIdBytes(const std::size_t byteLength)
         {
@@ -191,26 +193,9 @@ namespace AsynGyanis::Net
                                                  m_configuration.applicationProtocol + "」不会改变协商结果，只会让启动日志说谎；请写 h3");
         }
 
-        // 地址验证这一项的开关与密钥在**建 TLS 上下文之前**定死：令牌的签发器一旦配错就当场抛，
-        // 而构造期抛出后析构不跑——排在上下文建立之后就留下一份没人认领的 SSL_CTX（见上面 ALPN 那格）
-        if (m_configuration.addressValidationTokenLifetime > std::chrono::seconds{0})
-        {
-            if (m_configuration.addressValidationKey.empty())
-            {
-                m_addressValidation = QuicAddressValidationTokenCodec::createWithRandomKey(m_configuration.addressValidationTokenLifetime);
-                if (m_addressValidation == nullptr)
-                {
-                    throw Base::SystemException("QUIC 服务端配置无效：地址验证令牌要随机自造密钥，而系统的随机源取不到字节："
-                                                "没有密钥签出的令牌谁都验不过，这项保护就成了纯粹的丢包器");
-                }
-                LOG_WARN("QuicServer: 地址验证已开启但没配 addressValidationKey，本次启动随机自造了一把："
-                         "多进程 worker 各自一把时，客户端带着别的进程签的令牌撞过来必然验不过——请按部署共享同一份密钥");
-            } else
-            {
-                m_addressValidation = std::make_unique<QuicAddressValidationTokenCodec>(std::span<const std::uint8_t>(m_configuration.addressValidationKey),
-                                                                                        m_configuration.addressValidationTokenLifetime);
-            }
-        }
+        // 两把密钥（地址验证令牌的签发器、无状态重置的静态密钥）在建 TLS 上下文之前定死，
+        // 理由见各自那一格：构造期抛出后析构不跑，排在后面就会留下没人认领的 SSL_CTX 或 /metrics 把手
+        resolveProtocolKeys();
 
         // 上下文（连带证书、策略、ALPN 与票据密钥）由那一份唯一的构建函数交出。失败仍然当场抛：
         // 构造没有错误通道，而「在监听却谁也不应答」比启动失败难查得多
@@ -256,7 +241,66 @@ namespace AsynGyanis::Net
                         "此刻在册但尚未完成握手的 QUIC 连接数（与 asyn_quic 连接总数之差给已验证的那部分归因）。"
                         "它在涨而在线数不动，说明来的是只发 Initial 不推进握手的流量；两类连接共用同一份 maximumConnections 是刻意的（见 QuicConnection.h 的清单）",
                         Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::Sum, [this] { return handshakingConnectionCount(); }),
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_quic_stateless_resets_sent_total",
+                        "QUIC 服务端交出去的无状态重置条数（RFC 9000 §10.3：目的标识不属于任何在册连接时，以随机字节加 16 字节令牌让对端立刻收场）。"
+                        "它在涨说明端口上有人在敲已经不在的连接；多进程 worker 各自一把 statelessResetKey 时，撞上别人旧连接的那一份会少了这条记录",
+                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum, [this] { return m_statelessResetSentCount.load(std::memory_order_relaxed); }),
         };
+    }
+
+    void QuicServer::wireAliasConnectionIdCallbacks(QuicConnection::Configuration &configuration)
+    {
+        // 标识一上线就可能出现在下一包的短头里，而路由表只认「本端签发的标识」：签发的每一条都
+        // 按别名登记（登记早于上线，见核心的签发通知），对端 RETIRE 之后即摘除
+        configuration.onConnectionIdIssued = [this](QuicConnection &connection, const std::span<const std::uint8_t> connectionId)
+        { m_connectionsByAliasConnectionId.emplace(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection); };
+        configuration.onConnectionIdRetired = [this](QuicConnection &, const std::span<const std::uint8_t> connectionId)
+        { m_connectionsByAliasConnectionId.erase(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size())); };
+    }
+
+    void QuicServer::resolveProtocolKeys()
+    {
+        // 地址验证这一项的开关与密钥：令牌的签发器一旦配错就当场抛，而构造期抛出后析构不跑——
+        // 排在 TLS 上下文建立之后就会留下一份没人认领的 SSL_CTX
+        if (m_configuration.addressValidationTokenLifetime > std::chrono::seconds{0})
+        {
+            if (m_configuration.addressValidationKey.empty())
+            {
+                m_addressValidation = QuicAddressValidationTokenCodec::createWithRandomKey(m_configuration.addressValidationTokenLifetime);
+                if (m_addressValidation == nullptr)
+                {
+                    throw Base::SystemException("QUIC 服务端配置无效：地址验证令牌要随机自造密钥，而系统的随机源取不到字节："
+                                                "没有密钥签出的令牌谁都验不过，这项保护就成了纯粹的丢包器");
+                }
+                LOG_WARN("QuicServer: 地址验证已开启但没配 addressValidationKey，本次启动随机自造了一把："
+                         "多进程 worker 各自一把时，客户端带着别的进程签的令牌撞过来必然验不过——请按部署共享同一份密钥");
+            } else
+            {
+                m_addressValidation = std::make_unique<QuicAddressValidationTokenCodec>(std::span<const std::uint8_t>(m_configuration.addressValidationKey),
+                                                                                        m_configuration.addressValidationTokenLifetime);
+            }
+        }
+
+        // 无状态重置的静态密钥：留空＝本实例随机自造一把（多进程 worker 不共享时，撞上别家旧连接只能继续不理，
+        // 见配置里那一格）。这一格必须在这里定死：每条连接签发的令牌都从它派生（§10.3.2）
+        if (m_configuration.statelessResetKey.empty())
+        {
+            m_statelessResetKey = randomConnectionIdBytes(32);
+            if (m_statelessResetKey.empty())
+            {
+                throw Base::SystemException("QUIC 服务端配置无效：无状态重置的密钥要随机自造，而系统的随机源取不到字节："
+                                            "拿一把可猜的密钥算令牌，那条令牌就成了人人可用的掐线指令");
+            }
+            LOG_WARN("QuicServer: 没配 statelessResetKey，本次启动随机自造了一把：多进程 worker 各自一把时，"
+                     "撞到别的工作进程那份旧连接的报文只能继续不理——客户端认不出「连接没了」，要等它自己的空闲超时");
+        } else if (m_configuration.statelessResetKey.size() < kQuicMinimumStatelessResetKeyByteLength)
+        {
+            throw Base::InvalidArgumentException("QUIC 服务端配置无效：statelessResetKey 短于 16 字节（RFC 9000 §8.1.4 的「难猜」口径）");
+        } else
+        {
+            m_statelessResetKey = m_configuration.statelessResetKey;
+        }
     }
 
     QuicServer::~QuicServer()
@@ -923,6 +967,15 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        // 两条表都没命中，报文又长得像 1-RTT：对端在找一条本端已经不存在的连接（连接收口了、进程
+        // 重启过、或这个标识本就无主）。按 §10.3 回一条无状态重置，让对端立刻收场而不是等自己的超时。
+        // 长头和「连包头都解不开」那两档都不回：§10.3 明写那时的令牌还没发给对端，静静扔掉同样有效
+        if (!decodedHeader->isLongHeader)
+        {
+            co_await sendStatelessReset(peerAddress, datagram, decodedHeader->destinationConnectionId);
+            co_return;
+        }
+
         if (!admitsNewConnection(m_connections.size(), m_configuration.maximumConnections))
         {
             // 满载按跳变报（每空出一次名额再撞满各一条），并留一条累计读数进 /metrics：
@@ -1100,6 +1153,54 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
+    Core::Task<> QuicServer::sendStatelessReset(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram,
+                                                const std::span<const std::uint8_t> destinationConnectionId)
+    {
+        if (m_socket == nullptr)
+        {
+            co_return;
+        }
+        // 尺寸三条判据一起看（§10.3 与 §10.3.3）：比触发报文**小**（减一字节即满足；循环里尺寸一路衰减，
+        // 小到 21 字节以下就自然停住，本端因此不必为防循环维护任何状态）、不小于图 10 的下限 21 字节、
+        // 也不超过本端的数据报基准尺寸（更大的触发报文不替对端放大字节）
+        constexpr std::size_t kMinimumStatelessResetByteLength = 21; // 38 位不可预测位 + 128 位令牌（§10.3 图 10）
+        if (datagram.size() <= kMinimumStatelessResetByteLength)
+        {
+            co_return; // 触发报文太短：装得下 21 字节就不比它小，两者无法同时满足——这一档只能靠对端自己的超时
+        }
+        const std::size_t resetByteLength = std::min(datagram.size() - 1, kQuicMaximumDatagramPayloadByteLength);
+
+        // 令牌按「报文里那个目的标识 + 静态密钥」现算（§10.3.2 的「丢掉状态的一端照样算得出」）：
+        // 对端手上那份是从本端签发的 NEW_CONNECTION_ID / 传输参数里来的，同一条标识同一个值
+        const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token =
+                deriveQuicStatelessResetToken(std::span<const std::uint8_t>(m_statelessResetKey), destinationConnectionId);
+        if (std::ranges::all_of(token, [](const std::uint8_t byte) { return byte == 0; }))
+        {
+            co_return; // 密钥算不出令牌（随机源自造那把时取不到字节）：全零令牌是一条人人可发的掐线指令
+        }
+
+        // 报文长得像一条普通短头包：首字节高两位固定为 0b01，其余全是不可预测位（§10.3 图 10 与随后一段：
+        // 「The remainder of the first byte and an arbitrary number of bytes following it are set to
+        // values that SHOULD be indistinguishable from random」）
+        std::vector<std::uint8_t> reset(resetByteLength, 0U);
+        if (RAND_bytes(reset.data(), static_cast<int>(reset.size())) != 1)
+        {
+            co_return; // 随机不可用：拿不出不可预测位，可预测的重置会被旁观者一眼认出来
+        }
+        reset.front() = static_cast<std::uint8_t>((reset.front() & 0x3FU) | 0x40U);
+        std::copy(token.begin(), token.end(), reset.end() - static_cast<std::ptrdiff_t>(token.size()));
+
+        const ssize_t sentLength = co_await m_socket->asyncSendTo(peerAddress, reset.data(), reset.size(), 0);
+        if (sentLength != static_cast<ssize_t>(reset.size()))
+        {
+            co_return; // 没交出去就不计数：这条读数说的是「对端能据此认出连接没了」
+        }
+        m_statelessResetSentCount.fetch_add(1, std::memory_order_relaxed);
+        LOG_DEBUG_FMT("QuicServer: 一条短头报文的目的标识（{} 字节）不属于任何在册连接，已按 RFC 9000 §10.3 回一条 {} 字节的无状态重置", destinationConnectionId.size(),
+                      reset.size());
+        co_return;
+    }
+
     Core::Task<> QuicServer::respondToUnsupportedVersion(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
     {
         // 排空期间连新连接都不接，更不会去宣称「来我这建连」：与上面那格拒绝新连接同口径，静默丢
@@ -1156,12 +1257,11 @@ namespace AsynGyanis::Net
         // DF 是这台套接字的事实，不是每条连接各自决定的：listen 时设一次，接进来的连接照它走
         connectionConfiguration.pathMtuProbeAllowed = m_isDoNotFragmentSet;
         connectionConfiguration.congestionAlgorithm = m_configuration.congestionAlgorithm;
+        // 无状态重置的密钥是全实例一把：连接签发的令牌与「连接没了之后现算的令牌」必须是同一个值（§10.3.2）
+        connectionConfiguration.statelessResetKey = m_statelessResetKey;
         // 每签发一条新标识就登记进别名索引：报文按它路由回来时才能认到这条连接（§5.1.1 的「签了就得认」）。
         // 摘除那一路反着来。两张表都只归收报文那条循环线程，这两个回调也从同一线程发出（核心在出包时回调）
-        connectionConfiguration.onConnectionIdIssued = [this](QuicConnection &connection, const std::span<const std::uint8_t> connectionId)
-        { m_connectionsByAliasConnectionId.emplace(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size()), &connection); };
-        connectionConfiguration.onConnectionIdRetired = [this](QuicConnection &, const std::span<const std::uint8_t> connectionId)
-        { m_connectionsByAliasConnectionId.erase(std::string(reinterpret_cast<const char *>(connectionId.data()), connectionId.size())); };
+        wireAliasConnectionIdCallbacks(connectionConfiguration);
         // 接上路由器就让 HTTP/3 接管：这时流里的字节是 h3 的帧，直通出口拿到的只会是看不懂的裸字节
         connectionConfiguration.onStreamData = [this](QuicConnection &connection, const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
         {

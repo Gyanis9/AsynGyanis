@@ -12,8 +12,10 @@
  *
  * @note 能力范围：两个角色各自的握手、1-RTT 的流与流量控制、1-RTT 密钥更新，以及恢复层的发包记账、
  *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可、Initial 空间的退休、ECN 验证与 CE 反应、
- *       路径 MTU 探测（DPLPMTUD）、连接标识的签发/通告/撤回（§5.1），以及路径验证与迁移应答
- *       （§8.2、§9.3–§9.4：回应挑战、跟对端换地址、逐路径反放大、验证失败退回）。
+ *       路径 MTU 探测（DPLPMTUD）、连接标识的签发/通告/撤回（§5.1）、路径验证与迁移应答
+ *       （§8.2、§9.3–§9.4：回应挑战、跟对端换地址、逐路径反放大、验证失败退回），以及无状态重置
+ *       令牌的签发与识别（§10.3–§10.3.2：收下对端给的令牌、对上即进 draining；发送那一半在服务端
+ *       外壳上，见 `QuicServer::Configuration::statelessResetKey`）。
  *       刻意不做：0-RTT、NEW_TOKEN、版本协商、本端主动发起迁移（本端地址不换，§9.2 那一半）与
  *       §9.6 的首选地址；作客户端时**不能接住服务端下发的 Retry**（挑一个 8 字节以上的随机目的标识
  *       是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路）。
@@ -55,6 +57,24 @@
 
 namespace AsynGyanis::Net
 {
+    /// 无状态重置的静态密钥下限（RFC 9000 §8.1.4 的「难猜」口径）：短于它就不算令牌——全零令牌会把
+    /// 「末尾 16 个零字节的报文」变成一条人人可发的掐线指令
+    inline constexpr std::size_t kQuicMinimumStatelessResetKeyByteLength = 16;
+
+    /**
+     * @brief 按 RFC 9000 §10.3.2 算一条连接标识的无状态重置令牌：HMAC-SHA256(静态密钥, 标识) 截前 16 字节
+     * @details 一个进程丢掉了连接状态之后，要靠它从「收到的报文里那条目的标识」现算出一个对端认得的令牌
+     *          （§10.3.2：「An endpoint that loses state can use the same method to generate a valid
+     *          stateless reset token」），因此这个推导同时属于签发的连接与不认识它的那台服务端——
+     *          两处各写一份的话，算错的那一侧发出去的重置没人认，而症状是「客户端干等到自己的超时」
+     * @param staticKey 端点静态密钥；低于 16 字节时拒（§8.1.4 的「难猜」口径，两处调用同一条判据）
+     * @param connectionId 那条标识本身（可能来自对端报文的明文头部）
+     * @return std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> 16 字节令牌；密钥过短或
+     *         HMAC 上下文建不起来时给全零——调用方按「令牌算不出来就不发重置」处置
+     */
+    [[nodiscard]] ASYN_NET_API std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> deriveQuicStatelessResetToken(std::span<const std::uint8_t> staticKey,
+                                                                                                                          std::span<const std::uint8_t> connectionId) noexcept;
+
     /// 状态机的阶段。收口后不另设「drained」阶段：`isFinished()` 就是「已收口且待发队列空」
     enum class QuicConnectionPhase
     {
@@ -145,12 +165,20 @@ namespace AsynGyanis::Net
          */
         std::function<void(const QuicPathKey &)> onPeerPathAbandoned{};
         /**
-         * @brief 无状态重置令牌的派生密钥；留空＝本连接随机取一把
+         * @brief 收到一条对上本端令牌的无状态重置（RFC 9000 §10.3.1）：外壳据此记日志
+         * @details 对上令牌即进 draining——不发 CLOSE、也不再往这条连接上发任何东西（对端显然已经不
+         *          认识它了）。核心打完这条通知之后就是「已收口且待发队列空」，外层看 `isFinished()`
+         *          即可回收。无参数：这条连接的对端是唯一的，地址与标识都归外壳记账
+         */
+        std::function<void()> onStatelessResetDetected{};
+        /**
+         * @brief 无状态重置令牌的派生密钥（§10.3.2）；留空＝本连接随机取一把
          * @details 令牌按 RFC 9000 §10.3.2 由「端点静态密钥 + 标识」派生，签发的每条标识在
-         *          NEW_CONNECTION_ID 里都要带一个。本端目前只签发、不发送无状态重置（§10.3 那一半
-         *          见账目），但派生方式按规范摆好，等重置那一半落地时这批令牌不需要重签。
-         *          **多进程 worker 必须共享同一把**：无状态重置的用处正是「连接没了还能答话」，
-         *          而那一刻报文可能落到另一个进程手里（与 `addressValidationKey` 同一条道理）。
+         *          NEW_CONNECTION_ID 里都要带一个、服务端还给握手那条发一份传输参数（0x02）。
+         *          留空只够单连接自己用：服务端要把它喂成**全实例一把**（`QuicServer` 同名那一格），
+         *          否则连接没了之后谁也替它算出对端认得的那份令牌。**多进程 worker 同样必须共享
+         *          同一把**：无状态重置的用处正是「连接没了还能答话」，而那一刻报文可能落到另一个
+         *          进程手里（与 `addressValidationKey` 同一条道理）。
          */
         std::vector<std::uint8_t> statelessResetKey{};
     };
@@ -500,7 +528,10 @@ namespace AsynGyanis::Net
         {
             std::vector<std::uint8_t>    id{};                  ///< 标识本体
             std::uint64_t                sequence{0};           ///< 序列号；握手期那条是 0
-            std::array<std::uint8_t, 16> statelessResetToken{}; ///< 对端给的令牌（本端目前只存不带外）
+            std::array<std::uint8_t, 16> statelessResetToken{}; ///< 对端给的无状态重置令牌（§19.15 或服务端参数的 0x02）
+            /// 上面那格有没有被真正给过一份：**没给过的绝不能拿全零去比对**（§10.3.1 只许认
+            /// 「对端真发过来的令牌」，否则一条末尾 16 个零字节的报文就能掐断连接）
+            bool hasStatelessResetToken{false};
         };
 
         /**
@@ -725,6 +756,29 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool hasRoomForAnotherConnectionId() const noexcept;
         /// §10.3.2：令牌 = HMAC(静态密钥, 标识) 的前 16 字节
         [[nodiscard]] std::array<std::uint8_t, 16> statelessResetTokenOf(std::span<const std::uint8_t> connectionId) const;
+
+        /**
+         * @brief 这条数据报是不是一条对上本端令牌的无状态重置（RFC 9000 §10.3.1）
+         * @details 判据写死在规范里：末 16 字节与「本端在用的那条对端标识的令牌」逐字节相同，比对
+         *          必须不泄露令牌取值（用 `CRYPTO_memcmp` 做常数时间比对）。只比对**在用的那条**：
+         *          正文的 MUST NOT 不许为「还没用过的标识」的令牌放行，而本端的发送目标只有一条
+         *          （对端给的其它标识一直只记账不用，§9.5 的换用还没做）
+         * @param datagram 这条数据报（必须已过「长度不小于 16」的判断）
+         * @return true 对上令牌
+         */
+        [[nodiscard]] bool isStatelessResetDatagram(std::span<const std::uint8_t> datagram) const noexcept;
+
+        /// §10.3.1 末段：对上令牌即进 draining——不发 CLOSE、也不再发任何报文，并通知外壳
+        void enterDrainingAfterStatelessReset();
+
+        /**
+         * @brief 把对端在传输参数里给的握手令牌收进在册表（RFC 9000 §10.3：服务端的 0x02 参数）
+         * @details 令牌随它对应的那条标识走，而这一份只配给**握手期那条**（序列号 0）。本端此后
+         *          一直拿那条标识当发送目标（§9.5 的换用没做），收下它，「服务端进程没了」这件事
+         *          才有一条不靠计时器的判据
+         * @param token 对端给的 16 字节令牌
+         */
+        void notePeerHandshakeStatelessResetToken(const std::array<std::uint8_t, 16> &token) noexcept;
         /**
          * @brief 按 Retire Prior To 退休本端持有的对端标识（§19.15 的处理顺序：先退再加）
          * @details 每退一条都要发一条 RETIRE_CONNECTION_ID（§5.1.2：不许不打招呼就忘掉一条标识）。

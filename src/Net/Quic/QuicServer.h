@@ -178,6 +178,20 @@ namespace AsynGyanis::Net
              *          低于 16 字节在构造期即被拒（RFC 9000 §8.1.4 的「难猜」要求）。
              */
             std::vector<std::uint8_t> addressValidationKey{};
+            /**
+             * @brief 无状态重置的静态密钥（RFC 9000 §10.3.2）；留空＝本实例启动时随机自造一把
+             *
+             * @details 用在哪：一条目的标识不属于任何在册连接的短头报文会换回一条重置（§10.3），
+             *          令牌就是拿这把密钥与「报文里那个目的标识」现算的（§10.3.2：丢掉了状态的端点
+             *          用同一个方法算出对端认得的令牌）。**不共享的代价比地址验证那次更隐蔽**：
+             *          多进程 worker 各自一把随机密钥时，撞到别的工作进程那份旧连接的报文只能继续
+             *          不理，而客户端认不出「连接没了」，只能等它自己的空闲超时。至少 16 字节
+             *          （§8.1.4 的「难猜」口径，构造期即拒）。
+             * @note 这条密钥与连接自己的签发令牌是同一把：连接把令牌发在 NEW_CONNECTION_ID 与
+             *       `stateless_reset_token` 传输参数里，进程没了之后服务端再按同一算法算出来，
+             *       两边才对得上
+             */
+            std::vector<std::uint8_t> statelessResetKey{};
         };
 
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration);
@@ -682,6 +696,33 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> sendRetryPacket(const Platform::SocketAddress peerAddress, std::vector<std::uint8_t> retryPacket);
 
         /**
+         * @brief 构造期把两把密钥定死：地址验证令牌的签发器，以及无状态重置的静态密钥
+         * @details 排在建 TLS 上下文与登记 /metrics 把手之前：两处都会抛（配置错、随机源取不到字节），
+         *          而构造期抛出后析构不跑——排在后面就会留下没人认领的 SSL_CTX 或度量把手
+         * @throws Base::InvalidArgumentException `statelessResetKey` 短于 16 字节
+         * @throws Base::SystemException 需要随机自造密钥而系统随机源取不到字节
+         */
+        void resolveProtocolKeys();
+
+        /// 把「签发即登记别名索引、撤回即摘除」两条回调接进连接配置（§5.1.1：签了就得认）
+        void wireAliasConnectionIdCallbacks(QuicConnection::Configuration &configuration);
+
+        /**
+         * @brief 对一条「目的标识不属于任何在册连接」的短头报文回一条无状态重置（RFC 9000 §10.3）
+         *
+         * @details 这是本端**丢掉连接状态之后的最后一招**：不建任何状态，凭「报文里的目的标识 + 静态
+         *          密钥」现算令牌（§10.3.2），对端收到即可立刻收场，不必等自己的空闲超时。三条尺寸
+         *          判据一次走完：比触发报文**小**（§10.3.3 的 MUST：循环里尺寸一路衰减，本端因此
+         *          不必维护防循环的状态）、不小于 21 字节（图 10：38 位不可预测位 + 16 字节令牌）、
+         *          也不超过本端数据报基准尺寸（不替对端放大字节）
+         * @param peerAddress 来源地址，回包就打给它
+         * @param datagram 触发的数据报（拿它的长度定重置尺寸）
+         * @param destinationConnectionId 触发报文里的目的标识（令牌就按它派生）
+         */
+        [[nodiscard]] Core::Task<> sendStatelessReset(Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram,
+                                                      std::span<const std::uint8_t> destinationConnectionId);
+
+        /**
          * @brief 把一个数据报交给一条已在册的连接，随后把它的 HTTP/3 会话推一步
          * @details 三处调用点（按本端标识命中、按别名命中、刚刚新建的那一条）要做的是同一件事，
          *          写成一处而不是三份：那条 `ActivityGuard` 少了任何一份都会让定时循环在 await 期间
@@ -812,10 +853,14 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_retrySentCount{0};
         /// 验不过的令牌条数：涨了说明端口上有人在搬令牌或自造令牌，也可能是密钥没共享的那几份进程
         std::atomic<std::uint64_t> m_retryTokenRejectedCount{0};
+        /// 交出去的无状态重置条数：涨了说明端口上有人在敲已经不在的连接（对端进程重启过、或连接已收口）
+        std::atomic<std::uint64_t> m_statelessResetSentCount{0};
         /// 地址验证令牌的签发器；空＝这一项保护没开（`addressValidationTokenLifetime` 为 0）
         std::unique_ptr<QuicAddressValidationTokenCodec> m_addressValidation{};
+        /// 无状态重置的静态密钥：构造期定死（留空则随机自造），既喂给每条连接，也用于上面那条回包路径
+        std::vector<std::uint8_t> m_statelessResetKey{};
         /// 上面几笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
-        std::array<Core::ProcessMetricHandle, 8> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 9> m_metricHandles{};
         /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
         /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
         bool m_isEcnFieldVisible{false};
