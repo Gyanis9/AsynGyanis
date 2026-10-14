@@ -5,6 +5,7 @@
  */
 
 #include "Net/Http3/Http3Connection.h"
+#include "Net/Http3/Http3Frame.h"
 
 #include "HttpTestSupport.h"
 
@@ -19,6 +20,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -26,6 +28,9 @@ namespace
     using AsynGyanis::Net::Http3Connection;
     using AsynGyanis::Net::Http3ErrorCode;
     using AsynGyanis::Net::Http3Frame;
+    using AsynGyanis::Net::Http3FrameReader;
+    using AsynGyanis::Net::Http3SettingId;
+    using AsynGyanis::Net::Http3SettingsFrame;
     using AsynGyanis::Net::QpackEncoder;
     using AsynGyanis::Net::QpackErrorKind;
     using AsynGyanis::Net::QpackHeaderField;
@@ -288,6 +293,68 @@ TEST(Http3Connection, PeerSettingsEnableTheDynamicTableWithinTheLocalCeiling)
 
     EXPECT_FALSE(connection->isBroken());
     EXPECT_EQ(connection->peerTableCapacityByteCount(), 4096u);
+}
+
+/**
+ * @brief 本端不宣告 SETTINGS_H3_DATAGRAM：没实现的能力不许在设置里许诺
+ * @details 断言读的是「本端交给传输层的那一帧解码后没有 0x33」，不是「实现里没写它」——用公开解码器
+ *          读产出的字节，改动组装处就会红。两个角色各读一次：那一段字节由同一条构造路径写出，
+ *          只钉一侧会留下「另一侧哪天加了一项」的缝。
+ */
+TEST(Http3Connection, DoesNotAdvertiseTheHttp3DatagramSetting)
+{
+    for (const AsynGyanis::Net::QuicConnectionRole role: {AsynGyanis::Net::QuicConnectionRole::Server, AsynGyanis::Net::QuicConnectionRole::Client})
+    {
+        FakeTransport transport;
+        EventLog      events;
+        const auto    connection = makeConnection(transport, events, {}, role);
+        ASSERT_TRUE(connection->isUsable());
+
+        const std::string controlBytes = transport.bytesOf(3);
+        Http3FrameReader  reader(controlBytes.size() + 8);
+        ASSERT_TRUE(reader.feed(bytesOfText(controlBytes).subspan(1)).has_value()) << "本端写出的控制流字节要能被自家解码器吃下";
+        const auto decodedFrame = reader.nextFrame();
+        ASSERT_TRUE(decodedFrame.has_value()) << decodedFrame.error().message;
+        ASSERT_TRUE(decodedFrame->has_value()) << "控制流上没解出帧";
+        const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**decodedFrame);
+        ASSERT_TRUE(settingsFrame != nullptr) << "控制流的第一个帧不是 SETTINGS";
+
+        EXPECT_TRUE(settingsFrame->unknownSettings.empty()) << "本端不该发出自己不认识的设置项";
+        for (const auto &[settingId, settingValue]: settingsFrame->settings)
+        {
+            static_cast<void>(settingValue);
+            // RFC 9297 §2.1.1：这一项说的是「我愿意收 HTTP Datagrams」，本层没有 DATAGRAM 帧的实现，
+            // 发出去等于给对端开一条自己不用的路
+            EXPECT_NE(static_cast<std::uint64_t>(settingId), 0x33U) << "本层不实现 RFC 9297，不许宣告这一项";
+        }
+    }
+}
+
+/**
+ * @brief 对端发来的 0x33 一律按未知设置项忽略，取值是 1 还是 7 都不改变会话形状
+ * @details RFC 9297 §2.1.1 那条「取值非 0 即 1 就报 H3_SETTINGS_ERROR」的 MUST 认这一项的一端才生效；
+ *          本层不认识它，按 RFC 9114 §7.2.4「必须忽略不认识的参数」处理。反向对照放在同一趟里：
+ *          之后仍能正常收一个请求，判据不是「会话碰巧没炸」。
+ */
+TEST(Http3Connection, IgnoresPeerHttp3DatagramSettingWhateverItsValueIs)
+{
+    for (const std::uint64_t peerDatagramSettingValue: {1U, 7U})
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+
+        const std::string settingsPayload = makeFrame(0x04, std::string("\x33", 1) + static_cast<char>(peerDatagramSettingValue));
+        connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + settingsPayload), false);
+
+        EXPECT_FALSE(connection->isBroken()) << "取值 " << peerDatagramSettingValue << " 的未知设置项不该破连接";
+        EXPECT_TRUE(events.connectionClosures.empty()) << "未知设置项不该上报任何连接错误";
+
+        std::string       encoderBytes;
+        const std::string headerBlock = encodeSection(minimalRequestFields(), encoderBytes);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), true);
+        ASSERT_EQ(events.requestsEnded.size(), 1u) << "对端带了这一项之后，请求就不该再被卡住";
+    }
 }
 
 TEST(Http3Connection, RequestHeadIsDeliveredFieldByFieldAndReportedAsOneBlock)

@@ -120,6 +120,10 @@ namespace AsynGyanis::Net
         }
 
         // SETTINGS 必须排在控制流所有帧之前（RFC 9114 §7.2.4.2）
+        // 这里刻意不发 RFC 9297 的 SETTINGS_H3_DATAGRAM（0x33）：本层没有 DATAGRAM 帧的实现，而那一
+        // 项说的正是「我愿意收 HTTP Datagrams」（§2.1.1），宣告它等于给对端开一条本端自己不用的路。
+        // 对端发来的 0x33 按 RFC 9114 §7.2.4「忽略不认识的参数」处理，取值是几都不判错——§2.1.1 那条
+        // 「取值非 0 即 1 就报 H3_SETTINGS_ERROR」的 MUST 认这一项的一端才承担，本端不认它
         Http3SettingsFrame settingsFrame;
         settingsFrame.settings.emplace_back(Http3SettingId::QpackMaxTableCapacity, m_localSettings.qpackMaximumTableCapacityByteCount);
         settingsFrame.settings.emplace_back(Http3SettingId::QpackBlockedStreams, m_localSettings.qpackMaximumBlockedStreamCount);
