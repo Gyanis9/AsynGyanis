@@ -1054,6 +1054,16 @@ namespace AsynGyanis::Core
      *          两条线程各按自己的节奏反复进出后端，占位在场的窗口彼此重叠，被拒的次数按「两边都记」
      *          来判——抢占是双向的，只盯其中一边会漏（实测那种写法在 30 次里红 15 次）。
      */
+    /**
+     * @brief 探测某个循环类型上有没有 postRemote() 这条跨线程投递入口
+     * @details 放在命名空间作用域写成 concept：在断言里就地写 requires(auto 形参)，MSVC 与 GCC 放行
+     *          而 clang 按「requires 的形参不许是 auto 占位」当场拒，整份用例文件在 clang 档编不过；
+     *          把形参直接写成 EventLoop & 又不行——MSVC 会把「没有这个成员」报成硬错误而不是判假。
+     *          concept 在实例化前是依赖的，三家都落到「判 false」。
+     * @tparam Loop 待探测的循环类型
+     */
+    template<typename Loop>
+    concept HasRemotePostOn = requires(Loop loopObject) { loopObject.postRemote(std::function<void()>{}); };
     TEST(Epoll, RejectsConcurrentUseFromAnotherThread)
     {
         Epoll             backend;
@@ -1126,7 +1136,7 @@ namespace AsynGyanis::Core
         static_assert(std::is_member_function_pointer_v<decltype(&Scheduler::postRemote)>);
         // 探测参数写成 auto 占位（依赖表达式）：直接给 EventLoop & 时 MSVC 会把「没这个成员」报成硬错误而不是判假
         // 将来若真给 EventLoop 加一条 postRemote 转发，撤掉这条反向 static_assert 并把上面的期望一起挪过去
-        static_assert(!requires(auto loopObject) { loopObject.postRemote(std::function<void()>{}); });
+        static_assert(!HasRemotePostOn<EventLoop>);
     }
 #endif
 } // namespace AsynGyanis::Core
