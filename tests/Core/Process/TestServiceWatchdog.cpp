@@ -25,6 +25,7 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -110,22 +111,36 @@ namespace
     }
 
     /**
-     * @brief 收一条数据报，带两秒上限：发方没送时用例要能红，而不是把作业挂在一次永久阻塞上
+     * @brief 收一条数据报，两秒总预算：发方没送时用例要能红，而不是把作业挂在一次永久阻塞上
+     * @details 被信号打断（EINTR）不算「没收到」，得接着等：io_uring 后端与 ASan 同进程串跑时，主线程这次
+     *          阻塞的 recv 会在二十来毫秒处被打断成 EINTR（实测：同进程 20 连跑 19 条假红、逐条独立进程
+     *          20/20 绿、按 EINTR 重试后 20/20 绿），把它当成超时会令用例在被测件正常发节拍时判红。
+     *          与本仓 EventNotifier、Platform::Socket 对 EINTR 的处置同一口径。
      * @param descriptor 收端描述符
-     * @return std::string 收到的字节；超时或出错回空串
+     * @return std::string 收到的字节；预算内没等到或出错回空串
      */
     std::string receiveOneDatagram(const int descriptor)
     {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+
         timeval timeout{2, 0};
         static_cast<void>(::setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)));
 
         std::array<char, 256> buffer{};
-        const auto            received = ::recv(descriptor, buffer.data(), buffer.size(), 0);
-        if (received <= 0)
+        while (true)
         {
+            const auto received = ::recv(descriptor, buffer.data(), buffer.size(), 0);
+            if (received > 0)
+            {
+                return std::string(buffer.data(), static_cast<std::size_t>(received));
+            }
+            if (received < 0 && errno == EINTR && std::chrono::steady_clock::now() < deadline)
+            {
+                // SO_RCVTIMEO 按调用重新起表，所以这里只守总预算：打断之后等的仍是同一条数据报
+                continue;
+            }
             return {};
         }
-        return std::string(buffer.data(), static_cast<std::size_t>(received));
     }
 #endif
 } // namespace
