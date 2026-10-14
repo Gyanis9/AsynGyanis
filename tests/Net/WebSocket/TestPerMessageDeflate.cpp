@@ -419,4 +419,27 @@ namespace AsynGyanis::Net
         EXPECT_EQ(serverOwnDeclaration->value().decompressBits, 9);
         EXPECT_EQ(serverOwnDeclaration->value().compressBits, 15) << "响应没提 client_max_window_bits，本端压缩窗口按缺省 15";
     }
+    /**
+     * @brief 钉住窗口位数参数的取值面：只有 8..15 的纯十进制收，前导零、带符号、带小数、非数字、越界一律拒
+     * @details 判据取自 RFC 7692 §7.1.1–§7.1.2 的原文「decimal integer value without leading zeroes
+     *          between 8 to 15, inclusive」。放行这些形状等于把一条本端解不开的压缩流发到线上：
+     *          「09」按数值是 9、按规范却是非法写法，收下就是替对端的实现错误兜底。
+     */
+    TEST(PerMessageDeflateNegotiation, WindowBitsAcceptsOnlyPlainDecimalWithinRange)
+    {
+        for (int bits = kWebSocketMinimumWindowBits; bits <= kWebSocketDefaultWindowBits; ++bits)
+        {
+            const std::string header = "permessage-deflate; client_max_window_bits=" + std::to_string(bits);
+            EXPECT_TRUE(negotiatePerMessageDeflate(header).accepted) << "合法位数 " << bits << " 被判拒";
+        }
+
+        for (const char *malformed: {"7", "16", "0", "100", "09", "015", "-10", "+10", "10.5", "9x", "x", "1e2"})
+        {
+            const std::string header = std::string("permessage-deflate; client_max_window_bits=") + malformed;
+            EXPECT_FALSE(negotiatePerMessageDeflate(header).accepted) << "非法取值「" << malformed << "」被收下了";
+        }
+
+        // 参数首尾的空白（OWS）要剥干净：这条与上一条合起来才既没放太松、也没紧到把合法声明判成非法
+        EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate;\tclient_max_window_bits=12 \t").accepted) << "参数两侧的空白与制表没剥掉，合法声明被当成非法";
+    }
 } // namespace AsynGyanis::Net
