@@ -214,9 +214,16 @@ namespace
         // 收到一条就原样回一条——回显本身就把「帧进得来、也出得去」两件事一起验了。
         // 消息类型必须照搬：把 Binary 回成 Text 会让二进制协议的客户端解不出内容，
         // 而 Autobahn 1.2.x / 9.2.x / 12.2.x 那几族判据（含空负载与分片）盯的就是这一条
+        //
+        // Origin 这一格刻意选 AllowAny，不是忘了配：参考服务器同时是一致性验收的目标端，而 Autobahn
+        // 报的源是 http://localhost:9001、它连的地址是 host.docker.internal:18081 —— 按引擎默认的
+        // SameOriginOnly 判，整条验收会被自己的闸门挡在门外。真实部署接自家页面时应当留着默认档，
+        // 要跨源就显式写 AllowList 并列出可信来源（RFC 6455 §10.2 的 SHOULD verify 说的是那条）。
         router.get("/ws",
                    [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
                    {
+                       Net::WebSocketUpgradePolicy handshakePolicy;
+                       handshakePolicy.originMode = Net::WebSocketOriginMode::AllowAny;
                        response.upgradeToWebSocket(
                                [](Net::WebSocketPeer &peer) -> Core::Task<>
                                {
@@ -230,7 +237,8 @@ namespace
                                        }
                                    }
                                    co_return;
-                               });
+                               },
+                               std::move(handshakePolicy));
                        co_return;
                    });
     }

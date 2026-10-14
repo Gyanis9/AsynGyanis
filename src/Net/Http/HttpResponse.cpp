@@ -604,6 +604,42 @@ namespace AsynGyanis::Net
         m_isWebSocketUpgradeRequested = true;
     }
 
+    void HttpResponse::upgradeToWebSocket(WebSocketHandler handler, WebSocketUpgradePolicy policy)
+    {
+        // 表项形状在登记这一刻判：写歪的一条 allowedOrigins（带了路径、协议名不对）在每次握手比对里
+        // 都会悄悄落空，业务只看到一个不知道为什么的 403。判据与握手用同一份解析（isWebSocketOriginTextValid），
+        // 两处不会分叉
+        for (const std::string &allowedOrigin: policy.allowedOrigins)
+        {
+            if (!isWebSocketOriginTextValid(allowedOrigin))
+            {
+                throw Base::InvalidArgumentException(std::format("HttpResponse::upgradeToWebSocket：allowedOrigins 里的 \"{}\" 不是一个能解析的源；"
+                                                                 "RFC 6454 §3 规定它写成 scheme://host[:端口]，scheme 只认 http 与 https，"
+                                                                 "且不带路径、查询与片段",
+                                                                 allowedOrigin));
+            }
+        }
+        // 子协议候选名同样当场判：带逗号的名字会被对端的列表切开成两个 token，业务以为登记了一个，
+        // 实际对端读到的不是那一个
+        for (const std::string &candidate: policy.subprotocolCandidates)
+        {
+            if (candidate.empty() || candidate.find_first_of(", \t") != std::string::npos)
+            {
+                throw Base::InvalidArgumentException(std::format("HttpResponse::upgradeToWebSocket：subprotocolCandidates 里的 \"{}\" 不是一个可用的子协议名；"
+                                                                 "RFC 6455 §4.1 第 10 条要求它是非空且不含逗号与空白的 token",
+                                                                 candidate));
+            }
+        }
+
+        upgradeToWebSocket(std::move(handler));
+        m_webSocketUpgradePolicy = std::move(policy);
+    }
+
+    const WebSocketUpgradePolicy &HttpResponse::webSocketUpgradePolicy() const noexcept
+    {
+        return m_webSocketUpgradePolicy;
+    }
+
     bool HttpResponse::isWebSocketUpgradeRequested() const noexcept
     {
         return m_isWebSocketUpgradeRequested;
@@ -1090,6 +1126,7 @@ namespace AsynGyanis::Net
 
         // 升级意图与处理器一起清：留在复用对象上会把下一条报文也拖进升级分支
         m_webSocketHandler            = WebSocketHandler{};
+        m_webSocketUpgradePolicy      = WebSocketUpgradePolicy{};
         m_isWebSocketUpgradeRequested = false;
 
         // 正文抑制标记同样复位：它属于「这一条报文」，下一条可能是 GET，正文必须照发

@@ -2726,6 +2726,97 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住升级策略在 h3 隧道上同样生效：表外的源按 403 收口，表内的源升到 200 并回显谈成的子协议
+     * @details 与 h1/h2 那两条同名判据成一套：三条通道读同一份策略是本仓的既有承诺。这里判的是**接线**
+     *          ——策略函数本身在 TestWebSocketUpgradePolicy 里逐格钉过，会话没把它接上就一切照旧。
+     *          h3 恒跑在 TLS 上（QUIC 只有 TLS 1.3），因此本连接的源是 `https://<权威段>`。
+     */
+    TEST(Http3Session, AppliesUpgradePolicyToWebSocketTunnel)
+    {
+        WebSocketUpgradePolicy policy;
+        policy.originMode            = WebSocketOriginMode::AllowList;
+        policy.allowedOrigins        = {"https://listed.example"};
+        policy.subprotocolCandidates = {"superchat", "chat"};
+
+        // 一次判据一棵会话：夹具的请求流号固定，同一个流号不能连着发两条已收尾的请求
+        // 助手返回的是「解好的响应 + 请求是否编出来」：ASSERT_* 在助手里只能 return，判据要交回用例体做
+        struct TunnelOutcome
+        {
+            Http3ClientPeer::DecodedResponse response;
+            bool                             isRequestEncoded;
+        };
+
+        const auto runTunnel = [&policy](const std::vector<std::pair<std::string, std::string>> &handshakeExtra) -> TunnelOutcome
+        {
+            FakeStreamOpener                opener;
+            std::vector<CapturedStreamData> sentStreamData;
+            Http3Session                    session(
+                    std::ref(opener),
+                    [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                    {
+                        sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                        return data.size();
+                    },
+                    Http3Session::StreamCrediter{});
+
+            Router router;
+            router.get("/chat",
+                       [&policy](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket(
+                                   [](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       while (const auto message = co_await peer.receive())
+                                       {
+                                           static_cast<void>(message);
+                                       }
+                                       co_return;
+                                   },
+                                   policy);
+                           co_return;
+                       });
+            session.attachRouter(router);
+
+            Http3ClientPeer                       peer;
+            const std::vector<CapturedStreamData> requestChunks = peer.submitEndedWebSocketTunnel("/chat", "listed.example", handshakeExtra);
+            if (requestChunks.empty())
+            {
+                // 助手函数里不能用 ASSERT_*：它只从助手返回，用例体会带着一个解不开的响应接着跑
+                return TunnelOutcome{peer.response(), false};
+            }
+            for (const CapturedStreamData &chunk: requestChunks)
+            {
+                session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+
+            Core::Task<> pumpTask = session.pump();
+            resumeUntilReady(pumpTask);
+            for (const CapturedStreamData &chunk: sentStreamData)
+            {
+                peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+            }
+            return TunnelOutcome{peer.response(), true};
+        };
+
+        // 表外且非同源的 Origin：403，且不得带上子协议回显
+        const TunnelOutcome rejected = runTunnel({{"origin", "https://evil.example"}});
+        ASSERT_TRUE(rejected.isRequestEncoded) << "跨源那条扩展 CONNECT 没编出来";
+        EXPECT_EQ(rejected.response.status, 403) << "表外的源必须按 403 收口";
+        EXPECT_EQ(rejected.response.headers.find("sec-websocket-protocol"), rejected.response.headers.end()) << "被拒的握手不该回显子协议";
+
+        // 表内的源：升到 200，回显按对端次序挑中的那一个
+        const TunnelOutcome accepted = runTunnel({
+                {"origin", "https://listed.example"},
+                {"sec-websocket-protocol", "chat, superchat"},
+        });
+        ASSERT_TRUE(accepted.isRequestEncoded) << "表内那条扩展 CONNECT 没编出来";
+        EXPECT_EQ(accepted.response.status, 200) << "放行表里的源应当建成隧道";
+        const auto echoedProtocol = accepted.response.headers.find("sec-websocket-protocol");
+        ASSERT_NE(echoedProtocol, accepted.response.headers.end()) << "谈成的子协议没有回显";
+        EXPECT_EQ(echoedProtocol->second, "chat") << "回显的必须是按对端次序挑中的那一个";
+    }
+
+    /**
      * @brief 业务自己收工时，隧道要先发一条 Close(1000) 再结束这条流（与 h1/h2 同一顺序）
      * @details 少了这条帧，对端的 WebSocket 层只能报「连接被凭空切断」——按 RFC 9220 §6 那属异常断开，
      *          客户端拿不到本端给出的状态码，也无法区分「服务器收工」与「中间把连接掐了」。

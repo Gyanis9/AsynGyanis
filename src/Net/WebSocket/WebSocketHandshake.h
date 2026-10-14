@@ -84,7 +84,8 @@ namespace AsynGyanis::Net
      * @return true 是合法的升级请求，可调用 buildHandshakeResponse() 回 101
      * @return false 不是升级请求，原因见 failureReason（传空指针则只要结论，不要原因）
      * @note token 比对大小写不敏感并按逗号拆分，因此 "Upgrade: WebSocket, foo" 这类写法同样被接受
-     * @note 只做「是不是升级请求」的判定，不涉及鉴权：Origin、子协议与自定义头部留给上层
+     * @note 只做「是不是升级请求」的判定，不涉及鉴权：Origin 准入与子协议协商由
+     *       `WebSocketUpgradePolicy` 那两个函数负责（三条通道共用），自定义头部仍留给上层
      */
     [[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr);
 
@@ -215,11 +216,15 @@ namespace AsynGyanis::Net
      * @param clientKey 已通过 isWebSocketUpgradeRequest() 校验的 Sec-WebSocket-Key 值
      * @param extensionsResponseValue 回给对端的 Sec-WebSocket-Extensions 取值（见
      *        negotiatePerMessageDeflate()）；为空表示不启用任何扩展，此时不写该头部
+     * @param subprotocolResponseValue 谈成的子协议原文（见 selectWebSocketSubprotocol()）；为空表示
+     *        不回显——RFC 6455 §4.2.2 里「谈不成」的线上形式就是这条头部不发
      * @return std::string 完整的 101 报文，逐字节为
      *         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-     *         "Sec-WebSocket-Accept: <值>\r\n\r\n"
-     * @note 本实现不协商任何子协议：报文里不含 Sec-WebSocket-Protocol。扩展只在
-     *       extensionsResponseValue 非空时写一行 Sec-WebSocket-Extensions
+     *         "Sec-WebSocket-Accept: <值>\r\n"，其后按给出的顺序可能出现
+     *         "Sec-WebSocket-Protocol: <值>\r\n" 与 "Sec-WebSocket-Extensions: <值>\r\n"，最后是空行
+     * @note 两条回显头部都只在**谈成**时才写：写一条对端没提过的子协议或对端没用过的扩展，
+     *       都是 RFC 6455 §4.2.2 步骤 6 与 §9.1 要求对端判失败的形状
      */
-    [[nodiscard]] ASYN_NET_API std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {});
+    [[nodiscard]] ASYN_NET_API std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {},
+                                                                  std::string_view subprotocolResponseValue = {});
 } // namespace AsynGyanis::Net

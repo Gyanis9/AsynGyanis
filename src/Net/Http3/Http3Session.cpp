@@ -639,24 +639,16 @@ namespace AsynGyanis::Net
                     {
                         LOG_ERROR_FMT("Http3Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答、不建隧道。流 {}，原因：{}", streamId, handshakeFailureReason);
                         noteBadRequest();
-                        response.reset();
-                        response.setStatus(400);
-                        response.setBody("Bad WebSocket Handshake");
-                        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
-                        if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
-                        {
-                            // 版本类失败补一条本端支持的版本（RFC 6455 §4.2.2）；状态码同 h2 留 400，
-                            // h3 里没有 Upgrade 这套机制可让对端改
-                            static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
-                        }
-                        finalizeResponseForHttp3(streamId, response);
-                        submitResponse(streamId, response, false);
-                        // 隧道这两条出口都要记这一笔：循环末尾的 noteRequestServed() 是单连接请求条数
-                        // 上限唯一的触发点，而这两条 continue 都绕过了它——只连隧道的 h3 连接因此永远
-                        // 到不了 maximumRequestsPerConnection，该换的连接一直不换。h2 在
-                        // serveWebSocketTunnel 里升级应答发出去就记（Http2Session 的 noteServedRequest），
-                        // h1 的 respondAndFinish 对每条被答过的请求都 ++，被拒的握手也是答过的一条
-                        noteRequestServed();
+                        // 状态码同 h2 留 400：h3 里没有 Upgrade 这套机制可让对端改，版本类失败只补那条头部
+                        rejectWebSocketTunnelResponse(streamId, response, 400, "Bad WebSocket Handshake", handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion);
+                        continue;
+                    }
+
+                    // Origin 准入与子协议协商：判定住在 evaluateWebSocketUpgrade（三条通道共用一份），
+                    // 回显与拒绝都由闸门自己落地。排在隧道协程之前——隧道会在处理器上挂起，届时请求
+                    // 记录可能已被回收
+                    if (response.isWebSocketUpgradeRequested() && rejectWebSocketUpgradeByPolicy(streamId, request, response))
+                    {
                         continue;
                     }
 
@@ -1653,6 +1645,57 @@ namespace AsynGyanis::Net
         }
 
         reapFinishedTunnels();
+    }
+
+    bool Http3Session::rejectWebSocketUpgradeByPolicy(const std::int64_t streamId, HttpRequest &request, HttpResponse &response)
+    {
+        const WebSocketUpgradePolicy    &upgradePolicy = response.webSocketUpgradePolicy();
+        const std::optional<std::string> hostField     = request.getHeader("host");
+        const std::optional<std::string> originField   = request.getHeader("origin");
+        const std::optional<std::string> offeredField  = request.getHeader(kWebSocketSubprotocolHeaderName);
+        // 三条 Optional 都按「有才取」写成视图，不用 value_or：optional<string>::value_or 要求实参可
+        // 转成 string，而 string_view → string 是显式构造（LWG-3424 把它写成了 static_assert）
+        const std::string_view hostText    = hostField.has_value() ? std::string_view{*hostField} : std::string_view{};
+        const std::string_view originText  = originField.has_value() ? std::string_view{*originField} : std::string_view{};
+        const std::string_view offeredText = offeredField.has_value() ? std::string_view{*offeredField} : std::string_view{};
+        const std::string      sameOrigin  = makeWebSocketSameOrigin(request.overTls(), hostText);
+
+        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgrade(originText, offeredText, sameOrigin, upgradePolicy);
+        if (decision.isAccepted)
+        {
+            if (decision.selectedSubprotocol.has_value())
+            {
+                // 只谈成才回显；「谈不成」在 RFC 6455 §4.2.2 里的线上形式就是这条字段不发
+                static_cast<void>(response.setHeader(kWebSocketSubprotocolHeaderName, *decision.selectedSubprotocol));
+            }
+            return false;
+        }
+
+        // 403（来源不可接受）与 400（谈不成子协议而策略要求拒）都由判定函数给码；两档都不进
+        // noteBadRequest——那一格数的是报文畸形，而这两条请求本身是成形报文
+        LOG_WARN_FMT("Http3Session: {}。流 {}", decision.rejectionReason, streamId);
+        rejectWebSocketTunnelResponse(streamId, response, decision.rejectionStatus, decision.rejectionReason, false);
+        return true;
+    }
+
+    void Http3Session::rejectWebSocketTunnelResponse(const std::int64_t streamId, HttpResponse &response, const int status, const std::string &body, const bool isVersionHintNeeded)
+    {
+        response.reset();
+        response.setStatus(status);
+        response.setBody(body);
+        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+        if (isVersionHintNeeded)
+        {
+            // 版本类失败要按 RFC 6455 §4.2.2 补一条本端支持的版本，客户端据此换版本重试
+            static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
+        }
+        finalizeResponseForHttp3(streamId, response);
+        submitResponse(streamId, response, false);
+        // 隧道的每一条「没交给业务就收口」的出口都要记这一笔：循环末尾的 noteRequestServed() 是单连接
+        // 请求条数上限唯一的触发点，而这些 continue 都绕过了它——只连隧道的 h3 连接因此永远到不了
+        // maximumRequestsPerConnection，该换的连接一直不换。h2 在 serveWebSocketTunnel 里升级应答发出
+        // 去就记，h1 的 respondAndFinish 对每条被答过的请求都 ++，被拒的握手也是答过的一条
+        noteRequestServed();
     }
 
     Core::Task<> Http3Session::serveWebSocketTunnel(const std::int64_t streamId, std::string requestedExtensions, HttpResponse &response)

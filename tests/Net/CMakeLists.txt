@@ -135,6 +135,7 @@ add_executable(TestNet
         WebSocket/TestWebSocketSession.cpp
         WebSocket/TestWebSocketHub.cpp
         WebSocket/TestWebSocketUtf8.cpp
+        WebSocket/TestWebSocketUpgradePolicy.cpp
 
         Http2/TestHttp2Frame.cpp
         Http2/TestHpack.cpp

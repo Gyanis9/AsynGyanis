@@ -436,7 +436,7 @@ namespace AsynGyanis::Net
         return versionFieldAllowsHandshake(request, false, failureReason, rejection);
     }
 
-    std::string buildHandshakeResponse(const std::string_view clientKey, const std::string_view extensionsResponseValue)
+    std::string buildHandshakeResponse(const std::string_view clientKey, const std::string_view extensionsResponseValue, const std::string_view subprotocolResponseValue)
     {
         // 逐字节拼出 101 报文：状态行 + 三条头部 + 结束空行，行分隔符一律 CRLF。
         // 头部名用与 HttpResponse 序列化一致的常规大小写（RFC 9110 §5.1 规定大小写不敏感）
@@ -447,6 +447,19 @@ namespace AsynGyanis::Net
         response.append("Sec-WebSocket-Accept: ");
         response.append(computeWebSocketAcceptValue(clientKey));
         response.append("\r\n");
+
+        // 子协议只在**谈成**时写：RFC 6455 §4.2.2 把 /subprotocol/ 定成「对端列表里本端愿意用的那一个
+        // 或 null」，而 null 的线上形式就是「这条头部不发」。写一条对端没提过的名字是客户端必须判失败
+        // 的形状（同节步骤 6），写空串更糟——它既不是 null 也不是合法 token
+        if (!subprotocolResponseValue.empty())
+        {
+            // 头部名用与相邻两行一致的常规大小写（RFC 9110 §5.1 规定比对不敏感，而 101 的逐字节形状
+            // 被用例钉着，写法混用会让同一份报文里出现两种风格）
+            response.append("Sec-WebSocket-Protocol: ");
+            // 名字逐字回显对端的那一份写法：协商比的就是字面，折过大小写就成了另一个名字
+            response.append(subprotocolResponseValue);
+            response.append("\r\n");
+        }
 
         // 扩展只在**协商成功**时写：对端没提、或提了但本端不接受，都不能声明一个它没用过的扩展
         if (!extensionsResponseValue.empty())

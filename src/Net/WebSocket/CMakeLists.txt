@@ -4,6 +4,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/PerMessageDeflate.cpp
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketHandshake.h
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketHandshake.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WebSocketUpgradePolicy.h
+        ${CMAKE_CURRENT_LIST_DIR}/WebSocketUpgradePolicy.cpp
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketFrame.h
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketFrame.cpp
         ${CMAKE_CURRENT_LIST_DIR}/WebSocketPeer.h

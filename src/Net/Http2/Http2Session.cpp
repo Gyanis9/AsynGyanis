@@ -1352,6 +1352,62 @@ namespace AsynGyanis::Net
         co_return RequestServeOutcome::Served;
     }
 
+    Core::Task<std::optional<Http2Session::RequestServeOutcome>> Http2Session::evaluateWebSocketUpgradeGate(const std::uint32_t streamId, HttpRequest &request,
+                                                                                                            HttpResponse &response, std::vector<HpackHeaderField> &acceptFields)
+    {
+        const WebSocketUpgradePolicy    &upgradePolicy = response.webSocketUpgradePolicy();
+        const std::optional<std::string> hostField     = request.getHeader("host");
+        const std::optional<std::string> originField   = request.getHeader("origin");
+        const std::optional<std::string> offeredField  = request.getHeader(kWebSocketSubprotocolHeaderName);
+        // 三条 Optional 都按「有才取」写成视图，不用 value_or：optional<string>::value_or 要求实参可
+        // 转成 string，而 string_view → string 是显式构造（LWG-3424 把它写成了 static_assert）
+        const std::string_view hostText    = hostField.has_value() ? std::string_view{*hostField} : std::string_view{};
+        const std::string_view originText  = originField.has_value() ? std::string_view{*originField} : std::string_view{};
+        const std::string_view offeredText = offeredField.has_value() ? std::string_view{*offeredField} : std::string_view{};
+        const std::string      sameOrigin  = makeWebSocketSameOrigin(request.overTls(), hostText);
+
+        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgrade(originText, offeredText, sameOrigin, upgradePolicy);
+        if (!decision.isAccepted)
+        {
+            // 403（来源不可接受）与 400（谈不成子协议而策略要求拒）都由判定函数给码；两档都不进
+            // countBadRequest——那一格数的是报文畸形，而这两条请求本身是成形报文
+            LOG_WARN_FMT("Http2Session: {}。request-id {}，路径 {}", decision.rejectionReason, request.requestId(), request.uri());
+            response.reset();
+            response.setStatus(decision.rejectionStatus);
+            response.setBody(decision.rejectionReason);
+            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+            co_return toRequestServeOutcome(co_await sendResponse(streamId, response, false));
+        }
+
+        if (decision.selectedSubprotocol.has_value())
+        {
+            // 只谈成才回显；回 null 的线上形式就是这条头部不发（RFC 6455 §4.2.2 /subprotocol/）
+            acceptFields.push_back({.name = std::string(kWebSocketSubprotocolHeaderName), .value = *decision.selectedSubprotocol});
+        }
+        co_return std::nullopt;
+    }
+
+    Core::Task<Http2Session::RequestServeOutcome> Http2Session::rejectWebSocketTunnelHandshake(const std::uint32_t streamId, HttpRequest &request, HttpResponse &response,
+                                                                                               const WebSocketHandshakeRejection rejection, const std::string &reason)
+    {
+        LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(), reason);
+        // 与 h1（升级被拒时）以及 h3（同一条判据）同一笔账：本段其余四条没交给业务的收口
+        // （431/414/413/预算）都只落这一笔，漏掉它会让「被闸门挡下的请求数」在 h2 的 WS 那一路少一格
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countBadRequest();
+        }
+        response.reset();
+        response.setStatus(400);
+        response.setBody("Bad WebSocket Handshake");
+        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+        if (rejection == WebSocketHandshakeRejection::UnsupportedVersion)
+        {
+            static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
+        }
+        co_return toRequestServeOutcome(co_await sendResponse(streamId, response, false));
+    }
+
     Core::Task<Http2Session::RequestServeOutcome> Http2Session::serveWebSocketTunnel(const std::uint32_t streamId, PendingRequest &pending)
     {
         HttpRequest                                &request         = pending.request;
@@ -1365,32 +1421,21 @@ namespace AsynGyanis::Net
         WebSocketHandshakeRejection handshakeRejection{WebSocketHandshakeRejection::Other};
         if (!validateWebSocketTunnelVersion(request, &handshakeFailureReason, &handshakeRejection))
         {
-            // 版本类失败要按 RFC 6455 §4.2.2 补一条 Sec-WebSocket-Version 指明本端支持的版本。
-            // 状态码留 400 而不是 h1 那侧的 426：426 说的是「请改用 Upgrade」，而 h2 里根本没有
-            // Upgrade 这套机制（切换靠 :protocol=websocket），对端没有可改的东西
-            LOG_ERROR_FMT("Http2Session: 扩展 CONNECT 的 WebSocket 握手不合法，已按 400 应答。request-id {}，路径 {}，原因：{}", request.requestId(), request.uri(),
-                          handshakeFailureReason);
-            // 与 h1（升级被拒时）以及 h3（同一条判据）同一笔账：本段其余四条没交给业务的收口
-            // （431/414/413/预算）都只落这一笔，漏掉它会让「被闸门挡下的请求数」在 h2 的 WS 那一路少一格
-            if (m_metrics != nullptr)
-            {
-                m_metrics->countBadRequest();
-            }
-            response.reset();
-            response.setStatus(400);
-            response.setBody("Bad WebSocket Handshake");
-            static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
-            if (handshakeRejection == WebSocketHandshakeRejection::UnsupportedVersion)
-            {
-                static_cast<void>(response.setHeader(kWebSocketVersionHeaderName, std::string(kSupportedWebSocketVersion)));
-            }
-            const RequestServeOutcome handshakeOutcome = toRequestServeOutcome(co_await sendResponse(streamId, response, false));
-            co_return handshakeOutcome;
+            co_return co_await rejectWebSocketTunnelHandshake(streamId, request, response, handshakeRejection, handshakeFailureReason);
         }
 
         // 升级应答是 200 且**不带 END_STREAM**（RFC 8441 §5）：这条流接下来要承载帧，消息还没结束。
         // 因此这里不能走 sendResponse()——它按「正文是否为空」决定 END_STREAM，会把隧道当场关掉
         std::vector<HpackHeaderField> acceptFields;
+
+        // Origin 准入与子协议协商：判定住在 evaluateWebSocketUpgrade（三条通道共用一份），回显由闸门
+        // 直接追加进应答头列表；被拒时它已把错误应答发出，这里只收口
+        if (const std::optional<RequestServeOutcome> policyRejection = co_await evaluateWebSocketUpgradeGate(streamId, request, response, acceptFields);
+            policyRejection.has_value())
+        {
+            co_return *policyRejection;
+        }
+
         // key 在本形态下不是必填（见上面握手校验的注释），但**给了就得回对应的那条 Accept**：
         // 现存的 h2 WebSocket 客户端里两类都有，凭空造一条空 key 的 Accept 比不回更糟——
         // 它会让学生以为握手被验证过了，而本端其实什么都没验

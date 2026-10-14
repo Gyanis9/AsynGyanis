@@ -13,6 +13,7 @@
 
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/WebSocket/WebSocketUpgradePolicy.h"
 #include "Net/Http/Router.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
@@ -98,6 +99,27 @@ namespace AsynGyanis::Net
             request.append(kRfcClientKey);
             request.append("\r\n");
             request.append("sec-websocket-version: 13\r\n\r\n");
+            return request;
+        }
+
+        /**
+         * @brief 在标准升级请求的头部块末尾追加几条头部
+         * @param extraLines 要追加的头部行原文（不含行尾 CRLF）
+         * @return std::string 完整请求报文，仍以空行收尾
+         * @details Origin 与子协议两条判据吃的是请求里的这两样，夹具的默认请求刻意都不发（那正是
+         *          非浏览器客户端的形状）；用例按格补上，别整片改写夹具。
+         */
+        std::string upgradeRequestTextWithExtraHeaders(const std::vector<std::string> &extraLines)
+        {
+            std::string request = upgradeRequestText();
+            // 夹具的报文以「最后一条头部 + CRLF」再跟一个空行收尾：先摘掉那个空行，追加完再放回去
+            request.erase(request.size() - 2);
+            for (const std::string &headerLine: extraLines)
+            {
+                request.append(headerLine);
+                request.append("\r\n");
+            }
+            request.append("\r\n");
             return request;
         }
 
@@ -341,6 +363,29 @@ namespace AsynGyanis::Net
             };
 
             return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, parserLimits);
+        }
+
+        /**
+         * @brief 起一台按给定策略登记 /ws 升级路由的服务器
+         * @param record 回显业务的消息记录槽
+         * @param policy 这次握手的 Origin 准入与子协议协商策略
+         * @return std::unique_ptr<RunningHttpServerFixture> 已投递 start() 的服务器夹具
+         * @details 与 makeWebSocketServer 的唯一差别就是把 policy 交给 upgradeToWebSocket：
+         *          用例因此能判「策略生效」而不是「夹具碰巧没发那条头部」。
+         */
+        std::unique_ptr<RunningHttpServerFixture> makeWebSocketServerWithPolicy(const std::shared_ptr<MessageRecord> &record, const WebSocketUpgradePolicy &policy)
+        {
+            const HttpTestSupport::RouteRegistrar registrar = [record, policy](Router &router, Core::EventLoop &)
+            {
+                router.any(std::string(kHandshakePath),
+                           [record, policy](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.upgradeToWebSocket([record](WebSocketPeer &peer) -> Core::Task<> { co_await echoHandler(record, peer); }, policy);
+                               co_return;
+                           });
+            };
+
+            return std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, HttpParserLimits{});
         }
 
         /**
@@ -1782,6 +1827,157 @@ namespace AsynGyanis::Net
                 << "服务端循环没执行这次观察，下面的读数都是空的";
         EXPECT_EQ(lobbyMemberCount, 2U);
         EXPECT_EQ(droppedMessages, 0U) << "两条都跟得上：不该有任何一条被丢掉";
+    }
+
+    // ============================================================================
+    // 握手策略：Origin 准入与子协议协商（RFC 6455 §4.2.2 /origin/、§10.2 与 /subprotocol/）
+    // ============================================================================
+
+    /**
+     * @brief 钉住跨源升级按 403 收口，而同源与不发 Origin 两种写法都能升到 101
+     * @details 三条放在一条用例里对照，是因为这一格真正容易写错的地方在「反向那半」：只断言跨源被拒，
+     *          实现改成「什么都拒」也能过。同源串由「传输层是否 TLS + host 头部」拼出，本夹具跑在
+     *          明文回环上、host 写的是 `test`，因此 `http://test` 才是同源，`https://test` 不是。
+     */
+    TEST(WebSocketSession, RejectsCrossOriginUpgradeWithForbidden)
+    {
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServer(record);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+        const std::uint16_t port = server->listeningPort();
+
+        // 跨源：403 + 中文原因，且不得出现 Accept（RFC 6455 §10.2 给的就是这一档状态码）
+        const std::string crossOriginRequest = upgradeRequestTextWithExtraHeaders({"origin: https://evil.example"});
+        SCOPED_TRACE("跨源 Origin");
+        expectUpgradeRejected(port, crossOriginRequest, "HTTP/1.1 403 ", "Origin", record, false);
+
+        // 同源：必须升到 101，逐字节还是那份黄金应答（策略没有改变任何合规请求的形状）
+        const std::string sameOriginRequest = upgradeRequestTextWithExtraHeaders({"origin: http://test"});
+        LoopbackClient    sameOriginClient(port);
+        ASSERT_TRUE(sameOriginClient.isValid());
+        ASSERT_TRUE(sameOriginClient.sendText(sameOriginRequest, kWaitTimeout));
+        const std::string handshake = expectedHandshakeResponseText();
+        std::string       accumulated;
+        ASSERT_TRUE(readUntilLength(sameOriginClient, accumulated, handshake.size(), kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "同源带 Origin 的请求没能升级";
+
+        // 协议不同就不是同源：https://test 与明文回环上的本端不同源
+        const std::string wrongSchemeRequest = upgradeRequestTextWithExtraHeaders({"origin: https://test"});
+        SCOPED_TRACE("协议不符的 Origin");
+        expectUpgradeRejected(port, wrongSchemeRequest, "HTTP/1.1 403 ", "Origin", record, false);
+    }
+
+    /**
+     * @brief 钉住放行表那一档：列出来的源升到 101，没列出来的仍然按 403
+     * @details AllowList 是「额外」而不是「取而代之」——这一格漏掉的话自家页面的请求会被打成 403，
+     *          而现场看起来像「同源校验坏了」。
+     */
+    TEST(WebSocketSession, AcceptsListedOriginUnderAllowListPolicy)
+    {
+        WebSocketUpgradePolicy policy;
+        policy.originMode     = WebSocketOriginMode::AllowList;
+        policy.allowedOrigins = {"https://admin.example"};
+
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServerWithPolicy(record, policy);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+        const std::uint16_t port = server->listeningPort();
+
+        // 放行表里的源：升到 101
+        const std::string listedRequest = upgradeRequestTextWithExtraHeaders({"origin: https://admin.example"});
+        LoopbackClient    listedClient(port);
+        ASSERT_TRUE(listedClient.isValid());
+        ASSERT_TRUE(listedClient.sendText(listedRequest, kWaitTimeout));
+        const std::string handshake = expectedHandshakeResponseText();
+        std::string       accumulated;
+        ASSERT_TRUE(readUntilLength(listedClient, accumulated, handshake.size(), kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "放行表里的源没能升级";
+
+        // 表外且非同源：仍然 403
+        const std::string outsideRequest = upgradeRequestTextWithExtraHeaders({"origin: https://other.example"});
+        SCOPED_TRACE("放行表外的源");
+        expectUpgradeRejected(port, outsideRequest, "HTTP/1.1 403 ", "Origin", record, false);
+
+        // 同源仍然放行
+        const std::string sameOriginRequest = upgradeRequestTextWithExtraHeaders({"origin: http://test"});
+        LoopbackClient    sameOriginClient(port);
+        ASSERT_TRUE(sameOriginClient.isValid());
+        ASSERT_TRUE(sameOriginClient.sendText(sameOriginRequest, kWaitTimeout));
+        std::string sameOriginAccumulated;
+        ASSERT_TRUE(readUntilLength(sameOriginClient, sameOriginAccumulated, handshake.size(), kWaitTimeout)) << "只收到 " << sameOriginAccumulated.size() << " 字节";
+        EXPECT_EQ(sameOriginAccumulated.substr(0, handshake.size()), handshake) << "AllowList 档下同源被误拒";
+    }
+
+    /**
+     * @brief 钉住子协议回显按**对端次序**挑中的那一个，且 101 里只出现一条
+     * @details 期望字节整串手算：夹具的候选表把 superchat 排在前面，而对端先列 chat——回显的必须是
+     *          `chat`。这一步只测策略函数测不到的东西：会话真的把选中的名字写进了 101。
+     */
+    TEST(WebSocketSession, EchoesSubprotocolChosenByClientPreferenceOrder)
+    {
+        WebSocketUpgradePolicy policy;
+        policy.subprotocolCandidates = {"superchat", "chat"};
+
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServerWithPolicy(record, policy);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string request = upgradeRequestTextWithExtraHeaders({"sec-websocket-protocol: chat, superchat"});
+        LoopbackClient    client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(request, kWaitTimeout));
+
+        // 手算期望的 101：在 Accept 之后补一条子协议回显，其余逐字不变
+        std::string expected = "HTTP/1.1 101 Switching Protocols\r\n";
+        expected.append("Upgrade: websocket\r\n");
+        expected.append("Connection: Upgrade\r\n");
+        expected.append("Sec-WebSocket-Accept: ");
+        expected.append(kRfcAcceptValue);
+        expected.append("\r\n");
+        expected.append("Sec-WebSocket-Protocol: chat\r\n");
+        expected.append("\r\n");
+
+        std::string accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, expected.size(), kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, expected.size()), expected) << "回显的子协议不对，或头部形状被改动";
+        EXPECT_EQ(accumulated.find("superchat"), std::string::npos) << "谈成一个就够，不该把候选表整个回过去";
+    }
+
+    /**
+     * @brief 钉住谈不成时的两档：默认不回显照常升级，显式改成拒则按 400 收口
+     * @details 默认档是 RFC 6455 §4.2.2 的字面口径（谈不成的唯一可发值是 null，线上形式就是这条头部
+     *          不发），由客户端自己判失败。两档各测一次：只测拒的那档，实现改成「永远拒」也能过。
+     */
+    TEST(WebSocketSession, OmitsSubprotocolEchoWhenNothingMatchesUnlessPolicyRejects)
+    {
+        WebSocketUpgradePolicy proceedPolicy;
+        proceedPolicy.subprotocolCandidates = {"chat"};
+        proceedPolicy.subprotocolMismatch   = WebSocketSubprotocolMismatch::ProceedWithoutEcho;
+
+        const auto                                      record = std::make_shared<MessageRecord>();
+        const std::unique_ptr<RunningHttpServerFixture> server = makeWebSocketServerWithPolicy(record, proceedPolicy);
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+        const std::uint16_t port = server->listeningPort();
+
+        const std::string unmatchedRequest = upgradeRequestTextWithExtraHeaders({"sec-websocket-protocol: superchat"});
+
+        // 默认档：升到 101，且 101 里没有那条头部（回显一个对端没提的名字是客户端必须判失败的形状）
+        LoopbackClient client(port);
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(unmatchedRequest, kWaitTimeout));
+        const std::string handshake = expectedHandshakeResponseText();
+        std::string       accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size(), kWaitTimeout)) << "只收到 " << accumulated.size() << " 字节";
+        EXPECT_EQ(accumulated.substr(0, handshake.size()), handshake) << "谈不成时应当原样回那份 101";
+        EXPECT_EQ(accumulated.find("Sec-WebSocket-Protocol"), std::string::npos) << "没谈成却回显了子协议";
+
+        // 拒的那档：同一个请求当场 400，原因里点出提议的名字与本端能讲的名字
+        WebSocketUpgradePolicy rejectPolicy                          = proceedPolicy;
+        rejectPolicy.subprotocolMismatch                             = WebSocketSubprotocolMismatch::RejectHandshake;
+        const std::unique_ptr<RunningHttpServerFixture> rejectServer = makeWebSocketServerWithPolicy(record, rejectPolicy);
+        ASSERT_TRUE(rejectServer->awaitRunning(kWaitTimeout));
+        SCOPED_TRACE("谈不成即拒");
+        expectUpgradeRejected(rejectServer->listeningPort(), unmatchedRequest, "HTTP/1.1 400 ", "superchat", record, false);
     }
 
 } // namespace AsynGyanis::Net

@@ -1858,6 +1858,109 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住升级策略在 h2 隧道上同样生效：表外的源按 403 收口，表内的源升到 200 并回显谈成的子协议
+     * @details 这一条测的是**接线**，不是策略函数——函数在 TestWebSocketUpgradePolicy 里已经逐格钉过。
+     *          三条通道读同一份策略是本仓的既有承诺：h1 拒掉的来源在 h2 上被放行，等于让对端用承载方式
+     *          挑选准入口径。反向那一半（同源/表内必须升到 200、回显必须是按对端次序挑中的那一个）同条
+     *          用例里一起判，否则「实现改成什么都拒」也能让前一半过。
+     */
+    TEST(Http2CleartextSession, AppliesUpgradePolicyToWebSocketTunnel)
+    {
+        WebSocketUpgradePolicy policy;
+        policy.originMode            = WebSocketOriginMode::AllowList;
+        policy.allowedOrigins        = {"http://listed.example"};
+        policy.subprotocolCandidates = {"superchat", "chat"};
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [policy](Router &router, Core::EventLoop &)
+                {
+                    router.get("/policy-chat",
+                               [policy](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (const std::optional<WebSocketMessage> message = co_await peer.receive())
+                                               {
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                               co_return;
+                                           },
+                                           policy);
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        // 表外且非同源的 Origin：按 403 收口，不得建成隧道
+        CleartextHttp2Client rejectedClient(fixture.listeningPort());
+        ASSERT_TRUE(rejectedClient.isValid());
+        std::vector<Http2Frame> rejectedFrames;
+        ASSERT_TRUE(rejectedClient.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        const std::string crossOriginBlock = makeWebSocketTunnelHeaderBlockWithHandshake("/policy-chat", {
+                                                                                                                 {"sec-websocket-version", "13"},
+                                                                                                                 {"sec-websocket-key", std::string(kRfc6455SampleKey)},
+                                                                                                                 {"origin", "http://evil.example"},
+                                                                                                         });
+        ASSERT_TRUE(rejectedClient.sendBytes(makeRequestHeadersFrame(1U, crossOriginBlock, false), kWaitTimeout));
+        ASSERT_TRUE(rejectedClient.pumpUntil(
+                rejectedFrames,
+                [](const std::vector<Http2Frame> &frames)
+                {
+                    for (const Http2Frame &frame: frames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "跨源的扩展 CONNECT 没有拿到应答";
+        {
+            HpackDecoder decoder;
+            EXPECT_EQ(findResponseHeaderValue(decoder, rejectedFrames, 1U, ":status"), "403") << "表外的源必须按 403 收口";
+        }
+
+        // 表内的源 + 对端按 preference 列出两个名字：升到 200，且回显对端先列的那个
+        CleartextHttp2Client acceptedClient(fixture.listeningPort());
+        ASSERT_TRUE(acceptedClient.isValid());
+        std::vector<Http2Frame> acceptedFrames;
+        ASSERT_TRUE(acceptedClient.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        const std::string listedBlock = makeWebSocketTunnelHeaderBlockWithHandshake("/policy-chat", {
+                                                                                                            {"sec-websocket-version", "13"},
+                                                                                                            {"sec-websocket-key", std::string(kRfc6455SampleKey)},
+                                                                                                            {"origin", "http://listed.example"},
+                                                                                                            {"sec-websocket-protocol", "chat, superchat"},
+                                                                                                    });
+        ASSERT_TRUE(acceptedClient.sendBytes(makeRequestHeadersFrame(1U, listedBlock, false), kWaitTimeout));
+        ASSERT_TRUE(acceptedClient.pumpUntil(
+                acceptedFrames,
+                [](const std::vector<Http2Frame> &frames)
+                {
+                    for (const Http2Frame &frame: frames)
+                    {
+                        if (frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "表内的源没有拿到应答";
+        HpackDecoder acceptedDecoder;
+        EXPECT_EQ(findResponseHeaderValue(acceptedDecoder, acceptedFrames, 1U, ":status"), "200") << "放行表里的源应当建成隧道";
+        EXPECT_EQ(findResponseHeaderValue(acceptedDecoder, acceptedFrames, 1U, "sec-websocket-protocol"), "chat") << "回显的必须是按对端次序挑中的那一个";
+    }
+
+    /**
      * @brief 钉住：RFC 8441 扩展 CONNECT 把 h2c 流变成 WebSocket 隧道（200 + 规范 accept 值、帧原样回显、Close 后 END_STREAM 收尾）
      * @details 客户端与 h1 的差别只有握手承载方式：没有 Upgrade/Connection 头，改用 :protocol=websocket；
      *          服务端的应答是 200 而不是 101。accept 值用 RFC 6455 §1.3 的示例 key 对照规范原文的黄金值。

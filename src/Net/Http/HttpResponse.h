@@ -18,6 +18,7 @@
 #include "Net/Http/HttpCookie.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Net/WebSocket/WebSocketUpgradePolicy.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include <cstddef>
@@ -557,10 +558,32 @@ namespace AsynGyanis::Net
         void upgradeToWebSocket(WebSocketHandler handler);
 
         /**
+         * @brief 登记「本次请求要把这条连接升级成 WebSocket」，并带上这次握手的策略
+         *
+         * @details 策略登记在响应上而不是服务器上：三条入站通道（h1 的 `Upgrade`、h2 的扩展 CONNECT、
+         *          h3 的 CONNECT 隧道）都从这一份读，Origin 准入与子协议协商因此不因承载方式分叉——
+         *          同一处服务经三条通道被访问是这台引擎的常态，把判定交给应用层各判一遍等于没判。
+         * @param handler 升级成功后的业务处理器，所有权转移给本响应
+         * @param policy 这次升级按哪些规则判；`allowedOrigins` 里任何一条不是合法的源就当场拒收
+         * @throws Base::InvalidArgumentException handler 为空，或某条 allowedOrigins 写法不是
+         *         `scheme://host[:端口]`（登记时就判形状，而不是等到握手时让它悄悄落空）
+         * @throws Base::LogicException 已设过整块正文或已进入流式模式
+         * @see upgradeToWebSocket(WebSocketHandler), webSocketUpgradePolicy()
+         */
+        void upgradeToWebSocket(WebSocketHandler handler, WebSocketUpgradePolicy policy);
+
+        /**
          * @brief 本次响应是否登记了 WebSocket 升级。
          * @return true 已由 upgradeToWebSocket() 登记，会话应尝试升级而不是按响应序列化应答
          */
         [[nodiscard]] bool isWebSocketUpgradeRequested() const noexcept;
+
+        /**
+         * @brief 取本次升级登记的握手策略。
+         * @return 策略的常引用；未登记升级时是默认值（只放同源、不参与子协议协商）
+         * @note 引用跟随本响应的生命周期；三条通道都在发出应答之前读它
+         */
+        [[nodiscard]] const WebSocketUpgradePolicy &webSocketUpgradePolicy() const noexcept;
 
         /**
          * @brief 取已登记的升级处理器。
@@ -779,10 +802,11 @@ namespace AsynGyanis::Net
         ChunkSender                                       m_chunkSender;               ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
 
         /// 中间响应（1xx）写出回调，由会话装配；空表示这条连接没有可写的通道
-        InformationalWriter m_informationalWriter;
-        std::string         m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
-        WebSocketHandler    m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
-        bool                m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
-        mutable std::string m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
+        InformationalWriter    m_informationalWriter;
+        std::string            m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
+        WebSocketHandler       m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
+        WebSocketUpgradePolicy m_webSocketUpgradePolicy{};           ///< 本次升级的握手策略（Origin 准入与子协议协商），三条通道共用这一份
+        bool                   m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
+        mutable std::string    m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
 } // namespace AsynGyanis::Net
