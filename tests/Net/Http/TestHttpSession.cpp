@@ -692,8 +692,8 @@ namespace AsynGyanis::Net
                                  co_return;
                              });
 
-        std::vector<std::string> headerLines;
-        headerLines.reserve(61);
+        std::vector<std::string> headerLines{"host: test"};
+        headerLines.reserve(62);
         for (int index = 0; index < 60; ++index)
         {
             headerLines.push_back("x-pad-" + std::to_string(index) + ": " + std::string(120, 'p'));

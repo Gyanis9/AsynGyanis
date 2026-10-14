@@ -1,5 +1,6 @@
 #include "Net/Http/HttpParser.h"
 
+#include "Base/Log/LogEscaping.h"
 #include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
@@ -617,11 +618,26 @@ namespace AsynGyanis::Net
         // Host 只许有一条（RFC 9112 §3.2：服务端对「多于一条 Host 头部行」的请求必须回 400）。
         // 这一条在本端不是纸面合规：host() 只能挑一条来读，而链路上的前端与共享缓存可能按另一条分诊、
         // 另一条记缓存键——两份说法各走各的正是把请求送到非预期站点、或给共享缓存投毒的经典形状
-        if (equalsIgnoringCase(name, "host") && ++m_hostHeaderFieldCount > 1)
+        if (equalsIgnoringCase(name, "host"))
         {
-            failMalformed("HTTP 报文解析失败：请求里出现多于一条 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
-                          "请只保留一条 Host");
-            return false;
+            if (++m_hostHeaderFieldCount > 1)
+            {
+                failMalformed("HTTP 报文解析失败：请求里出现多于一条 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
+                              "请只保留一条 Host");
+                return false;
+            }
+
+            // 取值语法同样归 RFC 9112 §3.2 那句「Host 取值非法 → 必须 400」：判据与 h2/h3 的
+            // :authority 共用 findAuthorityFieldDefect，一条请求走哪条通道都得到同一个结论。
+            // 空值放行是那条判据的另一半——绝对形式的目标 URI 没有权威段时，RFC 9112 §3.2 要求客户端
+            // 发一个空 Host，把它判死会把一条合规范的请求拒掉
+            if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
+            {
+                failMalformed(std::format("HTTP 报文解析失败：Host 头部的取值 \"{}\" 不是合法的权威段（{}）："
+                                          "RFC 9110 §7.2 规定它是 uri-host[:端口]，请去掉用户名段、空白、路径与控制字符后重试",
+                                          Base::escapeForLog(value), *defect));
+                return false;
+            }
         }
 
         // 名与值就地进暂存缓冲（名字折小写也在这一趟做完）：这里不再为一条头部造两个 std::string
@@ -802,6 +818,18 @@ namespace AsynGyanis::Net
 
     void HttpParser::finishHeaderBlock()
     {
+        // HTTP/1.1 及以后的请求必须带 Host：RFC 9112 §3.2「A server MUST respond with a 400 (Bad Request)
+        // status code to any HTTP/1.1 request message that lacks a Host header field」。这一格在本端不是
+        // 保守，而是选站与缓存键的输入缺一半——没有权威段时，本端只能按默认站点走，而链路上任何按 Host
+        // 分诊的前端都会把它送到另一个站点。1.0/0.9 不判：那一版没有定义这个字段
+        const bool requiresHostField = m_httpVersion.size() == 8 && m_httpVersion[5] == '1' && m_httpVersion[7] >= '1';
+        if (requiresHostField && m_hostHeaderFieldCount == 0)
+        {
+            failMalformed("HTTP 报文解析失败：HTTP/1.1 请求缺少 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
+                          "请补一行 Host: <权威段>（形如 Host: example.org 或 Host: example.org:8080）");
+            return;
+        }
+
         // 分块请求体：先把「一条报文两个长度解释」的组合拒掉，再要求 Transfer-Encoding 只声明 chunked
         if (m_hasTransferEncoding)
         {

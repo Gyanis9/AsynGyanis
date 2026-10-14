@@ -230,7 +230,7 @@ namespace AsynGyanis::Net
     TEST(HttpParserChunked, AcceptsEmptyBodyTerminatedWithoutTrailer)
     {
         const std::string message   = makeChunkedMessage("0\r\n\r\n");
-        const std::string pipelined = message + "GET /next HTTP/1.1\r\n\r\n";
+        const std::string pipelined = message + "GET /next HTTP/1.1\r\nHost: example.test\r\n\r\n";
 
         HttpParser parser;
         ASSERT_EQ(parser.parse(pipelined.data(), pipelined.size()), ParseStatus::Done);
@@ -324,9 +324,9 @@ namespace AsynGyanis::Net
         // 前端代理看到哪条在前取决于客户端拼包顺序，收端不能因为先读到某一条就先定死分帧方式。
         static constexpr std::array<std::string_view, 2> kSmugglingMessages{
                 // CL 在前、TE 在后
-                "POST /smuggle HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                "POST /smuggle HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
                 // TE 在前、CL 在后（同一等价类的另一种顺序）
-                "POST /smuggle HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                "POST /smuggle HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
         };
 
         for (const std::string_view message: kSmugglingMessages)
@@ -345,23 +345,51 @@ namespace AsynGyanis::Net
      */
     TEST(HttpParserChunked, RejectsTransferEncodingOtherThanSingleChunked)
     {
-        static constexpr std::array<std::string_view, 5> kEncodingValues{
+        static constexpr std::array<std::string_view, 9> kEncodingValues{
                 "gzip",             ///< 不接受的传输编码
                 "chunked, gzip",    ///< chunked 不在编码链末尾
                 "gzip, chunked",    ///< 前面还挂着别的编码
                 "chunked, chunked", ///< chunked 重复出现
                 "",                 ///< 空值：不能当成「没有编码」
+                "identity",         ///< identity 也不是 chunked：chunked 不在末位，按 RFC 9112 §6.1 必须拒
+                "chunked;q=1",      ///< 头部的 chunked 不带参数（参数只属于块大小行那一段）
+                "xchunked",         ///< 近似拼写不得被前缀匹配放行
+                "chunkedx",         ///< 同上，反向
         };
 
         for (const std::string_view encodingValue: kEncodingValues)
         {
-            const std::string message = "POST /enc HTTP/1.1\r\nTransfer-Encoding: " + std::string(encodingValue) + "\r\n\r\n0\r\n\r\n";
+            const std::string message = "POST /enc HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: " + std::string(encodingValue) + "\r\n\r\n0\r\n\r\n";
             expectRejected(message, HttpParseErrorKind::Malformed, false, "Transfer-Encoding: " + std::string(encodingValue));
         }
 
         // 同一个头名出现两次同样要看见全部取值后一起判，而不是只认第一条
-        const std::string duplicated = "POST /enc HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n";
+        const std::string duplicated = "POST /enc HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n0\r\n\r\n";
         expectRejected(duplicated, HttpParseErrorKind::Malformed, false, "Transfer-Encoding 出现两次");
+    }
+
+    /**
+     * @brief 钉住 chunked 的写法面：两侧 OWS 与任意大小写都要认，否则合规范的客户端会被自家闸门打掉
+     * @details RFC 9110 §5.5 规定字段值两侧的 OWS 不算内容，§5.6.2 规定 token 大小写不敏感。
+     *          这一半与上面那条拒绝面成对：只测拒绝会把「什么都拒」当成「判据严格」。
+     */
+    TEST(HttpParserChunked, AcceptsChunkedWithOptionalWhitespaceAndMixedCase)
+    {
+        static constexpr std::array<std::string_view, 5> kChunkedSpellings{
+                "chunked",   ///< 最普通的写法
+                " chunked",  ///< 值前 OWS
+                "chunked ",  ///< 值后 OWS
+                "\tchUnKED", ///< 制表符与大小写混合
+                "ChUnKed\t",
+        };
+
+        for (const std::string_view spelling: kChunkedSpellings)
+        {
+            HttpParser        parser;
+            const std::string message = "POST /enc HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: " + std::string(spelling) + "\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done) << "写法「" << spelling << "」的 chunked 应当被收：" << parser.errorMessage();
+            EXPECT_EQ(parser.request().body(), "hello") << "写法「" << spelling << "」的正文没按分块拆";
+        }
     }
 
     /**

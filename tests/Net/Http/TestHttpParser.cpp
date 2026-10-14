@@ -139,7 +139,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "POST /submit HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello";
+        const std::string message = "POST /submit HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello";
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
 
         EXPECT_EQ(parser.request().method(), HttpMethod::POST);
@@ -150,8 +150,8 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        // 按任意字节边界切开喂入：行中间、CRLF 中间、正文中间都要能续上
-        static constexpr std::array<std::string_view, 4> kChunks{"POST /upload HTTP/1.1\r", "\nContent-Length: 11\r", "\n\r\nhel", "lo world"};
+        // 按任意字节边界切开喂入：行中间、CRLF 中间、正文中间都要能续上（第一片停在 CR 上正是 CRLF 中间那一格）
+        static constexpr std::array<std::string_view, 4> kChunks{"POST /upload HTTP/1.1\r", "\nHost: example.test\r\nContent-Length: ", "11\r\n\r\nhel", "lo world"};
 
         for (std::size_t index = 0; index + 1 < kChunks.size(); ++index)
         {
@@ -168,7 +168,7 @@ namespace AsynGyanis::Net
         HttpParser parser;
 
         // 请求行与头部都已到达，只差收尾空行：状态必须是 NeedMore
-        const std::string partial = "GET /half-built HTTP/1.1\r\nX-Stage: headers\r\n";
+        const std::string partial = "GET /half-built HTTP/1.1\r\nHost: example.test\r\nX-Stage: headers\r\n";
         EXPECT_EQ(parser.parse(partial.data(), partial.size()), ParseStatus::NeedMore);
 
         // 方法、URI、版本要等完成回调才定稿，半成品阶段绝不能读出一个「看起来完整」的请求
@@ -197,7 +197,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string head = "PUT /stream HTTP/1.1\r\nContent-Length: 5\r\nX-Token: abc\r\n";
+        const std::string head = "PUT /stream HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nX-Token: abc\r\n";
         EXPECT_EQ(parser.parse(head.data(), head.size()), ParseStatus::NeedMore);
         // 收尾空行还没到：头部块没收齐，既不许提交也不许读出来（与「半成品是空壳」同一条契约）
         EXPECT_FALSE(parser.isHeaderBlockComplete());
@@ -232,14 +232,14 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string firstHead = "PUT /first HTTP/1.1\r\nContent-Length: 2\r\nX-Only-First: 1\r\n\r\n";
+        const std::string firstHead = "PUT /first HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\nX-Only-First: 1\r\n\r\n";
         EXPECT_EQ(parser.parse(firstHead.data(), firstHead.size()), ParseStatus::NeedMore);
         ASSERT_TRUE(parser.commitHeadersForStreaming());
         const std::string firstBody = "ab";
         EXPECT_EQ(parser.parse(firstBody.data(), firstBody.size()), ParseStatus::Done);
 
         parser.reset();
-        const std::string secondHead = "PUT /second HTTP/1.1\r\nContent-Length: 2\r\nX-Only-Second: 2\r\n\r\n";
+        const std::string secondHead = "PUT /second HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\nX-Only-Second: 2\r\n\r\n";
         EXPECT_EQ(parser.parse(secondHead.data(), secondHead.size()), ParseStatus::NeedMore);
         // 复位没做对时这一句会走「已提交」那条早退分支：直接返回 true 却不再搬运，请求对象还挂着第一条的
         // URI 与头部——处理器会把请求发到上一条报文的路由上，且现场看不出来
@@ -257,7 +257,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpParser, OffersContinueOnlyWhileTheChunkedBodyIsStillIncoming)
     {
-        const std::string head = "POST /up HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
+        const std::string head = "POST /up HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
 
         // 一条都没表态的解析器：走到 trailer 段（最后一个块已到）之后正文已经收完，再回 100 没有意义
         HttpParser lateParser;
@@ -300,7 +300,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(http09Parser.parse(http09Head.data(), http09Head.size()), ParseStatus::NeedMore);
         EXPECT_FALSE(http09Parser.takeContinueRequest()) << "HTTP/0.9 同理：那个年代连头部都没有";
 
-        const std::string http11Head = "POST /up HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        const std::string http11Head = "POST /up HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
         HttpParser        http11Parser;
         EXPECT_EQ(http11Parser.parse(http11Head.data(), http11Head.size()), ParseStatus::NeedMore);
         EXPECT_TRUE(http11Parser.takeContinueRequest()) << "1.1 那条照给：这道闸只关 1.1 之前的版本";
@@ -319,7 +319,7 @@ namespace AsynGyanis::Net
         HttpParser parser;
 
         // 第一条：带 Expect。给一次时机，取过之后同一条不再给
-        const std::string expectingHead = "POST /first HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        const std::string expectingHead = "POST /first HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
         EXPECT_EQ(parser.parse(expectingHead.data(), expectingHead.size()), ParseStatus::NeedMore);
         EXPECT_TRUE(parser.takeContinueRequest());
         EXPECT_FALSE(parser.takeContinueRequest());
@@ -328,7 +328,7 @@ namespace AsynGyanis::Net
 
         // 第二条：不带 Expect。上一条「对端在等」若留着，这里会平白多回一次时机
         parser.reset();
-        const std::string plainHead = "POST /second HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
+        const std::string plainHead = "POST /second HTTP/1.1\r\nHost: example.test\r\nContent-Length: 3\r\n\r\n";
         EXPECT_EQ(parser.parse(plainHead.data(), plainHead.size()), ParseStatus::NeedMore);
         EXPECT_FALSE(parser.takeContinueRequest()) << "门闩跨报文残留：不带 Expect 的报文被上一条的「在等 100」带走了";
         const std::string secondBody = "def";
@@ -337,7 +337,7 @@ namespace AsynGyanis::Net
 
         // 第三条：又带 Expect。「这条已取过」若留着，对端等到自己的超时也等不到 100
         parser.reset();
-        const std::string thirdHead = "POST /third HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
+        const std::string thirdHead = "POST /third HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n";
         EXPECT_EQ(parser.parse(thirdHead.data(), thirdHead.size()), ParseStatus::NeedMore);
         EXPECT_TRUE(parser.takeContinueRequest()) << "「已取过 100」没随报文复位：这条报文再也拿不到回 100 的时机";
         EXPECT_FALSE(parser.takeContinueRequest()) << "复位顺带把「同一条只给一次」也放开了";
@@ -350,11 +350,11 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string firstMessage = "GET /first HTTP/1.1\r\n\r\n";
+        const std::string firstMessage = "GET /first HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(firstMessage.data(), firstMessage.size()), ParseStatus::Done);
 
         // 完成之后再喂任何东西都直接返回 Done，且一字节不吃：否则会把上一条已定稿的结果改坏
-        const std::string extraMessage = "GET /second HTTP/1.1\r\nX-Late: 1\r\n\r\n";
+        const std::string extraMessage = "GET /second HTTP/1.1\r\nHost: example.test\r\nX-Late: 1\r\n\r\n";
         EXPECT_EQ(parser.parse(extraMessage.data(), extraMessage.size()), ParseStatus::Done);
 
         EXPECT_EQ(parser.request().uri(), "/first");
@@ -366,7 +366,7 @@ namespace AsynGyanis::Net
         HttpParser parser;
 
         // 流水线：两条报文挤在同一次调用里。第一条必须完整落地，第二条被守卫拦下而不是串进来
-        const std::string pipelined = "GET /first HTTP/1.1\r\nX-Only-First: 1\r\n\r\nGET /second HTTP/1.1\r\nX-Only-Second: 2\r\n\r\n";
+        const std::string pipelined = "GET /first HTTP/1.1\r\nHost: example.test\r\nX-Only-First: 1\r\n\r\nGET /second HTTP/1.1\r\nHost: example.test\r\nX-Only-Second: 2\r\n\r\n";
         EXPECT_EQ(parser.parse(pipelined.data(), pipelined.size()), ParseStatus::Done);
         EXPECT_FALSE(parser.hasError());
 
@@ -376,7 +376,7 @@ namespace AsynGyanis::Net
 
         // 上层 reset() 之后单独再喂第二条，才是正常的续读路径
         parser.reset();
-        const std::string secondMessage = "GET /second HTTP/1.1\r\nX-Only-Second: 2\r\n\r\n";
+        const std::string secondMessage = "GET /second HTTP/1.1\r\nHost: example.test\r\nX-Only-Second: 2\r\n\r\n";
         EXPECT_EQ(parser.parse(secondMessage.data(), secondMessage.size()), ParseStatus::Done);
         EXPECT_EQ(parser.request().uri(), "/second");
         EXPECT_FALSE(parser.request().getHeader("x-only-first").has_value());
@@ -398,7 +398,7 @@ namespace AsynGyanis::Net
         for (const MethodProbe &probe: kProbes)
         {
             HttpParser        parser;
-            const std::string message = std::string(probe.methodText) + " /probe HTTP/1.1\r\n\r\n";
+            const std::string message = std::string(probe.methodText) + " /probe HTTP/1.1\r\nHost: example.test\r\n\r\n";
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done) << probe.methodText;
             EXPECT_EQ(parser.request().method(), probe.expectedMethod) << probe.methodText;
         }
@@ -474,7 +474,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "POST /x HTTP/1.1\r\nContent-Length: not-a-number\r\n\r\n";
+        const std::string message = "POST /x HTTP/1.1\r\nHost: example.test\r\nContent-Length: not-a-number\r\n\r\n";
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
 
         EXPECT_TRUE(parser.hasError());
@@ -491,11 +491,11 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string malformed = "POST /x HTTP/1.1\r\nContent-Length: nope\r\n\r\n";
+        const std::string malformed = "POST /x HTTP/1.1\r\nHost: example.test\r\nContent-Length: nope\r\n\r\n";
         EXPECT_EQ(parser.parse(malformed.data(), malformed.size()), ParseStatus::Error);
 
         // 错误粘滞：接着喂合法数据也只会拿回同一个错误，逼上层要么 reset 要么断开
-        const std::string valid = "GET /after-error HTTP/1.1\r\n\r\n";
+        const std::string valid = "GET /after-error HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(valid.data(), valid.size()), ParseStatus::Error);
 
         parser.reset();
@@ -511,12 +511,12 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string firstMessage = "POST /first HTTP/1.1\r\nContent-Length: 2\r\nX-First: 1\r\n\r\nhi";
+        const std::string firstMessage = "POST /first HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\nX-First: 1\r\n\r\nhi";
         ASSERT_EQ(parser.parse(firstMessage.data(), firstMessage.size()), ParseStatus::Done);
         parser.request().setParam("leftover", "yes");
 
         parser.reset();
-        const std::string secondMessage = "GET /second HTTP/1.1\r\n\r\n";
+        const std::string secondMessage = "GET /second HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(secondMessage.data(), secondMessage.size()), ParseStatus::Done);
 
         const HttpRequest &request = parser.request();
@@ -534,7 +534,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "GET /" + std::string(kUriLengthLimitInBytes - 1, 'a') + " HTTP/1.1\r\n\r\n";
+        const std::string message = "GET /" + std::string(kUriLengthLimitInBytes - 1, 'a') + " HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
 
         EXPECT_FALSE(parser.isLimitExceeded());
@@ -545,7 +545,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "GET /" + std::string(kUriLengthLimitInBytes + 1, 'a') + " HTTP/1.1\r\n\r\n";
+        const std::string message = "GET /" + std::string(kUriLengthLimitInBytes + 1, 'a') + " HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
 
         EXPECT_TRUE(parser.isLimitExceeded());
@@ -569,11 +569,10 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住「多于一条 Host」判错（RFC 9112 §3.2），且与两条取值是否相同无关
      * @details 本端读 Host 只能挑一条来读，而链路上的前端与共享缓存可能按另一条分诊、按另一条记缓存键——
-     *          「出现第二条」本身就是要拦的形状，等到两条取值不同时再拦已经晚了。同一节还要求「Host 的取值
-     *          本身不合法」也按 400 处理——那一格本端**同样不判**，且这里不给自己留台阶：头部语法层只校
-     *          字符集（obs-fold、控制字符、名与值的上限），主机名语法没人校验，这是一处明写的取舍而不是
-     *          「已被覆盖」。
+     *          「出现第二条」本身就是要拦的形状，等到两条取值不同时再拦已经晚了。
      *          反向那一半同样钉住：只有一条 Host 时不得判错，否则合规请求会被整片打掉。
+     *          同一节剩下的那格「Host 取值本身不合法也按 400」由
+     *          RejectsHostFieldWithInvalidAuthorityValue 单独钉，两条规则各一条用例，红的时候才分得清是哪条。
      */
     TEST(HttpParser, RejectsMoreThanOneHostHeaderField)
     {
@@ -587,9 +586,84 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(containsText(parser.errorMessage(), "Host")) << "原因里要点名 Host：" << parser.errorMessage();
         }
 
-        HttpParser        singleHostParser;
-        const std::string singleHostMessage = makeRequestTextWithHeaders({"Host: a.example"});
+        HttpParser singleHostParser;
+        // 夹具自带一条 Host（见 NetTestSupport.h 的 makeRequestTextWithHeaders），传空列表正是「恰好一条 Host」的那个对照档
+        const std::string singleHostMessage = makeRequestTextWithHeaders({});
         EXPECT_EQ(singleHostParser.parse(singleHostMessage.data(), singleHostMessage.size()), ParseStatus::Done) << singleHostParser.errorMessage();
+    }
+
+    /**
+     * @brief 钉住「HTTP/1.1 请求缺 Host」判错，同时钉住 1.0 不判这一格
+     * @details RFC 9112 §3.2「A server MUST respond with a 400 (Bad Request) status code to any
+     *          HTTP/1.1 request message that lacks a Host header field」。权威段是选站与缓存键的输入，
+     *          缺了它本端只能落到默认站点，而链路上任何按 Host 分诊的前端都会把同一条请求送到另一个站点。
+     *          HTTP/1.0 没有定义这个字段，缺它合法——所以这一条按版本分档判，反向那半（1.0 无 Host 必须
+     *          收）也钉住，否则「给所有版本都补一条 Host」这类改法会悄悄把老客户端整片拒掉。
+     */
+    TEST(HttpParser, RejectsHttpOneOneRequestWithoutHostField)
+    {
+        HttpParser        httpOneOneParser;
+        const std::string missingHost = "GET /no-host HTTP/1.1\r\nAccept: */*\r\n\r\n";
+        EXPECT_EQ(httpOneOneParser.parse(missingHost.data(), missingHost.size()), ParseStatus::Error);
+        EXPECT_EQ(httpOneOneParser.errorKind(), HttpParseErrorKind::Malformed) << "缺 Host 是报文畸形，不是体量越限";
+        EXPECT_FALSE(httpOneOneParser.isLimitExceeded());
+        EXPECT_TRUE(containsText(httpOneOneParser.errorMessage(), "Host")) << "原因里要点名缺的是哪一条头部：" << httpOneOneParser.errorMessage();
+        EXPECT_TRUE(containsText(httpOneOneParser.errorMessage(), "400")) << "原因里要写清代际义务：" << httpOneOneParser.errorMessage();
+
+        // 同一份字节补上 Host 就必须收：反向对照缺了它，上面那半条红也可能是「什么都拒」
+        HttpParser        withHostParser;
+        const std::string withHost = "GET /no-host HTTP/1.1\r\nAccept: */*\r\nHost: example.test\r\n\r\n";
+        EXPECT_EQ(withHostParser.parse(withHost.data(), withHost.size()), ParseStatus::Done) << withHostParser.errorMessage();
+
+        // 1.0 没定义 Host，缺它合法；这一格与上面那半同样是判据，不是运气
+        HttpParser        httpOneZeroParser;
+        const std::string legacyMissingHost = "GET /legacy HTTP/1.0\r\nAccept: */*\r\n\r\n";
+        EXPECT_EQ(httpOneZeroParser.parse(legacyMissingHost.data(), legacyMissingHost.size()), ParseStatus::Done) << httpOneZeroParser.errorMessage();
+        EXPECT_EQ(httpOneZeroParser.request().httpVersion(), "HTTP/1.0");
+    }
+
+    /**
+     * @brief 钉住「Host 取值不是合法的权威段」判错（RFC 9112 §3.2 同节的另一格），并钉住空值放行
+     * @details 语法本体在 `findAuthorityFieldDefect`，h2 的 host / :authority 与 h3 的两条通路共用它，
+     *          三条通道对同一份字节必须给同一个结论——权威段决定「这条请求送到哪个站点」，一条通道收、
+     *          一条通道拒就是路由分裂。空值那格刻意放行：RFC 9112 §3.2 要求「目标 URI 没有权威段时客户端
+     *          发一个空 Host」，把它判死会拒掉一条合规范的请求。
+     */
+    TEST(HttpParser, RejectsHostFieldWithInvalidAuthorityValue)
+    {
+        const auto makeHostRequest = [](const std::string_view hostValue) { return std::string("GET /host HTTP/1.1\r\nHost: ") + std::string(hostValue) + "\r\n\r\n"; };
+
+        // 每一格都写清「各家为什么可能读成两份」：这些正是链路上的前端与本端分诊分叉的形状
+        for (const std::string_view invalidHostValue: {"user@example.com",  ///< userinfo：RFC 9113 §8.3.1 明写 MUST NOT
+                                                       "example.com/path",  ///< 路径塞进权威段
+                                                       "example.com?x=1",   ///< 查询串塞进权威段
+                                                       "example.com#frag",  ///< 片段不属于请求目标
+                                                       "exa mple.com",      ///< 权威段里的空白
+                                                       "example.com:80:80", ///< 多于一个端口分隔符
+                                                       "example.com:http",  ///< 端口不是十进制数字
+                                                       "ex%a.com",          ///< 半截百分号转义
+                                                       "[::1",              ///< IPv6 字面量没有闭合的方括号
+                                                       "[::1]x"})           ///< 方括号之后跟着别的东西
+        {
+            HttpParser        parser;
+            const std::string message = makeHostRequest(invalidHostValue);
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error) << "非法的 Host 取值必须判错：" << message;
+            EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::Malformed);
+            EXPECT_TRUE(containsText(parser.errorMessage(), "Host")) << "原因里要点名 Host：" << parser.errorMessage();
+        }
+
+        for (const std::string_view validHostValue:
+             {"example.com", "example.com.", "Example.COM", "example.com:8443", "[::1]:8443", "xn--80ak6aa92e.com", "a_b.example.com", "127.0.0.1", "localhost", "*"})
+        {
+            HttpParser        parser;
+            const std::string message = makeHostRequest(validHostValue);
+            EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done) << "合法的 Host 取值被拒了：" << validHostValue << " " << parser.errorMessage();
+        }
+
+        // 空值那一格单独钉：它不是「语法碰巧过得去」，是规范要求这种写法必须收
+        HttpParser        emptyValueParser;
+        const std::string emptyHostMessage = makeHostRequest("");
+        EXPECT_EQ(emptyValueParser.parse(emptyHostMessage.data(), emptyHostMessage.size()), ParseStatus::Done) << emptyValueParser.errorMessage();
     }
 
     TEST(HttpParser, RejectsHeaderFieldNameAboveLengthLimit)
@@ -635,7 +709,8 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = makeRequestTextWithHeaders(makeHeaderLines(kHeaderCountLimit, 1));
+        // 夹具自带一条 Host，生成的条数比上限少 1 才正好等于上限
+        const std::string message = makeRequestTextWithHeaders(makeHeaderLines(kHeaderCountLimit - 1, 1));
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Done);
 
         EXPECT_FALSE(parser.isLimitExceeded());
@@ -685,7 +760,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(parser.hasError());
         EXPECT_TRUE(parser.errorMessage().empty());
 
-        const std::string normal = "GET /recovered HTTP/1.1\r\n\r\n";
+        const std::string normal = "GET /recovered HTTP/1.1\r\nHost: example.test\r\n\r\n";
         EXPECT_EQ(parser.parse(normal.data(), normal.size()), ParseStatus::Done);
         EXPECT_EQ(parser.request().uri(), "/recovered");
     }
@@ -704,7 +779,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "GET /folded HTTP/1.1\r\nX-Note: first\r\n second\r\n\r\n";
+        const std::string message = "GET /folded HTTP/1.1\r\nHost: example.test\r\nX-Note: first\r\n second\r\n\r\n";
         EXPECT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
 
         EXPECT_TRUE(parser.hasError());
@@ -736,15 +811,30 @@ namespace AsynGyanis::Net
     TEST(HttpParser, AcceptsIdenticalRepeatedContentLengthButRejectsConflictingOnes)
     {
         HttpParser        identicalParser;
-        const std::string sameValue = "POST /dup HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
+        const std::string sameValue = "POST /dup HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
         EXPECT_EQ(identicalParser.parse(sameValue.data(), sameValue.size()), ParseStatus::Done);
         EXPECT_EQ(identicalParser.request().body(), "hello");
 
         HttpParser        conflictingParser;
-        const std::string differentValue = "POST /dup HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello";
+        const std::string differentValue = "POST /dup HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello";
         EXPECT_EQ(conflictingParser.parse(differentValue.data(), differentValue.size()), ParseStatus::Error);
         EXPECT_FALSE(conflictingParser.isLimitExceeded());
         EXPECT_TRUE(containsText(conflictingParser.errorMessage(), "Content-Length"));
+
+        // 一条字段里塞逗号列表（RFC 9110 §5.3 把重复字段与列表视为同一形状）：本端一律判错，
+        // 比 RFC 9112 §6.3.4 允许的「列表里每个值都相同」更严。这一格刻意不放宽——两个方向都要红得有道理：
+        // 收下它得替对端拆列表并逐值比，而链路上任何按另一套拆法的前端都能把它读成另一个长度
+        HttpParser        listValueParser;
+        const std::string listValue = "POST /dup HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5, 5\r\n\r\nhello";
+        EXPECT_EQ(listValueParser.parse(listValue.data(), listValue.size()), ParseStatus::Error) << "逗号列表写法本端判错（比规范更严，理由见上）";
+        EXPECT_TRUE(containsText(listValueParser.errorMessage(), "Content-Length"));
+
+        // 前导零：ABNF 是 1*DIGIT，十进制值相同就是同一个长度，这一格不能拒——拒了会把合规范的
+        // 客户端整片打掉，而上面那一格拒的是「拆法分歧」，两格不是一回事
+        HttpParser        leadingZeroParser;
+        const std::string leadingZero = "POST /dup HTTP/1.1\r\nHost: example.test\r\nContent-Length: 05\r\nContent-Length: 5\r\n\r\nhello";
+        EXPECT_EQ(leadingZeroParser.parse(leadingZero.data(), leadingZero.size()), ParseStatus::Done) << leadingZeroParser.errorMessage();
+        EXPECT_EQ(leadingZeroParser.request().body(), "hello");
     }
 
     /**
@@ -753,11 +843,11 @@ namespace AsynGyanis::Net
     TEST(HttpParser, RejectsMalformedRequestLine)
     {
         static constexpr std::array<std::string_view, 5> kMalformedMessages{
-                "GET /two words HTTP/1.1\r\n\r\n", ///< 目标里混进空格
-                "GET  /x HTTP/1.1\r\n\r\n",        ///< 多一个分隔空格（目标以空格开头）
-                "GET /x HTTP/11\r\n\r\n",          ///< 版本缺少「主.次」结构
-                "GET /x HTTP/1.11\r\n\r\n",        ///< 版本次版本号位数超出
-                "GET /x HTTP/9.9\r\n\r\n",         ///< 主版本不是 0/1：那是另一套协议，不该按文本解析
+                "GET /two words HTTP/1.1\r\nHost: example.test\r\n\r\n", ///< 目标里混进空格
+                "GET  /x HTTP/1.1\r\nHost: example.test\r\n\r\n",        ///< 多一个分隔空格（目标以空格开头）
+                "GET /x HTTP/11\r\n\r\n",                                ///< 版本缺少「主.次」结构
+                "GET /x HTTP/1.11\r\n\r\n",                              ///< 版本次版本号位数超出
+                "GET /x HTTP/9.9\r\n\r\n",                               ///< 主版本不是 0/1：那是另一套协议，不该按文本解析
         };
 
         for (const std::string_view message: kMalformedMessages)
@@ -780,8 +870,8 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string first  = "POST /first HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello";
-        const std::string second = "GET /second HTTP/1.1\r\n\r\n";
+        const std::string first  = "POST /first HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello";
+        const std::string second = "GET /second HTTP/1.1\r\nHost: example.test\r\n\r\n";
 
         // 两条报文挤在同一次调用里：第一条的长度必须精确交回，第二条一个字节都不吃
         const std::string pipelined = first + second;
@@ -827,7 +917,7 @@ namespace AsynGyanis::Net
         }
         {
             HttpParser        parser;
-            const std::string message = "POST /huge HTTP/1.1\r\nContent-Length: 9000000000\r\n\r\n";
+            const std::string message = "POST /huge HTTP/1.1\r\nHost: example.test\r\nContent-Length: 9000000000\r\n\r\n";
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
             EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::BodyTooLarge);
         }
@@ -835,7 +925,7 @@ namespace AsynGyanis::Net
             // Transfer-Encoding 取值不是 chunked：按协议级非法处理（400），不能悄悄按 identity 收下。
             // 分块请求体本身的解码与拒绝面另见 TestHttpParserChunked.cpp
             HttpParser        parser;
-            const std::string message = "POST /chunked HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n";
+            const std::string message = "POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: gzip\r\n\r\n";
             ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
             EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::Malformed);
         }
@@ -859,7 +949,7 @@ namespace AsynGyanis::Net
     {
         HttpParser parser;
 
-        const std::string message = "POST /big HTTP/1.1\r\nContent-Length: 9000000000\r\n\r\n";
+        const std::string message = "POST /big HTTP/1.1\r\nHost: example.test\r\nContent-Length: 9000000000\r\n\r\n";
         ASSERT_EQ(parser.parse(message.data(), message.size()), ParseStatus::Error);
 
         EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::BodyTooLarge);

@@ -206,12 +206,15 @@ namespace AsynGyanis::Net::TestSupport
 
     /**
      * @brief 用给定的头部行拼出一条完整 GET 报文
-     * @param headerLines 头部行原文，不含行尾 CRLF
+     * @details 请求行之后固定补一条 `Host: example.test`：HTTP/1.1 缺 Host 是要判 400 的畸形报文
+     *          （RFC 9112 §3.2），夹具不带它的话每条用例都会先撞这一格，看不出自己真正要判的那条规则。
+     *          要判「缺 Host」本身就别用本函数，直接拼原文。
+     * @param headerLines 头部行原文，不含行尾 CRLF；条数与总长的算术要把这里固定补上的一条算进去
      * @return std::string 可直接喂给 parse() 的报文
      */
     [[nodiscard]] inline std::string makeRequestTextWithHeaders(const std::vector<std::string> &headerLines)
     {
-        std::string message = "GET /indexed HTTP/1.1\r\n";
+        std::string message = "GET /indexed HTTP/1.1\r\nHost: example.test\r\n";
         for (const std::string &headerLine: headerLines)
         {
             message.append(headerLine);

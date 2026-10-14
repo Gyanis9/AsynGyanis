@@ -162,7 +162,7 @@ namespace AsynGyanis::Net
         {
             // headerLine 自带结尾 CRLF，再补一条空 CRLF 便是头部块的终止空行：
             // 多留一个 CRLF 会让整条报文收齐后还剩字节，正向断言会被误判成失败
-            const std::string request = "GET / HTTP/1.1\r\n" + headerLine + "\r\n";
+            const std::string request = "GET / HTTP/1.1\r\nHost: example.test\r\n" + headerLine + "\r\n";
             HttpParser        parser;
             const ParseStatus status = parser.parse(request.data(), request.size());
             return status == ParseStatus::Done && parser.consumedByteCount() == request.size();

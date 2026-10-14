@@ -460,6 +460,27 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 找出一段 Host / :authority 取值里的语法缺陷
+     *
+     * @details 语法是 `uri-host [ ":" port ]`（RFC 9110 §7.2 的 Host 定义，uri-host 与 port 见
+     *          RFC 3986 §3.2.2、§3.2.3）。三条入站通道吃的是同一个语法：h1 的 `Host` 头部、h2 的
+     *          `Host` 与 `:authority`、h3 的 `Host` 与 `:authority`——各判一遍就会出现「同一个取值
+     *          在这条通道被收、在那条被拒」，而权威段正是选站与缓存键的输入，两份说法分家就是
+     *          路由分裂与共享缓存投毒的形状。userinfo（`@` 之前那段）一律判否：
+     *          RFC 9112 §3.2 要求 Host 只带到权威段，RFC 9113 §8.3.1 与 RFC 9114 §4.3.1 更把
+     *          http/https 的 userinfo 写成 MUST NOT。
+     *
+     * @param value 字段值原文（调用方应已去掉两侧 OWS），按「指针 + 长度」取，不依赖零终止
+     * @return std::optional<std::string_view> 无缺陷时为空；有缺陷时给出一句「哪一格不合法」的短语，由调用方拼进自己的中文拒因
+     * @note 空值不在这里判：HTTP/1.1 允许「目标 URI 没有权威段时 Host 取空」（RFC 9112 §3.2 要求客户端
+     *       在这种情况下发一个空值），而 h2/h3 明写「出现就必须非空」（RFC 9114 §4.3.1）。判据不同的那一格
+     *       留在各通道的消费点，本函数只交语法
+     * @note 端口只判「是不是十进制数字」，不判 0..65535 的范围：本仓的比对键会丢掉端口（见
+     *       normalizeHostComparisonKey），越界端口改不了任何一次选站，把它判死等于凭空拒掉一条能用的请求
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<std::string_view> findAuthorityFieldDefect(std::string_view value) noexcept;
+
+    /**
      * @brief 判断一段文本是不是合法的 URI scheme（RFC 3986 §3.1：字母打头，其后字母/数字与 `+ - .`）
      *
      * @details 这条语法此前有两份各写一遍的实现（h3 的伪头校验、出站 URL 解析），而 h2 的 `:scheme`

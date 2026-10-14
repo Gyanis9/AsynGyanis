@@ -192,6 +192,8 @@ namespace AsynGyanis::Net
     TEST(HttpParserFuzzSmoke, ErrorStateIsStickyUntilReset)
     {
         HttpParser parser;
+        // 「Bad Header」在头部行那一步就判死，用不到 Host 那一格；补一条 Host 反而会让下面的字节数
+        // 与这条报文实际长度脱节（第二个实参是按原文数出来的）
         ASSERT_EQ(parser.parse("GET / HTTP/1.1\r\nBad Header\r\n\r\n", 30), ParseStatus::Error);
 
         // 粘滞：再喂一条完整合法报文也不能「自愈」
@@ -207,7 +209,7 @@ namespace AsynGyanis::Net
     TEST(HttpParserFuzzSmoke, OversizedInputIsRejectedInsteadOfConsumed)
     {
         // 上限是 DoS 防线：超长 URI 与超长头部块都必须判错，而不是无限吃内存
-        const std::string oversizedUri = "GET /" + std::string(64 * 1024, 'a') + " HTTP/1.1\r\n\r\n";
+        const std::string oversizedUri = "GET /" + std::string(64 * 1024, 'a') + " HTTP/1.1\r\nHost: example.test\r\n\r\n";
         HttpParser        parser;
         const ParseStatus uriStatus = parser.parse(oversizedUri.data(), oversizedUri.size());
         EXPECT_EQ(uriStatus, ParseStatus::Error);
@@ -216,7 +218,7 @@ namespace AsynGyanis::Net
         // 头部：一条语法上完全合法、但值长度远超上限的头部。用「合法的超长」而不是「畸形的超长」，
         // 是为了让失败原因只可能来自长度上限本身（畸形输入会先被语法判定拦下）
         parser.reset();
-        const std::string oversizedHeaders = "GET / HTTP/1.1\r\nX-Big: " + std::string(256 * 1024, 'a') + "\r\n\r\n";
+        const std::string oversizedHeaders = "GET / HTTP/1.1\r\nHost: example.test\r\nX-Big: " + std::string(256 * 1024, 'a') + "\r\n\r\n";
         EXPECT_EQ(parser.parse(oversizedHeaders.data(), oversizedHeaders.size()), ParseStatus::Error);
         EXPECT_TRUE(parser.isLimitExceeded());
         EXPECT_EQ(parser.errorKind(), HttpParseErrorKind::HeaderTooLarge);
@@ -237,9 +239,9 @@ namespace AsynGyanis::Net
         {
             static const std::vector<std::pair<std::string, std::string>> corpus = {
                     {"GET /plain HTTP/1.1\r\nHost: a\r\n\r\n", "/plain"},
-                    {"POST /cl HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello", "/cl"},
-                    {"POST /chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", "/chunked"},
-                    {"POST /trailers HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Tail: 1\r\n\r\n", "/trailers"},
+                    {"POST /cl HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello", "/cl"},
+                    {"POST /chunked HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", "/chunked"},
+                    {"POST /trailers HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Tail: 1\r\n\r\n", "/trailers"},
             };
             return corpus;
         }
