@@ -214,6 +214,37 @@ namespace AsynGyanis::Core
             }
             return {client, server};
         }
+
+        /**
+         * @brief 测试辅助：起一个已 bind 但还没 listen() 的回环监听套接字
+         * @details 上层就是这个顺序：AsyncSocket 构造时即注册 EPOLLIN，listen() 在后面一步。
+         * @return std::array<int, 2> {监听套接字, 内核分配的端口}；起不来时套接字为 -1
+         */
+        std::array<int, 2> bindLoopbackListenerNotListening()
+        {
+            const int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (listener == -1)
+            {
+                return {-1, 0};
+            }
+
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port        = 0;
+            if (::bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, 0};
+            }
+            const std::uint16_t port = boundPortOf(listener);
+            if (port == 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, 0};
+            }
+            return {listener, static_cast<int>(port)};
+        }
     } // namespace
 
     /**
@@ -1321,5 +1352,77 @@ namespace AsynGyanis::Core
         EXPECT_TRUE((events[0].events & (EPOLLERR | EPOLLHUP)) != 0U) << "就绪里没带错误位：上层按位判断拿不到「这条连接已经死了」";
 
         static_cast<void>(Platform::FileDescriptor::close(clientEnd));
+    }
+
+    /**
+     * @brief 注册时还没 listen() 的监听描述符，补上 listen() 之后的第一条连接要报上来、而且要真能取走
+     * @details 上层就是这个顺序：AsyncSocket 构造时即注册 EPOLLIN，listen() 在后面一步。Windows 后端在
+     *          注册那一刻查一次监听态（SO_ACCEPTCONN）就把它当普通套接字处理，读探针因「还没连上」排进
+     *          重投表；此后每轮 wait() 之前重投时要**重新查一次监听态**，才会改走 AcceptEx。只信注册时
+     *          那一份的写法（把那道现查改成常量假）实测让这条用例在 20 轮里一条事件都收不到。
+     * @note 「本轮不该有就绪」只在 Windows 侧判：Linux 的 epoll 对已 bind 但没 listen 的流套接字当场就
+     *       给就绪，那不是本条要钉的东西。两边的共同判据放在最后一步——报上来的必须真能取出一条连接
+     *       （Windows 由 AcceptEx 接进后端自己的套接字，`::accept()` 看不见它，只能走 takeAcceptedSocket；
+     *       Linux 侧直接 accept）。只判「报了就绪」会放过一份没有连接可取的空事件。
+     */
+    TEST(Epoll, DeliversAcceptAfterARegisteredListenerStartsListening)
+    {
+        const Platform::Socket::Initialization winsock{};
+        ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
+
+        Epoll backend;
+        const auto [listener, listenerPort] = bindLoopbackListenerNotListening();
+        ASSERT_GE(listener, 0) << "回环监听套接字起不来，这条没法判";
+
+        int sentinel = 0;
+        ASSERT_TRUE(backend.addFileDescriptor(listener, EPOLLIN, &sentinel)) << "还没 listen() 的监听描述符不许被拒注册";
+
+#if ASYN_PLATFORM_WIN32
+        // 先空等一轮：这一轮的接受探针会因「还没 listen()」当场失败并排进重投表，本轮不该报就绪
+        const auto beforeListening = backend.wait(50);
+        EXPECT_TRUE(beforeListening.empty()) << "既没 listen() 也没人连接，本轮却报了就绪";
+#else
+        static_cast<void>(backend.wait(50));
+#endif
+
+        ASSERT_EQ(::listen(listener, 8), 0) << "补 listen() 失败，后面的接入无从谈起";
+
+        sockaddr_in target{};
+        target.sin_family      = AF_INET;
+        target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        target.sin_port        = htons(static_cast<std::uint16_t>(listenerPort));
+        const int connector    = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(connector, 0) << "连接发起方起不来，这条没法判";
+        ASSERT_EQ(::connect(connector, reinterpret_cast<const sockaddr *>(&target), sizeof(target)), 0) << "连接没进积压队列";
+
+        // 重投是按轮进行的，多给几轮：每一轮 wait() 之前都会把上一轮没武装上的方向补投一次
+        std::span<epoll_event> arrived{};
+        for (int round = 0; round < 20 && arrived.empty(); ++round)
+        {
+            arrived = backend.wait(200);
+        }
+        ASSERT_FALSE(arrived.empty()) << "补上 listen() 之后接入事件没报上来：这台服务器不再接受任何连接";
+        EXPECT_EQ(arrived[0].data.ptr, static_cast<void *>(&sentinel)) << "报回来的不是那个监听描述符";
+
+        // 那份就绪必须真能取出一条连接，否则「报上来」三个字是空的
+#if ASYN_PLATFORM_WIN32
+        int acceptedFileDescriptor = -1;
+        EXPECT_TRUE(backend.takeAcceptedSocket(listener, &acceptedFileDescriptor)) << "报了可读却取不到 AcceptEx 接入的连接";
+        if (acceptedFileDescriptor >= 0)
+        {
+            static_cast<void>(::closesocket(acceptedFileDescriptor));
+        }
+#else
+        const int acceptedFileDescriptor = static_cast<int>(::accept(listener, nullptr, nullptr));
+        EXPECT_GE(acceptedFileDescriptor, 0) << "报了可读却 accept() 不出连接：那份就绪不是接入";
+        if (acceptedFileDescriptor >= 0)
+        {
+            static_cast<void>(Platform::FileDescriptor::close(acceptedFileDescriptor));
+        }
+#endif
+
+        static_cast<void>(Platform::FileDescriptor::close(connector));
+        static_cast<void>(backend.delFileDescriptor(listener));
+        static_cast<void>(Platform::FileDescriptor::close(listener));
     }
 } // namespace AsynGyanis::Core
