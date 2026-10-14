@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <format>
+#include <limits>
 #include <ranges>
 #include <type_traits>
 #include <utility>
@@ -142,6 +143,29 @@ namespace AsynGyanis::Net
             return frameType == static_cast<std::uint64_t>(QuicFrameType::ResetStream) || frameType == static_cast<std::uint64_t>(QuicFrameType::StopSending) ||
                    (frameType >= 0x08 && frameType <= 0x1b) || frameType == static_cast<std::uint64_t>(QuicFrameType::HandshakeDone);
         }
+
+        /**
+         * @brief 这一帧算不算探测帧（RFC 9000 §9.1 只列了四类：PATH_CHALLENGE、PATH_RESPONSE、
+         *        NEW_CONNECTION_ID、PADDING），其余一律是非探测帧
+         * @details 「带没带非探测帧」是 §9.3 判定「对端搬了家」的唯一信号：只带探测帧的报文
+         *          （例如握手中途的一条 PADDING-only 包）不能把发包目标拽到另一个地址上
+         * @param frame 一个已解出的帧
+         * @return true 非探测帧
+         */
+        bool isNonProbingFrame(const QuicFrame &frame) noexcept
+        {
+            return !std::visit(
+                    [](const auto &specificFrame)
+                    {
+                        using FrameType = std::remove_cvref_t<decltype(specificFrame)>;
+                        return std::same_as<FrameType, QuicPaddingFrame> || std::same_as<FrameType, QuicPathChallengeFrame> || std::same_as<FrameType, QuicPathResponseFrame> ||
+                               std::same_as<FrameType, QuicNewConnectionIdFrame>;
+                    },
+                    frame);
+        }
+
+        /// 「这条路径不受反放大上限约束」的返回值：比任何合法的剩余额度都大，参与取小不影响结论
+        constexpr std::size_t kUnlimitedAmplificationByteCount = std::numeric_limits<std::size_t>::max();
 
         /**
          * @brief 本端出包时除帧以外占掉的字节数
@@ -364,7 +388,22 @@ namespace AsynGyanis::Net
     {
         // §8.1 那条上限是给「被陌生人打到地址上」的一方设的：客户端自己先出声，收到的字节可能一条
         // 都还没有，照它算连第一个 Initial 都发不出去
-        return isLocalServer() && !m_isAddressValidated;
+        if (!isLocalServer())
+        {
+            return false;
+        }
+        if (!m_isAddressValidated)
+        {
+            return true;
+        }
+        // §9.3.1：换地址之后给新地址的额度也只认从新地址收到的字节，按「当前发送路径没验证过」
+        // 复用同一套判定。路径标识还没定下来的用法（单路径、留空）不套这条——那是 §8.1 在管
+        if (isUnspecifiedQuicPathKey(m_sendPathKey))
+        {
+            return false;
+        }
+        const PeerPathState *const sendPathState = findPathState(m_sendPathKey);
+        return sendPathState != nullptr && !sendPathState->isValidated;
     }
 
     void QuicConnectionCore::followPeerConnectionId(const QuicPacketHeader &header)
@@ -383,6 +422,311 @@ namespace AsynGyanis::Net
         m_peerConnectionIds.push_back(PeerConnectionId{.id = m_configuration.peerConnectionId, .sequence = 0});
     }
 
+    const QuicConnectionCore::PeerPathState *QuicConnectionCore::findPathState(const QuicPathKey &pathKey) const noexcept
+    {
+        const auto found = std::ranges::find(m_peerPaths, pathKey, &PeerPathState::key);
+        return found == m_peerPaths.end() ? nullptr : &*found;
+    }
+
+    QuicConnectionCore::PeerPathState *QuicConnectionCore::pathStateFor(const QuicPathKey &pathKey) noexcept
+    {
+        const auto found = std::ranges::find(m_peerPaths, pathKey, &PeerPathState::key);
+        if (found != m_peerPaths.end())
+        {
+            return &*found;
+        }
+        if (m_peerPaths.size() >= kMaximumTrackedPeerPaths)
+        {
+            // 表满：淘汰最老的一条「没在用」的——未验证、且不是当前发送路径（正在验证的候选就是当前
+            // 发送路径，所以只保护它这一条就够）。全是在用的就返回空，调用方跳过这次记账：宁可
+            // 少记一条账，也不能把在用的那条挤掉
+            const auto evictable = std::ranges::find_if(m_peerPaths, [this](const PeerPathState &state) { return !state.isValidated && state.key != m_sendPathKey; });
+            if (evictable == m_peerPaths.end())
+            {
+                return nullptr;
+            }
+            *evictable = PeerPathState{.key = pathKey};
+            return &*evictable;
+        }
+        return &m_peerPaths.emplace_back(PeerPathState{.key = pathKey});
+    }
+
+    void QuicConnectionCore::followPeerPath(const QuicPathKey &pathKey, const PacketNumberSpace space, const std::uint64_t packetNumber, const bool carriesNonProbingFrame,
+                                            const Timestamp now)
+    {
+        if (!m_hasAdoptedPeerPath)
+        {
+            // 第一条认证过的报文定下这条连接的路径：此前到达的字节可能来路不明，不能拿它们作数。
+            // 全零是合法的路径键（单路径用法留空），所以「定没定过」要单独记
+            m_hasAdoptedPeerPath = true;
+            m_sendPathKey        = pathKey;
+            return;
+        }
+        if (!carriesNonProbingFrame)
+        {
+            return; // §9.1/§9.3：只有非探测帧才算「对端搬了家」，光打挑战探测不算
+        }
+        std::optional<std::uint64_t> &largestNonProbing = m_largestNonProbingPacketNumbers[spaceIndex(space)];
+        if (largestNonProbing.has_value() && packetNumber <= *largestNonProbing)
+        {
+            return; // §9.3：发包目标只跟编号最高的那一条非探测包，乱序的旧包不能把它拽回去
+        }
+        largestNonProbing = packetNumber;
+        if (pathKey == m_sendPathKey || !isLocalServer())
+        {
+            return; // 还在原路上；或本端是客户端——§9 的丢弃门在 handlePacket 里已经拦了陌生地址
+        }
+
+        const QuicPathKey previousPathKey = m_sendPathKey;
+        m_sendPathKey                     = pathKey;
+        // §9.3：换过非探测包的目标地址之后，其它地址上的验证可以放弃
+        static_cast<void>(std::erase_if(m_pendingPathChallenges, [](const PendingPathChallenge &challenge) { return challenge.isCandidate; }));
+        if (const PeerPathState *const newPathState = findPathState(pathKey); newPathState == nullptr || !newPathState->isValidated)
+        {
+            armPathChallenge(pathKey, true, now); // §9.3 的 MUST：换了地址就要验；只有验证过的地址才允许跳过（§9.3 的 MAY）
+        }
+        // §9.3.3：疑似迁移时必须在原来那条活动路径上也验一次——那条挑战会把对端的真实流量引回来，
+        // 离路劫持的包走得比真包快也照样会被拽回去
+        if (const PeerPathState *const previousState = findPathState(previousPathKey); previousState != nullptr && previousState->isValidated)
+        {
+            armPathChallenge(previousPathKey, false, now);
+        }
+    }
+
+    void QuicConnectionCore::armPathChallenge(const QuicPathKey &pathKey, const bool isCandidate, const Timestamp now)
+    {
+        // §8.2.1 的 MUST：每次挑战都用不可预测数据——可预测的话，谁抢答都算验证通过，等于没验
+        const std::vector<std::uint8_t> random = randomBytes(kQuicPathValidationDataByteLength);
+        if (random.size() != kQuicPathValidationDataByteLength)
+        {
+            return; // 随机数不可用：不发、不验证，绝不用可预测数据顶上
+        }
+        PendingPathChallenge challenge;
+        challenge.key         = pathKey;
+        challenge.isCandidate = isCandidate;
+        std::copy(random.begin(), random.end(), challenge.data.begin());
+        // §8.2.4 的推荐值：3×max(当前 PTO, 按 kInitialRtt 算的 PTO)。留得宽是有意的——挑战或回应
+        // 丢一两条都不该把验证判死，这段时间里换一份新数据重发（§9.4 末段）
+        challenge.abandonDeadline    = now + std::max(probeTimeoutPeriod(), m_recovery.initialProbeTimeout()) * 3;
+        challenge.retransmitDeadline = now + probeTimeoutPeriod();
+        // 同一条路径上只留最新的一条；候选至多一条（能走到这里就说明旧的候选已经让了位）
+        static_cast<void>(
+                std::erase_if(m_pendingPathChallenges, [&](const PendingPathChallenge &existing) { return existing.key == pathKey || (isCandidate && existing.isCandidate); }));
+        if (m_pendingPathChallenges.size() >= kMaximumPendingPathChallenges)
+        {
+            // 表满先丢非候选的（复验那种丢了也无害）；还满就这条不发
+            static_cast<void>(std::erase_if(m_pendingPathChallenges, [](const PendingPathChallenge &existing) { return !existing.isCandidate; }));
+            if (m_pendingPathChallenges.size() >= kMaximumPendingPathChallenges)
+            {
+                return;
+            }
+        }
+        m_pendingPathChallenges.push_back(challenge);
+    }
+
+    void QuicConnectionCore::abandonPathValidation(const QuicPathKey &pathKey)
+    {
+        if (m_configuration.onPeerPathAbandoned)
+        {
+            m_configuration.onPeerPathAbandoned(pathKey);
+        }
+        if (!m_hasValidatedPeerPath)
+        {
+            // §9.3.2 末段：一个已验证地址都没有，就没有可退的地方——静默收口，连 CLOSE 都不发
+            m_phase               = QuicConnectionPhase::Closing;
+            m_localCloseErrorCode = std::nullopt;
+            m_localCloseReasonPhrase.clear();
+            m_outboundDatagrams.clear();
+            return;
+        }
+        // §9.3.2：退回上一个已验证地址。对端若真搬了家，它会从新地址再说话、再触发一轮跟随与验证
+        m_sendPathKey = m_validatedPathKey;
+    }
+
+    void QuicConnectionCore::expirePathChallenges(const Timestamp now)
+    {
+        if (m_pendingPathChallenges.empty())
+        {
+            return;
+        }
+        std::vector<PendingPathChallenge> survivors;
+        survivors.reserve(m_pendingPathChallenges.size());
+        for (PendingPathChallenge challenge: m_pendingPathChallenges)
+        {
+            if (now >= challenge.abandonDeadline)
+            {
+                if (challenge.isCandidate)
+                {
+                    abandonPathValidation(challenge.key); // §8.2.4 到期放弃 → §9.3.2 退回
+                }
+                continue; // 复验那条（旧路 / MTU）到期只是销账，不影响连接
+            }
+            if (challenge.isCandidate && now >= challenge.retransmitDeadline)
+            {
+                if (!challenge.isSendPending)
+                {
+                    // §13.3 对 PATH_CHALLENGE 的要求是「换一份新数据重发」：同一份重发没有意义（对端可能
+                    // 已经回过、也可能永远回不来）；§9.4 末段给的动作也正是「发一条新挑战并把计时拉长」
+                    if (const std::vector<std::uint8_t> fresh = randomBytes(kQuicPathValidationDataByteLength); fresh.size() == kQuicPathValidationDataByteLength)
+                    {
+                        std::copy(fresh.begin(), fresh.end(), challenge.data.begin());
+                        challenge.isSendPending = true;
+                    }
+                }
+                // 计时无论如何都要往后推：还压着没发出去（窗口或额度不够）时也一样，否则这个时刻
+                // 永远留在过去，外壳的闹钟会一拍接一拍地空转
+                challenge.retransmitDeadline = now + probeTimeoutPeriod();
+            }
+            survivors.push_back(challenge);
+        }
+        m_pendingPathChallenges = std::move(survivors);
+    }
+
+    void QuicConnectionCore::queuePathValidationPackets(const Timestamp now)
+    {
+        // 两类帧都只许出现在 1-RTT 包里（§19 表 3 的 Pkts 列）：应用写密钥还没就位就什么都发不出，
+        // 待发的那些留着——挑战要等到 1-RTT 就绪的那一刻发，而不是丢掉
+        if (!m_spaces[spaceIndex(PacketNumberSpace::Application)].writeKeys.has_value())
+        {
+            return;
+        }
+        const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false);
+
+        // ① 欠着的 PATH_RESPONSE：逐条回应，且必须打在挑战来的那条路径上（§8.2.2）
+        if (!m_pendingPathResponses.empty())
+        {
+            std::vector<PendingPathResponse> deferred;
+            for (const PendingPathResponse &response: m_pendingPathResponses)
+            {
+                std::string frames;
+                appendQuicFrame(frames, QuicFrame{QuicPathResponseFrame{response.data}});
+                const std::size_t packetByteLength = overheadByteLength + frames.size();
+                if (packetByteLength > amplificationLimitForPath(response.key) || !m_congestion->maySend(packetByteLength))
+                {
+                    // 额度或窗口腾不出来：留到下一轮。§8.2.2 允许回应被这两者压后
+                    deferred.push_back(response);
+                    continue;
+                }
+                std::optional<DatagramPadding> padding;
+                if (canExpandPathValidationDatagram(response.key))
+                {
+                    padding = DatagramPadding{kQuicMinimumInitialDatagramByteLength, false};
+                }
+                emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, padding, response.key);
+            }
+            m_pendingPathResponses = std::move(deferred);
+        }
+
+        // ② 待发的 PATH_CHALLENGE：一条一包（§8.2.1 明写一个包里不该放多条挑战）
+        for (PendingPathChallenge &challenge: m_pendingPathChallenges)
+        {
+            if (!challenge.isSendPending)
+            {
+                continue;
+            }
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{challenge.data}});
+            const std::size_t packetByteLength = overheadByteLength + frames.size();
+            if (packetByteLength > amplificationLimitForPath(challenge.key) || !m_congestion->maySend(packetByteLength))
+            {
+                continue; // 下一轮再试；放弃时限照旧在走（§8.2.4 只说到期放弃，没说这期间必须一直在试）
+            }
+            std::optional<DatagramPadding> padding;
+            if (canExpandPathValidationDatagram(challenge.key))
+            {
+                padding = DatagramPadding{kQuicMinimumInitialDatagramByteLength, false};
+            }
+            emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, padding, challenge.key);
+            challenge.isSendPending      = false;
+            challenge.wasExpanded        = padding.has_value();
+            challenge.sentTime           = now;
+            challenge.retransmitDeadline = now + probeTimeoutPeriod();
+        }
+    }
+
+    void QuicConnectionCore::confirmPeerPathValidated(const QuicPathKey &pathKey, const bool wasExpanded, const Timestamp now)
+    {
+        if (PeerPathState *const state = pathStateFor(pathKey); state != nullptr)
+        {
+            state->isValidated = true;
+        }
+        m_hasValidatedPeerPath = true;
+        m_validatedPathKey     = pathKey;
+        // §9.4 的 MUST：确认对端对新地址的所有权之后，立刻把拥塞控制器与 RTT 估算重置回初值。
+        // 「只换了端口」那一档规范允许保留旧状态（NAT 重绑最常见的正是这种），但那要拿两个地址
+        // 的 IP 比对——核心刻意不认识地址，这半条 MAY 就不做：一律重置仍是规范下侧合规的写法
+        m_congestion->resetToInitialState();
+        m_recovery.resetForPathChange();
+        if (m_configuration.onPeerPathValidated)
+        {
+            m_configuration.onPeerPathValidated(pathKey);
+        }
+        // §8.2.3 末段：第一轮挑战没能扩到 1200（额度不够）的话，路径通了但 MTU 还没验过，
+        // 必须再验一轮扩充的；这一刻路径已验证，反放大上限已经不在
+        if (!wasExpanded)
+        {
+            armPathChallenge(pathKey, false, now);
+        }
+    }
+
+    void QuicConnectionCore::queuePathResponse(const QuicPathKey &pathKey, const std::array<std::uint8_t, kQuicPathValidationDataByteLength> &data)
+    {
+        if (m_pendingPathResponses.size() >= kMaximumPendingPathResponses)
+        {
+            return; // 防滥用：对端在一个包里塞满挑战就等于拿本端当放大器（aioquic 为同一理由设了同量级的上限）
+        }
+        m_pendingPathResponses.push_back(PendingPathResponse{.key = pathKey, .data = data});
+    }
+
+    void QuicConnectionCore::handlePathResponseFrame(const QuicPathResponseFrame &frame, const Timestamp now)
+    {
+        const auto pending = std::ranges::find_if(m_pendingPathChallenges, [&](const PendingPathChallenge &challenge) { return challenge.data == frame.data; });
+        if (pending == m_pendingPathChallenges.end())
+        {
+            // 对不上任何一条在途挑战：忽略。可能来得太晚，也可能属于别的连接，两种都不构成对端违规
+            // （§8.2.3 只写了「对上了」意味着什么）
+            return;
+        }
+        const PendingPathChallenge matched = *pending;
+        m_pendingPathChallenges.erase(pending);
+        if (matched.isCandidate)
+        {
+            confirmPeerPathValidated(matched.key, matched.wasExpanded, now);
+        }
+        // 非候选（旧路径复验 / MTU 复验）对上了什么都不做：那条路径本来就是已验证的
+    }
+
+    std::size_t QuicConnectionCore::amplificationLimitForPath(const QuicPathKey &pathKey) const noexcept
+    {
+        std::size_t remaining = kUnlimitedAmplificationByteCount;
+        if (isLocalServer() && !m_isAddressValidated)
+        {
+            // §8.1 的握手期总额度：回出去的字节总数不许超过已收的三倍
+            remaining = saturatingSubtract(kQuicAmplificationFactor * m_receivedByteCount, m_sentByteCount);
+        }
+        if (isLocalServer() && !isUnspecifiedQuicPathKey(pathKey))
+        {
+            if (const PeerPathState *const state = findPathState(pathKey); state != nullptr && !state->isValidated)
+            {
+                // §9.3.1 的逐路径额度：只认从这条路径收到的字节
+                remaining = std::min(remaining, saturatingSubtract(kQuicAmplificationFactor * state->receivedByteCount, state->sentByteCount));
+            }
+        }
+        return remaining;
+    }
+
+    bool QuicConnectionCore::canExpandPathValidationDatagram(const QuicPathKey &pathKey) const noexcept
+    {
+        // §8.2.1/§8.2.2 都要求扩到 1200，但都留了同一条例外：反放大额度装不下就不扩（照常发小包，
+        // §8.2.1 末段另要求之后补一轮扩充的验证）。拥塞窗口同样要许可——§8.2.2 的「不得延迟」
+        // 以「拥塞控制所限」为界
+        if (amplificationLimitForPath(pathKey) < kQuicMinimumInitialDatagramByteLength)
+        {
+            return false;
+        }
+        return m_pathMtu.maximumDatagramPayloadByteLength() >= kQuicMinimumInitialDatagramByteLength && m_congestion->maySend(kQuicMinimumInitialDatagramByteLength);
+    }
+
     void QuicConnectionCore::confirmHandshake(const Timestamp now)
     {
         if (m_isHandshakeConfirmed)
@@ -390,6 +734,18 @@ namespace AsynGyanis::Net
             return;
         }
         m_isHandshakeConfirmed = true;
+        // 握手顺带把对端地址验了一遍（§8.1.4 的路径验证，两个方向各自成立）：此刻在用的这条路径
+        // 从此算已验证——它也是 §9.3.2 里「上一个已验证地址」的第一个候选。此后对端若从别处说话，
+        // 验证失败时才有地方可退
+        if (m_hasAdoptedPeerPath && !m_hasValidatedPeerPath)
+        {
+            m_hasValidatedPeerPath = true;
+            m_validatedPathKey     = m_sendPathKey;
+            if (PeerPathState *const state = pathStateFor(m_sendPathKey); state != nullptr)
+            {
+                state->isValidated = true;
+            }
+        }
         const std::uint64_t peerMaximumDelayMilliseconds =
                 m_peerParameters.has_value() ? m_peerParameters->maximumAcknowledgmentDelayMilliseconds : kQuicDefaultMaximumAcknowledgmentDelayMilliseconds;
         m_recovery.onHandshakeConfirmed(std::chrono::duration_cast<QuicTime>(std::chrono::milliseconds{peerMaximumDelayMilliseconds}));
@@ -403,7 +759,7 @@ namespace AsynGyanis::Net
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime,
-                                                                                const std::optional<std::uint8_t> ecnCodepoint)
+                                                                                const std::optional<std::uint8_t> ecnCodepoint, const QuicPathKey &pathKey)
     {
         // §13.4.1：整条 UDP 数据报只有一个 IP 头，里面那些合包的 QUIC 报文共用这一格读数
         m_incomingEcnCodepoint = ecnCodepoint;
@@ -413,6 +769,12 @@ namespace AsynGyanis::Net
         }
         // 反放大额度按「收到的整条数据报」算，不看解没解出来：对端确实把这些字节打到了我们地址上
         m_receivedByteCount += datagram.size();
+        // 逐路径再记一份（§9.3.1）：换地址之后给新地址的额度只认从新地址收到的字节。来源不明的
+        // 数据报也照记——§8.1 的口径就是「不管有没有被处理」，而这条账只用于给未验证路径定额度
+        if (PeerPathState *const receivedPath = pathStateFor(pathKey); receivedPath != nullptr)
+        {
+            receivedPath->receivedByteCount += datagram.size();
+        }
         std::size_t offset = 0;
         while (offset < datagram.size())
         {
@@ -423,7 +785,7 @@ namespace AsynGyanis::Net
                 // 连包头都解不出来，后面的字节也就没了依据：整条数据报丢弃（RFC 9000 §5.1）
                 return {};
             }
-            const std::expected<void, QuicDecodeError> handled = handlePacket(remainder.subspan(0, decodedHeader->packetByteCount), *decodedHeader, arrivalTime);
+            const std::expected<void, QuicDecodeError> handled = handlePacket(remainder.subspan(0, decodedHeader->packetByteCount), *decodedHeader, arrivalTime, pathKey);
             if (!handled.has_value())
             {
                 return handled;
@@ -464,7 +826,7 @@ namespace AsynGyanis::Net
     }
 
     std::expected<void, QuicDecodeError> QuicConnectionCore::handlePacket(const std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader,
-                                                                          const Timestamp arrivalTime)
+                                                                          const Timestamp arrivalTime, const QuicPathKey &pathKey)
     {
         const std::optional<QuicEncryptionLevel> level = levelOf(plainHeader);
         if (!level.has_value())
@@ -477,8 +839,7 @@ namespace AsynGyanis::Net
         // 通告出去的备用标识一上线就可能被对端拿去用（§8.2 明写迁移中的探测就该换一条新标识），
         // 而外壳的别名路由已经把这种报文送到了本连接手上，两层对「是不是我的」必须同一个结论
         if (!std::ranges::equal(plainHeader.destinationConnectionId, m_configuration.localConnectionId) &&
-            !std::ranges::any_of(m_issuedConnectionIds,
-                                 [&](const IssuedConnectionId &issued) { return std::ranges::equal(plainHeader.destinationConnectionId, issued.id); }) &&
+            !std::ranges::any_of(m_issuedConnectionIds, [&](const IssuedConnectionId &issued) { return std::ranges::equal(plainHeader.destinationConnectionId, issued.id); }) &&
             !(*level == QuicEncryptionLevel::Initial && std::ranges::equal(plainHeader.destinationConnectionId, m_configuration.originalDestinationConnectionId)))
         {
             return {};
@@ -566,6 +927,14 @@ namespace AsynGyanis::Net
             applyPeerKeyUpdate(state, arrivalTime);
         }
 
+        // §9：客户端收到来自「陌生服务端地址」的报文一律丢弃——服务端换地址讲话更像路径劫持，
+        // 只有回到本端认下的那个地址的包才继续处理。放在认证之后、记账之前：整包不留任何痕迹
+        // （解不开的报文到这一步本来就没了，伪造来源拽不动发包目标）
+        if (!isLocalServer() && m_hasAdoptedPeerPath && pathKey != m_sendPathKey)
+        {
+            return {};
+        }
+
         // 到这一步包才是「认证过」的：包号记账、重复判定与 ECN 计数都只在这个前提下推进
         if (!noteReceivedPacket(space, packetNumber))
         {
@@ -602,8 +971,14 @@ namespace AsynGyanis::Net
                        std::format("帧序列不合 RFC 9000 §19：{}", decodedFrames.error().message), arrivalTime);
             return std::unexpected(decodedFrames.error());
         }
+        return handleFrames(frames, state, space, packetNumber, pathKey, arrivalTime);
+    }
 
-        bool hasAckElicitingFrame = false;
+    std::expected<void, QuicDecodeError> QuicConnectionCore::handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, const PacketNumberSpace space,
+                                                                          const std::uint64_t packetNumber, const QuicPathKey &pathKey, const Timestamp arrivalTime)
+    {
+        bool hasAckElicitingFrame   = false;
+        bool carriesNonProbingFrame = false;
         for (const QuicFrame &frame: frames)
         {
             const std::uint64_t frameType = quicFrameTypeValue(frame);
@@ -613,8 +988,9 @@ namespace AsynGyanis::Net
                 beginClose(kQuicProtocolViolation, std::format("帧 0x{:x} 出现在非 1-RTT 包里（RFC 9000 §19 表 3 的 Pkts 列）", frameType), arrivalTime);
                 return {};
             }
-            hasAckElicitingFrame = hasAckElicitingFrame || isAcknowledgementEliciting(frame);
-            handleFrame(frame, space, arrivalTime);
+            hasAckElicitingFrame   = hasAckElicitingFrame || isAcknowledgementEliciting(frame);
+            carriesNonProbingFrame = carriesNonProbingFrame || isNonProbingFrame(frame);
+            handleFrame(frame, space, arrivalTime, pathKey);
         }
         if (hasAckElicitingFrame)
         {
@@ -622,13 +998,15 @@ namespace AsynGyanis::Net
             state.largestAckElicitingArrival  = arrivalTime;
             state.isAcknowledgementPending    = true;
         }
+        // 路径只认认证过的报文（§9.3.1 的伪造来源正是靠这一点挡住的）
+        followPeerPath(pathKey, space, packetNumber, carriesNonProbingFrame, arrivalTime);
         return {};
     }
 
-    void QuicConnectionCore::handleFrame(const QuicFrame &frame, const PacketNumberSpace space, const Timestamp arrivalTime)
+    void QuicConnectionCore::handleFrame(const QuicFrame &frame, const PacketNumberSpace space, const Timestamp arrivalTime, const QuicPathKey &pathKey)
     {
         std::visit(
-                [this, space, arrivalTime](const auto &specificFrame)
+                [this, space, arrivalTime, &pathKey](const auto &specificFrame)
                 {
                     using FrameType = std::remove_cvref_t<decltype(specificFrame)>;
                     if constexpr (std::same_as<FrameType, QuicAcknowledgementFrame>)
@@ -676,11 +1054,16 @@ namespace AsynGyanis::Net
                     } else if constexpr (std::same_as<FrameType, QuicRetireConnectionIdFrame>)
                     {
                         handleRetireConnectionIdFrame(specificFrame, arrivalTime);
+                    } else if constexpr (std::same_as<FrameType, QuicPathChallengeFrame>)
+                    {
+                        // §8.2.2：原样回显一条 PATH_RESPONSE，且必须打在挑战来的这条路径上
+                        queuePathResponse(pathKey, specificFrame.data);
+                    } else if constexpr (std::same_as<FrameType, QuicPathResponseFrame>)
+                    {
+                        handlePathResponseFrame(specificFrame, arrivalTime);
                     }
                     // PADDING 与 PING 不需要动作：PING 的确认由触发确认的记账统一处理。
-                    // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14）。
-                    // 路径验证那两帧（PATH_CHALLENGE/PATH_RESPONSE）要等迁移那一笔落地才接，
-                    // 收到即忽略——本端两侧都还没有「探测另一条路」的动作。
+                    // DATA_BLOCKED 那三类只是对端的自述，本层不需要反应（§19.12–§19.14））
                 },
                 frame);
     }
@@ -944,6 +1327,9 @@ namespace AsynGyanis::Net
             // 拥塞层的计量单位跟着已确认的数据报尺寸走：窗口增减与最小窗都以 max_datagram_size 为一格
             // （§B.2、§7.2），探到更大的尺寸却不换它，涨窗就按比线上实际小的那一格算，长期偏慢
             m_congestion->setMaximumDatagramByteLength(m_pathMtu.maximumDatagramPayloadByteLength());
+            // 路径验证的挑战与回应先排出去：§8.2.2 明写回应「不得延迟」，而这一轮 flush 正是
+            // 刚把挑战收进来的那一轮
+            queuePathValidationPackets(now);
             for (const PacketNumberSpace space: {PacketNumberSpace::Initial, PacketNumberSpace::Handshake, PacketNumberSpace::Application})
             {
                 queueSpacePackets(space, now);
@@ -1099,7 +1485,8 @@ namespace AsynGyanis::Net
             }
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
             const bool hasMoreWork   = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
-            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone, std::move(announcements), carriesConnectionIdFrames);
+            emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone, std::move(announcements), carriesConnectionIdFrames,
+                       std::nullopt, m_sendPathKey);
             if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
                 // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
@@ -1162,29 +1549,30 @@ namespace AsynGyanis::Net
         }
         std::string frames;
         appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
-        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, probeByteLength);
+        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, DatagramPadding{*probeByteLength, true}, m_sendPathKey);
     }
 
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now, const bool isAckEliciting,
                                         const std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone,
-                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const bool carriesConnectionIdFrames,
-                                        const std::optional<std::size_t> paddedDatagramByteLength)
+                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const bool carriesConnectionIdFrames, const std::optional<DatagramPadding> padding,
+                                        const QuicPathKey &pathKey)
     {
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
         // 两处补尺寸补的都是 PADDING 帧（0x00 一字节一帧），落在受保护载荷里，所以差多少要等包头与标签
-        // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针按 §14.4
-        // 补到待探的那个尺寸——探针的意义就在这个数上，凑不到就没有「这个尺寸走过去了」这条证据
+        // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针与路径
+        // 验证的挑战/回应按各自章节补到 1200——探针的意义就在那个数上，验证的那两个是让新路先证明
+        // 自己过得去大包（§8.2.1/§8.2.2）
         const std::size_t plainOverheadByteLength = packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application) - kQuicCryptoFrameHeaderByteLimit;
         std::string       paddedFrameAssembly;
         if (!isLocalServer() && space == PacketNumberSpace::Initial && plainOverheadByteLength + frames.size() < kQuicMinimumInitialDatagramByteLength)
         {
             paddedFrameAssembly = frames;
             paddedFrameAssembly.append(kQuicMinimumInitialDatagramByteLength - plainOverheadByteLength - frames.size(), '\0');
-        } else if (paddedDatagramByteLength.has_value() && plainOverheadByteLength + frames.size() < *paddedDatagramByteLength)
+        } else if (padding.has_value() && plainOverheadByteLength + frames.size() < padding->datagramByteLength)
         {
             paddedFrameAssembly = frames;
-            paddedFrameAssembly.append(*paddedDatagramByteLength - plainOverheadByteLength - frames.size(), '\0');
+            paddedFrameAssembly.append(padding->datagramByteLength - plainOverheadByteLength - frames.size(), '\0');
         }
         QuicOutboundPacket packet;
         packet.isLongHeader            = space != PacketNumberSpace::Application;
@@ -1205,9 +1593,10 @@ namespace AsynGyanis::Net
         const std::uint8_t outgoingEcnCodepoint = m_recovery.outgoingEcnCodepoint();
         ++state.nextPacketNumber;
         const std::size_t datagramByteCount = datagram.size();
+        // 目标路径由调用方解析好传进来（见头文件那一格的理由：全零是合法键值，这里不做「留空＝当前路径」的兜底）。
         // 待发队列拿的是这条报文的本体而不是它的副本：下面 record 与字节数都只需要长度，
         // 整包再抄一遍是白付的一次分配加一次 memcpy
-        m_outboundDatagrams.push_back(QuicOutboundDatagram{std::move(datagram), outgoingEcnCodepoint});
+        m_outboundDatagrams.push_back(QuicOutboundDatagram{std::move(datagram), outgoingEcnCodepoint, pathKey});
 
         QuicSentPacketInfo record;
         record.packetNumber              = packetNumber;
@@ -1222,7 +1611,7 @@ namespace AsynGyanis::Net
         record.carriesConnectionIdFrames = carriesConnectionIdFrames;
         // 探针被丢不算拥塞证据、也不算 §7.6.2 那一段的端点（RFC 9000 §14.4），所以这一格要留在凭据上；
         // 被确认时它又是「这个尺寸走过去了」的唯一证据，两条出口都靠它分辨
-        record.isPathMtuProbe = paddedDatagramByteLength.has_value();
+        record.isPathMtuProbe = padding.has_value() && padding->isPathMtuProbe;
         if (carriesHandshakeDone)
         {
             m_isHandshakeDoneInFlight = true;
@@ -1237,6 +1626,11 @@ namespace AsynGyanis::Net
         m_congestion->onPacketSent(record);
         m_recovery.onPacketSent(recoverySpaceOf(space), std::move(record));
         m_sentByteCount += datagramByteCount;
+        // 逐路径的已发字节（§9.3.1 给未验证路径定额度用它）：按这条报文真正的目标记账
+        if (PeerPathState *const sentPath = pathStateFor(pathKey); sentPath != nullptr)
+        {
+            sentPath->sentByteCount += datagramByteCount;
+        }
     }
 
     std::size_t QuicConnectionCore::sendByteBudget(const std::size_t reservedByteLength, const bool ignoresCongestionWindow) const
@@ -1264,7 +1658,8 @@ namespace AsynGyanis::Net
 
     std::size_t QuicConnectionCore::amplificationRemainingByteCount() const noexcept
     {
-        return saturatingSubtract(kQuicAmplificationFactor * m_receivedByteCount, m_sentByteCount);
+        // 两条上限（§8.1 的握手期总额度、§9.3.1 的逐路径额度）谁小听谁，判据都收在 amplificationLimitForPath
+        return amplificationLimitForPath(m_sendPathKey);
     }
 
     void QuicConnectionCore::requestClose(const std::uint64_t errorCode, const std::string_view reasonPhrase, const Timestamp now)
@@ -1297,7 +1692,7 @@ namespace AsynGyanis::Net
             // 收口也受 §8.1 约束：额度不够就宁可不发，反正对端已经在把我们当放大器打了
             return;
         }
-        emitPacket(space, frames, now, false, std::nullopt);
+        emitPacket(space, frames, now, false, std::nullopt, {}, false, {}, false, std::nullopt, m_sendPathKey);
     }
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::highestSpaceWithWriteKeys() const noexcept
@@ -1350,6 +1745,15 @@ namespace AsynGyanis::Net
         if (const std::optional<Timestamp> idleDeadline = idleDeadlineTime(); idleDeadline.has_value() && (!deadline.has_value() || *idleDeadline < *deadline))
         {
             deadline = idleDeadline;
+        }
+        for (const PendingPathChallenge &challenge: m_pendingPathChallenges)
+        {
+            // 候选路径两把计时都要看（换数据重发与放弃）；复验那种只看放弃期限——它不重发
+            const Timestamp challengeDeadline = challenge.isCandidate ? std::min(challenge.abandonDeadline, challenge.retransmitDeadline) : challenge.abandonDeadline;
+            if (!deadline.has_value() || challengeDeadline < *deadline)
+            {
+                deadline = challengeDeadline;
+            }
         }
         return deadline;
     }
@@ -1449,6 +1853,12 @@ namespace AsynGyanis::Net
         // 路径 MTU 那两个计时器都记在这里：探针到点没被确认算一次失败（连满三条才收口），抬升计时器到点
         // 就重新往上找。真正把探针发出去的是下面那次按空间排队——它从 Application 那格走进 queuePathMtuProbe
         m_pathMtu.onDeadlineReached(now);
+        // 路径验证的两把计时：到点先按 §13.3/§9.4 换一份新数据重发，到期限就按 §8.2.4 放弃这次验证
+        expirePathChallenges(now);
+        if (m_phase == QuicConnectionPhase::Closing)
+        {
+            return; // 放弃时可能刚刚静默收口（§9.3.2 末段）：这一拍不再产出任何报文
+        }
         const QuicRecoveryTimeoutAction action = m_recovery.onDeadlineReached(now);
         if (!action.lost.empty())
         {
@@ -1472,6 +1882,8 @@ namespace AsynGyanis::Net
         {
             queueSpacePackets(space, now);
         }
+        // 重发的那条挑战（或验证通过后补的一轮 MTU 验证）在这一拍上线
+        queuePathValidationPackets(now);
     }
 
     auto QuicConnectionCore::takeOutboundDatagram() -> std::optional<QuicOutboundDatagram>
@@ -1548,6 +1960,11 @@ namespace AsynGyanis::Net
     std::span<const std::uint8_t> QuicConnectionCore::activePeerConnectionId() const noexcept
     {
         return std::span<const std::uint8_t>(m_configuration.peerConnectionId);
+    }
+
+    QuicRoundTripTimeEstimate QuicConnectionCore::roundTripTimeEstimate() const noexcept
+    {
+        return m_recovery.roundTripTimeEstimate();
     }
 
     std::array<std::uint8_t, 16> QuicConnectionCore::statelessResetTokenOf(const std::span<const std::uint8_t> connectionId) const

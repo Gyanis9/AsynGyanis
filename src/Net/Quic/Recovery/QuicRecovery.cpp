@@ -591,4 +591,25 @@ namespace AsynGyanis::Net
         estimate.probeTimeout       = baseDuration * static_cast<std::int64_t>(1ULL << std::min<std::size_t>(m_probeBackoffExponent, 16));
         return estimate;
     }
+
+    QuicTime QuicRecovery::initialProbeTimeout() const noexcept
+    {
+        // §6.2.1 的算式套 §5.3 的初值：PTO = kInitialRtt + max(4×kInitialRtt/2, kGranularity) + max_ack_delay。
+        // 新路径正落在进入用空间那一档，所以对端声明的报告延迟要算进去；不带退避倍数——§8.2.4
+        // 要的是「按 kInitialRtt 算的 PTO」这个静态量，不是本端此刻退避到了几倍
+        return kInitialRoundTripTime + std::max(4 * (kInitialRoundTripTime / 2), kTimerGranularity) + m_peerMaximumAcknowledgmentDelay;
+    }
+
+    void QuicRecovery::resetForPathChange() noexcept
+    {
+        // §9.4 的第一段：旧路径上发的包不得算进新路径的 RTT 估算。回到构造时那组初值，并把
+        // 「有没有样本」与退避倍数一起清掉——不清的话第一次采样会按旧路的 srtt 加权，PTO 也还挂着旧路的退避
+        m_estimate.smoothed  = kInitialRoundTripTime;
+        m_estimate.variation = kInitialRoundTripTime / 2;
+        m_estimate.latest    = QuicTime{};
+        m_estimate.minimum   = QuicTime{};
+        m_hasRoundTripSample = false;
+        m_firstRoundTripSampleTime.reset();
+        m_probeBackoffExponent = 0;
+    }
 } // namespace AsynGyanis::Net

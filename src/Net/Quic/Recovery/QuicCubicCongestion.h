@@ -77,8 +77,9 @@ namespace AsynGyanis::Net
          */
         void applyCongestionAvoidanceGrowth(std::size_t acknowledgedByteCount, QuicTime eventTime) override;
 
-        /// 持久拥塞重启（§4.8 的精神）：清掉 epoch 与 W_max 记录，下一次增长从当前窗口重定 K=0 起步
-        void onPersistentCongestionRestart() noexcept override;
+        /// 窗口被重置回基准（§7.6.2 的持久拥塞重启或 §9.4 的迁移重置，§4.8 的精神）：
+        /// 清掉 epoch 与 W_max 记录，下一次增长从当前窗口重定 K=0 起步
+        void onWindowReset() noexcept override;
 
     private:
         /// 拥塞避免阶段的时钟与曲线参数（epoch 建立那一刻定下，降窗或重启时作废）

@@ -11,11 +11,12 @@
  *          帧 → 组包发出。时间戳一律由调用方注入，因此整条链可以在单测里逐字节复现，不需要真实网络。
  *
  * @note 能力范围：两个角色各自的握手、1-RTT 的流与流量控制、1-RTT 密钥更新，以及恢复层的发包记账、
- *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可、Initial 空间的退休、ECN 验证与 CE 反应，
- *       以及路径 MTU 探测（DPLPMTUD）。
- *       刻意不做：0-RTT、RETRY、版本协商、连接迁移与本端签发额外连接标识——收到对应的报文按各自
- *       章节丢弃或忽略。作客户端时因此**不能接住服务端下发的 Retry**：挑一个 8 字节以上的随机目的标识
- *       （§7.3 建议的最小长度）是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路。
+ *       RTT、判丢、探测超时、按偏移重发、拥塞窗口许可、Initial 空间的退休、ECN 验证与 CE 反应、
+ *       路径 MTU 探测（DPLPMTUD）、连接标识的签发/通告/撤回（§5.1），以及路径验证与迁移应答
+ *       （§8.2、§9.3–§9.4：回应挑战、跟对端换地址、逐路径反放大、验证失败退回）。
+ *       刻意不做：0-RTT、NEW_TOKEN、版本协商、本端主动发起迁移（本端地址不换，§9.2 那一半）与
+ *       §9.6 的首选地址；作客户端时**不能接住服务端下发的 Retry**（挑一个 8 字节以上的随机目的标识
+ *       是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路）。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -130,6 +131,20 @@ namespace AsynGyanis::Net
          */
         std::function<void(std::span<const std::uint8_t> connectionId)> onConnectionIdRetired{};
         /**
+         * @brief 对端新地址验证通过的通知（RFC 9000 §8.2.3）：外壳据此记日志
+         * @details 验证通过的判据写死在规范里：收到一条 PATH_RESPONSE，其数据与本端发过的某条
+         *          PATH_CHALLENGE 逐字节相同——确认不算验证（§8.2.3 末段），包被确认不算，
+         *          丢包判重也不算。核心在通知之前已经把拥塞窗口与 RTT 估算按 §9.4 重置过
+         */
+        std::function<void(const QuicPathKey &)> onPeerPathValidated{};
+        /**
+         * @brief 对端新地址验证失败的通知（RFC 9000 §8.2.4 / §9.3.2）：外壳据此记日志
+         * @details 判据是 §8.2.4 那把计时器：3×max(当前 PTO, 按 kInitialRtt 算的 PTO) 到期
+         *          还没收到对应的 PATH_RESPONSE 就放弃。核心已按 §9.3.2 退回上一个已验证地址
+         *          （一个都没有时会静默收口），通知里给的正是放弃的那条路径
+         */
+        std::function<void(const QuicPathKey &)> onPeerPathAbandoned{};
+        /**
          * @brief 无状态重置令牌的派生密钥；留空＝本连接随机取一把
          * @details 令牌按 RFC 9000 §10.3.2 由「端点静态密钥 + 标识」派生，签发的每条标识在
          *          NEW_CONNECTION_ID 里都要带一个。本端目前只签发、不发送无状态重置（§10.3 那一半
@@ -192,10 +207,14 @@ namespace AsynGyanis::Net
          * @param ecnCodepoint 这条数据报 IP 头里的 ECN 字段；**交空表示本端读不到这个字段**（Windows，
          *        或套接字没开那个选项）。读不到与读到 0 是两件事：前者不许在 ACK 里报 ECN 计数
          *        （RFC 9000 §13.4.1 明确允许读不到的端点不报），后者要按 §19.3.2 计入 ECT(0) 那一格
+         * @param pathKey 这条数据报打哪条对端路径来（外壳按来源地址折算，RFC 9000 §9.3 的路径就是
+         *        本端地址与对端地址的二元组）。§9.3 的「只跟编号最高的非探测包换地址」、§8.2.2 的
+         *        「回应必须打在挑战来的那条路径上」以及 §9.3.1 的逐路径反放大上限都按它记账；
+         *        单路径的用法（出站客户端）留空即可
          * @return 与不带这一格时同义：失败返回 `QuicDecodeError`，本类自行发出 CONNECTION_CLOSE
          */
         [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime,
-                                                                              std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
+                                                                              std::optional<std::uint8_t> ecnCodepoint = std::nullopt, const QuicPathKey &pathKey = QuicPathKey{});
 
         /**
          * @brief 取走一条待发数据报
@@ -412,6 +431,14 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::span<const std::uint8_t> activePeerConnectionId() const noexcept;
 
+        /**
+         * @brief 当前的 RTT 估算（RFC 9002 §5）
+         * @return QuicRoundTripTimeEstimate 各统计量与当前 PTO 周期
+         * @details 迁移验证通过时整组值会按 §9.4 重置回初值（kInitialRtt 那一档）：这一格是那条
+         *          动作最直接的读数，运维与用例都靠它分辨「估算还是旧路径的」与「已经重新起算了」
+         */
+        [[nodiscard]] QuicRoundTripTimeEstimate roundTripTimeEstimate() const noexcept;
+
     private:
         /// 包号空间：0-RTT 借用 Initial 的空间，所以只有三个
         enum class PacketNumberSpace : std::size_t
@@ -422,6 +449,16 @@ namespace AsynGyanis::Net
         };
 
         static constexpr std::size_t kPacketNumberSpaceCount = 3;
+
+        /// 同时记账的对端路径条数上界：当前发送路径、候选路径、旧路径复验最多三处同时在册，留一个余量
+        static constexpr std::size_t kMaximumTrackedPeerPaths = 4;
+        /**
+         * @brief 欠发的 PATH_RESPONSE 条数上界（§8.2.2 要求逐条回应，但一个包里塞几十条挑战再来要回应，
+         *        就是拿本端当放大器）：aioquic 也为同一个理由设了上限（MAX_REMOTE_CHALLENGES），取同一量级
+         */
+        static constexpr std::size_t kMaximumPendingPathResponses = 8;
+        /// 在途挑战条数上界：候选一条 + 旧路径复验一条（外加 §8.2.3 的 MTU 复验一条）
+        static constexpr std::size_t kMaximumPendingPathChallenges = 3;
 
         /**
          * @brief 一个包号空间的状态
@@ -466,6 +503,51 @@ namespace AsynGyanis::Net
             std::array<std::uint8_t, 16> statelessResetToken{}; ///< 对端给的令牌（本端目前只存不带外）
         };
 
+        /**
+         * @brief 一条对端路径的记账（RFC 9000 §9.3）
+         * @details 两处要用：① 路径还没验证时按 §9.3.1 压 3 倍反放大上限；② §9.4 的「确认新地址」
+         *          与 §9.3.2 的「退回上一个已验证地址」看 `isValidated`。
+         */
+        struct PeerPathState
+        {
+            QuicPathKey   key{};                ///< 路径标识
+            std::uint64_t receivedByteCount{0}; ///< 从这条路径收到的字节（含解不开的数据报：§8.1 的口径是「不管有没有被处理」）
+            std::uint64_t sentByteCount{0};     ///< 发往这条路径的字节
+            bool          isValidated{false};   ///< 已通过握手级验证，或完成过一次 PATH_CHALLENGE/PATH_RESPONSE 往返（§8.2.3）
+        };
+
+        /// 已发出、等着回应的 PATH_CHALLENGE（§8.2.1 的发起、§8.2.4 的计时、§13.3 的换数据重发）
+        struct PendingPathChallenge
+        {
+            QuicPathKey                                                 key{};                ///< 挑战打在哪条路径上
+            std::array<std::uint8_t, kQuicPathValidationDataByteLength> data{};               ///< 8 字节不可预测数据（§8.2.1 的 MUST）
+            bool                                                        isCandidate{false};   ///< true＝验证候选路径（失败要退回）；false＝旧路径复验或 MTU 复验（成败都不动连接）
+            bool                                                        isSendPending{true};  ///< 还没上线：arm 之后的下一次出包把它发出去
+            bool                                                        wasExpanded{false};   ///< 上线那条有没有扩到 1200：§8.2.3 的第二轮验证按它决定
+            Timestamp                                                   sentTime{};           ///< 最近一次上线的时刻
+            Timestamp                                                   abandonDeadline{};    ///< 3×max(当前 PTO, 按 kInitialRtt 的 PTO) 到期就放弃（§8.2.4）
+            Timestamp                                                   retransmitDeadline{}; ///< 到期换一份新数据重发（§13.3/§9.4）；只对候选路线有效
+        };
+
+        /// 欠着的一条 PATH_RESPONSE（§8.2.2：收到挑战就要原样回显，还必须打在同一条路径上）
+        struct PendingPathResponse
+        {
+            QuicPathKey                                                 key{};  ///< 挑战来的那条路径
+            std::array<std::uint8_t, kQuicPathValidationDataByteLength> data{}; ///< 原样回显的 8 字节
+        };
+
+        /**
+         * @brief 一次出包要把整条数据报补到多大，以及为什么补
+         * @details 三种补尺寸的理由不能混：路径 MTU 探针补到待探的那一格（被确认即是「这个尺寸走得通」
+         *          的证据，§14.4）、客户端握手期的 Initial 补到 1200（§14.1）、路径验证的挑战与回应
+         *          补到 1200（§8.2.1/§8.2.2：让新路先证明能过大包）。只有第一种能进 `isPathMtuProbe`
+         */
+        struct DatagramPadding
+        {
+            std::size_t datagramByteLength{0}; ///< 整条数据报要凑到的字节数
+            bool        isPathMtuProbe{false}; ///< 是不是路径 MTU 探针
+        };
+
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t       spaceIndex(QuicEncryptionLevel level) noexcept;
         [[nodiscard]] static std::size_t       spaceIndex(PacketNumberSpace space) noexcept;
@@ -498,7 +580,23 @@ namespace AsynGyanis::Net
         [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
-        std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime);
+        std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime,
+                                                          const QuicPathKey &pathKey);
+        /**
+         * @brief 把一包已认证、已解出的帧序列处理完：帧门、逐帧分派、触发确认记账与路径跟随
+         * @details 从 handlePacket 里剥出来的一段：那一位函数的主线是「解一包」（去保护、解密、按级别
+         *          记账），帧层这一段的判据（表 3 的帧门、哪些帧触发确认、什么才算「对端搬了家」）
+         *          和它是两件事，分开之后两条主线各自读得完
+         * @param frames 已解出的帧序列（指向复用缓冲，本函数返回前用完）
+         * @param state 本包所属空间的状态
+         * @param space 本包所属的包号空间
+         * @param packetNumber 本报文的完整包号
+         * @param pathKey 本报文来的路径
+         * @param arrivalTime 到达时刻
+         * @return 与 handlePacket 同义：失败返回 `QuicDecodeError`，本类自行收口
+         */
+        std::expected<void, QuicDecodeError> handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber,
+                                                          const QuicPathKey &pathKey, Timestamp arrivalTime);
         /**
          * @brief 把一条**认证过**的报文落进本空间的账：包号记账与 ECN 字段计数
          * @details 两件事必须同进同出，顺序也只有一种正确写法：§13.4.1 末句要求重复包不重复计数，
@@ -510,7 +608,7 @@ namespace AsynGyanis::Net
          * @return bool 本包是新的（true）还是重复收到的（false）；重复的那些调用方直接交空、不再解帧
          */
         bool noteReceivedPacket(PacketNumberSpace space, std::uint64_t packetNumber) noexcept;
-        void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
+        void handleFrame(const QuicFrame &frame, PacketNumberSpace space, Timestamp arrivalTime, const QuicPathKey &pathKey);
         void handleAcknowledgement(const QuicAcknowledgementFrame &frame, PacketNumberSpace space, Timestamp arrivalTime);
         void handleCryptoBytes(PacketNumberSpace space, std::uint64_t offset, std::span<const std::uint8_t> bytes, Timestamp arrivalTime);
         /**
@@ -533,6 +631,83 @@ namespace AsynGyanis::Net
          * @param arrivalTime 收口报文要用它当发送时刻
          */
         void handleRetireConnectionIdFrame(const QuicRetireConnectionIdFrame &frame, Timestamp arrivalTime);
+
+        /**
+         * @brief 一条**认证过**的报文带来的路径信息：采纳首条 | 按 §9.3 跟随新地址 | 什么都不做
+         * @details 只有认证过的报文才作数：伪造来源的报文解不开，也就不该把本端的发包目标拽走
+         *          （§9.3.1 描述的正是这种反射攻击）。客户端的规矩相反——§9 明写「客户端收到来自
+         *          陌生服务端地址的报文一律丢弃」，那条门在 `handlePacket` 里已经拦了，这里不再跟
+         * @param pathKey 本报文来的路径
+         * @param space 本报文所属的包号空间（包号只在空间内可比）
+         * @param packetNumber 本报文的完整包号
+         * @param carriesNonProbingFrame 本报文带没带非探测帧（§9.1：只有非探测帧才算「对端搬了家」）
+         * @param now 到达时刻
+         */
+        void followPeerPath(const QuicPathKey &pathKey, PacketNumberSpace space, std::uint64_t packetNumber, bool carriesNonProbingFrame, Timestamp now);
+
+        /**
+         * @brief 武装一条 PATH_CHALLENGE（§8.2.1）
+         * @details 数据取不可预测的 8 字节随机数（§8.2.1 的 MUST——可预测的话谁都能抢先答话）。
+         *          随机数不可用时干脆不发：用可预测数据发出去比不验证更糟。同一条路径上只留最新的一条
+         * @param pathKey 挑战打哪条路径
+         * @param isCandidate true＝这次验证的成败决定「留在新地址还是退回旧地址」
+         * @param now 武装时刻，两把计时都从它起算
+         */
+        void armPathChallenge(const QuicPathKey &pathKey, bool isCandidate, Timestamp now);
+
+        /// §8.2.4 到期放弃这次验证：按 §9.3.2 退回上一个已验证地址；一个都没有就静默收口
+        void abandonPathValidation(const QuicPathKey &pathKey);
+
+        /**
+         * @brief 路径验证的两把计时器到点：先按 §13.3/§9.4 换一份新数据重发，再按 §8.2.4 放弃
+         * @param now 当前时刻
+         */
+        void expirePathChallenges(Timestamp now);
+
+        /**
+         * @brief 把欠着的 PATH_RESPONSE 与待发的 PATH_CHALLENGE 编成数据报（§8.2.2 的「不得延迟」靠它）
+         * @details 每帧单独一包：§8.2.1 明写一个包里不该放多条 PATH_CHALLENGE，而回应与挑战都必须打在
+         *          各自那条路径上、还都要补到 1200——挤进普通出包流水就得给那条流水添三样特例
+         * @param now 出包时刻
+         */
+        void queuePathValidationPackets(Timestamp now);
+
+        /**
+         * @brief 候选路径验证通过：置验证状态、按 §9.4 重置拥塞与 RTT、通知外壳，必要时补一轮扩充验证
+         * @param pathKey 验证通过的路径
+         * @param wasExpanded 通过的那一轮挑战上线时有没有扩到 1200（没扩就按 §8.2.3 末段再来一轮）
+         * @param now 验证通过的时刻（下一轮挑战从它起算）
+         */
+        void confirmPeerPathValidated(const QuicPathKey &pathKey, bool wasExpanded, Timestamp now);
+
+        /// §8.2.2：收到 PATH_CHALLENGE，欠一条原样回显（记下它来的那条路径）
+        void queuePathResponse(const QuicPathKey &pathKey, const std::array<std::uint8_t, kQuicPathValidationDataByteLength> &data);
+
+        /**
+         * @brief §8.2.3：拿回应的数据去对在途的挑战——对上了才算验证通过
+         * @details 判据写死在规范里：数据与本端发过的某条 PATH_CHALLENGE 逐字节相同。对不上任何一条
+         *          只是忽略（可能迟到、可能属于别的连接），不构成对端违规
+         * @param frame 这一帧
+         * @param now 到达时刻（验证通过时把它交给重置与后续挑战）
+         */
+        void handlePathResponseFrame(const QuicPathResponseFrame &frame, Timestamp now);
+
+        /**
+         * @brief 这条路径上此刻还剩多少反放大额度：§8.1 的握手期总额度（若还在那一段）与 §9.3.1
+         *        逐路径额度谁小听谁；两条都不适用时给一个足够大的值
+         * @details 只对「服务端 + 该路径还没验证」成立：客户端本来就要先出声（§8.1 那条上限是给
+         *          被陌生人打到地址上的一方设的），已验证的路径按 §8.2.3 起可以随便发
+         */
+        [[nodiscard]] std::size_t amplificationLimitForPath(const QuicPathKey &pathKey) const noexcept;
+
+        /// 路径验证那一包能不能补到 1200：§8.2.1/§8.2.2 的例外分支——反放大或拥塞窗口不许就不补，照常发小包
+        [[nodiscard]] bool canExpandPathValidationDatagram(const QuicPathKey &pathKey) const noexcept;
+
+        /// 按路径标识找记账；没有就建一条（表满时淘汰最老的一条没在用的），腾不出位置返回空
+        [[nodiscard]] PeerPathState *pathStateFor(const QuicPathKey &pathKey) noexcept;
+
+        /// 只查不建
+        [[nodiscard]] const PeerPathState *findPathState(const QuicPathKey &pathKey) const noexcept;
         /**
          * @brief 造一条新标识并登记进在册表：随机 18 字节 + 按 §10.3.2 派生的令牌
          * @details 只造不改线：真正上线要等下一次 1-RTT 出包把它编成 NEW_CONNECTION_ID。
@@ -643,12 +818,15 @@ namespace AsynGyanis::Net
          * @param streamRanges 本包带的流数据区间，确认与判丢都按它回收额度
          * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
          * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
-         * @param paddedDatagramByteLength 非空就把整包补到这个尺寸（PADDING 帧），并在发包凭据上标
-         *        「这是路径 MTU 探针」——被确认时才是 PLPMTU 可以抬到这一格的证据（§14.4）
+         * @param carriesConnectionIdFrames 本包是否带了 NEW_CONNECTION_ID / RETIRE_CONNECTION_ID（§13.3 要求判丢后重发）
+         * @param padding 非空就把整包补到这个尺寸（PADDING 帧），要哪一种、为什么补见 `DatagramPadding`
+         * @param pathKey 这条数据报发往哪条对端路径：**由调用方解析好**——普通出包传 `m_sendPathKey`，
+         *        路径验证传各自那把键。全零是合法的键值（单路径用法），所以这里没有「留空＝当前路径」
+         *        这种默认：§9.3.3 的复验探测要打的正是那条全零键的旧路径，混一起就成了打给新地址
          */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange,
-                        std::vector<QuicStreamRange> streamRanges = {}, bool carriesHandshakeDone = false, std::vector<QuicStreamAnnouncement> streamAnnouncements = {},
-                        bool carriesConnectionIdFrames = false, std::optional<std::size_t> paddedDatagramByteLength = std::nullopt);
+                        std::vector<QuicStreamRange> streamRanges, bool carriesHandshakeDone, std::vector<QuicStreamAnnouncement> streamAnnouncements,
+                        bool carriesConnectionIdFrames, std::optional<DatagramPadding> padding, const QuicPathKey &pathKey);
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -756,5 +934,22 @@ namespace AsynGyanis::Net
         bool m_isConnectionIdFramesDirty{false};
         /// 无状态重置令牌的派生密钥（§10.3.2）：配置没给就在这里随机取一把
         std::vector<std::uint8_t> m_statelessResetKey{};
+
+        /// 对端路径的记账（§9.3）：当前发送路径、正在验证的候选、外壳报到过的其它来源；上界见 kMaximumTrackedPeerPaths
+        std::vector<PeerPathState> m_peerPaths{};
+        /// 本端出包默认打哪条路径：第一条**认证过**的报文定下它（此后按 §9.3 只跟编号更高的非探测包换）
+        QuicPathKey m_sendPathKey{};
+        /// 路径有没有被定下来过：全零键是合法值（单路径用法留空），单靠它分不出「还没定」与「定了空键」
+        bool m_hasAdoptedPeerPath{false};
+        /// 最近一次验证通过的对端路径（§9.3.2 的退回目标）；「静默收口」那条判据看 m_hasValidatedPeerPath
+        QuicPathKey m_validatedPathKey{};
+        /// 有没有一条已验证过的路径：全零键是合法值，光靠 m_validatedPathKey 分不出「没有」与「就是空键」
+        bool m_hasValidatedPeerPath{false};
+        /// 各包号空间见过的最大非探测包号：§9.3 只让发包目标跟着更高的那些走，防乱序包把它拽回旧路
+        std::array<std::optional<std::uint64_t>, kPacketNumberSpaceCount> m_largestNonProbingPacketNumbers{};
+        /// 在途的 PATH_CHALLENGE：§8.2.4 的放弃计时与 §13.3 的换数据重发都按它算
+        std::vector<PendingPathChallenge> m_pendingPathChallenges{};
+        /// 欠发的 PATH_RESPONSE（§8.2.2），出包时按各自路径发走
+        std::vector<PendingPathResponse> m_pendingPathResponses{};
     };
 } // namespace AsynGyanis::Net

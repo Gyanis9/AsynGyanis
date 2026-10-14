@@ -11,7 +11,8 @@
  *          以及最小窗/上界这些读口——全部收在基类。分叉只在三处虚点：
  *          @li 降窗算式（NewReno 取半、CUBIC 乘 0.7 并把降窗前的窗口记进 W_max）；
  *          @li 拥塞避免期的增长律（NewReno 线性加一、CUBIC 三次曲线 + Reno 友好区）；
- *          @li 持久拥塞重启后的算法状态清理（NewReno 无事、CUBIC 清掉 epoch 与 W_est）。
+ *          @li 窗口被重置回基准时的算法状态清理（NewReno 无事、CUBIC 清掉 epoch 与 W_max；
+ *              §7.6.2 的持久拥塞重启与 §9.4 的迁移重置都走它）。
  *
  * @note 时刻与 RTT 都由调用方注入（与恢复层同构的纯计算件）：`setSmoothedRoundTripTime()`
  *       在每帧确认落账前把恢复层的 srtt 刷进来，CUBIC 的 Reno 友好区与「下一个 RTT 的目标窗」
@@ -117,9 +118,18 @@ namespace AsynGyanis::Net
          * @details 与「降窗」的普通丢包反应不是一回事：停滞足够久说明这条路径大概已经不通，
          *          继续按缩小后的窗口爬只会让重传一直堆在那里，规范给的解法是回到最小窗重新慢启动。
          *          在途字节不动（那些包该销的账由确认与判丢那两条路去销）；子类的算法状态
-         *          （如 CUBIC 的 epoch）由 `onPersistentCongestionRestart()` 清。
+         *          （如 CUBIC 的 epoch）由 `onWindowReset()` 清。
          */
         void restartAfterPersistentCongestion() noexcept;
+
+        /**
+         * @brief 确认对端换到了新地址之后把窗口重置回初值（RFC 9000 §9.4 的 MUST）
+         * @details 与持久拥塞重启的区别只在落到哪一格：这条落回 §7.2 的**初始窗口**而不是最小窗——
+         *          换的是一条活路，未知的是它的容量，不是它已经不通。旧路径上爬出来的窗口与
+         *          慢启动阈值对新路没有依据（§9.4 第一段：旧路径上发的包不得算进新路径的拥塞控制），
+         *          在途字节同样不动，理由同上一格；子类的算法状态同样由 `onWindowReset()` 清
+         */
+        void resetToInitialState() noexcept;
 
         /**
          * @brief 某个包号空间的密钥退休了：把其中的在途字节销账，但不动窗口
@@ -167,13 +177,20 @@ namespace AsynGyanis::Net
          */
         virtual void applyCongestionAvoidanceGrowth(std::size_t acknowledgedByteCount, QuicTime eventTime) = 0;
 
-        /// 虚点三：持久拥塞重启后的算法状态清理；默认无事
-        virtual void onPersistentCongestionRestart() noexcept
+        /**
+         * @brief 虚点三：窗口回到初值 / 最小窗时的算法状态清理；默认无事
+         * @details 两条路共用：§7.6.2 的持久拥塞重启（落最小窗）与 §9.4 的迁移重置（落初始窗口）。
+         *          两处要求的一样——把算法自己攒下的临时状态丢掉，下一次增长从新基准重开
+         */
+        virtual void onWindowReset() noexcept
         {
         }
 
         /// 恢复期什么时候算结束：一个在 recoveryStartTime 之后发出的包被确认（§7.3.2）
         [[nodiscard]] bool isInRecovery() const noexcept;
+
+        /// §7.2 的初始窗口：min(10×数据报上限, max(2×数据报上限, 14720))
+        [[nodiscard]] std::size_t initialWindowByteLength() const noexcept;
 
         /// §7.2 的最小窗口（2×数据报上限）：降窗与持久拥塞重启的地板
         [[nodiscard]] std::size_t minimumWindowByteLength() const noexcept;

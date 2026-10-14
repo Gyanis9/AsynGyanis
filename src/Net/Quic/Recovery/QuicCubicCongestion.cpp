@@ -119,7 +119,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    void QuicCubicCongestion::onPersistentCongestionRestart() noexcept
+    void QuicCubicCongestion::onWindowReset() noexcept
     {
         // §4.8 的精神：重启后的一轮拥塞避免以当前窗口为新基准（K=0、W_max=当前窗口），
         // 旧曲线的一切记录（W_max、cwnd_prior、epoch、W_est）都不再适用

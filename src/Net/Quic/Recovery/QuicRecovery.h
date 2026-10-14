@@ -250,6 +250,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] QuicRoundTripTimeEstimate roundTripTimeEstimate() const noexcept;
 
         /**
+         * @brief 按 kInitialRtt 算出来的 PTO：一条还没有任何样本的新路径该等多久（RFC 9000 §8.2.4）
+         * @details 路径验证的放弃时限取「当前 PTO 与它谁大」——新路径的往返时间可能比旧路径长得多，
+         *          只按旧路径的估算去等，会把一条只是慢一点的好路判死
+         * @return QuicTime 用初始 RTT 与对端声明的 max_ack_delay 算出的 PTO，不含退避倍数
+         */
+        [[nodiscard]] QuicTime initialProbeTimeout() const noexcept;
+
+        /**
+         * @brief 确认对端的新地址之后把 RTT 估算重置回初值（RFC 9000 §9.4 的 MUST）
+         * @details 只动估算器与退避倍数：在途记账与 §7.6.2 的判丢锚点不动——那些包还挂在网上，
+         *          该销的账仍要按原样销。重置之后 PTO 重新从 kInitialRtt 那一档长起来
+         */
+        void resetForPathChange() noexcept;
+
+        /**
          * @brief 在途字节总数
          * @return std::size_t 三个空间里尚未确认、且计入拥塞窗口的包之和
          */

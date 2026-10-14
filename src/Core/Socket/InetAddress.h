@@ -14,6 +14,7 @@
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -163,6 +164,22 @@ namespace AsynGyanis::Core
          * @return Platform::SocketAddress 地址与长度成对；未初始化的地址给出 length 为 0 的空地址
          */
         [[nodiscard]] Platform::SocketAddress platformAddress() const noexcept;
+
+        /// `canonicalBytes()` 的定长：族号 1 + 地址 16 + 端口 2 + 作用域 4，余下留 0
+        static constexpr std::size_t kCanonicalByteCount = 24;
+
+        /**
+         * @brief 取出与结构体填充字段无关的规范化字节：族号、地址本体、端口、作用域号
+         * @details 做「是不是同一个对端地址」的快速判定要按字段取，不能直接比 sockaddr 的原始字节：
+         *          sockaddr_in 尾部的填充（sin_zero）在不同收包路径下并不总是同一个值——本仓实测过，
+         *          把原样字节折进 Retry 令牌时偶发验不过，正是这个原因。
+         *          族号写作 4/6（不写 AF_INET/AF_INET6——后者在 BSD 与 Windows 上取值不同），
+         *          端口与作用域沿用结构体里的字节序：这份标识只在本进程内比较，不跨线上，
+         *          要的是「同一地址必同、不同地址必不同」，不是跨平台的逐字节一致。
+         * @return std::array<std::uint8_t, kCanonicalByteCount> 定长字节；未初始化的地址给全零，
+         *         IPv4 用前 7 字节（族号 + 地址 + 端口），IPv6 用 23 字节（族号 + 地址 + 端口 + 作用域）
+         */
+        [[nodiscard]] std::array<std::uint8_t, kCanonicalByteCount> canonicalBytes() const noexcept;
 
         /**
          * @brief 将地址转换为可读字符串（"IP:Port" 格式）

@@ -330,6 +330,28 @@ namespace AsynGyanis::Core
         return converted;
     }
 
+    std::array<std::uint8_t, InetAddress::kCanonicalByteCount> InetAddress::canonicalBytes() const noexcept
+    {
+        std::array<std::uint8_t, kCanonicalByteCount> bytes{};
+
+        if (m_address.ss_family == AF_INET)
+        {
+            const auto *sin = reinterpret_cast<const sockaddr_in *>(&m_address);
+            bytes[0]        = 4;
+            std::memcpy(&bytes[1], &sin->sin_addr, sizeof(sin->sin_addr));
+            std::memcpy(&bytes[5], &sin->sin_port, sizeof(sin->sin_port));
+        } else if (m_address.ss_family == AF_INET6)
+        {
+            const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(&m_address);
+            bytes[0]         = 6;
+            std::memcpy(&bytes[1], &sin6->sin6_addr, sizeof(sin6->sin6_addr));
+            std::memcpy(&bytes[17], &sin6->sin6_port, sizeof(sin6->sin6_port));
+            std::memcpy(&bytes[19], &sin6->sin6_scope_id, sizeof(sin6->sin6_scope_id));
+        }
+
+        return bytes;
+    }
+
     std::string InetAddress::toString() const
     {
         std::string result;

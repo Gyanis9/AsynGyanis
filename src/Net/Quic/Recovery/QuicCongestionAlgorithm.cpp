@@ -32,12 +32,16 @@ namespace AsynGyanis::Net
     } // namespace
 
     QuicCongestionAlgorithm::QuicCongestionAlgorithm(const std::size_t maximumDatagramByteLength) noexcept :
-        m_maximumDatagramByteLength(maximumDatagramByteLength),
-        m_congestionWindowByteLength(std::min(kInitialWindowDatagramMultiple * maximumDatagramByteLength,
-                                              std::max(kMinimumWindowDatagramMultiple * maximumDatagramByteLength, kInitialWindowFloorByteLength))),
+        m_maximumDatagramByteLength(maximumDatagramByteLength), m_congestionWindowByteLength(initialWindowByteLength()),
         // 阈值先取「无穷大」，慢启动这才从第一个确认开始涨（§7.3.1）
         m_slowStartThresholdByteLength(std::numeric_limits<std::size_t>::max())
     {
+    }
+
+    std::size_t QuicCongestionAlgorithm::initialWindowByteLength() const noexcept
+    {
+        return std::min(kInitialWindowDatagramMultiple * m_maximumDatagramByteLength,
+                        std::max(kMinimumWindowDatagramMultiple * m_maximumDatagramByteLength, kInitialWindowFloorByteLength));
     }
 
     void QuicCongestionAlgorithm::setMaximumDatagramByteLength(const std::size_t maximumDatagramByteLength) noexcept
@@ -144,7 +148,19 @@ namespace AsynGyanis::Net
         m_congestionWindowByteLength      = floorByteLength;
         m_slowStartThresholdByteLength    = floorByteLength;
         m_recoveryStartTime               = std::nullopt;
-        onPersistentCongestionRestart();
+        onWindowReset();
+    }
+
+    void QuicCongestionAlgorithm::resetToInitialState() noexcept
+    {
+        // RFC 9000 §9.4 的 MUST：确认了对端的新地址之后，拥塞控制器要立刻回到初值。
+        // 落点是 §7.2 的初始窗口而不是最小窗：换的是一条活路，未知的是它的容量，不是它不通。
+        // 在途字节不动——那些包还挂在网上，该销的账仍由确认与判丢去销；恢复期标记要清，
+        // 否则新窗口会被上一轮恢复期的闸挡住，涨窗判据（§7.3.2）就废了
+        m_congestionWindowByteLength   = initialWindowByteLength();
+        m_slowStartThresholdByteLength = std::numeric_limits<std::size_t>::max();
+        m_recoveryStartTime            = std::nullopt;
+        onWindowReset();
     }
 
     void QuicCongestionAlgorithm::startCongestionEvent(const QuicTime eventTime) noexcept

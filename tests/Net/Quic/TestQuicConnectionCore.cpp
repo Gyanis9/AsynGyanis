@@ -619,6 +619,18 @@ namespace AsynGyanis::Net
                 return m_serverRetiredConnectionIdSequences;
             }
 
+            /// 服务端发来的 PATH_CHALLENGE 的 8 字节数据，按到达顺序
+            [[nodiscard]] const std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> &serverPathChallenges() const noexcept
+            {
+                return m_serverPathChallenges;
+            }
+
+            /// 服务端发来的 PATH_RESPONSE 的 8 字节数据，按到达顺序
+            [[nodiscard]] const std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> &serverPathResponses() const noexcept
+            {
+                return m_serverPathResponses;
+            }
+
             /**
              * @brief 之后 consume 到的服务端数据报都按这个 ECN 取值计数；交空表示本端读不到那个字段
              * @details 这是替身唯一能表达的「中间节点做了什么」：给出 `kEcnCodepointCe` 就是本端标了
@@ -976,6 +988,12 @@ namespace AsynGyanis::Net
                 } else if (const auto *retireConnectionId = std::get_if<QuicRetireConnectionIdFrame>(&frame); retireConnectionId != nullptr)
                 {
                     m_serverRetiredConnectionIdSequences.push_back(retireConnectionId->sequenceNumber);
+                } else if (const auto *pathChallenge = std::get_if<QuicPathChallengeFrame>(&frame); pathChallenge != nullptr)
+                {
+                    m_serverPathChallenges.push_back(pathChallenge->data);
+                } else if (const auto *pathResponse = std::get_if<QuicPathResponseFrame>(&frame); pathResponse != nullptr)
+                {
+                    m_serverPathResponses.push_back(pathResponse->data);
                 }
             }
 
@@ -1088,6 +1106,10 @@ namespace AsynGyanis::Net
             std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> m_serverNewConnectionIds{};
             /// 服务端发来的 RETIRE_CONNECTION_ID 序列号，按到达顺序
             std::vector<std::uint64_t> m_serverRetiredConnectionIdSequences{};
+            /// 服务端发来的 PATH_CHALLENGE 的 8 字节数据，按到达顺序（迁移用例按它回 PATH_RESPONSE）
+            std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> m_serverPathChallenges{};
+            /// 服务端发来的 PATH_RESPONSE 的 8 字节数据，按到达顺序
+            std::vector<std::array<std::uint8_t, kQuicPathValidationDataByteLength>> m_serverPathResponses{};
             /// 「网络」给本端读到的 ECN 字段取值，空表示这个平台读不到；每条数据报都按它计（§13.4.1）
             std::optional<std::uint8_t> m_incomingEcnCodepoint{};
             /// 服务端各空间 ACK 里报的三个 ECN 计数；该空间最近一帧不带计数时为空
@@ -1165,6 +1187,12 @@ namespace AsynGyanis::Net
 
         /// 缺省 PROBE_TIMER 是 16 秒（RFC 8899 §5.1.1 那条 SHOULD 的下限），跨过它才允许发下一条探针
         constexpr Timestamp kPastProbeTimer{20LL * 1000 * 1000};
+
+        /// §14.1 的「允许的最小最大数据报」：路径验证的挑战与回应都要求扩到这一格（§8.2.1/§8.2.2）
+        constexpr std::size_t kSmallestAllowedMaximumDatagramByteLength = 1200;
+
+        /// RFC 9002 §5.3 的 kInitialRtt（本仓 QuicRecovery 里同名常量的对表值，断言 §9.4 的重置用）
+        constexpr std::chrono::milliseconds kInitialRoundTripTimeMilliseconds{333};
 
         /// 一轮往返里服务端出包的延迟：ACK 的延迟字段与 RTT 样本都以此为基准，取 1 毫秒便于口算
         constexpr Timestamp kServerSendLatency{1000};
@@ -1258,6 +1286,40 @@ namespace AsynGyanis::Net
         {
             ASSERT_TRUE(core.onDatagramReceived(datagram, arrivalTime).has_value());
             core.drive(arrivalTime + kServerSendLatency);
+        }
+
+        /**
+         * @brief 把一条数据报交给服务端，并声明它来自哪条对端路径（§9.3）
+         * @details 路径标识对状态机是不透明的：用例直接造键，不必去造一个真地址再折算——
+         *          折算那一步是外壳的事（`quicPathKeyOf`），这里验的是状态机按键做的账
+         * @param core 服务端状态机
+         * @param datagram 客户端手工编出来的那一条
+         * @param arrivalTime 到达时刻
+         * @param pathKey 这条数据报来的那条路径
+         */
+        void feedOnPath(QuicConnectionCore &core, const std::vector<std::uint8_t> &datagram, const Timestamp arrivalTime, const QuicPathKey &pathKey)
+        {
+            ASSERT_TRUE(core.onDatagramReceived(datagram, arrivalTime, std::nullopt, pathKey).has_value());
+            core.drive(arrivalTime + kServerSendLatency);
+        }
+
+        /**
+         * @brief 造一份与真实地址不相干的路径标识
+         * @details 第一格模仿 `Core::InetAddress::canonicalBytes()` 的族号（真地址折出来不会是 0，
+         *          全零留给「还没定路径」这一档），其余按种子填充
+         */
+        QuicPathKey makePathKey(const std::uint8_t seed)
+        {
+            QuicPathKey key{};
+            key.front() = 6;
+            key[1]      = seed;
+            return key;
+        }
+
+        /// 把一条服务端产出的数据报交给客户端替身（含路径标识的那份结构直接转过来）
+        void consumeOutbound(InMemoryQuicClient &client, const QuicOutboundDatagram &datagram)
+        {
+            client.consume(std::vector<std::uint8_t>(datagram.bytes.begin(), datagram.bytes.end()));
         }
 
         /// @return 文本对应的字节 vector，造 STREAM 帧用
@@ -3466,17 +3528,18 @@ namespace AsynGyanis::Net
                 EXPECT_EQ(*client.serverCloseErrorCode(), 0x0AU) << name << " 该按 PROTOCOL_VIOLATION 收口（§12.4）";
             } else
             {
-                EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << name << " 在 1-RTT 包里是合法形态，不该被拒（原因："
-                                                                        << client.serverCloseReasonPhrase() << "）";
+                EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << name << " 在 1-RTT 包里是合法形态，不该被拒（原因：" << client.serverCloseReasonPhrase() << "）";
             }
         };
         const auto frameInHandshakeCloses = [&](const std::string &frames, const std::string_view name, const bool expectClose)
         { frameInSpaceCloses(QuicEncryptionLevel::Handshake, frames, name, expectClose); };
 
         {
-            std::string                    frames;
+            std::string                                                        frames;
             const std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> token{};
-            appendQuicFrame(frames, QuicFrame{QuicNewConnectionIdFrame{.sequenceNumber = 1, .retirePriorTo = 0, .connectionId = std::span<const std::uint8_t>(kServerConnectionId),
+            appendQuicFrame(frames, QuicFrame{QuicNewConnectionIdFrame{.sequenceNumber      = 1,
+                                                                       .retirePriorTo       = 0,
+                                                                       .connectionId        = std::span<const std::uint8_t>(kServerConnectionId),
                                                                        .statelessResetToken = std::span<const std::uint8_t>(token)}});
             frameInHandshakeCloses(frames, "NEW_CONNECTION_ID", true);
         }
@@ -3501,5 +3564,366 @@ namespace AsynGyanis::Net
             appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
             frameInSpaceCloses(QuicEncryptionLevel::Application, frames, "PATH_CHALLENGE(1-RTT)", false);
         }
+    }
+
+    /**
+     * @brief §8.2.2：收到 PATH_CHALLENGE 要原样回显，且回显打在同一条路径上、扩到 1200
+     * @details 三条判据都在这一趟里核：回显的数据逐字节相同、恰好一条、且它走的路径就是挑战来的那条
+     *          ——回显打到别处的话，对方在原来那条路上永远等不到验证结论（§8.2.2 第二段的理由）
+     */
+    TEST(QuicConnectionCore, EchoesAPathChallengeOnThePathItArrivedOn)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const QuicPathKey                                                 probePathKey = makePathKey(0xA1);
+        const std::array<std::uint8_t, kQuicPathValidationDataByteLength> probeData{9, 8, 7, 6, 5, 4, 3, 2};
+        std::string                                                       frames;
+        appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{.data = probeData}});
+        // 挑战自己只有 9 字节，三倍额度装不下 1200 的回显（那正是 §8.2.2 的例外分支）。补够 400 字节
+        // 让额度足够，好把「扩到 1200」那半条一并验掉
+        frames.append(400, '\0');
+        const std::vector<std::uint8_t> challengeDatagram = client.buildDatagramWith(QuicEncryptionLevel::Application, frames);
+        ASSERT_GE(challengeDatagram.size(), 400U);
+
+        feedOnPath(core, challengeDatagram, Timestamp{130000}, probePathKey);
+        const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+        ASSERT_EQ(outbound.size(), 2U) << "一条挑战应当换回两条报文：回显（§8.2.2）与它自己那份确认";
+        for (const QuicOutboundDatagram &datagram: outbound)
+        {
+            consumeOutbound(client, datagram);
+        }
+
+        const auto responseDatagram = std::ranges::find_if(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == probePathKey; });
+        ASSERT_NE(responseDatagram, outbound.end()) << "回显没打回挑战来的那条路径上（§8.2.2：MUST be sent on the network path where the PATH_CHALLENGE was received）";
+        EXPECT_GE(responseDatagram->bytes.size(), kSmallestAllowedMaximumDatagramByteLength) << "含 PATH_RESPONSE 的数据报要扩到 1200（§8.2.2）";
+        ASSERT_EQ(client.serverPathResponses().size(), 1U) << "一条挑战要恰好换回一条回显（§8.2.2：MUST NOT send more than one）";
+        EXPECT_TRUE(std::ranges::equal(client.serverPathResponses().front(), probeData)) << "回显的数据必须逐字节相同（§8.2.2）";
+
+        const auto acknowledgementDatagram = std::ranges::find_if(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey != probePathKey; });
+        ASSERT_NE(acknowledgementDatagram, outbound.end());
+        EXPECT_TRUE(isUnspecifiedQuicPathKey(acknowledgementDatagram->pathKey)) << "一条只带探测帧的报文不该把发包目标拽到新地址上（§9.1/§9.3）";
+        EXPECT_TRUE(client.serverPathChallenges().empty()) << "本端不该因一条只带探测帧的报文发起验证（§9.3 只认非探测包）";
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value());
+    }
+
+    /**
+     * @brief §9.3：只跟「编号最高的非探测包」换地址；§9.3.3：换的时候要在原来那条路上复验
+     */
+    TEST(QuicConnectionCore, FollowsANewPathOnlyForAHigherNumberedNonProbingPacket)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const QuicPathKey newPathKey = makePathKey(0xB2);
+
+        // ① 只带 PATH_CHALLENGE 的报文不算「搬家」：回显要走新路，发包目标留在原地
+        std::string probeFrames;
+        appendQuicFrame(probeFrames, QuicFrame{QuicPathChallengeFrame{.data = {1, 1, 2, 2, 3, 3, 4, 4}}});
+        probeFrames.append(400, '\0');
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, probeFrames), Timestamp{130000}, newPathKey);
+        {
+            const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+            for (const QuicOutboundDatagram &datagram: outbound)
+            {
+                consumeOutbound(client, datagram);
+            }
+            EXPECT_TRUE(client.serverPathChallenges().empty()) << "一条只带探测帧的报文把本端拽去了新地址（§9.3 只认非探测包）";
+            ASSERT_EQ(client.serverPathResponses().size(), 1U);
+        }
+
+        // ② 非探测包来了：换过去、在新路拿挑战、并在旧路复验（§9.3.3）
+        std::string pingFrames;
+        appendQuicFrame(pingFrames, QuicFrame{QuicPingFrame{}});
+        const std::vector<std::uint8_t> lateOldPathPacket = client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames); // 先编出来压着，包号更低
+        const std::vector<std::uint8_t> triggerPacket     = client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames); // 包号更高，先送到
+        feedOnPath(core, triggerPacket, Timestamp{140000}, newPathKey);
+        const std::vector<QuicOutboundDatagram> followFlight = drainMarked(core);
+        for (const QuicOutboundDatagram &datagram: followFlight)
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3）并在原来那条活动路径上复验（§9.3.3）";
+        ASSERT_EQ(followFlight.size(), 3U) << "这一批应当是：新路挑战、旧路复验、以及那条报文自己的确认";
+        EXPECT_EQ(followFlight[0].pathKey, newPathKey);
+        EXPECT_LT(followFlight[0].bytes.size(), kSmallestAllowedMaximumDatagramByteLength) << "三倍额度只有小报文那么多，挑战不该硬扩到 1200（§8.2.1 的例外分支）";
+        EXPECT_TRUE(isUnspecifiedQuicPathKey(followFlight[1].pathKey)) << "§9.3.3：疑似迁移时必须在原来那条活动路径上也验一次";
+        EXPECT_EQ(followFlight[2].pathKey, newPathKey) << "换地址之后确认也要打到新地址上（§9.3 的 MUST）";
+
+        // ③ 把压着的那条**更旧**的非探测包从原路径送进来：发包目标不能被它拽回去（§9.3 只认编号最高的那条）
+        feedOnPath(core, lateOldPathPacket, Timestamp{150000}, QuicPathKey{});
+        const std::vector<QuicOutboundDatagram> lateOutbound = drainMarked(core);
+        for (const QuicOutboundDatagram &datagram: lateOutbound)
+        {
+            consumeOutbound(client, datagram);
+        }
+        EXPECT_EQ(client.serverPathChallenges().size(), 2U) << "一条乱序的旧包又触发了一轮验证：地址被它拽走了（§9.3）";
+        ASSERT_FALSE(lateOutbound.empty());
+        EXPECT_TRUE(std::ranges::all_of(lateOutbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; })) << "更旧的包不该把发包目标拽回旧地址";
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value());
+    }
+
+    /**
+     * @brief §8.2.3/§9.4：回应对上在途挑战才算验证通过，且此刻拥塞窗口与 RTT 估算都要重置回初值
+     * @details 「确认不算验证」这条同一趟里反向钉住：这一轮挑战的确认（ACK）早就在路上跑了，
+     *          但只有在 PATH_RESPONSE 到齐之后两个读数才会回到初值
+     */
+    TEST(QuicConnectionCore, ValidatesTheMigratedPathAndResetsCongestionAndRoundTripEstimation)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        // 前置：握手采过真样本、窗口也随确认涨过，两个读数此刻都不是初值（否则下面的断言什么都不证明）。
+        // 初窗按 §7.2 的算式用本端当前的数据报上限手算：握手期的路径 MTU 探针确认过 1232 那一格，
+        // 初窗因此是 10×1232 而不是 10×1200——算式写在用例里（不叫实现里那个函数），期望值才有独立来源
+        const std::size_t datagramByteLength      = core.maximumDatagramPayloadByteLength();
+        const std::size_t initialWindowByteLength = std::min(10 * datagramByteLength, std::max(2 * datagramByteLength, std::size_t{14720}));
+        const std::size_t windowBefore            = core.congestionWindowByteLength();
+        ASSERT_NE(core.roundTripTimeEstimate().smoothed, kInitialRoundTripTimeMilliseconds);
+        ASSERT_GT(windowBefore, initialWindowByteLength);
+
+        const QuicPathKey newPathKey = makePathKey(0xC3);
+        std::string       frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        frames.append(600, '\0'); // 额度够 1200：这一轮挑战会扩充，后面不该再补一轮
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{130000}, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3），同时按 §9.3.3 复验原来那条活动路径";
+        // 候选那条先提的枪（装载顺序在前，到达顺序也就排第一）
+        const std::array<std::uint8_t, kQuicPathValidationDataByteLength> challengeData = client.serverPathChallenges().front();
+
+        std::string responseFrames;
+        appendQuicFrame(responseFrames, QuicFrame{QuicPathResponseFrame{.data = challengeData}});
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, responseFrames), Timestamp{140000}, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+
+        EXPECT_EQ(core.roundTripTimeEstimate().smoothed, kInitialRoundTripTimeMilliseconds)
+                << "确认新地址之后 RTT 估算没重置（§9.4 的 MUST；初值 333ms 出自 RFC 9002 §5.3 的 kInitialRtt）";
+        EXPECT_EQ(core.congestionWindowByteLength(), initialWindowByteLength) << "拥塞窗口没回到初值（§9.4 的 MUST；初窗算式见 RFC 9002 §7.2）";
+        EXPECT_EQ(client.serverPathChallenges().size(), 2U) << "这一轮挑战本来就扩充过，不该再补一轮 MTU 验证（§8.2.3 末段只管没扩充的那一轮）";
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value());
+    }
+
+    /**
+     * @brief §8.2.1 末段/§8.2.3：第一轮挑战被额度卡住没扩充时，验过地址之后必须再补一轮扩充的
+     */
+    TEST(QuicConnectionCore, RevalidatesWithAnExpandedDatagramWhenTheFirstChallengeCouldNotBeExpanded)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const QuicPathKey newPathKey = makePathKey(0xD4);
+        std::string       frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        const std::vector<std::uint8_t> smallTrigger = client.buildDatagramWith(QuicEncryptionLevel::Application, frames);
+        feedOnPath(core, smallTrigger, Timestamp{130000}, newPathKey);
+        const std::vector<QuicOutboundDatagram> firstFlight = drainMarked(core);
+        for (const QuicOutboundDatagram &datagram: firstFlight)
+        {
+            consumeOutbound(client, datagram);
+        }
+
+        ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3），同时按 §9.3.3 复验原来那条活动路径";
+        const auto firstChallenge = std::ranges::find_if(firstFlight, [&](const QuicOutboundDatagram &datagram)
+                                                         { return datagram.pathKey == newPathKey && datagram.bytes.size() < kSmallestAllowedMaximumDatagramByteLength; });
+        ASSERT_NE(firstChallenge, firstFlight.end()) << "额度装不下 1200 时挑战仍要照发小包（§8.2.1 的例外分支不是「不发」）";
+        EXPECT_LE(firstChallenge->bytes.size(), 3 * smallTrigger.size()) << "打出去的字节不能超过这条路径三倍的已收额度（§9.3.1）";
+
+        std::string responseFrames;
+        appendQuicFrame(responseFrames, QuicFrame{QuicPathResponseFrame{.data = client.serverPathChallenges().front()}});
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, responseFrames), Timestamp{140000}, newPathKey);
+        const std::vector<QuicOutboundDatagram> secondFlight = drainMarked(core);
+        for (const QuicOutboundDatagram &datagram: secondFlight)
+        {
+            consumeOutbound(client, datagram);
+        }
+
+        ASSERT_EQ(client.serverPathChallenges().size(), 3U) << "第一轮没扩充过就不能算验过 MTU（§8.2.3 末段：MUST initiate another path validation with an expanded datagram）";
+        EXPECT_NE(client.serverPathChallenges().back(), client.serverPathChallenges().front()) << "补的那一轮要换一份新数据";
+        const auto expandedChallenge = std::ranges::find_if(secondFlight, [&](const QuicOutboundDatagram &datagram)
+                                                            { return datagram.pathKey == newPathKey && datagram.bytes.size() >= kSmallestAllowedMaximumDatagramByteLength; });
+        EXPECT_NE(expandedChallenge, secondFlight.end()) << "补的那一轮挑战必须扩到 1200";
+    }
+
+    /**
+     * @brief §13.3/§9.4：挑战一个 PTO 没等到回应就换一份新数据重发；旧那份数据从此不再作数
+     */
+    TEST(QuicConnectionCore, RetransmitsTheChallengeWithFreshDataOnProbeTimeout)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const QuicPathKey newPathKey = makePathKey(0xE5);
+        const Timestamp   arrival    = Timestamp{130000};
+        std::string       frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        frames.append(600, '\0');
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), arrival, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3），同时按 §9.3.3 复验原来那条活动路径";
+        const std::array<std::uint8_t, kQuicPathValidationDataByteLength> firstChallengeData = client.serverPathChallenges().front();
+
+        // 一个 PTO 过后还没等到回应：换一份新数据重发（§13.3「resent with different payloads」/§9.4 末段）
+        const Timestamp challengeSentTime = arrival + kServerSendLatency;
+        core.onTimeout(challengeSentTime + core.probeTimeoutPeriod() + Timestamp{1000});
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 3U) << "探测超时之后没换新挑战重发";
+        EXPECT_NE(client.serverPathChallenges().back(), firstChallengeData) << "重发必须换一份新数据（§13.3：同一份重发没有意义）";
+
+        // 拿旧数据回话：对不上任何在途挑战，不该验过（§8.2.3 的判据是「与发过的挑战逐字节相同」）
+        std::string staleResponseFrames;
+        appendQuicFrame(staleResponseFrames, QuicFrame{QuicPathResponseFrame{.data = firstChallengeData}});
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, staleResponseFrames), Timestamp{150000}, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        EXPECT_NE(core.roundTripTimeEstimate().smoothed, kInitialRoundTripTimeMilliseconds) << "一份对不上在途挑战的回应把路径验过了";
+
+        // 拿新数据回话：这次才该验过
+        std::string freshResponseFrames;
+        appendQuicFrame(freshResponseFrames, QuicFrame{QuicPathResponseFrame{.data = client.serverPathChallenges().back()}});
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, freshResponseFrames), Timestamp{160000}, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        EXPECT_EQ(core.roundTripTimeEstimate().smoothed, kInitialRoundTripTimeMilliseconds) << "回应的正是在途挑战那份数据却没验过（§8.2.3）";
+    }
+
+    /**
+     * @brief §8.2.4/§9.3.2：放弃时限之前一直算验证中；越过之后退回上一个已验证地址，连接继续
+     */
+    TEST(QuicConnectionCore, RevertsToTheValidatedPathWhenValidationIsAbandoned)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        const QuicPathKey newPathKey = makePathKey(0xF6);
+        const Timestamp   arrival    = Timestamp{130000};
+        std::string       frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        frames.append(600, '\0');
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), arrival, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3），同时按 §9.3.3 复验原来那条活动路径";
+        const Timestamp challengeSentTime = arrival + kServerSendLatency;
+
+        // 只带探测帧的报文：回显要走它来的那条路，而确认走的是本端当前发包目标——两处一对比就看出退没退。
+        // 两次探测各编一份（同一份交两遍会被包号去重挡下，那样什么也验不到）
+        std::string probeFrames;
+        appendQuicFrame(probeFrames, QuicFrame{QuicPathChallengeFrame{.data = {5, 5, 5, 5, 6, 6, 6, 6}}});
+        const std::vector<std::uint8_t> firstProbingDatagram  = client.buildDatagramWith(QuicEncryptionLevel::Application, probeFrames);
+        const std::vector<std::uint8_t> secondProbingDatagram = client.buildDatagramWith(QuicEncryptionLevel::Application, probeFrames);
+
+        // 未到 §8.2.4 的期限（3×max(当前 PTO, 按 kInitialRtt 的 PTO) ≈ 3.07 秒）：验证照旧，发包目标还在新地址
+        core.onTimeout(challengeSentTime + std::chrono::milliseconds{2900});
+        feedOnPath(core, firstProbingDatagram, Timestamp{3000000}, newPathKey);
+        {
+            const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+            for (const QuicOutboundDatagram &datagram: outbound)
+            {
+                consumeOutbound(client, datagram);
+            }
+            ASSERT_FALSE(outbound.empty());
+            EXPECT_TRUE(std::ranges::all_of(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; }))
+                    << "期限没到就把验证放弃了（§8.2.4 的时限是给「多条 PTO 之内丢一两帧」留的余地）";
+        }
+
+        // 越过期限：放弃并退回上一个已验证地址（§8.2.4 → §9.3.2）
+        core.onTimeout(challengeSentTime + std::chrono::milliseconds{3200});
+        feedOnPath(core, secondProbingDatagram, Timestamp{3300000}, newPathKey);
+        {
+            const std::vector<QuicOutboundDatagram> outbound = drainMarked(core);
+            for (const QuicOutboundDatagram &datagram: outbound)
+            {
+                consumeOutbound(client, datagram);
+            }
+            EXPECT_TRUE(std::ranges::any_of(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; }))
+                    << "回显仍要打在挑战来的那条路径上（§8.2.2）";
+            EXPECT_TRUE(std::ranges::any_of(outbound, [&](const QuicOutboundDatagram &datagram) { return isUnspecifiedQuicPathKey(datagram.pathKey); }))
+                    << "放弃之后回包没退回上一个已验证地址（§9.3.2 的 MUST revert）";
+        }
+        EXPECT_FALSE(core.isFinished()) << "还有可退的已验证地址，不该就此收口";
+        EXPECT_FALSE(client.serverCloseErrorCode().has_value()) << "退回旧地址是正常路径，不是收口";
+    }
+
+    /**
+     * @brief §9.3.2 末段：一个已验证地址都没有（握手还没确认）时验证失败，只能静默收口
+     * @details 这条只在「对端在握手确认前就换地址」的窗口里成立：服务端的地址验证要等握手确认
+     *          （§8.1.4），那之前 m_validatedPathKey 一直是空的。静默＝不发 CONNECTION_CLOSE
+     */
+    TEST(QuicConnectionCore, ClosesSilentlyWhenNoValidatedPathIsLeftToFallBackTo)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        exchange(core, client, Timestamp{0}); // 只跑第一轮：对端还没确认过 Handshake 空间的包，握手尚未确认
+
+        // 客户端第二趟的握手字节从新地址来：只喂飞行、不喂确认，免得顺手把握手确认掉
+        const QuicPathKey newPathKey = makePathKey(0x57);
+        for (const auto &datagram: client.buildFlight())
+        {
+            feedOnPath(core, datagram, Timestamp{20000}, newPathKey);
+        }
+
+        core.onTimeout(Timestamp{4'000'000}); // 越过 3×max(当前 PTO, 按 kInitialRtt 的 PTO) 的放弃期限
+        EXPECT_TRUE(core.isFinished()) << "没有已验证地址可退时该静默收口（§9.3.2 末段）";
+        EXPECT_TRUE(drainMarked(core).empty()) << "静默收口不该留下任何待发报文";
+        EXPECT_FALSE(client.sawConnectionClose()) << "静默收口不许发 CONNECTION_CLOSE";
     }
 } // namespace AsynGyanis::Net

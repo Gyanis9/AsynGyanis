@@ -131,6 +131,11 @@ port="$(startServer address-validation --address-validation 30)" || exit 2
 runCase retry-handshake address-validation retry-handshake "$port"
 stopServer
 
+port="$(startServer migration)" || exit 2
+runCase migration migration migration "$port"
+expectLog migration migration 'ECHOED [0-9]+ 9'
+stopServer
+
 port="$(startServer alpn)" || exit 2
 runCase alpn-refusal alpn alpn-refusal "$port"
 stopServer

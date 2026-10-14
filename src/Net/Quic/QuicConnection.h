@@ -11,8 +11,10 @@
  *          而这里只负责真实世界的那一层。流数据由 `QuicStreamLayer` 拷贝入队，交出后即可释放，
  *          不再有「指针必须活到对端确认」的那份跨层承诺。
  *
- * @note 能力边界之外刻意没有做几项：无状态重置令牌与 STATELESS RESET、连接标识轮换（本端全程
- *       只用一个连接标识）、路径迁移与 PATH_CHALLENGE、0-RTT、RETRY、版本协商包。
+ * @note 能力边界之外刻意没有做几项：无状态重置的**发送**（§10.3；令牌派生已按 §10.3.2 摆好）、
+ *       0-RTT、NEW_TOKEN、版本协商包，以及 §9.6 的首选地址。路径迁移按 §9.3 应答（跟地址、验新路、
+ *       退回旧路），但本端不主动发起迁移（§9.2 那一半）。来源地址表与 §9.3.3 的旧路复验探测
+ *       成对做在 `handleDatagram` 与 `sendOutboundBatch` 上。
  * **未验证连接与已验证连接共用同一份名额**（`QuicServer::Configuration::maximumConnections`），
  *       不设「握手未完成单独占额」也是刻意的：握手有超时（PTO 与空闲两把钟都会收掉僵尸位）、
  *       未验证期的字节面另有 3× 放大帽压着（RFC 9000 §8.1），且这与 TCP 侧同一口径（那边连接
@@ -46,6 +48,9 @@
 namespace AsynGyanis::Net
 {
     class QuicConnectionCore;
+
+    /// 状态机的配置结构（定义在 `QuicConnectionCore.h`）：本类只把它按引用传出去，不必把整个头拉进来
+    struct QuicConnectionCoreConfiguration;
 
     /// 出站连接的身份设置（SNI、校验名、ALPN），定义在 `Crypto/QuicTlsContext.h`；这里只按引用交出去
     struct QuicClientTlsSettings;
@@ -219,9 +224,10 @@ namespace AsynGyanis::Net
          * @return std::string 地址文本；本连接还没收到过任何带来源的报文时为空串
          * @details 与其它传输层的 `Connection::remoteAddress()` 同一形状、同一取值口径，因此 h1/h2/h3
          *          三条通道交给业务的来源地址不需要按协议分叉（见 HttpRequest::remoteAddress()）。
-         * @note 读的是**当前**那份对端地址：QUIC 允许来源随 NAT 重绑而变化（handleDatagram 会跟随更新），
-         *       所以两次调用之间取值可能不同。HTTP/3 会话按连接缓存一次，业务因此在一批请求里读到的是
-         *       同一个来源，不会半批换 IP
+         * @note 服务端一侧读的是**当前**那份对端地址：QUIC 允许来源随 NAT 重绑而变化（§9.3，
+         *       handleDatagram 会跟随更新），所以两次调用之间取值可能不同；客户端一侧只认配置里
+         *       那个服务端地址（§9 的 MUST：陌生服务端地址的报文一律丢弃）。HTTP/3 会话按连接缓存
+         *       一次，业务因此在一批请求里读到的是同一个来源，不会半批换 IP
          */
         [[nodiscard]] std::string remoteAddress() const;
 
@@ -418,6 +424,30 @@ namespace AsynGyanis::Net
         /// @return 自本连接建立起的微秒数，状态机要的那个时刻
         [[nodiscard]] std::chrono::microseconds currentTime() const noexcept;
 
+        /**
+         * @brief 把「这条路径的对端地址」记进表里（已在表里就挪到最新一格）
+         * @details 表按来源地址记条目，键是 `Core::InetAddress::canonicalBytes()` 折出来的路径标识——
+         *          状态机对地址不透明，产出的数据报只带标识，外壳靠这张表把它换回地址（§9.3）
+         * @param pathKey 路径标识
+         * @param address 该路径对应的对端地址
+         */
+        void rememberPathAddress(const QuicPathKey &pathKey, const Platform::SocketAddress &address);
+
+        /// @return 路径标识对应的对端地址（拷一份返回：发送要 await，期间别的任务可能往表里加条目）；
+        ///         标识是留空那一档（单路径）时就是本连接记着的对端地址；查不到为空
+        [[nodiscard]] std::optional<Platform::SocketAddress> targetAddressFor(const QuicPathKey &pathKey) const;
+
+        /// @return 路径标识对应的地址文本，供日志用；查不到时给一句固定的说明
+        [[nodiscard]] std::string pathAddressText(const QuicPathKey &pathKey) const;
+
+        /**
+         * @brief 把核心的三条通知（标识签发/撤回、路径验证成败）接回本连接
+         * @details 接线要等连接对象存在（回调要指回它），所以不能写在 `accept` 的配置填充段里；
+         *          从中剥出来也是让 `accept` 那条主线（解报文 → 填配置 → 建状态机）读得完
+         * @param coreConfiguration 待建状态机的配置，本函数就地补上各条回调
+         */
+        void wireCoreNotifications(QuicConnectionCoreConfiguration &coreConfiguration);
+
         /// 把状态机攒下的流交付与流收口挨个转交给配置里的回调
         void pumpStreamCallbacks();
 
@@ -444,11 +474,17 @@ namespace AsynGyanis::Net
          */
         void notifyPeerStreamClosed(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
-        Configuration                         m_configuration;            ///< 服务端共享的那几项
-        std::unique_ptr<QuicConnectionCore>   m_core{};                   ///< 协议状态机，本连接唯一一份
-        std::string                           m_sourceConnectionId;       ///< 本端连接标识（路由键）
-        Platform::SocketAddress               m_peerAddress{};            ///< 对端地址
-        Platform::SocketAddress               m_localAddress{};           ///< 本端地址
+        Configuration                       m_configuration;      ///< 服务端共享的那几项
+        std::unique_ptr<QuicConnectionCore> m_core{};             ///< 协议状态机，本连接唯一一份
+        std::string                         m_sourceConnectionId; ///< 本端连接标识（路由键）
+        Platform::SocketAddress             m_peerAddress{};      ///< 对端地址（当前发包目标；单路径与默认目标）
+        Platform::SocketAddress             m_localAddress{};     ///< 本端地址
+        /// 来源地址表：路径标识 → 对端地址。迁移期一个批次里可能同时装着两个目标（§9.3.3 的旧路径
+        /// 复验），所以地址不只有「当前那个」。上界比状态机的在册路径数（至多 3 条）多一倍余量
+        std::vector<std::pair<QuicPathKey, Platform::SocketAddress>> m_pathAddresses{};
+        /// 来源地址变了要不要跟：服务端要跟（§9.3，报文最终由状态机按最高非探测包决定发往哪），
+        /// 客户端不跟（§9 的 MUST：客户端收到陌生服务端地址的报文一律丢弃）
+        bool                                  m_followsPeerAddressOnReceive{false};
         std::chrono::steady_clock::time_point m_timeOrigin{};             ///< 时刻换算的基准，协议侧只看相对量
         int                                   m_activityCount{0};         ///< 正持有本连接的协程数，见 ActivityGuard
         bool                                  m_isClosed{false};          ///< 本地判定的收口标志（致命写失败这类路径）

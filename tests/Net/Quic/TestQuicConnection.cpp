@@ -5,6 +5,7 @@
 #include "Net/Quic/QuicConnection.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Platform/IO/Socket.h"
 
 #include <gtest/gtest.h>
@@ -154,7 +155,17 @@ namespace AsynGyanis::Net
              */
             void deliver(const std::vector<std::uint8_t> &datagram)
             {
-                const Core::Task<> handlingTask = m_connection->handleDatagram(makeLoopbackAddress(55000), std::span<const std::uint8_t>(datagram));
+                deliverFrom(makeLoopbackAddress(55000), datagram);
+            }
+
+            /**
+             * @brief 把一段字节从指定来源地址交给 handleDatagram() 跑到底
+             * @param fromAddress 这条报文看起来来自哪里（迁移用例要造「来源变了」的局面）
+             * @param datagram 待交付的数据报
+             */
+            void deliverFrom(const Platform::SocketAddress &fromAddress, const std::vector<std::uint8_t> &datagram)
+            {
+                const Core::Task<> handlingTask = m_connection->handleDatagram(fromAddress, std::span<const std::uint8_t>(datagram));
                 handlingTask.handle().resume();
                 EXPECT_TRUE(handlingTask.handle().done()) << "handleDatagram 没跑完";
             }
@@ -433,5 +444,61 @@ namespace AsynGyanis::Net
 
         EXPECT_FALSE(connection.isClosed());
         EXPECT_EQ(connection.nextExpiry(), expiryAfterAccept) << "解不开的报文给这条连接续了命";
+    }
+
+    /**
+     * @brief 服务端一侧要跟来源地址的变化：回包要打到对端**现在**在用的地址上（RFC 9000 §9.3）
+     * @details 发往哪条路最终由状态机按「编号最高的非探测包」定，外壳这一层先把「对端地址」
+     *          这一格跟上——不然对端 NAT 重绑之后什么都收不到。客户端一侧的规矩相反，见下一条
+     */
+    TEST(QuicConnection, FollowsTheSourceAddressForServerSideConnections)
+    {
+        AcceptedConnectionFixture fixture;
+        ASSERT_TRUE(fixture.accepted());
+        QuicConnection &connection = fixture.connection();
+
+        fixture.deliver(makeClientInitial());
+        EXPECT_EQ(connection.remoteAddress(), "127.0.0.1:55000");
+
+        // 同一条连接换成另一个来源端口说话（NAT 重绑定/迁移的样子）：地址那一格要跟上
+        fixture.deliverFrom(makeLoopbackAddress(55001), makeClientInitial());
+        EXPECT_EQ(connection.remoteAddress(), "127.0.0.1:55001");
+    }
+
+    /**
+     * @brief 客户端一侧不跟：陌生服务端地址的报文连「对端地址」这一格都不许动（RFC 9000 §9 的 MUST）
+     * @details 「客户端收到来自陌生服务端地址的报文一律丢弃」在外壳上的第一道效果就是这一格：
+     *          地址一旦被拽走，本端此后所有重传都打给那个陌生地址，而服务端按规范根本不会迁移。
+     *          把 connect() 里那个标志改成真，本条立刻变红
+     */
+    TEST(QuicConnection, KeepsTheConfiguredServerAddressWhenAStraySourceSendsToTheClient)
+    {
+        std::unique_ptr<SSL_CTX, void (*)(SSL_CTX *)> tlsContext(SSL_CTX_new(TLS_client_method()),
+                                                                 [](SSL_CTX *context)
+                                                                 {
+                                                                     if (context != nullptr)
+                                                                     {
+                                                                         SSL_CTX_free(context);
+                                                                     }
+                                                                 });
+        ASSERT_NE(tlsContext.get(), nullptr);
+        std::vector<std::size_t>      sentDatagramLengths;
+        QuicConnection::Configuration configuration = makeConfiguration(*tlsContext, sentDatagramLengths);
+
+        QuicClientTlsSettings clientTlsSettings;
+        clientTlsSettings.hostName                       = "localhost";
+        clientTlsSettings.applicationProtocolIdentifiers = {std::string{"h3"}};
+        std::unique_ptr<QuicConnection> client           = QuicConnection::connect(configuration, makeLoopbackAddress(44000), makeLoopbackAddress(4433), clientTlsSettings);
+        ASSERT_NE(client, nullptr);
+        const std::string configuredAddress = client->remoteAddress();
+        ASSERT_FALSE(configuredAddress.empty());
+
+        // 一条来自陌生地址的垃圾报文：解不开也要走一遍收包路径，地址那一格正是在那条路上写的
+        const std::vector<std::uint8_t> strayDatagram{0x40U, 0x01U, 0x02U, 0x03U, 0x04U};
+        const Core::Task<>              handlingTask = client->handleDatagram(makeLoopbackAddress(55099), std::span<const std::uint8_t>(strayDatagram));
+        handlingTask.handle().resume();
+        EXPECT_TRUE(handlingTask.handle().done());
+
+        EXPECT_EQ(client->remoteAddress(), configuredAddress) << "客户端跟着陌生来源换了地址：此后重传全打给一个不该认的地址（§9 的 MUST）";
     }
 } // namespace AsynGyanis::Net

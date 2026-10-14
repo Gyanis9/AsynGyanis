@@ -90,6 +90,29 @@ namespace AsynGyanis::Net
         /// 客户端第一个 Initial 里那个自造目的标识的长度：RFC 9000 §7.2 只要求「至少 8 字节以免撞车」，
         /// 取 16 是给同一台机器上的大量出站连接留出足够的区分度
         constexpr std::size_t kInitialPeerConnectionIdLength = 16;
+
+        /// 来源地址表的容量：路径验证至多同时用三条（当前路径、候选、§9.3.3 的旧路径复验），留一倍余量
+        constexpr std::size_t kMaximumRememberedPathAddressCount = 8;
+
+        /// 「查不到路径地址」那条告警的限流窗口：错配要么不发生，要么每条待发都发生，不限流会刷爆日志
+        constexpr std::chrono::minutes kUnknownPathAddressLogWindow{1};
+
+        /// 路径地址表与覆盖路径标识长度的约定必须一致：折出来的键就按这个长度比（库层各改各的会静默对不上）
+        static_assert(kQuicPathKeyByteLength == Core::InetAddress::kCanonicalByteCount, "路径标识长度必须跟地址规范化字节的定长一致");
+
+        /**
+         * @brief 把一条来源地址折成路径标识（RFC 9000 §9.3 的「路径」：本端地址与对端地址的二元组，
+         *        收包侧只看对端那一半）
+         * @details 折的是 `Core::InetAddress::canonicalBytes()` 的规范化字节，不是 sockaddr 的原始字节：
+         *          后者带着 sin_zero 之类的填充字段，同一个地址在不同收包路径下这些字节的值可能不同
+         *          （本仓实测过，Retry 令牌曾因此偶发验不过）
+         * @param address 平台层收来的对端地址
+         * @return QuicPathKey 对状态机不透明的路径标识
+         */
+        QuicPathKey quicPathKeyOf(const Platform::SocketAddress &address)
+        {
+            return Core::InetAddress(address.storage, address.length).canonicalBytes();
+        }
     } // namespace
 
     std::unique_ptr<QuicConnection> QuicConnection::accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
@@ -165,19 +188,10 @@ namespace AsynGyanis::Net
         connection->m_peerAddress  = peerAddress;
         connection->m_localAddress = localAddress;
         connection->m_timeOrigin   = std::chrono::steady_clock::now();
+        // 服务端这一侧要跟来源地址的变化（§9.3：报文发往哪，最终由状态机按「编号最高的非探测包」定）
+        connection->m_followsPeerAddressOnReceive = true;
         connection->m_sourceConnectionId.assign(reinterpret_cast<const char *>(coreConfiguration.localConnectionId.data()), coreConfiguration.localConnectionId.size());
-        // 标识通知要转一道：核心给的是「哪条标识」，外壳的调用方要的是「这条标识属于哪条连接」，
-        // 而连接对象此刻才存在（配置在它之前建好，回调又要指回它），所以在这里才接得上
-        if (configuration.onConnectionIdIssued)
-        {
-            coreConfiguration.onConnectionIdIssued = [rawConnection = connection.get()](const std::span<const std::uint8_t> connectionId)
-            { rawConnection->m_configuration.onConnectionIdIssued(*rawConnection, connectionId); };
-        }
-        if (configuration.onConnectionIdRetired)
-        {
-            coreConfiguration.onConnectionIdRetired = [rawConnection = connection.get()](const std::span<const std::uint8_t> connectionId)
-            { rawConnection->m_configuration.onConnectionIdRetired(*rawConnection, connectionId); };
-        }
+        connection->wireCoreNotifications(coreConfiguration);
         try
         {
             connection->m_core = std::make_unique<QuicConnectionCore>(std::move(coreConfiguration));
@@ -190,6 +204,25 @@ namespace AsynGyanis::Net
 
         LOG_DEBUG_FMT("QuicConnection: 已接受一条连接（连接标识 {} 字节，版本 0x{:08x}）", connection->m_sourceConnectionId.size(), header.version);
         return connection;
+    }
+
+    void QuicConnection::wireCoreNotifications(QuicConnectionCoreConfiguration &coreConfiguration)
+    {
+        // 三条通知都要转一道：核心给的是「哪条标识/哪条路径」，外壳的调用方要的是「属于哪条连接」，
+        // 而连接对象此刻才存在（配置在它之前建好，回调又要指回它），所以只能在这里接
+        if (m_configuration.onConnectionIdIssued)
+        {
+            coreConfiguration.onConnectionIdIssued = [this](const std::span<const std::uint8_t> connectionId) { m_configuration.onConnectionIdIssued(*this, connectionId); };
+        }
+        if (m_configuration.onConnectionIdRetired)
+        {
+            coreConfiguration.onConnectionIdRetired = [this](const std::span<const std::uint8_t> connectionId) { m_configuration.onConnectionIdRetired(*this, connectionId); };
+        }
+        // 路径验证的两条事件转成日志（核心不打日志，理由是纯计算件）：地址文本从本类的来源表里取
+        coreConfiguration.onPeerPathValidated = [this](const QuicPathKey &pathKey)
+        { LOG_INFO_FMT("QuicConnection: 对端新地址 {} 验证通过（RFC 9000 §8.2.3），后续报文发往这里", pathAddressText(pathKey)); };
+        coreConfiguration.onPeerPathAbandoned = [this](const QuicPathKey &pathKey)
+        { LOG_WARN_FMT("QuicConnection: 对端新地址 {} 验证没通过（RFC 9000 §8.2.4），退回上一个已验证地址", pathAddressText(pathKey)); };
     }
 
     std::unique_ptr<QuicConnection> QuicConnection::connect(const Configuration &configuration, const Platform::SocketAddress &localAddress,
@@ -355,14 +388,18 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 对端地址变了（NAT 重绑定）：本实现不做路径迁移，但回包仍要打到最新来源地址上，
-        // 否则对端换了端口之后再也收不到东西
-        if (peerAddress.length != m_peerAddress.length || std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0)
+        // 来源地址折成路径标识、记进表里（状态机产出的数据报按它换回地址）：
+        // 对端换地址（NAT 重绑定、迁移）之后这一格就变，标识与账都按它记（§9.3）
+        const QuicPathKey pathKey = quicPathKeyOf(peerAddress);
+        rememberPathAddress(pathKey, peerAddress);
+        if (m_followsPeerAddressOnReceive && (peerAddress.length != m_peerAddress.length || std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0))
         {
+            // 服务端：回包仍要打到最新来源地址上（发往哪最终由状态机按「编号最高的非探测包」定）。
+            // 客户端不跟（§9 的 MUST：陌生服务端地址的报文一律丢弃），它只认配置里那个服务端地址
             m_peerAddress = peerAddress;
         }
 
-        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint);
+        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint, pathKey);
         if (!handled.has_value())
         {
             LOG_DEBUG_FMT("QuicConnection: 报文不合协议（{}），已按协议收口", handled.error().message);
@@ -463,20 +500,95 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> QuicConnection::sendOutboundBatch(const std::vector<OutboundDatagram> &outboundBatch)
     {
-        if (m_configuration.sendDatagramBatch)
+        // 目标地址按条解析：迁移期一批里可能同时装着两个目标（新路径的正常包 + 旧路径的复验探测，
+        // §9.3.3），而两条出口都只收一个地址。按标识切连续段，段内保持编帧顺序原样交出去
+        std::size_t runBeginIndex = 0;
+        while (runBeginIndex < outboundBatch.size())
         {
-            // 整批一次交出：每条报文带的 ECN 标记随条目一起过去，本层不再替它改写
-            co_return co_await m_configuration.sendDatagramBatch(m_peerAddress, std::span<const OutboundDatagram>(outboundBatch));
-        }
-        for (const OutboundDatagram &datagram: outboundBatch)
-        {
-            // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
-            if (!co_await m_configuration.sendDatagram(m_peerAddress, reinterpret_cast<const std::uint8_t *>(datagram.bytes.data()), datagram.bytes.size(), datagram.ecnCodepoint))
+            const QuicPathKey runKey      = outboundBatch[runBeginIndex].pathKey;
+            std::size_t       runEndIndex = runBeginIndex + 1;
+            while (runEndIndex < outboundBatch.size() && outboundBatch[runEndIndex].pathKey == runKey)
             {
-                co_return false;
+                ++runEndIndex;
             }
+            const std::optional<Platform::SocketAddress> runTarget = targetAddressFor(runKey);
+            if (!runTarget.has_value())
+            {
+                // 键是收包时登记过的，查不到只可能是表被挤掉了：宁可丢这一条，也不能发给别的地址
+                if (auto &throttle = ASYN_LOG_THROTTLED(kUnknownPathAddressLogWindow); throttle.acquire())
+                {
+                    LOG_WARN_FMT("QuicConnection: 一条待发数据报指向没登记过的对端路径，已丢弃（过去 {} 分钟里另有 {} 条同类）", kUnknownPathAddressLogWindow.count(),
+                                 throttle.droppedCount());
+                }
+            } else if (m_configuration.sendDatagramBatch)
+            {
+                // 整批一次交出：每条报文带的 ECN 标记随条目一起过去，本层不再替它改写
+                const std::span<const OutboundDatagram> run(outboundBatch.data() + runBeginIndex, runEndIndex - runBeginIndex);
+                if (!co_await m_configuration.sendDatagramBatch(*runTarget, run))
+                {
+                    co_return false;
+                }
+            } else
+            {
+                for (std::size_t index = runBeginIndex; index < runEndIndex; ++index)
+                {
+                    // 报文本体从队列移交到这份 vector，因此这份指针在整次 await 期间都有效
+                    const OutboundDatagram &datagram = outboundBatch[index];
+                    if (!co_await m_configuration.sendDatagram(*runTarget, reinterpret_cast<const std::uint8_t *>(datagram.bytes.data()), datagram.bytes.size(),
+                                                               datagram.ecnCodepoint))
+                    {
+                        co_return false;
+                    }
+                }
+            }
+            runBeginIndex = runEndIndex;
         }
         co_return true;
+    }
+
+    void QuicConnection::rememberPathAddress(const QuicPathKey &pathKey, const Platform::SocketAddress &address)
+    {
+        const auto existing = std::ranges::find(m_pathAddresses, pathKey, &std::pair<QuicPathKey, Platform::SocketAddress>::first);
+        if (existing != m_pathAddresses.end())
+        {
+            // 挪到最新一格：淘汰从最老的开始，活跃的那几条因此不会被刚来的挤掉
+            std::pair<QuicPathKey, Platform::SocketAddress> entry = *existing;
+            m_pathAddresses.erase(existing);
+            m_pathAddresses.push_back(std::move(entry));
+            m_pathAddresses.back().second = address;
+            return;
+        }
+        if (m_pathAddresses.size() >= kMaximumRememberedPathAddressCount)
+        {
+            m_pathAddresses.erase(m_pathAddresses.begin());
+        }
+        m_pathAddresses.emplace_back(pathKey, address);
+    }
+
+    std::optional<Platform::SocketAddress> QuicConnection::targetAddressFor(const QuicPathKey &pathKey) const
+    {
+        if (isUnspecifiedQuicPathKey(pathKey))
+        {
+            // 留空那一档＝本连接的默认目标：出站客户端与「路径还没定下来」的第一批包走这里
+            return m_peerAddress;
+        }
+        const auto found = std::ranges::find(m_pathAddresses, pathKey, &std::pair<QuicPathKey, Platform::SocketAddress>::first);
+        if (found == m_pathAddresses.end())
+        {
+            return std::nullopt;
+        }
+        // 拷一份返回：发送要 await，期间别的任务可能往表里加条目把这份引用挪走
+        return found->second;
+    }
+
+    std::string QuicConnection::pathAddressText(const QuicPathKey &pathKey) const
+    {
+        const std::optional<Platform::SocketAddress> address = targetAddressFor(pathKey);
+        if (!address.has_value() || address->length == 0)
+        {
+            return "（未登记的路径）";
+        }
+        return Core::InetAddress(address->storage, address->length).toString();
     }
 
     std::chrono::steady_clock::time_point QuicConnection::nextExpiry() const noexcept
