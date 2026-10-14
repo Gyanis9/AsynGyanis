@@ -5,6 +5,7 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include "AllocationProbe.h"
@@ -30,7 +31,6 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
-#include "Platform/IO/Socket.h"
 
 #include <atomic>
 #include <memory>
@@ -40,7 +40,9 @@
 #endif
 
 #if !ASYN_PLATFORM_WIN32
+#include <netinet/in.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 #endif
@@ -108,6 +110,110 @@ namespace AsynGyanis::Core
 #endif
             }
         };
+
+        /**
+         * @brief 取一个套接字当前绑定的本机端口（内核分配的那种）
+         * @details 端口由内核分配，只能用 bind 之后回读的名字取；取不到就交回 0，由调用方按「起不来」处理。
+         * @param socketHandle 已 bind 的套接字
+         * @return std::uint16_t 主机字节序的端口；失败为 0
+         */
+        [[nodiscard]] std::uint16_t boundPortOf(const int socketHandle)
+        {
+            sockaddr_in bound{};
+            socklen_t   nameLength = static_cast<socklen_t>(sizeof(bound));
+
+            if (::getsockname(socketHandle, reinterpret_cast<sockaddr *>(&bound), &nameLength) != 0)
+            {
+                return 0;
+            }
+            return ntohs(bound.sin_port);
+        }
+
+        /**
+         * @brief 测试辅助：在回环上起一个数据报套接字，端口由内核分配
+         * @return std::array<int, 2> {套接字, 本机端口}；起不来时套接字为 -1
+         */
+        std::array<int, 2> bindLoopbackDatagram()
+        {
+            const int socketHandle = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+            if (socketHandle == -1)
+            {
+                return {-1, 0};
+            }
+
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port        = 0;
+            if (::bind(socketHandle, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(socketHandle));
+                return {-1, 0};
+            }
+
+            const std::uint16_t port = boundPortOf(socketHandle);
+            if (port == 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(socketHandle));
+                return {-1, 0};
+            }
+            return {socketHandle, static_cast<int>(port)};
+        }
+
+        /**
+         * @brief 测试辅助：在回环上建一条真 TCP 连接，交回 {客户端, 服务端}
+         * @details 必须是真的 TCP 两端：`FileDescriptor::createPair()` 交出来的两头都不是 TCP，
+         *          拿它测「对端复位」测的是另一种东西（内核会不会记错误、后端能不能看见复位都不是一回事）。
+         * @return std::array<int, 2> 两端套接字；任何一步失败都交回 {-1, -1}
+         */
+        std::array<int, 2> makeLoopbackTcpPair()
+        {
+            const int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (listener == -1)
+            {
+                return {-1, -1};
+            }
+
+            sockaddr_in address{};
+            address.sin_family      = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port        = 0;
+            if (::bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 1) != 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, -1};
+            }
+
+            const std::uint16_t listenerPort = boundPortOf(listener);
+            if (listenerPort == 0)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, -1};
+            }
+            address.sin_port = htons(listenerPort);
+
+            const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+            if (client == -1)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, -1};
+            }
+            if (::connect(client, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == -1)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(client));
+                static_cast<void>(Platform::FileDescriptor::close(listener));
+                return {-1, -1};
+            }
+
+            const int server = static_cast<int>(::accept(listener, nullptr, nullptr));
+            static_cast<void>(Platform::FileDescriptor::close(listener));
+            if (server == -1)
+            {
+                static_cast<void>(Platform::FileDescriptor::close(client));
+                return {-1, -1};
+            }
+            return {client, server};
+        }
     } // namespace
 
     /**
@@ -1139,4 +1245,81 @@ namespace AsynGyanis::Core
         static_assert(!HasRemotePostOn<EventLoop>);
     }
 #endif
+
+    /**
+     * @brief 无连接的数据报套接字注册后，报文到达要报可读
+     * @details Windows 的读探针靠一条挂起的 WSARecv 实现，而投递前要先确认「这条套接字连上了」——
+     *          数据报根本没有连接，按那条守卫它永远排不进武装，等待方在 Windows 上就永远醒不过来；
+     *          后端为此留了一条按 SO_TYPE 的豁免。Linux 侧 epoll 不关心连接态，两边于是测到同一个
+     *          使用方可见的后果：UDP 的可读等待会被报文叫醒。
+     */
+    TEST(Epoll, DeliversReadableForAnUnconnectedDatagramSocket)
+    {
+        // Windows 上任何 socket API 之前都要先有 Winsock 初始化引用，Linux 侧这个守卫是空操作
+        const Platform::Socket::Initialization winsock{};
+        ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
+
+        Epoll backend;
+
+        const auto [receiveEnd, receivePort] = bindLoopbackDatagram();
+        ASSERT_GE(receiveEnd, 0) << "回环数据报套接字起不来，这条没法判";
+        const auto [sendEnd, sendPort] = bindLoopbackDatagram();
+        ASSERT_GE(sendEnd, 0) << "发端起不来，这条没法判";
+        static_cast<void>(sendPort);
+
+        int sentinel = 0;
+        ASSERT_TRUE(backend.addFileDescriptor(receiveEnd, EPOLLIN, &sentinel)) << "无连接的数据报被当成「还没连上」拒了注册";
+
+        sockaddr_in target{};
+        target.sin_family      = AF_INET;
+        target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        target.sin_port        = htons(static_cast<std::uint16_t>(receivePort));
+        ASSERT_GT(::sendto(sendEnd, "喂", 3, 0, reinterpret_cast<const sockaddr *>(&target), sizeof(target)), 0) << "报文没送出去，后面的就绪无从谈起";
+
+        const auto events = backend.wait(2000);
+        ASSERT_FALSE(events.empty()) << "报文到了却不报可读：等这条数据报的协程会永远静默";
+        EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&sentinel)) << "报回来的不是刚注册的那条套接字";
+        EXPECT_TRUE((events[0].events & EPOLLIN) != 0U) << "就绪位里没有可读：等待方按位判断会被卡住";
+
+        static_cast<void>(Platform::FileDescriptor::close(receiveEnd));
+        static_cast<void>(Platform::FileDescriptor::close(sendEnd));
+    }
+
+    /**
+     * @brief 对端复位之后，只关注可写的那一方也必须收到带错误位的就绪
+     * @details Windows 的写探针是一次零字节 WSASend：连接已被复位时它当场返回硬错误，此后这条套接字上
+     *          不会有任何完成通知，后端必须自己合成一份错误事件交出去（只记「待重投」就等于让等待方
+     *          永远静默，最后只能由上层看门狗收场）。Linux 侧 epoll 在同一状态下本来就直接带上
+     *          EPOLLERR|EPOLLHUP，两边判的是同一个使用方可见后果。
+     */
+    TEST(Epoll, ReportsErrorBitsWhenPeerResetsTheConnection)
+    {
+        const Platform::Socket::Initialization winsock{};
+        ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
+
+        Epoll backend;
+
+        const auto [clientEnd, peerEnd] = makeLoopbackTcpPair();
+        ASSERT_GE(clientEnd, 0) << "回环 TCP 两端建不起来，这条没法判";
+        ASSERT_GE(peerEnd, 0);
+
+        // 0 秒 linger 关闭 → 发 RST 而不是 FIN，本端这条连接进入持久的错误态
+        linger abortLinger{1, 0};
+        ASSERT_EQ(::setsockopt(peerEnd, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char *>(&abortLinger), sizeof(abortLinger)), 0);
+        static_cast<void>(Platform::FileDescriptor::close(peerEnd));
+
+        // 先把错误取到手再注册：否则「复位到没到本端」会决定这一条测到哪条分支
+        char probe[8]{};
+        static_cast<void>(::recv(clientEnd, probe, sizeof(probe), 0));
+
+        int sentinel = 0;
+        ASSERT_TRUE(backend.addFileDescriptor(clientEnd, EPOLLOUT, &sentinel));
+
+        const auto events = backend.wait(2000);
+        ASSERT_FALSE(events.empty()) << "连接被复位后可写等待永远静默：这一头的协程只能靠看门狗收场";
+        EXPECT_EQ(events[0].data.ptr, static_cast<void *>(&sentinel));
+        EXPECT_TRUE((events[0].events & (EPOLLERR | EPOLLHUP)) != 0U) << "就绪里没带错误位：上层按位判断拿不到「这条连接已经死了」";
+
+        static_cast<void>(Platform::FileDescriptor::close(clientEnd));
+    }
 } // namespace AsynGyanis::Core
