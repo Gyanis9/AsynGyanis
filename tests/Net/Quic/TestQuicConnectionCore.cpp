@@ -601,6 +601,12 @@ namespace AsynGyanis::Net
                 return m_serverCloseErrorCode;
             }
 
+            /// 服务端 CONNECTION_CLOSE 里那句原因（诊断用：断言失败时一眼看出收口是哪条判据触发的）
+            [[nodiscard]] const std::string &serverCloseReasonPhrase() const noexcept
+            {
+                return m_serverCloseReasonPhrase;
+            }
+
             /// 服务端发过的 NEW_CONNECTION_ID：序列号与标识本体，按到达顺序
             [[nodiscard]] const std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> &serverNewConnectionIds() const noexcept
             {
@@ -944,6 +950,7 @@ namespace AsynGyanis::Net
                 {
                     m_sawConnectionClose   = true;
                     m_serverCloseErrorCode = close->errorCode;
+                    m_serverCloseReasonPhrase.assign(close->reasonPhrase.begin(), close->reasonPhrase.end());
                 } else if (std::holds_alternative<QuicPingFrame>(frame))
                 {
                     ++m_pingFrameCount;
@@ -1076,6 +1083,7 @@ namespace AsynGyanis::Net
             std::optional<std::uint64_t>       m_serverMaxData{};                                  ///< 服务端最近一条 MAX_DATA 的上限
             std::optional<std::uint64_t>       m_serverMaxStreamData{};                            ///< 服务端最近一条 MAX_STREAM_DATA 的上限
             std::optional<std::uint64_t>       m_serverCloseErrorCode{};                           ///< 服务端 CONNECTION_CLOSE 的错误码
+            std::string                        m_serverCloseReasonPhrase{};                        ///< 服务端 CONNECTION_CLOSE 的原因文案（诊断用）
             /// 服务端发来的 NEW_CONNECTION_ID（序列号 + 标识），按到达顺序
             std::vector<std::pair<std::uint64_t, std::vector<std::uint8_t>>> m_serverNewConnectionIds{};
             /// 服务端发来的 RETIRE_CONNECTION_ID 序列号，按到达顺序
@@ -3385,5 +3393,48 @@ namespace AsynGyanis::Net
         EXPECT_EQ(client.serverRetiredConnectionIdSequences()[1], 1U);
         // 在用的那条（握手时对端自报的源标识）被退：必须换到剩下的那条上，否则回包打在一条件作废的标识上
         EXPECT_TRUE(std::ranges::equal(core.activePeerConnectionId(), thirdId)) << "在用的标识被退了却没换：此后回包全打在一条已作废的标识上";
+    }
+
+    /**
+     * @brief 本端签发的**每一条**连接标识都得收（§5.1.1 的 MUST accept）
+     * @details 通告出去的备用标识一上线就可能出现在对端的短头里。只认握手期那一条的话，对端改用
+     *          备用标识之后本端会把它的报文全丢掉——而外壳的路由表（按签发通知建的别名索引）已经
+     *          把报文送到了连接手上，两层对「这条报文是不是我的」必须给出同一个结论
+     */
+    TEST(QuicConnectionCore, AcceptsPacketsAddressedToAnyConnectionIdItIssued)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+        exchange(core, client, Timestamp{70000});
+
+        ASSERT_EQ(client.serverNewConnectionIds().size(), 1U) << "前置没成立：备用标识没发出来";
+        const std::vector<std::uint8_t> spareId = client.serverNewConnectionIds().front().second;
+        ASSERT_EQ(spareId.size(), kServerConnectionId.size());
+        ASSERT_FALSE(std::ranges::equal(spareId, kServerConnectionId));
+
+        // 对端改用它手上那条备用标识发一条 PING：服务端必须收下并回确认
+        client.overrideDestinationConnectionId(spareId);
+        const std::optional<std::uint64_t> acknowledgedBefore = client.largestServerAcknowledged();
+        std::string                        frames;
+        appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{130000});
+        for (const auto &datagram: drain(core))
+        {
+            client.consume(datagram);
+        }
+        ASSERT_TRUE(client.largestServerAcknowledged().has_value());
+        EXPECT_GT(*client.largestServerAcknowledged(), acknowledgedBefore.value_or(0)) << "打在备用标识上的报文被当成无主报文丢了（§5.1.1：签发的标识要认到对端撤回为止）";
+
+        // 反向对照：一个本端从没签发过的标识仍必须丢弃，别把上面那条断言变成「什么都收」
+        std::vector<std::uint8_t> unknownId = kServerConnectionId;
+        unknownId.back() ^= 0x01U;
+        client.overrideDestinationConnectionId(unknownId);
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{140000});
+        EXPECT_TRUE(drain(core).empty()) << "一条谁都没签发的标识也把报文收了：路由结论与签发记录对不上";
     }
 } // namespace AsynGyanis::Net

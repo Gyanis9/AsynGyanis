@@ -471,8 +471,13 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        // 目的标识必须落在本连接上：Initial 允许对端凭空造的那个原始标识，其余只认本端签发的
+        // 目的标识必须落在本连接上：Initial 允许对端凭空造的那个原始标识，其余只认本端**签发过的**
+        // 每一条（§5.1.1 的 MUST：签发的标识要认到对端 RETIRE 为止）。只认握手期那一条是不够的——
+        // 通告出去的备用标识一上线就可能被对端拿去用（§8.2 明写迁移中的探测就该换一条新标识），
+        // 而外壳的别名路由已经把这种报文送到了本连接手上，两层对「是不是我的」必须同一个结论
         if (!std::ranges::equal(plainHeader.destinationConnectionId, m_configuration.localConnectionId) &&
+            !std::ranges::any_of(m_issuedConnectionIds,
+                                 [&](const IssuedConnectionId &issued) { return std::ranges::equal(plainHeader.destinationConnectionId, issued.id); }) &&
             !(*level == QuicEncryptionLevel::Initial && std::ranges::equal(plainHeader.destinationConnectionId, m_configuration.originalDestinationConnectionId)))
         {
             return {};
