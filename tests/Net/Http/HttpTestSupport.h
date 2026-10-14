@@ -208,6 +208,30 @@ namespace AsynGyanis::Net
                 return matchCount;
             }
 
+            /**
+             * @brief 在给定等待时长内轮询「包含指定子串的记录条数」，出现第一条即返回
+             *
+             * @details 用于「连接被关掉之后才写下收口原因」这一类日志：把对端唤醒的是清扫协程关掉描述符
+             *          那一刻，原因那条记录排在它之后，用例「先读到 EOF、再查日志」的顺序就会偶发落空。
+             *          等待只把「还没写」与「永远不会写」分开，判据本身不变。
+             * @param fragment 待查找的子串，如「没有收到 Pong」
+             * @param timeout 最长等待时长
+             * @return std::size_t 命中的条数；直到超时都没出现时为最后一次读到的值（通常为 0）
+             */
+            [[nodiscard]] std::size_t countContainingWithin(const std::string_view fragment, const std::chrono::milliseconds timeout) const
+            {
+                const auto deadline = std::chrono::steady_clock::now() + timeout;
+                for (;;)
+                {
+                    const std::size_t matchCount = countContaining(fragment);
+                    if (matchCount > 0 || std::chrono::steady_clock::now() >= deadline)
+                    {
+                        return matchCount;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                }
+            }
+
         private:
             /**
              * @brief 全部已记录消息的共享容器（本对象与 Sink 各持一份引用）

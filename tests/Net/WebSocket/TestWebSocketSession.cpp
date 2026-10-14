@@ -714,7 +714,8 @@ namespace AsynGyanis::Net
      *          只能归因于心跳那一路；会话协程此刻正挂在读等待上、对端又不发字节，能提前收掉它的
      *          只有武装那一刻刷进连接空闲截止的那一次通知。先等本端真的发出去一帧 Ping，判据才不是
      *          「夹具碰巧没发心跳」。死因同时钉日志：清扫协程只报「空闲超过截止时间」，现场得有一条
-     *          把死因说对的。
+     *          把死因说对的。那条记录排在描述符关闭之后落地——EOF 先到、原因后写是这条链的正常形状，
+     *          所以日志按等待读，而不是读到 EOF 就立刻查一次。
      */
     TEST(WebSocketSession, ClosesConnectionWhenPeerNeverAnswersThePing)
     {
@@ -736,7 +737,7 @@ namespace AsynGyanis::Net
 
         // 既不回 Pong、也不再发任何字节：连接应在心跳时限 + 一拍清扫之内被收掉，而不是挂到 30 秒空闲
         EXPECT_TRUE(client.waitForClosure(accumulated, kWaitTimeout)) << "对端不回 Pong 而这条连接一直不断：心跳那把钟没接到连接的空闲截止上";
-        EXPECT_GE(logCapture.countContaining("没有收到 Pong"), 1u) << "收口原因没写成「心跳没回」，现场只能看到一条空闲超时";
+        EXPECT_GE(logCapture.countContainingWithin("没有收到 Pong", kWaitTimeout), 1u) << "收口原因没写成「心跳没回」，现场只能看到一条空闲超时";
     }
 
     /**
