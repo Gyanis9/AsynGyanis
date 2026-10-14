@@ -573,6 +573,16 @@ namespace AsynGyanis::Net
                                                  std::optional<std::uint8_t> ecnCodepoint = std::nullopt);
 
         /**
+         * @brief 对「版本本端不支持」的长头报文回一条版本协商包（RFC 9000 §6.1、§17.2.1）
+         * @details 只在报文头解不开时调它：解得开的报文要么是本端支持的版本（走正常路由），
+         *          要么是违反 v1 硬规则的坏包（那些规则与版本无关，回版本协商反而误导对端）。
+         *          本端不为这条流量留任何状态，因此一个数据报最多回一条（§17.2.1 的 MUST NOT）。
+         * @param peerAddress 来源地址，回包就打给它
+         * @param datagram 收到的数据报字节
+         */
+        Core::Task<> respondToUnsupportedVersion(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram);
+
+        /**
          * @brief 把一个数据报交给一条已在册的连接，随后把它的 HTTP/3 会话推一步
          * @details 三处调用点（按本端标识命中、按别名命中、刚刚新建的那一条）要做的是同一件事，
          *          写成一处而不是三份：那条 `ActivityGuard` 少了任何一份都会让定时循环在 await 期间
@@ -696,8 +706,11 @@ namespace AsynGyanis::Net
         /// 发包侧的同形两笔账：一轮 flush 攒出的报文按窗交出，这里的批次数是**窗口调用数**
         std::atomic<std::uint64_t> m_datagramBatchSendCount{0}; ///< 批次发包的调用数
         std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
-        /// 上面四笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
-        std::array<Core::ProcessMetricHandle, 5> m_metricHandles{};
+        /// 交出去的版本协商包条数：公网端口上「版本不合就礼貌地拒」这件事必须可数，否则它与「静默丢了」
+        /// 长得一模一样（G-17 的判据就是这个数在涨而连接表不动）
+        std::atomic<std::uint64_t> m_versionNegotiationSentCount{0};
+        /// 上面几笔的 /metrics 把手：构造时登记、析构即注销，与 Net 其它非 HTTP 通道同形
+        std::array<Core::ProcessMetricHandle, 6> m_metricHandles{};
         /// 本端能不能读到收到数据报的 ECN 字段：读不到就不在 ACK 里报计数（RFC 9000 §13.4.1），
         /// 也不能指望着对端报回来——这一格由 listen 时的一次 enableEcnFieldVisibility 定下来
         bool m_isEcnFieldVisible{false};

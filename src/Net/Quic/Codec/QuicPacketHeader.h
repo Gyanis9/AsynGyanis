@@ -18,8 +18,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -109,6 +111,63 @@ namespace AsynGyanis::Net
 
     /// 包号字段的最长编码：1 到 4 字节（RFC 9000 §17.1）
     inline constexpr std::size_t kQuicMaximumPacketNumberByteCount = 4;
+
+    /**
+     * @brief 版本协商包里「本端支持的版本」这一列的取值数上限
+     * @details 一条数据报净载荷上限 1200 字节，头部固定 14 字节上限（含两条 20 字节标识），
+     *          32 位一档远够本实现用；设这一格是为了让编码器的入参校验有可对照的界，
+     *          而不是任一条越界的请求把整个数据报撑破
+     */
+    inline constexpr std::size_t kQuicMaximumVersionNegotiationListLength = 64;
+
+    /**
+     * @brief 一条「本端不支持的版本」的长头报文里，回版本协商包要照抄的两条连接标识
+     *
+     * @details 只取版本协商决策与回包字段所需的部分，不解释类型位之后的 Token/Length/包号：
+     *          那些字段的布局按版本各定一套，而本端既然不支持这个版本就没有解它的资格。
+     *          RFC 9000 §17.2.1 明写「连接标识的版本特定规则 MUST NOT 影响是否发版本协商包的决定」，
+     *          因此这里按各版本共有的前缀读：首字节 + 32 位版本 + 8 位长度 + 标识 + 8 位长度 + 标识，
+     *          长度上限取该 8 位字段本身能表达的 255 字节，而不是 v1 的 20 字节。
+     * @see readQuicVersionNegotiationRequest
+     */
+    struct ASYN_NET_API QuicVersionNegotiationRequest
+    {
+        std::uint32_t                 version{};                 ///< 报文里带的版本号，一定既不是 0 也不是本端支持的版本
+        std::span<const std::uint8_t> destinationConnectionId{}; ///< 报文里的目的标识：抄进回包的 Source 字段
+        std::span<const std::uint8_t> sourceConnectionId{};      ///< 报文里的源标识：抄进回包的 Destination 字段
+    };
+
+    /**
+     * @brief 读出一个长头报文，判它是否该被回一个版本协商包
+     * @details 三类一律交回空：短头（线上没有版本字段，谈不上「版本不合」）、版本字段为 0 的版本协商报文
+     *          （§6.1 的 MUST NOT：不许拿版本协商报文回敬版本协商报文）、以及版本就是本端支持的那一版
+     *          （该走正常路由，不是版本协商的对象）。字节不够或标识长度字段越过数据报末尾同样交回空——
+     *          那种报文连回敬所需的字段都取不出来。
+     * @param datagram 一个完整的 UDP 数据报净字节
+     * @return 有值＝该回版本协商包，并给出要照抄的两条连接标识（视图指向入参，入参必须活到用完）
+     * @return 空＝不回，按既有口径丢弃或继续处理
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<QuicVersionNegotiationRequest> readQuicVersionNegotiationRequest(std::span<const std::uint8_t> datagram) noexcept;
+
+    /**
+     * @brief 编一个版本协商包（RFC 9000 §17.2.1）
+     * @details 布局：首字节（最高位 1 表长头，其余 7 位本实现取 `0xC0`——把 §17.2.1 建议的那一位置 1，
+     *          让它看起来带固定位，余下按「任意值」取 0）、32 位版本恒 0、两条长度 + 标识、再跟一列
+     *          32 位支持的版本。包里没有包号与 Length 字段，因此**一条数据报只装得下它自己**，
+     *          且对单个数据报最多回一条（§17.2.1 的 MUST NOT）。它不被确认，也不进任何连接状态。
+     * @param destinationConnectionId 回包的目的标识，取值为收到报文的**源**连接标识（§17.2.1 的映射）
+     * @param sourceConnectionId 回包的源标识，取值为收到报文的**目的**连接标识；两条一起回显，
+     *        客户端据此判这条回包不是旁观者凭空造的
+     * @param supportedVersions 本端支持的版本列表，至少一条
+     * @return std::vector<std::uint8_t> 可直接交给 UDP 的整条数据报
+     * @throws Base::InvalidArgumentException 用法错误：连接标识超过 255 字节（8 位长度域装不下），
+     *         或版本列表为空/超过 kQuicMaximumVersionNegotiationListLength——空的版本列表等于
+     *         告诉对端「什么版本都不支持」，那不如不回
+     */
+    [[nodiscard]] ASYN_NET_API std::vector<std::uint8_t> buildQuicVersionNegotiationPacket(std::span<const std::uint8_t>  destinationConnectionId,
+                                                                                           std::span<const std::uint8_t>  sourceConnectionId,
+                                                                                           std::span<const std::uint32_t> supportedVersions);
+
 
     /**
      * @brief 解出一个报文头的明文部分

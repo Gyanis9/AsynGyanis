@@ -173,6 +173,11 @@ namespace AsynGyanis::Net
                 Core::ProcessMetricsRegistry::registerMetric("asyn_quic_datagrams_sent_total", "QUIC 服务端交给内核的数据报条数（与上一条相除就是「一次调用交了几条」）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return m_datagramSentCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_quic_version_negotiations_sent_total",
+                                                             "QUIC 服务端交出去的版本协商包条数（RFC 9000 §6.1：对端用的版本本端不支持时礼貌地拒，而不是静默丢）。"
+                                                             "它在涨而连接数不动，说明来的是别的版本的探测流量——这一格与「名额已满」的账分开，两者对运维是两个问题",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return m_versionNegotiationSentCount.load(std::memory_order_relaxed); }),
                 Core::ProcessMetricsRegistry::registerMetric(
                         "asyn_quic_handshaking_connections",
                         "此刻在册但尚未完成握手的 QUIC 连接数（与 asyn_quic 连接总数之差给已验证的那部分归因）。"
@@ -821,6 +826,9 @@ namespace AsynGyanis::Net
         const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
         if (!decodedHeader.has_value())
         {
+            // 解不开不等于该丢：版本不合的长头要按 §6.1 回一条版本协商包（连两条连接标识都取不出来的
+            // 报文除外）。取不出来的仍走下面这条静默丢的出口
+            co_await respondToUnsupportedVersion(peerAddress, datagram);
             co_return;
         }
         // 用视图查表：两张表都是透明比较（std::less<>），而本端连接标识固定 18 字节、超过
@@ -901,6 +909,38 @@ namespace AsynGyanis::Net
         // 这里存裸指针是因为连接的所有权仍在上面那张表里，本表只是别名查找索引
         m_connectionsByAliasConnectionId.emplace(destinationConnectionId, rawConnection);
         co_await serveMatchedConnection(*rawConnection, peerAddress, datagram, ecnCodepoint);
+    }
+
+    Core::Task<> QuicServer::respondToUnsupportedVersion(const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram)
+    {
+        // 排空期间连新连接都不接，更不会去宣称「来我这建连」：与上面那格拒绝新连接同口径，静默丢
+        if (m_isRefusingNewConnections.load(std::memory_order_acquire) || m_socket == nullptr)
+        {
+            co_return;
+        }
+        // 只有「长头 + 版本字段既不是 0（版本协商报文本身，§6.1 的 MUST NOT）也不是本端支持的版本」这一类
+        // 该回话；判据与取字段都在编解码层，理由见 readQuicVersionNegotiationRequest
+        const std::optional<QuicVersionNegotiationRequest> request = readQuicVersionNegotiationRequest(datagram);
+        if (!request.has_value())
+        {
+            co_return;
+        }
+
+        // §17.2.1 的映射：回包的目的标识抄收到报文的**源**标识、回包的源标识抄收到报文的**目的**标识。
+        // 两条一起回显是给客户端的凭据——只有一条对得上的话，一个没看见 Initial 的旁观者也造得出来
+        const std::array<std::uint32_t, 1> supportedVersions{kQuicVersion1};
+        const std::vector<std::uint8_t>    packet = buildQuicVersionNegotiationPacket(request->sourceConnectionId, request->destinationConnectionId, supportedVersions);
+        // 版本协商报文不被确认也不带包号（§17.2.1），发与不发都不动本端状态：这条流量上我们没留任何东西。
+        // ECN 取 0：这是一条无连接的应答，不参与任何拥塞控制
+        const ssize_t sentLength = co_await m_socket->asyncSendTo(peerAddress, packet.data(), packet.size(), 0);
+        if (sentLength != static_cast<ssize_t>(packet.size()))
+        {
+            // 没交出去就不计数：那条读数说的是「对端收到了礼貌的拒绝」，出不了门的包不算
+            co_return;
+        }
+        m_versionNegotiationSentCount.fetch_add(1, std::memory_order_relaxed);
+        LOG_DEBUG_FMT("QuicServer: 对端用的 QUIC 版本 0x{:08X} 本端不支持，已按 RFC 9000 §6.1 回一条版本协商包（本端支持 0x{:08X}）", request->version, kQuicVersion1);
+        co_return;
     }
 
     Core::Task<> QuicServer::serveMatchedConnection(QuicConnection &connection, const Platform::SocketAddress peerAddress, const std::span<const std::uint8_t> datagram,

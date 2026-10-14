@@ -608,4 +608,88 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(server.reloadCertificate()) << "读不出证书却报了成功";
         EXPECT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", trustAnchors)) << "重载失败就把线上身份弄没了：旧上下文该原样继续服务";
     }
+
+    /**
+     * @brief 钉住「版本不合就礼貌地拒」：未知版本的长头会收到一条版本协商包，而不是被静默丢掉
+     * @details 自家客户端只会发 v1，够不着这条判据，因此用裸 UDP 手拼一条别的版本：字段按 RFC 9000
+     *          §17.2.1 那张图摆、也按那张图读回，全程不碰被测的编解码（两侧同源就查不出「都理解错」）。
+     *          判据三件：回的是版本协商包（版本字段恒 0）、两条标识按规范互换（回包 DCID＝我发的 SCID、
+     *          回包 SCID＝我发的 DCID）、末尾列着本端支持的 0x00000001。
+     *          反向那一半（v1 报文不该收到这种东西）在这里只算观察：无应答时它是空的，真正钉住它的是
+     *          编解码层那条 OnlyReadsVersionNegotiationRequestsForUnsupportedVersions。
+     */
+    TEST(QuicServer, AnswersUnsupportedVersionWithVersionNegotiationPacket)
+    {
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Core::InetAddress serverAddress("127.0.0.1", server.listeningPort());
+
+        // 一条「本端不支持的版本」的长头：版本填 0x00000002（将来登记的下一版），DCID 8 字节、SCID 16 字节
+        std::vector<std::uint8_t> unknownVersionProbe{0xC0, 0x00, 0x00, 0x00, 0x02};
+        unknownVersionProbe.push_back(0x08);
+        for (std::uint8_t index = 0; index < 8; ++index)
+        {
+            unknownVersionProbe.push_back(static_cast<std::uint8_t>(0xD0U + index));
+        }
+        unknownVersionProbe.push_back(0x10);
+        for (std::uint8_t index = 0; index < 16; ++index)
+        {
+            unknownVersionProbe.push_back(static_cast<std::uint8_t>(0x50U + index));
+        }
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), unknownVersionProbe.data(), unknownVersionProbe.size()), 0);
+
+        // 非阻塞套接字按拍轮询：等的是「有没有回话」这件事，不是某个绝对时长
+        std::vector<std::uint8_t> reply(1200);
+        std::size_t               replyLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    const ssize_t           received = sender.receive(reply.data(), reply.size(), replyFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    replyLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kWaitTimeout))
+                << "版本不合的报文什么都没收到：静默丢等于让对端干等到它自己的超时，公网端口上这就是「在监听却不应答」";
+
+        const std::size_t minimumPacketLength = 5U + 1U + 8U + 1U + 16U + 4U;
+        ASSERT_GE(replyLength, minimumPacketLength) << "回包短于版本协商包应有的最小形状";
+        EXPECT_NE(reply[0] & 0x80U, 0U) << "回包不是长头";
+        const std::uint32_t replyVersion = static_cast<std::uint32_t>((static_cast<std::uint32_t>(reply[1]) << 24U) | (static_cast<std::uint32_t>(reply[2]) << 16U) |
+                                                                      (static_cast<std::uint32_t>(reply[3]) << 8U) | static_cast<std::uint32_t>(reply[4]));
+        EXPECT_EQ(replyVersion, 0U) << "版本协商包的版本字段必须恒 0（RFC 9000 §17.2.1）";
+
+        // 两条标识的互换：回包的目的标识是我发出去的**源**标识，回包的源标识是我发出去的目的标识
+        std::size_t offset = 5;
+        EXPECT_EQ(reply[offset], 0x10U) << "回包的目的标识长度该等于我发出的源标识长度";
+        ++offset;
+        for (std::uint8_t index = 0; index < 16; ++index)
+        {
+            ASSERT_LT(offset, replyLength);
+            EXPECT_EQ(reply[offset], static_cast<std::uint8_t>(0x50U + index)) << "回包目的标识的第 " << static_cast<unsigned int>(index) << " 字节没照抄我发的源标识";
+            ++offset;
+        }
+        EXPECT_EQ(reply[offset], 0x08U) << "回包的源标识长度该等于我发出的目的标识长度";
+        ++offset;
+        for (std::uint8_t index = 0; index < 8; ++index)
+        {
+            ASSERT_LT(offset, replyLength);
+            EXPECT_EQ(reply[offset], static_cast<std::uint8_t>(0xD0U + index)) << "回包源标识的第 " << static_cast<unsigned int>(index) << " 字节没照抄我发的目的标识";
+            ++offset;
+        }
+
+        // 末尾是一列 32 位支持的版本：本实现只支持 v1，因此恰好一条、且就是 0x00000001
+        ASSERT_EQ(replyLength - offset, 4U) << "支持的版本列表该只有一条 v1（多一条就是本端根本没支持那版本）";
+        const std::uint32_t advertisedVersion =
+                static_cast<std::uint32_t>((static_cast<std::uint32_t>(reply[offset]) << 24U) | (static_cast<std::uint32_t>(reply[offset + 1U]) << 16U) |
+                                           (static_cast<std::uint32_t>(reply[offset + 2U]) << 8U) | static_cast<std::uint32_t>(reply[offset + 3U]));
+        EXPECT_EQ(advertisedVersion, 0x00000001U) << "列表里列的不是 v1，客户端按列表去连就连到别处了";
+    }
 } // namespace AsynGyanis::Net

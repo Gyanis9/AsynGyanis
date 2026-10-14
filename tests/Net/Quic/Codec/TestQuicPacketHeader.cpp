@@ -331,4 +331,85 @@ namespace AsynGyanis::Net
         EXPECT_EQ(refreshed.error().kind, QuicDecodeErrorKind::Malformed);
         EXPECT_TRUE(containsText(refreshed.error().message, "不自洽")) << refreshed.error().message;
     }
+
+    /**
+     * @brief 钉住版本协商包的线上字节就是 RFC 9000 §17.2.1 的那张图
+     * @details 期望值按规范图手拼，不复用被测编码器：首字节 0xC0（最高位表长头，§17.2.1 建议置 1 的
+     *          那一高位也置上，其余 Unused 位取 0）、32 位版本恒 0、两条「长度 + 标识」、末尾一列 32 位
+     *          大端版本。这条同时钉住「回包的两条标识是照抄而不是自造」——映射由调用方做，本函数只管摆字节。
+     */
+    TEST(QuicPacketHeader, BuildsVersionNegotiationPacketExactly)
+    {
+        const std::vector<std::uint8_t> destinationConnectionId{0x01, 0x02, 0x03, 0x04};
+        const std::vector<std::uint8_t> sourceConnectionId{0xAA, 0xBB};
+        const std::uint32_t             supportedVersions[]{kQuicVersion1};
+
+        const std::vector<std::uint8_t> packet = buildQuicVersionNegotiationPacket(destinationConnectionId, sourceConnectionId, std::span{supportedVersions});
+
+        const std::vector<std::uint8_t> expected{0xC0, 0x00, 0x00, 0x00, 0x00, // 长头位 + Unused 高位，版本恒 0
+                                                 0x04, 0x01, 0x02, 0x03, 0x04, // 目的标识
+                                                 0x02, 0xAA, 0xBB,             // 源标识
+                                                 0x00, 0x00, 0x00, 0x01};      // 支持的版本 1
+        EXPECT_EQ(packet, expected);
+    }
+
+    /**
+     * @brief 钉住「哪些报文该回版本协商」这一格判据
+     * @details 五种形状各自一条：本端支持的版本（该走正常路由）、版本 0 即对端发来的版本协商报文
+     *          （§6.1 的 MUST NOT：不许拿版本协商回敬版本协商）、短头（线上没有版本字段）、
+     *          标识长度越过数据报末尾（连回敬要抄的字段都取不出来），四种都不回；
+     *          只有「长头 + 版本既非 0 也非 1」这一种回，且两条标识要按线上顺序交回。
+     */
+    TEST(QuicPacketHeader, OnlyReadsVersionNegotiationRequestsForUnsupportedVersions)
+    {
+        // 支持的那一版：v1 长头 + 4 字节目的标识 + 2 字节源标识
+        const std::vector<std::uint8_t> supportedVersionPacket{0xC0, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x02, 0x03, 0x04, 0x02, 0xAA, 0xBB};
+        EXPECT_FALSE(readQuicVersionNegotiationRequest(supportedVersionPacket).has_value()) << "本端支持的版本被判成「该回版本协商」";
+
+        // 版本字段为 0：这是一条版本协商报文本身
+        std::vector<std::uint8_t> negotiationPacket = supportedVersionPacket;
+        negotiationPacket[4]                        = 0x00;
+        EXPECT_FALSE(readQuicVersionNegotiationRequest(negotiationPacket).has_value()) << "对版本协商报文再回一条版本协商，违反 RFC 9000 §6.1";
+
+        // 短头（最高位 0）：线上没有版本字段，谈不上版本不合
+        const std::vector<std::uint8_t> shortHeaderPacket{0x40, 0x01, 0x02, 0x03, 0x04};
+        EXPECT_FALSE(readQuicVersionNegotiationRequest(shortHeaderPacket).has_value()) << "短头报文被当成版本不合的长头";
+
+        // 目的标识长度越过数据报末尾：字段取不全，也就无从照抄
+        const std::vector<std::uint8_t> truncatedPacket{0xC0, 0x00, 0x00, 0x00, 0x02, 0x7F, 0x01};
+        EXPECT_FALSE(readQuicVersionNegotiationRequest(truncatedPacket).has_value()) << "取不出连接标识的报文也去回版本协商";
+
+        // 唯一该回的那一种：版本 0x00000002 是将来登记的下一版，本端不支持
+        const std::vector<std::uint8_t>                    unsupportedVersionPacket{0xC0, 0x00, 0x00, 0x00, 0x02, 0x04, 0x01, 0x02, 0x03, 0x04, 0x02, 0xAA, 0xBB};
+        const std::optional<QuicVersionNegotiationRequest> request = readQuicVersionNegotiationRequest(unsupportedVersionPacket);
+        ASSERT_TRUE(request.has_value()) << "版本不合的长头没被认出来：对端只会干等";
+        EXPECT_EQ(request->version, 0x00000002U);
+        // 两条标识先各自拷成 vector 再比：宏的实参里带花括号的初始化列表会被逗号拆成两个参数
+        const std::vector<std::uint8_t> echoedDestination(request->destinationConnectionId.begin(), request->destinationConnectionId.end());
+        const std::vector<std::uint8_t> echoedSource(request->sourceConnectionId.begin(), request->sourceConnectionId.end());
+        const std::vector<std::uint8_t> expectedDestination{0x01, 0x02, 0x03, 0x04};
+        const std::vector<std::uint8_t> expectedSource{0xAA, 0xBB};
+        EXPECT_EQ(echoedDestination, expectedDestination);
+        EXPECT_EQ(echoedSource, expectedSource);
+    }
+
+    /**
+     * @brief 钉住版本协商包编码的拒绝面：标识过长与版本列表空/超上限都抛用法错误
+     * @details 这三种写法只能靠截断或谎报才能发出去——空列表等于宣称「没有支持的版本」，那种回包不如不回。
+     */
+    TEST(QuicPacketHeader, RejectsUnsendableVersionNegotiationArguments)
+    {
+        const std::vector<std::uint8_t> oversizedConnectionId(256U, 0x11U);
+        const std::vector<std::uint8_t> smallConnectionId{0x22};
+        const std::uint32_t             oneVersion[]{kQuicVersion1};
+
+        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(oversizedConnectionId, smallConnectionId, std::span{oneVersion})), Base::InvalidArgumentException)
+                << "8 位长度域装不下的标识被静默截断发出去了";
+        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, oversizedConnectionId, std::span{oneVersion})), Base::InvalidArgumentException);
+        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span<const std::uint32_t>{})), Base::InvalidArgumentException)
+                << "空的版本列表被当成一条合法回包";
+
+        const std::vector<std::uint32_t> tooManyVersions(kQuicMaximumVersionNegotiationListLength + 1U, kQuicVersion1);
+        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span{tooManyVersions})), Base::InvalidArgumentException);
+    }
 } // namespace AsynGyanis::Net

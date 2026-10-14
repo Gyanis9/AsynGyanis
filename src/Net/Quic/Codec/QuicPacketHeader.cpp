@@ -310,4 +310,90 @@ namespace AsynGyanis::Net
         }
         return candidate;
     }
+
+    std::optional<QuicVersionNegotiationRequest> readQuicVersionNegotiationRequest(const std::span<const std::uint8_t> datagram) noexcept
+    {
+        // 只有长头才谈得上版本：短头线上没有版本字段（§17.3.1），拿它回版本协商等于对 1-RTT 流量瞎答。
+        // 不足 5 字节连版本都读不出来，同样不回
+        if (datagram.size() < 5 || (datagram[0] & kQuicLongHeaderFlagBit) == 0)
+        {
+            return std::nullopt;
+        }
+        const std::uint32_t version = static_cast<std::uint32_t>(readBigEndianInteger(datagram.subspan(1), 4));
+        // 版本 0 是版本协商报文自己：§6.1 明写不许拿版本协商报文回敬版本协商报文。
+        // 版本 1 是本端支持的那一版，该走正常路由而不是版本协商
+        if (version == kQuicVersionNegotiationVersion || version == kQuicVersion1)
+        {
+            return std::nullopt;
+        }
+
+        // 两条连接标识按各版本共有的前缀读，长度域的上限取该 8 位字段本身能表达的字节数——
+        // §17.2.1 要求「连接标识的版本特定规则 MUST NOT 影响是否发版本协商包的决定」，
+        // 因此这里刻意不套 v1 那条 20 字节的上限
+        constexpr std::size_t kMaximumConnectionIdByteLength = 255;
+        std::size_t           offset                         = 5;
+        const std::size_t     destinationLength              = datagram[offset];
+        ++offset;
+        if (destinationLength > kMaximumConnectionIdByteLength || offset + destinationLength > datagram.size())
+        {
+            return std::nullopt;
+        }
+        QuicVersionNegotiationRequest request;
+        request.version                 = version;
+        request.destinationConnectionId = datagram.subspan(offset, destinationLength);
+        offset += destinationLength;
+        if (offset >= datagram.size())
+        {
+            return std::nullopt;
+        }
+        const std::size_t sourceLength = datagram[offset];
+        ++offset;
+        if (sourceLength > kMaximumConnectionIdByteLength || offset + sourceLength > datagram.size())
+        {
+            return std::nullopt;
+        }
+        request.sourceConnectionId = datagram.subspan(offset, sourceLength);
+        return request;
+    }
+
+    std::vector<std::uint8_t> buildQuicVersionNegotiationPacket(const std::span<const std::uint8_t> destinationConnectionId, const std::span<const std::uint8_t> sourceConnectionId,
+                                                                const std::span<const std::uint32_t> supportedVersions)
+    {
+        // 三条入参校验都是用法错误：8 位长度域装不下的标识只能靠截断才能写出去，而空版本列表等于
+        // 告诉对端「什么版本都不支持」——那种回包不如不回（§17.2.1 的列表就是本端能接受的版本）
+        if (destinationConnectionId.size() > 255U || sourceConnectionId.size() > 255U)
+        {
+            throw Base::InvalidArgumentException(std::format("版本协商包里的连接标识长度 {} / {} 字节超过 255（§17.2.1 的长度字段是 8 位）："
+                                                             "请只回显对端在报文里给出的连接标识，不要自己造更长的",
+                                                             destinationConnectionId.size(), sourceConnectionId.size()));
+        }
+        if (supportedVersions.empty() || supportedVersions.size() > kQuicMaximumVersionNegotiationListLength)
+        {
+            throw Base::InvalidArgumentException(std::format("版本协商包的版本列表有 {} 条，不在 1..{} 之内：空列表等于宣称「没有支持的版本」，"
+                                                             "多于上限则可能把整条数据报撑破",
+                                                             supportedVersions.size(), kQuicMaximumVersionNegotiationListLength));
+        }
+
+        std::vector<std::uint8_t> packet;
+        // 首字节：最高位 1 表长头；其余 7 位是 Unused，本端按 §17.2.1 的建议把 0x40 置 1，
+        // 让它看起来带固定位（与其它协议的复用更稳），剩下几位取 0——客户端必须忽略这一段
+        packet.push_back(static_cast<std::uint8_t>(kQuicLongHeaderFlagBit | 0x40U));
+        for (std::size_t unusedVersionByte = 0; unusedVersionByte < 4; ++unusedVersionByte)
+        {
+            packet.push_back(0);
+        }
+        packet.push_back(static_cast<std::uint8_t>(destinationConnectionId.size()));
+        packet.insert(packet.end(), destinationConnectionId.begin(), destinationConnectionId.end());
+        packet.push_back(static_cast<std::uint8_t>(sourceConnectionId.size()));
+        packet.insert(packet.end(), sourceConnectionId.begin(), sourceConnectionId.end());
+        for (const std::uint32_t version: supportedVersions)
+        {
+            // 32 位大端：§16 末段把版本排除在变长整数编码之外，这里就是定长四字节
+            packet.push_back(static_cast<std::uint8_t>(version >> 24U));
+            packet.push_back(static_cast<std::uint8_t>(version >> 16U));
+            packet.push_back(static_cast<std::uint8_t>(version >> 8U));
+            packet.push_back(static_cast<std::uint8_t>(version));
+        }
+        return packet;
+    }
 } // namespace AsynGyanis::Net
