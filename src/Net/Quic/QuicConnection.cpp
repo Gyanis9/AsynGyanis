@@ -1,6 +1,7 @@
 #include "Net/Quic/QuicConnection.h"
 
 #include "Base/Exception/Exception.h"
+#include "Core/Crypto/Random.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/LogThrottle.h"
 #include "Core/Socket/InetAddress.h"
@@ -9,7 +10,6 @@
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 #include "Platform/IO/DatagramSocket.h"
 
-#include <openssl/rand.h>
 
 #include <cstring>
 #include <utility>
@@ -43,12 +43,15 @@ namespace AsynGyanis::Net
          */
         std::vector<std::uint8_t> randomBytes(const std::size_t length)
         {
-            std::vector<std::uint8_t> bytes(length);
-            if (RAND_bytes(bytes.data(), static_cast<int>(length)) != 1)
+            // 取不到交回空 vector：调用方（accept/connect）据此放弃这条连接；取字节与报错在
+            // Core::Random 那一侧，本处只留「这条通路怎么处置失败」的策略
+            try
+            {
+                return Core::Random::bytes(length);
+            } catch (const Base::Exception &)
             {
                 return {};
             }
-            return bytes;
         }
 
         /**

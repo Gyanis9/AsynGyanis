@@ -10,12 +10,13 @@
 #include "Net/Quic/QuicAddressValidationToken.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogMacros.h"
 #include "Base/Exception/Exception.h"
 #include "Core/Crypto/Digest.h"
+#include "Core/Crypto/Random.h"
 #include "Core/Socket/InetAddress.h"
 
 #include <openssl/crypto.h>
-#include <openssl/rand.h>
 
 #include <algorithm>
 #include <array>
@@ -139,10 +140,15 @@ namespace AsynGyanis::Net
 
     std::unique_ptr<QuicAddressValidationTokenCodec> QuicAddressValidationTokenCodec::createWithRandomKey(const std::chrono::seconds lifetime)
     {
-        std::vector<std::uint8_t> signingKey(kQuicRandomSigningKeyByteLength);
-        if (RAND_bytes(signingKey.data(), static_cast<int>(signingKey.size())) != 1)
+        // 这把密钥是签名密钥材料的级别，走私有 DRBG 那一侧；取不到没有安全的降级路径：
+        // 拿全零密钥签出的令牌谁都验得过，那比不发更糟
+        std::vector<std::uint8_t> signingKey;
+        try
         {
-            // 随机源坏了没有安全的降级路径：拿全零密钥签出的令牌谁都验得过，那比不发更糟
+            signingKey = Core::Random::secretBytes(kQuicRandomSigningKeyByteLength);
+        } catch (const Base::Exception &failure)
+        {
+            LOG_ERROR_FMT("QuicAddressValidationToken: 自造签名密钥失败，Retry 令牌功能未启用。原因：{}", failure.what());
             return nullptr;
         }
         return std::make_unique<QuicAddressValidationTokenCodec>(std::span<const std::uint8_t>(signingKey), lifetime);

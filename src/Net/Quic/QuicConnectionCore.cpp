@@ -9,6 +9,7 @@
 #include "Platform/IO/DatagramSocket.h"
 
 #include "Base/Exception/Exception.h"
+#include "Core/Crypto/Random.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Crypto/Digest.h"
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
@@ -24,7 +25,6 @@
 #include <utility>
 
 #include <openssl/crypto.h>
-#include <openssl/rand.h>
 
 namespace AsynGyanis::Net
 {
@@ -76,14 +76,20 @@ namespace AsynGyanis::Net
          * @param byteLength 要多少字节
          * @return std::vector<std::uint8_t> 取到的字节；随机数不可用时为空
          */
+        /// 本连接自造无状态重置密钥的长度：取 HMAC-SHA-256 的分组宽度 32 字节。
+        /// 配置里给的下限只有 16（§10.3.2 只要求不可预测的 128 位），自造这一把没有理由按下限取
+        constexpr std::size_t kQuicSelfGeneratedStatelessResetKeyByteLength = 32;
+
         std::vector<std::uint8_t> randomBytes(const std::size_t byteLength)
         {
-            std::vector<std::uint8_t> bytes(byteLength);
-            if (byteLength > 0 && RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            // 取不到交回空 vector，由调用方处置（本类是纯计算件，不写日志也不抛出）
+            try
+            {
+                return Core::Random::bytes(byteLength);
+            } catch (const Base::Exception &)
             {
                 return {};
             }
-            return bytes;
         }
 
         /**
@@ -316,7 +322,14 @@ namespace AsynGyanis::Net
         if (m_configuration.statelessResetKey.empty())
         {
             // 配置没给密钥就本连接随机取一把：单进程与单测够用，多进程 worker 要共享时由外壳显式给
-            m_statelessResetKey = randomBytes(32);
+            try
+            {
+                // 这是密钥材料（HMAC 密钥），走私有 DRBG 那一侧；取不到就留空，本连接不发重置令牌
+                m_statelessResetKey = Core::Random::secretBytes(kQuicSelfGeneratedStatelessResetKeyByteLength);
+            } catch (const Base::Exception &)
+            {
+                m_statelessResetKey.clear();
+            }
         } else
         {
             m_statelessResetKey = m_configuration.statelessResetKey;

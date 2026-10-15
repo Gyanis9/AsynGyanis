@@ -3,6 +3,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/DeadlineGuard.h"
+#include "Core/Crypto/Random.h"
 #include "Core/Socket/AsyncResolver.h"
 #include "Core/Socket/ConnectionRace.h"
 #include "Core/Socket/InetAddress.h"
@@ -14,7 +15,6 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
-#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <algorithm>
 #include <array>
@@ -52,14 +52,10 @@ namespace AsynGyanis::Net
          */
         std::string cryptographicRandomBytes(const std::size_t length)
         {
-            std::string bytes(length, '\0');
-            if (::RAND_bytes(reinterpret_cast<unsigned char *>(bytes.data()), static_cast<int>(length)) != 1)
-            {
-                throw Base::Exception(std::format("WebSocketClient: 系统的密码学随机源取不到 {} 字节（RAND_bytes 失败）：没有它就不能为本次握手或本帧取键，"
-                                                  "请检查 OpenSSL 的随机设备是否可用",
-                                                  length));
-            }
-            return bytes;
+            // 取不到就直接抛：Core::Random 的报错文案已经带上「熵源不足 / 随机源失效」与替代做法，
+            // 这里不再另造一句——两处各写一份时，将来只有其中一处会跟着返回码的语义走
+            const std::vector<std::uint8_t> bytes = Core::Random::bytes(length);
+            return std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         }
         /// 本帧的掩码键：逐帧新取，绝不复用（§5.3 的抗重放全靠这一条）
         [[nodiscard]] WebSocketMaskKey nextMaskKey()

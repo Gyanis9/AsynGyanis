@@ -2,6 +2,7 @@
 #include "Net/Http/HttpHeaderRules.h"
 
 #include "Base/Coding/Base64.h"
+#include "Core/Crypto/Random.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Crypto/Digest.h"
@@ -11,7 +12,6 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Platform/System/PlatformTime.h"
 
-#include <openssl/rand.h>
 
 #include <algorithm>
 #include <array>
@@ -172,23 +172,28 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 一次请求一个、不许重放的随机串
-         * @details 云解析用它挡重放；重复的 nonce 会被判 InvalidSignatureNonce。RAND_bytes 只在熵源
-         *          坏掉时失败，那种情况下退到「时钟 + 计数」也比抛出好：这条通路在协程里，抛出等于
-         *          把签发流程的异常通道绕过
+         * @details 云解析用它挡重放；重复的 nonce 会被判 InvalidSignatureNonce。随机源坏掉时退到
+         *          「时钟 + 计数」也比抛出好：这条通路在协程里，抛出等于把签发流程的异常通道绕过
          */
         [[nodiscard]] std::string makeSignatureNonce()
         {
-            std::array<unsigned char, 16> bytes{};
-            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            try
             {
+                const std::vector<std::uint8_t> bytes = Core::Random::bytes(16U);
+                return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+            } catch (const Base::Exception &failure)
+            {
+                // 随机源坏了（原因与替代做法在 Core::Random 的文案里）：这条通路的 nonce 只要「不许重复」，
+                // 不需要保密，因此退到「时钟 + 计数」——它不可预测性差，但重复概率在同进程内仍是零，
+                // 而抛出会让签发流程在协程里换一条异常通道。降级必须出声：否则这台机器的熵源坏了，
+                // 运维只看到「TXT 一直没生效」，查不到签发这一层
+                LOG_WARN_FMT("阿里云 DNS TXT 写入器: 密码学随机源不可用，本次签名 nonce 退到「时钟 + 计数」。原因：{}", failure.what());
                 static std::atomic<std::uint64_t> fallbackCounter{0U};
                 const std::uint64_t               counter = fallbackCounter.fetch_add(1U, std::memory_order_relaxed);
                 const std::uint64_t               nanosecond =
                         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-                const std::string text = std::format("{:016x}{:016x}", nanosecond, counter);
-                return text;
+                return std::format("{:016x}{:016x}", nanosecond, counter);
             }
-            return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
         }
 
         /**

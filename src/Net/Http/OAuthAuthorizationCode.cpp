@@ -1,13 +1,13 @@
 #include "Net/Http/OAuthAuthorizationCode.h"
 
 #include "Base/Coding/Base64.h"
+#include "Core/Crypto/Random.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/OAuthSupport.h"
 
 #include <openssl/evp.h>
-#include <openssl/rand.h>
 
 #include <array>
 #include <optional>
@@ -22,16 +22,20 @@ namespace AsynGyanis::Net
         /// 随机材料的字节数：32 字节编成 base64url 恰好 43 个字符（RFC 7636 §4.1 对 verifier 的下限，合法）
         constexpr std::size_t kRandomTokenBytes = 32U;
 
-        /// 取一段随机 token（base64url 编码，43 字符）：RAND_bytes 只在熵源坏掉时失败——对 PKCE 的
+        /// 取一段随机 token（base64url 编码，43 字符）：密码学随机源只在熵源坏掉时失败——对 PKCE 的
         /// verifier 与 state 来说，「取不到就换个弱随机」等于把这两步的安全意义整个拿掉，宁可如实失败
         [[nodiscard]] std::expected<std::string, std::string> makeRandomToken()
         {
-            std::array<unsigned char, kRandomTokenBytes> bytes{};
-            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            // PKCE 的 verifier 与 state 都是密钥材料，走私有 DRBG 那一侧；「取不到就换个弱随机」
+            // 等于把这两步的安全意义整个拿掉，宁可如实失败并把原因带回去
+            try
             {
-                return std::unexpected("密码学随机源取不到字节（RAND_bytes 失败）：没有它就不能生成 PKCE verifier 与 state");
+                const std::vector<std::uint8_t> bytes = Core::Random::secretBytes(kRandomTokenBytes);
+                return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+            } catch (const Base::Exception &failure)
+            {
+                return std::unexpected(std::format("密码学随机源取不到 {} 字节，无法生成 PKCE verifier 与 state。原因：{}", kRandomTokenBytes, failure.what()));
             }
-            return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
         }
 
         /// SHA-256 摘要（PKCE 的 S256 变换用）

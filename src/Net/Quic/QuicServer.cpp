@@ -2,6 +2,7 @@
 #include "Net/Quic/QuicOpenSslError.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Crypto/Random.h"
 #include "Base/Exception/SystemException.h"
 #include "Base/Log/LogMacros.h"
 #include "Base/Log/LogThrottle.h"
@@ -24,7 +25,6 @@
 #include <string>
 
 #include <openssl/err.h>
-#include <openssl/rand.h>
 #include <openssl/ssl.h>
 
 namespace AsynGyanis::Net
@@ -51,12 +51,15 @@ namespace AsynGyanis::Net
          */
         std::vector<std::uint8_t> randomConnectionIdBytes(const std::size_t byteLength)
         {
-            std::vector<std::uint8_t> bytes(byteLength);
-            if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+            // 本模块的统一口径：取不到就交回空 vector，由调用方丢包或当场拒启（这里的策略是
+            // 「不接客端」而不是抛出）；取字节与报错文案都在 Core::Random 那一侧
+            try
+            {
+                return Core::Random::bytes(byteLength);
+            } catch (const Base::Exception &)
             {
                 return {};
             }
-            return bytes;
         }
 
         /// 验不过的原因怎么说给运维：三格的措辞各自带着「下一步该查什么」，别合成一句「令牌不合」
@@ -1182,10 +1185,15 @@ namespace AsynGyanis::Net
         // 报文长得像一条普通短头包：首字节高两位固定为 0b01，其余全是不可预测位（§10.3 图 10 与随后一段：
         // 「The remainder of the first byte and an arbitrary number of bytes following it are set to
         // values that SHOULD be indistinguishable from random」）
-        std::vector<std::uint8_t> reset(resetByteLength, 0U);
-        if (RAND_bytes(reset.data(), static_cast<int>(reset.size())) != 1)
+        // 随机不可用时不发：拿不出不可预测位，可预测的重置会被旁观者一眼认出来（§10.3.3 的防循环
+        // 也建立在「重置比触发它的报文小」这一条上，宁可不发）
+        std::vector<std::uint8_t> reset;
+        try
         {
-            co_return; // 随机不可用：拿不出不可预测位，可预测的重置会被旁观者一眼认出来
+            reset = Core::Random::bytes(resetByteLength);
+        } catch (const Base::Exception &)
+        {
+            co_return;
         }
         reset.front() = static_cast<std::uint8_t>((reset.front() & 0x3FU) | 0x40U);
         std::copy(token.begin(), token.end(), reset.end() - static_cast<std::ptrdiff_t>(token.size()));
