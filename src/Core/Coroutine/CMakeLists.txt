@@ -7,6 +7,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/CoroutinePool.h
         ${CMAKE_CURRENT_LIST_DIR}/CoroutinePool.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Cancelable.h
+        ${CMAKE_CURRENT_LIST_DIR}/CursorRange.h
         ${CMAKE_CURRENT_LIST_DIR}/Semaphore.h
         ${CMAKE_CURRENT_LIST_DIR}/Semaphore.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Mutex.h

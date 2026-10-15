@@ -2,6 +2,7 @@
 // 参数绑定与约束违例、连接池取还与等待交接、异步执行链路，以及按环境变量门控的 MySQL / Redis 真机
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/CursorRange.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -1481,9 +1482,9 @@ namespace
             const std::unique_ptr<Database::DatabaseResult> stream = connection.executeStreaming("SELECT `id` FROM " + tableName + " ORDER BY `id`");
             if (stream != nullptr)
             {
-                while (stream->next())
+                for (const Database::DatabaseResult &row: Core::cursorRange(*stream))
                 {
-                    if (const auto id = cellAs<std::int64_t>(*stream, std::size_t{0}); id.has_value())
+                    if (const auto id = cellAs<std::int64_t>(row, std::size_t{0}); id.has_value())
                     {
                         streamedIdSum += *id;
                     }

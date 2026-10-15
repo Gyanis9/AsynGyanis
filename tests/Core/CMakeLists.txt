@@ -32,6 +32,7 @@ add_executable(TestCore
         Coroutine/TestTask.cpp
         Coroutine/TestCoroutinePool.cpp
         Coroutine/TestCancelable.cpp
+        Coroutine/TestCursorRange.cpp
         Coroutine/TestThreadPool.cpp
         Coroutine/TestAsyncExecutor.cpp
 
