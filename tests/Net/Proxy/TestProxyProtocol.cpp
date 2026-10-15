@@ -245,6 +245,74 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：v2 的 TLV 逐条交出（类型 + 按字节原样的值、保持出现顺序）
+     * @details 此前 TLV 只被「跳过」：消费字节数对，但业务拿不到里面任何一条。判据按三条 TLV 各钉一面：
+     *          已知类型（Authority，0x02）、填充（NoOp，0x04，按规范要忽略其内容但照原样交出）、
+     *          私有号段（0xEA）且值里带 0x00 这类二进制字节——顺带证明值不经文本转换
+     * @note 证伪：把 parseV2Tlvs 里那段循环整段删掉（回到「只跳不交」），本用例第一条断言就红
+     */
+    TEST(ProxyProtocol, ExposesTheV2TlvsInOrderWithTypesAndValues)
+    {
+        std::string block = makeV2Ipv4Block({192, 0, 2, 1}, {192, 0, 2, 2}, 1000, 80);
+        block += std::string{"\x02\x00\x0B", 3} + "example.com";                      // Authority
+        block += std::string{"\x04\x00\x03", 3} + "pad";                              // NoOp（填充）
+        block += std::string{"\xEA\x00\x04", 3} + std::string{"\x00\xFF\x01\x02", 4}; // 私有号段 + 二进制值
+        const std::string header = makeV2Header(1, 1, block);
+
+        std::size_t consumed = 0U;
+        const auto  endpoint = parse(header, consumed);
+        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_EQ(endpoint->tlvs.size(), 3U) << "TLV 条数不对（被跳过或被吞了）";
+
+        EXPECT_EQ(endpoint->tlvs[0].type, static_cast<std::uint8_t>(ProxyTlvType::Authority));
+        EXPECT_EQ(endpoint->tlvs[0].value, "example.com");
+        EXPECT_EQ(endpoint->tlvs[1].type, static_cast<std::uint8_t>(ProxyTlvType::NoOp));
+        EXPECT_EQ(endpoint->tlvs[1].value, "pad") << "填充 TLV 也要原样交出（过滤是消费方的事）";
+        EXPECT_EQ(endpoint->tlvs[2].type, 0xEAU) << "私有号段不在已知表里，但类型号要原样保留";
+        EXPECT_EQ(endpoint->tlvs[2].value.size(), 4U);
+        EXPECT_EQ(endpoint->tlvs[2].value[1], '\xFF') << "值是二进制安全的：高位字节不许被转换掉";
+        EXPECT_EQ(endpoint->tlvs[2].value[0], '\x00') << "值里的 0x00 不是终止符";
+        EXPECT_EQ(consumed, header.size());
+    }
+
+    /**
+     * @brief 钉住：没有 TLV 时交出空列表，v1 头也恒为空（TLV 是 v2 的形状）
+     */
+    TEST(ProxyProtocol, HeadersWithoutTlvsYieldAnEmptyList)
+    {
+        const std::string v2Header   = makeV2Header(1, 1, makeV2Ipv4Block({192, 0, 2, 1}, {192, 0, 2, 2}, 1000, 80));
+        std::size_t       consumed   = 0U;
+        const auto        v2Endpoint = parse(v2Header, consumed);
+        ASSERT_TRUE(v2Endpoint.has_value());
+        EXPECT_TRUE(v2Endpoint->tlvs.empty()) << "没有 TLV 就不该有条目";
+
+        const std::string v1Header   = "PROXY TCP4 192.0.2.1 192.0.2.2 1000 80\r\n";
+        const auto        v1Endpoint = parse(v1Header, consumed);
+        ASSERT_TRUE(v1Endpoint.has_value());
+        EXPECT_TRUE(v1Endpoint->tlvs.empty()) << "v1 没有 TLV 这一层";
+    }
+
+    /**
+     * @brief 钉住：TLV 声明的长度越过块尾、或尾部只剩不足 3 字节的残片，整条头判不合格
+     * @details 那条头的长度字段已经把这些字节框进来了，装不下说明发送侧自己写歪了；放行会让
+     *          「头吃多少字节」在两侧的理解错位——因此宁可拒绝这一条连接
+     * @note 证伪：把 parseV2Tlvs 里两个越界判断任意一个去掉，对应的那条断言立刻红
+     */
+    TEST(ProxyProtocol, RejectsV2TlvsWhoseLengthDoesNotFitTheBlock)
+    {
+        // 值声明 16 字节，实际只给了 4 字节
+        std::string overrun = makeV2Ipv4Block({192, 0, 2, 1}, {192, 0, 2, 2}, 1000, 80);
+        overrun += std::string{"\x02\x00\x10", 3} + "abcd";
+        std::size_t consumed = 0U;
+        EXPECT_FALSE(parse(makeV2Header(1, 1, overrun), consumed).has_value()) << "值越过块尾的头不该被接受";
+
+        // 尾部只剩 2 字节：连一条 TLV 的头都拼不出来
+        std::string trailing = makeV2Ipv4Block({192, 0, 2, 1}, {192, 0, 2, 2}, 1000, 80);
+        trailing += std::string{"\x02\x00", 2};
+        EXPECT_FALSE(parse(makeV2Header(1, 1, trailing), consumed).has_value()) << "残片头不该被接受";
+    }
+
+    /**
      * @brief LOCAL 与 UNKNOWN 命令都不给身份
      * @details LOCAL 是代理自己发的（健康检查一类），地址字段按规范填 0/127.0.0.1；把它当客户端来源
      *          会让所有健康检查共享一个名额，或让限额指向一个假来源

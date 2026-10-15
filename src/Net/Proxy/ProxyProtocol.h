@@ -12,8 +12,10 @@
 #include "Core/Socket/InetAddress.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -33,6 +35,36 @@ namespace AsynGyanis::Net
     inline constexpr std::size_t kMaximumProxyHeaderV2Bytes = 1024U;
 
     /**
+     * @brief v2 TLV 里几个已定义的类型号（RFC 的 PROXY 协议规范附录 A）
+     * @details 只列有名字的那几个；私有号段（0xE0–0xFF）与未定义类型一律按「原样交出、消费方按类型挑
+     *          自己认的」处理，因此不在此处穷举。`NoOp` 是**填充**（规范要求接收方忽略它的内容），
+     *          本层照原样放进列表——过滤是消费方的事，解析层不做取舍
+     */
+    enum class ProxyTlvType : std::uint8_t
+    {
+        Alpn      = 0x01, ///< PP2_TYPE_ALPN：上层协议协商结果
+        Authority = 0x02, ///< PP2_TYPE_AUTHORITY：客户端请求的原始主机名（UTF-8）
+        Crc32C    = 0x03, ///< PP2_TYPE_CRC32C：前面整条头的校验和（本层不校验，只交出）
+        NoOp      = 0x04, ///< PP2_TYPE_NOOP：填充，内容无意义
+        UniqueId  = 0x05, ///< PP2_TYPE_UNIQUE_ID：代理侧的一次性连接标识
+        Ssl       = 0x20  ///< PP2_TYPE_SSL：客户端 TLS 信息（其值本身是一个嵌套的 TLV 序列）
+    };
+
+    /**
+     * @brief v2 头里的一条 TLV：类型 + 值
+     *
+     * @note `value` 是**视图**，指进 `parseProxyHeader()` 收到的那个缓冲：解析结果不得活得比它长。
+     *       这样定形是为了让解析入口保持不分配（它是 `noexcept` 的读侧热路径，每条连接都要走一次），
+     *       调用方真要长期持有某条值，自己拷一份（单条值的上限就是整条头的
+     *       kMaximumProxyHeaderV2Bytes）。
+     */
+    struct ASYN_NET_API ProxyTlv
+    {
+        std::uint8_t     type{0}; ///< 类型号，已知取值见 ProxyTlvType
+        std::string_view value{}; ///< 值，按字节原样（二进制安全）
+    };
+
+    /**
      * @brief 一条 PROXY 头交出的四层身份
      *
      * @note **TOA 不做（这是决定，不是待办）**：TOA（TCP Option Address）是 Linux 专有的方案，要内核
@@ -47,6 +79,10 @@ namespace AsynGyanis::Net
         Core::InetAddress source{};            ///< 真实客户端地址（协议里写的「源」）
         Core::InetAddress destination{};       ///< 被代理的本端地址（协议里写的「目的」）
         bool              hasAddresses{false}; ///< 这条头是否带地址：v1 的 `UNKNOWN` 与 v2 的 LOCAL 都不带
+
+        /// v2 的 TLV，按出现顺序逐条交出（含填充用的 NoOp 与未定义类型，原样不取舍）；v1 恒为空。
+        /// 值的视图指进解析时传入的那个缓冲，见 ProxyTlv 的说明
+        std::vector<ProxyTlv> tlvs{};
     };
 
     /**

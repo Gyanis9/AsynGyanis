@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -194,6 +195,39 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 解析地址块尾部紧跟的 TLV 序列，逐条原样塞进 endpoint
+         * @param block 整块地址块（地址在前、TLV 在后）
+         * @param addressBytes 该地址族的地址字节数：TLV 从这里开始（等于块长时表示这一族不切分 TLV）
+         * @param endpoint 输出：TLV 按出现顺序追加
+         * @return true 整段 TLV 都能按各自声明的长度装下；有残片或越界即 false（报文不合规范）
+         * @note 声明长度越界即整条头判不合格：那条头的长度字段已经覆盖了这些字节，装不下说明发送侧
+         *       自己就写歪了——放行会让「头吃多少字节」与发送侧的理解错位
+         */
+        bool parseV2Tlvs(std::string_view block, const std::size_t addressBytes, ProxyEndpoint &endpoint)
+        {
+            std::size_t cursor = addressBytes;
+            while (cursor < block.size())
+            {
+                // 一条 TLV 至少 3 字节（类型 1 + 长度 2 大端），尾部剩下的不足 3 字节只能是残片
+                if (block.size() - cursor < 3U)
+                {
+                    return false;
+                }
+                const auto *const bytes      = reinterpret_cast<const std::uint8_t *>(block.data() + cursor);
+                const std::size_t valueBytes = (static_cast<std::size_t>(bytes[1]) << 8U) | bytes[2];
+                cursor += 3U;
+                if (block.size() - cursor < valueBytes)
+                {
+                    return false;
+                }
+                // 值是**视图**：指进调用方传进来的缓冲，因此解析结果不得活得比它长（见 ProxyTlv 的说明）
+                endpoint.tlvs.push_back(ProxyTlv{.type = bytes[0], .value = block.substr(cursor, valueBytes)});
+                cursor += valueBytes;
+            }
+            return true;
+        }
+
+        /**
          * @brief 解析一条完整的 v1 文本行
          * @param line 去掉 `PROXY ` 前缀、也去掉结尾 CRLF 的正文
          * @param endpoint 输出：交出的身份
@@ -334,6 +368,24 @@ namespace AsynGyanis::Net
             {
                 return std::nullopt;
             }
+
+            // 地址之后的余下字节是 TLV（类型 1 + 长度 2 大端 + 值，见 ProxyTlv）。这一步在
+            // **地址布局已知的两族**上切分：IPv4 是 12 字节、IPv6 是 36 字节；UNSPEC 与 AF_UNIX
+            // 不解释（前者规范没给地址字段、后者是两条 108 字节的路径且本层不校验内容），
+            // 起点无从对齐——那两族交出的 tlvs 为空，与「按规范忽略地址信息」同一条口径。
+            // 分配失败当作「这条头解析不了」：本入口是 noexcept 的读侧路径，不许把 bad_alloc 抛出去
+            const std::size_t tlvStart = family == kV2FamilyIpv4 ? 12U : (family == kV2FamilyIpv6 ? 36U : block.size());
+            try
+            {
+                if (!parseV2Tlvs(block, tlvStart, endpoint))
+                {
+                    return std::nullopt;
+                }
+            } catch (const std::exception &)
+            {
+                return std::nullopt;
+            }
+
             if (command != 1U)
             {
                 endpoint.hasAddresses = false;
