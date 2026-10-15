@@ -24,6 +24,7 @@
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Pool/Transaction.h"
+#include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
@@ -814,6 +815,82 @@ namespace AsynGyanis::Database::Queryable
                 }
             }
             return true;
+        }
+
+        /**
+         * @brief 幂等落一份种子数据：已有行不动，只补缺失的行
+         *
+         * @details 「种子数据」这一格在部署动作里的形状是：结构由迁移改、数据由本方法补，
+         *          二者属于**同一个部署步骤**（先 `migrate()` 再 `seed()`），并且可以反复执行——
+         *          已经存在的行不产生第二条，只有缺失的行被补进来。写入走
+         *          `Queryable::insertBatch(rows, InsertConflict::Ignore)`（SQLite 是 `INSERT OR IGNORE`、
+         *          MySQL 是 `INSERT IGNORE`），因此分块、参数上限、取值转换与唯一的写入路径完全复用，
+         *          不另起一份实现。
+         *
+         * @tparam RowType 行类型（与 `TableSchema<RowType>` 配套，同 ORM 的其余入口）
+         * @param pool 提供连接的连接池
+         * @param rows 种子行；幂等键取它们在**表上的唯一键**（通常是显式给出的主键）。空集合什么都不做
+         * @param insertedCount 可选出参：本次真正新增了几行（已存在的不计入；空列表恒为 0）
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 每一行现在都在表里
+         * @return false 表声明了自增主键（写不出冲突键，做不到幂等），或写入失败
+         * @note 自增主键的表被判为不可用：写入清单里不含主键列，`INSERT OR IGNORE` 撞不上任何唯一键，
+         *       每跑一轮都会追加一份——与其静默追加重复行，不如当场拒。这类表要落种子数据，
+         *       请自己写幂等 SQL，或给表声明一个业务唯一键后直接用 `insertBatch(rows, InsertConflict::Ignore)`
+         */
+        template<typename RowType>
+        [[nodiscard]] static bool seed(ConnectionPool &pool, const std::span<const RowType> rows, std::size_t *insertedCount = nullptr, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (insertedCount != nullptr)
+            {
+                *insertedCount = 0;
+            }
+
+            // 声明了自增主键的表不能走这条路（理由见 @note）
+            if (Detail::declaresAutoIncrementPrimaryKey<RowType>())
+            {
+                writeError(errorText, "SchemaMigrator: 表 " + std::string(TableSchema<RowType>::kTableName) +
+                                              " 声明了自增主键，种子数据无法幂等——写入清单里不含主键列，重复执行会追加重复行。"
+                                              "请自己写幂等 SQL，或给表声明一个业务唯一键后直接用 Queryable::insertBatch(rows, InsertConflict::Ignore)");
+                return false;
+            }
+
+            try
+            {
+                // 空数据集由 insertBatch 自己早退（它承诺「空集合直接返回 0，不产生任何语句」），
+                // 这里不再重复判一次——多一道守卫就是多一个永远走不到的分支
+                const std::int64_t insertedRows = Queryable<RowType>(pool).insertBatch(rows, InsertConflict::Ignore);
+                if (insertedCount != nullptr)
+                {
+                    *insertedCount = static_cast<std::size_t>(std::max<std::int64_t>(0, insertedRows));
+                }
+                return true;
+            } catch (const std::exception &exception)
+            {
+                // 与 addMissingColumns 同款出口：布尔语义的调用方不该收到异常。
+                // 基类要抓 std::exception——本仓的异常体系有两根（LogicException 走 std::logic_error、
+                // Exception 走 std::runtime_error），只抓 Base::Exception 会漏掉 LogicException
+                writeError(errorText, std::string{exception.what()});
+                return false;
+            }
+        }
+
+        /**
+         * @brief 幂等落一份种子数据（容器版）
+         * @details 与 span 版完全等价；两个重载并存的理由是**模板实参推导**：从
+         *          `const std::vector<RowType>&` 推不出 `std::span<const RowType>`（推导不考虑
+         *          用户定义转换），只给 span 版会让最常见的调用写法编不过
+         * @param pool 提供连接的连接池
+         * @param rows 种子行
+         * @param insertedCount 可选出参：本次真正新增了几行
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 每一行现在都在表里
+         */
+        template<typename RowType>
+        [[nodiscard]] static bool seed(ConnectionPool &pool, const std::vector<RowType> &rows, std::size_t *insertedCount = nullptr, std::string *errorText = nullptr)
+        {
+            return seed<RowType>(pool, std::span<const RowType>{rows}, insertedCount, errorText);
         }
 
     private:

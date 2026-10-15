@@ -1,7 +1,8 @@
-// 版本化迁移（台账 3.2）的判据：迁移记录表、升序应用、幂等、可回退，以及「一条一笔事务」。
+// 版本化迁移（台账 3.2）与随迁移落的种子数据（台账 3.4）的判据：迁移记录表、升序应用、幂等、
+// 可回退、「一条一笔事务」，以及种子数据「连跑两轮不新增行」。
 //
 // 全部用 SQLite 内存库（池上限 1：内存库不跨连接共享）。真机那一侧另外有 MySQL 版本
-// （TestMySqlIntegration.cpp：应用 + 幂等 + 回退 + 再应用；那侧的 DDL 隐式提交，回滚语义不可测）。
+// （TestMySqlIntegration.cpp：应用 + 幂等 + 回退 + 再应用 + 种子往返；那侧的 DDL 隐式提交，回滚语义不可测）。
 
 #include "Base/Exception/LogicException.h"
 
@@ -11,6 +12,7 @@
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 #include "Database/Queryable/Column.h"
+#include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 
@@ -19,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -41,6 +44,13 @@ namespace
     struct MigrationTagRow
     {
         std::int64_t id; ///< 主键
+    };
+
+    /// 种子数据的反例靶子：自增主键的表（`seed()` 必须拒）
+    struct AutoIncrementSeedRow
+    {
+        std::int64_t id;   ///< 自增主键（不进 INSERT 的列清单）
+        std::string  name; ///< 名称
     };
 } // namespace
 
@@ -69,6 +79,18 @@ struct AsynGyanis::Database::Queryable::TableSchema<MigrationTagRow>
     static constexpr std::string_view kPrimaryKey = "id";
 };
 
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AutoIncrementSeedRow>
+{
+    static constexpr std::string_view kTableName = "seed_auto_increment";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AutoIncrementSeedRow::id, "id"),
+            Column(&AutoIncrementSeedRow::name, "name"),
+    };
+    static constexpr std::string_view kPrimaryKey                = "id";
+    static constexpr bool             kIsAutoIncrementPrimaryKey = true;
+};
+
 namespace
 {
     using AsynGyanis::Database::ConnectionConfig;
@@ -81,6 +103,11 @@ namespace
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
     using AsynGyanis::Database::Queryable::TableSchema;
+
+    /// ORM 查询构建器的本地别名（理由同 TestMySqlIntegration.cpp：`using Queryable::Queryable;`
+    /// 会与同名命名空间构成歧义 C2872）
+    template<typename RowType>
+    using OrmQuery = AsynGyanis::Database::Queryable::Queryable<RowType>;
 
     /**
      * @brief 迁移用例的夹具：一个内存库 + 两条现成的迁移
@@ -215,6 +242,89 @@ TEST_F(SchemaMigrationsTest, RefusesRollbackCountsOutsideTheAppliedRange)
     EXPECT_NE(error.find("只应用了 2 条"), std::string::npos) << error;
     // 两条都在：被拒的回退不该动结构
     EXPECT_TRUE(SchemaMigrator::tableExists<MigrationTagRow>(*m_pool));
+}
+
+// ========================================================================
+// 种子数据（台账 3.4：随迁移一起落的幂等数据集）
+// ========================================================================
+
+/**
+ * @brief 钉住种子数据的幂等：连跑两轮，第二轮一行都不新增
+ * @details 一个部署步骤的形状：`migrate()` 建表 → `seed()` 落数据 → 再来一轮（什么结构都不动、
+ *          一行都不新增）。判据三层：新增行数（3 → 0）、表内总行数（始终 3）、行内容（与种子
+ *          逐字一致）。第三层是必须的——「第二轮没新增」也可以靠「把内容覆盖成别的样子」做到
+ * @note 证伪：把 `Ignore` 换成 `Fail`，第二轮直接撞唯一键（返回 false + 冲突原因）而不是 0；
+ *       换成 `Replace`，第二轮返回 3（MySQL 侧会记成 6）且内容可能被覆盖，第一条断言就红
+ */
+TEST_F(SchemaMigrationsTest, SeedsOnlyTheMissingRowsAndIsIdempotent)
+{
+    std::string error;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, m_steps, nullptr, &error)) << error;
+
+    const std::vector<MigrationNoteRow> seedRows = {
+            MigrationNoteRow{.id = 1, .text = "第一条"},
+            MigrationNoteRow{.id = 2, .text = "第二条"},
+            MigrationNoteRow{.id = 3, .text = "第三条"},
+    };
+
+    // 第一轮：三行都是新的
+    std::size_t inserted = 0;
+    ASSERT_TRUE(SchemaMigrator::seed(*m_pool, seedRows, &inserted, &error)) << error;
+    EXPECT_EQ(inserted, 3U) << "第一轮的新增行数不对";
+
+    // 第二轮：结构已应用、行也已存在，一行都不该新增
+    std::size_t insertedAgain = 0;
+    ASSERT_TRUE(SchemaMigrator::seed(*m_pool, seedRows, &insertedAgain, &error)) << "第二轮种子失败（幂等写入撞了唯一键？）：" << error;
+    EXPECT_EQ(insertedAgain, 0U) << "重复落种子数据产生了新行";
+
+    // 内容层：三行都在，文本与种子逐字一致（按集合比对，顺序由服务端定）
+    const std::vector<MigrationNoteRow> rows = OrmQuery<MigrationNoteRow>(*m_pool).orderBy(AsynGyanis::Database::Queryable::asc("id")).toList();
+    ASSERT_EQ(rows.size(), 3U) << "重复落种子数据让行数变了";
+    EXPECT_EQ(rows[0].text, "第一条");
+    EXPECT_EQ(rows[1].text, "第二条");
+    EXPECT_EQ(rows[2].text, "第三条");
+
+    // 只补缺的：删掉中间那一行再落一遍，新增数正好是 1（不是「全表重写」）
+    static_cast<void>(OrmQuery<MigrationNoteRow>(*m_pool).where(Column(&MigrationNoteRow::id, "id") == std::int64_t{2}).executeNonQuery());
+    std::size_t insertedAfterDelete = 0;
+    ASSERT_TRUE(SchemaMigrator::seed(*m_pool, seedRows, &insertedAfterDelete, &error)) << error;
+    EXPECT_EQ(insertedAfterDelete, 1U) << "缺的那一行没被补回来（或把别的行也一起动了）";
+    EXPECT_EQ(OrmQuery<MigrationNoteRow>(*m_pool).count(), 3);
+}
+
+/**
+ * @brief 钉住空数据集不发语句：连表都不存在也返回成功
+ * @details 「空列表 = 什么都不做」这条由下一层的 `insertBatch` 承诺（空集合直接返回 0、不产生任何
+ *          语句），本用例把它端到端钉住。用一张**不存在的表**来判：真发了语句就一定失败，
+ *          返回成功只能是「没发」
+ */
+TEST_F(SchemaMigrationsTest, SeedsAnEmptyDataSetWithoutTouchingTheDatabase)
+{
+    std::string error;
+    std::size_t inserted = 1U;
+    const bool  seeded   = SchemaMigrator::seed<MigrationTagRow>(*m_pool, std::span<const MigrationTagRow>{}, &inserted, &error);
+    EXPECT_TRUE(seeded) << error;
+    EXPECT_EQ(inserted, 0U);
+    EXPECT_FALSE(SchemaMigrator::tableExists<MigrationTagRow>(*m_pool)) << "空数据集不该碰数据库（这张表从未建过，被建出来说明发了 DDL/DML）";
+}
+
+/**
+ * @brief 钉住自增主键的表被拒（种子数据在那张表上做不到幂等）
+ * @details 自增主键不进 INSERT 的列清单，因此 `INSERT OR IGNORE` 撞不上任何唯一键——每跑一轮
+ *          都会追加一份。这是「静默追加重复行」的形状，宁可当场拒
+ * @note 证伪：把守卫整段删掉，这条会返回 true（表被建出来、行被插进去），断言立刻红
+ */
+TEST_F(SchemaMigrationsTest, RefusesSeedsOnAutoIncrementPrimaryKeyTables)
+{
+    std::string                             error;
+    std::size_t                             inserted = 0;
+    const std::vector<AutoIncrementSeedRow> rows     = {AutoIncrementSeedRow{.name = "甲"}};
+
+    EXPECT_FALSE(SchemaMigrator::seed(*m_pool, rows, &inserted, &error)) << "自增主键的表被放行了";
+    EXPECT_NE(error.find("自增主键"), std::string::npos) << "拒绝原因没点出自增主键：" << error;
+    EXPECT_EQ(inserted, 0U);
+    // 守卫在碰库之前就拒：这张表在用例里从未被创建过，被建出来说明走到了 SQL 那一层
+    EXPECT_FALSE(SchemaMigrator::tableExists<AutoIncrementSeedRow>(*m_pool));
 }
 
 // ========================================================================

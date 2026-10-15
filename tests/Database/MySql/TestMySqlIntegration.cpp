@@ -273,7 +273,10 @@ namespace AsynGyanis::Database
 
         /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
         constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
-        constexpr std::string_view kAutoIncrementColumns   = "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
+
+        /// 种子幂等用例的表：与迁移用例同形，表名独立以免并行时撞车
+        constexpr std::string_view kSeedTableName        = "Asyn_Mysql_Seed";
+        constexpr std::string_view kAutoIncrementColumns = "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
 
         /// 空改动 UPDATE 用例的表：借用自增表的列定义，表名独立以免与其它用例并行时撞车
         constexpr std::string_view kNoOpUpdateTableName = "Asyn_Mysql_NoOpUpdate";
@@ -394,6 +397,15 @@ namespace AsynGyanis::Database
             double                     balance;  ///< 余额（DOUBLE NOT NULL）
             bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
             std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /**
+         * @brief 种子幂等用例的行：显式给主键（幂等键就是它），表由迁移建出来
+         */
+        struct IntegrationSeedRow
+        {
+            std::int64_t id;   ///< 主键（种子行的幂等键）
+            std::string  name; ///< 名称
         };
 
         /**
@@ -628,6 +640,17 @@ namespace AsynGyanis::Database
         static constexpr auto kColumns = std::tuple{
                 Column(&IntegrationMigratedRow::id, "id"),           Column(&IntegrationMigratedRow::name, "name"),     Column(&IntegrationMigratedRow::note, "note"),
                 Column(&IntegrationMigratedRow::balance, "balance"), Column(&IntegrationMigratedRow::active, "active"), Column(&IntegrationMigratedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationSeedRow>
+    {
+        static constexpr std::string_view kTableName = kSeedTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationSeedRow::id, "id"),
+                Column(&IntegrationSeedRow::name, "name"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -3636,6 +3659,62 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "回退之后重新应用没把结构建回来";
 
         // 收尾：迁移表是库级共享对象，本用例自己清掉（表由 TearDown 管）
+        MySqlConnection cleanup(m_configuration);
+        ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+    }
+
+    /**
+     * @brief 真机上钉住种子数据的幂等：连跑两轮，第二轮一行都不新增
+     * @details 与 SQLite 那条同一份判据，换到真服务端——MySQL 侧的关键差异是
+     *          「`INSERT IGNORE` 的影响行数**不含被跳过的行**」这条取值语义，计数判据因此必须真机验
+     * @note 池上限为 1：迁移与种子各自要借连接，握着不放就是死等（同一条纪律）
+     */
+    TEST_F(MySqlIntegrationTest, SeedingIsIdempotentOnTheRealServer)
+    {
+        {
+            MySqlConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kSeedTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        }
+        m_preparedTableName = std::string(kSeedTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        const std::shared_ptr<AsynGyanis::Database::SqlDialect> dialect = Queryable::SchemaMigrator::dialectOf(*pool);
+        ASSERT_NE(dialect, nullptr);
+
+        // 一个部署步骤的形状：迁移建表 → 种子落数据
+        const std::vector<Queryable::SchemaMigrator::MigrationStep> steps{
+                Queryable::SchemaMigrator::MigrationStep{
+                        .name           = "0001-create-seed",
+                        .upStatements   = {Queryable::SchemaMigrator::createTableStatement<IntegrationSeedRow>(*dialect)},
+                        .downStatements = {Queryable::SchemaMigrator::dropTableStatement<IntegrationSeedRow>(*dialect)},
+                },
+        };
+        std::string error;
+        ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, nullptr, &error)) << error;
+
+        const std::vector<IntegrationSeedRow> seedRows = {
+                IntegrationSeedRow{.id = 1, .name = "真机种子一"},
+                IntegrationSeedRow{.id = 2, .name = "真机种子二"},
+        };
+
+        std::size_t inserted = 0;
+        ASSERT_TRUE(Queryable::SchemaMigrator::seed(*pool, seedRows, &inserted, &error)) << error;
+        EXPECT_EQ(inserted, 2U) << "第一轮的新增行数不对";
+
+        std::size_t insertedAgain = 0;
+        ASSERT_TRUE(Queryable::SchemaMigrator::seed(*pool, seedRows, &insertedAgain, &error)) << error;
+        EXPECT_EQ(insertedAgain, 0U) << "重复落种子数据产生了新行（MySQL 的 IGNORE 影响行数语义？）";
+
+        const std::vector<IntegrationSeedRow> rows = OrmQuery<IntegrationSeedRow>(*pool).orderBy(asc("id")).toList();
+        ASSERT_EQ(rows.size(), 2U) << "重复落种子数据让行数变了";
+        EXPECT_EQ(rows[0].name, "真机种子一");
+        EXPECT_EQ(rows[1].name, "真机种子二");
+
+        // 收尾：迁移表是库级共享对象，本用例自己清掉（种子表由 TearDown 管）
         MySqlConnection cleanup(m_configuration);
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
