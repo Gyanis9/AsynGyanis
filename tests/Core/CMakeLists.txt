@@ -25,6 +25,8 @@ add_executable(TestCore
         Metrics/TestProcessMetricsRegistry.cpp
 
         Coroutine/TestScheduler.cpp
+        Coroutine/TestSemaphore.cpp
+        Coroutine/TestMutex.cpp
         Coroutine/TestTask.cpp
         Coroutine/TestCoroutinePool.cpp
         Coroutine/TestCancelable.cpp
