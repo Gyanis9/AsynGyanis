@@ -11,16 +11,35 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Metrics/MetricData.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace AsynGyanis::Net
 {
     /// 延迟直方图的档位数：四个「上界档」加一个溢出档，与 kHttpLatencyUpperBoundMilliseconds 配套使用
     inline constexpr std::size_t kHttpLatencyBucketCount = 5;
+
+    /// 状态码分类标签的键名：Prometheus 的 `label="…"` 与 OTLP 的 attribute 共用这一份（见 HttpStatusClassCount）
+    inline constexpr std::string_view kHttpStatusClassLabelKey = "status_class";
+
+    /**
+     * @brief 状态码分类的一档：类名（1xx…5xx）与该类已发出的响应条数
+     *
+     * @details 两条导出出口（Prometheus 文本、OTLP）此前各自拼了一遍这五档的名字与取值表；名字拼法
+     *          分岔会让采集侧在两种编码之间看到不同的标签值。取值表因此只有这一处（由
+     *          `httpStatusClassCounts()` 给出），出口只负责把键值对编码成各自的形状。
+     */
+    struct HttpStatusClassCount
+    {
+        std::string_view className; ///< 类名文本（`1xx`…`5xx`），两条出口共用
+        std::uint64_t    count{0};  ///< 该类已发出的响应条数
+    };
 
     /// 缓存行字节数：把不同写者热度的原子计数按行边界分开，避免伪共享。取 64（x86-64 通用行宽）；
     /// 刻意不用 std::hardware_destructive_interference_size——它的取值随实现变、会触发跨编译器告警。
@@ -176,6 +195,26 @@ namespace AsynGyanis::Net
             return sampleCount;
         }
     };
+
+    /**
+     * @brief 取五档状态码分类（顺序固定 1xx→5xx），供两条导出出口共用
+     * @details 键名见 kHttpStatusClassLabelKey；取值表只有这一处，Prometheus 与 OTLP 两侧都不再各自
+     *          拼一遍（拼法分岔会让采集侧在两种编码之间看到不同的标签值）
+     * @param stats 统计快照
+     * @return std::array<HttpStatusClassCount, 5> 五档类名与该类条数
+     */
+    [[nodiscard]] ASYN_NET_API std::array<HttpStatusClassCount, 5> httpStatusClassCounts(const HttpServerStats &stats) noexcept;
+
+    /**
+     * @brief 把延迟直方图折成公共数据模型（`Core::MetricHistogramSample`，单位统一到秒）
+     *
+     * @details 换算在这里只做一次：档位上界是毫秒常量、`totalLatencyMicroseconds` 是微秒累计，
+     *          都换到秒。分格保持**每格条数**（与快照同形，非累计）——Prometheus 展示格式要的累计
+     *          数由 `Core::cumulativeBucketCounts()` 现算，那属于渲染端的活，模型里不存两份。
+     * @param stats 统计快照
+     * @return Core::MetricHistogramSample 上界（秒）+ 每格条数 + count + sum（秒）
+     */
+    [[nodiscard]] ASYN_NET_API Core::MetricHistogramSample httpLatencyHistogramSample(const HttpServerStats &stats);
 
     /**
      * @brief 统计采集端：HTTP 与 WebSocket 的累计计数、状态码分类与延迟直方图

@@ -66,4 +66,26 @@ namespace AsynGyanis::Net
         applyRuntimeBacklogStats(stats);
         return stats;
     }
+
+    std::array<HttpStatusClassCount, 5> httpStatusClassCounts(const HttpServerStats &stats) noexcept
+    {
+        // 五档的顺序与类名是契约的一部分：两条出口按同一顺序编码，采集侧才可能把两种格式对上
+        return {HttpStatusClassCount{.className = "1xx", .count = stats.status1xxCount}, HttpStatusClassCount{.className = "2xx", .count = stats.status2xxCount},
+                HttpStatusClassCount{.className = "3xx", .count = stats.status3xxCount}, HttpStatusClassCount{.className = "4xx", .count = stats.status4xxCount},
+                HttpStatusClassCount{.className = "5xx", .count = stats.status5xxCount}};
+    }
+
+    Core::MetricHistogramSample httpLatencyHistogramSample(const HttpServerStats &stats)
+    {
+        Core::MetricHistogramSample sample;
+        sample.upperBoundsSeconds.reserve(kHttpLatencyUpperBoundMilliseconds.size());
+        for (const std::int64_t upperBoundMilliseconds: kHttpLatencyUpperBoundMilliseconds)
+        {
+            sample.upperBoundsSeconds.push_back(static_cast<double>(upperBoundMilliseconds) / 1000.0);
+        }
+        sample.bucketCounts.assign(stats.latencyBucketCounts.begin(), stats.latencyBucketCounts.end());
+        sample.count      = stats.latencySampleCount();
+        sample.sumSeconds = static_cast<double>(stats.totalLatencyMicroseconds) / 1'000'000.0;
+        return sample;
+    }
 } // namespace AsynGyanis::Net

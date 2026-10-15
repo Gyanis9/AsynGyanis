@@ -102,6 +102,7 @@ add_executable(TestNet
         Metrics/TestOtlpHttpMetricsExporter.cpp
         Metrics/TestMetricsExportConfiguration.cpp
         Metrics/TestHttpStatsOtlp.cpp
+        Metrics/TestMetricsDataModel.cpp
         WebSocket/TestPerMessageDeflate.cpp
         Http/TestCompressionMiddleware.cpp
         Http/TestHttpAcceptDispatch.cpp

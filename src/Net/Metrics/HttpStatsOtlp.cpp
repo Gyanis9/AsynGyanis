@@ -50,39 +50,33 @@ namespace AsynGyanis::Net
         addGauge("maximum_connections", "本监听器的并发连接上限（0 = 不设这道限）", stats.maximumConnections);
         addGauge("maximum_connections_per_ip", "单个来源 IP 的并发上限（0 = 这道闸门没装）", stats.maximumConnectionsPerIp);
 
-        // 状态码五类：OTLP 侧的正统形状是一条 metric 多数据点、每点带 status_class 属性
+        // 状态码五类：OTLP 侧的正统形状是一条 metric 多数据点、每点带 status_class 属性。
+        // 取值表由 httpStatusClassCounts() 给出（与 /metrics 出口共用同一份），这里只负责编码
         {
             OtlpLabeledSample responses;
             responses.name = makeName(metricNamePrefix, "responses_total");
             responses.help = "已发出的响应条数，按状态码类聚合";
             responses.kind = Core::ProcessMetricKind::Counter;
-            const std::array<std::pair<const char *, std::uint64_t>, 5> statusClassCounts{{
-                    {"1xx", stats.status1xxCount},
-                    {"2xx", stats.status2xxCount},
-                    {"3xx", stats.status3xxCount},
-                    {"4xx", stats.status4xxCount},
-                    {"5xx", stats.status5xxCount},
-            }};
-            for (const auto &[statusClass, count]: statusClassCounts)
+            for (const HttpStatusClassCount &statusClassCount: httpStatusClassCounts(stats))
             {
-                responses.points.push_back(OtlpLabeledPoint{.attributes = {{"status_class", std::string(statusClass)}}, .value = count});
+                responses.points.push_back(
+                        OtlpLabeledPoint{.attributes = {{std::string(kHttpStatusClassLabelKey), std::string(statusClassCount.className)}}, .value = statusClassCount.count});
             }
             batch.labeled.push_back(std::move(responses));
         }
 
-        // 延迟直方图：上界毫秒常量换算成秒、sum 微秒换算成秒；桶保持「每格条数」（与 stats 同形）
+        // 延迟直方图：单位换算与分格语义由公共模型一次做对（Core::MetricHistogramSample），
+        // OTLP 与模型同形（每格条数、上界与和都是秒），这里因此是逐字段搬运
         {
+            const Core::MetricHistogramSample histogramSample = httpLatencyHistogramSample(stats);
+
             OtlpHistogramSample histogram;
-            histogram.name = makeName(metricNamePrefix, "request_duration_seconds");
-            histogram.help = "已应答请求的耗时分布";
-            histogram.explicitBoundsSeconds.reserve(kHttpLatencyUpperBoundMilliseconds.size());
-            for (const std::int64_t upperBoundMilliseconds: kHttpLatencyUpperBoundMilliseconds)
-            {
-                histogram.explicitBoundsSeconds.push_back(static_cast<double>(upperBoundMilliseconds) / 1000.0);
-            }
-            histogram.bucketCounts.assign(stats.latencyBucketCounts.begin(), stats.latencyBucketCounts.end());
-            histogram.count      = stats.latencySampleCount();
-            histogram.sumSeconds = static_cast<double>(stats.totalLatencyMicroseconds) / 1'000'000.0;
+            histogram.name                  = makeName(metricNamePrefix, "request_duration_seconds");
+            histogram.help                  = "已应答请求的耗时分布";
+            histogram.explicitBoundsSeconds = histogramSample.upperBoundsSeconds;
+            histogram.bucketCounts          = histogramSample.bucketCounts;
+            histogram.count                 = histogramSample.count;
+            histogram.sumSeconds            = histogramSample.sumSeconds;
             batch.histograms.push_back(std::move(histogram));
         }
 
