@@ -125,6 +125,19 @@ namespace AsynGyanis::Net
             int keepAliveIdleSeconds{0};     ///< 空闲多少秒后开始探测（SO_KEEPALIVE + TCP_KEEPIDLE），0 = 关闭保活
             int keepAliveIntervalSeconds{0}; ///< 两次探测的间隔秒数，0 = 系统默认（Windows 上没有这一格入口时不下发）
             int keepAliveProbeCount{0};      ///< 连续失败几次判定连接已死，0 = 系统默认（仅 POSIX 有此入口）
+
+            /// 已送出但未被确认的数据最多在途多少毫秒（TCP_USER_TIMEOUT），0 = 不下发。
+            /// 半开治理里比保活更直接的一格（保活要等连接空闲，它盯的是「有在途数据收不到确认」）。
+            /// **仅 Linux 有效**：Windows 没有该选项，`Platform::Socket::hasUserTimeout()` 在那一侧为假，
+            /// 下发会被如实拒掉而不是静默当成已生效（读法见 Platform::Socket::setUserTimeout 的说明）
+            int userTimeoutMilliseconds{0};
+
+            /// 关闭时的逗留行为（SO_LINGER）：0 = 不下发（系统默认，后台把数据送完）；
+            /// 正的秒数 = 开启逗留并最多等待这么多秒；**负数 = 开启逗留且超时 0 秒**——
+            /// close() 直接发 RST 并丢弃未送出的数据（协议违规收口、拒绝滥用连接用这一档）。
+            /// 非阻塞套接字上「正数」那一档形同虚设（close() 立刻返回 EWOULDBLOCK），
+            /// 细节见 Platform::Socket::setLinger 的说明
+            int lingerSeconds{0};
         };
 
         /**

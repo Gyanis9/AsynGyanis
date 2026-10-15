@@ -268,6 +268,34 @@ namespace AsynGyanis::Platform
         return setIntegerOption(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, isOnlyV6 ? 1 : 0);
     }
 
+    bool Socket::setUserTimeout(const int descriptor, const int milliseconds) noexcept
+    {
+        if (milliseconds <= 0)
+        {
+            // 非正的毫秒数没有「在途多久算死」的语义：0 在内核里是关掉这一项，负值无定义。
+            // 与 setKeepAlive 同一条口径：不下发含糊取值，交回 false 让调用方按「未开启」处理
+            return false;
+        }
+#ifdef TCP_USER_TIMEOUT
+        return setIntegerOption(descriptor, IPPROTO_TCP, TCP_USER_TIMEOUT, milliseconds);
+#else
+        // Windows 没有该选项（TCP_MAXRT 语义不同，见头文件说明）：返回 false 让调用方按
+        // 「本平台没有这一格」处理——配合 hasUserTimeout() 可以把它与「设置失败」分开报
+        (void) descriptor;
+        return false;
+#endif
+    }
+
+    bool Socket::setLinger(const int descriptor, const bool isEnabled, const int seconds) noexcept
+    {
+        // SO_LINGER 在两侧都是 struct linger：开关是 u_short、超时是 u_short（秒）。
+        // 负的秒数按 0 处理（都是「不等待」），因此不需要拒绝这一个入参形状
+        linger option{};
+        option.l_onoff  = isEnabled ? 1 : 0;
+        option.l_linger = static_cast<unsigned short>(seconds < 0 ? 0 : seconds);
+        return ::setsockopt(descriptor, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char *>(&option), static_cast<socklen_t>(sizeof(option))) == 0;
+    }
+
     int Socket::takePendingError(const int descriptor) noexcept
     {
         int       pendingError = 0;

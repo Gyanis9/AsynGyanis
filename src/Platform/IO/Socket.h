@@ -228,6 +228,61 @@ namespace AsynGyanis::Platform
         static bool setFastOpen(int descriptor, int queueLength) noexcept;
 
         /**
+         * @brief 设置「已送出但未被确认的数据最多在途多久」（TCP_USER_TIMEOUT，仅 Linux）
+         *
+         * @details 半开治理里比保活更直接的一格：保活要等连接**空闲**够久才开始探测，而对端断电、
+         *          拔线、中间设备黑掉时，本端往往还在反复重传。本选项让内核在「已送出的数据连续
+         *          这么多毫秒收不到确认」时直接判死连接（ETIMEDOUT），把重传预算从内核默认的
+         *          十几分钟压到业务能接受的数量级。对端正常收数据时它不产生任何影响——判据是
+         *          「有在途未确认的数据」，不是「连接空闲」。
+         *
+         * @param descriptor 目标套接字描述符
+         * @param milliseconds 允许的在途时长上限，单位毫秒（这是本选项的**原生单位**，与保活那族
+         *        选项的秒不同），必须为正
+         * @return true 设置成功；false 取值非正，或本平台没有这一格（见 `hasUserTimeout()`）
+         * @note **Windows 没有该选项**。它的 `TCP_MAXRT` 语义不同（管的是重传超时上限、以秒计），
+         *       且同属「重传参数」而不是「未被确认的数据在途多久」，因此本层不把它当等价物下发。
+         *       读法：`hasUserTimeout()` 为假即「这台机器上不存在这一格」，不要把它当成「设置失败」
+         *       记进错误路径（`sendfile`/`TransmitFile` 那一族吃过这个亏：静默跳过被当成了已生效）
+         */
+        static bool setUserTimeout(int descriptor, int milliseconds) noexcept;
+
+        /**
+         * @brief 本平台是否提供 TCP_USER_TIMEOUT
+         * @details 判据是编译期特性宏（不是运行期试探）：Linux 内核 2.6.37+ 与 glibc 头都在，宏在即可用。
+         *          给调用方一个能**读出来**的能力格：设置失败与「本平台没有这一格」是两回事，
+         *          前者要记错误、后者要在运维面上如实说明
+         * @return true 本平台提供该选项
+         */
+        [[nodiscard]] static constexpr bool hasUserTimeout() noexcept
+        {
+#ifdef TCP_USER_TIMEOUT
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        /**
+         * @brief 设置关闭时的逗留行为（SO_LINGER）
+         *
+         * @details 两种有意义的形状，各对应一个场景：
+         *          - `{ true, 0 }`：**立即复位收口**——close() 直接发 RST 并丢弃未送出的数据，
+         *            不等对端确认、不经过 TIME_WAIT 的优雅收尾。用于「这条连接本就不该被善待」的
+         *            场合（协议违规的收口、拒绝一条刚完成握手的滥用连接）。
+         *          - `{ true, n }`（n > 0）：close() 最多阻塞 n 秒等数据送出。**非阻塞套接字上这一档
+         *            形同虚设**：close() 会立刻返回 EWOULDBLOCK 而不是等，因此本仓的事件循环套接字
+         *            基本用不到它，保留它是为了把语义写全（阻塞套接字的调用方会用到）。
+         *          - `{ false, ... }`：关闭逗留，close() 回到「后台把数据送完」的默认行为。
+         *
+         * @param descriptor 目标套接字描述符
+         * @param isEnabled 是否开启逗留
+         * @param seconds 逗留秒数；仅 isEnabled 为真时有意义，负值按 0 处理（都是「不等待」）
+         * @return true 设置成功；false 系统拒绝（描述符失效等）
+         */
+        static bool setLinger(int descriptor, bool isEnabled, int seconds) noexcept;
+
+        /**
          * @brief 设置 IPv6 套接字是否只接受 IPv6 连接（IPV6_V6ONLY）
          * @details 双栈监听（isOnlyV6=false）才能同时接住 IPv4 映射地址；
          *          非 IPv6 套接字调用本函数会失败，调用方应先判 family。

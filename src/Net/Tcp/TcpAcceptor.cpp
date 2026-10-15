@@ -206,6 +206,19 @@ namespace AsynGyanis::Net
             [[maybe_unused]] const bool isKeepAliveSet =
                     Platform::Socket::setKeepAlive(descriptor, m_tuning.keepAliveIdleSeconds, m_tuning.keepAliveIntervalSeconds, m_tuning.keepAliveProbeCount);
         }
+        if (m_tuning.userTimeoutMilliseconds > 0)
+        {
+            // 与保活同一档：这是「有在途数据收不到确认」的兜底，置不上只让这条连接回到内核默认的
+            // 重传预算，不影响可用性。**Windows 上没有这一格**（Platform 如实返回 false，
+            // 能力判据是 Platform::Socket::hasUserTimeout()），这里不把它当错误、也不假装已生效——
+            // 判据在用例里按平台分开断言（Linux 读回、Windows 断言为假）
+            [[maybe_unused]] const bool isUserTimeoutSet = Platform::Socket::setUserTimeout(descriptor, m_tuning.userTimeoutMilliseconds);
+        }
+        if (m_tuning.lingerSeconds != 0)
+        {
+            // 负数是「开启逗留且超时 0 秒」（close() 立即发 RST），正数按秒等待；负数在这里折成 0
+            [[maybe_unused]] const bool isLingerSet = Platform::Socket::setLinger(descriptor, /*isEnabled*/ true, m_tuning.lingerSeconds > 0 ? m_tuning.lingerSeconds : 0);
+        }
     }
 
     Core::Task<std::optional<Core::AsyncSocket>> TcpAcceptor::accept()

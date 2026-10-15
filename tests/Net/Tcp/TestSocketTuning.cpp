@@ -136,6 +136,43 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 读回 SO_LINGER 的当前取值
+         * @param descriptor 目标描述符
+         * @param isEnabled 出参：逗留是否开启
+         * @return int 逗留秒数；读取失败返回 -1（此时 isEnabled 也置假）
+         */
+        int queryLingerSeconds(const int descriptor, bool &isEnabled)
+        {
+            linger    option{};
+            socklen_t optionLength = static_cast<socklen_t>(sizeof(option));
+            if (::getsockopt(descriptor, SOL_SOCKET, SO_LINGER, reinterpret_cast<char *>(&option), &optionLength) != 0)
+            {
+                isEnabled = false;
+                return -1;
+            }
+            isEnabled = option.l_onoff != 0;
+            return static_cast<int>(option.l_linger);
+        }
+
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 读回 TCP_USER_TIMEOUT 的当前取值（仅 Linux：Windows 没有该选项，本函数不参与编译）
+         * @param descriptor 目标描述符
+         * @return int 毫秒数；读取失败返回 -1
+         */
+        int queryUserTimeoutMilliseconds(const int descriptor)
+        {
+            int       optionValue  = -1;
+            socklen_t optionLength = static_cast<socklen_t>(sizeof(optionValue));
+            if (::getsockopt(descriptor, IPPROTO_TCP, TCP_USER_TIMEOUT, reinterpret_cast<char *>(&optionValue), &optionLength) != 0)
+            {
+                return -1;
+            }
+            return optionValue;
+        }
+#endif
+
+        /**
          * @brief 在独立线程上驱动事件循环的夹具（定义见 CoreTestSupport.h，借用模式）
          * @note 必须声明在协程任务与结果槽之后：析构顺序保证「先 join 循环线程，
          *       再销毁协程帧与已接受的套接字」，否则循环线程可能恢复已销毁的句柄
@@ -458,4 +495,130 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(plainAccepted.has_value()) << "accept() 未在时限内交回连接";
         EXPECT_EQ(queryKeepAliveSwitch(plainAccepted->fileDescriptor()), 0) << "没配置的监听器不该替连接开启保活";
     }
+    /**
+     * @brief 钉住 SO_LINGER 的三种形状：开启并等待、开启且超时 0（立即复位）、关闭
+     * @details 读回值按结构体两格分别断言：只看「设置成功」无法区分「开启逗留 5 秒」与
+     *          「开启逗留 0 秒（close() 发 RST）」——这两档在收口行为上完全不同
+     * @note 负的秒数按 0 处理（同样是「不等待」）：这一格是形状归一，不是错误
+     */
+    TEST(SocketTuning, LingerCanBeEnabledReadBackAndResetToZero)
+    {
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
+
+        // 新套接字默认不逗留：后半段「开了之后读回开启」要有这条对照才不是恒真
+        bool isEnabled = true;
+        EXPECT_EQ(queryLingerSeconds(probeDescriptor, isEnabled), 0);
+        EXPECT_FALSE(isEnabled);
+
+        ASSERT_TRUE(Platform::Socket::setLinger(probeDescriptor, true, 5));
+        EXPECT_EQ(queryLingerSeconds(probeDescriptor, isEnabled), 5) << "逗留秒数没有原样下发";
+        EXPECT_TRUE(isEnabled);
+
+        // 立即复位收口那一档：开启逗留、超时 0
+        ASSERT_TRUE(Platform::Socket::setLinger(probeDescriptor, true, 0));
+        EXPECT_EQ(queryLingerSeconds(probeDescriptor, isEnabled), 0);
+        EXPECT_TRUE(isEnabled) << "超时 0 与「关闭逗留」是两回事：前者仍要开启";
+
+        // 负值按 0（不等待），不当作错误
+        ASSERT_TRUE(Platform::Socket::setLinger(probeDescriptor, true, -3));
+        EXPECT_EQ(queryLingerSeconds(probeDescriptor, isEnabled), 0);
+        EXPECT_TRUE(isEnabled);
+
+        ASSERT_TRUE(Platform::Socket::setLinger(probeDescriptor, false, 0));
+        EXPECT_FALSE(queryLingerSeconds(probeDescriptor, isEnabled) != 0 || isEnabled) << "关闭逗留没生效";
+    }
+
+    /**
+     * @brief 钉住 TCP_USER_TIMEOUT 的平台约定：Linux 下发且能读回，**Windows 没有这一格**（明确读数而非静默跳过）
+     * @details 这一格在 Windows 上不存在（TCP_MAXRT 语义不同，本层不当等价物），判据因此分平台：
+     *          Linux 侧断言「设了、读回等于设的值」；Windows 侧断言「能力查询为假、下发被如实拒掉」——
+     *          后者就是那条「明确读数」，不是把它当作设置失败记进错误路径
+     * @note 证伪：Linux 侧把 setUserTimeout 的检查整段删掉（直接返回 true 而不下发），读回那一条立刻红；
+     *       把 hasUserTimeout() 写成恒真，Windows 侧第一条断言红
+     */
+    TEST(SocketTuning, UserTimeoutIsLinuxOnlyAndReadsBackWhereAvailable)
+    {
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
+
+#if ASYN_PLATFORM_WIN32
+        // 本平台没有这一格：能力查询为假，下发返回假（调用方据此报「这台机器上不存在」）
+        EXPECT_FALSE(Platform::Socket::hasUserTimeout()) << "Windows 上不该报出这个能力";
+        EXPECT_FALSE(Platform::Socket::setUserTimeout(probeDescriptor, 30000)) << "Windows 上下发应当被如实拒掉";
+#else
+        EXPECT_TRUE(Platform::Socket::hasUserTimeout()) << "POSIX 侧应当报出这个能力";
+        ASSERT_TRUE(Platform::Socket::setUserTimeout(probeDescriptor, 30000));
+        EXPECT_EQ(queryUserTimeoutMilliseconds(probeDescriptor), 30000) << "在途时限没有原样下发（单位是毫秒）";
+#endif
+    }
+
+    /**
+     * @brief 钉住：非正的毫秒数不下发（0 在内核里是关掉这一项、负值无定义），且拒绝发生在动套接字之前
+     * @note Windows 上所有调用都回假，这条在那侧不构成判据；Linux 侧它才是真判据（没有它，
+     *       「把 0 也当合法值下发」这种实现测不出来）
+     */
+    TEST(SocketTuning, UserTimeoutRejectsNonPositiveValues)
+    {
+        Core::EventLoop   loop;
+        Core::AsyncSocket probeSocket     = Core::AsyncSocket::create(loop);
+        const int         probeDescriptor = probeSocket.fileDescriptor();
+        ASSERT_GE(probeDescriptor, 0) << "TCP 探针套接字没有创建成功";
+
+        EXPECT_FALSE(Platform::Socket::setUserTimeout(probeDescriptor, 0));
+        EXPECT_FALSE(Platform::Socket::setUserTimeout(probeDescriptor, -1));
+    }
+
+    /**
+     * @brief 钉住：监听器把「在途时限 + 立即复位收口」下发到每条接受到的连接，未配置时不碰这两项
+     * @details 两条判据各自的对照都在场：配置侧读回生效、未配置侧的连接必须是系统默认（逗留关闭）。
+     *          在途时限那一格仅 Linux 能读回，Windows 只断逗留（它没有该选项，见上一条用例）
+     */
+    TEST(SocketTuning, AcceptorAppliesUserTimeoutAndLingerToAcceptedConnections)
+    {
+        Core::EventLoop           loop;
+        TcpAcceptor               acceptor(loop, Core::InetAddress::localhost(0));
+        TcpAcceptor::SocketTuning tuning;
+        tuning.userTimeoutMilliseconds = 30000;
+        tuning.lingerSeconds           = -1; // 立即复位收口档
+        acceptor.setSocketTuning(tuning);
+        EXPECT_EQ(acceptor.socketTuning().lingerSeconds, -1);
+
+        ASSERT_TRUE(acceptor.bind());
+        ASSERT_TRUE(acceptor.listen(kDefaultListenBacklog));
+        const Core::InetAddress boundAddress = queryBoundAddress(acceptor.fileDescriptor());
+        ASSERT_NE(boundAddress.port(), 0);
+        LoopbackClient client(boundAddress.port());
+        ASSERT_TRUE(client.isValid());
+
+        const std::optional<Core::AsyncSocket> accepted = acceptOneConnection(acceptor, loop);
+        ASSERT_TRUE(accepted.has_value()) << "accept() 未在时限内交回连接";
+        const int acceptedDescriptor = accepted->fileDescriptor();
+
+        bool isEnabled = false;
+        EXPECT_EQ(queryLingerSeconds(acceptedDescriptor, isEnabled), 0) << "立即复位收口档应当落成「开启逗留、超时 0」";
+        EXPECT_TRUE(isEnabled) << "配置的逗留没有下发到接受到的连接";
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_EQ(queryUserTimeoutMilliseconds(acceptedDescriptor), 30000) << "配置的在途时限没有下发到接受到的连接";
+#endif
+
+        // 对照：同形状但不配置这两项，接受到的连接必须仍是系统默认（逗留关闭）
+        Core::EventLoop plainLoop;
+        TcpAcceptor     plainAcceptor(plainLoop, Core::InetAddress::localhost(0));
+        ASSERT_TRUE(plainAcceptor.bind());
+        ASSERT_TRUE(plainAcceptor.listen(kDefaultListenBacklog));
+        const Core::InetAddress plainAddress = queryBoundAddress(plainAcceptor.fileDescriptor());
+        ASSERT_NE(plainAddress.port(), 0);
+        LoopbackClient plainClient(plainAddress.port());
+        ASSERT_TRUE(plainClient.isValid());
+
+        const std::optional<Core::AsyncSocket> plainAccepted = acceptOneConnection(plainAcceptor, plainLoop);
+        ASSERT_TRUE(plainAccepted.has_value()) << "accept() 未在时限内交回连接";
+        EXPECT_FALSE(queryLingerSeconds(plainAccepted->fileDescriptor(), isEnabled) != 0 || isEnabled) << "没配置的监听器不该替连接开启逗留";
+    }
+
 } // namespace AsynGyanis::Net
