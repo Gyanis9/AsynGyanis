@@ -222,6 +222,13 @@ namespace AsynGyanis::Database::Queryable
         /// 之类），读完即弃。为空表示调用方没有提供：方言据此拒绝而不是生成一条
         /// 服务端必拒的语句（同层的纪律：宁可失败也不送畸形 SQL）
         std::vector<std::string> conflictTargetColumns;
+
+        /// UPDATE 方向里写成「这一列自己加一」的列（乐观锁的版本列走这里）：渲染成
+        /// `"col" = "col" + 1` 而不是 `"col" = ?`——加一由服务端在一次语句里完成，因此
+        /// 「两个会话各改一次都成功」不可能发生，调用方也**没法**忘掉这一格。
+        /// 它不占参数位（文本里不出现占位符），因此不改动「SET 参数在前、条件参数在后」那条顺序契约；
+        /// 只在 UPDATE 方向参与渲染，其余方向读完即弃
+        std::vector<std::string> incrementColumns;
     };
 
 } // namespace AsynGyanis::Database::Queryable

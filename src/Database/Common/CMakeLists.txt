@@ -18,6 +18,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseSources
         ${CMAKE_CURRENT_LIST_DIR}/DatabaseException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ConnectionUnavailableException.h
         ${CMAKE_CURRENT_LIST_DIR}/ConnectionUnavailableException.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/OptimisticLockException.h
+        ${CMAKE_CURRENT_LIST_DIR}/OptimisticLockException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QueryExecutionException.h
         ${CMAKE_CURRENT_LIST_DIR}/QueryExecutionException.cpp
         ${CMAKE_CURRENT_LIST_DIR}/RowMappingException.h

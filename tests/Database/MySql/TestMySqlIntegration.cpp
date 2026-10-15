@@ -256,6 +256,10 @@ namespace AsynGyanis::Database
         /// 异步错误路径用例的表名：本表刻意不创建，用于制造「表不存在」这条异常路径
         constexpr std::string_view kAsyncMissingTableName = "Asyn_Mysql_AsyncMissing";
 
+        /// 乐观锁用例的表：带版本列，两个会话同时改同一行
+        constexpr std::string_view kVersionedLockTableName = "Asyn_Mysql_VersionedLock";
+        constexpr std::string_view kVersionedLockColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `version` BIGINT NOT NULL";
+
         /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
         constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
         constexpr std::string_view kAutoIncrementColumns   = "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
@@ -454,6 +458,16 @@ namespace AsynGyanis::Database
             std::int64_t id; ///< 唯一一列
         };
 
+        /**
+         * @brief 乐观锁用例的行：版本列声明进 TableSchema 之后，update() 的 WHERE 会带上它
+         */
+        struct IntegrationVersionedRow
+        {
+            std::int64_t id;      ///< 主键
+            std::string  name;    ///< 业务列
+            std::int64_t version; ///< 版本列（每次成功更新由服务端加一）
+        };
+
     } // namespace
 
     // ========================================================================
@@ -605,6 +619,19 @@ namespace AsynGyanis::Database
                 Column(&IntegrationAsyncMissingRow::id, "id"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationVersionedRow>
+    {
+        static constexpr std::string_view kTableName = kVersionedLockTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationVersionedRow::id, "id"),
+                Column(&IntegrationVersionedRow::name, "name"),
+                Column(&IntegrationVersionedRow::version, "version"),
+        };
+        static constexpr std::string_view kPrimaryKey    = "id";
+        static constexpr std::string_view kVersionColumn = "version";
     };
 
     // ========================================================================
@@ -3343,6 +3370,58 @@ namespace AsynGyanis::Database
 
         // 这一族失败码刻意不在建连重试表里：它说的是「一条已发出的语句中途断了」，写可能已经生效
         EXPECT_FALSE(isTransientConnectFailure(victim)) << victim.lastError();
+    }
+
+    /**
+     * @brief 真机上钉住乐观锁的「两个会话同时改同一行」：后写的拿到冲突，先写的改动没被抹掉
+     * @details 进程内替身穿不出真服务端的 MVCC 语义（SQLite
+     * 那条用的是文件库，MySQL 这条走的是
+     *          真正的两条会话连接）。两个会话各自读出行（版本都是 0），会话一先写成功，会话二拿
+     *          过期版本再写——必须抛
+     * OptimisticLockException，且会话一写进去的值原样还在。
+     * @note 与 InsertConflict 那三档正交：那一档管 INSERT 撞唯一键，本档管 UPDATE 条件匹配不上；
+     *
+     * 这条用例里没有任何唯一键冲突，唯一的失败来源就是版本条件
+     */
+    TEST_F(MySqlIntegrationTest, OptimisticLockRejectsTheStaleWriteFromASecondSession)
+    {
+        ASSERT_TRUE(prepareTable(kVersionedLockTableName, kVersionedLockColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool>   pool = makePool(2);
+        OrmQuery<IntegrationVersionedRow> firstSession(*pool);
+        OrmQuery<IntegrationVersionedRow> secondSession(*pool);
+
+        ASSERT_EQ(firstSession.insert(IntegrationVersionedRow{.id = 1, .name = "原值", .version = 0}), 1);
+
+        const std::optional<IntegrationVersionedRow> firstView  = firstSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        const std::optional<IntegrationVersionedRow> secondView = secondSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(firstView.has_value());
+        ASSERT_TRUE(secondView.has_value());
+        ASSERT_EQ(firstView->version, 0);
+        ASSERT_EQ(secondView->version, 0);
+
+        IntegrationVersionedRow firstRow = *firstView;
+        firstRow.name                    = "会话一写的";
+        EXPECT_EQ(firstSession.update(firstRow), 1) << "第一个写者不该失败";
+
+        IntegrationVersionedRow secondRow = *secondView;
+        secondRow.name                    = "会话二写的";
+        try
+        {
+            static_cast<void>(secondSession.update(secondRow));
+            FAIL() << "会话二用过期版本写成功了：会话一的改动已经被静默覆盖";
+        } catch (const OptimisticLockException &error)
+        {
+            const std::string message = error.what();
+            EXPECT_NE(message.find(kVersionedLockTableName), std::string::npos) << "冲突消息没点出表名：" << message;
+            EXPECT_NE(message.find("version"), std::string::npos) << "冲突消息没点出版本列：" << message;
+            EXPECT_NE(message.find("期望值 0"), std::string::npos) << "冲突消息没点出期望的版本值：" << message;
+        }
+
+        const std::optional<IntegrationVersionedRow> after = OrmQuery<IntegrationVersionedRow>(*pool).where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(after.has_value());
+        EXPECT_EQ(after->name, "会话一写的") << "先写的那份数据被覆盖了";
+        EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一（MySQL 侧只统计真变了的行，加一必须由语句本身完成）";
     }
 
 } // namespace AsynGyanis::Database

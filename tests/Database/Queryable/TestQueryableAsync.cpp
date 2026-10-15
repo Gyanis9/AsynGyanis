@@ -74,6 +74,14 @@ namespace
         std::string  title = ""; ///< 标题列
     };
 
+    /// 乐观锁的行：版本列声明进 TableSchema 之后，updateAsync 的 WHERE 也会带上它
+    struct AsyncVersionedRow
+    {
+        std::int64_t id      = 0;  ///< 主键
+        std::string  name    = ""; ///< 业务列
+        std::int64_t version = 0;  ///< 版本列（每次成功更新由服务端加一）
+    };
+
 } // namespace
 
 template<>
@@ -100,6 +108,19 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsyncMissingTableRow>
 };
 
 template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AsyncVersionedRow>
+{
+    static constexpr std::string_view kTableName = "async versioned";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&AsyncVersionedRow::id, "id"),
+            Column(&AsyncVersionedRow::name, "name"),
+            Column(&AsyncVersionedRow::version, "version"),
+    };
+    static constexpr std::string_view kPrimaryKey    = "id";
+    static constexpr std::string_view kVersionColumn = "version";
+};
+
+template<>
 struct AsynGyanis::Database::Queryable::TableSchema<AsyncTicketRow>
 {
     static constexpr std::string_view kTableName = "async generated tickets";
@@ -122,6 +143,7 @@ namespace
     using AsynGyanis::Database::ConnectionConfig;
     using AsynGyanis::Database::ConnectionPool;
     using AsynGyanis::Database::DatabaseFactory;
+    using AsynGyanis::Database::OptimisticLockException;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
     using AsynGyanis::Database::SqliteDialect;
@@ -1007,4 +1029,52 @@ TEST_F(QueryableAsyncTest, OfflineModeThrowsOnAsyncExecution)
         EXPECT_NE(std::string(exception.what()).find("toListAsync()"), std::string::npos);
         EXPECT_NE(std::string(exception.what()).find("离线模式"), std::string::npos);
     }
+}
+
+/**
+ * @brief 钉住 updateAsync 在版本对不上时抛同一个乐观锁异常（判据与同步路径共用一份实现）
+ * @details 异步路径多一层东西可坏：语句在工作线程上执行，0 行的结论要从那里带回恢复侧。
+ *          这条用例把「别人先改过」用一条原语 UPDATE 造出来（同一个内存库、同一个池连接，
+ *          池上限为 1 时取回的就是同一条连接），再让 updateAsync 拿着旧版本去写——
+ *          异常必须照样从协程里抛出来，而不是静默返回 0。
+ * @note 表是本用例自建的：本文件既有的夹具表没有版本列，而乐观锁只对声明了版本列的表生效
+ */
+TEST_F(QueryableAsyncTest, UpdateAsyncSurfacesTheOptimisticLockConflict)
+{
+    {
+        PooledConnection connection = m_pool->acquire();
+        ASSERT_TRUE(connection);
+        ASSERT_NE(connection->execute("CREATE TABLE \"async versioned\" (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL)"), nullptr)
+                << connection->lastError();
+    }
+
+    Queryable<AsyncVersionedRow> query(*m_pool);
+    ASSERT_EQ(query.insert(AsyncVersionedRow{.id = 1, .name = "原值", .version = 0}), 1);
+
+    // 先读出这一行：手里这份的版本是 0
+    AsyncVersionedRow staleRow = *query.where(Column(&AsyncVersionedRow::id, "id") == std::int64_t{1}).first();
+    ASSERT_EQ(staleRow.version, 0);
+
+    // 「另一个会话先写」在这里用一条原语语句造出来：版本加一、名字换掉，手里那份就此过期
+    {
+        PooledConnection otherSession = m_pool->acquire();
+        ASSERT_TRUE(otherSession);
+        ASSERT_NE(otherSession->execute("UPDATE \"async versioned\" SET name = '别人写的', version = version + 1 WHERE id = 1"), nullptr) << otherSession->lastError();
+    }
+
+    staleRow.name                                = "拿旧版本异步写";
+    const CompletedTask<std::int64_t> conflicted = m_loopRunner.runToCompletion(query.updateAsync(staleRow, eventLoop()));
+    ASSERT_TRUE(conflicted.finished) << "协程没在时限内收尾";
+    ASSERT_NE(conflicted.error, nullptr) << "异步路径把冲突吞成了「0 行」";
+    // rethrow_exception 是 [[noreturn]]：后面再写断言会被判成不可达代码（/W4 C4702）
+    EXPECT_THROW(std::rethrow_exception(conflicted.error), OptimisticLockException);
+
+    // 重新读出、用当前版本再写：异步路径照常成功，版本走到 2
+    AsyncVersionedRow freshRow                = *query.where(Column(&AsyncVersionedRow::id, "id") == std::int64_t{1}).first();
+    freshRow.name                             = "重新读出后异步写";
+    const CompletedTask<std::int64_t> updated = m_loopRunner.runToCompletion(query.updateAsync(freshRow, eventLoop()));
+    ASSERT_EQ(updated.error, nullptr);
+    ASSERT_TRUE(updated.value.has_value());
+    EXPECT_EQ(*updated.value, 1);
+    EXPECT_EQ(query.where(Column(&AsyncVersionedRow::id, "id") == std::int64_t{1}).first()->version, 2);
 }

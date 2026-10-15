@@ -18,6 +18,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseType.h"
+#include "Database/Common/OptimisticLockException.h"
 #include "Database/Common/QueryExecutionException.h"
 #include "Database/Common/TransactionTimeoutException.h"
 #include "Database/Dialect/DialectRegistry.h"
@@ -32,6 +33,7 @@
 #include "Database/Queryable/TableSchema.h"
 
 #include <algorithm>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -41,6 +43,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace AsynGyanis::Database::Queryable
@@ -501,16 +504,32 @@ namespace AsynGyanis::Database::Queryable
          *          MySQL 只统计值真变了的行（写回原值是 0，与主键不存在无法区分）。两侧口径各由一条
          *          用例钉住，存在性请用 first() / count() 确认。
          *
+         * @details `TableSchema<T>::kVersionColumn` 非空时（乐观锁）多两件事：WHERE 追加
+         *          「版本 = ?」（问的是**手里这份数据的版本**），SET 把该列写成自增加一；更新到
+         *          0 行即抛 `OptimisticLockException`，消息点名表、版本列、期望版本与主键值。
+         *          这一档与 `InsertConflict` 三档正交：那一档管 INSERT 撞唯一键，本档管 UPDATE
+         *          条件匹配不上，一次写入只可能落在其中一处。
+         * @note 更新成功之后，这条结构体里的版本字段就成了旧值（服务端已经加过一，而本方法只读地
+         *       接收结构体、拿不到回写）。要继续改这一行请先重新读出——这正是乐观锁的意思：
+         *       手里那份数据一旦写出去就过期了，第二次拿旧值写会**当场报冲突**而不是悄悄覆盖别人
+         *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws Base::LogicException TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
          *         或表中只有主键列（没有可更新的列），无法生成 UPDATE
+         * @throws Base::LogicException 版本列与主键同列，或声明了版本列但它不在 kColumns 中
+         * @throws OptimisticLockException 声明了版本列且这次 UPDATE 命中 0 行（别人先改过，或这一行已不在）
          * @throws DatabaseException 取连接失败或语句执行失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          */
         [[nodiscard]] std::int64_t update(const T &row)
         {
             requireOnline("update()");
-            return executeStatement(buildUpdateStatement(row));
+
+            const auto [statement, conflictReason] = buildUpdateStatement(row);
+            const std::int64_t affectedRows        = executeStatement(statement);
+            // 启用乐观锁时，「0 行」不是「没变化」而是「别人先改过」：见 requireNoOptimisticLockConflict
+            requireNoOptimisticLockConflict(conflictReason, affectedRows);
+            return affectedRows;
         }
 
         // ========================================================================
@@ -780,7 +799,10 @@ namespace AsynGyanis::Database::Queryable
          * @param completionLoop 恢复本协程用的事件循环，要求同 toListAsync()
          * @return Core::Task<std::int64_t> 惰性启动的协程；驱动口径的受影响行数，含义与 update() 相同
          *         （不要拿它当存在性判据，理由见 update() 的 @warning）
-         * @throws Base::LogicException 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列
+         * @throws Base::LogicException 当前为离线模式；或主键未在 kColumns 声明、表中只有主键列；
+         *         或版本列与主键同列、声明了版本列但不在 kColumns 中
+         * @throws OptimisticLockException 声明了版本列且这次 UPDATE 命中 0 行（别人先改过，或这一行已不在）；
+         *         抛在恢复本协程的那个线程上，判据与同步路径共用同一份实现
          * @throws DatabaseException 取连接失败或语句执行失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
          * @note 主键缺失这类编程错误在**首次 resume** 时就会抛出（语句生成阶段），
@@ -790,17 +812,20 @@ namespace AsynGyanis::Database::Queryable
         {
             requireOnline("updateAsync()");
 
-            SqlStatement    statement   = buildUpdateStatement(row);
-            ConnectionPool *pool        = m_pool;
-            Transaction    *transaction = m_transaction;
+            auto [statement, conflictReason] = buildUpdateStatement(row);
+            ConnectionPool *pool             = m_pool;
+            Transaction    *transaction      = m_transaction;
 
-            std::int64_t affectedRows = co_await asyncExecutor().template submit<std::int64_t>(completionLoop,
-                                                                                               [statement = std::move(statement), pool, transaction]() -> std::int64_t
-                                                                                               {
-                                                                                                   ConnectionLease lease = acquireConnection(pool, transaction);
-                                                                                                   return executeOn(*lease.connection, statement);
-                                                                                               });
+            std::int64_t affectedRows =
+                    co_await asyncExecutor().template submit<std::int64_t>(completionLoop,
+                                                                           [statement = std::move(statement), conflictReason, pool, transaction]() -> std::int64_t
+                                                                           {
+                                                                               ConnectionLease lease = acquireConnection(pool, transaction);
+                                                                               return executeOn(*lease.connection, statement);
+                                                                           });
 
+            // 判据与同步路径同一份实现（同一条口径：启用乐观锁时 0 行＝冲突），抛在恢复本协程的线程上
+            requireNoOptimisticLockConflict(conflictReason, affectedRows);
             co_return affectedRows;
         }
 
@@ -1218,24 +1243,48 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 生成按主键更新一行的 UPDATE 语句
+         * @brief 生成按主键更新一行的 UPDATE 语句，并在启用乐观锁时顺带给出冲突文案
          * @details SET 子句覆盖除主键外的全部列，WHERE 子句用主键定位，主键值同样以参数绑定送出。
          *          条件渲染交回方言：ORM 只提供「SET 列 + 取值」与一条主键等值条件，
          *          条件树的递归、IN 展开、参数顺序因此与 SELECT / DELETE 完全一致。
+         *          `TableSchema<T>::kVersionColumn` 非空时（乐观锁）多两件事：WHERE 追加
+         *          「版本 = ?」（问的是手里这份数据的版本），SET 里把该列写成「自己加一」而不是取结构体的值——
+         *          加一由服务端在一次语句里完成，因此调用方忘不掉、两个会话也不可能都成功。
          * @param row 待更新的结构体
-         * @return SqlStatement "UPDATE 表 SET 列 = ?, … WHERE 主键 = ?"
-         * @throws Base::LogicException 主键未在 kColumns 中声明，或表中只有主键列
+         * @return std::pair<SqlStatement, std::string> 语句；第二项是冲突文案（含表、版本列、期望版本与主键值），
+         *         未启用乐观锁时为空串——调用方据此决定「0 行」要不要当冲突抛
+         * @throws Base::LogicException 主键未在 kColumns 中声明；表里既没有可更新的列也没有版本列；
+         *         版本列与主键同列；或声明了版本列但它不在 kColumns 里
          */
-        [[nodiscard]] SqlStatement buildUpdateStatement(const T &row)
+        [[nodiscard]] std::pair<SqlStatement, std::string> buildUpdateStatement(const T &row)
         {
-            const std::string_view primaryKeyName = TableSchema<T>::kPrimaryKey;
+            const std::string_view primaryKeyName    = TableSchema<T>::kPrimaryKey;
+            const std::string_view versionColumnName = Detail::versionColumnName<T>();
+
+            // 版本列与主键同列时 WHERE 里会写两遍同一格、加一也加在定位键上：那是写错了而不是用法选择，
+            // 当场拒掉比生成一条语义含糊的语句好
+            if (!versionColumnName.empty() && versionColumnName == primaryKeyName)
+            {
+                throw Base::LogicException("Queryable: 无法生成 UPDATE，TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 的 kVersionColumn（" +
+                                           std::string(versionColumnName) + "）与 kPrimaryKey 同列：版本列必须独立于主键");
+            }
 
             std::vector<std::string>      assignmentColumns;
             std::vector<DatabaseValue>    assignmentValues;
+            std::vector<std::string>      incrementColumns;
             std::optional<WhereCondition> primaryKeyCondition;
+            std::optional<WhereCondition> versionCondition;
+            std::string                   versionExpectationText;
+            std::string                   primaryKeyValueText;
 
-            std::apply([&](const auto &...columnDescriptors)
-                       { (appendUpdateColumn(columnDescriptors, row, primaryKeyName, assignmentColumns, assignmentValues, primaryKeyCondition), ...); }, TableSchema<T>::kColumns);
+            std::apply(
+                    [&](const auto &...columnDescriptors)
+                    {
+                        (appendUpdateColumn(columnDescriptors, row, primaryKeyName, versionColumnName, assignmentColumns, assignmentValues, incrementColumns, primaryKeyCondition,
+                                            versionCondition, versionExpectationText, primaryKeyValueText),
+                         ...);
+                    },
+                    TableSchema<T>::kColumns);
 
             if (!primaryKeyCondition.has_value())
             {
@@ -1243,17 +1292,64 @@ namespace AsynGyanis::Database::Queryable
                                            "）未在 kColumns 中声明");
             }
 
-            if (assignmentColumns.empty())
+            // 声明了版本列却找不到那一列：WHERE 就带不上版本条件，乐观锁会静默失效——宁可当场拒绝
+            if (!versionColumnName.empty() && !versionCondition.has_value())
+            {
+                throw Base::LogicException("Queryable: 无法生成 UPDATE，TableSchema<" + std::string(TableSchema<T>::kTableName) + ">::kVersionColumn（" +
+                                           std::string(versionColumnName) + "）未在 kColumns 中声明：没有这一列，WHERE 就带不上版本条件，乐观锁会静默失效");
+            }
+
+            // 「只有主键列」的判据要把版本列算上：一张「主键 + 版本」的表在乐观锁下是可更新的
+            // （SET 里那格自增赋值就是它的更新内容），只按普通赋值判会把这种表误拒
+            if (assignmentColumns.empty() && incrementColumns.empty())
             {
                 throw Base::LogicException("Queryable: 无法生成 UPDATE，表 " + std::string(TableSchema<T>::kTableName) + " 只有主键列，没有可更新的列");
             }
 
-            QueryNode updateNode     = makeWriteQueryNode();
-            updateNode.selectColumns = std::move(assignmentColumns);
+            QueryNode updateNode        = makeWriteQueryNode();
+            updateNode.selectColumns    = std::move(assignmentColumns);
+            updateNode.incrementColumns = std::move(incrementColumns);
             updateNode.whereConditions.push_back(std::move(primaryKeyCondition.value()));
+            if (versionCondition.has_value())
+            {
+                updateNode.whereConditions.push_back(std::move(versionCondition.value()));
+            }
 
-            // SET 参数在前、主键条件参数在后，与方言输出文本中占位符的先后顺序一致
-            return requireDialect().translateUpdate(updateNode, assignmentValues);
+            std::string conflictReason;
+            if (versionCondition.has_value())
+            {
+                // 期望版本与主键值都要点出来：只报「0 行」等于让调用方自己回去找是哪一行、手里那份有多旧
+                conflictReason = "表 " + std::string(TableSchema<T>::kTableName) + " 的版本列 " + std::string(versionColumnName) + " 期望值 " + versionExpectationText + "（主键 " +
+                                 std::string(primaryKeyName) + " = " + primaryKeyValueText + "）";
+            }
+
+            // SET 参数在前、主键与版本条件参数在后，与方言输出文本中占位符的先后顺序一致
+            return {requireDialect().translateUpdate(updateNode, assignmentValues), std::move(conflictReason)};
+        }
+
+        /**
+         * @brief 启用乐观锁时，UPDATE 命中 0 行就是并发冲突，当场抛
+         * @details 「0 行」在关掉乐观锁时含义含糊（SQLite 把「写回原值」也算命中，
+         *
+         * MySQL 只算真变了的行，见 update() 的 @warning），但在启用版本列之后它是确定的：
+         *          WHERE 里带着「版本 = 手里的值」，0
+         * 行只可能是「这一行被别人改过（版本已经不是这个数）
+         *          或被删掉了」。因此同步与异步两条路径共用这一份判据，口径不会各说各话。
+         * @param
+         * conflictReason 语句生成阶段留下的冲突文案；未启用乐观锁时为空串（此时 0 行照旧不抛）
+         * @param affectedRows 驱动口径的受影响行数
+         * @throws
+         * OptimisticLockException conflictReason 非空且受影响行数为 0 时
+         */
+        static void requireNoOptimisticLockConflict(const std::string &conflictReason, const std::int64_t affectedRows)
+        {
+            if (conflictReason.empty() || affectedRows != 0)
+            {
+                return;
+            }
+
+            throw OptimisticLockException("Queryable: 乐观锁冲突——" + conflictReason +
+                                          "，UPDATE 没有匹配到任何行：这一行在读出之后被别人改过、或已经被删掉了。请重新读出、合并改动后再试一次");
         }
 
         /**
@@ -1465,19 +1561,26 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 把 UPDATE 的一列拆进 SET 或 WHERE
+         * @brief 把 UPDATE 的一列拆进 SET、WHERE 或「自增加一」
          * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
          * @param columnDescriptor 列的元信息（列名 + 成员指针）
          * @param row 提供字段值的结构体
          * @param primaryKeyName 主键列名，命中该列的成员不进 SET
+         * @param versionColumnName 乐观锁版本列名；为空表示未启用。命中该列的成员同样不进 SET
+         *        （它走自增加一那一格），其取值改作 WHERE 里的版本条件
          * @param assignmentColumns 出参：进入 SET 的列名列表，按 kColumns 顺序
          * @param assignmentValues 出参：与 assignmentColumns 同序的取值列表
+         * @param incrementColumns 出参：走「自己加一」的列名列表（乐观锁的版本列）
          * @param primaryKeyCondition 出参：主键等值条件；未找到主键列时保持空
+         * @param versionCondition 出参：版本等值条件；未启用乐观锁或未找到版本列时保持空
+         * @param versionExpectationText 出参：版本取值的可读文本，供冲突消息点名「期望值是多少」
+         * @param primaryKeyValueText 出参：主键取值的可读文本，供冲突消息点名「是哪一行」
          */
         template<typename ColumnDescriptorType>
-        static void appendUpdateColumn(const ColumnDescriptorType &columnDescriptor, const T &row, const std::string_view primaryKeyName,
-                                       std::vector<std::string> &assignmentColumns, std::vector<DatabaseValue> &assignmentValues,
-                                       std::optional<WhereCondition> &primaryKeyCondition)
+        static void appendUpdateColumn(const ColumnDescriptorType &columnDescriptor, const T &row, const std::string_view primaryKeyName, const std::string_view versionColumnName,
+                                       std::vector<std::string> &assignmentColumns, std::vector<DatabaseValue> &assignmentValues, std::vector<std::string> &incrementColumns,
+                                       std::optional<WhereCondition> &primaryKeyCondition, std::optional<WhereCondition> &versionCondition, std::string &versionExpectationText,
+                                       std::string &primaryKeyValueText)
         {
             // 主键列不进 SET：更新主键会破坏行标识（其它表的外键、上层缓存都指向旧值）。
             // 它的值改作 WHERE 条件，仍然是参数绑定而不是拼进 SQL 文本
@@ -1486,11 +1589,66 @@ namespace AsynGyanis::Database::Queryable
                 primaryKeyCondition = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
                                                      .op    = SqlOperator::Eq,
                                                      .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
+                primaryKeyValueText = describeValueForConflictMessage(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName));
+                return;
+            }
+
+            // 版本列：结构体里那个值是**手里这份数据读出时的版本**，它只进 WHERE；
+            // SET 里改成自增加一（见 QueryNode::incrementColumns）——这样「忘了加一」不会让更新
+            // 悄悄失去保护，加一也由服务端在一次语句里做完
+            if (!versionColumnName.empty() && columnDescriptor.columnName == versionColumnName)
+            {
+                const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);
+                versionCondition                 = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
+                                                                  .op    = SqlOperator::Eq,
+                                                                  .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
+                versionExpectationText           = describeValueForConflictMessage(versionValue);
+                incrementColumns.emplace_back(columnDescriptor.columnName);
                 return;
             }
 
             assignmentColumns.emplace_back(columnDescriptor.columnName);
             assignmentValues.push_back(Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName));
+        }
+
+        /**
+         * @brief 把一个取值渲染成异常消息里可读的一小段
+         * @details 只服务于乐观锁冲突那一条消息（点名「期望版本是多少」），因此口径取「看得懂」而不是
+         *          「可再解析」：文本原样、整数与浮点按通用写法、布尔写成 true/false；复合类型只报规模，
+         *          把它们整个铺开会让一条异常消息长到没人读
+         * @param value 待渲染的取值
+         * @return std::string 可读文本
+         */
+        [[nodiscard]] static std::string describeValueForConflictMessage(const DatabaseValue &value)
+        {
+            return std::visit(
+                    [](const auto &concrete) -> std::string
+                    {
+                        using ValueType = std::decay_t<decltype(concrete)>;
+                        if constexpr (std::is_same_v<ValueType, std::monostate>)
+                        {
+                            return "NULL";
+                        } else if constexpr (std::is_same_v<ValueType, bool>)
+                        {
+                            return concrete ? "true" : "false";
+                        } else if constexpr (std::is_same_v<ValueType, std::int64_t>)
+                        {
+                            return std::to_string(concrete);
+                        } else if constexpr (std::is_same_v<ValueType, double>)
+                        {
+                            return std::format("{}", concrete);
+                        } else if constexpr (std::is_same_v<ValueType, std::string>)
+                        {
+                            return concrete;
+                        } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
+                        {
+                            return std::format("<{} 字节二进制>", concrete.size());
+                        } else
+                        {
+                            return std::format("<{} 项集合>", concrete.size());
+                        }
+                    },
+                    value);
         }
 
         /**

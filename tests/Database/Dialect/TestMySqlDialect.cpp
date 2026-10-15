@@ -963,6 +963,32 @@ TEST(MySqlDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
 }
 
 /**
+ * @brief 钉住乐观锁的自增赋值在反引号方言下同样由本方言渲染列名
+ *
+ * @details 与 SQLite 侧那条用例成对：两份文本只差引用字符，证明 `"col" = "col" + 1`
+ *          里的列名不是硬编码拼出来的，而是走了各方言自己的引用实现——
+ *          硬编码在 SQLite 上照样绿，在 MySQL 上会生成一句服务端认不出的语句
+ */
+TEST(MySqlDialectWrite, UpdateRendersIncrementAssignmentWithBacktickQuoting)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName        = "accounts";
+    node.selectColumns    = {"name"};
+    node.incrementColumns = {"version"};
+    node.whereConditions.push_back(makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}));
+    node.whereConditions.push_back(makeComparison("version", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(0)}));
+
+    const std::vector<DatabaseValue> values{std::string("王五")};
+    const SqlStatement               statement = dialect.translateUpdate(node, values);
+
+    EXPECT_EQ(statement.sql, "UPDATE `accounts` SET `name` = ?, `version` = `version` + 1 WHERE `id` = ? AND `version` = ?");
+    ASSERT_EQ(statement.parameters.size(), 3U);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+}
+
+/**
  * @brief 验证带表别名的 UPDATE 与复合条件（IN + IS NULL）的参数顺序
  */
 TEST(MySqlDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)

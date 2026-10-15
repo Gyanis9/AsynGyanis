@@ -1320,6 +1320,37 @@ TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
 }
 
 /**
+ * @brief 钉住乐观锁的自增赋值：写成「列 = 列 + 1」、不占参数位，且分隔符接在普通赋值之后
+ *
+ * @details 这一格的形状有两个容易写错的地方：①自增赋值排在普通赋值后面时要带上逗号
+ *          （漏了就是 `SET "name" = ? "version" = "version" + 1` 这种语法错误），
+ *          ②它**不产生占位符**，因此参数表仍然是「SET 取值 + 条件取值」三枚，
+ *          不做这一档的把关就会把参数顺序整体错位一格。
+ *          列名渲染走的是本方言自己的引用字符（这一条由 MySQL 侧那条用例对照证明）
+ */
+TEST(SqliteDialectWrite, UpdateRendersIncrementAssignmentWithoutParameters)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName        = "accounts";
+    node.selectColumns    = {"name"};
+    node.incrementColumns = {"version"};
+    node.whereConditions.push_back(makeComparison("id", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(7)}));
+    node.whereConditions.push_back(makeComparison("version", SqlOperator::Eq, ParameterValue{static_cast<std::int64_t>(0)}));
+
+    const std::vector<DatabaseValue> values{std::string("王五")};
+    const SqlStatement               statement = dialect.translateUpdate(node, values);
+
+    EXPECT_EQ(statement.sql, "UPDATE \"accounts\" SET \"name\" = ?, \"version\" = \"version\" + 1 WHERE \"id\" = ? AND \"version\" = ?");
+    ASSERT_EQ(statement.parameters.size(), 3U) << "自增赋值占了参数位，参数顺序会整体错位";
+    EXPECT_EQ(std::get<std::string>(statement.parameters[0]), "王五");
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[1]), 7);
+    EXPECT_EQ(std::get<std::int64_t>(statement.parameters[2]), 0);
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+}
+
+/**
  * @brief 验证带表别名的 UPDATE 与复合条件（IN + IS NULL）的参数顺序
  */
 TEST(SqliteDialectWrite, UpdateWithCompositeConditionKeepsParameterOrder)

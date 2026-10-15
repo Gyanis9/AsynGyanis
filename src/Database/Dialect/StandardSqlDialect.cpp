@@ -606,9 +606,10 @@ namespace AsynGyanis::Database
 
         // SET 子句先于 WHERE 输出，赋值参数因此排在条件参数之前，
         // 与文本里占位符的先后顺序严格一致（见 SqlStatement.h 的参数顺序契约）
+        std::size_t assignmentCount = 0;
         for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
         {
-            if (index > 0)
+            if (assignmentCount++ > 0)
             {
                 sqlText += ", ";
             }
@@ -617,6 +618,21 @@ namespace AsynGyanis::Database
             appendPlaceholder(sqlText, parameters.size());
             // 赋值取值由 ORM 以 DatabaseValue 形式给出，已经是驱动可直接绑定的形态，无需再转换
             parameters.push_back(values[index]);
+        }
+
+        // 自增赋值排在普通赋值之后（乐观锁的版本列走这一格）。它**不占参数位**，
+        // 因此既不动上面「赋值参数在前、条件参数在后」的顺序契约，也不动参数总数；
+        // `"col" = "col" + 1` 是三引擎都收的标准写法，加一由服务端在一次语句里完成
+        for (const std::string &incrementColumn: query.incrementColumns)
+        {
+            if (assignmentCount++ > 0)
+            {
+                sqlText += ", ";
+            }
+            appendFieldReference(sqlText, incrementColumn);
+            sqlText += " = ";
+            appendFieldReference(sqlText, incrementColumn);
+            sqlText += " + 1";
         }
 
         // WHERE 与 SELECT / DELETE 共用同一份渲染与参数收集实现
