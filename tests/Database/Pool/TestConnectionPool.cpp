@@ -1274,6 +1274,8 @@ namespace AsynGyanis::Database
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_borrow_timeouts_total"));
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_waiting_rejections_total"));
         ASSERT_FALSE(hasRegistrySample("asyn_db_pool_oldest_borrow_start_seconds"));
+        ASSERT_FALSE(hasRegistrySample("asyn_db_pool_connection_probes_total"));
+        ASSERT_FALSE(hasRegistrySample("asyn_db_pool_connect_retries_total"));
         {
             ConnectionPool pool(factory, configuration);
             EXPECT_EQ(registryValue("asyn_db_pool_active_connections"), 0U);
@@ -1294,6 +1296,10 @@ namespace AsynGyanis::Database
 
             // 「会话没复位干净」这条读数单开着，是因为它说的不是「轮换到了」而是「有人在还脏连接」：
             // 混进 connections_discarded_total 就分不出这两种现场
+            // 探针与重试两条都是「构造即登记」：开关关着时也要读得到 0，否则面板上「这项为 0」与
+            // 「这池根本没开这项」分不开
+            EXPECT_EQ(registryValue("asyn_db_pool_connection_probes_total"), 0U);
+            EXPECT_EQ(registryValue("asyn_db_pool_connect_retries_total"), 0U);
             EXPECT_EQ(registryValue("asyn_db_pool_session_reset_failures_total"), 0U) << "干净的归还不该记到这条上";
             counter.sessionResetFails.store(true);
             {

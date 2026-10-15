@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace AsynGyanis::Database
@@ -22,7 +23,7 @@ namespace AsynGyanis::Database
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
 
-        // 登记的九条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
+        // 登记的十一条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
         // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
         // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
         // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
@@ -68,6 +69,17 @@ namespace AsynGyanis::Database
                                                              "这条在涨说明有借用者留下了清不掉的会话状态，或那条连接已经不能对话",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_sessionResetFailures.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connection_probes_total",
+                                                             "借出前发出的有效性探针数（PoolConfig::probeBeforeAcquire 打开时才增，关闭时恒为 0）：每一格都是"
+                                                             "一次真实的往返，读侧要能看见自己为它付了多少。与 connections_discarded_total 对着读：探针判死的"
+                                                             "那些连接会从丢弃数里现形",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_probeCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_db_pool_connect_retries_total",
+                                                             "建连失败后重试的次数（只重驱动报「连不上」那一类错误码；鉴权错、库名错不计）。它涨而借用仍成功，"
+                                                             "说的是服务端在重启或网络在抖；它涨且借用开始空手，才是重试预算也不够用",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_connectRetryCount.load(std::memory_order_relaxed)); }),
         };
     }
 
@@ -823,22 +835,80 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // 借出前的探针：只在配置打开时花这一次往返。它挡的是「状态读起来还连着、对面其实已经
+        // 重启过」那一格——不开探针的话这条连接要等下一个借用者的第一条语句报错才被丢掉
+        if (m_config.probeBeforeAcquire && !probeConnection(*entry.connection))
+        {
+            discardConnection(std::move(entry.connection));
+            return nullptr;
+        }
+
         return std::move(entry.connection);
     }
 
+    bool ConnectionPool::probeConnection(DatabaseConnection &connection) noexcept
+    {
+        m_probeCount.fetch_add(1, std::memory_order_relaxed);
+        return connection.probeAlive();
+    }
+
     std::unique_ptr<DatabaseConnection> ConnectionPool::createNewConnection() noexcept
+    {
+        // 建连重试的预算：只重 isTransientConnectFailure() 认的那一类（服务端正在重启、连接被拒），
+        // 间隔 5 毫秒起翻倍、单次封顶 100 毫秒，累计不超过 acquireTimeoutMilliseconds ——
+        // 后者本来就是这次借用愿意等的量级，重试不许把它撑破。鉴权错、库名错这类重试也不会中，
+        // 一次就空手
+        const auto attemptDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
+        auto       backoff         = std::chrono::milliseconds{5};
+
+        for (std::size_t attempt = 1;; ++attempt)
+        {
+            // 返回的是 pair 的成员而不是结构化绑定的名字：绑定名不是对象，move 它只会退化成拷贝
+            auto outcome = attemptCreateConnection();
+            if (outcome.first)
+            {
+                return std::move(outcome.first);
+            }
+            const bool isRetryable = outcome.second;
+            // 「能不能再试」由驱动报的那条形如「连不上」的错误码决定（见 attemptCreateConnection）；
+            // 工厂抛异常、返回空与鉴权错都落在 isRetryable 为假的一侧，一次就空手
+            const bool isLastAllowedAttempt = attempt >= m_config.maximumConnectAttempts;
+            if (!isRetryable || isLastAllowedAttempt || std::chrono::steady_clock::now() >= attemptDeadline)
+            {
+                return nullptr;
+            }
+            // 睡这一觉是在借用者所在的线程上（建连本来就在那条线程上跑），因此它有单次封顶与
+            // 总量上限，不是一句「多试几次」就无限等下去
+            const auto sleepFor = std::min(backoff, std::chrono::milliseconds{100});
+            std::this_thread::sleep_for(sleepFor);
+            backoff *= 2;
+            m_connectRetryCount.fetch_add(1, std::memory_order_relaxed);
+            LOG_DEBUG_FMT("ConnectionPool: 建连失败且属可重试的一类，第 {} 次重试前等 {} 毫秒", attempt, sleepFor.count());
+        }
+    }
+
+    std::pair<std::unique_ptr<DatabaseConnection>, bool> ConnectionPool::attemptCreateConnection() noexcept
     {
         try
         {
             std::unique_ptr<DatabaseConnection> connection = m_factory();
             if (!connection)
             {
-                return nullptr;
+                return {nullptr, false};
             }
 
             if (!connection->connect())
             {
-                return nullptr;
+                // 只有驱动明确报「连不上」的那几条码才值得再试：分类表在
+                // isTransientConnectFailure() 一处，本函数不重复一份
+                const bool isRetryable = isTransientConnectFailure(*connection);
+                if (isRetryable)
+                {
+                    // 把驱动报的原因留在日志里：重试成功之后这条连接的 lastError 会被下一次 connect
+                    // 清掉，届时再也看不出「刚才重试的那几次里有一直在拒我们」
+                    LOG_WARN_FMT("ConnectionPool: 建连失败且属可重试的一类，原因：{}", connection->lastError());
+                }
+                return {nullptr, isRetryable};
             }
 
             // 建立成功的时刻记在连接自己身上：池在借出/归还之间没有任何地方能存这份信息，
@@ -848,18 +918,18 @@ namespace AsynGyanis::Database
             // 承诺的口径，归还时按它退回（见 restoreQueryTimeoutBaseline）
             connection->markQueryTimeoutBaseline();
 
-            return connection;
+            return {std::move(connection), false};
         } catch (const std::exception &failure)
         {
             // 工厂或 connect 抛异常时返回空指针。原因必须出声：调用方从 nullptr 只能知道
             // 「拿不到连接」，而真正的原因（驱动报的鉴权失败、主机不可达、URL 写错）在这里
             // 是唯一持有过它的地方，丢了就查不到。建连接不在请求热路径上，逐条打不会淹
             LOG_ERROR_EXCEPTION(failure, "ConnectionPool: 创建连接失败，本次获取按「无连接可用」收场（原因：{}）", failure.what());
-            return nullptr;
+            return {nullptr, false};
         } catch (...)
         {
             LOG_ERROR("ConnectionPool: 创建连接失败（非标准异常），本次获取按「无连接可用」收场");
-            return nullptr;
+            return {nullptr, false};
         }
     }
 

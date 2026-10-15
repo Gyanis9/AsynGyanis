@@ -23,6 +23,8 @@
 // - ConfiguredKeyspaceIsSelectedOnConnect
 // - TextCommandPathSplitsArguments（execute() 的切词路径）
 // - QueryTimeoutChangeAppliesToEstablishedConnection（建连后改超时当场生效，不必重连）
+// - ProbeAliveAsksTheServerAndNotTheLocalFlag（被 CLIENT KILL 杀掉的会话：状态读起来还连着，探针判死）
+// - ProbeAliveRefusesWhilePipelineIsPending（管道没 flush 时探针不发，flush 的回复仍逐条对齐）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
@@ -813,11 +815,18 @@ namespace AsynGyanis::Database
      *          会是别人的跟踪行。这类模式没有可靠的撤销命令（RESET 要 6.2+），因此判据是两半：
      *          isConnected() 转假、且 resetSessionState() 交回 false——后者让池把它记进
      *          session_reset_failures；两者缺一，这种污染在指标上都会混进普通轮换里。
+     *          顺带钉借出前探针在同一格上的拒绝：这条连接的回复流已经不属于「一条命令一次回复」
+     *          的形状，探一次读回来的不是 +PONG。
      */
     TEST_F(RedisIntegrationTest, MonitorStyleSessionIsDroppedOnReturn)
     {
         ASSERT_NE(m_connection->executeCommand({"MONITOR"}), nullptr) << m_connection->lastError();
         ASSERT_TRUE(m_connection->isConnected());
+
+        // 借出前的探针在这一步也要拒：PING 的回复会排在服务端持续推送的跟踪行后面，读到的第一份
+        // 不是 +PONG，一次「探针失败」就把一条其实还在服务的连接判死
+        EXPECT_FALSE(m_connection->probeAlive()) << "MONITOR 这类退不回去的模式下探针照发，读到的是别家的字节";
+        EXPECT_NE(m_connection->lastError().find("订阅态"), std::string::npos) << m_connection->lastError();
 
         const bool wasResetClean = m_connection->resetSessionState();
 
@@ -1052,6 +1061,63 @@ namespace AsynGyanis::Database
 
         // 收发超时属传输层失败：回复流的位置已不可知，这条连接必须被判为不可再用（池据此换掉它）
         EXPECT_FALSE(m_connection->isConnected());
+    }
+
+    /**
+     * @brief 借出前探针问的是服务端而不是本端标志：被 CLIENT KILL 掉的会话要在这里判死
+     * @details 这条钉的是「探针为什么值得存在」。isConnected() 按本仓各驱动的约定只读本端标志，
+     *          服务端单方面把会话杀掉时它照读成「已连接」——池不开探针就会把这条死人交出去。
+     *          故障注入走服务端而不是本层：从**另一条连接**发 `CLIENT KILL ID <本连接号>`，
+     *          与 MySQL 那侧「被服务端杀掉的会话」同一手法；自己翻自己的状态位证明不了任何事。
+     * @note 证伪：把 probeAlive() 退回基类默认（只读 isConnected()），下面「杀掉之后仍回 false」
+     *       那一条当场红——那正是「探针没问出口」的形状。
+     */
+    TEST_F(RedisIntegrationTest, ProbeAliveAsksTheServerAndNotTheLocalFlag)
+    {
+        EXPECT_TRUE(m_connection->probeAlive()) << m_connection->lastError();
+
+        const std::optional<DatabaseValue> identity = runScalar({"CLIENT", "ID"});
+        ASSERT_TRUE(identity.has_value());
+        ASSERT_NE(std::get_if<std::int64_t>(&identity.value()), nullptr) << "CLIENT ID 的整数回复没按 int64 交出";
+        const std::int64_t victimId = std::get<std::int64_t>(identity.value());
+
+        RedisConnection executioner(m_configuration);
+        ASSERT_TRUE(executioner.connect()) << executioner.lastError();
+        const std::string victimIdText = std::to_string(victimId);
+        ASSERT_NE(executioner.executeCommand({"CLIENT", "KILL", "ID", victimIdText}), nullptr) << executioner.lastError();
+        executioner.disconnect();
+
+        // 本端此刻还没碰过链路，因此状态读起来仍是「已连接」——这一条是下面那条判据的前提
+        ASSERT_TRUE(m_connection->isConnected()) << "探针还没发，本端标志已经先转假，后面那条判据就测不到「死人」";
+        EXPECT_FALSE(m_connection->probeAlive()) << "服务端已经把会话杀掉，探针却照着状态位放行";
+        EXPECT_TRUE(containsLocalizedText(m_connection->lastError())) << m_connection->lastError();
+    }
+
+    /**
+     * @brief 管道里还有没 flush 的命令时探针必须闭嘴：它读到的是别人排队的那一条回复
+     * @details 登记的管道命令要到 flushPipeline() 才开始发送，而 PING 走的是「立即发送并读回复」的
+     *          一次性通路。不加拒绝就发，PING 会插到那批命令前面，+PONG 被当成第一条回复消费掉，
+     *          flush 收回来的整体错位一格且毫无报错。判据两半：探针当场拒并说明原因；随后 flush 的
+     *          回复仍与登记的命令逐条对齐——只测前一半挡不住「拒了但没记原因」这种半吊子写法。
+     * @note 证伪：删掉 probeAlive() 里那条「还有未 flush 的管道命令」闸门，第一条断言红，
+     *       第二条会读到 replies[0] 是 PONG 而不是 OK。
+     */
+    TEST_F(RedisIntegrationTest, ProbeAliveRefusesWhilePipelineIsPending)
+    {
+        const std::string key = makeKey("probe-pending-pipeline");
+
+        ASSERT_TRUE(m_connection->pipelineCommand("SET " + key + " alpha")) << m_connection->lastError();
+        ASSERT_TRUE(m_connection->pipelineCommand("GET " + key)) << m_connection->lastError();
+
+        EXPECT_FALSE(m_connection->probeAlive()) << "管道里还压着两条没 flush 的命令，探针照样把 PING 发了出去";
+        EXPECT_NE(m_connection->lastError().find("管道"), std::string::npos) << m_connection->lastError();
+
+        const std::vector<std::unique_ptr<DatabaseResult>> replies = m_connection->flushPipeline();
+        ASSERT_EQ(replies.size(), 2U);
+        ASSERT_NE(replies[0], nullptr);
+        EXPECT_EQ(std::get<std::string>(replies[0]->getValue(0)), "OK") << "SET 的回复位被别的东西占了";
+        ASSERT_NE(replies[1], nullptr);
+        EXPECT_EQ(std::get<std::string>(replies[1]->getValue(0)), "alpha");
     }
 
 } // namespace AsynGyanis::Database

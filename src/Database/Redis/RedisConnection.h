@@ -241,6 +241,14 @@ namespace AsynGyanis::Database
         bool resetSessionState() noexcept override;
 
         /**
+         * @brief 借出前探针：发一条 PING 并读回它的回复
+         * @details 真花一次往返，因此认得出「服务端重启过、这条连接已被它丢掉」那一格——
+         *          那是 isConnected() 只看本端标志时看不出来的
+         * @return true 收到 +PONG；false 发送或读取失败（原因见 lastError()）
+         */
+        [[nodiscard]] bool probeAlive() noexcept override;
+
+        /**
          * @brief 一次性发送全部已登记的管道命令并读回回复
          * @details 先逐条 append（此时才开始发送），再按已发出的条数读回复，因此返回顺序与登记顺序严格
          *          一致；返回的元素永不为 nullptr。服务端 error 回复被原样封装成 RedisResult 返回，由调用方

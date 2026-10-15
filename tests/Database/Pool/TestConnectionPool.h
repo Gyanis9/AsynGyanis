@@ -102,6 +102,15 @@ namespace AsynGyanis::Database::TestPoolSupport
         std::atomic<bool>         sessionResetFails{false}; ///< 置位时复位钩子交回 false：模拟「没清干净」那条出口
         std::atomic<bool>         connectionsHealthy{true}; ///< 全体连接的存活开关：用例据此造出「入栈后失联」
         ArrivalGate              *disconnectGate{nullptr};  ///< 断开门闩，空则 disconnect() 不额外停留
+        /// 探针计数：probeAlive() 每被调一次加一（池的「借出前探针」是否真在花时间往返，就看这个数）
+        std::atomic<std::int64_t> probeCount{0};
+        /// 还剩几次 connect() 要失败（0 = 从此一律成功）：造建连重试的那条形状用
+        std::atomic<std::int64_t> connectFailuresRemaining{0};
+        /// 上述失败连带写进 lastError 的驱动原生码：isTransientConnectFailure() 认它，用例据此分
+        /// 「会重试的那一类」与「一次就空手的那一类」
+        std::atomic<std::int64_t> connectFailureNativeCode{5};
+        /// 全体连接的探针返回值开关：置 false 后 probeAlive() 一律判死（造「状态还连着、对面已经不在」）
+        std::atomic<bool> connectionsProbeOk{true};
     };
 
     /**
@@ -141,8 +150,26 @@ namespace AsynGyanis::Database::TestPoolSupport
          */
         bool connect() override
         {
+            // 先扣「还要失败几次」的账再判：两个线程共用一个计数器时，先判后扣会让两边都看到同一个数
+            const auto remainingBefore = m_counter->connectFailuresRemaining.load();
+            if (remainingBefore > 0)
+            {
+                m_counter->connectFailuresRemaining.fetch_sub(1);
+                m_isConnected = false;
+                m_lastError.assignNative("打桩的建连失败", m_counter->connectFailureNativeCode.load());
+                return false;
+            }
+            m_lastError.clear();
             m_isConnected = m_connectOk;
             return m_connectOk;
+        }
+
+        /// 借出前探针：计一次数再交回全体开关与本连接状态。计数是这条判据的关键——
+        /// 「池有没有真去探」只能从「探了几次」读出来
+        [[nodiscard]] bool probeAlive() noexcept override
+        {
+            m_counter->probeCount.fetch_add(1);
+            return m_probeOk && m_isConnected && m_counter->connectionsProbeOk.load();
         }
 
         /**
@@ -192,7 +219,7 @@ namespace AsynGyanis::Database::TestPoolSupport
          */
         [[nodiscard]] DatabaseType databaseType() const override
         {
-            return DatabaseType::Sqlite;
+            return m_databaseType;
         }
 
         /**
@@ -213,12 +240,32 @@ namespace AsynGyanis::Database::TestPoolSupport
             m_healthOk = ok;
         }
 
+        /**
+         * @brief 设置本连接的探针返回值
+         * @param ok false 表示这条连接状态还「连着」但探不通（对面已经重启那一类）
+         */
+        void setProbeOk(bool ok) noexcept
+        {
+            m_probeOk = ok;
+        }
+
+        /**
+         * @brief 设置本打桩连接的数据库类型（isTransientConnectFailure() 按它分档）
+         * @param type 目标类型
+         */
+        void setDatabaseType(DatabaseType type) noexcept
+        {
+            m_databaseType = type;
+        }
+
     private:
-        ConnectionCounter *m_counter;           ///< 全局计数器
-        std::int64_t       m_id;                ///< 连接唯一 ID
-        bool               m_connectOk{true};   ///< connect() 的返回值
-        bool               m_healthOk{true};    ///< isConnected() 的返回值
-        bool               m_isConnected{true}; ///< 连接状态（由 connect/disconnect 控制）
+        ConnectionCounter *m_counter;                            ///< 全局计数器
+        std::int64_t       m_id;                                 ///< 连接唯一 ID
+        bool               m_connectOk{true};                    ///< connect() 的返回值
+        bool               m_healthOk{true};                     ///< isConnected() 的返回值
+        bool               m_probeOk{true};                      ///< probeAlive() 的返回值
+        DatabaseType       m_databaseType{DatabaseType::Sqlite}; ///< databaseType() 的返回值
+        bool               m_isConnected{true};                  ///< 连接状态（由 connect/disconnect 控制）
     };
 
     /**

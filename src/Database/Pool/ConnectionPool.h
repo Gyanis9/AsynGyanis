@@ -422,10 +422,27 @@ namespace AsynGyanis::Database
         std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadline(std::chrono::steady_clock::time_point deadline);
 
         /**
-         * @brief 创建新连接（调用工厂 + connect）
+         * @brief 创建新连接：按配置的次数建连，失败且属「连不上」那一类时按退避重试
+         * @details 重试落在借用者所在的线程上（建连本来就在那条线程上跑），因此单次间隔封顶 100 毫秒、
+         *          累计不超过 acquireTimeoutMilliseconds，次数由 maximumConnectAttempts 定。
          * @return std::unique_ptr<DatabaseConnection> 创建成功且已连接时返回有效连接
          */
         std::unique_ptr<DatabaseConnection> createNewConnection() noexcept;
+
+        /**
+         * @brief 建连一次：交回连接与「这次失败值不值得再试一次」
+         * @details 值得重试的只有驱动报「连不上」那一类码（见 `isTransientConnectFailure()`）；工厂
+         *          抛异常、返回空与鉴权错都算不值得——重试也不会中，多等一轮只是把借用拖长
+         * @return std::pair<std::unique_ptr<DatabaseConnection>, bool> 连接（失败时为空）与可重试标记
+         */
+        [[nodiscard]] std::pair<std::unique_ptr<DatabaseConnection>, bool> attemptCreateConnection() noexcept;
+
+        /**
+         * @brief 借出前的有效性探针：计一次数再问驱动
+         * @param connection 待探的连接
+         * @return true 还能对话；false 探测失败，调用方要丢弃这条连接
+         */
+        bool probeConnection(DatabaseConnection &connection) noexcept;
 
         /**
          * @brief 判断空闲条目是否过期（存活期或空闲期任一到达）
@@ -581,6 +598,11 @@ namespace AsynGyanis::Database
         /// 而不是增减量，所以漏改一处只会少报一格，不会一路漂移
         std::atomic<std::size_t> m_asyncWaitingCount{0};
 
+        /// 借出前探针的累计次数（只在 `probeBeforeAcquire` 打开时增）：见 asyn_db_pool_connection_probes_total
+        std::atomic<std::size_t> m_probeCount{0};
+        /// 建连重试的累计次数：见 asyn_db_pool_connect_retries_total
+        std::atomic<std::size_t> m_connectRetryCount{0};
+
         // ----- 后台线程 -----
         // 这两个必须声明在 m_healthThread 之前：成员按声明逆序销毁，jthread 的隐式 join 会先跑，
         // 而它要在这对同步原语还活着时才能把睡眠中的循环叫醒
@@ -590,12 +612,12 @@ namespace AsynGyanis::Database
         std::jthread m_healthThread; ///< 后台健康检查线程
 
         /**
-         * @brief 九条池内读数挂在进程级指标注册表上的把手
+         * @brief 十一条池内读数挂在进程级指标注册表上的把手
          * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
          *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
          *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */
-        std::array<Core::ProcessMetricHandle, 9> m_metricHandles{};
+        std::array<Core::ProcessMetricHandle, 11> m_metricHandles{};
     };
 
 } // namespace AsynGyanis::Database

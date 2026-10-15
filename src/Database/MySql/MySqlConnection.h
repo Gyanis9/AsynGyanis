@@ -247,6 +247,15 @@ namespace AsynGyanis::Database
         bool resetSessionState() noexcept override;
 
         /**
+         * @brief 借出前探针：mysql_ping 一次，问服务端还在不在
+         * @details 与复位不同，这里不改动任何会话状态。automatic-reconnect 在本驱动是关着的
+         *          （见 connect() 那段：隐式重连会丢掉事务与会话变量），因此探测失败就是把一条
+         *          死人交回池里处理，不会在这里悄悄换一条新连接
+         * @return true 服务端答了；false 句柄不在或已失联（原因见 lastError()）
+         */
+        [[nodiscard]] bool probeAlive() noexcept override;
+
+        /**
          * @brief 获取服务端版本字符串
          * @details 走 mysql_get_server_info，它必须持有已建立连接的句柄，因此未连接时返回空串
          *          （这与 Sqlite 驱动不同：SQLite 是进程内引擎，版本随时可取）。

@@ -14,6 +14,7 @@
 // - 预处理结果的取值缓冲区跟着「本次数据长度」走：先读 1 MiB 再读 20 字节，同一句缓存语句的读数要收缩回百字节级
 // - 带参流式（executeStreaming(command, parameters)）：跨预取窗口读全每一行（含逐列补取路径与 NULL）、
 //   在途流封锁三个执行入口、中途丢弃不串流、写语句给出写回执
+// - 借出前探针（probeAlive）：被 KILL 杀掉的会话要判死（状态读起来还连着），在途未清流时发送前先拒
 // 门控：口令（ASYN_MYSQL_TEST_PASSWORD）没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令。
 // 用例只碰自建专用库，表由各用例自建自清；表名必须按用例区分（并行执行时不得与其它用例共用同名表）。
 
@@ -3137,12 +3138,14 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 在途未清流同样拦住**流式入口**与复位路径：计数与拒绝覆盖三条发送路径、一处复位出口
+     * @brief 在途未清流同样拦住**流式入口**、**借出前探针**与复位路径：计数与拒绝覆盖三条发送路径、一处探针、一处复位出口
      * @details 前半：流开着时 executeStreaming() 也在发送前被拒（此前那一拒要等语句上线、由服务端回
-     *          Commands out of sync）；后半：这条连接此时**复位不出干净状态**——resetSessionState()
-     *          必须回 false 并说明原因，池归还路径据此按「没复位干净」丢弃它，而不是把一条回包流停在
-     *          中途的连接交给下一个借用者。结果集析构后两处都放开。
-     * @note 证伪：把 m_openStreamCount 的读取改成恒 0（拦不住、也不判脏），本条两处断言当场红。
+     *          Commands out of sync），借出前的探针读同一份计数——mysql_ping 也是一条命令，排在没收完
+     *          的回复流前面撞上 out-of-sync 后，那次失败说的是「这条连接不能再用」而不是「服务端不在」，
+     *          混进探针的判死里就会把一条其实活着的连接丢掉的。后半：这条连接此时**复位不出干净状态**——
+     *          resetSessionState() 必须回 false 并说明原因，池归还路径据此按「没复位干净」丢弃它，
+     *          而不是把一条回包流停在中途的连接交给下一个借用者。结果集析构后三处都放开。
+     * @note 证伪：把 m_openStreamCount 的读取改成恒 0（拦不住、也不判脏、探针也不再拒），本条各处断言当场红。
      */
     TEST_F(MySqlIntegrationTest, OpenStreamBlocksBothTheStreamingEntryAndSessionReset)
     {
@@ -3157,12 +3160,17 @@ namespace AsynGyanis::Database
         EXPECT_EQ(connection.executeStreaming("SELECT 2"), nullptr) << "流没读完时流式入口又开了一条";
         EXPECT_NE(connection.lastError().find("未消费完的流式结果"), std::string::npos) << connection.lastError();
 
+        // 借出前的探针读同一份计数，也在发送之前拒
+        EXPECT_FALSE(connection.probeAlive()) << "流没读完时探针把 mysql_ping 发了出去";
+        EXPECT_NE(connection.lastError().find("未消费完的流式结果"), std::string::npos) << connection.lastError();
+
         // 复位路径判脏：这条连接回不到可复用状态，必须由池丢弃而不是交出去
         EXPECT_FALSE(connection.resetSessionState()) << "流开着时复位却报成功：下一位会拿到一条回包流停在中途的连接";
         EXPECT_NE(connection.lastError().find("流式结果"), std::string::npos) << connection.lastError();
 
-        // 丢掉结果集（free_result 吃掉剩余回复流）之后两处都放开
+        // 丢掉结果集（free_result 吃掉剩余回复流）之后三处都放开
         stream.reset();
+        EXPECT_TRUE(connection.probeAlive()) << "流已收回，探针不该再拒一次：" << connection.lastError();
         EXPECT_TRUE(connection.resetSessionState()) << "流已收回，复位不该再被拒：" << connection.lastError();
         const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 3");
         ASSERT_NE(followUp, nullptr) << connection.lastError();
@@ -3299,6 +3307,42 @@ namespace AsynGyanis::Database
         const std::unique_ptr<DatabaseResult> followUp = connection.execute("SELECT 1");
         ASSERT_NE(followUp, nullptr) << connection.lastError();
         EXPECT_TRUE(followUp->next());
+    }
+
+    /**
+     * @brief 借出前探针问的是服务端：被 KILL 掉的会话状态读起来还「连着」，探针要判死
+     * @details 与 Redis 那侧 `ProbeAliveAsksTheServerAndNotTheLocalFlag` 同形——同一格在两个驱动上
+     *          都要有人钉。`isConnected()` 按本仓约定只读本端标志（见其注释：刻意不发 mysql_ping），
+     *          服务端单方面杀掉会话时它照读成「已连接」，池不开探针就把这条死人交出去。故障注入走
+     *          服务端而不是本层：从另一条连接发 `KILL <线程号>`，手法取自
+     *          `StreamingNextReportsBrokenLinkInsteadOfEndOfRows`。
+     * @note 证伪：把 probeAlive() 退回基类默认（只读 isConnected()），「探针判死」那条当场红；
+     *       把 mysql_ping 的失败原因丢掉（不回 false 或不记错误），后两条红。
+     */
+    TEST_F(MySqlIntegrationTest, ProbeAliveTellsAKilledSessionApartFromALiveOne)
+    {
+        MySqlConnection victim(configuration());
+        ASSERT_TRUE(victim.connect()) << victim.lastError();
+        EXPECT_TRUE(victim.probeAlive()) << victim.lastError();
+
+        const std::unique_ptr<DatabaseResult> identity = victim.execute("SELECT CONNECTION_ID()");
+        ASSERT_NE(identity, nullptr) << victim.lastError();
+        ASSERT_TRUE(identity->next());
+        const std::int64_t victimThreadId = std::get<std::int64_t>(identity->getValue(0));
+
+        MySqlConnection executioner(configuration());
+        ASSERT_TRUE(executioner.connect()) << executioner.lastError();
+        const std::string killStatement = "KILL " + std::to_string(victimThreadId);
+        ASSERT_NE(executioner.execute(killStatement), nullptr) << executioner.lastError();
+        executioner.disconnect();
+
+        // 杀掉之后本端还没碰过链路，因此状态读起来仍是「已连接」——这一条是下一条判据的前提
+        ASSERT_TRUE(victim.isConnected()) << "探针还没发，本端标志已经先转假，后面那条判据就测不到「死人」";
+        EXPECT_FALSE(victim.probeAlive()) << "服务端已经杀掉这条会话，探针却照着状态位放行";
+        EXPECT_NE(victim.lastError().find("借出前的连接探针"), std::string::npos) << victim.lastError();
+
+        // 这一族失败码刻意不在建连重试表里：它说的是「一条已发出的语句中途断了」，写可能已经生效
+        EXPECT_FALSE(isTransientConnectFailure(victim)) << victim.lastError();
     }
 
 } // namespace AsynGyanis::Database

@@ -19,9 +19,8 @@
 
 // 链路 TLS 走本引擎自己的上下文与校验口径（CA、最低版本、SNI/主机名分 IP 与域名两条规则），
 // 与 MySQL 驱动那侧「交给客户端库映射」不同：hiredis 没有内建 TLS，这里在明文建连之后
-// 自己握手并换掉它的读/写/关闭三只钩子，认证与全部命令自然落在密文里
-#include "Core/Tls/TlsContext.h"
-#include "Core/Tls/TlsPolicy.h"
+// 自己握手并换掉它的读/写/关闭三只钩子，认证与全部命令自然落在密文里。
+// 这两个头的**包含**放在驱动开关之外（见下面那一组）：析构函数销毁 m_tlsContext 那段两种构建都要编
 #include "Platform/IO/FileDescriptor.h"
 
 #include "Database/Redis/RedisReplyText.h"
@@ -46,10 +45,19 @@
 #endif // DATABASE_HAS_REDIS
 
 // 下面这几样在两种构建下都要能用：parseKeyspaceNotification() 是与驱动无关的纯字符串工作，
-// 桩构建也得有它（否则「没有 hiredis」会顺带让一个能用、能测的解析器消失）
+// 桩构建也得有它（否则「没有 hiredis」会顺带让一个能用、能测的解析器消失）。
+// <algorithm> 与 <limits> 同一格：Detail::makeTimeoutParts() 的钳位在驱动开关之外定义，两种构建都编得到，
+// 而原先这两样只顺着 hiredis 那一段的包含链进来——桩构建里那条链不存在，当场就是「std::clamp 不是成员」。
+// Core::TlsContext 也是：头文件里 `unique_ptr<Core::TlsContext>` 只带前置声明，而开关之外定义的
+// ~RedisConnection() 要销毁它——不完整类型在桩构建里报 C2027/C2338（删除不完整类型）
+#include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
+
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1347,6 +1355,43 @@ namespace AsynGyanis::Database
                 return;
         }
     }
+
+    bool RedisConnection::probeAlive() noexcept
+    {
+        m_lastError.clear();
+        // 桩构建（未找到 hiredis）里没有 redisCommand 可用，那个布局下的 redisContext 只是前置声明的
+        // 不完整类型。那一档如实报「驱动缺失」，与桩里其余入口同一口径——那边 connect() 恒失败，
+        // 池里根本不会躺着一条待探的连接
+#ifdef DATABASE_HAS_REDIS
+        if (m_redisContext == nullptr || !isConnected())
+        {
+            m_lastError = "未连接到 Redis 服务，探针未发出";
+            return false;
+        }
+
+        // 在途管道命令或退不回去的会话模式（MONITOR/订阅/HELLO 那一族）下不能问：PING 的回复会
+        // 排在那批字节后面，读到的是别家命令的回复，一次「探针失败」就变成「把一条其实活着的
+        // 连接判死」。这类连接本来也不该交回池（归还时按「复位没干净」断开），这里如实回 false
+        if (!m_pipelineCommands.empty() || m_isSessionModeChanged)
+        {
+            m_lastError = "这条连接上还有未 flush 的管道命令或处于订阅态，探针未发出";
+            return false;
+        }
+
+        auto *reply = static_cast<redisReply *>(redisCommand(m_redisContext, "PING"));
+        if (reply == nullptr)
+        {
+            captureError("借出前的连接探针（PING）失败");
+            return false;
+        }
+        freeReplyObject(reply);
+        return true;
+#else
+        m_lastError = kMissingDriverError;
+        return false;
+#endif
+    }
+
 
     bool RedisConnection::resetSessionState() noexcept
     {

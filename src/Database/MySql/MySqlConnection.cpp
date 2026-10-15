@@ -1438,6 +1438,43 @@ namespace AsynGyanis::Database
         return isRolledBack;
     }
 
+    bool MySqlConnection::probeAlive() noexcept
+    {
+        m_lastError.clear();
+        // 桩构建（CMake 没找到 libmysqlclient）里没有客户端库可依赖：mysql_ping 不存在，那个布局下的
+        // struct MYSQL 只是前置声明的不完整类型。因此那一档如实报「驱动缺失」，与桩里其余入口同一口径——
+        // 那边 connect() 恒失败，池里根本不会躺着一条待探的连接，退回「问不出」比假装探到了更诚实
+#ifdef DATABASE_HAS_MYSQL
+        if (m_mysqlHandle == nullptr)
+        {
+            m_lastError = "未连接到 MySQL 数据库，探针未发出";
+            return false;
+        }
+
+        // 在途未清流时不能问：mysql_ping 也是一条命令，回复流停在半路会让它撞上 Commands out of
+        // sync，而那次失败说的是「这条连接不能再用」不是「服务端不在」——混成同一格会让池把一条
+        // 其实活着的连接判死。如实回 false，交回池按失联处置
+        if (m_openStreamCount != 0)
+        {
+            m_lastError = "这条连接上还有未消费完的流式结果，探针未发出：请先读完或释放那条流";
+            return false;
+        }
+
+        // automatic-reconnect 是关着的（见 connect() 里那段：隐式重连会丢掉事务与会话变量），因此
+        // 这里失败就是真失败，不会顺手换一条新连接糊过去
+        if (mysql_ping(m_mysqlHandle) != 0)
+        {
+            captureError("借出前的连接探针（mysql_ping）失败");
+            return false;
+        }
+        return true;
+#else
+        m_lastError = kMissingDriverError;
+        return false;
+#endif
+    }
+
+
     bool MySqlConnection::resetSessionState() noexcept
     {
         // 未连接：没有会话可复位

@@ -60,6 +60,19 @@ namespace AsynGyanis::Database
         /// 0 表示不排队（见上面 0 值清单）。命中它意味着池容量或下游耗时出了问题，
         /// 要修的是那一头，不该靠调大这个数绕开
         std::size_t maximumWaitingRequests = 64;
+        /// 借出前是否先发一次有效性探针（`DatabaseConnection::probeAlive()`）。**默认关闭**：
+        /// 打开后每条**从空闲栈交出**的连接多一次网络往返（MySQL 的 mysql_ping、Redis 的 PING 都是），
+        /// 这是性能契约的变化，因此投产前要在 README 的核对表里过一眼。刚建好的那条与归还时直接交接给
+        /// 等待者的那条都不探——前者几毫秒前才握完手，后者刚从上一位手里出来，等于刚刚被证明可用。
+        /// 它换到的是「不要把手里的死人交出去」：服务端重启过、而池里还躺着一条状态读起来仍然
+        /// 「已连接」的连接时，不开探针就只能等下一个借用者在第一条语句上报错、丢弃、再重建
+        bool probeBeforeAcquire = false;
+        /// 一次借用里建连最多试几次（含第一次）。默认 1 ＝ 不重试，与这项存在之前的行为一致：
+        /// 失败当场空手交回调用方。大于 1 时只重 `isTransientConnectFailure()` 认的那一类失败
+        /// （服务端正在重启／连接被拒这类「等一会再来」的形状），鉴权错、库名错这类重试也不会中，
+        /// 一律直接空手。重试的间隔是 5 毫秒起、每次翻倍、单次封顶 100 毫秒，总时长不超过
+        /// acquireTimeoutMilliseconds —— 后一项是这次借用的截止时刻，重试不许越过它
+        std::size_t maximumConnectAttempts = 1;
     };
 
 } // namespace AsynGyanis::Database

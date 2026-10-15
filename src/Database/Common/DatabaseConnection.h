@@ -14,6 +14,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -167,6 +168,29 @@ namespace AsynGyanis::Database
          * @return true 已连接
          */
         [[nodiscard]] virtual bool isConnected() const = 0;
+
+        /**
+         * @brief 借出前的有效性探针：真去问一次对面还在不在（连接池按配置可选启用）
+         * @details 与 isConnected() 的分工要分清：后者是**纯状态读**（本仓各驱动的约定，热路径上
+         *          随便调），它只说「本端还不知道连接已断」；本函数允许花一次往返，因此只在
+         *          `PoolConfig::probeBeforeAcquire` 打开时由池在借出前调一次。
+         *          默认实现退回 isConnected()：没有更省的办法时就如实报「只读状态」，不要让某个
+         *          驱动为了填这个口子去发一条它并不支持的命令。
+         *          各驱动实际问的是什么（按「这条通路存在吗」逐条核过，不是省事才不重写）：
+         *          MySQL 走 `mysql_ping`、Redis 走一条 `PING`，两者都是真的往返；PostgreSQL 不重写
+         *          是因为 `PQstatus` 已经是 isConnected() 的第三个判据（对端单方面断开时它翻成
+         *          CONNECTION_BAD），再发一条真查询要占回复流、还得处理事务中途执行的结果，收益不抵
+         *          这份复杂；SQLite 是本地文件，没有对面可问，而 `sqlite3_get_autocommit`
+         *          读的是句柄内的事务标志——它已由归还路径的 resetSessionState() 消费（判「上一位
+         *          留没留事务」），拿它当存活探针只会把「读得出标志」说成「链路还活着」。
+         * @note 不得抛异常：池在借出路径上调用它，抛出会把一次借用变成调用方的异常，而这里的
+         *       失败本来就有明确的处置（丢弃这条连接、换下一条或重建）
+         * @return true 这条连接还能对话；false 已失联或探测失败
+         */
+        [[nodiscard]] virtual bool probeAlive() noexcept
+        {
+            return isConnected();
+        }
 
         /**
          * @brief 本连接最近一次建立成功的时刻
@@ -506,6 +530,62 @@ namespace AsynGyanis::Database
             nativeCode = (nativeCode << 8) | static_cast<unsigned char>(character);
         }
         return nativeCode;
+    }
+
+    /**
+     * @brief 打包后的 SQLSTATE 是否落在 08 类（connection_exception）
+     * @param nativeCode `postgresSqlStateNativeCode()` 的产物
+     * @return true 前两个字符是 "08"
+     */
+    [[nodiscard]] constexpr bool isPostgresConnectionClassCode(const std::int64_t nativeCode) noexcept
+    {
+        // 打包规则是高位在前、每字符一字节（见 postgresSqlStateNativeCode），因此右移 24 位
+        // 剩下的正是前两个字符：'0' = 0x30、'8' = 0x38
+        return (nativeCode >> 24) == 0x3038;
+    }
+
+    /**
+     * @brief 判一次**建连失败**是不是「重来一次可能就成了」那一类
+     *
+     * @details 连接池的建连重试只认这一个分类，判据按「重做一遍有没有副作用」定：建连本身不改动
+     *          服务端状态，因此重试是安全的；而一条已经发出去的语句即便报「连接断开」也不能重放
+     *          （MySQL 2006/2013 就属于这种——写可能已经生效），所以那两条**不在**本表里，
+     *          `QueryExecutionException::isRetryable()` 也刻意不把它们算成可重试。
+     *          各驱动的错误码词汇表不同，因此按 `databaseType()` 分档列，取值全部取自所用客户端库
+     *          的公开常量（MySQL 的 CR_*、PostgreSQL 的 SQLCLASS 08/57P、SQLite 的主结果码、
+     *          Redis 走系统 errno）。
+     *
+     * @param connection 刚失败的那条连接（读它的 lastError() 与 databaseType()，不改动它）
+     * @return true 值得再试一次；false 重试也改变不了结局（配置错、鉴权错、库不存在），直接空手
+     */
+    [[nodiscard]] inline bool isTransientConnectFailure(const DatabaseConnection &connection) noexcept
+    {
+        const std::int64_t nativeCode = connection.lastNativeErrorCode();
+
+        switch (connection.databaseType())
+        {
+            // MySQL：CR_CONNECTION_ERROR(2002 找不到/socket 打不开)、CR_CONN_HOST_ERROR(2003 连不上主机)
+            // 都是「服务端此刻不在」的形状——重启、启动竞态、网络瞬断都归这一类
+            case DatabaseType::MySql:
+                return nativeCode == 2002 || nativeCode == 2003;
+
+            // PostgreSQL：08xxx 是 connection_exception（含 08001 建不起连接、08004 服务端拒绝连接），
+            // 57P01/57P02/57P03 是服务端正在关停/崩溃——两种都是「等一会儿再来」
+            case DatabaseType::PostgreSql:
+                return isPostgresConnectionClassCode(nativeCode) || nativeCode == postgresSqlStateNativeCode("57P01") || nativeCode == postgresSqlStateNativeCode("57P02") ||
+                       nativeCode == postgresSqlStateNativeCode("57P03");
+
+            // SQLite：本地文件，建连失败的「瞬态」只有锁竞争与内存不足两条（BUSY/LOCKED），
+            // 路径不存在、权限不够这类重试一万次也一样
+            case DatabaseType::Sqlite:
+                return nativeCode == 5 || nativeCode == 6;
+
+            // Redis：connect() 失败时 err 里放的是系统 errno（ECONNREFUSED 是最典型的一条：
+            // 服务端正在重启），其余按「连不上」的形状算
+            case DatabaseType::Redis:
+                return nativeCode == ECONNREFUSED || nativeCode == EHOSTUNREACH || nativeCode == ETIMEDOUT || nativeCode == EAGAIN || nativeCode == EINTR;
+        }
+        return false;
     }
 
 } // namespace AsynGyanis::Database
