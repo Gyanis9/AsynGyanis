@@ -29,7 +29,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     Http2ClientConnection::Http2ClientConnection(Core::EventLoop &loop, std::unique_ptr<HttpOutboundConnection> transport, const Config config) :
-        m_loop(loop), m_transport(std::move(transport)), m_config(config), m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize})
+        m_loop(loop), m_transport(std::move(transport)), m_config(config), m_decoder(Http2FrameLimits{.maximumFrameSizeByteCount = config.maximumFrameByteSize}), m_flushTurn(loop)
     {
         m_connectionSendWindowByteCount = kHttp2InitialWindowSizeByteCount;
         if (config.maximumOpenedStreamCount == 0U || config.maximumOpenedStreamCount > kMaximumOpenedStreamCount)
@@ -122,21 +122,18 @@ namespace AsynGyanis::Net
         // 而那正是 failConnection 攒进缓冲的东西——按健康状态把这一段短路掉，对端就只看到一个断掉的通路
         while (!m_outgoing.empty())
         {
-            if (m_isFlushInProgress)
+            // 先拿写权：同一条通路同一时刻只许一个协程在 send，否则两条各写一半套接字缓冲，
+            // 对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上传输层「一个方向只许一个等待者」
+            // 的约束，当场把连接判死。排队与交给下一位由 Core::Mutex 管：按申请先后，一次只给一位
+            const std::optional<Core::Mutex::Guard> writeTurn = co_await m_flushTurn.lock();
+            if (!writeTurn.has_value())
             {
-                // 写权在别人手上：等它放开。同一条通路同一时刻只许一个协程在 send，否则两条各写一半
-                // 套接字缓冲，对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上传输层
-                // 「一个方向只许一个等待者」的约束，当场把连接判死
-                if (!co_await FlushTurnAwaiter(*this))
-                {
-                    // 排不上写队（内存吃紧）：这一轮不写，把待发缓冲留给下一次，别在原地空转
-                    co_return false;
-                }
-                continue;
+                // 没拿到写权：排不上队（内存吃紧）或这道门已在收尾。这一轮不写，
+                // 把待发缓冲留给下一次，别在原地空转
+                co_return false;
             }
-            m_isFlushInProgress = true;
-            const FlushTurnGuard guard(*this);
-            std::string          pending;
+
+            std::string pending;
             pending.swap(m_outgoing);
             bool isWritten = false;
             try
@@ -151,9 +148,10 @@ namespace AsynGyanis::Net
             if (!isWritten)
             {
                 fail("写出 HTTP/2 帧失败：通路已不可用");
-                co_return false;
+                co_return false; // writeTurn 随协程体结束归还：下一位在途的写协程照常接上手
             }
             // 我写的是换出来的那一段；等在写权上的人被我叫醒后会接着写它新攒的部分
+            // （守卫在这一行之后随本轮迭代结束析构，写权就在这一步交出去）
         }
         co_return m_isHealthy;
     }
@@ -471,33 +469,6 @@ namespace AsynGyanis::Net
         }
         iterator->second.waiter = waiter;
         ++connection.m_waitingStreamCount;
-        return true;
-    }
-
-    void Http2ClientConnection::wakeFlushWaiters() noexcept
-    {
-        // 先把手上的这批取走再逐个投：唤醒期间可能又有人排队，那批留给下一轮
-        std::vector<std::coroutine_handle<>> waiters;
-        waiters.swap(m_flushWaiters);
-        for (const std::coroutine_handle<> waiter: waiters)
-        {
-            m_loop.scheduler().schedule(waiter);
-        }
-    }
-
-    bool Http2ClientConnection::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
-    {
-        // 入队这一步要分配，而协程语言规定 await_suspend 是 noexcept——让 bad_alloc 穿出去
-        // 就是把一次 flush 变成 std::terminate。处置沿用本文件 StreamAwaiter 那句「挂不上就不挂」
-        // 的形状：回 false 让协程继续往下走，由调用方按「这一轮写不出去」结账
-        try
-        {
-            m_connection->m_flushWaiters.push_back(waiter);
-        } catch (...)
-        {
-            m_isQueued = false;
-            return false;
-        }
         return true;
     }
 

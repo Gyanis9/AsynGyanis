@@ -9,6 +9,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Coroutine/Mutex.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/HttpBodyChunk.h"
@@ -254,75 +255,6 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 写出权的作用域守卫：离开作用域（含异常展开）时放开写权并叫醒排队的人
-         * @details 与 PumpLease 分开的理由：读整条通路只能有一个等待者，写却没有这个限制，但
-         *          「一次 send 只送一段字节」意味着两个协程同时在写会把帧撕成跨两半的字节流。
-         *          写权可以层层嵌套地问（驱动者读完顺手回帧时也在写），所以它必须独立于读租约。
-         */
-        class FlushTurnGuard
-        {
-        public:
-            /// @param connection 已把 m_isFlushInProgress 置真的那条连接
-            explicit FlushTurnGuard(Http2ClientConnection &connection) noexcept : m_connection(connection)
-            {
-            }
-
-            /// 放开写权并叫醒排队的写者
-            ~FlushTurnGuard() noexcept
-            {
-                m_connection.m_isFlushInProgress = false;
-                m_connection.wakeFlushWaiters();
-            }
-
-            FlushTurnGuard(const FlushTurnGuard &)            = delete;
-            FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
-
-        private:
-            Http2ClientConnection &m_connection; ///< 归属连接
-        };
-
-        /**
-         * @brief flushOutgoing() 的等待体：写权在别人手上时挂起来，等它放开
-         * @details 醒来不带走连接上的任何东西——它只看一眼待发缓冲还剩多少。等待体上那一个 bool
-         *          不是结果而是「这次到底排上了没」：排不上时不能谎报成等到过写权。
-         */
-        class FlushTurnAwaiter
-        {
-        public:
-            /// @param connection 所属连接（生命周期由本次等待覆盖）
-            explicit FlushTurnAwaiter(Http2ClientConnection &connection) noexcept : m_connection(&connection)
-            {
-            }
-
-            /**
-             * @brief 写权空着就不用挂：调用方会自己去抢这一轮
-             * @return true 不必挂起
-             */
-            [[nodiscard]] bool await_ready() const noexcept
-            {
-                return !m_connection->m_isFlushInProgress;
-            }
-
-            /**
-             * @brief 把本协程排进写队
-             * @param waiter 当前协程句柄
-             * @return true 已入队、将由持有写权的一方叫醒；false 排队失败（内存吃紧），不必挂起
-             */
-            bool await_suspend(std::coroutine_handle<> waiter) noexcept;
-
-            /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            /// @return true 这一轮写权确实等到过；false 排不上写队，调用方应放弃本轮
-            [[nodiscard]] bool await_resume() const noexcept
-            {
-                return m_isQueued;
-            }
-
-        private:
-            Http2ClientConnection *m_connection;     ///< 归属连接（非拥有）
-            bool                   m_isQueued{true}; ///< 是否已排进写队（await_suspend 分配失败时置假）
-        };
-
-        /**
          * @brief request() 的等待体：这条流暂时没有我可驱动的份，挂起来等驱动者叫醒
          * @details 一条连接同一时刻只能有一个协程在读通路（通路读是单等待者的），但响应可以落到
          *          任何一条流上——所以「驱动者」顺手替所有人读，读完把挂着的人叫醒。这里的关键是
@@ -443,9 +375,6 @@ namespace AsynGyanis::Net
         /// 叫醒挂在这条连接上的请求协程：它们会各自再看一眼自己的流，需要驱动的那个来接租约
         void wakeWaitingStreams() noexcept;
 
-        /// 叫醒排队等写权的协程：它们会各自再抢一轮，抢到的那个把待发字节写出去
-        void wakeFlushWaiters() noexcept;
-
         /// 把攒下的待发字节一次写出去（写完清空）；通路出错时为 false
         Core::Task<bool> flushOutgoing();
 
@@ -565,17 +494,18 @@ namespace AsynGyanis::Net
         /// CONTINUATION，任何别的帧一律按连接错误 PROTOCOL_ERROR 收口。按流那一位
         /// （`PendingStream::isAwaitingContinuation`）说不出「整条连接正卡在一段没收完的头块上」，
         /// 而插入的帧会让本端先解了后编的那一段——HPACK 的动态表就此与对端错位，报出来的是别的流的字段
-        bool                                 m_isAssemblingHeaderBlock{false};
-        std::uint32_t                        m_pendingHeaderStreamId{0};         ///< 正在拼头块的那条流；`m_isAssemblingHeaderBlock` 为假时无意义
-        bool                                 m_isPumpLeaseTaken{false};          ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
-        std::size_t                          m_waitingStreamCount{0};            ///< 挂在 StreamAwaiter 上的请求协程数
-        bool                                 m_isFlushInProgress{false};         ///< 写权在谁手上：两个协程同时 send 会把帧撕开
-        std::vector<std::coroutine_handle<>> m_flushWaiters;                     ///< 排队等写权的协程
-        bool                                 m_isHealthy{true};                  ///< 连接层是否还能用
-        bool                                 m_isPeerGoAway{false};              ///< 对端是否已通告收尾
-        bool                                 m_isPeerSettingsReceived{false};    ///< 是否已收到对端的 SETTINGS（能提请求的前提）
-        bool                                 m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
-        std::string                          m_errorMessage;                     ///< 最后一次失败的中文原因
+        bool          m_isAssemblingHeaderBlock{false};
+        std::uint32_t m_pendingHeaderStreamId{0}; ///< 正在拼头块的那条流；`m_isAssemblingHeaderBlock` 为假时无意义
+        bool          m_isPumpLeaseTaken{false};  ///< 这一轮谁在读通路并顺带回帧：同一时刻只许一个
+        std::size_t   m_waitingStreamCount{0};    ///< 挂在 StreamAwaiter 上的请求协程数
+        /// 写权：两个协程同时 send 会把帧撕成跨两半的字节流，而传输层一个方向只许一个等待者，
+        /// 抢槽会当场把连接判死。排队与「一次只交给下一位」由 Core::Mutex 管（按申请先后）
+        Core::Mutex m_flushTurn;
+        bool        m_isHealthy{true};                  ///< 连接层是否还能用
+        bool        m_isPeerGoAway{false};              ///< 对端是否已通告收尾
+        bool        m_isPeerSettingsReceived{false};    ///< 是否已收到对端的 SETTINGS（能提请求的前提）
+        bool        m_isOwnSettingsAcknowledged{false}; ///< 对端是否已 ACK 过本端那一条 SETTINGS（只许 ACK 一次）
+        std::string m_errorMessage;                     ///< 最后一次失败的中文原因
 
         /// 客户端前奏的字节（RFC 9113 §3.3），本端在 start() 里第一个写出
         static constexpr std::string_view kClientPrefaceBytes = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";

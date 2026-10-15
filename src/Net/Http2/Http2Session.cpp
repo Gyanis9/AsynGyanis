@@ -119,7 +119,7 @@ namespace AsynGyanis::Net
         // 基类那条套接字是占位，本类要用到的装配各持一份引用/共享指针；共享指针按值传两份
         // 而不是移走：两边指向的是同一批对象，不存在两份配置或两个采集端
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()), m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget)), m_flushTurn(loop)
     {
         m_tlsSocket.emplace(std::move(tlsSocket));
     }
@@ -133,7 +133,7 @@ namespace AsynGyanis::Net
         // 解析上限一并交下去——字段条数与请求目标长度这两道闸门住在连接层，判据与 h1/h3 同一份配置
         m_connection(std::move(http2Configuration), parserLimits), m_loop(loop), m_scheduler(loop.scheduler()), m_router(router), m_parserLimits(parserLimits),
         m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()), m_metrics(std::move(metrics)),
-        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
+        m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget)), m_flushTurn(loop)
     {
     }
 
@@ -886,33 +886,6 @@ namespace AsynGyanis::Net
             break; // 一条连接同时只跑一条隧道（第二条在 serveOtherStreamsDuringTunnel 里已回 503）
         }
         co_return true;
-    }
-
-    bool Http2Session::FlushTurnAwaiter::await_suspend(const std::coroutine_handle<> waiter) noexcept
-    {
-        // 入队这一步要分配，而协程语言规定 await_suspend 是 noexcept——让 bad_alloc 穿出去
-        // 就是把一次 flush 变成 std::terminate。处置与 AsyncResolver 的解析等待体同形：
-        // 排不上就不挂起，回 false 交调用方按「这一轮写不出去」结账
-        try
-        {
-            m_session->m_flushWaiters.push_back(waiter);
-        } catch (...)
-        {
-            m_isQueued = false;
-            return false;
-        }
-        return true;
-    }
-
-    void Http2Session::wakeFlushWaiters() noexcept
-    {
-        // 先把手上的这批取走再逐个投：唤醒期间可能又有人排队，那批留给下一轮
-        std::vector<std::coroutine_handle<>> waiters;
-        waiters.swap(m_flushWaiters);
-        for (const std::coroutine_handle<> waiter: waiters)
-        {
-            m_scheduler.schedule(waiter);
-        }
     }
 
     Core::Task<> Http2Session::drainInFlightServes()
@@ -2202,22 +2175,19 @@ namespace AsynGyanis::Net
         }
 
         // 先拿写权：从这一刻起，同一条通路上只有本协程在 send。多个处理器协程并发时这一道是必需的
-        // ——两条协程各写一半会把帧撕开，而且传输层一个方向只许一个等待者，抢槽会当场把连接判死
-        while (m_isFlushInProgress)
+        // ——两条协程各写一半会把帧撕开，而且传输层一个方向只许一个等待者，抢槽会当场把连接判死。
+        // 排队与「一次只交给下一位」由 Core::Mutex 管：按申请先后给，不给第二个同时进写的人
+        const std::optional<Core::Mutex::Guard> writeTurn = co_await m_flushTurn.lock();
+        if (!writeTurn.has_value())
         {
-            // 排不上写队（内存吃紧）：这一轮按「写不出去」收尾，别在原地空转抢写权
-            if (!co_await FlushTurnAwaiter(*this))
-            {
-                co_return false;
-            }
-            // 等写权期间连接可能已被判死（拿着上一轮写权的那条协程写失败了）：不必再去抢
-            if (m_isConnectionUnusable)
-            {
-                co_return false;
-            }
+            // 排不上写队（内存吃紧）或这道门已在收尾：这一轮按「写不出去」收尾，别在原地空转抢写权
+            co_return false;
         }
-        m_isFlushInProgress = true;
-        const FlushTurnGuard turnGuard(*this);
+        // 等写权期间连接可能已被判死（拿着上一轮写权的那条协程写失败了）：不必再去抢
+        if (m_isConnectionUnusable)
+        {
+            co_return false;
+        }
 
         std::string outgoingBytes = m_connection.takeOutgoingBytes();
         if (outgoingBytes.empty())

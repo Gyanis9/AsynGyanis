@@ -11,6 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Coroutine/Mutex.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
@@ -356,67 +357,6 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 写权等待体：写权在别人手上时挂起来，等它放开
-         * @details 与客户端侧 Http2ClientConnection 的同一判据：一条通路同一时刻只许一个协程在 send，
-         *          否则两条各写一半套接字缓冲，对端解出来的就是撕开的帧；更糟的是第二个等待者会撞上
-         *          传输层「一个方向只许一个等待者」的约束，当场把连接判死。
-         */
-        class FlushTurnAwaiter
-        {
-        public:
-            /// @param session 所属会话（生命周期由本次等待覆盖）
-            explicit FlushTurnAwaiter(Http2Session &session) noexcept : m_session(&session)
-            {
-            }
-
-            /// 写权空着就不用挂：调用方会自己去抢这一轮
-            [[nodiscard]] bool await_ready() const noexcept
-            {
-                return !m_session->m_isFlushInProgress;
-            }
-
-            /// 把本协程排进写队；排不上时回 false，调用方当轮按「写不出去」结账
-            /// @return true 已入队、将由持有写权的一方叫醒；false 排队失败（内存吃紧），不必挂起
-            bool await_suspend(const std::coroutine_handle<> waiter) noexcept;
-
-            /// 醒来即完成：接下来由调用方自己再看一眼写权与待发缓冲
-            /// @return true 这一轮写权确实等到过；false 排不上写队，调用方应放弃本轮
-            [[nodiscard]] bool await_resume() const noexcept
-            {
-                return m_isQueued;
-            }
-
-        private:
-            Http2Session *m_session;        ///< 所属会话（非拥有）
-            bool          m_isQueued{true}; ///< 是否已排进写队（await_suspend 分配失败时置假）
-        };
-
-        /**
-         * @brief 写权的 RAII 放开：析构即让给排队的下一个写者
-         */
-        class FlushTurnGuard
-        {
-        public:
-            /// @param session 拿走写权的会话
-            explicit FlushTurnGuard(Http2Session &session) noexcept : m_session(&session)
-            {
-            }
-
-            FlushTurnGuard(const FlushTurnGuard &)            = delete;
-            FlushTurnGuard &operator=(const FlushTurnGuard &) = delete;
-
-            /// 放开写权并叫醒排队的写者
-            ~FlushTurnGuard() noexcept
-            {
-                m_session->m_isFlushInProgress = false;
-                m_session->wakeFlushWaiters();
-            }
-
-        private:
-            Http2Session *m_session; ///< 归属会话
-        };
-
-        /**
          * @brief HTTP/2 主循环：读字节 → feedBytes() → 写出 → 取请求与正文 → 路由 → 写出
          * @details 循环退出即收口：对端关闭、传输失败、协议失败（GOAWAY 已写出）或本侧被关停。
          * @return Core::Task<> 协程，循环结束时完成
@@ -481,11 +421,6 @@ namespace AsynGyanis::Net
          * @return false 写出失败（连接已不可用），调用方应停止循环
          */
         [[nodiscard]] Core::Task<bool> serveWebSocketTunnels();
-
-        /**
-         * @brief 叫醒排队等写权的协程
-         */
-        void wakeFlushWaiters() noexcept;
 
         /// 收口时每轮等处理器跑完的一拍时长：一拍 1 毫秒，让事件循环有时间推进到期定时器与别的会话
         static constexpr std::chrono::milliseconds kServeDrainTickInterval{1};
@@ -881,10 +816,10 @@ namespace AsynGyanis::Net
         /// 在飞的处理器协程条数：一条连接可以同时有多条流在服务，「忙」因此要计数而不是布尔量——
         /// 第一条起时置忙、最后一条收尾才置闲，否则先跑完的那条会把还在等业务的本连接交回空闲清扫
         std::size_t m_activeServeCount{0};
-        /// 写权是否已被某个协程拿走：一条通路同一时刻只许一个协程在 send（两个协程各写一半会把帧撕开，
-        /// 而且传输层一个方向只许一个等待者，抢槽会当场把连接判死）
-        bool                                 m_isFlushInProgress{false};
-        std::vector<std::coroutine_handle<>> m_flushWaiters;                ///< 排队等写权的协程（放开时一次性叫醒）
-        bool                                 m_isConnectionUnusable{false}; ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
+        /// 写权：一条通路同一时刻只许一个协程在 send（两个协程各写一半会把帧撕开，而且传输层
+        /// 一个方向只许一个等待者，抢槽会当场把连接判死）。排队与「一次只交给下一位」由
+        /// Core::Mutex 管（按申请先后）
+        Core::Mutex m_flushTurn;
+        bool        m_isConnectionUnusable{false}; ///< 本侧是否已判定写不出去：置位后所有写出短路，同一次故障只留一条日志
     };
 } // namespace AsynGyanis::Net
