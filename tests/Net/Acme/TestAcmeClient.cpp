@@ -688,6 +688,30 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：机构**只给 tls-alpn-01** 时的失败形态与出路（台账 3.6：不做这一种，但要说清给的是什么错、怎么绕）
+     * @details 本客户端不做 tls-alpn-01（它要在握手里交出带 `acme-tls/1` 的自签证书，与本服务的 ALPN
+     *          装配是两套），机构只提供这一种时当场判失败。判据三层：①失败种类是
+     *          `UnexpectedResponse`（这句答复本身合法，缺的是「配置要的那一格」）；②文案点名机构实际给的
+     *          类型 `tls-alpn-01`；③文案给出出路（换一家机构，或改配置要机构实际给的那一种）——
+     *          这三样就是部署方半夜看日志时唯一能据以行动的东西
+     * @note 配置侧对 `challenge = tls-alpn-01` 的拒绝另有既有用例（`TestAcmeAutomationConfig` 里的
+     *       tls-alpn-01 样本）：那条管「配置写错了」，本条管「配置没错、机构不给」——两种现场都有人遇到
+     */
+    TEST_F(AcmeClientTest, ReportsTheWayOutWhenTheAuthorityOnlyOffersTlsAlpn01)
+    {
+        AcmeStubAuthority::Settings settings;
+        settings.offeredChallengeType = "tls-alpn-01";
+        startFixtures(settings);
+
+        const auto outcome = runDefaultFlow();
+        EXPECT_FALSE(outcome.isSuccess);
+        EXPECT_EQ(outcome.failureKind, AcmeErrorKind::UnexpectedResponse) << outcome.failureMessage;
+        EXPECT_NE(outcome.failureMessage.find("tls-alpn-01"), std::string::npos) << "拒绝话术要列出机构实际给了哪几种：" << outcome.failureMessage;
+        EXPECT_NE(outcome.failureMessage.find("请换一家"), std::string::npos) << "文案要给出出路（换一家机构，或改配置要机构实际给的那一种）：" << outcome.failureMessage;
+        EXPECT_EQ(this->evidence().challengeFetchCount, 0U) << "没挑到挑战就不该去答任何一条";
+    }
+
+    /**
      * @brief 钉住：配置切到 DNS-01 而机构只给 http-01 时，拒绝话术点名的是 dns-01
      * @details 与上一条凑成一对反向判据：文案跟着配置走，才说明「要哪一种」真被消费了，
      *          而不是写死在实现里的一句老话

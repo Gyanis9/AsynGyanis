@@ -33,6 +33,17 @@ namespace AsynGyanis::Net
     // takeOutgoingBytes()，请求与正文按事件交出；所有入口都不阻塞、不 co_await——等对端的响应
     // （窗口、SETTINGS ACK、PING）不由本层等待，驱动顺序见 Http2Connection 的类说明。
     // 帧层与 HPACK 层各管一段（单帧合法性、头块压缩），跨帧的流状态、窗口与语义校验都在本层。
+    //
+    // **不做流优先级（这是决定，不是待办）**：本层收下 PRIORITY 帧与 HEADERS 的 PRIORITY 位之后
+    // 只做**规范要求的那部分处理**，不建优先级树、也不按权重调度。依据是 RFC 9113：§5.3.2 明写
+    // 「This update to HTTP/2 deprecates the priority signaling defined in RFC 7540」，§5.3.1 给了
+    // 理由（「the prioritization signaling in RFC 7540 was not successful」，且有「Many server
+    // deployments ignored client signals」的既成事实）；留下的强制处理只有「帧字段与若干必判」，
+    // 为的是与仍在使用该信号的实现互通——即：长度必为 5、流号非 0、**自依赖必须拒**（§5.3.1，
+    // 由帧层判），其余照收即弃。RFC 9218 的 `Priority` 头与 PRIORITY_UPDATE 帧属于扩展：
+    // 未知帧类型按 §4.1 必须忽略（解码器原样交出、本层不解释），因此也不需要在帧类型表里列名。
+    // 将来若要按 RFC 9218 调度，落点是「收下 Priority 头/PRIORITY_UPDATE → 排一条请求顺序」，
+    // 与本节无冲突；在那之前，忽略优先级是合法且与主流服务端一致的形状。
     // ============================================================================
 
     /// 客户端前奏的 24 字节（RFC 9113 §3.4）：服务端必须先原样收到它，之后的字节才按帧解释
@@ -109,10 +120,15 @@ namespace AsynGyanis::Net
     struct ASYN_NET_API Http2ConnectionConfiguration
     {
         std::uint32_t headerTableSize{kHpackDefaultDynamicTableSizeByteCount}; ///< SETTINGS_HEADER_TABLE_SIZE（§6.5.2 初值 4096），同时是本端 HPACK 解码器动态表的上限
-        std::uint32_t enablePush{0};                                           ///< SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留
-        std::uint32_t maximumConcurrentStreams{100};                           ///< SETTINGS_MAX_CONCURRENT_STREAMS（§6.5.2 初值不限）：本端策略上限，超出回 REFUSED_STREAM
-        std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount};     ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
-        std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize}; ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
+        /// SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留。
+        /// **服务端推送不做（这是决定，不是待办）**：业界已弃用这一机制（Chrome 早已移除、主流服务端
+        /// 相继下线），`ENABLE_PUSH=0` 是正确的对外承诺而不是能力的欠缺；对端仍推 PUSH_PROMISE 按
+        /// §6.6 判 PROTOCOL_ERROR（有用例钉住）。真要做时的落点是「上一条附加的保序流 + 服务端侧的
+        /// 主动发起」，与本节不冲突——但在那之前，本项保持 0。
+        std::uint32_t enablePush{0};
+        std::uint32_t maximumConcurrentStreams{100};                       ///< SETTINGS_MAX_CONCURRENT_STREAMS（§6.5.2 初值不限）：本端策略上限，超出回 REFUSED_STREAM
+        std::uint32_t initialWindowSize{kHttp2InitialWindowSizeByteCount}; ///< SETTINGS_INITIAL_WINDOW_SIZE（§6.5.2 初值 65535）：本端允许对端每条流先发的字节数
+        std::uint32_t maximumFrameSize{kHttp2DefaultMaximumFrameSize};     ///< SETTINGS_MAX_FRAME_SIZE（§6.5.2 初值 16384，合法区间 [16384, 16777215]）：本端可接收的单帧负载上限
         /// SETTINGS_MAX_HEADER_LIST_SIZE（§6.5.2 初值不限）：本端策略上限，算式按 §6.5.2 的「名长 + 值长 + 32」。
         /// 出厂值与 `HttpParserLimits::maximumHeaderBlockLength` 同为 64 KiB，与 h3 的
         /// `Http3ConnectionConfiguration::maximumFieldSectionSizeByteCount` 同档——三条通道对同一个头块体量

@@ -122,7 +122,14 @@ namespace AsynGyanis::Net
      * @warning 支持 HTTP-01 与 DNS-01 两种自证的**协议侧**：挑挑战、算校验值、按机构的答复轮询。
      *          「把答案放出去」不在本类职责内——HTTP-01 要靠已注册的路由，DNS-01 要靠 DNS 提供方；
      *          配置要的那一种机构没给时，本类在读授权时就判失败并列出机构实际给了哪些类型，
-     *          不会挑一条自己答不了的挑战去 POST（tls-alpn-01 一律不支持）
+     *          不会挑一条自己答不了的挑战去 POST。
+     * @warning **tls-alpn-01 一律不支持**（RFC 8737）：它要在握手里交出一张带 `acme-tls/1` ALPN 与
+     *          `id-pe-acmeIdentifier` 扩展的自签证书，那是一条独立的 TLS 服务端装配，与本服务的
+     *          ALPN 装配（h2/h3/http1 那套）不是同一件事。机构只提供这一种时，读授权即失败：
+     *          种类是 `UnexpectedResponse`（答复本身合法、缺的是配置要的那一格），文案里点名
+     *          `tls-alpn-01` 并给出出路——**换一家能发 http-01/dns-01 的机构，或改配置要机构实际
+     *          给的那一种**。这条形状有用例钉住（`AcmeClientTest.ReportsTheWayOutWhenTheAuthorityOnlyOffersTlsAlpn01`），
+     *          配置侧写 `challenge = tls-alpn-01` 的拒绝另有一条（`AcmeAutomationConfig` 那一族）。
      */
     class ASYN_NET_API AcmeClient
     {

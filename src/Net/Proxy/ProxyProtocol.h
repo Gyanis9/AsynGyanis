@@ -34,6 +34,13 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 一条 PROXY 头交出的四层身份
+     *
+     * @note **TOA 不做（这是决定，不是待办）**：TOA（TCP Option Address）是 Linux 专有的方案，要内核
+     *       打补丁、在 TCP 选项里塞入真实来源，而且只有特定 LVS 形态会配它。「拿到真实来源」这一需求
+     *       已由 PROXY 协议覆盖（本文件就是它的读侧），而 TOA 还要在本层之外额外接一条 `getsockopt`
+     *       式的读法（对本项目来说既没有可测的内核，也没有可复现的部署形态）。真遇到只认 TOA 的
+     *       LVS 时，落点是「在 accept 之后从 TCP 选项里读出地址再喂给本层的同一条身份出口」，
+     *       而不是改解析器。
      */
     struct ASYN_NET_API ProxyEndpoint
     {

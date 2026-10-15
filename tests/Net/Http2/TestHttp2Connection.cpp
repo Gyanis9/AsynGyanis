@@ -588,6 +588,42 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：RFC 9218 的 `Priority` 头原样交给业务，本层不按它调度（「不做优先级」是决定，见头注释）
+     * @details 「忽略优先级」的可观测形状有两条，本用例各钉一条：①该头是普通头字段，必须原样进业务
+     *          （它不是伪头，不该被未知伪头那条规则误拒）；②到达顺序即交付顺序——后到的请求哪怕声明了
+     *          更高的优先级（`u=0` 最高、`u=7` 最低）也不会被提前交付。RFC 9113 §5.3.2 已把 RFC 7540 的
+     *          优先级信号废弃，忽略它是合法实现；将来真按 RFC 9218 调度时，②这一条会先红，正是要的
+     * @note 对照：自依赖必拒（HEADERS 的 PRIORITY 位与 PRIORITY 帧两条路）在帧层有用例
+     *       （`Http2Frame.RejectsPriorityDependingOnItsOwnStream`），未知伪头 `:priority` 按 §8.3.1
+     *       判畸形也有既有用例（`RejectsMalformedRequestHeaderFields` 的「未知伪头」样本）——本条不重复
+     */
+    TEST(Http2Connection, PassesTheRfc9218PriorityFieldThroughWithoutSchedulingOnIt)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        // 流 1 声明最低优先级（u=7）、流 3 声明最高（u=0）：若按优先级调度，交付顺序必须反过来
+        std::string lowPriorityBlock = makeMinimalGetRequestBlock();
+        lowPriorityBlock += hpackLiteralField("priority", "u=7");
+        const std::string lowPriorityFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, lowPriorityBlock);
+
+        std::string highPriorityBlock = makeMinimalGetRequestBlock();
+        highPriorityBlock += hpackLiteralField("priority", "u=0, i");
+        const std::string highPriorityFrame = makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, highPriorityBlock);
+
+        EXPECT_EQ(feed(connection, lowPriorityFrame), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(feed(connection, highPriorityFrame), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.hasFailed()) << connection.errorMessage();
+
+        const std::vector<Http2Request> requests = connection.takeRequests();
+        ASSERT_EQ(requests.size(), 2U);
+        EXPECT_EQ(requests[0].streamId, 1U) << "后到的高优先级请求被提前交付：本层不做优先级调度";
+        EXPECT_EQ(requests[1].streamId, 3U);
+        EXPECT_EQ(requests[0].headerFields.firstValueView("priority").value_or("<缺失>"), "u=7") << "Priority 头必须原样交给业务";
+        EXPECT_EQ(requests[1].headerFields.firstValueView("priority").value_or("<缺失>"), "u=0, i");
+    }
+
+    /**
      * @brief 钉住：还回来的请求向量只被接走容量；本端已另攒出新待交请求时那份缓冲丢弃而不覆盖
      * @details 漏了这道判断的话，回收会把「已经交出去还没处理完的旧请求」换进本端，结果同一条请求被
      *          交付两次、而刚解出来的那条直接消失——两头都错且现场无任何报错。

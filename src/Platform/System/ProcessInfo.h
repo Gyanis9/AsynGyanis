@@ -26,6 +26,17 @@ namespace AsynGyanis::Platform
      * @details 日志与配置的相对路径必须基于可执行文件所在目录解析，否则会随
      *          进程启动时的工作目录变化而漂移；环境变量读取在 MSVC 上必须使用
      *          _dupenv_s 才能避开 C4996 与内存归属问题，两者统一由本类承担。
+     *
+     * @note **磁盘与网络级指标不做（这是决定，不是待办）**：本类只提供**进程级**读数（RSS、CPU 秒、
+     *       句柄数、启动时刻）——它们有确定的消费方（`/metrics` 与 OTLP 两条出口，见
+     *       `Core::ProcessMetricsRegistry` 与 `HttpServerStats`）。磁盘/网络那两组没有这样的消费方：
+     *       验收侧的磁盘与链路对账直接用 `/proc`（`/proc/self/io`、`/proc/net/dev`、`/proc/diskstats`）
+     *       现取现算，采集侧要的是 `node_exporter` 口径的整机读数而不是某个进程的份额，而本层给出的
+     *       只会是「本进程读写了多少字节」这种半张脸的口径。加一组没人读的 API 等于给下一个读代码的
+     *       人留一个「这里为什么没有消费方」的疑问；真出现消费方（例如要做进程级 IO 限额或配额告警）
+     *       时按同一份形状加：`ioReadBytes()` / `ioWriteBytes()`（POSIX 走 /proc/self/io，Windows 走
+     *       GetProcessIoCounters），网络收发那两格 Windows 侧只有 `GetPerTcpConnectionEStats` 这类
+     *       按连接的接口，进程级口径本就取不到——先确认需求再谈落点。
      */
     class ASYN_PLATFORM_API ProcessInfo
     {

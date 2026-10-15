@@ -132,6 +132,13 @@ namespace AsynGyanis::Database
      *          在建连后由 redisSetTimeout 应用到上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内；
      *          连接存续期间改这个值同样当场生效，不必断开重连。
      *
+     * @note **Redis Cluster 不做（这是决定，不是待办）**：集群要在本层之上再起一整层拓扑——slot 路由、
+     *       MOVED/ASK 重定向、拓扑刷新与故障切换时的重试，成本与收益不匹配（多键命令还会因跨 slot
+     *       直接失败，那等于把「哪些命令能用」再切一刀）。主从这一现实需求由 Sentinel 覆盖：
+     *       `resolveSentinelMasterAddress()` 给出主库地址后照常建连即可（见 RedisSentinel.h）。
+     *       真要做集群时的落点是「在 `RedisConnection` 之外加一层路由连接（持有 N 条到各节点的连接
+     *       并按 slot 分派）」，而不是把这些逻辑塞进本类。
+     *
      * @warning 管道命令登记后不立即发送，flushPipeline() 之前不会有任何网络往返；
      *          中途的传输层失败会丢弃尚未读回的回复并断开连接，Redis 侧无法回滚已执行的命令。
      * @warning 订阅要走本类给出的那组入口（subscribe()/psubscribe()/readPushReply()），不要拿

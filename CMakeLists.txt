@@ -13,7 +13,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的完成端口
 # （src/Core/EventLoop/Iocp.cpp；wepoll.h 只提供 epoll_event 与事件位定义，实现已删除）。
 # 其它系统在 Core 这一层就编译不过，而报出来的会是几百行模板错误——与其让人去猜，不如在这里
-# 一句话说清「缺的是 kqueue 后端」以及补它的落点。README 的「环境要求」也写了这一点，两处一致
+# 一句话说清「缺的是 kqueue 后端」以及补它的落点。README 的「环境要求」也写了这一点，两处一致。
+# **这是既有决定而不是待办的缺口**：目标平台就是 Linux 与 Windows，下面这段报错是「拒绝文案」本身，
+# 不是「还没做」的标记——别把它当成 TODO 去补 kqueue（macOS/BSD 也不在支持面上）。
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR
             "AsynGyanis 目前只支持 Linux 与 Windows：事件循环的实现是 epoll 与完成端口，"
@@ -69,6 +71,13 @@ option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）
 # 这些路径此前只有注释级约定，TSan 是唯一能自动兜住它们的工具；Linux CI 用本开关另起一个
 # 构建目录跑并发相关的用例集（见 .github/workflows/linux-ci.yml）。
 option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
+
+# **不为「证明架构不变式」加第二预设（既有决定，别再说它是缺口）**：架构约定（某层不许包含某层、
+# 平台调用不许漏出 Platform、事件循环对象的线程归属等）由**用例与源级检查**守——前者跑在既有预设上，
+# 后者是 scripts/ 下的静态检查；再起一棵只为「换个开关看它编不编得过」的构建树，等于每个不变式都要
+# 在两套配置里各维护一遍，且它证明的东西（编译通过）与不变式本身（运行期行为）并不是一回事。
+# 需要验证「某条降级路径也能编」时，用 OBJECT 形状的编译单元就地编它（见 feedback 里那条
+# 「宣称编得过的降级档要真编一次」），不要新开预设。
 
 # 可选全局分配器：mimalloc（跨平台；jemalloc 在 Windows 上长期无人维护，mimalloc 是这里唯一现实的选择）。
 # 默认关闭：接管整个进程的 malloc/free 属于部署决策（调试器、其它库的分配统计都会受影响）。
