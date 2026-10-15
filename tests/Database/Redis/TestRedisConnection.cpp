@@ -4,6 +4,8 @@
 // - 未连接时的执行入口：execute / executeCommand / selectDatabase / flushPipeline 一律返回 nullptr 并写原因
 // - 管道登记与丢弃：切词失败当场拒绝、未连接时 flush 不发送且丢弃缓冲、空管道不是错误
 // - disconnect() 在未连接与失败后都幂等，析构安全
+// - 键存活状态与扫描页的模型：三档各自是一个不同形状（不存在 / 永不过期 / 还剩多久），
+//   SCAN 只认游标 "0" 为终止；两个新入口在未连接时一律「问不成 + 中文原因」而不是交回一个空档
 // 需要真实服务端的语义（认证、命令往返、键空间选择）由 TestRedisIntegration.cpp 在真机侧覆盖；
 // 超时取百毫秒量级并用 steady_clock 判定上界（回环未监听端口会立刻回 RST，超时只是防挂死的保险）。
 
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <limits>
@@ -614,6 +617,72 @@ namespace AsynGyanis::Database
             EXPECT_GE(microsecondPart, 0) << "剩余微秒数为负：这一次读取的时限不可解释";
             EXPECT_LT(microsecondPart, 1000000);
         }
+    }
+
+    /**
+     * @brief 钉住键存活状态的三档各自是一个不同形状
+     * @details 「键不存在」「键在但永不过期」「键在且还剩多久」在服务端是一个整数的三种含义。
+     *          折成两档就把「这个键没人写过」与「链路坏了」混成一件事；折成一档更会把永不过期的键
+     *          当成即将过期来处理。这里钉的是模型本身，真机那一侧怎么把 -1 / -2 交回来由
+     *          `TestRedisIntegration.cpp` 的同一组判据兜住
+     */
+    TEST(RedisConnection, KeyLifetimeModelsTheThreeServerAnswersDistinctly)
+    {
+        const RedisKeyLifetime absent;
+        EXPECT_FALSE(absent.keyExists);
+        EXPECT_FALSE(absent.hasExpiry());
+
+        RedisKeyLifetime neverExpires;
+        neverExpires.keyExists = true;
+        EXPECT_TRUE(neverExpires.keyExists);
+        EXPECT_FALSE(neverExpires.remainingTime.has_value());
+        EXPECT_FALSE(neverExpires.hasExpiry()) << "永不过期被当成了「马上要没了」";
+
+        RedisKeyLifetime expiring;
+        expiring.keyExists     = true;
+        expiring.remainingTime = std::chrono::milliseconds{500};
+        EXPECT_TRUE(expiring.hasExpiry());
+        EXPECT_EQ(expiring.remainingTime, std::chrono::milliseconds(500));
+    }
+
+    /**
+     * @brief 钉住 SCAN 只有游标回到 "0" 才算扫完，空游标与别的数字都不算
+     * @details 游标是服务端的迭代状态，本类按字符串原样透传——把它当整数解析会静默截断成一个
+     *          更早的轮次，而「已经归 0」的误判会让调用方漏掉整个后半段键空间
+     */
+    TEST(RedisConnection, ScanPageTreatsOnlyTheZeroCursorAsFinished)
+    {
+        RedisScanPage first;
+        EXPECT_FALSE(first.isFinished()) << "默认构造的空游标不该被当成「已扫完」";
+
+        first.nextCursor = "17";
+        EXPECT_FALSE(first.isFinished());
+
+        first.nextCursor = "0";
+        EXPECT_TRUE(first.isFinished());
+    }
+
+    /**
+     * @brief 钉住两个新入口在未连接时一律「问不成」而不是交回一个看起来像答案的空档
+     * @details 与 `executeCommand` 那一族同一条口径：空值 + 中文原因。把未连接答成「键不存在」
+     *          或「这一页没有键」，调用方会据此删掉自己的索引或跳过一整批键
+     */
+    TEST(RedisConnection, KeyLifetimeAndScanPageRefuseWithoutAConnection)
+    {
+        RedisConnection connection(ConnectionConfig::redisDefault());
+
+        const std::optional<RedisKeyLifetime> lifetime = connection.keyLifetime("any-key");
+        EXPECT_FALSE(lifetime.has_value()) << "没连上却交回了一个键状态";
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
+
+        // 游标为空是调用方的错，这条判据排在连接检查之前：一条本来就不合法的请求不该等到网络状态才知道
+        const std::optional<RedisScanPage> refused = connection.scanPage(std::string_view{}, std::string_view{}, std::nullopt);
+        EXPECT_FALSE(refused.has_value());
+        EXPECT_NE(connection.lastError().find("游标"), std::string::npos) << connection.lastError();
+
+        const std::optional<RedisScanPage> page = connection.scanPage("0", std::string_view{}, std::nullopt);
+        EXPECT_FALSE(page.has_value()) << "没连上却交回了一页扫描结果";
+        EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
     }
 
 } // namespace AsynGyanis::Database

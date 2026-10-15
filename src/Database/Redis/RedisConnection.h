@@ -73,6 +73,57 @@ namespace AsynGyanis::Database
     };
 
     /**
+     * @brief 一个键的存活状态（`PTTL` 的三档答案，见 RedisConnection::keyLifetime）
+     *
+     * @details 服务端在这里回的是**一个整数三种含义**：`-1` 是「键在，但没设过期」，`-2` 是
+     *          「键不存在」，其余是剩余毫秒。把两个负数折成同一个「没有值」就丢掉了排查现场最需要的
+     *          那一条信息（键到底还在不在），而折成一个布尔又分不出「永不过期」与「已经没了」。
+     *          因此这里按三档如实建模，调用方不必再记那两个哨兵值。
+     * @note 「问不成」（未连接、服务端报错）不由本结构表达——那条走返回值的空值与 lastError()，
+     *       否则「键不存在」与「链路坏了」会共用同一个形状。
+     */
+    struct ASYN_DATABASE_API RedisKeyLifetime
+    {
+        bool                                     keyExists{false}; ///< 键是否存在（服务端的 -2 即「不存在」）
+        std::optional<std::chrono::milliseconds> remainingTime{};  ///< 剩余时长；键在而没设过期时为空
+
+        /**
+         * @brief 这个键会不会自己消失
+         * @return true 设了过期且键还在；false 键不存在，或键在但永不过期
+         */
+        [[nodiscard]] bool hasExpiry() const noexcept
+        {
+            return keyExists && remainingTime.has_value();
+        }
+    };
+
+    /**
+     * @brief 一页 `SCAN` 的结果（游标 + 这一页扫到的键）
+     *
+     * @details SCAN 的契约是「游标续扫」：服务端回一份两元素数组，第一个是**下一页**的游标
+     *          （回到 "0" 表示扫完），第二个是这一页的键。游标是**字符串**而不是整数——服务端可能
+     *          编码自己的迭代状态，把它当数字解析会静默截断，因此这里原样透传。
+     * @note 一次调用只发一条命令、只走一页：把「循环到扫完」也做进本方法就等于替调用方决定要不要
+     *       防一次无界遍历（大键空间上那会让一条连接被占住 arbitrarily 久），因此这里只交一页。
+     *       游标可能是**重复**或**空**的——SCAN 只保证「游标为 0 之前每个至少存在过的键会被给出一次」，
+     *       键在扫描期间被删除或新建都不保证；这是协议的限制，不是本类的缺陷（见 Redis 的 SCAN 文档）。
+     */
+    struct ASYN_DATABASE_API RedisScanPage
+    {
+        std::string              nextCursor; ///< 下一页游标；回到 "0" 表示这一轮扫完了
+        std::vector<std::string> keys;       ///< 这一页的键名（按字节原样交出，可能为空）
+
+        /**
+         * @brief 这一轮迭代是否已经回到起点
+         * @return true 服务端给出的游标是 "0"；false 还要拿 nextCursor 继续扫
+         */
+        [[nodiscard]] bool isFinished() const noexcept
+        {
+            return nextCursor == "0";
+        }
+    };
+
+    /**
      * @brief Redis 键值存储连接
      *
      * @details 可选编译：未取得 hiredis 时编译为报错桩（各执行入口把「当前构建未编译 Redis 驱动」写入
@@ -274,6 +325,38 @@ namespace AsynGyanis::Database
          * @return false 编号非法、未连接或服务端拒绝，原因见 lastError()
          */
         bool selectDatabase(int index);
+
+        /**
+         * @brief 问一个键还能活多久（`PTTL`，毫秒精度）
+         * @details 存在性、有没有设过期、还剩多久这三档在服务端是**一个整数的三种含义**
+         *          （`-2` 不存在 / `-1` 存在但永不过期 / 其余为剩余毫秒），本方法把它们交回
+         *          `RedisKeyLifetime` 的三个不同形状，调用方不必再记那两个哨兵值。
+         *          为什么用 PTTL 而不是 TTL：后者只有秒精度，`1500 毫秒` 会被服务端报成 `1`，
+         *          而用它做「还剩多久就该续期」的判断时那个误差正好落在决策点上。
+         * @param key 键名（按字节送出，含空白与内嵌 '\0' 都不截断）
+         * @return std::optional<RedisKeyLifetime> 三档之一的存活状态
+         * @return std::nullopt 问不成——未连接、服务端报错或链路失败，原因见 lastError()
+         * @note 「键不存在」不是失败，因此它有值；空值只表示没问到。这两件事混成一个空返回值，
+         *       现场就分不清「这个键没人写过」与「这条连接根本没连上」
+         */
+        [[nodiscard]] std::optional<RedisKeyLifetime> keyLifetime(std::string_view key);
+
+        /**
+         * @brief 扫一页键（`SCAN`，游标续扫，一次一条命令）
+         * @details 为什么不做「扫到完」的那一层包装：那等于替调用方决定一次无界遍历要不要设上限，
+         *          而大键空间上这一条命令序列能把连接占住很久。本方法只走一页，续不续、走几页、
+         *          要不要在页与页之间让出连接，都留在调用方这一侧（`RedisScanPage::isFinished()`
+         *          就是那个停表）。游标按**字符串**原样透传：它是服务端的迭代状态，当数字解析会静默截断。
+         *          SCAN 只保证「回到 0 之前每个至少存在过一次的键会被给出一次」——同一页里可能重复，
+         *          扫描期间新建或删除的键不保证出现，这是协议的限制。
+         * @param cursor 本次迭代的游标；首轮传 "0"，之后传上一页的 nextCursor
+         * @param pattern 键名模式（Glob 风格，如 `session:*`）；空表示不筛
+         * @param count 服务端这一页想拿到多少个键的**提示**；为空时不带 COUNT 参数。
+         *        它是提示不是上限：服务端可以回更多或更少，真拿到几个键要看返回的 keys
+         * @return std::optional<RedisScanPage> 这一页的游标与键
+         * @return std::nullopt 游标为空串、未连接、服务端报错或回复形状不对，原因见 lastError()
+         */
+        [[nodiscard]] std::optional<RedisScanPage> scanPage(std::string_view cursor = "0", std::string_view pattern = {}, std::optional<std::size_t> count = {});
 
         /**
          * @brief 获取底层 redisContext 句柄，供需要直接使用 hiredis 的高级场景使用

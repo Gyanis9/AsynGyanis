@@ -44,6 +44,7 @@ add_executable(TestDatabase
 
         Redis/TestRedisConnection.cpp
         Redis/TestRedisResult.cpp
+        Redis/TestRedisSentinel.cpp
         Redis/TestRedisIntegration.cpp
         Redis/TestRedisTls.cpp
         Redis/TestRedisSubscription.cpp

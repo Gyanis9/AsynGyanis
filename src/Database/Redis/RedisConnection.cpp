@@ -864,6 +864,103 @@ namespace AsynGyanis::Database
         return true;
     }
 
+    std::optional<RedisKeyLifetime> RedisConnection::keyLifetime(const std::string_view key)
+    {
+        const std::unique_ptr<DatabaseResult> reply = executeCommand({std::string_view("PTTL"), key});
+        if (reply == nullptr)
+        {
+            // 原因已由发送路径写进 m_lastError（未连接、服务端报错或链路失败），这里不重复一遍
+            return std::nullopt;
+        }
+
+        const DatabaseValue value        = reply->getValue(std::size_t{0});
+        const auto         *rawRemaining = std::get_if<std::int64_t>(&value);
+        if (rawRemaining == nullptr)
+        {
+            // 只认整数这一种形状：把「读不出整数」当成「键不存在」会把一次协议意外说成一个业务答案
+            m_lastError = "读键的存活状态失败：服务端没按整数回答 PTTL，实际回复的类型编号不在预期内";
+            return std::nullopt;
+        }
+
+        RedisKeyLifetime lifetime;
+        // 那两个负数是服务端的契约，不是错误：-2 说的是「这个键不存在」，-1 说的是「键在、但没人给它
+        // 设过期」。两者都折成空值就分不出「没写过」与「链路坏了」，都折成 0 毫秒更会把永不过期的键
+        // 当成即将过期来处理
+        if (*rawRemaining == -2)
+        {
+            lifetime.keyExists = false;
+        } else if (*rawRemaining == -1)
+        {
+            lifetime.keyExists     = true;
+            lifetime.remainingTime = std::nullopt;
+        } else
+        {
+            lifetime.keyExists     = true;
+            lifetime.remainingTime = std::chrono::milliseconds{*rawRemaining};
+        }
+        return lifetime;
+    }
+
+    std::optional<RedisScanPage> RedisConnection::scanPage(const std::string_view cursor, const std::string_view pattern, const std::optional<std::size_t> count)
+    {
+        if (cursor.empty())
+        {
+            m_lastError = "SCAN 的游标为空：首轮传 \"0\"，之后传上一页返回的 nextCursor";
+            return std::nullopt;
+        }
+
+        // COUNT 的文本要先落成局部量再交给视图：arguments 里存的是「指针 + 长度」，
+        // 临时量在表达式结束时就没了，而命令要到 executeCommand 里才发出去
+        const std::string countText = count.has_value() ? std::to_string(*count) : std::string{};
+
+        std::vector<std::string_view> arguments{std::string_view("SCAN"), cursor};
+        if (!pattern.empty())
+        {
+            arguments.push_back(std::string_view("MATCH"));
+            arguments.push_back(pattern);
+        }
+        if (count.has_value())
+        {
+            arguments.push_back(std::string_view("COUNT"));
+            arguments.push_back(std::string_view(countText));
+        }
+
+        const std::unique_ptr<DatabaseResult> reply = executeCommand(arguments);
+        if (reply == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        // 契约是 [下一页游标, [这一页的键]]：形状不对就如实报，不拿「少一列」当成「这一页没有键」——
+        // 后者会让调用方以为已经扫完，从此不再续扫
+        if (reply->columnCount() < 2)
+        {
+            m_lastError = "读 SCAN 的回复失败：服务端没按「游标 + 键列表」两元素回答";
+            return std::nullopt;
+        }
+
+        const DatabaseValue cursorValue = reply->getValue(std::size_t{0});
+        const auto         *nextCursor  = std::get_if<std::string>(&cursorValue);
+        if (nextCursor == nullptr)
+        {
+            m_lastError = "读 SCAN 的回复失败：游标不是按文本给出的，原样透传是这一格的契约";
+            return std::nullopt;
+        }
+
+        const DatabaseValue keysValue = reply->getValue(std::size_t{1});
+        const auto         *keys      = std::get_if<std::vector<std::string>>(&keysValue);
+        if (keys == nullptr)
+        {
+            m_lastError = "读 SCAN 的回复失败：这一页的键不是按列表给出的";
+            return std::nullopt;
+        }
+
+        RedisScanPage page;
+        page.nextCursor = *nextCursor;
+        page.keys       = *keys;
+        return page;
+    }
+
     void RedisConnection::captureError(const std::string_view description)
     {
         // errstr 是 redisContext 结构体内的固定数组，随上下文一起释放：
@@ -1229,6 +1326,20 @@ namespace AsynGyanis::Database
     {
         m_lastError = kMissingDriverError;
         return false;
+    }
+
+    std::optional<RedisKeyLifetime> RedisConnection::keyLifetime(const std::string_view)
+    {
+        // 桩里连命令都发不出去：如实报「没问到」而不是「键不存在」——后者会把一个构建配置问题
+        // 说成一个业务答案
+        m_lastError = kMissingDriverError;
+        return std::nullopt;
+    }
+
+    std::optional<RedisScanPage> RedisConnection::scanPage(const std::string_view, const std::string_view, const std::optional<std::size_t>)
+    {
+        m_lastError = kMissingDriverError;
+        return std::nullopt;
     }
 
     void RedisConnection::applyQueryTimeoutNow() noexcept

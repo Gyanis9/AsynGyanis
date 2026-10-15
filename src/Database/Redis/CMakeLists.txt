@@ -5,4 +5,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseSources
         ${CMAKE_CURRENT_LIST_DIR}/RedisResult.h
         ${CMAKE_CURRENT_LIST_DIR}/RedisResult.cpp
         ${CMAKE_CURRENT_LIST_DIR}/RedisReplyText.h
+        ${CMAKE_CURRENT_LIST_DIR}/RedisSentinel.h
+        ${CMAKE_CURRENT_LIST_DIR}/RedisSentinel.cpp
 )

@@ -28,6 +28,7 @@
 // - RESP3 那一族：HGETALL 从交替数组换成一份哈希、SMEMBERS 按成员逐列而 SMISMEMBER 服务端答的是整数、
 //   INFO 的 verbatim 交出正文、建连时的 HELLO 不进会话记账（中途发 HELLO 照旧断开）、
 //   订阅与读推送在发送前就被拒（RESP3 的确认是推送，本模型收不到——实测会等满 30 秒）
+// - 键存活状态与扫描页的三档/续扫往返：-2 与 -1 各自成形（毫秒精度走 PTTL），SCAN 按游标续到 0 且 MATCH 生效
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
@@ -44,6 +45,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -1283,6 +1285,101 @@ namespace AsynGyanis::Database
         ASSERT_NE(connection.executeCommand({"HELLO", "2"}), nullptr) << connection.lastError();
         EXPECT_FALSE(connection.resetSessionState()) << "中途改协议却没被记账，这条连接会带着错位回复流回池";
         EXPECT_FALSE(connection.isConnected()) << "中途改协议的那条连接没有被断开";
+    }
+
+    /**
+     * @brief 钉住键存活状态的三档：不存在、存在但永不过期、存在且剩余多少
+     * @details 服务端在这里回的是一个整数的三种含义（`-2` / `-1` / 剩余毫秒），而 `RedisKeyLifetime`
+     *          把它们交回三个不同形状。「两个负数折成同一个没有值」会把「这个键没人写过」与
+     *          「这条连接坏了」读成同一件事，而后者才是这两种情况下真正不同的东西。
+     * @note 证伪：把 -1 那一档也写成「键不存在」，第二条断言红；把 -2 与问不成都回空值，第一条红。
+     */
+    TEST_F(RedisIntegrationTest, KeyLifetimeTellsTheThreeServerAnswersApart)
+    {
+        const std::string missingKey  = makeKey("lifetime-missing");
+        const std::string foreverKey  = makeKey("lifetime-forever");
+        const std::string expiringKey = makeKey("lifetime-expiring");
+        ASSERT_NE(m_connection->executeCommand({"SET", foreverKey, "v"}), nullptr) << m_connection->lastError();
+        // PSETEX 给 100 秒：判据只用「还剩一大半」这一条，机器慢与调度抖动都动不了它
+        ASSERT_NE(m_connection->executeCommand({"PSETEX", expiringKey, "100000", "v"}), nullptr) << m_connection->lastError();
+
+        const std::optional<RedisKeyLifetime> absent = m_connection->keyLifetime(missingKey);
+        ASSERT_TRUE(absent.has_value()) << "不存在的键是一次正常的回答，不该与「问不成」共用一个空值：" << m_connection->lastError();
+        EXPECT_FALSE(absent->keyExists);
+        EXPECT_FALSE(absent->hasExpiry());
+
+        const std::optional<RedisKeyLifetime> noExpiry = m_connection->keyLifetime(foreverKey);
+        ASSERT_TRUE(noExpiry.has_value()) << m_connection->lastError();
+        EXPECT_TRUE(noExpiry->keyExists);
+        EXPECT_FALSE(noExpiry->remainingTime.has_value()) << "永不过期被读成了剩余 0，或键不存在被读成了永不过期";
+        EXPECT_FALSE(noExpiry->hasExpiry());
+
+        const std::optional<RedisKeyLifetime> expiring = m_connection->keyLifetime(expiringKey);
+        ASSERT_TRUE(expiring.has_value()) << m_connection->lastError();
+        EXPECT_TRUE(expiring->keyExists);
+        EXPECT_TRUE(expiring->hasExpiry());
+        ASSERT_TRUE(expiring->remainingTime.has_value());
+        // PTTL 在这里给的是**毫秒**：若实现图省事走了 TTL（秒），这一格会读到 ~100 毫秒而红
+        EXPECT_GT(*expiring->remainingTime, std::chrono::milliseconds(50000));
+        EXPECT_LE(*expiring->remainingTime, std::chrono::milliseconds(100000));
+
+        // 问不成才是空值：另起一条从未连上的连接问一次，交回的必须是「没问到 + 原因」。
+        // 刻意不动夹具那条连接——它的清理靠 TearDown，而在用例里断开会让那一步整个跳过，
+        // 键就留在服务端的键空间里了（套件的兜底检查会把这件事报出来，本轮就是这么被抓到的）
+        RedisConnection unanswered(m_configuration);
+        EXPECT_FALSE(unanswered.isConnected());
+        EXPECT_FALSE(unanswered.keyLifetime(foreverKey).has_value()) << "链路没建立却交回了一个键状态，调用方会把坏连接当成答案用";
+        EXPECT_FALSE(unanswered.lastError().empty()) << "空值没留原因，就分不出「没问到」与「键不存在」";
+    }
+
+    /**
+     * @brief 钉住 SCAN 的游标续扫、MATCH 筛键，以及「一次调用只走一页」这个契约
+     * @details 三格各自会坏：把游标当整数解析会截断服务端的迭代状态；一次调用扫到完等于替调用方
+     *          决定一次无界遍历要不要设上限；而「这一页给了几个键」不受 COUNT 约束（它只是提示），
+     *          所以判据只能落在「回到 0 之前把该看到的都看到」上，不钉页数也不钉顺序。
+     * @note 证伪：把 MATCH 透传丢掉，「外来键不该出现」那条红；把游标写死成空串（等于不给下一页），
+     *       续扫那条路就会在「该看到的键没看到」上出声。三态模型本身的判据在
+     *       `TestRedisConnection.cpp` 那组离线用例里（不依赖服务端怎么分桶）
+     */
+    TEST_F(RedisIntegrationTest, ScanPageWalksTheCursorAndHonoursMatch)
+    {
+        const std::string firstKey  = makeKey("scan-a");
+        const std::string secondKey = makeKey("scan-b");
+        const std::string thirdKey  = makeKey("scan-c");
+        const std::string foreign   = makeKey("scan-foreign-other");
+        for (const std::string &key: {firstKey, secondKey, thirdKey, foreign})
+        {
+            ASSERT_NE(m_connection->executeCommand({"SET", key, "v"}), nullptr) << m_connection->lastError();
+        }
+
+        // 只筛本用例这一族键（foreign 不在模式里），COUNT 给 1 逼出多页续扫
+        const std::string        pattern = makeKey("scan-") + "[abc]";
+        std::vector<std::string> seen;
+        std::string              cursor   = "0";
+        bool                     finished = false;
+        std::size_t              pages    = 0;
+        do
+        {
+            const std::optional<RedisScanPage> page = m_connection->scanPage(cursor, pattern, std::optional<std::size_t>{1});
+            ASSERT_TRUE(page.has_value()) << m_connection->lastError();
+            seen.insert(seen.end(), page->keys.begin(), page->keys.end());
+            cursor   = page->nextCursor;
+            finished = page->isFinished();
+            ++pages;
+            // 上限是防「游标永不归 0」把用例跑成死循环：真撞到了下面那条 EXPECT 会出声
+        } while (!finished && pages < 100);
+
+        EXPECT_TRUE(finished) << "续到 " << pages << " 页也没回到游标 0，这一轮的终止条件没被走到";
+        for (const std::string &expected: {firstKey, secondKey, thirdKey})
+        {
+            EXPECT_NE(std::find(seen.begin(), seen.end(), expected), seen.end()) << "该看到的键没看到：" << expected;
+        }
+        EXPECT_EQ(std::find(seen.begin(), seen.end(), foreign), seen.end()) << "MATCH 没生效，筛掉了不该留下的键";
+
+        // 空游标是调用方的错，当场拒而不发命令
+        const std::optional<RedisScanPage> refused = m_connection->scanPage(std::string_view{}, std::string_view{}, std::nullopt);
+        EXPECT_FALSE(refused.has_value());
+        EXPECT_NE(m_connection->lastError().find("游标"), std::string::npos) << m_connection->lastError();
     }
 
 } // namespace AsynGyanis::Database
