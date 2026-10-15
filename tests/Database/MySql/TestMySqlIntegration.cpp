@@ -3424,4 +3424,73 @@ namespace AsynGyanis::Database
         EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一（MySQL 侧只统计真变了的行，加一必须由语句本身完成）";
     }
 
+
+    /**
+     * @brief 真机上钉住「应用 → 幂等 → 回退 → 再应用」这一整圈（MySQL 侧）
+     * @details 与 SQLite
+     * 那一组同一份判据，换到真服务端：应用把表建出来并记账；第二次调用一条都不应用；
+     *          回退把表撤掉并把记账一起删；再应用把结构建回来。MySQL 的 DDL
+     * 隐式提交，因此
+
+     * *          「一条一笔事务」在这里测不出回滚语义（那一格由 SQLite 侧钉），本用例只覆盖成功的往返。
+     * @note
+     * 迁移表由本用例自己清理：它是库级共享对象，留着会跟着进下一个用例的现场
+     */
+    TEST_F(MySqlIntegrationTest, VersionedMigrationAppliesRollsBackAndReapplies)
+    {
+        // 清理上一次跑留下的迁移表（断在半路时它可能还在），这一次从干净状态开始
+        {
+            MySqlConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kMigratedTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        }
+        // 迁移会自己建这张表，因此只登记表名给 TearDown（不要先 prepareTable()，那样测的就不是迁移了）
+        m_preparedTableName = std::string(kMigratedTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        const std::shared_ptr<AsynGyanis::Database::SqlDialect> dialect = Queryable::SchemaMigrator::dialectOf(*pool);
+        ASSERT_NE(dialect, nullptr);
+
+        const std::vector<Queryable::SchemaMigrator::MigrationStep> steps{
+                Queryable::SchemaMigrator::MigrationStep{
+                        .name           = "0001-create-migrated",
+                        .upStatements   = {Queryable::SchemaMigrator::createTableStatement<IntegrationMigratedRow>(*dialect)},
+                        .downStatements = {Queryable::SchemaMigrator::dropTableStatement<IntegrationMigratedRow>(*dialect)},
+                },
+        };
+
+        std::size_t applied = 0;
+        std::string error;
+        ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, &applied, &error)) << error;
+        EXPECT_EQ(applied, 1U);
+        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "迁移没把表建出来";
+
+        // 幂等
+        std::size_t appliedAgain = 0;
+        ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, &appliedAgain, &error)) << error;
+        EXPECT_EQ(appliedAgain, 0U) << "重复应用同一迁移";
+
+        // 回退：表消失、记账清空
+        std::size_t rolledBack = 0;
+        ASSERT_TRUE(Queryable::SchemaMigrator::rollbackLast(*pool, steps, 1, &rolledBack, &error)) << error;
+        EXPECT_EQ(rolledBack, 1U);
+        EXPECT_FALSE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "回退没把表撤掉";
+        std::vector<std::string> recorded;
+        ASSERT_TRUE(Queryable::SchemaMigrator::appliedMigrations(*pool, &recorded, &error)) << error;
+        EXPECT_TRUE(recorded.empty()) << "记账没跟着回退一起删";
+
+        // 再应用：往返闭合
+        std::size_t reapplied = 0;
+        ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, &reapplied, &error)) << error;
+        EXPECT_EQ(reapplied, 1U);
+        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "回退之后重新应用没把结构建回来";
+
+        // 收尾：迁移表是库级共享对象，本用例自己清掉（表由 TearDown 管）
+        MySqlConnection cleanup(m_configuration);
+        ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+    }
+
 } // namespace AsynGyanis::Database

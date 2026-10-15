@@ -23,6 +23,7 @@
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
+#include "Database/Pool/Transaction.h"
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
@@ -30,10 +31,12 @@
 #include <cstddef>
 #include <exception>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -71,6 +74,55 @@ namespace AsynGyanis::Database::Queryable
 
     } // namespace Detail
 
+} // namespace AsynGyanis::Database::Queryable
+
+namespace AsynGyanis::Database::Queryable
+{
+    /**
+     * @brief 迁移记录表的形状：表名、列名与那一行
+     *
+     * @details 这三样必须排在 SchemaMigrator **之前**：类内的模板方法会实例化这张表的登记
+     *          （`createTable<MigrationLedgerRow>()`），而显式特化必须早于任何隐式实例化——
+     *          排在类后面会直接撞 C2908「显式特化在实例化之后」。因此它单独成一个命名空间，
+     *          表名与列名也只有这一处真源（建表、查询、写入三处都取它）。
+     */
+    namespace MigrationLedger
+    {
+        inline constexpr std::string_view kTableName  = "asyn_schema_migrations"; ///< 迁移记录表名
+        inline constexpr std::string_view kNameColumn = "migration_name";         ///< 记录列：一条迁移一行，值就是 MigrationStep::name
+
+        /// 迁移记录表的一行（迁移名即主键）
+        struct Row
+        {
+            std::string migrationName; ///< 迁移名
+        };
+    } // namespace MigrationLedger
+} // namespace AsynGyanis::Database::Queryable
+
+/**
+ * @brief 迁移记录表的结构登记
+ * @details 迁移表由 SchemaMigrator 自己建，但它与其他表走**同一份登记**：
+ *          `createTableStatement<MigrationLedgerRow>()` 生成它的 DDL，
+ *          `addMissingColumns<MigrationLedgerRow>()` 也认得它（干净时增补 0 列）。
+ *          手写一份 DDL 就做不到这一点——那份 DDL 与登记的形状会各走各的。
+ * @note 它排在这里而不是文件末尾：类内的 `createTable<MigrationLedgerRow>()` 会隐式实例化
+ *       这张登记，显式特化必须早于那次实例化
+ */
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AsynGyanis::Database::Queryable::MigrationLedger::Row>
+{
+    static constexpr std::string_view kTableName = AsynGyanis::Database::Queryable::MigrationLedger::kTableName;
+
+    static constexpr auto kColumns = std::tuple{
+            AsynGyanis::Database::Queryable::Column(&AsynGyanis::Database::Queryable::MigrationLedger::Row::migrationName,
+                                                    AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn),
+    };
+
+    static constexpr std::string_view kPrimaryKey = AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn;
+};
+
+namespace AsynGyanis::Database::Queryable
+{
     /**
      * @brief 建表迁移工具
      *
@@ -498,6 +550,272 @@ namespace AsynGyanis::Database::Queryable
             return !isAborted;
         }
 
+        /**
+         * @brief 一条命名迁移：升序应用、可回退，应用记录落在迁移表里
+         *
+         * @details 与 `setQueryTimeout` 那一族的「时机」不同，迁移是**部署动作**：它按名字记录
+         *          「这条已经跑过了」，因此重复执行同一份列表是幂等的，而回退要知道撤的是哪一条。
+         *          up/down 都是 `SqlStatement` 列表：用 `createTableStatement<T>()` 那组生成器
+         *          现拼、或者直接写原生 SQL 都行（`SqlStatement` 允许为空文本，那时这一步只是
+         *          一条版本标记）。
+         */
+        struct MigrationStep
+        {
+            std::string               name;           ///< 唯一名（迁移表的主键）；重复或为空都会在应用前被拒
+            std::vector<SqlStatement> upStatements;   ///< 应用时按序执行
+            std::vector<SqlStatement> downStatements; ///< 回退时按序执行
+        };
+
+        /// 迁移记录表名（取自 MigrationLedger，唯一真源在那里）
+        static constexpr std::string_view kMigrationLedgerTableName = MigrationLedger::kTableName;
+        /// 迁移记录表的列名（同上）
+        static constexpr std::string_view kMigrationNameColumn = MigrationLedger::kNameColumn;
+
+        /// 迁移记录表的一行：由 MigrationLedger 定义，登记也排在那边（见那一处的说明）
+        using MigrationLedgerRow = MigrationLedger::Row;
+
+        /**
+         * @brief 取本池对应的方言（给「要在池之外先拼好迁移步骤」的调用方用）
+         * @param pool 提供连接与方言登记表的连接池
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return std::shared_ptr<SqlDialect> 方言；登记表里没有该数据库类型时为空
+         */
+        [[nodiscard]] static std::shared_ptr<SqlDialect> dialectOf(ConnectionPool &pool, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            return resolveDialect(pool, errorText);
+        }
+
+        /**
+         * @brief 建迁移记录表（不存在才建）
+         * @details 走的是与其他表同一条路：`createTable<MigrationLedgerRow>(pool, true)`。
+         *          应用与回退都会先确保它存在，因此调用方通常不必单独调它；它单独开着一个口，
+         *          是为了让「只想看看迁移状态」的调用方不必先跑一次迁移
+         * @param pool 提供连接的连接池
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 表已存在或刚建好
+         * @return false 取连接失败、方言缺登记或 DDL 被拒，原因见 errorText()
+         */
+        [[nodiscard]] static bool ensureMigrationLedger(ConnectionPool &pool, std::string *errorText = nullptr)
+        {
+            return createTable<MigrationLedgerRow>(pool, true, errorText);
+        }
+
+        /**
+         * @brief 读已应用的迁移名
+         * @details 查询走方言的标识符引用（表名与列名都取本类的常量），因此三种引擎同一份文本生成。
+         *          **顺序未定义**：迁移表只记名字，它是一份集合；要按顺序处理请以调用方的步骤表为准
+         * @param pool 提供连接的连接池
+         * @param appliedNames 出参：已应用的名字（每次调用先清空）
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 读取成功（列表可能为空）
+         * @return false 迁移表读不出来（未建、方言缺登记、查询失败），原因见 errorText()
+         */
+        [[nodiscard]] static bool appliedMigrations(ConnectionPool &pool, std::vector<std::string> *appliedNames, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (appliedNames != nullptr)
+            {
+                appliedNames->clear();
+            }
+
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            const PooledConnection connection = pool.acquire();
+            if (!connection)
+            {
+                writeError(errorText, "SchemaMigrator: 从连接池获取连接失败（池已达上限、连接创建失败或等待名额被拒）");
+                return false;
+            }
+
+            const std::string listingSql = "SELECT " + dialect->quoteIdentifier(kMigrationNameColumn) + " FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName);
+            const std::unique_ptr<DatabaseResult> listing = connection->execute(std::string_view{listingSql});
+            if (listing == nullptr)
+            {
+                writeError(errorText, "SchemaMigrator: 读迁移记录失败（表可能还没建，先调 ensureMigrationLedger()）：" + connection->lastError());
+                return false;
+            }
+
+            while (listing->next())
+            {
+                const DatabaseValue nameValue = listing->getValue(std::size_t{0});
+                const auto         *nameText  = std::get_if<std::string>(&nameValue);
+                if (nameText == nullptr)
+                {
+                    writeError(errorText,
+                               "SchemaMigrator: 迁移记录的名字列读不出文本（实际类型 " + std::string(databaseValueTypeName(nameValue)) + "），请检查这张表是不是被别的程序改过");
+                    return false;
+                }
+                if (appliedNames != nullptr)
+                {
+                    appliedNames->push_back(*nameText);
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 按列表顺序应用尚未应用的迁移（重复调用幂等）
+         *
+         * @details 规则四条，都是「部署动作」这一格必须钉住的：①先确保迁移表存在；②已应用的名字
+         *          必须是本次列表的**前缀**——前缀之外还有记录（顺序被改过、列表漏了一条、或者
+         *          换了另一份列表）时当场拒绝，因为按错误的顺序改结构比不改更糟；③逐条应用，
+         *          **一条一笔事务**：结构改动与记账在同一笔里提交，崩在两者之间不会留下
+         *          「结构改了却没记账」（MySQL 侧有例外，见下）；④一条失败即停在那里，已提交的
+         *          前面的步骤保持已应用状态，出参给出已应用的条数。
+         *
+         * @warning **MySQL 的 DDL 会隐式提交**，因此那一侧的「一条一笔事务」是尽力而为：UP 语句
+         *          已经执行到一半时失败，回滚撤不回结构（记账那一条也随隐式提交落下或不落）。
+         *          SQLite 与 PostgreSQL 的 DDL 可回滚，那一侧这条保证是完整的。要在 MySQL 上把
+         *          风险降到最低，就把一条迁移的 UP 拆得尽量小（一条 DDL 一条迁移），并用
+         *          `downStatements` 写清怎么手工退。
+         *
+         * @param pool 提供连接的连接池
+         * @param steps 迁移列表，按应应用的顺序给出；名字必须两两不同
+         * @param appliedCount 可选出参：本次真正应用了几条（幂等的那次是 0）
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 列表中的每一条现在都已应用
+         * @return false 列表不合法（空名、重名）、与已应用的不一致（不是前缀）、或某一条执行失败
+         * @throws Base::LogicException 列表里有空名或重名（调用方把列表写错了，不是运行期故障）
+         */
+        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount = nullptr, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (appliedCount != nullptr)
+            {
+                *appliedCount = 0;
+            }
+
+            requireDistinctStepNames(steps);
+            if (!ensureMigrationLedger(pool, errorText))
+            {
+                return false;
+            }
+
+            std::vector<std::string> appliedNames;
+            if (!appliedMigrations(pool, &appliedNames, errorText))
+            {
+                return false;
+            }
+
+            if (!isAppliedPrefixOfSteps(appliedNames, steps, errorText))
+            {
+                return false;
+            }
+
+            // 方言在开事务之前取：resolveDialect() 自己要借一条连接，而池上限为 1 的部署里
+            // 事务正握着那条连接——取在事务里就是死等（实测等满 5 秒的借用超时）
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            const std::unordered_set<std::string> appliedSet(appliedNames.begin(), appliedNames.end());
+            for (const MigrationStep &step: steps)
+            {
+                if (appliedSet.contains(step.name))
+                {
+                    continue;
+                }
+
+                if (!runStep(dialect, pool, step, /*isRollingBack*/ false, errorText))
+                {
+                    return false;
+                }
+                if (appliedCount != nullptr)
+                {
+                    ++(*appliedCount);
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 回退最后应用的若干条迁移（按列表顺序的**逆序**撤）
+         *
+         * @details 「最后应用的」由列表顺序决定：已应用的必须是列表前缀（同 migrate()），
+         *          因此最后一条就是前缀的最后一项。逐条执行 `downStatements` 并删掉它的记账，
+         *          同样是**一条一笔事务**；一条失败即停，已退掉的保持已退状态，出参给出退了几条。
+         *          退回的迁移还在列表里，因此回退之后再 `migrate()` 会重新应用它们。
+         *
+         * @warning 与 migrate() 同一条 MySQL 例外：那一侧撤结构的那句 DDL 隐式提交，
+         *          「撤结构 + 删记账」不是一笔原子事务。SQLite / PostgreSQL 侧完整。
+         *
+         * @param pool 提供连接的连接池
+         * @param steps 与 migrate() 同一份列表
+         * @param stepCount 要回退几条；必须 ≥ 1 且不超过已应用的条数
+         * @param rolledBackCount 可选出参：实际退掉了几条
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @return true 指定的条数都已回退
+         * @return false 参数越界、与已应用的不一致、或某一条回退失败
+         * @throws Base::LogicException 列表里有空名或重名
+         */
+        [[nodiscard]] static bool rollbackLast(ConnectionPool &pool, const std::span<const MigrationStep> steps, const std::size_t stepCount,
+                                               std::size_t *rolledBackCount = nullptr, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (rolledBackCount != nullptr)
+            {
+                *rolledBackCount = 0;
+            }
+
+            requireDistinctStepNames(steps);
+            if (stepCount == 0)
+            {
+                writeError(errorText, "SchemaMigrator: 回退条数为 0——本方法只做「退最后 N 条」，什么都不退请直接不调用它");
+                return false;
+            }
+
+            if (!ensureMigrationLedger(pool, errorText))
+            {
+                return false;
+            }
+
+            std::vector<std::string> appliedNames;
+            if (!appliedMigrations(pool, &appliedNames, errorText))
+            {
+                return false;
+            }
+
+            if (!isAppliedPrefixOfSteps(appliedNames, steps, errorText))
+            {
+                return false;
+            }
+
+            if (stepCount > appliedNames.size())
+            {
+                writeError(errorText, "SchemaMigrator: 要回退 " + std::to_string(stepCount) + " 条，而当前只应用了 " + std::to_string(appliedNames.size()) + " 条");
+                return false;
+            }
+
+            // 方言在开事务之前取（理由同 migrate()：池上限为 1 时在事务里再取就是死等）
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            // 逆序撤：先退最后应用的那一条，退回的结构因此按相反顺序合上
+            for (std::size_t index = 0; index < stepCount; ++index)
+            {
+                const std::size_t position = appliedNames.size() - 1 - index;
+                if (!runStep(dialect, pool, steps[position], /*isRollingBack*/ true, errorText))
+                {
+                    return false;
+                }
+                if (rolledBackCount != nullptr)
+                {
+                    ++(*rolledBackCount);
+                }
+            }
+            return true;
+        }
+
     private:
         /**
          * @brief 把标识符折成小写用于比对（只折 ASCII 大写）
@@ -706,6 +1024,145 @@ namespace AsynGyanis::Database::Queryable
          * @return true 语句被引擎接受
          * @return false 取连接失败或语句执行失败，原因见 errorText
          */
+        /**
+         * @brief 执行一条迁移（应用或回退）并同步记账
+         * @details 结构改动与记账在同一笔事务里：两者中间崩溃会留下「改了结构却查不到记录」（下次会重跑）
+
+         * *          或「记了账却没改」（下次跳过）这类最难排查的状态。MySQL 的 DDL 隐式提交让这条保证
+         *          打了折扣，那一侧的例外写在 migrate() 的 @warning 里
+
+         * * @param dialect 目标引擎的方言：**由调用方先取好传进来**——本方法持有事务连接，而池上限为 1 的
+         *        部署里 `resolveDialect()`
+         * 自己也要借一条连接，在事务里再取就是死等（实测等满 5 秒借用超时）
+         * @param pool 提供连接的连接池
+         * @param step 待执行的那一条
+         * @param
+         * isRollingBack true 执行 downStatements 并删记账；false 执行 upStatements 并写记账
+         * @param errorText 失败原因出参
+         * @return true 该条已提交
+
+         */
+        [[nodiscard]] static bool runStep(const std::shared_ptr<SqlDialect> &dialect, ConnectionPool &pool, const MigrationStep &step, const bool isRollingBack,
+                                          std::string *errorText)
+        {
+            Transaction transaction(pool);
+            if (!transaction.isActive())
+            {
+                writeError(errorText, "SchemaMigrator: 开启迁移事务失败（取连接失败或引擎拒绝了开启事务语句）：" + transaction.lastError());
+                return false;
+            }
+
+            const std::span<const SqlStatement> statements = isRollingBack ? std::span<const SqlStatement>(step.downStatements) : std::span<const SqlStatement>(step.upStatements);
+            const std::string_view              phase      = isRollingBack ? std::string_view{"回退"} : std::string_view{"应用"};
+            for (std::size_t index = 0; index < statements.size(); ++index)
+            {
+                const SqlStatement &statement = statements[index];
+                if (statement.sql.empty())
+                {
+                    continue; // 空语句＝这一步只是版本标记，没有结构改动
+                }
+                if (transaction.connection().execute(std::string_view{statement.sql}, statement.parameters) == nullptr)
+                {
+                    writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的第 " + std::to_string(index + 1) + " 条语句失败（本次已回滚）：" +
+                                                  transaction.connection().lastError());
+                    return false;
+                }
+            }
+
+            std::string ledgerSql;
+            if (isRollingBack)
+            {
+                ledgerSql = "DELETE FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " WHERE " + dialect->quoteIdentifier(kMigrationNameColumn) + " = ?";
+            } else
+            {
+                ledgerSql = "INSERT INTO " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " (" + dialect->quoteIdentifier(kMigrationNameColumn) + ") VALUES (?)";
+            }
+
+            const std::vector<DatabaseValue> ledgerParameters{DatabaseValue(step.name)};
+            if (transaction.connection().execute(std::string_view{ledgerSql}, std::span<const DatabaseValue>(ledgerParameters)) == nullptr)
+            {
+                writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的记账失败（本次已回滚）：" + transaction.connection().lastError());
+                return false;
+            }
+
+            if (!transaction.commit())
+            {
+                writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的提交失败：" + transaction.lastError());
+                return false;
+            }
+            return true;
+        }
+
+        /**
+         * @brief 列表里的名字必须两两不同且非空
+         * @details
+         * 重名会让记账退化成一条记录对应两条迁移，回退时撤错结构；空名则让记账的主键
+
+         * *
+         * 变成一个谁都读不懂的值。两者都是调用方把列表写错了（编程错误），走 LogicException
+         * @param steps 迁移列表
+         *
+         * @throws Base::LogicException 出现空名或重名
+         */
+        static void requireDistinctStepNames(const std::span<const MigrationStep> steps)
+        {
+            std::unordered_set<std::string> seenNames;
+            for (const MigrationStep &step: steps)
+            {
+                if (step.name.empty())
+                {
+                    throw Base::LogicException("SchemaMigrator: 迁移列表里有空名字：迁移名是记账的主键，空名会让记录失去意义");
+                }
+                if (!seenNames.insert(step.name).second)
+                {
+                    throw Base::LogicException("SchemaMigrator: 迁移列表里有重名「" + step.name + "」：一条记账只能对应一条迁移，重名会让回退撤错结构");
+                }
+            }
+        }
+
+        /**
+         * @brief 已应用的迁移必须是本次列表的前缀
+         * @details
+         * 前缀之外还有记账（列表漏了一条、顺序被改过、或者换了另一份列表）时继续应用，
+
+         * *
+         * 就是拿一个与落库历史不一致的顺序去改结构；宁可当场拒掉，让人先把两边的列表对齐
+         * @param appliedNames
+         * 迁移表里的名字（顺序未定义，这里按集合语义用）
+
+         * *
+         * @param steps 本次的列表
+         * @param errorText 失败原因出参
+         * @return true 一致；false 已写入原因
+         */
+        [[nodiscard]] static bool isAppliedPrefixOfSteps(const std::vector<std::string> &appliedNames, const std::span<const MigrationStep> steps, std::string *errorText)
+        {
+            if (appliedNames.size() > steps.size())
+            {
+                writeError(errorText, "SchemaMigrator: 迁移表里有 " + std::to_string(appliedNames.size()) + " 条记录，而本次列表只有 " + std::to_string(steps.size()) +
+                                              " 条：已应用的必须是本次列表的前缀，两者不是同一份历史，请先把列表补回原样");
+                return false;
+            }
+
+            const std::unordered_set<std::string> appliedSet(appliedNames.begin(), appliedNames.end());
+            for (std::size_t index = 0; index < steps.size(); ++index)
+            {
+                const bool isApplied = appliedSet.contains(steps[index].name);
+                if (index < appliedNames.size() && !isApplied)
+                {
+                    writeError(errorText, "SchemaMigrator: 已应用的历史不是本次列表的前缀——列表第 " + std::to_string(index + 1) + " 条「" + steps[index].name +
+                                                  "」没有记账，而它前面那几条都记过；这说明列表漏了一条或顺序被改过，请先对齐再迁移");
+                    return false;
+                }
+                if (index >= appliedNames.size() && isApplied)
+                {
+                    writeError(errorText, "SchemaMigrator: 列表第 " + std::to_string(index + 1) + " 条「" + steps[index].name + "」还排在前缀之外，却已经记过账；请把列表补回原样");
+                    return false;
+                }
+            }
+            return true;
+        }
+
         [[nodiscard]] static bool executeStatement(ConnectionPool &pool, const SqlStatement &statement, std::string *errorText)
         {
             const PooledConnection connection = pool.acquire();
