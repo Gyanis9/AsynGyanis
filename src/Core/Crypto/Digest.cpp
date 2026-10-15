@@ -102,6 +102,52 @@ namespace AsynGyanis::Core::Digest
         return digest;
     }
 
+    std::string_view openSslName(const Algorithm algorithm)
+    {
+        switch (algorithm)
+        {
+            case Algorithm::Sha256:
+                return OSSL_DIGEST_NAME_SHA2_256;
+            case Algorithm::Sha384:
+                return OSSL_DIGEST_NAME_SHA2_384;
+            case Algorithm::Sha512:
+                return OSSL_DIGEST_NAME_SHA2_512;
+        }
+        // 走到这里说明上面漏了一条 case（新增枚举值时最容易漏的就是这里）：与其返回一个
+        // 「看着像 SHA-256」的名字让 KDF 悄悄换掉哈希，不如当场报出来
+        throw Base::Exception("Core::Digest: 请求了一个不认识的摘要算法的选择子，无法给出它在 OpenSSL 里的名字");
+    }
+
+    std::size_t byteLength(const Algorithm algorithm)
+    {
+        switch (algorithm)
+        {
+            case Algorithm::Sha256:
+                return kSha256Length;
+            case Algorithm::Sha384:
+                return kSha384Length;
+            case Algorithm::Sha512:
+                return kSha512Length;
+        }
+        // 同 openSslName：漏了 case 就报，不交回一个「看着像 32 字节」的长度——KDF 拿它定
+        // PRK 长度与输出上限，错一位就是派生出另一份密钥
+        throw Base::Exception("Core::Digest: 请求了一个不认识的摘要算法的选择子，无法给出它的摘要长度");
+    }
+
+    Sha384Value sha384(const std::string_view data)
+    {
+        Sha384Value digest{};
+        runDigest(data, EVP_sha384(), std::span<std::uint8_t>{digest}, "SHA-384");
+        return digest;
+    }
+
+    Sha512Value sha512(const std::string_view data)
+    {
+        Sha512Value digest{};
+        runDigest(data, EVP_sha512(), std::span<std::uint8_t>{digest}, "SHA-512");
+        return digest;
+    }
+
     Sha1Value hmacSha1(const std::string_view key, const std::string_view data)
     {
         Sha1Value mac{};

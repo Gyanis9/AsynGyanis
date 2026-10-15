@@ -86,4 +86,35 @@ namespace AsynGyanis::Core::Digest
             EXPECT_TRUE(isDigit || isLowerHex) << "出现了非小写十六进制字符：" << character;
         }
     }
+
+    /**
+     * @brief SHA-384 与 SHA-512 的公开向量（FIPS 180-4 示例里的那条 "abc"）
+     * @details 同一组输入另拿 Node 的 crypto 与 Python 的 hashlib 各算一遍，两边与本条逐字一致
+     */
+    TEST(DigestTest, MatchesThePublishedSha384AndSha512Vectors)
+    {
+        EXPECT_EQ(toHex(sha384("abc")), "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7");
+        EXPECT_EQ(toHex(sha512("abc")), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f");
+        EXPECT_EQ(sha384("abc").size(), kSha384Length);
+        EXPECT_EQ(sha512("abc").size(), kSha512Length);
+    }
+
+    /**
+     * @brief 算法选择子给出的名字与长度都对得上所选的哈希
+     * @details 这一段映射原先散在密钥套表里（各写一份 `"SHA2-256"`），拼错一处就是悄悄换了个哈希；
+     *          收成一处之后，这条用例钉的是「名字与长度不能各说各话」
+     */
+    TEST(DigestTest, AlgorithmSelectorMapsToNameAndLength)
+    {
+        EXPECT_EQ(openSslName(Algorithm::Sha256), "SHA2-256");
+        EXPECT_EQ(openSslName(Algorithm::Sha384), "SHA2-384");
+        EXPECT_EQ(openSslName(Algorithm::Sha512), "SHA2-512");
+        EXPECT_EQ(byteLength(Algorithm::Sha256), 32U);
+        EXPECT_EQ(byteLength(Algorithm::Sha384), 48U);
+        EXPECT_EQ(byteLength(Algorithm::Sha512), 64U);
+
+        // 名字给出去的必须是能真算出这个长度的那个算法：把两条口串起来验，单看一条会漏掉错位
+        EXPECT_EQ(sha384("").size(), byteLength(Algorithm::Sha384));
+        EXPECT_EQ(sha512("").size(), byteLength(Algorithm::Sha512));
+    }
 } // namespace AsynGyanis::Core::Digest

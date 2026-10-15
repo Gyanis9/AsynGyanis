@@ -21,6 +21,8 @@ add_executable(TestCore
         EventLoop/TestTimer.cpp
 
         Crypto/TestDigest.cpp
+        Crypto/TestRandom.cpp
+        Crypto/TestHkdf.cpp
 
         Metrics/TestProcessMetricsRegistry.cpp
 

@@ -1,6 +1,6 @@
 /**
  * @file Digest.h
- * @brief 摘要与消息认证码工具：SHA-1、SHA-256、HMAC-SHA-1、HMAC-SHA-256 与十六进制文本化
+ * @brief 摘要与消息认证码工具：SHA-1/256/384/512、HMAC-SHA-1/256、十六进制文本化，以及算法选择子到 OpenSSL 名字的映射
  * @author Gyanis
  * @date 2026-09-27
  * @version 1.0.0
@@ -38,8 +38,47 @@ namespace AsynGyanis::Core
         /// SHA-256 摘要长度，单位字节
         inline constexpr std::size_t kSha256Length = 32;
 
+        /// SHA-384 摘要长度，单位字节
+        inline constexpr std::size_t kSha384Length = 48;
+
+        /// SHA-512 摘要长度，单位字节
+        inline constexpr std::size_t kSha512Length = 64;
+
         using Sha1Value   = std::array<std::uint8_t, kSha1Length>;   ///< SHA-1 摘要
         using Sha256Value = std::array<std::uint8_t, kSha256Length>; ///< SHA-256 摘要
+        using Sha384Value = std::array<std::uint8_t, kSha384Length>; ///< SHA-384 摘要
+        using Sha512Value = std::array<std::uint8_t, kSha512Length>; ///< SHA-512 摘要
+
+        /**
+         * @brief 摘要算法的选择子
+         * @details 存在的理由是把「算法 → OpenSSL 的摘要名」这段映射收在一处：密钥套表与 KDF 这些
+         *          按套件挑哈希的地方原先各写一份字符串（`"SHA2-256"` 之类），拼错一处就是
+         *          悄悄换了个哈希，而这里换成枚举后编译器管得住。
+         */
+        enum class Algorithm
+        {
+            Sha256, ///< SHA-256（32 字节摘要，QUIC 的 AES-128-GCM 套件用它）
+            Sha384, ///< SHA-384（48 字节摘要，QUIC 的 AES-256-GCM 套件用它）
+            Sha512, ///< SHA-512（64 字节摘要）
+        };
+
+        /**
+         * @brief 取某个算法在 OpenSSL 里的摘要名
+         * @details 名字取 `OSSL_DIGEST_NAME_*` 那一族而不是硬写字符串：小版本之间改过写法，
+         *          用宏才跟着头文件走
+         * @param algorithm 目标算法
+         * @return std::string_view 静态长度的摘要名，调用方可直接拷进参数缓冲
+         */
+        [[nodiscard]] ASYN_CORE_API std::string_view openSslName(Algorithm algorithm);
+
+        /**
+         * @brief 取某个算法的摘要长度，单位字节
+         * @details KDF 一族靠它定两件事：HKDF 的 PRK 长度（RFC 5869 §2.2 就是哈希长度）与
+         *          输出上限（§2.3 的 255 × Hash.length）
+         * @param algorithm 目标算法
+         * @return std::size_t SHA-256 → 32、SHA-384 → 48、SHA-512 → 64
+         */
+        [[nodiscard]] ASYN_CORE_API std::size_t byteLength(Algorithm algorithm);
 
         /**
          * @brief 算 SHA-1 摘要
@@ -69,6 +108,22 @@ namespace AsynGyanis::Core
          * @throws Base::Exception 上下文创建失败或摘要接口未能算出完整结果
          */
         [[nodiscard]] ASYN_CORE_API Sha256Value sha256(std::string_view data);
+
+        /**
+         * @brief 算 SHA-384 摘要
+         * @param data 待摘要数据（允许含 NUL）
+         * @return Sha384Value 48 字节摘要
+         * @throws Base::Exception 上下文创建失败或摘要接口未能算出完整结果
+         */
+        [[nodiscard]] ASYN_CORE_API Sha384Value sha384(std::string_view data);
+
+        /**
+         * @brief 算 SHA-512 摘要
+         * @param data 待摘要数据（允许含 NUL）
+         * @return Sha512Value 64 字节摘要
+         * @throws Base::Exception 上下文创建失败或摘要接口未能算出完整结果
+         */
+        [[nodiscard]] ASYN_CORE_API Sha512Value sha512(std::string_view data);
 
         /**
          * @brief 算 HMAC-SHA-256
