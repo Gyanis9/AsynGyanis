@@ -3,6 +3,8 @@
 // - 标量回复：状态/整数/零值/空批量字符串/内嵌 '\0' 的批量字符串各按自己的类型交出
 // - 数组回复：一列一元素、越界与空数组、嵌套数组降级为文本、nil 子元素占位、error 回复
 // - RESP3 容器（SET 等）：成员按 elements 逐列交出、空容器与空数组同为空集
+// - RESP3 类型化回复：map 交出一份哈希并占一列（空 map 是「有一份空哈希」）、bool 与 double 按类型交出、
+//   数组里的 bool 元素同样按类型、map 里带类型的值按文本折进哈希、verbatim 交出剥掉子类型后的正文
 // - 游标与合成列名：单行只访问一次、reset 后重放、valueN 按名与按索引取值一致
 // 未编译 hiredis 时结果集退化成永远为空的对象，只有「无回复」一组用例仍可跑。
 
@@ -18,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -207,6 +210,54 @@ namespace AsynGyanis::Database
             if (const std::vector<std::string> *list = std::get_if<std::vector<std::string>>(&value); list != nullptr)
             {
                 return *list;
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 按列索引取哈希值（RESP3 的 map 走这一格）
+         * @param result 结果集
+         * @param index 列索引
+         * @return std::optional<std::unordered_map<std::string, std::string>> 该列的哈希；该列不是哈希备选时返回空值
+         */
+        [[nodiscard]] std::optional<std::unordered_map<std::string, std::string>> hashAt(const RedisResult &result, const std::size_t index)
+        {
+            const DatabaseValue value = result.getValue(index);
+            if (const auto *hash = std::get_if<std::unordered_map<std::string, std::string>>(&value); hash != nullptr)
+            {
+                return *hash;
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 按列索引取布尔值（RESP3 的 #t / #f 走这一格）
+         * @param result 结果集
+         * @param index 列索引
+         * @return std::optional<bool> 该列的布尔；该列不是布尔备选时返回空值
+         */
+        [[nodiscard]] std::optional<bool> boolAt(const RedisResult &result, const std::size_t index)
+        {
+            const DatabaseValue value = result.getValue(index);
+            if (const bool *flag = std::get_if<bool>(&value); flag != nullptr)
+            {
+                return *flag;
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 按列索引取浮点值（RESP3 的 ,<double> 走这一格）
+         * @param result 结果集
+         * @param index 列索引
+         * @return std::optional<double> 该列的浮点；该列不是浮点备选时返回空值
+         */
+        [[nodiscard]] std::optional<double> doubleAt(const RedisResult &result, const std::size_t index)
+        {
+            const DatabaseValue value = result.getValue(index);
+            if (const double *number = std::get_if<double>(&value); number != nullptr)
+            {
+                return *number;
             }
             return std::nullopt;
         }
@@ -436,6 +487,137 @@ namespace AsynGyanis::Database
         ASSERT_NE(emptyArray, nullptr);
         EXPECT_TRUE(emptyArray->isEmpty());
         EXPECT_EQ(emptyArray->columnCount(), 0u);
+    }
+
+    // ------------------------------------------------------------------------
+    // RESP3 的类型化回复：map / bool / double / verbatim
+    // ------------------------------------------------------------------------
+
+    /**
+     * @brief 钉住 RESP3 的 map 交出一份哈希、占**一列**，而不是 2N 列让调用方自己配对
+     * @details 这正是提示词点名的「容器被有损折成列表」那一格：服务端在 RESP3 下把 `HGETALL`、
+     *          `CONFIG GET` 回成 map，配对关系本来就在协议里，按交替下标交回去等于把它拆散了再
+     *          让每个人自己重拼一遍（拼错一位就静默拿到别人的值）。
+     *          判据两半：列数是 1；哈希里逐对可见。
+     * @note 证伪：把 map 的类型分支删掉（退回按 elements 逐列），`columnCount()==1` 与哈希那两条当场红。
+     */
+    TEST(RedisResult, MapReplyBecomesASingleHashColumn)
+    {
+        const std::unique_ptr<RedisResult> result = makeResultFromResp("%2\r\n$5\r\nalpha\r\n$1\r\n1\r\n$4\r\nbeta\r\n$3\r\n2.5\r\n");
+        ASSERT_NE(result, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
+
+        EXPECT_EQ(result->columnCount(), 1u) << "map 被拆成了交替的两列，配对关系又得调用方自己猜";
+        const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
+        ASSERT_TRUE(entries.has_value()) << "map 没有按哈希备选交出";
+        EXPECT_EQ(entries->size(), 2u);
+        EXPECT_EQ(entries->at("alpha"), "1");
+        EXPECT_EQ(entries->at("beta"), "2.5");
+        EXPECT_FALSE(result->isEmpty());
+    }
+
+    /**
+     * @brief 钉住空 map 是「有一份空哈希」，与空数组的「一行都没有」分得开
+     * @details `%0` 与 `*0` 在服务端说的是两件事实：前者是「这个集合里确实没有配对项」，
+     *          后者是「没有成员」。两者都折成空集就会把「查了、答案是空」读成「什么都没查」，
+     *          调用方分不出键不存在与键存在但为空。
+     */
+    TEST(RedisResult, EmptyMapReadsAsAnEmptyHashRatherThanNoReply)
+    {
+        const std::unique_ptr<RedisResult> result = makeResultFromResp("%0\r\n");
+        ASSERT_NE(result, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
+
+        EXPECT_EQ(result->columnCount(), 1u);
+        EXPECT_FALSE(result->isEmpty()) << "空哈希被读成了「没有回复」";
+        const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
+        ASSERT_TRUE(entries.has_value());
+        EXPECT_TRUE(entries->empty());
+    }
+
+    /**
+     * @brief 钉住 map 里带类型的值按文本折进哈希，而**配对关系仍在**
+     * @details 哈希备选只接受字符串：值一侧的整数（`:7`）与双精度（`,1`）按十进制文本保留。
+     *          这一格是「有损」的边界，如实钉住现状而不是让它看起来无损——层级与类型不保留，
+     *          但键与值的归属一定是对的（`CONFIG GET` 那一族实际就用在这个形状上）。
+     */
+    TEST(RedisResult, MapValuesThatCarryTheirOwnTypeAreKeptAsText)
+    {
+        // 一份 map、两对：值一侧分别是整数与一个集合（`:7` 与 `~2 …`）
+        const std::unique_ptr<RedisResult> result = makeResultFromResp("%2\r\n$5\r\ncount\r\n:7\r\n$7\r\nmembers\r\n~2\r\n$1\r\na\r\n$1\r\nb\r\n");
+        ASSERT_NE(result, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
+
+        const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
+        ASSERT_TRUE(entries.has_value());
+        EXPECT_EQ(entries->size(), 2u) << "配对关系错位：多出一项或少了一项";
+        EXPECT_EQ(entries->at("count"), "7") << "整数值没按十进制文本留住";
+        EXPECT_EQ(entries->at("members"), "[a, b]") << "嵌套容器作为值时层级压平，但成员不能丢";
+        EXPECT_EQ(entries->find("a"), entries->end()) << "集合的成员被当成了哈希自己的键";
+    }
+
+    /**
+     * @brief 钉住 RESP3 布尔按 bool 交出：它不带任何文本，原先会连一列都不算
+     * @details hiredis 把 `#t` / `#f` 放在 integer 里而 str 是空指针，因此旧的列数判据
+     *          （「带 str 才算一列」）会把一条真答复折成空结果——`SMISMEMBER` 在 RESP3 下就是
+     *          一串布尔，整条命令读起来像没查到。判据取两侧：true 与 false 都要是 bool，
+     *          而不是「一个为真、一个为没值」。
+     * @note 证伪：删掉列数判据里的布尔那一格，两条用例都红在「0 列」；删掉取值分支里的布尔那一格，
+     *       红在备选类型上。
+     */
+    TEST(RedisResult, BoolReplyReadsAsBooleanNotAsEmptyResult)
+    {
+        const std::unique_ptr<RedisResult> yes = makeResultFromResp("#t\r\n");
+        const std::unique_ptr<RedisResult> no  = makeResultFromResp("#f\r\n");
+        ASSERT_NE(yes, nullptr);
+        ASSERT_NE(no, nullptr);
+
+        EXPECT_EQ(yes->columnCount(), 1u) << "布尔回复不带文本，被折成了没有一列";
+        EXPECT_EQ(boolAt(*yes, 0), std::optional<bool>(true));
+        EXPECT_FALSE(yes->isEmpty());
+        EXPECT_EQ(boolAt(*no, 0), std::optional<bool>(false)) << "假被读成了「没有值」";
+        EXPECT_FALSE(no->isEmpty());
+    }
+
+    /**
+     * @brief 钉住数组里的布尔元素同样按 bool 交出（`SMISMEMBER` 的真实形状）
+     */
+    TEST(RedisResult, BooleanElementsInsideArrayKeepTheirType)
+    {
+        const std::unique_ptr<RedisResult> result = makeResultFromResp("*3\r\n#t\r\n#f\r\n#t\r\n");
+        ASSERT_NE(result, nullptr);
+
+        EXPECT_EQ(result->columnCount(), 3u);
+        EXPECT_EQ(boolAt(*result, 0), std::optional<bool>(true));
+        EXPECT_EQ(boolAt(*result, 1), std::optional<bool>(false));
+        EXPECT_EQ(boolAt(*result, 2), std::optional<bool>(true));
+    }
+
+    /**
+     * @brief 钉住 RESP3 双精度按 double 交出，而不是它的十进制文本
+     * @details hiredis 同时把值放在 dval 与原始文本里；交回文本会让调用方以为拿到的是字符串
+     *          （`std::get_if<double>` 恒空），数值口径也就此丢失
+     */
+    TEST(RedisResult, DoubleReplyReadsAsDoubleNotAsText)
+    {
+        const std::unique_ptr<RedisResult> result = makeResultFromResp(",3.5\r\n");
+        ASSERT_NE(result, nullptr);
+
+        EXPECT_EQ(result->columnCount(), 1u);
+        EXPECT_EQ(doubleAt(*result, 0), std::optional<double>(3.5));
+        EXPECT_EQ(textAt(*result, 0), std::nullopt) << "双精度仍按文本交出，调用方按数值读会一律拿空";
+    }
+
+    /**
+     * @brief 钉住 verbatim 回复交出去掉三字节子类型之后的正文
+     * @details `INFO` 一类在 RESP3 下回 `=<len>\r\ntxt:<正文>`。hiredis 自己把子类型放在 vtype、
+     *          str 只留正文（实测 len 不含那四个字节），因此这里要拿到的就是 `# Server…` 那段，
+     *          不该带 "txt:" 前缀——带上会让调用方按行解析时第一行就错。
+     */
+    TEST(RedisResult, VerbatimReplyKeepsItsPayload)
+    {
+        const std::unique_ptr<RedisResult> result = makeResultFromResp("=15\r\ntxt:Some string\r\n");
+        ASSERT_NE(result, nullptr);
+
+        EXPECT_EQ(result->columnCount(), 1u);
+        EXPECT_EQ(textAt(*result, 0), std::optional<std::string>("Some string"));
     }
 
     // ------------------------------------------------------------------------

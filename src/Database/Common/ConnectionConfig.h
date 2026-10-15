@@ -100,6 +100,26 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief Redis 的 RESP 协议版本（只有 Redis 驱动读这一格）
+     *
+     * @details 两档的取舍与既有生态同解（redis-py 的 `protocol=3`、Lettuce/Jedis 的 protocolVersion、
+     *          StackExchange.Redis 的 RESP3 开关都放在连接配置上而不是连接对象上，本仓同形）：
+     *          RESP2 是 Redis 生态的默认档，也是本驱动此前的唯一形状——`HGETALL` 回「字段、值」交替的
+     *          扁平数组，容器里的类型一律按文本读出；RESP3 让服务端改回**带类型的容器**
+     *          （map / set / bool / double / verbatim），`RedisResult` 因此能把它们按类型交出而不是折成文本。
+     *          默认 Resp2：换协议会改**回复形状**，正在按交替下标配对读 `HGETALL` 的代码会被静默错位，
+     *          所以这一格只能由部署方显式打开，不能由库替它决定。
+     * @note Resp3 档目前不支持「靠推送送达」的那几条入口（SUBSCRIBE / PSUBSCRIBE / MONITOR 之后的
+     *       readPushReply）：服务端把它们改成 `>` 推送，而本驱动按「一条命令一条回复」执行，
+     *       这些命令会在**发送之前**被拒并给出原因。要用订阅就留在 Resp2（逐条取证见 RedisConnection.cpp
+     *       里 kResp3PushPathRefusal 那段）；把推送接起来需要推送回调 + 订阅不再等命令回复那套改法。
+     */
+    enum class DatabaseRedisProtocol : std::uint8_t
+    {
+        Resp2 = 2, ///< 默认档：不协商，链路上的回复形状与 RESP 协议 2 逐字相同
+        Resp3 = 3, ///< 建连并认证之后发一条 `HELLO 3`；谈不成即建连失败（不静默回落）
+    };
+    /**
      * @brief 数据库连接配置
      *
      * @details 只保留各驱动确实会读取的字段。超时不在这里配置，由 DatabaseConnection 的
@@ -113,6 +133,9 @@ namespace AsynGyanis::Database
         std::string       password; ///< 密码；SQLite 忽略
         std::string       database; ///< 数据库名、Redis 键空间编号或 SQLite 文件路径
         DatabaseTlsPolicy tls;      ///< 链路 TLS 策略；MySQL 与 Redis 读取，SQLite 配了即拒
+        /// RESP 协议版本；只有 Redis 驱动读取（与 `tls` 在 SQLite 上同理：不是每条通道都吃到这一格）。
+        /// 默认 Resp2 ＝ 与本字段存在之前的行为逐字相同
+        DatabaseRedisProtocol redisProtocol = DatabaseRedisProtocol::Resp2;
 
         /**
          * @brief 构造一份 MySQL 默认配置

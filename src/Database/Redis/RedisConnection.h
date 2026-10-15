@@ -116,14 +116,18 @@ namespace AsynGyanis::Database
         RedisConnection &operator=(RedisConnection &&) = delete;
 
         /**
-         * @brief 连接 Redis 服务并完成认证与键空间选择
+         * @brief 连接 Redis 服务并完成协议协商、认证与键空间选择
          * @details 重写 DatabaseConnection::connect()：已连接时直接返回 true 保持幂等（重复
          *          redisConnectWithTimeout 会泄漏前一个上下文）；建连成功后用 redisSetTimeout 应用
-         *          queryTimeout()；password / database 非空时依次发送二进制安全的 AUTH 与 SELECT，任一步
-         *          失败即断开；全部成功后 m_isConnected 才置位。其余与基类一致；桩构建下直接返回 false。
-         * @return true 连接已建立（含认证与键空间选择）
+         *          queryTimeout()；password 非空时先走二进制安全的 AUTH；配置成 RESP3 时随后发一条
+         *          `HELLO 3`（谈不成即建连失败，不静默回落 RESP2，理由见 .cpp 那一段）；database 非空时
+         *          最后 SELECT。任一步失败即断开；全部成功后 m_isConnected 才置位。其余与基类一致；
+         *          桩构建下直接返回 false。
+         * @return true 连接已建立（含协议协商、认证与键空间选择）
          * @return false 任一环节失败，原因见 lastError()
          * @note host 为空视为配置错误，直接失败而不是交给 hiredis 报出难懂的底层错误
+         * @note 建连这一路的 HELLO 不进会话记账（它说的是「这条会话按配置就停在 RESP3 上」，不是某个
+         *       借用者中途改的形态）；连接建立之后再发 HELLO 仍按「退不回去的模式」处置，归还时断开
          */
         bool connect() override;
 
@@ -297,9 +301,12 @@ namespace AsynGyanis::Database
          * @param channels 频道名列表；为空时不发送任何字节并直接返回 false（那是调用方的错，
          *                 不该让服务端去回一个「SUBSCRIBE 需要至少一个参数」的错话）
          * @return true 命令已发出且确认回复收齐
-         * @return false 频道列表为空、未连接或收发失败，原因见 lastError()
+         * @return false 频道列表为空、未连接、这条连接配置成 RESP3 档，或收发失败，原因见 lastError()
          * @note 订阅是连接级会话状态：这条连接不能再交回连接池。归还时 resetSessionState() 会直接
          *       断开它（回复流已与命令错位，留着比丢掉便宜）
+         * @note 配置成 RESP3 时**在发送之前就拒**：RESP3 把订阅确认写成推送，本类按「一条命令一条
+         *       回复」执行，那条确认收不到（实测等满读写超时才报 recv timeout）。档位与理由见
+         *       ConnectionConfig::redisProtocol 与 .cpp 里 kResp3PushPathRefusal 那段取证
          */
         bool subscribe(std::span<const std::string_view> channels);
 
@@ -307,7 +314,7 @@ namespace AsynGyanis::Database
          * @brief 按模式订阅（PSUBSCRIBE），确认回复同样在本方法内收干
          * @param patterns 模式列表（Glob 风格，如 `__keyspace@0__:*`），语义与限制同 subscribe()
          * @return true 命令已发出且确认回复收齐
-         * @return false 模式列表为空、未连接或收发失败，原因见 lastError()
+         * @return false 模式列表为空、未连接、这条连接配置成 RESP3 档，或收发失败，原因见 lastError()
          */
         bool psubscribe(std::span<const std::string_view> patterns);
 
@@ -334,6 +341,9 @@ namespace AsynGyanis::Database
          * @return std::optional<RedisPushReply> 收到一条推送；超时时返回空值
          * @return std::nullopt 也用于「读坏了」的情况——那种情形 lastError() 非空且连接已断开，
          *         两种空值靠 lastError() 区分（推送本身可以载荷为空，所以不拿空字符串表达失败）
+         * @note 这条连接配置成 RESP3 档时立即回空值并把原因写进 lastError()：RESP3 的推送在
+         *       hiredis 未接推送回调时会被就地丢弃，等下去只会读满本次时限，然后把「档位不支持」
+         *       报成「对端这一轮没发」
          */
         [[nodiscard]] std::optional<RedisPushReply> readPushReply(std::chrono::milliseconds waitTimeout);
 
@@ -392,6 +402,18 @@ namespace AsynGyanis::Database
          * @return true 通道就绪（此时尚未认证）；false 失败，原因进 m_lastError
          */
         [[nodiscard]] bool establishTransport();
+
+        /**
+         * @brief 按配置协商 RESP 协议版本：只在 Resp3 档发一条 `HELLO 3`，其余档位一个字节都不发
+         * @details 抽成独立一步的理由：`connect()` 的骨架要看得见「传输 → 超时 → 认证 → 协议 → 键空间」
+         *          这五格，而不是其中一格摊成二十几行内联。
+         *          这一条**不走** `executeArguments`：那条路会给 `noteSessionCommand` 记账，而建连时的
+         *          HELLO 说的是「这条会话按配置就停在 RESP3 上」，不是某个借用者中途改的形态——记了账
+         *          就等于把池里每条连接都标成「退不回去」，归还时一律断开。借用者自己发 HELLO 的姿态不变
+         * @return true 档位无需协商，或服务端确认切到 RESP3
+         * @return false 服务端拒绝或链路失败，原因进 m_lastError（调用方负责断开）
+         */
+        [[nodiscard]] bool negotiateProtocol();
 
         /**
          * @brief 在已建立的明文连接上做链路 TLS：阻塞握手 + 把 hiredis 的读/写/关闭钩子换到 SSL 上

@@ -545,6 +545,13 @@ namespace AsynGyanis::Database
             freeReplyObject(authenticationReply);
         }
 
+        // RESP3 协商排在认证之后：服务端在没有认证时直接回 NOAUTH 并拒绝切协议（本机实测原文如此）
+        if (!negotiateProtocol())
+        {
+            disconnect();
+            return false;
+        }
+
         // ConnectionConfig::database 对 Redis 的解释是键空间编号：非空就在建连后 SELECT，
         // 否则这个配置字段会被静默忽略
         m_configuredKeySpaceIndex = 0;
@@ -957,6 +964,39 @@ namespace AsynGyanis::Database
         }
         LOG_WARN_FMT("RedisConnection: 链路 TLS 未谈成（{}），按 Preferred 档回落明文重连", tlsFailure);
         m_lastError.clear();
+        return true;
+    }
+
+    bool RedisConnection::negotiateProtocol()
+    {
+        // Resp2 是默认档：一个字节都不发，链路上的回复形状与协议 2 逐字相同
+        if (m_configuration.redisProtocol != DatabaseRedisProtocol::Resp3)
+        {
+            return true;
+        }
+
+        // 用 redisCommand 而不是 executeArguments：后者会给 noteSessionCommand 记账，而建连时的 HELLO
+        // 说的是「这条会话按配置就停在 RESP3 上」，不是某个借用者中途改的形态——记了账就等于把池里
+        // 每条连接都标成「退不回去」，归还时一律断开，探针与复用全白做。借用者自己发 HELLO 的姿态一个字没动。
+        // 版本号是本地常量，不经格式串取用任何外部内容，与「参数一律按指针 + 长度」那条二进制安全的要求不冲突
+        auto *const helloReply = static_cast<redisReply *>(redisCommand(m_redisContext, "HELLO %d", static_cast<int>(DatabaseRedisProtocol::Resp3)));
+        if (helloReply == nullptr)
+        {
+            captureError("协商 Redis RESP3 协议失败");
+            return false;
+        }
+
+        if (helloReply->type == REDIS_REPLY_ERROR)
+        {
+            // 谈不成就是谈不成，不静默回落 RESP2：调用方显式选了协议版本，回落到另一档会让它按 RESP2 的
+            // 形状读一份它以为在 RESP3 上的回复（HGETALL 那一格的配对关系正落在两侧差别上）
+            m_lastError = "协商 Redis RESP3 协议失败：" + copyReplyText(helloReply) + "（HELLO 要 Redis 6.0 以上的服务端；把 redisProtocol 留在 Resp2 即与本项存在之前逐字相同）";
+            freeReplyObject(helloReply);
+            return false;
+        }
+
+        // HELLO 3 的回复是一份 map（本机实测 `%7` 那一族），所有权在本函数手里，读完即释放
+        freeReplyObject(helloReply);
         return true;
     }
 
@@ -1614,6 +1654,21 @@ namespace AsynGyanis::Database
 
         /// 收订阅/退订确认时的单次等待上限：确认紧随命令到达，等满这么久就是没来（按失败收场）
         constexpr std::chrono::milliseconds kConfirmationWait{5000};
+
+        /**
+         * @brief RESP3 档下「靠推送送达」的那几条入口统一的拒绝文案
+         * @details 为什么必须拒而不是「发了再说」：RESP3 把订阅确认与后续消息都写成 `>` 推送
+         *          （本机 Redis 8.10.1 实测：`SUBSCRIBE ch` 的回包是 `>3 subscribe ch 1`，
+         *          `MONITOR` 之后每条监视行同样是推送），而 hiredis 在没有装推送回调时会在
+         *          `redisGetReply` 内部把推送就地释放并继续等一条「真正的回复」——订阅那条命令因此
+         *          永远等不到东西，实测是等满 30 秒读写超时后报 `recv timeout`。
+         *          把这条挂死伪装成「探针式地试一下」比直接拒更坏：调用方看到的是超时错误码，
+         *          看不出档位与协议模型不相容这件事。要支持它需要的是推送回调 + 「发出订阅后不再
+         *          等命令回复」的那套改法，属另一件事，进度记在交付报告的未结案里
+         */
+        constexpr std::string_view kResp3PushPathRefusal = "这条命令在 RESP3 档下不可用：订阅确认与服务端推送在 RESP3 里走 `>` 推送，而本驱动按「一条命令一条回复」执行，"
+                                                           "hiredis 未接推送回调时这类回复会被就地丢弃、命令永远等不到回答。请把 redisProtocol 留在 Resp2 用它，"
+                                                           "或改用 RESP3 仍能正常应答的命令（HGETALL / SMEMBERS / INFO 那一族）";
     } // namespace
 
     bool RedisConnection::subscribe(const std::span<const std::string_view> channels)
@@ -1635,6 +1690,21 @@ namespace AsynGyanis::Database
             // 空目标不该发出去：服务端会回「ERR wrong number of arguments」，而那看着像本类没接好命令。
             // 更要紧的是发出过一条订阅命令就会把连接标成推送形态，白丢一条可复用的连接
             m_lastError = "Redis 订阅命令没有目标：SUBSCRIBE 要至少一个频道，PSUBSCRIBE 要至少一个模式";
+            return false;
+        }
+
+        // 「现在真正阻塞的是什么」排在档位判据之前：没连上时报未连接，比报档位更贴近现场
+        if (!isConnected())
+        {
+            m_lastError = "未连接到 Redis，命令未执行";
+            return false;
+        }
+
+        // RESP3 档的订阅确认是推送，本模型收不到（原因与取证见 kResp3PushPathRefusal）。
+        // 在发送之前就拒，因此这条连接也不会被顺手记成「已进推送形态」——拒掉的订阅不该弄脏还能用的连接
+        if (m_configuration.redisProtocol == DatabaseRedisProtocol::Resp3)
+        {
+            m_lastError = std::string(kResp3PushPathRefusal);
             return false;
         }
 
@@ -1738,6 +1808,14 @@ namespace AsynGyanis::Database
         if (m_redisContext == nullptr)
         {
             m_lastError = "未连接到 Redis，读不到推送";
+            return std::nullopt;
+        }
+
+        // 同一条档位的理由：RESP3 的推送被 hiredis 就地丢弃，这里等下去只会等满本次时限然后报
+        // 「没等到消息」——那把「档位不支持」伪装成「对端没发」，排查方向整个反了
+        if (m_configuration.redisProtocol == DatabaseRedisProtocol::Resp3)
+        {
+            m_lastError = std::string(kResp3PushPathRefusal);
             return std::nullopt;
         }
 

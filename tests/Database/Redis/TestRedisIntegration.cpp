@@ -25,6 +25,9 @@
 // - QueryTimeoutChangeAppliesToEstablishedConnection（建连后改超时当场生效，不必重连）
 // - ProbeAliveAsksTheServerAndNotTheLocalFlag（被 CLIENT KILL 杀掉的会话：状态读起来还连着，探针判死）
 // - ProbeAliveRefusesWhilePipelineIsPending（管道没 flush 时探针不发，flush 的回复仍逐条对齐）
+// - RESP3 那一族：HGETALL 从交替数组换成一份哈希、SMEMBERS 按成员逐列而 SMISMEMBER 服务端答的是整数、
+//   INFO 的 verbatim 交出正文、建连时的 HELLO 不进会话记账（中途发 HELLO 照旧断开）、
+//   订阅与读推送在发送前就被拒（RESP3 的确认是推送，本模型收不到——实测会等满 30 秒）
 // 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
@@ -47,8 +50,10 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1118,6 +1123,166 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(replies[0]->getValue(0)), "OK") << "SET 的回复位被别的东西占了";
         ASSERT_NE(replies[1], nullptr);
         EXPECT_EQ(std::get<std::string>(replies[1]->getValue(0)), "alpha");
+    }
+
+    /**
+     * @brief 钉住 RESP3 协商把 `HGETALL` 从「交替数组」换成一份哈希，而 RESP2 一档保持原样
+     * @details 这一格是 3.5 的正判据：同一个键、同一句命令，两档各读一次——
+     *          RESP2 回 `*4` 的「字段、值、字段、值」，调用方自己配对（四列）；
+     *          RESP3 回 `%2` 的 map，本驱动交回一份哈希、只占一列。只测一档的话，
+     *          「协商根本没生效」与「生效了但映射错」都看不出来。
+     * @note 证伪：把 connect() 里那条 HELLO 删掉，RESP3 那一半红在列数上；把 RedisResult 的 map
+     *       分支删掉，红在「按哈希交出」那一条而 RESP2 那一半照旧绿。
+     */
+    TEST_F(RedisIntegrationTest, Resp3NegotiationTurnsHashRepliesIntoAHash)
+    {
+        const std::string key = makeKey("resp3-hash");
+        ASSERT_NE(m_connection->executeCommand({"HSET", key, "alpha", "1", "beta", "2.5"}), nullptr) << m_connection->lastError();
+
+        // 反面（默认档）：不协商时协议里就没有 map，两个字段读成四列，配对关系靠下标
+        const std::unique_ptr<DatabaseResult> resp2 = m_connection->executeCommand({"HGETALL", key});
+        ASSERT_NE(resp2, nullptr) << m_connection->lastError();
+        EXPECT_EQ(resp2->columnCount(), 4U) << "RESP2 档不该出现 map 形状";
+
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection resp3(resp3Configuration);
+        ASSERT_TRUE(resp3.connect()) << resp3.lastError();
+
+        const std::unique_ptr<DatabaseResult> resp3Reply = resp3.executeCommand({"HGETALL", key});
+        ASSERT_NE(resp3Reply, nullptr) << resp3.lastError();
+        ASSERT_EQ(resp3Reply->columnCount(), 1U) << "HELLO 3 没生效，或 map 又被拆成了交替列";
+        // 具名局部量：std::get_if 要的是左值地址，直接把 getValue() 的结果取地址编不过
+        const DatabaseValue entriesValue = resp3Reply->getValue(std::size_t{0});
+        const auto         *entries      = std::get_if<std::unordered_map<std::string, std::string>>(&entriesValue);
+        ASSERT_NE(entries, nullptr) << "map 没有按哈希备选交出";
+        EXPECT_EQ(entries->size(), 2U);
+        EXPECT_EQ(entries->at("alpha"), "1");
+        EXPECT_EQ(entries->at("beta"), "2.5");
+    }
+
+    /**
+     * @brief 钉住 RESP3 一档下 SET 仍按成员逐列交出，而 `SMISMEMBER` 回的是**整数**不是布尔
+     * @details 两条都是量出来的事实，不是从文档抄的：本机 Redis 8.10.1 在 `HELLO 3` 之后
+     *          `SMEMBERS` 回 `~2`（成员是批量字符串，一列一个），`SMISMEMBER` 回 `*2` 里两个
+     *          `:1` / `:0`。Redis 自己的命令文档把后者写成「Array of Booleans」，服务端实际没这么答——
+     *          照着文档去 `std::get<bool>` 会一律读到「没有值」。这里把线上真相钉住；布尔与浮点那两档的
+     *          映射由 `TestRedisResult.cpp` 用 RESP 文本夹具直测（hiredis 的解析器就是那条通路的裁判）
+     */
+    TEST_F(RedisIntegrationTest, Resp3KeepsSetMembersAsColumnsAndSmisMemberAsIntegers)
+    {
+        const std::string key = makeKey("resp3-set");
+        ASSERT_NE(m_connection->executeCommand({"SADD", key, "here", "there"}), nullptr) << m_connection->lastError();
+
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection resp3(resp3Configuration);
+        ASSERT_TRUE(resp3.connect()) << resp3.lastError();
+
+        const std::unique_ptr<DatabaseResult> members = resp3.executeCommand({"SMEMBERS", key});
+        ASSERT_NE(members, nullptr) << resp3.lastError();
+        EXPECT_EQ(members->columnCount(), 2U) << "SET 的成员没有各占一列";
+        EXPECT_EQ(std::get<std::string>(members->getValue(std::size_t{0})), "here");
+        EXPECT_EQ(std::get<std::string>(members->getValue(std::size_t{1})), "there");
+
+        const std::unique_ptr<DatabaseResult> membership = resp3.executeCommand({"SMISMEMBER", key, "here", "missing"});
+        ASSERT_NE(membership, nullptr) << resp3.lastError();
+        ASSERT_EQ(membership->columnCount(), 2U);
+        EXPECT_EQ(std::get<std::int64_t>(membership->getValue(std::size_t{0})), 1) << "服务端答的是整数，别按布尔读它";
+        EXPECT_EQ(std::get<std::int64_t>(membership->getValue(std::size_t{1})), 0);
+    }
+
+    /**
+     * @brief 钉住 RESP3 档下订阅入口**在发送之前**就被拒，且这条连接保持干净可复用
+     * @details 这一格是量出来的，不是推的：RESP3 把订阅确认写成 `>` 推送，而 hiredis 在没有推送
+     *          回调时会把推送就地丢弃、继续等一条真正的回复——实测 `subscribe()` 等满 30 秒读写
+     *          超时后报 `recv timeout`。与其把那次挂死交给调用方，不如当场说清档位与模型不相容。
+     *          判据两半：拒得干净（没记成推送形态、连接还在、复位照常干净），且随后普通命令照走。
+     * @note 反面判据在 RESP2 那一档：`TestRedisSubscription.cpp` 里同样的订阅照常成功，
+     *       两侧都跑才分得出「档位不支持」与「订阅本身坏了」。
+     */
+    TEST_F(RedisIntegrationTest, Resp3SubscribeIsRefusedBeforeTouchingTheSocket)
+    {
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection resp3(resp3Configuration);
+        ASSERT_TRUE(resp3.connect()) << resp3.lastError();
+
+        const std::string                   channel = makeKey("resp3-refused-channel");
+        const std::vector<std::string_view> channels{std::string_view(channel)};
+        EXPECT_FALSE(resp3.subscribe(std::span<const std::string_view>(channels))) << "RESP3 档的订阅没有被拒，调用方会等满一次读写超时";
+        EXPECT_NE(resp3.lastError().find("RESP3"), std::string::npos) << resp3.lastError();
+
+        // 拒发生在发送之前：这条连接没被记成推送形态，归还时不该被断开，也还能正常应答
+        EXPECT_FALSE(resp3.isSubscribing()) << "被拒的订阅把连接标成了推送形态";
+        EXPECT_TRUE(resp3.isConnected());
+        EXPECT_TRUE(resp3.resetSessionState()) << resp3.lastError();
+        const std::unique_ptr<DatabaseResult> ping = resp3.executeCommand({"PING"});
+        ASSERT_NE(ping, nullptr) << resp3.lastError();
+    }
+
+    /**
+     * @brief 钉住 RESP3 档下读推送同样立刻拒绝，而不是等满本次时限报「没等到消息」
+     * @details 后者的危害是把「档位不支持」伪装成「对端没发」：调用方会去查服务端与网络，
+     *          而真正的原因在配置那一格。判据取返回空值**且** lastError 非空（本类用 lastError
+     *          区分这两种空值），并且连接保持可用。
+     */
+    TEST_F(RedisIntegrationTest, Resp3PushReadRefusesInsteadOfWaiting)
+    {
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection resp3(resp3Configuration);
+        ASSERT_TRUE(resp3.connect()) << resp3.lastError();
+
+        const std::optional<RedisPushReply> push = resp3.readPushReply(std::chrono::milliseconds(200));
+        EXPECT_FALSE(push.has_value());
+        EXPECT_NE(resp3.lastError().find("RESP3"), std::string::npos) << "空值被当成「只是没等到消息」交回，档位原因没出声";
+        EXPECT_TRUE(resp3.isConnected()) << "被拒的读推送把一条好连接断开了";
+    }
+
+    /**
+     * @brief 钉住 RESP3 的 verbatim 回复（`INFO`）交出正文本身，不带 "txt:" 子类型前缀
+     * @details 子类型由 hiredis 放在 vtype 里、str 只留正文；驱动若把两者拼回去，第一个可解析行
+     *          就成了 `txt:# Server` 这样的一句，按行读 INFO 的代码第一行就错。
+     */
+    TEST_F(RedisIntegrationTest, Resp3VerbatimReplyKeepsItsBodyWithoutTheSubtypePrefix)
+    {
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection resp3(resp3Configuration);
+        ASSERT_TRUE(resp3.connect()) << resp3.lastError();
+
+        const std::unique_ptr<DatabaseResult> information = resp3.executeCommand({"INFO", "server"});
+        ASSERT_NE(information, nullptr) << resp3.lastError();
+        const DatabaseValue bodyValue = information->getValue(std::size_t{0});
+        const auto         *text      = std::get_if<std::string>(&bodyValue);
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->rfind("# Server", 0), 0U) << "verbatim 的正文被前缀污染了，实际开头是：" << text->substr(0, 20);
+        EXPECT_EQ(text->find("txt:"), std::string::npos) << "回复里不该带 RESP3 的子类型标记：" << text->substr(0, 20);
+    }
+
+    /**
+     * @brief 钉住建连时的 HELLO **不进**会话记账：这条连接归还时要被留下而不是断开
+     * @details 记账那条路（`noteSessionCommand`）把 HELLO 当成「借用者中途改了回复形态」，归还时直接
+     *          断开——那对中途发 HELLO 的连接是既有安全姿态，一个字不许动。但配置成 RESP3 的池里，
+     *          每条新建连接都在建连时发过 HELLO，若同样进账就成了「池里所有连接归还一律断开」，
+     *          探针与复用全部白做，症状只是连接数一直涨、日志里全是复位失败。
+     */
+    TEST_F(RedisIntegrationTest, ConnectTimeHelloDoesNotPoisonTheSessionLedger)
+    {
+        ConnectionConfig resp3Configuration = m_configuration;
+        resp3Configuration.redisProtocol    = DatabaseRedisProtocol::Resp3;
+        RedisConnection connection(resp3Configuration);
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        // 干净连接的复位不发任何清理命令，也不许断开
+        EXPECT_TRUE(connection.resetSessionState()) << "建连时的 HELLO 被记成了退不回去的模式";
+        EXPECT_TRUE(connection.isConnected()) << "复位把这条其实可复用的连接断开了";
+
+        // 反面：同一档协议下**中途**发 HELLO 仍是「退不回去」，归还时照旧断开
+        ASSERT_NE(connection.executeCommand({"HELLO", "2"}), nullptr) << connection.lastError();
+        EXPECT_FALSE(connection.resetSessionState()) << "中途改协议却没被记账，这条连接会带着错位回复流回池";
+        EXPECT_FALSE(connection.isConnected()) << "中途改协议的那条连接没有被断开";
     }
 
 } // namespace AsynGyanis::Database

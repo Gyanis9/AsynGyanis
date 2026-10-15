@@ -9,6 +9,7 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -39,7 +40,7 @@ namespace AsynGyanis::Database
 
             // 元素型回复一律压成 "[a, b]"：RESP2 的数组与 RESP3 的 SET / MAP / PUSH / ATTR 都靠
             // elements 承载，判据因此取 elements 而不是枚举常量——这些名字在各 hiredis 版本里并不
-            // 一致（本文件刻意不引用它们）。牺牲层级，换「不静默丢数据」
+            // 一致（本文件顶层映射处引用它们时一律带 #ifdef）。牺牲层级，换「不静默丢数据」
             if (sourceReply->elements > 0)
             {
                 std::string nestedText("[");
@@ -77,6 +78,46 @@ namespace AsynGyanis::Database
                     return copyReplyText(sourceReply);
             }
         }
+
+        /**
+         * @brief 这份回复是不是 RESP3 的 map（键值成对的容器）
+         * @details 判据用宏名而不是裸数字：`REDIS_REPLY_MAP` 是 hiredis 1.0 才添上的记号，
+         *          更早的客户端库里连这个名字都没有——那一档服务端也回不出 map，
+         *          这里恒回 false 即等价于「按元素逐列交出」，正是原来的行为
+         * @param reply 回复节点，可为 nullptr
+         * @return true 该节点是 map
+         */
+        [[nodiscard]] bool isMapReply(const redisReply *reply) noexcept
+        {
+#ifdef REDIS_REPLY_MAP
+            return reply != nullptr && reply->type == REDIS_REPLY_MAP;
+#else
+            static_cast<void>(reply);
+            return false;
+#endif
+        }
+
+#ifdef REDIS_REPLY_MAP
+        /**
+         * @brief 把一份 map 回复折成哈希值
+         * @details 协议里 `%<n>` 说的是 **n 对**，hiredis 因此把元素按「键、值、键、值…」平铺，
+         *          `elements` 恒为偶数；真遇到落单的那一个（半截解析）就丢掉尾部那一格，
+         *          不替它编一个空值——把「读不到配对」说成「值为空」是假信息。
+         *          键与值都按 flattenReplyText() 取文本：子元素带类型时层级与类型不保留，
+         *          这是哈希备选类型只接受字符串导致的边界，写在类注释里
+         * @param reply 一份 map 回复（调用方保证非空且类型正确）
+         * @return std::unordered_map<std::string, std::string> 键到值的映射；空 map 交回空哈希
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string> mapReplyToHash(const redisReply *reply)
+        {
+            std::unordered_map<std::string, std::string> entries;
+            for (size_t index = 0; index + 1 < static_cast<size_t>(reply->elements); index += 2)
+            {
+                entries.insert_or_assign(flattenReplyText(reply->element[index]), flattenReplyText(reply->element[index + 1]));
+            }
+            return entries;
+        }
+#endif
     } // namespace
 
     RedisResult::RedisResult(redisReply *const ownedReply) : m_replyPointer(ownedReply)
@@ -91,18 +132,30 @@ namespace AsynGyanis::Database
         m_replyType = m_replyPointer->type;
 
         // 列数按回复的**结构**定，不按类型枚举定：
-        // - 带元素的回复（RESP2 数组，以及 RESP3 的 SET / MAP / PUSH / ATTR）一列一个元素，
+        // - RESP3 的 map 交出一份哈希、占**一列**（含 `%0` 那份空哈希：那是「服务端回了一份空的哈希」，
+        //   与「没有回复」是两件事，拆成 2N 列反而把配对关系交回调用方去猜）；
+        // - 其余带元素的回复（RESP2 数组，以及 RESP3 的 SET / PUSH / ATTR）一列一个元素，
         //   否则整份容器回复只能读出一个空值——那两个成员的集合就这样无声消失；
         // - nil 既无值也无元素，按 0 列的空集处理；
-        // - 整数没有文本载体但仍是一个值，算一列；
+        // - 整数与 RESP3 的布尔没有文本载体但仍是一个值，各算一列；
         // - 带 str 的标量（批量字符串 / 状态 / error / DOUBLE / VERB）一行一列；
-        // - 剩下的只有「空容器」（如 ~0 的空集合）：没有任何元素可给，按 0 列
-        if (m_replyPointer->elements > 0)
+        // - 剩下的只有「空容器」（如 *0 的空集合）：没有任何元素可给，按 0 列
+        if (isMapReply(m_replyPointer))
+        {
+            m_columnCount = 1;
+        } else if (m_replyPointer->elements > 0)
         {
             m_columnCount = m_replyPointer->elements;
         } else if (m_replyType == REDIS_REPLY_NIL)
         {
             m_columnCount = 0;
+#ifdef REDIS_REPLY_BOOL
+        } else if (m_replyType == REDIS_REPLY_BOOL)
+        {
+            // 布尔回复不带任何文本（hiredis 把 0/1 放在 integer 里，str 是空指针）：
+            // 按上面那条「带 str 才算一列」的判据它会被折成 0 列，一条假「没有结果」
+            m_columnCount = 1;
+#endif
         } else if (m_replyType == REDIS_REPLY_INTEGER || m_replyPointer->str != nullptr)
         {
             m_columnCount = 1;
@@ -140,6 +193,12 @@ namespace AsynGyanis::Database
             return std::monostate{};
         }
 
+        // map 交出一份哈希、占一列：容器本身就是那个值，不再按下标拆元素
+        if (isMapReply(m_replyPointer))
+        {
+            return convertReply(m_replyPointer);
+        }
+
         // 元素型回复：第 index 列就是第 index 个元素（数组与 RESP3 容器同一条判据，见构造函数）
         if (m_replyPointer->elements > 0)
         {
@@ -162,7 +221,16 @@ namespace AsynGyanis::Database
             return std::monostate{};
         }
 
-        // 元素型回复（数组与 RESP3 容器）映射成列表：判据取 elements 而不是枚举常量，理由见构造函数
+#ifdef REDIS_REPLY_MAP
+        // map 是 RESP3 里唯一「元素成对」的容器：交出一份哈希。判据排在元素分支**之前**，
+        // 否则它会与数组同路走成 2N 列，把配对关系重新交回调用方去猜
+        if (sourceReply->type == REDIS_REPLY_MAP)
+        {
+            return mapReplyToHash(sourceReply);
+        }
+#endif
+
+        // 元素型回复（数组与 RESP3 的 SET / PUSH / ATTR）映射成列表：判据取 elements 而不是枚举常量，理由见构造函数
         if (sourceReply->elements > 0)
         {
             // 子元素全部压成文本，这是列表备选类型只有字符串造成的有损映射，取舍与理由见 flattenReplyText()
@@ -187,6 +255,20 @@ namespace AsynGyanis::Database
             // hiredis 把 Redis 的 64 位有符号整数放在 integer 里，与 DatabaseValue 的整型备选完全对齐
             case REDIS_REPLY_INTEGER:
                 return static_cast<std::int64_t>(sourceReply->integer);
+
+#ifdef REDIS_REPLY_BOOL
+            // RESP3 的布尔不带任何文本（hiredis 把 0/1 放在 integer 里，str 是空指针）：
+            // 按文本取会读成「没有值」，而 `SMISMEMBER`、`ZADD` 的一部分变体在 RESP3 下就回这一类
+            case REDIS_REPLY_BOOL:
+                return sourceReply->integer != 0;
+#endif
+
+#ifdef REDIS_REPLY_DOUBLE
+            // RESP3 的双精度数在 hiredis 里同时带 dval 与原始文本：取 dval，
+            // 让「1.5」以数值而不是字符串交出（调用方再转文本时才知道自己是按哪一位截的）
+            case REDIS_REPLY_DOUBLE:
+                return sourceReply->dval;
+#endif
 
             // nil 与「没有值」在 DatabaseValue 里统一用 monostate 表达
             case REDIS_REPLY_NIL:
