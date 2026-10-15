@@ -68,14 +68,15 @@ namespace
 #if defined(_MSC_VER) && !defined(NDEBUG)
     /// MSVC Debug（迭代器检查开满，门禁这一路还带 ASan）的实测读数加一档
     ///
-    /// count 与 update 两格在 ORM 乐观锁那一轮重测过一次（31/72 → 35/85）：新增的容器对象
-    /// （QueryNode 多了一个空 vector 成员、更新路径多了一组局部容器）在 IDL=2 下各自多挂一份
-    /// 代理分配，而**同一份代码在 GCC 侧读数不动**（容器那一档门禁照旧绿）——这正是上面那条
-    /// 「Debug 的读数同时取决于编译器与配置」的又一例，不是运行时真的多碰了堆。
-    /// 判据：把那一处新成员撤掉后 count 立刻退回可行区间（本轮在临时工作树里实测过）。
-    inline constexpr std::uint64_t kFirstRowAllocationBudget     = 80U;     ///< 实测 75
+    /// count 与 update 两格在 ORM 乐观锁那一轮重测过一次（31/72 → 35/85），first 与 count 这一轮
+    /// 又重测一次（75→83、35→39）：新增的容器对象（QueryNode 多了一个空 vector 成员）在 IDL=2 下
+    /// 每次节点构造多挂一份代理分配——count() 里一次拷贝（+1）、first() 里三次构造（+3，/Od 不做
+    /// NRVO）。**同一份代码在 GCC 侧读数不动**（容器那一档门禁照旧绿，libstdc++ 的空 vector 不碰堆），
+    /// 这正是上面那条「Debug 的读数同时取决于编译器与配置」的又一例，不是运行时真的多碰了堆。
+    /// 判据：把那一处新成员撤掉后 count 立刻退回可行区间（乐观锁轮在临时工作树里实测过）。
+    inline constexpr std::uint64_t kFirstRowAllocationBudget     = 84U;     ///< 实测 83（关系装载轮之前是 75）
     inline constexpr std::uint64_t kListAllocationBudget         = 340U;    ///< 实测 318
-    inline constexpr std::uint64_t kCountAllocationBudget        = 38U;     ///< 实测 35（乐观锁轮之前是 31）
+    inline constexpr std::uint64_t kCountAllocationBudget        = 40U;     ///< 实测 39（关系装载轮之前是 35）
     inline constexpr std::uint64_t kUpdateAllocationBudget       = 90U;     ///< 实测 85（乐观锁轮之前是 72）
     inline constexpr std::uint64_t kSmallBatchAllocationBudget   = 232U;    ///< 实测 216
     inline constexpr std::uint64_t kSmallBatchBytesBudget        = 14848U;  ///< 实测 13816

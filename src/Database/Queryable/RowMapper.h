@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -582,20 +583,14 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 一次性解析结构体全部列在结果集中的下标（列结构对整个结果集不变，供逐行复用）
-         * @details 同时校验各列解析到**不同**的下标：两个成员写同一个列名（或结果集里有两个同名列）
-         *          时，二者都会拿到同一列的值而无人报错，属于静默错值，必须在建表时就暴露。
+         * @brief 校验下标表两两不同，重复即抛并点名是哪两个成员
          * @tparam T 结构体类型
          * @tparam IndexPositions kColumns 的下标序列
-         * @param result 结果集
-         * @return std::array<std::size_t, sizeof...(IndexPositions)> 与 kColumns 同序的下标表
-         * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列），或两列解析到同一下标
+         * @param columnIndices 与 kColumns 同序的下标表
          */
         template<typename T, std::size_t... IndexPositions>
-        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result, std::index_sequence<IndexPositions...>)
+        void requireDistinctColumnIndices(const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices, std::index_sequence<IndexPositions...>)
         {
-            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))...};
-
             // 列名表按 kColumns 同序取出，用于在撞名下标时报告是哪两个成员
             const std::array<std::string_view, sizeof...(IndexPositions)> columnNames = {std::get<IndexPositions>(TableSchema<T>::kColumns).columnName...};
 
@@ -614,7 +609,84 @@ namespace AsynGyanis::Database::Queryable
                                               " 列，两个成员会静默拿到同一个值。请给其中一列改用不同的列名，" + "或在 SELECT 列表里为该列起不同的别名");
                 }
             }
+        }
 
+        /**
+         * @brief 一次性解析结构体全部列在结果集中的下标（列结构对整个结果集不变，供逐行复用）
+         * @details 同时校验各列解析到**不同**的下标：两个成员写同一个列名（或结果集里有两个同名列）
+         *          时，二者都会拿到同一列的值而无人报错，属于静默错值，必须在建表时就暴露。
+         * @tparam T 结构体类型
+         * @tparam IndexPositions kColumns 的下标序列
+         * @param result 结果集
+         * @return std::array<std::size_t, sizeof...(IndexPositions)> 与 kColumns 同序的下标表
+         * @throws RowMappingException 任一列不存在（按 kColumns 顺序报告第一个缺失列），或两列解析到同一下标
+         */
+        template<typename T, std::size_t... IndexPositions>
+        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolveColumnIndices(const DatabaseResult &result, std::index_sequence<IndexPositions...>)
+        {
+            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {resolveColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns))...};
+            requireDistinctColumnIndices<T>(columnIndices, std::index_sequence<IndexPositions...>{});
+            return columnIndices;
+        }
+
+        /**
+         * @brief 按「前缀 + 双下划线 + 列名」解析一列在结果集中的下标（关系装载 include 用）
+         * @details 前缀是别名列输出名的前段（`QueryNode::AliasColumn::outputName` 由
+         *          `前缀 + "__" + 列名` 拼成），解析规则与 resolveColumnIndex() 同源：
+         *          仍是按列名查，不看位置。
+         * @tparam T 结构体类型（报告缺失列时点名它所属的表）
+         * @tparam ColumnDescriptorType ColumnDescriptor<T, MemberType> 的推导类型
+         * @param result 结果集
+         * @param columnDescriptor 列的元信息
+         * @param namePrefix 别名列输出名的前缀（如 "r0"）
+         * @return std::size_t 该列在结果集中的下标
+         * @throws RowMappingException 列不存在，或该名字在结果集里并列出现（columnIndex 只会命中
+         *         第一个，静默取错列比取不到更糟）
+         */
+        template<typename T, typename ColumnDescriptorType>
+        [[nodiscard]] std::size_t resolvePrefixedColumnIndex(const DatabaseResult &result, const ColumnDescriptorType &columnDescriptor, const std::string_view namePrefix)
+        {
+            const std::string prefixedName = std::string{namePrefix} + "__" + std::string{columnDescriptor.columnName};
+
+            std::size_t nameCount = 0;
+            for (std::size_t index = 0; index < result.columnCount(); ++index)
+            {
+                if (result.columnName(index) == prefixedName)
+                {
+                    ++nameCount;
+                }
+            }
+            if (nameCount > 1U)
+            {
+                throw RowMappingException("ORM 行映射失败：结果集里有 " + std::to_string(nameCount) + " 列都叫 \"" + prefixedName + "\"（表 " +
+                                          std::string(TableSchema<T>::kTableName) + " 的关系装载），按名解析只会命中第一列、静默取错值。请让基表列名避开「别名__」前缀");
+            }
+
+            const std::optional<std::size_t> columnIndex = result.columnIndex(prefixedName);
+            if (!columnIndex.has_value())
+            {
+                throw RowMappingException("ORM 行映射失败：结果集中不存在列 \"" + prefixedName + "\"（表 " + std::string(TableSchema<T>::kTableName) + " 的关系装载，前缀 " +
+                                          std::string(namePrefix) + "）");
+            }
+            return columnIndex.value();
+        }
+
+        /**
+         * @brief 一次性解析「带前缀」的全部列下标（列结构对整个结果集不变，供逐行复用）
+         * @tparam T 结构体类型
+         * @tparam IndexPositions kColumns 的下标序列
+         * @param result 结果集
+         * @param namePrefix 别名列输出名的前缀
+         * @return std::array<std::size_t, sizeof...(IndexPositions)> 与 kColumns 同序的下标表
+         * @throws RowMappingException 任一列缺失或名字并列，或两列解析到同一下标
+         */
+        template<typename T, std::size_t... IndexPositions>
+        [[nodiscard]] std::array<std::size_t, sizeof...(IndexPositions)> resolvePrefixedColumnIndices(const DatabaseResult &result, const std::string_view namePrefix,
+                                                                                                      std::index_sequence<IndexPositions...>)
+        {
+            std::array<std::size_t, sizeof...(IndexPositions)> columnIndices = {
+                    resolvePrefixedColumnIndex<T>(result, std::get<IndexPositions>(TableSchema<T>::kColumns), namePrefix)...};
+            requireDistinctColumnIndices<T>(columnIndices, std::index_sequence<IndexPositions...>{});
             return columnIndices;
         }
 
@@ -624,12 +696,11 @@ namespace AsynGyanis::Database::Queryable
          * @tparam IndexPositions kColumns 的下标序列
          * @param mappedRow 目标结构体
          * @param result 结果集，游标须已停在有效行上
-         * @param columnIndices 与 kColumns 同序的下标表
+         * @param columnIndices 与 kColumns 同序的下标表（下标表本身可由调用方按前缀解析，见 resolvePrefixedColumnIndices）
          * @throws RowMappingException 类型不匹配
          */
         template<typename T, std::size_t... IndexPositions>
-        void assignRowFromIndices(T &mappedRow, DatabaseResult &result, const std::array<std::size_t, sizeof...(IndexPositions)> &columnIndices,
-                                  std::index_sequence<IndexPositions...>)
+        void assignRowFromIndices(T &mappedRow, DatabaseResult &result, const std::span<const std::size_t> columnIndices, std::index_sequence<IndexPositions...>)
         {
             // 折叠表达式逐个赋值：逗号运算符保证从左到右按 kColumns 顺序执行
             (assignColumn<T>(mappedRow, std::get<IndexPositions>(TableSchema<T>::kColumns), result, columnIndices[IndexPositions]), ...);

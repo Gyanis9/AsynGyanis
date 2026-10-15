@@ -51,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -260,10 +261,15 @@ namespace AsynGyanis::Database
         constexpr std::string_view kVersionedLockTableName = "Asyn_Mysql_VersionedLock";
         constexpr std::string_view kVersionedLockColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `version` BIGINT NOT NULL";
 
-        /// 关系装载用例的三张表：都由用例自建自清（表名先 grep 过，整个文件零命中）
+        /// 关系装载用例的三张表：都由用例自建自清（表名先 grep 过，整个文件零命中）。
+        /// **include 用例另起一套表名**：ctest 按进程并行跑用例，两套用例共表会在对方 DROP/CREATE
+        /// 的窗口里读到「表不存在」（实测：并发那一轮两条都红，串行跑各自都绿）
         constexpr std::string_view kRelationAuthorTableName  = "Asyn_Mysql_RelAuthors";
         constexpr std::string_view kRelationPostTableName    = "Asyn_Mysql_RelPosts";
         constexpr std::string_view kRelationCommentTableName = "Asyn_Mysql_RelComments";
+        constexpr std::string_view kIncludeAuthorTableName   = "Asyn_Mysql_IncAuthors";
+        constexpr std::string_view kIncludePostTableName     = "Asyn_Mysql_IncPosts";
+        constexpr std::string_view kIncludeCommentTableName  = "Asyn_Mysql_IncComments";
 
         /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
         constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
@@ -495,6 +501,34 @@ namespace AsynGyanis::Database
         };
 
         /**
+         * @brief include 用例的行：与 then 用例同形，但表名各自独立（ctest 按进程并行跑，
+         *        两套用例共表会在对方 DROP/CREATE 的窗口里读到「表不存在」）
+         */
+        struct IntegrationIncludeAuthor
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 姓名
+        };
+
+        /// @brief include 用例：评论（一对多的「多」）
+        struct IntegrationIncludeComment
+        {
+            std::int64_t id;     ///< 主键
+            std::int64_t postId; ///< 所属帖子（外键）
+            std::string  text;   ///< 正文
+        };
+
+        /// @brief include 用例：帖子（两个关系成员不进 kColumns，只进 kRelations）
+        struct IntegrationIncludePost
+        {
+            std::int64_t                            id;       ///< 主键
+            std::string                             title;    ///< 标题
+            std::int64_t                            authorId; ///< 外键列
+            std::optional<IntegrationIncludeAuthor> author;   ///< 装载结果：作者
+            std::vector<IntegrationIncludeComment>  comments; ///< 装载结果：评论
+        };
+
+        /**
          * @brief 乐观锁用例的行：版本列声明进 TableSchema 之后，update() 的 WHERE 会带上它
          */
         struct IntegrationVersionedRow
@@ -693,6 +727,45 @@ namespace AsynGyanis::Database
         static constexpr auto             kRelations  = std::tuple{
                 AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::author, "author_id"),
                 AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::comments, "post_id"),
+        };
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationIncludeAuthor>
+    {
+        static constexpr std::string_view kTableName = kIncludeAuthorTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationIncludeAuthor::id, "id"),
+                Column(&IntegrationIncludeAuthor::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationIncludeComment>
+    {
+        static constexpr std::string_view kTableName = kIncludeCommentTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationIncludeComment::id, "id"),
+                Column(&IntegrationIncludeComment::postId, "post_id"),
+                Column(&IntegrationIncludeComment::text, "text"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationIncludePost>
+    {
+        static constexpr std::string_view kTableName = kIncludePostTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationIncludePost::id, "id"),
+                Column(&IntegrationIncludePost::title, "title"),
+                Column(&IntegrationIncludePost::authorId, "author_id"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+        static constexpr auto             kRelations  = std::tuple{
+                AsynGyanis::Database::Queryable::Relation(&IntegrationIncludePost::author, "author_id"),
+                AsynGyanis::Database::Queryable::Relation(&IntegrationIncludePost::comments, "post_id"),
         };
     };
 
@@ -3637,6 +3710,88 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationCommentTableName)));
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationAuthorTableName)));
+    }
+
+    /**
+     * @brief 钉住 include（一次 LEFT JOIN）在真服务端上的两个方向
+     * @details 与 then() 那条真机用例同一份数据形状，换的是取数方式：别名投影
+     *          （`r0`.`id` AS `r0__id`）与折叠重复父行都在 MySQL 的取值映射下成立。
+     *          三张表用独立表名（Asyn_Mysql_Inc*）：ctest 按进程并行跑用例，与 then 用例共表
+     *          会在对方 DROP/CREATE 的窗口里读到「表不存在」——并发那一轮两条都红过
+     * @note 池上限为 1：include 自始至终只用一条连接，握着它也不会再开第二条查询
+     */
+    TEST_F(MySqlIntegrationTest, IncludeLoadsBothDirectionsOnTheRealServer)
+    {
+        {
+            MySqlConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeCommentTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludePostTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeAuthorTableName)));
+        }
+        m_preparedTableName = std::string(kIncludePostTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            MySqlConnection ddl(m_configuration);
+            ASSERT_TRUE(ddl.connect()) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kIncludeAuthorTableName) + " (`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL)"), nullptr) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kIncludePostTableName) + " (`id` BIGINT PRIMARY KEY, `title` VARCHAR(191) NOT NULL, `author_id` BIGINT NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kIncludeCommentTableName) + " (`id` BIGINT PRIMARY KEY, `post_id` BIGINT NOT NULL, `text` VARCHAR(191) NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+        }
+
+        {
+            OrmQuery<IntegrationIncludeAuthor> authors(*pool);
+            ASSERT_EQ(authors.insert(IntegrationIncludeAuthor{.id = 1, .name = "真机作者一"}), 1);
+            ASSERT_EQ(authors.insert(IntegrationIncludeAuthor{.id = 2, .name = "真机作者二"}), 1);
+
+            OrmQuery<IntegrationIncludePost> posts(*pool);
+            ASSERT_EQ(posts.insert(IntegrationIncludePost{.id = 10, .title = "真机第一篇", .authorId = 1}), 1);
+            ASSERT_EQ(posts.insert(IntegrationIncludePost{.id = 11, .title = "真机第二篇", .authorId = 2}), 1);
+            ASSERT_EQ(posts.insert(IntegrationIncludePost{.id = 12, .title = "真机孤儿篇", .authorId = 999}), 1);
+
+            OrmQuery<IntegrationIncludeComment> comments(*pool);
+            ASSERT_EQ(comments.insert(IntegrationIncludeComment{.id = 100, .postId = 10, .text = "真机第一评"}), 1);
+            ASSERT_EQ(comments.insert(IntegrationIncludeComment{.id = 101, .postId = 10, .text = "真机第二评"}), 1);
+        }
+
+        // 查询树形状：两条 include 各一条 JOIN + 各自的别名投影（引用字符的渲染由方言测试钉；
+        // 这里是「走的是 JOIN 而不是补取」那条判据在真机侧的对照）
+        const std::string sql = OrmQuery<IntegrationIncludePost>(*pool).include(&IntegrationIncludePost::author).include(&IntegrationIncludePost::comments).toSql();
+        EXPECT_NE(sql.find("LEFT JOIN " + std::string(kIncludeAuthorTableName) + " AS r0"), std::string::npos) << sql;
+        EXPECT_NE(sql.find("r1.text AS r1__text"), std::string::npos) << sql;
+
+        // 两个方向一起：多对一挂对/留空，一对多折叠回父行
+        const std::vector<IntegrationIncludePost> posts =
+                OrmQuery<IntegrationIncludePost>(*pool).orderBy(asc("id")).include(&IntegrationIncludePost::author).include(&IntegrationIncludePost::comments).toList();
+        ASSERT_EQ(posts.size(), 3U) << "一对多没有折叠：父行被子行乘开了";
+        ASSERT_TRUE(posts[0].author.has_value());
+        EXPECT_EQ(posts[0].author->name, "真机作者一") << "第一条帖子挂错了作者";
+        // 子行的返回顺序由服务端定（本仓没有子行排序的声明口）：按文本集合比对，不按位置取元素
+        ASSERT_EQ(posts[0].comments.size(), 2U) << "第一条帖子的评论数不对";
+        std::set<std::string> firstPostTexts;
+        for (const IntegrationIncludeComment &comment: posts[0].comments)
+        {
+            firstPostTexts.insert(comment.text);
+        }
+        const std::set<std::string> expectedTexts = {"真机第一评", "真机第二评"};
+        EXPECT_EQ(firstPostTexts, expectedTexts) << "第一条帖子的评论集合不对";
+        ASSERT_TRUE(posts[1].author.has_value());
+        EXPECT_EQ(posts[1].author->name, "真机作者二");
+        EXPECT_TRUE(posts[1].comments.empty()) << "第二条帖子没有评论（分组键错位会把别家的挂上来）";
+        EXPECT_FALSE(posts[2].author.has_value()) << "对端不存在却挂上了一行";
+        EXPECT_TRUE(posts[2].comments.empty());
+
+        // 收尾：三张表都清掉（TearDown 只会 DROP 登记的那一张）
+        MySqlConnection cleanup(m_configuration);
+        ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeCommentTableName)));
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludePostTableName)));
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeAuthorTableName)));
     }
 
 } // namespace AsynGyanis::Database

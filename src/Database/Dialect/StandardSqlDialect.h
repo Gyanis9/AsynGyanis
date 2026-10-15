@@ -219,6 +219,17 @@ namespace AsynGyanis::Database
         void appendFieldReference(std::string &sqlText, std::string_view fieldText) const;
 
         /**
+         * @brief 渲染 SELECT 列表：主表列（或通配符）之后跟着关系装载的别名列
+         *
+         * @details 从 translate() 里分出来的一格：别名列的渲染规则（两侧逐段引用、输出名按标识符引用）
+         *          与主表列的规则不同源，混在一起会让 translate() 的圈复杂度与长度一起涨。
+         * @param sqlText 输出缓冲区，"列, 列, …" 追加到末尾（不含 "SELECT " 关键字）
+         * @param query 查询树，读 selectColumns 与 aliasColumns
+         * @throws Base::InvalidArgumentException 任一列名为空
+         */
+        void appendSelectList(std::string &sqlText, const Queryable::QueryNode &query) const;
+
+        /**
          * @brief 把「已引用的表名 + 可选别名」追加进输出缓冲
          * @details SELECT / UPDATE / DELETE 与 JOIN 的目标表共用：表名在任何位置都按同一条规则渲染，
          *          不像字段引用那样给表达式留「原样输出」的出口（表名位置没有合法表达式）。

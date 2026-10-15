@@ -235,6 +235,71 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 显式装载一条关系：用**一次 LEFT JOIN** 把关联行随主查询一起带回来
+         *
+         * @details 与 `then()` 同一条取向（显式点名装载，不做懒加载代理），差别只在取数方式：
+         *          本方法把关联表连进同一条 SELECT（`LEFT JOIN … ON …`），并把它的列以
+         *          `别名__列名` 的形状投影出来，因此**不多一次往返**；`then()` 走的是第二条
+         *          `IN (…)` 补取查询。取舍：多对一（对端唯一，JOIN 不会把行乘开）用本方法划算；
+         *          一对多走 JOIN 会把父行按子行乘开（结果行数 = 父行 × 子行数），需要在客户端
+         *          折叠回一行——子行多时应当改用 `then()`。
+         *
+         * @details 两个方向的装载形状：多对一挂上 `U` / `std::optional<U>` 成员（LEFT JOIN
+         *          配不上时留空、必填成员保持原值）；一对多把子行按基表主键**折叠**回父行，
+         *          没有子行的父行留空列表（与 `then()` 同一条语义）。
+         *
+         * @param memberPointer 要装载的成员（`&Post::author` 这类）
+         * @return Queryable& 自身引用，支持链式调用
+         * @throws Base::LogicException 该成员没有在 `kRelations` 里声明过；关联行类型的主键列
+         *         没有在它的 `kColumns` 里声明（多对一要靠它判「配不上」、一对多要靠它折叠）；
+         *         或一对多的 include 与 LIMIT / OFFSET 同时用（在取数时拒，见 @warning）
+         * @note `count()` / `countAsync()` 不接受 include：聚合方向整段 SELECT 列表被 COUNT(*)
+         *       顶掉，而 JOIN 还会把一对多的行乘开让计数虚高——请另起一条查询统计
+         * @note `first()` / `firstAsync()` 与一对多的 include 同用时会取回全部结果行再折叠
+         *       （LIMIT 压到 1 会把父行的子行截掉），不能接受这一点时请用 `then()` 补取
+         * @warning 一对多的 include 与 `limit()` / `offset()` 不能同时用：分页数的是结果行
+         *          （父行被子行乘开之后的），不是父行数。要限制父行请先查出父行、再用 `then()` 补取
+         */
+        template<typename MemberType>
+        Queryable &include(MemberType T::*memberPointer)
+        {
+            const RelationDescriptor<T, MemberType> *relation = findRelationOf(memberPointer);
+            if (relation == nullptr)
+            {
+                throw Base::LogicException("Queryable: include() 要装载的成员没有在 TableSchema<" + std::string(TableSchema<T>::kTableName) +
+                                           ">::kRelations 里声明过——请先加一条 Relation(&T::成员, \"外键列\")");
+            }
+
+            using Target     = Detail::RelationTarget<MemberType>;
+            using RelatedRow = typename Target::RowType;
+            // 成员类型必须是一个登记过的行类型：指向别的东西（比如 std::string）时整段不实例化
+            // （上面那次 findRelationOf 已经先抛了，这里挡住的是编译期的实例化）。
+            // 返回语句放进 else 支里：真支是 throw，之后不该再留下任何可达语句（MSVC 会报 C4702）
+            if constexpr (!std::is_aggregate_v<RelatedRow>)
+            {
+                throw Base::LogicException("Queryable: include() 指向的成员不是一张登记过的行类型（关系装载只认 std::vector<行> 与 行/optional<行>）");
+            } else
+            {
+                // 主键列必须在关联行类型里声明过：LEFT JOIN 配不上时整行都是 NULL，只有主键列
+                // 保证非空——拿别的列判「配不上」会把「子行某列恰好是 NULL」误判成「没有子行」；
+                // 一对多的折叠也按基表主键做，同样要求它可读
+                if (!columnIsDeclared<RelatedRow>(TableSchema<RelatedRow>::kPrimaryKey))
+                {
+                    throw Base::LogicException("Queryable: include() 要求关联行类型 TableSchema<" + std::string(TableSchema<RelatedRow>::kTableName) + "> 把它的主键列（" +
+                                               std::string(TableSchema<RelatedRow>::kPrimaryKey) + "）声明在 kColumns 里——装载要靠它判「有没有配上」");
+                }
+
+                // 前缀按声明顺序编号：r0、r1…。它与「__」一起把关联列与基表列分开（见 AliasColumn）
+                const std::string prefix = "r" + std::to_string(m_includeProcessors.size());
+
+                appendIncludeJoin<RelatedRow, MemberType>(*relation, prefix, Target::isCollection);
+                appendIncludeProjection<RelatedRow>(prefix);
+                m_includeProcessors.push_back(makeIncludeProcessor<RelatedRow, MemberType>(memberPointer, prefix));
+                return *this;
+            }
+        }
+
+        /**
          * @brief 添加 JOIN 子句
          *
          * @param join 连接子句
@@ -343,15 +408,20 @@ namespace AsynGyanis::Database::Queryable
             requireOnline("first()");
 
             QueryNode limitedNode = resolvedQueryNode();
-            // 只取一行：LIMIT 1 让数据库侧提前停止扫描，比取回全部再取首元素高效得多
-            limitedNode.limit = 1U;
+            if (!hasFoldingInclude())
+            {
+                // 只取一行：LIMIT 1 让数据库侧提前停止扫描，比取回全部再取首元素高效得多。
+                // 带一对多的 include 时不压 LIMIT——分页数的是结果行，压到 1 会把父行的子行截掉，
+                // 那种情况只能取回全部结果再折叠（见 include() 的 @note）
+                limitedNode.limit = 1U;
+            }
 
-            if (m_relationLoaders.empty())
+            if (m_relationLoaders.empty() && m_includeProcessors.empty())
             {
                 return fetchFirst(limitedNode);
             }
 
-            // 有装载器时走列表路径：装载器就地改一个 vector，单行包成一行即可（LIMIT 1 照样生效）
+            // 有装载器 / include 时走列表路径：装载器就地改一个 vector，单行包成一行即可（LIMIT 1 照样生效）
             std::vector<T> rows = fetchRows(limitedNode);
             runRelationLoaders(rows);
             if (rows.empty())
@@ -379,6 +449,7 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] std::int64_t count()
         {
             requireOnline("count()");
+            requireNoIncludesForAggregate("count()");
 
             // 计数方向整段 SELECT 列表被 COUNT(*) 顶掉，因此不走 resolvedQueryNode()：
             // 先把全部列名展开再覆盖一遍是白做（列名展开要建一个 vector<string>）
@@ -612,20 +683,22 @@ namespace AsynGyanis::Database::Queryable
             QueryNode                   resolvedNode = resolvedQueryNode();
             ConnectionPool             *pool         = m_pool;
             Transaction                *transaction  = m_transaction;
-            // 装载器按值拷进任务：它们捕获的是池/事务/方言，在工作线程上跑与在调用线程上一样安全
-            std::vector<RelationLoader> loaders = m_relationLoaders;
+            // 装载器按值拷进任务：它们捕获的是池/事务/方言，在工作线程上跑与在调用线程上一样安全；
+            // include 处理器同样按值拷贝（闭包只捕获成员指针与前缀字符串，不触及本对象）
+            std::vector<RelationLoader>   loaders  = m_relationLoaders;
+            std::vector<IncludeProcessor> includes = m_includeProcessors;
 
             // 类模板内经由成员函数返回值访问成员模板时，GCC 要求名字前写 template 关键字，
             // 否则 '<' 会被当成小于号解析；MSVC 接受缺省写法，这里按最严的编译器来写
             std::vector<T> rows = co_await asyncExecutor().template submit<std::vector<T>>(
                     completionLoop,
-                    [dialect, resolvedNode = std::move(resolvedNode), pool, transaction, loaders = std::move(loaders)]() -> std::vector<T>
+                    [dialect, resolvedNode = std::move(resolvedNode), pool, transaction, loaders = std::move(loaders), includes = std::move(includes)]() -> std::vector<T>
                     {
                         std::vector<T> mappedRows;
                         {
                             // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
                             ConnectionLease lease = acquireConnection(pool, transaction);
-                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, resolvedNode);
+                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, resolvedNode, includes);
                         }
                         // 补取排在取数连接释放之后：池上限为 1 时，握着第一条等第二条就是死等
                         for (const RelationLoader &relationLoader: loaders)
@@ -656,21 +729,26 @@ namespace AsynGyanis::Database::Queryable
 
             std::shared_ptr<SqlDialect> dialect     = resolveDialect();
             QueryNode                   limitedNode = resolvedQueryNode();
-            // 只取一行：让数据库侧提前停止扫描，与同步版 first() 的取舍一致
-            limitedNode.limit           = 1U;
+            if (!hasFoldingInclude())
+            {
+                // 只取一行：让数据库侧提前停止扫描，与同步版 first() 的取舍一致。
+                // 带一对多的 include 时不压 LIMIT，理由见 first() 与 include() 的 @note
+                limitedNode.limit = 1U;
+            }
             ConnectionPool *pool        = m_pool;
             Transaction    *transaction = m_transaction;
-            // 装载器按值拷进任务（理由同 toListAsync()）
-            std::vector<RelationLoader> loaders = m_relationLoaders;
+            // 装载器与 include 处理器按值拷进任务（理由同 toListAsync()）
+            std::vector<RelationLoader>   loaders  = m_relationLoaders;
+            std::vector<IncludeProcessor> includes = m_includeProcessors;
 
             std::optional<T> firstRow = co_await asyncExecutor().template submit<std::optional<T>>(
                     completionLoop,
-                    [dialect, limitedNode = std::move(limitedNode), pool, transaction, loaders = std::move(loaders)]() -> std::optional<T>
+                    [dialect, limitedNode = std::move(limitedNode), pool, transaction, loaders = std::move(loaders), includes = std::move(includes)]() -> std::optional<T>
                     {
                         std::vector<T> mappedRows;
                         {
                             ConnectionLease lease = acquireConnection(pool, transaction);
-                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, limitedNode);
+                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, limitedNode, includes);
                         }
                         for (const RelationLoader &relationLoader: loaders)
                         {
@@ -701,6 +779,7 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] Core::Task<std::int64_t> countAsync(Core::EventLoop &completionLoop)
         {
             requireOnline("countAsync()");
+            requireNoIncludesForAggregate("countAsync()");
 
             std::shared_ptr<SqlDialect> dialect = resolveDialect();
             // 与同步的 count() 同一条理由：列名展开的结果马上被 COUNT(*) 顶掉，不必先做一遍
@@ -931,6 +1010,21 @@ namespace AsynGyanis::Database::Queryable
         /// 本次查询要显式装载的关系（`then()` 登记）：见 RelationLoader 的说明
         std::vector<RelationLoader> m_relationLoaders;
 
+        /// 一次 `include()` 的取数侧处理器：JOIN 的投影怎么拆、拆出来的行挂到哪个成员
+        struct IncludeProcessor
+        {
+            /// 每行调用一次：把带前缀的关联列拆成一个对象挂到行上。
+            /// resolvedIndices 是**本次取数**的下标槽（首次调用时解析并填充）——槽位由 fetchRowsOn 每次执行现造，
+            /// 因此上一次执行的列下标不会被带进下一次（列结构变更后仍按名重解）
+            std::function<void(T &row, DatabaseResult &result, std::vector<std::size_t> &resolvedIndices)> attach;
+            /// 一对多折叠：把重复父行上挂到的子行并进首次出现的那一行（非折叠方向为空）
+            std::function<void(T &first, T &duplicate)> absorbDuplicate;
+            bool                                        foldsParentRows = false; ///< 该 include 是否会把父行乘开（一对多）
+        };
+
+        /// 本次查询用 `include()` 装载的关系（顺序与别名前缀 r0、r1… 一致）
+        std::vector<IncludeProcessor> m_includeProcessors;
+
         /**
          * @brief 造一条关系装载器
          * @details 在这里（`then()` 被调用时）查一次「这条关系声明过没有」：查不到当场抛，
@@ -1012,6 +1106,178 @@ namespace AsynGyanis::Database::Queryable
                         TableSchema<T>::kRelations);
             }
             return found;
+        }
+
+        /**
+         * @brief 判断某一格列名是否声明在行类型的 kColumns 里
+         * @tparam RowType 行类型
+         * @param columnName 列名
+         * @return bool 声明过即真
+         */
+        template<typename RowType>
+        [[nodiscard]] static constexpr bool columnIsDeclared(const std::string_view columnName)
+        {
+            bool declared = false;
+            std::apply(
+                    [&declared, columnName](const auto &...descriptors)
+                    {
+                        auto consider = [&declared, columnName](const auto &descriptor)
+                        {
+                            if (descriptor.columnName == columnName)
+                            {
+                                declared = true;
+                            }
+                        };
+                        (consider(descriptors), ...);
+                    },
+                    TableSchema<RowType>::kColumns);
+            return declared;
+        }
+
+        /**
+         * @brief 取某一格列名在 kColumns 里的位置（不存在时返回列数）
+         * @tparam RowType 行类型
+         * @param columnName 列名
+         * @return std::size_t 位置；未声明时为 kColumns 的列数
+         */
+        template<typename RowType, std::size_t... IndexPositions>
+        [[nodiscard]] static consteval std::size_t findColumnPosition(const std::string_view columnName, std::index_sequence<IndexPositions...>)
+        {
+            constexpr std::size_t columnCount = sizeof...(IndexPositions);
+            std::size_t           position    = columnCount;
+            auto                  consider    = [&position, columnName](const auto index, const bool matched)
+            {
+                if (matched)
+                {
+                    position = index;
+                }
+            };
+            (consider(IndexPositions, std::get<IndexPositions>(TableSchema<RowType>::kColumns).columnName == columnName), ...);
+            return position;
+        }
+
+        /**
+         * @brief 给 include 的关系加一条 LEFT JOIN
+         * @details 连接条件按方向取列：多对一（外键在本表）用「关联表主键 = 本表外键」，
+         *          一对多（外键在对方表）用「关联表外键 = 本表主键」。本表一侧用表名的最后一段
+         *          引用（`appendFieldReference` 逐段引用），因此与查询树自己的写法一致
+         * @tparam RelatedRow 关联行类型
+         * @tparam MemberType 目标成员类型
+         * @param relation 关系声明
+         * @param prefix 关联表别名（r0、r1…）
+         * @param isCollection 是否一对多
+         */
+        template<typename RelatedRow, typename MemberType>
+        void appendIncludeJoin(const RelationDescriptor<T, MemberType> &relation, const std::string_view prefix, const bool isCollection)
+        {
+            const std::string baseReference = (m_queryNode.tableAlias.empty() ? m_queryNode.tableName : m_queryNode.tableAlias);
+
+            JoinClause join;
+            join.type       = JoinType::Left;
+            join.tableName  = std::string(TableSchema<RelatedRow>::kTableName);
+            join.tableAlias = std::string(prefix);
+
+            WhereCondition onCondition;
+            onCondition.op = SqlOperator::Eq;
+            if (isCollection)
+            {
+                // 一对多：外键列在对方表（`Relation()` 的第二格），指向本表主键
+                onCondition.left  = FieldReference{.name = std::string(prefix) + "." + std::string(relation.foreignKeyColumn)};
+                onCondition.right = FieldReference{.name = baseReference + "." + std::string(TableSchema<T>::kPrimaryKey)};
+            } else
+            {
+                // 多对一：外键列在本表（`Relation()` 的第二格），指向对端主键
+                onCondition.left  = FieldReference{.name = std::string(prefix) + "." + std::string(TableSchema<RelatedRow>::kPrimaryKey)};
+                onCondition.right = FieldReference{.name = baseReference + "." + std::string(relation.foreignKeyColumn)};
+            }
+            join.conditions.push_back(std::move(onCondition));
+            m_queryNode.joins.push_back(std::move(join));
+        }
+
+        /**
+         * @brief 把关联行的全部列按「前缀__列名」加进 SELECT 投影
+         * @tparam RelatedRow 关联行类型
+         * @param prefix 别名前缀（r0、r1…）
+         */
+        template<typename RelatedRow>
+        void appendIncludeProjection(const std::string_view prefix)
+        {
+            std::apply(
+                    [this, prefix](const auto &...descriptors)
+                    {
+                        auto consider = [this, prefix](const auto &descriptor)
+                        {
+                            AliasColumn alias;
+                            alias.tableAlias = std::string(prefix);
+                            alias.columnName = std::string(descriptor.columnName);
+                            alias.outputName = std::string(prefix) + "__" + std::string(descriptor.columnName);
+                            m_queryNode.aliasColumns.push_back(std::move(alias));
+                        };
+                        (consider(descriptors), ...);
+                    },
+                    TableSchema<RelatedRow>::kColumns);
+        }
+
+        /**
+         * @brief 造一个 include 的取数侧处理器（拆投影、挂成员、折叠）
+         * @tparam RelatedRow 关联行类型
+         * @tparam MemberType 目标成员类型
+         * @param memberPointer 目标成员
+         * @param prefix 别名前缀（闭包按值持有一份字符串，不指向调用方的临时量）
+         * @return IncludeProcessor 处理器
+         */
+        template<typename RelatedRow, typename MemberType>
+        [[nodiscard]] static IncludeProcessor makeIncludeProcessor(MemberType T::*memberPointer, const std::string_view prefix)
+        {
+            using Target = Detail::RelationTarget<MemberType>;
+            // 关联行类型由上面的 if constexpr 保证是聚合体，tuple_size 因此可用
+            constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<RelatedRow>::kColumns)>>;
+            // 主键列在 kColumns 里的位置（include() 已确保它在）：装载时靠它那一格判「LEFT JOIN 配没配上」
+            constexpr std::size_t keyPosition = findColumnPosition<RelatedRow>(TableSchema<RelatedRow>::kPrimaryKey, std::make_index_sequence<columnCount>{});
+
+            IncludeProcessor processor;
+            processor.foldsParentRows = Target::isCollection;
+            processor.attach          = [memberPointer, prefix = std::string(prefix)](T &row, DatabaseResult &result, std::vector<std::size_t> &resolvedIndices)
+            {
+                if (resolvedIndices.empty())
+                {
+                    // 结果集的列结构不变：下标只在第一行解析一次并复用（与 mapResultRows 同一纪律）。
+                    // 槽位由本次取数创建，因此上一次执行的列下标不会被带进下一次
+                    const std::array<std::size_t, columnCount> indices = Detail::resolvePrefixedColumnIndices<RelatedRow>(result, prefix, std::make_index_sequence<columnCount>{});
+                    resolvedIndices.assign(indices.begin(), indices.end());
+                }
+
+                // 主键列是 NULL 即「LEFT JOIN 没配上」（配不上的行右侧整行为 NULL）；
+                // 先判它再逐列赋值：非 optional 成员读到 NULL 会抛映射异常，而这一格是正常情形
+                const DatabaseValue keyValue = result.getValue(resolvedIndices[keyPosition]);
+                if (std::holds_alternative<std::monostate>(keyValue))
+                {
+                    return;
+                }
+
+                RelatedRow related{};
+                Detail::assignRowFromIndices<RelatedRow>(related, result, resolvedIndices, std::make_index_sequence<columnCount>{});
+                if constexpr (Target::isCollection)
+                {
+                    (row.*(memberPointer)).push_back(std::move(related));
+                } else
+                {
+                    // U 直接赋值；std::optional<U> 由 optional 的 operator=(U&&) 接住
+                    row.*(memberPointer) = std::move(related);
+                }
+            };
+
+            if constexpr (Target::isCollection)
+            {
+                processor.absorbDuplicate = [memberPointer](T &first, T &duplicate)
+                {
+                    // 折叠：把重复父行上挂到的子行并进首次出现的那一行（按结果行顺序在尾部追加）
+                    auto &keptChildren    = first.*(memberPointer);
+                    auto &droppedChildren = duplicate.*(memberPointer);
+                    keptChildren.insert(keptChildren.end(), std::make_move_iterator(droppedChildren.begin()), std::make_move_iterator(droppedChildren.end()));
+                };
+            }
+            return processor;
         }
 
         /**
@@ -1219,6 +1485,37 @@ namespace AsynGyanis::Database::Queryable
             }
         }
 
+        /**
+         * @brief 本次查询是否带「会把父行乘开」的 include（一对多）
+         * @return bool 带折叠 include 即真
+         */
+        [[nodiscard]] bool hasFoldingInclude() const
+        {
+            for (const IncludeProcessor &processor: m_includeProcessors)
+            {
+                if (processor.foldsParentRows)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 聚合方向不接受 include：整段 SELECT 列表被 COUNT(*) 顶掉，JOIN 还会把一对多的行乘开
+         * @param methodName 调用方名字（count() / countAsync()），文案点名它
+         * @throws Base::LogicException 本次查询带 include
+         */
+        void requireNoIncludesForAggregate(const char *methodName) const
+        {
+            if (!m_includeProcessors.empty())
+            {
+                throw Base::LogicException(std::string("Queryable: ") + methodName +
+                                           " 不能与 include() 同时用：聚合方向整段 SELECT 列表会被 COUNT(*) 顶掉，JOIN 还会把一对多的行乘开让计数虚高。"
+                                           "请另起一条不带 include 的查询统计。");
+            }
+        }
+
 
         // ========================================================================
         // 在线执行支撑
@@ -1407,7 +1704,92 @@ namespace AsynGyanis::Database::Queryable
                 resolvedNode.selectColumns = allColumnNames();
             }
 
+            if (!m_includeProcessors.empty())
+            {
+                qualifyBaseColumnsForIncludes(resolvedNode);
+            }
+
             return resolvedNode;
+        }
+
+        /**
+         * @brief 判断一串列名文本是不是「纯列名」（只有标识符字节、不含点号与运算符）
+         * @param columnText 待判断的文本
+         * @return bool 是纯列名即真（表达式与已限定的名字都判否）
+         */
+        [[nodiscard]] static bool isPlainColumnName(const std::string_view columnText)
+        {
+            if (columnText.empty())
+            {
+                return false;
+            }
+            for (const char character: columnText)
+            {
+                const bool isIdentifierByte =
+                        (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_';
+                if (!isIdentifierByte)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief 带 include 时把基表列限定成「表名.列名」
+         * @details JOIN 一旦把两张表放进同一条语句，裸列名在同名列（几乎一定有的 `id`）上就是
+         *          歧义，服务端直接报错。因此带 include 的查询里：纯列名一律限定到**基表**，
+         *          表达式（`COUNT(*)` 之类）与已经带点的名字原样保留。条件树递归处理左右两侧，
+         *          IN 的值列表不动（那是绑定的参数，不是列名）
+         * @param node 待限定的查询树（就地修改）
+         */
+        static void qualifyBaseColumnsForIncludes(QueryNode &node)
+        {
+            const std::string baseReference = node.tableAlias.empty() ? node.tableName : node.tableAlias;
+
+            const auto qualifyField = [&baseReference](FieldReference &field)
+            {
+                if (isPlainColumnName(field.name))
+                {
+                    field.name = baseReference + "." + field.name;
+                }
+            };
+            const auto qualifyCondition = [&qualifyField](auto &&self, WhereCondition &condition) -> void
+            {
+                qualifyField(condition.left);
+                if (auto *const rightField = std::get_if<FieldReference>(&condition.right))
+                {
+                    qualifyField(*rightField);
+                }
+                for (WhereCondition &child: condition.children)
+                {
+                    self(self, child);
+                }
+            };
+
+            for (std::string &columnName: node.selectColumns)
+            {
+                if (isPlainColumnName(columnName))
+                {
+                    columnName = baseReference + "." + columnName;
+                }
+            }
+            for (OrderByClause &order: node.orderBy)
+            {
+                qualifyField(order.field);
+            }
+            for (FieldReference &field: node.groupBy)
+            {
+                qualifyField(field);
+            }
+            if (node.having.has_value())
+            {
+                qualifyCondition(qualifyCondition, node.having.value());
+            }
+            for (WhereCondition &condition: node.whereConditions)
+            {
+                qualifyCondition(qualifyCondition, condition);
+            }
         }
 
         /**
@@ -1421,7 +1803,7 @@ namespace AsynGyanis::Database::Queryable
             const SqlDialect &dialect = requireDialect();
             ConnectionLease   lease   = acquireConnection(m_pool, m_transaction);
             // 连接在 result 之前声明、之后析构，二者按声明逆序销毁，因此连接必定比结果集活得久
-            return fetchRowsOn(*lease.connection, dialect, queryNode);
+            return fetchRowsOn(*lease.connection, dialect, queryNode, m_includeProcessors);
         }
 
         /**
@@ -1445,13 +1827,18 @@ namespace AsynGyanis::Database::Queryable
          * @param connection 目标连接，必须在结果集存活期间保持有效
          * @param dialect 方言，提供 translate()
          * @param queryNode 已展开列的查询树
+         * @param includes 本次查询的 include 处理器（为空即普通映射路径，一字不改）
          * @return std::vector<T> 映射后的行列表
          * @throws DatabaseException SQL 执行失败或行映射失败
+         * @throws Base::LogicException 一对多的 include 与 LIMIT / OFFSET 同时出现（分页数的是结果行，不是父行数）
          * @note SQLite 的结果集持有连接句柄的非拥有指针，因此 connection 必须比结果集活得久：
          *       这一点由调用方持有连接租约、且租约比本函数返回值活得更久来保证
          */
-        [[nodiscard]] static std::vector<T> fetchRowsOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &queryNode)
+        [[nodiscard]] static std::vector<T> fetchRowsOn(DatabaseConnection &connection, const SqlDialect &dialect, const QueryNode &queryNode,
+                                                        const std::span<const IncludeProcessor> includes = {})
         {
+            requireCompatibleIncludes(queryNode, includes);
+
             const auto [sql, parameters] = dialect.translate(queryNode);
 
             const std::unique_ptr<DatabaseResult> result = connection.execute(std::string_view{sql}, parameters);
@@ -1462,7 +1849,128 @@ namespace AsynGyanis::Database::Queryable
                 throw QueryExecutionException("Queryable: 查询执行失败：" + connection.lastError(), connection.lastNativeErrorCode());
             }
 
-            return mapResultRows<T>(*result);
+            if (includes.empty())
+            {
+                return mapResultRows<T>(*result);
+            }
+
+            return mapRowsWithIncludes(*result, includes);
+        }
+
+        /**
+         * @brief 校验 include 与分页的组合是合法的（在翻译与执行之前判，问题与数据库无关）
+         * @param queryNode 查询树（读分页信息）
+         * @param includes 本次查询的 include 处理器
+         * @throws Base::LogicException 一对多的 include 与 LIMIT / OFFSET 同时出现
+         */
+        static void requireCompatibleIncludes(const QueryNode &queryNode, const std::span<const IncludeProcessor> includes)
+        {
+            for (const IncludeProcessor &processor: includes)
+            {
+                if (processor.foldsParentRows && (queryNode.limit.has_value() || queryNode.offset.has_value()))
+                {
+                    // LIMIT 数的是结果行；一对多的 JOIN 会把父行按子行乘开，压到 N 会把父行的子行截掉。
+                    // 静默给出一份缺子行的结果比拒绝糟得多，因此这里当场挡住
+                    throw Base::LogicException("Queryable: 一对多的 include 不能与 LIMIT / OFFSET 同时用——分页数的是结果行（父行会被子行乘开），不是父行数。"
+                                               "要限制父行请先查出父行、再用 then() 补取子行");
+                }
+            }
+        }
+
+        /**
+         * @brief 带 include 的逐行映射：映射基表行之后把带前缀的关联列拆出来挂上，再折叠一对多
+         * @details 与 mapResultRows 同一纪律：基表列下标只在第一行解析一次并复用、空结果集不解析列；
+         *          include 各自的下标槽由本次调用现造（见 IncludeProcessor::attach）
+         * @param result 结果集，会被推进
+         * @param includes 本次查询的 include 处理器
+         * @return std::vector<T> 映射（并折叠）后的行列表
+         */
+        [[nodiscard]] static std::vector<T> mapRowsWithIncludes(DatabaseResult &result, const std::span<const IncludeProcessor> includes)
+        {
+            bool foldsParentRows = false;
+            for (const IncludeProcessor &processor: includes)
+            {
+                foldsParentRows = foldsParentRows || processor.foldsParentRows;
+            }
+
+            static_assert(Detail::allColumnTypesSupported<T>(), "Queryable：TableSchema<T>::kColumns 中存在不支持的列类型（见 RowMapper.h 的说明）");
+
+            std::vector<std::vector<std::size_t>> resolvedIndices(includes.size());
+
+            constexpr std::size_t columnCount = std::tuple_size_v<std::remove_cvref_t<decltype(TableSchema<T>::kColumns)>>;
+            std::vector<T>        rows;
+            if (const std::size_t knownRowCount = result.rowCount(); knownRowCount > 0)
+            {
+                rows.reserve(knownRowCount);
+            }
+
+            std::array<std::size_t, columnCount> columnIndices{};
+            bool                                 isBaseResolved = false;
+            while (result.next())
+            {
+                if (!isBaseResolved)
+                {
+                    columnIndices  = Detail::resolveColumnIndices<T>(result, std::make_index_sequence<columnCount>{});
+                    isBaseResolved = true;
+                }
+                T mappedRow{};
+                Detail::assignRowFromIndices<T>(mappedRow, result, columnIndices, std::make_index_sequence<columnCount>{});
+                for (std::size_t index = 0; index < includes.size(); ++index)
+                {
+                    includes[index].attach(mappedRow, result, resolvedIndices[index]);
+                }
+                rows.push_back(std::move(mappedRow));
+            }
+
+            if (foldsParentRows)
+            {
+                foldIncludedParentRows(rows, includes);
+            }
+            return rows;
+        }
+
+        /**
+         * @brief 把一对多 include 乘开的重复父行折叠回一行
+         * @details 按基表主键认「同一个父行」：首次出现的行留在结果里并占住位置，后续重复行上的
+         *          子行按结果行顺序并进首次出现的那一行，重复行被丢弃。父行的先后按首次出现定，
+         *          因此调用方的 ORDER BY 仍然说了算
+         * @param rows 待折叠的行列表（就地修改）
+         * @param includes 本次查询的 include 处理器（折叠只走带 absorbDuplicate 的那些）
+         * @throws Base::LogicException 基表主键列不在结果集里（include() 已在声明阶段挡过，这里兜住「行类型被换过」）
+         */
+        static void foldIncludedParentRows(std::vector<T> &rows, const std::span<const IncludeProcessor> includes)
+        {
+            std::map<std::string, std::size_t> firstSeenAt;
+            std::size_t                        keptRows = 0;
+            for (std::size_t index = 0; index < rows.size(); ++index)
+            {
+                const std::optional<DatabaseValue> key = readColumnValue(rows[index], TableSchema<T>::kPrimaryKey);
+                if (!key.has_value())
+                {
+                    throw Base::LogicException("Queryable: 一对多的 include 需要基表主键列（" + std::string(TableSchema<T>::kPrimaryKey) +
+                                               "）出现在结果集里——折叠重复父行要靠它认行");
+                }
+
+                const auto [position, inserted] = firstSeenAt.try_emplace(indexKeyOf(*key), keptRows);
+                if (inserted)
+                {
+                    if (keptRows != index)
+                    {
+                        rows[keptRows] = std::move(rows[index]);
+                    }
+                    ++keptRows;
+                    continue;
+                }
+
+                for (const IncludeProcessor &processor: includes)
+                {
+                    if (processor.absorbDuplicate)
+                    {
+                        processor.absorbDuplicate(rows[position->second], rows[index]);
+                    }
+                }
+            }
+            rows.resize(keptRows);
         }
 
         /**
@@ -2059,37 +2567,47 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 构建 SELECT SQL 语句
          * @return std::string 完整的 SELECT 语句
+         * @note 带 include 的查询走已解析的查询树（基表列已限定、别名投影会列出）：这份调试文本
+         *       才反映真正执行的形状；不带 include 时行为与之前逐字相同
          */
         [[nodiscard]] std::string buildSelectSql() const
         {
+            const QueryNode  resolvedNode = m_includeProcessors.empty() ? QueryNode{} : resolvedQueryNode();
+            const QueryNode &node         = m_includeProcessors.empty() ? m_queryNode : resolvedNode;
+
             std::string sql;
 
             // SELECT 子句
             sql += "SELECT ";
-            if (m_queryNode.selectColumns.empty())
+            if (node.selectColumns.empty())
             {
                 sql += '*';
             } else
             {
-                for (std::size_t i = 0; i < m_queryNode.selectColumns.size(); ++i)
+                for (std::size_t i = 0; i < node.selectColumns.size(); ++i)
                 {
                     if (i > 0)
                         sql += ", ";
-                    sql += m_queryNode.selectColumns[i];
+                    sql += node.selectColumns[i];
                 }
+            }
+            for (const AliasColumn &aliasColumn: node.aliasColumns)
+            {
+                sql += ", ";
+                sql += aliasColumn.tableAlias + "." + aliasColumn.columnName + " AS " + aliasColumn.outputName;
             }
 
             // FROM 子句
             sql += " FROM ";
-            sql += m_queryNode.tableName;
-            if (!m_queryNode.tableAlias.empty())
+            sql += node.tableName;
+            if (!node.tableAlias.empty())
             {
                 sql += " AS ";
-                sql += m_queryNode.tableAlias;
+                sql += node.tableAlias;
             }
 
             // JOIN 子句
-            for (const auto &[type, tableName, tableAlias, conditions]: m_queryNode.joins)
+            for (const auto &[type, tableName, tableAlias, conditions]: node.joins)
             {
                 sql += ' ';
                 sql += joinTypeToString(type);
@@ -2113,60 +2631,60 @@ namespace AsynGyanis::Database::Queryable
             }
 
             // WHERE 子句
-            if (!m_queryNode.whereConditions.empty())
+            if (!node.whereConditions.empty())
             {
                 sql += " WHERE ";
-                for (std::size_t i = 0; i < m_queryNode.whereConditions.size(); ++i)
+                for (std::size_t i = 0; i < node.whereConditions.size(); ++i)
                 {
                     if (i > 0)
                         sql += " AND ";
-                    sql += buildConditionString(m_queryNode.whereConditions[i]);
+                    sql += buildConditionString(node.whereConditions[i]);
                 }
             }
 
             // GROUP BY 子句
-            if (!m_queryNode.groupBy.empty())
+            if (!node.groupBy.empty())
             {
                 sql += " GROUP BY ";
-                for (std::size_t i = 0; i < m_queryNode.groupBy.size(); ++i)
+                for (std::size_t i = 0; i < node.groupBy.size(); ++i)
                 {
                     if (i > 0)
                         sql += ", ";
-                    sql += fieldReferenceToString(m_queryNode.groupBy[i]);
+                    sql += fieldReferenceToString(node.groupBy[i]);
                 }
             }
 
             // HAVING 子句
-            if (m_queryNode.having.has_value())
+            if (node.having.has_value())
             {
                 sql += " HAVING ";
-                sql += buildConditionString(m_queryNode.having.value());
+                sql += buildConditionString(node.having.value());
             }
 
             // ORDER BY 子句
-            if (!m_queryNode.orderBy.empty())
+            if (!node.orderBy.empty())
             {
                 sql += " ORDER BY ";
-                for (std::size_t i = 0; i < m_queryNode.orderBy.size(); ++i)
+                for (std::size_t i = 0; i < node.orderBy.size(); ++i)
                 {
                     if (i > 0)
                         sql += ", ";
-                    sql += orderByToString(m_queryNode.orderBy[i]);
+                    sql += orderByToString(node.orderBy[i]);
                 }
             }
 
             // LIMIT 子句
-            if (m_queryNode.limit.has_value())
+            if (node.limit.has_value())
             {
                 sql += " LIMIT ";
-                sql += std::to_string(m_queryNode.limit.value());
+                sql += std::to_string(node.limit.value());
             }
 
             // OFFSET 子句
-            if (m_queryNode.offset.has_value())
+            if (node.offset.has_value())
             {
                 sql += " OFFSET ";
-                sql += std::to_string(m_queryNode.offset.value());
+                sql += std::to_string(node.offset.value());
             }
 
             return sql;

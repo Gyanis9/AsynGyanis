@@ -49,6 +49,7 @@ namespace
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::SqlStatement;
     using AsynGyanis::Database::TransactionIsolationLevel;
+    using AsynGyanis::Database::Queryable::AliasColumn;
     using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::JoinClause;
     using AsynGyanis::Database::Queryable::JoinType;
@@ -975,6 +976,28 @@ TEST(SqliteDialectJoin, TableNameWithEmptySegmentAroundDotIsRejected)
     {
         EXPECT_NE(std::string_view(failure.what()).find("空段"), std::string_view::npos) << failure.what();
     }
+}
+
+/**
+ * @brief 验证别名列渲染成 `"别名"."列" AS "输出名"`（关系装载 include 的投影形状）
+ *
+ * @details 三段都走引用：关联表别名与列名逐段引用（表名的同款理由），输出名作为标识符引用。
+ *          输出名要能被结果集按列名查回来，因此它不接受表达式——写进表达式那一格就查不回来了。
+ */
+TEST(SqliteDialectSelect, AliasColumnsAreRenderedAfterTheBaseColumns)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "posts";
+    node.selectColumns = {"id", "title"};
+    node.aliasColumns.push_back(AliasColumn{.tableAlias = "r0", .columnName = "id", .outputName = "r0__id"});
+    node.aliasColumns.push_back(AliasColumn{.tableAlias = "r0", .columnName = "name", .outputName = "r0__name"});
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT \"id\", \"title\", \"r0\".\"id\" AS \"r0__id\", \"r0\".\"name\" AS \"r0__name\" FROM \"posts\"");
+    EXPECT_TRUE(statement.parameters.empty());
 }
 
 /**

@@ -119,6 +119,11 @@ namespace AsynGyanis::Database
             {
                 identifierBytes += joinClause.tableName.size() + joinClause.tableAlias.size();
             }
+            for (const Queryable::AliasColumn &aliasColumn: query.aliasColumns)
+            {
+                // 别名列渲染出三段标识符（别名、列名、输出名）与一个 " AS "
+                identifierBytes += aliasColumn.tableAlias.size() + aliasColumn.columnName.size() * 2U + aliasColumn.outputName.size() + 8U;
+            }
             for (const Queryable::FieldReference &field: query.groupBy)
             {
                 identifierBytes += field.name.size();
@@ -338,6 +343,38 @@ namespace AsynGyanis::Database
         }
     }
 
+    void StandardSqlDialect::appendSelectList(std::string &sqlText, const Queryable::QueryNode &query) const
+    {
+        if (query.selectColumns.empty())
+        {
+            // 查询树没有指定列时退化为通配符。ORM 层（Queryable<T>）在需要按 TableSchema
+            // 的列序对齐结果时才显式展开列名，方言层不依赖任何模板参数，因此只能给出
+            // 语法上最通用、顺序由数据库决定的 '*'
+            sqlText += '*';
+        } else
+        {
+            for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    sqlText += ", ";
+                }
+                appendFieldReference(sqlText, query.selectColumns[index]);
+            }
+        }
+
+        // 关系装载（include）的别名列跟在主表列之后：`"r0"."id" AS "r0__id"`。
+        // 两侧都逐段引用（见表名的同款理由），输出名只作为标识符引用、不接受表达式——它要能被
+        // 结果集按列名查回来，写进表达式会让那一格变成一个查不回来的名字
+        for (const Queryable::AliasColumn &aliasColumn: query.aliasColumns)
+        {
+            sqlText += ", ";
+            appendFieldReference(sqlText, aliasColumn.tableAlias + "." + aliasColumn.columnName);
+            sqlText += " AS ";
+            appendQuotedIdentifier(sqlText, aliasColumn.outputName);
+        }
+    }
+
     void StandardSqlDialect::appendColumnList(std::string &sqlText, const Queryable::QueryNode &query) const
     {
         for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
@@ -448,23 +485,7 @@ namespace AsynGyanis::Database
 
         // ---------- SELECT 列 ----------
         sqlText += "SELECT ";
-        if (query.selectColumns.empty())
-        {
-            // 查询树没有指定列时退化为通配符。ORM 层（Queryable<T>）在需要按 TableSchema
-            // 的列序对齐结果时才显式展开列名，方言层不依赖任何模板参数，因此只能给出
-            // 语法上最通用、顺序由数据库决定的 '*'
-            sqlText += '*';
-        } else
-        {
-            for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
-            {
-                if (index > 0)
-                {
-                    sqlText += ", ";
-                }
-                appendFieldReference(sqlText, query.selectColumns[index]);
-            }
-        }
+        appendSelectList(sqlText, query);
 
         // ---------- FROM ----------
         sqlText += " FROM ";

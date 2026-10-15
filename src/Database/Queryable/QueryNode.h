@@ -188,6 +188,25 @@ namespace AsynGyanis::Database::Queryable
     };
 
     // ========================================================================
+    // AliasColumn
+    // ========================================================================
+
+    /**
+     * @brief SELECT 列表里的别名列 —— 渲染成 `"别名"."列" AS "输出名"`
+     *
+     * @details 关系装载（`Queryable::include()`）用它把关联表的列以唯一名字带进结果集：
+     *          同一张结果集里还要放主表自己的列，靠「别名 + 双下划线」把两边的同名列分开。
+     *          方言层按自己的引用字符逐段渲染，因此这里存的都是**纯标识符**，不带引用符号、
+     *          也不接受表达式（表达式口径见 `select()` 的信任边界）。
+     */
+    struct ASYN_DATABASE_API AliasColumn
+    {
+        std::string tableAlias; ///< 关联表别名（如 "r0"），逐段引用
+        std::string columnName; ///< 关联表的列名
+        std::string outputName; ///< AS 之后的输出列名（前缀 + 双下划线 + 列名）
+    };
+
+    // ========================================================================
     // QueryNode
     // ========================================================================
 
@@ -229,6 +248,11 @@ namespace AsynGyanis::Database::Queryable
         /// 它不占参数位（文本里不出现占位符），因此不改动「SET 参数在前、条件参数在后」那条顺序契约；
         /// 只在 UPDATE 方向参与渲染，其余方向读完即弃
         std::vector<std::string> incrementColumns;
+
+        /// SELECT 列表里「主表列之后」追加的别名列（关系装载 include 的投影，见 AliasColumn）。
+        /// 只被 translate() 的 SELECT 分支读取——INSERT / UPDATE / DELETE 方向读完即弃；
+        /// 统计类查询（COUNT）整段 SELECT 列表被顶掉，ORM 因此拒绝「include + 聚合」同用
+        std::vector<AliasColumn> aliasColumns;
     };
 
 } // namespace AsynGyanis::Database::Queryable

@@ -44,6 +44,7 @@ namespace
     using AsynGyanis::Database::SqlDialect;
     using AsynGyanis::Database::SqlStatement;
     using AsynGyanis::Database::TransactionIsolationLevel;
+    using AsynGyanis::Database::Queryable::AliasColumn;
     using AsynGyanis::Database::Queryable::FieldReference;
     using AsynGyanis::Database::Queryable::JoinClause;
     using AsynGyanis::Database::Queryable::JoinType;
@@ -89,6 +90,27 @@ TEST(MySqlDialectIdentifier, QuoteIdentifierDoublesEmbeddedBacktick)
     EXPECT_EQ(dialect.quoteIdentifier("weird`name"), "`weird``name`");
     EXPECT_EQ(dialect.quoteIdentifier("a`b`c"), "`a``b``c`");
     EXPECT_EQ(dialect.quoteIdentifier(""), "``");
+}
+
+/**
+ * @brief 验证别名列在 MySQL 侧走反引号（关系装载 include 的投影形状）
+ *
+ * @details 与 SQLite 侧同一条判据的对照：输出名与两段限定名都必须按本引擎的引用字符渲染。
+ *          双引号在 MySQL 默认 sql_mode 下是字符串字面量，写成 `"r0"."id"` 会让整条投影失去语义。
+ */
+TEST(MySqlDialectSelect, AliasColumnsUseBackticks)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "posts";
+    node.selectColumns = {"id"};
+    node.aliasColumns.push_back(AliasColumn{.tableAlias = "r0", .columnName = "id", .outputName = "r0__id"});
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT `id`, `r0`.`id` AS `r0__id` FROM `posts`");
+    EXPECT_TRUE(statement.parameters.empty());
 }
 
 /**
