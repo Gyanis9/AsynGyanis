@@ -29,11 +29,14 @@
 #include "Database/Pool/Transaction.h"
 #include "Database/Queryable/Expression.h"
 #include "Database/Queryable/QueryNode.h"
+#include "Database/Queryable/Relations.h"
 #include "Database/Queryable/RowMapper.h"
 #include "Database/Queryable/TableSchema.h"
 
 #include <algorithm>
 #include <format>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -202,6 +205,36 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 显式装载一条关系：把关联行按外键**分批补取**回来并挂到结果上
+         *
+         * @details 这是「显式装载」而不是懒加载：本仓不做会挂起属性访问的代理（那在协程运行时里
+         *          是最容易咬人的形状）。补取是**第二条查询**（`SELECT … WHERE 外键 IN (…)`），
+         *          按方言的参数上限分块，因此一对多也不会把父行乘成笛卡尔积——这正是它与 JOIN
+         *          那条路的分工：子行多时用本方法，一对一又想省一趟往返时才用一次 JOIN 取回。
+         *
+         * @details 方向由成员类型决定（见 `RelationDescriptor`）：`std::vector<U>` 是一对多
+         *          （外键列在 U 的表里、指向本行主键），`U` / `std::optional<U>` 是多对一
+         *          （外键列在本表里、指向 U 的主键）。要装载的成员必须先在
+         *          `TableSchema<T>::kRelations` 里用 `Relation()` 声明过，否则当场抛点名那个成员的
+         *          `LogicException`——装配错误要在**第一次查询**时就出声，不要等某天悄悄少挂一半数据。
+         *
+         * @details 空结果集不发第二条查询；补取不到的行（对端已删）在可空成员上留空、
+         *          在 `std::vector` 成员上留空列表、在必填的非 optional 成员上保持原值（不覆写、不抛）。
+         *
+         * @param memberPointer 要装载的成员（`&Post::author` 这类）
+         * @return Queryable& 自身引用，支持链式调用
+         * @throws Base::LogicException 当前为离线模式（要方言定参数上限）；或该成员没有在
+         *         `kRelations` 里声明过
+         * @note 对 `first()` / `firstAsync()` 同样生效：它们把单行包成一行列表走同一条装载路径
+         */
+        template<typename MemberType>
+        Queryable &then(MemberType T::*memberPointer)
+        {
+            m_relationLoaders.push_back(makeRelationLoader(memberPointer, m_pool, m_transaction, resolveDialect()));
+            return *this;
+        }
+
+        /**
          * @brief 添加 JOIN 子句
          *
          * @param join 连接子句
@@ -287,7 +320,11 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] std::vector<T> toList()
         {
             requireOnline("toList()");
-            return fetchRows(resolvedQueryNode());
+
+            std::vector<T> rows = fetchRows(resolvedQueryNode());
+            // 装载在取数那条连接释放之后跑：补取会再借一条（池上限为 1 的部署里，握着第一条等第二条就是死等）
+            runRelationLoaders(rows);
+            return rows;
         }
 
         /**
@@ -309,7 +346,19 @@ namespace AsynGyanis::Database::Queryable
             // 只取一行：LIMIT 1 让数据库侧提前停止扫描，比取回全部再取首元素高效得多
             limitedNode.limit = 1U;
 
-            return fetchFirst(limitedNode);
+            if (m_relationLoaders.empty())
+            {
+                return fetchFirst(limitedNode);
+            }
+
+            // 有装载器时走列表路径：装载器就地改一个 vector，单行包成一行即可（LIMIT 1 照样生效）
+            std::vector<T> rows = fetchRows(limitedNode);
+            runRelationLoaders(rows);
+            if (rows.empty())
+            {
+                return std::nullopt;
+            }
+            return std::optional<T>(std::move(rows.front()));
         }
 
         /**
@@ -563,16 +612,28 @@ namespace AsynGyanis::Database::Queryable
             QueryNode                   resolvedNode = resolvedQueryNode();
             ConnectionPool             *pool         = m_pool;
             Transaction                *transaction  = m_transaction;
+            // 装载器按值拷进任务：它们捕获的是池/事务/方言，在工作线程上跑与在调用线程上一样安全
+            std::vector<RelationLoader> loaders = m_relationLoaders;
 
             // 类模板内经由成员函数返回值访问成员模板时，GCC 要求名字前写 template 关键字，
             // 否则 '<' 会被当成小于号解析；MSVC 接受缺省写法，这里按最严的编译器来写
-            std::vector<T> rows = co_await asyncExecutor().template submit<std::vector<T>>(completionLoop,
-                                                                                           [dialect, resolvedNode = std::move(resolvedNode), pool, transaction]() -> std::vector<T>
-                                                                                           {
-                                                                                               // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
-                                                                                               ConnectionLease lease = acquireConnection(pool, transaction);
-                                                                                               return fetchRowsOn(*lease.connection, *dialect, resolvedNode);
-                                                                                           });
+            std::vector<T> rows = co_await asyncExecutor().template submit<std::vector<T>>(
+                    completionLoop,
+                    [dialect, resolvedNode = std::move(resolvedNode), pool, transaction, loaders = std::move(loaders)]() -> std::vector<T>
+                    {
+                        std::vector<T> mappedRows;
+                        {
+                            // 整段阻塞链路在工作线程上执行：取连接、执行语句、逐行映射成结构体
+                            ConnectionLease lease = acquireConnection(pool, transaction);
+                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, resolvedNode);
+                        }
+                        // 补取排在取数连接释放之后：池上限为 1 时，握着第一条等第二条就是死等
+                        for (const RelationLoader &relationLoader: loaders)
+                        {
+                            relationLoader(mappedRows);
+                        }
+                        return mappedRows;
+                    });
 
             co_return rows;
         }
@@ -599,14 +660,28 @@ namespace AsynGyanis::Database::Queryable
             limitedNode.limit           = 1U;
             ConnectionPool *pool        = m_pool;
             Transaction    *transaction = m_transaction;
+            // 装载器按值拷进任务（理由同 toListAsync()）
+            std::vector<RelationLoader> loaders = m_relationLoaders;
 
-            std::optional<T> firstRow =
-                    co_await asyncExecutor().template submit<std::optional<T>>(completionLoop,
-                                                                               [dialect, limitedNode = std::move(limitedNode), pool, transaction]() -> std::optional<T>
-                                                                               {
-                                                                                   ConnectionLease lease = acquireConnection(pool, transaction);
-                                                                                   return fetchFirstOn(*lease.connection, *dialect, limitedNode);
-                                                                               });
+            std::optional<T> firstRow = co_await asyncExecutor().template submit<std::optional<T>>(
+                    completionLoop,
+                    [dialect, limitedNode = std::move(limitedNode), pool, transaction, loaders = std::move(loaders)]() -> std::optional<T>
+                    {
+                        std::vector<T> mappedRows;
+                        {
+                            ConnectionLease lease = acquireConnection(pool, transaction);
+                            mappedRows            = fetchRowsOn(*lease.connection, *dialect, limitedNode);
+                        }
+                        for (const RelationLoader &relationLoader: loaders)
+                        {
+                            relationLoader(mappedRows);
+                        }
+                        if (mappedRows.empty())
+                        {
+                            return std::nullopt;
+                        }
+                        return std::optional<T>(std::move(mappedRows.front()));
+                    });
 
             co_return firstRow;
         }
@@ -849,6 +924,302 @@ namespace AsynGyanis::Database::Queryable
         }
 
     private:
+        /// 关系装载器：拿着行列表去补取并把关联挂上。闭包捕获池/事务/方言，**不捕获 this**——
+        /// 查询构建器在链式调用里会被移动，捕获 this 的闭包在移动之后指向旧对象
+        using RelationLoader = std::function<void(std::vector<T> &)>;
+
+        /// 本次查询要显式装载的关系（`then()` 登记）：见 RelationLoader 的说明
+        std::vector<RelationLoader> m_relationLoaders;
+
+        /**
+         * @brief 造一条关系装载器
+         * @details 在这里（`then()` 被调用时）查一次「这条关系声明过没有」：查不到当场抛，
+         *          而不是等到装载时才发现少了一个成员
+         * @param memberPointer 目标成员
+         * @param pool 连接池（可为空：只有事务时走事务）
+         * @param transaction 绑定的事务（可为空）
+         * @param dialect 目标引擎的方言（定补取语句的参数上限）
+         * @return RelationLoader 装载器
+         * @throws Base::LogicException TableSchema<T>::kRelations 里没有这个成员的声明
+         */
+        template<typename MemberType>
+        [[nodiscard]] static RelationLoader makeRelationLoader(const MemberType T::*memberPointer, ConnectionPool *pool, Transaction *transaction,
+                                                               std::shared_ptr<SqlDialect> dialect)
+        {
+            if (findRelationOf(memberPointer) == nullptr)
+            {
+                throw Base::LogicException("Queryable: then() 要装载的成员没有在 TableSchema<" + std::string(TableSchema<T>::kTableName) +
+                                           ">::kRelations 里声明过——请先加一条 Relation(&T::成员, \"外键列\")");
+            }
+
+            return [memberPointer, pool, transaction, dialect = std::move(dialect)](std::vector<T> &rows)
+            {
+                if (rows.empty())
+                {
+                    return; // 空结果集不发第二条查询
+                }
+
+                using Target     = Detail::RelationTarget<MemberType>;
+                using RelatedRow = typename Target::RowType;
+                // 成员类型必须是一个登记过的行类型：指向别的东西（比如 std::string）时整个装载器
+                // 不实例化——否则编译期会在 TableSchema<std::string> 上炸掉，而那是调用方写错了接口
+                // （then() 里那次 findRelationOf 已经先抛了）
+                if constexpr (!std::is_aggregate_v<RelatedRow>)
+                {
+                    throw Base::LogicException("Queryable: then() 指向的成员不是一张登记过的行类型（关系装载只认 std::vector<行> 与 行/optional<行>）");
+                } else if constexpr (Target::isCollection)
+                {
+                    loadOneToMany<RelatedRow, MemberType>(*findRelationOf(memberPointer), *dialect, pool, transaction, rows);
+                } else
+                {
+                    loadManyToOne<RelatedRow, MemberType>(*findRelationOf(memberPointer), *dialect, pool, transaction, rows);
+                }
+            };
+        }
+
+        /**
+         * @brief 在 TableSchema<T>::kRelations 里按成员指针取那条声明
+         * @param memberPointer 目标成员
+         * @return 声明指针；未声明时为空
+         */
+        template<typename MemberType>
+        [[nodiscard]] static const RelationDescriptor<T, MemberType> *findRelationOf(const MemberType T::*memberPointer)
+        {
+            const RelationDescriptor<T, MemberType> *found = nullptr;
+
+            // 直接遍历 TableSchema<T>::kRelations（static constexpr，寿命到程序结束）。
+            // **不能**改成遍历一个按值返回的取元组的帮助函数：那样 `&relation` 指向的是一个
+            // 语句结束就销毁的临时量——实测症状是装载挂不上（读到的成员指针是野的）与偶发访问违例
+            if constexpr (requires { TableSchema<T>::kRelations; })
+            {
+                std::apply(
+                        [&](const auto &...relations)
+                        {
+                            auto consider = [&](const auto &relation)
+                            {
+                                // 只比较同形的成员指针：kRelations 里可能同时放着 vector<U> 与 optional<V>，
+                                // 拿不同形的成员指针做比较编译不过（requires 在这里充当那个过滤器）
+                                if constexpr (requires { relation.memberPointer == memberPointer; })
+                                {
+                                    if (relation.memberPointer == memberPointer)
+                                    {
+                                        found = &relation;
+                                    }
+                                }
+                            };
+                            (consider(relations), ...);
+                        },
+                        TableSchema<T>::kRelations);
+            }
+            return found;
+        }
+
+        /**
+         * @brief 把行键渲染成可比较的索引文本
+         * @details `DatabaseValue` 的备选里有无序哈希表（没有 `<`），整个 variant 因此不可比较，
+         *          不能直接当 `std::map` 的键。这里按「备选下标 + 取值文本」拼一个：下标保证
+         *          「不同备选里的同一个文本」不会撞（例如整数 1 与文本 "1"）
+         * @param key 键值（关系两端的主键/外键，都是标量）
+         * @return std::string 索引键
+         */
+        [[nodiscard]] static std::string indexKeyOf(const DatabaseValue &key)
+        {
+            return std::to_string(key.index()) + "|" + describeValueForConflictMessage(key);
+        }
+
+        /**
+         * @brief 从一行结构体里按列名取值
+         * @details 借的是 kColumns 的元组：列名对得上就取那个成员的值——关系的两端（外键与主键）
+         *          因此必须在各自的 TableSchema 里声明过，这是本层的契约
+         * @tparam RowType 行类型
+         * @param row 已映射的行
+         * @param columnName 列名
+         * @return std::optional<DatabaseValue> 取值；该行类型没有这一列时为空
+         */
+        template<typename RowType>
+        [[nodiscard]] static std::optional<DatabaseValue> readColumnValue(const RowType &row, const std::string_view columnName)
+        {
+            std::optional<DatabaseValue> value;
+            std::apply(
+                    [&](const auto &...descriptors)
+                    {
+                        auto consider = [&](const auto &descriptor)
+                        {
+                            if (descriptor.columnName == columnName)
+                            {
+                                value = Detail::toDatabaseValue(row.*(descriptor.memberPointer), descriptor.columnName);
+                            }
+                        };
+                        (consider(descriptors), ...);
+                    },
+                    TableSchema<RowType>::kColumns);
+            return value;
+        }
+
+        /**
+         * @brief 多对一：按本表外键列的取值补取对端行，再逐个挂上去
+         * @tparam RelatedRow 对端行类型
+         * @tparam MemberType 目标成员类型（`RelatedRow` 或 `std::optional<RelatedRow>`）
+         * @param relation 关系声明（外键列在本表）
+         * @param dialect 方言
+         * @param pool 连接池
+         * @param transaction 事务（可为空）
+         * @param rows 待装载的行
+         */
+        template<typename RelatedRow, typename MemberType>
+        static void loadManyToOne(const RelationDescriptor<T, MemberType> &relation, const SqlDialect &dialect, ConnectionPool *pool, Transaction *transaction,
+                                  std::vector<T> &rows)
+        {
+            std::vector<DatabaseValue> keys;
+            for (const T &row: rows)
+            {
+                if (const std::optional<DatabaseValue> key = readColumnValue(row, relation.foreignKeyColumn); key.has_value() && !std::holds_alternative<std::monostate>(*key))
+                {
+                    keys.push_back(*key);
+                }
+            }
+            if (keys.empty())
+            {
+                return;
+            }
+
+            const std::string_view  targetKey = TableSchema<RelatedRow>::kPrimaryKey;
+            std::vector<RelatedRow> related   = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, targetKey, keys);
+
+            // 索引：对端的主键值 → 在结果里的位置（拷 RelatedRow 不便宜，命中的行按引用取一次）
+            std::map<std::string, std::size_t> index;
+            for (std::size_t position = 0; position < related.size(); ++position)
+            {
+                if (const std::optional<DatabaseValue> key = readColumnValue(related[position], targetKey); key.has_value())
+                {
+                    index.emplace(indexKeyOf(*key), position);
+                }
+            }
+
+            for (T &row: rows)
+            {
+                const std::optional<DatabaseValue> key = readColumnValue(row, relation.foreignKeyColumn);
+                if (!key.has_value())
+                {
+                    continue;
+                }
+                const auto matched = index.find(indexKeyOf(*key));
+                if (matched == index.end())
+                {
+                    continue; // 对端不在了：可空成员留空、必填成员保持原值（见 then() 的说明）
+                }
+                row.*(relation.memberPointer) = related[matched->second];
+            }
+        }
+
+        /**
+         * @brief 一对多：按本行主键补取子行，按外键分组挂上
+         * @tparam RelatedRow 子行类型
+         * @tparam MemberType 目标成员类型（`std::vector<RelatedRow>`）
+         * @param relation 关系声明（外键列在子表）
+         * @param dialect 方言
+         * @param pool 连接池
+         * @param transaction 事务（可为空）
+         * @param rows 待装载的行
+         */
+        template<typename RelatedRow, typename MemberType>
+        static void loadOneToMany(const RelationDescriptor<T, MemberType> &relation, const SqlDialect &dialect, ConnectionPool *pool, Transaction *transaction,
+                                  std::vector<T> &rows)
+        {
+            const std::string_view ownerKey = TableSchema<T>::kPrimaryKey;
+
+            std::vector<DatabaseValue> keys;
+            for (const T &row: rows)
+            {
+                if (const std::optional<DatabaseValue> key = readColumnValue(row, ownerKey); key.has_value() && !std::holds_alternative<std::monostate>(*key))
+                {
+                    keys.push_back(*key);
+                }
+            }
+            if (keys.empty())
+            {
+                return;
+            }
+
+            std::vector<RelatedRow> children = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, relation.foreignKeyColumn, keys);
+
+            std::map<std::string, std::vector<RelatedRow>> groups;
+            for (RelatedRow &child: children)
+            {
+                if (const std::optional<DatabaseValue> key = readColumnValue(child, relation.foreignKeyColumn); key.has_value())
+                {
+                    groups[indexKeyOf(*key)].push_back(std::move(child));
+                }
+            }
+
+            for (T &row: rows)
+            {
+                const std::optional<DatabaseValue> key = readColumnValue(row, ownerKey);
+                if (!key.has_value())
+                {
+                    continue;
+                }
+                const auto matched = groups.find(indexKeyOf(*key));
+                // 没有子行时挂**空列表**而不是保持原值：装载过的语义是「这就是全部子行」，
+                // 留一个可能是别人塞进去的旧值会谎报数据
+                row.*(relation.memberPointer) = matched == groups.end() ? std::vector<RelatedRow>{} : std::move(matched->second);
+            }
+        }
+
+        /**
+         * @brief 按 `列 IN (…)` 补取对端行，按方言参数上限分块
+         * @details 分块的理由与 insertBatch 同源：一条语句的参数个数有上限而键可能很多。
+         *          块之间不再排序（装载结果按分组建索引，与顺序无关）
+         * @tparam RelatedRow 对端行类型
+         * @param dialect 方言（给出参数上限）
+         * @param pool 连接池（可为空：只有事务时走事务）
+         * @param transaction 事务（可为空）
+         * @param columnName IN 的列名（多对一时是对方主键列，一对多时是对方外键列）
+         * @param keys 键集合（重复不影响结果）
+         * @return std::vector<RelatedRow> 取回的对端行
+         */
+        template<typename RelatedRow>
+        [[nodiscard]] static std::vector<RelatedRow> fetchRelatedByKeyIn(const SqlDialect &dialect, ConnectionPool *pool, Transaction *transaction,
+                                                                         const std::string_view columnName, const std::span<const DatabaseValue> keys)
+        {
+            const std::size_t parameterLimit = std::max<std::size_t>(1U, dialect.maximumStatementParameters());
+
+            std::vector<RelatedRow> collected;
+            for (std::size_t offset = 0; offset < keys.size(); offset += parameterLimit)
+            {
+                const std::size_t chunkCount = std::min(parameterLimit, keys.size() - offset);
+
+                WhereCondition condition;
+                condition.left  = FieldReference{.name = std::string(columnName)};
+                condition.op    = SqlOperator::In;
+                condition.right = ParameterValue{static_cast<std::int64_t>(0)}; // IN 只看 inValues（与 Expression.h 的 in() 同款）
+                condition.inValues.reserve(chunkCount);
+                for (std::size_t index = 0; index < chunkCount; ++index)
+                {
+                    condition.inValues.push_back(Detail::toParameterValueFromKey(keys[offset + index], columnName));
+                }
+
+                Queryable<RelatedRow> lookup = transaction != nullptr ? Queryable<RelatedRow>(*transaction) : Queryable<RelatedRow>(*pool);
+                lookup.where(std::move(condition));
+                std::vector<RelatedRow> chunkRows = lookup.toList();
+                collected.insert(collected.end(), std::make_move_iterator(chunkRows.begin()), std::make_move_iterator(chunkRows.end()));
+            }
+            return collected;
+        }
+
+        /**
+         * @brief 跑一遍已登记的关系装载器
+         * @param rows 待装载的行（就地修改）
+         */
+        void runRelationLoaders(std::vector<T> &rows) const
+        {
+            for (const RelationLoader &loader: m_relationLoaders)
+            {
+                loader(rows);
+            }
+        }
+
+
         // ========================================================================
         // 在线执行支撑
         // ========================================================================

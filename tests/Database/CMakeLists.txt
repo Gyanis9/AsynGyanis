@@ -27,6 +27,8 @@ add_executable(TestDatabase
         Queryable/TestParameterizedExecution.cpp
         Queryable/TestRowMapper.cpp
         Queryable/TestQueryableOptimisticLock.cpp
+        Queryable/TestQueryableRelations.cpp
+        Queryable/TestQueryableRelationsAsync.cpp
         Queryable/TestSchemaMigrator.cpp
         Queryable/TestSchemaMigrations.cpp
         Queryable/TestQueryableAsync.cpp

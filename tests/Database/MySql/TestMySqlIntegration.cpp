@@ -260,6 +260,11 @@ namespace AsynGyanis::Database
         constexpr std::string_view kVersionedLockTableName = "Asyn_Mysql_VersionedLock";
         constexpr std::string_view kVersionedLockColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `version` BIGINT NOT NULL";
 
+        /// 关系装载用例的三张表：都由用例自建自清（表名先 grep 过，整个文件零命中）
+        constexpr std::string_view kRelationAuthorTableName  = "Asyn_Mysql_RelAuthors";
+        constexpr std::string_view kRelationPostTableName    = "Asyn_Mysql_RelPosts";
+        constexpr std::string_view kRelationCommentTableName = "Asyn_Mysql_RelComments";
+
         /// 自增标识用例的表：AUTO_INCREMENT 主键，验证写回执带出生成本条语句的标识
         constexpr std::string_view kAutoIncrementTableName = "Asyn_Mysql_AutoIncrement";
         constexpr std::string_view kAutoIncrementColumns   = "`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, `name` VARCHAR(191) NOT NULL";
@@ -459,6 +464,37 @@ namespace AsynGyanis::Database
         };
 
         /**
+         * @brief 关系装载用例：作者（多对一的「一」）
+         */
+        struct IntegrationRelationAuthor
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 姓名
+        };
+
+        /**
+         * @brief 关系装载用例：评论（一对多的「多」，外键在子表这一侧）
+         */
+        struct IntegrationRelationComment
+        {
+            std::int64_t id;     ///< 主键
+            std::int64_t postId; ///< 所属帖子（外键）
+            std::string  text;   ///< 正文
+        };
+
+        /**
+         * @brief 关系装载用例：帖子（两个关系成员不进 kColumns，只进 kRelations）
+         */
+        struct IntegrationRelationPost
+        {
+            std::int64_t                             id;       ///< 主键
+            std::string                              title;    ///< 标题
+            std::int64_t                             authorId; ///< 外键列
+            std::optional<IntegrationRelationAuthor> author;   ///< 装载结果：作者
+            std::vector<IntegrationRelationComment>  comments; ///< 装载结果：评论
+        };
+
+        /**
          * @brief 乐观锁用例的行：版本列声明进 TableSchema 之后，update() 的 WHERE 会带上它
          */
         struct IntegrationVersionedRow
@@ -619,6 +655,45 @@ namespace AsynGyanis::Database
                 Column(&IntegrationAsyncMissingRow::id, "id"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationAuthor>
+    {
+        static constexpr std::string_view kTableName = kRelationAuthorTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationAuthor::id, "id"),
+                Column(&IntegrationRelationAuthor::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationComment>
+    {
+        static constexpr std::string_view kTableName = kRelationCommentTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationComment::id, "id"),
+                Column(&IntegrationRelationComment::postId, "post_id"),
+                Column(&IntegrationRelationComment::text, "text"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationPost>
+    {
+        static constexpr std::string_view kTableName = kRelationPostTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationPost::id, "id"),
+                Column(&IntegrationRelationPost::title, "title"),
+                Column(&IntegrationRelationPost::authorId, "author_id"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+        static constexpr auto             kRelations  = std::tuple{
+                AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::author, "author_id"),
+                AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::comments, "post_id"),
+        };
     };
 
     template<>
@@ -3491,6 +3566,77 @@ namespace AsynGyanis::Database
         MySqlConnection cleanup(m_configuration);
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+    }
+
+    /**
+     * @brief 真机上钉住关系装载的两个方向（多对一 + 一对多，一条 IN 查询各补取一次）
+     * @details 与 SQLite 那一组同一份判据，换到真服务端：`IN (…)` 的参数绑定、分组键的取值、
+     *          以及「对端不存在时留空」在 MySQL 的取值映射下同样成立。三张表都由本用例自建自清
+     * @note 池上限为 1：这顺带把「补取必须在外层连接释放之后」这条纪律在真机上也压了一遍——
+     *       握着取数连接去开第二条查询会等满借用超时
+     */
+    TEST_F(MySqlIntegrationTest, RelationLoadingWorksOnTheRealServer)
+    {
+        // 上一次跑断在半路时可能留下这三张表：先清干净再建（这三张表之间没有外键约束，顺序无所谓）
+        {
+            MySqlConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationCommentTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationPostTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationAuthorTableName)));
+        }
+        m_preparedTableName = std::string(kRelationPostTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            MySqlConnection ddl(m_configuration);
+            ASSERT_TRUE(ddl.connect()) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationAuthorTableName) + " (`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL)"), nullptr) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationPostTableName) + " (`id` BIGINT PRIMARY KEY, `title` VARCHAR(191) NOT NULL, `author_id` BIGINT NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationCommentTableName) + " (`id` BIGINT PRIMARY KEY, `post_id` BIGINT NOT NULL, `text` VARCHAR(191) NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+        }
+
+        {
+            OrmQuery<IntegrationRelationAuthor> authors(*pool);
+            ASSERT_EQ(authors.insert(IntegrationRelationAuthor{.id = 1, .name = "真机作者一"}), 1);
+            ASSERT_EQ(authors.insert(IntegrationRelationAuthor{.id = 2, .name = "真机作者二"}), 1);
+
+            OrmQuery<IntegrationRelationPost> posts(*pool);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 10, .title = "真机第一篇", .authorId = 1}), 1);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 11, .title = "真机第二篇", .authorId = 2}), 1);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 12, .title = "真机孤儿篇", .authorId = 999}), 1);
+
+            OrmQuery<IntegrationRelationComment> comments(*pool);
+            ASSERT_EQ(comments.insert(IntegrationRelationComment{.id = 100, .postId = 10, .text = "真机第一评"}), 1);
+            ASSERT_EQ(comments.insert(IntegrationRelationComment{.id = 101, .postId = 10, .text = "真机第二评"}), 1);
+        }
+
+        // 多对一：命中的挂对、命不中的留空
+        const std::vector<IntegrationRelationPost> posts = OrmQuery<IntegrationRelationPost>(*pool).orderBy(asc("id")).then(&IntegrationRelationPost::author).toList();
+        ASSERT_EQ(posts.size(), 3U);
+        ASSERT_TRUE(posts[0].author.has_value());
+        EXPECT_EQ(posts[0].author->name, "真机作者一") << "第一条帖子挂错了作者";
+        ASSERT_TRUE(posts[1].author.has_value());
+        EXPECT_EQ(posts[1].author->name, "真机作者二") << "两条帖子挂成了同一个作者";
+        EXPECT_FALSE(posts[2].author.has_value()) << "对端不存在却挂上了一行";
+
+        // 一对多：按外键分组，没有子行的留空列表
+        const std::vector<IntegrationRelationPost> withComments = OrmQuery<IntegrationRelationPost>(*pool).orderBy(asc("id")).then(&IntegrationRelationPost::comments).toList();
+        ASSERT_EQ(withComments.size(), 3U);
+        ASSERT_EQ(withComments[0].comments.size(), 2U) << "第一条帖子的评论数不对";
+        EXPECT_EQ(withComments[0].comments[0].text, "真机第一评");
+        ASSERT_EQ(withComments[1].comments.size(), 0U) << "第二条帖子没有评论（分组键错位会把别家的挂上来）";
+        EXPECT_TRUE(withComments[2].comments.empty());
+
+        // 收尾：三张表都清掉（TearDown 只会 DROP 登记的那一张）
+        MySqlConnection cleanup(m_configuration);
+        ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationCommentTableName)));
+        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationAuthorTableName)));
     }
 
 } // namespace AsynGyanis::Database

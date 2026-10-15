@@ -57,6 +57,10 @@ namespace AsynGyanis::Database::Queryable
          *       本格管 UPDATE 条件匹配不上，一次写入只可能落在其中一处
          */
         static constexpr std::string_view kVersionColumn = "";
+
+        /// 关系声明：`std::tuple` 里放若干 `Relation(&T::成员, "外键列")`（见 Relations.h）。
+        /// 它是纯增量声明——不写这一格的行类型行为与之前逐字相同（读取走 requires 探测）
+        static constexpr auto kRelations = std::tuple{};
     };
 
     namespace Detail
