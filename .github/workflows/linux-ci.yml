@@ -840,6 +840,33 @@ jobs:
       - name: 编译全部用例（-k 0 收集式失败，一次看全所有编译错误）
         run: cmake --build build/coverage -- -k 0
 
+      - name: 起 Postgres 与 Redis 真机（真机用例的门从 SKIP 变真跑）
+        # Database 格垫底的原因不是没测：PG 与 Redis 两张驱动的真机用例在本作业里全是
+        # GTEST_SKIP（没有可连的服务端），被跳过的每一行都不进覆盖。把两件服务当场喂给用例——
+        # 数字往上走靠真跑的用例，不靠动下限。口令当场随机生成经 GITHUB_ENV 传给后续步骤，
+        # 仓库零明文。端口用 5433/6380：runner 镜像自带一台监听 5432 的 PostgreSQL，撞上即红。
+        run: |
+          postgres_password="$(openssl rand -hex 16)"
+          redis_password="$(openssl rand -hex 16)"
+          echo "ASYN_POSTGRES_TEST_PASSWORD=$postgres_password" >> "$GITHUB_ENV"
+          echo "ASYN_POSTGRES_TEST_PORT=5433" >> "$GITHUB_ENV"
+          echo "ASYN_REDIS_TEST_PASSWORD=$redis_password" >> "$GITHUB_ENV"
+          echo "ASYN_REDIS_TEST_PORT=6380" >> "$GITHUB_ENV"
+          docker run -d --name coverage-postgres -e POSTGRES_PASSWORD="$postgres_password" -p 5433:5432 postgres:16
+          docker run -d --name coverage-redis -p 6380:6379 redis:7.4 redis-server --requirepass "$redis_password"
+          # 就绪判据用官方自带工具轮询，不睡固定时长：先定义「什么时候算好」，好了才放行；
+          # 轮询耗尽后那两条不带循环的调用就是判据本身——没起来就红在轮到实例的这一步
+          for attempt in $(seq 1 30); do
+            docker exec coverage-postgres pg_isready -U postgres && break
+            sleep 2
+          done
+          docker exec coverage-postgres pg_isready -U postgres
+          for attempt in $(seq 1 30); do
+            docker exec -e REDISCLI_AUTH="$redis_password" coverage-redis redis-cli ping && break
+            sleep 1
+          done
+          docker exec -e REDISCLI_AUTH="$redis_password" coverage-redis redis-cli ping
+
       - name: 跑用例生成 .gcda
         # --output-on-failure 是这一档的可读性命门：全仓其它用例步骤都带它，唯独这里没带，
         # 于是 2026-10-08 那次红只在收尾打了「The following tests FAILED: 3954 - …」一行，
