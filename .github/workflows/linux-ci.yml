@@ -13,10 +13,11 @@
 name: Linux 门禁
 
 on:
-  # 只在 main 的推送与手动触发上跑：日常开发在 develop 上，PR 不再触发任何 CI（免费分钟数有限，
-  # 一次全量构建+用例要几十个 runner 分钟）。要验证某个提交就手动 dispatch，或者合进 main。
+  # main 与 develop 的推送都跑（2026-10-17 起把 develop 也纳入：真机用例一族过去只在合进 main
+  # 之后才第一次见 CI，红了才发现）。PR 仍不触发；免费分钟数有限，一次全量构建+用例几十个 runner 分钟，
+  # 要只验证某个提交就手动 dispatch。
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
     # 纯文档改动与工作流自身的改动不值得等构建；版本号门禁在 release-gate.yml，那条不受这里影响
     paths-ignore:
       - '**.md'
