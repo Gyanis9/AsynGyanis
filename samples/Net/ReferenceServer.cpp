@@ -220,6 +220,27 @@ namespace
         // 报的源是 http://localhost:9001、它连的地址是 host.docker.internal:18081 —— 按引擎默认的
         // SameOriginOnly 判，整条验收会被自己的闸门挡在门外。真实部署接自家页面时应当留着默认档，
         // 要跨源就显式写 AllowList 并列出可信来源（RFC 6455 §10.2 的 SHOULD verify 说的是那条）。
+        // 心跳时限（server.limits.web_socket_pong_timeout_ms）的外部触发口：升级后立刻发一条 Ping，
+        // 之后只是等着——不回 Pong 的对端到点会被各通道既有那一拍收口。不给这一条，那个配置项在
+        // 本样例上永远武装不起来（没有任何路由主动发过 Ping），验收就只能停在进程内。
+        router.get("/ws-ping",
+                   [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
+                   {
+                       Net::WebSocketUpgradePolicy handshakePolicy;
+                       handshakePolicy.originMode = Net::WebSocketOriginMode::AllowAny;
+                       response.upgradeToWebSocket(
+                               [](Net::WebSocketPeer &peer) -> Core::Task<>
+                               {
+                                   static_cast<void>(co_await peer.sendPing());
+                                   while (co_await peer.receive())
+                                   {
+                                   }
+                                   co_return;
+                               },
+                               std::move(handshakePolicy));
+                       co_return;
+                   });
+
         router.get("/ws",
                    [](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<void>
                    {
