@@ -879,6 +879,8 @@ namespace AsynGyanis::Database
      *          写过的键不参与淘汰，NO-TOUCH ON 之后本连接读过的键不再刷新 LRU/LFU。漏给下一个借用者
      *          的症状是「热点键莫名被淘汰」或「该保护的键没被保护」，两边都不报错，只能靠断开重连兜住。
      *          不替借用者补发 OFF：那要按子命令各记一位，还要判借用者自己有没有关回去，而断开更便宜。
+     *          版本前提：NO-EVICT 自 Redis 7.0、NO-TOUCH 自 7.2 才有，服务端回 unknown subcommand 时
+     *          本用例按「前提不齐」跳过（GTEST_SKIP），不把它表现成实现的红。
      */
     TEST_F(RedisIntegrationTest, ClientEvictionProtectionSessionIsDroppedOnReturn)
     {
@@ -886,7 +888,17 @@ namespace AsynGyanis::Database
         {
             RedisConnection protectedConnection(m_configuration);
             ASSERT_TRUE(protectedConnection.connect()) << protectedConnection.lastError();
-            ASSERT_NE(protectedConnection.executeCommand({"CLIENT", std::string(subcommand), "ON"}), nullptr) << subcommand << ": " << protectedConnection.lastError();
+
+            // 这两条子命令是分版本到齐的：NO-TOUCH 要 Redis ≥ 7.2，旧服务端回 unknown subcommand。
+            // 那是「服务端版本低于用例前提」，按本组惯例跳过——别让环境把判据染成一条红
+            if (protectedConnection.executeCommand({"CLIENT", std::string(subcommand), "ON"}) == nullptr)
+            {
+                if (protectedConnection.lastError().find("unknown subcommand") != std::string::npos)
+                {
+                    GTEST_SKIP() << "服务端不支持 CLIENT " << subcommand << "（Redis ≥ 7.2 才有），跳过：" << protectedConnection.lastError();
+                }
+                FAIL() << subcommand << ": " << protectedConnection.lastError();
+            }
             ASSERT_TRUE(protectedConnection.isConnected());
 
             const bool wasProtectedResetClean = protectedConnection.resetSessionState();
