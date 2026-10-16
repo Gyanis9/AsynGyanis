@@ -151,7 +151,7 @@ namespace AsynGyanis::Core
          *          占用归因探针（WorkloadScope）靠它免去沿途传引用。`run()` 返回后即清
          * @return EventLoop* 本线程正在跑的循环；空表示本线程不是循环线程
          */
-        [[nodiscard]] static ASYN_CORE_API EventLoop *currentEventLoop() noexcept;
+        [[nodiscard]] static EventLoop *currentEventLoop() noexcept;
 
         /**
          * @brief 标注本循环正在跑的作业名（占用归因探针；传空指针清除）
@@ -163,10 +163,10 @@ namespace AsynGyanis::Core
          *        本函数只存指针不拷贝——临时串交给它等于留一个读已释放内存的读数
          * @note 只在所属循环线程上调用（与其它成员同一纪律）
          */
-        ASYN_CORE_API void setActiveWorkload(const char *workloadName) noexcept;
+        void setActiveWorkload(const char *workloadName) noexcept;
 
         /// @brief 此刻标注的作业名；未标注为空
-        [[nodiscard]] ASYN_CORE_API std::string_view activeWorkload() const noexcept;
+        [[nodiscard]] std::string_view activeWorkload() const noexcept;
 
         /**
          * @brief 请求停止事件循环（非阻塞）
