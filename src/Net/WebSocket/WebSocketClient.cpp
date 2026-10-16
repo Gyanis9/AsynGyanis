@@ -624,20 +624,26 @@ namespace AsynGyanis::Net
     {
         // 压缩只对数据消息生效（控制帧从不压缩，RFC 7692 §6.1）；压不动或压完更大就原样发——
         // 压缩是带宽优化，而发一条对端解不开的帧比不压严重得多（与 WebSocketPeer::sendFrame 同口径）
-        const bool                 isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
-        std::optional<std::string> compressedPayload;
+        const bool isDataMessage = opCode == WebSocketOpCode::Text || opCode == WebSocketOpCode::Binary;
+
+        // 收成「普通 string + 标志位」而不是让 optional<string> 一直走到 string_view 转换：
+        // GCC 13 在 -O3 下读不出 optional 的 engaged 守卫，会沿那条内联路径报 -Wmaybe-uninitialized
+        // （CI 的 Release 档 -Werror 当场红；Debug 档不触发，所以本机一直看不见）
+        std::string compressedPayload;
+        bool        isCompressed = false;
         if (m_deflateWindow.has_value() && isDataMessage)
         {
-            compressedPayload = deflateWebSocketMessage(payload, m_deflateWindow->compressBits);
-            if (compressedPayload.has_value() && compressedPayload->size() >= payload.size())
+            const std::optional<std::string> compressed = deflateWebSocketMessage(payload, m_deflateWindow->compressBits);
+            if (compressed.has_value())
             {
-                compressedPayload.reset();
+                compressedPayload = *compressed;
+                isCompressed      = compressedPayload.size() < payload.size();
             }
         }
-        const std::string_view payloadToSend = compressedPayload.has_value() ? std::string_view(*compressedPayload) : payload;
+        const std::string_view payloadToSend = isCompressed ? std::string_view{compressedPayload} : payload;
 
         // 本帧现取一把新键：编码里对控制帧长度与操作码的用法判据也在这一步抛出，调用点当场就能看见
-        return encodeWebSocketFrame(opCode, payloadToSend, true, compressedPayload.has_value(), nextMaskKey());
+        return encodeWebSocketFrame(opCode, payloadToSend, true, isCompressed, nextMaskKey());
     }
     Core::Task<bool> WebSocketClient::sendCloseBytes(std::string frameBytes)
     {
