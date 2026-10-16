@@ -220,6 +220,9 @@ namespace AsynGyanis::Database
         /// 无符号取值域用例的表：与建表迁移用例分开，各用例各持一张物理表（并行执行时互不干扰）
         constexpr std::string_view kUnsignedTableName = "Asyn_Mysql_Unsigned";
 
+        /// 版本化迁移用例的表：同一条理由；它还要 DROP 库级的迁移登记表，与建表迁移用例共用一张表时并行会互相删表
+        constexpr std::string_view kVersionedTableName = "Asyn_Mysql_Versioned";
+
         /// 二进制列用例的表：同表内放一列 LONGBLOB 与一列 TEXT，用于验证字符集是二者在协议层的唯一区分
         constexpr std::string_view kBinaryTableName = "Asyn_Mysql_Binary";
 
@@ -415,6 +418,22 @@ namespace AsynGyanis::Database
          *          并行执行时会互相删表、互相撞主键，因此本用例单列一个绑定独立表名的结构体。
          */
         struct IntegrationUnsignedRow
+        {
+            std::int64_t               id;       ///< 主键（BIGINT NOT NULL PRIMARY KEY）
+            std::string                name;     ///< 名称（TEXT NOT NULL）
+            std::optional<std::string> note;     ///< 备注（TEXT，可空）
+            double                     balance;  ///< 余额（DOUBLE NOT NULL）
+            bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
+            std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /**
+         * @brief 版本化迁移用例的结构体：与建表迁移用例同构，但绑定独立的物理表
+         *
+         * @details 同 IntegrationUnsignedRow 的理由：表名只能来自编译期常量，共用结构体就是共用一张表；
+         *          本用例还要在建表前后 DROP 与回退，共用时并行会互相删表。
+         */
+        struct IntegrationMigrationRoundTripRow
         {
             std::int64_t               id;       ///< 主键（BIGINT NOT NULL PRIMARY KEY）
             std::string                name;     ///< 名称（TEXT NOT NULL）
@@ -663,6 +682,19 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationUnsignedRow::id, "id"),           Column(&IntegrationUnsignedRow::name, "name"),     Column(&IntegrationUnsignedRow::note, "note"),
                 Column(&IntegrationUnsignedRow::balance, "balance"), Column(&IntegrationUnsignedRow::active, "active"), Column(&IntegrationUnsignedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationMigrationRoundTripRow>
+    {
+        // 表名固定为 kVersionedTableName：版本化迁移用例单列一张物理表（见上面结构体的说明）
+        static constexpr std::string_view kTableName = kVersionedTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationMigrationRoundTripRow::id, "id"),         Column(&IntegrationMigrationRoundTripRow::name, "name"),
+                Column(&IntegrationMigrationRoundTripRow::note, "note"),     Column(&IntegrationMigrationRoundTripRow::balance, "balance"),
+                Column(&IntegrationMigrationRoundTripRow::active, "active"), Column(&IntegrationMigrationRoundTripRow::sequence, "sequence"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -3613,11 +3645,11 @@ namespace AsynGyanis::Database
         {
             MySqlConnection cleanup(m_configuration);
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kMigratedTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kVersionedTableName)));
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
         }
         // 迁移会自己建这张表，因此只登记表名给 TearDown（不要先 prepareTable()，那样测的就不是迁移了）
-        m_preparedTableName = std::string(kMigratedTableName);
+        m_preparedTableName = std::string(kVersionedTableName);
 
         std::unique_ptr<ConnectionPool> pool = makePool(1);
 
@@ -3627,8 +3659,8 @@ namespace AsynGyanis::Database
         const std::vector<Queryable::SchemaMigrator::MigrationStep> steps{
                 Queryable::SchemaMigrator::MigrationStep{
                         .name           = "0001-create-migrated",
-                        .upStatements   = {Queryable::SchemaMigrator::createTableStatement<IntegrationMigratedRow>(*dialect)},
-                        .downStatements = {Queryable::SchemaMigrator::dropTableStatement<IntegrationMigratedRow>(*dialect)},
+                        .upStatements   = {Queryable::SchemaMigrator::createTableStatement<IntegrationVersionedRow>(*dialect)},
+                        .downStatements = {Queryable::SchemaMigrator::dropTableStatement<IntegrationVersionedRow>(*dialect)},
                 },
         };
 
@@ -3636,7 +3668,7 @@ namespace AsynGyanis::Database
         std::string error;
         ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, &applied, &error)) << error;
         EXPECT_EQ(applied, 1U);
-        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "迁移没把表建出来";
+        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationVersionedRow>(*pool)) << "迁移没把表建出来";
 
         // 幂等
         std::size_t appliedAgain = 0;
@@ -3647,7 +3679,7 @@ namespace AsynGyanis::Database
         std::size_t rolledBack = 0;
         ASSERT_TRUE(Queryable::SchemaMigrator::rollbackLast(*pool, steps, 1, &rolledBack, &error)) << error;
         EXPECT_EQ(rolledBack, 1U);
-        EXPECT_FALSE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "回退没把表撤掉";
+        EXPECT_FALSE(Queryable::SchemaMigrator::tableExists<IntegrationVersionedRow>(*pool)) << "回退没把表撤掉";
         std::vector<std::string> recorded;
         ASSERT_TRUE(Queryable::SchemaMigrator::appliedMigrations(*pool, &recorded, &error)) << error;
         EXPECT_TRUE(recorded.empty()) << "记账没跟着回退一起删";
@@ -3656,7 +3688,7 @@ namespace AsynGyanis::Database
         std::size_t reapplied = 0;
         ASSERT_TRUE(Queryable::SchemaMigrator::migrate(*pool, steps, &reapplied, &error)) << error;
         EXPECT_EQ(reapplied, 1U);
-        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool)) << "回退之后重新应用没把结构建回来";
+        EXPECT_TRUE(Queryable::SchemaMigrator::tableExists<IntegrationVersionedRow>(*pool)) << "回退之后重新应用没把结构建回来";
 
         // 收尾：迁移表是库级共享对象，本用例自己清掉（表由 TearDown 管）
         MySqlConnection cleanup(m_configuration);

@@ -87,8 +87,17 @@ gtest_discover_tests(TestDatabase
         PROPERTIES RESOURCE_LOCK asyn-redis-server-config
         POST_FILE TestDatabase-subscription
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
+# MySqlIntegrationTest 这一族共用几张库级对象（迁移登记表、kMigratedTableName 之类的物理表），
+# 而 ctest 逐用例起进程：并行时彼此的建表/删表会串进对方的现场（实测 -j2 下单条用例间歇红，
+# 单跑与串行都过）。表名已按「各用例各持一张」改造过一轮，仍有低频残留，因此这一族挂资源锁
+# 串行化——第二次发现调用要另给 POST_FILE，否则两份收尾脚本互相覆盖（同上一条的理由）。
 gtest_discover_tests(TestDatabase
-        TEST_FILTER "-RedisSubscriptionIntegration.*"
+        TEST_FILTER "MySqlIntegrationTest.*"
+        PROPERTIES RESOURCE_LOCK asyn-mysql-integration
+        POST_FILE TestDatabase-mysql
+        DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
+gtest_discover_tests(TestDatabase
+        TEST_FILTER "-RedisSubscriptionIntegration.*:MySqlIntegrationTest.*"
         POST_FILE TestDatabase-rest
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
