@@ -40,6 +40,7 @@
 #include "Net/Tracing/HttpTracingMiddleware.h"
 #include "Net/Tracing/TracingConfiguration.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Platform/IO/FileContents.h"
 #include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/System/ServiceNotification.h"
@@ -384,7 +385,9 @@ int main(int argc, char **argv)
     bool keyFileGiven         = false;
     /// 会话票据密钥文件，可重复给（首份签发、其余只解开旧票据）；空 = 按 OpenSSL 默认随机密钥
     std::vector<std::string> ticketKeyFiles;
-    std::string              configFile;
+    /// QUIC 无状态重置密钥文件（≥ 16 字节二进制）；空 = 每进程各自随机一把（多 worker 下互相认不出）
+    std::string statelessResetKeyFile;
+    std::string configFile;
     /// 本进程在 worker 池里的序号：由 master 逐份传下来（见 WorkerSupervisor），用来给管理口错开端口
     unsigned workerIndex = 0;
     /// 心跳管道写端（内部开关，多 worker + WatchdogSec= 时由 master 传下来）：-1 = 没有这条通道
@@ -459,6 +462,10 @@ int main(int argc, char **argv)
             // 可重复：轮换的形态就是「新的插首位、旧的留在后面」，与 nginx 的同名指令一致
             ticketKeyFiles.push_back(Samples::readOptionValue(argc, argv, i, "--ticket-key", "一个会话票据密钥文件路径（48 或 80 字节）"));
             ++i;
+        } else if (arg == "--stateless-reset-key")
+        {
+            statelessResetKeyFile = Samples::readOptionValue(argc, argv, i, "--stateless-reset-key", "无状态重置密钥文件路径（≥ 16 字节二进制）");
+            ++i;
         } else if (arg == "--key")
         {
             keyFile      = Samples::readOptionValue(argc, argv, i, "--key", "一个私钥文件路径");
@@ -517,10 +524,13 @@ int main(int argc, char **argv)
     {
         LOG_INFO("Usage: ReferenceServer [--host localhost] [--port 8080] [--threads N]");
         LOG_INFO("                  [--https] [--cert cert.pem] [--key key.pem] [--h2c] [--h3] [--static <目录>]");
-        LOG_INFO("                  [--ticket-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
+        LOG_INFO("                  [--ticket-key <文件>] [--stateless-reset-key <文件>] [--max-connections-per-ip N] [--metrics] [--config <文件>]");
         LOG_INFO("  --ticket-key TLS 会话票据密钥文件（48 或 80 字节二进制，openssl rand 48 > ticket.key）：");
         LOG_INFO("                  可重复给（首份签发、其余只解旧票据，即轮换）。多进程 --workers 下各进程装同一份，");
         LOG_INFO("                  客户端第二次连接被分到别的进程也能恢复会话；不给则每进程一份随机密钥、跨进程必落空");
+        LOG_INFO("  --stateless-reset-key QUIC 无状态重置密钥文件（≥ 16 字节二进制，openssl rand 32 > reset.key）：");
+        LOG_INFO("                  多进程 --workers 下各进程装同一份，否则撞到别的进程那份旧连接的报文会被静默丢弃、");
+        LOG_INFO("                  客户端要等自己的空闲超时才察觉；不给则每进程各随机一把并落一条 WARN");
         LOG_INFO("  --threads 0 = auto (min(4, hw_concurrency)), 1 = single-threaded");
         LOG_INFO("  --h2c 明文连接按 HTTP/2（先验知识）服务，需客户端直接发连接前奏（仅 HTTP 端可用）");
         LOG_INFO("  --h3 额外在同一个端口号的 UDP 上提供 HTTP/3：走同一套路由与处理器，需要证书（QUIC 自带 TLS）；"
@@ -895,6 +905,39 @@ int main(int argc, char **argv)
             LOG_ERROR_FMT("ReferenceServer 启动失败：{}", keyFailure.what());
             return 1;
         }
+    }
+
+    if (!statelessResetKeyFile.empty() && !useHttp3)
+    {
+        // 与 --ticket-key 同一条口径：静默收下就等于让部署方以为跨进程的识别已经生效
+        LOG_ERROR("--stateless-reset-key 需要 HTTP/3：无状态重置是 QUIC 的东西，请与 --h3 一起用");
+        return 1;
+    }
+
+    std::vector<std::uint8_t> statelessResetKeyBytes;
+    if (!statelessResetKeyFile.empty())
+    {
+        // 启动期先把密钥文件校验一遍：不合格要的是「一句人话 + 退出码 1」，而不是让异常抛到建服务器那一层
+        std::error_code      sizeFailure;
+        const std::uintmax_t keyFileSize = std::filesystem::file_size(statelessResetKeyFile, sizeFailure);
+        if (sizeFailure)
+        {
+            LOG_ERROR_FMT("ReferenceServer 启动失败：读不了无状态重置密钥文件 {}（{}）", statelessResetKeyFile, sizeFailure.message());
+            return 1;
+        }
+        const auto keyContents = Platform::readFileContents(statelessResetKeyFile, 0U, static_cast<std::size_t>(keyFileSize));
+        if (!keyContents.has_value())
+        {
+            LOG_ERROR_FMT("ReferenceServer 启动失败：读不出无状态重置密钥文件 {}（错误码 {}）", statelessResetKeyFile, keyContents.error().value());
+            return 1;
+        }
+        if (keyContents->size() < 16)
+        {
+            LOG_ERROR_FMT("ReferenceServer 启动失败：无状态重置密钥 {} 只有 {} 字节，短于 16 字节的下限（可用 openssl rand 32 > reset.key 现造一份）", statelessResetKeyFile,
+                          keyContents->size());
+            return 1;
+        }
+        statelessResetKeyBytes.assign(keyContents->begin(), keyContents->end());
     }
 
     // 证书自动化开着的时候，服务端加载的证书与私钥这两条路径以 acme 段的落点为准：监听器加载与
@@ -1320,6 +1363,9 @@ int main(int argc, char **argv)
         http3Configuration.certificateFile       = certificateFile;
         http3Configuration.privateKeyFile        = keyFile;
         http3Configuration.sessionTicketKeyFiles = ticketKeyFiles;
+        // 多 worker 下必须共用同一把（照 --ticket-key 的理由）：不给则每进程各随机一把，
+        // 撞到别的进程那份旧连接的报文只能继续不理，客户端要等自己的空闲超时才知道连接没了
+        http3Configuration.statelessResetKey = statelessResetKeyBytes;
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
         http3Configuration.parserLimits = configuration.parserLimits;
         // 在途正文预算与 HTTP 侧共用同一份账：h3 的正文也驻留在进程内存里，
