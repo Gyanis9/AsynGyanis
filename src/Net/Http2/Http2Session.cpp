@@ -6,6 +6,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
@@ -48,6 +49,15 @@ namespace AsynGyanis::Net
 
         /// 无效描述符的取值：与 Core::AsyncSocket::close() 之后的 fileDescriptor() 一致
         constexpr int kInvalidSocketDescriptor = -1;
+
+        /**
+         * @brief TLS 握手失败日志的压重窗口
+         * @details 公网端口上任何扫描器都能按包制造一条握手失败（明文打进 443、老客户端、半断），
+         *          而这条日志带符号化调用栈、又发生在事件循环线程上：不压重就是「远端可放大的
+         *          日志洪泛 + 符号化开销」。压重复条而不是关掉它——「有人在打这个端口」本身是
+         *          要让运维看见的事，被压掉的条数也写进放行的那一条（与 TcpServer 的 PROXY 拒绝同套）。
+         */
+        constexpr std::chrono::seconds kHandshakeFailureLogWindow{10};
 
         /// 扩展 CONNECT 的升级应答状态码（RFC 8441 §5 用 2xx 而不是 101）；accept 那条头名
         /// 与 101 握手用的是同一份出处，见 WebSocketHandshake.h 的 kWebSocketAcceptHeaderName
@@ -170,8 +180,13 @@ namespace AsynGyanis::Net
             co_await m_tlsSocket->handshake();
         } catch (const std::exception &handshakeException)
         {
-            // 握手失败没有可信的明文可回：记日志后直接结束会话，收口交给上面的 RAII 守卫
-            LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}", transportFileDescriptor(), handshakeException.what());
+            // 握手失败没有可信的明文可回：记日志后直接结束会话，收口交给上面的 RAII 守卫。
+            // 这条日志带调用栈且落在事件循环线程上，按窗口压重（同窗只留首条并报出被压条数）
+            if (auto &throttle = ASYN_LOG_THROTTLED(kHandshakeFailureLogWindow); throttle.acquire())
+            {
+                LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}（过去 {} 秒内另有 {} 条同类被压掉）", transportFileDescriptor(), handshakeException.what(),
+                                    kHandshakeFailureLogWindow.count(), throttle.droppedCount());
+            }
             co_return;
         }
 
