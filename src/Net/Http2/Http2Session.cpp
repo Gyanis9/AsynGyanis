@@ -184,8 +184,8 @@ namespace AsynGyanis::Net
             // 这条日志带调用栈且落在事件循环线程上，按窗口压重（同窗只留首条并报出被压条数）
             if (auto &throttle = ASYN_LOG_THROTTLED(kHandshakeFailureLogWindow); throttle.acquire())
             {
-                LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}（过去 {} 秒内另有 {} 条同类被压掉）", transportFileDescriptor(), handshakeException.what(),
-                                    kHandshakeFailureLogWindow.count(), throttle.droppedCount());
+                LOG_ERROR_EXCEPTION(handshakeException, "Http2Session: TLS 握手失败，已关闭连接（描述符={}）。原因：{}（过去 {} 秒内另有 {} 条同类被压掉）",
+                                    transportFileDescriptor(), handshakeException.what(), kHandshakeFailureLogWindow.count(), throttle.droppedCount());
             }
             co_return;
         }
