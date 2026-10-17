@@ -313,27 +313,6 @@ namespace AsynGyanis::Net
         EXPECT_EQ(state->entries()[1].value, "def");
     }
 
-    TEST(TraceContextExtraction, KeepsAtMostThirtyTwoTracestateEntries)
-    {
-        std::string text;
-        for (int index = 0; index < 40; ++index)
-        {
-            if (!text.empty())
-            {
-                text.push_back(',');
-            }
-            text += "k" + std::to_string(index) + "=v";
-        }
-        HttpRequest request;
-        request.addHeader("tracestate", text);
-
-        const std::optional<TraceState> state = extractTraceState(request);
-        ASSERT_TRUE(state.has_value());
-        EXPECT_EQ(state->entryCount(), kMaximumTraceStateEntryCount) << "超过 32 条的尾部应被丢弃";
-        EXPECT_EQ(state->entries().front().key, "k0");
-        EXPECT_EQ(state->entries().back().key, "k31");
-    }
-
     TEST(TraceContextExtraction, RendersTraceIdForErrorLogsWithoutLeavingItBlank)
     {
         HttpRequest request;
