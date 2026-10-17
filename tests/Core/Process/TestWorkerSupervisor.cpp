@@ -301,6 +301,7 @@ namespace AsynGyanis::Core
         // 抖动边界：±20%，0.5 恰为基准值
         EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.0), 80ms);
         EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.999999), 120ms);
+        EXPECT_LE(WorkerSupervisor::restartBackoffFor(1000ms, 20U, 0.999999), kMaximumWorkerRestartBackoff) << "抖动把上限顶破了";
         EXPECT_LT(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.9), WorkerSupervisor::restartBackoffFor(100ms, 2U, 0.1)) << "抖动不该吃掉相邻两档的增长";
     }
 
@@ -689,7 +690,7 @@ namespace AsynGyanis::Core
      * @details 槽位 0 必崩、槽位 1 常驻，这样只有槽位 0 在走退避（两个槽位都崩时，补位循环里
      *          彼此串行的睡眠会把「间隔」量成别人的等待，恒定退避也能伪装成逐次变长）。
      *          脚本自己把启动时刻（纳秒）与槽位号写进文件；按槽位分组后量相邻两次启动的间隔。
-     *          基准 300 毫秒、抖动 ±20% 时第一档落在 [240,360]、第二档 [480,720]，因此「第二段
+     *          基准 500 毫秒、抖动 ±20% 时第一档落在 [400,600]、第二档 [800,1200]，因此「第二段
      *          至少比第一段长 15%」在不赌具体数值的前提下成立
      */
     TEST(WorkerSupervisor, GrowsRestartGapsAcrossRepeatedCrashes)
@@ -703,7 +704,7 @@ namespace AsynGyanis::Core
         configuration.workerIndexArgument = "--slot";
         configuration.workerCount         = 2;
         configuration.pollInterval        = std::chrono::milliseconds{20};
-        configuration.restartBackoff      = std::chrono::milliseconds{300};
+        configuration.restartBackoff      = std::chrono::milliseconds{500};
         configuration.shutdownTimeout     = std::chrono::milliseconds{2000};
         configuration.crashLoopWindow     = std::chrono::milliseconds{5000};
         configuration.crashLoopLimit      = 3;
@@ -737,7 +738,7 @@ namespace AsynGyanis::Core
 
         const long long firstGap  = slotZeroStarts[1] - slotZeroStarts[0];
         const long long secondGap = slotZeroStarts[2] - slotZeroStarts[1];
-        EXPECT_GE(firstGap, 150'000'000LL) << "第一次补位没有按基准值退避：" << firstGap / 1'000'000 << " 毫秒";
+        EXPECT_GE(firstGap, 300'000'000LL) << "第一次补位没有按基准值退避：" << firstGap / 1'000'000 << " 毫秒";
         EXPECT_GT(secondGap, firstGap * 115 / 100) << "补位间隔没有逐次变长（恒定退避？）：" << firstGap / 1'000'000 << " → " << secondGap / 1'000'000 << " 毫秒";
     }
 

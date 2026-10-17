@@ -626,10 +626,12 @@ namespace AsynGyanis::Core
         }
 
         // 抖动：jitterUnit 落在 [0,1)，映射到 [1-ratio, 1+ratio]；0.5 恰为基准值，用例因此可钉边界。
-        // 取整用四舍五入而不是截断：0.999999 的边界值乘出来是 119.99998，截断会造出一条测试里看得见的 119
+        // 取整用四舍五入而不是截断：0.999999 的边界值乘出来是 119.99998，截断会造出一条测试里看得见的 119。
+        // 抖动之后再过一次封顶：否则到顶那一档的 +20% 会把「上限」悄悄顶破
         const double boundedJitter = std::clamp(jitterUnit, 0.0, 0.999999);
         const double factor        = 1.0 - kWorkerRestartBackoffJitterRatio + 2.0 * kWorkerRestartBackoffJitterRatio * boundedJitter;
-        return std::chrono::milliseconds{static_cast<std::int64_t>(std::llround(static_cast<double>(nominal.count()) * factor))};
+        const auto   jittered      = std::chrono::milliseconds{static_cast<std::int64_t>(std::llround(static_cast<double>(nominal.count()) * factor))};
+        return std::min(jittered, cap);
     }
 
     void WorkerSupervisor::requestStop() noexcept

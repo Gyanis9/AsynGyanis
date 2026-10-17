@@ -78,7 +78,7 @@ namespace AsynGyanis::Core
      *       打一条 ERROR 点名槽位）；若整池都被放弃，run() 返回 false 交给进程管理器接手。只要还有其他
      *       槽位在跑，被放弃的槽位静默满 `10 × crashLoopWindow` 后会**重新纳入一次**补位尝试（崩计数
      *       清零）——给「配置被改好」「依赖恢复」这类外部修复留一条回去的路，同时不让它每轮都试。
-     *       催过的指标 `asyn_worker_slots_given_up` 是**累计放弃次数**，重新纳入不会把它减回去。
+     *       导出的指标 `asyn_worker_slots_given_up` 是**累计放弃次数**，重新纳入不会把它减回去。
      */
     class ASYN_CORE_API WorkerSupervisor
     {
@@ -114,10 +114,10 @@ namespace AsynGyanis::Core
             std::chrono::milliseconds restartBackoff{500};
             std::chrono::milliseconds shutdownTimeout{10000}; ///< 收尾期限：请求退出后等到这个点就强杀
             /**
-             * @brief 「起来就崩」的存活门槛，同时是崩溃突发与放弃重新纳入的窗口
-             * @details 存活不足这个时长就退出算一次「起来就崩」；两次崩溃间隔超过它则视为新的一轮
-             *          （崩计数从 1 重新开始）。槽位被放弃后，静默满 `10 × crashLoopWindow` 会重新纳入
-             *          一次补位尝试——见类注释里的自愈口径。必须大于 0
+             * @brief 「起来就崩」的存活门槛，同时是放弃后重新纳入的静默窗口基数
+             * @details 存活不足这个时长就退出算一次「起来就崩」；跑满它才退出的 worker 会清零崩计数
+             *          （被当作稳定运行，而不是崩溃循环的一环）。槽位被放弃后，静默满
+             *          `10 × crashLoopWindow` 会重新纳入一次补位尝试——见类注释里的自愈口径。必须大于 0
              */
             std::chrono::milliseconds crashLoopWindow{3000};
             std::size_t               crashLoopLimit{5}; ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
@@ -292,7 +292,6 @@ namespace AsynGyanis::Core
             Platform::Process::Handle             handle;           ///< 进程句柄
             std::chrono::steady_clock::time_point startTime;        ///< 启动时刻：判「起来就崩」用
             std::size_t                           crashCount{0};    ///< 该位连续「起来就崩」的次数
-            std::chrono::steady_clock::time_point lastCrashAt{};    ///< 最近一次崩溃时刻：判两次崩溃是否还在同一窗口内
             bool                                  isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
             std::chrono::steady_clock::time_point givenUpAt{};      ///< 放弃时刻：静默够久后重新纳入一次
             /// 心跳管道的读端（-1 = 该槽位没有心跳通道：没启用看门狗，或是 Windows）；只在编排线程上碰
@@ -463,18 +462,13 @@ namespace AsynGyanis::Core
         /**
          * @brief 记一次「起来就崩」：槽位计数与进程级累计各加一
          * @details 两处崩溃点（起不来、存活不足窗口就退出）都走这里，避免只有一处记得抬累计。
-         *          两次崩溃间隔超过 @c crashLoopWindow 视为新的一轮：计数从 1 重新开始，
-         *          否则「一天崩一次」也会在某个时刻凑满阈值而被误放弃
+         *          「连续」由 `reapWorker` 的稳定运行分支清零来界定；起不来那一档没有存活时长，
+         *          连续失败自然累积。这里刻意**不按两次崩溃的间隔清零**：指数退避会把间隔越拉越长，
+         *          到某一档必然超过 crashLoopWindow——那样永远凑不满阈值，熔断形同虚设
          */
         void noteWorkerCrash(Worker &worker) noexcept
         {
-            const auto now = std::chrono::steady_clock::now();
-            if (worker.crashCount > 0 && now - worker.lastCrashAt > m_configuration.crashLoopWindow)
-            {
-                worker.crashCount = 0;
-            }
             ++worker.crashCount;
-            worker.lastCrashAt = now;
             m_totalCrashCount.fetch_add(1, std::memory_order_relaxed);
         }
 
