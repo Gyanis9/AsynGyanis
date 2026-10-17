@@ -313,6 +313,9 @@ namespace AsynGyanis::Core
                     return std::ranges::any_of(snapshotOfMessages, [](const std::string &message) { return message.find(kSlowWorkloadName) != std::string::npos; });
                 });
         ASSERT_TRUE(alertNamedTheWorkload) << "慢段告警没有点名被占住的作业";
-        EXPECT_EQ(driver.loop().snapshot().lastCompletedWorkload, std::string_view{kSlowWorkloadName}) << "快照里的最近作业字段没跟上";
+        // 告警在慢段被检测到那一刻发出，而 lastCompletedWorkload 要等这一段真正收尾才写：
+        // 两者之间有一个窗口（TSan 下实测告警先到、字段还是空的）。有界地等字段落地，
+        // 不赌「告警与收段谁先」这条调度顺序
+        EXPECT_TRUE(waitForCondition([&driver] { return driver.loop().snapshot().lastCompletedWorkload == std::string_view{kSlowWorkloadName}; })) << "快照里的最近作业字段没跟上";
     }
 } // namespace AsynGyanis::Core
