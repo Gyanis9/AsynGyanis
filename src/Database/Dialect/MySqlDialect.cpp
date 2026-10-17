@@ -36,6 +36,23 @@ namespace AsynGyanis::Database
         return "START TRANSACTION";
     }
 
+    std::optional<std::string> MySqlDialect::currentDatabaseNameStatement() const
+    {
+        // GET_LOCK 是服务器级的：把库名揉进锁键，同服务器上的两个库才不会互相挡住迁移
+        return std::string{"SELECT DATABASE()"};
+    }
+
+    std::optional<std::string> MySqlDialect::tryAcquireMigrationLockStatement(const std::uint64_t key) const
+    {
+        // 第二个参数 0 = 立刻返回；键是十进制数字串，不含引号或反斜杠
+        return "SELECT GET_LOCK('" + std::to_string(key) + "', 0)";
+    }
+
+    std::optional<std::string> MySqlDialect::releaseMigrationLockStatement(const std::uint64_t key) const
+    {
+        return "SELECT RELEASE_LOCK('" + std::to_string(key) + "')";
+    }
+
     std::string_view MySqlDialect::isolationLevelStatement(const TransactionIsolationLevel level) const noexcept
     {
         // MySQL 的 SET TRANSACTION（不带 SESSION/GLOBAL）按文档只设置「下一笔事务」的隔离级别，

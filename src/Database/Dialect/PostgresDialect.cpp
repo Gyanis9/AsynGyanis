@@ -110,6 +110,23 @@ namespace AsynGyanis::Database
         return "ROLLBACK";
     }
 
+    std::optional<std::string> PostgresDialect::currentDatabaseNameStatement() const
+    {
+        // 咨询锁是服务器级的：把库名揉进锁键，同服务器上的两个库才不会互相挡住迁移
+        return std::string{"SELECT current_database()"};
+    }
+
+    std::optional<std::string> PostgresDialect::tryAcquireMigrationLockStatement(const std::uint64_t key) const
+    {
+        // 单键形式收 bigint；调用方已把键压进 63 位，十进制原文可以直接内联
+        return "SELECT pg_try_advisory_lock(" + std::to_string(key) + ')';
+    }
+
+    std::optional<std::string> PostgresDialect::releaseMigrationLockStatement(const std::uint64_t key) const
+    {
+        return "SELECT pg_advisory_unlock(" + std::to_string(key) + ')';
+    }
+
     std::string_view PostgresDialect::isolationLevelStatement(const TransactionIsolationLevel level) const noexcept
     {
         // 四档语法 PostgreSQL 全接受（Read Uncommitted 内部按 Read Committed 处理，

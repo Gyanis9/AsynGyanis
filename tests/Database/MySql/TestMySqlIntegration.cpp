@@ -40,9 +40,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <charconv>
 #include <cmath>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -57,6 +59,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -222,6 +225,10 @@ namespace AsynGyanis::Database
 
         /// 版本化迁移用例的表：同一条理由；它还要 DROP 库级的迁移登记表，与建表迁移用例共用一张表时并行会互相删表
         constexpr std::string_view kVersionedTableName = "Asyn_Mysql_Versioned";
+
+        /// 跨实例迁移互斥用例的两张表：各用例各持物理表，并行执行互不干扰
+        constexpr std::string_view kConcurrentMigrationTableOne = "Asyn_Mysql_MigConcurrent_A";
+        constexpr std::string_view kConcurrentMigrationTableTwo = "Asyn_Mysql_MigConcurrent_B";
 
         /// 二进制列用例的表：同表内放一列 LONGBLOB 与一列 TEXT，用于验证字符集是二者在协议层的唯一区分
         constexpr std::string_view kBinaryTableName = "Asyn_Mysql_Binary";
@@ -3694,6 +3701,92 @@ namespace AsynGyanis::Database
         MySqlConnection cleanup(m_configuration);
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+    }
+
+    /**
+     * @brief 真机上钉住迁移的跨实例互斥：两个连接池同时 migrate，每一步只应用一次
+     *
+     * @details 两个池各持一条连接（上限 1），并发调用 `migrate()`。`GET_LOCK` 让其中一个先跑完，
+     *          另一个等锁后读到最新记账、一步都不再应用。判据：两个调用都成功、两个实例的
+     *          appliedCount 之和等于步骤数、台账里每个名字只有一行、两张表都真的建出来。
+     *          把取锁那一步去掉，两个实例会同时读到空台账并各应用一遍，第二个的记账 INSERT
+     *          撞主键失败——本用例当场红。
+     */
+    TEST_F(MySqlIntegrationTest, ConcurrentMigrationsApplyEachStepExactlyOnce)
+    {
+        {
+            MySqlConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        }
+
+        const std::unique_ptr<ConnectionPool> firstPool  = makePool(1);
+        const std::unique_ptr<ConnectionPool> secondPool = makePool(1);
+
+        const std::vector<Queryable::SchemaMigrator::MigrationStep> steps{
+                Queryable::SchemaMigrator::MigrationStep{
+                        .name           = "0001-concurrent-a",
+                        .upStatements   = {SqlStatement{.sql = "CREATE TABLE " + quote(kConcurrentMigrationTableOne) + " (`id` BIGINT PRIMARY KEY)"}},
+                        .downStatements = {SqlStatement{.sql = "DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)}},
+                },
+                Queryable::SchemaMigrator::MigrationStep{
+                        .name           = "0002-concurrent-b",
+                        .upStatements   = {SqlStatement{.sql = "CREATE TABLE " + quote(kConcurrentMigrationTableTwo) + " (`id` BIGINT PRIMARY KEY)"}},
+                        .downStatements = {SqlStatement{.sql = "DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)}},
+                },
+        };
+
+        std::atomic<int>           readyCount{0};
+        std::atomic<bool>          startGate{false};
+        std::array<bool, 2>        succeeded{};
+        std::array<std::string, 2> errors;
+        std::array<std::size_t, 2> appliedCounts{};
+
+        const auto runMigration = [&](const std::size_t index, ConnectionPool &pool)
+        {
+            readyCount.fetch_add(1, std::memory_order_release);
+            while (!startGate.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            succeeded[index] = Queryable::SchemaMigrator::migrate(pool, steps, &appliedCounts[index], &errors[index]);
+        };
+
+        std::thread firstThread(runMigration, std::size_t{0}, std::ref(*firstPool));
+        std::thread secondThread(runMigration, std::size_t{1}, std::ref(*secondPool));
+        while (readyCount.load(std::memory_order_acquire) < 2)
+        {
+            std::this_thread::yield();
+        }
+        startGate.store(true, std::memory_order_release);
+        firstThread.join();
+        secondThread.join();
+
+        EXPECT_TRUE(succeeded[0]) << "实例一迁移失败：" << errors[0];
+        EXPECT_TRUE(succeeded[1]) << "实例二迁移失败：" << errors[1];
+        EXPECT_EQ(appliedCounts[0] + appliedCounts[1], 2U) << "同一步被两个实例各应用了一次";
+
+        std::string              error;
+        std::vector<std::string> recorded;
+        ASSERT_TRUE(Queryable::SchemaMigrator::appliedMigrations(*firstPool, &recorded, &error)) << error;
+        ASSERT_EQ(recorded.size(), 2U) << "台账里的步数不对";
+        EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0001-concurrent-a"), 1) << "第一步被记了不止一行";
+        EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0002-concurrent-b"), 1) << "第二步被记了不止一行";
+
+        MySqlConnection verification(m_configuration);
+        ASSERT_TRUE(verification.connect()) << verification.lastError();
+        for (const std::string_view tableName: {kConcurrentMigrationTableOne, kConcurrentMigrationTableTwo})
+        {
+            const std::unique_ptr<DatabaseResult> result = verification.execute("SELECT COUNT(*) FROM " + quote(tableName));
+            EXPECT_NE(result, nullptr) << "表 " << tableName << " 不存在：" << verification.lastError();
+        }
+
+        // 库级共享对象：本用例自己清掉（两张表 + 台账）
+        static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
+        static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
+        static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
     }
 
     /**

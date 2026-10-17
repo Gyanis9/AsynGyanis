@@ -70,6 +70,28 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view beginTransactionStatement() const noexcept override;
 
         /**
+         * @brief 取当前库名：MySQL 的 GET_LOCK 是服务器级的，锁键要按库分开
+         * @return std::optional<std::string> 恒为 `SELECT DATABASE()`
+         */
+        [[nodiscard]] std::optional<std::string> currentDatabaseNameStatement() const override;
+
+        /**
+         * @brief 非阻塞尝试 MySQL 会话级命名锁
+         * @details 语句是 `SELECT GET_LOCK('<key>', 0)`；第二个参数 0 表示立刻返回。
+         *          键是十进制数字串，不会带引号或反斜杠，不需要额外转义
+         * @param key 锁键
+         * @return std::optional<std::string> 语句文本
+         */
+        [[nodiscard]] std::optional<std::string> tryAcquireMigrationLockStatement(std::uint64_t key) const override;
+
+        /**
+         * @brief 释放 MySQL 会话级命名锁
+         * @param key 与取得锁时同一个键
+         * @return std::optional<std::string> 语句文本
+         */
+        [[nodiscard]] std::optional<std::string> releaseMigrationLockStatement(std::uint64_t key) const override;
+
+        /**
          * @brief 获取 MySQL 的隔离级别设置语句
          * @details 重写 SqlDialect::isolationLevelStatement()：返回
          *          `SET TRANSACTION ISOLATION LEVEL <级别>`。不带 SESSION/GLOBAL 的 `SET TRANSACTION`

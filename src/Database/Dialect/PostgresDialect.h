@@ -165,6 +165,28 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view rollbackStatement() const noexcept override;
 
         /**
+         * @brief 取当前库名：PostgreSQL 的咨询锁是服务器级的，锁键要按库分开
+         * @return std::optional<std::string> 恒为 `SELECT current_database()`
+         */
+        [[nodiscard]] std::optional<std::string> currentDatabaseNameStatement() const override;
+
+        /**
+         * @brief 非阻塞取 PostgreSQL 会话级咨询锁
+         * @details 语句是 `SELECT pg_try_advisory_lock(key)`，按单键形式；
+         *          键已由调用方压进 63 位，不会越过 bigint 的有符号上界
+         * @param key 锁键
+         * @return std::optional<std::string> 语句文本
+         */
+        [[nodiscard]] std::optional<std::string> tryAcquireMigrationLockStatement(std::uint64_t key) const override;
+
+        /**
+         * @brief 释放 PostgreSQL 会话级咨询锁
+         * @param key 与取得锁时同一个键
+         * @return std::optional<std::string> 语句文本
+         */
+        [[nodiscard]] std::optional<std::string> releaseMigrationLockStatement(std::uint64_t key) const override;
+
+        /**
          * @brief 获取 PostgreSQL 的隔离级别设置语句
          * @details 重写 SqlDialect::isolationLevelStatement()：文本是 `SET TRANSACTION ISOLATION
          *          LEVEL …`。它在 PostgreSQL 里必须在 BEGIN 之后、本事务第一条语句之前执行，

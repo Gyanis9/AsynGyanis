@@ -29,12 +29,16 @@
 #include "Database/Queryable/TableSchema.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_set>
@@ -567,6 +571,20 @@ namespace AsynGyanis::Database::Queryable
             std::vector<SqlStatement> downStatements; ///< 回退时按序执行
         };
 
+        /**
+         * @brief 迁移互斥的设置
+         *
+         * @details 锁键会与「当前库名」一起哈希：PostgreSQL 的咨询锁与 MySQL 的 GET_LOCK
+         *          都是服务器级的，同一台服务器上的两个库若共用一把锁会互相挡住对方的迁移。
+         *          SQLite 没有会话级咨询锁，退回「整段一笔写事务」的等价物（`BEGIN IMMEDIATE`
+         *          立刻取写锁，其余实例按 busy_timeout 等待），锁键对它不适用。
+         */
+        struct MigrationLockOptions
+        {
+            std::string               key{"asyngyanis_schema_migration"}; ///< 锁键基名；与库名一起哈希成最终锁键
+            std::chrono::milliseconds timeout{std::chrono::seconds{30}};  ///< 等锁上限；超时如实失败，不在无锁下继续
+        };
+
         /// 迁移记录表名（取自 MigrationLedger，唯一真源在那里）
         static constexpr std::string_view kMigrationLedgerTableName = MigrationLedger::kTableName;
         /// 迁移记录表的列名（同上）
@@ -659,31 +677,371 @@ namespace AsynGyanis::Database::Queryable
             return true;
         }
 
+    private:
+        /**
+         * @brief 一次迁移/回退期间独占的那条连接与它持有的互斥
+         *
+         * @details 会话级咨询锁必须与跑迁移的连接是同一条：锁在 A 连接上取、语句落在 B 连接上，
+         *          锁保护不到任何东西，释放时也找不到持有者。因此本对象从取锁到释放一直握着那条
+         *          连接；池上限为 1 时，迁移期间不再向池借第二条（否则死等借用超时）。建台账、
+         *          读记账与跑步骤都在同一条连接上完成。
+         *
+         * @note 没有会话锁的引擎（SQLite）退回「整段一笔写事务」：`BEGIN IMMEDIATE` 立刻取写锁，
+         *       其余实例按 busy_timeout 等；此时整份迁移是一笔事务（失败全撤），与逐条提交的
+         *       PostgreSQL/MySQL 路径不同——**交付语义同形而机制不同**。
+         */
+        class MigrationSession
+        {
+        public:
+            MigrationSession(ConnectionPool &pool, std::shared_ptr<SqlDialect> dialect, const MigrationLockOptions &options, std::string *errorText) : m_dialect(std::move(dialect))
+            {
+                m_connection = pool.acquire();
+                if (!m_connection)
+                {
+                    setError(errorText, "SchemaMigrator: 从连接池获取迁移锁连接失败（池已达上限、连接创建失败或等待名额被拒）");
+                    return;
+                }
+
+                std::string databaseName;
+                if (!readCurrentDatabaseName(&databaseName, errorText))
+                {
+                    return;
+                }
+                m_lockKey = migrationLockKey(options.key, databaseName);
+
+                if (const std::optional<std::string> tryAcquire = m_dialect->tryAcquireMigrationLockStatement(m_lockKey); tryAcquire.has_value())
+                {
+                    const auto deadline = std::chrono::steady_clock::now() + options.timeout;
+                    for (;;)
+                    {
+                        const std::unique_ptr<DatabaseResult> result = m_connection->execute(std::string_view{*tryAcquire});
+                        if (result == nullptr || !result->next())
+                        {
+                            setError(errorText, "SchemaMigrator: 尝试取迁移锁失败：" + m_connection->lastError());
+                            return;
+                        }
+
+                        bool       isRecognized = false;
+                        const bool isAcquired   = interpretLockResult(result->getValue(std::size_t{0}), isRecognized);
+                        if (!isRecognized)
+                        {
+                            setError(errorText, "SchemaMigrator: 引擎返回的迁移锁结果无法解释（既不是布尔也不是整数）");
+                            return;
+                        }
+                        if (isAcquired)
+                        {
+                            m_isSessionLocked = true;
+                            return;
+                        }
+                        if (std::chrono::steady_clock::now() >= deadline)
+                        {
+                            setError(errorText,
+                                     "SchemaMigrator: 等待迁移锁超时（" + std::to_string(options.timeout.count()) + "ms）：另一个实例正在迁移，本实例未在无锁状态下继续");
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                    }
+                }
+
+                // 没有会话级咨询锁：整段一笔写事务当等价物。事务在 ensureLedger() 建完台账之后才开，
+                // 否则失败回滚会把刚建好的台账表一起撤掉——那样「失败现场」也查不到了
+                m_isTransactionScope = true;
+            }
+
+            MigrationSession(const MigrationSession &)            = delete;
+            MigrationSession &operator=(const MigrationSession &) = delete;
+
+            ~MigrationSession() noexcept
+            {
+                try
+                {
+                    if (m_isTransactionBegun && !m_isFinished)
+                    {
+                        static_cast<void>(m_connection->execute(m_dialect->rollbackStatement()));
+                    }
+                    releaseSessionLock();
+                } catch (...)
+                {
+                    // 析构不做任何有副作用的决定：释放/回滚失败已经无法上报，异常也绝不能逃出去
+                }
+            }
+
+            [[nodiscard]] bool isReady() const noexcept
+            {
+                return static_cast<bool>(m_connection);
+            }
+
+            [[nodiscard]] bool ensureLedger(std::string *errorText)
+            {
+                const SqlStatement statement = createTableStatement<MigrationLedgerRow>(*m_dialect, true);
+                if (m_connection->execute(std::string_view{statement.sql}, statement.parameters) == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 建迁移记录表失败：" + m_connection->lastError());
+                    return false;
+                }
+
+                if (m_isTransactionScope)
+                {
+                    // 台账先以自动提交建好（幂等），再用写事务把「读已应用 + 应用步骤」整段锁住；
+                    // SQLite 的 BEGIN IMMEDIATE 在此立刻取写锁，其余实例按 busy_timeout 等待
+                    if (m_connection->execute(m_dialect->beginTransactionStatement()) == nullptr)
+                    {
+                        setError(errorText, "SchemaMigrator: 开启迁移互斥事务失败（另一个实例可能正占用写锁）：" + m_connection->lastError());
+                        return false;
+                    }
+                    m_isTransactionBegun = true;
+                }
+                return true;
+            }
+
+            [[nodiscard]] bool readAppliedMigrations(std::vector<std::string> *appliedNames, std::string *errorText)
+            {
+                appliedNames->clear();
+                const std::string listingSql = "SELECT " + m_dialect->quoteIdentifier(kMigrationNameColumn) + " FROM " + m_dialect->quoteIdentifier(kMigrationLedgerTableName);
+                const std::unique_ptr<DatabaseResult> listing = m_connection->execute(std::string_view{listingSql});
+                if (listing == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 读迁移记录失败（表可能还没建，先调 ensureMigrationLedger()）：" + m_connection->lastError());
+                    return false;
+                }
+                while (listing->next())
+                {
+                    const DatabaseValue value = listing->getValue(std::size_t{0});
+                    if (const auto *nameText = std::get_if<std::string>(&value); nameText != nullptr)
+                    {
+                        appliedNames->push_back(*nameText);
+                        continue;
+                    }
+                    setError(errorText,
+                             "SchemaMigrator: 迁移记录的名字列读不出文本（实际类型 " + std::string(databaseValueTypeName(value)) + "），请检查这张表是不是被别的程序改过");
+                    return false;
+                }
+                return true;
+            }
+
+            [[nodiscard]] bool runStep(const MigrationStep &step, const bool isRollingBack, std::string *errorText)
+            {
+                if (m_isTransactionScope)
+                {
+                    // 事务型的等价物：整段已经在一笔写事务里，步骤不再自己开关事务
+                    return executeStepStatements(*m_dialect, *m_connection, step, isRollingBack, errorText);
+                }
+
+                if (m_connection->execute(m_dialect->beginTransactionStatement()) == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 开启迁移事务失败：" + m_connection->lastError());
+                    return false;
+                }
+                if (!executeStepStatements(*m_dialect, *m_connection, step, isRollingBack, errorText))
+                {
+                    static_cast<void>(m_connection->execute(m_dialect->rollbackStatement()));
+                    return false;
+                }
+                if (m_connection->execute(m_dialect->commitStatement()) == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 迁移提交失败：" + m_connection->lastError());
+                    static_cast<void>(m_connection->execute(m_dialect->rollbackStatement()));
+                    return false;
+                }
+                return true;
+            }
+
+            [[nodiscard]] bool finish(std::string *errorText)
+            {
+                if (m_isTransactionBegun)
+                {
+                    if (m_connection->execute(m_dialect->commitStatement()) == nullptr)
+                    {
+                        setError(errorText, "SchemaMigrator: 提交迁移互斥事务失败：" + m_connection->lastError());
+                        return false;
+                    }
+                    m_isFinished = true;
+                }
+                return true;
+            }
+
+        private:
+            [[nodiscard]] bool readCurrentDatabaseName(std::string *databaseName, std::string *errorText)
+            {
+                const std::optional<std::string> statement = m_dialect->currentDatabaseNameStatement();
+                if (!statement.has_value())
+                {
+                    return true; // 引擎的锁不需要按库分开（或根本没有会话锁）
+                }
+
+                const std::unique_ptr<DatabaseResult> result = m_connection->execute(std::string_view{*statement});
+                if (result == nullptr || !result->next())
+                {
+                    setError(errorText, "SchemaMigrator: 读当前库名失败（迁移锁键要按库分开）：" + m_connection->lastError());
+                    return false;
+                }
+                const DatabaseValue value = result->getValue(std::size_t{0});
+                if (const auto *text = std::get_if<std::string>(&value); text != nullptr)
+                {
+                    *databaseName = *text;
+                    return true;
+                }
+                setError(errorText, "SchemaMigrator: 当前库名不是文本（实际类型 " + std::string(databaseValueTypeName(value)) + "）");
+                return false;
+            }
+
+            void releaseSessionLock() noexcept
+            {
+                if (!m_isSessionLocked)
+                {
+                    return;
+                }
+                m_isSessionLocked                        = false;
+                const std::optional<std::string> release = m_dialect->releaseMigrationLockStatement(m_lockKey);
+                if (release.has_value() && m_connection->execute(std::string_view{*release}) != nullptr)
+                {
+                    return;
+                }
+                // 释放失败不能把连接还回池：MySQL 的会话复位不收 GET_LOCK，锁会跟着连接
+                // 回到下一个借用者手里。丢弃连接，让服务端随会话结束释放
+                try
+                {
+                    m_connection.discard();
+                } catch (...)
+                {
+                }
+            }
+
+            static void setError(std::string *errorText, std::string message)
+            {
+                if (errorText != nullptr)
+                {
+                    *errorText = std::move(message);
+                }
+            }
+
+            static std::uint64_t migrationLockKey(const std::string_view baseKey, const std::string_view databaseName)
+            {
+                // FNV-1a 64；压掉最高位，PostgreSQL 的 pg_advisory_lock 收有符号 bigint
+                std::uint64_t hash = 1469598103934665603ULL;
+                const auto    mix  = [&hash](const std::string_view text)
+                {
+                    for (const char character: text)
+                    {
+                        hash ^= static_cast<unsigned char>(character);
+                        hash *= 1099511628211ULL;
+                    }
+                };
+                mix(baseKey);
+                mix(std::string_view{":"});
+                mix(databaseName);
+                return hash & 0x7FFF'FFFF'FFFF'FFFFULL;
+            }
+
+            static bool interpretLockResult(const DatabaseValue &value, bool &isRecognized)
+            {
+                isRecognized = true;
+                if (const auto *booleanValue = std::get_if<bool>(&value); booleanValue != nullptr)
+                {
+                    return *booleanValue;
+                }
+                if (const auto *integerValue = std::get_if<std::int64_t>(&value); integerValue != nullptr)
+                {
+                    return *integerValue != 0;
+                }
+                isRecognized = false;
+                return false;
+            }
+
+            std::shared_ptr<SqlDialect> m_dialect;                   ///< 引擎方言
+            PooledConnection            m_connection;                ///< 从取锁到释放一直持有的那条连接
+            std::uint64_t               m_lockKey{0};                ///< 最终锁键（基名 + 库名哈希）
+            bool                        m_isSessionLocked{false};    ///< 是否已取到会话级咨询锁
+            bool                        m_isTransactionScope{false}; ///< 是否走整段一笔写事务的等价物
+            bool                        m_isTransactionBegun{false}; ///< 等价的写事务是否已真正开启
+            bool                        m_isFinished{false};         ///< 事务型等价物是否已提交
+        };
+
+        /**
+         * @brief 在一笔已经打开的事务里执行一条迁移的结构改动与记账
+         * @details 会话锁与事务等价物两条路径共用这一份；调用方负责 BEGIN/COMMIT/ROLLBACK。
+         */
+        [[nodiscard]] static bool executeStepStatements(const SqlDialect &dialect, DatabaseConnection &connection, const MigrationStep &step, const bool isRollingBack,
+                                                        std::string *errorText)
+        {
+            const std::span<const SqlStatement> statements = isRollingBack ? std::span<const SqlStatement>(step.downStatements) : std::span<const SqlStatement>(step.upStatements);
+            const std::string_view              phase      = isRollingBack ? std::string_view{"回退"} : std::string_view{"应用"};
+            for (std::size_t index = 0; index < statements.size(); ++index)
+            {
+                const SqlStatement &statement = statements[index];
+                if (statement.sql.empty())
+                {
+                    continue; // 空语句＝这一步只是版本标记，没有结构改动
+                }
+                if (connection.execute(std::string_view{statement.sql}, statement.parameters) == nullptr)
+                {
+                    if (errorText != nullptr)
+                    {
+                        *errorText = "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的第 " + std::to_string(index + 1) + " 条语句失败（本次已回滚）：" +
+                                     connection.lastError();
+                    }
+                    return false;
+                }
+            }
+
+            // 占位符由方言给：PostgreSQL 的扩展查询协议只认 $1，写死 "?" 会被服务端以
+            // 42601（syntax error at or near ")"）拒绝——三种引擎里只有它会这样
+            std::string ledgerSql;
+            if (isRollingBack)
+            {
+                ledgerSql = "DELETE FROM " + dialect.quoteIdentifier(kMigrationLedgerTableName) + " WHERE " + dialect.quoteIdentifier(kMigrationNameColumn) + " = ";
+                dialect.appendPlaceholder(ledgerSql, 0);
+            } else
+            {
+                ledgerSql = "INSERT INTO " + dialect.quoteIdentifier(kMigrationLedgerTableName) + " (" + dialect.quoteIdentifier(kMigrationNameColumn) + ") VALUES (";
+                dialect.appendPlaceholder(ledgerSql, 0);
+                ledgerSql += ')';
+            }
+
+            const std::vector<DatabaseValue> ledgerParameters{DatabaseValue(step.name)};
+            if (connection.execute(std::string_view{ledgerSql}, std::span<const DatabaseValue>(ledgerParameters)) == nullptr)
+            {
+                if (errorText != nullptr)
+                {
+                    *errorText = "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的记账失败（本次已回滚）：" + connection.lastError();
+                }
+                return false;
+            }
+            return true;
+        }
+
+    public:
         /**
          * @brief 按列表顺序应用尚未应用的迁移（重复调用幂等）
          *
-         * @details 规则四条，都是「部署动作」这一格必须钉住的：①先确保迁移表存在；②已应用的名字
-         *          必须是本次列表的**前缀**——前缀之外还有记录（顺序被改过、列表漏了一条、或者
-         *          换了另一份列表）时当场拒绝，因为按错误的顺序改结构比不改更糟；③逐条应用，
-         *          **一条一笔事务**：结构改动与记账在同一笔里提交，崩在两者之间不会留下
-         *          「结构改了却没记账」（MySQL 侧有例外，见下）；④一条失败即停在那里，已提交的
-         *          前面的步骤保持已应用状态，出参给出已应用的条数。
+         * @details 规则五条，都是「部署动作」这一格必须钉住的：①迁移开始前在同一连接上取
+         *          **跨实例互斥**——PostgreSQL 用会话级咨询锁、MySQL 用 `GET_LOCK`，取不到就等、
+         *          等到超时如实失败（不在无锁状态下继续）；SQLite 没有咨询锁，用「整段一笔
+         *          `BEGIN IMMEDIATE` 写事务」当等价物（语义同形而机制不同）。②先确保迁移表存在；
+         *          ③已应用的名字必须是本次列表的**前缀**——前缀之外还有记录（顺序被改过、列表
+         *          漏了一条、或者换了另一份列表）时当场拒绝，因为按错误的顺序改结构比不改更糟；
+         *          ④逐条应用，**一条一笔事务**：结构改动与记账在同一笔里提交，崩在两者之间不会
+         *          留下「结构改了却没记账」（MySQL 侧有例外，见下）；⑤一条失败即停在那里，已提交
+         *          的前面的步骤保持已应用状态，出参给出已应用的条数。
          *
          * @warning **MySQL 的 DDL 会隐式提交**，因此那一侧的「一条一笔事务」是尽力而为：UP 语句
          *          已经执行到一半时失败，回滚撤不回结构（记账那一条也随隐式提交落下或不落）。
-         *          SQLite 与 PostgreSQL 的 DDL 可回滚，那一侧这条保证是完整的。要在 MySQL 上把
-         *          风险降到最低，就把一条迁移的 UP 拆得尽量小（一条 DDL 一条迁移），并用
-         *          `downStatements` 写清怎么手工退。
+         *          PostgreSQL 的 DDL 可回滚，逐条提交的保证完整。SQLite 走的是整段一笔事务，
+         *          失败时**整份迁移一起撤**（不是只撤失败的那一条）——这是它的互斥等价物带来的
+         *          语义差异。要在 MySQL 上把风险降到最低，就把一条迁移的 UP 拆得尽量小
+         *          （一条 DDL 一条迁移），并用 `downStatements` 写清怎么手工退。
          *
          * @param pool 提供连接的连接池
          * @param steps 迁移列表，按应应用的顺序给出；名字必须两两不同
          * @param appliedCount 可选出参：本次真正应用了几条（幂等的那次是 0）
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @param lockOptions 跨实例互斥的设置；默认 30 秒等锁，锁键按库名分开
          * @return true 列表中的每一条现在都已应用
-         * @return false 列表不合法（空名、重名）、与已应用的不一致（不是前缀）、或某一条执行失败
+         * @return false 列表不合法（空名、重名）、与已应用的不一致（不是前缀）、取锁超时或某一条执行失败
          * @throws Base::LogicException 列表里有空名或重名（调用方把列表写错了，不是运行期故障）
          */
-        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount = nullptr, std::string *errorText = nullptr)
+        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount = nullptr, std::string *errorText = nullptr,
+                                          const MigrationLockOptions &lockOptions = {})
         {
             clearError(errorText);
             if (appliedCount != nullptr)
@@ -692,26 +1050,35 @@ namespace AsynGyanis::Database::Queryable
             }
 
             requireDistinctStepNames(steps);
-            if (!ensureMigrationLedger(pool, errorText))
+
+            // 方言必须在借出长占连接之前取：resolveDialect() 自己也要借一条连接，
+            // 池上限为 1 时它必须在那条连接被长占之前完成（否则死等借用超时）
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
             {
                 return false;
             }
 
+            // 取锁到释放全程占同一条连接：会话级咨询锁与跑迁移的连接必须是同一条
+            MigrationSession session(pool, dialect, lockOptions, errorText);
+            if (!session.isReady())
+            {
+                return false;
+            }
+
+            if (!session.ensureLedger(errorText))
+            {
+                return false;
+            }
+
+            // 已应用清单必须在拿到锁之后读：先读后锁的窗口里，另一个实例可能刚好应用了同一批步骤
             std::vector<std::string> appliedNames;
-            if (!appliedMigrations(pool, &appliedNames, errorText))
+            if (!session.readAppliedMigrations(&appliedNames, errorText))
             {
                 return false;
             }
 
             if (!isAppliedPrefixOfSteps(appliedNames, steps, errorText))
-            {
-                return false;
-            }
-
-            // 方言在开事务之前取：resolveDialect() 自己要借一条连接，而池上限为 1 的部署里
-            // 事务正握着那条连接——取在事务里就是死等（实测等满 5 秒的借用超时）
-            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
-            if (dialect == nullptr)
             {
                 return false;
             }
@@ -724,7 +1091,7 @@ namespace AsynGyanis::Database::Queryable
                     continue;
                 }
 
-                if (!runStep(dialect, pool, step, /*isRollingBack*/ false, errorText))
+                if (!session.runStep(step, /*isRollingBack*/ false, errorText))
                 {
                     return false;
                 }
@@ -733,7 +1100,7 @@ namespace AsynGyanis::Database::Queryable
                     ++(*appliedCount);
                 }
             }
-            return true;
+            return session.finish(errorText);
         }
 
         /**
@@ -752,12 +1119,13 @@ namespace AsynGyanis::Database::Queryable
          * @param stepCount 要回退几条；必须 ≥ 1 且不超过已应用的条数
          * @param rolledBackCount 可选出参：实际退掉了几条
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @param lockOptions 跨实例互斥的设置；与 migrate() 同一把锁
          * @return true 指定的条数都已回退
-         * @return false 参数越界、与已应用的不一致、或某一条回退失败
+         * @return false 参数越界、与已应用的不一致、取锁超时或某一条回退失败
          * @throws Base::LogicException 列表里有空名或重名
          */
         [[nodiscard]] static bool rollbackLast(ConnectionPool &pool, const std::span<const MigrationStep> steps, const std::size_t stepCount,
-                                               std::size_t *rolledBackCount = nullptr, std::string *errorText = nullptr)
+                                               std::size_t *rolledBackCount = nullptr, std::string *errorText = nullptr, const MigrationLockOptions &lockOptions = {})
         {
             clearError(errorText);
             if (rolledBackCount != nullptr)
@@ -772,13 +1140,26 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
-            if (!ensureMigrationLedger(pool, errorText))
+            // 方言在借出长占连接之前取（理由同 migrate()）
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            MigrationSession session(pool, dialect, lockOptions, errorText);
+            if (!session.isReady())
+            {
+                return false;
+            }
+
+            if (!session.ensureLedger(errorText))
             {
                 return false;
             }
 
             std::vector<std::string> appliedNames;
-            if (!appliedMigrations(pool, &appliedNames, errorText))
+            if (!session.readAppliedMigrations(&appliedNames, errorText))
             {
                 return false;
             }
@@ -794,18 +1175,11 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
-            // 方言在开事务之前取（理由同 migrate()：池上限为 1 时在事务里再取就是死等）
-            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
-            if (dialect == nullptr)
-            {
-                return false;
-            }
-
             // 逆序撤：先退最后应用的那一条，退回的结构因此按相反顺序合上
             for (std::size_t index = 0; index < stepCount; ++index)
             {
                 const std::size_t position = appliedNames.size() - 1 - index;
-                if (!runStep(dialect, pool, steps[position], /*isRollingBack*/ true, errorText))
+                if (!session.runStep(steps[position], /*isRollingBack*/ true, errorText))
                 {
                     return false;
                 }
@@ -814,7 +1188,7 @@ namespace AsynGyanis::Database::Queryable
                     ++(*rolledBackCount);
                 }
             }
-            return true;
+            return session.finish(errorText);
         }
 
         /**
@@ -1090,89 +1464,6 @@ namespace AsynGyanis::Database::Queryable
             // 未实现的类型由注册表抛 Base::InvalidArgumentException（用法错误）：刻意不在此处转成
             // 「查询失败 + 原因文本」，用法错误应当由调用方看见，而不是被折叠成可恢复的返回值
             return DialectRegistry::dialectFor(probeConnection->databaseType());
-        }
-
-        /**
-         * @brief 在池中的一条连接上执行 DDL 语句
-         *
-         * @param pool 提供连接的连接池
-         * @param statement 待执行的 DDL 语句（parameters 恒为空）
-         * @param errorText 可选出参；失败时写入中文原因
-         * @return true 语句被引擎接受
-         * @return false 取连接失败或语句执行失败，原因见 errorText
-         */
-        /**
-         * @brief 执行一条迁移（应用或回退）并同步记账
-         * @details 结构改动与记账在同一笔事务里：两者中间崩溃会留下「改了结构却查不到记录」（下次会重跑）
-
-         * *          或「记了账却没改」（下次跳过）这类最难排查的状态。MySQL 的 DDL 隐式提交让这条保证
-         *          打了折扣，那一侧的例外写在 migrate() 的 @warning 里
-
-         * * @param dialect 目标引擎的方言：**由调用方先取好传进来**——本方法持有事务连接，而池上限为 1 的
-         *        部署里 `resolveDialect()`
-         * 自己也要借一条连接，在事务里再取就是死等（实测等满 5 秒借用超时）
-         * @param pool 提供连接的连接池
-         * @param step 待执行的那一条
-         * @param
-         * isRollingBack true 执行 downStatements 并删记账；false 执行 upStatements 并写记账
-         * @param errorText 失败原因出参
-         * @return true 该条已提交
-
-         */
-        [[nodiscard]] static bool runStep(const std::shared_ptr<SqlDialect> &dialect, ConnectionPool &pool, const MigrationStep &step, const bool isRollingBack,
-                                          std::string *errorText)
-        {
-            Transaction transaction(pool);
-            if (!transaction.isActive())
-            {
-                writeError(errorText, "SchemaMigrator: 开启迁移事务失败（取连接失败或引擎拒绝了开启事务语句）：" + transaction.lastError());
-                return false;
-            }
-
-            const std::span<const SqlStatement> statements = isRollingBack ? std::span<const SqlStatement>(step.downStatements) : std::span<const SqlStatement>(step.upStatements);
-            const std::string_view              phase      = isRollingBack ? std::string_view{"回退"} : std::string_view{"应用"};
-            for (std::size_t index = 0; index < statements.size(); ++index)
-            {
-                const SqlStatement &statement = statements[index];
-                if (statement.sql.empty())
-                {
-                    continue; // 空语句＝这一步只是版本标记，没有结构改动
-                }
-                if (transaction.connection().execute(std::string_view{statement.sql}, statement.parameters) == nullptr)
-                {
-                    writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的第 " + std::to_string(index + 1) + " 条语句失败（本次已回滚）：" +
-                                                  transaction.connection().lastError());
-                    return false;
-                }
-            }
-
-            // 占位符由方言给：PostgreSQL 的扩展查询协议只认 $1，写死 "?" 会被服务端以
-            // 42601（syntax error at or near ")"）拒绝——三种引擎里只有它会这样。
-            std::string ledgerSql;
-            if (isRollingBack)
-            {
-                ledgerSql = "DELETE FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " WHERE " + dialect->quoteIdentifier(kMigrationNameColumn) + " = ";
-                dialect->appendPlaceholder(ledgerSql, 0);
-            } else
-            {
-                ledgerSql = "INSERT INTO " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " (" + dialect->quoteIdentifier(kMigrationNameColumn) + ") VALUES (";
-                dialect->appendPlaceholder(ledgerSql, 0);
-                ledgerSql += ')';
-            }
-
-            const std::vector<DatabaseValue> ledgerParameters{DatabaseValue(step.name)};
-            if (transaction.connection().execute(std::string_view{ledgerSql}, std::span<const DatabaseValue>(ledgerParameters)) == nullptr)
-            {
-                writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的记账失败（本次已回滚）：" + transaction.connection().lastError());
-                return false;
-            }
-
-            if (!transaction.commit())
-            {
-                writeError(errorText, "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的提交失败：" + transaction.lastError());
-                return false;
-            }
-            return true;
         }
 
         /**

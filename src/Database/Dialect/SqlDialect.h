@@ -21,6 +21,8 @@
 #include "Database/Dialect/SqlStatement.h"
 #include "Database/Queryable/QueryNode.h"
 
+#include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -286,6 +288,51 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string releaseSavepointStatement(const std::string_view name) const
         {
             return "RELEASE SAVEPOINT " + quoteIdentifier(name);
+        }
+
+        /**
+         * @brief 取「当前数据库名」的查询语句，供迁移锁把锁键限定到本库
+         *
+         * @details PostgreSQL 的咨询锁与 MySQL 的 GET_LOCK 都是**服务器级**的：同一台服务器上
+         *          两个同名库若共用一个锁键，会互相挡住对方的迁移。读取当前库名后把它揉进锁键，
+         *          不同库就各自有一把锁。返回空表示本引擎不需要这一层限定（SQLite 的锁随文件）。
+         *
+         * @return std::optional<std::string> 查询语句；本引擎不提供时为空
+         */
+        [[nodiscard]] virtual std::optional<std::string> currentDatabaseNameStatement() const
+        {
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 取「非阻塞尝试迁移会话锁」的语句
+         *
+         * @details 迁移开始前由 SchemaMigrator 在同一连接上反复执行本语句，直到拿到锁或超时。
+         *          **必须是会话级锁**：迁移期间那条连接一直由迁移持有，结束（含异常路径）才释放。
+         *          默认返回空表示本引擎没有会话级咨询锁——调用方退回「整段一笔写事务」的等价物。
+         *
+         * @param key 锁键（已由调用方混入库名并压成 63 位整数）
+         * @return std::optional<std::string> 语句文本；本引擎不支持时为空
+         */
+        [[nodiscard]] virtual std::optional<std::string> tryAcquireMigrationLockStatement(const std::uint64_t key) const
+        {
+            static_cast<void>(key);
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 取「释放迁移会话锁」的语句
+         *
+         * @details 与 tryAcquireMigrationLockStatement() 成对；执行失败时调用方会丢弃那条连接
+         *          （MySQL 的会话复位不收 GET_LOCK），让服务端随会话结束释放。
+         *
+         * @param key 与取得锁时同一个键
+         * @return std::optional<std::string> 语句文本；本引擎不支持时为空
+         */
+        [[nodiscard]] virtual std::optional<std::string> releaseMigrationLockStatement(const std::uint64_t key) const
+        {
+            static_cast<void>(key);
+            return std::nullopt;
         }
 
         /**

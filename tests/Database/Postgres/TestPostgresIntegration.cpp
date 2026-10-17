@@ -67,6 +67,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -76,6 +79,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -143,7 +147,9 @@ namespace AsynGyanis::Database
         constexpr std::string_view kNumericTableName = "Asyn_Pg_Numeric";
 
         /// 版本化迁移往返用例的表：由迁移步骤自己建、回退时撤，表名必须是编译期常量
-        constexpr std::string_view kVersionedTableName = "Asyn_Pg_Versioned";
+        constexpr std::string_view kVersionedTableName          = "Asyn_Pg_Versioned";
+        constexpr std::string_view kConcurrentMigrationTableOne = "Asyn_Pg_MigConcurrent_A";
+        constexpr std::string_view kConcurrentMigrationTableTwo = "Asyn_Pg_MigConcurrent_B";
 
         /// 「UP 到一半失败」用例的探针表：第一步建它、第二步故意写坏，事务回滚后它必须不存在
         constexpr std::string_view kHalfFailedMigrationTableName = "Asyn_Pg_MigHalf";
@@ -1658,6 +1664,91 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::migrate(*pool, steps, &reapplied, &error)) << error;
         EXPECT_EQ(reapplied, 1U);
         EXPECT_TRUE(SchemaMigrator::tableExists<IntegrationVersionedMigrationRow>(*pool, &error)) << "回退之后重新应用没把结构建回来";
+    }
+
+    /**
+     * @brief 真机上钉住迁移的跨实例互斥：两个连接池同时 migrate，每一步只应用一次
+     *
+     * @details 两个池各持一条连接（上限 1），在同一份步骤表上并发调用 `migrate()`。
+     *          咨询锁让其中一个先跑完，另一个等锁后读到最新的记账、一步都不再应用。
+     *          判据三条：两个调用都成功、两个实例的 appliedCount 之和等于步骤数、
+     *          台账里每个名字只有一行。把取锁那一步去掉，两个实例会同时读到空台账并各应用
+     *          一遍——第二个实例的记账 INSERT 撞主键失败（本用例当场红）。
+     */
+    TEST_F(PostgresIntegrationTest, ConcurrentMigrationsApplyEachStepExactlyOnce)
+    {
+        {
+            PostgresConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+        }
+        m_preparedTableNames.emplace_back(kConcurrentMigrationTableOne);
+        m_preparedTableNames.emplace_back(kConcurrentMigrationTableTwo);
+        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+
+        const std::unique_ptr<ConnectionPool> firstPool  = makePool(1);
+        const std::unique_ptr<ConnectionPool> secondPool = makePool(1);
+
+        const std::vector<SchemaMigrator::MigrationStep> steps{
+                SchemaMigrator::MigrationStep{
+                        .name           = "0001-concurrent-a",
+                        .upStatements   = {SqlStatement{.sql = "CREATE TABLE " + quote(kConcurrentMigrationTableOne) + " (id BIGINT PRIMARY KEY)"}},
+                        .downStatements = {SqlStatement{.sql = "DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)}},
+                },
+                SchemaMigrator::MigrationStep{
+                        .name           = "0002-concurrent-b",
+                        .upStatements   = {SqlStatement{.sql = "CREATE TABLE " + quote(kConcurrentMigrationTableTwo) + " (id BIGINT PRIMARY KEY)"}},
+                        .downStatements = {SqlStatement{.sql = "DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)}},
+                },
+        };
+
+        std::atomic<int>           readyCount{0};
+        std::atomic<bool>          startGate{false};
+        std::array<bool, 2>        succeeded{};
+        std::array<std::string, 2> errors;
+        std::array<std::size_t, 2> appliedCounts{};
+
+        const auto runMigration = [&](const std::size_t index, ConnectionPool &pool)
+        {
+            readyCount.fetch_add(1, std::memory_order_release);
+            while (!startGate.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            succeeded[index] = SchemaMigrator::migrate(pool, steps, &appliedCounts[index], &errors[index]);
+        };
+
+        std::thread firstThread(runMigration, std::size_t{0}, std::ref(*firstPool));
+        std::thread secondThread(runMigration, std::size_t{1}, std::ref(*secondPool));
+        while (readyCount.load(std::memory_order_acquire) < 2)
+        {
+            std::this_thread::yield();
+        }
+        startGate.store(true, std::memory_order_release);
+        firstThread.join();
+        secondThread.join();
+
+        EXPECT_TRUE(succeeded[0]) << "实例一迁移失败：" << errors[0];
+        EXPECT_TRUE(succeeded[1]) << "实例二迁移失败：" << errors[1];
+        EXPECT_EQ(appliedCounts[0] + appliedCounts[1], 2U) << "同一步被两个实例各应用了一次";
+
+        std::string              error;
+        std::vector<std::string> recorded;
+        ASSERT_TRUE(SchemaMigrator::appliedMigrations(*firstPool, &recorded, &error)) << error;
+        ASSERT_EQ(recorded.size(), 2U) << "台账里的步数不对";
+        EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0001-concurrent-a"), 1) << "第一步被记了不止一行";
+        EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0002-concurrent-b"), 1) << "第二步被记了不止一行";
+
+        // 记账之外再核一遍结构：两张表都真的建出来了
+        PostgresConnection verification(m_configuration);
+        ASSERT_TRUE(verification.connect()) << verification.lastError();
+        for (const std::string_view tableName: {kConcurrentMigrationTableOne, kConcurrentMigrationTableTwo})
+        {
+            const std::unique_ptr<DatabaseResult> result = verification.execute("SELECT COUNT(*) FROM " + quote(tableName));
+            EXPECT_NE(result, nullptr) << "表 " << tableName << " 不存在：" << verification.lastError();
+        }
     }
 
     /**

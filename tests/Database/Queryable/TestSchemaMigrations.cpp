@@ -18,11 +18,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 // ========================================================================
@@ -442,6 +448,117 @@ TEST_F(SchemaMigrationsTest, KeepsTheRecordWhenRollbackItselfFails)
  * @details 迁移表由本类自己建，但它走的是同一份 TableSchema 登记——因此 `addMissingColumns`
  *          与 `tableExists` 对它同样成立。手写一份 DDL 就做不到这件事
  */
+/**
+ * @brief SQLite 的互斥等价物：两个实例同时对同一个文件库跑 migrate，每一步只应用一次
+ *
+ * @details SQLite 没有会话级咨询锁，实现用「整段一笔 BEGIN IMMEDIATE 写事务 + busy_timeout」
+ *          当等价物。两个池各一条连接、同时起跑：先拿到写锁的那个读空台账并把两步都应用掉，
+ *          另一个等锁后读到最新台账、一步都不再应用。把取锁那一段（BEGIN IMMEDIATE）去掉，
+ *          两个实例会同时读到空台账并各应用一遍，第二个的记账 INSERT 撞主键失败——本用例红。
+ */
+TEST(SchemaMigrationsConcurrency, TwoInstancesApplyEachStepOnceOnSqlite)
+{
+    const std::filesystem::path databasePath =
+            std::filesystem::temp_directory_path() / ("asyn-mig-concurrent-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".db");
+
+    const auto makePool = [&databasePath]
+    {
+        PoolConfig poolConfiguration;
+        poolConfiguration.maximumPoolSize = 1;
+        return std::make_unique<ConnectionPool>(
+                [databasePath]
+                {
+                    auto connection = DatabaseFactory::createSqlite(ConnectionConfig::sqliteDefault(databasePath.string()));
+                    connection->connect();
+                    return connection;
+                },
+                poolConfiguration);
+    };
+
+    std::unique_ptr<ConnectionPool> firstPool  = makePool();
+    std::unique_ptr<ConnectionPool> secondPool = makePool();
+
+    const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*firstPool);
+    ASSERT_NE(dialect, nullptr);
+
+    const std::vector<SchemaMigrator::MigrationStep> steps{
+            SchemaMigrator::MigrationStep{
+                    .name           = "0001-concurrent-notes",
+                    .upStatements   = {SchemaMigrator::createTableStatement<MigrationNoteRow>(*dialect)},
+                    .downStatements = {SchemaMigrator::dropTableStatement<MigrationNoteRow>(*dialect)},
+            },
+            SchemaMigrator::MigrationStep{
+                    .name           = "0002-concurrent-tags",
+                    .upStatements   = {SchemaMigrator::createTableStatement<MigrationTagRow>(*dialect)},
+                    .downStatements = {SchemaMigrator::dropTableStatement<MigrationTagRow>(*dialect)},
+            },
+    };
+
+    std::atomic<int>           readyCount{0};
+    std::atomic<bool>          startGate{false};
+    std::array<bool, 2>        succeeded{};
+    std::array<std::string, 2> errors;
+    std::array<std::size_t, 2> appliedCounts{};
+
+    const auto runMigration = [&](const std::size_t index, ConnectionPool &pool)
+    {
+        readyCount.fetch_add(1, std::memory_order_release);
+        while (!startGate.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        succeeded[index] = SchemaMigrator::migrate(pool, steps, &appliedCounts[index], &errors[index]);
+    };
+
+    std::thread firstThread(runMigration, std::size_t{0}, std::ref(*firstPool));
+    std::thread secondThread(runMigration, std::size_t{1}, std::ref(*secondPool));
+    while (readyCount.load(std::memory_order_acquire) < 2)
+    {
+        std::this_thread::yield();
+    }
+    startGate.store(true, std::memory_order_release);
+    firstThread.join();
+    secondThread.join();
+
+    EXPECT_TRUE(succeeded[0]) << "实例一迁移失败：" << errors[0];
+    EXPECT_TRUE(succeeded[1]) << "实例二迁移失败：" << errors[1];
+    EXPECT_EQ(appliedCounts[0] + appliedCounts[1], 2U) << "同一步被两个实例各应用了一次";
+
+    std::string              error;
+    std::vector<std::string> recorded;
+    ASSERT_TRUE(SchemaMigrator::appliedMigrations(*firstPool, &recorded, &error)) << error;
+    ASSERT_EQ(recorded.size(), 2U) << "台账里的步数不对";
+    EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0001-concurrent-notes"), 1) << "第一步被记了不止一行";
+    EXPECT_EQ(std::count(recorded.begin(), recorded.end(), "0002-concurrent-tags"), 1) << "第二步被记了不止一行";
+
+    // 连接还握着文件时 Windows 删不掉：先收池再删
+    firstPool.reset();
+    secondPool.reset();
+    std::error_code removeError;
+    std::filesystem::remove(databasePath, removeError);
+}
+
+/**
+ * @brief 迁移失败之后锁必须被放掉：同一池上限 1 的部署里下一次 migrate 不能死等
+ *
+ * @details 失败路径（步骤语句被拒）走的是会话析构：事务回滚、连接归还。若锁/事务留在
+ *          那条连接上，池上限 1 的下一次调用会在借用/开事务处挂住，本用例超时前就会红。
+ */
+TEST_F(SchemaMigrationsTest, FailedMigrationReleasesTheLockForTheNextRun)
+{
+    std::vector<SchemaMigrator::MigrationStep> brokenSteps = m_steps;
+    brokenSteps.front().upStatements.push_back(SqlStatement{.sql = "CREATE TABLE"});
+
+    std::string error;
+    std::size_t applied = 0;
+    EXPECT_FALSE(SchemaMigrator::migrate(*m_pool, brokenSteps, &applied, &error)) << "故意写坏的迁移却成功了";
+    EXPECT_EQ(applied, 0U) << "失败的那一步不应计入已应用条数";
+
+    std::size_t appliedAfterFailure = 0;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, m_steps, &appliedAfterFailure, &error)) << "失败路径没有释放锁/事务：" << error;
+    EXPECT_EQ(appliedAfterFailure, 2U) << "失败之后的正常迁移应用条数不对";
+}
+
 TEST_F(SchemaMigrationsTest, TheLedgerTableIsVisibleToTheExistingColumnRepair)
 {
     std::string error;
