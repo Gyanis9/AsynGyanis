@@ -265,9 +265,13 @@ namespace AsynGyanis::Net
 
         // 发送协程首次恢复必须在循环线程上：在调用线程 resume 会让它就地注册观察者，
         // 与这里的 run() 抢同一份后端。帧留在本函数的栈上，活到 run() 返回之后
-        Core::Task<void> pump = pumpBatches();
-        static_cast<void>(pump.handle().resume());
-        m_loop.run();
+        {
+            Core::Task<void> pump = pumpBatches();
+            static_cast<void>(pump.handle().resume());
+            m_loop.run();
+            // 先销毁发送协程、再收客户端：协程帧里的出向并发闸守卫要在池子仍活着时退账。
+            // 反过来（先 reset 客户端）会让守卫在已释放的池子上调 releaseInFlight
+        }
         // HttpClient 与它的池都归属这条循环，必须在 run() 返回之后、仍在本线程上收掉
         m_client.reset();
     }
