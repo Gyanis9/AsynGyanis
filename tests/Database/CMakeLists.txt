@@ -96,8 +96,16 @@ gtest_discover_tests(TestDatabase
         PROPERTIES RESOURCE_LOCK asyn-mysql-integration
         POST_FILE TestDatabase-mysql
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
+# PostgresIntegrationTest 这一族里的迁移/种子用例共用库级的迁移登记表，而 ctest 逐用例起进程：
+# 并行时一条用例 DROP 登记表会抽走另一条的现场。整族串行化（各用例的表本身已独立），
+# 与 MySQL 那一族同一条理由；第二次发现调用同样要另给 POST_FILE。
 gtest_discover_tests(TestDatabase
-        TEST_FILTER "-RedisSubscriptionIntegration.*:MySqlIntegrationTest.*"
+        TEST_FILTER "PostgresIntegrationTest.*"
+        PROPERTIES RESOURCE_LOCK asyn-postgres-integration
+        POST_FILE TestDatabase-postgres
+        DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
+gtest_discover_tests(TestDatabase
+        TEST_FILTER "-RedisSubscriptionIntegration.*:MySqlIntegrationTest.*:PostgresIntegrationTest.*"
         POST_FILE TestDatabase-rest
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 

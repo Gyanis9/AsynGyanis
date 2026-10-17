@@ -142,6 +142,24 @@ namespace AsynGyanis::Database
         /// NUMERIC(20) 专用表：单独一个用例，验证无符号 64 位的承载类型被服务端接受
         constexpr std::string_view kNumericTableName = "Asyn_Pg_Numeric";
 
+        /// 版本化迁移往返用例的表：由迁移步骤自己建、回退时撤，表名必须是编译期常量
+        constexpr std::string_view kVersionedTableName = "Asyn_Pg_Versioned";
+
+        /// 「UP 到一半失败」用例的探针表：第一步建它、第二步故意写坏，事务回滚后它必须不存在
+        constexpr std::string_view kHalfFailedMigrationTableName = "Asyn_Pg_MigHalf";
+
+        /// 种子幂等用例的表：由迁移建出来，表名独立以免与并行用例共用
+        constexpr std::string_view kSeedTableName = "Asyn_Pg_Seed";
+
+        /// 乐观锁用例的表：带版本列，两个会话同时改同一行
+        constexpr std::string_view kVersionedLockTableName = "Asyn_Pg_VersionedLock";
+        constexpr std::string_view kVersionedLockColumns   = "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL, \"version\" BIGINT NOT NULL";
+
+        /// 关系装载用例的三张表：由用例自建自清，表名先 grep 过整份文件确认零命中
+        constexpr std::string_view kRelationAuthorTableName  = "Asyn_Pg_RelAuthors";
+        constexpr std::string_view kRelationPostTableName    = "Asyn_Pg_RelPosts";
+        constexpr std::string_view kRelationCommentTableName = "Asyn_Pg_RelComments";
+
         /**
          * @brief 读取一个环境变量
          * @details 口令只经由本函数进入测试，源码里不出现任何明文。底层实现按平台取环境变量
@@ -216,6 +234,72 @@ namespace AsynGyanis::Database
             double       amount; ///< 金额
         };
 
+        /**
+         * @brief 版本化迁移往返用例的行型：只含主键与文本列，绑定本用例专属的表
+         * @details 迁移表只能来自编译期常量，一个行型只能绑一张表；与其它迁移用例分开
+         *          既可避免并行时互相删表，也让「回退后重新应用」的判据落在自己的表上
+         */
+        struct IntegrationVersionedMigrationRow
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 「UP 到一半失败」用例的探针行型：第一步建表用的就是它
+         */
+        struct IntegrationHalfFailedMigrationRow
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 种子幂等用例的行型：显式给主键（幂等键就是它），表由迁移建出来
+         */
+        struct IntegrationSeedRow
+        {
+            std::int64_t id;   ///< 主键（种子行的幂等键）
+            std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 乐观锁用例的行：版本列声明进 TableSchema 之后，update() 的 WHERE 会带上它
+         */
+        struct IntegrationVersionedRow
+        {
+            std::int64_t id;      ///< 主键
+            std::string  name;    ///< 业务列
+            std::int64_t version; ///< 版本列（每次成功更新由服务端加一）
+        };
+
+        /// @brief 关系装载用例：作者（多对一的「一」）
+        struct IntegrationRelationAuthor
+        {
+            std::int64_t id;   ///< 主键
+            std::string  name; ///< 姓名
+        };
+
+        /// @brief 关系装载用例：评论（一对多的「多」，外键在子表这一侧）
+        struct IntegrationRelationComment
+        {
+            std::int64_t id;     ///< 主键
+            std::int64_t postId; ///< 所属帖子（外键）
+            std::string  text;   ///< 正文
+        };
+
+        /**
+         * @brief 关系装载用例：帖子（两个关系成员不进 kColumns，只进 kRelations）
+         */
+        struct IntegrationRelationPost
+        {
+            std::int64_t                             id;       ///< 主键
+            std::string                              title;    ///< 标题
+            std::int64_t                             authorId; ///< 外键列
+            std::optional<IntegrationRelationAuthor> author;   ///< 装载结果：作者
+            std::vector<IntegrationRelationComment>  comments; ///< 装载结果：评论
+        };
+
     } // namespace
 
     // ========================================================================
@@ -272,6 +356,91 @@ namespace AsynGyanis::Database
                 Column(&IntegrationBudgetRow::amount, "amount"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationVersionedMigrationRow>
+    {
+        static constexpr std::string_view kTableName = kVersionedTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationVersionedMigrationRow::id, "id"),
+                Column(&IntegrationVersionedMigrationRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationHalfFailedMigrationRow>
+    {
+        static constexpr std::string_view kTableName = kHalfFailedMigrationTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationHalfFailedMigrationRow::id, "id"),
+                Column(&IntegrationHalfFailedMigrationRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationSeedRow>
+    {
+        static constexpr std::string_view kTableName = kSeedTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationSeedRow::id, "id"),
+                Column(&IntegrationSeedRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationVersionedRow>
+    {
+        static constexpr std::string_view kTableName = kVersionedLockTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationVersionedRow::id, "id"),
+                Column(&IntegrationVersionedRow::name, "name"),
+                Column(&IntegrationVersionedRow::version, "version"),
+        };
+        static constexpr std::string_view kPrimaryKey    = "id";
+        static constexpr std::string_view kVersionColumn = "version";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationAuthor>
+    {
+        static constexpr std::string_view kTableName = kRelationAuthorTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationAuthor::id, "id"),
+                Column(&IntegrationRelationAuthor::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationComment>
+    {
+        static constexpr std::string_view kTableName = kRelationCommentTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationComment::id, "id"),
+                Column(&IntegrationRelationComment::postId, "post_id"),
+                Column(&IntegrationRelationComment::text, "text"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationRelationPost>
+    {
+        static constexpr std::string_view kTableName = kRelationPostTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationRelationPost::id, "id"),
+                Column(&IntegrationRelationPost::title, "title"),
+                Column(&IntegrationRelationPost::authorId, "author_id"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+        static constexpr auto             kRelations  = std::tuple{
+                AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::author, "author_id"),
+                AsynGyanis::Database::Queryable::Relation(&IntegrationRelationPost::comments, "post_id"),
+        };
     };
 
     // ========================================================================
@@ -1359,6 +1528,252 @@ namespace AsynGyanis::Database
         ASSERT_NE(afterReturn, nullptr) << next->lastError();
         ASSERT_TRUE(afterReturn->next());
         EXPECT_NE(std::get<std::string>(afterReturn->getValue(0)), "asyn-integration-borrower") << "会话变量跟着连接串给了下一位借用者";
+    }
+
+    /**
+     * @brief 真机上钉住乐观锁的「两个会话同时改同一行」：后写的拿到冲突，先写的改动没被抹掉
+     *
+     * @details 两个会话各自读出行（版本都是 0），会话一先写成功，会话二拿过期版本再写——
+     *          必须抛 OptimisticLockException，且会话一写进去的值原样还在。这里没有任何唯一键
+     *          冲突，唯一的失败来源就是版本条件；版本加一必须由服务端的 SET 完成。
+     */
+    TEST_F(PostgresIntegrationTest, OptimisticLockRejectsTheStaleWriteFromASecondSession)
+    {
+        ASSERT_TRUE(prepareTable(kVersionedLockTableName, kVersionedLockColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool>   pool = makePool(2);
+        OrmQuery<IntegrationVersionedRow> firstSession(*pool);
+        OrmQuery<IntegrationVersionedRow> secondSession(*pool);
+
+        ASSERT_EQ(firstSession.insert(IntegrationVersionedRow{.id = 1, .name = "原值", .version = 0}), 1);
+
+        const std::optional<IntegrationVersionedRow> firstView  = firstSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        const std::optional<IntegrationVersionedRow> secondView = secondSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(firstView.has_value());
+        ASSERT_TRUE(secondView.has_value());
+        ASSERT_EQ(firstView->version, 0);
+        ASSERT_EQ(secondView->version, 0);
+
+        IntegrationVersionedRow firstRow = *firstView;
+        firstRow.name                    = "会话一写的";
+        EXPECT_EQ(firstSession.update(firstRow), 1) << "第一个写者不该失败";
+
+        IntegrationVersionedRow secondRow = *secondView;
+        secondRow.name                    = "会话二写的";
+        try
+        {
+            static_cast<void>(secondSession.update(secondRow));
+            FAIL() << "会话二用过期版本写成功了：会话一的改动已经被静默覆盖";
+        } catch (const OptimisticLockException &error)
+        {
+            const std::string message = error.what();
+            EXPECT_NE(message.find(kVersionedLockTableName), std::string::npos) << "冲突消息没点出表名：" << message;
+            EXPECT_NE(message.find("version"), std::string::npos) << "冲突消息没点出版本列：" << message;
+            EXPECT_NE(message.find("期望值 0"), std::string::npos) << "冲突消息没点出期望的版本值：" << message;
+        }
+
+        const std::optional<IntegrationVersionedRow> after = OrmQuery<IntegrationVersionedRow>(*pool).where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(after.has_value());
+        EXPECT_EQ(after->name, "会话一写的") << "先写的那份数据被覆盖了";
+        EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一";
+    }
+
+    /**
+     * @brief 真机上钉住版本化迁移的四格：UP 到一半失败必须真回滚、应用、幂等、回退、再应用
+     *
+     * @details PostgreSQL 的 DDL 在事务里可回滚，这是 MySQL 侧（DDL 隐式提交）测不到的一面：
+     *          第一条 up 语句把表建出来、第二条被服务端拒绝时，`runStep` 的那笔事务必须把
+     *          第一句的影响一起撤掉，迁移记录也不许留下。把第二条故意写坏的语句去掉，本用例
+     *          的 `ASSERT_FALSE(migrate(...))` 当场变红——这条判据因此不是「跑了一圈都成功」。
+     *
+     *          随后用一份正常的迁移走完整圈：应用 → 重复应用 0 条 → 回退（表与记账一起消失）
+     *          → 再应用把结构建回来。
+     */
+    TEST_F(PostgresIntegrationTest, VersionedMigrationAppliesRollsBackAndReapplies)
+    {
+        {
+            PostgresConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kVersionedTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kHalfFailedMigrationTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+        }
+        // 迁移自己建表，因此只登记清理名（不要先 prepareTable()，那样测的就不是迁移了）
+        m_preparedTableNames.emplace_back(kVersionedTableName);
+        m_preparedTableNames.emplace_back(kHalfFailedMigrationTableName);
+        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*pool);
+        ASSERT_NE(dialect, nullptr);
+
+        // ---- UP 到一半失败：同一笔迁移的第一句建表成功、第二句被服务端拒，事务必须整体回滚 ----
+        const std::vector<SchemaMigrator::MigrationStep> halfFailingSteps{
+                SchemaMigrator::MigrationStep{
+                        .name           = "0001-half-applied",
+                        .upStatements   = {SchemaMigrator::createTableStatement<IntegrationHalfFailedMigrationRow>(*dialect),
+                                           SqlStatement{.sql = "CREATE TABLE \"Asyn_Pg_MigHalf_Broken\" ("}},
+                        .downStatements = {SchemaMigrator::dropTableStatement<IntegrationHalfFailedMigrationRow>(*dialect)},
+                },
+        };
+
+        std::size_t appliedOnFailure = 0;
+        std::string error;
+        ASSERT_FALSE(SchemaMigrator::migrate(*pool, halfFailingSteps, &appliedOnFailure, &error)) << "第二条 up 语句故意写坏，迁移却成功了";
+        EXPECT_EQ(appliedOnFailure, 0U);
+        EXPECT_NE(error.find("已回滚"), std::string::npos) << "失败原因没说明本次已回滚：" << error;
+        EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationHalfFailedMigrationRow>(*pool, &error)) << "UP 的第二句失败后第一句建的表还在：DDL 没有跟着事务回滚";
+        std::vector<std::string> appliedAfterFailure;
+        ASSERT_TRUE(SchemaMigrator::appliedMigrations(*pool, &appliedAfterFailure, &error)) << error;
+        EXPECT_TRUE(appliedAfterFailure.empty()) << "失败的迁移留下了记账";
+
+        // ---- 正常往返：应用 → 幂等 → 回退 → 再应用 ----
+        const std::vector<SchemaMigrator::MigrationStep> steps{
+                SchemaMigrator::MigrationStep{
+                        .name           = "0001-create-versioned",
+                        .upStatements   = {SchemaMigrator::createTableStatement<IntegrationVersionedMigrationRow>(*dialect)},
+                        .downStatements = {SchemaMigrator::dropTableStatement<IntegrationVersionedMigrationRow>(*dialect)},
+                },
+        };
+
+        std::size_t applied = 0;
+        ASSERT_TRUE(SchemaMigrator::migrate(*pool, steps, &applied, &error)) << error;
+        EXPECT_EQ(applied, 1U);
+        EXPECT_TRUE(SchemaMigrator::tableExists<IntegrationVersionedMigrationRow>(*pool, &error)) << "迁移没把表建出来";
+
+        std::size_t appliedAgain = 0;
+        ASSERT_TRUE(SchemaMigrator::migrate(*pool, steps, &appliedAgain, &error)) << error;
+        EXPECT_EQ(appliedAgain, 0U) << "重复应用同一迁移";
+
+        std::size_t rolledBack = 0;
+        ASSERT_TRUE(SchemaMigrator::rollbackLast(*pool, steps, 1, &rolledBack, &error)) << error;
+        EXPECT_EQ(rolledBack, 1U);
+        EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationVersionedMigrationRow>(*pool, &error)) << "回退没把表撤掉";
+        std::vector<std::string> recorded;
+        ASSERT_TRUE(SchemaMigrator::appliedMigrations(*pool, &recorded, &error)) << error;
+        EXPECT_TRUE(recorded.empty()) << "记账没跟着回退一起删";
+
+        std::size_t reapplied = 0;
+        ASSERT_TRUE(SchemaMigrator::migrate(*pool, steps, &reapplied, &error)) << error;
+        EXPECT_EQ(reapplied, 1U);
+        EXPECT_TRUE(SchemaMigrator::tableExists<IntegrationVersionedMigrationRow>(*pool, &error)) << "回退之后重新应用没把结构建回来";
+    }
+
+    /**
+     * @brief 真机上钉住种子数据的幂等：连跑两轮，第二轮一行都不新增
+     *
+     * @details 与 SQLite 那条同一份判据，换到真服务端——PostgreSQL 走 `ON CONFLICT DO NOTHING`，
+     *          被跳过的行不计入影响行数；计数与表内容两条都要在真机上成立。
+     * @note 池上限为 1：迁移与种子各自要借连接，握着不放就是死等
+     */
+    TEST_F(PostgresIntegrationTest, SeedingIsIdempotentOnTheRealServer)
+    {
+        {
+            PostgresConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kSeedTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+        }
+        m_preparedTableNames.emplace_back(kSeedTableName);
+        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+
+        const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*pool);
+        ASSERT_NE(dialect, nullptr);
+
+        const std::vector<SchemaMigrator::MigrationStep> steps{
+                SchemaMigrator::MigrationStep{
+                        .name           = "0001-create-seed",
+                        .upStatements   = {SchemaMigrator::createTableStatement<IntegrationSeedRow>(*dialect)},
+                        .downStatements = {SchemaMigrator::dropTableStatement<IntegrationSeedRow>(*dialect)},
+                },
+        };
+        std::string error;
+        ASSERT_TRUE(SchemaMigrator::migrate(*pool, steps, nullptr, &error)) << error;
+
+        const std::vector<IntegrationSeedRow> seedRows = {
+                IntegrationSeedRow{.id = 1, .name = "真机种子一"},
+                IntegrationSeedRow{.id = 2, .name = "真机种子二"},
+        };
+
+        std::size_t inserted = 0;
+        ASSERT_TRUE(SchemaMigrator::seed(*pool, seedRows, &inserted, &error)) << error;
+        EXPECT_EQ(inserted, 2U) << "第一轮的新增行数不对";
+
+        std::size_t insertedAgain = 0;
+        ASSERT_TRUE(SchemaMigrator::seed(*pool, seedRows, &insertedAgain, &error)) << error;
+        EXPECT_EQ(insertedAgain, 0U) << "重复落种子数据产生了新行";
+
+        const std::vector<IntegrationSeedRow> rows = OrmQuery<IntegrationSeedRow>(*pool).orderBy(asc("id")).toList();
+        ASSERT_EQ(rows.size(), 2U) << "重复落种子数据让行数变了";
+        EXPECT_EQ(rows[0].name, "真机种子一");
+        EXPECT_EQ(rows[1].name, "真机种子二");
+    }
+
+    /**
+     * @brief 真机上钉住关系装载的两个方向（多对一 + 一对多，一条 IN 查询各补取一次）
+     *
+     * @details 与 SQLite 那一组同一份判据，换到真服务端：`IN (…)` 的参数绑定、分组键的取值、
+     *          以及「对端不存在时留空」在 PostgreSQL 的取值映射下同样成立。三张表都由本用例自建自清。
+     * @note 池上限为 1：这顺带把「补取必须在外层连接释放之后」这条纪律在真机上也压了一遍
+     */
+    TEST_F(PostgresIntegrationTest, RelationLoadingWorksOnTheRealServer)
+    {
+        {
+            PostgresConnection cleanup(m_configuration);
+            ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationCommentTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationPostTableName)));
+            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kRelationAuthorTableName)));
+        }
+        m_preparedTableNames.emplace_back(kRelationAuthorTableName);
+        m_preparedTableNames.emplace_back(kRelationPostTableName);
+        m_preparedTableNames.emplace_back(kRelationCommentTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            PostgresConnection ddl(m_configuration);
+            ASSERT_TRUE(ddl.connect()) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationAuthorTableName) + " (\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL)"), nullptr) << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationPostTableName) + " (\"id\" BIGINT PRIMARY KEY, \"title\" TEXT NOT NULL, \"author_id\" BIGINT NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+            ASSERT_NE(ddl.execute("CREATE TABLE " + quote(kRelationCommentTableName) + " (\"id\" BIGINT PRIMARY KEY, \"post_id\" BIGINT NOT NULL, \"text\" TEXT NOT NULL)"),
+                      nullptr)
+                    << ddl.lastError();
+        }
+
+        {
+            OrmQuery<IntegrationRelationAuthor> authors(*pool);
+            ASSERT_EQ(authors.insert(IntegrationRelationAuthor{.id = 1, .name = "真机作者一"}), 1);
+            ASSERT_EQ(authors.insert(IntegrationRelationAuthor{.id = 2, .name = "真机作者二"}), 1);
+
+            OrmQuery<IntegrationRelationPost> posts(*pool);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 10, .title = "真机第一篇", .authorId = 1}), 1);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 11, .title = "真机第二篇", .authorId = 2}), 1);
+            ASSERT_EQ(posts.insert(IntegrationRelationPost{.id = 12, .title = "真机孤儿篇", .authorId = 999}), 1);
+
+            OrmQuery<IntegrationRelationComment> comments(*pool);
+            ASSERT_EQ(comments.insert(IntegrationRelationComment{.id = 100, .postId = 10, .text = "真机第一评"}), 1);
+            ASSERT_EQ(comments.insert(IntegrationRelationComment{.id = 101, .postId = 10, .text = "真机第二评"}), 1);
+        }
+
+        const std::vector<IntegrationRelationPost> posts = OrmQuery<IntegrationRelationPost>(*pool).orderBy(asc("id")).then(&IntegrationRelationPost::author).toList();
+        ASSERT_EQ(posts.size(), 3U);
+        ASSERT_TRUE(posts[0].author.has_value());
+        EXPECT_EQ(posts[0].author->name, "真机作者一") << "第一条帖子挂错了作者";
+        ASSERT_TRUE(posts[1].author.has_value());
+        EXPECT_EQ(posts[1].author->name, "真机作者二") << "两条帖子挂成了同一个作者";
+        EXPECT_FALSE(posts[2].author.has_value()) << "对端不存在却挂上了一行";
+
+        const std::vector<IntegrationRelationPost> withComments = OrmQuery<IntegrationRelationPost>(*pool).orderBy(asc("id")).then(&IntegrationRelationPost::comments).toList();
+        ASSERT_EQ(withComments.size(), 3U);
+        ASSERT_EQ(withComments[0].comments.size(), 2U) << "第一条帖子的评论数不对";
+        EXPECT_EQ(withComments[0].comments[0].text, "真机第一评");
+        ASSERT_EQ(withComments[1].comments.size(), 0U) << "第二条帖子没有评论（分组键错位会把别家的挂上来）";
+        EXPECT_TRUE(withComments[2].comments.empty());
     }
 
 } // namespace AsynGyanis::Database

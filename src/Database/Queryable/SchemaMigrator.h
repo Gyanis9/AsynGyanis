@@ -1146,13 +1146,18 @@ namespace AsynGyanis::Database::Queryable
                 }
             }
 
+            // 占位符由方言给：PostgreSQL 的扩展查询协议只认 $1，写死 "?" 会被服务端以
+            // 42601（syntax error at or near ")"）拒绝——三种引擎里只有它会这样。
             std::string ledgerSql;
             if (isRollingBack)
             {
-                ledgerSql = "DELETE FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " WHERE " + dialect->quoteIdentifier(kMigrationNameColumn) + " = ?";
+                ledgerSql = "DELETE FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " WHERE " + dialect->quoteIdentifier(kMigrationNameColumn) + " = ";
+                dialect->appendPlaceholder(ledgerSql, 0);
             } else
             {
-                ledgerSql = "INSERT INTO " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " (" + dialect->quoteIdentifier(kMigrationNameColumn) + ") VALUES (?)";
+                ledgerSql = "INSERT INTO " + dialect->quoteIdentifier(kMigrationLedgerTableName) + " (" + dialect->quoteIdentifier(kMigrationNameColumn) + ") VALUES (";
+                dialect->appendPlaceholder(ledgerSql, 0);
+                ledgerSql += ')';
             }
 
             const std::vector<DatabaseValue> ledgerParameters{DatabaseValue(step.name)};
