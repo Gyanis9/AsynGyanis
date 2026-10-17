@@ -238,7 +238,10 @@ namespace AsynGyanis::Database::Queryable
         std::vector<FieldReference>   groupBy;         ///< GROUP BY 字段列表
         std::optional<WhereCondition> having;          ///< HAVING 条件
         std::optional<std::size_t>    limit;           ///< LIMIT 行数上限
-        std::optional<std::size_t>    offset;          ///< OFFSET 偏移量
+        /// 严格标识符模式：开启后 select/orderBy/groupBy/where 的文本字段只允许保守字符集。
+        /// 默认关——既有合法表达式（运算符、字面量）不会被静默收紧；由调用方显式打开
+        bool                       strictIdentifiers = false;
+        std::optional<std::size_t> offset; ///< OFFSET 偏移量
         /// 唯一键冲突的处置，只在 INSERT 方向参与渲染（SELECT/UPDATE/DELETE 一侧读完即弃）；
         /// 刻意不放进「查询树必须有默认值才好用」的其它档：默认 Fail 与标准 SQL 完全等价
         InsertConflict insertConflict{InsertConflict::Fail}; ///< 冲突处置，默认按标准 SQL 报错

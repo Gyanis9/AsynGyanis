@@ -13,6 +13,7 @@
  */
 #pragma once
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
@@ -143,8 +144,51 @@ namespace AsynGyanis::Database::Queryable
          */
         Queryable &where(WhereCondition condition)
         {
+            if (m_queryNode.strictIdentifiers)
+            {
+                requireStrictWhereCondition(condition, "where()");
+            }
             // 如果条件是 AND/OR/NOT 复合节点或普通比较，直接压入列表
             m_queryNode.whereConditions.push_back(std::move(condition));
+            return *this;
+        }
+
+        /**
+         * @brief 开关严格标识符校验（默认关）
+         * @details 开启后 `select()/orderBy()/groupBy()/where()` 里的文本字段只允许保守字符集
+         *          （字母、数字、`_ . $ * ( ) ,` 与空白）；分号、引号、注释符、运算符等一律拒绝，
+         *          并在异常里点名是哪个字段、哪个字符。默认关是硬要求：既要保证既有表达式不被收紧，
+         *          也要让不开这一档的调用方保持逐字节相同的 SQL
+         * @param enabled true 开启；false 关闭（关闭不回溯校验已有字段）
+         * @return Queryable& 自身引用
+         * @throws Base::InvalidArgumentException 开启时已有字段里存在不允许的文本
+         */
+        Queryable &strictIdentifiers(const bool enabled = true)
+        {
+            if (enabled)
+            {
+                for (std::size_t index = 0; index < m_queryNode.selectColumns.size(); ++index)
+                {
+                    requireStrictIdentifierText(m_queryNode.selectColumns[index], "select() 的第 " + std::to_string(index + 1U) + " 项");
+                }
+                for (std::size_t index = 0; index < m_queryNode.groupBy.size(); ++index)
+                {
+                    requireStrictIdentifierText(m_queryNode.groupBy[index].name, "groupBy() 的第 " + std::to_string(index + 1U) + " 项");
+                }
+                for (const OrderByClause &order: m_queryNode.orderBy)
+                {
+                    requireStrictIdentifierText(order.field.name, "orderBy() 的字段");
+                }
+                for (const WhereCondition &condition: m_queryNode.whereConditions)
+                {
+                    requireStrictWhereCondition(condition, "where()");
+                }
+                if (m_queryNode.having.has_value())
+                {
+                    requireStrictWhereCondition(*m_queryNode.having, "having()");
+                }
+            }
+            m_queryNode.strictIdentifiers = enabled;
             return *this;
         }
 
@@ -158,6 +202,10 @@ namespace AsynGyanis::Database::Queryable
          */
         Queryable &orderBy(OrderByClause order)
         {
+            if (m_queryNode.strictIdentifiers)
+            {
+                requireStrictIdentifierText(order.field.name, "orderBy() 的字段");
+            }
             m_queryNode.orderBy.push_back(std::move(order));
             return *this;
         }
@@ -200,6 +248,13 @@ namespace AsynGyanis::Database::Queryable
          */
         Queryable &select(std::vector<std::string> columns)
         {
+            if (m_queryNode.strictIdentifiers)
+            {
+                for (std::size_t index = 0; index < columns.size(); ++index)
+                {
+                    requireStrictIdentifierText(columns[index], "select() 的第 " + std::to_string(index + 1U) + " 项");
+                }
+            }
             m_queryNode.selectColumns = std::move(columns);
             return *this;
         }
@@ -324,6 +379,10 @@ namespace AsynGyanis::Database::Queryable
             fieldRefs.reserve(fields.size());
             for (auto &field: fields)
             {
+                if (m_queryNode.strictIdentifiers)
+                {
+                    requireStrictIdentifierText(field, "groupBy() 的第 " + std::to_string(fieldRefs.size() + 1U) + " 项");
+                }
                 fieldRefs.push_back(FieldReference{.name = std::move(field)});
             }
             m_queryNode.groupBy = std::move(fieldRefs);
@@ -343,6 +402,10 @@ namespace AsynGyanis::Database::Queryable
          */
         Queryable &having(WhereCondition condition)
         {
+            if (m_queryNode.strictIdentifiers)
+            {
+                requireStrictWhereCondition(condition, "having()");
+            }
             m_queryNode.having = std::move(condition);
             return *this;
         }
@@ -1421,6 +1484,48 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] static std::string indexKeyOf(const DatabaseValue &key)
         {
             return std::to_string(key.index()) + "|" + describeValueForConflictMessage(key);
+        }
+
+        /**
+         * @brief 严格标识符模式的字符白名单校验
+         * @param text 待校验文本
+         * @param fieldDescription 出错时点名的字段描述（含 API 名与序号）
+         * @throws Base::InvalidArgumentException 出现白名单外的字符
+         */
+        static void requireStrictIdentifierText(const std::string_view text, const std::string &fieldDescription)
+        {
+            if (text.empty())
+            {
+                throw Base::InvalidArgumentException("严格标识符模式：" + fieldDescription + " 为空");
+            }
+            for (const char character: text)
+            {
+                const bool isAsciiLetter = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
+                const bool isAsciiDigit  = character >= '0' && character <= '9';
+                const bool isAllowed     = isAsciiLetter || isAsciiDigit || character == '_' || character == '.' || character == '$' || character == '*' || character == '(' ||
+                                           character == ')' || character == ',' || character == ' ' || character == '\t';
+                if (!isAllowed)
+                {
+                    throw Base::InvalidArgumentException("严格标识符模式：" + fieldDescription + "「" + std::string(text) + "」含不允许的字符 0x" +
+                                                         std::format("{:02X}", static_cast<unsigned char>(character)));
+                }
+            }
+        }
+
+        /**
+         * @brief 递归校验条件树里的字段引用（参数值不校验：它们走绑定）
+         */
+        static void requireStrictWhereCondition(const WhereCondition &condition, const std::string &context)
+        {
+            requireStrictIdentifierText(condition.left.name, context + " 的左字段");
+            if (const auto *rightField = std::get_if<FieldReference>(&condition.right); rightField != nullptr)
+            {
+                requireStrictIdentifierText(rightField->name, context + " 的右字段");
+            }
+            for (const WhereCondition &child: condition.children)
+            {
+                requireStrictWhereCondition(child, context);
+            }
         }
 
         /**

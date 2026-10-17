@@ -149,8 +149,12 @@ namespace
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
+    using AsynGyanis::Database::Queryable::FieldReference;
+    using AsynGyanis::Database::Queryable::ParameterValue;
     using AsynGyanis::Database::Queryable::Queryable;
     using AsynGyanis::Database::Queryable::SchemaMigrator;
+    using AsynGyanis::Database::Queryable::SqlOperator;
+    using AsynGyanis::Database::Queryable::WhereCondition;
     using AsynGyanis::Database::TestSupport::CompletedTask;
     using AsynGyanis::Database::TestSupport::EventLoopThread;
     using AsynGyanis::Database::TestSupport::waitForCondition;
@@ -752,6 +756,61 @@ TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
     EXPECT_EQ(upsertedRow->name, "upserted");
     EXPECT_EQ(upsertedRow->note.value_or(""), "note");
     EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "Upsert 变成了又一次插入";
+}
+
+// ========================================================================
+// 严格标识符校验（默认关）
+// ========================================================================
+
+/**
+ * @brief 严格模式默认关；开启后 select/orderBy/groupBy/where 的可疑文本被拒且点名字段
+ */
+TEST_F(QueryableAsyncTest, StrictIdentifiersRejectSuspiciousTextAndStayOffByDefault)
+{
+    using AsynGyanis::Base::InvalidArgumentException;
+
+    // 默认关：原样接受（这里只建查询树，不执行）
+    Queryable<AsyncAccountRow> permissive(*m_pool);
+    EXPECT_NO_THROW(permissive.select({"name; DROP TABLE users"}));
+    EXPECT_NO_THROW(permissive.orderBy(asc("name -- comment")));
+
+    Queryable<AsyncAccountRow> strict(*m_pool);
+    strict.strictIdentifiers();
+
+    try
+    {
+        static_cast<void>(strict.select({"name; DROP TABLE users"}));
+        FAIL() << "select() 里的分号没有被严格模式拒绝";
+    } catch (const InvalidArgumentException &exception)
+    {
+        const std::string text{exception.what()};
+        EXPECT_NE(text.find("select() 的第 1 项"), std::string::npos) << text;
+        EXPECT_NE(text.find("0x3B"), std::string::npos) << text;
+    }
+    EXPECT_THROW(static_cast<void>(strict.orderBy(asc("name -- comment"))), InvalidArgumentException);
+    EXPECT_THROW(static_cast<void>(strict.groupBy({"name/*comment*/"})), InvalidArgumentException);
+
+    WhereCondition suspiciousCondition;
+    suspiciousCondition.left  = FieldReference{.name = "name; DROP TABLE users"};
+    suspiciousCondition.op    = SqlOperator::Eq;
+    suspiciousCondition.right = ParameterValue{std::string("x")};
+    try
+    {
+        static_cast<void>(strict.where(suspiciousCondition));
+        FAIL() << "where() 里的可疑字段没有被严格模式拒绝";
+    } catch (const InvalidArgumentException &exception)
+    {
+        EXPECT_NE(std::string{exception.what()}.find("where() 的左字段"), std::string::npos) << exception.what();
+    }
+
+    // 合法表达式与列引用仍放行
+    EXPECT_NO_THROW(strict.select({"COUNT(*)", "COALESCE(name, 0)"}));
+    EXPECT_NO_THROW(strict.where(Column(&AsyncAccountRow::id, "id") == std::int64_t{1}));
+
+    // 先写进可疑文本、再开严格模式：开启那一刻回溯校验并拒绝
+    Queryable<AsyncAccountRow> late(*m_pool);
+    late.select({"name; DROP TABLE users"});
+    EXPECT_THROW(static_cast<void>(late.strictIdentifiers()), InvalidArgumentException);
 }
 
 // ========================================================================
