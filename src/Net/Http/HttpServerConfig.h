@@ -28,7 +28,8 @@ namespace AsynGyanis::Net
      *
      * @details 每个字段的默认值与对应结构体的默认值一致，因此配置里**只写要改的那几项**即可，
      *          没写的键保持默认——这也让「升级后新增的键」在旧配置上自动取到合理取值。
-     * @note 这里只放「启动时定一次」的项：限额与开关都在 start() 之前落定，运行期不再变。
+     * @note 其中 `limits`（超时与单连接请求上限）可由 `HttpServer::setLimits()` / `HttpsServer::setLimits()`
+     *       在运行期整体换代，只影响此后新建的连接；其余项与端点开关仍在 start() 之前落定。
      * @see readHttpServerConfiguration(), HttpServerLimits, HttpParserLimits
      */
     /**

@@ -625,6 +625,38 @@ int main(int argc, char **argv)
     Platform::ServiceNotification serviceStatus;
     Core::ReloadSignal            reloadSignal;
 
+    // 可热换代的限额目标（HttpServer / HttpsServer / 管理口）：SIGHUP 与文件监听共用这一份。
+    // 两家服务器没有共同的 HTTP 基类，这里只收「换代动作」，免得为热重载再造一层继承。
+    // 声明在回调之前——回调要按它逐台换代，而服务器对象要到后面才创建
+    std::vector<std::function<void(const Net::HttpServerLimits &)>> reloadableLimitTargets;
+
+    // 重读后真正可变的运行时配置：logging 段与 server 限额。路由、监听地址、线程数、metrics_port
+    // 与运维令牌要么需要重建监听器（等于换代进程），要么是安全边界（令牌热换改错就锁死自己），
+    // 仍按启动期定型。HTTP/3 的限额随 QUIC 服务器在启动期定型，不在这条清单里
+    const auto applyReloadedRuntimeConfiguration = [&reloadableLimitTargets, configFile](const std::string_view trigger) -> std::string
+    {
+        try
+        {
+            // 与启动期同一份读取器：未知键、类型不符都在这里当场拒，不会把半份配置塞给限额
+            Base::ConfigObject document;
+            document.emplace(std::string(Net::kHttpServerConfigSection), Base::ConfigManager::instance().getSection(Net::kHttpServerConfigSection));
+            const Base::ConfigValue            configurationDocument(std::move(document));
+            const Net::HttpServerConfiguration reloaded = Net::readHttpServerConfiguration(configurationDocument);
+            Base::LoggerConfigLoader::loadFromConfig("logging", std::filesystem::path(configFile).parent_path());
+            for (const auto &applyLimits: reloadableLimitTargets)
+            {
+                applyLimits(reloaded.limits);
+            }
+            LOG_INFO_FMT("{}：配置已重读（{}），logging 段与 HTTP/1·HTTP/2 的 server 限额按新值生效（只影响此后新建的连接）；"
+                         "HTTP/3 限额、路由、监听地址、线程数、metrics_port 与运维令牌仍按启动期生效",
+                         trigger, configFile);
+            return {};
+        } catch (const std::exception &reloadError)
+        {
+            return reloadError.what();
+        }
+    };
+
     // 崩溃现场：段错误/断言失败/未捕获异常至少要在 stderr 上留下「怎么死的、死在哪」，
     // 而不是只留下「进程没了」。安装是进程级且幂等的，装完仍以默认处置死（coredump 语义保留）
     [[maybe_unused]] const bool isCrashSceneInstalled = Core::CrashScene::install();
@@ -633,7 +665,7 @@ int main(int argc, char **argv)
     // --config」分成两种语义——同一条信号在两种部署里行为不同，是最难归因的那一类。没配文件时
     // 它回一条状态说明为什么什么都没重读，而不是悄悄什么都不做
     reloadSignal.onReload(
-            [configFile, &serviceStatus, isWorkerProcess]
+            [configFile, &serviceStatus, isWorkerProcess, &applyReloadedRuntimeConfiguration]
             {
                 // worker 不替 master 报状态：它继承的是父进程那一份 NOTIFY_SOCKET，报出去的每条都是
                 // 第 2..N 份，而监督者认的是主进程。重读本身照做——每个 worker 各有一份 ConfigManager
@@ -656,14 +688,17 @@ int main(int argc, char **argv)
                     static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReloadingState));
                 }
 
-                const Base::ConfigLoadResult reloaded = Base::ConfigManager::instance().reload();
+                const Base::ConfigLoadResult reloaded  = Base::ConfigManager::instance().reload();
+                bool                         isApplied = reloaded.success;
                 if (reloaded.success)
                 {
-                    // logging 段重新装载——这条路上真正会变的运行时行为就是等级与滚动参数。
-                    // 限额、TLS 证书路径、监听地址与线程数都在启动期定型，不随这次重载改变：
-                    // 说清哪几样会生效，比让人以为 reload 等于 nginx 那种整服重建重要
-                    Base::LoggerConfigLoader::loadFromConfig("logging", std::filesystem::path(configFile).parent_path());
-                    LOG_INFO_FMT("SIGHUP：配置已重读（{}），logging 段按新值生效；server 段与 acme 段是启动期定型的，这次不改", configFile);
+                    // 与文件监听共用同一段「重读 + 应用」：两处各写一份，迟早会出现「SIGHUP 生效了、
+                    // 文件监听没生效」这种最难查的分叉
+                    if (const std::string applyError = applyReloadedRuntimeConfiguration("SIGHUP"); !applyError.empty())
+                    {
+                        isApplied = false;
+                        LOG_ERROR_FMT("SIGHUP：配置已重读，但运行时配置应用失败（{}），仍按原值继续服务", applyError);
+                    }
                 } else
                 {
                     std::string reasons;
@@ -677,10 +712,16 @@ int main(int argc, char **argv)
                 if (reportsStatus)
                 {
                     static_cast<void>(serviceStatus.send(Platform::ServiceNotification::kReadyState));
-                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(reloaded.success ? "配置已重读" : "配置重读失败，仍按原配置继续服务")));
+                    static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(isApplied ? "配置已重读" : "配置重读失败，仍按原配置继续服务")));
                 }
             });
-    LOG_INFO("SIGHUP 已接管：kill -HUP <pid> 会重读配置文件并重新装载 logging 段（Windows 没有这条约定，走文件监听那一路）");
+    if (reloadSignal.isInstalled())
+    {
+        LOG_INFO("SIGHUP 已接管：kill -HUP <pid> 会重读配置文件并重新装载 logging 段与 server 限额");
+    } else
+    {
+        LOG_INFO("本平台没有 SIGHUP：重载只走文件监听那一路");
+    }
 
     if (!configFile.empty())
     {
@@ -1181,6 +1222,7 @@ int main(int argc, char **argv)
     const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
         auto server = std::make_unique<Net::HttpServer>(loop, *address);
+        reloadableLimitTargets.emplace_back([rawServer = server.get()](const Net::HttpServerLimits &limits) { rawServer->setLimits(limits); });
         setupRoutes(server->router());
         advertiseHttp3IfEnabled(server->router());
         enableTraceContextIfRequested(server->router());
@@ -1221,6 +1263,7 @@ int main(int argc, char **argv)
     const auto buildHttpsServer = [&](Core::EventLoop &loop)
     {
         auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
+        reloadableLimitTargets.emplace_back([rawServer = server.get()](const Net::HttpServerLimits &limits) { rawServer->setLimits(limits); });
         // 各 worker 进程装同一份密钥，客户端被分到哪个进程都解得开票据；不给则每进程一份随机密钥
         if (!ticketKeyFiles.empty())
         {
@@ -1341,6 +1384,7 @@ int main(int argc, char **argv)
             return 1;
         }
         adminServer = std::make_unique<Net::HttpServer>(pool.eventLoop(0), *adminAddress);
+        reloadableLimitTargets.emplace_back([rawServer = adminServer.get()](const Net::HttpServerLimits &limits) { rawServer->setLimits(limits); });
         // 管理口刻意不调 setHttp2CleartextEnabled()：抓取端是 h1，运维面上多一条协议栈只是多一处入口。
         // 业务口那边开没开 h2c 与这里无关（理由见 HttpServerConfiguration::metricsPort 的说明）
         // 共用那份采集端：管理口要报的是整进程的数，不是它自己那台服务器的零
@@ -1430,6 +1474,45 @@ int main(int argc, char **argv)
             return 1;
         }
         LOG_INFO_FMT("HTTP/3 已在同一个端口号的 UDP 上监听（udp/{}）", port);
+    }
+
+    // 文件监听重载：与 SIGHUP 共用同一段「重读 + 应用」。Windows 上 ReloadSignal 直接拒绝接管，
+    // 这条是那里唯一的重载入口；POSIX 上也保留，便于不依赖信号的重载。装在所有监听器建好之后：
+    // 回调要逐台换代，清单为空时重读也没有可应用的对象
+    if (!configFile.empty())
+    {
+        const bool isHotReloadEnabled = Base::ConfigManager::instance().enableHotReload(
+                [&applyReloadedRuntimeConfiguration](const Base::ConfigLoadResult &result)
+                {
+                    // 回调跑在重载工作线程上：不拦异常就是逃出线程函数 → std::terminate
+                    try
+                    {
+                        if (!result.success)
+                        {
+                            std::string reasons;
+                            for (const auto &reason: result.errors)
+                            {
+                                reasons += reasons.empty() ? reason : "；" + reason;
+                            }
+                            LOG_ERROR_FMT("文件监听：配置重读失败（{}），仍按原配置继续服务", reasons);
+                            return;
+                        }
+                        if (const std::string applyError = applyReloadedRuntimeConfiguration("文件监听"); !applyError.empty())
+                        {
+                            LOG_ERROR_FMT("文件监听：配置已重读，但运行时配置应用失败（{}），仍按原值继续服务", applyError);
+                        }
+                    } catch (const std::exception &callbackError)
+                    {
+                        LOG_ERROR_EXCEPTION(callbackError, "文件监听：应用重载配置时抛出异常，本轮按失败处理：{}", callbackError.what());
+                    }
+                });
+        if (isHotReloadEnabled)
+        {
+            LOG_INFO_FMT("文件监听重载已启用：改 {} 后自动重读（防抖 500ms）", configFile);
+        } else
+        {
+            LOG_WARN_FMT("文件监听重载未启用：{} 的目录锚点推不出来（相对路径推不出稳定目录）；Windows 上因此没有别的重载入口", configFile);
+        }
     }
 
     // 证书自动化的装配排在所有监听器建好之后：装回动作要遍历的就是这些对象，而「本进程有没有可装回的

@@ -61,7 +61,7 @@ namespace AsynGyanis::Net
 
     void HttpsServer::ensureStaticFileSettings()
     {
-        m_staticFiles.install(m_router, m_limits->maximumMappedStaticFiles);
+        m_staticFiles.install(m_router, limitsSnapshot()->maximumMappedStaticFiles);
     }
 
     void HttpsServer::staticFileDir(const std::string &directoryPath)
@@ -129,7 +129,9 @@ namespace AsynGyanis::Net
         // 协商出 h2 就跑 HTTP/2 循环，否则（http/1.1 或客户端没提 ALPN）走同一份 HTTP/1.1 事务循环。
         // 明文 h2c（前奏直发、无 ALPN）不在本片：那条路径上没有任何 ALPN 可读，连接按 HTTP/1.1 处理
         Core::TlsSocket tlsSocket(sslHandle, m_loop, std::move(socket));
-        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
+        // 取一份快照再构造会话：锁只罩指针复制，会话构造在锁外
+        const std::shared_ptr<const HttpServerLimits> limits = limitsSnapshot();
+        return std::make_shared<Http2Session>(m_loop, std::move(tlsSocket), m_router, limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
                                               m_http2Configuration);
     }
 
@@ -225,12 +227,20 @@ namespace AsynGyanis::Net
     void HttpsServer::setLimits(HttpServerLimits limits)
     {
         // 换一份新配置而不是改写原对象，理由同 HttpServer::setLimits()：会话按只读配置共享持有它
-        m_limits = std::make_shared<const HttpServerLimits>(limits);
+        auto                              replacement = std::make_shared<const HttpServerLimits>(limits);
+        const std::lock_guard<std::mutex> guard(m_limitsMutex);
+        m_limits = std::move(replacement);
     }
 
     HttpServerLimits HttpsServer::limits() const
     {
-        return *m_limits;
+        return *limitsSnapshot();
+    }
+
+    std::shared_ptr<const HttpServerLimits> HttpsServer::limitsSnapshot() const
+    {
+        const std::lock_guard<std::mutex> guard(m_limitsMutex);
+        return m_limits;
     }
 
     void HttpsServer::setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget)

@@ -1551,12 +1551,14 @@ namespace AsynGyanis::Net
         // 与基类契约的差异见头文件 Doxygen：这里只搬移 socket 与转交几个引用，
         // 不做握手、不查地址、不阻塞，因此既不抛异常也不可能返回空指针。
         // h2c 打开时明文连接进 HTTP/2 会话：它按先验知识直接进 HTTP/2 循环，不做协议嗅探
+        // 取一份快照再构造会话：锁只罩指针复制，会话构造在锁外
+        const std::shared_ptr<const HttpServerLimits> limits = limitsSnapshot();
         if (m_isHttp2CleartextEnabled)
         {
-            return std::make_shared<Http2Session>(m_loop, std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
+            return std::make_shared<Http2Session>(m_loop, std::move(socket), m_router, limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget,
                                                   m_http2Configuration);
         }
-        return std::make_shared<HttpSession>(std::move(socket), m_router, m_limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget);
+        return std::make_shared<HttpSession>(std::move(socket), m_router, limits, m_metrics, m_requestIdGenerator, m_parserLimits, m_memoryBudget);
     }
 
     void HttpServer::setHttp2Configuration(Http2ConnectionConfiguration configuration)
@@ -1879,7 +1881,7 @@ namespace AsynGyanis::Net
 
     void HttpServer::ensureStaticFileSettings()
     {
-        m_staticFiles.install(m_router, m_limits->maximumMappedStaticFiles);
+        m_staticFiles.install(m_router, limitsSnapshot()->maximumMappedStaticFiles);
     }
 
     void HttpServer::staticFileDir(const std::string &directoryPath)
@@ -1932,12 +1934,20 @@ namespace AsynGyanis::Net
     {
         // 换一份新配置而不是改写原对象：会话按 shared_ptr 只读持有它，
         // 就地修改会让在途会话读到半新半旧的组合
-        m_limits = std::make_shared<const HttpServerLimits>(limits);
+        auto                              replacement = std::make_shared<const HttpServerLimits>(limits);
+        const std::lock_guard<std::mutex> guard(m_limitsMutex);
+        m_limits = std::move(replacement);
     }
 
     HttpServerLimits HttpServer::limits() const
     {
-        return *m_limits;
+        return *limitsSnapshot();
+    }
+
+    std::shared_ptr<const HttpServerLimits> HttpServer::limitsSnapshot() const
+    {
+        const std::lock_guard<std::mutex> guard(m_limitsMutex);
+        return m_limits;
     }
 
     void HttpServer::setMemoryBudget(std::shared_ptr<HttpMemoryBudget> memoryBudget)

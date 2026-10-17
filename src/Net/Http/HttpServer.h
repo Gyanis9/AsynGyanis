@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -177,8 +178,8 @@ namespace AsynGyanis::Net
          *          已建立的连接因此不会读到半新半旧的组合；要改配置就换一份新的。
          *
          * @param limits 新的限额，取值 0 的字段表示关闭对应保护（见 HttpServerLimits）
-         * @note 必须在 start() 之前调用：它只影响此后的 createConnection()，
-         *       已经建立的会话继续用创建时那份配置
+         * @note 可在运行期从任意线程调用（如 SIGHUP 重载）：指针换代在内部互斥量下完成，
+         *       只影响此后的 createConnection()；已经建立的会话继续用它们创建时那份配置，连接不会被打断
          * @see HttpServerLimits, TcpServer::setIdleCheckInterval()
          */
         void setLimits(HttpServerLimits limits);
@@ -396,15 +397,25 @@ namespace AsynGyanis::Net
         void ensureStaticFileSettings();
 
         /**
+         * @brief 取当前限额指针的一份快照（互斥量保护换代）
+         * @return 共享指针副本；调用方持用它期间那份配置不会被释放
+         * @note 只锁「复制指针」这一小段：会话构造在锁外进行，不会与 accept 路径互锁
+         */
+        [[nodiscard]] std::shared_ptr<const HttpServerLimits> limitsSnapshot() const;
+
+        /**
          * @brief 把本服务器的连接数镜像接到当前采集端上
          * @details 构造与 setMetricsCollector() 都要接一次：镜像目标是采集端里的一个原子量，
          *          换采集端不重接就会把连接数写进已经没人读的那一份
          */
         void attachActiveConnectionMirror() noexcept;
 
-        Router                                  m_router;                         ///< 路由器，存储路由表与处理函数
-        StaticFileService                       m_staticFiles;                    ///< 静态目录配置本体；三个静态方法都转发到它
-        std::shared_ptr<const HttpServerLimits> m_limits;                         ///< 连接级限额，按只读配置交给会话共享
+        Router                                  m_router;      ///< 路由器，存储路由表与处理函数
+        StaticFileService                       m_staticFiles; ///< 静态目录配置本体；三个静态方法都转发到它
+        std::shared_ptr<const HttpServerLimits> m_limits;      ///< 连接级限额，按只读配置交给会话共享
+        /// 保护 m_limits 的指针换代：运行期重载会从重载线程写、accept 路径读，
+        /// 裸 shared_ptr 的两字读写并发就是数据竞争。只罩指针复制，不罩会话构造
+        mutable std::mutex                      m_limitsMutex;
         HttpParserLimits                        m_parserLimits{};                 ///< 解析上限，按值交给每个新会话的解析器（构造时固定，无需共享）
         Http2ConnectionConfiguration            m_http2Configuration{};           ///< h2 连接层配置，按值交给每个新会话（两条通道共用这一份）
         bool                                    m_isHttp2CleartextEnabled{false}; ///< 明文连接是否按 h2c 服务（先验知识，见 setHttp2CleartextEnabled()）

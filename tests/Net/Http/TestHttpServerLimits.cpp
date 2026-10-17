@@ -209,6 +209,50 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
+    TEST(HttpServerLimits, RuntimeLimitReplacementAppliesToNewConnectionsOnly)
+    {
+        // 运行期换代（SIGHUP / 文件监听那条路）：新限额只影响此后创建的连接，
+        // 已建立的连接继续用它创建时那份，不被打断
+        HttpServerLimits initial;
+        initial.idleTimeout                  = std::chrono::seconds{10};
+        initial.readTimeout                  = std::chrono::seconds{10};
+        initial.writeTimeout                 = std::chrono::seconds{10};
+        initial.maximumRequestsPerConnection = 100;
+
+        RunningHttpServerFixture fixture(initial, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        // 换代之前建立的连接：按旧上限（100）继续跑
+        LoopbackClient existingClient(listeningPort);
+        ASSERT_TRUE(existingClient.isValid()) << "回环连接失败";
+        ASSERT_TRUE(existingClient.sendText(helloRequestText(), kWaitTimeout));
+        std::string existingReceived;
+        ASSERT_TRUE(existingClient.waitForText(existingReceived, "served-hello", kWaitTimeout)) << "第 1 条请求未得到完整响应";
+
+        // 从测试线程换代，模拟 SIGHUP 重载线程写、accept 路径读
+        HttpServerLimits tightened             = initial;
+        tightened.maximumRequestsPerConnection = 1;
+        fixture.server().setLimits(tightened);
+        EXPECT_EQ(fixture.server().limits().maximumRequestsPerConnection, 1U);
+
+        // 换代之后新建的连接：第 1 条就达到上限，响应带 close 并随后收口
+        LoopbackClient freshClient(listeningPort);
+        ASSERT_TRUE(freshClient.isValid()) << "回环连接失败";
+        ASSERT_TRUE(freshClient.sendText(helloRequestText(), kWaitTimeout));
+        std::string freshReceived;
+        ASSERT_TRUE(freshClient.waitForText(freshReceived, "served-hello", kWaitTimeout)) << "新连接上的第 1 条请求未得到响应";
+        EXPECT_NE(freshReceived.find("connection: close"), std::string::npos) << "新连接没有取到换代后的请求上限";
+        EXPECT_TRUE(freshClient.waitForClosure(freshReceived, kWaitTimeout)) << "达到新上限后新连接未收口";
+
+        // 旧连接照旧服务：第 2 条请求仍按旧上限放行，响应不带 close
+        ASSERT_TRUE(existingClient.sendText(makeRequestText("GET /hello HTTP/1.1"), kWaitTimeout));
+        ASSERT_TRUE(existingClient.waitForStatusLines(existingReceived, 2, kWaitTimeout)) << "换代打断了已建立的连接";
+        EXPECT_EQ(existingReceived.find("connection: close"), std::string::npos) << "已建立的连接被套上了新限额";
+    }
+
     TEST(HttpServerLimits, ZeroSweepIntervalDisablesIdleTimeout)
     {
         // 拒绝面：清扫节拍为 0 时不做连接级超时。同一份空闲连接在同样的观察到窗口内

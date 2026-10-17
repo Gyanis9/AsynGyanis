@@ -155,8 +155,10 @@
   本窗口内的拍才喂一条 `WATCHDOG=1`——任何一条 worker 的事件循环卡死都会让汇聚停喂，语义与单进程形态一致（Windows 没有
   systemd 看门狗，这一路不启用）
 - **SIGHUP 的重载入口** — `Core::ReloadSignal` 把运维那枚「换一份配置继续跑」的信号接到注册的重载动作上（systemd 的
-  `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`）：`ReferenceServer --config` 之下，一次 HUP 重读配置文件并重装 `logging` 段，
-  同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。注册表跨轮次保留（重载不是一次性的）；多 worker 形态下 HUP 落在
+  `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`）：`ReferenceServer --config` 之下，一次 HUP 重读配置文件并重装 `logging` 段、
+  按 `server` 段换新一代连接限额（只影响此后新建的连接，已建立的连接不打断），
+  同时按 `RELOADING=1` → `READY=1` 成对讲回监督者。HTTP/3 的限额、路由、监听地址、线程数、`metrics_port` 与运维令牌
+  仍按启动期定型。注册表跨轮次保留（重载不是一次性的）；多 worker 形态下 HUP 落在
   master 上，重读的是 master 那份配置、状态也只由 master 报（worker 各有一份 `ConfigManager`，要逐位重读请分别对
   各 worker 的 pid 发信号）；Windows 没有这条约定，
   `isInstalled()` 恒假并说明原因，那边的重载入口仍是文件监听
@@ -843,7 +845,10 @@ AsynGyanis/
    一并把整条链自检完）。Windows 没有这套移交，走多 worker 的进程组停机（`CTRL_BREAK`）。
 4. **配置重读**：给主进程发 `SIGHUP`（`Core::ReloadSignal`；systemd `ExecReload=` 的默认形状）。装上之后
    SIGHUP 不再按缺省动作杀进程；没配 `--config` 时会明确打一句「没有可重读的文件」而不是假装重载了。
-   文件监听（`enableHotReload`）是另一路（盘上文件变了自己触发），两者互不替代。
+   `ReferenceServer` 同时装上文件监听（`enableHotReload`）作为另一路（盘上文件变了自己触发），两路共用同一段
+   「重读 + 应用」；Windows 上 ReloadSignal 拒绝接管，那一侧只走文件监听。
+   两路都只换 `logging` 段与 HTTP/1·HTTP/2 的连接限额；HTTP/3 限额、路由、监听地址、线程数、
+   `metrics_port` 与运维令牌仍按启动期定型。
 
 **症状 → 先看哪里**：
 
