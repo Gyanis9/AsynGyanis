@@ -49,6 +49,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --no-create-home --shell /usr/sbin/nologin asyngyanis
 
+# 配置样例把日志与链路文件的目录写成绝对路径 /var/lib/asyngyanis/logs，而这个账号是
+# --no-create-home 建的、家目录都不存在：目录得在这里备好并归属它，否则滚动文件 sink 建不出
+# 目录，随后开文件时抛带路径的中文异常、服务起不来。
+# 单独一层、不并进上面的 apt 那条：改这一格不必重新联网装包。
+RUN install -d -o asyngyanis -g asyngyanis /var/lib/asyngyanis
+
 # 静态 Linux 构建把示例落在 samples/ 下（bin/ 只在共享 Windows 形态才启用）
 COPY --from=builder /src/build/release/samples/ReferenceServer /usr/local/bin/ReferenceServer
 
@@ -66,5 +72,8 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # 密文/证书、限额与日志配置走 --config（另挂进容器）；这里给的是不依赖外部文件的明文形态。
 # 生产配置样例见 packaging/asyngyanis.yaml.example（挂载为 --config 指的文件）。
+# 监听地址只能从命令行给（配置里没有 host/port 两格），而 --host 的默认值是 localhost：
+# `docker run 镜像 --config /cfg/x.yaml` 会**整段替换**下面这行 CMD，于是服务只听回环、
+# 从容器外连不上。带 --config 时要连 --host 0.0.0.0 一起给。
 ENTRYPOINT ["/usr/local/bin/ReferenceServer"]
 CMD ["--host", "0.0.0.0", "--port", "8080"]

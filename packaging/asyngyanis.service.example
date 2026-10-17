@@ -18,6 +18,12 @@ StartLimitBurst=3
 User=asyngyanis
 Group=asyngyanis
 
+# 配置样例把日志与链路文件写在 /var/lib/asyngyanis/logs 下（用绝对路径是有理由的：相对路径的锚点是
+# **配置文件所在目录**，而那份配置住在 /etc/asyngyanis/，专用账号在 /etc 下建不出目录）。
+# StateDirectory= 让 systemd 建好 /var/lib/asyngyanis 并按上面的 User/Group 归属；
+# 镜像里同一格是 install -d（见 packaging/Dockerfile），两边同解。
+StateDirectory=asyngyanis
+
 # 引擎在监听器确认之后才发 READY=1，多 worker 形态下只由 master 发一条——所以 systemd 的
 # 「启动完成」与「端口已在应答」是同一个时点，TimeoutStartSec 才有约束力。
 Type=notify
