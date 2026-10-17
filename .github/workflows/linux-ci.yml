@@ -2,8 +2,8 @@
 #
 # 与 windows-ci.yml 分工：本工作流覆盖 GCC/Linux 侧——GCC 的 ASan 会检出 MSVC 不支持的
 # use-after-scope 与泄漏（测试代码的生命周期问题只有这一侧能兜住）；Redis 集成用例连真实服务。
-# MySQL 依赖仍跳过（ASYN_SKIP_MYSQL_DEPS）：libmysqlclient 的 ConanCenter 预编译包在 runner
-# 编译器版本变化时不保证可用，现场编译要十几分钟；MySQL 集成用例按环境变量跳过。
+# MySQL 依赖只在覆盖率作业里装（libmysqlclient 走 Conan，缓存键与 mysql-driver-compile 共用）；
+# 其余作业仍跳过（ASYN_SKIP_MYSQL_DEPS=1），那里的 MySQL 集成用例按环境变量跳过。
 #
 # 全量用例拆成三个分片并行跑（platform-base-core / net / database）：分片按 tests/ 下的子目录切，
 # 新用例只要落在对应目录就会被自动带上，不需要维护名字清单。编译输出由 ccache 缓存——分片会让
@@ -314,10 +314,9 @@ jobs:
           path: /tmp/*.log
           if-no-files-found: ignore
 
-  # MySQL 真机驱动分支的**编译**覆盖：其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
-  # -DDATABASE_WITH_MYSQL=OFF，于是 MySqlConnection/MySqlResult 那些源文件在 CI 里从不参与编译，
-  # 连语法/类型错误都不会红（本机真机用例跑的是另一套环境）。这个作业只构建 Database 目标，
-  # 不做真机连接测试。
+  # MySQL 真机驱动分支的**编译**覆盖：除覆盖率作业外，其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
+  # -DDATABASE_WITH_MYSQL=OFF，于是 MySqlConnection/MySqlResult 那些源文件在那些作业里从不参与编译，
+  # 连语法/类型错误都不会红。这个作业只构建 Database 目标，不做真机连接测试（真机那一路在 coverage）。
   #
   # 成本：libmysqlclient 在 ConanCenter 上只有源码包，第一次跑要现场编译十几分钟；之后
   # CONAN_HOME 被 actions/cache 缓存（key 与其它作业相同），后续运行几乎是白拿。
@@ -333,10 +332,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 缓存键必须与其它作业不同：共用键会让「先命中的那个作业」把缓存内容钉死。
-      # 其它作业的依赖集里没有 libmysqlclient，若共用键，命中它们的缓存后本作业
+      # 缓存键必须与不带 mysql 的作业不同：共用键会让「先命中的那个作业」把缓存内容钉死。
+      # 那些作业的依赖集里没有 libmysqlclient，若共用键，命中它们的缓存后本作业
       # 仍要回退去现场编译 MySQL 驱动（或反过来把他的缓存顶掉），缓存等于白设。
       # 注意 GitHub Actions 的缓存一经写入不可覆盖，所以两类依赖集必须各占一个键。
+      # coverage 作业的依赖集与本作业相同，因此它也用这一个键（白拿）。
       - name: 缓存 Conan 依赖
         uses: actions/cache@v4
         with:
@@ -794,7 +794,7 @@ jobs:
   # 那个脚本里（默认值按 2026-10-01 实测往下留一档：总行 77.08 / 函数 85.44 / 分支 62.38；
   # Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50）——原先总行下限另放在这里的一个
   # env 里，「两处必须同解」只能靠口头守而值守不住；收进脚本后阈值只有一个落点。分模块这条是重点：
-  # 本作业不带 MySQL/Redis 真库分支，Database 天然低一截只看总数会隐身；阈值故意取在实测下游，要提先实测。
+  # 本作业起 PG/Redis/MySQL 三件真机；Database 仍是全仓最低的一片，只看总数会隐身。阈值故意取在实测下游，要提先实测。
   coverage:
     name: 覆盖率门禁
     runs-on: ubuntu-latest
@@ -802,16 +802,18 @@ jobs:
 
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
-      ASYN_SKIP_MYSQL_DEPS: "1"
 
     steps:
       - uses: actions/checkout@v4
 
+      # 这个键必须与 mysql-driver-compile 相同、与其它作业不同：本作业的依赖集里有
+      # libmysqlclient，而 GitHub 的缓存一经写入不可覆盖——共用无 mysql 的键会永远命中
+      # 一份缺它的缓存，每一轮都白付现场编译的钱。两个作业的依赖集与构建类型相同，命中就是白拿。
       - name: 缓存 Conan 依赖
         uses: actions/cache@v4
         with:
           path: ${{ env.CONAN_HOME }}
-          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+          key: conan-${{ runner.os }}-mysql-${{ hashFiles('conandata.yml', 'conanfile.py') }}
 
       - name: 安装 Conan 与 gcovr
         run: |
@@ -832,7 +834,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
             -DCMAKE_C_FLAGS="--coverage -O0 -g" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
-            -DDATABASE_WITH_MYSQL=OFF \
+            -DDATABASE_WITH_MYSQL=ON \
             -DASYN_BUILD_SAMPLES=OFF \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$PWD/conan_provider.cmake"
@@ -843,22 +845,36 @@ jobs:
       - name: 编译全部用例（-k 0 收集式失败，一次看全所有编译错误）
         run: cmake --build build/coverage -- -k 0
 
-      - name: 起 Postgres 与 Redis 真机（真机用例的门从 SKIP 变真跑）
-        # Database 格垫底的原因不是没测：PG 与 Redis 两张驱动的真机用例在本作业里全是
-        # GTEST_SKIP（没有可连的服务端），被跳过的每一行都不进覆盖。把两件服务当场喂给用例——
+      - name: 起 PostgreSQL、Redis 与 MySQL 真机（真机用例的门从 SKIP 变真跑）
+        # Database 格垫底的原因不是没测：PG/Redis/MySQL 三张驱动的真机用例在本作业里全是
+        # GTEST_SKIP（没有可连的服务端），被跳过的每一行都不进覆盖。把三件服务当场喂给用例——
         # 数字往上走靠真跑的用例，不靠动下限。口令当场随机生成经 GITHUB_ENV 传给后续步骤，
-        # 仓库零明文。端口避开 5432/6379：runner 镜像里装着 PostgreSQL 与 MySQL（服务默认没起、端口空着），用非默认口是防御性的。
+        # 仓库零明文。端口避开 5432/6379/3306：runner 镜像里装着 PostgreSQL 与 MySQL（服务默认
+        # 没起、端口空着），用非默认口只是防御性的。
         run: |
           postgres_password="$(openssl rand -hex 16)"
           redis_password="$(openssl rand -hex 16)"
+          mysql_password="$(openssl rand -hex 16)"
           echo "ASYN_POSTGRES_TEST_PASSWORD=$postgres_password" >> "$GITHUB_ENV"
           echo "ASYN_POSTGRES_TEST_PORT=5433" >> "$GITHUB_ENV"
           echo "ASYN_REDIS_TEST_PASSWORD=$redis_password" >> "$GITHUB_ENV"
           echo "ASYN_REDIS_TEST_PORT=6380" >> "$GITHUB_ENV"
+          echo "ASYN_MYSQL_TEST_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "ASYN_MYSQL_TEST_PORT=3307" >> "$GITHUB_ENV"
+          echo "ASYN_MYSQL_TEST_USER=root" >> "$GITHUB_ENV"
+          echo "ASYN_MYSQL_TEST_PASSWORD=$mysql_password" >> "$GITHUB_ENV"
+          echo "ASYN_MYSQL_TEST_DATABASE=asyngyanis_test" >> "$GITHUB_ENV"
           docker run -d --name coverage-postgres -e POSTGRES_PASSWORD="$postgres_password" -p 5433:5432 postgres:16
           docker run -d --name coverage-redis -p 6380:6379 redis:7.4 redis-server --requirepass "$redis_password"
+          # MYSQL_ROOT_HOST 必须给：用例从宿主的 127.0.0.1:3307 进来，源地址是 docker 网桥，
+          # 默认只建 root@localhost 会被拒（现场症状是整组 60 条全红在「连不上」）
+          docker run -d --name coverage-mysql \
+            -e MYSQL_ROOT_PASSWORD="$mysql_password" \
+            -e MYSQL_ROOT_HOST=% \
+            -e MYSQL_DATABASE=asyngyanis_test \
+            -p 3307:3306 mysql:8
           # 就绪判据用官方自带工具轮询，不睡固定时长：先定义「什么时候算好」，好了才放行；
-          # 轮询耗尽后那两条不带循环的调用就是判据本身——没起来就红在轮到实例的这一步
+          # 轮询耗尽后那三条不带循环的调用就是判据本身——没起来就红在轮到实例的这一步
           for attempt in $(seq 1 30); do
             docker exec coverage-postgres pg_isready -U postgres && break
             sleep 2
@@ -869,6 +885,11 @@ jobs:
             sleep 1
           done
           docker exec -e REDISCLI_AUTH="$redis_password" coverage-redis redis-cli ping
+          for attempt in $(seq 1 60); do
+            docker exec -e MYSQL_PWD="$mysql_password" coverage-mysql mysqladmin ping -h 127.0.0.1 -u root && break
+            sleep 2
+          done
+          docker exec -e MYSQL_PWD="$mysql_password" coverage-mysql mysqladmin ping -h 127.0.0.1 -u root
 
       - name: 跑用例生成 .gcda
         # --output-on-failure 是这一档的可读性命门：全仓其它用例步骤都带它，唯独这里没带，
