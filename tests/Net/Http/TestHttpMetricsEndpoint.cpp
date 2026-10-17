@@ -4,6 +4,8 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
@@ -468,6 +470,121 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText("GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
         ASSERT_TRUE(client.waitForText(receivedText, kReadinessReadyResponseBody, kEndpointTimeout)) << "就绪探针未得到应答";
         EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << receivedText;
+    }
+
+    /**
+     * @brief 连接聚合端点：起两条在途连接后按协议计数，且不泄漏对端地址
+     */
+    TEST(HttpConnectionsEndpoint, AggregatesConnectionsWithoutLeakingPeerAddresses)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableConnectionsEndpoint(); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        LoopbackClient first(fixture.listeningPort());
+        LoopbackClient second(fixture.listeningPort());
+        ASSERT_TRUE(first.isValid());
+        ASSERT_TRUE(second.isValid());
+        ASSERT_TRUE(fixture.awaitConnectionAccepted(kWaitTimeout));
+
+        const auto parsed = sendAndReadResponse(fixture.listeningPort(), "GET /debug/connections HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_NE(parsed->body.find("\"total\""), std::string::npos) << parsed->body;
+        EXPECT_NE(parsed->body.find("\"http/1.1\""), std::string::npos) << "按协议分组没有出现 http/1.1：" << parsed->body;
+        EXPECT_NE(parsed->body.find("\"oldest_age_seconds\""), std::string::npos) << parsed->body;
+        EXPECT_EQ(parsed->body.find("127.0.0.1"), std::string::npos) << "聚合端点泄漏了对端地址：" << parsed->body;
+
+        first.closeNow();
+        second.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout));
+    }
+
+    /**
+     * @brief 日志等级端点：GET 读、PUT 改，未知等级回 400 且不改动现状
+     */
+    TEST(HttpLogLevelEndpoint, ReadsAndWritesTheRootLevel)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableLogLevelEndpoint(); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        Base::Logger &rootLogger    = Base::LoggerRegistry::instance().getRootLogger();
+        const auto    originalLevel = rootLogger.getLevel();
+        rootLogger.setLevel(Base::LogLevel::Info);
+
+        const auto readBack = sendAndReadResponse(fixture.listeningPort(), "GET /debug/log-level HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(readBack.has_value());
+        EXPECT_NE(readBack->body.find("\"level\":\"INFO\""), std::string::npos) << readBack->body;
+
+        const std::string debugBody = R"({"level":"debug"})";
+        const auto        writeBack =
+                sendAndReadResponse(fixture.listeningPort(), "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " +
+                                                                     std::to_string(debugBody.size()) + "\r\nConnection: close\r\n\r\n" + debugBody);
+        ASSERT_TRUE(writeBack.has_value());
+        EXPECT_NE(writeBack->body.find("\"level\":\"DEBUG\""), std::string::npos) << writeBack->body;
+        EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Debug) << "响应说改了，实际等级没变";
+
+        const std::string badBody  = R"({"level":"loud"})";
+        const auto        rejected = sendAndReadResponse(
+                fixture.listeningPort(), "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(badBody.size()) +
+                                                 "\r\nConnection: close\r\n\r\n" + badBody);
+        ASSERT_TRUE(rejected.has_value());
+        EXPECT_NE(rejected->headers.find("400"), std::string::npos) << rejected->headers;
+        EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Debug) << "被拒的请求不该改动等级";
+
+        rootLogger.setLevel(originalLevel);
+    }
+
+    /**
+     * @brief 钉住：两条新取证端点默认进运维令牌闸，探针仍免令牌
+     * @details 端点自己的用例证明不了「默认名单里有没有它们」：这里挂一道按默认名单构造的真闸，
+     *          无凭据抓连接快照与日志等级都必须 401，带对令牌的写必须 200，而 `/healthz` 仍要
+     *          无凭据可达。少登记任何一条默认路径，对应的无凭据请求就会变成 200。
+     */
+    TEST(HttpOpsEndpoints, NewDiagnosticsEndpointsRequireTheOpsTokenByDefault)
+    {
+        const ServerConfigurator configureServer = [](TestHttpServer &server)
+        {
+            server.router().addMiddleware(opsAccessMiddleware(OpsAccessOptions{.bearerToken = "s3cret"}));
+            server.enableConnectionsEndpoint();
+            server.enableLogLevelEndpoint();
+            server.enableHealthEndpoint();
+        };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        Base::Logger &rootLogger    = Base::LoggerRegistry::instance().getRootLogger();
+        const auto    originalLevel = rootLogger.getLevel();
+        struct RootLevelGuard
+        {
+            Base::Logger        &logger;
+            const Base::LogLevel original;
+            ~RootLevelGuard()
+            {
+                logger.setLevel(original);
+            }
+        } levelGuard{rootLogger, originalLevel};
+
+        const auto connectionsWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /debug/connections HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(connectionsWithoutToken.has_value());
+        EXPECT_NE(connectionsWithoutToken->headers.find("401"), std::string::npos) << "连接聚合端点没有进令牌闸：" << connectionsWithoutToken->headers;
+
+        const auto levelWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /debug/log-level HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(levelWithoutToken.has_value());
+        EXPECT_NE(levelWithoutToken->headers.find("401"), std::string::npos) << "日志等级端点没有进令牌闸：" << levelWithoutToken->headers;
+
+        const std::string writeBody = R"({"level":"warn"})";
+        const auto authorizedWrite  = sendAndReadResponse(fixture.listeningPort(),
+                                                          "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nContent-Type: application/json\r\n"
+                                                          "Content-Length: " +
+                                                                  std::to_string(writeBody.size()) + "\r\nConnection: close\r\n\r\n" + writeBody);
+        ASSERT_TRUE(authorizedWrite.has_value());
+        EXPECT_NE(authorizedWrite->headers.find("200"), std::string::npos) << "带对令牌的写被拒：" << authorizedWrite->headers;
+        EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Warn) << "闸门放行了，但等级没有真的改";
+
+        const auto healthWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(healthWithoutToken.has_value());
+        EXPECT_NE(healthWithoutToken->headers.find("200"), std::string::npos) << "存活探针不该被令牌闸拦住：" << healthWithoutToken->headers;
     }
 
     /**

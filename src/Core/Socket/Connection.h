@@ -18,6 +18,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace AsynGyanis::Core
 {
@@ -73,11 +74,43 @@ namespace AsynGyanis::Core
         virtual void close();
 
         /**
+         * @brief 这条连接承载的协议名（运维聚合用）
+         * @details 默认 "tcp"；HTTP 层按会话类型覆写为 "http/1.1" 或 "h2"。只用于
+         *          `/debug/connections` 的分组计数，不参与任何协议判定。
+         * @return std::string_view 协议名（静态文本，生命周期覆盖进程）
+         */
+        [[nodiscard]] virtual std::string_view protocolName() const noexcept
+        {
+            return "tcp";
+        }
+
+        /**
+         * @brief 连接建立时刻（steady 时钟）
+         * @return std::chrono::steady_clock::time_point 构造本对象时取的时刻
+         */
+        [[nodiscard]] std::chrono::steady_clock::time_point createdAt() const noexcept
+        {
+            return m_createdAt;
+        }
+
+        /**
          * @brief 检查连接是否存活。
          * @return true 表示连接有效，false 表示已关闭或无效
          * @note 派生类可重写以叠加自有传输层的判据（例如 TLS 通道是否仍然打开）。
          */
         [[nodiscard]] virtual bool isAlive() const noexcept;
+
+        /**
+         * @brief 只读基类的存活原子位（线程安全，不调用派生类的传输探测）
+         * @details 给 `/debug/connections` 这类跨线程聚合用：派生类的 `isAlive()` 会碰
+         *          TlsSocket 一类只属于循环线程的状态，跨线程读就是数据竞争；聚合只要一个
+         *          粗粒度分组，原子位足够。
+         * @return true 基类存活位仍为真
+         */
+        [[nodiscard]] bool isAliveFlag() const noexcept
+        {
+            return m_alive.load(std::memory_order_acquire);
+        }
 
         /**
          * @brief 获取底层异步socket的引用。
@@ -208,10 +241,11 @@ namespace AsynGyanis::Core
         }
 
     private:
-        AsyncSocket       m_socket;      ///< 底层异步socket
-        Cancelable        m_cancelable;  ///< 取消支持（stop_token）
-        std::atomic<bool> m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
-        bool              m_busy{false}; ///< 是否有在途工作，由协议层维护（见 setBusy()）
+        AsyncSocket                           m_socket;      ///< 底层异步socket
+        Cancelable                            m_cancelable;  ///< 取消支持（stop_token）
+        std::chrono::steady_clock::time_point m_createdAt{}; ///< 构造时刻（运维聚合的「最老连接」用）
+        std::atomic<bool>                     m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
+        bool                                  m_busy{false}; ///< 是否有在途工作，由协议层维护（见 setBusy()）
 
         /// 空闲截止时间；未设置表示这条连接不参与超时清扫。只由所属事件循环线程访问（见 refreshIdleDeadline()）
         std::optional<std::chrono::steady_clock::time_point> m_idleDeadline;

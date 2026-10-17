@@ -99,6 +99,15 @@ namespace AsynGyanis::Net
         Core::Task<> start() override;
 
         /**
+         * @brief 协议名：本类承载 HTTP/1.1
+         * @return std::string_view 恒为 "http/1.1"
+         */
+        [[nodiscard]] std::string_view protocolName() const noexcept override
+        {
+            return "http/1.1";
+        }
+
+        /**
          * @brief 按 RFC 9112 §9 判定这条事务之后是否保持连接（Keep-Alive）。
          *
          * @details 判定顺序固定，且请求侧的显式 close 不可被响应头反转：任一侧带 `Connection: close` → 断开；

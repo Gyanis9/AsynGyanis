@@ -295,6 +295,22 @@ namespace AsynGyanis::Net
         void enableLoopDiagnosticsEndpoint(std::string_view path = "/debug/loops");
 
         /**
+         * @brief 在本服务器上注册在途连接聚合端点（/debug/connections）
+         * @details 与明文侧同一份聚合；只报计数与最老存活秒数，不列对端地址
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/connections`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         */
+        void enableConnectionsEndpoint(std::string_view path = "/debug/connections");
+
+        /**
+         * @brief 在本服务器上注册运行时日志等级端点（/debug/log-level）
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/log-level`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @note 写操作：调用方必须用 `opsAccessMiddleware` 保护本路径
+         */
+        void enableLogLevelEndpoint(std::string_view path = "/debug/log-level");
+
+        /**
          * @brief 取本服务器的统计采集端
          * @details 采集端是共享对象：把它传给别的服务端（例如 QuicServer 的
          *          Configuration::metricsCollector），那条服务路径的计数就会并进本服务器的

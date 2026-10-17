@@ -18,9 +18,15 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace AsynGyanis::Core
+{
+    class Connection;
+}
 
 namespace AsynGyanis::Net
 {
@@ -81,6 +87,32 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] ASYN_NET_API std::string formatLoopDiagnosticsJson(const std::vector<Core::ObservedEventLoop> &observedLoops, std::size_t unregisteredLoopCount,
                                                                      std::chrono::steady_clock::time_point nowMoment);
+
+    /**
+     * @brief 把在途连接快照渲染成 `/debug/connections` 的聚合 JSON
+     *
+     * @details 只给**聚合**：按协议与状态分组计数、最老连接的存活秒数。刻意不逐条列出对端地址——
+     *          那等于把客户端清单暴露在运维端点上。数据来自 `ConnectionManager::snapshot()`：
+     *          取快照只在管理器锁内复制 shared_ptr，遍历与渲染都在锁外完成，不长时间占锁。
+     * @param connections 连接快照
+     * @param nowMoment 计算存活时长的基准时刻
+     * @return std::string 紧凑 JSON：total / by_protocol / by_state / oldest_age_seconds
+     * @note 收发字节没有进这一版：`Core::Connection` 目前不记字节数，为它加计数会碰三条协议路径；
+     *       要按连接出字节账时再单独立项
+     */
+    [[nodiscard]] ASYN_NET_API std::string formatConnectionsJson(const std::vector<std::shared_ptr<Core::Connection>> &connections,
+                                                                 std::chrono::steady_clock::time_point                 nowMoment);
+
+    /**
+     * @brief 注册运行时日志等级端点：GET 读、PUT/POST 改 root 日志器等级
+     * @details 必须与 `opsAccessMiddleware` 同批挂载（调用方把它加进 protectedPaths）：改等级是写操作，
+     *          不加令牌闸等于把日志开关交给任何能访问运维口的人。改等级前先落一条 WARN 审计
+     *          （新等级高于 WARN 时这条只能在旧等级下写出，因此**先记审计再改**）。
+     * @param router 目标路由器，必须在 start() 之前注册
+     * @param path 端点路径，形状校验由调用方做
+     * @see Logger::setLevel, opsAccessMiddleware
+     */
+    ASYN_NET_API void registerLogLevelEndpoint(Router &router, std::string_view path);
 
     /**
      * @brief 注册就绪探针端点：还在接受新连接回 200，已经停了回 503

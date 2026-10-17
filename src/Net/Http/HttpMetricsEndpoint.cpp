@@ -1,16 +1,27 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 
 #include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogLevel.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "Core/Socket/Connection.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/Router.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -109,6 +120,18 @@ namespace AsynGyanis::Net
                     return "waiting_for_events";
             }
             return "unknown";
+        }
+
+        /// 运维端点上的等级文本：`logLevelToString()` 只认可记录的消息等级，`Off` 在那里是
+        /// "?????"；但 `Off` 是合法阈值，读回来的文本必须能原样再写进去
+        [[nodiscard]] std::string logLevelEndpointLabel(const Base::LogLevel level)
+        {
+            std::string label{level == Base::LogLevel::Off ? std::string_view{"OFF"} : std::string_view{Base::logLevelToString(level)}};
+            while (!label.empty() && label.back() == ' ')
+            {
+                label.pop_back();
+            }
+            return label;
         }
     } // namespace
 
@@ -334,6 +357,118 @@ namespace AsynGyanis::Net
                        response.setBody(formatLoopDiagnosticsJson(Core::eventLoopSnapshots(), Core::unregisteredEventLoopCount(), std::chrono::steady_clock::now()));
                        co_return;
                    });
+    }
+
+    std::string formatConnectionsJson(const std::vector<std::shared_ptr<Core::Connection>> &connections, const std::chrono::steady_clock::time_point nowMoment)
+    {
+        std::map<std::string, std::uint64_t> byProtocol;
+        std::map<std::string, std::uint64_t> byState;
+        std::int64_t                         oldestAgeSeconds = 0;
+        for (const std::shared_ptr<Core::Connection> &connection: connections)
+        {
+            if (connection == nullptr)
+            {
+                continue;
+            }
+            ++byProtocol[std::string{connection->protocolName()}];
+            ++byState[connection->isAliveFlag() ? "alive" : "closed"];
+            const auto ageSeconds = std::chrono::duration_cast<std::chrono::seconds>(nowMoment - connection->createdAt()).count();
+            oldestAgeSeconds      = std::max(oldestAgeSeconds, ageSeconds);
+        }
+
+        Base::ConfigValue protocolCounts = Base::ConfigValue::object();
+        for (const auto &[protocol, count]: byProtocol)
+        {
+            protocolCounts[protocol] = count;
+        }
+        Base::ConfigValue stateCounts = Base::ConfigValue::object();
+        for (const auto &[state, count]: byState)
+        {
+            stateCounts[state] = count;
+        }
+
+        Base::ConfigValue document     = Base::ConfigValue::object();
+        document["total"]              = connections.size();
+        document["by_protocol"]        = std::move(protocolCounts);
+        document["by_state"]           = std::move(stateCounts);
+        document["oldest_age_seconds"] = oldestAgeSeconds;
+        return Base::serializeConfigValue(document).value_or("{}");
+    }
+
+    void registerLogLevelEndpoint(Router &router, const std::string_view path)
+    {
+        // GET 与写操作共用同一份等级渲染：两边各拼一次迟早出现「读回来是 INFO、写进去是 INFO 」
+        const auto writeLevelResponse = [](HttpResponse &response, const Base::LogLevel level)
+        {
+            Base::ConfigValue body = Base::ConfigValue::object();
+            body["level"]          = logLevelEndpointLabel(level);
+            response.setStatus(200);
+            response.setHeader("content-type", "application/json");
+            response.setBody(Base::serializeConfigValue(body).value_or("{}"));
+        };
+
+        const auto rejectRequest = [](HttpResponse &response, const std::string &reason)
+        {
+            Base::ConfigValue body = Base::ConfigValue::object();
+            body["error"]          = reason;
+            response.setStatus(400);
+            response.setHeader("content-type", "application/json");
+            response.setBody(Base::serializeConfigValue(body).value_or(R"({"error":"bad request"})"));
+        };
+
+        // 严格解析：LogLevel.h 的 logLevelFromString 对未知串回落成 Info，那是配置加载的容错口径；
+        // 运维端点写错等级必须回 400，不能静默改成一个用户没要的等级
+        const auto parseLevel = [](const std::string_view text) -> std::optional<Base::LogLevel>
+        {
+            if (Base::Detail::logLevelLabelEquals(text, "TRACE"))
+                return Base::LogLevel::Trace;
+            if (Base::Detail::logLevelLabelEquals(text, "DEBUG"))
+                return Base::LogLevel::Debug;
+            if (Base::Detail::logLevelLabelEquals(text, "INFO"))
+                return Base::LogLevel::Info;
+            if (Base::Detail::logLevelLabelEquals(text, "WARN"))
+                return Base::LogLevel::Warn;
+            if (Base::Detail::logLevelLabelEquals(text, "ERROR"))
+                return Base::LogLevel::Error;
+            if (Base::Detail::logLevelLabelEquals(text, "FATAL"))
+                return Base::LogLevel::Fatal;
+            if (Base::Detail::logLevelLabelEquals(text, "OFF"))
+                return Base::LogLevel::Off;
+            return std::nullopt;
+        };
+
+        router.get(std::string(path),
+                   [writeLevelResponse](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       writeLevelResponse(response, Base::LoggerRegistry::instance().getRootLogger().getLevel());
+                       co_return;
+                   });
+
+        const auto handleWrite = [writeLevelResponse, rejectRequest, parseLevel](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+        {
+            const std::optional<Base::ConfigValue> parsed = Base::parseConfigValue(request.body());
+            if (!parsed.has_value() || !parsed->is_object() || !parsed->contains("level") || !parsed->at("level").is_string())
+            {
+                rejectRequest(response, R"(正文必须是 {"level":"debug"} 这样的 JSON 对象)");
+                co_return;
+            }
+            const std::optional<Base::LogLevel> newLevel = parseLevel(parsed->at("level").get<std::string>());
+            if (!newLevel.has_value())
+            {
+                rejectRequest(response, "未知日志等级；可用取值：TRACE/DEBUG/INFO/WARN/ERROR/FATAL/OFF（不区分大小写）");
+                co_return;
+            }
+
+            Base::Logger        &rootLogger = Base::LoggerRegistry::instance().getRootLogger();
+            const Base::LogLevel oldLevel   = rootLogger.getLevel();
+            // 先记审计再改：新等级高于 WARN 时，改完这条 WARN 就写不出来了
+            LOG_WARN_FMT("运维端点：root 日志等级由 {} 改为 {}（客户端 {}）", logLevelEndpointLabel(oldLevel), logLevelEndpointLabel(*newLevel), request.remoteAddress());
+            rootLogger.setLevel(*newLevel);
+            writeLevelResponse(response, *newLevel);
+            co_return;
+        };
+        router.put(std::string(path), handleWrite);
+        router.post(std::string(path), handleWrite);
     }
 
     void registerMetricsEndpoint(Router &router, const std::string_view path, const std::string_view metricNamePrefix, std::function<HttpServerStats()> snapshotProvider)

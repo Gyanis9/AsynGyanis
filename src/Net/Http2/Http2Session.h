@@ -153,6 +153,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isAlive() const noexcept override;
 
         /**
+         * @brief 协议名：本类承载 HTTP/2（TLS ALPN 或 h2c）
+         * @return std::string_view 恒为 "h2"
+         */
+        [[nodiscard]] std::string_view protocolName() const noexcept override
+        {
+            return "h2";
+        }
+
+        /**
          * @brief 取对端地址：TLS 模式下必须问 TlsSocket，明文模式走基类
          * @return std::string 形如 "127.0.0.1:54321" 的地址；取不到时返回空串
          */

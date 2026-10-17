@@ -1523,15 +1523,16 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 运维端点的访问策略
-     * @details 给 `opsAccessMiddleware()` 用。默认只保护 `/metrics` 与 `/debug/loops`：前者是内部计数与
-     *          循环状态，后者直接暴露每条事件循环的相位与计数。`/healthz` 不在名单里是刻意的——进程存活
-     *          探针要能被编排器无凭据访问（正文固定、不含任何业务数据），给它加令牌会让探针长期失败而被
-     *          人关掉，比暴露几个计数更糟。
+     * @details 给 `opsAccessMiddleware()` 用。默认保护 `/metrics`、`/debug/loops`、`/debug/connections`
+     *          与 `/debug/log-level`：前两条是内部计数与循环状态，第三条暴露在途连接的聚合，第四条
+     *          能改整个进程的日志音量。`/healthz` 不在名单里是刻意的——进程存活探针要能被编排器
+     *          无凭据访问（正文固定、不含任何业务数据），给它加令牌会让探针长期失败而被人关掉，
+     *          比暴露几个计数更糟。
      */
     struct ASYN_NET_API OpsAccessOptions
     {
-        std::string              bearerToken{};                              ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
-        std::vector<std::string> protectedPaths{"/metrics", "/debug/loops"}; ///< 需要令牌的路径，逐条精确匹配
+        std::string              bearerToken{}; ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
+        std::vector<std::string> protectedPaths{"/metrics", "/debug/loops", "/debug/connections", "/debug/log-level"}; ///< 需要令牌的路径，逐条精确匹配
     };
 
     namespace Detail

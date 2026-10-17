@@ -1674,6 +1674,31 @@ namespace AsynGyanis::Net
         registerReadinessEndpoint(m_router, path, [this] { return isRunning(); }, std::move(dependencyCheck));
     }
 
+    void HttpServer::enableConnectionsEndpoint(const std::string_view path)
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 连接聚合端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+        m_router.get(std::string(path),
+                     [this](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                     {
+                         response.setStatus(200);
+                         response.setHeader("content-type", "application/json");
+                         response.setBody(formatConnectionsJson(m_connectionManager.snapshot(), std::chrono::steady_clock::now()));
+                         co_return;
+                     });
+    }
+
+    void HttpServer::enableLogLevelEndpoint(const std::string_view path)
+    {
+        if (path.empty() || path.front() != '/')
+        {
+            throw Base::InvalidArgumentException("HttpServer: 日志等级端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
+        }
+        registerLogLevelEndpoint(m_router, path);
+    }
+
     void HttpServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
     {
         // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象

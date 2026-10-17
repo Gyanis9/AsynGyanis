@@ -369,6 +369,25 @@ namespace AsynGyanis::Net
         void enableLoopDiagnosticsEndpoint(std::string_view path = "/debug/loops");
 
         /**
+         * @brief 在本服务器上注册在途连接聚合端点（/debug/connections）
+         * @details 只报聚合：按协议与状态分组计数、最老连接存活秒数。刻意不逐条列出对端地址。
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/connections`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @note 与另几个端点同一纪律：默认不开、必须在 start() 之前调用；它读连接管理器的快照，
+         *       快照只在管理器锁内复制 shared_ptr，聚合在锁外完成
+         */
+        void enableConnectionsEndpoint(std::string_view path = "/debug/connections");
+
+        /**
+         * @brief 在本服务器上注册运行时日志等级端点（/debug/log-level）
+         * @param path 端点路径，必须以 `/` 开头；默认 `/debug/log-level`
+         * @throws Base::InvalidArgumentException 路径不以 `/` 开头
+         * @note 这是**写操作**：调用方必须同时挂 `opsAccessMiddleware` 并把本路径加入 protectedPaths，
+         *       否则任何能访问运维口的人都能改日志等级
+         */
+        void enableLogLevelEndpoint(std::string_view path = "/debug/log-level");
+
+        /**
          * @brief 设置本服务器的在途正文字节预算
          *
          * @details 单条报文的上限（`HttpParserLimits::maximumBodySize`）挡不住「很多条连接各压着一条大

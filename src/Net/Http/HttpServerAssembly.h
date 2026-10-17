@@ -152,8 +152,15 @@ namespace AsynGyanis::Net
         host.enableHealthEndpoint();
         host.enableReadinessEndpoint("/readyz", readinessCheck);
         host.enableLoopDiagnosticsEndpoint();
+        host.enableConnectionsEndpoint();
+        // 改日志等级是写操作：没有令牌就不注册，宁可没有这个入口，也不留一个人人可改的开关
+        if (!configuration.opsBearerToken.empty())
+        {
+            host.enableLogLevelEndpoint();
+        }
         // `/healthz` 与 `/readyz` 都不进上面那道令牌闸（`OpsAccessOptions::protectedPaths` 的默认名单里
-        // 只有 /metrics 与 /debug/loops）：编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉
+        // 只有 /metrics、/debug/loops、/debug/connections 与 /debug/log-level）：编排器的探针拿不到凭据，
+        // 给探针加闸的结局是探针被人关掉
     }
 
     /**
