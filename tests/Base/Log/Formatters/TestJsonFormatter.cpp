@@ -19,6 +19,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -79,6 +80,42 @@ namespace AsynGyanis::Base
         EXPECT_EQ(textField(parsed, "logger"), kLoggerName);
         EXPECT_EQ(textField(parsed, "thread"), kThreadId);
         EXPECT_EQ(textField(parsed, "message"), "请求处理完成");
+    }
+
+    /**
+     * @brief 上下文以顶层键出现；作用域结束后同一条日志不再带它（复用对象不漏键）
+     */
+    TEST(JsonFormatterTest, RendersContextAsTopLevelFieldsAndForgetsThemAfterTheScope)
+    {
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("带上下文的日志");
+
+        {
+            const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_EQ(textField(parsed, "trace_id"), "4bf92f3577b34da6a3ce929d0e0e4736");
+            EXPECT_EQ(textField(parsed, "span_id"), "00f067aa0ba902b7");
+        }
+
+        // 复用对象（同一线程）必须摘掉上一条的上下文键，否则会读成「链路串了」
+        const nlohmann::json after = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(after.find("trace_id"), after.end()) << "作用域结束后的日志仍带着 trace_id";
+        EXPECT_EQ(after.find("span_id"), after.end()) << "作用域结束后的日志仍带着 span_id";
+    }
+
+    /**
+     * @brief 上下文键撞上日志骨架字段时加 ctx. 前缀，不覆盖框架字段
+     */
+    TEST(JsonFormatterTest, PrefixesContextKeysThatCollideWithFrameworkFields)
+    {
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("撞名");
+
+        const LogContextScope scope({{"message", "不是消息"}, {"custom", "值"}});
+        const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(textField(parsed, "message"), "撞名") << "上下文覆盖了日志正文";
+        EXPECT_EQ(textField(parsed, "ctx.message"), "不是消息");
+        EXPECT_EQ(textField(parsed, "custom"), "值");
     }
 
     /**

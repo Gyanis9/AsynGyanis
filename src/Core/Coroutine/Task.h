@@ -11,6 +11,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/CoroutinePool.h"
 
@@ -141,6 +142,83 @@ namespace AsynGyanis::Core
 
         bool *m_isStarted{nullptr}; ///< 指向 promise 中的「已启动」标记
     };
+
+    namespace Detail
+    {
+        /**
+         * @brief 把一次 co_await 包成「挂起前保存日志上下文、恢复后重新发布」
+         *
+         * @details 日志上下文原本是线程局部的：协程挂起后线程回到循环，别的协程会跑在上面；
+         *          若不保存/清除，前一个请求的 trace_id 会串到后一个请求的日志上；若不恢复，
+         *          协程在别的线程上恢复（或同一线程被别的协程污染过）后就再也找不到自己的上下文。
+         *          本等待器在挂起前把当前上下文存进所属协程帧，并在恢复时重新发布——跨挂起点、
+         *          跨线程都成立。无上下文时只做两次空 shared_ptr 赋值，零堆分配。
+         *
+         * @note 只持原始 awaiter 的指针：co_await 操作数的临时量活到整条 full-expression 结束
+         *       （含挂起与恢复），这是语言保证的生存期，与编译器把 awaiter 放进协程帧是同一件事
+         * @note 对称转移（await_suspend 返回句柄）时**保留**当前上下文：接手的通常是子协程，
+         *       它应当继承父协程的上下文；只有交回 noop（等待目标已在跑、本协程真挂起）才清场
+         */
+        template<typename Awaiter, typename Promise>
+        class LogContextAwaiter
+        {
+        public:
+            LogContextAwaiter(Awaiter *awaiter, Promise *promise) noexcept : m_awaiter(awaiter), m_promise(promise)
+            {
+            }
+
+            [[nodiscard]] bool await_ready()
+            {
+                return m_awaiter->await_ready();
+            }
+
+            template<typename Handle>
+            auto await_suspend(Handle handle)
+            {
+                m_promise->m_logContext = Base::currentLogContext();
+                using SuspendResult     = decltype(m_awaiter->await_suspend(handle));
+                if constexpr (std::is_void_v<SuspendResult>)
+                {
+                    m_isSuspended = true;
+                    m_awaiter->await_suspend(handle);
+                    Base::publishLogContext(nullptr);
+                } else if constexpr (std::is_same_v<SuspendResult, bool>)
+                {
+                    const bool isSuspended = m_awaiter->await_suspend(handle);
+                    m_isSuspended          = isSuspended;
+                    if (isSuspended)
+                    {
+                        Base::publishLogContext(nullptr);
+                    }
+                    return isSuspended;
+                } else
+                {
+                    auto nextHandle = m_awaiter->await_suspend(handle);
+                    m_isSuspended   = true;
+                    if (nextHandle == std::noop_coroutine())
+                    {
+                        // 等待目标已经在别处跑：本协程真挂起了，线程要交还给循环，必须清场
+                        Base::publishLogContext(nullptr);
+                    }
+                    return nextHandle;
+                }
+            }
+
+            decltype(auto) await_resume()
+            {
+                if (m_isSuspended)
+                {
+                    Base::publishLogContext(m_promise->m_logContext);
+                }
+                return m_awaiter->await_resume();
+            }
+
+        private:
+            Awaiter *m_awaiter;            ///< 被包装的等待器（由 co_await 操作数持有生存期）
+            Promise *m_promise;            ///< 所属协程的 promise，用于跨挂起点暂存上下文
+            bool     m_isSuspended{false}; ///< 本次是否真的挂起过（await_ready 直接放行时不恢复）
+        };
+    } // namespace Detail
 
     // ============================================================================
     // Task<T> 实现
@@ -325,11 +403,25 @@ namespace AsynGyanis::Core
                 return std::move(*m_value);
             }
 
+            /**
+             * @brief 包装每一次 co_await：把日志上下文跨挂起点保存与恢复
+             * @details 见 Detail::LogContextAwaiter 的说明。无上下文时只做空指针赋值，零堆分配
+             * @tparam Awaiter 被等待对象（由编译器按 co_await 操作数推导）
+             * @param awaiter 被等待对象
+             * @return Detail::LogContextAwaiter 包装后的等待器
+             */
+            template<typename Awaiter>
+            auto await_transform(Awaiter &&awaiter)
+            {
+                return Detail::LogContextAwaiter<std::remove_reference_t<Awaiter>, promise_type>{std::addressof(awaiter), this};
+            }
+
             std::optional<T>        m_value;                   ///< 协程的返回值（若存在）
             std::exception_ptr      m_exception;               ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr};   ///< 等待该协程的父协程句柄
             bool                    m_isStarted{false};        ///< 协程体是否已开始执行（初始挂起点被恢复过）
             bool                    m_isResultConsumed{false}; ///< 结果是否已被取走（一次性的，第二次读要报出来）
+            Base::LogContextPtr     m_logContext;              ///< 挂起前暂存的日志上下文（恢复时重新发布）
         };
 
         // ========================================================================
@@ -546,9 +638,22 @@ namespace AsynGyanis::Core
                     std::rethrow_exception(m_exception);
             }
 
+            /**
+             * @brief 包装每一次 co_await：把日志上下文跨挂起点保存与恢复（语义同主模板）
+             * @tparam Awaiter 被等待对象
+             * @param awaiter 被等待对象
+             * @return Detail::LogContextAwaiter 包装后的等待器
+             */
+            template<typename Awaiter>
+            auto await_transform(Awaiter &&awaiter)
+            {
+                return Detail::LogContextAwaiter<std::remove_reference_t<Awaiter>, promise_type>{std::addressof(awaiter), this};
+            }
+
             std::exception_ptr      m_exception;             ///< 协程中发生的异常（若有）
             std::coroutine_handle<> m_continuation{nullptr}; ///< 等待该协程的父协程句柄
             bool                    m_isStarted{false};      ///< 协程体是否已开始执行（初始挂起点被恢复过）
+            Base::LogContextPtr     m_logContext;            ///< 挂起前暂存的日志上下文（恢复时重新发布）
         };
 
         /**

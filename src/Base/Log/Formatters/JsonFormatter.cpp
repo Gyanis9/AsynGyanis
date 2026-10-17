@@ -2,15 +2,18 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/Formatters/TimestampText.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogLevel.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Base
 {
@@ -30,6 +33,29 @@ namespace AsynGyanis::Base
         {
             static thread_local nlohmann::json fields = nlohmann::json::object();
             return fields;
+        }
+
+        /**
+         * @brief 上一条日志从上下文带进来的键名
+         * @details 复用对象不会自己忘掉键：不按这份清单摘除，没有上下文的下一条日志会带着
+         *          上一条的 trace_id，看起来像「链路串了」
+         */
+        std::vector<std::string> &reusableContextKeys()
+        {
+            static thread_local std::vector<std::string> keys;
+            return keys;
+        }
+
+        /**
+         * @brief 是否为日志骨架自己的键（上下文撞名时要加前缀，不能覆盖它们）
+         * @param key 待判定的键名
+         * @return true 表示撞上了框架字段
+         */
+        bool isReservedLogField(const std::string_view key)
+        {
+            static constexpr std::array<std::string_view, 10> kReservedFields{"timestamp",  "level", "logger", "thread",   "message",
+                                                                              "stackTrace", "file",  "line",   "function", "context"};
+            return std::ranges::find(kReservedFields, key) != kReservedFields.end();
         }
 
         /**
@@ -117,6 +143,25 @@ namespace AsynGyanis::Base
 #else
             // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
+
+            // 上下文：顶层键，与原有字段并列。先摘掉上一条的上下文键再写本条的，
+            // 撞上框架字段时加 `ctx.` 前缀（上下文不能改写日志骨架）
+            std::vector<std::string> &contextKeys = reusableContextKeys();
+            for (const std::string &key: contextKeys)
+            {
+                removeField(fields, key.c_str());
+            }
+            contextKeys.clear();
+
+            if (const LogContextPtr &context = currentLogContext(); context != nullptr)
+            {
+                for (const auto &[key, value]: context->fields())
+                {
+                    std::string fieldName = isReservedLogField(key) ? "ctx." + key : key;
+                    assignField(fields, fieldName.c_str(), value);
+                    contextKeys.push_back(std::move(fieldName));
+                }
+            }
             return fields;
         }
 

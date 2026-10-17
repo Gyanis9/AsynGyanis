@@ -7,6 +7,7 @@
 #include "Net/Tracing/HttpTracingMiddleware.h"
 
 #include "Base/Exception/LogicException.h"
+#include "Base/Log/LogContext.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
@@ -44,6 +45,9 @@ namespace
     using AsynGyanis::Net::tracingSpanMiddleware;
     using AsynGyanis::Net::TestSupport::CapturingSpanExporter;
 
+    /// 上游传来的合法 traceparent：trace-id 与 parent-id 都是定长十六进制
+    constexpr std::string_view kIncomingTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
     /// 造一条只有方法、路径与（可选）上游上下文的请求
     HttpRequest makeRequest(const HttpMethod method, const std::string &uri, const std::string &traceparent = {})
     {
@@ -67,6 +71,18 @@ namespace
         auto tracer                        = Tracer::create(configuration);
         tracer->addExporter(exporter);
         return tracer;
+    }
+
+    /// 取当前日志上下文里的一个字段；没有上下文或没有该键时返回空串
+    std::string logContextField(const std::string_view key)
+    {
+        const AsynGyanis::Base::LogContextPtr &context = AsynGyanis::Base::currentLogContext();
+        if (context == nullptr)
+        {
+            return {};
+        }
+        const auto iterator = context->fields().find(std::string(key));
+        return iterator == context->fields().end() ? std::string{} : iterator->second;
     }
 
     /**
@@ -273,6 +289,44 @@ TEST(HttpTracingMiddleware, HandlerExceptionStillDeliversAnErrorSpan)
     EXPECT_EQ(record.status, SpanStatusCode::Error);
     EXPECT_EQ(record.statusMessage, "处理函数抛出异常");
     EXPECT_EQ(findAttribute(record, "http.response.status_code"), nullptr) << "没走到写状态码的那一步，就不该凭空补一条";
+}
+
+/**
+ * @brief 处理期间日志上下文带上 trace_id/span_id/request-id，离开后清场
+ *
+ * @details 这是「日志能接上链路」的行为判据：处理器在链路的下一层，它读到的那份上下文
+ *          就是这一节 span 的标识。trace_id 必须与上游 traceparent 同解；span_id 是本节
+ *          新生成的；request-id 不依赖链路开关。
+ */
+TEST(HttpTracingMiddleware, PublishesTraceAndRequestIdToTheLogContext)
+{
+    const auto exporter   = std::make_shared<CapturingSpanExporter>();
+    const auto tracer     = makeTracer(exporter);
+    const auto middleware = tracingSpanMiddleware(tracer);
+
+    HttpRequest  request = makeRequest(HttpMethod::GET, "/ctx", std::string{kIncomingTraceparent});
+    HttpResponse response;
+    request.setRequestId("req-42");
+
+    std::string traceIdInHandler;
+    std::string spanIdInHandler;
+    std::string requestIdInHandler;
+    const auto  readingTerminal = [&]() -> Task<void>
+    {
+        traceIdInHandler   = logContextField("trace_id");
+        spanIdInHandler    = logContextField("span_id");
+        requestIdInHandler = logContextField("request_id");
+        co_return;
+    };
+
+    ASSERT_TRUE(runMiddleware(middleware, request, response, readingTerminal));
+    tracer->flush();
+
+    EXPECT_EQ(traceIdInHandler, "4bf92f3577b34da6a3ce929d0e0e4736") << "日志上下文没接上上游链路";
+    EXPECT_EQ(spanIdInHandler.size(), 16U) << "本节 span-id 不合法：" << spanIdInHandler;
+    EXPECT_NE(spanIdInHandler, "00f067aa0ba902b7") << "本节 span-id 不该沿用上游的 parent-id";
+    EXPECT_EQ(requestIdInHandler, "req-42") << "request-id 没进日志上下文";
+    EXPECT_EQ(AsynGyanis::Base::currentLogContext(), nullptr) << "中间件返回后上下文应清场";
 }
 
 /**

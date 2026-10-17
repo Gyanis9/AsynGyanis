@@ -1,6 +1,7 @@
 #include "Net/Tracing/HttpTracingMiddleware.h"
 
 #include "Base/Exception/LogicException.h"
+#include "Base/Log/LogContext.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/TraceContext.h"
 #include "Net/Tracing/Span.h"
@@ -39,6 +40,11 @@ namespace AsynGyanis::Net
             Span span = tracer->startSpan(methodKeyword(request.method()), SpanKind::Server, parent);
             span.setAttribute(kMethodAttributeName, methodKeyword(request.method()));
             span.setAttribute(kPathAttributeName, request.path());
+
+            // 本次请求处理期间产生的日志都带上链路标识；request-id 是不开链路时也有的关联键。
+            // 作用域跨 co_await next()：协程挂起/恢复由 Task 的等待器负责保存与重新发布
+            const TraceIdentifiers identifiers = span.identifiers();
+            Base::LogContextScope  logContextScope({{"trace_id", identifiers.traceIdText()}, {"span_id", identifiers.parentIdText()}, {"request_id", request.requestId()}});
 
             // 头部指回本节：处理器与出站客户端从头部读到的上下文，就是它们自己的直接上级。
             // 看不懂的更高版本原样转发——重排别人写的字段不是本中间件的权限

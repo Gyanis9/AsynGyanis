@@ -17,6 +17,7 @@
 #include "Base/Log/Formatters/SourceLocationText.h"
 #include "Base/Log/Formatters/StackTraceText.h"
 #include "Base/Log/Formatters/TimestampText.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
@@ -51,6 +52,36 @@ namespace AsynGyanis::Base
             return haystack.find(needle) != std::string::npos;
         }
     } // namespace
+
+    /**
+     * @brief 上下文以 ` key=value` 段追加在正文之后，键按升序；作用域外逐字节不变
+     */
+    TEST(DefaultFormatterTest, AppendsLogContextFieldsInStableOrder)
+    {
+        DefaultFormatter  formatter;
+        const std::string withoutContext = formatter.format(makeEvent(LogLevel::Info, "ctx"));
+
+        {
+            const LogContextScope scope({{"span_id", "00f067aa0ba902b7"}, {"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}});
+            const std::string     withContext = formatter.format(makeEvent(LogLevel::Info, "ctx"));
+            // 键按升序：span_id 在 trace_id 之前
+            EXPECT_TRUE(contains(withContext, " span_id=00f067aa0ba902b7 trace_id=4bf92f3577b34da6a3ce929d0e0e4736"))
+                    << "上下文段没有按 key=value 追加，或键序不稳定：" << withContext;
+        }
+
+        EXPECT_EQ(formatter.format(makeEvent(LogLevel::Info, "ctx")), withoutContext) << "作用域结束后输出应逐字节回到原样";
+    }
+
+    /**
+     * @brief 上下文取值里的换行会被转义，不能把一条日志拆成两条
+     */
+    TEST(DefaultFormatterTest, EscapesControlBytesInContextValues)
+    {
+        DefaultFormatter      formatter;
+        const LogContextScope scope({{"tenant", "a\nb"}});
+        const std::string     text = formatter.format(makeEvent(LogLevel::Info, "escaped"));
+        EXPECT_TRUE(contains(text, " tenant=a\\x0Ab")) << "上下文取值里的换行没有被转义：" << text;
+    }
 
     // ============================================================================
     // 共用工具 SourceLocationText：两个格式化器 Debug 分支共同依赖的「文件:行号」生成

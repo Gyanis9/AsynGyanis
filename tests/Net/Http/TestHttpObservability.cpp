@@ -13,6 +13,13 @@
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerStats.h"
 
+#include "Base/Log/Formatters/JsonFormatter.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/LoggerRegistry.h"
+#include "Base/Log/Sinks/LogSink.h"
+#include "Net/Tracing/HttpTracingMiddleware.h"
+#include "Net/Tracing/Tracer.h"
+
 #include "HttpTestSupport.h"
 
 #include "NetTestSupport.h"
@@ -22,6 +29,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -50,6 +59,51 @@ namespace AsynGyanis::Net
             limits.writeTimeout = std::chrono::seconds{10};
             return limits;
         }
+
+        /**
+         * @brief 造一台只在本用例存活期内使用的链路编排器（不挂出口：只验证上下文，不验证导出）
+         * @return std::shared_ptr<Tracer> 编排器
+         */
+        std::shared_ptr<Tracer> singleTracerForTest()
+        {
+            Tracer::Configuration configuration;
+            configuration.serviceName          = "http-observability-test";
+            configuration.exportBatchSpanCount = 1U;
+            configuration.exportInterval       = std::chrono::milliseconds{60000};
+            return Tracer::create(configuration);
+        }
+
+        /// 按 JSON 版式记录的共享容器
+        struct JsonLogRecords
+        {
+            std::mutex               mutex; ///< 保护 lines
+            std::vector<std::string> lines; ///< 已格式化的 JSON 行
+        };
+
+        /**
+         * @brief 按 JSON 版式记录日志行的 Sink（上下文由格式化器读取当前作用域，不在 event.message 里）
+         */
+        class JsonLineSink final : public Base::LogSink
+        {
+        public:
+            explicit JsonLineSink(std::shared_ptr<JsonLogRecords> records) : m_records(std::move(records))
+            {
+            }
+
+            void write(const Base::LogEvent &event) override
+            {
+                const std::string     line = Base::JsonFormatter{}.format(event);
+                const std::lock_guard lock(m_records->mutex);
+                m_records->lines.push_back(line);
+            }
+
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<JsonLogRecords> m_records; ///< 与用例共享的记录
+        };
 
         /**
          * @brief 判断请求标识是否符合自动生成格式（定义见 NetTestSupport.h）
@@ -377,5 +431,61 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(primaryFixture.awaitConnectionsDrained(kWaitTimeout)) << "主监听器上的会话未收口";
         EXPECT_TRUE(shadowFixture.awaitConnectionsDrained(kWaitTimeout)) << "第二台监听器上的会话未收口";
         EXPECT_EQ(sharedCollector->snapshot().activeConnectionCount, 0u) << "会话已收口，共用采集端的活跃连接数没有跟着回落";
+    }
+
+    /**
+     * @brief 端到端钉住「日志接上链路」：真服务处理请求期间产生的日志带着请求头里的 trace_id
+     *
+     * @details 链路中间件建的作用域要跨真实回环请求的整条处理器链；日志行由 JsonFormatter 渲染，
+     *          因此这里断言的是**格式化后的顶层 trace_id**，而不是 event.message 里的文本。
+     *          请求头里的 trace-id 与日志里的值必须同解——这是「日志能接上链路」的唯一真判据。
+     */
+    TEST(HttpObservability, RequestLogsCarryTheIncomingTraceId)
+    {
+        constexpr std::string_view kTraceId    = "4bf92f3577b34da6a3ce929d0e0e4736";
+        const std::string          traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+        auto records = std::make_shared<JsonLogRecords>();
+        Base::LoggerRegistry::instance().getRootLogger().addSink(std::make_unique<JsonLineSink>(records));
+
+        RunningHttpServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/ctx-log",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   LOG_WARN("上下文自检");
+                                   response.setBody("logged");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.router().addMiddleware(tracingSpanMiddleware(singleTracerForTest())); });
+
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器没有进入接受循环";
+
+        const auto parsed = sendAndReadResponse(fixture.listeningPort(), "GET /ctx-log HTTP/1.1\r\nHost: test\r\nTraceparent: " + traceparent + "\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(parsed.has_value()) << "真实 TCP 请求没有拿到完整响应";
+
+        bool sawLineWithTrace = false;
+        ASSERT_TRUE(waitForCondition(
+                [&records, &sawLineWithTrace, kTraceId]
+                {
+                    const std::lock_guard<std::mutex> lock(records->mutex);
+                    for (const std::string &line: records->lines)
+                    {
+                        if (line.find("上下文自检") != std::string::npos && line.find(std::string(kTraceId)) != std::string::npos)
+                        {
+                            sawLineWithTrace = true;
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kWaitTimeout))
+                << "请求处理期间产生的日志没有带上请求头里的 trace_id";
+
+        Base::LoggerRegistry::instance().getRootLogger().clearSinks();
+        EXPECT_TRUE(sawLineWithTrace);
     }
 } // namespace AsynGyanis::Net
