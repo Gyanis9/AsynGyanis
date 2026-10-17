@@ -55,6 +55,16 @@ COPY --from=builder /src/build/release/samples/ReferenceServer /usr/local/bin/Re
 USER asyngyanis
 EXPOSE 8080
 
+# 健康检查只用 runtime 阶段已有的 bash /dev/tcp 探监听端口：不额外装 curl（少一层攻击面与体积），
+# 也不需要运维令牌。默认 CMD 不带 --config，运维端点（/healthz）没注册，因此这里刻意只判
+# 「端口还在接受连接」；要判 HTTP 应答就自己带 --metrics 或配置 expose_metrics 后改 PROBE_PATH。
+# 30s 间隔：本机回环探测成本可忽略，又能在 90s（3 次失败）内定性「进程还在但不再应答」；
+# 3s 超时防一次探测挂住；5s 起始宽限覆盖静态二进制加载与监听器 bind。
+ENV ASYN_HEALTHCHECK_PORT=8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${ASYN_HEALTHCHECK_PORT}"]
+
 # 密文/证书、限额与日志配置走 --config（另挂进容器）；这里给的是不依赖外部文件的明文形态。
+# 生产配置样例见 packaging/asyngyanis.yaml.example（挂载为 --config 指的文件）。
 ENTRYPOINT ["/usr/local/bin/ReferenceServer"]
 CMD ["--host", "0.0.0.0", "--port", "8080"]

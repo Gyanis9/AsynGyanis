@@ -1,0 +1,139 @@
+# AsynGyanis 的生产配置样例（ReferenceServer --config 可直接加载）。
+#
+# 抄用方式：复制到部署机（systemd 单元里是 /etc/asyngyanis/asyngyanis.yaml），按现场改。
+# 样例里凡是口令/密钥/私钥的键都**没有写值**（注释掉或留空说明位置）——AccessKey 一类只从
+# 环境变量读，任何情况下都不要把它们写进版本库或镜像。
+#
+# 两类键的处置不同，读配置时就能分辨：
+#   · server / acme 段：未知键当场拒（拼错不会被静默忽略）；
+#   · logging 段：未知字段只打一行 stderr 诊断——sink 的字段集按类型多态，为一个多余字段
+#     丢掉整条 sink 比现状更伤。
+# 每一项的默认值与「配错了会怎样」见 README 的「投产前核对」表。
+
+server:
+  # 整机并发连接上限；多进程部署里这是整机口径，装配时按「worker 进程数 × 每进程监听器数」
+  # 摊到每台。显式写 0 = 不限（把连接表交给对端，要写就写下理由）。
+  maximum_connections: 4096
+  # 单个来源 IP 的并发上限；共享出口（运营商 NAT、企业代理）要按实测并发抬高，别关掉。
+  # 0 = 不限。
+  maximum_connections_per_ip: 256
+  # 在途请求正文总量上限（整机字节数），0 = 不设这道账。开了之后超预算的新请求回 503。
+  memory_budget_bytes: 0
+  # 打开 /metrics、/healthz、/readyz、/debug/loops 四个运维端点。
+  expose_metrics: true
+  # 运维端点的 Bearer 令牌。**不要**把现场令牌写进本文件后提交；部署时把这一行取消注释并填入
+  # 现场值（令牌只能写在配置文件里，命令行上的令牌会进 shell 历史与进程列表）。
+  # 不配 = /metrics 与 /debug/loops 不鉴权；/healthz 与 /readyz 刻意不查令牌。
+  # ops_bearer_token: <现场值>
+  # 运维端点另起的管理口；0 = 端点留在业务口上。多进程时实际端口是这里加进程序号。
+  metrics_port: 9091
+  # 管理口监听地址；默认只听回环。写成 0.0.0.0 前先确认上面配了令牌。
+  metrics_address: 127.0.0.1
+
+  # 连接级限额（时间与单连接请求条数）。0 一律表示关闭对应保护。
+  # SIGHUP / 文件监听重载会整体换新一代限额，只影响此后新建的连接，已建立的连接不打断。
+  limits:
+    # 两次请求之间收不到新字节的容忍时长（keep-alive 空闲与 WebSocket 帧间空闲）
+    idle_timeout_ms: 75000
+    # 相邻两次成功读取之间的最长空闲（慢速攻击防线）
+    read_timeout_ms: 60000
+    # 响应产出预算：处理器执行与等待可写的最长时长（慢消费者与长处理器防线）
+    write_timeout_ms: 60000
+    # HTTP/2 握手期等对端 ACK 本端 SETTINGS 的时长
+    settings_acknowledgement_timeout_ms: 10000
+    # WebSocket 心跳：发出 Ping 后等 Pong 的时长；0 = 不设这项保护
+    web_socket_pong_timeout_ms: 0
+    # 单连接最多处理的请求条数，达到后回完当前响应即收口；0 = 不限
+    maximum_requests_per_connection: 1000
+
+  # 单条报文的内存上限（三条协议通道同一把尺）。0 一律表示关闭该项保护。
+  parser_limits:
+    maximum_uri_length: 8192
+    maximum_header_field_name_length: 256
+    maximum_header_field_value_length: 8192
+    maximum_header_count: 100
+    maximum_header_block_length: 65536
+    maximum_body_size: 8388608
+    maximum_chunk_size_line_length: 1024
+    # 入站 WebSocket 一条消息的上限：分片重组后与 permessage-deflate 解压后同用这一把尺
+    maximum_websocket_message_size: 8388608
+
+  # 令牌桶限流；requests_per_second = 0 表示不限流（默认值刻意是 0：给默认值会误杀真实用户）。
+  # burst_capacity 是瞬时突发量，开限流时必须 >= 1。
+  rate_limit:
+    requests_per_second: 0.0
+    burst_capacity: 1.0
+
+# 日志：global_level 与 sinks。未配置前 root 是 Trace 且零 sink（全部丢弃），因此生产必须配。
+logging:
+  global_level: info
+  loggers:
+    - level: info
+      sinks:
+        # 控制台：容器/systemd 采集用。color=false 让重定向后的日志不带 ANSI 转义。
+        - type: console
+          color: false
+          level: info
+        # 异步包一层滚动文件：满队列按 drop 丢并计数（asyn_http_log_dropped_events_total，
+        # 那是「日志系统自己来不及」的信号，不是业务错误）。
+        - type: async
+          queue_size: 8192
+          overflow_policy: drop
+          wrapped:
+            type: rolling_file
+            base_filename: asyngyanis.log
+            directory: logs
+            # size / daily / hourly；size 档配合 max_size_mb 与 max_backup
+            policy: size
+            max_size_mb: 100
+            max_backup: 10
+
+# 链路追踪（OTLP 推送 / 文件落盘）。enabled=false 时其余取值不校验，但未知键仍会拒。
+tracing:
+  enabled: false
+  service_name: asyngyanis
+  service_version: "0.0.0"
+  sample_ratio: 0.1
+  pending_span_count: 2048
+  batch_span_count: 512
+  export_interval_ms: 5000
+  otlp:
+    endpoint: http://127.0.0.1:4318
+    timeout_ms: 3000
+    headers: {}
+  file:
+    path: logs/spans.jsonl
+
+# 读数推给 OTLP 采集端（无需抓取端）。段缺失或 enabled=false 即关着；
+# 空快照周期直接跳过、失败不补发（下个周期是全量最新值，不是可靠队列）。
+metrics:
+  enabled: false
+  service_name: asyngyanis
+  service_version: "0.0.0"
+  export_interval_ms: 15000
+  otlp:
+    endpoint: http://127.0.0.1:4318
+    timeout_ms: 3000
+    headers: {}
+
+# 证书自动化（ACME）。默认整段关着。要开时把下面整段取消注释并填现场值；
+# AccessKey 不认配置文件，只从环境变量读：
+#   ASYN_ACME_DNS_ACCESS_KEY_ID / ASYN_ACME_DNS_ACCESS_KEY_SECRET
+#
+# acme:
+#   enabled: true
+#   directory_url: https://acme-v02.api.letsencrypt.org/directory
+#   domains: [example.com, www.example.com]
+#   certificate_file: /etc/asyngyanis/tls/fullchain.pem
+#   private_key_file: /etc/asyngyanis/tls/privkey.pem
+#   account_key_file: /etc/asyngyanis/acme/account.key
+#   account_state_file: /etc/asyngyanis/acme/account.json
+#   contact_email: ops@example.com
+#   tos_accepted: true
+#   challenge: dns-01            # http-01 或 dns-01
+#   renew_before_expiry_days: 30
+#   renewal_check_interval_minutes: 720
+#   dns:
+#     provider: aliyun
+#     domain: example.com
+#     record_ttl_seconds: 600    # 下限 600；配小了在读配置时就拒

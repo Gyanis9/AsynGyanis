@@ -27,7 +27,8 @@ Type=notify
 NotifyAccess=main
 
 # 路径按安装前缀改。--config 是限额、TLS/ACME、logging 等配置的来源；没有它也能跑，
-# 但 SIGHUP 只会明确打一行「没有可重读的文件」。
+# 但 SIGHUP 只会明确打一行「没有可重读的文件」。可抄的配置样例在
+# packaging/asyngyanis.yaml.example（安装时复制为下面的路径，再按现场改）。
 # --workers N 的 N 个 worker 各自 bind（SO_REUSEPORT），看门狗心跳由 master 汇聚。
 ExecStart=/usr/local/bin/ReferenceServer --config /etc/asyngyanis/asyngyanis.yaml --workers 4
 
