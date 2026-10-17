@@ -9,7 +9,8 @@ namespace AsynGyanis::Core
 
     Connection::Connection(Connection &&other) noexcept :
         m_socket(std::move(other.m_socket)), m_cancelable(std::move(other.m_cancelable)), m_createdAt(other.m_createdAt), m_alive(other.m_alive.load(std::memory_order_acquire)),
-        m_busy(other.m_busy), m_idleDeadline(std::move(other.m_idleDeadline))
+        m_busy(other.m_busy), m_receivedBytes(other.m_receivedBytes.load(std::memory_order_acquire)), m_sentBytes(other.m_sentBytes.load(std::memory_order_acquire)),
+        m_idleDeadline(std::move(other.m_idleDeadline))
     {
     }
 
@@ -23,6 +24,8 @@ namespace AsynGyanis::Core
             m_idleDeadline = std::move(other.m_idleDeadline);
             m_busy         = other.m_busy;
             m_alive.store(other.m_alive.load(std::memory_order_acquire), std::memory_order_release);
+            m_receivedBytes.store(other.m_receivedBytes.load(std::memory_order_acquire), std::memory_order_release);
+            m_sentBytes.store(other.m_sentBytes.load(std::memory_order_acquire), std::memory_order_release);
         }
         return *this;
     }

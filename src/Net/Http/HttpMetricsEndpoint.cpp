@@ -416,7 +416,11 @@ namespace AsynGyanis::Net
     {
         std::map<std::string, std::uint64_t> byProtocol;
         std::map<std::string, std::uint64_t> byState;
-        std::int64_t                         oldestAgeSeconds = 0;
+        std::int64_t                         oldestAgeSeconds     = 0;
+        std::uint64_t                        receivedBytesTotal   = 0;
+        std::uint64_t                        sentBytesTotal       = 0;
+        std::uint64_t                        maximumReceivedBytes = 0;
+        std::uint64_t                        maximumSentBytes     = 0;
         for (const std::shared_ptr<Core::Connection> &connection: connections)
         {
             if (connection == nullptr)
@@ -425,8 +429,14 @@ namespace AsynGyanis::Net
             }
             ++byProtocol[std::string{connection->protocolName()}];
             ++byState[connection->isAliveFlag() ? "alive" : "closed"];
-            const auto ageSeconds = std::chrono::duration_cast<std::chrono::seconds>(nowMoment - connection->createdAt()).count();
-            oldestAgeSeconds      = std::max(oldestAgeSeconds, ageSeconds);
+            const auto ageSeconds             = std::chrono::duration_cast<std::chrono::seconds>(nowMoment - connection->createdAt()).count();
+            oldestAgeSeconds                  = std::max(oldestAgeSeconds, ageSeconds);
+            const std::uint64_t receivedBytes = connection->receivedBytes();
+            const std::uint64_t sentBytes     = connection->sentBytes();
+            receivedBytesTotal += receivedBytes;
+            sentBytesTotal += sentBytes;
+            maximumReceivedBytes = std::max(maximumReceivedBytes, receivedBytes);
+            maximumSentBytes     = std::max(maximumSentBytes, sentBytes);
         }
 
         Base::ConfigValue protocolCounts = Base::ConfigValue::object();
@@ -440,11 +450,15 @@ namespace AsynGyanis::Net
             stateCounts[state] = count;
         }
 
-        Base::ConfigValue document     = Base::ConfigValue::object();
-        document["total"]              = connections.size();
-        document["by_protocol"]        = std::move(protocolCounts);
-        document["by_state"]           = std::move(stateCounts);
-        document["oldest_age_seconds"] = oldestAgeSeconds;
+        Base::ConfigValue document       = Base::ConfigValue::object();
+        document["total"]                = connections.size();
+        document["by_protocol"]          = std::move(protocolCounts);
+        document["by_state"]             = std::move(stateCounts);
+        document["oldest_age_seconds"]   = oldestAgeSeconds;
+        document["received_bytes_total"] = receivedBytesTotal;
+        document["sent_bytes_total"]     = sentBytesTotal;
+        document["max_received_bytes"]   = maximumReceivedBytes;
+        document["max_sent_bytes"]       = maximumSentBytes;
         return Base::serializeConfigValue(document).value_or("{}");
     }
 

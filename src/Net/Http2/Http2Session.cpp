@@ -295,20 +295,36 @@ namespace AsynGyanis::Net
 
     Core::Task<ssize_t> Http2Session::transportReceive(void *const buffer, const std::size_t length)
     {
+        ssize_t receivedLength = 0;
         if (m_tlsSocket.has_value())
         {
-            co_return co_await m_tlsSocket->asyncReceive(buffer, length);
+            receivedLength = co_await m_tlsSocket->asyncReceive(buffer, length);
+        } else
+        {
+            receivedLength = co_await socket().asyncReceive(buffer, length);
         }
-        co_return co_await socket().asyncReceive(buffer, length);
+        if (receivedLength > 0)
+        {
+            noteBytesReceived(static_cast<std::size_t>(receivedLength));
+        }
+        co_return receivedLength;
     }
 
     Core::Task<ssize_t> Http2Session::transportSend(const void *const buffer, const std::size_t length)
     {
+        ssize_t writtenLength = 0;
         if (m_tlsSocket.has_value())
         {
-            co_return co_await m_tlsSocket->asyncSend(buffer, length);
+            writtenLength = co_await m_tlsSocket->asyncSend(buffer, length);
+        } else
+        {
+            writtenLength = co_await socket().asyncSend(buffer, length);
         }
-        co_return co_await socket().asyncSend(buffer, length);
+        if (writtenLength > 0)
+        {
+            noteBytesSent(static_cast<std::size_t>(writtenLength));
+        }
+        co_return writtenLength;
     }
 
     Core::Task<> Http2Session::runHttp2Loop()

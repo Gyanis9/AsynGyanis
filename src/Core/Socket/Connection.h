@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -110,6 +111,38 @@ namespace AsynGyanis::Core
         [[nodiscard]] bool isAliveFlag() const noexcept
         {
             return m_alive.load(std::memory_order_acquire);
+        }
+
+        /**
+         * @brief 记一笔从对端收到的字节（协议层在每次读成功后调用）
+         * @details 只做原子累加，可从会话协程所在线程调用；聚合端在别的线程上读也只看到整数值
+         * @param byteCount 本次收到的字节数；非正值由调用方过滤，这里不做判断
+         */
+        void noteBytesReceived(const std::size_t byteCount) noexcept
+        {
+            m_receivedBytes.fetch_add(byteCount, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一笔交给传输层的字节（协议层在每次写成功后调用）
+         * @param byteCount 本次写出的字节数
+         * @note 口径是「本层交出去的明文/帧字节」，不是 TLS 记录层加密后的线上字节
+         */
+        void noteBytesSent(const std::size_t byteCount) noexcept
+        {
+            m_sentBytes.fetch_add(byteCount, std::memory_order_relaxed);
+        }
+
+        /// @brief 本连接累计收到的字节数（跨线程可读）
+        [[nodiscard]] std::uint64_t receivedBytes() const noexcept
+        {
+            return m_receivedBytes.load(std::memory_order_acquire);
+        }
+
+        /// @brief 本连接累计交给传输层的字节数（跨线程可读）
+        [[nodiscard]] std::uint64_t sentBytes() const noexcept
+        {
+            return m_sentBytes.load(std::memory_order_acquire);
         }
 
         /**
@@ -241,11 +274,13 @@ namespace AsynGyanis::Core
         }
 
     private:
-        AsyncSocket                           m_socket;      ///< 底层异步socket
-        Cancelable                            m_cancelable;  ///< 取消支持（stop_token）
-        std::chrono::steady_clock::time_point m_createdAt{}; ///< 构造时刻（运维聚合的「最老连接」用）
-        std::atomic<bool>                     m_alive{true}; ///< 连接存活标志，原子操作保证线程安全
-        bool                                  m_busy{false}; ///< 是否有在途工作，由协议层维护（见 setBusy()）
+        AsyncSocket                           m_socket;           ///< 底层异步socket
+        Cancelable                            m_cancelable;       ///< 取消支持（stop_token）
+        std::chrono::steady_clock::time_point m_createdAt{};      ///< 构造时刻（运维聚合的「最老连接」用）
+        std::atomic<bool>                     m_alive{true};      ///< 连接存活标志，原子操作保证线程安全
+        bool                                  m_busy{false};      ///< 是否有在途工作，由协议层维护（见 setBusy()）
+        std::atomic<std::uint64_t>            m_receivedBytes{0}; ///< 累计收到的字节数（协议层写、聚合端跨线程读）
+        std::atomic<std::uint64_t>            m_sentBytes{0};     ///< 累计交给传输层的字节数
 
         /// 空闲截止时间；未设置表示这条连接不参与超时清扫。只由所属事件循环线程访问（见 refreshIdleDeadline()）
         std::optional<std::chrono::steady_clock::time_point> m_idleDeadline;

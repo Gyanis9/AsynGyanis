@@ -4,6 +4,7 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Config/ConfigValue.h"
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Core/Coroutine/AsyncExecutor.h"
@@ -610,12 +611,28 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(second.isValid());
         ASSERT_TRUE(fixture.awaitConnectionAccepted(kWaitTimeout));
 
+        // 先让 first 走完一次请求/响应：否则抓取发生在响应写出之前，这份快照里 sent 必为 0，
+        // 「发出字节」这条判据就会因为采样时点而不是实现而失败
+        std::string helloResponse;
+        ASSERT_TRUE(first.sendText("GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n", kEndpointTimeout));
+        ASSERT_TRUE(first.waitForText(helloResponse, "served-hello", kEndpointTimeout)) << "预热请求没有拿到响应";
+
         const auto parsed = sendAndReadResponse(fixture.listeningPort(), "GET /debug/connections HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         ASSERT_TRUE(parsed.has_value());
         EXPECT_NE(parsed->body.find("\"total\""), std::string::npos) << parsed->body;
         EXPECT_NE(parsed->body.find("\"http/1.1\""), std::string::npos) << "按协议分组没有出现 http/1.1：" << parsed->body;
         EXPECT_NE(parsed->body.find("\"oldest_age_seconds\""), std::string::npos) << parsed->body;
         EXPECT_EQ(parsed->body.find("127.0.0.1"), std::string::npos) << "聚合端点泄漏了对端地址：" << parsed->body;
+
+        // 收发字节：本次 GET 的请求字节已被读入、响应字节已交给传输层，因此两条合计都应为正
+        const std::optional<Base::ConfigValue> document = Base::parseConfigValue(parsed->body);
+        ASSERT_TRUE(document.has_value()) << parsed->body;
+        const std::uint64_t receivedBytes = document->at("received_bytes_total").get<std::uint64_t>();
+        const std::uint64_t sentBytes     = document->at("sent_bytes_total").get<std::uint64_t>();
+        EXPECT_GT(receivedBytes, 0U) << "连接聚合里没有收到字节：" << parsed->body;
+        EXPECT_GT(sentBytes, 0U) << "连接聚合里没有发出字节：" << parsed->body;
+        EXPECT_LE(document->at("max_received_bytes").get<std::uint64_t>(), receivedBytes);
+        EXPECT_LE(document->at("max_sent_bytes").get<std::uint64_t>(), sentBytes);
 
         first.closeNow();
         second.closeNow();
@@ -627,6 +644,7 @@ namespace AsynGyanis::Net
      */
     TEST(HttpLogLevelEndpoint, ReadsAndWritesTheRootLevel)
     {
+        const LogCapture         logCapture;
         const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableLogLevelEndpoint(); };
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
@@ -634,6 +652,7 @@ namespace AsynGyanis::Net
         Base::Logger &rootLogger    = Base::LoggerRegistry::instance().getRootLogger();
         const auto    originalLevel = rootLogger.getLevel();
         rootLogger.setLevel(Base::LogLevel::Info);
+        EXPECT_FALSE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "Info 档不该放行 Debug";
 
         const auto readBack = sendAndReadResponse(fixture.listeningPort(), "GET /debug/log-level HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         ASSERT_TRUE(readBack.has_value());
@@ -646,6 +665,8 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(writeBack.has_value());
         EXPECT_NE(writeBack->body.find("\"level\":\"DEBUG\""), std::string::npos) << writeBack->body;
         EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Debug) << "响应说改了，实际等级没变";
+        EXPECT_TRUE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "新等级没有真的参与过滤";
+        EXPECT_EQ(logCapture.countContaining("运维端点：root 日志等级由 INFO 改为 DEBUG"), 1U) << "改等级没有留下审计行";
 
         const std::string badBody  = R"({"level":"loud"})";
         const auto        rejected = sendAndReadResponse(
@@ -704,6 +725,8 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(authorizedWrite.has_value());
         EXPECT_NE(authorizedWrite->headers.find("200"), std::string::npos) << "带对令牌的写被拒：" << authorizedWrite->headers;
         EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Warn) << "闸门放行了，但等级没有真的改";
+        EXPECT_FALSE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "Warn 档不该放行 Debug";
+        EXPECT_TRUE(rootLogger.shouldLog(Base::LogLevel::Warn));
 
         const auto healthWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         ASSERT_TRUE(healthWithoutToken.has_value());

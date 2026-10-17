@@ -382,8 +382,10 @@ namespace AsynGyanis::Net
                         failureReason = "对端已关闭连接或连接不可用";
                     }
                     LOG_ERROR_FMT("WebSocket 会话：帧写出失败，连接已不可用，此后不再尝试发送，请停止继续发送。原因：{}", failureReason);
+                    co_return false;
                 }
-                co_return isSucceeded;
+                connection.noteBytesSent(frameBytes.size());
+                co_return true;
             };
 
             WebSocketPeer peer(sendFrameBytes, metrics);
@@ -451,6 +453,7 @@ namespace AsynGyanis::Net
                     // 0 是对端正常关闭，负值是连接不可用，两者都只剩收尾
                     break;
                 }
+                connection.noteBytesReceived(static_cast<std::size_t>(receivedLength));
 
                 // 一段字节一次喂完：解码器内部按帧推进，产出即排队交给业务
                 feedStatus = peer.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength));
@@ -666,8 +669,10 @@ namespace AsynGyanis::Net
                 if (!isSucceeded)
                 {
                     recordSendFailure(std::move(failureReason));
+                    co_return false;
                 }
-                co_return isSucceeded;
+                connection.noteBytesSent(head.size() + body.size());
+                co_return true;
             };
 
 #if !ASYN_PLATFORM_WIN32
@@ -724,8 +729,11 @@ namespace AsynGyanis::Net
                 if (!isSucceeded)
                 {
                     recordSendFailure(std::move(failureReason));
+                    co_return false;
                 }
-                co_return isSucceeded;
+                // 零拷贝的正文由内核直接从文件读出，这里记的是「交给传输层的量」而不是用户态拷贝量
+                connection.noteBytesSent(head.size() + static_cast<std::size_t>(zeroCopyBody.length));
+                co_return true;
             };
 #endif
 
@@ -796,7 +804,7 @@ namespace AsynGyanis::Net
             bool lastReadFilledWindow{false};
 
             // 读一次网络字节到窗口剩余空间。返回 0 表示对端正常关闭，负值表示连接不可用
-            const auto readIntoWindow = [&isAlive, &receiveBuffer, &socket, &windowLength, &lastReadFilledWindow]() -> Core::Task<ssize_t>
+            const auto readIntoWindow = [&isAlive, &connection, &receiveBuffer, &socket, &windowLength, &lastReadFilledWindow]() -> Core::Task<ssize_t>
             {
                 // 挂起前先复查存活：对端断开或被服务器强制关闭时不该再多读一次
                 if (!isAlive())
@@ -820,6 +828,10 @@ namespace AsynGyanis::Net
                 {
                     const ssize_t receivedLength = co_await socket.asyncReceive(receiveBuffer.data(), receiveBuffer.size());
                     lastReadFilledWindow         = receivedLength == static_cast<ssize_t>(receiveBuffer.size());
+                    if (receivedLength > 0)
+                    {
+                        connection.noteBytesReceived(static_cast<std::size_t>(receivedLength));
+                    }
                     co_return receivedLength;
                 } catch (const std::exception &)
                 {

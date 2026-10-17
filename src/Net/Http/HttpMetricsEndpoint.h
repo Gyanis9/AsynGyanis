@@ -94,14 +94,16 @@ namespace AsynGyanis::Net
     /**
      * @brief 把在途连接快照渲染成 `/debug/connections` 的聚合 JSON
      *
-     * @details 只给**聚合**：按协议与状态分组计数、最老连接的存活秒数。刻意不逐条列出对端地址——
-     *          那等于把客户端清单暴露在运维端点上。数据来自 `ConnectionManager::snapshot()`：
-     *          取快照只在管理器锁内复制 shared_ptr，遍历与渲染都在锁外完成，不长时间占锁。
+     * @details 只给**聚合**：按协议与状态分组计数、最老连接的存活秒数，以及收发字节的合计与单连接最大值。
+     *          刻意不逐条列出对端地址——那等于把客户端清单暴露在运维端点上。数据来自
+     *          `ConnectionManager::snapshot()`：取快照只在管理器锁内复制 shared_ptr，遍历与渲染都在
+     *          锁外完成，不长时间占锁；字节数走连接上的原子累加，跨线程读不会碰传输层状态。
      * @param connections 连接快照
      * @param nowMoment 计算存活时长的基准时刻
-     * @return std::string 紧凑 JSON：total / by_protocol / by_state / oldest_age_seconds
-     * @note 收发字节没有进这一版：`Core::Connection` 目前不记字节数，为它加计数会碰三条协议路径；
-     *       要按连接出字节账时再单独立项
+     * @return std::string 紧凑 JSON：total / by_protocol / by_state / oldest_age_seconds /
+     *         received_bytes_total / sent_bytes_total / max_received_bytes / max_sent_bytes
+     * @note 字节口径是协议层交给传输层的量（h1/h2 的明文/帧字节），不是 TLS 记录层加密后的线上字节；
+     *       h3 连接不在 ConnectionManager 里，因此不参与这份聚合
      */
     [[nodiscard]] ASYN_NET_API std::string formatConnectionsJson(const std::vector<std::shared_ptr<Core::Connection>> &connections,
                                                                  std::chrono::steady_clock::time_point                 nowMoment);
