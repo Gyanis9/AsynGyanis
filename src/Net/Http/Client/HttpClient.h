@@ -180,6 +180,16 @@ namespace AsynGyanis::Net
          * @see Net::Traceparent, Net::Span::identifiers()
          */
         std::optional<TraceIdentifiers> traceContext{};
+
+        /**
+         * @brief 要随 traceparent 一起上线的 tracestate（可选）
+         * @details 上游厂商盖在 tracestate 里的采样决定与厂商标识要原样带到下游；本客户端不猜
+         *          「该保留哪些厂商键」，只负责按 W3C §3.3 的列表形态写出（条目顺序原样）。
+         * @note 只在 `traceContext` 也给出时有意义：没有 traceparent 的 tracestate 按规范应被丢弃，
+         *       因此这种组合按用法错误拒绝。与 `headers` 里手写的 tracestate 同时给出同样拒绝
+         *       （一处请求只能有一份 tracestate）。空条目表不发送头部。
+         */
+        std::optional<TraceState> traceState{};
     };
     /**
      * @brief 拆开的请求 URL

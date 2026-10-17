@@ -313,7 +313,11 @@ namespace AsynGyanis::Net
             {
                 return std::nullopt; // 规范把重复键整条判废：半条可信比全都不可信更糟
             }
-            state.m_entries.push_back(TraceStateEntry{std::string(key), std::string(entryValue)});
+            // shortcut: 超过 32 条的尾部不再查重（规范允许丢弃右侧），只保最前面的 32 条并继续校验形态
+            if (state.m_entries.size() < kMaximumTraceStateEntryCount)
+            {
+                state.m_entries.push_back(TraceStateEntry{std::string(key), std::string(entryValue)});
+            }
 
             if (separatorOffset == std::string_view::npos)
             {
@@ -398,6 +402,26 @@ namespace AsynGyanis::Net
             target.push_back('=');
             target.append(m_entries[index].value);
         }
+    }
+
+    std::optional<TraceState> extractTraceState(const HttpRequest &request)
+    {
+        // 多条同名头部按 RFC 9110 §5.3 合并（到达顺序）；字段缺席与空值都按「没有 tracestate」处理
+        const std::vector<std::string> values = request.headerValues(kTracestateHeaderName);
+        std::string                    merged;
+        for (const std::string &value: values)
+        {
+            if (!merged.empty())
+            {
+                merged.push_back(',');
+            }
+            merged.append(value);
+        }
+        if (trimOptionalWhitespace(merged).empty())
+        {
+            return std::nullopt;
+        }
+        return TraceState::parse(merged);
     }
 
     std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request)

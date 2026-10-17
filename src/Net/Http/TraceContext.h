@@ -228,6 +228,18 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request);
 
     /**
+     * @brief 从请求上读出 tracestate 条目表（多条同名头部按到达顺序合并）
+     *
+     * @details W3C §3.3 的 tracestate 是**列表字段**：同一条请求可以有多条 tracestate 头，
+     *          按 RFC 9110 §5.3 用逗号合并后再解析。只读第一条会在网关分片转发时丢掉后半段，
+     *          而条目顺序正是「谁最后写过」的信号。条目超过 32 条时按 §3.3.1.1 丢右侧，
+     *          保留最前面的 32 条。
+     * @param request 已收齐的请求对象
+     * @return std::optional<TraceState> 有效条目表；头部缺席、形态不合或重复键时为空
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<TraceState> extractTraceState(const HttpRequest &request);
+
+    /**
      * @brief 取这条请求的 trace id，专门给错误日志用
      *
      * @details 三条通道（h1/h2/h3）的「处理器抛出 → 回 500」那行日志都要带上 trace id：响应里

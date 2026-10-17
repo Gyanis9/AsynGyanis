@@ -298,6 +298,42 @@ namespace AsynGyanis::Net
      *          用的缺省值是中文的「无」而不是空串：空值在一段日志里读起来像字段漏打了，运维会去查
      *          是不是哪里丢了，而实际上只是这条请求本来不在任何链路里。
      */
+    TEST(TraceContextExtraction, MergesMultipleTracestateHeadersInArrivalOrder)
+    {
+        HttpRequest request;
+        request.addHeader("tracestate", "vendora=abc");
+        request.addHeader("tracestate", "vendorb=def");
+
+        const std::optional<TraceState> state = extractTraceState(request);
+        ASSERT_TRUE(state.has_value());
+        ASSERT_EQ(state->entryCount(), 2U);
+        EXPECT_EQ(state->entries()[0].key, "vendora");
+        EXPECT_EQ(state->entries()[0].value, "abc");
+        EXPECT_EQ(state->entries()[1].key, "vendorb");
+        EXPECT_EQ(state->entries()[1].value, "def");
+    }
+
+    TEST(TraceContextExtraction, KeepsAtMostThirtyTwoTracestateEntries)
+    {
+        std::string text;
+        for (int index = 0; index < 40; ++index)
+        {
+            if (!text.empty())
+            {
+                text.push_back(',');
+            }
+            text += "k" + std::to_string(index) + "=v";
+        }
+        HttpRequest request;
+        request.addHeader("tracestate", text);
+
+        const std::optional<TraceState> state = extractTraceState(request);
+        ASSERT_TRUE(state.has_value());
+        EXPECT_EQ(state->entryCount(), kMaximumTraceStateEntryCount) << "超过 32 条的尾部应被丢弃";
+        EXPECT_EQ(state->entries().front().key, "k0");
+        EXPECT_EQ(state->entries().back().key, "k31");
+    }
+
     TEST(TraceContextExtraction, RendersTraceIdForErrorLogsWithoutLeavingItBlank)
     {
         HttpRequest request;

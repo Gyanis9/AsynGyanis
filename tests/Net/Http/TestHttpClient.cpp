@@ -521,6 +521,113 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 出站 tracestate：给了才发、原样按列表写出；与手写头部冲突时拒绝
+     */
+    TEST(HttpClient, WritesTracestateOnlyWhenGivenAndRejectsConflicts)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/echo-state",
+                                                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.setBody(request.getHeader("tracestate").value_or("<missing>"));
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/echo-state";
+
+        const TraceIdentifiers identifiers = Traceparent::generate();
+        const auto             parsedState = TraceState::parse("vendora=abc,vendorb=def");
+        ASSERT_TRUE(parsedState.has_value());
+
+        {
+            HttpClientRequest request;
+            request.traceContext      = identifiers;
+            request.traceState        = *parsedState;
+            const SendOutcome outcome = runSend(url, request);
+            ASSERT_TRUE(outcome.reason.empty()) << outcome.reason;
+            EXPECT_EQ(outcome.body, "vendora=abc,vendorb=def") << "tracestate 没有按原顺序上线";
+        }
+
+        {
+            // 只给 traceContext：不发空的 tracestate 头
+            HttpClientRequest request;
+            request.traceContext      = identifiers;
+            const SendOutcome outcome = runSend(url, request);
+            ASSERT_TRUE(outcome.reason.empty()) << outcome.reason;
+            EXPECT_EQ(outcome.body, "<missing>") << "没给 tracestate 却发出了这条头";
+        }
+
+        {
+            // 手写 tracestate + traceState：一处请求只能有一份
+            HttpClientRequest request;
+            request.traceContext = identifiers;
+            request.traceState   = *parsedState;
+            request.headers.emplace_back("tracestate", "hand=written");
+            const SendOutcome outcome = runSend(url, request);
+            EXPECT_TRUE(outcome.body.empty()) << "冲突组合却发出去了";
+            EXPECT_NE(outcome.reason.find("tracestate"), std::string::npos) << outcome.reason;
+        }
+    }
+
+    /**
+     * @brief 端到端：入站 traceparent+tracestate 原样带到下游那一跳
+     */
+    TEST(HttpClient, PropagatesInboundTracestateToTheDownstreamHop)
+    {
+        // 下游只回显收到的 tracestate
+        RunningHttpServerFixture downstream(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                            [](Router &router, Core::EventLoop &)
+                                            {
+                                                router.get("/echo-state",
+                                                           [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                           {
+                                                               response.setBody(request.getHeader("tracestate").value_or("<missing>"));
+                                                               co_return;
+                                                           });
+                                            });
+        ASSERT_TRUE(downstream.awaitRunning(kTimeout));
+        const std::string downstreamUrl = "http://127.0.0.1:" + std::to_string(downstream.listeningPort()) + "/echo-state";
+
+        // 上游收到请求后把入站链路上下文原样交给下游
+        RunningHttpServerFixture upstream(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                          [downstreamUrl](Router &router, Core::EventLoop &loop)
+                                          {
+                                              router.get("/hop",
+                                                         [&loop, downstreamUrl](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+                                                             const std::optional<TraceState>       state       = extractTraceState(request);
+                                                             if (!identifiers.has_value())
+                                                             {
+                                                                 response.setStatus(500);
+                                                                 response.setBody("no traceparent");
+                                                                 co_return;
+                                                             }
+                                                             HttpClientRequest outbound;
+                                                             outbound.traceContext = *identifiers;
+                                                             outbound.traceState   = state;
+                                                             const auto sent       = co_await HttpClient::send(loop, downstreamUrl, outbound, std::chrono::seconds{2});
+                                                             response.setBody(sent.has_value() ? sent->body : "<upstream failed>");
+                                                             co_return;
+                                                         });
+                                          });
+        ASSERT_TRUE(upstream.awaitRunning(kTimeout));
+        const std::string upstreamUrl = "http://127.0.0.1:" + std::to_string(upstream.listeningPort()) + "/hop";
+
+        HttpClientRequest request;
+        request.headers.emplace_back("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        request.headers.emplace_back("tracestate", "vendora=abc");
+        request.headers.emplace_back("tracestate", "vendorb=def");
+
+        const SendOutcome outcome = runSend(upstreamUrl, request);
+        ASSERT_TRUE(outcome.reason.empty()) << outcome.reason;
+        EXPECT_EQ(outcome.body, "vendora=abc,vendorb=def") << "入站 tracestate（多条合并）没能一路带到下游";
+    }
+
+    /**
      * @brief 钉住：会撕裂请求行的头部写法一律拒绝，不转义也不静默丢掉
      * @details 值里带 CR/LF 等于自己结束这一行再插一条新字段；名字带空格或冒号会拼出第二个字段；
      *          方法名进的是请求行开头，同样只准是 token。保留头部（Host、Content-Length、Connection、

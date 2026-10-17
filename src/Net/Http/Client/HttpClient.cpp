@@ -560,6 +560,34 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 按请求里给的上下文写出 traceparent 与可选的 tracestate
+         * @param headers 要追加头部的容器（就地改）
+         * @param context 本端这一跳的上下文
+         * @param state 可选的 tracestate；空条目表不发送
+         * @throws Base::InvalidArgumentException headers 里已手写过 traceparent 或 tracestate
+         */
+        void appendTraceHeaders(std::vector<HttpClientHeaderField> &headers, const TraceIdentifiers &context, const std::optional<TraceState> &state)
+        {
+            appendTraceparentHeader(headers, context);
+            if (!state.has_value())
+            {
+                return;
+            }
+            const bool callerWroteIt = std::ranges::any_of(headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, kTracestateHeaderName); });
+            if (callerWroteIt)
+            {
+                throw Base::InvalidArgumentException("HttpClient：请求的 traceState 与 headers 里手写的 tracestate 同时给了："
+                                                     "一处出站请求只能有一份 tracestate。请去掉其中一处再试");
+            }
+            std::string stateText;
+            state->renderInto(stateText);
+            if (!stateText.empty())
+            {
+                headers.emplace_back(kTracestateHeaderName, std::move(stateText));
+            }
+        }
+
+        /**
          * @brief 从整体时限里扣掉已经花掉的那一段
          * @details 契约是「握手、发送、收完响应三段之和」：分两段各给一次完整时限，等于把契约放宽
          *          一倍。返回空表示预算已经用完，调用方据此直接判失败。
@@ -630,7 +658,7 @@ namespace AsynGyanis::Net
                     storage          = request;
                     effectiveRequest = &storage.value();
                 }
-                appendTraceparentHeader(storage->headers, *request.traceContext);
+                appendTraceHeaders(storage->headers, *request.traceContext, request.traceState);
             }
             return *effectiveRequest;
         }
@@ -866,6 +894,11 @@ namespace AsynGyanis::Net
                 // 两种正文写法同时给：一份 Content-Length 加一份 chunked 是让对端挑一个信，
                 // 而挑哪个由中间盒决定——当场拒绝，不猜
                 throw Base::InvalidArgumentException("HttpClient：body 与 bodySource 只能选一种：前者一次性交整份正文，后者按段拉出去");
+            }
+            if (request.traceState.has_value() && !request.traceContext.has_value())
+            {
+                throw Base::InvalidArgumentException("HttpClient：给了 traceState 却没给 traceContext：没有 traceparent 的 tracestate 按 W3C §3.3 应被丢弃，"
+                                                     "请同时给出本端这一跳的链路上下文");
             }
             if (!isTokenText(request.method))
             {
@@ -2563,7 +2596,7 @@ namespace AsynGyanis::Net
         if (request.traceContext.has_value())
         {
             // request 是按下标传进来的副本：改它的头部不影响调用方，也不必再有一份实现去拼那条头部
-            appendTraceparentHeader(request.headers, *request.traceContext);
+            appendTraceHeaders(request.headers, *request.traceContext, request.traceState);
         }
         std::string failureReason;
         // 绝对截止时刻折进相对时限：没有 deadline 时原样透传，行为与加这一项之前逐字相同

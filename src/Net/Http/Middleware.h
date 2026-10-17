@@ -534,7 +534,8 @@ namespace AsynGyanis::Net
 
             if (!options.vendorKey.empty() && identifiers.has_value())
             {
-                std::optional<TraceState> parsedState = TraceState::parse(request.firstHeaderValueView(kTracestateHeaderName).value_or(std::string_view{}));
+                // 多条同名头部按 RFC 9110 §5.3 合并后再解析（读第一条会在网关分片转发时丢后半段）
+                std::optional<TraceState> parsedState = extractTraceState(request);
                 TraceState                state;
                 if (parsedState.has_value())
                 {
