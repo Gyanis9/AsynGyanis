@@ -116,27 +116,56 @@ namespace AsynGyanis::Net
          */
         Base::ConfigValue histogramMetricObjectOf(const OtlpHistogramSample &sample, std::string_view timeUnixNano)
         {
-            Base::ConfigValue point = Base::ConfigValue::object();
-            point["count"]          = std::to_string(sample.count);
-            point["sum"]            = sample.sumSeconds;
-
-            Base::ConfigValue bucketCounts = Base::ConfigValue::array();
-            for (const std::uint64_t bucketCount: sample.bucketCounts)
+            const auto pointObjectOf = [&sample, &timeUnixNano](const std::vector<std::pair<std::string, std::string>> &pointAttributes,
+                                                                const std::vector<std::uint64_t> &pointBucketCounts, const std::uint64_t pointCount, const double pointSumSeconds)
             {
-                bucketCounts.push_back(std::to_string(bucketCount));
-            }
-            point["bucketCounts"] = std::move(bucketCounts);
+                Base::ConfigValue point = Base::ConfigValue::object();
+                point["count"]          = std::to_string(pointCount);
+                point["sum"]            = pointSumSeconds;
 
-            Base::ConfigValue explicitBounds = Base::ConfigValue::array();
-            for (const double upperBound: sample.explicitBoundsSeconds)
+                Base::ConfigValue bucketCounts = Base::ConfigValue::array();
+                for (const std::uint64_t bucketCount: pointBucketCounts)
+                {
+                    bucketCounts.push_back(std::to_string(bucketCount));
+                }
+                point["bucketCounts"] = std::move(bucketCounts);
+
+                Base::ConfigValue explicitBounds = Base::ConfigValue::array();
+                for (const double upperBound: sample.explicitBoundsSeconds)
+                {
+                    explicitBounds.push_back(upperBound);
+                }
+                point["explicitBounds"] = std::move(explicitBounds);
+                point["timeUnixNano"]   = timeUnixNano;
+
+                Base::ConfigValue attributes = Base::ConfigValue::array();
+                for (const auto &[key, value]: pointAttributes)
+                {
+                    attributes.push_back(keyValueOf(key, textValueOf(value)));
+                }
+                if (!pointAttributes.empty())
+                {
+                    point["attributes"] = std::move(attributes);
+                }
+                return point;
+            };
+
+            Base::ConfigValue dataPoints = Base::ConfigValue::array();
+            if (!sample.points.empty())
             {
-                explicitBounds.push_back(upperBound);
+                // 带维度的分布：一条 metric、多个数据点，每点自带 attributes（如 route）
+                for (const OtlpHistogramPoint &point: sample.points)
+                {
+                    dataPoints.push_back(pointObjectOf(point.attributes, point.bucketCounts, point.count, point.sumSeconds));
+                }
+            } else
+            {
+                // 单点模式：沿用无属性的那一份字段（旧调用方的兼容路径）
+                dataPoints.push_back(pointObjectOf({}, sample.bucketCounts, sample.count, sample.sumSeconds));
             }
-            point["explicitBounds"] = std::move(explicitBounds);
-            point["timeUnixNano"]   = timeUnixNano;
 
             Base::ConfigValue histogram         = Base::ConfigValue::object();
-            histogram["dataPoints"]             = Base::ConfigValue::array({std::move(point)});
+            histogram["dataPoints"]             = std::move(dataPoints);
             histogram["aggregationTemporality"] = 2; // 统计快照是自启动起的累计值，折成 CUMULATIVE
 
             Base::ConfigValue metric = Base::ConfigValue::object();

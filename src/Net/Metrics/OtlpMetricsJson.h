@@ -53,19 +53,35 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 一条分布读数里的一个带维度数据点
+     * @details 与标量读数那边的 `OtlpLabeledPoint` 同形，只是承载的是分桶、count 与 sum。同一条
+     *          histogram metric 下的多个点按属性区分（如 `route`），OTLP 侧的正统形状正是如此。
+     */
+    struct ASYN_NET_API OtlpHistogramPoint
+    {
+        std::vector<std::pair<std::string, std::string>> attributes{};    ///< 这一点的维度键值（如 route=/user/:id）
+        std::vector<std::uint64_t>                       bucketCounts{};  ///< 每格条数（非累计），末格为溢出
+        std::uint64_t                                    count{0};        ///< 样本总数
+        double                                           sumSeconds{0.0}; ///< 观测值之和，单位秒
+    };
+
+    /**
      * @brief 一条分布读数（OTLP histogram 数据点）
      * @details 桶语义与 Prometheus 版的区别要盯住：OTLP 的 `bucketCounts` 是**每格区间的条数**
      *          （不累计），末格固定是 +Inf 溢出档，因此长度恒为 `explicitBoundsSeconds` 长度加一；
      *          这与本框架 HttpServerStats 的延迟档位同形，换算只发生在单位（毫秒/微秒 → 秒）。
+     * @note 需要按维度分点时填 `points`（此时忽略下面四个单点字段）；只报一条无标签分布时沿用
+     *       单点字段即可。两条路都渲染成同一条 metric 的 dataPoints，不各起一个同名 metric。
      */
     struct ASYN_NET_API OtlpHistogramSample
     {
-        std::string                name{};                  ///< 指标名（完整）
-        std::string                help{};                  ///< 一句中文说明
-        std::vector<double>        explicitBoundsSeconds{}; ///< 各档上界（升序，单位秒）；长度 = bucketCounts - 1
-        std::vector<std::uint64_t> bucketCounts{};          ///< 每格条数（非累计），末格为溢出
-        std::uint64_t              count{0};                ///< 样本总数（与 bucketCounts 之和同解）
-        double                     sumSeconds{0.0};         ///< 观测值之和，单位秒
+        std::string                     name{};                  ///< 指标名（完整）
+        std::string                     help{};                  ///< 一句中文说明
+        std::vector<double>             explicitBoundsSeconds{}; ///< 各档上界（升序，单位秒）；长度 = bucketCounts - 1
+        std::vector<std::uint64_t>      bucketCounts{};          ///< 每格条数（非累计），末格为溢出（单点模式）
+        std::uint64_t                   count{0};                ///< 样本总数（与 bucketCounts 之和同解，单点模式）
+        double                          sumSeconds{0.0};         ///< 观测值之和，单位秒（单点模式）
+        std::vector<OtlpHistogramPoint> points{};                ///< 带维度的数据点；非空时优先于单点字段
     };
 
     /**

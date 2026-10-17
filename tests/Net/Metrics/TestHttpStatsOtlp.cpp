@@ -119,7 +119,8 @@ TEST(HttpStatsOtlp, MapsCountersAndGaugesUnderTheSameNamesAsPrometheus)
 }
 
 /**
- * @brief 状态码五类折成一条带 status_class 属性的读数（OTLP 侧的正统形状）
+ * @brief 状态码五类折成一条带 route + status_class 属性的读数（OTLP 侧的正统形状）
+ * @details 快照没有路由明细时出口按 unmatched 合成一条；只输出实际出现过的类，因此 1xx 为零时不出现
  */
 TEST(HttpStatsOtlp, FoldsTheStatusClassesIntoOneLabeledReading)
 {
@@ -130,20 +131,22 @@ TEST(HttpStatsOtlp, FoldsTheStatusClassesIntoOneLabeledReading)
     const auto &responses = batch.labeled.front();
     EXPECT_EQ(responses.name, "asyn_http_responses_total");
     EXPECT_EQ(responses.kind, ProcessMetricKind::Counter);
-    ASSERT_EQ(responses.points.size(), 5U) << "五类各一个数据点";
-    const std::vector<std::uint64_t> expectedValues{0U, 80U, 10U, 5U, 5U};
-    const std::vector<std::string>   expectedClasses{"1xx", "2xx", "3xx", "4xx", "5xx"};
+    ASSERT_EQ(responses.points.size(), 4U) << "1xx 为零不输出，其余四类各一个数据点";
+    const std::vector<std::uint64_t> expectedValues{80U, 10U, 5U, 5U};
+    const std::vector<std::string>   expectedClasses{"2xx", "3xx", "4xx", "5xx"};
     for (std::size_t index = 0; index < responses.points.size(); ++index)
     {
-        ASSERT_EQ(responses.points.at(index).attributes.size(), 1U);
-        EXPECT_EQ(responses.points.at(index).attributes.at(0).first, "status_class");
-        EXPECT_EQ(responses.points.at(index).attributes.at(0).second, expectedClasses.at(index));
+        ASSERT_EQ(responses.points.at(index).attributes.size(), 2U);
+        EXPECT_EQ(responses.points.at(index).attributes.at(0).first, "route");
+        EXPECT_EQ(responses.points.at(index).attributes.at(0).second, "unmatched");
+        EXPECT_EQ(responses.points.at(index).attributes.at(1).first, "status_class");
+        EXPECT_EQ(responses.points.at(index).attributes.at(1).second, expectedClasses.at(index));
         EXPECT_EQ(responses.points.at(index).value, expectedValues.at(index));
     }
 }
 
 /**
- * @brief 延迟直方图折成秒单位的分布读数：每格条数照搬、上界毫秒换算、sum 微秒换算
+ * @brief 延迟直方图折成秒单位的分布读数：每条路由一个点，每格条数照搬、上界毫秒换算、sum 微秒换算
  */
 TEST(HttpStatsOtlp, ConvertsTheLatencyHistogramToSecondUnits)
 {
@@ -156,11 +159,16 @@ TEST(HttpStatsOtlp, ConvertsTheLatencyHistogramToSecondUnits)
     ASSERT_EQ(histogram.explicitBoundsSeconds.size(), kHttpLatencyBucketCount - 1);
     EXPECT_DOUBLE_EQ(histogram.explicitBoundsSeconds.at(0), 0.001) << "1 毫秒换 0.001 秒";
     EXPECT_DOUBLE_EQ(histogram.explicitBoundsSeconds.at(3), 0.1);
-    ASSERT_EQ(histogram.bucketCounts.size(), kHttpLatencyBucketCount) << "末格是溢出档";
-    EXPECT_EQ(histogram.bucketCounts.at(0), 40U) << "每格条数照搬（不做前缀和）";
-    EXPECT_EQ(histogram.bucketCounts.at(4), 5U);
-    EXPECT_EQ(histogram.count, stats.latencySampleCount());
-    EXPECT_DOUBLE_EQ(histogram.sumSeconds, 2.5) << "2'500'000 微秒换秒";
+    ASSERT_EQ(histogram.points.size(), 1U) << "没有路由明细时按 unmatched 合成一个点";
+    const auto &point = histogram.points.front();
+    ASSERT_EQ(point.attributes.size(), 1U);
+    EXPECT_EQ(point.attributes.front().first, "route");
+    EXPECT_EQ(point.attributes.front().second, "unmatched");
+    ASSERT_EQ(point.bucketCounts.size(), kHttpLatencyBucketCount) << "末格是溢出档";
+    EXPECT_EQ(point.bucketCounts.at(0), 40U) << "每格条数照搬（不做前缀和）";
+    EXPECT_EQ(point.bucketCounts.at(4), 5U);
+    EXPECT_EQ(point.count, stats.latencySampleCount());
+    EXPECT_DOUBLE_EQ(point.sumSeconds, 2.5) << "2'500'000 微秒换秒";
 }
 
 /**

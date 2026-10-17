@@ -57,6 +57,51 @@ namespace AsynGyanis::Net
         }
         stats.statusCodeMergedCount = m_statusCodeMergedCount.load(std::memory_order_relaxed);
 
+        // 路由维度：只复制已占用的槽。模式原文与长度都在哈希发布之前写好，acquire 读到哈希即读到它们
+        stats.routeCounts.reserve(kHttpRouteSeriesLimit + 1U);
+        for (const AtomicRouteSlot &slot: m_routeSlots)
+        {
+            if (slot.patternHash.load(std::memory_order_acquire) == 0)
+            {
+                continue;
+            }
+            HttpRouteCount routeCount;
+            routeCount.route.assign(slot.pattern.data(), slot.patternLength.load(std::memory_order_acquire));
+            for (std::size_t classIndex = 0; classIndex < routeCount.statusClassCounts.size(); ++classIndex)
+            {
+                routeCount.statusClassCounts[classIndex] = slot.statusClassCounts[classIndex].load(std::memory_order_relaxed);
+            }
+            for (std::size_t bucketIndex = 0; bucketIndex < routeCount.latencyBucketCounts.size(); ++bucketIndex)
+            {
+                routeCount.latencyBucketCounts[bucketIndex] = slot.latencyBucketCounts[bucketIndex].load(std::memory_order_relaxed);
+            }
+            routeCount.totalLatencyMicroseconds = slot.totalLatencyMicroseconds.load(std::memory_order_relaxed);
+            if (routeCount.responseCount() == 0 && routeCount.latencySampleCount() == 0)
+            {
+                continue;
+            }
+            stats.routeCounts.push_back(std::move(routeCount));
+        }
+
+        const std::uint64_t mergedRouteResponses = m_routeSeriesMergedCount.load(std::memory_order_relaxed);
+        stats.routeSeriesMergedCount             = mergedRouteResponses;
+        if (mergedRouteResponses > 0)
+        {
+            HttpRouteCount mergedCount;
+            mergedCount.route = std::string(kHttpRouteMergedLabel);
+            for (std::size_t classIndex = 0; classIndex < mergedCount.statusClassCounts.size(); ++classIndex)
+            {
+                mergedCount.statusClassCounts[classIndex] = m_mergedRouteStatusClassCounts[classIndex].load(std::memory_order_relaxed);
+            }
+            for (std::size_t bucketIndex = 0; bucketIndex < mergedCount.latencyBucketCounts.size(); ++bucketIndex)
+            {
+                mergedCount.latencyBucketCounts[bucketIndex] = m_mergedRouteLatencyBucketCounts[bucketIndex].load(std::memory_order_relaxed);
+            }
+            mergedCount.totalLatencyMicroseconds = m_mergedRouteLatencyMicroseconds.load(std::memory_order_relaxed);
+            stats.routeCounts.push_back(std::move(mergedCount));
+        }
+        std::ranges::sort(stats.routeCounts, {}, &HttpRouteCount::route);
+
         stats.webSocketUpgradeCount            = m_webSocketUpgradeCount.load(std::memory_order_relaxed);
         stats.webSocketMessageCount            = m_webSocketMessageCount.load(std::memory_order_relaxed);
         stats.webSocketProtocolErrorCloseCount = m_webSocketProtocolErrorCloseCount.load(std::memory_order_relaxed);
@@ -73,6 +118,38 @@ namespace AsynGyanis::Net
 
         applyRuntimeBacklogStats(stats);
         return stats;
+    }
+
+    std::size_t HttpMetricsCollector::insertRouteSlot(const std::uint64_t hash, const std::string_view label) noexcept
+    {
+        // 只在首次出现某条路由时进这里：拿锁期间的模式只做写入，热路径的读不经过这把锁
+        while (m_routeInsertLock.test_and_set(std::memory_order_acquire))
+        {
+        }
+
+        std::size_t slotIndex = kHttpRouteSeriesLimit;
+        for (std::size_t index = 0; index < kHttpRouteSeriesLimit; ++index)
+        {
+            AtomicRouteSlot    &slot     = m_routeSlots[index];
+            const std::uint64_t slotHash = slot.patternHash.load(std::memory_order_acquire);
+            if (slotHash == hash && slot.patternLength.load(std::memory_order_acquire) == label.size() && std::memcmp(slot.pattern.data(), label.data(), label.size()) == 0)
+            {
+                slotIndex = index;
+                break;
+            }
+            if (slotHash == 0)
+            {
+                std::memcpy(slot.pattern.data(), label.data(), label.size());
+                slot.patternLength.store(static_cast<std::uint32_t>(label.size()), std::memory_order_release);
+                // 哈希是发布点：它用 release 写出，读取方的 acquire 因此能看见上面两笔写入
+                slot.patternHash.store(hash, std::memory_order_release);
+                slotIndex = index;
+                break;
+            }
+        }
+
+        m_routeInsertLock.clear(std::memory_order_release);
+        return slotIndex;
     }
 
     std::array<HttpStatusClassCount, 5> httpStatusClassCounts(const HttpServerStats &stats) noexcept
@@ -110,6 +187,37 @@ namespace AsynGyanis::Net
         sample.bucketCounts.assign(stats.latencyBucketCounts.begin(), stats.latencyBucketCounts.end());
         sample.count      = stats.latencySampleCount();
         sample.sumSeconds = static_cast<double>(stats.totalLatencyMicroseconds) / 1'000'000.0;
+        return sample;
+    }
+
+    std::vector<HttpRouteCount> httpRouteCounts(const HttpServerStats &stats)
+    {
+        if (!stats.routeCounts.empty())
+        {
+            return stats.routeCounts;
+        }
+
+        // 手工构造的快照（或只填了全局计数的旧路径）没有路由明细：给一条 unmatched 的合成条目，
+        // 让「所有直方图都带 route 标签」这条形状在空快照上也成立
+        HttpRouteCount fallback;
+        fallback.route                    = std::string(kHttpRouteUnmatchedLabel);
+        fallback.statusClassCounts        = {stats.status1xxCount, stats.status2xxCount, stats.status3xxCount, stats.status4xxCount, stats.status5xxCount};
+        fallback.latencyBucketCounts      = stats.latencyBucketCounts;
+        fallback.totalLatencyMicroseconds = stats.totalLatencyMicroseconds;
+        return {std::move(fallback)};
+    }
+
+    Core::MetricHistogramSample httpRouteLatencyHistogramSample(const HttpRouteCount &routeCount)
+    {
+        Core::MetricHistogramSample sample;
+        sample.upperBoundsSeconds.reserve(kHttpLatencyUpperBoundMilliseconds.size());
+        for (const std::int64_t upperBoundMilliseconds: kHttpLatencyUpperBoundMilliseconds)
+        {
+            sample.upperBoundsSeconds.push_back(static_cast<double>(upperBoundMilliseconds) / 1000.0);
+        }
+        sample.bucketCounts.assign(routeCount.latencyBucketCounts.begin(), routeCount.latencyBucketCounts.end());
+        sample.count      = routeCount.latencySampleCount();
+        sample.sumSeconds = static_cast<double>(routeCount.totalLatencyMicroseconds) / 1'000'000.0;
         return sample;
     }
 } // namespace AsynGyanis::Net

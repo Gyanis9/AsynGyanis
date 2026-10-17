@@ -760,7 +760,9 @@ namespace AsynGyanis::Net
                         // 拿它的时间当样本会把直方图写脏
                         if (metrics != nullptr)
                         {
-                            metrics->countResponseStatus(statusCode);
+                            // 中间响应拿不到「这条请求最终走了哪条路由」的可靠上下文：按哨兵记账，
+                            // 不在这里临时猜一条路由
+                            metrics->countResponseStatus(statusCode, kHttpRouteUnmatchedLabel);
                         }
                         co_return true;
                     });
@@ -1091,7 +1093,7 @@ namespace AsynGyanis::Net
                     const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
                     if (metrics != nullptr)
                     {
-                        metrics->recordResponse(response.status(), requestElapsed);
+                        metrics->recordResponse(response.status(), requestElapsed, request.matchedRoute());
                     }
 
                     // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的

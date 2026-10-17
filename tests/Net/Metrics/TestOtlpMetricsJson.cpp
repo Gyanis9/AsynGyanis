@@ -26,6 +26,7 @@ namespace
     using AsynGyanis::Core::ProcessMetricSample;
     using AsynGyanis::Net::formatOtlpMetricsJson;
     using AsynGyanis::Net::kOtlpMetricsScopeName;
+    using AsynGyanis::Net::OtlpHistogramPoint;
     using AsynGyanis::Net::OtlpHistogramSample;
     using AsynGyanis::Net::OtlpLabeledPoint;
     using AsynGyanis::Net::OtlpLabeledSample;
@@ -180,6 +181,45 @@ TEST(OtlpMetricsJson, RendersHistogramDataPointsWithSecondUnits)
     EXPECT_DOUBLE_EQ(bounds.at(0).get<double>(), 0.001);
     EXPECT_DOUBLE_EQ(bounds.at(3).get<double>(), 0.1);
     EXPECT_EQ(jsonTextOf(point.at("timeUnixNano")), kCollectionNanoText);
+}
+
+/**
+ * @brief 带维度的分布读数渲染成一条 metric 的多个 histogram 数据点，每点带 route 属性
+ * @details 这条形状是 P2-12 的交付面：同一条 `request_duration_seconds` 下按路由分点，
+ *          而不是为每条路由各起一个同名 metric（后者在采集端是重复名字）
+ */
+TEST(OtlpMetricsJson, RendersMultiPointHistogramsWithRouteAttributes)
+{
+    OtlpHistogramSample histogram;
+    histogram.name                  = "asyn_test_request_duration_seconds";
+    histogram.help                  = "已应答请求的耗时分布，按路由模式（route）分组";
+    histogram.explicitBoundsSeconds = {0.001, 0.005};
+    histogram.points.push_back(OtlpHistogramPoint{.attributes = {{"route", "/user/:id"}}, .bucketCounts = {1U, 0U, 1U}, .count = 2U, .sumSeconds = 0.003});
+    histogram.points.push_back(OtlpHistogramPoint{.attributes = {{"route", "unmatched"}}, .bucketCounts = {0U, 1U, 0U}, .count = 1U, .sumSeconds = 0.004});
+
+    const OtlpMetricsBatch batch{.histograms = {histogram}};
+
+    const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), batch, fixedCollectionMoment()));
+    ASSERT_TRUE(parsed.has_value());
+    const ConfigValue &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
+    ASSERT_EQ(metrics.size(), 1U) << "两条路由应当共用一条 metric，而不是各起一个同名 metric";
+    const ConfigValue &dataPoints = metrics.at(0).at("histogram").at("dataPoints");
+    ASSERT_EQ(dataPoints.size(), 2U);
+
+    const ConfigValue &firstPoint = dataPoints.at(0);
+    ASSERT_EQ(firstPoint.at("attributes").size(), 1U);
+    EXPECT_EQ(jsonTextOf(firstPoint.at("attributes").at(0).at("key")), "route");
+    EXPECT_EQ(jsonTextOf(firstPoint.at("attributes").at(0).at("value").at("stringValue")), "/user/:id");
+    EXPECT_EQ(jsonTextOf(firstPoint.at("count")), "2");
+    EXPECT_EQ(firstPoint.at("sum").get<double>(), 0.003);
+    ASSERT_EQ(firstPoint.at("bucketCounts").size(), 3U);
+    EXPECT_EQ(jsonTextOf(firstPoint.at("bucketCounts").at(2)), "1");
+
+    const ConfigValue &secondPoint = dataPoints.at(1);
+    ASSERT_EQ(secondPoint.at("attributes").size(), 1U);
+    EXPECT_EQ(jsonTextOf(secondPoint.at("attributes").at(0).at("value").at("stringValue")), "unmatched");
+    EXPECT_EQ(jsonTextOf(secondPoint.at("count")), "1");
+    EXPECT_EQ(secondPoint.at("sum").get<double>(), 0.004);
 }
 
 /**

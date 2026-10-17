@@ -107,6 +107,71 @@ namespace AsynGyanis::Net
             return escaped;
         }
 
+        /// @brief 把标签值转义成 Prometheus 展示格式允许的形态（反斜杠、引号与换行三种）
+        [[nodiscard]] std::string escapedPrometheusLabelValue(const std::string_view value)
+        {
+            std::string escaped;
+            escaped.reserve(value.size());
+            for (const char character: value)
+            {
+                if (character == '\\' || character == '"')
+                {
+                    escaped.push_back('\\');
+                    escaped.push_back(character);
+                } else if (character == '\n')
+                {
+                    escaped += "\\n";
+                } else
+                {
+                    escaped.push_back(character);
+                }
+            }
+            return escaped;
+        }
+
+        /// @brief 追加按路由分组的响应计数（route × status_class）
+        void appendRouteResponseCounters(std::string &out, const std::string &responsesName, const HttpServerStats &stats)
+        {
+            constexpr std::array<std::string_view, 5> kStatusClassNames{"1xx", "2xx", "3xx", "4xx", "5xx"};
+            for (const HttpRouteCount &routeCount: httpRouteCounts(stats))
+            {
+                const std::string escapedRoute = escapedPrometheusLabelValue(routeCount.route);
+                for (std::size_t classIndex = 0; classIndex < kStatusClassNames.size(); ++classIndex)
+                {
+                    // 只输出实际出现过的类：一个只回过 200 的路由因此只有一条序列，基数用例才数得清
+                    if (routeCount.statusClassCounts[classIndex] == 0)
+                    {
+                        continue;
+                    }
+                    out += std::format("{}{{route=\"{}\",{}=\"{}\"}} {}\n", responsesName, escapedRoute, kHttpStatusClassLabelKey, kStatusClassNames[classIndex],
+                                       routeCount.statusClassCounts[classIndex]);
+                }
+            }
+        }
+
+        /// @brief 追加按路由分组的耗时直方图（route 标签 + 累计桶 + _sum/_count）
+        void appendRouteLatencyHistograms(std::string &out, const std::string &durationName, const HttpServerStats &stats)
+        {
+            for (const HttpRouteCount &routeCount: httpRouteCounts(stats))
+            {
+                const Core::MetricHistogramSample routeHistogram   = httpRouteLatencyHistogramSample(routeCount);
+                const std::vector<std::uint64_t>  cumulativeCounts = Core::cumulativeBucketCounts(routeHistogram);
+                const std::string                 escapedRoute     = escapedPrometheusLabelValue(routeCount.route);
+                for (std::size_t index = 0; index < cumulativeCounts.size(); ++index)
+                {
+                    // 末档没有上界，按约定记作 +Inf；其余档是模型里的秒上界
+                    const bool        isOverflowBucket = index + 1 == cumulativeCounts.size();
+                    const std::string upperBound       = isOverflowBucket ? std::string("+Inf") : std::format("{}", routeHistogram.upperBoundsSeconds[index]);
+                    out += std::format("{}_bucket{{route=\"{}\",le=\"{}\"}} {}\n", durationName, escapedRoute, upperBound, cumulativeCounts[index]);
+                }
+                // _sum 由模型给出（单位秒）。定点六位小数而不是默认的 {}：默认格式对小于 1e-3 的值会切到
+                // 科学计数（0.0005 会写成 5e-04），虽然 Prometheus 认这种写法，但固定小数位既更可读，
+                // 也正好对上累加器的微秒精度，还免了「同一个值在不同时刻长相不同」的比对麻烦
+                out += std::format("{}_sum{{route=\"{}\"}} {:.6f}\n", durationName, escapedRoute, routeHistogram.sumSeconds);
+                out += std::format("{}_count{{route=\"{}\"}} {}\n", durationName, escapedRoute, routeHistogram.count);
+            }
+        }
+
         /// 相位名：与 Core::LoopPhase 一一对应，写成 JSON 里可直接比对的常量文本
         [[nodiscard]] std::string_view phaseName(const Core::LoopPhase phase) noexcept
         {
@@ -163,41 +228,29 @@ namespace AsynGyanis::Net
                     "单个来源 IP 的并发上限（按 IP 的那道准入闸门按什么挡；0 = 这道闸门没装）。限额器可以被多条通道共用一份，因此抓哪台都是同一个值",
                     stats.maximumConnectionsPerIp);
 
-        // 状态码分类：一族带 status_class 标签的计数器，采集侧可直接按类聚合。
-        // 取值表由 httpStatusClassCounts() 给出（与 OTLP 出口共用同一份），这里只负责编码
+        // 状态码分类：一族带 route 与 status_class 标签的计数器，采集侧可按路由聚合。
+        // route 取路由模式原文（绝不取实际 URI）；未匹配、静态文件与超限归并各有固定哨兵。
+        // 具体状态码明细仍按全局一维报：route × status 的笛卡尔积不在基数预算里（见 HttpRouteCount）
         const std::string responsesName = makeMetricName(metricNamePrefix, "responses_total");
-        out += std::format("# HELP {} 已发出的响应条数，按状态码类（status_class）与具体状态码（status）聚合\n# TYPE {} counter\n", responsesName, responsesName);
-        for (const HttpStatusClassCount &statusClassCount: httpStatusClassCounts(stats))
-        {
-            out += std::format("{}{{{}=\"{}\"}} {}\n", responsesName, kHttpStatusClassLabelKey, statusClassCount.className, statusClassCount.count);
-        }
-        // 具体状态码：只输出实际出现过的码（不预置 100..599 的空序列）。两个维度同名同标签键，
-        // 与 OTLP 出口逐点同解；明细表满后被归并的条数另有一条计数器
+        out += std::format("# HELP {} 已发出的响应条数，按路由模式（route）与状态码类（status_class）聚合；具体状态码（status）另按全局一维报\n# TYPE {} counter\n", responsesName,
+                           responsesName);
+        appendRouteResponseCounters(out, responsesName, stats);
+        // 具体状态码：只输出实际出现过的码（不预置 100..599 的空序列）。与 OTLP 出口逐点同解；
+        // 明细表满后被归并的条数另有一条计数器
         for (const HttpStatusCodeCount &statusCodeCount: httpStatusCodeCounts(stats))
         {
             out += std::format("{}{{{}=\"{}\"}} {}\n", responsesName, kHttpStatusCodeLabelKey, statusCodeCount.statusCode, statusCodeCount.count);
         }
         appendCounter(out, makeMetricName(metricNamePrefix, "responses_status_merged_total"),
                       "具体状态码明细表已满后被归并进状态码类那一族的响应条数（这些响应仍计入 status_class）", stats.statusCodeMergedCount);
+        appendCounter(out, makeMetricName(metricNamePrefix, "route_series_merged_total"),
+                      "路由明细表已满或路由模式过长后被归并到 merged 哨兵的响应条数（仍计入全局状态码类与直方图）", stats.routeSeriesMergedCount);
 
-        // 耗时直方图：单位换算与分格语义由公共模型一次做对（Core::MetricHistogramSample），
-        // 本出口只把「每格条数」折成展示格式要的累计数（那一步的说明见 cumulativeBucketCounts）
-        const std::string                 durationName     = makeMetricName(metricNamePrefix, "request_duration_seconds");
-        const Core::MetricHistogramSample histogram        = httpLatencyHistogramSample(stats);
-        const std::vector<std::uint64_t>  cumulativeCounts = Core::cumulativeBucketCounts(histogram);
-        out += std::format("# HELP {} 已应答请求的耗时分布\n# TYPE {} histogram\n", durationName, durationName);
-        for (std::size_t index = 0; index < cumulativeCounts.size(); ++index)
-        {
-            // 末档没有上界，按约定记作 +Inf；其余档是模型里的秒上界
-            const bool        isOverflowBucket = index + 1 == cumulativeCounts.size();
-            const std::string upperBound       = isOverflowBucket ? std::string("+Inf") : std::format("{}", histogram.upperBoundsSeconds[index]);
-            out += std::format("{}_bucket{{le=\"{}\"}} {}\n", durationName, upperBound, cumulativeCounts[index]);
-        }
-        // _sum 由模型给出（单位秒）。定点六位小数而不是默认的 {}：默认格式对小于 1e-3 的值会切到
-        // 科学计数（0.0005 会写成 5e-04），虽然 Prometheus 认这种写法，但固定小数位既更可读，
-        // 也正好对上累加器的微秒精度，还免了「同一个值在不同时刻长相不同」的比对麻烦
-        out += std::format("{}_sum {:.6f}\n", durationName, histogram.sumSeconds);
-        out += std::format("{}_count {}\n", durationName, histogram.count);
+        // 耗时直方图：每条路由一族，带 route 标签；单位换算与分格语义由公共模型一次做对
+        // （Core::MetricHistogramSample），本出口只把「每格条数」折成展示格式要的累计数
+        const std::string durationName = makeMetricName(metricNamePrefix, "request_duration_seconds");
+        out += std::format("# HELP {} 已应答请求的耗时分布，按路由模式（route）分组\n# TYPE {} histogram\n", durationName, durationName);
+        appendRouteLatencyHistograms(out, durationName, stats);
 
         // WebSocket 与 HTTP/2 各一族：名字里带协议前缀，避免与 HTTP 侧的计数混在一张图里
         appendCounter(out, makeMetricName(metricNamePrefix, "websocket_upgrades_total"), "升级成功的 WebSocket 连接数", stats.webSocketUpgradeCount);

@@ -18,6 +18,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -34,6 +37,29 @@ namespace AsynGyanis::Net
 
     /// 具体状态码明细序列的上限：状态码天然只有 500 个取值，但仍给固定上限，防止有人把非规范码灌进来
     inline constexpr std::size_t kHttpStatusCodeSeriesLimit = 64;
+
+    /// 路由标签的键名：与状态码那两维并列，两条导出出口共用
+    inline constexpr std::string_view kHttpRouteLabelKey = "route";
+
+    /**
+     * @brief 路由明细序列的上限
+     * @details 路由模式由业务代码注册，数量没有天然上界；不设限时「几千条路由 × 5 个状态码类」会把
+     *          Prometheus 的序列数撑爆。与具体状态码表同一条有界策略：占满之后新出现的模式归并进
+     *          `merged` 哨兵，序列数不再增长，被归并的条数记在 `routeSeriesMergedCount`。
+     */
+    inline constexpr std::size_t kHttpRouteSeriesLimit = 64;
+
+    /// 路由模式原文的存放上限：超过它的模式不单独成序列，直接归并（标签里不截断，截断会造出假模式）
+    inline constexpr std::size_t kHttpRoutePatternCapacity = 160;
+
+    /// 未匹配到任何路由时的固定标签值（需要区分「路径没进标签」与「真的没路由」）
+    inline constexpr std::string_view kHttpRouteUnmatchedLabel = "unmatched";
+
+    /// 静态文件那一路的固定标签值：它注册的是通配路由 `"*"`，真正的路径同样不进标签
+    inline constexpr std::string_view kHttpRouteStaticLabel = "static";
+
+    /// 路由明细表占满之后，新模式的响应归并到这个固定标签
+    inline constexpr std::string_view kHttpRouteMergedLabel = "merged";
 
     /**
      * @brief 状态码分类的一档：类名（1xx…5xx）与该类已发出的响应条数
@@ -58,6 +84,44 @@ namespace AsynGyanis::Net
     {
         int           statusCode{0}; ///< 具体状态码（100..599）
         std::uint64_t count{0};      ///< 该状态码已发出的响应条数
+    };
+
+    /**
+     * @brief 一条路由模式下的响应与耗时统计
+     * @details 路由标签取值是**路由模式原文**（`/user/:id`），绝不取请求的实际 URI：后者每条请求都会
+     *          长出新的序列，正是本轮要消灭的基数爆炸。未匹配、静态文件与超限归并各有一个固定哨兵
+     *          （见 kHttpRouteUnmatchedLabel / kHttpRouteStaticLabel / kHttpRouteMergedLabel）。
+     * @note 状态码只细到**类**（1xx…5xx）：route × status 的笛卡尔积不在本轮的基数预算里，具体状态码
+     *       明细仍按全局一维报（见 HttpServerStats::statusCodeCounts）。按路由要看的是类级计数。
+     */
+    struct ASYN_NET_API HttpRouteCount
+    {
+        std::string                                        route;                       ///< 路由模式原文或固定哨兵
+        std::array<std::uint64_t, 5>                       statusClassCounts{};         ///< 1xx…5xx 五类的响应条数
+        std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};       ///< 延迟直方图各档条数
+        std::uint64_t                                      totalLatencyMicroseconds{0}; ///< 该路由的耗时之和（微秒）
+
+        /// @brief 该路由的响应总条数（五类之和）
+        [[nodiscard]] std::uint64_t responseCount() const noexcept
+        {
+            std::uint64_t count = 0;
+            for (const std::uint64_t classCount: statusClassCounts)
+            {
+                count += classCount;
+            }
+            return count;
+        }
+
+        /// @brief 该路由的延迟样本数（各档之和）
+        [[nodiscard]] std::uint64_t latencySampleCount() const noexcept
+        {
+            std::uint64_t count = 0;
+            for (const std::uint64_t bucketCount: latencyBucketCounts)
+            {
+                count += bucketCount;
+            }
+            return count;
+        }
     };
 
     /// 缓存行字节数：把不同写者热度的原子计数按行边界分开，避免伪共享。取 64（x86-64 通用行宽）；
@@ -86,6 +150,10 @@ namespace AsynGyanis::Net
      *       （三条通道共用同一份预算账，被拒次数一律记在那里）。
      *       状态码类计数同样只对应已发出的响应，故 status1xxCount 至
      *       status5xxCount 之和在稳态下等于 totalRequestCount（发送失败的应答不计入）。
+     *       这两个全局量与 routeCounts 里的同名分项同源同一次计入；按路由导出时用后者，
+     *       保留前者是为了「整台服务器」这一维仍有一个现成读数。
+     * @note 路由维度只细到状态码**类**：route × status 的笛卡尔积会突破序列预算，具体状态码明细
+     *       仍按全局一维报（statusCodeCounts）。route 的取值是路由模式原文或固定哨兵，绝不取实际 URI。
      * @note 升级到 WebSocket 的连接是上述口径的例外：升级请求计入 totalRequestCount 与
      *       webSocketUpgradeCount，但 101 由握手模块逐字节生成、不走 HttpResponse 序列化，
      *       故不进状态码类计数；101 之后的帧错误另进 webSocketProtocolErrorCloseCount，
@@ -118,6 +186,11 @@ namespace AsynGyanis::Net
         std::array<HttpStatusCodeCount, kHttpStatusCodeSeriesLimit> statusCodeCounts{};
         /// 因明细表已满而被归并进状态码类那一族的响应条数（这些响应仍计入 status4xxCount 等）
         std::uint64_t statusCodeMergedCount{0};
+
+        /// 按路由模式聚合的响应与耗时（只含实际出现过的路由；按 route 升序，至少含一条 unmatched）
+        std::vector<HttpRouteCount> routeCounts;
+        /// 因路由明细表已满（或模式长于 kHttpRoutePatternCapacity）而被归并进 merged 哨兵的响应条数
+        std::uint64_t routeSeriesMergedCount{0};
 
         /// 延迟直方图的累计条数，下标与 kHttpLatencyUpperBoundMilliseconds 对应；末档为溢出档
         std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};
@@ -221,9 +294,10 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 取五档状态码分类（顺序固定 1xx→5xx），供两条导出出口共用
-     * @details 键名见 kHttpStatusClassLabelKey；取值表只有这一处，Prometheus 与 OTLP 两侧都不再各自
-     *          拼一遍（拼法分岔会让采集侧在两种编码之间看到不同的标签值）
+     * @brief 取五档状态码分类（顺序固定 1xx→5xx）的**全局**合计
+     * @details 两条导出出口现在按路由分组输出状态码类（见 HttpRouteCount），本函数保留为「整台服务器
+     *          的五类合计」这一维的唯一取值表：需要全局视图的调用方与用例仍从它取，避免各自拼一遍
+     *          类名；分路由的导出不再用它，否则同名序列会与按路由的序列重复计数。
      * @param stats 统计快照
      * @return std::array<HttpStatusClassCount, 5> 五档类名与该类条数
      */
@@ -237,6 +311,23 @@ namespace AsynGyanis::Net
      * @return std::vector<HttpStatusCodeCount> 明细；一个码都没出现过时为空
      */
     [[nodiscard]] ASYN_NET_API std::vector<HttpStatusCodeCount> httpStatusCodeCounts(const HttpServerStats &stats);
+
+    /**
+     * @brief 取按路由聚合的统计（两条导出出口共用同一份过滤与排序）
+     * @details 快照里没有路由明细时（手工构造的统计、或只填了全局计数的旧路径），交回一条
+     *          `unmatched` 的合成条目，分档与全局直方图同值——渲染端因此永远有 `route` 标签可写，
+     *          不会出现「有的直方图带标签、有的不带」这种两套形状。
+     * @param stats 统计快照
+     * @return std::vector<HttpRouteCount> 按 route 升序；至少一条
+     */
+    [[nodiscard]] ASYN_NET_API std::vector<HttpRouteCount> httpRouteCounts(const HttpServerStats &stats);
+
+    /**
+     * @brief 把一条路由的延迟分档折成公共数据模型（单位秒，与全局直方图同一套档位）
+     * @param routeCount 单条路由的统计
+     * @return Core::MetricHistogramSample 上界（秒）+ 每格条数 + count + sum（秒）
+     */
+    [[nodiscard]] ASYN_NET_API Core::MetricHistogramSample httpRouteLatencyHistogramSample(const HttpRouteCount &routeCount);
 
     /**
      * @brief 把延迟直方图折成公共数据模型（`Core::MetricHistogramSample`，单位统一到秒）
@@ -305,33 +396,37 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 记一条已发出的响应：状态码类计数 + 本次耗时落进直方图
+         * @brief 记一条已发出的响应：状态码类计数 + 本次耗时落进直方图（全局与按路由各一份）
          * @param statusCode 响应状态码；1xx~5xx 之外的取值不计入任何一类（本框架不会发出这种状态码）
          * @param elapsed 从「收到完整请求」到「响应发完」的耗时
+         * @param matchedRoute 本次派发命中的路由模式（`HttpRequest::matchedRoute()`）；空表示没有匹配到
+         *        路由，落进 `unmatched` 哨兵。**不要传请求的实际 URI**——那会让序列数随请求数增长
          */
-        void recordResponse(const int statusCode, const std::chrono::steady_clock::duration elapsed) noexcept
+        void recordResponse(const int statusCode, const std::chrono::steady_clock::duration elapsed, const std::string_view matchedRoute) noexcept
         {
-            countResponseStatus(statusCode);
+            countGlobalResponseStatus(statusCode);
 
             // 延迟照记：即便状态码不在 1xx~5xx 内，这次请求的耗时也是真实发生过的
-            m_latencyBucketCounts[latencyBucketIndex(elapsed)].fetch_add(1, std::memory_order_relaxed);
-            m_totalLatencyMicroseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count()), std::memory_order_relaxed);
+            const std::size_t   bucketIndex   = latencyBucketIndex(elapsed);
+            const std::uint64_t elapsedMicros = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
+            m_latencyBucketCounts[bucketIndex].fetch_add(1, std::memory_order_relaxed);
+            m_totalLatencyMicroseconds.fetch_add(elapsedMicros, std::memory_order_relaxed);
+
+            recordRouteSample(matchedRoute, statusCode, bucketIndex, elapsedMicros);
         }
 
         /**
-         * @brief 只记一条已发出的响应的状态码类，不落延迟样本
+         * @brief 只记一条已发出的响应的状态码类，不落延迟样本（全局与按路由各一份）
          * @details 给拿不到可信请求耗时的会话用（HTTP/3 各流由传输层驱动，会话没有「收到完整请求」
          *          那一刻的戳），让它们的流量至少出现在请求数与状态码类里。**不要用 0 秒糊弄**：
          *          那会把延迟直方图与 _sum 写脏，让两个协议的耗时混在一张图里失去意义
          * @param statusCode 响应状态码；1xx~5xx 之外的取值不计入任何一类（本框架不会发出这种状态码）
+         * @param matchedRoute 路由模式；拿不到就传 `kHttpRouteUnmatchedLabel`，不要在这里改成从别处取
          */
-        void countResponseStatus(const int statusCode) noexcept
+        void countResponseStatus(const int statusCode, const std::string_view matchedRoute) noexcept
         {
-            if (std::atomic<std::uint64_t> *classCounter = statusClassCounter(statusCode); classCounter != nullptr)
-            {
-                classCounter->fetch_add(1, std::memory_order_relaxed);
-            }
-            countStatusCodeSeries(statusCode);
+            countGlobalResponseStatus(statusCode);
+            countRouteResponseStatus(matchedRoute, statusCode);
         }
 
         /// WebSocket 各项计数与上面几组同档：都用放宽内存序，只做累加，读侧不依赖字段间的先后次序
@@ -498,6 +593,161 @@ namespace AsynGyanis::Net
             }
         }
 
+        /// @brief 全局那一维的状态码类与具体状态码明细（既有口径，不经路由表）
+        void countGlobalResponseStatus(const int statusCode) noexcept
+        {
+            if (std::atomic<std::uint64_t> *classCounter = statusClassCounter(statusCode); classCounter != nullptr)
+            {
+                classCounter->fetch_add(1, std::memory_order_relaxed);
+            }
+            countStatusCodeSeries(statusCode);
+        }
+
+        /// @brief 状态码所属的类下标（0..4）；不在 100~599 内时为空
+        [[nodiscard]] static std::optional<std::size_t> statusClassIndex(const int statusCode) noexcept
+        {
+            if (statusCode < 100 || statusCode > 599)
+            {
+                return std::nullopt;
+            }
+            return static_cast<std::size_t>(statusCode / 100 - 1);
+        }
+
+        /// @brief 路由模式归一成标签：未匹配与静态文件各有固定哨兵，其余原样
+        [[nodiscard]] static std::string_view routeLabelOf(const std::string_view matchedRoute) noexcept
+        {
+            if (matchedRoute.empty())
+            {
+                return kHttpRouteUnmatchedLabel;
+            }
+            if (matchedRoute == "*")
+            {
+                return kHttpRouteStaticLabel;
+            }
+            return matchedRoute;
+        }
+
+        /// @brief FNV-1a 哈希：0 留给「空槽」，故结果为零时抬成 1
+        [[nodiscard]] static std::uint64_t routeLabelHash(const std::string_view label) noexcept
+        {
+            std::uint64_t hash = 14695981039346656037ULL;
+            for (const char character: label)
+            {
+                hash ^= static_cast<unsigned char>(character);
+                hash *= 1099511628211ULL;
+            }
+            return hash == 0 ? 1 : hash;
+        }
+
+        /**
+         * @brief 一个路由槽位：模式原文 + 五类状态码 + 延迟分档
+         * @details 模式原文写在定长缓冲里、长度先于哈希发布（release/acquire 一对），读取方因此不必
+         *          持锁，也不会看到半截模式。写缓冲只在插入（表未满且该模式首次出现）时发生。
+         */
+        struct AtomicRouteSlot
+        {
+            std::atomic<std::uint64_t>                                      patternHash{0};              ///< 0 = 空槽
+            std::atomic<std::uint32_t>                                      patternLength{0};            ///< 模式字节数
+            std::array<char, kHttpRoutePatternCapacity>                     pattern{};                   ///< 模式原文（无结尾 NUL）
+            std::array<std::atomic<std::uint64_t>, 5>                       statusClassCounts{};         ///< 1xx…5xx
+            std::array<std::atomic<std::uint64_t>, kHttpLatencyBucketCount> latencyBucketCounts{};       ///< 各档条数
+            std::atomic<std::uint64_t>                                      totalLatencyMicroseconds{0}; ///< 耗时之和
+        };
+
+        /**
+         * @brief 找到（或插入）一条路由的槽位
+         * @return 槽位下标；表满或模式过长时返回 kHttpRouteSeriesLimit
+         * @note 常见路径只做原子读 + 一次定长比较；只有首次出现的模式才去拿插入锁
+         */
+        [[nodiscard]] std::size_t findRouteSlot(const std::uint64_t hash, const std::string_view label) noexcept
+        {
+            for (std::size_t index = 0; index < kHttpRouteSeriesLimit; ++index)
+            {
+                AtomicRouteSlot    &slot     = m_routeSlots[index];
+                const std::uint64_t slotHash = slot.patternHash.load(std::memory_order_acquire);
+                if (slotHash == hash && slot.patternLength.load(std::memory_order_acquire) == label.size() && std::memcmp(slot.pattern.data(), label.data(), label.size()) == 0)
+                {
+                    return index;
+                }
+                if (slotHash == 0)
+                {
+                    return insertRouteSlot(hash, label);
+                }
+            }
+            return kHttpRouteSeriesLimit;
+        }
+
+        /// @brief 在插入锁内复探并写入新槽位；返回下标或 kHttpRouteSeriesLimit（表满）
+        [[nodiscard]] std::size_t insertRouteSlot(std::uint64_t hash, std::string_view label) noexcept;
+
+        /// @brief 把一条响应记进路由维度（状态码类 + 延迟分档）；表满或模式过长时归并
+        void recordRouteSample(const std::string_view matchedRoute, const int statusCode, const std::size_t bucketIndex, const std::uint64_t elapsedMicros) noexcept
+        {
+            const std::string_view label = routeLabelOf(matchedRoute);
+            if (label.size() > kHttpRoutePatternCapacity)
+            {
+                recordMergedRouteSample(statusCode, bucketIndex, elapsedMicros);
+                return;
+            }
+            const std::size_t slotIndex = findRouteSlot(routeLabelHash(label), label);
+            if (slotIndex == kHttpRouteSeriesLimit)
+            {
+                recordMergedRouteSample(statusCode, bucketIndex, elapsedMicros);
+                return;
+            }
+
+            AtomicRouteSlot &slot = m_routeSlots[slotIndex];
+            if (const std::optional<std::size_t> classIndex = statusClassIndex(statusCode); classIndex.has_value())
+            {
+                slot.statusClassCounts[*classIndex].fetch_add(1, std::memory_order_relaxed);
+            }
+            slot.latencyBucketCounts[bucketIndex].fetch_add(1, std::memory_order_relaxed);
+            slot.totalLatencyMicroseconds.fetch_add(elapsedMicros, std::memory_order_relaxed);
+        }
+
+        /// @brief 只把状态码类记进路由维度（中间响应没有可信耗时）
+        void countRouteResponseStatus(const std::string_view matchedRoute, const int statusCode) noexcept
+        {
+            const std::string_view label = routeLabelOf(matchedRoute);
+            if (label.size() > kHttpRoutePatternCapacity)
+            {
+                countMergedRouteResponse(statusCode);
+                return;
+            }
+            const std::size_t slotIndex = findRouteSlot(routeLabelHash(label), label);
+            if (slotIndex == kHttpRouteSeriesLimit)
+            {
+                countMergedRouteResponse(statusCode);
+                return;
+            }
+            if (const std::optional<std::size_t> classIndex = statusClassIndex(statusCode); classIndex.has_value())
+            {
+                m_routeSlots[slotIndex].statusClassCounts[*classIndex].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        /// @brief 归并一条带耗时的响应：计数只落在 merged 哨兵的账上
+        void recordMergedRouteSample(const int statusCode, const std::size_t bucketIndex, const std::uint64_t elapsedMicros) noexcept
+        {
+            m_routeSeriesMergedCount.fetch_add(1, std::memory_order_relaxed);
+            if (const std::optional<std::size_t> classIndex = statusClassIndex(statusCode); classIndex.has_value())
+            {
+                m_mergedRouteStatusClassCounts[*classIndex].fetch_add(1, std::memory_order_relaxed);
+            }
+            m_mergedRouteLatencyBucketCounts[bucketIndex].fetch_add(1, std::memory_order_relaxed);
+            m_mergedRouteLatencyMicroseconds.fetch_add(elapsedMicros, std::memory_order_relaxed);
+        }
+
+        /// @brief 归并一条不带耗时的响应
+        void countMergedRouteResponse(const int statusCode) noexcept
+        {
+            m_routeSeriesMergedCount.fetch_add(1, std::memory_order_relaxed);
+            if (const std::optional<std::size_t> classIndex = statusClassIndex(statusCode); classIndex.has_value())
+            {
+                m_mergedRouteStatusClassCounts[*classIndex].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         /**
          * @brief 把一次耗时折算成直方图下标
          * @param elapsed 本次请求耗时
@@ -556,6 +806,16 @@ namespace AsynGyanis::Net
         // 活跃连接数按「每条连接一次加、一次减」被写，与上面「每请求都写」的那几组不同热度：
         // 同处一行会让长连接的建连/断连把请求计数所在的行反复踢出缓存
         alignas(kCacheLineBytes) std::atomic<std::uint64_t> m_activeConnectionCount{0}; ///< 共用本采集端的连接管理器在册连接数
+
+        // 路由维度：表本身有界（kHttpRouteSeriesLimit），模式原文写进槽位后只读；插入只在首次出现时发生
+        alignas(kCacheLineBytes) std::array<AtomicRouteSlot, kHttpRouteSeriesLimit> m_routeSlots{};
+        std::atomic_flag m_routeInsertLock = ATOMIC_FLAG_INIT; ///< 只保护「写入新槽位」，热路径不碰它
+
+        /// 归并哨兵的账：表满/模式过长之后，新模式的响应落在这里（仍计入全局状态码类与全局直方图）
+        std::array<std::atomic<std::uint64_t>, 5>                       m_mergedRouteStatusClassCounts{};
+        std::array<std::atomic<std::uint64_t>, kHttpLatencyBucketCount> m_mergedRouteLatencyBucketCounts{};
+        std::atomic<std::uint64_t>                                      m_mergedRouteLatencyMicroseconds{0};
+        std::atomic<std::uint64_t>                                      m_routeSeriesMergedCount{0};
     };
 #if defined(_MSC_VER)
 #pragma warning(pop)

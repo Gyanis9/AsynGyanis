@@ -17,12 +17,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -197,11 +199,12 @@ namespace AsynGyanis::Net
         // 活跃连接数是瞬时量，必须是 gauge——报成 counter 采集侧会去算增长率
         EXPECT_NE(text.find("# TYPE asyn_http_active_connections gauge\nasyn_http_active_connections 2\n"), std::string::npos);
 
-        // 状态码分类：一族带标签的计数器，五类都在
-        EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"1xx\"} 1\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"2xx\"} 5\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"4xx\"} 2\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"5xx\"} 1\n"), std::string::npos);
+        // 状态码分类：一族带 route 与 status_class 标签的计数器。快照没有路由明细时，出口按
+        // unmatched 合成一条（见 httpRouteCounts），因此这里钉的是那个哨兵
+        EXPECT_NE(text.find("asyn_http_responses_total{route=\"unmatched\",status_class=\"1xx\"} 1\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_total{route=\"unmatched\",status_class=\"2xx\"} 5\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_total{route=\"unmatched\",status_class=\"4xx\"} 2\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_total{route=\"unmatched\",status_class=\"5xx\"} 1\n"), std::string::npos);
         // 具体状态码：429/404/500 各自一条，按码升序；旧的口径（status_class）一条不少
         EXPECT_NE(text.find("asyn_http_responses_total{status=\"404\"} 2\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_responses_total{status=\"429\"} 3\n"), std::string::npos);
@@ -215,9 +218,9 @@ namespace AsynGyanis::Net
     TEST(HttpMetricsEndpoint, CollectorTracksStatusCodeSeriesAndMergesWhenFull)
     {
         HttpMetricsCollector collector;
-        collector.recordResponse(429, std::chrono::milliseconds{1});
-        collector.recordResponse(429, std::chrono::milliseconds{1});
-        collector.recordResponse(404, std::chrono::milliseconds{1});
+        collector.recordResponse(429, std::chrono::milliseconds{1}, "/orders/:id");
+        collector.recordResponse(429, std::chrono::milliseconds{1}, "/orders/:id");
+        collector.recordResponse(404, std::chrono::milliseconds{1}, "/orders/:id");
 
         HttpServerStats stats = collector.snapshot();
         EXPECT_EQ(stats.status4xxCount, 3U) << "状态码类那一族没有照旧累计";
@@ -232,12 +235,131 @@ namespace AsynGyanis::Net
         // 灌 100 个不同的码：表的上限固定，多出来的只能归并
         for (int statusCode = 200; statusCode < 300; ++statusCode)
         {
-            collector.countResponseStatus(statusCode);
+            collector.countResponseStatus(statusCode, "/bulk");
         }
 
         stats = collector.snapshot();
         EXPECT_LE(httpStatusCodeCounts(stats).size(), kHttpStatusCodeSeriesLimit) << "具体状态码表没有上界";
         EXPECT_GT(stats.statusCodeMergedCount, 0U) << "表满之后的码没有计入归并数";
+    }
+
+    /**
+     * @brief 钉住：路由标签取模式原文，参数化路径不按实际 URI 分叉；实际 URI 绝不进标签
+     * @details 注册 `/user/:id` 后打 `/user/1` 与 `/user/2`，响应计数只能有一条
+     *          `route="/user/:id"` 序列、值为 2——这就是「不会随请求数炸开」的证明
+     */
+    TEST(HttpMetricsEndpoint, RouteLabelUsesThePatternNotTheRequestUri)
+    {
+        const RouteRegistrar registerRoutes = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/user/:id",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("user");
+                           co_return;
+                       });
+        };
+        const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableMetricsEndpoint(); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerRoutes, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        for (const std::string_view path: {std::string_view{"/user/1"}, std::string_view{"/user/2"}})
+        {
+            const auto response =
+                    sendAndReadResponse(fixture.listeningPort(), std::string("GET ") + std::string(path) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            ASSERT_TRUE(response.has_value());
+            EXPECT_NE(response->headers.find("200"), std::string::npos) << response->headers;
+        }
+
+        const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(metrics.has_value());
+        const std::string &body = metrics->body;
+
+        const std::string seriesPrefix = "asyn_http_responses_total{route=\"/user/:id\",";
+        std::size_t       seriesCount  = 0;
+        std::size_t       seriesAt     = body.find(seriesPrefix);
+        std::uint64_t     seriesValue  = 0;
+        while (seriesAt != std::string::npos)
+        {
+            ++seriesCount;
+            const std::size_t lineEnd = body.find('\n', seriesAt);
+            ASSERT_NE(lineEnd, std::string::npos);
+            const std::size_t valueBegin = body.rfind(' ', lineEnd);
+            ASSERT_NE(valueBegin, std::string::npos);
+            seriesValue = std::stoull(body.substr(valueBegin + 1U, lineEnd - valueBegin - 1U));
+            seriesAt    = body.find(seriesPrefix, lineEnd);
+        }
+        EXPECT_EQ(seriesCount, 1U) << "两条参数化请求长出了多条路由序列：" << body;
+        EXPECT_EQ(seriesValue, 2U) << "同一条路由序列的计数不是 2：" << body;
+        EXPECT_EQ(body.find("/user/1"), std::string::npos) << "请求的实际 URI 进了标签：" << body;
+        EXPECT_EQ(body.find("/user/2"), std::string::npos) << "请求的实际 URI 进了标签：" << body;
+    }
+
+    /**
+     * @brief 钉住：未匹配与静态文件两路各有固定哨兵，路径本身不进标签
+     */
+    TEST(HttpMetricsEndpoint, UnmatchedAndStaticRoutesUseFixedSentinels)
+    {
+        {
+            const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableMetricsEndpoint(); };
+            RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+            ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+            const auto missing = sendAndReadResponse(fixture.listeningPort(), "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            ASSERT_TRUE(missing.has_value());
+            EXPECT_NE(missing->headers.find("404"), std::string::npos) << missing->headers;
+
+            const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            ASSERT_TRUE(metrics.has_value());
+            EXPECT_NE(metrics->body.find("route=\"unmatched\""), std::string::npos) << "未匹配路由没有落到 unmatched 哨兵：" << metrics->body;
+            EXPECT_EQ(metrics->body.find("/no-such-route"), std::string::npos) << "未匹配的实际路径进了标签：" << metrics->body;
+        }
+
+        {
+            const RouteRegistrar registerRoutes = [](Router &router, Core::EventLoop &)
+            {
+                // 静态文件服务注册的正是这条通配路由；这里用同形路由占位，标签应归一成 static
+                router.any("*",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.setBody("static");
+                               co_return;
+                           });
+            };
+            const ServerConfigurator configureServer = [](TestHttpServer &server) { server.enableMetricsEndpoint(); };
+            RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, registerRoutes, HttpParserLimits{}, configureServer);
+            ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+            const auto staticFile = sendAndReadResponse(fixture.listeningPort(), "GET /assets/app.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            ASSERT_TRUE(staticFile.has_value());
+            EXPECT_NE(staticFile->headers.find("200"), std::string::npos) << staticFile->headers;
+
+            const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+            ASSERT_TRUE(metrics.has_value());
+            EXPECT_NE(metrics->body.find("route=\"static\""), std::string::npos) << "通配路由没有落到 static 哨兵：" << metrics->body;
+            EXPECT_EQ(metrics->body.find("/assets/app.js"), std::string::npos) << "静态文件的实际路径进了标签：" << metrics->body;
+        }
+    }
+
+    /**
+     * @brief 钉住路由表的有界性：灌超量不同模式后表不再增长，归并计数与 merged 哨兵都在
+     */
+    TEST(HttpMetricsEndpoint, RouteSeriesTableIsBoundedAndMergedCountGrows)
+    {
+        HttpMetricsCollector  collector;
+        constexpr std::size_t overflowRouteCount = kHttpRouteSeriesLimit + 16U;
+        for (std::size_t index = 0; index < overflowRouteCount; ++index)
+        {
+            collector.recordResponse(200, std::chrono::milliseconds{1}, std::format("/route/{}", index));
+        }
+
+        const HttpServerStats stats = collector.snapshot();
+        EXPECT_LE(stats.routeCounts.size(), kHttpRouteSeriesLimit + 1U) << "路由表没有上界";
+        EXPECT_GT(stats.routeSeriesMergedCount, 0U) << "表满之后的路由没有计入归并数";
+
+        const auto mergedRoute = std::ranges::find(stats.routeCounts, std::string(kHttpRouteMergedLabel), &HttpRouteCount::route);
+        ASSERT_NE(mergedRoute, stats.routeCounts.end()) << "归并计数非零，却没有 merged 哨兵条目";
+        EXPECT_EQ(mergedRoute->responseCount(), stats.routeSeriesMergedCount) << "merged 哨兵的计数与归并计数对不上";
     }
 
     /**
@@ -250,15 +372,16 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("# TYPE asyn_http_request_duration_seconds histogram\n"), std::string::npos) << text;
         // 档位上界是毫秒常量，导出成秒；四个上界 + 一个溢出档。
         // 快照里前两档各 1 条，而展示格式的 le 是累计口径，故从第二档起就都是 2——
-        // 照着「每档区间条数」原样输出会让采集侧算出的分位系统性偏小
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{le=\"0.001\"} 1\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{le=\"0.005\"} 2\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{le=\"0.02\"} 2\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{le=\"0.1\"} 2\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{le=\"+Inf\"} 2\n"), std::string::npos);
+        // 照着「每档区间条数」原样输出会让采集侧算出的分位系统性偏小。
+        // 直方图按路由分组：没有路由明细的快照落在 unmatched 哨兵上
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{route=\"unmatched\",le=\"0.001\"} 1\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{route=\"unmatched\",le=\"0.005\"} 2\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{route=\"unmatched\",le=\"0.02\"} 2\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{route=\"unmatched\",le=\"0.1\"} 2\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_bucket{route=\"unmatched\",le=\"+Inf\"} 2\n"), std::string::npos);
         // 500 微秒 = 0.000500 秒（定点六位小数，见渲染处的说明）；样本数取各档之和，与 +Inf 档一致
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_sum 0.000500\n"), std::string::npos) << text;
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_count 2\n"), std::string::npos) << text;
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_sum{route=\"unmatched\"} 0.000500\n"), std::string::npos) << text;
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_count{route=\"unmatched\"} 2\n"), std::string::npos) << text;
     }
 
     /**
@@ -281,7 +404,7 @@ namespace AsynGyanis::Net
     {
         const std::string text = formatPrometheusMetrics(HttpServerStats{}, "asyn_http");
         EXPECT_NE(text.find("asyn_http_requests_total 0\n"), std::string::npos);
-        EXPECT_NE(text.find("asyn_http_request_duration_seconds_count 0\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_request_duration_seconds_count{route=\"unmatched\"} 0\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_active_connections 0\n"), std::string::npos);
         // 空文本以换行结尾：抓取工具按行解析，末行没有换行会被吞掉
         ASSERT_FALSE(text.empty());
@@ -637,9 +760,14 @@ namespace AsynGyanis::Net
             const std::optional<std::uint64_t> servedRequestCount = findMetricValue(receivedText, "asyn_http_requests_total ");
             ASSERT_TRUE(servedRequestCount.has_value()) << "缺少请求总数指标：「" << receivedText << "」";
             EXPECT_GE(*servedRequestCount, 1u) << "刚打过的请求没有计入请求总数";
-            const std::optional<std::uint64_t> latencySampleCount = findMetricValue(receivedText, "asyn_http_request_duration_seconds_count ");
-            ASSERT_TRUE(latencySampleCount.has_value()) << "缺少直方图样本数";
-            EXPECT_GE(*latencySampleCount, 1u) << "已应答请求没有落进直方图";
+            // 直方图按路由分组后，_count 带 route 标签；/hello 与 /metrics 各自一条，任取第一条验「至少 1 条」
+            const std::size_t latencyCountBegin = receivedText.find("asyn_http_request_duration_seconds_count{route=");
+            ASSERT_NE(latencyCountBegin, std::string::npos) << "缺少带 route 的直方图样本数：「" << receivedText << "」";
+            const std::size_t latencyLineEnd = receivedText.find('\n', latencyCountBegin);
+            ASSERT_NE(latencyLineEnd, std::string::npos);
+            const std::size_t latencyValueBegin = receivedText.rfind(' ', latencyLineEnd);
+            ASSERT_NE(latencyValueBegin, std::string::npos);
+            EXPECT_GE(std::stoull(receivedText.substr(latencyValueBegin + 1U, latencyLineEnd - latencyValueBegin - 1U)), 1u) << "已应答请求没有落进直方图";
         }
 
         // 未注册的端点仍走兜底 404：开启两个端点不该顺手把别的路径也放行

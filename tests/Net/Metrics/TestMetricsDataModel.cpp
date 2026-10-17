@@ -24,7 +24,9 @@ namespace
     using AsynGyanis::Net::httpLatencyHistogramSample;
     using AsynGyanis::Net::HttpServerStats;
     using AsynGyanis::Net::httpStatusClassCounts;
+    using AsynGyanis::Net::kHttpRouteLabelKey;
     using AsynGyanis::Net::kHttpStatusClassLabelKey;
+    using AsynGyanis::Net::OtlpHistogramPoint;
     using AsynGyanis::Net::OtlpHistogramSample;
     using AsynGyanis::Net::OtlpMetricsBatch;
 
@@ -46,6 +48,13 @@ namespace
         stats.statusCodeCounts[3] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 404, .count = 3U};
         stats.statusCodeCounts[4] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 429, .count = 2U};
         stats.statusCodeCounts[5] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 500, .count = 11U};
+        // 路由维度：与全局计数同值，两条出口的 route 标签才有一份可对照的非哨兵取值
+        AsynGyanis::Net::HttpRouteCount routeCount;
+        routeCount.route                    = "/user/:id";
+        routeCount.statusClassCounts        = {1U, 80U, 3U, 5U, 11U};
+        routeCount.latencyBucketCounts      = {40U, 30U, 20U, 5U, 5U};
+        routeCount.totalLatencyMicroseconds = 2'500'000U;
+        stats.routeCounts.push_back(std::move(routeCount));
         return stats;
     }
 
@@ -149,19 +158,24 @@ TEST(MetricsDataModel, BothExportsRenderTheSameHistogramAndLabels)
 
     ASSERT_EQ(otlpBatch.histograms.size(), 1U);
     const OtlpHistogramSample &otlpHistogram = otlpBatch.histograms.front();
-    ASSERT_EQ(otlpHistogram.bucketCounts.size(), 5U);
+    ASSERT_EQ(otlpHistogram.points.size(), 1U);
+    const OtlpHistogramPoint &otlpPoint = otlpHistogram.points.front();
+    ASSERT_EQ(otlpPoint.bucketCounts.size(), 5U);
     ASSERT_EQ(otlpHistogram.explicitBoundsSeconds.size(), 4U);
+    ASSERT_EQ(otlpPoint.attributes.size(), 1U);
+    EXPECT_EQ(otlpPoint.attributes.front().first, "route");
+    EXPECT_EQ(otlpPoint.attributes.front().second, "/user/:id") << "route 标签应当是路由模式原文";
 
     // 手写的上界文本与用例自己的累计账本；两者都不经过被测实现的折算函数
     const std::array<std::string, 4> expectedBoundTexts = {"0.001", "0.005", "0.02", "0.1"};
     std::uint64_t                    manualCumulative   = 0;
-    for (std::size_t index = 0; index < otlpHistogram.bucketCounts.size(); ++index)
+    for (std::size_t index = 0; index < otlpPoint.bucketCounts.size(); ++index)
     {
-        manualCumulative += otlpHistogram.bucketCounts[index];
+        manualCumulative += otlpPoint.bucketCounts[index];
 
-        const bool        isOverflowBucket = index + 1U == otlpHistogram.bucketCounts.size();
+        const bool        isOverflowBucket = index + 1U == otlpPoint.bucketCounts.size();
         const std::string boundText        = isOverflowBucket ? std::string("+Inf") : expectedBoundTexts[index];
-        const std::string linePrefix       = "srv_request_duration_seconds_bucket{le=\"" + boundText + "\"} ";
+        const std::string linePrefix       = "srv_request_duration_seconds_bucket{route=\"/user/:id\",le=\"" + boundText + "\"} ";
 
         const std::string valueText = valueTextOnLine(prometheusText, linePrefix);
         ASSERT_FALSE(valueText.empty()) << "Prometheus 文本里找不到这一条 _bucket：" << linePrefix;
@@ -175,13 +189,13 @@ TEST(MetricsDataModel, BothExportsRenderTheSameHistogramAndLabels)
     }
 
     // 和的换算与样本数：Prometheus 的 _sum/_count 与 OTLP 的同源
-    EXPECT_DOUBLE_EQ(std::stod(valueTextOnLine(prometheusText, "srv_request_duration_seconds_sum ")), otlpHistogram.sumSeconds);
-    EXPECT_DOUBLE_EQ(otlpHistogram.sumSeconds, 2.5);
-    EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, "srv_request_duration_seconds_count ")), otlpHistogram.count);
-    EXPECT_EQ(otlpHistogram.count, 100U);
+    EXPECT_DOUBLE_EQ(std::stod(valueTextOnLine(prometheusText, "srv_request_duration_seconds_sum{route=\"/user/:id\"} ")), otlpPoint.sumSeconds);
+    EXPECT_DOUBLE_EQ(otlpPoint.sumSeconds, 2.5);
+    EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, "srv_request_duration_seconds_count{route=\"/user/:id\"} ")), otlpPoint.count);
+    EXPECT_EQ(otlpPoint.count, 100U);
 
     // 状态码标签族：同一份取数、同一个键名与类名，两条出口逐点对上。
-    // 同一条 metric 现在有两组数据点：status_class 五档 + 实际出现过的具体状态码
+    // 同一条 metric 现在有两组数据点：route × status_class + 实际出现过的具体状态码（全局一维）
     ASSERT_EQ(otlpBatch.labeled.size(), 1U);
     const auto statusClasses = httpStatusClassCounts(stats);
     const auto statusCodes   = AsynGyanis::Net::httpStatusCodeCounts(stats);
@@ -189,11 +203,13 @@ TEST(MetricsDataModel, BothExportsRenderTheSameHistogramAndLabels)
     for (std::size_t index = 0; index < statusClasses.size(); ++index)
     {
         const auto &attributes = otlpBatch.labeled.front().points[index].attributes;
-        ASSERT_EQ(attributes.size(), 1U);
-        EXPECT_EQ(attributes.front().first, std::string(kHttpStatusClassLabelKey));
-        EXPECT_EQ(attributes.front().second, std::string(statusClasses[index].className));
+        ASSERT_EQ(attributes.size(), 2U);
+        EXPECT_EQ(attributes.at(0).first, std::string(kHttpRouteLabelKey));
+        EXPECT_EQ(attributes.at(0).second, "/user/:id");
+        EXPECT_EQ(attributes.at(1).first, std::string(kHttpStatusClassLabelKey));
+        EXPECT_EQ(attributes.at(1).second, std::string(statusClasses[index].className));
 
-        const std::string linePrefix = std::string("srv_responses_total{status_class=\"") + std::string(statusClasses[index].className) + "\"} ";
+        const std::string linePrefix = std::string("srv_responses_total{route=\"/user/:id\",status_class=\"") + std::string(statusClasses[index].className) + "\"} ";
         EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, linePrefix)), otlpBatch.labeled.front().points[index].value)
                 << "状态码类 " << statusClasses[index].className << " 两条出口的取值对不上";
     }

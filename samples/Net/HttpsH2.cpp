@@ -1019,9 +1019,41 @@ namespace
     }
 
     /**
+     * @brief 把按路由分组的某类状态码计数加起来
+     * @details 直方图与响应计数现在带 route 标签，同一类状态码会分成多条序列（每条路由一条）；
+     *          「这台服务器一共回过多少条 2xx」因此要把各条路由序列相加，不能只读其中一条
+     * @param metricsBody /metrics 的响应正文
+     * @param statusClassLabel 形如 status_class="2xx" 的过滤片段
+     * @return std::uint64_t 匹配到的各条序列之和
+     */
+    std::uint64_t sumPrometheusStatusClassCounts(const std::string &metricsBody, const std::string_view statusClassLabel)
+    {
+        std::uint64_t total     = 0;
+        std::size_t   lineStart = 0;
+        while (lineStart <= metricsBody.size())
+        {
+            const std::size_t      lineEnd = metricsBody.find('\n', lineStart);
+            const std::size_t      stopAt  = lineEnd == std::string::npos ? metricsBody.size() : lineEnd;
+            const std::string_view line(metricsBody.data() + lineStart, stopAt - lineStart);
+            lineStart = lineEnd == std::string::npos ? metricsBody.size() + 1U : lineEnd + 1U;
+
+            if (line.rfind("asyn_http_responses_total{", 0) != 0 || line.find(statusClassLabel) == std::string_view::npos)
+            {
+                continue;
+            }
+            const std::size_t valueBegin = line.rfind(' ');
+            if (valueBegin != std::string_view::npos)
+            {
+                total += std::stoull(std::string(line.substr(valueBegin + 1U)));
+            }
+        }
+        return total;
+    }
+
+    /**
      * @brief 从 Prometheus 文本里取一条计数行的取值
      * @param metricsBody /metrics 的响应正文
-     * @param linePrefix 值行的前缀（含标签，如 asyn_http_responses_total{status_class="2xx"}）
+     * @param linePrefix 值行的前缀（含标签，如 asyn_http_responses_total{route="/hello",status_class="2xx"}）
      * @return std::optional<std::uint64_t> 取到的数值；没有这一行时为空
      */
     std::optional<std::uint64_t> readPrometheusCounter(const std::string &metricsBody, const std::string &linePrefix)
@@ -1440,10 +1472,10 @@ namespace
 
         static_cast<void>(client->sendBytes(makeRequestHeadersFrame(17U, makeGetRequestHeaderBlock("/metrics", true), true)));
         static_cast<void>(client->pumpUntil([&client]() { return client->isResponseCompleteOnStream(17U); }, kWaitTimeout));
-        const std::optional<std::uint64_t> responseCount = readPrometheusCounter(client->responsePayload(17U), "asyn_http_responses_total{status_class=\"2xx\"}");
-        // 第二次抓取时前八条响应都已落账（本条自己的响应还没发完，故不计）
-        LOG_INFO_FMT("第二次抓 /metrics 读到 2xx 响应计数 {}", responseCount.has_value() ? std::to_string(responseCount.value()) : "<没有这一行>");
-        samples.check(responseCount.has_value() && responseCount.value() >= 8U, "第二次抓 /metrics 时状态码类计数已落账，与 stats() 同一份口径");
+        const std::uint64_t responseCount = sumPrometheusStatusClassCounts(client->responsePayload(17U), R"(status_class="2xx")");
+        // 第二次抓取时前八条响应都已落账（本条自己的响应还没发完，故不计）；按路由分组后取各条之和
+        LOG_INFO_FMT("第二次抓 /metrics 读到 2xx 响应计数 {}", responseCount);
+        samples.check(responseCount >= 8U, "第二次抓 /metrics 时状态码类计数已落账，与 stats() 同一份口径（按路由分组后取各条之和）");
 
         const Net::HttpServerStats servedStats = tlsServer->stats();
         // 此刻这台服务器已派发九条请求（两条 /hello、四条 /mux、/healthz、两次 /metrics），其中八条的响应已落账

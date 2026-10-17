@@ -1324,7 +1324,7 @@ namespace AsynGyanis::Net
         const bool isTruncatedStreamingResponse = isStreamingStarted && handlerException != nullptr;
         if (m_metrics != nullptr && !isTruncatedStreamingResponse)
         {
-            m_metrics->recordResponse(statusCode, requestElapsed);
+            m_metrics->recordResponse(statusCode, requestElapsed, request.matchedRoute());
         }
 
         // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的处理记录
@@ -1461,7 +1461,7 @@ namespace AsynGyanis::Net
         }
         if (m_metrics != nullptr)
         {
-            m_metrics->recordResponse(static_cast<int>(kWebSocketAcceptedStatusCode), std::chrono::steady_clock::now() - tunnelStartTime);
+            m_metrics->recordResponse(static_cast<int>(kWebSocketAcceptedStatusCode), std::chrono::steady_clock::now() - tunnelStartTime, request.matchedRoute());
             m_metrics->countWebSocketUpgrade();
         }
         LOG_DEBUG_FMT("Http2Session: 流 {} 已升级为 WebSocket 隧道（RFC 8441 扩展 CONNECT）。request-id {}，路径 {}", streamId, request.requestId(), request.uri());
@@ -2001,10 +2001,10 @@ namespace AsynGyanis::Net
             LOG_ERROR_FMT("Http2Session: 流 {} 的 {} 中间响应未能排入待发字节。原因：{}", streamId, statusCode, errorText);
             return false;
         }
-        // 只落状态码类，不落延迟样本：中间响应不是「这条请求的答复」
+        // 只落状态码类，不落延迟样本：中间响应不是「这条请求的答复」。路由上下文拿不到，按哨兵记账
         if (m_metrics != nullptr)
         {
-            m_metrics->countResponseStatus(statusCode);
+            m_metrics->countResponseStatus(statusCode, kHttpRouteUnmatchedLabel);
         }
         return true;
     }

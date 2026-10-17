@@ -1404,11 +1404,26 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(client.waitForTextOccurrences(metricsText, "asyn_http_requests_total 3", 1, kWaitTimeout))
                 << "抓取这一刻应当已记下三条请求（/hello、/healthz 与 /metrics 自己）：「" << metricsText << "」";
         // 状态码类在**第二次抓取**里核对：响应计数发生在「响应已排入待发字节」之后、渲染那一刻之前，
-        // 因此第一次抓取的正文里还没有它自己那条。第二次抓取时前三条响应都已落账
+        // 因此第一次抓取的正文里还没有它自己那条。第二次抓取时前三条响应都已落账。
+        // 直方图/计数按路由分组后，总量是各条 route 序列之和：/hello、/healthz、/metrics 各 1
         std::string secondMetricsText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "第二次指标请求未能写入";
-        EXPECT_TRUE(client.waitForTextOccurrences(secondMetricsText, "asyn_http_responses_total{status_class=\"2xx\"} 3", 1, kWaitTimeout))
-                << "成功响应的状态码类没有计入：「" << secondMetricsText << "」";
+        ASSERT_TRUE(client.waitForTextOccurrences(secondMetricsText, "asyn_http_responses_total{route=", 1, kWaitTimeout))
+                << "响应计数没有带 route 标签：「" << secondMetricsText << "」";
+        std::uint64_t status2xxTotal = 0;
+        for (std::size_t lineStart = 0; lineStart < secondMetricsText.size();)
+        {
+            const std::size_t lineEnd = secondMetricsText.find('\n', lineStart);
+            const std::string line    = secondMetricsText.substr(lineStart, lineEnd == std::string::npos ? std::string::npos : lineEnd - lineStart);
+            lineStart                 = lineEnd == std::string::npos ? secondMetricsText.size() : lineEnd + 1U;
+            if (line.rfind("asyn_http_responses_total{", 0) == 0 && line.find("status_class=\"2xx\"") != std::string::npos)
+            {
+                const std::size_t valueBegin = line.rfind(' ');
+                ASSERT_NE(valueBegin, std::string::npos) << line;
+                status2xxTotal += std::stoull(line.substr(valueBegin + 1U));
+            }
+        }
+        EXPECT_EQ(status2xxTotal, 3U) << "成功响应的状态码类没有按路由计入：「" << secondMetricsText << "」";
     }
 
     /**

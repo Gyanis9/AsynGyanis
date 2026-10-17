@@ -50,17 +50,28 @@ namespace AsynGyanis::Net
         addGauge("maximum_connections", "本监听器的并发连接上限（0 = 不设这道限）", stats.maximumConnections);
         addGauge("maximum_connections_per_ip", "单个来源 IP 的并发上限（0 = 这道闸门没装）", stats.maximumConnectionsPerIp);
 
-        // 状态码五类：OTLP 侧的正统形状是一条 metric 多数据点、每点带 status_class 属性。
-        // 取值表由 httpStatusClassCounts() 给出（与 /metrics 出口共用同一份），这里只负责编码
+        // 状态码五类：OTLP 侧的正统形状是一条 metric 多数据点、每点带属性。状态码类这一组带
+        // route 标签（路由模式原文或固定哨兵），具体状态码仍按全局一维报——route × status 的
+        // 笛卡尔积不在基数预算里（口径见 HttpRouteCount）
         {
             OtlpLabeledSample responses;
             responses.name = makeName(metricNamePrefix, "responses_total");
-            responses.help = "已发出的响应条数，按状态码类（status_class）与具体状态码（status）聚合";
+            responses.help = "已发出的响应条数，按路由模式（route）与状态码类（status_class）聚合；具体状态码（status）另按全局一维报";
             responses.kind = Core::ProcessMetricKind::Counter;
-            for (const HttpStatusClassCount &statusClassCount: httpStatusClassCounts(stats))
+            constexpr std::array<std::string_view, 5> kStatusClassNames{"1xx", "2xx", "3xx", "4xx", "5xx"};
+            for (const HttpRouteCount &routeCount: httpRouteCounts(stats))
             {
-                responses.points.push_back(
-                        OtlpLabeledPoint{.attributes = {{std::string(kHttpStatusClassLabelKey), std::string(statusClassCount.className)}}, .value = statusClassCount.count});
+                for (std::size_t classIndex = 0; classIndex < kStatusClassNames.size(); ++classIndex)
+                {
+                    // 只输出实际出现过的类：基数用例要能数出「一条路由只有一条序列」
+                    if (routeCount.statusClassCounts[classIndex] == 0)
+                    {
+                        continue;
+                    }
+                    responses.points.push_back(OtlpLabeledPoint{.attributes = {{std::string(kHttpRouteLabelKey), routeCount.route},
+                                                                               {std::string(kHttpStatusClassLabelKey), std::string(kStatusClassNames[classIndex])}},
+                                                                .value      = routeCount.statusClassCounts[classIndex]});
+                }
             }
             // 具体状态码是同一条 metric 的第二组数据点：OTLP 允许同名 metric 的点带不同属性集，
             // 与 /metrics 的两组标签逐点同解
@@ -72,19 +83,25 @@ namespace AsynGyanis::Net
             batch.labeled.push_back(std::move(responses));
         }
         addCounter("responses_status_merged_total", "具体状态码明细表已满后被归并进状态码类那一族的响应条数（这些响应仍计入 status_class）", stats.statusCodeMergedCount);
+        addCounter("route_series_merged_total", "路由明细表已满或路由模式过长后被归并到 merged 哨兵的响应条数（仍计入全局状态码类与直方图）", stats.routeSeriesMergedCount);
 
-        // 延迟直方图：单位换算与分格语义由公共模型一次做对（Core::MetricHistogramSample），
-        // OTLP 与模型同形（每格条数、上界与和都是秒），这里因此是逐字段搬运
+        // 延迟直方图：每条路由一个数据点，属性键是 route；单位换算与分格语义由公共模型一次做对
+        // （Core::MetricHistogramSample），OTLP 与模型同形（每格条数、上界与和都是秒）
         {
-            const Core::MetricHistogramSample histogramSample = httpLatencyHistogramSample(stats);
+            const Core::MetricHistogramSample boundsSample = httpLatencyHistogramSample(stats);
 
             OtlpHistogramSample histogram;
             histogram.name                  = makeName(metricNamePrefix, "request_duration_seconds");
-            histogram.help                  = "已应答请求的耗时分布";
-            histogram.explicitBoundsSeconds = histogramSample.upperBoundsSeconds;
-            histogram.bucketCounts          = histogramSample.bucketCounts;
-            histogram.count                 = histogramSample.count;
-            histogram.sumSeconds            = histogramSample.sumSeconds;
+            histogram.help                  = "已应答请求的耗时分布，按路由模式（route）分组";
+            histogram.explicitBoundsSeconds = boundsSample.upperBoundsSeconds;
+            for (const HttpRouteCount &routeCount: httpRouteCounts(stats))
+            {
+                const Core::MetricHistogramSample routeSample = httpRouteLatencyHistogramSample(routeCount);
+                histogram.points.push_back(OtlpHistogramPoint{.attributes   = {{std::string(kHttpRouteLabelKey), routeCount.route}},
+                                                              .bucketCounts = routeSample.bucketCounts,
+                                                              .count        = routeSample.count,
+                                                              .sumSeconds   = routeSample.sumSeconds});
+            }
             batch.histograms.push_back(std::move(histogram));
         }
 

@@ -662,7 +662,7 @@ namespace AsynGyanis::Net
                     {
                         // 隧道这条请求的应答也要落账：h3 按 RFC 9220 以 2xx 应答（没有 101 这一档），
                         // 记的就是那个真实状态码。耗时覆盖整条隧道的在途时长——与 h2 同一口径
-                        m_metrics->recordResponse(response.status(), std::chrono::steady_clock::now() - requestReceivedTime);
+                        m_metrics->recordResponse(response.status(), std::chrono::steady_clock::now() - requestReceivedTime, request.matchedRoute());
                     }
                     noteRequestServed(); // 与上面那条拒绝出口同一格记账，理由写在那里
                     continue;
@@ -690,7 +690,7 @@ namespace AsynGyanis::Net
                 if (m_metrics != nullptr && !isTruncatedStreamingResponse)
                 {
                     requestElapsed = std::chrono::steady_clock::now() - requestReceivedTime;
-                    m_metrics->recordResponse(response.status(), requestElapsed);
+                    m_metrics->recordResponse(response.status(), requestElapsed, request.matchedRoute());
                 }
             } else
             {
@@ -701,7 +701,7 @@ namespace AsynGyanis::Net
                 // 三条协议上的「抓一次 /metrics 看到什么」是同一份口径（理由见上面 countParsedRequest 处）
                 if (m_metrics != nullptr && !isRejectedWithoutHandler)
                 {
-                    m_metrics->recordResponse(response.status(), requestElapsed);
+                    m_metrics->recordResponse(response.status(), requestElapsed, request.matchedRoute());
                 }
             }
             // 一条请求一条日志：request-id 同时出现在响应头与这里，客户端报的响应与服务端的处理记录
@@ -1535,7 +1535,7 @@ namespace AsynGyanis::Net
         if (m_metrics != nullptr && !(isStreamingHeadSent && handlerException != nullptr))
         {
             const std::chrono::steady_clock::duration requestElapsed = std::chrono::steady_clock::now() - streamingRequest.requestReceivedAt;
-            m_metrics->recordResponse(response.status(), requestElapsed);
+            m_metrics->recordResponse(response.status(), requestElapsed, streamingRequest.request.matchedRoute());
             if (!streamingRequest.request.requestId().empty())
             {
                 LOG_DEBUG_FMT("Http3Session: 请求已完成。request-id {}，路径 {}，状态码 {}，耗时 {}us（流式正文路由）", streamingRequest.request.requestId(),
@@ -2205,10 +2205,10 @@ namespace AsynGyanis::Net
             LOG_ERROR_FMT("Http3Session: 流 {} 的 {} 中间响应未能排进待发字节。原因：{}", streamId, statusCode, submitted.error().message);
             return false;
         }
-        // 只落状态码类，不落延迟样本：中间响应不是这条请求的答复
+        // 只落状态码类，不落延迟样本：中间响应不是这条请求的答复。路由上下文拿不到，按哨兵记账
         if (m_metrics != nullptr)
         {
-            m_metrics->countResponseStatus(statusCode);
+            m_metrics->countResponseStatus(statusCode, kHttpRouteUnmatchedLabel);
         }
         return true;
     }
