@@ -65,6 +65,9 @@ asyn_add_sample(NetHttp3Demo Net/Http3.cpp)
 asyn_add_sample(NetUdpDemo Net/Udp.cpp)
 target_link_libraries(NetUdpDemo PRIVATE Platform)
 
+# Net 网关：入站 HttpServer 与出站 HttpClient 拼一条反向代理；轮流选择、上游健康检查与加权轮转的缺口在示例末尾按 gated 记
+asyn_add_sample(NetGateway Net/Gateway.cpp)
+
 # Database：SQLite 文件库/内存库、ORM 与查询构造、事务、二进制列、参数绑定、连接池；MySQL/Redis 按环境变量门控
 asyn_add_sample(DatabaseDemo Database/OrmAndPool.cpp)
 target_link_libraries(DatabaseDemo PRIVATE Database)
