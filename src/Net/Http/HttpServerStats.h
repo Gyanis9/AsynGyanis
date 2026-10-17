@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -27,6 +28,12 @@ namespace AsynGyanis::Net
 
     /// 状态码分类标签的键名：Prometheus 的 `label="…"` 与 OTLP 的 attribute 共用这一份（见 HttpStatusClassCount）
     inline constexpr std::string_view kHttpStatusClassLabelKey = "status_class";
+
+    /// 具体状态码标签的键名：与 `status_class` 并列的第二维（429、404、500 各自可单独告警）
+    inline constexpr std::string_view kHttpStatusCodeLabelKey = "status";
+
+    /// 具体状态码明细序列的上限：状态码天然只有 500 个取值，但仍给固定上限，防止有人把非规范码灌进来
+    inline constexpr std::size_t kHttpStatusCodeSeriesLimit = 64;
 
     /**
      * @brief 状态码分类的一档：类名（1xx…5xx）与该类已发出的响应条数
@@ -39,6 +46,18 @@ namespace AsynGyanis::Net
     {
         std::string_view className; ///< 类名文本（`1xx`…`5xx`），两条出口共用
         std::uint64_t    count{0};  ///< 该类已发出的响应条数
+    };
+
+    /**
+     * @brief 一个具体状态码与它已发出的响应条数
+     * @details 与状态码类那一族并列，键名见 kHttpStatusCodeLabelKey。只出现在实际发出过的码上——
+     *          不预置 100..599 的全表（那是 500 条空序列）。表满之后新出现的码归并进状态码类那一族，
+     *          归并条数记在 HttpServerStats::statusCodeMergedCount。
+     */
+    struct HttpStatusCodeCount
+    {
+        int           statusCode{0}; ///< 具体状态码（100..599）
+        std::uint64_t count{0};      ///< 该状态码已发出的响应条数
     };
 
     /// 缓存行字节数：把不同写者热度的原子计数按行边界分开，避免伪共享。取 64（x86-64 通用行宽）；
@@ -94,6 +113,11 @@ namespace AsynGyanis::Net
         std::uint64_t status3xxCount{0}; ///< 状态码为 3xx 的响应条数
         std::uint64_t status4xxCount{0}; ///< 状态码为 4xx 的响应条数
         std::uint64_t status5xxCount{0}; ///< 状态码为 5xx 的响应条数
+
+        /// 具体状态码的明细计数（只含出现过的码，未使用的槽位 statusCode 为 0）
+        std::array<HttpStatusCodeCount, kHttpStatusCodeSeriesLimit> statusCodeCounts{};
+        /// 因明细表已满而被归并进状态码类那一族的响应条数（这些响应仍计入 status4xxCount 等）
+        std::uint64_t statusCodeMergedCount{0};
 
         /// 延迟直方图的累计条数，下标与 kHttpLatencyUpperBoundMilliseconds 对应；末档为溢出档
         std::array<std::uint64_t, kHttpLatencyBucketCount> latencyBucketCounts{};
@@ -206,6 +230,15 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::array<HttpStatusClassCount, 5> httpStatusClassCounts(const HttpServerStats &stats) noexcept;
 
     /**
+     * @brief 取具体状态码的明细计数（只含实际出现过的码，按状态码升序）
+     * @details 键名见 kHttpStatusCodeLabelKey；Prometheus 与 OTLP 两侧共用这一份过滤与排序，
+     *          免得一边按哈希顺序、一边按插入顺序输出。表满后被归并的码不在这里，见 statusCodeMergedCount。
+     * @param stats 统计快照
+     * @return std::vector<HttpStatusCodeCount> 明细；一个码都没出现过时为空
+     */
+    [[nodiscard]] ASYN_NET_API std::vector<HttpStatusCodeCount> httpStatusCodeCounts(const HttpServerStats &stats);
+
+    /**
      * @brief 把延迟直方图折成公共数据模型（`Core::MetricHistogramSample`，单位统一到秒）
      *
      * @details 换算在这里只做一次：档位上界是毫秒常量、`totalLatencyMicroseconds` 是微秒累计，
@@ -298,6 +331,7 @@ namespace AsynGyanis::Net
             {
                 classCounter->fetch_add(1, std::memory_order_relaxed);
             }
+            countStatusCodeSeries(statusCode);
         }
 
         /// WebSocket 各项计数与上面几组同档：都用放宽内存序，只做累加，读侧不依赖字段间的先后次序
@@ -385,6 +419,61 @@ namespace AsynGyanis::Net
 
     private:
         /**
+         * @brief 具体状态码明细表的槽位
+         * @details `code == -1` 表示空槽。键用 CAS 发布，计数用 fetch_add 累加：并发插入同一个码时
+         *          只有一个能把 -1 换成它，输的一方在重读后走「已有同码」的累加分支，不会丢掉这一次。
+         */
+        struct AtomicStatusCodeSlot
+        {
+            std::atomic<int>           code{-1}; ///< 状态码；-1 为空槽
+            std::atomic<std::uint64_t> count{0}; ///< 该码的累计条数
+        };
+
+        /**
+         * @brief 把一条响应记进具体状态码明细（有界表，满则归并）
+         * @details 开放寻址、无锁：每个响应只做一次哈希 + 至多 table-size 次探测。表满或探测链走完时
+         *          直接记进归并计数——这些响应仍然在状态码类那一族里，明细只是不再细分。
+         * @param statusCode 响应状态码；不在 100~599 内时什么都不记
+         */
+        void countStatusCodeSeries(const int statusCode) noexcept
+        {
+            if (statusCode < 100 || statusCode > 599)
+            {
+                return;
+            }
+
+            std::size_t index = (static_cast<std::size_t>(statusCode) * std::size_t{2654435761U}) % kHttpStatusCodeSeriesLimit;
+            for (std::size_t probe = 0; probe < kHttpStatusCodeSeriesLimit; ++probe, index = (index + 1U) % kHttpStatusCodeSeriesLimit)
+            {
+                AtomicStatusCodeSlot &slot     = m_statusCodeSlots[index];
+                const int             slotCode = slot.code.load(std::memory_order_acquire);
+                if (slotCode == statusCode)
+                {
+                    slot.count.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                if (slotCode == -1)
+                {
+                    int expected = -1;
+                    if (slot.code.compare_exchange_strong(expected, statusCode, std::memory_order_acq_rel, std::memory_order_acquire))
+                    {
+                        slot.count.fetch_add(1, std::memory_order_relaxed);
+                        return;
+                    }
+                    if (expected == statusCode)
+                    {
+                        // 输给了同一个码：算进这个槽，而不是再占一个
+                        slot.count.fetch_add(1, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            }
+
+            // 表满（或探测链被异码占满）：明细不再细分，但仍计入状态码类
+            m_statusCodeMergedCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
          * @brief 取某个状态码所属类别的计数器
          * @param statusCode 响应状态码
          * @return 指向该类计数器的指针；状态码不在 100~599 内时返回 nullptr
@@ -436,6 +525,10 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_status3xxCount{0}; ///< 累计 3xx 响应条数
         std::atomic<std::uint64_t> m_status4xxCount{0}; ///< 累计 4xx 响应条数
         std::atomic<std::uint64_t> m_status5xxCount{0}; ///< 累计 5xx 响应条数
+
+        /// 具体状态码明细（有界、无锁开放寻址）；只在实际出现过的码上占槽
+        std::array<AtomicStatusCodeSlot, kHttpStatusCodeSeriesLimit> m_statusCodeSlots{};
+        std::atomic<std::uint64_t>                                   m_statusCodeMergedCount{0}; ///< 明细表满后被归并的响应条数
 
         /// 延迟直方图的累计条数；元素默认值初始化（C++20 起 std::atomic 的默认构造即置零）
         std::array<std::atomic<std::uint64_t>, kHttpLatencyBucketCount> m_latencyBucketCounts{};

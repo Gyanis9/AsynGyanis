@@ -3,6 +3,7 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Platform/System/ProcessInfo.h"
 
+#include <algorithm>
 #include <cstddef>
 
 namespace AsynGyanis::Net
@@ -49,6 +50,13 @@ namespace AsynGyanis::Net
         stats.status4xxCount              = m_status4xxCount.load(std::memory_order_relaxed);
         stats.status5xxCount              = m_status5xxCount.load(std::memory_order_relaxed);
 
+        for (std::size_t index = 0; index < kHttpStatusCodeSeriesLimit; ++index)
+        {
+            stats.statusCodeCounts[index].statusCode = m_statusCodeSlots[index].code.load(std::memory_order_relaxed);
+            stats.statusCodeCounts[index].count      = m_statusCodeSlots[index].count.load(std::memory_order_relaxed);
+        }
+        stats.statusCodeMergedCount = m_statusCodeMergedCount.load(std::memory_order_relaxed);
+
         stats.webSocketUpgradeCount            = m_webSocketUpgradeCount.load(std::memory_order_relaxed);
         stats.webSocketMessageCount            = m_webSocketMessageCount.load(std::memory_order_relaxed);
         stats.webSocketProtocolErrorCloseCount = m_webSocketProtocolErrorCloseCount.load(std::memory_order_relaxed);
@@ -73,6 +81,22 @@ namespace AsynGyanis::Net
         return {HttpStatusClassCount{.className = "1xx", .count = stats.status1xxCount}, HttpStatusClassCount{.className = "2xx", .count = stats.status2xxCount},
                 HttpStatusClassCount{.className = "3xx", .count = stats.status3xxCount}, HttpStatusClassCount{.className = "4xx", .count = stats.status4xxCount},
                 HttpStatusClassCount{.className = "5xx", .count = stats.status5xxCount}};
+    }
+
+    std::vector<HttpStatusCodeCount> httpStatusCodeCounts(const HttpServerStats &stats)
+    {
+        std::vector<HttpStatusCodeCount> counts;
+        counts.reserve(kHttpStatusCodeSeriesLimit);
+        for (const HttpStatusCodeCount &slot: stats.statusCodeCounts)
+        {
+            // 空槽（statusCode 0）与「刚占槽还没落到计数上」的瞬时态都不输出
+            if (slot.statusCode >= 100 && slot.count > 0)
+            {
+                counts.push_back(slot);
+            }
+        }
+        std::ranges::sort(counts, {}, &HttpStatusCodeCount::statusCode);
+        return counts;
     }
 
     Core::MetricHistogramSample httpLatencyHistogramSample(const HttpServerStats &stats)

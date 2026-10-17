@@ -142,11 +142,19 @@ namespace AsynGyanis::Net
         // 状态码分类：一族带 status_class 标签的计数器，采集侧可直接按类聚合。
         // 取值表由 httpStatusClassCounts() 给出（与 OTLP 出口共用同一份），这里只负责编码
         const std::string responsesName = makeMetricName(metricNamePrefix, "responses_total");
-        out += std::format("# HELP {} 已发出的响应条数，按状态码类聚合\n# TYPE {} counter\n", responsesName, responsesName);
+        out += std::format("# HELP {} 已发出的响应条数，按状态码类（status_class）与具体状态码（status）聚合\n# TYPE {} counter\n", responsesName, responsesName);
         for (const HttpStatusClassCount &statusClassCount: httpStatusClassCounts(stats))
         {
             out += std::format("{}{{{}=\"{}\"}} {}\n", responsesName, kHttpStatusClassLabelKey, statusClassCount.className, statusClassCount.count);
         }
+        // 具体状态码：只输出实际出现过的码（不预置 100..599 的空序列）。两个维度同名同标签键，
+        // 与 OTLP 出口逐点同解；明细表满后被归并的条数另有一条计数器
+        for (const HttpStatusCodeCount &statusCodeCount: httpStatusCodeCounts(stats))
+        {
+            out += std::format("{}{{{}=\"{}\"}} {}\n", responsesName, kHttpStatusCodeLabelKey, statusCodeCount.statusCode, statusCodeCount.count);
+        }
+        appendCounter(out, makeMetricName(metricNamePrefix, "responses_status_merged_total"),
+                      "具体状态码明细表已满后被归并进状态码类那一族的响应条数（这些响应仍计入 status_class）", stats.statusCodeMergedCount);
 
         // 耗时直方图：单位换算与分格语义由公共模型一次做对（Core::MetricHistogramSample），
         // 本出口只把「每格条数」折成展示格式要的累计数（那一步的说明见 cumulativeBucketCounts）

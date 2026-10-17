@@ -39,6 +39,13 @@ namespace
         stats.status5xxCount           = 11U;
         stats.latencyBucketCounts      = {40U, 30U, 20U, 5U, 5U};
         stats.totalLatencyMicroseconds = 2'500'000U;
+        // 具体状态码明细：类计数与明细保持一致，两条出口才对得上
+        stats.statusCodeCounts[0] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 100, .count = 1U};
+        stats.statusCodeCounts[1] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 200, .count = 80U};
+        stats.statusCodeCounts[2] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 302, .count = 3U};
+        stats.statusCodeCounts[3] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 404, .count = 3U};
+        stats.statusCodeCounts[4] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 429, .count = 2U};
+        stats.statusCodeCounts[5] = AsynGyanis::Net::HttpStatusCodeCount{.statusCode = 500, .count = 11U};
         return stats;
     }
 
@@ -173,10 +180,12 @@ TEST(MetricsDataModel, BothExportsRenderTheSameHistogramAndLabels)
     EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, "srv_request_duration_seconds_count ")), otlpHistogram.count);
     EXPECT_EQ(otlpHistogram.count, 100U);
 
-    // 状态码标签族：同一份取数、同一个键名与类名，两条出口逐点对上
+    // 状态码标签族：同一份取数、同一个键名与类名，两条出口逐点对上。
+    // 同一条 metric 现在有两组数据点：status_class 五档 + 实际出现过的具体状态码
     ASSERT_EQ(otlpBatch.labeled.size(), 1U);
     const auto statusClasses = httpStatusClassCounts(stats);
-    ASSERT_EQ(otlpBatch.labeled.front().points.size(), statusClasses.size());
+    const auto statusCodes   = AsynGyanis::Net::httpStatusCodeCounts(stats);
+    ASSERT_EQ(otlpBatch.labeled.front().points.size(), statusClasses.size() + statusCodes.size());
     for (std::size_t index = 0; index < statusClasses.size(); ++index)
     {
         const auto &attributes = otlpBatch.labeled.front().points[index].attributes;
@@ -187,5 +196,16 @@ TEST(MetricsDataModel, BothExportsRenderTheSameHistogramAndLabels)
         const std::string linePrefix = std::string("srv_responses_total{status_class=\"") + std::string(statusClasses[index].className) + "\"} ";
         EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, linePrefix)), otlpBatch.labeled.front().points[index].value)
                 << "状态码类 " << statusClasses[index].className << " 两条出口的取值对不上";
+    }
+    for (std::size_t index = 0; index < statusCodes.size(); ++index)
+    {
+        const auto &attributes = otlpBatch.labeled.front().points[statusClasses.size() + index].attributes;
+        ASSERT_EQ(attributes.size(), 1U);
+        EXPECT_EQ(attributes.front().first, std::string(AsynGyanis::Net::kHttpStatusCodeLabelKey));
+        EXPECT_EQ(attributes.front().second, std::to_string(statusCodes[index].statusCode));
+
+        const std::string linePrefix = std::string("srv_responses_total{status=\"") + std::to_string(statusCodes[index].statusCode) + "\"} ";
+        EXPECT_EQ(std::stoull(valueTextOnLine(prometheusText, linePrefix)), otlpBatch.labeled.front().points[statusClasses.size() + index].value)
+                << "具体状态码 " << statusCodes[index].statusCode << " 两条出口的取值对不上";
     }
 }

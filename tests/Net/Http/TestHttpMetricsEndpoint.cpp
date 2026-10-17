@@ -130,6 +130,11 @@ namespace AsynGyanis::Net
             stats.processCpuSeconds                = 22;
             stats.openHandleCount                  = 23;
             stats.processStartTimeSeconds          = 24;
+            // 具体状态码明细：只放出现过的码，槽位顺序不影响输出（出口按码升序）
+            stats.statusCodeCounts[0]   = HttpStatusCodeCount{.statusCode = 429, .count = 3};
+            stats.statusCodeCounts[1]   = HttpStatusCodeCount{.statusCode = 404, .count = 2};
+            stats.statusCodeCounts[2]   = HttpStatusCodeCount{.statusCode = 500, .count = 1};
+            stats.statusCodeMergedCount = 7;
             return stats;
         }
     } // namespace
@@ -195,6 +200,42 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"2xx\"} 5\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"4xx\"} 2\n"), std::string::npos);
         EXPECT_NE(text.find("asyn_http_responses_total{status_class=\"5xx\"} 1\n"), std::string::npos);
+        // 具体状态码：429/404/500 各自一条，按码升序；旧的口径（status_class）一条不少
+        EXPECT_NE(text.find("asyn_http_responses_total{status=\"404\"} 2\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_total{status=\"429\"} 3\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_total{status=\"500\"} 1\n"), std::string::npos);
+        EXPECT_NE(text.find("asyn_http_responses_status_merged_total 7\n"), std::string::npos);
+    }
+
+    /**
+     * @brief 钉住采集端的两维记账：具体状态码只记出现过的码，表满后归并进状态码类并计数
+     */
+    TEST(HttpMetricsEndpoint, CollectorTracksStatusCodeSeriesAndMergesWhenFull)
+    {
+        HttpMetricsCollector collector;
+        collector.recordResponse(429, std::chrono::milliseconds{1});
+        collector.recordResponse(429, std::chrono::milliseconds{1});
+        collector.recordResponse(404, std::chrono::milliseconds{1});
+
+        HttpServerStats stats = collector.snapshot();
+        EXPECT_EQ(stats.status4xxCount, 3U) << "状态码类那一族没有照旧累计";
+        const std::vector<HttpStatusCodeCount> initialCounts = httpStatusCodeCounts(stats);
+        ASSERT_EQ(initialCounts.size(), 2U) << "只该出现 404 与 429 两个码";
+        EXPECT_EQ(initialCounts[0].statusCode, 404);
+        EXPECT_EQ(initialCounts[0].count, 1U);
+        EXPECT_EQ(initialCounts[1].statusCode, 429);
+        EXPECT_EQ(initialCounts[1].count, 2U);
+        EXPECT_EQ(stats.statusCodeMergedCount, 0U) << "表还没满，不该有归并";
+
+        // 灌 100 个不同的码：表的上限固定，多出来的只能归并
+        for (int statusCode = 200; statusCode < 300; ++statusCode)
+        {
+            collector.countResponseStatus(statusCode);
+        }
+
+        stats = collector.snapshot();
+        EXPECT_LE(httpStatusCodeCounts(stats).size(), kHttpStatusCodeSeriesLimit) << "具体状态码表没有上界";
+        EXPECT_GT(stats.statusCodeMergedCount, 0U) << "表满之后的码没有计入归并数";
     }
 
     /**

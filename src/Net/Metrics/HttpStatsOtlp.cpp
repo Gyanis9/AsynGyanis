@@ -55,15 +55,23 @@ namespace AsynGyanis::Net
         {
             OtlpLabeledSample responses;
             responses.name = makeName(metricNamePrefix, "responses_total");
-            responses.help = "已发出的响应条数，按状态码类聚合";
+            responses.help = "已发出的响应条数，按状态码类（status_class）与具体状态码（status）聚合";
             responses.kind = Core::ProcessMetricKind::Counter;
             for (const HttpStatusClassCount &statusClassCount: httpStatusClassCounts(stats))
             {
                 responses.points.push_back(
                         OtlpLabeledPoint{.attributes = {{std::string(kHttpStatusClassLabelKey), std::string(statusClassCount.className)}}, .value = statusClassCount.count});
             }
+            // 具体状态码是同一条 metric 的第二组数据点：OTLP 允许同名 metric 的点带不同属性集，
+            // 与 /metrics 的两组标签逐点同解
+            for (const HttpStatusCodeCount &statusCodeCount: httpStatusCodeCounts(stats))
+            {
+                responses.points.push_back(
+                        OtlpLabeledPoint{.attributes = {{std::string(kHttpStatusCodeLabelKey), std::to_string(statusCodeCount.statusCode)}}, .value = statusCodeCount.count});
+            }
             batch.labeled.push_back(std::move(responses));
         }
+        addCounter("responses_status_merged_total", "具体状态码明细表已满后被归并进状态码类那一族的响应条数（这些响应仍计入 status_class）", stats.statusCodeMergedCount);
 
         // 延迟直方图：单位换算与分格语义由公共模型一次做对（Core::MetricHistogramSample），
         // OTLP 与模型同形（每格条数、上界与和都是秒），这里因此是逐字段搬运
