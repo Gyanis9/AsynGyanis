@@ -42,6 +42,16 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::optional<std::string> gzipCompress(std::string_view input, int level = kDefaultGzipLevel);
 
     /**
+     * @brief 把一段字节压成 `Content-Encoding: deflate` 的表示（RFC 1950 的 zlib 封装）
+     * @details 不是裸 deflate：RFC 9110 §8.4.1.2 指的是 zlib 封装，浏览器与 curl 也按这一种发。
+     *          与 gzipCompress() 同一取舍：一次性压缩、级别越界夹取、失败返回空由调用方发原文
+     * @param input 待压正文
+     * @param level zlib 压缩级别，1..9；越界夹取
+     * @return std::optional<std::string> zlib 封装字节；没压成时为空
+     */
+    [[nodiscard]] ASYN_NET_API std::optional<std::string> deflateCompress(std::string_view input, int level = kDefaultGzipLevel);
+
+    /**
      * @brief 解一段 deflate 家族的压缩正文（gzip 容器或 zlib 流都认）
      *
      * @details 建流用 windowBits = 15 + 32，即 zlib 的「自动识别」档：gzip 头（RFC 1952）与 zlib 头

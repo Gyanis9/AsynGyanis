@@ -188,6 +188,18 @@ namespace AsynGyanis::Net
                                response.setBody(kLargeBody);
                                co_return;
                            });
+                router.get("/stream",
+                           [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                           {
+                               response.startChunkedResponse(200);
+                               response.setHeader("content-type", "text/event-stream");
+                               if (!co_await response.writeChunk("stream-part-a"))
+                               {
+                                   co_return;
+                               }
+                               static_cast<void>(co_await response.writeChunk("stream-part-b"));
+                               co_return;
+                           });
             };
 
             const ServerConfigurator configureServer = [minimumBodySize](TestHttpServer &server)
@@ -197,6 +209,47 @@ namespace AsynGyanis::Net
                                                                       configureServer);
             EXPECT_TRUE(fixture->awaitRunning(kCompressionTestTimeout));
             return fixture;
+        }
+
+        /**
+         * @brief 解开 zlib 封装（RFC 1950，`Content-Encoding: deflate` 的规范形态）
+         * @details 用 15 而不是 -15：后者是裸 deflate，正是本用例要区分的那一种
+         * @param input zlib 字节
+         * @return std::optional<std::string> 原始内容；不是 zlib 封装时为空
+         */
+        std::optional<std::string> unzlib(const std::string_view input)
+        {
+            z_stream stream{};
+            if (::inflateInit2(&stream, 15) != Z_OK)
+            {
+                return std::nullopt;
+            }
+
+            std::string output;
+            stream.next_in  = reinterpret_cast<Bytef *>(const_cast<char *>(input.data()));
+            stream.avail_in = static_cast<uInt>(input.size());
+
+            std::string chunk(4096, '\0');
+            int         result = Z_OK;
+            while (result != Z_STREAM_END)
+            {
+                stream.next_out  = reinterpret_cast<Bytef *>(chunk.data());
+                stream.avail_out = static_cast<uInt>(chunk.size());
+                result           = ::inflate(&stream, Z_NO_FLUSH);
+                if (result != Z_OK && result != Z_STREAM_END && result != Z_BUF_ERROR)
+                {
+                    ::inflateEnd(&stream);
+                    return std::nullopt;
+                }
+                output.append(chunk.data(), chunk.size() - stream.avail_out);
+                if (result == Z_BUF_ERROR)
+                {
+                    break;
+                }
+            }
+
+            ::inflateEnd(&stream);
+            return output;
         }
 
         /**
@@ -411,6 +464,50 @@ namespace AsynGyanis::Net
         const std::optional<std::string> restored = gunzip(response->body);
         ASSERT_TRUE(restored.has_value()) << "压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
+    }
+
+    /**
+     * @brief 对端只接受 deflate 时按 RFC 1950 的 zlib 封装压；与 gzip 同时列出时 gzip 优先
+     */
+    TEST(CompressionMiddleware, CompressesWithZlibWrappedDeflateWhenOnlyDeflateAccepted)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+        const std::uint16_t                             port    = fixture->listeningPort();
+        ASSERT_NE(port, 0U);
+
+        const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: deflate"}), kCompressionTestTimeout);
+        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: deflate")) << "响应没有声明 deflate：" << response->headers;
+
+        // 用 15 解而不是 -15：裸 deflate 会在这里解不开，正是 RFC 9110 §8.4.1.2 与浏览器约定的区别
+        const std::optional<std::string> restored = unzlib(response->body);
+        ASSERT_TRUE(restored.has_value()) << "deflate 应答不是 zlib 封装（RFC 1950），按裸 deflate 写出了一份对端解不开的字节";
+        EXPECT_EQ(*restored, kLargeBody);
+
+        // 偏好：gzip 与 deflate 同时可接受时选 gzip，deflate 只是兜底
+        const std::optional<ParsedResponse> preferred =
+                sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate"}), kCompressionTestTimeout);
+        ASSERT_TRUE(preferred.has_value());
+        EXPECT_TRUE(hasHeaderLine(preferred->headers, "content-encoding: gzip")) << "deflate 抢了 gzip 的优先级：" << preferred->headers;
+    }
+
+    /**
+     * @brief 钉住流式这一格有意不压：分块响应照原样逐段上线，不被整块压缩
+     * @details 按块压缩要先定 flush 语义，而 SSE 的事件边界与压缩器块边界不是一回事。这条用例把
+     *          「不覆盖流式」的原因固定成行为：对端接受 gzip 时，流式响应仍是 chunked 且没有
+     *          content-encoding，正文里能直接读到原样的分段
+     */
+    TEST(CompressionMiddleware, LeavesStreamingResponsesUncompressed)
+    {
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
+        LoopbackClient                                  client(fixture->listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /stream HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout)) << "流式请求未能写入";
+
+        std::string receivedText;
+        ASSERT_TRUE(client.waitForText(receivedText, "stream-part-b", kCompressionTestTimeout)) << "流式响应没有把第二段送达：「" << receivedText << "」";
+        EXPECT_TRUE(hasHeaderLine(receivedText, "transfer-encoding: chunked")) << receivedText;
+        EXPECT_FALSE(hasHeaderLine(receivedText, "content-encoding: gzip")) << "流式响应被整块压缩，事件边界与 flush 语义都会被破坏：" << receivedText;
     }
 
     /**

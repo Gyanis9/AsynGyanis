@@ -1111,6 +1111,12 @@ namespace AsynGyanis::Net
                     return codec.name;
                 }
             }
+            // deflate 只参与在线协商，不进上面那张共享表：静态预压缩没有 `.deflate` 的部署约定，
+            // 表项会被文件变体查找当成一个真实后缀。它排在所有表项之后（兼容兜底，压缩率最差）
+            if (acceptsEncoding(acceptEncoding, "deflate"))
+            {
+                return "deflate";
+            }
             return {};
         }
 
@@ -1194,8 +1200,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 响应压缩选项
-     * @details 三种算法各有自己的档位语义：gzip 级别 1..9（zlib 的 6 是折中）、brotli 质量 0..11
-     *          （6 与 gzip 6 同档）、zstd 级别 1..22（3 是库自身的平衡点）。越界由各压缩构件夹取
+     * @details 在线协商支持 zstd / br / gzip / deflate 四种（deflate 排在最后，复用 gzip 档位；
+     *          静态预压缩只认前三种的后缀约定）。gzip 与 deflate 共用 zlib 的 1..9 级别（6 是折中）、
+     *          brotli 质量 0..11（6 与 gzip 6 同档）、zstd 级别 1..22（3 是库自身的平衡点）。
+     *          越界由各压缩构件夹取
      */
     struct ASYN_NET_API CompressionOptions
     {
@@ -1229,6 +1237,10 @@ namespace AsynGyanis::Net
             } else if (encoding == "br")
             {
                 compressed = brotliCompress(body, options.brotliQuality);
+            } else if (encoding == "deflate")
+            {
+                // 复用 gzip 的档位：两者都是 zlib 的 deflate 参数，1..9
+                compressed = deflateCompress(body, options.gzipLevel);
             } else
             {
                 compressed = gzipCompress(body, options.gzipLevel);
@@ -1267,7 +1279,11 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-                // 流式响应逐段写出、长度对序列化层未知，压不了整块
+                // 流式响应逐段写出、长度对序列化层未知，压不了整块。
+                // 按块压缩需要另定 flush 语义：SSE 的事件边界与压缩器的块边界不是一回事——每段都 flush
+                // 会让小事件膨胀（gzip 头发+同步块比正文还长），不 flush 又要跨事件缓冲，事件就失去
+                // 「写出即送达」的语义（text/event-stream 的消费方按事件计时）。因此这一格不覆盖流式，
+                // 需要压缩的流式接口请调用方自己按协议选边界
                 if (response.isChunkedResponse())
                 {
                     co_return;
@@ -1358,6 +1374,9 @@ namespace AsynGyanis::Net
      * @note 不压缩的情形（都会原样发正文）：对端不接受任何受支持的编码（含 `gzip;q=0` 这类明确拒绝）、
      *       响应已带 content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
      *       正文小于阈值、内容类型属于已压缩媒体
+     * @note 流式响应这一格是**有意不覆盖**：按块压缩要先定 flush 语义，而 SSE 的事件边界与压缩器的
+     *       块边界不是一回事——逐段 flush 会让小事件膨胀，跨事件缓冲又破坏「写完即送达」。需要压缩的
+     *       流式接口由调用方按自己的协议边界处理（见 compressionMiddlewareImplementation 里的说明）
      * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
      *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
      * @warning 正文可能很大时别用这一版：HTTP 三条路径的协程都跑在事件循环线程上，一条正文压多久，
