@@ -33,6 +33,7 @@
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
+#include "Net/Logging/LogExportConfiguration.h"
 #include "Net/Metrics/HttpStatsOtlp.h"
 #include "Net/Metrics/MetricsExportConfiguration.h"
 #include "Net/Quic/QuicServer.h"
@@ -616,6 +617,8 @@ int main(int argc, char **argv)
     Net::MetricsExportConfiguration metricsConfiguration;
     /// 证书自动化：段没写就是关着（默认值即「不建管理器」），其余一切不合法在读配置那一刻抛出
     Net::AcmeAutomationConfiguration acmeConfiguration;
+    /// 日志导出：段没写就是关着；开了就把 root 日志按周期推给 OTLP 采集端（按启动期定型）
+    Net::LogExportConfiguration logExportConfiguration;
 
     // 这两个都要早于任何工作线程：POSIX 的信号屏蔽字由子线程继承，先起的线程没被打上屏蔽，
     // 那之后一枚 SIGHUP 会按缺省动作直接把进程干掉。声明顺序也有讲究——serviceStatus 在前、
@@ -630,10 +633,19 @@ int main(int argc, char **argv)
     // 声明在回调之前——回调要按它逐台换代，而服务器对象要到后面才创建
     std::vector<std::function<void(const Net::HttpServerLimits &)>> reloadableLimitTargets;
 
+    // 日志段每次重装都会 clearSinks()，OTLP 日志 sink 必须在这一步之后补挂；导出段按启动期定型
+    const auto attachLogExportSink = [&logExportConfiguration]
+    {
+        if (auto sink = Net::buildOtlpLogSink(logExportConfiguration); sink != nullptr)
+        {
+            Base::LoggerRegistry::instance().getRootLogger().addSink(std::move(sink));
+        }
+    };
+
     // 重读后真正可变的运行时配置：logging 段与 server 限额。路由、监听地址、线程数、metrics_port
     // 与运维令牌要么需要重建监听器（等于换代进程），要么是安全边界（令牌热换改错就锁死自己），
     // 仍按启动期定型。HTTP/3 的限额随 QUIC 服务器在启动期定型，不在这条清单里
-    const auto applyReloadedRuntimeConfiguration = [&reloadableLimitTargets, configFile](const std::string_view trigger) -> std::string
+    const auto applyReloadedRuntimeConfiguration = [&reloadableLimitTargets, &attachLogExportSink, configFile](const std::string_view trigger) -> std::string
     {
         try
         {
@@ -643,6 +655,7 @@ int main(int argc, char **argv)
             const Base::ConfigValue            configurationDocument(std::move(document));
             const Net::HttpServerConfiguration reloaded = Net::readHttpServerConfiguration(configurationDocument);
             Base::LoggerConfigLoader::loadFromConfig("logging", std::filesystem::path(configFile).parent_path());
+            attachLogExportSink();
             for (const auto &applyLimits: reloadableLimitTargets)
             {
                 applyLimits(reloaded.limits);
@@ -748,6 +761,7 @@ int main(int argc, char **argv)
             document.emplace(std::string(Net::kTracingConfigSection), Base::ConfigManager::instance().getSection(Net::kTracingConfigSection));
             document.emplace(std::string(Net::kMetricsExportConfigSection), Base::ConfigManager::instance().getSection(Net::kMetricsExportConfigSection));
             document.emplace(std::string(Net::kAcmeConfigSection), Base::ConfigManager::instance().getSection(Net::kAcmeConfigSection));
+            document.emplace(std::string(Net::kLogExportConfigSection), Base::ConfigManager::instance().getSection(Net::kLogExportConfigSection));
             // 这里必须用圆括号：花括号会去配 initializer_list 那个构造，整份文档就变成一个数组，
             // 各读取器都找不到自己的段而全部走默认值——现象只是「配置写了没生效」
             const Base::ConfigValue configurationDocument(std::move(document));
@@ -759,6 +773,8 @@ int main(int argc, char **argv)
             // acme 段也在这一批读：证书自动化最常见的现场是「写了但没生效」，而它的第一处出口是几天之后
             // 第一次查到期，那时候没人还记得配置文件里写过什么。读不出、交叉判据不过都当场终止启动
             acmeConfiguration = Net::readAcmeConfiguration(configurationDocument);
+            // 日志导出段同批读：开了就必须有服务名与采集端地址，写不出来的写法不该等到第一条日志要发才炸
+            logExportConfiguration = Net::readLogExportConfiguration(configurationDocument);
         } catch (const std::exception &configurationException)
         {
             LOG_ERROR_EXCEPTION(configurationException, "配置读取失败，服务未启动。文件：{}，原因：{}", configFile, configurationException.what());
@@ -766,6 +782,9 @@ int main(int argc, char **argv)
         }
         LOG_INFO_FMT("已读取配置 {}：最大连接 {}，单来源 {}，限流 {} 请求/s（桶 {}），指标 {}", configFile, configuration.maximumConnections, configuration.maximumConnectionsPerIp,
                      configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, configuration.exposeMetrics ? "开" : "关");
+        // 日志段装完之后再挂 OTLP sink；同时说清开/关，免得「段写了却没生效」被当成通路故障
+        attachLogExportSink();
+        LOG_INFO_FMT("日志导出：{}", logExportConfiguration.enabled ? "开（root 日志按周期推给 " + logExportConfiguration.otlpEndpoint + "）" : "关");
     }
 
     // 排空预算取「服务器自己承诺的响应产出预算」，而不是写死一个数：`write_timeout_ms` 是三条通道对

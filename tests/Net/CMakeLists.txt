@@ -98,6 +98,9 @@ add_executable(TestNet
         Tracing/TestOtlpHttpSpanExporter.cpp
         Tracing/TestHttpTracingMiddleware.cpp
         Tracing/TestTracingConfiguration.cpp
+        Logging/TestOtlpLogJson.cpp
+        Logging/TestOtlpLogSink.cpp
+        Logging/TestLogExportConfiguration.cpp
         # 读数导出（Metrics）：渲染形状、周期出口、metrics 段配置
         Metrics/TestOtlpMetricsJson.cpp
         Metrics/TestOtlpHttpMetricsExporter.cpp
