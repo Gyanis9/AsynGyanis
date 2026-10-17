@@ -844,7 +844,7 @@ jobs:
         # Database 格垫底的原因不是没测：PG 与 Redis 两张驱动的真机用例在本作业里全是
         # GTEST_SKIP（没有可连的服务端），被跳过的每一行都不进覆盖。把两件服务当场喂给用例——
         # 数字往上走靠真跑的用例，不靠动下限。口令当场随机生成经 GITHUB_ENV 传给后续步骤，
-        # 仓库零明文。端口用 5433/6380：runner 镜像自带一台监听 5432 的 PostgreSQL，撞上即红。
+        # 仓库零明文。端口避开 5432/6379：runner 镜像里装着 PostgreSQL 与 MySQL（服务默认没起、端口空着），用非默认口是防御性的。
         run: |
           postgres_password="$(openssl rand -hex 16)"
           redis_password="$(openssl rand -hex 16)"
