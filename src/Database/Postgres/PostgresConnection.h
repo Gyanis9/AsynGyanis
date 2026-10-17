@@ -13,11 +13,14 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 // libpq 的全局 C 类型前置声明集中写在本头的全局作用域（全项目只此一处）：
 // 只有 .cpp 才包含 <libpq-fe.h>，避免第三方 C 头顺着包含链传染给所有使用方。
@@ -359,6 +362,29 @@ namespace AsynGyanis::Database
          */
         void applyQueryTimeoutNow() noexcept override;
 
+        /**
+         * @brief 语句缓存当前的预处理语句条数
+         * @details 上界是 kMaximumCachedStatements；表满时逐出最久未用的那条。
+         *          与 MySqlConnection::cachedStatementCount() 同形，便于两个驱动对着看
+         * @return std::size_t 表里的语句条数；未连接或桩构建为 0
+         */
+        [[nodiscard]] std::size_t cachedStatementCount() const noexcept
+        {
+            return m_statementCache.size();
+        }
+
+        /**
+         * @brief 语句缓存累计命中的次数（没命中就要向服务端 Parse 一次）
+         * @return std::uint64_t 命中次数
+         */
+        [[nodiscard]] std::uint64_t statementCacheHitCount() const noexcept
+        {
+            return m_statementCacheHits;
+        }
+
+        /// 语句缓存的条数上限：服务端每条命名语句都占一份会话级资源，上限换来可预期的占用
+        static constexpr std::size_t kMaximumCachedStatements = 64;
+
     private:
         /**
          * @brief 按当前 queryTimeout() 向服务端下发 statement_timeout
@@ -406,7 +432,37 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description);
 
+        /**
+         * @brief 取（必要时准备）一条语句的会话级名字
+         * @details 命中返回缓存里的名字；未命中就 PQprepare 一条新名字并登记。只对数据语句启用
+         *          （SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/WITH）：BEGIN/SET/DDL 这类控制语句
+         *          每次执行都便宜，且把它们放进命名语句池只会占额度
+         * @param commandText 语句文本（原样交给服务端，不做占位符改写）
+         * @param parameterCount 参数个数
+         * @return std::optional<std::string> 语句名；准备失败时为空（原因已写进 lastError()）
+         */
+        [[nodiscard]] std::optional<std::string> preparedStatementName(const std::string &commandText, int parameterCount);
+
+        /// 表满时逐出最久未用的那条：先 DEALLOCATE，再从表里删掉
+        void evictLeastRecentlyUsedStatement() noexcept;
+
+        /// 清空语句缓存（DISCARD ALL / 断链后服务端语句已不存在，必须与之一同失效）
+        void clearStatementCache() noexcept;
+
+        /// 缓存里的一条语句连同使用记号
+        struct CachedStatement
+        {
+            std::string   name;            ///< 服务端会话级语句名
+            std::uint64_t lastUseStamp{0}; ///< 最后使用序号（逐出最久未用的那条）
+        };
+
         PGconn *m_connection{nullptr}; ///< libpq 连接句柄，本对象独占所有权，未连接时为 nullptr
+
+        /// 参数化数据语句的缓存：键是语句原文，值是服务端名字与 LRU 记号（与 MySQL 侧同一策略）
+        std::unordered_map<std::string, CachedStatement> m_statementCache;
+        std::uint64_t                                    m_statementCacheUseStamp{0};
+        std::uint64_t                                    m_preparedStatementSerial{0}; ///< 生成本连接唯一的语句名
+        std::uint64_t                                    m_statementCacheHits{0};      ///< 累计命中次数
 
         /// 在途未清流的条数（每个 executeStreaming 成功开流 +1，结果读完/中断/析构收干时 -1）：
         /// 大于 0 时三条执行路径都在**发送之前**拒绝，resetSessionState 也据此判脏——回复流停在

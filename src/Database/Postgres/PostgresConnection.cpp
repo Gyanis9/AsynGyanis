@@ -33,8 +33,10 @@
 
 #endif // DATABASE_HAS_POSTGRES
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -111,6 +113,77 @@ namespace AsynGyanis::Database
 
         /// 次版本号在编号里占两位（minor * 100），取模 100 即得次版本号
         constexpr int kPostgresMinorVersionDivisor = 100;
+
+        /**
+         * @brief 语句是否适合进命名语句缓存（数据语句）
+         * @details 只认 SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/WITH 打头的语句。事务控制、SET 与 DDL
+         *          每次执行都便宜，且把它们塞进命名池只会占额度；更重要的是，这条判据让
+         *          「写错前缀的语句」退回 PQexecParams 的既有语义，而不是被 PQprepare 拒掉
+         * @param command 语句原文（前导空白与注释会被跳过）
+         * @return true 可以预处理并缓存
+         */
+        [[nodiscard]] bool isPreparableDataStatement(const std::string_view command) noexcept
+        {
+            std::size_t cursor = 0;
+            while (cursor < command.size() && (command[cursor] == ' ' || command[cursor] == '\t' || command[cursor] == '\r' || command[cursor] == '\n'))
+            {
+                ++cursor;
+            }
+            // 跳过前导注释：`--` 到行尾，`/* ... */` 到配对的结束符。跳不过去就按「不可预处理」退回旧路径
+            for (;;)
+            {
+                if (cursor + 1U < command.size() && command[cursor] == '-' && command[cursor + 1U] == '-')
+                {
+                    const std::size_t lineEnd = command.find('\n', cursor + 2U);
+                    cursor                    = lineEnd == std::string_view::npos ? command.size() : lineEnd + 1U;
+                } else if (cursor + 1U < command.size() && command[cursor] == '/' && command[cursor + 1U] == '*')
+                {
+                    const std::size_t blockEnd = command.find("*/", cursor + 2U);
+                    if (blockEnd == std::string_view::npos)
+                    {
+                        return false;
+                    }
+                    cursor = blockEnd + 2U;
+                } else
+                {
+                    break;
+                }
+                while (cursor < command.size() && (command[cursor] == ' ' || command[cursor] == '\t' || command[cursor] == '\r' || command[cursor] == '\n'))
+                {
+                    ++cursor;
+                }
+            }
+
+            constexpr std::array<std::string_view, 7> kPreparableKeywords{"SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "WITH"};
+            for (const std::string_view keyword: kPreparableKeywords)
+            {
+                if (command.size() - cursor < keyword.size())
+                {
+                    continue;
+                }
+                bool isSameKeyword = true;
+                for (std::size_t index = 0; index < keyword.size(); ++index)
+                {
+                    const char character = command[cursor + index];
+                    const char upperCase = (character >= 'a' && character <= 'z') ? static_cast<char>(character - 'a' + 'A') : character;
+                    if (upperCase != keyword[index])
+                    {
+                        isSameKeyword = false;
+                        break;
+                    }
+                }
+                if (isSameKeyword)
+                {
+                    // 关键字后面必须是分隔符：`SELECTED` 这样的标识符不该被当 SELECT
+                    const char following = cursor + keyword.size() < command.size() ? command[cursor + keyword.size()] : ' ';
+                    if (following == ' ' || following == '\t' || following == '\r' || following == '\n' || following == '(')
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
 
         /**
          * @brief 把基类的毫秒超时换算成 libpq 的 connect_timeout 秒数
@@ -492,6 +565,7 @@ namespace AsynGyanis::Database
         // PQfinish 释放句柄内部的全部缓冲，其中就包括 PQerrorMessage 指向的那一份，
         // 因此所有错误文本都必须在本行之前取走（connect()/execute()/takeResult() 的失败路径都遵守
         // 这一顺序）。建连失败时同样要走到这里：失败会话占用的内存同样只有 PQfinish 才能回收
+        clearStatementCache();
         PQfinish(m_connection);
         m_connection = nullptr;
     }
@@ -633,11 +707,94 @@ namespace AsynGyanis::Database
         // 里就推断成 id 的类型），这是扩展查询协议的正规用法，也避免客户端另建一份类型表；
         // paramFormats 传空指针：全部参数按文本格式送出，不引入二进制编码这一层；
         // resultFormat 传 0：结果同样按文本格式取回，与 convertColumnText 的按文本解析一一对应。
-        // 零参数时不交出数组（空 vector 的 data() 没有可读元素），nParams 为 0 时 libpq 也不会读它
-        PGresult *rawResult = PQexecParams(m_connection, commandText.c_str(), static_cast<int>(parameters.size()), nullptr, valuePointers.empty() ? nullptr : valuePointers.data(),
-                                           valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0);
+        // 零参数时不交出数组（空 vector 的 data() 没有可读元素），nParams 为 0 时 libpq 也不会读它。
+        // 数据语句走命名语句缓存：首次 PQprepare，之后 PQexecPrepared；控制语句仍走 PQexecParams
+        const int parameterCount = static_cast<int>(parameters.size());
+        PGresult *rawResult      = nullptr;
+        if (isPreparableDataStatement(commandText))
+        {
+            const std::optional<std::string> statementName = preparedStatementName(commandText, parameterCount);
+            if (!statementName.has_value())
+            {
+                return nullptr;
+            }
+            rawResult = PQexecPrepared(m_connection, statementName->c_str(), parameterCount, valuePointers.empty() ? nullptr : valuePointers.data(),
+                                       valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0);
+        } else
+        {
+            rawResult = PQexecParams(m_connection, commandText.c_str(), parameterCount, nullptr, valuePointers.empty() ? nullptr : valuePointers.data(),
+                                     valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0);
+        }
 
         return takeResult(rawResult, "执行带参数的 SQL 命令失败");
+    }
+
+    std::optional<std::string> PostgresConnection::preparedStatementName(const std::string &commandText, const int parameterCount)
+    {
+        const auto cached = m_statementCache.find(commandText);
+        if (cached != m_statementCache.end())
+        {
+            cached->second.lastUseStamp = ++m_statementCacheUseStamp;
+            ++m_statementCacheHits;
+            return cached->second.name;
+        }
+
+        if (m_statementCache.size() >= kMaximumCachedStatements)
+        {
+            evictLeastRecentlyUsedStatement();
+        }
+
+        const std::string statementName = "asyn_stmt_" + std::to_string(++m_preparedStatementSerial);
+        PGresult         *prepared      = PQprepare(m_connection, statementName.c_str(), commandText.c_str(), parameterCount, nullptr);
+        if (prepared == nullptr)
+        {
+            captureError("准备 SQL 语句失败");
+            return std::nullopt;
+        }
+        if (PQresultStatus(prepared) != PGRES_COMMAND_OK)
+        {
+            captureResultError(prepared, "准备 SQL 语句失败");
+            PQclear(prepared);
+            if (PQstatus(m_connection) == CONNECTION_BAD)
+            {
+                disconnect();
+            }
+            return std::nullopt;
+        }
+        PQclear(prepared);
+
+        m_statementCache.emplace(commandText, CachedStatement{statementName, ++m_statementCacheUseStamp});
+        return statementName;
+    }
+
+    void PostgresConnection::evictLeastRecentlyUsedStatement() noexcept
+    {
+        if (m_statementCache.empty())
+        {
+            return;
+        }
+        auto oldest = m_statementCache.begin();
+        for (auto candidate = std::next(m_statementCache.begin()); candidate != m_statementCache.end(); ++candidate)
+        {
+            if (candidate->second.lastUseStamp < oldest->second.lastUseStamp)
+            {
+                oldest = candidate;
+            }
+        }
+
+        // 逐出时把服务端那份也放手：名字是本类生成的 ASCII 标识符，不需要引用
+        const std::string deallocateStatement = "DEALLOCATE " + oldest->second.name;
+        if (PGresult *deallocated = PQexecParams(m_connection, deallocateStatement.c_str(), 0, nullptr, nullptr, nullptr, nullptr, 0); deallocated != nullptr)
+        {
+            PQclear(deallocated);
+        }
+        m_statementCache.erase(oldest);
+    }
+
+    void PostgresConnection::clearStatementCache() noexcept
+    {
+        // 只清本地表：调用点是 DISCARD ALL 之前与断链时，服务端那侧由这两条路径各自收掉
+        m_statementCache.clear();
     }
 
     std::unique_ptr<DatabaseResult> PostgresConnection::executeStreaming(const std::string_view command)
@@ -964,7 +1121,9 @@ namespace AsynGyanis::Database
             }
 
             // DISCARD ALL 把会话里一切可变状态复位：SET 变量、PREPARE 的语句、临时表、游标、
-            // LISTEN 注册等——上一个借用者绕过本类入口手工留下的东西同样收得掉
+            // LISTEN 注册等——上一个借用者绕过本类入口手工留下的东西同样收得掉。
+            // 本地语句缓存在它之前清空：DISCARD ALL 之后那些命名语句已经不存在
+            clearStatementCache();
             if (execute("DISCARD ALL") == nullptr)
             {
                 return false;

@@ -76,6 +76,7 @@
 #include <cstdlib>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -934,6 +935,57 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsLocalizedText(connection.lastError())) << connection.lastError();
         EXPECT_TRUE(connection.isConnected());
         EXPECT_NE(connection.execute("SELECT 1"), nullptr) << connection.lastError();
+    }
+
+    /**
+     * @brief 参数化数据语句走命名语句缓存：同文复用、条数有界，DISCARD ALL 后一起失效
+     * @details 判据分三段：同一条 SELECT 第二次执行命中缓存（服务端不再 Parse）；灌满上限后
+     *          条数稳定停在 64；resetSessionState() 之后缓存清零且下一次执行仍能重新准备成功
+     */
+    TEST_F(PostgresIntegrationTest, CachesPreparedStatementsAndClearsThemOnSessionReset)
+    {
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+        EXPECT_EQ(connection.cachedStatementCount(), 0U);
+        EXPECT_EQ(connection.statementCacheHitCount(), 0U);
+
+        const auto runAddition = [&connection](const std::int64_t operand) { return connection.execute("SELECT $1::bigint + 1 AS answer", std::vector<DatabaseValue>{operand}); };
+
+        {
+            const std::unique_ptr<DatabaseResult> firstResult = runAddition(41);
+            ASSERT_NE(firstResult, nullptr) << connection.lastError();
+            ASSERT_TRUE(firstResult->next());
+            EXPECT_EQ(std::get<std::int64_t>(firstResult->getValue("answer")), 42);
+        }
+        EXPECT_EQ(connection.cachedStatementCount(), 1U) << "首次执行没有把语句放进缓存";
+        EXPECT_EQ(connection.statementCacheHitCount(), 0U);
+
+        {
+            const std::unique_ptr<DatabaseResult> secondResult = runAddition(1);
+            ASSERT_NE(secondResult, nullptr) << connection.lastError();
+            ASSERT_TRUE(secondResult->next());
+            EXPECT_EQ(std::get<std::int64_t>(secondResult->getValue("answer")), 2);
+        }
+        EXPECT_EQ(connection.cachedStatementCount(), 1U) << "同一条语句重复执行长出了第二条缓存";
+        EXPECT_EQ(connection.statementCacheHitCount(), 1U) << "第二次执行没有命中缓存";
+
+        // 灌超上限：条数必须停在上界，且逐出之后仍能继续执行
+        for (std::size_t index = 0; index < PostgresConnection::kMaximumCachedStatements + 8U; ++index)
+        {
+            ASSERT_NE(connection.execute("SELECT " + std::to_string(index) + "::bigint AS value", std::span<const DatabaseValue>{}), nullptr) << connection.lastError();
+        }
+        EXPECT_LE(connection.cachedStatementCount(), PostgresConnection::kMaximumCachedStatements) << "语句缓存没有上界";
+        ASSERT_NE(runAddition(10), nullptr) << connection.lastError();
+
+        // DISCARD ALL 把服务端命名语句全部收掉，本地表必须跟着失效，否则下一次命中会撞上
+        // “prepared statement does not exist”
+        ASSERT_TRUE(connection.resetSessionState()) << connection.lastError();
+        EXPECT_EQ(connection.cachedStatementCount(), 0U) << "会话复位后本地缓存仍留着已失效的语句名";
+        const std::unique_ptr<DatabaseResult> afterReset = runAddition(41);
+        ASSERT_NE(afterReset, nullptr) << connection.lastError();
+        ASSERT_TRUE(afterReset->next());
+        EXPECT_EQ(std::get<std::int64_t>(afterReset->getValue("answer")), 42);
+        EXPECT_EQ(connection.cachedStatementCount(), 1U);
     }
 
     // ========================================================================
