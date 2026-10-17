@@ -5,31 +5,45 @@
 //   因此不需要服务端也永远可判——CI 上没有哨兵时这一组照常跑。
 // - 真机一组问一个被监控的主库：答得出的地址、监控名不存在时的终止、坏地址先跳过再问下一个、
 //   全部问不到时把每一台的失败原因都留在文案里。
+// - 故障转移一组：真把主库杀掉，等哨兵把副本提升成新主库，再确认地址真的变了。这一条是
+//   **破坏性**的（跑完旧主库已停机），因此单独由 `ASYN_REDIS_SENTINEL_TEST_FAILOVER=1` 门控，
+//   不进默认套件；要在一次性环境里跑。
 //
 // 真机一组的门控：`ASYN_REDIS_SENTINEL_TEST_NAME` 未设置即整组 GTEST_SKIP（不给默认值，
 // 免得在一台没有哨兵的机器上把「跳过」读成「通过」）。地址默认 127.0.0.1:26379，
 // 可用 `ASYN_REDIS_SENTINEL_TEST_HOST` / `_PORT` 覆盖。
-// CI 上要造出这个形状：先起一个主库（本仓其它真机用例已经在用的那台），再起一个哨兵指着它——
-//   docker run -d --name asyn-sentinel --link <主库容器名>:asynmaster -p 26379:26379 \
-//     -v <一个可写目录>:/sentinel redis:7 redis-server /sentinel/sentinel.conf --sentinel
-// 其中 sentinel.conf 至少要有 `port 26379`、`sentinel monitor mymaster asynmaster 6379 1`、
-// `sentinel resolve-hostnames yes` 与一个可写的 `dir /sentinel`（哨兵要把状态回写进配置文件，
-// 没有可写的配置文件时它直接退出，实测原文是 `Sentinel needs config file on disk to save state`）。
-// 然后设 `ASYN_REDIS_SENTINEL_TEST_NAME=mymaster` 跑 TestDatabase 即可。
+// 造这个形状的配方（主机端口映射；哨兵按 IP 监视，避免主库停掉后 DNS 解析失败把哨兵推进 tilt）：
+//   主库：docker run -d --name asyn-sentinel-master -p 16379:6379 redis:7.4 \
+//           redis-server --port 6379 --requirepass <pw>
+//   副本：docker run -d --name asyn-sentinel-replica -p 16380:6380 redis:7.4 \
+//           redis-server --port 6380 --requirepass <pw> --masterauth <pw> \
+//           --replicaof <宿主IP> 16379 --replica-announce-ip <宿主IP> --replica-announce-port 16380
+//   哨兵：docker run -d --name asyn-sentinel -p 26379:26379 -v <可写目录>:/sentinel redis:7.4 \
+//           redis-server /sentinel/sentinel.conf --sentinel
+// sentinel.conf 至少要有 `port 26379`、`dir /sentinel`、`sentinel monitor mymaster <宿主IP> 16379 1`、
+// `sentinel auth-pass mymaster <pw>` 与 `sentinel down-after-milliseconds mymaster 2000`；
+// 目录必须可写（哨兵要把状态回写进配置文件，没有可写的配置文件时它直接退出，实测原文是
+// `Sentinel needs config file on disk to save state`）。
+// 然后设 `ASYN_REDIS_SENTINEL_TEST_NAME=mymaster`、`ASYN_REDIS_SENTINEL_TEST_MASTER_PORT=16379`
+// 跑 TestDatabase 即可；故障转移那条再加 `ASYN_REDIS_SENTINEL_TEST_FAILOVER=1` 与主库口令。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
+#include "Database/Redis/RedisConnection.h"
 #include "Database/Redis/RedisSentinel.h"
 
 #include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace AsynGyanis::Database
@@ -43,6 +57,9 @@ namespace AsynGyanis::Database
 
         /// 哨兵的默认端口：主库是 6379，填错这一格是最常见的一次「连不上但其实连错了」
         constexpr std::uint16_t kDefaultSentinelPort = 26379;
+
+        /// 主库的默认端口；一次性环境常把它映射到别的宿主端口，因此断言读这一格而不是写死 6379
+        constexpr std::uint16_t kDefaultMasterPort = 6379;
 
         /**
          * @brief 取真机用例要查的监控名；未设置时返回空串（用例据此跳过）
@@ -61,6 +78,17 @@ namespace AsynGyanis::Database
         {
             return RedisSentinelAddress{readEnvironmentTextOrDefault("ASYN_REDIS_SENTINEL_TEST_HOST", "127.0.0.1"),
                                         readEnvironmentPortOrDefault("ASYN_REDIS_SENTINEL_TEST_PORT", kDefaultSentinelPort)};
+        }
+
+        /**
+         * @brief 哨兵应当报出的主库端口
+         * @details 一次性环境把主库映射到 16379 这类宿主端口时，哨兵报的是映射后的端口；
+         *          断言读这一格，别把用例绑死在 6379 上
+         * @return std::uint16_t 主库端口，可用 ASYN_REDIS_SENTINEL_TEST_MASTER_PORT 覆盖
+         */
+        [[nodiscard]] std::uint16_t expectedMasterPort()
+        {
+            return readEnvironmentPortOrDefault("ASYN_REDIS_SENTINEL_TEST_MASTER_PORT", kDefaultMasterPort);
         }
 
         /**
@@ -155,7 +183,7 @@ namespace AsynGyanis::Database
 
         ASSERT_TRUE(outcome.has_value()) << outcome.error();
         EXPECT_FALSE(outcome->host.empty());
-        EXPECT_EQ(outcome->port, 6379) << "哨兵报的主库端口不是 6379，发现链路可能连的是另一个实例";
+        EXPECT_EQ(outcome->port, expectedMasterPort()) << "哨兵报的主库端口不是预期的那个，发现链路可能连的是另一个实例";
     }
 
     /**
@@ -199,7 +227,7 @@ namespace AsynGyanis::Database
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
 
         ASSERT_TRUE(outcome.has_value()) << outcome.error();
-        EXPECT_EQ(outcome->port, 6379);
+        EXPECT_EQ(outcome->port, expectedMasterPort());
     }
 
     /**
@@ -223,6 +251,90 @@ namespace AsynGyanis::Database
         EXPECT_NE(outcome.error().find("问遍 2 个哨兵"), std::string::npos) << outcome.error();
         EXPECT_NE(outcome.error().find("连不上"), std::string::npos) << "第一台的原因没留在汇总里：" << outcome.error();
         EXPECT_NE(outcome.error().find("地址不完整"), std::string::npos) << "第二台的原因没留在汇总里：" << outcome.error();
+    }
+
+    /**
+     * @brief 真杀主库，等哨兵把副本提升，确认发现结果里的地址真的变了
+     *
+     * @details 这一条不是「问一次发现接口」：它先用发现结果连上当前主库、发 `SHUTDOWN NOSAVE`
+     *          把它打掉，再轮询哨兵直到报回来的地址不再是原来那一对。判据落在**端口变了**——
+     *          主库与副本在一次性环境里刻意用不同端口，地址没变就说明哨兵仍在报旧配置，
+     *          故障转移根本没发生。最后再连一次新主库并 PING，证明报出来的地址是活的。
+     *
+     * @note 破坏性：跑完旧主库已停机，副本被提升。由 `ASYN_REDIS_SENTINEL_TEST_FAILOVER=1`
+     *       单独门控，不进默认套件；主库口令取 `ASYN_REDIS_TEST_PASSWORD`（与其它真机用例同源）。
+     * @note 轮询是「等条件成立」而不是固定睡眠：每 200ms 问一次，最多 90 秒——哨兵在宿主负载
+     *       过高时会进入 30 秒的 tilt 模式并暂停故障转移，时限要留出一次恢复窗口；超时仍拿到
+     *       旧地址就红在该判据上，不会把一次没发生的事件读成通过。
+     */
+    TEST(RedisSentinel, PromotesTheReplicaWhenTheMasterIsKilled)
+    {
+        const std::string masterName = sentinelMasterName();
+        if (masterName.empty())
+        {
+            GTEST_SKIP() << "未设置 ASYN_REDIS_SENTINEL_TEST_NAME，跳过哨兵真机用例";
+        }
+        if (readEnvironmentVariableText("ASYN_REDIS_SENTINEL_TEST_FAILOVER") != "1")
+        {
+            GTEST_SKIP() << "未设置 ASYN_REDIS_SENTINEL_TEST_FAILOVER=1，跳过破坏性的故障转移用例（跑完旧主库会停机）";
+        }
+        const std::string masterPassword = readEnvironmentVariableText("ASYN_REDIS_TEST_PASSWORD");
+        if (masterPassword.empty())
+        {
+            GTEST_SKIP() << "未设置 ASYN_REDIS_TEST_PASSWORD：故障转移用例要连上旧主库发 SHUTDOWN，跳过";
+        }
+
+        const std::vector<RedisSentinelAddress>                sentinels{sentinelAddress()};
+        const std::expected<RedisSentinelAddress, std::string> before =
+                resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
+        ASSERT_TRUE(before.has_value()) << before.error();
+
+        ConnectionConfig masterConfiguration = ConnectionConfig::redisDefault();
+        masterConfiguration.host             = before->host;
+        masterConfiguration.port             = before->port;
+        masterConfiguration.password         = masterPassword;
+        masterConfiguration.database.clear();
+
+        {
+            RedisConnection master(masterConfiguration);
+            ASSERT_TRUE(master.connect()) << "杀主库之前连不上旧主库：" << master.lastError();
+            // 服务端执行完就关连接，本次 execute 必然拿不到正常的回复；这里只要求命令发出去了，
+            // 是否真的停机由下面的轮询判据证明
+            static_cast<void>(master.execute("SHUTDOWN NOSAVE"));
+        }
+
+        std::optional<RedisSentinelAddress> after;
+        std::string                         lastQueryError;
+        const auto                          deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            std::expected<RedisSentinelAddress, std::string> outcome =
+                    resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
+            if (outcome.has_value())
+            {
+                if (outcome->host != before->host || outcome->port != before->port)
+                {
+                    after = *outcome;
+                    break;
+                }
+            } else
+            {
+                lastQueryError = outcome.error();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+
+        ASSERT_TRUE(after.has_value()) << "90 秒内哨兵没有报出新主库；最后一次查询失败原因：" << lastQueryError;
+        EXPECT_NE(after->port, before->port) << "旧主库已被杀掉，哨兵报回来的仍是同一个端口——地址没有真的变";
+
+        ConnectionConfig promotedConfiguration = ConnectionConfig::redisDefault();
+        promotedConfiguration.host             = after->host;
+        promotedConfiguration.port             = after->port;
+        promotedConfiguration.password         = masterPassword;
+        promotedConfiguration.database.clear();
+        RedisConnection promoted(promotedConfiguration);
+        ASSERT_TRUE(promoted.connect()) << "哨兵报出的新主库连不上：" << promoted.lastError();
+        EXPECT_NE(promoted.execute("PING"), nullptr) << "新主库连上了但不回 PING：" << promoted.lastError();
     }
 
 } // namespace AsynGyanis::Database
