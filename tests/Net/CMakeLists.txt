@@ -38,6 +38,7 @@ add_executable(TestNet
         Http/TestHttpRequestId.cpp
         Http/TestTraceContext.cpp
         Http/TestHttpResponse.cpp
+        Http/TestProblemJson.cpp
         Http/TestMultipartForm.cpp
         Http/TestHttpVirtualHosts.cpp
         Http/TestHttpDirectoryListing.cpp

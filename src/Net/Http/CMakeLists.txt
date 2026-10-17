@@ -60,6 +60,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/MultipartForm.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpResponse.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ProblemJson.h
+        ${CMAKE_CURRENT_LIST_DIR}/ProblemJson.cpp
         ${CMAKE_CURRENT_LIST_DIR}/SseStream.h
         ${CMAKE_CURRENT_LIST_DIR}/SseStream.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpSession.h
