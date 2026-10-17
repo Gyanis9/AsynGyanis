@@ -21,12 +21,19 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Core
 {
+    /// 崩溃重启退避的上限：指数增长到这里为止，再长只会让恢复变慢
+    inline constexpr std::chrono::milliseconds kMaximumWorkerRestartBackoff{30'000};
+
+    /// 退避抖动的幅度：在基准值上下各 20% 内随机，避免多个槽位在同一时刻一起重启
+    inline constexpr double kWorkerRestartBackoffJitterRatio = 0.2;
+
     /**
      * @brief 编排器交给 worker 的那个参数名（移交模式下自动追加，值就是交接通道地址）
      * @details worker 侧要认它：拿到地址后用 Core::adoptHandedOverListener(值, 预算) 取回一份
@@ -67,6 +74,11 @@ namespace AsynGyanis::Core
      * @note 进程之间**不共享任何状态**：按来源 IP 的并发限额、限流桶、指标计数都是各进程一份。
      *       多进程下这意味着「单来源上限 × N、请求速率上限 × N、指标要按进程分别采集」——
      *       要真正的全局口径就得引入进程间共享（或改用单进程多工作循环 + 接受分发）。
+     * @note 崩溃循环的收口口径：连续「起来就崩」达到 @c crashLoopLimit 的槽位会被**放弃**（不再补它，
+     *       打一条 ERROR 点名槽位）；若整池都被放弃，run() 返回 false 交给进程管理器接手。只要还有其他
+     *       槽位在跑，被放弃的槽位静默满 `10 × crashLoopWindow` 后会**重新纳入一次**补位尝试（崩计数
+     *       清零）——给「配置被改好」「依赖恢复」这类外部修复留一条回去的路，同时不让它每轮都试。
+     *       催过的指标 `asyn_worker_slots_given_up` 是**累计放弃次数**，重新纳入不会把它减回去。
      */
     class ASYN_CORE_API WorkerSupervisor
     {
@@ -89,14 +101,26 @@ namespace AsynGyanis::Core
          */
         struct Configuration
         {
-            std::string               executablePath;         ///< 要起的可执行文件（通常就是本进程自己的映像）
-            std::vector<std::string>  workerArguments;        ///< 每个 worker 的固定参数（不含 argv[0]）
-            std::size_t               workerCount{1};         ///< worker 个数；必须大于 1，等于 1 时直接用单进程跑，不需要本类
-            std::chrono::milliseconds pollInterval{100};      ///< 观察存活与响应停止请求的轮询间隔
-            std::chrono::milliseconds restartBackoff{500};    ///< 补 worker 前的等待：避免崩溃循环里打转
+            std::string               executablePath;    ///< 要起的可执行文件（通常就是本进程自己的映像）
+            std::vector<std::string>  workerArguments;   ///< 每个 worker 的固定参数（不含 argv[0]）
+            std::size_t               workerCount{1};    ///< worker 个数；必须大于 1，等于 1 时直接用单进程跑，不需要本类
+            std::chrono::milliseconds pollInterval{100}; ///< 观察存活与响应停止请求的轮询间隔
+            /**
+             * @brief 崩溃重启退避的**基准值**：第 n 次连续崩溃后等 base × 2^(n-1)，封顶 30 秒，再叠 ±20% 抖动
+             * @details 恒定间隔并不能避免崩溃循环里打转（一个必崩的 worker 会以固定频率无限重启）；
+             *          指数增长让反复失败的槽位逐步让出 CPU 与日志，抖动避免多个槽位在同一刻一起回来。
+             *          首次启动（崩计数为 0）不走退避，冷启动因此不会串成 N × base。
+             */
+            std::chrono::milliseconds restartBackoff{500};
             std::chrono::milliseconds shutdownTimeout{10000}; ///< 收尾期限：请求退出后等到这个点就强杀
-            std::chrono::milliseconds crashLoopWindow{3000};  ///< 存活不足这个时长就退出，算一次「起来就崩」；必须大于 0
-            std::size_t               crashLoopLimit{5};      ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
+            /**
+             * @brief 「起来就崩」的存活门槛，同时是崩溃突发与放弃重新纳入的窗口
+             * @details 存活不足这个时长就退出算一次「起来就崩」；两次崩溃间隔超过它则视为新的一轮
+             *          （崩计数从 1 重新开始）。槽位被放弃后，静默满 `10 × crashLoopWindow` 会重新纳入
+             *          一次补位尝试——见类注释里的自愈口径。必须大于 0
+             */
+            std::chrono::milliseconds crashLoopWindow{3000};
+            std::size_t               crashLoopLimit{5}; ///< 连续「起来就崩」达到这个次数就停止补该 worker；至少为 1
             /// 移交配置（Windows 必填、POSIX 必须留空，见类注释与 Handoff 的 @note）：
             /// 有值即启用「master 送监听套接字」那套编排，本类会往 worker 参数尾部追加
             /// kHandedOverListenerArgument 与那条一次性通道的地址
@@ -186,6 +210,18 @@ namespace AsynGyanis::Core
         void requestStop() noexcept;
 
         /**
+         * @brief 按连续崩溃次数算下一次补位的退避（指数 + 封顶 + 抖动）
+         * @details 第 n 次连续崩溃（n ≥ 1）的基准是 `base × 2^(n-1)`，封顶 @c kMaximumWorkerRestartBackoff；
+         *          再乘 `1 ± kWorkerRestartBackoffJitterRatio` 的随机因子。单列成静态函数是为了让
+         *          增长、封顶与抖动边界可以被确定性用例钉住（编排层只负责喂一个 [0,1) 的随机数）。
+         * @param base 配置里的 restartBackoff（基准值）
+         * @param crashCount 连续崩溃次数；0 或 1 都按第一次算（首次启动不调用本函数，调用方按 0 次处理）
+         * @param jitterUnit [0,1) 的随机数；0.5 表示不抖动（恰为基准值）
+         * @return std::chrono::milliseconds 本次退避时长
+         */
+        [[nodiscard]] static std::chrono::milliseconds restartBackoffFor(std::chrono::milliseconds base, std::size_t crashCount, double jitterUnit) noexcept;
+
+        /**
          * @brief 当前仍在运行的 worker 数（日志与诊断用），任何线程可调
          * @return std::size_t 个数；这是编排线程**最近一轮扫描**的快照，最长滞后一个 pollInterval
          * @note 本接口不去探句柄：观察线程若直接调存活查询，会与编排线程同时读写同一个进程句柄
@@ -256,7 +292,9 @@ namespace AsynGyanis::Core
             Platform::Process::Handle             handle;           ///< 进程句柄
             std::chrono::steady_clock::time_point startTime;        ///< 启动时刻：判「起来就崩」用
             std::size_t                           crashCount{0};    ///< 该位连续「起来就崩」的次数
+            std::chrono::steady_clock::time_point lastCrashAt{};    ///< 最近一次崩溃时刻：判两次崩溃是否还在同一窗口内
             bool                                  isGivenUp{false}; ///< 是否已放弃补它（连续崩太多次）
+            std::chrono::steady_clock::time_point givenUpAt{};      ///< 放弃时刻：静默够久后重新纳入一次
             /// 心跳管道的读端（-1 = 该槽位没有心跳通道：没启用看门狗，或是 Windows）；只在编排线程上碰
             int heartbeatReadFd{-1};
             /// 上一次读到心跳字节的时刻；空表示这个槽位成立以来还没读到过拍。
@@ -408,7 +446,11 @@ namespace AsynGyanis::Core
          *          扫表就要引入一把新锁。两处崩溃记账各加一次，读的人只看到「一共崩了几次」
          */
         std::atomic<std::size_t> m_totalCrashCount{0};    ///< 连续「起来就崩」的累计次数（含补位那几轮）
-        std::atomic<std::size_t> m_givenUpWorkerCount{0}; ///< 已放弃补位的槽位数：涨一个就等于少一份容量，且不会自愈
+        std::atomic<std::size_t> m_givenUpWorkerCount{0}; ///< 累计放弃补位的槽位次数（重新纳入后再放弃会继续加）
+
+        /// 退避抖动：只在编排线程上取数，故不需要加锁；种子取 random_device，避免多进程同刻同序重启
+        std::mt19937_64                        m_restartJitterGenerator;
+        std::uniform_real_distribution<double> m_restartJitterDistribution{0.0, 1.0};
 
         /**
          * @brief 上面两条挂在进程级指标注册表上的把手
@@ -420,18 +462,27 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 记一次「起来就崩」：槽位计数与进程级累计各加一
-         * @details 两处崩溃点（起不来、存活不足窗口就退出）都走这里，避免只有一处记得抬累计
+         * @details 两处崩溃点（起不来、存活不足窗口就退出）都走这里，避免只有一处记得抬累计。
+         *          两次崩溃间隔超过 @c crashLoopWindow 视为新的一轮：计数从 1 重新开始，
+         *          否则「一天崩一次」也会在某个时刻凑满阈值而被误放弃
          */
         void noteWorkerCrash(Worker &worker) noexcept
         {
+            const auto now = std::chrono::steady_clock::now();
+            if (worker.crashCount > 0 && now - worker.lastCrashAt > m_configuration.crashLoopWindow)
+            {
+                worker.crashCount = 0;
+            }
             ++worker.crashCount;
+            worker.lastCrashAt = now;
             m_totalCrashCount.fetch_add(1, std::memory_order_relaxed);
         }
 
-        /// 记下某个槽位已被放弃补位（连续崩到上限）
+        /// 记下某个槽位已被放弃补位（连续崩到上限），并留下重新纳入的静默起点
         void noteWorkerGivenUp(Worker &worker) noexcept
         {
             worker.isGivenUp = true;
+            worker.givenUpAt = std::chrono::steady_clock::now();
             m_givenUpWorkerCount.fetch_add(1, std::memory_order_relaxed);
         }
 

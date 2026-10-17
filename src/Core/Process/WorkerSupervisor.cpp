@@ -9,6 +9,7 @@
 #include "Platform/System/PlatformError.h"
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -106,7 +107,7 @@ namespace AsynGyanis::Core
 #endif
     } // namespace
 
-    WorkerSupervisor::WorkerSupervisor(Configuration configuration) : m_configuration(std::move(configuration))
+    WorkerSupervisor::WorkerSupervisor(Configuration configuration) : m_configuration(std::move(configuration)), m_restartJitterGenerator(std::random_device{}())
     {
         if (m_configuration.executablePath.empty())
         {
@@ -167,10 +168,10 @@ namespace AsynGyanis::Core
                 Core::ProcessMetricsRegistry::registerMetric("asyn_worker_crashes_total", "worker「起来就崩」的累计次数（含补上去的那几轮）", Core::ProcessMetricKind::Counter,
                                                              Core::ProcessMetricMerge::Sum,
                                                              [this] { return static_cast<std::uint64_t>(m_totalCrashCount.load(std::memory_order_relaxed)); }),
-                Core::ProcessMetricsRegistry::registerMetric(
-                        "asyn_worker_slots_given_up", "已放弃补位的 worker 槽位累计数：每槽满编时少一个进程就少一份容量，只增不减（放弃这件事不会自愈，所以它也不是一个瞬时量）",
-                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
-                        [this] { return static_cast<std::uint64_t>(m_givenUpWorkerCount.load(std::memory_order_relaxed)); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_worker_slots_given_up",
+                                                             "被放弃补位的 worker 槽位累计次数：满编时少一个进程就少一份容量；槽位静默足够久会重新纳入，那时本计数不回退",
+                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
+                                                             [this] { return static_cast<std::uint64_t>(m_givenUpWorkerCount.load(std::memory_order_relaxed)); }),
         };
     }
 
@@ -566,17 +567,32 @@ namespace AsynGyanis::Core
             Worker &worker = m_workers[workerIndex];
             if (worker.isGivenUp)
             {
-                continue;
+                // 自愈口径：只要池子没全灭，槽位静默满 10 个 crashLoopWindow 就重新纳入一次。
+                // 不立即重试是为了不让一个必崩的槽位每轮都刷日志；窗口取得比崩溃判定长，
+                // 是为了等「配置改好」「依赖恢复」这类外部修复落定
+                const auto now = std::chrono::steady_clock::now();
+                if (now - worker.givenUpAt < m_configuration.crashLoopWindow * 10)
+                {
+                    continue;
+                }
+                LOG_INFO_FMT("WorkerSupervisor: worker {} 已静默 {} 毫秒，重新纳入补位（上次连续崩了 {} 次）", workerIndex,
+                             std::chrono::duration_cast<std::chrono::milliseconds>(now - worker.givenUpAt).count(), worker.crashCount);
+                worker.isGivenUp  = false;
+                worker.crashCount = 0;
             }
 
             if (!worker.handle.isValid())
             {
                 // 退避只加在「这个槽位已经崩过」之后：崩溃循环里不留一段满速重启的窗口。
                 // 首轮起进程时崩计数还是 0，若照样退避，N 个 worker 的冷启动就要串行等
-                // N × restartBackoff（默认 500 毫秒），进程池要空转几秒才开始接活
+                // N × restartBackoff（默认 500 毫秒），进程池要空转几秒才开始接活。
+                // 指数的基准是配置值，封顶与抖动见 restartBackoffFor()
                 if (worker.crashCount > 0)
                 {
-                    std::this_thread::sleep_for(m_configuration.restartBackoff);
+                    const std::chrono::milliseconds backoff =
+                            restartBackoffFor(m_configuration.restartBackoff, worker.crashCount, m_restartJitterDistribution(m_restartJitterGenerator));
+                    LOG_WARN_FMT("WorkerSupervisor: worker {} 连续第 {} 次崩溃，补位前退避 {} 毫秒", workerIndex, worker.crashCount, backoff.count());
+                    std::this_thread::sleep_for(backoff);
                     // 退避期间来了停止请求就到此为止：剩下那些槽位不该在收尾时补出新的 worker，
                     // 交给外层的循环条件收（少补一个是「收尾更快」，多补一个是「收尾时还得起新进程」）
                     if (m_isStopRequested.load(std::memory_order_acquire))
@@ -593,6 +609,27 @@ namespace AsynGyanis::Core
                 static_cast<void>(reapWorker(worker, workerIndex));
             }
         }
+    }
+
+    std::chrono::milliseconds WorkerSupervisor::restartBackoffFor(const std::chrono::milliseconds base, const std::size_t crashCount, const double jitterUnit) noexcept
+    {
+        if (base <= std::chrono::milliseconds::zero())
+        {
+            return base;
+        }
+        // 封顶至少是基准值：配置本身已经超过 30 秒时，不把它的首轮等待反过来压低
+        const std::chrono::milliseconds cap     = std::max(base, kMaximumWorkerRestartBackoff);
+        std::chrono::milliseconds       nominal = base;
+        for (std::size_t step = 1; step < crashCount && nominal < cap; ++step)
+        {
+            nominal = std::min(nominal * 2, cap);
+        }
+
+        // 抖动：jitterUnit 落在 [0,1)，映射到 [1-ratio, 1+ratio]；0.5 恰为基准值，用例因此可钉边界。
+        // 取整用四舍五入而不是截断：0.999999 的边界值乘出来是 119.99998，截断会造出一条测试里看得见的 119
+        const double boundedJitter = std::clamp(jitterUnit, 0.0, 0.999999);
+        const double factor        = 1.0 - kWorkerRestartBackoffJitterRatio + 2.0 * kWorkerRestartBackoffJitterRatio * boundedJitter;
+        return std::chrono::milliseconds{static_cast<std::int64_t>(std::llround(static_cast<double>(nominal.count()) * factor))};
     }
 
     void WorkerSupervisor::requestStop() noexcept

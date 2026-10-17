@@ -94,6 +94,22 @@ namespace AsynGyanis::Core
                 return lineCount;
             }
 
+            /// 读出全部非空行（新用例按行里的时间戳与槽位自行解析）
+            [[nodiscard]] std::vector<std::string> lines() const
+            {
+                std::vector<std::string> result;
+                std::ifstream            file(m_path, std::ios::in);
+                std::string              line;
+                while (std::getline(file, line))
+                {
+                    if (!line.empty())
+                    {
+                        result.push_back(line);
+                    }
+                }
+                return result;
+            }
+
         private:
             AsynGyanis::TestSupport::TemporaryDirectory m_directory; ///< 本用例独占的临时目录（析构时递归删除）
             std::filesystem::path                       m_path;      ///< 记录文件
@@ -263,6 +279,29 @@ namespace AsynGyanis::Core
         configuration.crashLoopLimit            = 3;
         const std::string acceptedRejectionText = rejectionTextOf(configuration);
         EXPECT_EQ(acceptedRejectionText.find("崩溃判据"), std::string::npos) << acceptedRejectionText;
+    }
+
+    /**
+     * @brief 退避的指数增长、封顶与抖动边界（纯函数钉住，不依赖调度时序；两个平台都跑）
+     */
+    TEST(WorkerSupervisor, RestartBackoffGrowsExponentiallyWithCapAndJitter)
+    {
+        using namespace std::chrono_literals;
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 0U, 0.5), 100ms) << "首次启动不该被指数放大";
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.5), 100ms);
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 2U, 0.5), 200ms);
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 3U, 0.5), 400ms);
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 4U, 0.5), 800ms);
+
+        // 封顶：指数涨到 30 秒就停，不再无限放大
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(1000ms, 20U, 0.5), kMaximumWorkerRestartBackoff);
+        // 配置的基准值本身超过封顶时，首轮等待不被反过来压低
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(60000ms, 1U, 0.5), 60000ms);
+
+        // 抖动边界：±20%，0.5 恰为基准值
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.0), 80ms);
+        EXPECT_EQ(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.999999), 120ms);
+        EXPECT_LT(WorkerSupervisor::restartBackoffFor(100ms, 1U, 0.9), WorkerSupervisor::restartBackoffFor(100ms, 2U, 0.1)) << "抖动不该吃掉相邻两档的增长";
     }
 
 #if ASYN_PLATFORM_WIN32
@@ -638,6 +677,104 @@ namespace AsynGyanis::Core
         EXPECT_EQ(launchLog.launchCount(), 6U) << "两个槽位各应被补到上限为止（各 3 次）";
         EXPECT_EQ(supervisor.runningWorkerCount(), 0U);
     }
+
+#if ASYN_PLATFORM_WIN32
+    TEST(WorkerSupervisor, GrowsRestartGapsAcrossRepeatedCrashes)
+    {
+        GTEST_SKIP() << "假 worker 是 POSIX shell；Windows 侧的跨进程编排由移交夹具覆盖，这条时序判据不在本平台跑";
+    }
+#else
+    /**
+     * @brief 真起一个必崩 worker：补位间隔要逐次变长（不是恒定 restartBackoff）
+     * @details 槽位 0 必崩、槽位 1 常驻，这样只有槽位 0 在走退避（两个槽位都崩时，补位循环里
+     *          彼此串行的睡眠会把「间隔」量成别人的等待，恒定退避也能伪装成逐次变长）。
+     *          脚本自己把启动时刻（纳秒）与槽位号写进文件；按槽位分组后量相邻两次启动的间隔。
+     *          基准 300 毫秒、抖动 ±20% 时第一档落在 [240,360]、第二档 [480,720]，因此「第二段
+     *          至少比第一段长 15%」在不赌具体数值的前提下成立
+     */
+    TEST(WorkerSupervisor, GrowsRestartGapsAcrossRepeatedCrashes)
+    {
+        const WorkerLaunchLog launchLog;
+        const std::string     script = "echo \"$(date +%s%N) $1\" >> \"" + launchLog.path().string() + "\"; if [ \"$1\" = \"0\" ]; then exit 1; else exec sleep 5; fi";
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath      = "/bin/sh";
+        configuration.workerArguments     = {"-c", script};
+        configuration.workerIndexArgument = "--slot";
+        configuration.workerCount         = 2;
+        configuration.pollInterval        = std::chrono::milliseconds{20};
+        configuration.restartBackoff      = std::chrono::milliseconds{300};
+        configuration.shutdownTimeout     = std::chrono::milliseconds{2000};
+        configuration.crashLoopWindow     = std::chrono::milliseconds{5000};
+        configuration.crashLoopLimit      = 3;
+
+        WorkerSupervisor  supervisor(configuration);
+        std::atomic<bool> isSettled{false};
+        std::thread       supervisorThread([&supervisor, &isSettled] { isSettled.store(supervisor.run(), std::memory_order_release); });
+
+        // 槽位 0 起 3 次（首次 + 两次补位）加上槽位 1 的首次启动，共 4 行
+        const bool hasEnoughLaunches = waitForCondition([&launchLog] { return launchLog.launchCount() >= 4U; }, kWaitTimeout);
+        supervisor.requestStop();
+        supervisorThread.join();
+        ASSERT_TRUE(hasEnoughLaunches) << "槽位 0 没有补到上限（启动记录 " << launchLog.launchCount() << " 行）";
+        EXPECT_TRUE(isSettled.load(std::memory_order_acquire)) << "请求停止之后编排没有正常收口";
+
+        std::vector<long long> slotZeroStarts;
+        for (const std::string &line: launchLog.lines())
+        {
+            const std::size_t separator = line.rfind(' ');
+            ASSERT_NE(separator, std::string::npos) << line;
+            if (line.substr(separator + 1U) == "0")
+            {
+                slotZeroStarts.push_back(std::stoll(line.substr(0, separator)));
+            }
+        }
+        ASSERT_EQ(slotZeroStarts.size(), 3U) << "槽位 0 应当被起 3 次（首次 + 两次补位）";
+        for (std::size_t index = 1; index < slotZeroStarts.size(); ++index)
+        {
+            ASSERT_GT(slotZeroStarts[index], slotZeroStarts[index - 1U]) << "启动时刻没有单调递增";
+        }
+
+        const long long firstGap  = slotZeroStarts[1] - slotZeroStarts[0];
+        const long long secondGap = slotZeroStarts[2] - slotZeroStarts[1];
+        EXPECT_GE(firstGap, 150'000'000LL) << "第一次补位没有按基准值退避：" << firstGap / 1'000'000 << " 毫秒";
+        EXPECT_GT(secondGap, firstGap * 115 / 100) << "补位间隔没有逐次变长（恒定退避？）：" << firstGap / 1'000'000 << " → " << secondGap / 1'000'000 << " 毫秒";
+    }
+
+    /**
+     * @brief 放弃之后的自愈口径：其他槽位还活着时，被放弃的槽位静默够久会重新纳入一次
+     * @details 槽位 0 必崩、槽位 1 常驻；crashLoopLimit=1 让槽位 0 一崩就被放弃，窗口 100 毫秒
+     *          因此静默 1 秒后重新纳入。判据落在「启动记录出现第 3 行」上：前两行是冷启动，
+     *          第三行只能是槽位 0 的自愈补位
+     */
+    TEST(WorkerSupervisor, ReAdmitsAGivenUpSlotAfterItsQuietWindow)
+    {
+        const WorkerLaunchLog launchLog;
+        const std::string     script = "echo worker >> \"" + launchLog.path().string() + "\"; if [ \"$1\" = \"0\" ]; then exit 1; else exec sleep 5; fi";
+
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath      = "/bin/sh";
+        configuration.workerArguments     = {"-c", script};
+        configuration.workerIndexArgument = "--slot";
+        configuration.workerCount         = 2;
+        configuration.pollInterval        = std::chrono::milliseconds{20};
+        configuration.restartBackoff      = std::chrono::milliseconds{50};
+        configuration.shutdownTimeout     = std::chrono::milliseconds{2000};
+        configuration.crashLoopWindow     = std::chrono::milliseconds{100};
+        configuration.crashLoopLimit      = 1;
+
+        WorkerSupervisor  supervisor(configuration);
+        std::atomic<bool> isSettled{false};
+        std::thread       supervisorThread([&supervisor, &isSettled] { isSettled.store(supervisor.run(), std::memory_order_release); });
+
+        const bool isReAdmitted = waitForCondition([&launchLog] { return launchLog.launchCount() >= 3U; }, kWaitTimeout);
+        supervisor.requestStop();
+        supervisorThread.join();
+
+        EXPECT_TRUE(isReAdmitted) << "被放弃的槽位没有在静默窗口之后重新纳入（启动记录停在 " << launchLog.launchCount() << " 行）";
+        EXPECT_TRUE(isSettled.load(std::memory_order_acquire)) << "请求停止之后编排没有正常收口";
+    }
+#endif
 
     /**
      * @brief 正常 worker 只起一次就稳定运行；收到停止请求后编排把它送走并返回
