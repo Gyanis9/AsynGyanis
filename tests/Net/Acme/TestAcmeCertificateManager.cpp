@@ -428,6 +428,21 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：第一次跑会签出一张可用的证书，私钥、账户状态与到期时刻各归其位
      */
+    /**
+     * @brief 钉住 Configuration 的五个时间默认值：改配置的人不必先翻实现
+     * @details 这五行是头文件里的默认成员初始化器；用例显式构造一份默认配置，既固定契约，
+     *          也让覆盖率不再把「没人默认构造过」记成未执行
+     */
+    TEST(AcmeCertificateManagerConfiguration, KeepsDocumentedDefaults)
+    {
+        const AcmeCertificateManager::Configuration configuration;
+        EXPECT_EQ(configuration.renewalCheckInterval, std::chrono::hours{12});
+        EXPECT_EQ(configuration.renewBeforeExpiry, std::chrono::hours{24 * 30});
+        EXPECT_EQ(configuration.issuanceTimeout, std::chrono::seconds{180});
+        EXPECT_EQ(configuration.challengePollInterval, std::chrono::milliseconds{500});
+        EXPECT_EQ(configuration.minimumRetryInterval, std::chrono::hours{1});
+    }
+
     TEST_F(AcmeCertificateManagerTest, IssuesAndPersistsACertificateOnFirstRun)
     {
         startServers({});
