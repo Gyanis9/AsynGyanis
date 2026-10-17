@@ -1511,7 +1511,7 @@ int main(int argc, char **argv)
         listeningServers.push_back(adminServer.get());
         servers.push_back(std::move(adminServer));
         serverLoopIndexes.push_back(0);
-        LOG_INFO_FMT("运维端点单独听在 {}:{}（业务口上不注册这四个端点）", configuration.metricsAddress, adminPort);
+        LOG_INFO_FMT("运维端点单独听在 {}:{}（业务口上不再注册它们）", configuration.metricsAddress, adminPort);
     }
 
     // HTTP/3 与 h1/h2 共存：它走 UDP，与上面的 TCP 端用同一个端口号互不干扰。

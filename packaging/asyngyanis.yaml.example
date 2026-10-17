@@ -19,11 +19,13 @@ server:
   maximum_connections_per_ip: 256
   # 在途请求正文总量上限（整机字节数），0 = 不设这道账。开了之后超预算的新请求回 503。
   memory_budget_bytes: 0
-  # 打开 /metrics、/healthz、/readyz、/debug/loops 四个运维端点。
+  # 打开运维端点：/metrics、/healthz、/readyz、/debug/loops、/debug/connections，
+  # 以及配了下面那个令牌时才注册的 /debug/log-level（改日志等级是写操作：没闸门就不留这个入口）。
   expose_metrics: true
   # 运维端点的 Bearer 令牌。**不要**把现场令牌写进本文件后提交；部署时把这一行取消注释并填入
   # 现场值（令牌只能写在配置文件里，命令行上的令牌会进 shell 历史与进程列表）。
-  # 不配 = /metrics 与 /debug/loops 不鉴权；/healthz 与 /readyz 刻意不查令牌。
+  # 不配 = /metrics、/debug/loops 与 /debug/connections 都不鉴权，且 /debug/log-level 不注册；
+  # /healthz 与 /readyz 刻意不查令牌（探针要能被编排器无凭据访问，给探针加闸的结局是探针被人关掉）。
   # ops_bearer_token: <现场值>
   # 运维端点另起的管理口；0 = 端点留在业务口上。多进程时实际端口是这里加进程序号。
   metrics_port: 9091
