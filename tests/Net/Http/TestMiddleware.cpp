@@ -188,6 +188,22 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 统计一段文本里某个子串出现的次数
+         * @param text     被检索的文本
+         * @param fragment 待查找的子串
+         * @return std::size_t 出现次数
+         */
+        std::size_t countSubstring(const std::string &text, const std::string_view fragment)
+        {
+            std::size_t count = 0;
+            for (std::size_t position = text.find(fragment); position != std::string::npos; position = text.find(fragment, position + fragment.size()))
+            {
+                ++count;
+            }
+            return count;
+        }
+
+        /**
          * @brief 测试协程：周期性检查取消令牌，观察到取消后立刻收工
          * @details 这是协作式超时下业务 handler 的标准形态——自己让出 CPU，并定期看 stop_requested()。
          *          同时带一个硬上界，绝不把事件循环和测试一起吊死。
@@ -494,6 +510,58 @@ namespace AsynGyanis::Net
         const std::lock_guard<std::mutex> recordLock(records->mutex);
         ASSERT_EQ(records->messages.size(), 1U);
         EXPECT_TRUE(containsText(records->messages[0], "429"));
+    }
+
+    TEST(LoggingMiddleware, EmitsCompleteAccessLogFieldsForRealTcpRequest)
+    {
+        auto records = std::make_shared<LogRecords>();
+        // 用真实回环 TCP 起服务：createPair 在 POSIX 侧是 AF_UNIX，测不到线上语义
+        HttpTestSupport::RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds(50), {},
+                                                          [records](Router &router, Core::EventLoop &)
+                                                          {
+                                                              router.addMiddleware(loggingMiddleware(makeRecordingLogger(records)));
+                                                              router.get("/items/:id",
+                                                                         [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                                         {
+                                                                             response.setBody("payload");
+                                                                             co_return;
+                                                                         });
+                                                          });
+        ASSERT_TRUE(fixture.awaitRunning(HttpTestSupport::kWaitTimeout)) << "服务器没有进入接受循环";
+
+        const auto parsed = HttpTestSupport::sendAndReadResponse(fixture.listeningPort(),
+                                                                 "GET /items/42?detail=1 HTTP/1.1\r\nHost: test\r\nx-request-id: req-abc\r\nConnection: close\r\n\r\n");
+        ASSERT_TRUE(parsed.has_value()) << "真实 TCP 请求没有拿到完整响应";
+
+        std::string accessLine;
+        ASSERT_TRUE(waitForCondition(
+                [&accessLine, &records]
+                {
+                    const std::lock_guard<std::mutex> recordLock(records->mutex);
+                    for (const std::string &message: records->messages)
+                    {
+                        if (message.find("HTTP 访问") != std::string::npos)
+                        {
+                            accessLine = message;
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kConditionTimeout))
+                << "访问日志没有写出";
+
+        // 每格各出现一次：任何一格从格式串里掉出去，这里都会少一条
+        EXPECT_EQ(countSubstring(accessLine, "method=GET"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "uri=/items/42?detail=1"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "status=200"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "duration_ms="), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "bytes=7"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "request_id=req-abc"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "client=127.0.0.1:"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "proto=HTTP/1.1"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "tls=0"), 1U);
+        EXPECT_EQ(countSubstring(accessLine, "route=/items/:id"), 1U);
     }
 
     // ============================================================================

@@ -274,18 +274,25 @@ namespace AsynGyanis::Net
     } // namespace Detail
 
     /**
-     * @brief 创建一个日志中间件，记录请求 URI、响应状态码与处理耗时。
+     * @brief 创建一个访问日志中间件，按稳定字段顺序记录一条可被日志平台解析的访问日志。
      * @param logger 日志器；为空指针时本中间件退化为透传（不记日志）
      * @return MiddlewareFunc 中间件函数
      *
      * @details 前置什么都不做，只在 `co_await next()` 返回后记一条 Info 日志，
      *          因此业务短路响应（429、504）同样会被记录，方便压障。
+     *          输出是一行 `key=value` 段，键序固定：method/uri/status/duration_ms/bytes/
+     *          request_id/client/proto/tls/route；取不到的值为 `-`，便于按空格切分后再按等号取值。
      *
      * @note 参数按 shared_ptr 收取：中间件会被塞进类型擦除的 std::function 里长期存活，
      *       按引用捕获外部对象等于把生命周期交给调用方口头保证，一旦对方传的是局部 logger 就是悬垂引用。
      *       借用 Base::LoggerRegistry 持有的日志器时，可用「空 shared_ptr + 裸指针」构造一个不拥有的
      *       共享指针（注册表单例的生命周期覆盖全进程）；若将来会 unregisterLogger()/clear()，
      *       请改为调用方自己拥有的 shared_ptr。
+     * @note `bytes` 取 `HttpResponse::body()` 的字节数：本类不记已发字节，流式响应（分块/SSE）
+     *       的正文由会话逐段写出，这里恒报 0。要覆盖流式那一档得另加计数器，那会碰三条协议路径。
+     * @note `route` 是路由器落定的模式原文（如 `/users/:id`），不是实际 URI：按它出账与打点不会
+     *       让标签基数随访问过的 URL 增长；未命中的请求报 `-`。
+     * @warning 刻意不记录 Authorization/Cookie 一类凭据字段。
      */
     inline MiddlewareFunc loggingMiddleware(std::shared_ptr<const Base::Logger> logger)
     {
@@ -301,8 +308,17 @@ namespace AsynGyanis::Net
             }
 
             // 耗时用毫秒整数：日志里读数量级够用，浮点秒反而把噪声写进眼睛
-            const auto elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTimePoint).count();
-            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(), "HTTP 请求 {} -> {}（{}ms）", request.uri(), response.status(), elapsedMilliseconds);
+            const auto        elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTimePoint).count();
+            const auto        method              = methodKeyword(request.method());
+            const auto        requestId           = request.requestId();
+            const auto        route               = request.matchedRoute();
+            const std::string clientAddress       = request.remoteAddress();
+
+            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(),
+                              "HTTP 访问 method={} uri={} status={} duration_ms={} bytes={} request_id={} client={} proto={} tls={} route={}",
+                              method.empty() ? std::string_view{"-"} : method, request.uri(), response.status(), elapsedMilliseconds, response.body().size(),
+                              requestId.empty() ? std::string_view{"-"} : requestId, clientAddress.empty() ? std::string_view{"-"} : std::string_view{clientAddress},
+                              request.httpVersion(), request.overTls() ? "1" : "0", route.empty() ? std::string_view{"-"} : route);
         };
     }
 
