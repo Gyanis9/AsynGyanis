@@ -326,6 +326,9 @@ python scripts/run_samples.py --build build/release --timeout 300
 要看「还有哪些代码没被触达」，用覆盖率构建（只在 GCC/Clang 侧，MSVC 没有 gcov 兼容工具链）：
 就地重配一次并跑完测试与示例，再用 `gcovr` 出报告——没被触达的行与分支就是清单上的欠账，
 示例里挂掉的每一步也都对应一处「公开面没被从库外驱动过」的地方。
+**Windows 侧没有覆盖率读数**：IOCP、wepoll、`ReadDirectoryChangesW`、`TransmitFile` 这些只在
+Windows 编到的实现不在 Linux 那份 gcovr 报告里；Windows 三条作业只保证用例通过，覆盖率门禁
+**只覆盖 Linux 能编到的那部分**。别把「Windows 全绿」读成「两边都有覆盖率读数」。
 
 ```bash
 cmake --preset debug -DASYN_ENABLE_COVERAGE=ON     # 就地重配，会触发一次全量重建
@@ -336,8 +339,9 @@ pip install gcovr && gcovr --root . --filter 'src/' --print-summary
 ```
 
 每次 `linux-ci.yml` 的 `coverage` 作业跑完都会把**当轮实测**打进作业摘要（阈值 60%，判据是 `scripts/check-coverage-gate.py`
-的下限——gcovr 自带的 `--fail-under-line` 已撤）；2026-09-30 在 `develop` 上的一次读数是**行覆盖 77%（29453/38230）**——这一档不带
-MySQL/Redis 真库分支，也不跑示例，所以它与下面那次手工全量的口径不同，两个数都别拿去替对方说话。
+的下限——gcovr 自带的 `--fail-under-line` 已撤）；2026-09-30 在 `develop` 上的一次读数是**行覆盖 77%（29453/38230）**——这一档
+现在会起 PG/Redis/MySQL 三件真机（MySQL 那 60 条集成用例从此进 CI），但仍不跑示例，所以它与下面那次手工全量的口径不同，
+两个数都别拿去替对方说话。
 2026-09-20 在 ubuntu24（GCC 13，ASan/UBSan 与 gcov 同开）跑完整套测试与全部示例后的实测：
 **行 76.2%（19828/26034）、函数 83.9%、分支 44.6%**；分模块行覆盖 Net 89.2%、Core 86.4%、
 Platform 86.2%、Base 71.9%、Database 54.2%。完全没被执行的只有 2 个文件——`MySqlResult.cpp`
