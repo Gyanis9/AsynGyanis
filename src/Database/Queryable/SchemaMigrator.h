@@ -1035,13 +1035,30 @@ namespace AsynGyanis::Database::Queryable
          * @param steps 迁移列表，按应应用的顺序给出；名字必须两两不同
          * @param appliedCount 可选出参：本次真正应用了几条（幂等的那次是 0）
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
-         * @param lockOptions 跨实例互斥的设置；默认 30 秒等锁，锁键按库名分开
          * @return true 列表中的每一条现在都已应用
          * @return false 列表不合法（空名、重名）、与已应用的不一致（不是前缀）、取锁超时或某一条执行失败
          * @throws Base::LogicException 列表里有空名或重名（调用方把列表写错了，不是运行期故障）
+         * @note 需要自定义锁设置时用下面那个重载。这里不给 `lockOptions` 默认实参：GCC 13 不接受
+         *       嵌套聚合（带默认成员初始化器）的 `const T & = {}` 默认实参——MSVC 会放过，
+         *       但 Linux 门禁当场红；委托到重载可绕开这一限制且行为不变
          */
-        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount = nullptr, std::string *errorText = nullptr,
-                                          const MigrationLockOptions &lockOptions = {})
+        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount = nullptr, std::string *errorText = nullptr)
+        {
+            return migrate(pool, steps, appliedCount, errorText, MigrationLockOptions{});
+        }
+
+        /**
+         * @brief 同 migrate()，但可指定跨实例互斥的锁键与等锁超时
+         * @param pool 提供连接的连接池
+         * @param steps 迁移列表，按应应用的顺序给出；名字必须两两不同
+         * @param appliedCount 可选出参：本次真正应用了几条（幂等的那次是 0）
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @param lockOptions 跨实例互斥的设置；锁键按库名分开
+         * @return true 列表中的每一条现在都已应用
+         * @return false 列表不合法（空名、重名）、与已应用的不一致（不是前缀）、取锁超时或某一条执行失败
+         */
+        [[nodiscard]] static bool migrate(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::size_t *appliedCount, std::string *errorText,
+                                          const MigrationLockOptions &lockOptions)
         {
             clearError(errorText);
             if (appliedCount != nullptr)
@@ -1119,13 +1136,30 @@ namespace AsynGyanis::Database::Queryable
          * @param stepCount 要回退几条；必须 ≥ 1 且不超过已应用的条数
          * @param rolledBackCount 可选出参：实际退掉了几条
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
-         * @param lockOptions 跨实例互斥的设置；与 migrate() 同一把锁
          * @return true 指定的条数都已回退
          * @return false 参数越界、与已应用的不一致、取锁超时或某一条回退失败
          * @throws Base::LogicException 列表里有空名或重名
+         * @note 与 migrate() 同一条限制：锁设置走下面那个重载，默认实参不写成 `{}`
          */
         [[nodiscard]] static bool rollbackLast(ConnectionPool &pool, const std::span<const MigrationStep> steps, const std::size_t stepCount,
-                                               std::size_t *rolledBackCount = nullptr, std::string *errorText = nullptr, const MigrationLockOptions &lockOptions = {})
+                                               std::size_t *rolledBackCount = nullptr, std::string *errorText = nullptr)
+        {
+            return rollbackLast(pool, steps, stepCount, rolledBackCount, errorText, MigrationLockOptions{});
+        }
+
+        /**
+         * @brief 同 rollbackLast()，但可指定跨实例互斥的锁键与等锁超时
+         * @param pool 提供连接的连接池
+         * @param steps 与 migrate() 同一份列表
+         * @param stepCount 要回退几条；必须 ≥ 1 且不超过已应用的条数
+         * @param rolledBackCount 可选出参：实际退掉了几条
+         * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
+         * @param lockOptions 跨实例互斥的设置；与 migrate() 同一把锁
+         * @return true 指定的条数都已回退
+         * @return false 参数越界、与已应用的不一致、取锁超时或某一条回退失败
+         */
+        [[nodiscard]] static bool rollbackLast(ConnectionPool &pool, const std::span<const MigrationStep> steps, const std::size_t stepCount, std::size_t *rolledBackCount,
+                                               std::string *errorText, const MigrationLockOptions &lockOptions)
         {
             clearError(errorText);
             if (rolledBackCount != nullptr)
