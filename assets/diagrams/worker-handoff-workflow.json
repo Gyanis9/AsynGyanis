@@ -113,7 +113,7 @@
       "tag": "满 5 次放弃",
       "sources": [
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 577, "end_line": 579, "label": "首轮不退避" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 730, "label": "crashLoopLimit" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 767, "label": "crashLoopLimit" }
       ]
     },
     {
@@ -139,7 +139,7 @@
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
         { "path": "src/Platform/IO/Socket.cpp", "line": 769, "end_line": 773, "label": "通道文件与权限" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 639, "label": "UpgradeChannel::open" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 677, "label": "UpgradeChannel::open" }
       ]
     },
     {
