@@ -699,9 +699,12 @@ jobs:
       - name: 配置（Release；Conan 依赖由 conan_provider.cmake 自动安装）
         run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF
 
-      - name: 构建 ReferenceServer 与 QUIC 跨实现探针的被测端
+      # 全树而不是只建三个验收产物：GCC 13 在 -O3 下的诊断（如 WebSocketClient 那处
+      # optional<string> 的 maybe-uninitialized 假阳性）只有这一档能抓到，定向构建会让它们
+      # 在 CI 里继续隐身。验收本身仍只用 ReferenceServer/quic_probe_*，不额外跑用例（时长考虑）。
+      - name: 全树构建（Release/-O3；跨实现验收只用其中三个产物）
         run: |
-          cmake --build build/release --target ReferenceServer quic_probe_server quic_probe_client
+          cmake --build build/release -- -k 0
 
       - name: HTTP/3 跨实现验收（GET/HEAD/流式/大正文/压缩/WebSocket 隧道）
         run: ASYN_H3_CROSS_LOG=/tmp/echo-h3.log bash scripts/h3_cross_check.sh build/release "$(command -v python3)"
