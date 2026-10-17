@@ -1661,7 +1661,7 @@ namespace AsynGyanis::Net
         registerHealthEndpoint(m_router, path);
     }
 
-    void HttpServer::enableReadinessEndpoint(const std::string_view path)
+    void HttpServer::enableReadinessEndpoint(const std::string_view path, ReadinessCheck dependencyCheck)
     {
         // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象
         if (path.empty() || path.front() != '/')
@@ -1670,8 +1670,8 @@ namespace AsynGyanis::Net
         }
 
         // 判据现读 isRunning()：排空没有推送口，编排器只能靠轮询问出来，缓存一份就会把「已经停了」
-        // 晚一拍报出去
-        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); });
+        // 晚一拍报出去；依赖检查原样转交，由调用方保证它只读快照
+        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); }, std::move(dependencyCheck));
     }
 
     void HttpServer::enableLoopDiagnosticsEndpoint(const std::string_view path)

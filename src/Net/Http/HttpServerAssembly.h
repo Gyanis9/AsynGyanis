@@ -20,6 +20,7 @@
 
 #include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/Middleware.h"
+#include "Net/Http/ReadinessCheck.h"
 
 #include <expected>
 #include <memory>
@@ -80,6 +81,14 @@ namespace AsynGyanis::Net
          * @note 0 是用法错误（等于「本进程一台都不接」），装配当场拒，不当「不摊」
          */
         std::size_t listenersPerProcess{1};
+
+        /**
+         * @brief 就绪探针的依赖检查（可选）
+         * @details 运维端点由本装配出口统一挂载；依赖检查也必须从同一个出口进，否则「业务口与
+         *          管理口各挂一份」会分叉。不交即只判「还在不在接新连接」，与加它之前逐字相同。
+         *          回调在服务器循环线程上被调用，必须是 O(1) 的快照读取（见 ReadinessCheck）
+         */
+        ReadinessCheck readinessCheck;
     };
 
     /**
@@ -125,9 +134,10 @@ namespace AsynGyanis::Net
      *          走管理监听器那一条（也是推荐形态——运维面不该跟着业务口一起公开出去）。
      * @param host 目标服务器，必须尚未 start()
      * @param configuration 已读出的配置（起作用的是 `exposeMetrics` 与 `opsBearerToken`）
+     * @param readinessCheck 可选的依赖检查；不交即只判「还在不在接新连接」
      */
     template<typename ServerType>
-    void registerOperationEndpoints(ServerType &host, const HttpServerConfiguration &configuration)
+    void registerOperationEndpoints(ServerType &host, const HttpServerConfiguration &configuration, const ReadinessCheck &readinessCheck = {})
     {
         if (!configuration.exposeMetrics)
         {
@@ -140,7 +150,7 @@ namespace AsynGyanis::Net
         }
         host.enableMetricsEndpoint();
         host.enableHealthEndpoint();
-        host.enableReadinessEndpoint();
+        host.enableReadinessEndpoint("/readyz", readinessCheck);
         host.enableLoopDiagnosticsEndpoint();
         // `/healthz` 与 `/readyz` 都不进上面那道令牌闸（`OpsAccessOptions::protectedPaths` 的默认名单里
         // 只有 /metrics 与 /debug/loops）：编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉

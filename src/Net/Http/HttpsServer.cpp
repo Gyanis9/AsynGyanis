@@ -202,7 +202,7 @@ namespace AsynGyanis::Net
         registerHealthEndpoint(m_router, path);
     }
 
-    void HttpsServer::enableReadinessEndpoint(const std::string_view path)
+    void HttpsServer::enableReadinessEndpoint(const std::string_view path, ReadinessCheck dependencyCheck)
     {
         if (path.empty() || path.front() != '/')
         {
@@ -210,7 +210,7 @@ namespace AsynGyanis::Net
         }
 
         // 与明文侧同一份实现、同一个判据：TLS 只是通路，「还在不在接新连接」这件事与加密无关
-        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); });
+        registerReadinessEndpoint(m_router, path, [this] { return isRunning(); }, std::move(dependencyCheck));
     }
 
     void HttpsServer::enableLoopDiagnosticsEndpoint(const std::string_view path)

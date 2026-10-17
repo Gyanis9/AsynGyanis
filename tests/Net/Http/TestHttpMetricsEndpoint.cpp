@@ -372,6 +372,88 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 依赖检查不就绪时回 503 并点名原因；恢复后回 200
+     */
+    TEST(HttpReadinessEndpoint, ReportsDependencyFailureWithReasonAndRecovers)
+    {
+        Router router;
+        bool   isAcceptingNewConnections = true;
+        bool   isDependencyReady         = false;
+        registerReadinessEndpoint(
+                router, "/readyz", [&isAcceptingNewConnections] { return isAcceptingNewConnections; },
+                [&isDependencyReady] { return ReadinessCheckResult{.ready = isDependencyReady, .reason = isDependencyReady ? std::string{} : std::string{"数据库连接池不可用"}}; });
+
+        const auto drive = [](Router &target, HttpRequest &request, HttpResponse &response)
+        {
+            Core::Task<> routeTask = target.route(request, response);
+            routeTask.handle().resume();
+            EXPECT_TRUE(routeTask.isReady());
+        };
+
+        {
+            HttpRequest  request;
+            HttpResponse response;
+            request.setMethod(HttpMethod::GET);
+            request.setUri("/readyz");
+            request.setHttpVersion("HTTP/1.1");
+            drive(router, request, response);
+
+            EXPECT_EQ(response.status(), 503) << "依赖不就绪时必须回 503";
+            EXPECT_NE(response.body().find("not_ready"), std::string::npos) << response.body();
+            EXPECT_NE(response.body().find("数据库连接池不可用"), std::string::npos) << "正文没有点名哪一格不就绪";
+            ASSERT_EQ(response.headerValues("retry-after").size(), 1U);
+        }
+
+        isDependencyReady = true;
+        {
+            HttpRequest  request;
+            HttpResponse response;
+            request.setMethod(HttpMethod::GET);
+            request.setUri("/readyz");
+            request.setHttpVersion("HTTP/1.1");
+            drive(router, request, response);
+            EXPECT_EQ(response.status(), 200) << "依赖恢复后应回到就绪";
+            EXPECT_EQ(response.body(), kReadinessReadyResponseBody);
+        }
+    }
+
+    /**
+     * @brief 探针只读快照：依赖的探测慢，不影响 /readyz 的响应时延
+     */
+    TEST(HttpReadinessEndpoint, DependencyCheckIsASnapshotAndDoesNotWaitForTheDependency)
+    {
+        std::atomic<bool>        isDependencyReady{false};
+        const ServerConfigurator configureServer = [&isDependencyReady](TestHttpServer &server)
+        { server.enableReadinessEndpoint("/readyz", [&isDependencyReady] { return ReadinessCheckResult{.ready = isDependencyReady.load(), .reason = "依赖仍在探测中"}; }); };
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        std::thread slowProbe(
+                [&isDependencyReady]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{300});
+                    isDependencyReady.store(true, std::memory_order_release);
+                });
+
+        const auto     started = std::chrono::steady_clock::now();
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid());
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText("GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
+        ASSERT_TRUE(client.waitForText(receivedText, "not_ready", kEndpointTimeout)) << "依赖未就绪时应立刻回 503";
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{250}) << "探针等了依赖：回调不是快照读取";
+        slowProbe.join();
+
+        ASSERT_TRUE(waitForCondition([&isDependencyReady] { return isDependencyReady.load(std::memory_order_acquire); }, kEndpointTimeout));
+        LoopbackClient recoveredClient(fixture.listeningPort());
+        ASSERT_TRUE(recoveredClient.isValid());
+        std::string recoveredText;
+        ASSERT_TRUE(recoveredClient.sendText("GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", kEndpointTimeout));
+        ASSERT_TRUE(recoveredClient.waitForText(recoveredText, kReadinessReadyResponseBody, kEndpointTimeout)) << "依赖恢复后探针没有回到 ready";
+    }
+
+    /**
      * @brief 端到端：还在接受新连接时，回环上抓 /readyz 得到 200 + ready
      */
     TEST(HttpReadinessEndpoint, ServesReadyOverLoopbackWhileAccepting)

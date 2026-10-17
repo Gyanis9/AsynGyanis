@@ -18,6 +18,7 @@
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/ReadinessCheck.h"
 #include "Net/Http/Router.h"
 #include "Net/Http/StaticFileMappingCache.h"
 #include "Net/Http/StaticFileService.h"
@@ -345,10 +346,12 @@ namespace AsynGyanis::Net
          *          关掉，比暴露「这台在不在接活」更糟。
          *
          * @param path 端点路径，必须以 `/` 开头；默认 `/readyz`
+         * @param dependencyCheck 可选的依赖检查；不交时行为与加它之前逐字相同。回调在事件循环线程上
+         *        调用，必须是 O(1) 的快照读取（见 ReadinessCheck）
          * @note 默认不开，与另两个端点同一条纪律；必须在 start() 之前调用
          * @see enableHealthEndpoint(), registerReadinessEndpoint(), TcpServer::isRunning()
          */
-        void enableReadinessEndpoint(std::string_view path = "/readyz");
+        void enableReadinessEndpoint(std::string_view path = "/readyz", ReadinessCheck dependencyCheck = {});
 
         /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）

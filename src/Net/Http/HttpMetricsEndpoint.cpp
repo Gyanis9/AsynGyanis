@@ -1,5 +1,6 @@
 #include "Net/Http/HttpMetricsEndpoint.h"
 
+#include "Base/Config/ConfigValue.h"
 #include "Base/Log/Sinks/AsyncSink.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Net/Http/HttpRequest.h"
@@ -268,17 +269,13 @@ namespace AsynGyanis::Net
         return out;
     }
 
-    void registerReadinessEndpoint(Router &router, const std::string_view path, std::function<bool()> isAccepting)
+    void registerReadinessEndpoint(Router &router, const std::string_view path, std::function<bool()> isAccepting, ReadinessCheck dependencyCheck)
     {
         router.get(std::string(path),
-                   [isAccepting = std::move(isAccepting)](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   [isAccepting = std::move(isAccepting), dependencyCheck = std::move(dependencyCheck)](HttpRequest &, HttpResponse &response) -> Core::Task<>
                    {
                        response.setHeader("content-type", "application/json");
-                       if (isAccepting())
-                       {
-                           response.setStatus(200);
-                           response.setBody(kReadinessReadyResponseBody);
-                       } else
+                       if (!isAccepting())
                        {
                            // retry-after 与另两处 503 同一口径（在途预算超量、h3 还没接上路由器）：排空期
                            // 里这台不会自己变回就绪，但探针按这个间隔再问一次的代价是零，而缺这一格的
@@ -286,7 +283,28 @@ namespace AsynGyanis::Net
                            response.setStatus(503);
                            response.setHeader("retry-after", "1");
                            response.setBody(kReadinessDrainingResponseBody);
+                           co_return;
                        }
+
+                       if (dependencyCheck)
+                       {
+                           // 回调是快照读取：真实依赖的探测在调用方自己的后台协程/线程里跑，
+                           // 这里只读上一轮结论，绝不在探针路径上做网络或磁盘 IO
+                           const ReadinessCheckResult result = dependencyCheck();
+                           if (!result.ready)
+                           {
+                               Base::ConfigValue body = Base::ConfigValue::object();
+                               body["status"]         = "not_ready";
+                               body["reason"]         = result.reason;
+                               response.setStatus(503);
+                               response.setHeader("retry-after", "1");
+                               response.setBody(Base::serializeConfigValue(body).value_or(R"({"status":"not_ready"})"));
+                               co_return;
+                           }
+                       }
+
+                       response.setStatus(200);
+                       response.setBody(kReadinessReadyResponseBody);
                        co_return;
                    });
     }

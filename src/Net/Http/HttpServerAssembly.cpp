@@ -145,7 +145,7 @@ namespace AsynGyanis::Net
             // 多进程时每个进程一个端口）——留在业务口上就等于跟着业务口一起公开出去
             if (configuration.metricsPort == 0)
             {
-                registerOperationEndpoints(server, configuration);
+                registerOperationEndpoints(server, configuration, context.readinessCheck);
             }
             return {};
         }

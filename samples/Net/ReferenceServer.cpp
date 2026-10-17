@@ -14,6 +14,7 @@
 #include "Core/Coroutine/ThreadPool.h"
 #include "Core/EventLoop/ConnectionDistributor.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/CrashScene.h"
 #include "Core/Process/GracefulShutdown.h"
@@ -28,6 +29,7 @@
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerAssembly.h"
+#include "Net/Http/ReadinessCheck.h"
 #include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/HttpServerStats.h"
@@ -38,6 +40,7 @@
 #include "Net/Metrics/MetricsExportConfiguration.h"
 #include "Net/Quic/QuicServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Net/Tcp/TcpClient.h"
 #include "Net/Tracing/HttpTracingMiddleware.h"
 #include "Net/Tracing/TracingConfiguration.h"
 #include "Net/WebSocket/WebSocketPeer.h"
@@ -48,7 +51,10 @@
 #include "common/SampleSupport.h"
 
 #include <atomic>
+#include <charconv>
 #include <chrono>
+#include <mutex>
+#include <system_error>
 #include <csignal>
 #include <cstdlib>
 
@@ -377,6 +383,65 @@ namespace
         pendingLoopCount.fetch_sub(1, std::memory_order_acq_rel);
         co_return;
     }
+
+    /**
+     * @brief 就绪依赖的上一轮探测结论
+     * @details 探测在后台协程里做，`/readyz` 只读快照：探针可能被编排器高频抓取，
+     *          在请求路径上做连接等于把整条事件循环按在一次网络往返上。
+     */
+    struct ReadyDependencyState
+    {
+        std::atomic<bool>  ready{true}; ///< 上一轮是否连得上
+        mutable std::mutex mutex;       ///< 保护 reason
+        std::string        reason{};    ///< 不就绪时的中文原因（不含连接串/凭据）
+
+        /// 发布一轮探测结论：先写原因再 release 置标志，读侧看到 false 时原因已经就位
+        void update(const bool isReady, std::string newReason)
+        {
+            const std::lock_guard lock(mutex);
+            reason = std::move(newReason);
+            ready.store(isReady, std::memory_order_release);
+        }
+
+        /// 给探针用的快照
+        [[nodiscard]] Net::ReadinessCheckResult snapshot() const
+        {
+            const std::lock_guard lock(mutex);
+            return {ready.load(std::memory_order_acquire), reason};
+        }
+    };
+
+    /**
+     * @brief 后台每 2 秒试连一次依赖地址，把结论写进 state
+     * @details 用 `TcpClient::connect`（异步连接，不占循环线程）；连上即就绪，否则不就绪。
+     *          这是示例级消费方：真实部署应把「连库 + 一次轻量查询」放进自己的探测协程/线程，
+     *          探针只交快照（形状与这里相同）。
+     * @param loop 承载连接与定时等待的事件循环（必须在它自己的线程上首次恢复）
+     * @param host 依赖主机名或 IP 文本
+     * @param port 依赖端口（主机字节序）
+     * @param state 上一轮结论的共享槽
+     * @return Core::Task<void> 永不自行返回的探测协程
+     */
+    Core::Task<> monitorReadyDependency(Core::EventLoop &loop, std::string host, const std::uint16_t port, std::shared_ptr<ReadyDependencyState> state)
+    {
+        Core::Timer timer(loop);
+        const auto  endpointText = host + ":" + std::to_string(port);
+        for (;;)
+        {
+            bool reachable = false;
+            try
+            {
+                const std::unique_ptr<Net::TcpStream> stream = co_await Net::TcpClient::connect(loop, host, port);
+                reachable                                    = stream != nullptr;
+            } catch (const std::exception &)
+            {
+                // connect 已把逐地址的失败折成 nullptr；这里只兜住分配/启动期的异常
+                reachable = false;
+            }
+            state->update(reachable, reachable ? std::string{} : "依赖 " + endpointText + " 不可达");
+            co_await timer.waitFor(std::chrono::seconds{2});
+        }
+    }
 } // namespace
 
 int main(int argc, char **argv)
@@ -385,22 +450,24 @@ int main(int argc, char **argv)
     uint16_t                   port    = 8080;
     unsigned                   threads = 0;         // 0 = auto (optimized for local benchmarks)
     std::optional<std::size_t> maxConnectionsPerIp; // 没给就走配置文件/内置默认（显式给 0 = 不限）
-    bool                       useHttps             = false;
-    bool                       useHttp2Cleartext    = false;
-    bool                       exposeMetrics        = false;
-    bool                       logJson              = false; // 日志按 JSON Lines 输出，供采集端解析
-    bool                       dispatchAccept       = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
-    bool                       pinThreadsToCores    = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
-    bool                       compressResponses    = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
-    bool                       compressInLoop       = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
-    std::size_t                maxInflightBodyBytes = 0;     // 0 = 不限制在途正文字节总量
-    std::size_t                workerProcessCount   = 1;     // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
-    bool                       isWorkerProcess      = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
-    bool                       useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
-    bool                       useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
-    bool                       showUsage            = false;
-    std::string                certificateFile      = "cert.pem";
-    std::string                keyFile              = "key.pem";
+    /// 就绪探针的依赖地址（--ready-tcp host:port）：空 = 只判「还在不在接新连接」
+    std::optional<std::pair<std::string, std::uint16_t>> readinessDependency;
+    bool                                                 useHttps             = false;
+    bool                                                 useHttp2Cleartext    = false;
+    bool                                                 exposeMetrics        = false;
+    bool                                                 logJson              = false; // 日志按 JSON Lines 输出，供采集端解析
+    bool                                                 dispatchAccept       = false; // 一个监听器 + N 个工作循环（不依赖 SO_REUSEPORT）
+    bool                                                 pinThreadsToCores    = false; // 启动时把每个工作循环线程绑到一枚逻辑核上
+    bool                                                 compressResponses    = false; // 按 Accept-Encoding 协商压缩响应（zstd/br/gzip）
+    bool                                                 compressInLoop       = false; // --compress-sync：压缩留在循环线程上做完，只作对照用
+    std::size_t                                          maxInflightBodyBytes = 0;     // 0 = 不限制在途正文字节总量
+    std::size_t                                          workerProcessCount   = 1;     // 1 = 单进程；大于 1 时由 master 起这么多 worker 进程
+    bool                                                 isWorkerProcess      = false; // 由 master 起的 worker 进程（内部开关，用户不必手写）
+    bool                                                 useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
+    bool                                                 useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
+    bool                                                 showUsage            = false;
+    std::string                                          certificateFile      = "cert.pem";
+    std::string                                          keyFile              = "key.pem";
     /// 命令行有没有显式给过证书/私钥：开了 acme 之后这两条要与 acme 的落点同解，
     /// 而「没给」（走上面那两个默认值）与「给成了别的路径」是两种处置，只能按是否给过来判
     bool certificateFileGiven = false;
@@ -470,6 +537,21 @@ int main(int argc, char **argv)
             // 一并打开压缩，只是把执行位置换回循环线程：与默认的外置路径对照才看得出差多少
             compressResponses = true;
             compressInLoop    = true;
+        } else if (arg == "--ready-tcp")
+        {
+            const std::string text = Samples::readOptionValue(argc, argv, i, "--ready-tcp", "host:port");
+            ++i;
+            const std::size_t colon        = text.rfind(':');
+            std::uint32_t     portValue    = 0;
+            const char       *portBegin    = colon == std::string::npos ? text.data() : text.data() + colon + 1;
+            const auto        parseOutcome = std::from_chars(portBegin, text.data() + text.size(), portValue);
+            if (colon == std::string::npos || colon == 0 || colon + 1 == text.size() || parseOutcome.ec != std::errc{} || parseOutcome.ptr != text.data() + text.size() ||
+                portValue == 0 || portValue > 65535)
+            {
+                LOG_ERROR_FMT("--ready-tcp 的取值「{}」不是 host:port（端口取 1-65535）", text);
+                return 1;
+            }
+            readinessDependency = std::pair<std::string, std::uint16_t>{text.substr(0, colon), static_cast<std::uint16_t>(portValue)};
         } else if (arg == "--max-inflight-body")
         {
             maxInflightBodyBytes = static_cast<std::size_t>(Samples::readNumericOption(argc, argv, i, "--max-inflight-body", 0U, std::numeric_limits<std::uint64_t>::max()));
@@ -582,6 +664,7 @@ int main(int argc, char **argv)
         LOG_INFO("            压缩交给工作线程做，完成后回到本连接的循环线程续上，循环不会为一次压缩停摆");
         LOG_INFO("  --compress-sync 同样开压缩，但留在事件循环线程上同步做完（只作对照：实测一条 256 KiB");
         LOG_INFO("            正文的 gzip 会把同循环小请求的 p50 从 37us 顶到 5.9ms）");
+        LOG_INFO("  --ready-tcp <host:port> 给 /readyz 接一个依赖检查（后台每 2 秒试连一次；不给则只判「还在不在接新连接」）");
         LOG_INFO("  --max-inflight-body 在途正文总量上限（整机字节数，0 = 不限；配置里对应 server.memory_budget_bytes，");
         LOG_INFO("            本开关是它的命令行覆盖）：挡住多条连接同时压着大正文，超出的请求回 503；");
         LOG_INFO("            按 --workers 摊到每个进程，明文、HTTPS 与 h3 三端共用同一份账");
@@ -1120,8 +1203,21 @@ int main(int argc, char **argv)
     /// 真正承担监听的那几台（分发模式下只有接受器：工作服务器从不自己 accept，isRunning 恒为 false）
     std::vector<Net::TcpServer *> listeningServers;
     servers.reserve(actualThreads);
-    acceptTasks.reserve(actualThreads);
+    acceptTasks.reserve(actualThreads + 1);
     listeningServers.reserve(actualThreads + 1);
+
+    // 就绪探针的依赖检查（--ready-tcp）：后台协程每 2 秒试连一次，探针只读上一轮结论。
+    // shortcut: TcpClient::connect 没有应用层超时（超时由内核重试支配），只适合回环/同机房的依赖；
+    // 依赖在路由黑洞后面时需要补带超时的探测。
+    Net::ReadinessCheck readinessCheck;
+    if (readinessDependency.has_value())
+    {
+        auto state = std::make_shared<ReadyDependencyState>();
+        acceptTasks.emplace_back(monitorReadyDependency(pool.eventLoop(0), readinessDependency->first, readinessDependency->second, state));
+        pool.eventLoop(0).scheduler().schedule(acceptTasks.back().handle());
+        readinessCheck = [state] { return state->snapshot(); };
+        LOG_INFO_FMT("就绪依赖检查已启用：{}:{}（每 2 秒探一次，探针只读上一轮结论）", readinessDependency->first, readinessDependency->second);
+    }
 
     // 按来源 IP 的限额只有一份、在所有监听器之间共享：内核按 SO_REUSEPORT 把新连接分给不同循环上的
     // 监听器，若每个服务器各持一份计数，单个来源的实际上限会乘上监听器数量，限额等于失效。
@@ -1197,6 +1293,7 @@ int main(int argc, char **argv)
         assemblyContext.workerProcessCount    = workerProcessTotal;
         // 一台进程里跑几条监听器就要乘几：TcpServer 的并发计数是每台一份的，只按进程摊会放行 L 倍
         assemblyContext.listenersPerProcess = actualThreads;
+        assemblyContext.readinessCheck      = readinessCheck;
         if (const auto outcome = Net::applyHttpServerConfiguration(*server, configuration, assemblyContext); !outcome)
         {
             // 只可能来自「共享对象与配置标量不一致」这一种自相矛盾的配置。装配发生在起服务之前，
@@ -1408,7 +1505,7 @@ int main(int argc, char **argv)
         // 业务口那边开没开 h2c 与这里无关（理由见 HttpServerConfiguration::metricsPort 的说明）
         // 共用那份采集端：管理口要报的是整进程的数，不是它自己那台服务器的零
         joinSharedMetricsCollector(adminServer);
-        Net::registerOperationEndpoints(*adminServer, configuration);
+        Net::registerOperationEndpoints(*adminServer, configuration, readinessCheck);
         adminListenTask = adminServer->start();
         pool.eventLoop(0).scheduler().schedule(adminListenTask->handle());
         listeningServers.push_back(adminServer.get());

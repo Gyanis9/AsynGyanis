@@ -18,6 +18,7 @@
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/ReadinessCheck.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/Http/Router.h"
 #include "Net/Http/StaticFileService.h"
@@ -275,11 +276,12 @@ namespace AsynGyanis::Net
          * @details 判据与渲染都在 `registerReadinessEndpoint()`，与明文侧共用同一份实现；它测的是
          *          「还能不能接新活」，与测存活性的 `/healthz` 各问一格，停机排空期间这条先变。
          * @param path 端点路径，必须以 `/` 开头；默认 `/readyz`
+         * @param dependencyCheck 可选的依赖检查；不交时行为与加它之前逐字相同（见 ReadinessCheck）
          * @throws Base::InvalidArgumentException 路径不以 `/` 开头
          * @note 必须在 start() 之前调用；与 `/healthz` 同样不查运维令牌（探针方拿不到凭据）
          * @see HttpServer::enableReadinessEndpoint(), registerReadinessEndpoint()
          */
-        void enableReadinessEndpoint(std::string_view path = "/readyz");
+        void enableReadinessEndpoint(std::string_view path = "/readyz", ReadinessCheck dependencyCheck = {});
 
         /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）

@@ -13,6 +13,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/HttpServerStats.h"
+#include "Net/Http/ReadinessCheck.h"
 
 #include <chrono>
 #include <cstddef>
@@ -97,13 +98,15 @@ namespace AsynGyanis::Net
      * @param router 目标路由器；与另两个端点同样必须在 start() 之前注册
      * @param path 端点路径，形状校验由调用方做（报错文案要点名是哪个服务器）
      * @param isAccepting 本端此刻是否仍在接受新连接，端点在每次抓取时现读它，不做缓存
+     * @param dependencyCheck 可选的依赖检查；不交时行为与加它之前逐字相同。非要就绪时回 503 并在
+     *        正文里点名原因；回调在事件循环线程上调用，必须是 O(1) 的快照读取（见 ReadinessCheck）
      * @note 同 (方法, 路径) 的重复注册是**就地替换**（Router 的既有语义，由
      *       `Router.ReplacesHandlerForSameMethodAndPathInPlace` 钉住）：业务先注册过同一条 GET 路径再开
      *       这个开关，自己那条会被本端点顶掉；先开开关、后注册同路径的业务处理函数，赢的是后者。
      *       两条注册都发生在 start() 之前，所以「谁在后」就是路由器里看到的那个次序。
      * @see HttpServer::enableReadinessEndpoint(), HttpsServer::enableReadinessEndpoint()
      */
-    ASYN_NET_API void registerReadinessEndpoint(Router &router, std::string_view path, std::function<bool()> isAccepting);
+    ASYN_NET_API void registerReadinessEndpoint(Router &router, std::string_view path, std::function<bool()> isAccepting, ReadinessCheck dependencyCheck = {});
 
     /**
      * @brief 注册存活性探针端点：回固定的 200 JSON
