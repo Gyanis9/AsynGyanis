@@ -101,6 +101,17 @@ namespace AsynGyanis::Database::Queryable
         {
             std::string migrationName; ///< 迁移名
         };
+
+        /// 迁移内容校验和的伴生表：与记录表分开，已有部署不必 ALTER 旧表就能开始记录
+        inline constexpr std::string_view kChecksumTableName   = "asyn_schema_migration_checksums";
+        inline constexpr std::string_view kChecksumValueColumn = "checksum";
+
+        /// 伴生表的一行：迁移名 + 首次应用时的内容校验和
+        struct ChecksumRow
+        {
+            std::string migrationName; ///< 迁移名（主键）
+            std::string checksum;      ///< 内容校验和（十六进制）
+        };
     } // namespace MigrationLedger
 } // namespace AsynGyanis::Database::Queryable
 
@@ -121,6 +132,24 @@ struct AsynGyanis::Database::Queryable::TableSchema<AsynGyanis::Database::Querya
     static constexpr auto kColumns = std::tuple{
             AsynGyanis::Database::Queryable::Column(&AsynGyanis::Database::Queryable::MigrationLedger::Row::migrationName,
                                                     AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn),
+    };
+
+    static constexpr std::string_view kPrimaryKey = AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn;
+};
+
+/**
+ * @brief 校验和伴生表的结构登记（与记录表同一条建表路径）
+ */
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<AsynGyanis::Database::Queryable::MigrationLedger::ChecksumRow>
+{
+    static constexpr std::string_view kTableName = AsynGyanis::Database::Queryable::MigrationLedger::kChecksumTableName;
+
+    static constexpr auto kColumns = std::tuple{
+            AsynGyanis::Database::Queryable::Column(&AsynGyanis::Database::Queryable::MigrationLedger::ChecksumRow::migrationName,
+                                                    AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn),
+            AsynGyanis::Database::Queryable::Column(&AsynGyanis::Database::Queryable::MigrationLedger::ChecksumRow::checksum,
+                                                    AsynGyanis::Database::Queryable::MigrationLedger::kChecksumValueColumn),
     };
 
     static constexpr std::string_view kPrimaryKey = AsynGyanis::Database::Queryable::MigrationLedger::kNameColumn;
@@ -572,6 +601,43 @@ namespace AsynGyanis::Database::Queryable
         };
 
         /**
+         * @brief 一条迁移的内容校验和（名字 + 各条 SQL 文本，按顺序）
+         * @details FNV-1a 64 位、定长十六进制：只用于「同一份台账前后是否被改过」，
+         *          不做安全用途。绑定参数值不进校验和——它们属于数据而不是结构，
+         *          迁移里的参数通常为空；要追踪数据变化请用业务审计列
+         * @param step 迁移步骤
+         * @return std::string 16 位小写十六进制
+         */
+        [[nodiscard]] static std::string checksumOfStep(const MigrationStep &step)
+        {
+            std::uint64_t hash = 14695981039346656037ULL;
+            const auto    mix  = [&hash](const std::string_view text)
+            {
+                for (const char character: text)
+                {
+                    hash ^= static_cast<unsigned char>(character);
+                    hash *= 1099511628211ULL;
+                }
+                // 分隔符避免 "ab"+"c" 与 "a"+"bc" 撞成同一个值
+                hash ^= 0xFFU;
+                hash *= 1099511628211ULL;
+            };
+            mix(step.name);
+            for (const SqlStatement &statement: step.upStatements)
+            {
+                mix(statement.sql);
+            }
+
+            std::string text(16, '0');
+            for (std::size_t index = text.size(); index > 0; --index)
+            {
+                text[index - 1U] = "0123456789abcdef"[hash & 0xFU];
+                hash >>= 4U;
+            }
+            return text;
+        }
+
+        /**
          * @brief 迁移互斥的设置
          *
          * @details 锁键会与「当前库名」一起哈希：PostgreSQL 的咨询锁与 MySQL 的 GET_LOCK
@@ -589,6 +655,9 @@ namespace AsynGyanis::Database::Queryable
         static constexpr std::string_view kMigrationLedgerTableName = MigrationLedger::kTableName;
         /// 迁移记录表的列名（同上）
         static constexpr std::string_view kMigrationNameColumn = MigrationLedger::kNameColumn;
+        /// 校验和伴生表名与值列（同上）
+        static constexpr std::string_view kMigrationChecksumTableName   = MigrationLedger::kChecksumTableName;
+        static constexpr std::string_view kMigrationChecksumValueColumn = MigrationLedger::kChecksumValueColumn;
 
         /// 迁移记录表的一行：由 MigrationLedger 定义，登记也排在那边（见那一处的说明）
         using MigrationLedgerRow = MigrationLedger::Row;
@@ -780,6 +849,13 @@ namespace AsynGyanis::Database::Queryable
                     return false;
                 }
 
+                const SqlStatement checksumStatement = createTableStatement<MigrationLedger::ChecksumRow>(*m_dialect, true);
+                if (m_connection->execute(std::string_view{checksumStatement.sql}, checksumStatement.parameters) == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 建迁移校验和表失败：" + m_connection->lastError());
+                    return false;
+                }
+
                 if (m_isTransactionScope)
                 {
                     // 台账先以自动提交建好（幂等），再用写事务把「读已应用 + 应用步骤」整段锁住；
@@ -814,6 +890,61 @@ namespace AsynGyanis::Database::Queryable
                     }
                     setError(errorText,
                              "SchemaMigrator: 迁移记录的名字列读不出文本（实际类型 " + std::string(databaseValueTypeName(value)) + "），请检查这张表是不是被别的程序改过");
+                    return false;
+                }
+                return true;
+            }
+
+            /**
+             * @brief 读已应用迁移的校验和（旧部署没有这张表时为空表）
+             * @param checksums 迁移名 → 校验和
+             * @param errorText 失败原因
+             * @return true 读取成功（表不存在也算成功，交回空表）
+             */
+            [[nodiscard]] bool readAppliedChecksums(std::unordered_map<std::string, std::string> *checksums, std::string *errorText)
+            {
+                checksums->clear();
+                const std::string listingSql = "SELECT " + m_dialect->quoteIdentifier(kMigrationNameColumn) + ", " + m_dialect->quoteIdentifier(kMigrationChecksumValueColumn) +
+                                               " FROM " + m_dialect->quoteIdentifier(kMigrationChecksumTableName);
+                const std::unique_ptr<DatabaseResult> listing = m_connection->execute(std::string_view{listingSql});
+                if (listing == nullptr)
+                {
+                    // 伴生表由 ensureLedger 刚建过；这里失败按真实错误上报，不静默当成「没有记录」
+                    setError(errorText, "SchemaMigrator: 读迁移校验和失败：" + m_connection->lastError());
+                    return false;
+                }
+                while (listing->next())
+                {
+                    const DatabaseValue nameValue     = listing->getValue(std::size_t{0});
+                    const DatabaseValue checksumValue = listing->getValue(std::size_t{1});
+                    const auto         *nameText      = std::get_if<std::string>(&nameValue);
+                    const auto         *checksumText  = std::get_if<std::string>(&checksumValue);
+                    if (nameText == nullptr || checksumText == nullptr)
+                    {
+                        setError(errorText, "SchemaMigrator: 迁移校验和表的内容不是文本，请检查这张表是不是被别的程序改过");
+                        return false;
+                    }
+                    checksums->insert_or_assign(*nameText, *checksumText);
+                }
+                return true;
+            }
+
+            /**
+             * @brief 给一条旧迁移补记当前校验和（只在台账里没有记录时调用）
+             */
+            [[nodiscard]] bool backfillChecksum(const MigrationStep &step, std::string *errorText)
+            {
+                std::string insertSql = "INSERT INTO " + m_dialect->quoteIdentifier(kMigrationChecksumTableName) + " (" + m_dialect->quoteIdentifier(kMigrationNameColumn) + ", " +
+                                        m_dialect->quoteIdentifier(kMigrationChecksumValueColumn) + ") VALUES (";
+                m_dialect->appendPlaceholder(insertSql, 0);
+                insertSql += ", ";
+                m_dialect->appendPlaceholder(insertSql, 1);
+                insertSql += ')';
+
+                const std::vector<DatabaseValue> parameters{DatabaseValue(step.name), DatabaseValue(checksumOfStep(step))};
+                if (m_connection->execute(std::string_view{insertSql}, std::span<const DatabaseValue>(parameters)) == nullptr)
+                {
+                    setError(errorText, "SchemaMigrator: 补记迁移「" + step.name + "」的校验和失败：" + m_connection->lastError());
                     return false;
                 }
                 return true;
@@ -1007,10 +1138,167 @@ namespace AsynGyanis::Database::Queryable
                 }
                 return false;
             }
+
+            // 校验和与记录同生共死：应用时写入首次内容摘要，回退时连同记录一起删
+            std::string checksumSql;
+            if (isRollingBack)
+            {
+                checksumSql = "DELETE FROM " + dialect.quoteIdentifier(kMigrationChecksumTableName) + " WHERE " + dialect.quoteIdentifier(kMigrationNameColumn) + " = ";
+                dialect.appendPlaceholder(checksumSql, 0);
+            } else
+            {
+                checksumSql = "INSERT INTO " + dialect.quoteIdentifier(kMigrationChecksumTableName) + " (" + dialect.quoteIdentifier(kMigrationNameColumn) + ", " +
+                              dialect.quoteIdentifier(kMigrationChecksumValueColumn) + ") VALUES (";
+                dialect.appendPlaceholder(checksumSql, 0);
+                checksumSql += ", ";
+                dialect.appendPlaceholder(checksumSql, 1);
+                checksumSql += ')';
+            }
+            const std::vector<DatabaseValue> checksumParameters = isRollingBack ? std::vector<DatabaseValue>{DatabaseValue(step.name)}
+                                                                                : std::vector<DatabaseValue>{DatabaseValue(step.name), DatabaseValue(checksumOfStep(step))};
+            if (connection.execute(std::string_view{checksumSql}, std::span<const DatabaseValue>(checksumParameters)) == nullptr)
+            {
+                if (errorText != nullptr)
+                {
+                    *errorText = "SchemaMigrator: " + std::string(phase) + "迁移「" + step.name + "」的校验和记账失败（本次已回滚）：" + connection.lastError();
+                }
+                return false;
+            }
             return true;
         }
 
     public:
+        /**
+         * @brief 只报「还没应用哪些迁移」，不执行任何迁移语句（dry-run）
+         * @details 只读快照：不取迁移锁、不建表、不写台账。台账不存在时认为全部待应用。
+         *          已应用迁移的校验和与当前列表不一致时按失败报出（与 migrate() 同一判据），
+         *          这样 `--plan` 也能提前看见「改了旧迁移」这种要拒绝的形状
+         * @param pool 提供连接的连接池
+         * @param steps 迁移列表
+         * @param pendingNames 出参：按列表顺序排列的待应用迁移名
+         * @param errorText 可选出参；失败时写入中文原因
+         * @return true 计划生成成功；false 列表不合法、读台账失败或发现校验和漂移
+         */
+        [[nodiscard]] static bool plan(ConnectionPool &pool, const std::span<const MigrationStep> steps, std::vector<std::string> *pendingNames, std::string *errorText = nullptr)
+        {
+            clearError(errorText);
+            if (pendingNames == nullptr)
+            {
+                writeError(errorText, "SchemaMigrator: plan() 的 pendingNames 出参为空");
+                return false;
+            }
+            pendingNames->clear();
+            requireDistinctStepNames(steps);
+
+            const std::shared_ptr<SqlDialect> dialect = resolveDialect(pool, errorText);
+            if (dialect == nullptr)
+            {
+                return false;
+            }
+
+            std::string existenceError;
+            if (!tableExists<MigrationLedgerRow>(pool, &existenceError))
+            {
+                if (!existenceError.empty())
+                {
+                    writeError(errorText, std::move(existenceError));
+                    return false;
+                }
+                for (const MigrationStep &step: steps)
+                {
+                    pendingNames->push_back(step.name);
+                }
+                return true;
+            }
+
+            // 伴生表的存在性要在借出下面那条连接之前问：tableExists() 自己也要借连接，
+            // 池上限为 1 时握着连接再问就是把自己排在自己后面
+            std::string checksumTableError;
+            const bool  hasChecksumTable = tableExists<MigrationLedger::ChecksumRow>(pool, &checksumTableError);
+            if (!hasChecksumTable && !checksumTableError.empty())
+            {
+                writeError(errorText, std::move(checksumTableError));
+                return false;
+            }
+
+            const PooledConnection connection = pool.acquire();
+            if (!connection)
+            {
+                writeError(errorText, "SchemaMigrator: plan() 从连接池获取连接失败");
+                return false;
+            }
+
+            const std::string listingSql = "SELECT " + dialect->quoteIdentifier(kMigrationNameColumn) + " FROM " + dialect->quoteIdentifier(kMigrationLedgerTableName);
+            const std::unique_ptr<DatabaseResult> listing = connection->execute(std::string_view{listingSql});
+            if (listing == nullptr)
+            {
+                writeError(errorText, "SchemaMigrator: plan() 读迁移记录失败：" + connection->lastError());
+                return false;
+            }
+
+            std::vector<std::string>                     appliedNames;
+            std::unordered_map<std::string, std::string> appliedChecksums;
+            while (listing->next())
+            {
+                const DatabaseValue value = listing->getValue(std::size_t{0});
+                if (const auto *nameText = std::get_if<std::string>(&value); nameText != nullptr)
+                {
+                    appliedNames.push_back(*nameText);
+                    continue;
+                }
+                writeError(errorText, "SchemaMigrator: plan() 读到的迁移名不是文本");
+                return false;
+            }
+
+            if (!isAppliedPrefixOfSteps(appliedNames, steps, errorText))
+            {
+                return false;
+            }
+
+            if (hasChecksumTable)
+            {
+                const std::string checksumSql = "SELECT " + dialect->quoteIdentifier(kMigrationNameColumn) + ", " + dialect->quoteIdentifier(kMigrationChecksumValueColumn) +
+                                                " FROM " + dialect->quoteIdentifier(kMigrationChecksumTableName);
+                const std::unique_ptr<DatabaseResult> checksumListing = connection->execute(std::string_view{checksumSql});
+                if (checksumListing == nullptr)
+                {
+                    writeError(errorText, "SchemaMigrator: plan() 读迁移校验和失败：" + connection->lastError());
+                    return false;
+                }
+                while (checksumListing->next())
+                {
+                    const DatabaseValue nameValue     = checksumListing->getValue(std::size_t{0});
+                    const DatabaseValue checksumValue = checksumListing->getValue(std::size_t{1});
+                    const auto         *nameText      = std::get_if<std::string>(&nameValue);
+                    const auto         *checksumText  = std::get_if<std::string>(&checksumValue);
+                    if (nameText == nullptr || checksumText == nullptr)
+                    {
+                        writeError(errorText, "SchemaMigrator: plan() 读到的迁移校验和不是文本");
+                        return false;
+                    }
+                    appliedChecksums.insert_or_assign(*nameText, *checksumText);
+                }
+            }
+
+            const std::unordered_set<std::string> appliedSet(appliedNames.begin(), appliedNames.end());
+            for (const MigrationStep &step: steps)
+            {
+                if (!appliedSet.contains(step.name))
+                {
+                    pendingNames->push_back(step.name);
+                    continue;
+                }
+                const auto stored = appliedChecksums.find(step.name);
+                if (stored != appliedChecksums.end() && stored->second != checksumOfStep(step))
+                {
+                    writeError(errorText, "SchemaMigrator: 迁移「" + step.name + "」的内容与台账记录的校验和不一致（台账 " + stored->second + "，当前 " + checksumOfStep(step) +
+                                                  "）。已应用的迁移不应修改；请新增一条迁移来承载这次变更");
+                    return false;
+                }
+            }
+            return true;
+        }
+
         /**
          * @brief 按列表顺序应用尚未应用的迁移（重复调用幂等）
          *
@@ -1100,7 +1388,36 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
+            // 已应用的每一步都要与台账里的内容校验和对上：改了已发布迁移的 SQL 却想悄悄重跑，
+            // 在这里被拦下（旧部署没有校验和记录时，按当前内容补一份基线，不追溯判断漂移）
+            std::unordered_map<std::string, std::string> appliedChecksums;
+            if (!session.readAppliedChecksums(&appliedChecksums, errorText))
+            {
+                return false;
+            }
             const std::unordered_set<std::string> appliedSet(appliedNames.begin(), appliedNames.end());
+            for (const MigrationStep &step: steps)
+            {
+                if (!appliedSet.contains(step.name))
+                {
+                    continue;
+                }
+                const std::string expectedChecksum = checksumOfStep(step);
+                const auto        stored           = appliedChecksums.find(step.name);
+                if (stored == appliedChecksums.end())
+                {
+                    if (!session.backfillChecksum(step, errorText))
+                    {
+                        return false;
+                    }
+                } else if (stored->second != expectedChecksum)
+                {
+                    writeError(errorText, "SchemaMigrator: 迁移「" + step.name + "」的内容与台账记录的校验和不一致（台账 " + stored->second + "，当前 " + expectedChecksum +
+                                                  "）。已应用的迁移不应修改；请新增一条迁移来承载这次变更");
+                    return false;
+                }
+            }
+
             for (const MigrationStep &step: steps)
             {
                 if (appliedSet.contains(step.name))

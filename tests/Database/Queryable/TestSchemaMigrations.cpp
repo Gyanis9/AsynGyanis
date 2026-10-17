@@ -200,6 +200,43 @@ TEST_F(SchemaMigrationsTest, AppliesStepsInOrderAndIsIdempotent)
     EXPECT_EQ(appliedAgain, 0U) << "重复应用同一迁移：这一次不该再动结构";
 }
 
+/**
+ * @brief plan 只报待应用项、不改结构；改掉已应用迁移的 SQL 时 plan 与 migrate 都按漂移拒绝
+ */
+TEST_F(SchemaMigrationsTest, PlanReportsPendingStepsAndRejectsChecksumDrift)
+{
+    std::string              error;
+    std::vector<std::string> pending;
+
+    // 台账尚未建立：全部待应用，且 plan 不得顺手把台账/表建出来
+    ASSERT_TRUE(SchemaMigrator::plan(*m_pool, m_steps, &pending, &error)) << error;
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[0], m_steps[0].name);
+    EXPECT_FALSE(SchemaMigrator::tableExists<MigrationNoteRow>(*m_pool)) << "plan 执行了迁移语句";
+
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, m_steps, nullptr, &error)) << error;
+    ASSERT_TRUE(SchemaMigrator::plan(*m_pool, m_steps, &pending, &error)) << error;
+    EXPECT_TRUE(pending.empty()) << "全部已应用时仍有待应用项";
+
+    // 追加一条：plan 只报它，migrate 只应用它
+    std::vector<SchemaMigrator::MigrationStep> extended = m_steps;
+    extended.push_back(SchemaMigrator::MigrationStep{.name = "003-marker", .upStatements = {}, .downStatements = {}});
+    ASSERT_TRUE(SchemaMigrator::plan(*m_pool, extended, &pending, &error)) << error;
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending[0], "003-marker");
+    std::size_t applied = 0;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, extended, &applied, &error)) << error;
+    EXPECT_EQ(applied, 1U);
+
+    // 改掉已应用那条的 SQL：校验和漂移，plan 与 migrate 都必须拒绝
+    std::vector<SchemaMigrator::MigrationStep> drifted = extended;
+    drifted[0].upStatements[0].sql += " ";
+    EXPECT_FALSE(SchemaMigrator::plan(*m_pool, drifted, &pending, &error));
+    EXPECT_NE(error.find("校验和"), std::string::npos) << error;
+    EXPECT_FALSE(SchemaMigrator::migrate(*m_pool, drifted, nullptr, &error));
+    EXPECT_NE(error.find("校验和"), std::string::npos) << error;
+}
+
 // ========================================================================
 // 回退与往返
 // ========================================================================
