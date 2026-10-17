@@ -159,6 +159,16 @@ namespace AsynGyanis::Net
         std::size_t maximumRedirectCount{5};
 
         /**
+         * @brief 绝对截止时刻（可选）：整条请求（含重定向与出向并发闸等待）不得晚于它
+         * @details 入站请求的剩余预算由调用方换算成本字段（不要在库里偷偷读「当前请求」）：
+         *          上游已经放弃时，本端还在按相对 requestTimeout 等下游，超时就会沿调用链层层放大。
+         * @note 不填 = 不设绝对时限，行为与加这一项之前逐字相同；与 `requestTimeout` 同时给时取更严者。
+         *       剩余预算不足 1 毫秒按 1 毫秒发（不把「快到期」翻成「完全不发」）；截止时刻已经过去则
+         *       直接失败，连套接字都不建。
+         */
+        std::optional<std::chrono::steady_clock::time_point> deadline{};
+
+        /**
          * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部
          * @details 装的是**本端这一跳的上下文**——通常就是当前那一节的 `Span::identifiers()`，
          *          或入站请求归一化后读到的那份（`extractTraceContext()`）。标识按原样渲染，
@@ -357,6 +367,18 @@ namespace AsynGyanis::Net
 
         /// 当前空闲、可被复用的 HTTP/1.1 连接条数
         [[nodiscard]] std::size_t idleConnectionCount() const noexcept;
+
+        /// 当前本实例所有端点的在途请求数（出向并发闸放行后的合计）
+        [[nodiscard]] std::size_t outboundInFlightCount() const noexcept
+        {
+            return m_pool.inFlightCount();
+        }
+
+        /// 本实例因每端点在途上限而拒绝或等待超时的累计次数
+        [[nodiscard]] std::uint64_t outboundGateRejectionCount() const noexcept
+        {
+            return m_pool.gateRejectionCount();
+        }
 
         /**
          * @brief 当前留着待命的 HTTP/2 连接条数（一台主机最多一条）

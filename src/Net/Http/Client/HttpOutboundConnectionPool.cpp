@@ -2,16 +2,48 @@
 
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Core/Tls/TlsSocket.h"
 #include "Net/Http/Client/HttpProxyPumpedTls.h"
 #include "Net/Http2/Http2ClientConnection.h"
 #include "Net/Http3/Http3ClientConnection.h"
 
 #include <algorithm>
+#include <atomic>
 #include <utility>
 
 namespace AsynGyanis::Net
 {
+    namespace
+    {
+        /// 进程级在途合计（所有 HttpClient 实例、所有端点）
+        std::atomic<std::uint64_t> &processInFlightCount() noexcept
+        {
+            static std::atomic<std::uint64_t> value{0};
+            return value;
+        }
+
+        /// 进程级闸拒绝计数
+        std::atomic<std::uint64_t> &processGateRejectionCount() noexcept
+        {
+            static std::atomic<std::uint64_t> value{0};
+            return value;
+        }
+
+        /// 首次建池时登记两条读数；把手常驻到进程退出（HttpClient 不注销自己的读数）
+        void ensureOutboundGateMetrics()
+        {
+            static const Core::ProcessMetricHandle inFlightHandle = Core::ProcessMetricsRegistry::registerMetric(
+                    "asyn_http_outbound_inflight_requests", "本进程所有出站 HTTP 客户端当前在途的请求数（并发闸放行后的合计）", Core::ProcessMetricKind::Gauge,
+                    Core::ProcessMetricMerge::Sum, [] { return processInFlightCount().load(std::memory_order_relaxed); });
+            static const Core::ProcessMetricHandle rejectionHandle = Core::ProcessMetricsRegistry::registerMetric(
+                    "asyn_http_outbound_gate_rejections_total", "出站并发闸因每端点在途上限而拒绝或等待超时的累计次数", Core::ProcessMetricKind::Counter,
+                    Core::ProcessMetricMerge::Sum, [] { return processGateRejectionCount().load(std::memory_order_relaxed); });
+            static_cast<void>(inFlightHandle);
+            static_cast<void>(rejectionHandle);
+        }
+    } // namespace
+
     bool HttpOutboundEndpointKey::operator==(const HttpOutboundEndpointKey &other) const noexcept
     {
         return host == other.host && port == other.port && isTls == other.isTls;
@@ -230,6 +262,65 @@ namespace AsynGyanis::Net
 
     HttpOutboundConnectionPool::HttpOutboundConnectionPool(const Config config) noexcept : m_config(config)
     {
+        ensureOutboundGateMetrics();
+    }
+
+    bool HttpOutboundConnectionPool::tryAcquireInFlight(const HttpOutboundEndpointKey &key, const bool recordRejection)
+    {
+        const std::lock_guard lock(m_inFlightMutex);
+        std::size_t          &count = m_inFlightByEndpoint[key];
+        if (m_config.maximumInFlightPerEndpoint != 0 && count >= m_config.maximumInFlightPerEndpoint)
+        {
+            if (recordRejection)
+            {
+                ++m_gateRejectionCount;
+                static_cast<void>(processGateRejectionCount().fetch_add(1, std::memory_order_relaxed));
+            }
+            return false;
+        }
+        ++count;
+        static_cast<void>(processInFlightCount().fetch_add(1, std::memory_order_relaxed));
+        return true;
+    }
+
+    void HttpOutboundConnectionPool::releaseInFlight(const HttpOutboundEndpointKey &key) noexcept
+    {
+        const std::lock_guard lock(m_inFlightMutex);
+        const auto            iterator = m_inFlightByEndpoint.find(key);
+        if (iterator == m_inFlightByEndpoint.end() || iterator->second == 0)
+        {
+            return;
+        }
+        --iterator->second;
+        static_cast<void>(processInFlightCount().fetch_sub(1, std::memory_order_relaxed));
+        if (iterator->second == 0)
+        {
+            m_inFlightByEndpoint.erase(iterator);
+        }
+    }
+
+    std::size_t HttpOutboundConnectionPool::inFlightCount() const noexcept
+    {
+        const std::lock_guard lock(m_inFlightMutex);
+        std::size_t           total = 0;
+        for (const auto &[key, count]: m_inFlightByEndpoint)
+        {
+            total += count;
+        }
+        return total;
+    }
+
+    std::uint64_t HttpOutboundConnectionPool::gateRejectionCount() const noexcept
+    {
+        const std::lock_guard lock(m_inFlightMutex);
+        return m_gateRejectionCount;
+    }
+
+    void HttpOutboundConnectionPool::noteGateRejection() noexcept
+    {
+        const std::lock_guard lock(m_inFlightMutex);
+        ++m_gateRejectionCount;
+        static_cast<void>(processGateRejectionCount().fetch_add(1, std::memory_order_relaxed));
     }
 
     std::unique_ptr<HttpOutboundConnection> HttpOutboundConnectionPool::acquire(const HttpOutboundEndpointKey &endpointKey)

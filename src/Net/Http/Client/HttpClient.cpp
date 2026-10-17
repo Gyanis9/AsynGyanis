@@ -567,6 +567,206 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限
          * @return std::optional<std::chrono::milliseconds> 还剩多少；已经用尽则为空
          */
+        /**
+         * @brief 把请求的绝对截止时刻折进相对时限（取更严者）
+         * @param request 请求（读 deadline）
+         * @param baseTimeout 相对时限的剩余部分；<= 0 表示调用方本来就没给相对时限
+         * @param nowMoment 折的时刻
+         * @param failureReason 截止时刻已过时写入原因
+         * @return std::optional<std::chrono::milliseconds> 有效时限；截止时刻已过时为空
+         * @note 剩余预算不足 1 毫秒按 1 毫秒：0 在 requestTimeout 一侧是「立刻失败」，
+         *       不把「快到期」翻成「完全不发」
+         */
+        std::optional<std::chrono::milliseconds> foldDeadlineIntoTimeout(const HttpClientRequest &request, const std::chrono::milliseconds baseTimeout,
+                                                                         const std::chrono::steady_clock::time_point nowMoment, std::string &failureReason)
+        {
+            if (!request.deadline.has_value())
+            {
+                return baseTimeout;
+            }
+            if (*request.deadline <= nowMoment)
+            {
+                failureReason = "本次请求已到截止时刻：不再建连接、不再继续等待（调用方给的剩余预算已用尽）";
+                return std::nullopt;
+            }
+            const auto remaining     = std::max(std::chrono::duration_cast<std::chrono::milliseconds>(*request.deadline - nowMoment), std::chrono::milliseconds{1});
+            const auto effectiveTime = baseTimeout > std::chrono::milliseconds::zero() ? std::min(baseTimeout, remaining) : remaining;
+            return effectiveTime;
+        }
+
+        /**
+         * @brief 发送前补全头部：Cookie 罐与链路上下文；不需要改头时原样交出请求
+         * @param cookieJar Cookie 罐（可空）
+         * @param request 调用方的请求
+         * @param parsed 目标 URL（罐按主机/路径取值）
+         * @param storage 需要改头时的副本槽（调用方持有，活到本次发送结束）
+         * @return const HttpClientRequest & 实际要发的请求
+         */
+        const HttpClientRequest &prepareOutboundRequest(const HttpCookieJar *cookieJar, const HttpClientRequest &request, const ParsedUrl &parsed,
+                                                        std::optional<HttpClientRequest> &storage)
+        {
+            const HttpClientRequest *effectiveRequest = &request;
+            if (cookieJar != nullptr)
+            {
+                // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
+                const bool callerHasCookieHeader =
+                        std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
+                if (!callerHasCookieHeader)
+                {
+                    if (const auto cookieHeader = cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())
+                    {
+                        storage = request;
+                        storage->headers.emplace_back("cookie", *cookieHeader);
+                        effectiveRequest = &storage.value();
+                    }
+                }
+            }
+
+            // 链路上下文也按「要改头部才拷」的规矩处理：不填时开销与行为都和原来一样
+            if (request.traceContext.has_value())
+            {
+                if (!storage.has_value())
+                {
+                    storage          = request;
+                    effectiveRequest = &storage.value();
+                }
+                appendTraceparentHeader(storage->headers, *request.traceContext);
+            }
+            return *effectiveRequest;
+        }
+
+        /**
+         * @brief 取一个端点的在途名额；Fail 立即失败，Wait 在时限/截止时刻内轮询
+         * @param pool 出向连接池
+         * @param loop 等待用的循环
+         * @param key 端点键
+         * @param request 读 deadline
+         * @param method 请求方法（失败原因里点名）
+         * @param url 目标地址（失败原因里点名）
+         * @param requestTimeout 调用方给的相对时限
+         * @param startedAt 本次请求开始时刻
+         * @param failureReason 失败原因出参
+         * @return true 已占到名额（调用方负责 releaseInFlight）
+         */
+        Core::Task<bool> acquireOutboundInFlightSlot(HttpOutboundConnectionPool &pool, Core::EventLoop &loop, const HttpOutboundEndpointKey &key, const HttpClientRequest &request,
+                                                     const std::string_view method, const std::string_view url, const std::chrono::milliseconds requestTimeout,
+                                                     const std::chrono::steady_clock::time_point startedAt, std::string &failureReason)
+        {
+            const bool failFast = pool.config().inFlightOverflowPolicy == InFlightOverflowPolicy::Fail;
+            if (pool.tryAcquireInFlight(key, failFast))
+            {
+                co_return true;
+            }
+            if (failFast)
+            {
+                failureReason = std::format("{} {} 被出向并发闸挡下：端点在途已达上限 {}（处置为立即失败）", method, url, pool.config().maximumInFlightPerEndpoint);
+                co_return false;
+            }
+
+            Core::Timer gateTimer(loop);
+            for (;;)
+            {
+                const auto nowMoment = std::chrono::steady_clock::now();
+                if (request.deadline.has_value() && nowMoment >= *request.deadline)
+                {
+                    failureReason = "出向并发闸：等待端点名额时到达请求的截止时刻";
+                    break;
+                }
+                if (requestTimeout > std::chrono::milliseconds::zero() && nowMoment - startedAt >= requestTimeout)
+                {
+                    failureReason = "出向并发闸：等待端点名额耗尽了请求时限";
+                    break;
+                }
+                if (requestTimeout <= std::chrono::milliseconds::zero() && !request.deadline.has_value())
+                {
+                    failureReason = "出向并发闸：请求没有可用的等待预算（时限为 0 且未给截止时刻）";
+                    break;
+                }
+                co_await gateTimer.waitFor(std::chrono::milliseconds{5});
+                if (pool.tryAcquireInFlight(key, false))
+                {
+                    co_return true;
+                }
+            }
+            // 轮询的中间失败不计数，最终判失败时记一次
+            pool.noteGateRejection();
+            co_return false;
+        }
+
+        /**
+         * @brief 闸等待结束后重新折出有效时限：先扣掉等待花掉的时间，再与绝对截止取更严者
+         * @param request 读 deadline
+         * @param requestTimeout 调用方给的相对时限
+         * @param startedAt 本次请求开始时刻
+         * @param failureReason 失败原因出参
+         * @return std::optional<std::chrono::milliseconds> 有效时限；预算已被等待耗尽或截止已过时为空
+         */
+        std::optional<std::chrono::milliseconds> foldPostWaitTimeout(const HttpClientRequest &request, std::chrono::milliseconds requestTimeout,
+                                                                     const std::chrono::steady_clock::time_point startedAt, std::string &failureReason)
+        {
+            std::chrono::milliseconds remaining = requestTimeout;
+            if (remaining > std::chrono::milliseconds::zero())
+            {
+                const auto spentWaiting = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+                if (spentWaiting >= remaining)
+                {
+                    failureReason = "本次请求已到时限：出向并发闸的等待用尽了整条预算";
+                    return std::nullopt;
+                }
+                remaining -= spentWaiting;
+            }
+            return foldDeadlineIntoTimeout(request, remaining, std::chrono::steady_clock::now(), failureReason);
+        }
+
+        /**
+         * @brief 在途名额的 RAII 归还（构造即占用，析构即归还）
+         */
+        class OutboundInFlightGuard
+        {
+        public:
+            OutboundInFlightGuard(HttpOutboundConnectionPool &pool, const HttpOutboundEndpointKey &key) noexcept : m_pool(pool), m_key(key)
+            {
+            }
+
+            ~OutboundInFlightGuard()
+            {
+                m_pool.releaseInFlight(m_key);
+            }
+
+            OutboundInFlightGuard(const OutboundInFlightGuard &)            = delete;
+            OutboundInFlightGuard &operator=(const OutboundInFlightGuard &) = delete;
+
+        private:
+            HttpOutboundConnectionPool &m_pool; ///< 名额所属的池
+            HttpOutboundEndpointKey     m_key;  ///< 端点
+        };
+
+        /**
+         * @brief 把响应里的 Set-Cookie 收进罐子（没挂罐子时什么都不做）
+         * @param cookieJar Cookie 罐（可空）
+         * @param parsed 目标 URL
+         * @param response 响应
+         */
+        void storeResponseCookies(HttpCookieJar *cookieJar, const ParsedUrl &parsed, const HttpClientResponse &response)
+        {
+            if (cookieJar == nullptr)
+            {
+                return;
+            }
+            std::vector<std::string> setCookieValues;
+            for (const HttpClientHeaderField &field: response.headers)
+            {
+                if (equalsIgnoringCase(field.first, "set-cookie"))
+                {
+                    setCookieValues.push_back(field.second);
+                }
+            }
+            if (!setCookieValues.empty())
+            {
+                cookieJar->storeFromResponse(parsed.host, parsed.scheme == "https", parsed.path, setCookieValues);
+            }
+        }
+
         std::optional<std::chrono::milliseconds> remainingBudget(const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout)
         {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
@@ -2366,11 +2566,17 @@ namespace AsynGyanis::Net
             appendTraceparentHeader(request.headers, *request.traceContext);
         }
         std::string failureReason;
+        // 绝对截止时刻折进相对时限：没有 deadline 时原样透传，行为与加这一项之前逐字相同
+        const std::optional<std::chrono::milliseconds> effectiveTimeout = foldDeadlineIntoTimeout(request, requestTimeout, std::chrono::steady_clock::now(), failureReason);
+        if (!effectiveTimeout.has_value())
+        {
+            co_return std::unexpected(std::move(failureReason));
+        }
         // 静态那一路不带池、也没有承载 TLS 策略与 h3 开关的地方，因此永不走 h3（两个空指针即此意）；
         // 代理策略同样没有实例承载，每次调用按默认策略现读一次环境（对齐 curl 每进程语义）
         const HttpProxyPolicy               proxyPolicy = applyProxyEnvironment(HttpProxyPolicy{});
         std::unique_ptr<HttpClientResponse> response =
-                co_await performRequestFollowingRedirects(loop, request, parsed, requestTimeout, nullptr, failureReason, nullptr, nullptr, &proxyPolicy);
+                co_await performRequestFollowingRedirects(loop, request, parsed, *effectiveTimeout, nullptr, failureReason, nullptr, nullptr, &proxyPolicy);
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
@@ -2512,34 +2718,8 @@ namespace AsynGyanis::Net
 
         // 挂了罐子才拷一份请求出来加头部：没挂时开销与行为都和原来一样
         std::optional<HttpClientRequest> requestWithCookie;
-        const HttpClientRequest         *effectiveRequest = &request;
-        if (m_cookieJar != nullptr)
-        {
-            // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
-            const bool callerHasCookieHeader = std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
-            if (!callerHasCookieHeader)
-            {
-                if (const auto cookieHeader = m_cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())
-                {
-                    requestWithCookie = request;
-                    requestWithCookie->headers.emplace_back("cookie", *cookieHeader);
-                    effectiveRequest = &requestWithCookie.value();
-                }
-            }
-        }
-
-        // 链路上下文也按「要改头部才拷」的规矩处理：不填时开销与行为都和原来一样
-        if (request.traceContext.has_value())
-        {
-            if (!requestWithCookie.has_value())
-            {
-                requestWithCookie = request;
-                effectiveRequest  = &requestWithCookie.value();
-            }
-            appendTraceparentHeader(requestWithCookie->headers, *request.traceContext);
-        }
-
-        validateRequest(*effectiveRequest);
+        const HttpClientRequest         &effectiveRequest = prepareOutboundRequest(m_cookieJar.get(), request, parsed, requestWithCookie);
+        validateRequest(effectiveRequest);
         std::string failureReason;
 
         const HttpOutboundEndpointKey endpointKey{parsed.host, parsed.port, parsed.scheme == "https"};
@@ -2547,6 +2727,24 @@ namespace AsynGyanis::Net
         {
             // 开闸期间连套接字都不建：上游塌掉时这笔钱原本每个请求重付一遍，而调用方只看到「超时」
             failureReason = std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, url);
+            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            co_return nullptr;
+        }
+
+        // 出向并发闸：每个端点的在途请求数上限。Fail（默认）立即失败；Wait 在时限/截止时刻内轮询等名额。
+        // 计数在闸内、释放靠守卫，覆盖整条请求（含重定向），不与空闲连接池的那条账混用
+        const auto requestStartedAt = std::chrono::steady_clock::now();
+        if (!co_await acquireOutboundInFlightSlot(m_pool, *m_loop, endpointKey, effectiveRequest, request.method, url, requestTimeout, requestStartedAt, failureReason))
+        {
+            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            co_return nullptr;
+        }
+        OutboundInFlightGuard inFlightGuard{m_pool, endpointKey};
+
+        // 闸等待吃掉的预算要从相对时限里扣掉，再与绝对截止时刻取更严者
+        const std::optional<std::chrono::milliseconds> effectiveTimeout = foldPostWaitTimeout(effectiveRequest, requestTimeout, requestStartedAt, failureReason);
+        if (!effectiveTimeout.has_value())
+        {
             LOG_ERROR_FMT("HttpClient: {}", failureReason);
             co_return nullptr;
         }
@@ -2560,7 +2758,7 @@ namespace AsynGyanis::Net
         http3Context.clientPrivateKeyFile  = &m_clientPrivateKeyFile;
         http3Context.rejectedEndpoints     = &m_http3RejectedEndpoints;
 
-        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(*m_loop, *effectiveRequest, parsed, requestTimeout, &m_pool, failureReason,
+        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(*m_loop, effectiveRequest, parsed, *effectiveTimeout, &m_pool, failureReason,
                                                                                                  m_clientTls.get(), &http3Context, &m_proxyPolicy);
         if (!response)
         {
@@ -2583,27 +2781,13 @@ namespace AsynGyanis::Net
                 m_circuitBreaker->reportSuccess(endpointKey);
             }
         }
-        if (!applyContentEncoding(*effectiveRequest, *response, failureReason))
+        if (!applyContentEncoding(effectiveRequest, *response, failureReason))
         {
             LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
             co_return nullptr;
         }
 
-        if (m_cookieJar != nullptr)
-        {
-            std::vector<std::string> setCookieValues;
-            for (const HttpClientHeaderField &field: response->headers)
-            {
-                if (equalsIgnoringCase(field.first, "set-cookie"))
-                {
-                    setCookieValues.push_back(field.second);
-                }
-            }
-            if (!setCookieValues.empty())
-            {
-                m_cookieJar->storeFromResponse(parsed.host, parsed.scheme == "https", parsed.path, setCookieValues);
-            }
-        }
+        storeResponseCookies(m_cookieJar.get(), parsed, *response);
         co_return response;
     }
 

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
@@ -197,6 +198,15 @@ namespace AsynGyanis::Net
      *          管两种状态等于把「一条连接同时被两个请求写」的窗口开回来（HTTP/1.1 没有流的概念，响应
      *          严格按请求顺序回来，混写会让两条响应串到彼此身上）。
      */
+    /**
+     * @brief 每端点在途请求超过上限时的处置
+     */
+    enum class InFlightOverflowPolicy
+    {
+        Fail, ///< 立即失败（默认：把慢上游的影响限制在上限条协程内，不排队堆积）
+        Wait  ///< 在时限预算内等一个名额，等不到再失败
+    };
+
     class ASYN_NET_API HttpOutboundConnectionPool
     {
     public:
@@ -217,6 +227,13 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kDefaultMaximumResponseBodyBytes = 8ull * 1024 * 1024;
 
         /**
+         * @brief 每端点同时在途请求的默认上限
+         * @details 64 是默认空闲上限（4）的 16 倍：足够容纳正常突发，又能在慢上游把协程堆成山之前收口。
+         *          取 1024 这类数等于没有闸——真正的瓶颈是上游而不是本端名额
+         */
+        static constexpr std::size_t kDefaultMaximumInFlightPerEndpoint = 64;
+
+        /**
          * @brief 池的规模参数
          * @param idleTimeout 空闲多久就收口
          * @param maximumIdlePerEndpoint 每个键最多留几条
@@ -230,6 +247,10 @@ namespace AsynGyanis::Net
             std::size_t maximumIdlePerEndpoint{kDefaultMaximumIdlePerEndpoint};
             /// 本端愿意收多大的响应正文；越过就判这次请求失败，连接不留残货。放开到不限填 0
             std::size_t maximumResponseBodyBytes{kDefaultMaximumResponseBodyBytes};
+            /// 每端点同时在途请求的上限；0 表示不设限（显式关闭这道闸）
+            std::size_t maximumInFlightPerEndpoint{kDefaultMaximumInFlightPerEndpoint};
+            /// 超过在途上限时的处置，见 InFlightOverflowPolicy
+            InFlightOverflowPolicy inFlightOverflowPolicy{InFlightOverflowPolicy::Fail};
         };
 
         /// 用默认参数建池
@@ -250,6 +271,31 @@ namespace AsynGyanis::Net
          *          才能生成销毁代码，把析构留在头里就等于让每个包含者都得包含 Http2 那层。
          */
         ~HttpOutboundConnectionPool();
+
+        /**
+         * @brief 尝试占一个该端点的在途名额
+         * @param key 端点键（主机 + 端口 + 是否 TLS）
+         * @return true 已占到一个名额（调用方用完后必须 releaseInFlight）；false 已达上限
+         * @note 上限为 0 时恒成功；`recordRejection` 为真时 false 分支累加溢出计数
+         *       （轮询等待的中间失败传 false，只在最终判失败时记一次）
+         */
+        [[nodiscard]] bool tryAcquireInFlight(const HttpOutboundEndpointKey &key, bool recordRejection = true);
+
+        /**
+         * @brief 归还一个在途名额（与 tryAcquireInFlight 配对）
+         * @param key 端点键
+         * @note 多还或少还会让计数漂移，只由占用成功的那一方调用
+         */
+        void releaseInFlight(const HttpOutboundEndpointKey &key) noexcept;
+
+        /// 当前所有端点加起来的在途请求数（测试与读数用）
+        [[nodiscard]] std::size_t inFlightCount() const noexcept;
+
+        /// 因在途上限/等待超时被拒的累计次数
+        [[nodiscard]] std::uint64_t gateRejectionCount() const noexcept;
+
+        /// 记一次闸拒绝（等待型处置在最终判失败时调用，轮询中间失败不记）
+        void noteGateRejection() noexcept;
 
         /**
          * @brief 本池生效的参数
@@ -393,6 +439,11 @@ namespace AsynGyanis::Net
         };
 
         /// 按键分组的空闲连接：键的顺序不稳定问题不成问题（这里只按组取用，不对外给出次序）
+        /// 在途并发闸：每端点计数。与空闲连接表分开：闸盖的是整条请求（含重定向），不是一条连接
+        mutable std::mutex                             m_inFlightMutex;
+        std::map<HttpOutboundEndpointKey, std::size_t> m_inFlightByEndpoint;
+        std::uint64_t                                  m_gateRejectionCount{0}; ///< 被闸拒绝/等待超时的累计次数
+
         std::map<HttpOutboundEndpointKey, std::vector<IdleEntry>> m_idleByEndpoint;
 
         /// 每台主机留一条 h2 连接，与调用方共同持有：它不像 h1 那样一次租给一个请求，也不按

@@ -15,6 +15,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
+#include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpDate.h"
@@ -339,6 +340,154 @@ namespace AsynGyanis::Net
 
         // 收尾前等这条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条「要等定时器才肯结束」
         // 的在途请求留到那之后（既有用例都刻意避开这个状态）
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 绝对截止时刻优先于相对时限：剩余预算到点就收口，不等到 requestTimeout
+     */
+    TEST(HttpClient, AbsoluteDeadlineCapsTheRequestBudget)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+
+        {
+            // 截止时刻比 requestTimeout 更严：应在 ~150ms 收口，而不是 5 秒
+            HttpClientRequest request;
+            request.deadline   = std::chrono::steady_clock::now() + std::chrono::milliseconds{150};
+            const auto started = std::chrono::steady_clock::now();
+            const auto outcome = runSend(url, request, std::chrono::milliseconds{5000});
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            EXPECT_TRUE(outcome.body.empty()) << "截止时刻已到却拿到了正文";
+            EXPECT_FALSE(outcome.reason.empty()) << "失败没有原因";
+            EXPECT_LT(elapsed, kSlowRouteTime) << "请求等到了慢路由写完（" << elapsed.count() << " ms）：截止时刻没有生效";
+        }
+
+        {
+            // requestTimeout 更严：取更严者，截止时刻不放大它
+            HttpClientRequest request;
+            request.deadline   = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            const auto started = std::chrono::steady_clock::now();
+            const auto outcome = runSend(url, request, std::chrono::milliseconds{100});
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            EXPECT_TRUE(outcome.body.empty());
+            EXPECT_LT(elapsed, kSlowRouteTime) << "requestTimeout 没有被取为更严者";
+        }
+
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 剩余预算不足 1 毫秒按 1 毫秒发：截止时刻刚过也不能翻成「不设限」
+     */
+    TEST(HttpClient, SubMillisecondBudgetStillStopsAtTheDeadline)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        HttpClientRequest request;
+        request.deadline = std::chrono::steady_clock::now() + std::chrono::microseconds{500};
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto outcome = runSend(url, request, std::chrono::milliseconds{5000});
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+
+        EXPECT_TRUE(outcome.body.empty()) << "预算不足 1 毫秒时不该拿到正文";
+        EXPECT_LT(elapsed, kSlowRouteTime) << "不足 1 毫秒的预算被翻成了不设限（用了 " << elapsed.count() << " ms）";
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 出向并发闸：上限 1 时第二条按 Fail 立即失败，Wait 时等第一条让出名额
+     */
+    TEST(HttpClient, OutboundInFlightGateRejectsOrWaitsPerConfiguration)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{250};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+
+        // 在同一个循环上同时起两条实例请求，等两条协程都结束
+        const auto runTwo = [&url](const std::size_t inFlightLimit, const InFlightOverflowPolicy policy, std::unique_ptr<HttpClientResponse> &first,
+                                   std::unique_ptr<HttpClientResponse> &second, std::uint64_t &rejections)
+        {
+            Core::EventLoop                    loop;
+            HttpOutboundConnectionPool::Config poolConfig;
+            poolConfig.maximumInFlightPerEndpoint = inFlightLimit;
+            poolConfig.inFlightOverflowPolicy     = policy;
+            HttpClient client(loop, poolConfig);
+
+            Core::Task<std::unique_ptr<HttpClientResponse>> firstTask  = client.get(url, std::chrono::seconds{2});
+            Core::Task<std::unique_ptr<HttpClientResponse>> secondTask = client.get(url, std::chrono::seconds{2});
+            loop.scheduler().schedule(firstTask.handle());
+            loop.scheduler().schedule(secondTask.handle());
+
+            Core::Timer timer(loop);
+            // 先把闭包命名再调用：惰性协程帧持有的是闭包地址，立即调用的临时闭包在开跑前就销毁了
+            auto watchdogBody = [&]() -> Core::Task<void>
+            {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+                while ((!firstTask.isReady() || !secondTask.isReady()) && std::chrono::steady_clock::now() < deadline)
+                {
+                    co_await timer.waitFor(std::chrono::milliseconds{10});
+                }
+                loop.stop();
+                co_return;
+            };
+            Core::Task<void> watchdog = watchdogBody();
+            loop.scheduler().schedule(watchdog.handle());
+            loop.run();
+            if (firstTask.isReady())
+            {
+                first = firstTask.handle().promise().result();
+            }
+            if (secondTask.isReady())
+            {
+                second = secondTask.handle().promise().result();
+            }
+            rejections = client.outboundGateRejectionCount();
+        };
+
+        {
+            std::unique_ptr<HttpClientResponse> first;
+            std::unique_ptr<HttpClientResponse> second;
+            std::uint64_t                       rejections = 0;
+            runTwo(1, InFlightOverflowPolicy::Fail, first, second, rejections);
+            // 调度器不保证两条协程的起跑先后：只断言「恰好一条成功、一条被闸挡下」
+            EXPECT_NE(first == nullptr, second == nullptr) << "上限 1 时应恰好一条成功、一条被闸挡下";
+            EXPECT_EQ(rejections, 1U) << "拒绝计数没有加一";
+        }
+
+        {
+            std::unique_ptr<HttpClientResponse> first;
+            std::unique_ptr<HttpClientResponse> second;
+            std::uint64_t                       rejections = 0;
+            runTwo(1, InFlightOverflowPolicy::Wait, first, second, rejections);
+            EXPECT_NE(first, nullptr);
+            EXPECT_NE(second, nullptr) << "Wait 处置应在第一条让出名额后放行第二条";
+            EXPECT_EQ(rejections, 0U) << "等到了名额就不该记拒绝";
+        }
+
+        {
+            std::unique_ptr<HttpClientResponse> first;
+            std::unique_ptr<HttpClientResponse> second;
+            std::uint64_t                       rejections = 0;
+            runTwo(0, InFlightOverflowPolicy::Fail, first, second, rejections);
+            EXPECT_NE(first, nullptr);
+            EXPECT_NE(second, nullptr) << "上限 0 是「不设限」，不是「一条都不许发」";
+            EXPECT_EQ(rejections, 0U);
+        }
         std::this_thread::sleep_for(kSlowRouteTime);
     }
 
