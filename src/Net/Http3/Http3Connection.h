@@ -57,7 +57,7 @@ namespace AsynGyanis::Net
         using StreamOpener = std::function<std::int64_t()>;
 
         /// 一条流上待发字节的出口：endStream 为真表示这段之后本端在该流上收尾。
-        /// 返回**被接收的字节数**——传输层的待发队列有上界，收不下的余数留在本类缓冲里下一轮续交
+        /// 返回被接收的字节数——传输层的待发队列有上界，收不下的余数留在本类缓冲里下一轮续交
         using StreamWriter = std::function<std::size_t(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream)>;
 
         /// 把已消费的字节归还给 QUIC 的接收窗口（本端在这条流上还可以再收多少）
@@ -218,8 +218,8 @@ namespace AsynGyanis::Net
          * @brief 在某条流上提交响应尾段（正文之后的第二个字段段），并以此收尾这条流
          *
          * @details RFC 9114 §4.3 规定尾段就是一个普通的 HEADERS 帧，只是排在最后一个 DATA 之后，
-         *          且其中的字段受 §7.2.4 与 RFC 9110 §6.5 的额外限制：**不得含伪头，也不得含
-         *          content-length 与 host**（那两项在头段里已经定过界，尾段再来一份就是两个解释位置）。
+         *          且其中的字段受 §7.2.4 与 RFC 9110 §6.5 的额外限制：不得含伪头，也不得含
+         *          content-length 与 host（那两项在头段里已经定过界，尾段再来一份就是两个解释位置）。
          *          这些判据与收侧共用同一个 Http3HeaderValidator，只是 beginHeaderBlock 传 isTrailers，
          *          因此不会出现「本端发得出、对端解不开」的尾段。FIN 只能跟着尾段，本方法不提供开关。
          * @param streamId 承载该响应的流
@@ -317,7 +317,7 @@ namespace AsynGyanis::Net
         {
             std::optional<Http3FrameReader>       reader;    ///< 该流的帧读取器，上限按本端配置建
             std::unique_ptr<Http3HeaderValidator> validator; ///< 该流的消息头判定器：跨头段与尾段共用一份，才认得出「尾段必须在头段之后」
-            /// 本端写出侧的判定器：与上面那份**分开**，因为一条流上两个方向各有一套判据
+            /// 本端写出侧的判定器：与上面那份分开，因为一条流上两个方向各有一套判据
             /// （请求侧是 Request 种类、响应侧是 Response 种类），而且同样要跨头段与尾段累积状态
             std::unique_ptr<Http3HeaderValidator> responseValidator;
             std::uint64_t                         fedByteCount{0};                    ///< 交给该流读取器的字节总数
@@ -332,7 +332,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 这条流上还压着未交付的头段（可能不止一段：头段加随后的尾段）
              * @details 引用动态表的头段可能先到、它要用的插入指令后到（两条流之间传输层不保证先后，
-             *          RFC 9204 §2.2.1 就是让解码器等）。等期间这条流**不算收完**：按 END_STREAM 就地
+             *          RFC 9204 §2.2.1 就是让解码器等）。等期间这条流不算收完：按 END_STREAM 就地
              *          收尾会把整条消息判成空——头段一个字节都没交出去，正文却已经计过数了。
              *          身份（头段还是尾段）不在这里记，按那一段自己的内容判，见 deliverResumedFieldSection()
              */

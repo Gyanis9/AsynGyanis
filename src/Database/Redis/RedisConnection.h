@@ -75,7 +75,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 一个键的存活状态（`PTTL` 的三档答案，见 RedisConnection::keyLifetime）
      *
-     * @details 服务端在这里回的是**一个整数三种含义**：`-1` 是「键在，但没设过期」，`-2` 是
+     * @details 服务端在这里回的是一个整数三种含义：`-1` 是「键在，但没设过期」，`-2` 是
      *          「键不存在」，其余是剩余毫秒。把两个负数折成同一个「没有值」就丢掉了排查现场最需要的
      *          那一条信息（键到底还在不在），而折成一个布尔又分不出「永不过期」与「已经没了」。
      *          因此这里按三档如实建模，调用方不必再记那两个哨兵值。
@@ -100,12 +100,12 @@ namespace AsynGyanis::Database
     /**
      * @brief 一页 `SCAN` 的结果（游标 + 这一页扫到的键）
      *
-     * @details SCAN 的契约是「游标续扫」：服务端回一份两元素数组，第一个是**下一页**的游标
-     *          （回到 "0" 表示扫完），第二个是这一页的键。游标是**字符串**而不是整数——服务端可能
+     * @details SCAN 的契约是「游标续扫」：服务端回一份两元素数组，第一个是下一页的游标
+     *          （回到 "0" 表示扫完），第二个是这一页的键。游标是字符串而不是整数——服务端可能
      *          编码自己的迭代状态，把它当数字解析会静默截断，因此这里原样透传。
      * @note 一次调用只发一条命令、只走一页：把「循环到扫完」也做进本方法就等于替调用方决定要不要
      *       防一次无界遍历（大键空间上那会让一条连接被占住 arbitrarily 久），因此这里只交一页。
-     *       游标可能是**重复**或**空**的——SCAN 只保证「游标为 0 之前每个至少存在过的键会被给出一次」，
+     *       游标可能是重复或空的——SCAN 只保证「游标为 0 之前每个至少存在过的键会被给出一次」，
      *       键在扫描期间被删除或新建都不保证；这是协议的限制，不是本类的缺陷（见 Redis 的 SCAN 文档）。
      */
     struct ASYN_DATABASE_API RedisScanPage
@@ -132,7 +132,7 @@ namespace AsynGyanis::Database
      *          在建连后由 redisSetTimeout 应用到上下文，因此 AUTH 与初始 SELECT 也在读写超时保护内；
      *          连接存续期间改这个值同样当场生效，不必断开重连。
      *
-     * @note **Redis Cluster 不做（这是决定，不是待办）**：集群要在本层之上再起一整层拓扑——slot 路由、
+     * @note Redis Cluster 不做（这是决定，不是待办）：集群要在本层之上再起一整层拓扑——slot 路由、
      *       MOVED/ASK 重定向、拓扑刷新与故障切换时的重试，成本与收益不匹配（多键命令还会因跨 slot
      *       直接失败，那等于把「哪些命令能用」再切一刀）。主从这一现实需求由 Sentinel 覆盖：
      *       `resolveSentinelMasterAddress()` 给出主库地址后照常建连即可（见 RedisSentinel.h）。
@@ -219,12 +219,12 @@ namespace AsynGyanis::Database
          *          `execute("SET", {DatabaseValue("k"), DatabaseValue("v")})` 与
          *          `executeCommand({"SET", "k", "v"})` 是同一句话，按驱动接口写的应用（以及
          *          `executeChecked()` 那条带回路的包装）在 Redis 上不再是死路。
-         * @param command 命令文本：命令名，可带内联参数。**文本里出现 `?` 这个记号即拒绝**——
+         * @param command 命令文本：命令名，可带内联参数。文本里出现 `?` 这个记号即拒绝——
          *        Redis 没有占位符语法，静默把它当成一个键发出去，比当场报错难查得多
          * @param parameters 逐个转成文本后追加在命令之后，经 argv 接口发送（内嵌 '\0' 与空白都不丢）
          * @return std::unique_ptr<DatabaseResult> 结果集；参数不可表达、命令带占位符、未连接或
          *        服务端报错时返回 nullptr，原因见 lastError()
-         * @note 形状判据排在连接检查**之前**：一条本来就不合法的命令不该等到网络状态才知道
+         * @note 形状判据排在连接检查之前：一条本来就不合法的命令不该等到网络状态才知道
          * @see argumentText() 取值到文本的口径
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
@@ -335,7 +335,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 问一个键还能活多久（`PTTL`，毫秒精度）
-         * @details 存在性、有没有设过期、还剩多久这三档在服务端是**一个整数的三种含义**
+         * @details 存在性、有没有设过期、还剩多久这三档在服务端是一个整数的三种含义
          *          （`-2` 不存在 / `-1` 存在但永不过期 / 其余为剩余毫秒），本方法把它们交回
          *          `RedisKeyLifetime` 的三个不同形状，调用方不必再记那两个哨兵值。
          *          为什么用 PTTL 而不是 TTL：后者只有秒精度，`1500 毫秒` 会被服务端报成 `1`，
@@ -353,12 +353,12 @@ namespace AsynGyanis::Database
          * @details 为什么不做「扫到完」的那一层包装：那等于替调用方决定一次无界遍历要不要设上限，
          *          而大键空间上这一条命令序列能把连接占住很久。本方法只走一页，续不续、走几页、
          *          要不要在页与页之间让出连接，都留在调用方这一侧（`RedisScanPage::isFinished()`
-         *          就是那个停表）。游标按**字符串**原样透传：它是服务端的迭代状态，当数字解析会静默截断。
+         *          就是那个停表）。游标按字符串原样透传：它是服务端的迭代状态，当数字解析会静默截断。
          *          SCAN 只保证「回到 0 之前每个至少存在过一次的键会被给出一次」——同一页里可能重复，
          *          扫描期间新建或删除的键不保证出现，这是协议的限制。
          * @param cursor 本次迭代的游标；首轮传 "0"，之后传上一页的 nextCursor
          * @param pattern 键名模式（Glob 风格，如 `session:*`）；空表示不筛
-         * @param count 服务端这一页想拿到多少个键的**提示**；为空时不带 COUNT 参数。
+         * @param count 服务端这一页想拿到多少个键的提示；为空时不带 COUNT 参数。
          *        它是提示不是上限：服务端可以回更多或更少，真拿到几个键要看返回的 keys
          * @return std::optional<RedisScanPage> 这一页的游标与键
          * @return std::nullopt 游标为空串、未连接、服务端报错或回复形状不对，原因见 lastError()
@@ -369,7 +369,7 @@ namespace AsynGyanis::Database
          * @brief 获取底层 redisContext 句柄，供需要直接使用 hiredis 的高级场景使用
          * @warning 句柄所有权始终属于本连接，调用方不得 redisFree，
          *          也不得在连接销毁后继续使用；拿它去发命令会绕过本类的错误与超时处理，
-         *          **也绕过会话状态的记账**（`noteSessionCommand()` 只看走本类的那条路）：从这里发
+         *          也绕过会话状态的记账（`noteSessionCommand()` 只看走本类的那条路）：从这里发
          *          `SELECT`／`AUTH`／`CLIENT REPLY OFF`／`SUBSCRIBE` 都不会被记下来，归还时因此不会
          *          退回或断开——下一个借用者接的就是这条被改过会话的连接。要发这类命令请走本类的公开入口
          * @return redisContext* 未连接时为 nullptr；桩构建下恒为 nullptr
@@ -386,7 +386,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 订阅若干频道，并把这条连接切到推送形态
          * @details 走的是同一条 argv 发送路径，因此频道名二进制安全（含空格与内嵌 '\0' 都不丢）。
-         *          服务端为**每个频道**回一条 subscribe 确认，本方法把它们读干后才返回——留着不读，
+         *          服务端为每个频道回一条 subscribe 确认，本方法把它们读干后才返回——留着不读，
          *          第一份确认就会被下一个 readPushReply() 当成消息交出去。
          * @param channels 频道名列表；为空时不发送任何字节并直接返回 false（那是调用方的错，
          *                 不该让服务端去回一个「SUBSCRIBE 需要至少一个参数」的错话）
@@ -394,7 +394,7 @@ namespace AsynGyanis::Database
          * @return false 频道列表为空、未连接、这条连接配置成 RESP3 档，或收发失败，原因见 lastError()
          * @note 订阅是连接级会话状态：这条连接不能再交回连接池。归还时 resetSessionState() 会直接
          *       断开它（回复流已与命令错位，留着比丢掉便宜）
-         * @note 配置成 RESP3 时**在发送之前就拒**：RESP3 把订阅确认写成推送，本类按「一条命令一条
+         * @note 配置成 RESP3 时在发送之前就拒：RESP3 把订阅确认写成推送，本类按「一条命令一条
          *       回复」执行，那条确认收不到（实测等满读写超时才报 recv timeout）。档位与理由见
          *       ConnectionConfig::redisProtocol 与 .cpp 里 kResp3PushPathRefusal 那段取证
          */
@@ -410,11 +410,11 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 退掉全部频道与模式订阅，把这条连接送回「一条命令一条回复」的形态
-         * @details 不带参数的 UNSUBSCRIBE / PUNSUBSCRIBE 会为**每个当前订阅**回一条确认，本方法按
+         * @details 不带参数的 UNSUBSCRIBE / PUNSUBSCRIBE 会为每个当前订阅回一条确认，本方法按
          *          自己记下的条数把它们收干（服务端回复里那个整数是两类合计的剩余订阅数，分不出
          *          单一类退完没有，所以条数只能本地记）。收干之后这条连接能再发普通命令并拿回
          *          正常回复——用例 UnsubscribeAllRestoresTheCommandReplyShape 钉的就是这件事。
-         * @note 但**不要指望它被池留下**：经历过推送形态，这条连接上的 m_isSessionModeChanged 一直是真，
+         * @note 但不要指望它被池留下：经历过推送形态，这条连接上的 m_isSessionModeChanged 一直是真，
          *       归还时池照旧把它换掉。那一位是 HELLO / MONITOR / 订阅三类共用的「本类退不回去」标记，
          *       在这里顺手清掉就会把前两类的账一起抹了——宁可多换一条连接。
          * @return true 两类订阅都已退干净（本来就没订阅也算成功，且不发任何命令）
@@ -425,7 +425,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 读一条服务端推来的回复，最多等 waitTimeout
          * @details 本驱动是同步的，因此「等」就落在调用线程上：要么由调用方放到工作线程上跑，
-         *          要么给一个有限时长。等超时**不算失败**——返回空值、连接保持可用，这是持续消费
+         *          要么给一个有限时长。等超时不算失败——返回空值、连接保持可用，这是持续消费
          *          的正常节奏（否则每轮空等都得重连）。
          * @param waitTimeout 本次等待上限；非正值表示不设本次超时，按连接当前的 queryTimeout() 等
          * @return std::optional<RedisPushReply> 收到一条推送；超时时返回空值
@@ -497,7 +497,7 @@ namespace AsynGyanis::Database
          * @brief 按配置协商 RESP 协议版本：只在 Resp3 档发一条 `HELLO 3`，其余档位一个字节都不发
          * @details 抽成独立一步的理由：`connect()` 的骨架要看得见「传输 → 超时 → 认证 → 协议 → 键空间」
          *          这五格，而不是其中一格摊成二十几行内联。
-         *          这一条**不走** `executeArguments`：那条路会给 `noteSessionCommand` 记账，而建连时的
+         *          这一条不走 `executeArguments`：那条路会给 `noteSessionCommand` 记账，而建连时的
          *          HELLO 说的是「这条会话按配置就停在 RESP3 上」，不是某个借用者中途改的形态——记了账
          *          就等于把池里每条连接都标成「退不回去」，归还时一律断开。借用者自己发 HELLO 的姿态不变
          * @return true 档位无需协商，或服务端确认切到 RESP3
@@ -564,7 +564,7 @@ namespace AsynGyanis::Database
         int  m_currentKeySpaceIndex{0};     ///< 本会话实际所在的键空间编号，与上面不等时归还前 SELECT 回去
         bool m_isSessionModeChanged{false}; ///< 是否进入了退不回去的会话模式（MONITOR/订阅/HELLO/AUTH/CLIENT 的几条子命令）：归还时断开这条连接
 
-        // 两类订阅各记各的**去重名单**：服务端为一条订阅只记一份，无参数的 UNSUBSCRIBE / PUNSUBSCRIBE
+        // 两类订阅各记各的去重名单：服务端为一条订阅只记一份，无参数的 UNSUBSCRIBE / PUNSUBSCRIBE
         // 因此按名单条数回确认（本机 redis 实测：`SUBSCRIBE a a` 回两条 subscribe 确认但计数都是 1，
         // 随后无参数 UNSUBSCRIBE 只回一条）。原先记的是「发出去的目标条数」，重复目标会让账比真订阅多，
         // unsubscribeAll() 就去等一批服务端根本不会发的确认——白等满一次确认时限再把连接判成不确定。
@@ -581,7 +581,7 @@ namespace AsynGyanis::Database
          *
          * @details 折成 `timeval` 之前必须钳：`std::chrono::milliseconds::rep` 是 64 位，而这套
          *          「秒 + 微秒」的换算是按 int 做的——2^31 毫秒（约 24.85 天）以上会窄化成负数。
-         *          更要紧的是调用方那句「取值大于 0 才算自定义等待」用的是**未窄化**的取值，于是
+         *          更要紧的是调用方那句「取值大于 0 才算自定义等待」用的是未窄化的取值，于是
          *          负数照样被交给 `redisSetTimeout`：把负数塞进 `tv_sec` 在各平台上的行为并不一致
          *          （`applyQueryTimeout` 的注释里写着同一条），轻则立刻返回「超时」让消费循环空转，
          *          重则这一次读取根本没有时限。

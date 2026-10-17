@@ -1184,7 +1184,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住错误码的**线上数值**取自 RFC 9113 §7（NO_ERROR 起于 0x00，逐档加一）
+     * @brief 钉住错误码的线上数值取自 RFC 9113 §7（NO_ERROR 起于 0x00，逐档加一）
      * @details RST_STREAM 与 GOAWAY 把这个枚举原样写成 4 字节大端整数，所以这里的数字就是报文里的数字。
      *          既有的线格式用例只钉了 Cancel 一格，其余 13 档挪动了也不会红；本条把整张表抄成正文取值。
      */

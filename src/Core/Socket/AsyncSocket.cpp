@@ -21,7 +21,7 @@ namespace AsynGyanis::Core
     {
         /**
          * @brief 取最近一次 socket 系统调用的失败码
-         * @details winsock 失败**不写 errno**，而 SystemException 的隐式错误码构造函数读的正是 errno，
+         * @details winsock 失败不写 errno，而 SystemException 的隐式错误码构造函数读的正是 errno，
          *          于是文本里带的是与本次失败无关的陈旧值（实测发送失败报成「[112] There is not
          *          enough space on the disk」），真正的失败码反而看不到：socket 调用失败必须显式传码。
          * @return std::error_code socket 空间的错误码（描述文本由 std::system_category 提供）
@@ -330,7 +330,7 @@ namespace AsynGyanis::Core
     {
         // 段数与空数组属于调用方契约：静默拆分会让「一次系统调用」的前提悄悄失效，
         // 静默补齐零段则会让调用方以为数据发出去了，两者都必须当场失败。
-        // 报错走 logic_error 分支而不是运行期故障链：失败点是**传进来的取值**，重试不会变好
+        // 报错走 logic_error 分支而不是运行期故障链：失败点是传进来的取值，重试不会变好
         if (buffers == nullptr || bufferCount == 0)
         {
             throw Base::InvalidArgumentException("聚合发送失败：段数组为空");
@@ -493,7 +493,7 @@ namespace AsynGyanis::Core
             // 少了这一步，正在等待可读/可写的协程会永久挂起
             m_watcher.reset();
 
-            // 监听套接字只关自己这一份引用：shutdown 打在**端点**上，同一端点的其它引用会一起停掉。
+            // 监听套接字只关自己这一份引用：shutdown 打在端点上，同一端点的其它引用会一起停掉。
             // 零停机换代里新一代正是拿着同一端点的另一份引用在服务，交棒方一 shutdown 就等于把端口
             // 上的监听一起关掉（实测父代收口后子代 10/10 连不上）。监听套接字也没有半关、
             // 也没有「本端不再读的入站字节」一说，直接关描述符就到位

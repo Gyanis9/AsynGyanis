@@ -246,7 +246,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 往 Vary 上补一个 token（已含则不重复，比对按 ASCII 大小写不敏感）
-         * @details Vary 是**列表**头，而 `setHeader` 是把整条换掉：一条先写 `accept-language` 的中间件
+         * @details Vary 是列表头，而 `setHeader` 是把整条换掉：一条先写 `accept-language` 的中间件
          *          与一条后写 `Origin` 的 CORS 串起来，前者那个 token 就整条没了——共享缓存按剩下的
          *          那个维度分桶，于是 A 来源的应答会被发给 B 来源，压缩副本会被发给不接受压缩的客户端。
          *          框架里凡是要动 Vary 的都从这一个出口走，不再各写一份追加逻辑。
@@ -340,7 +340,7 @@ namespace AsynGyanis::Net
      * @return MiddlewareFunc 中间件函数
      *
      * @details 预检请求（OPTIONS 且带 Access-Control-Request-Method）就地生成 204 预检应答，
-     *          **不进入业务路由**：业务 handler 收下一个它根本不该处理的 OPTIONS 只会回 404/405，
+     *          不进入业务路由：业务 handler 收下一个它根本不该处理的 OPTIONS 只会回 404/405，
      *          浏览器侧表现为「CORS 一直不通」。实际请求先挂上允许来源的头再放行下游。
      *
      * @warning 凭据与通配来源不能共存：`Access-Control-Allow-Origin: *` 与
@@ -350,7 +350,7 @@ namespace AsynGyanis::Net
      *          一律不输出 allow-credentials，并附一条 `Vary: Origin` 说明应答随来源而变。
      *          确实要带凭据，请把 allowOrigin 写成具体站点并且自己维护白名单。
      * @throws Base::InvalidArgumentException `allowOrigin`/`allowMethods`/`allowHeaders` 之一含
-     *         CR/LF/NUL 一类会撕裂字段值的字节，或 `maxAge` 为负。判据排在**装配期**而不是请求期：
+     *         CR/LF/NUL 一类会撕裂字段值的字节，或 `maxAge` 为负。判据排在装配期而不是请求期：
      *         留到请求期只会让 `setHeader` 静默拒写，现场表现是「配了 CORS 而响应上没有头」。
      */
     inline MiddlewareFunc corsMiddleware(CorsPolicy policy = {})
@@ -433,7 +433,7 @@ namespace AsynGyanis::Net
      *         会撕裂字段值的字符（CR/LF/NUL、双引号、分号）
      *
      * @details 产出形如 `alt-svc: h3=":8443"; ma=86400`（给了主机名则是 `h3="edge.example.com:8443"; ma=86400`）。
-     *          取值与请求无关，因此在工厂里**渲染一次**由所有请求共享，逐条请求不再拼字符串、不分配。
+     *          取值与请求无关，因此在工厂里渲染一次由所有请求共享，逐条请求不再拼字符串、不分配。
      *
      *          头在下游之前挂上，与 corsMiddleware、x-request-id 自动补齐同一个优先级口径：
      *          业务处理器自己 `setHeader("alt-svc", ...)` 就会覆盖掉这条通告。
@@ -493,7 +493,7 @@ namespace AsynGyanis::Net
      * @brief 创建 W3C Trace Context 中间件：把请求上的链路上下文归一化成一条可信的 traceparent
      *
      * @details 三条口径，都是踩过坑的取舍：
-     *          - **上下文的权威形态就是那条头部**，本中间件不另存第二份。合法就原样放过（一个字都不写、
+     *          - 上下文的权威形态就是那条头部，本中间件不另存第二份。合法就原样放过（一个字都不写、
      *            一次分配都不碰），缺席/畸形才生成并 `setHeader` 写回——处理器与下游看到的永远是同一串字节，
      *            不会出现「中间件记了一份、头部还是另一份」的两处状态。读侧用 extractTraceContext()。
      *          - 畸形包含「同一请求带多条 traceparent」：读侧按名计数把这种歧义与「恰好一条」分开，
@@ -502,10 +502,10 @@ namespace AsynGyanis::Net
      *          - tracestate 只在显式给出 vendorKey 时才动：它按规范要把自己的键挪到最前并丢掉后面的同名项，
      *            而条目表按值持串，默认做这件事等于给每条被跟踪的请求加一次分配。无效 tracestate 按缺席处理
      *            （规范就是这么规定的），不影响本条链路。
-     *          - 响应上刻意什么都不写：traceparent/tracestate 是**请求侧**的传播字段，规范没定义响应形态，
+     *          - 响应上刻意什么都不写：traceparent/tracestate 是请求侧的传播字段，规范没定义响应形态，
      *            自创一个回声头只会让下游误以为可以照它续链。
      *
-     * @param options 策略开关；vendorKey 非空但键不合法时在**注册期**抛异常，不留到运行期静默不写
+     * @param options 策略开关；vendorKey 非空但键不合法时在注册期抛异常，不留到运行期静默不写
      * @return MiddlewareFunc 中间件函数
      * @throws Base::InvalidArgumentException 用法错误：vendorKey 不是合法的 tracestate 键
      * @see Traceparent, TraceState, extractTraceContext()
@@ -562,7 +562,7 @@ namespace AsynGyanis::Net
      *          并把「已超时」写进共享状态；业务链返回时中间件据该标志把响应重置为 504。
      *          只比实际耗时的写法既取消不了业务、也改不动本轮已经发出的响应。
      *
-     * @warning 这是**协作式**超时。单线程协程模型里没有抢占：
+     * @warning 这是协作式超时。单线程协程模型里没有抢占：
      *          @li 业务 handler 必须周期性检查 `request.cancelToken().stop_requested()`
      *              并尽快 `co_return`，否则中间件只能等它跑完再改写 504；
      *          @li 全程不让出 CPU 的 handler（死循环、长同步计算、阻塞调用）既不会被定时唤醒打断，
@@ -570,7 +570,7 @@ namespace AsynGyanis::Net
      *          需要「硬超时」请在业务侧使用可中断的等待，或把长任务放到 ThreadPool 并配合 Core::Cancelable。
      *
      * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()。
-     *       **三条通道各自在每次路由前注册一次转发**（`HttpSession` 的 ConnectionCancelForwarder 按连接注册
+     *       三条通道各自在每次路由前注册一次转发（`HttpSession` 的 ConnectionCancelForwarder 按连接注册
      *       一次覆盖整条 keep-alive 循环、`Http2Session::serveOneRequest` 每请求一份、h3 的两个派发出口
      *       `Http3Session::pump` 与 `Http3Session::serveStreamingRequest` 各一份），
      *       两条来源到期都体现在同一个 request.cancelToken() 上。h3 会话没有 Core::Connection 那一层
@@ -631,7 +631,7 @@ namespace AsynGyanis::Net
             // 超时判定只在此处单点改写响应：晚于业务的一切写入，保证线上发的就是 504
             if (state->isDeadlineReached || isElapsedOverTimeout)
             {
-                // 流式响应已经发过至少一段时**不能改写**：头部（状态码与头字段）早在上线那一刻定稿，
+                // 流式响应已经发过至少一段时不能改写：头部（状态码与头字段）早在上线那一刻定稿，
                 // 而 reset() 会把 isChunked/hasSentChunkedHead 一并清掉——会话据此以为这是「新响应」，
                 // 于是分块正文中间又插进一条完整的 504，对端直接报协议错。
                 // 此时唯一正确的动作是记一条日志、让这条流按已发出的状态码收尾
@@ -664,13 +664,13 @@ namespace AsynGyanis::Net
      * @return MiddlewareFunc 中间件函数
      *
      * @details 固定窗口计数（窗口到期整体清零）。超出上限时直接回 429 Too Many Requests
-     *          并带上 Retry-After，**不调用下游**，因此业务 handler 不会被无谓唤醒。
+     *          并带上 Retry-After，不调用下游，因此业务 handler 不会被无谓唤醒。
      *
      * @note 计数器为「每个中间件实例一份」，进程内全局共享，非线程安全：
      *       它假定所有会话跑在同一个事件循环线程上。多循环/多进程部署请换用原子计数或外部存储。
      * @warning 固定窗口有两个坑：
-     *          @li **临界突发**：窗口切换的前后各放行一整批，瞬时速率可达配置值的两倍；
-     *          @li **额度按实例算**：本中间件注册到哪个服务器，额度就只属于那个服务器。多监听器
+     *          @li 临界突发：窗口切换的前后各放行一整批，瞬时速率可达配置值的两倍；
+     *          @li 额度按实例算：本中间件注册到哪个服务器，额度就只属于那个服务器。多监听器
      *             部署（每循环一个服务器）时若逐个注册，进程级的实际上限会乘上监听器数量。
      *          要一个真正的全局上限，用下面基于共享令牌桶的 tokenBucketRateLimiterMiddleware()。
      */
@@ -721,8 +721,8 @@ namespace AsynGyanis::Net
      *          令牌桶按经过的时间连续补令牌、超出容量的部分丢弃，长期速率精确等于配置值，
      *          桶容量则决定能容忍多大的瞬时突发。
      *
-     * @note 线程安全（一把互斥量护住桶状态）：会话可能跑在不同循环线程上。**要在所有监听器之间
-     *       共享同一实例**才能构成进程级的全局 RPS 上限——每个服务器各持一份的话，实际上限会乘上
+     * @note 线程安全（一把互斥量护住桶状态）：会话可能跑在不同循环线程上。要在所有监听器之间
+     *       共享同一实例才能构成进程级的全局 RPS 上限——每个服务器各持一份的话，实际上限会乘上
      *       监听器数量（与 PerIpConnectionLimiter 同一类坑）。
      */
     class ASYN_NET_API TokenBucket
@@ -830,11 +830,11 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 创建基于共享令牌桶的速率限制中间件（超限回 429 Too Many Requests）
-     * @param bucket 令牌桶；**由调用方在所有监听器之间共享同一份**才能构成全局 RPS 上限
+     * @param bucket 令牌桶；由调用方在所有监听器之间共享同一份才能构成全局 RPS 上限
      * @return MiddlewareFunc 中间件函数
      * @throws Base::InvalidArgumentException bucket 为空指针
      *
-     * @details 取不到令牌时直接回 429 并附 Retry-After，**不调用下游**：业务 handler 不会被唤醒。
+     * @details 取不到令牌时直接回 429 并附 Retry-After，不调用下游：业务 handler 不会被唤醒。
      *
      * @note 空指针是用法错误而不是「不限制」：静默放行会让调用方以为限流生效，实际完全没有保护；
      *       要「不限制」就不要注册本中间件。
@@ -923,12 +923,12 @@ namespace AsynGyanis::Net
         /**
          * @brief 判断 Accept-Encoding 是否接受某个编码（含 q 值语义）
          * @details 既要认出目标编码名（大小写不敏感），也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。
-         *          q=0 是**拒绝**而不是「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，
+         *          q=0 是拒绝而不是「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，
          *          发该编码的正文等于违反协商。
          * @param acceptEncoding Accept-Encoding 头部的值，缺头时传空串
          * @param targetEncoding 待判定的编码名（小写，如 "gzip"/"br"/"zstd"）
          * @param honorWildcard 传 false 时 `*` 不参选、只认显式列出的编码名：RFC 9842 §6.1 的模型是
-         *        「客户端把支持的字典编码**显式加进** Accept-Encoding」，`*` 是「其余编码都行」的
+         *        「客户端把支持的字典编码显式加进 Accept-Encoding」，`*` 是「其余编码都行」的
          *        历史语法，替它推断「支持字典解码」超出了题干；代价是漏掉不合规客户端，换来的是
          *        绝不把 dcz 发给不认识它的对端
          * @return true 可以使用该编码
@@ -1084,7 +1084,7 @@ namespace AsynGyanis::Net
             bool             requiresDictionary; ///< 该编码必须带着字典才解得出（RFC 9842 的 dcz）；在线压缩产不出它
         };
 
-        /// 压缩算法表：**表的顺序就是服务器偏好**——zstd 压缩率与速度综合最好、brotli 次之（静态内容
+        /// 压缩算法表：表的顺序就是服务器偏好——zstd 压缩率与速度综合最好、brotli 次之（静态内容
         /// 尤佳）、gzip 兜底兼容。在线协商与静态预压缩的变体查找读的都是这一张表，于是「本端认为 br
         /// 比 gz 好」这件事只有一处结论；加算法改这一行，两处一起跟上。
         /// dcz（RFC 9842 的字典压缩 zstd）排在最前：只有对端手里确有匹配字典时它才参选，而那种场合
@@ -1140,7 +1140,7 @@ namespace AsynGyanis::Net
          * @brief 解析请求的 Available-Dictionary（RFC 9842 §2.2 的 sf-binary），取出 32 字节 SHA-256
          * @details 形态固定为 `:<base64>:`——冒号包裹的标准字母表 Base64（RFC 8941 §4.2.7 引用
          *          RFC 4648 §4，带填充）。严格解码（Base::base64Decode 的那套判据），且解码结果
-         *          **必须恰好 32 字节**：多一字节少一字节都不是 SHA-256，按「没有匹配字典」处置，
+         *          必须恰好 32 字节：多一字节少一字节都不是 SHA-256，按「没有匹配字典」处置，
          *          而不是报错——这条头部来自由公网驱动的客户端，含糊的输入不该换回非 2xx 的差异。
          * @param headerValue Available-Dictionary 头部的值；缺头时传空串
          * @return std::optional<Core::Digest::Sha256Value> 解码出的 32 字节哈希；形态不对或长度不对时为空
@@ -1374,7 +1374,7 @@ namespace AsynGyanis::Net
      * @note 不压缩的情形（都会原样发正文）：对端不接受任何受支持的编码（含 `gzip;q=0` 这类明确拒绝）、
      *       响应已带 content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
      *       正文小于阈值、内容类型属于已压缩媒体
-     * @note 流式响应这一格是**有意不覆盖**：按块压缩要先定 flush 语义，而 SSE 的事件边界与压缩器的
+     * @note 流式响应这一格是有意不覆盖：按块压缩要先定 flush 语义，而 SSE 的事件边界与压缩器的
      *       块边界不是一回事——逐段 flush 会让小事件膨胀，跨事件缓冲又破坏「写完即送达」。需要压缩的
      *       流式接口由调用方按自己的协议边界处理（见 compressionMiddlewareImplementation 里的说明）
      * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
@@ -1404,7 +1404,7 @@ namespace AsynGyanis::Net
      * @return MiddlewareFunc 中间件
      * @warning 执行器与循环都必须比返回的中间件活得久：中间件只握着它们的裸指针，
      *          注册进服务器后由每条请求复用
-     * @warning 前提是这条传输路径的会话收尾会**等**处理器协程跑完：挂起的帧若被提前销毁，已经投回
+     * @warning 前提是这条传输路径的会话收尾会等处理器协程跑完：挂起的帧若被提前销毁，已经投回
      *          循环的那次恢复就是悬垂句柄。三条通道都满足——HTTP/1.1 与 HTTP/2 的请求路径按结构成立
      *          （帧在会话帧里、服务器只在 isReady() 之后回收），HTTP/3 由承载层在摘掉连接之前调用
      *          Http3Session::abandonPendingStreams()，叫醒并等完在途的派发协程
@@ -1424,7 +1424,7 @@ namespace AsynGyanis::Net
          * @details gzip 的压缩比可以到上千倍，不设上界等于让对端用几百字节决定本进程分配多少内存。
          *          默认与 `inflateHttpBody` 的默认同一档（8 MiB，与 `HttpParserLimits::maximumBodySize`
          *          同档）：解出来的东西最终也要过那一道闸，两处不同值只会让「收得下但解不出」或
-         *          「解得出但收不下」这两种半截形态出现。**装配时把它对准同一份配置**——示例按
+         *          「解得出但收不下」这两种半截形态出现。装配时把它对准同一份配置——示例按
          *          `configuration.parserLimits.maximumBodySize` 传入，收紧线上正文上限即同步收紧解压出口
          */
         std::size_t maximumDecompressedByteCount = kDefaultInflateOutputLimitBytes;
@@ -1446,14 +1446,14 @@ namespace AsynGyanis::Net
      *          新正文配一个旧长度）。
      *
      * @note 流式路由（`Router::postStreaming()` 那一类）在头部收齐时就派发，此刻 `body()` 只是「已收而
-     *       尚未交付」的那一段，整份压缩流不在这里。中间件这一层能依据的只有声明长度：**声明的
-     *       content-length 与实际字节不符、或压根没有声明长度（分块正文）时原样交回**，由处理器按段
+     *       尚未交付」的那一段，整份压缩流不在这里。中间件这一层能依据的只有声明长度：声明的
+     *       content-length 与实际字节不符、或压根没有声明长度（分块正文）时原样交回，由处理器按段
      *       自己解——把一段合法上传判成 400 比不解更坏。编码本身不合规那两档（链式、没有解码器）
      *       与正文到没到齐无关，照旧先判 415。
      * @param options 解压档位
      * @param inflatedBodyBudget 解出来的正文要计入的「在途正文字节」预算，可为空；
      *        三条会话收正文时各自记同一份预算（HttpServer::memoryBudget()），装配处把同一份传进来即可。
-     *        为空时解出的缓冲不进这份账——正文仍受会话侧**收进来那份**的约束，只是解压多出的那一截不在账上
+     *        为空时解出的缓冲不进这份账——正文仍受会话侧收进来那份的约束，只是解压多出的那一截不在账上
      * @return MiddlewareFunc 中间件
      * @see compressionMiddleware()（响应方向的那一半）
      */
@@ -1558,7 +1558,7 @@ namespace AsynGyanis::Net
     {
         /**
          * @brief 按 auth-scheme 前缀剥出 Authorization 头的凭据段（RFC 9110 §11.2）
-         * @details 方案名大小写不敏感，但**整段前缀都要对上**才剥：按固定偏移顺手切一刀，会把另一种
+         * @details 方案名大小写不敏感，但整段前缀都要对上才剥：按固定偏移顺手切一刀，会把另一种
          *          方案里恰好合法的 base64 也当成凭据收下。对不上就交回「没有凭据」，不替非法输入猜解释
          * @param headerValue 头取值原文
          * @param lowerCaseSchemePrefix 小写书写、含尾随空格的方案前缀（如 `"basic "`）
@@ -1596,7 +1596,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 给运维端点挂一道 Bearer 令牌闸门
      * @details 指标与循环诊断端点原本谁都能抓：开到 0.0.0.0 上等于把内部计数、连接数与每条循环的相位
-     *          公开。令牌为空时**抛**而不是放行——那正是「配了闸却没关」最难发现的一种。
+     *          公开。令牌为空时抛而不是放行——那正是「配了闸却没关」最难发现的一种。
      *          比较走 Base::constantTimeEquals，避免把「前几位猜对了」泄漏进响应耗时里。
      * @param options 访问策略（令牌与受保护路径），按值捕获进中间件
      * @return MiddlewareFunc 中间件；未授权时回 401 且不调用下游
@@ -1642,7 +1642,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 安全响应头的取值
-     * @details 给 `securityHeadersMiddleware()` 用。留空即**不发这一条**——这些头各自的默认值在不同
+     * @details 给 `securityHeadersMiddleware()` 用。留空即不发这一条——这些头各自的默认值在不同
      *          部署里结论相反（内嵌 iframe 的管理台会把 DENY 改成 SAMEORIGIN 或干脆不发），
      *          本层不替调用方选边；只有 nosniff / DENY / no-referrer 这三条取「默认收紧」，
      *          因为它们是「浏览器多做一步猜测」这类风险的兜底，收紧的代价远小于放松。
@@ -1689,7 +1689,7 @@ namespace AsynGyanis::Net
      *          不被别人框进 iframe、不把来源 URL 递给第三方、只在 HTTPS 上继续访问本站。
      *          此前引擎一条都不发（本仓从未出现 Strict-Transport-Security / Content-Security-Policy
      *          这些字段名），业务要自己一条条 setHeader，且很容易在某个路由上漏掉。
-     *          已存在的头部**不覆盖**：排在更外层的中间件或已经写定策略的业务才是取值的主人。
+     *          已存在的头部不覆盖：排在更外层的中间件或已经写定策略的业务才是取值的主人。
      *          HSTS 只在加密连接上发（见 HttpRequest::overTls()）：RFC 6797 §7.2 要求浏览器忽略
      *          非安全传输上收到的这一条，明文发出去不但不生效，还会让人以为这个站点已经有了这道保护。
      * @param options 各条头的取值，按值捕获进中间件
@@ -1758,7 +1758,7 @@ namespace AsynGyanis::Net
      * @details 引擎不猜口令存在哪里：`verify` 是调用方的判定入口（查表、查库、比对哈希都行），
      *          本层只负责把 `Authorization` 那一段拆对、按规范答 401/403，以及把「明文连接上
      *          不该收 Basic 凭据」这条默认守住。
-     * @note 口令的比较时机安全**在 verify 里**：要比对字面口令，请用 `Base::constantTimeEquals`，
+     * @note 口令的比较时机安全在 verify 里：要比对字面口令，请用 `Base::constantTimeEquals`，
      *       不要用 `operator==`——短路比较会把「前几位猜对了」泄漏进响应耗时里
      */
     struct ASYN_NET_API BasicAuthOptions
@@ -1787,13 +1787,13 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 给路由挂一道 HTTP Basic 认证闸
-     * @details 引擎此前只有 `opsAccessMiddleware()` 那一道闸：它比的是**单个 Bearer 令牌**，守的是固定
+     * @details 引擎此前只有 `opsAccessMiddleware()` 那一道闸：它比的是单个 Bearer 令牌，守的是固定
      *          名单里的运维端点；业务侧要按 `user:secret` 保护一条管理路由，仍得自己在处理器里写一遍
      *          ——而「忘了写的那条路由」正是最难发现的暴露面，所以这一件也做成按路径名单挂的中间件，
      *          与运维端点那道共用同一套纪律（方案判定、多条凭据按未授权处理、构造期校验入参）。
      *          未授权时回 401 并带上 `WWW-Authenticate: Basic realm="...", charset="US-ASCII"`
      *          （RFC 7617 §2.1 的 charset 参数），正文固定、不回显「差在哪一位」。
-     * @details 默认**拒绝在明文连接上收 Basic 凭据**（回 403 而不是 401：401 附带的那句提示等于
+     * @details 默认拒绝在明文连接上收 Basic 凭据（回 403 而不是 401：401 附带的那句提示等于
      *          邀请客户端把口令发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，
      *          报的是本端这一跳的传输层事实，不看 `X-Forwarded-Proto`。确实要在明文上放开
      *          （本机调试、或已在反代之后），显式置 `requireSecureTransport=false`。
@@ -1802,7 +1802,7 @@ namespace AsynGyanis::Net
      * @throws Base::InvalidArgumentException verify 缺席；或 realm 含 CR/LF/NUL/引号那类会破坏头取值的字节
      * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
      *       随头部顺序时通时不通，那种不稳定比直接拒更难查
-     * @note 切分按**第一个**冒号：user-id 里不允许出现冒号（RFC 7617 §2），所以冒号之后的整体都是口令，
+     * @note 切分按第一个冒号：user-id 里不允许出现冒号（RFC 7617 §2），所以冒号之后的整体都是口令，
      *       含冒号的口令因此能用，而用户名不能
      */
     inline MiddlewareFunc basicAuthMiddleware(BasicAuthOptions options)
@@ -1868,12 +1868,12 @@ namespace AsynGyanis::Net
 
     /**
      * @brief Bearer 令牌认证（RFC 6750 §2、§3）的取值
-     * @details 引擎此前有两道相关的闸：`opsAccessMiddleware()` 比的是**一个写死的令牌**且只守运维端点名单，
+     * @details 引擎此前有两道相关的闸：`opsAccessMiddleware()` 比的是一个写死的令牌且只守运维端点名单，
      *          `basicAuthMiddleware()` 走的是 `user:secret`。业务侧要按自己的令牌存储、会话服务或签名
      *          校验来保护一条路由，仍然得在处理器里手写拆头、多条判定与挑战头——而「忘了写的那条路由」
      *          是最难发现的暴露面。判定交给 `verify`（引擎不猜令牌存在哪里），本层只负责把
      *          `Authorization` 拆对、按规范答 401/403，以及把「明文连接上不该收凭据」这条默认守住。
-     * @note 令牌的比较时机安全**在 verify 里**：要比对字面令牌，请用 `Base::constantTimeEquals`，
+     * @note 令牌的比较时机安全在 verify 里：要比对字面令牌，请用 `Base::constantTimeEquals`，
      *       短路比较会把「前几位猜对了」泄漏进响应耗时里
      */
     struct ASYN_NET_API BearerAuthOptions
@@ -1890,11 +1890,11 @@ namespace AsynGyanis::Net
      *          给出令牌；这道守调用方给的路径名单（空名单=整台服务）、把「这个令牌算不算数」交回调用方，
      *          因此能接查表、查库、验签名这三种完全不同的令牌来源。两条纪律是共用的：方案判定走同一个
      *          `Detail::extractBearerCredential()`，同名多条 `Authorization` 一律按未授权处理。
-     * @details 挑战头按 RFC 6750 §3.1 分两种形状：**没给凭据**时只带 realm（此时客户端该去取凭据），
-     *          **给了但不被接受**时才带 `error="invalid_token"`（此时客户端该停下重试循环）。把两者合成
+     * @details 挑战头按 RFC 6750 §3.1 分两种形状：没给凭据时只带 realm（此时客户端该去取凭据），
+     *          给了但不被接受时才带 `error="invalid_token"`（此时客户端该停下重试循环）。把两者合成
      *          一条发出去，等于对没登录的客户端谎报「你那条令牌被拒了」。正文固定，不回显令牌本身，
      *          也不区分「没给/给了不对/给了多条」之外的细节——那些差别只帮攻击者缩小搜索面。
-     * @details 默认**拒绝在明文连接上收凭据**（回 403 而不是 401：401 附带的那句提示等于邀请客户端把
+     * @details 默认拒绝在明文连接上收凭据（回 403 而不是 401：401 附带的那句提示等于邀请客户端把
      *          令牌发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，报的是本端这一跳的传输层
      *          事实，不看 `X-Forwarded-Proto`。确实要在明文上放开（本机调试、或已在反代之后），
      *          显式置 `requireSecureTransport=false`。

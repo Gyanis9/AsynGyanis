@@ -10,7 +10,7 @@
  *          worker 自己调 sd_notify 无效也不该——喂狗的统一出口必须在 master。于是 worker 把
  *          「我这边的循环还在推进」交给一条 dedicated 管道，master 收齐所有 worker 的拍之后
  *          才向服务管理器喂一次 `WATCHDOG=1`（汇聚逻辑在 `WorkerSupervisor`）。用的仍是
- *          `RoundTicker` 那条骨架：**全部**循环都在这一轮醒过才写一拍——任何一条循环卡死，
+ *          `RoundTicker` 那条骨架：全部循环都在这一轮醒过才写一拍——任何一条循环卡死，
  *          这个 worker 从此不再有拍，master 的判定随之停喂。
  *
  * @note 管道 write 端描述符由 master 经启动参数传入（fork 继承，见 `WorkerSupervisor`）；

@@ -56,7 +56,7 @@ namespace AsynGyanis::Base
      * @note 日志器名称与线程 ID 都以 std::shared_ptr<const std::string> 共享：两者在各自
      *       宿主（Logger / 线程）内都不变，因此每条日志不为其分配/拷贝字符串，
      *       异步 Sink 入队也只复制指针。
-     * @note 调用栈以**原始帧**随事件传递，符号解析由各 Sink 在输出时进行（见 StackTrace.h）：
+     * @note 调用栈以原始帧随事件传递，符号解析由各 Sink 在输出时进行（见 StackTrace.h）：
      *       异步 Sink 上解析落在工作线程，事件循环线程不为它付出调试信息读取的开销。
      */
     struct ASYN_BASE_API LogEvent

@@ -6,7 +6,7 @@
 # （密钥方向、该不该发 original_destination_connection_id、握手确认的时刻）验不出来。
 #
 # 判据取两边的说法：aioquic 侧打印它解到了什么，探针侧打印它做了什么，任何一侧缺行即失败。
-# **不要只看退出码**——脚本没跑起来与跑起来但判据不成立，都可能是非 0 或 0。
+# 不要只看退出码——脚本没跑起来与跑起来但判据不成立，都可能是非 0 或 0。
 #
 # 用法：
 #   scripts/quic_outbound_cross_check.sh [构建目录] [带 aioquic 的 python]
@@ -18,7 +18,7 @@ cd "$root" || exit 1
 
 buildDir="${1:-build/release}"
 python="${2:-python3}"
-# 证书路径保持**相对**形式：脚本已经 cd 到仓库根。给绝对路径的话，Git Bash 会把
+# 证书路径保持相对形式：脚本已经 cd 到仓库根。给绝对路径的话，Git Bash 会把
 # /g/Codes/... 这种 MSYS 形状递给 Windows 版 python，对方打不开就崩，而报出来的是「对端没起来」
 certificate="tests/Core/fixtures/test_localhost_cert.pem"
 privateKey="tests/Core/fixtures/test_localhost_key.pem"

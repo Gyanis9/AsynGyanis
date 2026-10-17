@@ -524,7 +524,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 单值视图按需重建：先查询、再追加同名头部，第二次查询必须看到合并后的结果
      *
-     * @details 视图是**惰性**的（首次查询才由权威记录建出，见 rebuildSingleValueView），
+     * @details 视图是惰性的（首次查询才由权威记录建出，见 rebuildSingleValueView），
      *          因此「查询 → 新增头部 → 再查询」这条时序必须把视图标脏并重建；
      *          漏掉标脏会让第二次查询拿到旧的合并结果，而这类错误只在特定调用顺序下出现。
      */

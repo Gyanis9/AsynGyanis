@@ -10,7 +10,7 @@
  *          LogicException、派生自 std::invalid_argument 的 InvalidArgumentException）无法共享
  *          基类，而调用方常常只 catch 了 std::exception；本头文件用一次 dynamic_cast 认出来。
  *          只应在错误路径上调用——正常路径不该为它付出类型检查的开销。
- * @note 上面那三个异常头的 include 是**对外兼容面**而不是本文件自身需要的：大量现有翻译单元
+ * @note 上面那三个异常头的 include 是对外兼容面而不是本文件自身需要的：大量现有翻译单元
  *       经 Logger.h 间接拿到这三个类型，抽掉它们会把几十处 catch 打成编译错误。
  *       要按「谁用谁 include」收口，应当单独立一笔逐个补直接包含，而不是混在本轮改造里顺手做。
  */

@@ -110,7 +110,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 一条分布读数折成 OTLP 的 Metric（histogram 数据点）
-         * @details 64 位计数按 proto3 JSON mapping 的规矩写成**字符串**（`count` 与 `bucketCounts`
+         * @details 64 位计数按 proto3 JSON mapping 的规矩写成字符串（`count` 与 `bucketCounts`
          *          的元素都是 uint64；`sum` 与 `explicitBounds` 是 double，保持数字形态）；
          *          桶是「每格条数」不累计、末格溢出，与产出方同形、渲染层不做换算。
          */

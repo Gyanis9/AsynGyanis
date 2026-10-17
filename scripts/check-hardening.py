@@ -3,11 +3,11 @@
 
 判据的形状照本仓其它门禁来：
 
-* **期望从构建目录自己的 CMakeCache.txt 现读**（`ASYN_ENABLE_HARDENING` / `ENABLE_SANITIZERS` /
+* 期望从构建目录自己的 CMakeCache.txt 现读（`ASYN_ENABLE_HARDENING` / `ENABLE_SANITIZERS` /
   `SANITIZE_THREADS` / `CMAKE_BUILD_TYPE` / 编译器 id），脚本里不再抄一份策略——两处算式分叉是
   最难发现的那种漂移，而「配了却没生效」正是本仓在 sanitizer 上踩过的那类假安全；
-* **编译侧**读 `compile_commands.json`：本仓 `src/` 下每个翻译单元都要带着该带的开关；
-* **镜像侧**读产物头：ELF 看 `GNU_RELRO` + `BIND_NOW` + 不可执行栈，PE 看 NX / DYNAMIC_BASE /
+* 编译侧读 `compile_commands.json`：本仓 `src/` 下每个翻译单元都要带着该带的开关；
+* 镜像侧读产物头：ELF 看 `GNU_RELRO` + `BIND_NOW` + 不可执行栈，PE 看 NX / DYNAMIC_BASE /
   Control Flow Guard；
 * 退出码分三档：0 全对、1 有落点不对（被测面的问题）、2 前置缺件（没有 compile_commands、找不到
   readelf/dumpbin 之类）——缺件绝不被读成「通过」。
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 # 两个流固定按 UTF-8 写：这张表的每一行都是中文，而 Windows 侧的默认编码可能是 cp1252
-# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，脚本会在**打印第一行读数时**
+# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，脚本会在打印第一行读数时
 # 抛 UnicodeEncodeError 退 1——看上去像「加固落空」，实际一条判据都没跑完。
 # 这条门第一次上 CI 就红在这里（2026-10-10，Linux 侧同一件跑过），所以补得不算早。
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -84,7 +84,7 @@ def command_of(entry: dict) -> str:
 def check_compile_side(expect: dict, entries: list[dict], args: argparse.Namespace) -> list[str]:
     """核对 src/ 下每个翻译单元带着该带的开关；返回落空的文件清单。
 
-    加固不落的那一档反过来也要核：**一个都不该出现**——sanitizer 与加固叠在一起会让一次 trap
+    加固不落的那一档反过来也要核：一个都不该出现——sanitizer 与加固叠在一起会让一次 trap
     归因不清，而「缓存里说关了、命令行里还带着」正是这种静默失效的形状。
     """
     problems: list[str] = []

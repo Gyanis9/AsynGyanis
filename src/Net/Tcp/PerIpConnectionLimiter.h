@@ -36,7 +36,7 @@ namespace AsynGyanis::Net
      *
      * @note 线程安全：多个循环线程会并发 tryAcquire/Lease 析构，内部一把互斥量保护计数表。
      *       取名额发生在 accept 之后、建连之前，不在每请求路径上，锁竞争与连接建立同量级。
-     * @warning 判据是**TCP 对端地址**，因此同一台 NAT 后面的多个客户端会被算作一个来源——限额按
+     * @warning 判据是TCP 对端地址，因此同一台 NAT 后面的多个客户端会被算作一个来源——限额按
      *          「一个来源」给，取值要按这个前提定，不要当成「每个用户」。
      * @see TcpServer::setPerIpConnectionLimiter()
      */
@@ -108,7 +108,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 构造限额
-         * @param maximumConnectionsPerIp 单个来源允许同时存活的连接条数；**0 表示关闭该项保护**
+         * @param maximumConnectionsPerIp 单个来源允许同时存活的连接条数；0 表示关闭该项保护
          *        （与框架里其它限额字段的 0 语义一致：是「不设这项保护」而不是「一条都不许」）
          */
         explicit PerIpConnectionLimiter(std::size_t maximumConnectionsPerIp);
@@ -119,7 +119,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 为某个来源占用一个名额
-         * @param ipKey 来源标识，**只含地址、不含端口**（调用方传 `InetAddress::ip()`）。带上端口就等于
+         * @param ipKey 来源标识，只含地址、不含端口（调用方传 `InetAddress::ip()`）。带上端口就等于
          *        按连接计数——每条连接的端口都不同，限额永远碰不到。IPv4 映射写法（`::%ffff:a.b.c.d`）会
          *        折成点分十进制本体再记账，使同一来源不管从哪一族监听器进来都落在同一格
          * @return `std::optional<Lease>` 成功时返回持有名额的凭据；该来源已达上限时返回空 optional；

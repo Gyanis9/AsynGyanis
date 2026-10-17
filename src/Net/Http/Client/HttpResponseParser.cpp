@@ -32,7 +32,7 @@ namespace AsynGyanis::Net
         /// @note 慢路径交出的行指向 lineBuffer，调用方必须在下一次 feedLine 之前用完它；
         ///       清缓冲推迟到下一次调用（见 isLineHandedOut）——交出去就清会让 MSVC 的
         ///       std::string 在首字节写 NUL，调用方读到的是坏内容
-        /// @note 单行长度闸门就在这一处，量的是**行体**（不含 CRLF），与入站解析器同一把尺
+        /// @note 单行长度闸门就在这一处，量的是行体（不含 CRLF），与入站解析器同一把尺
         ///       （见 HttpHeaderRules.h 的 lineBodyByteCountWithoutTerminator）。闸门原先站在 feed()
         ///       入口「先看已有的、再等下一次喂」，于是每多喂一段就多攒一段：一次喂入是 4 KiB，
         ///       8 KiB 的上限实际能长到 12 KiB，而调用方拿不到越界的时机信息。挪到 append 之前按
@@ -378,7 +378,7 @@ namespace AsynGyanis::Net
                         break;
                     }
                     m_headerBlockByteCount += field->first.size() + field->second.size();
-                    // 条数与净字节都按**整条报文**累计：trailer 段的字段一并计入，否则「把字段拆进
+                    // 条数与净字节都按整条报文累计：trailer 段的字段一并计入，否则「把字段拆进
                     // trailer 段」就是这两道闸的绕过口——与入站侧（h1 解析器、h2/h3 会话）同一条口径
                     if (exceedsBudget(m_result.headers.size() + m_result.trailers.size() + 1, kDefaultMaximumHeaderCount) ||
                         (exceedsBudget(m_headerBlockByteCount, kDefaultMaximumHeaderBlockByteCount)))
@@ -465,7 +465,7 @@ namespace AsynGyanis::Net
                                 m_chunkPhase = ChunkPhase::SizeLine;
                                 continue;
                             }
-                            // Trailer 段：空行表示报文完整；其余行按**与头部同一套**形态判据校验后
+                            // Trailer 段：空行表示报文完整；其余行按与头部同一套形态判据校验后
                             // 收进 trailers（过去只校验就丢弃：正文之后才知道的结果——校验和、最终状态——
                             // 调用方压根读不到，而这正是 chunked trailer 存在的理由）
                             if (line.empty())

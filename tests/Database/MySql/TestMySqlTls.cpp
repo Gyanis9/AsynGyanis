@@ -1,7 +1,7 @@
 // MySQL 链路 TLS 的活体用例：档位映射到客户端库 ssl-mode 后的效果（Ssl_cipher 读数）与 CA 校验的两条去向。
 // 门控与 TestMySqlIntegration.cpp 同一套环境变量（口令没有默认值，未设置整组跳过）；VerifyCa 正向用例
 // 另需 ASYN_MYSQL_TEST_SSL_CA 指向服务端的 CA 文件，未提供时那条用例单独跳过。
-// 判据口径：Ssl_cipher 是**本会话**的协商结果（SHOW SESSION STATUS），空 = 这条连接是明文。
+// 判据口径：Ssl_cipher 是本会话的协商结果（SHOW SESSION STATUS），空 = 这条连接是明文。
 
 #include "DatabaseTestSupport.h"
 
@@ -100,7 +100,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 显式 Disabled：绝不对链路加密——要么明文建成（cipher 为空），要么被服务端的安全姿态拒绝
      * @details MySQL 8 的 caching_sha2_password 在明文通道上拒绝口令认证（错误 2061）：这是服务端
-     *          防止口令裸奔的设计，不是驱动故障。本用例把两种结局都钉住：无论如何**不得**出现密码套件
+     *          防止口令裸奔的设计，不是驱动故障。本用例把两种结局都钉住：无论如何不得出现密码套件
      */
     TEST(MySqlTls, DisabledNeverNegotiatesALinkCipher)
     {

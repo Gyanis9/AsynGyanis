@@ -41,11 +41,11 @@ namespace AsynGyanis::Core
      *          在途请求随进程一起丢」，而且没人会知道自己抄错了。
      * @note 一个进程只允许一个观察者：信号处理器与 SIGTERM 的屏蔽都是进程级的，两个实例会互相抢。
      *       第二个实例不会装处理器，`isInstalled()` 返回 false 并记一条 ERROR 日志——不静默降级。
-     * @note POSIX 侧要求**尽早构造**（在其它工作线程创建之前）：构造时把 SIGINT/SIGTERM 加进本线程的
+     * @note POSIX 侧要求尽早构造（在其它工作线程创建之前）：构造时把 SIGINT/SIGTERM 加进本线程的
      *       信号屏蔽字，之后派生的线程继承它，信号因此只会由本类那个等待线程（带超时的 sigtimedwait
      *       轮询）取走。
      *       已经跑起来的线程不会被打上屏蔽，它们仍可能自己收到信号并按缺省动作终止进程。
-     * @note 只收**进程定向**的信号（`kill(pid, SIGTERM)`、终端的 Ctrl+C 都是这一类）：用 `raise()` 或
+     * @note 只收进程定向的信号（`kill(pid, SIGTERM)`、终端的 Ctrl+C 都是这一类）：用 `raise()` 或
      *       `pthread_kill()` 送给某条线程的线程定向信号，只有那条线程自己能收，本类的等待线程取不到它。
      *       要在进程内模拟一次真信号，请用 `kill(getpid(), SIGTERM)`，或者直接调 requestShutdown()。
      * @note 目标循环如果已经退出，投回去的动作会被丢弃（`Scheduler::postRemote` 的既有语义）：
@@ -72,7 +72,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 不绑定事件循环，接管停机信号
          * @details 给「动作本来就与循环无关」的宿主用（例如只置一个原子标志、主循环自己轮到了再收口），
-         *          这类宿主往往在信号到达时还没起好任何循环。动作因此**在收到信号的那条线程上就地执行**，
+         *          这类宿主往往在信号到达时还没起好任何循环。动作因此在收到信号的那条线程上就地执行，
          *          要碰服务器与会话状态的动作请用带事件循环的那个构造。
          */
         GracefulShutdown();
@@ -130,7 +130,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 提前把 SIGINT/SIGTERM 挡进本线程的信号屏蔽字（POSIX；Windows 上空转返回 true）
-         * @details 屏蔽字只对被屏蔽之后**才派生**的线程生效，而构造本类往往已经晚于工作线程的创建。
+         * @details 屏蔽字只对被屏蔽之后才派生的线程生效，而构造本类往往已经晚于工作线程的创建。
          *          需要让「所有线程都不按缺省动作终止进程」时，请在起线程之前调这一句，之后再构造本类。
          *          构造本类时也会调它一次，因此「先构造再起线程」的常规写法不必额外做什么。
          * @return true 屏蔽字已设好（或本平台没有这套机制）；false 系统调用失败
@@ -178,7 +178,7 @@ namespace AsynGyanis::Core
         std::atomic<std::uint8_t> m_reason{0};          ///< 触发成因，取值是 Reason 的底层值；0 表示尚未触发
         std::atomic<bool>         m_isInstalled{false}; ///< 信号接管是否装上（每进程仅一个观察者装得上）
 
-        /// POSIX 侧取信号的等待线程。**必须声明在最后**：成员按声明逆序销毁，最后声明的最先销毁，
+        /// POSIX 侧取信号的等待线程。必须声明在最后：成员按声明逆序销毁，最后声明的最先销毁，
         /// 于是 jthread 的 join 发生在上面那批原子量与容器之前——否则等待线程可能在它们已经没了
         /// 的时候还在读它们（不带超时的 sigwait 是叫不醒的，所以等待用的是固定短周期轮询）
         std::jthread m_waiter;

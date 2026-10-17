@@ -79,7 +79,7 @@ namespace AsynGyanis::Net
             std::string privateKeyFile;  ///< 私钥（PEM）
             /// 会话票据密钥文件（可空：留空即 OpenSSL 默认，每个 SSL_CTX 一份随机密钥）。每份是
             /// 48 或 80 字节的二进制内容，首份用于签发、其余只用于解开轮换窗口内的旧票据。
-            /// **多进程 worker 要共享恢复能力就得各进程装同一份**：QUIC 的恢复走 TLS 1.3 票据，
+            /// 多进程 worker 要共享恢复能力就得各进程装同一份：QUIC 的恢复走 TLS 1.3 票据，
             /// 密钥不共享时客户端第二次连接被分到别的进程只能退回全量握手
             std::vector<std::string> sessionTicketKeyFiles;
             /**
@@ -87,14 +87,14 @@ namespace AsynGyanis::Net
              *
              * @details 存在的理由是「一份策略喂三个监听器」：安全等级、TLS 1.3 套件、命名曲线、票据
              *          开关这些项，过去 HTTPS 侧改一处、QUIC 侧再改一处，两边迟早会漂。
-             * @note 这里有几项对**本监听器**不适用，因为 QUIC 只跑 TLS 1.3、且本服务端不要求客户端
+             * @note 这里有几项对本监听器不适用，因为 QUIC 只跑 TLS 1.3、且本服务端不要求客户端
              *       证书：`cipherList`（1.2 及以下的套件串）、`certificateAuthorityFile/Path`、
              *       `verifyDepth`、`revocationListFile`/`revocationCoversWholeChain`。它们被原样带上
              *       而不报错，正是因为同一份策略多半还要交给 `HttpsServer` 或出站客户端用——
              *       在那两侧它们是生效的。「填了字段但这一侧用不上」与「这一侧支持但没生效」是两件事，
              *       后者才需要拒绝。
-             * @note 版本区间由本层管到底：策略的**下限**低于 1.3 时这里钉回 1.3（只会更严，不算说谎），
-             *       而把**上限**压到 1.3 以下是一条 QUIC 满足不了的配置，构造当场抛。
+             * @note 版本区间由本层管到底：策略的下限低于 1.3 时这里钉回 1.3（只会更严，不算说谎），
+             *       而把上限压到 1.3 以下是一条 QUIC 满足不了的配置，构造当场抛。
              * @note `cipherList`（1.2 及以下的套件串）对本监听器恒不适用——QUIC 只跑 TLS 1.3。
              *       其余那几项（`certificateAuthorityFile/Path`、`verifyDepth`、
              *       `revocationListFile`/`revocationCoversWholeChain`）是否生效取决于下面的
@@ -110,13 +110,13 @@ namespace AsynGyanis::Net
              *
              * @details 与 `HttpsServer::setClientCertificateRequired()` 同一档能力，只是这里在构造期一次
              *          定：h3 的连接由数据报路由而来，没有「先监听再改配置」的中间态，改校验模式只能整台换。
-             * @note 为真时 `tlsPolicy.certificateAuthorityFile` 或 `certificateAuthorityPath` **至少要给一项**，
+             * @note 为真时 `tlsPolicy.certificateAuthorityFile` 或 `certificateAuthorityPath` 至少要给一项，
              *       否则构造当场抛——「要求校验却没有信任锚」在握手里的形态是每条连接都失败，与其留一条
              *       永远握不成的监听器，不如在启动时就点名。与 HTTPS 侧同一判据（那边是拒绝启用而非静默放行）。
              * @note 开启后对端不出示证书即被拒（`SSL_VERIFY_FAIL_IF_NO_PEER_CERT`），不退化成「可选校验」。
              */
             bool requireClientCertificates{false};
-            /// 同时在线连接上限；**显式写 0 = 不限**，与 `HttpServerConfig::maximumConnections` 同口径
+            /// 同时在线连接上限；显式写 0 = 不限，与 `HttpServerConfig::maximumConnections` 同口径
             /// （那边 0 就是不限，抄过来时若把 0 当成「一个也不收」，症状是一台监听正常却谁也连不上）。
             /// 默认取 1024 而不是 0：QUIC 的每条在线连接都常驻一份 TLS 会话、流表与拥塞状态，
             /// 而且它没有内核接受队列可挡——新连接一握手就是本端的账，所以本端自己先设一道有限值。
@@ -131,7 +131,7 @@ namespace AsynGyanis::Net
             /// `QuicConnectionCoreConfiguration::congestionAlgorithm`
             QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
             /// h3 会话的请求解析上限（正文总量上限等），与 h1/h2 同一套配置。
-            /// 不设置时用 HttpParserLimits 的默认值——**不能没有上限**：一条 POST 就能把内存吃光
+            /// 不设置时用 HttpParserLimits 的默认值——不能没有上限：一条 POST 就能把内存吃光
             HttpParserLimits parserLimits{};
             /// 本端在 HTTP/3 SETTINGS 里公布的能力，也是 QPACK 两侧与单帧缓冲的实际约束
             /// （RFC 9114 §4.2.2、RFC 9204 §5、RFC 9220 §3.1）。此前服务端一侧只能吃编译期默认值：
@@ -141,10 +141,10 @@ namespace AsynGyanis::Net
             /// h3 的正文同样驻留在进程内存里，只限「单条流」挡不住 100 条流各压 8 MiB
             std::shared_ptr<HttpMemoryBudget> memoryBudget;
             /// 统计采集端（可空：空表示 h3 流量不采集）。
-            /// **与 HTTP 侧共用同一个实例**，那台服务器的 /metrics 就一并覆盖 h3（见
+            /// 与 HTTP 侧共用同一个实例，那台服务器的 /metrics 就一并覆盖 h3（见
             /// HttpServer::metricsCollector()）；单独采集时用 stats() 读本服务端的快照
             std::shared_ptr<HttpMetricsCollector> metricsCollector;
-            /// request-id 生成器（可空：空表示 h3 不为请求落定 id）。**与 HTTP 侧共用同一个实例**：
+            /// request-id 生成器（可空：空表示 h3 不为请求落定 id）。与 HTTP 侧共用同一个实例：
             /// 同一来源不管走 h1/h2 还是 h3，日志与 x-request-id 里的前缀都指向同一台服务器
             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator;
             /// 连接级限额（可空）：目前用到「单连接最多处理多少条请求」——达到后 h3 会话发 GOAWAY
@@ -157,13 +157,13 @@ namespace AsynGyanis::Net
             /// 同一来源不管从 TCP 还是 QUIC 进来都算在同一个名额里
             std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter;
             /**
-             * @brief 地址验证令牌的有效期（秒）；**0 表示不开这项保护**（缺省，逐字保持这一格落地之前的行为）
+             * @brief 地址验证令牌的有效期（秒）；0 表示不开这项保护（缺省，逐字保持这一格落地之前的行为）
              *
              * @details 开了之后，每个不带令牌的新连接 Initial 都先吃一条 Retry（RFC 9000 §8.1.2）：本端
              *          不为它建任何状态，等它带着令牌重来才建。这一格的存在理由是公网 UDP 端口上的成本
              *          不对称——一条 Initial 就能让本端建一份 TLS 会话、一张流表与一套拥塞状态，而发的人
              *          不必是自己。测试计划里「放大/反射字节比 ≤3」与「Initial 洪水」两格都靠它收口。
-             * @note 开了之后**自家出站客户端连不上**：本实现的客户端不处理 Retry 报文（见 §17.2.5.2 那格
+             * @note 开了之后自家出站客户端连不上：本实现的客户端不处理 Retry 报文（见 §17.2.5.2 那格
              *       未落地），所以要由能接 Retry 的客户端来连（跨实现核对用的 aioquic 就能）。
              * @note 令牌由 HMAC 算出，密钥见 `addressValidationKey`。有效期就是密钥轮换的窗口：
              *       旧密钥签出的令牌最长活到这里，之后就没人再认它。
@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 令牌 HMAC 的签发密钥；留空＝启动时随机自造一把
              *
-             * @details **多进程 worker 必须配同一份**（同一台机器上的几份进程共享一把密钥，或从同一份
+             * @details 多进程 worker 必须配同一份（同一台机器上的几份进程共享一把密钥，或从同一份
              *          密钥文件读）：各进程随机自造时，客户端带着 A 签的令牌撞到 B 必然验不过，症状是
              *          「同样的握手偶尔要重来一次」——与 `sessionTicketKeyFiles` 那格同一条道理。
              *          低于 16 字节在构造期即被拒（RFC 9000 §8.1.4 的「难猜」要求）。
@@ -183,7 +183,7 @@ namespace AsynGyanis::Net
              *
              * @details 用在哪：一条目的标识不属于任何在册连接的短头报文会换回一条重置（§10.3），
              *          令牌就是拿这把密钥与「报文里那个目的标识」现算的（§10.3.2：丢掉了状态的端点
-             *          用同一个方法算出对端认得的令牌）。**不共享的代价比地址验证那次更隐蔽**：
+             *          用同一个方法算出对端认得的令牌）。不共享的代价比地址验证那次更隐蔽：
              *          多进程 worker 各自一把随机密钥时，撞到别的工作进程那份旧连接的报文只能继续
              *          不理，而客户端认不出「连接没了」，只能等它自己的空闲超时。至少 16 字节
              *          （§8.1.4 的「难猜」口径，构造期即拒）。
@@ -209,7 +209,7 @@ namespace AsynGyanis::Net
         void rotateAddressValidationKey(std::span<const std::uint8_t> newSigningKey);
 
         /**
-         * @brief 建一台**接手别人已经绑好的数据报套接字**的服务端（一条 UDP 端口交多个进程的那一步）
+         * @brief 建一台接手别人已经绑好的数据报套接字的服务端（一条 UDP 端口交多个进程的那一步）
          * @param eventLoop 所属事件循环
          * @param configuration 配置（按值收：此后不再读调用方那份）
          * @param adoptedBoundSocket 已经 bind 过的数据报套接字，所有权随之转移；本对象析构或 stop()
@@ -221,7 +221,7 @@ namespace AsynGyanis::Net
          *          新一代也要在同一端口上接手已绑的口。两条路都缺这一格，因为按地址构造只会自己 bind。
          * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::adopt` 把别的进程交过来的描述符
          *       包成本层的持有者语义，它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格
-         * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
+         * @note 与按地址构造的差别只在端口从哪来：本构造不会去 bind，端口从交来的套接字问，
          *       `listeningPort()` 报的是真值
          */
         QuicServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket);
@@ -234,14 +234,14 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 绑定端口并开始服务（在所属事件循环上跑，直到 stop()）
-         * @param localAddress 本地地址（端口给 0 表示由内核分配）。**按值收**：本方法是惰性协程，
+         * @param localAddress 本地地址（端口给 0 表示由内核分配）。按值收：本方法是惰性协程，
          *        收引用会把「调用方传的临时量」留到协程恢复时再用，那是悬空引用（实测 ASan 报过
          *        stack-use-after-scope）
          * @return Core::Task<> 停止时完成
          * @throws Base::InvalidArgumentException 本对象是接手构造出来的（端口已经定在交过来的套接字上，
          *         那种情形请调不带地址的 listen()）、或这台服务端已经在某个端口上监听（一台只能启动一次）
          * @throws Base::Exception 证书/私钥加载失败、套接字绑定失败等启动期就该拦住的问题
-         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
+         * @note 本方法是惰性协程：抛出发生在首次恢复（await 或投递给循环）那一刻，不在调用处
          */
         [[nodiscard]] Core::Task<> listen(Core::InetAddress localAddress);
 
@@ -250,7 +250,7 @@ namespace AsynGyanis::Net
          * @return Core::Task<> 停止时完成
          * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
          *         listen(地址)，由本端自己 bind；或这台服务端已经在某个端口上监听（一台只能启动一次）
-         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
+         * @note 本方法是惰性协程：抛出发生在首次恢复（await 或投递给循环）那一刻，不在调用处
          * @note 交付口径与 listen(地址) 完全一致，差别只在端口与套接字都不是本端建的，因此这里
          *       不会有「绑定失败」那一类出口
          * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）
@@ -276,7 +276,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把 HTTP/3 接到既有路由器上
-         * @param router 路由器；**必须活得比服务端久**（本类只存指针）
+         * @param router 路由器；必须活得比服务端久（本类只存指针）
          * @note 接上之后，每条连接在收到第一条流数据时自动建立 HTTP/3 会话：控制流与两条 QPACK 流
          *       由本类替它开出来，h3 请求按既有路由与处理器派发——业务代码与 h1/h2 是同一份。
          *       不接路由器时服务端只做传输层，流数据交给 setStreamDataHandler() 的直通出口
@@ -305,7 +305,7 @@ namespace AsynGyanis::Net
          * @details 存在的理由与 `HttpServer::setLimits()` 同一条：`Configuration` 里那份限额要先交给
          *          `HttpMetricsEndpoint`/`healthCheckMiddleware` 之类共用对象，而 h3 的限额此前只能在建
          *          服务端那一刻定死——同一份配置喂三条通道时，h3 就成了那条改不动的。
-         * @note 与两条 TCP 侧同一口径：**必须在 listen() 之前调用**。限额按 shared_ptr 只读交给此后
+         * @note 与两条 TCP 侧同一口径：必须在 listen() 之前调用。限额按 shared_ptr 只读交给此后
          *       每条连接新建的会话，已经建立的会话继续用它构造那一刻那一份（换一份新对象而不是改写
          *       原对象，是为了不让在途会话读到半新半旧的组合）。
          * @see HttpServerLimits, setParserLimits(), limits()
@@ -359,7 +359,7 @@ namespace AsynGyanis::Net
          * @brief 设置请求打到静态目录时是否生成 HTML 目录列表
          *
          * @details 默认关闭：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者，
-         *          而多数部署里静态目录只是资源仓库。打开之后列表**不带验证器**且带
+         *          而多数部署里静态目录只是资源仓库。打开之后列表不带验证器且带
          *          `cache-control: no-store`（被缓存的列表会在目录变化后继续宣称「这里有这些文件」），
          *          Range 对它一律忽略，条目数有上界。完整语义见 `StaticFileService::setDirectoryListing()`。
          * @param enabled true 列出目录条目；false（默认）按 404 处理
@@ -402,10 +402,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 取「尚未完成握手」的在线连接数
          * @details 与 connectionCount() 同一条跨线程口径（读原子镜像，relaxed）：两者之差就是
-         *          **已验证**的那部分。未验证连接与已验证连接共用同一份 maximumConnections 是刻意的
+         *          已验证的那部分。未验证连接与已验证连接共用同一份 maximumConnections 是刻意的
          *          （理由见 QuicConnection.h 的刻意清单），本读数把「名额被谁占着」变成看得见的数——
          *          它在涨而 connectionCount() 不动，说明来的是只发 Initial 不推进握手的流量
-         * @note 镜像在每拍末尾、**摘除收口之后**重算（完成点埋在状态机内部，散布加减迟早漏一处；
+         * @note 镜像在每拍末尾、摘除收口之后重算（完成点埋在状态机内部，散布加减迟早漏一处；
          *       排在摘除之后，最后一条离表当拍就归零）：连接在表时最迟一个节拍（默认 10ms）内反映；
          *       空表期间新到的连接最坏等满一拍空闲上界（kIdleTickerSleep，1s）才被算上
          * @return std::size_t 未完成握手的在册连接数
@@ -441,7 +441,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取本服务端实际生效的最大并发连接数
          * @details 与 `TcpServer::maximumConnections()` 同一条问句：`connectionCount()` 给的是分子，
-         *          没有这一句就算不出「这台 h3 是不是已经贴着上限跑」。报的是**构造时下发到本台的值**
+         *          没有这一句就算不出「这台 h3 是不是已经贴着上限跑」。报的是构造时下发到本台的值
          *          （h3 的整机摊分由装配方负责，与配置里的整机数可能差几倍，见 Configuration 的说明）；
          *          0 表示本台不设这道限
          * @return std::size_t 最大并发连接数
@@ -475,7 +475,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 优雅收口：先挡新连接，给已有连接发 GOAWAY，等在途请求做完，到期再兜底强关
-         * @details 与 `TcpServer::drain()` 同一形状。这里**不能**直接 `stop()`：收报文那条循环会
+         * @details 与 `TcpServer::drain()` 同一形状。这里不能直接 `stop()`：收报文那条循环会
          *          随之退出，在途请求的后续报文与 ACK 再也进不来，「等它做完」就无从谈起。因此第一段
          *          只置「不再接受新连接」的标记，h3 侧则在各连接的控制流上发一条 GOAWAY（RFC 9114 §5.2）
          *          告诉对端别再发新请求；等待期间的驱动仍由定时循环与本协程的轮询完成。
@@ -530,7 +530,7 @@ namespace AsynGyanis::Net
          * @brief 定时器驱动：按「下一次真正有东西可查的时刻」检查各连接的到期
          * @details QUIC 的 PTO/空闲超时/握手超时都要在「没有报文到达」时也准时触发，因此不能只靠
          *          收到报文时顺手处理。原来是一律按固定节拍（默认 10ms）轮询——简单可预期，代价是
-         *          到期处理最多晚一个节拍，且**在线连接为零时也在轮**。现在按
+         *          到期处理最多晚一个节拍，且在线连接为零时也在轮。现在按
          *          `nextTickerWakePoint()` 那条算法定睡眠点：早于节拍的截止按时到，晚于节拍的仍按
          *          节拍到（needsFlush 那一档补刀与 h3 请求的读时限没有可查的截止时刻，只能靠轮询兜），
          *          零连接时退到 kIdleTickerSleep。
@@ -672,7 +672,7 @@ namespace AsynGyanis::Net
          *
          * @details 三档出口：报文带着本端签的令牌且验过＝放行建连接（并把令牌里恢复的原始目的标识交给外壳）；
          *          没带令牌＝回一条 Retry 并把这条数据报用掉；带了但验不过（被改过、搬来别处、或已过期）＝丢弃并计数。
-         *          验不过时**不再回第二条 Retry**：§8.1.2 明写「对一份来自 Retry 的令牌，服务端只能拒或放行」，
+         *          验不过时不再回第二条 Retry：§8.1.2 明写「对一份来自 Retry 的令牌，服务端只能拒或放行」，
          *          而对端此时已认定自己验过地址了，再回一条只会让它以为还在第一轮。
          *          按 §8.1.2 的 SHOULD 本应回一条 INVALID_TOKEN 收口，那要先为这条连接算出 Initial 密钥——
          *          本端刻意不在建连接之前算任何东西（那正是 Retry 要省掉的成本），因此走同节允许的另一条：
@@ -710,9 +710,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 对一条「目的标识不属于任何在册连接」的短头报文回一条无状态重置（RFC 9000 §10.3）
          *
-         * @details 这是本端**丢掉连接状态之后的最后一招**：不建任何状态，凭「报文里的目的标识 + 静态
+         * @details 这是本端丢掉连接状态之后的最后一招：不建任何状态，凭「报文里的目的标识 + 静态
          *          密钥」现算令牌（§10.3.2），对端收到即可立刻收场，不必等自己的空闲超时。三条尺寸
-         *          判据一次走完：比触发报文**小**（§10.3.3 的 MUST：循环里尺寸一路衰减，本端因此
+         *          判据一次走完：比触发报文小（§10.3.3 的 MUST：循环里尺寸一路衰减，本端因此
          *          不必维护防循环的状态）、不小于 21 字节（图 10：38 位不可预测位 + 16 字节令牌）、
          *          也不超过本端数据报基准尺寸（不替对端放大字节）
          * @param peerAddress 来源地址，回包就打给它
@@ -843,7 +843,7 @@ namespace AsynGyanis::Net
         /// `datagramBatchCount()` 的 @details）；同一份读数经 ProcessMetricsRegistry 进 /metrics
         std::atomic<std::uint64_t> m_datagramBatchCount{0}; ///< 批次收包的调用数
         std::atomic<std::uint64_t> m_datagramCount{0};      ///< 其中交付的报文条数
-        /// 发包侧的同形两笔账：一轮 flush 攒出的报文按窗交出，这里的批次数是**窗口调用数**
+        /// 发包侧的同形两笔账：一轮 flush 攒出的报文按窗交出，这里的批次数是窗口调用数
         std::atomic<std::uint64_t> m_datagramBatchSendCount{0}; ///< 批次发包的调用数
         std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
         /// 交出去的版本协商包条数：公网端口上「版本不合就礼貌地拒」这件事必须可数，否则它与「静默丢了」
@@ -871,7 +871,7 @@ namespace AsynGyanis::Net
         /// 一条都不报又看不见满载，因此按「空出名额 → 再次撞满」的跳变各报一条
         bool m_overLimitAlerted{false}; ///< 仅由所属循环线程读写
 
-        /// 别名索引：除本端 SCID 之外**可以寻址到本连接的目的连接标识** → 连接
+        /// 别名索引：除本端 SCID 之外可以寻址到本连接的目的连接标识 → 连接
         /// （存裸指针，所有权仍在上面那张表里）。目前只有一类来源：客户端最初选的 DCID——
         /// 客户端重传 Initial 时报文里的 DCID 仍是它最初选的那个（RFC 9000 §7.2 首包连接标识
         /// 固定到服务端回话为止），按本端 SCID 建的键对不上，少了这一路会把每条重传都当成新连接

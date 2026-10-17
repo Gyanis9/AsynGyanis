@@ -115,7 +115,7 @@ namespace AsynGyanis::Base
             ++m_acceptedCount;
         } else
         {
-            // Block：等队列腾出空间。**等待有上界**——下游 sink 卡住（慢盘、网络盘失联）时
+            // Block：等队列腾出空间。等待有上界——下游 sink 卡住（慢盘、网络盘失联）时
             // 队列再也不会腾位，而调用方可能就是事件循环线程本身，无限期等它等于把整个循环停摆。
             // 超时与「因停止而结束」同一条处置：计入丢弃数，让运维能从 droppedEventCount() 看到代价
             const bool hasSpace =
@@ -130,7 +130,7 @@ namespace AsynGyanis::Base
             ++m_acceptedCount;
         }
         lock.unlock();
-        // 只叫消费者：**入队是占走一个空位，不是腾出一个空位**，等着腾位的写入者本来就不该被这一步
+        // 只叫消费者：入队是占走一个空位，不是腾出一个空位，等着腾位的写入者本来就不该被这一步
         // 叫醒。生产者与消费者共用一条条件变量时，notify_one 有概率落在某个正在等空位的写入者身上——
         // 它复检「还有空位」为假于是再睡下，这次唤醒就此吞掉，而事件已经在队列里、消费者还在睡。
         // 之后每条写入都要付满 Block 超时并计入丢弃，flush() 更是等不到 pending 归零
@@ -225,7 +225,7 @@ namespace AsynGyanis::Base
                        [this]
                        {
                            {
-                               // 停止标记必须与等待谓词在**同一把锁**下发布：谓词在锁内读 stop_requested()，
+                               // 停止标记必须与等待谓词在同一把锁下发布：谓词在锁内读 stop_requested()，
                                // 若在锁外通知，唤醒可能落在「等待方已判定谓词为假、尚未入睡」的窗口里被丢弃，
                                // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
                                const std::lock_guard lock(m_queueMutex);

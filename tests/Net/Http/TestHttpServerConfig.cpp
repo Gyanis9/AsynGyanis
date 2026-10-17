@@ -75,7 +75,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.limits.readTimeout, defaults.limits.readTimeout);
         EXPECT_EQ(configuration.limits.maximumRequestsPerConnection, defaults.limits.maximumRequestsPerConnection);
         EXPECT_EQ(configuration.parserLimits.maximumBodySize, defaults.parserLimits.maximumBodySize);
-        // 缺键取的是内置的**有限**默认，而不是「不限」：0 现在只代表调用方显式写了 0
+        // 缺键取的是内置的有限默认，而不是「不限」：0 现在只代表调用方显式写了 0
         EXPECT_EQ(configuration.maximumConnections, kDefaultMaximumConnections);
         EXPECT_EQ(configuration.maximumConnectionsPerIp, kDefaultMaximumConnectionsPerIp);
         EXPECT_EQ(configuration.requestsPerSecond, 0.0);

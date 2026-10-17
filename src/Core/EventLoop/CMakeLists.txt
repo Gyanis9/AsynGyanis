@@ -16,7 +16,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.cpp
 )
 
-# wepoll 的**头文件**（epoll 的 Windows 兼容实现，BSD-2-Clause 许可）随仓库保留：
+# wepoll 的头文件（epoll 的 Windows 兼容实现，BSD-2-Clause 许可）随仓库保留：
 # 事件后端换成完成端口（Iocp）之后，Iocp.h 仍借它的 epoll_event 与事件位定义，因此头文件
 # 随 Core 一起安装、不单独导出目标；AFD 轮询实现（Wepoll.cpp）已删除——事件通知全部走 Iocp.cpp，
 # 留着两套 Windows 后端只会各自腐化

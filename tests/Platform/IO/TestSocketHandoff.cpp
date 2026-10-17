@@ -469,7 +469,7 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 头里写的类型与实际交过来的套接字对不上时整体作废，而不是照建一个用
-     * @details 头那两项是交出方从**同一个套接字**问出来的，所以对不上只可能是消息被写坏、版本不对
+     * @details 头那两项是交出方从同一个套接字问出来的，所以对不上只可能是消息被写坏、版本不对
      *          或通道上跑的根本不是移交载荷。那种情况下重建出来的套接字收不到任何报文（数据报的口径
      *          与流的口径不是一回事），而调用方以为接手成功了。
      * @note 伪造方式按平台分两条：Windows 的载荷是普通字节，先做一次真移交、把协议信息原样搬过来
@@ -497,7 +497,7 @@ namespace AsynGyanis::Platform
         int channelWriter = -1;
         int channelReader = -1;
 #if ASYN_PLATFORM_WIN32
-        // 先取一份**真的**协议信息：它只能由交出方生成，伪造不了，所以伪造的只有头
+        // 先取一份真的协议信息：它只能由交出方生成，伪造不了，所以伪造的只有头
         int realWriter = -1;
         int realReader = -1;
         ASSERT_TRUE(makeBlockingChannel(realWriter, realReader));
@@ -551,7 +551,7 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 拒掉一条不可信的移交时，也要把**已经装进本进程**的描述符关掉
+     * @brief 拒掉一条不可信的移交时，也要把已经装进本进程的描述符关掉
      * @details recvmsg 一成功返回，内核就把 SCM_RIGHTS 里那枚描述符交到了本进程手上；此后每一条
      *          失败出口都得关它。换代是旧进程交给新进程，还要按 worker 补位重复许多轮，漏下来的就是
      *          每个槽位一枚永不回收的描述符——症状要等长跑撞到上限才看得见。
@@ -676,7 +676,7 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 通道在交出任何字节之前就被对端关掉时，报的必须是「连接被复位」，不能是槽位里的残值
-     * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次**成功**的
+     * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次成功的
      *          调用，实测它会把 last-error 清成 0，照抄槽位就是拿「没有错误」当成失败原因；POSIX 用
      *          recvmsg，0 会落进「头没收全」那一档，报出来像格式错。
      * @note 读这一侧的是换代时的编排线程，它照报出的码选下一步：看成格式错会重发一条永远收不到的
@@ -711,7 +711,7 @@ namespace AsynGyanis::Platform
      * @brief 通道的访问范围由它所在目录的权限把守，收尾时目录要跟着一起删掉
      * @details 这条通道交出去的载荷是「监听套接字的一份引用」：本机任何进程连得上，就等于能拿走一个
      *          端口的引用。目录由 mkdtemp 建出来就是 0700，所以不必再动进程级 umask——那会在同一时刻
-     *          把**别的线程**新建的文件（日志、临时文件、票据密钥）权限一并改掉。
+     *          把别的线程新建的文件（日志、临时文件、票据密钥）权限一并改掉。
      * @note 只在 POSIX 上判：Windows 侧通道是 loopback TCP，可连范围由回环地址本身决定
      * @note 证伪（容器实测）：把目录换成临时目录里一个固定名字并用默认方式建出来，前半红——组内与
      *       其他人的位读出 45（0o55），而 `UpgradeChannel.ChannelAddressesDoNotCollideAndFilesAreRemovedOnClose`

@@ -18,16 +18,16 @@ namespace AsynGyanis::Core
      *
      * @details 没有处理器时，一次段错误只留下「进程没了」：服务侧看的是 PID 消失与补位计数，
      *          堆栈在哪里断的一无所知。装上之后，致命信号与 std::terminate 都会往 stderr
-     *          写一份现场（致因、进程号、线程指纹、捕获到的调用栈），随后**恢复默认处置并重发
-     *          信号**——进程仍以「信号致死」退出，WIFSIGNALED 与 coredump 的语义都保留，
+     *          写一份现场（致因、进程号、线程指纹、捕获到的调用栈），随后恢复默认处置并重发
+     *          信号——进程仍以「信号致死」退出，WIFSIGNALED 与 coredump 的语义都保留，
      *          上层看护（WorkerSupervisor 的补位计数）照常工作。
      *
-     * @warning 现场是 **best-effort**，且「死得正确」不再依赖它写不写得全：信号处理器内先只走无分配的
+     * @warning 现场是 best-effort，且「死得正确」不再依赖它写不写得全：信号处理器内先只走无分配的
      *          一条（静态文本 + 手工转写的最小现场）；会分配/加锁的完整现场（std::format 与
      *          std::stacktrace 的符号解析）在 Linux 侧移进 fork 出来的子进程写——子进程被继承的锁
      *          锁死也只锁它自己（alarm 兜底收走），进程仍以「信号致死」退出，WIFSIGNALED 与 coredump
      *          不受影响。崩溃发生在分配器持锁处时，完整现场可能残缺，最小现场必有。
-     * @note Linux 侧处理器经 SA_ONSTACK 落在**每条线程各自**的备用栈上（128 KiB，随该线程第一次调用
+     * @note Linux 侧处理器经 SA_ONSTACK 落在每条线程各自的备用栈上（128 KiB，随该线程第一次调用
      *       install() 时挂上）：爆栈引发的 SIGSEGV 因此也进得来——其余线程要各自调一次 install()
      *       才有这份落脚处（信号处置是进程级的，重复调用只补备用栈）。
      * @note Windows 侧没有 fork：完整现场在进程内尽力写（最小现场先落，stderr 走 CRT 的 _write）。

@@ -415,7 +415,7 @@ namespace AsynGyanis::Net
      *          「Required Insert Count 与本端 Insert Count 比较」判定能否立刻解（§2.2.1），解不开的按流
      *          挂起原始字节，等编码器流补齐后续解，并且只在整段头块交付上层之后才发 Section Ack（§4.4.1）。
      *
-     * @warning 入参是一个**完整**的编码段：HEADERS 与 CONTINUATION 的片段由会话层按序拼好后一次喂入。
+     * @warning 入参是一个完整的编码段：HEADERS 与 CONTINUATION 的片段由会话层按序拼好后一次喂入。
      * @warning 失败即状态不再可信：DynamicTable 与对端不一致后必须按 §6 作废连接（头块类失败可只重置该
      *          流），本类不提供 reset()，实例应随连接一起销毁。
      */
@@ -456,7 +456,7 @@ namespace AsynGyanis::Net
          * @param streamId 承载该头块的 HTTP 流标识，用于挂起与 Section Ack 的按流记账
          * @param encodedFieldSection 完整编码段字节
          * @param fields 输出参数：解出的字段行按序存放，进入调用时先清空；Blocked 与失败时为空
-         * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节；**Section Ack 不在这里发**，
+         * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节；Section Ack 不在这里发，
          *        要等整段头块交付上层后由 noteFieldSectionDelivered() 产出（§4.4.1）
          * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> Decoded 表示 fields 可用；
          *         Blocked 表示已挂起（超过本端承诺的阻塞流数则按 §2.1.2 判 DecompressionFailed）；

@@ -551,7 +551,7 @@ namespace AsynGyanis::Net
 
         if (selectedHandler != nullptr)
         {
-            // 模式原文在跑管道**之前**落进请求：访问日志、指标打点这些横切逻辑只在管道里跑，
+            // 模式原文在跑管道之前落进请求：访问日志、指标打点这些横切逻辑只在管道里跑，
             // 而它们要按路由分组。未命中（404/405）那条路不设，读回来是空视图——聚合时它就是
             // 「没匹配到」那一档，不会与任何注册过的模式撞名
             request.setMatchedRoute(selectedPattern);

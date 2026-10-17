@@ -34,7 +34,7 @@ namespace AsynGyanis::Database
      * PGresult 里的行数据虽然已经由 libpq 完整取回客户端内存（不是游标），但它的每个取值
      * 都只能通过 PQgetvalue / PQfname 这类句柄接口拿到，也就是说「读一行」这件事始终牵着
      * 一个第三方句柄。构造时把列名、每格已转好的 DatabaseValue 与影响行数全部快照下来之后：
-     * - 结果集**不持有连接**，也不依赖语句句柄，可以比连接对象活得更久（与 MySqlStatementResult
+     * - 结果集不持有连接，也不依赖语句句柄，可以比连接对象活得更久（与 MySqlStatementResult
      *   在参数化路径上的取舍一致，两条路径的结果集语义因此统一）；
      * - 全部 const 取值接口都不再触碰 libpq，越界、NULL 之类的判定完全由本类的内存快照决定，
      *   不存在「句柄先被释放、读取时才炸」的时序陷阱；
@@ -42,12 +42,12 @@ namespace AsynGyanis::Database
      * 代价与大结果集的取舍：整份数据等额占用内存（与 MySQL 驱动的 mysql_store_result 预读同源）。
      *
      * ## 两种数据来源（与 MySqlResult 的预读/流式同形）
-     * - **预读**（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
+     * - 预读（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
      *   定死，可反复遍历、可 reset 重扫；代价是大结果集等额占用内存；
-     * - **流式**（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
+     * - 流式（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
      *   一行（libpq 的单行模式把每次 PQgetResult 变成一块一行的结果），客户端内存只装当前
      *   这一行。列元数据在首块到达时就绪；行数按基类契约回 0（含义是「无法预先知道」）；
-     *   不可重扫。**流式结果必须比产出它的连接短命**，且在它读完或析构之前那条连接不能再执行
+     *   不可重扫。流式结果必须比产出它的连接短命，且在它读完或析构之前那条连接不能再执行
      *   任何语句（连接的 execute/executeStreaming 在发送前拒绝，见 PostgresConnection）。
      *
      * ## 写回执
@@ -98,16 +98,16 @@ namespace AsynGyanis::Database
         explicit PostgresResult(PGresult *ownedResult);
 
         /**
-         * @brief 接管一条**流式**查询的首块结果并交出所有权
+         * @brief 接管一条流式查询的首块结果并交出所有权
          * @details 行留在服务端，每调用一次 next() 才取一行（libpq 单行模式：每次 PQgetResult
          *          给出一块一行的结果）。列元数据从首块快照；行数不快照——按基类契约回 0
          *          （含义是「无法预先知道」）。首块在这里就转成当前行缓冲并在构造内释放，
          *          之后的块由 next() 逐块取。
-         * @param connectionHandle 产出这份结果的连接句柄（**非拥有**）：后续块要经它用
+         * @param connectionHandle 产出这份结果的连接句柄（非拥有）：后续块要经它用
          *        PQgetResult 取回，且「取完最后一块」与「链路中断」只能靠它区分
          * @param owner 产出这条流的连接对象（非拥有）：流结束（读完、中断或析构收干）时通知它
          *        归位「在途未清流」计数，连接据此恢复可发语句
-         * @param firstRowResult 流式查询的**首块**（PGRES_SINGLE_TUPLE，一块一行）；所有块都带
+         * @param firstRowResult 流式查询的首块（PGRES_SINGLE_TUPLE，一块一行）；所有块都带
          *        完整列定义，因此列快照从它取
          * @return std::unique_ptr<PostgresResult> 结果集（构造私有，只有本工厂能造）
          */
@@ -167,7 +167,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 按列名取列索引
          * @details 重写 DatabaseResult::columnIndex()：在快照的列名列表上做逐字节精确匹配
-         *          （区分大小写）。PostgreSQL 会把**未加双引号**的标识符折叠成小写，而元数据里
+         *          （区分大小写）。PostgreSQL 会把未加双引号的标识符折叠成小写，而元数据里
          *          的列名是服务端按查询原文保留的名字，因此本方法按原文比较，不做任何大小写归一化
          *          ——归一化会把服务端的标识符规则复制一份到客户端，两边迟早不一致。
          *          同名列（SELECT name, name）取第一个匹配。

@@ -39,7 +39,7 @@ namespace AsynGyanis::Base
     [[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept;
 
     /**
-     * @brief URL-safe 且**不带填充**的 Base64 编码（RFC 4648 §5 字母表，JWT/ACME 那一类写法）
+     * @brief URL-safe 且不带填充的 Base64 编码（RFC 4648 §5 字母表，JWT/ACME 那一类写法）
      * @details 与 base64Encode() 的差别只有两处：字母表把 '+' '/' 换成 '-' '_'（这两个字符在 URL 与
      *          表单里另有含义），以及末组不补 '='（填充会改变查询串与摘要的字节形态，而这类协议按
      *          「整段做字符串比较」使用它）。刻意做成两个有名字的函数而不是给 base64Encode() 加开关：
@@ -58,7 +58,7 @@ namespace AsynGyanis::Base
      *          而它们在这些协议里被当成不同的凭据参与比较。
      * @param text 待解码文本，首尾空白由调用方去掉
      * @return std::optional<std::string> 解码出的字节；输入非法时为空
-     * @note 空串同样判非法，但它是**合法编码结果**（0 字节编出来就是空串）。调用点若本就要处理
+     * @note 空串同样判非法，但它是合法编码结果（0 字节编出来就是空串）。调用点若本就要处理
      *       「这一段是空的」这种正文（POST-as-GET 的空 payload），必须先判空再调本函数，
      *       不能把判空交给本函数的返回值
      */

@@ -78,7 +78,7 @@ namespace AsynGyanis::Core
      * @brief 钉住换代的地基本身：交出去又收回来的那个描述符，仍在替这个端口accept
      * @details 这条用例不需要第二个进程——SCM_RIGHTS 与 WSADuplicateSocket 都能在同进程内换一份
      *          引用（平台的 write/read 一对函数就是成对入口），因此判据可以在两平台上都跑住。
-     * @details 关键是**先关掉原来那份再连**：端口若真跟着老描述符一起没了，连接根本到不了接受队列，
+     * @details 关键是先关掉原来那份再连：端口若真跟着老描述符一起没了，连接根本到不了接受队列，
      *          收回来的描述符也就 accept 不出来。「老的不在了、新的仍接得住」才是零停机的实质。
      */
     TEST(UpgradeChannel, HandedOverListenerKeepsAcceptingAfterOriginalIsClosed)

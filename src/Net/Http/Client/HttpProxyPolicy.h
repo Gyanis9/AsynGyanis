@@ -71,7 +71,7 @@ namespace AsynGyanis::Net
      * @param host 目标主机（IPv6 不含方括号）
      * @param port 目标端口
      * @return nullopt = 直连；值 = 经该代理；unexpected = 策略里的代理地址不合法
-     * @note 代理地址不合法时**拒绝请求而不是静默直连**：绕过运维配置的代理是安全面的事，
+     * @note 代理地址不合法时拒绝请求而不是静默直连：绕过运维配置的代理是安全面的事，
      *       不能退化成「看着能用」
      */
     [[nodiscard]] ASYN_NET_API std::expected<std::optional<HttpProxyRoute>, std::string> resolveOutboundProxy(const HttpProxyPolicy &policy, std::string_view scheme,
@@ -81,7 +81,7 @@ namespace AsynGyanis::Net
      * @brief 解析一条代理地址：`http://`/`https://`/裸 `[user[:pass]@]host[:port]`
      * @param proxyUrl 代理地址文本（来自显式策略或环境变量）
      * @return HttpProxyRoute 主机、端口（http 缺省 80、https 缺省 443）、TLS 标志与预拼的认证头；非法时给出点名原因
-     * @details `https://` 代理表示 **TLS 连到代理自身**（与目标的 scheme 无关）：建立侧据此先按代理
+     * @details `https://` 代理表示 TLS 连到代理自身（与目标的 scheme 无关）：建立侧据此先按代理
      *          主机名做一次 TLS 握手再说话；http 目标写绝对形式、https 目标在外层 TLS 里再发 CONNECT。
      *          凭据段支持 `%XX` 转义；口令原文绝不回显进任何错误文案（见 redactProxyCredentials）。
      * @note 代理地址的 scheme 只决定「怎么连代理」：目标走 http 还是 https 由请求 URL 定，
@@ -95,7 +95,7 @@ namespace AsynGyanis::Net
      * @param port 目标端口（条目带 `:port` 时参与匹配）
      * @param noProxyList 逗号分隔的豁免表；条目形如 `*`、`host`、`.host`、`host:port`、`[v6]:port`
      * @return true 命中（本次直连）
-     * @note 后缀匹配按**点边界**：`example.com` 命中 `example.com` 与 `api.example.com`，不命中
+     * @note 后缀匹配按点边界：`example.com` 命中 `example.com` 与 `api.example.com`，不命中
      *       `notexample.com`；IP 字面量请写完整（后缀规则对 IP 同样生效，写全了才精确）
      */
     [[nodiscard]] ASYN_NET_API bool matchesNoProxy(std::string_view host, std::uint16_t port, std::string_view noProxyList) noexcept;

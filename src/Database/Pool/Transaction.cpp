@@ -33,7 +33,7 @@ namespace AsynGyanis::Database
         // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
 
-        // 请求了非默认隔离级别：取出方言的设置语句并检查可用性。语句文本的**执行位置**由方言决定
+        // 请求了非默认隔离级别：取出方言的设置语句并检查可用性。语句文本的执行位置由方言决定
         // （MySQL / SQLite 的 SET TRANSACTION 必须在事务开始前生效；PostgreSQL 恰恰相反，
         // 事务块外发它只会得到警告且不生效，见 SqlDialect::isolationLevelStatementFollowsBegin()）。
         // 引擎给不出设置语句（SQLite 不支持按事务请求）时拒绝并点名，不静默降级；
@@ -207,7 +207,7 @@ namespace AsynGyanis::Database
             throw Base::InvalidArgumentException("数据库事务：" + std::string(action) + "保存点的名字不能全是空白字符（它会被原样引起来送进语句）");
         }
 
-        // 事务已结束就一条都不发。这一步不是形式主义：SQLite 上没有活动事务时 SAVEPOINT 会**另起一个**
+        // 事务已结束就一条都不发。这一步不是形式主义：SQLite 上没有活动事务时 SAVEPOINT 会另起一个
         // 事务（文档明写等价于 BEGIN DEFERRED），而这个对象的 m_isActive 已假、析构不再回滚也不再提交，
         // 那条连接就会带着一个没人负责的事务回到池里——把「保存点」变成一次意外的开事务
         if (!m_isActive)

@@ -19,7 +19,7 @@
  * - SELECT 列展开、FROM 与表别名（引用字符为双引号）
  * - WHERE 条件中的 $n 序号：单条件、IN 展开、多条件组合
  * - UPDATE 的 SET 参数排在 WHERE 参数之前（$1 在前、条件序号顺延）
- * - LIMIT $n / OFFSET $n，以及**只给 OFFSET 时不补任何常量**（与 SQLite 的 "LIMIT -1"、
+ * - LIMIT $n / OFFSET $n，以及只给 OFFSET 时不补任何常量（与 SQLite 的 "LIMIT -1"、
  *   MySQL 的无符号上界常量形成对照）
  * - 综合场景下 $1..$n 的连续性与占位符个数 = 参数个数
  * - 事务控制语句：BEGIN / COMMIT / ROLLBACK

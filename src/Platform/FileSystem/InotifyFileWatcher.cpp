@@ -20,7 +20,7 @@ namespace AsynGyanis::Platform
         m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC);
         if (m_inotifyFileDescriptor < 0)
         {
-            // 这里刻意用裸 std::runtime_error 而**不是** Base 的框架异常：Platform 在 Base 之下
+            // 这里刻意用裸 std::runtime_error 而不是 Base 的框架异常：Platform 在 Base 之下
             // （Base 依赖 Platform），把 Base/Exception 拉进来就是循环依赖。构造期失败按本层
             // 的既有形状交给调用方；要改成正按 Platform 风格的错误码出口，得连着
             // FileWatcher::create() 的签名一起动，属另一笔改造。
@@ -99,7 +99,7 @@ namespace AsynGyanis::Platform
             std::lock_guard lock(m_watchMutex);
 
             // 自愈清单只记调用方（与框架自己的补挂）给的注册，不记递归枚举出来的子目录——
-            // 唯一的例外是下面那条枚举链里**没挂上**的子目录：那种格子留在清单外就是永久失明
+            // 唯一的例外是下面那条枚举链里没挂上的子目录：那种格子留在清单外就是永久失明
             if (keepForSelfHeal)
             {
                 m_selfHealPaths.insert(absolutePath);
@@ -249,7 +249,7 @@ namespace AsynGyanis::Platform
             // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是
             // 监听侧自己的分配失败（读缓冲、路径拼装、重挂监视）。Platform 在 Base 之下没有
             // 日志通路，因此只能把「本监听器已经停了」落到 isRunning() 上再收线程。
-            // 警告：这一格目前**没有生产读取方**——isRunning() 只被 tests/Platform 读，
+            // 警告：这一格目前没有生产读取方——isRunning() 只被 tests/Platform 读，
             // ConfigManager::isHotReloadEnabled() 报的是自己那个开关位而不是线程死活，所以真抛一次的
             // 现场是「热重载永久停摆而对外仍说已启用」（同一形状与缺的补齐路径见 Win32FileWatcher.cpp
             // 的 watchLoop 注释）
@@ -324,7 +324,7 @@ namespace AsynGyanis::Platform
                 continue;
             }
 
-            // IN_MOVE_SELF：被监视的目录**本身**被改名或移到别处（len==0 才代表目标自身，带名字的
+            // IN_MOVE_SELF：被监视的目录本身被改名或移到别处（len==0 才代表目标自身，带名字的
             // 是子项改名）。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补 IN_IGNORED，
             // 于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」挡下而不
             // 重新注册，新目录的事件从此永久丢失。这里按同样的方式摘掉映射——递归根随后由自愈

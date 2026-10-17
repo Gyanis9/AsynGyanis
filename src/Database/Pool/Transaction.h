@@ -14,7 +14,7 @@
  * @note 析构必须自动回滚：异常会跨过作用域跳走，显式 rollback() 常常来不及执行，而未结束的事务
  *       会污染下一个使用者。回滚是幂等的，已提交/已回滚的事务不会再发语句（m_isActive 为假）。
  *       回滚失败时事务状态不可知，此时主动断开连接让池的探活丢弃它。
- *       **嵌套不是再开一个 Transaction**（两个引擎都不吃嵌套 BEGIN：MySQL 的 START TRANSACTION 会
+ *       嵌套不是再开一个 Transaction（两个引擎都不吃嵌套 BEGIN：MySQL 的 START TRANSACTION 会
  *       隐式提交上一笔、SQLite 直接报错，而再借一条连接更是另一个事务），要的是同一笔事务里的
  *       保存点：savepoint() / rollbackToSavepoint() / releaseSavepoint()，见那三个方法的说明。
  *       走本事务的语句由 m_statementMutex 串行落在那一条连接上（驱动连接不是线程安全的）。
@@ -43,7 +43,7 @@ namespace AsynGyanis::Database
      *          析构时若仍未提交则自动回滚，随后把连接归还池。
      *
      * @warning 事务对象本身不允许跨线程使用：commit() / rollback() / 析构要在同一个线程上按顺序发生。
-     *          走本事务的**语句**则由 acquireStatementLock() 串行落在那一条连接上（异步接口会把语句
+     *          走本事务的语句则由 acquireStatementLock() 串行落在那一条连接上（异步接口会把语句
      *          投到工作线程，调用方无需自己保证不并发），对象生命周期必须覆盖所有走该事务执行的
      *          查询/写语句（Queryable(Transaction&) 只保存指针）。
      */
@@ -59,7 +59,7 @@ namespace AsynGyanis::Database
          * @throws ConnectionUnavailableException 池中取不到连接（已达上限且等待超时、
          *         连接工厂创建失败，或等待名额被拒）
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现，取不到开启事务的语句文本；
-         *         或**引擎不支持所请求的隔离级别**（如 SQLite 不支持按事务请求）——抛出文案点名
+         *         或引擎不支持所请求的隔离级别（如 SQLite 不支持按事务请求）——抛出文案点名
          *         引擎与级别，不静默降级成引擎默认
          * @throws QueryExecutionException 驱动拒绝 BEGIN 或隔离级别设置语句（例如同一连接上已有
          *         未结束的事务）
@@ -68,7 +68,7 @@ namespace AsynGyanis::Database
          *       方言的 `SET TRANSACTION ISOLATION LEVEL …`（只作用于本笔事务）按引擎要求在
          *       BEGIN 之前或之后执行（见 `SqlDialect::isolationLevelStatementFollowsBegin()`）
          * @note 单参数版本是本构造的 Default 委托：多个公开构造必须汇进同一个（见仓库约定），
-         *       参数校验（含隔离级别可用性）排在任何**语句**发出之前
+         *       参数校验（含隔离级别可用性）排在任何语句发出之前
          */
         explicit Transaction(ConnectionPool &pool, TransactionIsolationLevel isolationLevel);
 
@@ -131,7 +131,7 @@ namespace AsynGyanis::Database
          * @brief 在本事务里立一个保存点（事务内部的可回退点）
          *
          * @details 用途是「一笔事务里回退一小段而不要整笔作废」：批量写入里某一条坏了，可以只退到
-         *          这一批之前的那个点，前面已经做的工作保住。两个引擎都**不支持嵌套 BEGIN**（MySQL 的
+         *          这一批之前的那个点，前面已经做的工作保住。两个引擎都不支持嵌套 BEGIN（MySQL 的
          *          START TRANSACTION 会隐式提交上一笔，SQLite 直接报错），所以嵌套这一层只能由保存点回答，
          *          而不是再构造一个 Transaction 对象——后者会去池里再借一条连接，那是另一个事务。
          *
@@ -151,7 +151,7 @@ namespace AsynGyanis::Database
         [[nodiscard]] bool savepoint(std::string_view name);
 
         /**
-         * @brief 回退到本事务里的某个保存点，**事务仍然开着**
+         * @brief 回退到本事务里的某个保存点，事务仍然开着
          *
          * @details 与 `rollback()` 的关键区别就在这里：这条语句撤掉的是「那个点之后」的写入，
          *          而那个点之前的工作照旧留在未提交状态，之后仍然可以 `commit()`。
@@ -241,7 +241,7 @@ namespace AsynGyanis::Database
          *
          * @details 由 `Queryable` 在取到本事务连接的使用权之后、语句发出之前调用（走本事务的语句
          *          全部经 `Queryable::acquireConnection()`，挂那里一处生效）：剩余预算与连接自身的
-         *          会话级超时**取更严者**写回连接（`DatabaseConnection::setQueryTimeout()`），各驱动
+         *          会话级超时取更严者写回连接（`DatabaseConnection::setQueryTimeout()`），各驱动
          *          再把它落到引擎上——PostgreSQL 的 statement_timeout、MySQL 的 max_execution_time、
          *          SQLite 的 busy_timeout 与执行时限两道界、Redis 的收发超时。正在执行的语句因此会在
          *          预算耗尽时被引擎打断，而不是等它跑完才由本端拒下一条。
@@ -264,7 +264,7 @@ namespace AsynGyanis::Database
          *          返回的引用在本对象析构前始终有效，调用方不得保存到本对象之后使用。
          * @return DatabaseConnection& 事务持有的连接
          * @throws Base::LogicException 对象未持有连接（构造失败后继续使用等，正常流程不可达）
-         * @warning 经本通道自组的语句**不受 `setTimeLimit()` 拒点覆盖**：那闸只挂 Queryable 取租约、
+         * @warning 经本通道自组的语句不受 `setTimeLimit()` 拒点覆盖：那闸只挂 Queryable 取租约、
          *          `commit()` 与三条保存点语句三处出口，这条通道照发不误；要时限兜底请自查 `isTimeLimitExceeded()`。
          *          剩余预算的透传同样只发生在 Queryable 出口（本通道不发那条 SET），不过连接上留着
          *          上一次透传收紧的读数，引擎侧的界照常守着
@@ -308,10 +308,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 三条保存点语句共用的三道前置检查
          *
-         * @details 分三件事是因为它们的性质不同：**名字坏**是调用方的输入错误（空串、全是空白、
-         *          含 NUL），当场抛，不留「返回 false 但没人知道为什么」的口子；**事务已经结束**与
-         *          **整笔时限已到**是运行期状态，按本类的错误通道回 false 并写 lastError()，
-         *          且此时一条语句都不发——在已结束的事务上立保存点，SQLite 会**另起一个**事务
+         * @details 分三件事是因为它们的性质不同：名字坏是调用方的输入错误（空串、全是空白、
+         *          含 NUL），当场抛，不留「返回 false 但没人知道为什么」的口子；事务已经结束与
+         *          整笔时限已到是运行期状态，按本类的错误通道回 false 并写 lastError()，
+         *          且此时一条语句都不发——在已结束的事务上立保存点，SQLite 会另起一个事务
          *          （等价于 BEGIN DEFERRED）而不是报错，而超时那条引擎给的是误导信息，两种我们都说得清。
          *
          * @param name 调用方给的保存点名

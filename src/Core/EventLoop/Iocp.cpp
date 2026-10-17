@@ -428,7 +428,7 @@ namespace AsynGyanis::Core
         }
 
         // ConnectEx 要求先绑定：未绑定时直接投会拿到 WSAEINVAL（实测）。判「没绑过」以 getsockname
-        // 为准——Windows 上未绑定的套接字是**调用失败**（WSAEINVAL），不是回一个 AF_UNSPEC 的地址；
+        // 为准——Windows 上未绑定的套接字是调用失败（WSAEINVAL），不是回一个 AF_UNSPEC 的地址；
         // 已绑定的（调用方自己 bind 过）不动它
         sockaddr_storage boundName{};
         int              boundLength = static_cast<int>(sizeof(boundName));
@@ -719,7 +719,7 @@ namespace AsynGyanis::Core
 
     void Iocp::retryFailedArms()
     {
-        // 只处理进入时已在表里的那几条：armProbe 失败会由 noteArmPending 追加到**同一张表**的尾部，
+        // 只处理进入时已在表里的那几条：armProbe 失败会由 noteArmPending 追加到同一张表的尾部，
         // 按长度取本轮份额、再把处理过的前几条摘掉，就不会边遍历边插入（此前是「整张表换到局部
         // 变量再销毁」，结果等价，但每轮都把缓冲还给堆、下一轮重新长出来）。
         // 表项是堆上的 SocketState 指针，扩容只搬表本身，按下标取用不受影响
@@ -741,7 +741,7 @@ namespace AsynGyanis::Core
                 static_cast<void>(armProbe(*state, EPOLLOUT));
             }
         }
-        // 这里**不能**清表：本轮重投又失败的方向已经由 noteArmPending／noteArmFailure 重新入表，
+        // 这里不能清表：本轮重投又失败的方向已经由 noteArmPending／noteArmFailure 重新入表，
         // 清掉它们等于「只重投一次」，之后那个描述符再也不会被武装——实测后果是监听描述符
         // 若在首次重投时还没 listen()，此后就永远等不到 AcceptEx，服务器不再接受任何连接。
         // 摘掉前 currentRoundCount 条即可：新排进来的被挪到表头，留给下一轮
@@ -935,7 +935,7 @@ namespace AsynGyanis::Core
             event.events |= EPOLLERR | EPOLLHUP;
         }
 
-        // 同一个注册对象的两个方向可能在同一批完成通知里各来一条：**必须合并成一条 epoll_event**，
+        // 同一个注册对象的两个方向可能在同一批完成通知里各来一条：必须合并成一条 epoll_event，
         // 这正是 epoll 给事件的方式（一个 epoll_event 带多个事件位）。分成两条时，上层处理第一条
         // 就可能把该注册对象销毁（读侧收到 EOF 就关连接是常态），第二条随后写到已释放内存上——
         // ASan 实测：IoWatcher::handleEvents 里往 m_armedEvents 写入时 heap-use-after-free。
@@ -1116,7 +1116,7 @@ namespace AsynGyanis::Core
 
     void Iocp::rearmLevelTriggered()
     {
-        // 直接遍历成员表，**不像 retryFailedArms() 那样先换到局部变量**：这张表只在
+        // 直接遍历成员表，不像 retryFailedArms() 那样先换到局部变量：这张表只在
         // translateCompletion 里入表，而它由 wait() 在本函数之后才调用，本轮内不会有人往里加，
         // 因此不存在迭代器失效。换表反而每轮都把缓冲还给堆、下一批入表再从零长起——
         // 水平触发下这张表每轮都非空，实测单是去掉这一处就把每轮 wait() 的分配从 12 次降到 1 次

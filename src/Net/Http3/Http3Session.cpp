@@ -290,7 +290,7 @@ namespace AsynGyanis::Net
 
     bool Http3Session::beginGracefulShutdown()
     {
-        // 排空**不**请求取消：本方法的既定语义是「已经受理的请求照常处理完」，而 h1/h2 的排空路径
+        // 排空不请求取消：本方法的既定语义是「已经受理的请求照常处理完」，而 h1/h2 的排空路径
         // （TcpServer 的 drain）也只对非 busy 的连接 requestStop——busy 的那批留给它跑完。
         // 在这里补一次取消转发会把在途请求半路打断，反而比 h1/h2 少交付响应。真正交信号的是
         // abandonPendingStreams()：那一步意味着承载连接已经没了，等待永不到来。
@@ -862,7 +862,7 @@ namespace AsynGyanis::Net
 
         if (const auto tunnel = m_webSocketTunnels.find(streamId); tunnel != m_webSocketTunnels.end())
         {
-            // CONNECT 隧道：对端发来的是 WebSocket 帧本身（RFC 9220 §4）。**不在这里直接喂**：喂进去
+            // CONNECT 隧道：对端发来的是 WebSocket 帧本身（RFC 9220 §4）。不在这里直接喂：喂进去
             // 会让业务协程立刻跑起来，它回头就推帧给连接层，而此刻还在连接层的回调里
             // （重入是未定义行为）。攒起来，回到安全点由 wakeWebSocketTunnels() 喂
             tunnel->second->pendingIncomingBytes.append(reinterpret_cast<const char *>(data.data()), data.size());
@@ -887,7 +887,7 @@ namespace AsynGyanis::Net
                 }
             } else
             {
-                // 流式：字节进本流自己的缓冲，**窗口在字节被处理器取走时才还**（消费回调已绑好）。
+                // 流式：字节进本流自己的缓冲，窗口在字节被处理器取走时才还（消费回调已绑好）。
                 // 这里顺手还掉就等于「到达即归还」，背压随之失效——那正是流式路径要保住的东西
                 streamBody.append(std::string_view(reinterpret_cast<const char *>(data.data()), data.size()), data.size(), false);
                 return;
@@ -1214,7 +1214,7 @@ namespace AsynGyanis::Net
         {
             // 流没了：先叫醒等缓冲排空的生产者，再摘记录。等待器与生产者各持一份共享所有权，
             // 摘表后他们读到的是 isStreamClosed，不会踩空；漏掉这一步生产者会永远等不到唤醒。
-            // **唤醒本身推到安全点**：被唤醒的业务会接着写响应（那要推正文给连接层），
+            // 唤醒本身推到安全点：被唤醒的业务会接着写响应（那要推正文给连接层），
             // 而本函数是经连接层回调进来的，回调期间重入连接层是未定义行为
             const std::shared_ptr<StreamingResponse> state = streaming->second;
             state->isStreamClosed                          = true;
@@ -1365,7 +1365,7 @@ namespace AsynGyanis::Net
             answerExpectContinueIfRequested(streamId, incoming);
         }
 
-        // 扩展 CONNECT（RFC 9220）要在**头收齐时**就派发：隧道建立之后对端才会在同一
+        // 扩展 CONNECT（RFC 9220）要在头收齐时就派发：隧道建立之后对端才会在同一
         // 条流上发 WebSocket 帧，等 end_stream 就等于永远等不到（对方不会结束这条流）
         if (methodText == "CONNECT" && extendedConnect != ExtendedConnectKind::NotExtended)
         {
@@ -1418,7 +1418,7 @@ namespace AsynGyanis::Net
         created.reader.attach(created.body, makeBodyPump(streamId));
         created.request.setBodyStream(&created.reader);
 
-        // 协程本身是惰性的，构造它不会执行任何一行；**但不在这里 resume**：此刻还在连接层的
+        // 协程本身是惰性的，构造它不会执行任何一行；但不在这里 resume：此刻还在连接层的
         // 回调里，处理器一上来就可能提交响应，而回调期间重入连接层是未定义行为。只置标记，
         // 回到安全点由 wakeStreamingRequests() 起
         created.serveTask.emplace(serveStreamingRequest(streamId, created));
@@ -1679,7 +1679,7 @@ namespace AsynGyanis::Net
                     m_metrics->countWebSocketProtocolErrorClose();
                 }
                 // 与 h1/h2 的已知不对称（有意留下）：那两路在这里会先 co_await peer.close(1002/1007/1009)
-                // 再收口，而本处是直接结束流——本函数是**非协程**的安全点（由 onStreamData 调），
+                // 再收口，而本处是直接结束流——本函数是非协程的安全点（由 onStreamData 调），
                 // 发一条要等产出窗口的帧要么挂起要么另搭一套延迟发送，而延迟发送会把「唤醒挂在 receive()
                 // 上的业务」推到下一次 pump，对端不再发字节时就成永久挂起。宁可让对端看到异常断开，
                 // 也不在这里造一个丢唤醒
@@ -1763,7 +1763,7 @@ namespace AsynGyanis::Net
             static_cast<void>(response.setHeader(kWebSocketExtensionsHeaderName, deflateNegotiation.responseValue));
         }
 
-        // 复用流式响应那套：应答头先出去且**不结束这条流**，出向帧之后一段一段推给连接层
+        // 复用流式响应那套：应答头先出去且不结束这条流，出向帧之后一段一段推给连接层
         const std::shared_ptr<StreamingResponse> state = streamingResponseFor(streamId);
         if (!submitStreamingResponseHead(streamId, *state, response))
         {
@@ -1901,7 +1901,7 @@ namespace AsynGyanis::Net
 
     void Http3Session::reapFinishedStreamingRequests()
     {
-        // 两个条件都要满足才摘：派发协程跑完**且**承载侧的流已关闭。handler 先跑完而流还开着时
+        // 两个条件都要满足才摘：派发协程跑完且承载侧的流已关闭。handler 先跑完而流还开着时
         // 不能摘——那之后还会有 DATA 到达，记录没了就会被当成非流式请求又建出一份来
         for (auto entry = m_streamingRequests.begin(); entry != m_streamingRequests.end();)
         {
@@ -2281,7 +2281,7 @@ namespace AsynGyanis::Net
         if (m_connection->isLocalStreamFinished(streamId))
         {
             // 连接层找不到这条流，或本端早已收尾：对端多半已经把它 RST 掉了（慢业务上很常见）。
-            // 这只是**这一条流**的响应发不出去，连接与其它流都还健康——按流级作废，
+            // 这只是这一条流的响应发不出去，连接与其它流都还健康——按流级作废，
             // 不置 m_isBroken（那会连带关掉整条 QUIC 连接；h2 同场景也只作废该流）
             LOG_WARN_FMT("Http3Session: 流 {} 已经不在了（对端多半已重置该流），{}作废；连接与其它流不受影响", streamId, what);
             dropRequest(streamId);

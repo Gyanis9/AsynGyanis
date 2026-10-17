@@ -35,7 +35,7 @@ namespace AsynGyanis::Core
      * @details 节拍与窗口的换算只有一处真源：`Platform::ServiceNotification::readWatchdogConfiguration()`
      *          按 sd_watchdog_enabled(3) 读变量并折半，本类不再算第二遍，也不调 libsystemd。
      * @note 未配看门狗（没有 `$WATCHDOG_USEC`、`$WATCHDOG_PID` 指的是别的进程、Windows 侧）时
-     *       `arm()` 返回 false 并且**不在线程池上挂任何协程**：跑一条永远不发东西的常驻协程，
+     *       `arm()` 返回 false 并且不在线程池上挂任何协程：跑一条永远不发东西的常驻协程，
      *       比不跑更容易让人以为这条通道是通的。原因写在 lastError() 里。
      * @warning 挂上之后不得重启线程池：`ThreadPool::start()` 在 stop() 之后会换新的一批循环，
      *          先前的拍协程连同它的等待器就落到了已销毁的那批循环上。要重启就先停本对象所属的

@@ -272,7 +272,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 持久拥塞重启把窗口与阈值一起落到最小窗，并退出恢复期（§7.6.2）
      * @details 与「减半」的普通降窗要分得开：减半是阈值=窗口/2 并进恢复期，重启是两者都到最小窗
-     *          且**退出**恢复期。留在恢复期里等于白重启——恢复期内窗口纹丝不动（§7.3.2），
+     *          且退出恢复期。留在恢复期里等于白重启——恢复期内窗口纹丝不动（§7.3.2），
      *          链路恢复之后这条连接会一直趴在原处，下一帧确认也不会替它涨回去。
      */
     TEST(QuicCongestionControl, RestartAfterPersistentCongestionCollapsesToMinimumWindowAndExitsRecovery)

@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 报文来自不可信的对端，解不开是**可恢复错误**而不是调用方的用法错误，因此走
+ * @details 报文来自不可信的对端，解不开是可恢复错误而不是调用方的用法错误，因此走
  *          `std::expected` 的失败分支返回，不抛异常。类别按「怎么回才对端有用」划分，
  *          与 `Http2FrameErrorKind` 同一套判据：文案会改，分类才是契约。
  */

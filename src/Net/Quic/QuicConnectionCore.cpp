@@ -196,7 +196,7 @@ namespace AsynGyanis::Net
          *
          * @details 解头部保护要一份可写副本、AEAD 解密要一份明文缓冲，两者都要到能算出长度之后
          *          才知道要多大——也就是说在判断「这条报文解不解得开」之前就已经付过一次分配。
-         *          按线程复用之后高水位只留一份，代价是**任何指向它们的视图都不许活到下一次收包**：
+         *          按线程复用之后高水位只留一份，代价是任何指向它们的视图都不许活到下一次收包：
          *          本层的交付路径（流层入队、TLS 缓冲、transport parameters 解析、错误文案）全部是
          *          拷贝入存储，因此这一条成立。状态机不跨挂起点持有这些视图（它不是协程）。
          */
@@ -343,7 +343,7 @@ namespace AsynGyanis::Net
             m_peerConnectionIds.push_back(PeerConnectionId{.id = m_configuration.peerConnectionId, .sequence = 0});
         }
 
-        // §7.3 要求**服务端**把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
+        // §7.3 要求服务端把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
         // 这两项由本类按配置补齐，调用方漏了也照样合法，免得每条连接都要手抄一遍再抄错。
         // 客户端一侧相反：原始目的标识只有在接住 Retry 之后才允许出现（本实现不做 Retry，故必须不写），
         // 写了会被对端按非法参数收口
@@ -430,7 +430,7 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        // §7.2：客户端只允许把**长头**报文里的源标识拿来当后续发包的目的标识（短头没有那个字段）。
+        // §7.2：客户端只允许把长头报文里的源标识拿来当后续发包的目的标识（短头没有那个字段）。
         // 只跟第一次：服务端此后按 §5.1 可以换标识，跟错一次会把整条连接打成「对端认不出」
         m_hasAdoptedPeerConnectionId = true;
         m_configuration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
@@ -859,7 +859,7 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        // 目的标识必须落在本连接上：Initial 允许对端凭空造的那个原始标识，其余只认本端**签发过的**
+        // 目的标识必须落在本连接上：Initial 允许对端凭空造的那个原始标识，其余只认本端签发过的
         // 每一条（§5.1.1 的 MUST：签发的标识要认到对端 RETIRE 为止）。只认握手期那一条是不够的——
         // 通告出去的备用标识一上线就可能被对端拿去用（§8.2 明写迁移中的探测就该换一条新标识），
         // 而外壳的别名路由已经把这种报文送到了本连接手上，两层对「是不是我的」必须同一个结论
@@ -1095,7 +1095,7 @@ namespace AsynGyanis::Net
 
     void QuicConnectionCore::handleAcknowledgement(const QuicAcknowledgementFrame &frame, const PacketNumberSpace space, const Timestamp arrivalTime)
     {
-        // 报告延迟是线上值，按**对端自己声明**的指数还原成时间（§19.3）；它的参数还没到之前用默认指数
+        // 报告延迟是线上值，按对端自己声明的指数还原成时间（§19.3）；它的参数还没到之前用默认指数
         const std::uint64_t peerExponent  = m_peerParameters.has_value() ? m_peerParameters->acknowledgmentDelayExponent : kQuicDefaultAcknowledgmentDelayExponent;
         const std::uint64_t shiftBitCount = std::min<std::uint64_t>(peerExponent, 20U);
         // 这个字段允许对端塞任意大的数：先按上限夹一次再移位，免得乘出一个回绕的负延迟。
@@ -1395,7 +1395,7 @@ namespace AsynGyanis::Net
     {
         // 探针只走 1-RTT：状态机在握手完成前不离开 Disabled，而那时应用空间的写密钥本来就还没武装
         queuePathMtuProbe(now);
-        // §5.1.1 的 SHOULD：给对端留一条**没在用的**标识，它才可能换一条来迁移（§9.5 明写不许拿同一条
+        // §5.1.1 的 SHOULD：给对端留一条没在用的标识，它才可能换一条来迁移（§9.5 明写不许拿同一条
         // 标识打两个目的地址，池子耗尽就等于迁移被锁死）。上限由对端通告的 active_connection_id_limit
         // 把住：本端从不超发，退了一条才补一条
         if (hasRoomForAnotherConnectionId())
@@ -1423,8 +1423,8 @@ namespace AsynGyanis::Net
             // 1-RTT 才有的两件事：路径 MTU 探针与「给对端补一条没用过的标识」，理由见各自的方法
             prepareOneRttPackets(now);
         }
-        // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 **1-RTT
-        // 帧**（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
+        // §19.20：握手完成、且对端确认过 Handshake 空间的包之后才发 HANDSHAKE_DONE，且它是 1-RTT
+        // 帧（§19 表 3 的 Protection 列只有 1）——塞进 Handshake 空间的包会被对端按「该级别不该
         // 出现这种帧」判 PROTOCOL_VIOLATION（aioquic 即如此）。这一帧也只归服务端发
         bool owesHandshakeDone =
                 isLocalServer() && space == PacketNumberSpace::Application && m_phase == QuicConnectionPhase::Established && m_isHandshakeConfirmed && isHandshakeDonePending();

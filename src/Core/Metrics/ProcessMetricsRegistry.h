@@ -46,13 +46,13 @@ namespace AsynGyanis::Core
      *
      * @details 两条 `UdpServer` 各登记一份收包数时，运维要的是进程总量，不是其中一台的份额；
      *          而两个证书管理器各报自己的到期时刻时，求和会得到一个谁也没配的数——那时该报
-     *          **最早**的那张，因为它才是会先出事的那个。取最大没有对应的告警语义，故不提供。
+     *          最早的那张，因为它才是会先出事的那个。取最大没有对应的告警语义，故不提供。
      */
     enum class ProcessMetricMerge
     {
         Sum,       ///< 各实例相加（计数类）
         Min,       ///< 取最小值（「最早的那个期限」这类，0 也算一个真实的最小值）
-        MinNonZero ///< 取最小值但**跳过 0**：有些读数里 0 的含义是「读不出/还没有」而不是「最早」，
+        MinNonZero ///< 取最小值但跳过 0：有些读数里 0 的含义是「读不出/还没有」而不是「最早」，
                    ///< 让它参与求早会把另一个实例的真值压成假的告警（证书到期时刻即此形）
     };
 
@@ -113,18 +113,18 @@ namespace AsynGyanis::Core
      * @brief 进程级读数的注册表。
      *
      * @details 为什么要有这么一层：`/metrics` 的渲染入口只吃 `Net::HttpServerStats` 的字段，
-     *          于是**不进那份结构体的读数必然无出口**。把 UdpServer、连接池、ACME 的计数塞进
+     *          于是不进那份结构体的读数必然无出口。把 UdpServer、连接池、ACME 的计数塞进
      *          `HttpServerStats` 是伪造依赖（它们不是 HTTP 服务器的状态，也不该被 HTTP 层知道），
      *          而且 `Database` 与 `Net` 是兄弟模块，池的读数根本到不了渲染点。这一层放在 `Core`
      *          （`Platform ← Base ← Core ← {Net, Database}` 的共同下层），Core 只记账、
      *          Net 那侧负责渲染成 Prometheus 文本。
      *
-     * @note 命名约定：**登记的是完整名字**，不随 `/metrics` 的 `metric_name_prefix` 变。
+     * @note 命名约定：登记的是完整名字，不随 `/metrics` 的 `metric_name_prefix` 变。
      *       进程级读数抓哪台监听器都是同一份，给它套某个服务器的业务前缀反而会让人以为
      *       那台服务器独占这个数。建议形状 `asyn_<面>_<指标>_[total|seconds|bytes]`，
      *       计数类一律以 `_total` 结尾（Prometheus 的既有约定）。
-     * @note 同名登记是支持的（多台同类对象各登记一份，按 `merge` 并成一个数）；但**同一个名字上的
-     *       类型、说明与并法必须一致**——不一致就是两处代码抢一个名字，当场抛出来比导出两份
+     * @note 同名登记是支持的（多台同类对象各登记一份，按 `merge` 并成一个数）；但同一个名字上的
+     *       类型、说明与并法必须一致——不一致就是两处代码抢一个名字，当场抛出来比导出两份
      *       互相矛盾的 `# TYPE` 好得多。
      */
     class ASYN_CORE_API ProcessMetricsRegistry
@@ -137,7 +137,7 @@ namespace AsynGyanis::Core
          * @param help 一句中文说明，导出成 `# HELP`；同名重复登记时它必须与先登记的完全一致
          * @param kind 计数还是瞬时量，决定 `# TYPE`
          * @param merge 同名多条实例时怎么并
-         * @param provider 取值回调，会被**每次抓取**调用一次
+         * @param provider 取值回调，会被每次抓取调用一次
          * @return ProcessMetricHandle 注销把手；丢掉把手就等于把这条读数从导出里拿掉
          * @throws std::invalid_argument 名字不合法、provider 为空，或同名登记的类型/说明/并法不一致
          * @note 抓取时 provider 在注册表的读锁内被调用：它必须只做原子量读取，且不得回头调用注册表的
@@ -149,7 +149,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 取当前所有登记的读数快照，按登记先后给出
          * @return std::vector<ProcessMetricSample> 每个名字一份（同名已按 merge 并好）
-         * @note 抓取是**现取**而不是缓存：注册表里存的是回调，值在被抓的那一刻才读
+         * @note 抓取是现取而不是缓存：注册表里存的是回调，值在被抓的那一刻才读
          */
         [[nodiscard]] static std::vector<ProcessMetricSample> samples();
 

@@ -154,7 +154,7 @@ namespace AsynGyanis::Base
         {
             GTEST_SKIP() << "本构建没有调试信息（既无 PDB 也无 -g），栈帧只剩模块加偏移，符号解析断言不适用";
         }
-        // 按**帧身份**判，而不是「栈里有个测试体帧就算对」：任何深于两帧的栈里都有 TestBody，
+        // 按帧身份判，而不是「栈里有个测试体帧就算对」：任何深于两帧的栈里都有 TestBody，
         // 旧断言在「少跳一格」（框架自己的构造帧顶在最前）与「多跳一格」（抛出点被跳掉）两种
         // 错法下都不会红。这里两条分别钉住：抛出点所在文件必须在栈里，框架构造帧必须不在
         EXPECT_NE(text.find("TestException.cpp"), std::string::npos) << "解析结果里没有抛出点所在文件，说明采到的不是抛出点的栈：\n" << text;
@@ -360,7 +360,7 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 隐式错误码必须按 errno 语义解释：数值与描述得来自同一个错误码空间
-     * @details Windows 上 `std::system_category()` 把数值当成 **Win32 码**查表，而 kernel32/winsock
+     * @details Windows 上 `std::system_category()` 把数值当成 Win32 码查表，而 kernel32/winsock
      *          的失败根本不写 errno，于是旧写法（errno 的值 + system_category）会给出与本次失败
      *          无关的描述（本仓实测把发送失败报成「[112] There is not enough space on the disk」）。
      *          Linux 上两个类别的文本相同，因此这条只有 Windows 侧能证伪——缺陷本身也只在那一侧。

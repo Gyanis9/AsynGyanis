@@ -17,14 +17,14 @@ namespace AsynGyanis::Base::Detail
     /**
      * @brief 异常抛出点载荷：抛出位置 + 抛出点的调用栈原始帧
      *
-     * @details 刻意**不是** std::exception 的派生类。Base::Exception / LogicException /
+     * @details 刻意不是 std::exception 的派生类。Base::Exception / LogicException /
      *          InvalidArgumentException 分别落在 std::runtime_error 与 std::logic_error 两条
      *          分支上——运行期故障与用法错误必须分成两条捕获面，这是既定策略，因此异常基类
      *          共享不了（强行共享会对 std::logic_error 形成菱形）。但三条链都能各自公开继承
-     *          这**一个**非异常基类，于是：
+     *          这一个非异常基类，于是：
      *          - 抛出点与调用栈的字段和访问器从此只有一份，不会再三条链各抄一遍而漂移；
      *          - 「从一个 std::exception 上取回它携带的栈」从三次串行 dynamic_cast 收成一次，
-     *            新增第四条链时不必再改那个粘合函数——而漏改原本的后果是**静默丢栈**
+     *            新增第四条链时不必再改那个粘合函数——而漏改原本的后果是静默丢栈
      *            （日志照常输出，只是不带栈，没有任何一处会报错）。
      * @note 非多态基类：运行期识别靠的是 std::exception 自身的多态性，因此不给异常对象添
      *       第二根 vptr；也没有经 ExceptionPayload* 释放对象的用法，故不设虚析构。

@@ -1094,7 +1094,7 @@ namespace AsynGyanis::Base
          *          （见 parseCoreInteger 与 parseCoreFloat）。同一份配置换个后缀就换行为，
          *          是这里最难查的一类现场，因此解析前先把这两种字面量扫出来拒掉。
          *          判范围只能在解析前做：事后 DOM 里已经分不出「超大整数」与「浮点数」。
-         *          扫描只认**字符串字面量之外**的数值记数器，误拒比漏拒更糟（合法配置会直接加载失败）。
+         *          扫描只认字符串字面量之外的数值记数器，误拒比漏拒更糟（合法配置会直接加载失败）。
          * @param text 去掉 BOM 后的 JSON 文档文本
          * @throws DocumentConversionException 存在超出表示范围的数值字面量
          */
@@ -1443,7 +1443,7 @@ namespace AsynGyanis::Base
             return result;
         }
 
-        // 扫描本身可能中途失败（子目录不可读、条目属性取不到）。这时交回的**不是**一份
+        // 扫描本身可能中途失败（子目录不可读、条目属性取不到）。这时交回的不是一份
         // 少了些文件的清单，而是一次失败：按全量提交会让那些没扫到的文件的键静默消失
         const auto scanned = scanConfigFiles(configDirectory, recursive);
         if (!scanned.has_value())
@@ -1628,7 +1628,7 @@ namespace AsynGyanis::Base
         // （下一次改动还会再来），因此整段收口在这里
         try
         {
-            // 重扫信号走的是**目录**路径，按扩展名的那道过滤会把它整个滤掉——内核丢事件时本要的正是
+            // 重扫信号走的是目录路径，按扩展名的那道过滤会把它整个滤掉——内核丢事件时本要的正是
             // 「把整份目录重读一遍」，因此它在过滤之前先接下来，与单个文件变更走同一条重载路径
             if (changeType == Platform::FileChangeType::NeedsRescan)
             {
@@ -1865,7 +1865,7 @@ namespace AsynGyanis::Base
             }
         }
 
-        // 循环之外的这一次判定不能省：迭代器在**最后一个条目之后**才出错时，循环体内的检查
+        // 循环之外的这一次判定不能省：迭代器在最后一个条目之后才出错时，循环体内的检查
         // 永远不会再跑到，错误就这么留在 errorCode 里没人认领
         if (errorCode)
         {

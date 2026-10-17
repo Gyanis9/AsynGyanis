@@ -14,7 +14,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 去掉转换补出的替换字符，只留下「原文里本来就在的内容」
          * @details 两个平台补 U+FFFD 的个数不同（Windows 按坏字节数补，本端按坏序列数补），这个差异
-         *          不影响正确性；会咬人的是**正文少了一段**，所以按正文比对而不是按总长度比对。
+         *          不影响正确性；会咬人的是正文少了一段，所以按正文比对而不是按总长度比对。
          * @param wideText 转换结果
          * @return std::wstring 去掉 U+FFFD 后的结果
          */

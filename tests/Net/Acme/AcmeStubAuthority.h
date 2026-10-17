@@ -45,7 +45,7 @@ namespace AsynGyanis::Net::TestSupport
      *          别的挑战类型、限流、账户已删、CSR 被拒）都得由故障注入才出得来，而真机构不会替我们
      *          制造这些现场，且它的速率限制会让一轮回归变成一小时的等待。真机构那条路另有按环境变量
      *          门控的用例覆盖。
-     * @details 它同时是**独立实现**：签名用「按 JWK 重建公钥再验」这条与被测实现不同的路，
+     * @details 它同时是独立实现：签名用「按 JWK 重建公钥再验」这条与被测实现不同的路，
      *          指纹用通用 JSON 序列化的按键排序而不是本框架手写的成员顺序。两边都错在同一种理解上时，
      *          这里会不一致而不是一起绿。
      * @note 桩走明文 http：出站 TLS 已由 HttpClient 的既有用例覆盖，把两件事捆在一条判据上只会让
@@ -82,7 +82,7 @@ namespace AsynGyanis::Net::TestSupport
             bool isOrderRateLimited{false};
             /**
              * @brief 非空时，被拒域名那条 problem document 的 `detail` 原样用这一段文本
-             * @details 存在的理由：机构的 `detail` 是**自由文本**，JSON 里合法地可以带 `\n`（写成 `\\n`），
+             * @details 存在的理由：机构的 `detail` 是自由文本，JSON 里合法地可以带 `\n`（写成 `\\n`），
              *          解析回来就是真换行，而这条文本会被拼进错误消息、最终由续期管理器记成一行日志。
              *          桩要能造出这种形状，才测得出客户端有没有把它折过再交出去。
              */
@@ -174,7 +174,7 @@ namespace AsynGyanis::Net::TestSupport
          * @brief 交给桩一条「现在权威侧答得出的 TXT 是什么」的读法，dns-01 校验靠它
          * @param reader 返回当前已发布的那条 TXT 正文；没有就返回空
          * @details 桩不接真 DNS，所以由用例把被测方那副假 DNS 的记录口递进来。桩要核的是
-         *          `base64url(SHA-256(令牌.指纹))`，其中**指纹用桩自己那份独立实现算**——
+         *          `base64url(SHA-256(令牌.指纹))`，其中指纹用桩自己那份独立实现算——
          *          被测实现若把令牌或指纹接错，这里就会判 invalid 而不是跟着一起错
          */
         void setPublishedTxtReader(std::function<std::optional<std::string>()> reader);
@@ -226,7 +226,7 @@ namespace AsynGyanis::Net::TestSupport
             std::vector<std::string> authorizationUrls;
         };
 
-        /// 一段解开的 JWS：字段按原样留着，签名要用**原文**重算，不能解码后再拼
+        /// 一段解开的 JWS：字段按原样留着，签名要用原文重算，不能解码后再拼
         struct ParsedJws
         {
             std::string protectedText; ///< 解开的 protected 头 JSON
@@ -271,7 +271,7 @@ namespace AsynGyanis::Net::TestSupport
 
         /**
          * @brief 真去取一次 HTTP-01 的自证令牌并按结果定挑战状态
-         * @details 期望正文是 "令牌.账户公钥指纹"，指纹按**桩自己**那份独立规范化算出：
+         * @details 期望正文是 "令牌.账户公钥指纹"，指纹按桩自己那份独立规范化算出：
          *          被测实现手写的成员顺序若与之不同，这里就会判 invalid 而不是跟着一起错
          */
         Core::Task<void> validateHttp01(Challenge &challenge, const Account &account);

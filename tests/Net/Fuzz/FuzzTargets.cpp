@@ -1,7 +1,7 @@
 // libFuzzer 入口：把同一个内核交给覆盖引导的模糊器跑。仅在 -DASYN_BUILD_FUZZ_TARGETS=ON 时构建。
 //
 // 工具链现状（2026-09-24 实查，别再重走）：
-//   · llvm.org 官方包（本机 G:\Tools\LLVM，clang 23.1.1 / x86_64-pc-windows-msvc）**带** fuzzer 运行时
+//   · llvm.org 官方包（本机 G:\Tools\LLVM，clang 23.1.1 / x86_64-pc-windows-msvc）带 fuzzer 运行时
 //     （lib/clang/23/lib/windows/clang_rt.fuzzer*.lib），这条路能跑——scripts/fuzz-net.sh 就是它：
 //     实测 61 秒 266 万次执行、新增 3263 个覆盖单元、峰值常驻 33 MB，各档解码器零违例。
 //     唯一的坑：那份运行时按静态 CRT 编，整产物必须 /MT，混不上项目里 /MD 的 Net.lib，

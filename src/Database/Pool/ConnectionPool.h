@@ -72,7 +72,7 @@ namespace AsynGyanis::Database
          * @throws Base::InvalidArgumentException healthCheckIntervalSeconds 超过 7 天
          *         （见 kMaximumHealthCheckIntervalSeconds：那条后台线程按毫秒睡觉，那个量换算成毫秒
          *          会溢出成负数，wait_for 对负时长立即返回，线程于是每秒空转一轮）
-         * @details 构造函数调它，且调在健康检查线程启动**之前**：换个时机拒就是「线程已经跑起来了才炸」，
+         * @details 构造函数调它，且调在健康检查线程启动之前：换个时机拒就是「线程已经跑起来了才炸」，
          *          抛出去之后还要等成员析构把那条线程收掉
          */
         [[nodiscard]] static PoolConfig validateConfiguration(const PoolConfig &config);
@@ -102,7 +102,7 @@ namespace AsynGyanis::Database
          *          忙时等待最多 acquireTimeoutMs 毫秒，超时返回空；等待期间每次被叫醒都会重走一遍
          *          「从栈里取（判过期与判存活）／未达上限就新建」，因此任何一次腾出名额——包括
          *          归还的那条被判失联或过存活期而当场丢弃——都能把等待者救出来，不必白等满超时。
-         *          合计等待数已达 PoolConfig::maximumWaitingRequests 时**不排队**：两次乐观尝试
+         *          合计等待数已达 PoolConfig::maximumWaitingRequests 时不排队：两次乐观尝试
          *          之后直接返回空（宁可快速失败让调用方降级，也不排一条只会等满超时的队），
          *          该情形计入 waitingRejectedCount()，不混进借出超时账。
          *
@@ -115,7 +115,7 @@ namespace AsynGyanis::Database
          * @brief 协程异步获取连接
          *
          * @details 有空闲连接（或未达上限）时立即返回，不涉及任何线程切换；否则当前协程挂起到
-         *          等待列表，待连接归还时由归还方把恢复动作**投递回本方法给定的 EventLoop**，
+         *          等待列表，待连接归还时由归还方把恢复动作投递回本方法给定的 EventLoop，
          *          因此协程恢复后的代码仍运行在该事件循环线程上，与异步数据库执行器的约定一致。
          *
          * @param loop 恢复本协程用的事件循环；其 run() 必须正在运行（或即将运行），
@@ -125,13 +125,13 @@ namespace AsynGyanis::Database
          * @note 提前销毁协程（Task 析构）是安全的：还在等待列表里时会自行移除；已被交接或
          *       超时唤醒、但恢复动作尚未执行时，那次恢复会变成空操作（见 AcquireAwaiter::ResumeTicket），
          *       不会有人去 resume 已经随帧释放的内存。
-         * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次**就地恢复**而不是
+         * @note 池被 shutdown 时会以「空连接」唤醒全部等待者，且那一次就地恢复而不是
          *       投回事件循环：池都停摆了，投递到循环里可能永远不被执行，那会让协程永久挂起。
          *       被这样叫醒的协程看到停摆标志就收尾，不再重挂一轮。
          * @note 与同步 acquire() 同口径：等待中被叫醒（有人归还入栈、也有人把连接判失联或过存活期
          *       当场丢弃而腾出名额）后都会再走一遍「从栈里取 / 未达上限就新建」，两种取法的
          *       过期与失联判定一致，因此过期的连接不会被直接交接给协程。
-         * @note 合计等待数已达 PoolConfig::maximumWaitingRequests 时**不挂起**：与同步路径同一条
+         * @note 合计等待数已达 PoolConfig::maximumWaitingRequests 时不挂起：与同步路径同一条
          *       判据、同一笔 waitingRejectedCount() 计数，当场以空连接收尾（也不记进借出超时账）
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
@@ -177,8 +177,8 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::size_t waitingCount() const noexcept;
 
         /**
-         * @brief 池**当下持有**的连接数：创建时加、丢弃或建连失败时减
-         * @details 它与 `maximumPoolSize` 是同一本账——占位判定看的就是这个数，所以它**不是**历史累计值：
+         * @brief 池当下持有的连接数：创建时加、丢弃或建连失败时减
+         * @details 它与 `maximumPoolSize` 是同一本账——占位判定看的就是这个数，所以它不是历史累计值：
          *          丢弃一条会把它减回去，池才能补建一条。要判断「建了就丢、丢了又建」，看
          *          `discardedCount()`：本数贴着上限而丢弃数一直涨，才是那个形状。
          * @return std::size_t 池当前记在账上的连接条数
@@ -217,7 +217,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 因等待名额已满（`PoolConfig::maximumWaitingRequests`）而不再排队的借出次数
          * @details 同步与异步两条取出路径共用这一笔：两者都是「两次乐观尝试之后没等到位置，
-         *          当场空手返回」。被拒**不等待**，因此刻意不混进 borrowTimeoutCount()——
+         *          当场空手返回」。被拒不等待，因此刻意不混进 borrowTimeoutCount()——
          *          混进去会让「池不够用」这个容量信号在队列封顶后反而失真。它与
          *          `waitingCount()` 对着读可分诊：等待数贴着上限、本数在涨 = 队列成了瓶颈，
          *          该看的是池容量与下游耗时。
@@ -335,7 +335,7 @@ namespace AsynGyanis::Database
             struct ResumeTicket
             {
                 std::atomic<std::coroutine_handle<>> handle{
-                        nullptr}; ///< 待恢复的协程；等待器析构后为空。**必须是原子的**：清空发生在等待器（任意线程）的析构里，而读取发生在投递回事件循环的 lambda
+                        nullptr}; ///< 待恢复的协程；等待器析构后为空。必须是原子的：清空发生在等待器（任意线程）的析构里，而读取发生在投递回事件循环的 lambda
                                   ///< 里，两者之间没有任何 happens-before（shared_ptr 的引用计数不建立它），用非原子字段就是数据竞争、甚至 resume 一块已释放的帧；取用一律
                                   ///< `exchange(nullptr)`，同一个句柄只允许被恢复一次
 
@@ -456,7 +456,7 @@ namespace AsynGyanis::Database
          * @details 取出路径与归还路径共用这一份判定，避免两处对「存活期到没到」给出不同口径。
          * @param connection 待判的连接，不可为空
          * @param now 判定时刻（一次调用里只取一次时钟，不在本函数内部读）
-         * @return true 已达到上限（按秒取整后**等于** N 秒即判过期，不是过 N 秒才判）；
+         * @return true 已达到上限（按秒取整后等于 N 秒即判过期，不是过 N 秒才判）；
          *         `maximumLifetimeSeconds == 0` 视为「立即过期」，恒为 true
          */
         [[nodiscard]] bool isPastMaximumLifetime(const DatabaseConnection &connection, std::chrono::steady_clock::time_point now) const noexcept;
@@ -613,7 +613,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 十一条池内读数挂在进程级指标注册表上的把手
-         * @details 登记的都必须是**原子量**，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
+         * @details 登记的都必须是原子量，抓取线程不碰池的任何一把锁（拿锁去抓就等于与借出路径抢锁，
          *          一次 `/metrics` 抓取会变成池的延迟来源）。异步等待数因此配了一份原子镜像
          *          `m_asyncWaitingCount`；空闲条数仍只在锁里，所以仍然不报。
          */

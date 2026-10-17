@@ -204,7 +204,7 @@ namespace AsynGyanis::Net
             return std::vector<std::uint8_t>(token.begin(), token.end());
         } catch (const Base::Exception &)
         {
-            // HMAC 算不出来是运行期故障：交回空令牌，调用方据此**不**回 Retry。核验侧同一处故障按「不合」
+            // HMAC 算不出来是运行期故障：交回空令牌，调用方据此不回 Retry。核验侧同一处故障按「不合」
             // 处理——最坏的后果是多花一次握手，而不是放行一张没有认证的令牌
             return {};
         }

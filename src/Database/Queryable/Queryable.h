@@ -242,7 +242,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @param columns 列名或表达式文本列表
          * @return Queryable& 自身引用，支持链式调用
-         * @warning 表达式文本**按原样拼进 SQL 语句**，不是参数绑定的对象：
+         * @warning 表达式文本按原样拼进 SQL 语句，不是参数绑定的对象：
          *          只允许传入编译期常量或可信文本，任何来自用户输入的片段都必须走参数绑定
          *          （值用占位符），否则就是 SQL 注入面
          */
@@ -260,10 +260,10 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 显式装载一条关系：把关联行按外键**分批补取**回来并挂到结果上
+         * @brief 显式装载一条关系：把关联行按外键分批补取回来并挂到结果上
          *
          * @details 这是「显式装载」而不是懒加载：本仓不做会挂起属性访问的代理（那在协程运行时里
-         *          是最容易咬人的形状）。补取是**第二条查询**（`SELECT … WHERE 外键 IN (…)`），
+         *          是最容易咬人的形状）。补取是第二条查询（`SELECT … WHERE 外键 IN (…)`），
          *          按方言的参数上限分块，因此一对多也不会把父行乘成笛卡尔积——这正是它与 JOIN
          *          那条路的分工：子行多时用本方法，一对一又想省一趟往返时才用一次 JOIN 取回。
          *
@@ -271,7 +271,7 @@ namespace AsynGyanis::Database::Queryable
          *          （外键列在 U 的表里、指向本行主键），`U` / `std::optional<U>` 是多对一
          *          （外键列在本表里、指向 U 的主键）。要装载的成员必须先在
          *          `TableSchema<T>::kRelations` 里用 `Relation()` 声明过，否则当场抛点名那个成员的
-         *          `LogicException`——装配错误要在**第一次查询**时就出声，不要等某天悄悄少挂一半数据。
+         *          `LogicException`——装配错误要在第一次查询时就出声，不要等某天悄悄少挂一半数据。
          *
          * @details 空结果集不发第二条查询；补取不到的行（对端已删）在可空成员上留空、
          *          在 `std::vector` 成员上留空列表、在必填的非 optional 成员上保持原值（不覆写、不抛）。
@@ -290,17 +290,17 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 显式装载一条关系：用**一次 LEFT JOIN** 把关联行随主查询一起带回来
+         * @brief 显式装载一条关系：用一次 LEFT JOIN 把关联行随主查询一起带回来
          *
          * @details 与 `then()` 同一条取向（显式点名装载，不做懒加载代理），差别只在取数方式：
          *          本方法把关联表连进同一条 SELECT（`LEFT JOIN … ON …`），并把它的列以
-         *          `别名__列名` 的形状投影出来，因此**不多一次往返**；`then()` 走的是第二条
+         *          `别名__列名` 的形状投影出来，因此不多一次往返；`then()` 走的是第二条
          *          `IN (…)` 补取查询。取舍：多对一（对端唯一，JOIN 不会把行乘开）用本方法划算；
          *          一对多走 JOIN 会把父行按子行乘开（结果行数 = 父行 × 子行数），需要在客户端
          *          折叠回一行——子行多时应当改用 `then()`。
          *
          * @details 两个方向的装载形状：多对一挂上 `U` / `std::optional<U>` 成员（LEFT JOIN
-         *          配不上时留空、必填成员保持原值）；一对多把子行按基表主键**折叠**回父行，
+         *          配不上时留空、必填成员保持原值）；一对多把子行按基表主键折叠回父行，
          *          没有子行的父行留空列表（与 `then()` 同一条语义）。
          *
          * @param memberPointer 要装载的成员（`&Post::author` 这类）
@@ -501,7 +501,7 @@ namespace AsynGyanis::Database::Queryable
          *          （聚合结果只有一行，排序与分页没有意义，某些数据库还会直接报错）。
          *          手动设置的 SELECT 列会被本方法忽略；GROUP BY 保留，此时返回第一组的计数。
          *
-         * @return std::int64_t 匹配的行数；带 GROUP BY 时是**其中一组**的计数（引擎按组各回一行，
+         * @return std::int64_t 匹配的行数；带 GROUP BY 时是其中一组的计数（引擎按组各回一行，
          *         本方法只读第一行且组序不保证），要在乎每一组就改用 toList() 投影 COUNT(*)；
          *         结果为空或计数列为 NULL 时返回 0
          *
@@ -723,7 +723,7 @@ namespace AsynGyanis::Database::Queryable
          *          没有绑定事务时自己开一笔，已绑定时并入调用方那笔
          * @param rows 用于取主键的行，允许为空（返回 0）
          * @return std::int64_t 受影响的行数
-         * @note 只按这些行的主键删，**不叠加**当前查询树上已设置的 where 条件——批量删的语义是
+         * @note 只按这些行的主键删，不叠加当前查询树上已设置的 where 条件——批量删的语义是
          *       「删掉我手上这些行」，混入别的过滤会让「传了 N 行却只删掉一部分」变成静默行为
          * @throws Base::LogicException 当前为离线模式，或主键列未在 kColumns 中声明
          * @throws DatabaseException 事务开启或语句执行失败
@@ -818,13 +818,13 @@ namespace AsynGyanis::Database::Queryable
          *          用例钉住，存在性请用 first() / count() 确认。
          *
          * @details `TableSchema<T>::kVersionColumn` 非空时（乐观锁）多两件事：WHERE 追加
-         *          「版本 = ?」（问的是**手里这份数据的版本**），SET 把该列写成自增加一；更新到
+         *          「版本 = ?」（问的是手里这份数据的版本），SET 把该列写成自增加一；更新到
          *          0 行即抛 `OptimisticLockException`，消息点名表、版本列、期望版本与主键值。
          *          这一档与 `InsertConflict` 三档正交：那一档管 INSERT 撞唯一键，本档管 UPDATE
          *          条件匹配不上，一次写入只可能落在其中一处。
          * @note 更新成功之后，这条结构体里的版本字段就成了旧值（服务端已经加过一，而本方法只读地
          *       接收结构体、拿不到回写）。要继续改这一行请先重新读出——这正是乐观锁的意思：
-         *       手里那份数据一旦写出去就过期了，第二次拿旧值写会**当场报冲突**而不是悄悄覆盖别人
+         *       手里那份数据一旦写出去就过期了，第二次拿旧值写会当场报冲突而不是悄悄覆盖别人
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws Base::LogicException TableSchema<T>::kPrimaryKey 未在 kColumns 中声明，
@@ -852,7 +852,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 异步执行查询并返回所有结果行
          *
-         * @details 与 toList() 语义完全一致，唯一差别是**不阻塞调用线程**：方言解析与 SQL 生成
+         * @details 与 toList() 语义完全一致，唯一差别是不阻塞调用线程：方言解析与 SQL 生成
          *          在提交前完成（纯文本变换，不访问数据库），随后「取连接 → 执行 → 行映射」
          *          整段阻塞链路交给 AsyncExecutor 的工作线程，任务完成后协程在 completionLoop
          *          所在线程上恢复并交出结果。
@@ -1039,8 +1039,8 @@ namespace AsynGyanis::Database::Queryable
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败或语句执行失败（如唯一约束冲突）
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
-         * @note **row 按值接收**，与另几个异步方法的引用/视图入参刻意不同：本方法是惰性启动的
-         *       协程，函数体（包括把 row 的取值转成绑定参数）要到**首次 resume** 才执行，
+         * @note row 按值接收，与另几个异步方法的引用/视图入参刻意不同：本方法是惰性启动的
+         *       协程，函数体（包括把 row 的取值转成绑定参数）要到首次 resume 才执行，
          *       若按引用接收，调用方写「先拿 Task 再 resume」就会让引用指向已销毁的临时对象，
          *       而且不报错、只静默读到垃圾值。按值接收让协程帧自己持有一份副本，
          *       传临时对象也安全（拷贝成本与后面必然发生的参数拷贝同量级）
@@ -1108,7 +1108,7 @@ namespace AsynGyanis::Database::Queryable
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败、事务开启失败、语句执行失败或本地事务提交失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
-         * @note **rows 按值接收**（理由同 insertAsync）：惰性协程要到首次 resume 才读入参，
+         * @note rows 按值接收（理由同 insertAsync）：惰性协程要到首次 resume 才读入参，
          *       视图（span）不持有所指数据，按视图接收会让「先拿 Task 再 resume」静默读到
          *       已销毁的容器。需要传已有容器时用 std::move 转交，避免多一次拷贝；
          *       传入 std::span 的调用方需自行构造 vector（这是让协程帧拥有数据的必要代价）
@@ -1152,7 +1152,7 @@ namespace AsynGyanis::Database::Queryable
          *         抛在恢复本协程的那个线程上，判据与同步路径共用同一份实现
          * @throws DatabaseException 取连接失败或语句执行失败
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现
-         * @note 主键缺失这类编程错误在**首次 resume** 时就会抛出（语句生成阶段），
+         * @note 主键缺失这类编程错误在首次 resume 时就会抛出（语句生成阶段），
          *       不会变成工作线程上的异常；row 按值接收的理由见 insertAsync()
          */
         [[nodiscard]] Core::Task<std::int64_t> updateAsync(T row, Core::EventLoop &completionLoop)
@@ -1196,7 +1196,7 @@ namespace AsynGyanis::Database::Queryable
         }
 
     private:
-        /// 关系装载器：拿着行列表去补取并把关联挂上。闭包捕获池/事务/方言，**不捕获 this**——
+        /// 关系装载器：拿着行列表去补取并把关联挂上。闭包捕获池/事务/方言，不捕获 this——
         /// 查询构建器在链式调用里会被移动，捕获 this 的闭包在移动之后指向旧对象
         using RelationLoader = std::function<void(std::vector<T> &)>;
 
@@ -1207,7 +1207,7 @@ namespace AsynGyanis::Database::Queryable
         struct IncludeProcessor
         {
             /// 每行调用一次：把带前缀的关联列拆成一个对象挂到行上。
-            /// resolvedIndices 是**本次取数**的下标槽（首次调用时解析并填充）——槽位由 fetchRowsOn 每次执行现造，
+            /// resolvedIndices 是本次取数的下标槽（首次调用时解析并填充）——槽位由 fetchRowsOn 每次执行现造，
             /// 因此上一次执行的列下标不会被带进下一次（列结构变更后仍按名重解）
             std::function<void(T &row, DatabaseResult &result, std::vector<std::size_t> &resolvedIndices)> attach;
             /// 一对多折叠：把重复父行上挂到的子行并进首次出现的那一行（非折叠方向为空）
@@ -1275,7 +1275,7 @@ namespace AsynGyanis::Database::Queryable
             const RelationDescriptor<T, MemberType> *found = nullptr;
 
             // 直接遍历 TableSchema<T>::kRelations（static constexpr，寿命到程序结束）。
-            // **不能**改成遍历一个按值返回的取元组的帮助函数：那样 `&relation` 指向的是一个
+            // 不能改成遍历一个按值返回的取元组的帮助函数：那样 `&relation` 指向的是一个
             // 语句结束就销毁的临时量——实测症状是装载挂不上（读到的成员指针是野的）与偶发访问违例
             if constexpr (requires { TableSchema<T>::kRelations; })
             {
@@ -1661,7 +1661,7 @@ namespace AsynGyanis::Database::Queryable
                     continue;
                 }
                 const auto matched = groups.find(indexKeyOf(*key));
-                // 没有子行时挂**空列表**而不是保持原值：装载过的语义是「这就是全部子行」，
+                // 没有子行时挂空列表而不是保持原值：装载过的语义是「这就是全部子行」，
                 // 留一个可能是别人塞进去的旧值会谎报数据
                 row.*(relation.memberPointer) = matched == groups.end() ? std::vector<RelatedRow>{} : std::move(matched->second);
             }
@@ -1796,7 +1796,7 @@ namespace AsynGyanis::Database::Queryable
          * @return std::shared_ptr<SqlDialect> 方言实例，恒非空
          * @throws DatabaseException 无法从池中取得连接以推导类型
          * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（MySQL / Redis）
-         * @warning 必须在**持有租约之前**调用：既未显式指定方言类型也未绑定事务时，它要自己再借一条
+         * @warning 必须在持有租约之前调用：既未显式指定方言类型也未绑定事务时，它要自己再借一条
          *          连接去探测类型。调用方若已经占着池里唯一的连接（maximumPoolSize 为 1 是文件型
          *          SQLite 的常见配法），这次嵌套借用会白等满 acquireTimeoutMilliseconds，然后抛
          *          「无法获取连接以推导类型」——一条离真实原因很远的错误。各执行入口都按
@@ -1973,7 +1973,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 带 include 时把基表列限定成「表名.列名」
          * @details JOIN 一旦把两张表放进同一条语句，裸列名在同名列（几乎一定有的 `id`）上就是
-         *          歧义，服务端直接报错。因此带 include 的查询里：纯列名一律限定到**基表**，
+         *          歧义，服务端直接报错。因此带 include 的查询里：纯列名一律限定到基表，
          *          表达式（`COUNT(*)` 之类）与已经带点的名字原样保留。条件树递归处理左右两侧，
          *          IN 的值列表不动（那是绑定的参数，不是列名）
          * @param node 待限定的查询树（就地修改）
@@ -2707,7 +2707,7 @@ namespace AsynGyanis::Database::Queryable
                 return;
             }
 
-            // 版本列：结构体里那个值是**手里这份数据读出时的版本**，它只进 WHERE；
+            // 版本列：结构体里那个值是手里这份数据读出时的版本，它只进 WHERE；
             // SET 里改成自增加一（见 QueryNode::incrementColumns）——这样「忘了加一」不会让更新
             // 悄悄失去保护，加一也由服务端在一次语句里做完
             if (!versionColumnName.empty() && columnDescriptor.columnName == versionColumnName)

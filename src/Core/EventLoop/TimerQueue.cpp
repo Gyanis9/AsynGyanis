@@ -124,7 +124,7 @@ namespace AsynGyanis::Core
     {
         const auto now = std::chrono::steady_clock::now();
 
-        // 上限必须在**毫秒域**里算：直接拿时长与「时间点最大值 - 此刻」比较，两侧单位不同，
+        // 上限必须在毫秒域里算：直接拿时长与「时间点最大值 - 此刻」比较，两侧单位不同，
         // 比较会先把毫秒折成时钟的滴答（Windows 上是 100ns），毫秒量级的大数在这一步就越界了，
         // 比较结果随之失真——正是要防的那种溢出。折到毫秒只做除法，不会溢出
         const auto maximumDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::time_point::max() - now);
@@ -185,7 +185,7 @@ namespace AsynGyanis::Core
             [[maybe_unused]] const bool isArmed = rearm();
 
             // 注册失效（描述符已坏，或队列与循环在收尾）时以「未就绪」结束，驱动随之退出。
-            // 状态必须落到 Dead：只复位成 Idle 的话，后续登记会再把**已经跑完的**驱动帧投一次，
+            // 状态必须落到 Dead：只复位成 Idle 的话，后续登记会再把已经跑完的驱动帧投一次，
             // 那是对停在终结点上的协程 resume，属未定义行为
             if (!co_await m_watcher.waitReadable())
             {
@@ -318,7 +318,7 @@ namespace AsynGyanis::Core
         [[maybe_unused]] const bool isArmed = rearm();
 
         // 恢复动作排给调度器，而不是在这里就地恢复、也不把裸句柄投出去：本协程还在推进队列，
-        // 就地恢复会让别的协程在队列状态尚未收敛时插进来；而**裸句柄一旦投出去就摘不回来**——
+        // 就地恢复会让别的协程在队列状态尚未收敛时插进来；而裸句柄一旦投出去就摘不回来——
         // 投出之后、恢复之前若等待者的帧被销毁（取消、连接收尾），循环会 resume 一块已释放的帧。
         // 排一段「稍后恢复」的代码就没这个问题：恢复前逐个从待恢复表里取，帧析构时会把表里的
         // 自己摘掉，被销毁的等待者因此根本不会被恢复（与连接池的恢复票据同一目的，见 resumeExpired）

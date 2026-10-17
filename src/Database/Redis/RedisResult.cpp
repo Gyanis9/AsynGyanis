@@ -100,7 +100,7 @@ namespace AsynGyanis::Database
 #ifdef REDIS_REPLY_MAP
         /**
          * @brief 把一份 map 回复折成哈希值
-         * @details 协议里 `%<n>` 说的是 **n 对**，hiredis 因此把元素按「键、值、键、值…」平铺，
+         * @details 协议里 `%<n>` 说的是 n 对，hiredis 因此把元素按「键、值、键、值…」平铺，
          *          `elements` 恒为偶数；真遇到落单的那一个（半截解析）就丢掉尾部那一格，
          *          不替它编一个空值——把「读不到配对」说成「值为空」是假信息。
          *          键与值都按 flattenReplyText() 取文本：子元素带类型时层级与类型不保留，
@@ -131,8 +131,8 @@ namespace AsynGyanis::Database
 
         m_replyType = m_replyPointer->type;
 
-        // 列数按回复的**结构**定，不按类型枚举定：
-        // - RESP3 的 map 交出一份哈希、占**一列**（含 `%0` 那份空哈希：那是「服务端回了一份空的哈希」，
+        // 列数按回复的结构定，不按类型枚举定：
+        // - RESP3 的 map 交出一份哈希、占一列（含 `%0` 那份空哈希：那是「服务端回了一份空的哈希」，
         //   与「没有回复」是两件事，拆成 2N 列反而把配对关系交回调用方去猜）；
         // - 其余带元素的回复（RESP2 数组，以及 RESP3 的 SET / PUSH / ATTR）一列一个元素，
         //   否则整份容器回复只能读出一个空值——那两个成员的集合就这样无声消失；
@@ -222,7 +222,7 @@ namespace AsynGyanis::Database
         }
 
 #ifdef REDIS_REPLY_MAP
-        // map 是 RESP3 里唯一「元素成对」的容器：交出一份哈希。判据排在元素分支**之前**，
+        // map 是 RESP3 里唯一「元素成对」的容器：交出一份哈希。判据排在元素分支之前，
         // 否则它会与数组同路走成 2N 列，把配对关系重新交回调用方去猜
         if (sourceReply->type == REDIS_REPLY_MAP)
         {

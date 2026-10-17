@@ -240,7 +240,7 @@ namespace AsynGyanis::Net
             return;
         }
 
-        // 先清过期：发送路径上的 buildRequestHeader 只**过滤**已过期的（它是 const，且不能因为
+        // 先清过期：发送路径上的 buildRequestHeader 只过滤已过期的（它是 const，且不能因为
         // 「有人来查」就改账），所以过期条目一直占着 `maximumTotalCookies` 与单域配额。一个爱发
         // 短命 Cookie 的站点能靠这些僵尸把真正要用的会话 Cookie 挤出去——那是静默登录失效的形状
         std::erase_if(m_entries, [&receivedAt](const Entry &stored) { return stored.expiresAt.has_value() && *stored.expiresAt <= receivedAt; });
@@ -309,7 +309,7 @@ namespace AsynGyanis::Net
                 }
                 // delta-seconds 是对端给的 int64，而本时钟的周期是 1 秒的十亿分之一（Linux）或
                 // 百亿分之一（MSVC）：`Max-Age=31536000000`（一千年，真实站点确实写过）换算过去就已经
-                // 越过 int64 上界，那是有符号溢出——UB，而这里的后果是**到期时刻翻成过去**：
+                // 越过 int64 上界，那是有符号溢出——UB，而这里的后果是到期时刻翻成过去：
                 // 刚存进来的 Cookie 当场被当成过期摘掉，症状是登录态莫名其妙存不住。
                 // 按「本端承认的最长寿命」收口：超出上限就当永不过期用，这正是对端写下这个数时的意图。
                 constexpr std::int64_t kMaximumLifetimeSeconds = 100LL * 365 * 24 * 3600; // ≈ 3.15e9，换算成 tick 远在可表示范围内

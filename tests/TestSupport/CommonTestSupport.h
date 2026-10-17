@@ -85,10 +85,10 @@ namespace AsynGyanis::TestSupport
         {
             static std::atomic<unsigned int> sequenceCounter{0};
 
-            // 目录名必须**跨进程**唯一：ctest 会把每个用例作为独立进程并行拉起，而 steady_clock 的读数
+            // 目录名必须跨进程唯一：ctest 会把每个用例作为独立进程并行拉起，而 steady_clock 的读数
             // 是全系统共享的、序号计数器又是每个进程各自从 0 开始，两者相加仍可能撞名（撞名时两个进程
             // 会共用同一个目录，先结束的那个 remove_all 会把另一个的用例文件删掉）。因此以
-            // create_directories 是否**真的新建了目录**为准，撞了就换个盐重试——不依赖时钟精度
+            // create_directories 是否真的新建了目录为准，撞了就换个盐重试——不依赖时钟精度
             std::error_code error;
             while (true)
             {
@@ -152,7 +152,7 @@ namespace AsynGyanis::TestSupport
         }
 
         /**
-         * @brief 在临时目录内写入**二进制**文件，字节按原样落盘
+         * @brief 在临时目录内写入二进制文件，字节按原样落盘
          * @param fileName 相对文件名
          * @param content 要写的字节（可含 0x00 与 0x0A）
          * @return true 写入成功

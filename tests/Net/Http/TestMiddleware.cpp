@@ -287,7 +287,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 把协程投到事件循环上跑完，收口后停掉循环，再把结果交给调用方
          *
-         * @details 判据只用协程自己在循环线程上置位的原子标记——**不能**顺手读 Task::isReady()：
+         * @details 判据只用协程自己在循环线程上置位的原子标记——不能顺手读 Task::isReady()：
          *          那是在外部线程读协程帧，与循环线程写同一块内存（TSan 的并发用例集报的正是它，
          *          Windows 上因为时序凑巧看不出来）。收口之后本方法会停掉并 join 循环：任务帧紧接着
          *          就会被调用方销毁，而销毁必须发生在循环线程停手之后，否则协程的收尾阶段仍在碰这块帧。
@@ -674,7 +674,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 CORS 策略在**装配期**就把「会被 setHeader 静默拒写的取值」挡下来
+     * @brief 钉住 CORS 策略在装配期就把「会被 setHeader 静默拒写的取值」挡下来
      * @details 三个取值都是原样上线的字段值。含 CR/LF/NUL 时 `HttpResponse::setHeader` 拒写并回
      *          false，而中间件不看那个 bool——留到请求期，现场表现只有「浏览器说 CORS 不通」，
      *          服务端一句日志都没有。判据复用 `setHeader` 内部那一份谓词（与 `altSvcMiddleware`
@@ -1286,7 +1286,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：取值一致的重复 Content-Length 不算非法
-     * @details RFC 9110 §8.6 允许同一取值重复写；h2/h3 的 framing 读的是**首条**。这道前置闸此前读的是
+     * @details RFC 9110 §8.6 允许同一取值重复写；h2/h3 的 framing 读的是首条。这道前置闸此前读的是
      *          合并视图，两条 `content-length: 8` 会被拼成「8, 8」而 from_chars 判它非法，
      *          于是本框架自己收得下的请求被中间件回一个 400——三层口径必须一致
      */
@@ -1625,7 +1625,7 @@ namespace AsynGyanis::Net
      * @brief 解出来的正文进「在途正文字节」预算：链上可见、链后归还；超限按 503 收口
      * @details E-5 钉的是「解出的缓冲不进账」这条缝：① 接了预算时，处理器在链上能看到预算是
      *          解压后的量级（≥ 明文长度），链跑完归还归零——预留在中间件协程帧里，帧亡账销；
-     *          ② 预算不够时当场 503，**正文保持原样**（不换半份）、处理器不跑、残账归零。
+     *          ② 预算不够时当场 503，正文保持原样（不换半份）、处理器不跑、残账归零。
      *          对照即本组其余用例：不接预算时解压照常（那条路径整个不发生）。
      */
     TEST(RequestDecompressionMiddleware, DecompressedBodyEntersAndLeavesTheInflightBudget)
@@ -2022,7 +2022,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：带 CR/LF/NUL 的取值在构造期就被拒
      * @details 这类文案常由配置拼出来；写进响应头就是 HTTP 响应拆分——同一份判据与
-     *          HttpResponse::setHeader() 拒这三个字节同源，这里要在**拼串之前**响
+     *          HttpResponse::setHeader() 拒这三个字节同源，这里要在拼串之前响
      */
     TEST(SecurityHeadersMiddleware, RefusesValuesCarryingHeaderBreakingBytes)
     {

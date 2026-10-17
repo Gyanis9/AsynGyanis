@@ -98,7 +98,7 @@ namespace AsynGyanis::Core
             SSL_CTX_set_verify_depth(context, *policy.verifyDepth);
         }
 
-        // 吊销检查：列表进的是**同一个存储**——CA 与 CRL 本来就住在 X509_STORE 的一张表里，
+        // 吊销检查：列表进的是同一个存储——CA 与 CRL 本来就住在 X509_STORE 的一张表里，
         // 分开两处放会让「信任谁」与「查谁的吊销名单」各走各的，而后者只有在前者认的那张证书上
         // 才查得到。开关与文件是同一件事（见头文件那条 @details），所以这里只在给了文件时生效。
         // 标志用「或」进去而不是 X509_STORE_set_flags 整个替换：存储的默认位里可能已经有别的判据

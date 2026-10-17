@@ -13,12 +13,12 @@
  * @par 静默与共享怎么判
  * 判据是 `ASYN_<模块>_SHARED_LIB`（由 CMake 以 PUBLIC 传出去，所以使用方与本库看到同一个值），
  * 构库自身再叠一条 PRIVATE 的 `ASYN_<模块>_BUILDING_SHARED_LIB` 来区分 dllexport 与 dllimport。
- * **两个都不定义时按静态处理**，而不是按共享：绕过 CMake 直接编源文件的场合确实存在
+ * 两个都不定义时按静态处理，而不是按共享：绕过 CMake 直接编源文件的场合确实存在
  * （scripts/fuzz-net.sh 就是这么编四类解码器的），那种场合落到的必须是「什么都不标」这一边——
  * 把它反过来会让一次没传定义的编译得到 dllimport，Windows 上报成一片找不到符号，读起来像库坏了。
  *
  * @par 嵌套类型要自己标一次
- * 外层类上的 `__declspec(dllexport)` 只覆盖外层类自己的成员，**不会**把它的嵌套类一起导出。
+ * 外层类上的 `__declspec(dllexport)` 只覆盖外层类自己的成员，不会把它的嵌套类一起导出。
  * 因此跨模块用得着的嵌套类型（如 Platform::Process::Handle）必须在自己的 `class` 上再标一次，
  * 否则外层 DLL 编得出来、用到它的那个 DLL 在链接期报 LNK2019。
  *

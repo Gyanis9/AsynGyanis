@@ -345,7 +345,7 @@ namespace AsynGyanis::Core
 
     /**
      * @brief Windows 的移交编排：master 绑一次，两个 worker 各自接手同一份监听并真的应答
-     * @details 这条路只能这样钉：WSADuplicateSocketW 按**目标进程号**发凭证，同一个进程里试不出
+     * @details 这条路只能这样钉：WSADuplicateSocketW 按目标进程号发凭证，同一个进程里试不出
      *          「另一个进程拿到监听引用后能不能替这个端口接活」。判据也不留在被测类里——连接由本
      *          用例发起、回话由 tests/Tools 的夹具写，两边都不读编排器的内部状态。
      * @note run() 放在一条独立线程上：Windows 的派生是 CreateProcess，没有 POSIX 那套 fork 前必须
@@ -552,7 +552,7 @@ namespace AsynGyanis::Core
         writeConsoleProbeMarker("pool-up");
         appendConsoleProbeTrace(isPoolUp ? "workers-up" : "workers-missing");
 
-        // 按**自己这个进程组**投 CTRL_BREAK：这正是编排者送走 worker 用的那枚事件，而 master 侧的处理器
+        // 按自己这个进程组投 CTRL_BREAK：这正是编排者送走 worker 用的那枚事件，而 master 侧的处理器
         // 对 Ctrl+C 与 CTRL_BREAK 走同一条路。用 0 当组号会把事件打到共享这个控制台的所有进程
         // （worker 的组也一起打到），那就不是「编排者收到停机请求」这一问了。
         // 组号必须是「本进程自己那个组」：只有以 CREATE_NEW_PROCESS_GROUP 起来的进程才是组首，

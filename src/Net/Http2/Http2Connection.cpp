@@ -928,7 +928,7 @@ namespace AsynGyanis::Net
             return false;
         }
 
-        // 流控记账（RFC 9113 §6.9.1）：DATA 帧的**整段负载**都占窗口——含帧层剥掉的 padding，
+        // 流控记账（RFC 9113 §6.9.1）：DATA 帧的整段负载都占窗口——含帧层剥掉的 padding，
         // 也含随后会被忽略或判错的那些帧。对端已经按自己的账扣过一次，本端不记就是漏账
         const std::int64_t frameByteCount = static_cast<std::int64_t>(frame.header.payloadLength);
         m_connectionReceiveWindowByteCount -= frameByteCount;
@@ -2040,7 +2040,7 @@ namespace AsynGyanis::Net
         stream.state    = Http2StreamState::Open;
         // 流级发送窗口的初值取对端通告的 SETTINGS_INITIAL_WINDOW_SIZE（§6.9.2），不是本端通告的那个
         stream.sendWindowByteCount = peerInitialWindowSize();
-        // 流级接收窗口的初值取**本端**通告的 SETTINGS_INITIAL_WINDOW_SIZE：对端按它扣，本端按它判超发
+        // 流级接收窗口的初值取本端通告的 SETTINGS_INITIAL_WINDOW_SIZE：对端按它扣，本端按它判超发
         stream.receiveWindowByteCount = static_cast<std::int64_t>(m_configuration.initialWindowSize);
         m_streams[streamId]           = std::move(stream);
         ++m_openStreamCount;

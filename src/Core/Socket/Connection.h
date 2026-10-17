@@ -185,7 +185,7 @@ namespace AsynGyanis::Core
          * @details 默认 false——基类持有的是普通 TCP 套接字，本来就跑在明文上。把描述符交给自有
          *          传输层的派生类（TLS 会话是这一类）必须像重写 remoteAddress() 那样重写本函数，
          *          否则「这条请求走没走 HTTPS」会被答成 false。
-         * @note 报的是**本端这一跳的事实**，不看 X-Forwarded-Proto：头里那一句谁都能写，代理侧的
+         * @note 报的是本端这一跳的事实，不看 X-Forwarded-Proto：头里那一句谁都能写，代理侧的
          *       声明只有 PROXY 协议这类可信通路才采纳（见 Net::TcpServer::setProxyProtocolRequired()）
          * @note 用途是 HSTS（RFC 6797 §7.2 要求非安全传输上收到的该头被忽略，所以明文发出去就是撒谎）、
          *       业务侧构造 https 跳转与 Cookie 的 Secure 判定
@@ -194,7 +194,7 @@ namespace AsynGyanis::Core
         [[nodiscard]] virtual bool isSecureTransport() const noexcept;
 
         /**
-         * @brief 与 remoteAddress() 同一个值，但**按连接只取一次**且**不抛**
+         * @brief 与 remoteAddress() 同一个值，但按连接只取一次且不抛
          * @return 对端地址文本的视图，形如 "IP:Port"；取不到地址时为空视图
          * @details 给「每条请求都要带上来源」这一路用（HttpRequest::setRemoteAddress()）：那条路上
          *          既不能每条请求付一次 getpeername 与一次格式化，也不能让一次取址失败打断业务派发。
@@ -210,7 +210,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 刷新空闲截止时间，把「多久没动静算超期」重新计时
          * @param timeout 容忍时长；非正数表示清除截止时间，即关闭本项超时保护
-         * @note 到点之后由服务器上的清扫协程负责关闭连接，连接自身**不做任何定时等待**：
+         * @note 到点之后由服务器上的清扫协程负责关闭连接，连接自身不做任何定时等待：
          *       协程挂起期间帧可能已被销毁，定时等待会指向已释放内存
          * @note 只有所属事件循环线程读写本状态（清扫协程也在该线程上），因此没有原子量
          */
@@ -236,7 +236,7 @@ namespace AsynGyanis::Core
          *          让 TcpServer::drain() 能区分「正在服务请求」与「空闲等下一个请求」的连接，
          *          只等待前者做完。默认 false，即视为没有在途工作。
          * @param busy true 表示有在途请求正在处理
-         * @note **非原子量**：只有所属事件循环线程读写（drain 协程同样跑在该线程上）
+         * @note 非原子量：只有所属事件循环线程读写（drain 协程同样跑在该线程上）
          */
         void setBusy(bool busy) noexcept;
 
@@ -254,7 +254,7 @@ namespace AsynGyanis::Core
          * @details 清扫协程扫出超过空闲截止时间的连接后调用它，默认空实现：不关心超时统计的
          *          连接子类无需理会，需要上报的协议层（如 HTTP 会话）重写它即可。上报点做成虚函数
          *          是为了让基础设施不必反过来认识具体协议——服务器一侧因此没有 dynamic_cast。
-         * @note 由清扫协程在所属事件循环线程上、**close() 之后**调用：连接此刻已收口，
+         * @note 由清扫协程在所属事件循环线程上、close() 之后调用：连接此刻已收口，
          *       实现里不得再发起任何收发，且必须无异常（异常会穿透清扫协程）。
          */
         virtual void onIdleTimeoutClosed() noexcept
@@ -262,12 +262,12 @@ namespace AsynGyanis::Core
         }
 
         /**
-         * @brief 服务器要优雅收口本连接时的钩子（在 close() **之前**调用）
-         * @note 与 onIdleTimeoutClosed() 的关键差别是**调用时机**：本钩子在通道仍然可用时调用，
+         * @brief 服务器要优雅收口本连接时的钩子（在 close() 之前调用）
+         * @note 与 onIdleTimeoutClosed() 的关键差别是调用时机：本钩子在通道仍然可用时调用，
          *       实现能借最后一次机会把收口原因告诉对端（例如 HTTP/2 发收尾 GOAWAY）；
          *       那个钩子在 close() 之后调用，那时一个字节也写不出去
          * @note 由服务器在所属事件循环线程上调用，必须无异常（异常会穿透收尾路径被记成「关闭连接失败」）；
-         *       实现里的写出只能是**尽力而为**：这条路径不为等可写而挂起，写不出去就放弃
+         *       实现里的写出只能是尽力而为：这条路径不为等可写而挂起，写不出去就放弃
          */
         virtual void onGracefulShutdownRequested()
         {

@@ -158,12 +158,12 @@ namespace AsynGyanis::Core
 
     void EventLoop::run()
     {
-        // 这里刻意**不**清除 m_stopRequested，即停止请求是粘性的：它一旦被置位，
+        // 这里刻意不清除 m_stopRequested，即停止请求是粘性的：它一旦被置位，
         // 之后每次 run() 都会立刻返回。原因不是忘了重置，而是这样才保证
         // 「stop() 先于 run() 到达」不会被丢掉——start() 之后立刻 stop() 是常见写法，
         // 若在 run() 开头清除标志，那次停止请求就会被吞掉，工作线程将永远阻塞在
         // epoll_wait 上，join 随之卡死（实测过）。需要重新运行请新建 EventLoop 实例
-        // 自观测：身份那句排在 m_running 发布**之前**——读侧 acquire 读 m_running 判「在跑」，
+        // 自观测：身份那句排在 m_running 发布之前——读侧 acquire 读 m_running 判「在跑」，
         // 线程身份后写就有一拍报「在跑但整表里查不到属主线程」（就绪标记永远最后发布，载荷先写）。
         // 相位与计时仍排在发布之后：那两个是状态位，提前写会把「还没跑」读成「正在工作」。
         m_ownerThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
@@ -183,8 +183,8 @@ namespace AsynGyanis::Core
             // 逃出去就是 std::terminate（整个进程带走），而且末尾的 m_running 复位会被跳过，
             // isRunning() 永远停在 true。
             //
-            // 这里就地收下、复位状态、置 stoppedByFailure 后**正常返回**，不再重抛。重抛的旧写法
-            // 指望「由 WorkerSupervisor 重启 worker」来兜，但那台 supervisor 编排的是 worker **进程**
+            // 这里就地收下、复位状态、置 stoppedByFailure 后正常返回，不再重抛。重抛的旧写法
+            // 指望「由 WorkerSupervisor 重启 worker」来兜，但那台 supervisor 编排的是 worker 进程
             // （fork+exec、盯进程退出），而 ThreadPool 的工作线程是一条没有重启函数的 jthread：
             // 它接住重抛后只是记一条日志再让线程体返回，于是 threadCount() 照样报原数、而那条循环
             // 再也不驱动任何东西——它上面的连接仍挂在活的 epoll 里，连收空闲连接的清扫协程也在同一条
@@ -250,10 +250,10 @@ namespace AsynGyanis::Core
                 // 挂载在 data.ptr 上的只可能是唤醒哨兵或某个 IoWatcher 的地址：
                 // 常驻注册写进去的是注册对象自己的地址，因此这里把事件交给它分发
                 // （它再决定是恢复等待中的协程，还是把就绪记下来留给下一次等待）。
-                // **派发前先确认对象还活着**：这一批是批量取回来的，先前处理的那条事件
+                // 派发前先确认对象还活着：这一批是批量取回来的，先前处理的那条事件
                 // 可能已经把它所属的连接关掉（会话收口就是这么做的），此时再派发就是
                 // 往已释放对象里写成员。登记表正是为这一种情形而设。
-                // 查表与派发之间**不持锁**：handleEvents() 里的业务会关连接、销毁
+                // 查表与派发之间不持锁：handleEvents() 里的业务会关连接、销毁
                 // IoWatcher，而注销登记要拿同一把非递归锁——持锁派发就是自死锁。
                 // 因此这道检查只覆盖「同一批内已被销毁」；跨线程的销毁不在线程契约内
                 // （循环对象只在所属循环上构造/销毁，见 EventLoop 的类说明）
@@ -353,7 +353,7 @@ namespace AsynGyanis::Core
             }
 
             // 占用归因收段：本段内标注过的作业名成为「最近完成段」的读数，同时清空段内格子。
-            // **未标注的段不清空那个读数**：它记的是「最近一次被标注的作业」，跨段保留（见成员注释）；
+            // 未标注的段不清空那个读数：它记的是「最近一次被标注的作业」，跨段保留（见成员注释）；
             // 写成无条件覆盖就会在紧接着的空闲段里立刻变空，现场只剩「快照字段恒空」这一副面孔
             const char *const workloadInThisSegment = m_lastWorkloadInSegment.load(std::memory_order_relaxed);
             if (workloadInThisSegment != nullptr)

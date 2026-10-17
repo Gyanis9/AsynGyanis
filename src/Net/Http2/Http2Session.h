@@ -68,7 +68,7 @@ namespace AsynGyanis::Net
      * @note 对端一直不回 ACK 本端 SETTINGS（RFC 9113 §6.5.3 的 SETTINGS_TIMEOUT）时，握手期按
      *       HttpServerLimits::settingsAcknowledgementTimeout 约束空闲截止时间：清扫协程到点收口连接，
      *       会话在还能写字节时先尽力把 GOAWAY(SETTINGS_TIMEOUT) 送出去。
-     * @note 响应的写出时机：一轮里收齐的请求先全部服务完（各自把响应排进待发字节），随后**一次性写出**。
+     * @note 响应的写出时机：一轮里收齐的请求先全部服务完（各自把响应排进待发字节），随后一次性写出。
      *       因此对端深流水线时，某条流的响应延迟会随排在它前面的流数增长——多路复用省的是连接数，
      *       不减少单条请求的排队延迟（要压这一点就得每条响应各刷一次，代价是更多次写出）。
      * @note 对端用 RST_STREAM 取消某条流只影响这条流：响应发送据此只停该流，连接与其它流照旧工作
@@ -323,7 +323,7 @@ namespace AsynGyanis::Net
             bool                    hasPendingWake{false};                     ///< 本流有新正文/收尾/断开，等回到安全点唤醒挂着的处理器
             RequestServeOutcome     serveOutcome{RequestServeOutcome::Served}; ///< 跑完的结论，由会话摘记录时处置
 
-            /// 本条流的处理器协程。**必须排在记录的最后**：成员按声明逆序销毁，帧要在这条流的
+            /// 本条流的处理器协程。必须排在记录的最后：成员按声明逆序销毁，帧要在这条流的
             /// 请求/响应/正文还在时先拆掉（帧里的局部对象按引用使它们）
             std::optional<Core::Task<>> serveTask;
         };
@@ -392,7 +392,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把正文已收齐（或已超限）且尚未发起的请求各自起一条处理器协程
-         * @details 一条流一条协程：起完之后本函数**不等业务**，立刻返回给主循环继续读下一批字节。
+         * @details 一条流一条协程：起完之后本函数不等业务，立刻返回给主循环继续读下一批字节。
          *          业务挂起时（等正文、等自己的 I/O）由调度器就地恢复它自己那条协程，会话循环不必陪着等
          *          ——这正是消除队头阻塞的那一步：以前慢处理器会把同连接其它流的请求挡在读通路之外。
          *          隧道不在此列：它要自己驱动这条连接的读写，因此留到 serveWebSocketTunnels() 就地跑。
@@ -436,7 +436,7 @@ namespace AsynGyanis::Net
 
         /// 收口时等在飞处理器跑完的让轮上限（≈ 1 秒）。正常一两条就能收完（承载已死，挂在正文上的
         /// 等待都立刻落空），走到上限说明有处理器卡在与会话无关的等待上——此时只记一条错误日志，
-        /// 记录**不**摘：它的协程帧还可能停在业务自己的等待上，摘掉等于把活帧留在调度器手里
+        /// 记录不摘：它的协程帧还可能停在业务自己的等待上，摘掉等于把活帧留在调度器手里
         static constexpr std::size_t kServeDrainRoundLimit = 1024;
 
         /**
@@ -544,15 +544,15 @@ namespace AsynGyanis::Net
          * @brief 在一条流上跑 WebSocket 隧道（RFC 8441 的扩展 CONNECT）
          *
          * @details 与 h1 侧 101 升级后的阶段同构，差别只在承载：h1 上字节来自套接字、升级应答是 101；
-         *          这里握手应答是一条**不带 END_STREAM 的 200**（RFC 8441 §5，h2 里没有 Upgrade 语义），
+         *          这里握手应答是一条不带 END_STREAM 的 200（RFC 8441 §5，h2 里没有 Upgrade 语义），
          *          此后的字节全部装在 DATA 帧里（本流的负载喂给 WebSocket 解码器，业务写出的帧发成 DATA）。
          *
          * @param streamId 该扩展 CONNECT 所属的流
          * @param pending 待服务的请求（其正文缓冲里可能已有对端在 200 之前抢先发来的帧）
          * @return RequestServeOutcome Served（隧道已按 RFC 6455 收尾）或 ConnectionUnusable
-         * @note 隧道期间本协程就是这条连接的驱动者，因此**同连接的其它流照常服务**（见
+         * @note 隧道期间本协程就是这条连接的驱动者，因此同连接的其它流照常服务（见
          *       serveOtherStreamsDuringTunnel()）：普通请求就地 co_await 服务掉，第二条隧道仍回 503
-         * @note 隧道在服务阶段**内联跑完**（由 servePendingRequests() 直接 co_await）：读循环与写循环
+         * @note 隧道在服务阶段内联跑完（由 servePendingRequests() 直接 co_await）：读循环与写循环
          *       都在本协程里，主循环在隧道存续期间不再拿回执行权。因此隧道期间本协程就是这条连接的驱动者：
          *       自己读传输字节、喂连接层、把本流的 DATA 交给解码器、归还接收窗口，并调用
          *       serveOtherStreamsDuringTunnel() 就地服务同连接其它流上已收齐的请求
@@ -601,7 +601,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 隧道读循环退出后给对端对象定稿：按死因决定补不补那条 Close
          * @details 三条出口按 h1 阶段同一判据分档：帧违规按具体码、心跳到点判死（不给不回心跳的对端
-         *          补 Close，本侧此刻收口）、其余主动发正常关闭帧。刻意**不唤醒**等待者——那是调用方
+         *          补 Close，本侧此刻收口）、其余主动发正常关闭帧。刻意不唤醒等待者——那是调用方
          *          在 markClosed 之后要做的事，顺序在 h1 那侧已钉过（先唤醒再销毁）。
          * @param streamId 隧道所属的流（只进日志）
          * @param peer 这条隧道的对端对象
@@ -657,7 +657,7 @@ namespace AsynGyanis::Net
          *          收尾帧立刻写出，对端因此不必等到下一轮读循环才看到消息结尾。
          * @param streamId 目标流号
          * @param response 这条流正在填写的响应（记录持有；一段都没写时头块按它补齐）
-         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时**不补尾部字段**——那些值是
+         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时不补尾部字段——那些值是
          *                       业务对它「算完的那段正文」负责的检查和行数，正文只发了一半就补上线，
          *                       对端按字段校验必然失败（与 h1 侧同一处置，见 HttpSession 的收尾）
          * @return Http2ResponseSendStatus 收尾帧的发送结论；StreamNotWritable 表示对端已取消这条流

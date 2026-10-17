@@ -19,26 +19,26 @@
  * - ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
  * - ASYN_POSTGRES_TEST_PORT      端口，默认 5432
  * - ASYN_POSTGRES_TEST_USER      用户名，默认 postgres
- * - ASYN_POSTGRES_TEST_PASSWORD  口令，**没有默认值**；未设置时全部用例 GTEST_SKIP（不是失败）
+ * - ASYN_POSTGRES_TEST_PASSWORD  口令，没有默认值；未设置时全部用例 GTEST_SKIP（不是失败）
  * - ASYN_POSTGRES_TEST_DATABASE  库名，默认 postgres（初始化集群时必然存在的维护库）
  * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 PostgreSQL 驱动的桩
  * 构建也走跳过路径（见 kPostgresDriverCompiled）。
  *
  * ## 为什么不新建测试专用库
  * MySQL 侧可以随手 CREATE DATABASE，PostgreSQL 不行：CREATE DATABASE 不能在事务块里执行，
- * 且普通角色未必有建库权限。默认库取初始化集群时必然存在的 postgres，用例只操作**自己建的表**：
+ * 且普通角色未必有建库权限。默认库取初始化集群时必然存在的 postgres，用例只操作自己建的表：
  * 每个用例使用独立表名，建表前先 DROP TABLE IF EXISTS，收尾在 TearDown 里再 DROP TABLE IF EXISTS，
  * 跑完不留任何残留。表名固定而非随机，是因为 TableSchema<T>::kTableName 必须是编译期常量；
  * 用例之间不共用表名，因此并行运行（ctest -j）也不会互相干扰。
  *
  * ## 与 MySQL 集成测试的两处有意差异
- * - **不做内嵌 '\0' 的往返断言**：PostgreSQL 的文本类型不允许出现零字节
+ * - 不做内嵌 '\0' 的往返断言：PostgreSQL 的文本类型不允许出现零字节
  *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），
  *   把 0 字节写进 TEXT 列不是驱动能做到的事。要承载任意二进制得改用 BYTEA，而 BYTEA 的
  *   文本协议输入需要十六进制或转义编码（当前驱动不做这层编码），因此这里如实不测；
  *   「按指针 + 长度取字节、不依赖零终止符」这件事由不受该限制的取值路径（长文本逐字节相等）
  *   与离线侧的空串/NULL 判定覆盖。
- * - **不写死 sleep**：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
+ * - 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
  *   立即查询——PostgreSQL 默认隔离级别是 READ COMMITTED，每条 SELECT 各自取一次快照，
  *   结论确定，不需要任何等待。
  * @author Gyanis

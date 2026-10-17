@@ -52,7 +52,7 @@ using namespace AsynGyanis;
 namespace
 {
     /// 本示例的端口偏移；同一台机器上多个示例并行时由进程号错开。
-    /// --port 给的是**基准端口**：三台服务器依次占用 basePort、basePort+1、basePort+2
+    /// --port 给的是基准端口：三台服务器依次占用 basePort、basePort+1、basePort+2
     constexpr std::uint16_t kSamplePortOffset = 60;
 
     /// 单次等待的上限：协议往返都在本机回环上，超过这个时长就是没通
@@ -186,7 +186,7 @@ namespace
     // 手拼 HTTP/2 客户端要用的帧与头块
     //
     // 框架的出站客户端如今也说 HTTP/2（`Net::HttpClient` 按 ALPN 在 h1 与 h2 之间挑，h3 另由
-    // `setHttp3Enabled` 开关决定），本示例仍按帧拼是刻意的：它要验的是服务端在**帧层**上的反应——
+    // `setHttp3Enabled` 开关决定），本示例仍按帧拼是刻意的：它要验的是服务端在帧层上的反应——
     // SETTINGS、GOAWAY、RST_STREAM 与 h2c 的 preface 这些格子从客户端 API 问不到。
     // 因此 TLS 上的 h2 与明文 h2c 两条路都自己发帧：帧与 HPACK 一律用生产编解码器，
     // 「服务端吐出的字节」由第二份实现解回来。

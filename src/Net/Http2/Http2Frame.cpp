@@ -347,7 +347,7 @@ namespace AsynGyanis::Net
                                             (static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[1])) << 8) |
                                             static_cast<std::uint32_t>(static_cast<std::uint8_t>(bytes[2]));
         const std::uint32_t streamIdField = readBigEndian32(bytes.data() + 5);
-        // 帧头流号的最高位 R 在接收侧**忽略**（RFC 9113 §4.1 原文是「MUST remain unset when sending
+        // 帧头流号的最高位 R 在接收侧忽略（RFC 9113 §4.1 原文是「MUST remain unset when sending
         // and MUST be ignored when receiving」）。此前本实现按「从严」把它判成错误并断链，
         // h2spec 4.1.3 抓到：置位的那一帧本该按没置位处理，连接要继续活着（那条用例随后还发 PING
         // 探这一点）。掩码在下面那行照旧生效，不必额外分支
@@ -711,7 +711,7 @@ namespace AsynGyanis::Net
         payload.endHeaders  = (frame.header.flags & kHttp2FlagEndHeaders) != 0;
         payload.hasPriority = frame.hasPriority;
         payload.priority    = frame.priority;
-        // padding 与优先级字段已由帧层剥掉：这里是**头块片段**，交给 HPACK 层按序拼接与解码
+        // padding 与优先级字段已由帧层剥掉：这里是头块片段，交给 HPACK 层按序拼接与解码
         payload.headerBlockFragment = frame.payload;
         return true;
     }

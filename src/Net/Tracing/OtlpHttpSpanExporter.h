@@ -43,7 +43,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 把一批节按 `POST <endpoint>` 发给采集端（OTLP/HTTP，Content-Type: application/json）
      *
-     * @details 交付是**异步**的：exportSpans() 只把正文放进本出口自己的有界队列就返回，真正的
+     * @details 交付是异步的：exportSpans() 只把正文放进本出口自己的有界队列就返回，真正的
      *          请求由本类自带的一条事件循环线程发出去。理由是出口线程不该排在一次网络往返后面——
      *          采集端慢或失联时，同步交付会把 Tracer 的出口线程整条钉住，进而让所有生产者排在
      *          一次慢 IO 后面。代价是「收下」在这里只表示「已投递给下游」，网络层的失败由本类的
@@ -184,7 +184,7 @@ namespace AsynGyanis::Net
             OtlpHttpSpanExporter &m_exporter; ///< 要挂起/唤醒的那条队列的主人
         };
 
-        /// @brief 循环线程主体：在**本线程上**首次驱动发送协程，然后交给 run()
+        /// @brief 循环线程主体：在本线程上首次驱动发送协程，然后交给 run()
         void runLoopThread();
 
         /// @brief 发送协程：醒了就一批批发，失败的那一批之后定时退避并停下，剩下的留在队列里等下一次唤醒

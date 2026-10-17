@@ -28,7 +28,7 @@ namespace AsynGyanis::Platform
      *          false，调用方据此改用强杀或自行约定退出机制。
      *
      * @warning spawn() 在 POSIX 上是 fork + exec：fork 之后、exec 之前子进程只能调用
-     *          async-signal-safe 的函数，且**父进程此刻不能有其它线程**（多线程下 fork 出的子进程
+     *          async-signal-safe 的函数，且父进程此刻不能有其它线程（多线程下 fork 出的子进程
      *          只带着调用线程，锁状态与运行库状态都可能不自洽）。因此它只该在启动服务器之前、
      *          进程还是单线程时调用——多进程 worker 模型正是在那一刻起的。
      * @note 失败不抛异常：与 Platform 层「错误码 + 返回值」的惯例一致（失败时句柄无效，
@@ -41,7 +41,7 @@ namespace AsynGyanis::Platform
          * @brief 子进程句柄
          *
          * @details 持有平台侧句柄，析构时释放它（Windows 关句柄，POSIX 顺手回收已退出的子进程
-         *          以免留下僵尸），但**不会**终止仍在运行的进程——终止是显式动作
+         *          以免留下僵尸），但不会终止仍在运行的进程——终止是显式动作
          *          （requestTermination()/forceTermination()），不做成析构的副作用。
          */
         class ASYN_PLATFORM_API Handle
@@ -78,8 +78,8 @@ namespace AsynGyanis::Platform
              * @warning 带 `LaunchOptions::killWithParent` 的句柄是例外：关闭作业句柄就是「随父终止」的
              *          实施方式，仍在运行的子进程会被系统终止。要在本进程退出不杀子进程的形态，
              *          派生时别给这个开关
-             * @warning 句柄一释放，那个 pid 就再也没人回收：**刚强杀过子进程的调用方必须先等它结束
-             *          再释放句柄**（`isRunning()` / `pollExitCode()` 观察时顺手回收），否则 POSIX 上
+             * @warning 句柄一释放，那个 pid 就再也没人回收：刚强杀过子进程的调用方必须先等它结束
+             *          再释放句柄（`isRunning()` / `pollExitCode()` 观察时顺手回收），否则 POSIX 上
              *          会留下僵尸进程。`WorkerSupervisor::shutdown()` 的强杀路径就是这么做的
              */
             void close() noexcept;
@@ -116,7 +116,7 @@ namespace AsynGyanis::Platform
             void *m_jobHandle{nullptr};
 #else
             /// 进程号；负数表示无效。
-            /// **mutable**：观察类接口（pollExitCode）收的是 const 引用，而「子进程已被回收」
+            /// mutable：观察类接口（pollExitCode）收的是 const 引用，而「子进程已被回收」
             /// 这件事只能在那次观察里发现——发现时要把句柄一并作废（否则后面拿这个 pid 去 kill
             /// 可能打到复用它的无关进程），所以它必须能在 const 路径上写
             mutable int m_processId{-1};
@@ -147,7 +147,7 @@ namespace AsynGyanis::Platform
              *          刻意默认 false：换代交棒那种「父退出而子必须活下来」的形状要的就是相反的行为，
              *          默认打开会把那条路做成静默自杀。
              * @warning 主机已在一个不允许嵌套的作业里时（某些容器/CI 环境），`AssignProcessToJobObject`
-             *          会失败。本层**不因此让派生失败**（起不来服务更糟），但保护就此缺席，
+             *          会失败。本层不因此让派生失败（起不来服务更糟），但保护就此缺席，
              *          调用方要用 `Handle::killWithParentGuardActive()` 核一遍并出声。
              */
             bool killWithParent{false};
@@ -167,7 +167,7 @@ namespace AsynGyanis::Platform
          * @note Windows 没有那条约定，等价保护要显式要：`LaunchOptions::killWithParent` 把子进程挂进一个
          *       关闭即终止的作业。它可能挂不上（本进程已在一个禁止嵌套的作业里），此时派生照常成功但保护
          *       缺席，务必用 `Handle::killWithParentGuardActive()` 核一遍
-         * @warning 该信号的实际触发点是**调用 fork 的那个线程**退出（Linux 语义），不是整个进程：
+         * @warning 该信号的实际触发点是调用 fork 的那个线程退出（Linux 语义），不是整个进程：
          *          多线程程序要在还单线程时启动编排，否则线程池收工会提前把子进程带走
          * @warning 「在还单线程时派生」这条还有一层原因：`executablePath` 不含目录时走的是
          *          `execvp`，它要在 PATH 里搜可执行文件，那条路径上可能碰分配器——多线程下 fork 之后
@@ -199,7 +199,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 请求子进程体面退出
          * @details POSIX 上发 SIGTERM，由子进程自己把退出做干净（本框架的服务器据此走
-         *          stop()/drain()）。Windows 没有信号，走控制台事件：向子进程**自己名下**的进程组发
+         *          stop()/drain()）。Windows 没有信号，走控制台事件：向子进程自己名下的进程组发
          *          CTRL_BREAK，装了控制台处理函数的子进程会收到——前提是派生时给了
          *          `LaunchOptions::ownProcessGroup`。
          * @param handle 目标句柄

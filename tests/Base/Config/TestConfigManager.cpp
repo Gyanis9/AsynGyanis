@@ -603,7 +603,7 @@ port: 9090
     /**
      * @brief 文件名落在本地代码页外时，加载失败要「报出来」而不是把异常抛给调用方
      * @details 本模块把路径写进结果列表与错误文案用的是 `path::string()`，Windows 上它按本地代码页
-     *          转换，落在代码页外的字符**直接抛出**，而四处抛出点里有三处就在 catch 块内——
+     *          转换，落在代码页外的字符直接抛出，而四处抛出点里有三处就在 catch 块内——
      *          「构造一条报错」于是把整次加载变成异常。POSIX 上窄串等于原生刻度，
      *          这一条只有 Windows 侧能证伪
      */
@@ -2087,7 +2087,7 @@ port: 9090
      * @brief 相对路径不得被当成配置目录锚点：锚点是此后每次重读时按当前目录解析的
      * @details 注释与头文件都写着「含相对路径时保留既有配置目录不覆盖」，实现此前只挡
      *          「没有目录成分」那一种（"sub/settings.json" 的 parent 是 "sub"，非空即被收下）。
-     *          锚点会被 enableHotReload 与之后每一次 reload() 按**当时的**工作目录重新解析，
+     *          锚点会被 enableHotReload 与之后每一次 reload() 按当时的工作目录重新解析，
      *          进程换过工作目录（daemonize 等）后重读的就是另一个目录，而配置目录看着「已设置」
      */
     TEST_F(ConfigManagerTest, LoadFilesWithRelativePathKeepsTheConfigDirectoryUnset)

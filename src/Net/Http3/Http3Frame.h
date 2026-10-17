@@ -41,7 +41,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 判断某个标识取值是否落在「留给未知类型」的保留区 0x1f * N + 0x21
      * @details 三处保留区（§7.2.8 帧类型、§6.2.3 流类型、§7.2.4.1 设置项）用的是同一个式子，因此共用本判断。
-     *          规范要它们存在的目的就是验证「未知类型必须被忽略」这条，收到时**不得**赋予任何含义。
+     *          规范要它们存在的目的就是验证「未知类型必须被忽略」这条，收到时不得赋予任何含义。
      * @note 别与 §7.2.8 另一类保留值混淆：0x02、0x06、0x08、0x09 是从 HTTP/2 继承下来的保留帧类型，
      *       它们的处置是「MUST NOT 发送，收到按 H3_FRAME_UNEXPECTED」，不落在本式子里。
      * @param value 帧类型 / 流类型 / 设置项标识的线上取值
@@ -56,7 +56,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 帧类型取值（RFC 9114 表 2 与各小节）
      *
-     * @details 只列本层**认识布局**的类型。0x02/0x06/0x08/0x09（HTTP/2 里用过、HTTP/3 无对应帧）与
+     * @details 只列本层认识布局的类型。0x02/0x06/0x08/0x09（HTTP/2 里用过、HTTP/3 无对应帧）与
      *          0x1f * N + 0x21 一族都在 §7.2.8 里被保留，取值仍然原样落进 Http3UnknownFrame 交上层处置；
      *          新增成员一律追加在末尾。
      */
@@ -75,8 +75,8 @@ namespace AsynGyanis::Net
      * @brief 单向流开头的流类型取值（§6.2 图 1）
      *
      * @details 流类型是单向流第一个字段，本身就是一个变长整数（§6.2）。本端只认这四值；其余取值按
-     *          §6.2 与 §9 属「未知流类型」——接收侧**必须**要么中止读该流、要么丢弃后续数据且不再处理，
-     *          中止读时 SHOULD 用 H3_STREAM_CREATION_ERROR 或保留错误码（§8.1），且**不得**把未知流类型
+     *          §6.2 与 §9 属「未知流类型」——接收侧必须要么中止读该流、要么丢弃后续数据且不再处理，
+     *          中止读时 SHOULD 用 H3_STREAM_CREATION_ERROR 或保留错误码（§8.1），且不得把未知流类型
      *          当成连接级错误。§6.2.3 另留了 0x1f * N + 0x21 一族作保留流类型，发送侧可干净收尾也可重置它。
      */
     enum class Http3StreamType : std::uint64_t
@@ -186,7 +186,7 @@ namespace AsynGyanis::Net
      * @brief SETTINGS 帧（§7.2.4 图 7）：Type + Length + Setting(...) ...
      *
      * @details 载荷是零或多条「标识 + 值」的变长整数对。本层按 §7.2.4 只做布局拆解，不判语义：
-     *          同一个标识出现两次照样两条都收（规范写着「MUST NOT 重复」「接收方**可以**判 H3_SETTINGS_ERROR」，
+     *          同一个标识出现两次照样两条都收（规范写着「MUST NOT 重复」「接收方可以判 H3_SETTINGS_ERROR」，
      *          判不判是连接层的事），也不拒绝空载荷（零个参数是合法的）。
      * @note 编码侧先写 settings 再写 unknownSettings：线上参数顺序无语义，逐字节回显对端原文不是本层职责。
      */
@@ -222,7 +222,7 @@ namespace AsynGyanis::Net
      * @brief GOAWAY 帧（§7.2.6 图 9）：载荷恰好一个变长整数
      *
      * @details 终稿的字段名就是「Stream ID/Push ID」，同一个位置按方向承载两种量：服务端发的是
-     *          客户端发起的双向流号，客户端发的是 Push ID（§7.2.6、§5.2）。语义是**该标识及其以上**的
+     *          客户端发起的双向流号，客户端发的是 Push ID（§7.2.6、§5.2）。语义是该标识及其以上的
      *          请求或推送都被发送方拒绝，所以它既是「最早不再接受的标识」也是「可能已被处理的上界」。
      * @note 取值是否属于合法流号（服务端方向必须是客户端发起的双向流）与「后发的 GOAWAY 标识不得变大」
      *       都由连接层判，违规按 §7.2.6/§5.2 回 H3_ID_ERROR。
@@ -246,7 +246,7 @@ namespace AsynGyanis::Net
      * @brief 本层不认识的帧：§9 要求「未知或不受支持的取值必须忽略」，于是载荷原样交出
      *
      * @details 承载三类取值：扩展自定义的帧类型、§7.2.8 的 0x1f * N + 0x21 保留族、以及
-     *          §7.2.8 从 HTTP/2 继承下来的保留帧类型（0x02/0x06/0x08/0x09）。前两类本层**不报错**，
+     *          §7.2.8 从 HTTP/2 继承下来的保留帧类型（0x02/0x06/0x08/0x09）。前两类本层不报错，
      *          第三类要连接层按 §7.2.8 判 H3_FRAME_UNEXPECTED——差别只在数值落在哪个区段，
      *          用 isHttp3ReservedExtensionIdentifier() 即可区分，故不额外建类型。
      */
@@ -265,7 +265,7 @@ namespace AsynGyanis::Net
      * @brief 一帧的联合类型
      *
      * @details 与 QuicFrame 同档：每种帧字段互不相干，摊平会造出一堆对该类型无意义的空位。
-     * @warning 载荷类字段（DATA/HEADERS/PUSH_PROMISE/未知帧）是**指向解码时那段缓冲的视图**，
+     * @warning 载荷类字段（DATA/HEADERS/PUSH_PROMISE/未知帧）是指向解码时那段缓冲的视图，
      *          不是拷贝。一次性解码入口要求缓冲活到帧用完；增量解码器见 Http3FrameReader 的说明。
      */
     using Http3Frame = std::variant<Http3DataFrame, Http3HeadersFrame, Http3CancelPushFrame, Http3SettingsFrame, Http3PushPromiseFrame, Http3GoAwayFrame, Http3MaxPushIdFrame,
@@ -288,7 +288,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 把一帧按 §7.1 的布局追写到缓冲末尾
-     * @details 写出顺序是 Type、Length、载荷；Length 恒按**实际写出的载荷字节数**填，不接受调用方给的长度，
+     * @details 写出顺序是 Type、Length、载荷；Length 恒按实际写出的载荷字节数填，不接受调用方给的长度，
      *          因此 §7.1 要求的「长度自洽」在编码侧不可能被写坏。变长整数一律用最短档位（§7.2.4.1 保留区
      *          之外也没有更宽的要求）。
      * @param bytes 目标缓冲，二进制安全
@@ -330,10 +330,10 @@ namespace AsynGyanis::Net
      *        即以两倍的量封顶，不会无限增长。
      *
      * @note 未知帧类型、未知设置项按 §9 原样交出，不判错；本层唯一的错误是「布局不合 §7.2」与「超本端上限」。
-     * @note 变长整数**允许非最短编码**：RFC 9000 §16 末段那条「唯一要求最短编码」的例外管的是 QUIC 自己的
+     * @note 变长整数允许非最短编码：RFC 9000 §16 末段那条「唯一要求最短编码」的例外管的是 QUIC 自己的
      *       Frame Type 字段（§12.4），HTTP/3 的帧类型、长度与流类型都不在其列，§7.1 只要求嵌套长度自洽
      *       （见 §10.8），所以宽档位照样解成同一个值。
-     * @warning 交出的帧里载荷字段指向**本对象内部缓冲**。下一次 feed() 可能让缓冲扩容搬家、nextFrame()
+     * @warning 交出的帧里载荷字段指向本对象内部缓冲。下一次 feed() 可能让缓冲扩容搬家、nextFrame()
      *          会把已消费的前缀挪走，两者都会让上一帧的视图失效；要把某帧留到之后用，当场把载荷拷走。
      * @warning 失败是粘滞的：一旦返回过错误，缓冲里的字节已无法解释，后续调用一律重复同一个错误，
      *          直到 reset() 为止。
@@ -373,7 +373,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取出缓冲里下一个完整帧
          * @details 帧头没收齐、或载荷还差一字节，都算「还没到」而不是「读坏了」：此时不消费任何字节，
-         *          等下一次 feed() 补上。解出帧后已消费的前缀会在**下一次**调用时才被挪走，
+         *          等下一次 feed() 补上。解出帧后已消费的前缀会在下一次调用时才被挪走，
          *          所以本帧的视图在下次调用前一直有效。
          * @return 成功返回一帧；缓冲里没有完整帧时返回空 optional（不是错误）
          * @return 失败返回 `Http3FrameError`：载荷字段越出声明长度或声明长度盖不住必填字段为 `Malformed`，

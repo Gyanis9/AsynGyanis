@@ -393,7 +393,7 @@ namespace AsynGyanis::Net
          * @brief 起一台「升级后先发一帧 Ping，再走回显」的服务器，并把心跳时限设成给定值
          * @details 空闲时限拉到 30 秒：这样「这条连接被收掉」只可能来自心跳那把钟，用例不会误把空闲
          *          超时当成心跳超时。清扫节拍沿用本文件的 50 毫秒档（实际收口 = 心跳时限 + 一拍）。
-         *          心跳在业务一上来就发，因此它落在会话读循环的**同一拍**里——这一形状钉的是时限的
+         *          心跳在业务一上来就发，因此它落在会话读循环的同一拍里——这一形状钉的是时限的
          *          折算与撤销，钉不到「武装时的那次通知」（见 makeHeartbeatWebSocketServer 的那一层）。
          * @param record 回显业务的消息记录槽
          * @param pongTimeout 本端发出 Ping 后等 Pong 的时限
@@ -424,7 +424,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 起一台「按拍自发 Ping、不回显」的服务器：心跳由处理器自己的定时器驱动
-         * @details 钉的是武装那一刻的通知。会话协程此刻正挂在套接字的读等待上，而读循环只在**收到字节之后**
+         * @details 钉的是武装那一刻的通知。会话协程此刻正挂在套接字的读等待上，而读循环只在收到字节之后
          *          才会重刷空闲截止——对端不回 Pong 也就不会再来字节，那一拍永远不来；少了那次通知，
          *          这条连接只能等满 30 秒的空闲时限，心跳时限就成了摆设。
          * @param pongTimeout 本端发出 Ping 后等 Pong 的时限
@@ -742,7 +742,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 反向对照：对端按原样回了 Pong，时限走过去之后这条连接仍然能收发
-     * @details 睡过心跳时限是**构造前提**（让「已到期」这个条件成立），断言判的是之后还能round-trip
+     * @details 睡过心跳时限是构造前提（让「已到期」这个条件成立），断言判的是之后还能round-trip
      *          一条消息——它不掐秒表，因此机器快慢只会让前提更早成立，不会让判据翻面。
      *          「收到 Pong 就撤表」这一步坏掉时，这条连接会被自己的看门狗在时限处收掉，回显读不到。
      */
@@ -871,7 +871,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住交回的是对端的**原值**：禁止上线的状态码也留得住，而回帧按协议错误收口
+     * @brief 钉住交回的是对端的原值：禁止上线的状态码也留得住，而回帧按协议错误收口
      * @details 1015 是保留取值、不允许出现在线上，本侧因此不能原样回送（回 1002）；但「对端到底说了什么」
      *          正是排查要看的——把两件事合成一件，运维就只剩一个与对端说法无关的 1002。
      */
@@ -1007,7 +1007,7 @@ namespace AsynGyanis::Net
      * @brief 钉住拒绝面：登记了升级但请求不构成合法握手时回错误应答、给中文原因、不升级也不交付业务
      * @details 四种情况各改一处：非 GET、缺 Upgrade、版本 12、key 解码后不是 16 字节。前三条里
      *          版本那条按 RFC 6455 §4.2.2 单独走一档：状态码 426 Upgrade Required 且必须带
-     *          Sec-WebSocket-Version: 13；其余三条是 400 且**不得**带那条头部。
+     *          Sec-WebSocket-Version: 13；其余三条是 400 且不得带那条头部。
      */
     TEST(WebSocketSession, RejectsInvalidUpgradeRequests)
     {
@@ -1786,7 +1786,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(request + maskedClientFrame(0x1, kCompressedHelloPayload, true, true), kWaitTimeout));
 
         // 101 的长度是确定的：基础报文里插入一行扩展声明。据此算出回帧从哪里开始，
-        // 然后**只等字节到齐、不看时序**——回帧要等服务端收帧、解压、再写回，Windows 上常与 101
+        // 然后只等字节到齐、不看时序——回帧要等服务端收帧、解压、再写回，Windows 上常与 101
         // 挤在同一个 TCP 段里，Linux 上则分两段到（本用例最初按「读到 101 就该有回帧」断言，Linux 上必红）
         std::string expectedHandshake = expectedHandshakeResponseText();
         expectedHandshake.insert(expectedHandshake.size() - 2, std::string(kPerMessageDeflateResponseLine));
@@ -2148,7 +2148,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住子协议回显按**对端次序**挑中的那一个，且 101 里只出现一条
+     * @brief 钉住子协议回显按对端次序挑中的那一个，且 101 里只出现一条
      * @details 期望字节整串手算：夹具的候选表把 superchat 排在前面，而对端先列 chat——回显的必须是
      *          `chat`。这一步只测策略函数测不到的东西：会话真的把选中的名字写进了 101。
      */

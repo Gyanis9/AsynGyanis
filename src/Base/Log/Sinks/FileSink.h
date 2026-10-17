@@ -78,7 +78,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 重新打开并切换输出文件路径
          * @param newPath 新日志文件路径
-         * @details 打开失败**不抛异常**（本方法常在滚动/切换路径的运行期被调用，打断日志写入比
+         * @details 打开失败不抛异常（本方法常在滚动/切换路径的运行期被调用，打断日志写入比
          *          报不出来更糟），但会出声：失败那一刻往标准错误打一行，点名是哪个路径打不开，
          *          并说明此后日志会被静默丢弃直到下一次成功重开。连续失败只报第一条（上升沿），
          *          重开成功后重新武装——按大小滚动的目录被删或权限改掉时，不打这一行就等于
@@ -116,7 +116,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 重开失败时按上升沿报一行（调用方必须已持有 m_mutex）
-         * @details 与 reportStreamFailureOnceLocked 分开是两条独立判据：那条看流状态，而**文件没打开**
+         * @details 与 reportStreamFailureOnceLocked 分开是两条独立判据：那条看流状态，而文件没打开
          *          的时候流没有状态可看，写路径在判空处就早退了，永远轮不到它——这正是「整条 Sink
          *          静默失聪」的来路。
          */
@@ -128,7 +128,7 @@ namespace AsynGyanis::Base
         std::mutex            m_mutex;                          ///< 保护文件写入的互斥锁
         bool                  m_hasReportedWriteFailure{false}; ///< 本轮连续写失败是否已上报（避免每条日志都写一次标准错误）
         /// 没能落盘的行数（文件未打开或流已失效），见 skippedLineCount()。用原子而不是锁保护的普通量：
-        /// 读它的是运维/用例在**另一个线程**上问一句，而 m_mutex 不是 mutable，const 读口拿不到锁；
+        /// 读它的是运维/用例在另一个线程上问一句，而 m_mutex 不是 mutable，const 读口拿不到锁；
         /// 写入只在故障路径上发生，热路径不碰这里
         std::atomic<std::size_t> m_skippedLineCount{0};
         bool                     m_hasReportedReopenFailure{false}; ///< 本轮连续重开失败是否已报过（上升沿报一次，重开成功后重新武装）

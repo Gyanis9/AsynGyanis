@@ -729,7 +729,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：dns-01 通路按名字发布**摘要后**的正文，机构取到过答案之后每条都撤
+     * @brief 钉住：dns-01 通路按名字发布摘要后的正文，机构取到过答案之后每条都撤
      * @details 这条同时管着三件事：走的是 dns-01 挑战、交出去的是 43 字符的 base64url 摘要而不是
      *          HTTP-01 那份 keyAuthorization 原文、以及每条授权各一次写各一次撤。
      *          桩机构那侧的期望值是拿它自己那份指纹算的，所以「名字与令牌对不上」也会在这里变红
@@ -838,7 +838,7 @@ namespace AsynGyanis::Net
     } // namespace
 
     /**
-     * @brief 钉住：三条自动化读数在**构造时**就挂上，管理器析构就注销
+     * @brief 钉住：三条自动化读数在构造时就挂上，管理器析构就注销
      * @details 不等第一次签发才登记，是因为「常驻进程里这几条长期为 0」就是要报的事；
      *          而把手漏注销会留下一条谁也不持有的读数，下一轮抓取还在报旧对象的值
      */
@@ -926,7 +926,7 @@ namespace AsynGyanis::Net
     {
         /**
          * @brief 常驻循环的观察协程：200 毫秒叫停，之后每 50 毫秒看一次帧有没有退，5 秒为上限
-         * @details 写成具名函数按引用收参，不写成立即调用的 lambda：协程帧里存的是**闭包对象的引用**，
+         * @details 写成具名函数按引用收参，不写成立即调用的 lambda：协程帧里存的是闭包对象的引用，
          *          立即调用的那个闭包在整条表达式结束时就销毁了，帧之后再碰它是
          *          stack-use-after-scope（Linux 侧 ASan 实测抓到，MSVC 上恰好看不出来）
          */
@@ -1096,7 +1096,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：机构没说话时，退避门槛按本地 `minimumRetryInterval` 算
-     * @details 这个配置项此前**从来没有被读过**（探针与用例都能配它，行为却恒为「下一秒再试」）。
+     * @details 这个配置项此前从来没有被读过（探针与用例都能配它，行为却恒为「下一秒再试」）。
      *          这一条把它接上：60 秒的门槛要看得见，而 1 秒就是原来那个从未生效的形状。
      */
     TEST_F(AcmeCertificateManagerTest, UsesTheLocalMinimumWhenTheAuthoritySaysNothing)
@@ -1163,7 +1163,7 @@ namespace AsynGyanis::Net
                 },
                 isStopping));
         // 这条循环已经由 loopThread 在另一条线程上驱动，本地队列就归那条线程——测试线程只能把协程
-        // **投递**过去（scheduleRemote），就地 schedule() 会被调度器的线程守卫当场拒掉。快档里后台线程
+        // 投递过去（scheduleRemote），就地 schedule() 会被调度器的线程守卫当场拒掉。快档里后台线程
         // 常常还没进 run()，于是这一格会蒙过去；--coverage -O0 那档一起步就慢，变成确定性红。
         loopThread.schedule(*follower);
 
@@ -1227,7 +1227,7 @@ namespace AsynGyanis::Net
         if (!waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{2}))
         {
             // 同一处调度赌注：基线可能在这一次写盘之后才定下，那这次变化对它就不存在。换内容再写一次，
-            // 让前提由用例自己造出来。**这里之后不再写盘**——「装回失败还认下新身份」那种退化要靠
+            // 让前提由用例自己造出来。这里之后不再写盘——「装回失败还认下新身份」那种退化要靠
             // 「同一次未处置的变化每拍重试」来红，再多写一次就把那条性质洗掉了
             ASSERT_TRUE(paths.writeBinaryFile("chain.pem", "cert-v3-longer-longest"));
         }

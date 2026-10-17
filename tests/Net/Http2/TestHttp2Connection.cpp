@@ -969,7 +969,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：parser_limits 的「字段条数」闸门在 h2 上同样生效
-     * @details 这个配置键此前只有 h1 与 h3 在判：h2 只判头块的**字节数**，于是同一个键在三条通道上
+     * @details 这个配置键此前只有 h1 与 h3 在判：h2 只判头块的字节数，于是同一个键在三条通道上
      *          给出三种强度——运维照 h1 那个数调整台机器，h2 上一条 16 KiB 的头块可以塞进上千条
      *          一次性头部，全部原样交给业务去遍历。计数口径照 h3：这一场请求头部里的字段数，伪头也算一条。
      */
@@ -1195,7 +1195,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住请求头 content-length 的取值口径：非十进制取值、重复且冲突都按流错误拒绝
      * @details 与 h1 侧同一口径（RFC 9110 §8.6）：长度有歧义时中间设备与业务可能各按一种读法理解
-     *          正文边界，正是请求走私的形态。这是**流**错误而不是连接错误：RST_STREAM 这条流，
+     *          正文边界，正是请求走私的形态。这是流错误而不是连接错误：RST_STREAM 这条流，
      *          连接继续服务其它流。
      */
     TEST(Http2Connection, RejectsMalformedAndConflictingRequestContentLength)
@@ -1227,7 +1227,7 @@ namespace AsynGyanis::Net
      * @brief 钉住 Host 与 :authority 必须指向同一个实体（RFC 9113 §8.3.1）
      * @details 不一致时按畸形中止这条流而不交给业务：本端选虚拟主机读的是 Host，而一个按 :authority
      *          分诊的前端会把同一个请求送到另一个站点——两份说法就是请求走私的入口。
-     *          反向那一半同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的写法**不能**被拒，
+     *          反向那一半同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的写法不能被拒，
      *          否则 `Host: example.com.` 这类合规范的写法会被自家闸门打掉，而拒错了比不拒更难查。
      */
     TEST(Http2Connection, RejectsHostHeaderDisagreeingWithAuthority)
@@ -1325,7 +1325,7 @@ namespace AsynGyanis::Net
      * @brief 钉住重复 host 必须指向同一实体（RFC 9110 §7.2）：取值不一致按畸形中止这条流
      * @details 没有 :authority 可判时正是缺的那半格：两条不同的 host 此前会原样交给业务、选站取首条，
      *          而前端与共享缓存可能按另一条分诊——两份说法各走各的就是请求走私的入口。反向那一半
-     *          同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的多条 host **不能**被拒。
+     *          同样要紧：归一化（去端口、折小写、去结尾根点）之后指同一实体的多条 host 不能被拒。
      */
     TEST(Http2Connection, RejectsConflictingDuplicateHostHeaders)
     {
@@ -1849,7 +1849,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << "2^31-1 是合法窗口：" << connection.errorMessage();
 
-        // 再加 1 字节就越界：§6.9.1 对**流级**要求 RST_STREAM(FLOW_CONTROL_ERROR)，连接继续服务其它流
+        // 再加 1 字节就越界：§6.9.1 对流级要求 RST_STREAM(FLOW_CONTROL_ERROR)，连接继续服务其它流
         // （旧断言把它写成连接失败，与下面 RejectsWindowUpdateThatOverflowsTheWindow 一并更正）
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::WindowUpdate, 0, 1U, makeBigEndian32(1U))), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_FALSE(connection.hasFailed()) << "流级窗口越界只该结这条流：" << connection.errorMessage();
@@ -1934,8 +1934,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：对端 RST_STREAM 之后再来的 DATA / HEADERS 按流错误 STREAM_CLOSED 回敬，且只回敬一次
-     * @details §5.1「closed」段把两种终止分开写：**本端**发过 RST 之后的帧 MUST ignore（那些帧对端撤不
-     *          回来）；而**收到**对端的 RST 之后再来的帧要按流错误 STREAM_CLOSED 处理。TCP 按序到达保证
+     * @details §5.1「closed」段把两种终止分开写：本端发过 RST 之后的帧 MUST ignore（那些帧对端撤不
+     *          回来）；而收到对端的 RST 之后再来的帧要按流错误 STREAM_CLOSED 处理。TCP 按序到达保证
      *          后者排在那枚 RST 之后，属明知故犯，不能沿用前一支的宽容——h2spec 5.1/8 与 5.1/9 判的就是
      *          这里，原先一律忽略的表现是对端超时。回敬一次就把终止方式改记成「本端复位」，其后的同类帧
      *          转为忽略（§5.4.2：一个流上通常不该发第二枚 RST_STREAM）。
@@ -2900,7 +2900,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 回收待发缓冲是两个方向：内部已攒出新帧时不许覆盖，内部空着时要把那份收下并清空
      * @details 会话的节奏是「取走 → 交套接字 → 还回来复用容量」。写侧挂起期间连接完全可能又产出
-     *          帧（PING 的 ACK、下一条响应的头块），此时把那份**取走之前的旧缓冲**整块换过去，
+     *          帧（PING 的 ACK、下一条响应的头块），此时把那份取走之前的旧缓冲整块换过去，
      *          新帧就被覆盖成空串——对端从此等不到那段字节，而本地一句错误都不会有。
      * @note 证伪两头各摘一处：撤掉「非空即不回收」那道闸门 → 第一段红（ACK 消失，实测）；
      *       撤掉回收时的清空 → 第二段红（上一轮的旧字节被发出去）
@@ -2943,7 +2943,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：「还没送出去的响应字节」两段都要数——待发缓冲与各条流的流控队列
      * @details 这个读数是 h2 会话收口时判「响应没送出去」的唯一依据（`countWriteAbortedConnection()`
-     *          的触发条件），而流控队列那一段**写侧永远不会报错**：对端不再读、字节连帧都没拼出去，
+     *          的触发条件），而流控队列那一段写侧永远不会报错：对端不再读、字节连帧都没拼出去，
      *          只有这里看得见。所以两段各自钉一次，数字按帧开销手算：19 = 9 字节帧头 + 10 字节负载，
      *          20 = 30 字节正文里被窗口挡住的那部分，29 = 9 字节帧头 + 20 字节负载。
      */
@@ -2971,11 +2971,11 @@ namespace AsynGyanis::Net
         EXPECT_EQ(connection.unsentResponseByteCount(), 0U) << "字节已整批交给上层，读数不该还挂着";
     }
     /**
-     * @brief 钉住：入站尾部头块越过 HPACK 的头列表上限时按**流错误** ENHANCE_YOUR_CALM 收口，连接照旧
+     * @brief 钉住：入站尾部头块越过 HPACK 的头列表上限时按流错误 ENHANCE_YOUR_CALM 收口，连接照旧
      * @details 与头部那场的处置分得很开是有原因的：响应此刻已经发出，没有 431 可回（RFC 9113 §10.5.1
      *          把「头块超出本端愿意处理的量」列为流错误 ENHANCE_YOUR_CALM 而非连接错误）。这一支此前
      *          无人直测——`Http2CleartextSession` 那两条累计用例走的是 `parser_limits` 那把尺，越限的
-     *          请求还没派发，回得出 431；这一条走的是 `maximumHeaderListSize` 那把尺，越限的是**已派发**
+     *          请求还没派发，回得出 431；这一条走的是 `maximumHeaderListSize` 那把尺，越限的是已派发
      *          那条流的尾块。两把尺、两种处置，缺一条就会在「统一成 431」这类改动里被静默换掉，
      *          把响应已发出的流改成回一个发不出去的 431。
      *          数字：单个尾字段 `x-a` + 6000 字节值，按 §6.5.2 的「名长 + 值长 + 32」算 6035 字节，

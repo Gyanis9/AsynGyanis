@@ -218,7 +218,7 @@ namespace AsynGyanis::Net
         const auto outcome                      = applyHttpServerConfiguration(rejectingServer, configuration, mismatchedContext);
         ASSERT_FALSE(outcome.has_value()) << "共享桶还是整机速率就直接收下了：那等于放行四倍";
         EXPECT_NE(outcome.error().find("25"), std::string::npos) << "拒因要点名摊后的速率：「" << outcome.error() << "」";
-        // 拒因里点名的配置键必须是**真存在的那一个**：写成 `rate_limit.rate` 这类不存在的键，
+        // 拒因里点名的配置键必须是真存在的那一个：写成 `rate_limit.rate` 这类不存在的键，
         // 运维照着去配置文件里找会找不到，照着改还会被「未知的配置键」当场拒——补救动作按不下去
         EXPECT_NE(outcome.error().find("rate_limit.requests_per_second"), std::string::npos) << "拒因要点名 rate_limit 那一段里真实的键名：「" << outcome.error() << "」";
     }
@@ -277,7 +277,7 @@ namespace AsynGyanis::Net
      *          各绑一次同一端口（SO_REUSEPORT），于是一条进程里就有 L 个各自独立的上限闸门。只按进程数
      *          摊的话，`maximum_connections: 100` 配 4 条监听器实际放行 400，而配置文件看着仍是 100——
      *          「文件完全正确、数被静默乘起来」这一类错最难往配置上想。
-     * @details 两个分母要分开：调用方传进来的**共享对象**（每来源限额器、限流桶、在途预算）在一台进程里
+     * @details 两个分母要分开：调用方传进来的共享对象（每来源限额器、限流桶、在途预算）在一台进程里
      *          被多台共用，仍只按进程数摊；没传而由本台自建的那几份则与各台同乘。
      */
     TEST(HttpServerAssembly, SplitsPerListenerCapsAcrossListenersInTheProcess)

@@ -68,7 +68,7 @@ namespace AsynGyanis::Core::Digest
                 throw Base::Exception("Core::Digest: 无法创建 HMAC 上下文（OpenSSL 内存不足）");
             }
 
-            // 摘要名必须落在自己持有的**可写**缓冲里：OSSL_PARAM_construct_utf8_string 收的是 char*，
+            // 摘要名必须落在自己持有的可写缓冲里：OSSL_PARAM_construct_utf8_string 收的是 char*，
             // 而 OpenSSL 不承诺绝不回写这段参数
             std::string digestNameOwner(digestName);
             OSSL_PARAM  parameters[2];

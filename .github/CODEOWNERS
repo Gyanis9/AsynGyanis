@@ -21,7 +21,7 @@
 # 基础设施层：日志、配置、异常与文本编解码
 /src/Base/ @Gyanis9
 
-# 构建与打包：CMake 分层聚合、Conan 配方与安装包。装包类改动必须在**全新构建树**验，
+# 构建与打包：CMake 分层聚合、Conan 配方与安装包。装包类改动必须在全新构建树验，
 # 本地旧目录会让 install 假绿
 /CMakeLists.txt @Gyanis9
 /cmake/ @Gyanis9

@@ -41,7 +41,7 @@ namespace AsynGyanis::Net::Fuzz
         /// h2 / h3 解码器的本端上限：故意比样本输入大，让「畸形」而不是「超限」成为主要拒绝原因
         constexpr std::size_t kDecoderFrameLimitBytes = 64U * 1024U;
 
-        /// 单轮驱动允许的最大迭代数。解码器只要不推进就会永远转下去，而模糊内核**必须**比被
+        /// 单轮驱动允许的最大迭代数。解码器只要不推进就会永远转下去，而模糊内核必须比被
         /// 测物更可靠：挂住或无限堆内存的话，报告里看到的就只有超时，没有「哪条不变量被破坏」。
         /// 上限取输入长度的 4 倍再加一段余量，正常路径远碰不到
         constexpr std::size_t maximumDriveSteps(const std::size_t inputLength) noexcept
@@ -229,7 +229,7 @@ namespace AsynGyanis::Net::Fuzz
             return input;
         }
 
-        /// 为 HPACK 目标造输入：多数轮拼一个**长度自洽**的字面量头块，少量轮直接用编码器产出的整块
+        /// 为 HPACK 目标造输入：多数轮拼一个长度自洽的字面量头块，少量轮直接用编码器产出的整块
         /// @details 只喂随机字节的话成功路径基本走不到（HPACK 状态机的大部分代码在解码成功之路上），
         ///          因此这里刻意让相当比例的输入是可解的——用例末尾的「既产出过帧、也判过错」正是
         ///          在钉这件事：哪边长期为 0，就是生成器退化了
@@ -607,7 +607,7 @@ namespace AsynGyanis::Net::Fuzz
 
         /**
          * @brief 为 QUIC 报文头目标造输入：长头与短头两形轮转，Length 域多数轮按真实剩余自洽
-         * @details 这段解码器是 UDP 上最先被外部打到的，且**不需要任何密钥**就能走进去：首字节、版本、
+         * @details 这段解码器是 UDP 上最先被外部打到的，且不需要任何密钥就能走进去：首字节、版本、
          *          两条连接标识的长度、Token 长度、Length 域、包号长度位全是发包方可控的字段。
          *          纯随机字节多半停在「首字节最高位不是 1」那一层，因此先拼自洽骨架再变异：多数轮 Length
          *          与剩余一致（走通成功路径），少数轮故意偏大 / 清零 / 差一，版本偶尔换成 0 或 2——
@@ -669,7 +669,7 @@ namespace AsynGyanis::Net::Fuzz
         }
 
         /**
-         * @brief 为 QUIC 帧序列目标造输入：先用**生产编码器**拍 1～3 帧，再按轮次变异
+         * @brief 为 QUIC 帧序列目标造输入：先用生产编码器拍 1～3 帧，再按轮次变异
          * @details 与 HPACK 那一档同理——编解码互逆本就是契约，手写帧头一旦与编码器口径有差，
          *          判的就是「我自己的假设」而不是解码器。变异集中在三处：截掉尾部（打 Truncated）、
          *          改首字节类型位（打未定义类型）、尾部补一段（打「解完仍有剩余」）。
@@ -678,7 +678,7 @@ namespace AsynGyanis::Net::Fuzz
         {
             std::string input;
 
-            // 每帧现拍现编：解出的帧持的是**指向载荷的视图**，先把几帧攒进一个 vector 再统一编码，
+            // 每帧现拍现编：解出的帧持的是指向载荷的视图，先把几帧攒进一个 vector 再统一编码，
             // 那些视图会随缓冲重新分配或复用而失效——生成器自己就成了野指针来源
             const std::size_t frameCount = 1U + random.nextBelow(3U);
             for (std::size_t index = 0; index < frameCount; ++index)
@@ -1074,7 +1074,7 @@ namespace AsynGyanis::Net::Fuzz
          * @brief 用 feed + 三态阶段机的出站响应解析器把 input 跑一遍
          * @details consumed 的契约是「本趟实际吃掉多少」，未吃掉的余量由调用方拼下次一起再喂——
          *          驱动就按这个走法维护 pending。喂完仍不完整时调 endOfStream()（读到连接关闭那条路的收尾）
-         * @param parser 目标解析器（调用方持有：I5 要在**同一个**对象上 reset() 后复跑）
+         * @param parser 目标解析器（调用方持有：I5 要在同一个对象上 reset() 后复跑）
          * @param input 输入字节
          * @param chunkSize 每次取入的字节数；1 就是「一次一字节」
          * @param errorText 输出：不变量违例文案（空表示没违例）
@@ -1145,7 +1145,7 @@ namespace AsynGyanis::Net::Fuzz
          * @details h3 侧没有「本次消费多少」的出口，因此推进判据是喂入偏移、卡死判据是步数上限：
          *          外层每轮喂一块并就地取空帧，喂完再取一次即可收尾。对端字节的对错由解码器判，
          *          本函数只在「错误态没粘住」和「不推进」两处记违例
-         * @param reader 目标解码器（调用方持有：I5 要在**同一个**对象上 reset() 后复跑，新建会绕过「粘滞没清干净」）
+         * @param reader 目标解码器（调用方持有：I5 要在同一个对象上 reset() 后复跑，新建会绕过「粘滞没清干净」）
          * @param input 输入字节
          * @param chunkSize 每次 feed 的字节数；1 就是「一次一字节」
          * @param errorText 输出：不变量违例文案（空表示没违例）
@@ -1209,9 +1209,9 @@ namespace AsynGyanis::Net::Fuzz
 
         /**
          * @brief 用一次性解码器解一个 HPACK 头块
-         * @details 头块接口没有分片语义，因此这里的「两路驱动」是两次互相独立的整块解码——比的是**确定性**
+         * @details 头块接口没有分片语义，因此这里的「两路驱动」是两次互相独立的整块解码——比的是确定性
          *          而不是增量等价（见 checkInvariants 的 HpackBlock 分支）
-         * @param decoder 目标解码器（调用方持有：I5 要在**同一个**对象上 reset() 后复跑）
+         * @param decoder 目标解码器（调用方持有：I5 要在同一个对象上 reset() 后复跑）
          * @param input 头块字节
          * @param errorText 输出：不变量违例文案（本目标只在「失败却留下字段」时写）
          * @return RunTrace 本轮轨迹；帧标识是 `名=值` 文本
@@ -1244,7 +1244,7 @@ namespace AsynGyanis::Net::Fuzz
     /**
      * @brief 把解出的帧里所有指向载荷的视图逐个核一遍「落在载荷之内」
      * @details 载荷视图是这一层的交付形状（CRYPTO/STREAM/NEW_TOKEN/NEW_CONNECTION_ID/CONNECTION_CLOSE
-     *          各持有一段），帧结构本身不拥有字节。视图指到段外就是野指针，而 ASan 只在**真去读**时才报——
+     *          各持有一段），帧结构本身不拥有字节。视图指到段外就是野指针，而 ASan 只在真去读时才报——
      *          模糊器解完就丢、未必读那段，所以这里当场按地址区间核，不等 sanitizer。
      * @param payload 载荷原文（视图必须整个落在它的范围内）
      * @param frames 解出来的帧序列
@@ -1655,7 +1655,7 @@ namespace AsynGyanis::Net::Fuzz
                     }
                 }
 
-                // I5 复位可用：在**同一个**解码器上 reset() 后必须还能解出合法输入。
+                // I5 复位可用：在同一个解码器上 reset() 后必须还能解出合法输入。
                 // 换成新建一个对象，这条就退化成「解码器能用」——粘滞没清干净恰好被绕过
                 wholeDecoder.reset();
                 const std::string probe      = validInput(target);
@@ -1762,7 +1762,7 @@ namespace AsynGyanis::Net::Fuzz
                 {
                     return secondError;
                 }
-                // 一次性解码器没有分片问题，但必须**确定**：同一份输入两次结果不同即状态泄漏
+                // 一次性解码器没有分片问题，但必须确定：同一份输入两次结果不同即状态泄漏
                 if (first.frameKeys != second.frameKeys || first.isEndedInError != second.isEndedInError)
                 {
                     return "同一输入两次解码结果不同（确定性）";

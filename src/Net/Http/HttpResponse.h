@@ -63,7 +63,7 @@ namespace AsynGyanis::Net
      *       @li 权威记录按「设置顺序」保存每条头部，toString() 就按它逐条输出，
      *           因此报文头部顺序稳定可复现，多条 Set-Cookie 也保持先后次序；
      *       @li 单值视图是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
-     *           使用，逐条取值请用 headerValues()；**首次查询时才由权威记录建出**（写入只把视图标脏），
+     *           使用，逐条取值请用 headerValues()；首次查询时才由权威记录建出（写入只把视图标脏），
      *           HTTP/1.1 的序列化从不读它，因此那条路径不再为每个响应维护一张映射表；
      *           头部名一律转小写存储（RFC 9110 §5.1）。
      * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
@@ -177,7 +177,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 用一段 JSON 作为响应正文，并顺带把媒体类型设成 `application/json; charset=utf-8`。
-         * @details 序列化失败（值是 NaN、±Inf，或字符串里带着非 UTF-8 字节）时返回 false 且**不改动**
+         * @details 序列化失败（值是 NaN、±Inf，或字符串里带着非 UTF-8 字节）时返回 false 且不改动
          *          已经设好的正文与头部：发出一条语法上不合法的 JSON 比发不出响应更糟——对端的解析器
          *          会把它当成一次成功的响应去读，读出来的是什么没人知道。
          * @param value 要交出的值（`Base::ConfigValue`，即本仓统一使用的 JSON 值类型）
@@ -191,7 +191,7 @@ namespace AsynGyanis::Net
          * @details 与 `setHeader("set-cookie", cookie.renderAsSetCookie())` 同效，区别在属性由
          *          `HttpCookie` 拼装：手写属性串最容易漏掉 Secure/HttpOnly，或把 Expires 写成
          *          对端不认的日期格式——那种错在响应里是静默的。
-         * @details 与那条手写写法**不等效**的一处：本方法会拒掉「SameSite=None 却没设 Secure」的 Cookie。
+         * @details 与那条手写写法不等效的一处：本方法会拒掉「SameSite=None 却没设 Secure」的 Cookie。
          *          浏览器对这种组合整条丢弃（RFC 6265bis §4.1.2.1），而字面上那条头部看不出毛病——
          *          现场只剩「Cookie 存不住」。本类不替调用方补 Secure：那等于在明文连接上发一条它没要的
          *          Secure Cookie（见 `HttpCookie` 的「只写显式设过的属性」口径）。
@@ -214,15 +214,15 @@ namespace AsynGyanis::Net
         /**
          * @brief 登记一条要随正文一起收尾的 trailer 字段（RFC 9112 §7.1.2 的尾部头字段）
          *
-         * @details 与 setHeader **分开存**：尾部字段并进头部就会出现「同一个字段两个解释位置」，
+         * @details 与 setHeader 分开存：尾部字段并进头部就会出现「同一个字段两个解释位置」，
          *          `content-length` 这类定界字段尤其危险（收端读哪一份都可能被对端利用）。
          *          三条出站通路（h1 的分块终止块、h2 的尾部头块、h3 的尾段）都从这一份记录取值——
-         *          **但 h1 只有分块（流式）响应带得动它们**：非分块报文的正文由 content-length 或
+         *          但 h1 只有分块（流式）响应带得动它们：非分块报文的正文由 content-length 或
          *          「读到关闭」定界，正文之后没有放字段段的位置（RFC 9112 §7.1.2）。那种响应上登记的
          *          字段不会上线，序列化时会写一条 WARN 把这件事说出来（h2/h3 不受此限，尾部是独立的
          *          一个头块/段）。
          *          头部里那条 `Trailer:` 声明由序列化层按本方法的登记结果自动生成，调用方不必自己写；
-         *          **但声明只在头部上线前那一刻有效**：流式响应的首段之前头部就已发出，此后登记的字段
+         *          但声明只在头部上线前那一刻有效：流式响应的首段之前头部就已发出，此后登记的字段
          *          仍会上线，只是没进声明——按 RFC 9110 §6.5.1 严格的收端有权忽略未声明的尾部字段，
          *          因此要把字段交给对端读，就得在首次 writeChunk 之前登记完。
          * @param name 字段名，大小写不敏感（入库转小写）；必须是合法 token 且非空
@@ -413,7 +413,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 装配流式发送回调（由会话在路由之前调用）
          * @param chunkSender 发送回调；传空 std::function 表示清除装配
-         * @note 回调绑定的是**连接**而不是某一条报文，因此 reset() 不清理它；未装配时
+         * @note 回调绑定的是连接而不是某一条报文，因此 reset() 不清理它；未装配时
          *       writeChunk() 会直接报错，绝不把正文段悄悄丢掉
          */
         void setChunkSender(ChunkSender chunkSender);
@@ -426,7 +426,7 @@ namespace AsynGyanis::Net
          *
          * @details 与 ChunkSender 同一装配时机（会话在路由之前装配，HttpResponse 自己不认识 socket）。
          *          回调只写「状态行 + 给定字段 + 空行」，不写正文，也不读不写本响应的状态与头部——
-         *          中间响应是一条**独立报文**，最终响应照常由本对象给出。
+         *          中间响应是一条独立报文，最终响应照常由本对象给出。
          *          false = 没写成、连接不可再用（失败口径与 ChunkSender 逐字相同）。
          */
         using InformationalWriter = std::function<Core::Task<bool>(int statusCode, const std::vector<InformationalHeaderField> &fields)>;
@@ -449,8 +449,8 @@ namespace AsynGyanis::Net
          *
          * @details 用途两条：`103 Early Hints`（RFC 8297：最终响应还在生成时先把 `Link: rel=preload`
          *          交出去，浏览器可以据此提前取 CSS 与字体）与 `102 Processing`（长任务先表态）。
-         *          三条通道同一个语义出处：h1 是一条独立的状态行报文，h2/h3 是**不带 END_STREAM 的
-         *          HEADERS 块**（RFC 9113 §8.1、RFC 9114 §4.1），因此处理函数换协议不必改写法。
+         *          三条通道同一个语义出处：h1 是一条独立的状态行报文，h2/h3 是不带 END_STREAM 的
+         *          HEADERS 块（RFC 9113 §8.1、RFC 9114 §4.1），因此处理函数换协议不必改写法。
          *
          * @param statusCode 必须落在 1xx（100~199）。100 由会话在收到 `Expect: 100-continue` 时自动回，
          *        处理函数要的一般是 102 或 103
@@ -466,7 +466,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 组一条 HTTP/1.1 的中间响应（1xx）报文文本：状态行 + 给定字段 + 空行
          *
-         * @details 与最终响应的序列化分开的理由有两条：一条中间响应**没有正文**，也不该被写成一份
+         * @details 与最终响应的序列化分开的理由有两条：一条中间响应没有正文，也不该被写成一份
          *          可缓存的答复——所以不补 Date、不补 Server、不写 content-length（RFC 9112 §6.1 里
          *          那份日期是给最终响应的）；同时它也不读不写本对象的头部，是同一条连接上的另一份报文。
          *          h2/h3 不用这个函数：那两条通道上中间响应是一个不带 END_STREAM 的 HEADERS 块。
@@ -499,8 +499,8 @@ namespace AsynGyanis::Net
          *          直接写连接，不在内存里攒整块正文；首段之前先把头部推出去。
          * @param data 本次写出的正文段，按「指针 + 长度」取，可以是任意字节
          * @return true 已写出（data 为空时同样为 true，表示无需写出）
-         * @return false 本段未发出、连接不可再用、**调用方应停止继续写并收手**；来源有两种：
-         *         **本侧已收口**（此前必已记录过收口原因，本次不新增日志）与**传输失败**（对端关闭、
+         * @return false 本段未发出、连接不可再用、调用方应停止继续写并收手；来源有两种：
+         *         本侧已收口（此前必已记录过收口原因，本次不新增日志）与传输失败（对端关闭、
          *         对端复位、描述符被关闭、等可写期间被关闭，会话本次记一条中文日志）。该失败不抛异常；
          *         「false 且日志里没有新记录」通常意味着本侧已收口，排查请回看收口那一刻的日志
          * @throws Base::LogicException 用法错误，仍抛异常：当前不在流式模式（请先调用
@@ -784,7 +784,7 @@ namespace AsynGyanis::Net
         int                  m_status{200};             ///< HTTP 状态码，默认 200
         std::string          m_httpVersion{"HTTP/1.1"}; ///< HTTP 版本，默认 1.1
         HttpHeaderFieldStore m_headerStore;             ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
-        /// 尾部字段存储，按需创建：不带尾部的响应一次额外分配也不付。`reset()` 要把它**整份解除**
+        /// 尾部字段存储，按需创建：不带尾部的响应一次额外分配也不付。`reset()` 要把它整份解除
         /// 而不是清空，否则 hasTrailerFields() 会因为「空的那一份也存在」而说谎
         std::optional<HttpHeaderFieldStore> m_trailerStore;
         bool                                m_isStreamingBodySuppressed{false}; ///< HEAD 请求：流式响应只发头部、不发正文段

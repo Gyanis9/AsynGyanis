@@ -52,7 +52,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 问一句：这个端点有人在建连吗？没有就把领导者名额占下来
          * @param endpointKey 目标身份（与池里用的端点键文本一致）
-         * @return true 本次成为领导者：去建连，结束时**必须** settle()
+         * @return true 本次成为领导者：去建连，结束时必须 settle()
          * @return false 已有人在建：该 attach() 等它
          */
         bool tryBecomeLeader(const std::string &endpointKey);

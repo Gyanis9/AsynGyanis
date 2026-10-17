@@ -400,13 +400,13 @@ namespace AsynGyanis::Net
         // 每一轮都以「取出并写出待发字节」收尾，因此退出时不必再补一次写出：对端已关闭或本侧
         // 写不出去时重试只会多留一条无意义的错误日志。收口统一交给 start() 里的 RAII 守卫
         //
-        // 但**在飞的处理器必须先收拢**：它们的协程帧按引用使着本会话与这条连接的记录，带着活帧
+        // 但在飞的处理器必须先收拢：它们的协程帧按引用使着本会话与这条连接的记录，带着活帧
         // 退出就等于把悬空协程留给调度器（业务被恢复时踩的是已析构对象）。以前不存在这个窗口——
         // 处理器是内联跑的，循环走不到它们前面
         co_await drainInFlightServes();
 
         // 「响应没送出去」这件事要在离开循环这里落账：写出侧失败已经在 flushOutgoingBytes() 里
-        // 记过一次，剩下的一类是**写侧从没报错**的——对端不再读、响应卡在流控队列里，读侧先发现
+        // 记过一次，剩下的一类是写侧从没报错的——对端不再读、响应卡在流控队列里，读侧先发现
         // 连接断了就直接收口，那部分字节一次都没碰过套接字
         if (m_metrics != nullptr && !m_isConnectionUnusable && m_connection.unsentResponseByteCount() > 0)
         {
@@ -551,7 +551,7 @@ namespace AsynGyanis::Net
                 const bool isHeadRequestAtIntake = pending.request.method() == HttpMethod::HEAD;
                 pending.streamBody.setDeclaredBodyByteCount(isHeadRequestAtIntake ? std::optional<std::size_t>{} : pending.request.declaredBodyLength());
             }
-            // 期待 100-continue 与否要在**移入容器之前**取出来：pending 随后被 std::move 走，
+            // 期待 100-continue 与否要在移入容器之前取出来：pending 随后被 std::move 走，
             // 移后对象的字段（含映射好的头部）都成了空壳，读它只会得到空串。
             // 扩展 CONNECT 排除在外（与 h3 侧 `protocolText.empty()` 那条同一判据）：它的 `hasBody`
             // 只是「还没 END_STREAM」，那条流上没有正文要发，回一张 1xx 就等于在 200 之前塞进一段
@@ -633,7 +633,7 @@ namespace AsynGyanis::Net
                 pending.hasPendingWake = true;
             }
 
-            // 流式路由：正文进那条流自己的缓冲，业务按到达批次取走；窗口在**被消费**时才还
+            // 流式路由：正文进那条流自己的缓冲，业务按到达批次取走；窗口在被消费时才还
             // （见 HttpStreamBody），因此这里不调 creditReceivedData——那正是背压的落点
             if (pending.isStreamingBody)
             {
@@ -765,7 +765,7 @@ namespace AsynGyanis::Net
                 // 对端可能已经 RST 掉了这条流（头收齐、正文没收完就取消）：那样的请求再也不会
                 // 变成「可服务」，留着它既占着请求头与已收正文，又让「有待办就不算空闲」的判据
                 // 一直为真（空闲超时随之失效）。按流已关闭清掉，并计入单流取消。
-                // 口径上有一处已知的粗：`Closed` 按它自己的定义是「RST_STREAM（**任一端**）或双向
+                // 口径上有一处已知的粗：`Closed` 按它自己的定义是「RST_STREAM（任一端）或双向
                 // END_STREAM」，本层问不出是谁复位的，所以连接层自己判畸形而 RST 掉的那条（例如尾块
                 // 不合规）也会记进「对端取消」。要分清就得给 Http2Connection 的流表加一位「谁复位的」，
                 // 而这一形状只在「头已收下、正文还没收齐、本端又判了这条流畸形」时才出现，故留在此处记账
@@ -883,7 +883,7 @@ namespace AsynGyanis::Net
             // 摘记录必须在会话循环里做：协程跑完最后一段代码时，它的帧正站在自己那条记录的成员之上
             pending.serveTask.reset();
             // 响应没发出去的流式请求不走 finishStreamingRequestBody（那一步排在「发送成功」之后），
-            // 而正文攥着的流控账就此没人归还：这些字节既不会再交给任何人，也永久占着**连接级**窗口，
+            // 而正文攥着的流控账就此没人归还：这些字节既不会再交给任何人，也永久占着连接级窗口，
             // 攒够几轮就把整条连接的对端发送额度吃光。h3 侧同一件事在 reapFinishedStreamingRequests()
             // 里做在摘记录这一处；已发出去的响应此前就把账归零了，故那条路径上这一句是空转
             pending.streamBody.consumePending();
@@ -941,7 +941,7 @@ namespace AsynGyanis::Net
         // 等于把已释放的协程留在套接字的完成路径上（下一次完成就踩空）。内联时代不存在这个窗口
         // ——循环走不到处理器前面。今天多出来的这条等待与过去同形：业务不返回，收口就等着
         //
-        // 每一轮真正让出一次**事件循环**，而不是只让出一次调度：处理器可能停在 Core::Timer 上
+        // 每一轮真正让出一次事件循环，而不是只让出一次调度：处理器可能停在 Core::Timer 上
         // （业务用它做退避、等外部条件）。 bare 地把协程重新排回调度队列会让 Scheduler::runAll() 的
         // 本地队列永远非空，循环走不到定时器那一段，于是被等的定时器永不触发、收口原地空转——
         // 实测表现为一条连接停不下来的忙循环（万轮量级都等不来一次 400 毫秒的定时器）。
@@ -1428,7 +1428,7 @@ namespace AsynGyanis::Net
             co_return co_await rejectWebSocketTunnelHandshake(streamId, request, response, handshakeRejection, handshakeFailureReason);
         }
 
-        // 升级应答是 200 且**不带 END_STREAM**（RFC 8441 §5）：这条流接下来要承载帧，消息还没结束。
+        // 升级应答是 200 且不带 END_STREAM（RFC 8441 §5）：这条流接下来要承载帧，消息还没结束。
         // 因此这里不能走 sendResponse()——它按「正文是否为空」决定 END_STREAM，会把隧道当场关掉
         std::vector<HpackHeaderField> acceptFields;
 
@@ -1440,7 +1440,7 @@ namespace AsynGyanis::Net
             co_return *policyRejection;
         }
 
-        // key 在本形态下不是必填（见上面握手校验的注释），但**给了就得回对应的那条 Accept**：
+        // key 在本形态下不是必填（见上面握手校验的注释），但给了就得回对应的那条 Accept：
         // 现存的 h2 WebSocket 客户端里两类都有，凭空造一条空 key 的 Accept 比不回更糟——
         // 它会让学生以为握手被验证过了，而本端其实什么都没验
         if (const std::optional<std::string> offeredKey = request.getHeader("sec-websocket-key"); offeredKey.has_value())
@@ -1867,7 +1867,7 @@ namespace AsynGyanis::Net
         // HEAD 只发头：正文视图换成空，头部里的 content-length 仍按完整正文补齐。同一处置还要盖住
         // 「按定义没有正文」的状态码（1xx/204/304，RFC 9110 §6.3）：RFC 9113 §8.1.1 明说这类响应可以
         // 带着非零 content-length 而正文不进 DATA 帧。204/304 由 `Router::finalizeResponse()` 在上游
-        // 就把正文清了，所以这一格真正兜住的是**以 1xx 作最终状态**那条——Router 不清它，而 h1 的
+        // 就把正文清了，所以这一格真正兜住的是以 1xx 作最终状态那条——Router 不清它，而 h1 的
         // 序列化层与 h3 的 submitResponse 都按状态码挡着，h2 此前只挡 HEAD：一条流式契约之外的
         // 合法写法就会发出「1xx 还带正文」的报文，对端按 §8.1.1 判畸形是站得住的
         const bool             isBodylessResponse = HttpResponse::isBodylessStatusCode(static_cast<int>(wireStatusCode));

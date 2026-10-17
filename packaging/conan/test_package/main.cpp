@@ -73,7 +73,7 @@ int main()
     static_assert(ASYN_IS_SANITIZED == 0 || ASYN_IS_SANITIZED == 1, "sanitizer 的读数不是 0/1");
     static_assert(ASYN_IS_SHARED_BUILD == 0 || ASYN_IS_SHARED_BUILD == 1, "共享形态的读数不是 0/1");
 
-    // 上面四条只判形状，判不出「宏与库体分叉」（取值翻转它们照样绿）。这三条拿**另一处真源**对：
+    // 上面四条只判形状，判不出「宏与库体分叉」（取值翻转它们照样绿）。这三条拿另一处真源对：
     // 模块按现场探测发出去的 PUBLIC 宏，与清单里那一项必须同解——配方复述一遍条件、或者清单漏接一项，
     // 红的是编译而不是线上第一次调用
 #if (defined(ASYN_HAS_STACKTRACE) ? 1 : 0) != ASYN_HAS_STACKTRACE_SUPPORT

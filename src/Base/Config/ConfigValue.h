@@ -55,7 +55,7 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 判断一个值能否表示成合法的 JSON 文本
-     * @details 非有限浮点（NaN、±Inf）单独判不可表示：nlohmann 的 dump 对它们缺省是**替换成 null**
+     * @details 非有限浮点（NaN、±Inf）单独判不可表示：nlohmann 的 dump 对它们缺省是替换成 null
      *          而不报错，那是静默变形——与 configValueAs() 同一条口径（宁可失败也不变形）。
      *          非 UTF-8 的字符串不在这里判：dump 的严格错误处理会抛出来，由 serializeConfigValue 接住。
      * @param value 待判定的值，递归检查数组与对象的每个子节点

@@ -83,7 +83,7 @@ namespace AsynGyanis::Net
      *          监听器怎么重装身份」，而那些事也不该散落在每个应用的 main 里——一处写歪就会出现
      *          「磁盘上是新证书、内存里还是旧的」这种最难查的现场。
      *
-     * @details 落盘一律走原子替换（写临时文件再 rename），且**先写私钥再写证书链**：中途崩了
+     * @details 落盘一律走原子替换（写临时文件再 rename），且先写私钥再写证书链：中途崩了
      *          最坏情况是旧证书配新私钥，下一次启动加载配对校验就会失败并说清原因，
      *          而不是留下一个能加载却身份不明的组合。
      *
@@ -93,7 +93,7 @@ namespace AsynGyanis::Net
      *       是有界的（约一片 + 调度），不会等满一整拍（默认可达 12 小时）
      * @warning 自证走哪一条由「有没有交来 DNS-01 的 TXT 写入动作」决定，两条的前提不同：
      *          HTTP-01（默认）要机构能从公网按 80 端口取到 `/.well-known/acme-challenge/` 下的令牌，
-     *          registerChallengeRoutes() 必须在**明文 80 端口那台服务**上调用（或让 80 重定向到本服务，
+     *          registerChallengeRoutes() 必须在明文 80 端口那台服务上调用（或让 80 重定向到本服务，
      *          Let's Encrypt 会跟随重定向），只挂在 443 上等于没答；
      *          DNS-01 不需要任何入站通路，但要求那对凭据真的能改域名记录，且这台机器能出公网 443。
      *          被备案拦截、80 端口拿不到的部署（国内云上常见）只能走后者
@@ -145,7 +145,7 @@ namespace AsynGyanis::Net
             std::chrono::milliseconds renewBeforeExpiry{std::chrono::hours{24 * 30}};
             /// 自证与定稿两段轮询的总时限（每轮之间查一次，含机构侧排队校验的那段）。单次出站请求的
             /// 时限由它折算得出（见 AcmeClient::Configuration::boundedRequestTimeout），所以整轮签发的
-            /// 耗时**不**硬卡在这个数上：前置的目录/账户/订单握手各按单次时限走，它掐的是机构侧不答话
+            /// 耗时不硬卡在这个数上：前置的目录/账户/订单握手各按单次时限走，它掐的是机构侧不答话
             std::chrono::milliseconds issuanceTimeout{std::chrono::seconds{180}};
             /// 自证状态的轮询间隔
             std::chrono::milliseconds challengePollInterval{std::chrono::milliseconds{500}};
@@ -159,7 +159,7 @@ namespace AsynGyanis::Net
          * @param configuration 见 Configuration：本构造不校验，校验排在每次签发入口里，
          *        好让配置错误与其他失败从同一条 expected 通道交回
          * @param reloadHandler 装回服务的动作；可先不设（首签时服务往往还没起来，拿到路径再构造），
-         *        但**不设就跑续期循环会被拒绝**：那只等于把证书下到磁盘却没人装
+         *        但不设就跑续期循环会被拒绝：那只等于把证书下到磁盘却没人装
          * @param dns01TxtWriter 发布与撤回 TXT 的动作对。给了它就走 DNS-01（机构侧挑 dns-01 挑战，
          *        且只在这条通道上应答），不给就走 HTTP-01；两档之间没有回落——一次签发中途换通道
          *        只会让机构拿着另一条挑战的答案判 invalid
@@ -213,7 +213,7 @@ namespace AsynGyanis::Net
          * @brief 下一轮续期检查该在多久之后醒来
          * @details 一处算式：常驻循环按它决定停放时长，运维要显示「下一次什么时候再试」读的也是它，
          *          两份各写一遍迟早会漂（`backoffGateUnixSeconds()` 同一族）。取「查到期节拍」与
-         *          「失败退避门槛」里更晚的那个，但**装回还欠着时压回一个短片**——磁盘上的证书是新的，
+         *          「失败退避门槛」里更晚的那个，但装回还欠着时压回一个短片——磁盘上的证书是新的，
          *          到期判据会判「还够用」而一次都不再试，那种情况下等到 12 小时之后不是保守而是漏掉。
          * @return std::chrono::milliseconds 至少 1 毫秒
          */
@@ -317,7 +317,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 挂在进程级指标注册表上的把手：到期时刻、签发次数、失败次数
-         * @details 构造时就登记，而不是等第一次签发：常驻进程里这三条**长期为 0** 本身就是最要紧的
+         * @details 构造时就登记，而不是等第一次签发：常驻进程里这三条长期为 0 本身就是最要紧的
          *          信号——自动化没跑成与自动化还没跑，从外面看得是同一个形状
          */
         std::array<Core::ProcessMetricHandle, 4> m_metricHandles{};
@@ -337,12 +337,12 @@ namespace AsynGyanis::Net
      * @brief 跟着磁盘上那张证书走的常驻协程：身份变了就叫本进程重装一次
      * @details 存在的理由是「一张单签完、多个进程都要用」那一档部署。签发只需要一个进程去做（机构的
      *          速率限制按账户计，不是按进程），可 TLS 身份是每个进程各自握着的 SSL_CTX，而签发进程
-     *          写完那两张文件之后没有任何通知别人的通道——**原子替换本身就是通知**：本协程按
+     *          写完那两张文件之后没有任何通知别人的通道——原子替换本身就是通知：本协程按
      *          `pollInterval` 用 `Platform::queryFileBasicInfo` 读回 (字节数, 修改秒, 身份标记) 三元组，
      *          任一与上次不同就调用 `reloadHandler` 一次。三元组与静态文件缓存用的是同一处口径，
      *          不在这里另造一份「怎么算换了」。
      *
-     * @details 装回失败时**不把新身份认下**，下一拍再试：线上还在用旧证书，放过一次就是永远放过。
+     * @details 装回失败时不把新身份认下，下一拍再试：线上还在用旧证书，放过一次就是永远放过。
      *          同一次变化只报一条 ERROR（重试静默），否则 15 秒一次的节拍会把日志刷成一堵墙。
      *
      * @param loop 承载本协程定时器的事件循环（循环对象只在它所属的那条线程上碰）

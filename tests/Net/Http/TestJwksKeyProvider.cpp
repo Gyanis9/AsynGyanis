@@ -298,7 +298,7 @@ namespace AsynGyanis::Net
             loop.run();
         }
 
-        /// 轮换场景的全部阶段写在一条协程里，**一次 run() 跑到底**——
+        /// 轮换场景的全部阶段写在一条协程里，一次 run() 跑到底——
         /// 中途 stop 再次 run 会让后台循环的定时等待不再被重唤醒（实测刷新永不发生）
         Core::Task<void> rotationScenario(Core::EventLoop &loop, const std::shared_ptr<JwksKeyProvider> &provider, MiniJwksServer &server,
                                           const std::pair<std::string, std::string> &modulusExponent, const std::string &rotatedToken)
@@ -471,8 +471,8 @@ namespace AsynGyanis::Net
                                                                                 .refreshInterval     = std::chrono::seconds{60},
                                                                                 .refreshRequestSlice = std::chrono::milliseconds{50}});
 
-            // 先跑一小段让**首投被消费**（帧落到定时/IO 等待上），再析构。直接在首投还排在队列里时
-            // 析构是**禁止用法**：投出去的句柄搞不回来，帧先没了而队列里还留着它——下一次 run() 取到
+            // 先跑一小段让首投被消费（帧落到定时/IO 等待上），再析构。直接在首投还排在队列里时
+            // 析构是禁止用法：投出去的句柄搞不回来，帧先没了而队列里还留着它——下一次 run() 取到
             // 就是悬垂句柄（实测 ASan 当场报 UAF；供给器的头文件 @warning 写明这条）
             bool firstTickConsumed = false;
             runControlTask(loop, waitUntilAndStop(loop, [&provider] { return provider->cachedKeyCount() > 0; }, firstTickConsumed));

@@ -230,17 +230,17 @@ namespace AsynGyanis::Platform
         /**
          * @brief 设置「已送出但未被确认的数据最多在途多久」（TCP_USER_TIMEOUT，仅 Linux）
          *
-         * @details 半开治理里比保活更直接的一格：保活要等连接**空闲**够久才开始探测，而对端断电、
+         * @details 半开治理里比保活更直接的一格：保活要等连接空闲够久才开始探测，而对端断电、
          *          拔线、中间设备黑掉时，本端往往还在反复重传。本选项让内核在「已送出的数据连续
          *          这么多毫秒收不到确认」时直接判死连接（ETIMEDOUT），把重传预算从内核默认的
          *          十几分钟压到业务能接受的数量级。对端正常收数据时它不产生任何影响——判据是
          *          「有在途未确认的数据」，不是「连接空闲」。
          *
          * @param descriptor 目标套接字描述符
-         * @param milliseconds 允许的在途时长上限，单位毫秒（这是本选项的**原生单位**，与保活那族
+         * @param milliseconds 允许的在途时长上限，单位毫秒（这是本选项的原生单位，与保活那族
          *        选项的秒不同），必须为正
          * @return true 设置成功；false 取值非正，或本平台没有这一格（见 `hasUserTimeout()`）
-         * @note **Windows 没有该选项**。它的 `TCP_MAXRT` 语义不同（管的是重传超时上限、以秒计），
+         * @note Windows 没有该选项。它的 `TCP_MAXRT` 语义不同（管的是重传超时上限、以秒计），
          *       且同属「重传参数」而不是「未被确认的数据在途多久」，因此本层不把它当等价物下发。
          *       读法：`hasUserTimeout()` 为假即「这台机器上不存在这一格」，不要把它当成「设置失败」
          *       记进错误路径（`sendfile`/`TransmitFile` 那一族吃过这个亏：静默跳过被当成了已生效）
@@ -250,7 +250,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 本平台是否提供 TCP_USER_TIMEOUT
          * @details 判据是编译期特性宏（不是运行期试探）：Linux 内核 2.6.37+ 与 glibc 头都在，宏在即可用。
-         *          给调用方一个能**读出来**的能力格：设置失败与「本平台没有这一格」是两回事，
+         *          给调用方一个能读出来的能力格：设置失败与「本平台没有这一格」是两回事，
          *          前者要记错误、后者要在运维面上如实说明
          * @return true 本平台提供该选项
          */
@@ -267,11 +267,11 @@ namespace AsynGyanis::Platform
          * @brief 设置关闭时的逗留行为（SO_LINGER）
          *
          * @details 两种有意义的形状，各对应一个场景：
-         *          - `{ true, 0 }`：**立即复位收口**——close() 直接发 RST 并丢弃未送出的数据，
+         *          - `{ true, 0 }`：立即复位收口——close() 直接发 RST 并丢弃未送出的数据，
          *            不等对端确认、不经过 TIME_WAIT 的优雅收尾。用于「这条连接本就不该被善待」的
          *            场合（协议违规的收口、拒绝一条刚完成握手的滥用连接）。
-         *          - `{ true, n }`（n > 0）：close() 最多阻塞 n 秒等数据送出。**非阻塞套接字上这一档
-         *            形同虚设**：close() 会立刻返回 EWOULDBLOCK 而不是等，因此本仓的事件循环套接字
+         *          - `{ true, n }`（n > 0）：close() 最多阻塞 n 秒等数据送出。非阻塞套接字上这一档
+         *            形同虚设：close() 会立刻返回 EWOULDBLOCK 而不是等，因此本仓的事件循环套接字
          *            基本用不到它，保留它是为了把语义写全（阻塞套接字的调用方会用到）。
          *          - `{ false, ... }`：关闭逗留，close() 回到「后台把数据送完」的默认行为。
          *
@@ -373,9 +373,9 @@ namespace AsynGyanis::Platform
          * @brief 开一条一次性的换代交接通道（交棒方）
          * @details POSIX 用 AF_UNIX 流套接字——内核只在 unix 域里随 SCM_RIGHTS 送描述符（见
          *          writeListeningSocketHandoff 的那条 @note）。套接字文件建在一个刚 mkdtemp 出来的
-         *          私有目录里（0700）：这条通道交出去的是**监听套接字的一份引用**，任何本机进程都能
+         *          私有目录里（0700）：这条通道交出去的是监听套接字的一份引用，任何本机进程都能
          *          连上来取的话，那道门就由目录权限把守。放在新目录里而不是直接写进临时目录，是因为
-         *          「先建出来再收紧」的窗口关不掉，而 umask 会在同一时刻把**别的线程**新建的文件
+         *          「先建出来再收紧」的窗口关不掉，而 umask 会在同一时刻把别的线程新建的文件
          *          权限一并改掉。
          *          Windows 上没有描述符随字节流走的机制，改走 loopback TCP：交出去的载荷是
          *          WSADuplicateSocketW 换出来的协议信息，那是普通字节，任何字节流通道都行，
@@ -394,11 +394,11 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 有界地等一次「监听端上有连接 pending」，不取走它
-         * @details 存在的理由是 acceptHandoffPeer() 只会无限等：交接通道的对端是**另一个进程**，
+         * @details 存在的理由是 acceptHandoffPeer() 只会无限等：交接通道的对端是另一个进程，
          *          它可能压根没连上来（起崩了、参数给错了、还没走到连的那一步）。把无限阻塞放进
          *          编排循环，一个连不上通道的子进程就会冻住整池的补位与收尾。
          * @param listenerDescriptor openHandoffChannel 交出的监听端
-         * @param budget 等待上限；**0 表示只取一次当前状态**（立刻返回有没有），不是「无限等」；
+         * @param budget 等待上限；0 表示只取一次当前状态（立刻返回有没有），不是「无限等」；
          *        负数是参数错误，当场报 invalid_argument 而不是当成前两种读法
          * @return std::expected<bool, std::error_code> true 有连接 pending，紧接着 accept 拿得到；
          *         false 期限内没有；unexpected 是等待本身失败（描述符无效、预算为负、select 报错）
@@ -421,7 +421,7 @@ namespace AsynGyanis::Platform
          * @param address openHandoffChannel 给出的地址文本
          * @return int 已连通的通道描述符；负值表示这次没连上
          * @note 一次失败不说明问题：交棒方可能还在准备通道。重试由调用方按预算决定，
-         *       且**每次重试都要换新描述符**——connect 失败后的套接字不再保证可用，
+         *       且每次重试都要换新描述符——connect 失败后的套接字不再保证可用，
          *       同一个 fd 上重连不算重试
          */
         [[nodiscard]] static int connectHandoffChannel(std::string_view address) noexcept;
@@ -444,7 +444,7 @@ namespace AsynGyanis::Platform
          * @param targetProcessId 接收方进程号（Windows 按进程号认目标；POSIX 上内核自己处理）
          * @return true 已完整写出
          * @return false 平台不支持、参数非法或通道写坏，原因见 PlatformError::lastErrorCode()
-         * @note **POSIX 上通道必须是 AF_UNIX 流套接字**。内核只在 unix 域里随 SCM_RIGHTS 送描述符：
+         * @note POSIX 上通道必须是 AF_UNIX 流套接字。内核只在 unix 域里随 SCM_RIGHTS 送描述符：
          *       同一段代码走 loopback TCP 时 sendmsg 与 recvmsg 都返回成功、8 字节数据一字不差，
          *       只有控制消息被静默丢掉（实测 recvmsg 后 msg_controllen 归 0），接收侧于是只拿得到
          *       「一个描述符也没有」。实测对照：AF_UNIX 通道 recvmsg 后 controllen=24 且能拿到可用
@@ -470,7 +470,7 @@ namespace AsynGyanis::Platform
          *       所以「格式不对」「控制消息被截断」这些出口也得先把它关掉（换代每补一次 worker 就移交
          *       一次，漏一枚就是长跑进程里一个永不回收的描述符）；
          *       EBADF 表示「字节收齐了但里面没有描述符」——POSIX 上这一条几乎都是通道用错了类型
-         * @note 换代的关键性质在这里：本端 accept 到的是**上一代进程还在服务时**就已排队的连接，
+         * @note 换代的关键性质在这里：本端 accept 到的是上一代进程还在服务时就已排队的连接，
          *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗
          */
         static int readListeningSocketHandoff(int channelDescriptor) noexcept;

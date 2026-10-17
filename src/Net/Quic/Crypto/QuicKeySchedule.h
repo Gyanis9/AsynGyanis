@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 由客户端首个 Initial 的目的连接标识推出 Initial 包保护密钥
-     * @details Initial 密钥的输入是**客户端报文里的目的连接标识**（不是本端签发的源标识），
+     * @details Initial 密钥的输入是客户端报文里的目的连接标识（不是本端签发的源标识），
      *          且套件固定为 AEAD_AES_128_GCM；服务端要解客户端的 Initial、以及自己回 Initial
      *          都用同一个目的标识推导，只有方向标签不同（RFC 9001 §5.2）。
      * @param destinationConnectionId 客户端 Initial 的目的连接标识，可为零长（Retry 之后可能为 0）

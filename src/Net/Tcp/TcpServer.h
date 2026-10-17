@@ -92,7 +92,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 停止接受新连接
          * @details 置位运行标志并关闭监听器；已建立的连接不受影响，继续跑到自然结束。
-         * @warning **必须由运行本服务器事件循环的那个线程调用**：本方法关闭的监听描述符
+         * @warning 必须由运行本服务器事件循环的那个线程调用：本方法关闭的监听描述符
          *          正被该循环上的 accept 协程使用（`AsyncSocket` 的文件描述符是普通 int，
          *          不是原子量），从别的线程调用会与它竞争同一个句柄。
          *          需要从外部线程发起停止时，请把动作投递到那个循环
@@ -132,7 +132,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 立即关闭服务器：停止接受并强制关闭全部已有连接
          * @details 在 stop() 之上追加 ConnectionManager::shutdown()，用于需要立刻释放资源的场合。
-         * @warning 线程约束同 stop()，而且更强：shutdown() 会逐个关闭**每条活跃连接**的套接字，
+         * @warning 线程约束同 stop()，而且更强：shutdown() 会逐个关闭每条活跃连接的套接字，
          *          那些 Socket 正被各自的事件循环读写。同样只在拥有这些连接的线程上调用。
          */
         void close();
@@ -160,7 +160,7 @@ namespace AsynGyanis::Net
          * @details 构造时把端口写成 0 交给内核挑，此后只有内核知道实际端口——没有这个入口，
          *          调用方（和测试）只能靠派生类去读监听器再自己 getsockname，跨协议驱动时
          *          每条通道都得重抄一遍。QUIC 侧的 `QuicServer::listeningPort()` 同名同语义
-         * @note 端口在绑定成功后**最后**才发布，因此非 0 就意味着监听套接字已经就绪；
+         * @note 端口在绑定成功后最后才发布，因此非 0 就意味着监听套接字已经就绪；
          *       值由所属循环写入、别的线程可读，故用原子量（与 QuicServer 同一口径）
          * @see Core::TcpServer::start(), QuicServer::listeningPort()
          */
@@ -175,7 +175,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取本台实际生效的最大并发连接数
-         * @details 报的是**下发到本台的值**而不是配置里的数：多进程下整机上限会摊到每个进程，
+         * @details 报的是下发到本台的值而不是配置里的数：多进程下整机上限会摊到每个进程，
          *          运维要靠这一句区分「配了 100」与「本台真正卡的是 25」。0 表示本台不设这道限
          * @return std::size_t 最大并发连接数
          */
@@ -183,7 +183,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 设置按来源 IP 的并发连接限额
-         * @param limiter 限额对象；**多个监听器（每循环一个）必须共享同一份**，否则单个来源的实际上限
+         * @param limiter 限额对象；多个监听器（每循环一个）必须共享同一份，否则单个来源的实际上限
          *        会乘上监听器数量，限额等于失效。传空指针表示不作按 IP 的限制（默认）
          * @note 必须在 start() 之前调用；检查时即时读取，与 setMaxConnections() 的语义一致
          * @see PerIpConnectionLimiter
@@ -193,7 +193,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取本台挂着的按来源 IP 的限额对象
          * @details 存在的理由与 `maximumConnections()` 同一条：运维要能问出「这台到底卡在哪」。
-         *          限额对象常是多个监听器共用的一份，因此这里交回的**就是那一份**（指针相等，不是副本），
+         *          限额对象常是多个监听器共用的一份，因此这里交回的就是那一份（指针相等，不是副本），
          *          调用方据此可以读出真正生效的每来源上限，也能把同一个对象挂到另一台上。
          * @return std::shared_ptr<PerIpConnectionLimiter> 没设限额时为空指针
          */
@@ -201,7 +201,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 按来源 IP 的准入闸门累计挡掉过多少条连接
-         * @details 限额对象是可以被多台服务器共用的一份，因此这个数报的是**这道闸门**的总量而不是
+         * @details 限额对象是可以被多台服务器共用的一份，因此这个数报的是这道闸门的总量而不是
          *          本实例那一份——与限额本身的口径一致。没设限额对象时返回 0。
          *          /metrics 里的 admission_rejected_connections_total 由它来（见 HttpServer::stats()）。
          * @return std::uint64_t 累计拒绝条数
@@ -229,15 +229,15 @@ namespace AsynGyanis::Net
          *          LB 的流量记成一个来源，审计与封禁也就找错了人。开启后每条连接先读一条
          *          PROXY 协议头（v1 文本行或 v2 二进制块），读到的来源地址从此就是这条套接字的
          *          对端身份，限额键、`HttpRequest::remoteAddress()` 与日志都跟着改。
-         * @note **只该在只有代理能连进来的端口上开**：头本身没有任何鉴权，对公网敞开就等于让每个
+         * @note 只该在只有代理能连进来的端口上开：头本身没有任何鉴权，对公网敞开就等于让每个
          *       客户端自己挑一个来源 IP 来占限额
          * @note 没带头、带头但不合规范、或在读头时限（固定 3 秒，见 kProxyProtocolHeaderTimeout）之内
          *       没把带头发完的连接都被收口，且各留一条 WARN：这类连接进不了会话，静默丢弃会让人排查半天
-         * @note 这几条 WARN 每种**每 10 秒至多一条**（见 TcpServer.cpp 的 kProxyRejectionLogWindow），
+         * @note 这几条 WARN 每种每 10 秒至多一条（见 TcpServer.cpp 的 kProxyRejectionLogWindow），
          *       放行的那条会带上「另有几条被压掉」。原因：一个不打头的对端就能让这条路径每次接受都落一行，
          *       而日志是同步写的——真出过「热路径日志把停摆表现成 backlog 灌满后回 ECONNREFUSED」。
          *       压的是重复条，不是这条告警本身，也不是收口这个动作
-         * @note 头必须**单独成段**送到：若代理把「头 + 请求正文」挤进同一次发送，多出来的那一段没有
+         * @note 头必须单独成段送到：若代理把「头 + 请求正文」挤进同一次发送，多出来的那一段没有
          *       地方安放（读掉的字节退不回内核缓冲，也塞不进会话的读缓冲），这条连接按上一条收口。
          *       主流代理都在建连时先把头单独写一次，因此实际不会撞上；撞上时日志会给出多出多少字节
          * @note 必须在 start() 之前调用：已建立的连接不会补读

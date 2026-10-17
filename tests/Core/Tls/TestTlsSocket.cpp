@@ -6,7 +6,7 @@
 //     ——帧确实从帧池拿。带 sanitizer 的构建按 CoroutinePool.h 的既定口径绕开池，那时每条形状
 //     都会各多出一到两块（Debug 实测：握手 16、明文等待 7、两只帧 2）；
 //   · 一次明文「向后端注册 + 等一次可读」：5 块 / 312 B。握手两侧各摊一次注册，也就是说
-//     **TLS 自己这一层基本不花分配，读数的九成落在这条 I/O 等待与注册上**。别把它跟「每连接
+//     TLS 自己这一层基本不花分配，读数的九成落在这条 I/O 等待与注册上。别把它跟「每连接
 //     注册成本台账」里 epoll 0 次、io_uring 3 次直接对照：那份量的是后端注册本身，这条还含着等待。
 
 #include "Core/Tls/TlsSocket.h"
@@ -824,7 +824,7 @@ namespace AsynGyanis::Core
 #ifdef NDEBUG
         // 生产形态（Release、帧池生效）实测：两侧接线 0 块、两只协程帧 0 块，一次双向 TLS1.3
         // 握手 11 块 / 640 B；而「一条套接字注册 + 等一次可读」的明文形状就要 5 块 / 312 B，
-        // 握手两侧各摊一次 ≈ 10 块——**TLS 自己这一层几乎不再花分配**，剩下的都在后端的每连接注册记账上
+        // 握手两侧各摊一次 ≈ 10 块——TLS 自己这一层几乎不再花分配，剩下的都在后端的每连接注册记账上
         EXPECT_EQ(frames.totalAllocations, 0U) << "协程帧没有从帧池拿到：池的接线被改坏了";
         EXPECT_LE(profile.totalAllocations, kMeasurementRounds * 16ULL) << "每次握手的堆块数越界：TLS 这条路上多半又多了一次分配";
 #endif
@@ -835,7 +835,7 @@ namespace AsynGyanis::Core
      * @details 一条读数在两端各加一次（数的是握手事件），因此期望是「轮数 × 2」而不是「轮数」
      * @details 判据不能是「期望第二次一定复用」——那取决于会话票据、缓存与协商到的版本，
      *          会变，而且红了也说不清是谁错了。改法：测试自己按 `SSL_session_reused()` 数一遍
-     *          两次握手各有几条算复用，再要求导出读数的**增量**与它相等。这样既钉住了接线，
+     *          两次握手各有几条算复用，再要求导出读数的增量与它相等。这样既钉住了接线，
      *          也不把外部条件写死成断言
      */
     TEST(TlsSocket, CountsCompletedHandshakesAndSessionReuse)

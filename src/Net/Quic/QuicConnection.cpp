@@ -166,7 +166,7 @@ namespace AsynGyanis::Net
         coreConfiguration.role              = QuicConnectionRole::Server;
         coreConfiguration.tlsContext        = configuration.tlsContext;
         coreConfiguration.localConnectionId = std::move(sourceConnectionIdBytes);
-        // 回包要打在客户端**自报**的源标识上（RFC 9000 §7.2）；填成报文里的目的标识会让对端
+        // 回包要打在客户端自报的源标识上（RFC 9000 §7.2）；填成报文里的目的标识会让对端
         // 把所有回包当成无主报文丢掉
         coreConfiguration.peerConnectionId.assign(header.sourceConnectionId.begin(), header.sourceConnectionId.end());
         // 客户端首个 Initial 的目的标识是它自己造的：Initial 密钥与参数里的 ODCID 都由它算

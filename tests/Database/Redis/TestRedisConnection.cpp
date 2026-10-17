@@ -227,7 +227,7 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 钉住主机名里的内嵌 NUL 在本地就被拒：hiredis 按 C 字符串读地址，会把它截成前半截
-     * @details 截断后连上的是**另一个**主机（这台机器上真跑着 Redis 时甚至能连成功），而报错看起来
+     * @details 截断后连上的是另一个主机（这台机器上真跑着 Redis 时甚至能连成功），而报错看起来
      *          像 DNS 或认证问题。MySQL 驱动对连接配置的同一件事早有这道闸，两条驱动必须同一口径
      */
     TEST(RedisConnection, ConnectWithEmbeddedNulInHostFailsWithoutServerContact)
@@ -282,7 +282,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsLocalizedText(reason)) << reason;
         EXPECT_NE(reason.find("Redis"), std::string::npos) << reason;
 
-        // 文本与码必须**成对**落下（与 MySQL/SQLite 的 captureError 同一口径）：只把错误码拼进文本而
+        // 文本与码必须成对落下（与 MySQL/SQLite 的 captureError 同一口径）：只把错误码拼进文本而
         // 不写进记录，lastNativeErrorCode() 就恒为 -1，按码判重试与抛 QueryExecutionException 的调用方
         // 读到的是「这条原因没配码」，而文本里明明写着（错误码 N）
         const std::int64_t nativeCode = connection.lastNativeErrorCode();

@@ -214,8 +214,8 @@ namespace AsynGyanis::Net
                       "本侧没能把响应完整交给传输层就收口的连接数（写出失败，或仍有字节留在待发缓冲与流控队列；仅 TCP 侧）", stats.writeAbortedConnectionCount);
 
         // 活跃连接数是瞬时量，用 gauge；取值来自连接管理器，见 HttpServer::stats()
-        // 口径要说清：多台监听器共用同一份采集端时这一条是**相加的那一份**（刻意如此，否则抓取随机
-        // 命中一台会看到 1/N 与计数器回落），而下面那条 maximum_connections 是**本监听器**的上限——
+        // 口径要说清：多台监听器共用同一份采集端时这一条是相加的那一份（刻意如此，否则抓取随机
+        // 命中一台会看到 1/N 与计数器回落），而下面那条 maximum_connections 是本监听器的上限——
         // 两者不同源，别直接相除当「负载率」；要负载率就按监听器条数折算，或每台各抓各的口
         appendGauge(out, makeMetricName(metricNamePrefix, "active_connections"), "取快照那一刻的活跃连接数（多条监听器共用一份采集端时是各台相加）", stats.activeConnectionCount);
 
@@ -286,7 +286,7 @@ namespace AsynGyanis::Net
                       "asyn_executor_rejected_total；提交方当场收到异常，涨了就说明该降并发或加工作线程）",
                       stats.blockingTaskRejectedCount);
 
-        // 日志被丢的规模是进程级的，而且**有一条对端可驱动的路**：JSON 版式对非法 UTF-8 整条失败，
+        // 日志被丢的规模是进程级的，而且有一条对端可驱动的路：JSON 版式对非法 UTF-8 整条失败，
         // 请求目标里送原始 Latin-1 字节的客户端因此能把自己在访问日志里的那行消音。没有这条读数，
         // 「审计记录被消音」与「这段时间没人写日志」在面板上是同一个形状
         appendCounter(out, makeMetricName(metricNamePrefix, "log_dropped_events_total"),
@@ -306,7 +306,7 @@ namespace AsynGyanis::Net
         appendGauge(out, makeMetricName(metricNamePrefix, "process_start_time_seconds"),
                     "本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启", stats.processStartTimeSeconds);
 
-        // 进程级登记的读数：名字是登记时给的**完整名字**，不套本监听器的业务前缀——
+        // 进程级登记的读数：名字是登记时给的完整名字，不套本监听器的业务前缀——
         // 这些数不属于某台 HTTP 服务器，抓哪台监听器都该是同一份（口径与上面那几条进程级读数一致）
         for (const Core::ProcessMetricSample &sample: Core::ProcessMetricsRegistry::samples())
         {

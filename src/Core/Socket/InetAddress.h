@@ -44,7 +44,7 @@ namespace AsynGyanis::Core
          *             默认为 "0.0.0.0"
          * @throws Base::InvalidArgumentException IP 文本既不是合法的 IPv4 也不是合法的 IPv6，
          *         或其中含 NUL 字节，或 IPv6 带了「%作用域」后缀但作用域既不是数字也不是本机存在的
-         *         接口名；**本构造函数不解析主机名**，需要主机名请改用 resolve()
+         *         接口名；本构造函数不解析主机名，需要主机名请改用 resolve()
          */
         explicit InetAddress(uint16_t port, std::string_view ip = "0.0.0.0");
 

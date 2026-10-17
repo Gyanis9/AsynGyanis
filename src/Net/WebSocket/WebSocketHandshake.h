@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 握手失败的分类
      *
-     * @details 只有一类失败带着一份额外的应答义务：版本不被理解时，应答**必须**带
+     * @details 只有一类失败带着一份额外的应答义务：版本不被理解时，应答必须带
      *          Sec-WebSocket-Version 指明本端支持的版本（RFC 6455 §4.2.2），客户端正是靠这一行
      *          决定换一个版本重试。其余缺陷（缺 key、base64 形态不对、不是 GET）没有这条义务，
      *          带上反而会把一个「你发的 key 不对」的应答伪装成「版本不对」。分类由校验函数
@@ -93,7 +93,7 @@ namespace AsynGyanis::Net
      * @brief 校验 h1 升级握手共用的两项：Sec-WebSocket-Version 恰为 13、Sec-WebSocket-Key 是解码后恰 16 字节的标准 base64
      *
      * @details 这一条服务的是 RFC 6455 §4.1 的 101 握手：那条路上 key 与版本都是客户端必填项，少一项就不构成
-     *          一次合法握手。扩展 CONNECT 隧道（h2/h3）**不用**本函数判——见 validateWebSocketTunnelVersion()
+     *          一次合法握手。扩展 CONNECT 隧道（h2/h3）不用本函数判——见 validateWebSocketTunnelVersion()
      *          里引的 RFC 8441 §5。两条入口共用的那段版本判据住在同一个 .cpp 里的一份实现上，判据不会各写一遍。
      * @param request 已解析完成的请求（h2/h3 侧同样是已映射好的请求对象）
      * @param clientKey 输出参数：通过校验的 key 原文（已去掉首尾空白），可直接交给 computeWebSocketAcceptValue()；
@@ -113,8 +113,8 @@ namespace AsynGyanis::Net
      *          extended CONNECT to bootstrap WebSockets do not do the processing of the Sec-WebSocket-Key
      *          and Sec-WebSocket-Accept header fields of [RFC6455] as that functionality has been superseded
      *          by the :protocol pseudo-header field」。所以这里既不要求 key，也不校验它的形状。
-     *          版本这一项按同一条 RFC 沿用 RFC 6455：**写出来却不是 13 必须拒**（并按 RFC 6455 §4.2.2 在拒绝
-     *          应答里补一条 Sec-WebSocket-Version 指明本端支持的版本）；**整条没写不在这里拒**——那是 RFC 6455
+     *          版本这一项按同一条 RFC 沿用 RFC 6455：写出来却不是 13 必须拒（并按 RFC 6455 §4.2.2 在拒绝
+     *          应答里补一条 Sec-WebSocket-Version 指明本端支持的版本）；整条没写不在这里拒——那是 RFC 6455
      *          给 101 客户端派的义务，而按隧道形态实现的互操作端有两条都不带的（本仓的 aioquic 验收裁判就是），
      *          在这里拒等于把一条能用的隧道判死。本仓上一版在 h3 上加过 key 必填，被该裁判当场抓出。
      * @param request 已映射好的请求对象（h2/h3 侧都是同一份 HttpRequest）
@@ -222,7 +222,7 @@ namespace AsynGyanis::Net
      *         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
      *         "Sec-WebSocket-Accept: <值>\r\n"，其后按给出的顺序可能出现
      *         "Sec-WebSocket-Protocol: <值>\r\n" 与 "Sec-WebSocket-Extensions: <值>\r\n"，最后是空行
-     * @note 两条回显头部都只在**谈成**时才写：写一条对端没提过的子协议或对端没用过的扩展，
+     * @note 两条回显头部都只在谈成时才写：写一条对端没提过的子协议或对端没用过的扩展，
      *       都是 RFC 6455 §4.2.2 步骤 6 与 §9.1 要求对端判失败的形状
      */
     [[nodiscard]] ASYN_NET_API std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue = {},

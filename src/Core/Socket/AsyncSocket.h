@@ -7,7 +7,7 @@
  *
  * 封装了 create/bind/listen/connect/receive/send 等 socket 操作,
  * 所有 I/O 方法返回 Task<> 类型, 通过 co_await 实现异步等待。
- * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：注册推迟到**第一次等待**时才发生
+ * 内部用常驻的 IoWatcher 处理 EAGAIN/EWOULDBLOCK：注册推迟到第一次等待时才发生
  * （见 ensureWatcher()），关注位在等待期间按需武装（详见 IoWatcher 的说明）。
  *
  * @copyright Copyright (c) 2026
@@ -115,7 +115,7 @@ namespace AsynGyanis::Core
          * @brief 声明「本端已经在监听」，让收口时只关掉自己这一份引用
          * @details 为什么需要单独声明：listen() 之外还有「接手别人交来的监听描述符」那条路
          *          （零停机换代的新一代），描述符到本进程时已经是监听态，本对象不会再调 listen()。
-         *          少了这个标记，收口就会走连接的收口流程去 shutdown(SHUT_RDWR)——那打在**端点**上，
+         *          少了这个标记，收口就会走连接的收口流程去 shutdown(SHUT_RDWR)——那打在端点上，
          *          同一端点的其它引用会一起停掉，也就是把新一代正在服务的端口关掉，换代当场变成空窗。
          *          标记是 mutable 且不改任何 I/O 行为，因此 listen() 与本方法都保持 const。
          * @note 只对确实处于监听态的描述符调用：给一条已建立的连接打标记，收口时就不会发出 FIN，
@@ -141,7 +141,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 异步连接远端服务器（InetAddress 版本）
-         * @param address 远端地址，**按值接收**：本方法是惰性启动的协程，函数体要到首次
+         * @param address 远端地址，按值接收：本方法是惰性启动的协程，函数体要到首次
          *        resume 才执行，若按引用接收，调用方传临时对象（如
          *        `co_await socket.asyncConnect(InetAddress("127.0.0.1", 8080))`）就会让引用
          *        指向已销毁的对象，而且不报错、只静默读到垃圾地址
@@ -157,7 +157,7 @@ namespace AsynGyanis::Core
          *          封禁都会把「一整个 LB 的流量」记成一个人。PROXY 协议把真实来源随连接一起交来，
          *          这一层就把它当作这条套接字的对端身份——所有下游消费者（限额键、请求的
          *          `remoteAddress()`、日志）因此不必各自认得代理协议。
-         * @note **只有可信通道才准调用**：这个值一旦写上，`remoteAddress()` 就不再反映内核看到的对端，
+         * @note 只有可信通道才准调用：这个值一旦写上，`remoteAddress()` 就不再反映内核看到的对端，
          *       写错了等于让对端自己挑一个身份来占限额。可信与否由调用方（哪条监听端口开了 PROXY 头、
          *       网段边界）负责，本类不做也无法做判断
          * @note 随套接字一起移动：把连接交给会话、再从会话交出去的那几条路上都不能丢这个身份
@@ -170,14 +170,14 @@ namespace AsynGyanis::Core
          * @param length 缓冲区最大能接收的字节数，不得超过 INT_MAX（超出会被底层 C API 静默窄化，
          *        因此本方法提前报错，请分段调用）
          * @return Task<ssize_t> — co_await 返回实际接收的字节数；0 表示对端正常关闭连接
-         * @warning 返回 0 有两种来源：对端关闭，以及**本次 length 就是 0**（此时不做任何 I/O 直接
+         * @warning 返回 0 有两种来源：对端关闭，以及本次 length 就是 0（此时不做任何 I/O 直接
          *          返回 0）。因此不要把「缓冲区剩余空间」这类可能算出 0 的值当长度传进来——
          *          0 会被读成一次干净的 EOF，一条健康的连接就此被收口
          *
          * 内部循环调用 recv(MSG_NOSIGNAL)，当没有数据可读（EAGAIN）时，
          * 挂起等待 EPOLLIN 事件。
          * @note 无数据时不产生 SIGPIPE 信号（MSG_NOSIGNAL）
-         * @note **buffer 必须活到本次 co_await 恢复**：协程在挂起期间只持有这个裸指针，
+         * @note buffer 必须活到本次 co_await 恢复：协程在挂起期间只持有这个裸指针，
          *       违约（例如把临时缓冲传进来后立刻离开作用域）会让恢复后的 recv 写入已释放内存，
          *       且不报错、表现为随机数据损坏
          * @throws Base::InvalidArgumentException length 超过 INT_MAX：取值非法走 logic_error 分支，
@@ -195,9 +195,9 @@ namespace AsynGyanis::Core
          *
          * 内部循环调用 send(MSG_NOSIGNAL)，当发送缓冲区满（EAGAIN）时，
          * 挂起等待 EPOLLOUT 事件。
-         * @note 返回 -1 表示**对端已关闭连接**（底层 send 返回 0 的那条路径），
+         * @note 返回 -1 表示对端已关闭连接（底层 send 返回 0 的那条路径），
          *       这条路径下 errno 未被设置，判定请以返回值为准，不要去读 errno
-         * @note **buffer 必须活到本次 co_await 恢复**，理由同 asyncReceive
+         * @note buffer 必须活到本次 co_await 恢复，理由同 asyncReceive
          * @throws Base::InvalidArgumentException length 超过 INT_MAX：这是传进来的取值非法（重试不会变好），
          *         走 logic_error 分支，与 TlsSocket 同一条口径
          * @throws Base::SystemException 发送失败（连接重置、对端关闭等运行期故障）
@@ -211,7 +211,7 @@ namespace AsynGyanis::Core
          * @return 全部发送完成时返回总字节数；返回 -1 表示对端已关闭（同 asyncSend）
          * @note 多段合成一次提交（scatter/gather），省掉「头部块 + 正文」拼进同一块缓冲的整体拷贝；
          *       部分写由内部游标推进，调用方不必关心
-         * @note **每段的地址必须活到本次 co_await 恢复**，理由同 asyncSend
+         * @note 每段的地址必须活到本次 co_await 恢复，理由同 asyncSend
          * @throws Base::InvalidArgumentException 段数为 0 或超过平台上限（当场拒绝而不是静默拆分）：
          *         取值非法走 logic_error 分支
          * @throws Base::SystemException 发送失败（连接重置、对端关闭等运行期故障）
@@ -271,7 +271,7 @@ namespace AsynGyanis::Core
          *
          * @details 用于把一条刚接受的连接转交给别的循环：调用方拿走描述符后必须立即接管，
          *          本对象此后不再关闭它，也不再认为自己持有连接。
-         * @note **只允许在描述符尚未注册事件时调用**（刚 accept、还没读过写过的套接字正是这种状态）：
+         * @note 只允许在描述符尚未注册事件时调用（刚 accept、还没读过写过的套接字正是这种状态）：
          *       事件注册只存在于本对象的等待器里，跨循环搬不走，已注册的连接不能用这个方法移交。
          * @return int 交出的描述符；本对象随即变为无效（fileDescriptor() 返回 -1），析构不再关闭它
          */
@@ -345,7 +345,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 按需创建常驻注册对象（第一次等待时调用）
-         * @note 注册推迟到第一次等待才做：Windows 完成端口**绑过一次就换不了端口**，在监听循环上
+         * @note 注册推迟到第一次等待才做：Windows 完成端口绑过一次就换不了端口，在监听循环上
          *       提前注册的描述符移交到工作循环后就再也注册不上；同时让只靠收发系统调用完成的
          *       短连接不必为「可能永远用不到的注册」付一次系统调用
          * @return IoWatcher* 注册对象；描述符无效或已关闭时为空指针
@@ -355,7 +355,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 常驻 epoll 注册（等待时按方向武装），第一次等待时创建
-         * @details 堆分配而非直接持有：epoll 里记的是注册对象的**地址**，而本类可移动——堆对象随
+         * @details 堆分配而非直接持有：epoll 里记的是注册对象的地址，而本类可移动——堆对象随
          *          指针转移，地址始终不变。可读与可写共用一个注册对象（方向由各等待器指定，同步只
          *          允许一个方向有等待者）；`mutable` 是因为等待方法本身是 const 而首次等待要建对象。
          */

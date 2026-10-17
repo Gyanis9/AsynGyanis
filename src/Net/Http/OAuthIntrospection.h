@@ -10,12 +10,12 @@
  *          服务器的自省端点——请求方把令牌原文 POST 过去，端点回 `{"active": true/false, …}`。
  *          本件就是那条请求的客户端：组表单、发 POST、把响应解析成结构体。与 JWT 一路的差别
  *          在信任模型：JWT 离线验签（公钥在手就能判），自省每问一次都要服务端点头——因此它
- *          天然是逐请求的往返，**不适合**放进同步的 verify 口逐请求调用，更适合会话建立时
+ *          天然是逐请求的往返，不适合放进同步的 verify 口逐请求调用，更适合会话建立时
  *          判定一次、或按缓存周期复核（怎么用是调用方的事，本件只把这一次往返做对）。
  *
  * @note 凭据按 RFC 6749 §2.3.1 走 HTTP Basic（client_id 作用户名、client_secret 作口令）；
  *       未给 clientId 时不发认证头（公开客户端或网关已代管的部署）。
- * @warning 自省端点**必须**在 TLS 之下：请求体里带着令牌原文，明文连接等于把令牌交给链路上的
+ * @warning 自省端点必须在 TLS 之下：请求体里带着令牌原文，明文连接等于把令牌交给链路上的
  *          每一跳。本件不替调用方拦明文端点——它照发并解析，但调用方要清楚这是它自己的选择。
  */
 #pragma once
@@ -80,8 +80,8 @@ namespace AsynGyanis::Net
          * @brief 查询一枚令牌的当前状态
          * @details POST `token=<百分号编码原文>&token_type_hint=access_token`（表单编码按
          *          RFC 6749 §4.1.3）；凭据走 Basic。响应必须是 2xx 且带布尔 `active`——
-         *          RFC 7662 规定无效/过期的令牌也以 **200** 回答并置 `active: false`，
-         *          因此非 2xx 与「缺 active」都算**协议不符**（返回失败原因），不是「不活跃」。
+         *          RFC 7662 规定无效/过期的令牌也以 200 回答并置 `active: false`，
+         *          因此非 2xx 与「缺 active」都算协议不符（返回失败原因），不是「不活跃」。
          * @param token 待查询的令牌原文
          * @return std::expected<OAuthTokenIntrospection, std::string> 解析结果；失败为中文原因
          *         （网络失败、非 2xx、正文不是 JSON 对象、缺 active 字段）

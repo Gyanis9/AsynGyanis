@@ -67,7 +67,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 一条分布读数（OTLP histogram 数据点）
-     * @details 桶语义与 Prometheus 版的区别要盯住：OTLP 的 `bucketCounts` 是**每格区间的条数**
+     * @details 桶语义与 Prometheus 版的区别要盯住：OTLP 的 `bucketCounts` 是每格区间的条数
      *          （不累计），末格固定是 +Inf 溢出档，因此长度恒为 `explicitBoundsSeconds` 长度加一；
      *          这与本框架 HttpServerStats 的延迟档位同形，换算只发生在单位（毫秒/微秒 → 秒）。
      * @note 需要按维度分点时填 `points`（此时忽略下面四个单点字段）；只报一条无标签分布时沿用
@@ -111,7 +111,7 @@ namespace AsynGyanis::Net
      *          ＝ CUMULATIVE——注册表交出的本来就是自进程启动起的累计值）；`Gauge` 折成 `gauge`；
      *          带维度读数折成多数据点（每点带 attributes）；直方图折成 `histogram` 数据点
      *          （`bucketCounts` 非累计、末格溢出、`explicitBounds` 与单位秒的 `sum`/`count` 同数组）。
-     *          64 位取值与时间一律写成**字符串**，与各语言 OTel SDK 的输出一致。
+     *          64 位取值与时间一律写成字符串，与各语言 OTel SDK 的输出一致。
      * @param resource 这批读数的出处（服务名与版本）；形状与链路出口共用同一份 TraceResource
      * @param batch 三路条目；全空也渲染出结构完整的正文（三条空数组）
      * @param collectionMoment 本批的采集时刻，充任每个数据点的 `timeUnixNano`；由调用方给出，渲染因此可复现可断言

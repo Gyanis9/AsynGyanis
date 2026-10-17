@@ -38,7 +38,7 @@ namespace AsynGyanis::Base::Detail
      * @param message 异常描述消息
      * @param sourceLocation 异常抛出位置
      * @return std::string 形如 "[异常] 消息 [文件:行 in 函数]" 的完整文本
-     * @details 文件只取末段：`source_location::file_name()` 给的是编译期展开的**绝对路径**，
+     * @details 文件只取末段：`source_location::file_name()` 给的是编译期展开的绝对路径，
      *          而 what() 是一个会被到处抄的字符串——日志、错误页、以及消费方直接回给对端的应答
      *          （框架自己的约定是「what() 带抛出点、不外回」，但那挡不住下游按自己的判断外回）。
      *          构建目录的绝对路径本身就是信息泄露，还让同一份日志在不同机器上对不上。

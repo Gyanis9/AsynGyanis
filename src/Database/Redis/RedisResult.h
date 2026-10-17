@@ -32,7 +32,7 @@ namespace AsynGyanis::Database
      *       才能读列值；Redis 数据已在内存里，本类不 gate 任何数据可读性。
      * @note 顶层元素映射：STRING / STATUS / ERROR → std::string（按长度拷贝，内嵌 '\0' 不丢失）、
      *       INTEGER → std::int64_t、NIL 或未知类型 → std::monostate、ARRAY → std::vector<std::string>；
-     *       RESP3 的三档各自成一项：**BOOL → bool、DOUBLE → double、MAP → 一份哈希（占一列）**，
+     *       RESP3 的三档各自成一项：BOOL → bool、DOUBLE → double、MAP → 一份哈希（占一列），
      *       SET 与 ARRAY 同形（一列一个成员），VERBATIM 与 BIGNUM 按其字节内容交回文本。
      *       这三档只有在服务端按 RESP3 应答时才会出现（见 ConnectionConfig::redisProtocol）；
      *       RESP2 下 `HGETALL` 是「字段、值」交替的扁平数组，与普通字符串数组在协议上无从区分，
@@ -40,7 +40,7 @@ namespace AsynGyanis::Database
      * @warning Redis 没有列名概念，columnName()/columnNames() 只能给出按下标合成的名字
      *          （"value0"、"value1"…），它不承载任何语义，也不等于哈希字段名；
      *          稳定可靠的取值方式是按下标 getValue(index)。
-     * @warning 容器**内部**的子元素仍按文本折（DatabaseValue 的列表与哈希备选只接受字符串）：
+     * @warning 容器内部的子元素仍按文本折（DatabaseValue 的列表与哈希备选只接受字符串）：
      *          嵌套的整数按十进制文本、嵌套容器压成 "[a, b]"，信息不丢但层级与类型不保留。
      *          需要真正的树形值时先按 `nativeHandle()` 自行遍历，本类不替调用方猜形状。
      *

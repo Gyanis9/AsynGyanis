@@ -49,7 +49,7 @@ namespace AsynGyanis::Net
      */
     struct QuicAddressValidationTokenContent
     {
-        std::vector<std::uint8_t> originalDestinationConnectionId{}; ///< 客户端**第一个** Initial 的目的标识
+        std::vector<std::uint8_t> originalDestinationConnectionId{}; ///< 客户端第一个 Initial 的目的标识
         std::chrono::seconds      issuedAge{0};                      ///< 距今多久前签发（核验时算出）
     };
 

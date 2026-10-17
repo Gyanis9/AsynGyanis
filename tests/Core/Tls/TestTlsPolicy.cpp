@@ -72,7 +72,7 @@ namespace AsynGyanis::Core
         const RawContext context;
         ASSERT_NE(context.get(), nullptr);
         // 裸上下文的起点由 OpenSSL 给（随发行版配置变化，可能是 1.0 也可能是 1.6.5b 那档），
-        // 这里只断言「没被改动」：下限是**服务端角色**补的（见下面 ServerRoleKeepsTheTls12Floor），
+        // 这里只断言「没被改动」：下限是服务端角色补的（见下面 ServerRoleKeepsTheTls12Floor），
         // applyTlsPolicy 自己不许替调用方发明下限
         const int startingMinimumVersion = SSL_CTX_get_min_proto_version(context.get());
 

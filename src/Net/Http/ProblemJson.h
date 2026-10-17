@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 本文件只做两件事：把一份字段完整的 problem 对象渲染成 JSON 文本，以及把它作为一个
- *          **可选**响应出口写进 `HttpResponse`。既有中间件与路由的错误路径一行都不改——它们
+ *          可选响应出口写进 `HttpResponse`。既有中间件与路由的错误路径一行都不改——它们
  *          继续发各自的自定义 JSON 形；要不要换成 problem+json 由调用方显式选择。这条边界是
  *          有意的：统一替换所有错误出口是行为变更，不属于「补一个渲染器」。
  */

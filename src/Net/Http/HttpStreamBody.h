@@ -41,7 +41,7 @@ namespace AsynGyanis::Net
     class ASYN_NET_API HttpStreamBody final : public HttpBodySource
     {
     public:
-        /// 消费回调：参数是本次被消费掉的**流控字节数**，会话据此归还接收窗口
+        /// 消费回调：参数是本次被消费掉的流控字节数，会话据此归还接收窗口
         using ConsumeHandler = std::function<void(std::size_t)>;
 
         /// 到达通知：有新正文到达、收尾或断开时各调一次（供推式承载唤醒等待者）

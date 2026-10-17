@@ -56,7 +56,7 @@ namespace AsynGyanis::Net
      *          `Http3Connection` 负责，本类把它的通知接成业务：把收全的请求交给既有 `Router`——
      *          业务处理器与 h1/h2 完全同一份，不需要为 h3 另写一套。
      *
-     * @note 控制流与 QPACK 编解码流都是**本端发起的单向流**：连接层在构造时就开出这三条流、发掉
+     * @note 控制流与 QPACK 编解码流都是本端发起的单向流：连接层在构造时就开出这三条流、发掉
      *       SETTINGS 并接上 QPACK 两侧（RFC 9114 §6.2.1），流号由传输层给（`StreamOpener`），本类不碰。
      * @warning 线程契约与连接一致：本对象只在其所属事件循环线程上使用。
      */
@@ -116,7 +116,7 @@ namespace AsynGyanis::Net
          *       开流失败只记日志并让会话保持不可用（`isUsable()` 为假），不抛异常：
          *       一条连接建不起 h3 不该把服务端拖垮
          * @note 采集口径与 h1/h2 对齐：请求数与 413/协议性拒绝计入，响应按状态码类计数并落耗时直方图，
-         *        被对端 RESET_STREAM 取消的流计入「单流取消」。**三条派发路径都算账**：普通请求、
+         *        被对端 RESET_STREAM 取消的流计入「单流取消」。三条派发路径都算账：普通请求、
          *        流式正文路由的请求（头部收齐即派发，与 h1/h2 同一时刻计入）、RFC 9220 的隧道
          *        （以 2xx 应答，那条响应同样落账）。耗时的起点是「本会话收下这条请求」的那一刻：
          *        普通路径在收齐并交付业务时取戳，流式路径在头部收齐、派发协程建立时取戳——
@@ -139,7 +139,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 接上路由器：收全的请求按 h1/h2 同一套路由与处理器派发
-         * @param router 路由器；**必须活得比本会话久**（由服务端持有，本类只存指针）
+         * @param router 路由器；必须活得比本会话久（由服务端持有，本类只存指针）
          * @note 不接路由器时会话照常收发，但请求会得到 503（明确失败，不静默丢弃）
          */
         void attachRouter(Router &router) noexcept;
@@ -289,7 +289,7 @@ namespace AsynGyanis::Net
          * @brief 一条流还没答完就死了：按「谁判的」分别落账
          * @details 只把「还没答完」的算进来——响应早已发完、事后被重置的流不该记
          *          （与 h2 同一判据：那边只在响应发不出去、原因是流被取消时计数）。分开落账的理由：
-         *          `streamCancelledCount` 的口径写死是**对端**取消（RESET_STREAM/STOP_SENDING），
+         *          `streamCancelledCount` 的口径写死是对端取消（RESET_STREAM/STOP_SENDING），
          *          而本端按规则判死的流是「对端的报文不合规」，那一份属 `badRequestCount`
          *          （见 HttpServerStats 的请求计数口径：被协议层挡在业务之外的只进那一笔）。
          *          本端排空期拒掉的新请求两本都不进——那既不是对端的错，也不是坏报文，
@@ -451,7 +451,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 给一条还在收的请求记一条字段的头部预算，越限就置位
-         * @details 条数、单名/单值长度、整块净字节与 h1/h2 同口径；**尾段字段同样计入**
+         * @details 条数、单名/单值长度、整块净字节与 h1/h2 同口径；尾段字段同样计入
          *          （@c HttpParserLimits::maximumHeaderCount 的注释就是这么写的）。头段与尾段共用
          *          这一份判定，免得两条路各自漂移。越限只置位、让请求收完，服务阶段统一回 431——
          *          中途断开的话对端只看到「连接没了」，拿不到「头部太大」这个结论。
@@ -661,7 +661,7 @@ namespace AsynGyanis::Net
         std::shared_ptr<StreamingResponse> streamingResponseFor(std::int64_t streamId);
 
         /**
-         * @brief 查一条流已有的流式响应状态（**只查不建**）
+         * @brief 查一条流已有的流式响应状态（只查不建）
          * @details 对端已经重置这条流时表里没有它：此时重建一个「未关闭」的新状态会让条目与
          *          其中的字节永久驻留（没人再置位、也没人清理），大帧还会卡在等缓冲空间那里
          *          永远等下去。发送侧因此一律只查表，查不到按「流没了」处理
@@ -676,7 +676,7 @@ namespace AsynGyanis::Net
          * @param state 该流的状态
          * @param response 业务填好的响应（取状态码与头部）
          * @return true 提交成功
-         * @note 只交头、**不结束这条流**：正文随后一段一段推给连接层
+         * @note 只交头、不结束这条流：正文随后一段一段推给连接层
          */
         bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response);
 
@@ -704,7 +704,7 @@ namespace AsynGyanis::Net
          * @brief 流式响应写完：补交还没交的响应头，再交出收尾的 END_STREAM
          * @param streamId 流号
          * @param response 业务填好的响应（一次都没写过时要在这里补交响应头）
-         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时**不交尾段**——那些值是业务
+         * @param isBodyComplete 业务是否正常跑完：中途抛异常时为 false，此时不交尾段——那些值是业务
          *                       对它「算完的那段正文」负责的承诺，正文只发了一半就交上去必然对不上
          *                       （与 h1、h2 同一条处置）
          */
@@ -934,7 +934,7 @@ namespace AsynGyanis::Net
         bool                                    m_hasAbandonedPendingStreams{false}; ///< 承载连接的收口信号是否已交过：唤醒只做一次，之后每拍只收敛
         /// 会话级收口信号：承载连接已没了（abandonPendingStreams）时请求它停止，正在跑的处理器经
         /// `HttpRequest::cancelToken()` 观察到（与 h1 的 Connection::cancelable()、h2 的同一处同一角色）。
-        /// 优雅排空那一步**不**请求它——见 beginGracefulShutdown 里那条「已受理的请求照常跑完」
+        /// 优雅排空那一步不请求它——见 beginGracefulShutdown 里那条「已受理的请求照常跑完」
         Core::Cancelable m_shutdownCancelable{};
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;

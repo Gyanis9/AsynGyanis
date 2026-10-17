@@ -11,7 +11,7 @@
  *          一份实现：SQL NULL→monostate、整数列与 BIT 列→int64_t、浮点列→double、
  *          二进制列→BinaryBytes、DECIMAL 与其余类型→std::string。
  *
- * @note 二进制列**不能只看类型码**：MySQL 的 BLOB 与 TEXT 共用 MYSQL_TYPE_BLOB，VARBINARY 与
+ * @note 二进制列不能只看类型码：MySQL 的 BLOB 与 TEXT 共用 MYSQL_TYPE_BLOB，VARBINARY 与
  *       VARCHAR 共用 MYSQL_TYPE_VAR_STRING，唯一的区分依据是列的字符集是否为 binary(63)，
  *       因此转换函数必须同时接收字符集号，否则会把 TEXT 列读成字节、或把 BLOB 读成文本。
  * @note 本头只在 MySql 驱动内部的 .cpp 里包含（它必须看到真实的 mysql.h 才能拿到 enum_field_types
@@ -70,7 +70,7 @@ namespace AsynGyanis::Database::Detail
      * @brief 把一段浮点文本解析为 double
      * @details 判定与拒绝面全部由 std::from_chars 的浮点重载给出，两点值得写清：它接受
      *          inf / infinity / nan（含大小写变体与服务端的 -nan），因此服务端的非有限值
-     *          在这里就能还原成对应的 double，不需要额外拼写表；它**不接受前导 '+'**
+     *          在这里就能还原成对应的 double，不需要额外拼写表；它不接受前导 '+'
      *          （"+7" 判失败），而 MySQL 印数时也不会带正号，所以这条放宽没有必要。
      * @param rawValue 列值首地址，调用方保证非空
      * @param byteLength 列值字节长度
@@ -97,7 +97,7 @@ namespace AsynGyanis::Database::Detail
     /**
      * @brief 判定一列是否为真正的二进制列
      *
-     * @details MySQL 在协议层**不区分** BLOB 与 TEXT：两者都是 MYSQL_TYPE_BLOB（TINY/MEDIUM/LONG
+     * @details MySQL 在协议层不区分 BLOB 与 TEXT：两者都是 MYSQL_TYPE_BLOB（TINY/MEDIUM/LONG
      *          同理），VARBINARY 与 VARCHAR 都是 MYSQL_TYPE_VAR_STRING。唯一的判据是列字符集
      *          是否为 binary——因此只看类型码会把 TEXT 列读成字节。
      *
@@ -199,7 +199,7 @@ namespace AsynGyanis::Database::Detail
 
             case MYSQL_TYPE_BIT:
             {
-                // 协议把 BIT(M) 送成 ⌈M/8⌉ 字节的**大端无符号整数**（实测 BIT(8)=200 回 0xC8、
+                // 协议把 BIT(M) 送成 ⌈M/8⌉ 字节的大端无符号整数（实测 BIT(8)=200 回 0xC8、
                 // BIT(1)=0 回一个长度为 1 的 NUL 字节）。按文本交出等于把一串控制字节冒充成文本列，
                 // 因此还原成数值：装得进 int64 给整数，装不进（BIT(64) 上界 2^64-1）按十进制文本交出
                 // ——与 MYSQL_TYPE_*UNSIGNED 同一套约定，RowMapper 的文本支路能原样读回。

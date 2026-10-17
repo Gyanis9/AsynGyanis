@@ -31,7 +31,7 @@ namespace AsynGyanis::Core
     /**
      * @brief Windows 完成端口（IOCP）事件后端，接口与 Epoll 一致
      *
-     * @note **监听套接字的连接必须由 takeAcceptedSocket() 取走**：AcceptEx 在完成时已经把连接
+     * @note 监听套接字的连接必须由 takeAcceptedSocket() 取走：AcceptEx 在完成时已经把连接
      *       从监听队列里摘下并接入它自己的套接字，`::%accept()` 看不到它——TcpAcceptor 走的正是
      *       这条路径（见 AsyncSocket::takeAcceptedConnection()）。
      * @note 线程约束：全部方法只在所属事件循环线程上调用（完成通知也只在 wait() 里取出），
@@ -76,7 +76,7 @@ namespace AsynGyanis::Core
          * @param userData 上报事件时写进 epoll_event.data.ptr 的用户数据（IoWatcher 用自己的地址）
          * @return true 已注册（同一描述符重复注册返回 false）
          * @details 注册即与完成端口建立归属关系，随后按 `events` 里给出的方向投递探针；探针投递失败
-         *          **不算注册失败**——已连接套接字的对侧还没就绪、监听描述符暂时拿不到接受套接字
+         *          不算注册失败——已连接套接字的对侧还没就绪、监听描述符暂时拿不到接受套接字
          *          都会走到这里，上层真正等待时会经 modFileDescriptor() 再武装一次。
          */
         bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData);
@@ -100,7 +100,7 @@ namespace AsynGyanis::Core
          *          上层的调用顺序是「先注销、后关闭描述符」，因此这里不负责关闭套接字。
          * @param fileDescriptor 目标描述符
          * @return true 已注销；false 表示它不在注册表里
-         * @warning 注销之后**同一个还打开着的描述符不能再注册回来**：Windows 没有把句柄从完成端口
+         * @warning 注销之后同一个还打开着的描述符不能再注册回来：Windows 没有把句柄从完成端口
          *          解除关联的 API，第二次绑定会被拒（实测三种时序一致：探针已跑完一轮、取消完成尚未
          *          取回、先收掉取消完成再注册）。epoll 与 io_uring 没有这条限制，因此「注销后再注册
          *          同一个活描述符」不能当跨后端契约；本层的注销只发生在套接字关闭路径上。
@@ -133,14 +133,14 @@ namespace AsynGyanis::Core
          * @return true 操作已投递（或已当场成功），此后 `takeConnectResult()` 会交出结果；
          *         false 表示连投递都没成功（原因见 immediateErrorCode）
          *
-         * @details 非阻塞 `connect()` 之后，Windows 的 IOCP **不会**为「可写」给出任何通知：连接中的
+         * @details 非阻塞 `connect()` 之后，Windows 的 IOCP 不会为「可写」给出任何通知：连接中的
          *          套接字上零字节 `WSASend` 连投递都失败（实测 WSAENOTCONN 持续整个连接期），
          *          于是等可写的协程只能靠上层的看门狗收场——连接被拒要等到预算耗尽。
          *          ConnectEx 把连接变成一次真正的重叠操作，完成通知带着结果回来，等待方按对端时序醒来。
          *
-         * @note ConnectEx 要求套接字**已绑定**：未绑定时本方法先就地绑到本族的任意地址（实测不绑直接
+         * @note ConnectEx 要求套接字已绑定：未绑定时本方法先就地绑到本族的任意地址（实测不绑直接
          *       WSAEINVAL），已绑定的（调用方自己 bind 过）不动它。
-         * @note 调用方必须在**同一次循环迭代内**接着等这个描述符的可写事件，中间不要挂起：完成通知
+         * @note 调用方必须在同一次循环迭代内接着等这个描述符的可写事件，中间不要挂起：完成通知
          *        只在 wait() 里处理，投递后立刻进入等待才可能接住它；否则结果会留在状态里等
          *        `takeConnectResult()` 取，而唤醒源已经没有了。`AsyncSocket::asyncConnect()` 就是这个形状。
          * @note 完成后本方法负责补 `SO_UPDATE_CONNECT_CONTEXT`，否则这条套接字拿不到监听侧的上下文
@@ -154,7 +154,7 @@ namespace AsynGyanis::Core
          * @return true 结果已就绪（本次调用把它取走）
          * @return false 连接还没完成，或这个描述符上没有在途的连接操作
          *
-         * @details 错误码从完成包里取（`WSAGetOverlappedResult`），**不能**看 `SO_ERROR`：实测被拒的
+         * @details 错误码从完成包里取（`WSAGetOverlappedResult`），不能看 `SO_ERROR`：实测被拒的
          *          ConnectEx 完成时 `SO_ERROR` 仍是 0，而包里的状态码译回来才是 1225/WSAECONNREFUSED。
          */
         bool takeConnectResult(int fileDescriptor, int *errorCode);
@@ -175,7 +175,7 @@ namespace AsynGyanis::Core
          *          循环的那条线程碰」，这个标记把违约变成一次当场抛出的错误。
          *
          * @note 只查「同时在场」，不查「换了线程」：注册推迟到第一次等待才做，同一个对象被两条线程
-         *       **先后**使用是既有的良性形态（顺序交接），不在本检查范围内——按属主线程判会误伤一大片。
+         *       先后使用是既有的良性形态（顺序交接），不在本检查范围内——按属主线程判会误伤一大片。
          * @note 同一线程的重入同样拒绝：那意味着在 wait() 还没返回时又进了后端，交出去的事件视图
          *       会被下一批覆盖。
          */
@@ -337,7 +337,7 @@ namespace AsynGyanis::Core
         std::vector<epoll_event>      m_results;       ///< 翻译结果（wait() 的返回值指向它）
         /// 同一批完成通知的合并索引：data.ptr → m_results 下标，与 m_results 同生命周期。
         /// 用开放寻址的扁平表而不是 unordered_map：后者每插一个键分配一个节点，
-        /// 而合并是**每条完成通知**都要走的一步（把同一注册对象两个方向的完成并入一条 epoll_event）
+        /// 而合并是每条完成通知都要走的一步（把同一注册对象两个方向的完成并入一条 epoll_event）
         std::vector<void *>      m_resultSlotUserData; ///< 槽位的键（内容仅在下标有效时有意义）
         std::vector<std::size_t> m_resultSlotIndex;    ///< 槽位的值：m_results 下标，kEmptyResultSlot 为空槽
         /// 本轮真正用过的槽位：一轮通常只有几条完成通知，重置时按这张表逐个清即可——

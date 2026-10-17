@@ -153,7 +153,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 为这批域名产出一份证书签名请求（PKCS#10）
-         * @details 主题名取第一个域名做可读性便利，但**真正的凭据靠 SAN 扩展**：现代校验一律看
+         * @details 主题名取第一个域名做可读性便利，但真正的凭据靠 SAN 扩展：现代校验一律看
          *          subjectAltName，CN 不参与匹配（RFC 6125 已被 RFC 9525 取代，CA/Browser 基线也
          *          明确忽略 CN）。全部域名都写进 DNS 类型的 SAN。
          * @param domainNames 要覆盖的域名，至少一条；空列表直接拒绝而不是交出一张没有 SAN 的请求
@@ -169,7 +169,7 @@ namespace AsynGyanis::Net
          * @return std::string 指纹文本
          * @details 单独开成静态入口有两个用处：一是它能拿 RFC 的官方向量单独验收（不必持有一把
          *          与该向量对应的私钥），二是账户密钥之外的场景（比如核对机构侧记录的指纹）也要用同一份判据。
-         * @note 本函数**不重排成员、不校验成员集合**：规范化那一步由 publicJsonWebKeyText() 保证，
+         * @note 本函数不重排成员、不校验成员集合：规范化那一步由 publicJsonWebKeyText() 保证，
          *       把任意 JSON 传进来算出的指纹与规范的 JWK 指纹不是同一件事，这是调用方的责任
          */
         [[nodiscard]] static std::string computeJsonWebKeyThumbprint(std::string_view canonicalJwkMembers);

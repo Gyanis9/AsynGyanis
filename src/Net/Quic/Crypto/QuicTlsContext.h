@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details OpenSSL 3.5+ 的 `SSL_set_quic_tls_cbs` 是**拉模型**：TLS 通过回调向本类要握手字节、
+ * @details OpenSSL 3.5+ 的 `SSL_set_quic_tls_cbs` 是拉模型：TLS 通过回调向本类要握手字节、
  *          并把产出的字节交回来，全程不碰 BIO 与 socket。因此本类可以只当作「TLS 记录的多路复用器」
  *          来测——两端各建一个上下文，把记录互相搬运，就能在内存里跑完整个握手。
  *
@@ -75,7 +75,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 作客户端时要落到每连接会话上的那三样身份设置
      *
-     * @details 都是**按连接**而非按上下文生效的：一个上下文要服务多个主机的出站连接，SNI、校验名与
+     * @details 都是按连接而非按上下文生效的：一个上下文要服务多个主机的出站连接，SNI、校验名与
      *          ALPN 列表逐条连接才可能不同。服务端一侧留空即可（那些值是listen侧配置的 ALPN 回调给的）。
      */
     struct ASYN_NET_API QuicClientTlsSettings
@@ -103,7 +103,7 @@ namespace AsynGyanis::Net
          * @param tlsContext 已配好证书与 ALPN 的上下文（生命周期必须覆盖本对象）
          * @param isServerSide true 为服务端
          * @param localTransportParameters 已按 RFC 9000 §18 编码的本端参数；交空即不设参数（握手会因缺
-         *        `initial_source_connection_id` 等必填项被对端判错）。**本类会复制一份**：OpenSSL 的
+         *        `initial_source_connection_id` 等必填项被对端判错）。本类会复制一份：OpenSSL 的
          *        `SSL_set_quic_tls_transport_params` 只记指针不拷内容，所以交临时缓冲进来也不会悬空
          * @param clientSettings 作客户端时的身份设置（SNI、证书校验名、ALPN）；服务端一侧交空指针即可。
          *        只在这次构造里读，不留指针
@@ -123,7 +123,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把对端 CRYPTO 帧的负载交给对应级别的入站缓冲
-         * @details 级别参数**必须**收：每个级别是独立的包号空间，报文可以乱序到达，Initial 的尾巴
+         * @details 级别参数必须收：每个级别是独立的包号空间，报文可以乱序到达，Initial 的尾巴
          *          完全可能落在 Handshake 之后。更要命的是 TLS 状态机要求 ServerHello 结束处正好是一条
          *          记录的末尾（RFC 8446 §4.4.1），把两个级别的字节接成一条流会打断那个判据。
          * @param level 该批字节来自哪个级别的报文

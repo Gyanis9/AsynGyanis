@@ -115,7 +115,7 @@ namespace AsynGyanis::Net::TestSupport
      * @param path 输出路径
      * @param keyTypeSpecification OpenSSL 的算法名与参数写法：如 "RSA:2048"、"EC:secp384r1"
      * @return true 文件已写出
-     * @note 本函数刻意能造出本框架**不收**的密钥（1024 位 RSA、P-384 曲线）：拒绝面要有真原料才测得到
+     * @note 本函数刻意能造出本框架不收的密钥（1024 位 RSA、P-384 曲线）：拒绝面要有真原料才测得到
      */
     [[nodiscard]] bool writeGeneratedPrivateKeyPem(const std::filesystem::path &path, std::string_view keyTypeSpecification);
 

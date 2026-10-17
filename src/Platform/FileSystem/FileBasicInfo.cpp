@@ -180,7 +180,7 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 取文件系统给这个文件对象记的身份句柄，折成一个可混入的 64 位数
-         * @details ext4 与 tmpfs 的句柄字节里除了 inode 号还带**世代号**，inode 被回收再发给新文件时世代
+         * @details ext4 与 tmpfs 的句柄字节里除了 inode 号还带世代号，inode 被回收再发给新文件时世代
          *          必变；而 ctime 由 `current_time()` 取粗粒度时钟，HZ=1000 时同一毫秒内的「删掉再同名
          *          重建」会给出逐位相同的 ctime（原生 ext4 实测 50 次里 16 次相同，本用例因此稳定变红）。
          *          overlayfs 则直接回 EOPNOTSUPP（容器实测），此时给空，由调用方退回原来的三项折法。

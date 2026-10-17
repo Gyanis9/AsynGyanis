@@ -5,7 +5,7 @@
 //
 // 覆盖场景：
 // - parseIntegerText：int64 上下界；空白/小数点/科学计数/十六进制/余文/越界一律拒；
-//   **带前导 '+' 也拒**（std::from_chars 的符号位只认负号，而 MySQL 印数不带正号，故无需放宽）
+//   带前导 '+' 也拒（std::from_chars 的符号位只认负号，而 MySQL 印数不带正号，故无需放宽）
 // - parseDoubleText：十进制与科学计数、±0、上溢拒；非有限值拼写 inf / -inf / nan / -nan 及
 //   infinity 由 from_chars 的浮点文法认出（这点反直觉，故单独钉用例）
 // - isBinaryColumn：BLOB 与 TEXT 共用类型码，字符集 63 是唯一判据；非字节类型即使字符集是 binary 也不按二进制

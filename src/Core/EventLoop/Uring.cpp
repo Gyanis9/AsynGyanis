@@ -324,7 +324,7 @@ namespace AsynGyanis::Core
         io_uring_sqe *const submission = &m_submissionEntries[index];
         std::memset(submission, 0, sizeof(io_uring_sqe));
         m_submissionArray[index] = index;
-        // 只推进本地计数，**不发布尾指针**：调用方随后才填 opcode/fd 这些字段，
+        // 只推进本地计数，不发布尾指针：调用方随后才填 opcode/fd 这些字段，
         // 而尾部一旦发布给内核，它就可能读到半写的 SQE（发布统一放在 flushSubmissions）
         ++m_reservedSubmissionCount;
         return submission;
@@ -545,7 +545,7 @@ namespace AsynGyanis::Core
         if (registration->inFlightTicket != 0)
         {
             // 在途轮询先取消：完成通知到齐之前不能销毁记录（内核还持有它的地址）。
-            // 但描述符键要**当场**释放——那个 fd 号可能立刻被复用，键留着会让新连接注册失败
+            // 但描述符键要当场释放——那个 fd 号可能立刻被复用，键留着会让新连接注册失败
             registration->pendingDelete = true;
             if (!registration->pendingRemove && submitPollRemove(registration->inFlightTicket))
             {

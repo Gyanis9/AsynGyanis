@@ -24,9 +24,9 @@ namespace AsynGyanis::Core
 {
     /**
      * @brief 事件循环上的数据报套接字
-     * @note 报文是**整条**收发：内核不会把一条报文切开，因此发不下时等可写后整条重发，
+     * @note 报文是整条收发：内核不会把一条报文切开，因此发不下时等可写后整条重发，
      *       接收也要连同来源地址一起交回
-     * @warning 与其它循环对象同一条线程契约：只在**所属事件循环线程**上创建、使用与关闭
+     * @warning 与其它循环对象同一条线程契约：只在所属事件循环线程上创建、使用与关闭
      *          （内部状态没有原子保护）
      * @note 一条报文的最大长度见 Platform::DatagramSocket::kMaximumDatagramBytes
      */
@@ -122,13 +122,13 @@ namespace AsynGyanis::Core
          * @param capacity 缓冲容量，至少 1 字节（空报文也要占一位）
          * @return 字节数与来源地址（见结构体说明：按值返回）
          * @note 等待可读期间套接字被关闭时 receivedByteCount 为 -1 且 socketErrorCode 为 0；
-         *       **0 是合法的空报文**
+         *       0 是合法的空报文
          * @note 缓冲放不下整条报文时多出的字节被丢弃（UDP 语义），返回值即 capacity
-         * @note 平台报错同样按 -1 + socketErrorCode 交出，**不抛**：无连接套接字上这些码
+         * @note 平台报错同样按 -1 + socketErrorCode 交出，不抛：无连接套接字上这些码
          *       （WSAECONNRESET / EHOSTUNREACH / ECONNREFUSED …）都是 ICMP 替某个已消失的对端
          *       捎来的回声，套接字本身还能用。之前这里按硬失败抛，而抛出的异常落不进正在 await 的
          *       协程——本框架里被调度器恢复的协程抛异常只会被记一行「没人接住」然后丢弃，
-         *       于是**监听循环当场消失**：一个消失的对端就让整台 QUIC 服务器不再接受任何来源
+         *       于是监听循环当场消失：一个消失的对端就让整台 QUIC 服务器不再接受任何来源
          * @throws Base::InvalidArgumentException 缓冲为空或容量为 0（调用方写错了，不必重试）
          * @throws Base::SystemException 套接字无效（已被移动走或关闭）
          */
@@ -159,7 +159,7 @@ namespace AsynGyanis::Core
          *          `receive()`，接口与语义同形但每槽仍付一次系统调用。
          * @note 至少收到一条才返回；一次都没收到而等待被打断（套接字关闭或循环停止）时条数为 0、
          *       错误码为 0——与 `asyncReceiveFrom` 的那条「无码收场」同形。
-         * @note 真错误按 0 条 + 错误码交出，**不抛**（抛会让监听循环当场消失，见 `asyncReceiveFrom` 的 @note）
+         * @note 真错误按 0 条 + 错误码交出，不抛（抛会让监听循环当场消失，见 `asyncReceiveFrom` 的 @note）
          * @throws Base::InvalidArgumentException 槽位数组为空或条数为 0
          * @throws Base::SystemException 套接字无效（已被移动走或关闭）
          */
@@ -185,7 +185,7 @@ namespace AsynGyanis::Core
          * @param itemCount 条目数；超过 `Platform::DatagramSocket::kMaximumBatchSlotCount` 按上限发
          * @return 已交出的条数、是否全部交出，以及没交出时的错误码
          *
-         * @details 发送缓冲满时等可写，再从**没交出的那一条**接着发（已交出的不重发——数据报没有
+         * @details 发送缓冲满时等可写，再从没交出的那一条接着发（已交出的不重发——数据报没有
          *          「部分写出」，重发就是让对端收到两条）。
          * @note 与 `asyncSendTo` 同一条不抛的口径：平台错误按结果交出。抛会给不出错误通道，
          *       而连接侧需要的是「这几条到底出去了没有」。
@@ -203,7 +203,7 @@ namespace AsynGyanis::Core
          * @param ecnCodepoint 要在 IP 头里标的 ECN 取值，`Platform::kEcnCodepointNotCapable`（默认）表示不标；
          *        平台与按条目的规则见 `Platform::DatagramSocket::BatchSendItem::ecnCodepoint`
          * @return 实际发出的字节数（与 length 相等即成功）；等待可写期间套接字被关闭时返回 -1
-         * @note 数据报不会部分写出，因此等待可写后是**整条重发**
+         * @note 数据报不会部分写出，因此等待可写后是整条重发
          * @throws Base::InvalidArgumentException 缓冲为空，或单条报文超过
          *         Platform::DatagramSocket::kMaximumDatagramBytes（不会被内核切开，须自行分片）
          * @throws Base::SystemException 套接字无效（已被移动走或关闭），或平台层报错
@@ -213,8 +213,8 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 关闭套接字
-         * @details 顺序与 `AsyncSocket::close()` 同理：**先**销毁注册对象——它会唤醒仍挂在可读/可写上的
-         *          等待协程（关描述符本身不唤醒 epoll 的等待者），**再**关描述符。少了前一步，
+         * @details 顺序与 `AsyncSocket::close()` 同理：先销毁注册对象——它会唤醒仍挂在可读/可写上的
+         *          等待协程（关描述符本身不唤醒 epoll 的等待者），再关描述符。少了前一步，
          *          正在等的协程就永远醒不过来，出站侧的看门狗于是形同虚设。
          * @note 幂等：已关闭或描述符已被移动走时什么都不做
          * @warning 只能在所属事件循环线程上调用（与等待同一线程的约定）

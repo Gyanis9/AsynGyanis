@@ -234,8 +234,8 @@ namespace AsynGyanis::Core
                     isDone.store(true, std::memory_order_release);
                 });
 
-        // 必须用 kill(getpid()) 而不是 raise()：raise 送的是**线程定向**的挂起信号，只有调用线程自己能收，
-        // 而本类的等待线程要靠**进程定向**的挂起信号才能取到它（raise 的这颗会一直挂在主线程的掩码后面，
+        // 必须用 kill(getpid()) 而不是 raise()：raise 送的是线程定向的挂起信号，只有调用线程自己能收，
+        // 而本类的等待线程要靠进程定向的挂起信号才能取到它（raise 的这颗会一直挂在主线程的掩码后面，
         // 析构解除屏蔽时才按缺省动作把进程干掉）。这与外部 `kill -TERM <pid>` 的实际形状一致
         ASSERT_EQ(::kill(::getpid(), SIGTERM), 0) << "kill 失败，这条用例就没有把信号送出去";
 

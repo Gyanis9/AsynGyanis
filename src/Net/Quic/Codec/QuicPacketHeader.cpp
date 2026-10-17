@@ -10,7 +10,7 @@ namespace AsynGyanis::Net
     {
         /**
          * @brief 按大端读出定长整数字段
-         * @details QUIC 线上整数一律网络序（RFC 9000 §17 开头），且**不用**变长整数编码——
+         * @details QUIC 线上整数一律网络序（RFC 9000 §17 开头），且不用变长整数编码——
          *          版本、连接标识长度与包号都是这种定长字段（§16 末段明确把它们排除在外）。
          * @param bytes 字段字节，调用方保证够 byteCount 个
          * @param byteCount 字段字节数（1 到 8）

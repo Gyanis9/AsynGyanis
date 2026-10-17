@@ -4,7 +4,7 @@
 //   1) 规范形态的字节：每种帧按 §19 的字段图手算期望字节再逐字节比（变长整数的档位、STREAM 的
 //      OFF/LEN/FIN 位、ACK 的 First ACK Range 与 gap 递推都在这一步核到）；
 //   2) 解码：逐型 std::get 核字段，并检查多帧序列的顺序与 quicFrameTypeValue 的取值；
-//   3) 两条容易被写错的规则：0x1c 形态的 Frame Type 字段**恒在**（不知道触发帧时填 0），
+//   3) 两条容易被写错的规则：0x1c 形态的 Frame Type 字段恒在（不知道触发帧时填 0），
 //      以及 LEN 位为 0 的 STREAM 数据延伸到载荷末尾（重新编码会变形态但不改变语义）；
 //   4) ACK 区间的递推：largest = previous_smallest - gap - 2 算出负包号一律判 Malformed（§19.3.1），
 //      编码侧同样拒绝会算出负数的区间输入；
@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 解出「恰好一帧」的载荷，多帧或失败都返回空
-         * @details 帧里的 CRYPTO/STREAM/标识等字段是**指向载荷的视图**（生产接口就是这么定的，
+         * @details 帧里的 CRYPTO/STREAM/标识等字段是指向载荷的视图（生产接口就是这么定的，
          *          为的是不拷载荷），所以载荷的存储必须由调用方持有并活得比帧久；
          *          本助手若自己拿局部 vector，返回的帧当场悬空（ASan 实测 heap-use-after-free）。
          * @param hexadecimalText 载荷的十六进制文本
@@ -160,7 +160,7 @@ namespace AsynGyanis::Net
         single.ranges                          = {{0, 5}};
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205000005"));
 
-        // ACK Delay 是**线上值**而不是微秒：300 原样落到第三个字段，乘除 2^指数都不在本层
+        // ACK Delay 是线上值而不是微秒：300 原样落到第三个字段，乘除 2^指数都不在本层
         single.acknowledgementDelay = 300;
         EXPECT_EQ(encodeOne(single), makeBytesFromHex("0205412c0005"));
 
@@ -332,7 +332,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(frames.error().kind, QuicDecodeErrorKind::Malformed);
         EXPECT_TRUE(containsText(frames.error().message, "最短")) << frames.error().message;
 
-        // 对照：同一非最短写法用在**取值**字段上必须照收，否则就把 §16 的「除帧类型外都合法」反着实现了
+        // 对照：同一非最短写法用在取值字段上必须照收，否则就把 §16 的「除帧类型外都合法」反着实现了
         std::vector<std::uint8_t> paddedStorage;
         const auto                paddedValue = decodeSingle("1080000003", paddedStorage);
         ASSERT_TRUE(paddedValue.has_value());

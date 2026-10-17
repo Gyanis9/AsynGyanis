@@ -22,7 +22,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
         /**
          * @brief 按 MSVCRT 的解析规则给一个参数加引号
-         * @details 只给**需要**引号的参数加（含空白、制表符或引号）：无差别地全加会改变某些程序的解析
+         * @details 只给需要引号的参数加（含空白、制表符或引号）：无差别地全加会改变某些程序的解析
          *          ——`cmd` 的 `/c` 一旦被引号包住，后面的命令串会被当成另一段。需要引号时按 MSVCRT
          *          规则转义：整体加双引号，参数内的双引号用「反斜杠加倍 + 一个反斜杠」，紧邻引号与
          *          末尾的反斜杠必须成对加倍——少做一步就会让参数被拆错，子进程里缺字且极难回溯。
@@ -274,7 +274,7 @@ namespace AsynGyanis::Platform
         std::wstring wideCommandLine = TextEncoding::toWideString(commandLine);
 
         // 可执行文件只走命令行那一路，lpApplicationName 传空：CreateProcessW 对 lpApplicationName
-        // **不搜 PATH**（只按当前目录/系统目录补全），只给个「cmd.exe」这种名字会直接失败；
+        // 不搜 PATH（只按当前目录/系统目录补全），只给个「cmd.exe」这种名字会直接失败；
         // 而命令行首 token 是会按搜索路径解析的。argv[0] 已按 MSVCRT 规则加好引号，
         // 含空格的完整路径因此不会被拆成两段。
         // 只传命令行串（不带独占的所有权保证）不影响子进程按路径映射映像；lpCommandLine 需要可写缓冲，
@@ -379,7 +379,7 @@ namespace AsynGyanis::Platform
 
     std::optional<int> Process::pollExitCode(const Handle &handle) noexcept
     {
-        // 回收过一次就直接给记住的值，而且要排在有效性判定**之前**：被别处回收时进程号一并作废了
+        // 回收过一次就直接给记住的值，而且要排在有效性判定之前：被别处回收时进程号一并作废了
         // （那个 pid 已交还系统，留着只会让终止类操作打到复用它的无关进程），把有效性判定放在前面
         // 就等于「记住的退出码永远查不到」，与这份缓存存在的理由正好相反
         if (handle.m_exitCode.has_value())

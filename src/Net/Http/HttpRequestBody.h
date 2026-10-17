@@ -36,7 +36,7 @@ namespace AsynGyanis::Net
      *          处理完数据，不能把视图存起来等下一段（与 HttpParser::takeLine() 的交付约定一致）。
      * @note 流终止（readNext() 返回 false）有三种来源：正文真的读完、对端断开/传输失败、
      *       正文中途解析失败。三者「为何终止」不区分（后两种会话都在收尾时收口连接，不会按
-     *       可复用连接继续服务），但**终止时正文齐不齐**问得出：readNext() 返回 false 之后调
+     *       可复用连接继续服务），但终止时正文齐不齐问得出：readNext() 返回 false 之后调
      *       isTruncated()，为真就是「交出去的正文比声明的短」，处理器据此拒绝半份上传，
      *       而不是把它当完整正文。
      * @see HttpRequest::bodyStream(), HttpBodySource, Router::postStreaming()

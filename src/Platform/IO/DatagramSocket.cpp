@@ -28,7 +28,7 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 一份对齐好的控制报文存储
-         * @details 对齐要求写在**类型**上而不是写在 `std::array` 的模板实参上：后者会让 GCC 报
+         * @details 对齐要求写在类型上而不是写在 `std::array` 的模板实参上：后者会让 GCC 报
          *          `ignoring attributes on template argument`（`alignas` 不参与模板实参），而这道门
          *          是 `-Werror`。控制报文的宏（`CMSG_DATA` 等）要求缓冲区按 cmsghdr 对齐，
          *          对不齐在部分平台上是未定义行为，不是「看着能用」

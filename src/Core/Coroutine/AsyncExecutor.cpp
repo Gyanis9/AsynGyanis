@@ -42,7 +42,7 @@ namespace AsynGyanis::Core
         m_isStopping.store(true, std::memory_order_release);
 
         {
-            // 停止请求必须与 worker 的等待谓词在**同一把锁**下发布：谓词（读 stop_requested 与队列）
+            // 停止请求必须与 worker 的等待谓词在同一把锁下发布：谓词（读 stop_requested 与队列）
             // 在锁内求值，锁外通知时唤醒可能落在「worker 已判定谓词为假、尚未入睡」的窗口里被丢弃——
             // worker 会永远睡着，jthread 析构时的 join 随之永久阻塞
             const std::lock_guard lock(m_mutex);

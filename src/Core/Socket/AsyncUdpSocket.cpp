@@ -215,7 +215,7 @@ namespace AsynGyanis::Core
             const int errorCode = Platform::PlatformError::lastSocketErrorCode();
             if (batchSentCount == 0 && errorCode == Platform::PlatformError::kWouldBlock)
             {
-                // 发送缓冲暂时放不下：等可写，然后从**没交出的那一条**接着发。已交出的绝不重发——
+                // 发送缓冲暂时放不下：等可写，然后从没交出的那一条接着发。已交出的绝不重发——
                 // 数据报没有「部分写出」，重发就是让对端收到两条同样的报文
                 if (!co_await waitWritable())
                 {

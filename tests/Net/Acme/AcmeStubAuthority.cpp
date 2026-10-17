@@ -284,7 +284,7 @@ namespace AsynGyanis::Net::TestSupport
         jws.kid           = textOf(*protectedJson, "kid");
         if (protectedJson->contains("jwk") && (*protectedJson)["jwk"].is_object())
         {
-            // 头里的 jwk 用**序列化后**的文本记账：验签要靠它重建公钥，注册后的账户也要留着它
+            // 头里的 jwk 用序列化后的文本记账：验签要靠它重建公钥，注册后的账户也要留着它
             jws.jwkText = Base::serializeConfigValue((*protectedJson)["jwk"]).value_or(std::string{});
         }
         if (const auto payloadBytes = Base::base64UrlDecode(payloadSegment); payloadBytes.has_value())
@@ -319,7 +319,7 @@ namespace AsynGyanis::Net::TestSupport
             return std::nullopt;
         }
 
-        // 公钥来源：jwk（只有注册那次）或 kid 指向的账户记录。两条都是**从 JWK 重建**，
+        // 公钥来源：jwk（只有注册那次）或 kid 指向的账户记录。两条都是从 JWK 重建，
         // 与被测实现写出 JWK 的那条路是两份代码
         std::unique_ptr<EVP_PKEY, Net::Detail::EvpKeyDeleter> publicKey;
         Account                                               account;

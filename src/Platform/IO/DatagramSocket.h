@@ -74,20 +74,20 @@ namespace AsynGyanis::Platform
         [[nodiscard]] static DatagramSocket bindTo(const SocketAddress &localAddress) noexcept;
 
         /**
-         * @brief 接管一个**别人已经绑好**的数据报套接字（跨进程共享一条 UDP 端口的那一步）
+         * @brief 接管一个别人已经绑好的数据报套接字（跨进程共享一条 UDP 端口的那一步）
          *
          * @details 存在的理由：Windows 没有 `SO_REUSEPORT` 的等价物，多个进程各自 bind 同一端口时内核把
          *          全部报文交给最后绑上的那一个，其余进程一个错都不报却永远收不到报文。于是「一条端口、
          *          多个进程」只能由一方 bind、把套接字交给别的进程（`Socket::writeListeningSocketHandoff`
          *          的机制本身不限套接字类型），数据报这一侧的接手动作就是本函数。
-         * @param descriptor 已经 bind 过的数据报描述符；**所有权随之转移**，本对象析构或 close() 会关掉它。
+         * @param descriptor 已经 bind 过的数据报描述符；所有权随之转移，本对象析构或 close() 会关掉它。
          *        失败时不接管也不关闭——那枚描述符还是调用方的
          * @return std::expected<DatagramSocket, std::error_code> 接管好的套接字；失败给出这四类原因之一：
          *         `bad_file_descriptor` 描述符无效、`not_a_socket` 句柄有效但根本不是套接字（普通文件、
          *         目录、管道）、`not_supported` 是套接字但类型不是 SOCK_DGRAM、
          *         `invalid_argument` 还没 bind（本地端口为 0，「谁往这个端口发报文」这回事不存在）
          * @note 「不是套接字」与「不是数据报」分开报：前者要换的是传进来的东西，后者是交出方送错了类型
-         * @note 接手方一律被置为**非阻塞**：不置会把事件循环卡在 recvfrom 上。POSIX 上文件状态位由同一个
+         * @note 接手方一律被置为非阻塞：不置会把事件循环卡在 recvfrom 上。POSIX 上文件状态位由同一个
          *       开放文件描述共享，而本层的交出方本来就非阻塞（`bindTo` 置过），这里补置不会把对方改坏；
          *       Windows 侧重建出的句柄形态随协议信息，可能带着阻塞位
          * @note 也会被取消「随子进程继承」：本层交出去的套接字都不该随 spawn 漏给下一个进程，
@@ -115,7 +115,7 @@ namespace AsynGyanis::Platform
         [[nodiscard]] SocketAddress localAddress() const noexcept;
 
         /**
-         * @brief 本平台能不能按**单条报文**读写 IP 头的 ECN 字段（读与写在这一格上是同一个前提）
+         * @brief 本平台能不能按单条报文读写 IP 头的 ECN 字段（读与写在这一格上是同一个前提）
          * @details Linux 两侧都有入口：收侧 `IP_RECVTOS` / `IPV6_RECVTCLASS` 随控制报文交回，发侧
          *          `sendmsg` 带一条 `IP_TOS` / `IPV6_TCLASS` 控制报文。Windows 两侧都没有：`WSARecvMsg`
          *          不交这一项，发送也没有按报文设 TOS 的入口。一个 UDP 端口面对多条连接（QUIC 就是这样），
@@ -131,7 +131,7 @@ namespace AsynGyanis::Platform
          * @brief 让内核把收到报文的 ECN 字段交上来（`receive` 与 `receiveBatch` 里那一格由此才有意义）
          * @details Linux 上 IPv4 走 `IP_RECVTOS`、IPv6 走 `IPV6_RECVTCLASS`，取值随控制报文一起回来，
          *          本层截出低 2 位。Windows 上没有对应的「按报文读 ECN」入口（`WSARecvMsg` 不交这一项），
-         *          因此那边本方法**必然失败**并置 `kUnsupported`——上层据此走 RFC 9000 §13.4.1 明确允许的
+         *          因此那边本方法必然失败并置 `kUnsupported`——上层据此走 RFC 9000 §13.4.1 明确允许的
          *          退化：读不到就不报 ECN 计数，对端因此关闭这条路径上的 ECN，功能不失效、结论也不谎报。
          * @param isVisible true 打开；false 关闭并回到「ECN 字段一律读成 0」
          * @return bool 成功打开返回 true；平台不支持或 setsockopt 失败返回 false 并置错误码
@@ -146,7 +146,7 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 让内核不要在 IP 层分片本端发出的数据报
-         * @details RFC 9000 §14 的硬要求：QUIC 数据报**不得**在 IP 层分片，IPv4 要设 DF 位。理由是分片
+         * @details RFC 9000 §14 的硬要求：QUIC 数据报不得在 IP 层分片，IPv4 要设 DF 位。理由是分片
          *          会把「这个尺寸走不走得通」这条证据拆掉——一条 1452 字节的报文被切成两片后，路径上那台
          *          只吃得下 1280 的路由器只会丢，而丢的是分片而不是整条，探测读到的形状就说不清是谁的错。
          *          Linux 走 `IP_MTU_DISCOVER = IP_PMTUDISC_DO` / `IPV6_MTU_DISCOVER = IPV6_PMTUDISC_DO`，
@@ -221,7 +221,7 @@ namespace AsynGyanis::Platform
          * @details Linux 走 `recvmmsg`（带 MSG_DONTWAIT）：一条连接上的多个 QUIC 包由此一次系统调用收完，
          *          而不是每条付一次 `recvfrom` 加一次就绪等待。
          * @note Windows 上没有对应的批量入口（`WSARecvMsg` 一次仍是一条），本方法在那一侧退化为
-         *       循环 `receive()`：接口同形、语义同形，但**每槽仍付一次系统调用**——读数要如实分开，
+         *       循环 `receive()`：接口同形、语义同形，但每槽仍付一次系统调用——读数要如实分开，
          *       不要把「一次调用」写进两侧共同的自述里。
          * @note 截断交付与来源地址的规则同 `receive()`；调用方按返回条数遍历槽位，未填的槽位保持原样。
          */
@@ -236,7 +236,7 @@ namespace AsynGyanis::Platform
          *        那样在两端会得到不同的错误码，不如这一层统一说清）
          * @param ecnCodepoint 要在 IP 头 ECN 字段里标的取值；`kEcnCodepointNotCapable` 表示不标。
          *        取非零值时 Linux 按报文带 `IP_TOS` / `IPV6_TCLASS` 控制报文（IPv4 那一格低 2 位就是这个
-         *        取值）；Windows 不支持按报文设 TOS，该值被**静默忽略**——所以调用方要先问
+         *        取值）；Windows 不支持按报文设 TOS，该值被静默忽略——所以调用方要先问
          *        `supportsPerDatagramEcnField()` 再决定请求不请求，别在这里等一个不会发生的报错
          * @return ssize_t 实际发出的字节数；失败返回 -1 并置错误码
          */
@@ -258,13 +258,13 @@ namespace AsynGyanis::Platform
          * @brief 发一批报文：一次系统调用尽量交出多条
          * @param items 条目数组首元素，至少 itemCount 个
          * @param itemCount 条目数；超过 kMaximumBatchSlotCount 时按上限发
-         * @return ssize_t **被内核接下的条数**（可能小于请求数）；一条都没接下且是真错误时返回 -1 并置错误码
+         * @return ssize_t 被内核接下的条数（可能小于请求数）；一条都没接下且是真错误时返回 -1 并置错误码
          *
          * @details Linux 走 `sendmmsg`：QUIC 一轮 flush 攒出的多个报文由此一次交给内核。
          *          Windows 没有对位入口（`WSASendMsg` 一次仍是一条），退化为逐条 `send()`——
          *          返回条数的语义同形，但每条目仍付一次系统调用。
          * @note 发送缓冲暂时放不下时，本方法交出「已经发出的条数」（可能是 0）并把错误码置成
-         *       `kWouldBlock`：**剩下的报文没有被本层重发**，续发的责任在调用方
+         *       `kWouldBlock`：剩下的报文没有被本层重发，续发的责任在调用方
          *       （Core 的 `AsyncUdpSocket::asyncSendBatch` 会等可写再从剩下那条接着发）。
          *       数据报要么整条要么不交，所以「前 k 条已发出、第 k+1 条起未发」是唯一可能的切分形状。
          * @note 单条超过 `kMaximumDatagramBytes`、地址没设置或缓冲为空都算用法错误：整批当场判错

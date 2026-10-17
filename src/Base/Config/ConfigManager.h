@@ -94,7 +94,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 启用热加载（监听配置文件变更，自动重载）
-         * @details 回调在**重载工作线程**上执行（不是文件监听线程、也不是调用方线程），
+         * @details 回调在重载工作线程上执行（不是文件监听线程、也不是调用方线程），
          *          其快照在启动监听前发布（release/acquire 配对），因此回调内可安全做耗时处理。
          *          已在监听时重复调用不会重起监视器，但这一轮的回调与防抖间隔照样生效。
          * @param callback 热加载完成后的回调函数；传 nullptr 即不回调（重载照跑，本轮失败改由日志报出）
@@ -131,7 +131,7 @@ namespace AsynGyanis::Base
          * @brief 安全获取配置值。
          * @param key 配置键。
          * @return std::optional<ConfigValue> 键存在时返回值，否则为空。
-         * @note 返回值是配置子树的一份**深拷贝**，拷贝要分配内存，因此本方法不是 noexcept：
+         * @note 返回值是配置子树的一份深拷贝，拷贝要分配内存，因此本方法不是 noexcept：
          *       写成 noexcept 只会在内存耗尽时把一次可捕获的失败升级成 std::terminate
          */
         [[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const;
@@ -231,7 +231,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 设置配置值并立即生效（原子替换内存快照）
-         * @details 只改内存，**不写回任何文件**：写配置是应用层的事（它知道该写哪个文件、
+         * @details 只改内存，不写回任何文件：写配置是应用层的事（它知道该写哪个文件、
          *          要不要问过运维），因此本方法的效果不跨进程，重启后回到文件里的取值。
          * @param key 配置键（点号路径，如 server.port）。
          * @param value 配置值。
@@ -255,7 +255,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 注册全局 schema，后续加载/热重载提交时自动校验并记录错误日志。
          * @details 传入空 schema 可取消注册；注册时立即对当前快照校验一次并记日志。
-         * @note 本框架自己**不**注册 schema：server / tracing / acme 三段各有 reader 做未知键拒绝
+         * @note 本框架自己不注册 schema：server / tracing / acme 三段各有 reader 做未知键拒绝
          *       与取值诊断，全局 schema 是给使用方声明自己那批键用的——框架再登记一份同址的键清单
          *       就是第二份必须同步的副本，而不是第二道闸。
          * @param schema 约束条目列表。
@@ -314,7 +314,7 @@ namespace AsynGyanis::Base
          *          环境变量一概不看。
          * @details 覆盖发生在每一次快照提交时（首次加载、reload 与热重载走的是同一个出口），所以热重载
          *          不会把覆盖冲掉；`setValue()` 在这之后写入，仍然以程序侧为准。
-         * @details 类型判定按「文件里该键现有的类型 → schema 声明的类型 → 字符串」三级取值，**不猜类型**：
+         * @details 类型判定按「文件里该键现有的类型 → schema 声明的类型 → 字符串」三级取值，不猜类型：
          *          既没有文件值也没有 schema 声明时按字符串交出，schema 若声明了别的类型，会由提交后的
          *          校验出声。整数值接受 `1234`；布尔值接受 `1/0/true/false/yes/no/on/off`（大小写不敏感）；
          *          对象与数组的值按 JSON 解析（例如 `ASYN_SERVER__HOSTS=["a","b"]`）。
@@ -489,7 +489,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 扫描目录中的 JSON/YAML 配置文件并按路径排序。
-         * @details 中途出错（子目录不可读等）时交出的是**错误而不是那份扫到一半的清单**：
+         * @details 中途出错（子目录不可读等）时交出的是错误而不是那份扫到一半的清单：
          *          半份清单被当成全量提交，等于让后面那些文件的键静默从配置里消失。
          * @param directory 待扫描目录。
          * @param recursive 是否递归。

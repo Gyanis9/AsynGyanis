@@ -629,7 +629,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 用给定的出站 TLS 策略（可带客户端身份）GET 一次：自建客户端与循环，跑完即停
      * @details 与 doHttpsGet 的差别只在客户端是哪一档：静态那一支没有承载策略的地方，用的是进程级
-     *          默认上下文；出站策略（信任库、握手段位）与客户端身份都挂在**实例**上，只有走实例入口
+     *          默认上下文；出站策略（信任库、握手段位）与客户端身份都挂在实例上，只有走实例入口
      *          才看得到。循环刻意每次新建而不是让调用方复用：EventLoop 的停止请求是粘性的，第二次
      *          run() 会立刻返回，那时候的「空响应」就成了与 TLS 无关的假证据
      * @param url 目标地址
@@ -888,7 +888,7 @@ namespace AsynGyanis::Net
      * @details 判据必须在请求还没答完的时候取：跑完之后池按端点只留一格，五条握手会被折叠成
      *          一格，那时再数就分不出「一条连接服务五条请求」与「五条连接各服务一条然后剩一条」。
      *          服务器侧的在册连接数没有这个问题——会话是谁建的它就数谁。
-     * @note 读数的回调**按值收**：协程的参数住在帧里，首次恢复之后才读，收引用的话
+     * @note 读数的回调按值收：协程的参数住在帧里，首次恢复之后才读，收引用的话
      *       调用点那个临时 `std::function` 早就出了作用域（ASan 报 stack-use-after-scope 抓到过）。
      */
     Core::Task<void> sampleActiveConnections(Core::EventLoop &loop, const std::function<std::size_t()> reader, std::size_t *const destination)
@@ -1145,7 +1145,7 @@ namespace AsynGyanis::Net
      * @brief 临时把 SSL_CERT_FILE 指向某张证书，让出站客户端信任它
      * @details 客户端只认系统 CA 库（SSL_CTX_set_default_verify_paths），而仓库夹具是自签的；
      *          OpenSSL 解析默认路径时认 SSL_CERT_FILE 这个环境变量，于是用例借此把夹具证书
-     *          当成受信根。**必须在进程内第一次 HTTPS 客户端请求之前设好**——SSL_CTX 是那时
+     *          当成受信根。必须在进程内第一次 HTTPS 客户端请求之前设好——SSL_CTX 是那时
      *          惰性创建并缓存的。析构还原原值（没设过就清掉）
      */
     class ScopedTrustedCertificateFile
@@ -1293,7 +1293,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：默认闸门的 Basic 认证在 TLS 那一侧放行、在明文那一侧拒收，同一份中间件配置
      * @details 与 `BasicAuthWiring.RefusesCredentialsOverCleartextUntilTheOperatorOptsIn` 配成一对：
-     *          中间件读的是会话从**连接**上取下来的 `HttpRequest::overTls()`，只有两种真传输各跑一遍
+     *          中间件读的是会话从连接上取下来的 `HttpRequest::overTls()`，只有两种真传输各跑一遍
      *          才看得出它取的是本端事实而不是常量——把 `overTls` 恒置 false 会红在这一条（TLS 侧回 403），
      *          恒置 true 会红在明文那一条。明文侧还断言「不带 `WWW-Authenticate`」：回挑战等于一边拒一边催
      */
@@ -1396,14 +1396,14 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.sendText(makeRequestText("GET /healthz HTTP/1.1"), kWaitTimeout)) << "健康检查请求未能写入";
         ASSERT_TRUE(client.waitForTextOccurrences(healthText, kHealthCheckResponseBody, 1, kWaitTimeout)) << "健康检查端点没有回固定正文：「" << healthText << "」";
 
-        // 指标端点：值行里应当有**三条**请求——先前那条 /hello、/healthz，以及本条 /metrics 自己
+        // 指标端点：值行里应当有三条请求——先前那条 /hello、/healthz，以及本条 /metrics 自己
         // （计数发生在派发业务之前，因此它自己也算在内）。等的是值行而不是指标名：
         // HELP/TYPE 行先到，只等名字会在取到值之前就返回
         std::string metricsText;
         ASSERT_TRUE(client.sendText(makeRequestText("GET /metrics HTTP/1.1"), kWaitTimeout)) << "指标请求未能写入";
         EXPECT_TRUE(client.waitForTextOccurrences(metricsText, "asyn_http_requests_total 3", 1, kWaitTimeout))
                 << "抓取这一刻应当已记下三条请求（/hello、/healthz 与 /metrics 自己）：「" << metricsText << "」";
-        // 状态码类在**第二次抓取**里核对：响应计数发生在「响应已排入待发字节」之后、渲染那一刻之前，
+        // 状态码类在第二次抓取里核对：响应计数发生在「响应已排入待发字节」之后、渲染那一刻之前，
         // 因此第一次抓取的正文里还没有它自己那条。第二次抓取时前三条响应都已落账。
         // 直方图/计数按路由分组后，总量是各条 route 序列之和：/hello、/healthz、/metrics 各 1
         std::string secondMetricsText;
@@ -1475,7 +1475,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：ALPN 选到 h2 时，出站客户端改按 HTTP/2 说话，方法与正文都照样带过去
      * @details 服务端的 ALPN 偏好里 h2 排在 http/1.1 之前，这条 TLS 连接协商出的结果必然是 h2。客户端
      *          若不认这个结果、照旧写请求行，握手之后就是帧格式错乱的失败。两条判据分开看：200 与回显
-     *          一致说明这趟真走通了；**原因短语为空**说明状态是从 :status 解出来的——HTTP/1.1 的答一定
+     *          一致说明这趟真走通了；原因短语为空说明状态是从 :status 解出来的——HTTP/1.1 的答一定
      *          带 "OK"（本服务端的状态行照常写原因短语），所以这一条能把「走了 h2」与「退回 h1」分开。
      */
     TEST(HttpsServer, OutboundClientSpeaksHttp2WhenAlpnSelectsIt)
@@ -1710,7 +1710,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：领导者建连失败时，等它的人要各自收场，而不是永远等一次不会来的结算
      * @details 合并握手把等待挂在「建连资格」上：领导者每条出口都得归还资格，漏一处就把这个端点的
-     *          出站请求**永久**堵死——等建连那一步自己不设时限，只有 settle 叫得醒它，比 h2 帧那种
+     *          出站请求永久堵死——等建连那一步自己不设时限，只有 settle 叫得醒它，比 h2 帧那种
      *          「退化」的漏还严重一档。连一个刚关掉的监听端口是确定复现「建连必败」的写法（比挑一个
      *          自认为空闲的端口可靠）。判据取「每条都自己回来了」：漏结算时那几条会挂在等待里，
      *          循环只由看门狗叫停，收口计数数不满。
@@ -1847,7 +1847,7 @@ namespace AsynGyanis::Net
      * @details 复用连接时「一个字节没回来」通常意味着对端在我们手里空闲期间把连接收了，那种可以重来；
      *          但请求已经整个写上通路、只是对端答得慢（这里让处理器按住 400 毫秒，本端 150 毫秒就放弃），
      *          同一位看着一样，重发就把非幂等请求做两遍。判据取路由的进入次数：它数的就是被交付了几次。
-     * @details 本条**不是**重发闸门的证伪用例：把闸门整段撤掉本条照样绿——挡住第二次执行的是整体时限
+     * @details 本条不是重发闸门的证伪用例：把闸门整段撤掉本条照样绿——挡住第二次执行的是整体时限
      *          用尽之后那段预算判定（重开连接前先算剩余预算，已经没剩的了）。闸门本身要由
      *          `DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection`（h2）与
      *          `HttpOutboundConnectionPool` 里那条同名前缀的用例（h1）来钉：那两条失败得早、预算还剩
@@ -1886,7 +1886,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：池里那条 h2 连接被服务端在空闲期收掉之后，下一条请求换一条新的重来一次
      * @details 与 HTTP/1.1 的 `RecoversWhenPooledConnectionWasClosedByPeer` 是同一条竞态在两条通路上的
      *          形状：客户端只能「用了才知道」那条已经死了。h2 这一侧此前不恢复——写进一条对端已收的
-     *          套接字在本地是**成功**的，于是那条请求被记成「已整个发出」，按当时那条一刀切的规则直接
+     *          套接字在本地是成功的，于是那条请求被记成「已整个发出」，按当时那条一刀切的规则直接
      *          交出失败。判据只有第二条拿到 200：只看「没报错」不行，得看它真的又服务了一次。
      * @details 允许重来的依据是方法幂等（RFC 9112 §9.3.2 的自动重试许可只覆盖幂等方法）：GET 做两遍
      *          与做一遍对服务器状态的影响相同，而 POST 不能——那一条由
@@ -1924,7 +1924,7 @@ namespace AsynGyanis::Net
      * @brief 钉住 HTTP/2 这一侧的重发闸门：请求已整个写上通路时，非幂等方法不重来一次
      * @details 与 HTTP/1.1 那条 `DoesNotReplayASentNonIdempotentRequestWhenThePeerTookTheConnection`
      *          是同一个场景的两条通路：连接被服务端在空闲期收掉，本端写它时本地是成功的，于是分不清
-     *          「对端没见过这条请求」与「对端已经收下」。判据取服务端的进入次数为 **0**——闸门一撤，
+     *          「对端没见过这条请求」与「对端已经收下」。判据取服务端的进入次数为 0——闸门一撤，
      *          那条 POST 就会被换一条新连接重交一遍（拿到 200 也算泄漏了一次执行）。
      * @details 幂等方法在同样情形下允许重来一次，那是 `PooledClientRecoversWhenTheHttp2ConnectionWas
      *          ClosedByThePeer` 的恢复路径；两条合起来才是完整的口径（RFC 9112 §9.3.2）。
@@ -2005,7 +2005,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 客户端校验主机名：证书名字对不上就必须拒绝，不能只看「链是受信的」
      * @details 同一张受信证书（SAN 只有 DNS:localhost）用 IP 去连：链校验必然通过（它就在受信根里），
-     *          唯一能拦住这次握手的只有**主机名校验**。去掉客户端侧的 SSL_set1_host /
+     *          唯一能拦住这次握手的只有主机名校验。去掉客户端侧的 SSL_set1_host /
      *          X509_VERIFY_PARAM_set1_ip_asc 后本条会变绿——那正是被修掉的那个缺陷（CWE-297）
      */
     TEST(HttpsServer, ClientRejectsCertificateForAnotherHost)
@@ -2743,7 +2743,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：TLS 会话要把「超过一次写出容量」的响应正文完整交付
-     * @details `TlsSocket::asyncSend` 按设计返回**实际发送的字节数**——发送缓冲的余量被吃掉后就是
+     * @details `TlsSocket::asyncSend` 按设计返回实际发送的字节数——发送缓冲的余量被吃掉后就是
      *          部分返回（它的重试循环只管 WANT_READ/WANT_WRITE 让轮，不管把整块发完）。把一次正值
      *          返回当成「整条正文已发出」，剩余字节就永久丢失，而服务端不记任何失败：状态仍是 200，
      *          `content-length` 与实收不符，客户端只看到文件被下坏。

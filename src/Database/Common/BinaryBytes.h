@@ -14,7 +14,7 @@
  * @note 规范存储类型固定为 std::vector<std::uint8_t>：DatabaseValue 与 ParameterValue
  *       的备选都是它，因此 std::byte 成员在映射处做一次逐字节转换。转换是逐元素的
  *       static_cast，不重新解释内存、不改变字节序。
- * @note 刻意**不**接受 std::vector<char> 与 std::string_view：前者与文本载荷无法区分，
+ * @note 刻意不接受 std::vector<char> 与 std::string_view：前者与文本载荷无法区分，
  *       后者不持有内存、绑定后生命周期不可控。需要传文本请用 std::string 成员。
  */
 #pragma once

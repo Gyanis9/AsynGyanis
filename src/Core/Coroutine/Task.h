@@ -156,7 +156,7 @@ namespace AsynGyanis::Core
          *
          * @note 只持原始 awaiter 的指针：co_await 操作数的临时量活到整条 full-expression 结束
          *       （含挂起与恢复），这是语言保证的生存期，与编译器把 awaiter 放进协程帧是同一件事
-         * @note 对称转移（await_suspend 返回句柄）时**保留**当前上下文：接手的通常是子协程，
+         * @note 对称转移（await_suspend 返回句柄）时保留当前上下文：接手的通常是子协程，
          *       它应当继承父协程的上下文；只有交回 noop（等待目标已在跑、本协程真挂起）才清场
          */
         template<typename Awaiter, typename Promise>
@@ -284,7 +284,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 析构函数，销毁协程句柄（如果有效）。
          * @note 把一个 Task 的 `handle()` 交给调度器排队之后，本对象必须活到那次派发之后：析构拆的是
-         *       **帧本身**，与协程停在哪个挂起点无关，排进队列的句柄因此会指到一块已经没了的内存
+         *       帧本身，与协程停在哪个挂起点无关，排进队列的句柄因此会指到一块已经没了的内存
          *       （归属契约见 Scheduler 的类注释）。
          */
         ~Task()
@@ -393,7 +393,7 @@ namespace AsynGyanis::Core
                     std::rethrow_exception(m_exception);
 
                 // 结果是一次性的（按 move 交出）。判据不能看 optional 是否还有值：move 走一个 int
-                // 之后 optional 仍然是「有值」的，第二次读因此既不是异常也不是崩溃，而是**静默**
+                // 之后 optional 仍然是「有值」的，第二次读因此既不是异常也不是崩溃，而是静默
                 // 交回一份重复或已被搬空的载荷（move-only 的 T 会交出 nullptr）。这里显式记账，
                 // 把「同一个 Task 被读第二次」这个调用方错误当场报出来
                 if (m_isResultConsumed)
@@ -445,8 +445,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 挂起当前协程，并把 continuation 登记为「本任务结束后要恢复的协程」
          * @details 未启动的任务（停在初始挂起点）返回自身句柄就地启动；已启动的只登记 continuation
-         *          后挂起，等它真正到达终结点由 FinalAwaiter 以对称转移恢复。**绝不能就地恢复已启动的
-         *          任务**：那等于把它内部挂着的等待当成已完成，任务里真正挂着的子协程会失去唤醒者。
+         *          后挂起，等它真正到达终结点由 FinalAwaiter 以对称转移恢复。绝不能就地恢复已启动的
+         *          任务：那等于把它内部挂着的等待当成已完成，任务里真正挂着的子协程会失去唤醒者。
          * @param continuation 等待当前协程的父协程句柄
          * @return 需要恢复的协程句柄：未启动的任务返回自身句柄（启动它），已启动的返回 noop_coroutine
          */
@@ -556,7 +556,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 析构函数，销毁协程句柄（如果有效）。
          * @note 把一个 Task 的 `handle()` 交给调度器排队之后，本对象必须活到那次派发之后：析构拆的是
-         *       **帧本身**，与协程停在哪个挂起点无关，排进队列的句柄因此会指到一块已经没了的内存
+         *       帧本身，与协程停在哪个挂起点无关，排进队列的句柄因此会指到一块已经没了的内存
          *       （归属契约见 Scheduler 的类注释）。
          */
         ~Task()

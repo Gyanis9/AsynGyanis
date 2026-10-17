@@ -113,10 +113,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 追加一条 HTTP 头部字段。
-         * @details 头部名折小写入库。**权威记录按到达顺序逐条留档**：同一个名字在线上出现几条就占几项，
+         * @details 头部名折小写入库。权威记录按到达顺序逐条留档：同一个名字在线上出现几条就占几项，
          *          互不覆盖，`headerFieldCount(key)`、`forEachHeaderField()` 与 `headerValues()` 读到的都是
          *          这份逐条记录（因此重新转发一条请求时不会把多条 `Via` 并成一行）。
-         *          以 ", " 合并只发生在**单值读口**（`headers()` / `getHeader()`）：普通头部按
+         *          以 ", " 合并只发生在单值读口（`headers()` / `getHeader()`）：普通头部按
          *          RFC 9110 §5.2 的收件人规则把同名多条拼成一条，可重复头部（目前只有 `set-cookie`）
          *          不合并、取首条——那种值本身可以含逗号，合并后就还原不回来。
          * @param key   头部字段名，大小写不敏感
@@ -127,7 +127,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 追加一条 trailer 字段（RFC 9112 §7.1 分块正文之后的尾部头字段）
-         * @details 与 addHeader **分开存**：把 trailer 并进头部等于给同一个字段造出两个解释位置
+         * @details 与 addHeader 分开存：把 trailer 并进头部等于给同一个字段造出两个解释位置
          *          （`content-length` 这类定界字段尤其危险，收端读哪一份都可能被对端利用）。
          *          解析侧只把「不定义报文边界、也不是连接级」的字段交进来，见 HttpParser 的 trailer 段
          * @param name 字段名，大小写不敏感（入库转小写）
@@ -174,7 +174,7 @@ namespace AsynGyanis::Net
          * @param key   头部名，大小写不敏感（入库转小写）；必须是合法 token 且非空
          * @param value 头部值；CR/LF/NUL 会让头部块提前结束（响应拆分），一律拒绝（HTAB 是允许的 OWS）
          * @return true 已写入
-         * @return false 名字或取值不合法，**已有状态一字未改**
+         * @return false 名字或取值不合法，已有状态一字未改
          */
         [[nodiscard]] bool setHeader(std::string_view key, std::string_view value);
 
@@ -381,7 +381,7 @@ namespace AsynGyanis::Net
          *          业务、中间件与日志因此都从一处读到同一个值。
          *
          * @param requestId 本次请求的标识文本，原样保存不裁剪；传空表示不采集（例如该会话没有生成器）
-         * @note 它是**可观测性标识，不是安全令牌**：不参与鉴权，也不要求不可预测
+         * @note 它是可观测性标识，不是安全令牌：不参与鉴权，也不要求不可预测
          * @note 按视图接收并原地写入本对象的缓冲：按值收 std::string 会把源侧刚取到的那块堆连着
          *       容量一起接过来、再把手上那块还掉（实测每请求一次堆分配），请求按连接复用时容量本该留着
          */
@@ -399,7 +399,7 @@ namespace AsynGyanis::Net
          * @param address 地址文本，形如 "IP:Port"（IPv6 侧带方括号）；传空串表示本条给不出来源
          * @details 与 setRequestId() 排在同一处（派发之前）：这类「这条请求从哪来」的事实只有会话知道，
          *          而业务处理器的签名里只有请求与响应两个对象，没有第三条通道把连接身份带过去。
-         * @note 存的是**视图**：文本由会话按连接缓存一份（见 Core::Connection::cachedRemoteAddress()），
+         * @note 存的是视图：文本由会话按连接缓存一份（见 Core::Connection::cachedRemoteAddress()），
          *       请求对象只指过去。因此调用方给的这块内存必须活得比本会话的连接久
          */
         void setRemoteAddress(std::string_view address) noexcept;
@@ -408,7 +408,7 @@ namespace AsynGyanis::Net
          * @brief 发起这条请求的对端地址，形如 "IP:Port"（IPv6 侧为 "[::1]:8080" 这种带方括号的写法）
          * @return std::string 地址副本；会话没能取到地址时为空串
          * @details 业务侧做「按来源限流、按地区放行、审计里落的是谁」这一类判定就读这里。开启 PROXY
-         *          协议时它已经是代理交来的**真实来源**而不是代理记账
+         *          协议时它已经是代理交来的真实来源而不是代理记账
          *          （见 TcpServer::setProxyProtocolRequired()，三条协议通道同一份来源）。
          * @note 交回副本而不是视图：这条文本指向的是会话那一份按连接缓存的缓冲，连接一收口它就没了，
          *       而把它抄进审计队列正是本接口最常见的用法。requestId() 交视图是因为它指向本请求自己的
@@ -422,7 +422,7 @@ namespace AsynGyanis::Net
          * @details 与 setRemoteAddress() 排在同一处：「这条请求走没走 HTTPS」只有会话知道，
          *          而业务处理器的签名里只有请求与响应两个对象。h2/h1-over-TLS 由 Http2Session 报出
          *          自己有没有持有 TlsSocket，h3 恒为真（QUIC 只跑 TLS 1.3）。
-         * @note 报的是**本端这一跳**的事实，刻意不看 X-Forwarded-Proto：那一句谁都能写，把它当可信来源
+         * @note 报的是本端这一跳的事实，刻意不看 X-Forwarded-Proto：那一句谁都能写，把它当可信来源
          *       会让一条明文连接拿到 HSTS 与 Secure 判定
          */
         void setOverTls(bool isSecure) noexcept;
@@ -436,11 +436,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool overTls() const noexcept;
 
         /**
-         * @brief 发起这条请求的对端 IP，**不带端口**
+         * @brief 发起这条请求的对端 IP，不带端口
          * @return std::string IP 文本；地址为空时返回空串，形状认不出来时原样交回整条文本
          * @details 「按来源限流、按地区放行、审计落的是谁」要的键是不带端口的 IP：`remoteAddress()` 里那段
          *          端口每条连接都换，直接拿去当键会得到「每条连接一个桶」，限流因此形同不存在。
-         *          IPv6 一侧**保留**百分号后的作用域号（`fe80::1%3`）：链路本地地址在不同网卡上靠它区分来源，
+         *          IPv6 一侧保留百分号后的作用域号（`fe80::1%3`）：链路本地地址在不同网卡上靠它区分来源，
          *          剥掉就把两块网卡上的流量并进同一个键。
          * @note 认的是本框架 `InetAddress::toString()` 的产出形状——`"1.2.3.4:5678"` 与
          *       `"[fe80::1%3]:8080"`（IPv6 一律带方括号，双栈上的映射地址也带着它，形如
@@ -453,8 +453,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 记下本次派发命中的路由模式原文
          * @param routePattern 注册时给出的路径模式原文（如 "/users/:id"）；空视图表示没有命中任何路由
-         * @details 由路由器在跑中间件管道**之前**落定，因此访问日志、指标打点这类横切逻辑也读得到。
-         * @note 存的是**视图**：文本指向路由表里那条模式自己那份存储，路由器在 start() 之后仍增删条目时
+         * @details 由路由器在跑中间件管道之前落定，因此访问日志、指标打点这类横切逻辑也读得到。
+         * @note 存的是视图：文本指向路由表里那条模式自己那份存储，路由器在 start() 之后仍增删条目时
          *       这块内存可能被搬走。要跨请求留存（存进队列、异步落库）请自己抄一份
          */
         void setMatchedRoute(std::string_view routePattern) noexcept;
@@ -472,7 +472,7 @@ namespace AsynGyanis::Net
          * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
          * @return 路径视图；URI 为空时返回空视图
          * @note 返回的是原始文本，未做百分号解码
-         * @note 返回**视图**而不是副本：它指向本对象持有的 URI，生命周期跟随本请求对象。
+         * @note 返回视图而不是副本：它指向本对象持有的 URI，生命周期跟随本请求对象。
          *       路由这类每请求都要看路径的地方因此不必再付一次字符串拷贝
          */
         [[nodiscard]] std::string_view path() const;
@@ -490,11 +490,11 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 解析 `application/x-www-form-urlencoded` 的请求正文为表单字段。
-         * @details 与 queryParams() 走**同一份**解析（同一套分对规则、同一个百分号解码、同一个
+         * @details 与 queryParams() 走同一份解析（同一套分对规则、同一个百分号解码、同一个
          *          '+' 当空格的约定），所以 `a%20b`、`a+b`、`a=b=c` 这类写法在两条路上必然得到
          *          同一个解释——写两份就会漂移。规则同查询串：无 '=' 的分对值为空串，键为空的分对
          *          跳过，重复键后出现的覆盖先出现的。
-         * @note 媒体类型不是 `application/x-www-form-urlencoded` 时交回**空表**，不去猜：把 JSON 或
+         * @note 媒体类型不是 `application/x-www-form-urlencoded` 时交回空表，不去猜：把 JSON 或
          *       二进制正文按 '&' 切开拼成「参数」是凭空造数据。类型参数（`; charset=utf-8`）不参与判定，
          *       媒体类型本身大小写不敏感。
          * @note 流式正文（`bodyStream()` 那一路）不适用：这条只读已经收齐的整份正文。
@@ -516,7 +516,7 @@ namespace AsynGyanis::Net
          * @brief 把请求正文按 JSON 解析成一份配置值（与 `Base::ConfigValue` 同一个类型，不做二次搬运）。
          * @details 媒体类型不是 `application/json` 时交回空，语法不合法也交回空：调用方判空即可，
          *          不需要接异常——外部输入不该靠异常否定一次调用。
-         * @note 正文里的注释**不**宽容（RFC 8259 没有注释这一说）：在这里放宽一次，就会和配置文件
+         * @note 正文里的注释不宽容（RFC 8259 没有注释这一说）：在这里放宽一次，就会和配置文件
          *       那条路分成两套解析器，而两套的差异只会以「同一份 JSON 一边能读一边不能」的形式暴露。
          * @note 流式正文那一路不适用，这条只读已经收齐的整份正文。
          * @return std::optional<Base::ConfigValue> 解析结果；不适用或语法错误时为空
@@ -526,8 +526,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 把请求正文按 `multipart/form-data` 解析成段序列（RFC 7578）。
          * @details 上传文件在框架里唯一的表达途径：`formFields()` 按 '&' 切正文，遇到二进制正文
-         *          只会切出一堆垃圾，所以正文类型是 multipart 时走这里。段正文是**指向本请求正文的
-         *          视图**（零拷贝），返回对象的寿命因此不得超过本请求。
+         *          只会切出一堆垃圾，所以正文类型是 multipart 时走这里。段正文是指向本请求正文的
+         *          视图（零拷贝），返回对象的寿命因此不得超过本请求。
          * @note 媒体类型不是 `multipart/form-data`、缺 content-type、或正文畸形（边界缺失、段没有
          *       name、缺结束分隔符、带无法还原的传输编码）一律交回空：调用方判空回 400 即可，
          *       不接异常——外部输入不该靠异常否定一次调用。
@@ -604,7 +604,7 @@ namespace AsynGyanis::Net
         std::string                         m_body;                ///< 消息正文
         HttpRequestBody                    *m_bodyStream{nullptr}; ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
         std::string                         m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
-        /// 对端地址文本，指向**会话按连接缓存的那一份**（见 setRemoteAddress()）：按连接复用的请求对象
+        /// 对端地址文本，指向会话按连接缓存的那一份（见 setRemoteAddress()）：按连接复用的请求对象
         /// 因此不为它付一次堆分配，reset() 只把视图清回去
         std::string_view m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
         /// 这条请求所在的连接是否跑在 TLS 上，由会话在派发之前落定（见 setOverTls()）。

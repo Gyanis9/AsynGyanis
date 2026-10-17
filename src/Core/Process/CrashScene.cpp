@@ -227,7 +227,7 @@ namespace AsynGyanis::Core
             reportCrashScene(causeText, threadFingerprint);
 #endif
 
-            // 恢复默认处置后重发。**重发后面不能接任何兜底 exit**：信号在处理器执行期间会被加入
+            // 恢复默认处置后重发。重发后面不能接任何兜底 exit：信号在处理器执行期间会被加入
             // 屏蔽字，这一次 raise 只是把它置成挂起态，真正交付发生在处理器返回那一刻（按已经恢复
             // 的默认处置致死，coredump 语义也在）；在那之前退出会把死法换成普通退出码，
             // WIFSIGNALED 为假，上层看护会把崩溃读成「正常退出」

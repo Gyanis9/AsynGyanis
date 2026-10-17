@@ -45,7 +45,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 这份字段行是不是 1xx 信息性响应的段
-         * @details 信息性响应是一份**独立**的消息（RFC 9114 §4.1），它不该占用「这条流唯一的头段」
+         * @details 信息性响应是一份独立的消息（RFC 9114 §4.1），它不该占用「这条流唯一的头段」
          *          那个位置——否则随后交最终响应时会被自己的判定器判成「同一消息里的第二个头段」。
          *          判据只看 :status 那一位：h3 的响应字段行由会话拼，伪头恒在最前。
          * @param fieldLines 待提交的字段行
@@ -277,7 +277,7 @@ namespace AsynGyanis::Net
 
         if (!isUnidirectionalStream(streamId) && !isLocallyInitiatedStream(streamId))
         {
-            // 服务端一侧：对端发起的双向流就是一问一答的请求流。作客户端时这类流是**对端发起的推送**
+            // 服务端一侧：对端发起的双向流就是一问一答的请求流。作客户端时这类流是对端发起的推送
             // （本端从不发 MAX_PUSH_ID，RFC 9114 §4.6 允许直接拒绝），按忽略处置但归还额度
             if (m_isLocalServer)
             {
@@ -507,7 +507,7 @@ namespace AsynGyanis::Net
         {
             failStream(streamId, toHttp3ErrorCode(fed.error().kind), fed.error().message);
             // 与正常出口同一条收尾，一步都不能少：这一趟喂进去的帧头字节已经消化掉却不还额度，
-            // 对端每条坏帧都在**这条流**的接收窗口上啃掉一块（StreamCrediter 按流号还，不是连接级的）；
+            // 对端每条坏帧都在这条流的接收窗口上啃掉一块（StreamCrediter 按流号还，不是连接级的）；
             // 而 failStream 只标记不 erase（调用链上到处握着 StreamState 引用），回收点就是下面这一句——
             // 跳过它，这条流的记录连同读取器那块按单帧上限长出来的缓冲一起留到连接收口，
             // 而对端可以不断开新的请求流重复这个形状
@@ -593,7 +593,7 @@ namespace AsynGyanis::Net
             }
             if (!state.isHeaderSectionSeen)
             {
-                // 「这条流已经有头段了」那一位只由**最终**响应的头段占：过渡响应是一份独立的消息
+                // 「这条流已经有头段了」那一位只由最终响应的头段占：过渡响应是一份独立的消息
                 // （RFC 9114 §4.1、§5.1），占不掉它，否则随后那条真响应会被当成尾段判成非法序列。
                 // 还压在解码器里等指令的那一段判不出内容，照旧先占位——那种情况下随后的最终段会在续解点
                 // 按自己的内容认出「我是头段」，不会被真的降成尾段
@@ -678,7 +678,7 @@ namespace AsynGyanis::Net
             // 「这条可以当没发过、换条连接重来」——§5.2 原句是「The client can treat requests rejected by the
             // server as though they had never been sent at all」。
             // 只挑「本端发起的双向流」，这一条同时把角色分开：服务端角色下对端（客户端）发来的 GOAWAY 里那个
-            // 标识是**推送流号**（§5.2：the client sends a push ID），而服务端发起的只有单向流，一条请求流
+            // 标识是推送流号（§5.2：the client sends a push ID），而服务端发起的只有单向流，一条请求流
             // 都不会落进这个筛子——本端从不推送，也就不必再另判一次角色
             std::vector<std::int64_t> rejectedStreamIds;
             for (const auto &entry: m_streams)
@@ -716,7 +716,7 @@ namespace AsynGyanis::Net
 
     bool Http3Connection::deliverFieldSection(const std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, const bool isTrailers)
     {
-        // 过渡响应（1xx：100 Continue、103 Early Hints）是一份**独立**的消息（RFC 9114 §4.1、§5.1；
+        // 过渡响应（1xx：100 Continue、103 Early Hints）是一份独立的消息（RFC 9114 §4.1、§5.1；
         // h1 那侧的同一读法见 RFC 9110 §15.2「1xx 是最终响应之前的招呼」与 RFC 9112 §6.3「1xx 不带正文」）：
         // 它占不掉「这条流唯一的头段」那一位，字段也不该交给业务。
         // 本端服务端三条通道都会发它（带 Expect: 100-continue 的请求由会话自动补一个 100，处理器还能自己
@@ -1003,7 +1003,7 @@ namespace AsynGyanis::Net
 
         if (!bytes.empty())
         {
-            // 一段正文按上界拆成多条 DATA 帧。整份塞进一条帧时，接收方要凑齐**一整帧**才交货，
+            // 一段正文按上界拆成多条 DATA 帧。整份塞进一条帧时，接收方要凑齐一整帧才交货，
             // 而它自己宣告的流窗口比正文小，于是凑不齐 → 不消费 → 不还额度 → 本端也发不出去，
             // 双方互等到时限（实测 600 KiB 的正文一字节也到不了对端）。拆小之后每一帧都能在一档
             // 窗口里发完，额度按消耗持续推进，多大的正文都走得通

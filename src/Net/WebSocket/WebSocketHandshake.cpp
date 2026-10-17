@@ -448,7 +448,7 @@ namespace AsynGyanis::Net
         response.append(computeWebSocketAcceptValue(clientKey));
         response.append("\r\n");
 
-        // 子协议只在**谈成**时写：RFC 6455 §4.2.2 把 /subprotocol/ 定成「对端列表里本端愿意用的那一个
+        // 子协议只在谈成时写：RFC 6455 §4.2.2 把 /subprotocol/ 定成「对端列表里本端愿意用的那一个
         // 或 null」，而 null 的线上形式就是「这条头部不发」。写一条对端没提过的名字是客户端必须判失败
         // 的形状（同节步骤 6），写空串更糟——它既不是 null 也不是合法 token
         if (!subprotocolResponseValue.empty())
@@ -461,7 +461,7 @@ namespace AsynGyanis::Net
             response.append("\r\n");
         }
 
-        // 扩展只在**协商成功**时写：对端没提、或提了但本端不接受，都不能声明一个它没用过的扩展
+        // 扩展只在协商成功时写：对端没提、或提了但本端不接受，都不能声明一个它没用过的扩展
         if (!extensionsResponseValue.empty())
         {
             response.append("Sec-WebSocket-Extensions: ");

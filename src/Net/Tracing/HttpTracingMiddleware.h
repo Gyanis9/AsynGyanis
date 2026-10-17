@@ -23,7 +23,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 创建「一条请求一节」的服务端链路中间件
      *
-     * @details 放在 traceContextMiddleware **之后**：它读的是请求上那条 traceparent，而归一化
+     * @details 放在 traceContextMiddleware 之后：它读的是请求上那条 traceparent，而归一化
      *          （缺则生成、畸形则重开）正是那一步做的。顺序反了也不会出错，只是这一节会跟着
      *          上游的原始写法走。
      * @details 它做三件事：按上游的采样位决定记不记；把 traceparent 的段标识改成本节的标识

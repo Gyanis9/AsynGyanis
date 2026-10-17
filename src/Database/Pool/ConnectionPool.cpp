@@ -17,14 +17,14 @@ namespace AsynGyanis::Database
     // ========================================================================
 
     ConnectionPool::ConnectionPool(std::function<std::unique_ptr<DatabaseConnection>()> factory, const PoolConfig &config) :
-        // 配置先在**线程起来之前**过一遍判据：m_config 与 m_healthThread 按声明顺序初始化，
+        // 配置先在线程起来之前过一遍判据：m_config 与 m_healthThread 按声明顺序初始化，
         // 把校验放在这一段里就等于「要么先拒、要么根本还没启动」，不会出现抛出去之后
         // 留下一条已经在跑的后台线程
         m_factory(std::move(factory)), m_config(validateConfiguration(config)), m_healthThread([this](std::stop_token stopToken) { healthCheckLoop(std::move(stopToken)); })
     {
 
         // 登记的十一条都是原子量，抓取时不碰池的锁（理由见头文件里那段的注释）。其中
-        // `connections_created_total` 是 `connections_held` 的**旧名别名**：那个名字随 v2.4.0 发布过，
+        // `connections_created_total` 是 `connections_held` 的旧名别名：那个名字随 v2.4.0 发布过，
         // 而它其实不是历史累计（丢弃会减回去，它同时是上限的占位分母）——改名等于掐断既有面板，
         // 所以旧名留着、值与 help 都按真实语义走，新面板取 held
         m_metricHandles = {
@@ -87,8 +87,8 @@ namespace AsynGyanis::Database
     {
         // 置假必须在令牌锁里做：此刻起归还路径要么已经持锁进来（本析构会等它走完），
         // 要么看到「池已停摆」直接关掉连接——池已析构就不能再被取消引用。
-        // **锁只覆盖这一次赋值**：析构末尾会就地恢复等待者，被恢复的协程可能归还
-        // PooledConnection，那条路径要锁同一把**非递归**令牌锁；持锁跨越恢复就是同线程
+        // 锁只覆盖这一次赋值：析构末尾会就地恢复等待者，被恢复的协程可能归还
+        // PooledConnection，那条路径要锁同一把非递归令牌锁；持锁跨越恢复就是同线程
         // 二次加锁的自死锁（与下面「恢复必须在 m_asyncMutex 锁外做」是同一条纪律）
         {
             const std::lock_guard livenessLock(m_liveness->mutex);
@@ -132,7 +132,7 @@ namespace AsynGyanis::Database
         // 这一次刻意「就地恢复」而不是投回各自的事件循环——池已经停摆，投递进循环的任务
         // 很可能永远不会被执行（循环也可能正在停止），那会让等待的协程永久挂起；
         // 就地恢复至少能让它们拿到空连接、继续走完自己的错误分支。
-        // **恢复必须在锁外做**：协程恢复后可能立刻再触池（重试 acquire、归还连接），
+        // 恢复必须在锁外做：协程恢复后可能立刻再触池（重试 acquire、归还连接），
         // 那些路径都要拿 m_asyncMutex，持锁恢复就是同线程二次加锁的自死锁
         // 收集票据而不是裸指针：票据是共享所有权，等待器随帧析构时我们手里的这一份仍然有效，
         // 而裸指针在锁外就已经可能悬垂（调用方可以随时销毁那个 Task）
@@ -405,12 +405,12 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 仍无可用连接：加入等待列表。**这次判定必须与入表同锁**：唤醒方（归还路径的「交接或入栈」）拿的
+        // 仍无可用连接：加入等待列表。这次判定必须与入表同锁：唤醒方（归还路径的「交接或入栈」）拿的
         // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
         // 归还侧判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
         {
             std::lock_guard lock(m_pool->m_asyncMutex);
-            // 锁里**只从空闲栈摘一条**，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
+            // 锁里只从空闲栈摘一条，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
             // 会让归还路径、后台超时唤醒与健康检查全排在它后面。池未满时的建连已经在上面
             // 那次无锁尝试里做过了，这里还是空栈就说明确实没有立即可用的连接
             // （摘到的那条若不可用，其断开已在 m_mutex 之外；它仍落在本把锁内，因为等待表与
@@ -512,7 +512,7 @@ namespace AsynGyanis::Database
         // 同步的 acquire() 与异步的 acquireAsync() 共用这一份判定——若异步路径只从空闲栈取，
         // 一个刚建好的池上所有异步获取都会先挂起（尽管池完全有能力建连），
         // 而同步获取却能立刻建连，两条路径给出相反的行为。
-        // **建连不在锁内**：工厂要跑 TCP 握手或开文件（秒级），持着 m_mutex 会让所有取出、
+        // 建连不在锁内：工厂要跑 TCP 握手或开文件（秒级），持着 m_mutex 会让所有取出、
         // 统计与后台驱逐一起排队；先用「占位」把额度定下来，再放锁执行建连
         {
             std::lock_guard lock(m_mutex);
@@ -1163,7 +1163,7 @@ namespace AsynGyanis::Database
             std::vector<AcquireAwaiter *> timedOutWaiters;
 
             // 容量先要到手，再动这张表。这段里唯一可能失败的分配就是这两次 reserve，而它们发生在
-            // 任何一条等待者被摘出链表**之前**——reserve 抛出来时表里一条没动，catch 里那句
+            // 任何一条等待者被摘出链表之前——reserve 抛出来时表里一条没动，catch 里那句
             // 「其余留到下一轮」才是真的。原先的顺序是先 erase_if 摘链、再逐条收集，收集那次
             // push_back 一抛，剩下的几条已经离开 m_asyncWaiters 却没人唤醒：那条协程永远睡着，
             // 而下一轮扫描再也看不见它（它已不在表里），借用超时的读数也不涨——现场只剩「调用方不动了」

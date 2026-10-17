@@ -20,7 +20,7 @@ namespace AsynGyanis::Net
     {
         /**
          * @brief 把出站连接的三项身份落到这条会话上：SNI、证书里的校验名、ALPN
-         * @details 三项都是**硬要求**而不是可调项：少了 SNI，前面坐着 SNI 路由的服务端只会给出默认证书；
+         * @details 三项都是硬要求而不是可调项：少了 SNI，前面坐着 SNI 路由的服务端只会给出默认证书；
          *          少了校验名，OpenSSL 只按名字表里的 CN/SAN 做默认比对，主机名拼错也就没人管。
          *          落不上去时当场抛，不静默跳过——一条「看起来握手成功、其实没验身份」的连接比握手失败更危险。
          * @param session 已建好、尚未挂回调的会话
@@ -58,7 +58,7 @@ namespace AsynGyanis::Net
                 encodedIdentifiers.push_back(static_cast<unsigned char>(identifier.size()));
                 encodedIdentifiers.insert(encodedIdentifiers.end(), identifier.begin(), identifier.end());
             }
-            // 注意这条的返回值是**反的**：0 才是成功（与 SSL_CTX_set_alpn_protos 同一口径）
+            // 注意这条的返回值是反的：0 才是成功（与 SSL_CTX_set_alpn_protos 同一口径）
             if (SSL_set_alpn_protos(&session, encodedIdentifiers.data(), static_cast<unsigned int>(encodedIdentifiers.size())) != 0)
             {
                 throw Base::Exception("QUIC 出站连接建立失败：ALPN 列表落不上去（" + quicOpenSslErrorText() + "）");

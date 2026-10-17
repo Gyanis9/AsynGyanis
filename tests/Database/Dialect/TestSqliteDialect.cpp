@@ -215,8 +215,8 @@ TEST(SqliteDialectSelect, QualifiedNameWithEmptySegmentIsPassedThrough)
 /**
  * @brief 钉住标识符判定的弱形式边界：高位字节、空格名与纯数字文本都落「引用桶」
  * @details 判定是允许表（字母/数字/下划线/≥0x80/引用符/空格）而不是「真标识符」的证明，
- *          被它放行的一切都按**引用**处理——引用是安全桶：最坏生成一个带引号的怪名字、
- *          由服务端拒绝，而表达式桶会**原样拼进 SQL**。三个边界：
+ *          被它放行的一切都按引用处理——引用是安全桶：最坏生成一个带引号的怪名字、
+ *          由服务端拒绝，而表达式桶会原样拼进 SQL。三个边界：
  *          ① 中文列名（≥0x80 连续区）逐段引用；② 含空格列名整体引用（"full name" 这类
  *          列名真实存在，且空格不会改变表达式结构）；③ 纯数字文本也引用——本层不替
  *          调用方猜「序号还是列名」，序号请走编译期常量而不是运行时字符串 API
@@ -235,7 +235,7 @@ TEST(SqliteDialectSelect, WeakFormIdentifierBucketQuotesHighBytesSpacesAndDigits
 }
 
 /**
- * @brief 钉住高位非法字节的去向：落引用桶（被引号包住），**不是**表达式桶
+ * @brief 钉住高位非法字节的去向：落引用桶（被引号包住），不是表达式桶
  * @details 0xFF 不成 UTF-8，但它 ≥0x80，仍进引用桶——这正是弱形式的兜底方向：原文若
  *          落进表达式桶就会原样拼进 SQL；落引用桶最坏只是服务端拒绝一个怪名字。
  *          行为要改必须先在这一条上红，再讨论新方向是否更安全
@@ -550,7 +550,7 @@ TEST(SqliteDialectWhere, InListBeyondTheEngineParameterBudgetIsRejectedWithReada
 }
 
 /**
- * @brief 钉住参数上限按**实际产出的占位符数**判定：SQLite 内联的分页不许把查询挤出去
+ * @brief 钉住参数上限按实际产出的占位符数判定：SQLite 内联的分页不许把查询挤出去
  * @details 本方言把 limit/offset 直接写进文本、不产出参数，而翻译前的估算按「各占一个」算。
  *          拿估计数当判据时，一条恰好贴着上限的大 IN 只要再带一个 LIMIT 就被误拒——
  *          而它实际只有 999 个占位符，是完全可执行的语句（MySQL 侧分页确实绑定，估计数即实际数，
@@ -1367,7 +1367,7 @@ TEST(SqliteDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)
  *
  * @details 这一格的形状有两个容易写错的地方：①自增赋值排在普通赋值后面时要带上逗号
  *          （漏了就是 `SET "name" = ? "version" = "version" + 1` 这种语法错误），
- *          ②它**不产生占位符**，因此参数表仍然是「SET 取值 + 条件取值」三枚，
+ *          ②它不产生占位符，因此参数表仍然是「SET 取值 + 条件取值」三枚，
  *          不做这一档的把关就会把参数顺序整体错位一格。
  *          列名渲染走的是本方言自己的引用字符（这一条由 MySQL 侧那条用例对照证明）
  */

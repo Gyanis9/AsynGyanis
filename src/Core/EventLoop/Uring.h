@@ -38,7 +38,7 @@ namespace AsynGyanis::Core
      *          水平触发（IoWatcher 的注册全是这一类）在上报后要补投，补投只按登记下来的描述符做，
      *          不遍历整张注册表——每轮全表扫描会把单事件循环的开销做成连接数的线性函数。
      * @warning 本后端只在 `ASYN_WITH_IO_URING=ON` 时参与构建；CI 的 `io_uring 的编译档` 会在内核放行时
-     *          **真跑一遍**契约用例（`io_uring_disabled` 非 0 时退化为只编译，并把这件事写进作业摘要）。
+     *          真跑一遍契约用例（`io_uring_disabled` 非 0 时退化为只编译，并把这件事写进作业摘要）。
      *          本地容器要实跑得放开 seccomp：默认挡掉 `io_uring_setup`（返回 EPERM），
      *          需 `--security-opt seccomp=unconfined`。
      */
@@ -94,7 +94,7 @@ namespace AsynGyanis::Core
          * @param timeoutMs 超时毫秒数，-1 表示无限等待，0 表示立即返回
          * @return 就绪事件视图；空表示超时/无事件
          * @warning 视图指向本对象的固定容量缓冲，下一次 wait() 会覆盖它的内容：在持有视图期间
-         *          **不得**再进入 wait()，也不得把视图跨线程留着用（Epoll 侧同一约束）
+         *          不得再进入 wait()，也不得把视图跨线程留着用（Epoll 侧同一约束）
          * @note 一次最多返回 kMaximumEventCount 条。取满不算丢：没处理的完成通知仍留在 CQ 环里
          *       （头指针不越过未处理的那条），下一次 wait() 开头就先把它们收掉
          * @throws Base::SystemException 提交或等待的系统调用失败
@@ -108,7 +108,7 @@ namespace AsynGyanis::Core
 
     private:
         /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。三个后端各拿这一个数定自己的
-        /// 每批上限，取同一值是刻意的**同档配置**（每批处理的预算与延迟感相当），不是一条跨模块必须同解
+        /// 每批上限，取同一值是刻意的同档配置（每批处理的预算与延迟感相当），不是一条跨模块必须同解
         /// 的约束：上层（EventLoop::run）只遍历交出的那段视图，并不按某张固定长度的表索引它，所以改
         /// 一档只改这一后端的每批量，不会把另两个后端读坏。取满不丢事件——完成通知仍留在 CQ 环里，
         /// 下一轮立刻再报

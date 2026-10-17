@@ -34,7 +34,7 @@ namespace AsynGyanis::Database
      * @brief 事务隔离级别（SQL:1992 的四档 + 「随引擎默认」）
      * @details Default 表示引擎自己的默认（MySQL 是 REPEATABLE READ、SQLite 是 SERIALIZABLE），
      *          不额外发任何语句；其余四档由各方言翻译成「BEGIN 之前的设置语句」。
-     *          引擎不支持按事务请求时**拒绝并点名**（见 `Transaction` 的构造说明），不静默降级
+     *          引擎不支持按事务请求时拒绝并点名（见 `Transaction` 的构造说明），不静默降级
      */
     enum class TransactionIsolationLevel
     {
@@ -174,8 +174,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 把冲突处置的尾部子句追加到 INSERT 文本末尾（默认不给子句）
          *
-         * @details 与 insertKeywordPhrase() 相对：那一份表达写在**最前面**的处置
-         *          （如 MySQL 的 `REPLACE INTO`），本方法表达只能写在 **VALUES 之后**的处置——
+         * @details 与 insertKeywordPhrase() 相对：那一份表达写在最前面的处置
+         *          （如 MySQL 的 `REPLACE INTO`），本方法表达只能写在 VALUES 之后的处置——
          *          PostgreSQL 的 `ON CONFLICT …` 就是后者，它没有可用的开头形式。
          *          默认实现什么也不追加；需要尾部处置的方言（PostgreSQL 的全部、
          *          MySQL/SQLite 的 Upsert 档）各自覆写。`Fail` 档在两种位置都必须是空档，
@@ -205,11 +205,11 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view beginTransactionStatement() const noexcept = 0;
 
         /**
-         * @brief 开启事务**之前**要发的隔离级别设置语句
+         * @brief 开启事务之前要发的隔离级别设置语句
          *
          * @details 事务对象在 BEGIN 之前执行它，语句本身只影响紧随其后的那一笔事务
          *          （标准语法 `SET TRANSACTION ISOLATION LEVEL …` 即此语义，MySQL 同名语句同解）。
-         *          引擎不提供「按事务请求隔离级别」这条路时给出**空串**——这是「拒绝」而不是
+         *          引擎不提供「按事务请求隔离级别」这条路时给出空串——这是「拒绝」而不是
          *          「不支持就当默认」：调用方（Transaction 构造）见到空串就地抛出并点名，
          *          不静默降级成引擎默认。
          *
@@ -219,7 +219,7 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept = 0;
 
         /**
-         * @brief 隔离级别设置语句该在 BEGIN **之后**（而不是之前）执行吗
+         * @brief 隔离级别设置语句该在 BEGIN 之后（而不是之前）执行吗
          *
          * @details 「设置语句相对 BEGIN 的位置」是引擎知识而不是调用方偏好：MySQL / SQLite 的
          *          `SET TRANSACTION …` 必须在事务开始前发出才对下一笔事务生效；PostgreSQL 恰好相反——
@@ -250,7 +250,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 获取在事务里立一个保存点的语句文本
          *
-         * @details 保存点是「事务内部的可回退点」：`ROLLBACK TO SAVEPOINT` 只撤到那一点而**不结束事务**，
+         * @details 保存点是「事务内部的可回退点」：`ROLLBACK TO SAVEPOINT` 只撤到那一点而不结束事务，
          *          所以嵌套回滚不必再开第二个事务——两个引擎都不吃嵌套 BEGIN（MySQL 的 START TRANSACTION
          *          会隐式提交上一笔，SQLite 直接报错），而再借一条连接开的更是另一笔事务。
          *
@@ -281,7 +281,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 获取丢弃某个保存点的语句文本
-         * @details 丢弃只是让这个名字之后不能被回退，**不提交也不回滚**它之后的工作；
+         * @details 丢弃只是让这个名字之后不能被回退，不提交也不回滚它之后的工作；
          *          不调用也可以，事务结束时保存点随之消失，所以它只在需要早回收命名空间时有用。
          * @param name 保存点名
          * @return std::string 语句文本，保证不含分号
@@ -294,7 +294,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取「当前数据库名」的查询语句，供迁移锁把锁键限定到本库
          *
-         * @details PostgreSQL 的咨询锁与 MySQL 的 GET_LOCK 都是**服务器级**的：同一台服务器上
+         * @details PostgreSQL 的咨询锁与 MySQL 的 GET_LOCK 都是服务器级的：同一台服务器上
          *          两个同名库若共用一个锁键，会互相挡住对方的迁移。读取当前库名后把它揉进锁键，
          *          不同库就各自有一把锁。返回空表示本引擎不需要这一层限定（SQLite 的锁随文件）。
          *
@@ -309,7 +309,7 @@ namespace AsynGyanis::Database
          * @brief 取「非阻塞尝试迁移会话锁」的语句
          *
          * @details 迁移开始前由 SchemaMigrator 在同一连接上反复执行本语句，直到拿到锁或超时。
-         *          **必须是会话级锁**：迁移期间那条连接一直由迁移持有，结束（含异常路径）才释放。
+         *          必须是会话级锁：迁移期间那条连接一直由迁移持有，结束（含异常路径）才释放。
          *          默认返回空表示本引擎没有会话级咨询锁——调用方退回「整段一笔写事务」的等价物。
          *
          * @param key 锁键（已由调用方混入库名并压成 63 位整数）
@@ -352,7 +352,7 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view columnTypeName(ColumnType type) const noexcept = 0;
 
         /**
-         * @brief 把一个逻辑列类型翻译成**可作主键**的物理类型名
+         * @brief 把一个逻辑列类型翻译成可作主键的物理类型名
          *
          * @details 主键（以及任何索引列）对物理类型有额外要求：MySQL 的 TEXT/LONGBLOB
          *          不能直接进索引，建表语句会以 1170 号错误被拒，必须换成带长度的同族类型
@@ -360,7 +360,7 @@ namespace AsynGyanis::Database
          *          TEXT 主键本就合法，无需区分；只有引擎存在这种限制时才重写。
          *
          * @param type 逻辑列类型
-         * @return std::string_view 该引擎可直接写进**主键列定义**的物理类型名
+         * @return std::string_view 该引擎可直接写进主键列定义的物理类型名
          * @note 需要为键列换类型时，换出的类型可能比原类型短（例如 TEXT → VARCHAR(255)），
          *       超长取值会被引擎按自己的规则拒绝——这是引擎侧的硬限制，不是本映射的取舍
          */

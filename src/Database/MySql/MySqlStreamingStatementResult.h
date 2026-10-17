@@ -6,15 +6,15 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 预处理语句与大结果集的组合：连接在 mysql_stmt_execute 之后**不** store_result，
- *          行留在服务端按预取窗口逐批取回（STMT_ATTR_PREFETCH_ROWS，窗口按**行数**计），
+ * @details 预处理语句与大结果集的组合：连接在 mysql_stmt_execute 之后不 store_result，
+ *          行留在服务端按预取窗口逐批取回（STMT_ATTR_PREFETCH_ROWS，窗口按行数计），
  *          客户端内存只装窗口与当前行。与 MySqlResult 的流式档同一套契约差异：
  *          rowCount() 回 0（未知）、isEmpty() 回 false（不宣称自己空）、不可重扫、
  *          结果集必须比产出它的连接短命，且在它收口之前那条连接不能再发任何语句。
  *
  * @note 语句句柄归连接的语句缓存所有，本对象只借用：收口（读完、中断或析构）时
  *       mysql_stmt_free_result 把没读完的回复流吃掉并通知连接放行；清不干净（连接已坏）
- *       时按命令文本请连接弃掉缓存里那一条。本对象**不**关闭任何句柄；取数期间连接被
+ *       时按命令文本请连接弃掉缓存里那一条。本对象不关闭任何句柄；取数期间连接被
  *       在途流计数锁住，缓存不会逐出这条语句。
  * @warning 生命周期与文本协议流式档同一条（详见 MySqlResult 的 @warning）：回复流没走完的
  *          期间断开连接属违反契约的用法；本对象比连接短命是它的前提。
@@ -75,7 +75,7 @@ namespace AsynGyanis::Database
          * @brief 取下一行并当场按列转换成值
          * @details 重写 DatabaseResult::next()：mysql_stmt_fetch 一次取一行（预取窗口由连接设置），
          *          本行当场逐列转换；超缓冲的列就地 mysql_stmt_fetch_column 补取（绝不让截断值过界）。
-         *          结束时（MYSQL_NO_DATA）收口；取数中断（错误码非零）按**残缺结果**处置：
+         *          结束时（MYSQL_NO_DATA）收口；取数中断（错误码非零）按残缺结果处置：
          *          写好 m_lastError 并收口，调用方从 lastError() 看到「这不是读完了」。
          * @return true 游标停在有效行上
          * @return false 读完、中断或已收口

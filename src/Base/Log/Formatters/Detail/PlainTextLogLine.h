@@ -36,7 +36,7 @@ namespace AsynGyanis::Base::Detail
      * @param out 目标缓冲；不清空，本次文本追加在其现有内容之后
      * @param event 日志事件
      * @param levelPrefix 等级字段之前的修饰（如 ANSI 颜色码），可为空
-     * @param levelSuffix 等级字段**补齐之后**的收尾（如颜色复位），可为空
+     * @param levelSuffix 等级字段补齐之后的收尾（如颜色复位），可为空
      */
     inline void appendPlainTextLogLine(std::string &out, const LogEvent &event, const std::string_view levelPrefix, const std::string_view levelSuffix)
     {

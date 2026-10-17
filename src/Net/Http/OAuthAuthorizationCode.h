@@ -8,7 +8,7 @@
  *
  * @details 三步走：①`beginAuthorization()` 组一条授权 URL 并交回本次的 state 与 PKCE verifier
  *          （都留着）；②调用方把 URL 交给浏览器，用户在授权页确认后浏览器被重定向到
- *          `redirectUri`，回调的**接受方式由调用方决定**（本地回环服务、自建端点、自定义协议
+ *          `redirectUri`，回调的接受方式由调用方决定（本地回环服务、自建端点、自定义协议
  *          或手工粘贴——本件不做这件事）；③`exchangeCode()` 把回调里的授权码连同 verifier 发到
  *          令牌端点换回令牌。状态核对与回调错误的拒绝都在换取之前完成，漏掉这两步的调用方
  *          拿不到令牌（state 不符会当场被拒）。
@@ -16,7 +16,7 @@
  * @note PKCE 按 RFC 7636 §4.3：能力允许时必须用 S256（本件只发 S256，不发 plain）。
  * @note 授权码只能换一次、且要与发起时的 redirectUri 与 verifier 配套（RFC 6749 §4.1.3、
  *       RFC 7636 §4.5）——三者都由 `beginAuthorization()` 的产物与配置提供，调用方不必自己拼。
- * @warning 令牌端点**必须**在 TLS 之下：来往上带着授权码与最终令牌。本件不替调用方拦明文端点
+ * @warning 令牌端点必须在 TLS 之下：来往上带着授权码与最终令牌。本件不替调用方拦明文端点
  *          ——照发，但调用方要清楚这是它自己的选择。
  */
 #pragma once
@@ -121,9 +121,9 @@ namespace AsynGyanis::Net
          *          两者都不向令牌端点发一个字节。表单固定为
          *          `grant_type=authorization_code&code=…&redirect_uri=…&client_id=…&code_verifier=…`；
          *          给了 clientSecret 时凭据走 Basic。响应按 RFC 6749 §5.1 的共用形状解析。
-         * @param request beginAuthorization 的产物。**按值收**：协程到首次恢复才读入参，
+         * @param request beginAuthorization 的产物。按值收：协程到首次恢复才读入参，
          *        按引用/视图接临时量会静默读到已释放内存
-         * @param callback 解析过的回调。**按值收**，口径同上
+         * @param callback 解析过的回调。按值收，口径同上
          * @return std::expected<OAuthAccessToken, std::string> 令牌；失败为中文原因
          */
         [[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback);

@@ -11,8 +11,8 @@
 #   —— 数据面每请求约 4.5 次读、4 次写，逐条 recvfrom，没有批量
 #   —— epoll_wait 那四万次不是自旋：QUIC 服务端有一个 10 毫秒的 expiry ticker
 #      （QuicServer::Configuration::expiryTickInterval），每次唤醒约两趟 epoll_wait，
-#      而 strace 把整场压到三分多钟，于是 200 次/秒 × 200 秒 ≈ 四万。**空闲开销由节拍主导，
-#      与负载无关**：要降它得把「固定节拍轮询」换成「按最早的交易截止时间睡」，
+#      而 strace 把整场压到三分多钟，于是 200 次/秒 × 200 秒 ≈ 四万。空闲开销由节拍主导，
+#      与负载无关：要降它得把「固定节拍轮询」换成「按最早的交易截止时间睡」，
 #      加 recvmmsg 批量并不能碰它一分
 #
 #   改完再跑同一条负载（`--threads 1`，同一台容器、同一棵树）：epoll_wait 2126、
@@ -33,7 +33,7 @@
 #   ① 不能用 `strace -p` 挂到已存在的进程上——这个容器不给 PTRACE_SEIZE 权限
 #      （"ptrace(PTRACE_SEIZE, ...): Operation not permitted"），只有随 strace 一起 fork
 #      出来的子进程能被跟。于是服务必须由 strace 带着起、由服务自己收口（SIGINT）。
-#   ② 认进程要按**可执行体名**（pgrep -x ReferenceServer）而不是命令行（pgrep -f）：strace 自己的
+#   ② 认进程要按可执行体名（pgrep -x ReferenceServer）而不是命令行（pgrep -f）：strace 自己的
 #      命令行里就带着 ReferenceServer 的路径，-f 会先命中它，SIGINT 送给 strace 只是让它 detach，
 #      服务留在场上没人收，脚本卡在 wait 上（实测卡过两次，留了一排僵尸）。
 set -u
@@ -63,7 +63,7 @@ for _ in $(seq 1 60); do
   sleep 0.2
 done
 sleep 1
-# 认进程要按**可执行体名**而不是命令行：`pgrep -f samples/ReferenceServer` 会先命中 strace 自己
+# 认进程要按可执行体名而不是命令行：`pgrep -f samples/ReferenceServer` 会先命中 strace 自己
 # （它的命令行里就带着这个路径），SIGINT 送给 strace 只是让它 detach，服务留在场上没人收
 server_pid="$(pgrep -x ReferenceServer | head -1)"
 

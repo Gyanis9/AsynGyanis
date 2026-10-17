@@ -133,16 +133,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
-         * @brief 执行一条 SQL 命令并交出**流式**结果集（行留在服务端，每调用一次 next() 取一行）
+         * @brief 执行一条 SQL 命令并交出流式结果集（行留在服务端，每调用一次 next() 取一行）
          * @details 重写 DatabaseConnection::executeStreaming()：命令照旧由 mysql_real_query 送出，
          *          区别只在收回结果用 mysql_use_result 而非 mysql_store_result——客户端因此只持有当前这一行，
          *          大结果集不再等额占内存。三条与预读不同的契约按基类落地：结果集比连接短命、它结束
          *          （读完或析构）之前这条连接不能再执行任何语句、rowCount() 回 0 表示「未知」。
-         *          中间那条由本驱动**本地拦截**：在途未清的流式结果按计数记着（m_openStreamCount），
+         *          中间那条由本驱动本地拦截：在途未清的流式结果按计数记着（m_openStreamCount），
          *          期间任何 execute()/executeStreaming() 都在发送前被拒并说明原因；流式结果读完
          *          或析构时计数归位（见 MySqlResult 的结束通知）。替代了此前「让服务端回
          *          Commands out of sync 再说」的走法——那时语句已经在线上了
-         * @warning **没有返回列的语句一律拒**（INSERT/UPDATE/DDL 与事务语句）：那种命令本来就没有可流式的
+         * @warning 没有返回列的语句一律拒（INSERT/UPDATE/DDL 与事务语句）：那种命令本来就没有可流式的
          *          结果集，悄悄退回预读的「空回执」会让调用方把写语句当查询用，比报一条错难查得多。
          *          拒收发生在命令已送到服务端之后（C API 无从预判有没有返回列）：写语句的副作用可能
          *          已经发生，不要按「没执行过」重试。
@@ -156,7 +156,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行带参数的命令并交出流式结果集：预处理语句逐行取数，行留在服务端按预取窗口取回
          * @details 重写 DatabaseConnection::executeStreaming() 的带参重载：走预处理语句接口
-         *          （mysql_stmt_*）真正绑定参数；执行后**不** store_result，行留在服务端按预取窗口
+         *          （mysql_stmt_*）真正绑定参数；执行后不 store_result，行留在服务端按预取窗口
          *          （STMT_ATTR_PREFETCH_ROWS，64 行）逐批取回，客户端内存只装窗口与当前行。
          *          列元数据取完即释放，语句句柄留在语句缓存里复用——取数期间在途流计数锁着整条连接，
          *          缓存不会逐出这条语句。与文本协议流式档同一套契约：行数未知（rowCount() 回 0、
@@ -181,7 +181,7 @@ namespace AsynGyanis::Database
          *          便捷封装；语句文本以方言为唯一来源，与 Transaction 路径共用，二者不会漂移。
          * @return true 事务已开启
          * @return false 未连接、语句被服务端拒绝，或这条连接已经在一个事务里（原因见 lastError()）
-         * @note 已经在事务里时**不再发这条语句**：MySQL 的 START TRANSACTION 会隐式提交上一笔未提交的
+         * @note 已经在事务里时不再发这条语句：MySQL 的 START TRANSACTION 会隐式提交上一笔未提交的
          *       工作，照发就等于替调用方把事情做成永久，而 SQLite 上同样的嵌套调用是失败的
          * @note 默认自动提交为 ON 时不需要显式开事务；本方法不会去改 autocommit 会话变量
          */
@@ -211,32 +211,32 @@ namespace AsynGyanis::Database
          *          SERVER_STATUS_IN_TRANS——只有后者认得出绕过本类入口手工执行的 "START TRANSACTION"
          *          与关掉 autocommit 之后被语句隐式带出来的事务。SQLite 侧按 sqlite3_get_autocommit
          *          判，两边同一判据：读引擎真值，而不是只读本类记了多少账。
-         *          **在途未清流直接判脏**：还有流式结果没读完/没析构时，回包流停在中途，
+         *          在途未清流直接判脏：还有流式结果没读完/没析构时，回包流停在中途，
          *          连 ROLLBACK 都发不出去（服务端回 Commands out of sync），这条连接已不可复位——
          *          一步不做、当场回 false，由池归还路径按「没复位干净」丢弃它（见 m_openStreamCount）。
          * @note 与基类契约一致：不抛异常、幂等；未连接、且下面这几格都说「与建连时一致」时不做任何事
-         * @note **复位范围是「事务 + 自动提交 + 默认库 + 连接字符集 + 只读语句时限」这五格**：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
+         * @note 复位范围是「事务 + 自动提交 + 默认库 + 连接字符集 + 只读语句时限」这五格：借用者自己设的其他会话变量、临时表与本类的语句缓存都不在这条路径上。
          *       COM_RESET_CONNECTION 能一次清掉它们，但它同时作废服务端全部预编译语句，而语句缓存里
          *       留着的是 MYSQL_STMT 裸句柄——要走到那一步，得先让缓存与那次重置同生共死，
          *       而那会把「热语句不必重新 prepare」这份收益一并交出去。
-         *       名单里还有两格要点名：**显式表锁 `LOCK TABLES`** 与**会话级咨询锁 `GET_LOCK`**——
+         *       名单里还有两格要点名：显式表锁 `LOCK TABLES` 与会话级咨询锁 `GET_LOCK`——
          *       前者不属于事务（ROLLBACK 不放它），后者要 `RELEASE_ALL_LOCKS()` 才收得掉，而这两格
          *       都没有 server_status 那种「自报的位」可判，按文本认又太容易漏（存储过程、动态语句里都会出现）；
          *       要清就得每次归还都多发一条语句，与本方法「一致时不付往返」的口径相反。
          *       借用者若要用它们，请自己释放再归还。
-         *       还有两格同样**不在语句台账里**：绕过 `setQueryTimeout()` 直接发的 `SET SESSION sql_mode=…`
+         *       还有两格同样不在语句台账里：绕过 `setQueryTimeout()` 直接发的 `SET SESSION sql_mode=…`
          *       与 `SET SESSION TRANSACTION ISOLATION LEVEL …`——台账只认 `NAMES` 与 `max_execution_time`
          *       两个关键字（见 noteSessionCommand 里那段说明）。这两格也没有 server_status 那种自报位可判，
          *       而「退回基线」要先读回基线：sql_mode 得发一条 SELECT @@session.sql_mode 才拿得到，
          *       隔离级别同理。为了不让下一位继承上一位的严格度/隔离度，借用者改了它们请自己改回去再归还。
          * @note 还有一格的归属容易误判：`LAST_INSERT_ID()` 是会话级且复位路径不重设——下一位在插入之前
-         *       查询会读到**上一位**的值（这是 MySQL 的会话语义，本层不做旧值清除）。框架自身的写回执
+         *       查询会读到上一位的值（这是 MySQL 的会话语义，本层不做旧值清除）。框架自身的写回执
          *       走 `mysql_insert_id()` 快照，不受它影响；要跨借用者读它的部署方，请自己在插入后再查。
          * @note 只读语句时限有两条来路，各归一处：走 `setQueryTimeout()` 的那条由连接池在归还时按建连时的
          *       取值退回（`DatabaseConnection::restoreQueryTimeoutBaseline()`，命令超时是基类的账）；
          *       绕过 setter 直接发 `SET SESSION max_execution_time=…` 的那条由本方法按语句文本记下来并重申
          *       基类口径——两条都堵上，才有「下一位拿到的时限与配置一致」这句话
-         * @note 自动提交那一格按**建连时服务端自报的那一位**退回（不是写死成「开」——服务端默认 off 的
+         * @note 自动提交那一格按建连时服务端自报的那一位退回（不是写死成「开」——服务端默认 off 的
          *       部署不该被本层改掉）。漏判的症状与事务那一格同一族：下一位并不会被告知自己不在自动提交
          *       模式下，他的每条单语句都隐式开事务，行锁握到他归还为止。判据读 server_status，
          *       与事务那一格同一份真值，因此一致时不额外付一趟查询
@@ -399,7 +399,7 @@ namespace AsynGyanis::Database
          * @details 默认库（`USE …`）、连接字符集（`SET NAMES …`）与只读语句时限
          *          （`SET [SESSION] max_execution_time=…`）都是会话级的，而本类没有对应的
          *          setter——借用者只能发原始语句，那份改动因此不会经过任何本类的账。不记下来的后果
-         *          不是报错而是**认错对象**：方言的元数据查询按 `DATABASE()` 限定库名（见 MySqlDialect），
+         *          不是报错而是认错对象：方言的元数据查询按 `DATABASE()` 限定库名（见 MySqlDialect），
          *          上一位换了库，下一位的「这张表不存在」其实是「在别人的库里不存在」，于是 migrator
          *          在别人的库里建表，或读写落在同名而不同的那张表上；字符集那格则是中文列被读成乱码。
          *          判据是「首词 + `SET` 之后前 80 个字符里的关键字」（与 Redis 侧 `noteSessionCommand()`
@@ -485,7 +485,7 @@ namespace AsynGyanis::Database
          * @return true 表已接管该句柄，后续由各条失败路径的 discardCachedStatement() 按键关闭
          * @return false 未接管（插入语句结点或键字符串时分配失败）：本函数是 noexcept，
          *         不能让它抛穿成 terminate；而调用方手里那份句柄还要继续绑定与执行，
-         *         因此这里**不**替调用方关闭它，只回报「表外」这一事实，由调用方的作用域兜底收尾
+         *         因此这里不替调用方关闭它，只回报「表外」这一事实，由调用方的作用域兜底收尾
          */
         [[nodiscard]] bool cacheStatement(std::string statementText, MYSQL_STMT *statement) noexcept;
 
@@ -515,7 +515,7 @@ namespace AsynGyanis::Database
          * @brief 新命令发送之前的统一前置：清 lastError → 连接 → 空命令 → 在途未清流
          * @details 每条发送入口都是独立尝试：先清上一轮错误，成功路径不残留失败文本。
          *          在途未清流时回复流停在中途，新语句会与它交错（服务端回 Commands out of sync）；
-         *          判在**发送之前**——语句一条不发、不改变任何服务端状态，这类拒绝因此可以安全重试。
+         *          判在发送之前——语句一条不发、不改变任何服务端状态，这类拒绝因此可以安全重试。
          *          计数在流读完或结果析构时归位（见 noteStreamClosed）
          * @param command 待发送的命令原文（这里只判它是否为空）
          * @return true 可以发送新命令
@@ -567,7 +567,7 @@ namespace AsynGyanis::Database
 
         /// 在途未清流的流式结果条数（每个 executeStreaming 成功开流 +1，结果读完或析构时 -1）：
         /// 大于 0 时回复流停在中途，本连接不能再发任何语句——execute 两条路径与 executeStreaming
-        /// 都据此在**发送之前**拒绝，resetSessionState 也据此拒复位（那条连接已不可复用，交回池
+        /// 都据此在发送之前拒绝，resetSessionState 也据此拒复位（那条连接已不可复用，交回池
         /// 只会让下一个借用者的第一条语句撞上协议错位）
         std::size_t m_openStreamCount{0};
     };

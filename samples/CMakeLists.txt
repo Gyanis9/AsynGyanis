@@ -5,7 +5,7 @@
 # 其余按模块拆开的示例承担「把每一块单独跑通」的职责，脚本 scripts/run_samples.py 会把它们
 # 全部跑一遍并按退出码判定系统完整性。
 
-# 一个示例一个目标。目录按**模块**分（Base / Platform / Core / Net / Database，与 src/ 与 tests/ 同一套名字），
+# 一个示例一个目标。目录按模块分（Base / Platform / Core / Net / Database，与 src/ 与 tests/ 同一套名字），
 # 文件名就是这个示例讲的那件事（ReferenceServer.cpp、Loop.cpp、Upgrade.cpp…）——不再用 main.cpp：
 # 一排同名文件在编辑器标签页与调用栈里分不出谁是谁，而「哪个模块的哪个面」本该从路径上一眼读得出来。
 # 目标名就是可运行程序名，一律大驼峰、不带下划线（CoreLoop、NetHttpDemo、ReferenceServer…），
@@ -75,7 +75,7 @@ target_link_libraries(DatabaseDemo PRIVATE Database)
 # Core 零停机换代：把正在监听的套接字交给新一代进程，端口全程不关（POSIX 才构建，理由见下）
 #
 # 移交本身两家都有原语（POSIX 走 SCM_RIGHTS，Windows 走 WSADuplicateSocket），拦住 Windows 的是
-# 事件后端：套接字与完成端口的关联是**内核对象级**且不可解除的，交棒方的循环一开跑就把监听句柄挂上了
+# 事件后端：套接字与完成端口的关联是内核对象级且不可解除的，交棒方的循环一开跑就把监听句柄挂上了
 # 自己的端口，新一代再把它挂进自己的完成端口就被拒（实测 CreateIoCompletionPort 报 87，父代答完话、
 # 子代一次都没接上）。那条拒因现在带得出码，用例是 IoWatcher.DescriptorOnAnotherCompletionPortThrowsWithWin32Reason。
 # 要让 Windows 也走得通，得给换代单独配一条「阻塞 accept 线程 + adoptConnection」的接手路径，

@@ -58,7 +58,7 @@ namespace AsynGyanis::Core
      *          就是这么写的）。修复前它们置完就落回 while 的开头继续跑：读数说已经停了，事件照派发、
      *          协程照恢复；而 ~EventLoop 按 `m_running==false` 跳过 stop()，紧接着在还在等事件的线程
      *          底下销毁后端与唤醒套接字；持续失败的那一格还会退化成每轮一条 ERROR 的满核空转。
-     * @note 判据是「run() 有没有返回」，且**刻意不靠 stop() 收口**——旧代码被 stop() 也叫得醒，
+     * @note 判据是「run() 有没有返回」，且刻意不靠 stop() 收口——旧代码被 stop() 也叫得醒，
      *       那样这条判据就是假的。触发方式：把「关掉后端句柄」投给这条循环自己（Linux 下下一趟
      *       epoll_wait 直接 EBADF，Windows 上完成端口已关 → GetQueuedCompletionStatusEx 报错）。
      *       投递只在两次 wait 之间被派发，所以关的那一瞬间它必然不在 wait 里——主线程去关就不一样：

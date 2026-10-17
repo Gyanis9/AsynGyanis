@@ -23,7 +23,7 @@ namespace AsynGyanis::Base
      * @brief 编程/用法错误异常
      *
      * @details 用于「调用方把接口用错了」这一类失败，重试与降级都无济于事，只能改代码或改配置。
-     *          **刻意不派生自 Base::Exception**：那会归入 std::runtime_error，分开才能让
+     *          刻意不派生自 Base::Exception：那会归入 std::runtime_error，分开才能让
      *          `catch (const Base::Exception &)` 不把调用方的 bug 一并吞掉；要一次网住「所有用法错误」
      *          需捕获两条链的共同基类 std::logic_error。
      *

@@ -16,12 +16,12 @@ CMakeLists 的 `project(VERSION ...)`，见下面的 set_version），用 CMakeD
 。各组件之间的依赖关系由本文件的 cpp_info.components
 如实声明，因此只需链顶层用到的那个目标。
 
-**本包只出静态库**（`package_type = "static-library"`，且不提供 `shared` 选项）：共享形态是仓库自己
+本包只出静态库（`package_type = "static-library"`，且不提供 `shared` 选项）：共享形态是仓库自己
 用 `-DBUILD_SHARED_LIBS=ON` 直接配 CMake 走的那条路，双端双形态都有门禁；这条包路线没有会跑共享档的
 作业，加一个没人验过的开关等于造死配置。
 
-与仓库根 conanfile.py 的分工：那份是**开发用**配方（application 角色，只负责为本地构建与 CI
-装依赖，并放行 MySQL 依赖的可选跳过）；这份是**分发用**配方，只装库本体必需的四项依赖
+与仓库根 conanfile.py 的分工：那份是开发用配方（application 角色，只负责为本地构建与 CI
+装依赖，并放行 MySQL 依赖的可选跳过）；这份是分发用配方，只装库本体必需的四项依赖
 （zlib / openssl / sqlite3 / hiredis，可选 libmysqlclient），不引入 GTest——测试与示例由
 ASYN_BUILD_TESTS / ASYN_BUILD_SAMPLES 两个开关在配置阶段关掉。
 
@@ -41,11 +41,11 @@ from conan.tools.files import copy
 # 库本体必需的外部依赖：TLS 与摘要走 openssl，HTTP 响应压缩与 permessage-deflate 走 zlib，
 # 压缩协商里还有 zstd 与 brotli（gzip/deflate/zstd/br 四选一的其余两项），
 # Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis。
-# **这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐**：漏一项，
+# 这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐：漏一项，
 # 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
 # HTTP/3 的帧与 QPACK 已全部自研，测试的对端也是自带的字节级实现，仓库任何一侧都不再链接
 # 第三方 h3 实现，因此它既不进库包也不进测试依赖。
-# **本文件里写版本的四处（这份列表与下面三个 *_REQUIREMENT）都必须与 conandata.yml 同解**：
+# 本文件里写版本的四处（这份列表与下面三个 *_REQUIREMENT）都必须与 conandata.yml 同解：
 # 升 conandata 而漏跟这里，交付包就钉在旧版本上，scripts/check-dependency-advisories.py 机检这一面。
 BASE_REQUIREMENTS = [
     "zlib/1.3.1",
@@ -151,7 +151,7 @@ class AsynGyanisLibrary(ConanFile):
         """读构建期那份 std::stacktrace 探测的结果，真源在 `src/Base/CMakeLists.txt` 的 check_cxx_source_compiles
 
         为什么不在这里复述一遍工具链矩阵：宏是 PUBLIC 的，而 `Base/Exception/StackTrace.h` 按它换
-        `CapturedStackTrace` 的**类型**（有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。
+        `CapturedStackTrace` 的类型（有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。
         复述过一次就漂一次——本函数原先写死「Windows 一律没有、Linux 只认 gcc>=13」，而 MSVC 与 clang
         上那次探测其实会通过：一旦通过，包里编进去的是有栈那份形状，而消费方按宏缺失拿到空替身，
         静态链接不会报错，错的是两边对同一个类的布局。
@@ -192,7 +192,7 @@ class AsynGyanisLibrary(ConanFile):
         platform.set_property("cmake_target_name", "AsynGyanis::Platform")
         if self.settings.os == "Windows":
             # Winsock 只在 Windows 需要（Linux 侧由 libc 内建提供）；Linux 侧补 pthread。
-            # **这份清单与 src/Platform/CMakeLists.txt 的 target_link_libraries 必须逐项一致**：
+            # 这份清单与 src/Platform/CMakeLists.txt 的 target_link_libraries 必须逐项一致：
             # 静态库不会把外部依赖带给最终可执行文件，少一项就是消费方链接期一条未解析外部符号。
             # iphlpapi 曾被漏掉，而 `Platform/IO/NetworkInterface.h` 是公开头、里面直接
             # include <iphlpapi.h>（if_nametoindex/if_indextoname 在 Windows SDK 里由它实现）

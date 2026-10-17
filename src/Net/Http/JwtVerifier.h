@@ -8,11 +8,11 @@
  *
  * @details OAuth 侧的令牌大多是 RS256 签名的 JWT：验它需要「解析三段 → 取公钥 → 验签 →
  *          校验声明」四步，每一步都有各自的拒绝面（alg 混淆、篡改、过期、iss/aud 不符）。
- *          本文件把这四步做成**无状态纯函数**：不拉网络、不持有缓存、时钟由调用方传入——
+ *          本文件把这四步做成无状态纯函数：不拉网络、不持有缓存、时钟由调用方传入——
  *          因此可以在用例里对着现场签好的令牌逐格证伪。公钥的来源（JWKS 端点、缓存与轮换）
  *          是另一半，建在本层之上而不是塞进来。
  *
- * @note 拒绝一律「点名原因」（中文），且**先验签后读载荷**：未验签的载荷不可信，把
+ * @note 拒绝一律「点名原因」（中文），且先验签后读载荷：未验签的载荷不可信，把
  *       「解析出来给调用方看一眼」做成默认行为等于把不可信数据递出去。要读未验签的载荷
  *       （例如只为取 kid 选键）请显式走 parseJwt()，名字里的「解析」就是提醒。
  * @warning 只认 RS256。`alg: none` 与 HMAC（HS256）都必须被拒——前者是「无签名」的公开
@@ -50,18 +50,18 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::optional<std::string> base64UrlDecode(std::string_view text);
 
     /**
-     * @brief 解析后的 JWT 三段（**未验签**）
+     * @brief 解析后的 JWT 三段（未验签）
      */
     struct ParsedJwt
     {
         std::string headerJson;   ///< 头段解出的 JSON 文本
         std::string payloadJson;  ///< 载荷段解出的 JSON 文本
         std::string signature;    ///< 签名原始字节（第三段 base64url 解码后）
-        std::string signingInput; ///< "header.payload" 的**原文**（验签输入必须用原文而不是重编码）
+        std::string signingInput; ///< "header.payload" 的原文（验签输入必须用原文而不是重编码）
     };
 
     /**
-     * @brief 拆开 JWT 并解码前两段（只做形状与编码检查，**不验签**）
+     * @brief 拆开 JWT 并解码前两段（只做形状与编码检查，不验签）
      * @param token 完整令牌（三段、点分隔）
      * @return std::optional<ParsedJwt> 解析结果；段数不对、base64url 非法或头/载荷不是 JSON 时给空
      */
@@ -79,7 +79,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief RS256 验签（RSASSA-PKCS1-v1_5 + SHA-256）
-     * @details 验的是 ParsedJwt::signingInput 的**原文**与第三段解码后的签名，公钥按调用方给的来。
+     * @details 验的是 ParsedJwt::signingInput 的原文与第三段解码后的签名，公钥按调用方给的来。
      *          本函数不看 header.alg——「令牌自称什么算法」不是判据，判据在 verifyJwtRs256() 的白名单里。
      * @param parsed parseJwt() 的输出
      * @param publicKey 公钥；空指针给 false

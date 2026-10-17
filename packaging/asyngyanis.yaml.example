@@ -1,12 +1,12 @@
 # AsynGyanis 的生产配置样例（ReferenceServer --config 可直接加载）。
 #
 # 抄用方式：复制到部署机（systemd 单元里是 /etc/asyngyanis/asyngyanis.yaml），按现场改。
-# 样例里凡是口令/密钥/私钥的键都**没有写值**（注释掉或留空说明位置）——AccessKey 一类只从
+# 样例里凡是口令/密钥/私钥的键都没有写值（注释掉或留空说明位置）——AccessKey 一类只从
 # 环境变量读，任何情况下都不要把它们写进版本库或镜像。
 #
-# 监听地址与端口**不在本文件里**：`--host` / `--port` 只能从命令行给，而 `--host` 的默认值是
+# 监听地址与端口不在本文件里：`--host` / `--port` 只能从命令行给，而 `--host` 的默认值是
 # localhost。容器里跑必须显式给 `--host 0.0.0.0`——`docker run 镜像 --config /cfg/x.yaml` 会
-# **整段替换**镜像的 CMD，连带把 CMD 里那个 `--host 0.0.0.0` 一起丢掉，于是服务只听回环、
+# 整段替换镜像的 CMD，连带把 CMD 里那个 `--host 0.0.0.0` 一起丢掉，于是服务只听回环、
 # 从容器外一条也连不上（端口映射看着是通的，症状只是超时）。
 #
 # 两类键的处置不同，读配置时就能分辨：
@@ -27,7 +27,7 @@ server:
   # 打开运维端点：/metrics、/healthz、/readyz、/debug/loops、/debug/connections，
   # 以及配了下面那个令牌时才注册的 /debug/log-level（改日志等级是写操作：没闸门就不留这个入口）。
   expose_metrics: true
-  # 运维端点的 Bearer 令牌。**不要**把现场令牌写进本文件后提交；部署时把这一行取消注释并填入
+  # 运维端点的 Bearer 令牌。不要把现场令牌写进本文件后提交；部署时把这一行取消注释并填入
   # 现场值（令牌只能写在配置文件里，命令行上的令牌会进 shell 历史与进程列表）。
   # 不配 = /metrics、/debug/loops 与 /debug/connections 都不鉴权，且 /debug/log-level 不注册；
   # /healthz 与 /readyz 刻意不查令牌（探针要能被编排器无凭据访问，给探针加闸的结局是探针被人关掉）。
@@ -74,7 +74,7 @@ server:
 # 日志：global_level 与 sinks。未配置前 root 是 Trace 且零 sink（全部丢弃），因此生产必须配。
 logging:
   global_level: info
-  # loggers 是「日志器名 → 它的字段」的映射，**不是列表**：写成 `- level: …` 会被整段跳过
+  # loggers 是「日志器名 → 它的字段」的映射，不是列表：写成 `- level: …` 会被整段跳过
   # （只在 stderr 打一行「loggers 不是对象」），于是下面的 sink 一个都不生效。root 是根日志器。
   loggers:
     root:
@@ -86,7 +86,7 @@ logging:
           level: info
         # 异步包一层滚动文件：满队列按 drop 丢并计数（asyn_http_log_dropped_events_total，
         # 那是「日志系统自己来不及」的信号，不是业务错误）。
-        # directory 写**绝对路径**：相对路径的锚点是**本配置文件所在的目录**（不是进程工作目录，
+        # directory 写绝对路径：相对路径的锚点是本配置文件所在的目录（不是进程工作目录，
         # 见 LoggerConfigLoader::resolveLogPath），而 systemd 那份配置住在 /etc/asyngyanis/ ——
         # 写 `logs` 就会去建 /etc/asyngyanis/logs，专用账号在 /etc 下建不动，启动即抛带路径的异常。
         # /var/lib/asyngyanis 由镜像的 install -d 与单元里的 StateDirectory= 各自备好并归属专用账号。
@@ -120,7 +120,7 @@ tracing:
     path: /var/lib/asyngyanis/logs/spans.jsonl
 
 # 日志推给 OTLP 采集端（/v1/logs）。段缺失或 enabled=false 即关着；开了必须给服务名与地址。
-# 与 metrics 段不同，日志是**批语义**：有界队列、失败重试、溢出与收尾丢弃都计数（日志丢了就是丢了）。
+# 与 metrics 段不同，日志是批语义：有界队列、失败重试、溢出与收尾丢弃都计数（日志丢了就是丢了）。
 # 记录里会带日志上下文字段（trace_id/span_id/request_id）与 logger.name/thread.id。
 log_export:
   enabled: false

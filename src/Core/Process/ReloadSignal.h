@@ -28,7 +28,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 重载信号观察者：注册重载动作，SIGHUP 到达时执行
      *
-     * @details 为什么要有它：本引擎的重载入口一直是**文件监听**那一侧（`Base::ConfigManager::enableHotReload()`，
+     * @details 为什么要有它：本引擎的重载入口一直是文件监听那一侧（`Base::ConfigManager::enableHotReload()`，
      *          inotify / ReadDirectoryChangesW），它回答的是「盘上的文件变了」。运维要的是另一件事——
      *          「我知道文件变了，现在请立刻重读」，标准做法是给主进程发一个 SIGHUP（systemd 的
      *          `ExecReload=` 默认就是 `/bin/kill -HUP $MAINPID`，nginx 那一族的 reload 也走这条路）。
@@ -37,16 +37,16 @@ namespace AsynGyanis::Core
      *          （那边管 SIGINT/SIGTERM，这边只管 SIGHUP），所以两个观察者可以在同一进程里并存。
      * @details 动作一律被投回构造时给出的那个事件循环去执行（与停机观察者同一条契约）：要重读的配置通常
      *          正被循环线程上的服务器与处理器读着，在别的线程上改它就是数据竞态。
-     * @note **Linux/POSIX 专有**。Windows 没有 SIGHUP 这套约定，控制台也没有「重载」这一类事件
+     * @note Linux/POSIX 专有。Windows 没有 SIGHUP 这套约定，控制台也没有「重载」这一类事件
      *       （`CTRL_*` 五种全是停机向的），Windows 侧的 `isInstalled()` 恒为 false 并记一条说明——
      *       那不是待办，是平台事实；Windows 上的重载入口仍是文件监听那一条。
      * @note 一个进程只允许一个观察者：信号屏蔽字与待取队列都是进程级的，两个实例会互相抢同一条 SIGHUP，
      *       表现是一条运维信号只让一半动作跑。第二个实例不装接管，`isInstalled()` 回 false 并记 ERROR 日志。
      * @note 装上之后 SIGHUP 不再按缺省动作终止进程（缺省动作正是「终止」，多数人不清楚）。这正是本类要的
      *       效果，但请把它当成一次契约变更看待：原本靠 `kill -HUP` 杀进程的脚本会改成触发一次重载。
-     * @note POSIX 侧要求**尽早构造**（在其它工作线程创建之前）：构造时把 SIGHUP 挡进本线程的屏蔽字，
+     * @note POSIX 侧要求尽早构造（在其它工作线程创建之前）：构造时把 SIGHUP 挡进本线程的屏蔽字，
      *       之后派生的线程继承它，信号因此只会由本类那个等待线程取走。已经跑起来的线程不会被打上屏蔽。
-     * @note 只收**进程定向**的信号：要在进程内模拟一次，请用 `kill(getpid(), SIGHUP)`，
+     * @note 只收进程定向的信号：要在进程内模拟一次，请用 `kill(getpid(), SIGHUP)`，
      *       或直接调 requestReload()；`raise()`/`pthread_kill()` 那种线程定向信号本类的等待线程取不到。
      */
     class ASYN_CORE_API ReloadSignal
@@ -61,7 +61,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 不绑定事件循环，接管 SIGHUP
          * @details 给「动作本来就与循环无关」的宿主用（例如只置一个原子量、主循环自己轮到了再重读）。
-         *          动作因此**在收到信号的那条线程上就地执行**；要碰循环上的状态请用带事件循环的构造。
+         *          动作因此在收到信号的那条线程上就地执行；要碰循环上的状态请用带事件循环的构造。
          */
         ReloadSignal();
 
@@ -80,7 +80,7 @@ namespace AsynGyanis::Core
          * @brief 注册一个重载动作
          * @details 触发后按注册顺序依次执行；单个动作抛出的异常被就地接住并记 ERROR 日志，后面的动作照跑
          *          ——与停机观察者同一条理由：一次重读失败不该把「把新配置接上」整段带走。
-         * @details 注册表**跨轮次保留**：每一次 SIGHUP 都会把当前登记的动作为重跑一遍（与
+         * @details 注册表跨轮次保留：每一次 SIGHUP 都会把当前登记的动作为重跑一遍（与
          *          `GracefulShutdown` 的单向一次性正好相反）。要只跑一次就自己 `cancel()`，
          *          或在动作里带一个「只装一次」的闩锁。
          * @param action 要在事件循环线程上执行的动作
@@ -99,7 +99,7 @@ namespace AsynGyanis::Core
          * @brief 程序侧触发一次重载，路径与真信号完全相同
          * @details 给「管理端点要重读配置」「自检脚本自己触发」这类场景用：与其自己抄一遍顺序，
          *          不如让信号与程序触发共用同一条路。
-         * @note 与停机不同，重载**可以重复触发**：每一次都是一轮新的重读，不做单向闩锁。
+         * @note 与停机不同，重载可以重复触发：每一次都是一轮新的重读，不做单向闩锁。
          */
         void requestReload() noexcept;
 
@@ -151,7 +151,7 @@ namespace AsynGyanis::Core
         std::atomic<bool>          m_isInstalled{false}; ///< 信号接管是否装上（每进程仅一个观察者装得上）
         std::atomic<std::uint64_t> m_reloadCount{0};     ///< 累计触发次数
 
-        /// POSIX 侧取信号的等待线程。**必须声明在最后**：成员按声明逆序销毁，最后声明的最先销毁，
+        /// POSIX 侧取信号的等待线程。必须声明在最后：成员按声明逆序销毁，最后声明的最先销毁，
         /// 于是 jthread 的 join 发生在上面那批原子量与容器之前——否则等待线程可能在它们已经没了
         /// 的时候还在读它们（sigtimedwait 带超时，所以停得下来）
         std::jthread m_waiter;

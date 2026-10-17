@@ -142,7 +142,7 @@ TEST(WebSocketUpgradePolicy, SameOriginTextComesFromTransportAndAuthority)
 }
 
 /**
- * @brief 钉住子协议协商按**对端次序**取第一个本端有的，且比较逐字进行
+ * @brief 钉住子协议协商按对端次序取第一个本端有的，且比较逐字进行
  * @details RFC 6455 §4.1 第 10 条把对端的列表写成「ordered by preference」，所以本端的候选表顺序
  *          不构成优先级；反过来，把 `chat` 与 `Chat` 当同一个名字会回显一条对端没提过的写法，
  *          而那正是客户端必须判失败的形状（§4.2.2 步骤 6）。

@@ -68,7 +68,7 @@ namespace AsynGyanis::Core
              * @return std::chrono::milliseconds 至少 1 毫秒
              * @details 预算按「从本波起还有几波要分」切均。一两条地址（双栈主机最常见的形状）落在同
              *          一波里，rounds 就是 1，两条各拿完整预算——并发本来就在比谁先连上，不需要截。
-             *          只有候选条数超过在途上限时才会有第二波，而第二波的候选**要等前面的收口才发起**：
+             *          只有候选条数超过在途上限时才会有第二波，而第二波的候选要等前面的收口才发起：
              *          不切预算的话，几条一起挂住的头部会把整场吃光，第五条永远轮不到。实测正是这个
              *          形状：Windows 的完成端口后端上「连不上」不给可写事件，挂在 connect 上的协程要等
              *          自己的看门狗（一条拒绝的候选独吞 2000 ms 预算，补发的第五条到点即饿死）。
@@ -243,7 +243,7 @@ namespace AsynGyanis::Core
 
             /**
              * @brief 交出胜者；没人赢就是空
-             * @details **只能取一次**：取走会把账本里的胜者搬空，第二次拿到的是描述符已归还的空壳——
+             * @details 只能取一次：取走会把账本里的胜者搬空，第二次拿到的是描述符已归还的空壳——
              *          所以等待方协程要写成 `co_return co_await RaceAwaiter{race};`，先 co_await 丢弃
              *          再自己取一遍就会静默交出一条不能用的连接（实测 asyncSend 报 ENOTSOCK）。
              */
@@ -343,7 +343,7 @@ namespace AsynGyanis::Core
     {
         CandidateRace race(loop, std::move(candidates), deadline);
         race.launchPending();
-        // 一次 co_await 就把胜者带走：await_resume() 是**搬空**账本里的胜者，多调一次第二次只会拿到
+        // 一次 co_await 就把胜者带走：await_resume() 是搬空账本里的胜者，多调一次第二次只会拿到
         // 一个描述符已归还的空壳
         co_return co_await RaceAwaiter{race};
     }

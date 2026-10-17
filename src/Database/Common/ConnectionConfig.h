@@ -105,13 +105,13 @@ namespace AsynGyanis::Database
      * @details 两档的取舍与既有生态同解（redis-py 的 `protocol=3`、Lettuce/Jedis 的 protocolVersion、
      *          StackExchange.Redis 的 RESP3 开关都放在连接配置上而不是连接对象上，本仓同形）：
      *          RESP2 是 Redis 生态的默认档，也是本驱动此前的唯一形状——`HGETALL` 回「字段、值」交替的
-     *          扁平数组，容器里的类型一律按文本读出；RESP3 让服务端改回**带类型的容器**
+     *          扁平数组，容器里的类型一律按文本读出；RESP3 让服务端改回带类型的容器
      *          （map / set / bool / double / verbatim），`RedisResult` 因此能把它们按类型交出而不是折成文本。
-     *          默认 Resp2：换协议会改**回复形状**，正在按交替下标配对读 `HGETALL` 的代码会被静默错位，
+     *          默认 Resp2：换协议会改回复形状，正在按交替下标配对读 `HGETALL` 的代码会被静默错位，
      *          所以这一格只能由部署方显式打开，不能由库替它决定。
      * @note Resp3 档目前不支持「靠推送送达」的那几条入口（SUBSCRIBE / PSUBSCRIBE / MONITOR 之后的
      *       readPushReply）：服务端把它们改成 `>` 推送，而本驱动按「一条命令一条回复」执行，
-     *       这些命令会在**发送之前**被拒并给出原因。要用订阅就留在 Resp2（逐条取证见 RedisConnection.cpp
+     *       这些命令会在发送之前被拒并给出原因。要用订阅就留在 Resp2（逐条取证见 RedisConnection.cpp
      *       里 kResp3PushPathRefusal 那段）；把推送接起来需要推送回调 + 订阅不再等命令回复那套改法。
      */
     enum class DatabaseRedisProtocol : std::uint8_t

@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
         /// 连续这么多毫秒没有任何进展才算停住。为什么用「没有进展」而不是「总共花了多久」：
         /// 一台被压满的机器上，300 KiB 走回环 UDP 花掉 15 秒不是缺陷而是调度——满载 `-j 8`
         /// 实测本文件那条确实这样红过（15.32 秒 / 单独跑 0.2 秒）。而窗口归还没做时症状是
-        /// **彻底停住**，对端一个字节都不再发，按进展判既不会误杀慢的、也照样抓得住停的
+        /// 彻底停住，对端一个字节都不再发，按进展判既不会误杀慢的、也照样抓得住停的
         constexpr std::chrono::milliseconds kDeliveryStallBudget{15000};
         /// 进展哨兵的节拍：十五个静默拍子就是 `kDeliveryStallBudget`
         constexpr std::chrono::milliseconds kDeliveryStallCheckInterval{1000};
@@ -265,7 +265,7 @@ namespace AsynGyanis::Net
              * @param judgeByProgress true = 这一趟的停与不停按「有没有进展」判，不押一条总时长：
              *        挂上「连续静默就掐掉连接」的哨兵，并把正文逐批收进自己的缓冲（判据改用 `body()`）。
              *        大正文那一条用它——满载时 300 KiB 走回环 UDP 可以慢到几十秒，而窗口归还漏做的症状
-             *        是**彻底停住**（理由同 `kDeliveryStallBudget`，也同 `Http3DeliveryAttempt` 那一趟）
+             *        是彻底停住（理由同 `kDeliveryStallBudget`，也同 `Http3DeliveryAttempt` 那一趟）
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
                                 const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000},
@@ -978,7 +978,7 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 大正文那趟的「没有进展」哨兵：连续静默就掐掉链路
-             * @details 判据换成构造出来的条件而不是绝对时长：窗口归还漏做时的症状是对端**一个字节都不再发**，
+             * @details 判据换成构造出来的条件而不是绝对时长：窗口归还漏做时的症状是对端一个字节都不再发，
              *          而一台被压满的机器上「慢但仍在一批一批交」是常态。这里每拍看一次批次数有没有变——
              *          变过就重新计时，连续 `kDeliveryStallBudget` 没变才把链路关掉，让请求带着原因回来。
              *          与被判据的那个动作同在本条循环线程上，因此读 `m_batches` 不需要额外同步
@@ -1117,10 +1117,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 服务端要求客户端证书时，不带身份的客户端拿不到任何服务
-     * @details 判据落在**服务端平面**。TLS 1.3 里客户端收完服务端的 Finished 就自认握手完成，它对
+     * @details 判据落在服务端平面。TLS 1.3 里客户端收完服务端的 Finished 就自认握手完成，它对
      *          「服务端后来有没有接受我的 Certificate」没有任何可见性（拒绝只能靠加密后的 alert 传达），
      *          所以「客户端那边握手成功」不能拿来当 mTLS 的判据——实现完全正确时那条断言也会红。
-     *          这里看两件：请求没拿到答，以及**服务端的请求计数一条也不涨**，后者才是「没被服务」的
+     *          这里看两件：请求没拿到答，以及服务端的请求计数一条也不涨，后者才是「没被服务」的
      *          证据而不是本端自己的推断。
      * @note 已知未覆盖：这条被拒的连接什么时候从服务端连接表里散去。现测到的是服务端的 TLS 既不
      *       Failed 也不 Completed（OpenSSL 在没有可用客户端证书时不让握手结论），本端靠请求时限收手；
@@ -1161,10 +1161,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 出站池按与 h2 同一形状管 h3 链路：取回同一条、一台主机只留一条、判死即抹掉、废链不占位
-     * @details `Http3OutboundLink` 存在的理由是**共同持有**——h3 会话只借用它的 QUIC 连接，池与调用方
+     * @details `Http3OutboundLink` 存在的理由是共同持有——h3 会话只借用它的 QUIC 连接，池与调用方
      *          各拿一半就会松开一条还在用的链路。这里连池的四条契约一起判：取回的就是放进去那条
      *          （复用发生在流上，不摘走）、第二条链路不占位置、关掉之后取既拿到空也把表清干净、
-     *          以及**不再被访问的那台主机的废链要在下一次收链时被清掉**（判死原先只在取用那一格发生，
+     *          以及不再被访问的那台主机的废链要在下一次收链时被清掉（判死原先只在取用那一格发生，
      *          一台此后没人访问的主机就把 UDP 端口与 QPACK 状态一直占到 closeAll()）。
      * @note 证伪：把 `adoptHttp3` 的「已有货就不收」去掉 → 第二条链路那条判据红；把 `acquireHttp3`
      *       里的健康判定删掉 → 最后两条判据一起红（把废链交回调用方）；把 `forgetDeadLinks` 的扫描
@@ -1227,7 +1227,7 @@ namespace AsynGyanis::Net
      * @details 上限是使用方的胃口而不是对端犯了协议错，所以处置只能是「这一条不要了」而不能把整条
      *          连接判死——同一条连接上别的请求还要用。不复位的话对端会一直往一条我们不再读的流上发
      *          字节，本端的接收窗口额度也要等连接收口才还得回去，因此这里同时验三件事：越界那次拿到
-     *          的是失败结论（且**不交半份正文**）、链路仍然健康、紧随其后的正常请求答得出来。
+     *          的是失败结论（且不交半份正文）、链路仍然健康、紧随其后的正常请求答得出来。
      * @note 证伪：把 `noteBodyBytes` 里的上限判定摘掉 → 第一条断言红（拿到 200 与 200 KiB 正文）；
      *       把越界处置改成「连连接一起判死」（不调 `abortStream` 而调 `close()`）→ 后两条红。
      */
@@ -1285,7 +1285,7 @@ namespace AsynGyanis::Net
      * @note 证伪：摘掉 `noteBodyBytes` 里那句 `extendReceiveWindow` → 服务端推满 256 KiB 后停住，
      *       本用例由「没有进展」哨兵在静默满 15 秒时掐掉链路，请求带着「响应没收齐」回来而红。
      *       判据不押总时长：满载实测里这条 300 KiB 走回环 UDP 用过 30 秒还没搬完（112 KiB 时到点），
-     *       那是调度不是缺陷；而窗口归还漏做的症状是**一个字节都不再发**，按进展判既不误杀慢的、
+     *       那是调度不是缺陷；而窗口归还漏做的症状是一个字节都不再发，按进展判既不误杀慢的、
      *       也照样抓得住停的（同一形状见 `kDeliveryStallBudget` 与 `Http3DeliveryAttempt`）。
      */
     TEST(Http3ClientConnection, CreditsTheReceiveWindowForBodyBeyondTheAdvertisedStreamWindow)
@@ -1317,7 +1317,7 @@ namespace AsynGyanis::Net
      * @details 判据为什么不会靠调度运气：本端给每条流的接收额度按消耗归还，而对端要把一帧（拆帧之后
      *          16 KiB）发完才轮得到下一帧，交付又排在每一轮推动通路之前——三百 KiB 的正文必然落成多次
      *          交付。拼接起来逐字节等于服务端答出去的那一份，才算既没交重也没漏交。
-     *          「会不会因为机器忙而超时」这一格由 `watchForStall` 处理：停与不停看的是**批次数还在不在动**，
+     *          「会不会因为机器忙而超时」这一格由 `watchForStall` 处理：停与不停看的是批次数还在不在动，
      *          不是总共跑了多久（实测满载 `-j 8` 时这条曾红在 15.32 秒，单独跑 0.2 秒——那是调度不是缺陷）。
      * @note 证伪：把 `noteBodyBytes` 里「挂了接收口就攒着待交」改回直接进 body 并当场还额度 → 本条红
      *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红，

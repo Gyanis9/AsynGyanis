@@ -179,7 +179,7 @@ namespace AsynGyanis::Net
             adjustedRoundTripTime = latestRoundTripTime - clampedDelay;
         }
 
-        // 顺序照 RFC 9002 附录 A.7：rttvar 用的是**更新前**的 smoothed_rtt
+        // 顺序照 RFC 9002 附录 A.7：rttvar 用的是更新前的 smoothed_rtt
         const QuicTime variationSample = m_estimate.smoothed > adjustedRoundTripTime ? m_estimate.smoothed - adjustedRoundTripTime : adjustedRoundTripTime - m_estimate.smoothed;
         m_estimate.variation           = (3 * m_estimate.variation + variationSample) / 4;
         m_estimate.smoothed            = m_estimate.smoothed + (adjustedRoundTripTime - m_estimate.smoothed) / 8;
@@ -241,7 +241,7 @@ namespace AsynGyanis::Net
         if (!increasesLargestAcknowledged)
         {
             // 规范这一句是 MUST NOT：「不抬高最大确认值的那一帧」不许据以判验证失败。增量要跟上一份
-            // **校验通过**的计数比，而后到的旧帧比的会是更新过的基准，判出来的失败是假的；同理也不据它反应
+            // 校验通过的计数比，而后到的旧帧比的会是更新过的基准，判出来的失败是假的；同理也不据它反应
             return;
         }
 
@@ -249,7 +249,7 @@ namespace AsynGyanis::Net
         std::array<std::uint64_t, 3>      &previous  = m_ecnReportedCounts[spaceIndex(space)];
         const std::array<std::uint64_t, 2> sentTotal = m_ecnMarkedSentTotals[spaceIndex(space)];
 
-        // 三个计数按 §19.3.2 是该空间内的**累计**总数，因此只会不降；降了就是对端报错了一份
+        // 三个计数按 §19.3.2 是该空间内的累计总数，因此只会不降；降了就是对端报错了一份
         const bool isNonDecreasing = reported[0] >= previous[0] && reported[1] >= previous[1] && reported[2] >= previous[2];
         if (!isNonDecreasing)
         {
@@ -262,7 +262,7 @@ namespace AsynGyanis::Net
         // ECT 改成 CE 之外的形状（例如把 ECT(0) 抹成 0 又只报一部分）
         const bool coversMarkedPackets = increase[0] + increase[2] >= acknowledgedEctZeroCount && increase[1] + increase[2] >= acknowledgedEctOneCount;
         // 「报告总量不得超过本端发出去带过这一格的包总数」：凭空加标的中间节点会在这里露出来。
-        // 规范同时明写计数**允许大于**本帧新确认的包数（确认帧可能丢过），所以只有超总量才判失败
+        // 规范同时明写计数允许大于本帧新确认的包数（确认帧可能丢过），所以只有超总量才判失败
         const bool isWithinSentTotals = reported[0] <= sentTotal[0] && reported[1] <= sentTotal[1];
         if (!coversMarkedPackets || !isWithinSentTotals)
         {
@@ -478,7 +478,7 @@ namespace AsynGyanis::Net
 
     QuicTime QuicRecovery::persistentCongestionDuration() const noexcept
     {
-        // §7.6.1 的时长与 §6.2.1 的 PTO 用同一把尺，但那份报告延迟**不论丢包在哪个空间都算进去**
+        // §7.6.1 的时长与 §6.2.1 的 PTO 用同一把尺，但那份报告延迟不论丢包在哪个空间都算进去
         // （规范明写「unlike the PTO computation」），最后乘 kPersistentCongestionThreshold（推荐 3）
         const QuicTime baseDuration = m_estimate.smoothed + std::max(4 * m_estimate.variation, kTimerGranularity) + m_peerMaximumAcknowledgmentDelay;
         return baseDuration * kPersistentCongestionThresholdMultiplier;

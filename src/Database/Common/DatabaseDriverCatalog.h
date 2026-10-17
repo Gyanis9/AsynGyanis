@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 这是**库内私有**头而不是对外契约：数据库类型名、默认端口、连接工厂与方言工厂
+ * @details 这是库内私有头而不是对外契约：数据库类型名、默认端口、连接工厂与方言工厂
  *          都从这一张表回答，工厂、方言注册表与 databaseTypeName 只是三个查询入口，
  *          不再各写一份 switch——新增驱动只需要「新建驱动目录 + 在表里加一行」。
  *          忘了加表行时有两道拦截：配置期 asyn_configure_database_driver 的清单检查，

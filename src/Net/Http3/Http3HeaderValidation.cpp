@@ -54,7 +54,7 @@ namespace AsynGyanis::Net
         }
 
         m_isTrailersSection = isTrailers;
-        // 伪头的顺序标记与 content-length 都是**每个头段**独立判的：尾段不该带这些，带了要能报出来
+        // 伪头的顺序标记与 content-length 都是每个头段独立判的：尾段不该带这些，带了要能报出来
         m_sawRegularField = false;
         return {};
     }

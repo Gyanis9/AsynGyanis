@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
      * @brief TLS 协商出的密码套件，决定 AEAD、密钥长度与 HKDF 用的哈希
      *
      * @details RFC 9001 §5.3 允许 [TLS13] 的全部套件（除 TLS_AES_128_CCM_8_SHA256，它没有定义
-     *          头部保护方案）。这里刻意**不收** TLS_AES_128_CCM_SHA256：本仓库的 OpenSSL 默认不
+     *          头部保护方案）。这里刻意不收 TLS_AES_128_CCM_SHA256：本仓库的 OpenSSL 默认不
      *          协商它，而 CCM 的 EVP 通路要求先报明文与总长度才能取标签，实现路径与另外三个不同。
      *          留着枚举值就等于留一个「声明支持、实际会失败」的状态。
      */
@@ -78,7 +78,7 @@ namespace AsynGyanis::Net
      * @brief 一个方向、一个加密级别上的包保护密钥组
      *
      * @details 三段密钥按套件的实际长度使用（数组按最大长度定死，免得每包一次堆分配）。
-     *          头部保护密钥在密钥更新后**不变**（RFC 9001 §5.4），所以它和会换的 AEAD 密钥分开存。
+     *          头部保护密钥在密钥更新后不变（RFC 9001 §5.4），所以它和会换的 AEAD 密钥分开存。
      */
     struct ASYN_NET_API QuicPacketKeys
     {

@@ -118,7 +118,7 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException epoll_wait 失败（句柄已销毁或内核报错）。EINTR 不算失败：
          *         它返回空视图，让调用方回到循环开头重新检查停止请求
          * @warning 视图指向本对象的固定容量缓冲（每次取满 kMaximumEventCount 条为止）。
-         *          下一次 wait() 会覆盖它的内容，因此在持有视图期间**不得**再进入 wait()，
+         *          下一次 wait() 会覆盖它的内容，因此在持有视图期间不得再进入 wait()，
          *          也不得把这个视图跨线程留着用——EventLoop::run() 正是靠「先取完这批、
          *          再回到循环末尾」满足这条约束的
          * @note 一次最多返回 kMaximumEventCount 条。取满不算丢事件：epoll 水平触发，

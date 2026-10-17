@@ -532,7 +532,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住 TCP_USER_TIMEOUT 的平台约定：Linux 下发且能读回，**Windows 没有这一格**（明确读数而非静默跳过）
+     * @brief 钉住 TCP_USER_TIMEOUT 的平台约定：Linux 下发且能读回，Windows 没有这一格（明确读数而非静默跳过）
      * @details 这一格在 Windows 上不存在（TCP_MAXRT 语义不同，本层不当等价物），判据因此分平台：
      *          Linux 侧断言「设了、读回等于设的值」；Windows 侧断言「能力查询为假、下发被如实拒掉」——
      *          后者就是那条「明确读数」，不是把它当作设置失败记进错误路径

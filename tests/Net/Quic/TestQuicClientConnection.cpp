@@ -285,7 +285,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把两份自签证书并成一份信任锚文件
-         * @details 信任对两种身份都成立，才能保证「连不上」的唯一解释是**身份本身变了**，
+         * @details 信任对两种身份都成立，才能保证「连不上」的唯一解释是身份本身变了，
          *          而不是新那张不在信任库里——否则这条判据是空的
          */
         void writeCombinedTrustAnchors(const std::filesystem::path &destination, const std::vector<std::filesystem::path> &certificates)
@@ -389,7 +389,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "基线握手没成";
         // ① 握手完成后：在线 ≥1、「未验证」归零——两个读数按状态分开。
         // 归因镜像由定时循环按拍重算，而空闲起步的第一拍要等满 kIdleTickerSleep（1 秒，见 QuicServer.h）才落地：
-        // **固定睡满那一拍再加余量**，让本条的断言读的是重算之后的值。只等「条件成立」不行——镜像初值就是 0，
+        // 固定睡满那一拍再加余量，让本条的断言读的是重算之后的值。只等「条件成立」不行——镜像初值就是 0，
         // 条件在重算前恒真；正确实现下这段等待不改变结论（重算前后都是 0），把归因写错（例如拿在线数当
         // 未验证数）才会在重算后读出大于 0 的值，本条即钉住它
         ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() >= 1U; }, kWaitTimeout)) << "完成的握手没让服务端记上在线连接";
@@ -436,7 +436,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：单来源名额拒绝的告警被时间窗压住，不是每个被拒的 Initial 一条
      * @details 被拒的连接不进别名索引，对端的握手重传会以新 Initial 反复走到这个判定点——不压重条时
-     *          这是**一条报文一条日志**的远端可驱动刷屏面。与 PROXY 组同一形状：量级进那一条放行的
+     *          这是一条报文一条日志的远端可驱动刷屏面。与 PROXY 组同一形状：量级进那一条放行的
      *          日志（同窗压掉了多少条），重复条目才被丢掉；撤掉闸门时本用例的「恰一条」当场红。
      */
     TEST(QuicServer, ThrottlesRepeatedPerIpRejectionWarnings)
@@ -518,7 +518,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 把服务端配成「要求客户端证书却没给信任锚」时，构造当场抛而不是留一条永远握不成的监听器
-     * @details 这种配置在 TLS 里的形态不是「退化成不校验」而是**每条握手都失败**（没有可对照的根，
+     * @details 这种配置在 TLS 里的形态不是「退化成不校验」而是每条握手都失败（没有可对照的根，
      *          任何客户端证书都验不过）。启动时点名比让运维从一堆握手失败里反推这一行配置便宜得多，
      *          与 HTTPS 侧 `setClientCertificateRequired()` 的拒绝同一判据。
      */
@@ -698,7 +698,7 @@ namespace AsynGyanis::Net
                                                                       (static_cast<std::uint32_t>(reply[3]) << 8U) | static_cast<std::uint32_t>(reply[4]));
         EXPECT_EQ(replyVersion, 0U) << "版本协商包的版本字段必须恒 0（RFC 9000 §17.2.1）";
 
-        // 两条标识的互换：回包的目的标识是我发出去的**源**标识，回包的源标识是我发出去的目的标识
+        // 两条标识的互换：回包的目的标识是我发出去的源标识，回包的源标识是我发出去的目的标识
         std::size_t offset = 5;
         EXPECT_EQ(reply[offset], 0x10U) << "回包的目的标识长度该等于我发出的源标识长度";
         ++offset;
@@ -727,9 +727,9 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住地址验证：不带令牌的第一包 Initial 先吃一条 Retry，把令牌带回来才建连接
-     * @details 这一格要判的是**公网 UDP 端口上的成本账**：一条 Initial 就能让本端建一份 TLS 会话、
+     * @details 这一格要判的是公网 UDP 端口上的成本账：一条 Initial 就能让本端建一份 TLS 会话、
      *          一张流表与一套拥塞状态，而发的人不必是自己。判据分三段，每段各钉一种失败形状：
-     *          ① 没令牌→回 Retry 且**不建任何状态**（少了这条，Retry 就成了白加一轮握手）；
+     *          ① 没令牌→回 Retry 且不建任何状态（少了这条，Retry 就成了白加一轮握手）；
      *          ② 带真令牌回来→不再回 Retry（§8.1.2 禁止第二轮）且这条连接被受理；受理这一步读服务端写的
      *          那条日志而不是在线数——这一包的载荷注定解不开，本端会把它连同连接一起收口，在线数只在
      *          同一批里存在一瞬，拿它判就是赌调度；
@@ -874,7 +874,7 @@ namespace AsynGyanis::Net
     /**
      * @brief §10.3：目的标识不属于任何在册连接的短头报文换回一条无状态重置（丢状态的最后一招）
      * @details 判据三条，每条钉一种失败形状：
-     *          ① 形状：短头（首字节高两位 0b01，§10.3 图 10）、末 16 字节是**按那个目的标识派生**的
+     *          ① 形状：短头（首字节高两位 0b01，§10.3 图 10）、末 16 字节是按那个目的标识派生的
      *             令牌——期望值用 Python 的 hmac 现算（独立实现），拿本仓的派生函数自己给自己出题，
      *             算错了也看不出来；
      *          ② 尺寸：比触发它的报文小一字节（§10.3.3 的 MUST，循环里尺寸一路衰减，本端因此不必维护

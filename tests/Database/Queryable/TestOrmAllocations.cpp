@@ -5,7 +5,7 @@
 // 覆盖形状：first() 按主键取一行、toList() 取二十行、count()、update() 按主键改一行、
 // insertBatch() 的两条形状（20 行单条语句、1000 行分块）。
 // 两条自检先行：计数件要看得见一次普通堆分配，空窗口要量出零次——否则下面所有读数都不可信。
-// 稳态读数（语句缓存与分配器空闲链已预热，每次操作；下面是 **Release/NDEBUG** 那一档）：
+// 稳态读数（语句缓存与分配器空闲链已预热，每次操作；下面是 Release/NDEBUG 那一档）：
 //   first() 取一行     GCC 13 次，MSVC 14 次
 //   toList() 取二十行  GCC 37 次 / 23736 字节（每行不到两次），MSVC 86 次
 //   count()            两侧都是 6 次 / 451 字节
@@ -14,7 +14,7 @@
 //   批量 1000 行       两侧都是 4022 次（每次约 4 次/行），MSVC 473954 / GCC 415451 字节
 // 两侧读数不同不是代码差异，而是 STL 的 vector 扩容系数与 string 分档不同（直方图实测：
 // libstdc++ 把 21 字节的户名记在 16..31 档、MSVC 记在 32..47 档，且 MSVC 的扩容链更长）。
-// **配置也是口径**：MSVC 的 Debug 打开 _ITERATOR_DEBUG_LEVEL=2，每个 STL 容器对象多挂一份代理
+// 配置也是口径：MSVC 的 Debug 打开 _ITERATOR_DEBUG_LEVEL=2，每个 STL 容器对象多挂一份代理
 // 分配，同形状的实测读数变成 first() 75、toList 318、count 31、update 72、批量 20 行 216 次、
 // 批量 1000 行 9077 次——把钉下上面那批数字的提交单独编出来重跑，Debug 下照样是这个数，所以
 // 这不是代码涨了分配。门禁跑的是 Debug+ASan，因此 Debug 那一档必须自己钉一套数（见下面的常量）。
@@ -60,7 +60,7 @@ namespace
     using AsynGyanis::TestSupport::measureOperations;
     using AsynGyanis::TestSupport::measurePerOperation;
 
-    // 台账钉的是「一次操作碰几次堆」，而这个数同时取决于**编译器**与**配置**：MSVC 的 Debug 会打开
+    // 台账钉的是「一次操作碰几次堆」，而这个数同时取决于编译器与配置：MSVC 的 Debug 会打开
     // _ITERATOR_DEBUG_LEVEL=2，每个 STL 容器对象多挂一份代理分配，同一段代码的读数比 Release 高好几倍
     // （实测 first() 从 14 涨到 75、20 行列表从 96 涨到 318）。这不是代码涨了分配——把钉下这批数字的
     // 那个提交单独编出来重跑，Debug 下照样 75。所以三档各按自己的实测钉，别把某一档的数套到另一档；
@@ -71,7 +71,7 @@ namespace
     /// count 与 update 两格在 ORM 乐观锁那一轮重测过一次（31/72 → 35/85），first 与 count 这一轮
     /// 又重测一次（75→83、35→39）：新增的容器对象（QueryNode 多了一个空 vector 成员）在 IDL=2 下
     /// 每次节点构造多挂一份代理分配——count() 里一次拷贝（+1）、first() 里三次构造（+3，/Od 不做
-    /// NRVO）。**同一份代码在 GCC 侧读数不动**（容器那一档门禁照旧绿，libstdc++ 的空 vector 不碰堆），
+    /// NRVO）。同一份代码在 GCC 侧读数不动（容器那一档门禁照旧绿，libstdc++ 的空 vector 不碰堆），
     /// 这正是上面那条「Debug 的读数同时取决于编译器与配置」的又一例，不是运行时真的多碰了堆。
     /// 判据：把那一处新成员撤掉后 count 立刻退回可行区间（乐观锁轮在临时工作树里实测过）。
     inline constexpr std::uint64_t kFirstRowAllocationBudget     = 84U;     ///< 实测 83（关系装载轮之前是 75）

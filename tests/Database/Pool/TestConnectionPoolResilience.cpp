@@ -187,7 +187,7 @@ namespace AsynGyanis::Database
 
     TEST(ConnectionPoolResilience, StopsRetryingOnceTheBorrowDeadlinePasses)
     {
-        // 判据：次数上限之外还有一道「这次借用愿意等的总时长」。这里取的是**上界**而不是第几轮撞线——
+        // 判据：次数上限之外还有一道「这次借用愿意等的总时长」。这里取的是上界而不是第几轮撞线——
         // 撞上的是真实时钟，具体停在哪一轮由这台机器怎么排这几觉决定，钉死某一轮就是把用例交给调度运气
         ConnectionCounter counter;
         counter.connectFailuresRemaining.store(50);

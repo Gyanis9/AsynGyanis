@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 帧永远不跨报文（§12.4），载荷去掉保护后就是一段完整内存，因此解码是**一次性批量**
+ * @details 帧永远不跨报文（§12.4），载荷去掉保护后就是一段完整内存，因此解码是一次性批量
  *          而不是增量状态机——与 Http2FrameDecoder 那种字节流口子刻意不同。
  *          DATAGRAM（RFC 9221）不在本层：本端不通告 max_datagram_frame_size，收到即按未知帧类型
  *          交上层判 PROTOCOL_VIOLATION，正好是 RFC 9221 §2 要求的行为。
@@ -49,7 +49,7 @@ namespace AsynGyanis::Net
      * @brief 帧类型取值（RFC 9000 §12.4 表 3）
      *
      * @details STREAM 家族的 0x08..0x0f 与 ACK 的 0x02/0x03 由低位决定，不在此逐条列举；
-     *          这里只列**独立**的类型值，编码与解码按位算出变体。
+     *          这里只列独立的类型值，编码与解码按位算出变体。
      */
     enum class QuicFrameType : std::uint64_t
     {
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
     /**
      * @brief ACK 帧（§19.3）
      *
-     * @details 区间以**绝对包号**存（解码时按 `largest = previous_smallest - gap - 2` 递推，
+     * @details 区间以绝对包号存（解码时按 `largest = previous_smallest - gap - 2` 递推，
      *          编码时反推 gap），这样上层丢包检测不必自己重算，也不必区分「首区间用 First ACK Range、
      *          其余用 Gap」这一线上差异。区间必须严格递减且不重叠。
      * @note 不变式：`ranges` 永不为空，且 `ranges.front().largestAcknowledged` 恒等于
@@ -129,11 +129,11 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API QuicAcknowledgementFrame
     {
-        std::uint64_t largestAcknowledgedPacketNumber{0};          ///< 被确认的最大包号
-        std::uint64_t acknowledgementDelay{0};                     ///< 收到最大包号到发出本帧的延迟，**线上值**：单位是 2^本端 ack_delay_exponent 微秒，本层只搬运不换算（§19.3）
-        std::vector<QuicAcknowledgementRange> ranges{};            ///< 被确认的包号区间，按包号递减且不重叠
-        bool                                  hasEcnCounts{false}; ///< 是否带三个 ECN 计数（帧类型为 0x03 时为 true）
-        std::array<std::uint64_t, 3>          ecnCounts{};         ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数
+        std::uint64_t                         largestAcknowledgedPacketNumber{0}; ///< 被确认的最大包号
+        std::uint64_t                         acknowledgementDelay{0}; ///< 收到最大包号到发出本帧的延迟，线上值：单位是 2^本端 ack_delay_exponent 微秒，本层只搬运不换算（§19.3）
+        std::vector<QuicAcknowledgementRange> ranges{};                ///< 被确认的包号区间，按包号递减且不重叠
+        bool                                  hasEcnCounts{false};     ///< 是否带三个 ECN 计数（帧类型为 0x03 时为 true）
+        std::array<std::uint64_t, 3>          ecnCounts{};             ///< 依次是 ECT(0)、ECT(1)、ECN-CE 的包数
     };
 
     /// RESET_STREAM 帧（§19.4）：告知对端本端不再发送这条流的剩余数据，收尾长度由本帧给出
@@ -325,7 +325,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 解出报文载荷里的全部帧
-     * @details 载荷是**去掉包保护之后**的净字节；帧不跨报文，因此一次交完整段。
+     * @details 载荷是去掉包保护之后的净字节；帧不跨报文，因此一次交完整段。
      *          类型字段要求最短编码（§16 里唯一的例外就是帧类型），其余变长整数不要求。
      * @param payload 一个报文的净载荷，按「指针 + 长度」取
      * @return 成功返回按出现顺序排列的帧序列；空载荷返回空序列，是否判 PROTOCOL_VIOLATION 由上层定

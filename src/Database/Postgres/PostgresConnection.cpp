@@ -52,7 +52,7 @@ namespace AsynGyanis::Database
      * @brief 校验命令文本不含 NUL 字节
      *
      * @details libpq 的 PQexec / PQexecParams 只接受「零终止 C 字符串」形式的命令，
-     *          内嵌 NUL 会让命令被**静默截断**成前半句：多数情况服务端报语法错误，
+     *          内嵌 NUL 会让命令被静默截断成前半句：多数情况服务端报语法错误，
      *          但截出来的也可能是恰好合法的一条语句——那就成了「执行了半条 SQL 却不报错」，
      *          比直接失败危险得多。因此在这里本地拦下并说明原因。
      *
@@ -260,7 +260,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 把连接配置摊成 libpq 的关键字/取值对序列
-         * @details 空取值一律**省略**而不是原样送出：在 libpq 里「省略」表示用默认规则（用户名取操作
+         * @details 空取值一律省略而不是原样送出：在 libpq 里「省略」表示用默认规则（用户名取操作
          *          系统账号、口令走 PGPASSWORD 或 ~/.pgpass、库名取用户名），而「送出空串」表示
          *          「值就是空」，服务端会直接回 database "" does not exist 一类错误。
          *          TLS 五档显式下发（含 disable）：不下发时客户端库按自己的默认档走，「这条链路
@@ -333,7 +333,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 由参数序列生成两个以空指针收尾的平行数组
          * @details libpq 靠空指针判断参数列表结束：漏掉它就会越界读取后面的栈内容。数组元素是取值
-         *          文本的视图，**源序列必须活到 PQconnectdbParams 返回为止**——不要把本函数直接
+         *          文本的视图，源序列必须活到 PQconnectdbParams 返回为止——不要把本函数直接
          *          套在 collectConnectionParameters(...) 的临时量上。
          * @param parameters 参数序列（须活到使用完）
          * @return ConnectionParameterPointers 两组指针
@@ -606,7 +606,7 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在**发送之前**就拒——语句一条都不发，
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在发送之前就拒——语句一条都不发，
         // 因此这类拒绝不改变任何服务端状态，可以安全重试；连事务控制语句也不放行（流与连接绑定）
         if (m_openStreamCount != 0)
         {
@@ -619,7 +619,7 @@ namespace AsynGyanis::Database
         // （它可能是另一个更长缓冲的切片），直接交出 data() 会读到越界内存，因此必须先拷成 std::string
         const std::string commandText(command);
 
-        // 无参数路径也走扩展查询协议（零参数）：简单查询协议（PQexec）会把文本里的**多条语句全部执行**
+        // 无参数路径也走扩展查询协议（零参数）：简单查询协议（PQexec）会把文本里的多条语句全部执行
         // 而只返回最后一条的结果，而扩展协议在解析阶段整次拒绝多语句——这正是 MySQL 侧「握手不开
         // CLIENT_MULTI_STATEMENTS」的同一安全姿态，把「拼接出的第二条语句被静默执行」这道门关上。
         // 事务语句、DDL 与 SET 都是单条 utility statement，扩展协议照常执行（参数格式与结果格式的
@@ -670,7 +670,7 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在**发送之前**就拒——语句一条都不发，
+        // 在途未清流：回复流停在中途，任何新语句都会与它交错。在发送之前就拒——语句一条都不发，
         // 因此这类拒绝不改变任何服务端状态，可以安全重试；连事务控制语句也不放行（流与连接绑定）
         if (m_openStreamCount != 0)
         {

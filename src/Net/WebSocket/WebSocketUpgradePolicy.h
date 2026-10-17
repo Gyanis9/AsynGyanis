@@ -72,7 +72,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 判一条 Origin 在这份策略下能不能放行
      *
-     * @details Origin 缺席按放行处理，不是漏判：RFC 6455 §4.1 第 8 条只要求**浏览器**客户端必发 Origin，
+     * @details Origin 缺席按放行处理，不是漏判：RFC 6455 §4.1 第 8 条只要求浏览器客户端必发 Origin，
      *          非浏览器客户端「MAY include」——本仓自己的 `WebSocketClient` 与 curl 一类工具都不发，
      *          把它判死等于把自己家的客户端和整条 Autobahn 套件挡在门外。Origin 存在时的比较口径是
      *          「协议 + 主机 + 端口」三者全等（RFC 6454 §4 的同源定义），写法上的大小写差异与结尾的
@@ -113,7 +113,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一次升级请求按策略判完的结论
      *
-     * @details 三条通道各自拼自己的应答（h1 是 101 报文、h2/h3 是 HEADERS 块），但**判**的部分只有一份：
+     * @details 三条通道各自拼自己的应答（h1 是 101 报文、h2/h3 是 HEADERS 块），但判的部分只有一份：
      *          把判定写成一处，「同一份请求走不同通道得出不同结论」就没有可发生的位置。
      */
     struct ASYN_NET_API WebSocketUpgradeDecision
@@ -144,7 +144,7 @@ namespace AsynGyanis::Net
      * @brief 判断一段文本是不是一个能解析的源（`scheme://host[:端口]`）
      *
      * @details 给登记策略的那一层用：`allowedOrigins` 里的表项写歪了（带了路径、协议名不对）会在
-     *          每一次握手比对里悄悄落空，业务只看到「403 不知道为什么」——所以表项要在**登记那一刻**
+     *          每一次握手比对里悄悄落空，业务只看到「403 不知道为什么」——所以表项要在登记那一刻
      *          判形状，而不是等到握手时。判定与握手共用同一份解析，两处不会分叉。
      *
      * @param originText 待判的源文本，如 `https://example.com:8443`
@@ -156,8 +156,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 按对端给出的次序挑一个本端愿意讲的子协议
      *
-     * @details RFC 6455 §4.1 第 10 条规定客户端的列表「ordered by preference」，所以这里是**按客户端
-     *          次序**取第一个本端候选表里有的，而不是按服务端偏好——同一条请求换承载通道不该挑出不同的
+     * @details RFC 6455 §4.1 第 10 条规定客户端的列表「ordered by preference」，所以这里是按客户端
+     *          次序取第一个本端候选表里有的，而不是按服务端偏好——同一条请求换承载通道不该挑出不同的
      *          子协议。对端没发这条头部、或一条都没谈成时返回空，调用方按
      *          `WebSocketSubprotocolMismatch` 决定是「不回显继续握手」还是拒掉。
      *

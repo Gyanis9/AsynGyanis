@@ -101,7 +101,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 开一节
          * @details 无 parent 时开一条新链路并按 sampleRatio 判采不采；有 parent 时沿用它的 trace-id、
-         *          把 parent 的段标识当作上一节、并**照办 parent 的采样位**（W3C §3.2.1.3：判定是
+         *          把 parent 的段标识当作上一节、并照办 parent 的采样位（W3C §3.2.1.3：判定是
          *          链路上游做的，下游只能遵从）。不采的一节返回非记录的替身——它仍然带着合法的
          *          链路标识，可以原样往下游传，于是「不采」不会让下游变成一条没有上文的孤立链路。
          * @param name 操作名

@@ -20,7 +20,7 @@
 // 链路 TLS 走本引擎自己的上下文与校验口径（CA、最低版本、SNI/主机名分 IP 与域名两条规则），
 // 与 MySQL 驱动那侧「交给客户端库映射」不同：hiredis 没有内建 TLS，这里在明文建连之后
 // 自己握手并换掉它的读/写/关闭三只钩子，认证与全部命令自然落在密文里。
-// 这两个头的**包含**放在驱动开关之外（见下面那一组）：析构函数销毁 m_tlsContext 那段两种构建都要编
+// 这两个头的包含放在驱动开关之外（见下面那一组）：析构函数销毁 m_tlsContext 那段两种构建都要编
 #include "Platform/IO/FileDescriptor.h"
 
 #include "Database/Redis/RedisReplyText.h"
@@ -975,7 +975,7 @@ namespace AsynGyanis::Database
         const std::string_view reasonText = (m_redisContext->errstr[0] != '\0') ? std::string_view(m_redisContext->errstr) : std::string_view("未给出原因的协议或系统错误");
 
         // 带上 hiredis 的 err 码：只有中文文本时排查具体的超时与 DNS 失败仍需要原始数字。
-        // 文本与码要**成对**写入（MySQL 与 SQLite 两侧都是 assignNative）：只拼进文本而不落码，
+        // 文本与码要成对写入（MySQL 与 SQLite 两侧都是 assignNative）：只拼进文本而不落码，
         // lastNativeErrorCode() 就恒为 -1，而 RetryableQueryFailure 这类按码判定的调用方读到的是「没有码」
         m_lastError.assignNative(composeNativeErrorText(description, reasonText, "未给出原因的协议或系统错误", m_redisContext->err),
                                  static_cast<std::int64_t>(m_redisContext->err));
@@ -1399,7 +1399,7 @@ namespace AsynGyanis::Database
         switch (commandName.empty() ? '\0' : foldAsciiToLower(commandName.front()))
         {
             case 'a':
-                // AUTH 换的是**这条连接**在服务端的身份：Redis 6 起的两参数形式（AUTH 用户名 口令）能换成
+                // AUTH 换的是这条连接在服务端的身份：Redis 6 起的两参数形式（AUTH 用户名 口令）能换成
                 // 另一个 ACL 用户，此后同一条连接上的每条命令都按那个用户的权限判。退不回去（没有「退回
                 // 原来那个身份」的命令，只能用配置里的口令再 AUTH 一次，而那要在归还路径上多发一趟、还要
                 // 处置它自己失败的样子），因此按 MONITOR 同一档处置：记标记，归还时断开这条连接，让下一个
@@ -1413,7 +1413,7 @@ namespace AsynGyanis::Database
                 return;
 
             case 'c':
-                // CLIENT 的这几条子命令改的都是**这条连接上**的会话状态，而下一个借用者并不知道自己该先
+                // CLIENT 的这几条子命令改的都是这条连接上的会话状态，而下一个借用者并不知道自己该先
                 // 补发什么：REPLY OFF/SKIP 让之后的命令不再回话、TRACKING ON 让服务端往回复流里插失效推送
                 // （这两条改的是「本类还读不读得到一条命令一条回复」），NO-EVICT ON 让这条连接写过的键不参与
                 // 淘汰、NO-TOUCH ON 让这条连接读到的键不再刷新 LRU/LFU（这两条不改帧的形状，改的是服务端
@@ -1482,7 +1482,7 @@ namespace AsynGyanis::Database
                     return;
                 }
 
-                // SELECT 换的是**这条连接**所在的键空间，而不只是本次命令的作用域：不记账就会把库位串给
+                // SELECT 换的是这条连接所在的键空间，而不只是本次命令的作用域：不记账就会把库位串给
                 // 下一个借用者（对方按配置以为自己停在原库，写进去的键落在别人库里，两边都不报错）。
                 // selectDatabase() 也是走 executeCommand 发 SELECT 的，因此记账只有这一处；那边另记一遍的话，
                 // 裸 SELECT 与 selectDatabase() 就会各说一套。服务端退回的 SELECT（编号越界、集群模式不支持）
@@ -1833,7 +1833,7 @@ namespace AsynGyanis::Database
 
         // 按类记条数：unsubscribeAll() 要知道每条退订命令该收几确认（回复里那个整数是两类合计，
         // 单看它分不出「这一类退干净了没」）
-        // 名单按**去重**记：服务端为一条订阅只持一份，无参数 UNSUBSCRIBE 就按这份名单回确认。
+        // 名单按去重记：服务端为一条订阅只持一份，无参数 UNSUBSCRIBE 就按这份名单回确认。
         // 下面那条「补收 targets.size() - 1 条」仍然按目标数走——本机实测 `SUBSCRIBE a a` 确实为
         // 每个参数各回一条 subscribe 确认（计数都写 1），要分开的只是「这一条命令回几条」与
         // 「这条连接上真有几份订阅」这两个问题
@@ -1843,7 +1843,7 @@ namespace AsynGyanis::Database
             subscriptions.insert(std::string(target));
         }
 
-        // 服务端为**每个目标**各回一条确认。第一条已经作为这条命令的回复被 executeArguments 取走了
+        // 服务端为每个目标各回一条确认。第一条已经作为这条命令的回复被 executeArguments 取走了
         // （那一刻连接还没进入推送形态，配对是成立的），因此这里只补收剩下的 targets.size() - 1 条。
         // 多等一条会一直等到超时——服务端根本没有那一条；少等一条则把确认留在流里，
         // 下一次 readPushReply() 就会把「subscribe 确认」当成消息交给调用方

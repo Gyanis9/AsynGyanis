@@ -24,7 +24,7 @@ namespace AsynGyanis::Net
     {
         /**
          * @brief 同类 PROXY 收口告警的放行间隔
-         * @details 这几条 WARN 是**对端一句话就能触发一次**的：开了 `setProxyProtocolRequired()` 的端口上，
+         * @details 这几条 WARN 是对端一句话就能触发一次的：开了 `setProxyProtocolRequired()` 的端口上，
          *          每个不打头的连接都会留一条。逐条落盘的后果有两层——日志被同一句话刷满，真正要看的信息
          *          淹在里面；以及同步写日志把事件循环拖住（本仓库真出过一次：热路径上的日志把停摆表现成
          *          backlog 灌满后回 ECONNREFUSED）。压重复条而不是关掉这条告警，因为「有人在打这个端口」
@@ -228,7 +228,7 @@ namespace AsynGyanis::Net
             }
         } pendingHeader{m_pendingProxyHeaders};
 
-        // 判死的出口必须**当场**关闭描述符：套接字是按值参数，住在协程帧的参数区，只在整帧销毁时才
+        // 判死的出口必须当场关闭描述符：套接字是按值参数，住在协程帧的参数区，只在整帧销毁时才
         // 析构——而这一帧要等 m_connectionTasks 的清扫才回收。只靠作用域退出，对端会在「已判定收口」
         // 的连接上继续等一个不会来的 FIN（实测如此）。交给 admitConnection 后描述符已被搬空，
         // 这里的 close() 是空操作（AsyncSocket::close() 先判 m_fileDescriptor >= 0），两条路径不冲突
@@ -596,7 +596,7 @@ namespace AsynGyanis::Net
         } catch (const std::exception &drainException)
         {
             // 本协程由调度器独立恢复，异常逃逸等于在事件循环线程上抛异常，会把整个进程带崩。
-            // 放弃等待但**仍强关剩余连接**：drain 的后置条件是「返回后不再有连接残留」，
+            // 放弃等待但仍强关剩余连接：drain 的后置条件是「返回后不再有连接残留」，
             // 把连接留给调用方的收尾路径会让它们悬到进程退出
             LOG_ERROR_EXCEPTION(drainException, "TcpServer: 优雅关闭过程失败，已放弃等待并强制关闭剩余连接。原因：{}", drainException.what());
             m_connectionManager.shutdown();

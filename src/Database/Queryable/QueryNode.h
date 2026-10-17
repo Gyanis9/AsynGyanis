@@ -53,8 +53,8 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 字面量匹配（LIKE ... ESCAPE）
          *
-         * @details 与 Like 的区别只在右操作数的身份：Like 的右值是**模式**（% 与 _ 按通配符解释），
-         *          LikeLiteral 的右值是**已经转义好的字面量**（% _ \\ 都按字符本身匹配），
+         * @details 与 Like 的区别只在右操作数的身份：Like 的右值是模式（% 与 _ 按通配符解释），
+         *          LikeLiteral 的右值是已经转义好的字面量（% _ \\ 都按字符本身匹配），
          *          因此方言渲染时必须补出 ESCAPE 子句。成员追加在枚举末尾：既有取值的全部数值不变。
          */
         LikeLiteral ///< 字面量匹配（LIKE ... ESCAPE '!'）
@@ -99,7 +99,7 @@ namespace AsynGyanis::Database::Queryable
      * @details 各备选依次为 SQL NULL、布尔、有符号/无符号 64 位整数、浮点、字符串与二进制载荷
      *          （后者用于按 BLOB / BINARY 列做条件查询）。
      *
-     * @note 新增备选一律**追加在末尾**：既有备选的下标是已发布的契约，调整顺序会让按固定
+     * @note 新增备选一律追加在末尾：既有备选的下标是已发布的契约，调整顺序会让按固定
      *       下标取值的调用点静默取错类型。
      */
     using ParameterValue = std::variant<std::nullptr_t, bool, int64_t, uint64_t, double, std::string, std::vector<std::uint8_t>>;
@@ -177,7 +177,7 @@ namespace AsynGyanis::Database::Queryable
      *          两家的形状不同——SQLite 是 `INSERT OR IGNORE/REPLACE INTO`，MySQL 是
      *          `INSERT IGNORE INTO` 与 `REPLACE INTO`；`Upsert` 档在 MySQL 写作
      *          `ON DUPLICATE KEY UPDATE`，在 PostgreSQL/SQLite 写作 `ON CONFLICT … DO UPDATE`。
-     * @note Replace 在 MySQL 侧是**先删同键旧行再插**，不是「按主键更新」：行上的触发器会被触发、
+     * @note Replace 在 MySQL 侧是先删同键旧行再插，不是「按主键更新」：行上的触发器会被触发、
      *       自增标识会换一个新值、未在新行里给出的列回到默认值。要「存在就只改这几列」用 Upsert
      */
     enum class InsertConflict
@@ -205,7 +205,7 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 关系装载（`Queryable::include()`）用它把关联表的列以唯一名字带进结果集：
      *          同一张结果集里还要放主表自己的列，靠「别名 + 双下划线」把两边的同名列分开。
-     *          方言层按自己的引用字符逐段渲染，因此这里存的都是**纯标识符**，不带引用符号、
+     *          方言层按自己的引用字符逐段渲染，因此这里存的都是纯标识符，不带引用符号、
      *          也不接受表达式（表达式口径见 `select()` 的信任边界）。
      */
     struct ASYN_DATABASE_API AliasColumn
@@ -256,7 +256,7 @@ namespace AsynGyanis::Database::Queryable
 
         /// UPDATE 方向里写成「这一列自己加一」的列（乐观锁的版本列走这里）：渲染成
         /// `"col" = "col" + 1` 而不是 `"col" = ?`——加一由服务端在一次语句里完成，因此
-        /// 「两个会话各改一次都成功」不可能发生，调用方也**没法**忘掉这一格。
+        /// 「两个会话各改一次都成功」不可能发生，调用方也没法忘掉这一格。
         /// 它不占参数位（文本里不出现占位符），因此不改动「SET 参数在前、条件参数在后」那条顺序契约；
         /// 只在 UPDATE 方向参与渲染，其余方向读完即弃
         std::vector<std::string> incrementColumns;

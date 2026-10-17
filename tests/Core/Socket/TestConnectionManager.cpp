@@ -166,7 +166,7 @@ namespace AsynGyanis::Core
      * @details 原来的写法让第一次抛出直接中止整轮关闭：排在它之后的连接连 requestStop() 都没收到，
      *          随后 `waitAll()` 会为它们一直等到超时，而调用方（TcpServer 的几处收口）拿到的是一个
      *          从关闭路径上抛出的异常。
-     * @details 判据把**三条连接都做成会抛**，于是「未修复」的表现必然是 closeAttempts==1，
+     * @details 判据把三条连接都做成会抛，于是「未修复」的表现必然是 closeAttempts==1，
      *          与管理器内部 unordered_map 的遍历次序无关——只放一条会抛的连接就得赌它排在第几位。
      */
     TEST(ConnectionManager, ShutdownKeepsClosingTheRestWhenConnectionsThrow)
@@ -211,7 +211,7 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(lateConnection->cancelable().isStopRequested()) << "晚到的连接没有收到停止请求";
         EXPECT_FALSE(lateConnection->isAlive()) << "晚到的连接应当已被 close() 收尾";
 
-        // add() 只负责关闭，**不**代删表项：摘除由持有该连接的协程在收尾路径上调 remove()，
+        // add() 只负责关闭，不代删表项：摘除由持有该连接的协程在收尾路径上调 remove()，
         // 与正常关闭路径一致（谁拥有谁摘除），所以此刻它仍在活跃表里
         EXPECT_EQ(manager.activeCount(), 1U);
 
@@ -356,7 +356,7 @@ namespace AsynGyanis::Core
      * @brief 在册之后再换镜像目标，要把本管理器占着的那几条一起搬过去
      * @details 这不是假想的用法：`HttpsServer::setMetricsCollector()` 是运行期可换的公开入口，
      *          它换采集端时连着镜像一起重接。只换指针不搬条数，新镜像从 0 起算，而这些连接
-     *          **将来每一条都要退一次**——无符号的合并计数因此回绕成 1.8e19 量级的一格，
+     *          将来每一条都要退一次——无符号的合并计数因此回绕成 1.8e19 量级的一格，
      *          `/metrics` 上「取快照那一刻的活跃连接数」读到的正是它。
      * @details 四步都要钉：接上时搬进来、换目标时旧的一头退干净、逐条摘除跟着回退、
      *          以及摘掉镜像（传 nullptr）时把在册那几条从旧镜像里退出去。

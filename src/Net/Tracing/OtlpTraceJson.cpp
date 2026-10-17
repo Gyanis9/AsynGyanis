@@ -22,7 +22,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把一个维度取值折成 OTLP 的 AnyValue
-         * @details 整数写成**字符串**形态的 intValue：proto3 的 JSON mapping 里 64 位整数就是字符串，
+         * @details 整数写成字符串形态的 intValue：proto3 的 JSON mapping 里 64 位整数就是字符串，
          *          各家 SDK 的解码器都按这个形状发，跟着发最省事。
          * @param value 维度取值
          * @return ConfigValue 形如 {"stringValue":"…"} 或 {"intValue":"…"}

@@ -27,7 +27,7 @@ namespace AsynGyanis::Base
     /**
      * @brief 一个调用点的日志闸门：每 interval 至多放行一条，其余只累计条数
      *
-     * @details 为什么需要它：有几条告警是**对端一句话就能触发一次**的（例如要求 PROXY 协议头的端口上，
+     * @details 为什么需要它：有几条告警是对端一句话就能触发一次的（例如要求 PROXY 协议头的端口上，
      *          每个不打头的连接都会留一条 WARN）。这类路径上「一条连接一条日志」有两个后果——日志被
      *          同一句话刷满，真正的信息淹在里面看不见；以及同步落盘的每请求日志把事件循环拖住
      *          （本仓库真出过一次：热路径上的日志把停摆表现成 backlog 灌满后回 ECONNREFUSED）。
@@ -38,8 +38,8 @@ namespace AsynGyanis::Base
      * @note 被压掉的条数不丢：放行那一刻由 droppedCount() 读出「自上次放行以来压掉了多少条」，
      *       调用方把它写进那条放行的日志里。于是量级信息始终可见，丢的只是重复条目里的逐条细节
      *       （地址、字节数）——那些值在同一条判定下每次都可能不同，但决定要不要看的人要的是频率。
-     * @warning 一个实例代表**一个调用点**。跨调用点共用一份会让 A 点的洪水把 B 点也压掉。
-     * @note 一个调用点要按**运行期的 key** 分开压（每个来源 IP、每台设备各一个窗口）时，本类的
+     * @warning 一个实例代表一个调用点。跨调用点共用一份会让 A 点的洪水把 B 点也压掉。
+     * @note 一个调用点要按运行期的 key 分开压（每个来源 IP、每台设备各一个窗口）时，本类的
      *       形状给不了：那份状态得有地方放。那种用法看 LogThrottleRegistry。
      * @see ASYN_LOG_THROTTLED, LogThrottleRegistry
      */
@@ -117,7 +117,7 @@ namespace AsynGyanis::Base
     };
 
     /**
-     * @brief 按**运行期 key** 分档的日志闸门表：一个调用点、每个 key 各一个窗口
+     * @brief 按运行期 key 分档的日志闸门表：一个调用点、每个 key 各一个窗口
      *
      * @details 为什么不是又一个调用点闸门：`ASYN_LOG_THROTTLED` 的状态长在调用点（函数局部 static），
      *          一个使用处一份。而有一类告警的区分单位是运行期才有的东西——哪个来源 IP、哪台设备、
@@ -130,9 +130,9 @@ namespace AsynGyanis::Base
      *        状态得有个地方按 key 存。相比一条被压掉的日志本来要付的格式化与落盘，这笔钱小得多；
      *        但别把它挂在每请求必过的路上。
      * @note 表有上界（kMaximumTrackedKeys），满时淘汰最久未触碰的那条。被淘汰的 key 下次再来时窗口
-     *        是新的，也就是会再多放行一条：**内存封顶换极端基数下漏一条**，这是有意的取舍。
+     *        是新的，也就是会再多放行一条：内存封顶换极端基数下漏一条，这是有意的取舍。
      *        因此 key 不要取每请求唯一量（请求 id、时间戳）——那会把表变成一台轮转器，每个 key 都压不住
-     * @note 同一 key 的窗口以**第一次建目**时传入的 interval 为准，后续传入值只在该 key 被淘汰后重建时生效
+     * @note 同一 key 的窗口以第一次建目时传入的 interval 为准，后续传入值只在该 key 被淘汰后重建时生效
      * @see ASYN_LOG_THROTTLED_KEYED
      */
     class ASYN_BASE_API LogThrottleRegistry
@@ -154,7 +154,7 @@ namespace AsynGyanis::Base
          * @param key      区分单位（来源 IP、设备号、频道名一类基数有限的文本）
          * @param interval 放行间隔；0 或负数表示这个 key 不压（每条都放行）
          * @return LogThrottleDecision 放行时带上这一段被压掉的条数，供调用方写进那一条里
-         * @note 不抛：表建不起来（内存不够）时**放行**而不是压掉——压掉的那一条没有任何地方补记，
+         * @note 不抛：表建不起来（内存不够）时放行而不是压掉——压掉的那一条没有任何地方补记，
          *       运维会看到「这个告警从此再没响过」，那比洪水更难查
          */
         [[nodiscard]] LogThrottleDecision acquire(std::string_view key, std::chrono::milliseconds interval) noexcept;

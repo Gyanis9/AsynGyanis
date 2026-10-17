@@ -986,7 +986,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：一条 Range 里多个区间时回 206 + multipart/byteranges，正文逐段拼装
      * @details 旧行为是「整条忽略回 200 全量」——那对下载器与图片预览器意味着为了拿两段字节而
      *          重取整个文件。现在按 RFC 9110 §14.6 逐段带 content-type 与 content-range，
-     *          顶层不再写 Content-Range（那是单区间的形状），并且**正文逐字节钉住**：
+     *          顶层不再写 Content-Range（那是单区间的形状），并且正文逐字节钉住：
      *          分隔符、空行与顺序错一处，对端就切错段
      */
     TEST(HttpServer, ServesMultipleRangesAsMultipartByteranges)
@@ -1242,7 +1242,7 @@ namespace AsynGyanis::Net
         // 这里刻意用临时量而不留具名对象：响应可能正持有那份映射，留着它会让 Windows 的替换被挡住
         ASSERT_EQ(serveRequest(server, HttpMethod::GET, "/hello.txt").body(), kHelloFileContent);
 
-        // 换成一份**等长**的正文：大小不变，替换若落在同一秒内连修改秒都不变，
+        // 换成一份等长的正文：大小不变，替换若落在同一秒内连修改秒都不变，
         // 只有「文件身份」这一维能挡住的旧映射就会被发出去——这正是身份标记存在的理由
         const std::string updatedContent = "hello_from_static_root";
         ASSERT_EQ(updatedContent.size(), kHelloFileContent.size());

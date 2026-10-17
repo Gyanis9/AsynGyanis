@@ -83,7 +83,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 名字前缀 `__Host-` / `__Secure-` 附带的额外要求是否满足（RFC 6265bis §4.1.2.6）
          *
-         * @details 这两个前缀是**写进名字的授权声明**：站点用它替代「自己去校验这条 Cookie 是从哪来的」，
+         * @details 这两个前缀是写进名字的授权声明：站点用它替代「自己去校验这条 Cookie 是从哪来的」，
          *          因为浏览器会把不合格式的整条丢掉——`__Host-` 要 Secure、要明确写 `Path=/`、且不得带
          *          `Domain`（缺省推出来的根路径不算「明确写了」，规范只看属性文本），`__Secure-` 要 Secure。
          *          收端不判这一条，等于替对端兑现了它自己没做到的承诺：罐子会收下一条
@@ -239,7 +239,7 @@ namespace AsynGyanis::Net
          * @brief 解析一条（或多条同名头合并成的）Cookie 请求头
          * @details 请求侧的 Cookie 头只带名字与取值，没有属性。'=' 之后到下一个 ';' 之前全算取值，
          *          取值里再出现的 '=' 原样保留；两侧空白被去掉，引号包起来的取值按 §5.1.2 解开。
-         *          中间带空格的裸取值不算合法 cookie-octet，那**一条**会被跳过（其余各条照常交出来，
+         *          中间带空格的裸取值不算合法 cookie-octet，那一条会被跳过（其余各条照常交出来，
          *          判据见 isValidValue）。
          * @param headerValue 一个 Cookie 头的完整取值
          * @return std::vector<HttpCookie> 按出现顺序给出的 Cookie 列表，属性一律为未设

@@ -146,7 +146,7 @@ namespace AsynGyanis::Net
          * @param isFinal 发完这段是否收尾
          * @return std::size_t 被接收的字节数。小于 `bytes.size()` 即本层只收下前一段（队列到
          *         `kMaximumPendingSendByteCount`，或流已收尾、被打断、超出对端给的流数上限时是 0）：
-         *         **余下的字节仍归调用方持有**，调用方要留住它们并在队列排空后续交，否则正文被截断
+         *         余下的字节仍归调用方持有，调用方要留住它们并在队列排空后续交，否则正文被截断
          * @note 收尾只在整段收下时落定：只收一半时 FIN 跟着退回的那一段，不会提前告诉对端「发完了」
          */
         std::size_t writeStreamData(std::uint64_t streamId, std::span<const std::uint8_t> bytes, bool isFinal);
@@ -372,7 +372,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 这条流是不是本端发起的（判据随角色翻转，§2.1）
          * @details 作服务端时是本端发起低位为 1 的那两档，作客户端时是低位为 0 的那两档。
-         *          这一条判据被额度取用、流数上限、收口宣告等十来处共用，因此它必须是**带角色的成员**
+         *          这一条判据被额度取用、流数上限、收口宣告等十来处共用，因此它必须是带角色的成员
          *          而不是文件内的自由函数——同一个流号在两型眼里归属相反
          * @param streamId 流号
          * @return true 本端发起

@@ -440,7 +440,7 @@ namespace AsynGyanis::Platform
          * @param length 期望字节数
          * @return true 读满；通道提前关闭或读坏返回 false
          * @note 读不满就是「消息不完整」，调用方必须整体作废而不是拿半截载荷去重建套接字
-         * @note 两条失败出口都显式写错误码：`recv` 返回 0（对端已关）是一次**成功**的调用，实测它会把
+         * @note 两条失败出口都显式写错误码：`recv` 返回 0（对端已关）是一次成功的调用，实测它会把
          *       last-error 清成 0，照抄槽位就等于把「没有错误」当成失败原因交出去
          */
         bool readAll(int descriptor, char *bytes, std::size_t length)
@@ -507,7 +507,7 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 核对重建出来的套接字与移交头里写的是同一类
-         * @details 头里的地址族与类型是交出方从**同一个套接字**问出来的，因此这里对不上只可能是
+         * @details 头里的地址族与类型是交出方从同一个套接字问出来的，因此这里对不上只可能是
          *          消息被写坏、版本或平台不对，或通道上跑的压根不是移交消息——那三种情况下交出去
          *          的套接字都不能用：宁可报「不像本平台的移交消息」，也不把一枚认不出来的描述符交给
          *          调用方去 accept 或 recvfrom。
@@ -551,7 +551,7 @@ namespace AsynGyanis::Platform
         }
 
 #if ASYN_PLATFORM_WIN32
-        // Winsock 的复制接口按**进程号**认目标，不需要先把对方 OpenProcess 成句柄；
+        // Winsock 的复制接口按进程号认目标，不需要先把对方 OpenProcess 成句柄；
         // 交给本进程（自测与「同进程内换一份描述符」的用法）也是同一条路
         WSAPROTOCOL_INFOW protocolInfo{};
         const int         duplicationResult = ::WSADuplicateSocketW(static_cast<SOCKET>(listenDescriptor), static_cast<DWORD>(targetProcessId), &protocolInfo);
@@ -684,7 +684,7 @@ namespace AsynGyanis::Platform
         }
 
         // 先把描述符从控制消息里摘出来：recvmsg 一成功返回，内核就已经把随消息装填的那枚描述符放进
-        // 本进程了，此后**每一条**失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
+        // 本进程了，此后每一条失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
         // 比不拒更糟（换代是旧进程交给新进程，交完还要按补位次数重复许多轮）
         //
         // 一条消息可以搭不止一枚描述符（发送方想少跑几趟，或对端根本不讲这套消息格式），而本通道
@@ -795,7 +795,7 @@ namespace AsynGyanis::Platform
         }
 
         // 套接字文件放在一个刚 `mkdtemp` 出来的私有目录里：目录建出来就是 0700，没有「先建出来再收紧」
-        // 的窗口，因此不必再动进程级 umask——那会在同一时刻把**别的线程**创建的文件（日志、临时文件、
+        // 的窗口，因此不必再动进程级 umask——那会在同一时刻把别的线程创建的文件（日志、临时文件、
         // 票据密钥）权限一并收紧。别人既进不去这个目录，也就连不上这条通道，而它交出去的是监听套接字
         // 的一份引用
         const std::string templateText = (temporaryRoot / "asyn-handoff-XXXXXX").string();
@@ -897,7 +897,7 @@ namespace AsynGyanis::Platform
         while (true)
         {
             auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            // 「预算用尽」的判定排在**至少 poll 过一次**之后：0 预算的用法就是「只取当前状态」，那需要
+            // 「预算用尽」的判定排在至少 poll 过一次之后：0 预算的用法就是「只取当前状态」，那需要
             // 真去 select 一次（零超时）。拿两次 now() 的差当依据时，只要这两句之间被抢占满一毫秒，
             // 截断出来的 remaining 就是负数，于是队列里明明已有一条连接等着 accept 却报「没人来连」
             if (hasSampled && remaining < std::chrono::milliseconds::zero())

@@ -204,7 +204,7 @@ namespace AsynGyanis::Net
         public:
             AlidnsClient(Core::EventLoop &loop, AliyunDns01Configuration configuration) : m_loop(loop), m_configuration(std::move(configuration))
             {
-                // 四条读数按**实例**登记（多次签发就多份），抓取时按 Sum 并成进程量。
+                // 四条读数按实例登记（多次签发就多份），抓取时按 Sum 并成进程量。
                 // 为什么值得挂：dns-01 这一条通路上有三段等待（同名重写的静默期、控制面可见性轮询、
                 // 结算延迟），一次续期花掉十分钟是正常而不是卡死——没有读数就会被当成故障去查
                 m_metricHandles = {
@@ -392,7 +392,7 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 名字推不出主域名时那条可操作的文案
-             * @details 要点名的是**真存在的那几个开关**：配置里是 `acme.dns.domain`，直接构造写入器时是
+             * @details 要点名的是真存在的那几个开关：配置里是 `acme.dns.domain`，直接构造写入器时是
              *          `AliyunDns01Configuration::zoneDomainName`（探针上对应 `--dns-zone`），
              *          写成一个不存在的配置键会把运维引到一条找不到的路上
              */

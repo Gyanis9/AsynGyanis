@@ -40,7 +40,7 @@ namespace AsynGyanis::Core
     {
         /**
          * @brief 把绝对截止时间换算成描述符要武装的时长
-         * @details 一律**向上**取整：描述符只认毫秒，向下取整会让定时器最多提前 1 毫秒醒来，
+         * @details 一律向上取整：描述符只认毫秒，向下取整会让定时器最多提前 1 毫秒醒来，
          *          那一刻没有任何到期项，驱动只能再武装一次——每次到期白多一发
          *          timerfd_settime 与一次循环唤醒，而定时器密集（每连接一个 tick）时这是
          *          成倍的事件循环开销。向上取整最迟晚 1 毫秒触发，且不再有空转的一拍。
@@ -77,7 +77,7 @@ namespace AsynGyanis::Core
              * @param queue 所属队列
              * @param duration 等待时长；非正数表示「尽快到期」（在下一个驱动周期内完成），
              *        而不是永不触发
-             * @note 截止时间在**真正挂起时**（await_suspend）才按此刻 + 时长算出，
+             * @note 截止时间在真正挂起时（await_suspend）才按此刻 + 时长算出，
              *       因此 `auto awaiter = timer.waitFor(1s); …先干别的…; co_await awaiter;`
              *       等的是「挂起时刻起 1 秒」，而不是构造时刻起 1 秒
              */

@@ -1,4 +1,4 @@
-// 安全响应头的**接线**证据：中间件挂在 router 上之后，真回环连接上拿到的响应里确实带着这些头，
+// 安全响应头的接线证据：中间件挂在 router 上之后，真回环连接上拿到的响应里确实带着这些头，
 // 且明文连接上不带 HSTS。纯管道用例（TestMiddleware.cpp 的 SecurityHeadersMiddleware.*）只证明
 // 这段逻辑本身正确，证明不了它真的在服务器上跑——挂错位置、只在某一条协议通道上注册，都会让
 // 「配了安全头」这件事在浏览器里悄悄不生效。
@@ -73,7 +73,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(headers.find("x-frame-options: DENY"), std::string::npos) << "线上响应没带 X-Frame-Options：" << headers;
         EXPECT_NE(headers.find("referrer-policy: no-referrer"), std::string::npos) << "线上响应没带 Referrer-Policy：" << headers;
         EXPECT_NE(headers.find("content-security-policy: default-src 'none'"), std::string::npos) << "配了策略却没上线：" << headers;
-        // 明文回环这一跳：配了 HSTS 也**不该**出现这一行（RFC 6797 §7.2 让浏览器忽略明文收到的它）
+        // 明文回环这一跳：配了 HSTS 也不该出现这一行（RFC 6797 §7.2 让浏览器忽略明文收到的它）
         EXPECT_EQ(headers.find("strict-transport-security"), std::string::npos) << "明文连接发出了 HSTS：" << headers;
 
         // 错误应答同样要挂上：头是在下游之前写的，路由器写 404 正文时它们已经就位——

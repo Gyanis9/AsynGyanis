@@ -30,10 +30,10 @@ namespace AsynGyanis::Platform
         /**
          * @brief 「同一路径现在指向哪个文件」的身份标记，与大小、修改秒一起构成缓存命中判据
          * @details 只靠大小与修改秒会漏掉一种情形：文件被原子替换成新内容，长度一样、且落在同一秒内。
-         *          POSIX 优先折入文件系统给该对象记的**世代号**（`name_to_handle_at` 的句柄字节，一次
+         *          POSIX 优先折入文件系统给该对象记的世代号（`name_to_handle_at` 的句柄字节，一次
          *          系统调用，无句柄的调用方付不起 `open`+`ioctl` 那一套）——inode 号会被回收，而世代号
          *          在回收后必变；文件系统不支持句柄时（overlayfs 实测回 EOPNOTSUPP）退回折
-         *          (设备号, inode, ctime)。退回的那三项**认不出同一毫秒内完成的删建**：ctime 取自内核
+         *          (设备号, inode, ctime)。退回的那三项认不出同一毫秒内完成的删建：ctime 取自内核
          *          粗粒度时钟，原生 ext4 实测 50 次紧凑删建里 16 次逐位相同，故只在句柄可用的文件系统
          *          上才把本标记当版本判据。Windows 取创建时间的 100 纳秒刻度，它同样认不出那种替换
          *          （隧道缓存会还原创建时间）。
@@ -64,7 +64,7 @@ namespace AsynGyanis::Platform
      * @return std::optional<FileBasicInfo> 查询成功时给出信息；路径不存在、无权限或参数非法时为空
      * @note 本层不抛异常（与 Platform 其它封装一致）：失败只以空值表达，文案与分支由上层决定。
      * @note 「路径太长」在本层不以失败区分，而是长成一次查不到：超过传统 MAX_PATH（260 字符）能不能
-     *       查到，取决于**可执行体**有没有在清单里声明长路径意识（并且系统开了 LongPathsEnabled），
+     *       查到，取决于可执行体有没有在清单里声明长路径意识（并且系统开了 LongPathsEnabled），
      *       这是库替调用方决定不了的事。实测同一棵 559 字符的深目录树：未声明的进程在 265 字符处就
      *       建不下去，声明之后走到 1770 字符仍能创建与读写。深目录树下的静态文件若在别处看得见、
      *       在服务端一律 404，先按这条查，不要去怀疑目录遍历或缓存。
@@ -72,7 +72,7 @@ namespace AsynGyanis::Platform
     [[nodiscard]] ASYN_PLATFORM_API std::optional<FileBasicInfo> queryFileBasicInfo(const std::filesystem::path &path) noexcept;
 
     /**
-     * @brief 从一个**已经打开**的文件对象读回基本信息
+     * @brief 从一个已经打开的文件对象读回基本信息
      * @details 与按路径查的那条同刻度（同样的取整方向、同样的身份标记算法），区别在于它问的是句柄
      *          绑定的那个对象，而不是「这个路径现在指向谁」。打开与查询之间文件被原子替换时，路径
      *          会跟着换对象而句柄不会——发出去的正文与据此写下的 ETag 是否描述同一版本，只能靠这条判。

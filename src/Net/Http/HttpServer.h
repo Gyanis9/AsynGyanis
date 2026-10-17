@@ -92,12 +92,12 @@ namespace AsynGyanis::Net
          *
          * @details 语义是「配置当前值」，不是「追加一条路由」：首次配置（本方法或
          *          setStaticFileCacheControl()）注册一条 `any("*")` 兜底路由，处理函数只读取
-         *          本服务器的当前配置；之后再调用只更新配置，**不会**注册第二条兜底路由，
+         *          本服务器的当前配置；之后再调用只更新配置，不会注册第二条兜底路由，
          *          也不会出现「新目录不生效、旧目录仍在服务」的悬空状态。
          *
          * @param directoryPath 静态文件的根目录路径（UTF-8 文本），相对或绝对均可；传入空串表示关闭静态服务
          *
-         * @note 传入的目录在**此刻**被规范化（weakly_canonical）并落定：目录不存在或无权访问时
+         * @note 传入的目录在此刻被规范化（weakly_canonical）并落定：目录不存在或无权访问时
          *       直接判为关闭静态服务并记一条中文告警，不会推迟到请求到达时再报错。
          *       也就是说，进程启动后才被创建的目录需要再调一次本方法才会生效。
          * @warning 规范化结果会被缓存，因此运行期间把该目录改名或移动，行为不再可预期。
@@ -125,7 +125,7 @@ namespace AsynGyanis::Net
          * @brief 设置请求打到静态目录时是否生成 HTML 目录列表
          *
          * @details 默认关闭：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者，
-         *          而多数部署里静态目录只是资源仓库。打开之后列表**不带验证器**且带
+         *          而多数部署里静态目录只是资源仓库。打开之后列表不带验证器且带
          *          `cache-control: no-store`（被缓存的列表会在目录变化后继续宣称「这里有这些文件」），
          *          Range 对它一律忽略，条目数有上界。完整语义见 `StaticFileService::setDirectoryListing()`。
          * @param enabled true 列出目录条目；false（默认）按 404 处理
@@ -207,14 +207,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置 HTTP/2 连接层配置（SETTINGS 通告值与本端各项上限）。
          *
-         * @details h2 的限额此前只能从服务端 SETTINGS 里**观测**、改不动：整条链上没有任何入口能把
+         * @details h2 的限额此前只能从服务端 SETTINGS 里观测、改不动：整条链上没有任何入口能把
          *          一份 Http2ConnectionConfiguration 交进去，连接层一律按缺省值构造。本方法补上这个入口。
          *          配置按值交给此后新建的会话，已建立的连接继续用它握手时那份（SETTINGS 是连接级的，
          *          中途改会让两端认知不一致）。
          *
          * @param configuration 新的连接层配置
          * @throws Base::InvalidArgumentException 取值非法（ENABLE_PUSH / ENABLE_CONNECT_PROTOCOL 不是 0/1，
-         *         或 MAX_FRAME_SIZE 越出 RFC 9113 §6.5.2 的合法区间）：**设置时就拒绝**，而不是等第一条
+         *         或 MAX_FRAME_SIZE 越出 RFC 9113 §6.5.2 的合法区间）：设置时就拒绝，而不是等第一条
          *         连接进来才在会话构造里抛出——后者在启动日志里看不到任何异常
          * @note 明文(h2c)与 TLS 上的 h2 共用这一份配置
          * @see Http2ConnectionConfiguration, setHttp2CleartextEnabled()
@@ -231,8 +231,8 @@ namespace AsynGyanis::Net
          * @brief 设置本服务器的明文连接是否按 HTTP/2（h2c，先验知识）服务。
          *
          * @details 打开后本服务器的明文连接一律进入 HTTP/2 会话：对端必须直接发 HTTP/2 连接前奏
-         *          （RFC 9113 §3.4 的先验知识），否则连接层按前奏校验失败回 GOAWAY。**不做前奏嗅探、
-         *          不做已废弃的 HTTP/1.1 Upgrade 流程**，因此打开本开关就等于「这个端口只说 h2」，
+         *          （RFC 9113 §3.4 的先验知识），否则连接层按前奏校验失败回 GOAWAY。不做前奏嗅探、
+         *          不做已废弃的 HTTP/1.1 Upgrade 流程，因此打开本开关就等于「这个端口只说 h2」，
          *          同一端口不再服务 HTTP/1.1。默认关闭，明文连接按 HTTP/1.1 服务。
          *
          * @param enabled true 表示明文连接按 h2c 服务
@@ -306,13 +306,13 @@ namespace AsynGyanis::Net
          *
          * @details 指标内容见 HttpMetricsEndpoint.h：计数器、状态码分类、耗时直方图、WebSocket 与
          *          HTTP/2 的专项计数，都是本服务器实例自己的口径。
-         * @warning **HTTP/3 默认不在内**：h3 由独立的 QuicServer 服务。要让本端点一并覆盖它，
+         * @warning HTTP/3 默认不在内：h3 由独立的 QuicServer 服务。要让本端点一并覆盖它，
          *          把本服务器的采集端交给那条服务路径（`metricsCollector()` →
          *          QuicServer::Configuration::metricsCollector）；不接就只报 h1/h2 的量
          *
          * @param path 端点路径，必须以 `/` 开头；默认 `/metrics`
          * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
-         * @note **端点默认不开**（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
+         * @note 端点默认不开（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
          *       /metrics 等于把内部负载与错误率公开出去。它是一条普通路由，会经过中间件，因此
          *       要鉴权就在路由器上挂中间件，或把端点限制在内网/交给反向代理屏蔽
          * @note 必须在 start() 之前调用：路由表在收到请求时读取，开机后再注册会让早到的请求拿不到
@@ -323,9 +323,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 在本服务器上注册健康检查端点
          *
-         * @details 应答固定为 200 + `{"status":"ok"}`。它测的是**存活性**：这个响应由事件循环里的
+         * @details 应答固定为 200 + `{"status":"ok"}`。它测的是存活性：这个响应由事件循环里的
          *          会话协程生成，能答出来就说明循环在转、连接还能被服务。它不表示「依赖都健康」
-         *          （本框架不掌握下游依赖），也**不区分「正在 drain」**——那是就绪性，停机排空期间
+         *          （本框架不掌握下游依赖），也不区分「正在 drain」——那是就绪性，停机排空期间
          *          进程还活着、连接还在服务，这一格回 503 会让编排器直接把进程杀掉。要问「还能不能
          *          接新活」请看 enableReadinessEndpoint()。
          *
@@ -342,7 +342,7 @@ namespace AsynGyanis::Net
          *          并把这一格置假，而已建立的连接继续服务到自然结束——那一段正是编排器要用来把这台
          *          摘出负载的窗口。渲染与判定住在 `registerReadinessEndpoint()`，HTTPS 侧共用同一份。
          *
-         *          与 `/healthz` 一样**不查**运维令牌：编排器的探针拿不到凭据，加闸的结局是探针被人
+         *          与 `/healthz` 一样不查运维令牌：编排器的探针拿不到凭据，加闸的结局是探针被人
          *          关掉，比暴露「这台在不在接活」更糟。
          *
          * @param path 端点路径，必须以 `/` 开头；默认 `/readyz`
@@ -356,7 +356,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
          *
-         * @details 应答是进程内**每条事件循环**一行的 JSON：当前在哪一相、这一相已持续多久、
+         * @details 应答是进程内每条事件循环一行的 JSON：当前在哪一相、这一相已持续多久、
          *          跑完过多少条工作段、最慢一条多久、门口还堆着几件外来投递。它答的是「哪条循环
          *          被处理器占住了」——本框架不做鉴权，公网可达就把内部线程画像公开了出去。
          * @param path 端点路径，必须以 `/` 开头；默认 `/debug/loops`
@@ -382,7 +382,7 @@ namespace AsynGyanis::Net
          * @brief 在本服务器上注册运行时日志等级端点（/debug/log-level）
          * @param path 端点路径，必须以 `/` 开头；默认 `/debug/log-level`
          * @throws Base::InvalidArgumentException 路径不以 `/` 开头
-         * @note 这是**写操作**：调用方必须同时挂 `opsAccessMiddleware` 并把本路径加入 protectedPaths，
+         * @note 这是写操作：调用方必须同时挂 `opsAccessMiddleware` 并把本路径加入 protectedPaths，
          *       否则任何能访问运维口的人都能改日志等级
          */
         void enableLogLevelEndpoint(std::string_view path = "/debug/log-level");

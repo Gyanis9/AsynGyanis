@@ -125,7 +125,7 @@ namespace AsynGyanis::Net
      *          finish() 或析构时把成品交给所属 Tracer 的待出口缓冲。析构也会收口，
      *          为的是「处理器有五六条 return」这种形状下不必每条出口都手写一次 finish()——
      *          漏掉一条不会丢数据，只会让结束时刻变成作用域结束的时刻。
-     * @note 未采样的请求上拿到的是一个**非记录的替身**（isRecording() 为假）：写入全是空操作，
+     * @note 未采样的请求上拿到的是一个非记录的替身（isRecording() 为假）：写入全是空操作，
      *        于是处理器侧不需要到处判空，链路上下文照样能从这里取出去往下传。
      *        刻意不返回 std::optional\<Span\>：那会把「判一下」的负担摊到每个使用点上，
      *        而替身在这里是完全合法的上下文来源。
@@ -197,7 +197,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把本节换算成「交给下一跳的链路上下文」
-         * @details 结果里的 parentId 是**本节**的标识——正是 traceparent 该带的值：下一跳把它当作
+         * @details 结果里的 parentId 是本节的标识——正是 traceparent 该带的值：下一跳把它当作
          *          自己的上一节。可直接交给 Traceparent::renderInto() 写进出站头部。
          * @return TraceIdentifiers 链路标识 + 本节标识 + 本节携带的采样位
          */

@@ -39,9 +39,9 @@ namespace AsynGyanis::Net
      * @brief 按导出周期现取一份进程读数快照，经 `POST <endpoint>` 推给采集端（OTLP/HTTP，Content-Type: application/json）
      *
      * @details 与链路出口（OtlpHttpSpanExporter）刻意不同的两条语义，都是数据形态决定的：
-     *          一是**快照语义**——每个周期现取一份「此刻的全量读数」发出去，没有待发队列、失败不重发：
+     *          一是快照语义——每个周期现取一份「此刻的全量读数」发出去，没有待发队列、失败不重发：
      *          下个周期的快照自带最新值，一个周期丢了没有补的价值，也就没有「批必须送达」那种排空账；
-     *          二是**周期驱动**——导出由本类自带的事件循环线程上的定时器按 `exportInterval` 发起，
+     *          二是周期驱动——导出由本类自带的事件循环线程上的定时器按 `exportInterval` 发起，
      *          不依赖任何调用方投递。采集端慢或失联时，生产线不受影响（快照在导出线程上现取，
      *          注册表的读锁只在那一次取样本的瞬间被拿）。
      * @note 读数取不到（provider 交回空批）的周期直接跳过并计 emptySnapshotCount：三路条目全空时
@@ -124,7 +124,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string lastFailureReason() const;
 
     private:
-        /// @brief 循环线程主体：在**本线程上**首次驱动导出协程，然后交给 run()
+        /// @brief 循环线程主体：在本线程上首次驱动导出协程，然后交给 run()
         void runLoopThread();
 
         /// @brief 导出协程：按周期醒来取快照、渲染、POST 一次；醒来时复查停止标记

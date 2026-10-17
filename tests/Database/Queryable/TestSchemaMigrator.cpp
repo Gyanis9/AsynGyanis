@@ -490,7 +490,7 @@ TEST_F(SchemaMigratorSqliteTest, CreateTableThenOrmRoundTripThenDrop)
  * @brief 验证二进制列的端到端链路：真 BLOB 落库、两种拼法往返、空载荷与 NULL 可区分、可作条件
  *
  * @details 这条用例是二进制成员链路的验收核心。DDL 侧声明成 BLOB 只决定「列怎么声明」，
- *          值是否真的以 BLOB 存储取决于**绑定方式**（sqlite3_bind_blob）。因此这里用
+ *          值是否真的以 BLOB 存储取决于绑定方式（sqlite3_bind_blob）。因此这里用
  *          typeof() 断言存储类：列声明为 BLOB 却按文本绑定时，列的类型仍是 BLOB，
  *          但存储类会是 text——只看 DDL 是发现不了的。
  */

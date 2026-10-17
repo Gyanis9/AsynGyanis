@@ -112,7 +112,7 @@ namespace AsynGyanis
 
             /**
              * @brief 对端 Close 帧交来的状态码原值
-             * @details 交回的是**原值**，包括本规范禁止上线的取值（1004、1005、1006、1015 等）：那种
+             * @details 交回的是原值，包括本规范禁止上线的取值（1004、1005、1006、1015 等）：那种
              *          情况下本端回帧按协议错误收口（1002），而「对端到底说了什么」仍然留得住，业务
              *          据此分档收尾（该不该重试、要不要告警、要不要记审计）。
              * @return std::optional<std::uint16_t> 有值＝对端交来了状态码；空＝对端没交出号码——
@@ -130,7 +130,7 @@ namespace AsynGyanis
             [[nodiscard]] std::string_view remoteCloseReason() const noexcept;
 
             /**
-             * @brief 收下一条**数据消息**（文本或二进制）
+             * @brief 收下一条数据消息（文本或二进制）
              * @details 分片消息由解码器重组完才交；控制帧在这一格处理掉：收到的 Ping 自动按原负载回 Pong，
              *          收到的 Pong 就地消费，收到的 Close 会按同一状态码回一条 Close（RFC 6455 §5.5.1）
              *          并把帧交回调用方，同时本会话置为不可用。

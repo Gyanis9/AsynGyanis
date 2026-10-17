@@ -766,7 +766,7 @@ namespace
     /**
      * @brief 框架自带客户端的一轮真请求：与上面手写的报文互为对照
      * @param loop 承载本次等待的循环
-     * @param url 目标地址。**按值收**：惰性协程不能引用调用方的临时量
+     * @param url 目标地址。按值收：惰性协程不能引用调用方的临时量
      * @return Core::Task<> 结论写进观测
      */
     Core::Task<> probeWithHttpClient(Core::EventLoop &loop, const std::string url)
@@ -1059,7 +1059,7 @@ int main(const int argc, char **argv)
     const auto metricsResponses      = splitResponses(observations.metricsFirst.bytes);
     const auto laterMetricsResponses = splitResponses(observations.metricsSecond.bytes);
     samples.check(!metricsResponses.empty() && metricsResponses.front().status == 200 && !metricsResponses.front().body.empty(), "/metrics 有内容且是 200");
-    // 比**正文**而不是比原始字节：每条 h1 响应都带自己的 x-request-id 与 Date 头，
+    // 比正文而不是比原始字节：每条 h1 响应都带自己的 x-request-id 与 Date 头，
     // 比原始字节永远不等——那样连「指标正文是冻结常量」也会被判成「数值随请求推进而变化」
     samples.check(!metricsResponses.empty() && !laterMetricsResponses.empty() && metricsResponses.front().body != laterMetricsResponses.front().body,
                   "两次抓取的指标正文不同（计数确实随请求推进）");
@@ -1095,7 +1095,7 @@ int main(const int argc, char **argv)
     samples.check(observations.statsTotalRequests > 20 && observations.statsBadRequests >= 2, "服务器统计把成功与坏请求分别计入");
 
     // 「拿不到服务」要与服务根本没起来区分开：requestOnce 在连接/发送失败时同样交出空字节，
-    // 那种情况下读循环根本没跑，stopReason 是空串。额度被占满时服务端是**接受后再收口**，
+    // 那种情况下读循环根本没跑，stopReason 是空串。额度被占满时服务端是接受后再收口，
     // stopReason 必为 eof/reset/error-N 之一
     samples.check(observations.perIpProbe.bytes.empty() && !observations.perIpProbe.stopReason.empty(),
                   "单来源并发上限生效：额度被占满时新连接被接受后不获服务（连接被服务端合上）");

@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
      *          @li 处置类型必须是 `form-data`，name 必须存在且非空，同一段的上述三条头部各只能出现一次；
      *          @li 边界按 RFC 2046 §5.1.1 的 bchars 校验（至多 70 字符、不以空格收尾）；
      *          @li 行尾只认 CRLF，正文里不允许 obs-fold（续行）。
-     * @note **不支持的写法一律拒绝而不是将就**：`filename*`/`name*`（RFC 2231 扩展参数）与
+     * @note 不支持的写法一律拒绝而不是将就：`filename*`/`name*`（RFC 2231 扩展参数）与
      *       `Content-Transfer-Encoding: base64`、`quoted-printable` 都会让整份表单判失败。后两者需要
      *       把段正文换成解码后的新字节序列，与本类「段正文是请求正文的视图」这一零拷贝口径冲突；
      *       宁可让调用方看见失败，也不把没还原的编码文本当原始字节交出去。
@@ -95,7 +95,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] const MultipartPart *findPart(std::string_view name) const noexcept;
 
         /**
-         * @brief 取指定 name 的第一个**字段**（非文件段）的正文
+         * @brief 取指定 name 的第一个字段（非文件段）的正文
          * @details 常规模板里「读一个文本框」就要这一条：文件段的正文是原始字节，按文本用会读出乱码，
          *          所以这里只认非文件段。
          * @param name 字段名

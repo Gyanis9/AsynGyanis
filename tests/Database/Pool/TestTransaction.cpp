@@ -654,7 +654,7 @@ TEST_F(TransactionTest, RefusesUnsupportedIsolationLevelWithoutLeakingTheConnect
  * @brief 钉住「走同一事务的语句互斥执行」：连接使用权被占时，ORM 查询与 COMMIT 都要排队
  * @details 一个驱动句柄只有一条协议流，而 Queryable 的异步接口会把语句投到 AsyncExecutor 的
  *          工作线程上执行——调用方全程待在自己的线程里，也可能同时有两条语句踩同一条连接。
- *          用例把前提构造成确定成立而非赌调度：主线程先占住使用权时，后台的查询与提交**不可能**
+ *          用例把前提构造成确定成立而非赌调度：主线程先占住使用权时，后台的查询与提交不可能
  *          完成（拿不到锁就到不了驱动），交还之后两者才依次跑完。
  */
 TEST_F(TransactionTest, StatementsOnOneTransactionWaitForTheConnection)
@@ -688,7 +688,7 @@ TEST_F(TransactionTest, StatementsOnOneTransactionWaitForTheConnection)
  * @brief 钉住分块批量插入整批占住连接使用权，而不只占住一条语句
  * @details 单条语句的路径经 acquireConnection() 取使用权，分块那条分支是「一条接一条地往同一条
  *          连接上发」：不整批占住，块与块之间就能插进别的语句，一个驱动句柄上的协议流随即交错。
- *          用例不赌调度：主线程占住使用权时批量插入**不可能**到达驱动，交还之后三块才依次写完。
+ *          用例不赌调度：主线程占住使用权时批量插入不可能到达驱动，交还之后三块才依次写完。
  */
 TEST_F(TransactionTest, ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch)
 {
@@ -846,7 +846,7 @@ TEST_F(TransactionTest, RollbackToUnknownSavepointFailsWithoutEndingTransaction)
 /**
  * @brief 事务结束后再要保存点：一条语句都不发
  * @details 这条不是「参数校验」那类洁癖，而是 SQLite 的真行为：没有活动事务时 `SAVEPOINT` 等价于
- *          `BEGIN DEFERRED`，会**另起一个事务**。而本对象的 `m_isActive` 已假，之后没人提交也没人回滚，
+ *          `BEGIN DEFERRED`，会另起一个事务。而本对象的 `m_isActive` 已假，之后没人提交也没人回滚，
  *          那条连接就带着一个没人负责的事务回到池里（下一位借用者的语句悄悄并进它）。
  *          判据直接问这条连接「还有事务可收尾吗」：拒绝到位就答「没有」（回滚失败）。
  *          证伪：删掉 `checkSavepointPremises` 里 `m_isActive` 那一段，这里会红。
@@ -1292,7 +1292,7 @@ TEST_F(TransactionTest, NoTimeLimitLeavesTheConnectionsTimeoutAlone)
  * @details 「拒的出口」语义是越限之后一条语句都不发，而不只是「在取锁之前查一次」。连接使用权
  *          是排队的（另一条语句可能占着几十秒），排队前的检查通过不等于拿到锁时还在预算内——
  *          少了取锁后的复查，这段缝里发出的语句正好落在「注定不能再往前走」的事务上。
- *          判据不赌调度：主线程先占住使用权，在锁未交还时断言后台查询**不可能**完成（它正
+ *          判据不赌调度：主线程先占住使用权，在锁未交还时断言后台查询不可能完成（它正
  *          阻塞在取锁上，而不是以别的路径失败），睡过时限后才交还；后台随即在复查处被拒。
  *          证伪：删掉 `Queryable::acquireConnection()` 里取锁后的那次 `isTimeLimitExceeded()`，
  *          后台的查询照常跑完，返回的消息为空串，第一个断言变红。

@@ -95,7 +95,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 丢弃退休表里的日志器外壳，回收注册/注销 churn 攒下的内存
-         * @details Sink 已在退休那一刻交还，本方法剩下的是对象本身：调用方须**确知**已无在途
+         * @details Sink 已在退休那一刻交还，本方法剩下的是对象本身：调用方须确知已无在途
          *          裸引用（正在使用 `Logger&` 的 LOG_* 宏）——进程收尾，或测试夹具删临时目录之前。
          * @warning 运行期不要调用：退休表的存在前提就是「对象仍可达」，销毁会把在途引用变成悬垂。
          */
@@ -160,7 +160,7 @@ namespace AsynGyanis::Base
         /// 根日志器的热路径缓存（裸指针）：每条 LOG_* 宏都先读它，命中时只需一次原子读。
         /// 用裸指针而不是 shared_ptr 的原子量，是因为后者的 load 在 MSVC/libstdc++ 上要走内部
         /// 自旋锁，而这条路径每次日志调用都会被走到。
-        /// **安全前提是本类的退休约定**：任何被替换/注销/清理的日志器都移入 m_retiredLoggers
+        /// 安全前提是本类的退休约定：任何被替换/注销/清理的日志器都移入 m_retiredLoggers
         /// 而不是销毁，因此这里拿到的指针在注册表存活期内一直有效
         std::atomic<Logger *> m_cachedRootLoggerPointer{nullptr};
     };

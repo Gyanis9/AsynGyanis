@@ -49,9 +49,9 @@ namespace AsynGyanis::Database::Detail
     /**
      * @brief 本驱动用到的 PostgreSQL 类型 OID（结果集按它决定每个列值怎么映射）
      *
-     * @details 这些取值来自服务端系统表 pg_type 里**固定不变**的 OID（PostgreSQL 源码里的
+     * @details 这些取值来自服务端系统表 pg_type 里固定不变的 OID（PostgreSQL 源码里的
      *          生成文件 catalog/pg_type_d.h）。这里之所以自己定义而不是直接包含官方头：
-     *          那些 BOOLOID / INT4OID 之类的常量只出现在**服务端**头文件
+     *          那些 BOOLOID / INT4OID 之类的常量只出现在服务端头文件
      *          <postgresql/server/catalog/pg_type_d.h> 里，而多数发行版的 libpq 开发包
      *          （如 Debian 的 libpq-dev / 本仓库经 Conan 引入的包）只装客户端头，
      *          根本没有 server 目录——依赖它会让驱动在正常的客户端开发环境里编不过。
@@ -86,7 +86,7 @@ namespace AsynGyanis::Database::Detail
 
     /**
      * @brief 把一个 64 位有符号整数格式化成十进制文本
-     * @details 用 std::to_chars 而不是 std::to_string：前者按最短往返表示输出且**不受 locale 影响**
+     * @details 用 std::to_chars 而不是 std::to_string：前者按最短往返表示输出且不受 locale 影响
      *          （std::to_string 走 sprintf 一类路径，受 LC_NUMERIC 影响），也不会抛异常。
      * @param value 待格式化的整数
      * @return std::string 十进制文本，例如 "-9223372036854775808"
@@ -126,7 +126,7 @@ namespace AsynGyanis::Database::Detail
      * @details 纯函数：只吃入参、不写任何状态，因此可以在任意路径上安全调用。映射规则：
      *          - std::monostate → isNull，由调用方交出空指针（SQL NULL 的唯一表达方式。
      *            若绑成空串，"IS NULL" 不再成立，NULL 与空串也会被混淆）；
-     *          - bool → **"true" / "false" 两个字面量**：PostgreSQL 的 BOOLEAN 列不接受
+     *          - bool → "true" / "false" 两个字面量：PostgreSQL 的 BOOLEAN 列不接受
      *            '0'/'1' 文本（那是 MySQL 的 TINYINT(1) 约定），写错会在服务端报
      *            "invalid input syntax for type boolean"；
      *          - std::int64_t / double → 十进制文本（见 toDecimalText 的两条说明）；
@@ -203,7 +203,7 @@ namespace AsynGyanis::Database::Detail
      * @param rawValue 列值首地址，调用方保证在 [rawValue, rawValue + byteLength) 内可读
      * @param byteLength 列值字节长度，可为 0（空串）
      * @return std::optional<double> 解析结果；非数字、有余文或超出 double 范围时返回空值
-     * @note 标准规定 std::from_chars 的浮点解析**不识别 inf / nan**，而 PostgreSQL 的
+     * @note 标准规定 std::from_chars 的浮点解析不识别 inf / nan，而 PostgreSQL 的
      *       float8 输出在溢出情形下正是 "Infinity" / "NaN"：这类取值会解析失败并退回原始文本
      *       （见 convertColumnText 的兜底），不会凭空造出一个数值
      */

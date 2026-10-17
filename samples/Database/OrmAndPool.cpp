@@ -766,8 +766,8 @@ namespace
                         .toList();
         Samples::checklist().check(matched.size() == 1 && matched[0].id == 1, "IN 与 LIKE 复合条件递归渲染，只命中 id=1 那一行");
 
-        // 同一个字符在两条通道上含义不同：like 的入参是**模式**（% 是通配符），contains 的入参是
-        // **字面量**（% 就匹配一个百分号，方言为它补出 ESCAPE 子句）。把外部输入递给 like 的后果不是慢，
+        // 同一个字符在两条通道上含义不同：like 的入参是模式（% 是通配符），contains 的入参是
+        // 字面量（% 就匹配一个百分号，方言为它补出 ESCAPE 子句）。把外部输入递给 like 的后果不是慢，
         // 而是谓词被放宽成全表匹配——一个含 % 的搜索词就能越过过滤条件读到别人的行
         OrmQuery<AccountRow> wildcardQuery(pool, Database::DatabaseType::Sqlite);
         OrmQuery<AccountRow> literalQuery(pool, Database::DatabaseType::Sqlite);

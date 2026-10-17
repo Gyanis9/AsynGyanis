@@ -34,7 +34,7 @@ namespace AsynGyanis::Net
 
         /// Retry 首字节取 0xFF：头部形式位与固定位按 §17.2 置起、类型位是 3，剩下 4 位是 Unused——
         /// 规范说这一档由服务端任意定、客户端 MUST 忽略（§17.2.5）。取全 1 是为了与 RFC 9001 附录 A.4
-        /// 那条官方样例逐字相同：完整性标签的关联数据**含**这一字节，取别的值就没法拿官方向量钉住这条报文
+        /// 那条官方样例逐字相同：完整性标签的关联数据含这一字节，取别的值就没法拿官方向量钉住这条报文
         inline constexpr std::uint8_t kQuicRetryFirstByte =
                 kQuicLongHeaderFirstByteBase | (static_cast<std::uint8_t>(QuicLongPacketType::Retry) << kQuicLongPacketTypeShift) | 0x0FU;
 

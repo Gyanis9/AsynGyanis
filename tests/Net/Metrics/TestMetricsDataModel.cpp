@@ -1,7 +1,7 @@
 // 指标数据模型公共件（台账 2.5）的判据：直方图折换算只在映射层做一次，两条出口渲染同一份模型。
 //
 // 判据分三处：映射层给的上界/条数/和与手算逐条对齐；两条出口（Prometheus 文本、OTLP 批）从同一份
-// 快照出发必须对上——且对照的期望值在用例里**手工累加**得出，不复用被测实现的折算函数。
+// 快照出发必须对上——且对照的期望值在用例里手工累加得出，不复用被测实现的折算函数。
 
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpServerStats.h"
@@ -59,7 +59,7 @@ namespace
     }
 
     /**
-     * @brief 取 Prometheus 文本里某一行的**数值文本**（行里最后一个空格之后、换行之前）
+     * @brief 取 Prometheus 文本里某一行的数值文本（行里最后一个空格之后、换行之前）
      * @details 对 `名字{le="…"} 值` 与 `名字 值` 两种行形都成立，因此桶、_sum 与 _count 共用一份取法
      * @param prometheusText 渲染结果
      * @param linePrefix 行首特征（含指标名与可选的标签前缀）
@@ -143,7 +143,7 @@ TEST(MetricsDataModel, CumulativeCountsArePrefixSumsIncludingTheOverflowBucket)
 }
 
 /**
- * @brief 钉住两条出口渲染同一份模型：同一份快照下，OTLP 的每格条数**手工累加**必须等于
+ * @brief 钉住两条出口渲染同一份模型：同一份快照下，OTLP 的每格条数手工累加必须等于
  *        Prometheus 文本里的 `_bucket` 累计值，上界文本、和的换算、样本数与状态码标签逐一对上
  * @details 本用例的期望值在用例内手工累加得出（不调用 cumulativeBucketCounts），因此它同时钉住
  *          「折算规则是前缀和」与「两条出口同源」两件事：任何一处把语义换掉都会在这里分叉

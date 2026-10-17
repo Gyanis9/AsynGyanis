@@ -45,13 +45,13 @@ namespace AsynGyanis::Net
         /// 光看 isAnyByteReceived 不够：请求正文已整个交出去、对端还没答完时被时限掐掉，同样是
         /// 「一个字节没收到」，按那条判就会把非幂等请求悄悄做两遍
         bool isAnyByteSent{false};
-        /// 对端有没有**保证**这条请求没被处理过：只有 RFC 9113 §8.7 那两种机制能给出这个保证——
+        /// 对端有没有保证这条请求没被处理过：只有 RFC 9113 §8.7 那两种机制能给出这个保证——
         /// RST_STREAM 带 REFUSED_STREAM（「the stream is being closed prior to any processing having
         /// occurred. Any request that was sent on the reset stream can be safely retried」），以及 GOAWAY
         /// 的 last-stream-id 低于本条流号（「Requests on streams with higher numbers are therefore
         /// guaranteed to be safe to retry」）。为真时重发对非幂等方法也安全（§8.7：「clients MAY
-        /// automatically retry them, even those with non-idempotent methods」）；本端只在**一个响应字节
-        /// 都没收到**时才认这个保证——对端已经答过话还说没处理，那是它违反 §8.7 的 MUST NOT，不能拿它的话
+        /// automatically retry them, even those with non-idempotent methods」）；本端只在一个响应字节
+        /// 都没收到时才认这个保证——对端已经答过话还说没处理，那是它违反 §8.7 的 MUST NOT，不能拿它的话
         /// 把非幂等请求做两遍
         bool isGuaranteedUnprocessed{false};
 
@@ -77,7 +77,7 @@ namespace AsynGyanis::Net
     /**
      * @brief HTTP/2 的客户端一侧：与自家 Http2Connection（服务端角色）互为对端
      * @details 为什么要另写一层而不是给 Http2Connection 加个角色开关：那个类把「校验对端前奏」「收
-     *          请求发响应」「流号必须是奇数」这些**服务端方向**的规则编进了状态机与 API 形状（
+     *          请求发响应」「流号必须是奇数」这些服务端方向的规则编进了状态机与 API 形状（
      *          takeRequests()/sendResponseHeaders()），反过来就是一套另一方向的账本，开关式合并只会让
      *          每条分支都要问「现在是谁」。帧层（Http2Frame）与 HPACK（Hpack）是角色中立的，这一层就
      *          建在它们之上。
@@ -180,7 +180,7 @@ namespace AsynGyanis::Net
                                                               std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {});
 
         /**
-         * @brief 提一条**流式正文**的请求：正文由 bodySource 一段一段交出，交完才收尾流
+         * @brief 提一条流式正文的请求：正文由 bodySource 一段一段交出，交完才收尾流
          * @details 与 request() 的整份正文那一支的差别只在正文从哪来：那一支要一整份在手（长度事先
          *          知道，最后一段 DATA 带 END_STREAM），这一支边生产边发（END_STREAM 落在收尾那条空
          *          DATA 上）。拉一段发一段就是背压：上一段没写上通路（对端的流控窗口还没还）不会叫
@@ -216,7 +216,7 @@ namespace AsynGyanis::Net
          */
         void close() noexcept;
 
-        /// 通路是否还能用来提**新**请求：没被对端收掉、没被本端判死或关掉，且对端没通告收尾
+        /// 通路是否还能用来提新请求：没被对端收掉、没被本端判死或关掉，且对端没通告收尾
         /// （RFC 9113 §6.8：收到 GOAWAY 之后不得再在这条连接上开新流，故这条连接对池而言已经用完了）
         [[nodiscard]] bool isHealthy() const noexcept;
 

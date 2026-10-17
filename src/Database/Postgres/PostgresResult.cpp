@@ -239,7 +239,7 @@ namespace AsynGyanis::Database
         m_connectionHandle(connectionHandle), m_streamOwner(owner), m_isStreaming(true)
     {
         // 所有块（含首块与最终的收尾块）都带完整列定义，列名与列数因此照常快照；
-        // 行数**不快照**——按基类契约回 0，含义是「无法预先知道」，比假装精确诚实
+        // 行数不快照——按基类契约回 0，含义是「无法预先知道」，比假装精确诚实
         const int         rawColumnCount = firstRowResult != nullptr ? PQnfields(firstRowResult) : 0;
         const std::size_t columnTotal    = rawColumnCount > 0 ? static_cast<std::size_t>(rawColumnCount) : 0U;
 

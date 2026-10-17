@@ -48,9 +48,9 @@ namespace AsynGyanis::Database
      *          否则退化成一个明确报错的桩——connect() 恒为 false，并把「当前构建未编译
      *          PostgreSQL 驱动」写进 lastError()，调用方不会把「什么都没做」误当成成功。
      *
-     * ConnectionConfig 的五个字段在本驱动全部有效，且以 **PQconnectdbParams 的关键字/取值对**
+     * ConnectionConfig 的五个字段在本驱动全部有效，且以 PQconnectdbParams 的关键字/取值对
      * 下发（不拼连接字符串：拼接要处理引号与转义，参数化接口没有这个问题）：
-     * - host / port：连接地址。host 为空视为配置错误当场失败；port 为 0 时**省略**该关键字，
+     * - host / port：连接地址。host 为空视为配置错误当场失败；port 为 0 时省略该关键字，
      *   由 libpq 回落到默认端口 5432；
      * - userName / password / database：认证信息与默认库名，按字节原样交给 libpq，本类不做转义。
      *   空串一律省略对应关键字，让 libpq 用它自己的默认规则（用户名默认取操作系统账号、
@@ -74,12 +74,12 @@ namespace AsynGyanis::Database
      *        WIN1252 的服务端上会让中文列变乱码，因此这里显式协商；协商失败即判整次连接失败。
      *
      * 占位符：本驱动直接使用 $1 $2 这种 PostgreSQL 原生写法（PostgresDialect::appendPlaceholder()
-     *        生成），由 SQL 文本原样交给 PQexecParams，因此**不做任何 "?" → "$n" 的改写**；
+     *        生成），由 SQL 文本原样交给 PQexecParams，因此不做任何 "?" → "$n" 的改写；
      *        参数个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错，
      *        本驱动只负责把服务端原文转成中文原因。参数格式一律文本（paramFormats 传空指针），
      *        避免二进制格式下每个类型都要自己编码。
      *
-     * 命令边界：两条 execute 路径都走**扩展查询协议**（PQexecParams），因此一次只可能执行一条语句——
+     * 命令边界：两条 execute 路径都走扩展查询协议（PQexecParams），因此一次只可能执行一条语句——
      *          简单查询协议（PQexec）会执行文本里的全部语句却只返回最后一条的结果，
      *          扩展协议在解析阶段就整次拒绝多语句。这与 MySQL 侧「握手不开 CLIENT_MULTI_STATEMENTS」
      *          是同一安全姿态：拼接出的第二条语句不执行、整条命令失败。
@@ -208,14 +208,14 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行一条带 $n 占位符的 SQL 命令，参数按位置绑定
          * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
-         *          本驱动用 libpq 的**扩展查询协议**（PQexecParams）真正绑定参数，取值绝不拼进
-         *          SQL 文本，注入面因此彻底消失。语句文本**原样送达**：PostgresDialect 生成的
+         *          本驱动用 libpq 的扩展查询协议（PQexecParams）真正绑定参数，取值绝不拼进
+         *          SQL 文本，注入面因此彻底消失。语句文本原样送达：PostgresDialect 生成的
          *          占位符就是 $1 $2 这种 PostgreSQL 原生写法，也就是 PQexecParams 要求的格式，
          *          所以本方法不做任何 "?" → "$n" 的改写；parameters[i] 按下标绑定到 $i+1，
          *          个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错。
          *
          * 执行细节：
-         *          1) 参数一律以**文本格式**送出（paramFormats 传空指针，resultFormat 传 0），
+         *          1) 参数一律以文本格式送出（paramFormats 传空指针，resultFormat 传 0），
          *             不引入二进制编码这一层；值由 Detail::toPostgresTextParameter 转换，
          *             SQL NULL 用空指针表达（绑成空串会让 IS NULL 不再成立）；
          *          2) paramValues 与 paramLengths 成对交出：长度数组非空时 libpq 按长度取字节，
@@ -238,13 +238,13 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters) override;
 
         /**
-         * @brief 执行命令并交出**流式**结果集（行留在服务端，每 next() 取一行）
+         * @brief 执行命令并交出流式结果集（行留在服务端，每 next() 取一行）
          * @details 重写 DatabaseConnection::executeStreaming()：走 libpq 的单行模式——
          *          PQsendQueryParams 送出（与另两条 execute 同一扩展协议，多语句同样被整次拒绝）
          *          后调 PQsetSingleRowMode，每次 PQgetResult 交出一块一行的结果，结果集只装当前行。
          *          代价是三条契约（与基类的 @warning 逐条对应）：
          *          - 结果集必须比本连接短命：在它读完或析构之前，本连接不能再执行任何语句——
-         *            execute 两条路径与 executeStreaming 都在**发送之前**拒绝（见 m_openStreamCount），
+         *            execute 两条路径与 executeStreaming 都在发送之前拒绝（见 m_openStreamCount），
          *            在途未清的时刻连事务控制语句也不放行；
          *          - rowCount() 回 0 的含义是「未知」，isEmpty() 恒回 false（不宣称自己空）；
          *          - 不支持 reset() 重扫（行是一次性流过来的）。
@@ -348,7 +348,7 @@ namespace AsynGyanis::Database
          *          - DISCARD ALL 把 statement_timeout 一并复位成默认（不限），因此在它之后按当前
          *            queryTimeout() 重下发一次：池的归还顺序是「先本方法、后 restoreQueryTimeoutBaseline」，
          *            而后者只在借用者改过取值时才动手，不在这里重下发就会把「比配置更宽」的会话交出去。
-         * @return true 会话已复位；false **没能**复位干净（池据此丢弃这条连接），原因见 lastError()
+         * @return true 会话已复位；false 没能复位干净（池据此丢弃这条连接），原因见 lastError()
          */
         [[nodiscard]] bool resetSessionState() noexcept override;
 
@@ -465,7 +465,7 @@ namespace AsynGyanis::Database
         std::uint64_t                                    m_statementCacheHits{0};      ///< 累计命中次数
 
         /// 在途未清流的条数（每个 executeStreaming 成功开流 +1，结果读完/中断/析构收干时 -1）：
-        /// 大于 0 时三条执行路径都在**发送之前**拒绝，resetSessionState 也据此判脏——回复流停在
+        /// 大于 0 时三条执行路径都在发送之前拒绝，resetSessionState 也据此判脏——回复流停在
         /// 中途的连接不可复用，交回池只会让下一位借用者的第一条语句撞上协议错位
         std::size_t m_openStreamCount{0};
     };

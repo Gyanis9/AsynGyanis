@@ -1,6 +1,6 @@
 // Net HTTP/3 与 QUIC 服务端自检：配置校验、端口 0 起监听、报文面容错、定时驱动、统计与优雅收口
 //
-// 框架**有**出站 h3/QUIC 客户端（`HttpClient::setHttp3Enabled`，默认关、探不通回落 TCP），但本程序刻意不用它：
+// 框架有出站 h3/QUIC 客户端（`HttpClient::setHttp3Enabled`，默认关、探不通回落 TCP），但本程序刻意不用它：
 // 这里要喂给服务端的是乱码与畸形长头那一类对端真写得出的字节，自家客户端不会那样写，
 // 于是本程序从「外面」驱动服务端不依赖握手的那半张脸：起停、绑定、乱码与畸形长头的容错、定时驱动、统计与排空。
 // 握手之后的路径（真实 h3 请求）由单测与 aioquic 真机脚本覆盖，这里刻意不假装能验。
@@ -273,7 +273,7 @@ namespace
     /**
      * @brief 跑一遍服务端自检，结论写进观测结构
      * @param loop 服务与探针共用的循环（探针全是要等待的协程，不阻塞这条循环）
-     * @param certificateFile 证书夹具路径。**按值收**：listen() 这类惰性协程不能引用调用方的临时量
+     * @param certificateFile 证书夹具路径。按值收：listen() 这类惰性协程不能引用调用方的临时量
      * @param keyFile 私钥夹具路径，理由同上
      * @param fixedPort 指定端口（验「按请求的端口绑」）
      * @return Core::Task<> 跑完即返回

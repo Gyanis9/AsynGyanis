@@ -32,8 +32,8 @@ namespace AsynGyanis::Database
         /**
          * @brief 一个把「错误」按用例摆好的驱动替身
          * @details 只用来打包装自身的三条形状：lastError() 与 lastNativeErrorCode() 读的是同一份
-         *          ErrorRecord，替身按真驱动的写法填它即可。**刻意不重写带参数的 execute()，
-         *          也不重写 executeStreaming()**，那样基类那两条默认实现（「暂不支持参数化查询」与
+         *          ErrorRecord，替身按真驱动的写法填它即可。刻意不重写带参数的 execute()，
+         *          也不重写 executeStreaming()，那样基类那两条默认实现（「暂不支持参数化查询」与
          *          「暂不支持流式结果集」）才走得到。
          */
         class StubConnection final : public DatabaseConnection

@@ -117,7 +117,7 @@ namespace AsynGyanis::Net
          * @param descriptor 监听描述符
          * @return std::uint16_t 实际端口，失败返回 0
          * @note 缓冲区按 sockaddr_storage 给：Windows 上用 sockaddr_in 去问一个 AF_INET6 套接字的
-         *       名字是**直接失败**而不是截断（实测），端口就会读成 0——用例随后连向端口 0，
+         *       名字是直接失败而不是截断（实测），端口就会读成 0——用例随后连向端口 0，
          *       表现出来的是「IPv6 连不上」，与本用例要测的东西毫无关系
          */
         inline std::uint16_t queryBoundPort(const int descriptor)
@@ -716,7 +716,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 注册一条「收流式正文、每交付一批就推进计数」的 POST 路由（路径 /stream-echo）
          * @details 走 `postStreaming` 而不是普通 POST：那才是「头部收齐即派发、正文按到达批次交付」的
-         *          一侧。批次数是判据，而**交付一批之后立刻把计数抬上去**——出站侧的来源正等着这个数
+         *          一侧。批次数是判据，而交付一批之后立刻把计数抬上去——出站侧的来源正等着这个数
          *          才肯生产下一段，于是「一段一段发」由握手保证，不靠计时碰运气。
          * @param router 目标路由器
          * @param batchCount 服务端已交付的批次数（跨线程读写，按原子量记）
@@ -898,7 +898,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 停止承载线程并 join
              *
-             * @details 派生夹具若有**协程帧成员**（如 drain 任务），必须在自己的析构体里先调用本方法：
+             * @details 派生夹具若有协程帧成员（如 drain 任务），必须在自己的析构体里先调用本方法：
              *          派生成员的析构早于基类析构体，不先 join 的话循环线程可能正在恢复那些帧
              *          （TSan 在 Http2CleartextSession 的优雅关停用例上报的正是这一处）。
              */

@@ -1,8 +1,8 @@
 // 来源地址（HttpRequest::remoteAddress() / remoteIp()）与传输层是否加密（overTls()）的直测：业务处理器
 // 只拿到请求与响应两个对象，这两条只有会话知道的事实必须由会话在派发之前落进请求里。这里钉四层——
 // 字段本身的形状（默认空 / 默认明文、设置后读得到、reset() 一并清掉）、remoteIp() 的剥端口规则
-// （只认本框架产出的三种形状，认不出来就原样交回）、h1 真回环连接上业务读到的是这条连接的地址**且是
-// 明文**、以及开了 PROXY 协议之后读到的是**代理交来的真实来源**而不是代理记账。
+// （只认本框架产出的三种形状，认不出来就原样交回）、h1 真回环连接上业务读到的是这条连接的地址且是
+// 明文、以及开了 PROXY 协议之后读到的是代理交来的真实来源而不是代理记账。
 // h2 与 h3 的同一判据分别落在 tests/Net/Http2 与 tests/Net/Http3，TLS 那一侧的「读到加密」在
 // TestHttpsServer.cpp。
 
@@ -86,7 +86,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief remoteIp() 剥端口：只认本框架 InetAddress::toString() 产出的那三种形状
-     * @details 认不出来时**原样交回整条文本**而不是切一刀——切错给的是一个静默失效的限额键，
+     * @details 认不出来时原样交回整条文本而不是切一刀——切错给的是一个静默失效的限额键，
      *          比交回原样难查得多（裸写的 "::1" 是这条判据的反例）
      */
     TEST(HttpRequestRemoteAddress, RemoteIpStripsThePortOnlyForTheShapesWeProduce)
@@ -167,7 +167,7 @@ namespace AsynGyanis::Net
 
         LoopbackClient client(listeningPort);
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
-        // 带头必须**单独成段**先到：与请求挤进同一次发送时多出来的字节无处安放，服务器按设计收口这条连接
+        // 带头必须单独成段先到：与请求挤进同一次发送时多出来的字节无处安放，服务器按设计收口这条连接
         ASSERT_TRUE(client.sendText("PROXY TCP4 203.0.113.7 198.51.100.7 44000 " + std::to_string(listeningPort) + "\r\n", kWaitTimeout)) << "PROXY 头未能写入";
         ASSERT_TRUE(fixture.awaitConnectionAccepted(kWaitTimeout)) << "带头的连接没被放行：头没被认出来";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /who HTTP/1.1"), kWaitTimeout)) << "请求未能写入";

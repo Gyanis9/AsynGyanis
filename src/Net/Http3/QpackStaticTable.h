@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 表内容与顺序逐条照抄 RFC 9204 附录 A 的 Table 4；它与 HPACK 的静态表（RFC 7541 附录 A）
- *          既不同项也不同序，且**从 0 开始编号**（RFC 9204 §3.1 末段），因此索引 0 是合法取值，
+ *          既不同项也不同序，且从 0 开始编号（RFC 9204 §3.1 末段），因此索引 0 是合法取值，
  *          查不到时不能像 HPACK 那样用 0 当哨兵，改由 kQpackStaticTableNoIndex 表示。
  */
 

@@ -758,7 +758,7 @@ TEST(Http3Connection, BodyArrivingWhileFieldSectionBlockedDoesNotTurnTheHeadInto
  * @brief 同一条流上头段与尾段都挂起：指令补齐后两段要按序各交付一次，身份不能互换
  * @details 现场取自自家出站 h3 客户端打自家服务端：响应头段引用动态表、尾段也插了新项，两段的指令
  *          一起排在头段之后才到。本端只在流上记一个「挂起的是哪一类」的槽，于是尾段那一次到达把它改写，
- *          补齐时把**头段**按尾段交出去——响应头里的 `:status` 立刻被判定器按 §4.3 判成「伪头出现在尾段」。
+ *          补齐时把头段按尾段交出去——响应头里的 `:status` 立刻被判定器按 §4.3 判成「伪头出现在尾段」。
  *          另一半是续解只走一段：解码器按流存的是队列，而 `feedEncoderStream` 每条流只报一个标识，
  *          交付完队首就返回，后面那段再没有唤醒点，尾字段静默消失
  * @note 证伪：把续解点改回「只交付一段就返回」，本条在尾段那一判据红；把交付身份改回读那个单槽，
@@ -967,7 +967,7 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
  *          本端过去只把这个帧写进 DEBUG 日志：在途的那些流没人给结局（只能各自等时限），连接也照常算健康
  *          被池继续派发，于是每条新请求都去撞一次拒绝。三格分别是：通告值 0 把已开的流 0 判掉、通告值 4
  *          只判 4 而不牵连 0、以及服务端角色下一条请求流都不动（对端客户端发来的 GOAWAY 里那个标识是
- *          **推送流号**，本端从不推送）
+ *          推送流号，本端从不推送）
  * @note 证伪：摘掉逐流处置那个循环，格一与格二红在 streamsReset 上；摘掉「只挑本端发起的双向流」那个筛子，
  *       格三红（服务端角色会把对端的请求流当成自己被拒的流）；摘掉 `m_isPeerGoAwayReceived` 的记账，
  *       格一红在两处（那一位本身，与「GOAWAY 之后不许再开新请求」那道闸）；只摘那道闸，格一红在
@@ -1005,7 +1005,7 @@ TEST(Http3Connection, PeerGoAwayRejectsTheUnprocessedRequestStreamsAndBarsNewOne
         EXPECT_EQ(events.streamsReset.size(), 1U) << "被挡下的那次提交不该在流上留下痕迹";
     }
 
-    // 格二：通告值之下的流不受牵连（§5.2 说的是「该标识**及以上**」）
+    // 格二：通告值之下的流不受牵连（§5.2 说的是「该标识及以上」）
     {
         FakeTransport transport;
         EventLog      events;
@@ -1044,7 +1044,7 @@ TEST(Http3Connection, PeerGoAwayRejectsTheUnprocessedRequestStreamsAndBarsNewOne
  *          把它当「最终响应之前的一声招呼」丢掉。h3 入站此前没有这一支：第一段被交给判定器并记下
  *          「头段已过」，于是那条真响应按 RFC 9114 §4.1 判成「同一消息里出现了第二个头段」——
  *          一个用 Expect 的出站请求被自家服务端的 100 打死。RFC 9114 §4.1/§5.1 说清过渡响应是一份
- *          **独立**的消息，不占最终响应的头段位，也不该把它的字段交给业务
+ *          独立的消息，不占最终响应的头段位，也不该把它的字段交给业务
  * @note 证伪：摘掉入站的过渡响应分支（让 1xx 走正常头段交付），本条第一格在 `malformedRequests`
  *       与「头段恰好一次」两处红；把这一支写成「一切头段都用一次性判定器」，第二格（两条最终响应）红
  */
@@ -1077,7 +1077,7 @@ TEST(Http3Connection, InformationalResponseSectionDoesNotTakeTheHeadSlotFromTheF
         EXPECT_FALSE(connection->isBroken());
     }
 
-    // 格二：两条**最终**响应仍然非法——豁免只给 1xx，别把这道闸一并拆掉
+    // 格二：两条最终响应仍然非法——豁免只给 1xx，别把这道闸一并拆掉
     {
         FakeTransport transport;
         EventLog      events;

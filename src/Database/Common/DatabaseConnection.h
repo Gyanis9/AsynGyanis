@@ -43,10 +43,10 @@ namespace AsynGyanis::Database
          * @details 驱动一直把原生码拼在文本末尾（见 composeNativeErrorText），于是调用方要判
          *          「这条语句该不该重试」就只能去匹配中文——而 QueryExecutionException 拆成独立
          *          类型的全部理由就是重试语义不同。这里把码单独存一份，并用一条规则防住最容易
-         *          犯的错：**任何只写文本的赋值与 clear() 都会把码重置为「未知」**，因此码永远不会
+         *          犯的错：任何只写文本的赋值与 clear() 都会把码重置为「未知」，因此码永远不会
          *          配到上一条错误的文本上（各驱动的失败路径里既有带码的 capture*，也有只写文本的
          *          分支，混用是常态而不是边角情况）。
-         * @note 之所以不在读取时现取句柄的错误码：MySQL 的语句错误挂在**语句**句柄上，连接级
+         * @note 之所以不在读取时现取句柄的错误码：MySQL 的语句错误挂在语句句柄上，连接级
          *       mysql_errno 此刻读到的可能还是上一条命令的码——该驱动自己的注释就写着这条。
          */
         class ErrorRecord
@@ -68,7 +68,7 @@ namespace AsynGyanis::Database
             }
 
             /**
-             * @brief 在既有文本尾部追加一段说明，原生码**保持**不变
+             * @brief 在既有文本尾部追加一段说明，原生码保持不变
              * @details 追加句是对同一次失败的补充说明（例如「只读语句时限未能下发」），
              *          换掉码反而会让它配到别的文本上去
              * @param extra 追加的文本
@@ -171,7 +171,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 借出前的有效性探针：真去问一次对面还在不在（连接池按配置可选启用）
-         * @details 与 isConnected() 的分工要分清：后者是**纯状态读**（本仓各驱动的约定，热路径上
+         * @details 与 isConnected() 的分工要分清：后者是纯状态读（本仓各驱动的约定，热路径上
          *          随便调），它只说「本端还不知道连接已断」；本函数允许花一次往返，因此只在
          *          `PoolConfig::probeBeforeAcquire` 打开时由池在借出前调一次。
          *          默认实现退回 isConnected()：没有更省的办法时就如实报「只读状态」，不要让某个
@@ -217,7 +217,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 归还连接池时的会话状态复位（默认什么都不做）
-         * @details 池在把连接放回空闲栈**或直接交给等待者**之前调用一次。会话级状态（未发送的
+         * @details 池在把连接放回空闲栈或直接交给等待者之前调用一次。会话级状态（未发送的
          *          管道缓冲、临时表、未提交的事务……）必须在这里清掉，否则会串给下一个借用者：
          *          Redis 的管道缓冲就是活例子——残留命令会被下一个借用者的 flushPipeline() 代发，
          *          回复按下标错位且毫无报错
@@ -225,7 +225,7 @@ namespace AsynGyanis::Database
          * @note 命令超时不在派生类的这条路径上：池调用本方法之后另行调用 restoreQueryTimeoutBaseline()，
          *       把借用者改过的 queryTimeout() 退回建连时记下的基线。三个驱动都吃这一份值，
          *       因此它只在一处复位，不随驱动各写一遍
-         * @return true 会话已干净（或本来就没有要复位的东西）；false **没能**复位干净——池据此把这条
+         * @return true 会话已干净（或本来就没有要复位的东西）；false 没能复位干净——池据此把这条
          *         连接丢掉，而不是让它带着上一个借用者留下的事务回到空闲栈
          */
         [[nodiscard]] virtual bool resetSessionState() noexcept
@@ -266,11 +266,11 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 执行命令并交出**流式**结果集（行留在服务端，每调用一次 next() 才取一行）
+         * @brief 执行命令并交出流式结果集（行留在服务端，每调用一次 next() 才取一行）
          *
          * @details 它存在的唯一理由是大结果集的内存量级：execute() 走预读，整份行数据一次复制进客户端，
          *          而「读一千万行」与「读十行」在本框架里不该花同一份内存。默认实现把 lastError()
-         *          置为中文提示并返回 nullptr，**刻意不退化成预读的 execute()**——那会让调用方以为自己在
+         *          置为中文提示并返回 nullptr，刻意不退化成预读的 execute()——那会让调用方以为自己在
          *          流式读、实际却把整份结果搬进内存，是最难排查的那类静默退化（与上面参数化那条同一判据）。
          *          当前覆写有三处：MySQL 的文本协议（mysql_use_result 逐行取数）与带参路径
          *          （预处理语句 + 预取窗口，见同名带参重载）、PostgreSQL 的单行模式；SQLite 与
@@ -279,11 +279,11 @@ namespace AsynGyanis::Database
          *
          * @warning 实现方要接受三条与预读不同的契约（逐条的理由写在 MySqlResult 的类注释与它自己的方法上）：
          *          结果集必须比产出它的连接短命；在它消费完或析构之前，那条连接不能再执行任何语句
-         *          （把行留在**网线对端**的实现才受这条约束——MySQL 与 PostgreSQL；SQLite 的本地
+         *          （把行留在网线对端的实现才受这条约束——MySQL 与 PostgreSQL；SQLite 的本地
          *          游标可与其它语句共存，这是有意差异，见它的 executeStreaming 说明）；
          *          rowCount() 回 0 的含义是「未知」，isEmpty() 不许据此宣称结果为空。
          *
-         * @param command 命令文本（只对**有返回列**的语句有意义；写语句没有可流式的结果集）
+         * @param command 命令文本（只对有返回列的语句有意义；写语句没有可流式的结果集）
          * @return std::unique_ptr<DatabaseResult> 流式结果集；失败或驱动不支持时返回 nullptr，
          *         原因见 lastError()
          */
@@ -297,10 +297,10 @@ namespace AsynGyanis::Database
         }
 
         /**
-         * @brief 执行带参数的命令并交出**流式**结果集（参数绑定与大结果集同时成立时用）
+         * @brief 执行带参数的命令并交出流式结果集（参数绑定与大结果集同时成立时用）
          *
          * @details 默认实现与上一支同一条口径：把 lastError() 置为中文提示并返回 nullptr，
-         *          **刻意不退化成** execute(command, parameters) 的整份预读——那会让调用方以为
+         *          刻意不退化成 execute(command, parameters) 的整份预读——那会让调用方以为
          *          自己在流式读、实际却把整份结果搬进内存。「带参解绑」与「长结果集」撞在一起时，
          *          调用方要么显式落回预读（看见了内存代价），要么换一条实现了本路径的驱动。
          * @param command 命令文本
@@ -359,8 +359,8 @@ namespace AsynGyanis::Database
          * @param command 命令文本
          * @return std::expected<std::unique_ptr<DatabaseResult>, ExecutionFailure> 成功为结果集，失败为原因
          * @details 这是 execute() 的「带成因」版本：后者失败只回一个空指针，原因留在连接对象里等
-         *          lastError() 去读，于是每处调用都要自己写「判空 + 抄文本」，而**这份原因是长在连接
-         *          对象上的**——连接归还池之后再读，读到的是下一个借用者那条命令的失败。本包装在
+         *          lastError() 去读，于是每处调用都要自己写「判空 + 抄文本」，而这份原因是长在连接
+         *          对象上的——连接归还池之后再读，读到的是下一个借用者那条命令的失败。本包装在
          *          execute() 返回的那一刻就把文本与原生码抄进返回值，调用方拿到的错误与那条命令一一对应，
          *          也因此可以在把连接还回去之后再处置失败（重试、降级、落日志）。
          * @note 不改 execute() 的签名：那三个驱动的实现、ORM 层与全部用例都按「空指针 + lastError()」
@@ -545,11 +545,11 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 判一次**建连失败**是不是「重来一次可能就成了」那一类
+     * @brief 判一次建连失败是不是「重来一次可能就成了」那一类
      *
      * @details 连接池的建连重试只认这一个分类，判据按「重做一遍有没有副作用」定：建连本身不改动
      *          服务端状态，因此重试是安全的；而一条已经发出去的语句即便报「连接断开」也不能重放
-     *          （MySQL 2006/2013 就属于这种——写可能已经生效），所以那两条**不在**本表里，
+     *          （MySQL 2006/2013 就属于这种——写可能已经生效），所以那两条不在本表里，
      *          `QueryExecutionException::isRetryable()` 也刻意不把它们算成可重试。
      *          各驱动的错误码词汇表不同，因此按 `databaseType()` 分档列，取值全部取自所用客户端库
      *          的公开常量（MySQL 的 CR_*、PostgreSQL 的 SQLCLASS 08/57P、SQLite 的主结果码、

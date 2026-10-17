@@ -423,7 +423,7 @@ namespace AsynGyanis::Base
     /**
      * @brief 钉住：重开失败时丢弃量读得到，重开成功后不再累加
      * @details 文件打不开时 `writePreparedLineLocked` 在「流没打开」的判空处直接返回 0，而那条
-     *          「连续写失败只报一次」的标准错误上报排在它后面——**永远轮不到**。于是整条 Sink 从这一刻
+     *          「连续写失败只报一次」的标准错误上报排在它后面——永远轮不到。于是整条 Sink 从这一刻
      *          起静默失聪：程序自己一句诊断都不留，运维只能靠人肉发现日志少了。现在这一路的丢弃行数
      *          走 `skippedLineCount()`（形状与异步通道的 droppedAsyncLogEventCount 一致），
      *          并在失败那一刻按上升沿往标准错误打一行。

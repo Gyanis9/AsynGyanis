@@ -157,7 +157,7 @@ namespace AsynGyanis::Net
 
     TEST_F(JwtVerifierTest, RejectsTamperedPayload)
     {
-        // 造「同一枚签名、被换过的载荷」要在**明文**上重组：token 里全是 base64 文本，直接在 token 上
+        // 造「同一枚签名、被换过的载荷」要在明文上重组：token 里全是 base64 文本，直接在 token 上
         // 找明文字符是找不到的——那样写出来的用例会在「找不到」上先红，测不到验签本身
         const std::string headerJson  = defaultHeader();
         const std::string payloadJson = makePayload(kNowSeconds + kOneHour, kNowSeconds - kOneHour, R"("https://api.example")");
@@ -216,7 +216,7 @@ namespace AsynGyanis::Net
 
     TEST_F(JwtVerifierTest, RejectsAlgNoneBeforeSignatureCheck)
     {
-        // alg=none 的公开伪装：头改成 none、签名段清空。判据是**拒绝原因点名算法**而不是「签名失败」——
+        // alg=none 的公开伪装：头改成 none、签名段清空。判据是拒绝原因点名算法而不是「签名失败」——
         // 那证明白名单在验签之前生效（否则空签名也走不到算法判定）
         const std::string signingInput =
                 base64UrlEncode(R"({"alg":"none","typ":"JWT"})") + "." + base64UrlEncode(makePayload(kNowSeconds + kOneHour, kNowSeconds - kOneHour, R"("https://api.example")"));

@@ -65,7 +65,7 @@ namespace AsynGyanis::Core
         std::size_t                           saturatedRemoteRejectionCount{}; ///< 跨线程在途队列满被拒的累计条数（见 Scheduler::saturatedRemoteRejectionCount）
         std::size_t                           skippedCompletedHandleCount{};   ///< 派发时因帧已停在终结点被跳过的累计条数（见 Scheduler::skippedCompletedHandleCount）
         /// 此刻标注在跑的作业名（占用归因探针，见 setActiveWorkload）；空表示未标注。
-        /// @warning 视图指向调用方交出的**长命零终止**文本（如路由的模式原文），不是本类保存的副本
+        /// @warning 视图指向调用方交出的长命零终止文本（如路由的模式原文），不是本类保存的副本
         std::string_view activeWorkload{};
         /// 最近一条工作段期间标注过的作业名：慢段报警与读取方据此点名「那一段被谁占住」；
         /// 从未标注过为空。同样只是视图（生命周期同 activeWorkload）
@@ -88,7 +88,7 @@ namespace AsynGyanis::Core
     inline constexpr std::chrono::milliseconds kSlowWorkingSegmentAlertThreshold{100};
 
     /**
-     * @brief 取回进程内**所有**登记在观测槽位上的事件循环的快照
+     * @brief 取回进程内所有登记在观测槽位上的事件循环的快照
      *
      * @details 按槽位号升序返回，同一台机器上两次抓取因此对得上行。一个进程里通常有多条循环
      *          （每工作线程一条、链路出口自己的那条、客户端临时起的），整表端点因此不必知道循环归谁。
@@ -107,7 +107,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 每线程一个的事件循环，封装 epoll 事件监控与协程调度
      *
-     * @note **一个实例一个运行生命周期**：stop() 置下的停止请求是粘性的，此后再调用 run() 都会
+     * @note 一个实例一个运行生命周期：stop() 置下的停止请求是粘性的，此后再调用 run() 都会
      *       立刻返回（不会阻塞、也不会重新开始跑）——这个取舍保证「先 stop() 后 run()」的时序
      *       不丢停止请求，而 start() 之后立刻 stop() 正是常见写法；需要重新运行请新建实例。
      */
@@ -137,7 +137,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 启动事件循环（阻塞当前线程）
          * @note 持续处理就绪事件与协程任务，直到 stop() 被调用或发生逃逸到循环层的异常
-         * @note **本函数不向调用方抛异常**：它的调用点绝大多数是裸线程入口（线程池的工作线程、
+         * @note 本函数不向调用方抛异常：它的调用点绝大多数是裸线程入口（线程池的工作线程、
          *       遥测导出线程、示例与测试夹具里的 std::thread），让异常从那里穿出去就是
          *       std::terminate，整个进程连同在途请求一起没。逃逸到这一层的异常就地收下、
          *       置 stoppedByFailure 后正常返回；派发级的异常更早就被 Scheduler 与 IoWatcher
@@ -157,9 +157,9 @@ namespace AsynGyanis::Core
          * @brief 标注本循环正在跑的作业名（占用归因探针；传空指针清除）
          * @details 慢工作段报警与 `/debug/loops` 据此点名「循环被谁占住」——没有它，一次超阈
          *          只能报出「占了多少毫秒」，报不出被什么占的。多路复用（同一循环上多条协程
-         *          交错）下这是**近似读数**：取「最近进入、尚未退出」的那一个，精确到每协程的
+         *          交错）下这是近似读数：取「最近进入、尚未退出」的那一个，精确到每协程的
          *          归因需要标签随协程帧走，那是更大一层的活（刻意不做）
-         * @param workloadName 作业名文本，必须是**长命且零终止**的（例如路由表持有的模式原文）；
+         * @param workloadName 作业名文本，必须是长命且零终止的（例如路由表持有的模式原文）；
          *        本函数只存指针不拷贝——临时串交给它等于留一个读已释放内存的读数
          * @note 只在所属循环线程上调用（与其它成员同一纪律）
          */
@@ -215,9 +215,9 @@ namespace AsynGyanis::Core
          * @return true 仍在登记表里，可以安全派发
          * @note 按线程契约，登记与注销都发生在所属循环线程上（见 IoWatcher 的类注释与
          *       TcpServer::close() 的 @warning）。这把锁是防御性的：它保证派发判定与登记表不会
-         *       读到彼此的中途状态，**不构成**「可以从外部线程关闭连接/销毁注册对象」的许可——
+         *       读到彼此的中途状态，不构成「可以从外部线程关闭连接/销毁注册对象」的许可——
          *       事件后端自身的注册表并不带锁，那样做仍然是竞争
-         * @details 事件是**批量**从内核取回来的：先处理的那条有可能销毁后一条事件所属的对象
+         * @details 事件是批量从内核取回来的：先处理的那条有可能销毁后一条事件所属的对象
          *          （会话收口时顺手关掉另一条连接就是这条路径），派发前必须确认接收对象还在，
          *          否则后一条事件就是往已释放对象里写成员并 resume 垃圾句柄。
          */
@@ -231,7 +231,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 判断调用线程是否就是这条循环跑 run() 的那条线程
-         * @details 循环没在跑时一律返回 true：构造期与停机后的**顺序交接**是既有的良性形态，
+         * @details 循环没在跑时一律返回 true：构造期与停机后的顺序交接是既有的良性形态，
          *          按属主线程一刀切会误伤一大片（与 Iocp::ExclusiveUse 那条 @note 同一口径）。
          *          判「能不能直接动本循环上的对象」要连着 isRunning() 一起看，本函数已经把
          *          这条规则包在里面。
@@ -242,7 +242,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 取本循环自己的那一行自观测快照
-         * @details 读的全是原子量，因此**任意线程可调**：不必把动作投进本循环再等它应答——真停顿的
+         * @details 读的全是原子量，因此任意线程可调：不必把动作投进本循环再等它应答——真停顿的
          *          循环正是应答不了的那条。要拿进程内所有循环的整表，用 eventLoopSnapshots()。
          * @return EventLoopSnapshot 各字段的口径见该结构体说明
          */
@@ -297,7 +297,7 @@ namespace AsynGyanis::Core
      *          与 `/debug/loops` 就能点名「这一段被谁占住」。不在循环线程上构造时是空操作
      *          （探针不假装能标）。多路复用时析构直接清空而不是恢复上一层：协程不是栈式嵌套，
      *          「上一个是谁」在交错场景里没有可靠答案（见 EventLoop::setActiveWorkload 的说明）。
-     * @note `workloadName` 必须是**长命且零终止**的文本（如路由表持有的模式原文）；传空指针
+     * @note `workloadName` 必须是长命且零终止的文本（如路由表持有的模式原文）；传空指针
      *       等于只用本作用域清场、不标注
      */
     class ASYN_CORE_API WorkloadScope

@@ -92,9 +92,9 @@ namespace AsynGyanis::Net
     } // namespace
 
     /**
-     * @brief 钉住：解析出 IPv6 候选时，套接字按**那条地址自己的协议族**建
+     * @brief 钉住：解析出 IPv6 候选时，套接字按那条地址自己的协议族建
      * @details AsyncSocket::create 的默认档是 AF_INET，拿它去 connect 一个 sockaddr_in6 只会以
-     *          「协议族不符」收场——修之前纯 IPv6 目标是**根本连不上**，双栈目标却看不出来
+     *          「协议族不符」收场——修之前纯 IPv6 目标是根本连不上，双栈目标却看不出来
      *          （解析器把 IPv4 排在前面，第一条就成了）。所以这里让服务器只监听 ::1：唯一那条路
      *          就是 IPv6。这台机器没有可用的 IPv6 回环时按环境跳过。
      */

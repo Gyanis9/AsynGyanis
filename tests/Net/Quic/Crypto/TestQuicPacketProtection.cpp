@@ -3,7 +3,7 @@
 // 覆盖三块：
 //   1) 官方向量：附录 A.5 的 ChaCha20-Poly1305 小包（AAD 4200bff4 + 明文 01 + 包号 654360564 →
 //      密文带标签 655e5c…5bfb），以及附录 A.2 的客户端 Initial（AES-128-GCM，1162 字节明文 →
-//      1178 字节密文），后者用的密钥是**从 deriveQuicInitialPacketKeys 现推**的，顺带验两层能接上；
+//      1178 字节密文），后者用的密钥是从 deriveQuicInitialPacketKeys 现推的，顺带验两层能接上；
 //   2) 解开的逆运算：同一组输入解回原明文；
 //   3) 认证性的拒绝面：改一个密文字节、包号差一、AAD 少一位，都必须判 AuthenticationFailed
 //      ——这三条正是 AEAD 存在的理由，任一失守都意味着 nonce/AAD/标签没被真正绑进来。

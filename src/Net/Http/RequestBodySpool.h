@@ -69,14 +69,14 @@ namespace AsynGyanis::Net
      *          把解析器的上限抬到磁盘量级，代价立刻变成「每条在途连接驻留一整份正文」。
      *          本类把这份代价从内存搬到磁盘：逐段写，内存里永远只有当前那一段。
      *
-     *          落盘器**不改协议判定**：`server.parser_limits.maximum_body_size` 那道声明长度的闸照旧先落。
+     *          落盘器不改协议判定：`server.parser_limits.maximum_body_size` 那道声明长度的闸照旧先落。
      *          要接住比默认更大的上传，仍然是先抬那一项；抬起来之后不再按连接吃内存，是本类负责的部分。
      *
      * @note 写动作经 `Core::AsyncExecutor::submit()` 离开事件循环线程——落盘是阻塞调用，压在循环线程上
      *       等于把这条连接的吞吐换成磁盘抖动，还连累同一循环上的其它连接。每段先拷进提交体
      *       （`HttpRequestBody::chunk()` 的视图只有效到下一次 `readNext()`，而工作线程可能在恢复投递
      *       之前都还没跑完），写完再要下一段。
-     * @warning 截断的正文**不交出去**：`HttpRequestBody::isTruncated()` 为真时 capture() 直接失败并删掉半份
+     * @warning 截断的正文不交出去：`HttpRequestBody::isTruncated()` 为真时 capture() 直接失败并删掉半份
      *          文件（RFC 9110 §6.6 要求接收方把长度不足的报文当错误处理；半份文件被当成完整上传落进业务，
      *          比拒掉难查得多）。
      * @see HttpRequestBody, Router::postStreaming()
@@ -101,7 +101,7 @@ namespace AsynGyanis::Net
          * @param options 落盘取值
          * @return Core::Task<std::expected<RequestBodySpool, std::string>> 成功时交出一份归调用方所有的
          *         临时文件；失败时值是中文原因，且临时文件已删掉（不留半份）
-         * @note 失败通道是 expected 而不是异常：磁盘满、目录不可写、正文被截断都是**预期的运营事件**，
+         * @note 失败通道是 expected 而不是异常：磁盘满、目录不可写、正文被截断都是预期的运营事件，
          *       处理器要能分别回 507/500/400，而不是让异常穿过协程帧把连接一起带走
          */
         static Core::Task<std::expected<RequestBodySpool, std::string>> capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,

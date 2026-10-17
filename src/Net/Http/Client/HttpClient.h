@@ -58,7 +58,7 @@ namespace AsynGyanis::Net
         std::vector<HttpClientHeaderField> trailers;
 
         /**
-         * @brief 按名字取一条响应头，**名字大小写不敏感**
+         * @brief 按名字取一条响应头，名字大小写不敏感
          * @details 存在的理由：`headers` 按对端给什么留什么（不折叠、不重排，便于原样诊断），
          *          而 RFC 9110 §5.1 规定头部名大小写不敏感。没有这一句时每个消费方都得自己重写一遍
          *          「折小写再比对」的循环——本仓已经各写三份：ACME 用 `std::tolower`（跟着 C locale 走，
@@ -67,7 +67,7 @@ namespace AsynGyanis::Net
          * @param name 头部名，大小写任意
          * @return std::optional<std::string_view> 第一条同名字段的值；没有则为空。
          *         交回的是指向 `headers` 内部的视图，本响应析构后失效
-         * @note 同名多条时交回**第一条**；要拿全部（如 `Set-Cookie`）请自己遍历 `headers`
+         * @note 同名多条时交回第一条；要拿全部（如 `Set-Cookie`）请自己遍历 `headers`
          */
         [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view name) const;
         /**
@@ -101,8 +101,8 @@ namespace AsynGyanis::Net
      * @brief 响应正文的接收口：按到达批次把正文交给调用方，交完才去读下一批通路字节
      *
      * @details 这就是背压的落点——本口没返回，客户端就不会再读，TCP 窗口与 h2/h3 的流控因此自己闭合。
-     * @param head 已收齐的响应头部（状态码与头部可信；**只在本次调用内有效**，要留就自己抄下来）
-     * @param batch 本批正文（**只在本次调用内有效**；`isLastBatch` 为真时可为空，表示零长收尾）
+     * @param head 已收齐的响应头部（状态码与头部可信；只在本次调用内有效，要留就自己抄下来）
+     * @param batch 本批正文（只在本次调用内有效；`isLastBatch` 为真时可为空，表示零长收尾）
      * @param isLastBatch 是否最后一批：长度收满、分块或流读到收尾，或对端收线
      * @return true 还要下一批；false 就此收口（HTTP/1.1 关整条连接，h2 与 h3 只结这一条流）
      */
@@ -118,7 +118,7 @@ namespace AsynGyanis::Net
          * @brief 流式正文的来源：一段一段交出，写完才算正文结束
          * @details 填了它就忽略 body（contentType 照旧生效）。两种正文写法同时给属于用法错误，当场拒绝。
          *          上线的形状按通路而定：HTTP/1.1 是 `Transfer-Encoding: chunked`（不再写
-         *          Content-Length），HTTP/2 是分帧的 DATA；两条都是**拉一段、发一段**，所以传一个大文件
+         *          Content-Length），HTTP/2 是分帧的 DATA；两条都是拉一段、发一段，所以传一个大文件
          *          时内存里同时只有一份分段，而不是整份先攒进一个字符串。
          * @note 整体时限（requestTimeout）覆盖「生产正文」这一段：来源自己按住不放，到点就是一条失败
          *       请求，不会把循环挂住
@@ -128,7 +128,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 响应正文的接收口：设了就「边到边交」，整条响应的正文不再攒在本端内存里
          * @details 签名的读法见 `HttpResponseBodyReceiver`。设了这个口子时，交回来的
-         *          `HttpClientResponse::body` 是**空的**（字节都交给了接收口），成败仍看返回的响应
+         *          `HttpClientResponse::body` 是空的（字节都交给了接收口），成败仍看返回的响应
          *          是否为空；`isLastBatch` 为真才算正文走到头。
          * @note 整体时限（requestTimeout）照旧覆盖到正文交完为止：对端按住不送、或本口自己按住不放，
          *       到点就是一条失败请求。本客户端没有「不限时限」这一档，要收一条不结束的流
@@ -138,8 +138,8 @@ namespace AsynGyanis::Net
         HttpResponseBodyReceiver responseBodyReceiver{};
 
         /**
-         * @brief 自动跟随 3xx 重定向；默认**关**（关着时本客户端的行为与加这一项之前逐字相同）
-         * @details 开着时交回的是**最后一跳**的响应。方法折算按 RFC 9110 §15.4：303 折成 GET（HEAD 仍按
+         * @brief 自动跟随 3xx 重定向；默认关（关着时本客户端的行为与加这一项之前逐字相同）
+         * @details 开着时交回的是最后一跳的响应。方法折算按 RFC 9110 §15.4：303 折成 GET（HEAD 仍按
          *          §15.4.4 的例外保持 HEAD）、301/302 只把 POST 折成 GET、307/308 方法与正文都不动；
          *          `Location` 可以是相对引用，按 §10.2.2 对基准 URL 解析（`resolveUrlReference()`）。
          * @note 三处边界一律「交回那一条 3xx 并打一行原因」，不静默换成别的请求：整条时限被前面几跳
@@ -170,7 +170,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部
-         * @details 装的是**本端这一跳的上下文**——通常就是当前那一节的 `Span::identifiers()`，
+         * @details 装的是本端这一跳的上下文——通常就是当前那一节的 `Span::identifiers()`，
          *          或入站请求归一化后读到的那份（`extractTraceContext()`）。标识按原样渲染，
          *          本客户端不重新生成：谁在跟踪这一跳，谁的标识才作数。
          * @note 不填（默认）时行为与从前一致：headers 里已有 traceparent 就原样发出，没有就不发。
@@ -230,7 +230,7 @@ namespace AsynGyanis::Net
      * @param reference 响应里的引用，通常是 `Location` 的值
      * @return std::optional<std::string> 绝对 URL，交回的值可直接喂给 `parseUrl()`；
      *         引用不合法（含空白或控制字符、去掉片段之后什么都不剩、协议不是 http(s)、引用本身畸形）时为空
-     * @details 交回空而不是抛异常：这条读的是**对端给的字节**，对端写歪是网络现象而不是本进程的用法错误。
+     * @details 交回空而不是抛异常：这条读的是对端给的字节，对端写歪是网络现象而不是本进程的用法错误。
      * @note 协议名之外的引用不带认证信息：`http://user:pass@host/` 这种写法在这里一律拒（凭据走 URL 是
      *       RFC 9110 §4.2.4 早已废止的做法，而把它抄进下一跳等于把口令发给另一个主机）。
      */
@@ -264,7 +264,7 @@ namespace AsynGyanis::Net
          * @param loop 所属事件循环（提供套接字与定时器）
          * @param url 目标地址，形如 http(s)://host[:port]/path
          * @param requestTimeout 整体时限：到时直接掐断连接并返回空响应，避免对端只连不应答时
-         *        把调用方永远挂住。TLS 握手、写出、收完响应之外，**TCP 连接**也在其中——这一段的时限
+         *        把调用方永远挂住。TLS 握手、写出、收完响应之外，TCP 连接也在其中——这一段的时限
          *        是补上的：Windows 的完成端口后端上「连不上」并没有可写事件可等（实测系统 2 秒内就把
          *        连接拒了，挂在可写上的协程却永远等不到那一次唤醒），交给内核的 SYN 重试兜底等于让
          *        调用方无限期停在这里。只有域名解析不在其中，那一步由系统解析器兜底
@@ -330,8 +330,8 @@ namespace AsynGyanis::Net
          * @param poolConfig 池的规模参数
          * @param tlsPolicy 出站 TLS 的策略与信任库
          * @param proxyPolicy 出站代理策略：显式值为空时按 consultEnvironment 取进程环境，构造时读一次冻结
-         * @note 前三支构造不带代理策略，等价于传一份默认的 `HttpProxyPolicy`（即**默认就认
-         *       `http_proxy`/`https_proxy`/`no_proxy` 环境**，与 curl/Go 的出站口径一致）；要整体
+         * @note 前三支构造不带代理策略，等价于传一份默认的 `HttpProxyPolicy`（即默认就认
+         *       `http_proxy`/`https_proxy`/`no_proxy` 环境，与 curl/Go 的出站口径一致）；要整体
          *       关掉环境识别就传 `consultEnvironment=false` 的那一份
          */
         explicit HttpClient(Core::EventLoop &loop, HttpOutboundConnectionPool::Config poolConfig, const Core::TlsPolicy &tlsPolicy, HttpProxyPolicy proxyPolicy);
@@ -339,7 +339,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 给出站连接带上自己的客户端证书（双向 TLS 的出站侧）
          * @details 服务端要求出示证书时（HttpsServer::setClientCertificateRequired(true)），
-         *          本端不配身份就连不上。证书与私钥装在**本实例的上下文**上，之后每条 HTTPS 连接
+         *          本端不配身份就连不上。证书与私钥装在本实例的上下文上，之后每条 HTTPS 连接
          *          都会带上它（握手时按对端请求的 CA 选链，OpenSSL 负责挑）。
          * @param certificateFile 客户端证书（PEM，可含链）
          * @param keyFile 私钥（PEM）
@@ -356,7 +356,7 @@ namespace AsynGyanis::Net
          * @param url 目标地址，口径同静态的 get()
          * @param requestTimeout 整体时限，语义同静态的 get()：连接、握手、发送、收完响应四段之和
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
-         * @note 复用的那条连接如果对端已经关掉，本次请求会**自动重开一条再来一次**——这是 keep-alive
+         * @note 复用的那条连接如果对端已经关掉，本次请求会自动重开一条再来一次——这是 keep-alive
          *       的固有竞态（对端随时可以收掉空闲连接），不是失败。两类情形不重发：读到过响应字节
          *       （那已经是「响应本身有问题」，重来不换一个答案）；请求已整个写上通路而方法不在幂等
          *       集合里（GET/HEAD/OPTIONS/PUT/DELETE/TRACE，RFC 9110 §9.2.2；RFC 9112 §9.3.2 给的自动
@@ -412,7 +412,7 @@ namespace AsynGyanis::Net
          * @brief 挂上一个 Cookie 存储罐，让这条实例自动收发放给的 Cookie。
          * @details 装上之后：每次请求前按目标主机、连接是否加密与请求路径拼一条 Cookie 头发出去；
          *          响应里的 Set-Cookie 全部收回罐子（作用域规则见 `HttpCookieJar`）。
-         * @details 调用方自己在 `request.headers` 里写了 cookie 头时**以调用方为准**，本方法不再补——
+         * @details 调用方自己在 `request.headers` 里写了 cookie 头时以调用方为准，本方法不再补——
          *          那等于静默改写他明确给出的头部。多个实例共用一个罐子即可共享会话（罐子本身可跨线程）。
          * @note 只有实例这一路（`get`/`post`/带池的 `send`）会用到罐子；静态的 `send()` 不带任何状态，
          *       因此也没有罐子可挂
@@ -423,9 +423,9 @@ namespace AsynGyanis::Net
          * @details 重发闸门只有这一份实现：三态判据（对端答过话／请求写上过通路／对端保证没处理过）
          *          合起来决定「重来」还是「就此失败」。三条规矩各自的出处：
          *          - 对端答过话（收到过任何响应字节）→ 不重来：那是响应本身出了问题，换条连接不会换一个答案；
-         *          - 请求已整个写上通路而对端没答话 → 只有**幂等**方法才重来（RFC 9112 §9.3.2 给的自动重试
+         *          - 请求已整个写上通路而对端没答话 → 只有幂等方法才重来（RFC 9112 §9.3.2 给的自动重试
          *            许可只覆盖幂等方法，集合由 RFC 9110 §9.2.2 给出；表外方法一律按不幂等处理）；
-         *          - 但对端**保证**这条请求没被处理过时，非幂等方法也可以重来（RFC 9113 §8.7：「Requests
+         *          - 但对端保证这条请求没被处理过时，非幂等方法也可以重来（RFC 9113 §8.7：「Requests
          *            that have not been processed have not failed; clients MAY automatically retry them,
          *            even those with non-idempotent methods」，保证只来自 REFUSED_STREAM 与 GOAWAY 的
          *            last-stream-id 这两处）。
@@ -447,7 +447,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 换上（或摘掉）出站熔断器。
-         * @details 实例构造时**自带**一个默认配置的熔断器：同一端点连续 5 次失败即开闸 30 秒，
+         * @details 实例构造时自带一个默认配置的熔断器：同一端点连续 5 次失败即开闸 30 秒，
          *          开闸期间对新请求直接给出失败原因，不再付 DNS、TCP 与 TLS 握手的钱——上游整个塌掉时
          *          这笔钱原本每个请求都要重付一遍，而调用方看到的只是「超时」。
          * @param circuitBreaker 熔断器；传空指针即关掉这条保护，退回「每次都试」的行为
@@ -464,14 +464,14 @@ namespace AsynGyanis::Net
          * @brief 打开或关掉本客户端的 HTTP/3 出站通路（默认关）
          * @details 开关而不是自动协商：本框架不缓存 Alt-Svc，调用方要的是「这个 URL 会走哪条通路」
          *          的确定性。打开之后每条 https 出站先试 h3——池里有待命链路就直接复用，没有就探
-         *          一条；探不通、起步没走完或这条流没答话，都**回落到 TCP**（h2 还是 h1 由 ALPN 定），
+         *          一条；探不通、起步没走完或这条流没答话，都回落到 TCP（h2 还是 h1 由 ALPN 定），
          *          调用方拿到的响应与协议无关。
          * @param isEnabled true 允许走 h3；false 恒走 TCP，与打开之前的行为逐字一致
          * @note 五条边界：①明文 `http://` 不走 h3（QUIC 的 TLS 是强制的）；②带 `bodySource` 的流式
          *       上传不走 h3——h3 的出站入口只收整份正文，没有流式出口，这条请求改走 TCP 而不是把
          *       来源整块缓冲下来（那会悄悄改掉这条请求的内存账）；③静态的 `get()/post()/send()`
-         *       那一支没有承载开关与 TLS 策略的地方，恒走 TCP；④**一个端点在本客户端的存活期内只探
-         *       一次**：探败过就记下、此后直接走 TCP。少了这条记账，一批并发请求会各付一次探测时限
+         *       那一支没有承载开关与 TLS 策略的地方，恒走 TCP；④一个端点在本客户端的存活期内只探
+         *       一次：探败过就记下、此后直接走 TCP。少了这条记账，一批并发请求会各付一次探测时限
          *       （它们还被同一端点的建连资格串在彼此后面）；服务端「后来才开 h3」要重新建一个客户端才认；
          *       ⑤探测那 3 秒要落在本次 `requestTimeout` 的剩余预算里才去付——时限给得比它小就直接走 TCP，
          *       既不会把一条请求撑成三倍时限，也不会因此把端点记成「没有 h3」（一次没发生的探测不留证据）。
@@ -526,7 +526,7 @@ namespace AsynGyanis::Net
         /// 每个实例一份而不是共用进程级那一份：共用时一个实例的策略会把别人的握手档位一起改掉
         std::unique_ptr<Core::TlsContext> m_clientTls;
         /// 上面那份策略的副本，用指针留着是为了让本头文件继续只前向声明 TlsPolicy（见构造函数的说明）。
-        /// 副本存在的理由：h3 的 QUIC 连接要**自己建**一份 TLS 上下文，它吃的是策略而不是现成的上下文
+        /// 副本存在的理由：h3 的 QUIC 连接要自己建一份 TLS 上下文，它吃的是策略而不是现成的上下文
         std::unique_ptr<Core::TlsPolicy> m_tlsPolicy;
         /// 出站代理策略（构造时把环境读一次冻结的副本）：每个请求按目标 scheme 与豁免表解析成一条
         /// 路由；未解析出路由即直连。静态便捷入口没有实例承载它，每次调用现读一份环境

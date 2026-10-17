@@ -87,7 +87,7 @@ namespace AsynGyanis::Core
          * @brief 为某个主机名登记一份证书，握手按 ClientHello 里的 server_name 选它（SNI，RFC 6066 §3）
          *
          * @details 一个端口服务多个 HTTPS 站点的最小要件：一份默认证书 + 若干按主名分配的证书。
-         *          名字比对只看归一化后的字面值（折小写、去结尾根点），**不做通配**——通配站点这件事
+         *          名字比对只看归一化后的字面值（折小写、去结尾根点），不做通配——通配站点这件事
          *          由证书自己负责（一张 `*.example.com` 的证书本来就覆盖全部子域，再拿 `*.example.com`
          *          当登记键只会多出一条永不需要的匹配规则）。名字没登记过、或客户端根本没带 SNI
          *          （TLS 1.3 之前老客户端、直连 IP 的探活）时用默认证书，与 nginx 的 default server 同形。
@@ -137,7 +137,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 设置对端证书的 SHA-256 指纹名单（在链验通之上再点名；空列表 = 清除名单）
          * @details mTLS 的默认信任是「CA 签的都对」：一个 CA 签了很多客户端时，任何一张被签的
-         *          证书都能进来。本方法把信任收窄到点名的几张——判定用**叶子证书的 SHA-256 指纹**
+         *          证书都能进来。本方法把信任收窄到点名的几张——判定用叶子证书的 SHA-256 指纹
          *          （64 位小写十六进制，`openssl x509 -noout -fingerprint -sha256 -in cert.pem` 取得），
          *          链校验照旧先跑：名单是加法不是替代。
          *          名单进策略（TlsPolicy::allowedPeerSha256Fingerprints），reloadCertificate() 换代时
@@ -150,7 +150,7 @@ namespace AsynGyanis::Core
          *       在 `enableClientPeerVerification()` 那一刻随策略装上（本方法的即时生效分支按
          *       当前已启用的校验模式走）
          * @note 名单本身即时生效：校验回调读的是挂在 SSL_CTX 上的共享登记，本次替换之后的
-         *       下一次校验（含已建连接上的后续握手）读到的就是新名单；**校验模式不追溯**——
+         *       下一次校验（含已建连接上的后续握手）读到的就是新名单；校验模式不追溯——
          *       按 `SSL_VERIFY_NONE` 建好的 SSL 不会因为这次调用开始校验，要新连接都校验就先
          *       调 `setClientCertificateRequired(true)` / `enableClientPeerVerification()`
          * @see setClientCertificateRequired(), enableClientPeerVerification()
@@ -162,7 +162,7 @@ namespace AsynGyanis::Core
          * @param fileDescriptor 已连接的 socket 文件描述符（用于 SSL_set_fd 设置底层描述符）
          * @return SSL 对象指针，所有权转移给调用者（通常由 TlsSocket 持有）；
          * @throws CoreException SSL_new 返回空，或 SSL_set_fd 绑定失败（文件描述符已关闭
-         *         或不是套接字）。本方法**不返回 nullptr**：失败一律抛出，且绑定失败时
+         *         或不是套接字）。本方法不返回 nullptr：失败一律抛出，且绑定失败时
          *         已释放刚创建的 SSL 对象，不会泄漏
          */
         SSL *createSSL(int fileDescriptor) const;
@@ -170,7 +170,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 获取底层的 SSL_CTX 原生句柄。
          * @return SSL_CTX* 指针
-         * @warning 只是**借出**指针，不加引用：调用方不得 SSL_CTX_free 它，也不得跨一次
+         * @warning 只是借出指针，不加引用：调用方不得 SSL_CTX_free 它，也不得跨一次
          *          reloadCertificate() 继续持有（换代时旧上下文按引用计数释放，本函数没有计数）。
          *          要在新上下文生效后继续建会话，就重新取一次；需要在握手里活过换代的对象请走
          *          createSSL()，它自带与换代互斥的引用
@@ -183,7 +183,7 @@ namespace AsynGyanis::Core
          *         加载失败，此时旧证书原样继续服务
          * @note 有意不带参数：续期的标准流程是「新证书覆盖到原路径」（certbot 与 ACME 客户端都
          *       这么做），复用上次记下的路径可避免调用方传错路径而悄悄换掉身份
-         * @note 先在**新上下文**上把加固与已加载的 CA、对端校验开关、OCSP 响应原样复现完，成功
+         * @note 先在新上下文上把加固与已加载的 CA、对端校验开关、OCSP 响应原样复现完，成功
          *       之后才整台换掉；任一步失败都不碰旧上下文（漏掉对端校验会让一次续期悄悄关掉 mTLS）
          * @note 与 createSSL() 互斥：OpenSSL 不允许在其它线程正用它创建 SSL 时改同一个 SSL_CTX，
          *       因此换代粒度是整台上下文，而不是就地改写
@@ -207,7 +207,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 装载会话票据密钥，让多个上下文（多进程 worker、多台机器、换代前后）互相认得对方签的票据
-         * @param keyFiles 密钥文件路径列表，**二进制**内容，每份 48 或 80 字节
+         * @param keyFiles 密钥文件路径列表，二进制内容，每份 48 或 80 字节
          *        （`openssl rand 48 > ticket.key` 即可产出；48 走 AES-128、80 走 AES-256，可混用）。
          *        首份用于签发新票据，其余只用于解开轮换窗口内旧密钥签发的票据
          * @throws CoreException 列表为空、某份文件读不出来或为空、某份长度既不是 48 也不是 80；
@@ -219,7 +219,7 @@ namespace AsynGyanis::Core
          * @note 不装载时按 OpenSSL 默认，每个 SSL_CTX 自己随机生成一份密钥，于是有两处代价：
          *       ①多进程/多机之间票据互不通用，客户端第二次连接若被 SO_REUSEPORT 分到另一个
          *       worker，恢复必然落空、只能退回全量握手；②reloadCertificate() 换代后旧票据全废。
-         *       各进程装载**同一份**密钥文件即同时消除这两条（nginx 的 ssl_session_ticket_key 同此形态）
+         *       各进程装载同一份密钥文件即同时消除这两条（nginx 的 ssl_session_ticket_key 同此形态）
          * @note 与证书、OCSP 同为「路径即身份」：reloadCertificate() 按原路径重读密钥并在新上下文上复现，
          *       重读失败则整次换代失败、旧上下文继续服务（与 OCSP 重读同一语义）
          * @note 轮换：把新密钥插到列表首位、旧的留在后面，旧票据仍解得开且 OpenSSL 会顺手换发一张
@@ -235,7 +235,7 @@ namespace AsynGyanis::Core
          * @brief 客户端一侧的默认校验：必须验对端证书，信任库按策略给的 CA，没给就用系统信任库
          * @details 与 `setClientCertificateRequired()` 的区别是方向：那一套说的是「服务端要不要验客户端」，
          *          名字与判据都朝服务端。出站侧要的是另一件事——不验对端就等于任何受信 CA 签的证书都能
-         *          冒充目标主机，所以这一句必须**默认开启**，且不能因为「调用方没配 CA」而静默降级成不校验。
+         *          冒充目标主机，所以这一句必须默认开启，且不能因为「调用方没配 CA」而静默降级成不校验。
          *          系统信任库那条与 `SSL_CTX_set_default_verify_paths` 一致（Linux 走 /etc/ssl/certs，
          *          Windows 走系统存储），只在策略没接管信任库时才补。
          * @note 主机名/SNI 的逐连接设置仍由调用方做（那是每个目标不同的事，不是上下文的事）
@@ -264,7 +264,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 指纹点名回调：链验通之后，叶子证书的 SHA-256 必须落在名单里
-         * @details 取不到宿主对象时**拒绝**（fail-closed）：宁可不放行也不静默退回只看链
+         * @details 取不到宿主对象时拒绝（fail-closed）：宁可不放行也不静默退回只看链
          * @param preverifyOK OpenSSL 默认链校验的结论
          * @param storeContext 校验上下文
          * @return 1 放行；0 终止握手
@@ -295,7 +295,7 @@ namespace AsynGyanis::Core
 
         /// 对端指纹名单的共享登记：校验回调与 setter 之间的唯一交汇点
         /**
-         * @details 与 VirtualHostRegistry 同形同理由：回调在**握手线程**上读名单，而 setter 在配置
+         * @details 与 VirtualHostRegistry 同形同理由：回调在握手线程上读名单，而 setter 在配置
          *          线程上整体替换——状态不能放在宿主 TlsContext 里（回调运行时宿主可能已析构，
          *          裸读成员又是一场无同步数据竞争）。读写各持共享/独占锁；名单是「链验之上再点名」，
          *          读错一次就放错人。

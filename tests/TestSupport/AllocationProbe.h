@@ -50,10 +50,10 @@ namespace AsynGyanis::TestSupport
     using AllocationHistogram = std::array<std::uint64_t, kAllocationHistogramBucketCount>;
 
     /**
-     * @brief 「第 N 次分配失败」开关：挂上之后**本线程**的第 N 次 operator new 抛 bad_alloc，随后自动解除
+     * @brief 「第 N 次分配失败」开关：挂上之后本线程的第 N 次 operator new 抛 bad_alloc，随后自动解除
      * @details 本探针原先只能数分配，而 `std::bad_alloc` 没有别的注入点——于是好几处
      *          「在 `noexcept` 边界上兜住分配失败」的处置一直钉不住，只能在注释里写补齐路径。
-     *          这里就是那条路径：只失败**一次**，因为被测体的兜底分支自己也要分配内存
+     *          这里就是那条路径：只失败一次，因为被测体的兜底分支自己也要分配内存
      *          （摘表、投唤醒），一直失败会把它打成另一种形状，判据就说不清在钉什么。
      * @note 计数按线程各算一份（全局计数会被别的线程偷掉：事件循环线程空闲时也在分配，
      *        于是「没掐到」会表现为随机失败）。这与探针读数本身的口径一致——见头里

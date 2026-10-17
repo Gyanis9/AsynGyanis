@@ -66,7 +66,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 池里的一条已建立连接：明文走 TcpStream，TLS 走 TlsSocket
      * @details 解析器与套接字同生共死是 keep-alive 的关键一环：上一条响应收齐时，读进来的字节往往
-     *          已经越过了响应边界，那部分只属于**下一条**响应。换掉解析器就等于把它丢掉。
+     *          已经越过了响应边界，那部分只属于下一条响应。换掉解析器就等于把它丢掉。
      * @warning 只能在自己的事件循环上收发（协程挂起期间被别的线程驱动会踩坏套接字状态），因此本对象
      *          连同所在池都不跨线程共享。
      */
@@ -91,10 +91,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 接管一条「TLS 到代理」的连接（http 目标经 https 代理）
-         * @param endpointKey 这条连接的可复用身份（isTls 仍为 false——身份按**目标**记）
+         * @param endpointKey 这条连接的可复用身份（isTls 仍为 false——身份按目标记）
          * @param socket 与代理完成握手的 TLS 套接字（本对象接管其所有权）
          * @return std::unique_ptr<HttpOutboundConnection> 池化连接
-         * @details 与 forSecure 同构但语义不同：TLS 的对端是**代理**，其上跑的请求按绝对形式
+         * @details 与 forSecure 同构但语义不同：TLS 的对端是代理，其上跑的请求按绝对形式
          *          （RFC 9112 §3.2.2）。单独摆一个工厂是为了让调用点说清「这条 TLS 到谁」——
          *          两者在收发分发上没有任何差别，池的身份只取决于目标与用途
          */
@@ -102,7 +102,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 接管一条 TLS-in-TLS 连接（https 目标经 https 代理）
-         * @param endpointKey 这条连接的可复用身份（isTls 为 true——身份是**目标**）
+         * @param endpointKey 这条连接的可复用身份（isTls 为 true——身份是目标）
          * @param socket 内层 TLS 已握手完成的泵（外层到代理、内层到目标，本对象接管其所有权）
          * @return std::unique_ptr<HttpOutboundConnection> 池化连接
          */
@@ -323,7 +323,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 取回某台主机上留着的那条 HTTP/2 连接
-         * @details h2 的连接可以**同时**给好几个请求用（复用发生在流上），所以这里不交出所有权：
+         * @details h2 的连接可以同时给好几个请求用（复用发生在流上），所以这里不交出所有权：
          *          取到的人手里只是一份共同持有的引用，取用次数不影响它在池里的位置。已断开或已被
          *          对端收尾的那条在这里当场作废并返回空——判死不留缓存，HPACK 动态表跟着连接一起作废。
          * @param endpointKey 目标身份
@@ -372,7 +372,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 最忙的那条 h2 连接上同时在途的流数（测试与观测用）
          * @details 单看连接条数判不出复用：两条连接各服务一条请求，与一条连接同时服务两条，那个数都是 2。
-         *          这里取的是各条连接的**最大值**，也就是本端实测到的复用度——一台主机只留一条连接，
+         *          这里取的是各条连接的最大值，也就是本端实测到的复用度——一台主机只留一条连接，
          *          故「连接一条、复用度二」只能解释为两条请求共用了同一条连接。
          * @return std::size_t 各条留着的 h2 连接里在途流数最大的那个；池里没货返回 0
          */
@@ -387,7 +387,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 把两张 h2/h3 表里已经废掉的连接摘出缓存
          * @details 判死原先只在「有人再来取那一格」时发生，于是一台不再被访问的端点会把废链一直留到
-         *          `closeAll()`：池握着共享引用，而**废掉不等于关掉**——描述符与 HPACK/QPACK 的账都还
+         *          `closeAll()`：池握着共享引用，而废掉不等于关掉——描述符与 HPACK/QPACK 的账都还
          *          活着。描述符是硬资源，一个按用户给的地址出站的调用方攒到上限就是「再也建不出新连接」。
          *          收链这一步（每建一条新连接才走一次，不在每请求的热路径上）顺手扫一遍全表；
          *          只放手不关掉，因为在途请求还握着同一条引用，关掉别人的连接不是这一层的决定
@@ -397,7 +397,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 占下这个端点的「建连」资格：占到的人负责建，没占到的人等
          * @param endpointKey 目标身份
-         * @return true 本次成为领导者：去建连，每条出口都**必须** settleEstablishment()
+         * @return true 本次成为领导者：去建连，每条出口都必须 settleEstablishment()
          * @return false 已有别的请求在建：改 co_await awaitEstablishment()，醒来再看池
          * @details 存在的理由：冷池上同时进来的请求原本各建一条连接，5 条并发就是 5 遍
          *          TCP+TLS+ALPN+h2 前奏（实测服务器侧同时在册 5 条），而 HTTP/2 的复用就发生在这条
@@ -409,7 +409,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 结算一个端点的建连：撤掉在途标记并唤醒等待者
          * @param endpointKey 目标身份
-         * @details 不论建成还是失败都要调，且**不能靠作用域守卫**：本框架的协程帧不在 `co_return` 时
+         * @details 不论建成还是失败都要调，且不能靠作用域守卫：本框架的协程帧不在 `co_return` 时
          *          销毁（FinalAwaiter 是 no-op），守卫要等调用方放手才触发，那时等待者已经白等一整段
          *          请求时间。所以领导者要在交出结论的当下显式结算。
          */

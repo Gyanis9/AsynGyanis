@@ -149,7 +149,7 @@ namespace AsynGyanis::Core::TestSupport
     /**
      * @brief 驱动协程：跑完一条不带返回值的任务，把它抛出的异常文本取回调用方给的变量
      *
-     * @details 惰性协程的抛出点在**首次恢复**时，`EXPECT_THROW(obj.listen(...))` 只构造了协程帧、
+     * @details 惰性协程的抛出点在首次恢复时，`EXPECT_THROW(obj.listen(...))` 只构造了协程帧、
      *          什么都测不到。要判「这条出口会抛」必须把帧投给循环真跑一遍再接住异常。
      * @param inner 待驱动的任务（按值接收，帧内持有它的生命周期）
      * @param reason 出参：异常文本；任务没抛则为空串
@@ -177,8 +177,8 @@ namespace AsynGyanis::Core::TestSupport
      * @brief 后台事件循环运行器：在独立线程上跑 EventLoop::run()，析构先停循环再 join
      *
      * @details 默认构造内建并自持一个事件循环，传入循环引用则改为借用——两种模式都只在本对象
-     *          存活期间驱动它。销毁纪律：**协程帧必须活到事件循环线程结束之后**——runToCompletion()
-     *          产出的驱动帧一律留在 m_driverTasks，且它声明在 m_thread **之前**，逆序析构保证帧
+     *          存活期间驱动它。销毁纪律：协程帧必须活到事件循环线程结束之后——runToCompletion()
+     *          产出的驱动帧一律留在 m_driverTasks，且它声明在 m_thread 之前，逆序析构保证帧
      *          销毁晚于循环线程结束；调用方自持的驱动协程对象也须声明在本类之前。
      */
     class EventLoopThread
@@ -270,11 +270,11 @@ namespace AsynGyanis::Core::TestSupport
         /**
          * @brief 启动一个任务并等到它完成
          *
-         * @details 首次恢复也交给事件循环线程做，**不在调用线程上 resume**：驱动协程会立刻把内层
+         * @details 首次恢复也交给事件循环线程做，不在调用线程上 resume：驱动协程会立刻把内层
          *          任务跑到它的第一个挂起点，而那条挂起路径上可能就地注册 IO 观察者
          *          （`AsyncSocket::ensureWatcher()` → 后端的 `addFileDescriptor`）。循环线程此刻
          *          正堵在 `wait()` 里，两份线程同时碰同一份后端状态就是数据竞争——Windows 上实测
-         *          表现为事件循环后端的偶发堆破坏。完成标记是驱动协程的**最后一次**出参写入，之后
+         *          表现为事件循环后端的偶发堆破坏。完成标记是驱动协程的最后一次出参写入，之后
          *          只走 final_suspend 收尾，故按值搬出结果安全；帧仍留在 m_driverTasks 里活到 join 之后。
          *
          * @tparam ResultType 任务结果类型

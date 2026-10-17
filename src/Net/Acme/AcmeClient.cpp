@@ -39,7 +39,7 @@ namespace AsynGyanis::Net
          * @brief 本框架 ACME 客户端的标识串
          * @details 不只是礼貌：Boulder 与 Pebble 对缺这条头的请求一律回 400 malformed
          *          （Pebble 的原文是 "All requests MUST include a User-Agent header"），
-         *          连取目录这一步都过不去，整台状态机第一步就断。它因此必须挂在**每一条**请求上，
+         *          连取目录这一步都过不去，整台状态机第一步就断。它因此必须挂在每一条请求上，
          *          包括不带签名的目录 GET 与 newNonce 的 HEAD。
          */
         constexpr std::string_view kAcmeUserAgentValue = "AsynGyanis ACME client (+https://github.com/Gyanis9/AsynGyanis)";
@@ -136,7 +136,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 按 RFC 8553 §3 核一个域名标识：字母数字、连字符、下划线与点，通配只在 dns-01 下允许
          * @details 通配要 dns-01 才验得了（RFC 8738；HTTP-01 没法让机构去取 `*.example` 的令牌），
-         *          因此这条判据挂在**挑了哪种挑战**上，而不是挂在配置的一个字段名上。
+         *          因此这条判据挂在挑了哪种挑战上，而不是挂在配置的一个字段名上。
          *          本地直接拒并说明原因，比让机构回一条 rejectedIdentifier 更有指导性
          */
         [[nodiscard]] std::optional<std::string> describeUnusableDomainName(const std::string &domainName, const bool allowsWildcard)

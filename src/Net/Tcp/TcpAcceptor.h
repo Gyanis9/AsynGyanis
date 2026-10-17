@@ -56,14 +56,14 @@ namespace AsynGyanis::Net
         TcpAcceptor(Core::EventLoop &loop, const Core::InetAddress &address);
 
         /**
-         * @brief 接手一个**已经在监听中**的套接字：不新建、不 bind、不 listen
+         * @brief 接手一个已经在监听中的套接字：不新建、不 bind、不 listen
          *
          * @details 零停机重启靠这条路径：监听套接字由 supervisor 持有（Linux socket activation、Windows 服务
          *          管理器传入），本进程只负责接手并开始接受连接。接手后 bind()/listen() 直接返回成功——后置
          *          条件已成立，绝不能重新绑定，否则上一代仍在接受的连接会被丢掉。本地地址从内核取（getsockname），
          *          因此 listeningPort() 报的是真值。
          * @param loop 关联的事件循环，要求与按地址构造时相同（必须比本对象活得久）
-         * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符；描述符**所有权随之转移**，
+         * @param adoptedListeningDescriptor 已经在监听状态的套接字描述符；描述符所有权随之转移，
          *        本对象析构或 close() 会关掉它——对旧进程来说这正是它该做的事（关闭自己那一份、
          *        不再接受新连接，等在途请求 drain 完再退出）
          * @throws Base::InvalidArgumentException 描述符无效（用法错误，不交给底层报含糊的系统错误）
@@ -128,12 +128,12 @@ namespace AsynGyanis::Net
 
             /// 已送出但未被确认的数据最多在途多少毫秒（TCP_USER_TIMEOUT），0 = 不下发。
             /// 半开治理里比保活更直接的一格（保活要等连接空闲，它盯的是「有在途数据收不到确认」）。
-            /// **仅 Linux 有效**：Windows 没有该选项，`Platform::Socket::hasUserTimeout()` 在那一侧为假，
+            /// 仅 Linux 有效：Windows 没有该选项，`Platform::Socket::hasUserTimeout()` 在那一侧为假，
             /// 下发会被如实拒掉而不是静默当成已生效（读法见 Platform::Socket::setUserTimeout 的说明）
             int userTimeoutMilliseconds{0};
 
             /// 关闭时的逗留行为（SO_LINGER）：0 = 不下发（系统默认，后台把数据送完）；
-            /// 正的秒数 = 开启逗留并最多等待这么多秒；**负数 = 开启逗留且超时 0 秒**——
+            /// 正的秒数 = 开启逗留并最多等待这么多秒；负数 = 开启逗留且超时 0 秒——
             /// close() 直接发 RST 并丢弃未送出的数据（协议违规收口、拒绝滥用连接用这一档）。
             /// 非阻塞套接字上「正数」那一档形同虚设（close() 立刻返回 EWOULDBLOCK），
             /// 细节见 Platform::Socket::setLinger 的说明

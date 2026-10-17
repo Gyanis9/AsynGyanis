@@ -83,7 +83,7 @@ namespace
 
     /**
      * @brief 建一个「假的服务管理器」：按抽象命名空间 bind 一个数据报套接字
-     * @details 地址是**独立写的一份**，不复用被测代码里的 buildDestination：两边共用同一段代码时，
+     * @details 地址是独立写的一份，不复用被测代码里的 buildDestination：两边共用同一段代码时，
      *          一起写错同一处判据是抓不到的。
      * @param name 不带前导 '@' 的名字
      * @return int 已 bind 的描述符；失败返回 -1

@@ -19,11 +19,11 @@ namespace AsynGyanis::Core
      * @details 存在的理由与「不自研 generator」同源：本仓有几处「服务端逐行交结果」的游标
      *          （`DatabaseResult` 的流式读是其中最典型的一处），消费它们天然就是上面那条循环。
      *          标准库的惰性视图（`std::generator`、`std::ranges::views`）要么还没进这条工具链、
-     *          要么要求协程产出端，而这里要的只是**把现成的推进式游标喂给 range-for**——
+     *          要么要求协程产出端，而这里要的只是把现成的推进式游标喂给 range-for——
      *          因此给的是适配器，不是生成器；等标准 `std::generator` 可用时这一层可以整体换掉。
      *
      * @details 语义按 std::istream_iterator 同族定（输入范围）：
-     *          游标是**单遍**的，视图因此只能遍历一次，`begin()` 会把游标推进到第一行——
+     *          游标是单遍的，视图因此只能遍历一次，`begin()` 会把游标推进到第一行——
      *          换句话说 `begin()` 不是只读操作，它调用一次 `next()`。这一点必须记牢：
      *          对着同一个视图跑两遍 range-for，第二遍拿到的是空（游标已经在末尾），
      *          这不是缺陷而是游标本身的性质（`next()` 只能往前）。
@@ -39,8 +39,8 @@ namespace AsynGyanis::Core
     public:
         /**
          * @brief 游标视图的输入迭代器
-         * @details 空迭代器（`m_cursor == nullptr`）即末尾哨兵；`begin()` 构造时**先推进一行**，
-         *          此后每次 `++` 再推一行，推不动就把自己变成哨兵。解引用交回的是游标**本身**
+         * @details 空迭代器（`m_cursor == nullptr`）即末尾哨兵；`begin()` 构造时先推进一行，
+         *          此后每次 `++` 再推一行，推不动就把自己变成哨兵。解引用交回的是游标本身
          *          （当前行挂在它上面），不是它的副本——复制一份行数据要多一次分配，
          *          而多数消费点读几列就走
          */
@@ -132,7 +132,7 @@ namespace AsynGyanis::Core
         }
 
         /**
-         * @brief 取出起始迭代器（**会推进游标一行**）
+         * @brief 取出起始迭代器（会推进游标一行）
          * @return Iterator 已停在可以读的第一行上的迭代器；游标推到末尾时返回末尾哨兵
          */
         [[nodiscard]] Iterator begin() const noexcept
@@ -159,7 +159,7 @@ namespace AsynGyanis::Core
      * @param cursor 待遍历的游标
      * @return CursorRange<CursorType> 惰性视图
      * @note 与 `std::views::all` 一族的取向一致：不进容器、不拷贝元素、只把现成的推进接口
-     *       翻译成 range 协议；因此**不要**把它交给任何会遍历两次的算法（那是单遍游标使然，
+     *       翻译成 range 协议；因此不要把它交给任何会遍历两次的算法（那是单遍游标使然，
      *       见类注释）
      */
     template<typename CursorType>

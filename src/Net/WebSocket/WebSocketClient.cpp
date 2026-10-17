@@ -181,7 +181,7 @@ namespace AsynGyanis::Net
             }
             while (true)
             {
-                // 看门狗掐出来的那条出口是**抛出**（等待期间套接字被关），而本函数的出口是
+                // 看门狗掐出来的那条出口是抛出（等待期间套接字被关），而本函数的出口是
                 // std::expected：抛出必须在这里落成拒因。让它穿过 connect() 的 expected 契约，
                 // 调用方既拿不到结局也等不到协程收尾，现场看着就像「时限到了也不回」
                 ssize_t received = 0;
@@ -574,7 +574,7 @@ namespace AsynGyanis::Net
     Core::Task<std::expected<WebSocketFrame, std::string>> WebSocketClient::answerPeerClose(const WebSocketFrame &closeFrame)
     {
         // 收侧判定与服务端共用一处（RFC 6455 §5.5.1 / §7.4.1）：非法码回 1002、原因非 UTF-8 回 1007、
-        // 合规的原样答回；对端那个码**原值**记进 remoteCloseCode()，业务据此看得见「对端是违例关闭的」
+        // 合规的原样答回；对端那个码原值记进 remoteCloseCode()，业务据此看得见「对端是违例关闭的」
         const WebSocketCloseVerdict verdict = classifyWebSocketClosePayload(closeFrame.payload);
         m_remoteCloseCode                   = verdict.peerCode;
         m_remoteCloseReason                 = verdict.peerReason;

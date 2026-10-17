@@ -27,7 +27,7 @@ namespace AsynGyanis::Net
      *          的差异全在「调哪家的 API、按什么格式签」，没有需要多态分派的共同状态。
      *          做成两个 std::function 之后，接一家新 DNS 就是填这两格，运维层不需要知道是谁填的。
      *
-     * @note publish 交回成功**必须**意味着权威侧已经能答出这条 TXT（见各实现自己的说明），
+     * @note publish 交回成功必须意味着权威侧已经能答出这条 TXT（见各实现自己的说明），
      *       否则调用方在成功之后就立刻让机构去取，机构只会判 invalid——那种失败的原文通常
      *       只说 "NXDOMAIN"，看不出「我们问早了」
      * @note withdraw 在 publish 失败时也会被调用一次：重复 TXT 会让机构的校验直接失败，

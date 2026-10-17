@@ -145,7 +145,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(notifier.isValid());
 
         // 合并是靠一个「待处理」标记实现的，因此排空必须把标记也清掉：
-        // 若排空只读走字节、留下标记，之后所有通知都会以为「已经有人待处理」而**再也不写**，
+        // 若排空只读走字节、留下标记，之后所有通知都会以为「已经有人待处理」而再也不写，
         // 目标事件循环就会永远睡在 epoll_wait 上（表现为任务排进去了却没人处理）
         notifier.notify();
         ASSERT_TRUE(TestSupport::waitForReadable(notifier.readDescriptor(), 1000));

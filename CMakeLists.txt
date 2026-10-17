@@ -14,7 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # （src/Core/EventLoop/Iocp.cpp；wepoll.h 只提供 epoll_event 与事件位定义，实现已删除）。
 # 其它系统在 Core 这一层就编译不过，而报出来的会是几百行模板错误——与其让人去猜，不如在这里
 # 一句话说清「缺的是 kqueue 后端」以及补它的落点。README 的「环境要求」也写了这一点，两处一致。
-# **这是既有决定而不是待办的缺口**：目标平台就是 Linux 与 Windows，下面这段报错是「拒绝文案」本身，
+# 这是既有决定而不是待办的缺口：目标平台就是 Linux 与 Windows，下面这段报错是「拒绝文案」本身，
 # 不是「还没做」的标记——别把它当成 TODO 去补 kqueue（macOS/BSD 也不在支持面上）。
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR
@@ -72,8 +72,8 @@ option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）
 # 构建目录跑并发相关的用例集（见 .github/workflows/linux-ci.yml）。
 option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
 
-# **不为「证明架构不变式」加第二预设（既有决定，别再说它是缺口）**：架构约定（某层不许包含某层、
-# 平台调用不许漏出 Platform、事件循环对象的线程归属等）由**用例与源级检查**守——前者跑在既有预设上，
+# 不为「证明架构不变式」加第二预设（既有决定，别再说它是缺口）：架构约定（某层不许包含某层、
+# 平台调用不许漏出 Platform、事件循环对象的线程归属等）由用例与源级检查守——前者跑在既有预设上，
 # 后者是 scripts/ 下的静态检查；再起一棵只为「换个开关看它编不编得过」的构建树，等于每个不变式都要
 # 在两套配置里各维护一遍，且它证明的东西（编译通过）与不变式本身（运行期行为）并不是一回事。
 # 需要验证「某条降级路径也能编」时，用 OBJECT 形状的编译单元就地编它（见 feedback 里那条
@@ -106,12 +106,12 @@ endif()
 # 控制流劫持」整段交给工具链默认值，等于这道题空着。
 #
 # 三条边界写在这里，因为它们决定了下面为什么长成这样：
-# - **只落在本仓自己的目标上**，用的是上面那条告警门同一份目标清单。全局 `add_compile_options` 会一并
+# - 只落在本仓自己的目标上，用的是上面那条告警门同一份目标清单。全局 `add_compile_options` 会一并
 #   命中将来 vendor 进来的第三方源码，而加固位落在它们身上既不是我们要修的，也会改变它们的性能形状；
-# - **不把链接期策略推给消费者**：全部 PRIVATE。`-z now` 与 `/guard:cf` 是「最终可执行体的所有者」该做的
+# - 不把链接期策略推给消费者：全部 PRIVATE。`-z now` 与 `/guard:cf` 是「最终可执行体的所有者」该做的
 #   决定——静态库的消费者可能用 `--no-pie`、纯静态 glibc，或干脆自己有一套 CET 策略，替他决定只会在
 #   他的链接线上炸出一段难读的错；
-# - **sanitizer 档自动不叠**：ASan/UBSan/TSan 自带一套栈与内存检查，再叠 `_FORTIFY_SOURCE` 与栈保护，
+# - sanitizer 档自动不叠：ASan/UBSan/TSan 自带一套栈与内存检查，再叠 `_FORTIFY_SOURCE` 与栈保护，
 #   一次 trap 到底是哪一层报的就说不清了（本仓的判据一贯是「谁触发要能归因」）。因此 sanitizer 开着时
 #   本开关整体失效，并在配置期打一行说明，不让它悄悄变成「配了却没生效」。
 option(ASYN_ENABLE_HARDENING "给本仓产出的目标加上加固位（栈保护、_FORTIFY_SOURCE、FULL RELRO、MSVC 的 CFG）" ON)
@@ -259,10 +259,10 @@ endif()
 # ============================================================================
 # 告警门禁：零编译器告警是提交硬判据
 # ============================================================================
-# CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前**没有任何告警开关**——Linux 侧只开
+# CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前没有任何告警开关——Linux 侧只开
 # 了 GCC 默认那几条，未初始化、未使用、窄化这类常见缺陷根本不会被拦下。这里把门禁真正接上。
 #
-# 只加在**本仓库自己的目标**上：将来若再 vendor 第三方源码，它们不参与，
+# 只加在本仓库自己的目标上：将来若再 vendor 第三方源码，它们不参与，
 # 它们的告警不是我们要修的，也不能靠改它们的代码消掉；而全局 add_compile_options 会一并命中它们，
 # 再在第三方目录里用 /W0 覆盖又会触发 MSVC 的 D9025（/WX 下直接变成错误）——因此按目标逐个开启。
 function(asyn_enable_strict_warnings target_name)
@@ -301,7 +301,7 @@ function(asyn_apply_hardening target_name)
     endif()
 
     if(MSVC)
-        # /guard:cf 编译侧只产出受保护的间接调用序列，真正的 CFG 是**链接器**策略：静态库这一档
+        # /guard:cf 编译侧只产出受保护的间接调用序列，真正的 CFG 是链接器策略：静态库这一档
         # CMake 不会把 link options 传给消费者（PRIVATE），因此本仓自己的可执行体（测试、示例、探针）
         # 会真的开起来，而库的消费者按自己的部署口径决定
         target_compile_options(${target_name} PRIVATE $<$<CONFIG:Release>:/guard:cf>)
@@ -411,7 +411,7 @@ if(ASYN_ENABLE_INSTALL)
     set(ASYN_HAS_MIMALLOC ${ASYN_WITH_MIMALLOC})
     set(ASYN_IS_SANITIZED ${ENABLE_SANITIZERS})
     set(ASYN_SANITIZES_THREADS ${SANITIZE_THREADS})
-    # 覆盖计数取**事实**而不是取选项：CI 的 coverage 档是拿裸旗标 `--coverage` 配的、没给 ASYN_ENABLE_COVERAGE，
+    # 覆盖计数取事实而不是取选项：CI 的 coverage 档是拿裸旗标 `--coverage` 配的、没给 ASYN_ENABLE_COVERAGE，
     # 只跟选项就会让自述报「没编覆盖计数」而产物其实全是插桩过的
     if(ASYN_ENABLE_COVERAGE OR CMAKE_CXX_FLAGS MATCHES "--coverage" OR CMAKE_C_FLAGS MATCHES "--coverage")
         set(ASYN_HAS_COVERAGE ON)
@@ -421,7 +421,7 @@ if(ASYN_ENABLE_INSTALL)
     set(ASYN_IS_SHARED_BUILD ${BUILD_SHARED_LIBS})
     set(ASYN_HAS_FUZZ_TARGETS ${ASYN_BUILD_FUZZ_TARGETS})
     # 另外几项改变的是使用方怎么写代码（真驱动还是报错桩、CapturedStackTrace 是哪一种 ABI 形状），
-    # 此前只以模块自己的 PUBLIC 宏发出去而没进这份清单。取值直接从各模块**实际导出的编译定义**读，
+    # 此前只以模块自己的 PUBLIC 宏发出去而没进这份清单。取值直接从各模块实际导出的编译定义读，
     # 不在这里复述一遍探测条件——复述就是第二处真源，与现场分叉时没人报错
     get_target_property(asynDatabaseExportedDefinitions Database INTERFACE_COMPILE_DEFINITIONS)
     get_target_property(asynBaseExportedDefinitions Base INTERFACE_COMPILE_DEFINITIONS)

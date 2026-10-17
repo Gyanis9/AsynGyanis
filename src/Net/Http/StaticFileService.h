@@ -30,7 +30,7 @@ namespace AsynGyanis::Net
      *
      * @details 两个消费点都读这里：字典文件自身的响应带上 `Use-As-Dictionary: match="..."` 供客户端
      *          缓存，之后客户端按 `Available-Dictionary` 回送哈希，服务端与这里的 contentHash 逐字节
-     *          比对决定能不能发 `.dcz` 副本。哈希在**配置期**算好并冻结——运行期每请求读字典文件
+     *          比对决定能不能发 `.dcz` 副本。哈希在配置期算好并冻结——运行期每请求读字典文件
      *          重算，等于把一次整文件读加进请求路径。
      */
     struct ASYN_NET_API StaticFileCompressionDictionary
@@ -92,7 +92,7 @@ namespace AsynGyanis::Net
      *          合法性判定与兜底路由的登记全写死在它的方法里。HTTPS 与 h3 要接同一能力，只有两条路——
      *          把那一整段抄第二份、第三份（漂移的表现是「明文侧修了一个路径穿越，TLS 侧没有」这种
      *          最贵的一类），或者把本体收出来。这里收的是本体，各服务器一侧只留转发，语义逐字相同。
-     * @note 成员函数的**定义在 HttpServer.cpp**：处理函数 serveStaticFileRequest 与它要用的路径清洗、
+     * @note 成员函数的定义在 HttpServer.cpp：处理函数 serveStaticFileRequest 与它要用的路径清洗、
      *       条件请求判定都在那，搬来搬去只会把一处实现拆成两处读。
      * @warning install() 之前不能调其余配置方法（那是各服务器的 ensure 转发负责的事）。
      * @see StaticFileSettings, HttpServer::staticFileDir()
@@ -111,7 +111,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置（或关闭）静态文件根目录
          * @param directoryPath UTF-8 文本，相对或绝对均可；空串表示关闭
-         * @details 目录在**此刻**被规范化：不存在或无权访问即关闭静态服务并记一条中文告警，
+         * @details 目录在此刻被规范化：不存在或无权访问即关闭静态服务并记一条中文告警，
          *          不把这个 surprise 留到第一个请求上。规范化结果会被缓存，因此运行期间把该目录
          *          改名或移动，行为不再可预期。
          */
@@ -133,7 +133,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 设置请求打到目录本身时要不要生成 HTML 目录列表
          * @param enabled true 列出该目录的条目；false（默认）按 404 处理，与关闭静态目录时的形状一致
-         * @details 列表是现读生成的，因此**不带验证器**且带 `cache-control: no-store`：一份被缓存
+         * @details 列表是现读生成的，因此不带验证器且带 `cache-control: no-store`：一份被缓存
          *          下来的列表会在目录内容变化之后继续对外宣称「这里有这些文件」。条目数有上界
          *          （超出时在末尾如实写明还有多少项没列出）。Range 对列表一律忽略——它不是一个
          *          稳定的表示，给它切片等于承诺一个不存在的长度。
@@ -148,10 +148,10 @@ namespace AsynGyanis::Net
          * @param enabled true 时按服务器偏好挑「对端接受且磁盘上有副本」的那份；false（默认）只发请求路径本身
          * @details 打开后同一 URL 存在两个表示，于是 `Vary: Accept-Encoding` 无条件跟着发——哪怕这一条
          *          请求最终发的是明文：缓存见过 br 那份再把它发给不接受 br 的客户端就是投毒。
-         *          验证器随表示变：ETag 由**实际发出去那份文件**的大小与整秒修改时间构出，明文与副本
+         *          验证器随表示变：ETag 由实际发出去那份文件的大小与整秒修改时间构出，明文与副本
          *          天然不同，跨变体的 `If-None-Match` 因此不会互相命中。
          * @note 副本由部署方自己生成（引擎不压盘上的文件），算法名与后缀的对应见 `Detail::kCompressionCodecs`
-         * @note 请求路径本身不存在时**不会**退回去发某个副本，仍按 404：变体不能凭空造出一个资源
+         * @note 请求路径本身不存在时不会退回去发某个副本，仍按 404：变体不能凭空造出一个资源
          * @see StaticFileSettings::precompressedVariantsEnabled
          */
         void setPrecompressedVariants(bool enabled);
@@ -163,7 +163,7 @@ namespace AsynGyanis::Net
          *        空串一并表示关闭
          * @details 配置期做四件事：把相对路径解析到根内并确认是常规文件、读全文算 SHA-256、校验模式
          *          （非空、以 `/` 开头、无控制字符——sf-string 里它们非法）、把三件事实冻进
-         *          `StaticFileSettings::dictionary`。任何一件不成立就**不启用**并记一条中文告警，
+         *          `StaticFileSettings::dictionary`。任何一件不成立就不启用并记一条中文告警，
          *          与 setDirectory 同一条口径：把 surprise 留在配置期，不留给第一个请求。
          *
          *          生效面（RFC 9842 §8 要求安全上下文，三条缺一不可）：

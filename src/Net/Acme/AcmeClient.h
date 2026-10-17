@@ -76,7 +76,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 算 DNS-01 要发布到 `_acme-challenge.<域名>` 的 TXT 正文
-     * @details 值是 `base64url(SHA-256(keyAuthorization))`（RFC 8738 §3，URL-safe 字母表且**不带填充**），
+     * @details 值是 `base64url(SHA-256(keyAuthorization))`（RFC 8738 §3，URL-safe 字母表且不带填充），
      *          与 HTTP-01 直接发布 keyAuthorization 原文只差这一层哈希；少一位或留了 `=` 填充，机构就判
      *          invalid，而它给的原文里往往不会说差在哪，所以这一处只留一份实现。
      * @param keyAuthorization `token` + `.` + 账户密钥指纹，即 HTTP-01 要发布的那整串
@@ -112,23 +112,23 @@ namespace AsynGyanis::Net
     /**
      * @brief ACME 协议的客户端：把 RFC 8555 那一套请求与应答的形状和判定收在一处
      *
-     * @details 与 AcmeCertificateManager 的分工：本类只管**协议**（一单怎么走完），不管证书落在
+     * @details 与 AcmeCertificateManager 的分工：本类只管协议（一单怎么走完），不管证书落在
      *          哪个文件、什么时候该续、该通知谁重载——那些是运维的事。分成两层的代价是多一个类型，
      *          收益是协议侧可以拿一份进程内桩服务端逐条判据测，而不必为测协议去搭一台真 CA。
      *
      * @note 绑定在构造时给的那个事件循环上，只能在循环所属线程调用（出站请求与定时器都在那条线程上跑）
      * @note 账户密钥按引用持有：它必须活得比本对象久——签名发生在协程挂起之后，
      *       调用方交来一个临时对象会静默读到已释放的密钥材料
-     * @warning 支持 HTTP-01 与 DNS-01 两种自证的**协议侧**：挑挑战、算校验值、按机构的答复轮询。
+     * @warning 支持 HTTP-01 与 DNS-01 两种自证的协议侧：挑挑战、算校验值、按机构的答复轮询。
      *          「把答案放出去」不在本类职责内——HTTP-01 要靠已注册的路由，DNS-01 要靠 DNS 提供方；
      *          配置要的那一种机构没给时，本类在读授权时就判失败并列出机构实际给了哪些类型，
      *          不会挑一条自己答不了的挑战去 POST。
-     * @warning **tls-alpn-01 一律不支持**（RFC 8737）：它要在握手里交出一张带 `acme-tls/1` ALPN 与
+     * @warning tls-alpn-01 一律不支持（RFC 8737）：它要在握手里交出一张带 `acme-tls/1` ALPN 与
      *          `id-pe-acmeIdentifier` 扩展的自签证书，那是一条独立的 TLS 服务端装配，与本服务的
      *          ALPN 装配（h2/h3/http1 那套）不是同一件事。机构只提供这一种时，读授权即失败：
      *          种类是 `UnexpectedResponse`（答复本身合法、缺的是配置要的那一格），文案里点名
-     *          `tls-alpn-01` 并给出出路——**换一家能发 http-01/dns-01 的机构，或改配置要机构实际
-     *          给的那一种**。这条形状有用例钉住（`AcmeClientTest.ReportsTheWayOutWhenTheAuthorityOnlyOffersTlsAlpn01`），
+     *          `tls-alpn-01` 并给出出路——换一家能发 http-01/dns-01 的机构，或改配置要机构实际
+     *          给的那一种。这条形状有用例钉住（`AcmeClientTest.ReportsTheWayOutWhenTheAuthorityOnlyOffersTlsAlpn01`），
      *          配置侧写 `challenge = tls-alpn-01` 的拒绝另有一条（`AcmeAutomationConfig` 那一族）。
      */
     class ASYN_NET_API AcmeClient
@@ -146,7 +146,7 @@ namespace AsynGyanis::Net
             std::string directoryUrl;
             /// 联系邮箱，按 RFC 8555 §7.3 的写法带前缀："mailto:ops@example.com"。可空
             std::string contactEmailAddress;
-            /// 是否已读过并接受目录里那份服务条款。**不为 true 时不建账户**：
+            /// 是否已读过并接受目录里那份服务条款。不为 true 时不建账户：
             /// 接受条款是一个有法律含义的动作，不能由库替调用方默认
             bool isTermsOfServiceAccepted{false};
             /// 外部账户绑定（EAB，RFC 8555 §7.3.4）的标识；与密钥同时为空表示不用 EAB
@@ -164,14 +164,14 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 把「一轮操作的总时限」折算成单次出站请求的时限：取两者较小的一边
-             * @details 调用方手上常常同时有两份数：整轮操作的总预算与每一次出站请求的时限。**把总时限
-             *          原样当单次时限用会让外层那道闸永远轮不到开火**——一次卡住的请求就能吃满整轮预算，
+             * @details 调用方手上常常同时有两份数：整轮操作的总预算与每一次出站请求的时限。把总时限
+             *          原样当单次时限用会让外层那道闸永远轮不到开火——一次卡住的请求就能吃满整轮预算，
              *          而一轮操作是一串请求（目录、nonce、账户、订单、每次轮询），实际总耗时于是成了总时限
              *          的若干倍，报错里那句「在总时限内没走到终局」也永远不会由它自己说出来。
              *          只往下钳是为了让「配得更小」永远等于「更严」：总时限小于默认单次时限时，它自己就是上界。
              * @param overallTimeout 那一轮操作的总时限
              * @return std::chrono::milliseconds 单次出站请求应取的时限
-             * @note 这是**上界折算**，不是硬总额：前置的目录/账户/订单握手各按这一条走，一轮的总耗时仍可能
+             * @note 这是上界折算，不是硬总额：前置的目录/账户/订单握手各按这一条走，一轮的总耗时仍可能
              *       到「单次时限 × 请求数」。要一条硬的总额闸就得把「剩余预算」一路带到每次出站请求里，
              *       而本类的每次请求都各自取配置里的时限，没有那样的接缝。
              */
@@ -270,7 +270,7 @@ namespace AsynGyanis::Net
          * @param url 目标 URL（同时写进 JWS 头的 "url"，两者不一致会被机构判死）
          * @param payloadJson 正文 JSON；传空视图表示 POST-as-GET（RFC 8555 §6.3）
          * @param isNewAccountRequest 是否账户注册那一次：只有它带 jwk，其余都带 kid
-         * @return Core::Task<std::expected<AcmeReply, AcmeError>> **只要收到了应答就交回应答本身**，
+         * @return Core::Task<std::expected<AcmeReply, AcmeError>> 只要收到了应答就交回应答本身，
          *         状态码是 4xx/5xx 也一样；只有「一条应答都没拿到」与「nonce 重试用尽」才落到失败值。
          *         故意不把非 2xx 折成失败：调用方里有需要按机构的问题类型分支的场合
          *         （账户已不存在就是一条 401，处置是重新建号而不是报错）

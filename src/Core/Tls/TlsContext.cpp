@@ -57,7 +57,7 @@ namespace AsynGyanis::Core
          * @param clientProtocolsLength 客户端列表总字节数
          * @return SSL_TLSEXT_ERR_OK 选中；SSL_TLSEXT_ERR_NOACK 客户端未提供列表；
          *         SSL_TLSEXT_ERR_ALERT_FATAL 列表里没有本端支持的协议
-         * @note 只能选客户端**提供过**的名字（RFC 7301 §3.2）：替对端选一个它没提过的名字会被
+         * @note 只能选客户端提供过的名字（RFC 7301 §3.2）：替对端选一个它没提过的名字会被
          *       严格的客户端直接拒绝；偏好顺序见 kAlpnPreferences（h2 优先）
          */
         int selectAlpnProtocol(SSL *, const unsigned char **outputProtocol, unsigned char *outputLength, const unsigned char *clientProtocols,
@@ -691,7 +691,7 @@ namespace AsynGyanis::Core
         // 先清空错误栈：返回 false 时调用方读到的原因必须是本次留下的
         ERR_clear_error();
 
-        // 关键顺序：**先把整台新上下文配置好，成功之后才换**。任何一步失败都直接返回 false，
+        // 关键顺序：先把整台新上下文配置好，成功之后才换。任何一步失败都直接返回 false，
         // 旧上下文一个字节都不动——轮换失败不能让正在服务的进程掉线
         SSL_CTX *newContext = nullptr;
         try
@@ -719,7 +719,7 @@ namespace AsynGyanis::Core
             applyPeerVerification(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
         }
 
-        // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径**重读**而不是沿用旧字节；
+        // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径重读而不是沿用旧字节；
         // 重读失败与证书加载失败同语义——本次轮换整体失败，旧上下文继续服务
         if (!m_ocspResponseFile.empty())
         {

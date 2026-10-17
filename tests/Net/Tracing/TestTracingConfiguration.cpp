@@ -172,7 +172,7 @@ TEST(TracingConfiguration, RejectsMalformedValues)
 
 /**
  * @brief 钉住：大得加不到当前时刻上的时限，报错说的是「超出上限」而不是「必须大于 0」
- * @details 换算处原先直接 `static_cast<long long>`：一个超过有符号 64 位承载力的毫秒数折成**负数**，
+ * @details 换算处原先直接 `static_cast<long long>`：一个超过有符号 64 位承载力的毫秒数折成负数，
  *          随后被下游那条正数判据拦下。失败是响亮了，但把一个「写大了」的错报成「写了个不大于 0 的数」，
  *          排查的人会回去把 0 改成 1 而不是把数改小——补救动作指错方向。现在界在换算那一刻就拒，
  *          拒因点名上限。上限的具体数字随 tick 周期而变（MSVC 100ns、libstdc++ 1ns），所以只断言它

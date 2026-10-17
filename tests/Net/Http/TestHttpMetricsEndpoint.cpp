@@ -53,7 +53,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] std::optional<std::uint64_t> findMetricValue(const std::string &text, const std::string_view metricNameWithTrailingSpace)
         {
-            // 只在**行首**出现的指标名才算样本行：# HELP/# TYPE 两行里也有同样的名字，
+            // 只在行首出现的指标名才算样本行：# HELP/# TYPE 两行里也有同样的名字，
             // 从它们后面取数会取到中文说明，解析必然失败
             std::size_t searchBegin = 0;
             while (true)
@@ -77,7 +77,7 @@ namespace AsynGyanis::Net
                     return std::nullopt;
                 }
 
-                // 这里读的是**线上报文的正文**，行尾是 CRLF：把归行的 \r 从数字里剔掉，
+                // 这里读的是线上报文的正文，行尾是 CRLF：把归行的 \r 从数字里剔掉，
                 // 否则 from_chars 会停在不该停的位置
                 if (valueEnd > valueBegin && text[valueEnd - 1] == '\r')
                 {
@@ -364,7 +364,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：直方图三件套齐备，档位上界换算成秒、**分档按累计口径输出**、末档为 +Inf
+     * @brief 钉住：直方图三件套齐备，档位上界换算成秒、分档按累计口径输出、末档为 +Inf
      */
     TEST(HttpMetricsEndpoint, RendersLatencyHistogramWithSumAndCount)
     {
@@ -838,7 +838,7 @@ namespace AsynGyanis::Net
      * @details 判据要能被证伪：把共享执行器的工作线程逐个占住（卡在条件变量上，不烧 CPU），
      *          再投一条——那条只能排在队列里，于是「深度」有了一个非零的真值可比。
      *          收尾次序按「放行 → 等任务全部跑完并把恢复投回循环 → join 循环线程 → 协程帧出作用域」。
-     *          这里刻意等 completedTaskCount() 而不是只看 pendingTaskCount()：队列长度在任务**出队**
+     *          这里刻意等 completedTaskCount() 而不是只看 pendingTaskCount()：队列长度在任务出队
      *          那一刻就减了，而任务体跑完之后还要解引用 completionLoop 把恢复投回去——容器 ASan 实测
      *          过按队列判的写法，命中 heap-use-after-free（读落在 Scheduler::scheduleRemote 的
      *          push_back，释放点在 EventLoopThread 的析构）。本执行器是进程级共享的，
@@ -901,7 +901,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(waitForCondition([&executor] { return executor.pendingTaskCount() == 0; })) << "放行之后排队的任务没有做完";
         parkedTasks.push_back(std::move(queuedTask));
 
-        // 拆循环之前的最后一道闸：等这批任务全部**执行完**（恢复也已投回循环），
+        // 拆循环之前的最后一道闸：等这批任务全部执行完（恢复也已投回循环），
         // 否则工作线程还会来解引用这个已经没了的循环——这一条是容器 ASan 实测出来的形状
         ASSERT_TRUE(waitForCondition([&executor, completedBefore, submittedCount] { return executor.completedTaskCount() >= completedBefore + submittedCount; }))
                 << "有任务还没跑完就要拆循环：完成计数停在 " << executor.completedTaskCount() - completedBefore << " / " << submittedCount;
@@ -910,7 +910,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：进程级登记的读数原样进导出，且**不套**本监听器的名字前缀
+     * @brief 钉住：进程级登记的读数原样进导出，且不套本监听器的名字前缀
      * @details 这类读数的口径是「全进程一份」。套上前缀会让采集侧以为它属于某台服务器，
      *          多监听器部署下同一份数还会被冠上两个名字，报出两条互相矛盾的进程量
      */

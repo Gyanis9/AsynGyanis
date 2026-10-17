@@ -118,7 +118,7 @@ namespace AsynGyanis::Net
      * @brief 按 RFC 6455 §5.5.1 / §7.4.1 裁定「对端 Close 的负载」：回什么码、记什么值
      * @details 收侧判定只在这一处，服务端会话与出站客户端共用（两张表迟早会在某个保留段上分叉）：
      *          负载只有 1 字节（状态码缺失）与禁止上线的保留码回 1002，原因文本不是合法 UTF-8 回 1007，
-     *          其余把对端那个码原样答回；空负载回 1000 且不记码。`peerCode` 是**原值**、与回帧分档
+     *          其余把对端那个码原样答回；空负载回 1000 且不记码。`peerCode` 是原值、与回帧分档
      *          独立（业务据此分档收尾）；`peerReason` 只在合法 UTF-8 时非空——非法那串可能带控制码，
      *          交出去等于把日志注入的原料递给业务。
      * @param payload Close 帧的负载原文
@@ -128,7 +128,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 一帧的 4 字节掩码键（RFC 6455 §5.3）
-     * @details 出站客户端每帧要换一个**由密码学随机源取出的**键；写成独立类型是为了让
+     * @details 出站客户端每帧要换一个由密码学随机源取出的键；写成独立类型是为了让
      *          「谁去取随机数」留在会话层，编码器只管按给定键异或——编码器因此仍可被用例用固定键驱动。
      */
     struct ASYN_NET_API WebSocketMaskKey
@@ -175,8 +175,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 解码器对「对端这一帧该不该带掩码」的判据档位（RFC 6455 §5.1）
      *
-     * @details 掩码方向是协议规定的，不是可协商的：客户端 → 服务端**必须**带掩码，
-     *          服务端 → 客户端**必须不带**。两个方向共用一台解码器，各取一档，
+     * @details 掩码方向是协议规定的，不是可协商的：客户端 → 服务端必须带掩码，
+     *          服务端 → 客户端必须不带。两个方向共用一台解码器，各取一档，
      *          于是这一条协议规则在两个方向上只有一份实现。
      * @note 新增取值一律追加在末尾：档位写进了用例的断言与配置文案。
      */
@@ -190,7 +190,7 @@ namespace AsynGyanis::Net
      * @brief WebSocket 帧增量解码器（两个方向共用一台；掩码档位见 `WebSocketMaskingRequirement`）
      *
      * @details 逐字节推进，任意字节边界都能切开续上（含切在掩码键中间、扩展长度中间、负载中间）。
-     *          产出的是**完整消息**：分片消息在此重组后才交付，因此 takeFrame() 交出的帧 opCode
+     *          产出的是完整消息：分片消息在此重组后才交付，因此 takeFrame() 交出的帧 opCode
      *          绝不是 Continuation、isFinal 恒为 true；控制帧各自单独成帧。
      *
      * @note 掩码这一格按档位判（RFC 6455 §5.1）：默认档 `PeerMustMask` 是服务端视角——客户端帧
@@ -214,7 +214,7 @@ namespace AsynGyanis::Net
         static constexpr std::size_t kMaximumMessagePayloadLength = 8ull * 1024 * 1024;
 
         /// 单帧负载上限：取的就是消息总上限那一个数。原先这里另设 1 MiB，于是「一条 4 MiB 的消息
-        /// 拆成 4 片收、整片发来却按 1009 断掉」——而浏览器与多数客户端是**一条消息一帧**发的
+        /// 拆成 4 片收、整片发来却按 1009 断掉」——而浏览器与多数客户端是一条消息一帧发的
         /// （Chrome 只在自身分片策略下才拆），这种自相矛盾的限制只伤互操作，不省内存：最坏情况
         /// 本来就是消息总上限那一档（无限分片同样能攒到它）
         static constexpr std::size_t kMaximumFramePayloadLength = kMaximumMessagePayloadLength;

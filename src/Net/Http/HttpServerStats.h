@@ -88,10 +88,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 一条路由模式下的响应与耗时统计
-     * @details 路由标签取值是**路由模式原文**（`/user/:id`），绝不取请求的实际 URI：后者每条请求都会
+     * @details 路由标签取值是路由模式原文（`/user/:id`），绝不取请求的实际 URI：后者每条请求都会
      *          长出新的序列，正是本轮要消灭的基数爆炸。未匹配、静态文件与超限归并各有一个固定哨兵
      *          （见 kHttpRouteUnmatchedLabel / kHttpRouteStaticLabel / kHttpRouteMergedLabel）。
-     * @note 状态码只细到**类**（1xx…5xx）：route × status 的笛卡尔积不在本轮的基数预算里，具体状态码
+     * @note 状态码只细到类（1xx…5xx）：route × status 的笛卡尔积不在本轮的基数预算里，具体状态码
      *       明细仍按全局一维报（见 HttpServerStats::statusCodeCounts）。按路由要看的是类级计数。
      */
     struct ASYN_NET_API HttpRouteCount
@@ -142,7 +142,7 @@ namespace AsynGyanis::Net
      *
      * @details 纯数据，不持有任何同步设施，可由调用方按值取走、跨线程传递或落进监控上报。
      *          各字段分别读取，因此不是严格同一瞬间的一致切面（跨字段求和可能与某次采样略有偏差）。
-     * @note 请求计数口径：totalRequestCount 只统计**交给业务处理的那批请求**；解析失败的、以及被协议层
+     * @note 请求计数口径：totalRequestCount 只统计交给业务处理的那批请求；解析失败的、以及被协议层
      *       挡在业务之外的（头部/请求目标/正文越限，回的是 4xx）都只进 badRequestCount 那一笔，
      *       三条通道在这一条上同解——否则同一份越界请求，`requests_total` 会随对端选了 h1/h2/h3 而不同。
      *       「在途正文预算不足」不在这一笔里：它回的是 503，而本字段口径是「对端的报文不合规」，
@@ -152,7 +152,7 @@ namespace AsynGyanis::Net
      *       status5xxCount 之和在稳态下等于 totalRequestCount（发送失败的应答不计入）。
      *       这两个全局量与 routeCounts 里的同名分项同源同一次计入；按路由导出时用后者，
      *       保留前者是为了「整台服务器」这一维仍有一个现成读数。
-     * @note 路由维度只细到状态码**类**：route × status 的笛卡尔积会突破序列预算，具体状态码明细
+     * @note 路由维度只细到状态码类：route × status 的笛卡尔积会突破序列预算，具体状态码明细
      *       仍按全局一维报（statusCodeCounts）。route 的取值是路由模式原文或固定哨兵，绝不取实际 URI。
      * @note 升级到 WebSocket 的连接是上述口径的例外：升级请求计入 totalRequestCount 与
      *       webSocketUpgradeCount，但 101 由握手模块逐字节生成、不走 HttpResponse 序列化，
@@ -227,10 +227,10 @@ namespace AsynGyanis::Net
         /**
          * @brief 本监听器的并发连接上限（分母，瞬时量；0 = 不设这道限）
          * @details 为什么单独记一份：`activeConnectionCount` 与 `overLimitRejectedConnectionCount`
-         *          一直在报分子和「已经撞到顶之后拒了多少」，但**上限本身**从未出现在 `/metrics` 上。
+         *          一直在报分子和「已经撞到顶之后拒了多少」，但上限本身从未出现在 `/metrics` 上。
          *          于是「还剩多少余量」「是不是该扩容了」这两条最该提前预警的判据只能靠人记得配置文件
          *          里写过什么——而多进程部署里配置的是整机数、实际生效的是摊到本进程那一份，两边根本
-         *          对不上。报的是**下发到本监听器的实际值**，与 `TcpServer::maximumConnections()` 同一个口径
+         *          对不上。报的是下发到本监听器的实际值，与 `TcpServer::maximumConnections()` 同一个口径
          */
         std::uint64_t maximumConnections{0};
 
@@ -243,7 +243,7 @@ namespace AsynGyanis::Net
         std::uint64_t maximumConnectionsPerIp{0};
 
         /**
-         * @brief 因**本服务器自身**并发连接上限（`maximum_connections`）而被拒的连接条数
+         * @brief 因本服务器自身并发连接上限（`maximum_connections`）而被拒的连接条数
          * @details 与上面那道按来源 IP 的闸门分开计数：限额器可以多台共用、报的是闸门总量，而这个数
          *          是「这台服务器已经满载」。两者混在一个读数里就分不出「某个来源在刷」与「整体容量到顶」，
          *          而这两种情况的处置完全相反（前者收紧按 IP 的限额，后者加 worker 或抬上限）。
@@ -294,7 +294,7 @@ namespace AsynGyanis::Net
     };
 
     /**
-     * @brief 取五档状态码分类（顺序固定 1xx→5xx）的**全局**合计
+     * @brief 取五档状态码分类（顺序固定 1xx→5xx）的全局合计
      * @details 两条导出出口现在按路由分组输出状态码类（见 HttpRouteCount），本函数保留为「整台服务器
      *          的五类合计」这一维的唯一取值表：需要全局视图的调用方与用例仍从它取，避免各自拼一遍
      *          类名；分路由的导出不再用它，否则同名序列会与按路由的序列重复计数。
@@ -333,7 +333,7 @@ namespace AsynGyanis::Net
      * @brief 把延迟直方图折成公共数据模型（`Core::MetricHistogramSample`，单位统一到秒）
      *
      * @details 换算在这里只做一次：档位上界是毫秒常量、`totalLatencyMicroseconds` 是微秒累计，
-     *          都换到秒。分格保持**每格条数**（与快照同形，非累计）——Prometheus 展示格式要的累计
+     *          都换到秒。分格保持每格条数（与快照同形，非累计）——Prometheus 展示格式要的累计
      *          数由 `Core::cumulativeBucketCounts()` 现算，那属于渲染端的活，模型里不存两份。
      * @param stats 统计快照
      * @return Core::MetricHistogramSample 上界（秒）+ 每格条数 + count + sum（秒）
@@ -400,7 +400,7 @@ namespace AsynGyanis::Net
          * @param statusCode 响应状态码；1xx~5xx 之外的取值不计入任何一类（本框架不会发出这种状态码）
          * @param elapsed 从「收到完整请求」到「响应发完」的耗时
          * @param matchedRoute 本次派发命中的路由模式（`HttpRequest::matchedRoute()`）；空表示没有匹配到
-         *        路由，落进 `unmatched` 哨兵。**不要传请求的实际 URI**——那会让序列数随请求数增长
+         *        路由，落进 `unmatched` 哨兵。不要传请求的实际 URI——那会让序列数随请求数增长
          */
         void recordResponse(const int statusCode, const std::chrono::steady_clock::duration elapsed, const std::string_view matchedRoute) noexcept
         {
@@ -418,7 +418,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 只记一条已发出的响应的状态码类，不落延迟样本（全局与按路由各一份）
          * @details 给拿不到可信请求耗时的会话用（HTTP/3 各流由传输层驱动，会话没有「收到完整请求」
-         *          那一刻的戳），让它们的流量至少出现在请求数与状态码类里。**不要用 0 秒糊弄**：
+         *          那一刻的戳），让它们的流量至少出现在请求数与状态码类里。不要用 0 秒糊弄：
          *          那会把延迟直方图与 _sum 写脏，让两个协议的耗时混在一张图里失去意义
          * @param statusCode 响应状态码；1xx~5xx 之外的取值不计入任何一类（本框架不会发出这种状态码）
          * @param matchedRoute 路由模式；拿不到就传 `kHttpRouteUnmatchedLabel`，不要在这里改成从别处取
@@ -836,7 +836,7 @@ namespace AsynGyanis::Net
      * @details 三个数一向是各通道的 `stats()` 自己填的（只填了拒绝数那一个），因此 `/metrics` 上
      *          永远只有分子没有分母。这里把三样并成一次调用，让明文 HTTP、HTTPS/HTTP2、QUIC 三条
      *          通道对同一个问句给出同形答案：本监听器的并发上限、单个来源的上限、闸门挡过的条数。
-     *          调用方负责交回**实际生效**的那两个数（多进程部署里配置是整机数、生效的是摊后的份额）。
+     *          调用方负责交回实际生效的那两个数（多进程部署里配置是整机数、生效的是摊后的份额）。
      * @param stats 待补的快照
      * @param maximumConnections 本监听器的并发连接上限，0 表示不设
      * @param maximumConnectionsPerIp 单个来源 IP 的并发上限，0 表示这道闸门没装

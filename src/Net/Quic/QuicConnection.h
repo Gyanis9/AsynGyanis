@@ -16,12 +16,12 @@
  *       来源地址表与 §9.3.3 的旧路复验探测成对做在 `handleDatagram` 与 `sendOutboundBatch` 上；
  *       无状态重置的识别在核心（§10.3.1），发送在服务端外壳（§10.3：目的标识不属于任何在册连接
  *       的短头报文换一条重置）。
- * @note **0-RTT 不做（这是决定，不是待办）**：它要接受可重放的早期数据（RFC 9001 §9.2 明确列出
+ * @note 0-RTT 不做（这是决定，不是待办）：它要接受可重放的早期数据（RFC 9001 §9.2 明确列出
  *       重放面），而引擎无法替业务判断「这条请求重复执行一次是否安全」——在框架层默认接纳 0-RTT
  *       等于把反重放的责任推给每一位调用方，而漏判的表现是「写操作被执行两次」这类事后才发现的事故。
  *       要做也应当由业务显式开启并给出幂等凭据（例如一次性 token），落点在 `QuicServer` 的配置面
  *       加一个显式开关、而不是在这里默认打开。
- * **未验证连接与已验证连接共用同一份名额**（`QuicServer::Configuration::maximumConnections`），
+ * 未验证连接与已验证连接共用同一份名额（`QuicServer::Configuration::maximumConnections`），
  *       不设「握手未完成单独占额」也是刻意的：握手有超时（PTO 与空闲两把钟都会收掉僵尸位）、
  *       未验证期的字节面另有 3× 放大帽压着（RFC 9000 §8.1），且这与 TCP 侧同一口径（那边连接
  *       同样在 TLS 完成前就占着名额）。要按验证状态归因，看 `QuicServer::handshakingConnectionCount()`
@@ -71,7 +71,7 @@ namespace AsynGyanis::Net
     class ASYN_NET_API QuicConnection
     {
     public:
-        /// 本端连接标识的长度。对端报文里的目的连接标识就是这个长度——而短头报文**不携带** DCID
+        /// 本端连接标识的长度。对端报文里的目的连接标识就是这个长度——而短头报文不携带 DCID
         /// 长度字段，解这种报文时必须把本长度告诉状态机，否则它会按别的长度去截，解出来的
         /// 「目的连接标识」里混进包号字段，永远命不中路由表
         static constexpr std::size_t kSourceConnectionIdLength = 18;
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
             StreamDataHandler   onStreamData; ///< 流数据回调（HTTP/3 层接在这里）
             /**
              * @brief 对端打断了某条请求流（RESET_STREAM / STOP_SENDING）时的通知
-             * @details 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对**请求流**触发（流号低两位为 0，
+             * @details 上层的 HTTP/3 会话据此回收该流的请求与响应状态。只对请求流触发（流号低两位为 0，
              *          即客户端发起的双向流，两种角色都是这一类）——控制流与 QPACK 流另有自己的一套规矩
              *          （RFC 9114 §6.2.1）。错误码与形状一并交出去：h3 那边「服务端没做任何应用层处理就拒了
              *          这条请求」只能靠 RESET_STREAM 的应用层错误码认（RFC 9114 §7 的 H3_REQUEST_REJECTED），
@@ -152,7 +152,7 @@ namespace AsynGyanis::Net
             QuicCongestionAlgorithmKind congestionAlgorithm{QuicCongestionAlgorithmKind::NewReno};
             /**
              * @brief 无状态重置令牌的派生密钥（RFC 9000 §10.3.2）；留空＝本连接随机取一把
-             * @details 服务端要把**同一把**喂给它的每条连接：令牌按「密钥 + 标识」派生，而一条连接
+             * @details 服务端要把同一把喂给它的每条连接：令牌按「密钥 + 标识」派生，而一条连接
              *          没了之后，指望的是另一个进程或下一次启动能替它算出同一个值——每连接一把随机
              *          密钥时那个值谁都算不出来，本端发出去的重置也就没人认（见 `QuicServer` 同名配置）
              */
@@ -160,7 +160,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 本端签发一条新连接标识时的通知（RFC 9000 §5.1.1）
              * @details 服务端一侧拿它把这条标识登记进路由表：标识一上线就可能出现在下一包的短头里，
-             *          路由表必须在那一包到达之前就认它。核心在**造出标识的那一刻**回调，早于它被
+             *          路由表必须在那一包到达之前就认它。核心在造出标识的那一刻回调，早于它被
              *          编进 NEW_CONNECTION_ID 上线，因此登记永远来得及
              * @param connection 这条标识所属的连接
              * @param connectionId 新签发的标识字节
@@ -198,7 +198,7 @@ namespace AsynGyanis::Net
          *         时返回 nullptr。首包本身不在这里交付，调用方随后照常调 `handleDatagram`
          * @details 走过 Retry 之后有两处要换个来源：本端签发的标识就是 Retry 里给出去的那一条——客户端
          *          此后所有包都按它路由，自造一条新的会让这封重传的 Initial 认不回来；而参数里的原始目的
-         *          标识要的是客户端**第一个** Initial 里那个值，它由令牌恢复，不再取自此刻报文里的目的标识
+         *          标识要的是客户端第一个 Initial 里那个值，它由令牌恢复，不再取自此刻报文里的目的标识
          *          （§17.2.5.2 之后两者已经不同，RFC 9000 §18.2 认的是前者，Initial 的密钥认的是前者）。
          */
         [[nodiscard]] static std::unique_ptr<QuicConnection> accept(const Configuration &configuration, const Platform::SocketAddress &localAddress,
@@ -211,12 +211,12 @@ namespace AsynGyanis::Net
          *          仍是 `kSourceConnectionIdLength` 字节（短头不携带长度字段，收包侧要靠它定长），
          *          第一个 Initial 的目的标识由本端自造（RFC 9000 §7.2 建议至少 8 字节以免撞车），
          *          Initial 的密钥与参数里的 ODCID 都由它算出。
-         * @param configuration 连接配置（`tlsContext` 须是**客户端**角色、且已装好信任锚的上下文）
+         * @param configuration 连接配置（`tlsContext` 须是客户端角色、且已装好信任锚的上下文）
          * @param localAddress 本端地址（随发的数据报由 socket 决定实际源地址，这里只作日志与后续路由用）
          * @param peerAddress 服务端地址
          * @param clientTlsSettings 这条连接的身份设置：SNI、证书校验名与要提供的 ALPN 列表
          * @return std::unique_ptr<QuicConnection> 起不来时返回空（配置不完整、随机数不可用、TLS 会话建不起来）；
-         *         成功只表示状态机已就绪，**还没发出任何字节**——调用方随后调 `drive`/`flush` 才开始握手
+         *         成功只表示状态机已就绪，还没发出任何字节——调用方随后调 `drive`/`flush` 才开始握手
          */
         [[nodiscard]] static std::unique_ptr<QuicConnection> connect(const Configuration &configuration, const Platform::SocketAddress &localAddress,
                                                                      const Platform::SocketAddress &peerAddress, const QuicClientTlsSettings &clientTlsSettings);
@@ -237,7 +237,7 @@ namespace AsynGyanis::Net
          * @return std::string 地址文本；本连接还没收到过任何带来源的报文时为空串
          * @details 与其它传输层的 `Connection::remoteAddress()` 同一形状、同一取值口径，因此 h1/h2/h3
          *          三条通道交给业务的来源地址不需要按协议分叉（见 HttpRequest::remoteAddress()）。
-         * @note 服务端一侧读的是**当前**那份对端地址：QUIC 允许来源随 NAT 重绑而变化（§9.3，
+         * @note 服务端一侧读的是当前那份对端地址：QUIC 允许来源随 NAT 重绑而变化（§9.3，
          *       handleDatagram 会跟随更新），所以两次调用之间取值可能不同；客户端一侧只认配置里
          *       那个服务端地址（§9 的 MUST：陌生服务端地址的报文一律丢弃）。HTTP/3 会话按连接缓存
          *       一次，业务因此在一批请求里读到的是同一个来源，不会半批换 IP
@@ -252,7 +252,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::int64_t openUnidirectionalStream();
 
         /**
-         * @brief 开一条本端发起的**双向**流并返回流号
+         * @brief 开一条本端发起的双向流并返回流号
          * @details 出站 HTTP/3 一条请求一条双向流（RFC 9000 §1.3），这条路只有作客户端时才用得到：
          *          服务端一侧的请求流都是对端发起的。额度来自对端参数的 `initial_max_streams_bidi`，
          *          参数还没到手之前一条也开不出来（§4.6）
@@ -403,7 +403,7 @@ namespace AsynGyanis::Net
          * @param endStream 发完是否收尾这条流
          * @return std::size_t 被收下的字节数。小于 `data.size()` 即该流的待发队列到了上界
          *         （`QuicStreamLayer::kMaximumPendingSendByteCount`）或这条流已不可写：
-         *         **调用方必须留住余下的字节等 `onSendSpaceAvailable` 后再交**，直接丢弃就是截断响应
+         *         调用方必须留住余下的字节等 `onSendSpaceAvailable` 后再交，直接丢弃就是截断响应
          */
         std::size_t queueStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool endStream);
 
@@ -421,7 +421,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 是否攒下了还没刷出去的字节
          * @return true 表示有待发字节等着 flush
-         * @note 收报文那条路会顺手 flush，但业务协程可能在**收报文路径之外**写下响应（例如先 await
+         * @note 收报文那条路会顺手 flush，但业务协程可能在收报文路径之外写下响应（例如先 await
          *       了一个定时器或一次磁盘写）：那时没人替它刷，响应会一直躺在待发队列里等某个定时器
          *       把它想起来。服务端的定时循环据此补一刀
          */

@@ -17,7 +17,7 @@
  *       令牌的签发与识别（§10.3–§10.3.2：收下对端给的令牌、对上即进 draining；发送那一半在服务端
  *       外壳上，见 `QuicServer::Configuration::statelessResetKey`）。
  *       刻意不做：0-RTT、NEW_TOKEN、版本协商、本端主动发起迁移（本端地址不换，§9.2 那一半）与
- *       §9.6 的首选地址；作客户端时**不能接住服务端下发的 Retry**（挑一个 8 字节以上的随机目的标识
+ *       §9.6 的首选地址；作客户端时不能接住服务端下发的 Retry（挑一个 8 字节以上的随机目的标识
  *       是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路）。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
@@ -140,7 +140,7 @@ namespace AsynGyanis::Net
          * @brief 本端签发一条新连接标识时的通知：外壳拿它把这条标识登记进路由表（RFC 9000 §5.1.1）
          * @details §5.1.1 明写「签发的标识要么认到连接结束、要么认到对端用 RETIRE_CONNECTION_ID
          *          撤回为止」：标识一旦上线就可能出现在下一包的短头里，路由表必须在那一包到达之前就认它。
-         *          本类在**造出这条标识的那一刻**通知，广告它的 NEW_CONNECTION_ID 要等到下一次 1-RTT
+         *          本类在造出这条标识的那一刻通知，广告它的 NEW_CONNECTION_ID 要等到下一次 1-RTT
          *          出包，因此登记永远早于上线。空回调＝不登记（单测与不需要按标识路由的用法）
          */
         std::function<void(std::span<const std::uint8_t> connectionId)> onConnectionIdIssued{};
@@ -175,9 +175,9 @@ namespace AsynGyanis::Net
          * @brief 无状态重置令牌的派生密钥（§10.3.2）；留空＝本连接随机取一把
          * @details 令牌按 RFC 9000 §10.3.2 由「端点静态密钥 + 标识」派生，签发的每条标识在
          *          NEW_CONNECTION_ID 里都要带一个、服务端还给握手那条发一份传输参数（0x02）。
-         *          留空只够单连接自己用：服务端要把它喂成**全实例一把**（`QuicServer` 同名那一格），
-         *          否则连接没了之后谁也替它算出对端认得的那份令牌。**多进程 worker 同样必须共享
-         *          同一把**：无状态重置的用处正是「连接没了还能答话」，而那一刻报文可能落到另一个
+         *          留空只够单连接自己用：服务端要把它喂成全实例一把（`QuicServer` 同名那一格），
+         *          否则连接没了之后谁也替它算出对端认得的那份令牌。多进程 worker 同样必须共享
+         *          同一把：无状态重置的用处正是「连接没了还能答话」，而那一刻报文可能落到另一个
          *          进程手里（与 `addressValidationKey` 同一条道理）。
          */
         std::vector<std::uint8_t> statelessResetKey{};
@@ -232,7 +232,7 @@ namespace AsynGyanis::Net
          * @brief 处理一个收到的 UDP 数据报净载荷
          * @param datagram 数据报字节
          * @param arrivalTime 本数据报的到达时刻，用于 ACK 帧的延迟字段
-         * @param ecnCodepoint 这条数据报 IP 头里的 ECN 字段；**交空表示本端读不到这个字段**（Windows，
+         * @param ecnCodepoint 这条数据报 IP 头里的 ECN 字段；交空表示本端读不到这个字段（Windows，
          *        或套接字没开那个选项）。读不到与读到 0 是两件事：前者不许在 ACK 里报 ECN 计数
          *        （RFC 9000 §13.4.1 明确允许读不到的端点不报），后者要按 §19.3.2 计入 ECT(0) 那一格
          * @param pathKey 这条数据报打哪条对端路径来（外壳按来源地址折算，RFC 9000 §9.3 的路径就是
@@ -277,11 +277,11 @@ namespace AsynGyanis::Net
          * @brief 应用还在做事时替这条连接保活：把「还早」的空闲截止提前用一条 PING 顶住
          * @details 为什么需要：服务端一个处理器的耗时上限是 `writeTimeout`（三条通道同一个口径，h1/h2 在
          *          处理器相位会显式把空闲截止刷成这一段，见 `HttpSession.h` 里 `refreshIdleDeadline` 那处），
-         *          而 QUIC 的空闲超时是**传输层**的闸——它只认「有没有报文进来」。一个 40 秒的处理器既不读
+         *          而 QUIC 的空闲超时是传输层的闸——它只认「有没有报文进来」。一个 40 秒的处理器既不读
          *          也不写，两端各自的 `max_idle_timeout`（默认 30 秒）先到期，连接被静默收口：同一份业务在
          *          h1/h2 上答得出来，换到 h3 上连响应带别的流一起丢。RFC 9000 §10.1.2 给出的合法解法就是
          *          空闲期间发一条 PING 让对端有东西可确认。
-         * @details 为什么不会变成僵尸连接：本方法只**欠一条探针**，续期仍走 `emitPacket` 里那条既有判据
+         * @details 为什么不会变成僵尸连接：本方法只欠一条探针，续期仍走 `emitPacket` 里那条既有判据
          *          ——「收到过报文之后的第一包主动发包才续一期」（§10.1 的同一处，见 `m_hasSentAckElicitingSinceReceipt`）。
          *          对端活着就会回 ACK，那一收把标记清掉、下一轮才还能续；对端没了就永远收不到报文，
          *          截止不再被顶开，本端按原定的空闲时限收口。调用方的谓词也必须自限：只对
@@ -529,7 +529,7 @@ namespace AsynGyanis::Net
             std::vector<std::uint8_t>    id{};                  ///< 标识本体
             std::uint64_t                sequence{0};           ///< 序列号；握手期那条是 0
             std::array<std::uint8_t, 16> statelessResetToken{}; ///< 对端给的无状态重置令牌（§19.15 或服务端参数的 0x02）
-            /// 上面那格有没有被真正给过一份：**没给过的绝不能拿全零去比对**（§10.3.1 只许认
+            /// 上面那格有没有被真正给过一份：没给过的绝不能拿全零去比对（§10.3.1 只许认
             /// 「对端真发过来的令牌」，否则一条末尾 16 个零字节的报文就能掐断连接）
             bool hasStatelessResetToken{false};
         };
@@ -629,7 +629,7 @@ namespace AsynGyanis::Net
         std::expected<void, QuicDecodeError> handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber,
                                                           const QuicPathKey &pathKey, Timestamp arrivalTime);
         /**
-         * @brief 把一条**认证过**的报文落进本空间的账：包号记账与 ECN 字段计数
+         * @brief 把一条认证过的报文落进本空间的账：包号记账与 ECN 字段计数
          * @details 两件事必须同进同出，顺序也只有一种正确写法：§13.4.1 末句要求重复包不重复计数，
          *          而「是不是重复」正是靠本空间的包号集合判的——先去重再计数。拆成两个调用点就会有人
          *          漏掉那一格，把同一报文收两遍当成路上堵了两遍。计数按空间各一份（§19.3.2），
@@ -648,7 +648,7 @@ namespace AsynGyanis::Net
          *          同一条标识换个令牌或换个序列号报上来＝PROTOCOL_VIOLATION（同节的 MAY，本端从严）；
          *          加完之后本端持有的条数超过本端通告的 `active_connection_id_limit` 门槛＝
          *          CONNECTION_ID_LIMIT_ERROR（§5.1.1 明写这一条按"处理完这一帧之后"的数算）。
-         *          重复收到同一条帧（相同令牌、相同序列号）按同节要求**不算错**，静默忽略
+         *          重复收到同一条帧（相同令牌、相同序列号）按同节要求不算错，静默忽略
          * @param frame 这一帧
          * @param arrivalTime 收口报文要用它当发送时刻
          */
@@ -664,7 +664,7 @@ namespace AsynGyanis::Net
         void handleRetireConnectionIdFrame(const QuicRetireConnectionIdFrame &frame, Timestamp arrivalTime);
 
         /**
-         * @brief 一条**认证过**的报文带来的路径信息：采纳首条 | 按 §9.3 跟随新地址 | 什么都不做
+         * @brief 一条认证过的报文带来的路径信息：采纳首条 | 按 §9.3 跟随新地址 | 什么都不做
          * @details 只有认证过的报文才作数：伪造来源的报文解不开，也就不该把本端的发包目标拽走
          *          （§9.3.1 描述的正是这种反射攻击）。客户端的规矩相反——§9 明写「客户端收到来自
          *          陌生服务端地址的报文一律丢弃」，那条门在 `handlePacket` 里已经拦了，这里不再跟
@@ -760,7 +760,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 这条数据报是不是一条对上本端令牌的无状态重置（RFC 9000 §10.3.1）
          * @details 判据写死在规范里：末 16 字节与「本端在用的那条对端标识的令牌」逐字节相同，比对
-         *          必须不泄露令牌取值（用 `CRYPTO_memcmp` 做常数时间比对）。只比对**在用的那条**：
+         *          必须不泄露令牌取值（用 `CRYPTO_memcmp` 做常数时间比对）。只比对在用的那条：
          *          正文的 MUST NOT 不许为「还没用过的标识」的令牌放行，而本端的发送目标只有一条
          *          （对端给的其它标识一直只记账不用，§9.5 的换用还没做）
          * @param datagram 这条数据报（必须已过「长度不小于 16」的判断）
@@ -773,7 +773,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把对端在传输参数里给的握手令牌收进在册表（RFC 9000 §10.3：服务端的 0x02 参数）
-         * @details 令牌随它对应的那条标识走，而这一份只配给**握手期那条**（序列号 0）。本端此后
+         * @details 令牌随它对应的那条标识走，而这一份只配给握手期那条（序列号 0）。本端此后
          *          一直拿那条标识当发送目标（§9.5 的换用没做），收下它，「服务端进程没了」这件事
          *          才有一条不靠计时器的判据
          * @param token 对端给的 16 字节令牌
@@ -832,7 +832,7 @@ namespace AsynGyanis::Net
         void queueSpacePackets(PacketNumberSpace space, Timestamp now);
         /**
          * @brief 到点的话发一条路径 MTU 探针（RFC 9000 §14.4、RFC 8899 §5.2）
-         * @details 探针是**单独一包**：只带一条 PING 再补 PADDING 到待探的尺寸。跟普通数据挤在同一包里就
+         * @details 探针是单独一包：只带一条 PING 再补 PADDING 到待探的尺寸。跟普通数据挤在同一包里就
          *          没有「这个尺寸走过去了」这条证据可言——被确认的是那个尺寸，不是那次巧合的拼车。
          *          它照样要吃拥塞窗口（§14.4 明写 probes consume congestion window），所以窗口腾不出待探
          *          尺寸时状态机不算这次到点，也不会把「窗口小」记成「这个尺寸走不通」
@@ -874,7 +874,7 @@ namespace AsynGyanis::Net
          * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
          * @param carriesConnectionIdFrames 本包是否带了 NEW_CONNECTION_ID / RETIRE_CONNECTION_ID（§13.3 要求判丢后重发）
          * @param padding 非空就把整包补到这个尺寸（PADDING 帧），要哪一种、为什么补见 `DatagramPadding`
-         * @param pathKey 这条数据报发往哪条对端路径：**由调用方解析好**——普通出包传 `m_sendPathKey`，
+         * @param pathKey 这条数据报发往哪条对端路径：由调用方解析好——普通出包传 `m_sendPathKey`，
          *        路径验证传各自那把键。全零是合法的键值（单路径用法），所以这里没有「留空＝当前路径」
          *        这种默认：§9.3.3 的复验探测要打的正是那条全零键的旧路径，混一起就成了打给新地址
          */
@@ -911,7 +911,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept;
         /**
          * @brief 收到并处理成功一个包：重新定下本期空闲额度与截止时刻
-         * @details 额度里那个「至少 3 倍当前 PTO」的下限按**这一刻**的 PTO 取（§10.1）。之后即使
+         * @details 额度里那个「至少 3 倍当前 PTO」的下限按这一刻的 PTO 取（§10.1）。之后即使
          *          退避把 PTO 翻倍，截止点也不再后移——否则 max_idle_timeout 就成了空头承诺
          * @param now 这个包的到达时刻
          */
@@ -941,7 +941,7 @@ namespace AsynGyanis::Net
         std::array<SpaceState, kPacketNumberSpaceCount> m_spaces{};             ///< 三个包号空间
         /// 待发数据报队列：元素就是报文本体（std::string 在本仓里当字节缓冲用，与帧序列同一个口径），
         /// 组包器直接往里写，取出时按所有权移交
-        /// 各包号空间**收到**的 ECN 计数（ECT(0)、ECT(1)、CE 三条累计），发 ACK 时按 §19.3.2 原样带上
+        /// 各包号空间收到的 ECN 计数（ECT(0)、ECT(1)、CE 三条累计），发 ACK 时按 §19.3.2 原样带上
         std::array<std::array<std::uint64_t, 3>, kPacketNumberSpaceCount> m_receivedEcnCounts{};
         /// 本次 `onDatagramReceived` 那条数据报的 ECN 字段；空表示本端读不到，因此一条都不许计
         std::optional<std::uint8_t> m_incomingEcnCodepoint{};
@@ -991,7 +991,7 @@ namespace AsynGyanis::Net
 
         /// 对端路径的记账（§9.3）：当前发送路径、正在验证的候选、外壳报到过的其它来源；上界见 kMaximumTrackedPeerPaths
         std::vector<PeerPathState> m_peerPaths{};
-        /// 本端出包默认打哪条路径：第一条**认证过**的报文定下它（此后按 §9.3 只跟编号更高的非探测包换）
+        /// 本端出包默认打哪条路径：第一条认证过的报文定下它（此后按 §9.3 只跟编号更高的非探测包换）
         QuicPathKey m_sendPathKey{};
         /// 路径有没有被定下来过：全零键是合法值（单路径用法留空），单靠它分不出「还没定」与「定了空键」
         bool m_hasAdoptedPeerPath{false};

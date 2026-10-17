@@ -17,7 +17,7 @@
 
 namespace AsynGyanis::Net
 {
-    /// 请求行里除 URI 之外的固定余量，单位字节。判的是**行体**（方法 SP 目标 SP 版本），行尾那两字节
+    /// 请求行里除 URI 之外的固定余量，单位字节。判的是行体（方法 SP 目标 SP 版本），行尾那两字节
     /// 不参与计数——与 `maximumChunkSizeLineLength` 那句「含块扩展，不含 CRLF」同一口径，见
     /// `HttpHeaderRules.h` 的 lineBodyByteCountWithTerminator。拆法：方法名上限 32 B
     /// （HttpParser::kMaximumMethodLength，与 llhttp 同档的协议语法约束）+ 版本串与分隔符 10 B
@@ -29,7 +29,7 @@ namespace AsynGyanis::Net
      * @brief 按「0 表示关闭该项保护」的口径判定一个长度或条数是否越界
      * @details 三条通道与出站解析器共用这一份判据：`!= 0 &&` 那一半在谁手里写，0 的语义就归谁解释，
      *          同一把尺因此会在某一档上被当成「不允许任何长度」。比较排在增量之后，调用方传进来的
-     *          必须是**收下这一项之后**的值。
+     *          必须是收下这一项之后的值。
      * @param value 实测值（字节数或条数），已含本次要收下的一项
      * @param limit 该项上限，0 表示不设上限
      * @return true 表示越界
@@ -46,7 +46,7 @@ namespace AsynGyanis::Net
      * @details 与 HttpServerLimits 分工不同：连接级限额管时间与请求条数（空闲 / 读写超时、单连接
      *          请求上限），本结构管单条报文的内存占用，两者互不覆盖；头部行与请求行的整行上限都由
      *          已有字段推出（名 + 值 + ": " 与 CRLF、URI + 方法名与版本串的固定余量），不另设字段。
-     * @note 每一项取值 0 都表示**关闭该项保护**（即不设上限），与 HttpServerLimits 的 0 语义一致，
+     * @note 每一项取值 0 都表示关闭该项保护（即不设上限），与 HttpServerLimits 的 0 语义一致，
      *       不是「不允许任何长度」：例如 maximumHeaderCount 为 0 时头部条数不限、maximumBodySize
      *       为 0 时正文多长都收。
      * @warning 关掉长度类上限会让解析器持续缓冲一整行或一条正文，确实要放行超大报文时才这么做；
@@ -63,14 +63,14 @@ namespace AsynGyanis::Net
         std::size_t maximumHeaderCount{100};                    ///< 头部条数上限，单位条；trailer 头部同样计入。0 表示不限条数
         /// 头部块总长上限，单位字节，只算名与值的净字节（不含 ": " 与 CRLF）。0 表示不限。
         /// 三条通道都判这一把尺：h1 由解析器判，h3 在会话层判，h2 在 intake 判，且与 maximumHeaderCount
-        /// 同样是**整条报文累计**（h2 把尾部头块的净字节加在头部那一场之上）。明写的例外：h2/h3 的
+        /// 同样是整条报文累计（h2 把尾部头块的净字节加在头部那一场之上）。明写的例外：h2/h3 的
         /// 流式路由在头收齐那刻就把请求派发了，此后越限只拦得住尾字段、回不出 431，那一段体量由各自的
         /// 压缩层上限（HPACK 逐条尺 / SETTINGS_MAX_FIELD_SECTION_SIZE）兜住。h2 另有
         /// `Http2ConnectionConfiguration::maximumHeaderListSize`（按 RFC 9113 §6.5.2 的「名长 + 值长 + 32」
         /// 逐条计，且随 SETTINGS 宣告给对端）并排列着，两者取更紧的一方生效；出厂值同为 64 KiB，
         /// 要在 h2 那一侧再放宽走 `HttpServer::setHttp2Configuration()`。
         /// 本结构里除 maximumChunkSizeLineLength（分块只存在于 h1，h2/h3 禁掉 Transfer-Encoding 就没有
-        /// 块大小行可判）之外每一项都在**三条通道**上生效（h1 由解析器判，h2 与 h3 在 intake 判；
+        /// 块大小行可判）之外每一项都在三条通道上生效（h1 由解析器判，h2 与 h3 在 intake 判；
         /// 两条长度项在 h2 由 HPACK 解码器按同一把尺判，见 Http2Connection 的构造），
         /// 配置键因此只有一个含义
         std::size_t maximumHeaderBlockLength{64ull * 1024};

@@ -481,7 +481,7 @@ namespace AsynGyanis::Net
         expectRejected(makeChunkedMessage(payload), HttpParseErrorKind::BodyTooLarge, true, "解码后正文超上限");
     }
     /**
-     * @brief 钉住：分块的 trailer 段与头部那场**共用**同一条报文的条数与净字节账
+     * @brief 钉住：分块的 trailer 段与头部那场共用同一条报文的条数与净字节账
      * @details `HttpParserLimits::maximumHeaderCount` 的键文档就写着「trailer 头部同样计入」。这条跨块
      *          累计此前只在 h2/h3 有用例（`Http2CleartextSession.CountsTrailer*AgainstTheSame*Limit` 两条），
      *          h1 侧只有「头部那场恰好等于上限通过、多一条判错」——于是「进 trailer 阶段时把计数器归零」

@@ -29,8 +29,8 @@
 //   INFO 的 verbatim 交出正文、建连时的 HELLO 不进会话记账（中途发 HELLO 照旧断开）、
 //   订阅与读推送在发送前就被拒（RESP3 的确认是推送，本模型收不到——实测会等满 30 秒）
 // - 键存活状态与扫描页的三档/续扫往返：-2 与 -1 各自成形（毫秒精度走 PTTL），SCAN 按游标续到 0 且 MATCH 生效
-// 门控：`ASYN_REDIS_TEST_PASSWORD` **没有默认值**，未设置时整组 GTEST_SKIP，仓库零明文口令；
-// 键空间默认 **15**（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
+// 门控：`ASYN_REDIS_TEST_PASSWORD` 没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令；
+// 键空间默认 15（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
@@ -148,7 +148,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 全套用例跑完后核对临时键空间里没有本套件留下的键
          *
-         * @details 每个用例的 TearDown 已逐键删除，这里是**兜底检查**：将来新增用例若忘了用 makeKey() 登记键名，
+         * @details 每个用例的 TearDown 已逐键删除，这里是兜底检查：将来新增用例若忘了用 makeKey() 登记键名，
          *          就会在这里被抓住，而不是悄悄在使用者的 15 号库里留垃圾；没有 Redis 环境时静默返回。
          *          用 KEYS 可接受，是因为这是专用临时库、模式又限定到本进程前缀（生产代码里当然不该用 KEYS）。
          */
@@ -433,7 +433,7 @@ namespace AsynGyanis::Database
     TEST_F(RedisIntegrationTest, CommandErrorFailsWithLocalizedReason)
     {
         // 参数个数不对：服务端回 error 回复。真机实测确认本驱动的契约是
-        // **返回 nullptr 并把原因写进连接的 lastError()**（与 MySQL/SQLite 驱动一致），
+        // 返回 nullptr 并把原因写进连接的 lastError()（与 MySQL/SQLite 驱动一致），
         // 而不是返回一个「错误类型的结果」——后者只在管道里才有（见下一个用例）
         EXPECT_EQ(m_connection->executeCommand({"GET"}), nullptr);
 
@@ -453,7 +453,7 @@ namespace AsynGyanis::Database
         const std::string key = makeKey("pipe-error");
 
         // 管道里「一次 flush 收多条回复」，因此单条命令失败不能整体失败：
-        // 好的那条要正常给出结果，坏的那条要把服务端原文留在**它自己**的结果上
+        // 好的那条要正常给出结果，坏的那条要把服务端原文留在它自己的结果上
         ASSERT_TRUE(m_connection->pipelineCommand("SET " + key + " ok"));
         ASSERT_TRUE(m_connection->pipelineCommand("GET")); // 少参数，服务端必回 error
 
@@ -521,7 +521,7 @@ namespace AsynGyanis::Database
         {
             ASSERT_NE(reply, nullptr);
             // 一条命令被接上多余的参数，服务端必回 wrong number of arguments 的 error，
-            // 而管道路径把 error 留在**该条自己**的结果上，因此这里逐条验空
+            // 而管道路径把 error 留在该条自己的结果上，因此这里逐条验空
             EXPECT_TRUE(reply->lastError().empty()) << reply->lastError();
         }
 
@@ -574,7 +574,7 @@ namespace AsynGyanis::Database
     {
         const std::string key = makeKey("reset-session");
 
-        // 登记一条管道命令但**不 flush**：这正是「借了连接没写完就还回去」的形态
+        // 登记一条管道命令但不 flush：这正是「借了连接没写完就还回去」的形态
         ASSERT_TRUE(m_connection->pipelineCommand("SET " + key + " must-not-be-sent"));
 
         // 归还路径上的会话复位（池在归还时统一调它）：残留命令必须被丢掉
@@ -911,7 +911,7 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 借用者重发过 AUTH 的连接在归还时被断开，不把身份串给下一位
-     * @details AUTH 换的是**这条连接**在服务端的身份：Redis 6 起的两参数形式能换成另一个 ACL 用户，此后
+     * @details AUTH 换的是这条连接在服务端的身份：Redis 6 起的两参数形式能换成另一个 ACL 用户，此后
      *          同一条连接上的每条命令都按那个用户的权限判。没有「退回原来那个身份」的命令，因此判据与
      *          MONITOR／TRACKING 同形：复位之后 isConnected() 转假，池另起一条按配置重新认证过的连接。
      *          本用例用配置里的口令重发一次 AUTH（服务端照样接受，身份换成默认用户），不需要另建一个
@@ -1086,7 +1086,7 @@ namespace AsynGyanis::Database
      * @brief 借出前探针问的是服务端而不是本端标志：被 CLIENT KILL 掉的会话要在这里判死
      * @details 这条钉的是「探针为什么值得存在」。isConnected() 按本仓各驱动的约定只读本端标志，
      *          服务端单方面把会话杀掉时它照读成「已连接」——池不开探针就会把这条死人交出去。
-     *          故障注入走服务端而不是本层：从**另一条连接**发 `CLIENT KILL ID <本连接号>`，
+     *          故障注入走服务端而不是本层：从另一条连接发 `CLIENT KILL ID <本连接号>`，
      *          与 MySQL 那侧「被服务端杀掉的会话」同一手法；自己翻自己的状态位证明不了任何事。
      * @note 证伪：把 probeAlive() 退回基类默认（只读 isConnected()），下面「杀掉之后仍回 false」
      *       那一条当场红——那正是「探针没问出口」的形状。
@@ -1176,7 +1176,7 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 钉住 RESP3 一档下 SET 仍按成员逐列交出，而 `SMISMEMBER` 回的是**整数**不是布尔
+     * @brief 钉住 RESP3 一档下 SET 仍按成员逐列交出，而 `SMISMEMBER` 回的是整数不是布尔
      * @details 两条都是量出来的事实，不是从文档抄的：本机 Redis 8.10.1 在 `HELLO 3` 之后
      *          `SMEMBERS` 回 `~2`（成员是批量字符串，一列一个），`SMISMEMBER` 回 `*2` 里两个
      *          `:1` / `:0`。Redis 自己的命令文档把后者写成「Array of Booleans」，服务端实际没这么答——
@@ -1207,7 +1207,7 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 钉住 RESP3 档下订阅入口**在发送之前**就被拒，且这条连接保持干净可复用
+     * @brief 钉住 RESP3 档下订阅入口在发送之前就被拒，且这条连接保持干净可复用
      * @details 这一格是量出来的，不是推的：RESP3 把订阅确认写成 `>` 推送，而 hiredis 在没有推送
      *          回调时会把推送就地丢弃、继续等一条真正的回复——实测 `subscribe()` 等满 30 秒读写
      *          超时后报 `recv timeout`。与其把那次挂死交给调用方，不如当场说清档位与模型不相容。
@@ -1238,7 +1238,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 钉住 RESP3 档下读推送同样立刻拒绝，而不是等满本次时限报「没等到消息」
      * @details 后者的危害是把「档位不支持」伪装成「对端没发」：调用方会去查服务端与网络，
-     *          而真正的原因在配置那一格。判据取返回空值**且** lastError 非空（本类用 lastError
+     *          而真正的原因在配置那一格。判据取返回空值且 lastError 非空（本类用 lastError
      *          区分这两种空值），并且连接保持可用。
      */
     TEST_F(RedisIntegrationTest, Resp3PushReadRefusesInsteadOfWaiting)
@@ -1276,7 +1276,7 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 钉住建连时的 HELLO **不进**会话记账：这条连接归还时要被留下而不是断开
+     * @brief 钉住建连时的 HELLO 不进会话记账：这条连接归还时要被留下而不是断开
      * @details 记账那条路（`noteSessionCommand`）把 HELLO 当成「借用者中途改了回复形态」，归还时直接
      *          断开——那对中途发 HELLO 的连接是既有安全姿态，一个字不许动。但配置成 RESP3 的池里，
      *          每条新建连接都在建连时发过 HELLO，若同样进账就成了「池里所有连接归还一律断开」，
@@ -1293,7 +1293,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(connection.resetSessionState()) << "建连时的 HELLO 被记成了退不回去的模式";
         EXPECT_TRUE(connection.isConnected()) << "复位把这条其实可复用的连接断开了";
 
-        // 反面：同一档协议下**中途**发 HELLO 仍是「退不回去」，归还时照旧断开
+        // 反面：同一档协议下中途发 HELLO 仍是「退不回去」，归还时照旧断开
         ASSERT_NE(connection.executeCommand({"HELLO", "2"}), nullptr) << connection.lastError();
         EXPECT_FALSE(connection.resetSessionState()) << "中途改协议却没被记账，这条连接会带着错位回复流回池";
         EXPECT_FALSE(connection.isConnected()) << "中途改协议的那条连接没有被断开";
@@ -1331,7 +1331,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(expiring->keyExists);
         EXPECT_TRUE(expiring->hasExpiry());
         ASSERT_TRUE(expiring->remainingTime.has_value());
-        // PTTL 在这里给的是**毫秒**：若实现图省事走了 TTL（秒），这一格会读到 ~100 毫秒而红
+        // PTTL 在这里给的是毫秒：若实现图省事走了 TTL（秒），这一格会读到 ~100 毫秒而红
         EXPECT_GT(*expiring->remainingTime, std::chrono::milliseconds(50000));
         EXPECT_LE(*expiring->remainingTime, std::chrono::milliseconds(100000));
 

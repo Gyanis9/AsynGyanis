@@ -9,7 +9,7 @@
  * @details 这段字节由 TLS 携带（RFC 9001 §8.2 的 quic_transport_parameters 扩展），本类只管字节，
  *          不碰 TLS 也不碰连接：`QuicTlsContext` 交回来的 `peerTransportParameters()` 直接喂这里。
  *
- * @note 刻意分两层：本文件的解码只做**自洽**的校验（框架、重复、取值长度与范围、角色专属项），
+ * @note 刻意分两层：本文件的解码只做自洽的校验（框架、重复、取值长度与范围、角色专属项），
  *       而依赖握手上下文的绑定校验（参数里的连接标识要等于实际收发的那几个，§7.3）留给连接核心。
  * @note `preferred_address`（0x0d）不建模：本实现不做迁移，收到就按 §7.4.2 当作不支持的参数忽略。
  *       但它仍在「服务端专属」名单里，客户端交来照样判错，不会被漏成未知参数。
@@ -41,7 +41,7 @@ namespace AsynGyanis::Net
     inline constexpr std::size_t kQuicStatelessResetTokenLength = kQuicStatelessResetTokenByteLength;
 
     /// `max_udp_payload_size` 的默认值：本端愿意收下的最大 UDP 载荷。RFC 9000 §18.2 的下限是 1200，
-    /// 上限则由**本端收包缓冲**决定——`Platform::DatagramSocket::kMaximumDatagramBytes`（65535 − 20 − 8
+    /// 上限则由本端收包缓冲决定——`Platform::DatagramSocket::kMaximumDatagramBytes`（65535 − 20 − 8
     /// ＝ 65507）。报得比它大是自伤：对端信了这个数并照发，超出部分被 UDP 静默截断，AEAD 解不开就是
     /// 整条连接死掉，现场只留下「对端突然断线」。两处的相等关系由 `TestQuicTransportParameters.cpp` 里一条
     /// static_assert 钉住（测试树同时看得到这两个常量，编解码这层不必依赖 Platform）
@@ -58,7 +58,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 配置里给的空闲超时能否编进 `max_idle_timeout`
-     * @details 负数不是「小一点」而是**根本没有合法编码**：`std::chrono::milliseconds` 的负值直接
+     * @details 负数不是「小一点」而是根本没有合法编码：`std::chrono::milliseconds` 的负值直接
      *          `static_cast<std::uint64_t>` 得到约 1.8×10^19，超过 QUIC 变长整数的上限 2^62-1，
      *          而编码器在为服务端 Initial 写这份参数的那一刻抛异常——那发生在事件循环线程上、
      *          在连接建立的中途，症状是「第一个 QUIC 连接把循环打崩」而不是「配置写错了」。
@@ -85,7 +85,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 这批参数是谁交来的，用来判定「服务端专属参数」是否违规
      *
-     * @details 判据是**对端**的角色而不是本端：同一份字节，服务端交来合法的东西客户端交来就是错误
+     * @details 判据是对端的角色而不是本端：同一份字节，服务端交来合法的东西客户端交来就是错误
      *          （RFC 9000 §18.2 末段列出四个服务端专属项）。
      */
     enum class QuicTransportParameterSenderRole
@@ -98,7 +98,7 @@ namespace AsynGyanis::Net
      * @brief 一对连接的全部传输参数
      *
      * @details 整型成员的初值就是 RFC 9000 §18.2 规定的默认值，缺席即取默认；其余四项（连接标识与
-     *          无状态重置令牌）用 `std::optional`：**「没发」与「发了但长度为 0」是两回事**，
+     *          无状态重置令牌）用 `std::optional`：「没发」与「发了但长度为 0」是两回事，
      *          §7.3 明确要求选了零长连接标识时仍要带上零长的取值，缺 ISCID/ODCID 才是错误。
      *          成员顺序与参数标识递增一致，编码按此顺序写出，因此同一份参数编出来的字节是确定的。
      */

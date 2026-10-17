@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 这是**实现侧的头**（在根 CMakeLists 的安装排除面里，不随包发给使用方）：
+ * @details 这是实现侧的头（在根 CMakeLists 的安装排除面里，不随包发给使用方）：
  *          只有 OAuth 家族各件自己的 `.cpp` 与直测用例包含它，不构成对外契约。
  *          函数声明为 inline 是为了不额外增加编译单元（与驱动内部的转换件同一做法）。
  */
@@ -57,7 +57,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 读 JSON 对象的可选字符串字段
-     * @details 「缺失」是可选字段的常态，交回空串；类型不是字符串则是**协议不符**，交回中文原因
+     * @details 「缺失」是可选字段的常态，交回空串；类型不是字符串则是协议不符，交回中文原因
      *          而不是把它静默按缺省处理。刻意不走 nlohmann 的 `value()`：它在类型不符时会抛类型
      *          异常，穿出以 expected/optional 为契约的调用面——同步调用方还能靠 catch 兜住，协程里
      *          的抛出会顺着 co_await 链把调用链打死，分离投递的后台协程（如 JWKS 轮换）更是只留

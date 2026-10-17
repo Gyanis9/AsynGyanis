@@ -71,7 +71,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一个报文头的解码结果
      *
-     * @details **分两趟解**：首字节的保留位与包号长度受头部保护（RFC 9001 §5.4），拿到密钥去掉保护之前
+     * @details 分两趟解：首字节的保留位与包号长度受头部保护（RFC 9001 §5.4），拿到密钥去掉保护之前
      *          读到的只是被掩过的值。因此第一趟只填「明文就能确定的字段」（版本、两条连接标识、Token、
      *          Length 域、包号字段起点），`packetNumberByteCount` 与 `packetNumber` 留空；
      *          去掉头部保护后调 `refreshQuicPacketHeader()` 补上这几项。
@@ -153,10 +153,10 @@ namespace AsynGyanis::Net
      * @brief 编一个版本协商包（RFC 9000 §17.2.1）
      * @details 布局：首字节（最高位 1 表长头，其余 7 位本实现取 `0xC0`——把 §17.2.1 建议的那一位置 1，
      *          让它看起来带固定位，余下按「任意值」取 0）、32 位版本恒 0、两条长度 + 标识、再跟一列
-     *          32 位支持的版本。包里没有包号与 Length 字段，因此**一条数据报只装得下它自己**，
+     *          32 位支持的版本。包里没有包号与 Length 字段，因此一条数据报只装得下它自己，
      *          且对单个数据报最多回一条（§17.2.1 的 MUST NOT）。它不被确认，也不进任何连接状态。
-     * @param destinationConnectionId 回包的目的标识，取值为收到报文的**源**连接标识（§17.2.1 的映射）
-     * @param sourceConnectionId 回包的源标识，取值为收到报文的**目的**连接标识；两条一起回显，
+     * @param destinationConnectionId 回包的目的标识，取值为收到报文的源连接标识（§17.2.1 的映射）
+     * @param sourceConnectionId 回包的源标识，取值为收到报文的目的连接标识；两条一起回显，
      *        客户端据此判这条回包不是旁观者凭空造的
      * @param supportedVersions 本端支持的版本列表，至少一条
      * @return std::vector<std::uint8_t> 可直接交给 UDP 的整条数据报
@@ -175,7 +175,7 @@ namespace AsynGyanis::Net
      *          越出数据报末尾。版本策略（不支持的版本要回什么、Retry/版本协商怎么处理）不在本层，
      *          本层对 Retry 与版本协商一律报 `Malformed`，由上层按丢弃处理。
      * @param datagram 一个完整的 UDP 数据报净字节，按「指针 + 长度」取
-     * @param shortHeaderDestinationConnectionIdLength **短头报文的**目的连接标识长度，必须是本端签发
+     * @param shortHeaderDestinationConnectionIdLength 短头报文的目的连接标识长度，必须是本端签发
      *        标识的字节数。短头线上不带长度字段（§17.3.1），传大了解进来的包号字节、传小了解出的标识
      *        不完整，两种都让路由表命不中，只能整包丢
      * @return 成功返回只填了明文部分的 `QuicPacketHeader`，包号相关字段要等 refresh
@@ -186,7 +186,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 去掉头部保护后把首字节换回真值，并补齐包号长度、包号与短头标志位
-     * @details 掩出来的首字节会改动保留位与包号长度两位，因此这两趟之间**不能**使用包号；
+     * @details 掩出来的首字节会改动保留位与包号长度两位，因此这两趟之间不能使用包号；
      *          本函数同时复核 Length 域与真实包号长度是否自洽。
      * @param header 第一趟解出的报文头，就地更新
      * @param unmaskedFirstByte 去掉头部保护之后的首字节
@@ -199,7 +199,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 按线格式写出截断包号（RFC 9000 §17.1）
-     * @details 包号是**定长大端**、只保留最低 `packetNumberByteCount` 个字节，**不带**变长整数的
+     * @details 包号是定长大端、只保留最低 `packetNumberByteCount` 个字节，不带变长整数的
      *          前缀位——§16 末段把版本、连接标识长度与包号都排除在变长整数编码之外。对端靠
      *          「已收过的最大包号 + 半窗口」把高位补回来（见 `restoreQuicPacketNumber`）。
      * @param bytes 目标缓冲，二进制安全

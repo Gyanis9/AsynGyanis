@@ -27,7 +27,7 @@ namespace AsynGyanis::Core
     std::expected<UpgradeChannel, std::string> UpgradeChannel::open()
     {
         // 通道本体是套接字：Windows 上任何 socket 调用之前都要有 Winsock 初始化引用。
-        // 这条引用交出去之后就没人管了，所以按**不加配对的 initialize()** 申请：一次换代
+        // 这条引用交出去之后就没人管了，所以按不加配对的 initialize() 申请：一次换代
         // 只开一条通道，进程活多久它活多久，让配对的 finalize() 有机会把还在用的 Winsock
         // 拆掉才是更糟的选择
         static_cast<void>(Platform::Socket::initialize());

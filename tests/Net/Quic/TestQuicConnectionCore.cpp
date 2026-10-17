@@ -208,7 +208,7 @@ namespace AsynGyanis::Net
              * @param sourceConnectionId 本端在第一个 Initial 里的源标识
              * @param mismatchedSourceConnectionId 要不要把参数里的 ISCID 写成别的值，用于 §7.3 绑定用例
              * @param maximumIdleTimeoutMilliseconds 本端宣告的 max_idle_timeout，0 表示不宣告（§18.2）
-             * @param advertisedStreamWindowByteCount 本端在**自己发起的那条双向流**上宣告的流级额度，默认
+             * @param advertisedStreamWindowByteCount 本端在自己发起的那条双向流上宣告的流级额度，默认
              *        给够；用例要验「正文比额度大」时把它调小，好让流量控制而不是拥塞窗口先卡住
              */
             InMemoryQuicClient(SSL_CTX &context, std::vector<std::uint8_t> sourceConnectionId, const bool mismatchedSourceConnectionId = false,
@@ -408,7 +408,7 @@ namespace AsynGyanis::Net
             }
 
             /**
-             * @brief 把 ClientHello 分成 [0, 半) 与 [四分之一, 末尾) 两条**重叠**的数据报
+             * @brief 把 ClientHello 分成 [0, 半) 与 [四分之一, 末尾) 两条重叠的数据报
              * @details 用来验「重传换了分片大小时要剪掉重叠的那一段」（§7.5）：不剪就会把重复字节
              *          喂给 TLS，握手当场报错收口
              * @return 两条数据报，前一条短、后一条从中间开始且盖住前一条的后半段
@@ -428,7 +428,7 @@ namespace AsynGyanis::Net
             }
 
             /**
-             * @brief 把 ClientHello 分成 [后半段, 前 3/4 段] 两条**跨界重叠**的数据报
+             * @brief 把 ClientHello 分成 [后半段, 前 3/4 段] 两条跨界重叠的数据报
              * @details 用来验「重传换了分片大小」这一种合法写法：后一段的起点落在前一段之内，
              *          只按起点建索引的缓存会在喂完前 3/4 段之后再也找不到那个偏移，握手永远接不上
              * @return 两条数据报：先是偏移靠后的那一段，再是跨过它起点的那一段
@@ -688,7 +688,7 @@ namespace AsynGyanis::Net
                 while (offset < bytes.size())
                 {
                     const auto remainder = bytes.subspan(offset);
-                    // 短头没有长度字段：服务端发来的 1-RTT 包里目的标识是**本端自报**的那一条
+                    // 短头没有长度字段：服务端发来的 1-RTT 包里目的标识是本端自报的那一条
                     const auto decodedHeader = decodeQuicPacketHeader(remainder, m_sourceConnectionId.size());
                     if (!decodedHeader.has_value() || decodedHeader->packetByteCount == 0 || offset + decodedHeader->packetByteCount > bytes.size())
                     {
@@ -2358,7 +2358,7 @@ namespace AsynGyanis::Net
      *          截止刷成这一段），而 QUIC 的空闲超时只认「有没有报文进来」——一个 40 秒的处理器既不读也不写，
      *          两端各自的 `max_idle_timeout` 先到期，连接被静默收口，同一份业务换到 h3 就丢响应。
      *          RFC 9000 §10.1.2 给的合法解法正是空闲期发一条 PING。
-     * @details 另一半判据是**不能把它写成无条件续命**：续期走 `emitPacket` 里那条既有规则——「收到报文之后的
+     * @details 另一半判据是不能把它写成无条件续命：续期走 `emitPacket` 里那条既有规则——「收到报文之后的
      *          第一包主动发包才续一期」。对端活着就会回 ACK，那一收把标记清掉、下一轮才还能续；对端没了就
      *          永远收不到报文，截止不再被顶开，连接按原定时刻收口。下面第三条断言钉的就是这一格
      */
@@ -2405,7 +2405,7 @@ namespace AsynGyanis::Net
         core.onTimeout(originalDeadline);
         EXPECT_NE(core.phase(), QuicConnectionPhase::Closing) << "保发包没顶开空闲截止：连接还是会在原时刻被掐";
 
-        // 此后对端一句不回：第二次保活可以发包，但**不能**再把截止往后推——僵尸连接的闸就在这
+        // 此后对端一句不回：第二次保活可以发包，但不能再把截止往后推——僵尸连接的闸就在这
         const Timestamp secondAttempt = extendedDeadline - Timestamp{4000000};
         EXPECT_TRUE(core.requestKeepalive(secondAttempt));
         core.drive(secondAttempt + Timestamp{1000});
@@ -3231,7 +3231,7 @@ namespace AsynGyanis::Net
         EXPECT_GE(core.congestionWindowByteLength(), windowBefore) << "对端只报 ECT(0)、一条 CE 都没报，本端不该降窗";
 
         // 路由器开始染色：本端发出的包被按 CE 收下，而它们在恢复层里仍记着发出时的 ECT(0)。
-        // 判据按**逐轮**的形状：CE 计数一到，那一轮必然把窗口压下去——同一帧里被确认的包都发在
+        // 判据按逐轮的形状：CE 计数一到，那一轮必然把窗口压下去——同一帧里被确认的包都发在
         // 这次拥塞事件之前，按 §7.3.2 一条都不涨窗。写成「几轮之后比 windowBefore 小」就等于把
         // 「窗口这几轮涨了多少」编进判据，涨得快的那版实现反而会被判红
         client.setIncomingEcnCodepoint(Platform::kEcnCodepointCe);
@@ -3531,7 +3531,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 本端签发的**每一条**连接标识都得收（§5.1.1 的 MUST accept）
+     * @brief 本端签发的每一条连接标识都得收（§5.1.1 的 MUST accept）
      * @details 通告出去的备用标识一上线就可能出现在对端的短头里。只认握手期那一条的话，对端改用
      *          备用标识之后本端会把它的报文全丢掉——而外壳的路由表（按签发通知建的别名索引）已经
      *          把报文送到了连接手上，两层对「这条报文是不是我的」必须给出同一个结论
@@ -3735,7 +3735,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(isUnspecifiedQuicPathKey(followFlight[1].pathKey)) << "§9.3.3：疑似迁移时必须在原来那条活动路径上也验一次";
         EXPECT_EQ(followFlight[2].pathKey, newPathKey) << "换地址之后确认也要打到新地址上（§9.3 的 MUST）";
 
-        // ③ 把压着的那条**更旧**的非探测包从原路径送进来：发包目标不能被它拽回去（§9.3 只认编号最高的那条）
+        // ③ 把压着的那条更旧的非探测包从原路径送进来：发包目标不能被它拽回去（§9.3 只认编号最高的那条）
         feedOnPath(core, lateOldPathPacket, Timestamp{150000}, QuicPathKey{});
         const std::vector<QuicOutboundDatagram> lateOutbound = drainMarked(core);
         for (const QuicOutboundDatagram &datagram: lateOutbound)

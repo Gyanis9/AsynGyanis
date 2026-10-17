@@ -138,7 +138,7 @@ namespace AsynGyanis::Platform
          * @param slotCount 槽位数
          * @return ssize_t 交付条数；超时或真错误分别交回 0 与 -1
          * @details 与 `receiveWithTimeout` 同一形状：本用例要判的是「一次批次能交出几条」，
-         *          因此这里只在**一次**调用里等出条目，拿到几条就算几条，不替被测代码合批。
+         *          因此这里只在一次调用里等出条目，拿到几条就算几条，不替被测代码合批。
          */
         ssize_t receiveBatchWithTimeout(const DatagramSocket &socket, DatagramSocket::BatchSlot *const slots, const std::size_t slotCount)
         {
@@ -160,7 +160,7 @@ namespace AsynGyanis::Platform
         }
 
         /**
-         * @brief 造一个已绑定的回环数据报套接字，交回来的是**裸描述符**
+         * @brief 造一个已绑定的回环数据报套接字，交回来的是裸描述符
          * @param port 输出：内核分配的端口
          * @return int 描述符；负值表示没造出来
          * @details 接管接口的输入是别人已经绑好的描述符，而 DatagramSocket 没有「交出所有权」的
@@ -216,7 +216,7 @@ namespace AsynGyanis::Platform
         }
 
         /**
-         * @brief 打开一个**有效但根本不是套接字**的句柄（设备文件），当接管拒绝面的输入
+         * @brief 打开一个有效但根本不是套接字的句柄（设备文件），当接管拒绝面的输入
          * @return int 描述符；负值表示没打开成
          * @details 接管第一步问的是 SO_TYPE，问不出来的那一档与「是套接字但不是数据报」是两回事：
          *          前者要换传进来的东西，后者是交出方送错了类型，混成一档就把两条不同的下一步并成了
@@ -381,7 +381,7 @@ namespace AsynGyanis::Platform
      * @details 这是 QUIC 收包侧的那笔账：一条连接上的几个包本来每包付一次 `recvfrom` 加一次就绪
      *          等待。本层对外的承诺是「一次调用把已经排在套接字上的报文一起交出来」，两侧同形——
      *          实测 Windows 的逐条退化档同样一次交出排好的三条，所以本用例判的是这条共同语义，
-     *          把实现退回「每次一条」时红在第一条批次调用只交 1 上。两侧的差别只在**付几次系统调用**
+     *          把实现退回「每次一条」时红在第一条批次调用只交 1 上。两侧的差别只在付几次系统调用
      *          （Linux 一次 `recvmmsg`，Windows 三次 `recvfrom`），那一格不在这里判，写在头文件的
      *          @note 里供读数时对照。
      */
@@ -718,7 +718,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：绑好的数据报套接字已清掉继承位，POSIX 那一侧由 FD_CLOEXEC 用例覆盖
-     * @details Winsock 句柄**默认就是可继承的**，只有创建路径显式清这一位才不泄漏给子进程；这与
+     * @details Winsock 句柄默认就是可继承的，只有创建路径显式清这一位才不泄漏给子进程；这与
      *          POSIX「默认不继承、要靠 SOCK_CLOEXEC 才不继承」正好相反，所以两侧各钉一条而不是共用。
      *          漏清时 worker 子进程会替父进程持着这个端口，父进程退出后重启即报地址占用。
      */
@@ -842,7 +842,7 @@ namespace AsynGyanis::Platform
      * @details 静默接下来各自的代价：流套接字上「收数据报」永远收不到东西；没 bind 的套接字没有端口，
      *          接过来只是一台谁也不认识的服务器。第四档「句柄有效但不是套接字」只在 POSIX 上造得出输入，
      *          由 ReportsADistinctCauseWhenTheHandleIsNotASocket 判。
-     *          不关描述符是所有权约定——**只在成功时**接管。
+     *          不关描述符是所有权约定——只在成功时接管。
      */
     TEST(DatagramSocket, RejectsDescriptorsItCannotAdopt)
     {
@@ -904,7 +904,7 @@ namespace AsynGyanis::Platform
      *          Linux 臂——发 ECT(0) 读回 1、发 ECT(1) 读回 2、不标读回 0。三格都要是因为中间节点会把
      *          ECT(*) 改成 CE，而计数那一侧要能认出四个取值里的每一个；「不标也读成 0」这一格还同时
      *          钉住 0 不是残留值——每一轮先把出参污染成 CE 再收，读不到就会露成 CE。
-     *          Windows 臂——`setEcnFieldVisible(true)` 必须**回 false** 且 `isEcnFieldVisible()` 保持 false。
+     *          Windows 臂——`setEcnFieldVisible(true)` 必须回 false 且 `isEcnFieldVisible()` 保持 false。
      *          上层靠这一格决定 ACK 里要不要带 ECN 计数（RFC 9000 §13.4.1 明确允许读不到的端点不报），
      *          而「静默成功但其实全是 0」会让上层报一份零计数、对端据此把一条好好的路判成不支持 ECN。
      */
@@ -1037,7 +1037,7 @@ namespace AsynGyanis::Platform
      * @brief 「不要在 IP 层分片」这一档两侧都设得上去，而且读数与内核同解
      * @details QUIC 的这条是 RFC 9000 §14 的 MUST（IPv4 要设 DF 位），也是路径 MTU 探测成立的前提。
      *          与 ECN 那一格不同：Linux 有 `IP_MTU_DISCOVER`，Windows 有 `IP_DONTFRAGMENT`，两侧都有入口，
-     *          所以这里要求的是**成功**而不是退化——设不上就说明这一档在本仓根本没接对，探测会静默停摆。
+     *          所以这里要求的是成功而不是退化——设不上就说明这一档在本仓根本没接对，探测会静默停摆。
      * @details 另一条判据是「没 bind 之前不许假装成功」：地址族还不认识，选项该开在 IPPROTO_IP 还是
      *          IPPROTO_IPV6 上无从决定，外壳一律是绑好端口再调，这里钉住那个用法错误的出口。
      */

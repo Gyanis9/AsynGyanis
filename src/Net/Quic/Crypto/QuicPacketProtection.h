@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details nonce 由 IV 与**完整包号**异或得到（不是线上那个截断值），AAD 是「从头字节到包号末尾」
+ * @details nonce 由 IV 与完整包号异或得到（不是线上那个截断值），AAD 是「从头字节到包号末尾」
  *          的未加密头部。两者都只在本层出现一次，写错的代价是「对端全都解不开」。
  */
 
@@ -30,7 +30,7 @@ namespace AsynGyanis::Net
      * @details 明文为空也合法（会产出一个只有标签的密文）；输入按「指针 + 长度」取，可含任意二进制。
      * @param output 目标缓冲，二进制安全
      * @param keys 该方向、该级别的包保护密钥
-     * @param packetNumber **完整**包号（未截断的那个），只取低 62 位参与 nonce
+     * @param packetNumber 完整包号（未截断的那个），只取低 62 位参与 nonce
      * @param additionalData 报文的未加密头部：从首字节起、含包号字段
      * @param plaintext 帧序列字节
      * @throws Base::Exception 运行期故障：OpenSSL 建不了上下文、拒绝了参数或加密本身失败
@@ -42,7 +42,7 @@ namespace AsynGyanis::Net
      * @brief 解密载荷并校验标签
      * @param plaintextOutput 输出缓冲，长度必须等于 protectedPayload 去掉 16 字节标签后的长度
      * @param keys 该方向、该级别的包保护密钥
-     * @param packetNumber 从报文里还原出的**完整**包号
+     * @param packetNumber 从报文里还原出的完整包号
      * @param additionalData 报文的未加密头部：从首字节起、含包号字段
      * @param protectedPayload 密文加标签
      * @return 成功返回写入的明文字节数

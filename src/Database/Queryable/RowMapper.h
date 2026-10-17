@@ -155,7 +155,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把一段十进制整型文本严格解析成目标整型
          *
          * @details 引擎存得下、却给不出 int64 的整数只能以文本返回（MySQL 的 BIGINT UNSIGNED
-         *          上界 2^64-1），因此整型成员必须能读文本。解析必须**严格**：用 std::from_chars，
+         *          上界 2^64-1），因此整型成员必须能读文本。解析必须严格：用 std::from_chars，
          *          不跳前导空白、不接受余文、按 C locale 解析且不抛异常（std::stoll 三者都会放宽）。
          *          解析宽度按目标类型的符号性选：无符号成员要吃下 int64 之外的上界。
          *
@@ -207,11 +207,11 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 把一段十进制小数文本严格解析成目标浮点类型
          *
-         * @details MySQL 的 DECIMAL/NEWDECIMAL 列按**文本**交回（见 MySql/MySqlValueConversion.h：
+         * @details MySQL 的 DECIMAL/NEWDECIMAL 列按文本交回（见 MySql/MySqlValueConversion.h：
          *          「DECIMAL 与其余类型→std::string」），而 DECIMAL 正是金额与精确量的常用列型——
          *          少了这一支，同一个结构体在 SQLite 上读得动、在 MySQL 上逐行报列类型错误，
          *          报的还是「列声明与成员声明不符」。整型一侧早就收十进制文本，理由同一条。
-         * @details 收下之前先判**有效位数**：超过 `digits10`（double 15 位、float 6 位）的十进制转成
+         * @details 收下之前先判有效位数：超过 `digits10`（double 15 位、float 6 位）的十进制转成
          *          二进制浮点会静默改值，而本层对「静默改值」的一贯处置是报错而不是取整。
          *          位数按「第一个非零数字到最后一个非零数字」计——前后置零不携带信息：
          *          `"0.0012"` 算 2 位、`"10000000000000000"` 算 1 位，两者都收。
@@ -320,7 +320,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把一个单元格的值转换成目标成员类型
          * @details 整型接受 std::int64_t 或严格十进制文本（引擎存得下却给不出 int64 的整数只能以文本
          *          返回），越界即报错而不是取整、截断。bool 只认 0 与 1；浮点接受 Double、能逐位精确
-         *          表示的 Int64，以及**十进制小数文本**（MySQL 的 DECIMAL 列走的就是文本，见
+         *          表示的 Int64，以及十进制小数文本（MySQL 的 DECIMAL 列走的就是文本，见
          *          parseDecimalText()），收窄会改变数值时一律报错。
          * @tparam MemberType 目标成员类型（可为 std::optional 包装）
          * @param cellValue 结果集当前行的单元格值
@@ -613,7 +613,7 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 一次性解析结构体全部列在结果集中的下标（列结构对整个结果集不变，供逐行复用）
-         * @details 同时校验各列解析到**不同**的下标：两个成员写同一个列名（或结果集里有两个同名列）
+         * @details 同时校验各列解析到不同的下标：两个成员写同一个列名（或结果集里有两个同名列）
          *          时，二者都会拿到同一列的值而无人报错，属于静默错值，必须在建表时就暴露。
          * @tparam T 结构体类型
          * @tparam IndexPositions kColumns 的下标序列

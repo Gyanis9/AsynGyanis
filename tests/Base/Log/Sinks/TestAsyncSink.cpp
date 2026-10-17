@@ -899,7 +899,7 @@ namespace AsynGyanis::Base
     /**
      * @brief 反复「构造完立刻析构」必须次次完成：停止请求的唤醒一旦被丢弃就是永久挂死
      * @details 该形状正好把停止请求打进 worker 的首次等待窗口，是丢唤醒的最短路径。
-     *          循环放在独立线程里、主线程有界等待——回归时用例是**失败**，而不是把测试进程
+     *          循环放在独立线程里、主线程有界等待——回归时用例是失败，而不是把测试进程
      *          挂到作业超时（120 分钟）才被发现。
      */
     TEST(AsyncSink, RepeatedConstructionAndDestructionAlwaysCompletes)

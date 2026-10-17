@@ -26,7 +26,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一台 HTTP 服务器的可配置项集合。
      *
-     * @details 每个字段的默认值与对应结构体的默认值一致，因此配置里**只写要改的那几项**即可，
+     * @details 每个字段的默认值与对应结构体的默认值一致，因此配置里只写要改的那几项即可，
      *          没写的键保持默认——这也让「升级后新增的键」在旧配置上自动取到合理取值。
      * @note 其中 `limits`（超时与单连接请求上限）可由 `HttpServer::setLimits()` / `HttpsServer::setLimits()`
      *       在运行期整体换代，只影响此后新建的连接；其余项与端点开关仍在 start() 之前落定。
@@ -58,13 +58,13 @@ namespace AsynGyanis::Net
         /**
          * @brief 在途请求正文的总量上限，单位字节（整机口径，装配时摊到每个 worker 进程）
          * @details 补的是「单条报文的上限挡不住很多条连接」这一格：`parser_limits.maximum_body_size`
-         *          限的是**一条**请求的正文，N 条连接各压着一条大正文时总占用与连接数同增，而每个
+         *          限的是一条请求的正文，N 条连接各压着一条大正文时总占用与连接数同增，而每个
          *          分量看着都合规。超出本预算的新请求回 503 并收口，把额度留给已收下正文的连接。
          * @note 默认 0 = 不设这道账。刻意不给有限默认值：一个有限数会在「升级后什么都没改」的部署上
          *       突然开始回 503，而配置文件的每一行看着都对——这类默认值只能由部署方自己选
-         * @note 账只覆盖三条 HTTP 通道（h1/h2/h3）的**请求正文**；WebSocket 帧缓冲、每连接接收窗口
+         * @note 账只覆盖三条 HTTP 通道（h1/h2/h3）的请求正文；WebSocket 帧缓冲、每连接接收窗口
          *       与响应正文都不在本预算之内
-         * @note h2/h3 的**流式路由**也不在这本账上：那条路上正文不在服务端留存，未消费的字节由每流
+         * @note h2/h3 的流式路由也不在这本账上：那条路上正文不在服务端留存，未消费的字节由每流
          *       接收窗口钉住上界（不消费就不还窗口，对端本来就发不出来），再记一遍等于把「业务读得慢」
          *       判成超限——那时响应已在路上，503 也回不出去。h1 相反：它的预留发生在派发之前
          *       （那时还判不出这条会不会走流式），所以流式路由照样进账。因此
@@ -87,7 +87,7 @@ namespace AsynGyanis::Net
          * @details 两个用处：① 来源收口——管理口默认只听回环（`metricsAddress`），业务口可以继续开
          *          在 0.0.0.0；② 多进程部署时每个进程各听一个端口（调用方按进程序号错开），
          *          采集端就能按进程聚合而不是随机命中某一台。
-         * @note 管理口是**另一台服务器**，由调用方自己起：本仓的参考实现只在它上面发 HTTP/1.1，
+         * @note 管理口是另一台服务器，由调用方自己起：本仓的参考实现只在它上面发 HTTP/1.1，
          *       业务口开了 h2c 也不会带过去。抓取端（Prometheus 一类）本来就是 h1，运维面上多一条
          *       协议栈只是多一处可被打的入口。想确认这一步没走偏，看用例
          *       `Http2CleartextSession.RefusesH2cPrefaceWhenCleartextSupportIsOff`——没开 h2c 的端口
@@ -104,7 +104,7 @@ namespace AsynGyanis::Net
      *
      * @details 读的是文档的 `server` 段，键名与 HttpServerConfiguration 的字段同名（超时一律带 `_ms`
      *          后缀，单位毫秒）。三层嵌套：`limits`（连接级）、`parser_limits`（单条报文）、
-     *          `rate_limit`（令牌桶）。**没有任何配置时返回一份全默认值**，调用方因此不必区分
+     *          `rate_limit`（令牌桶）。没有任何配置时返回一份全默认值，调用方因此不必区分
      *          「配置里没有 server 段」与「配置里有但没写这一项」。
      *
      * @param configurationRoot 配置文档的根值，即一个以 `server` 为键的对象。从
@@ -112,7 +112,7 @@ namespace AsynGyanis::Net
      *        （ConfigManager 的键是扁平的，get("server") 取不到中间层节点）
      * @return HttpServerConfiguration 读出来的配置；缺失的键取结构体默认值
      * @throws Base::ConfigValidationException 段或子段不是对象、出现未知键、类型不符或取值越界。
-     *         未知键也算错是**刻意**的：把 `idle_timeout` 写成 `idle_timeout_ms` 时静默忽略
+     *         未知键也算错是刻意的：把 `idle_timeout` 写成 `idle_timeout_ms` 时静默忽略
      *         等于配置没生效却看不出来，正是最难查的一类问题。
      * @note 只读不写，线程安全取决于调用方传入的值树是否可变（本函数不做任何修改）
      * @see HttpServerConfiguration, Base::ConfigManager

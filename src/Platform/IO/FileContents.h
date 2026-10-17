@@ -31,7 +31,7 @@ namespace AsynGyanis::Platform
      * @param length 期望读出的字节数；为 0 时不打开文件，直接把缓冲调成空长度
      * @param target 输出缓冲，进入时容量可复用；无论成功与否，长度都被调整：成功时为实际读到的
      *               字节数，失败时内容未定义（调用方应丢弃这次结果）
-     * @param openedAs 可选出参：成功时填入**实际读到的那个文件对象**的基本信息（句柄绑定的对象，
+     * @param openedAs 可选出参：成功时填入实际读到的那个文件对象的基本信息（句柄绑定的对象，
      *                 不随同路径的原子替换而改变）；传 nullptr 表示不需要这份信息
      * @return std::expected<std::size_t, std::error_code> 实际读到的字节数；短读（文件比期望的短）
      *         以小于 length 的返回值表达，不报错也不补零；length 大得连缓冲都调不出来（超出可表示

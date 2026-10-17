@@ -8,7 +8,7 @@
 //    ——这三条都得跟真的服务端过一遍才作数，hiredis 怎么报读超时尤其只能实测。
 //
 // 真机门控与 TestRedisIntegration.cpp 同一条：未设置 ASYN_REDIS_TEST_PASSWORD 时整组 GTEST_SKIP，
-// 仓库里不留明文口令。notify-keyspace-events 是**服务端全局**配置：改之前先读回原值，收尾原样还回去。
+// 仓库里不留明文口令。notify-keyspace-events 是服务端全局配置：改之前先读回原值，收尾原样还回去。
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"
@@ -341,7 +341,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 真机：同一条命令里重复的频道，不该让退订去等一条服务端根本不会发的确认
      * @details 本机实测（宿主那份 redis）：`SUBSCRIBE a a` 为两个参数各回一条 subscribe 确认（确认里的
-     *          计数两次都写 1），而无参数的 `UNSUBSCRIBE` 只为那**一份**真订阅回一条确认。订阅账原先按
+     *          计数两次都写 1），而无参数的 `UNSUBSCRIBE` 只为那一份真订阅回一条确认。订阅账原先按
      *          「发出去的目标条数」记，退订那一步于是多等一条——白等满一次确认时限（5 秒）之后把这条
      *          连接判成「订阅状态不确定」，而它其实是干净的。现在记去重后的名单。
      *          判据只押结论不押毫秒：unsubscribeAll() 必须返回真，且退订后回到一条命令一条回复的形状

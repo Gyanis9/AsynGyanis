@@ -121,7 +121,7 @@ namespace AsynGyanis::Database
         constexpr std::string_view kReusedStatementColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(64) NOT NULL";
 
         /// 带参流式用例的表：行数跨过预取窗口（64 行），列含长 TEXT（逐列补取路径）与 NULL。
-        /// **每个用例一张独立表名**：ctest 逐用例并行起进程，同名表会在对方 Drop/Create 时被抽走
+        /// 每个用例一张独立表名：ctest 逐用例并行起进程，同名表会在对方 Drop/Create 时被抽走
         constexpr std::string_view kParameterizedStreamingColumns          = "`id` BIGINT PRIMARY KEY, `label` VARCHAR(64) NOT NULL, `payload` MEDIUMTEXT NULL";
         constexpr std::size_t      kParameterizedStreamingRowCount         = 150;
         constexpr std::string_view kParameterizedStreamingReadTableName    = "Asyn_Mysql_ParamStream";
@@ -213,7 +213,7 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTransactionSavepointLateTableName = "Asyn_Mysql_Tx_Savepoint_Late";
         // 时限透传读数用例的表：并行不得共用，理由与上面几条注释相同
         constexpr std::string_view kTransactionBudgetTableName = "Asyn_Mysql_Tx_Budget";
-        // 非有限取值用例的表：DOUBLE 列必须**可空**，否则旧实现会撞 NOT NULL 约束而「看起来也在拒绝」
+        // 非有限取值用例的表：DOUBLE 列必须可空，否则旧实现会撞 NOT NULL 约束而「看起来也在拒绝」
         constexpr std::string_view kNonFiniteTableName = "Asyn_Mysql_NonFinite_Double";
         constexpr std::string_view kTransactionColumns = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `amount` DOUBLE NOT NULL";
 
@@ -272,7 +272,7 @@ namespace AsynGyanis::Database
         constexpr std::string_view kVersionedLockColumns   = "`id` BIGINT PRIMARY KEY, `name` VARCHAR(191) NOT NULL, `version` BIGINT NOT NULL";
 
         /// 关系装载用例的三张表：都由用例自建自清（表名先 grep 过，整个文件零命中）。
-        /// **include 用例另起一套表名**：ctest 按进程并行跑用例，两套用例共表会在对方 DROP/CREATE
+        /// include 用例另起一套表名：ctest 按进程并行跑用例，两套用例共表会在对方 DROP/CREATE
         /// 的窗口里读到「表不存在」（实测：并发那一轮两条都红，串行跑各自都绿）
         constexpr std::string_view kRelationAuthorTableName  = "Asyn_Mysql_RelAuthors";
         constexpr std::string_view kRelationPostTableName    = "Asyn_Mysql_RelPosts";
@@ -1304,7 +1304,7 @@ namespace AsynGyanis::Database
      *          MySQL 侧此前只靠「握手时不开 CLIENT_MULTI_STATEMENTS」这一个实现事实，没有用例守着：
      *          谁把这个位加上（它正是拼接注入的常规出口），行为就会静默变成「首条照跑、后段报错」。
      *          两条协议路径都钉：文本走 mysql_real_query，预处理走 mysql_stmt_prepare，服务端都要在
-     *          解析阶段就拒，且**首条不落库**——半执行状态比报错危险得多。
+     *          解析阶段就拒，且首条不落库——半执行状态比报错危险得多。
      */
     TEST_F(MySqlIntegrationTest, MultipleStatementsAreRejectedWithoutRunningTheFirst)
     {
@@ -2235,7 +2235,7 @@ namespace AsynGyanis::Database
      * @brief 验证真实服务端上的异步读写全链路与同步版在同一张表上逐项一致
      *
      * @details 覆盖 insertAsync → toListAsync → countAsync → updateAsync → executeNonQueryAsync：每一步都与同一张表上的
-     *          同步版本对照，异步写之后一律用**同步查询**读回——同步查询看到的才是服务端的真实数据，这是「写确实提交上去了」
+     *          同步版本对照，异步写之后一律用同步查询读回——同步查询看到的才是服务端的真实数据，这是「写确实提交上去了」
      *          的权威证据。执行器沿用进程级共享实例（顺带覆盖零配置的默认路径），协程的恢复都发生在后台事件循环线程上。
      */
     TEST_F(MySqlIntegrationTest, AsyncReadWriteChainMatchesSyncResults)
@@ -2731,7 +2731,7 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 钉住：归还路径把借用者裸设的 `SET autocommit = 0` 退回建连时那一份
-     * @details 上面两条钉的是「已经开出来的那笔事务」，而 `autocommit` 本身是**会话级设置**：不退回去，
+     * @details 上面两条钉的是「已经开出来的那笔事务」，而 `autocommit` 本身是会话级设置：不退回去，
      *          下一位的每条单语句都会隐式开事务并把行锁握到他归还为止，而他自己并不知道不在自动提交模式下。
      *          判据读的是服务端在应答里自报的那一位（与本类记账无关），因此这一格只有真服务端测得出来。
      */
@@ -2753,7 +2753,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 钉住：借用者裸发 `USE` 换掉的默认库在归还时退回配置那一份
      * @details 本类没有「换库」的 setter（Redis 有 selectDatabase()，MySQL 侧就是发原始语句），因此这份账
-     *          只能从语句文本上记。不退回的后果不是报错而是**认错对象**：方言的元数据查询按 `DATABASE()`
+     *          只能从语句文本上记。不退回的后果不是报错而是认错对象：方言的元数据查询按 `DATABASE()`
      *          限定库名，下一位的「这张表不存在」其实是「在别人的库里不存在」，于是 migrator 到别人的库里
      *          建表，或读写落到同名而不同的那张表上。用例借用 `information_schema` 这张恒在的库做切换目标，
      *          不新建也不触碰任何业务库
@@ -2798,7 +2798,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 钉住：绕过 `setQueryTimeout()` 直接发 `SET SESSION max_execution_time` 也在归还时被重申
      * @details 基类那份账只认自己 setter 设过的值，两条来路各归一处才不漏：走 setter 的那条由池退回基线，
-     *          走原始语句的那条由 `resetSessionState()` 按文本记下来再重申一次。期望值取**改动前**的读数，
+     *          走原始语句的那条由 `resetSessionState()` 按文本记下来再重申一次。期望值取改动前的读数，
      *          不在用例里重算毫秒→秒的换算（那是 `applyStatementTimeLimit` 自己的判据，另有直测）
      */
     TEST_F(MySqlIntegrationTest, ResetSessionStateReappliesStatementTimeLimitAfterARawSet)
@@ -3224,7 +3224,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 「流被中途掐断」那一条用的探集语句：5 万行、每行约 700 字节，总量远超任何套接字缓冲
-         * @details 尺寸是这条判据的前提。服务端被 KILL 之后，客户端仍会把**已经在途**的那些行读完
+         * @details 尺寸是这条判据的前提。服务端被 KILL 之后，客户端仍会把已经在途的那些行读完
          *          （它们早就进了套接字缓冲），才撞上断链——所以一份只有 1000 行、约 30 KB 的结果
          *          完全可能整体落在缓冲里，让「读完」与「断了」在客户端看不出差别，用例就变成
          *          赌时序。按 5 万行 × 700 字节（约 34 MB）走，客户端能读到的前缀必然远小于总量，
@@ -3239,7 +3239,7 @@ namespace AsynGyanis::Database
     } // namespace
 
     /**
-     * @brief 流式读与预读交出**同一份数据**，三条契约差异按文档落地
+     * @brief 流式读与预读交出同一份数据，三条契约差异按文档落地
      * @details 两条路径共用 MySqlValueConversion 的列值映射，但数据来源不同（客户端缓冲 vs 服务端回复流），
      *          最容易坏在「流式那一份悄悄少读了几行」或「NULL 被读成空串」。因此判据按行逐格比对，
      *          行数以预读那一份为基准，而流式那一份必须老实说「行数未知」（rowCount() 回 0）且
@@ -3296,7 +3296,7 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 流式结果未消费完之前占住这条连接，丢掉之后又把它交还
-     * @details 这一条同时干两件事。前半是**本组的本地拦截**：未读完就发新语句在**发送之前**被拒
+     * @details 这一条同时干两件事。前半是本组的本地拦截：未读完就发新语句在发送之前被拒
      *          （文案点名「未消费完的流式结果」）——此前这一拒来自服务端 Commands out of sync，语句已经
      *          上了线；现在语句一条都不发，因此这类拒绝不改变任何服务端状态、可安全重试。
      *          「use_result 的行确实留在服务端」这条分辨力改由断链那条用例承担（它按「远超套接字缓冲」
@@ -3347,12 +3347,12 @@ namespace AsynGyanis::Database
      * @brief 流读到一半服务端把这条会话杀掉：next() 报「中断」而不是「读完」
      *
      * @details 这条用例补的是上一条判据的另一半。`mysql_fetch_row` 交出空指针有两解——回复流读完了，
-     *          或者中途断了；驱动靠 `mysql_errno(连接)` 分辨（见 MySqlResult::next()），而**两个方向都要有人钉**：
+     *          或者中途断了；驱动靠 `mysql_errno(连接)` 分辨（见 MySqlResult::next()），而两个方向都要有人钉：
      *          上一条用例读到底并断言「错误状态是空的」，本条把会话打死并断言「错误状态不是空的、且点名中断」。
      *          只留前者会让「一概当读完」的实现照样全绿，而那种实现把残缺结果交给调用方当完整数据用——
      *          按行数预留容器、按「拿齐了」提交业务后果，都是这一格决定的。
      *
-     * @details 故障注入走服务端而不是本层：从**另一条连接**发 `KILL <线程号>`，服务端随即关闭这条会话，
+     * @details 故障注入走服务端而不是本层：从另一条连接发 `KILL <线程号>`，服务端随即关闭这条会话，
      *          客户端下一次读就撞上「查询期间连接中断」。刻意不做进程内模拟——真要覆盖的是
      *          「驱动读到的是网络层的断」，自己造的状态位证明不了这件事。
      *
@@ -3401,11 +3401,11 @@ namespace AsynGyanis::Database
     }
 
     /**
-     * @brief 在途未清流同样拦住**流式入口**、**借出前探针**与复位路径：计数与拒绝覆盖三条发送路径、一处探针、一处复位出口
+     * @brief 在途未清流同样拦住流式入口、借出前探针与复位路径：计数与拒绝覆盖三条发送路径、一处探针、一处复位出口
      * @details 前半：流开着时 executeStreaming() 也在发送前被拒（此前那一拒要等语句上线、由服务端回
      *          Commands out of sync），借出前的探针读同一份计数——mysql_ping 也是一条命令，排在没收完
      *          的回复流前面撞上 out-of-sync 后，那次失败说的是「这条连接不能再用」而不是「服务端不在」，
-     *          混进探针的判死里就会把一条其实活着的连接丢掉的。后半：这条连接此时**复位不出干净状态**——
+     *          混进探针的判死里就会把一条其实活着的连接丢掉的。后半：这条连接此时复位不出干净状态——
      *          resetSessionState() 必须回 false 并说明原因，池归还路径据此按「没复位干净」丢弃它，
      *          而不是把一条回包流停在中途的连接交给下一个借用者。结果集析构后三处都放开。
      * @note 证伪：把 m_openStreamCount 的读取改成恒 0（拦不住、也不判脏、探针也不再拒），本条各处断言当场红。
@@ -3818,7 +3818,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 真机上钉住种子数据的幂等：连跑两轮，第二轮一行都不新增
      * @details 与 SQLite 那条同一份判据，换到真服务端——MySQL 侧的关键差异是
-     *          「`INSERT IGNORE` 的影响行数**不含被跳过的行**」这条取值语义，计数判据因此必须真机验
+     *          「`INSERT IGNORE` 的影响行数不含被跳过的行」这条取值语义，计数判据因此必须真机验
      * @note 池上限为 1：迁移与种子各自要借连接，握着不放就是死等（同一条纪律）
      */
     TEST_F(MySqlIntegrationTest, SeedingIsIdempotentOnTheRealServer)

@@ -4,7 +4,7 @@
 //   二. 拒绝面：1xx/204/304 不能进流式模式、已设整块正文不能再进流式、流式下不能再设整块正文、
 //       未进模式或未装配回调时 writeChunk 报错；
 //   三. 真正流式：真实回环请求上分三段写出，客户端拿到按序相邻的三帧并以 0\r\n\r\n 收尾；
-//   四. 边写边到：处理器写出第一段后**等客户端读到它**才继续写，客户端因此必须在该处理器结束前
+//   四. 边写边到：处理器写出第一段后等客户端读到它才继续写，客户端因此必须在该处理器结束前
 //       拿到第一段与承载它的头部 —— 这是本功能的要点，必须实测；
 //   五. 消息边界：终止块之后同一条连接上的后续请求（含「一段都没写的流式响应」）照常应答；
 //   六. 半途断开与半途异常：客户端中途关闭、处理器写了一段后抛异常，两种都不得崩溃或挂死，
@@ -505,7 +505,7 @@ namespace AsynGyanis::Net
     TEST(HttpStreaming, SurvivesClientDisconnectMidStream)
     {
         // 钉住半途断开：客户端读到第一段后关闭连接，写侧迟早失败，处理器据此收手、会话正常收尾，
-        // 整个过程不得崩溃或挂死，且**处理器协程必须在有限时间内被释放**（帧一直挂着同样是缺陷：
+        // 整个过程不得崩溃或挂死，且处理器协程必须在有限时间内被释放（帧一直挂着同样是缺陷：
         // 它连同连接与缓冲会滞留到进程退出，而这一点不会有任何日志或断言失败来提示）。
         //
         // 本平台（Windows/wepoll）上写侧有两条被唤醒的路径，两条都在断言覆盖之下：
@@ -576,7 +576,7 @@ namespace AsynGyanis::Net
 
     TEST(HttpStreaming, ReleasesWriterParkedOnSweepClose)
     {
-        // 钉住「关闭描述符必须自己唤醒等可写的协程」这条路径：客户端只停读、**不关连接**，
+        // 钉住「关闭描述符必须自己唤醒等可写的协程」这条路径：客户端只停读、不关连接，
         // 内核不会回 RST，因此没有任何错误事件可用——写侧唯一的唤醒者就是清扫协程的
         // connection->close()（经 IoWatcher 析构把等待者投回调度器并以「未就绪」恢复）。
         // 少了这一步，卡在 writeChunk 上的处理器会一直挂着，帧与连接滞留到进程退出
@@ -618,7 +618,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid()) << "回环连接失败";
         ASSERT_TRUE(client.sendText(makeRequestText("GET /endless HTTP/1.1"), kWaitTimeout));
 
-        // 读一小段确认流已经开始，随后停读且**不关连接**：写侧因此只能等写超时
+        // 读一小段确认流已经开始，随后停读且不关连接：写侧因此只能等写超时
         std::string responseText;
         ASSERT_TRUE(client.waitForText(responseText, "10000\r\nx", kWaitTimeout)) << "第一段正文没发出来：" << responseText;
 
@@ -711,14 +711,14 @@ namespace AsynGyanis::Net
      * @brief 钉住：流式派发之后 trailer 段才越限时，响应照常发出、连接收口，并留下一行原因
      * @details 上一笔给 h2 的同一条路径补了日志（`WithholdsTrailersAndWarnsWhenQuotaBreaksAfterDispatch`），
      *          h1 这一侧结构不同但毛病一样：流式路由在头部收齐那刻就派发了，trailer 段是在业务跑完之后
-     *          的**排空阶段**才被解析器判出来（`HttpSession.h` 的排空循环）。那时响应已经按业务结果发出，
+     *          的排空阶段才被解析器判出来（`HttpSession.h` 的排空循环）。那时响应已经按业务结果发出，
      *          不能再改成 431——本端实际做的事只是「收口这条连接」。此前这一支一行日志都不留，运维看到的
      *          是「连接莫名被关」。数字：请求头部两场是 `host` 与 `transfer-encoding`（2 条），
      *          上限取 3，于是 2+1 恰好放行（对照）、2+2 越限（判据）。
      * @note 前提要自己构造出来：整条报文一次写完时，解析器在同一趟 parse 里就报 Error，流式派发根本
      *       不发生，本端回的是 431（实测：一次写完只收到 `HTTP/1.1 431`，业务响应没发出来）。因此本用例
      *       分两次写，并在发尾块之前先等「处理器已拿到首批正文」这个条件成立——不靠调度运气。
-     * @note 日志计数按**增量**判：`LogCapture` 在一个用例进程里累积，写绝对数会跟着块的先后次序变红，
+     * @note 日志计数按增量判：`LogCapture` 在一个用例进程里累积，写绝对数会跟着块的先后次序变红，
      *       那是用例的毛病而不是实现的问题。
      */
     TEST(HttpStreaming, ExplainsWhyConnectionClosesWhenTrailerQuotaBreaksAfterDispatch)

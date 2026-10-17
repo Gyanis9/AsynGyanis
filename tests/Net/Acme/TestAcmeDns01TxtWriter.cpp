@@ -194,7 +194,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 夹具：在一条真循环上跑一次动作，把成败与失败文案交回来
-     * @details 这两条出口都在**任何网络动作之前**，因此不需要桩服务端：主域名解析排第一，
+     * @details 这两条出口都在任何网络动作之前，因此不需要桩服务端：主域名解析排第一，
      *          凭据校验排第二，谁先红就说明走的是哪一道门
      */
     class AliyunDns01TxtWriterTest : public ::testing::Test

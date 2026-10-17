@@ -73,7 +73,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # 密文/证书、限额与日志配置走 --config（另挂进容器）；这里给的是不依赖外部文件的明文形态。
 # 生产配置样例见 packaging/asyngyanis.yaml.example（挂载为 --config 指的文件）。
 # 监听地址只能从命令行给（配置里没有 host/port 两格），而 --host 的默认值是 localhost：
-# `docker run 镜像 --config /cfg/x.yaml` 会**整段替换**下面这行 CMD，于是服务只听回环、
+# `docker run 镜像 --config /cfg/x.yaml` 会整段替换下面这行 CMD，于是服务只听回环、
 # 从容器外连不上。带 --config 时要连 --host 0.0.0.0 一起给。
 ENTRYPOINT ["/usr/local/bin/ReferenceServer"]
 CMD ["--host", "0.0.0.0", "--port", "8080"]

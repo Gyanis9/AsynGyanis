@@ -232,7 +232,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：对端接受 br 时发的是磁盘上那份副本，正文与长度都属于它
-     * @details 断言的三样互不冗余：正文字节等于**独立读回的**副本内容（不是「再压一遍比一下」，
+     * @details 断言的三样互不冗余：正文字节等于独立读回的副本内容（不是「再压一遍比一下」，
      *          那等于拿被测同源当预期值）、`content-length` 等于那份字节数（序列化层自己算的那一遍）、
      *          `content-type` 仍来自基名（外层 `.br` 不该把媒体类型改成 octet-stream）
      */
@@ -333,7 +333,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：两份表示各有自己的验证器，跨变体的条件请求不会互相命中
-     * @details ETag 由**实际发出去那份**的大小与修改时间构出，因此明文与副本天然不同；
+     * @details ETag 由实际发出去那份的大小与修改时间构出，因此明文与副本天然不同；
      *          拿明文那份的 ETag 去问副本必须是 200 而不是 304——否则客户端会把自己没见过的字节
      *          当成已有的缓存。同变体命中 304 时按 §15.4.5 回带 Vary，而不回带编码声明
      */
@@ -562,7 +562,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：Available-Dictionary 只认完整形状 `:<base64>:` 且恰好 32 字节（RFC 9842 §2.2）
-     * @details 期望值是 RFC 9842 正文示例的**独立解码**（Python 的 base64 一次算回），不是本端
+     * @details 期望值是 RFC 9842 正文示例的独立解码（Python 的 base64 一次算回），不是本端
      *          再编一遍——拿被测同源当预期，解析与编码一起错也照样绿
      */
     TEST(HttpPrecompressedStatic, AvailableDictionaryParserAcceptsOnlyTheFullSfBinaryForm)

@@ -326,7 +326,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 判断 If-Match 的前提是否**不成立**（成立时返回 false，让请求照常走）
+         * @brief 判断 If-Match 的前提是否不成立（成立时返回 false，让请求照常走）
          * @details §13.2.2 的 MUST：所选表示与给定标签不符即回 412。这里用强比较而不是复用它上面
          *          那句弱比较——两者区别是规范规定的：`W/"x"` 永不强匹配，而 `*` 作为列表一项时
          *          也不代表「任意资源」，只有整值为 `*` 才表示「只要它还在」。
@@ -533,7 +533,7 @@ namespace AsynGyanis::Net
          * @details 合并是 RFC 9110 §14.2 明给的自由（「服务端可以把重叠或相邻的区间合成一段发」），
          *          这里用它换两样东西：`0-4,3-6` 这种写法不会发出两份重叠字节，以及
          *          「区间数」这个上界判的是真正要发的段数而不是对端写了几段。
-         *          两道刻意的退回：段数越过上限、或合并后总字节越过上限时**整条 Range 当没看见**
+         *          两道刻意的退回：段数越过上限、或合并后总字节越过上限时整条 Range 当没看见
          *          （回 200 全量）——与其用一条请求换走数倍正文内存，不如让对端拿完整表示。
          *
          * @param headerValue Range 头原文
@@ -740,7 +740,7 @@ namespace AsynGyanis::Net
          * @brief 生成一份 HTML 目录列表并写进响应
          *
          * @details 三条刻意的口径，都写进用例：
-         *          @li 正文现读生成，因此**不给验证器**且带 `cache-control: no-store`——一份被缓存的
+         *          @li 正文现读生成，因此不给验证器且带 `cache-control: no-store`——一份被缓存的
          *              列表会在目录变化之后继续宣称「这里有这些文件」，而条件请求那套（ETag/Last-Modified）
          *              在这里没有可信的来源；
          *          @li 忽略 Range：列表不是一个长度稳定的表示；
@@ -887,7 +887,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 把多区间的正文拼成一份 multipart/byteranges 并写成一条 206
          *
-         * @details 状态码与 content-type 只在**全部正文就位之后**才写：半途失败（文件被删或被换成
+         * @details 状态码与 content-type 只在全部正文就位之后才写：半途失败（文件被删或被换成
          *          另一个版本、正文里撞上了分隔符）时响应还是一个干净的空对象，调用方可以改判
          *          「这条 Range 没接」回 200 全量，而不是发出一份自相矛盾的 206。
          *          零拷贝在这里换不成：正文是多段拼出来的，每段读完都要拷进那一块缓冲——代价由
@@ -1010,7 +1010,7 @@ namespace AsynGyanis::Net
          * @details 200、206、304 与 multipart 那四条出口共用这一份实现：四边各写一遍迟早漂移，
          *          而这里的每一条口径都是有判据的（见下面两段注释）。
          * @param response 待填的响应
-         * @param entityTagText 由**实际发出去那份文件**的大小与整秒修改时间构出的强 ETag
+         * @param entityTagText 由实际发出去那份文件的大小与整秒修改时间构出的强 ETag
          * @param lastModifiedText 同一个时间戳的 HTTP 日期文本
          * @param contentEncodingToken 选中的预压缩算法名；空表示发的是明文那份
          * @param settings 静态服务配置（读 Cache-Control 与变体协商开关）
@@ -1271,7 +1271,7 @@ namespace AsynGyanis::Net
             }
 
             // 预压缩变体协商（默认关闭）：只有请求路径本身这份存在才谈变体，一条 `.br` 副本不能凭空
-            // 造出一个资源。选定之后，正文、验证器与长度一律改用**实际发出去那一份**——下面每一处
+            // 造出一个资源。选定之后，正文、验证器与长度一律改用实际发出去那一份——下面每一处
             // fileSize / lastWriteSeconds / identityTag 都取自 representation，就不会出现「发的是副本
             // 的字节、配的是明文的 ETag」这种跨表示的错配
             const DictionaryNegotiation dictionaryNegotiation = negotiateCompressionDictionary(request, *settings, candidatePath);
@@ -1316,7 +1316,7 @@ namespace AsynGyanis::Net
             // 代码页装不下的名字会在这里抛出，而这条正站在每个静态请求的路上
             // 查表返回的是静态字面量，直接交给 setHeader 的 string_view 形参；再拷一份进 std::string
             // 等于把「application/octet-stream」这种超出内联的长度白付一次堆分配
-            // 这里**故意**用请求路径（candidatePath）而不是 servedPath 的扩展名：`app.js.br` 的媒体类型
+            // 这里故意用请求路径（candidatePath）而不是 servedPath 的扩展名：`app.js.br` 的媒体类型
             // 是内层那份 `app.js` 的（text/javascript），外层后缀交给 Content-Encoding 表达
             const char *const mimeType = FileSender::contentTypeForFile(Platform::FileSystem::utf8FromPath(candidatePath.extension()));
 
@@ -1324,7 +1324,7 @@ namespace AsynGyanis::Net
 
             const bool isHeadRequest = (requestMethod == HttpMethod::HEAD);
 
-            // If-Match 排在「未修改」判定之前：两个条件同时在场时要**同时**成立（§13.2.2），
+            // If-Match 排在「未修改」判定之前：两个条件同时在场时要同时成立（§13.2.2），
             // 先判 If-Match 才能把「前提不成立」与「没变化」这两种答复分清楚
             if (preconditionFails(request, entityTagText))
             {
@@ -1597,7 +1597,7 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("HttpServer: 统计采集端不能为空，请传入一份现成的采集端或调用 metricsCollector() 取本服务器的");
         }
 
-        // 旧采集端要撑到镜像重接完为止：重接时连接管理器会把本台在册的连接数从**旧**那一份里退掉，
+        // 旧采集端要撑到镜像重接完为止：重接时连接管理器会把本台在册的连接数从旧那一份里退掉，
         // 而 `m_metrics = ...` 一旦交回最后一份引用，旧对象连同它内嵌的那个原子量就当场没了——
         // 那一次退账就写在已释放的内存上（ConnectionManager 的契约：镜像对象的生存期要覆盖本管理器）
         const std::shared_ptr<HttpMetricsCollector> previous = m_metrics;

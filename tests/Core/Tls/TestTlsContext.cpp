@@ -763,7 +763,7 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 指纹名单的两端：链上有效且被点名的放行，链上有效但未被点名的拒绝
-     * @details 判别力的关键在对照组：先不设名单跑一次**同样链上有效**的未点名证书，它必须握手成功——
+     * @details 判别力的关键在对照组：先不设名单跑一次同样链上有效的未点名证书，它必须握手成功——
      *          这才证明后面的拒绝来自名单，而不是链校验顺手把它挡了。证书对用「同一信任库里两张自签
      *          证书」构造：信任库装一份两证书的 CA 包，客户端分别出示 `test_cert.pem`（被点名）与
      *          `test_localhost_cert.pem`（未点名）。
@@ -1820,7 +1820,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 证书换代要把票据密钥一起带到新上下文
      * @details 换代是「整台新建 SSL_CTX 再换掉」，任何一项配置没复现就等于被换代悄悄清掉。
-     *          这里的判据是换代**之后**签的票据仍能被装载同一份密钥的另一个上下文解开
+     *          这里的判据是换代之后签的票据仍能被装载同一份密钥的另一个上下文解开
      */
     TEST(TlsContext, ReloadCertificateReplaysTicketKeys)
     {
@@ -2116,7 +2116,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 造一份由指定签发者签发的吊销列表（CRL）并写成 PEM
-         * @details OpenSSL 按**签发者名字**在存储里找 CRL：名字对不上就是「找不到列表」，与「列表里
+         * @details OpenSSL 按签发者名字在存储里找 CRL：名字对不上就是「找不到列表」，与「列表里
          *          没有这一张」是两种不同的失败（前者是 X509_V_ERR_UNABLE_TO_GET_CRL，后者才是被吊销）。
          *          吊销用例两条都要能造得出来，所以签发者证书由参数给，序列号表可为空（空表＝谁都还没吊销）。
          * @param outputFile CRL 输出路径
@@ -2534,7 +2534,7 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 钉住：列表里点名吊销的那张证书要拒，没点名的要放行
-     * @details 两条断言用的是**同一张**叶证书，只差那份列表的内容——于是「拒」不可能来自链本身
+     * @details 两条断言用的是同一张叶证书，只差那份列表的内容——于是「拒」不可能来自链本身
      *          验不过（同一张证书在空列表下能成），也不能来自「反正开了吊销就一律拒」。
      *          判据取客户端的校验码而不是「握手没成」：证书被吊销、找不到列表、名字对不上、主机名
      *          不符在握手层都是「没成」，只有校验码分得开是哪一种。
@@ -2571,11 +2571,11 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 钉住：查不到发证 CA 的列表时是**失败即关**，而不是当作没吊销
+     * @brief 钉住：查不到发证 CA 的列表时是失败即关，而不是当作没吊销
      * @details 三级链（根 → 中间 → 叶）下只给根那份列表：叶的发证者是中间证书，存储里没有它的列表。
      *          OpenSSL 在这里报「unable to get certificate CRL」而不是放行，本仓库认为这个方向是对的
      *          ——「列表没同步到就被当作没吊销」比「同步断了先拒掉」危险，所以配置里不准备反向开关。
-     *          对照组用**同一套证书材料**、只是不带列表：握手要成，否则这条测的就不是吊销而是链本身。
+     *          对照组用同一套证书材料、只是不带列表：握手要成，否则这条测的就不是吊销而是链本身。
      */
     TEST(TlsContext, RevocationCheckingFailsClosedWhenTheIssuingAuthorityHasNoList)
     {
@@ -2609,7 +2609,7 @@ namespace AsynGyanis::Core
      * @brief 钉住：整条链都查与只查对端那一张是两种口径，中间证书被吊销时二者结论相反
      * @details 默认只查对端那一张（业界常见部署形态：链上每张都要有列表，实操里很容易因为漏同步而
      *          全线拒绝）。打开 revocationCoversWholeChain 之后，被吊销的中间证书也拦得住。
-     *          两次握手用的是**同一份列表文件**（根的那份点名吊销中间证书 + 中间那份是空表），
+     *          两次握手用的是同一份列表文件（根的那份点名吊销中间证书 + 中间那份是空表），
      *          所以结论之差只能来自这个开关——这也是这条配置不是死开关的证明。
      */
     TEST(TlsContext, WholeChainRevocationCheckingAlsoRejectsARevokedIntermediateAuthority)

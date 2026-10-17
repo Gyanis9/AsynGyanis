@@ -95,7 +95,7 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual DatabaseValue getValue(std::string_view name) const = 0;
 
         /**
-         * @brief 读出指定列并把该格载荷的**所有权**交给调用方
+         * @brief 读出指定列并把该格载荷的所有权交给调用方
          * @details 给逐列映射用：结果集按行前进、每格只读一次，把已经存好的文本/二进制缓冲直接搬走
          *          就省掉「快照 → 返回值」那一次整串拷贝与它的堆分配。默认实现转交 getValue()——
          *          游标式取值本来就是当场构造的，没有可省的拷贝，因此只有物化了行的驱动值得重写。

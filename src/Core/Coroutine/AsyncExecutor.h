@@ -16,7 +16,7 @@
  * @note 完成动作是在工作线程的任务体内投回 `completionLoop` 的，因此按「先析构本执行器、
  *       再析构它要恢复的那些循环」的顺序拆资源就不会碰已释放的循环——析构返回时所有投递都已发生完。
  *       反过来（先拆循环再析构执行器）是在解引用一个已销毁的 EventLoop。
- * @warning 调用方可以在任务完成前销毁 Task（等待体会作废那次恢复），但**不能**在恢复动作
+ * @warning 调用方可以在任务完成前销毁 Task（等待体会作废那次恢复），但不能在恢复动作
  *          已经投递给事件循环之后再销毁：那一刻句柄已离开共享状态，作废不再生效，循环会 resume
  *          一块已释放的帧。判据是「投递是否已发生」，而调用方无从得知，因此实践上的约束是
  *          驱动协程帧必须活到恢复被处理完（测试里交给 EventLoopThread::parkDriver 保管）。
@@ -103,7 +103,7 @@ namespace AsynGyanis::Core
          *          某个下游超时打满时，每个在途请求都往队列里塞一份闭包加一份堆上的共享状态，
          *          进程在请求被处理完之前就先被自己的排队撑死。按线程数定容，因此它与
          *          「这台机器能并行做多少件阻塞活」同阶，而不是一个与规模脱钩的魔数。
-         *          越过上限的提交**如实失败**（await_resume 抛出），调用方据此降级或回压，
+         *          越过上限的提交如实失败（await_resume 抛出），调用方据此降级或回压，
          *          而不是排一个永远排不到的队
          */
         static constexpr std::size_t kMaximumPendingTasksPerWorker = 256;
@@ -119,7 +119,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 获取「工作线程已经跑完、恢复动作也已投回事件循环」的累计条数
-         * @details 这条计数补的是 `pendingTaskCount()` 看不到的那一段：队列长度在任务**出队**的那一刻
+         * @details 这条计数补的是 `pendingTaskCount()` 看不到的那一段：队列长度在任务出队的那一刻
          *          就减了，而任务体跑完之后还要把协程恢复投回 completionLoop（那一步会解引用循环）。
          *          调用方拿「队列已空」当「没有任务会再碰我的循环」是错的——本计数才是那个判据。
          *          主要用于停机次序与测试：先等它对齐提交数，再拆循环。
@@ -194,7 +194,7 @@ namespace AsynGyanis::Core
             std::optional<ResultType>   value; ///< 任务返回值（成功后才有值）
             std::exception_ptr          error; ///< 任务抛出的异常（失败时非空）
             /// 待恢复的协程句柄，取走一次即作废（空即「等待体已析构」或「已被恢复」）。
-            /// **必须是原子的**：清空发生在等待体（任意线程）的析构里，读取发生在工作线程的队列闭包里，
+            /// 必须是原子的：清空发生在等待体（任意线程）的析构里，读取发生在工作线程的队列闭包里，
             /// 两者之间没有任何 happens-before（shared_ptr 的引用计数不建立它）
             std::atomic<std::coroutine_handle<>> continuation{nullptr};
             Core::EventLoop                     *completionLoop{nullptr}; ///< 恢复该协程的事件循环
@@ -329,7 +329,7 @@ namespace AsynGyanis::Core
         };
 
         /**
-         * @brief 一次入队的三种结局，供 await_suspend 给出**指得准**的失败原因
+         * @brief 一次入队的三种结局，供 await_suspend 给出指得准的失败原因
          * @details 用枚举而不是 bool：原先「执行器已停止」与「队列已满」都得报成同一句话，
          *          而调用方的处置完全不同——前者要查生命周期，后者要降并发或退避
          */

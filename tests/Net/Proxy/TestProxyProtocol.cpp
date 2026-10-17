@@ -393,7 +393,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 不是头的字节要**立刻**判死
+     * @brief 不是头的字节要立刻判死
      * @details 第一个字节就能否掉：直接把服务器暴露在公网上时，对端发的是 `GET /`，
      *          慢慢等满整个缓冲才拒绝等于给「不配头的监听端口」留了一段可被填满的窗口
      */
@@ -433,10 +433,10 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 同一条长度上界在**解析**入口也要判一次：成帧那侧判了不等于公开入口判了
+     * @brief 同一条长度上界在解析入口也要判一次：成帧那侧判了不等于公开入口判了
      * @details parseProxyHeader 是导出的公开函数，调用方可以不经 frameProxyHeader 直接拿一段字节请它解析。
      *          这里给一条长度字段落在 1 KiB 上界之外、但字节确实齐平的 v2 头：地址块之后那一坨按 TLV 处理
-     *          会被跳过，所以缺了这道闸它就会**解析成功**——上界于是只存在于成帧那一条路上
+     *          会被跳过，所以缺了这道闸它就会解析成功——上界于是只存在于成帧那一条路上
      */
     TEST(ProxyProtocol, RejectsOverlongV2HeaderAtTheParseEntryToo)
     {

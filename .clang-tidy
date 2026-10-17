@@ -143,7 +143,7 @@ readability-uniqueptr-delete-release,
 readability-use-anyofallof,
 readability-identifier-naming'
 
-# 取值要留意**拼写**：clang-tidy 认的是 CamelCase（首字母大写）与 camelBack（首字母小写），
+# 取值要留意拼写：clang-tidy 认的是 CamelCase（首字母大写）与 camelBack（首字母小写），
 # 平时习惯写的 PascalCase / camelCase 它不认——拼错时只报一句 "invalid configuration value"
 # 并把那一项丢掉继续跑，于是整组命名检查静默空转（本仓曾经 22 项全空转）。
 # 改完要确认告警真的出得来，否则下一轮看到的还是零。

@@ -242,7 +242,7 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::shared_ptr<Core::Connection> createConnection(Core::AsyncSocket socket) override
             {
-                // 先记载荷、**最后**才把「调用次数」放出去：次数是等待方判定「到了」的信号，
+                // 先记载荷、最后才把「调用次数」放出去：次数是等待方判定「到了」的信号，
                 // 先加计数再写端口会让等待方在端口还是 0 时就往下走（x86 上先写的计数先可见，
                 // Windows CI 实测读到 recordedLocalPort()==0）
                 m_recordedLocalPort.store(socket.localAddress().port(), std::memory_order_release);
@@ -691,7 +691,7 @@ namespace AsynGyanis::Net
 
         // start() 依次 bind() 与 listen(kDefaultListenBacklog)，两步都成功才会置位运行标志
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "start() 未在时限内进入接受循环：上界 kWaitTimeout";
-        // 端口 0 交给内核挑，因此公开 accessor 必须报出**实际**端口，而不是当初传进去的那个 0。
+        // 端口 0 交给内核挑，因此公开 accessor 必须报出实际端口，而不是当初传进去的那个 0。
         // 对照判据仍取 getsockname：那是内核口径，accessor 与它不一致就是回填没做
         const std::uint16_t kernelPort = queryBoundPort(fixture.listenDescriptor());
         ASSERT_NE(kernelPort, 0);
@@ -763,12 +763,12 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：会话协程抛出的**非协议**异常要留下一行日志，而协议异常不被这里重复记
+     * @brief 钉住：会话协程抛出的非协议异常要留下一行日志，而协议异常不被这里重复记
      * @details 此前 `handleConnection` 用一个 catch (...) 把所有抛出物一起吞掉，注释说「会话实现自己会留
      *          日志」——那只对 `Base::Exception` 这一族成立。非协议抛出物（分配失败、第三方库漏出来的）
      *          没有任何一处替它出声：本层吞掉之后连 `Task` 那份「协程有异常没人接住」的兜底日志都不会触发，
      *          现场只看得到一条连接随机消失、activeCount 一切正常。
-     * @details 判据两条各钉一侧：非协议那一侧要求这一行出现且带着原因文本；协议那一侧要求这一行**不出现**
+     * @details 判据两条各钉一侧：非协议那一侧要求这一行出现且带着原因文本；协议那一侧要求这一行不出现
      *          （证明补的不是「什么都记一遍」）。两条都断言接受循环照旧、名额已摘除。
      */
     TEST(TcpServer, LogsNonProtocolSessionFailureWithoutDoubleLoggingProtocolErrors)
@@ -887,7 +887,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 双栈监听器上进来的 IPv4 客户端，按点分地址那一格记账
-     * @details 这条用例钉的是**线上真实形态**而不是键的字符串处理：服务器绑 `::`（接受器会关掉
+     * @details 这条用例钉的是线上真实形态而不是键的字符串处理：服务器绑 `::`（接受器会关掉
      *          IPV6_V6ONLY），客户端连 127.0.0.1，于是对端地址族是 AF_INET6、文本带 `::ffff:` 前缀。
      *          限额若按这个原文分格，同一来源经纯 IPv4 监听器就会另占一格，上限实际翻倍
      */
@@ -1361,7 +1361,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 同一个调用点的 PROXY 告警要经过闸门：三条同样不合格的连接不多落日志
      * @details 为什么断「这一批至多一条」加「全进程至少一条」这一对，而不是「恰好一条」：
-     *          闸门是**进程内**的函数局部 static，本文件里另有几条用例命中同一个调用点，
+     *          闸门是进程内的函数局部 static，本文件里另有几条用例命中同一个调用点，
      *          谁先跑谁占那一拍的窗口。两半合起来才是完整判据——只数一批会放过「整条路径不再写日志」，
      *          只数全进程会放过「每条连接各写一条」。「首条一定放行」与「放行那条带上被压掉的条数」
      *          由 tests/Base/Log/TestLogThrottle.cpp 在单元层钉（那里的闸门由用例自己建、窗口可控）。
@@ -1448,7 +1448,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 头后面还跟着别的字节时宁可拒绝：本层没有地方安放多出来的那一段
-     * @details 钉住这条**取舍**而不是让它悄悄发生：代理把「头 + 请求」挤进一段时连接会被拒掉，
+     * @details 钉住这条取舍而不是让它悄悄发生：代理把「头 + 请求」挤进一段时连接会被拒掉，
      *          而按实现读掉的字节已无法退回内核缓冲，静默错位比拒绝更糟
      */
     TEST(TcpServer, DropsConnectionCarryingBytesAfterProxyHeader)

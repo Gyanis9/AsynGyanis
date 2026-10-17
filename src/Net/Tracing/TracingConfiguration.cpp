@@ -103,7 +103,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把配置里的毫秒数折成时长，越界当场拒
-         * @details 原先直接 `static_cast<long long>`：一个超过有符号 64 位的取值折成**负数**，
+         * @details 原先直接 `static_cast<long long>`：一个超过有符号 64 位的取值折成负数，
          *          随后被下游那条「必须大于 0」拦下——响亮是够响亮，但把「你写大了」报成「你写了个
          *          不大于 0 的数」，排查的人只会回去把 0 改成 1 而不是把数改小。更近的一格是
          *          `export_interval_ms` 与 `timeout_ms` 最终都要与当前时刻相加算截止，越过时钟可表示

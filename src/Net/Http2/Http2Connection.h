@@ -34,12 +34,12 @@ namespace AsynGyanis::Net
     // （窗口、SETTINGS ACK、PING）不由本层等待，驱动顺序见 Http2Connection 的类说明。
     // 帧层与 HPACK 层各管一段（单帧合法性、头块压缩），跨帧的流状态、窗口与语义校验都在本层。
     //
-    // **不做流优先级（这是决定，不是待办）**：本层收下 PRIORITY 帧与 HEADERS 的 PRIORITY 位之后
-    // 只做**规范要求的那部分处理**，不建优先级树、也不按权重调度。依据是 RFC 9113：§5.3.2 明写
+    // 不做流优先级（这是决定，不是待办）：本层收下 PRIORITY 帧与 HEADERS 的 PRIORITY 位之后
+    // 只做规范要求的那部分处理，不建优先级树、也不按权重调度。依据是 RFC 9113：§5.3.2 明写
     // 「This update to HTTP/2 deprecates the priority signaling defined in RFC 7540」，§5.3.1 给了
     // 理由（「the prioritization signaling in RFC 7540 was not successful」，且有「Many server
     // deployments ignored client signals」的既成事实）；留下的强制处理只有「帧字段与若干必判」，
-    // 为的是与仍在使用该信号的实现互通——即：长度必为 5、流号非 0、**自依赖必须拒**（§5.3.1，
+    // 为的是与仍在使用该信号的实现互通——即：长度必为 5、流号非 0、自依赖必须拒（§5.3.1，
     // 由帧层判），其余照收即弃。RFC 9218 的 `Priority` 头与 PRIORITY_UPDATE 帧属于扩展：
     // 未知帧类型按 §4.1 必须忽略（解码器原样交出、本层不解释），因此也不需要在帧类型表里列名。
     // 将来若要按 RFC 9218 调度，落点是「收下 Priority 头/PRIORITY_UPDATE → 排一条请求顺序」，
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
     {
         std::uint32_t headerTableSize{kHpackDefaultDynamicTableSizeByteCount}; ///< SETTINGS_HEADER_TABLE_SIZE（§6.5.2 初值 4096），同时是本端 HPACK 解码器动态表的上限
         /// SETTINGS_ENABLE_PUSH（§6.5.2 初值 1）：本片不实现推送，取 0 如实告知对端不必预留。
-        /// **服务端推送不做（这是决定，不是待办）**：业界已弃用这一机制（Chrome 早已移除、主流服务端
+        /// 服务端推送不做（这是决定，不是待办）：业界已弃用这一机制（Chrome 早已移除、主流服务端
         /// 相继下线），`ENABLE_PUSH=0` 是正确的对外承诺而不是能力的欠缺；对端仍推 PUSH_PROMISE 按
         /// §6.6 判 PROTOCOL_ERROR（有用例钉住）。真要做时的落点是「上一条附加的保序流 + 服务端侧的
         /// 主动发起」，与本节不冲突——但在那之前，本项保持 0。
@@ -217,12 +217,12 @@ namespace AsynGyanis::Net
          * @brief 每连接控制帧（PING / SETTINGS / RST_STREAM）令牌桶：桶容量（毫帧单位，1 帧 = 1000）
          * @details RFC 9113 §10.5 点名的洪泛源里，这三类直接花本端的时间或强制本端生成回帧
          *          （PING 必须应答、SETTINGS 每条都要 ACK、RST_STREAM 要停止流并结账）；原文明写
-         *          **"Implementations SHOULD track the use of these features and set limits on their
+         *          "Implementations SHOULD track the use of these features and set limits on their
          *          use. An endpoint MAY treat activity that is suspicious as a connection error
-         *          (Section 5.4.1) of type ENHANCE_YOUR_CALM."** 容量取 1000 帧：合法瞬时风暴
+         *          (Section 5.4.1) of type ENHANCE_YOUR_CALM." 容量取 1000 帧：合法瞬时风暴
          *          （浏览器导航取消一批流、客户端重启后补一轮 PING）全落在桶里；洪泛（每秒万级
-         *          起步）会在秒级内把桶打穿。单位取毫帧是为了回填能走整数：每秒回填的**帧数**
-         *          恰好等于每毫秒回填的**毫帧数**
+         *          起步）会在秒级内把桶打穿。单位取毫帧是为了回填能走整数：每秒回填的帧数
+         *          恰好等于每毫秒回填的毫帧数
          */
         static constexpr std::int64_t kControlFrameBucketCapacityMilliFrames = 1000 * 1000;
 
@@ -246,7 +246,7 @@ namespace AsynGyanis::Net
          * @throws Base::InvalidArgumentException ENABLE_PUSH 或 ENABLE_CONNECT_PROTOCOL 不是 0/1，
          *         或 MAX_FRAME_SIZE 落在 RFC 9113 §6.5.2 的合法区间 [16384, 16777215] 之外
          * @details 构造函数会调它，服务器侧的 setHttp2Configuration() 也调它：同一份判据只写一处。
-         *          让服务器在**设置时**就拒绝，是因为按构造时机检查的表现是「第一条连接进来才炸」，
+         *          让服务器在设置时就拒绝，是因为按构造时机检查的表现是「第一条连接进来才炸」，
          *          部署方在启动日志里看不到任何异常
          */
         static void validateConfiguration(const Http2ConnectionConfiguration &configuration);
@@ -437,7 +437,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 在某条流上发尾部头块（trailing HEADERS），并以此收尾本端方向
          *
-         * @details RFC 9113 §8.1 把尾部头块的形状钉死：它**必须**自带 END_STREAM，且不得含伪头与连接
+         * @details RFC 9113 §8.1 把尾部头块的形状钉死：它必须自带 END_STREAM，且不得含伪头与连接
          *          特定字段。因此调用顺序是固定的——正文那一片 DATA 不许带 END_STREAM，尾部头块才是这条
          *          流的最后一个帧；没有正文时可以只有头部块加尾部头块。本方法自己置 END_STREAM，
          *          不提供开关参数：给一个能把协议写坏的开关不如不给。
@@ -449,7 +449,7 @@ namespace AsynGyanis::Net
          *         Rejected 字段形状非法，本层已按 INTERNAL_ERROR 中止这条流；
          *         HeaderListTooLarge 越过对端通告的 SETTINGS_MAX_HEADER_LIST_SIZE，本层已中止这条流
          * @note 返回非 Sent 时不写任何字节（Rejected 与 HeaderListTooLarge 各排出一帧 RST_STREAM），
-         *       且本端方向**不会**被收尾：调用方要么补一个裸的零长度 DATA 收尾，要么按结论停掉这条流
+         *       且本端方向不会被收尾：调用方要么补一个裸的零长度 DATA 收尾，要么按结论停掉这条流
          */
         [[nodiscard]] Http2ResponseSendStatus sendResponseTrailers(std::uint32_t streamId, const std::vector<HpackHeaderField> &trailerFields, std::string *errorText = nullptr);
 
@@ -505,7 +505,7 @@ namespace AsynGyanis::Net
          * @brief 累计有多少条流因「请求头不合规」被本端拒掉
          * @details 这类流不交出请求、不回响应，因此既不进总请求数也不进状态码计数——h1 与 h3 都把它
          *          记进 badRequestCount（对端送来一条本端无法解释的请求头，就是坏请求），h2 此前在
-         *          指标上是**零**：对端拿畸形头部连发，读到的曲线什么都没有。本读口就是给上层补这笔账的，
+         *          指标上是零：对端拿畸形头部连发，读到的曲线什么都没有。本读口就是给上层补这笔账的，
          *          上层按「比上次读到的多了几条」逐条落账。
          * @note 逐条的中文原因仍只在 lastStreamErrorMessage() 里留最近一条（本层不为记账排事件队列）
          * @return std::uint64_t 本连接生命周期内被拒的请求头条数
@@ -566,8 +566,8 @@ namespace AsynGyanis::Net
     private:
         /**
          * @brief 一条流被终止的方式：之后的帧落在它上面时，判「忽略」还是「判错」全看这一个字
-         * @details RFC 9113 §5.1「closed」段把两种终止分得很清：**收到**对端的 RST_STREAM 之后再来的帧
-         *          按流错误 STREAM_CLOSED 处理；**发出** RST_STREAM 之后再来的帧则 MUST ignore（那些帧
+         * @details RFC 9113 §5.1「closed」段把两种终止分得很清：收到对端的 RST_STREAM 之后再来的帧
+         *          按流错误 STREAM_CLOSED 处理；发出 RST_STREAM 之后再来的帧则 MUST ignore（那些帧
          *          撤不回来）。两者共用一个布尔分不开，故按方向摊成三个取值。
          */
         enum class StreamTermination
@@ -714,7 +714,7 @@ namespace AsynGyanis::Net
          * @return true 头列表是一个合法的请求
          * @details 不再是 static：它要读本端落定的 `HttpParserLimits`（`maximumHeaderCount` 与
          *          `maximumUriLength`），而这两个闸门在 h1/h3 上一直是按配置生效的——h2 此前只判
-         *          头块字节数，同一个配置键在三条通道上给出三种强度。越限的两种形态都**不算协议错误**：
+         *          头块字节数，同一个配置键在三条通道上给出三种强度。越限的两种形态都不算协议错误：
          *          字段条数超上限把请求标成「头块过大」（上层 431），`:path` 太长标成 `isUriTooLong`
          *          （上层 414），两者都只作废那一条流。
          */

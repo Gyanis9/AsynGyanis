@@ -28,7 +28,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条连接上两侧各自的 deflate 窗口位数
      *
-     * @details 这两个数不是本端的偏好，而是**对端的声明**：压缩窗口只要大过对端解压器的窗口，
+     * @details 这两个数不是本端的偏好，而是对端的声明：压缩窗口只要大过对端解压器的窗口，
      *          对方就会在远距离回溯上解不开（zlib 报 Z_DATA_ERROR），一条帧就把整条连接打死；
      *          解压窗口按对端声明的压缩位数收小，是按连接回收内存的那一位（15 档约 32 KiB、8 档 256 B）。
      */
@@ -51,8 +51,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 协商 permessage-deflate 扩展（RFC 7692 §7.1）
      *
-     * @details 在客户端提供的 Sec-WebSocket-Extensions 里找 permessage-deflate；找到就接受并回一份**本端
-     *          选定**的参数：`server_no_context_takeover` 与 `client_no_context_takeover`。两条都要求每条
+     * @details 在客户端提供的 Sec-WebSocket-Extensions 里找 permessage-deflate；找到就接受并回一份本端
+     *          选定的参数：`server_no_context_takeover` 与 `client_no_context_takeover`。两条都要求每条
      *          消息重置压缩上下文，因此收发都不需要跨消息保存 z_stream——代价是压缩率略低，换来连接级压缩
      *          状态及其生命周期管理的省却。
      *          两个窗口参数按 RFC 的语义吃掉而不是忽略：对端的 `server_max_window_bits` 是它解压器能开的
@@ -60,7 +60,7 @@ namespace AsynGyanis::Net
      *          `client_max_window_bits` 是它压缩时用的位数，本端解压窗口按它收小。
      *          婉拒的三种形态都出自 RFC 7692 §9.1 那张「服务器必须婉拒这条要约」的清单：取值不在 8..15
      *          或不是十进制数字、要约里出现了本扩展没定义的参数名、同名参数重复出现。前一种是无法履约，
-     *          后两种是本端**无从判断**对端声明的到底是什么配置——带着猜出来的配置把连接开起来，或把不认识
+     *          后两种是本端无从判断对端声明的到底是什么配置——带着猜出来的配置把连接开起来，或把不认识
      *          的要求当「与本端无关」放过，都是「看起来成功了」而线上未必。
      *          两条 `*_no_context_takeover` 是被识别的（本端本来就按每条消息重置上下文实现），但它们带值
      *          即取值不合法：那是布尔参数。
@@ -75,7 +75,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 压缩一条 WebSocket 消息（RFC 7692 §7.2.1）
      *
-     * @details 步骤固定为：负载后追加四字节 `0x00 0x00 0xFF 0xFF`，用 **裸 deflate**（窗口位数取负值，
+     * @details 步骤固定为：负载后追加四字节 `0x00 0x00 0xFF 0xFF`，用 裸 deflate（窗口位数取负值，
      *          不带 zlib 头尾）压到 Z_SYNC_FLUSH，再把输出末尾的四字节空块尾去掉——线上负载因此
      *          不含这四字节，解压侧自行补回。
      * @param payload 消息负载，可为空（空消息也会产出合法的压缩结果）
@@ -121,7 +121,7 @@ namespace AsynGyanis::Net
      *          消息重置上下文时本端无法安全解压，见 acceptPerMessageDeflateResponse 的拒因）；
      *          `client_no_context_takeover` 是对称的承诺类 hint（本端发送本就不复用上下文）；
      *          `client_max_window_bits` 不带值＝声明本端接受服务端在响应里指定客户端的压缩窗口
-     *          （§7.1.2.2 的无值形态）。刻意**不**带 `server_max_window_bits`：那会向服务端提出
+     *          （§7.1.2.2 的无值形态）。刻意不带 `server_max_window_bits`：那会向服务端提出
      *          「你压缩窗口不得大于 N」的限定，而服务端即使要约没带也可在响应里主动声明自己的
      *          压缩窗口（§7.1.2.1 的 MAY），本端按声明值解压即可。
      */

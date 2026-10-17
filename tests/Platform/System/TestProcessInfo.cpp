@@ -142,7 +142,7 @@ namespace AsynGyanis::Platform
         const std::vector<std::pair<std::string, std::string>> matches = ProcessInfo::environmentVariablesWithPrefix("ASYN_ENUM_DEMO_M");
 
 #if ASYN_PLATFORM_WIN32
-        // Windows 的环境表不区分大小写：同名变量已存在时保留的是**它原来**的大小写，
+        // Windows 的环境表不区分大小写：同名变量已存在时保留的是它原来的大小写，
         // 因此这里只断言「能按大小写不敏感的方式找回来」，不咬死拼写
         const auto insensitive = std::ranges::find_if(matches,
                                                       [](const std::pair<std::string, std::string> &entry)

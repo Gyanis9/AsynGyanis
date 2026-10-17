@@ -545,15 +545,15 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(waitUntilQuotaReturned(budget, kWaitTimeout)) << "被拒请求收口后额度仍未归还，当前占用 " << budget->reservedByteCount();
     }
     /**
-     * @brief 钉住：h1 的流式路由**照样进**「在途正文预算」这本账，与 h2/h3 的流式分支相反
+     * @brief 钉住：h1 的流式路由照样进「在途正文预算」这本账，与 h2/h3 的流式分支相反
      * @details 同一个 `memory_budget_bytes` 在三条通道上不是同一种强度，这条差别得有读数：
      *          h2/h3 的 `absorb`/`addRequestBody` 在流式那条分支里提前返回，从不碰 `growTo()`
      *          （钉在 `Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`，
      *          读数为 0）；h1 的预留发生在共享的 keep-alive 循环里，按
-     *          `residentBodyBytes = max(解析器暂存, 请求对象正文)` 记，而**这一步跑在派发之前**——
+     *          `residentBodyBytes = max(解析器暂存, 请求对象正文)` 记，而这一步跑在派发之前——
      *          那时会话还不知道这条请求会不会命中流式路由，所以流式与否对 h1 的账没有影响。
      *          实测数：四块各 8 字节的分块上传（共 32 字节），首批正文握在业务手里时从处理器
-     *          **内部**采样，账上是 32。
+     *          内部采样，账上是 32。
      * @note 差别不是漏账而是结构：h2/h3 在派发之后预留就回不出 503 了，h1 必须在派发前预留，
      *       否则内存已经占住。口径写进 `HttpMemoryBudget` 的类注释与 `memoryBudgetBytes` 的键文档。
      */

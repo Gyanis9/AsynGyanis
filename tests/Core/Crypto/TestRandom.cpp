@@ -70,7 +70,7 @@ namespace AsynGyanis::Core::Random
         std::array<std::uint8_t, 4> buffer{};
         buffer.fill(0x5cU);
 
-        // 给出去的是**空视图**才是空操作：非空的视图必须被填满（见上一条用例），两者不能混
+        // 给出去的是空视图才是空操作：非空的视图必须被填满（见上一条用例），两者不能混
         EXPECT_NO_THROW(fill(std::span<std::uint8_t>{}));
         EXPECT_NO_THROW(fillSecret(std::span<std::uint8_t>{}));
         EXPECT_TRUE(bytes(0U).empty());

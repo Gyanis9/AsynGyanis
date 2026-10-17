@@ -150,7 +150,7 @@ namespace AsynGyanis::Net
 
     QuicPacketKeys deriveQuicInitialPacketKeys(const std::span<const std::uint8_t> destinationConnectionId, const QuicPacketDirection direction)
     {
-        // 抽取段的 IKM 是**客户端报文里的目的连接标识**，方向只决定扩展段用哪个标签（RFC 9001 §5.2）
+        // 抽取段的 IKM 是客户端报文里的目的连接标识，方向只决定扩展段用哪个标签（RFC 9001 §5.2）
         const std::span<const std::uint8_t> salt{kQuicInitialSalt};
         // Initial 一族的哈希恒为 SHA-256（RFC 9001 §5.2），与后面协商出的套件无关
         const auto initialSecret = extract(salt, destinationConnectionId, Core::Digest::Algorithm::Sha256, "Initial 秘密抽取");

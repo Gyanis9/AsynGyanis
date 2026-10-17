@@ -91,7 +91,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 一帧载荷内部的读位置游标
          *
-         * @details 游标被**声明长度**框住：这里读不到「还没到的字节」，因此越出末尾只有一种解释——
+         * @details 游标被声明长度框住：这里读不到「还没到的字节」，因此越出末尾只有一种解释——
          *          对端把帧写坏了（§7.1），报 Malformed 而不是等更多数据。
          */
         class PayloadCursor

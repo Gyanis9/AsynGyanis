@@ -6,7 +6,7 @@
 @version 1.0.0
 @copyright Copyright (c) . All rights reserved.
 
-它做的事就是**像外部工程那样**用这个包：requires 包本身、拿 CMakeDeps 生成的配置
+它做的事就是像外部工程那样用这个包：requires 包本身、拿 CMakeDeps 生成的配置
 find_package(AsynGyanis)、链 AsynGyanis::Net，然后跑起来。因此「包能装」与「包能用」
 是同一件事的两面——后者才是真问题（少了某个组件的依赖、头文件路径不对，
 都会在这里当场暴露）。

@@ -56,7 +56,7 @@ namespace AsynGyanis::Net
     } // namespace Detail
 
     /**
-     * @brief `If-None-Match` 的**弱比较**（§13.1.2）
+     * @brief `If-None-Match` 的弱比较（§13.1.2）
      * @details 弱比较忽略 `W/` 标记，因此 `W/"x"` 与 `"x"` 算同一标签；`*` 作为整值或列表中的
      *          任一项都命中任意资源。
      * @param listValue 头部原文（可以是逗号分隔的列表）
@@ -70,8 +70,8 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief `If-Match` 的**强比较**（§13.2.1 与 §8.8.3.2）
-     * @details 与弱比较的两处差别是规范要求的，不是疏忽：① 带 `W/` 的标签**永不**强匹配（连 `"x"`
+     * @brief `If-Match` 的强比较（§13.2.1 与 §8.8.3.2）
+     * @details 与弱比较的两处差别是规范要求的，不是疏忽：① 带 `W/` 的标签永不强匹配（连 `"x"`
      *          与 `W/"x"` 也不等）；② `*` 只在整值为 `*` 时命中，作为列表一项时不代表任意资源。
      * @param listValue 头部原文
      * @param entityTag 本资源当前的强标签

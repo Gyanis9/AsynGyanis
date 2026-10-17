@@ -56,7 +56,7 @@ namespace AsynGyanis::Database
                 break;
         }
 
-        // Replace → DO UPDATE：**必须给出冲突目标**（推断列或约束名）——真机实测：不带目标的
+        // Replace → DO UPDATE：必须给出冲突目标（推断列或约束名）——真机实测：不带目标的
         // DO UPDATE 被服务端以 42601「requires inference specification or constraint name」拒绝
         // （只有 DO NOTHING 能省目标）。目标列由调用方经 conflictTargetColumns 提供（ORM 从
         // TableSchema 的主键自动带上）；缺了就当场拒绝，不生成一条服务端必拒的语句。

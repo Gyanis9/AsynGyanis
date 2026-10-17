@@ -27,7 +27,7 @@ namespace AsynGyanis::Platform
      *          进程启动时的工作目录变化而漂移；环境变量读取在 MSVC 上必须使用
      *          _dupenv_s 才能避开 C4996 与内存归属问题，两者统一由本类承担。
      *
-     * @note **磁盘与网络级指标不做（这是决定，不是待办）**：本类只提供**进程级**读数（RSS、CPU 秒、
+     * @note 磁盘与网络级指标不做（这是决定，不是待办）：本类只提供进程级读数（RSS、CPU 秒、
      *       句柄数、启动时刻）——它们有确定的消费方（`/metrics` 与 OTLP 两条出口，见
      *       `Core::ProcessMetricsRegistry` 与 `HttpServerStats`）。磁盘/网络那两组没有这样的消费方：
      *       验收侧的磁盘与链路对账直接用 `/proc`（`/proc/self/io`、`/proc/net/dev`、`/proc/diskstats`）
@@ -82,7 +82,7 @@ namespace AsynGyanis::Platform
          *          Windows 取工作集，POSIX 取 /proc/self/statm 的常驻页乘页尺寸。
          * @return std::uint64_t 常驻字节数；平台读不出时返回 0（按「不知道」处理，与 currentProcessId 同口径）
          * @note 分配器把空闲页面留在自己的池里时，释放内存不一定让这一列掉下来（glibc 就是如此），
-         *       因此它读的是**趋势**而不是「当前活跃分配了多少字节」
+         *       因此它读的是趋势而不是「当前活跃分配了多少字节」
          */
         static std::uint64_t residentMemoryBytes() noexcept;
 

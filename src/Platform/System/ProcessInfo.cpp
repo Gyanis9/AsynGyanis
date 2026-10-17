@@ -167,7 +167,7 @@ namespace AsynGyanis::Platform
         }
         return static_cast<std::uint64_t>(counters.WorkingSetSize);
 #else
-        // /proc/self/statm 的一行是七个**页计数**（大小 常驻 共享 文本 库 数据 脏页），第二列才是要的那一列。
+        // /proc/self/statm 的一行是七个页计数（大小 常驻 共享 文本 库 数据 脏页），第二列才是要的那一列。
         // 单位是页，所以还要乘页尺寸；procfs 上这类文件报大小为 0，故按固定上界读一段而不是按大小读
         constexpr std::size_t                             kStatmProbeLength = 128;
         const std::expected<std::string, std::error_code> contents          = readFileContents("/proc/self/statm", 0, kStatmProbeLength);
@@ -299,7 +299,7 @@ namespace AsynGyanis::Platform
         {
             return 0;
         }
-        // 跳过 ") "：comm 之后第一列是状态（第 3 列）——它是 R/S/D 这类单字符，**不是数字**；
+        // 跳过 ") "：comm 之后第一列是状态（第 3 列）——它是 R/S/D 这类单字符，不是数字；
         // starttime 是第 22 列，即余下部分的第 19 个下标。状态列必须先按「非空白段」跨过：
         // 直接对它跑 from_chars 会当场报无效字符，整条读数恒回 0
         const std::string_view afterComm  = statLine.substr(closeParenthesis + 2);
@@ -315,7 +315,7 @@ namespace AsynGyanis::Platform
             {
                 ++cursor;
             }
-            // 逐列按**有符号**解析：这份表里的 tpgid（无控制终端时是 -1）与 nice（可为负）
+            // 逐列按有符号解析：这份表里的 tpgid（无控制终端时是 -1）与 nice（可为负）
             // 都是合法负数，无符号目标会让 from_chars 在它们身上当场报无效字符
             const std::from_chars_result parsed = std::from_chars(afterComm.begin() + static_cast<std::ptrdiff_t>(cursor), afterComm.end(), tokenValue);
             if (parsed.ec != std::errc{})

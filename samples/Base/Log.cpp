@@ -190,7 +190,7 @@ namespace
 
             for (const auto &entry: std::filesystem::directory_iterator(rollingDirectory))
             {
-                // 时间策略的**当前**文件就把周期段插在扩展名之前（`timed-daily.2026-09-21.log`，
+                // 时间策略的当前文件就把周期段插在扩展名之前（`timed-daily.2026-09-21.log`，
                 // 见 RollingFileSink::getCurrentFilename），所以按不带扩展名的主干认
                 std::error_code sizeError;
                 if (!entry.is_regular_file() || !entry.path().filename().string().starts_with(nameStem))

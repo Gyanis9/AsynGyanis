@@ -25,7 +25,7 @@ namespace AsynGyanis::Core
      * @brief 交棒方这一侧的交接通道（一次性：只交给一个新一代）
      *
      * @details 换代的地基是「监听套接字跨进程移交」：新一代拿到同一个端点的监听引用之后，端口从不
-     *          关闭，也就没有 ECONNREFUSED 的空窗。本类只管**通道**——把监听套接字送过去这一步仍由
+     *          关闭，也就没有 ECONNREFUSED 的空窗。本类只管通道——把监听套接字送过去这一步仍由
      *          平台层做（POSIX 走 SCM_RIGHTS，Windows 走 WSADuplicateSocketW，见
      *          Platform::Socket::writeListeningSocketHandoff）。
      * @note 通道不带鉴权：本层不校验「对面就是我要交给的那个进程」。POSIX 上那道门是套接字文件的
@@ -65,7 +65,7 @@ namespace AsynGyanis::Core
          * @brief 等新一代连上，交回那条已连通的通道
          * @details 拿到对端之后监听端就没用了，本函数顺手把它收掉（一条通道只交给一个新一代）：
          *          此后再有进程连这个地址只会失败，而不是插进一次已经谈定的交接。
-         * @param budget 等待上限；**非正数表示无限等**（本方法原有的阻塞语义，交棒方还没派生
+         * @param budget 等待上限；非正数表示无限等（本方法原有的阻塞语义，交棒方还没派生
          *        新一代时就要这种等法）。给出正数时，期限内没人连就收掉通道并报超时——
          *        对端是别的进程，它完全可能起崩后再也不连，无限等会把调用方的编排循环冻住
          * @return std::expected<int, std::string> 通道描述符；失败交中文原因
@@ -95,8 +95,8 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 新一代这一侧：连上交接通道并取回移交来的套接字
-     * @details 取回的描述符带着交出方的状态：TCP 侧**已在监听**（backlog 与已排队的连接一并跟过来），
-     *          UDP 侧**已经 bind**。Net 侧各服务器都有接手的构造入口——TCP 那几台收裸描述符
+     * @details 取回的描述符带着交出方的状态：TCP 侧已在监听（backlog 与已排队的连接一并跟过来），
+     *          UDP 侧已经 bind。Net 侧各服务器都有接手的构造入口——TCP 那几台收裸描述符
      *          （TcpServer/HttpServer/HttpsServer），数据报那两台收 `Platform::DatagramSocket`
      *          （先过 Platform::DatagramSocket::adopt），因此取回之后直接起服务即可。
      * @param address UpgradeChannel::address() 给出的地址文本

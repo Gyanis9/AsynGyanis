@@ -24,10 +24,10 @@ namespace AsynGyanis::Core
      *
      * @details 为什么要收成一份类型：加固项此前写死在 `TlsContext::createHardenedContext()` 里，
      *          QUIC 服务端与出站客户端又各建各的 SSL_CTX，于是「改一处策略」要翻三处代码，而这三处
-     *          迟早会漂（证书安装与 ALPN 已经是两份实现了）。本类型只描述**策略**，不描述身份
+     *          迟早会漂（证书安装与 ALPN 已经是两份实现了）。本类型只描述策略，不描述身份
      *          （证书、私钥、票据密钥仍走各自的加载接口，它们是「这台服务是谁」而不是「怎么握手」）。
      *
-     * @note 每个字段都留了「不设置」的取值，且不设置时行为与本类型出现之前**逐字相同**：
+     * @note 每个字段都留了「不设置」的取值，且不设置时行为与本类型出现之前逐字相同：
      *       默认构造的策略就是既有加固档位（服务端最低 TLS 1.2、安全等级 2、那份显式排除弱算法的套件列表）。
      *       这样默认构造路径不会给现存部署带来任何握手变化，可配置性只加在不满意的那部分人身上。
      * @note 套件串与曲线名不预先校验：什么算合法由 OpenSSL 说了算（它随发行版配置变化），
@@ -70,16 +70,16 @@ namespace AsynGyanis::Core
         std::optional<int> verifyDepth;
 
         /**
-         * @brief 吊销列表（CRL）文件；**给了就等于要求做吊销检查**
+         * @brief 吊销列表（CRL）文件；给了就等于要求做吊销检查
          *
          * @details 为什么把「开关」并进这一个字段：留一个独立的 requireRevocationChecking 布尔，
          *          就会出现「开了检查却没有任何列表可查」那种配置——它在 OpenSSL 侧不是「没查」而是
-         *          **每条握手都失败**（unable to get certificate CRL）。挂在一个只能同时成立的动作上，
+         *          每条握手都失败（unable to get certificate CRL）。挂在一个只能同时成立的动作上，
          *          这类配置就写不出来。
          * @note 只支持单个文件（PEM 或 DER，OpenSSL 自己分辨，也可以一份文件里放多张 CRL）。
          *       哈希目录那种布局刻意不做：多一处目录约定就多一处「c_rehash 忘了跑」这类只在运行期
          *       暴露的错，而把若干张 CRL 串成一个文件是同样可达、却不依赖部署动作的写法。
-         * @note 吊销检查是**失败即关**的：启用它却没有覆盖到发证 CA 的列表时，握手一条也不成。
+         * @note 吊销检查是失败即关的：启用它却没有覆盖到发证 CA 的列表时，握手一条也不成。
          *       这方向不是疏忽——「列表没同步到就被当作没吊销」比「同步断了先拒掉」危险。
          */
         std::string revocationListFile;
@@ -91,11 +91,11 @@ namespace AsynGyanis::Core
         bool areSessionTicketsEnabled{true};
 
         /**
-         * @brief 对端证书的 SHA-256 指纹名单（64 位小写十六进制）；**空 = 不做点名**
+         * @brief 对端证书的 SHA-256 指纹名单（64 位小写十六进制）；空 = 不做点名
          *
          * @details mTLS 的默认信任是「CA 签的都对」——一个 CA 签了很多客户端时，任何一张被签的
          *          证书都能进来，而部署方常常要的是「只点名这几张」。名单不替代链校验：它是
-         *          在链验通之上**再点名**（就绪顺序与语义见 TlsContext::setPeerFingerprintAllowlist）。
+         *          在链验通之上再点名（就绪顺序与语义见 TlsContext::setPeerFingerprintAllowlist）。
          *          用指纹而不是 SAN/CN 是刻意的：名字解析带编码与通配符的坑，指纹是确定性字节。
          * @note 挂在策略里而不是上下文单拷一份：reloadCertificate() 按策略重建整台上下文，
          *       名单随之自动复现——另起一份就是「续期把名单悄悄丢了」的藏身处
@@ -111,8 +111,8 @@ namespace AsynGyanis::Core
      *          顺序颠倒会得到一条「套件列表无效」的误导性报错。
      * @param context 目标上下文，所有权不归本函数（调用方保证它活得比策略应用久）
      * @param policy 待施加的策略
-     * @param builtInCipherList 策略里套件串为空时使用的本角色默认；**传 nullptr 表示「策略没给就不设
-     *        这一项」**（出站客户端正是这种：它原先不写套件列表，写了反而可能把本可以连上的服务器拒掉）
+     * @param builtInCipherList 策略里套件串为空时使用的本角色默认；传 nullptr 表示「策略没给就不设
+     *        这一项」（出站客户端正是这种：它原先不写套件列表，写了反而可能把本可以连上的服务器拒掉）
      * @throws CoreException 任一 OpenSSL 调用拒绝了这个值：消息点名是哪一项、原文是什么
      * @note 失败即抛，不做「这项没生效但其它照旧」的降级：半生效的 TLS 策略比启动失败危险得多
      */

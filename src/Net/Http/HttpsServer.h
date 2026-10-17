@@ -126,7 +126,7 @@ namespace AsynGyanis::Net
          * @brief 设置请求打到静态目录时是否生成 HTML 目录列表
          *
          * @details 默认关闭：列表会把目录结构、文件名与大小交给任何一句 `GET /assets/` 的探测者，
-         *          而多数部署里静态目录只是资源仓库。打开之后列表**不带验证器**且带
+         *          而多数部署里静态目录只是资源仓库。打开之后列表不带验证器且带
          *          `cache-control: no-store`（被缓存的列表会在目录变化后继续宣称「这里有这些文件」），
          *          Range 对它一律忽略，条目数有上界。完整语义见 `StaticFileService::setDirectoryListing()`。
          * @param enabled true 列出目录条目；false（默认）按 404 处理
@@ -165,7 +165,7 @@ namespace AsynGyanis::Net
          * @brief 为一条新连接创建 TLS 加密的 HTTP 会话。
          *
          * @details 重写 TcpServer::createConnection()：接管 socket 之前先向 TLS 上下文申请 SSL
-         *          对象，失败时**抛异常**（基类会丢弃这条连接并记录中文错误）而不是返回空指针；
+         *          对象，失败时抛异常（基类会丢弃这条连接并记录中文错误）而不是返回空指针；
          *          socket 所有权随 Core::TlsSocket 转移，会话交给基类的是一条占位套接字；此处不做
          *          任何网络动作，握手留在会话协程里做，以免在事件循环线程上阻塞。
          *
@@ -255,7 +255,7 @@ namespace AsynGyanis::Net
          *          与 HTTP 侧共用一份采集端（metricsCollector()）时，两条服务路径的计数会并进同一份输出
          * @param path 端点路径，必须以 `/` 开头；默认 `/metrics`
          * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
-         * @note **端点默认不开**（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
+         * @note 端点默认不开（不调用本方法就没有任何暴露面）：本框架不做鉴权，公网可达的
          *       /metrics 等于把内部负载与错误率公开出去
          * @note 必须在 start() 之前调用：路由表在收到请求时读取，开机后再注册会让早到的请求拿不到
          * @throws Base::InvalidArgumentException 路径不以 `/` 开头
@@ -285,7 +285,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 在本服务器上注册事件循环观测端点（/debug/loops）
-         * @details 与 HttpServer::enableLoopDiagnosticsEndpoint() 同一份正文：报的是**进程内**所有
+         * @details 与 HttpServer::enableLoopDiagnosticsEndpoint() 同一份正文：报的是进程内所有
          *          事件循环的画像，不分 TLS 与否，两条服务路径注册哪个都看到同一张表。
          * @param path 端点路径，必须以 `/` 开头；默认 `/debug/loops`
          * @note 与指标端点同样默认不开，且必须在 start() 之前调用
@@ -344,8 +344,8 @@ namespace AsynGyanis::Net
          *
          * @details 续期流程：ACM 客户端/certbot 把新证书覆盖到原路径 → 调用本方法。已建立的连接
          *          不受影响（各自持有旧上下文，见 Core::TlsContext::reloadCertificate()）。
-         *          实现上先在新上下文把加固与 mTLS 配置整套重建、成功之后才换，因此**失败不会
-         *          影响正在服务的旧证书**。
+         *          实现上先在新上下文把加固与 mTLS 配置整套重建、成功之后才换，因此失败不会
+         *          影响正在服务的旧证书。
          *
          * @return true 新证书已生效；false 本次没换（新证书加载失败，或本服务器从未加载过证书），
          *         此时旧证书继续服务，调用方应记日志并稍后重试
@@ -397,7 +397,7 @@ namespace AsynGyanis::Net
          *          不装载同一份密钥文件的话，客户端第二次连接被分到别的 worker 就恢复不了会话，
          *          只能退回全量握手；证书换代前后同理。
          *
-         * @param keyFiles 密钥文件路径列表（**二进制**，每份 48 或 80 字节），首份用于签发新票据、
+         * @param keyFiles 密钥文件路径列表（二进制，每份 48 或 80 字节），首份用于签发新票据、
          *                 其余只用于解开轮换窗口内的旧票据
          * @throws Core::CoreException 列表为空、某份文件读不出来或为空、某份长度既不是 48 也不是 80；
          *         消息点名是哪一份文件

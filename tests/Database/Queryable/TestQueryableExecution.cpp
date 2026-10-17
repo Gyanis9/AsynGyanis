@@ -1,4 +1,4 @@
-// 覆盖场景（内存 SQLite 建连接池，建表后**完全通过 ORM** 完成插入/查询/排序/分页/计数/更新/删除）：
+// 覆盖场景（内存 SQLite 建连接池，建表后完全通过 ORM 完成插入/查询/排序/分页/计数/更新/删除）：
 // - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
 // - OrmInsertThenQueryWithWhereOrderAndLimit
 // - HostileTextRoundTripsThroughParameterBinding
@@ -111,7 +111,7 @@ namespace
      *
      * @details UInt64 是唯一在三个引擎上都「没有原生对应类型」的成员类型：SQLite 只有 64 位有符号整数，MySQL 有
      *          BIGINT UNSIGNED 但它的上界超过 int64，驱动只能以文本返回。这个结构体用于验证两侧边界：int64 能表达的取值必须
-     *          无损往返，表达不了的取值必须**明确失败**而不是悄悄换个数值。
+     *          无损往返，表达不了的取值必须明确失败而不是悄悄换个数值。
      */
     struct UnsignedCounterRow
     {
@@ -414,7 +414,7 @@ TEST_F(QueryableExecutionTest, OrmInsertThenQueryWithWhereOrderAndLimit)
 
 /**
  * @brief 钉住：ORM 插入路径在绑定前拒掉非有限浮点值，并点名是哪一列
- * @details 单元层那条只证明判据存在；这一条证明**调用方把列名传进来了**——否则运维看到的
+ * @details 单元层那条只证明判据存在；这一条证明调用方把列名传进来了——否则运维看到的
  *          是一句「某列写不进」而不知道是哪一列。`balance` 是本夹具里的 REAL 列。
  */
 TEST_F(QueryableExecutionTest, NonFiniteDoubleIsRejectedBeforeBinding)
@@ -766,7 +766,7 @@ TEST_F(QueryableExecutionTest, UnsignedColumnRoundTripsWithinInt64Range)
  * @brief 验证超出 int64 的 UInt64 取值在 SQLite 上明确失败，而不是悄悄换个数值
  *
  * @details SQLite 只有 64 位有符号整数：INTEGER 亲和性会把「装不下的十进制文本」转成 REAL，于是这一列读回来是浮点
- *          而不是整数。这是引擎的存储能力边界，ORM 的职责是**如实报错**——静默取整或回绕都会给出一个看起来正常、实际错误的
+ *          而不是整数。这是引擎的存储能力边界，ORM 的职责是如实报错——静默取整或回绕都会给出一个看起来正常、实际错误的
  *          数值，那比失败难查得多。需要精确承载 2^63 以上取值时应改用 MySQL 的 BIGINT UNSIGNED，那条真机路径由 MySQL 集成用例覆盖。
  */
 TEST_F(QueryableExecutionTest, UnsignedValueBeyondInt64FailsLoudlyOnSqlite)
@@ -850,7 +850,7 @@ TEST_F(QueryableExecutionTest, DuplicateColumnNamesDoNotAliasTwoMembersOntoOneCo
 /**
  * @brief 验证 contains / startsWith / endsWith 把用户输入里的 % _ ! 当字面量匹配
  *
- * @details like() 的入参是**模式**（% 与 _ 是通配符），把外部输入直接递给它的后果是：一个恰好
+ * @details like() 的入参是模式（% 与 _ 是通配符），把外部输入直接递给它的后果是：一个恰好
  *          含 % 的搜索词会放宽成「匹配任意内容」，选择性归零并退化成整表扫描。字面量三兄弟必须
  *          连 ESCAPE 子句一起产出才成立——SQLite 的 LIKE 没有默认转义符，缺了那句转义就是摆设。
  *          同一用例里保留 like() 的对照组，用来区分「修好了字面量」与「把通配符语义弄坏了」。

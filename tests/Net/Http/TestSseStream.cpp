@@ -68,7 +68,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把 chunked 响应的正文解码出来
-         * @details **只在确认收到终止块之后调用**：本函数要求解到 "0\r\n\r\n" 才返回 true，
+         * @details 只在确认收到终止块之后调用：本函数要求解到 "0\r\n\r\n" 才返回 true，
          *          响应还在途时帧不完整，必然失败。不处理 chunk 扩展，本框架也不发扩展。
          * @param rawResponse 已收到的全部响应字节
          * @param payload 输出：解码出的正文，进入调用时先清空

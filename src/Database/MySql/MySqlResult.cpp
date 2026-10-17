@@ -64,7 +64,7 @@ namespace AsynGyanis::Database
         m_result(ownedResult), m_connectionHandle(connectionHandle), m_streamOwner(owner), m_isStreaming(true)
     {
         // 列元数据在流式结果上是即时可用的（回复的头一段就是列定义），所以列数照常快照；
-        // 行数**不快照**：mysql_num_rows 在取完全部行之前给的是 0，这里把它留成 0 并在 rowCount() 的
+        // 行数不快照：mysql_num_rows 在取完全部行之前给的是 0，这里把它留成 0 并在 rowCount() 的
         // 文档里说明「0 是未知」，比等到读完再更新诚实——本类也不假装能提供随机定位
         if (m_result != nullptr)
         {
@@ -130,7 +130,7 @@ namespace AsynGyanis::Database
         }
 
         // 流式的空指针有两解：回复流真的读完了，或者中途断了。二者对调用方是完全不同的事——后者意味着
-        // 它拿到的是一份**残缺**结果，按「读完了」收尾就是把截断当成完整。判据是连接上的错误状态：
+        // 它拿到的是一份残缺结果，按「读完了」收尾就是把截断当成完整。判据是连接上的错误状态：
         // 读完时 mysql_errno(连接) 为 0，断了则带着服务端/客户端的错误码
         const unsigned int errorNumber = m_connectionHandle != nullptr ? mysql_errno(m_connectionHandle) : 0U;
         if (errorNumber == 0U)

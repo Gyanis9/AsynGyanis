@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
      * @details 为什么不一次把整份正文解析掉：`text/event-stream` 按设计不会结束，「整份」这个概念
      *          在这里不存在。解析器因此只认「喂进来的字节」与「能交出去的事件」，中间状态（半行、
      *          攒到一半的事件）都由它自己留着。
-     * @note 按 §9.2.6 的规矩办事：行分隔符是 CRLF / LF / 单独的 CR；`field:value` 冒号后的**一个**
+     * @note 按 §9.2.6 的规矩办事：行分隔符是 CRLF / LF / 单独的 CR；`field:value` 冒号后的一个
      *       空格属于分隔符不算进取值；未知字段与以 `:` 开头的注释行忽略；`data` 为空时那一行不算
      *       事件（不发）；`id` 里含 NUL 的整条忽略。
      * @see HttpClientRequest::responseBodyReceiver —— 喂进来的字节由它逐批给出

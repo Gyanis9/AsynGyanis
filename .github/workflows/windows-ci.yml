@@ -17,7 +17,7 @@ on:
   push:
     branches: [ main, develop ]
     # 纯文档改动不值得等构建；版本号门禁在 release-gate.yml，那条不受这里影响。
-    # 这里**不再**忽略 .github/workflows/**：门禁表里的读数只认「push 到默认分支那一轮」跑出来的结果，
+    # 这里不再忽略 .github/workflows/**：门禁表里的读数只认「push 到默认分支那一轮」跑出来的结果，
     # 而改门禁恰恰就改在这个文件里——一旦忽略它，新增或修好的门就只能靠手动触发验证，永远进不了台账。
     # 本工作流只有两条作业（Linux 侧十四条那条仍按原样忽略），代价可控
     paths-ignore:
@@ -268,11 +268,11 @@ jobs:
           markCount=$(ls "$tidyDir"/*.mark 2>/dev/null | wc -l)
           # 判「有没有真解析成功」用 [clang-diagnostic-error] 这个标签，而不是退出码：本仓给 MSVC 开了
           # /WX，clang 把它读成 -Werror，于是 clang 独有的几类（unused-const-variable、
-          # unused-lambda-capture、unused-private-field）以 error 的面目出现、退出码非 0——那是**发现项**，
+          # unused-lambda-capture、unused-private-field）以 error 的面目出现、退出码非 0——那是发现项，
           # 拿它判红会让这道门常红；真正解析不了的形状另有标签
           nonzeroCount=$(grep -l " rc=[1-9]" "$tidyDir"/*.mark 2>/dev/null | wc -l)
           findingCount=$(grep -cE "warning:|error:" "$RUNNER_TEMP/clang-tidy.log" 2>/dev/null || true)
-          # 解析失败按首条错误**落在哪个文件**分两档：落在本仓 src/ 里的必须为零，那是真没分析成；
+          # 解析失败按首条错误落在哪个文件分两档：落在本仓 src/ 里的必须为零，那是真没分析成；
           # 落在第三方头里的（默认档下实测有 2 件栽在 zlib 的 zconf.h：'unistd.h' file not found——
           # 那份头在没有 _WIN32 的假设下走了 POSIX 分支，而本仓代码里没有这行 include）属工具吃不了
           # 那份依赖头，Windows 侧改不动它；这两个翻译单元在 Linux 那条 clang-tidy 作业里照常分析。

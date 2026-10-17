@@ -196,7 +196,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 把已经拆出来的六个字段折成时间点
          * @details 三条格式（IMF、RFC 850、asctime）共用这一份折算与范围检查：闰秒允许 second==60，
-         *          日必须落在该月实际天数的**区间内**——下界也要判：`day` 是无符号的，只判上界时 0
+         *          日必须落在该月实际天数的区间内——下界也要判：`day` 是无符号的，只判上界时 0
          *          一路穿到 daysFromCivil，悄悄给出上个月最后一天（对端写 `Sun Nov 00 …` 本该被拒，
          *          却读成 10 月 31 日，条件验证器与 Cookie 的 Expires 都吃这个数）。
          *          闰年 2 月 29 合法、4 月 31 不合法。
@@ -227,7 +227,7 @@ namespace AsynGyanis::Net
          * @brief 解析 RFC 850 的过时格式：`Sunday, 06-Nov-94 08:49:37 GMT`
          * @details 星期允许全称（RFC 850 的原形）也允许三字母缩写——发过这种头的老客户端两种都在写。
          *          两位年份按 RFC 9110 §5.6.7 指向的 RFC 6265 规则折叠：0..69 记 2000 年代，
-         *          70..99 记 1900 年代。**不**按「离现在最近的世纪」解释，那会让同一个头在不同时刻
+         *          70..99 记 1900 年代。不按「离现在最近的世纪」解释，那会让同一个头在不同时刻
          *          解析出不同结果，缓存验证器要的是可复现的判据。
          * @param text 已去首尾空白的整条文本
          * @return std::optional<std::chrono::system_clock::time_point> 形状不符时返回空
@@ -492,7 +492,7 @@ namespace AsynGyanis::Net
     std::chrono::system_clock::time_point timePointFromUnixSeconds(const std::int64_t unixSeconds) noexcept
     {
         // 「秒 × 时钟周期」这一步在本平台上是一次乘法（libstdc++ 的周期是 1 纳秒、MSVC 是 100 纳秒），
-        // 越过 int64 上界就是有符号溢出——UB。它在运行期的落法很具体：**远期折回过去**，而这条路上
+        // 越过 int64 上界就是有符号溢出——UB。它在运行期的落法很具体：远期折回过去，而这条路上
         // 走的数往往不是本框架写的：ext4/xfs 存得下 2262 年以后的 mtime，ASN.1 的 GENERALIZEDTIME
         // 允许 9999 年。按本时钟能表达的两端各钳一刀，方向与语义都对得上：
         // 超出可表达的远期 = 永不到期，超出可表达的久远过去 = 早已过期

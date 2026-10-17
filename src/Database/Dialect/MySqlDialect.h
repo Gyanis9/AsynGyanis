@@ -95,7 +95,7 @@ namespace AsynGyanis::Database
          * @brief 获取 MySQL 的隔离级别设置语句
          * @details 重写 SqlDialect::isolationLevelStatement()：返回
          *          `SET TRANSACTION ISOLATION LEVEL <级别>`。不带 SESSION/GLOBAL 的 `SET TRANSACTION`
-         *          按 MySQL 文档只作用于**下一笔**事务——正是本方言开启事务那一条要用的；
+         *          按 MySQL 文档只作用于下一笔事务——正是本方言开启事务那一条要用的；
          *          Default 返回空串（无语句可发），未知枚举值同样返回空串（按「拒绝」处置）
          * @param level 请求的隔离级别
          * @return std::string_view 设置语句；Default 与未知值时为空
@@ -114,7 +114,7 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 冲突处置的 INSERT 关键词：MySQL 写成 `INSERT IGNORE INTO` 与 `REPLACE INTO`
-         * @details 重写 SqlDialect::insertKeywordPhrase()。`REPLACE INTO` 是**先删同键旧行再插**，
+         * @details 重写 SqlDialect::insertKeywordPhrase()。`REPLACE INTO` 是先删同键旧行再插，
          *          不是「按主键更新那几列」：行上的触发器会被触发、自增标识换一个新值、新行没给的列
          *          回到默认值。要「只改指定列」用 `InsertConflict::Upsert`：前缀是普通 INSERT，
          *          尾部由 appendInsertConflictTail() 追加 `ON DUPLICATE KEY UPDATE`

@@ -57,7 +57,7 @@ namespace AsynGyanis::Net
          * @brief 出站连接的配置
          *
          * @details 信任库、证书吊销名单与版本区间都从 `tlsPolicy` 走，本结构不另开一套同义字段：
-         *          出站侧的校验开关也**不在这里**——`Core::TlsContext` 对客户端角色的约定是「校验默认开启，
+         *          出站侧的校验开关也不在这里——`Core::TlsContext` 对客户端角色的约定是「校验默认开启，
          *          且不许因为没配 CA 而静默降级」，这里放一个 `verifyPeer=false` 等于给那条约定开后门
          *          （任何受信 CA 签的证书都能冒充目标主机）。要连不校验对端的自签测试环境，就把那份
          *          PEM 交给 `tlsPolicy.certificateAuthorityFile` 当信任锚。
@@ -66,8 +66,8 @@ namespace AsynGyanis::Net
         {
             std::string              hostName{};                                        ///< 服务端的规范主机名：SNI 与证书里的校验目标，必填
             std::vector<std::string> applicationProtocolIdentifiers{std::string{"h3"}}; ///< 要提供的 ALPN，按优先级排列
-            /// 本端要出示的客户端证书（PEM）与配套私钥，双向 TLS 的客户端一侧。**两项必须同时给或
-            /// 同时不给**，只给一项在构造期就抛：那种配置在握手里的形态是「服务端要证书而我们给得出
+            /// 本端要出示的客户端证书（PEM）与配套私钥，双向 TLS 的客户端一侧。两项必须同时给或
+            /// 同时不给，只给一项在构造期就抛：那种配置在握手里的形态是「服务端要证书而我们给得出
             /// 证书、给不出签名」，失败点离成因很远。留空即不提客户端证书——服务端要求时握手会被拒，
             /// 那正是服务端的意图，本端不替调用方猜要不要身份
             std::string               clientCertificateFile{};
@@ -106,7 +106,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 发起握手并跑完它
-         * @param serverAddress 服务端地址（取它的地址族挑本端绑定，并向它发包）。**按值收**：本方法是
+         * @param serverAddress 服务端地址（取它的地址族挑本端绑定，并向它发包）。按值收：本方法是
          *        惰性协程，收引用会把「调用方传的临时量」（如 `resolve(...).value()`）留到协程恢复时
          *        再用，那是悬空引用（实测 ASan 报过 stack-use-after-scope）
          * @return true 握手完成，此后可以开流收发；false 失败（对端不说话被时限掐断、握手被服务端拒绝、
@@ -183,7 +183,7 @@ namespace AsynGyanis::Net
         std::size_t writeStream(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream);
 
         /**
-         * @brief 把收到的流数据**直接转交**给一个出口，不再在本对象里排队
+         * @brief 把收到的流数据直接转交给一个出口，不再在本对象里排队
          * @details 上层是 HTTP/3 时必须要这一条：h3 那层自己按流分派、自己管额度，中间再放一层
          *          「按流缓冲、等谁来取」就是把同一批字节存两遍，还会让它看不到收尾（FIN）。
          *          设了它之后 `takeReceivedData` 就只会拿到空——一份字节只交给一边。
@@ -256,7 +256,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 带着握手看门狗把握手跑到完成或收场
-         * @details 单独成一条协程有两个理由：看门狗的守卫对象要在**这条协程的帧**销毁时一起撤销
+         * @details 单独成一条协程有两个理由：看门狗的守卫对象要在这条协程的帧销毁时一起撤销
          *          （放在 `connect()` 的函数体上会让它活过握手，到点掐掉已经可用的套接字），而
          *          `connect()` 还要管套接字与 TLS 的装配，两段混在一起读不出「谁在掐表」。
          *          收进来的每条数据报都按本端能否读到 ECN 字段决定交不交那一格（Windows 读不到，

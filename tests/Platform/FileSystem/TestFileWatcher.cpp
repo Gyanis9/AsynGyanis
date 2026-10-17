@@ -406,7 +406,7 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 钉住：撤销一条**递归**监视之后，它不会被自愈逻辑悄悄加回来
+     * @brief 钉住：撤销一条递归监视之后，它不会被自愈逻辑悄悄加回来
      * @details 递归根另存了一份清单，供「目录被删掉后又回来」时补挂监视用。撤销一条递归监视时
      *          若只清监视表、不清这份清单，下一拍自愈就会把它重新挂上：removeWatch() 明明返回了
      *          true，句柄却重开、回调照旧派发——等于把调用方的显式撤销否决掉。
@@ -436,7 +436,7 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 钉住：撤销一条递归监视要把整棵子树的**活**监视一起停掉
+     * @brief 钉住：撤销一条递归监视要把整棵子树的活监视一起停掉
      * @details 两个后端都会给枚举出来的子目录各挂一份原生监视。只摘被点名的那一条时，子目录
      *          那份照旧工作：调用方拿到 true 却仍在收事件，原生句柄与 watch 也一直被占（那棵树
      *          删不掉、卷卸不掉），反复挂撤还会耗尽 inotify 的配额，之后整个实例再也挂不上监视。
@@ -492,10 +492,10 @@ namespace AsynGyanis::Platform
 
 #if ASYN_PLATFORM_LINUX
     /**
-     * @brief 钉住（Linux）：被监视目录**改名走开**之后在同一路径重建，再注册一次要真的挂上新目录
+     * @brief 钉住（Linux）：被监视目录改名走开之后在同一路径重建，再注册一次要真的挂上新目录
      * @details inotify 对「被监视目录本身被改名」只发 IN_MOVE_SELF、不发 IN_IGNORED，内核仍持有该
      *          wd，于是映射不会自己消失；随后的 addWatch(原路径) 撞上「已经看过这个路径」这条去重、
-     *          **返回 true 却不注册**，原地重建的同名目录里的变更从此永久丢失。这里刻意不调
+     *          返回 true 却不注册，原地重建的同名目录里的变更从此永久丢失。这里刻意不调
      *          removeWatch，走的就是调用方以为「重复注册是幂等的」那条路。
      * @note 只在 Linux 编译：Windows 上同一形状（改名走开再原地重建）由另一条修法解决——监视条目按
      *       父目录报出的旧名/新名配对换键跟随目录，重建出的同名目录再交给按秒节拍的自愈补挂，
@@ -517,7 +517,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->start());
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-        // 把整个被监视目录改名走开，再在**原路径**上建一个同名新目录（全程不 stop、不 removeWatch）
+        // 把整个被监视目录改名走开，再在原路径上建一个同名新目录（全程不 stop、不 removeWatch）
         const std::filesystem::path movedAwayPath = temporaryDirectory.path().parent_path() / (temporaryDirectory.path().filename().string() + ".moved");
         std::error_code             renameError;
         std::filesystem::rename(temporaryDirectory.path(), movedAwayPath, renameError);
@@ -803,7 +803,7 @@ namespace AsynGyanis::Platform
 
     /**
      * @brief 钉住：递归根的名字落在本地代码页之外时，子目录一样要被覆盖，回调也要报回 UTF-8
-     * @details Windows 上把一段 UTF-8 文本直接交给 std::filesystem，它按**本地代码页**解释这些字节
+     * @details Windows 上把一段 UTF-8 文本直接交给 std::filesystem，它按本地代码页解释这些字节
      *          （实测 ACP 936 下「文档」被解成 U+93C2 U+56E6 U+6B22，即同一段字节的 GBK 读法），于是
      *          「这目录是不是目录」查不出来、整棵树的枚举被跳过，而 addWatch 照旧返回 true。反方向
      *          `path::string()` 给出的是代码页字节而不是 UTF-8，名字代码页装不下时它直接抛出。
@@ -907,7 +907,7 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 钉住：把一条已注册的目录**升级**成递归，要真的挂上先就存在的子目录
+     * @brief 钉住：把一条已注册的目录升级成递归，要真的挂上先就存在的子目录
      * @details 两个后端的注册函数都是「先记递归根，再查这条路径是否已注册，已注册就当场返回 true」，
      *          于是枚举子目录那一步被跳过：调用方两次 addWatch 都拿到 true，子目录却一个都没挂上，
      *          里面的变更永久丢失。自愈也救不了——它只复查清单上已有的路径，枚举不到的目录它不认识。
@@ -945,7 +945,7 @@ namespace AsynGyanis::Platform
     }
 
     /**
-     * @brief 递归监听开始**之后**新建的子目录也要被覆盖
+     * @brief 递归监听开始之后新建的子目录也要被覆盖
      * @details 每个目录各自一条监视（Win32 上是一条 ReadDirectoryChangesW），新建的子目录不补挂
      *          就永远收不到它内部的变更。inotify 侧早就有这条补挂，Win32 侧此前只在注册那一刻
      *          递归一遍，之后新建的目录成了监听盲区
@@ -1005,7 +1005,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->start());
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-        // 把整个目录换掉：删掉再重建，**不**重新 addWatch
+        // 把整个目录换掉：删掉再重建，不重新 addWatch
         std::error_code removeError;
         static_cast<void>(std::filesystem::remove_all(temporaryDirectory.path(), removeError));
         ASSERT_FALSE(removeError) << "删除被监视目录失败：" << removeError.message();
@@ -1102,7 +1102,7 @@ namespace AsynGyanis::Platform
         const bool isRearmed = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("first.yaml"); }, 3000);
         ASSERT_TRUE(isRearmed) << "补挂没发生，后面的判据都是空转";
 
-        // 补挂之后再建子目录，并**等它的 Created 通知被处理完**再往里写文件：覆盖集被污染时，正是这条
+        // 补挂之后再建子目录，并等它的 Created 通知被处理完再往里写文件：覆盖集被污染时，正是这条
         // 通知把子目录自动挂成递归监视的——不等这一步就写文件，两次变更会落进同一批通知，那批处理完
         // 才补挂，深那条就来不及报上来，用例就成了赌打包时机
         const std::filesystem::path subDirectory = watchedDirectory / "nested";
@@ -1221,7 +1221,7 @@ namespace AsynGyanis::Platform
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件
      * @details WaitForMultipleObjects 单次最多等 64 个对象（含停止事件，因此目录只有 63 个额度）。
      *          原实现只截前 63 个、且遍历顺序稳定，排在后面的目录永远进不了等待集——它们的事件
-     *          永久丢失。这里递归监视 70 个子目录，写**最后一个**子目录里的文件来钉住轮转切片
+     *          永久丢失。这里递归监视 70 个子目录，写最后一个子目录里的文件来钉住轮转切片
      */
     TEST(FileWatcher, WatchesMoreDirectoriesThanOneWaitBatch)
     {

@@ -44,7 +44,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 一条路径的数据报包层 PMTU 探测（DPLPMTUD）
-     * @details 探针是**触发确认的**包：只有被确认的尺寸才敢立为 PLPMTU，所以「发得出去」与「收得回来」
+     * @details 探针是触发确认的包：只有被确认的尺寸才敢立为 PLPMTU，所以「发得出去」与「收得回来」
      *          这一对才是证据，路由器的 ICMP 一律不参与（RFC 9000 §14.3.3 要求先验证再用，本仓不接
      *          ICMP 那条通路）。
      */

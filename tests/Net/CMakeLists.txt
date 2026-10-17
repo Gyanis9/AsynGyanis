@@ -213,7 +213,7 @@ gtest_discover_tests(TestNet
 # ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
 asyn_copy_sanitizer_runtime(TestNet)
 
-# libFuzzer 入口：默认不构建。开这个开关要求**整份项目**用带 fuzzer 运行时的 Clang 配置
+# libFuzzer 入口：默认不构建。开这个开关要求整份项目用带 fuzzer 运行时的 Clang 配置
 # （llvm.org 的 clang 可以；Qt 自带的 llvm-mingw clang 对 windows-gnu 目标根本不支持这个 sanitizer）。
 # 本机日常想跑模糊不必走这条路：scripts/fuzz-net.sh 只编「内核 + 四个解码器 + 依赖闭包」，
 # 因为 compiler-rt 的 Windows fuzzer 运行时是静态 CRT，混不上本项目 /MD 编出来的库。

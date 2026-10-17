@@ -108,7 +108,7 @@ namespace AsynGyanis::Net
 
     std::optional<std::string> deflateCompress(const std::string_view input, const int level)
     {
-        // RFC 9110 §8.4.1.2 的 deflate 是 **zlib 封装**（RFC 1950），不是裸 deflate。
+        // RFC 9110 §8.4.1.2 的 deflate 是 zlib 封装（RFC 1950），不是裸 deflate。
         // 两家历史上混用过，这里明确按 zlib 头写；浏览器与 curl 发的也是这一种
         return deflateContainerCompress(input, level, 15);
     }

@@ -26,7 +26,7 @@ namespace AsynGyanis::Platform
      * @details 事件循环线程被调度器搬来搬去时，L1/L2 缓存与 TLB 每搬一次就要重建一遍，
      *          绑核能稳定尾延迟；绑的动作用 Windows 的 SetThreadAffinityMask 与 Linux 的
      *          sched_setaffinity 各自实现，收在这里是因为 Platform 独占 OS 底层。
-     * @note 「可用核」按**本进程被允许使用的核**算，不是硬件核数：容器 cpuset 与
+     * @note 「可用核」按本进程被允许使用的核算，不是硬件核数：容器 cpuset 与
      *       taskset 收窄过的环境下 hardware_concurrency() 会给出机器核数而超出许可范围。
      * @warning 可绑的逻辑核编号范围取各平台自己那套 CPU 集合的宽度：Linux 的 cpu_set_t 有 1024 位，
      *          Windows 的 SetThreadAffinityMask 只能在一个处理器组内按位选核（因此只有 64 位，且线程

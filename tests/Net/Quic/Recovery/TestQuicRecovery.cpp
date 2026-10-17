@@ -2,7 +2,7 @@
 //
 // 时间全部注入，所以每条断言都是可精确复算的整数：RTT 的三个统计量、PTO 周期、按包号与按时间的
 // 两种丢包判据、退避倍数、以及确认/判丢后在途字节的回收。
-// 期望值都按 RFC 的公式手算并写成注释，整数除法一律**向零截断**（例如 41875/4 = 10468）；
+// 期望值都按 RFC 的公式手算并写成注释，整数除法一律向零截断（例如 41875/4 = 10468）；
 // 若哪天改了运算次序，这些数字会先变红，而不是留下一个看着合理其实偏了的估算。
 //
 // 覆盖：
@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
          * @brief 造一个 ACK 帧
          * @param largestAcknowledged 最大确认包号
          * @param ranges 区间列表（递减、闭区间）
-         * @param ecnCounts 交空表示这一帧**不带**三个计数（帧类型 0x02）；给出则置 `hasEcnCounts`
+         * @param ecnCounts 交空表示这一帧不带三个计数（帧类型 0x02）；给出则置 `hasEcnCounts`
          *                  并按 ECT(0)、ECT(1)、ECN-CE 的顺序填进去（§19.3.2）
          * @return QuicAcknowledgementFrame 交给恢复层的帧
          */
@@ -77,7 +77,7 @@ namespace AsynGyanis::Net
             return acknowledgement;
         }
 
-        /// 造一条本端**标了 ECT(0)** 的已发包（ECN 试探期就长这样）
+        /// 造一条本端标了 ECT(0) 的已发包（ECN 试探期就长这样）
         QuicSentPacketInfo makeMarkedSentPacket(const std::uint64_t packetNumber, const QuicTime timeSent)
         {
             QuicSentPacketInfo packet = makeSentPacket(packetNumber, timeSent);
@@ -305,7 +305,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 段里出现过一次确认就不判：那说明这条路在段内通过过（§7.6.2 的第一条并列条件）
-     * @details 这一格盯的是「先并段、再记确认、最后比时长」这个顺序。按旧写法（拿**上一趟**的段终点筛本帧
+     * @details 这一格盯的是「先并段、再记确认、最后比时长」这个顺序。按旧写法（拿上一趟的段终点筛本帧
      *          的确认）会是另一副样子：第一趟判掉包 1 与包 4（20ms 与 50ms），本帧确认到的包 5 在 60ms
      *          发出、落在段外 ⇒ 水位记成 60ms；第二趟判掉包 6 与包 8（100ms 与 210ms）把段终点推到 210ms，
      *          于是 60ms 这个确认就落进了 (20ms, 210ms] 这段里 ⇒ 规范要的答案是「不判」。
@@ -340,7 +340,7 @@ namespace AsynGyanis::Net
      * @brief 定时器那条路只把新判丢并进这一段，结论要等下一帧确认（§7.6.2 的「收到确认之后」）
      * @details 包 1（20ms）由第一帧判丢并把段开起来；包 2（200ms）当时还没到时间阈值，恢复层把
      *          211.25ms 那个时刻记成待判丢的闹钟（200ms + 9/8×10ms）。定时器到点把它判掉，段的跨度
-     *          推到 180ms——这一趟**不给**结论（`QuicRecoveryTimeoutAction` 里根本没有那一格）；
+     *          推到 180ms——这一趟不给结论（`QuicRecoveryTimeoutAction` 里根本没有那一格）；
      *          紧接着的一帧重复确认什么新包都没确认到，但规范那一格「收到确认之后」满足了 ⇒ 就在这里建立。
      *          两格各自都要：漏了定时器那一侧的并进锚点，这条要等下一次真判丢才判得出；
      *          在定时器那一侧就下结论，红的是「到点了却没重启」那一格。
@@ -458,7 +458,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 标够 §13.4.2 建议的十条也接着标，直到某个失败探测器出结论（本仓对附录 A.4 的有意偏离）
      * @details 规范那一格「unknown」的作用是「试探窗用完先停标、等已标出去那些包的回话」，代价是
-     *          **握手本身就常常吃掉十条**：等不到应用数据的包被标过，ECN 对真正要保护的那段流量等于没做。
+     *          握手本身就常常吃掉十条：等不到应用数据的包被标过，ECN 对真正要保护的那段流量等于没做。
      *          §13.4.2 明写「Endpoints can implement different methods」，这里改成一路标到有结论，
      *          靠两条失败判据收口（见下面两个用例）。这一格钉的就是「不按包数停标」。
      */
@@ -553,7 +553,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 本端标过的包被一帧不带计数的确认收走，判验证失败并从此不标（§13.4.2.1 第一条）
      * @details 这一格抓的是「路上有元件把 ECN 字段抹成 0」与「对端压根不报标记」——两种都在规范列出的
-     *          检测对象里。另一臂同样要紧：确认的是**没标过**的包而不带计数，什么都不许发生，
+     *          检测对象里。另一臂同样要紧：确认的是没标过的包而不带计数，什么都不许发生，
      *          否则任何普通 ACK 都会把 ECN 判死。
      */
     TEST(QuicRecovery, FailsEcnValidationWhenMarkedPacketsAreAcknowledgedWithoutCounts)
@@ -643,7 +643,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 报上来的 ECT 总量超过本端发出去带过这一格的包总数，判验证失败（§13.4.2.1 末段）
      * @details 这一格抓的是「中间节点凭空把包改成 ECT(0)」：本端一条都没标，对端却报了 ECT(0) 计数。
-     *          规范同时明写计数**允许大于**本帧新确认的包数（确认帧可能丢过），所以只有超总量才失败——
+     *          规范同时明写计数允许大于本帧新确认的包数（确认帧可能丢过），所以只有超总量才失败——
      *          另一臂（未确认的包带标，报得比本帧确认数大仍然算通过）一并钉在这里。
      */
     TEST(QuicRecovery, FailsEcnValidationWhenReportedEctTotalExceedsWhatThisEndSent)

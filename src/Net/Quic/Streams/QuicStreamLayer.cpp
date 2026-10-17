@@ -906,7 +906,7 @@ namespace AsynGyanis::Net
             return false;
         }
         // 上层报回来的加上作废掉的，要凑齐本层记过的每一个字节：还欠着就不能摘，否则
-        // releaseReceiveWindow 找不到条目会把这份额度**丢掉**，连接级窗口就此不再前进，
+        // releaseReceiveWindow 找不到条目会把这份额度丢掉，连接级窗口就此不再前进，
         // 对端永远等不到 MAX_DATA
         if (stream.consumedByteCount + stream.discardedByteCount != stream.receivedHighWaterOffset)
         {
@@ -1070,7 +1070,7 @@ namespace AsynGyanis::Net
             // 单向流只有发起方会发数据：本端发起的（0x03）才对端参数里的 0x07 管得着
             return isLocallyInitiated(streamId) ? m_peerParameters.initialMaximumStreamDataUnidirectional : std::optional<std::uint64_t>{0};
         }
-        // 对端参数里的 local/remote 是**它自己**的视角：本端发起的双向流在它那边算 remote（§18.2）
+        // 对端参数里的 local/remote 是它自己的视角：本端发起的双向流在它那边算 remote（§18.2）
         return isLocallyInitiated(streamId) ? m_peerParameters.initialMaximumStreamDataBidirectionalRemote : m_peerParameters.initialMaximumStreamDataBidirectionalLocal;
     }
 

@@ -15,7 +15,7 @@ namespace AsynGyanis::Platform
     {
         /**
          * @brief 把一段 UTF-8 路径文本交给文件系统
-         * @details 直接把窄字符序列交给 std::filesystem::path，Windows 会按**本地代码页**解释这些字节
+         * @details 直接把窄字符序列交给 std::filesystem::path，Windows 会按本地代码页解释这些字节
          *          （实测 ACP 936 下 UTF-8 的「文档」解成 U+93C2 U+56E6 U+6B22），查询与建监视就落在
          *          另一个名字上；反方向的 `path::string()` 同样按代码页出串，代码页装不下的名字直接
          *          抛出。跨这一层的路径文本因此一律走 FileSystem 的那对 UTF-8 转换
@@ -371,7 +371,7 @@ namespace AsynGyanis::Platform
         // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是监听侧
         // 自己的分配失败（收集等待集、路径拼装、补挂监视）。Platform 在 Base 之下没有日志通路，
         // 因此只能把「本监听器已停」落到停止标志上。
-        // 警告：**这一格目前只落到标志上，没人读**：`isRunning()` 在 src/ 与 samples/ 里没有生产消费方
+        // 警告：这一格目前只落到标志上，没人读：`isRunning()` 在 src/ 与 samples/ 里没有生产消费方
         //          （只有 tests/Platform 的用例读它），`ConfigManager::isHotReloadEnabled()` 报的是自己那个
         //          原子位而不是线程死活。所以真抛一次的现场表现是「热重载永久停摆而对外仍说已启用」，
         //          既无日志也无计数。ponytail: 补法是给 ConfigManager 一个可注入的 FileWatcher 接缝，
@@ -400,7 +400,7 @@ namespace AsynGyanis::Platform
         eventHandles.reserve(MAXIMUM_WAIT_OBJECTS);
         pendingPaths.reserve(MAXIMUM_WAIT_OBJECTS - 1);
 
-        // 单次最多等 63 个目录，超出的那部分靠**轮转**排下一轮：只截前 63 个的话，顺序一旦稳定
+        // 单次最多等 63 个目录，超出的那部分靠轮转排下一轮：只截前 63 个的话，顺序一旦稳定
         // （m_watches 是有序表），尾部目录永远进不了等待集，它们的事件会永久收不到
         std::size_t rotationOffset = 0;
 
@@ -647,7 +647,7 @@ namespace AsynGyanis::Platform
         node.key()          = relocatedPath;
         node.mapped()->path = relocatedPath;
         m_watches.insert(std::move(node));
-        // 新位置同样纳入自愈范围；旧键**故意留着**——原地重建出同名目录时靠自愈复查补挂第二条监视
+        // 新位置同样纳入自愈范围；旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
         m_recursiveWatchPaths.insert(relocatedPath);
         // 调用方点过名的那条监视搬到哪，自愈就该在新位置复查它；旧键同样留着，理由与上面一致
         if (std::ranges::any_of(m_selfHealPaths, [&oldPath](const std::string &requestedPath) { return isSameDirectoryPath(requestedPath, oldPath); }))
@@ -770,7 +770,7 @@ namespace AsynGyanis::Platform
         {
             ::CancelIo(entry.directoryHandle);
 
-            // 等完成包必须有上限。GetOverlappedResult 的 bWait=TRUE 是**无界**等待，而
+            // 等完成包必须有上限。GetOverlappedResult 的 bWait=TRUE 是无界等待，而
             // CancelIo 对某些状态的目录根本不会给出完成（本文件上面就记着「目录被改名走开后
             // 不再往里写入时，等待永久不返回，监听线程就此停摆」这条实测）：调用 stop() 的线程
             // 会被一起钉死，热重载的启停与进程退出都可能因此挂住几十秒到永久。

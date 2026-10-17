@@ -140,7 +140,7 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 缓存里的游标属于**当前这个**数据库句柄，必须在关句柄前全部 finalize：
+        // 缓存里的游标属于当前这个数据库句柄，必须在关句柄前全部 finalize：
         // 键只有 SQL 文本，重连之后拿旧游标去 step 就是对已释放对象的访问
         clearStatementCache();
 
@@ -331,7 +331,7 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 带返回列 = 查询：流式档**跳过预扫描**——不整趟遍历、不存快照，行数保持未知（rowCount
+        // 带返回列 = 查询：流式档跳过预扫描——不整趟遍历、不存快照，行数保持未知（rowCount
         // 回 0）、isEmpty 保持 false（都是流式档的既定哨兵）；游标从首行起由调用方逐行推进
         if (sqlite3_column_count(statement) > 0)
         {
@@ -522,11 +522,11 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 外键开关是**每连接**的一位，而 connect() 承诺过它是 ON。借用者为了批量导入把它关掉
+        // 外键开关是每连接的一位，而 connect() 承诺过它是 ON。借用者为了批量导入把它关掉
         // （"PRAGMA foreign_keys=OFF" 是这类代码的常见写法）再归还，下一个借用者就在不知情的情况下
         // 往库里插孤儿子行：约束在表定义里看着还在，报错却一次都没有。这里无条件重申一次。
         // 必须排在回滚之后——那条 PRAGMA 在事务内是空操作。
-        // 日志模式（WAL）不在此列：它是**每库文件**的持久设置，改它会影响所有连接并触发检查点，
+        // 日志模式（WAL）不在此列：它是每库文件的持久设置，改它会影响所有连接并触发检查点，
         // 不属于「上一个借用者留下的会话状态」这一档
         if (sqlite3_exec(m_database, kForeignKeysPragma, nullptr, nullptr, nullptr) != SQLITE_OK)
         {
@@ -542,7 +542,7 @@ namespace AsynGyanis::Database
         }
 
         // 另两格「每连接」设置按建连时读到的基线重申。它们与 foreign_keys 同属批量导入配方的另一半，
-        // 而后果都是下一位**看不出来**的那种：synchronous 被调低＝掉电可能丢数据；recursive_triggers
+        // 而后果都是下一位看不出来的那种：synchronous 被调低＝掉电可能丢数据；recursive_triggers
         // 被打开＝触发器多滚几层从而改变写入结果。（case_sensitive_like 不在此列——它写进去有效而
         // PRAGMA 读不回来，基线根本拿不到，见 SqliteConnection.h 里那段名单说明。）
         // 先读再比：稳态（没人改过）时只付两次读数，既不写也不分配字符串
@@ -739,7 +739,7 @@ namespace AsynGyanis::Database
                 bindResult = sqlite3_bind_int64(statement, parameterIndex, *integerValue);
             } else if (const auto *realValue = std::get_if<double>(&parameterValue))
             {
-                // REAL 的存储格式装不下 NaN 与无穷大，sqlite3_bind_double 会把它们**改绑成 NULL**：
+                // REAL 的存储格式装不下 NaN 与无穷大，sqlite3_bind_double 会把它们改绑成 NULL：
                 // 「写入一个数」于是静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
                 if (!std::isfinite(*realValue))
                 {

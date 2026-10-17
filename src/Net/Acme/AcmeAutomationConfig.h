@@ -49,7 +49,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一段 `acme` 配置读出来的结果
      *
-     * @details 刻意**不**自己再造一份设置结构体：`manager` 就是 `AcmeCertificateManager` 直接吃的那份，
+     * @details 刻意不自己再造一份设置结构体：`manager` 就是 `AcmeCertificateManager` 直接吃的那份，
      *          再加一层就会有两处默认值要同步（而这类「配置说 A、构造体写 B」的偏差正是最难查的）。
      *          DNS-01 那三项是管理器没有的字段（管理器只认「有没有动作对」），所以单列在这里。
      * @note 凭据不在这里：AccessKey 只从环境变量进，见 `buildDns01TxtWriter`

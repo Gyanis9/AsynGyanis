@@ -23,12 +23,12 @@ namespace AsynGyanis::Core::Random
      *          HTTP 掩码帧的密钥、外部服务的 nonce 都算这一类。
      * @param destination 待填满的缓冲；长度为 0 时是空操作（不碰随机源，也不抛）
      * @throws Base::Exception 随机源取不出字节：熵池尚未初始化或底层 DRBG 失败。
-     *         抛出时缓冲**保持原样**，不会留下半填的状态——半填的字节看起来像取到了，比取不到更危险
+     *         抛出时缓冲保持原样，不会留下半填的状态——半填的字节看起来像取到了，比取不到更危险
      */
     ASYN_CORE_API void fill(std::span<std::uint8_t> destination);
 
     /**
-     * @brief 用**私有实例**取密钥材料：签名密钥、令牌密钥、无状态重置密钥这类长期秘密
+     * @brief 用私有实例取密钥材料：签名密钥、令牌密钥、无状态重置密钥这类长期秘密
      * @details 走 `RAND_priv_bytes`：OpenSSL 为密钥材料另备一份 DRBG 实例，与公开随机数分流——
      *          一份实例的状态被推断出来时，另一份不受牵连（OpenSSL 手册里 RAND_priv_bytes 的存在理由）。
      *          判据按用途挑：这个字节会不会被拿去当密钥、口令或 HMAC 密钥？会就用本函数。

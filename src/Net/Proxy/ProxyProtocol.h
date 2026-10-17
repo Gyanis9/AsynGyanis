@@ -37,7 +37,7 @@ namespace AsynGyanis::Net
     /**
      * @brief v2 TLV 里几个已定义的类型号（RFC 的 PROXY 协议规范附录 A）
      * @details 只列有名字的那几个；私有号段（0xE0–0xFF）与未定义类型一律按「原样交出、消费方按类型挑
-     *          自己认的」处理，因此不在此处穷举。`NoOp` 是**填充**（规范要求接收方忽略它的内容），
+     *          自己认的」处理，因此不在此处穷举。`NoOp` 是填充（规范要求接收方忽略它的内容），
      *          本层照原样放进列表——过滤是消费方的事，解析层不做取舍
      */
     enum class ProxyTlvType : std::uint8_t
@@ -53,7 +53,7 @@ namespace AsynGyanis::Net
     /**
      * @brief v2 头里的一条 TLV：类型 + 值
      *
-     * @note `value` 是**视图**，指进 `parseProxyHeader()` 收到的那个缓冲：解析结果不得活得比它长。
+     * @note `value` 是视图，指进 `parseProxyHeader()` 收到的那个缓冲：解析结果不得活得比它长。
      *       这样定形是为了让解析入口保持不分配（它是 `noexcept` 的读侧热路径，每条连接都要走一次），
      *       调用方真要长期持有某条值，自己拷一份（单条值的上限就是整条头的
      *       kMaximumProxyHeaderV2Bytes）。
@@ -67,7 +67,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条 PROXY 头交出的四层身份
      *
-     * @note **TOA 不做（这是决定，不是待办）**：TOA（TCP Option Address）是 Linux 专有的方案，要内核
+     * @note TOA 不做（这是决定，不是待办）：TOA（TCP Option Address）是 Linux 专有的方案，要内核
      *       打补丁、在 TCP 选项里塞入真实来源，而且只有特定 LVS 形态会配它。「拿到真实来源」这一需求
      *       已由 PROXY 协议覆盖（本文件就是它的读侧），而 TOA 还要在本层之外额外接一条 `getsockopt`
      *       式的读法（对本项目来说既没有可测的内核，也没有可复现的部署形态）。真遇到只认 TOA 的
@@ -106,9 +106,9 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API ProxyHeaderFraming frameProxyHeader(std::string_view buffered) noexcept;
 
     /**
-     * @brief 解析一条**完整**的 PROXY 头
+     * @brief 解析一条完整的 PROXY 头
      * @param header 头的全部字节（可以比头本身长：只解析最前面那一条，多余部分归调用方的下一段读）
-     * @param consumedBytes 输出参数：本次吃掉的字节数（v1 含结尾 CRLF，v2 含 TLV）；**解析失败时置 0**，
+     * @param consumedBytes 输出参数：本次吃掉的字节数（v1 含结尾 CRLF，v2 含 TLV）；解析失败时置 0，
      *        调用方因此不必分辨「没动」与「没吃」——失败就是什么都没吃
      * @return std::optional<ProxyEndpoint> 解析成功交出身份；格式不合规范交出空
      * @note 不合规就返回空而不是抛：读侧的处置是「关掉这条连接并记一条日志」，一条报文格式问题不该

@@ -126,7 +126,7 @@ namespace AsynGyanis::Core
         return true;
 #else
         // 被挡进屏蔽字的信号不会按缺省动作终止进程，只会被本类的等待线程取走。
-        // 屏蔽只对**之后**派生的线程生效（子线程继承掩码），所以要在起工作线程之前调
+        // 屏蔽只对之后派生的线程生效（子线程继承掩码），所以要在起工作线程之前调
         sigset_t watchSet;
         fillWatchedSignalSet(watchSet);
         const int blocked = ::pthread_sigmask(SIG_BLOCK, &watchSet, nullptr);

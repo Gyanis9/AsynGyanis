@@ -32,7 +32,7 @@ namespace AsynGyanis::Net::TestSupport
     /// 附录 A.4 样例里那条令牌：规范把它取成 ASCII 的 "token"，五字节
     constexpr std::string_view kAppendixA4RetryTokenHex = "746f6b656e";
 
-    /// 附录 A.4：整条 Retry（36 字节）。首字节的 Unused 位取全 1，而完整性标签的关联数据**含**这一字节，
+    /// 附录 A.4：整条 Retry（36 字节）。首字节的 Unused 位取全 1，而完整性标签的关联数据含这一字节，
     /// 所以本端的组包器也取全 1 才能与这条官方样例逐字节相同（RFC 9000 §17.2.5 说这几位任意、客户端必须忽略）
     constexpr std::string_view kAppendixA4RetryPacketHex = "ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba";
 

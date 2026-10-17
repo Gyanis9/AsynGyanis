@@ -255,7 +255,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 多字段 Transfer-Encoding 先按 RFC 9112 §6.1 合并，再作为一条编码链整体裁决
-     * @details 「chunked 必须在链末尾」是对**合并后的列表**说的。逐条看，
+     * @details 「chunked 必须在链末尾」是对合并后的列表说的。逐条看，
      *          `Transfer-Encoding: chunked` + `Transfer-Encoding: gzip` 里的第一条会单独通过，
      *          正文就被按分块解读而错位——这条测试存在的理由一直是「先合并」。
      *          合并之后本端拆不掉这条链（只实现 chunked 这一种传输编码），因此现在判的是失败，
@@ -559,7 +559,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住出站方向也拒绝折行、非法头名与非法头值——过去这几条只有入站有
-     * @details 旧实现缺冒号时把**整行**当成头名塞进结果，上层按名字取头就可能读到一个对端根本没发过的
+     * @details 旧实现缺冒号时把整行当成头名塞进结果，上层按名字取头就可能读到一个对端根本没发过的
      *          字段；折行（obs-fold）与冒号前带空白的名字同样照收。同一串字节在入站解析里是明确拒绝的，
      *          两个方向给出不同结论就是中转分歧的入口（缓存投毒、请求走私都从这里进去）。
      *          值这一半是同一处分歧的另一面：控制字符进了 headers 就再也发不出去（写头的闸门拒同一批
@@ -648,7 +648,7 @@ namespace AsynGyanis::Net
      * @details 旧写法取前三字符喂 atoi：`HTTP/1.1 abc OK` 得到 0、`HTTP/1.1 2000 OK` 得到 2000、
      *          `HTTP/1.1 20 OK` 得到 20——上层按「2xx 才算成功」分支时，这些假号与真号无法区分，
      *          而报文里从来没写过它们。判据与 h2/h3 的 `:status` 共用 parseStatusCodeText 一处。
-     *          正向对照两则：带原因短语的常规状态行，以及**没有原因短语**的状态行
+     *          正向对照两则：带原因短语的常规状态行，以及没有原因短语的状态行
      *          （RFC 9112 §9 里 Reason-Phrase 是可选的，收紧状态码不该把它一起挡掉）。
      */
     TEST(HttpResponseParser, RejectsStatusCodeTextThatIsNotThreeDigits)
@@ -675,7 +675,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：chunked 的 trailer 段收进 `trailers` 而不是丢掉，并与头部共用同一道配额账
      * @details 过去这一支只校验形态就丢弃——正文之后才知道的结果（校验和、最终状态）调用方压根读不到，
      *          而那正是 chunked trailer 存在的理由（RFC 9112 §7.1.2）。收下来就要记账：条数与净字节两道
-     *          闸门按**整条报文**累计判，与入站侧（h1 解析器、h2 会话、h3 会话）同一条口径；否则「把字段
+     *          闸门按整条报文累计判，与入站侧（h1 解析器、h2 会话、h3 会话）同一条口径；否则「把字段
      *          拆进 trailer 段」就成了本端这两道闸的绕过口。
      */
     TEST(HttpResponseParser, CapturesTrailerFieldsAndCountsThemIntoTheHeaderBudget)

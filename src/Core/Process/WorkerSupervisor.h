@@ -58,7 +58,7 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 多进程 worker 的编排器（master 侧）：起进程、盯退出、按需重启、收尾送走；worker 参数全部由调用方给
-     * @warning run() 必须在**进程还是单线程**时调用：worker 由 fork + exec 起（见 Platform::Process），
+     * @warning run() 必须在进程还是单线程时调用：worker 由 fork + exec 起（见 Platform::Process），
      *          多线程下 fork 出的子进程只带调用线程，锁与运行库状态都可能不自洽。
      * @note 两个平台的分摊形状不同，配置因此分叉：
      *        @li POSIX 给 @c handoff 留空——每个 worker 自己 bind 同一个端口，靠 SO_REUSEPORT 由内核
@@ -71,14 +71,14 @@ namespace AsynGyanis::Core
      * @warning 移交模式下的补位是有界阻塞：起一个 worker 最多占用 @c handoff.waitBudget 等它连上
      *          通道，期限内没连上就按一次「起来就崩」记数并杀掉那个进程。整池都起不来时编排照常
      *          放弃并返回 false，不会卡在通道上。
-     * @note 进程之间**不共享任何状态**：按来源 IP 的并发限额、限流桶、指标计数都是各进程一份。
+     * @note 进程之间不共享任何状态：按来源 IP 的并发限额、限流桶、指标计数都是各进程一份。
      *       多进程下这意味着「单来源上限 × N、请求速率上限 × N、指标要按进程分别采集」——
      *       要真正的全局口径就得引入进程间共享（或改用单进程多工作循环 + 接受分发）。
-     * @note 崩溃循环的收口口径：连续「起来就崩」达到 @c crashLoopLimit 的槽位会被**放弃**（不再补它，
+     * @note 崩溃循环的收口口径：连续「起来就崩」达到 @c crashLoopLimit 的槽位会被放弃（不再补它，
      *       打一条 ERROR 点名槽位）；若整池都被放弃，run() 返回 false 交给进程管理器接手。只要还有其他
-     *       槽位在跑，被放弃的槽位静默满 `10 × crashLoopWindow` 后会**重新纳入一次**补位尝试（崩计数
+     *       槽位在跑，被放弃的槽位静默满 `10 × crashLoopWindow` 后会重新纳入一次补位尝试（崩计数
      *       清零）——给「配置被改好」「依赖恢复」这类外部修复留一条回去的路，同时不让它每轮都试。
-     *       导出的指标 `asyn_worker_slots_given_up` 是**累计放弃次数**，重新纳入不会把它减回去。
+     *       导出的指标 `asyn_worker_slots_given_up` 是累计放弃次数，重新纳入不会把它减回去。
      */
     class ASYN_CORE_API WorkerSupervisor
     {
@@ -106,7 +106,7 @@ namespace AsynGyanis::Core
             std::size_t               workerCount{1};    ///< worker 个数；必须大于 1，等于 1 时直接用单进程跑，不需要本类
             std::chrono::milliseconds pollInterval{100}; ///< 观察存活与响应停止请求的轮询间隔
             /**
-             * @brief 崩溃重启退避的**基准值**：第 n 次连续崩溃后等 base × 2^(n-1)，封顶 30 秒，再叠 ±20% 抖动
+             * @brief 崩溃重启退避的基准值：第 n 次连续崩溃后等 base × 2^(n-1)，封顶 30 秒，再叠 ±20% 抖动
              * @details 恒定间隔并不能避免崩溃循环里打转（一个必崩的 worker 会以固定频率无限重启）；
              *          指数增长让反复失败的槽位逐步让出 CPU 与日志，抖动避免多个槽位在同一刻一起回来。
              *          首次启动（崩计数为 0）不走退避，冷启动因此不会串成 N × base。
@@ -138,10 +138,10 @@ namespace AsynGyanis::Core
             /**
              * @brief 每个槽位都各有一个活着的 worker 时回调一次；空 = 不回调
              * @details 「活着」按进程号判：`Platform::Process::isRunning` 说的是这个子进程还没退出并已被
-             *          回收，**不**说明它已经绑上监听端口——那一段还要等它自己起完循环。所以这一格能给的是
+             *          回收，不说明它已经绑上监听端口——那一段还要等它自己起完循环。所以这一格能给的是
              *          「整池都到位了」，端口上真有人应答要由调用方自己再验一次（`ReferenceServer` 就是
              *          先等这条回调、再对本机端口做一次 TCP 连接试探，然后才向服务管理器报就绪）。
-             * @note 回调跑在**编排线程**上，不得长时间阻塞：那条线程同时负责补崩掉的 worker 与响应停止请求。
+             * @note 回调跑在编排线程上，不得长时间阻塞：那条线程同时负责补崩掉的 worker 与响应停止请求。
              *       每轮重数一遍个数，凑齐那一刻只回调一次；worker 后来崩了不再补起也不会二次回调——
              *       「就绪」是一次性陈述，不是持续状态。
              */
@@ -152,7 +152,7 @@ namespace AsynGyanis::Core
              * @details 给「要告诉监督者我在收尾」那一类调用方用：这一刻 worker 还没被通知退出，
              *          整池仍在跑，正是一次 `STOPPING=1` 该有的位置。放在 `stopAllWorkers()` 之前而不是
              *          `run()` 返回之后——后者已经收尾完了，再报就成了事后说明。
-             * @note 同样跑在编排线程上；由信号触发的停止里，本回调是在**循环线程**而不是信号处理函数里跑的
+             * @note 同样跑在编排线程上；由信号触发的停止里，本回调是在循环线程而不是信号处理函数里跑的
              *       （处理函数只置原子标记，见 `requestStop()`）。
              */
             std::function<void()> onStopRequested{};
@@ -161,7 +161,7 @@ namespace AsynGyanis::Core
              * @brief 看门狗通知通路（可空 = 不启用汇聚喂狗）
              * @details 非空且窗口读得出（`readWatchdogConfiguration()`）时，本类为每个槽位建一条心跳管道
              *          并把写端经 `kWatchdogPipeArgument`/`kWatchdogPingArgument` 传给 worker：就绪之后，
-             *          只有**每个未放弃槽位都在本窗口内有过拍**才向该通路喂一条 `WATCHDOG=1`。任何一条
+             *          只有每个未放弃槽位都在本窗口内有过拍才向该通路喂一条 `WATCHDOG=1`。任何一条
              *          worker 的心跳停摆（事件循环卡死、进程僵住）都会让判定失败而停喂，监督者按超时
              *          重启整个单元——与单进程形态「循环停摆就不再喂」同一语义。
              * @note 本类不拥有通知通路；它须比本对象活得久。Windows 侧整条路径不启用（没有 systemd
@@ -223,7 +223,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 当前仍在运行的 worker 数（日志与诊断用），任何线程可调
-         * @return std::size_t 个数；这是编排线程**最近一轮扫描**的快照，最长滞后一个 pollInterval
+         * @return std::size_t 个数；这是编排线程最近一轮扫描的快照，最长滞后一个 pollInterval
          * @note 本接口不去探句柄：观察线程若直接调存活查询，会与编排线程同时读写同一个进程句柄
          *       （存活查询顺手回收子进程并把退出码与进程号写回句柄）。回收本身不能并发——两个线程
          *       只有一个拿得到退出状态；更要紧的是终止路径读到的进程号可能已被并发的回收改写成
@@ -453,7 +453,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 上面两条挂在进程级指标注册表上的把手
-         * @details 刻意**不导出** `runningWorkerCount()`：那个读口会顺手回收子进程并改写退出码，
+         * @details 刻意不导出 `runningWorkerCount()`：那个读口会顺手回收子进程并改写退出码，
          *          从抓取线程调用等于与编排线程抢回收（见其注释）。进程里有几份容量，看这条自动化
          *          的计数与日志更稳妥
          */
@@ -463,7 +463,7 @@ namespace AsynGyanis::Core
          * @brief 记一次「起来就崩」：槽位计数与进程级累计各加一
          * @details 两处崩溃点（起不来、存活不足窗口就退出）都走这里，避免只有一处记得抬累计。
          *          「连续」由 `reapWorker` 的稳定运行分支清零来界定；起不来那一档没有存活时长，
-         *          连续失败自然累积。这里刻意**不按两次崩溃的间隔清零**：指数退避会把间隔越拉越长，
+         *          连续失败自然累积。这里刻意不按两次崩溃的间隔清零：指数退避会把间隔越拉越长，
          *          到某一档必然超过 crashLoopWindow——那样永远凑不满阈值，熔断形同虚设
          */
         void noteWorkerCrash(Worker &worker) noexcept

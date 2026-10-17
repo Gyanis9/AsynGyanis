@@ -8,7 +8,7 @@
 // - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
 // - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
 // - OfflineModeThrowsOnAsyncExecution
-// 异步写之后一律用**同步查询**读回，那是「数据真的落库」的权威证据；协程帧由常驻的 TestSupport::EventLoopThread
+// 异步写之后一律用同步查询读回，那是「数据真的落库」的权威证据；协程帧由常驻的 TestSupport::EventLoopThread
 // 持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
 
 #include "DatabaseTestSupport.h"
@@ -411,7 +411,7 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
 /**
  * @brief 异步插入取回的自增标识要与同步那条给同一个值（该入口此前零直测）
  * @details 异步版的承诺是「取连接 → 执行 → 读写回执上的自增标识」整段都在工作线程上跑，标识是在
- *          **同一条租约**上读回来的。把读标识那一步挪回事件循环线程、或顺手改成读受影响行数，
+ *          同一条租约上读回来的。把读标识那一步挪回事件循环线程、或顺手改成读受影响行数，
  *          第二条插入拿到的就不再紧接第一条——那是「不报错的错误答案」，只有把号读回来对答案才看得见。
  *          自增主键被省略这条也在这里重复钉一次：语句生成与同步共用一份实现，但异步入口此前没有用例守。
  * @note 证伪：把工作线程 lambda 里的 `lastInsertRowId()` 换成 `affectedRows()`，本条红在第二条标识

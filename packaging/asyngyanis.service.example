@@ -19,7 +19,7 @@ User=asyngyanis
 Group=asyngyanis
 
 # 配置样例把日志与链路文件写在 /var/lib/asyngyanis/logs 下（用绝对路径是有理由的：相对路径的锚点是
-# **配置文件所在目录**，而那份配置住在 /etc/asyngyanis/，专用账号在 /etc 下建不出目录）。
+# 配置文件所在目录，而那份配置住在 /etc/asyngyanis/，专用账号在 /etc 下建不出目录）。
 # StateDirectory= 让 systemd 建好 /var/lib/asyngyanis 并按上面的 User/Group 归属；
 # 镜像里同一格是 install -d（见 packaging/Dockerfile），两边同解。
 StateDirectory=asyngyanis
@@ -59,7 +59,7 @@ TimeoutStopSec=30s
 TimeoutStartSec=60s
 
 # 每个 TCP 连接占一个 fd，HTTP/3 还要额外的 UDP 套接字；现代内核默认的 1024 在正常连接量下
-# 不够。这里给的是**每进程**上限（多 worker 时每个 worker 各算各的），配置里的
+# 不够。这里给的是每进程上限（多 worker 时每个 worker 各算各的），配置里的
 # maximum_connections / maximumConnections 必须低于它，否则先撞到的是 systemd 的 fd 墙。
 LimitNOFILE=65536
 

@@ -137,9 +137,9 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行命令并交出流式结果集：跳过预扫描，游标从首行起由调用方逐行推进
          * @details 重写 DatabaseConnection::executeStreaming()：与 execute(command) 共用同一条管线
-         *          （缓存、边界校验、绑定、写回执），差别只在查询结果集**不做预扫描**——
+         *          （缓存、边界校验、绑定、写回执），差别只在查询结果集不做预扫描——
          *          行数保持未知（rowCount() 回 0）、isEmpty() 回 false，内存里只有当前一行。
-         * @note 与 MySQL/PG 的流式档有一条**有意差异**：本驱动不锁连接——回包流只存在于网线上，
+         * @note 与 MySQL/PG 的流式档有一条有意差异：本驱动不锁连接——回包流只存在于网线上，
          *       SQLite 的本地游标可以与其他语句共存（游标会被从缓存摘走，析构时 finalize）。
          *       另外 reset() 在本地游标上仍可重扫（sqlite3_reset 的天然能力），不做拒绝。
          * @param command 命令文本
@@ -200,10 +200,10 @@ namespace AsynGyanis::Database
          *          下一位就会在不知情的情况下插进孤儿子行（约束在表定义里看着还在，一次报错都没有），
          *          因此事务滚干净之后再重申一次。同一条「批量导入配方」还有两格也是每连接的：
          *          `synchronous`（调低＝掉电可能丢数据）与 `recursive_triggers`（打开＝触发器多滚几层而
-         *          改变写入结果）——本类不承诺它们的取值，于是按**建连时读到的那份基线**重申
+         *          改变写入结果）——本类不承诺它们的取值，于是按建连时读到的那份基线重申
          *          （写死默认值会替部署方改掉他们自己在工厂里设的口径）。先读再比，稳态下这两格只付
          *          两次读数、既不写也不分配。
-         * @note **`case_sensitive_like` 不在名单里**：它也是每连接的一位（打开＝LIKE 少命中），但 SQLite
+         * @note `case_sensitive_like` 不在名单里：它也是每连接的一位（打开＝LIKE 少命中），但 SQLite
          *       只让写不让读——`PRAGMA case_sensitive_like` 回零行，基线根本拿不到，于是「退回建连时那份」
          *       这条口径在它身上无法成立。要用它的部署方请自己在使用后写回自己想要的取值。
          * @note `busy_timeout` 每次归还都按 `queryTimeout()` 重装一次（一次 C API 调用，不发语句）：
@@ -392,7 +392,7 @@ namespace AsynGyanis::Database
         void cacheStatement(std::string sqlText, sqlite3_stmt *statement);
 
         /**
-         * @brief 收尾一条**不再复用**的游标：缓存来的 reset 归还，新编译的 finalize 释放
+         * @brief 收尾一条不再复用的游标：缓存来的 reset 归还，新编译的 finalize 释放
          * @details 只在出错、这条不打算入表的路上用；成功路径的收尾直接 sqlite3_reset
          *          （见 execute()），因为那条游标下一步就要交给缓存。
          * @param statement 待收尾的游标，不可为空
@@ -476,7 +476,7 @@ namespace AsynGyanis::Database
 
         sqlite3 *m_database{nullptr}; ///< SQLite C API 数据库句柄，本对象独占所有权
 
-        /// 建连结束时这两个**每连接**设置的读数（-1＝当时读不出来，那一格就不退回）：归还路径按它们重申。
+        /// 建连结束时这两个每连接设置的读数（-1＝当时读不出来，那一格就不退回）：归还路径按它们重申。
         /// 它们与 foreign_keys 同属「批量导入配方」，而改完不退回的代价都是下一位看不出来的那种：
         /// synchronous 调低＝掉电可能丢数据；recursive_triggers 打开＝触发器多滚几层而改变写入结果
         int m_synchronousBaseline{-1};

@@ -109,7 +109,7 @@ namespace AsynGyanis::Core
 
     /**
      * @brief 两步写法（先建 Task、临时串销毁、再 await）下主机名不能被当成悬垂视图读
-     * @details 惰性 Task 在**调用**时就把参数拷进帧，而帧体要等 co_await 才跑，中间隔着
+     * @details 惰性 Task 在调用时就把参数拷进帧，而帧体要等 co_await 才跑，中间隔着
      *          「发起到等待」这一步。参数若按视图收下，临时串早已销毁——Debug 构建带 ASan，
      *          这里会当场报释放后使用
      */

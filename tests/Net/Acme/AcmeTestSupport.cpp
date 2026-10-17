@@ -54,7 +54,7 @@ namespace AsynGyanis::Net::TestSupport
             }
         };
 
-        /// 扩展列表的释放器：X509_REQ_get_extensions 交回的是**复制出来**的一叠，必须逐个放掉
+        /// 扩展列表的释放器：X509_REQ_get_extensions 交回的是复制出来的一叠，必须逐个放掉
         struct ExtensionStackDeleter
         {
             void operator()(STACK_OF(X509_EXTENSION) * extensions) const noexcept
@@ -167,7 +167,7 @@ namespace AsynGyanis::Net::TestSupport
             return std::nullopt;
         }
 
-        // X509_REQ_get0_pubkey 交回的是**借用**指针，随请求生死：多取一份引用才带得走
+        // X509_REQ_get0_pubkey 交回的是借用指针，随请求生死：多取一份引用才带得走
         EVP_PKEY *requestKey = X509_REQ_get0_pubkey(request.get());
         if (requestKey == nullptr || EVP_PKEY_up_ref(requestKey) != 1)
         {

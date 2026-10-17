@@ -22,7 +22,7 @@ namespace AsynGyanis::Core
     namespace
     {
         /// 同时在跑的解析线程上限：解析要起线程去跑阻塞的 getaddrinfo，线程栈与内核调度都不免费，
-        /// 不设上限的话一次解析风暴能把进程线程数顶到系统限制。到顶之后的解析**如实失败**
+        /// 不设上限的话一次解析风暴能把进程线程数顶到系统限制。到顶之后的解析如实失败
         /// （空地址列表）并留一条日志，而不是无限起线程
         constexpr int kMaximumConcurrentResolutions = 256;
 
@@ -129,7 +129,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 一份已占住的解析名额：构造即计一次，析构即还一次
-         * @details 名额必须在**发起方线程上同步占用**（见 AsyncResolver::resolve 的 await_suspend），
+         * @details 名额必须在发起方线程上同步占用（见 AsyncResolver::resolve 的 await_suspend），
          *          不能等解析线程起跑后才加计：一批协程在同一个循环线程上连着挂起时，每个发起方读到的
          *          都是「还没到顶」，上限就被整片冲开了。占用凭据跟着 ResolveState 活着，因此解析线程
          *          正常结束、线程没起来、等待方先销毁这三种收场都只归还一次。
@@ -158,7 +158,7 @@ namespace AsynGyanis::Core
          */
         struct ResolveState
         {
-            /// 等待结果的协程句柄。**必须是原子的**：置空发生在等待器析构（帧销毁，可能在
+            /// 等待结果的协程句柄。必须是原子的：置空发生在等待器析构（帧销毁，可能在
             /// 任意线程），读取发生在后台线程投回的唤醒里，两者无同步就是数据竞争；而且
             /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
             /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
@@ -209,7 +209,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 在后台线程执行阻塞的 getaddrinfo，完成后通过 postRemote 唤醒调用方协程
          * @details 本次解析占住的名额挂在 state->slot 上，由这份状态负责归还，本函数不另设计数
-         * @note 本函数跑在**分离线程**上且体内不抛：分离线程没人 join，异常穿出线程体就是
+         * @note 本函数跑在分离线程上且体内不抛：分离线程没人 join，异常穿出线程体就是
          *       std::terminate；而更坏的后果是漏掉末尾那两次收尾——等待方是挂在 postRemote 上的
          *       协程，本函数一退出就再没人有第二次机会叫它，漏投递就是永久挂起。
          *       因此收集阶段的分配失败（vector 增长、InetAddress 里的字符串）就地收下，
@@ -325,7 +325,7 @@ namespace AsynGyanis::Core
                 // terminate，而这里两条都是「资源耗尽就按失败收尾」的同一处置
                 try
                 {
-                    // 名额在**发起线程上**就占住（构造即加计），不是等解析线程起跑后才计：一批协程在
+                    // 名额在发起线程上就占住（构造即加计），不是等解析线程起跑后才计：一批协程在
                     // 同一个循环线程上连着挂起时，只读计数的发起方全都看到「还没到顶」，上限被整片冲开
                     auto slot = std::make_shared<ResolutionSlotGuard>();
                     if (g_activeResolutionCount.load(std::memory_order_relaxed) > kMaximumConcurrentResolutions)

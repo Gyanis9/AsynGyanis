@@ -239,7 +239,7 @@ namespace AsynGyanis::Database
         {
             // 含运算符、括号、逗号等结构字符的文本按表达式原样输出：例如 COUNT(*)，
             // COALESCE(age, 0)，age + 1。对表达式整体加引用会把它降级成一个列名，直接改变语义。
-            // **信任边界**：这一段按原样拼进 SQL，因此字段引用只允许来自编译期常量
+            // 信任边界：这一段按原样拼进 SQL，因此字段引用只允许来自编译期常量
             // （Column() 的 columnName 参数或 asc()/desc() 的字符串字面量）等可信文本；
             // 数据值一律走参数绑定。调用方若把用户输入喂进 select()/groupBy()，那就是注入面——
             // 公共 API 的文档已就这条边界给出 @warning
@@ -286,7 +286,7 @@ namespace AsynGyanis::Database
 
         // 点号在 SQL 里是「库.表」的层级分隔，因此逐段引用：整块包起来会得到一张名叫 shop.orders
         // 的表，而不是 shop 库下的 orders。段与段之间只判空（"a..b" 生成的是不合法的引用），
-        // **不做字符校验**——加了引用的标识符能容纳任何字节（含空格、连字符的名字都合法），
+        // 不做字符校验——加了引用的标识符能容纳任何字节（含空格、连字符的名字都合法），
         // 校验只会把合法名字判死，而「原样拼进语句」这条路本来就由引用堵住了
         std::size_t segmentStart = 0;
         for (;;)
@@ -424,7 +424,7 @@ namespace AsynGyanis::Database
     {
         // 超过引擎单条语句的参数上限时，两侧驱动都只在执行阶段回一句引擎原文
         // （SQLite 是 "too many SQL variables"、MySQL 是占位符数超限），既指不出是哪一段条件撑爆的、
-        // 也不说该怎么办。传入的是**渲染完成后实际产出的参数个数**：占位符只在 push 参数时写出，
+        // 也不说该怎么办。传入的是渲染完成后实际产出的参数个数：占位符只在 push 参数时写出，
         // 两者一一对应，而方言自己决定要不要把某个取值内联进文本（SQLite 内联分页），
         // 所以渲染前的估算数只能用于预留缓冲，拿它当判据会误拒贴着上限的查询
         if (const std::size_t parameterBudget = maximumStatementParameters(); parameterCount > parameterBudget)
@@ -565,7 +565,7 @@ namespace AsynGyanis::Database
         // 三个引擎在这条子句上的差异最大，交给子类覆写的钩子处理
         appendLimitOffsetClause(sqlText, parameters, query);
 
-        // 参数上限在这里按**实际产出的参数数**判定：渲染前那个估算值只是给 reserve 用的宽度
+        // 参数上限在这里按实际产出的参数数判定：渲染前那个估算值只是给 reserve 用的宽度
         // （分页按「各占一个」估，而 SQLite 把分页取值内联进文本、一个占位符都不产生），
         // 拿估计数当判据会把刚好贴着上限的查询误拒
         requireWithinParameterBudget(parameters.size());
@@ -641,7 +641,7 @@ namespace AsynGyanis::Database
             parameters.push_back(values[index]);
         }
 
-        // 自增赋值排在普通赋值之后（乐观锁的版本列走这一格）。它**不占参数位**，
+        // 自增赋值排在普通赋值之后（乐观锁的版本列走这一格）。它不占参数位，
         // 因此既不动上面「赋值参数在前、条件参数在后」的顺序契约，也不动参数总数；
         // `"col" = "col" + 1` 是三引擎都收的标准写法，加一由服务端在一次语句里完成
         for (const std::string &incrementColumn: query.incrementColumns)

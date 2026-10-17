@@ -1107,7 +1107,7 @@ namespace AsynGyanis::Net
         // 「视图里查得到、序列化里没有」的鬼条目）
         m_headerStore.clear();
 
-        // 尾部字段那份存储要**整份解除**而不是清空：hasTrailerFields() 判的就是「这一份在不在」，
+        // 尾部字段那份存储要整份解除而不是清空：hasTrailerFields() 判的就是「这一份在不在」，
         // 留着一个空壳会让下一条报文白补一条 Trailer 声明，h2/h3 也会白发一个空的尾部头块
         m_trailerStore.reset();
 

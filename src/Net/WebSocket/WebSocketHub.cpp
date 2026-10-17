@@ -129,7 +129,7 @@ namespace AsynGyanis::Net
             const std::size_t queuedByteCharge = payload.size() + kWebSocketFrameOverheadByteCount;
             if (queuedByteCharge > m_maximumPendingByteCount || member->pendingByteCount + queuedByteCharge > m_maximumPendingByteCount)
             {
-                m_droppedMessageCount.fetch_add(1, std::memory_order_relaxed); // 丢**最新**的一条并计数：已入队的顺序不被插队打乱
+                m_droppedMessageCount.fetch_add(1, std::memory_order_relaxed); // 丢最新的一条并计数：已入队的顺序不被插队打乱
                 continue;
             }
             member->pendingMessages.push_back(Detail::WebSocketHubPendingMessage{.opCode = opCode, .payload = std::string(payload)});

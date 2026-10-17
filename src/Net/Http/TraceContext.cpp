@@ -313,7 +313,7 @@ namespace AsynGyanis::Net
             {
                 return std::nullopt; // 规范把重复键整条判废：半条可信比全都不可信更糟
             }
-            // 解析阶段保留全部条目：上限 32 是**转发**时的约束（renderInto 截断尾部），
+            // 解析阶段保留全部条目：上限 32 是转发时的约束（renderInto 截断尾部），
             // 解析时提前丢会连「上游写了几条、哪条被丢」这类现场一起抹掉
             state.m_entries.push_back(TraceStateEntry{std::string(key), std::string(entryValue)});
 

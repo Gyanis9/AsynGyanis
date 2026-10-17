@@ -114,10 +114,10 @@ namespace AsynGyanis::Net
         std::vector<QuicSentPacketInfo> lost{};                    ///< 因此次确认而判丢的包
         bool                            isRoundTripSampled{false}; ///< 是否按 §5.1 的条件更新过 RTT 估算
         /**
-         * @brief 本次确认是否把这条连接判进了**持久拥塞**（RFC 9002 §7.6.2）
-         * @details 规范的三条并列条件都在这里核：两个**触发确认的**包被判丢、这两个包发出时刻之间发出的
+         * @brief 本次确认是否把这条连接判进了持久拥塞（RFC 9002 §7.6.2）
+         * @details 规范的三条并列条件都在这里核：两个触发确认的包被判丢、这两个包发出时刻之间发出的
          *          包一个都没被确认（跨三个空间一起看）、两者发出时刻之差超过持久拥塞时长；另外还要求
-         *          这两个包发出时已经有一个先前的 RTT 样本。规范把「建立」这件事明确放在**收到确认之后**，
+         *          这两个包发出时已经有一个先前的 RTT 样本。规范把「建立」这件事明确放在收到确认之后，
          *          所以这条信号只有这一个出口——定时器那条路只把新判丢并进这一段、不下判定（§7.6.1 末段
          *          还专门说了「不拿连续几次探测超时来建立持久拥塞」）。
          *          与普通判丢的差别在处置：普通判丢是窗口减半继续爬，持久拥塞是认定这条路已经不通，
@@ -129,7 +129,7 @@ namespace AsynGyanis::Net
          * @brief 本帧的对端 ECN 计数上升要在哪一刻触发一次拥塞事件（空表示本帧没有）
          * @details RFC 9002 §B.7：`ack.ce_counter` 比上次看到的高，就按 `OnCongestionEvent(largest_acked
          *          那条的发出时刻)` 处置——拥塞信号到得比丢包早，等到判丢再降窗就把这条路的容量用完了。
-         *          只有**计数校验通过**之后才给这一格：§13.4.2.1 明写「用之前先校验」，
+         *          只有计数校验通过之后才给这一格：§13.4.2.1 明写「用之前先校验」，
          *          而时刻取的是本帧最大确认值那条包的发出时刻（重复确认没这条记录，那就什么都不给）。
          */
         std::optional<QuicTime> ecnCongestionEventTime{};
@@ -300,7 +300,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 按 §13.4.2.1 校验本帧报告的 ECN 计数，通过则按 §B.7 决定要不要触发拥塞事件
          * @details 五条判据一次走完：新确认里有本端标过的包而这帧不带计数即失败；本帧没抬高最大确认值时
-         *          **不据它判失败也不据它反应**（乱序到达的 ACK 没法校验，§13.4.2.1 的 MUST NOT）；
+         *          不据它判失败也不据它反应（乱序到达的 ACK 没法校验，§13.4.2.1 的 MUST NOT）；
          *          两格增量之和盖不住新确认的对应带标包数即失败（能抓到中间节点把 ECT 抹成 CE 或倒过来）；
          *          报告总量超过本端发出去带过这一格的包总数即失败（抓到中间节点凭空加标）。
          * @param space 本帧所属的包号空间：计数按空间各记一份（§19.3.2）
@@ -332,7 +332,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::pair<std::optional<QuicTime>, QuicRecoverySpace> probeTimeoutDeadline() const noexcept;
         /**
          * @brief 把这一趟新判丢的包并进 §7.6.2 那一段「没有确认打断的判丢」里
-         * @details 只收**触发确认的**包：规范那句「These two packets MUST be ack-eliciting」的理由是
+         * @details 只收触发确认的包：规范那句「These two packets MUST be ack-eliciting」的理由是
          *          对端只承诺在 max_ack_delay 内确认触发确认的包，只含 ACK 的包本来就可能没人答，
          *          把它算进「这条路死了」的那一段会误判。锚点跨三个包号空间共用（规范同样要求
          *          「across all packet number spaces」一起看）。
@@ -352,7 +352,7 @@ namespace AsynGyanis::Net
          */
         bool notePersistentCongestionSpan(const std::vector<QuicSentPacketInfo> &acknowledged, const std::vector<QuicSentPacketInfo> &lost) noexcept;
         /// 持久拥塞时长：(smoothed_rtt + max(4×rttvar, kGranularity) + 对端的 max_ack_delay) × 3。
-        /// §7.6.1 明写这里的报告延迟**不论丢包在哪个空间都要算进去**（与 §6.2 的 PTO 相反），
+        /// §7.6.1 明写这里的报告延迟不论丢包在哪个空间都要算进去（与 §6.2 的 PTO 相反），
         /// 所以没有「握手空间按 0 算」那一格；倍率取 §7.2 推荐的 3
         [[nodiscard]] QuicTime persistentCongestionDuration() const noexcept;
 
@@ -369,10 +369,10 @@ namespace AsynGyanis::Net
         /// 用 `std::optional` 而不是「0 表示没有」：0 在这里是合法的发出时刻（用例从 0 起算）
         std::optional<QuicTime> m_lossGapEarliestSentTime{}; ///< 这一段里最早被判丢的触发确认包的发出时刻
         std::optional<QuicTime> m_lossGapLatestSentTime{};   ///< 这一段里最近被判丢的触发确认包的发出时刻
-        /// 这一段开着之后、发出时刻**晚于**锚点起点的被确认包里最早的那个：段里的终点会随后续判丢往后长，
+        /// 这一段开着之后、发出时刻晚于锚点起点的被确认包里最早的那个：段里的终点会随后续判丢往后长，
         /// 所以留一个「最早的一次晚于起点的确认」就够判「这两个包之间有没有包被确认过」
         std::optional<QuicTime> m_lossGapAckedAfterStart{};
-        /// 第一个 RTT 样本被收到的时刻：§7.6.2 要那两个包**发出时**就已有先前的样本，
+        /// 第一个 RTT 样本被收到的时刻：§7.6.2 要那两个包发出时就已有先前的样本，
         /// 只判「手上有没有样本」会把这一帧刚采到的样本算成先前的
         std::optional<QuicTime> m_firstRoundTripSampleTime{};
         /// 本端 ECN 验证走到哪一格；开局就是 Testing，所以第一条包就带 ECT(0)，一路标到出结论为止
@@ -384,7 +384,7 @@ namespace AsynGyanis::Net
         /// 定论为「判丢」的带标包数：与分母相等且分母不少于 `kEcnMinimumMarkedPacketCount` 即命中
         /// §13.4.2 那条「标过的包全被判丢」（中间节点直接丢掉带标的包就是这个形状）
         std::size_t m_ecnMarkedLostCount{0};
-        /// 上一份**校验通过**的 ACK 报的三个计数（ECT0、ECT1、CE），按空间各一份：增量都跟它比
+        /// 上一份校验通过的 ACK 报的三个计数（ECT0、ECT1、CE），按空间各一份：增量都跟它比
         std::array<std::array<std::uint64_t, 3>, kSpaceCount> m_ecnReportedCounts{};
         /// 有没有至少一条本端标过的包被确认过：附录 A.4 要求「一条都没确认过」时不许转入 Capable
         bool m_isAnyMarkedPacketAcknowledged{false};

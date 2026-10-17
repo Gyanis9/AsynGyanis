@@ -8,7 +8,7 @@
  *
  * @details 本头只留 epoll_data、epoll_event、EPOLL_ 系列常量与 SOCKET、HANDLE 这些与 Linux
  *          逐位对应的类型与常量，供 Iocp.h 借用。epoll_create、epoll_create1、epoll_close、
- *          epoll_ctl、epoll_wait 这五个入口点**不再声明**：vendored 实现早已从本仓库摘除
+ *          epoll_ctl、epoll_wait 这五个入口点不再声明：vendored 实现早已从本仓库摘除
  *          （Windows 侧改走 IOCP），声明留着就是给装了这份头文件的消费者留一个「编得过、
  *          链不上」的坑。类型名、常量名与位值一律不动；EPOLL_ 的 UPPER_SNAKE 命名与全局
  *          作用域属于这份对齐 ABI 的接口，不适用本工程的命名约定。

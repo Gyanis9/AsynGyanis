@@ -107,7 +107,7 @@ namespace AsynGyanis::Net
          * @details 只做三件事：把请求编成 HEADERS/DATA 帧分趟交出去、把会话回的字节按帧读回来、
          *          把解出的字段与正文攒成一份可比对的响应视图。头块用本层的 QpackEncoder 编、
          *          QpackDecoder 解，因此这里的判据是「会话的状态机与业务映射对不对」；
-         *          「字节合不合规范」由**进程外**的独立实现裁定——`scripts/h3_acceptance.py` 与
+         *          「字节合不合规范」由进程外的独立实现裁定——`scripts/h3_acceptance.py` 与
          *          `scripts/quic_cross_check.sh` 拿 aioquic 真握手、真编解。第三方实现不再链接进测试
          *          可执行体：链接进来的裁判与被测代码同属一次构建、可以一起改软，那种「跨实现」迟早只剩名字。
          */
@@ -287,7 +287,7 @@ namespace AsynGyanis::Net
              * @param authority 权威主机（:authority）
              * @param firstWebSocketFrame 隧道建立后要发的第一条 WebSocket 帧字节
              * @return std::vector<CapturedStreamData> 按流号分好的待发字节（含请求头与随后的帧）
-             * @note 头那一趟**不能**收尾：对端之后还要在同一条流上发 WebSocket 帧，
+             * @note 头那一趟不能收尾：对端之后还要在同一条流上发 WebSocket 帧，
              *       服务端会把收尾之后的 DATA 判成 H3_FRAME_UNEXPECTED
              */
             std::vector<CapturedStreamData> submitWebSocketTunnel(const std::string &path, const std::string &authority, const std::string &firstWebSocketFrame)
@@ -903,9 +903,9 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：优雅排空**不**取消在途请求，否则 h3 比 h1/h2 少交付响应
+     * @brief 钉住：优雅排空不取消在途请求，否则 h3 比 h1/h2 少交付响应
      * @details `QuicServer::drain` 对每条还开着的连接都调一次 beginGracefulShutdown，其中就包括正在跑
-     *          处理器的那些；而 h1/h2 的排空只对**非 busy** 的连接 requestStop（`TcpServer` 里那一步先
+     *          处理器的那些；而 h1/h2 的排空只对非 busy 的连接 requestStop（`TcpServer` 里那一步先
      *          给协议层发 GOAWAY、再停描述符，busy 的留给它跑完），本类的文档也写着「已经受理的请求照常
      *          处理完」。把取消顺手加进这一步是往反方向漂移：处理器半路被打断，那份本来写得出的响应没了。
      */
@@ -1710,7 +1710,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 钉住：`content-length` 重复且取值一致时，100 照样要回
      * @details 判定器按 RFC 9110 §8.6 只拒「取值不一致的第二个 content-length」，一致的允许存在；
-     *          而这一格此前读的是**合并视图**，两条 4 会被拼成「4, 4」→ parseContentLengthValue 判非法
+     *          而这一格此前读的是合并视图，两条 4 会被拼成「4, 4」→ parseContentLengthValue 判非法
      *          → 一条 100 都不回，严格等 100 的对端只能靠自己的 expect 超时。h2 侧读的是首条，
      *          同一份请求在两条通道上不该得到不同的对待
      */
@@ -2219,7 +2219,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：h3 尾段字段落进请求的 trailer 一档，且**不**出现在头部（非流式派发）
+     * @brief 钉住：h3 尾段字段落进请求的 trailer 一档，且不出现在头部（非流式派发）
      * @details 改造前尾段的字段与普通头部走同一条 addHeader：正文之后到达的字段于是有了头部的身份，
      *          业务按头部读到的值与线上「这是尾部」的事实不符。现在两处都验：trailer 档读得到，
      *          头部读不到。删掉会话里的分流（让它回到 addHeader）这条就红。
@@ -2633,7 +2633,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 本端判死一条流时记的是「坏请求」，不是「对端取消」
-     * @details 两条读数各有各的口径：`streamCancelledCount` 说的是**对端**用 RST_STREAM（h2）/
+     * @details 两条读数各有各的口径：`streamCancelledCount` 说的是对端用 RST_STREAM（h2）/
      *          RESET_STREAM、STOP_SENDING（h3）取消了单流（`HttpServerStats` 的类注释与 `/metrics`
      *          的帮助文本都这么写），而「对端的报文不合规、被协议层挡在业务之外」按同一份文档只进
      *          `badRequestCount`。h3 会话过去把两种形状一律记进前者：一条 content-length 与实收字节
@@ -2770,7 +2770,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住升级策略在 h3 隧道上同样生效：表外的源按 403 收口，表内的源升到 200 并回显谈成的子协议
-     * @details 与 h1/h2 那两条同名判据成一套：三条通道读同一份策略是本仓的既有承诺。这里判的是**接线**
+     * @details 与 h1/h2 那两条同名判据成一套：三条通道读同一份策略是本仓的既有承诺。这里判的是接线
      *          ——策略函数本身在 TestWebSocketUpgradePolicy 里逐格钉过，会话没把它接上就一切照旧。
      *          h3 恒跑在 TLS 上（QUIC 只有 TLS 1.3），因此本连接的源是 `https://<权威段>`。
      */
@@ -3878,7 +3878,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：流式**正文**路由也要回显 request-id——h3 有两个派发出口，只有一处做过这件事
+     * @brief 钉住：流式正文路由也要回显 request-id——h3 有两个派发出口，只有一处做过这件事
      * @details 上一条钉的是普通派发（`Http3Session::pump`）里派发前回显那一步。命中 `postStreaming(...)` 的
      *          请求走 `serveStreamingRequest`，它同样在处理器第一次写块之前就该把 id 放上响应头——
      *          流式响应的头部在写第一块时已经上线，处理器回来再设来不及。h1/h2 的两种派发共用一个
@@ -4806,7 +4806,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：h3 的尾字段与头部那场**共用同一份** parser_limits 条数预算，越限按 431 收口
+     * @brief 钉住：h3 的尾字段与头部那场共用同一份 parser_limits 条数预算，越限按 431 收口
      * @details h3 侧此前只有「头部那场越限回 431」这一条直测（`Answers431ForOversizedHeaderBlockWithoutHandingItToBusiness`），
      *          而「尾字段也记进同一份账」这一步（`addTrailerFieldToStream` 的落点一调
      *          `accountHeaderFieldBudget()`）零直测：h1 由解析器共用一个计数器、h2 有跨头块累计的两条用例，
@@ -4814,7 +4814,7 @@ namespace AsynGyanis::Net
      *          数字：`submitRequestWithBodyAndTrailers` 带正文时交出的头块是 `:method`、`:scheme`、
      *          `:authority`、`:path` 四条伪头再加 `content-length`，共 5 条（本对端只编显式给出的字段，
      *          不自己补；伪头同样进这条账），上限取 7，于是 5+2 恰好放行、5+3 越限。
-     * @note 这条账只在**未派发**的记录上记（落点一）。流式路由在头收齐时就把请求搬走了，那条路径
+     * @note 这条账只在未派发的记录上记（落点一）。流式路由在头收齐时就把请求搬走了，那条路径
      *       刻意不再记预算——回不出 431，见 `addTrailerFieldToStream` 落点二的说明与
      *       `HttpParserLimits` 的键文档。
      */

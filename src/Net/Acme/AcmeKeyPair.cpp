@@ -338,7 +338,7 @@ namespace AsynGyanis::Net
                 return std::unexpected(keyMaterialFailure("取 ES256 签名的 R 与 S"));
             }
 
-            // 先把两个整数各补成定长 32 字节的**裸字节**接成一串，再整串编码一次：
+            // 先把两个整数各补成定长 32 字节的裸字节接成一串，再整串编码一次：
             // 「各编成 base64 再拼字符串」会得到一段看着像签名、按定长切分却全歪的双重编码产物
             std::string rawSignature(2U * kEs256CoordinateLength, '\0');
             auto       *writeCursor = reinterpret_cast<unsigned char *>(rawSignature.data());
@@ -550,7 +550,7 @@ namespace AsynGyanis::Net
         }
 
         // PKCS#10 上没有 X509_add_ext 那种单条入口：扩展要成叠交给 X509_REQ_add_extensions，
-        // 而它把每一条**复制**进请求，栈与扩展本体都由本函数收口
+        // 而它把每一条复制进请求，栈与扩展本体都由本函数收口
         const ExtensionStackHandle extensionStack(sk_X509_EXTENSION_new_null());
         if (!extensionStack)
         {

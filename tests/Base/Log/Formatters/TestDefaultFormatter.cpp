@@ -365,7 +365,7 @@ namespace AsynGyanis::Base
      * @brief 逐字段拼出的整行与 `std::format` 的版式规范逐字节相同
      * @details 版式从 `std::format_to` 改成逐字段追加之后，「字段顺序、分隔符、补齐口径」三件事全靠这条
      *          对拍钉住——期望值仍按原格式串现算，不跟着实现改。输入覆盖各等级、空 logger 名、超长与
-     *          非 ASCII 的源码位置：`{:<N}` 量的是**显示宽度**（宽字符算两格），实现若按码元数就少补
+     *          非 ASCII 的源码位置：`{:<N}` 量的是显示宽度（宽字符算两格），实现若按码元数就少补
      *          几格，非 ASCII 那一条当场红（本轮实测正是这样抓到的）。
      */
     TEST(DefaultFormatter, LineAssemblyMatchesFormatSpecByteForByte)

@@ -10,7 +10,7 @@
  *          三方向共用的 WHERE、参数收集顺序）全部继承自基类，本类只给出引擎知识。
  *
  * ## 与 SQLite / MySQL 方言的差异（逐项给出依据）
- * - 占位符：**写作 "$1" "$2" 而不是 "?"**。这是 PostgreSQL 自己的语法：
+ * - 占位符：写作 "$1" "$2" 而不是 "?"。这是 PostgreSQL 自己的语法：
  *   扩展查询协议（PQexecParams / PQprepare）要求语句文本用 $n 标出参数位置，
  *   序号从 1 开始。因此本方言是唯一真正用到 placeholder() 序号参数的实现——
  *   基类保证「先取序号再压参数」，序号与 parameters 的下标严格对应；
@@ -19,7 +19,7 @@
  *   因此一律引用也顺带保证了大写列名的可用性；
  * - 分页：直接沿用基类的标准关键字形式，值以占位符送出。PostgreSQL 既允许
  *   "LIMIT $1" 单独出现，也允许 "OFFSET $2" 单独出现（SQLite 需要补 "LIMIT -1"，
- *   MySQL 需要补无符号上界常量），因此本类**不需要覆写分页钩子**；
+ *   MySQL 需要补无符号上界常量），因此本类不需要覆写分页钩子；
  * - 事务：开启用 "BEGIN"（PostgreSQL 的等价写法 START TRANSACTION 同样可用，
  *   BEGIN 更短且是官方文档的首选），提交 COMMIT、回滚 ROLLBACK；
  * - 参数上限：65535，依据是扩展查询协议 Bind 报文里参数个数为 Int16 字段；
@@ -34,7 +34,7 @@
  * 表存在性查询用 current_schema() 限定，与不带模式名执行 DML 时的解析规则一致。
  *
  * ## 一个必须在送参数之前知道的引擎限制
- * PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）**无法存储 NUL 字节**：
+ * PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）无法存储 NUL 字节：
  * 服务端会以「invalid byte sequence for encoding "UTF8": 0x00」之类报文拒绝整条语句。
  * 因此含 '\0' 的 std::string 参数不能直接用于文本列（本驱动会在送出前本地拒绝并给出中文原因，
  * 见 PostgresConnection::execute()）。需要承载任意二进制时应使用 BYTEA 列，
@@ -130,7 +130,7 @@ namespace AsynGyanis::Database
          *          - Ignore → " ON CONFLICT DO NOTHING"（不需要冲突目标）；
          *          - Replace → `ON CONFLICT (目标列) DO UPDATE SET 列 = EXCLUDED.列, …`：
          *            目标列取自 query.conflictTargetColumns（ORM 从 TableSchema 的主键自动带上），
-         *            缺失时**当场拒绝**——不带目标的 DO UPDATE 会被服务端以 42601 拒绝（真机实测，
+         *            缺失时当场拒绝——不带目标的 DO UPDATE 会被服务端以 42601 拒绝（真机实测，
          *            只有 DO NOTHING 能省目标），生成它是把必拒的语句送到服务端才失败。SET 列出
          *            本次插入的全部列，未列出的列保持旧值——与 MySQL REPLACE 的整行替换在未列出的
          *            列上语义不同，这正是「按业务键覆盖」的常规写法（覆盖一行里被显式给出的部分）。
@@ -194,7 +194,7 @@ namespace AsynGyanis::Database
          *          因此本类同时覆写 isolationLevelStatementFollowsBegin() 返回 true。
          *          ReadUncommitted 档照发不拒：PostgreSQL 文档明说四档语法都接受，
          *          只是内部把 Read Uncommitted 按 Read Committed 处理（标准允许实现更严格），
-         *          照发得到的是**比请求更严格**的级别，不会出现用户担心的脏读。
+         *          照发得到的是比请求更严格的级别，不会出现用户担心的脏读。
          * @param level 请求的隔离级别；Default 返回空串（无需设置语句）
          * @return std::string_view 设置语句
          */
@@ -214,7 +214,7 @@ namespace AsynGyanis::Database
          * @brief 把逻辑列类型翻译成 PostgreSQL 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：
          *          - Int64 → "BIGINT"（8 字节有符号，对应 C++ 的 std::int64_t）；
-         *          - UInt64 → "NUMERIC(20)"：PostgreSQL **没有无符号整数类型**，
+         *          - UInt64 → "NUMERIC(20)"：PostgreSQL 没有无符号整数类型，
          *            选 NUMERIC(20) 而不是 BIGINT 是因为前者能无损容纳 0 .. 2^64-1
          *            （20 位十进制正好覆盖 18446744073709551615），代价是服务端按精确数值
          *            处理、比整数略慢；选 BIGINT 会让上半个取值域在写入时直接溢出报错；

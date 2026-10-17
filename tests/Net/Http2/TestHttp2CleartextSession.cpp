@@ -414,7 +414,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 按帧到达顺序解出每条流的**全部**响应头字段（同名只留最后一条）
+         * @brief 按帧到达顺序解出每条流的全部响应头字段（同名只留最后一条）
          * @details HPACK 的编码上下文按连接推进，所以这里必须一个解码器顺着帧走到底；
          *          只取单个字段的助手在同一条连接上判第二项时会踩到自己刚建起来的动态表
          * @param frames 已解出的帧
@@ -754,7 +754,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：服务器改了 h2 连接层配置，SETTINGS 通告与各项上限随之改变
-     * @details 此前 h2 的限额只能在服务端 SETTINGS 里**观测**、改不动（配置一路按缺省值构造）。
+     * @details 此前 h2 的限额只能在服务端 SETTINGS 里观测、改不动（配置一路按缺省值构造）。
      *          三项取值都故意偏离各自的缺省（缺省数由 Http2Connection.AdvertisesHeaderListSizeMatchingTheParserBlockLimit
      *          那一类用例钉着，这里不复述），因此这条断言不是恒等的：
      *          配置没落到连接层就会退回缺省值而变红
@@ -800,7 +800,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：非法的 h2 连接层配置在**设置时**就被拒绝
+     * @brief 钉住：非法的 h2 连接层配置在设置时就被拒绝
      * @details 若留到第一条连接构造会话时才抛，部署方在启动日志里看不到任何异常，
      *          表现只是「h2 服务时好时坏」——那是最难查的一类失败
      */
@@ -1394,7 +1394,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：一场请求头部的字段条数超出 parser_limits.maximum_header_count 时 h2 也按 431 收口
-     * @details h2 此前只判头块的**字节数**：一条 16 KiB 的头块能塞进上千条极小的字段，全部原样交给
+     * @details h2 此前只判头块的字节数：一条 16 KiB 的头块能塞进上千条极小的字段，全部原样交给
      *          业务遍历，而运维配的那个条数上限只在 h1/h3 生效。计数口径与 h3 相同（伪头也算一条）。
      */
     TEST(Http2CleartextSession, Answers431WhenHeaderFieldCountExceedsParserLimit)
@@ -1802,7 +1802,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：一条明文连接上并发两条流各自拿到属于自己的响应——多路复用不因传输是明文而失效
-     * @details 两条请求同批写出（对端流号 1 与 3），响应允许乱序到达，但**正文与请求必须一一对应**：
+     * @details 两条请求同批写出（对端流号 1 与 3），响应允许乱序到达，但正文与请求必须一一对应：
      *          串流（把 A 的正文发给 B）是这类实现最容易犯又最难察觉的错误
      */
     TEST(Http2CleartextSession, ServesTwoConcurrentStreamsOverOneConnection)
@@ -1859,7 +1859,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住升级策略在 h2 隧道上同样生效：表外的源按 403 收口，表内的源升到 200 并回显谈成的子协议
-     * @details 这一条测的是**接线**，不是策略函数——函数在 TestWebSocketUpgradePolicy 里已经逐格钉过。
+     * @details 这一条测的是接线，不是策略函数——函数在 TestWebSocketUpgradePolicy 里已经逐格钉过。
      *          三条通道读同一份策略是本仓的既有承诺：h1 拒掉的来源在 h2 上被放行，等于让对端用承载方式
      *          挑选准入口径。反向那一半（同源/表内必须升到 200、回显必须是按对端次序挑中的那一个）同条
      *          用例里一起判，否则「实现改成什么都拒」也能让前一半过。
@@ -2502,7 +2502,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：隧道期间同连接上的第二条扩展 CONNECT 回 503，且那是一条带 Date 的完整应答
      * @details 这条 503 手上没有 HttpResponse——它走的是裸 HPACK 字段表出口，因此响应头自动补齐
      *          Date 的那一段不经过它。RFC 9110 §10.1.4 要求 5xx 一律带 Date：缺了它，对端既估不出
-     *          时钟偏差也无从判这条应答的新鲜度。刻意**不**带 Retry-After——「请另开一条连接」
+     *          时钟偏差也无从判这条应答的新鲜度。刻意不带 Retry-After——「请另开一条连接」
      *          不是「稍后重试」，叫对端原地重发只会再撞一次同一道闸。
      */
     TEST(Http2CleartextSession, AnswersSecondTunnelWith503CarryingDateHeader)
@@ -2705,7 +2705,7 @@ namespace AsynGyanis::Net
      * @details 100 的前提是「还有正文要发」，而扩展 CONNECT 的「正文」是隧道里的帧（RFC 8441 §4）：
      *          h2 把 `hasBody` 判成「还没 END_STREAM」，于是这条流上一个正文字节都不会有，
      *          先发的 100 就成了对端没要的过渡响应（h3 侧同一判据是「:protocol 为空才回 100」）。
-     * @details 判据要一条都不落的 1xx，另配正向对照：补上 END_STREAM 的零长 DATA 之后照常拿到**唯一一个**
+     * @details 判据要一条都不落的 1xx，另配正向对照：补上 END_STREAM 的零长 DATA 之后照常拿到唯一一个
      *          响应头块（200）——否则「什么都没收到」也会让前一条断言成立，那是空转。
      */
     TEST(Http2CleartextSession, DoesNotAnswerContinueOnAnExtendedConnect)
@@ -2937,7 +2937,7 @@ namespace AsynGyanis::Net
      *          于是这个形状在 h2 的流式通路上一度既不比、也不出声：h1 读不满就根本收不了尾，h3 在连接层
      *          按 §4.1.2 判死这条流，只有这一条沉默。现在收尾处补判并记一条 ERROR，而业务侧经
      *          `HttpRequestBody::isTruncated()` 问得到同一个结论（RFC 9113 §8.1.1 的畸形请求）。
-     *          本用例同时钉住三件事：① 一声必须出（且只按收尾那一次出）；② 交付形状**没被顺手改**——
+     *          本用例同时钉住三件事：① 一声必须出（且只按收尾那一次出）；② 交付形状没被顺手改——
      *          业务仍按到达批次拿到那 5 字节，把流打断看着更严格，实际会把「截断」洗成「空正文」；
      *          ③ 完整性这一句必须为真，否则处理器只能靠自己数字节去猜对端少发了没有
      */
@@ -3229,7 +3229,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：接收窗口只在「业务消费」之后归还——慢消费者期间不归还，放行后凭归还才发得出窗口之外的字節
-     * @details 客户端在这里是**遵守窗口的**：先只发用一个初始窗口的量，处理器握着首段不放时窗口不该变大；
+     * @details 客户端在这里是遵守窗口的：先只发用一个初始窗口的量，处理器握着首段不放时窗口不该变大；
      *          放行后服务端随消费归还窗口，客户端收到 WINDOW_UPDATE 才发最后一段。
      * @note 前半段（握着不放时没有 WINDOW_UPDATE）单独看不是强断言：吸收本身也受处理器拉取驱动，
      *       「到达即归还」的退化实现同样可能凑不满窗口更新的阈值而通过。真正有判别力的是后半段——
@@ -3363,9 +3363,9 @@ namespace AsynGyanis::Net
      * @brief 钉住：响应没能发出的流式请求，其未消费的正文仍在摘记录时归还连接级接收窗口
      * @details 归还正文窗口那一步（finishStreamingRequestBody）排在「响应发出成功」之后，于是发送失败
      *          这条出口整个绕过了它。要让那一刻真的有未归还的账，处理器按「取走一段就停手」的形状写：
-     *          读取器是把**上一段**的窗口在下一次 readNext 时才归还的，因此没有下一次就是一笔没人认领
+     *          读取器是把上一段的窗口在下一次 readNext 时才归还的，因此没有下一次就是一笔没人认领
      *          的账。而这条出口绕开它之后，那批字节既不会再交给任何人，也没人替它们还窗口——被吃掉的
-     *          这一头是**连接级**窗口，一条连接上所有流共享的资产，吃掉的一块永不回来，攒够几轮就把
+     *          这一头是连接级窗口，一条连接上所有流共享的资产，吃掉的一块永不回来，攒够几轮就把
      *          对端的整条发送额度耗光，此后连别人的正常请求正文都发不进来。
      *          把响应判死的办法是让对端通告一个极小的 SETTINGS_MAX_HEADER_LIST_SIZE：§6.5.2 的算式里
      *          ":status" 这一项就占 42 字节，再加一条 300 字节的头必然越限。选它是因为它不依赖任何时序
@@ -3613,7 +3613,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：响应卡在流控队列里没送完就被对端抽走的连接，也要记一条 writeAbortedConnectionCount
      *
      * @details 这一类比「写出侧失败」更常见，也更难发现：对端不读也不还窗口，正文就停在流的待发
-     *          队列里，**一次都没碰过套接字**，因此写侧永远不会报错、也不会留下一行错误日志。
+     *          队列里，一次都没碰过套接字，因此写侧永远不会报错、也不会留下一行错误日志。
      *          探针那批「读到一半放弃」的连接走的就是这条路，读数若只挂在写失败上就一直是 0。
      */
     TEST(Http2CleartextSession, CountsConnectionAbortedWhileResponseBodyStillBlockedOnFlowControl)
@@ -3905,7 +3905,7 @@ namespace AsynGyanis::Net
         }
     }
     /**
-     * @brief 钉住：尾部头块里的字段与头部那一场**累加**判 parser_limits 的条数上限
+     * @brief 钉住：尾部头块里的字段与头部那一场累加判 parser_limits 的条数上限
      * @details h1 的解析器整条报文共用一个计数器（`maximum_header_count` 的文档就写着「trailer 头部
      *          同样计入」），h3 在 accountHeaderFieldBudget 里把尾字段一起数，而 h2 此前只数头部那一场：
      *          把字段拆进尾部头块就能绕过这道闸。越限与头部越限走同一条路径（不派发、按 431 收口），
@@ -3948,7 +3948,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "431");
     }
     /**
-     * @brief 钉住：尾部头块的名与值净字节与头部那场**累加**判 parser_limits 的头块字节上限
+     * @brief 钉住：尾部头块的名与值净字节与头部那场累加判 parser_limits 的头块字节上限
      * @details 上一条用例钉的是条数，这一条钉同一族的另一半：`maximum_header_block_length` 此前在 h2
      *          只由头部那场判（`acceptRequestHeaderFields`），尾字段根本不进这道闸，把字段拆进尾部头块
      *          就能绕过。h1 的解析器与 h3 的预算记账都是整条报文累计。HPACK 那侧的「每条 +32」是协议
@@ -3993,14 +3993,14 @@ namespace AsynGyanis::Net
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 3U, ":status"), "431");
     }
     /**
-     * @brief 钉住：命中流式路由的请求，其正文**不进**「在途正文字节」这本账
+     * @brief 钉住：命中流式路由的请求，其正文不进「在途正文字节」这本账
      * @details `memory_budget_bytes` 的文档说它管的是「单条报文的上限挡不住很多条连接」——那条路上
      *          正文是服务端自己攒起来的。流式路由不是：每一批交给业务、服务端不留存，所以
      *          `Http2Session::absorb` 在流式分支里根本不碰 `bodyBudget.growTo()`（h3 的
-     *          `addRequestBody` 同形）。这是有意的口径而不是漏账：那条路上未消费的字节由**每流接收窗口**
+     *          `addRequestBody` 同形）。这是有意的口径而不是漏账：那条路上未消费的字节由每流接收窗口
      *          钉住上界——不消费就不还窗口，对端本来就发不出来；再让预算记一遍等于把「业务读得慢」
      *          判成超限，而那时响应已经在路上，503 也回不出去。
-     *          采样的位置是关键：从处理器**内部**读 `reservedByteCount()`，手里正握着一批正文而账上是零，
+     *          采样的位置是关键：从处理器内部读 `reservedByteCount()`，手里正握着一批正文而账上是零，
      *          才把文档那句口径变成可判的读数。缓冲路径的记账由同族的
      *          `SharesOneBodyBudgetAcrossConcurrentStreams` 负责，两条各钉一侧。
      */
@@ -4069,16 +4069,16 @@ namespace AsynGyanis::Net
         EXPECT_EQ(budget->reservedByteCount(), 0U) << "收口之后也不该留下没归还的预留";
     }
     /**
-     * @brief 钉住：请求**已派发**之后尾字段才越限，业务照常答完、越限的尾字段被拦下，且丢弃有一行日志
+     * @brief 钉住：请求已派发之后尾字段才越限，业务照常答完、越限的尾字段被拦下，且丢弃有一行日志
      * @details 这是 intake 那道跨头块累计闸（`CountsTrailerFieldsAgainstTheSameHeaderFieldLimit` 与
      *          `CountsTrailerFieldBytesAgainstTheSameHeaderBlockLimit`）剩下的最后一格：流式路由在头收齐
      *          那刻就把请求派发了，`isIntakeRejected()` 只在 serve 协程入口读一次，此后置上的旗无人消费。
      *          于是这一支既回不出 431、也不进 `bad_requests_total`——本端实际做的事只有「不把越限的尾字段
-     *          交给业务」。此前这件事**一行日志都不留**，运维看到的是「业务读不到 trailer」而没有任何解释。
+     *          交给业务」。此前这件事一行日志都不留，运维看到的是「业务读不到 trailer」而没有任何解释。
      *          数字：POST 头块 4 条（`:method`/`:scheme`/`:path`/`:authority`），上限取 5，
      *          于是 4+1 恰好放行（对照组在 `CountsTrailerFieldsAgainstTheSameHeaderFieldLimit`）、
      *          这里的 4+2 越限。
-     * @note 断言里同时要求「按 431 收口」那行 ERROR **不出现**：两支必须各说各话，
+     * @note 断言里同时要求「按 431 收口」那行 ERROR 不出现：两支必须各说各话，
      *       将来若有人把越限统一成一个出口，这条会红而不是留下两句互相打脸的日志。
      */
     TEST(Http2CleartextSession, WithholdsTrailersAndWarnsWhenQuotaBreaksAfterDispatch)

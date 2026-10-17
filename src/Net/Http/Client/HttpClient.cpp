@@ -255,8 +255,8 @@ namespace AsynGyanis::Net
         std::string authorityText(const ParsedUrl &url)
         {
             std::string host = url.host.find(':') != std::string::npos ? '[' + url.host + ']' : url.host;
-            // 端口只在**不等于该协议的默认端口**时写：RFC 9110 §7.2 对 Host、RFC 9113 §8.3.1 对
-            // :authority 是同一条法。连到哪个端口由 URL 的端口决定，这里漏掉端口的代价是**站点选择**：
+            // 端口只在不等于该协议的默认端口时写：RFC 9110 §7.2 对 Host、RFC 9113 §8.3.1 对
+            // :authority 是同一条法。连到哪个端口由 URL 的端口决定，这里漏掉端口的代价是站点选择：
             // 按 Host 分虚拟主机的对端会把 8443 上的服务认成默认那一个，严格的实现直接回 421
             const bool isSchemeDefaultPort = (url.scheme == "https" && url.port == 443U) || (url.scheme != "https" && url.port == 80U);
             if (!isSchemeDefaultPort)
@@ -300,7 +300,7 @@ namespace AsynGyanis::Net
          * @param path 以 `/` 打头的路径（不含查询）
          * @return std::string 折叠后的绝对路径
          * @details 照规范那台状态机逐条规则走，不按「切段—过滤—重拼」的省事写法：中段的双斜杠在规范里
-         *          是**一个空段，必须原样留着**（`/a//b` 与 `/a/b` 对按路径分派的路由是两个资源），而按段
+         *          是一个空段，必须原样留着（`/a//b` 与 `/a/b` 对按路径分派的路由是两个资源），而按段
          *          过滤的实现会把空段一起滤掉——那种折叠等于替对端改写了下一跳指向哪个资源，且不报任何错。
          *          越根的 `..`（`/../x`）折到根为止：跳出一台主机之外的路径不是合法请求目标。
          */
@@ -519,7 +519,7 @@ namespace AsynGyanis::Net
             /// 请求有没有被通路完整收下。写成功才算发出：通路本来就死着时 send 返回 false，
             /// 那一支仍是「对端在我们手里把连接收了」，重来不涉及重复执行
             bool isAnyByteSent{false};
-            /// 对端有没有**保证**这条请求没被处理过（RFC 9113 §8.7 的两种机制：REFUSED_STREAM 与
+            /// 对端有没有保证这条请求没被处理过（RFC 9113 §8.7 的两种机制：REFUSED_STREAM 与
             /// GOAWAY 的 last-stream-id）。为真时连非幂等方法也可以重来一次
             bool isGuaranteedUnprocessed{false};
         };
@@ -527,7 +527,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 这个方法原文按规范是不是幂等的（同一条请求做两遍与做一遍，对服务器状态的影响相同）
          * @details 用来决定「请求已整个写上通路、却没等到回音」时要不要换一条连接重来一次：
-         *          RFC 9112 §9.3.2 允许在连接故障之后自动重试**幂等**方法，幂等集合由 RFC 9110 §9.2.2
+         *          RFC 9112 §9.3.2 允许在连接故障之后自动重试幂等方法，幂等集合由 RFC 9110 §9.2.2
          *          给出（GET/HEAD/OPTIONS/PUT/DELETE/TRACE；PATCH 明确不算）。方法 token 大小写敏感
          *          （RFC 9110 §9），这里就不折叠；表外原文一律按不幂等处理——猜错方向的代价是把非幂等
          *          请求做两遍，比少恢复一次贵得多
@@ -812,7 +812,7 @@ namespace AsynGyanis::Net
          *          来：那一档走「用了才发现对端已关」的路径——读回来的是干净的 0 字节，调用方按
          *          「一个字节都没收到」重开一条，不会把上一条的尾巴接到下一条头上。
          *          头名与那个 token 都按大小写不敏感判（RFC 9110 §7.6.1：connection-option 是 token，
-         *          §5.1 说字段名大小写不敏感），且**每条** connection 头都要看——中转可能把它拆成两条写，
+         *          §5.1 说字段名大小写不敏感），且每条 connection 头都要看——中转可能把它拆成两条写，
          *          而 close 出现在任何一条里都是收尾。取值用子串找而不是按逗号切 token：找错的方向是
          *          「把还能用的连接当成要关的」，代价只是另开一条，反过来则会把请求发进一条对端已收的通路
          * @param responseHeaders 已收齐响应的头部字段（名与值按收到的顺序原样留着）
@@ -1243,7 +1243,7 @@ namespace AsynGyanis::Net
          * @brief 给客户端 SSL 配 SNI、主机名校验与（可选的）ALPN 声明
          * @param ssl 待配置的 SSL 对象
          * @param host 校验与 SNI 用的主机名（IP 字面量走 IP 校验、域名走 DNS 名校验）
-         * @param withAlpn true = 声明 h2/http1.1（到**目标**的一路）；false = 不声明（到**代理**的一路）
+         * @param withAlpn true = 声明 h2/http1.1（到目标的一路）；false = 不声明（到代理的一路）
          * @return true 配置完成；false 表示 ALPN 列表被 OpenSSL 拒（唯一可失败的步骤）
          * @details 链校验只证明「证书由受信 CA 签发」，主机名校验才证明「签发的对象就是这台主机」——
          *          少了它任何受信 CA 给他域签的证书都能冒充目标（CWE-297）。ALPN 的线格式是
@@ -1272,7 +1272,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 在已连上的字节流（直连 socket，或明文隧道之后）上做**目标**的 TLS 握手
+         * @brief 在已连上的字节流（直连 socket，或明文隧道之后）上做目标的 TLS 握手
          * @param socket 已连到目标（或其明文隧道已打通）的套接字（所有权移入返回的 TlsSocket）
          * @param loop 所属事件循环
          * @param u 已拆开的 URL（主机与端口是 SNI 与校验的依据）
@@ -1310,7 +1310,7 @@ namespace AsynGyanis::Net
                 co_return std::nullopt;
             }
 
-            // SNI、主机名校验（CWE-297）与 ALPN 声明：到**目标**的一路三样都要
+            // SNI、主机名校验（CWE-297）与 ALPN 声明：到目标的一路三样都要
             if (!configureClientSsl(ssl, u.host, true))
             {
                 SSL_free(ssl);
@@ -1340,7 +1340,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 与 https 代理做一次客户端 TLS 握手（按**代理**主机名校验；刻意不声明 ALPN）
+         * @brief 与 https 代理做一次客户端 TLS 握手（按代理主机名校验；刻意不声明 ALPN）
          * @param socket 已连到代理的套接字（所有权移入返回的 TlsSocket）
          * @param loop 所属事件循环
          * @param route 代理路由（主机与端口用于 SNI 与校验）
@@ -1403,7 +1403,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 在外层隧道上建内层 TLS（TLS-in-TLS 的第二层）：按**目标**校验与协商，字节经泵搬运
+         * @brief 在外层隧道上建内层 TLS（TLS-in-TLS 的第二层）：按目标校验与协商，字节经泵搬运
          * @param outer 与代理握手完成、CONNECT 已打通的外层传输（所有权移入返回的泵）
          * @param loop 所属事件循环
          * @param u 已拆开的 URL（主机与端口是内层 SNI 与校验的依据）
@@ -1437,7 +1437,7 @@ namespace AsynGyanis::Net
             // 「connection type not set」当场失败（内层恒为本端客户端）
             SSL_set_connect_state(ssl);
 
-            // 内层按**目标**校验与协商（三样都要：SNI、主机名校验与 ALPN）
+            // 内层按目标校验与协商（三样都要：SNI、主机名校验与 ALPN）
             if (!configureClientSsl(ssl, u.host, true))
             {
                 SSL_free(ssl);
@@ -1490,7 +1490,7 @@ namespace AsynGyanis::Net
                                                                                      const std::chrono::milliseconds requestTimeout, std::string &failureReason,
                                                                                      const std::optional<HttpProxyRoute> &proxyRoute, const Core::TlsContext *clientTls)
         {
-            // 经代理的明文请求拨的是**代理**地址，池键仍是目标——连接的身份按用途记，拨号按路由走
+            // 经代理的明文请求拨的是代理地址，池键仍是目标——连接的身份按用途记，拨号按路由走
             const auto [dialHost, dialPort] = dialTargetForConnection(key.host, key.port, proxyRoute);
 
             const std::optional<std::chrono::milliseconds> connectBudget = remainingBudget(startedAt, requestTimeout);
@@ -1672,7 +1672,7 @@ namespace AsynGyanis::Net
          * @param requestTimeout 整体时限
          * @param failureReason 输出：断在哪一段（解析地址 / 连接 / CONNECT 隧道 / TLS 那几步 / 握手）
          * @param clientTls 复用的 TLS 客户端上下文，可空
-         * @param proxyRoute 非空即经代理：先拨代理、开 CONNECT 隧道，TLS 仍按**目标**的 SNI 与主机名校验走
+         * @param proxyRoute 非空即经代理：先拨代理、开 CONNECT 隧道，TLS 仍按目标的 SNI 与主机名校验走
          * @return std::unique_ptr<HttpOutboundConnection> 握手成功就交出连接；任一步失败返回空
          */
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &u,
@@ -1682,7 +1682,7 @@ namespace AsynGyanis::Net
         {
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
-            // 经代理的 TLS 连接拨的是**代理**地址，CONNECT 之后的 TLS 与 SNI 仍按目标走（代理只搬字节）
+            // 经代理的 TLS 连接拨的是代理地址，CONNECT 之后的 TLS 与 SNI 仍按目标走（代理只搬字节）
             const auto [dialHost, dialPort]                              = dialTargetForConnection(u.host, u.port, proxyRoute);
             const std::optional<std::chrono::milliseconds> connectBudget = remainingBudget(startedAt, requestTimeout);
             if (!connectBudget.has_value())
@@ -2008,7 +2008,7 @@ namespace AsynGyanis::Net
          * @brief 这次请求的剩余预算付不付得起一次 h3 探测的固定开销
          * @details 探测那 3 秒是这条通路上唯一由本端定的开销，而 `requestTimeout` 的契约是「握手、发送、
          *          收完响应三段之和」（见 remainingBudget）：只给 300 毫秒的请求原本会被一次探测撑到 3 秒，
-         *          探测回来时预算已尽，那次真正的 TCP 请求连一次都不试就判失败。付不起就**跳过探测**，
+         *          探测回来时预算已尽，那次真正的 TCP 请求连一次都不试就判失败。付不起就跳过探测，
          *          直接走 TCP——而不是把探测截短成 300 毫秒：截短的那次一定失败，而失败会被记成
          *          「这个端点没有 h3」，于是一条小时限的健康检查就能把这个端点的 h3 永久关掉。
          * @param startedAt 本次请求的开始时刻
@@ -2295,7 +2295,7 @@ namespace AsynGyanis::Net
                 }
 
                 // 领导者归还资格的地方只有这几处：结论进池之后、走 h1 之前、以及每条失败出口。
-                // 不用作用域守卫是因为本框架的协程帧**不在 co_return 时销毁**（FinalAwaiter 是 no-op），
+                // 不用作用域守卫是因为本框架的协程帧不在 co_return 时销毁（FinalAwaiter 是 no-op），
                 // 帧要等调用方放手才回收——那时才结算，等待方白等一整段请求时间。
                 // 也不设兜底的异常出口：连接、握手与 h2 三层各自把通路异常折成了返回值（见
                 // connectWithDeadline、establishSecureConnection 的 catch，与 Http2ClientConnection
@@ -2534,7 +2534,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief `performRequest()` 的重定向包一层：单次与连接池两条出口共用这一份跟随逻辑
-         * @details 时限按**整条请求**算：每一跳只拿此刻剩下的预算，所以跟几跳都不会把 requestTimeout
+         * @details 时限按整条请求算：每一跳只拿此刻剩下的预算，所以跟几跳都不会把 requestTimeout
          *          乘上跳数（这条纪律与 h3 探测吃预算那处同一个口径）。开关关着时第一趟就原样透传。
          */
         Core::Task<std::unique_ptr<HttpClientResponse>> performRequestFollowingRedirects(Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &url,
@@ -2554,7 +2554,7 @@ namespace AsynGyanis::Net
                     co_return nullptr;
                 }
                 std::unique_ptr<HttpClientResponse> response;
-                // 代理决定按**当跳** URL 解析：重定向换主机/换 scheme 时选的代理与豁免表随之切换
+                // 代理决定按当跳 URL 解析：重定向换主机/换 scheme 时选的代理与豁免表随之切换
                 {
                     RequestProxyDecision proxyDecision;
                     if (!resolveRequestProxyRoute(*proxyPolicy, currentUrl, failureReason, proxyDecision))
@@ -2667,7 +2667,7 @@ namespace AsynGyanis::Net
         }
         // 写上了通路而对端没答话：默认按「可能已经执行过」处置，重来只许幂等方法（RFC 9112 §9.3.2 给的
         // 自动重试许可只覆盖幂等方法）；但 RFC 9113 §8.7 那两种保证是另一回事——REFUSED_STREAM 与 GOAWAY
-        // 的 last-stream-id 都说明对端**没处理过**这条请求，那时连非幂等方法也可以重来
+        // 的 last-stream-id 都说明对端没处理过这条请求，那时连非幂等方法也可以重来
         return isIdempotentRequestMethod(method) || isGuaranteedUnprocessed;
     }
 

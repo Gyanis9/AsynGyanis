@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 这一层的取向是**显式装载**：关系写在 `TableSchema<T>` 里（`kRelations`），要在查询上
+ * @details 这一层的取向是显式装载：关系写在 `TableSchema<T>` 里（`kRelations`），要在查询上
  *          点名装载（`Queryable<T>::then()`）。本仓刻意不做懒加载代理——在协程运行时里「访问属性
  *          会挂起」是最容易咬人的形状（Dapper 的 `Split`、EF 的 `Include`、SqlSugar 的 `Includes`
  *          同样都是显式装载）。
@@ -34,9 +34,9 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief 一条关系的声明：成员指针 + 外键列名
      * @tparam OwnerType 声明它的行类型（`TableSchema<OwnerType>` 里写 `kRelations`）
-     * @tparam MemberType 承载被装载对象的那**一个成员**的类型，方向由它决定：
-     *         - `std::vector<U>` → 一对多：外键列在 **U 的表**里（指向本行的主键）；
-     *         - `U` / `std::optional<U>` → 多对一：外键列在 **本行所在的表**里（指向 U 的主键）。
+     * @tparam MemberType 承载被装载对象的那一个成员的类型，方向由它决定：
+     *         - `std::vector<U>` → 一对多：外键列在 U 的表里（指向本行的主键）；
+     *         - `U` / `std::optional<U>` → 多对一：外键列在 本行所在的表里（指向 U 的主键）。
      */
     template<typename OwnerType, typename MemberType>
     struct RelationDescriptor

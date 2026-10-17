@@ -1562,7 +1562,7 @@ int main(int argc, char **argv)
         http3Configuration.perIpConnectionLimiter = perIpConnectionLimiter;
         // 整机并发上限同样要给 h3，否则配置里的 maximum_connections 只管两条 TCP 通道，而 h3 守着
         // QuicServer 自带的默认档：同一份配置下三条通道的口径不一致，本轮新增的 h3 满载读数也会
-        // 对着一个没人配过的数跳变。给的是**摊到本进程**的那一份（与 TCP 侧同源），否则 --workers 4
+        // 对着一个没人配过的数跳变。给的是摊到本进程的那一份（与 TCP 侧同源），否则 --workers 4
         // 就是四倍放行。0 要原样传下去：QuicServer 与 HTTP 侧一样把 0 定为「不限」（那边的注释与
         // 读口用例都在），而能走到这一行的 0 只可能是操作方显式写的——配置里没写时它是内置的 4096。
         // 此前这里用 `> 0` 挡下 0，等于上面刚印出「每台 不限（显式配 0）」，h3 却仍卡在 1024
@@ -1680,7 +1680,7 @@ int main(int argc, char **argv)
         }
 
         Core::EventLoop &acmeLoop = pool.eventLoop(0);
-        // DNS-01 的动作对只在**签发方**这一档构造：提供方不认识、凭据两条环境变量缺失都在
+        // DNS-01 的动作对只在签发方这一档构造：提供方不认识、凭据两条环境变量缺失都在
         // buildDns01TxtWriter 里当场抛，报出来的是「缺哪两条」，而不是几天之后第一次续期失败的那句机构错误。
         // 跟盘的进程什么都不签，因此也不该被要求握着能改域名记录的那对凭据——把凭据发给每一个进程
         // 只会成倍扩大暴露面
@@ -1759,7 +1759,7 @@ int main(int argc, char **argv)
                     std::chrono::duration_cast<std::chrono::days>(acmeConfiguration.manager.renewBeforeExpiry).count(), tlsServerCount, http3Server != nullptr ? "在" : "不在");
         } else
         {
-            // 非签发进程：磁盘上那张文件一换就重装本进程的 TLS 监听器。签发方是**先写私钥再写证书链**、
+            // 非签发进程：磁盘上那张文件一换就重装本进程的 TLS 监听器。签发方是先写私钥再写证书链、
             // 两张各一次原子替换，所以中间必然有一瞬间是「新私钥 + 旧证书」——那一次装回会被配对校验挡下，
             // 而跟随协程刻意不把没装上的变化认下，下一拍再试就撞上两张都到位的那一刻
             ++acmePendingLoopCount;
@@ -1908,7 +1908,7 @@ int main(int argc, char **argv)
         shutdownTasks.push_back(std::move(drainTask));
     }
 
-    // HTTP/3 与 TCP 两条路必须**同一时刻开始**排空：`QuicServer::drain()` 的第一步就是挡新连接并给每条
+    // HTTP/3 与 TCP 两条路必须同一时刻开始排空：`QuicServer::drain()` 的第一步就是挡新连接并给每条
     // 连接发 GOAWAY，若排在 TCP 那边等完之后才轮到它，最长 shutdownDrainTimeout 这段时间里 h3 还在接
     // 新连接，而业务口与管理口上的 /readyz 早已回 503——就绪那一格说的是整台进程，不是某一条通路。
     // 它照旧投回自己那条循环（drain 要遍历连接表），到期由 drain 自己兜底强关

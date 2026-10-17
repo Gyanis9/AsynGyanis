@@ -29,7 +29,7 @@ namespace AsynGyanis::Platform
      *
      * @details 用于「把一整个文件按字节发出去」这类场景：映射之后正文不必先读进堆缓冲，
      *          发送时直接引用映射出来的页（Windows 走 CreateFileMapping + MapViewOfFile，
-     *          Linux 走 mmap）。省掉的是**整份文件的用户态拷贝**与等量的堆分配，页由内核
+     *          Linux 走 mmap）。省掉的是整份文件的用户态拷贝与等量的堆分配，页由内核
      *          按需读入，多个请求读同一个文件还能命中同一份页缓存。
      *
      * @note 只读映射。映射期间文件若被外部截断，读越过新末尾的页会触发平台异常，
@@ -87,7 +87,7 @@ namespace AsynGyanis::Platform
         [[nodiscard]] std::error_code lastError() const noexcept;
 
         /**
-         * @brief 取这份映射**实际映射到的那个文件对象**的基本信息
+         * @brief 取这份映射实际映射到的那个文件对象的基本信息
          * @details 句柄绑定的对象不会随「同路径被原子替换」而改变，因此这条能回答「我映射到的还是
          *          刚才按路径查到的那一份吗」——静态服务据此判断已经写下的 ETag 是否还在描述发出去的
          *          那段字节。取值刻度与 queryFileBasicInfo 逐位一致，可以直接比。

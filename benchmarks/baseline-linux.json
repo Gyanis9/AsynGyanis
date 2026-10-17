@@ -5,7 +5,7 @@
   "build": "Release（GCC 13.3，-O3 -DNDEBUG，无插桩、无 LTO）",
   "serverCommand": "ASYN_SOAK_BUILD=linux-release benchmarks/run-soak.sh <端口> 4 --json-out ...；h2c 那一组加 ASYN_SOAK_STAGE=h2c，h3 那一组加 ASYN_SOAK_STAGE=h3 并用 ASYN_SOAK_PYTHON 指向装了 aioquic 的解释器",
   "note": [
-    "本文件是**这台容器**的性能基线快照：只与同一容器、同一构建配置的前后运行相比。",
+    "本文件是这台容器的性能基线快照：只与同一容器、同一构建配置的前后运行相比。",
     "绝对读数对不上 Windows 那份（benchmarks/baseline.json），也别去对：本机 keepalive 的 p50 是 582.0us，而 Windows 那台是 106.0us。差的是虚拟机回路、Python 解释器与宿主后台状态，不是代码——两边各自与自己那份比，check-baseline.py 用 --baseline 显式指文件。",
     "跑法是 benchmarks/run-soak.sh（Windows 侧的对应件是 run-soak.bat）。没有它之前，Linux 上根本没有跑得起这套门禁的入口，基线也就只能在一台机器上录。",
     "每个数是同一份代码 3 次运行的中位数；observedRange 如实记下离散范围。本轮离散最大的四格：http2-h2c-pipeline32 p95 2.06x、http2-h2c-pipeline32 p99 1.86x、http1-churn p99 1.38x、http1-keepalive p99 1.33x。默认阈值（吞吐 ≥0.6x、p50 ≤1.5x、p95 ≤2.0x、p99 ≤2.5x）逐项核对过「拿本轮最慢/最快的那一次当实测去比会不会自己报警」：全部安全。",

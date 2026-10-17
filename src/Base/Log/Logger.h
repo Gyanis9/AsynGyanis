@@ -143,7 +143,7 @@ namespace AsynGyanis::Base
          *          （自定义 Sink 的计数、队列水位、落盘失败次数）。
          * @note 传 `std::unique_ptr` 的旧写法照旧编得过：shared_ptr 有从 unique_ptr 的隐式转换，
          *       转换发生在这一层的形参上而不是重载决议里，因此不会出现两个重载争一个 `nullptr` 的歧义
-         * @note 留下句柄意味着可以在运行期继续用它。Sink 的 write() 由**任意打日志的线程**调用，
+         * @note 留下句柄意味着可以在运行期继续用它。Sink 的 write() 由任意打日志的线程调用，
          *       自定义 Sink 自己的状态本来就必须线程安全，这条不因本接口而放松
          */
         void addSink(std::shared_ptr<LogSink> sink);

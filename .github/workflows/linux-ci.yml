@@ -230,7 +230,7 @@ jobs:
       - name: 构建 ReferenceServer
         run: cmake --build build/debug --target ReferenceServer -- -k 0
 
-      # h2spec 是**别人写的** HTTP/2 裁判：146 条判据直接引 RFC 的句子，自家探针查不出的
+      # h2spec 是别人写的 HTTP/2 裁判：146 条判据直接引 RFC 的句子，自家探针查不出的
       # 「两边都错在同一种理解上」由它查。取固定版本的官方发布包（不自己编 Go），失败就让它红——
       # 拿不到裁判与裁判判不过，都需要被人看见
       - name: 取 h2spec（跨实现一致性裁判）
@@ -314,7 +314,7 @@ jobs:
           path: /tmp/*.log
           if-no-files-found: ignore
 
-  # MySQL 真机驱动分支的**编译**覆盖：除覆盖率作业外，其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
+  # MySQL 真机驱动分支的编译覆盖：除覆盖率作业外，其余作业一律 ASYN_SKIP_MYSQL_DEPS=1 +
   # -DDATABASE_WITH_MYSQL=OFF，于是 MySqlConnection/MySqlResult 那些源文件在那些作业里从不参与编译，
   # 连语法/类型错误都不会红。这个作业只构建 Database 目标，不做真机连接测试（真机那一路在 coverage）。
   #
@@ -364,7 +364,7 @@ jobs:
       - name: 编译 Database（含真机驱动分支；告警同样是失败）
         run: cmake --build build/mysql-driver-check --target Database -- -k 0
 
-  # io_uring 事件后端：编译**并且真的跑一遍用例**。该分支只在显式开关下参与编译（默认走 epoll），
+  # io_uring 事件后端：编译并且真的跑一遍用例。该分支只在显式开关下参与编译（默认走 epoll），
   # 而三后端共用一套契约、多数断言在 epoll 后端下恒绿——只在一台后端上跑等于没测（io_uring 不校验
   # 描述符、改掩码时机与 epoll 不同，这两处真实偏离就是这么找到的）。内核不放行 io_uring 时跳过运行
   # 而不是让全仓 PR 变红：这一步要抓的是后端契约回归，不是 runner 的内核策略。
@@ -434,7 +434,7 @@ jobs:
             -R "Epoll|IoWatcher|Timer|TimerQueue|EventLoop|Scheduler|ThreadPool|IoContext|Uring" \
             -j 4 --no-tests=error --output-on-failure
 
-  # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑**并发相关**的
+  # 线程竞态检测：TSan 与 ASan 互斥（不能同时插桩），因此另起一个构建目录，只跑并发相关的
   # 用例集，把 CI 时间压在可接受范围（本机 Linux 上可以直接跑全量）。事件循环、线程池与跨循环
   # 投递（scheduleRemote / 全局队列 / TimerQueue 唤醒）此前只有注释级约定，这里是唯一的自动兜底。
   thread-sanitizer:
@@ -533,7 +533,7 @@ jobs:
   # 静态检查：仓库里一直有 .clang-tidy（bugprone-* 等一组精选检查），但没有任何流水线跑它——
   # 等于一份没人执行的规范。这里补上。
   #
-  # 当前以**报告形式**接入：存量的告警数量还没有清点过，直接把 --warnings-as-errors 打开会让
+  # 当前以报告形式接入：存量的告警数量还没有清点过，直接把 --warnings-as-errors 打开会让
   # 每次推送都红。CI 日志里能看到全部发现；把下面的 -warnings-as-errors 改成 '*'（或先清干净
   # 存量再打开）它就成为门禁。clang-tidy 只扫本仓库源码（src/，不含 third_party/）。
   # 格式门禁：仓库已按 clang-format 23.1.1 全量排过一遍（配置见 .clang-format），这里保证不再漂。
@@ -562,7 +562,7 @@ jobs:
 
       - name: 全仓格式检查（先自证清单非空，再报差异；有差异即失败）
         run: |
-          # 先数条数再检：`xargs -0` 拿到空输入会用**零参数**调用 clang-format，而它读空 stdin 退出 0——
+          # 先数条数再检：`xargs -0` 拿到空输入会用零参数调用 clang-format，而它读空 stdin 退出 0——
           # glob 一旦失配（改扩展名、加 pathspec、checkout 出问题），这道门就从「全仓检查」变成
           # 「什么都没查还报绿」。2026-10-01 实测参与检查的是 707 个跟踪文件，下限取 500：
           # 它不是用来卡新增文件的，是用来卡「一条都没有」的
@@ -741,7 +741,7 @@ jobs:
     # 上限要按 apt 慢的那次量：v2.4.0 那次运行里，「装 clang-19 与它的 fuzzer 运行时」一步从 16:26:30
     # 拖到 16:54:57 才结束（llvm-19 / -tools / -dev 几百 MB，镜像吞吐看运气），模糊步骤只跑了 1 分多钟
     # 就被 30 分钟上限切断；同一份作业在缓存热、镜像快的运行里全程只用 6 分半。
-    # 选 60 而不是 45：慢镜像那一段本身就没有上界可依赖。另外要知道**超时判成 cancelled 而不是 failed**
+    # 选 60 而不是 45：慢镜像那一段本身就没有上界可依赖。另外要知道超时判成 cancelled 而不是 failed
     # ——既不是绿也不是红，比红更难被发现，所以宁可用不完也别擦线。
     timeout-minutes: 60
 

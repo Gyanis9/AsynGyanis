@@ -86,7 +86,7 @@ namespace AsynGyanis::Database::Queryable
     /**
      * @brief 迁移记录表的形状：表名、列名与那一行
      *
-     * @details 这三样必须排在 SchemaMigrator **之前**：类内的模板方法会实例化这张表的登记
+     * @details 这三样必须排在 SchemaMigrator 之前：类内的模板方法会实例化这张表的登记
      *          （`createTable<MigrationLedgerRow>()`），而显式特化必须早于任何隐式实例化——
      *          排在类后面会直接撞 C2908「显式特化在实例化之后」。因此它单独成一个命名空间，
      *          表名与列名也只有这一处真源（建表、查询、写入三处都取它）。
@@ -117,7 +117,7 @@ namespace AsynGyanis::Database::Queryable
 
 /**
  * @brief 迁移记录表的结构登记
- * @details 迁移表由 SchemaMigrator 自己建，但它与其他表走**同一份登记**：
+ * @details 迁移表由 SchemaMigrator 自己建，但它与其他表走同一份登记：
  *          `createTableStatement<MigrationLedgerRow>()` 生成它的 DDL，
  *          `addMissingColumns<MigrationLedgerRow>()` 也认得它（干净时增补 0 列）。
  *          手写一份 DDL 就做不到这一点——那份 DDL 与登记的形状会各走各的。
@@ -321,7 +321,7 @@ namespace AsynGyanis::Database::Queryable
          * @param pool 提供连接的连接池
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 表存在
-         * @return false 表不存在，**或**查询失败（用 errorText 区分：失败时它非空）
+         * @return false 表不存在，或查询失败（用 errorText 区分：失败时它非空）
          * @throws Base::LogicException TableSchema<T>::kTableName 为空或含点号
          * @note 查询失败不抛异常而返回 false，是因为本方法以布尔语义对外；需要区分「不存在」
          *       与「查询失败」的调用方应传入 errorText 并检查它是否被写入
@@ -455,7 +455,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 按结构体把表里缺的列补上（ALTER TABLE ADD COLUMN，逐列执行）
          *
          * @details 判据来自引擎本身：先问「这张表现在有哪些列」（`SqlDialect::columnListingStatement()`），
-         *          结构体里有而表里没有的每一列各发一条 ALTER。也就是说**不需要一份「上次建了什么」的账**，
+         *          结构体里有而表里没有的每一列各发一条 ALTER。也就是说不需要一份「上次建了什么」的账，
          *          重复调用是幂等的（已存在的列被跳过），换机器、换库、手工加过列都不需要额外状态。
          * @details 列名比对按小写：MySQL 的列名不区分大小写，而 SQLite 按声明原样给出，不折一次就会把
          *          同一个列看成两个。
@@ -587,7 +587,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 一条命名迁移：升序应用、可回退，应用记录落在迁移表里
          *
-         * @details 与 `setQueryTimeout` 那一族的「时机」不同，迁移是**部署动作**：它按名字记录
+         * @details 与 `setQueryTimeout` 那一族的「时机」不同，迁移是部署动作：它按名字记录
          *          「这条已经跑过了」，因此重复执行同一份列表是幂等的，而回退要知道撤的是哪一条。
          *          up/down 都是 `SqlStatement` 列表：用 `createTableStatement<T>()` 那组生成器
          *          现拼、或者直接写原生 SQL 都行（`SqlStatement` 允许为空文本，那时这一步只是
@@ -692,7 +692,7 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 读已应用的迁移名
          * @details 查询走方言的标识符引用（表名与列名都取本类的常量），因此三种引擎同一份文本生成。
-         *          **顺序未定义**：迁移表只记名字，它是一份集合；要按顺序处理请以调用方的步骤表为准
+         *          顺序未定义：迁移表只记名字，它是一份集合；要按顺序处理请以调用方的步骤表为准
          * @param pool 提供连接的连接池
          * @param appliedNames 出参：已应用的名字（每次调用先清空）
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
@@ -757,7 +757,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @note 没有会话锁的引擎（SQLite）退回「整段一笔写事务」：`BEGIN IMMEDIATE` 立刻取写锁，
          *       其余实例按 busy_timeout 等；此时整份迁移是一笔事务（失败全撤），与逐条提交的
-         *       PostgreSQL/MySQL 路径不同——**交付语义同形而机制不同**。
+         *       PostgreSQL/MySQL 路径不同——交付语义同形而机制不同。
          */
         class MigrationSession
         {
@@ -1303,19 +1303,19 @@ namespace AsynGyanis::Database::Queryable
          * @brief 按列表顺序应用尚未应用的迁移（重复调用幂等）
          *
          * @details 规则五条，都是「部署动作」这一格必须钉住的：①迁移开始前在同一连接上取
-         *          **跨实例互斥**——PostgreSQL 用会话级咨询锁、MySQL 用 `GET_LOCK`，取不到就等、
+         *          跨实例互斥——PostgreSQL 用会话级咨询锁、MySQL 用 `GET_LOCK`，取不到就等、
          *          等到超时如实失败（不在无锁状态下继续）；SQLite 没有咨询锁，用「整段一笔
          *          `BEGIN IMMEDIATE` 写事务」当等价物（语义同形而机制不同）。②先确保迁移表存在；
-         *          ③已应用的名字必须是本次列表的**前缀**——前缀之外还有记录（顺序被改过、列表
+         *          ③已应用的名字必须是本次列表的前缀——前缀之外还有记录（顺序被改过、列表
          *          漏了一条、或者换了另一份列表）时当场拒绝，因为按错误的顺序改结构比不改更糟；
-         *          ④逐条应用，**一条一笔事务**：结构改动与记账在同一笔里提交，崩在两者之间不会
+         *          ④逐条应用，一条一笔事务：结构改动与记账在同一笔里提交，崩在两者之间不会
          *          留下「结构改了却没记账」（MySQL 侧有例外，见下）；⑤一条失败即停在那里，已提交
          *          的前面的步骤保持已应用状态，出参给出已应用的条数。
          *
-         * @warning **MySQL 的 DDL 会隐式提交**，因此那一侧的「一条一笔事务」是尽力而为：UP 语句
+         * @warning MySQL 的 DDL 会隐式提交，因此那一侧的「一条一笔事务」是尽力而为：UP 语句
          *          已经执行到一半时失败，回滚撤不回结构（记账那一条也随隐式提交落下或不落）。
          *          PostgreSQL 的 DDL 可回滚，逐条提交的保证完整。SQLite 走的是整段一笔事务，
-         *          失败时**整份迁移一起撤**（不是只撤失败的那一条）——这是它的互斥等价物带来的
+         *          失败时整份迁移一起撤（不是只撤失败的那一条）——这是它的互斥等价物带来的
          *          语义差异。要在 MySQL 上把风险降到最低，就把一条迁移的 UP 拆得尽量小
          *          （一条 DDL 一条迁移），并用 `downStatements` 写清怎么手工退。
          *
@@ -1438,11 +1438,11 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
-         * @brief 回退最后应用的若干条迁移（按列表顺序的**逆序**撤）
+         * @brief 回退最后应用的若干条迁移（按列表顺序的逆序撤）
          *
          * @details 「最后应用的」由列表顺序决定：已应用的必须是列表前缀（同 migrate()），
          *          因此最后一条就是前缀的最后一项。逐条执行 `downStatements` 并删掉它的记账，
-         *          同样是**一条一笔事务**；一条失败即停，已退掉的保持已退状态，出参给出退了几条。
+         *          同样是一条一笔事务；一条失败即停，已退掉的保持已退状态，出参给出退了几条。
          *          退回的迁移还在列表里，因此回退之后再 `migrate()` 会重新应用它们。
          *
          * @warning 与 migrate() 同一条 MySQL 例外：那一侧撤结构的那句 DDL 隐式提交，
@@ -1546,7 +1546,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 幂等落一份种子数据：已有行不动，只补缺失的行
          *
          * @details 「种子数据」这一格在部署动作里的形状是：结构由迁移改、数据由本方法补，
-         *          二者属于**同一个部署步骤**（先 `migrate()` 再 `seed()`），并且可以反复执行——
+         *          二者属于同一个部署步骤（先 `migrate()` 再 `seed()`），并且可以反复执行——
          *          已经存在的行不产生第二条，只有缺失的行被补进来。写入走
          *          `Queryable::insertBatch(rows, InsertConflict::Ignore)`（SQLite 是 `INSERT OR IGNORE`、
          *          MySQL 是 `INSERT IGNORE`），因此分块、参数上限、取值转换与唯一的写入路径完全复用，
@@ -1554,7 +1554,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @tparam RowType 行类型（与 `TableSchema<RowType>` 配套，同 ORM 的其余入口）
          * @param pool 提供连接的连接池
-         * @param rows 种子行；幂等键取它们在**表上的唯一键**（通常是显式给出的主键）。空集合什么都不做
+         * @param rows 种子行；幂等键取它们在表上的唯一键（通常是显式给出的主键）。空集合什么都不做
          * @param insertedCount 可选出参：本次真正新增了几行（已存在的不计入；空列表恒为 0）
          * @param errorText 可选出参；进入调用时先清空，仅失败时写入中文原因
          * @return true 每一行现在都在表里
@@ -1603,7 +1603,7 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 幂等落一份种子数据（容器版）
-         * @details 与 span 版完全等价；两个重载并存的理由是**模板实参推导**：从
+         * @details 与 span 版完全等价；两个重载并存的理由是模板实参推导：从
          *          `const std::vector<RowType>&` 推不出 `std::span<const RowType>`（推导不考虑
          *          用户定义转换），只给 span 版会让最常见的调用写法编不过
          * @param pool 提供连接的连接池

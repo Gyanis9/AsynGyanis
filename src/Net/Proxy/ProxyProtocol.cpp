@@ -220,7 +220,7 @@ namespace AsynGyanis::Net
                 {
                     return false;
                 }
-                // 值是**视图**：指进调用方传进来的缓冲，因此解析结果不得活得比它长（见 ProxyTlv 的说明）
+                // 值是视图：指进调用方传进来的缓冲，因此解析结果不得活得比它长（见 ProxyTlv 的说明）
                 endpoint.tlvs.push_back(ProxyTlv{.type = bytes[0], .value = block.substr(cursor, valueBytes)});
                 cursor += valueBytes;
             }
@@ -370,7 +370,7 @@ namespace AsynGyanis::Net
             }
 
             // 地址之后的余下字节是 TLV（类型 1 + 长度 2 大端 + 值，见 ProxyTlv）。这一步在
-            // **地址布局已知的两族**上切分：IPv4 是 12 字节、IPv6 是 36 字节；UNSPEC 与 AF_UNIX
+            // 地址布局已知的两族上切分：IPv4 是 12 字节、IPv6 是 36 字节；UNSPEC 与 AF_UNIX
             // 不解释（前者规范没给地址字段、后者是两条 108 字节的路径且本层不校验内容），
             // 起点无从对齐——那两族交出的 tlvs 为空，与「按规范忽略地址信息」同一条口径。
             // 分配失败当作「这条头解析不了」：本入口是 noexcept 的读侧路径，不许把 bad_alloc 抛出去

@@ -1270,7 +1270,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(response.addTrailerField("x-checksum", "abc"));
         EXPECT_TRUE(response.hasTrailerFields());
 
-        // reset 必须把那份存储**整份解除**：留着空壳就会对新报文白补一条 Trailer 声明，
+        // reset 必须把那份存储整份解除：留着空壳就会对新报文白补一条 Trailer 声明，
         // 也会让 h2/h3 那边白发一个空的尾部头块
         response.reset();
         EXPECT_FALSE(response.hasTrailerFields()) << "reset 之后不得残留尾部字段";

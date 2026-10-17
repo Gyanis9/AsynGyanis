@@ -38,7 +38,7 @@ namespace AsynGyanis::Net
      */
     inline constexpr std::size_t kTraceparentCanonicalLength = 3U + kTraceIdHexDigitCount + 1U + kSpanIdHexDigitCount + 3U;
 
-    /// tracestate 的条目上限：规范允许「收到太多条就删掉若干条」，因此这里是**截断**而不是拒绝
+    /// tracestate 的条目上限：规范允许「收到太多条就删掉若干条」，因此这里是截断而不是拒绝
     inline constexpr std::size_t kMaximumTraceStateEntryCount = 32;
 
     /// tracestate 单条键或值的长度上限（§3.2.3 的 1*256 / 0*256）
@@ -83,7 +83,7 @@ namespace AsynGyanis::Net
      *
      * @details 线上形态是 `version "-" trace-id "-" parent-id "-" trace-flags`，版本 0 时定长 55 字节。
      *          本类只负责「读」与「发新链路」两件事，刻意不做改写：
-     *          · 收到的字段合法就**原样沿用**（含未知高版本的附加字段），一个字都不动——
+     *          · 收到的字段合法就原样沿用（含未知高版本的附加字段），一个字都不动——
      *            规范要求下游不得因为看不懂就拒绝或修剪上游的字段；
      *          · 缺席或非法才生成一条新的（版本固定 0），此时才走 renderInto。
      *          因此这里不需要「保留未知字段再回写」的缓冲，也就没有为它预留的容量。
@@ -149,7 +149,7 @@ namespace AsynGyanis::Net
     /**
      * @brief tracestate 的条目表：解析、按规范改写与渲染
      *
-     * @details 与 traceparent 不同，本表**必须**能改写：任何往链路上加自己条目的系统都要把
+     * @details 与 traceparent 不同，本表必须能改写：任何往链路上加自己条目的系统都要把
      *          自己的键挪到最前、并丢掉后面同名的旧条目（§3.2.4.1 的三步：插入到头部、去重、截断到 32）。
      *          这里的三条纪律：
      *          · 解析要么全成要么全废——规范把「有重复键」整条判为无效，宁可丢掉全部条目
@@ -164,7 +164,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 解析一个 tracestate 取值
          * @details 逗号分隔，逗号两侧空白（OWS）不算内容；键为空的条目、缺等号的条目、
-         *          超长的键或值、字符集越界、以及重复的键都判**整条**无效（规范把重复键整条判废，
+         *          超长的键或值、字符集越界、以及重复的键都判整条无效（规范把重复键整条判废，
          *          半条可信比全都不可信更糟）。条目数超过 32 不判废：规范许可「收到过多条目时
          *          删掉若干条」，因此这里保留顺序、由 upsertFront 与 renderInto 从尾部截断。
          * @param value 头部取值
@@ -222,7 +222,7 @@ namespace AsynGyanis::Net
      *          每次读都要过一遍 55 字节的定长校验（无分配、无拷贝），换掉的是「两处状态谁更新」
      *          这一类长期 bug——对只读上下文的处理器来说这笔买卖划算。
      * @param request 已收齐的请求对象
-     * @return std::optional<TraceIdentifiers> 有效标识；头部缺席、形态不合、或同名出现**多条**时为空
+     * @return std::optional<TraceIdentifiers> 有效标识；头部缺席、形态不合、或同名出现多条时为空
      *         （多条是有歧义的输入，猜首条还是末条都是替上游做决定，一律按「不在任何链路里」处理）
      */
     [[nodiscard]] ASYN_NET_API std::optional<TraceIdentifiers> extractTraceContext(const HttpRequest &request);
@@ -230,7 +230,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 从请求上读出 tracestate 条目表（多条同名头部按到达顺序合并）
      *
-     * @details W3C §3.3 的 tracestate 是**列表字段**：同一条请求可以有多条 tracestate 头，
+     * @details W3C §3.3 的 tracestate 是列表字段：同一条请求可以有多条 tracestate 头，
      *          按 RFC 9110 §5.3 用逗号合并后再解析。只读第一条会在网关分片转发时丢掉后半段，
      *          而条目顺序正是「谁最后写过」的信号。条目超过 32 条时按 §3.3.1.1 丢右侧，
      *          保留最前面的 32 条。
@@ -245,7 +245,7 @@ namespace AsynGyanis::Net
      * @details 三条通道（h1/h2/h3）的「处理器抛出 → 回 500」那行日志都要带上 trace id：响应里
      *          只回 500 是对的，可运维手上只剩下「/metrics 上多出来的一个 500」时，没有这两个
      *          标识（request-id 与 trace id）就翻不回是哪一条请求、哪一段链路。
-     *          这个读口存在的意义是**只有一份**取法：各通道自己写一遍，迟早有一路忘了带。
+     *          这个读口存在的意义是只有一份取法：各通道自己写一遍，迟早有一路忘了带。
      * @param request 已收齐的请求对象
      * @return std::string 请求携带的有效 trace id；不在任何链路里时交回中文的「无」
      *         （日志文案里留「无」而不是留空：空值读起来像漏打了字段）

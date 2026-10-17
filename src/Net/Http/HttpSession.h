@@ -54,7 +54,7 @@ namespace AsynGyanis::Net
      *          直到对端关闭、报文出错、或按 Keep-Alive 判定应当收口。协议细节全部下沉到
      *          Detail::httpKeepAliveLoop()，明文与 TLS 两类会话共用同一份实现，只差传输层类型。
      *
-     * @note 接收缓冲**跨次读取存续**：一个 TCP 包里粘着两条请求时，第一条应答完剩下的字节留在
+     * @note 接收缓冲跨次读取存续：一个 TCP 包里粘着两条请求时，第一条应答完剩下的字节留在
      *       缓冲区里，下一轮先喂进解析器；不留存就会每次从缓冲区开头重读，把第二条请求静默丢掉。
      * @see Detail::httpKeepAliveLoop(), shouldKeepAlive()
      */
@@ -248,7 +248,7 @@ namespace AsynGyanis::Net
          *          真值来源取前者（连接级、由服务器与运维路径驱动），后者只作为业务侧的读取出口：
          *          超时中间件调 request.requestCancel()，而连接被关停时由本对象把信号补进同一个出口，
          *          业务只需认 request.cancelToken() 一处。
-         * @note 按**连接**注册一次即可：回调指向解析器内部那个按连接复用的请求对象，
+         * @note 按连接注册一次即可：回调指向解析器内部那个按连接复用的请求对象，
          *       于是不必跟着每条报文反复注册与注销。若按请求注册，注册动作本身（停止回调节点）
          *       就成了每请求一次的开销。
          */
@@ -750,7 +750,7 @@ namespace AsynGyanis::Net
             // reset() 也不会把它清掉（只清流式模式标记）。装配必然早于任何一次路由
             response.setChunkSender(sendChunkSegment);
 
-            // 中间响应（1xx）的写出通道：一条**独立报文**——状态行 + 给定字段 + 空行，不带正文，
+            // 中间响应（1xx）的写出通道：一条独立报文——状态行 + 给定字段 + 空行，不带正文，
             // 也不读不写本响应的状态与头部。写路径与流式分段共用 sendResponse，因此同样受写超时约束，
             // 传输失败折成 false（口径与 ChunkSender 逐字相同）。
             // 会话自己回 100（Expect: 100-continue）也走这一条：两处各写一份字面量的话，
@@ -952,7 +952,7 @@ namespace AsynGyanis::Net
                     // HEAD：终止块同样是正文的一部分，一并不发
                     if (!response.isStreamingBodySuppressed())
                     {
-                        // 业务中途抛异常那一路只补裸终止块：尾部字段是业务对**它自己算完的那段正文**
+                        // 业务中途抛异常那一路只补裸终止块：尾部字段是业务对它自己算完的那段正文
                         // 的承诺（校验和、尾随状态），正文只发了一半就把承诺补上去，对端拿到的是一个
                         // 必然对不上的值。异常这一路连接本来也不保活，不补比补更安全
                         std::string terminatorText = handlerException ? std::string{kChunkedTerminator} : response.chunkedTerminatorText();

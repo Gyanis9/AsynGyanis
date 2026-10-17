@@ -437,7 +437,7 @@ namespace AsynGyanis::Net
      * @brief 端到端钉住「日志接上链路」：真服务处理请求期间产生的日志带着请求头里的 trace_id
      *
      * @details 链路中间件建的作用域要跨真实回环请求的整条处理器链；日志行由 JsonFormatter 渲染，
-     *          因此这里断言的是**格式化后的顶层 trace_id**，而不是 event.message 里的文本。
+     *          因此这里断言的是格式化后的顶层 trace_id，而不是 event.message 里的文本。
      *          请求头里的 trace-id 与日志里的值必须同解——这是「日志能接上链路」的唯一真判据。
      */
     TEST(HttpObservability, RequestLogsCarryTheIncomingTraceId)

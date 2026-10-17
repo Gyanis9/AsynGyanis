@@ -288,7 +288,7 @@ namespace AsynGyanis::Database
             return;
         }
 
-        // 缓存的语句属于**当前这个**连接句柄：mysql_close 不会替我们关闭它们，留着就是服务端语句
+        // 缓存的语句属于当前这个连接句柄：mysql_close 不会替我们关闭它们，留着就是服务端语句
         // 与客户端内存双双泄漏；而重连之后拿旧语句去 execute 更是对已释放对象的访问。
         // 顺序必须是「先关语句、再关连接」，与 SQLite 驱动那条缓存纪律同一依据
         clearStatementCache();
@@ -534,7 +534,7 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
-        // 显式释放已读完的结果缓冲：正确性不依赖这一行（实测省掉它结果仍然对），要的是**及时**——
+        // 显式释放已读完的结果缓冲：正确性不依赖这一行（实测省掉它结果仍然对），要的是及时——
         // 缓存里的语句会长期活着，不释放就把整份结果的客户端内存一直占着。
         // 对 store_result 过的结果它只清本地缓冲，不再产生网络往返；万一失败，快照本身仍然有效
         // （数据已经搬走），只是这条语句不能再复用，弃掉即可，不因此把成功的一次查询改成失败
@@ -595,7 +595,7 @@ namespace AsynGyanis::Database
             return std::make_unique<MySqlResult>(nullptr, toAffectedRowCount(mysql_stmt_affected_rows(statement)), mysql_stmt_insert_id(statement));
         }
 
-        // 有返回列：**不** store_result——行留在服务端，此后按预取窗口逐批取回；列元数据取完即释放
+        // 有返回列：不 store_result——行留在服务端，此后按预取窗口逐批取回；列元数据取完即释放
         MYSQL_RES *rawMetadata = mysql_stmt_result_metadata(statement);
         if (rawMetadata == nullptr)
         {
@@ -847,7 +847,7 @@ namespace AsynGyanis::Database
         const char        *rawMessage  = mysql_stmt_error(statement);
 
         // 文本同样必须先拷贝再让调用方关闭语句：mysql_stmt_close 会释放该缓冲
-        // 成对写入：这条码来自**语句**句柄，与下面这句文本讲的是同一次失败；调用方据此
+        // 成对写入：这条码来自语句句柄，与下面这句文本讲的是同一次失败；调用方据此
         // 才能判「1213 死锁可重试 / 1062 唯一键冲突不可重试」，而不是去匹配中文
         m_lastError.assignNative(composeNativeErrorText(description, rawMessage != nullptr ? rawMessage : "", "客户端库未给出原因", errorNumber),
                                  static_cast<std::int64_t>(errorNumber));
@@ -1396,7 +1396,7 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::beginTransaction()
     {
-        // 已经在事务里就不再发这条语句：MySQL 的 START TRANSACTION 会先**隐式提交**上一条事务，
+        // 已经在事务里就不再发这条语句：MySQL 的 START TRANSACTION 会先隐式提交上一条事务，
         // 于是第二次 beginTransaction() 既回 true 又把没提交的工作做成了永久——SQLite 上同样这一次
         // 调用是失败的（BEGIN 在事务中报错），两条通道对「嵌套」的答复必须一致
         if (isTransactionOpenNow())
@@ -1553,7 +1553,7 @@ namespace AsynGyanis::Database
         }
 
         // 在途未清流：回复流停在中途，任何新语句都会与它交错（服务端回 Commands out of sync）。
-        // 在**发送之前**就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试
+        // 在发送之前就拒——语句一条都不发，因此这类拒绝不改变任何服务端状态，可以安全重试
         if (m_openStreamCount != 0)
         {
             m_lastError =

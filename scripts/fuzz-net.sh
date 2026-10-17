@@ -2,7 +2,7 @@
 # 用 libFuzzer 持续模糊各档协议解码器（Windows 与 Linux 两侧的可复现跑法）。
 #
 # 为什么不是「把项目里的 Net.lib 拿来链」：LLVM 官方 Windows 包里 compiler-rt 的 fuzzer 运行时是
-# 按**静态 CRT**（/MT）编的，而本仓的 MSVC 构建一律是 /MD——lld-link 会以
+# 按静态 CRT（/MT）编的，而本仓的 MSVC 构建一律是 /MD——lld-link 会以
 # `/failifmismatch: RuntimeLibrary` 直接拒绝混链。所以这里只编「模糊内核 + 各档解码器 + 它们的
 # 真实依赖闭包」这一小组翻译单元，整份产物自洽为 /MT，不碰项目里任何一份现成库。
 # 闭包是一项一项按链接器报的未定义符号补齐的（最后一项是 HttpDate 需要的 PlatformTime::utcTime），
@@ -114,7 +114,7 @@ sources=(
     "src/Net/Http3/Qpack.cpp"
     "src/Net/Http3/Http3Error.cpp"
     # permessage-deflate 档：协商解析与压缩/解压的包装。它包着 zlib（`<zlib.h>`），是本闭包里
-    # 唯一一份仓外**库**依赖——Linux 侧链 `-lz`，Windows clang-cl 侧用 ASYN_FUZZ_ZLIB_DIR 指路
+    # 唯一一份仓外库依赖——Linux 侧链 `-lz`，Windows clang-cl 侧用 ASYN_FUZZ_ZLIB_DIR 指路
     # （见文件头的跑法说明）
     "src/Net/WebSocket/PerMessageDeflate.cpp"
     # 出站响应解析器档：状态行/头部/chunked 三相位。头部规则与 HttpDate 已在上面对应位置列出

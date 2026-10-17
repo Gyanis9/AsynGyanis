@@ -33,7 +33,7 @@ set -euo pipefail
 #                       以上——那样红的就不是这条判据而是「runner 取消作业」。要加次数就连着
 #                       timeout-minutes 一起调
 #
-# 判据：报告里 behavior **或 behaviorClose** 为 FAILED 的条数必须为 0——两个字段是独立判词，
+# 判据：报告里 behavior 或 behaviorClose 为 FAILED 的条数必须为 0——两个字段是独立判词，
 # 只查 behavior 会漏掉「数据面全过、关闭握手不达标」那一类。默认排除 9.1.6 与 9.2.6——那两条发
 # 16 MiB 的消息，超本端单条消息 8 MiB 的上限，按 RFC 6455 §7.1.6 回 1009 收口属规范许可的拒绝，
 # Autobahn 却仍按「没收到回显」记 FAILED。要连它们一起看，AUTOBAHN_EXCLUDE= 传空即可。

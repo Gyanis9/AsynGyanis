@@ -179,7 +179,7 @@ namespace AsynGyanis::Core
          * @brief 探一次本机会不会把黑洞地址当真黑洞
          * @param runner 后台事件循环
          * @return true 单发一条黑洞候选会挂到时限（本组用例要的形态）；false 本机立刻回了不可达
-         * @details 这个探测是**必须的**：若本机对 192.0.2.1 立刻给 ICMP 不可达，「在途候选不拖住整场」
+         * @details 这个探测是必须的：若本机对 192.0.2.1 立刻给 ICMP 不可达，「在途候选不拖住整场」
          *          就没有鉴别力（顺序试法也能过）。与其让用例假绿，不如显式跳过并说明原因。
          */
         bool isBlackholePending(EventLoopThread &runner)
@@ -226,7 +226,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 第一条候选被内核直接拒绝时，第二条照样要连上
      * @details 这条只验「失败要往下试」，不涉及时序，因此在任何环境都成立。它同时钉住一件事：
-     *          交出的胜者是**连上的那一条**，而不是候选表的第一条。
+     *          交出的胜者是连上的那一条，而不是候选表的第一条。
      */
     TEST(ConnectionRace, FailsOverToTheNextCandidateWhenTheHeadIsRefused)
     {

@@ -65,7 +65,7 @@ namespace AsynGyanis::Database
         explicit SqliteResult(sqlite3_stmt *statement, sqlite3 *database = nullptr, std::optional<int> affectedRowCountOverride = std::nullopt);
 
         /**
-         * @brief 流式取数的构造：**跳过预扫描**，游标从首行开始由调用方逐行推进
+         * @brief 流式取数的构造：跳过预扫描，游标从首行开始由调用方逐行推进
          * @details executeStreaming 入口专用：不整趟遍历（不做行数统计、不存快照），大结果集的
          *          内存代价因此只有一行；代价是流式档语义——rowCount() 回 0 表示未知、
          *          isEmpty() 回 false，与网线驱动的流式档同一条口径。reset() 在本地游标上仍可重扫

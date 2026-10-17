@@ -338,7 +338,7 @@ TEST_F(SchemaMigrationsTest, SeedsOnlyTheMissingRowsAndIsIdempotent)
 /**
  * @brief 钉住空数据集不发语句：连表都不存在也返回成功
  * @details 「空列表 = 什么都不做」这条由下一层的 `insertBatch` 承诺（空集合直接返回 0、不产生任何
- *          语句），本用例把它端到端钉住。用一张**不存在的表**来判：真发了语句就一定失败，
+ *          语句），本用例把它端到端钉住。用一张不存在的表来判：真发了语句就一定失败，
  *          返回成功只能是「没发」
  */
 TEST_F(SchemaMigrationsTest, SeedsAnEmptyDataSetWithoutTouchingTheDatabase)
@@ -422,7 +422,7 @@ TEST_F(SchemaMigrationsTest, RejectsEmptyAndDuplicateStepNames)
 /**
  * @brief 钉住「一条迁移失败时，它自己做过的结构改动也被撤回」，且不留记账
  * @details 这条是「结构改动与记账同一笔事务」的可证形式：让第二条语句注定失败（往一条不存在的
- *          表上加列），那么第一条语句建出来的表必须**不在**——若实现是「一句一句直接发」，
+ *          表上加列），那么第一条语句建出来的表必须不在——若实现是「一句一句直接发」，
  *          第一句已经落库，表会留在那里，判据当场红。SQLite 与 PostgreSQL 的 DDL 可回滚，
  *          MySQL 不行（那一侧的例外写在 SchemaMigrator::migrate() 的 @warning 里）
  * @note 失败之后迁移表里不能有这条的记录：否则下次会跳过它，结构永远缺一块

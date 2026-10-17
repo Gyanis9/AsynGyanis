@@ -628,7 +628,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住 C.6.1–C.6.3：同一批响应改用 Huffman 编码，动态表演进与 C.5.x 完全一致
-     * @details 规范特意说明：驱逐用的是**解码后**的字面量长度，因此 Huffman 不会改变表状态。
+     * @details 规范特意说明：驱逐用的是解码后的字面量长度，因此 Huffman 不会改变表状态。
      */
     TEST(Hpack, DecodesRfc7541C61ToC63ResponseSequenceWithHuffman)
     {
@@ -681,7 +681,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住编码器逐字节复现 RFC 7541 C.5.1–C.5.3 的三个响应头块
-     * @details 构造时就把表上限定为 256：这是连接上**已经约定好**的初始上限（等于对端通告的
+     * @details 构造时就把表上限定为 256：这是连接上已经约定好的初始上限（等于对端通告的
      *          SETTINGS_HEADER_TABLE_SIZE），因此头块开头不需要再补「动态表大小更新」，
      *          编出来的字节与规范示例逐字节相同。
      */
@@ -1227,7 +1227,7 @@ namespace AsynGyanis::Net
      * @brief 钉住：整数表示在「恰好等于前缀最大值」时转成续编码，而不是塞进首字节
      * @details RFC 7541 §5.1 的判据是 `value < 2^N-1` 才留在前缀内；等于最大值时首字节填
      *          那个最大值、再续写 `value - 最大值`（对 7 位前缀就是 `7F 00`）。把 `<` 写成 `<=`
-     *          在常见长度的头部名上看不出差别——只有取值**正好**卡在边界上才暴露，而既有用例
+     *          在常见长度的头部名上看不出差别——只有取值正好卡在边界上才暴露，而既有用例
      *          用的是 10 / 1337 / 42 / 2 四个数，都不落在边界上。期望值按 §5.1 手算。
      */
     TEST(Hpack, IntegerEncodingStaysInsidePrefixOnlyBelowItsMaximum)

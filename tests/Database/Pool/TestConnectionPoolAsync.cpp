@@ -1,7 +1,7 @@
 // 连接池异步获取测试 —— 挂起/唤醒的线程归属与快慢两条路径。
-// 盯住一条容易被忽略、却在真机上才会暴露的性质：**协程在哪个线程上恢复**。池满时 `acquireAsync()` 挂起，
+// 盯住一条容易被忽略、却在真机上才会暴露的性质：协程在哪个线程上恢复。池满时 `acquireAsync()` 挂起，
 // 归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`（`Scheduler::scheduleRemote`），
-// 因此恢复后的代码仍运行在那个事件循环线程上；本文件断言恢复线程 == 事件循环线程，且**不等于**调用线程。
+// 因此恢复后的代码仍运行在那个事件循环线程上；本文件断言恢复线程 == 事件循环线程，且不等于调用线程。
 // 覆盖场景：
 // - AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
 // - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
@@ -167,7 +167,7 @@ namespace AsynGyanis::Database
         // 无可用连接且已达上限：协程应停在挂起点上
         ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
 
-        // 在**调用线程**上归还连接：唤醒动作由这里发起，但恢复必须发生在循环线程上
+        // 在调用线程上归还连接：唤醒动作由这里发起，但恢复必须发生在循环线程上
         occupyingConnection.release();
 
         ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }));
@@ -477,7 +477,7 @@ namespace AsynGyanis::Database
      * @brief 驱动协程：先占住唯一一条连接，再等第二条（池已满，必然挂起），恢复后把第一条还回去
      *
      * @details 「占着连接等第二条」正是析构期就地恢复最危险的组合：析构会锁着存活令牌锁恢复等待者，
-     *          而本协程恢复后立刻归还连接——归还路径要锁**同一把非递归锁**；析构若不把锁收到置假
+     *          而本协程恢复后立刻归还连接——归还路径要锁同一把非递归锁；析构若不把锁收到置假
      *          那一步为止，本协程就会在同线程上二次加锁、永久挂住。
      */
     Core::Task<void> probeHoldFirstThenWaitSecond(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe)
@@ -497,7 +497,7 @@ namespace AsynGyanis::Database
     /**
      * @brief 钉住：池析构时唤醒的等待者可以安全地归还手里的连接（不得同线程死锁）
      * @details 归还路径「判活 + 调池」都在存活令牌锁内完成，析构则在同一把锁下置假——
-     *          因此那把锁**只能覆盖置假这一步**。一旦它跨到析构末尾的就地恢复点上，
+     *          因此那把锁只能覆盖置假这一步。一旦它跨到析构末尾的就地恢复点上，
      *          被恢复的协程在归还连接时就会对同一把非递归锁二次加锁：本用例会直接挂死。
      */
     TEST(ConnectionPoolAsync, DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection)
@@ -533,7 +533,7 @@ namespace AsynGyanis::Database
      * @brief 钉住：连接已交接、恢复尚未执行时销毁 Task，不得 resume 已释放的协程帧
      * @details 交接把「恢复这次等待」投回事件循环，而调用方在那之后随时可能销毁 Task——协程帧连同
      *          等待器一起析构，恢复动作必须只经持票句柄执行，不能拿裸句柄去 resume 已释放的内存。
-     *          用例用一个**不启动**的循环把这次恢复留在队列里，销毁 Task 之后再手动排空队列。
+     *          用例用一个不启动的循环把这次恢复留在队列里，销毁 Task 之后再手动排空队列。
      */
     TEST(ConnectionPoolAsync, DiscardingTaskAfterHandoffDoesNotResumeFreedFrame)
     {
@@ -778,13 +778,13 @@ namespace AsynGyanis::Database
      *          不止一次分配：票据的 `make_shared`、deque 首次插入的块。两家的标准库在这一步给的次数
      *          与字节数都不同（MSVC Debug 实测挂起窗口四笔，libstdc++ 连四笔都不到），所以坐标不写死：
      *          先用探针的追踪档量出「挂上开关到 resume 返回」这段窗口里本线程碰了几次堆，再逐档各掐一遍。
-     * @details 这一例真正钉的是**标记那一格**：`acquireAsync()` 外面套着 `while(true)` 重挂，兜底只回
+     * @details 这一例真正钉的是标记那一格：`acquireAsync()` 外面套着 `while(true)` 重挂，兜底只回
      *          `false` 而不留标记时，调用方会立刻另造一个等待体重走这一步——修复前实测掐中票据那一次
      *          之后等待表里仍然出现一条等待体，也就是内存持续吃紧时它在调用方的线程上空转到截止时刻。
      *          留了标记之后 `acquireAsync()` 按空手结账，并且不记进超时账（截止时刻根本没到，记成
      *          超时会把「池不够用」这个容量信号打成假的）。
-     * @note 判据不是「没崩」，也不是「掐中了第几次」。逐档跑下来断的是同一条不变量：**掐到分配却没
-     *       留下等待体**——`掐到了 + 表里有一条 + 调用方没往下走` 正是「兜底之后被重挂」的形状，出现即红。
+     * @note 判据不是「没崩」，也不是「掐中了第几次」。逐档跑下来断的是同一条不变量：掐到分配却没
+     *       留下等待体——`掐到了 + 表里有一条 + 调用方没往下走` 正是「兜底之后被重挂」的形状，出现即红。
      *       掐在协程帧那一步时异常由驱动协程的 promise 收下（当场既没有等待体也没完成），那是本例
      *       管不到的另一件事，不算违例。落在 try 里的那些档给出更强的读数：当场完成、手里是空连接、
      *       没记进超时账、借出与建连两格都不动。收尾那一格自证真的掐进了 try——否则本用例在

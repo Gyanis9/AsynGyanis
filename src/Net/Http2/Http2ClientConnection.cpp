@@ -341,7 +341,7 @@ namespace AsynGyanis::Net
                                        std::format("对端 SETTINGS 的 INITIAL_WINDOW_SIZE 取值 {} 超过上限 2^31-1（RFC 9113 §6.5.2）", setting.value));
                         return false;
                     }
-                    // §6.9.2：改了初值要按差值追溯地调整**每一条在途流**的窗口，否则新旧几条流按两套账
+                    // §6.9.2：改了初值要按差值追溯地调整每一条在途流的窗口，否则新旧几条流按两套账
                     // 算；平移之后越过上限同样是流控错误（对端把窗口"改大到装不下"也是它挑的）
                     const std::int64_t deltaByteCount = static_cast<std::int64_t>(setting.value) - static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
                     for (auto &entry: m_pendingStreams)
@@ -585,7 +585,7 @@ namespace AsynGyanis::Net
         PendingStream &stream = iterator->second;
         if (stream.isResponseComplete)
         {
-            // 与 DATA 那一支同一条法：尾部头块（trailers）必须在它自己的 END_STREAM **之前**到，
+            // 与 DATA 那一支同一条法：尾部头块（trailers）必须在它自己的 END_STREAM 之前到，
             // 收齐之后再来的头块就不是尾部，而是对一条已关闭的流动手脚（§5.1「closed」段）
             failConnection(Http2ErrorCode::StreamClosed, std::format("流 {} 已收到 END_STREAM 又来 HEADERS：RFC 9113 §5.1「closed」段要求按连接错误 "
                                                                      "STREAM_CLOSED 处理",
@@ -608,7 +608,7 @@ namespace AsynGyanis::Net
             stream.isPendingEndStream = payload.endStream;
             return true;
         }
-        // §6.2 的第二条畸形判据是**帧级**的（最终状态码之后再来一段不带 END_STREAM 的头块），
+        // §6.2 的第二条畸形判据是帧级的（最终状态码之后再来一段不带 END_STREAM 的头块），
         // 判得出就不用把它的字段落进响应记录；解码本身照做，HPACK 的动态表是连接级的
         if (!finishHeaderBlock(stream, !(hadFinalStatusBefore && !payload.endStream)))
         {
@@ -695,7 +695,7 @@ namespace AsynGyanis::Net
             return true;
         }
         stream.response.isAnyByteReceived = true;
-        // 上限按**累计**收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话一道闸门
+        // 上限按累计收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话一道闸门
         // 就只剩「一次能堆多大」，对端可以一直发下去
         stream.receivedBodyByteCount += payload.data.size();
         if (m_config.maximumResponseBodyBytes != 0U && stream.receivedBodyByteCount > m_config.maximumResponseBodyBytes)
@@ -793,7 +793,7 @@ namespace AsynGyanis::Net
             m_connectionSendWindowByteCount += static_cast<std::int64_t>(payload.windowSizeIncrement);
             if (m_connectionSendWindowByteCount > static_cast<std::int64_t>(kHttp2MaximumWindowSizeByteCount))
             {
-                // 连接级窗口越界是**连接**的账坏了：§6.9.1 要求按连接错误 FLOW_CONTROL_ERROR 收口
+                // 连接级窗口越界是连接的账坏了：§6.9.1 要求按连接错误 FLOW_CONTROL_ERROR 收口
                 failConnection(Http2ErrorCode::FlowControlError, "连接级流控窗口越过 31 位上界（RFC 9113 §6.9.1）");
                 return false;
             }
@@ -1020,7 +1020,7 @@ namespace AsynGyanis::Net
         {
             // 调用方另塞了一份 Host 时丢掉它：本端每条请求都带 :authority，而 RFC 9113 §8.3.1 要客户端
             // 不得生成两者取值不同的请求。经 `HttpClient` 来的这一支在上层就按「保留头部」拒了，
-            // 这道闸门护的是**直接用本类**的调用方——本类的入参没有任何地方保证 host 与 authority 同源
+            // 这道闸门护的是直接用本类的调用方——本类的入参没有任何地方保证 host 与 authority 同源
             if (equalsIgnoringCase(header.first, "host"))
             {
                 continue;
@@ -1211,7 +1211,7 @@ namespace AsynGyanis::Net
     void Http2ClientConnection::close() noexcept
     {
         m_isHealthy = false;
-        // 这里**不清**在途流的记录：每条流的记录由提起它的那个请求协程自己收走（它可能正拿着这条记录的
+        // 这里不清在途流的记录：每条流的记录由提起它的那个请求协程自己收走（它可能正拿着这条记录的
         // 引用跨 co_await，就地清掉等于把引用悬空）。本端判死之后所有等待方都会因 isHealthy() 转假而收尾
         m_transport->close();
         // 挂在这条连接上的请求协程不需要在这里叫：它们都是挂在「驱动者」身上等的，而通路一关，正在

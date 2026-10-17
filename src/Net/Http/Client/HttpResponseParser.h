@@ -66,7 +66,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 正文默认上限：与服务端请求解析器同一量级（8 MiB）
          * @details 客户端同样需要这道闸：chunked 与「读到连接关闭」两种定界方式下，
-         *          正文长度由**对端**说了算，没有上限就是让对端决定本进程分配多少内存
+         *          正文长度由对端说了算，没有上限就是让对端决定本进程分配多少内存
          */
         static constexpr std::size_t kDefaultMaximumBodySize = HttpParserLimits{}.maximumBodySize;
 
@@ -145,7 +145,7 @@ namespace AsynGyanis::Net
          * @param target 取回的字节（调用方的旧内容被覆盖）
          * @return std::size_t 取回的字节数
          * @details 给「边到边交」的接收口用：正文不必整份攒在本端内存里，交完一段就腾出来，
-         *          于是**峰值占用是一段的大小而不是整条响应的**。上限照旧按累计收到的字节判
+         *          于是峰值占用是一段的大小而不是整条响应的。上限照旧按累计收到的字节判
          *          （见 `isAccumulatedBodyOverLimit()`），所以取走字节绝不会把上限掏空。
          */
         std::size_t takeBodyBytes(std::string &target);
@@ -233,7 +233,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isAccumulatedBodyOverLimit() const noexcept
         {
-            // 按**累计收到**的字节判，不按「还留在缓冲里多少」判：接收口可以逐段把字节取走
+            // 按累计收到的字节判，不按「还留在缓冲里多少」判：接收口可以逐段把字节取走
             // （takeBodyBytes），留着的字节会一直很小，用缓冲大小当上限等于把闸门拆了
             return exceedsBudget(m_receivedBodyByteCount, m_maximumBodySize);
         }

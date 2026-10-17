@@ -60,7 +60,7 @@ namespace
         std::string   echoPrefix{"pong:"}; ///< 回显正文的前缀
         std::string   abortMarker{};       ///< 命中该正文即按错误码收口这条流；空即不启用
         std::uint64_t abortCode{0x010BU};  ///< 收口用的应用错误码（RFC 9114 §8.1 的一档）
-        std::string   largeReplyMarker{};  ///< 命中该正文即回一大块**不收口**的数据
+        std::string   largeReplyMarker{};  ///< 命中该正文即回一大块不收口的数据
         std::size_t   largeReplyBytes{2U * 1024U * 1024U};
         std::size_t   perIpLimit{0U}; ///< 单来源并发上限，0 表示不限
         /// 地址验证令牌的有效期秒数：0＝不开这项保护；大于 0＝每个新连接的第一个 Initial 都先吃一条 Retry

@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
         bool isAnyByteReceived{false};
         /// 这条流上有没有把字节写上过通路（只在写成功之后置位）
         bool isAnyByteSent{false};
-        /// 对端有没有**保证**这条请求没被处理过：RFC 9114 §5.2 的 H3_REQUEST_REJECTED（「The client can
+        /// 对端有没有保证这条请求没被处理过：RFC 9114 §5.2 的 H3_REQUEST_REJECTED（「The client can
         /// treat requests rejected by the server as though they had never been sent at all, thereby allowing
         /// them to be retried later」），以及 GOAWAY 通告值及以上的那些流（§7：「those requests will not be
         /// processed. Clients can safely retry unprocessed requests on a different HTTP connection」）。
@@ -148,7 +148,7 @@ namespace AsynGyanis::Net
          * @param waitTimeout 本次请求的整体时限（写出、等响应头、收完正文三段之和）
          * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body
          * @return Http3ClientResponse 响应；失败时 errorMessage 给出断在哪一段
-         * @warning 时限到点是**收掉整条连接**而不是只弃这条流：本层不替调用方揣测「同一条连接上别的
+         * @warning 时限到点是收掉整条连接而不是只弃这条流：本层不替调用方揣测「同一条连接上别的
          *          请求还要不要」。因此复用一条连接时，超时的那一次会连带让其它在途请求拿不到答案，
          *          调用方按「对端在我们手里把连接收了」那一支重来即可。
          */
@@ -178,7 +178,7 @@ namespace AsynGyanis::Net
          * @details RFC 9114 §5.2：H3_REQUEST_REJECTED 的意思是「A server rejected a request without performing
          *          any application processing」，客户端「can treat requests rejected by the server as though
          *          they had never been sent at all」；同节还规定服务端 MUST NOT 对已部分或全部处理过的请求
-         *          用这个码。本端再加一道自己的防御：**收到过任何响应字节就不认**——对端答过话又说没处理，
+         *          用这个码。本端再加一道自己的防御：收到过任何响应字节就不认——对端答过话又说没处理，
          *          那是它违规，不能拿它的话把非幂等请求做两遍。别的码（H3_REQUEST_CANCELLED、
          *          H3_INTERNAL_ERROR 等）都不带这个保证，按「可能已经执行过」处置
          * @param errorCode 这条流收场时的 h3 错误码：对端复位给的那个，或本端收到 GOAWAY 后判掉在途流时用的那个
@@ -189,7 +189,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 承载层报来的一次「对端打断了这条流」算不算「保证没处理过」
-         * @details 就是上面那条判据再加一道形状闸：§7 给的是「服务端**复位**这条流并带上
+         * @details 就是上面那条判据再加一道形状闸：§7 给的是「服务端复位这条流并带上
          *          H3_REQUEST_REJECTED」，而 STOP_SENDING 说的是「对端不再收本端这条流上的字节」，
          *          它带的码是「请对端在 RESET_STREAM 里用这个码」（RFC 9000 §19.5），不是对端对
          *          「处理没处理过」的表态。把叫停也当成保证，等于让一次「服务端不想再收正文」
@@ -247,7 +247,7 @@ namespace AsynGyanis::Net
         void notePeerAbortedStream(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
 
         /**
-         * @brief 取这条流在途的账；已经不认的流交出空条目，**不新建记录**
+         * @brief 取这条流在途的账；已经不认的流交出空条目，不新建记录
          * @details 请求协程收口时会把这条流的账摘掉，而对端在途的字节还能后到（本端刚结掉一条流，
          *          STOP_SENDING 至少还要一个来回才到）。那时按 `m_pendingStreams[id]` 取就会凭空
          *          立一条谁也不会再摘掉的记录——在途数从此再也回不到 0，链路看着一直被人用着。
@@ -276,12 +276,12 @@ namespace AsynGyanis::Net
     /**
      * @brief 一条出站 h3 链路的持有对：QUIC 连接与 h3 会话同生同灭
      *
-     * @details 存在的理由是**共同持有**。`Http3ClientConnection` 只借用它的 QUIC 连接（不拥有），
+     * @details 存在的理由是共同持有。`Http3ClientConnection` 只借用它的 QUIC 连接（不拥有），
      *          而出站池要把一条可复用的 h3 连接交给多个在途请求共同持有——把两份所有权分开交出去，
      *          就会出现「会话还在人手里、底下的 QUIC 连接先被释放」那种踩空。成对构造、成对释放，
      *          拿到 shared_ptr 的人就同时保住两层。
      *
-     * @note 成员声明顺序承担一件不看代码想不到的事：会话必须比它的 QUIC 连接**先**销毁（它持有那个
+     * @note 成员声明顺序承担一件不看代码想不到的事：会话必须比它的 QUIC 连接先销毁（它持有那个
      *       引用），而成员是按声明逆序销毁的，所以会话排在后面。改动这两个成员的次序是会崩的。
      * @warning 只能在所属事件循环线程上用（与 `Http3ClientConnection` 同一份线程契约）。
      */
@@ -304,7 +304,7 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 握一条 QUIC 连接并把 h3 层起起来（三条本端单向流 + SETTINGS）
-         * @param serverAddress 目标地址。**按值收**：本方法是惰性协程，收引用会把「调用方传的临时量」
+         * @param serverAddress 目标地址。按值收：本方法是惰性协程，收引用会把「调用方传的临时量」
          *        （如 `resolve(...).value()`）留到协程恢复时再用，那是悬空引用（实测 ASan 报过
          *        stack-use-after-scope）
          * @return true 这条链路已经可以提请求

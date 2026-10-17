@@ -212,7 +212,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 状态码文本只认「恰好三位十进制」，形状不合一律交回空而不是折出一个数
      * @details 三条客户端通路（h1 状态行、h2 与 h3 的 `:status` 伪头）共用这一处判据。折数的后果
-     *          不是数字差一点，而是**造出一个报文里没写过的状态码**：`atoi("abc")` 是 0、
+     *          不是数字差一点，而是造出一个报文里没写过的状态码：`atoi("abc")` 是 0、
      *          `strtoul("20")` 是 20、`atoi("2000")` 是 2000，上层按「2xx 才算成功」分支时
      *          假号与真号长得一模一样。这里刻意不判范围（100..999 之外仍交回数值）：
      *          取值是否可用由各通路自己的语义判（隧道只认 2xx），本层只保证「号是报文里那个号」。
@@ -262,7 +262,7 @@ namespace AsynGyanis::Net
      * @brief 忽略大小写的子串查找：只折 ASCII，且按「找得到」的方向出错
      * @details 出站复用判据靠它认响应里的 `Connection: close`（RFC 9110 §5.1 说字段名大小写不敏感、
      *          §7.6.1 的 connection-option 是 token，token 比较同样不看大小写）。此前那一处写的是
-     *          **大小写敏感**的 `find("close")`，于是对端或中转写 `Connection: Close` 时本端把这条已经
+     *          大小写敏感的 `find("close")`，于是对端或中转写 `Connection: Close` 时本端把这条已经
      *          宣布要收的连接还回池里，下一条请求撞上去：幂等方法靠重来兜住，非幂等方法白失败一次。
      *          端到端证不出这一格——自家服务端会照自己的口径把连接收掉，两种写法在线上长得一样，
      *          突变实测那条端到端用例两种实现都绿——所以判据落在这个共用助手上
@@ -289,10 +289,10 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(containsIgnoringCase(highByteText, highByteText));
     }
     /**
-     * @brief 钉住列表型字段值那**一份** token 扫描：切分、裁 OWS、整段全等
+     * @brief 钉住列表型字段值那一份 token 扫描：切分、裁 OWS、整段全等
      * @details 头部的 `Connection`/`Vary` 与条件请求的验证器列表现在都走 `anyTokenInList` 与它的
      *          「相等」特化 `containsFieldValueToken`（此前是分三处各写一遍的同一件事）。判据把这类扫描
-     *          最容易分叉的几点各自钉住：逗号两侧的 SP 与 HTAB 都要裁、比较是**整段全等**而不是
+     *          最容易分叉的几点各自钉住：逗号两侧的 SP 与 HTAB 都要裁、比较是整段全等而不是
      *          前缀或子串、空段不吃掉后面的段、空 token 不算命中、只在列表里比而不是拿整值比。
      * @note 证伪：把裁空白改成只裁空格（不裁 HTAB），红在 `\tupgrade\t` 那一格；把整段比较换成
      *       `containsIgnoringCase`，红在「`keep` 不该命中 `keep-alive`」那一格；把空段跳过写成

@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 # 两个流固定按 UTF-8 写：这张矩阵的表头与提示都是中文，而 Windows 侧的默认编码可能是 cp1252
-# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，会在**跑完全部示例之后**
+# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，会在跑完全部示例之后
 # 当场抛 UnicodeEncodeError 退 1——看上去像「有示例失败」，实际只是汇总没打印出来，整条判据废掉。
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -47,7 +47,7 @@ SMOKE_ONLY = {"ReferenceServer"}
 def infer_module(name: str) -> str:
     """按名字前缀归组；归不进已知模块时落到 other，让矩阵自己把「这个示例没归组」暴露出来。
 
-    取**最长**匹配：程序名没有分隔符可切，`PlatformPrimitives` 的首段是 `Platform`，而
+    取最长匹配：程序名没有分隔符可切，`PlatformPrimitives` 的首段是 `Platform`，而
     `ReferenceServer` 要靠 `Reference` 才归得到 Net——按最短前缀匹配会把两者都读成 other。
     """
     matched = [prefix for prefix in MODULE_BY_PREFIX if name.startswith(prefix)]
@@ -83,7 +83,7 @@ def find_sample_executables(build_dir: Path) -> list[Path]:
 def targets_known_to_build(build_dir: Path) -> set[str] | None:
     """问构建系统「这一份配置到底产出哪些示例」；问不出来返回 None（退回按目录里有什么跑）。
 
-    只按目录 glob 会把**已从构建清单里删掉或按平台关掉**的示例的残留可执行文件也算一份证据——那份
+    只按目录 glob 会把已从构建清单里删掉或按平台关掉的示例的残留可执行文件也算一份证据——那份
     二进制属于上一轮配置，跑它得出的红或绿都不属于当前这份代码（实测：Windows 上关掉的 CoreUpgrade
     留着一份 .exe，矩阵因此白红两条）。反过来，配置里有、目录里却没有的可执行文件也不能当没看见：
     那正是「示例根本没跑」的形态，门禁要出声。

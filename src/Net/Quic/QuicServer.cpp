@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
         /// 而这类错误的发生率本身就受对端控制（见收包循环里的说明）
         constexpr std::chrono::seconds kReceiveErrorLogWindow{10};
 
-        /// 单来源限额拒绝的放行间隔：**每个被拒的 Initial 一条**就是一条报文一条日志，
+        /// 单来源限额拒绝的放行间隔：每个被拒的 Initial 一条就是一条报文一条日志，
         /// 而且被拒的连接不进别名索引，握手重传会以新 Initial 反复走到这里——不压就是远端可驱动的刷屏面
         constexpr std::chrono::seconds kPerIpRejectionLogWindow{10};
 
@@ -116,7 +116,7 @@ namespace AsynGyanis::Net
          * @brief ALPN 选择回调：只接受 HTTP/3
          * @details 协商不出 h3 就按致命告警终止握手——放行别的协议会让后续按 h3 解析的字节流对不上，
          *          不如在握手期就明确拒绝。
-         * @note 递给 SSL_select_next_proto 的服务端列表必须是**线格式**（首字节是长度、后面是协议名），
+         * @note 递给 SSL_select_next_proto 的服务端列表必须是线格式（首字节是长度、后面是协议名），
          *       只给裸 "h3" 一个字节串它永远匹配不上——握手会停在 ALPN 这一步
          */
         int selectApplicationProtocol(SSL *, const unsigned char **out, unsigned char *outLength, const unsigned char *clientList, const unsigned int clientListLength, void *)
@@ -137,7 +137,7 @@ namespace AsynGyanis::Net
          * @brief 把 TLS 策略落到 QUIC 服务端这份 SSL_CTX 上，并把版本钉在 TLS 1.3
          * @details 先施加策略再钉下限，顺序反过来会得到一份「策略说了话而没人听」的配置：策略里的
          *          安全等级、1.3 套件、命名曲线都还在，唯独版本被后面那一句覆盖掉。下限低于 1.3 时
-         *          钉回 1.3 只会更严，不算对配置说谎；把**上限**压到 1.3 以下则是 QUIC 满足不了的
+         *          钉回 1.3 只会更严，不算对配置说谎；把上限压到 1.3 以下则是 QUIC 满足不了的
          *          要求，这里当场拒掉而不是悄悄改回去——配置说的是「我最多说到 1.2」，实际却在 1.3 上
          *          服务，两边说法不一致，比启动失败难查得多。
          * @param context 目标 SSL_CTX，所有权不归本函数
@@ -175,7 +175,7 @@ namespace AsynGyanis::Net
         m_serverLimits(m_configuration.serverLimits == nullptr ? std::make_shared<const HttpServerLimits>() : m_configuration.serverLimits),
         m_parserLimits(m_configuration.parserLimits), m_adoptedSocket(std::move(adoptedBoundSocket)), m_expiryTicker(eventLoop)
     {
-        // 不合格就抛，且这一判据排在**创建 TLS 上下文之前**：构造期抛出之后析构不会跑，而这份上下文
+        // 不合格就抛，且这一判据排在创建 TLS 上下文之前：构造期抛出之后析构不会跑，而这份上下文
         // 一旦 release() 交接给成员就没人认领了（实测把本判据挪到那句交接之后，容器 LSan 报出
         // SSL_CTX_new 那一块 1784 字节的直接泄漏）。空对象的两种来历指向同一件事——调用方手里的
         // bindTo 或 adopt 已经失败
@@ -465,7 +465,7 @@ namespace AsynGyanis::Net
         // 地址走，IPv6 监听要按 sockaddr_in6 读
         const std::uint16_t boundPort = Core::InetAddress(boundAddress.storage, boundAddress.length).port();
 
-        // 建连接时要拿本端地址写进回包，必须用**绑定后**的地址（端口给 0 时只有内核知道
+        // 建连接时要拿本端地址写进回包，必须用绑定后的地址（端口给 0 时只有内核知道
         // 实际端口）。漏掉这一步日志与诊断里看到的就是一条全零地址
         m_localSocketAddress = boundAddress;
 
@@ -507,7 +507,7 @@ namespace AsynGyanis::Net
             {
                 // 「对端已经不在了」那一类 socket 错误（Windows 的 WSAECONNRESET、Linux 的
                 // EHOSTUNREACH/ECONNREFUSED）是 ICMP 替某个已消失的对端捎来的回声：报文层面没改变本端
-                // 任何状态，套接字还能用。这里必须**继续读**而不是退出——退出等于让一个消失的对端把整台
+                // 任何状态，套接字还能用。这里必须继续读而不是退出——退出等于让一个消失的对端把整台
                 // 服务器变成不再接受任何来源（端口还在、进程还在、只是没人再读报文）
                 if (received.socketErrorCode != 0 && m_socket->isValid() && !m_isStopped.load(std::memory_order_acquire))
                 {
@@ -941,7 +941,7 @@ namespace AsynGyanis::Net
         }
 
         // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。最后一个参数是
-        // **短头报文的 DCID 长度**：短头不带这个长度字段，必须告诉解码器本端自己的连接标识有多长，
+        // 短头报文的 DCID 长度：短头不带这个长度字段，必须告诉解码器本端自己的连接标识有多长，
         // 否则它会把包号的头几字节也算进标识，从 1-RTT 起每条报文都命不中路由表
         const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
         if (!decodedHeader.has_value())
@@ -1115,7 +1115,7 @@ namespace AsynGyanis::Net
             std::string           packet;
             const QuicRetryPacket retryPacket{
                     .originalDestinationConnectionId = header.destinationConnectionId,
-                    // 线上目的标识抄这条 Initial 的**源**标识（§17.2.5.1）：客户端按那一格认领回包，
+                    // 线上目的标识抄这条 Initial 的源标识（§17.2.5.1）：客户端按那一格认领回包，
                     // 它自报过标识却收到一条目的标识为空的 Retry，只会把这条当成无主报文丢掉
                     .destinationConnectionId = header.sourceConnectionId,
                     .sourceConnectionId      = std::span<const std::uint8_t>(retrySourceConnectionId),
@@ -1163,7 +1163,7 @@ namespace AsynGyanis::Net
         {
             co_return;
         }
-        // 尺寸三条判据一起看（§10.3 与 §10.3.3）：比触发报文**小**（减一字节即满足；循环里尺寸一路衰减，
+        // 尺寸三条判据一起看（§10.3 与 §10.3.3）：比触发报文小（减一字节即满足；循环里尺寸一路衰减，
         // 小到 21 字节以下就自然停住，本端因此不必为防循环维护任何状态）、不小于图 10 的下限 21 字节、
         // 也不超过本端的数据报基准尺寸（更大的触发报文不替对端放大字节）
         constexpr std::size_t kMinimumStatelessResetByteLength = 21; // 38 位不可预测位 + 128 位令牌（§10.3 图 10）
@@ -1224,7 +1224,7 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // §17.2.1 的映射：回包的目的标识抄收到报文的**源**标识、回包的源标识抄收到报文的**目的**标识。
+        // §17.2.1 的映射：回包的目的标识抄收到报文的源标识、回包的源标识抄收到报文的目的标识。
         // 两条一起回显是给客户端的凭据——只有一条对得上的话，一个没看见 Initial 的旁观者也造得出来
         const std::array<std::uint32_t, 1> supportedVersions{kQuicVersion1};
         const std::vector<std::uint8_t>    packet = buildQuicVersionNegotiationPacket(request->sourceConnectionId, request->destinationConnectionId, supportedVersions);
@@ -1497,7 +1497,7 @@ namespace AsynGyanis::Net
             }
             reapClosedConnections();
 
-            // 名额归因镜像在本拍收尾处、**摘除之后**重算：握手完成点埋在状态机内部，在插入/摘除
+            // 名额归因镜像在本拍收尾处、摘除之后重算：握手完成点埋在状态机内部，在插入/摘除
             // 以外再散布加减迟早漏一处；排在摘除之后，最后一条离表当拍镜像就归零——放在拍首会让
             // 「已摘除但还没重算」的窗口里读到 1 而在线数已是 0（相减回绕成负值）
             {

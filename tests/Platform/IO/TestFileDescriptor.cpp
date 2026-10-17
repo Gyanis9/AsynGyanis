@@ -42,7 +42,7 @@ namespace AsynGyanis::Platform
     /**
      * @brief 钉住：无效描述符这三条拒掉的入口，要把「为什么拒」留在 PlatformError 里
      * @details 本接口的失败语义写成「-1，原因见 PlatformError」，而原先只有长度超限那一条置了码：
-     *          描述符无效时直接返回，调用方查到的码属于**上一次别的调用**——报出来的原因是假的。
+     *          描述符无效时直接返回，调用方查到的码属于上一次别的调用——报出来的原因是假的。
      *          判据刻意取「先把码清成 0、再问它」：不这么写的用例在实现不置码时也会蒙对。
      *          取值与 Socket::writeVectored 对齐（无效描述符与超限长度同归 kInvalidArgument），
      *          PlatformError 没有 EBADF 一档，两平台要给出同一个数就只能用这一个。
@@ -257,7 +257,7 @@ namespace AsynGyanis::Platform
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：长度大到会回绕成小正数时，读写按失败收口而不是「搬了 0 字节」
-     * @details recv/send 的长度形参是 int。刻意取 4 GiB 这个形状：它回绕之后是**正数 0**，
+     * @details recv/send 的长度形参是 int。刻意取 4 GiB 这个形状：它回绕之后是正数 0，
      *          于是系统调用正常返回 0 —— 读侧与「对端关闭/暂无数据」同形，写侧看起来是「一个字节都没
      *          发出去但没报错」，两种都不会被调用方察觉。取 INT_MAX+1 那种回绕成负数的形状反而测不出
      *          问题（系统调用自己就会报错），所以这里要量的正是「回绕后仍合法」那一类。

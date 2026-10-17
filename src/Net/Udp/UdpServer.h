@@ -37,11 +37,11 @@ namespace AsynGyanis::Net
      *          把报文路由给各条连接；本类没有连接这一层，一条报文就是全部输入，回包发往来路。
      *          适合发现广播、遥测上报、单请求单响应这类本就无连接的数据报协议。
      *
-     * @warning **报文串行处理**：上一条的处理器没跑完，下一条就留在内核队列里。这是刻意的取舍——
+     * @warning 报文串行处理：上一条的处理器没跑完，下一条就留在内核队列里。这是刻意的取舍——
      *          并发派发要把每条报文复制一份（每条一次堆分配），而慢处理器配上无限扇出等于把内存
      *          交给对端。处理器里放耗时工作时会堵住整个监听，耗时项请自行投递到别处再回来。
      *
-     * @warning 线程契约与其它循环对象一致：本类只在**所属事件循环线程**上创建、使用与关闭。
+     * @warning 线程契约与其它循环对象一致：本类只在所属事件循环线程上创建、使用与关闭。
      *          外部线程要停它，把 `stop()` 投递过去（`scheduler().postRemote()`），不要直接调。
      */
     class ASYN_NET_API UdpServer
@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 报文处理器：收到一条报文时调用，交回要发给来源的字节
          * @param sourceAddress 报文来源地址（回包就发往这里）
-         * @param payload 报文净字节；指向本服务端的收包缓冲，**只在本协程跑完之前有效**，
+         * @param payload 报文净字节；指向本服务端的收包缓冲，只在本协程跑完之前有效，
          *        不得留到之后使用（串行派发保证这期间不会有下一条报文覆盖它）
          * @return 要发回的字节；空表示不作答（零长报文与不作答是两件事，见 listen() 的说明）
          */
@@ -96,7 +96,7 @@ namespace AsynGyanis::Net
         UdpServer(Core::EventLoop &eventLoop, Configuration configuration);
 
         /**
-         * @brief 建一台**接手别人已经绑好的数据报套接字**的服务端（跨进程共享一条 UDP 端口那一步）
+         * @brief 建一台接手别人已经绑好的数据报套接字的服务端（跨进程共享一条 UDP 端口那一步）
          * @param eventLoop 所属事件循环
          * @param configuration 配置（按值收：此后不再读调用方那份）
          * @param adoptedBoundSocket 已经 bind 过的数据报套接字，所有权随之转移；本对象析构或 stop()
@@ -109,7 +109,7 @@ namespace AsynGyanis::Net
          * @note 套接字从哪来由调用方决定：`Platform::DatagramSocket::bindTo`（自己绑）或
          *       `Platform::DatagramSocket::adopt`（把别的进程交过来的描述符包成本层的持有者语义，
          *       它会区分「描述符无效」「不是套接字」「不是 SOCK_DGRAM」「还没 bind」四种不合格）
-         * @note 与按地址构造的差别只在端口从哪来：本构造**不会去 bind**，端口从交来的套接字问，
+         * @note 与按地址构造的差别只在端口从哪来：本构造不会去 bind，端口从交来的套接字问，
          *       `listeningPort()` 报的是真值
          */
         UdpServer(Core::EventLoop &eventLoop, Configuration configuration, Platform::DatagramSocket adoptedBoundSocket);
@@ -128,8 +128,8 @@ namespace AsynGyanis::Net
          *         （端口已经定在交过来的套接字上，那种情形请调不带地址的 listen()）、或这台服务端
          *         已经在某个端口上监听（一台只能启动一次）
          * @throws Base::SystemException 绑定失败
-         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
-         * @note 零长报文**照样交付**（payload 为空）：无连接协议里「一条不带内容的报文」常常就是
+         * @note 本方法是惰性协程：抛出发生在首次恢复（await 或投递给循环）那一刻，不在调用处
+         * @note 零长报文照样交付（payload 为空）：无连接协议里「一条不带内容的报文」常常就是
          *       全部输入（唤醒信号、探测），把它当「没收到」等于把这类协议判死
          * @note 读数报回的平台错误（ICMP 替一个已消失的对端捎回来的那类）只跳过这一次读数，
          *       循环继续——退出就等于让一个消失的对端把整台服务变成不再接受任何来源
@@ -142,7 +142,7 @@ namespace AsynGyanis::Net
          * @return Core::Task<> 收循环退出时完成
          * @throws Base::InvalidArgumentException 本对象不是接手构造出来的：那种情形要调
          *         listen(地址)，由本端自己 bind；或这台服务端已经在某个端口上监听（一台只能启动一次）
-         * @note 本方法是惰性协程：抛出发生在**首次恢复**（await 或投递给循环）那一刻，不在调用处
+         * @note 本方法是惰性协程：抛出发生在首次恢复（await 或投递给循环）那一刻，不在调用处
          * @note 交付口径与 listen(地址) 完全一致（零长报文照交付、读数报错不带走循环），差别只在
          *       端口与套接字都不是本端建的，因此这里也不会有「绑定失败」那一类出口
          * @warning 本协程的帧必须活到 `stop()` 之后（与其它循环对象同一条销毁纪律）

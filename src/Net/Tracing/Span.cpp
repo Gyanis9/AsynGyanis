@@ -150,7 +150,7 @@ namespace AsynGyanis::Net
         identifiers.version = m_version;
         identifiers.flags   = m_flags;
         identifiers.traceId = m_identity.traceId;
-        // 交给下一跳的 parent-id 就是**本节**的标识：下一跳要把我们当作它的上一节
+        // 交给下一跳的 parent-id 就是本节的标识：下一跳要把我们当作它的上一节
         identifiers.parentId = m_identity.spanId;
         return identifiers;
     }

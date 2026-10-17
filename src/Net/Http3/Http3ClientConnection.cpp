@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
             PendingExchange *exchange = liveExchange(streamId);
             if (exchange == nullptr)
             {
-                // 本端已经不认这条流（请求协程已收口）：失败没有落账的地方。这里**不能**顺着
+                // 本端已经不认这条流（请求协程已收口）：失败没有落账的地方。这里不能顺着
                 // noteStreamFailed 里的 exchangeFor 立一条新账——那条记录不会再有人摘，在途数从此回不到 0
                 return;
             }
@@ -162,7 +162,7 @@ namespace AsynGyanis::Net
             }
         }
 
-        // 时限挂在**底层连接**上：到点 close() 会把仍挂在可读上的收发协程叫醒，本循环才能退出。
+        // 时限挂在底层连接上：到点 close() 会把仍挂在可读上的收发协程叫醒，本循环才能退出。
         // 块作用域是为了在正常收齐时立刻撤销看门狗——协程帧的局部量要等调用方丢掉 Task 才析构，
         // 放在函数体上会留下一只醒着的看门狗，随时可能把这条已可用的连接掐掉
         {
@@ -285,7 +285,7 @@ namespace AsynGyanis::Net
 
     void Http3ClientConnection::noteBodyBytes(const std::int64_t streamId, const std::span<const std::uint8_t> bytes)
     {
-        // 本端已经不认这条流：字节仍占着接收额度，账要还，内容丢掉。这里**不能**顺手立一条新账——
+        // 本端已经不认这条流：字节仍占着接收额度，账要还，内容丢掉。这里不能顺手立一条新账——
         // 请求协程收口时把这条流的记录摘掉了，而本端刚结掉一条流时 STOP_SENDING 至少还要一个来回
         // 才到对端，那之后到的字节正是走这一支；立了新账就没有人再来摘它，在途数再也回不到 0
         PendingExchange *exchange = liveExchange(streamId);
@@ -295,7 +295,7 @@ namespace AsynGyanis::Net
             return;
         }
         exchange->response.isAnyByteReceived = true;
-        // 上限按**累计**收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话这道闸门
+        // 上限按累计收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话这道闸门
         // 就只剩「一次能堆多大」，对端可以一直发下去
         exchange->receivedBodyByteCount += bytes.size();
         if (!exchange->response.errorMessage.empty())

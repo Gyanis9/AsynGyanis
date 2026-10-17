@@ -46,12 +46,12 @@ namespace AsynGyanis::Database::Queryable
          * @brief 乐观锁版本列名，默认空串＝不启用
          *
          * @details 声明之后，`update()` 生成的 WHERE 除主键外多一个「版本 = ?」条件
-         *          （问的是**手里这份数据的版本**），SET 里把这一列写成「自己加一」而不是取结构体的值——
+         *          （问的是手里这份数据的版本），SET 里把这一列写成「自己加一」而不是取结构体的值——
          *          这样「忘了加版本号」不会让更新悄悄失去保护，加一由服务端在一次语句里完成，
          *          两个会话各改一次不可能都成功。更新到 0 行即抛
          *          `Database::OptimisticLockException`（消息点名表、版本列、期望版本与主键值）。
          *          这一列必须是 `kColumns` 里声明过的整数列、且不能与主键同列——两处都在生成语句时拒绝。
-         * @note 走的是「读出-改-写回」的经典乐观锁：它防的是**并发覆盖**（后写的人把先写的人抹掉），
+         * @note 走的是「读出-改-写回」的经典乐观锁：它防的是并发覆盖（后写的人把先写的人抹掉），
          *       不是「这一行还在不在」；要让「不在就报错」也成立，仍按 update() 的 @warning
          *       用 first()/count() 确认存在性。与 `InsertConflict` 三档正交：那一档管 INSERT 撞唯一键，
          *       本格管 UPDATE 条件匹配不上，一次写入只可能落在其中一处
@@ -69,7 +69,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 读取 TableSchema<T> 的自增主键声明，未声明时按 false 处理
          *
          * @details 必须用 requires 探测而不是直接写 TableSchema<T>::kIsAutoIncrementPrimaryKey：
-         *          用户的特化是**完全特化**，不继承主模板的默认成员，直接取会让所有既有声明在这个
+         *          用户的特化是完全特化，不继承主模板的默认成员，直接取会让所有既有声明在这个
          *          字段加入后一起编译失败。探测使它成为纯粹的增量声明，老代码一行不改仍然成立。
          *
          * @tparam T 已特化 TableSchema 的聚合类型

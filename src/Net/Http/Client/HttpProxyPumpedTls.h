@@ -35,7 +35,7 @@ namespace AsynGyanis::Net
      * @brief 内层 TLS 会话 + 外层 TLS 传输的合体：对上层提供与 TlsSocket 相同的收发口径
      *
      * @details 供出站客户端在「https 目标经 https 代理」时承载内层 TLS：外层先与代理握手并开
-     *          CONNECT 隧道，内层 SSL 的 SNI、主机名校验与 ALPN 照常按**目标**配置，字节经泵
+     *          CONNECT 隧道，内层 SSL 的 SNI、主机名校验与 ALPN 照常按目标配置，字节经泵
      *          在外层隧道里进出。收发口径与 `Core::TlsSocket` 逐条对齐：正常收口返回 0、
      *          其余失败一律抛异常、长度上限 INT_MAX、0 长度不做 I/O 直接回 0。
      * @warning 与 `Core::TlsSocket` 同一套并发约定：读、写各只允许一个并发调用者（h2 的读写
