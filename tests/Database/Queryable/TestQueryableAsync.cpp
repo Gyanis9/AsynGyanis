@@ -755,6 +755,42 @@ TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
 }
 
 // ========================================================================
+// 批量写与 keyset 分页
+// ========================================================================
+
+/**
+ * @brief 批量更新、批量删除与 keyset 分页在真实引擎上成立
+ * @details updateBatch/deleteBatch 各自一整笔事务；seekAfter 只追加「键 > 上一页末值」并清掉 offset，
+ *          因此第二页的结果不依赖 OFFSET 的稳定性
+ */
+TEST_F(QueryableAsyncTest, BatchUpdateDeleteAndKeysetPagination)
+{
+    Queryable<AsyncAccountRow> query(*m_pool);
+    for (std::int64_t id = 1; id <= 5; ++id)
+    {
+        ASSERT_EQ(query.insert(AsyncAccountRow{id, "row-" + std::to_string(id), std::nullopt}), 1);
+    }
+
+    const std::array<AsyncAccountRow, 2> updates{AsyncAccountRow{1, "updated-1", std::nullopt}, AsyncAccountRow{2, "updated-2", std::nullopt}};
+    EXPECT_EQ(query.updateBatch(std::span<const AsyncAccountRow>{updates}), 2);
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{1}).first()->name, "updated-1");
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{2}).first()->name, "updated-2");
+
+    const auto firstPage = Queryable<AsyncAccountRow>(*m_pool).orderBy(asc("id")).limit(2).seekAfter(Column(&AsyncAccountRow::id, "id"), std::int64_t{0}).toList();
+    ASSERT_EQ(firstPage.size(), 2U);
+    EXPECT_EQ(firstPage[0].id, 1);
+    EXPECT_EQ(firstPage[1].id, 2);
+    const auto secondPage = Queryable<AsyncAccountRow>(*m_pool).orderBy(asc("id")).limit(2).seekAfter(Column(&AsyncAccountRow::id, "id"), std::int64_t{2}).toList();
+    ASSERT_EQ(secondPage.size(), 2U);
+    EXPECT_EQ(secondPage[0].id, 3);
+    EXPECT_EQ(secondPage[1].id, 4);
+
+    const std::array<AsyncAccountRow, 2> removals{AsyncAccountRow{4, "", std::nullopt}, AsyncAccountRow{5, "", std::nullopt}};
+    EXPECT_EQ(query.deleteBatch(std::span<const AsyncAccountRow>{removals}), 2);
+    EXPECT_EQ(query.count(), 3);
+}
+
+// ========================================================================
 // 不阻塞调用线程
 // ========================================================================
 

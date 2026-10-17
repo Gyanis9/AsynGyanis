@@ -613,6 +613,134 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 按结构体主键批量更新（整批在同一事务里）
+         * @details 逐行生成 `UPDATE … WHERE 主键 = ?`，共用一条连接与一个事务：中途失败整批回滚。
+         *          没有绑定事务时本方法自己开一笔；已绑定事务时并入调用方那笔，提交仍由调用方负责
+         * @param rows 待更新的行，允许为空（返回 0，不产生任何语句）
+         * @return std::int64_t 各行受影响行数之和（口径同 update()）
+         * @note 只按行主键更新，不叠加当前查询树的 where 条件（与 update() 同口径）
+         * @throws Base::LogicException 当前为离线模式
+         * @throws DatabaseException 事务开启或语句执行失败
+         * @throws OptimisticLockException 任一行版本不匹配（整批回滚）
+         */
+        [[nodiscard]] std::int64_t updateBatch(const std::span<const T> rows)
+        {
+            requireOnline("updateBatch()");
+            if (rows.empty())
+            {
+                return 0;
+            }
+
+            std::int64_t affectedRowCount = 0;
+            if (m_transaction != nullptr)
+            {
+                for (const T &row: rows)
+                {
+                    affectedRowCount += update(row);
+                }
+                return affectedRowCount;
+            }
+
+            Transaction  transaction(*m_pool);
+            Queryable<T> batchQuery(transaction);
+            for (const T &row: rows)
+            {
+                affectedRowCount += batchQuery.update(row);
+            }
+            if (!transaction.commit())
+            {
+                throw QueryExecutionException("批量更新：提交事务失败：" + transaction.lastError());
+            }
+            return affectedRowCount;
+        }
+
+        /**
+         * @brief 按结构体主键批量删除（整批在同一事务里）
+         * @details 按引擎参数上限把主键分块，每块生成 `DELETE … WHERE 主键 IN (?, …)`；
+         *          没有绑定事务时自己开一笔，已绑定时并入调用方那笔
+         * @param rows 用于取主键的行，允许为空（返回 0）
+         * @return std::int64_t 受影响的行数
+         * @note 只按这些行的主键删，**不叠加**当前查询树上已设置的 where 条件——批量删的语义是
+         *       「删掉我手上这些行」，混入别的过滤会让「传了 N 行却只删掉一部分」变成静默行为
+         * @throws Base::LogicException 当前为离线模式，或主键列未在 kColumns 中声明
+         * @throws DatabaseException 事务开启或语句执行失败
+         */
+        [[nodiscard]] std::int64_t deleteBatch(const std::span<const T> rows)
+        {
+            requireOnline("deleteBatch()");
+            if (rows.empty())
+            {
+                return 0;
+            }
+
+            const SqlDialect          &dialect        = requireDialect();
+            const std::size_t          parameterLimit = std::max<std::size_t>(1U, dialect.maximumStatementParameters());
+            std::vector<DatabaseValue> primaryKeys;
+            primaryKeys.reserve(rows.size());
+            for (const T &row: rows)
+            {
+                const std::optional<DatabaseValue> key = readColumnValue(row, TableSchema<T>::kPrimaryKey);
+                if (!key.has_value())
+                {
+                    throw Base::InvalidArgumentException("批量删除：TableSchema 的主键列「" + std::string(TableSchema<T>::kPrimaryKey) + "」不在 kColumns 中，无法从行里取出键值");
+                }
+                primaryKeys.push_back(*key);
+            }
+
+            const auto deleteChunks = [&](Queryable<T> &target)
+            {
+                std::int64_t affectedRowCount = 0;
+                for (std::size_t offset = 0; offset < primaryKeys.size(); offset += parameterLimit)
+                {
+                    const std::size_t chunkCount = std::min(parameterLimit, primaryKeys.size() - offset);
+                    WhereCondition    condition;
+                    condition.left  = FieldReference{.name = std::string(TableSchema<T>::kPrimaryKey)};
+                    condition.op    = SqlOperator::In;
+                    condition.right = ParameterValue{static_cast<std::int64_t>(0)};
+                    condition.inValues.reserve(chunkCount);
+                    for (std::size_t index = 0; index < chunkCount; ++index)
+                    {
+                        condition.inValues.push_back(Detail::toParameterValueFromKey(primaryKeys[offset + index], TableSchema<T>::kPrimaryKey));
+                    }
+                    target.where(std::move(condition));
+                    affectedRowCount += target.executeNonQuery();
+                }
+                return affectedRowCount;
+            };
+
+            if (m_transaction != nullptr)
+            {
+                Queryable<T> batchQuery(*m_transaction);
+                return deleteChunks(batchQuery);
+            }
+
+            Transaction        transaction(*m_pool);
+            Queryable<T>       batchQuery(transaction);
+            const std::int64_t affectedRowCount = deleteChunks(batchQuery);
+            if (!transaction.commit())
+            {
+                throw QueryExecutionException("批量删除：提交事务失败：" + transaction.lastError());
+            }
+            return affectedRowCount;
+        }
+
+        /**
+         * @brief keyset（游标）分页：取主键严格大于上一页最后一条的记录
+         * @details 与 LIMIT/OFFSET 分页相比，翻页代价不随页码增长；本方法只追加 `键 > 上一页末值`
+         *          并清掉 offset。调用方应同时 `orderBy(asc(同一个键))` 并设置 `limit()`——
+         *          顺序与游标键不一致时结果仍是「键大于阈值」的子集，但不是稳定的逐页序列
+         * @param keyColumn 游标列（通常是主键）
+         * @param lastSeenValue 上一页最后一条在该列上的值；第一页不调用本方法
+         * @return Queryable& 自身，便于链式调用
+         */
+        template<typename KeyType>
+        Queryable &seekAfter(const ColumnDescriptor<T, KeyType> &keyColumn, const KeyType &lastSeenValue)
+        {
+            m_queryNode.offset.reset();
+            return where(keyColumn > lastSeenValue);
+        }
+
+        /**
          * @brief 按结构体主键更新一行
          *
          * @details SET 的列与取值来自非主键列，WHERE 条件由主键列构成，两者一起交给方言生成
