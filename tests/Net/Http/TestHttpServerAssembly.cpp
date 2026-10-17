@@ -182,7 +182,7 @@ namespace AsynGyanis::Net
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
-        for (const std::string_view path: {"/metrics", "/healthz", "/readyz", "/debug/loops"})
+        for (const std::string_view path: {"/metrics", "/healthz", "/readyz", "/debug/loops", "/debug/connections"})
         {
             const std::string text = fetchPath(fixture.listeningPort(), path);
             EXPECT_NE(text.find("HTTP/1.1 404"), std::string::npos) << path << " 仍挂在业务口上：" << text;
