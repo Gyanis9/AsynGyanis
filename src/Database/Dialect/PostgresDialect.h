@@ -116,7 +116,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 给定冲突处置时，INSERT 语句开头的关键词短语
          * @details 重写 SqlDialect::insertKeywordPhrase()：PostgreSQL 没有 INSERT IGNORE /
-         *          REPLACE INTO 这类开头形式，三档的前缀都是普通的 "INSERT INTO "，
+         *          REPLACE INTO 这类开头形式，四档的前缀都是普通的 "INSERT INTO "，
          *          处置本身由尾部子句表达（见 appendInsertConflictTail()）。
          * @param conflict 唯一键冲突的处置意图
          * @return std::string_view 恒为 "INSERT INTO "
@@ -134,10 +134,11 @@ namespace AsynGyanis::Database
          *            只有 DO NOTHING 能省目标），生成它是把必拒的语句送到服务端才失败。SET 列出
          *            本次插入的全部列，未列出的列保持旧值——与 MySQL REPLACE 的整行替换在未列出的
          *            列上语义不同，这正是「按业务键覆盖」的常规写法（覆盖一行里被显式给出的部分）。
+         *          - Upsert → 与 Replace 同一份 DO UPDATE（PostgreSQL 的 Replace 本来就是真 upsert）
          * @param sqlText 已渲染完 VALUES 行的 INSERT 文本，子句追加在其末尾
          * @param conflict 唯一键冲突的处置意图
-         * @param query 提供待写列与冲突目标列的查询树（Replace 档两者都要）
-         * @throws Base::InvalidArgumentException Replace 档缺 conflictTargetColumns 时
+         * @param query 提供待写列与冲突目标列的查询树（Replace/Upsert 档两者都要）
+         * @throws Base::InvalidArgumentException Replace/Upsert 档缺 conflictTargetColumns 时
          */
         void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const override;
 

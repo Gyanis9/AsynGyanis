@@ -26,6 +26,8 @@
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Queryable/QueryNode.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -1213,6 +1215,24 @@ TEST(SqliteDialectWrite, InsertConflictPoliciesChangeOnlyTheKeywordPhrase)
     node.insertConflict      = Conflict::Ignore;
     const SqlStatement batch = dialect.translateInsertBatch(node, rows);
     EXPECT_EQ(batch.sql, "INSERT OR IGNORE INTO \"users\" (\"id\", \"name\") VALUES (?, ?), (?, ?)");
+
+    // Upsert：普通 INSERT 前缀 + ON CONFLICT DO UPDATE；目标列缺了就在本地拒绝
+    node.insertConflict         = Conflict::Upsert;
+    node.conflictTargetColumns  = {"id"};
+    const SqlStatement upserted = dialect.translateInsert(node, values);
+    EXPECT_EQ(upserted.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) "
+                            "ON CONFLICT (\"id\") DO UPDATE SET \"id\" = excluded.\"id\", \"name\" = excluded.\"name\"");
+
+    node.conflictTargetColumns.clear();
+    std::string rejectionText;
+    try
+    {
+        static_cast<void>(dialect.translateInsert(node, values));
+    } catch (const AsynGyanis::Base::InvalidArgumentException &exception)
+    {
+        rejectionText = exception.what();
+    }
+    EXPECT_NE(rejectionText.find("conflictTargetColumns"), std::string::npos) << rejectionText;
 }
 
 /**

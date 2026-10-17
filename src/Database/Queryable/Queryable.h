@@ -515,10 +515,12 @@ namespace AsynGyanis::Database::Queryable
          *          `REPLACE INTO` 的原语 SQL——而那句是方言专有的，等于绕开 ORM 的参数化与取值转换。
          *          本方法只交意图，关键词由方言给（见 `SqlDialect::insertKeywordPhrase()`）。
          * @param row 待插入的结构体
-         * @param conflict 冲突处置：`Fail` 与单参版完全等价；`Ignore` 跳过冲突行；`Replace` 换掉那一行
+         * @param conflict 冲突处置：`Fail` 与单参版完全等价；`Ignore` 跳过冲突行；`Replace` 换掉那一行；
+         *        `Upsert` 只更新本次插入给出的列
          * @return std::int64_t 受影响的行数（引擎对 IGNORE 跳过的行不计入，MySQL 的 REPLACE 计 2）
          * @note `Replace` 在两家引擎上都是「先删同键旧行再插」而不是「只改这几列」：触发器多一次 DELETE、
-         *       自增标识可能换值、新行没给的列回默认值。要只改指定列就按主键走 `update()`
+         *       自增标识可能换值、新行没给的列回默认值。要只改指定列就用 `Upsert`（MySQL 写作
+         *       ON DUPLICATE KEY UPDATE，PostgreSQL/SQLite 写作 ON CONFLICT DO UPDATE）
          * @throws Base::LogicException 当前为离线模式
          * @throws DatabaseException 取连接失败或语句执行失败（`Fail` 档的唯一约束冲突即在此列）
          */
@@ -2109,10 +2111,10 @@ namespace AsynGyanis::Database::Queryable
             insertNode.selectColumns = insertColumnNames();
             // 冲突处置只参与 INSERT 方向的渲染，默认 Fail 时关键词与改前逐字相同
             insertNode.insertConflict = conflict;
-            // Replace 档要带上冲突目标：PostgreSQL 的 ON CONFLICT DO UPDATE 必须给出推断列
-            // （不带目标时服务端以 42601 拒绝——真机实测），这里从 TableSchema 的主键自动填上；
-            // MySQL / SQLite 的 Replace 写作前缀（REPLACE INTO / OR REPLACE），不读这个字段
-            if (conflict == InsertConflict::Replace)
+            // Replace 与 Upsert 档要带上冲突目标：PostgreSQL/SQLite 的 ON CONFLICT DO UPDATE
+            // 必须给出推断列（不带目标时服务端拒绝），这里从 TableSchema 的主键自动填上；
+            // MySQL 的 Replace 写作前缀（REPLACE INTO）、Upsert 写作 ON DUPLICATE KEY UPDATE，都不读这个字段
+            if (conflict == InsertConflict::Replace || conflict == InsertConflict::Upsert)
             {
                 insertNode.conflictTargetColumns.emplace_back(TableSchema<T>::kPrimaryKey);
             }
@@ -2354,8 +2356,8 @@ namespace AsynGyanis::Database::Queryable
             QueryNode batchNode      = makeWriteQueryNode();
             batchNode.selectColumns  = insertColumnNames();
             batchNode.insertConflict = conflict;
-            // 与单行插入同款：Replace 档带上冲突目标（PG 的 DO UPDATE 必须给推断列）
-            if (conflict == InsertConflict::Replace)
+            // 与单行插入同款：Replace/Upsert 档带上冲突目标（PG/SQLite 的 DO UPDATE 必须给推断列）
+            if (conflict == InsertConflict::Replace || conflict == InsertConflict::Upsert)
             {
                 batchNode.conflictTargetColumns.emplace_back(TableSchema<T>::kPrimaryKey);
             }

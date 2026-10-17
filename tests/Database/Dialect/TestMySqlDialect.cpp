@@ -876,16 +876,27 @@ TEST(MySqlDialectWrite, InsertConflictPoliciesUseTheEngineOwnPhrases)
     const SqlStatement ignored  = dialect.translateInsert(node, values);
     node.insertConflict         = Conflict::Replace;
     const SqlStatement replaced = dialect.translateInsert(node, values);
+    node.insertConflict         = Conflict::Upsert;
+    const SqlStatement upserted = dialect.translateInsert(node, values);
 
     EXPECT_EQ(failed.sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?)");
     EXPECT_EQ(ignored.sql, "INSERT IGNORE INTO `users` (`id`, `name`) VALUES (?, ?)");
     EXPECT_EQ(replaced.sql, "REPLACE INTO `users` (`id`, `name`) VALUES (?, ?)");
+    // 真 upsert：普通 INSERT 前缀 + ON DUPLICATE KEY UPDATE 逐列取本次要写的值
+    EXPECT_EQ(upserted.sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?) "
+                            "ON DUPLICATE KEY UPDATE `id` = VALUES(`id`), `name` = VALUES(`name`)");
     EXPECT_EQ(countPlaceholders(ignored.sql), failed.parameters.size());
 
     const std::vector<std::vector<DatabaseValue>> rows{values, values};
     node.insertConflict      = Conflict::Replace;
     const SqlStatement batch = dialect.translateInsertBatch(node, rows);
     EXPECT_EQ(batch.sql, "REPLACE INTO `users` (`id`, `name`) VALUES (?, ?), (?, ?)");
+
+    // 批量方向同样接上真 upsert 的尾部子句
+    node.insertConflict            = Conflict::Upsert;
+    const SqlStatement upsertBatch = dialect.translateInsertBatch(node, rows);
+    EXPECT_EQ(upsertBatch.sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?), (?, ?) "
+                               "ON DUPLICATE KEY UPDATE `id` = VALUES(`id`), `name` = VALUES(`name`)");
 }
 
 /**

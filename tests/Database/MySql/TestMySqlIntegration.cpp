@@ -1669,6 +1669,32 @@ namespace AsynGyanis::Database
     // ========================================================================
 
     /**
+     * @brief Upsert 在真实 MySQL 上生成 `ON DUPLICATE KEY UPDATE`：冲突行被就地更新，不新增行
+     * @details 判据落在「受影响行数为 2」与「读回来只有一行且值是新的」：MySQL 的
+     *          `ON DUPLICATE KEY UPDATE` 更新一行时 affected rows 报 2（插入报 1），
+     *          REPLACE 也会报 2，但 REPLACE 会先删后插；这里同时钉住行数仍为 1
+     */
+    TEST_F(MySqlIntegrationTest, UpsertUpdatesTheConflictingRowInPlace)
+    {
+        ASSERT_TRUE(prepareTable(kAccountTableName, kAccountColumns)) << m_lastSetupError;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(3);
+        OrmQuery<IntegrationAccountRow> query(*pool);
+        ASSERT_EQ(query.insert(makeAccountRow(1, "before", 1.0, std::string("keep"), true)), 1);
+
+        EXPECT_EQ(query.insert(makeAccountRow(1, "after", 2.5, std::string("new"), false), Queryable::InsertConflict::Upsert), 2)
+                << "MySQL 的 ON DUPLICATE KEY UPDATE 更新冲突行时应当报 2 行受影响";
+
+        const std::optional<IntegrationAccountRow> row = query.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
+        ASSERT_TRUE(row.has_value());
+        EXPECT_EQ(row->name, "after");
+        EXPECT_DOUBLE_EQ(row->balance, 2.5);
+        EXPECT_EQ(row->note.value_or(""), "new");
+        EXPECT_FALSE(row->active);
+        EXPECT_EQ(query.count(), 1) << "Upsert 变成了又一次插入";
+    }
+
+    /**
      * @brief 验证 ORM 的插入、条件查询、排序分页、单行读取、计数、更新与删除在真实 MySQL 上成立
      */
     TEST_F(MySqlIntegrationTest, OrmCrudRoundTripOverWhereOrderByPagingAndPrimaryKey)

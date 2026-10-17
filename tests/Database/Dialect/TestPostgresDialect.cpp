@@ -970,6 +970,24 @@ TEST(PostgresDialectConflict, ReplaceAppendsDoUpdatePerInsertedColumn)
 }
 
 /**
+ * @brief Upsert 档在 PostgreSQL 上与 Replace 同解：真 upsert 本来就是 DO UPDATE
+ */
+TEST(PostgresDialectConflict, UpsertAppendsTheSameDoUpdateAsReplace)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName             = "users";
+    node.selectColumns         = {"id", "name"};
+    node.insertConflict        = InsertConflict::Upsert;
+    node.conflictTargetColumns = {"id"};
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("x")});
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) "
+                             "ON CONFLICT (\"id\") DO UPDATE SET \"id\" = EXCLUDED.\"id\", \"name\" = EXCLUDED.\"name\"");
+}
+
+/**
  * @brief 钉住 Replace 档缺冲突目标时在翻译阶段被拒，而不是生成一条服务端必拒的语句
  *
  * @details PostgreSQL 的 `ON CONFLICT DO UPDATE` 要求推断列或约束名（只有 DO NOTHING 能省），

@@ -175,16 +175,25 @@ namespace AsynGyanis::Database::Queryable
      *
      * @details 本层只表达意图，具体关键词由方言给出（`SqlDialect::insertKeywordPhrase()`）：
      *          两家的形状不同——SQLite 是 `INSERT OR IGNORE/REPLACE INTO`，MySQL 是
-     *          `INSERT IGNORE INTO` 与 `REPLACE INTO`。
+     *          `INSERT IGNORE INTO` 与 `REPLACE INTO`；`Upsert` 档在 MySQL 写作
+     *          `ON DUPLICATE KEY UPDATE`，在 PostgreSQL/SQLite 写作 `ON CONFLICT … DO UPDATE`。
      * @note Replace 在 MySQL 侧是**先删同键旧行再插**，不是「按主键更新」：行上的触发器会被触发、
-     *       自增标识会换一个新值、未在新行里给出的列回到默认值。要「存在就只改这几列」的语义，
-     *       本层没有等价物，得走方言自己那条 ON DUPLICATE KEY UPDATE 的原语 SQL
+     *       自增标识会换一个新值、未在新行里给出的列回到默认值。要「存在就只改这几列」用 Upsert
      */
     enum class InsertConflict
     {
         Fail,    ///< 冲突就报错：标准 SQL 唯一的形状，也是所有既有调用方的默认
         Ignore,  ///< 冲突的行跳过、其余照插：用于「有就不动」的去重写入
         Replace, ///< 冲突时换掉那一行：用于「按业务键覆盖」的 create-or-update
+        /**
+         * @brief 冲突时只更新本次插入给出的列（不是先删后插）
+         * @details MySQL 写作 `ON DUPLICATE KEY UPDATE`，PostgreSQL/SQLite 写作
+         *          `ON CONFLICT (目标列) DO UPDATE SET … = excluded.…`。未给出的列保持旧值、
+         *          自增标识不变、不触发 DELETE——这是 `Replace` 做不到的那一档。
+         * @note 目标列由 `conflictTargetColumns` 给出（ORM 从 TableSchema 的主键自动带上）；
+         *       MySQL 不要求目标列，PostgreSQL/SQLite 必须给
+         */
+        Upsert,
     };
 
     // ========================================================================

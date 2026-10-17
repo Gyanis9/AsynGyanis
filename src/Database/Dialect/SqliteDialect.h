@@ -99,6 +99,17 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view insertKeywordPhrase(Queryable::InsertConflict conflict) const override;
 
         /**
+         * @brief 追加 SQLite 的真 upsert 尾部（`ON CONFLICT (目标列) DO UPDATE SET …`）
+         * @details 只对 `InsertConflict::Upsert` 生效；SQLite 3.24 起支持 upsert。
+         *          目标列取自 query.conflictTargetColumns（ORM 从 TableSchema 的主键自动带上），
+         *          缺失时当场拒绝——不带目标的 DO UPDATE 会被服务端判语法错
+         * @param sqlText 已渲染完 VALUES 行的 INSERT 文本
+         * @param conflict 冲突处置意图
+         * @param query 提供待写列与冲突目标列
+         */
+        void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const override;
+
+        /**
          * @brief 生成 SQLite 的自增主键列定义
          * @details 重写 SqlDialect::autoIncrementPrimaryKeyDefinition()：写成 "col" INTEGER PRIMARY KEY
          *          AUTOINCREMENT。类型必须是 INTEGER 且主键是单列——这是 SQLite 把该列认作 rowid 别名

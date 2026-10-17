@@ -177,8 +177,9 @@ namespace AsynGyanis::Database
          * @details 与 insertKeywordPhrase() 相对：那一份表达写在**最前面**的处置
          *          （如 MySQL 的 `REPLACE INTO`），本方法表达只能写在 **VALUES 之后**的处置——
          *          PostgreSQL 的 `ON CONFLICT …` 就是后者，它没有可用的开头形式。
-         *          默认实现什么也不追加，SQLite / MySQL 的处置全部在前缀里表达；
-         *          `Fail` 档在两种位置都必须是空档，否则既有调用的线上字节会变。
+         *          默认实现什么也不追加；需要尾部处置的方言（PostgreSQL 的全部、
+         *          MySQL/SQLite 的 Upsert 档）各自覆写。`Fail` 档在两种位置都必须是空档，
+         *          否则既有调用的线上字节会变。
          *
          * @param sqlText 已渲染完 VALUES 行的 INSERT 文本，子句追加在其末尾
          * @param conflict 唯一键冲突的处置意图

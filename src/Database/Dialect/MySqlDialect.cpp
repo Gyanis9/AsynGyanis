@@ -86,8 +86,36 @@ namespace AsynGyanis::Database
                 return "INSERT IGNORE INTO ";
             case Queryable::InsertConflict::Replace:
                 return "REPLACE INTO ";
+            case Queryable::InsertConflict::Upsert:
+                // 真 upsert：冲突时只改本次插入的列，不是 REPLACE 的先删后插
+                return "INSERT INTO ";
         }
         return "INSERT INTO ";
+    }
+
+    void MySqlDialect::appendInsertConflictTail(std::string &sqlText, const Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const
+    {
+        if (conflict != Queryable::InsertConflict::Upsert)
+        {
+            // Ignore/Replace 在前缀里已经表达完，Fail 是普通 INSERT：三者都不加尾部
+            return;
+        }
+
+        // MySQL 的 ON DUPLICATE KEY UPDATE 不需要冲突目标：它按表上的任意唯一键判定。
+        // VALUES(col) 取的是本次 INSERT 想写进去的值（8.0.20 起被标记弃用但仍是兼容写法，
+        // 新别名语法要 8.0.19+，为了跨 5.7/MariaDB 仍用它）
+        sqlText += " ON DUPLICATE KEY UPDATE ";
+        for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            appendFieldReference(sqlText, query.selectColumns[index]);
+            sqlText += " = VALUES(";
+            appendFieldReference(sqlText, query.selectColumns[index]);
+            sqlText += ")";
+        }
     }
 
     std::string_view MySqlDialect::columnTypeName(const ColumnType type) const noexcept

@@ -1,5 +1,7 @@
 #include "Database/Dialect/SqliteDialect.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,9 +67,46 @@ namespace AsynGyanis::Database
                 return "INSERT OR IGNORE INTO ";
             case Queryable::InsertConflict::Replace:
                 return "INSERT OR REPLACE INTO ";
+            case Queryable::InsertConflict::Upsert:
+                // 真 upsert 走 VALUES 之后的 ON CONFLICT 子句，前缀与普通 INSERT 相同
+                return "INSERT INTO ";
         }
-        // 枚举将来扩到第四档时回到最保守的那一个：宁可报错，也不静默改写别人那一行
+        // 枚举将来扩到更多档时回到最保守的那一个：宁可报错，也不静默改写别人那一行
         return "INSERT INTO ";
+    }
+
+    void SqliteDialect::appendInsertConflictTail(std::string &sqlText, const Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const
+    {
+        if (conflict != Queryable::InsertConflict::Upsert)
+        {
+            return;
+        }
+        if (query.conflictTargetColumns.empty())
+        {
+            throw Base::InvalidArgumentException("SQLite 方言：ON CONFLICT DO UPDATE 需要冲突目标（唯一键的列名），而查询树的 "
+                                                 "conflictTargetColumns 为空。请填入唯一键列，或改用 Ignore 档");
+        }
+
+        sqlText += " ON CONFLICT (";
+        for (std::size_t index = 0; index < query.conflictTargetColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            appendFieldReference(sqlText, query.conflictTargetColumns[index]);
+        }
+        sqlText += ") DO UPDATE SET ";
+        for (std::size_t index = 0; index < query.selectColumns.size(); ++index)
+        {
+            if (index > 0)
+            {
+                sqlText += ", ";
+            }
+            appendFieldReference(sqlText, query.selectColumns[index]);
+            sqlText += " = excluded.";
+            appendFieldReference(sqlText, query.selectColumns[index]);
+        }
     }
 
     std::string_view SqliteDialect::columnTypeName(const ColumnType type) const noexcept

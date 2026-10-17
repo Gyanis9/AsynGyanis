@@ -744,6 +744,14 @@ TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
     EXPECT_EQ(query.insert(AsyncAccountRow{7, "replaced", std::nullopt}, InsertConflict::Replace), 1);
     EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first()->name, "replaced") << "REPLACE 之后读回来的还是旧值";
     EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "同一主键出现了两行：Replace 变成了又一次插入";
+
+    // Upsert：真 `ON CONFLICT DO UPDATE`（不是先删后插），冲突时更新并保持一行
+    EXPECT_EQ(query.insert(AsyncAccountRow{7, "upserted", std::string("note")}, InsertConflict::Upsert), 1);
+    const auto upsertedRow = Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first();
+    ASSERT_TRUE(upsertedRow.has_value());
+    EXPECT_EQ(upsertedRow->name, "upserted");
+    EXPECT_EQ(upsertedRow->note.value_or(""), "note");
+    EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "Upsert 变成了又一次插入";
 }
 
 // ========================================================================

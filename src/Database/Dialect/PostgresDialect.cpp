@@ -52,6 +52,7 @@ namespace AsynGyanis::Database
                 return;
 
             case Queryable::InsertConflict::Replace:
+            case Queryable::InsertConflict::Upsert:
                 break;
         }
 

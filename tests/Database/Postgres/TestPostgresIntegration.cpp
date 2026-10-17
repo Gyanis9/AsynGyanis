@@ -1346,6 +1346,8 @@ namespace AsynGyanis::Database
         EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "ignored"}, Queryable::InsertConflict::Ignore), 0);
         // Replace（ON CONFLICT DO UPDATE SET 列 = EXCLUDED.列）：按列清单覆盖，影响行数是 1
         EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "replaced"}, Queryable::InsertConflict::Replace), 1);
+        // Upsert：PG 上与 Replace 同一份 DO UPDATE；ORM 必须自动带上冲突目标，否则方言会拒绝翻译
+        EXPECT_EQ(query.insert(IntegrationConflictRow{.id = 1, .name = "upserted"}, Queryable::InsertConflict::Upsert), 1);
 
         // Fail：主键冲突报错，且异常的 nativeErrorCode() 必须是 SQLSTATE 23505 的打包值
         bool nativeCodeMatched = false;
@@ -1361,7 +1363,7 @@ namespace AsynGyanis::Database
 
         const std::vector<IntegrationConflictRow> rows = query.orderBy(asc("id")).toList();
         ASSERT_EQ(rows.size(), 1U) << "upsert 留下了多行";
-        EXPECT_EQ(rows[0].name, "replaced");
+        EXPECT_EQ(rows[0].name, "upserted");
     }
 
     /**
