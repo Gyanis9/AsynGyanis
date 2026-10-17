@@ -352,10 +352,14 @@ namespace AsynGyanis::Core
                 m_slowestWorkingSegmentMicros.store(segmentMicroseconds.count(), std::memory_order_relaxed);
             }
 
-            // 占用归因收段：本段内标注过的作业名成为「最近完成段」的读数，同时清空段内格子——
-            // 下一段没标注时它不该继承上一段的名字（报警读的是段内的那格）
+            // 占用归因收段：本段内标注过的作业名成为「最近完成段」的读数，同时清空段内格子。
+            // **未标注的段不清空那个读数**：它记的是「最近一次被标注的作业」，跨段保留（见成员注释）；
+            // 写成无条件覆盖就会在紧接着的空闲段里立刻变空，现场只剩「快照字段恒空」这一副面孔
             const char *const workloadInThisSegment = m_lastWorkloadInSegment.load(std::memory_order_relaxed);
-            m_lastCompletedWorkload.store(workloadInThisSegment, std::memory_order_relaxed);
+            if (workloadInThisSegment != nullptr)
+            {
+                m_lastCompletedWorkload.store(workloadInThisSegment, std::memory_order_relaxed);
+            }
             m_lastWorkloadInSegment.store(nullptr, std::memory_order_relaxed);
 
             // 一条工作段吃掉阈值这么多，说明有处理器把循环线程占死了：这段时间里同一条循环上的

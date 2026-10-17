@@ -177,24 +177,27 @@ namespace AsynGyanis::Core
             {
                 m_promise->m_logContext = Base::currentLogContext();
                 using SuspendResult     = decltype(m_awaiter->await_suspend(handle));
+                // 先置位再交给 inner：inner 的 await_suspend 一旦把续体发布出去，另一条线程就可能
+                // 立刻恢复本协程并读这一位；写在发布之后就是数据竞争（TSan 实测报在 await_resume）
+                m_isSuspended = true;
                 if constexpr (std::is_void_v<SuspendResult>)
                 {
-                    m_isSuspended = true;
                     m_awaiter->await_suspend(handle);
                     Base::publishLogContext(nullptr);
                 } else if constexpr (std::is_same_v<SuspendResult, bool>)
                 {
                     const bool isSuspended = m_awaiter->await_suspend(handle);
-                    m_isSuspended          = isSuspended;
-                    if (isSuspended)
+                    if (!isSuspended)
                     {
-                        Base::publishLogContext(nullptr);
+                        // 没有挂起：没有并发读者，可以就地改回 false
+                        m_isSuspended = false;
+                        return false;
                     }
-                    return isSuspended;
+                    Base::publishLogContext(nullptr);
+                    return true;
                 } else
                 {
                     auto nextHandle = m_awaiter->await_suspend(handle);
-                    m_isSuspended   = true;
                     if (nextHandle == std::noop_coroutine())
                     {
                         // 等待目标已经在别处跑：本协程真挂起了，线程要交还给循环，必须清场
