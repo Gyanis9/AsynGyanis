@@ -1,0 +1,60 @@
+# AsynGyanis 的 systemd 单元样例。复制到 /etc/systemd/system/asyngyanis.service 后按现场改。
+#
+# 每一行的理由都对着引擎实现写：README 的「投产前核对」与「运行手册」是操作口径，
+# Platform::ServiceNotification / Core::ServiceWatchdog / Core::Process::WorkerSupervisor
+# 是这些口径的唯一真源。改本文件前先读那三处，别按别的服务的样子抄。
+
+[Unit]
+Description=AsynGyanis reference server
+After=network-online.target
+Wants=network-online.target
+
+# 配置或证书错了时反复重启只会把日志刷满；60 秒内 3 次就停下来等人看。
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+# 专用账号：useradd --system --no-create-home --shell /usr/sbin/nologin asyngyanis
+User=asyngyanis
+Group=asyngyanis
+
+# 引擎在监听器确认之后才发 READY=1，多 worker 形态下只由 master 发一条——所以 systemd 的
+# 「启动完成」与「端口已在应答」是同一个时点，TimeoutStartSec 才有约束力。
+Type=notify
+
+# 只有主进程有资格发状态。worker 继承了 NOTIFY_SOCKET 但按设计不碰这条通路，显式钉住
+# 可以在出现「worker 替 master 报就绪」的回退时让 systemd 直接拒收，而不是悄悄多一条 READY。
+NotifyAccess=main
+
+# 路径按安装前缀改。--config 是限额、TLS/ACME、logging 等配置的来源；没有它也能跑，
+# 但 SIGHUP 只会明确打一行「没有可重读的文件」。
+# --workers N 的 N 个 worker 各自 bind（SO_REUSEPORT），看门狗心跳由 master 汇聚。
+ExecStart=/usr/local/bin/ReferenceServer --config /etc/asyngyanis/asyngyanis.yaml --workers 4
+
+# SIGHUP 是引擎约定的重载入口：重读 --config 的 logging 段，并按 RELOADING=1 → READY=1
+# 成对回报监督者。只发 RELOADING 不发 READY 会让 systemd 等到启动超时并把本单元杀掉。
+ExecReload=/bin/kill -HUP $MAINPID
+
+# 10s 不是随手取的 30s：systemd 把它折成 WATCHDOG_USEC=10000000，引擎按窗口的一半（5s）
+# 喂一条 WATCHDOG=1；多 worker 形态下 master 以 1.5 × 节拍 = 7.5s 判某个 worker 的心跳陈旧
+# 并停止汇聚。单进程形态下所有事件循环都卡死时，最后一次喂狗后 10s 内监督者就会重启本单元。
+# 窗口放到 30s，会把「循环卡住」拖到 45s 量级才被发现。
+WatchdogSec=10s
+
+# 看门狗超时按失败处理；收到 SIGTERM 并走完 drain 的正常退出不要被拉起来。
+Restart=on-failure
+RestartSec=2s
+
+# 优雅停机的上限必须覆盖最长在途请求：引擎的 drain 到点会强关，systemd 不能先杀。
+TimeoutStopSec=30s
+
+# 启动给 TLS/证书装载留余量；READY 仍然只在监听器就绪之后才发。
+TimeoutStartSec=60s
+
+# 每个 TCP 连接占一个 fd，HTTP/3 还要额外的 UDP 套接字；现代内核默认的 1024 在正常连接量下
+# 不够。这里给的是**每进程**上限（多 worker 时每个 worker 各算各的），配置里的
+# maximum_connections / maximumConnections 必须低于它，否则先撞到的是 systemd 的 fd 墙。
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

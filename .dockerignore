@@ -1,0 +1,7 @@
+# 构建上下文只留源码：这几项是 GB 级的本地状态，进上下文会让 docker build 先搬一遍再开始。
+.git/
+build/
+3rd/
+.fuzz/
+.conan2/
+*.log
