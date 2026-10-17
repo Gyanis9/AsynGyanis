@@ -99,7 +99,7 @@
       "sublabel": "存活 < 3s 算快退",
       "sources": [
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 739, "label": "isFastExit" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 761, "label": "跑稳则清零" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 800, "label": "跑稳则清零" }
       ]
     },
     {

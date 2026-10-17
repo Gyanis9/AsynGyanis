@@ -5540,7 +5540,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>读写在同一协程内 co_await：发送挂起即整条会话停住，不是只停写</li>
-          <li>发送前把截止时间切到 writeTimeout（src/Net/Http/HttpSession.h:574），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）</li>
+          <li>发送前把截止时间切到 writeTimeout（src/Net/Http/HttpSession.h:631），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）</li>
           <li>部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/HttpSession.h:981 的 requires 分支）</li>
         </ul>
       </div>
