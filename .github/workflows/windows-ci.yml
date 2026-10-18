@@ -318,3 +318,81 @@ jobs:
           name: clang-tidy-report-windows
           path: ${{ runner.temp }}/clang-tidy.log
           if-no-files-found: warn
+
+  # 微基准进 CI 的第一步只做「报读数」不做「判回归」：共享 runner 上绝对吞吐随宿主负载浮动，
+  # 阈值门会把「旁边有人在编译」读成性能回归。这道作业把三跑的逐档读数与跨跑离散度原样落进
+  # 步骤摘要，攒够几轮真实波动之后再决定要不要把判定线抬进来（口径沿用 run-microbench.bat：
+  # 三跑取中位数；吞吐下限这里给 0，等于只落盘不判）。
+  # soak 那两份基线照旧不进 CI：那是分钟级的长负载，一轮就要占掉整条作业的预算。
+  microbench-readings:
+    name: 微基准读数（三跑取中位，只报不断）
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.conan2
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+          restore-keys: |
+            conan-${{ runner.os }}-
+
+      - name: 缓存 sccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py', 'CMakeLists.txt') }}-
+            sccache-${{ runner.os }}-
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装 Conan 与 sccache
+        run: |
+          pip install "conan>=2.25"
+          choco install sccache -y --no-progress
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 只编到 microbench 目标为止：微基准的读数只在 Release 档有意义，而全目标构建要多花几倍时间
+      - name: 配置（Release）
+        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: 构建微基准目标
+        run: cmake --build build/release --target microbench
+
+      - name: 三跑读数并落进步骤摘要
+        shell: bash
+        run: |
+          for run in 1 2 3; do
+            ./build/release/benchmarks/microbench/microbench.exe --json-out "$RUNNER_TEMP/microbench-run$run.json" || exit 1
+            # 退出码为 0 却没落文件＝拿上一次留下的旧读数来判，这种「绿」比红更危险
+            if [ ! -f "$RUNNER_TEMP/microbench-run$run.json" ]; then
+              echo "第 $run 跑没写出结果文件，拒绝用缺份的读数去比对" >&2
+              exit 1
+            fi
+          done
+          python benchmarks/check-baseline.py --baseline benchmarks/microbench-baseline.json --minimum-throughput-ratio 0             "$RUNNER_TEMP/microbench-run1.json" "$RUNNER_TEMP/microbench-run2.json" "$RUNNER_TEMP/microbench-run3.json" | tee "$RUNNER_TEMP/microbench.log"
+          {
+            echo "### 微基准三跑读数（只报不断）"
+            echo "- 逐档吞吐对基线的倍数与跨跑离散度（max/min）见下；阈值线留到有足够几轮真实波动读数之后再定"
+            echo '```'
+            grep -E "^  -- |\[噪声\]|\[点式基线\]|^==" "$RUNNER_TEMP/microbench.log" | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传三跑原始读数
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: microbench-readings
+          path: ${{ runner.temp }}/microbench-run*.json
+          if-no-files-found: warn
