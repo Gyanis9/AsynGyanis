@@ -1,9 +1,12 @@
 #include "Net/Http/HttpServerAssembly.h"
 
+#include "Base/Log/Logger.h"
+#include "Base/Log/LoggerRegistry.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpsServer.h"
 #include "Net/Http/Middleware.h"
+#include "Net/Http/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <algorithm>
@@ -42,6 +45,47 @@ namespace AsynGyanis::Net
 
     namespace
     {
+        /**
+         * @brief 把限流那一格落到一台服务器的路由器上：共享桶优先，否则本台自建一份
+         * @tparam ServerType HttpServer 或 HttpsServer
+         * @details 拆出来是因为桶的速率在构造时就定死，「传进来的共享对象与摊分结果不一致」必须当场拒——
+         *          静默挑一边就是「配置写着整机 100 而四个进程放行 400」，与连接数那条被拒的偏差同一形状。
+         *          0 表示不设这道闸门，保持不动。
+         * @param server 目标服务器
+         * @param configuration server 段读出的配置
+         * @param context 跨监听器共享的对象与摊分口径
+         * @param perListenerDenominator 「进程数 × 每进程台数」，只用于本台自建的那一份
+         * @return std::expected<void, std::string> 成功为空；失败给出中文原因
+         */
+        template<typename ServerType>
+        [[nodiscard]] std::expected<void, std::string> applyRateLimitOnto(ServerType &server, const HttpServerConfiguration &configuration,
+                                                                          const HttpServerAssemblyContext &context, const std::size_t perListenerDenominator)
+        {
+            const PerProcessRateLimit rateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, context.workerProcessCount);
+            if (context.sharedRateLimitBucket != nullptr)
+            {
+                // 共享对象是多台的共用一份，比对按进程口径；不一致时两侧都不动，把冲突原样交回调用方
+                if (rateShare.requestsPerSecond > 0.0 &&
+                    (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond || context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
+                {
+                    return std::unexpected(std::format("装配冲突：传入的共享限流桶是 {} 请求/s（桶容量 {}），而配置摊到本进程后应是 {} 请求/s（桶容量 {}）"
+                                                       "（rate_limit.requests_per_second={} 摊给 {} 个进程）。"
+                                                       "多条通道共用一个桶时，请让那一个与整机配置对得上（或对不上时把速率设为 0）",
+                                                       context.sharedRateLimitBucket->tokensPerSecond(), context.sharedRateLimitBucket->burstCapacity(),
+                                                       rateShare.requestsPerSecond, rateShare.burstCapacity, configuration.requestsPerSecond, context.workerProcessCount));
+                }
+                server.router().addMiddleware(tokenBucketRateLimiterMiddleware(context.sharedRateLimitBucket));
+            } else if (configuration.requestsPerSecond > 0.0)
+            {
+                // 桶是本台自己 new 的，一个进程里几台就各有一份，因此按「进程 × 台数」摊；
+                // 上面那条共享对象的比对仍按进程口径（一台进程里多台共用一个桶）
+                const PerProcessRateLimit perListenerRateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, perListenerDenominator);
+                server.router().addMiddleware(
+                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(perListenerRateShare.requestsPerSecond, perListenerRateShare.burstCapacity)));
+            }
+            return {};
+        }
+
         /**
          * @brief 两台服务器的装配共用同一段逻辑：它们都从 TcpServer 派生且 setter 同名同义
          * @tparam ServerType HttpServer 或 HttpsServer
@@ -84,6 +128,10 @@ namespace AsynGyanis::Net
             server.setParserLimits(configuration.parserLimits);
             server.setMaxConnections(perListenerMaximumConnections);
 
+            // 访问日志要排在限流那一步之前：中间件按登记顺序由外向内跑（先登记的在外层），挂在内侧就
+            // 记不到被限流短路的那几条 429——而那些恰恰是最需要在访问日志里看到的
+            applyAccessLogMiddleware(server.router(), configuration);
+
             // 传进来的共享对象优先；没传而配置里有标量时本台建一份（0 表示不设这道闸门，保持不动）
             if (context.sharedPerIpLimiter != nullptr)
             {
@@ -94,29 +142,10 @@ namespace AsynGyanis::Net
                 server.setPerIpConnectionLimiter(std::make_shared<PerIpConnectionLimiter>(perProcessShare(configuration.maximumConnectionsPerIp, perListenerDenominator)));
             }
 
-            // 限流桶同理：多台共用一份时由调用方传入，否则本台按配置建一份（0 表示不设这道闸门，保持不动）
-            // 传入的那一份必须与摊分结果一致——桶的速率在构造时就定死，配置写着整机 100 而桶跑的是
-            // 100/进程，四个进程就放行 400，与连接数那条被拒的偏差长得一模一样，不该只有一处出声
-            const PerProcessRateLimit rateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, context.workerProcessCount);
-            if (context.sharedRateLimitBucket != nullptr)
+            // 限流桶按「共享对象优先，否则本台自建」两条路落，判断与摊分都在那一步里
+            if (const auto rateOutcome = applyRateLimitOnto(server, configuration, context, perListenerDenominator); !rateOutcome)
             {
-                if (rateShare.requestsPerSecond > 0.0 &&
-                    (context.sharedRateLimitBucket->tokensPerSecond() != rateShare.requestsPerSecond || context.sharedRateLimitBucket->burstCapacity() != rateShare.burstCapacity))
-                {
-                    return std::unexpected(std::format("装配冲突：传入的共享限流桶是 {} 请求/s（桶容量 {}），而配置摊到本进程后应是 {} 请求/s（桶容量 {}）"
-                                                       "（rate_limit.requests_per_second={} 摊给 {} 个进程）。"
-                                                       "多条通道共用一个桶时，请让那一个与整机配置对得上（或对不上时把速率设为 0）",
-                                                       context.sharedRateLimitBucket->tokensPerSecond(), context.sharedRateLimitBucket->burstCapacity(),
-                                                       rateShare.requestsPerSecond, rateShare.burstCapacity, configuration.requestsPerSecond, context.workerProcessCount));
-                }
-                server.router().addMiddleware(tokenBucketRateLimiterMiddleware(context.sharedRateLimitBucket));
-            } else if (configuration.requestsPerSecond > 0.0)
-            {
-                // 桶是本台自己 new 的，一个进程里几台就各有一份，因此按「进程 × 台数」摊；
-                // 上面那条共享对象的比对仍按进程口径（一台进程里多台共用一个桶）
-                const PerProcessRateLimit perListenerRateShare = perProcessRateLimit(configuration.requestsPerSecond, configuration.rateLimitBurstCapacity, perListenerDenominator);
-                server.router().addMiddleware(
-                        tokenBucketRateLimiterMiddleware(std::make_shared<TokenBucket>(perListenerRateShare.requestsPerSecond, perListenerRateShare.burstCapacity)));
+                return rateOutcome;
             }
 
             // 在途正文预算是跨连接的一份账，且账目只在进程内可见：整机口径同样要摊到本进程。
@@ -150,6 +179,19 @@ namespace AsynGyanis::Net
             return {};
         }
     } // namespace
+
+    void applyAccessLogMiddleware(Router &router, const HttpServerConfiguration &configuration)
+    {
+        if (!configuration.accessLog)
+        {
+            return;
+        }
+        // 借用注册表单例持有的根日志器：中间件会被塞进 std::function 长期存活，因此按 loggingMiddleware
+        // 的参数契约用「空 shared_ptr + 裸指针」造一个不拥有的共享指针（注册表的生命周期覆盖全进程）。
+        // 刻意不另起一个命名日志器：命名日志器没配 sink 时不回落到 root，默认部署会把这一行静默丢掉
+        const auto rootLogger = std::shared_ptr<const Base::Logger>(std::shared_ptr<const Base::Logger>{}, &Base::LoggerRegistry::instance().getRootLogger());
+        router.addMiddleware(loggingMiddleware(rootLogger));
+    }
 
     std::expected<void, std::string> applyHttpServerConfiguration(HttpServer &server, const HttpServerConfiguration &configuration, const HttpServerAssemblyContext &context)
     {

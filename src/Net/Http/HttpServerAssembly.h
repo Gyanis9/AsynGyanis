@@ -30,6 +30,7 @@ namespace AsynGyanis::Net
 {
     class HttpServer;
     class HttpsServer;
+    class Router;
     class HttpMemoryBudget;
     class PerIpConnectionLimiter;
     class TokenBucket;
@@ -162,6 +163,17 @@ namespace AsynGyanis::Net
         // 只有 /metrics、/debug/loops、/debug/connections 与 /debug/log-level）：编排器的探针拿不到凭据，
         // 给探针加闸的结局是探针被人关掉
     }
+
+    /**
+     * @brief 按 `server.access_log` 把访问日志中间件挂到一台路由器上
+     * @details 这是那条开关的唯一实现：h1/h2 由装配出口在服务器上挂，h3 的路由器是调用方自己交给
+     *          `QuicServer` 的（装配出口碰不到它），必须调本函数挂同一份判断——分两处写的后果是
+     *          「h1 有访问日志、h3 没有」，而这件事只有真打一条 h3 请求才看得出来。
+     *          输出行的字段口径与不记哪些字段见 `loggingMiddleware`。
+     * @param router 目标路由器，必须尚未开始服务
+     * @param configuration 已读出的配置（只有 `accessLog` 这一项参与判断）
+     */
+    ASYN_NET_API void applyAccessLogMiddleware(Router &router, const HttpServerConfiguration &configuration);
 
     /**
      * @brief 把 server 段的配置落到一台明文 HTTP 服务器上

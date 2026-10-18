@@ -80,6 +80,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.maximumConnectionsPerIp, kDefaultMaximumConnectionsPerIp);
         EXPECT_EQ(configuration.requestsPerSecond, 0.0);
         EXPECT_FALSE(configuration.exposeMetrics);
+        // 访问日志默认开：装出去的服务器一条访问日志都不产，比多一行日志的代价更难查
+        EXPECT_TRUE(configuration.accessLog);
     }
 
     /**
@@ -112,6 +114,8 @@ namespace AsynGyanis::Net
         serverMembers.emplace("ops_bearer_token", Base::ConfigValue("assemble-test-token"));
         serverMembers.emplace("metrics_port", integer(9101));
         serverMembers.emplace("metrics_address", text("127.0.0.2"));
+        // 写成 false 才证得出这一格真被读进来：与默认值同形的 true 分不清「读了」与「没读」
+        serverMembers.emplace("access_log", boolean(false));
         serverMembers.emplace("limits", object(Base::ConfigObject{
                                                 {"idle_timeout_ms", integer(30000)},
                                                 {"read_timeout_ms", integer(15000)},
@@ -144,6 +148,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.opsBearerToken, "assemble-test-token");
         EXPECT_EQ(configuration.metricsPort, 9101U);
         EXPECT_EQ(configuration.metricsAddress, "127.0.0.2");
+        EXPECT_FALSE(configuration.accessLog);
         EXPECT_EQ(configuration.limits.idleTimeout, std::chrono::milliseconds(30000));
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
@@ -229,6 +234,18 @@ namespace AsynGyanis::Net
 
         const Base::ConfigObject booleanMismatch{{"expose_metrics", text("yes")}};
         EXPECT_THROW(expectConfigurationRejected(makeRootDocument(booleanMismatch)), Base::ConfigValidationException);
+
+        // 访问日志那一格同样只认真布尔：`on`/`1`/`enabled` 在 YAML 里各有自己的解释，
+        // 静默猜一侧等于「配了关而实际还开着」
+        const Base::ConfigObject accessLogMismatch{{"access_log", text("on")}};
+        try
+        {
+            expectConfigurationRejected(makeRootDocument(accessLogMismatch));
+            FAIL() << "access_log 写成字符串应当被拒";
+        } catch (const Base::ConfigValidationException &exception)
+        {
+            EXPECT_EQ(exception.key(), "server.access_log");
+        }
     }
 
     /**

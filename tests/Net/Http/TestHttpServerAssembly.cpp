@@ -122,6 +122,83 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：默认配置（access_log 开）装配后，一条真实 TCP 请求留下一行访问日志
+     * @details 这条钉的是「配置键 → 中间件」的接线，不是「中间件能用」——字段齐不齐由
+     *          `LoggingMiddleware.EmitsCompleteAccessLogFieldsForRealTcpRequest` 钉，而装配出口此前
+     *          压根没人挂它：照这份配置装出去的服务器一条访问日志都不产，而配置文件每一行看着都对
+     */
+    TEST(HttpServerAssembly, EmitsAccessLogForServedRequest)
+    {
+        LogCapture capture;
+
+        const ServerConfigurator configureServer = [](TestHttpServer &server)
+        {
+            const HttpServerConfiguration configuration; // accessLog 取默认（开）
+            const auto                    outcome = applyHttpServerConfiguration(server, configuration);
+            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        };
+
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/logged/:id",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.setBody("payload");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        // 走真实 TCP：响应到达那一刻中间件已经把这一行写进了根日志器（日志在写出响应之前落）
+        const auto parsed = fetchPath(fixture.listeningPort(), "/logged/7");
+        ASSERT_NE(parsed.find("HTTP/1.1 200"), std::string::npos) << parsed;
+
+        EXPECT_EQ(capture.countContainingWithin("HTTP 访问", kWaitTimeout), 1U) << "开了 access_log 却没有留下一行访问日志";
+        // 点名路由模式与请求标识：证明留下的确实是这一条请求的访问日志，而不是别的 Info 行
+        EXPECT_EQ(capture.countContaining("route=/logged/:id"), 1U);
+    }
+
+    /**
+     * @brief 钉住：`access_log: false` 时一条访问日志都不产
+     * @details 反向判据必须与上面的形状相同（同一条路由、同一条真实请求），否则「关掉」这一格
+     *          其实没被测过——只在中间件层判 null logger，测不到配置那一路
+     */
+    TEST(HttpServerAssembly, EmitsNoAccessLogWhenSwitchedOff)
+    {
+        LogCapture capture;
+
+        const ServerConfigurator configureServer = [](TestHttpServer &server)
+        {
+            HttpServerConfiguration configuration;
+            configuration.accessLog = false;
+            const auto outcome      = applyHttpServerConfiguration(server, configuration);
+            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        };
+
+        RunningHttpServerFixture fixture(
+                HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/logged/:id",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.setBody("payload");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, configureServer);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        const auto parsed = fetchPath(fixture.listeningPort(), "/logged/7");
+        ASSERT_NE(parsed.find("HTTP/1.1 200"), std::string::npos) << parsed;
+
+        EXPECT_EQ(capture.countContaining("HTTP 访问"), 0U) << "关掉了 access_log 却仍在记访问日志";
+    }
+
+    /**
      * @brief 钉住：配了令牌的运维端点，没带对凭据进不来，而 /healthz 与 /readyz 仍不查
      * @details /metrics 与 /debug/loops 各钉「缺凭据 401」「带错 401」「带对 200」，/healthz 与 /readyz
      *          钉「无凭据仍 200」——这条不对称是刻意的：存活探针与就绪探针都要能被编排器无凭据访问，

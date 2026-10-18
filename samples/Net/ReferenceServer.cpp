@@ -1528,6 +1528,10 @@ int main(int argc, char **argv)
         // 「收得下但解不出」或「解得出但收不下」），解出的字节同样进这台服务器的在途正文预算
         http3Router.addMiddleware(Net::requestDecompressionMiddleware(Net::RequestDecompressionOptions{.maximumDecompressedByteCount = configuration.parserLimits.maximumBodySize},
                                                                       inflightBodyBudget));
+        // 访问日志：h1/h2 那两路由装配出口挂（applyHttpServerConfiguration），h3 的路由器是交给
+        // QuicServer 的、装配出口碰不到，因此这里调同一个函数挂同一个判断——漏掉这一路就是
+        // 「h1 有访问日志、h3 一条没有」
+        Net::applyAccessLogMiddleware(http3Router, configuration);
         if (compressResponses)
         {
             // 三条通道一律走外置版：h3 的会话收口现在会先叫醒并等完挂在业务协程上的在途动作

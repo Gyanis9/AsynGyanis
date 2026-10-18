@@ -97,6 +97,18 @@ namespace AsynGyanis::Net
         std::uint16_t metricsPort{0};
         /// 管理口的监听地址，默认只听回环。写成 `0.0.0.0` 就是把指标公开到所有网卡上，请连同令牌一起想清楚
         std::string metricsAddress{"127.0.0.1"};
+        /**
+         * @brief 是否给每条请求记一行访问日志，默认开
+         * @details 默认开是因为「装出去的服务器一条访问日志都不产」比多一行日志的代价更难查：这条不对称
+         *          从第一眼就没法看出来（服务答得好好的，只是什么都没留下），而排障、按来源统计与
+         *          「这条请求到底进没进来」全靠这一行。不要就在配置里显式写 `access_log: false`
+         * @note 写进**根日志器**（Info 级），因此跟着 `logging.loggers.root.sinks` 与它的等级走：
+         *       root 抬到 warn 以上就没有访问日志了。刻意不另起一个命名日志器——命名日志器没配 sink
+         *       时不会回落到 root（见 LoggerConfigLoader），默认部署会把这一行静默丢掉
+         * @note 三条通道各挂一次，判断只有一处实现（@see applyAccessLogMiddleware）：h1/h2 由装配出口挂，
+         *       h3 的路由器由调用方在起 `QuicServer` 之前挂
+         */
+        bool accessLog{true};
     };
 
     /**

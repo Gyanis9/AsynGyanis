@@ -18,12 +18,18 @@ namespace AsynGyanis::Net
     namespace
     {
         /// server 段直接支持的键
-        constexpr std::array<std::string_view, 10> kServerKeys{
-                "maximum_connections", "maximum_connections_per_ip",
-                "memory_budget_bytes", "expose_metrics",
-                "ops_bearer_token",    "metrics_port",
-                "metrics_address",     "limits",
-                "parser_limits",       "rate_limit",
+        constexpr std::array<std::string_view, 11> kServerKeys{
+                "maximum_connections",
+                "maximum_connections_per_ip",
+                "memory_budget_bytes",
+                "expose_metrics",
+                "ops_bearer_token",
+                "metrics_port",
+                "metrics_address",
+                "access_log",
+                "limits",
+                "parser_limits",
+                "rate_limit",
         };
 
         /// limits 子段支持的键
@@ -123,6 +129,30 @@ namespace AsynGyanis::Net
                 return static_cast<std::uint64_t>(signedValue);
             }
             return value.get<std::uint64_t>();
+        }
+
+        /**
+         * @brief 读一个只认真布尔的开关键：没写这个键就保持调用方传进来的默认值
+         * @details 只认 true/false。`on`/`yes`/`1`/`enabled` 在 YAML 里各有自己的解释，猜中一侧等于
+         *          「配了关而实际还开着」——开关读错要比读漏更响亮地失败
+         * @param section 本层的对象节点
+         * @param key 键名
+         * @param keyPath 该键的完整路径，用于错误信息
+         * @param destination 取值落点
+         * @throws Base::ConfigValidationException 值不是布尔
+         */
+        void readBooleanSwitch(const Base::ConfigValue &section, const std::string &key, const std::string &keyPath, bool &destination)
+        {
+            if (!section.contains(key))
+            {
+                return;
+            }
+            const Base::ConfigValue &value = section.at(key);
+            if (!value.is_boolean())
+            {
+                throw Base::ConfigValidationException(keyPath, "必须是 true 或 false");
+            }
+            destination = value.get<bool>();
         }
 
         /**
@@ -304,15 +334,7 @@ namespace AsynGyanis::Net
         {
             configuration.memoryBudgetBytes = static_cast<std::size_t>(requireNonNegativeInteger(section.at("memory_budget_bytes"), sectionPath + ".memory_budget_bytes"));
         }
-        if (section.contains("expose_metrics"))
-        {
-            const Base::ConfigValue &value = section.at("expose_metrics");
-            if (!value.is_boolean())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".expose_metrics", "必须是 true 或 false");
-            }
-            configuration.exposeMetrics = value.get<bool>();
-        }
+        readBooleanSwitch(section, "expose_metrics", sectionPath + ".expose_metrics", configuration.exposeMetrics);
         if (section.contains("ops_bearer_token"))
         {
             const Base::ConfigValue &value = section.at("ops_bearer_token");
@@ -357,6 +379,7 @@ namespace AsynGyanis::Net
                         std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0", configuration.metricsAddress));
             }
         }
+        readBooleanSwitch(section, "access_log", sectionPath + ".access_log", configuration.accessLog);
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
         // 手调它只会把超时语义调坏；需要更细的节拍应当在代码里改而不是配置里拧
 

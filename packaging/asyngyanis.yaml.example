@@ -36,6 +36,11 @@ server:
   metrics_port: 9091
   # 管理口监听地址；默认只听回环。写成 0.0.0.0 前先确认上面配了令牌。
   metrics_address: 127.0.0.1
+  # 每条请求记一行访问日志（method/uri/status/duration_ms/bytes/request_id/client/proto/tls/route），
+  # 默认开。写进根日志器（Info），因此跟着上面 logging 段 root 的 sink 与等级走：root 抬到 warn
+  # 以上就没有访问日志了。要按来源排障、或让采集端（Filebeat/vector）看得见流量，别关它。
+  # 关掉：access_log: false
+  access_log: true
 
   # 连接级限额（时间与单连接请求条数）。0 一律表示关闭对应保护。
   # SIGHUP / 文件监听重载会整体换新一代限额，只影响此后新建的连接，已建立的连接不打断。
