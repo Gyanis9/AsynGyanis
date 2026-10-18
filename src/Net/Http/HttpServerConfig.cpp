@@ -2,6 +2,7 @@
 
 #include "Base/Exception/ConfigValidationException.h"
 #include "Core/Socket/InetAddress.h"
+#include "Net/Http/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <array>
@@ -18,7 +19,7 @@ namespace AsynGyanis::Net
     namespace
     {
         /// server 段直接支持的键
-        constexpr std::array<std::string_view, 11> kServerKeys{
+        constexpr std::array<std::string_view, 12> kServerKeys{
                 "maximum_connections",
                 "maximum_connections_per_ip",
                 "memory_budget_bytes",
@@ -30,6 +31,25 @@ namespace AsynGyanis::Net
                 "limits",
                 "parser_limits",
                 "rate_limit",
+                "tls",
+        };
+
+        /// tls 子段支持的键：逐项对应 Core::TlsPolicy 的旋钮，外加「要不要客户端证书」这一格
+        constexpr std::array<std::string_view, 14> kTlsKeys{
+                "minimum_protocol_version",
+                "maximum_protocol_version",
+                "cipher_list",
+                "tls13_cipher_suites",
+                "supported_groups",
+                "security_level",
+                "certificate_authority_file",
+                "certificate_authority_path",
+                "verify_depth",
+                "revocation_list_file",
+                "revocation_covers_whole_chain",
+                "session_tickets",
+                "allowed_peer_sha256_fingerprints",
+                "require_client_certificates",
         };
 
         /// limits 子段支持的键
@@ -229,6 +249,135 @@ namespace AsynGyanis::Net
             return &child;
         }
 
+        /**
+         * @brief 把协议版本档位文本解成策略里的枚举
+         * @details 只认这两档：更低的 TLS 1.0/1.1 由 RFC 8996 列为废弃，本框架不接受、也不给配置项——
+         *          留一个「能把它调回去」的口子等于把服务端重新暴露给 BEAST 一类的已知攻击面。
+         *          比较按 ASCII 折大小写（`equalsIgnoringCase`），`tls1.3` 与 `TLS1.3` 同解
+         * @param value 配置值
+         * @param keyPath 键路径，用于错误信息
+         * @return Core::TlsPolicy::ProtocolVersion 解出的档位
+         * @throws Base::ConfigValidationException 不是字符串，或取值不在这两档之内
+         */
+        [[nodiscard]] Core::TlsPolicy::ProtocolVersion readProtocolVersion(const Base::ConfigValue &value, const std::string &keyPath)
+        {
+            if (!value.is_string())
+            {
+                throw Base::ConfigValidationException(keyPath, "必须是字符串（TLS1.2 或 TLS1.3）");
+            }
+            const std::string text = value.get<std::string>();
+            if (equalsIgnoringCase(text, "TLS1.2"))
+            {
+                return Core::TlsPolicy::ProtocolVersion::Tls1_2;
+            }
+            if (equalsIgnoringCase(text, "TLS1.3"))
+            {
+                return Core::TlsPolicy::ProtocolVersion::Tls1_3;
+            }
+            throw Base::ConfigValidationException(keyPath, "只支持 TLS1.2 与 TLS1.3（更低的两档由 RFC 8996 列为废弃，这里既不接受也不给取值），当前是「" + text + "」");
+        }
+
+        /**
+         * @brief 取一条可选的字符串字段：没给就留空，而策略里空串的含义正是「这一格不动」
+         * @param node 本层的对象节点
+         * @param key 键名
+         * @param keyPath 该键的完整路径，用于错误信息
+         * @param destination 取值落点
+         * @throws Base::ConfigValidationException 值不是字符串
+         */
+        void readOptionalStringInto(const Base::ConfigValue &node, const std::string &key, const std::string &keyPath, std::string &destination)
+        {
+            if (!node.contains(key))
+            {
+                return;
+            }
+            const Base::ConfigValue &value = node.at(key);
+            if (!value.is_string())
+            {
+                throw Base::ConfigValidationException(keyPath, "必须是字符串（一条路径或一段 OpenSSL 语法的原文）");
+            }
+            destination = value.get<std::string>();
+        }
+
+        /**
+         * @brief 读 server.tls 段：只做文本到 `Core::TlsPolicy` 的映射，不新造中间类型
+         * @details 套件串、TLS 1.3 套件与曲线名刻意不预先校验：什么算合法由 OpenSSL 说了算（它随发行版
+         *          的编译配置变化），自己解析一遍会把它支持的写法判成非法；被拒时启动抛出的消息带着那份
+         *          原文与出错的那一项，比这里再猜一遍准。指纹名单同理——那条判据住在 `TlsContext`
+         *          （64 位小写十六进制），两处各写一份迟早会漂
+         * @param node tls 段的对象节点
+         * @param configuration 落点：@c tlsPolicy 与 @c requireClientCertificates
+         * @param sectionPath 上级键路径（"server"），用于拼出完整键名
+         * @throws Base::ConfigValidationException 出现未知键、类型不符或取值越界
+         */
+        void readTlsSection(const Base::ConfigValue &node, HttpServerConfiguration &configuration, const std::string &sectionPath)
+        {
+            const std::string tlsPath = sectionPath + ".tls";
+            rejectUnknownKeys(node, kTlsKeys.data(), kTlsKeys.size(), tlsPath);
+            Core::TlsPolicy &policy = configuration.tlsPolicy;
+
+            if (node.contains("minimum_protocol_version"))
+            {
+                policy.minimumProtocolVersion = readProtocolVersion(node.at("minimum_protocol_version"), tlsPath + ".minimum_protocol_version");
+            }
+            if (node.contains("maximum_protocol_version"))
+            {
+                policy.maximumProtocolVersion = readProtocolVersion(node.at("maximum_protocol_version"), tlsPath + ".maximum_protocol_version");
+            }
+
+            readOptionalStringInto(node, "cipher_list", tlsPath + ".cipher_list", policy.cipherList);
+            readOptionalStringInto(node, "tls13_cipher_suites", tlsPath + ".tls13_cipher_suites", policy.tls13CipherSuites);
+            readOptionalStringInto(node, "supported_groups", tlsPath + ".supported_groups", policy.supportedGroups);
+            readOptionalStringInto(node, "certificate_authority_file", tlsPath + ".certificate_authority_file", policy.certificateAuthorityFile);
+            readOptionalStringInto(node, "certificate_authority_path", tlsPath + ".certificate_authority_path", policy.certificateAuthorityPath);
+            readOptionalStringInto(node, "revocation_list_file", tlsPath + ".revocation_list_file", policy.revocationListFile);
+
+            if (node.contains("security_level"))
+            {
+                // OpenSSL 的等级只有 0..5 这六档有效（更高按 5 处理），负数是「把整套检查关掉」，
+                // 那不是任何部署会想要的写法，因此两侧都拒
+                const std::int64_t securityLevel = requireNonNegativeInteger(node.at("security_level"), tlsPath + ".security_level");
+                if (securityLevel > 5)
+                {
+                    throw Base::ConfigValidationException(
+                            tlsPath + ".security_level",
+                            std::format("必须在 0-5 之间（0 = 只做最小防护，2 = 默认档：拒 1024 位以下的 RSA/DH 与 SHA-1 签名），当前是 {}", securityLevel));
+                }
+                policy.securityLevel = static_cast<int>(securityLevel);
+            }
+            if (node.contains("verify_depth"))
+            {
+                const std::int64_t depth = requireNonNegativeInteger(node.at("verify_depth"), tlsPath + ".verify_depth");
+                if (depth < 1)
+                {
+                    throw Base::ConfigValidationException(tlsPath + ".verify_depth", "必须不小于 1：0 表示连对端那一张证书都不允许验，等于每一条握手必失败");
+                }
+                policy.verifyDepth = static_cast<int>(depth);
+            }
+            readBooleanSwitch(node, "revocation_covers_whole_chain", tlsPath + ".revocation_covers_whole_chain", policy.revocationCoversWholeChain);
+            readBooleanSwitch(node, "session_tickets", tlsPath + ".session_tickets", policy.areSessionTicketsEnabled);
+            readBooleanSwitch(node, "require_client_certificates", tlsPath + ".require_client_certificates", configuration.requireClientCertificates);
+
+            if (node.contains("allowed_peer_sha256_fingerprints"))
+            {
+                const Base::ConfigValue &value = node.at("allowed_peer_sha256_fingerprints");
+                if (!value.is_array())
+                {
+                    throw Base::ConfigValidationException(tlsPath + ".allowed_peer_sha256_fingerprints", "必须是列表，每一项是一条指纹（单条也要写成列表）");
+                }
+                policy.allowedPeerSha256Fingerprints.clear();
+                for (const Base::ConfigValue &item: value)
+                {
+                    if (!item.is_string())
+                    {
+                        throw Base::ConfigValidationException(tlsPath + ".allowed_peer_sha256_fingerprints",
+                                                              "每一项都必须是字符串指纹（`openssl x509 -noout -fingerprint -sha256` 取出的那 64 位十六进制）");
+                    }
+                    policy.allowedPeerSha256Fingerprints.push_back(item.get<std::string>());
+                }
+            }
+        }
+
         /// 读 limits 子段（连接级限额：超时与单连接请求数）
         void readLimitsSection(const Base::ConfigValue &node, HttpServerLimits &limits)
         {
@@ -295,6 +444,59 @@ namespace AsynGyanis::Net
             if (node.contains("burst_capacity"))
             {
                 burstCapacity = requireNonNegativeNumber(node.at("burst_capacity"), sectionPath + ".burst_capacity");
+            }
+        }
+
+        /**
+         * @brief 交叉校验：「配了这一项、而它的前提没配」的那几类状态，在读配置那一刻拦住
+         * @details 静默按其中一半生效时，配置文件每一行看着都对，而线上表现与出错的位置隔得很远：
+         *          容量小于 1 的桶让服务一上线就全 429；没开运维端点的令牌保护不到任何东西；
+         *          单独一个管理口端口号没有端点可听；要求客户端证书却没有信任锚时每条握手都失败。
+         *          这些都只能在装配前说，留到运行期就只剩「配了却没生效」这一种读法
+         * @param configuration 已读出的整份配置
+         * @throws Base::ConfigValidationException 任一条不成立，键路径点名到那一格
+         */
+        void validateCrossKeyConstraints(const HttpServerConfiguration &configuration)
+        {
+            // 开了限流就必须有能放行至少一个请求的桶，否则令牌桶永远取不出令牌
+            if (configuration.requestsPerSecond > 0.0 && configuration.rateLimitBurstCapacity < 1.0)
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity", "启用限流时容量必须不小于 1，否则任何请求都放行不了");
+            }
+            // 配了运维端点令牌却没开 expose_metrics，闸门就保护不到任何东西——看起来像「已配鉴权」
+            // 而实际无人在用它，是最难发现的一类死配置
+            if (!configuration.opsBearerToken.empty() && !configuration.exposeMetrics)
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".ops_bearer_token",
+                                                      "配了令牌但没有 expose_metrics：闸门保护不到任何端点。要么两处都开，要么把令牌这一项删掉");
+            }
+            // 同理：单独一个管理口端口号没有任何端点可听，或者只改了监听地址却没开管理口——
+            // 这两种都让「来源收口」这件事看起来做了而实际没做
+            if (configuration.metricsPort != 0 && !configuration.exposeMetrics)
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_port",
+                                                      "配了管理口端口却没有 expose_metrics：这个口上不会有任何端点。要么两处都开，要么把 metrics_port 设回 0");
+            }
+            if (configuration.metricsPort == 0 && configuration.metricsAddress != "127.0.0.1")
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_address",
+                                                      std::format("metrics_port 是 0（端点留在业务口上），此时 metrics_address=「{}」不会被任何人使用。"
+                                                                  "要给运维端点单独收口就同时设 metrics_port；只想公开到所有网卡就别写这一项",
+                                                                  configuration.metricsAddress));
+            }
+            // 同一类状态落到 TLS 上更狠：要求客户端证书却没有信任锚，在握手里的形态是每条连接都失败
+            // （HTTPS 与 QUIC 两侧的构造期判据都是拒），因此排在这里说，而不是留一条永远握不成的监听器
+            if (configuration.requireClientCertificates && configuration.tlsPolicy.certificateAuthorityFile.empty() && configuration.tlsPolicy.certificateAuthorityPath.empty())
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".tls.require_client_certificates",
+                                                      "开了双向 TLS 却没给 certificate_authority_file 或 certificate_authority_path：没有信任锚就没有任何证书能过校验，"
+                                                      "每条握手都会失败。要么补上 CA，要么把这一项设回 false");
+            }
+            // 同理：「整链都查」说的是查哪些证书，一张列表都没有时这句话没有对象可查
+            if (configuration.tlsPolicy.revocationCoversWholeChain && configuration.tlsPolicy.revocationListFile.empty())
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".tls.revocation_covers_whole_chain",
+                                                      "配了整链吊销检查却没给 revocation_list_file：没有任何列表可查，这一项不会被任何人使用。要么给出 CRL 文件，要么设回 false");
             }
         }
     } // namespace
@@ -395,34 +597,13 @@ namespace AsynGyanis::Net
         {
             readRateLimitSection(*rateNode, configuration.requestsPerSecond, configuration.rateLimitBurstCapacity);
         }
+        if (const Base::ConfigValue *tlsNode = findOptionalObject(section, "tls", sectionPath))
+        {
+            readTlsSection(*tlsNode, configuration, sectionPath);
+        }
 
-        // 交叉校验：开了限流就必须有能放行至少一个请求的桶，否则令牌桶永远取不出令牌，
-        // 表现为「服务一上线就全 429」——配置错误要在这里拦住，而不是等线上发现
-        if (configuration.requestsPerSecond > 0.0 && configuration.rateLimitBurstCapacity < 1.0)
-        {
-            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".rate_limit.burst_capacity", "启用限流时容量必须不小于 1，否则任何请求都放行不了");
-        }
-        // 同一条理由的另一面：配了运维端点令牌却没开 expose_metrics，闸门就保护不到任何东西——
-        // 看起来像「已配鉴权」而实际无人在用它，是最难发现的一类死配置
-        if (!configuration.opsBearerToken.empty() && !configuration.exposeMetrics)
-        {
-            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".ops_bearer_token",
-                                                  "配了令牌但没有 expose_metrics：闸门保护不到任何端点。要么两处都开，要么把令牌这一项删掉");
-        }
-        // 同理：单独一个管理口端口号没有任何端点可听，或者只改了监听地址却没开管理口——
-        // 这两种都让「来源收口」这件事看起来做了而实际没做
-        if (configuration.metricsPort != 0 && !configuration.exposeMetrics)
-        {
-            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_port",
-                                                  "配了管理口端口却没有 expose_metrics：这个口上不会有任何端点。要么两处都开，要么把 metrics_port 设回 0");
-        }
-        if (configuration.metricsPort == 0 && configuration.metricsAddress != "127.0.0.1")
-        {
-            throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".metrics_address",
-                                                  std::format("metrics_port 是 0（端点留在业务口上），此时 metrics_address=「{}」不会被任何人使用。"
-                                                              "要给运维端点单独收口就同时设 metrics_port；只想公开到所有网卡就别写这一项",
-                                                              configuration.metricsAddress));
-        }
+        // 交叉校验（限流桶、运维端点三件套、TLS 的信任锚与吊销名单要配套）都在那一个函数里
+        validateCrossKeyConstraints(configuration);
         return configuration;
     }
 

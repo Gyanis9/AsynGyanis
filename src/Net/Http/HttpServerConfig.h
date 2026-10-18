@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Base/Config/ConfigValue.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpServerLimits.h"
 
@@ -109,6 +110,27 @@ namespace AsynGyanis::Net
          *       h3 的路由器由调用方在起 `QuicServer` 之前挂
          */
         bool accessLog{true};
+        /**
+         * @brief `server.tls` 段解出来的加密策略，直接交给 `HttpsServer` 与 `QuicServer`
+         * @details 这一格的由来：`Core::TlsPolicy` 的旋钮早就齐了，而配置里没有任何一段能填到它上，
+         *          于是「版本下限／套件／曲线／安全等级／信任库／吊销」只在库层成立——运维不改代码
+         *          就收不住加密策略。这里只做文本到字段的映射，**不新造策略类型**，也不预先校验
+         *          套件串与曲线名：什么算合法由 OpenSSL 说了算，它拒绝时启动抛出的消息带着那份原文。
+         * @note 不写这一段时本成员就是默认构造的 `Core::TlsPolicy{}`，握手行为与加它之前逐字相同
+         *       （每个字段的「没给」都有默认档，见 `Core/Tls/TlsPolicy.h`）
+         * @note 三条通道的适用面不同：QUIC 只跑 TLS 1.3，`cipherList` 对 h3 恒不适用；信任库、
+         *       校验深度与吊销那几项只在 @c requireClientCertificates 打开时参与校验
+         *       （不要求客户端证书时服务端根本不会向对端要证书，那些字段装进信任库也没人去查）
+         */
+        Core::TlsPolicy tlsPolicy{};
+        /**
+         * @brief 是否要求并校验客户端证书（双向 TLS / mTLS），默认关
+         * @details 放在这一层是因为它是上面那份策略的「用不用」开关：`HttpsServer` 靠
+         *          `setClientCertificateRequired()`、`QuicServer` 靠配置里同名的构造期字段，
+         *          两侧都要求先有信任锚——所以配 true 而 `tls` 段里 CA 文件与 CA 目录都没给时，
+         *          读配置当场拒（那条状态在握手里的形态是每条连接都失败）。
+         */
+        bool requireClientCertificates{false};
     };
 
     /**

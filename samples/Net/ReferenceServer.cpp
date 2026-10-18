@@ -1378,7 +1378,13 @@ int main(int argc, char **argv)
 
     const auto buildHttpsServer = [&](Core::EventLoop &loop)
     {
-        auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile);
+        // 加密策略从 server.tls 段来（不写这一段就是默认构造的 TlsPolicy，与加这一格之前逐字相同）。
+        // 证书热轮换按登记时这份策略重建整台上下文，所以策略必须在构造那一刻就交进去
+        auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile, configuration.tlsPolicy);
+        if (configuration.requireClientCertificates)
+        {
+            server->setClientCertificateRequired(true);
+        }
         reloadableLimitTargets.emplace_back([rawServer = server.get()](const Net::HttpServerLimits &limits) { rawServer->setLimits(limits); });
         // 各 worker 进程装同一份密钥，客户端被分到哪个进程都解得开票据；不给则每进程一份随机密钥
         if (!ticketKeyFiles.empty())
@@ -1545,9 +1551,13 @@ int main(int argc, char **argv)
         }
 
         Net::QuicServer::Configuration http3Configuration;
-        http3Configuration.certificateFile       = certificateFile;
-        http3Configuration.privateKeyFile        = keyFile;
-        http3Configuration.sessionTicketKeyFiles = ticketKeyFiles;
+        http3Configuration.certificateFile = certificateFile;
+        http3Configuration.privateKeyFile  = keyFile;
+        // TLS 面与两条 TCP 通道同一份策略：版本区间、TLS 1.3 套件、曲线、安全等级、票据开关都在里面
+        // （cipherList 那一格对 QUIC 恒不适用，它只跑 TLS 1.3，见 QuicServer::Configuration 的说明）
+        http3Configuration.tlsPolicy                 = configuration.tlsPolicy;
+        http3Configuration.requireClientCertificates = configuration.requireClientCertificates;
+        http3Configuration.sessionTicketKeyFiles     = ticketKeyFiles;
         // 多 worker 下必须共用同一把（照 --ticket-key 的理由）：不给则每进程各随机一把，
         // 撞到别的进程那份旧连接的报文只能继续不理，客户端要等自己的空闲超时才知道连接没了
         http3Configuration.statelessResetKey = statelessResetKeyBytes;

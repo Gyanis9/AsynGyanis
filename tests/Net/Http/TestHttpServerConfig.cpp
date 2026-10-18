@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -138,6 +139,23 @@ namespace AsynGyanis::Net
                                                     {"requests_per_second", floating(250.0)},
                                                     {"burst_capacity", floating(500.0)},
                                             }));
+        serverMembers.emplace("tls", object(Base::ConfigObject{
+                                             {"minimum_protocol_version", text("TLS1.2")},
+                                             {"maximum_protocol_version", text("TLS1.3")},
+                                             {"cipher_list", text("ECDHE-ECDSA-AES128-GCM-SHA256")},
+                                             {"tls13_cipher_suites", text("TLS_CHACHA20_POLY1305_SHA256")},
+                                             {"supported_groups", text("X25519:secp384r1")},
+                                             {"security_level", integer(3)},
+                                             {"certificate_authority_file", text("/etc/asyngyanis/ca.pem")},
+                                             {"certificate_authority_path", text("/etc/asyngyanis/certs")},
+                                             {"verify_depth", integer(4)},
+                                             {"revocation_list_file", text("/etc/asyngyanis/ca.crl")},
+                                             {"revocation_covers_whole_chain", boolean(true)},
+                                             {"session_tickets", boolean(false)},
+                                             {"allowed_peer_sha256_fingerprints",
+                                              Base::ConfigValue(Base::ConfigArray{Base::ConfigValue("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")})},
+                                             {"require_client_certificates", boolean(true)},
+                                     }));
 
         const HttpServerConfiguration configuration = readHttpServerConfiguration(makeRootDocument(std::move(serverMembers)));
 
@@ -165,6 +183,106 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.parserLimits.maximumWebsocketMessageSize, 4194304u);
         EXPECT_DOUBLE_EQ(configuration.requestsPerSecond, 250.0);
         EXPECT_DOUBLE_EQ(configuration.rateLimitBurstCapacity, 500.0);
+
+        // tls 段逐项落到 Core::TlsPolicy：漏一格就是「配置里写了而握手照旧」
+        // 三个 has_value 用 ASSERT：解引用空 optional 会当场中止进程，把「这一格没读」
+        // 报成一条崩溃而不是一个可读的用例失败
+        ASSERT_TRUE(configuration.tlsPolicy.minimumProtocolVersion.has_value());
+        EXPECT_EQ(*configuration.tlsPolicy.minimumProtocolVersion, Core::TlsPolicy::ProtocolVersion::Tls1_2);
+        ASSERT_TRUE(configuration.tlsPolicy.maximumProtocolVersion.has_value());
+        EXPECT_EQ(*configuration.tlsPolicy.maximumProtocolVersion, Core::TlsPolicy::ProtocolVersion::Tls1_3);
+        EXPECT_EQ(configuration.tlsPolicy.cipherList, "ECDHE-ECDSA-AES128-GCM-SHA256");
+        EXPECT_EQ(configuration.tlsPolicy.tls13CipherSuites, "TLS_CHACHA20_POLY1305_SHA256");
+        EXPECT_EQ(configuration.tlsPolicy.supportedGroups, "X25519:secp384r1");
+        EXPECT_EQ(configuration.tlsPolicy.securityLevel, 3);
+        EXPECT_EQ(configuration.tlsPolicy.certificateAuthorityFile, "/etc/asyngyanis/ca.pem");
+        EXPECT_EQ(configuration.tlsPolicy.certificateAuthorityPath, "/etc/asyngyanis/certs");
+        ASSERT_TRUE(configuration.tlsPolicy.verifyDepth.has_value());
+        EXPECT_EQ(*configuration.tlsPolicy.verifyDepth, 4);
+        EXPECT_EQ(configuration.tlsPolicy.revocationListFile, "/etc/asyngyanis/ca.crl");
+        EXPECT_TRUE(configuration.tlsPolicy.revocationCoversWholeChain);
+        EXPECT_FALSE(configuration.tlsPolicy.areSessionTicketsEnabled);
+        ASSERT_EQ(configuration.tlsPolicy.allowedPeerSha256Fingerprints.size(), 1U);
+        EXPECT_EQ(configuration.tlsPolicy.allowedPeerSha256Fingerprints[0], "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+        EXPECT_TRUE(configuration.requireClientCertificates);
+    }
+
+    /**
+     * @brief 钉住：没写 tls 段时策略就是默认构造的那一份，握手行为逐字不变
+     * @details 这一格是整段能力的前提：新增的可配置面只加在「不满意的那部分人」身上，
+     *          旧配置升级后不该突然多出一条套件限制或一次吊销检查
+     */
+    TEST(HttpServerConfig, KeepsDefaultTlsPolicyWithoutTheSection)
+    {
+        const Base::ConfigObject serverMembers{{"maximum_connections", integer(64)}};
+
+        const HttpServerConfiguration configuration = readHttpServerConfiguration(makeRootDocument(serverMembers));
+        const Core::TlsPolicy         defaults;
+
+        EXPECT_FALSE(configuration.tlsPolicy.minimumProtocolVersion.has_value());
+        EXPECT_FALSE(configuration.tlsPolicy.maximumProtocolVersion.has_value());
+        EXPECT_EQ(configuration.tlsPolicy.cipherList, defaults.cipherList);
+        EXPECT_EQ(configuration.tlsPolicy.tls13CipherSuites, defaults.tls13CipherSuites);
+        EXPECT_EQ(configuration.tlsPolicy.supportedGroups, defaults.supportedGroups);
+        EXPECT_EQ(configuration.tlsPolicy.securityLevel, defaults.securityLevel);
+        EXPECT_EQ(configuration.tlsPolicy.certificateAuthorityFile, defaults.certificateAuthorityFile);
+        EXPECT_EQ(configuration.tlsPolicy.revocationListFile, defaults.revocationListFile);
+        EXPECT_EQ(configuration.tlsPolicy.revocationCoversWholeChain, defaults.revocationCoversWholeChain);
+        EXPECT_EQ(configuration.tlsPolicy.areSessionTicketsEnabled, true);
+        EXPECT_TRUE(configuration.tlsPolicy.allowedPeerSha256Fingerprints.empty());
+        EXPECT_FALSE(configuration.requireClientCertificates);
+    }
+
+    /**
+     * @brief 钉住：tls 段的拒绝面逐条点名到那一格
+     * @details 版本只认两档（1.0/1.1 由 RFC 8996 列为废弃，留取值口子等于留攻击面）、安全等级与
+     *          校验深度是整数档、未知键当场拒（`logging` 段那种「只报不拒」在这里不适用），
+     *          以及两处「配了这一项却没配它的前提」——都是会让握手静默按另一套规矩走的形状
+     */
+    TEST(HttpServerConfig, RejectsIllegalTlsSectionValues)
+    {
+        const std::vector<std::pair<Base::ConfigObject, std::string>> cases{
+                {Base::ConfigObject{{"minimum_protocol_version", text("SSLv3")}}, "server.tls.minimum_protocol_version"},
+                {Base::ConfigObject{{"maximum_protocol_version", text("TLS1.1")}}, "server.tls.maximum_protocol_version"},
+                {Base::ConfigObject{{"minimum_protocol_version", boolean(true)}}, "server.tls.minimum_protocol_version"},
+                {Base::ConfigObject{{"security_level", text("high")}}, "server.tls.security_level"},
+                {Base::ConfigObject{{"security_level", integer(6)}}, "server.tls.security_level"},
+                {Base::ConfigObject{{"verify_depth", integer(0)}}, "server.tls.verify_depth"},
+                {Base::ConfigObject{{"cipher_list", integer(1)}}, "server.tls.cipher_list"},
+                {Base::ConfigObject{{"allowed_peer_sha256_fingerprints", text("00aa")}}, "server.tls.allowed_peer_sha256_fingerprints"},
+                {Base::ConfigObject{{"allowed_peer_sha256_fingerprints", object(Base::ConfigObject{{"a", text("00aa")}})}}, "server.tls.allowed_peer_sha256_fingerprints"},
+                {Base::ConfigObject{{"session_tickets", text("off")}}, "server.tls.session_tickets"},
+                {Base::ConfigObject{{"require_client_certificates", boolean(true)}}, "server.tls.require_client_certificates"},
+                {Base::ConfigObject{{"revocation_covers_whole_chain", boolean(true)}}, "server.tls.revocation_covers_whole_chain"},
+                {Base::ConfigObject{{"not_a_tls_key", integer(1)}}, "server.tls.not_a_tls_key"},
+        };
+
+        for (const auto &[tlsMembers, expectedKey]: cases)
+        {
+            const Base::ConfigObject serverMembers{{"tls", object(tlsMembers)}};
+            try
+            {
+                static_cast<void>(readHttpServerConfiguration(makeRootDocument(serverMembers)));
+                FAIL() << expectedKey << " 这一格应当被拒";
+            } catch (const Base::ConfigValidationException &exception)
+            {
+                EXPECT_EQ(exception.key(), expectedKey);
+            }
+        }
+    }
+
+    /**
+     * @brief 钉住：tls 段的合法取值不会被上面那些判据误伤
+     * @details 拒绝面必须有正向对照，否则「写 SSLv3 被拒」与「写 TLS1.3 也被拒」在报告里长得一样
+     */
+    TEST(HttpServerConfig, AcceptsTheTwoLegalProtocolVersionSpellings)
+    {
+        const Base::ConfigObject serverMembers{{"tls", object(Base::ConfigObject{{"minimum_protocol_version", text("tls1.3")}})}};
+
+        const HttpServerConfiguration configuration = readHttpServerConfiguration(makeRootDocument(serverMembers));
+
+        ASSERT_TRUE(configuration.tlsPolicy.minimumProtocolVersion.has_value());
+        EXPECT_EQ(*configuration.tlsPolicy.minimumProtocolVersion, Core::TlsPolicy::ProtocolVersion::Tls1_3);
     }
 
     /**

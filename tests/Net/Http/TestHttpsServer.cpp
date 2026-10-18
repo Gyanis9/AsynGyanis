@@ -12,6 +12,7 @@
 #include "Net/Http/HttpServerStats.h"
 
 #include "Base/Coding/Base64.h"
+#include "Base/Config/ConfigValue.h"
 #include "Core/Crypto/Digest.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
@@ -19,6 +20,7 @@
 #include "Net/Http/HttpParserLimits.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
+#include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/Middleware.h"
 #include "Net/Http/Router.h"
@@ -165,11 +167,31 @@ namespace AsynGyanis::Net
             /**
              * @brief 连接并完成 TLS 握手
              * @param port 服务端监听端口
+             * @param minimumVersion 客户端侧的协议下限，0 = 不钉（交给 OpenSSL 默认）
+             * @param maximumVersion 客户端侧的协议上限，0 = 不钉
+             * @details 钉版本是为了替服务端的下限取证：不钉时客户端会跟着升到对端想要的版本，
+             *          「服务端只接 1.3」与「什么都接」在握手结果上长得一模一样。
+             *          两个参数都填成 TLS1_2_VERSION 就是「这个客户只会说 1.2」
              */
-            explicit TlsLoopbackClient(const std::uint16_t port)
+            explicit TlsLoopbackClient(const std::uint16_t port, const int minimumVersion = 0, const int maximumVersion = 0)
             {
                 m_context.reset(SSL_CTX_new(TLS_client_method()));
                 if (m_context == nullptr)
+                {
+                    return;
+                }
+
+                // 钉不住就说明前提没立起来（旧 OpenSSL 不认这个档位），把结论留给 isVersionPinApplied 判
+                m_versionPinApplied = true;
+                if (minimumVersion != 0)
+                {
+                    m_versionPinApplied = m_versionPinApplied && SSL_CTX_set_min_proto_version(m_context.get(), minimumVersion) == 1;
+                }
+                if (maximumVersion != 0)
+                {
+                    m_versionPinApplied = m_versionPinApplied && SSL_CTX_set_max_proto_version(m_context.get(), maximumVersion) == 1;
+                }
+                if (!m_versionPinApplied)
                 {
                     return;
                 }
@@ -218,6 +240,12 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool isHandshakeComplete() const noexcept
             {
                 return m_handshakeDone;
+            }
+
+            /// 客户端侧的协议档位是否真钉上了（没钉上时本例的前提不成立，不许当成「服务端拒了」）
+            [[nodiscard]] bool isVersionPinApplied() const noexcept
+            {
+                return m_versionPinApplied;
             }
 
             /// 本端 TCP 端口：服务端在会话里看到的对端端口就是它
@@ -403,6 +431,7 @@ namespace AsynGyanis::Net
             std::unique_ptr<SSL, SslDeleter>            m_ssl;                                            ///< 客户端 SSL 对象（关联 m_descriptor）
             int                                         m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 底层 TCP 描述符
             bool                                        m_handshakeDone{false};                           ///< TLS 握手是否已完成
+            bool                                        m_versionPinApplied{false};                       ///< 客户端侧协议档位是否钉上了（不钉版本时恒为真）
             Platform::Socket::Initialization            m_socketInitialization;                           ///< 保证 Winsock 在本对象存活期间保持初始化
         };
 
@@ -449,12 +478,15 @@ namespace AsynGyanis::Net
              * @param configureServer 可选的服务器配置动作（例如打开指标端点），同样在 start() 之前执行
              * @param certificatePath 服务器证书路径，默认用仓库自签夹具 test_cert.pem
              * @param privateKeyPath 服务器私钥路径，默认用仓库自签夹具 test_key.pem
+             * @param tlsPolicy 加密策略，默认构造即本框架既有档位（用例用它把 server.tls 段的结果送到握手面上）
              */
             RunningHttpsServerFixture(const HttpServerLimits &limits, const std::chrono::milliseconds sweepInterval, const RouteRegistrar &registerRoutes = {},
                                       const HttpParserLimits &parserLimits = HttpParserLimits{}, const std::function<void(HttpsServer &)> &configureServer = {},
-                                      const std::filesystem::path &certificatePath = kTestCertificatePath, const std::filesystem::path &privateKeyPath = kTestKeyPath) :
-                RunningServerFixture<TestHttpsServer>(limits, sweepInterval, parserLimits, [&certificatePath, &privateKeyPath](Core::EventLoop &serverLoop)
-                                                      { return TestHttpsServer(serverLoop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string()); })
+                                      const std::filesystem::path &certificatePath = kTestCertificatePath, const std::filesystem::path &privateKeyPath = kTestKeyPath,
+                                      const Core::TlsPolicy &tlsPolicy = {}) :
+                RunningServerFixture<TestHttpsServer>(
+                        limits, sweepInterval, parserLimits, [&certificatePath, &privateKeyPath, &tlsPolicy](Core::EventLoop &serverLoop)
+                        { return TestHttpsServer(serverLoop, Core::InetAddress::localhost(0), certificatePath.string(), privateKeyPath.string(), tlsPolicy); })
             {
                 if (registerRoutes)
                 {
@@ -1469,6 +1501,49 @@ namespace AsynGyanis::Net
         ASSERT_NE(response, nullptr) << "证书名字与请求的主机名一致，握手却被拒";
         EXPECT_EQ(response->statusCode, 200);
         EXPECT_NE(response->body.find("served-hello"), std::string::npos) << "正文：" << response->body;
+    }
+
+    /**
+     * @brief 钉住：`server.tls` 段的版本下限真的下发到握手上——只会说 TLS 1.2 的客户被拒，1.3 的照常服务
+     * @details 这条穿过整条链：配置文本 → `readHttpServerConfiguration` → `Core::TlsPolicy` → `HttpsServer`
+     *          构造。库层「版本下限已核实不缺」到这里才算装机侧也成立（此前 samples/ 里没有任何一处能填到它）。
+     *          正向对照（不钉版本的客户端拿到 200）挡的是「整台服务坏了也会让 1.2 客户端失败」那副假绿面孔；
+     *          `isVersionPinApplied` 挡的是「客户端根本没钉住，于是两边都握手成功/失败都说不清」。
+     *          撤掉构造点上那份策略，本用例红在「1.2 的客户却握上了手」那一条
+     */
+    TEST(HttpsServer, RefusesTls12ClientWhenConfigSectionSetsTls13Floor)
+    {
+        Base::ConfigObject serverMembers;
+        serverMembers.emplace("tls", Base::ConfigValue(Base::ConfigObject{{"minimum_protocol_version", Base::ConfigValue("TLS1.3")}}));
+        Base::ConfigObject rootMembers;
+        rootMembers.emplace(std::string(kHttpServerConfigSection), Base::ConfigValue(std::move(serverMembers)));
+        const HttpServerConfiguration configuration = readHttpServerConfiguration(Base::ConfigValue(std::move(rootMembers)));
+        ASSERT_TRUE(configuration.tlsPolicy.minimumProtocolVersion.has_value()) << "配置里的版本下限没读出来";
+
+        const RouteRegistrar serveFloor = [](Router &router, Core::EventLoop &)
+        {
+            router.get("/floor",
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody("floor-ok");
+                           co_return;
+                       });
+        };
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, serveFloor, HttpParserLimits{}, {}, kTestCertificatePath, kTestKeyPath,
+                                          configuration.tlsPolicy);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        TlsLoopbackClient lowerClient(fixture.listeningPort(), TLS1_2_VERSION, TLS1_2_VERSION);
+        ASSERT_TRUE(lowerClient.isVersionPinApplied()) << "客户端没能把自己收成只会说 TLS 1.2，本例的前提不成立";
+        EXPECT_FALSE(lowerClient.isHandshakeComplete()) << "配置把下限收到 1.3，而只会说 1.2 的客户却握上了手：server.tls 没下发到上下文";
+
+        TlsLoopbackClient allowedClient(fixture.listeningPort());
+        ASSERT_TRUE(allowedClient.isHandshakeComplete()) << "正向对照失败：不钉版本的客户也握不上，说明整台服务有问题，上面那条「拒 1.2」不作数";
+        std::string receivedText;
+        ASSERT_TRUE(allowedClient.sendText(makeRequestText("GET /floor HTTP/1.1"), kWaitTimeout)) << "1.3 通道里的请求写不出去";
+        ASSERT_TRUE(allowedClient.waitForTextOccurrences(receivedText, "floor-ok", 1, kWaitTimeout)) << "1.3 的客户拿不到响应：" << receivedText;
     }
 
     /**
