@@ -69,5 +69,22 @@ TimeoutStartSec=60s
 # maximum_connections / maximumConnections 必须低于它，否则先撞到的是 systemd 的 fd 墙。
 LimitNOFILE=65536
 
+# 用 socket activation 时改这一段（与 packaging/asyngyanis.socket.example 配套，两份要一起上）：
+#
+#   Requires=asyngyanis.socket
+#   After=asyngyanis.socket
+#   ExecStart=/usr/local/bin/ReferenceServer --config /etc/asyngyanis/asyngyanis.yaml
+#
+# 三件事都得写全，少一件就是静默的形状差：
+#   · ExecStart 要去掉 --workers——接管与多进程不同用（描述符不随 exec 传给 worker，本示例撞上会
+#     直接报错退出而不是降级），要多进程扩展就别用 activation，让各 worker 自己 bind（SO_REUSEPORT）；
+#   · 不用 --adopt-fd 传号：systemd 是按 LISTEN_FDS/LISTEN_PID 交进来的，服务读到 LISTEN_PID 等于
+#     本进程就自己接手；两个开关同时给也行，两条入口合成同一份待接手的描述符列表；
+#   · Requires=/After= 少了，服务可能在 socket 之前起，那时环境里没有 LISTEN_FDS，它就退化成
+#     自己 bind——端口是同一个所以看着没事，但 systemd 那份队列与它那份不是同一个监听器，
+#     「换代期间连接排在哪」就没人说得清。
+# 开了 --h3 时 .socket 里要同时写 ListenStream= 与 ListenDatagram=：只交 TCP 那一枚而服务又开着
+# h3，会按「接管一半」的形状退出（UDP 自己去 bind 就等于和交棒方抢同一个端口号）。
+
 [Install]
 WantedBy=multi-user.target

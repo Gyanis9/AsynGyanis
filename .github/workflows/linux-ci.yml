@@ -720,6 +720,19 @@ jobs:
       - name: QUIC 出站跨实现验收（握手、ALPN、双向流的回显）
         run: bash scripts/quic_outbound_cross_check.sh build/release "$(command -v python3)"
 
+      # 换代时监听套接字交不交得出去：镜像与 systemd 单元装的就是 ReferenceServer 这个二进制，
+      # 库里那段 adopt（Core::adoptHandedOverListener 与各 adopt 构造子）有单测，而示例的命令行接线
+      # 只有真起进程才测得出来。这一档钉的四件事都容易在改动静默处漏：接管形状下不许再 bind
+      # （strace 记，重复 listen 的实测症状是「端口换了、原服务不再应答」而不是报错）、交来的数据报
+      # 套接字上 h3 要真应答（不看 alt-svc 那种静态通告，服务没起来也照发）、LISTEN_PID 不符要忽略并
+      # 打说明、换代后老连接那条目的标识要换回一枚与交棒方宣告值逐字相同的无状态重置。
+      - name: 监听套接字交接与 socket activation 实测
+        run: |
+          command -v strace > /dev/null || sudo apt-get install -y strace
+          python3 scripts/fd_takeover_probe.py --server build/release/samples/ReferenceServer \
+              --cert tests/Core/fixtures/test_localhost_cert.pem \
+              --key tests/Core/fixtures/test_localhost_key.pem
+
       - name: 失败时上传服务端日志
         if: failure()
         uses: actions/upload-artifact@v4
@@ -1252,4 +1265,32 @@ jobs:
             echo "### 交付物：Conan 包与镜像"
             echo "镜像 $image_size；健康状态 $healthy；业务口 / $business_code；管理口 /healthz 首行「$healthz_line」；"
             echo "日志文件 ${log_bytes:-0} 字节、其中访问日志 ${access_lines:-0} 行；LoggerConfig 诊断 $diagnostics 行"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 校验 systemd 单元样例
+        run: |
+          # 两份样例都是交付件（抄到 /etc/systemd/system 就是真跑的那份），所以要让 systemd 的解析器
+          # 读一遍。.socket 没有 ExecStart，期望是零报告——多一条就是红；.service 在这台机器上没有
+          # /usr/local/bin/ReferenceServer（安装步用的是别的前缀），期望只剩「命令不可执行」那两条。
+          # 判据写成「把已知那条滤掉之后必须为空」，而不是「grep 到已知那条就算过」——后者在
+          # 解析器一条都不报时也会绿。
+          set -u
+          unit_dir=$(mktemp -d)
+          cp packaging/asyngyanis.service.example "$unit_dir/asyngyanis.service"
+          cp packaging/asyngyanis.socket.example "$unit_dir/asyngyanis.socket"
+          # docker cp 之外这里也是复制出来的文件，权限按 644 钉一遍：systemd 会抱怨 world-writable
+          chmod 644 "$unit_dir/asyngyanis.service" "$unit_dir/asyngyanis.socket"
+          cd "$unit_dir"
+
+          socket_report=$(systemd-analyze verify asyngyanis.socket 2>&1)
+          echo "socket 单元报告：${socket_report:-（空）}"
+          test -z "$socket_report" || { echo "socket 单元有告警或错误"; exit 1; }
+
+          service_report=$(systemd-analyze verify asyngyanis.service 2>&1 || true)
+          unexpected=$(echo "$service_report" | grep -av "Command /usr/local/bin/ReferenceServer is not executable" | sed '/^$/d')
+          echo "service 单元非预期报告：${unexpected:-（空）}"
+          test -z "$unexpected" || { echo "service 单元有除「本机没有那个二进制」之外的报告"; exit 1; }
+
+          {
+            echo "### systemd 单元样例"
+            echo "两份样例 verify 通过：.socket 零报告；.service 只剩「/usr/local/bin/ReferenceServer 不在本机」这一族预期抱怨"
           } >> "$GITHUB_STEP_SUMMARY"

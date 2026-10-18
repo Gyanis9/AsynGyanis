@@ -20,6 +20,7 @@
 #include "Core/Process/GracefulShutdown.h"
 #include "Core/Process/ReloadSignal.h"
 #include "Core/Process/ServiceWatchdog.h"
+#include "Core/Process/UpgradeChannel.h"
 #include "Core/Process/WorkerHeartbeat.h"
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
@@ -45,7 +46,10 @@
 #include "Net/Tracing/HttpTracingMiddleware.h"
 #include "Net/Tracing/TracingConfiguration.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/FileContents.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/System/CpuAffinity.h"
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/System/ServiceNotification.h"
@@ -468,9 +472,12 @@ int main(int argc, char **argv)
     bool                                                 useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
     bool                                                 showUsage            = false;
     /// --check-config：读完配置、把引用到的文件真打开解析一遍，然后在建任何监听器之前退出
-    bool        validateConfigurationOnly = false;
-    std::string certificateFile           = "cert.pem";
-    std::string keyFile                   = "key.pem";
+    bool validateConfigurationOnly = false;
+    /// --adopt-fd：接手别的进程交来的监听描述符（fd 继承或容器编排传号）。可重复给；
+    /// systemd 的 socket activation（LISTEN_FDS/LISTEN_PID）在启动时并入同一份列表，两条入口共用一段接管逻辑
+    std::vector<int> adoptedDescriptors;
+    std::string      certificateFile = "cert.pem";
+    std::string      keyFile         = "key.pem";
     /// 命令行有没有显式给过证书/私钥：开了 acme 之后这两条要与 acme 的落点同解，
     /// 而「没给」（走上面那两个默认值）与「给成了别的路径」是两种处置，只能按是否给过来判
     bool certificateFileGiven = false;
@@ -606,6 +613,11 @@ int main(int argc, char **argv)
             // 由 master 按窗口折半后传下来的拍间隔（毫秒，内部开关）：worker 不知道窗口，只按它拍
             watchdogPingMilliseconds = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, std::string{Core::kWatchdogPingArgument}, 1U, 600'000U));
             ++i;
+        } else if (arg == "--adopt-fd")
+        {
+            // 接手来的监听描述符：3 以下必然是搞错了（0/1/2 是标准输入输出与错误），当场按范围拒
+            adoptedDescriptors.push_back(static_cast<int>(Samples::readNumericOption(argc, argv, i, "--adopt-fd", 3U, 1024U)));
+            ++i;
         } else if (arg == "--check-config")
         {
             // 只校验不启动：运维要在端口还被旧实例占着的时候确认下一份配置能不能起
@@ -693,6 +705,13 @@ int main(int argc, char **argv)
 #endif
         LOG_INFO("            注意进程间不共享状态：单来源限额、限流上限与指标计数都是每进程一份");
         LOG_INFO("  --worker 内部开关：由 master 传给 worker，用户不必手写");
+        LOG_INFO("  --adopt-fd N 接手别的进程交来的监听描述符（可重复给；N 是本进程里那个已监听的 fd 号）：");
+        LOG_INFO("            描述符由交棒方经 fork+exec 或 SCM_RIGHTS 送过来，本进程不再 bind 那个端口，");
+        LOG_INFO("            于是端口从不关闭、已排队的连接照样接得上。systemd 的 socket activation 不必写");
+        LOG_INFO("            这个开关——读到 LISTEN_PID 等于本进程时，LISTEN_FDS 那几枚会并进同一份列表；");
+        LOG_INFO("            对不上的那份会被忽略并打一行说明（那是替别的进程收连接）。接管与 --workers、");
+        LOG_INFO("            --dispatch-accept 不同用（描述符不会随 exec 传下去，分发还要重复接手同一枚），");
+        LOG_INFO("            撞上直接报错退出；端口与配置不符也直接退出，不退化成自己再 bind 一个。");
         LOG_INFO("  --config 从配置文件读 server 段（限额、按 IP 限额、限流、指标开关、运维端点令牌）、");
         LOG_INFO("            logging 段（root 与各日志器的等级、控制台/文件/滚动 Sink）与 acme 段");
         LOG_INFO("            （证书自动化：enabled/directory_url/domains/落点四件/contact_email/tos_accepted/");
@@ -971,6 +990,69 @@ int main(int argc, char **argv)
                  configuration.requestsPerSecond > 0.0 ? std::format("{:.0f} 请求/s", configuration.requestsPerSecond) : std::string("不限（默认）"),
                  wholeMachineInflightBodyBytes == 0 ? std::string("不限（默认）") : std::to_string(wholeMachineInflightBodyBytes) + " 字节");
 
+    // 接手监听器：--adopt-fd（脚本/容器编排传进来的描述符号）与 systemd 的 socket activation 两条入口
+    // 在这里合成一份列表，后面各通道按形状分诊。分诊只问内核（isListeningStream / DatagramSocket::adopt
+    // 各自验类型），不按参数位置猜——猜错的症状不是报错而是服务起来后一条连接都收不到。
+    std::vector<int> handedOverDescriptors = adoptedDescriptors;
+    const auto       activation            = Core::activationListenerDescriptors();
+    if (activation.isForThisProcess)
+    {
+        handedOverDescriptors.insert(handedOverDescriptors.end(), activation.descriptors.begin(), activation.descriptors.end());
+    } else if (activation.announcedCount > 0)
+    {
+        // 别人的 fd：一枚都不碰，并且把为什么没接手写下来——静默改走自己 bind 是这条路上最难查的形状
+        LOG_INFO_FMT("忽略 systemd 交来的 {} 枚描述符：LISTEN_PID 不是本进程（pid {}），接手就是替别的进程收连接", activation.announcedCount,
+                     Platform::ProcessInfo::currentProcessId());
+    }
+    if (!handedOverDescriptors.empty() && (workerProcessTotal > 1 || dispatchAccept))
+    {
+        LOG_ERROR("接管监听器不能与 --workers 多进程或 --dispatch-accept 同用：master 与接受器那一台都不服务，"
+                  "而接手来的描述符不会随 exec 传给 worker（数据报那一枚还会被置成 close-on-exec）；"
+                  "分发模式还要另建一台只接受的服务器，那会把同一枚描述符接手两次。"
+                  "要么单进程单监听器接手，要么退回各台自己 bind（SO_REUSEPORT）——这一格没有静默降级，"
+                  "因为「以为在接手、其实各绑各的」比报错难查得多");
+        return 1;
+    }
+
+    int                                     adoptedStreamFd{-1};               // 交给 TCP 那台（明文或 HTTPS）的监听描述符
+    std::optional<Platform::DatagramSocket> adoptedQuicSocket;                 // 交给 QuicServer 的那一枚已绑定数据报
+    bool                                    isAdoptedListenerMismatch = false; // 接手来的监听器不在配置端口上（下面按失败退出）
+    for (const int descriptor: handedOverDescriptors)
+    {
+        if (adoptedStreamFd < 0 && Platform::Socket::isListeningStream(descriptor))
+        {
+            adoptedStreamFd = descriptor;
+            continue;
+        }
+        if (!adoptedQuicSocket.has_value())
+        {
+            // adopt 失败时它既不看错也不接管描述符（所有权留在调用方手里），所以下面由本处决定留还是关
+            if (auto probed = Platform::DatagramSocket::adopt(descriptor); probed.has_value())
+            {
+                adoptedQuicSocket = std::move(*probed);
+                continue;
+            }
+        }
+        // 用不上的那一枚必须关掉：留着就是替交棒方把这个端口占着，而本进程里没人 accept 它
+        LOG_INFO_FMT("接手来的描述符 {} 既不是可 accept 的流监听器也不是可用的已绑定数据报，已就地关闭", descriptor);
+        static_cast<void>(Platform::FileDescriptor::close(descriptor));
+    }
+    // 数据报那一份交进 QuicServer 时会被 std::move 走，此后这份 optional 恒空。三处日志与两处分支
+    // 要的都是「这一代到底接手了没」，所以在这里拍一张快照，后面一律只看它
+    const bool isQuicSocketAdopted = adoptedQuicSocket.has_value();
+    if (!handedOverDescriptors.empty())
+    {
+        LOG_INFO_FMT("接管模式：交来 {} 枚描述符 → TCP 监听器 {}，HTTP/3 数据报 {}", handedOverDescriptors.size(),
+                     adoptedStreamFd >= 0 ? std::to_string(adoptedStreamFd) : std::string("无"), isQuicSocketAdopted ? "有" : "无");
+    }
+    if (useHttp3 && !handedOverDescriptors.empty() && !isQuicSocketAdopted && adoptedStreamFd >= 0)
+    {
+        LOG_ERROR("开了 --h3 而交来的描述符里没有数据报那一枚：TCP 端口接手成功、UDP 仍会去自己 bind，"
+                  "于是同一个端口的两条通道来自两代进程。要么两边一起交（systemd 的 .socket 同时写 "
+                  "ListenStream= 与 ListenDatagram=），要么这一代别开 --h3");
+        return 1;
+    }
+
     // 多进程：master 只做编排，自己不服务——既当 master 又当 worker 会让「谁在服务」含糊，
     // 也会让「worker 崩了补一个」这条路径多一种要处理的形态。参数原样转给 worker，
     // 多两个内部开关：--worker（据此跳过这一段，直接去跑服务器）与 --worker-index（本进程的槽位号）
@@ -1238,6 +1320,13 @@ int main(int argc, char **argv)
 
     auto &pool          = context.threadPool();
     auto  actualThreads = static_cast<unsigned>(pool.threadCount());
+    if (adoptedStreamFd >= 0 && actualThreads > 1)
+    {
+        // 接手来的监听器只有一份，所有权归第一条服务器：再按循环数各建一台就是把同一枚描述符
+        // 交出去两次。这里当场收到 1 台并说明，而不是让第二台在 bind/adopt 处报一个看不懂的错
+        LOG_WARN_FMT("接管模式：监听器台数从 {} 收到 1（接手来的监听套接字只有一份，多绑一台就是重复接手同一枚描述符）", actualThreads);
+        actualThreads = 1;
+    }
 
     // 绑核是部署方的选择：开了之后每条循环线程固定占一枚逻辑核，减少调度迁移与缓存被踩。
     // 线程数多于可用核数时只有前若干条被绑（实现里会记 WARN），这里只如实报出开关与核数
@@ -1399,7 +1488,8 @@ int main(int argc, char **argv)
     // 按 --https 决定造哪种协议的服务器；返回基类指针，两条路径共用一套构造逻辑
     const auto buildHttpServer = [&](Core::EventLoop &loop)
     {
-        auto server = std::make_unique<Net::HttpServer>(loop, *address);
+        // 接手模式用那份已在监听的描述符（所有权转进服务器），否则按地址自己 bind
+        auto server = adoptedStreamFd >= 0 ? std::make_unique<Net::HttpServer>(loop, adoptedStreamFd) : std::make_unique<Net::HttpServer>(loop, *address);
         reloadableLimitTargets.emplace_back([rawServer = server.get()](const Net::HttpServerLimits &limits) { rawServer->setLimits(limits); });
         setupRoutes(server->router());
         advertiseHttp3IfEnabled(server->router());
@@ -1442,7 +1532,9 @@ int main(int argc, char **argv)
     {
         // 加密策略从 server.tls 段来（不写这一段就是默认构造的 TlsPolicy，与加这一格之前逐字相同）。
         // 证书热轮换按登记时这份策略重建整台上下文，所以策略必须在构造那一刻就交进去
-        auto server = std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile, configuration.tlsPolicy);
+        // 接手模式用那份已在监听的描述符（所有权转进服务器），否则按地址自己 bind
+        auto server = adoptedStreamFd >= 0 ? std::make_unique<Net::HttpsServer>(loop, adoptedStreamFd, certificateFile, keyFile, configuration.tlsPolicy)
+                                           : std::make_unique<Net::HttpsServer>(loop, *address, certificateFile, keyFile, configuration.tlsPolicy);
         if (configuration.requireClientCertificates)
         {
             server->setClientCertificateRequired(true);
@@ -1650,7 +1742,8 @@ int main(int argc, char **argv)
 
         try
         {
-            http3Server = std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration);
+            http3Server = isQuicSocketAdopted ? std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration, std::move(*adoptedQuicSocket))
+                                              : std::make_unique<Net::QuicServer>(pool.eventLoop(0), http3Configuration);
             // 印的就是刚传下去那个数：0 要印成「不限」而不是 0，否则两条日志里一个写 0 一个写
             // 「不限」，运维还是会去翻配置文件确认这台到底卡在哪
             LOG_INFO_FMT("HTTP/3 的并发连接上限 {}（就是上面「每台」那一份，三条通道同一个数）",
@@ -1662,7 +1755,9 @@ int main(int argc, char **argv)
             {
                 http3Server->staticFileDir(staticDirectory);
             }
-            http3ListenTask.emplace(http3Server->listen(*address));
+            // 接手的套接字端口已经定死，再按地址 listen 会被服务端当场拒绝（那是「换个端口」的动作）：
+            // listen 的两个重载就按这张快照分家
+            http3ListenTask.emplace(isQuicSocketAdopted ? http3Server->listen() : http3Server->listen(*address));
             pool.eventLoop(0).scheduler().schedule(http3ListenTask->handle());
         } catch (const Base::Exception &http3Exception)
         {
@@ -1864,6 +1959,42 @@ int main(int argc, char **argv)
                       address->toString());
         // 关停走既有那条路径：真的起来的那几台照样体面收口，不另起一套收尾
         g_running.store(false);
+    } else if (adoptedStreamFd >= 0 || isQuicSocketAdopted)
+    {
+        // 接手来的监听器必须真的在配置的那个端口上。端口对不上就是接错了别人的套接字（.socket 与
+        // 配置文件各写一个端口时正是这个形状），而此刻最坏的处置是「照常开服务」：新一代在一个没人
+        // 期望的端口上应答，交棒方那边看到的就是「换代之后服务不见了」——比当场退出难查得多
+        const auto mismatchReason = [](const std::string_view channel, const std::uint16_t actual, const std::uint16_t expected)
+        {
+            if (actual == expected)
+            {
+                return std::string{};
+            }
+            return std::string(channel) + " 接手的监听器实际在端口 " + std::to_string(actual) + "，而配置要的是 " + std::to_string(expected);
+        };
+        std::string mismatch;
+        for (const Net::TcpServer *listener: listeningServers)
+        {
+            mismatch = mismatchReason("TCP", listener->listeningPort(), port);
+            if (!mismatch.empty())
+            {
+                break;
+            }
+        }
+        if (mismatch.empty() && http3Server != nullptr)
+        {
+            mismatch = mismatchReason("HTTP/3", http3Server->listeningPort(), port);
+        }
+        if (!mismatch.empty())
+        {
+            LOG_ERROR_FMT("{}：接手失败就如实退出，不退化成自己再 bind 一个（那会与交棒方抢同一端口，症状是原服务不再应答而不是报错）", mismatch);
+            isAdoptedListenerMismatch = true;
+            g_running.store(false);
+        } else
+        {
+            LOG_INFO_FMT("接管模式已生效：本进程在交棒方原先的端口 {} 上继续应答（TCP {}，HTTP/3 {}）", port, adoptedStreamFd >= 0 ? "接手" : "自绑",
+                         isQuicSocketAdopted ? "接手" : (useHttp3 ? "自绑" : "未启用"));
+        }
     } else
     {
         LOG_INFO("" + std::string(proto) + " server started  " + proto + "://" + address->toString());
@@ -2016,5 +2147,5 @@ int main(int argc, char **argv)
 
     LOG_INFO("Server stopped successfully");
     // 启动没确认成功时不能报 0：编排脚本与进程管理器都靠退出码判断这次启动算不算成了
-    return stuckListenerCount == 0 ? 0 : 1;
+    return stuckListenerCount == 0 && !isAdoptedListenerMismatch ? 0 : 1;
 }

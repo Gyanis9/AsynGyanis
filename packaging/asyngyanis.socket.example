@@ -1,0 +1,37 @@
+# AsynGyanis 的 systemd **socket** 单元样例：把监听套接字交给 systemd，服务进程随后接手。
+# 复制到 /etc/systemd/system/asyngyanis.socket 后按现场改端口/地址，然后
+#   systemctl enable --now asyngyanis.socket
+# 同时把 asyngyanis.service 里的 --workers 去掉并接上 Requires/After（见该文件末尾那段）。
+#
+# 这一格解决的是「端口从不关闭」：套接字由 systemd 持有，服务换代期间新连接排在内核队列里，
+# 新一代起来就接着 accept——不再有「旧进程已退、新进程还没听」的 ECONNREFUSED 窗口。
+# 与 ReferenceServer 的 --adopt-fd（脚本/容器编排自己传描述符）是同一段接管逻辑，只是描述符
+# 的来源不同：这里由 systemd 按 LISTEN_FDS/LISTEN_PID 交进来。
+
+[Unit]
+Description=AsynGyanis reference server socket
+# 与服务的依赖关系写在服务那一侧（Requires= 指向本单元），这里不反向指：
+# 停掉 socket 时不该顺带把正在服务在途请求的服务杀掉。
+
+[Socket]
+# 端口要与 /etc/asyngyanis/asyngyanis.yaml 里的监听配置一致：服务接手时会核对
+# 「这枚描述符实际在哪个端口」，对不上就当场退出（宁可起不来，也不要在新一个端口上悄悄应答，
+# 而交棒方那边看起来是「换代之后服务不见了」）。
+ListenStream=8080
+# 只有开了 --h3 才需要这一行：交来的数据报套接字会交给 QuicServer（同一个端口号的 UDP）。
+# 两条都写时 systemd 先 STREAM 后 DGRAM 地排描述符，而服务是按形状分诊（问内核 SO_TYPE 与
+# SO_ACCEPTCONN），不按位置猜，因此这里加别的监听器也不会错位。
+# ListenDatagram=8080
+
+# 专用账号：与 asyngyanis.service 的 User/Group 同解，否则 systemd 建出来的套接字属 root，
+# 服务进程读不到（症状是接手成功但 accept 立刻 EBADF）。
+SocketUser=asyngyanis
+SocketGroup=asyngyanis
+SocketMode=0600
+
+# backlog 交给引擎决定：TcpServer 的默认档（含 TCP_DEFER_ACCEPT、FASTOPEN 等一整套）由
+# Platform::Socket 逐项设置，systemd 这里再钉一份就是第二处真源，两边不同解时没人报错。
+# 所以本单元刻意不写 ListenStream= 之外的 Backlog=。
+
+[Install]
+WantedBy=multi-user.target
