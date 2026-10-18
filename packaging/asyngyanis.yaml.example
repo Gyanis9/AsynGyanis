@@ -106,6 +106,10 @@ logging:
             policy: size
             max_size_mb: 100
             max_backup: 10
+            # 逐行同步（文件族 sink 在配置这一层的默认就是开）：写完就交给操作系统，tail -f、
+            # Filebeat/vector 这类采集与崩溃后的取证才读得到。写 immediate_flush: false 换回
+            # 「攒进流缓冲、由刷新或收口统一交出」，省一点系统调用，代价是运行期文件可能长时间
+            # 是 0 字节——开着日志采集的部署别关它。
 
 # 链路追踪（OTLP 推送 / 文件落盘）。enabled=false 时其余取值不校验，但未知键仍会拒。
 tracing:

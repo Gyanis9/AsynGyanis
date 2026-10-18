@@ -249,6 +249,27 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(fileContains(logPath, "WARN ")) << content;
     }
 
+    /**
+     * @brief 钉住：immediateFlush 打开时，写完的行不必等 flush 或收口就在文件里
+     * @details 「运行期不落盘」的洞正在这一步：`tail -f`、Filebeat/vector 这类采集与崩溃后的取证
+     *          只读得到已经交给操作系统的字节，而除了析构与显式 flush 之外没人调用刷新——实测装机形态
+     *          启动后 75 秒文件恒为 0 字节。撤掉 FileSink 写路径里那一次 flush，本用例当场红。
+     *          反向的「默认构造仍然攒在流缓冲里」由本文件的 /dev/full 那几条例用钉着（它们的前提
+     *          就是短写入先落进缓冲）
+     */
+    TEST(FileSink, ImmediateFlushMakesLinesVisibleBeforeAnyCloseout)
+    {
+        TestSupport::TemporaryDirectory temporaryDirectory("FileSink_ImmediateFlush");
+        const fs::path                  logPath = temporaryDirectory.path() / "live.log";
+
+        FileSink sink(logPath, false, true);
+        sink.write(makeEvent(LogLevel::Info, "live_one"));
+        sink.write(makeEvent(LogLevel::Info, "live_two"));
+
+        EXPECT_EQ(countLines(logPath), 2u) << "开了逐行同步却没落盘：" << readWholeFile(logPath);
+        EXPECT_TRUE(fileContains(logPath, "live_two")) << readWholeFile(logPath);
+    }
+
     TEST(FileSink, WrittenLineMatchesDefaultFormatterOutput)
     {
         TestSupport::TemporaryDirectory temporaryDirectory("FileSink_Format");

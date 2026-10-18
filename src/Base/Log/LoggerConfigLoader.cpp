@@ -82,11 +82,11 @@ namespace AsynGyanis::Base
             }
             if (type == "file")
             {
-                return {"type", "path", "truncate", "formatter", "level"};
+                return {"type", "path", "truncate", "immediate_flush", "formatter", "level"};
             }
             if (type == "rolling_file")
             {
-                return {"type", "base_filename", "directory", "policy", "max_size_mb", "max_backup", "formatter", "level"};
+                return {"type", "base_filename", "directory", "policy", "max_size_mb", "max_backup", "immediate_flush", "formatter", "level"};
             }
             if (type == "async")
             {
@@ -143,6 +143,30 @@ namespace AsynGyanis::Base
                 return defaultValue;
             }
             return *parsed;
+        }
+
+        /**
+         * @brief 把 rolling_file 的 policy 文本解成策略，认不出来的报一行并按 size 回落
+         * @details 与 overflow_policy 同一口径：回退本身可以，但必须说得出「拼错了」
+         * @param policyName 配置里的策略名
+         * @return RollingPolicy 解出的策略
+         */
+        [[nodiscard]] RollingPolicy parseRollingPolicy(const std::string &policyName)
+        {
+            if (policyName == "size")
+            {
+                return RollingPolicy::Size;
+            }
+            if (policyName == "daily")
+            {
+                return RollingPolicy::Daily;
+            }
+            if (policyName == "hourly")
+            {
+                return RollingPolicy::Hourly;
+            }
+            std::cerr << "LoggerConfig：rolling_file sink 的 policy='" << policyName << "' 非法（只支持 size / daily / hourly），已按 size 处理" << '\n';
+            return RollingPolicy::Size;
         }
 
         /**
@@ -370,10 +394,13 @@ namespace AsynGyanis::Base
             // 相对路径基于基准目录解析，避免依赖进程工作目录
             const std::filesystem::path filePath = resolveLogPath(*pathOptional, baseDirectory);
             const bool                  truncate = optionalFieldWithDiagnosis(sinkConfiguration, "truncate", false, "file sink");
+            // 逐行同步在配置这一层默认开（`FileSink` 自己的默认是关，见它的构造参数）：装机形态「运行期
+            // 不落盘」是采集端与崩溃取证看不见的洞，觉得贵的人显式写 false，别让默认替所有人决定看不见
+            const bool immediateFlush = optionalFieldWithDiagnosis(sinkConfiguration, "immediate_flush", true, "file sink");
             // 路径文本按 UTF-8 报：`path::string()` 走本地代码页，代码页外的字符直接抛出，
             // 一条「日志写到哪了」的说明不该把整次装配打断
             LOG_INFO_FMT("文件日志输出：{}", AsynGyanis::Platform::FileSystem::utf8FromPath(filePath));
-            sink = std::make_unique<FileSink>(filePath, truncate);
+            sink = std::make_unique<FileSink>(filePath, truncate, immediateFlush);
         } else if (type == "rolling_file")
         {
             const std::optional<std::string> baseOptional = requiredStringField(sinkConfiguration, "base_filename", "rolling_file sink");
@@ -385,21 +412,8 @@ namespace AsynGyanis::Base
             // （emoji、非本机文字）会被换成 '?'，日志就此写到改了名的文件上
             const std::filesystem::path logDirectory =
                     resolveLogPath(optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "directory", std::string{"logs"}, "rolling_file sink"), baseDirectory);
-            const std::string policyName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "policy", std::string{"size"}, "rolling_file sink");
-
-            RollingPolicy policy;
-            if (policyName == "size")
-                policy = RollingPolicy::Size;
-            else if (policyName == "daily")
-                policy = RollingPolicy::Daily;
-            else if (policyName == "hourly")
-                policy = RollingPolicy::Hourly;
-            else
-            {
-                // 与 overflow_policy 同一口径：回退本身可以，但必须说得出「拼错了」
-                std::cerr << "LoggerConfig：rolling_file sink 的 policy='" << policyName << "' 非法（只支持 size / daily / hourly），已按 size 处理" << '\n';
-                policy = RollingPolicy::Size;
-            }
+            const std::string   policyName = optionalFieldWithDiagnosis<std::string>(sinkConfiguration, "policy", std::string{"size"}, "rolling_file sink");
+            const RollingPolicy policy     = parseRollingPolicy(policyName);
 
             const int64_t configuredMaximumSizeMb = optionalFieldWithDiagnosis(sinkConfiguration, "max_size_mb", int64_t{10}, "rolling_file sink");
             // 边界钳制：0（或负数）会让「已写字节 >= 上限」恒真，退化成每写一行就滚动一次——
@@ -442,7 +456,8 @@ namespace AsynGyanis::Base
                 std::cerr << "LoggerConfig：rolling_file sink 的 base_filename='" << *baseOptional << "' 带目录段，只取其中的文件名 '"
                           << AsynGyanis::Platform::FileSystem::utf8FromPath(basePath.filename()) << "'；要把日志放进子目录请写在 directory 字段里" << '\n';
             }
-            sink = std::make_unique<RollingFileSink>(basePath, logDirectory, policy, maximumSizeBytes, maximumBackupCount);
+            sink = std::make_unique<RollingFileSink>(basePath, logDirectory, policy, maximumSizeBytes, maximumBackupCount,
+                                                     optionalFieldWithDiagnosis(sinkConfiguration, "immediate_flush", true, "rolling_file sink"));
         } else if (type == "async")
         {
             if (!sinkConfiguration.contains("wrapped"))

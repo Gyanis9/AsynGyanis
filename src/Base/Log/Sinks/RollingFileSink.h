@@ -64,9 +64,11 @@ namespace AsynGyanis::Base
          * @param policy 滚动策略
          * @param maximumSizeBytes 按大小滚动时的阈值（字节）
          * @param maximumBackupFiles 最大保留备份文件数，超过 kMaximumBackupFileCount 时按该上限钳制
+         * @param immediateFlush 每写一行是否立刻同步，转交给活动 FileSink（滚动前后的每个活动文件
+         *        都按同一份口径刷新）。默认 false 的理由见 `FileSink` 的构造参数
          */
         RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes = 10 * 1024 * 1024,
-                        size_t maximumBackupFiles = 10);
+                        size_t maximumBackupFiles = 10, bool immediateFlush = false);
 
         /**
          * @brief 析构滚动文件 Sink 并刷新残留数据
@@ -138,13 +140,15 @@ namespace AsynGyanis::Base
         RollingPolicy         m_policy;             ///< 滚动策略
         size_t                m_maximumSizeBytes;   ///< 按大小滚动阈值（字节）
         size_t                m_maximumBackupFiles; ///< 最大备份文件数
+        bool                  m_immediateFlush;     ///< 转交给活动 FileSink 的逐行同步口径（滚动后的新文件同值）
 
         std::unique_ptr<FileSink> m_currentSink;   ///< 当前活动文件 Sink
         std::string               m_currentSuffix; ///< 当前时间后缀（按时间滚动时使用）
         std::mutex                m_mutex;         ///< 保护滚动逻辑与上述计数的互斥锁
 
         /// 活动文件累计写入字节数（按大小滚动的判据）：
-        /// 用自增计数替代「每行 flush + file_size」两次系统调用
+        /// 用自增计数替代「每行 flush + file_size」两次系统调用；逐行同步打开时 flush 那一次会回来，
+        /// 但 stat 仍然不需要——判据看的是 writeLine 回报的落盘字节数
         std::uintmax_t m_bytesInCurrentFile = 0;
 
         /// 下一个需要检查滚动的时间点（按时间滚动的判据）：

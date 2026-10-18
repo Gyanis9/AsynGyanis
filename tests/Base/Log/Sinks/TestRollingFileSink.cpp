@@ -152,6 +152,28 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(collectFilesMatching(temporaryDirectory.path(), R"(quiet\.\d+\.log)").empty());
     }
 
+    /**
+     * @brief 钉住：immediateFlush 打开时写完即见，且滚动换出的新活动文件沿用同一口径
+     * @details 只在构造时定一次的口径才算「装配口径」：重开活动文件时漏传，滚过一刀之后又回到
+     *          「运行期不落盘」，而长会话里那正是最晚被发现的一格。全程不做任何 flush 与收口
+     */
+    TEST(RollingFileSink, ImmediateFlushAppliesToEveryActiveFileAfterRolling)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_ImmediateFlush");
+        const fs::path                        activePath = temporaryDirectory.path() / "live.log";
+
+        RollingFileSink sink("live.log", temporaryDirectory.path(), RollingPolicy::Size, 512, 5, true);
+        for (int index = 0; index < 12; ++index)
+        {
+            sink.write(makeEvent(LogLevel::Info, "live_" + std::to_string(index) + "_padding_payload"));
+        }
+
+        // 阈值 512 字节、每行约 45 字节：这 12 行至少滚过一次，因此读到的活动文件是新开的那个
+        EXPECT_FALSE(collectFilesMatching(temporaryDirectory.path(), R"(live\.\d+\.log)").empty()) << "没有发生滚动，本例的「新活动文件」前提不成立";
+        const std::string activeContent = readWholeFile(activePath);
+        EXPECT_NE(activeContent.find("live_11_padding_payload"), std::string::npos) << "最后写的那一行不在活动文件里：" << activeContent;
+    }
+
     TEST(RollingFileSink, SizePolicyCreatesNumberedBackups)
     {
         TestSupport::TemporaryDirectory temporaryDirectory("Rolling_SizeRoll");

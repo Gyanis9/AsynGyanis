@@ -82,7 +82,7 @@ namespace AsynGyanis::Base
         }
     } // namespace
 
-    FileSink::FileSink(std::filesystem::path filePath, const bool truncate) : m_filePath(std::move(filePath))
+    FileSink::FileSink(std::filesystem::path filePath, const bool truncate, const bool immediateFlush) : m_filePath(std::move(filePath)), m_immediateFlush(immediateFlush)
     {
         const std::string directoryError = createParentDirectory(m_filePath.parent_path());
 
@@ -149,6 +149,14 @@ namespace AsynGyanis::Base
         translateNewlinesToCrLf(m_lineBuffer);
 #endif
         m_file << m_lineBuffer;
+
+        // 逐行同步（配置装出来的 sink 默认走这一步，见构造参数）：不交出去的那半行采集端与
+        // 崩溃后的现场都读不到。放在流状态检查之前，让 flush 期间的失败（设备满、配额耗尽）
+        // 与写入失败走同一个判据与同一本丢行账，不再多一条只在一侧出声的路
+        if (m_immediateFlush)
+        {
+            m_file.flush();
+        }
 
         // 写入后必须看流状态：磁盘写满或配额耗尽时插入不会抛异常，只会把 failbit/badbit 置起，
         // 此后每次 << 都是空操作——日志整片静默消失，而返回值还在报「写成功了」。

@@ -37,9 +37,14 @@ namespace AsynGyanis::Base
          * @brief 构造文件 Sink，并按模式打开目标日志文件
          * @param filePath 日志文件路径
          * @param truncate 是否以截断模式打开文件，false 为追加模式
+         * @param immediateFlush 是否每写一行就同步到操作系统：默认 false 保持「攒进流缓冲、由 flush()
+         *        或析构统一交出去」这条既有契约（自己掌握刷新节奏的调用方不受影响）。从配置装出来的
+         *        sink 传的是 true——见 `LoggerConfigLoader` 的 `immediate_flush`，那里的默认与这里不同，
+         *        理由是「运维侧看不见就是没有」：`tail -f`、Filebeat/vector 这类采集与崩溃后的取证
+         *        只读得到已经交出去的字节，而运行期一次 flush 都不做时，日志文件能整段时间是 0 字节
          * @throws std::runtime_error 文件无法打开
          */
-        explicit FileSink(std::filesystem::path filePath, bool truncate = false);
+        explicit FileSink(std::filesystem::path filePath, bool truncate = false, bool immediateFlush = false);
 
         /**
          * @brief 析构文件 Sink 并确保缓存落盘
@@ -124,6 +129,7 @@ namespace AsynGyanis::Base
 
         std::filesystem::path m_filePath;                       ///< 当前日志文件路径
         std::ofstream         m_file;                           ///< 日志文件输出流
+        bool                  m_immediateFlush;                 ///< 每行写出后是否立刻同步（见构造参数）
         std::string           m_lineBuffer;                     ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
         std::mutex            m_mutex;                          ///< 保护文件写入的互斥锁
         bool                  m_hasReportedWriteFailure{false}; ///< 本轮连续写失败是否已上报（避免每条日志都写一次标准错误）

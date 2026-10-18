@@ -130,14 +130,14 @@ namespace AsynGyanis::Base
     } // namespace
 
     RollingFileSink::RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, const RollingPolicy policy, const size_t maximumSizeBytes,
-                                     const size_t maximumBackupFiles) :
+                                     const size_t maximumBackupFiles, const bool immediateFlush) :
         // 备份数上限自行钳制：它同时决定每次滚动要探测多少个序号，配置侧虽已夹过一道，
         // 但本类是公开可构造的，不能把「不会被卡死」的责任推给调用方
         // 只取文件名段（构造参数的注释对此已有承诺）：带目录段的 base_filename 会把活动文件写到
         // 那个目录里去（operator/ 遇到绝对路径的右操作数会整体替换左操作数），而备份与清理都在
         // m_directory 下按「主名.序号.扩展名」找——两半不在同一目录时滚动照样发生，备份却永远清不掉
         m_baseFilename(baseFilename.filename()), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes),
-        m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount))
+        m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount)), m_immediateFlush(immediateFlush)
     {
         // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
         // 随后的 FileSink 打开文件会失败并抛出带路径的中文异常，定位信息更准确
@@ -292,7 +292,8 @@ namespace AsynGyanis::Base
     void RollingFileSink::reopenActiveFile()
     {
         const auto currentPath = getCurrentFilename();
-        m_currentSink          = std::make_unique<FileSink>(currentPath);
+        // 逐行同步的口径要跟着活动文件走：滚动只换文件不换策略，否则滚过一刀之后又回到「运行期不落盘」
+        m_currentSink = std::make_unique<FileSink>(currentPath, false, m_immediateFlush);
 
         // 追加模式下目标文件可能已存在（同一周期的活动文件、进程重启后的续写），
         // 累计字节数必须从真实大小起算，否则按大小滚动会推迟到超过阈值一倍以上

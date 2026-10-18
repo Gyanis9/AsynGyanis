@@ -1077,6 +1077,58 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 配置装出来的文件 sink 默认逐行同步：不 flush、不收口也能立刻在文件里读到
+     * @details 交付形态的采集端（tail -f、Filebeat/vector）与崩溃后的取证只读得到已经交给操作系统的
+     *          字节；`FileSink` 自己的构造默认是关（既有调用方自己掌握刷新节奏），配置这一层的默认是开。
+     *          撤掉 FileSink 写路径里那一次 flush，本用例当场红
+     */
+    TEST_F(LoggerConfigLoaderTest, FileSinkFlushesEachLineByDefault)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: live_by_default.log
+)");
+        applyLogging();
+
+        LoggerRegistry::instance().getLogger("root").log(LogLevel::Info, "written without any flush");
+
+        EXPECT_TRUE(contains(readTemporaryFile("live_by_default.log"), "written without any flush")) << readTemporaryFile("live_by_default.log");
+    }
+
+    /**
+     * @brief immediate_flush 是文件族两种 sink 都认识的字段，写它不该被当成拼错
+     * @details 键集漏一格，配置里的这一项就只在标准错误留一行「不认识的字段」而行为照旧——
+     *          运维要先把那句话读成「我的开关没生效」才知道出了问题
+     */
+    TEST_F(LoggerConfigLoaderTest, ImmediateFlushKeyIsAcceptedByBothFileSinks)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: keyed_flush.log
+          immediate_flush: false
+        - type: rolling_file
+          base_filename: rolled.log
+          policy: size
+          immediate_flush: false
+)");
+        ::testing::internal::CaptureStderr();
+        applyLogging();
+        const std::string diagnostic = ::testing::internal::GetCapturedStderr();
+
+        EXPECT_EQ(diagnostic.find("不认识的字段 'immediate_flush'"), std::string::npos) << diagnostic;
+    }
+
+    /**
      * @brief 显式的 formatter 覆盖控制台的颜色选择，且 JSON 行里不含 ANSI 转义
      * @details 控制台那条路走的是 setColorEnabled 而不是直接换格式化器（那一条会先看输出目标支不支持
      *          ANSI 序列）。这里钉住两件事：显式 formatter 的优先级高于 color，以及 JSON 版式不带转义码
