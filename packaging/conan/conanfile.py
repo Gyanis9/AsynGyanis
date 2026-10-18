@@ -180,6 +180,26 @@ class AsynGyanisLibrary(ConanFile):
             raise ConanException(f"包里的 std::stacktrace 标记读不出取值：{fields}")
         return fields
 
+    def _installedDriverDefines(self) -> list:
+        """从随包交付的能力清单里读「哪几个驱动编的是真实现」，真源在 `src/Database/CMakeLists.txt`
+
+        为什么不在这里复述 with_mysql/with_postgres 这些选项：选项开着而客户端库装不上时，CMake 会把
+        那一路退化成报错桩，此时 PUBLIC 宏 `DATABASE_HAS_<名>` 根本不存在，消费方包含驱动头拿到的应当
+        是桩那份形状。按选项复述就会发一个库体里其实没有的宏——静态链接不报错，错的是两边对同一个类
+        的布局。这份清单是那次探测唯一随包交付的机器可读记录，与上面 ASYN_HAS_STACKTRACE 的读法同源
+        （见 _stacktraceSupportMarker 的理由）。
+
+        读不到清单就拒，不按「三个都没有」继续：那正是消费方按桩编译、库里却是真驱动的那种分叉
+        """
+        featuresPath = os.path.join(self.package_folder, "include", "AsynGyanisFeatures.h")
+        if not os.path.exists(featuresPath):
+            raise ConanException(
+                f"包里找不到 {featuresPath}：能力清单没随包交付，配方无从判断三个驱动宏要不要发给消费方")
+        with open(featuresPath, encoding="utf-8") as source:
+            text = source.read()
+        return [f"DATABASE_HAS_{driver}=1" for driver in ("MYSQL", "POSTGRES", "REDIS")
+                if re.search(rf"^#define ASYN_HAS_{driver}_DRIVER 1$", text, re.MULTILINE)]
+
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "AsynGyanis")
 
@@ -237,6 +257,11 @@ class AsynGyanisLibrary(ConanFile):
         database.libs = ["Database"]
         database.requires = ["core", "sqlite3::sqlite3", "hiredis::hiredis"]
         database.set_property("cmake_target_name", "AsynGyanis::Database")
+        # 三个驱动的 PUBLIC 编译宏也要发给消费方：CMakeDeps 只认 cpp_info 里声明的编译定义，
+        # install(EXPORT) 那份 INTERFACE_COMPILE_DEFINITIONS 不会经这条路走到使用方手里。
+        # 少了这一步，消费方包含 RedisConnection.h 一类头时按「没编真驱动」那份形状编译，
+        # 而 libDatabase.a 里编进去的是真驱动那份——链接不报错，错的是两边的类型布局
+        database.defines = list(database.defines) + self._installedDriverDefines()
         if self.options.with_mysql:
             database.requires.append("libmysqlclient::libmysqlclient")
         if self.options.with_postgres:
