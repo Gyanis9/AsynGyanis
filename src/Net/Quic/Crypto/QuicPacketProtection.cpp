@@ -160,9 +160,8 @@ namespace AsynGyanis::Net
         runAead(keys, packetNumber, additionalData, plaintext, {tail, plaintext.size()}, tail + plaintext.size(), true);
     }
 
-    std::expected<std::size_t, QuicDecodeError> openQuicProtectedPayload(const std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys,
-                                                                         const std::uint64_t packetNumber, const std::span<const std::uint8_t> additionalData,
-                                                                         const std::span<const std::uint8_t> protectedPayload)
+    QuicDecodeExpected<std::size_t> openQuicProtectedPayload(const std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys, const std::uint64_t packetNumber,
+                                                             const std::span<const std::uint8_t> additionalData, const std::span<const std::uint8_t> protectedPayload)
     {
         if (protectedPayload.size() < kQuicAuthenticationTagByteLength)
         {

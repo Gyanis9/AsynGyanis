@@ -776,8 +776,8 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QuicDecodeError> QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime,
-                                                                                const std::optional<std::uint8_t> ecnCodepoint, const QuicPathKey &pathKey)
+    QuicDecodeStatus QuicConnectionCore::onDatagramReceived(const std::span<const std::uint8_t> datagram, const Timestamp arrivalTime,
+                                                            const std::optional<std::uint8_t> ecnCodepoint, const QuicPathKey &pathKey)
     {
         // §13.4.1：整条 UDP 数据报只有一个 IP 头，里面那些合包的 QUIC 报文共用这一格读数
         m_incomingEcnCodepoint = ecnCodepoint;
@@ -810,7 +810,7 @@ namespace AsynGyanis::Net
                 // 连包头都解不出来，后面的字节也就没了依据：整条数据报丢弃（RFC 9000 §5.1）
                 return {};
             }
-            const std::expected<void, QuicDecodeError> handled = handlePacket(remainder.subspan(0, decodedHeader->packetByteCount), *decodedHeader, arrivalTime, pathKey);
+            const QuicDecodeStatus handled = handlePacket(remainder.subspan(0, decodedHeader->packetByteCount), *decodedHeader, arrivalTime, pathKey);
             if (!handled.has_value())
             {
                 return handled;
@@ -850,8 +850,8 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    std::expected<void, QuicDecodeError> QuicConnectionCore::handlePacket(const std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader,
-                                                                          const Timestamp arrivalTime, const QuicPathKey &pathKey)
+    QuicDecodeStatus QuicConnectionCore::handlePacket(const std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, const Timestamp arrivalTime,
+                                                      const QuicPathKey &pathKey)
     {
         const std::optional<QuicEncryptionLevel> level = levelOf(plainHeader);
         if (!level.has_value())
@@ -883,20 +883,20 @@ namespace AsynGyanis::Net
         workingBytes.assign(packet.begin(), packet.end());
         const std::span<std::uint8_t> workingPacket(workingBytes);
 
-        const std::expected<std::span<const std::uint8_t>, QuicDecodeError> sample = extractQuicHeaderProtectionSample(workingPacket, plainHeader);
+        const QuicDecodeExpected<std::span<const std::uint8_t>> sample = extractQuicHeaderProtectionSample(workingPacket, plainHeader);
         if (!sample.has_value())
         {
             return {};
         }
-        const QuicHeaderProtectionMask                     mask              = generateQuicHeaderProtectionMask(*state.readKeys, *sample);
-        const std::expected<std::uint8_t, QuicDecodeError> unmaskedFirstByte = removeQuicHeaderProtection(workingPacket, plainHeader, mask);
+        const QuicHeaderProtectionMask         mask              = generateQuicHeaderProtectionMask(*state.readKeys, *sample);
+        const QuicDecodeExpected<std::uint8_t> unmaskedFirstByte = removeQuicHeaderProtection(workingPacket, plainHeader, mask);
         if (!unmaskedFirstByte.has_value())
         {
             return {};
         }
 
         QuicPacketHeader header = plainHeader;
-        if (const std::expected<void, QuicDecodeError> refreshed = refreshQuicPacketHeader(header, *unmaskedFirstByte, workingPacket); !refreshed.has_value())
+        if (const QuicDecodeStatus refreshed = refreshQuicPacketHeader(header, *unmaskedFirstByte, workingPacket); !refreshed.has_value())
         {
             return {};
         }
@@ -940,7 +940,7 @@ namespace AsynGyanis::Net
         const std::span<const std::uint8_t> protectedPayload = workingPacket.subspan(headerByteCount);
         std::vector<std::uint8_t>          &plaintext        = receiveScratch(ReceiveScratch::Plaintext);
         plaintext.resize(protectedPayload.size() - kQuicAuthenticationTagByteLength);
-        const std::expected<std::size_t, QuicDecodeError> opened = openQuicProtectedPayload(plaintext, *reading, packetNumber, additionalData, protectedPayload);
+        const QuicDecodeExpected<std::size_t> opened = openQuicProtectedPayload(plaintext, *reading, packetNumber, additionalData, protectedPayload);
         if (!opened.has_value())
         {
             // 标签不合按 RFC 9001 §4.1.4 静默丢弃：可能是密钥不合或在途被改，回错误码只会喂攻击者
@@ -987,8 +987,8 @@ namespace AsynGyanis::Net
             m_isAddressValidated = true;
         }
 
-        std::vector<QuicFrame>                    &frames        = inboundFrameScratch();
-        const std::expected<void, QuicDecodeError> decodedFrames = decodeQuicFrames(std::span<const std::uint8_t>(plaintext).subspan(0, *opened), frames);
+        std::vector<QuicFrame> &frames        = inboundFrameScratch();
+        const QuicDecodeStatus  decodedFrames = decodeQuicFrames(std::span<const std::uint8_t>(plaintext).subspan(0, *opened), frames);
         if (!decodedFrames.has_value())
         {
             // 能解密就说明这包出自持有密钥的对端，帧解不开是对端违规（§19.1）
@@ -999,8 +999,8 @@ namespace AsynGyanis::Net
         return handleFrames(frames, state, space, packetNumber, pathKey, arrivalTime);
     }
 
-    std::expected<void, QuicDecodeError> QuicConnectionCore::handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, const PacketNumberSpace space,
-                                                                          const std::uint64_t packetNumber, const QuicPathKey &pathKey, const Timestamp arrivalTime)
+    QuicDecodeStatus QuicConnectionCore::handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, const PacketNumberSpace space, const std::uint64_t packetNumber,
+                                                      const QuicPathKey &pathKey, const Timestamp arrivalTime)
     {
         bool hasAckElicitingFrame   = false;
         bool carriesNonProbingFrame = false;
@@ -1236,7 +1236,7 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        const std::expected<QuicTransportParameters, QuicDecodeError> decoded = decodeQuicTransportParameters(
+        const QuicDecodeExpected<QuicTransportParameters> decoded = decodeQuicTransportParameters(
                 m_tls->peerTransportParameters(), isLocalServer() ? QuicTransportParameterSenderRole::Client : QuicTransportParameterSenderRole::Server);
         if (!decoded.has_value())
         {
@@ -1276,7 +1276,7 @@ namespace AsynGyanis::Net
         m_pathMtu.onPeerMaximumPayload(decoded->maximumUdpPayloadSize);
     }
 
-    void QuicConnectionCore::reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, const Timestamp now)
+    void QuicConnectionCore::reportStreamViolation(const QuicStreamViolationStatus &result, const Timestamp now)
     {
         if (!result.has_value())
         {

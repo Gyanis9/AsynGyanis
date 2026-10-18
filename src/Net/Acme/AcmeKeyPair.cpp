@@ -131,7 +131,7 @@ namespace AsynGyanis::Net
          * @details JWA 里 EC 的 x/y 与 ES256 的 R/S 都必须定长：少写一个前导零字节，机构侧按定长
          *          切分就会把签名读歪，而它报回来的是「签名无效」，看不出原因在编码上
          */
-        [[nodiscard]] std::expected<std::string, AcmeError> encodeFixedWidth(const BIGNUM *value, const std::size_t width, const std::string_view what)
+        [[nodiscard]] AcmeExpected<std::string> encodeFixedWidth(const BIGNUM *value, const std::size_t width, const std::string_view what)
         {
             if (value == nullptr)
             {
@@ -150,7 +150,7 @@ namespace AsynGyanis::Net
          * @brief 把一个大数按最短表示（不补前导零）编成 base64url
          * @details RSA 的 n 与 e 走这条：RFC 7518 §6.3.1 要的是大端整数的值本身，前导零属于表示法而非数值
          */
-        [[nodiscard]] std::expected<std::string, AcmeError> encodeMinimal(const BIGNUM *value, const std::string_view what)
+        [[nodiscard]] AcmeExpected<std::string> encodeMinimal(const BIGNUM *value, const std::string_view what)
         {
             if (value == nullptr)
             {
@@ -169,7 +169,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 读一个大数参数并接管它
          */
-        [[nodiscard]] std::expected<BignumHandle, AcmeError> readBignumParameter(const EVP_PKEY &key, const char *parameterName, const std::string_view what)
+        [[nodiscard]] AcmeExpected<BignumHandle> readBignumParameter(const EVP_PKEY &key, const char *parameterName, const std::string_view what)
         {
             BIGNUM *rawValue = nullptr;
             if (EVP_PKEY_get_bn_param(&key, parameterName, &rawValue) != 1 || rawValue == nullptr)
@@ -183,7 +183,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取 RSA 密钥的 n 与 e 并拼成 JWK
          */
-        [[nodiscard]] std::expected<Detail::PublicIdentity, AcmeError> buildRsaIdentity(const EVP_PKEY &key)
+        [[nodiscard]] AcmeExpected<Detail::PublicIdentity> buildRsaIdentity(const EVP_PKEY &key)
         {
             auto modulus = readBignumParameter(key, OSSL_PKEY_PARAM_RSA_N, "读取 RSA 模数");
             if (!modulus.has_value())
@@ -218,7 +218,7 @@ namespace AsynGyanis::Net
         /**
          * @brief 取 P-256 密钥的 crv、x 与 y 并拼成 JWK
          */
-        [[nodiscard]] std::expected<Detail::PublicIdentity, AcmeError> buildEllipticCurveIdentity(const EVP_PKEY &key)
+        [[nodiscard]] AcmeExpected<Detail::PublicIdentity> buildEllipticCurveIdentity(const EVP_PKEY &key)
         {
             char        groupName[64]{};
             std::size_t groupNameLength = 0;
@@ -273,7 +273,7 @@ namespace AsynGyanis::Net
          * @brief 由密钥内容推出算法并造出公开表示
          * @details 两者一起出：分开算就会出现「按 A 算法登记、密钥其实是 B」这种线上凭据对不上的状态
          */
-        [[nodiscard]] std::expected<DescribedKey, AcmeError> describeKey(EVP_PKEY &key)
+        [[nodiscard]] AcmeExpected<DescribedKey> describeKey(EVP_PKEY &key)
         {
             switch (EVP_PKEY_get_id(&key))
             {
@@ -321,7 +321,7 @@ namespace AsynGyanis::Net
          * @details OpenSSL 交回的 ECDSA 签名是 ASN.1 SEQUENCE，而 RFC 7518 §3.4 规定 ES256 的签名值是
          *          R 与 S 两个定长整数串起来。把 DER 原样 base64url 交出去，机构回的是「签名验证失败」
          */
-        [[nodiscard]] std::expected<std::string, AcmeError> flattenEllipticCurveSignature(std::string_view derSignature)
+        [[nodiscard]] AcmeExpected<std::string> flattenEllipticCurveSignature(std::string_view derSignature)
         {
             const unsigned char       *cursor = reinterpret_cast<const unsigned char *>(derSignature.data());
             const SignatureValueHandle value(d2i_ECDSA_SIG(nullptr, &cursor, static_cast<long>(derSignature.size())));
@@ -376,7 +376,7 @@ namespace AsynGyanis::Net
     {
     }
 
-    std::expected<AcmeKeyPair, AcmeError> AcmeKeyPair::generate(const AcmeKeyAlgorithm algorithm)
+    AcmeExpected<AcmeKeyPair> AcmeKeyPair::generate(const AcmeKeyAlgorithm algorithm)
     {
         // EVP_RSA_gen / EVP_EC_gen 是 OpenSSL 3.0 起的便捷入口：省去 EVP_PKEY_CTX 那套参数装配，
         // 交回的句柄与手工 keygen 的完全同形（后续 get_*_param 都认）
@@ -394,7 +394,7 @@ namespace AsynGyanis::Net
         return AcmeKeyPair(std::move(key), described->algorithm, std::move(described->identity));
     }
 
-    std::expected<AcmeKeyPair, AcmeError> AcmeKeyPair::loadFromFile(const std::filesystem::path &privateKeyFile)
+    AcmeExpected<AcmeKeyPair> AcmeKeyPair::loadFromFile(const std::filesystem::path &privateKeyFile)
     {
         std::error_code      sizeFailure;
         const std::uintmax_t fileSize = std::filesystem::file_size(privateKeyFile, sizeFailure);
@@ -427,7 +427,7 @@ namespace AsynGyanis::Net
         return AcmeKeyPair(std::move(key), described->algorithm, std::move(described->identity));
     }
 
-    std::expected<void, AcmeError> AcmeKeyPair::saveToFile(const std::filesystem::path &privateKeyFile) const
+    AcmeStatus AcmeKeyPair::saveToFile(const std::filesystem::path &privateKeyFile) const
     {
         const BioHandle bio(BIO_new(BIO_s_mem()));
         if (!bio)
@@ -474,7 +474,7 @@ namespace AsynGyanis::Net
         return m_algorithm == AcmeKeyAlgorithm::Rs256 ? "RS256" : "ES256";
     }
 
-    std::expected<std::string, AcmeError> AcmeKeyPair::signJsonWebSigningInput(const std::string_view signingInput) const
+    AcmeExpected<std::string> AcmeKeyPair::signJsonWebSigningInput(const std::string_view signingInput) const
     {
         const MessageContextHandle context(EVP_MD_CTX_new());
         if (!context)
@@ -514,7 +514,7 @@ namespace AsynGyanis::Net
         return Base::base64UrlEncode(signature);
     }
 
-    std::expected<std::string, AcmeError> AcmeKeyPair::createCertificateSigningRequest(const std::vector<std::string> &domainNames) const
+    AcmeExpected<std::string> AcmeKeyPair::createCertificateSigningRequest(const std::vector<std::string> &domainNames) const
     {
         if (domainNames.empty())
         {

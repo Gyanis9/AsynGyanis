@@ -639,7 +639,7 @@ namespace AsynGyanis::Net
              */
             [[nodiscard]] std::optional<std::array<std::uint8_t, kQuicStatelessResetTokenByteLength>> serverTransportParameterToken() const
             {
-                const std::expected<QuicTransportParameters, QuicDecodeError> decoded =
+                const QuicDecodeExpected<QuicTransportParameters> decoded =
                         decodeQuicTransportParameters(m_tls->peerTransportParameters(), QuicTransportParameterSenderRole::Server);
                 if (!decoded.has_value())
                 {

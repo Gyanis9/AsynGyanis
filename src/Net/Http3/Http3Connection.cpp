@@ -168,7 +168,7 @@ namespace AsynGyanis::Net
         return !isTrailers && !m_isLocalServer && isInformationalFieldSection(fields);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitRequestHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
+    QpackStatus Http3Connection::submitRequestHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
     {
         if (!m_isLocalServer && m_isPeerGoAwayReceived)
         {
@@ -187,7 +187,7 @@ namespace AsynGyanis::Net
         return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/false, isEndOfStream);
     }
 
-    std::expected<std::size_t, QpackError> Http3Connection::appendRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
+    QpackExpected<std::size_t> Http3Connection::appendRequestBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
     {
         static_cast<void>(streamStateFor(streamId));
         return appendResponseBody(streamId, bytes, isEndStream);
@@ -564,7 +564,7 @@ namespace AsynGyanis::Net
         pruneAbandonedStream(streamId);
     }
 
-    std::expected<void, QpackError> Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state, const Http3Frame &frame)
+    QpackStatus Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state, const Http3Frame &frame)
     {
         if (std::holds_alternative<Http3HeadersFrame>(frame))
         {
@@ -646,7 +646,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QpackError> Http3Connection::handleControlFrame(const Http3Frame &frame)
+    QpackStatus Http3Connection::handleControlFrame(const Http3Frame &frame)
     {
         if (const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&frame); settingsFrame != nullptr)
         {
@@ -890,20 +890,20 @@ namespace AsynGyanis::Net
         m_streamCrediter(streamId, increment - dataPayloadByteCount);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
+    QpackStatus Http3Connection::submitResponseHead(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isEndOfStream)
     {
         return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/false, isEndOfStream);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseTrailers(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines)
+    QpackStatus Http3Connection::submitResponseTrailers(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines)
     {
         // 尾段之后什么都不剩，FIN 只能跟着它：END_STREAM 因此写死为真，不给调用方一个能把协议写坏的开关
         // （RFC 9114 §4.3 与 §7.2.3——尾段是这条流的最后一个帧）
         return submitResponseFieldSection(streamId, fieldLines, /*isTrailers=*/true, /*isEndOfStream=*/true);
     }
 
-    std::expected<void, QpackError> Http3Connection::submitResponseFieldSection(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isTrailers,
-                                                                                const bool isEndOfStream)
+    QpackStatus Http3Connection::submitResponseFieldSection(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const bool isTrailers,
+                                                            const bool isEndOfStream)
     {
         if (m_isBroken)
         {
@@ -993,7 +993,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<std::size_t, QpackError> Http3Connection::appendResponseBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
+    QpackExpected<std::size_t> Http3Connection::appendResponseBody(const std::int64_t streamId, const std::span<const std::uint8_t> bytes, const bool isEndStream)
     {
         const auto entry = m_streams.find(streamId);
         if (entry == m_streams.end() || entry->second.isAbandoned || entry->second.isLocalFinished)
@@ -1140,7 +1140,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QpackError> Http3Connection::beginGracefulDrain()
+    QpackStatus Http3Connection::beginGracefulDrain()
     {
         if (!m_isUsable)
         {

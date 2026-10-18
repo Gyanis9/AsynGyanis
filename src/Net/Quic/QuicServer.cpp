@@ -943,7 +943,7 @@ namespace AsynGyanis::Net
         // 路由键是报文里的目的连接标识；解不出来（太短、版本协商报文等）就丢掉。最后一个参数是
         // 短头报文的 DCID 长度：短头不带这个长度字段，必须告诉解码器本端自己的连接标识有多长，
         // 否则它会把包号的头几字节也算进标识，从 1-RTT 起每条报文都命不中路由表
-        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
+        const QuicDecodeExpected<QuicPacketHeader> decodedHeader = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
         if (!decodedHeader.has_value())
         {
             // 解不开不等于该丢：版本不合的长头要按 §6.1 回一条版本协商包（连两条连接标识都取不出来的
@@ -1081,7 +1081,7 @@ namespace AsynGyanis::Net
             co_return QuicAddressValidationDecision::Proceed;
         }
 
-        const std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus> verified =
+        const QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> verified =
                 m_addressValidation->verify(header.token, peerAddress, std::chrono::system_clock::now());
         if (verified.has_value())
         {

@@ -210,9 +210,9 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus>
-    QuicAddressValidationTokenCodec::verify(const std::span<const std::uint8_t> token, const Platform::SocketAddress &peerAddress,
-                                            const std::chrono::system_clock::time_point now) const
+    QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> QuicAddressValidationTokenCodec::verify(const std::span<const std::uint8_t>         token,
+                                                                                                                  const Platform::SocketAddress              &peerAddress,
+                                                                                                                  const std::chrono::system_clock::time_point now) const
     {
         if (token.empty())
         {

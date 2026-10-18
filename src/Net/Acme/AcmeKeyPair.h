@@ -95,33 +95,33 @@ namespace AsynGyanis::Net
         /**
          * @brief 新生成一把密钥
          * @param algorithm 签名算法，见 AcmeKeyAlgorithm 的取舍说明
-         * @return std::expected<AcmeKeyPair, AcmeError> 带好公钥指纹的密钥；OpenSSL 拒绝生成时
+         * @return AcmeExpected<AcmeKeyPair> 带好公钥指纹的密钥；OpenSSL 拒绝生成时
          *         交回 KeyMaterial 一档（通常只有内存不足一种成因）
          * @note 无静态工厂可用，故与 loadFromFile() 成对：构造私有一律走这两条入口，
          *       对象一旦存在就一定带一把可用的密钥与算好的指纹
          */
-        [[nodiscard]] static std::expected<AcmeKeyPair, AcmeError> generate(AcmeKeyAlgorithm algorithm);
+        [[nodiscard]] static AcmeExpected<AcmeKeyPair> generate(AcmeKeyAlgorithm algorithm);
 
         /**
          * @brief 从 PEM 私钥文件读入一把密钥
          * @param privateKeyFile 私钥文件路径（PKCS#8 或传统 PEM，OpenSSL 自己分辨）
-         * @return std::expected<AcmeKeyPair, AcmeError> 读出的密钥；算法由文件内容决定
+         * @return AcmeExpected<AcmeKeyPair> 读出的密钥；算法由文件内容决定
          *         （RSA 密钥即 RS256、P-256 密钥即 ES256），不由调用方指定，因此不会出现
          *         「按 ES256 声明、实际是 RSA」这种线上凭据对不上的状态
          * @note 其它曲线（P-384 等）、其它位数的 RSA、加密私钥与公钥文件都判失败并写明原因：
          *       本类的签名与 JWK 序列化只按这两档写，收下来就是静默变形
          */
-        [[nodiscard]] static std::expected<AcmeKeyPair, AcmeError> loadFromFile(const std::filesystem::path &privateKeyFile);
+        [[nodiscard]] static AcmeExpected<AcmeKeyPair> loadFromFile(const std::filesystem::path &privateKeyFile);
 
         /**
          * @brief 把私钥以 PEM 形式原子写入文件，并收成属主可读写
          * @param privateKeyFile 目标路径，父目录不存在时由原子写工具建出来
-         * @return std::expected<void, AcmeError> 失败时交回 FileSystem 一档并带上底层原因
+         * @return AcmeStatus 失败时交回 FileSystem 一档并带上底层原因
          * @note 权限 0600 只在 POSIX 上真正生效，Windows 侧只有只读位有意义（Platform 封装的既有
          *       口径），因此 Windows 部署要靠 ACL 或存放目录来守这把私钥
          * @note 已存在的目标文件会被原子替换：中途失败时旧文件内容不动，不会出现「私钥半个」的状态
          */
-        [[nodiscard]] std::expected<void, AcmeError> saveToFile(const std::filesystem::path &privateKeyFile) const;
+        [[nodiscard]] AcmeStatus saveToFile(const std::filesystem::path &privateKeyFile) const;
 
         /**
          * @brief 这把手上公钥的 JWK 表示（RFC 7517 §4 + RFC 7518 §6），只含公开成员
@@ -146,10 +146,10 @@ namespace AsynGyanis::Net
          *          再编码：JWA 的 ES256 线上格式就是裸 R‖S，写 DER 出去机构会判签名无效
          *          （RFC 7518 §3.4）。RS256 是 PKCS#1 v1.5，本身就是定长字节串，直接编码。
          * @param signingInput 待签的 ASCII 原文（本函数自己算摘要，调用方不要先哈希）
-         * @return std::expected<std::string, AcmeError> base64url 无填充的签名段；
+         * @return AcmeExpected<std::string> base64url 无填充的签名段；
          *         失败交回 KeyMaterial 一档并写明是 OpenSSL 的哪一步
          */
-        [[nodiscard]] std::expected<std::string, AcmeError> signJsonWebSigningInput(std::string_view signingInput) const;
+        [[nodiscard]] AcmeExpected<std::string> signJsonWebSigningInput(std::string_view signingInput) const;
 
         /**
          * @brief 为这批域名产出一份证书签名请求（PKCS#10）
@@ -157,11 +157,11 @@ namespace AsynGyanis::Net
          *          subjectAltName，CN 不参与匹配（RFC 6125 已被 RFC 9525 取代，CA/Browser 基线也
          *          明确忽略 CN）。全部域名都写进 DNS 类型的 SAN。
          * @param domainNames 要覆盖的域名，至少一条；空列表直接拒绝而不是交出一张没有 SAN 的请求
-         * @return std::expected<std::string, AcmeError> base64url 无填充的 DER 编码 CSR，
+         * @return AcmeExpected<std::string> base64url 无填充的 DER 编码 CSR，
          *         即 ACME order finalize 要的 "csr" 字段取值
          * @note 请求用本密钥自己签名（challengePassword 一类附加属性一概不带）
          */
-        [[nodiscard]] std::expected<std::string, AcmeError> createCertificateSigningRequest(const std::vector<std::string> &domainNames) const;
+        [[nodiscard]] AcmeExpected<std::string> createCertificateSigningRequest(const std::vector<std::string> &domainNames) const;
 
         /**
          * @brief 按 RFC 7638 的口径算一份 JWK 文本的指纹：SHA-256 后 base64url 无填充

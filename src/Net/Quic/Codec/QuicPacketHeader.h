@@ -181,8 +181,8 @@ namespace AsynGyanis::Net
      * @return 成功返回只填了明文部分的 `QuicPacketHeader`，包号相关字段要等 refresh
      * @return 失败返回 `QuicDecodeError`：字节不足为 `Truncated`，字段违反 v1 规则为 `Malformed`
      */
-    [[nodiscard]] ASYN_NET_API std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
-                                                                                                       std::size_t                   shortHeaderDestinationConnectionIdLength);
+    [[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicPacketHeader> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram,
+                                                                                           std::size_t                   shortHeaderDestinationConnectionIdLength);
 
     /**
      * @brief 去掉头部保护后把首字节换回真值，并补齐包号长度、包号与短头标志位
@@ -194,8 +194,7 @@ namespace AsynGyanis::Net
      * @return 成功返回 void
      * @return 失败返回 `QuicDecodeError`：包号字段越出数据报末尾，或 Length 域容不下真实包号长度
      */
-    [[nodiscard]] ASYN_NET_API std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte,
-                                                                                            std::span<const std::uint8_t> datagram);
+    [[nodiscard]] ASYN_NET_API QuicDecodeStatus refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram);
 
     /**
      * @brief 按线格式写出截断包号（RFC 9000 §17.1）

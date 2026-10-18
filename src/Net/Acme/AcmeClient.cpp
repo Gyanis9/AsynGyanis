@@ -252,7 +252,7 @@ namespace AsynGyanis::Net
         return m_termsOfServiceUrl;
     }
 
-    Core::Task<std::expected<void, AcmeError>> AcmeClient::fetchFreshNonce()
+    Core::Task<AcmeStatus> AcmeClient::fetchFreshNonce()
     {
         HttpClientRequest request;
         request.method = "HEAD";
@@ -271,10 +271,10 @@ namespace AsynGyanis::Net
                                                                              m_newNonceUrl, kReplayNonceHeader, sent->statusCode)});
         }
         m_noncePool.push_back(std::move(nonce));
-        co_return std::expected<void, AcmeError>{};
+        co_return AcmeStatus{};
     }
 
-    Core::Task<std::expected<std::string, AcmeError>> AcmeClient::takeNonce()
+    Core::Task<AcmeExpected<std::string>> AcmeClient::takeNonce()
     {
         // 机构在每次应答里都顺带发一个新 nonce，先用池里那些，省掉一次往返
         if (m_noncePool.empty())
@@ -290,7 +290,7 @@ namespace AsynGyanis::Net
         co_return nonce;
     }
 
-    Core::Task<std::expected<AcmeReply, AcmeError>> AcmeClient::postSignedRequest(const std::string &url, const std::string_view payloadJson, const bool isNewAccountRequest)
+    Core::Task<AcmeExpected<AcmeReply>> AcmeClient::postSignedRequest(const std::string &url, const std::string_view payloadJson, const bool isNewAccountRequest)
     {
         for (std::size_t attempt = 0;; ++attempt)
         {
@@ -419,7 +419,7 @@ namespace AsynGyanis::Net
         return AcmeError{AcmeErrorKind::RejectedByAuthority, std::move(message)};
     }
 
-    Core::Task<std::expected<void, AcmeError>> AcmeClient::prepareAccount(std::optional<std::string> persistedAccountUrl)
+    Core::Task<AcmeStatus> AcmeClient::prepareAccount(std::optional<std::string> persistedAccountUrl)
     {
         // 校验排在这里而不是构造函数：配置不合法与网络失败要从同一条 expected 通道交回，
         // 而构造函数没有错误通道
@@ -512,7 +512,7 @@ namespace AsynGyanis::Net
             {
                 if (probe->statusCode >= 200 && probe->statusCode < 300)
                 {
-                    co_return std::expected<void, AcmeError>{};
+                    co_return AcmeStatus{};
                 }
                 if (readProblemType(probe->bodyText) == kAccountDoesNotExistProblem)
                 {
@@ -579,10 +579,10 @@ namespace AsynGyanis::Net
         }
         // 账户 URL 只在新建时给（201）；机构按 200 回已有账户时正文里没有它，只能沿用请求的那条
         m_accountUrl = reply->locationUrl.empty() ? m_newAccountUrl : reply->locationUrl;
-        co_return std::expected<void, AcmeError>{};
+        co_return AcmeStatus{};
     }
 
-    Core::Task<std::expected<AcmeOrder, AcmeError>> AcmeClient::createOrder(const std::vector<std::string> &domainNames)
+    Core::Task<AcmeExpected<AcmeOrder>> AcmeClient::createOrder(const std::vector<std::string> &domainNames)
     {
         if (domainNames.empty())
         {
@@ -661,7 +661,7 @@ namespace AsynGyanis::Net
         return "_acme-challenge." + std::string(bareName);
     }
 
-    Core::Task<std::expected<AcmeAuthorization, AcmeError>> AcmeClient::fetchAuthorization(const std::string &authorizationUrl)
+    Core::Task<AcmeExpected<AcmeAuthorization>> AcmeClient::fetchAuthorization(const std::string &authorizationUrl)
     {
         auto reply = co_await postSignedRequest(authorizationUrl, {}, false);
         if (!reply.has_value())
@@ -737,8 +737,8 @@ namespace AsynGyanis::Net
         co_return parsed;
     }
 
-    Core::Task<std::expected<std::string, AcmeError>> AcmeClient::solveChallenge(const std::string &challengeUrl, const std::chrono::milliseconds pollInterval,
-                                                                                 const std::chrono::milliseconds overallTimeout)
+    Core::Task<AcmeExpected<std::string>> AcmeClient::solveChallenge(const std::string &challengeUrl, const std::chrono::milliseconds pollInterval,
+                                                                     const std::chrono::milliseconds overallTimeout)
     {
         // 空 JSON 对象就是「请开始校验」的信号（RFC 8555 §7.5.1）：正文不带任何字段，
         // 但它是 payload 段而非 POST-as-GET 的空串
@@ -809,8 +809,8 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<std::expected<AcmeOrder, AcmeError>> AcmeClient::finalizeOrder(const AcmeOrder &order, const std::string_view encodedRequest,
-                                                                              const std::chrono::milliseconds pollInterval, const std::chrono::milliseconds overallTimeout)
+    Core::Task<AcmeExpected<AcmeOrder>> AcmeClient::finalizeOrder(const AcmeOrder &order, const std::string_view encodedRequest, const std::chrono::milliseconds pollInterval,
+                                                                  const std::chrono::milliseconds overallTimeout)
     {
         Base::ConfigValue payload = Base::ConfigValue::object();
         payload["csr"]            = std::string(encodedRequest);
@@ -882,7 +882,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<std::expected<std::string, AcmeError>> AcmeClient::fetchCertificateChain(const std::string &certificateUrl)
+    Core::Task<AcmeExpected<std::string>> AcmeClient::fetchCertificateChain(const std::string &certificateUrl)
     {
         auto reply = co_await postSignedRequest(certificateUrl, {}, false);
         if (!reply.has_value())

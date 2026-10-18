@@ -1,41 +1,42 @@
-# 贡献指南
+#贡献指南
 
 感谢你考虑为 AsynGyanis 做出贡献。
 
-## 开发环境
+                ##开发环境
 
-- **编译器**: MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++23 标准）
-- **构建工具**: CMake >= 3.20, Conan >= 2.0, Ninja（推荐）
-- **平台**: Windows ≥ 10（事件后端为完成端口）或 Linux kernel >= 3.9（epoll；`ASYN_WITH_IO_URING` 可换 io_uring，需内核 5.6+）
+                - **编译器 ** : MSVC ≥ 19.40 / GCC ≥ 13 / Clang ≥ 17（需支持 C++ 23 标准） - **构建工具 ** : CMake >=
+        3.20,
+        Conan >= 2.0,
+        Ninja（推荐） - **平台 ** : Windows ≥ 10（事件后端为完成端口）或 Linux kernel >= 3.9（epoll；`ASYN_WITH_IO_URING` 可换 io_uring，需内核 5.6 +）
 
 ```bash
-# 初始化开发环境（Linux；Windows 侧 pip install conan 后同样可用）
-python3 -m venv .venv
-.venv/bin/pip install conan
-.venv/bin/conan profile detect --force
+#初始化开发环境（Linux；Windows 侧 pip install conan                                                                           后同样可用）
+                                                                                                                               python3 -
+                                                                                                 m venv.venv.venv / bin / pip install conan.venv / bin /
+                                                                                                         conan profile                detect-- force
 
-# Debug 构建（含 ASan/UBSan）
-cmake --preset debug
-cmake --build build/debug -j$(nproc)
-cd build/debug && ctest --output-on-failure
+#Debug 构建（含                                                                                                  ASan / UBSan）
+                                                                                                                 cmake-- preset debug cmake-- build build /
+                                                                                                         debug -
+                                                                                                 j$(nproc) cd build / debug &&ctest-- output - on -
+                                                                                                 failure
 
-# Release 构建（开优化，并带上能解析调用栈的调试信息）
-cmake --preset release
-cmake --build build/release -j$(nproc)
+#Release 构建（开优化，并带上能解析调用栈的调试信息）
+                                                                                                         cmake-- preset release cmake-- build build
+                                                                                                         / release
+                                                                                                 -
+                                                                                                 j$(nproc)
 ```
 
-```bat
-:: Windows（需在已加载 vcvars64 的环境中执行）
-pip install conan
-conan profile detect --force
-cmake --preset debug
-cmake --build build/debug -j 14
-ctest --test-dir build/debug --output-on-failure
+```bat::Windows（需在已加载 vcvars64 的环境中执行） pip install conan conan profile detect-- force cmake-- preset debug cmake-- build build / debug - j 14 ctest-- test
+                                                                                                 - dir build / debug-- output - on -
+                                                                                                 failure
 ```
 
-第三方依赖由 `conan_provider.cmake` 在配置阶段自动安装（`conan install --build=missing`），无需手工执行。
+                                                                                                 第三方依赖由 `conan_provider.cmake` 在配置阶段自动安装（`conan install-- build =
+                missing`），无需手工执行。
 
-## 开发流程
+                        ##开发流程
 
 下面第 2 到第 4 项那几道门（格式、复杂度、图追溯、台账日期、公开接口面、构建、用例、示例矩阵）由一条命令
 一次跑完，判据形状与 CI 一致：
@@ -141,6 +142,10 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
   不必再改 `tryStackTrace()`，而漏改原本的后果是**静默丢栈**（日志照出，只是不带栈，不报错）。
   也不设统一的大 `ErrorCode` 枚举：协议层按 RFC 上线码切分、OS 层按 `std::error_code`、驱动层按
   原生码，三套语义空间强行合并只会造出一个没人能用的中间枚举；统一的是**形状与命名规则**。
+- 每个进 `std::expected` 的框架错误类型，在自己的头里带一对结果别名：`XxxExpected<Value>` 与 `XxxStatus`
+  （后者即 `std::expected<void, XxxError>`）。名字取错误类型去掉尾部的 `Error`/`Status`/`Failure` 再加后缀，
+  **没有真实消费方的那一半不定义**。签名与 `@return` 一律写别名；载荷还是裸 `std::string` 或 `std::error_code`
+  的通道暂时没有别名，等各自的错误类型落地再补。
 - 异常**不得跨线程/跨回调传播**：事件循环的派发单元（`Scheduler` 的每处投递与恢复、
   `IoWatcher::handleEvents` 的每次 `resume`）、会话回调、线程池任务都必须就地收下抛出的
   异常，转成日志 + 计数（`Scheduler::failedDispatchCount()`、`FileWatcher::failedCallbackCount()`）
@@ -175,3 +180,4 @@ samples/      — 示例程序（ReferenceServer，随构建编译）
 ## 行为准则
 
 本项目遵循 [Contributor Covenant](https://www.contributor-covenant.org/)。
+

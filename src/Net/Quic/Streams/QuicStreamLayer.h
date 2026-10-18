@@ -71,6 +71,8 @@ namespace AsynGyanis::Net
         std::string   reasonPhrase{}; ///< 进 CONNECTION_CLOSE 的原因文案
     };
 
+    using QuicStreamViolationStatus = std::expected<void, QuicStreamViolation>; ///< 一条流层规则判下来的结果：只问成不成
+
     /**
      * @brief 一条连接上的全部流与流量控制额度
      *
@@ -118,12 +120,12 @@ namespace AsynGyanis::Net
 
         /// @name 入站帧：返回错误即由核心按错误码收口
         /// @{
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onStreamFrame(const QuicStreamFrame &frame);
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onMaxDataFrame(const QuicMaxDataFrame &frame);
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame);
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onMaxStreamsFrame(const QuicMaxStreamsFrame &frame);
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onResetStreamFrame(const QuicResetStreamFrame &frame);
-        [[nodiscard]] std::expected<void, QuicStreamViolation> onStopSendingFrame(const QuicStopSendingFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onStreamFrame(const QuicStreamFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onMaxDataFrame(const QuicMaxDataFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onMaxStreamsFrame(const QuicMaxStreamsFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onResetStreamFrame(const QuicResetStreamFrame &frame);
+        [[nodiscard]] QuicStreamViolationStatus onStopSendingFrame(const QuicStopSendingFrame &frame);
         ///@}
 
         /**

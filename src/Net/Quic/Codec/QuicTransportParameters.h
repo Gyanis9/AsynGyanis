@@ -150,6 +150,6 @@ namespace AsynGyanis::Net
      * @return 成功返回参数；`initial_source_connection_id` 缺失、重复、取值长度或范围不合、
      *         末尾余字节等一律返回 `QuicDecodeError`
      */
-    [[nodiscard]] ASYN_NET_API std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(std::span<const std::uint8_t>    bytes,
-                                                                                                                     QuicTransportParameterSenderRole senderRole);
+    [[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicTransportParameters> decodeQuicTransportParameters(std::span<const std::uint8_t>    bytes,
+                                                                                                         QuicTransportParameterSenderRole senderRole);
 } // namespace AsynGyanis::Net

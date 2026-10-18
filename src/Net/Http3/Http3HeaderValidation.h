@@ -81,6 +81,8 @@ namespace AsynGyanis::Net
         std::string          message;                                           ///< 中文原因，含字段名实际值与对应的 RFC 章节
     };
 
+    using Http3HeaderStatus = std::expected<void, Http3HeaderError>; ///< 一条头部判定的结果：只问成不成，失败带类别与文案
+
     /**
      * @brief 把一个头部判定失败映射成线上错误码
      * @param errorKind 失败类别
@@ -113,7 +115,7 @@ namespace AsynGyanis::Net
          * @return 成功返回空；失败返回非法的头块序列（响应头的 :status 段之后不允许再来一个非尾段头块）
          * @note 一个头块结束后必须先调 endHeaderBlock() 才能再 beginHeaderBlock()
          */
-        [[nodiscard]] std::expected<void, Http3HeaderError> beginHeaderBlock(bool isTrailers) noexcept;
+        [[nodiscard]] Http3HeaderStatus beginHeaderBlock(bool isTrailers) noexcept;
 
         /**
          * @brief 喂进一个头字段
@@ -121,14 +123,14 @@ namespace AsynGyanis::Net
          * @param value 字段值，按原样字节给出
          * @return 成功返回空；失败返回具体的判定结果
          */
-        [[nodiscard]] std::expected<void, Http3HeaderError> onHeaderField(std::string_view name, std::string_view value);
+        [[nodiscard]] Http3HeaderStatus onHeaderField(std::string_view name, std::string_view value);
 
         /**
          * @brief 头块收齐：补判必填伪头与 authority/host 一致性
          * @return 成功返回空；失败返回缺失或冲突的具体原因
          * @note 尾段（trailer section）没有必填项，本函数只复核「尾段里不得有伪头与被禁字段」
          */
-        [[nodiscard]] std::expected<void, Http3HeaderError> endHeaderBlock() noexcept;
+        [[nodiscard]] Http3HeaderStatus endHeaderBlock() noexcept;
 
         /// 已归位的 :method 原文；未收到时为空串
         [[nodiscard]] const std::string &methodText() const noexcept;
@@ -156,16 +158,16 @@ namespace AsynGyanis::Net
 
     private:
         /// 校验字段名的字符集与大小写（RFC 9110 §5.1、RFC 9114 §4.2）
-        [[nodiscard]] std::expected<void, Http3HeaderError> validateFieldName(std::string_view name) const;
+        [[nodiscard]] Http3HeaderStatus validateFieldName(std::string_view name) const;
 
         /// 校验字段值的字符集：控制字符除 HTAB 一律拒（CR/LF 是响应拆分的入口）
-        [[nodiscard]] std::expected<void, Http3HeaderError> validateFieldValue(std::string_view value) const;
+        [[nodiscard]] Http3HeaderStatus validateFieldValue(std::string_view value) const;
 
         /// 归位并校验一个伪头
-        [[nodiscard]] std::expected<void, Http3HeaderError> onPseudoHeader(std::string_view name, std::string_view value);
+        [[nodiscard]] Http3HeaderStatus onPseudoHeader(std::string_view name, std::string_view value);
 
         /// 归位并校验一个普通字段
-        [[nodiscard]] std::expected<void, Http3HeaderError> onRegularField(std::string_view name, std::string_view value);
+        [[nodiscard]] Http3HeaderStatus onRegularField(std::string_view name, std::string_view value);
 
         Http3MessageKind             m_messageKind{Http3MessageKind::Request}; ///< 判定方向
         bool                         m_isExtendedConnectPermitted{false};      ///< 本会话是否允许 :protocol

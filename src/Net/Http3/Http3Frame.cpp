@@ -109,10 +109,10 @@ namespace AsynGyanis::Net
             /**
              * @brief 读一个变长整数字段
              * @param fieldName 字段名（如「Push ID」），只用于文案定位
-             * @return std::expected<std::uint64_t, Http3FrameError> 成功返回数值并把游标前移
+             * @return Http3FrameExpected<std::uint64_t> 成功返回数值并把游标前移
              * @return 失败返回 `Http3FrameError`，类别恒为 `Malformed`
              */
-            [[nodiscard]] std::expected<std::uint64_t, Http3FrameError> readInteger(const std::string_view fieldName)
+            [[nodiscard]] Http3FrameExpected<std::uint64_t> readInteger(const std::string_view fieldName)
             {
                 const auto decoded = decodeQuicVariableLengthInteger(m_payload.subspan(m_offset));
                 if (!decoded.has_value())
@@ -130,9 +130,9 @@ namespace AsynGyanis::Net
              * @brief 要求「必填字段已读尽、声明长度内没有多余字节」
              * @details §7.1：载荷里在已识别字段之后还有多余字节的，同样按 H3_FRAME_ERROR 处理。
              * @param fieldName 已读到的最后一个字段名，只用于文案定位
-             * @return std::expected<void, Http3FrameError> 恰好读尽时成功
+             * @return Http3FrameStatus 恰好读尽时成功
              */
-            [[nodiscard]] std::expected<void, Http3FrameError> requireFieldsEnd(const std::string_view fieldName)
+            [[nodiscard]] Http3FrameStatus requireFieldsEnd(const std::string_view fieldName)
             {
                 if (remainingByteCount() == 0)
                 {
@@ -187,9 +187,9 @@ namespace AsynGyanis::Net
          * @brief 读「载荷恰好是一个变长整数」的帧字段（CANCEL_PUSH/GOAWAY/MAX_PUSH_ID 共用同一档布局）
          * @param cursor 载荷游标
          * @param fieldName 字段名，只用于文案定位
-         * @return std::expected<std::uint64_t, Http3FrameError> 成功返回数值；缺字段或多尾巴均为 `Malformed`
+         * @return Http3FrameExpected<std::uint64_t> 成功返回数值；缺字段或多尾巴均为 `Malformed`
          */
-        [[nodiscard]] std::expected<std::uint64_t, Http3FrameError> readSoleInteger(PayloadCursor &cursor, const std::string_view fieldName)
+        [[nodiscard]] Http3FrameExpected<std::uint64_t> readSoleInteger(PayloadCursor &cursor, const std::string_view fieldName)
         {
             const auto value = cursor.readInteger(fieldName);
             if (!value.has_value())
@@ -208,9 +208,9 @@ namespace AsynGyanis::Net
          * @brief 按 §7.2 各小节的布局解释一段完整载荷
          * @param frameTypeValue 帧类型线上取值
          * @param payload 已按声明长度收齐的载荷
-         * @return std::expected<Http3Frame, Http3FrameError> 类型不认识时返回 Http3UnknownFrame（不是错误）
+         * @return Http3FrameExpected<Http3Frame> 类型不认识时返回 Http3UnknownFrame（不是错误）
          */
-        [[nodiscard]] std::expected<Http3Frame, Http3FrameError> decodeHttp3FramePayload(const std::uint64_t frameTypeValue, const std::span<const std::uint8_t> payload)
+        [[nodiscard]] Http3FrameExpected<Http3Frame> decodeHttp3FramePayload(const std::uint64_t frameTypeValue, const std::span<const std::uint8_t> payload)
         {
             PayloadCursor cursor(frameTypeValue, payload);
             switch (frameTypeValue)
@@ -389,7 +389,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, Http3FrameError> Http3FrameReader::feed(const std::span<const std::uint8_t> newBytes)
+    Http3FrameStatus Http3FrameReader::feed(const std::span<const std::uint8_t> newBytes)
     {
         if (m_stickyError.has_value())
         {
@@ -412,7 +412,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<std::optional<Http3Frame>, Http3FrameError> Http3FrameReader::nextFrame()
+    Http3FrameExpected<std::optional<Http3Frame>> Http3FrameReader::nextFrame()
     {
         if (m_stickyError.has_value())
         {

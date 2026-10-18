@@ -179,7 +179,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onStreamFrame(const QuicStreamFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onStreamFrame(const QuicStreamFrame &frame)
     {
         const std::uint64_t streamId  = frame.streamId;
         const std::uint64_t endOffset = frame.offset + frame.data.size();
@@ -296,14 +296,14 @@ namespace AsynGyanis::Net
         m_deliveries.pushBack(QuicStreamDelivery{streamId, std::move(payload), isFinal});
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onMaxDataFrame(const QuicMaxDataFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onMaxDataFrame(const QuicMaxDataFrame &frame)
     {
         // 只抬高不回落：§4.1 明确「更小的上限没有效果」，也不算违规
         m_connectionSendLimit = std::max(m_connectionSendLimit, frame.maximumData);
         return {};
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame)
     {
         if (isUnidirectional(frame.streamId) && !isLocallyInitiated(frame.streamId))
         {
@@ -326,7 +326,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onMaxStreamsFrame(const QuicMaxStreamsFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onMaxStreamsFrame(const QuicMaxStreamsFrame &frame)
     {
         // §4.6：大于 2^60 的流数上限会算出无法用变长整数表达的流号，收到就必须以 FRAME_ENCODING_ERROR
         // 收口连接——先把这条界挡住，下面才轮到「按方向取一档」与「只增不减」
@@ -343,7 +343,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onResetStreamFrame(const QuicResetStreamFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onResetStreamFrame(const QuicResetStreamFrame &frame)
     {
         if (isUnidirectional(frame.streamId) && isLocallyInitiated(frame.streamId))
         {
@@ -385,7 +385,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QuicStreamViolation> QuicStreamLayer::onStopSendingFrame(const QuicStopSendingFrame &frame)
+    QuicStreamViolationStatus QuicStreamLayer::onStopSendingFrame(const QuicStopSendingFrame &frame)
     {
         if (isUnidirectional(frame.streamId) && !isLocallyInitiated(frame.streamId))
         {

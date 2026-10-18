@@ -122,7 +122,7 @@ namespace AsynGyanis::Net
          * @param senderRole 对端角色
          * @return 解出来的参数或解码错误
          */
-        std::expected<QuicTransportParameters, QuicDecodeError> decodeHex(const std::string_view hexadecimalText, const QuicTransportParameterSenderRole senderRole)
+        QuicDecodeExpected<QuicTransportParameters> decodeHex(const std::string_view hexadecimalText, const QuicTransportParameterSenderRole senderRole)
         {
             return decodeQuicTransportParameters(makeBytesFromHex(hexadecimalText), senderRole);
         }

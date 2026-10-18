@@ -94,5 +94,5 @@ namespace AsynGyanis::Net
      * @return 成功返回 `QuicDecodedInteger`，其 byteCount 是本数吃掉的字节数（调用方据此前移读位置）
      * @return 失败返回 `QuicDecodeError`：类别恒为 `Truncated`（首字节高 2 位声明的宽度大于剩余字节数）
      */
-    [[nodiscard]] ASYN_NET_API std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes);
+    [[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicDecodedInteger> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes);
 } // namespace AsynGyanis::Net

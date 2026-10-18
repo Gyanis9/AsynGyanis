@@ -154,7 +154,7 @@ namespace AsynGyanis::Net
              * @param fieldName 进入失败文案的字段名
              * @return 成功返回数值，失败返回截断错误
              */
-            [[nodiscard]] std::expected<std::uint64_t, QuicDecodeError> readInteger(const std::string_view fieldName)
+            [[nodiscard]] QuicDecodeExpected<std::uint64_t> readInteger(const std::string_view fieldName)
             {
                 const auto decoded = decodeQuicVariableLengthInteger(m_bytes.subspan(m_offset));
                 if (!decoded.has_value())
@@ -171,7 +171,7 @@ namespace AsynGyanis::Net
              * @param fieldName 进入失败文案的字段名
              * @return 成功返回指向原文的视图，失败返回截断错误
              */
-            [[nodiscard]] std::expected<std::span<const std::uint8_t>, QuicDecodeError> readBytes(const std::size_t length, const std::string_view fieldName)
+            [[nodiscard]] QuicDecodeExpected<std::span<const std::uint8_t>> readBytes(const std::size_t length, const std::string_view fieldName)
             {
                 if (length > m_bytes.size() - m_offset)
                 {
@@ -196,7 +196,7 @@ namespace AsynGyanis::Net
          * @param name 参数名，进入失败文案
          * @return 成功返回数值，失败返回截断或格式错误
          */
-        std::expected<std::uint64_t, QuicDecodeError> readIntegerValue(const std::span<const std::uint8_t> value, const std::string_view name)
+        QuicDecodeExpected<std::uint64_t> readIntegerValue(const std::span<const std::uint8_t> value, const std::string_view name)
         {
             const auto decoded = decodeQuicVariableLengthInteger(value);
             if (!decoded.has_value())
@@ -218,7 +218,7 @@ namespace AsynGyanis::Net
          * @param name 参数名
          * @return 通过返回它自己（零长合法，见 §7.3 末段），超上限返回格式错误
          */
-        std::expected<std::vector<std::uint8_t>, QuicDecodeError> readConnectionIdValue(const std::span<const std::uint8_t> value, const std::string_view name)
+        QuicDecodeExpected<std::vector<std::uint8_t>> readConnectionIdValue(const std::span<const std::uint8_t> value, const std::string_view name)
         {
             if (value.size() > kQuicMaximumConnectionIdLength)
             {
@@ -236,7 +236,7 @@ namespace AsynGyanis::Net
          * @param name 参数名
          * @return 通过返回空，第二次出现返回格式错误
          */
-        std::expected<void, QuicDecodeError> markSeen(std::uint64_t &seenMask, const std::uint64_t identifier, const std::string_view name)
+        QuicDecodeStatus markSeen(std::uint64_t &seenMask, const std::uint64_t identifier, const std::string_view name)
         {
             if ((seenMask & (1ULL << identifier)) != 0)
             {
@@ -274,8 +274,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(const std::span<const std::uint8_t>    bytes,
-                                                                                          const QuicTransportParameterSenderRole senderRole)
+    QuicDecodeExpected<QuicTransportParameters> decodeQuicTransportParameters(const std::span<const std::uint8_t> bytes, const QuicTransportParameterSenderRole senderRole)
     {
         QuicTransportParameters parameters;
         ParameterReader         reader(bytes);

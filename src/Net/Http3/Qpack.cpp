@@ -608,7 +608,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QpackError> QpackEncoder::setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes)
+    QpackStatus QpackEncoder::setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes)
     {
         encoderStreamBytes.clear();
         if (capacityByteCount > m_peerMaximumTableCapacityByteCount)
@@ -637,8 +637,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QpackError> QpackEncoder::encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock,
-                                                                     std::string &encoderStreamBytes)
+    QpackStatus QpackEncoder::encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock, std::string &encoderStreamBytes)
     {
         headerBlock.clear();
         encoderStreamBytes.clear();
@@ -849,7 +848,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<std::size_t, QpackError> QpackEncoder::feedDecoderStream(std::span<const std::uint8_t> bytes)
+    QpackExpected<std::size_t> QpackEncoder::feedDecoderStream(std::span<const std::uint8_t> bytes)
     {
         const std::size_t bufferedByteCount = m_decoderStreamBuffer.size();
         m_decoderStreamBuffer.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
@@ -1013,7 +1012,7 @@ namespace AsynGyanis::Net
     {
     }
 
-    std::expected<std::uint64_t, QpackError> QpackDecoder::decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const
+    QpackExpected<std::uint64_t> QpackDecoder::decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const
     {
         if (encodedInsertCount == 0)
         {
@@ -1082,7 +1081,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<void, QpackError> QpackDecoder::blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount)
+    QpackStatus QpackDecoder::blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount)
     {
         const bool streamAlreadyBlocked = m_blockedSectionsByStreamId.contains(streamId);
         if (!streamAlreadyBlocked && m_blockedSectionsByStreamId.size() >= m_settings.maximumBlockedStreamCount)
@@ -1128,15 +1127,15 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                              std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
+    QpackExpected<QpackFieldSectionDecodeStatus> QpackDecoder::decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                  std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
     {
         return decodeFieldSectionInto(streamId, encodedFieldSection, fields, decoderStreamBytes, false);
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                                  std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
-                                                                                                  const bool isFrontOfPendingQueue)
+    QpackExpected<QpackFieldSectionDecodeStatus> QpackDecoder::decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                      std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
+                                                                                      const bool isFrontOfPendingQueue)
     {
         const auto decoded = decodeFieldSectionIntoScratch(streamId, encodedFieldSection, decoderStreamBytes, isFrontOfPendingQueue);
         // 只有整段解成才交付：失败或仍被挂起时调用方看到的仍是空表，与旧写法「先清空、末尾才填满」同形
@@ -1150,8 +1149,8 @@ namespace AsynGyanis::Net
         return decoded;
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                                         std::string &decoderStreamBytes, const bool isFrontOfPendingQueue)
+    QpackExpected<QpackFieldSectionDecodeStatus> QpackDecoder::decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                             std::string &decoderStreamBytes, const bool isFrontOfPendingQueue)
     {
         restartFieldLineScratch();
         decoderStreamBytes.clear();
@@ -1171,7 +1170,7 @@ namespace AsynGyanis::Net
         }
         cursor += consumedByteCount;
 
-        std::expected<std::uint64_t, QpackError> requiredInsertCountResult = decodeRequiredInsertCount(encodedInsertCount);
+        QpackExpected<std::uint64_t> requiredInsertCountResult = decodeRequiredInsertCount(encodedInsertCount);
         if (!requiredInsertCountResult.has_value())
         {
             return std::unexpected(requiredInsertCountResult.error());
@@ -1244,8 +1243,8 @@ namespace AsynGyanis::Net
         return QpackFieldSectionDecodeStatus::Decoded;
     }
 
-    std::expected<QpackFieldSectionDecodeStatus, QpackError> QpackDecoder::resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
-                                                                                                     std::string &decoderStreamBytes)
+    QpackExpected<QpackFieldSectionDecodeStatus> QpackDecoder::resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
+                                                                                         std::string &decoderStreamBytes)
     {
         const auto streamIterator = m_blockedSectionsByStreamId.find(streamId);
         if (streamIterator == m_blockedSectionsByStreamId.end() || streamIterator->second.empty())
@@ -1271,7 +1270,7 @@ namespace AsynGyanis::Net
         return decodeResult;
     }
 
-    std::expected<void, QpackError> QpackDecoder::noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes)
+    QpackStatus QpackDecoder::noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes)
     {
         decoderStreamBytes.clear();
         const auto streamIterator = m_unacknowledgedRequiredInsertCountsByStreamId.find(streamId);
@@ -1314,8 +1313,7 @@ namespace AsynGyanis::Net
         m_unacknowledgedRequiredInsertCountsByStreamId.erase(streamId);
     }
 
-    std::expected<std::size_t, QpackError> QpackDecoder::feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds,
-                                                                           std::string &decoderStreamBytes)
+    QpackExpected<std::size_t> QpackDecoder::feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds, std::string &decoderStreamBytes)
     {
         unblockedStreamIds.clear();
         decoderStreamBytes.clear();
@@ -1516,7 +1514,7 @@ namespace AsynGyanis::Net
         return parsedByteCount > bufferedByteCount ? parsedByteCount - bufferedByteCount : 0;
     }
 
-    std::expected<void, QpackError> QpackDecoder::resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const
+    QpackStatus QpackDecoder::resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const
     {
         if (absoluteIndex >= requiredInsertCount)
         {
@@ -1533,9 +1531,8 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, QpackError> QpackDecoder::decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::size_t &cursor,
-                                                                                std::uint64_t baseValue, std::uint64_t requiredInsertCount,
-                                                                                std::uint64_t &maximumReferencedAbsoluteIndex)
+    QpackStatus QpackDecoder::decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::size_t &cursor, std::uint64_t baseValue,
+                                                            std::uint64_t requiredInsertCount, std::uint64_t &maximumReferencedAbsoluteIndex)
     {
         const std::string_view section   = toByteView(encodedFieldSection);
         const std::size_t      lineIndex = m_fieldLineCount + 1;
@@ -1548,7 +1545,7 @@ namespace AsynGyanis::Net
         QpackHeaderField &field = beginDecodedFieldLine();
 
         // 动态表引用统一走这里：先核对是否落在本段声明的表状态内，再取项（§2.2.3）
-        const auto referenceDynamicEntry = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
+        const auto referenceDynamicEntry = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> QpackStatus
         {
             if (auto resolveResult = resolveDynamicReference(absoluteIndex, requiredInsertCount, field); !resolveResult.has_value())
             {
@@ -1559,7 +1556,7 @@ namespace AsynGyanis::Net
         };
 
         // 只取名字不取值的场景（带名引用的字面量）：名来自表项，值另解字面量
-        const auto referenceDynamicName = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> std::expected<void, QpackError>
+        const auto referenceDynamicName = [this, requiredInsertCount, &field, &maximumReferencedAbsoluteIndex](std::uint64_t absoluteIndex) -> QpackStatus
         {
             QpackHeaderField referenced;
             if (auto resolveResult = resolveDynamicReference(absoluteIndex, requiredInsertCount, referenced); !resolveResult.has_value())

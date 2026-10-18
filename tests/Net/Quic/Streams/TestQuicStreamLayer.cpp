@@ -98,8 +98,8 @@ namespace AsynGyanis::Net
         /// 把编出来的帧字节解回帧序列；解不开即失败，返回空序列
         std::vector<QuicFrame> decodeFrames(const std::string &encoded)
         {
-            const std::span<const std::uint8_t>                          payload(reinterpret_cast<const std::uint8_t *>(encoded.data()), encoded.size());
-            const std::expected<std::vector<QuicFrame>, QuicDecodeError> decoded = decodeQuicFrames(payload);
+            const std::span<const std::uint8_t>              payload(reinterpret_cast<const std::uint8_t *>(encoded.data()), encoded.size());
+            const QuicDecodeExpected<std::vector<QuicFrame>> decoded = decodeQuicFrames(payload);
             EXPECT_TRUE(decoded.has_value()) << "编出来的帧解不回去";
             return decoded.has_value() ? *decoded : std::vector<QuicFrame>{};
         }
@@ -173,7 +173,7 @@ namespace AsynGyanis::Net
          * @param result 入站帧的处理结果
          * @return std::uint64_t §11.1 的错误码；本该失败却成功时返回 0
          */
-        std::uint64_t violationCodeOf(const std::expected<void, QuicStreamViolation> &result)
+        std::uint64_t violationCodeOf(const QuicStreamViolationStatus &result)
         {
             EXPECT_FALSE(result.has_value()) << "本应判违规的一帧被当成了合法";
             return result.has_value() ? 0U : result.error().errorCode;
@@ -217,8 +217,8 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsDataOnLocallyInitiatedUnidirectionalStream)
     {
-        QuicStreamLayer                                layer(makeLocalParameters());
-        const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x03, 0, bytesOf("hi")));
+        QuicStreamLayer                 layer(makeLocalParameters());
+        const QuicStreamViolationStatus accepted = layer.onStreamFrame(makeStreamFrame(0x03, 0, bytesOf("hi")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x0aU);
     }
@@ -228,8 +228,8 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsDataOnUnknownLocallyInitiatedBidirectionalStream)
     {
-        QuicStreamLayer                                layer(makeLocalParameters());
-        const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x01, 0, bytesOf("hi")));
+        QuicStreamLayer                 layer(makeLocalParameters());
+        const QuicStreamViolationStatus accepted = layer.onStreamFrame(makeStreamFrame(0x01, 0, bytesOf("hi")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x0aU);
     }
@@ -353,8 +353,8 @@ namespace AsynGyanis::Net
      */
     TEST(QuicStreamLayer, RejectsStreamOffsetBeyondStreamLimit)
     {
-        QuicStreamLayer                                layer(makeLocalParameters());
-        const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x00, 1020, bytesOf("0123456789")));
+        QuicStreamLayer                 layer(makeLocalParameters());
+        const QuicStreamViolationStatus accepted = layer.onStreamFrame(makeStreamFrame(0x00, 1020, bytesOf("0123456789")));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x03U);
     }
@@ -367,7 +367,7 @@ namespace AsynGyanis::Net
         QuicStreamLayer layer(makeParameters(100, 1000, 1000, 1000, 4, 4));
         // 单条流的额度够，连接级只有 100：第二条流一进来就越界
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, std::vector<std::uint8_t>(80, 'a'))).has_value());
-        const std::expected<void, QuicStreamViolation> accepted = layer.onStreamFrame(makeStreamFrame(0x04, 0, std::vector<std::uint8_t>(30, 'b')));
+        const QuicStreamViolationStatus accepted = layer.onStreamFrame(makeStreamFrame(0x04, 0, std::vector<std::uint8_t>(30, 'b')));
         ASSERT_FALSE(accepted.has_value());
         EXPECT_EQ(accepted.error().errorCode, 0x03U);
     }

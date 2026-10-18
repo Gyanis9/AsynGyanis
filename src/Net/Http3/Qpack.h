@@ -88,6 +88,14 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief QPACK 的结果形状：成功带 Value，失败侧固定为 QpackError
+     */
+    template<typename Value>
+    using QpackExpected = std::expected<Value, QpackError>;
+
+    using QpackStatus = std::expected<void, QpackError>; ///< 只问成不成的 QPACK 结果
+
+    /**
      * @brief 把 QPACK 失败类别映射成上线的 HTTP/3 错误码
      * @param errorKind QPACK 失败类别
      * @return Http3ErrorCode DecompressionFailed→DecompressionFailed、EncoderStreamError→EncoderStreamError、
@@ -258,10 +266,10 @@ namespace AsynGyanis::Net
          * @brief 调整动态表容量，并产出 Set Dynamic Table Capacity 指令（RFC 9204 §4.3.1、§3.2.2）
          * @param capacityByteCount 新容量，单位字节；0 表示把表清空到不可插入，之后仍可再调回来
          * @param encoderStreamBytes 输出参数：本次要追加到编码器流的字节，进入调用时先清空
-         * @return std::expected<void, QpackError> 成功；失败时未写任何字节——超出对端上限判
+         * @return QpackStatus 成功；失败时未写任何字节——超出对端上限判
          *         InvalidLocalState，会淘汰仍被未确认头块引用的项也判 InvalidLocalState（§4.3.1 禁止）
          */
-        [[nodiscard]] std::expected<void, QpackError> setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes);
+        [[nodiscard]] QpackStatus setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes);
 
         /**
          * @brief 编码一段头块（含 §4.5.1 的两字段前缀）
@@ -269,23 +277,23 @@ namespace AsynGyanis::Net
          * @param fieldLines 待编码的字段行，按给定顺序输出表示（§2.1 要求保序）
          * @param headerBlock 输出参数：完整编码段（前缀 + 字段行表示），可直接放进 HEADERS/CONTINUATION 净负载；进入调用时先清空
          * @param encoderStreamBytes 输出参数：本次产生的编码器流指令（容量变更、插入、Duplicate），进入调用时先清空
-         * @return std::expected<void, QpackError> 成功；失败时两个输出均为空串，不留半截字节
+         * @return QpackStatus 成功；失败时两个输出均为空串，不留半截字节
          * @warning 两段输出必须按「编码器流指令在前、头块在后」的顺序写出：头块引用的表项若还没随指令到达
          *          对端，对端就得为该流挂起等待（§2.2.1）；同一条头块的这两段字节应落在同一个 flush 周期内
          *          送出，§2.1.3 还要求整条指令的流控额度已可用才写。
          */
-        [[nodiscard]] std::expected<void, QpackError> encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock,
-                                                                         std::string &encoderStreamBytes);
+        [[nodiscard]] QpackStatus encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock,
+                                                     std::string &encoderStreamBytes);
 
         /**
          * @brief 增量吃掉对端解码器流的字节（Section Ack / Stream Cancellation / Insert Count Increment）
          * @param bytes 新到达的字节，按「指针 + 长度」取，可含任意二进制
-         * @return std::expected<std::size_t, QpackError> 本趟消费的字节数；剩余不足一条指令的尾巴留在
+         * @return QpackExpected<std::size_t> 本趟消费的字节数；剩余不足一条指令的尾巴留在
          *         内部缓冲里等下趟，故返回值可以小于 bytes.size()。指令非法时返回 DecoderStreamError，
          *         此时本端已放弃该连接上的压缩上下文，上层须按 §6 作废连接
          * @note 每收到一条 Section Ack 即推进「对端已知插入计数」并释放该流对动态表项的引用（§2.1.4、§2.2.2.1）
          */
-        [[nodiscard]] std::expected<std::size_t, QpackError> feedDecoderStream(std::span<const std::uint8_t> bytes);
+        [[nodiscard]] QpackExpected<std::size_t> feedDecoderStream(std::span<const std::uint8_t> bytes);
 
         /**
          * @brief 本端放弃了某条流：释放该流上的引用，并按 §4.4.2 产出 Stream Cancellation
@@ -445,11 +453,11 @@ namespace AsynGyanis::Net
          *        每个标识调一次 resumeBlockedFieldSection()（§2.2.1）
          * @param decoderStreamBytes 输出参数：本次建议追加到解码器流的字节（当前实现只可能是 Insert Count
          *        Increment），进入调用时先清空
-         * @return std::expected<std::size_t, QpackError> 本趟消费的字节数；剩余部分留在内部缓冲里等下趟，
+         * @return QpackExpected<std::size_t> 本趟消费的字节数；剩余部分留在内部缓冲里等下趟，
          *         故可以小于 bytes.size()。指令非法时返回 EncoderStreamError（§6：连接作废）
          */
-        [[nodiscard]] std::expected<std::size_t, QpackError> feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds,
-                                                                               std::string &decoderStreamBytes);
+        [[nodiscard]] QpackExpected<std::size_t> feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds,
+                                                                   std::string &decoderStreamBytes);
 
         /**
          * @brief 解一段头块：前缀（Required Insert Count + Delta Base）加字段行表示
@@ -458,39 +466,39 @@ namespace AsynGyanis::Net
          * @param fields 输出参数：解出的字段行按序存放，进入调用时先清空；Blocked 与失败时为空
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节；Section Ack 不在这里发，
          *        要等整段头块交付上层后由 noteFieldSectionDelivered() 产出（§4.4.1）
-         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> Decoded 表示 fields 可用；
+         * @return QpackExpected<QpackFieldSectionDecodeStatus> Decoded 表示 fields 可用；
          *         Blocked 表示已挂起（超过本端承诺的阻塞流数则按 §2.1.2 判 DecompressionFailed）；
          *         失败时错误类别区分头块类（DecompressionFailed）与本端策略（FieldSectionTooLarge）
          * @note 该流上已压着更早的段时，本段即便引用够用也一并挂起：一条流的头块按发送序交付（§2.2.1）
          */
-        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                                  std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes);
+        [[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                      std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes);
 
         /**
          * @brief 续解一条已挂起的流上最早的那段头块
          * @param streamId feedEncoderStream() 报出来的已解除阻塞的流标识
          * @param fields 输出参数：解出的字段行按序存放，进入调用时先清空
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，同 decodeFieldSection()
-         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> Decoded 表示 fields 可用且挂起记录
+         * @return QpackExpected<QpackFieldSectionDecodeStatus> Decoded 表示 fields 可用且挂起记录
          *         已消除；Blocked 表示仍不够解（挂起记录原样留着，等下一次表补齐）；引用的项在此期间被
          *         淘汰或前缀本身非法时返回 DecompressionFailed（§2.2.3），该流本就没有挂起记录时同样报错
          * @note 一条流上可以压着多段，而 feedEncoderStream() 每条流只报一个标识：解出一段后要继续按
          *       hasBlockedFieldSection() 续解到空，否则后面那段永无唤醒点
          */
-        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
-                                                                                                         std::string &decoderStreamBytes);
+        [[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields,
+                                                                                             std::string &decoderStreamBytes);
 
         /**
          * @brief 告知本层「整段头块已交给上层处理」，据此产出 Section Ack（RFC 9204 §4.4.1）
          * @param streamId 该头块所在流；按 §2.2.2.1 只确认该流上最早一段 Required Insert Count 非 0 的头块
          * @param decoderStreamBytes 输出参数：追加的字节（Section Ack，并视需要补一条 Insert Count Increment），
          *        进入调用时先清空
-         * @return std::expected<void, QpackError> 无可确认的头块时返回 DecoderStreamError（说明上层与本层
+         * @return QpackStatus 无可确认的头块时返回 DecoderStreamError（说明上层与本层
          *         的记账不同步，线上会表现为对端收到无据的 Ack）
          * @warning 解码成功不等于可以 Ack：本方法必须在字段行交给上层之后调用，提前调用会让对端把尚未被
          *          本端消费的表项判为可淘汰（§4.4.1 的措辞是「After processing」）
          */
-        [[nodiscard]] std::expected<void, QpackError> noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes);
+        [[nodiscard]] QpackStatus noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes);
 
         /**
          * @brief 把「本端已收到但还没告诉对端」的插入数作为 Insert Count Increment 写出（RFC 9204 §4.4.3）
@@ -552,11 +560,10 @@ namespace AsynGyanis::Net
          * @param baseValue 该段的 Base（§3.2.5/§3.2.6 的换算基准）
          * @param requiredInsertCount 该段的 Required Insert Count，用于 §2.2.3 的越界判定
          * @param maximumReferencedAbsoluteIndex [in,out] 本段引用到的最大绝对索引，用于核对 RIC 取值
-         * @return std::expected<void, QpackError> 成功；字节不够与表示非法都按 DecompressionFailed 返回
+         * @return QpackStatus 成功；字节不够与表示非法都按 DecompressionFailed 返回
          */
-        [[nodiscard]] std::expected<void, QpackError> decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> section, std::size_t &cursor,
-                                                                                    std::uint64_t baseValue, std::uint64_t requiredInsertCount,
-                                                                                    std::uint64_t &maximumReferencedAbsoluteIndex);
+        [[nodiscard]] QpackStatus decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> section, std::size_t &cursor, std::uint64_t baseValue,
+                                                                std::uint64_t requiredInsertCount, std::uint64_t &maximumReferencedAbsoluteIndex);
 
         /**
          * @brief 解一段头块到本解码器的字段行落点里，不动调用方交出的缓冲
@@ -567,10 +574,10 @@ namespace AsynGyanis::Net
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，进入调用时先清空
          * @param isFrontOfPendingQueue 本段是否为该流挂起队列的队首（续解路径为真）：非队首的段即便引用
          *        已经够用也要一并挂起，一条流上的头块必须按发送序解开（§2.2.1）
-         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> 与公开入口同一口径
+         * @return QpackExpected<QpackFieldSectionDecodeStatus> 与公开入口同一口径
          */
-        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError>
-        decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::string &decoderStreamBytes, bool isFrontOfPendingQueue);
+        [[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                                 std::string &decoderStreamBytes, bool isFrontOfPendingQueue);
 
         /**
          * @brief 解一段头块并在解全时把字段行交给调用方的缓冲
@@ -580,11 +587,11 @@ namespace AsynGyanis::Net
          * @param fields 输出参数：字段行落点，进入调用时先清空
          * @param decoderStreamBytes 输出参数：本次可追加到解码器流的字节，进入调用时先清空
          * @param isFrontOfPendingQueue 见 decodeFieldSectionIntoScratch()
-         * @return std::expected<QpackFieldSectionDecodeStatus, QpackError> 与公开入口同一口径
+         * @return QpackExpected<QpackFieldSectionDecodeStatus> 与公开入口同一口径
          */
-        [[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
-                                                                                                      std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
-                                                                                                      bool isFrontOfPendingQueue);
+        [[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection,
+                                                                                          std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes,
+                                                                                          bool isFrontOfPendingQueue);
 
         /**
          * @brief 开始解一段头块
@@ -611,25 +618,25 @@ namespace AsynGyanis::Net
          * @param absoluteIndex 待取项的绝对索引
          * @param requiredInsertCount 该段的 Required Insert Count（§2.2.3 要求引用严格小于它）
          * @param field 输出参数：取到的字段行
-         * @return std::expected<void, QpackError> 成功；越界或已淘汰按 DecompressionFailed 返回
+         * @return QpackStatus 成功；越界或已淘汰按 DecompressionFailed 返回
          */
-        [[nodiscard]] std::expected<void, QpackError> resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const;
+        [[nodiscard]] QpackStatus resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const;
 
         /**
          * @brief 挂起一条流并在超过本端承诺的阻塞流数时判错（§2.1.2 的 MUST）
          * @param streamId 流标识
          * @param section 原始编码段字节
          * @param requiredInsertCount 该段的 Required Insert Count
-         * @return std::expected<void, QpackError> 已挂起；超限返回 DecompressionFailed
+         * @return QpackStatus 已挂起；超限返回 DecompressionFailed
          */
-        [[nodiscard]] std::expected<void, QpackError> blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount);
+        [[nodiscard]] QpackStatus blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount);
 
         /**
          * @brief 按 §4.5.1.1 的算法把前缀里的 Encoded Insert Count 还原成 Required Insert Count
          * @param encodedInsertCount 前缀里 8 位前缀整数解出的值
-         * @return std::expected<std::uint64_t, QpackError> 还原值；不可能由合规编码器产生时按 DecompressionFailed 返回
+         * @return QpackExpected<std::uint64_t> 还原值；不可能由合规编码器产生时按 DecompressionFailed 返回
          */
-        [[nodiscard]] std::expected<std::uint64_t, QpackError> decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const;
+        [[nodiscard]] QpackExpected<std::uint64_t> decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const;
 
         /**
          * @brief 有「本端已处理但还没告诉对端」的插入时，追加一条 Insert Count Increment（§4.4.3）

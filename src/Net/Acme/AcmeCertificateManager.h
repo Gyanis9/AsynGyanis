@@ -175,10 +175,10 @@ namespace AsynGyanis::Net
          * @details 判据是「磁盘上那张证书的到期时刻减去现在，是否还够 renewBeforeExpiry」；
          *          证书文件读不出、解析不动或压根不存在都按「该签」处理——覆盖一份坏文件是恢复动作，
          *          不是需要人批准的事故。
-         * @return Core::Task<std::expected<AcmeIssuedCertificate, AcmeError>> 落点与到期时刻；
+         * @return Core::Task<AcmeExpected<AcmeIssuedCertificate>> 落点与到期时刻；
          *         失败时磁盘上的旧证书原样不动（新证书没写成功就报错，不会写半份）
          */
-        Core::Task<std::expected<AcmeIssuedCertificate, AcmeError>> issueIfRequired();
+        Core::Task<AcmeExpected<AcmeIssuedCertificate>> issueIfRequired();
 
         /**
          * @brief 常驻续期循环：按 renewalCheckInterval 查到期、必要时签发，失败按最小间隔退避
@@ -243,12 +243,12 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 让账户密钥就位：文件里有就加载，没有就新生成并落盘
-         * @return std::expected<AcmeKeyPair *, AcmeError> 指向本对象持有的那把密钥；文件读不出、
+         * @return AcmeExpected<AcmeKeyPair *> 指向本对象持有的那把密钥；文件读不出、
          *         不是合法私钥或落盘失败都交回原因（expected 的值类型不能是引用，故给指针）
          * @details 排在签发流程里而不是构造函数里：构造函数没有错误通道，而这三种失败都是
          *          「运维得改点东西」的现场，必须带着中文文案从 expected 交回
          */
-        [[nodiscard]] std::expected<AcmeKeyPair *, AcmeError> ensureAccountKey();
+        [[nodiscard]] AcmeExpected<AcmeKeyPair *> ensureAccountKey();
 
         /**
          * @brief 走完一条 dns-01 授权：写 TXT → 叫机构校验 → 撤 TXT

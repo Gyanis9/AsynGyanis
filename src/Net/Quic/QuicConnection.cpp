@@ -133,7 +133,7 @@ namespace AsynGyanis::Net
 
         // 只有能解出包头的 v1 Initial 才有资格起一条新连接：版本不认识的、短头的都直接不要。
         // 本端此刻还没装任何密钥，也不要去猜别的形态（RFC 9000 §5.2.2、§17.2.5）
-        const std::expected<QuicPacketHeader, QuicDecodeError> decodedHeader = decodeQuicPacketHeader(clientInitial, kSourceConnectionIdLength);
+        const QuicDecodeExpected<QuicPacketHeader> decodedHeader = decodeQuicPacketHeader(clientInitial, kSourceConnectionIdLength);
         if (!decodedHeader.has_value() || !decodedHeader->isLongHeader || decodedHeader->longPacketType != QuicLongPacketType::Initial || decodedHeader->version != kQuicVersion1)
         {
             LOG_DEBUG("QuicConnection: 报文不可接受（不是 v1 的 Initial），已丢弃");
@@ -406,7 +406,7 @@ namespace AsynGyanis::Net
             m_peerAddress = peerAddress;
         }
 
-        const std::expected<void, QuicDecodeError> handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint, pathKey);
+        const QuicDecodeStatus handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint, pathKey);
         if (!handled.has_value())
         {
             LOG_DEBUG_FMT("QuicConnection: 报文不合协议（{}），已按协议收口", handled.error().message);

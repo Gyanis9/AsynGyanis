@@ -35,9 +35,9 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 读一个变长整数
-             * @return std::expected<std::uint64_t, QuicDecodeError> 成功返回数值，失败返回截断错误
+             * @return QuicDecodeExpected<std::uint64_t> 成功返回数值，失败返回截断错误
              */
-            [[nodiscard]] std::expected<std::uint64_t, QuicDecodeError> readInteger()
+            [[nodiscard]] QuicDecodeExpected<std::uint64_t> readInteger()
             {
                 const auto decoded = decodeQuicVariableLengthInteger(m_bytes.subspan(m_offset));
                 if (!decoded.has_value())
@@ -50,9 +50,9 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 读帧类型：变长整数里唯一要求最短编码的一处（RFC 9000 §16 末段与 §12.4）
-             * @return std::expected<std::uint64_t, QuicDecodeError> 成功返回类型值，非最短编码判 Malformed
+             * @return QuicDecodeExpected<std::uint64_t> 成功返回类型值，非最短编码判 Malformed
              */
-            [[nodiscard]] std::expected<std::uint64_t, QuicDecodeError> readFrameType()
+            [[nodiscard]] QuicDecodeExpected<std::uint64_t> readFrameType()
             {
                 const auto decoded = decodeQuicVariableLengthInteger(m_bytes.subspan(m_offset));
                 if (!decoded.has_value())
@@ -72,9 +72,9 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 读一个 8 位无符号整数
-             * @return std::expected<std::uint8_t, QuicDecodeError> 成功返回字节值
+             * @return QuicDecodeExpected<std::uint8_t> 成功返回字节值
              */
-            [[nodiscard]] std::expected<std::uint8_t, QuicDecodeError> readByte()
+            [[nodiscard]] QuicDecodeExpected<std::uint8_t> readByte()
             {
                 const auto bytes = readBytes(1);
                 if (!bytes.has_value())
@@ -87,9 +87,9 @@ namespace AsynGyanis::Net
             /**
              * @brief 读定长字节
              * @param count 需要的字节数
-             * @return std::expected<std::span<const std::uint8_t>, QuicDecodeError> 成功返回指向载荷的视图
+             * @return QuicDecodeExpected<std::span<const std::uint8_t>> 成功返回指向载荷的视图
              */
-            [[nodiscard]] std::expected<std::span<const std::uint8_t>, QuicDecodeError> readBytes(const std::size_t count)
+            [[nodiscard]] QuicDecodeExpected<std::span<const std::uint8_t>> readBytes(const std::size_t count)
             {
                 if (remainingByteCount() < count)
                 {
@@ -102,9 +102,9 @@ namespace AsynGyanis::Net
 
             /**
              * @brief 读 16 位定长大端整数（连接标识长度等短字段用）
-             * @return std::expected<std::uint16_t, QuicDecodeError> 成功返回数值
+             * @return QuicDecodeExpected<std::uint16_t> 成功返回数值
              */
-            [[nodiscard]] std::expected<std::uint16_t, QuicDecodeError> readBigEndian16()
+            [[nodiscard]] QuicDecodeExpected<std::uint16_t> readBigEndian16()
             {
                 const auto bytes = readBytes(2);
                 if (!bytes.has_value())
@@ -191,10 +191,10 @@ namespace AsynGyanis::Net
          * @param largestAcknowledged 最大确认包号
          * @param firstAcknowledgedRange 首区间长度
          * @param rangeCount 后续区间个数
-         * @return std::expected<std::vector<QuicAcknowledgementRange>, QuicDecodeError> 成功返回绝对包号区间
+         * @return QuicDecodeExpected<std::vector<QuicAcknowledgementRange>> 成功返回绝对包号区间
          */
-        std::expected<std::vector<QuicAcknowledgementRange>, QuicDecodeError>
-        decodeAcknowledgementRanges(FrameReader &reader, const std::uint64_t largestAcknowledged, const std::uint64_t firstAcknowledgedRange, const std::uint64_t rangeCount)
+        QuicDecodeExpected<std::vector<QuicAcknowledgementRange>> decodeAcknowledgementRanges(FrameReader &reader, const std::uint64_t largestAcknowledged,
+                                                                                              const std::uint64_t firstAcknowledgedRange, const std::uint64_t rangeCount)
         {
             if (largestAcknowledged < firstAcknowledgedRange)
             {
@@ -533,7 +533,7 @@ namespace AsynGyanis::Net
                 frame);
     }
 
-    std::expected<void, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
+    QuicDecodeStatus decodeQuicFrames(const std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
     {
         // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
         frames.clear();
@@ -905,10 +905,10 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<std::vector<QuicFrame>, QuicDecodeError> decodeQuicFrames(const std::span<const std::uint8_t> payload)
+    QuicDecodeExpected<std::vector<QuicFrame>> decodeQuicFrames(const std::span<const std::uint8_t> payload)
     {
         std::vector<QuicFrame> frames;
-        if (const std::expected<void, QuicDecodeError> decoded = decodeQuicFrames(payload, frames); !decoded.has_value())
+        if (const QuicDecodeStatus decoded = decodeQuicFrames(payload, frames); !decoded.has_value())
         {
             return std::unexpected(decoded.error());
         }

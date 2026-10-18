@@ -50,7 +50,7 @@ namespace AsynGyanis::Net
      *         `AuthenticationFailed`（调用方整包丢弃即可，别当成对端违规去回错误码）
      * @throws Base::Exception 运行期故障：输出缓冲长度不符、OpenSSL 拒绝了参数
      */
-    [[nodiscard]] ASYN_NET_API std::expected<std::size_t, QuicDecodeError> openQuicProtectedPayload(std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys,
-                                                                                                    std::uint64_t packetNumber, std::span<const std::uint8_t> additionalData,
-                                                                                                    std::span<const std::uint8_t> protectedPayload);
+    [[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::size_t> openQuicProtectedPayload(std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys,
+                                                                                        std::uint64_t packetNumber, std::span<const std::uint8_t> additionalData,
+                                                                                        std::span<const std::uint8_t> protectedPayload);
 } // namespace AsynGyanis::Net

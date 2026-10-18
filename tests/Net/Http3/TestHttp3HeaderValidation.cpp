@@ -10,6 +10,7 @@ namespace
 {
     using AsynGyanis::Net::Http3HeaderError;
     using AsynGyanis::Net::Http3HeaderErrorKind;
+    using AsynGyanis::Net::Http3HeaderStatus;
     using AsynGyanis::Net::Http3HeaderValidator;
     using AsynGyanis::Net::Http3MessageKind;
     using AsynGyanis::Net::toHttp3ErrorCode;
@@ -28,7 +29,7 @@ namespace
      * @details 返回第一个失败（含 endHeaderBlock 的判定），全通过则返回空。用例只关心「有没有被拒」时用
      *          它，关心「被哪条规则拒」时用 feedExpectingError。
      */
-    std::expected<void, Http3HeaderError> feedRequest(Http3HeaderValidator &validator, const std::vector<std::pair<std::string_view, std::string_view>> &fields)
+    Http3HeaderStatus feedRequest(Http3HeaderValidator &validator, const std::vector<std::pair<std::string_view, std::string_view>> &fields)
     {
         if (auto result = validator.beginHeaderBlock(false); !result)
         {
@@ -61,7 +62,7 @@ namespace
     }
 
     /// 断言被拒，且类别正是 expected 的那一个：只看「失败」会把「字段名非法」和「缺伪头」混为一谈
-    void expectRejected(const std::expected<void, Http3HeaderError> &result, const Http3HeaderErrorKind expectedKind, std::string_view context)
+    void expectRejected(const Http3HeaderStatus &result, const Http3HeaderErrorKind expectedKind, std::string_view context)
     {
         ASSERT_FALSE(result.has_value()) << context << "：本应被拒却通过了";
         EXPECT_EQ(result.error().kind, expectedKind) << context << "：失败类别不对，实际文案=" << result.error().message;

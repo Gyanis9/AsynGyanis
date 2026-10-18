@@ -319,7 +319,7 @@ namespace AsynGyanis::Net
         return readCertificateExpiry(m_configuration.certificateFile);
     }
 
-    std::expected<AcmeKeyPair *, AcmeError> AcmeCertificateManager::ensureAccountKey()
+    AcmeExpected<AcmeKeyPair *> AcmeCertificateManager::ensureAccountKey()
     {
         // 已经就位就复用：账户密钥换一次就意味着在机构那边换了个人，之前的速率与授权历史都不跟着走
         if (m_accountKey.has_value())
@@ -394,7 +394,7 @@ namespace AsynGyanis::Net
         co_return std::nullopt;
     }
 
-    Core::Task<std::expected<AcmeIssuedCertificate, AcmeError>> AcmeCertificateManager::issueIfRequired()
+    Core::Task<AcmeExpected<AcmeIssuedCertificate>> AcmeCertificateManager::issueIfRequired()
     {
         // 配置判据排在最前：这一层最常见的失败是路径或域名没填，而它比任何网络错误都更该先说
         if (m_configuration.domainNames.empty())
@@ -452,7 +452,7 @@ namespace AsynGyanis::Net
 
         // 域名密钥：文件里有就沿用。换密钥不是续期必需的（LE 的建议是换，但它也在换不了时照常工作），
         // 而每次续期都换会让「私钥被谁拿走」这件事更难对齐；要换就删掉那个文件，这是运维的显式动作
-        std::expected<AcmeKeyPair, AcmeError> domainKey = [this]() -> std::expected<AcmeKeyPair, AcmeError>
+        AcmeExpected<AcmeKeyPair> domainKey = [this]() -> AcmeExpected<AcmeKeyPair>
         {
             std::error_code existenceFailure;
             if (std::filesystem::exists(m_configuration.privateKeyFile, existenceFailure))

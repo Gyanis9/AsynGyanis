@@ -20,6 +20,7 @@ namespace
 {
     using AsynGyanis::Net::QuicAddressValidationTokenCodec;
     using AsynGyanis::Net::QuicAddressValidationTokenContent;
+    using AsynGyanis::Net::QuicAddressValidationTokenExpected;
     using AsynGyanis::Net::QuicAddressValidationTokenStatus;
 
     /// 签发时刻的基准：用例里所有时刻都从这一格往前推，避免拿本机墙钟当判据
@@ -66,7 +67,7 @@ TEST(QuicAddressValidationToken, RoundTripsForTheSameAddress)
     const auto                            token = issueOrFail(codec, peerAddressOn(44333));
 
     // 一秒之后就回来：Retry 的令牌是按「客户端立刻重发 Initial」设计的（RFC 9000 §8.1.2）
-    const std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus> verified =
+    const QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> verified =
             codec.verify(std::span<const std::uint8_t>(token), peerAddressOn(44333), issuedAt() + std::chrono::seconds{1});
 
     ASSERT_TRUE(verified.has_value()) << "自家签的令牌自家验不过，状态是 " << static_cast<int>(verified.error());
@@ -82,7 +83,7 @@ TEST(QuicAddressValidationToken, RejectsATokenPresentedFromAnotherAddress)
 
     // RFC 9000 §8.1.4 的 SHOULD 就是这一格：令牌要能核对「源地址与端口保持不变」。搬给同 IP 的另一个端口
     // 也算搬走——攻击者拿受害者地址收到的令牌，是自己打不到本端的
-    const std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus> moved =
+    const QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> moved =
             codec.verify(std::span<const std::uint8_t>(token), peerAddressOn(44334), issuedAt() + std::chrono::seconds{1});
     ASSERT_FALSE(moved.has_value());
     EXPECT_EQ(moved.error(), QuicAddressValidationTokenStatus::AddressMismatch);

@@ -1080,7 +1080,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encoder.insertCount(), 3U);
         EXPECT_EQ(encoder.blockedStreamCount(), 3U);
 
-        auto feedOneByte = [&encoder](std::uint8_t byteValue) -> std::expected<std::size_t, QpackError>
+        auto feedOneByte = [&encoder](std::uint8_t byteValue) -> QpackExpected<std::size_t>
         {
             const std::uint8_t storage = byteValue;
             return encoder.feedDecoderStream(std::span<const std::uint8_t>(&storage, 1));

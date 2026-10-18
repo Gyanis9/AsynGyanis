@@ -134,6 +134,14 @@ namespace AsynGyanis::Net
         std::string         message;                              ///< 中文可操作文案，含帧类型、声明长度与实收字节数和对应 RFC 章节
     };
 
+    /**
+     * @brief HTTP/3 帧编解码的结果形状：成功带 Value，失败侧固定为 Http3FrameError
+     */
+    template<typename Value>
+    using Http3FrameExpected = std::expected<Value, Http3FrameError>;
+
+    using Http3FrameStatus = std::expected<void, Http3FrameError>; ///< 只问成不成的帧结果
+
     // ============================================================================
     // 各帧的字段结构：只放该帧自己的字段，载荷一律是指向入参缓冲的视图
     // ============================================================================
@@ -368,7 +376,7 @@ namespace AsynGyanis::Net
          *         或解码器已进入粘滞错误态而重复报出旧错
          * @warning 之前交出的帧的载荷视图指向本对象的缓冲，本次追加可能让它们失效
          */
-        [[nodiscard]] std::expected<void, Http3FrameError> feed(std::span<const std::uint8_t> newBytes);
+        [[nodiscard]] Http3FrameStatus feed(std::span<const std::uint8_t> newBytes);
 
         /**
          * @brief 取出缓冲里下一个完整帧
@@ -379,7 +387,7 @@ namespace AsynGyanis::Net
          * @return 失败返回 `Http3FrameError`：载荷字段越出声明长度或声明长度盖不住必填字段为 `Malformed`，
          *         声明长度本身超上限为 `LimitExceeded`；此后解码器进入粘滞错误态，需 reset() 才能继续
          */
-        [[nodiscard]] std::expected<std::optional<Http3Frame>, Http3FrameError> nextFrame();
+        [[nodiscard]] Http3FrameExpected<std::optional<Http3Frame>> nextFrame();
 
         /**
          * @brief 丢弃缓冲里的一切，回到初态

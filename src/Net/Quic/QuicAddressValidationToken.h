@@ -42,6 +42,12 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 令牌核验的结果形状：成功带 Value，失败侧固定为核验到哪一档不合
+     */
+    template<typename Value>
+    using QuicAddressValidationTokenExpected = std::expected<Value, QuicAddressValidationTokenStatus>;
+
+    /**
      * @brief 核验通过的令牌里恢复出来的信息
      *
      * @details 原始目的标识是「参数里的 original_destination_connection_id」与「Initial 密钥的算据」的来源，
@@ -114,8 +120,8 @@ namespace AsynGyanis::Net
          * @return 通过返回封进去的内容
          * @return 失败返回具体的不合原因
          */
-        [[nodiscard]] std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus>
-        verify(std::span<const std::uint8_t> token, const Platform::SocketAddress &peerAddress, std::chrono::system_clock::time_point now) const;
+        [[nodiscard]] QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> verify(std::span<const std::uint8_t> token, const Platform::SocketAddress &peerAddress,
+                                                                                                   std::chrono::system_clock::time_point now) const;
 
         /// 令牌有效期（读数与日志要用，别让配置在服务器里再抄一份）
         [[nodiscard]] std::chrono::seconds lifetime() const noexcept;

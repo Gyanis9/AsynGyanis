@@ -94,19 +94,19 @@ namespace AsynGyanis::Net
          */
         struct Run
         {
-            std::optional<std::expected<AcmeIssuedCertificate, AcmeError>> result{};                         ///< 签发出口；空表示这一轮没跑到
-            std::optional<std::expected<AcmeIssuedCertificate, AcmeError>> retryResult{};                    ///< 装回翻回成功后再走一次入口的出口
-            bool                                                           pendingReloadAfterFailure{false}; ///< 第一次失败之后，管理器记不记得这笔欠账
-            bool                                                           pendingReloadAfterRetry{false};   ///< 补装成功之后，这笔欠账结没结清
-            std::size_t                                                    ordersAfterFailure{0};            ///< 第一次失败时机构建出的订单条数
-            std::size_t                                                    ordersAfterRetry{0};              ///< 补装之后机构建出的订单条数
-            std::size_t                                                    installCalls{0};                  ///< 这一轮里装回动作被调了几次
-            std::optional<int>                                             tokenProbeStatusCode{};           ///< 事后回取令牌的状态码
-            std::string                                                    tokenProbeBody;                   ///< 事后回取到的正文
-            std::size_t                                                    dnsPublishCalls{0};               ///< 这一轮里 TXT 被写入几次
-            std::size_t                                                    dnsWithdrawCalls{0};              ///< 这一轮里 TXT 被撤回几次
-            std::vector<std::string>                                       dnsPublishedNames;                ///< 每次写入用的记录名，按调用顺序
-            std::vector<std::string>                                       dnsPublishedValues;               ///< 每次写入的正文，按调用顺序
+            std::optional<AcmeExpected<AcmeIssuedCertificate>> result{};                         ///< 签发出口；空表示这一轮没跑到
+            std::optional<AcmeExpected<AcmeIssuedCertificate>> retryResult{};                    ///< 装回翻回成功后再走一次入口的出口
+            bool                                               pendingReloadAfterFailure{false}; ///< 第一次失败之后，管理器记不记得这笔欠账
+            bool                                               pendingReloadAfterRetry{false};   ///< 补装成功之后，这笔欠账结没结清
+            std::size_t                                        ordersAfterFailure{0};            ///< 第一次失败时机构建出的订单条数
+            std::size_t                                        ordersAfterRetry{0};              ///< 补装之后机构建出的订单条数
+            std::size_t                                        installCalls{0};                  ///< 这一轮里装回动作被调了几次
+            std::optional<int>                                 tokenProbeStatusCode{};           ///< 事后回取令牌的状态码
+            std::string                                        tokenProbeBody;                   ///< 事后回取到的正文
+            std::size_t                                        dnsPublishCalls{0};               ///< 这一轮里 TXT 被写入几次
+            std::size_t                                        dnsWithdrawCalls{0};              ///< 这一轮里 TXT 被撤回几次
+            std::vector<std::string>                           dnsPublishedNames;                ///< 每次写入用的记录名，按调用顺序
+            std::vector<std::string>                           dnsPublishedValues;               ///< 每次写入的正文，按调用顺序
         };
 
     protected:

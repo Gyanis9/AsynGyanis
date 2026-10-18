@@ -88,9 +88,9 @@ namespace AsynGyanis::Net
          *          为的是不拷载荷）。本助手刻意不把解码器做成返回值，否则当场悬空。
          * @param hexadecimalText 帧字节的十六进制文本
          * @param reader 调用方持有的解码器，单帧上限要够大
-         * @return std::expected<std::optional<Http3Frame>, Http3FrameError> 与 nextFrame() 同义
+         * @return Http3FrameExpected<std::optional<Http3Frame>> 与 nextFrame() 同义
          */
-        [[nodiscard]] std::expected<std::optional<Http3Frame>, Http3FrameError> decodeSoleFrame(const std::string_view hexadecimalText, Http3FrameReader &reader)
+        [[nodiscard]] Http3FrameExpected<std::optional<Http3Frame>> decodeSoleFrame(const std::string_view hexadecimalText, Http3FrameReader &reader)
         {
             const auto wireBytes = makeBytesFromHex(hexadecimalText);
             const auto fed       = reader.feed(std::span<const std::uint8_t>(wireBytes));

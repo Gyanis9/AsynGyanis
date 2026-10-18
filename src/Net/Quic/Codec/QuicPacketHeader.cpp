@@ -63,10 +63,10 @@ namespace AsynGyanis::Net
          * @param readOffset 读位置，成功时前移到字段之后
          * @param fieldDescription 字段中文名，用于文案
          * @param connectionId 输出：指向数据报的视图
-         * @return std::expected<void, QuicDecodeError> 失败原样带回错误
+         * @return QuicDecodeStatus 失败原样带回错误
          */
-        std::expected<void, QuicDecodeError> readLongHeaderConnectionId(std::span<const std::uint8_t> datagram, std::size_t &readOffset, std::string_view fieldDescription,
-                                                                        std::span<const std::uint8_t> &connectionId)
+        QuicDecodeStatus readLongHeaderConnectionId(std::span<const std::uint8_t> datagram, std::size_t &readOffset, std::string_view fieldDescription,
+                                                    std::span<const std::uint8_t> &connectionId)
         {
             if (readOffset >= datagram.size())
             {
@@ -94,9 +94,9 @@ namespace AsynGyanis::Net
          * @brief 解长头（RFC 9000 §17.2）：版本、两条连接标识、Initial 的 Token、Length 域
          * @param header 输出参数，进入时只需 firstByte 已填
          * @param datagram 整条数据报
-         * @return std::expected<QuicPacketHeader, QuicDecodeError> 成功返回填好明文部分的报文头
+         * @return QuicDecodeExpected<QuicPacketHeader> 成功返回填好明文部分的报文头
          */
-        std::expected<QuicPacketHeader, QuicDecodeError> decodeLongHeaderPacket(QuicPacketHeader header, std::span<const std::uint8_t> datagram)
+        QuicDecodeExpected<QuicPacketHeader> decodeLongHeaderPacket(QuicPacketHeader header, std::span<const std::uint8_t> datagram)
         {
             // 首字节 + 32 位版本：不足 5 字节连版本都读不出来
             if (datagram.size() < 5)
@@ -187,10 +187,10 @@ namespace AsynGyanis::Net
          * @param header 输出参数，进入时只需 firstByte 已填
          * @param datagram 整条数据报
          * @param destinationConnectionIdLength 本端签发标识的字节数
-         * @return std::expected<QuicPacketHeader, QuicDecodeError> 成功返回填好明文部分的报文头
+         * @return QuicDecodeExpected<QuicPacketHeader> 成功返回填好明文部分的报文头
          */
-        std::expected<QuicPacketHeader, QuicDecodeError> decodeShortHeaderPacket(QuicPacketHeader header, std::span<const std::uint8_t> datagram,
-                                                                                 const std::size_t destinationConnectionIdLength)
+        QuicDecodeExpected<QuicPacketHeader> decodeShortHeaderPacket(QuicPacketHeader header, std::span<const std::uint8_t> datagram,
+                                                                     const std::size_t destinationConnectionIdLength)
         {
             if ((header.firstByte & kQuicFixedBit) == 0)
             {
@@ -214,8 +214,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(const std::span<const std::uint8_t> datagram,
-                                                                            const std::size_t                   shortHeaderDestinationConnectionIdLength)
+    QuicDecodeExpected<QuicPacketHeader> decodeQuicPacketHeader(const std::span<const std::uint8_t> datagram, const std::size_t shortHeaderDestinationConnectionIdLength)
     {
         if (shortHeaderDestinationConnectionIdLength > kQuicMaximumConnectionIdLength)
         {
@@ -236,7 +235,7 @@ namespace AsynGyanis::Net
         return header.isLongHeader ? decodeLongHeaderPacket(header, datagram) : decodeShortHeaderPacket(header, datagram, shortHeaderDestinationConnectionIdLength);
     }
 
-    std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, const std::uint8_t unmaskedFirstByte, const std::span<const std::uint8_t> datagram)
+    QuicDecodeStatus refreshQuicPacketHeader(QuicPacketHeader &header, const std::uint8_t unmaskedFirstByte, const std::span<const std::uint8_t> datagram)
     {
         header.firstByte             = unmaskedFirstByte;
         header.packetNumberByteCount = packetNumberByteCountFromFirstByte(unmaskedFirstByte);

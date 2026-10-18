@@ -212,7 +212,7 @@ namespace AsynGyanis::Net
          * @note 头段大小越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时按 InvalidLocalState 拒绝：
          *       本端不判就把处置权交给对端，而它常见做法是收掉整条连接（RFC 9114 §4.2.2、§7.2.4.1）
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
+        [[nodiscard]] QpackStatus submitResponseHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
 
         /**
          * @brief 在某条流上提交响应尾段（正文之后的第二个字段段），并以此收尾这条流
@@ -229,7 +229,7 @@ namespace AsynGyanis::Net
          * @note 调用之前那条响应的正文必须以 `isEndStream=false` 交出：本端方向由这次收尾，
          *       先收尾就没有放尾段的位置了（见 appendResponseBody）
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseTrailers(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines);
+        [[nodiscard]] QpackStatus submitResponseTrailers(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines);
 
         /**
          * @brief 追加一段响应正文（编成 DATA 帧排进该流的待发队列）
@@ -238,7 +238,7 @@ namespace AsynGyanis::Net
          * @param isEndStream true 表示正文到此为止
          * @return 成功返回已收下的字节数；失败返回错误
          */
-        [[nodiscard]] std::expected<std::size_t, QpackError> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
+        [[nodiscard]] QpackExpected<std::size_t> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
 
         /**
          * @brief 作客户端时提交请求头：与 `submitResponseHead` 同一实现，只是按 Request 种类校验
@@ -247,7 +247,7 @@ namespace AsynGyanis::Net
          * @param isEndOfStream true 表示这条请求没有正文，交完头就收尾
          * @return 成功返回空；失败返回错误，此时一个字节也没排进待发队列
          */
-        [[nodiscard]] std::expected<void, QpackError> submitRequestHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
+        [[nodiscard]] QpackStatus submitRequestHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream);
 
         /**
          * @brief 作客户端时追加请求正文：与 `appendResponseBody` 同一实现（DATA 帧不分方向）
@@ -256,7 +256,7 @@ namespace AsynGyanis::Net
          * @param isEndStream true 表示正文到此为止
          * @return 成功返回已收下的字节数；失败返回错误
          */
-        [[nodiscard]] std::expected<std::size_t, QpackError> appendRequestBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
+        [[nodiscard]] QpackExpected<std::size_t> appendRequestBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream);
 
         /**
          * @brief 该流上还有多少字节没交给传输层
@@ -283,7 +283,7 @@ namespace AsynGyanis::Net
          * @return 成功返回空；失败返回原因（会话不可用时控制流还不存在，作废后不再写任何字节）
          * @note 幂等：重复调用不再补发通告，也不改变已经通告出去的标识
          */
-        [[nodiscard]] std::expected<void, QpackError> beginGracefulDrain();
+        [[nodiscard]] QpackStatus beginGracefulDrain();
 
         /// 是否已发出排空通告（通告之后到达的新请求流一律拒绝）
         [[nodiscard]] bool isDraining() const noexcept;
@@ -376,10 +376,10 @@ namespace AsynGyanis::Net
         void consumeQpackEncoderStreamBytes(std::span<const std::uint8_t> data);
 
         /// 解出一个完整帧之后按流类型与交错规则处置；失败时已被处置，调用方只需停手
-        std::expected<void, QpackError> handleRequestFrame(std::int64_t streamId, StreamState &state, const Http3Frame &frame);
+        QpackStatus handleRequestFrame(std::int64_t streamId, StreamState &state, const Http3Frame &frame);
 
         /// 处置对端控制流上的一个帧
-        std::expected<void, QpackError> handleControlFrame(const Http3Frame &frame);
+        QpackStatus handleControlFrame(const Http3Frame &frame);
 
         /// 把一个解完的头段先整体判定、再逐字段交给上层
         [[nodiscard]] bool deliverFieldSection(std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, bool isTrailers);
@@ -413,8 +413,7 @@ namespace AsynGyanis::Net
          * @param isEndOfStream true 表示交完这段本端在该流上收尾
          * @return 成功返回空；失败返回错误，此时一个字节也没排进待发队列
          */
-        [[nodiscard]] std::expected<void, QpackError> submitResponseFieldSection(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isTrailers,
-                                                                                 bool isEndOfStream);
+        [[nodiscard]] QpackStatus submitResponseFieldSection(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isTrailers, bool isEndOfStream);
 
         /**
          * @brief 把一帧「帧头 + 载荷」直接排进该流的待发缓冲，不为载荷另起临时串

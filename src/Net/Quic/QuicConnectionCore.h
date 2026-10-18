@@ -241,8 +241,8 @@ namespace AsynGyanis::Net
          *        单路径的用法（出站客户端）留空即可
          * @return 与不带这一格时同义：失败返回 `QuicDecodeError`，本类自行发出 CONNECTION_CLOSE
          */
-        [[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime,
-                                                                              std::optional<std::uint8_t> ecnCodepoint = std::nullopt, const QuicPathKey &pathKey = QuicPathKey{});
+        [[nodiscard]] QuicDecodeStatus onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime, std::optional<std::uint8_t> ecnCodepoint = std::nullopt,
+                                                          const QuicPathKey &pathKey = QuicPathKey{});
 
         /**
          * @brief 取走一条待发数据报
@@ -611,8 +611,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] static QuicRecoverySpace recoverySpaceOf(PacketNumberSpace space) noexcept;
         [[nodiscard]] static PacketNumberSpace spaceOf(QuicRecoverySpace space) noexcept;
 
-        std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime,
-                                                          const QuicPathKey &pathKey);
+        QuicDecodeStatus handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime, const QuicPathKey &pathKey);
         /**
          * @brief 把一包已认证、已解出的帧序列处理完：帧门、逐帧分派、触发确认记账与路径跟随
          * @details 从 handlePacket 里剥出来的一段：那一位函数的主线是「解一包」（去保护、解密、按级别
@@ -626,8 +625,8 @@ namespace AsynGyanis::Net
          * @param arrivalTime 到达时刻
          * @return 与 handlePacket 同义：失败返回 `QuicDecodeError`，本类自行收口
          */
-        std::expected<void, QuicDecodeError> handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber,
-                                                          const QuicPathKey &pathKey, Timestamp arrivalTime);
+        QuicDecodeStatus handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber, const QuicPathKey &pathKey,
+                                      Timestamp arrivalTime);
         /**
          * @brief 把一条认证过的报文落进本空间的账：包号记账与 ECN 字段计数
          * @details 两件事必须同进同出，顺序也只有一种正确写法：§13.4.1 末句要求重复包不重复计数，
@@ -861,7 +860,7 @@ namespace AsynGyanis::Net
          * @param result 入站帧的处理结果
          * @param now 收口报文的发送时刻
          */
-        void reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, Timestamp now);
+        void reportStreamViolation(const QuicStreamViolationStatus &result, Timestamp now);
         /**
          * @brief 组一个包发出去，并把它记进在途账
          * @param space 哪个包号空间

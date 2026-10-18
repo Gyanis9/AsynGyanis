@@ -37,7 +37,7 @@ namespace AsynGyanis::Net
     {
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::beginHeaderBlock(const bool isTrailers) noexcept
+    Http3HeaderStatus Http3HeaderValidator::beginHeaderBlock(const bool isTrailers) noexcept
     {
         // 一条消息只有一个头段；再来的必须是尾段。这份判定器只判一条消息的头段与尾段，1xx 过渡响应由
         // 连接层拿一次性判定器单独走一份（见 Http3Connection::isInboundInformationalSection），
@@ -59,7 +59,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::onHeaderField(const std::string_view name, std::string_view value)
+    Http3HeaderStatus Http3HeaderValidator::onHeaderField(const std::string_view name, std::string_view value)
     {
         if (name.empty())
         {
@@ -74,7 +74,7 @@ namespace AsynGyanis::Net
         return onRegularField(name, value);
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::onPseudoHeader(std::string_view name, std::string_view value)
+    Http3HeaderStatus Http3HeaderValidator::onPseudoHeader(std::string_view name, std::string_view value)
     {
         // RFC 9114 §4.3：伪头不得出现在尾段里
         if (m_isTrailersSection)
@@ -240,7 +240,7 @@ namespace AsynGyanis::Net
         return std::unexpected(makeHeaderError(Http3HeaderErrorKind::UndefinedPseudoHeader, "请求里出现未定义的伪头 \":" + std::string(name) + "\"（RFC 9114 §4.3）"));
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::onRegularField(const std::string_view name, std::string_view value)
+    Http3HeaderStatus Http3HeaderValidator::onRegularField(const std::string_view name, std::string_view value)
     {
         if (auto nameError = validateFieldName(name); !nameError)
         {
@@ -327,7 +327,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::validateFieldName(const std::string_view name) const
+    Http3HeaderStatus Http3HeaderValidator::validateFieldName(const std::string_view name) const
     {
         for (const char character: name)
         {
@@ -346,7 +346,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::validateFieldValue(const std::string_view value) const
+    Http3HeaderStatus Http3HeaderValidator::validateFieldValue(const std::string_view value) const
     {
         // CR/LF/NUL 一旦放行，字段值就能伪造出状态行或截断头部，这是响应拆分的最小形态
         if (!containsOnlyFieldValueCharacters(value))
@@ -357,7 +357,7 @@ namespace AsynGyanis::Net
         return {};
     }
 
-    std::expected<void, Http3HeaderError> Http3HeaderValidator::endHeaderBlock() noexcept
+    Http3HeaderStatus Http3HeaderValidator::endHeaderBlock() noexcept
     {
         m_isHeadSectionDone = true;
         if (m_isTrailersSection)

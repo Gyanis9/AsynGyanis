@@ -39,7 +39,7 @@ namespace AsynGyanis::Net
         appendQuicRawBytes(bytes, std::span<const std::uint8_t>(encoded).first(byteWidth));
     }
 
-    std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(const std::span<const std::uint8_t> bytes)
+    QuicDecodeExpected<QuicDecodedInteger> decodeQuicVariableLengthInteger(const std::span<const std::uint8_t> bytes)
     {
         if (bytes.empty())
         {

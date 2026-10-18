@@ -197,11 +197,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 取目录并确保账户可用：这一步之后其余方法才允许调
          * @param persistedAccountUrl 上次记账的账户 URL；空表示本机第一次跑，要新建账户
-         * @return Core::Task<std::expected<void, AcmeError>> 就绪与否。机构侧那个账户已被删除时，
+         * @return Core::Task<AcmeStatus> 就绪与否。机构侧那个账户已被删除时，
          *         本函数按 RFC 的口径重新建一个账户并把新 URL 记在 accountUrl() 上，
          *         不要求人工去删状态文件
          */
-        Core::Task<std::expected<void, AcmeError>> prepareAccount(std::optional<std::string> persistedAccountUrl);
+        Core::Task<AcmeStatus> prepareAccount(std::optional<std::string> persistedAccountUrl);
 
         /**
          * @brief 当前生效的账户 URL，供调用方记账（下次启动原样传回 prepareAccount 即复用同一账户）
@@ -220,16 +220,16 @@ namespace AsynGyanis::Net
          * @details 域名先按 RFC 8553 的字符集校验：不合法的名字送出去只会收到一条
          *          「rejectedIdentifier」的远端告状，而原因在本地一眼就能判。
          * @param domainNames 要覆盖的域名，至少一条
-         * @return Core::Task<std::expected<AcmeOrder, AcmeError>> 带着授权与定稿 URL 的订单
+         * @return Core::Task<AcmeExpected<AcmeOrder>> 带着授权与定稿 URL 的订单
          */
-        Core::Task<std::expected<AcmeOrder, AcmeError>> createOrder(const std::vector<std::string> &domainNames);
+        Core::Task<AcmeExpected<AcmeOrder>> createOrder(const std::vector<std::string> &domainNames);
 
         /**
          * @brief 读一份授权记录（POST-as-GET）
          * @param authorizationUrl 订单里的授权 URL
-         * @return Core::Task<std::expected<AcmeAuthorization, AcmeError>> 授权与其中的 http-01 挑战
+         * @return Core::Task<AcmeExpected<AcmeAuthorization>> 授权与其中的 http-01 挑战
          */
-        Core::Task<std::expected<AcmeAuthorization, AcmeError>> fetchAuthorization(const std::string &authorizationUrl);
+        Core::Task<AcmeExpected<AcmeAuthorization>> fetchAuthorization(const std::string &authorizationUrl);
 
         /**
          * @brief 叫机构去校验一条挑战，并轮询到它给出终局
@@ -239,10 +239,9 @@ namespace AsynGyanis::Net
          * @param challengeUrl 挑战的 URL
          * @param pollInterval 两次轮询之间的间隔
          * @param overallTimeout 总时限，超了交回 Transport 一档
-         * @return Core::Task<std::expected<std::string, AcmeError>> 成功时交回终局状态（"valid"）
+         * @return Core::Task<AcmeExpected<std::string>> 成功时交回终局状态（"valid"）
          */
-        Core::Task<std::expected<std::string, AcmeError>> solveChallenge(const std::string &challengeUrl, std::chrono::milliseconds pollInterval,
-                                                                         std::chrono::milliseconds overallTimeout);
+        Core::Task<AcmeExpected<std::string>> solveChallenge(const std::string &challengeUrl, std::chrono::milliseconds pollInterval, std::chrono::milliseconds overallTimeout);
 
         /**
          * @brief 交 CSR 定稿一张订单，并轮询到证书可取
@@ -250,19 +249,19 @@ namespace AsynGyanis::Net
          * @param encodedRequest base64url 的 DER CSR（AcmeKeyPair::createCertificateSigningRequest 的产物）
          * @param pollInterval 两次轮询之间的间隔
          * @param overallTimeout 总时限
-         * @return Core::Task<std::expected<AcmeOrder, AcmeError>> 状态为 valid 时带着 certificateUrl
+         * @return Core::Task<AcmeExpected<AcmeOrder>> 状态为 valid 时带着 certificateUrl
          */
-        Core::Task<std::expected<AcmeOrder, AcmeError>> finalizeOrder(const AcmeOrder &order, std::string_view encodedRequest, std::chrono::milliseconds pollInterval,
-                                                                      std::chrono::milliseconds overallTimeout);
+        Core::Task<AcmeExpected<AcmeOrder>> finalizeOrder(const AcmeOrder &order, std::string_view encodedRequest, std::chrono::milliseconds pollInterval,
+                                                          std::chrono::milliseconds overallTimeout);
 
         /**
          * @brief 取回证书链（PEM 文本，首张是叶证书）
          * @param certificateUrl valid 订单里的 certificateUrl
-         * @return Core::Task<std::expected<std::string, AcmeError>> PEM 原文
+         * @return Core::Task<AcmeExpected<std::string>> PEM 原文
          * @note 按「机构给什么就存什么」交回，不重排也不摘根证书：链的顺序与内容直接影响对端能否
          *       补上最后一跳，重排一份凭据不是本类该做的判断
          */
-        Core::Task<std::expected<std::string, AcmeError>> fetchCertificateChain(const std::string &certificateUrl);
+        Core::Task<AcmeExpected<std::string>> fetchCertificateChain(const std::string &certificateUrl);
 
     private:
         /**
@@ -270,22 +269,22 @@ namespace AsynGyanis::Net
          * @param url 目标 URL（同时写进 JWS 头的 "url"，两者不一致会被机构判死）
          * @param payloadJson 正文 JSON；传空视图表示 POST-as-GET（RFC 8555 §6.3）
          * @param isNewAccountRequest 是否账户注册那一次：只有它带 jwk，其余都带 kid
-         * @return Core::Task<std::expected<AcmeReply, AcmeError>> 只要收到了应答就交回应答本身，
+         * @return Core::Task<AcmeExpected<AcmeReply>> 只要收到了应答就交回应答本身，
          *         状态码是 4xx/5xx 也一样；只有「一条应答都没拿到」与「nonce 重试用尽」才落到失败值。
          *         故意不把非 2xx 折成失败：调用方里有需要按机构的问题类型分支的场合
          *         （账户已不存在就是一条 401，处置是重新建号而不是报错）
          */
-        Core::Task<std::expected<AcmeReply, AcmeError>> postSignedRequest(const std::string &url, std::string_view payloadJson, bool isNewAccountRequest = false);
+        Core::Task<AcmeExpected<AcmeReply>> postSignedRequest(const std::string &url, std::string_view payloadJson, bool isNewAccountRequest = false);
 
         /**
          * @brief 向机构的 newNonce 端点再取一个新鲜 nonce（HEAD，不带签名）
          */
-        Core::Task<std::expected<void, AcmeError>> fetchFreshNonce();
+        Core::Task<AcmeStatus> fetchFreshNonce();
 
         /**
          * @brief 攒一个可用的 nonce：池空时先去取一个
          */
-        Core::Task<std::expected<std::string, AcmeError>> takeNonce();
+        Core::Task<AcmeExpected<std::string>> takeNonce();
 
         /**
          * @brief 按 RFC 8555 §6.7 把一段失败应答折成错误：状态码 + type + detail 拼出中文文案

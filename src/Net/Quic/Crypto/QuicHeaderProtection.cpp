@@ -94,10 +94,10 @@ namespace AsynGyanis::Net
          * @param packet 报文字节
          * @param packetNumberOffset 包号字段起点
          * @param operation 面向文案的操作名
-         * @return std::expected<std::size_t, QuicDecodeError> 包号字节数，不够则返回截断错误
+         * @return QuicDecodeExpected<std::size_t> 包号字节数，不够则返回截断错误
          */
-        std::expected<std::size_t, QuicDecodeError> packetNumberByteCountOf(const std::uint8_t firstByte, const std::span<const std::uint8_t> packet,
-                                                                            const std::size_t packetNumberOffset, const std::string_view operation)
+        QuicDecodeExpected<std::size_t> packetNumberByteCountOf(const std::uint8_t firstByte, const std::span<const std::uint8_t> packet, const std::size_t packetNumberOffset,
+                                                                const std::string_view operation)
         {
             const std::size_t packetNumberByteCount = std::size_t{1} + static_cast<std::size_t>(firstByte & kQuicPacketNumberLengthBitMask);
             if (packetNumberOffset > packet.size() || packet.size() - packetNumberOffset < packetNumberByteCount)
@@ -115,7 +115,7 @@ namespace AsynGyanis::Net
         return {bytes.data(), std::min(byteCount, bytes.size())};
     }
 
-    std::expected<std::span<const std::uint8_t>, QuicDecodeError> extractQuicHeaderProtectionSample(const std::span<const std::uint8_t> packet, const QuicPacketHeader &header)
+    QuicDecodeExpected<std::span<const std::uint8_t>> extractQuicHeaderProtectionSample(const std::span<const std::uint8_t> packet, const QuicPacketHeader &header)
     {
         // 样本起点按「包号字段最长 4 字节」定，而不是按真实长度：去保护这一侧此时还不知道长度
         const std::size_t sampleOffset = header.packetNumberOffset + 4;
@@ -154,7 +154,7 @@ namespace AsynGyanis::Net
         return mask;
     }
 
-    std::expected<std::uint8_t, QuicDecodeError> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
+    QuicDecodeExpected<std::uint8_t> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
     {
         if (packet.empty())
         {
@@ -178,7 +178,7 @@ namespace AsynGyanis::Net
         return unmaskedFirstByte;
     }
 
-    std::expected<std::uint8_t, QuicDecodeError> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
+    QuicDecodeExpected<std::uint8_t> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
     {
         if (packet.empty())
         {

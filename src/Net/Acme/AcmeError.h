@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include <chrono>
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -60,6 +61,14 @@ namespace AsynGyanis::Net
          */
         std::optional<std::chrono::seconds> retryAfter{};
     };
+
+    /**
+     * @brief ACME 通路的结果形状：成功带 Value，失败侧固定为 AcmeError
+     */
+    template<typename Value>
+    using AcmeExpected = std::expected<Value, AcmeError>;
+
+    using AcmeStatus = std::expected<void, AcmeError>; ///< 只问成不成的 ACME 结果
 
     /**
      * @brief 把失败种类折成日志与状态里用的短名（ASCII）

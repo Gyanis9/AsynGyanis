@@ -167,7 +167,7 @@
       "col": 2,
       "sources": [
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 768, "end_line": 771, "label": "invalid/expired/revoked" },
-        { "path": "src/Net/Acme/AcmeError.h", "line": 39, "label": "ChallengeNotAnswered" }
+        { "path": "src/Net/Acme/AcmeError.h", "line": 38, "label": "ChallengeNotAnswered" }
       ]
     },
     {

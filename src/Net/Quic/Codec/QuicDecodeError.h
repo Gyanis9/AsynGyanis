@@ -15,6 +15,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include <expected>
 #include <string>
 
 namespace AsynGyanis::Net
@@ -39,4 +40,12 @@ namespace AsynGyanis::Net
         QuicDecodeErrorKind kind{QuicDecodeErrorKind::Malformed}; ///< 失败类别：上层据此选上线错误码，不去匹配文案
         std::string         message;                              ///< 中文原因，含实际取值与对应的 RFC 章节
     };
+
+    /**
+     * @brief QUIC 报文解码的结果形状：成功带 Value，失败侧固定为 QuicDecodeError
+     */
+    template<typename Value>
+    using QuicDecodeExpected = std::expected<Value, QuicDecodeError>;
+
+    using QuicDecodeStatus = std::expected<void, QuicDecodeError>; ///< 只问成不成的解码结果
 } // namespace AsynGyanis::Net
