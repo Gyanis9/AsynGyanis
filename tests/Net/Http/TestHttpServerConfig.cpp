@@ -83,6 +83,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(configuration.exposeMetrics);
         // 访问日志默认开：装出去的服务器一条访问日志都不产，比多一行日志的代价更难查
         EXPECT_TRUE(configuration.accessLog);
+        // 处理时限默认关：它是「多一层定时器与协程帧」的那类保护，只加在明确要它的人身上
+        EXPECT_EQ(configuration.handlerTimeout, std::chrono::milliseconds(0));
     }
 
     /**
@@ -117,6 +119,7 @@ namespace AsynGyanis::Net
         serverMembers.emplace("metrics_address", text("127.0.0.2"));
         // 写成 false 才证得出这一格真被读进来：与默认值同形的 true 分不清「读了」与「没读」
         serverMembers.emplace("access_log", boolean(false));
+        serverMembers.emplace("handler_timeout_ms", integer(4500));
         serverMembers.emplace("limits", object(Base::ConfigObject{
                                                 {"idle_timeout_ms", integer(30000)},
                                                 {"read_timeout_ms", integer(15000)},
@@ -167,6 +170,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.metricsPort, 9101U);
         EXPECT_EQ(configuration.metricsAddress, "127.0.0.2");
         EXPECT_FALSE(configuration.accessLog);
+        EXPECT_EQ(configuration.handlerTimeout, std::chrono::milliseconds(4500));
         EXPECT_EQ(configuration.limits.idleTimeout, std::chrono::milliseconds(30000));
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
@@ -366,6 +370,18 @@ namespace AsynGyanis::Net
         } catch (const Base::ConfigValidationException &exception)
         {
             EXPECT_EQ(exception.key(), "server.access_log");
+        }
+
+        // 处理时限与 limits 里那几格同一把尺：只认非负整数毫秒（0 = 关闭该项保护），
+        // 写成 "30s" 这类人话不能静默当成「没配」——那等于配了而没有
+        const Base::ConfigObject handlerTimeoutMismatch{{"handler_timeout_ms", text("30s")}};
+        try
+        {
+            expectConfigurationRejected(makeRootDocument(handlerTimeoutMismatch));
+            FAIL() << "handler_timeout_ms 写成字符串应当被拒";
+        } catch (const Base::ConfigValidationException &exception)
+        {
+            EXPECT_EQ(exception.key(), "server.handler_timeout_ms");
         }
     }
 

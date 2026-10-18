@@ -19,7 +19,7 @@ namespace AsynGyanis::Net
     namespace
     {
         /// server 段直接支持的键
-        constexpr std::array<std::string_view, 12> kServerKeys{
+        constexpr std::array<std::string_view, 13> kServerKeys{
                 "maximum_connections",
                 "maximum_connections_per_ip",
                 "memory_budget_bytes",
@@ -28,6 +28,7 @@ namespace AsynGyanis::Net
                 "metrics_port",
                 "metrics_address",
                 "access_log",
+                "handler_timeout_ms",
                 "limits",
                 "parser_limits",
                 "rate_limit",
@@ -448,6 +449,85 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 读 server 段的标量键（连接数、内存预算、运维面那几格、访问日志与处理时限）
+         * @details 与子段读取分开是因为职责不同，不是因为长度：这一层每项都是「一个键 → 一个字段」，
+         *          而 limits/parser_limits/rate_limit/tls 各自还要往下判一层。分开放，新加一格标量键
+         *          时不必在最外层函数里把已有那十几个键重看一遍
+         * @param section server 段的对象节点（未知键已由调用处拒过）
+         * @param configuration 取值落点
+         * @param sectionPath 上级键路径（"server"），用于拼出完整键名
+         * @throws Base::ConfigValidationException 类型不符或取值越界
+         */
+        void readServerScalarKeys(const Base::ConfigValue &section, HttpServerConfiguration &configuration, const std::string &sectionPath)
+        {
+            if (section.contains("maximum_connections"))
+            {
+                configuration.maximumConnections = static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections"), sectionPath + ".maximum_connections"));
+            }
+            if (section.contains("maximum_connections_per_ip"))
+            {
+                configuration.maximumConnectionsPerIp =
+                        static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections_per_ip"), sectionPath + ".maximum_connections_per_ip"));
+            }
+            if (section.contains("memory_budget_bytes"))
+            {
+                configuration.memoryBudgetBytes = static_cast<std::size_t>(requireNonNegativeInteger(section.at("memory_budget_bytes"), sectionPath + ".memory_budget_bytes"));
+            }
+            readBooleanSwitch(section, "expose_metrics", sectionPath + ".expose_metrics", configuration.exposeMetrics);
+            if (section.contains("ops_bearer_token"))
+            {
+                const Base::ConfigValue &value = section.at("ops_bearer_token");
+                if (!value.is_string())
+                {
+                    throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "必须是字符串；不想要鉴权就把这一项整个删掉，写 null 或空串都不是「删掉」");
+                }
+                configuration.opsBearerToken = value.get<std::string>();
+                // 空串是最坏的一种写法：中间件会因「没令牌」而抛，或者被当成不鉴权——两种都比「你没配」更难读。
+                // 要取消鉴权就不写这一项，要写就得写一个真的值
+                if (configuration.opsBearerToken.empty())
+                {
+                    throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "不能是空串：空串等于挂一道永远放行的闸。不需要鉴权就删掉这一项");
+                }
+            }
+            if (section.contains("metrics_port"))
+            {
+                const std::int64_t portValue = requireNonNegativeInteger(section.at("metrics_port"), sectionPath + ".metrics_port");
+                // 端口要装得进 uint16_t：静默取模会让进程去听一个谁也没配的端口，症状是「指标抓不到」
+                // 而配置文件看着完全正确——这类数一旦越界只能拒，不能折
+                if (portValue > std::numeric_limits<std::uint16_t>::max())
+                {
+                    throw Base::ConfigValidationException(sectionPath + ".metrics_port", std::format("必须在 0-{} 之间（0 = 运维端点留在业务口上），当前是 {}",
+                                                                                                     std::numeric_limits<std::uint16_t>::max(), portValue));
+                }
+                configuration.metricsPort = static_cast<std::uint16_t>(portValue);
+            }
+            if (section.contains("metrics_address"))
+            {
+                const Base::ConfigValue &value = section.at("metrics_address");
+                if (!value.is_string())
+                {
+                    throw Base::ConfigValidationException(sectionPath + ".metrics_address", "必须是 IP 文本字符串（如 \"127.0.0.1\" 或 \"::1\"）");
+                }
+                configuration.metricsAddress = value.get<std::string>();
+                // 地址在读配置时就判能不能解析：留到 bind 那一刻失败，报出来的是平台错误码，
+                // 读的人得先懂 EADDRNOTAVAIL 才知道是「metrics_address 写错了」
+                if (!Core::InetAddress::parseLiteral(configuration.metricsAddress, 0).has_value())
+                {
+                    throw Base::ConfigValidationException(
+                            sectionPath + ".metrics_address",
+                            std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0", configuration.metricsAddress));
+                }
+            }
+            readBooleanSwitch(section, "access_log", sectionPath + ".access_log", configuration.accessLog);
+            // 处理时限与连接级那几项同一口径：0 = 关闭该项保护，非 0 要能与当前时刻相加（同一把尺见 toMilliseconds）
+            if (section.contains("handler_timeout_ms"))
+            {
+                configuration.handlerTimeout =
+                        toMilliseconds(requireNonNegativeInteger(section.at("handler_timeout_ms"), sectionPath + ".handler_timeout_ms"), sectionPath + ".handler_timeout_ms");
+            }
+        }
+
+        /**
          * @brief 交叉校验：「配了这一项、而它的前提没配」的那几类状态，在读配置那一刻拦住
          * @details 静默按其中一半生效时，配置文件每一行看着都对，而线上表现与出错的位置隔得很远：
          *          容量小于 1 的桶让服务一上线就全 429；没开运维端点的令牌保护不到任何东西；
@@ -531,65 +611,8 @@ namespace AsynGyanis::Net
         const std::string sectionPath(kHttpServerConfigSection);
         rejectUnknownKeys(section, kServerKeys.data(), kServerKeys.size(), sectionPath);
 
-        if (section.contains("maximum_connections"))
-        {
-            configuration.maximumConnections = static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections"), sectionPath + ".maximum_connections"));
-        }
-        if (section.contains("maximum_connections_per_ip"))
-        {
-            configuration.maximumConnectionsPerIp =
-                    static_cast<std::size_t>(requireNonNegativeInteger(section.at("maximum_connections_per_ip"), sectionPath + ".maximum_connections_per_ip"));
-        }
-        if (section.contains("memory_budget_bytes"))
-        {
-            configuration.memoryBudgetBytes = static_cast<std::size_t>(requireNonNegativeInteger(section.at("memory_budget_bytes"), sectionPath + ".memory_budget_bytes"));
-        }
-        readBooleanSwitch(section, "expose_metrics", sectionPath + ".expose_metrics", configuration.exposeMetrics);
-        if (section.contains("ops_bearer_token"))
-        {
-            const Base::ConfigValue &value = section.at("ops_bearer_token");
-            if (!value.is_string())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "必须是字符串；不想要鉴权就把这一项整个删掉，写 null 或空串都不是「删掉」");
-            }
-            configuration.opsBearerToken = value.get<std::string>();
-            // 空串是最坏的一种写法：中间件会因「没令牌」而抛，或者被当成不鉴权——两种都比「你没配」更难读。
-            // 要取消鉴权就不写这一项，要写就得写一个真的值
-            if (configuration.opsBearerToken.empty())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".ops_bearer_token", "不能是空串：空串等于挂一道永远放行的闸。不需要鉴权就删掉这一项");
-            }
-        }
-        if (section.contains("metrics_port"))
-        {
-            const std::int64_t portValue = requireNonNegativeInteger(section.at("metrics_port"), sectionPath + ".metrics_port");
-            // 端口要装得进 uint16_t：静默取模会让进程去听一个谁也没配的端口，症状是「指标抓不到」
-            // 而配置文件看着完全正确——这类数一旦越界只能拒，不能折
-            if (portValue > std::numeric_limits<std::uint16_t>::max())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".metrics_port",
-                                                      std::format("必须在 0-{} 之间（0 = 运维端点留在业务口上），当前是 {}", std::numeric_limits<std::uint16_t>::max(), portValue));
-            }
-            configuration.metricsPort = static_cast<std::uint16_t>(portValue);
-        }
-        if (section.contains("metrics_address"))
-        {
-            const Base::ConfigValue &value = section.at("metrics_address");
-            if (!value.is_string())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".metrics_address", "必须是 IP 文本字符串（如 \"127.0.0.1\" 或 \"::1\"）");
-            }
-            configuration.metricsAddress = value.get<std::string>();
-            // 地址在读配置时就判能不能解析：留到 bind 那一刻失败，报出来的是平台错误码，
-            // 读的人得先懂 EADDRNOTAVAIL 才知道是「metrics_address 写错了」
-            if (!Core::InetAddress::parseLiteral(configuration.metricsAddress, 0).has_value())
-            {
-                throw Base::ConfigValidationException(
-                        sectionPath + ".metrics_address",
-                        std::format("不是可解析的 IP 字面量：「{}」。管理口要只听本机写 127.0.0.1（IPv6 用 ::1），要对外监听才写 0.0.0.0", configuration.metricsAddress));
-            }
-        }
-        readBooleanSwitch(section, "access_log", sectionPath + ".access_log", configuration.accessLog);
+        readServerScalarKeys(section, configuration, sectionPath);
+
         // 有意不暴露空闲清扫节拍：它是超时误差的唯一来源（最坏误差 = 节拍 + 各连接自己的超时），
         // 手调它只会把超时语义调坏；需要更细的节拍应当在代码里改而不是配置里拧
 

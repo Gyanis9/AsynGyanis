@@ -16,6 +16,8 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpServer.h"
+#include "Net/Http/HttpServerAssembly.h"
+#include "Net/Http/HttpServerConfig.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Connection.h"
@@ -2492,6 +2494,124 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.pumpUntil(
                 frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
                 << "隧道没有按 Close 收尾";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：配了 handler_timeout_ms 时，跑到那条时限的流被改写成 504，同连接的兄弟流照常完成
+     * @details h2 一条连接复用几十条流，`Core::Connection` 上那把连接级的钟表达不了「这一条流的处理器
+     *          跑了多久」——只有它到期时会把整条连接连同兄弟流一起收掉。这一格走每请求的看门狗：
+     *          到点把取消交给业务，业务返回那一刻把响应改写成 504，收口的只是这一条流。
+     *          兄弟流（流 3）的 200 与正文就是「没连带杀掉别人」的判据：换成连接级时限的话，
+     *          流 3 会跟着一起没了。装配那一步走的是真入口（applyHttpServerConfiguration），
+     *          所以这条同时钉住「配置键 → 中间件装上了」这段接线
+     */
+    TEST(Http2CleartextSession, CutsSlowStreamWithGatewayTimeoutWhileSiblingsKeepServing)
+    {
+        constexpr std::chrono::milliseconds kHandlerBudget{120};
+        constexpr std::chrono::milliseconds kHandlerHold{600};
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/held",
+                               [&loop](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   Core::Timer holdTimer(loop);
+                                   co_await holdTimer.waitFor(kHandlerHold);
+                                   response.setBody("served-held");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{},
+                [](TestHttpServer &server)
+                {
+                    HttpServerConfiguration configuration;
+                    configuration.limits         = makeCleartextLimits();
+                    configuration.handlerTimeout = kHandlerBudget;
+                    const auto outcome           = applyHttpServerConfiguration(server, configuration);
+                    ASSERT_TRUE(outcome.has_value()) << outcome.error();
+                    server.setHttp2CleartextEnabled(true);
+                });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 流 1 挂住处理器，流 3 是一条普通快请求：两条同时发出去
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/held"), true), kWaitTimeout));
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "超时的这条流没有得到应答（504 也没写出来）";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "兄弟流被超时连带收口了";
+
+        // HPACK 的动态表按连接推进，逐条孤立解码会解不开后到的那条（见 collectResponseStatuses 的说明）
+        const std::map<std::uint32_t, std::string> statuses = collectResponseStatuses(frames);
+        EXPECT_EQ(statuses.contains(1U) ? statuses.at(1U) : std::string{}, "504") << "跑到 handler_timeout_ms 的流应当被改写成 504";
+        EXPECT_EQ(statuses.contains(3U) ? statuses.at(3U) : std::string{}, "200") << "同连接的兄弟流不该被收口";
+        EXPECT_EQ(responseDataPayload(frames, 3U), "served-hello") << "兄弟流的正文串了";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 正向对照：没配 handler_timeout_ms 时不装那层看门狗，慢流按自己的耗时正常应答
+     * @details 上一条判据是「红得对」，这一条保证它不是「服务坏了所以谁都别想 200」——
+     *          两次的唯一差别就是那一格配置
+     */
+    TEST(Http2CleartextSession, ServesSlowStreamWithoutTimeoutWhenHandlerBudgetIsUnset)
+    {
+        constexpr std::chrono::milliseconds kHandlerHold{200};
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/held",
+                               [&loop](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   Core::Timer holdTimer(loop);
+                                   co_await holdTimer.waitFor(kHandlerHold);
+                                   response.setBody("served-held");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/held"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "没配处理时限的那条慢流没有正常应答";
+
+        HpackDecoder responseDecoder;
+        EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
+        EXPECT_EQ(responseDataPayload(frames, 1U), "served-held");
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

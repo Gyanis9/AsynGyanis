@@ -652,6 +652,11 @@ namespace AsynGyanis::Net
         m_idleCheckInterval = interval;
     }
 
+    Core::EventLoop &TcpServer::eventLoop() const noexcept
+    {
+        return m_loop;
+    }
+
     bool TcpServer::isRunning() const
     {
         return m_running;

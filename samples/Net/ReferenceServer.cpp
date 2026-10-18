@@ -1600,6 +1600,10 @@ int main(int argc, char **argv)
         // QuicServer 的、装配出口碰不到，因此这里调同一个函数挂同一个判断——漏掉这一路就是
         // 「h1 有访问日志、h3 一条没有」
         Net::applyAccessLogMiddleware(http3Router, configuration);
+        // 每请求处理时限同理：h3 的会话没有 writeTimeout 那把连接级钟可蹭，处理器挂住时它靠
+        // QuicServer 的产出预算那一拍（见 Http3Session 的 expireStaleRequests），而软时限这条
+        // 与两条 TCP 通道共用同一个中间件与同一个配置格
+        Net::applyRequestTimeoutMiddleware(http3Router, configuration, pool.eventLoop(0));
         if (compressResponses)
         {
             // 三条通道一律走外置版：h3 的会话收口现在会先叫醒并等完挂在业务协程上的在途动作

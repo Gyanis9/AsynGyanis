@@ -271,6 +271,14 @@ namespace AsynGyanis::Net
         void setIdleCheckInterval(std::chrono::milliseconds interval);
 
         /**
+         * @brief 本服务器所属的事件循环
+         * @details 装配出口需要它来挂「自带定时器」的那类中间件（每请求看门狗就是这种）。
+         *          循环与服务器同寿命，中间件因此可以按引用持有它而不承担生存期
+         * @return Core::EventLoop& 所属事件循环
+         */
+        [[nodiscard]] Core::EventLoop &eventLoop() const noexcept;
+
+        /**
          * @brief 查询服务器是否处于接受循环中
          * @return true start() 的循环活跃
          * @return false 已停止或尚未启动

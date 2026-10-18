@@ -73,9 +73,6 @@
       343,
       131
     ],
-    "src/Net/Http/HttpServerConfig.cpp": [
-      105
-    ],
     "src/Net/Http/Router.cpp": [
       228
     ],

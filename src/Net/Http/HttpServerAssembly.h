@@ -26,6 +26,11 @@
 #include <memory>
 #include <string>
 
+namespace AsynGyanis::Core
+{
+    class EventLoop;
+} // namespace AsynGyanis::Core
+
 namespace AsynGyanis::Net
 {
     class HttpServer;
@@ -174,6 +179,21 @@ namespace AsynGyanis::Net
      * @param configuration 已读出的配置（只有 `accessLog` 这一项参与判断）
      */
     ASYN_NET_API void applyAccessLogMiddleware(Router &router, const HttpServerConfiguration &configuration);
+
+    /**
+     * @brief 按 `server.handler_timeout_ms` 把每请求的处理时限中间件挂到一台路由器上
+     * @details 与 @c applyAccessLogMiddleware 同一形状：h1/h2 由装配出口挂，h3 的路由器交给
+     *          `QuicServer`、装配出口碰不到，由调用方拿着自己那一侧的事件循环调本函数——分两处写
+     *          的后果就是「h1 有处理时限、h3 没有」。时限为 0 时一条中间件都不挂：造一个「装了
+     *          但永远不超时」的中间件只会多一层协程帧与一个定时器。
+     * @note 挂上去的是软时限：到点把协作式取消交给业务、等业务返回那一刻把响应改写成 504。
+     *       不配合取消又不返回的处理器拿不到这条 504（理由见 `HttpServerConfiguration::handlerTimeout`）
+     * @param router 目标路由器，必须尚未开始服务
+     * @param configuration 已读出的配置（只有 @c handlerTimeout 这一项参与判断）
+     * @param loop 本路由器所属的事件循环：看门狗是每请求一个定时器，必须建在同一条循环上，
+     *             挂到别的循环就成了跨线程碰循环对象（事件循环的线程契约）
+     */
+    ASYN_NET_API void applyRequestTimeoutMiddleware(Router &router, const HttpServerConfiguration &configuration, Core::EventLoop &loop);
 
     /**
      * @brief 把 server 段的配置落到一台明文 HTTP 服务器上

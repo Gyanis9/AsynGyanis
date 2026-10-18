@@ -2,6 +2,7 @@
 
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpsServer.h"
@@ -131,6 +132,9 @@ namespace AsynGyanis::Net
             // 访问日志要排在限流那一步之前：中间件按登记顺序由外向内跑（先登记的在外层），挂在内侧就
             // 记不到被限流短路的那几条 429——而那些恰恰是最需要在访问日志里看到的
             applyAccessLogMiddleware(server.router(), configuration);
+            // 每请求的处理时限排在访问日志之内、限流之外：被它改写成的 504 要留下访问日志，
+            // 而被限流短路的请求没必要再多一层定时器
+            applyRequestTimeoutMiddleware(server.router(), configuration, server.eventLoop());
 
             // 传进来的共享对象优先；没传而配置里有标量时本台建一份（0 表示不设这道闸门，保持不动）
             if (context.sharedPerIpLimiter != nullptr)
@@ -191,6 +195,15 @@ namespace AsynGyanis::Net
         // 刻意不另起一个命名日志器：命名日志器没配 sink 时不回落到 root，默认部署会把这一行静默丢掉
         const auto rootLogger = std::shared_ptr<const Base::Logger>(std::shared_ptr<const Base::Logger>{}, &Base::LoggerRegistry::instance().getRootLogger());
         router.addMiddleware(loggingMiddleware(rootLogger));
+    }
+
+    void applyRequestTimeoutMiddleware(Router &router, const HttpServerConfiguration &configuration, Core::EventLoop &loop)
+    {
+        if (configuration.handlerTimeout <= std::chrono::milliseconds::zero())
+        {
+            return;
+        }
+        router.addMiddleware(timeoutMiddleware(loop, configuration.handlerTimeout));
     }
 
     std::expected<void, std::string> applyHttpServerConfiguration(HttpServer &server, const HttpServerConfiguration &configuration, const HttpServerAssemblyContext &context)
