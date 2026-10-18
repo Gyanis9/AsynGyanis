@@ -847,7 +847,7 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_datagramBatchSendCount{0}; ///< 批次发包的调用数
         std::atomic<std::uint64_t> m_datagramSentCount{0};      ///< 其中交给内核的报文条数
         /// 交出去的版本协商包条数：公网端口上「版本不合就礼貌地拒」这件事必须可数，否则它与「静默丢了」
-        /// 长得一模一样（G-17 的判据就是这个数在涨而连接表不动）
+        /// 长得一模一样（判据就是这个数在涨而连接表不动）
         std::atomic<std::uint64_t> m_versionNegotiationSentCount{0};
         /// 交出去的 Retry 条数：地址验证是否真在生效就看这一格，它与「名额已满」也是两本账
         std::atomic<std::uint64_t> m_retrySentCount{0};

@@ -185,7 +185,7 @@ TEST(OtlpMetricsJson, RendersHistogramDataPointsWithSecondUnits)
 
 /**
  * @brief 带维度的分布读数渲染成一条 metric 的多个 histogram 数据点，每点带 route 属性
- * @details 这条形状是 P2-12 的交付面：同一条 `request_duration_seconds` 下按路由分点，
+ * @details 这条形状的判据是：同一条 `request_duration_seconds` 下按路由分点，
  *          而不是为每条路由各起一个同名 metric（后者在采集端是重复名字）
  */
 TEST(OtlpMetricsJson, RendersMultiPointHistogramsWithRouteAttributes)

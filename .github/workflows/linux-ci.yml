@@ -452,8 +452,8 @@ jobs:
       CCACHE_COMPRESS: "true"
       # 筛面只在这一处定义：数命中的条数与真正跑它用的是同一个串，两处不会各说一套。
       # `ServiceWatchdog` 是 2026-10-10 补进来的：那批用例把拍协程挂在多条循环上、多条线程读写同一张
-      # 进度表与那份非线程安全的通知发送，是本轮新增的跨线程面，而类名不在旧 21 个词里就一条都不跑。2026-10-11 再补六类词：`Tracer`（出口线程）、`Reload`（SIGHUP 移交）、`Http3`、`Middleware`、`Budget`、`CoroutinePool`——这几类的跨线程用例此前一条都不进 TSan 档（审计 F2-14）
-      # 2026-10-12 再补两类（审计 F3-08）：`Tls`（指纹名单的校验回调在握手线程读、setter 在配置线程换，
+      # 进度表与那份非线程安全的通知发送，是本轮新增的跨线程面，而类名不在旧 21 个词里就一条都不跑。2026-10-11 再补六类词：`Tracer`（出口线程）、`Reload`（SIGHUP 移交）、`Http3`、`Middleware`、`Budget`、`CoroutinePool`——这几类的跨线程用例此前一条都不进 TSan 档
+      # 2026-10-12 再补两类：`Tls`（指纹名单的校验回调在握手线程读、setter 在配置线程换，
       # 对应 ConcurrentHandshakeAndAllowlistUpdatesRemainSafeWithSharedRegistry）与 `Crash`（崩溃处理器
       # 在多线程进程里的投递面，对应 FatalSignalFromOneOfMultipleThreadsStillLeavesSceneAndDiesBySignal）
       TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash"
@@ -1122,7 +1122,7 @@ jobs:
           exit "$rc"
   # 交付物：装出去的三种形态（CMake 安装包、Conan 包、镜像）在这一格出现之前，CI 里对它们的
   # 验证次数是 0——`cmake --install`、`conan create`、`docker build` 在 .github/workflows 全 0 命中，
-  # 于是第 4 轮那三处「会让部署白配或连不上」的样例缺陷能整轮上船。这一条把它们钉成门禁：
+  # 于是三处「会让部署白配或连不上」的样例缺陷能整轮上船。这一条把它们钉成门禁：
   # 装出来的东西要能被外部工程 find_package + 真链接 + 跑起来，Conan 包要连它自带的 test_package
   # 一起过，镜像要挂着仓库里那份配置样例起得来、答得出来、日志真的落盘。全程不需要任何真机服务与凭据。
   delivery:
@@ -1230,7 +1230,7 @@ jobs:
           mkdir -p /tmp/asyn-ci-cfg
           cp packaging/asyngyanis.yaml.example /tmp/asyn-ci-cfg/asyngyanis.yaml
           # --host 0.0.0.0 必须显式给：`docker run 镜像 --config …` 会整段替换 CMD，连带丢掉镜像里那条
-          # --host，服务于是只听回环——端口映射看着通，症状只有超时（这一格是第 4 轮实跑抓出来的）
+          # --host，服务于是只听回环——端口映射看着通，症状只有超时（这一格是实跑抓出来的）
           docker run -d --name asyn-ci \
             -v /tmp/asyn-ci-cfg:/cfg:ro \
             -p 18099:8080 \
@@ -1265,7 +1265,7 @@ jobs:
           log_bytes=$(docker exec asyn-ci sh -c 'wc -c < /var/lib/asyngyanis/logs/asyngyanis.log' || true)
           echo "日志文件字节数=${log_bytes:-0}"
           test "${log_bytes:-0}" -gt 0 || { docker logs asyn-ci; exit 1; }
-          # 访问日志真进了那份文件（装机形态一条都不产是第 4 轮的同一族缺口）
+          # 访问日志真进了那份文件（装机形态一条都不产是同一族缺口）
           access_lines=$(docker exec asyn-ci sh -c 'grep -c "HTTP 访问" /var/lib/asyngyanis/logs/asyngyanis.log' || true)
           echo "访问日志行数=${access_lines:-0}"
           test "${access_lines:-0}" -ge 1 || { docker exec asyn-ci sh -c 'tail -20 /var/lib/asyngyanis/logs/asyngyanis.log'; exit 1; }
