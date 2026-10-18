@@ -95,8 +95,8 @@
       "sublabel": "MSVC + 容器 GCC",
       "tag": "零告警/零泄漏",
       "sources": [
-        { "path": "CMakeLists.txt", "line": 261, "label": "/W4 /WX" },
-        { "path": "CMakeLists.txt", "line": 170, "label": "ASan + UBSan" },
+        { "path": "CMakeLists.txt", "line": 266, "label": "/W4 /WX" },
+        { "path": "CMakeLists.txt", "line": 175, "label": "ASan + UBSan" },
         { "path": "CMakePresets.json", "line": 10, "label": "debug 预设" }
       ]
     },

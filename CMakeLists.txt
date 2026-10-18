@@ -42,7 +42,12 @@ endif()
 if(MSVC)
     # 直接给编译器与链接器加开关，而不是走 CMAKE_MSVC_DEBUG_INFORMATION_FORMAT：
     # 后者受 CMP0141 管辖，而本文件声明的 3.20 下限把该策略停在 OLD，变量会被静默忽略
-    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    # 调用方显式点了那一档时这里让位：CI 的 MSVC 并行 Release 构建要 Embedded，
+    # /Zi 写的是共享 PDB，多个 cl.exe 同时抢就报 C1041（实测 Platform 一批翻译单元同时红）。
+    # 两边同时给会让编译器按最后一个记，读命令行的人分不清实际生效的是哪档，所以只留一份
+    if(NOT CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+        add_compile_options($<$<CONFIG:Release>:/Zi>)
+    endif()
     # /OPT:REF 与 /OPT:ICF 必须显式写回来：链接器只在「不做完整调试链接」时才默认启用它们，
     # 给了 /DEBUG 就退化成 NOREF/NOICF。实测只写 /DEBUG 时 http1-parse-request 由 730 ns
     # 涨到 961 ns（+31%）——死代码留下、相同代码不再折叠，代码布局散开之后指令缓存命中变差

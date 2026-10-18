@@ -42,7 +42,7 @@
       "pos": [320, 40],
       "size": [190, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 340, "label": "ASYN_ENABLE_INSTALL 出包配置" },
+        { "path": "CMakeLists.txt", "line": 345, "label": "ASYN_ENABLE_INSTALL 出包配置" },
         { "path": "packaging/conan/test_package/CMakeLists.txt", "line": 5, "end_line": 8, "label": "消费方只需 find_package" }
       ]
     },
@@ -54,8 +54,8 @@
       "pos": [560, 40],
       "size": [170, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 243, "label": "ASYN_BUILD_SAMPLES" },
-        { "path": "CMakeLists.txt", "line": 253, "end_line": 257, "label": "示例进构建" }
+        { "path": "CMakeLists.txt", "line": 248, "label": "ASYN_BUILD_SAMPLES" },
+        { "path": "CMakeLists.txt", "line": 258, "end_line": 262, "label": "示例进构建" }
       ]
     },
     {
@@ -66,8 +66,8 @@
       "pos": [40, 40],
       "size": [190, 60],
       "sources": [
-        { "path": "CMakeLists.txt", "line": 242, "label": "ASYN_BUILD_TESTS" },
-        { "path": "CMakeLists.txt", "line": 245, "end_line": 251, "label": "tests 与 microbench" }
+        { "path": "CMakeLists.txt", "line": 247, "label": "ASYN_BUILD_TESTS" },
+        { "path": "CMakeLists.txt", "line": 250, "end_line": 256, "label": "tests 与 microbench" }
       ]
     },
     {
@@ -157,7 +157,7 @@
       "size": [190, 60],
       "sources": [
         { "path": "src/Core/CMakeLists.txt", "line": 34, "end_line": 42, "label": "开关内链入" },
-        { "path": "CMakeLists.txt", "line": 77, "end_line": 81, "label": "与 sanitizer 互斥" }
+        { "path": "CMakeLists.txt", "line": 82, "end_line": 86, "label": "与 sanitizer 互斥" }
       ]
     },
     {

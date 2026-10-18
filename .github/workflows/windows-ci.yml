@@ -363,8 +363,12 @@ jobs:
         run: conan profile detect --force
 
       # 只编到 microbench 目标为止：微基准的读数只在 Release 档有意义，而全目标构建要多花几倍时间
+      # 调试信息按 Embedded（/Z7）走，与 debug 那档同一对开关：默认的 /Zi 把信息写进一份共享 PDB，
+      # 并行编译时多个 cl.exe 抢同一份就是 C1041（首跑实测：Platform 的好几个翻译单元同时报出来）。
+      # 这对变量受 CMP0141 管辖，而本工程的 cmake_minimum_required 停在 3.20 会让它被静默忽略，
+      # 所以策略也要显式置 NEW——只传变量等于没传
       - name: 配置（Release）
-        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
 
       - name: 构建微基准目标
         run: cmake --build build/release --target microbench
