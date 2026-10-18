@@ -3,6 +3,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -1014,6 +1015,120 @@ namespace AsynGyanis::Net
         // 关联标识：trace id 要出现在同一行，否则这条日志与那条链路之间没有桥
         EXPECT_EQ(logCapture.countContaining("12345678901234567890123456789012"), 1U) << "trace id 没进这条错误日志";
         EXPECT_EQ(logCapture.countContaining("路径 /boom"), 1U) << "出错的路径没进这条错误日志";
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    /**
+     * @brief 钉住：执行器排队已满（过载）回的是 503 + Retry-After，而不是和业务缺陷共用的 500
+     * @details 这一格的由来：饱和在 Core 侧本来是**返回值**（`SubmissionResult::RejectedBySaturatedQueue`），
+     *          文档写着「调用方应显式失败而不是挂起」，可 Net 侧此前一处都不认它——过载与「代码有 bug」
+     *          在客户端看着是同一个 500，也没有退避提示。RFC 9110 §15.6.1 对「暂时接不住」给的是 503。
+     * @details 饱和是真的造出来的而不是替身：一台只有 1 个工作线程的执行器，门闩任务占住那个线程，
+     *          再按上限 `kMaximumPendingTasksPerWorker` 灌满队列，handler 里那次提交必被拒。
+     *          上限取自常量而不是写死的数字，改上限不必改用例
+     */
+    TEST(HttpSession, Answers503WithRetryAfterWhenTheBlockingExecutorIsSaturated)
+    {
+        const HttpTestSupport::LogCapture logCapture;
+
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+
+        // 声明顺序有讲究：执行器与那批 Task 都必须在 fixture 之前析构——完成动作是投回
+        // fixture.loop() 的，循环还活着时拆执行器才安全（见 AsyncExecutor 的 @warning）
+        Core::AsyncExecutor          executor(1);
+        std::atomic<bool>            isGateOpen{false};
+        std::atomic<bool>            isGateKeeperRunning{false};
+        std::vector<Core::Task<int>> heldTasks;
+        heldTasks.reserve(Core::AsyncExecutor::kMaximumPendingTasksPerWorker);
+
+        Core::Task<int> gateKeeper = executor.submit<int>(fixture.loop(),
+                                                          [&isGateOpen, &isGateKeeperRunning]()
+                                                          {
+                                                              isGateKeeperRunning.store(true, std::memory_order_release);
+                                                              while (!isGateOpen.load(std::memory_order_acquire))
+                                                              {
+                                                                  std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                                              }
+                                                              return 0;
+                                                          });
+        gateKeeper.handle().resume();
+        ASSERT_TRUE(waitForCondition([&isGateKeeperRunning] { return isGateKeeperRunning.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "门闩任务没被那唯一的工作线程取走，队列里排着的就说不清是谁占的";
+
+        for (std::size_t index = 0; index < Core::AsyncExecutor::kMaximumPendingTasksPerWorker; ++index)
+        {
+            heldTasks.push_back(executor.submit<int>(fixture.loop(), []() { return 1; }));
+            heldTasks.back().handle().resume();
+        }
+        ASSERT_EQ(executor.pendingTaskCount(), Core::AsyncExecutor::kMaximumPendingTasksPerWorker) << "用例前提：队列没被灌满，handler 里那次提交不会被拒";
+
+        fixture.router().get("/offload",
+                             [&executor, &fixture](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                             {
+                                 // 排队已满：这一次提交在 await_suspend 里就不挂起，await_resume 当场抛出
+                                 const int value = co_await executor.submit<int>(fixture.loop(), []() { return 42; });
+                                 response.setStatus(200);
+                                 response.setBody(std::to_string(value));
+                                 co_return;
+                             });
+
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /offload HTTP/1.1", {"host: test"})));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "过载的那条请求没有拿到响应：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 503")) << "过载没按 503 回，实际响应：" + responseText;
+        EXPECT_NE(responseText.find("retry-after: 1"), std::string::npos) << "503 没带 Retry-After：客户端会把「该退避」读成「别重试」";
+        EXPECT_EQ(responseText.find("Internal Server Error"), std::string::npos) << "过载的正文还留着 500 那句";
+
+        // 日志要点名「排队已满」：运维查容量时不该被淹没在「业务处理函数抛出异常」那一句里，
+        // 而那一句这次必须不出现——两类不许混
+        EXPECT_EQ(logCapture.countContaining("因执行器排队已满而被拒（过载）"), 1U) << "过载没有在自己的日志里点名原因";
+        EXPECT_EQ(logCapture.countContaining("已整体重置响应并按 500 收口"), 0U) << "过载被记成了业务缺陷那一本账";
+
+        // 收尾：放行门闩并等这批积压真的做完（帧的恢复投回还在跑的循环），再让它们出作用域
+        isGateOpen.store(true, std::memory_order_release);
+        const auto allTasksReady = [&heldTasks, &gateKeeper]
+        {
+            for (const Core::Task<int> &task: heldTasks)
+            {
+                if (!task.isReady())
+                {
+                    return false;
+                }
+            }
+            return gateKeeper.isReady();
+        };
+        ASSERT_TRUE(waitForCondition(allTasksReady, kWaitTimeout)) << "放行后积压任务没有排空：此刻拆执行器会把待恢复的句柄留在已停的循环上";
+
+        EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
+    }
+
+    /**
+     * @brief 钉住：真缺陷（`std::logic_error`）仍然归 500，不带 Retry-After
+     * @details 上面那条把过载挪去 503 之后，这条守住另一半：两类挤在一个状态码里就等于哪类都没说清。
+     *          判据刻意用标准库的 logic_error 而不是框架异常——它就是「代码写错了」那一族的形状
+     */
+    TEST(HttpSession, StillAnswers500WithoutRetryAfterWhenTheHandlerThrowsLogicError)
+    {
+        HttpSessionFixture fixture;
+        ASSERT_TRUE(fixture.isValid());
+        fixture.router().get("/defect",
+                             [](HttpRequest &, HttpResponse &) -> Core::Task<>
+                             {
+                                 throw std::logic_error("测试用：业务代码的真缺陷");
+                                 co_return;
+                             });
+
+        ASSERT_TRUE(fixture.writeRequest(makeRequestText("GET /defect HTTP/1.1", {"host: test"})));
+        fixture.start();
+
+        std::string responseText;
+        ASSERT_TRUE(awaitResponseLines(fixture, responseText, 1, kWaitTimeout)) << "抛 logic_error 后没有拿到响应：上界 kWaitTimeout";
+        EXPECT_TRUE(containsStatusLine(responseText, "HTTP/1.1 500")) << "真缺陷没归 500，实际响应：" + responseText;
+        EXPECT_EQ(responseText.find("retry-after"), std::string::npos) << "代码缺陷被当成可退避的过载：重试一百次它还是错";
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }

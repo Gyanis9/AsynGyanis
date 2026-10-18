@@ -809,4 +809,23 @@ namespace AsynGyanis::Net
         bool                   m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
         mutable std::string    m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
     };
+
+    class HttpMetricsCollector; // 前置声明即可：本头不牵 HttpServerStats.h 那份重量，指针参数只要一个名字
+
+    /**
+     * @brief 按业务异常的形状改写「处理失败」的响应：过载归 503 + Retry-After，其余归 500
+     * @details 为什么要有这一处：四条通道各有一段「整体 reset 再填 500」的映射（h1 一处、h2 一处、
+     *          h3 两处），把过载也各写一遍就是让同一判据存在四份副本——漏一档不会编译失败，只会让
+     *          某一通道的客户端把「该退避」当成「别重试」。这里收的是状态码的形状与那笔账，
+     *          日志文案留给调用方：那一句要带通道自己的字段（流号、request-id、trace），搬不动
+     * @details 两类不许混：`Core::ExecutorSaturatedException` 说的是「此刻接不住」（RFC 9110 §15.6.1
+     *          的形状是 503，并给 `Retry-After: 1`——排队是瞬时状态，一秒后多半已排空，报更长只是让
+     *          客户端在一台还能接活的机器上多等，也与内存预算那条 503 同口径）；其余异常是代码缺陷，
+     *          重试多少次都是同一个错，因此既不换状态码也不给退避提示
+     * @param response 待改写的响应；本函数先整体 reset（业务在半路上写的头部与正文一并抹掉），再填形状
+     * @param exception 业务链抛出的异常；空指针按「不是过载」处理
+     * @param metrics 采集端，可为空；按过载降级时在这里落 `executor_saturated_responses_total` 那一笔
+     * @return true 本条是按过载降级的 503（调用方据此点名日志）；false 是 500
+     */
+    ASYN_NET_API bool applyHandlerFailureAnswer(HttpResponse &response, const std::exception_ptr &exception, HttpMetricsCollector *metrics);
 } // namespace AsynGyanis::Net

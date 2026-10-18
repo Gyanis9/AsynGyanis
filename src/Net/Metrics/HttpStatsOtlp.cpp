@@ -114,6 +114,7 @@ namespace AsynGyanis::Net
 
         // 单流取消与零拷贝
         addCounter("http2_stream_cancelled_total", "被对端取消单流（HTTP/2 的 RST_STREAM、HTTP/3 的 RESET_STREAM）而本端未发响应的请求条数", stats.streamCancelledCount);
+        addCounter("executor_saturated_responses_total", "因阻塞任务执行器排队已满而回 503 的响应条数", stats.executorSaturatedResponseCount);
         addCounter("zerocopy_sends_total", "正文经内核零拷贝（sendfile）直接发出的响应条数（仅 Linux 会增长）", stats.zeroCopySendCount);
 
         // 准入闸门：按来源 IP 挡下的与整机满载挡下的分开报（处置相反）

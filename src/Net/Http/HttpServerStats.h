@@ -262,6 +262,17 @@ namespace AsynGyanis::Net
         std::uint64_t blockingTaskRejectedCount{0};
 
         /**
+         * @brief 因为「执行器排队已满」而回 503 的响应条数
+         * @details 与上面那条各管一头：`blockingTaskRejectedCount` 说的是执行器拒了多少任务（任何
+         *          提交方都算，包括不在请求路径上的），这个数说的是「有多少条请求因此被降级应答」。
+         *          只看前者会漏掉两件事：降级之后的响应形状对不对（503 还是被当成 500），
+         *          以及有多少客户端正在拿到退避提示
+         * @note 纯计数、不带标签：过载是按进程整体看的容量信号，按路由或状态码拆分只会让时间序列
+         *       随路由表长（基数随部署变化，抓取端要付这个代价）
+         */
+        std::uint64_t executorSaturatedResponseCount{0};
+
+        /**
          * @brief 取快照这一刻本进程的常驻内存字节数（进程级；0 表示平台读不出）
          * @details 泄漏与无界缓存最先体现在这一列的趋势上。它不是「活跃分配量」：分配器留下的空闲页
          *          仍算常驻（glibc 就不把页面还给内核），所以掉下来的曲线才算「真的还回来了」。
@@ -478,6 +489,16 @@ namespace AsynGyanis::Net
         void countStreamCancelled() noexcept
         {
             m_streamCancelledCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 记一条「因执行器排队已满而回 503」的响应
+         * @note 只在这一条降级真的写进响应时记：过载的原因已经由执行器自己的
+         *       `asyn_executor_rejected_total` 记过一笔，这里记的是客户端看到的结果
+         */
+        void countExecutorSaturatedResponse() noexcept
+        {
+            m_executorSaturatedResponseCount.fetch_add(1, std::memory_order_relaxed);
         }
 
         /**
@@ -799,9 +820,10 @@ namespace AsynGyanis::Net
         std::atomic<std::uint64_t> m_webSocketPeerCloseCount{0};                        ///< 累计由对端发起关闭握手的连接数
         std::atomic<std::uint64_t> m_webSocketServerCloseCount{0};                      ///< 累计由本侧发起关闭握手的连接数
 
-        std::atomic<std::uint64_t> m_streamCancelledCount{0};        ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
-        std::atomic<std::uint64_t> m_zeroCopySendCount{0};           ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
-        std::atomic<std::uint64_t> m_writeAbortedConnectionCount{0}; ///< 累计「响应没送完就收口」的连接条数（写出失败或收口时仍有未送出字节）
+        std::atomic<std::uint64_t> m_streamCancelledCount{0};           ///< 累计被对端 RST_STREAM 取消了单流的 HTTP/2 请求条数
+        std::atomic<std::uint64_t> m_executorSaturatedResponseCount{0}; ///< 累计因执行器排队已满而回 503 的响应条数
+        std::atomic<std::uint64_t> m_zeroCopySendCount{0};              ///< 累计正文走零拷贝发送的响应条数（仅 Linux 会增长）
+        std::atomic<std::uint64_t> m_writeAbortedConnectionCount{0};    ///< 累计「响应没送完就收口」的连接条数（写出失败或收口时仍有未送出字节）
 
         // 活跃连接数按「每条连接一次加、一次减」被写，与上面「每请求都写」的那几组不同热度：
         // 同处一行会让长连接的建连/断连把请求计数所在的行反复踢出缓存

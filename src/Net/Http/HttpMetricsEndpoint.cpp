@@ -263,6 +263,10 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "http2_stream_cancelled_total"),
                       "被对端取消单流（HTTP/2 的 RST_STREAM、HTTP/3 的 RESET_STREAM/STOP_SENDING）而本端未发响应的请求条数；名字里的 http2 是历史遗留，口径含 HTTP/3",
                       stats.streamCancelledCount);
+        // 过载降级的出口：与 asyn_executor_rejected_total（执行器拒了多少任务）分头报，
+        // 这条说的是「有多少客户端因此拿到了 503 + Retry-After」
+        appendCounter(out, makeMetricName(metricNamePrefix, "executor_saturated_responses_total"), "因阻塞任务执行器排队已满而回 503 的响应条数",
+                      stats.executorSaturatedResponseCount);
 
         // 发送路径：零拷贝发送只在 Linux 的明文 HTTP/1.1 上发生，其余平台恒为 0，
         // 因此它同时是「静态文件快路径是否在生效」的探针

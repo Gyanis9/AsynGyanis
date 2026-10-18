@@ -975,26 +975,25 @@ namespace AsynGyanis::Net
 
                     if (handlerException)
                     {
-                        // 业务异常必须整体重置响应再填 500：handler 可能已经写了一半头部与正文，
-                        // 只改状态码会把半成品连同错的 content-length 一起发出去。
-                        // 流式模式若尚未写出任何一段，同样落到这里——头部还没上线，改写是完全有效的
-                        response.reset();
-                        response.setStatus(500);
-                        response.setBody("Internal Server Error");
-                        response.setHeader("content-type", kPlainTextContentType);
+                        // 状态码的形状只有一份实现（applyHandlerFailureAnswer）：过载（执行器排队已满）
+                        // 归 503 + Retry-After，其余异常归 500。四条通道各写一遍迟早漏一档，
+                        // 而漏的那一档客户端会把「该退避」读成「别重试」
+                        const bool isExecutorSaturated = applyHandlerFailureAnswer(response, handlerException, metrics);
                         if (!requestVersion.empty())
                         {
                             response.setHttpVersion(requestVersion);
                         }
 
-                        // 成因必须落这一条：响应里只回 500 是对的（不把内部原因泄漏给对端），
+                        // 成因必须落这一条：响应里只回状态码是对的（不把内部原因泄漏给对端），
                         // 但服务端这边此前一句都不记——同一函数里流式那一路（见上面 isChunkedHeadSent
                         // 分支）与 WebSocket 那一路都有日志，缺的正是这条最常走的路。
                         // 用 LOG_ERROR_EXCEPTION 而不是只拼 what()：框架异常携带的抛出点调用栈
                         // 要随这条记录交给 Sink，那是本框架异常可观测性的主要用途。
                         // request-id 与 trace id 一起带上：只看 /metrics 上多出来的一个 500，
                         // 没有这两个标识就翻不回是那一条请求。取法只有一份（traceIdTextForLog），
-                        // 三条通道共用——各写一遍迟早漏掉一路
+                        // 三条通道共用——各写一遍迟早漏掉一路。
+                        // 两句文案分开：查容量的人不该被淹没在「业务处理函数抛出异常」那一句里，
+                        // 而状态码取实际改写后的值，日志与线上发出去的始终是同一件事
                         const std::string traceIdText = traceIdTextForLog(request);
 
                         try
@@ -1002,8 +1001,9 @@ namespace AsynGyanis::Net
                             std::rethrow_exception(handlerException);
                         } catch (const std::exception &failure)
                         {
-                            LOG_ERROR_EXCEPTION(failure, "HttpSession: 业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}，原因：{}",
-                                                requestIdView, traceIdText, request.uri(), failure.what());
+                            LOG_ERROR_EXCEPTION(failure, "HttpSession: 业务处理函数{}，已整体重置响应并按 {} 收口。request-id {}，trace {}，路径 {}，原因：{}",
+                                                isExecutorSaturated ? "因执行器排队已满而被拒（过载）" : "抛出异常", response.status(), requestIdView, traceIdText, request.uri(),
+                                                failure.what());
                         } catch (...)
                         {
                             LOG_ERROR_FMT("HttpSession: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}", requestIdView,

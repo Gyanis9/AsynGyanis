@@ -108,6 +108,7 @@ namespace AsynGyanis::Net
         stats.webSocketPeerCloseCount          = m_webSocketPeerCloseCount.load(std::memory_order_relaxed);
         stats.webSocketServerCloseCount        = m_webSocketServerCloseCount.load(std::memory_order_relaxed);
         stats.streamCancelledCount             = m_streamCancelledCount.load(std::memory_order_relaxed);
+        stats.executorSaturatedResponseCount   = m_executorSaturatedResponseCount.load(std::memory_order_relaxed);
         stats.zeroCopySendCount                = m_zeroCopySendCount.load(std::memory_order_relaxed);
 
         for (std::size_t index = 0; index < kHttpLatencyBucketCount; ++index)

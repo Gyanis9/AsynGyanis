@@ -10,6 +10,7 @@
 #include "CoreTestSupport.h"
 #include "HttpTestSupport.h"
 
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/Router.h"
@@ -1870,6 +1871,114 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.response().status, 200) << "抛过异常之后会话不再服务后续请求";
         ASSERT_GE(peer.response().body.size(), bodyLengthBeforeSecondRequest);
         EXPECT_EQ(peer.response().body.substr(bodyLengthBeforeSecondRequest), "hi") << "第二条响应的正文";
+    }
+
+    /**
+     * @brief 钉住：h3 认得「执行器排队已满」这个形状，回 503 + Retry-After 并落进过载那本账
+     * @details 状态码映射在三条通道各有一处（h3 甚至有两处：普通派发与流式派发），h1 那条钉的是
+     *          真造出来的饱和，这一条钉的是本通道那一处认不认得类型——异常形状与 Core 拒提交时一致
+     *          （同 `Core::ExecutorSaturatedException`）。指标一并核对：运维判断「过载有没有发生过」
+     *          只有这一格可看，状态码类那本账里 503 与 500 都是 5xx，分不开
+     */
+    TEST(Http3Session, Answers503WithRetryAfterWhenTheHandlerIsRejectedBySaturation)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        Router router;
+        router.get("/saturated",
+                   [](HttpRequest &, HttpResponse &) -> Core::Task<>
+                   {
+                       // 与 Core 拒提交时同一个形状：过载不是业务缺陷，映射必须分开
+                       throw Core::ExecutorSaturatedException("测试用：阻塞任务执行器排队已满");
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        for (const CapturedStreamData &chunk: peer.submitRequest("GET", "/saturated", "example.com", kFirstRequestStreamId))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_FALSE(sentStreamData.empty()) << "过载的那条请求一条响应都没发";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 503) << "h3 的过载没按 503 回";
+        const auto retryAfter = peer.response().headers.find("retry-after");
+        ASSERT_NE(retryAfter, peer.response().headers.end()) << "503 没带 Retry-After：客户端会把「该退避」读成「别重试」";
+        EXPECT_EQ(retryAfter->second, "1") << "Retry-After 的取值要与另两条通道同解";
+
+        const HttpServerStats snapshot = metrics->snapshot();
+        EXPECT_EQ(snapshot.executorSaturatedResponseCount, 1U) << "过载的 503 没落进指标：面板上这次过载凭空不存在";
+        EXPECT_EQ(snapshot.badRequestCount, 0U) << "过载不是坏请求：那本账的口径是报文不合规";
+    }
+
+    /**
+     * @brief 钉住：h3 的**流式派发**出口也认得过载——那里是第二个 500 映射点
+     * @details 命中 `postStreaming(...)` 的请求走另一个出口（`Http3Session::serveStreamingRequest`），
+     *          它有自己的一段「整体 reset 再填状态码」。漏这一处不会编译失败，只会让同一条通道上
+     *          两种路由形状各回一个状态码——而「边读正文边等下游」的上传处理器恰恰是最该在过载时
+     *          拿到退避提示的那类业务。
+     * @details 只喂头部（不送正文）：流式路由在头部收齐就把请求交给业务，处理器此刻抛出，
+     *          因此这一条与上面那条的差别只剩「走哪个派发出口」
+     */
+    TEST(Http3Session, Answers503FromTheStreamingDispatchPathWhenTheHandlerIsRejectedBySaturation)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+
+        Http3Session session(
+                std::ref(opener),
+                [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                {
+                    sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                    return data.size();
+                },
+                Http3Session::StreamCrediter{}, metrics);
+
+        Router router;
+        router.postStreaming("/upload",
+                             [](HttpRequest &, HttpResponse &) -> Core::Task<>
+                             {
+                                 throw Core::ExecutorSaturatedException("测试用：阻塞任务执行器排队已满");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        for (const CapturedStreamData &chunk: peer.submitRequest("POST", "/upload", "example.com", kFirstRequestStreamId))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+        ASSERT_FALSE(sentStreamData.empty()) << "流式派发上的过载没有发出任何响应";
+        for (const CapturedStreamData &chunk: sentStreamData)
+        {
+            peer.receive(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+
+        EXPECT_EQ(peer.response().status, 503) << "流式派发出口的过载没按 503 回";
+        const auto retryAfter = peer.response().headers.find("retry-after");
+        ASSERT_NE(retryAfter, peer.response().headers.end()) << "流式派发出口的 503 没带 Retry-After";
+        EXPECT_EQ(retryAfter->second, "1") << "退避时长要与另外三条通道同解";
+        EXPECT_EQ(metrics->snapshot().executorSaturatedResponseCount, 1U) << "流式派发出口的过载没落进指标";
     }
 
     /**

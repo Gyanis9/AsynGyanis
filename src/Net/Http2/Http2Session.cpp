@@ -1239,25 +1239,24 @@ namespace AsynGyanis::Net
                               request.requestId(), request.uri(), streamId, describeException(handlerException));
             } else
             {
-                // 业务可能已经写了一半头部与正文，必须整体重置再填 500，否则会发出一条半成品响应
-                response.reset();
-                response.setStatus(500);
-                response.setBody("Internal Server Error");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                // 状态码的形状只有一份实现（applyHandlerFailureAnswer）：过载归 503 + Retry-After，
+                // 其余归 500——四条通道各写一遍迟早漏一档
+                const bool isExecutorSaturated = applyHandlerFailureAnswer(response, handlerException, m_metrics.get());
 
                 // 成因要落日志，并与 h1 同一口径：上面那条流式分支一直有日志，缺的是这条
-                // 最常走的非流式分支。响应只回 500 是对的（不把内部原因交给对端），
+                // 最常走的非流式分支。响应只回状态码是对的（不把内部原因交给对端），
                 // 但服务端这边不记就等于这次故障凭空消失，异常携带的抛出点栈也白采。
                 // trace id 也一起带上：h1 早就带了，缺它的通道等于把「这条 500」与「那段链路」
-                // 之间唯一的桥留空
+                // 之间唯一的桥留空。状态码取实际改写后的值，日志与线上发出的始终是同一件事
                 const std::string traceIdText = traceIdTextForLog(request);
                 try
                 {
                     std::rethrow_exception(handlerException);
                 } catch (const std::exception &failure)
                 {
-                    LOG_ERROR_EXCEPTION(failure, "Http2Session: 业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}，流 {}，原因：{}",
-                                        request.requestId(), traceIdText, request.uri(), streamId, failure.what());
+                    LOG_ERROR_EXCEPTION(failure, "Http2Session: 业务处理函数{}，已整体重置响应并按 {} 收口。request-id {}，trace {}，路径 {}，流 {}，原因：{}",
+                                        isExecutorSaturated ? "因执行器排队已满而被拒（过载）" : "抛出异常", response.status(), request.requestId(), traceIdText, request.uri(),
+                                        streamId, failure.what());
                 } catch (...)
                 {
                     LOG_ERROR_FMT("Http2Session: 业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}，流 {}",

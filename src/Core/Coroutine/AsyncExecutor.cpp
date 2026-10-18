@@ -5,6 +5,32 @@
 
 namespace AsynGyanis::Core
 {
+    ExecutorSaturatedException::ExecutorSaturatedException(const std::string &message, const std::source_location &sourceLocation) : Base::LogicException(message, sourceLocation)
+    {
+    }
+
+    bool isExecutorSaturation(const std::exception_ptr &exception) noexcept
+    {
+        if (!exception)
+        {
+            return false;
+        }
+        // 先落标志再返回：rethrow_exception 是 noreturn，若在两个 catch 里各自 return，
+        // 函数末尾就成了不可达代码（MSVC 的 C4702 在这条门禁上是错误）
+        bool isSaturated = false;
+        try
+        {
+            std::rethrow_exception(exception);
+        } catch (const ExecutorSaturatedException &)
+        {
+            isSaturated = true;
+        } catch (...)
+        {
+            isSaturated = false;
+        }
+        return isSaturated;
+    }
+
     AsyncExecutor::AsyncExecutor(const std::size_t workerCount)
     {
         // 两条读数各登记一份、在注册表里按 Sum 合并：注入自建执行器（Queryable::useAsyncExecutor）是一等

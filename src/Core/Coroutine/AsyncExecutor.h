@@ -40,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <source_location>
 #include <stop_token>
 #include <thread>
 #include <type_traits>
@@ -48,6 +49,37 @@
 
 namespace AsynGyanis::Core
 {
+    /**
+     * @brief 执行器排队已满（过载）——与「调用方把生命周期用错了」那一类分开
+     * @details 为什么要单列一种：这一句此前与「执行器已停止」同为 Base::LogicException，而调用方的
+     *          处置完全不同（过载该降并发或退避，停机该查生命周期）。HTTP 侧要靠它把过载回成
+     *          503 + Retry-After 而不是 500——「客户端看到的现象」与「服务端的原因」得对上，
+     *          而原因必须写在异常类型上，只写在文案里就没人能程序化地认出来。
+     * @note 基类保持 Base::LogicException 是刻意的：既有 catch 侧（含本层用例）靠它接住，换基类会
+     *       静默改掉所有 catching 的形状。它也不属于任何重试逻辑捕获的那一族（Database 侧的重试族
+     *       是 QueryExecutionException 一线），因此不会有人拿它去重试一条注定被拒的任务——
+     *       与 TransactionTimeoutException 刻意不做查询执行异常子类是同一条判据
+     */
+    class ASYN_CORE_API ExecutorSaturatedException : public Base::LogicException
+    {
+    public:
+        /**
+         * @brief 构造过载异常
+         * @param message 中文原因，要点名「排队已满」与那道上限（运维据此决定是降并发还是改非阻塞路径）
+         * @param sourceLocation 异常抛出位置，默认取调用点
+         */
+        explicit ExecutorSaturatedException(const std::string &message, const std::source_location &sourceLocation = std::source_location::current());
+    };
+
+    /**
+     * @brief 这条异常指针指的是不是「执行器排队已满」
+     * @details 三条 HTTP 通道手上只有 `std::exception_ptr`（业务链抛出的原样暂存在协程帧里），
+     *          要认类型只能就地重抛一次；这条路只在失败分支上走，不在每请求热路径上
+     * @param exception 待判的异常指针；空指针按「不是过载」处理
+     * @return true 是 @c ExecutorSaturatedException；false 是别的异常或没有异常
+     */
+    [[nodiscard]] ASYN_CORE_API bool isExecutorSaturation(const std::exception_ptr &exception) noexcept;
+
     /**
      * @brief 阻塞任务执行器
      *
@@ -297,7 +329,11 @@ namespace AsynGyanis::Core
                                                           ? std::string("阻塞任务执行器已停止：本任务未被执行，请检查执行器的生命周期是否覆盖到本次提交")
                                                           : std::string("阻塞任务执行器排队已满（每线程上限 ") + std::to_string(kMaximumPendingTasksPerWorker) +
                                                                     " 条）：下游明显慢于提交，请降低并发或改走非阻塞路径，不要继续向本执行器提交";
-                    state->error                = std::make_exception_ptr(Base::LogicException(std::move(rejectionReason)));
+                    // 类型也要分得开，不只是文案：停机那一条确实是调用方把生命周期用错了（LogicException），
+                    // 而「排队已满」是过载——上层要靠这个形状把它回成 503 + Retry-After（该退避），
+                    // 而不是和「代码有 bug」共用一个 500。文案是给运维读的，类型是给代码读的，缺一个都不算说清
+                    state->error = submission == SubmissionResult::RejectedByShutdown ? std::make_exception_ptr(Base::LogicException(std::move(rejectionReason)))
+                                                                                      : std::make_exception_ptr(ExecutorSaturatedException(std::move(rejectionReason)));
                     return false;
                 }
                 return true;

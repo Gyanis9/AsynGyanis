@@ -2,10 +2,12 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Net/Http/HttpChunkFrame.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 #include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/HttpServerStats.h"
 
 #include <algorithm>
 #include <array>
@@ -1096,6 +1098,28 @@ namespace AsynGyanis::Net
         response.setBody(std::move(message));
         response.setHeader("content-type", kPlainTextContentType);
         return response;
+    }
+
+    bool applyHandlerFailureAnswer(HttpResponse &response, const std::exception_ptr &exception, HttpMetricsCollector *metrics)
+    {
+        const bool isExecutorSaturated = Core::isExecutorSaturation(exception);
+
+        // 整体重置是这条映射的主语义：业务可能已经写了一半头部与正文，只改状态码会发出一条
+        // content-length 与正文不符的半成品响应
+        response.reset();
+        response.setStatus(isExecutorSaturated ? 503 : 500);
+        response.setBody(isExecutorSaturated ? "Service Unavailable" : "Internal Server Error");
+        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+        if (isExecutorSaturated)
+        {
+            // 1 秒与内存预算、限流那几处的退避提示同口径：过载是瞬时状态，报更长只是让客户端多等
+            static_cast<void>(response.setHeader("retry-after", "1"));
+            if (metrics != nullptr)
+            {
+                metrics->countExecutorSaturatedResponse();
+            }
+        }
+        return isExecutorSaturated;
     }
 
     void HttpResponse::reset()

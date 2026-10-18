@@ -14,6 +14,7 @@
 // 本文件不起 TLS：h2c 的全部意义就是不经过 TLS 直接说 h2，用真实明文回环才测得到这条路径。
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Coroutine/AsyncExecutor.h"
 #include "Net/Http/HttpRequestBody.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/HttpServerAssembly.h"
@@ -65,11 +66,11 @@ namespace AsynGyanis::Net
         // 下面几档时长放在文件级而不是用例体内：它们要进「夹具注册路由」那两层嵌套 lambda，
         // 而函数级的 constexpr 在 GCC 下算 odr-use、嵌套 lambda 拿不到（MSVC 放行，CI 的 GCC 档当场拒）。
         // 名字带上所属用例，避免跨用例串味
-        constexpr std::chrono::milliseconds kStreamTimeoutHandlerBudget{120};  ///< 配的每请求处理时限
-        constexpr std::chrono::milliseconds kStreamTimeoutHandlerHold{600};    ///< 处理器故意挂住的时长（> 时限）
-        constexpr std::chrono::milliseconds kUnbudgetedHandlerHold{200};       ///< 没配时限那条对照的挂起时长
-        constexpr std::chrono::milliseconds kCancelPollTick{5};                ///< 轮询取消状态的那一拍
-        constexpr int                       kCancelPollRounds = 100;           ///< 轮询上限：只有拿不到取消才跑满
+        constexpr std::chrono::milliseconds kStreamTimeoutHandlerBudget{120}; ///< 配的每请求处理时限
+        constexpr std::chrono::milliseconds kStreamTimeoutHandlerHold{600};   ///< 处理器故意挂住的时长（> 时限）
+        constexpr std::chrono::milliseconds kUnbudgetedHandlerHold{200};      ///< 没配时限那条对照的挂起时长
+        constexpr std::chrono::milliseconds kCancelPollTick{5};               ///< 轮询取消状态的那一拍
+        constexpr int                       kCancelPollRounds = 100;          ///< 轮询上限：只有拿不到取消才跑满
 
         /**
          * @brief 编一个字面量字段表示（定义见 Http2TestSupport.h）
@@ -2681,6 +2682,55 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&isHandlerFinished] { return isHandlerFinished.load(std::memory_order_acquire); }, std::chrono::milliseconds{8000}))
                 << "处理器没有在时限内跑完它的轮询：这条流的取消没送到，处理器挂死在等待上";
         EXPECT_TRUE(isCancelObserved.load(std::memory_order_acquire)) << "对端 RST_STREAM 没传进 request.cancelToken()：处理器按「没被取消」把活干完了";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：h2 认得「执行器排队已满」这个形状，回 503 + Retry-After 并落进过载那本账
+     * @details 状态码映射在三条通道各有一处，本条钉 h2 那一处。饱和的**真实来源**（执行器真的被灌满、
+     *          提交当场被拒）由 `HttpSession.Answers503WithRetryAfterWhenTheBlockingExecutorIsSaturated`
+     *          钉住；这里抛的是同一个异常类型，为的是把「类型 → 状态码」这段接线在每条通道上各钉一次
+     */
+    TEST(Http2CleartextSession, Answers503WithRetryAfterWhenTheHandlerIsRejectedBySaturation)
+    {
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/saturated",
+                               [](HttpRequest &, HttpResponse &) -> Core::Task<>
+                               {
+                                   throw Core::ExecutorSaturatedException("测试用：阻塞任务执行器排队已满");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/saturated"), true), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "过载的这条流没有得到应答";
+
+        // HPACK 的动态表按连接推进，逐条判据各用一份解码器（见上面 collectResponseStatuses 的说明）
+        HpackDecoder statusDecoder;
+        EXPECT_EQ(findResponseHeaderValue(statusDecoder, frames, 1U, ":status"), "503") << "h2 的过载没按 503 回";
+        HpackDecoder retryAfterDecoder;
+        EXPECT_EQ(findResponseHeaderValue(retryAfterDecoder, frames, 1U, "retry-after"), "1") << "503 没带 Retry-After：客户端会把「该退避」读成「别重试」";
+
+        EXPECT_EQ(fixture.server().stats().executorSaturatedResponseCount, 1U) << "过载的 503 没落进指标：面板上这次过载凭空不存在";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

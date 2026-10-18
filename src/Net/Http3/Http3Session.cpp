@@ -593,13 +593,12 @@ namespace AsynGyanis::Net
                                       streamId);
                     } else
                     {
-                        response.reset();
-                        response.setStatus(500);
-                        response.setBody("Internal Server Error");
-                        static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                        // 状态码的形状只有一份实现（applyHandlerFailureAnswer）：过载归 503 + Retry-After，
+                        // 其余归 500——四条通道各写一遍迟早漏一档
+                        const bool isExecutorSaturated = applyHandlerFailureAnswer(response, handlerException, m_metrics.get());
 
                         // 成因要落日志，并与 h1/h2 同一口径：上面那条流式分支一直有日志，缺的是这条
-                        // 非流式分支。响应只回 500 是对的（不把内部原因交给对端），
+                        // 非流式分支。响应只回状态码是对的（不把内部原因交给对端），
                         // 但服务端这边不记就等于这次故障凭空消失，异常携带的抛出点栈也白采
                         // trace id 与 h1/h2 同口径带上：三条通道里少一路，运维从那一路查过来的链路就断在这里
                         const std::string traceIdText = traceIdTextForLog(request);
@@ -608,8 +607,11 @@ namespace AsynGyanis::Net
                             std::rethrow_exception(handlerException);
                         } catch (const std::exception &failure)
                         {
-                            LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的业务处理函数抛出异常，已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}，原因：{}",
-                                                streamId, request.requestId(), traceIdText, request.uri(), failure.what());
+                            // 「过载」与「缺陷」两句要分开：查容量的人不该被淹没在业务异常那一句里；
+                            // 状态码取实际改写后的值，日志与线上发出的始终是同一件事
+                            LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的业务处理函数{}，已整体重置响应并按 {} 收口。request-id {}，trace {}，路径 {}，原因：{}", streamId,
+                                                isExecutorSaturated ? "因执行器排队已满而被拒（过载）" : "抛出异常", response.status(), request.requestId(), traceIdText,
+                                                request.uri(), failure.what());
                         } catch (...)
                         {
                             LOG_ERROR_FMT("Http3Session: 流 {} 的业务处理函数抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口。request-id {}，trace {}，路径 {}",
@@ -1496,19 +1498,19 @@ namespace AsynGyanis::Net
                 LOG_ERROR_FMT("Http3Session: 流 {} 的流式响应中途抛出异常，头部已上线无法改写状态码，已按原状态码收尾", streamId);
             } else
             {
-                response.reset();
-                response.setStatus(500);
-                response.setBody("Internal Server Error");
-                static_cast<void>(response.setHeader("content-type", kPlainTextContentType));
+                // 状态码的形状只有一份实现（applyHandlerFailureAnswer）。这里也必须走它：漏了这一处，
+                // 「边读正文边等下游」那类流式路由就在过载时回 500，而同一条通道的普通派发回 503
+                const bool isExecutorSaturated = applyHandlerFailureAnswer(response, handlerException, m_metrics.get());
 
                 // 流式那一路（上面）一直有日志，这条非流式的 else 缺成因记录——
-                // 与 h1/h2 补的是同一处口径差。响应仍只回 500，不外泄内部原因
+                // 与 h1/h2 补的是同一处口径差。响应仍只回状态码，不外泄内部原因
                 try
                 {
                     std::rethrow_exception(handlerException);
                 } catch (const std::exception &failure)
                 {
-                    LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的流式业务处理抛出异常，已整体重置响应并按 500 收口。原因：{}", streamId, failure.what());
+                    LOG_ERROR_EXCEPTION(failure, "Http3Session: 流 {} 的流式业务处理{}，已整体重置响应并按 {} 收口。原因：{}", streamId,
+                                        isExecutorSaturated ? "因执行器排队已满而被拒（过载）" : "抛出异常", response.status(), failure.what());
                 } catch (...)
                 {
                     LOG_ERROR_FMT("Http3Session: 流 {} 的流式业务处理抛出非标准异常（无 what() 描述），已整体重置响应并按 500 收口", streamId);
