@@ -11,6 +11,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Net/Http/HttpBodyDecodeError.h"
+
 #include <cstddef>
 #include <expected>
 #include <optional>
@@ -69,8 +71,8 @@ namespace AsynGyanis::Net
      * @param input 压缩字节，可为空（空输入按「解出空正文」处理，与 0 长度的 gzip 流不同：后者仍要
      *              带上容器头与校验，空 input 直接判格式错误）
      * @param maxOutputByteCount 解出来的正文长度上界，单位字节
-     * @return std::expected<std::string, std::string> 成功为解出的正文；失败为可直接进日志的中文原因
+     * @return HttpBodyDecodeExpected<std::string> 成功为解出的正文；失败带类别与可直接进日志的中文原因
      * @see HttpContentCoding.h 的按 Content-Encoding 分派
      */
-    [[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
+    [[nodiscard]] ASYN_NET_API HttpBodyDecodeExpected<std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes);
 } // namespace AsynGyanis::Net

@@ -1,5 +1,7 @@
 #include "Net/Http/Gzip.h"
 
+#include "Net/Http/HttpBodyDecodeError.h"
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -113,7 +115,7 @@ namespace AsynGyanis::Net
         return deflateContainerCompress(input, level, 15);
     }
 
-    std::expected<std::string, std::string> inflateHttpBody(const std::string_view input, const std::size_t maxOutputByteCount)
+    HttpBodyDecodeExpected<std::string> inflateHttpBody(const std::string_view input, const std::size_t maxOutputByteCount)
     {
         // 与压缩侧同一套复用手法：inflate 流的内部窗口字典有 32 KiB，每条响应都重建就是白付的固定开销。
         // inflateReset 把流复位到「刚 init」状态，字典与已分配的空间都留着
@@ -134,7 +136,8 @@ namespace AsynGyanis::Net
 
         if (input.empty())
         {
-            return std::unexpected("压缩正文为空：0 字节不是一条合法的 deflate 流，请检查 Content-Encoding 与正文是否匹配");
+            return std::unexpected(
+                    HttpBodyDecodeError{HttpBodyDecodeErrorKind::EmptyInput, "压缩正文为空：0 字节不是一条合法的 deflate 流，请检查 Content-Encoding 与正文是否匹配"});
         }
 
         if (context.isOpen && ::inflateReset(&context.stream) != Z_OK)
@@ -150,7 +153,8 @@ namespace AsynGyanis::Net
             // 裸 deflate（负 windowBits）刻意不放行，那种字节没有自描述，猜格式等于拿正确性换兼容
             if (::inflateInit2(&context.stream, 15 + 32) != Z_OK)
             {
-                return std::unexpected("zlib 解压器初始化失败（通常是内存不足）");
+                return std::unexpected(
+                        HttpBodyDecodeError{HttpBodyDecodeErrorKind::LocalResourceFailed, "zlib 解压器初始化失败（通常是内存不足）：与本端资源有关，与对端发的字节无关，可重试"});
             }
             context.isOpen = true;
         }
@@ -180,19 +184,27 @@ namespace AsynGyanis::Net
             }
             if (result != Z_OK)
             {
-                return std::unexpected(result == Z_DATA_ERROR ? std::string("压缩正文损坏：deflate 流校验失败（数据不全、被截断，或对端发的不是 deflate）")
-                                                              : std::string("zlib 解压失败，错误码 ") + std::to_string(result));
+                if (result == Z_DATA_ERROR)
+                {
+                    return std::unexpected(
+                            HttpBodyDecodeError{HttpBodyDecodeErrorKind::CorruptStream, "压缩正文损坏：deflate 流校验失败（数据不全、被截断，或对端发的不是 deflate）"});
+                }
+                return std::unexpected(
+                        HttpBodyDecodeError{HttpBodyDecodeErrorKind::LocalResourceFailed, std::string{"zlib 解压失败，错误码 "} + std::to_string(result) +
+                                                                                                  "：非数据类错误，是本端 zlib 流的状态问题，可重试（下一条会重建上下文）"});
             }
 
             if (stream.avail_out != 0U)
             {
                 // 输出缓冲没写满却还没到头：说明输入先耗尽了，也就是流被截断。
                 // 这时交回已解出的部分等于把「少了一截」伪装成正常正文，必须报错
-                return std::unexpected("压缩正文不完整：输入已读完但 deflate 流还没到头（响应被截断？）");
+                return std::unexpected(HttpBodyDecodeError{HttpBodyDecodeErrorKind::TruncatedStream, "压缩正文不完整：输入已读完但 deflate 流还没到头（响应被截断？）"});
             }
             if (output.size() >= maxOutputByteCount)
             {
-                return std::unexpected("解出的正文超过上限 " + std::to_string(maxOutputByteCount) + " 字节：压缩比过高属于异常，按失败处理而不是交回半截正文");
+                return std::unexpected(HttpBodyDecodeError{HttpBodyDecodeErrorKind::DecompressedSizeExceeded, "解出的正文超过上限 " + std::to_string(maxOutputByteCount) +
+                                                                                                                      " 字节：压缩比过高属于异常，"
+                                                                                                                      "按失败处理而不是交回半截正文"});
             }
 
             // 写满且还在正常出字节：扩一段继续解。翻倍一次到位，避免每 4 KiB 一次 realloc

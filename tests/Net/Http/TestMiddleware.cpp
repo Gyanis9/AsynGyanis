@@ -1505,9 +1505,11 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 解出来的长度受上界约束：到界即判失败，不交回前 N 字节
+     * @brief 解出来的长度受上界约束：到界即判失败，不交回前 N 字节，且回 413 而不是 400
      * @details gzip 压缩比可上千倍，不设界等于让对端用几百字节决定本进程分配多少内存；
-     *          而「交回前 N 字节」是一份长度对、内容错的数据，比失败更坏
+     *          而「交回前 N 字节」是一份长度对、内容错的数据，比失败更坏。状态码走 413（RFC 9110
+     *          §15.5.13「愿意收更小的请求」），与「字节根本不是压缩流」的 400 分档：客户端拿 400
+     *          会重发同一份载荷，拿 413 才知道要把它弄小
      */
     TEST(RequestDecompressionMiddleware, BoundsDecompressedBodyLength)
     {
@@ -1525,7 +1527,7 @@ namespace AsynGyanis::Net
         runPipeline(pipeline, request, response, terminalWriting(response, "handled", &handlerCalls));
 
         EXPECT_EQ(handlerCalls.load(), 0) << "超出上界的正文不该被当成合法请求";
-        EXPECT_EQ(response.status(), 400);
+        EXPECT_EQ(response.status(), 413);
     }
 
     /**

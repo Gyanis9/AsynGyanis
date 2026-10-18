@@ -20,6 +20,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Net/Http/HttpBodyDecodeError.h"
+
 #include "Net/Http/Client/HttpClient.h"
 
 #include <cstddef>
@@ -52,11 +54,11 @@ namespace AsynGyanis::Net
      * @details 空正文（HEAD 的应答、204/304，或对端什么都没发）不动也不报错——那时正文压根不存在。
      * @param response 已组装好的出站响应；成功解压时正文被换掉，两条相关头部被删
      * @param maxOutputByteCount 解出长度的上界
-     * @return std::expected<bool, std::string> true=解过；false=原样交回（无编码或 identity）；
+     * @return HttpBodyDecodeExpected<bool> true=解过；false=原样交回（无编码或 identity）；
      *         失败=中文原因（对端发了本端没声明的编码、解坏了、超出上界）
      */
-    [[nodiscard]] ASYN_NET_API std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response,
-                                                                                          std::size_t         maxOutputByteCount = kOutboundDecompressedBodyLimitBytes);
+    [[nodiscard]] ASYN_NET_API HttpBodyDecodeExpected<bool> decodeResponseBodyInPlace(HttpClientResponse &response,
+                                                                                      std::size_t         maxOutputByteCount = kOutboundDecompressedBodyLimitBytes);
 
     /**
      * @brief 一次出站请求的收尾：本端代加过声明时按响应的 Content-Encoding 解回正文

@@ -187,7 +187,7 @@ namespace AsynGyanis::Net
             const std::optional<std::string> compressed = gzipCompress(text);
             ASSERT_HAS_VALUE(compressed);
             const auto restored = inflateHttpBody(*compressed);
-            ASSERT_HAS_VALUE(restored) << restored.error();
+            ASSERT_HAS_VALUE(restored) << restored.error().message;
             EXPECT_EQ(*restored, text);
         }
     }
@@ -209,7 +209,7 @@ namespace AsynGyanis::Net
                                      static_cast<char>(9),   static_cast<char>(123)};
 
         const auto restored = inflateHttpBody(zlibStream);
-        ASSERT_HAS_VALUE(restored) << restored.error();
+        ASSERT_HAS_VALUE(restored) << restored.error().message;
         EXPECT_EQ(*restored, "hello decompressed world");
     }
 
@@ -222,15 +222,18 @@ namespace AsynGyanis::Net
     {
         const auto empty = inflateHttpBody({});
         ASSERT_FALSE(empty.has_value());
-        EXPECT_NE(empty.error().find("为空"), std::string::npos) << empty.error();
+        EXPECT_NE(empty.error().message.find("为空"), std::string::npos) << empty.error().message;
+        EXPECT_EQ(empty.error().kind, HttpBodyDecodeErrorKind::EmptyInput);
 
         const auto garbage = inflateHttpBody("这不是压缩流");
         ASSERT_FALSE(garbage.has_value());
+        EXPECT_EQ(garbage.error().kind, HttpBodyDecodeErrorKind::CorruptStream) << "垃圾字节归到「流校验不过」，与超上限分档" << garbage.error().message;
 
         const std::optional<std::string> compressed = gzipCompress(std::string_view{"a rather long payload to truncate"});
         ASSERT_HAS_VALUE(compressed);
         const auto truncated = inflateHttpBody(compressed->substr(0, compressed->size() - 3));
         ASSERT_FALSE(truncated.has_value()) << "被截断的流必须报错，实际交回了 " << (truncated.has_value() ? truncated->size() : 0) << " 字节";
+        EXPECT_EQ(truncated.error().kind, HttpBodyDecodeErrorKind::TruncatedStream);
     }
 
     /**
@@ -244,11 +247,12 @@ namespace AsynGyanis::Net
 
         const auto overLimit = inflateHttpBody(*compressed, 4096U);
         ASSERT_FALSE(overLimit.has_value());
-        EXPECT_NE(overLimit.error().find("4096"), std::string::npos) << overLimit.error();
+        EXPECT_NE(overLimit.error().message.find("4096"), std::string::npos) << overLimit.error().message;
+        EXPECT_EQ(overLimit.error().kind, HttpBodyDecodeErrorKind::DecompressedSizeExceeded) << "超上限要能不看文案就判成「太大」，中间件据此回 413";
 
         // 同一份输入，上界给够就能解：证明上一条的失败来自界限而不是数据
         const auto withinLimit = inflateHttpBody(*compressed, repetitive.size());
-        ASSERT_HAS_VALUE(withinLimit) << withinLimit.error();
+        ASSERT_HAS_VALUE(withinLimit) << withinLimit.error().message;
         EXPECT_EQ(withinLimit->size(), repetitive.size());
     }
 } // namespace AsynGyanis::Net

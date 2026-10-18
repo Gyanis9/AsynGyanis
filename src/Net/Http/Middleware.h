@@ -18,6 +18,7 @@
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/Gzip.h"
+#include "Net/Http/HttpBodyDecodeError.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpMemoryBudget.h"
 #include "Net/Http/HttpRequest.h"
@@ -1516,10 +1517,22 @@ namespace AsynGyanis::Net
             }
 
             // 到界即判失败：交回前 N 字节等于把损坏藏起来，调用方看到的是一份长度对、内容却错了的数据
-            std::expected<std::string, std::string> decompressed = inflateHttpBody(request.body(), options.maximumDecompressedByteCount);
+            HttpBodyDecodeExpected<std::string> decompressed = inflateHttpBody(request.body(), options.maximumDecompressedByteCount);
             if (!decompressed.has_value())
             {
-                reject(400, "Bad Request: malformed encoded request body", "声明的编码解不出正文");
+                // 状态码按类别分档：超上限不是「格式错」而是「太大」（RFC 9110 §15.5.13），本端资源起不来
+                // 更不该算客户端错（§15.5.4）；并成 400 会让客户端以为重发同样的请求就能通过
+                const HttpBodyDecodeErrorKind failureKind = decompressed.error().kind;
+                if (failureKind == HttpBodyDecodeErrorKind::DecompressedSizeExceeded)
+                {
+                    reject(413, "Content Too Large: decompressed body exceeds the limit", "解压后的正文超过本端上限，已拒绝而不交回半截正文");
+                } else if (failureKind == HttpBodyDecodeErrorKind::LocalResourceFailed)
+                {
+                    reject(503, "Service Unavailable: decompressor unavailable", "本端解压器起不来（与请求内容无关），可稍后重试");
+                } else
+                {
+                    reject(400, "Bad Request: malformed encoded request body", "声明的编码解不出正文");
+                }
                 co_return;
             }
 

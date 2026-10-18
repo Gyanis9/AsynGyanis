@@ -76,7 +76,7 @@ namespace AsynGyanis::Net
         return !std::any_of(headers.begin(), headers.end(), [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "accept-encoding"); });
     }
 
-    std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response, const std::size_t maxOutputByteCount)
+    HttpBodyDecodeExpected<bool> decodeResponseBodyInPlace(HttpClientResponse &response, const std::size_t maxOutputByteCount)
     {
         const std::string_view encoding = findHeaderValue(response.headers, "content-encoding");
         if (encoding.empty() || equalsIgnoringCase(encoding, "identity"))
@@ -94,20 +94,22 @@ namespace AsynGyanis::Net
         {
             // 链式编码要按声明顺序逐层反解（RFC 9110 §8.4）。做是能做，但真实世界里几乎没有
             // 对端这么发，而半途解错一层的后果是「看着正常的坏数据」——宁可拒绝
-            return std::unexpected("不支持链式 Content-Encoding（\"" + std::string(encoding) + "\"）：本端只处理单层编码");
+            return std::unexpected(HttpBodyDecodeError{HttpBodyDecodeErrorKind::UnsupportedChainedEncoding,
+                                                       "不支持链式 Content-Encoding（\"" + std::string(encoding) + "\"）：本端只处理单层编码"});
         }
 
         if (!equalsIgnoringCase(encoding, "gzip") && !equalsIgnoringCase(encoding, "deflate") && !equalsIgnoringCase(encoding, "x-gzip"))
         {
             // 本端只在没被调用方接管时才对编码有主张：收到没声明过的编码说明对端不按回答办事，
             // 原样交回等于把「业务以为拿到文本、其实是压缩字节」这一坑埋到更深处
-            return std::unexpected("对端返回了本端没请求的 Content-Encoding（\"" + std::string(encoding) + "\"），且本端没有对应的解码器");
+            return std::unexpected(HttpBodyDecodeError{HttpBodyDecodeErrorKind::UnrequestedEncoding,
+                                                       "对端返回了本端没请求的 Content-Encoding（\"" + std::string(encoding) + "\"），且本端没有对应的解码器"});
         }
 
         auto decompressed = inflateHttpBody(response.body, maxOutputByteCount);
         if (!decompressed.has_value())
         {
-            return std::unexpected("解 " + std::string(encoding) + " 正文失败：" + decompressed.error());
+            return std::unexpected(HttpBodyDecodeError{decompressed.error().kind, "解 " + std::string(encoding) + " 正文失败：" + decompressed.error().message});
         }
 
         response.body = std::move(decompressed.value());
@@ -128,7 +130,7 @@ namespace AsynGyanis::Net
         const auto decoded = decodeResponseBodyInPlace(response);
         if (!decoded.has_value())
         {
-            failureReason = decoded.error();
+            failureReason = decoded.error().message;
             return false;
         }
         return true;

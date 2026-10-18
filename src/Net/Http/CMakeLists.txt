@@ -1,6 +1,8 @@
 # Net/Http —— HTTP/HTTPS 报文、会话、服务器、路由与中间件
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
-        ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
+        # 只有头文件：压缩正文解码的失败类别与结果别名，Gzip 与 Client/HttpContentCoding 共用
+        ${CMAKE_CURRENT_LIST_DIR}/HttpBodyDecodeError.h
+${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpParseErrorKind.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpDate.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpDate.cpp
