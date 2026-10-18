@@ -6,6 +6,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Router.h"
 #include "Net/Quic/QuicAddressValidationToken.h"
@@ -174,9 +175,13 @@ namespace AsynGyanis::Net
              * @brief 排好一次出站连接尝试并起循环线程
              * @param configuration 客户端配置
              * @param serverAddress 目标地址
+             * @param holdOpenAfterHandshake true 表示握手交出结果后把这条连接一直挂着，直到调用方
+             *        `releaseHold()`；默认拿到结果就关
+             * @details 挂着是为了让「名额已满」由用例构造出来：默认的尝试在交出结果时就把客户端关了，
+             *          服务端那一条随之被收干净，占着名额的判据于是变成调度运气
              */
-            ConnectAttempt(QuicClientConnection::Configuration configuration, const Core::InetAddress &serverAddress) :
-                m_configuration(std::move(configuration)), m_serverAddress(serverAddress)
+            ConnectAttempt(QuicClientConnection::Configuration configuration, const Core::InetAddress &serverAddress, const bool holdOpenAfterHandshake = false) :
+                m_configuration(std::move(configuration)), m_serverAddress(serverAddress), m_isHeld(holdOpenAfterHandshake)
             {
                 m_task.emplace(run());
                 m_loop.scheduler().schedule(m_task->handle());
@@ -200,6 +205,15 @@ namespace AsynGyanis::Net
             bool awaitFinished(const std::chrono::milliseconds timeout)
             {
                 return waitForCondition([this] { return m_isFinished.load(std::memory_order_acquire); }, timeout);
+            }
+
+            /**
+             * @brief 交还这条连接占着的名额，让它在自己的循环线程上关闭
+             * @details 只在构造时传了 `holdOpenAfterHandshake` 的尝试有意义；没挂着的调用它是空操作
+             */
+            void releaseHold() noexcept
+            {
+                m_isHeld.store(false, std::memory_order_release);
             }
 
             [[nodiscard]] bool isSuccessful() const noexcept
@@ -230,9 +244,17 @@ namespace AsynGyanis::Net
                     m_negotiatedApplicationProtocol = client->negotiatedApplicationProtocol();
                 }
                 m_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+                // 结果先发布，再进入可能的挂起：调用方等的是结果，不是「连接已关」
+                m_isFinished.store(true, std::memory_order_release);
+                // 挂着这段时间只为占住名额。每 50 毫秒问一次放行没有：循环停了这些等待不会自己触发
+                // （Timer 的约定），而析构里的 stop 就是没人 release 时那条连接的最后一道出口
+                Core::Timer ticker{m_loop};
+                while (m_isHeld.load(std::memory_order_acquire))
+                {
+                    co_await ticker.waitFor(std::chrono::milliseconds{50});
+                }
                 // 套接字要在循环线程上关：交给测试线程的帧销毁时再做就跨线程了
                 client.reset();
-                m_isFinished.store(true, std::memory_order_release);
                 co_return;
             }
 
@@ -243,6 +265,7 @@ namespace AsynGyanis::Net
             std::thread                         m_loopThread{};                    ///< 跑循环的线程
             std::atomic<bool>                   m_isFinished{false};               ///< 结果已就位
             std::atomic<bool>                   m_isSuccessful{false};             ///< 握手是否完成
+            std::atomic<bool>                   m_isHeld{false};                   ///< 结果交出后仍把这条连接挂着（占名额用），由 releaseHold 结束
             std::string                         m_negotiatedApplicationProtocol{}; ///< 协商到的 ALPN
             std::chrono::milliseconds           m_elapsed{0};                      ///< 整次尝试耗时
         };
@@ -306,6 +329,21 @@ namespace AsynGyanis::Net
             ConnectAttempt attempt{makeConfiguration(hostName, trustAnchors, std::chrono::milliseconds{4000}), Core::InetAddress::resolve("127.0.0.1", port).value()};
             EXPECT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这次握手连结果都没交回来";
             return attempt.isSuccessful();
+        }
+
+        /**
+         * @brief 握一次手并把它挂着，交回持有者——按来源限额的名额要靠活连接占住
+         * @details 返回的是持有者而不是布尔：调用方要的是「这条连接在结果交出之后仍然活着」这段时期，
+         *          用完自己 releaseHold()。握手成没成由调用方按服务端在线数判，那才是名额是否真被占住的读数
+         * @param port 服务端端口
+         * @return std::unique_ptr<ConnectAttempt> 挂着的握手持有者
+         */
+        [[nodiscard]] std::unique_ptr<ConnectAttempt> holdHandshakeOpen(const std::uint16_t port)
+        {
+            auto attempt = std::make_unique<ConnectAttempt>(makeConfiguration("127.0.0.1", kIpCertificatePath, std::chrono::milliseconds{4000}),
+                                                            Core::InetAddress::resolve("127.0.0.1", port).value(), true);
+            static_cast<void>(attempt->awaitFinished(kWaitTimeout));
+            return attempt;
         }
 
         QuicClientConnection::Configuration makeConfiguration(const std::string &hostName, const std::filesystem::path &certificateAuthorityFile,
@@ -447,10 +485,14 @@ namespace AsynGyanis::Net
         RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [&limiter](QuicServer::Configuration &configuration) { configuration.perIpConnectionLimiter = limiter; }};
         ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
 
-        // 先把手上的两个名额占满：两条完成握手的连接都从 127.0.0.1 来，同一份单来源账
-        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "第一条基线握手没成";
-        ASSERT_TRUE(handshakeSucceeded(server.listeningPort(), "127.0.0.1", kIpCertificatePath)) << "第二条基线握手没成";
-        ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() >= 2U; }, kWaitTimeout)) << "两条完成的握手没让服务端记上在线连接";
+        // 先把手上的两个名额占满：两条完成握手的连接都从 127.0.0.1 来，同一份单来源账。
+        // 这两条要一直挂着到发完被拒的报文为止：结果一交出就把客户端关掉的话，服务端那两条随之被收干净，
+        // 「名额已满」就变成调度运气——本机空载、或五条报文挤在同一次派发里时恰好还满，满载与 CI 并行时
+        // 就整批走到空名额上（一条告警都不留），实测 Windows 与本机各中过一次
+        std::vector<std::unique_ptr<ConnectAttempt>> heldHandshakes;
+        heldHandshakes.push_back(holdHandshakeOpen(server.listeningPort()));
+        heldHandshakes.push_back(holdHandshakeOpen(server.listeningPort()));
+        ASSERT_TRUE(waitForCondition([&] { return server.server().connectionCount() >= 2U; }, kWaitTimeout)) << "两条挂着的握手没让服务端记上在线连接：名额没被真占住";
 
         // 名额已满：新 Initial 一律被单来源闸拒掉（附录 A.2 的整包就够——走到这层不需要能解开的握手）
         const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
@@ -467,6 +509,11 @@ namespace AsynGyanis::Net
                 << "被拒的 Initial 一条告警都没留：闸门把这条信号整个吞了";
         std::this_thread::sleep_for(std::chrono::milliseconds{200});
         EXPECT_EQ(logCapture.countContaining("的并发连接已达上限"), 1U) << "一批同类拒绝写出了多条告警：这个调用点没接闸门";
+        // 名额用完就交还：让这两条在自己的循环线程上关掉，而不是留到持有者析构时由测试线程动手
+        for (const auto &held: heldHandshakes)
+        {
+            held->releaseHold();
+        }
     }
 
     /**
