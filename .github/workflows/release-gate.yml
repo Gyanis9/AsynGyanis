@@ -30,3 +30,8 @@ jobs:
           # 读成「三处一致」。fetch 失败让这一步本身失败，别让它降级成一次静默跳过
           git fetch --tags --force --quiet
           python3 scripts/check-release-version.py
+
+      # 公开接口面的 diff：安装出去的每一份公开头里的声明都要在基线登记过。
+      # 同样不建不链——「发布之后才发现这次把 API 改破了」是最贵的一类事故，而它的判据只读源码
+      - name: 校验公开接口面基线（声明级 diff，与 MAJOR 联动）
+        run: python3 scripts/check-api-baseline.py

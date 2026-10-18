@@ -600,6 +600,13 @@ jobs:
           # 取不到 git、扫描清单为空、文件读不到都退 2——「什么都没查」不许被读成通过
           python3 scripts/check-ledger-dates.py
 
+      - name: 公开接口面基线（声明级 diff，与 MAJOR 联动）
+        run: |
+          # 同一道判据在发布门禁也跑一次（那条任何改动都跑、只在 main 上），这里挂着是为了
+          # 让 develop 与 PR 当天就知道「这次改破了公开面」，而不是等合进 main 才发现。
+          # 判据只读源码与 CMake 的安装规则，不建不链
+          python3 scripts/check-api-baseline.py
+
   clang-tidy:
     name: 静态检查：clang-tidy
     runs-on: ubuntu-latest
