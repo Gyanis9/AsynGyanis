@@ -193,9 +193,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 认 zlib 流的头（RFC 1950）：`Content-Encoding: deflate` 的规范形状
-     * @details 建流用 windowBits=15+16 就是为了让 gzip 与 zlib 两种容器都能解——线上确实有
-     *          标 deflate 发 zlib、标 gzip 发 zlib 的对端。字面量是 `zlib.compress(b'hello
-     * decompressed world')` 的产物。
+     * @details 建流用 windowBits=15+16 就是为了让 gzip 与 zlib 两种容器都能解——线上确实有标 deflate 发
+     *          zlib、标 gzip 发 zlib 的对端。字面量是 `zlib.compress(b'hello decompressed world')` 的产物。
      */
     TEST(GzipInflate, AcceptsZlibStreamHeaderToo)
     {

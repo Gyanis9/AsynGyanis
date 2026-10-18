@@ -3718,14 +3718,11 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 真机上钉住乐观锁的「两个会话同时改同一行」：后写的拿到冲突，先写的改动没被抹掉
-     * @details 进程内替身穿不出真服务端的 MVCC 语义（SQLite
-     * 那条用的是文件库，MySQL 这条走的是
-     *          真正的两条会话连接）。两个会话各自读出行（版本都是 0），会话一先写成功，会话二拿
-     *          过期版本再写——必须抛
-     * OptimisticLockException，且会话一写进去的值原样还在。
-     * @note 与 InsertConflict 那三档正交：那一档管 INSERT 撞唯一键，本档管 UPDATE 条件匹配不上；
-     *
-     * 这条用例里没有任何唯一键冲突，唯一的失败来源就是版本条件
+     * @details 进程内替身穿不出真服务端的 MVCC 语义（SQLite 那条用的是文件库，MySQL 这条走的是真正的两条
+     *          会话连接）。两个会话各自读出行（版本都是 0），会话一先写成功，会话二拿过期版本再写——必须抛
+     *          OptimisticLockException，且会话一写进去的值原样还在。
+     * @note 与 InsertConflict 那三档正交：那一档管 INSERT 撞唯一键，本档管 UPDATE 条件匹配不上；这条用例里
+     *          没有任何唯一键冲突，唯一的失败来源就是版本条件
      */
     TEST_F(MySqlIntegrationTest, OptimisticLockRejectsTheStaleWriteFromASecondSession)
     {

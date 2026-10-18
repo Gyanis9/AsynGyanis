@@ -749,17 +749,13 @@ namespace AsynGyanis::Net
         /**
          * @brief 按登记的策略判一次隧道握手；被拒时把错误应答发在这条流上
          *
-         * @details 判定本体住在
-         * `evaluateWebSocketUpgrade`（三条通道共用一份），本函数负责「按 h3 的方式
-         *          落地」：谈成的子协议直接写成本响应里的一个字段，403/400 走
-         * `rejectWebSocketTunnelResponse`
+         * @details 判定本体住在 `evaluateWebSocketUpgrade`（三条通道共用一份），本函数负责「按 h3 的方式落地」：
+         *          谈成的子协议直接写成本响应里的一个字段，403/400 走 `rejectWebSocketTunnelResponse`
          *          那一条共用出口。不挂起：h3 的应答是排进待发字节，不走协程。
          * @param streamId 流号
-         * @param request
-         * 已映射好的请求（只在本函数内读，不带到挂起之后）
+         * @param request 已映射好的请求（只在本函数内读，不带到挂起之后）
          * @param response 待复用的响应对象；拒绝路径会先 reset 再填错误应答
-         * @return true
-         * 本次升级已被策略拒掉且应答已发出，调用方别再建隧道
+         * @return true 本次升级已被策略拒掉且应答已发出，调用方别再建隧道
          * @return false 可以升级；谈成的子协议（若有）已写进本响应
          */
         [[nodiscard]] bool rejectWebSocketUpgradeByPolicy(std::int64_t streamId, HttpRequest &request, HttpResponse &response);
@@ -767,13 +763,11 @@ namespace AsynGyanis::Net
         /**
          * @brief 把一次隧道握手的拒绝落成这条流上的错误应答（握手不合法与策略拒绝共用这一条出口）
          * @param streamId 流号
-         * @param response
-         * 待复用的响应对象；本函数先 reset 再按给定状态码与正文填错误应答
+         * @param response 待复用的响应对象；本函数先 reset 再按给定状态码与正文填错误应答
          * @param status 要回的状态码（400 握手不合法或谈不成子协议、403 来源不可接受）
-         * @param
-         * body 错误正文，与日志里的原因同源
+         * @param body 错误正文，与日志里的原因同源
          * @param isVersionHintNeeded 是否补一条 Sec-WebSocket-Version 指明本端支持的版本（RFC 6455 §4.2.2
-         * 只对该那一类失败派了这条义务）
+         *          只对该那一类失败派了这条义务）
          */
         void rejectWebSocketTunnelResponse(std::int64_t streamId, HttpResponse &response, int status, const std::string &body, bool isVersionHintNeeded);
 

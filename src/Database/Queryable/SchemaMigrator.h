@@ -1830,11 +1830,8 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 列表里的名字必须两两不同且非空
-         * @details
-         * 重名会让记账退化成一条记录对应两条迁移，回退时撤错结构；空名则让记账的主键
-
-         * *
-         * 变成一个谁都读不懂的值。两者都是调用方把列表写错了（编程错误），走 LogicException
+         * @details 重名会让记账退化成一条记录对应两条迁移，回退时撤错结构；空名则让记账的主键变成一个
+         *          谁都读不懂的值。两者都是调用方把列表写错了（编程错误），走 LogicException
          * @param steps 迁移列表
          *
          * @throws Base::LogicException 出现空名或重名
@@ -1857,15 +1854,9 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 已应用的迁移必须是本次列表的前缀
-         * @details
-         * 前缀之外还有记账（列表漏了一条、顺序被改过、或者换了另一份列表）时继续应用，
-
-         * *
-         * 就是拿一个与落库历史不一致的顺序去改结构；宁可当场拒掉，让人先把两边的列表对齐
-         * @param appliedNames
-         * 迁移表里的名字（顺序未定义，这里按集合语义用）
-
-         * *
+         * @details 前缀之外还有记账（列表漏了一条、顺序被改过、或者换了另一份列表）时继续应用，就是拿一个
+         *          与落库历史不一致的顺序去改结构；宁可当场拒掉，让人先把两边的列表对齐
+         * @param appliedNames 迁移表里的名字（顺序未定义，这里按集合语义用）
          * @param steps 本次的列表
          * @param errorText 失败原因出参
          * @return true 一致；false 已写入原因

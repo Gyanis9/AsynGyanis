@@ -2467,17 +2467,13 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 启用乐观锁时，UPDATE 命中 0 行就是并发冲突，当场抛
-         * @details 「0 行」在关掉乐观锁时含义含糊（SQLite 把「写回原值」也算命中，
-         *
-         * MySQL 只算真变了的行，见 update() 的 @warning），但在启用版本列之后它是确定的：
-         *          WHERE 里带着「版本 = 手里的值」，0
-         * 行只可能是「这一行被别人改过（版本已经不是这个数）
-         *          或被删掉了」。因此同步与异步两条路径共用这一份判据，口径不会各说各话。
-         * @param
-         * conflictReason 语句生成阶段留下的冲突文案；未启用乐观锁时为空串（此时 0 行照旧不抛）
+         * @details 「0 行」在关掉乐观锁时含义含糊（SQLite 把「写回原值」也算命中，MySQL 只算真变了的行，
+         *          见 update() 的 @warning），但在启用版本列之后它是确定的：WHERE 里带着「版本 = 手里的值」，
+         *          0 行只可能是「这一行被别人改过（版本已经不是这个数）或被删掉了」。因此同步与异步两条
+         *          路径共用这一份判据，口径不会各说各话。
+         * @param conflictReason 语句生成阶段留下的冲突文案；未启用乐观锁时为空串（此时 0 行照旧不抛）
          * @param affectedRows 驱动口径的受影响行数
-         * @throws
-         * OptimisticLockException conflictReason 非空且受影响行数为 0 时
+         * @throws OptimisticLockException conflictReason 非空且受影响行数为 0 时
          */
         static void requireNoOptimisticLockConflict(const std::string &conflictReason, const std::int64_t affectedRows)
         {
