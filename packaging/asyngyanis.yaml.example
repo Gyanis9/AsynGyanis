@@ -80,7 +80,7 @@ server:
     # session_tickets: true
     # 对端证书指纹名单：每项 64 位小写十六进制（`openssl x509 -noout -fingerprint -sha256` 取得），
     # 不合规的取值在启动时被拒并点名那一项。名单是「链验通之上再点名」，不替代链校验，也只在
-    # require_client_certificates 打开时才有对象可查。
+    # require_client_certificates 打开时才有对象可查——两处不配套时读配置当场拒（与 mTLS 没给 CA 同口径）。
     # allowed_peer_sha256_fingerprints:
     #   - 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 

@@ -254,6 +254,9 @@ namespace AsynGyanis::Net
                 {Base::ConfigObject{{"session_tickets", text("off")}}, "server.tls.session_tickets"},
                 {Base::ConfigObject{{"require_client_certificates", boolean(true)}}, "server.tls.require_client_certificates"},
                 {Base::ConfigObject{{"revocation_covers_whole_chain", boolean(true)}}, "server.tls.revocation_covers_whole_chain"},
+                // 名单没有前提：不要求客户端证书时服务端不会向对端要证书，名单一次也不会被查
+                {Base::ConfigObject{{"allowed_peer_sha256_fingerprints", Base::ConfigValue(Base::ConfigArray{Base::ConfigValue("00aa")})}},
+                 "server.tls.allowed_peer_sha256_fingerprints"},
                 {Base::ConfigObject{{"not_a_tls_key", integer(1)}}, "server.tls.not_a_tls_key"},
         };
 

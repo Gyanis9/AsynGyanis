@@ -498,6 +498,14 @@ namespace AsynGyanis::Net
                 throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".tls.revocation_covers_whole_chain",
                                                       "配了整链吊销检查却没给 revocation_list_file：没有任何列表可查，这一项不会被任何人使用。要么给出 CRL 文件，要么设回 false");
             }
+            // 名单是「链验通之上再点名」：不要求客户端证书时服务端根本不会向对端要证书，这份名单一次也
+            // 不会被查到。`TlsContext` 对「没开校验就设名单」是直接拒，配置这一层同一条判据提前说
+            if (!configuration.requireClientCertificates && !configuration.tlsPolicy.allowedPeerSha256Fingerprints.empty())
+            {
+                throw Base::ConfigValidationException(std::string(kHttpServerConfigSection) + ".tls.allowed_peer_sha256_fingerprints",
+                                                      "给了对端指纹名单却没开 require_client_certificates：服务端不会向对端要证书，名单一次也不会被查。"
+                                                      "要么两处都开，要么删掉 allowed_peer_sha256_fingerprints");
+            }
         }
     } // namespace
 
