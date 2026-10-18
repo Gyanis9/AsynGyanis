@@ -155,8 +155,8 @@ namespace AsynGyanis::Net
         m_metricHandles = {
                 Core::ProcessMetricsRegistry::registerMetric(
                         "asyn_acme_certificate_expiry_seconds",
-                        "磁盘上那张证书的到期时刻（Unix 秒，进程内多个管理器取最早的那张读得出来的）；0 表示每一条路径上都没有读得出到期时刻的证书",
-                        Core::ProcessMetricKind::Gauge, Core::ProcessMetricMerge::MinNonZero,
+                        "磁盘上那张证书的到期时刻（Unix 秒，进程内多个管理器取最早的那张读得出来的）；0 表示每一条路径上都没有读得出到期时刻的证书", Core::ProcessMetricKind::Gauge,
+                        Core::ProcessMetricMerge::MinNonZero,
                         [this] { return static_cast<std::uint64_t>(std::max<long long>(0, m_expiryUnixSeconds.load(std::memory_order_relaxed))); }),
                 Core::ProcessMetricsRegistry::registerMetric("asyn_acme_issuances_total", "成功签发或续期并原子落盘的轮次数（进程累计）", Core::ProcessMetricKind::Counter,
                                                              Core::ProcessMetricMerge::Sum,
