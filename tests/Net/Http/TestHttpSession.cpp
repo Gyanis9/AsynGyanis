@@ -1037,7 +1037,9 @@ namespace AsynGyanis::Net
 
         // 声明顺序有讲究：执行器与那批 Task 都必须在 fixture 之前析构——完成动作是投回
         // fixture.loop() 的，循环还活着时拆执行器才安全（见 AsyncExecutor 的 @warning）
-        Core::AsyncExecutor          executor(1);
+        Core::AsyncExecutor executor(1);
+        // 基线：收尾等的是「本次这一批」跑完，不是从零开始的绝对数
+        const std::size_t            completedBefore = executor.completedTaskCount();
         std::atomic<bool>            isGateOpen{false};
         std::atomic<bool>            isGateKeeperRunning{false};
         std::vector<Core::Task<int>> heldTasks;
@@ -1088,20 +1090,19 @@ namespace AsynGyanis::Net
         EXPECT_EQ(logCapture.countContaining("因执行器排队已满而被拒（过载）"), 1U) << "过载没有在自己的日志里点名原因";
         EXPECT_EQ(logCapture.countContaining("已整体重置响应并按 500 收口"), 0U) << "过载被记成了业务缺陷那一本账";
 
-        // 收尾：放行门闩并等这批积压真的做完（帧的恢复投回还在跑的循环），再让它们出作用域
+        // 收尾：放行门闩并等这批积压真的做完，再让它们出作用域。判据只用两个原子计数，
+        // 刻意不 poll Task::isReady()——那读的是协程帧，而帧只能由它自己的循环线程碰：
+        // CI 的 ThreadSanitizer 报的就是这个形状（测试线程在 poll done()，循环线程同时在写同一份帧）
         isGateOpen.store(true, std::memory_order_release);
-        const auto allTasksReady = [&heldTasks, &gateKeeper]
+        const std::size_t expectedCompleted = completedBefore + 1U + Core::AsyncExecutor::kMaximumPendingTasksPerWorker;
+        const auto        drainFinished     = [&executor, &fixture, expectedCompleted]
         {
-            for (const Core::Task<int> &task: heldTasks)
-            {
-                if (!task.isReady())
-                {
-                    return false;
-                }
-            }
-            return gateKeeper.isReady();
+            // 完成计数对齐只说明「恢复动作已投回循环」，还要等循环把那批投掷消化完：
+            // 否则 heldTasks 出作用域时，队列里还有一条句柄指着即将释放的帧
+            return executor.completedTaskCount() >= expectedCompleted && fixture.loop().scheduler().remotePendingCount() == 0;
         };
-        ASSERT_TRUE(waitForCondition(allTasksReady, kWaitTimeout)) << "放行后积压任务没有排空：此刻拆执行器会把待恢复的句柄留在已停的循环上";
+        ASSERT_TRUE(waitForCondition(drainFinished, kWaitTimeout)) << "放行后积压没有排空：完成计数 " << executor.completedTaskCount() << " / 期望 " << expectedCompleted
+                                                                   << "，循环在途投掷 " << fixture.loop().scheduler().remotePendingCount();
 
         EXPECT_TRUE(fixture.closePeerAndAwaitFinished());
     }
