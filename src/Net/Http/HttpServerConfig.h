@@ -103,7 +103,7 @@ namespace AsynGyanis::Net
          * @details 默认开是因为「装出去的服务器一条访问日志都不产」比多一行日志的代价更难查：这条不对称
          *          从第一眼就没法看出来（服务答得好好的，只是什么都没留下），而排障、按来源统计与
          *          「这条请求到底进没进来」全靠这一行。不要就在配置里显式写 `access_log: false`
-         * @note 写进**根日志器**（Info 级），因此跟着 `logging.loggers.root.sinks` 与它的等级走：
+         * @note 写进根日志器（Info 级），因此跟着 `logging.loggers.root.sinks` 与它的等级走：
          *       root 抬到 warn 以上就没有访问日志了。刻意不另起一个命名日志器——命名日志器没配 sink
          *       时不会回落到 root（见 LoggerConfigLoader），默认部署会把这一行静默丢掉
          * @note 三条通道各挂一次，判断只有一处实现（@see applyAccessLogMiddleware）：h1/h2 由装配出口挂，
@@ -114,7 +114,7 @@ namespace AsynGyanis::Net
          * @brief `server.tls` 段解出来的加密策略，直接交给 `HttpsServer` 与 `QuicServer`
          * @details 这一格的由来：`Core::TlsPolicy` 的旋钮早就齐了，而配置里没有任何一段能填到它上，
          *          于是「版本下限／套件／曲线／安全等级／信任库／吊销」只在库层成立——运维不改代码
-         *          就收不住加密策略。这里只做文本到字段的映射，**不新造策略类型**，也不预先校验
+         *          就收不住加密策略。这里只做文本到字段的映射，不新造策略类型，也不预先校验
          *          套件串与曲线名：什么算合法由 OpenSSL 说了算，它拒绝时启动抛出的消息带着那份原文。
          * @note 不写这一段时本成员就是默认构造的 `Core::TlsPolicy{}`，握手行为与加它之前逐字相同
          *       （每个字段的「没给」都有默认档，见 `Core/Tls/TlsPolicy.h`）
