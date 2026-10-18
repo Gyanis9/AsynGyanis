@@ -71,7 +71,7 @@ namespace AsynGyanis::Database
          * @param config 待校验的配置
          * @return PoolConfig 原样交回（便于在成员初始化列表里直接套一层）
          * @throws Base::InvalidArgumentException healthCheckIntervalSeconds 超过 7 天
-         *         （见 kMaximumHealthCheckIntervalSeconds：那条后台线程按毫秒睡觉，那个量换算成毫秒
+         *          （见 kMaximumHealthCheckIntervalSeconds：那条后台线程按毫秒睡觉，那个量换算成毫秒
          *          会溢出成负数，wait_for 对负时长立即返回，线程于是每秒空转一轮）
          * @details 构造函数调它，且调在健康检查线程启动之前：换个时机拒就是「线程已经跑起来了才炸」，
          *          抛出去之后还要等成员析构把那条线程收掉

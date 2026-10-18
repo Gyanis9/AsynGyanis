@@ -57,7 +57,7 @@ namespace AsynGyanis::Database
      *   口令走 PGPASSWORD 或 ~/.pgpass、库名默认取用户名）。传空串与省略在 libpq 里是两种语义：
      *   前者会被当成「值就是空」，服务端会回 "database \"\" does not exist" 一类错误。
      *
-     * 超时策略：基类的 connectTimeout() 单位是毫秒，而 libpq 的 connect_timeout 接受的单位是秒，
+     *          超时策略：基类的 connectTimeout() 单位是毫秒，而 libpq 的 connect_timeout 接受的单位是秒，
      *          因此 connect() 向上取整换算后下发（不足 1 秒按 1 秒，避免 500 毫秒被截成 0——
      *          0 在 libpq 里的含义恰好相反：无限等待）。非正值代表「不超时」，此时直接省略该关键字。
      *          该参数只在建连期间生效，没有运行期修改的公开手段，因此 connect() 之后再调用
@@ -65,37 +65,37 @@ namespace AsynGyanis::Database
      *          queryTimeout() 对应服务端的 statement_timeout（毫秒，两端口径一致不做换算）：
      *          connect() 成功后按当前值下发一次，存续期间改值走 applyQueryTimeoutNow() 当场重下发。
      *
-     * 链路 TLS：ConnectionConfig::tls 的五档直译成 libpq 的 sslmode（disable / prefer / require /
+     *          链路 TLS：ConnectionConfig::tls 的五档直译成 libpq 的 sslmode（disable / prefer / require /
      *          verify-ca / verify-full），CA 与客户端证书分别映射到 sslrootcert / sslcert / sslkey。
      *          档位显式下发（含 Disabled），不依赖客户端库自己的默认档。
      *
-     * 字符集：建连成功后立即 PQsetClientEncoding(conn, "UTF8")，保证中文与错误消息都按 UTF-8
+     *        字符集：建连成功后立即 PQsetClientEncoding(conn, "UTF8")，保证中文与错误消息都按 UTF-8
      *        往返。libpq 默认跟随服务端/操作系统的编码，在把 client_encoding 设为 SQL_ASCII 或
      *        WIN1252 的服务端上会让中文列变乱码，因此这里显式协商；协商失败即判整次连接失败。
      *
-     * 占位符：本驱动直接使用 $1 $2 这种 PostgreSQL 原生写法（PostgresDialect::appendPlaceholder()
+     *        占位符：本驱动直接使用 $1 $2 这种 PostgreSQL 原生写法（PostgresDialect::appendPlaceholder()
      *        生成），由 SQL 文本原样交给 PQexecParams，因此不做任何 "?" → "$n" 的改写；
      *        参数个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错，
      *        本驱动只负责把服务端原文转成中文原因。参数格式一律文本（paramFormats 传空指针），
      *        避免二进制格式下每个类型都要自己编码。
      *
-     * 命令边界：两条 execute 路径都走扩展查询协议（PQexecParams），因此一次只可能执行一条语句——
+     *          命令边界：两条 execute 路径都走扩展查询协议（PQexecParams），因此一次只可能执行一条语句——
      *          简单查询协议（PQexec）会执行文本里的全部语句却只返回最后一条的结果，
      *          扩展协议在解析阶段就整次拒绝多语句。这与 MySQL 侧「握手不开 CLIENT_MULTI_STATEMENTS」
      *          是同一安全姿态：拼接出的第二条语句不执行、整条命令失败。
      *
-     * 结果集：PostgresResult 在构造时把整份 PGresult 读进内存快照（行、列名、影响行数），
+     *        结果集：PostgresResult 在构造时把整份 PGresult 读进内存快照（行、列名、影响行数），
      *        因此结果集不引用连接，可以比连接对象活得更久；代价是大结果集会等额占用内存。
      *        写语句交出的空回执携带语句级影响行数（affectedRowCount()），只读结果集按约定返回 0。
      *        流式结果（executeStreaming）走 libpq 的单行模式：行留在服务端、每次 next() 取一块一行，
      *        客户端内存只装当前行；只读查询的大结果集因此不再等额占内存。
      *
-     * 生命周期：构造（不分配句柄、不做 IO）→ connect() → execute() / 事务 → disconnect() → 析构。
+     *          生命周期：构造（不分配句柄、不做 IO）→ connect() → execute() / 事务 → disconnect() → 析构。
      *          析构自动调用 disconnect()。本对象独占 PGconn 句柄，拷贝或移动后的源对象析构时会
      *          重复 PQfinish，因此一律禁止。句柄本身不是线程安全的：一条连接同一时刻只能由
      *          一个线程使用，需要并发就每线程一条连接。
      *
-     * 错误处理：所有错误原因写入基类的 m_lastError，lastError() 沿用基类实现，本类不做重复覆写；
+     *          错误处理：所有错误原因写入基类的 m_lastError，lastError() 沿用基类实现，本类不做重复覆写；
      *          面向使用者的文本一律中文，并带上 libpq 原文与可用的 SQLSTATE（同时以此填出
      *          驱动原生码，见 ErrorRecord 与 postgresSqlStateNativeCode()）。
      *          链路被服务端单方面断开（PQstatus 变为 CONNECTION_BAD）时，execute() 的失败路径

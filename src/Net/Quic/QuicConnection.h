@@ -21,7 +21,7 @@
  *       等于把反重放的责任推给每一位调用方，而漏判的表现是「写操作被执行两次」这类事后才发现的事故。
  *       要做也应当由业务显式开启并给出幂等凭据（例如一次性 token），落点在 `QuicServer` 的配置面
  *       加一个显式开关、而不是在这里默认打开。
- * 未验证连接与已验证连接共用同一份名额（`QuicServer::Configuration::maximumConnections`），
+ *       未验证连接与已验证连接共用同一份名额（`QuicServer::Configuration::maximumConnections`），
  *       不设「握手未完成单独占额」也是刻意的：握手有超时（PTO 与空闲两把钟都会收掉僵尸位）、
  *       未验证期的字节面另有 3× 放大帽压着（RFC 9000 §8.1），且这与 TCP 侧同一口径（那边连接
  *       同样在 TLS 完成前就占着名额）。要按验证状态归因，看 `QuicServer::handshakingConnectionCount()`
