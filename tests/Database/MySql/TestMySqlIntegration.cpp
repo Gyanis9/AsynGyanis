@@ -3771,14 +3771,11 @@ namespace AsynGyanis::Database
 
     /**
      * @brief 真机上钉住「应用 → 幂等 → 回退 → 再应用」这一整圈（MySQL 侧）
-     * @details 与 SQLite
-     * 那一组同一份判据，换到真服务端：应用把表建出来并记账；第二次调用一条都不应用；
-     *          回退把表撤掉并把记账一起删；再应用把结构建回来。MySQL 的 DDL
-     * 隐式提交，因此
-
-     * *          「一条一笔事务」在这里测不出回滚语义（那一格由 SQLite 侧钉），本用例只覆盖成功的往返。
-     * @note
-     * 迁移表由本用例自己清理：它是库级共享对象，留着会跟着进下一个用例的现场
+     * @details 与 SQLite 那一组同一份判据，换到真服务端：应用把表建出来并记账；第二次调用一条都不
+     *          应用；回退把表撤掉并把记账一起删；再应用把结构建回来。MySQL 的 DDL 隐式提交，因此
+     *          「一条一笔事务」在这里测不出回滚语义（那一格由 SQLite 侧钉），本用例只覆盖成功的往返。
+     *
+     * @note 迁移表由本用例自己清理：它是库级共享对象，留着会跟着进下一个用例的现场
      */
     TEST_F(MySqlIntegrationTest, VersionedMigrationAppliesRollsBackAndReapplies)
     {

@@ -562,37 +562,28 @@ namespace AsynGyanis::Net
         /**
          * @brief 隧道握手的策略闸门：判 Origin 准入与子协议协商，被拒时把错误应答发在这条流上
          *
-         * @details 判定本体住在
-         * `evaluateWebSocketUpgrade`（三条通道共用一份），本函数负责「按 h2 的方式
-         *          落地」：谈成的子协议作为一条应答头追加进
-         * `acceptFields`；403（来源不可接受）与 400
-         *          （谈不成子协议而策略要求拒）都走一次普通响应发送。
+         * @details 判定本体住在 `evaluateWebSocketUpgrade`（三条通道共用一份），本函数负责「按 h2
+         *          的方式落地」：谈成的子协议作为一条应答头追加进 `acceptFields`；403（来源不可接受）与
+         *          400（谈不成子协议而策略要求拒）都走一次普通响应发送。
          * @param streamId 该扩展 CONNECT 所属的流
-
-         * * @param request 已映射好的请求
+         * @param request 已映射好的请求
          * @param response 待复用的响应对象；拒绝路径会先 reset 再填错误应答
-         * @param acceptFields
-         * 输入输出：升级应答的头列表，谈成子协议时由本函数追加那一条回显
+         * @param acceptFields 输入输出：升级应答的头列表，谈成子协议时由本函数追加那一条回显
          * @return std::optional<RequestServeOutcome> 有值＝已被策略拒掉且应答已发出，调用方原样收口
-
          */
         [[nodiscard]] Core::Task<std::optional<RequestServeOutcome>> evaluateWebSocketUpgradeGate(std::uint32_t streamId, HttpRequest &request, HttpResponse &response,
                                                                                                   std::vector<HpackHeaderField> &acceptFields);
 
         /**
          * @brief 把一次「隧道握手不合法」落成这条流上的 400 应答
-         * @details 版本类失败按 RFC 6455 §4.2.2 补一条 Sec-WebSocket-Version
-         * 指明本端支持的版本；状态码
-         *          留 400 而不是 h1 那侧的 426——426 说的是「请改用 Upgrade」，而 h2 里没有 Upgrade 这套
-         *          机制（切换靠
-         * `:protocol=websocket`），对端没有可改的东西。
+         * @details 版本类失败按 RFC 6455 §4.2.2 补一条 Sec-WebSocket-Version 指明本端支持的版本；状态码
+         *          留 400 而不是 h1 那侧的 426——426 说的是「请改用 Upgrade」，而 h2 里没有 Upgrade
+         *          这套机制（切换靠 `:protocol=websocket`），对端没有可改的东西。
          * @param streamId 该扩展 CONNECT 所属的流
          * @param request 已映射好的请求（日志里带 request-id 与路径）
-
-         * * @param response 待复用的响应对象；本函数先 reset 再填错误应答
+         * @param response 待复用的响应对象；本函数先 reset 再填错误应答
          * @param rejection 握手失败的分类，决定是否补那条版本头部
-         * @param reason
-         * 中文拒绝原因，同时进正文与日志
+         * @param reason 中文拒绝原因，同时进正文与日志
          * @return RequestServeOutcome 应答发送的结局，调用方原样 co_return
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> rejectWebSocketTunnelHandshake(std::uint32_t streamId, HttpRequest &request, HttpResponse &response,
