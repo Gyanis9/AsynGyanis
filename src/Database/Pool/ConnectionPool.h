@@ -44,6 +44,7 @@ namespace AsynGyanis::Core
 
 namespace AsynGyanis::Database
 {
+    class Transaction; ///< withTransaction 的参数类型；它的定义在 Pool/Transaction.h（那头包含本头）
 
     /**
      * @brief 高性能线程安全连接池
@@ -110,6 +111,26 @@ namespace AsynGyanis::Database
          *         超时、创建失败或等待名额已满时返回空
          */
         PooledConnection acquire();
+
+        /**
+         * @brief 在一笔事务里跑完回调，正常返回即提交，抛出即回滚（transaction-per-request 的作用域助手）
+         *
+         * @details 把「开事务 → 跑 → 提交 / 回滚」收成一处：回调里的异常照常往外传，
+         *          事务由 RAII 对象回滚；回调正常返回而提交失败时抛 `QueryExecutionException`，
+         *          因为「业务跑完了但没落库」绝不能被当成成功。
+         *
+         * @tparam Callback 可调用体，签名是 `回调(Transaction &)`，返回值原样交给调用方
+         * @param callback 业务本体，参数是这一笔事务（语句经它一律落在同一条连接上）
+         * @return 回调的返回值（回调返回 void 时本方法也返回 void）
+         * @throws ConnectionUnavailableException 取不到连接或事务没能开启（由 Transaction 的构造抛出）
+         * @throws QueryExecutionException 提交失败
+         * @note 定义在 `Database/Pool/Transaction.h` 里（那个头包含本头，反向包含会成环）：
+         *       调用点必须包含 `Transaction.h`，只带本头调用会是不完整实例化
+         * @note 回调里不得再从同一个池借第二条连接做写：池上限为 1 时那是死等，上限更大时
+         *       那条连接不在这笔事务里（本仓为迁移锁踩过同一条）
+         */
+        template<typename Callback>
+        auto withTransaction(Callback &&callback);
 
         /**
          * @brief 协程异步获取连接

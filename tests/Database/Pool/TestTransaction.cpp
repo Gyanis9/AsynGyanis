@@ -1355,3 +1355,59 @@ TEST_F(TransactionTest, ReadOnlyAccessModeIsRejectedOnSqlite)
     ASSERT_TRUE(connection) << "拒绝只读形态时把一条连接漏在池外";
     EXPECT_EQ(countCommittedRows(), 0);
 }
+
+/**
+ * @brief 验证 withTransaction 在回调正常返回时提交，并把回调的返回值原样交回
+ * @note 证伪：摘掉 withTransaction 里那次提交，这条红在「旁观连接读不到那一行」——
+ *       事务对象出作用域回滚，那一行根本不存在。
+ */
+TEST_F(TransactionTest, WithTransactionCommitsWhenCallbackReturns)
+{
+    const std::int64_t carriedId = m_pool->withTransaction(
+            [](Transaction &transaction) -> std::int64_t
+            {
+                Queryable<LedgerRow> query(transaction);
+                static_cast<void>(query.insert(LedgerRow{.id = 1, .name = "作用域助手", .amount = 1.0, .note = std::nullopt}));
+                return 41;
+            });
+
+    EXPECT_EQ(carriedId, 41) << "回调的返回值没原样交回调用方";
+    EXPECT_TRUE(findCommittedRow(1).has_value()) << "回调正常返回却没提交";
+}
+
+/// @brief 验证返回 void 的回调走同一条通路：提交照做，助手本身不返回东西
+TEST_F(TransactionTest, WithTransactionAcceptsVoidCallbackAndCommits)
+{
+    m_pool->withTransaction(
+            [](Transaction &transaction)
+            {
+                Queryable<LedgerRow> query(transaction);
+                static_cast<void>(query.insert(LedgerRow{.id = 2, .name = "无返回值", .amount = 2.0, .note = std::nullopt}));
+            });
+
+    EXPECT_TRUE(findCommittedRow(2).has_value()) << "void 回调那条分支没走到提交";
+}
+
+/**
+ * @brief 验证回调抛出时事务被回滚、异常原样向外传，连接回到池里
+ * @details 「异常照常往外传」是这条助手的承诺之一：把它做成返回 false 就等于让调用方
+ *          漏检一个失败分支。回滚靠的是事务对象析构那条既定契约，这里不另加 catch。
+ * @note 证伪：把提交改成「不管回调有没有抛出都要提交」，这条红在「表里多出一行」。
+ */
+TEST_F(TransactionTest, WithTransactionRollsBackWhenCallbackThrows)
+{
+    ASSERT_THROW(m_pool->withTransaction(
+                         [](Transaction &transaction) -> int
+                         {
+                             Queryable<LedgerRow> query(transaction);
+                             static_cast<void>(query.insert(LedgerRow{.id = 3, .name = "半途而废", .amount = 3.0, .note = std::nullopt}));
+                             throw std::runtime_error("业务在这个点失败");
+                         }),
+                 std::runtime_error);
+
+    EXPECT_FALSE(findCommittedRow(3).has_value()) << "回调抛异常而那一行仍落库：事务没回滚";
+
+    // 借出与归还都要平：异常路径上那条连接不能留在池外
+    PooledConnection connection = m_pool->acquire();
+    ASSERT_TRUE(connection) << "回滚之后连接没归还池";
+}

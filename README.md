@@ -134,7 +134,7 @@
 - **高性能连接池** — LIFO 复用、惰性创建、双机制清理（空闲回收 + 上限保护）；借出的连接可以
   `PooledConnection::discard()` 主动丢弃（驱动侧报过错、事务半路失败那一类脏会话），名额照旧腾出来
 - **异步执行器** — 数据库阻塞调用挪出事件循环线程，完成后经 `Scheduler::scheduleRemote` 投回指定 `EventLoop`
-- **事务与建表迁移** — `Transaction` RAII（析构未提交自动回滚），同一笔事务内可回退的段由保存点给出；`TransactionAccessMode::ReadOnly` 把这一笔钉成只读（MySQL / PostgreSQL 发 `START TRANSACTION READ ONLY`，其中的写语句由服务端拒；SQLite 没有这个形态，构造当场拒绝并点名引擎，不退化成一笔普通事务）
+- **事务与建表迁移** — `Transaction` RAII（析构未提交自动回滚），同一笔事务内可回退的段由保存点给出；`TransactionAccessMode::ReadOnly` 把这一笔钉成只读（MySQL / PostgreSQL 发 `START TRANSACTION READ ONLY`，其中的写语句由服务端拒；SQLite 没有这个形态，构造当场拒绝并点名引擎，不退化成一笔普通事务）；`pool.withTransaction(回调)` 把「开事务 → 跑 → 提交 / 回滚」收成一处——回调抛出即回滚且异常照常向外传，回调正常返回而提交失败则抛 `QueryExecutionException`，不会把「业务跑完了但没落库」报成成功
   （`savepoint()` / `rollbackToSavepoint()` / `releaseSavepoint()`，两个引擎都不吃嵌套 BEGIN，回退不结束事务），
   整笔事务可设时限（`setTimeLimit()`，到点后语句与提交都被拒，而回滚与析构照常收尾）；`SchemaMigrator` 从表结构生成 DDL
 

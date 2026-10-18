@@ -24,6 +24,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Database/Common/DatabaseConnection.h"
+#include "Database/Common/QueryExecutionException.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
@@ -33,6 +34,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace AsynGyanis::Database
 {
@@ -363,5 +365,36 @@ namespace AsynGyanis::Database
         // 工作线程上执行，因此同一事务上的语句必须串行落在这条连接里。锁由 Queryable 取用。
         mutable std::mutex m_statementMutex; ///< 事务连接的使用权：同一时刻只让一条语句碰这条连接
     };
+
+    template<typename Callback>
+    auto ConnectionPool::withTransaction(Callback &&callback)
+    {
+        // 借连接与开启语句都由 Transaction 的构造负责：开不出来就抛出，本助手不接——
+        // 调用方原本就要面对 pool.acquire() 取不到连接的两种失败形状，这里换一种面目只会增加困惑
+        Transaction transaction(*this);
+
+        // 提交只排在「回调正常返回」之后。回调抛出时异常照常向外传，
+        // 事务由析构回滚——那条承诺见本文件头的析构说明，这里不重复兜 catch
+        auto commitOrThrow = [&transaction]()
+        {
+            if (!transaction.commit())
+            {
+                // 提交失败就是「业务跑完了但没落库」，把它当成功返回是给调用方谎报；
+                // 文本带上事务自己的原因，析构那一步的补救（回滚）照常发生
+                throw QueryExecutionException("连接池：事务提交失败：" + transaction.lastError());
+            }
+        };
+
+        if constexpr (std::is_void_v<decltype(callback(transaction))>)
+        {
+            callback(transaction);
+            commitOrThrow();
+        } else
+        {
+            auto result = callback(transaction);
+            commitOrThrow();
+            return result;
+        }
+    }
 
 } // namespace AsynGyanis::Database
