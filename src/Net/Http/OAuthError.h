@@ -27,15 +27,15 @@ namespace AsynGyanis::Net
      */
     enum class OAuthErrorKind
     {
-        Transport,             ///< 出站通路失败（DNS、TLS、时限、对端收线），一条应答都没拿到：可按退避重试
-        RejectedByServer,      ///< 端点明确回了非 2xx 并带 OAuth 错误说明：重试通常无益，要改凭据、范围或让用户重授
-        MalformedResponse,     ///< 应答形状不对：正文不是 JSON 对象、必填字段缺失/类型不合/为空——最常见的现场是把 tokenUrl 填成了登录页
-        StateMismatch,         ///< 回调的 state 与本次授权请求不一致（RFC 6749 §10.12 要求逐字核对）：按 CSRF 处理，拒绝并记读数
-        AuthorizationDenied,   ///< 用户在同意页点了拒绝（回调带 error=access_denied）：不是故障，把原因交回给用户即可
+        Transport,                ///< 出站通路失败（DNS、TLS、时限、对端收线），一条应答都没拿到：可按退避重试
+        RejectedByServer,         ///< 端点明确回了非 2xx 并带 OAuth 错误说明：重试通常无益，要改凭据、范围或让用户重授
+        MalformedResponse,        ///< 应答形状不对：正文不是 JSON 对象、必填字段缺失/类型不合/为空——最常见的现场是把 tokenUrl 填成了登录页
+        StateMismatch,            ///< 回调的 state 与本次授权请求不一致（RFC 6749 §10.12 要求逐字核对）：按 CSRF 处理，拒绝并记读数
+        AuthorizationDenied,      ///< 用户在同意页点了拒绝（回调带 error=access_denied）：不是故障，把原因交回给用户即可
         MissingAuthorizationCode, ///< 回调里既没有 code 也没有 error：不是一次授权响应的形状，可疑的回跳
-        InvalidLocalState,     ///< 本端状态或用法不自洽，未产生任何线上字节（缺 PKCE verifier、轮询间隔非正、设备码在本地就已过期）
-        DeviceCodeExpired,     ///< 设备码有效期已过而用户仍未完成授权（RFC 8628 §3.5）：要重新发起一次设备授权
-        CryptoFailed,          ///< 随机源或摘要接口算不出（PKCE verifier、state、SHA-256 挑战）：查本进程的 OpenSSL provider 配置
+        InvalidLocalState,        ///< 本端状态或用法不自洽，未产生任何线上字节（缺 PKCE verifier、轮询间隔非正、设备码在本地就已过期）
+        DeviceCodeExpired,        ///< 设备码有效期已过而用户仍未完成授权（RFC 8628 §3.5）：要重新发起一次设备授权
+        CryptoFailed,             ///< 随机源或摘要接口算不出（PKCE verifier、state、SHA-256 挑战）：查本进程的 OpenSSL provider 配置
     };
 
     /**
@@ -46,14 +46,14 @@ namespace AsynGyanis::Net
      */
     struct ASYN_NET_API OAuthError
     {
-        OAuthErrorKind kind;   ///< 失败类别，调用方据此分支
+        OAuthErrorKind kind;    ///< 失败类别，调用方据此分支
         std::string    message; ///< 中文可操作文案，含端点原文与出问题的字段名
     };
 
     /**
      * @brief OAuth 通路的结果形状：成功带 Value，失败侧固定为 OAuthError
      */
-    template <typename Value>
+    template<typename Value>
     using OAuthExpected = std::expected<Value, OAuthError>;
 
     using OAuthStatus = std::expected<void, OAuthError>; ///< 只问成不成的 OAuth 结果
