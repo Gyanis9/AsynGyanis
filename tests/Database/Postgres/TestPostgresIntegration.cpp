@@ -52,6 +52,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/Decimal.h"
 #include "Database/Dialect/PostgresDialect.h"
 #include "Database/Postgres/PostgresConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -143,6 +144,8 @@ namespace AsynGyanis::Database
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Pg_Migrated";
+        /// 十进制金额用例的表名：与其余用例分开，并行执行时互不干扰
+        constexpr std::string_view kDecimalTableName = "Asyn_Pg_Decimal";
 
         /// NUMERIC(20) 专用表：单独一个用例，验证无符号 64 位的承载类型被服务端接受
         constexpr std::string_view kNumericTableName = "Asyn_Pg_Numeric";
@@ -194,6 +197,13 @@ namespace AsynGyanis::Database
          *          因此建表语句会同时用到 BIGINT、TEXT、DOUBLE PRECISION 与 BOOLEAN
          *          （PostgreSQL 是三个引擎里唯一有真布尔类型的，布尔列的文本形态是 't'/'f'）。
          */
+        /// 十进制金额用例的行：表由 SchemaMigrator 按本映射建（PostgreSQL 落不带限定的 NUMERIC）
+        struct IntegrationDecimalRow
+        {
+            std::int64_t                  id;     ///< 主键
+            AsynGyanis::Database::Decimal amount; ///< 金额列：走 Decimal 一档
+        };
+
         struct IntegrationMigratedRow
         {
             std::int64_t               id;      ///< 主键（BIGINT NOT NULL PRIMARY KEY）
@@ -312,6 +322,17 @@ namespace AsynGyanis::Database
     // ========================================================================
     // TableSchema 特化：把结构体注册到各自的表
     // ========================================================================
+
+    template<>
+    struct Queryable::TableSchema<IntegrationDecimalRow>
+    {
+        static constexpr std::string_view kTableName = kDecimalTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationDecimalRow::id, "id"),
+                Column(&IntegrationDecimalRow::amount, "amount"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
 
     template<>
     struct Queryable::TableSchema<IntegrationMigratedRow>
@@ -1093,6 +1114,61 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
         EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
         EXPECT_TRUE(errorText.empty()) << errorText;
+    }
+
+    /**
+     * @brief 钉住 Decimal 成员在真实 PostgreSQL 上逐字符往返：不带限定的 NUMERIC 按写入的标度存
+     *
+     * @details 这一条是判据 1 的 PostgreSQL 那一格。与 MySQL 那格的关键差别在列定义：
+     *          本映射在 PostgreSQL 上给的是不带精度限定的 NUMERIC，服务端按写入时的标度存，
+     *          因此 "0.1000" 读回来还是 "0.1000"（尾零留着），而 MySQL 的 DECIMAL(65,30) 会把小数
+     *          补到 30 位。两格都不写成「同一个断言」，因为两家的引擎契约本来就不同 ——
+     *          把差别抹平正是这条判据要避免的事。
+     * @note 19 位整数的金额超出 double 能逐位还原的范围；"3.000000000000000000000000000001"
+     *          更超出任何 64 位浮点。读回来逐字符相等才是「没经浮点」的可证形式。
+     * @note 最后那一格钉的是数值语义：NUMERIC 上的 ">" 走数值比较，"> 0.2" 命中 3 与 5 两行。
+     * @note 证伪：把驱动的参数文本化改成先折成 double，超出分辨率的两位立刻读不回原样，这条红。
+     */
+    TEST_F(PostgresIntegrationTest, DecimalColumnKeepsEveryDigitAndItsScale)
+    {
+        m_preparedTableNames.emplace_back(kDecimalTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationDecimalRow>(*makePool(1), true, &errorText)) << errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationDecimalRow>(*pool, true, &errorText)) << errorText;
+
+        const std::vector<std::string> writtenTexts{
+                std::string("0.1000"),
+                std::string("1234567890123456789"),
+                std::string("3.000000000000000000000000000001"),
+        };
+        {
+            OrmQuery<IntegrationDecimalRow> insertQuery(*pool);
+            for (std::size_t rowIndex = 0; rowIndex < writtenTexts.size(); ++rowIndex)
+            {
+                const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenTexts[rowIndex]);
+                ASSERT_TRUE(parsed.has_value()) << writtenTexts[rowIndex];
+                ASSERT_EQ(1, insertQuery.insert(IntegrationDecimalRow{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed})) << "写不进去：" << writtenTexts[rowIndex];
+            }
+        }
+
+        {
+            OrmQuery<IntegrationDecimalRow>          query(*pool);
+            const std::vector<IntegrationDecimalRow> rows = query.orderBy(asc("id")).toList();
+            ASSERT_EQ(rows.size(), writtenTexts.size());
+            for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
+            {
+                EXPECT_EQ(rows[rowIndex].amount.text(), writtenTexts[rowIndex]) << "第 " << (rowIndex + 1) << " 行的金额文本被改写过";
+            }
+        }
+
+        {
+            OrmQuery<IntegrationDecimalRow> query(*pool);
+            EXPECT_EQ(2, query.where(Column(&IntegrationDecimalRow::amount, "amount") > std::string("0.2")).count());
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationDecimalRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**

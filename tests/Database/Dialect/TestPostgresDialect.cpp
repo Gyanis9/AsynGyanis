@@ -839,6 +839,10 @@ TEST(PostgresDialectDdl, ColumnTypeNamesCoverAllLogicalTypes)
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Bool), "BOOLEAN");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Text), "TEXT");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Blob), "BYTEA");
+    // 不带限定的 NUMERIC 是「任意精度、按写入标度存」，与 Decimal 的文本承载同构
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "NUMERIC");
+    // 无符号 64 位承接用的 NUMERIC(20) 是另一格，两者不能混为一谈：前者标度随写入，后者固定 20 位
+    EXPECT_NE(dialect.columnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::UInt64));
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

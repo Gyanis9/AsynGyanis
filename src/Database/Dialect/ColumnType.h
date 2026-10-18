@@ -31,7 +31,9 @@ namespace AsynGyanis::Database
         Double, ///< 双精度浮点（C++ 的 float 也走这里：引擎侧没有更窄的小数类型值得单列）
         Bool,   ///< 布尔（两个引擎都没有独立的布尔物理类型，用整数 0/1 表达）
         Text,   ///< 变长文本（C++ 的 std::string）
-        Blob    ///< 二进制大对象（C++ 的 std::vector<std::uint8_t> / std::vector<std::byte>，按原始字节存取，不做字符集解释）
+        Blob,   ///< 二进制大对象（C++ 的 std::vector<std::uint8_t> / std::vector<std::byte>，按原始字节存取，不做字符集解释）
+        Decimal ///< 精确十进制小数（C++ 的 Database::Decimal）：三家的物理类型与保真程度各不相同，
+                ///< 逐家说明见各 SqlDialect::columnTypeName 的实现与头文件
     };
 
 } // namespace AsynGyanis::Database

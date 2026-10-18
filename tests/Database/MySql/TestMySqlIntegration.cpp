@@ -27,6 +27,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/Decimal.h"
 #include "Database/Dialect/MySqlDialect.h"
 #include "Database/MySql/MySqlConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -222,6 +223,8 @@ namespace AsynGyanis::Database
 
         /// 无符号取值域用例的表：与建表迁移用例分开，各用例各持一张物理表（并行执行时互不干扰）
         constexpr std::string_view kUnsignedTableName = "Asyn_Mysql_Unsigned";
+        /// 十进制金额用例的表名：与其余用例分开，并行执行时互不干扰
+        constexpr std::string_view kDecimalTableName = "Asyn_Mysql_Decimal";
 
         /// 版本化迁移用例的表：同一条理由；它还要 DROP 库级的迁移登记表，与建表迁移用例共用一张表时并行会互相删表
         constexpr std::string_view kVersionedTableName = "Asyn_Mysql_Versioned";
@@ -407,6 +410,13 @@ namespace AsynGyanis::Database
             double                     balance;  ///< 余额（DOUBLE NOT NULL）
             bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
             std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /// 十进制金额用例的行：表由 SchemaMigrator 按本映射建（MySQL 落 DECIMAL(65,30)）
+        struct IntegrationDecimalRow
+        {
+            std::int64_t                  id;     ///< 主键
+            AsynGyanis::Database::Decimal amount; ///< 金额列：走 Decimal 一档
         };
 
         /**
@@ -689,6 +699,17 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationUnsignedRow::id, "id"),           Column(&IntegrationUnsignedRow::name, "name"),     Column(&IntegrationUnsignedRow::note, "note"),
                 Column(&IntegrationUnsignedRow::balance, "balance"), Column(&IntegrationUnsignedRow::active, "active"), Column(&IntegrationUnsignedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationDecimalRow>
+    {
+        static constexpr std::string_view kTableName = kDecimalTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationDecimalRow::id, "id"),
+                Column(&IntegrationDecimalRow::amount, "amount"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -2070,6 +2091,68 @@ namespace AsynGyanis::Database
         }
 
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationUnsignedRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief 钉住 Decimal 成员在真实 MySQL 上不经二进制浮点：写入的每一位都存得下、读得回
+     *
+     * @details 表由 SchemaMigrator 按本映射建出来（DECIMAL(65,30)），因此这一条同时钉住
+     *          「迁移侧的新列类型能真建出表」与「值进出都不经 double」。
+     *          判据是逐字符比对，但期望值要按列定义的标度算：DECIMAL(65,30) 把小数补齐到 30 位，
+     *          那是引擎按列定义做的定标，不是本库的换算 —— 所以写入 "0.1" 读回
+     *          "0.1000000000000000000000000000"（30 位小数）。把这条写成「与写入逐字符相同」
+     *          会去钉一件引擎没承诺过的事；真正要钉的是**位与位宽都不丢**：
+     *          19 位整数的金额（超出 double 能逐位还原的范围）读回来必须一位不差。
+     * @note 最后那一格钉的是「这一列是数值列而不是文本列」：DECIMAL 上的 ">" 走数值语义，
+     *          因此 "> 0.2" 命中 3 与 5 两行；若是文本存储（SQLite 那一档取舍），字典序会给出不同计数。
+     * @note 证伪：把驱动的十进制绑定臂降级成 MYSQL_TYPE_DOUBLE，"3.000000000000000000000000000001"
+     *          这类超出 double 分辨率的取值会先被服务端拒或折成 3，用例当场红。
+     */
+    TEST_F(MySqlIntegrationTest, DecimalColumnKeepsEveryDigitAndComparesNumerically)
+    {
+        m_preparedTableName = std::string(kDecimalTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationDecimalRow>(*makePool(1), true, &errorText)) << errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationDecimalRow>(*pool, true, &errorText)) << errorText;
+
+        // 期望值在这里逐条写死（不是算出来的）：DECIMAL(65,30) 把小数补齐到 30 位，
+        // 那是服务端按列定义做的定标，与本库的换算无关
+        const std::vector<std::pair<std::string, std::string>> writtenAndExpected{
+                std::make_pair(std::string("0.1"), std::string("0.100000000000000000000000000000")),
+                std::make_pair(std::string("1234567890123456789"), std::string("1234567890123456789.000000000000000000000000000000")),
+                std::make_pair(std::string("3.000000000000000000000000000001"), std::string("3.000000000000000000000000000001")),
+        };
+
+        {
+            OrmQuery<IntegrationDecimalRow> insertQuery(*pool);
+            for (std::size_t rowIndex = 0; rowIndex < writtenAndExpected.size(); ++rowIndex)
+            {
+                const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenAndExpected[rowIndex].first);
+                ASSERT_TRUE(parsed.has_value()) << writtenAndExpected[rowIndex].first;
+                ASSERT_EQ(1, insertQuery.insert(IntegrationDecimalRow{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed}))
+                        << "写不进去：" << writtenAndExpected[rowIndex].first;
+            }
+        }
+
+        {
+            OrmQuery<IntegrationDecimalRow>          query(*pool);
+            const std::vector<IntegrationDecimalRow> rows = query.orderBy(asc("id")).toList();
+            ASSERT_EQ(rows.size(), writtenAndExpected.size());
+            for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
+            {
+                EXPECT_EQ(rows[rowIndex].amount.text(), writtenAndExpected[rowIndex].second) << "第 " << (rowIndex + 1) << " 行的金额文本被改写过";
+            }
+        }
+
+        // 数值语义那一格：0.1 < 0.2 < 3 < 5，"> 0.2" 应命中两行（文本存储会给出错乱的字典序结果）
+        {
+            OrmQuery<IntegrationDecimalRow> query(*pool);
+            EXPECT_EQ(2, query.where(Column(&IntegrationDecimalRow::amount, "amount") > std::string("0.2")).count());
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationDecimalRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**

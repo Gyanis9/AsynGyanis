@@ -132,6 +132,7 @@ namespace AsynGyanis::Database::Detail
      *          - std::int64_t / double → 十进制文本（见 toDecimalText 的两条说明）；
      *          - std::string → 原样，不转义也不改字节：SQL 结构由 $n 占位符固定，
      *            取值以参数送出，单引号、"--"、分号都只是普通字符（注入面因此消失）。
+     *          - Decimal → 承载文本原样：NUMERIC 列收文本参数由服务端精确解析，中间不经浮点换算。
      *
      * @param value 待送出的统一值
      * @return std::optional<PostgresTextParameter> 可送出的参数
@@ -168,6 +169,13 @@ namespace AsynGyanis::Database::Detail
             // 原样交出字节：内嵌 '\0' 由调用方通过 libpq 的「指针 + 长度」形式保全，
             // 只要长度数组非空，libpq 就按长度取字节而不是找零终止符
             return PostgresTextParameter{.text = *textValue};
+        }
+
+        if (const auto *decimalValue = std::get_if<Decimal>(&value))
+        {
+            // 十进制按承载文本原样交出：NUMERIC 列收文本参数时由服务端精确解析，
+            // 中间不经任何浮点换算（换算会在末位丢精度且不可逆）
+            return PostgresTextParameter{.text = decimalValue->text()};
         }
 
         // 容器的正确用法是展开成多个标量参数（IN 列表由方言展开），这里明确拒绝并交回调用方报错

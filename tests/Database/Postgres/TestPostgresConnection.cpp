@@ -25,6 +25,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/Decimal.h"
 #include "Database/Postgres/PostgresConnection.h"
 
 #include <gtest/gtest.h>
@@ -344,6 +345,32 @@ namespace AsynGyanis::Database
     // ------------------------------------------------------------------------
     // 参数校验发生在任何连接动作之前（真实驱动专属）
     // ------------------------------------------------------------------------
+
+    /**
+     * @brief 钉住十进制参数不被当成容器拒掉（真实驱动专属，不需要服务端）
+     * @details 参数形态的判定发生在任何连接动作之前，因此这一格离线就成立：它钉的是驱动那条
+     *          「一个值 → 一个文本参数」的映射认得 Decimal 这一档。不认的症状是把 Decimal 报成
+     *          「容器参数被拒」，而那与真正的 List/Hash 撞在同一条错误文案上，排查时分不出来。
+     * @note 证伪：删掉 toPostgresTextParameter 里的 Decimal 分支，报错关键词会从「未连接」
+     *       变成「容器」，这条当场红。
+     */
+    TEST(PostgresConnection, DecimalParametersPassFormCheckWithoutServer)
+    {
+        if (!kPostgresDriverCompiled)
+        {
+            GTEST_SKIP() << "当前构建未编译 PostgreSQL 驱动，参数形态判定不存在";
+        }
+
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+        ASSERT_FALSE(connection.isConnected());
+
+        const std::vector<DatabaseValue> decimalParameters{AsynGyanis::Database::Decimal::tryParse("0.1000").value()};
+        EXPECT_EQ(connection.execute("SELECT $1", decimalParameters), nullptr);
+        const std::string reason = connection.lastError();
+        // 停在「未连接」这一条，说明参数形态那一关已经过了
+        EXPECT_NE(reason.find("未连接"), std::string::npos) << reason;
+        EXPECT_EQ(reason.find("容器"), std::string::npos) << "Decimal 被当成容器拒掉了：" << reason;
+    }
 
     TEST(PostgresConnection, ContainerParametersAreRejectedWithoutServerContact)
     {

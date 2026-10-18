@@ -1232,6 +1232,9 @@ TEST(MySqlDialectDdl, ColumnTypeNamesFollowEngineWidths)
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Bool), "TINYINT(1)");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Text), "TEXT");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Blob), "LONGBLOB");
+    // 十进制在本引擎上必须定死精度与标度，取值见头文件；键列沿用同一映射（DECIMAL 本就进得了索引）
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "DECIMAL(65,30)");
+    EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::Decimal));
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

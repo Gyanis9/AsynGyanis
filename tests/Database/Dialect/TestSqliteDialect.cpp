@@ -1640,6 +1640,10 @@ TEST(SqliteDialectDdl, ColumnTypeNamesMapToStorageClasses)
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Bool), "INTEGER");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Text), "TEXT");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Blob), "BLOB");
+    // 十进制落在 TEXT 上（本引擎没有十进制类型，NUMERIC 亲和会把值折成 REAL）；
+    // 类型名写成 DECIMAL/NUMERIC 会被亲和规则判成 NUMERIC，所以必须正好是 TEXT 这一档
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "TEXT");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::Text));
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

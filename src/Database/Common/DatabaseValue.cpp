@@ -34,6 +34,11 @@ namespace AsynGyanis::Database
                     } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                     {
                         return "Bytes";
+                    } else if constexpr (std::is_same_v<ValueType, Decimal>)
+                    {
+                        // 这一支必须显式写出来：末尾的 else 是给哈希用的兜底，新增备选不写就会被
+                        // 它静默吞掉，于是日志与断言把一个十进制数报成 "Hash"
+                        return "Decimal";
                     } else
                     {
                         return "Hash";

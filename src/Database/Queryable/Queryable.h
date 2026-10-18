@@ -2754,6 +2754,11 @@ namespace AsynGyanis::Database::Queryable
                         } else if constexpr (std::is_same_v<ValueType, std::string>)
                         {
                             return concrete;
+                        } else if constexpr (std::is_same_v<ValueType, Decimal>)
+                        {
+                            // 这一支不写就会掉进下面的兜底（它按 .size() 报「N 项集合」，Decimal 没有 size()，
+                            // 编译期就会断）；乐观锁冲突文本里金额要原样是那段十进制文本
+                            return concrete.text();
                         } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                         {
                             return std::format("<{} 字节二进制>", concrete.size());

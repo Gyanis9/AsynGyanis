@@ -63,14 +63,16 @@ namespace AsynGyanis::Database::Queryable
 
         /**
          * @brief 判定单个列类型是否被行映射支持
-         * @details 支持整型、bool、浮点、std::string、二进制载荷（std::vector<std::uint8_t>
-         *          或 std::vector<std::byte>），以及它们的 std::optional 包装（递归判定）。
+         * @details 支持整型、bool、浮点、std::string、精确十进制（Database::Decimal）、
+         *          二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），
+         *          以及它们的 std::optional 包装（递归判定）。
          *          二进制的两种等价拼法由共享 trait 判定，规则只有一份实现。
          * @tparam MemberType 结构体成员类型
          */
         template<typename MemberType>
-        struct IsSupportedColumnType : std::bool_constant<std::is_integral_v<MemberType> || std::is_floating_point_v<MemberType> || std::is_same_v<MemberType, std::string> ||
-                                                          AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
+        struct IsSupportedColumnType
+            : std::bool_constant<std::is_integral_v<MemberType> || std::is_floating_point_v<MemberType> || std::is_same_v<MemberType, std::string> ||
+                                 std::is_same_v<MemberType, AsynGyanis::Database::Decimal> || AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
         {
         };
 
@@ -439,6 +441,30 @@ namespace AsynGyanis::Database::Queryable
                     return *textValue;
                 }
                 throwColumnTypeError(columnName, "std::string", cellValue);
+            } else if constexpr (std::is_same_v<BareType, AsynGyanis::Database::Decimal>)
+            {
+                if (const auto *decimalValue = std::get_if<AsynGyanis::Database::Decimal>(&cellValue))
+                {
+                    return *decimalValue;
+                }
+
+                // 三家引擎的十进制列都按文本交回（MySQL 的 DECIMAL/NEWDECIMAL、PostgreSQL 的 NUMERICOID、
+                // SQLite 的 TEXT 亲和），所以成员声明成 Decimal 时必须也认文本这一档 —— 否则「列是金额、
+                // 成员是 Decimal、驱动给的是文本」这条最常见的水路在写入方向能用、读取方向逐行报错
+                if (const auto *textValue = std::get_if<std::string>(&cellValue))
+                {
+                    if (const auto parsed = AsynGyanis::Database::Decimal::tryParse(*textValue); parsed.has_value())
+                    {
+                        return *parsed;
+                    }
+
+                    // 解析不出来的文本不猜值：PostgreSQL 的 NUMERIC 允许存 'NaN'，那不是一个十进制数，
+                    // 把它折成 0 或原样塞进 Decimal 都是造数。点名是哪一列、原文是什么，交调用方决定
+                    throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的取值 \"" + *textValue +
+                                              "\" 不是十进制文本，无法放进 Decimal。该列可能存了引擎允许而本类型不接受的形态"
+                                              "（PostgreSQL 的 NUMERIC 可以有 'NaN'）；请改用 std::string 成员自行判定");
+                }
+                throwColumnTypeError(columnName, "精确十进制（Decimal 或十进制文本）", cellValue);
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 if (const auto *byteValue = std::get_if<BinaryBytes>(&cellValue))
@@ -455,7 +481,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 不受支持的成员类型已被 allColumnTypesSupported() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
-                static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、"
+                static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、"
                                                         "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                         "以及它们的 std::optional 包装");
                 return MemberType{};
@@ -856,6 +882,11 @@ namespace AsynGyanis::Database::Queryable
             } else if constexpr (std::is_same_v<BareType, std::string>)
             {
                 return DatabaseValue{std::in_place_type<std::string>, value};
+            } else if constexpr (std::is_same_v<BareType, AsynGyanis::Database::Decimal>)
+            {
+                // 十进制必须按 Decimal 这一档交出去：降级成 double 会在末位丢精度且不可逆，
+                // 而金额列要的正是那一位。驱动侧各自的绑定形态见四个驱动的 Decimal 分支
+                return DatabaseValue{std::in_place_type<AsynGyanis::Database::Decimal>, value};
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 // 用 in_place_type 显式指定二进制备选：它必须由「类型」表达出来，
@@ -865,7 +896,7 @@ namespace AsynGyanis::Database::Queryable
             } else
             {
                 static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型，无法转换为绑定参数。"
-                                                        "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                        "仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、二进制载荷"
                                                         "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                         "以及它们的 std::optional 包装");
                 return std::monostate{};

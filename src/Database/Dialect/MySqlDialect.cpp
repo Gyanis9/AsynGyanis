@@ -135,6 +135,11 @@ namespace AsynGyanis::Database
                 return "TEXT";
             case ColumnType::Blob:
                 return "LONGBLOB";
+            case ColumnType::Decimal:
+                // MySQL 的 DECIMAL 必须把精度与标度都定死，没有「不限量」那一档。这里取 (65,30)：
+                // 精度是本引擎的上限，标度 30 够金额用。代价写在头文件——小数位多于 30 位会被服务端
+                // 四舍五入，整数位多于 35 位直接报错，两者都不会静默丢数；要别的宽度由调用方自己写 DDL
+                return "DECIMAL(65,30)";
             default:
                 // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
                 // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，

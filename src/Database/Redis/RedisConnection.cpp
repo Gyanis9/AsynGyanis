@@ -1662,6 +1662,13 @@ namespace AsynGyanis::Database
             return std::format("{}", *real);
         }
 
+        if (const auto *decimal = std::get_if<Decimal>(&value))
+        {
+            // 十进制按承载文本交出：Redis 只有字节安全，服务端不会把一个数变成一个数，
+            // 因此这条路上唯一要保证的是「文本不被中途换算」——原样交出即可
+            return decimal->text();
+        }
+
         // 剩下三档：NULL 与两种复合类型。它们没有「一个参数」的对应物，
         // 猜一个形状（把 List 拼成空格分隔、把 NULL 拼成空串）等于静默改写调用方的意思
         errorText = std::string("Redis 的参数不接受该类型的值（") + databaseValueTypeName(value) +

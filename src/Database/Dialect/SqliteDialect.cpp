@@ -127,6 +127,18 @@ namespace AsynGyanis::Database
                 return "TEXT";
             case ColumnType::Blob:
                 return "BLOB";
+            case ColumnType::Decimal:
+                // SQLite 没有十进制类型，只有五种存储亲和，两条路各丢一样东西，这里选「保真优先」：
+                // 写成 TEXT 亲和（类型名里带 CHAR/TEXT/CLOB 才是 TEXT 亲和，NUMERIC/DECIMAL 都会被
+                // 引擎判成 NUMERIC 亲和）。选 NUMERIC 的代价实测两条：小数尾零被抹掉（"0.1000" 交回
+                // "0.1"），并且值被折成 REAL 存 —— 读回来时驱动看到的是 SQLITE_FLOAT 而不是文本，
+                // 要把它还原成 Decimal 就得在本库里拿 double 自己印一遍文本，那是造数，不是取数。
+                // 选 TEXT 的代价一条，且必须让用的人知道：这列上的比较与排序按字典序进行
+                // （"9" 大于 "10"），而 SUM()/AVG() 这类聚合会自己把文本折成数值，不受影响。
+                // 需要数值序的场合请存整数分（Int64 列）或在查询里显式 CAST。
+                // 类型名写成 TEXT 而不是保留 DECIMAL：保留后者会静默落到 NUMERIC 亲和，
+                // 于是「声明看着是十进制、存进去是二进制浮点」，正是本类型要避免的事
+                return "TEXT";
             default:
                 // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
                 // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，

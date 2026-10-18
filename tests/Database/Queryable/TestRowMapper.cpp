@@ -23,6 +23,7 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseException.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/Decimal.h"
 #include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/RowMapper.h"
 
@@ -705,6 +706,102 @@ namespace AsynGyanis::Database::Queryable
             EXPECT_NE(std::string{failure.what()}.find("balance"), std::string::npos) << "消息要点名是哪一列：" << failure.what();
             EXPECT_NE(std::string{failure.what()}.find("正无穷"), std::string::npos) << failure.what();
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // 精确十进制成员（Decimal）
+    // ------------------------------------------------------------------------
+
+    /** @brief 钉住 Decimal 成员被认作受支持的列类型（可空的同样认） */
+    TEST(RowMapperDecimal, SupportsDecimalAndOptionalDecimal)
+    {
+        EXPECT_TRUE(Detail::IsSupportedColumnType<AsynGyanis::Database::Decimal>::value);
+        EXPECT_TRUE((Detail::IsSupportedColumnType<std::optional<AsynGyanis::Database::Decimal>>::value));
+    }
+
+    /**
+     * @brief 钉住写入方向走 Decimal 这一档，而不是被降级成 double 或文本
+     * @details 这一格是「不经二进制浮点」的编译期承诺：成员类型到统一值的映射一旦降级成 double，
+     *          末位精度就不可逆地丢了，而驱动那侧看不出任何异常。
+     */
+    TEST(RowMapperDecimal, WritesMemberAsDecimalAlternativeNotDouble)
+    {
+        const AsynGyanis::Database::Decimal amount    = AsynGyanis::Database::Decimal::tryParse("0.1000").value();
+        const DatabaseValue                 converted = Detail::toDatabaseValue(amount, "amount");
+
+        EXPECT_TRUE(std::holds_alternative<AsynGyanis::Database::Decimal>(converted));
+        EXPECT_FALSE(std::holds_alternative<double>(converted));
+        EXPECT_EQ(std::get<AsynGyanis::Database::Decimal>(converted).text(), "0.1000");
+    }
+
+    /** @brief 钉住 Decimal 单元格直接映射进成员，文本一字不改 */
+    TEST(RowMapperDecimal, ReadsDecimalCellIntoMember)
+    {
+        const DatabaseValue cell{AsynGyanis::Database::Decimal::tryParse("1234567890123456789").value()};
+
+        const AsynGyanis::Database::Decimal mapped = Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(cell, kColumnName);
+        EXPECT_EQ(mapped.text(), "1234567890123456789");
+    }
+
+    /**
+     * @brief 钉住三家引擎的十进制列都按文本交回时也能读进 Decimal 成员
+     * @details MySQL 的 DECIMAL/NEWDECIMAL、PostgreSQL 的 NUMERICOID、SQLite 的 TEXT 亲和都是文本形态。
+     *          少了这一支，「列是金额、成员是 Decimal、驱动给文本」这条最常见的水路只有写入方向能用。
+     * @note 尾零与前导零都不许被动过：逐字符相等才是这一格的判据。
+     */
+    TEST(RowMapperDecimal, ReadsDecimalFromEngineTextVerbatim)
+    {
+        for (const std::string_view expected: {"0.1000", "1234567890123456789", "-0.000000000000000000001", "007.50"})
+        {
+            const AsynGyanis::Database::Decimal mapped = Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(textValue(std::string(expected)), kColumnName);
+            EXPECT_EQ(mapped.text(), expected);
+        }
+    }
+
+    /**
+     * @brief 钉住「列被引擎折成浮点」时不替它编一段文本回来
+     * @details SQLite 的 NUMERIC 亲和会把交出去的十进制文本折成 REAL（本映射因此落在 TEXT 亲和上）。
+     *          真撞上这种列时按 double 现印文本就是把「引擎存的是什么」换成「我们猜的是什么」——造数。
+     *          报错点名是哪一列，让操作方去改列型或改成员型，而不是静默给出一个近似值。
+     */
+    TEST(RowMapperDecimal, RejectsDoubleCellInsteadOfRetextualisingIt)
+    {
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(realValue(0.1), kColumnName)), std::runtime_error);
+    }
+
+    /** @brief 钉住解析不出来的文本如实报错，并把原文抄进消息（PostgreSQL 的 NUMERIC 允许 NaN） */
+    TEST(RowMapperDecimal, RejectsNonDecimalTextAndQuotesIt)
+    {
+        try
+        {
+            static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(textValue("NaN"), "amount"));
+            FAIL() << "NaN 不是十进制文本，本该被拒";
+        } catch (const RowMappingException &failure)
+        {
+            const std::string reason{failure.what()};
+            EXPECT_NE(reason.find("amount"), std::string::npos) << "消息要点名是哪一列：" << reason;
+            EXPECT_NE(reason.find("NaN"), std::string::npos) << "消息要抄出原文，否则排查时无从下手：" << reason;
+        }
+    }
+
+    /**
+     * @brief 钉住可空的十进制列：NULL 读回空 optional，空 optional 写成 NULL
+     * @details Decimal 的默认构造是 "0"，这一路没接好就会把 NULL 读成零金额 —— 业务上最难查的一类错。
+     * @note 证伪：把 RowMapper 里 optional 的先判空那一步挪到取值之后，NULL 会变成一个零值而报错消失。
+     */
+    TEST(RowMapperDecimal, MapsNullToEmptyOptionalAndBackToNull)
+    {
+        using DecimalCell = std::optional<AsynGyanis::Database::Decimal>;
+
+        const DecimalCell fromNull = Detail::convertDatabaseValue<DecimalCell>(DatabaseValue{std::monostate{}}, kColumnName);
+        EXPECT_FALSE(fromNull.has_value()) << "NULL 读成了值，零金额与没有金额是两件事";
+
+        const DecimalCell fromText = Detail::convertDatabaseValue<DecimalCell>(textValue("7.0200"), kColumnName);
+        ASSERT_TRUE(fromText.has_value());
+        EXPECT_EQ(fromText->text(), "7.0200");
+
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(Detail::toDatabaseValue(DecimalCell{std::nullopt}, "amount")));
+        EXPECT_TRUE(std::holds_alternative<AsynGyanis::Database::Decimal>(Detail::toDatabaseValue(DecimalCell{*fromText}, "amount")));
     }
 
 } // namespace AsynGyanis::Database::Queryable

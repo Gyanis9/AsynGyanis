@@ -6,6 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseSources
         ${CMAKE_CURRENT_LIST_DIR}/DatabaseDriverCatalog.cpp
         ${CMAKE_CURRENT_LIST_DIR}/DatabaseValue.h
         ${CMAKE_CURRENT_LIST_DIR}/DatabaseValue.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Decimal.h
+        ${CMAKE_CURRENT_LIST_DIR}/Decimal.cpp
         ${CMAKE_CURRENT_LIST_DIR}/BinaryBytes.h
         ${CMAKE_CURRENT_LIST_DIR}/ErrorText.h
         ${CMAKE_CURRENT_LIST_DIR}/ConnectionConfig.h

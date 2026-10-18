@@ -8,6 +8,7 @@ add_executable(TestDatabase
         ${CMAKE_SOURCE_DIR}/tests/TestSupport/AllocationProbe.cpp
 
         Common/TestDatabaseTypes.cpp
+        Common/TestDecimal.cpp
         Common/TestDatabaseFactory.cpp
         Common/TestDatabaseException.cpp
         Common/TestDatabaseConnection.cpp

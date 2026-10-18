@@ -23,7 +23,7 @@
  * - 事务：开启用 "BEGIN"（PostgreSQL 的等价写法 START TRANSACTION 同样可用，
  *   BEGIN 更短且是官方文档的首选），提交 COMMIT、回滚 ROLLBACK；
  * - 参数上限：65535，依据是扩展查询协议 Bind 报文里参数个数为 Int16 字段；
- * - 类型名：BIGINT / NUMERIC(20) / DOUBLE PRECISION / BOOLEAN / TEXT / BYTEA。
+ * - 类型名：BIGINT / NUMERIC(20) / DOUBLE PRECISION / BOOLEAN / TEXT / BYTEA / NUMERIC（十进制）。
  *   PostgreSQL 是三个引擎里唯一有真布尔类型的，也是唯一需要为无符号 64 位
  *   另选类型的（它没有无符号整数，见 columnTypeName() 的说明）；
  * - 表清单：查 information_schema.tables 并按 current_schema() 过滤
@@ -222,7 +222,10 @@ namespace AsynGyanis::Database
          *          - Bool → "BOOLEAN"：三个引擎里唯一有真布尔类型的，
          *            服务端会拒绝把 '0'/'1' 以外、也不是 true/false 的文本写进布尔列；
          *          - Text → "TEXT"（变长，上限约 1 GiB，与 varchar 无性能差异）；
-         *          - Blob → "BYTEA"（变长二进制，官方推荐的二进制承载类型）。
+         *          - Blob → "BYTEA"（变长二进制，官方推荐的二进制承载类型）；
+         *          - Decimal → "NUMERIC"：不带精度限定就是「任意精度、按写入的标度存」，
+         *            写几位小数读回几位，服务端不做四舍五入 —— 与 Database::Decimal 的文本承载同构。
+         *            要固定标度（金额常见的 NUMERIC(19,4)）由调用方自己写 DDL，本映射不替业务定标度。
          * @param type 逻辑列类型
          * @return std::string_view 对应物理类型名；未知取值回落到 "TEXT"（见基类约定）
          */

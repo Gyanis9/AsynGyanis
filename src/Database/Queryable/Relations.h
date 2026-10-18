@@ -112,6 +112,11 @@ namespace AsynGyanis::Database::Queryable
                                              std::is_same_v<ValueType, std::string> || std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                         {
                             return concrete;
+                        } else if constexpr (std::is_same_v<ValueType, Decimal>)
+                        {
+                            // 键落在十进制列上时按文本交给参数层：ParameterValue 没有 Decimal 这一档
+                            // （它只服务查询条件的字面量），而十进制文本正是各家引擎都能精确收下的形态
+                            return concrete.text();
                         } else
                         {
                             throw Base::LogicException("关系装载：列 \"" + std::string(columnName) + "\" 的值是复合类型，不能当键用——请检查 TableSchema 里那一格指向的列");

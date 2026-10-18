@@ -3,10 +3,12 @@
 // - MapsEverySupportedTypeToItsOwnName / EverySupportedTypeHasACatalogEntry / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
 // - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
 // - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
+// - NamesDecimalValueAsDecimal
 // - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
 // - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / PostgresDefault* / RedisDefault* / SqliteDefault*
 // 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
-// databaseValueTypeName 给出 DatabaseValue 八个备选各自的类型名；ConnectionConfig 默认构造全空，
+// databaseValueTypeName 给出 DatabaseValue 每个备选各自的类型名（备选清单只写在 makeValueTypeNameTable 一处）；
+// ConnectionConfig 默认构造全空，
 // 三个 *Default 工厂只填本驱动真正读取的字段。全部用例不触碰任何驱动与网络，属于零依赖的纯函数断言。
 
 #include "Database/Common/BinaryBytes.h"
@@ -48,7 +50,7 @@ namespace AsynGyanis::Database
         const std::vector<int> kOutOfRangeDatabaseTypeValues = {4, 5, 99, 127, 255, -1};
 
         /**
-         * @brief 构造覆盖全部七个备选的数据库值样本
+         * @brief 构造覆盖每一个备选的数据库值样本
          * @return std::vector<std::pair<DatabaseValue, const char *>> 值与其期望类型名的配对
          */
         std::vector<std::pair<DatabaseValue, const char *>> makeValueTypeNameTable()
@@ -65,6 +67,8 @@ namespace AsynGyanis::Database
                     {DatabaseValue{std::vector<std::string>{"first", "second"}}, "List"},
                     {DatabaseValue{hashValue}, "Hash"},
                     {DatabaseValue{BinaryBytes{0x5C, 0x00, 0x41}}, "Bytes"},
+                    // 尾零要留着："3.1400" 与 "3.14" 是两个写法，本类型不归一化（见 Decimal.h 的头注）
+                    {DatabaseValue{Decimal::tryParse("3.1400").value()}, "Decimal"},
             };
         }
     } // namespace
@@ -199,10 +203,22 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(emptyByteValue), "Bytes");
     }
 
-    /** @brief 钉住八个备选的类型名两两不同：visit 分支漏写或写错类型会立刻撞名 */
+    /** @brief 钉住十进制备选报「Decimal」：漏写这一支会被末尾给哈希用的兜底静默报成 "Hash" */
+    TEST(DatabaseValue, NamesDecimalValueAsDecimal)
+    {
+        const DatabaseValue decimalValue = Decimal::tryParse("0.1000").value();
+        const DatabaseValue zeroValue    = Decimal{};
+
+        EXPECT_STREQ(databaseValueTypeName(decimalValue), "Decimal");
+        // 默认构造是零，不是「无值」：报 Null 就等于把 NULL 与 0 混成一件事
+        EXPECT_STREQ(databaseValueTypeName(zeroValue), "Decimal");
+    }
+
+    /** @brief 钉住各备选的类型名两两不同：visit 分支漏写或写错类型会立刻撞名 */
     TEST(DatabaseValue, KeepsNamesDistinctAcrossAllAlternatives)
     {
-        // 映射走的是 std::visit + is_same_v：一旦某条分支漏写或写错类型，这里会立刻撞名
+        // 映射走的是 std::visit + is_same_v：一旦某条分支漏写或写错类型，这里会立刻撞名。
+        // 表里少一行不会被这套撞名检查抓到（要两个分支同名才报），那一路由下面的完整表用例兜
         const std::vector<std::pair<DatabaseValue, const char *>> typeNameTable = makeValueTypeNameTable();
         for (std::size_t leftIndex = 0; leftIndex < typeNameTable.size(); ++leftIndex)
         {

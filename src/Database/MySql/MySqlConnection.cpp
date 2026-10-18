@@ -165,6 +165,55 @@ namespace AsynGyanis::Database
                 }
             }
         };
+
+        /**
+         * @brief 取出「按文本下发」那一档的载荷：std::string 与 Decimal 共用同一条路
+         * @details 十进制必须按它的承载文本交出（服务端按列的 DECIMAL(p,s) 精确收下），
+         *          而绝不能被降级成 MYSQL_TYPE_DOUBLE —— 末位精度不可逆地丢，且驱动那侧看不出异常。
+         * @param value 待绑定的统一值
+         * @return std::optional<std::string_view> 这两档之一给出载荷文本，其余返回空值；
+         *         视图指向 value 内部的缓冲，调用方必须在 value 还活着时用完
+         */
+        [[nodiscard]] std::optional<std::string_view> textLikePayload(const DatabaseValue &value) noexcept
+        {
+            if (const auto *textValue = std::get_if<std::string>(&value))
+            {
+                return *textValue;
+            }
+            if (const auto *decimalValue = std::get_if<Decimal>(&value))
+            {
+                return decimalValue->text();
+            }
+            return std::nullopt;
+        }
+
+        /**
+         * @brief 把一段「指针 + 长度」的文本参数绑进一个 MYSQL_BIND 槽位
+         * @details 文本与精确十进制共用这一条下发形态：十进制按它的承载文本交出，服务端按列的
+         *          DECIMAL(p,s) 精确收下，中间不经任何浮点换算（降级成 MYSQL_TYPE_DOUBLE 会在末位
+         *          丢精度且不可逆）。长度同时写进 buffer_length（缓冲区容量）与 *length
+         *          （客户端库实际采用的输入长度），内嵌 '\0' 因此不丢；超长会被 unsigned long 形参
+         *          静默截断，所以在这里就拒掉并交出原因。
+         * @param binding 要填的绑定槽位
+         * @param lengthSlot 本参数专用的长度存储，必须活到 mysql_stmt_execute 返回
+         * @param index 参数下标（从 0 起），只用于错误文本点名是第几个参数
+         * @param payload 参数文本
+         * @return std::optional<std::string> 绑上时为空；超长时给出中文原因，由调用方记进连接错误
+         */
+        [[nodiscard]] std::optional<std::string> bindTextParameter(MYSQL_BIND &binding, unsigned long &lengthSlot, const std::size_t index, const std::string_view payload)
+        {
+            if (payload.size() > kMaximumNativeLength)
+            {
+                return parameterTooLongText(index, false, payload.size(), "MySQL");
+            }
+
+            lengthSlot            = static_cast<unsigned long>(payload.size());
+            binding.buffer_type   = MYSQL_TYPE_STRING;
+            binding.buffer        = asBindBuffer(payload.data());
+            binding.buffer_length = lengthSlot;
+            binding.length        = &lengthSlot;
+            return std::nullopt;
+        }
     } // namespace
 
     MySqlConnection::MySqlConnection(const ConnectionConfig &configuration)
@@ -1053,21 +1102,14 @@ namespace AsynGyanis::Database
                 continue;
             }
 
-            if (const auto *textValue = std::get_if<std::string>(&parameterValue))
+            // 文本与十进制共用这一条下发路（十进制按承载文本交出，理由见 textLikePayload）
+            if (const std::optional<std::string_view> stringPayload = textLikePayload(parameterValue); stringPayload.has_value())
             {
-                // 文本按「指针 + 长度」绑定，内嵌 '\0' 因此不丢。长度同时写进 buffer_length（缓冲区容量）
-                // 与 *length（客户端库实际采用的输入长度）；超长文本会被 unsigned long 形参静默截断，直接拒绝
-                if (textValue->size() > kMaximumNativeLength)
+                if (const auto rejection = bindTextParameter(binding, parameterLengths[index], index, *stringPayload))
                 {
-                    m_lastError = parameterTooLongText(index, false, textValue->size(), "MySQL");
+                    m_lastError = *rejection;
                     return false;
                 }
-
-                parameterLengths[index] = static_cast<unsigned long>(textValue->size());
-                binding.buffer_type     = MYSQL_TYPE_STRING;
-                binding.buffer          = asBindBuffer(textValue->data());
-                binding.buffer_length   = parameterLengths[index];
-                binding.length          = &parameterLengths[index];
                 continue;
             }
 

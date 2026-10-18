@@ -748,19 +748,21 @@ namespace AsynGyanis::Database
                     return false;
                 }
                 bindResult = sqlite3_bind_double(statement, parameterIndex, *realValue);
-            } else if (const auto *textValue = std::get_if<std::string>(&parameterValue))
+            } else if (const auto *textValue = std::get_if<std::string>(&parameterValue); textValue != nullptr || std::holds_alternative<Decimal>(parameterValue))
             {
-                // sqlite3_bind_text 的长度参数是 int，超长文本会被静默截断成半条数据，直接拒绝
-                if (textValue->size() > kMaximumNativeLength)
+                // 文本与精确十进制都按 TEXT 绑出：SQLite 没有十进制类型，本映射把十进制落在 TEXT 亲和上
+                // （取舍见 SqliteDialect::columnTypeName 的 Decimal 分支），交出去的文本引擎原样收下
+                const std::string &payload = textValue != nullptr ? *textValue : std::get<Decimal>(parameterValue).text();
+                if (payload.size() > kMaximumNativeLength)
                 {
-                    m_lastError = parameterTooLongText(index, false, textValue->size(), "SQLite");
+                    m_lastError = parameterTooLongText(index, false, payload.size(), "SQLite");
                     return false;
                 }
 
                 // SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回
                 // （带返回列的语句要等调用方遍历结果集才真正执行），若用 SQLITE_STATIC，
                 // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
-                bindResult = sqlite3_bind_text(statement, parameterIndex, textValue->data(), static_cast<int>(textValue->size()), SQLITE_TRANSIENT);
+                bindResult = sqlite3_bind_text(statement, parameterIndex, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT);
             } else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
             {
                 // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断

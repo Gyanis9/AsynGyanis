@@ -16,6 +16,8 @@
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include "Database/Common/Decimal.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -58,6 +60,12 @@ namespace
         std::int64_t id;   ///< 自增主键（不进 INSERT 的列清单）
         std::string  name; ///< 名称
     };
+    /// 十进制金额用例的行：主键不自增，插入值由用例自己给，少一处引擎差异
+    struct DecimalMoneyRow
+    {
+        std::int64_t                  id;     ///< 主键
+        AsynGyanis::Database::Decimal amount; ///< 金额列：走本映射的 Decimal 一档
+    };
 } // namespace
 
 // ========================================================================
@@ -95,6 +103,17 @@ struct AsynGyanis::Database::Queryable::TableSchema<AutoIncrementSeedRow>
     };
     static constexpr std::string_view kPrimaryKey                = "id";
     static constexpr bool             kIsAutoIncrementPrimaryKey = true;
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<DecimalMoneyRow>
+{
+    static constexpr std::string_view kTableName = "decimal_money";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&DecimalMoneyRow::id, "id"),
+            Column(&DecimalMoneyRow::amount, "amount"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
 };
 
 namespace
@@ -611,4 +630,60 @@ TEST_F(SchemaMigrationsTest, TheLedgerTableIsVisibleToTheExistingColumnRepair)
     std::vector<std::string> recorded;
     ASSERT_TRUE(SchemaMigrator::appliedMigrations(*m_pool, &recorded, &error)) << error;
     EXPECT_EQ(recorded.size(), 2U) << "确保迁移表这一步把已有记录清掉了";
+}
+
+// ========================================================================
+// 十进制金额列（Decimal）
+// ========================================================================
+
+/**
+ * @brief 钉住 Decimal 成员在 SQLite 上的逐字符往返：DDL 由映射给出，写入什么文本就读回什么文本
+ * @details 这条是判据 1 的 SQLite 那一格，也是「不经二进制浮点」的可证形式：挑的三个取值都是
+ *          二进制浮点装不出来的 —— "0.1000" 经 double 会丢掉尾零，
+ *          "1234567890123456789" 超出 double 能逐位还原的范围（2^53 以上），
+ *          "-0.000000000000000000001" 干脆落在它的分辨率之外。
+ *          断言比的是逐字符而不是数值近似：数值近似正是这类缺陷能一路静默的原因。
+ * @note 建表语句由 SchemaMigrator::createTableStatement 生成，因此这一条同时钉住
+ *       「新列类型在迁移侧能建出表来」（SQLite 落 TEXT 亲和，理由见 SqliteDialect::columnTypeName）。
+ * @note 证伪：把驱动的十进制绑定臂降级成 double，或把成员的 Decimal 换成 double，
+ *       第一行会读回 "0.1"、第二行末位会错，这条当场红。
+ */
+TEST_F(SchemaMigrationsTest, DecimalMemberRoundTripsCharacterForCharacterOnSqlite)
+{
+    const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*m_pool);
+    ASSERT_NE(dialect, nullptr) << "取不到方言，用例前置条件不成立";
+
+    const std::vector<SchemaMigrator::MigrationStep> steps{
+            SchemaMigrator::MigrationStep{
+                    .name         = "0001-create-decimal-money",
+                    .upStatements = {SchemaMigrator::createTableStatement<DecimalMoneyRow>(*dialect)},
+            },
+    };
+    std::size_t applied = 0;
+    std::string error;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, steps, &applied, &error)) << error;
+    ASSERT_EQ(applied, 1U) << "金额表没建出来";
+
+    const std::vector<std::string> writtenTexts{
+            std::string("0.1000"),
+            std::string("1234567890123456789"),
+            std::string("-0.000000000000000000001"),
+    };
+    for (std::size_t rowIndex = 0; rowIndex < writtenTexts.size(); ++rowIndex)
+    {
+        const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenTexts[rowIndex]);
+        ASSERT_TRUE(parsed.has_value()) << writtenTexts[rowIndex];
+        const DecimalMoneyRow row{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed};
+        ASSERT_EQ(1, OrmQuery<DecimalMoneyRow>(*m_pool).insert(row)) << "金额列没能写进去：" << writtenTexts[rowIndex];
+    }
+
+    const std::vector<DecimalMoneyRow> readBack = OrmQuery<DecimalMoneyRow>(*m_pool).orderBy(AsynGyanis::Database::Queryable::asc("id")).toList();
+    ASSERT_EQ(readBack.size(), writtenTexts.size());
+    for (std::size_t rowIndex = 0; rowIndex < writtenTexts.size(); ++rowIndex)
+    {
+        EXPECT_EQ(readBack[rowIndex].amount.text(), writtenTexts[rowIndex]) << "第 " << (rowIndex + 1) << " 行的金额文本被改写过";
+    }
+
+    // 列的标度信息由承载文本带着：第三行是 21 位小数，读回来仍然数得出同样的位数
+    EXPECT_EQ(readBack[2].amount.scale(), 21U);
 }

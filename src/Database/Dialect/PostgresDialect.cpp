@@ -176,6 +176,11 @@ namespace AsynGyanis::Database
                 return "TEXT";
             case ColumnType::Blob:
                 return "BYTEA";
+            case ColumnType::Decimal:
+                // 不带精度限定的 NUMERIC 是「任意精度、按写入的标度存」，与本库的十进制承载形态同构：
+                // 写进去几位小数就读回几位，服务端不做四舍五入。要固定标度（金额常见的 NUMERIC(19,4)）
+                // 由调用方自己写 DDL，本映射不替业务决定标度
+                return "NUMERIC";
             default:
                 // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
                 // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，

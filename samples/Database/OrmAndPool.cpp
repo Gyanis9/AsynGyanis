@@ -691,6 +691,13 @@ namespace
                                            mySqlDialect.keyColumnTypeName(Database::ColumnType::Blob) != mySqlDialect.columnTypeName(Database::ColumnType::Blob),
                                    "引擎知识落在方言层：参数上限、二进制类型名与「可作主键的类型」三项都按引擎区分");
 
+        // 十进制这一档在两家给出的物理类型不同：SQLite 没有十进制类型（落 TEXT 亲和，比较按字典序），
+        // MySQL 必须定死精度与标度。使用方要按自己选的引擎知道这一点，所以把它抄进自检
+        Samples::checklist().check(sqliteDialect.columnTypeName(Database::ColumnType::Decimal) == "TEXT" &&
+                                           mySqlDialect.columnTypeName(Database::ColumnType::Decimal) == "DECIMAL(65,30)" &&
+                                           mySqlDialect.keyColumnTypeName(Database::ColumnType::Decimal) == mySqlDialect.columnTypeName(Database::ColumnType::Decimal),
+                                   "十进制列的物理类型名按引擎分家：SQLite 落 TEXT，MySQL 定死 DECIMAL(65,30)，且后者本就进得了索引");
+
         Samples::checklist().check(Database::DialectRegistry::supports(Database::DatabaseType::Sqlite) && Database::DialectRegistry::supports(Database::DatabaseType::MySql) &&
                                            !Database::DialectRegistry::supports(Database::DatabaseType::Redis) &&
                                            Database::DialectRegistry::dialectFor(Database::DatabaseType::Sqlite) ==

@@ -83,6 +83,10 @@ namespace AsynGyanis::Database
          * @details 重写 SqlDialect::columnTypeName()：SQLite 只有 5 个存储类，UInt64 只能退化为
          *          有符号 INTEGER（超过 int64 上限的取值由绑定期降级为十进制文本）；不用 TEXT
          *          承载整数，是因为字符串语义会让排序、比较、索引全部退化（"10" < "9"）。
+         *          Decimal 却只能落在 TEXT 上，与上面那条判断相反：本引擎没有十进制类型，
+         *          NUMERIC 亲和会把交出去的文本折成 REAL（小数尾零被抹掉、读回来是浮点而不是文本），
+         *          而十进制这一档存在的理由就是不被折成二进制浮点。取舍与代价（比较与排序按字典序、
+         *          聚合不受影响）写在实现处的注释里。
          * @param type 逻辑列类型
          * @return std::string_view 对应存储类名；未知取值回落到 "TEXT"（见基类约定）
          */

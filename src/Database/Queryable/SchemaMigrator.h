@@ -1669,6 +1669,9 @@ namespace AsynGyanis::Database::Queryable
             } else if constexpr (std::is_same_v<BareType, std::string>)
             {
                 return ColumnType::Text;
+            } else if constexpr (std::is_same_v<BareType, AsynGyanis::Database::Decimal>)
+            {
+                return ColumnType::Decimal;
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 // 两种成员拼法都落到 Blob：DDL 只关心「这一列是二进制」，
@@ -1678,7 +1681,7 @@ namespace AsynGyanis::Database::Queryable
             {
                 // 不受支持的类型已被 createTableStatement() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
-                static_assert(Detail::kAlwaysFalse<ValueType>, "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、"
+                static_assert(Detail::kAlwaysFalse<ValueType>, "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、"
                                                                "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                                "以及它们的 std::optional 包装");
                 return ColumnType::Text;

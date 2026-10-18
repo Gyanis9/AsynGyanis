@@ -12,6 +12,7 @@
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
+#include "Database/Common/Decimal.h"
 #include "Database/Redis/RedisConnection.h"
 #include "DatabaseTestSupport.h"
 
@@ -537,6 +538,8 @@ namespace AsynGyanis::Database
         EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(false), errorText).value_or(""), "0");
         // 双精度走最短可往返表示：不是 std::to_string(double) 那种固定六位小数
         EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(1.5), errorText).value_or(""), "1.5");
+        // 十进制按承载文本原样交出：期望值写死，尾零少一个都算红
+        EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(AsynGyanis::Database::Decimal::tryParse("0.1000").value()), errorText).value_or(""), "0.1000");
         EXPECT_EQ(RedisConnection::argumentText(DatabaseValue(std::vector<std::uint8_t>{0x00, 0xFF, 0x10}), errorText).value_or(""), std::string("\0\377\020", 3));
 
         // NULL：Redis 没有「一个 NULL 参数」这回事
