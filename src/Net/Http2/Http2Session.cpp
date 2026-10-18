@@ -839,6 +839,11 @@ namespace AsynGyanis::Net
                     m_metrics->countStreamCancelled();
                 }
             }
+            // 对端取消也要传到处理函数本身，而不只是断正文：只标正文的话，挂在自家等待上的处理器
+            // （等下游、等定时器）看到的仍是「没被取消」，于是把活干完再去写一条没人收的响应。
+            // h2 的派发按流独立成协程，本函数在会话循环里跑（不在连接层回调里），当场交信号是安全的；
+            // 与 serveOneRequest 里那条连接级转发同一个出口，业务只认 request.cancelToken() 一处
+            static_cast<void>(pending.request.requestCancel());
             pending.hasPendingWake = true;
         }
     }

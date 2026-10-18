@@ -2632,6 +2632,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端 RESET_STREAM 除了断正文，还要把取消交进处理函数的 cancelToken()
+     * @details 上面那条用例钉的是「人醒了」，这一条钉的是「醒过来知道为什么」：回收只把正文标断，
+     *          挂在自家等待上的处理器（等下游、等定时器）此前看到的仍是「没被取消」，于是把剩下的活
+     *          干完再去写一条没人收的响应——`Middleware.h` 与 h1 侧写的都是「业务只认
+     *          request.cancelToken() 一处」，而这一路没往那个出口交信号。
+     * @details 信号必须在叫醒处理器*之前*交：等待一被恢复，业务就读取消状态，晚一拍读数就成了假红。
+     *          正文刻意只喂到第一批且不告 END_STREAM，处理器因此确定还挂在派发协程上
+     */
+    TEST(Http3Session, PropagatesPeerStreamResetIntoStreamingHandlerCancelToken)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+
+        Http3Session session(std::ref(opener),
+                             [&sentStreamData](const std::int64_t streamId, const std::span<const std::uint8_t> data, const bool isEndStream)
+                             {
+                                 sentStreamData.push_back(CapturedStreamData{streamId, std::vector<std::uint8_t>(data.begin(), data.end()), isEndStream});
+                                 return data.size();
+                             });
+
+        std::atomic<bool> cancelObserved{false};
+        bool              isHandlerEntered  = false;
+        bool              isHandlerFinished = false;
+        Router            router;
+        router.postStreaming("/upload",
+                             [&cancelObserved, &isHandlerEntered, &isHandlerFinished](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 isHandlerEntered = true;
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 // 醒来第一件事是读取消状态：这一条读数就是本用例要钉的那一行信号
+                                 cancelObserved.store(request.cancelToken().stop_requested(), std::memory_order_release);
+                                 isHandlerFinished = true;
+                                 response.setStatus(200);
+                                 response.setBody("uploaded");
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        ASSERT_TRUE(peer.submitRequestWithBody("POST", "/upload", "example.com", "abcdefghijkl", 4));
+        // 只喂到处理器进入派发为止：正文一律不告 END_STREAM，处理器因此确定还挂在协程上
+        for (std::size_t stepIndex = 0; stepIndex < 16 && !isHandlerEntered; ++stepIndex)
+        {
+            const CapturedStreamData step = peer.takeNextWriteStep();
+            if (step.streamId == -1)
+            {
+                break;
+            }
+            session.onStreamData(step.streamId, step.bytes, false);
+        }
+        ASSERT_TRUE(isHandlerEntered) << "用例前提：流式路由没把请求交给业务";
+        ASSERT_FALSE(isHandlerFinished) << "用例前提：正文没喂完，处理器该还挂在 readNext() 上";
+
+        session.cancelStreamByPeer(kFirstRequestStreamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled), true);
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_TRUE(isHandlerFinished) << "对端取消后处理器没有跑完：本用例的取消读数无从归属";
+        EXPECT_TRUE(cancelObserved.load(std::memory_order_acquire)) << "对端 RESET_STREAM 没传进 request.cancelToken()：处理器按「没被取消」把活干完了";
+    }
+
+    /**
      * @brief 本端判死一条流时记的是「坏请求」，不是「对端取消」
      * @details 两条读数各有各的口径：`streamCancelledCount` 说的是对端用 RST_STREAM（h2）/
      *          RESET_STREAM、STOP_SENDING（h3）取消了单流（`HttpServerStats` 的类注释与 `/metrics`

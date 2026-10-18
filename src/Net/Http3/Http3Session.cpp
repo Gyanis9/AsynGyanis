@@ -1271,6 +1271,17 @@ namespace AsynGyanis::Net
             // dropRequest()），请求缓冲、流式等待者与隧道记录都跟着释放
             // （与正常收尾走同一条路，不另开清理分支，也不在这里重复计数）
             m_connection->noteStreamCancelledByPeer(cancelled.streamId, cancelled.applicationErrorCode, cancelled.isResetByPeer);
+
+            // 对端取消要传到处理函数，而不只是断正文：只标正文时，挂在自家等待上的处理器（等下游、
+            // 等定时器）看到的仍是「没被取消」，于是把活干完再去写一条没人收的响应。
+            // 信号在本函数交、不在 dropRequest 里交——那里可能是连接层回调（onStreamClosed/onStreamReset）
+            // 进来的，而 request_stop() 会当场恢复等待取消的业务协程，它醒来接着回写响应，
+            // 回调期间重入连接层是本文件成文避开的未定义行为。下面那次 wakeStreamingRequests() 之前
+            // 交信号，处理器被叫醒时看到的就已经是「本条请求已取消」
+            if (const auto found = m_streamingRequests.find(cancelled.streamId); found != m_streamingRequests.end())
+            {
+                static_cast<void>(found->second->request.requestCancel());
+            }
         }
 
         // 唤醒被这些取消波及的处理器：等正文的那些只记了「有新进展」，真正的唤醒在这里做，

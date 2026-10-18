@@ -251,6 +251,12 @@ namespace AsynGyanis::Net
          * @note 按连接注册一次即可：回调指向解析器内部那个按连接复用的请求对象，
          *       于是不必跟着每条报文反复注册与注销。若按请求注册，注册动作本身（停止回调节点）
          *       就成了每请求一次的开销。
+         * @note h1 的处理器执行期间不并发读这条连接：读、解析、派发串在同一条协程里
+         *       （`Detail::httpKeepAliveLoop` 里交给路由的那两处 `co_await` 跑完才回到读那一步），
+         *       所以对端中途 FIN/RST 要等处理函数返回才看得见——本对象转交的只有「本端关停」这一类信号。
+         *       要更早收口不必在此造一个选择子：走 h2/h3（那两路把对端取消当场交进同一个令牌，见
+         *       `Http2Session::noteCancelledStreams` 与 `Http3Session::drainPeerCancelledStreams`），
+         *       或配 `server.handler_timeout_ms` 让时限中间件去叫停业务
          */
         class ASYN_NET_API ConnectionCancelForwarder
         {

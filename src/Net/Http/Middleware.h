@@ -573,7 +573,11 @@ namespace AsynGyanis::Net
      *       三条通道各自在每次路由前注册一次转发（`HttpSession` 的 ConnectionCancelForwarder 按连接注册
      *       一次覆盖整条 keep-alive 循环、`Http2Session::serveOneRequest` 每请求一份、h3 的两个派发出口
      *       `Http3Session::pump` 与 `Http3Session::serveStreamingRequest` 各一份），
-     *       两条来源到期都体现在同一个 request.cancelToken() 上。h3 会话没有 Core::Connection 那一层
+     *       两条来源到期都体现在同一个 request.cancelToken() 上。第三种来源是「对端取消这一条流」：
+     *       h2 在 `Http2Session::noteCancelledStreams` 里交、h3 在 `Http3Session::drainPeerCancelledStreams`
+     *       里交（都在叫醒等待者之前交，处理器醒来读到的就是本条请求自己的状态），h1 没有第三种——
+     *       处理器执行期间不并发读这条连接，理由见 `HttpSession::ConnectionCancelForwarder` 的注释。
+     *       h3 会话没有 Core::Connection 那一层
      *       （字节走 UDP 承载，收口由 QuicServer 按连接/流做），故由会话自己的停止源
      *       `Http3Session::m_shutdownCancelable` 承担同一角色：只有「承载连接已经没了」那一步请求它停止，
      *       优雅排空那一步刻意不请求——在途的已受理请求要能跑完，这一格与 h1/h2 的 drain 只停非 busy

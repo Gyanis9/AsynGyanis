@@ -62,6 +62,15 @@ namespace AsynGyanis::Net
             return limits;
         }
 
+        // 下面几档时长放在文件级而不是用例体内：它们要进「夹具注册路由」那两层嵌套 lambda，
+        // 而函数级的 constexpr 在 GCC 下算 odr-use、嵌套 lambda 拿不到（MSVC 放行，CI 的 GCC 档当场拒）。
+        // 名字带上所属用例，避免跨用例串味
+        constexpr std::chrono::milliseconds kStreamTimeoutHandlerBudget{120};  ///< 配的每请求处理时限
+        constexpr std::chrono::milliseconds kStreamTimeoutHandlerHold{600};    ///< 处理器故意挂住的时长（> 时限）
+        constexpr std::chrono::milliseconds kUnbudgetedHandlerHold{200};       ///< 没配时限那条对照的挂起时长
+        constexpr std::chrono::milliseconds kCancelPollTick{5};                ///< 轮询取消状态的那一拍
+        constexpr int                       kCancelPollRounds = 100;           ///< 轮询上限：只有拿不到取消才跑满
+
         /**
          * @brief 编一个字面量字段表示（定义见 Http2TestSupport.h）
          */
@@ -2511,9 +2520,6 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, CutsSlowStreamWithGatewayTimeoutWhileSiblingsKeepServing)
     {
-        constexpr std::chrono::milliseconds kHandlerBudget{120};
-        constexpr std::chrono::milliseconds kHandlerHold{600};
-
         RunningHttpServerFixture fixture(
                 makeCleartextLimits(), std::chrono::milliseconds{30}, {},
                 [](Router &router, Core::EventLoop &loop)
@@ -2522,7 +2528,7 @@ namespace AsynGyanis::Net
                                [&loop](HttpRequest &, HttpResponse &response) -> Core::Task<>
                                {
                                    Core::Timer holdTimer(loop);
-                                   co_await holdTimer.waitFor(kHandlerHold);
+                                   co_await holdTimer.waitFor(kStreamTimeoutHandlerHold);
                                    response.setBody("served-held");
                                    co_return;
                                });
@@ -2532,7 +2538,7 @@ namespace AsynGyanis::Net
                 {
                     HttpServerConfiguration configuration;
                     configuration.limits         = makeCleartextLimits();
-                    configuration.handlerTimeout = kHandlerBudget;
+                    configuration.handlerTimeout = kStreamTimeoutHandlerBudget;
                     const auto outcome           = applyHttpServerConfiguration(server, configuration);
                     ASSERT_TRUE(outcome.has_value()) << outcome.error();
                     server.setHttp2CleartextEnabled(true);
@@ -2577,8 +2583,6 @@ namespace AsynGyanis::Net
      */
     TEST(Http2CleartextSession, ServesSlowStreamWithoutTimeoutWhenHandlerBudgetIsUnset)
     {
-        constexpr std::chrono::milliseconds kHandlerHold{200};
-
         RunningHttpServerFixture fixture(
                 makeCleartextLimits(), std::chrono::milliseconds{30}, {},
                 [](Router &router, Core::EventLoop &loop)
@@ -2587,7 +2591,7 @@ namespace AsynGyanis::Net
                                [&loop](HttpRequest &, HttpResponse &response) -> Core::Task<>
                                {
                                    Core::Timer holdTimer(loop);
-                                   co_await holdTimer.waitFor(kHandlerHold);
+                                   co_await holdTimer.waitFor(kUnbudgetedHandlerHold);
                                    response.setBody("served-held");
                                    co_return;
                                });
@@ -2612,6 +2616,71 @@ namespace AsynGyanis::Net
         HpackDecoder responseDecoder;
         EXPECT_EQ(findResponseHeaderValue(responseDecoder, frames, 1U, ":status"), "200");
         EXPECT_EQ(responseDataPayload(frames, 1U), "served-held");
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：对端 RST_STREAM 会传进处理函数的 cancelToken()，而不只是把正文标断
+     * @details 此前这条流上的通知只有「正文断了」：挂在自家等待上的处理器（等下游、等定时器）看到的
+     *          仍是「没被取消」，于是把活干完再去写一条没人收的响应——`Middleware.h` 与 h1 侧写的都是
+     *          「业务只认 request.cancelToken() 一处」，而这一路偏偏没往那个出口交信号。
+     * @details 处理器的等待刻意用 `Core::Timer` 而不是 `bodyStream()->readNext()`：后者被 markBroken
+     *          叫醒就已经算「正文那条路通了」，会把两件事混成一条判据。轮询上限 100 拍 × 5 毫秒，
+     *          修好后一两拍就出去，只有拿不到取消时才跑满——判据落在「处理函数确实观察到了」，
+     *          不是「连接关了」（用 waitForCondition 等标记，不靠 sleep 赌时序）
+     */
+    TEST(Http2CleartextSession, PropagatesPeerStreamCancellationIntoHandlerCancelToken)
+    {
+        std::atomic<bool> isHandlerEntered{false};
+        std::atomic<bool> isHandlerFinished{false};
+        std::atomic<bool> isCancelObserved{false};
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{30}, {},
+                [&isHandlerEntered, &isHandlerFinished, &isCancelObserved](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/watch-cancel",
+                               [&isHandlerEntered, &isHandlerFinished, &isCancelObserved, &loop](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                               {
+                                   Core::Timer pollTimer(loop);
+                                   isHandlerEntered.store(true, std::memory_order_release);
+                                   for (int pollRound = 0; pollRound < kCancelPollRounds && !request.cancelToken().stop_requested(); ++pollRound)
+                                   {
+                                       co_await pollTimer.waitFor(kCancelPollTick);
+                                   }
+                                   isCancelObserved.store(request.cancelToken().stop_requested(), std::memory_order_release);
+                                   isHandlerFinished.store(true, std::memory_order_release);
+                                   response.setStatus(200);
+                                   response.setBody("watched");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/watch-cancel"), true), kWaitTimeout));
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&isHandlerEntered] { return isHandlerEntered.load(std::memory_order_acquire); }, kWaitTimeout))
+                << "用例前提：处理器没有在时限内进入，后面的取消读数无从归属";
+
+        // 对端取消这条流（RFC 9113 §8.1 的 CANCEL）：服务端读循环下一轮就能看到流状态收口
+        ASSERT_TRUE(client.sendBytes(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, 1U), kWaitTimeout));
+
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&isHandlerFinished] { return isHandlerFinished.load(std::memory_order_acquire); }, std::chrono::milliseconds{8000}))
+                << "处理器没有在时限内跑完它的轮询：这条流的取消没送到，处理器挂死在等待上";
+        EXPECT_TRUE(isCancelObserved.load(std::memory_order_acquire)) << "对端 RST_STREAM 没传进 request.cancelToken()：处理器按「没被取消」把活干完了";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";

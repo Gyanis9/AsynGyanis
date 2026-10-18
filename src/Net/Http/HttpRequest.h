@@ -564,8 +564,15 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 获取与本次请求关联的取消令牌。
-         * @details 中间件（如 timeoutMiddleware）可设置 stop_source，业务处理器定期检查
-         *          token.stop_requested() 以实现协作式取消，避免超时后继续浪费资源。
+         * @details 交信号的有三处：`timeoutMiddleware` 的时限到点、本端关停这条连接/会话
+         *          （h1 的 ConnectionCancelForwarder、h2 的会话取消源、h3 的会话停止源），以及
+         *          对端取消这一条流（h2 收到 RST_STREAM、h3 收到 RESET_STREAM）。三处都只写这一个出口，
+         *          业务只认 request.cancelToken() 一处——它不会打断处理器，信号是协作式的：
+         *          处理器要么在等待之间问一次，要么根本不问。
+         * @details 可抄的写法（`Core::Timer` 不接 stop_token，因此在两次唤醒之间问一次）：
+         *          `for (;;) { if (request.cancelToken().stop_requested()) { co_return; } co_await timer.waitFor(50ms); }`
+         *          挂在 `bodyStream()->readNext()` 上的流式处理器不必自己轮询：正文那条路已经带唤醒，
+         *          被取消/被断开时它返回终止值，醒来再读一次本令牌就知道是哪种情况
          * @return 当前取消源的令牌快照；每次调用返回的令牌共享同一个状态源
          */
         [[nodiscard]] std::stop_token cancelToken() const noexcept;
