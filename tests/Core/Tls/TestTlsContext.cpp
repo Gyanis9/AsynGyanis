@@ -793,7 +793,7 @@ namespace AsynGyanis::Core
                                                                    sizeof(kHttp11AlpnWireFormat), false, unlistedCertificatePath, unlistedKeyPath);
             ASSERT_FALSE(outcome.setupFailed);
             ASSERT_TRUE(outcome.clientCertificateInstalled) << "对照组客户端未能装载证书/私钥：用例前提不成立";
-            ASSERT_TRUE(outcome.serverCompleted) << "对照组：链上有效的未点名证书在**未设名单**时也必须通过，否则后面的拒绝证明不了是名单干的：" << outcome.serverErrorText;
+            ASSERT_TRUE(outcome.serverCompleted) << "对照组：链上有效的未点名证书在未设名单时也必须通过，否则后面的拒绝证明不了是名单干的：" << outcome.serverErrorText;
         }
 
         TlsContext withList;

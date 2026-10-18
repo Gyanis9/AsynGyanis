@@ -1,4 +1,4 @@
-# AsynGyanis 的 systemd **socket** 单元样例：把监听套接字交给 systemd，服务进程随后接手。
+# AsynGyanis 的 systemd socket 单元样例：把监听套接字交给 systemd，服务进程随后接手。
 # 复制到 /etc/systemd/system/asyngyanis.socket 后按现场改端口/地址，然后
 #   systemctl enable --now asyngyanis.socket
 # 同时把 asyngyanis.service 里的 --workers 去掉并接上 Requires/After（见该文件末尾那段）。
