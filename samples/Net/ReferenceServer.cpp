@@ -24,6 +24,7 @@
 #include "Core/Process/WorkerSupervisor.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
+#include "Core/Tls/TlsContext.h"
 #include "Net/Acme/AcmeAutomationConfig.h"
 #include "Net/Acme/AcmeCertificateManager.h"
 #include "Net/Http/HttpResponse.h"
@@ -466,8 +467,10 @@ int main(int argc, char **argv)
     bool                                                 useHttp3             = false; // 额外在同一个端口号的 UDP 上提供 HTTP/3（QUIC，需要证书）
     bool                                                 useTraceContext      = false; // 挂 W3C Trace Context 中间件，把链路上下文归一化到请求头上
     bool                                                 showUsage            = false;
-    std::string                                          certificateFile      = "cert.pem";
-    std::string                                          keyFile              = "key.pem";
+    /// --check-config：读完配置、把引用到的文件真打开解析一遍，然后在建任何监听器之前退出
+    bool        validateConfigurationOnly = false;
+    std::string certificateFile           = "cert.pem";
+    std::string keyFile                   = "key.pem";
     /// 命令行有没有显式给过证书/私钥：开了 acme 之后这两条要与 acme 的落点同解，
     /// 而「没给」（走上面那两个默认值）与「给成了别的路径」是两种处置，只能按是否给过来判
     bool certificateFileGiven = false;
@@ -603,6 +606,10 @@ int main(int argc, char **argv)
             // 由 master 按窗口折半后传下来的拍间隔（毫秒，内部开关）：worker 不知道窗口，只按它拍
             watchdogPingMilliseconds = static_cast<unsigned>(Samples::readNumericOption(argc, argv, i, std::string{Core::kWatchdogPingArgument}, 1U, 600'000U));
             ++i;
+        } else if (arg == "--check-config")
+        {
+            // 只校验不启动：运维要在端口还被旧实例占着的时候确认下一份配置能不能起
+            validateConfigurationOnly = true;
         } else if (arg == "--help")
         {
             // 只记下意图、就地不输出：用法说明要走日志器，而日志器取决于 --log-json，此刻还没装配
@@ -654,6 +661,10 @@ int main(int argc, char **argv)
         LOG_INFO("          挂一道 Bearer 闸门（/healthz 与 /readyz 刻意不挡，存活与就绪探针要能被编排器无凭据访问）；");
         LOG_INFO("          metrics_port + metrics_address 让运维端点另起一台只听指定地址的服务器（默认回环），");
         LOG_INFO("          多进程 --workers 下每个进程各听 metrics_port+序号，采集端按进程抓");
+        LOG_INFO("  --check-config 只校验、不启动：读完配置并把引用到的文件真打开解析一遍（证书与私钥读得出且配对、");
+        LOG_INFO("            server.tls 里的取值 OpenSSL 认不认、票据密钥与无状态重置密钥、CA 与 CRL），全部通过退 0");
+        LOG_INFO("            并打一行「配置可用（含 N 处文件校验）」，任何一处不成立退非 0 并说出是哪一格。");
+        LOG_INFO("            这一步不 bind 任何端口，因此可以与正在跑的实例并存；systemd 里它的天然位置是 ExecStartPre=");
         LOG_INFO("  --log-json 日志改成每行一个 JSON 对象（采集端按键取值，不必再写正则）");
         LOG_INFO("  --pin-threads 启动时把每条工作循环线程绑到一枚逻辑核上（按线程池下标顺序占核，");
         LOG_INFO("            线程数多于可用核数时多出来的线程保持可迁移；容器里按 cpuset 放行的核算）");
@@ -1133,6 +1144,57 @@ int main(int argc, char **argv)
                           certificateFile, keyFile);
             return 1;
         }
+    }
+
+    // --check-config：走到这一步，配置文档、server/limits/parser_limits/rate_limit/tls 各段、票据密钥、
+    // 无状态重置密钥与 acme 的落点都已经真读过并判过（不成立的早就退出了），剩下唯一还没碰过的是
+    // 「证书与私钥能不能装进一份按 server.tls 建好的上下文」——那一步原本发生在监听器构造里，因此这里
+    // 借用库里那两个公开入口（同一处 createHardenedContext + installCertificate 判据，不另写第二份）：
+    // 策略里的取值被 OpenSSL 拒 → 构造抛并点名那一项与原文；证书读不出、不是合法 PEM、两者不配对 →
+    // loadCertificate 回假。
+    // shortcut: acme 那条「有没有 TLS 口可装回」的装配自洽判据要数真对象才成立，本开关不覆盖那一格
+    if (validateConfigurationOnly)
+    {
+        if (useHttps)
+        {
+            try
+            {
+                const Core::TlsContext tlsContext(configuration.tlsPolicy, Core::TlsContext::Role::Server);
+                if (!tlsContext.loadCertificate(certificateFile, keyFile))
+                {
+                    LOG_ERROR_FMT("配置校验失败：证书读不出、不是合法 PEM 或与私钥不配对（证书 {}、私钥 {}）", certificateFile, keyFile);
+                    return 1;
+                }
+            } catch (const Base::Exception &tlsFailure)
+            {
+                LOG_ERROR_FMT("配置校验失败：server.tls 里有 OpenSSL 拒掉的取值（{}）", tlsFailure.what());
+                return 1;
+            }
+        }
+        // 报出来的数就是上面真打开过的文件数：写成一个固定值会在下一次加校验点的那天变成假话
+        std::size_t checkedFileCount = ticketKeyFiles.size();
+        if (!configFile.empty())
+        {
+            ++checkedFileCount;
+        }
+        if (useHttps)
+        {
+            checkedFileCount += 2;
+        }
+        if (!statelessResetKeyFile.empty())
+        {
+            ++checkedFileCount;
+        }
+        if (!configuration.tlsPolicy.certificateAuthorityFile.empty())
+        {
+            ++checkedFileCount;
+        }
+        if (!configuration.tlsPolicy.revocationListFile.empty())
+        {
+            ++checkedFileCount;
+        }
+        LOG_INFO_FMT("配置可用（含 {} 处文件校验）", checkedFileCount);
+        return 0;
     }
 
     if (threads == 0)
