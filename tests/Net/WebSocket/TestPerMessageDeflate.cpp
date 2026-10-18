@@ -329,7 +329,7 @@ namespace AsynGyanis::Net
     {
         // 响应只回两条 no_context_takeover（服务端不额外声明窗口）：两侧都是缺省 15
         const auto defaultWindow = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; client_no_context_takeover", kPerMessageDeflateClientOffer);
-        ASSERT_HAS_VALUE(defaultWindow) << defaultWindow.error();
+        ASSERT_HAS_VALUE(defaultWindow) << defaultWindow.error().message;
         ASSERT_TRUE(defaultWindow->has_value());
         EXPECT_EQ(defaultWindow->value().compressBits, 15);
         EXPECT_EQ(defaultWindow->value().decompressBits, 15);
@@ -337,14 +337,14 @@ namespace AsynGyanis::Net
         // 响应声明了窗口：本端压缩窗口受响应 client_max_window_bits 限制，解压窗口按响应 server_max_window_bits 开
         const auto narrowed = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; client_max_window_bits=12; server_max_window_bits=10",
                                                               kPerMessageDeflateClientOffer);
-        ASSERT_HAS_VALUE(narrowed) << narrowed.error();
+        ASSERT_HAS_VALUE(narrowed) << narrowed.error().message;
         ASSERT_TRUE(narrowed->has_value());
         EXPECT_EQ(narrowed->value().compressBits, 12) << "本端压缩窗口要按响应的 client_max_window_bits 归位";
         EXPECT_EQ(narrowed->value().decompressBits, 10) << "本端解压窗口要按响应的 server_max_window_bits 归位";
 
         // 扩展名与参数名按 token 语义大小写不敏感（RFC 6455 §9.1），同一份响应换个大小写照收
         const auto differentCase = acceptPerMessageDeflateResponse("PerMessage-Deflate; Server_No_Context_Takeover", kPerMessageDeflateClientOffer);
-        ASSERT_HAS_VALUE(differentCase) << differentCase.error();
+        ASSERT_HAS_VALUE(differentCase) << differentCase.error().message;
         EXPECT_TRUE(differentCase->has_value());
     }
 
@@ -354,7 +354,7 @@ namespace AsynGyanis::Net
     TEST(PerMessageDeflate, ReportsAbsenceOfTheExtensionAsNoAgreement)
     {
         const auto absent = acceptPerMessageDeflateResponse("", kPerMessageDeflateClientOffer);
-        ASSERT_HAS_VALUE(absent) << absent.error();
+        ASSERT_HAS_VALUE(absent) << absent.error().message;
         EXPECT_FALSE(absent->has_value());
 
         const auto otherExtension = acceptPerMessageDeflateResponse("permessage-foo", kPerMessageDeflateClientOffer);
@@ -370,12 +370,12 @@ namespace AsynGyanis::Net
         // ① 含本扩展未定义的参数名
         const auto unknownParameter = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; x_fancy=1", kPerMessageDeflateClientOffer);
         ASSERT_FALSE(unknownParameter.has_value());
-        EXPECT_NE(unknownParameter.error().find("x_fancy"), std::string::npos) << unknownParameter.error();
+        EXPECT_NE(unknownParameter.error().message.find("x_fancy"), std::string::npos) << unknownParameter.error().message;
 
         // ② 取值非法：布尔参数带值、窗口位数越界、带前导零
         const auto booleanWithValue = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover=1", kPerMessageDeflateClientOffer);
         ASSERT_FALSE(booleanWithValue.has_value());
-        EXPECT_NE(booleanWithValue.error().find("server_no_context_takeover"), std::string::npos) << booleanWithValue.error();
+        EXPECT_NE(booleanWithValue.error().message.find("server_no_context_takeover"), std::string::npos) << booleanWithValue.error().message;
         EXPECT_FALSE(acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; server_max_window_bits=20", kPerMessageDeflateClientOffer).has_value());
         EXPECT_FALSE(acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; server_max_window_bits=09", kPerMessageDeflateClientOffer).has_value());
 
@@ -392,13 +392,13 @@ namespace AsynGyanis::Net
         // ④ 配置本端支持不了之一：要约要求了 server_no_context_takeover，响应却没承诺——本端解压器无状态，接不住
         const auto takeoverNotPrevented = acceptPerMessageDeflateResponse("permessage-deflate; client_no_context_takeover", kPerMessageDeflateClientOffer);
         ASSERT_FALSE(takeoverNotPrevented.has_value());
-        EXPECT_NE(takeoverNotPrevented.error().find("server_no_context_takeover"), std::string::npos) << takeoverNotPrevented.error();
+        EXPECT_NE(takeoverNotPrevented.error().message.find("server_no_context_takeover"), std::string::npos) << takeoverNotPrevented.error().message;
 
         // ④ 之二：响应带 client_max_window_bits 而要约没带过（§7.1.2.2 明写这种响应 MUST NOT 出现）
         const auto unrequestedClientWindow =
                 acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; client_max_window_bits=10", "permessage-deflate; server_no_context_takeover");
         ASSERT_FALSE(unrequestedClientWindow.has_value());
-        EXPECT_NE(unrequestedClientWindow.error().find("client_max_window_bits"), std::string::npos) << unrequestedClientWindow.error();
+        EXPECT_NE(unrequestedClientWindow.error().message.find("client_max_window_bits"), std::string::npos) << unrequestedClientWindow.error().message;
     }
 
     /**
@@ -410,12 +410,12 @@ namespace AsynGyanis::Net
         const auto widened = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; server_max_window_bits=12",
                                                              "permessage-deflate; server_no_context_takeover; server_max_window_bits=10");
         ASSERT_FALSE(widened.has_value());
-        EXPECT_NE(widened.error().find("server_max_window_bits"), std::string::npos) << widened.error();
+        EXPECT_NE(widened.error().message.find("server_max_window_bits"), std::string::npos) << widened.error().message;
 
         // 要约没带 server_max_window_bits，服务端主动声明自己的压缩窗口（§7.1.2.1 的 MAY）：合法，本端解压按它收小
         const auto serverOwnDeclaration = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; server_max_window_bits=9",
                                                                           "permessage-deflate; server_no_context_takeover; client_max_window_bits");
-        ASSERT_HAS_VALUE(serverOwnDeclaration) << serverOwnDeclaration.error();
+        ASSERT_HAS_VALUE(serverOwnDeclaration) << serverOwnDeclaration.error().message;
         ASSERT_TRUE(serverOwnDeclaration->has_value());
         EXPECT_EQ(serverOwnDeclaration->value().decompressBits, 9);
         EXPECT_EQ(serverOwnDeclaration->value().compressBits, 15) << "响应没提 client_max_window_bits，本端压缩窗口按缺省 15";

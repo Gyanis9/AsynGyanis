@@ -1,4 +1,5 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
+#include "Net/WebSocket/WebSocketError.h"
 
 #include <zlib.h>
 
@@ -549,13 +550,14 @@ namespace AsynGyanis::Net
          *          都收在这一处；与扫描器分开是让「两侧对照的那一段判据」独立成段、逐条可对表。
          * @param response 响应侧扫描结果
          * @param offer 要约侧扫描结果（本端自己拼的，坏形态按内部不一致拒）
-         * @return std::expected<std::optional<PerMessageDeflateWindow>, std::string> 同 acceptPerMessageDeflateResponse 的约定
+         * @return WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>> 同 acceptPerMessageDeflateResponse 的约定
          */
-        std::expected<std::optional<PerMessageDeflateWindow>, std::string> reconcilePerMessageDeflateParameters(const ScanResult &response, const ScanResult &offer)
+        WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>> reconcilePerMessageDeflateParameters(const ScanResult &response, const ScanResult &offer)
         {
             if (!response.problem.empty())
             {
-                return std::unexpected("101 应答的 permessage-deflate 无法接受：" + response.problem + "（RFC 7692 §7.1 的客户端失败条件）");
+                return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeflateNegotiationRejected,
+                                                             "101 应答的 permessage-deflate 无法接受：" + response.problem + "（RFC 7692 §7.1 的客户端失败条件）"});
             }
             if (!response.foundExtension)
             {
@@ -566,7 +568,9 @@ namespace AsynGyanis::Net
             if (!offer.problem.empty() || !offer.foundExtension)
             {
                 // 要约是本端自己拼的：走到这里说明两张表脱节，按内部不一致拒并点名（不该发生）
-                return std::unexpected("本端发出的 permessage-deflate 要约不合规（" + (offer.problem.empty() ? "要约里没有这个扩展" : offer.problem) + "）：本端内部实现不一致");
+                return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid,
+                                                             "本端发出的 permessage-deflate 要约不合规（" + (offer.problem.empty() ? "要约里没有这个扩展" : offer.problem) +
+                                                                     "）：本端内部实现不一致"});
             }
 
             // 第四类失败条件之一：要约要求了 server_no_context_takeover，响应却没承诺。本端解压器按
@@ -574,22 +578,25 @@ namespace AsynGyanis::Net
             // 上下文时本端接不住（RFC 7692 §7.1.1：接受带该参数要约的方式就是在响应里带上它）
             if (offer.hasServerNoContext && !response.hasServerNoContext)
             {
-                return std::unexpected("响应对要约没有回 server_no_context_takeover（RFC 7692 §7.1.1）：服务端不承诺每条消息重置上下文，"
-                                       "而本端解压器无状态、接不住可能跨消息复用上下文的配置，本次握手按失败处理");
+                return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeflateNegotiationRejected,
+                                                             "响应对要约没有回 server_no_context_takeover（RFC 7692 §7.1.1）：服务端不承诺每条消息重置上下文，"
+                                                             "而本端解压器无状态、接不住可能跨消息复用上下文的配置，本次握手按失败处理"});
             }
 
             // §7.1.2.2：要约没带 client_max_window_bits 时响应 MUST NOT 带它——对上了说明对面实现不对
             if (response.hasClientWindowParameter && !offer.hasClientWindowParameter)
             {
-                return std::unexpected("响应带了 client_max_window_bits 而本端要约里没有这一项（RFC 7692 §7.1.2.2 明写这种响应 MUST NOT 出现）："
-                                       "对端实现有问题，本次握手按失败处理");
+                return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeflateNegotiationRejected,
+                                                             "响应带了 client_max_window_bits 而本端要约里没有这一项（RFC 7692 §7.1.2.2 明写这种响应 MUST NOT 出现）："
+                                                             "对端实现有问题，本次握手按失败处理"});
             }
 
             // §7.1.2.1：要约限了服务端压缩窗口时，响应只能 same or smaller
             if (offer.serverWindowBits.has_value() && response.serverWindowBits.has_value() && *response.serverWindowBits > *offer.serverWindowBits)
             {
-                return std::unexpected("响应的 server_max_window_bits=" + std::to_string(*response.serverWindowBits) + " 大于本端要约限制的 " +
-                                       std::to_string(*offer.serverWindowBits) + "（RFC 7692 §7.1.2.1 要求 same or smaller）：本次握手按失败处理");
+                return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeflateNegotiationRejected,
+                                                             "响应的 server_max_window_bits=" + std::to_string(*response.serverWindowBits) + " 大于本端要约限制的 " +
+                                                                     std::to_string(*offer.serverWindowBits) + "（RFC 7692 §7.1.2.1 要求 same or smaller）：本次握手按失败处理"});
             }
 
             // 窗口各归各位：本端压缩窗口按响应的 client_max_window_bits 收（服务端限制本端）、
@@ -692,8 +699,8 @@ namespace AsynGyanis::Net
 
     } // namespace
 
-    std::expected<std::optional<PerMessageDeflateWindow>, std::string> acceptPerMessageDeflateResponse(const std::string_view responseHeaderValue,
-                                                                                                       const std::string_view offerHeaderValue)
+    WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>> acceptPerMessageDeflateResponse(const std::string_view responseHeaderValue,
+                                                                                                     const std::string_view offerHeaderValue)
     {
         // 两侧共用同一套参数判据：名字集合、重名、取值形态（RFC 7692 §7.1 的前三类失败条件）
         const auto scan = [](const std::string_view headerValue, const bool isResponse) -> ScanResult

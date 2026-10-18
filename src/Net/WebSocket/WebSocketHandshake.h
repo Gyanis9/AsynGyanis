@@ -14,6 +14,7 @@
 #include "Base/Exception/Exception.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
+#include "Net/WebSocket/WebSocketError.h"
 
 #include <expected>
 #include <optional>
@@ -167,13 +168,13 @@ namespace AsynGyanis::Net
      * @param subprotocols 依优先级排列的子协议名，为空就不发那条头部；名字里带分隔符或控制字符一律拒绝
      * @param extensionsOffer `Sec-WebSocket-Extensions` 的取值原文（本端目前只发 permessage-deflate 那一族），
      *        为空就不发那条头部
-     * @return std::expected<std::string, std::string> 完整的升级请求；拒绝时给中文原因（点明是哪一条取值不合用）
+     * @return WebSocketUpgradeExpected<std::string> 完整的升级请求；拒绝时给中文原因（点明是哪一条取值不合用）
      * @note 拒绝而不是清洗：把 CR/LF 从 Host 或子协议名里悄悄去掉等于替调用方编了一条它没打算发的请求，
      *       留着就是响应拆分与缓存投毒的入口
      */
-    [[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> buildWebSocketUpgradeRequest(std::string_view host, std::string_view requestTarget,
-                                                                                                    std::string_view clientKey, const std::vector<std::string> &subprotocols = {},
-                                                                                                    std::string_view extensionsOffer = {});
+    [[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<std::string> buildWebSocketUpgradeRequest(std::string_view host, std::string_view requestTarget, std::string_view clientKey,
+                                                                                                  const std::vector<std::string> &subprotocols    = {},
+                                                                                                  std::string_view                extensionsOffer = {});
 
     /**
      * @brief 服务端握手应答里本端要落地的几个事实
@@ -199,14 +200,15 @@ namespace AsynGyanis::Net
      * @param headers 应答的头部（按到达顺序的名值对；名按大小写无关比对）
      * @param clientKey 本端发出去的 `Sec-WebSocket-Key` 原文
      * @param offeredExtensions 本端发出去的 `Sec-WebSocket-Extensions` 取值原文；为空表示没提议任何扩展
-     * @return std::expected<WebSocketUpgradeAgreement, std::string> 成立时交回达成的那一小份一致；
+     * @return WebSocketUpgradeExpected<WebSocketUpgradeAgreement> 成立时交回达成的那一小份一致；
      *         不成立时给中文原因，点明判不过的是哪一条
      * @note accept 不等必须拒：那是「对端把这条连接当成别的服务器的续接」的唯一信号，放行等于把后续
      *       每一帧建立在一个没被证实的通道上
      */
-    [[nodiscard]] ASYN_NET_API std::expected<WebSocketUpgradeAgreement, std::string>
-                               validateWebSocketUpgradeResponse(int statusCode, const std::vector<std::pair<std::string, std::string>> &headers, std::string_view clientKey,
-                                                                std::string_view offeredExtensions = {});
+    [[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<WebSocketUpgradeAgreement> validateWebSocketUpgradeResponse(int statusCode,
+                                                                                                                    const std::vector<std::pair<std::string, std::string>> &headers,
+                                                                                                                    std::string_view clientKey,
+                                                                                                                    std::string_view offeredExtensions = {});
 
     /**
      * @brief 构建 101 Switching Protocols 的完整应答报文

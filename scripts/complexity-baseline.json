@@ -131,8 +131,14 @@
     "src/Net/WebSocket/PerMessageDeflate.cpp": [
       139
     ],
+    "src/Net/WebSocket/WebSocketClient.cpp": [
+      106
+    ],
     "src/Net/WebSocket/WebSocketFrame.cpp": [
       111
+    ],
+    "src/Net/WebSocket/WebSocketHandshake.cpp": [
+      104
     ],
     "src/Platform/FileSystem/InotifyFileWatcher.cpp": [
       131

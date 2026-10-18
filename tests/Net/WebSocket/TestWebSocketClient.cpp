@@ -63,13 +63,14 @@ namespace AsynGyanis::Net
         /// 一次用例运行的结论：握手成不成、交付了什么、发出去几帧、以及两份线上读数
         struct ClientRunOutcome
         {
-            bool                        is_connected{false};          ///< connect() 是否成功
-            std::string                 failure_reason;               ///< 失败时点明断在哪一段
-            std::vector<WebSocketFrame> delivered;                    ///< 会话交给业务的消息
-            std::vector<bool>           send_results;                 ///< 用例里几次 send*/close 的结论
-            std::string                 receive_error;                ///< receive() 交回的拒因
-            std::string                 accepted_subprotocol;         ///< 握手谈定的子协议
-            bool                        is_open_after_actions{false}; ///< 动作跑完时会话是否仍对开
+            bool                                     is_connected{false};          ///< connect() 是否成功
+            std::string                              failure_reason;               ///< 失败时点明断在哪一段
+            std::vector<WebSocketFrame>              delivered;                    ///< 会话交给业务的消息
+            std::vector<bool>                        send_results;                 ///< 用例里几次 send*/close 的结论
+            std::string                              receive_error;                ///< receive() 交回的拒因
+            std::optional<WebSocketSessionErrorKind> receive_kind;                 ///< receive() 交回的类别：拒因文本会改，这一格才是调用方能分支的那一层
+            std::string                              accepted_subprotocol;         ///< 握手谈定的子协议
+            bool                                     is_open_after_actions{false}; ///< 动作跑完时会话是否仍对开
         };
         using Action     = std::function<Core::Task<void>(WebSocketClient &, ClientRunOutcome &)>;
         using PeerScript = std::function<void(class PeerWire &)>;
@@ -466,7 +467,7 @@ namespace AsynGyanis::Net
             auto connected = co_await WebSocketClient::connect(loop, configuration);
             if (!connected.has_value())
             {
-                outcome.failure_reason = connected.error();
+                outcome.failure_reason = connected.error().message;
                 loop.stop();
                 co_return;
             }
@@ -532,7 +533,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             co_return;
         };
@@ -606,7 +607,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             co_return;
         };
@@ -686,7 +687,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             co_return;
         };
@@ -724,7 +725,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             observedRemoteCode = client.remoteCloseCode();
             co_return;
@@ -761,7 +762,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             observedRemoteCode = client.remoteCloseCode();
             observedReason     = std::string(client.remoteCloseReason());
@@ -856,7 +857,8 @@ namespace AsynGyanis::Net
             const auto received = co_await client.receive();
             if (!received.has_value())
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
+                outcome.receive_kind  = received.error().kind;
             } else
             {
                 outcome.delivered.push_back(*received);
@@ -868,7 +870,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
         EXPECT_EQ(outcome.delivered.size(), 0U);
         EXPECT_NE(outcome.receive_error.find("掩码"), std::string::npos) << outcome.receive_error;
+        ASSERT_TRUE(outcome.receive_kind.has_value());
+        EXPECT_EQ(*outcome.receive_kind, WebSocketSessionErrorKind::ProtocolFramingRejected) << "服务端发掩码帧是帧层违例，不能与超限并成一档";
         EXPECT_FALSE(outcome.is_open_after_actions);
+        ;
     }
     TEST(WebSocketClient, FailsWhenPeerSelectsUnofferedSubprotocol)
     {
@@ -908,7 +913,8 @@ namespace AsynGyanis::Net
             const auto received = co_await client.receive();
             if (!received.has_value())
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
+                outcome.receive_kind  = received.error().kind;
             }
             co_return;
         };
@@ -918,6 +924,8 @@ namespace AsynGyanis::Net
         const ClientRunOutcome              outcome = runClientAgainst(script, action, configuration, wireBytes);
         ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
         EXPECT_NE(outcome.receive_error.find("上限"), std::string::npos) << outcome.receive_error;
+        ASSERT_TRUE(outcome.receive_kind.has_value());
+        EXPECT_EQ(*outcome.receive_kind, WebSocketSessionErrorKind::MessageLimitExceeded) << "超限要能不看文案就判成「太大」这一档";
         EXPECT_FALSE(outcome.is_open_after_actions);
         const auto close = frameAt(wireBytes.second, 0);
         ASSERT_HAS_VALUE(close) << "越限之后没按协议出声";
@@ -1069,7 +1077,7 @@ namespace AsynGyanis::Net
                 outcome.delivered.push_back(*received);
             } else
             {
-                outcome.receive_error = received.error();
+                outcome.receive_error = received.error().message;
             }
             co_return;
         };

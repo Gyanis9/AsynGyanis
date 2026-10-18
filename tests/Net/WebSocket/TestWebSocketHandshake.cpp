@@ -410,7 +410,7 @@ namespace AsynGyanis::Net
     {
         const auto request = buildWebSocketUpgradeRequest("example.com:8443", "/chat?room=1", kRfcExampleClientKey);
 
-        ASSERT_HAS_VALUE(request) << request.error();
+        ASSERT_HAS_VALUE(request) << request.error().message;
         EXPECT_EQ(*request, "GET /chat?room=1 HTTP/1.1\r\n"
                             "Host: example.com:8443\r\n"
                             "Upgrade: websocket\r\n"
@@ -428,7 +428,7 @@ namespace AsynGyanis::Net
         const auto request = buildWebSocketUpgradeRequest("example.com", "/ws", kRfcExampleClientKey, std::vector<std::string>{"chat", "superchat"},
                                                           "permessage-deflate; client_max_window_bits=12");
 
-        ASSERT_HAS_VALUE(request) << request.error();
+        ASSERT_HAS_VALUE(request) << request.error().message;
         EXPECT_NE(request->find("Sec-WebSocket-Protocol: chat, superchat\r\n"), std::string::npos) << *request;
         EXPECT_NE(request->find("Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=12\r\n"), std::string::npos) << *request;
         EXPECT_TRUE(request->ends_with("\r\n\r\n")) << "结束空行必须还是那一个空行：" << *request;
@@ -446,7 +446,8 @@ namespace AsynGyanis::Net
             FAIL() << "Host 里的 CRLF 必须被拒掉，而不是被清洗后发出";
         } else
         {
-            EXPECT_TRUE(injectedHost.error().find("Host") != std::string::npos) << injectedHost.error();
+            EXPECT_TRUE(injectedHost.error().message.find("Host") != std::string::npos) << injectedHost.error().message;
+            EXPECT_EQ(injectedHost.error().kind, WebSocketUpgradeErrorKind::LocalRequestInvalid) << "本端交不出合法请求，与对端回的应答不合是两档";
         }
 
         if (const auto spacedTarget = buildWebSocketUpgradeRequest("example.com", "/a b", kRfcExampleClientKey); spacedTarget.has_value())
@@ -470,7 +471,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey);
 
-        ASSERT_HAS_VALUE(agreement) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error().message;
         EXPECT_TRUE(agreement->acceptedSubprotocol.empty());
         EXPECT_FALSE(agreement->isPerMessageDeflateAccepted);
     }
@@ -504,7 +505,8 @@ namespace AsynGyanis::Net
             FAIL() << "Connection 缺 upgrade token 时必须拒";
         } else
         {
-            EXPECT_TRUE(badConnection.error().find("Connection") != std::string::npos) << badConnection.error();
+            EXPECT_TRUE(badConnection.error().message.find("Connection") != std::string::npos) << badConnection.error().message;
+            EXPECT_EQ(badConnection.error().kind, WebSocketUpgradeErrorKind::UpgradeHeadersInvalid);
         }
 
         // Accept 缺、错值、以及同名两条：都不成立
@@ -535,7 +537,8 @@ namespace AsynGyanis::Net
             FAIL() << "回显空值的 Sec-WebSocket-Protocol 被当成了「没选子协议」放行";
         } else
         {
-            EXPECT_TRUE(emptyProtocol.error().find("子协议") != std::string::npos) << emptyProtocol.error();
+            EXPECT_TRUE(emptyProtocol.error().message.find("子协议") != std::string::npos) << emptyProtocol.error().message;
+            EXPECT_EQ(emptyProtocol.error().kind, WebSocketUpgradeErrorKind::SubprotocolMismatch);
         }
 
         // 单条里拼了多个子协议（逗号列表）：值不是单个 token，同拒
@@ -562,7 +565,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate; client_max_window_bits=12");
 
-        ASSERT_HAS_VALUE(agreement) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error().message;
         EXPECT_EQ(agreement->acceptedSubprotocol, "chat") << "回显值两侧的空白不属于内容，要折掉再交回";
         EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
     }
@@ -584,7 +587,8 @@ namespace AsynGyanis::Net
             FAIL() << "本端没提议扩展时，对面回了 permessage-deflate 必须判失败";
         } else
         {
-            EXPECT_TRUE(agreement.error().find("没提议") != std::string::npos) << agreement.error();
+            EXPECT_TRUE(agreement.error().message.find("没提议") != std::string::npos) << agreement.error().message;
+            EXPECT_EQ(agreement.error().kind, WebSocketUpgradeErrorKind::ExtensionEchoInvalid) << "回了没提议的扩展要单列一档，不能混进「应答形状不对」";
         }
     }
 
@@ -628,7 +632,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate");
 
-        ASSERT_HAS_VALUE(agreement) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error().message;
         EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
     }
 

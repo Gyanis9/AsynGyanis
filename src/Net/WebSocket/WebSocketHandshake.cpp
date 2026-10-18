@@ -4,6 +4,7 @@
 #include "Core/Crypto/Digest.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
+#include "Net/WebSocket/WebSocketError.h"
 
 #include <algorithm>
 #include <charconv>
@@ -262,10 +263,10 @@ namespace AsynGyanis::Net
          * @param extensionValues 应答里 Sec-WebSocket-Extensions 的同名取值，可为空
          * @param offeredExtensions 本端这次提议的扩展原文，拒因里要原样回显给用户看
          * @param agreement 出参：命中 permessage-deflate 时置 isPerMessageDeflateAccepted
-         * @return std::expected<void, std::string> 失败即回显了未提议过的扩展
+         * @return WebSocketUpgradeStatus 失败即回显了未提议过的扩展
          */
-        std::expected<void, std::string> checkExtensionEcho(const std::vector<std::string_view> &extensionValues, const std::string_view offeredExtensions,
-                                                            WebSocketUpgradeAgreement &agreement)
+        WebSocketUpgradeStatus checkExtensionEcho(const std::vector<std::string_view> &extensionValues, const std::string_view offeredExtensions,
+                                                  WebSocketUpgradeAgreement &agreement)
         {
             const std::vector<std::string> offeredExtensionNames = splitExtensionNames(offeredExtensions);
             for (const std::string_view extensionValue: extensionValues)
@@ -276,7 +277,9 @@ namespace AsynGyanis::Net
                                                         [&extensionName](const std::string &offered) { return equalsIgnoringCase(offered, extensionName); });
                     if (!wasOffered)
                     {
-                        return std::unexpected(std::format("101 应答回了本端没提议过的扩展「{}」（RFC 6455 §9.1）：本端只提议了「{}」", extensionName, offeredExtensions));
+                        return std::unexpected(
+                                WebSocketUpgradeError{WebSocketUpgradeErrorKind::ExtensionEchoInvalid,
+                                                      std::format("101 应答回了本端没提议过的扩展「{}」（RFC 6455 §9.1）：本端只提议了「{}」", extensionName, offeredExtensions)});
                     }
                     if (equalsIgnoringCase(extensionName, kPerMessageDeflateExtensionName))
                     {
@@ -474,13 +477,13 @@ namespace AsynGyanis::Net
         return response;
     }
 
-    std::expected<std::string, std::string> buildWebSocketUpgradeRequest(const std::string_view host, const std::string_view requestTarget, const std::string_view clientKey,
-                                                                         const std::vector<std::string> &subprotocols, const std::string_view extensionsOffer)
+    WebSocketUpgradeExpected<std::string> buildWebSocketUpgradeRequest(const std::string_view host, const std::string_view requestTarget, const std::string_view clientKey,
+                                                                       const std::vector<std::string> &subprotocols, const std::string_view extensionsOffer)
     {
         // 各段取值先整体判一遍再拼装：拒因的判据收在 findUpgradeOfferProblem() 里
         if (const std::optional<std::string> problem = findUpgradeOfferProblem(host, requestTarget, clientKey, subprotocols, extensionsOffer); problem.has_value())
         {
-            return std::unexpected(*problem);
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid, *problem});
         }
 
         std::string request;
@@ -526,39 +529,44 @@ namespace AsynGyanis::Net
         return request;
     }
 
-    std::expected<WebSocketUpgradeAgreement, std::string> validateWebSocketUpgradeResponse(const int statusCode, const std::vector<std::pair<std::string, std::string>> &headers,
-                                                                                           const std::string_view clientKey, const std::string_view offeredExtensions)
+    WebSocketUpgradeExpected<WebSocketUpgradeAgreement> validateWebSocketUpgradeResponse(const int statusCode, const std::vector<std::pair<std::string, std::string>> &headers,
+                                                                                         const std::string_view clientKey, const std::string_view offeredExtensions)
     {
         if (statusCode != 101)
         {
-            return std::unexpected(std::format("对端没回 101 Switching Protocols，而是 {}：这次升级不成立，请核对地址、端口与 TLS 配置", statusCode));
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::NotSwitchingProtocols,
+                                                         std::format("对端没回 101 Switching Protocols，而是 {}：这次升级不成立，请核对地址、端口与 TLS 配置", statusCode)});
         }
 
         if (!anyValueContainsToken(headerValues(headers, "upgrade"), "websocket"))
         {
-            return std::unexpected("101 应答的 Upgrade 头里没有 websocket 这个 token（RFC 6455 §4.2.2 第 2 条）：对面升上去的不是 WebSocket 协议");
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::UpgradeHeadersInvalid,
+                                                         "101 应答的 Upgrade 头里没有 websocket 这个 token（RFC 6455 §4.2.2 第 2 条）：对面升上去的不是 WebSocket 协议"});
         }
 
         // Connection 必须显式带上 upgrade：它是让中间设施放行这次协议切换的开关，缺了它后续帧
         // 可能被按 HTTP 报文缓存下来
         if (!anyValueContainsToken(headerValues(headers, "connection"), "upgrade"))
         {
-            return std::unexpected("101 应答的 Connection 头里没有 upgrade 这个 token（RFC 6455 §4.2.2 第 3 条）：中间设施不会放行这条协议切换");
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::UpgradeHeadersInvalid,
+                                                         "101 应答的 Connection 头里没有 upgrade 这个 token（RFC 6455 §4.2.2 第 3 条）：中间设施不会放行这条协议切换"});
         }
 
         const std::vector<std::string_view> acceptValues = headerValues(headers, kWebSocketAcceptHeaderName);
         if (acceptValues.size() != 1)
         {
-            return std::unexpected(std::format("101 应答里的 {} 头部有 {} 条（必须是恰好一条）：两条 accept 意味着这条应答不是回给本端这次握手的", kWebSocketAcceptHeaderName,
-                                               acceptValues.size()));
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::AcceptMismatch,
+                                                         std::format("101 应答里的 {} 头部有 {} 条（必须是恰好一条）：两条 accept 意味着这条应答不是回给本端这次握手的",
+                                                                     kWebSocketAcceptHeaderName, acceptValues.size())});
         }
         const std::string expectedAcceptValue = computeWebSocketAcceptValue(clientKey);
         if (acceptValues.front() != expectedAcceptValue)
         {
             // 逐字节比（base64 大小写有意义）：这里不能折大小写，折了就把「对端算了另一把 key」
             // 误判成「只是排版不同」
-            return std::unexpected(std::format("101 应答的 {} 与本端算出的值不一致（RFC 6455 §4.2.2 第 4 条）：本端算的是 {}，对面回的是 {}", kWebSocketAcceptHeaderName,
-                                               expectedAcceptValue, acceptValues.front()));
+            return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::AcceptMismatch,
+                                                         std::format("101 应答的 {} 与本端算出的值不一致（RFC 6455 §4.2.2 第 4 条）：本端算的是 {}，对面回的是 {}",
+                                                                     kWebSocketAcceptHeaderName, expectedAcceptValue, acceptValues.front())});
         }
 
         WebSocketUpgradeAgreement agreement;
@@ -566,8 +574,9 @@ namespace AsynGyanis::Net
         const std::vector<std::string_view> protocolValues = headerValues(headers, kWebSocketSubprotocolHeaderName);
         if (protocolValues.size() > 1)
         {
-            return std::unexpected(
-                    std::format("101 应答里的 {} 头部有 {} 条：子协议只能选定一个，请核对对面是不是把多条拼了过来", kWebSocketSubprotocolHeaderName, protocolValues.size()));
+            return std::unexpected(WebSocketUpgradeError{
+                    WebSocketUpgradeErrorKind::SubprotocolMismatch,
+                    std::format("101 应答里的 {} 头部有 {} 条：子协议只能选定一个，请核对对面是不是把多条拼了过来", kWebSocketSubprotocolHeaderName, protocolValues.size())});
         }
         if (!protocolValues.empty())
         {
@@ -577,15 +586,18 @@ namespace AsynGyanis::Net
             // 「对面把多条拼在了一条里」，不是「选定了一个」
             if (selectedProtocol.empty())
             {
-                return std::unexpected(
-                        std::format("101 应答的 {} 是一段空值：空串不是「没选子协议」的等价写法（RFC 6455 §4.2.2 明写它不是这个字段的合法值）", kWebSocketSubprotocolHeaderName));
+                return std::unexpected(WebSocketUpgradeError{
+                        WebSocketUpgradeErrorKind::SubprotocolMismatch,
+                        std::format("101 应答的 {} 是一段空值：空串不是「没选子协议」的等价写法（RFC 6455 §4.2.2 明写它不是这个字段的合法值）", kWebSocketSubprotocolHeaderName)});
             }
             for (const char character: selectedProtocol)
             {
                 if (!isTokenCharacter(static_cast<unsigned char>(character)))
                 {
-                    return std::unexpected(std::format("101 应答的 {} 取值「{}」含 token 之外的字符（RFC 6455 §4.3 的 ABNF 是 (token)）：选定一个子协议要单独占一条头，不拼列表",
-                                                       kWebSocketSubprotocolHeaderName, selectedProtocol));
+                    return std::unexpected(WebSocketUpgradeError{
+                            WebSocketUpgradeErrorKind::SubprotocolMismatch,
+                            std::format("101 应答的 {} 取值「{}」含 token 之外的字符（RFC 6455 §4.3 的 ABNF 是 (token)）：选定一个子协议要单独占一条头，不拼列表",
+                                        kWebSocketSubprotocolHeaderName, selectedProtocol)});
                 }
             }
             agreement.acceptedSubprotocol = std::string(selectedProtocol);

@@ -15,6 +15,7 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
+#include "Net/WebSocket/WebSocketError.h"
 #include <openssl/ssl.h>
 #include <algorithm>
 #include <array>
@@ -156,15 +157,16 @@ namespace AsynGyanis::Net
          * @param exchangeBudget 本段（写出请求 + 等到 101）可用的剩余时限；空表示预算已用尽
          * @param requestText 升级请求原文
          * @param target 目标描述，只进拒因文本
-         * @return Core::Task<std::expected<UpgradeExchange, std::string>> 一条完整应答与它之后的那截字节
+         * @return Core::Task<WebSocketUpgradeExpected<UpgradeExchange>> 一条完整应答与它之后的那截字节
          */
-        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverPlain(Core::EventLoop &loop, TcpStream &stream,
-                                                                                  const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
-                                                                                  const std::string target)
+        Core::Task<WebSocketUpgradeExpected<UpgradeExchange>> exchangeOverPlain(Core::EventLoop &loop, TcpStream &stream,
+                                                                                const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
+                                                                                const std::string target)
         {
             if (!exchangeBudget.has_value())
             {
-                co_return std::unexpected(std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target));
+                co_return std::unexpected(
+                        WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeadlineExpired, std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target)});
             }
             // 对端收了请求一言不发时，这条通路上的等待没有别的出口：看门狗到点把套接字关掉，
             // 挂在读上的协程因此被叫醒（关掉描述符本身不会唤醒 epoll 的等待者）
@@ -177,7 +179,8 @@ namespace AsynGyanis::Net
                 co_await stream.writeAll(requestText.data(), requestText.size());
             } catch (const Base::Exception &failure)
             {
-                co_return std::unexpected(std::format("升级请求没能写进通路（目标 {}）：{}。底层原因：{}", target, "连接在握手期间断开或已到时限", failure.what()));
+                co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::TransportFailed, std::format("升级请求没能写进通路（目标 {}）：{}。底层原因：{}", target,
+                                                                                                                        "连接在握手期间断开或已到时限", failure.what())});
             }
             while (true)
             {
@@ -190,12 +193,14 @@ namespace AsynGyanis::Net
                     received = co_await stream.read(chunk.data(), chunk.size());
                 } catch (const Base::Exception &failure)
                 {
-                    co_return std::unexpected(
-                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what()));
+                    co_return std::unexpected(WebSocketUpgradeError{
+                            WebSocketUpgradeErrorKind::TransportFailed,
+                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what())});
                 }
                 if (received < 0)
                 {
-                    co_return std::unexpected(std::format("读取 101 应答时通路出错（目标 {}）：被对端复位或本端被撤", target));
+                    co_return std::unexpected(
+                            WebSocketUpgradeError{WebSocketUpgradeErrorKind::TransportFailed, std::format("读取 101 应答时通路出错（目标 {}）：被对端复位或本端被撤", target)});
                 }
                 const auto outcome = feedUpgradeBytes(parser, exchange.leftover, chunk.data(), received == 0 ? 0 : static_cast<std::size_t>(received), received == 0);
                 if (outcome == UpgradeReadOutcome::NeedsMoreBytes)
@@ -204,11 +209,13 @@ namespace AsynGyanis::Net
                 }
                 if (outcome == UpgradeReadOutcome::PeerClosed)
                 {
-                    co_return std::unexpected(std::format("对端在给出 101 应答之前就把连接关了（目标 {}）：它可能没把这个路径当作 WebSocket 端点", target));
+                    co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::PeerClosedBeforeUpgrade,
+                                                                    std::format("对端在给出 101 应答之前就把连接关了（目标 {}）：它可能没把这个路径当作 WebSocket 端点", target)});
                 }
                 if (outcome == UpgradeReadOutcome::MalformedResponse)
                 {
-                    co_return std::unexpected(std::format("对端的升级应答不是合法 HTTP 报文（目标 {}）：状态行或头部读不懂，或越出了声明的上限", target));
+                    co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::MalformedHttpResponse,
+                                                                    std::format("对端的升级应答不是合法 HTTP 报文（目标 {}）：状态行或头部读不懂，或越出了声明的上限", target)});
                 }
                 exchange.response = parser.result();
                 co_return exchange;
@@ -222,15 +229,16 @@ namespace AsynGyanis::Net
          * @param exchangeBudget 本段（写出请求 + 等到 101）可用的剩余时限；空表示预算已用尽
          * @param requestText 升级请求原文
          * @param target 目标描述，只进拒因文本
-         * @return Core::Task<std::expected<UpgradeExchange, std::string>> 一条完整应答与它之后的那截字节
+         * @return Core::Task<WebSocketUpgradeExpected<UpgradeExchange>> 一条完整应答与它之后的那截字节
          */
-        Core::Task<std::expected<UpgradeExchange, std::string>> exchangeOverTls(Core::EventLoop &loop, Core::TlsSocket &tlsSocket,
-                                                                                const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
-                                                                                const std::string target)
+        Core::Task<WebSocketUpgradeExpected<UpgradeExchange>> exchangeOverTls(Core::EventLoop &loop, Core::TlsSocket &tlsSocket,
+                                                                              const std::optional<std::chrono::milliseconds> exchangeBudget, const std::string_view requestText,
+                                                                              const std::string target)
         {
             if (!exchangeBudget.has_value())
             {
-                co_return std::unexpected(std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target));
+                co_return std::unexpected(
+                        WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeadlineExpired, std::format("WebSocket 出站的握手时限已用尽：还没开始读取 101 应答（目标 {}）", target)});
             }
             const Core::DeadlineGuard<Core::TlsSocket> upgradeDeadline(loop, tlsSocket, *exchangeBudget, "WebSocketClient");
             std::array<char, kExchangeChunkByteLength> chunk{};
@@ -241,11 +249,13 @@ namespace AsynGyanis::Net
                 const ssize_t writtenByte = co_await tlsSocket.asyncSend(requestText.data(), requestText.size());
                 if (writtenByte <= 0)
                 {
-                    co_return std::unexpected(std::format("升级请求没能写进通路（目标 {}）：通路在握手期间被关掉或已到时限", target));
+                    co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::TransportFailed,
+                                                                    std::format("升级请求没能写进通路（目标 {}）：通路在握手期间被关掉或已到时限", target)});
                 }
             } catch (const Base::Exception &failure)
             {
-                co_return std::unexpected(std::format("升级请求没能写进通路（目标 {}）：{}。底层原因：{}", target, "TLS 写出失败", failure.what()));
+                co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::TransportFailed,
+                                                                std::format("升级请求没能写进通路（目标 {}）：{}。底层原因：{}", target, "TLS 写出失败", failure.what())});
             }
             while (true)
             {
@@ -255,8 +265,9 @@ namespace AsynGyanis::Net
                     received = co_await tlsSocket.asyncReceive(chunk.data(), chunk.size());
                 } catch (const Base::Exception &failure)
                 {
-                    co_return std::unexpected(
-                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what()));
+                    co_return std::unexpected(WebSocketUpgradeError{
+                            WebSocketUpgradeErrorKind::TransportFailed,
+                            std::format("读取 101 应答时通路出错（目标 {}）：通路被关掉——本次握手的时限到点，或对端复位、本端把会话撤了。底层原因：{}", target, failure.what())});
                 }
                 const auto outcome = feedUpgradeBytes(parser, exchange.leftover, chunk.data(), received == 0 ? 0 : static_cast<std::size_t>(received), received == 0);
                 if (outcome == UpgradeReadOutcome::NeedsMoreBytes)
@@ -265,11 +276,13 @@ namespace AsynGyanis::Net
                 }
                 if (outcome == UpgradeReadOutcome::PeerClosed)
                 {
-                    co_return std::unexpected(std::format("对端在给出 101 应答之前就把连接关了（目标 {}）：它可能没把这个路径当作 WebSocket 端点", target));
+                    co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::PeerClosedBeforeUpgrade,
+                                                                    std::format("对端在给出 101 应答之前就把连接关了（目标 {}）：它可能没把这个路径当作 WebSocket 端点", target)});
                 }
                 if (outcome == UpgradeReadOutcome::MalformedResponse)
                 {
-                    co_return std::unexpected(std::format("对端的升级应答不是合法 HTTP 报文（目标 {}）：状态行或头部读不懂，或越出了声明的上限", target));
+                    co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::MalformedHttpResponse,
+                                                                    std::format("对端的升级应答不是合法 HTTP 报文（目标 {}）：状态行或头部读不懂，或越出了声明的上限", target)});
                 }
                 exchange.response = parser.result();
                 co_return exchange;
@@ -285,15 +298,16 @@ namespace AsynGyanis::Net
          * @param socket 已经连上的套接字，所有权交给本函数
          * @param hostName 用于 SNI 与主机名校验的名字
          * @param handshakeBudget TLS 那一段的剩余时限；空表示已经没有预算可用
-         * @return Core::Task<std::expected<std::unique_ptr<Core::TlsSocket>, std::string>> 成功交出套接字，失败给中文拒因
+         * @return Core::Task<WebSocketUpgradeExpected<std::unique_ptr<Core::TlsSocket>>> 成功交出套接字，失败给中文拒因
          */
-        Core::Task<std::expected<std::unique_ptr<Core::TlsSocket>, std::string>> makeClientTlsSocket(Core::EventLoop &loop, const Core::TlsContext &context,
-                                                                                                     Core::AsyncSocket socket, const std::string hostName,
-                                                                                                     const std::optional<std::chrono::milliseconds> handshakeBudget)
+        Core::Task<WebSocketUpgradeExpected<std::unique_ptr<Core::TlsSocket>>> makeClientTlsSocket(Core::EventLoop &loop, const Core::TlsContext &context, Core::AsyncSocket socket,
+                                                                                                   const std::string                              hostName,
+                                                                                                   const std::optional<std::chrono::milliseconds> handshakeBudget)
         {
             if (!handshakeBudget.has_value())
             {
-                co_return std::unexpected(std::format("WebSocket 出站的握手时限已用尽：还没开始 TLS 握手（主机 {}）", hostName));
+                co_return std::unexpected(
+                        WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeadlineExpired, std::format("WebSocket 出站的握手时限已用尽：还没开始 TLS 握手（主机 {}）", hostName)});
             }
             // createSSL 把 SSL_new 与 SSL_set_fd 一起做了：少了绑定这一步 SSL_connect 立刻失败，
             // 而错误队列是空的，现场只剩「握手失败」四个字
@@ -314,7 +328,7 @@ namespace AsynGyanis::Net
             {
                 // 还没交给 TlsSocket，这份 SSL 归本函数收尾：漏掉 SSL_free 就是一次带引用的泄漏
                 SSL_free(ssl);
-                co_return std::unexpected("TLS 没能设置 ALPN 协议列表：OpenSSL 拒绝了这份写法");
+                co_return std::unexpected(WebSocketUpgradeError{WebSocketUpgradeErrorKind::TlsSetupRejected, "TLS 没能设置 ALPN 协议列表：OpenSSL 拒绝了这份写法"});
             }
             auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(socket), Core::TlsSocket::Role::Client);
             // 看门狗到点即关套接字：否则「对端不谈了」会让这条协程永久挂着，这一段没有别的出口
@@ -324,8 +338,9 @@ namespace AsynGyanis::Net
                 co_await tlsSocket->handshake();
             } catch (const Base::Exception &failure)
             {
-                co_return std::unexpected(
-                        std::format("TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线（主机 {}）。底层原因：{}", hostName, failure.what()));
+                co_return std::unexpected(WebSocketUpgradeError{
+                        WebSocketUpgradeErrorKind::TlsHandshakeFailed,
+                        std::format("TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线（主机 {}）。底层原因：{}", hostName, failure.what())});
             }
             co_return tlsSocket;
         }
@@ -339,11 +354,11 @@ namespace AsynGyanis::Net
          * @param subprotocols 本端提议过的子协议名单
          * @param offeredExtensions 本端提议过的扩展原文（空表示没提议）；传进校验是为了回显核对
          *        与扩展参数级判据（RFC 7692 §7.1）都按同一次要约对表
-         * @return std::expected<WebSocketUpgradeAgreement, std::string> 谈成的事实，或中文拒因
+         * @return WebSocketUpgradeExpected<WebSocketUpgradeAgreement> 谈成的事实，或中文拒因
          */
-        [[nodiscard]] std::expected<WebSocketUpgradeAgreement, std::string> checkUpgradeAgreement(const HttpResponseInfo &response, const std::string_view clientKey,
-                                                                                                  const std::vector<std::string> &subprotocols,
-                                                                                                  const std::string_view          offeredExtensions)
+        [[nodiscard]] WebSocketUpgradeExpected<WebSocketUpgradeAgreement> checkUpgradeAgreement(const HttpResponseInfo &response, const std::string_view clientKey,
+                                                                                                const std::vector<std::string> &subprotocols,
+                                                                                                const std::string_view          offeredExtensions)
         {
             auto agreement = validateWebSocketUpgradeResponse(response.statusCode, response.headers, clientKey, offeredExtensions);
             if (!agreement.has_value())
@@ -352,8 +367,10 @@ namespace AsynGyanis::Net
             }
             if (!agreement->acceptedSubprotocol.empty() && std::find(subprotocols.begin(), subprotocols.end(), agreement->acceptedSubprotocol) == subprotocols.end())
             {
-                return std::unexpected(std::format("对端选定的子协议「{}」不在本端提议的名单里（RFC 6455 §4.1）：请核对对面的实现，或把这个名字加进 Configuration.subprotocols",
-                                                   agreement->acceptedSubprotocol));
+                return std::unexpected(WebSocketUpgradeError{
+                        WebSocketUpgradeErrorKind::SubprotocolMismatch,
+                        std::format("对端选定的子协议「{}」不在本端提议的名单里（RFC 6455 §4.1）：请核对对面的实现，或把这个名字加进 Configuration.subprotocols",
+                                    agreement->acceptedSubprotocol)});
             }
             return *agreement;
         }
@@ -370,20 +387,23 @@ namespace AsynGyanis::Net
         m_decoder.setPerMessageDeflateEnabled(m_deflateWindow.has_value());
     }
     WebSocketClient::~WebSocketClient() = default;
-    Core::Task<std::expected<std::unique_ptr<WebSocketClient>, std::string>> WebSocketClient::connect(Core::EventLoop &loop, Configuration configuration)
+    Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> WebSocketClient::connect(Core::EventLoop &loop, Configuration configuration)
     {
         // 用法错误在任何资源获取之前判完：解析与连接都是要归还的东西，带着坏参数进去就会留下一条
         // 半途的连接，或者一条永远没人接的协程帧
         if (configuration.hostName.empty())
         {
-            co_return std::unexpected("WebSocket 出站缺 Configuration.hostName：请给出目标主机名或 IP 字面量（它同时用作 Host、SNI 与证书主机名校验的对象）");
+            co_return std::unexpected(
+                    WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid,
+                                          "WebSocket 出站缺 Configuration.hostName：请给出目标主机名或 IP 字面量（它同时用作 Host、SNI 与证书主机名校验的对象）"});
         }
         if (configuration.handshakeTimeout <= std::chrono::milliseconds::zero())
         {
-            co_return std::unexpected(
+            co_return std::unexpected(WebSocketUpgradeError{
+                    WebSocketUpgradeErrorKind::LocalRequestInvalid,
                     std::format("WebSocket 出站的 handshakeTimeout 是 {} 毫秒：建 TCP 连接、TLS 握手与等 101 这三段必须各有时限，0 或负数会让协程停在这三段里出不来。"
                                 "要放宽就写一个更大的正数",
-                                configuration.handshakeTimeout.count()));
+                                configuration.handshakeTimeout.count())});
         }
         const auto startedAt = std::chrono::steady_clock::now();
         // 三段共用一份总时限，各拿「此刻还剩下多少」：连接、TLS 握手、等 101 缺一段都会让总时限形同虚设
@@ -403,17 +423,22 @@ namespace AsynGyanis::Net
         const auto          resolved = co_await Core::AsyncResolver::resolve(loop, configuration.hostName, port);
         if (resolved.empty())
         {
-            co_return std::unexpected(std::format("WebSocket 出站没能把「{}」解析成可用地址：请核对主机名，或直接给 Configuration.hostName 填 IP 字面量", configuration.hostName));
+            co_return std::unexpected(WebSocketUpgradeError{
+                    WebSocketUpgradeErrorKind::AddressUnresolved,
+                    std::format("WebSocket 出站没能把「{}」解析成可用地址：请核对主机名，或直接给 Configuration.hostName 填 IP 字面量", configuration.hostName)});
         }
         const auto connectBudget = remainingBudget();
         if (!connectBudget.has_value())
         {
-            co_return std::unexpected(std::format("WebSocket 出站的 {} 毫秒握手时限已用尽：还没开始建立 TCP 连接（目标 {}）", configuration.handshakeTimeout.count(), target));
+            co_return std::unexpected(
+                    WebSocketUpgradeError{WebSocketUpgradeErrorKind::DeadlineExpired,
+                                          std::format("WebSocket 出站的 {} 毫秒握手时限已用尽：还没开始建立 TCP 连接（目标 {}）", configuration.handshakeTimeout.count(), target)});
         }
         auto candidate = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(resolved), *connectBudget);
         if (!candidate.has_value())
         {
-            co_return std::unexpected(std::format("建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 {}）", target));
+            co_return std::unexpected(
+                    WebSocketUpgradeError{WebSocketUpgradeErrorKind::TransportFailed, std::format("建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 {}）", target)});
         }
         // 时限从「连上了」这一刻起算：握手那一段（写出请求 + 等到 101）拿剩余的预算
         // 这把 key 只用于本次握手：accept 由它算出，核对 101 全靠这条对应关系
@@ -430,9 +455,9 @@ namespace AsynGyanis::Net
             co_return std::unexpected(requestText.error());
         }
         // 升级交换走本端自己持有的套接字对象，做完才把通路交给 HttpOutboundConnection 承载帧
-        std::optional<TcpStream>                                   plainStream;
-        std::unique_ptr<Core::TlsSocket>                           tlsSocket;
-        std::optional<std::expected<UpgradeExchange, std::string>> exchanged;
+        std::optional<TcpStream>                                 plainStream;
+        std::unique_ptr<Core::TlsSocket>                         tlsSocket;
+        std::optional<WebSocketUpgradeExpected<UpgradeExchange>> exchanged;
         if (isTls)
         {
             auto secured = co_await makeClientTlsSocket(loop, *configuration.clientTls, std::move(candidate->socket), configuration.hostName, remainingBudget());
@@ -486,13 +511,13 @@ namespace AsynGyanis::Net
     {
         return m_remoteCloseReason;
     }
-    Core::Task<std::expected<WebSocketFrame, std::string>> WebSocketClient::receive()
+    Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::receive()
     {
         // 收侧只看通路活着没有：本端发过 Close 之后仍然要能读回对端那条 Close（§5.5.1 的握手是双向的），
         // 「还能不能再发」由 m_isOpen 单独管
         if (!m_transport->isOpen())
         {
-            co_return std::unexpected("通路已经关了：这条会话收不到后续消息");
+            co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "通路已经关了：这条会话收不到后续消息"});
         }
         for (;;)
         {
@@ -503,14 +528,17 @@ namespace AsynGyanis::Net
             {
                 // 上限越出按 1009、其余按 1002 尽力告知对端（RFC 6455 §7.4.1）；通路已死时这一步作罢，
                 // 原因已经在交回的字符串里
-                const std::uint16_t closeCode = m_decoder.isLimitExceeded() ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
-                const std::string   errorText = m_decoder.errorMessage();
+                // 关闭码与失败类别同一条判据：超限与帧违例在 RFC 6455 §7.4.1 上本就是两格，调用方要能不看文案就分得开
+                const bool          isOverLimit = m_decoder.isLimitExceeded();
+                const std::uint16_t closeCode   = isOverLimit ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
+                const std::string   errorText   = m_decoder.errorMessage();
                 // 先把「为什么收口」发出去，再把本端置成不可用：反过来写会让这条出声的帧被自家的闸门拦下，
                 // 对端只看到一个没有原因的断开
                 static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(closeCode, {}))));
                 m_isOpen = false;
                 m_transport->close();
-                co_return std::unexpected(errorText);
+                co_return std::unexpected(
+                        WebSocketSessionError{isOverLimit ? WebSocketSessionErrorKind::MessageLimitExceeded : WebSocketSessionErrorKind::ProtocolFramingRejected, errorText});
             }
             if (status == WebSocketDecodeStatus::Frame)
             {
@@ -531,7 +559,7 @@ namespace AsynGyanis::Net
                         static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(kWebSocketProtocolErrorCode, {}))));
                         m_isOpen = false;
                         m_transport->close();
-                        co_return std::unexpected(errorText);
+                        co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::CompressedMessageUnusable, errorText});
                     }
                     frame.payload = std::move(*inflated);
                 }
@@ -541,7 +569,8 @@ namespace AsynGyanis::Net
                     if (!co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Pong, frame.payload)))
                     {
                         m_isOpen = false;
-                        co_return std::unexpected("回应 Pong 时通路已不可用：这次心跳没能答出去，连接按已断开处理");
+                        co_return std::unexpected(
+                                WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "回应 Pong 时通路已不可用：这次心跳没能答出去，连接按已断开处理"});
                     }
                     continue;
                 }
@@ -561,17 +590,18 @@ namespace AsynGyanis::Net
             if (received == 0)
             {
                 m_isOpen = false;
-                co_return std::unexpected("对端没有留下 Close 帧就收了线（RFC 6455 §7.1.1 的快速断开）：本端按已关闭处理");
+                co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::PeerClosedWithoutCloseFrame,
+                                                                "对端没有留下 Close 帧就收了线（RFC 6455 §7.1.1 的快速断开）：本端按已关闭处理"});
             }
             if (received < 0)
             {
                 m_isOpen = false;
-                co_return std::unexpected("读取帧时通路出错：连接已断开、被对端复位，或本端把它关了");
+                co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::ConnectionLostWhileReading, "读取帧时通路出错：连接已断开、被对端复位，或本端把它关了"});
             }
             m_inboundBytes.append(m_readBuffer.data(), static_cast<std::size_t>(received));
         }
     }
-    Core::Task<std::expected<WebSocketFrame, std::string>> WebSocketClient::answerPeerClose(const WebSocketFrame &closeFrame)
+    Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::answerPeerClose(const WebSocketFrame &closeFrame)
     {
         // 收侧判定与服务端共用一处（RFC 6455 §5.5.1 / §7.4.1）：非法码回 1002、原因非 UTF-8 回 1007、
         // 合规的原样答回；对端那个码原值记进 remoteCloseCode()，业务据此看得见「对端是违例关闭的」

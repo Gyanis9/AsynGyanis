@@ -10,6 +10,7 @@
 #pragma once
 
 #include "AsynGyanisExport.h"
+#include "Net/WebSocket/WebSocketError.h"
 
 #include <cstddef>
 #include <expected>
@@ -143,12 +144,12 @@ namespace AsynGyanis::Net
      *          不要求要约先带过。
      * @param responseHeaderValue 101 应答里 Sec-WebSocket-Extensions 的全部取值拼成的一段文本
      * @param offerHeaderValue 本端发出去的同名头部原文（含参数；用于校验响应与要约的一致性）
-     * @return std::expected<std::optional<PerMessageDeflateWindow>, std::string>
+     * @return WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>>
      *         响应里没有 permessage-deflate 时交回空 optional（未启用扩展，连接按明文继续）；
      *         无法接受时交回中文原因（点明判不过的是哪一条）；可接受时交回两侧窗口位数
      * @note 响应里出现两段 permessage-deflate 元素按「同名重复」拒绝：哪一段是服务端真正的意思
      *       无从判断，带着猜出来的配置开连接是「看起来成功了」的最坏形态
      */
-    [[nodiscard]] ASYN_NET_API std::expected<std::optional<PerMessageDeflateWindow>, std::string> acceptPerMessageDeflateResponse(std::string_view responseHeaderValue,
-                                                                                                                                  std::string_view offerHeaderValue);
+    [[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>> acceptPerMessageDeflateResponse(std::string_view responseHeaderValue,
+                                                                                                                                std::string_view offerHeaderValue);
 } // namespace AsynGyanis::Net

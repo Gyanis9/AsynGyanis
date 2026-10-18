@@ -14,6 +14,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
+#include "Net/WebSocket/WebSocketError.h"
 
 #include <chrono>
 #include <cstddef>
@@ -79,11 +80,11 @@ namespace AsynGyanis
              * @details 失败一律交回中文原因并点明断在哪一段（解析 / 连接 / TLS / 101 核对），调用方无需再看日志即可分支。
              * @param loop 本会话所属的事件循环
              * @param configuration 握手参数
-             * @return Core::Task<std::expected<std::unique_ptr<WebSocketClient>, std::string>> 成功交出可用的会话
+             * @return Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> 成功交出可用的会话
              * @throws Base::Exception 系统的密码学随机源不可用：本端取不出 `Sec-WebSocket-Key` 或帧掩码键，
              *         没有它们就不能开始这次握手（RFC 6455 §5.3 的抗缓存重放全靠这两把键）
              */
-            [[nodiscard]] static Core::Task<std::expected<std::unique_ptr<WebSocketClient>, std::string>> connect(Core::EventLoop &loop, Configuration configuration);
+            [[nodiscard]] static Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> connect(Core::EventLoop &loop, Configuration configuration);
 
             WebSocketClient(const WebSocketClient &)            = delete;
             WebSocketClient &operator=(const WebSocketClient &) = delete;
@@ -134,10 +135,10 @@ namespace AsynGyanis
              * @details 分片消息由解码器重组完才交；控制帧在这一格处理掉：收到的 Ping 自动按原负载回 Pong，
              *          收到的 Pong 就地消费，收到的 Close 会按同一状态码回一条 Close（RFC 6455 §5.5.1）
              *          并把帧交回调用方，同时本会话置为不可用。
-             * @return Core::Task<std::expected<WebSocketFrame, std::string>> 交出的帧操作码只可能是 Text、Binary、Close；
+             * @return Core::Task<WebSocketSessionExpected<WebSocketFrame>> 交出的帧操作码只可能是 Text、Binary、Close；
              *         失败原因点明是对端违反协议、对端未留 Close 就收口，还是本端已经收口
              */
-            [[nodiscard]] Core::Task<std::expected<WebSocketFrame, std::string>> receive();
+            [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive();
 
             /**
              * @brief 发一条文本消息（单个末帧，负载必须是合法 UTF-8 由调用方保证）
@@ -211,9 +212,9 @@ namespace AsynGyanis
             /**
              * @brief 应答对端那条 Close：按同一状态码回一条，然后把通路收掉
              * @param closeFrame 解码器交回的 Close 帧，负载是 {2 字节大端码}[原因]
-             * @return Core::Task<std::expected<WebSocketFrame, std::string>> 交回对端那条帧，让业务看见对端给的码与原因
+             * @return Core::Task<WebSocketSessionExpected<WebSocketFrame>> 交回对端那条帧，让业务看见对端给的码与原因
              */
-            [[nodiscard]] Core::Task<std::expected<WebSocketFrame, std::string>> answerPeerClose(const WebSocketFrame &closeFrame);
+            [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> answerPeerClose(const WebSocketFrame &closeFrame);
 
             /// 取一条消息用的读缓冲大小：与 TcpStream 同档，够让一帧在少数几轮里读完
             static constexpr std::size_t kReadChunkByteLength = 16384;
