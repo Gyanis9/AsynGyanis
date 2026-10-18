@@ -49,7 +49,8 @@ namespace AsynGyanis::Net
         return encoded;
     }
 
-    std::string aliyunRpcSignature(const std::string_view httpMethod, const std::map<std::string, std::string> &parameters, const std::string_view accessKeySecret)
+    std::expected<std::string, std::string> aliyunRpcSignature(const std::string_view httpMethod, const std::map<std::string, std::string> &parameters,
+                                                               const std::string_view accessKeySecret)
     {
         // 参数表按名字的 ASCII 序拼串：map 本身就是这个序，不需要再排一次
         std::string canonicalQuery;
@@ -67,9 +68,19 @@ namespace AsynGyanis::Net
         const std::string stringToSign = std::string(httpMethod) + "&" + aliyunPercentEncode("/") + "&" + aliyunPercentEncode(canonicalQuery);
         // 密钥是「Secret + &」而不是 Secret：少那个 & 会稳定地得到 SignatureDoesNotMatch，
         // 而服务端不会告诉你是哪一段拼错了
-        const std::string             signingKey = std::string(accessKeySecret) + "&";
-        const Core::Digest::Sha1Value digest     = Core::Digest::hmacSha1(signingKey, stringToSign);
-        return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+        const std::string signingKey = std::string(accessKeySecret) + "&";
+        try
+        {
+            const Core::Digest::Sha1Value digest = Core::Digest::hmacSha1(signingKey, stringToSign);
+            return Base::base64Encode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+        } catch (const Base::Exception &failure)
+        {
+            // 签名这一档不能像 nonce 那样降级：一条没签名的请求到机构那边只回 SignatureDoesNotMatch，
+            // 白烧一次限流额度还查不出原因。抛出也不取——call() 是条承诺交回 expected 的协程
+            return std::unexpected(std::format("算不出阿里云 OpenAPI 请求的 HMAC-SHA1 签名：{}。这一档与域名与凭据值无关，"
+                                               "查本进程的 OpenSSL provider 配置",
+                                               failure.what()));
+        }
     }
 
     std::chrono::milliseconds aliyunRewriteQuietPeriod(const std::chrono::milliseconds sinceWithdrawal, const std::uint32_t recordTtlSeconds)
@@ -478,8 +489,12 @@ namespace AsynGyanis::Net
                 parameters["Timestamp"]        = utcTimestamp();
                 parameters["SignatureNonce"]   = makeSignatureNonce();
                 // 签名覆盖的是「除 Signature 之外的全部参数」，所以先算进局部量再挂进表里
-                const std::string signature = aliyunRpcSignature("GET", parameters, m_configuration.accessKeySecret);
-                parameters["Signature"]     = signature;
+                const auto signature = aliyunRpcSignature("GET", parameters, m_configuration.accessKeySecret);
+                if (!signature.has_value())
+                {
+                    co_return std::unexpected(signature.error());
+                }
+                parameters["Signature"] = *signature;
 
                 std::string query;
                 for (const auto &field: parameters)

@@ -833,7 +833,8 @@ namespace AsynGyanis::Net::TestSupport
         ++m_evidence.dns01ValidationCount;
 
         // 期望正文由桩自己那份指纹算：被测实现把令牌或指纹接错时，这里判 invalid 而不是跟着一起错
-        const std::string expectedText = dns01ValidationText(challenge.token + "." + account.thumbprint);
+        const auto        expected     = dns01ValidationText(challenge.token + "." + account.thumbprint);
+        const std::string expectedText = expected.has_value() ? *expected : std::string{"（桩自身的摘要接口也算不出正文）"};
         const auto        published    = m_publishedTxtReader ? m_publishedTxtReader() : std::nullopt;
         if (!published.has_value())
         {

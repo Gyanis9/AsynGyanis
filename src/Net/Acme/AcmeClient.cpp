@@ -2,6 +2,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Exception/Exception.h"
 #include "Base/Log/LogEscaping.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Crypto/Digest.h"
@@ -647,11 +648,21 @@ namespace AsynGyanis::Net
         co_return parsedOrder;
     }
 
-    std::string dns01ValidationText(const std::string_view keyAuthorization)
+    AcmeExpected<std::string> dns01ValidationText(const std::string_view keyAuthorization)
     {
         // 与 HTTP-01 唯一的差别就是这一层摘要：SHA-256 后按 URL-safe 无填充 Base64 表示（RFC 8738 §3）
-        const Core::Digest::Sha256Value digest = Core::Digest::sha256(keyAuthorization);
-        return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+        try
+        {
+            const Core::Digest::Sha256Value digest = Core::Digest::sha256(keyAuthorization);
+            return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(digest.data()), digest.size()));
+        } catch (const Base::Exception &failure)
+        {
+            // Core::Digest 那条通道报的是「摘要接口建不起来」，归 KeyMaterial 这一档：换域名、重跑一轮
+            // 都不会好，要查的是这台机器进程的 OpenSSL provider 配置
+            return std::unexpected(AcmeError{AcmeErrorKind::KeyMaterial, std::format("算不出 dns-01 要发布的 TXT 正文：{}。这一档不是域名或机构的问题，"
+                                                                                     "查本进程的 OpenSSL provider 配置（libcrypto 是否装全、是否在 FIPS 模式下被拒）",
+                                                                                     failure.what())});
+        }
     }
 
     std::string dns01RecordName(const std::string_view domainName)

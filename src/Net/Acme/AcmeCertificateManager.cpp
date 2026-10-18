@@ -356,15 +356,20 @@ namespace AsynGyanis::Net
 
     Core::Task<std::optional<AcmeError>> AcmeCertificateManager::authorizeDns01(AcmeClient &client, const AcmeAuthorization &authorization)
     {
-        const std::string recordName       = dns01RecordName(authorization.identifier);
-        const std::string keyAuthorization = authorization.dns01->token + "." + m_accountKey->jsonWebKeyThumbprint();
-        const std::string recordValue      = dns01ValidationText(keyAuthorization);
+        const std::string               recordName       = dns01RecordName(authorization.identifier);
+        const std::string               keyAuthorization = authorization.dns01->token + "." + m_accountKey->jsonWebKeyThumbprint();
+        const AcmeExpected<std::string> recordValue      = dns01ValidationText(keyAuthorization);
+        if (!recordValue.has_value())
+        {
+            // 摘要算不出就没有可发布的 TXT：这一条自证根本发不起，也不该去动 DNS
+            co_return recordValue.error();
+        }
 
-        if (auto published = co_await m_dns01TxtWriter.publish(recordName, recordValue); !published.has_value())
+        if (auto published = co_await m_dns01TxtWriter.publish(recordName, *recordValue); !published.has_value())
         {
             // 写失败也要撤：「控制面收下之后才失败」那一类（确认阶段超时）其实已经写成了，
             // 留下的那条 TXT 会让下一轮签发在同一名字上读到两条不同答案，而机构的原文不会说这一点
-            if (auto rollback = co_await m_dns01TxtWriter.withdraw(recordName, recordValue); !rollback.has_value())
+            if (auto rollback = co_await m_dns01TxtWriter.withdraw(recordName, *recordValue); !rollback.has_value())
             {
                 LOG_WARN_FMT("AcmeCertificateManager: 域名 {} 的 dns-01 记录 {} 写入失败之后的撤回也没成功：{}。"
                              "请手工到 DNS 控制台删掉这条 TXT，否则下一轮签发会在同一个名字上看到两条答案",
@@ -381,7 +386,7 @@ namespace AsynGyanis::Net
         }
 
         // 撤这一步在任何一条自证出口之后都要跑到：先跑完再决定报哪条失败
-        auto withdrawn = co_await m_dns01TxtWriter.withdraw(recordName, recordValue);
+        auto withdrawn = co_await m_dns01TxtWriter.withdraw(recordName, *recordValue);
         if (solveFailure.has_value())
         {
             co_return *solveFailure;

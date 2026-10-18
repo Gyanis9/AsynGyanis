@@ -756,11 +756,17 @@ namespace AsynGyanis::Net
      */
     TEST(AcmeDns01ValidationText, MatchesIndependentlyComputedDigests)
     {
-        EXPECT_EQ(dns01ValidationText("EVstcErua-a8EKJvihxZd1nbLFiqsFf7.wwdt6DDcpLZcmWN7ZU8hgpjPvjz3w24xpXDWYA7BA8U"), "xUlhfYWyr3ScAdMmWf7gs_oiljhsvAxhGEi45qQiz8o");
-        EXPECT_EQ(dns01ValidationText("token.thumbprint"), "61rBZ_4knHblO0MNoxFsXZ_eTFUHum0B6IVRbhvUn5I");
-        EXPECT_EQ(dns01ValidationText(""), "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+        const auto first = dns01ValidationText("EVstcErua-a8EKJvihxZd1nbLFiqsFf7.wwdt6DDcpLZcmWN7ZU8hgpjPvjz3w24xpXDWYA7BA8U");
+        ASSERT_HAS_VALUE(first);
+        EXPECT_EQ(*first, "xUlhfYWyr3ScAdMmWf7gs_oiljhsvAxhGEi45qQiz8o");
+        const auto second = dns01ValidationText("token.thumbprint");
+        ASSERT_HAS_VALUE(second);
+        EXPECT_EQ(*second, "61rBZ_4knHblO0MNoxFsXZ_eTFUHum0B6IVRbhvUn5I");
+        const auto third = dns01ValidationText("");
+        ASSERT_HAS_VALUE(third);
+        EXPECT_EQ(*third, "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
 
-        const std::string text = dns01ValidationText("token.thumbprint");
+        const std::string text = *second;
         EXPECT_EQ(text.size(), 43U) << "SHA-256 的 URL-safe 无填充 Base64 恒为 43 字符";
         EXPECT_EQ(text.find('='), std::string::npos) << "带填充的 TXT 值机构不认";
     }

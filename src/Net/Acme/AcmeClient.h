@@ -78,11 +78,12 @@ namespace AsynGyanis::Net
      * @brief 算 DNS-01 要发布到 `_acme-challenge.<域名>` 的 TXT 正文
      * @details 值是 `base64url(SHA-256(keyAuthorization))`（RFC 8738 §3，URL-safe 字母表且不带填充），
      *          与 HTTP-01 直接发布 keyAuthorization 原文只差这一层哈希；少一位或留了 `=` 填充，机构就判
-     *          invalid，而它给的原文里往往不会说差在哪，所以这一处只留一份实现。
+     *          invalid，而它给的原文里往往不会说差在哪，所以这一处只留一份实现。摘要算不出来时交回
+     *          `KeyMaterial` 而不是抛出：调用方是 `Task` 协程，抛出等于给这条通路换一条失败通道。
      * @param keyAuthorization `token` + `.` + 账户密钥指纹，即 HTTP-01 要发布的那整串
-     * @return std::string 43 字符的 URL-safe 无填充 Base64 摘要文本
+     * @return AcmeExpected<std::string> 成功是 43 字符的 URL-safe 无填充 Base64 摘要文本；失败是算不出摘要
      */
-    [[nodiscard]] ASYN_NET_API std::string dns01ValidationText(std::string_view keyAuthorization);
+    [[nodiscard]] ASYN_NET_API AcmeExpected<std::string> dns01ValidationText(std::string_view keyAuthorization);
 
     /**
      * @brief 算 dns-01 要挂 TXT 记录的那个完整域名

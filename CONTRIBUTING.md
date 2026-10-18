@@ -152,9 +152,16 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
   或连接收口，不能让它沿调用点逃到线程入口。`EventLoop::run()` 因此**不向调用方抛**
   （它的调用点大多是裸 `std::thread` 入口）；被收下的失败要可观测，故有
   `EventLoopSnapshot::stoppedByFailure`。
+- 返回 `Task<std::expected<...>>` 的协程**不得让异常逃过 await 点**：调 Core 里声明 `@throws` 的接口
+  （`Core::Digest`、`Core::Random` 这一族）要么就地转成失败分支，要么用该接口的不抛变体。异常在协程体内抛出会被
+  存进 `Task` promise 的 `std::exception_ptr`，直到最外层读结果时才重抛——那时它已经离开了本该收口的那一层，
+  而这一层的调用方按「拿到 unexpected」写着
 - 析构函数、`noexcept` 函数、C 回调（含挂进 OpenSSL 的函数指针）**禁止抛**：C++ 异常穿过
   C 帧是未定义行为。`noexcept` 函数内部捕获不违反本条，恰是实现它的手段。
   注意 MSVC 的 C4297 会让 `noexcept` 函数里出现显式 `throw` 时直接编译失败（`/W4 /WX` 下即门禁红）。
+  这类函数里现拼错误文本（`std::format`、串接、`std::error_category::message()`）只欠 `bad_alloc` 一档——本机
+  MSVC STL 与容器里的 libstdc++ 实测对未知错误码都不抛；这一档本仓接受，要给 `noexcept` 加保护的是上一条那种
+  **自己声明会抛的接口**，不是内存分配失败。
 - 第三方原生库（yaml-cpp / nlohmann_json）的异常只在配置加载边界捕获并汇入
   `ConfigLoadResult::errors`；驱动侧（SQLite/MySQL/Redis 均为 C API）不抛，失败一律转成
   `expected`/错误文本 + 配对的原生码。

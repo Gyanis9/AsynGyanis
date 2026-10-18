@@ -71,15 +71,21 @@ namespace AsynGyanis::Net
                 {"Value", "dX5E6p2g-s6gJ3lN0aQe1rTw8yU3iO4pA5sD6fG7hI0"},
                 {"Version", "2015-01-09"},
         };
-        EXPECT_EQ(aliyunRpcSignature("GET", documentedCase, "testsecret"), "/B2/v/mJB+jJeqGvWlPpx/sd5Mc=");
+        const auto documented = aliyunRpcSignature("GET", documentedCase, "testsecret");
+        ASSERT_HAS_VALUE(documented) << "阿里云文档那条样例算不出签名";
+        EXPECT_EQ(*documented, "/B2/v/mJB+jJeqGvWlPpx/sd5Mc=");
 
-        EXPECT_EQ(aliyunRpcSignature("GET", {}, ""), "9uWlYLdCnrqTnAxZowDkuU1h2og=");
+        const auto empty = aliyunRpcSignature("GET", {}, "");
+        ASSERT_HAS_VALUE(empty) << "空参数表也应当签出一条";
+        EXPECT_EQ(*empty, "9uWlYLdCnrqTnAxZowDkuU1h2og=");
 
         const std::map<std::string, std::string> needsEncoding{
                 {"Aa", "x*"}, {"Action", "DescribeDomainRecords"}, {"DomainName", "a b*c~d"}, {"Value", "100%.="}, {"Zz", "last"},
         };
         // 拼出来的规范串是 Aa=x%2A&Action=DescribeDomainRecords&DomainName=a%20b%2Ac~d&Value=100%25.%3D&Zz=last
-        EXPECT_EQ(aliyunRpcSignature("GET", needsEncoding, "s e c"), "zqWsPanftH3JDsOD3naCTYznhtc=");
+        const auto encoded = aliyunRpcSignature("GET", needsEncoding, "s e c");
+        ASSERT_HAS_VALUE(encoded) << "含待编码字符的参数表算不出签名";
+        EXPECT_EQ(*encoded, "zqWsPanftH3JDsOD3naCTYznhtc=");
     }
 
     /**

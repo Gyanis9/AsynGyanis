@@ -50,7 +50,7 @@
       "col": 0,
       "step": "01",
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 397, "label": "入口" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 402, "label": "入口" },
         { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 145, "label": "renewBeforeExpiry" }
       ]
     },
@@ -77,9 +77,9 @@
       "col": 2,
       "step": "03",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 610, "label": "提交标识符" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 639, "label": "取 authorization" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 719, "label": "没有 http-01 即失败" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 611, "label": "提交标识符" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 640, "label": "取 authorization" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 730, "label": "没有 http-01 即失败" }
       ]
     },
     {
@@ -91,7 +91,7 @@
       "col": 3,
       "step": "04",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 745, "label": "POST 空体触发" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 756, "label": "POST 空体触发" }
       ]
     },
     {
@@ -103,9 +103,9 @@
       "col": 4,
       "step": "05",
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 816, "label": "提交 CSR" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 873, "label": "轮询订单" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 885, "label": "取证书链" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 827, "label": "提交 CSR" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 884, "label": "轮询订单" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 896, "label": "取证书链" }
       ]
     },
     {
@@ -117,7 +117,7 @@
       "lane": "hold",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 620, "end_line": 633, "label": "循环与等待" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 625, "end_line": 638, "label": "循环与等待" },
         { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 143, "label": "renewalCheckInterval" }
       ]
     },
@@ -129,7 +129,7 @@
       "lane": "hold",
       "col": 1,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 422, "end_line": 428, "label": "按绝对剩余天数判" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 427, "end_line": 433, "label": "按绝对剩余天数判" }
       ]
     },
     {
@@ -140,7 +140,7 @@
       "lane": "hold",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 529, "label": "PresentedToken 守卫" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 534, "label": "PresentedToken 守卫" },
         { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 18, "label": "present" },
         { "path": "src/Net/Acme/AcmeHttp01ChallengeStore.cpp", "line": 71, "label": "只注册 GET" }
       ]
@@ -154,7 +154,7 @@
       "lane": "hold",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 771, "label": "轮询挑战" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 782, "label": "轮询挑战" },
         { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 149, "label": "issuanceTimeout 折算出单次时限" }
       ]
     },
@@ -166,7 +166,7 @@
       "lane": "fault",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 768, "end_line": 771, "label": "invalid/expired/revoked" },
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 779, "end_line": 782, "label": "invalid/expired/revoked" },
         { "path": "src/Net/Acme/AcmeError.h", "line": 38, "label": "ChallengeNotAnswered" }
       ]
     },
@@ -179,7 +179,7 @@
       "col": 3,
       "sources": [
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 208, "label": "recordFailure" },
-        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 416, "label": "429/503 归 RateLimited" }
+        { "path": "src/Net/Acme/AcmeClient.cpp", "line": 417, "label": "429/503 归 RateLimited" }
       ]
     },
     {
@@ -190,7 +190,7 @@
       "lane": "terminal",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 612, "end_line": 615, "label": "无 handler 即记失败" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 617, "end_line": 620, "label": "无 handler 即记失败" }
       ]
     },
     {
@@ -201,7 +201,7 @@
       "lane": "terminal",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 585, "label": "ReloadRejected" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 590, "label": "ReloadRejected" }
       ]
     },
     {
@@ -225,7 +225,7 @@
       "lane": "hold",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 363, "label": "publish 到权威侧" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 368, "label": "publish 到权威侧" },
         { "path": "src/Net/Acme/AcmeDns01TxtWriter.h", "line": 45, "label": "publish 动作的类型" },
         { "path": "src/Net/Acme/AcmeAutomationConfig.h", "line": 71, "label": "只有 dns-01 才要写入口" }
       ]
@@ -238,8 +238,8 @@
       "lane": "fault",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 373, "label": "写不进当场判死" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 391, "label": "自证过了但撤不掉也判死" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 378, "label": "写不进当场判死" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 396, "label": "自证过了但撤不掉也判死" }
       ]
     },
     {
@@ -250,8 +250,8 @@
       "lane": "terminal",
       "col": 1,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 670, "label": "followCertificateRotation" },
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 706, "label": "时间戳变了才调用 reloadHandler" }
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 675, "label": "followCertificateRotation" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 711, "label": "时间戳变了才调用 reloadHandler" }
       ]
     }
   ],
