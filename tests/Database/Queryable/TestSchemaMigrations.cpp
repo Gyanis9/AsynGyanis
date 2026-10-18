@@ -16,6 +16,7 @@
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 
+#include "Database/Common/DatabaseResult.h"
 #include "Database/Common/Decimal.h"
 
 #include <gtest/gtest.h>
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -65,6 +67,15 @@ namespace
     {
         std::int64_t                  id;     ///< 主键
         AsynGyanis::Database::Decimal amount; ///< 金额列：走本映射的 Decimal 一档
+    };
+
+    /// 日期时间用例的行：两个逻辑类型各一列，再加一列可空的瞬时（NULL 与零瞬间是两件事）
+    struct TemporalRow
+    {
+        std::int64_t                                   id;       ///< 主键
+        AsynGyanis::Database::Timestamp                bookedAt; ///< UTC 瞬时
+        AsynGyanis::Database::LocalDateTime            localAt;  ///< 墙上时间
+        std::optional<AsynGyanis::Database::Timestamp> maybeAt;  ///< 可空的瞬时
     };
 } // namespace
 
@@ -112,6 +123,19 @@ struct AsynGyanis::Database::Queryable::TableSchema<DecimalMoneyRow>
     static constexpr auto             kColumns   = std::tuple{
             Column(&DecimalMoneyRow::id, "id"),
             Column(&DecimalMoneyRow::amount, "amount"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<TemporalRow>
+{
+    static constexpr std::string_view kTableName = "temporal_rows";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&TemporalRow::id, "id"),
+            Column(&TemporalRow::bookedAt, "booked_at"),
+            Column(&TemporalRow::localAt, "local_at"),
+            Column(&TemporalRow::maybeAt, "maybe_at"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -686,4 +710,55 @@ TEST_F(SchemaMigrationsTest, DecimalMemberRoundTripsCharacterForCharacterOnSqlit
 
     // 列的标度信息由承载文本带着：第三行是 21 位小数，读回来仍然数得出同样的位数
     EXPECT_EQ(readBack[2].amount.scale(), 21U);
+}
+
+/**
+ * @brief 钉住两个日期时间成员在 SQLite 上原样往返，且落库文本带不带 `Z` 是分得开的
+ * @details 这一格同时钉三件事：① 写入方向两个成员各走自己那一档（没被折成整数或浮点）；
+ *          ② 读回方向按文本解析回来还是同一个瞬间 / 同一个历法读数（SQLite 只有文本，形态由本库定）；
+ *          ③ 两个逻辑类型的区分**落在文本上**：瞬时带 `Z`、墙上时间不带。③ 是关键的一条——
+ *          哪天渲染把 `Z` 丢了，两个类型在库里就长得一样，等读回来才发现已经晚了。
+ * @note 期望文本与期望瞬间都按公历直接写出来（两个时钟共用 1970-01-01 那个纪元：
+ *       2026-10-18 是其第 20744 天，2026-03-01 是第 20513 天），不复用被测的解析器造期望值——
+ *       解析与渲染一起错就什么都测不出来。
+ * @note 证伪：把驱动的日期时间渲染改成不带 `Z`，③ 红；把成员折成 int64 存，① 与 ③ 都红；
+ *       把读侧的文本支路去掉，② 红。
+ */
+TEST_F(SchemaMigrationsTest, TemporalMembersRoundTripAndKeepTheirTextShapesOnSqlite)
+{
+    using namespace std::chrono;
+
+    const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*m_pool);
+    ASSERT_NE(dialect, nullptr);
+    const std::vector<SchemaMigrator::MigrationStep> steps{
+            SchemaMigrator::MigrationStep{
+                    .name         = "0001-create-temporal-rows",
+                    .upStatements = {SchemaMigrator::createTableStatement<TemporalRow>(*dialect)},
+            },
+    };
+    std::size_t applied = 0;
+    std::string error;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, steps, &applied, &error)) << error;
+    ASSERT_EQ(applied, 1U) << "日期时间表没建出来";
+
+    const AsynGyanis::Database::Timestamp     bookedAt{days{20744} + hours{3} + minutes{50} + seconds{30} + microseconds{123456}};
+    const AsynGyanis::Database::LocalDateTime localAt{days{20513} + hours{2} + minutes{30} + microseconds{500000}};
+
+    ASSERT_EQ(1, OrmQuery<TemporalRow>(*m_pool).insert(TemporalRow{.id = 1, .bookedAt = bookedAt, .localAt = localAt, .maybeAt = std::nullopt}));
+
+    const std::optional<TemporalRow> readBack = OrmQuery<TemporalRow>(*m_pool).first();
+    ASSERT_TRUE(readBack.has_value()) << "写进去的行读不回来";
+    EXPECT_EQ(readBack->bookedAt, bookedAt) << "UTC 瞬时往返之后不是同一个瞬间";
+    EXPECT_EQ(readBack->localAt, localAt) << "墙上时间往返之后不是同一个历法读数";
+    EXPECT_FALSE(readBack->maybeAt.has_value()) << "没给值的可空瞬时列读回来应当是空，而不是零瞬间";
+
+    // 落库文本单独问一遍：区分两个逻辑类型的就是这一位 'Z'
+    PooledConnection connection = m_pool->acquire();
+    ASSERT_TRUE(connection);
+    const std::unique_ptr<AsynGyanis::Database::DatabaseResult> result = connection->execute("SELECT booked_at, local_at, maybe_at FROM temporal_rows WHERE id = 1");
+    ASSERT_TRUE(result != nullptr) << connection->lastError();
+    ASSERT_TRUE(result->next());
+    EXPECT_EQ(std::get<std::string>(result->getValue(0)), "2026-10-18T03:50:30.123456Z");
+    EXPECT_EQ(std::get<std::string>(result->getValue(1)), "2026-03-01T02:30:00.500000");
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(result->getValue(2))) << "空的瞬时列要绑成 NULL，而不是一个空串";
 }

@@ -123,6 +123,7 @@
 **数据（Database）**
 
 - **SqlSugar 风格 ORM** — 结构体声明即表结构，`insert` / `toList` / `first` / `count` / `update` / 删除 / 批量插入；唯一键冲突可指定跳过或覆盖（`Queryable::InsertConflict`，关键词由方言给）；`TableSchema` 里声明 `kVersionColumn` 即启用乐观锁（`update` 的 WHERE 带上版本、SET 里由服务端加一，命中 0 行抛 `OptimisticLockException` 并点名表/版本列/期望值与主键）；已有表可按结构体补上缺的列（`SchemaMigrator::addMissingColumns`，现有列直接问引擎，重复调用幂等）；非有限的浮点取值（NaN、±Infinity）在绑定前就拒并点名列名——它们落库之后是哪个数由引擎决定，而 `insert()` 会照样报成功，空值请写 `std::optional`（绑成 SQL NULL）；金额这类二进制浮点装不下的数用 `Database::Decimal` 承载（规范十进制文本，位宽不受 int64/double 限制，不做算术也不假装归一化）。物理列名与保真程度按引擎分家：MySQL 是 `DECIMAL(65,30)`（小数按列定义定标，写入 `0.1` 读回 `0.100000000000000000000000000000`）、PostgreSQL 是不带限定的 `NUMERIC`（随写入的标度存，`0.1000` 读回还是 `0.1000`）、SQLite 没有十进制类型，落 TEXT 亲和换逐位保真，代价是那一列的比较与排序按字典序（`"9" > "10"`），要数值语义请存整数分
+- **时间有两种语义** — 结构体成员写 `Database::Timestamp`（瞬时，回答「哪一刻」，跟着会话时区一起被引擎改写）或 `Database::LocalDateTime`（墙上时间，库里那串数字就是它自己，不随时区变），两者都是微秒精度。物理列名按引擎分家：MySQL 两档都是 `DATETIME(6)`（不用 `TIMESTAMP`——它按会话时区换算取值，上限还停在 2038-01-19）；PostgreSQL 的瞬时落 `TIMESTAMPTZ`、墙上落 `TIMESTAMP(6)`；SQLite 没有这两类，落 `TEXT` 换逐位保真，好处是 ISO-8601 文本的字典序就是时间序。读写两侧的错配按列的语义拒：墙上时间列里读出带偏移的正文不当「抹平时区」收下，而是点名原文报错——这类静默折损正是「同一时刻两台机器读出两个数」的来源
 - **数据库链路 TLS** — `ConnectionConfig::tls`（`DatabaseTlsPolicy`：`Disabled`/`Preferred`/`Required`/`VerifyCa`/`VerifyIdentity`，档位名与 MySQL 的 `ssl-mode` 一一对应；另有 CA 与双向 TLS 的证书/私钥三路路径）。默认 `Preferred`——与 MySQL 客户端库的既有默认档一致（服务器支持就加密、谈不成回落明文），对既有部署零行为变化，而「加不加密」从此由本配置显式下发、不再随客户端库的默认档漂移；`ConnectionConfig::redisDefault()` 例外地把默认落成 `Disabled`（对齐 Redis 生态的默认明文，明文连接不付一次注定失败的 TLS 试探）。MySQL 侧映射到客户端库的 `MYSQL_OPT_SSL_MODE`/CA/CERT/KEY；Redis 侧在明文建连之后由引擎自己的 `TlsContext` 做阻塞握手并换掉 hiredis 的读/写/关闭三只钩子（认证与全部命令因此落在密文里），SNI 与主机名校验按「IP 走 `set1_ip`、域名走 SNI + `set1_host`」与出站 HTTP 同一口径；`Preferred` 两条驱动同义（谈不成 TLS 弃连重拨、回落明文）。双向 TLS 的客户端证书目前只在 MySQL 侧有活体覆盖（Redis 侧缺一台要客户端证书的服务端夹具，仓内不假装测过）。`VerifyCa`/`VerifyIdentity` 缺 CA、证书与私钥单给一半、路径含内嵌 NUL 都在拨号前拒绝；`Disabled` 是真关：MySQL 8 的 `caching_sha2_password` 会在明文通道上拒绝口令认证（错误 2061），那是服务端的安全姿态、如实交出；SQLite 是进程内文件库，配了非 `Disabled` 档即拒并点名
 - **SQL 方言层** — 查询树渲染与参数收集只有一份实现（`StandardSqlDialect`），SQLite 与 MySQL 各自只覆写引擎知识；写语句与事务语句一律由方言生成，ORM 不含 SQL 拼接
 - **参数化执行** — 取值一律以绑定参数送出，不拼进 SQL 文本（含引号、`--`、分号的文本只会被当作数据）
@@ -308,7 +309,7 @@ HTTP-01 那条路在回归环境给不了）。三条变量缺一不可，其中
 | `NetHttpsH2Demo` | 证书受信与不受信的对照、ALPN 协商 h2、h2c 明文、多路复用、GOAWAY 排空、解析上限 | 29 |
 | `NetHttp3Demo` | QUIC 服务端的证书校验、UDP 起停与指定端口、乱码与畸形长头容错、定时驱动、统计、排空 | 14 |
 | `NetUdpDemo` | UdpServer 的两种起步方式（按地址 bind / 接手别人绑好的口）、逐条交付与零长报文、主动下发、统计、处理器抛异常后的存活、两种顺序混用被拒、收口叫醒挂着的协程 | 13 |
-| `DatabaseDemo` | SQLite 文件库/内存库、方言、ORM、事务、blob、十进制、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 83 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
+| `DatabaseDemo` | SQLite 文件库/内存库、方言、ORM、事务、blob、十进制、日期时间、参数绑定、连接池、异步链路；MySQL/Redis 按环境变量门控 | 84 + 2 门控（本机无凭据）；设了凭据时这两组真机步骤会展开成更多步 |
 
 表内步数是两侧各自实测：Windows 一轮 `run_samples.py --repeat 2` 逐对一致，POSIX 侧在容器
 `ubuntu24` 里跑同一份源码。两台的差只来自平台专属步骤（本轮逐条比对过步骤名）：`PlatformPrimitives` 在

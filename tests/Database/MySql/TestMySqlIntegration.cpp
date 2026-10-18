@@ -225,6 +225,10 @@ namespace AsynGyanis::Database
         constexpr std::string_view kUnsignedTableName = "Asyn_Mysql_Unsigned";
         /// 十进制金额用例的表名：与其余用例分开，并行执行时互不干扰
         constexpr std::string_view kDecimalTableName = "Asyn_Mysql_Decimal";
+        /// 日期时间用例的表名（本映射建的 DATETIME(6) 那台）
+        constexpr std::string_view kTemporalTableName = "Asyn_Mysql_Temporal";
+        /// 对照表：同一份字面读数并排存进 DATETIME(6) 与 TIMESTAMP(6)，用来看会话时区各自怎么处理
+        constexpr std::string_view kTemporalPairTableName = "Asyn_Mysql_Temporal_Pair";
 
         /// 版本化迁移用例的表：同一条理由；它还要 DROP 库级的迁移登记表，与建表迁移用例共用一张表时并行会互相删表
         constexpr std::string_view kVersionedTableName = "Asyn_Mysql_Versioned";
@@ -410,6 +414,14 @@ namespace AsynGyanis::Database
             double                     balance;  ///< 余额（DOUBLE NOT NULL）
             bool                       active;   ///< 是否启用（TINYINT(1) NOT NULL）
             std::uint64_t              sequence; ///< 序号（BIGINT UNSIGNED NOT NULL）
+        };
+
+        /// 日期时间用例的行：表由 SchemaMigrator 按本映射建（两个逻辑类型都落 DATETIME(6)）
+        struct IntegrationTemporalRow
+        {
+            std::int64_t                        id;       ///< 主键
+            AsynGyanis::Database::Timestamp     bookedAt; ///< UTC 瞬时
+            AsynGyanis::Database::LocalDateTime localAt;  ///< 墙上时间
         };
 
         /// 十进制金额用例的行：表由 SchemaMigrator 按本映射建（MySQL 落 DECIMAL(65,30)）
@@ -699,6 +711,18 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationUnsignedRow::id, "id"),           Column(&IntegrationUnsignedRow::name, "name"),     Column(&IntegrationUnsignedRow::note, "note"),
                 Column(&IntegrationUnsignedRow::balance, "balance"), Column(&IntegrationUnsignedRow::active, "active"), Column(&IntegrationUnsignedRow::sequence, "sequence"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationTemporalRow>
+    {
+        static constexpr std::string_view kTableName = kTemporalTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationTemporalRow::id, "id"),
+                Column(&IntegrationTemporalRow::bookedAt, "booked_at"),
+                Column(&IntegrationTemporalRow::localAt, "local_at"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -4105,6 +4129,101 @@ namespace AsynGyanis::Database
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeCommentTableName)));
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludePostTableName)));
         static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kIncludeAuthorTableName)));
+    }
+
+    /**
+     * @brief 钉住两个日期时间在真实 MySQL 上往返同解，且会话时区不参与这件事
+     *
+     * @details 本映射把 UTC 瞬时存成 DATETIME(6) 的 UTC 字面量（选型理由见 MySqlDialect::columnTypeName）。
+     *          这一条把那个理由变成读数：成员经 ORM 写入、把会话 time_zone 挪到 +05:30 之后再读回来，
+     *          瞬时与历法读数都必须一个字节都不动。
+     * @note 下一格负责证明「换作 TIMESTAMP(6) 就会动」——那才是我们不用它的理由。两格合起来才说清
+     *       「不是没考虑时区，是知道哪一种会被会话改写、所以选了不会的那一种」。
+     * @note 收尾必须把会话时区改回 UTC：`SET time_zone` 是会话级的，而本驱动的会话账本只记
+     *       USE／SET NAMES／max_execution_time 三格（见 MySqlConnection::noteSessionScopedStatement），
+     *       不改回去就会把 +05:30 随这条连接还给连接池，下一个借用者读到的是别的时区。
+     */
+    TEST_F(MySqlIntegrationTest, TemporalMembersKeepTheirValuesAcrossSessionTimeZoneChange)
+    {
+        m_preparedTableName = std::string(kTemporalTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTemporalRow>(*makePool(1), true, &errorText)) << errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationTemporalRow>(*pool, true, &errorText)) << errorText;
+
+        // 2026-10-18 是 1970-01-01 之后第 20744 天，2026-03-01 是第 20513 天（期望值按公历直接写）
+        const AsynGyanis::Database::Timestamp     bookedAt{std::chrono::days{20744} + std::chrono::hours{3} + std::chrono::minutes{50} + std::chrono::seconds{30} +
+                                                           std::chrono::microseconds{123456}};
+        const AsynGyanis::Database::LocalDateTime localAt{std::chrono::days{20513} + std::chrono::hours{2} + std::chrono::minutes{30} + std::chrono::microseconds{500000}};
+        ASSERT_EQ(1, OrmQuery<IntegrationTemporalRow>(*pool).insert(IntegrationTemporalRow{.id = 1, .bookedAt = bookedAt, .localAt = localAt}));
+
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_TRUE(connection->execute("SET time_zone = '+05:30'") != nullptr) << connection->lastError();
+            // 非空判据：会话确实改了，否则「值没变」这条绿是白给的
+            const std::unique_ptr<DatabaseResult> zoneResult = connection->execute("SELECT @@session.time_zone");
+            ASSERT_TRUE(zoneResult != nullptr) << connection->lastError();
+            ASSERT_TRUE(zoneResult->next());
+            EXPECT_EQ(std::get<std::string>(zoneResult->getValue(0)), "+05:30");
+        }
+
+        const std::optional<IntegrationTemporalRow> readBack = OrmQuery<IntegrationTemporalRow>(*pool).first();
+        ASSERT_TRUE(readBack.has_value()) << "日期时间行读不回来";
+        EXPECT_EQ(readBack->bookedAt, bookedAt) << "DATETIME(6) 里的 UTC 字面量被会话时区改写了";
+        EXPECT_EQ(readBack->localAt, localAt) << "墙上时间被会话时区改写了";
+
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_TRUE(connection->execute("SET time_zone = '+00:00'") != nullptr) << connection->lastError();
+        }
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTemporalRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief 钉住 TIMESTAMP(6) 会被会话时区重新渲染 —— 本映射不选它的实测理由
+     * @details 同一份字面读数 '2026-10-18 03:50:30.123456' 在会话还是 UTC 时分别写进
+     *          DATETIME(6) 与 TIMESTAMP(6) 两列；把会话挪到 +05:30 之后按文本读回：
+     *          DATETIME 那列一字不变，TIMESTAMP 那列变成 09:20:30.123456（服务端按新时区换算过，
+     *          而交回的文本不带任何偏移标记）。这就是「本驱动不拥有会话时区参数，
+     *          所以不能把瞬时交给 TIMESTAMP」这条判断的证据，不是注释里的说法。
+     */
+    TEST_F(MySqlIntegrationTest, TimestampColumnIsRewrittenBySessionTimeZoneWhileDateTimeIsNot)
+    {
+        PooledConnection connection = makePool(1)->acquire();
+        ASSERT_TRUE(connection);
+        static_cast<void>(connection->execute("DROP TABLE IF EXISTS Asyn_Mysql_Temporal_Pair"));
+        ASSERT_TRUE(connection->execute("SET time_zone = '+00:00'") != nullptr) << connection->lastError();
+        ASSERT_TRUE(connection->execute("CREATE TABLE Asyn_Mysql_Temporal_Pair (id BIGINT PRIMARY KEY, dt DATETIME(6), ts TIMESTAMP(6))") != nullptr) << connection->lastError();
+        ASSERT_TRUE(connection->execute("INSERT INTO Asyn_Mysql_Temporal_Pair (id, dt, ts) VALUES (1, '2026-10-18 03:50:30.123456', '2026-10-18 03:50:30.123456')") != nullptr)
+                << connection->lastError();
+
+        // 读原始文本，不经 ORM：这一格要比的是服务端交回了什么
+        const auto readRow = [&](PooledConnection &holder)
+        {
+            const std::unique_ptr<DatabaseResult> result = holder->execute("SELECT dt, ts FROM Asyn_Mysql_Temporal_Pair WHERE id = 1");
+            EXPECT_TRUE(result != nullptr) << holder->lastError();
+            if (result == nullptr || !result->next())
+            {
+                return std::pair<std::string, std::string>{};
+            }
+            return std::make_pair(std::get<std::string>(result->getValue(0)), std::get<std::string>(result->getValue(1)));
+        };
+
+        const std::pair<std::string, std::string> underUtc = readRow(connection);
+        EXPECT_EQ(underUtc.first, "2026-10-18 03:50:30.123456");
+        EXPECT_EQ(underUtc.second, "2026-10-18 03:50:30.123456");
+
+        ASSERT_TRUE(connection->execute("SET time_zone = '+05:30'") != nullptr) << connection->lastError();
+        const std::pair<std::string, std::string> underKolkata = readRow(connection);
+        EXPECT_EQ(underKolkata.first, "2026-10-18 03:50:30.123456") << "DATETIME 不该被会话时区改写，改了就是本映射的前提不成立";
+        EXPECT_EQ(underKolkata.second, "2026-10-18 09:20:30.123456") << "TIMESTAMP 本该被会话时区改写（这才是我们不用它的理由）";
+
+        // 会话参数改回去再删表：归还给池的连接不能带着 +05:30
+        static_cast<void>(connection->execute("SET time_zone = '+00:00'"));
+        static_cast<void>(connection->execute("DROP TABLE IF EXISTS Asyn_Mysql_Temporal_Pair"));
     }
 
 } // namespace AsynGyanis::Database

@@ -3,7 +3,7 @@
 // - MapsEverySupportedTypeToItsOwnName / EverySupportedTypeHasACatalogEntry / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
 // - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
 // - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
-// - NamesDecimalValueAsDecimal
+// - NamesDecimalValueAsDecimal / NamesTimestampValueAsTimestamp / NamesLocalDateTimeValueAsLocalDateTime
 // - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
 // - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / PostgresDefault* / RedisDefault* / SqliteDefault*
 // 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
@@ -69,6 +69,8 @@ namespace AsynGyanis::Database
                     {DatabaseValue{BinaryBytes{0x5C, 0x00, 0x41}}, "Bytes"},
                     // 尾零要留着："3.1400" 与 "3.14" 是两个写法，本类型不归一化（见 Decimal.h 的头注）
                     {DatabaseValue{Decimal::tryParse("3.1400").value()}, "Decimal"},
+                    {DatabaseValue{Timestamp{std::chrono::microseconds{1}}}, "Timestamp"},
+                    {DatabaseValue{LocalDateTime{std::chrono::microseconds{1}}}, "LocalDateTime"},
             };
         }
     } // namespace
@@ -212,6 +214,27 @@ namespace AsynGyanis::Database
         EXPECT_STREQ(databaseValueTypeName(decimalValue), "Decimal");
         // 默认构造是零，不是「无值」：报 Null 就等于把 NULL 与 0 混成一件事
         EXPECT_STREQ(databaseValueTypeName(zeroValue), "Decimal");
+    }
+
+    /** @brief 钉住 UTC 瞬时那档报「Timestamp」 */
+    TEST(DatabaseValue, NamesTimestampValueAsTimestamp)
+    {
+        const DatabaseValue instant{Timestamp{std::chrono::microseconds{0}}};
+
+        EXPECT_STREQ(databaseValueTypeName(instant), "Timestamp");
+    }
+
+    /**
+     * @brief 钉住墙上时间那档报「LocalDateTime」，且与上一档不同名
+     * @details 两个档位的内部形状都是「自某纪元起算的微秒数」，同名就等于把「这一列有没有时区语义」
+     *          这件事从日志里抹掉——而它恰恰是三家里差别最大的一条。
+     */
+    TEST(DatabaseValue, NamesLocalDateTimeValueAsLocalDateTime)
+    {
+        const DatabaseValue wallClock{LocalDateTime{std::chrono::microseconds{0}}};
+
+        EXPECT_STREQ(databaseValueTypeName(wallClock), "LocalDateTime");
+        EXPECT_STRNE(databaseValueTypeName(wallClock), databaseValueTypeName(DatabaseValue{Timestamp{std::chrono::microseconds{0}}}));
     }
 
     /** @brief 钉住各备选的类型名两两不同：visit 分支漏写或写错类型会立刻撞名 */

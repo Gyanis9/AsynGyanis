@@ -117,6 +117,15 @@ namespace AsynGyanis::Database::Queryable
                             // 键落在十进制列上时按文本交给参数层：ParameterValue 没有 Decimal 这一档
                             // （它只服务查询条件的字面量），而十进制文本正是各家引擎都能精确收下的形态
                             return concrete.text();
+                        } else if constexpr (std::is_same_v<ValueType, Timestamp> || std::is_same_v<ValueType, LocalDateTime>)
+                        {
+                            // 日期时间当外键时不折成文本再交给参数层：文本形态是按引擎分家的
+                            // （MySQL 不带偏移、PostgreSQL 的 timestamptz 必须带 +00、SQLite 自带 Z），
+                            // 而这一层拿不到「我是哪家」的信息。猜一种就是让关联条件静默失效，
+                            // 所以点明原因：真需要按时间关联的模型请用整型或文本键
+                            throw Base::LogicException("关系装载：列 \"" + std::string(columnName) +
+                                                       "\" 的值是日期时间，不能当键用——"
+                                                       "日期时间的文本形态按引擎不同（本层不知道是哪一家），请改用整型或文本类型的键");
                         } else
                         {
                             throw Base::LogicException("关系装载：列 \"" + std::string(columnName) + "\" 的值是复合类型，不能当键用——请检查 TableSchema 里那一格指向的列");

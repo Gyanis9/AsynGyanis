@@ -9,6 +9,7 @@ add_executable(TestDatabase
 
         Common/TestDatabaseTypes.cpp
         Common/TestDecimal.cpp
+        Common/TestTemporalText.cpp
         Common/TestDatabaseFactory.cpp
         Common/TestDatabaseException.cpp
         Common/TestDatabaseConnection.cpp

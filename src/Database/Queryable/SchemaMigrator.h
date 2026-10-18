@@ -184,7 +184,8 @@ namespace AsynGyanis::Database::Queryable
             // 列类型不受支持时给出中文编译错误，而不是让模板在深处爆出一长串实例化回溯；
             // 判定与 RowMapper 共用同一份 trait，因此「能建表」与「能读写」永远等价
             static_assert(Detail::allColumnTypesSupported<T>(), "SchemaMigrator：TableSchema<T>::kColumns 中存在不支持的列类型。"
-                                                                "仅支持整型、bool、浮点、std::string、二进制载荷"
+                                                                "仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、"
+                                                                "日期时间（Timestamp / LocalDateTime）、二进制载荷"
                                                                 "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                                 "以及它们的 std::optional 包装");
 
@@ -1672,6 +1673,12 @@ namespace AsynGyanis::Database::Queryable
             } else if constexpr (std::is_same_v<BareType, AsynGyanis::Database::Decimal>)
             {
                 return ColumnType::Decimal;
+            } else if constexpr (AsynGyanis::Database::Queryable::Detail::IsSystemClockTime<BareType>::value)
+            {
+                return ColumnType::Timestamp;
+            } else if constexpr (AsynGyanis::Database::Queryable::Detail::IsLocalClockTime<BareType>::value)
+            {
+                return ColumnType::LocalDateTime;
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 // 两种成员拼法都落到 Blob：DDL 只关心「这一列是二进制」，
@@ -1682,6 +1689,7 @@ namespace AsynGyanis::Database::Queryable
                 // 不受支持的类型已被 createTableStatement() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
                 static_assert(Detail::kAlwaysFalse<ValueType>, "SchemaMigrator：不支持的列类型。仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、"
+                                                               "日期时间（Timestamp / LocalDateTime）、"
                                                                "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                                "以及它们的 std::optional 包装");
                 return ColumnType::Text;

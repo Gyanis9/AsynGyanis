@@ -709,6 +709,99 @@ namespace AsynGyanis::Database::Queryable
     }
 
     // ------------------------------------------------------------------------
+    // 日期时间成员（Timestamp / LocalDateTime）
+    // ------------------------------------------------------------------------
+
+    /** @brief 钉住两个日期时间成员被认作受支持的列类型，而纳秒精度不被认（截断会静默丢三位） */
+    TEST(RowMapperTemporal, SupportsBothTemporalShapesButNotNanosecondPrecision)
+    {
+        using namespace std::chrono;
+
+        EXPECT_TRUE((Detail::IsSystemClockTime<sys_time<seconds>>::value));
+        EXPECT_TRUE((Detail::IsSystemClockTime<sys_time<microseconds>>::value));
+        EXPECT_FALSE((Detail::IsSystemClockTime<sys_time<nanoseconds>>::value));
+        EXPECT_TRUE((Detail::IsLocalClockTime<local_time<seconds>>::value));
+        EXPECT_FALSE((Detail::IsLocalClockTime<sys_time<seconds>>::value)) << "两个逻辑类型互认就是抹平时区语义";
+        EXPECT_TRUE((Detail::IsSupportedColumnType<std::optional<AsynGyanis::Database::Timestamp>>::value));
+    }
+
+    /** @brief 钉住两个成员各落到自己那一档备选，且更粗的精度按成员收敛 */
+    TEST(RowMapperTemporal, WritesEachTemporalMemberIntoItsOwnAlternative)
+    {
+        using namespace std::chrono;
+
+        const AsynGyanis::Database::Timestamp instant{seconds{100}};
+        const DatabaseValue                   convertedInstant = Detail::toDatabaseValue(instant, "booked_at");
+        const DatabaseValue                   convertedWall    = Detail::toDatabaseValue(AsynGyanis::Database::LocalDateTime{seconds{100}}, "local_at");
+
+        EXPECT_TRUE(std::holds_alternative<AsynGyanis::Database::Timestamp>(convertedInstant));
+        EXPECT_TRUE(std::holds_alternative<AsynGyanis::Database::LocalDateTime>(convertedWall));
+        EXPECT_EQ(std::get<AsynGyanis::Database::Timestamp>(convertedInstant).time_since_epoch().count(), 100'000'000LL);
+
+        // 成员比承载精度更粗时（整秒），落进变体要按微秒计，读回来还得能收回整秒
+        const DatabaseValue coarse = Detail::toDatabaseValue(sys_time<seconds>{seconds{100}}, "booked_at");
+        EXPECT_EQ(std::get<AsynGyanis::Database::Timestamp>(coarse), instant);
+    }
+
+    /**
+     * @brief 钉住 MySQL 那种「不带偏移的空格分隔文本」按 UTC 折回同一个瞬间
+     * @details 本映射在这一家把 UTC 瞬时存成 DATETIME(6) 的 UTC 字面量，读回来就得按同一条约定解释；
+     *          期望瞬间由公历直接算（2026-10-18 是 Unix 纪元后第 20744 天），不借被测代码。
+     */
+    TEST(RowMapperTemporal, ReadsEngineTextIntoTimestampMemberFollowingTheUtcConvention)
+    {
+        using namespace std::chrono;
+
+        const AsynGyanis::Database::Timestamp expected{days{20744} + hours{9} + minutes{20} + seconds{30} + microseconds{123456}};
+        const AsynGyanis::Database::Timestamp mapped = Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("2026-10-18 09:20:30.123456"), kColumnName);
+        EXPECT_EQ(mapped, expected);
+
+        // 带偏移的文本按偏移折：+05:30 的 09:20 是 UTC 的 03:50
+        const AsynGyanis::Database::Timestamp withOffset = Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("2026-10-18 09:20:30+05:30"), kColumnName);
+        EXPECT_EQ(withOffset, AsynGyanis::Database::Timestamp{days{20744} + hours{3} + minutes{50} + seconds{30}});
+    }
+
+    /** @brief 钉住墙上时间成员遇到带偏移的文本会被拒，并把原文抄进消息 */
+    TEST(RowMapperTemporal, RejectsOffsetCarryingTextForWallClockMemberAndQuotesIt)
+    {
+        try
+        {
+            static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::LocalDateTime>(textValue("2026-10-18 09:20:30+05:30"), "local_at"));
+            FAIL() << "带偏移的文本不该塞进墙上时间成员";
+        } catch (const RowMappingException &failure)
+        {
+            const std::string reason{failure.what()};
+            EXPECT_NE(reason.find("local_at"), std::string::npos) << reason;
+            EXPECT_NE(reason.find("2026-10-18 09:20:30+05:30"), std::string::npos) << "消息要抄出原文：" << reason;
+        }
+    }
+
+    /** @brief 钉住零值日期与非 ISO 文本被拒（不猜），以及列被折成浮点时也不猜 */
+    TEST(RowMapperTemporal, RejectsZeroDatesNonIsoTextAndFloatColumns)
+    {
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("0000-00-00 00:00:00"), kColumnName)), std::runtime_error);
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("Thu 10-18-2026 09:20:30 PDT+0530"), kColumnName)),
+                     std::runtime_error);
+        // SQLite 的 date/time 函数会给出 REAL（儒略日）：那是另一种承载，认它就等于猜一个瞬间
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(realValue(2460000.5), kColumnName)), std::runtime_error);
+        // 整数也不行：20261018 这种「看起来像日期」的整数按儒略日/自纪元秒都能解释，选哪个都是猜
+        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(integerValue(20261018), kColumnName)), std::runtime_error);
+    }
+
+    /** @brief 钉住可空的日期时间列：NULL ↔ 空 optional，两个方向都不同零瞬间混 */
+    TEST(RowMapperTemporal, MapsNullToEmptyOptionalAndBackToNull)
+    {
+        using InstantCell = std::optional<AsynGyanis::Database::Timestamp>;
+
+        EXPECT_FALSE(Detail::convertDatabaseValue<InstantCell>(DatabaseValue{std::monostate{}}, kColumnName).has_value());
+        EXPECT_TRUE(std::holds_alternative<std::monostate>(Detail::toDatabaseValue(InstantCell{std::nullopt}, "booked_at")));
+
+        const InstantCell filled = Detail::convertDatabaseValue<InstantCell>(textValue("2026-10-18T03:50:30.123456Z"), kColumnName);
+        ASSERT_TRUE(filled.has_value());
+        EXPECT_EQ(filled->time_since_epoch().count(), 1'792'295'430'123'456LL) << "文本折出的瞬间与公历算出的不一致";
+    }
+
+    // ------------------------------------------------------------------------
     // 精确十进制成员（Decimal）
     // ------------------------------------------------------------------------
 

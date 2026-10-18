@@ -39,6 +39,13 @@ namespace AsynGyanis::Database
                         // 这一支必须显式写出来：末尾的 else 是给哈希用的兜底，新增备选不写就会被
                         // 它静默吞掉，于是日志与断言把一个十进制数报成 "Hash"
                         return "Decimal";
+                    } else if constexpr (std::is_same_v<ValueType, Timestamp>)
+                    {
+                        // 同上：两个日期时间备选都要点名，且不能同名——同名会让上面的撞判据静默放过
+                        return "Timestamp";
+                    } else if constexpr (std::is_same_v<ValueType, LocalDateTime>)
+                    {
+                        return "LocalDateTime";
                     } else
                     {
                         return "Hash";

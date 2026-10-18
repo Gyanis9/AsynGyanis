@@ -38,6 +38,7 @@
 
 // 列值到 DatabaseValue 的类型映射与文本协议路径共用一份实现，保证两条协议路径取值语义一致。
 // 该头必须看到真实的 mysql.h（要取 enum_field_types 常量），因此只能放在本分支内
+#include "Database/Common/TemporalText.h"
 #include "Database/MySql/MySqlValueConversion.h"
 
 #include <algorithm>
@@ -213,6 +214,118 @@ namespace AsynGyanis::Database
             binding.buffer_length = lengthSlot;
             binding.length        = &lengthSlot;
             return std::nullopt;
+        }
+        /**
+         * @brief 把一个参数取值填进一个 MYSQL_BIND 槽位
+         * @details 一个槽位只认自己的类型：NULL 用 MYSQL_TYPE_NULL 且不带缓冲区、布尔落 TINYINT(1)、
+         *          整数与浮点直连取值地址、文本与精确十进制共用 bindTextParameter、日期时间先渲染成
+         *          MySQL 的字面文本再走同一条下发路、二进制走 MYSQL_TYPE_BLOB。这段的形状就是
+         *          「本驱动认哪些取值」的清单，混在执行流里读不到，所以单独成一个函数。
+         * @param binding 要填的绑定槽位（已值初始化）
+         * @param lengthSlot 本参数专用的长度存储，必须活到 mysql_stmt_execute 返回
+         * @param tinySlot 本参数专用的单字节存储（布尔落这里），同上
+         * @param renderedTexts 日期时间渲染文本的容器，首次用到时按参数个数铺开，同上
+         * @param parameterCount 参数个数，铺开 renderedTexts 时用
+         * @param index 参数下标（从 0 起），只用于错误文本点名是第几个参数
+         * @param parameterValue 本参数的取值
+         * @return std::optional<std::string> 槽位可用时为空；拒绝时给出中文原因，由调用方记进连接错误
+         */
+        [[nodiscard]] std::optional<std::string> fillParameterSlot(MYSQL_BIND &binding, unsigned long &lengthSlot, signed char &tinySlot, std::vector<std::string> &renderedTexts,
+                                                                   const std::size_t parameterCount, const std::size_t index, const DatabaseValue &parameterValue)
+        {
+            // 用 std::get_if 取指针而不是 std::get：类型不符时走到 else 分支给出中文错误，
+            // 而 std::get 会抛 std::bad_variant_access，把「参数类型不对」变成难以处理的异常
+            if (std::holds_alternative<std::monostate>(parameterValue))
+            {
+                // SQL NULL 必须用 MYSQL_TYPE_NULL 表达：绑成空字符串后 "IS NULL" 不再成立，
+                // 与调用方传空值的意图直接冲突。NULL 不需要任何缓冲区
+                binding.buffer_type = MYSQL_TYPE_NULL;
+                return std::nullopt;
+            }
+
+            if (const auto *booleanValue = std::get_if<bool>(&parameterValue))
+            {
+                // MySQL 没有独立的布尔存储类，TINYINT(1) 是官方约定。
+                // MYSQL_TYPE_TINY 要求缓冲区元素类型与之一致（有符号单字节），因此先落到自己的存储再交出地址
+                tinySlot            = *booleanValue ? 1 : 0;
+                binding.buffer_type = MYSQL_TYPE_TINY;
+                binding.buffer      = asBindBuffer(&tinySlot);
+                return std::nullopt;
+            }
+
+            if (const auto *integerValue = std::get_if<std::int64_t>(&parameterValue))
+            {
+                // 有符号 64 位整数直连缓冲区：is_unsigned 留默认假，BIGINT SIGNED 与 int64_t 一一对应
+                binding.buffer_type = MYSQL_TYPE_LONGLONG;
+                binding.buffer      = asBindBuffer(integerValue);
+                return std::nullopt;
+            }
+
+            if (const auto *realValue = std::get_if<double>(&parameterValue))
+            {
+                // 与 SQLite 侧同一道闸：DOUBLE 装不下 NaN 与无穷大，服务端会把它改成 NULL 并只留一条
+                // warning——「写入一个数」静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
+                if (!std::isfinite(*realValue))
+                {
+                    return "MySQL 驱动：第 " + std::to_string(index + 1U) + " 个参数是" + (std::isnan(*realValue) ? " NaN" : "无穷大") +
+                           "，而 DOUBLE 列无法保存它（服务端会把它改写成 NULL）。请先挡掉非有限取值，或改用文本列承载并写明其表示法";
+                }
+                binding.buffer_type = MYSQL_TYPE_DOUBLE;
+                binding.buffer      = asBindBuffer(realValue);
+                return std::nullopt;
+            }
+
+            // 文本与十进制共用这一条下发路（十进制按承载文本交出，理由见 textLikePayload）
+            if (const std::optional<std::string_view> stringPayload = textLikePayload(parameterValue); stringPayload.has_value())
+            {
+                if (const auto rejection = bindTextParameter(binding, lengthSlot, index, *stringPayload))
+                {
+                    return rejection;
+                }
+                return std::nullopt;
+            }
+
+            if (std::optional<std::string> temporalText = Detail::renderTemporalParameterText(parameterValue, ' ', ""); temporalText.has_value())
+            {
+                // 两个日期时间都按文本交出，且**不带偏移标记**：MySQL 的 DATETIME 按字面收，
+                // 而本映射把 UTC 瞬时存成 DATETIME(6) 的 UTC 字面量（选它而不选 TIMESTAMP 的理由见
+                // MySqlDialect::columnTypeName）。墙上的那一档同样不带后缀，两者在库里就靠成员类型区分
+                if (renderedTexts.empty())
+                {
+                    renderedTexts.resize(parameterCount);
+                }
+                renderedTexts[index] = std::move(*temporalText);
+
+                if (const auto rejection = bindTextParameter(binding, lengthSlot, index, renderedTexts[index]))
+                {
+                    return rejection;
+                }
+                return std::nullopt;
+            }
+
+            if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
+            {
+                // 二进制必须走 MYSQL_TYPE_BLOB：若按 MYSQL_TYPE_STRING 下发，服务端会把载荷当作
+                // 连接字符集（本连接是 utf8mb4）下的字符串，非该字符集的字节序列可能被替换或直接
+                // 报错——写进去和读回来就不是同一串字节了。类型上是 BLOB，服务端便不再做字符集转换
+                if (byteValue->size() > kMaximumNativeLength)
+                {
+                    return parameterTooLongText(index, true, byteValue->size(), "MySQL");
+                }
+
+                lengthSlot          = static_cast<unsigned long>(byteValue->size());
+                binding.buffer_type = MYSQL_TYPE_BLOB;
+                // 空载荷指向静态字节而不是空指针：buffer 为空时客户端库行为无保证，
+                // 而长度为 0 已足够表达「零长度 BLOB」
+                binding.buffer        = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
+                binding.buffer_length = lengthSlot;
+                binding.length        = &lengthSlot;
+                return std::nullopt;
+            }
+
+            // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数：
+            // 方言层已把 IN 集合展开成多个占位符，走到这里说明调用方传了非标量值
+            return containerParameterRejectedText(index, parameterValue);
         }
     } // namespace
 
@@ -1048,96 +1161,25 @@ namespace AsynGyanis::Database
         }
 
         // 绑定缓冲区必须活到 mysql_stmt_execute 返回为止：客户端库正是在 execute 内部读取它们
-        // 并写进网络包。因此这些容器都声明在本函数体内，绑定与执行绝不被拆成两个函数。
+        // 并写进网络包。因此这些容器都声明在本函数体内：填槽那一步只写进这里给出的存储，自己不留任何一份。
+        // 绑定与执行也不拆成两次调用，中间没人能碰这些缓冲区。
         // 值初始化（vector 的默认构造）会把 MYSQL_BIND 的所有字段清零，省去逐个字段赋默认值
         std::vector<MYSQL_BIND>    bindings(parameters.size());
         std::vector<unsigned long> parameterLengths(parameters.size(), 0UL);
         std::vector<signed char>   tinyValues(parameters.size(), 0);
+        // 日期时间要先渲染成文本才能绑定（各家写法见 Common/TemporalText.h）。渲染结果按参数槽位收进
+        // 这个本函数体内的容器：绑定交出去的是指针，缓冲区必须活到 mysql_stmt_execute 返回。
+        // 只在真出现日期时间参数时才铺开，纯文本/数值参数不为此多付一次分配
+        std::vector<std::string> renderedTexts;
 
         for (std::size_t index = 0; index < parameters.size(); ++index)
         {
-            MYSQL_BIND          &binding        = bindings[index];
-            const DatabaseValue &parameterValue = parameters[index];
-
-            // 用 std::get_if 取指针而不是 std::get：类型不符时走到 else 分支给出中文错误，
-            // 而 std::get 会抛 std::bad_variant_access，把「参数类型不对」变成难以处理的异常
-            if (std::holds_alternative<std::monostate>(parameterValue))
+            if (const auto rejection = fillParameterSlot(bindings[index], parameterLengths[index], tinyValues[index], renderedTexts, parameters.size(), index, parameters[index]);
+                rejection.has_value())
             {
-                // SQL NULL 必须用 MYSQL_TYPE_NULL 表达：绑成空字符串后 "IS NULL" 不再成立，
-                // 与调用方传空值的意图直接冲突。NULL 不需要任何缓冲区
-                binding.buffer_type = MYSQL_TYPE_NULL;
-                continue;
+                m_lastError = *rejection;
+                return false;
             }
-
-            if (const auto *booleanValue = std::get_if<bool>(&parameterValue))
-            {
-                // MySQL 没有独立的布尔存储类，TINYINT(1) 是官方约定。
-                // MYSQL_TYPE_TINY 要求缓冲区元素类型与之一致（有符号单字节），因此先落到自己的存储再交出地址
-                tinyValues[index]   = *booleanValue ? 1 : 0;
-                binding.buffer_type = MYSQL_TYPE_TINY;
-                binding.buffer      = asBindBuffer(&tinyValues[index]);
-                continue;
-            }
-
-            if (const auto *integerValue = std::get_if<std::int64_t>(&parameterValue))
-            {
-                // 有符号 64 位整数直连缓冲区：is_unsigned 留默认假，BIGINT SIGNED 与 int64_t 一一对应
-                binding.buffer_type = MYSQL_TYPE_LONGLONG;
-                binding.buffer      = asBindBuffer(integerValue);
-                continue;
-            }
-
-            if (const auto *realValue = std::get_if<double>(&parameterValue))
-            {
-                // 与 SQLite 侧同一道闸：DOUBLE 装不下 NaN 与无穷大，服务端会把它改成 NULL 并只留一条
-                // warning——「写入一个数」静默变成「写入空值」，既不报错也读不回原值，只能在绑定前拦下
-                if (!std::isfinite(*realValue))
-                {
-                    m_lastError = "MySQL 驱动：第 " + std::to_string(index + 1U) + " 个参数是" + (std::isnan(*realValue) ? " NaN" : "无穷大") +
-                                  "，而 DOUBLE 列无法保存它（服务端会把它改写成 NULL）。请先挡掉非有限取值，或改用文本列承载并写明其表示法";
-                    return false;
-                }
-                binding.buffer_type = MYSQL_TYPE_DOUBLE;
-                binding.buffer      = asBindBuffer(realValue);
-                continue;
-            }
-
-            // 文本与十进制共用这一条下发路（十进制按承载文本交出，理由见 textLikePayload）
-            if (const std::optional<std::string_view> stringPayload = textLikePayload(parameterValue); stringPayload.has_value())
-            {
-                if (const auto rejection = bindTextParameter(binding, parameterLengths[index], index, *stringPayload))
-                {
-                    m_lastError = *rejection;
-                    return false;
-                }
-                continue;
-            }
-
-            if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
-            {
-                // 二进制必须走 MYSQL_TYPE_BLOB：若按 MYSQL_TYPE_STRING 下发，服务端会把载荷当作
-                // 连接字符集（本连接是 utf8mb4）下的字符串，非该字符集的字节序列可能被替换或直接
-                // 报错——写进去和读回来就不是同一串字节了。类型上是 BLOB，服务端便不再做字符集转换
-                if (byteValue->size() > kMaximumNativeLength)
-                {
-                    m_lastError = parameterTooLongText(index, true, byteValue->size(), "MySQL");
-                    return false;
-                }
-
-                parameterLengths[index] = static_cast<unsigned long>(byteValue->size());
-                binding.buffer_type     = MYSQL_TYPE_BLOB;
-                // 空载荷指向静态字节而不是空指针：buffer 为空时客户端库行为无保证，
-                // 而长度为 0 已足够表达「零长度 BLOB」
-                binding.buffer        = asBindBuffer(byteValue->empty() ? &kEmptyBinaryPayloadByte : byteValue->data());
-                binding.buffer_length = parameterLengths[index];
-                binding.length        = &parameterLengths[index];
-                continue;
-            }
-
-            // 容器的正确用法是展开成多个标量参数（如 IN 列表），而不是当成单个参数：
-            // 方言层已把 IN 集合展开成多个占位符，走到这里说明调用方传了非标量值
-            m_lastError = containerParameterRejectedText(index, parameterValue);
-            return false;
         }
 
         // 零参数时不需要下发绑定：传空指针给第三方库虽然通常可行，但它的行为在文档里没有明确保证，

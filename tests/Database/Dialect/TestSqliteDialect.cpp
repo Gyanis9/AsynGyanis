@@ -1644,6 +1644,10 @@ TEST(SqliteDialectDdl, ColumnTypeNamesMapToStorageClasses)
     // 类型名写成 DECIMAL/NUMERIC 会被亲和规则判成 NUMERIC，所以必须正好是 TEXT 这一档
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "TEXT");
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::Text));
+    // 日期时间也只能落 TEXT：类型名写成 DATE/TIME/TIMESTAMP 会因不含亲和关键字而掉进 NUMERIC 亲和，
+    // 于是日期文本先被引擎试着折成数值。两个逻辑类型的区别在交出的文本（带不带 Z），不在列名
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Timestamp), "TEXT");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::LocalDateTime), "TEXT");
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

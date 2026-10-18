@@ -139,6 +139,17 @@ namespace AsynGyanis::Database
                 // 类型名写成 TEXT 而不是保留 DECIMAL：保留后者会静默落到 NUMERIC 亲和，
                 // 于是「声明看着是十进制、存进去是二进制浮点」，正是本类型要避免的事
                 return "TEXT";
+            case ColumnType::Timestamp:
+            case ColumnType::LocalDateTime:
+                // 两条都落 TEXT，道理与上面那格相同：本引擎没有日期时间类型，只有亲和规则。
+                // 类型名刻意不写成 DATE / TIME / TIMESTAMP —— 亲和规则看的是子串
+                // （INT / CHAR / CLOB / TEXT / BLOB / REAL / FLOA / DOUB），这几个词一个都不沾，
+                // 会被判成 NUMERIC 亲和，于是「2026-10-18 09:20:30」要先被引擎试着折成数值，
+                // 折不动才留下文本：等于把列的存储类交给运气。
+                // 两个逻辑类型在物理上同型，区分它们的是**交出去的文本**：UTC 瞬时那一路带 'Z'、
+                // 墙上时间那一路不带（渲染口径见 Common/TemporalText.h）。定宽 ISO 文本还有一层用处：
+                // TEXT 亲和下比较按字典序，而定宽 ISO 的字典序与时间序一致，不像十进制会「9 大于 10」
+                return "TEXT";
             default:
                 // 本方法是 noexcept 且被建表语句生成直接调用，没有可回退的分支：
                 // 遇到将来新增而本实现尚未认得的枚举取值，返回最宽容的 TEXT，

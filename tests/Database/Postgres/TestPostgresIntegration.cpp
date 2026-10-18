@@ -144,6 +144,8 @@ namespace AsynGyanis::Database
 
         /// 建表迁移用例的表：由 SchemaMigrator 生成 DDL，表名必须是编译期常量（见下面的 TableSchema 特化）
         constexpr std::string_view kMigratedTableName = "Asyn_Pg_Migrated";
+        /// 日期时间用例的表名：一个瞬时列（timestamptz）加一个墙上时间列（timestamp(6)）
+        constexpr std::string_view kTemporalTableName = "Asyn_Pg_Temporal";
         /// 十进制金额用例的表名：与其余用例分开，并行执行时互不干扰
         constexpr std::string_view kDecimalTableName = "Asyn_Pg_Decimal";
 
@@ -202,6 +204,14 @@ namespace AsynGyanis::Database
         {
             std::int64_t                  id;     ///< 主键
             AsynGyanis::Database::Decimal amount; ///< 金额列：走 Decimal 一档
+        };
+
+        /// 日期时间用例的行：表由 SchemaMigrator 按本映射建（TIMESTAMPTZ + TIMESTAMP(6)）
+        struct IntegrationTemporalRow
+        {
+            std::int64_t                        id;       ///< 主键
+            AsynGyanis::Database::Timestamp     bookedAt; ///< UTC 瞬时
+            AsynGyanis::Database::LocalDateTime localAt;  ///< 墙上时间
         };
 
         struct IntegrationMigratedRow
@@ -330,6 +340,18 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationDecimalRow::id, "id"),
                 Column(&IntegrationDecimalRow::amount, "amount"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationTemporalRow>
+    {
+        static constexpr std::string_view kTableName = kTemporalTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationTemporalRow::id, "id"),
+                Column(&IntegrationTemporalRow::bookedAt, "booked_at"),
+                Column(&IntegrationTemporalRow::localAt, "local_at"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -1995,6 +2017,68 @@ namespace AsynGyanis::Database
         EXPECT_EQ(withComments[0].comments[0].text, "真机第一评");
         ASSERT_EQ(withComments[1].comments.size(), 0U) << "第二条帖子没有评论（分组键错位会把别家的挂上来）";
         EXPECT_TRUE(withComments[2].comments.empty());
+    }
+
+    /**
+     * @brief 钉住 timestamptz 在会话时区改变后仍是同一个瞬间，而 timestamp 仍是同一个历法读数
+     *
+     * @details 这是判据 3 的那一格，两条一起才算说清「时区语义没被抹平」：
+     *          ① 会话从 UTC 挪到 Asia/Kolkata 之后，瞬时列的原始文本必须**换了偏移来写同一个瞬间**
+     *            （读回来的成员值与写入逐微秒相等）；墙上时间列的文本必须**一字不变**（它没有偏移可言）。
+     *          ② 中间夹一条 `SHOW TimeZone` 与一条对原始文本的断言：否则「值没变」可能只是因为
+     *            会话压根没改成功，那条绿就是白给的。
+     * @note 期望瞬间/读数按公历直接写（2026-10-18 是 1970-01-01 之后第 20744 天，
+     *       2026-03-01 是第 20513 天），不复用被测解析器造期望。
+     * @note 收尾把会话时区改回 UTC：本驱动的会话复位用的是 DISCARD ALL，改回去是为了即使在那一步
+     *       之前用例就失败，归还的连接也不会带着别的时区给下一个借用者。
+     */
+    TEST_F(PostgresIntegrationTest, TimestamptzKeepsTheInstantAcrossSessionTimeZoneWhileTimestampKeepsTheLiteral)
+    {
+        m_preparedTableNames.emplace_back(kTemporalTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTemporalRow>(*makePool(1), true, &errorText)) << errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationTemporalRow>(*pool, true, &errorText)) << errorText;
+
+        const AsynGyanis::Database::Timestamp     bookedAt{std::chrono::days{20744} + std::chrono::hours{3} + std::chrono::minutes{50} + std::chrono::seconds{30} +
+                                                           std::chrono::microseconds{123456}};
+        const AsynGyanis::Database::LocalDateTime localAt{std::chrono::days{20513} + std::chrono::hours{2} + std::chrono::minutes{30} + std::chrono::microseconds{500000}};
+        ASSERT_EQ(1, OrmQuery<IntegrationTemporalRow>(*pool).insert(IntegrationTemporalRow{.id = 1, .bookedAt = bookedAt, .localAt = localAt}));
+
+        // 会话基线钉成 UTC，再挪到 +05:30：两步都读一次原始文本，比较才有对照
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_TRUE(connection->execute("SET TIME ZONE 'UTC'") != nullptr) << connection->lastError();
+            const std::unique_ptr<DatabaseResult> utcText = connection->execute("SELECT booked_at::text, local_at::text FROM \"Asyn_Pg_Temporal\" WHERE id = 1");
+            ASSERT_TRUE(utcText != nullptr) << connection->lastError();
+            ASSERT_TRUE(utcText->next());
+            EXPECT_EQ(std::get<std::string>(utcText->getValue(0)), "2026-10-18 03:50:30.123456+00");
+            EXPECT_EQ(std::get<std::string>(utcText->getValue(1)), "2026-03-01 02:30:00.5");
+
+            ASSERT_TRUE(connection->execute("SET TIME ZONE 'Asia/Kolkata'") != nullptr) << connection->lastError();
+            const std::unique_ptr<DatabaseResult> zoneCheck = connection->execute("SHOW TimeZone");
+            ASSERT_TRUE(zoneCheck != nullptr) << connection->lastError();
+            ASSERT_TRUE(zoneCheck->next());
+            EXPECT_EQ(std::get<std::string>(zoneCheck->getValue(0)), "Asia/Kolkata") << "会话没真的改时区，下面那条比较就什么都不是";
+
+            const std::unique_ptr<DatabaseResult> shifted = connection->execute("SELECT booked_at::text, local_at::text FROM \"Asyn_Pg_Temporal\" WHERE id = 1");
+            ASSERT_TRUE(shifted != nullptr) << connection->lastError();
+            ASSERT_TRUE(shifted->next());
+            EXPECT_EQ(std::get<std::string>(shifted->getValue(0)), "2026-10-18 09:20:30.123456+05:30") << "瞬时列没有按会话时区重新渲染";
+            EXPECT_EQ(std::get<std::string>(shifted->getValue(1)), "2026-03-01 02:30:00.5") << "墙上时间列被会话时区改写了（它本没有时区可言）";
+
+            static_cast<void>(connection->execute("SET TIME ZONE 'UTC'"));
+        }
+
+        // 换个连接（新会话）经 ORM 读回来：偏移折叠之后必须还是原来那个瞬间
+        const std::optional<IntegrationTemporalRow> readBack = OrmQuery<IntegrationTemporalRow>(*pool).first();
+        ASSERT_TRUE(readBack.has_value()) << "日期时间行读不回来";
+        EXPECT_EQ(readBack->bookedAt, bookedAt) << "timestamptz 折回 UTC 之后不是写入的那个瞬间";
+        EXPECT_EQ(readBack->localAt, localAt) << "timestamp 折回墙上时间之后不是写入的那个历法读数";
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTemporalRow>(*pool, true, &errorText)) << errorText;
     }
 
 } // namespace AsynGyanis::Database

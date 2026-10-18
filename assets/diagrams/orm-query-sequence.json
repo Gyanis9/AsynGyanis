@@ -42,8 +42,8 @@
       "label": "Queryable",
       "sublabel": "toList/first/count",
       "sources": [
-        { "path": "src/Database/Queryable/Queryable.h", "line": 448, "label": "toList" },
-        { "path": "src/Database/Queryable/Queryable.h", "line": 512, "label": "count 清排序分页" }
+        { "path": "src/Database/Queryable/Queryable.h", "line": 449, "label": "toList" },
+        { "path": "src/Database/Queryable/Queryable.h", "line": 513, "label": "count 清排序分页" }
       ]
     },
     {
@@ -84,7 +84,7 @@
       "label": "PooledConnection",
       "sublabel": "RAII 租约",
       "sources": [
-        { "path": "src/Database/Queryable/Queryable.h", "line": 1893, "label": "事务里持语句锁" },
+        { "path": "src/Database/Queryable/Queryable.h", "line": 1894, "label": "事务里持语句锁" },
         { "path": "src/Database/Pool/PooledConnection.cpp", "line": 94, "label": "doReturnToPool" }
       ]
     },
@@ -94,9 +94,9 @@
       "label": "驱动连接",
       "sublabel": "Sqlite / MySQL",
       "sources": [
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 366, "label": "未命中才 prepare" },
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 634, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 502, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 417, "label": "未命中才 prepare" },
+        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 685, "label": "findCachedStatement" },
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 663, "label": "命中直 bindAndExecute" }
       ]
     },
     {
@@ -105,8 +105,8 @@
       "label": "RowMapper",
       "sublabel": "值到字段",
       "sources": [
-        { "path": "src/Database/Queryable/RowMapper.h", "line": 682, "label": "mapResultRows" },
-        { "path": "src/Database/Queryable/RowMapper.h", "line": 354, "label": "bool 只认 0/1" }
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 788, "label": "mapResultRows" },
+        { "path": "src/Database/Queryable/RowMapper.h", "line": 417, "label": "bool 只认 0/1" }
       ]
     }
   ],
@@ -148,7 +148,7 @@
       "dot": "rose",
       "title": "预算与分块",
       "items": [
-        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:2367、2390）",
+        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:2368、2391）",
         "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、715）",
         "分页钩子在渲染里落：SQLite 内联十进制并补 LIMIT -1，MySQL 用 ?（StandardSqlDialect.cpp:400、SqliteDialect.cpp:14）"
       ]
@@ -166,7 +166,7 @@
       "dot": "cyan",
       "title": "事务与串行的真因",
       "items": [
-        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:965、ConnectionPool 的 acquireStatementLock）",
+        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:966、ConnectionPool 的 acquireStatementLock）",
         "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:101、103、126）",
         "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有五个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空、maximumWaitingRequests 0=同样不排队（PoolConfig.h:29-39）"
       ]
@@ -175,9 +175,9 @@
       "dot": "violet",
       "title": "Redis 借这张图的会话位",
       "items": [
-        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:227、1231、787、751）",
-        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1351）",
-        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1623）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
+        "argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:228、1232、788、752）",
+        "归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1548）",
+        "订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisConnection.cpp:1867）；发布/订阅与命令共用同一个池，但订阅连接不可归还",
         "可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate"
       ]
     }

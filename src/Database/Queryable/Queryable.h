@@ -21,6 +21,7 @@
 #include "Database/Common/DatabaseType.h"
 #include "Database/Common/OptimisticLockException.h"
 #include "Database/Common/QueryExecutionException.h"
+#include "Database/Common/TemporalText.h"
 #include "Database/Common/TransactionTimeoutException.h"
 #include "Database/Dialect/DialectRegistry.h"
 #include "Database/Dialect/SqlDialect.h"
@@ -2759,6 +2760,14 @@ namespace AsynGyanis::Database::Queryable
                             // 这一支不写就会掉进下面的兜底（它按 .size() 报「N 项集合」，Decimal 没有 size()，
                             // 编译期就会断）；乐观锁冲突文本里金额要原样是那段十进制文本
                             return concrete.text();
+                        } else if constexpr (std::is_same_v<ValueType, Timestamp>)
+                        {
+                            // 乐观锁冲突与主键文本都要能说出「那一刻」：按本库的定宽 ISO 形态交出（带 Z），
+                            // 与写进库里的文本同形，运维拿它去比对不需要再猜一种写法
+                            return AsynGyanis::Database::Detail::renderSystemClock(concrete, 'T', true);
+                        } else if constexpr (std::is_same_v<ValueType, LocalDateTime>)
+                        {
+                            return AsynGyanis::Database::Detail::renderWallClock(concrete, 'T');
                         } else if constexpr (std::is_same_v<ValueType, std::vector<std::uint8_t>>)
                         {
                             return std::format("<{} 字节二进制>", concrete.size());

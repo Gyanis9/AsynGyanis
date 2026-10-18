@@ -698,6 +698,14 @@ namespace
                                            mySqlDialect.keyColumnTypeName(Database::ColumnType::Decimal) == mySqlDialect.columnTypeName(Database::ColumnType::Decimal),
                                    "十进制列的物理类型名按引擎分家：SQLite 落 TEXT，MySQL 定死 DECIMAL(65,30)，且后者本就进得了索引");
 
+        // 日期时间同理：本引擎没有带时区的类型，两个逻辑类型都落 DATETIME(6)（选它的理由见方言实现），
+        // 区分两者的是交出去的文本带不带 Z；SQLite 侧同理落 TEXT
+        Samples::checklist().check(mySqlDialect.columnTypeName(Database::ColumnType::Timestamp) == "DATETIME(6)" &&
+                                           mySqlDialect.columnTypeName(Database::ColumnType::LocalDateTime) == "DATETIME(6)" &&
+                                           sqliteDialect.columnTypeName(Database::ColumnType::Timestamp) == "TEXT" &&
+                                           sqliteDialect.columnTypeName(Database::ColumnType::LocalDateTime) == "TEXT",
+                                   "日期时间列的物理类型名按引擎分家：MySQL 两个逻辑类型同写 DATETIME(6)（区分在文本带不带 Z），SQLite 落 TEXT");
+
         Samples::checklist().check(Database::DialectRegistry::supports(Database::DatabaseType::Sqlite) && Database::DialectRegistry::supports(Database::DatabaseType::MySql) &&
                                            !Database::DialectRegistry::supports(Database::DatabaseType::Redis) &&
                                            Database::DialectRegistry::dialectFor(Database::DatabaseType::Sqlite) ==

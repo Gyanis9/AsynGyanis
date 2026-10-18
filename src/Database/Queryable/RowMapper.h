@@ -15,6 +15,7 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/TemporalText.h"
 #include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/TableSchema.h"
 
@@ -22,6 +23,7 @@
 #include <charconv>
 #include <cerrno>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -62,17 +64,61 @@ namespace AsynGyanis::Database::Queryable
         };
 
         /**
+         * @brief 判定成员类型是不是「带时区语义的 UTC 瞬时」
+         * @details 只认 `std::chrono::time_point<system_clock, D>`，且要求 D 的刻度不细于微秒
+         *          （秒/毫秒/微秒都收；纳秒会被截到微秒，那是静默丢最后三位，所以直接拒）。
+         *          承载精度取微秒与本库的日期时间承载一致（见 DatabaseValue.h 与 Common/TemporalText.h）。
+         * @tparam MemberType 结构体成员类型
+         */
+        template<typename MemberType>
+        struct IsSystemClockTime : std::false_type
+        {
+        };
+
+        /**
+         * @brief system_clock 的 time_point 特化：按刻度判定能不能无损承载
+         * @tparam DurationType 成员用的精度
+         */
+        template<typename DurationType>
+        struct IsSystemClockTime<std::chrono::time_point<std::chrono::system_clock, DurationType>>
+            : std::bool_constant<DurationType::period::num == 1 && DurationType::period::den <= 1'000'000>
+        {
+        };
+
+        /**
+         * @brief 判定成员类型是不是「无偏移的墙上时间」（local_t 时钟的 time_point）
+         * @details 与上面那条同样的精度口径；两者是两个不同的逻辑类型，不互相映射——
+         *          「这一列有没有时区语义」在三家引擎上的答案不同，替调用方合并就是抹平。
+         * @tparam MemberType 结构体成员类型
+         */
+        template<typename MemberType>
+        struct IsLocalClockTime : std::false_type
+        {
+        };
+
+        /**
+         * @brief local_t 时钟的 time_point 特化：按刻度判定能不能无损承载
+         * @tparam DurationType 成员用的精度
+         */
+        template<typename DurationType>
+        struct IsLocalClockTime<std::chrono::time_point<std::chrono::local_t, DurationType>>
+            : std::bool_constant<DurationType::period::num == 1 && DurationType::period::den <= 1'000'000>
+        {
+        };
+
+        /**
          * @brief 判定单个列类型是否被行映射支持
          * @details 支持整型、bool、浮点、std::string、精确十进制（Database::Decimal）、
+         *          两个日期时间（system_clock / local_t 时钟的 time_point，精度不细于微秒）、
          *          二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），
          *          以及它们的 std::optional 包装（递归判定）。
          *          二进制的两种等价拼法由共享 trait 判定，规则只有一份实现。
          * @tparam MemberType 结构体成员类型
          */
         template<typename MemberType>
-        struct IsSupportedColumnType
-            : std::bool_constant<std::is_integral_v<MemberType> || std::is_floating_point_v<MemberType> || std::is_same_v<MemberType, std::string> ||
-                                 std::is_same_v<MemberType, AsynGyanis::Database::Decimal> || AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
+        struct IsSupportedColumnType : std::bool_constant<std::is_integral_v<MemberType> || std::is_floating_point_v<MemberType> || std::is_same_v<MemberType, std::string> ||
+                                                          std::is_same_v<MemberType, AsynGyanis::Database::Decimal> || IsSystemClockTime<MemberType>::value ||
+                                                          IsLocalClockTime<MemberType>::value || AsynGyanis::Database::Detail::IsBinaryBytes<MemberType>::value>
         {
         };
 
@@ -107,6 +153,23 @@ namespace AsynGyanis::Database::Queryable
             {
                 return (IsSupportedColumnType<typename std::tuple_element_t<Indices, ColumnTuple>::MemberType>::value && ...);
             }(std::make_index_sequence<std::tuple_size_v<ColumnTuple>>{});
+        }
+
+        /**
+         * @brief 日期时间文本解析不出来时的专用报错
+         * @details 与通用那条的差别在于必须抄出原文：日期时间的文本形态多到能让人一眼看不出问题
+         *          （MySQL 的零值日期 `0000-00-00 00:00:00`、PostgreSQL 非法国 DateStyle 下的
+         *          `Thu 10-18-2026 09:20:30 PDT+0530`、以及 `infinity`），只报「类型不符」等于让人重新查一遍。
+         * @param columnName 出错的列名
+         * @param textValue 列给出的原文
+         */
+        [[noreturn]] inline void throwTemporalMappingError(const std::string_view columnName, const std::string &textValue)
+        {
+            throw RowMappingException("ORM 行映射失败：列 \"" + std::string(columnName) + "\" 的取值 \"" + textValue +
+                                      "\" 不是本库认得的日期时间文本。认的写法是 `YYYY-MM-DD[ /T]HH:MM[:SS[.ffffff]][偏移]`，"
+                                      "偏移可为 Z/+HH:MM/-HHMM；不认的常见形态有两类：MySQL 的零值日期 `0000-00-00 00:00:00`、"
+                                      "PostgreSQL 在非 ISO DateStyle 下给出的带星期与带时区名的文本，以及 infinity；"
+                                      "成员声明成 LocalDateTime 时还多一条：文本带偏移会被拒（那说明这一列有实时区语义，成员该用 Timestamp）");
         }
 
         /**
@@ -465,6 +528,49 @@ namespace AsynGyanis::Database::Queryable
                                               "（PostgreSQL 的 NUMERIC 可以有 'NaN'）；请改用 std::string 成员自行判定");
                 }
                 throwColumnTypeError(columnName, "精确十进制（Decimal 或十进制文本）", cellValue);
+            } else if constexpr (IsSystemClockTime<BareType>::value || IsLocalClockTime<BareType>::value)
+            {
+                // 成员声明成哪个逻辑类型，就只认哪一档：两个备选互相不接受对方的值，
+                // 「这一列有没有时区语义」不能由读侧替调用方合并
+                if constexpr (IsSystemClockTime<BareType>::value)
+                {
+                    if (const auto *instant = std::get_if<AsynGyanis::Database::Timestamp>(&cellValue))
+                    {
+                        return std::chrono::time_point_cast<typename BareType::duration>(*instant);
+                    }
+                } else
+                {
+                    if (const auto *wallClock = std::get_if<AsynGyanis::Database::LocalDateTime>(&cellValue))
+                    {
+                        return std::chrono::time_point_cast<typename BareType::duration>(*wallClock);
+                    }
+                }
+
+                // 三家引擎的日期时间列今天都以文本交回（各驱动 convertColumnText 的默认分支），
+                // 所以成员声明成日期时间时必须认文本这一档，否则只有写入方向能用
+                if (const auto *textValue = std::get_if<std::string>(&cellValue))
+                {
+                    if (const auto parsed = AsynGyanis::Database::Detail::parseTemporalText(*textValue); parsed.has_value())
+                    {
+                        if constexpr (IsSystemClockTime<BareType>::value)
+                        {
+                            // 文本没带偏移时按 UTC 解释——这条约定是 MySQL 那一路的前提，
+                            // 见 MySqlDialect::columnTypeName 的 Timestamp 分支与 Common/TemporalText.h
+                            if (const auto instant = AsynGyanis::Database::Detail::toSystemClock(*parsed); instant.has_value())
+                            {
+                                return std::chrono::time_point_cast<typename BareType::duration>(*instant);
+                            }
+                        } else if (const auto wall = AsynGyanis::Database::Detail::toWallClock(*parsed); wall.has_value())
+                        {
+                            // 墙上时间那一路遇到带偏移的文本会拿不到值（toWallClock 故意不丢偏移）：
+                            // 那说明成员与列的时区语义配错了，下面按「解析不出」点名
+                            return std::chrono::time_point_cast<typename BareType::duration>(*wall);
+                        }
+                    }
+
+                    throwTemporalMappingError(columnName, *textValue);
+                }
+                throwColumnTypeError(columnName, "日期时间（Timestamp / LocalDateTime，或引擎交回的日期时间文本）", cellValue);
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 if (const auto *byteValue = std::get_if<BinaryBytes>(&cellValue))
@@ -482,7 +588,7 @@ namespace AsynGyanis::Database::Queryable
                 // 不受支持的成员类型已被 allColumnTypesSupported() 的 static_assert 拦住，
                 // 这里只是让 if constexpr 的所有分支都有返回值
                 static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型。仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、"
-                                                        "二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
+                                                        "日期时间（Timestamp / LocalDateTime）、二进制载荷（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                         "以及它们的 std::optional 包装");
                 return MemberType{};
             }
@@ -887,6 +993,12 @@ namespace AsynGyanis::Database::Queryable
                 // 十进制必须按 Decimal 这一档交出去：降级成 double 会在末位丢精度且不可逆，
                 // 而金额列要的正是那一位。驱动侧各自的绑定形态见四个驱动的 Decimal 分支
                 return DatabaseValue{std::in_place_type<AsynGyanis::Database::Decimal>, value};
+            } else if constexpr (IsSystemClockTime<BareType>::value || IsLocalClockTime<BareType>::value)
+            {
+                // 两个日期时间成员分别落进各自那一档，承载精度统一到微秒（更粗的精度无损，
+                // 更细的成员类型已被 IsSupportedColumnType 拦住）。各家把这一档渲染成什么文本，
+                // 见四个驱动的 textLikePayload / toPostgresTextParameter 与 Common/TemporalText.h
+                return DatabaseValue{std::chrono::time_point_cast<std::chrono::microseconds>(value)};
             } else if constexpr (AsynGyanis::Database::Detail::kIsBinaryBytes<BareType>)
             {
                 // 用 in_place_type 显式指定二进制备选：它必须由「类型」表达出来，
@@ -896,7 +1008,7 @@ namespace AsynGyanis::Database::Queryable
             } else
             {
                 static_assert(kAlwaysFalse<MemberType>, "RowMapper：不支持的成员类型，无法转换为绑定参数。"
-                                                        "仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、二进制载荷"
+                                                        "仅支持整型、bool、浮点、std::string、精确十进制（Decimal）、日期时间（Timestamp / LocalDateTime）、二进制载荷"
                                                         "（std::vector<std::uint8_t> 或 std::vector<std::byte>），"
                                                         "以及它们的 std::optional 包装");
                 return std::monostate{};

@@ -123,10 +123,10 @@ namespace AsynGyanis::Database
         const DatabaseValue bytes{BinaryBytes{0x01}};
         const DatabaseValue decimal{Decimal::tryParse("0.1000").value()};
 
-        // 「新增备选一律追加在末尾」是已发布的契约：既有下标不能动。这里现取 variant 的规模比对，
-        // 不在测试里再抄一个数字，否则加一个备选就要同时改两处
+        // 「新增备选一律追加在末尾」是已发布的契约：既有下标不能动。判据写成「后加的排在前面那些之后」，
+        // 不抄具体下标，也不假设自己是最后一个——后面每加一档都要来改一次数字就等于没有判据。
+        // 完整的递增序列在 TestTemporalText 的 NewAlternativesAppendInsteadOfReordering 里钉
         EXPECT_GT(decimal.index(), bytes.index());
-        EXPECT_EQ(decimal.index(), std::variant_size_v<DatabaseValue> - 1);
         EXPECT_TRUE(std::holds_alternative<Decimal>(decimal));
     }
 

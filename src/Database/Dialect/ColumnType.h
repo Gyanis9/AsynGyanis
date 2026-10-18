@@ -26,14 +26,18 @@ namespace AsynGyanis::Database
      */
     enum class ColumnType
     {
-        Int64,  ///< 有符号 64 位整数（C++ 的 int8/16/32/64 一律映射到这里）
-        UInt64, ///< 无符号 64 位整数（SQLite 无无符号类型，见 SqliteDialect::columnTypeName 的范围说明）
-        Double, ///< 双精度浮点（C++ 的 float 也走这里：引擎侧没有更窄的小数类型值得单列）
-        Bool,   ///< 布尔（两个引擎都没有独立的布尔物理类型，用整数 0/1 表达）
-        Text,   ///< 变长文本（C++ 的 std::string）
-        Blob,   ///< 二进制大对象（C++ 的 std::vector<std::uint8_t> / std::vector<std::byte>，按原始字节存取，不做字符集解释）
-        Decimal ///< 精确十进制小数（C++ 的 Database::Decimal）：三家的物理类型与保真程度各不相同，
-                ///< 逐家说明见各 SqlDialect::columnTypeName 的实现与头文件
+        Int64,        ///< 有符号 64 位整数（C++ 的 int8/16/32/64 一律映射到这里）
+        UInt64,       ///< 无符号 64 位整数（SQLite 无无符号类型，见 SqliteDialect::columnTypeName 的范围说明）
+        Double,       ///< 双精度浮点（C++ 的 float 也走这里：引擎侧没有更窄的小数类型值得单列）
+        Bool,         ///< 布尔（两个引擎都没有独立的布尔物理类型，用整数 0/1 表达）
+        Text,         ///< 变长文本（C++ 的 std::string）
+        Blob,         ///< 二进制大对象（C++ 的 std::vector<std::uint8_t> / std::vector<std::byte>，按原始字节存取，不做字符集解释）
+        Decimal,      ///< 精确十进制小数（C++ 的 Database::Decimal）：三家的物理类型与保真程度各不相同，
+                      ///< 逐家说明见各 SqlDialect::columnTypeName 的实现与头文件
+        Timestamp,    ///< 带时区语义的 UTC 瞬时（C++ 的 std::chrono::sys_time<std::chrono::microseconds>）：
+                      ///< 与 LocalDateTime 是两个逻辑类型，不合并——见 DatabaseValue.h 里那段理由
+        LocalDateTime ///< 无偏移的墙上时间（C++ 的 std::chrono::local_time<std::chrono::microseconds>）：
+                      ///< 「2026-03-01 02:30:00」这样一个历法读数，不属于任何时区
     };
 
 } // namespace AsynGyanis::Database

@@ -2,6 +2,7 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Database/Common/ErrorText.h"
+#include "Database/Common/TemporalText.h"
 #include "Database/Redis/RedisResult.h"
 
 #ifdef DATABASE_HAS_REDIS
@@ -1664,9 +1665,18 @@ namespace AsynGyanis::Database
 
         if (const auto *decimal = std::get_if<Decimal>(&value))
         {
-            // 十进制按承载文本交出：Redis 只有字节安全，服务端不会把一个数变成一个数，
-            // 因此这条路上唯一要保证的是「文本不被中途换算」——原样交出即可
+            // 十进制按承载文本交出：Redis 没有数值类型，唯一的判据是「别在中间被换算」，所以按文本原样交出
             return decimal->text();
+        }
+        if (const auto *instant = std::get_if<Timestamp>(&value))
+        {
+            // 日期时间同样按文本交出，用本库自己的定宽 ISO 形态（UTC 带 Z）：Redis 那边存的就是字节，
+            // 让「写进去什么形态」与「读出来什么形态」完全一致，调用方才能拿它当去重键或排序前缀
+            return Detail::renderSystemClock(*instant, 'T', true);
+        }
+        if (const auto *wall = std::get_if<LocalDateTime>(&value))
+        {
+            return Detail::renderWallClock(*wall, 'T');
         }
 
         // 剩下三档：NULL 与两种复合类型。它们没有「一个参数」的对应物，

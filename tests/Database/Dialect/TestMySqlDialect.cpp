@@ -1235,6 +1235,10 @@ TEST(MySqlDialectDdl, ColumnTypeNamesFollowEngineWidths)
     // 十进制在本引擎上必须定死精度与标度，取值见头文件；键列沿用同一映射（DECIMAL 本就进得了索引）
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "DECIMAL(65,30)");
     EXPECT_EQ(dialect.keyColumnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::Decimal));
+    // 两个日期时间在这一家落到同一个物理类型，且都带 6 位小数秒：不写长度的 DATETIME 只存整秒，
+    // 那是静默丢位。选 DATETIME 而不是带时区语义的 TIMESTAMP 的理由写在实现的注释里
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Timestamp), "DATETIME(6)");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::LocalDateTime), "DATETIME(6)");
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

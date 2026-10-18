@@ -2,6 +2,7 @@
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ErrorText.h"
+#include "Database/Common/TemporalText.h"
 #include "Database/Dialect/SqliteDialect.h"
 #include "Database/Sqlite/SqliteResult.h"
 
@@ -14,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace AsynGyanis::Database
 {
@@ -32,6 +34,53 @@ namespace AsynGyanis::Database
         // 语句长度（sqlite3_prepare_v2）与参数长度（sqlite3_bind_text / sqlite3_bind_blob）
         // 的长度形参都是 int，超限会被静默截断成半条语句或半段数据，因此共用同一上限
         constexpr size_t kMaximumNativeLength = static_cast<size_t>(std::numeric_limits<int>::max());
+        /**
+         * @brief 把一段文本载荷绑进槽位，超长在发起绑定之前就拒
+         * @details 绑定长度的形参是 int，超限会被静默截断，写进去的就不是原来那串，因此在这里就拒并交出原因。
+         *          SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回（带返回列的
+         *          语句要等调用方遍历结果集才真正执行），若用 SQLITE_STATIC，数据库读到的会是调用方早已释放的
+         *          缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失。
+         * @param statement 目标语句
+         * @param parameterIndex SQLite 绑定序号（从 1 起）
+         * @param index 参数下标（从 0 起），只用于错误文本点名是第几个参数
+         * @param payload 要交出去的文本
+         * @return std::pair<int, std::optional<std::string>> 绑定返回码与拒绝原因；拒绝时根本没发起绑定，
+         *         返回码为 SQLITE_OK 而原因非空
+         */
+        std::pair<int, std::optional<std::string>> bindTextPayload(sqlite3_stmt *const statement, const int parameterIndex, const std::size_t index, const std::string_view payload)
+        {
+            if (payload.size() > kMaximumNativeLength)
+            {
+                return {SQLITE_OK, parameterTooLongText(index, false, payload.size(), "SQLite")};
+            }
+            return {sqlite3_bind_text(statement, parameterIndex, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT), std::nullopt};
+        }
+
+        /**
+         * @brief 把一段二进制载荷绑进槽位，超长在发起绑定之前就拒
+         * @details sqlite3_bind_blob 的长度形参同样是 int，超长照样会被静默截断。空载荷必须走 zeroblob：
+         *          bind_blob 收到空指针会绑成 SQL NULL，而「零长度 BLOB」与 NULL 是两件事；std::vector 为空时
+         *          data() 可能返回空指针（这一点与 std::string 不同，后者即使为空也指向内部缓冲），因此不能侥幸。
+         *          SQLITE_TRANSIENT 的理由与文本那一路相同：语句可能晚于本函数返回才真正执行。
+         * @param statement 目标语句
+         * @param parameterIndex SQLite 绑定序号（从 1 起）
+         * @param index 参数下标（从 0 起），只用于错误文本点名是第几个参数
+         * @param payload 要交出去的字节
+         * @return std::pair<int, std::optional<std::string>> 绑定返回码与拒绝原因，口径同 bindTextPayload
+         */
+        std::pair<int, std::optional<std::string>> bindBinaryPayload(sqlite3_stmt *const statement, const int parameterIndex, const std::size_t index, const BinaryBytes &payload)
+        {
+            if (payload.size() > kMaximumNativeLength)
+            {
+                return {SQLITE_OK, parameterTooLongText(index, true, payload.size(), "SQLite")};
+            }
+            if (payload.empty())
+            {
+                return {sqlite3_bind_zeroblob(statement, parameterIndex, 0), std::nullopt};
+            }
+            return {sqlite3_bind_blob(statement, parameterIndex, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT), std::nullopt};
+        }
+
     } // namespace
 
     SqliteConnection::SqliteConnection(const ConnectionConfig &configuration)
@@ -752,37 +801,35 @@ namespace AsynGyanis::Database
             {
                 // 文本与精确十进制都按 TEXT 绑出：SQLite 没有十进制类型，本映射把十进制落在 TEXT 亲和上
                 // （取舍见 SqliteDialect::columnTypeName 的 Decimal 分支），交出去的文本引擎原样收下
-                const std::string &payload = textValue != nullptr ? *textValue : std::get<Decimal>(parameterValue).text();
-                if (payload.size() > kMaximumNativeLength)
+                const auto [code, rejection] = bindTextPayload(statement, parameterIndex, index, textValue != nullptr ? *textValue : std::get<Decimal>(parameterValue).text());
+                if (rejection.has_value())
                 {
-                    m_lastError = parameterTooLongText(index, false, payload.size(), "SQLite");
+                    m_lastError = *rejection;
                     return false;
                 }
-
-                // SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回
-                // （带返回列的语句要等调用方遍历结果集才真正执行），若用 SQLITE_STATIC，
-                // 数据库读到的会是调用方早已释放的缓冲区。文本按字节长度传递，内嵌 '\0' 不丢失
-                bindResult = sqlite3_bind_text(statement, parameterIndex, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT);
+                bindResult = code;
+            } else if (const std::optional<std::string> temporalText = Detail::renderTemporalParameterText(parameterValue, 'T', "Z"); temporalText.has_value())
+            {
+                // 日期时间同样落 TEXT 亲和，文本形态由本库定：定宽 ISO，瞬时带 'Z'、墙上时间不带——这一位 'Z'
+                // 就是两个逻辑类型在库里的唯一区分，各家写法与理由见 Common/TemporalText.h。刻意排在文本/十进制
+                // 那档之后：那两档的载荷就在值里，不需要每次现造一个 std::string（ORM 的分配台账会把「每参数一次
+                // 的分配」数进去，先借后渲染的顺序就是这么定的）
+                const auto [code, rejection] = bindTextPayload(statement, parameterIndex, index, *temporalText);
+                if (rejection.has_value())
+                {
+                    m_lastError = *rejection;
+                    return false;
+                }
+                bindResult = code;
             } else if (const auto *byteValue = std::get_if<BinaryBytes>(&parameterValue))
             {
-                // sqlite3_bind_blob 的长度参数同样是 int，超长二进制照样会被静默截断
-                if (byteValue->size() > kMaximumNativeLength)
+                const auto [code, rejection] = bindBinaryPayload(statement, parameterIndex, index, *byteValue);
+                if (rejection.has_value())
                 {
-                    m_lastError = parameterTooLongText(index, true, byteValue->size(), "SQLite");
+                    m_lastError = *rejection;
                     return false;
                 }
-
-                // 空载荷必须走 zeroblob：sqlite3_bind_blob 收到空指针会绑成 SQL NULL，而
-                // 「零长度 BLOB」与 NULL 是两件事。std::vector 在为空时 data() 可能返回空指针
-                // （这一点与 std::string 不同，后者即使为空也指向内部缓冲），因此不能侥幸
-                if (byteValue->empty())
-                {
-                    bindResult = sqlite3_bind_zeroblob(statement, parameterIndex, 0);
-                } else
-                {
-                    // SQLITE_TRANSIENT 的理由与文本分支相同：语句可能晚于本函数返回才真正执行
-                    bindResult = sqlite3_bind_blob(statement, parameterIndex, byteValue->data(), static_cast<int>(byteValue->size()), SQLITE_TRANSIENT);
-                }
+                bindResult = code;
             } else
             {
                 // 容器的正确用法是展开成多个标量参数（如 IN 列表），方言层已把 IN 集合展开，

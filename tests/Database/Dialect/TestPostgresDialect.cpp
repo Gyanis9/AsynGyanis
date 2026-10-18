@@ -843,6 +843,10 @@ TEST(PostgresDialectDdl, ColumnTypeNamesCoverAllLogicalTypes)
     EXPECT_EQ(dialect.columnTypeName(ColumnType::Decimal), "NUMERIC");
     // 无符号 64 位承接用的 NUMERIC(20) 是另一格，两者不能混为一谈：前者标度随写入，后者固定 20 位
     EXPECT_NE(dialect.columnTypeName(ColumnType::Decimal), dialect.columnTypeName(ColumnType::UInt64));
+    // 这一家是两个逻辑类型分开落物理类型的唯一一例：timestamptz 存瞬间、timestamp 存历法读数
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::Timestamp), "TIMESTAMPTZ");
+    EXPECT_EQ(dialect.columnTypeName(ColumnType::LocalDateTime), "TIMESTAMP(6)");
+    EXPECT_NE(dialect.columnTypeName(ColumnType::Timestamp), dialect.columnTypeName(ColumnType::LocalDateTime));
 
     // 未知取值必须回落到一个可用类型名而不是崩溃：本方法 noexcept 且调用点没有回退分支
     EXPECT_EQ(dialect.columnTypeName(static_cast<ColumnType>(0xFF)), "TEXT");

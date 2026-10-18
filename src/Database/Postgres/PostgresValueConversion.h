@@ -27,6 +27,7 @@
 #ifdef DATABASE_HAS_POSTGRES
 
 #include "Database/Common/DatabaseValue.h"
+#include "Database/Common/TemporalText.h"
 
 #include <libpq-fe.h>
 
@@ -176,6 +177,20 @@ namespace AsynGyanis::Database::Detail
             // 十进制按承载文本原样交出：NUMERIC 列收文本参数时由服务端精确解析，
             // 中间不经任何浮点换算（换算会在末位丢精度且不可逆）
             return PostgresTextParameter{.text = decimalValue->text()};
+        }
+
+        if (const auto *instant = std::get_if<Timestamp>(&value))
+        {
+            // UTC 瞬时那一路**必须带偏移**：timestamptz 收到不带偏移的文本时是按会话 TimeZone 解释的，
+            // 那样同一个瞬间在 Asia/Shanghai 的会话上会被存成另一个瞬间。交回 +00 之后，
+            // 会话时区只影响显示，不影响存进去的那一点
+            return PostgresTextParameter{.text = renderSystemClockWithZeroOffset(*instant)};
+        }
+
+        if (const auto *wall = std::get_if<LocalDateTime>(&value))
+        {
+            // 墙上时间相反：不带偏移，服务端按字面历法读数收（TIMESTAMP WITHOUT TIME ZONE 的语义）
+            return PostgresTextParameter{.text = renderWallClock(*wall, ' ')};
         }
 
         // 容器的正确用法是展开成多个标量参数（IN 列表由方言展开），这里明确拒绝并交回调用方报错
