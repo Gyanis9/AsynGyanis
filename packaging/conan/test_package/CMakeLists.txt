@@ -8,5 +8,8 @@ project(AsynGyanisConsumerSmoke LANGUAGES CXX)
 find_package(AsynGyanis REQUIRED)
 
 add_executable(consumer_smoke main.cpp)
-target_link_libraries(consumer_smoke PRIVATE AsynGyanis::Net)
+# 两条都要链：main.cpp 里那组「模块 PUBLIC 宏 vs 能力清单」的对照读的是各模块自己发出去的定义，
+# 而 DATABASE_HAS_* 挂在 Database 上——只链 Net 时这些宏根本进不了使用方的预处理环境，
+# 对照会把「清单说有、这边没链接」误判成分叉（Linux 包内带 hiredis 时当场以 #error 变红）
+target_link_libraries(consumer_smoke PRIVATE AsynGyanis::Net AsynGyanis::Database)
 target_compile_features(consumer_smoke PRIVATE cxx_std_23)
