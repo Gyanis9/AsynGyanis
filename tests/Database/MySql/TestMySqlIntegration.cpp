@@ -2196,8 +2196,9 @@ namespace AsynGyanis::Database
         std::unique_ptr<ConnectionPool> pool = makePool(2);
         ASSERT_TRUE(SchemaMigrator::createTable<IntegrationBinaryRow>(*pool, true, &errorText)) << errorText;
 
-        // 0x00 是内嵌 NUL、0xFF 单独出现不是合法 utf8mb4 序列：两者都是「按文本搬运会坏」的形态
-        const BinaryBytes payload{0x00, 0x5C, 0xFF, 0x41, 0x00};
+        // 三家共用的载荷：0x00 是内嵌 NUL、0xFF 单独出现不是合法 utf8mb4 序列，两者都是「按文本搬运会坏」
+        // 的形态；再加 0x5C（反斜杠）与「你」的三字节 UTF-8 序列，与 PG 的 BYTEA、SQLite 的 BLOB 同解
+        const BinaryBytes payload{0x00, 0x5C, 0xFF, 0x41, 0xE4, 0xBD, 0xA0, 0x00};
 
         {
             OrmQuery<IntegrationBinaryRow> insertQuery(*pool);

@@ -32,12 +32,10 @@
  * 用例之间不共用表名，因此并行运行（ctest -j）也不会互相干扰。
  *
  * ## 与 MySQL 集成测试的两处有意差异
- * - 不做内嵌 '\0' 的往返断言：PostgreSQL 的文本类型不允许出现零字节
- *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），
- *   把 0 字节写进 TEXT 列不是驱动能做到的事。要承载任意二进制得改用 BYTEA，而 BYTEA 的
- *   文本协议输入需要十六进制或转义编码（当前驱动不做这层编码），因此这里如实不测；
- *   「按指针 + 长度取字节、不依赖零终止符」这件事由不受该限制的取值路径（长文本逐字节相等）
- *   与离线侧的空串/NULL 判定覆盖。
+ * - 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
+ *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），把 0 字节写进 TEXT 列
+ *   不是驱动能做到的事。任意字节走 BYTEA：绑定层自己编成 `\x…`（见 toPostgresByteaText），
+ *   读侧解回 BinaryBytes（见 parsePostgresByteaText），因此这一家与其余两家的差别只剩协议层。
  * - 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
  *   立即查询——PostgreSQL 默认隔离级别是 READ COMMITTED，每条 SELECT 各自取一次快照，
  *   结论确定，不需要任何等待。
@@ -148,6 +146,8 @@ namespace AsynGyanis::Database
         constexpr std::string_view kTemporalTableName = "Asyn_Pg_Temporal";
         /// 十进制金额用例的表名：与其余用例分开，并行执行时互不干扰
         constexpr std::string_view kDecimalTableName = "Asyn_Pg_Decimal";
+        /// BYTEA 用例的表名：一列 BYTEA 加一列 TEXT，用来证明「二进制按字节、文本按字符」在这一家也分得开
+        constexpr std::string_view kBinaryTableName = "Asyn_Pg_Binary";
 
         /// NUMERIC(20) 专用表：单独一个用例，验证无符号 64 位的承载类型被服务端接受
         constexpr std::string_view kNumericTableName = "Asyn_Pg_Numeric";
@@ -221,6 +221,20 @@ namespace AsynGyanis::Database
             std::optional<std::string> note;    ///< 备注（TEXT，可空）
             double                     balance; ///< 余额（DOUBLE PRECISION NOT NULL）
             bool                       active;  ///< 是否启用（BOOLEAN NOT NULL）
+        };
+
+        /**
+         * @brief BYTEA 用例的结构体
+         *
+         * @details 与 MySQL 侧的 IntegrationBinaryRow 同形：一列二进制、一列文本对照。
+         *          三家共用同一条载荷（见下面那条用例里的 kSharedBinaryPayload 注释），
+         *          「换引擎就换语义」这件事只有把三条用例钉成同一个形状才看得见。
+         */
+        struct IntegrationPgBinaryRow
+        {
+            std::int64_t id;      ///< 主键
+            BinaryBytes  payload; ///< 任意字节（BYTEA）
+            std::string  label;   ///< 文本对照列（TEXT）：证明两列在这一家也是按类型分开的
         };
 
         /**
@@ -352,6 +366,18 @@ namespace AsynGyanis::Database
                 Column(&IntegrationTemporalRow::id, "id"),
                 Column(&IntegrationTemporalRow::bookedAt, "booked_at"),
                 Column(&IntegrationTemporalRow::localAt, "local_at"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationPgBinaryRow>
+    {
+        static constexpr std::string_view kTableName = kBinaryTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationPgBinaryRow::id, "id"),
+                Column(&IntegrationPgBinaryRow::payload, "payload"),
+                Column(&IntegrationPgBinaryRow::label, "label"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -2079,6 +2105,74 @@ namespace AsynGyanis::Database
         EXPECT_EQ(readBack->localAt, localAt) << "timestamp 折回墙上时间之后不是写入的那个历法读数";
 
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationTemporalRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief BYTEA 列逐字节往返：内嵌 NUL、反斜杠、单独出现的 0xFF 与多字节 UTF-8 序列都原样回来
+     * @details 这是「换引擎就换语义」那条判据在 PG 侧的落点。同一条载荷、同一组断言形状还在
+     *          MySqlIntegrationTest.BinaryColumnRoundTripsAsBlobWhileTextColumnStaysText（MySQL 的
+     *          LONGBLOB）与 SchemaMigrationsTest.BinaryMemberRoundTripsEveryByteIncludingNulOnSqlite
+     *          （SQLite 的 BLOB）里各钉一次，三处任一家把二进制读成文本就红。
+     *          载荷里的 0x5C 是这一家特有的关键格：BYTEA 的两种文本形态都以反斜杠起头，
+     *          编码或解码错一位，读回来的是另一种东西而不是报错。
+     * @note 证伪：删掉 toPostgresTextParameter 的 BinaryBytes 分支，写入这一步就报「容器参数被拒」，
+     *       insert 回 0；删掉 convertColumnText 的 BYTEA 分支，读回来是十六进制文本，
+     *       std::get 不到 BinaryBytes，两条断言各自红。
+     */
+    TEST_F(PostgresIntegrationTest, ByteaColumnRoundTripsEveryByteIncludingNul)
+    {
+        m_preparedTableNames.emplace_back(kBinaryTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationPgBinaryRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationPgBinaryRow>(*pool, true, &errorText)) << errorText;
+
+        // 三家共用的载荷：0x00 内嵌 NUL、0x5C 反斜杠、0xFF 高位、0x41 可打印、「你」的三字节
+        // UTF-8 序列，收尾再来一个 0x00——按字符集搬运的写法会在第一格就断
+        const BinaryBytes payload{0x00, 0x5C, 0xFF, 0x41, 0xE4, 0xBD, 0xA0, 0x00};
+
+        {
+            OrmQuery<IntegrationPgBinaryRow> insertQuery(*pool);
+            EXPECT_EQ(1, insertQuery.insert(IntegrationPgBinaryRow{.id = 1, .payload = payload, .label = "文本对照"}));
+            EXPECT_EQ(1, insertQuery.insert(IntegrationPgBinaryRow{.id = 2, .payload = BinaryBytes{}, .label = "zero"}));
+        }
+
+        {
+            OrmQuery<IntegrationPgBinaryRow>          query(*pool);
+            const std::vector<IntegrationPgBinaryRow> rows = query.orderBy(asc("id")).toList();
+
+            ASSERT_EQ(rows.size(), 2U);
+            EXPECT_EQ(rows[0].payload, payload) << "BYTEA 读回来的不是写入的那串字节";
+            EXPECT_TRUE(rows[1].payload.empty()) << "零长 BYTEA 与 SQL NULL 被混了";
+            EXPECT_EQ(rows[0].label, "文本对照");
+            EXPECT_EQ(rows[1].label, "zero");
+        }
+
+        // 库里那一格钉的是「存的确实是 BYTEA」：服务端按默认的 hex 输出时它长 \x 前缀。
+        // 字节数用 octet_length 而不是 pg_column_size——后者量的是磁盘占用，短 BYTEA 还带一个
+        // varlena 长度头（实测 8 字节的载荷报 9），拿它当「存进去几个字节」会读数错
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            const std::unique_ptr<DatabaseResult> raw =
+                    connection->execute("SELECT payload::text, octet_length(payload) FROM \"" + std::string(kBinaryTableName) + "\" WHERE id = 1");
+            ASSERT_TRUE(raw != nullptr) << connection->lastError();
+            ASSERT_TRUE(raw->next());
+            EXPECT_EQ(std::get<std::string>(raw->getValue(0)), "\\x005cff41e4bda000");
+            EXPECT_EQ(std::get<std::int64_t>(raw->getValue(1)), 8);
+        }
+
+        // 按二进制列做等值条件：证明 WHERE 那一侧的参数也走了同一套编码
+        {
+            OrmQuery<IntegrationPgBinaryRow>          query(*pool);
+            const std::vector<IntegrationPgBinaryRow> matched = query.where(Column(&IntegrationPgBinaryRow::payload, "payload") == payload).toList();
+            ASSERT_EQ(matched.size(), 1U) << "按 BYTEA 等值查不回写入的那一行";
+            EXPECT_EQ(matched[0].id, 1);
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationPgBinaryRow>(*pool, true, &errorText)) << errorText;
     }
 
 } // namespace AsynGyanis::Database

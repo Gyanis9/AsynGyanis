@@ -8,9 +8,10 @@
  *
  * @details 本头把驱动与 libpq 之间的两件事各收敛成一份实现，两个方向都只吃入参、不碰任何句柄：
  *          - 送出方向 toPostgresTextParameter()：DatabaseValue → libpq 文本格式参数
- *            （SQL NULL 用空指针表达、bool 用 "true"/"false"、数值用十进制文本、文本原样）；
+ *            （SQL NULL 用空指针表达、bool 用 "true"/"false"、数值用十进制文本、文本原样、
+ *            二进制编成 BYTEA 的十六进制文本）；
  *          - 取回方向 convertColumnText()：PGresult 的单元格文本 → DatabaseValue
- *            （按列的 OID 决定映射，PQftype 的取值由调用方传入）。
+ *            （按列的 OID 决定映射，PQftype 的取值由调用方传入；BYTEA 在这一侧解回字节）。
  *
  * ## 为什么全文件都包在 DATABASE_HAS_POSTGRES 里
  * 本头依赖 <libpq-fe.h>（需要用 Oid 常量与 BOOLOID 之类类型标识），而桩构建（CMake 未找到 libpq）
@@ -26,6 +27,7 @@
 
 #ifdef DATABASE_HAS_POSTGRES
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Common/TemporalText.h"
 
@@ -63,6 +65,7 @@ namespace AsynGyanis::Database::Detail
     namespace TypeOid
     {
         inline constexpr Oid kBoolean = 16U;   ///< BOOLOID：BOOLEAN，文本形态恒为 't' / 'f'
+        inline constexpr Oid kBytea   = 17U;   ///< BYTEAOID：BYTEA，任意字节序列（本库二进制列的承载类型）
         inline constexpr Oid kInt8    = 20U;   ///< INT8OID：BIGINT
         inline constexpr Oid kInt2    = 21U;   ///< INT2OID：SMALLINT
         inline constexpr Oid kInt4    = 23U;   ///< INT4OID：INTEGER
@@ -122,6 +125,139 @@ namespace AsynGyanis::Database::Detail
     }
 
     /**
+     * @brief 把二进制载荷编成 PostgreSQL 的 BYTEA 文本输入形态
+     *
+     * @details 形态是 `\x` 加小写十六进制——那是服务端 bytea_output 的默认输出形，也是
+     *          byteain() 认的第一种形，编出去与读回来同构。刻意走「指针 + 长度」的参数通道：
+     *          参数值不经 SQL 文本的转义层，因此 standard_conforming_strings 开合都无所谓，
+     *          一个字节都不会在途中被改写（把十六进制拼进语句文本是另一回事，那种写法才受它影响）。
+     *          编出来的文本恒为纯 ASCII、不含 NUL，这正是「TEXT 列存不下 0x00」那一族的出路：
+     *          编码放在绑定层，调用方只交 BinaryBytes，不必知道 BYTEA 的写法。
+     *
+     * @param payload 二进制载荷
+     * @return std::string 十六进制文本；零长载荷只剩前缀，那是长度为 0 的 BYTEA 而不是 NULL
+     */
+    inline std::string toPostgresByteaText(const BinaryBytes &payload)
+    {
+        static constexpr char kLowercaseHexDigits[] = "0123456789abcdef";
+
+        std::string text{"\\x"};
+        text.reserve(text.size() + payload.size() * 2U);
+        for (const std::uint8_t byte: payload)
+        {
+            text.push_back(kLowercaseHexDigits[static_cast<std::size_t>(byte) >> 4U]);
+            text.push_back(kLowercaseHexDigits[static_cast<std::size_t>(byte) & 0x0FU]);
+        }
+        return text;
+    }
+
+    /**
+     * @brief 把 BYTEA 的文本形态解回字节序列
+     *
+     * @details 认两种形，两家服务端都给得出来，只认一种就会在换服务端配置时静默读成另一种东西：
+     *          - 十六进制形：`\x` 加偶数位十六进制数字（服务端默认，大小写都收）；
+     *          - 转义形：老版本的默认输出，或会话把 bytea_output 设成 escape 时给的那一系——
+     *            反斜杠本身写成两个反斜杠，不可打印字节写成三位八进制，其余字符按字面收。
+     *          两种都不像就交回空值，由调用方按原文处理：猜一个字节序列会把「读到的不是二进制」
+     *          藏进一次成功返回里，与整数列读出 "12abc" 退回原文是同一条口径。
+     *
+     * @param rawValue 列值首地址，调用方保证在 [rawValue, rawValue + byteLength) 内可读
+     * @param byteLength 列值字节长度
+     * @return std::optional<BinaryBytes> 解出来的字节；长度为零或形态不认识时为空
+     */
+    inline std::optional<BinaryBytes> parsePostgresByteaText(const char *rawValue, const std::size_t byteLength)
+    {
+        // 十六进制数字的值：与 toPostgresByteaText 的小写形配对，但大写也收（手工写入的文本常用大写）
+        const auto hexDigitValue = [](const char character) -> std::optional<int>
+        {
+            if (character >= '0' && character <= '9')
+            {
+                return character - '0';
+            }
+            if (character >= 'a' && character <= 'f')
+            {
+                return character - 'a' + 10;
+            }
+            if (character >= 'A' && character <= 'F')
+            {
+                return character - 'A' + 10;
+            }
+            return std::nullopt;
+        };
+
+        if (byteLength == 0U)
+        {
+            return std::nullopt;
+        }
+
+        BinaryBytes payload;
+
+        if (rawValue[0] == '\\' && byteLength >= 2U && (rawValue[1] == 'x' || rawValue[1] == 'X'))
+        {
+            const std::size_t digitCount = byteLength - 2U;
+            if (digitCount % 2U != 0U)
+            {
+                return std::nullopt;
+            }
+
+            payload.reserve(digitCount / 2U);
+            for (std::size_t index = 2U; index < byteLength; index += 2U)
+            {
+                const std::optional<int> highDigit = hexDigitValue(rawValue[index]);
+                const std::optional<int> lowDigit  = hexDigitValue(rawValue[index + 1U]);
+                if (!highDigit.has_value() || !lowDigit.has_value())
+                {
+                    return std::nullopt;
+                }
+                payload.push_back(static_cast<std::uint8_t>((*highDigit << 4) | *lowDigit));
+            }
+            return payload;
+        }
+
+        for (std::size_t index = 0U; index < byteLength; ++index)
+        {
+            if (rawValue[index] != '\\')
+            {
+                payload.push_back(static_cast<std::uint8_t>(rawValue[index]));
+                continue;
+            }
+
+            if (index + 1U < byteLength && rawValue[index + 1U] == '\\')
+            {
+                payload.push_back(static_cast<std::uint8_t>('\\'));
+                ++index;
+                continue;
+            }
+
+            // 到这里只剩「\ + 三位八进制」一种合法续法：凑不满三位就是残缺写法，不猜
+            if (index + 3U >= byteLength)
+            {
+                return std::nullopt;
+            }
+
+            int octalValue = 0;
+            for (std::size_t offset = 1U; offset <= 3U; ++offset)
+            {
+                const char digit = rawValue[index + offset];
+                if (digit < '0' || digit > '7')
+                {
+                    return std::nullopt;
+                }
+                octalValue = octalValue * 8 + (digit - '0');
+            }
+            if (octalValue > 255)
+            {
+                return std::nullopt;
+            }
+
+            payload.push_back(static_cast<std::uint8_t>(octalValue));
+            index += 3U;
+        }
+
+        return payload;
+    }
+
+    /**
      * @brief 把统一的 DatabaseValue 转成 libpq 文本格式参数
      *
      * @details 纯函数：只吃入参、不写任何状态，因此可以在任意路径上安全调用。映射规则：
@@ -134,6 +270,8 @@ namespace AsynGyanis::Database::Detail
      *          - std::string → 原样，不转义也不改字节：SQL 结构由 $n 占位符固定，
      *            取值以参数送出，单引号、"--"、分号都只是普通字符（注入面因此消失）。
      *          - Decimal → 承载文本原样：NUMERIC 列收文本参数由服务端精确解析，中间不经浮点换算。
+     *          - BinaryBytes → BYTEA 的十六进制文本（见 toPostgresByteaText）：调用方不必自己编码，
+     *            这一档与其余两家的差别从此只剩「协议层怎么搬字节」。
      *
      * @param value 待送出的统一值
      * @return std::optional<PostgresTextParameter> 可送出的参数
@@ -177,6 +315,13 @@ namespace AsynGyanis::Database::Detail
             // 十进制按承载文本原样交出：NUMERIC 列收文本参数时由服务端精确解析，
             // 中间不经任何浮点换算（换算会在末位丢精度且不可逆）
             return PostgresTextParameter{.text = decimalValue->text()};
+        }
+
+        if (const auto *byteValue = std::get_if<BinaryBytes>(&value))
+        {
+            // 二进制编成 BYTEA 的十六进制文本参数：这一家与 MySQL/SQLite 的差别只在「协议层怎么搬字节」，
+            // 不在语义——成员写 std::vector<std::uint8_t>，三家存进去、读回来都是同一串字节
+            return PostgresTextParameter{.text = toPostgresByteaText(*byteValue)};
         }
 
         if (const auto *instant = std::get_if<Timestamp>(&value))
@@ -257,7 +402,9 @@ namespace AsynGyanis::Database::Detail
      * - FLOAT4OID / FLOAT8OID → double；
      * - NUMERICOID → std::string：NUMERIC 是精确定小数（金额列、无符号 64 位的承载类型），
      *   转 double 会在末位丢精度且不可逆，取舍与 MySQL 对 DECIMAL / NEWDECIMAL 的处理一致；
-     * - 其余（TEXT / VARCHAR / NAME / BYTEA / 日期时间 / JSON / UUID …）→ std::string 原样。
+     * - BYTEAOID → BinaryBytes：十六进制形与转义形都解（见 parsePostgresByteaText），与 MySQL 的
+     *   BLOB、SQLite 的 BLOB 交回同一种取值；解不开时退回原文。
+     * - 其余（TEXT / VARCHAR / NAME / 日期时间 / JSON / UUID …）→ std::string 原样。
      *
      * @param columnType 列的 OID，来自 PQftype()
      * @param rawValue 列值首地址，调用方保证在 [rawValue, rawValue + byteLength) 内可读
@@ -315,6 +462,15 @@ namespace AsynGyanis::Database::Detail
 
             case TypeOid::kNumeric:
                 // 精确定小数不做任何转换：转 double 丢精度不可逆，转整数会截断小数位
+                return std::string(rawValue, byteLength);
+
+            case TypeOid::kBytea:
+                // BYTEA 解回二进制取值，与 MySQL 的 BLOB、SQLite 的 BLOB 同一种 DatabaseValue 备选；
+                // 解不开（形态不认识）退回原文，与整数列读出非数字文本是同一条兜底口径
+                if (const std::optional<BinaryBytes> payload = parsePostgresByteaText(rawValue, byteLength); payload.has_value())
+                {
+                    return *payload;
+                }
                 return std::string(rawValue, byteLength);
 
             default:

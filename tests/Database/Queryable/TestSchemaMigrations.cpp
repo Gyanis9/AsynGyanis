@@ -17,6 +17,7 @@
 #include "Database/Queryable/TableSchema.h"
 
 #include "Database/Common/DatabaseResult.h"
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/Decimal.h"
 
 #include <gtest/gtest.h>
@@ -67,6 +68,14 @@ namespace
     {
         std::int64_t                  id;     ///< 主键
         AsynGyanis::Database::Decimal amount; ///< 金额列：走本映射的 Decimal 一档
+    };
+
+    /// 二进制对称用例的行：一列二进制加一列文本对照，载荷与 MySQL、PG 那两条用例逐字节相同
+    struct BinaryPayloadRow
+    {
+        std::int64_t                      id;      ///< 主键
+        AsynGyanis::Database::BinaryBytes payload; ///< 二进制列：SQLite 落 BLOB 存储类
+        std::string                       label;   ///< 文本对照列（TEXT）：与二进制列分开的唯一证据是 typeof() 读数
     };
 
     /// 日期时间用例的行：两个逻辑类型各一列，再加一列可空的瞬时（NULL 与零瞬间是两件事）
@@ -123,6 +132,19 @@ struct AsynGyanis::Database::Queryable::TableSchema<DecimalMoneyRow>
     static constexpr auto             kColumns   = std::tuple{
             Column(&DecimalMoneyRow::id, "id"),
             Column(&DecimalMoneyRow::amount, "amount"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BinaryPayloadRow>
+{
+    // 表名独立：与其余用例分开，ctest 逐用例起进程时互不干扰
+    static constexpr std::string_view kTableName = "binary_payloads";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&BinaryPayloadRow::id, "id"),
+            Column(&BinaryPayloadRow::payload, "payload"),
+            Column(&BinaryPayloadRow::label, "label"),
     };
     static constexpr std::string_view kPrimaryKey = "id";
 };
@@ -761,4 +783,57 @@ TEST_F(SchemaMigrationsTest, TemporalMembersRoundTripAndKeepTheirTextShapesOnSql
     EXPECT_EQ(std::get<std::string>(result->getValue(0)), "2026-10-18T03:50:30.123456Z");
     EXPECT_EQ(std::get<std::string>(result->getValue(1)), "2026-03-01T02:30:00.500000");
     EXPECT_TRUE(std::holds_alternative<std::monostate>(result->getValue(2))) << "空的瞬时列要绑成 NULL，而不是一个空串";
+}
+
+/**
+ * @brief 钉住二进制成员在 SQLite 上逐字节往返，且列里存的确实是 BLOB 而不是文本
+ * @details 这是「三家同解」判据的 SQLite 那一格：载荷与断言形状同
+ *          MySqlIntegrationTest.BinaryColumnRoundTripsAsBlobWhileTextColumnStaysText（LONGBLOB）与
+ *          PostgresIntegrationTest.ByteaColumnRoundTripsEveryByteIncludingNul（BYTEA）。
+ *          typeof() 那一格是 SQLite 特有的关键：本引擎按列亲和归类，绑定文本与绑定字节
+ *          在同一列上可以长出不同的存储类，而读回来都是同一种取值——存储类读成 'text' 时
+ *          载荷照样能逐字节相等，正是那种「静默改了语义」的形状。
+ * @note 证伪：把驱动的绑定臂从 sqlite3_bind_blob 换成 sqlite3_bind_text，typeof(payload) 读回 'text'，
+ *       这一条当场红而前三条断言仍绿；把绑定退回十六进制文本那一档（即 PG 改造前的写法），
+ *       读回来的就是 std::string 而不是 BinaryBytes，toList 那一步直接红。
+ */
+TEST_F(SchemaMigrationsTest, BinaryMemberRoundTripsEveryByteIncludingNulOnSqlite)
+{
+    const std::shared_ptr<SqlDialect> dialect = SchemaMigrator::dialectOf(*m_pool);
+    ASSERT_NE(dialect, nullptr) << "取不到方言，用例前置条件不成立";
+
+    const std::vector<SchemaMigrator::MigrationStep> steps{
+            SchemaMigrator::MigrationStep{
+                    .name         = "0001-create-binary-payloads",
+                    .upStatements = {SchemaMigrator::createTableStatement<BinaryPayloadRow>(*dialect)},
+            },
+    };
+    std::size_t applied = 0;
+    std::string error;
+    ASSERT_TRUE(SchemaMigrator::migrate(*m_pool, steps, &applied, &error)) << error;
+    ASSERT_EQ(applied, 1U) << "二进制表没建出来";
+
+    // 三家共用的载荷：0x00 内嵌 NUL、0x5C 反斜杠、0xFF 高位、0x41 可打印、
+    // 「你」的三字节 UTF-8 序列，收尾再来一个 0x00
+    const AsynGyanis::Database::BinaryBytes payload{0x00, 0x5C, 0xFF, 0x41, 0xE4, 0xBD, 0xA0, 0x00};
+
+    OrmQuery<BinaryPayloadRow> insertQuery(*m_pool);
+    ASSERT_EQ(1, insertQuery.insert(BinaryPayloadRow{.id = 1, .payload = payload, .label = "文本对照"})) << "二进制列没能写进去";
+    ASSERT_EQ(1, insertQuery.insert(BinaryPayloadRow{.id = 2, .payload = AsynGyanis::Database::BinaryBytes{}, .label = "zero"}));
+
+    const std::vector<BinaryPayloadRow> readBack = OrmQuery<BinaryPayloadRow>(*m_pool).orderBy(AsynGyanis::Database::Queryable::asc("id")).toList();
+    ASSERT_EQ(readBack.size(), 2U);
+    EXPECT_EQ(readBack[0].payload, payload) << "BLOB 读回来的不是写入的那串字节";
+    EXPECT_TRUE(readBack[1].payload.empty()) << "零长 BLOB 与 SQL NULL 被混了";
+    EXPECT_EQ(readBack[0].label, "文本对照");
+
+    PooledConnection connection = m_pool->acquire();
+    ASSERT_TRUE(connection);
+    const std::unique_ptr<AsynGyanis::Database::DatabaseResult> stored =
+            connection->execute("SELECT typeof(payload), typeof(label), length(payload) FROM binary_payloads WHERE id = 1");
+    ASSERT_TRUE(stored != nullptr) << connection->lastError();
+    ASSERT_TRUE(stored->next());
+    EXPECT_EQ(std::get<std::string>(stored->getValue(0)), "blob") << "二进制列的存储类不是 blob：绑定改走过文本";
+    EXPECT_EQ(std::get<std::string>(stored->getValue(1)), "text") << "文本对照列的存储类也变了，两条断言就失去对照";
+    EXPECT_EQ(std::get<std::int64_t>(stored->getValue(2)), 8) << "落库的字节数与载荷不一致";
 }

@@ -46,6 +46,7 @@ add_executable(TestDatabase
         MySql/TestMySqlTls.cpp
 
         Postgres/TestPostgresConnection.cpp
+        Postgres/TestPostgresValueConversion.cpp
         Postgres/TestPostgresIntegration.cpp
 
         Redis/TestRedisConnection.cpp

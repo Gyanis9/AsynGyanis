@@ -392,9 +392,9 @@ namespace AsynGyanis::Database
          * @details PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）在编码层面就不允许 NUL：
          *          服务端会以「invalid byte sequence for encoding "UTF8": 0x00」这类报文拒绝整条
          *          语句，调用方看到的只是一个与编码有关的报错，很难定位到「某个字符串里混进了 '\0'」。
-         *          本驱动本就用「指针 + 长度」送出参数，'\0' 不会被截断，是服务端按类型拒绝——要做
-         *          字节级二进制存储应使用 BYTEA 列，并按十六进制文本（'\x…'，纯 ASCII、不含 NUL）
-         *          作为普通文本参数送出。
+         *          本驱动本就用「指针 + 长度」送出参数，'\0' 不会被截断，是服务端按类型拒绝——
+         *          要存任意字节应改用 BYTEA 列并把取值作为 BinaryBytes 交出，驱动自己按 BYTEA 的
+         *          写法编码（见 PostgresValueConversion.h 的 toPostgresByteaText），这里不必也不能代劳。
          * @param parameters 全部实参
          * @return std::optional<std::string> 有值即失败原因（调用方写入 lastError()）
          */
@@ -410,8 +410,8 @@ namespace AsynGyanis::Database
 
                 return "参数化查询的文本参数不支持 NUL 字节（第 " + std::to_string(index + 1U) +
                        " 个参数）：PostgreSQL 的文本类型（TEXT / VARCHAR 等）无法存储 NUL 字节。"
-                       "需要承载任意二进制请改用 BYTEA 列，并把取值按十六进制文本（形如 \\x48656c6c6f）"
-                       "作为普通参数送出；若该字符串只是意外含 NUL，请在调用方清理掉";
+                       "需要承载任意二进制请改用 BYTEA 列，把取值作为 BinaryBytes 参数交出（驱动自己按 BYTEA 的写法编码）；"
+                       "若该字符串只是意外含 NUL，请在调用方清理掉";
             }
             return std::nullopt;
         }

@@ -21,6 +21,7 @@
  * @copyright Copyright (c) . All rights reserved.
  */
 
+#include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseType.h"
@@ -370,6 +371,32 @@ namespace AsynGyanis::Database
         // 停在「未连接」这一条，说明参数形态那一关已经过了
         EXPECT_NE(reason.find("未连接"), std::string::npos) << reason;
         EXPECT_EQ(reason.find("容器"), std::string::npos) << "Decimal 被当成容器拒掉了：" << reason;
+    }
+
+    /**
+     * @brief 钉住二进制参数不再被当成容器拒掉（真实驱动专属，不需要服务端）
+     * @details 这一格钉的是「绑定层自己会编 BYTEA」这件事真的接在驱动的参数路径上：
+     *          纯函数的直测只证明编码器存在，证明不了它被调用。参数形态判定发生在任何连接动作
+     *          之前，因此离线就成立。不认的症状与 Decimal 那一格一样——报成「容器参数被拒」，
+     *          与真正的 List/Hash 撞在同一条文案上。
+     * @note 证伪：删掉 toPostgresTextParameter 里的 BinaryBytes 分支，这条当场红
+     *       （关键词从「未连接」翻回「容器」）。
+     */
+    TEST(PostgresConnection, BinaryParametersPassFormCheckWithoutServer)
+    {
+        if (!kPostgresDriverCompiled)
+        {
+            GTEST_SKIP() << "当前构建未编译 PostgreSQL 驱动，参数形态判定不存在";
+        }
+
+        PostgresConnection connection(ConnectionConfig::postgresDefault());
+        ASSERT_FALSE(connection.isConnected());
+
+        const std::vector<DatabaseValue> binaryParameters{BinaryBytes{0x00, 0x5C, 0xFF, 0x41}};
+        EXPECT_EQ(connection.execute("SELECT $1", binaryParameters), nullptr);
+        const std::string reason = connection.lastError();
+        EXPECT_NE(reason.find("未连接"), std::string::npos) << reason;
+        EXPECT_EQ(reason.find("容器"), std::string::npos) << "BinaryBytes 被当成容器拒掉了：" << reason;
     }
 
     TEST(PostgresConnection, ContainerParametersAreRejectedWithoutServerContact)
