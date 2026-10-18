@@ -43,7 +43,7 @@ shift || true
 # 目标清单：默认每档各跑一整轮（每档预算都是 durationSeconds），这样「哪档在推进」看得见。
 # 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一个进程轮转全部目标），本机快速冒烟用得上。
 # 每档的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
-targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QpackBlock PerMessageDeflate HttpResponse QuicPacket QuicFrameSequence QuicParameters}"
+targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QpackBlock PerMessageDeflate HttpResponse QuicPacket QuicFrameSequence QuicParameters JwtCompact}"
 corpusRoot="${ASYN_FUZZ_CORPUS_DIR:-${projectRoot}/.fuzz/corpus}"
 logRoot="${projectRoot}/.fuzz/log"
 
@@ -114,11 +114,14 @@ sources=(
     "src/Net/Http3/Qpack.cpp"
     "src/Net/Http3/Http3Error.cpp"
     # permessage-deflate 档：协商解析与压缩/解压的包装。它包着 zlib（`<zlib.h>`），是本闭包里
-    # 唯一一份仓外库依赖——Linux 侧链 `-lz`，Windows clang-cl 侧用 ASYN_FUZZ_ZLIB_DIR 指路
+    # 仓外库依赖之一——Linux 侧链 `-lz`，Windows clang-cl 侧用 ASYN_FUZZ_ZLIB_DIR 指路
     # （见文件头的跑法说明）
     "src/Net/WebSocket/PerMessageDeflate.cpp"
     # 出站响应解析器档：状态行/头部/chunked 三相位。头部规则与 HttpDate 已在上面对应位置列出
     "src/Net/Http/Client/HttpResponseParser.cpp"
+    # JWT 档的本体：三段拆分与 base64url 解码、声明校验、JWK 的 n/e 进 OpenSSL 造公钥。
+    # 它是本闭包第二份仓外依赖（libcrypto），Linux 侧 -lcrypto、Windows 侧按下面的开关指路
+    "src/Net/Http/JwtVerifier.cpp"
     "src/Net/Quic/Codec/QuicVariableLengthInteger.cpp"
     # QUIC 那三档解码器各自一个 .cpp：本闭包不链 Net 库，漏一项就在链接期报未定义符号
     # （Windows 侧编不出 libFuzzer 目标，所以这种缺失只有 Linux 跑批或 CI 会暴露）
@@ -206,9 +209,10 @@ if [[ "$(uname -s)" == Linux* ]]; then
     # 帧指针留着，崩溃栈才带得出行号。编译与链接用同一个 ${chosenFlags}：标准库两侧必须同一条，
     # 上面那次「能编也能链」的探针判的就是这一条
     compileFlags=("${chosenFlags}" -O1 -g -fno-omit-frame-pointer -fsanitize=fuzzer,address -Isrc -Itests/Net "${nlohmannIncludes[@]}")
-    # -lz 是闭包里唯一一份仓外库依赖：permessage-deflate 档包着 zlib（见 sources 处说明）。
-    # Ubuntu runner 自带 libz，CI 的 apt 步骤里也显式装了 zlib1g-dev
-    linkFlags=("${chosenFlags}" -fsanitize=fuzzer,address -lz)
+    # 两份仓外库依赖：permessage-deflate 档包着 zlib（-lz），JWT 档包着 OpenSSL 的 libcrypto
+    # （-lcrypto，见 sources 处说明）。Ubuntu runner 两个都自带，CI 的 apt 步骤里也显式装了
+    # zlib1g-dev 与 libssl-dev
+    linkFlags=("${chosenFlags}" -fsanitize=fuzzer,address -lz -lcrypto)
     objectSuffix="o"
 
     mkdir -p "${objDir}" "${artifacts}"
@@ -273,7 +277,15 @@ if [[ -n "${zlibDir}" ]]; then
     zlibFlags=("/I${zlibDir}/include")
     zlibLinkFlags=("${zlibDir}/lib/zlib.lib")
 fi
-compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net "${nlohmannIncludes[@]}" "${zlibFlags[@]}")
+opensslDir="${ASYN_FUZZ_OPENSSL_DIR:-}"
+opensslFlags=()
+opensslLinkFlags=()
+if [[ -n "${opensslDir}" ]]; then
+    opensslFlags=("/I${opensslDir}/include")
+    # JwtVerifier.cpp 只用 EVP/BN/param_build，全在 libcrypto 里，不需要 libssl
+    opensslLinkFlags=("${opensslDir}/lib/libcrypto.lib")
+fi
+compileFlags=(/std:c++latest /O1 /MT /DNDEBUG /EHsc -fsanitize=fuzzer /Isrc /Itests/Net "${nlohmannIncludes[@]}" "${zlibFlags[@]}" "${opensslFlags[@]}")
 objects=()
 for source in "${sources[@]}"; do
     objectName="$(basename "${source}" .cpp).obj"
@@ -288,7 +300,7 @@ for source in "${sources[@]}"; do
 done
 
 echo "链接 ${binary}"
-MSYS_NO_PATHCONV=1 "${clangCl}" -fsanitize=fuzzer "/Fe${binary}" "${objects[@]}" "${zlibLinkFlags[@]}" || exit 1
+MSYS_NO_PATHCONV=1 "${clangCl}" -fsanitize=fuzzer "/Fe${binary}" "${objects[@]}" "${zlibLinkFlags[@]}" "${opensslLinkFlags[@]}" || exit 1
 
 MSYS_NO_PATHCONV=1 runAllTargets "${binary}" "${artifacts}" "$@"
 exit $?

@@ -14,10 +14,12 @@
 // 没有单独再突变一次。
 #include "CommonTestSupport.h"
 #include "Fuzz/ProtocolFuzzKernel.h"
+#include "Net/Http/JwtVerifier.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -92,6 +94,7 @@ namespace AsynGyanis::Net::Fuzz
         constexpr std::uint64_t kSeedQpack          = 20261012ULL;
         constexpr std::uint64_t kSeedPerMessage     = 20261013ULL;
         constexpr std::uint64_t kSeedHttpResponse   = 20261014ULL;
+        constexpr std::uint64_t kSeedJwtCompact     = 20261018ULL;
 
         /**
          * @brief 对某个目标跑一轮随机模糊
@@ -236,6 +239,47 @@ namespace AsynGyanis::Net::Fuzz
     {
         runRandomRounds(Target::HttpResponse, kSeedHttpResponse);
         runTruncationMatrix(Target::HttpResponse);
+    }
+
+    TEST(ProtocolFuzz, JwtCompactKeepsInvariants)
+    {
+        runRandomRounds(Target::JwtCompact, kSeedJwtCompact);
+        runTruncationMatrix(Target::JwtCompact);
+    }
+
+    /**
+     * @brief 自证这一档会响：四份已知畸形令牌必须按契约被拒，而不是崩、也不是被宽容收下
+     * @details 新加一档最怕两种假绿：生成器永远造不出能进到深处的输入（档在空转），
+     *          或解析器把畸形输入当合法（真缺陷被吞）。前者由 EveryTargetDecodesAndIsCounted
+     *          与上面的随机轮次管，这条管后者——每一格都对着 RFC 7519 §4 / base64url 无填充
+     *          这条硬约定写死期望。
+     */
+    TEST(ProtocolFuzz, JwtCompactRejectsKnownMalformedTokens)
+    {
+        // 段数不对：两段
+        EXPECT_FALSE(parseJwt("aGVsbG8.").has_value());
+        // 填充符不属于 JWT 的字母表（'=' 是 base64 的，RFC 7519 明确不用）
+        EXPECT_FALSE(parseJwt("aGVsbG8=.aGVsbG8=c2ln").has_value());
+        // 头段解出来不是 JSON（"hello"），形状对但内容不合法
+        EXPECT_FALSE(parseJwt("aGVsbG8.aGVsbG8.c2ln").has_value());
+        // 签名段掺一个 '+'（base64 而非 base64url）
+        EXPECT_FALSE(parseJwt(base64UrlEncode(R"({"alg":"RS256"})") + "." + base64UrlEncode(R"({"exp":1}")") + ".ab+c").has_value());
+
+        // 反面对照：同一份生成路径下合法的令牌必须解得开，且声明校验真的产出过原因
+        const std::string              goodHeader  = base64UrlEncode(R"({"alg":"RS256","typ":"JWT"})");
+        const std::string              goodPayload = base64UrlEncode(R"({"iss":"签发者-甲","aud":"受众-乙","exp":4000000000})");
+        const std::string              goodToken   = goodHeader + "." + goodPayload + "." + base64UrlEncode("signature-bytes");
+        const std::optional<ParsedJwt> parsed      = parseJwt(goodToken);
+        ASSERT_TRUE(parsed.has_value()) << "合法令牌被自己的生成路径拒了，那这一档根本什么都没测到";
+
+        const std::chrono::system_clock::time_point now{std::chrono::seconds{1000000000}};
+        EXPECT_TRUE(validateJwtClaims(parsed->payloadJson, JwtClaimExpectations{.issuer = "别人", .audience = ""}, now).has_value()) << "期望的 iss 不命中时校验不该放行";
+        EXPECT_FALSE(validateJwtClaims(parsed->payloadJson, JwtClaimExpectations{.issuer = "签发者-甲", .audience = "受众-乙"}, now).has_value())
+                << "期望全命中时校验不该给原因（exp 在 2096 年之前，nbf 未给出）";
+
+        RunStats stats;
+        EXPECT_TRUE(checkInvariants(Target::JwtCompact, goodToken, &stats).empty());
+        EXPECT_GT(stats.producedFrameCount, 0U) << "合法令牌没被记成产出：这一档的账在 CI 上会是零";
     }
 
     /**

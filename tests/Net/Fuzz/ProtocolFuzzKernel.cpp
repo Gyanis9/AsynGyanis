@@ -11,6 +11,7 @@
 
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpParser.h"
+#include "Net/Http/JwtVerifier.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 #include "Net/Http3/Http3Frame.h"
@@ -937,6 +938,156 @@ namespace AsynGyanis::Net::Fuzz
          * @brief 为出站 HTTP/1 响应解析器造输入
          * @details 三种定界的成功样本（定长 / chunked / 读到连接关闭）各占一份，其余轮打畸形拒绝面
          */
+        /// base64url（RFC 4648 §5，无填充）的字母表：判「解码器该不该收下」时按此对照
+        constexpr std::string_view kBase64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+        /**
+         * @brief 造一段纯 base64url 字符的文本
+         * @param random 确定性随机源
+         * @param length 长度
+         * @return std::string 只含字母表字符的文本
+         */
+        std::string makeBase64UrlRun(DeterministicRandom &random, const std::size_t length)
+        {
+            std::string text;
+            text.reserve(length);
+            for (std::size_t index = 0; index < length; ++index)
+            {
+                text.push_back(kBase64UrlAlphabet[random.nextBelow(kBase64UrlAlphabet.size())]);
+            }
+            return text;
+        }
+
+        /**
+         * @brief 造 JWT 档的输入
+         * @details 三种形状轮转，各自钉住一段路径：① 完整且声明合法的令牌（解析真能走通，
+         *          「这一档有没有被推到」的产出计数就落在它身上）；② 声明不匹配的令牌（校验的拒绝面）；
+         *          ③ 第三段掺一个非字母表字符（'=' 是 base64 的填充符，RFC 7519 明令 JWT 不用它——
+         *          宽容接受填充的解码器会把畸形令牌放进来）。再加一档纯随机字节撞形状判定本身。
+         * @param random 确定性随机源
+         * @return std::string 一段令牌形态（或纯随机）文本
+         */
+        std::string makeJwtCompactInput(DeterministicRandom &random)
+        {
+            const std::size_t shape = random.nextBelow(4U);
+            if (shape == 3U)
+            {
+                std::string       noise;
+                const std::size_t noiseLength = random.nextBelow(48U);
+                for (std::size_t index = 0; index < noiseLength; ++index)
+                {
+                    noise.push_back(static_cast<char>(static_cast<std::uint32_t>(random.next()) & 0xFFU));
+                }
+                return noise;
+            }
+
+            // 两段都编成 JSON 文本：不编 JSON 的话 parseJwt 恒停在「头/载荷不是 JSON」那一格，
+            // 声明校验与 JWK 那两条路一步都进不去
+            const std::string headerJson = R"({"alg":"RS256","typ":"JWT"})";
+            std::string       payloadJson;
+            if (shape == 0U)
+            {
+                payloadJson = R"({"iss":"签发者-甲","aud":["受众-乙","别的"],"exp":4000000000,"nbf":1})";
+            } else if (shape == 1U)
+            {
+                payloadJson = R"({"iss":"别人","aud":"受众-乙","exp":4000000000})";
+            } else
+            {
+                payloadJson = R"({"iss":"签发者-甲","exp":1,"nbf":4000000000})";
+            }
+
+            std::string token = base64UrlEncode(headerJson) + "." + base64UrlEncode(payloadJson) + "." + makeBase64UrlRun(random, 8U + random.nextBelow(16U));
+            if (shape == 1U)
+            {
+                token.back() = '=';
+            }
+            return token;
+        }
+
+        /**
+         * @brief JWT 档的不变式
+         * @details 四条都来自本层自己写下的契约，不是臆造的期望：
+         *          ① 验签输入必须是令牌原文的前缀（取错偏移＝验的签名与这份令牌无关）；
+         *          ② 公钥为空时 verifyRs256 必须回 false；
+         *          ③ base64url 的两条契约拒绝面（含 '=' 的段、长度模 4 余 1 的段）必须真的被拒，
+         *             而解得开的段再编一次要能解回同一串字节（字母表或偏移错一位就在这里露出来）；
+         *          ④ 声明校验放行的一份载荷里必然找得到期望的 iss 与 aud 文本。
+         *          另有 JWK 那一格：n/e 含非字母表字符却仍造出了公钥，就是宽容。
+         * @param input 本轮字节
+         * @param trace 产出记账（解析成功算一次产出，供「这一档没空转」的断言用）
+         * @return std::string 空表示通过；否则是违例说明
+         */
+        std::string checkJwtCompactInvariants(const std::string &input, RunTrace &trace)
+        {
+            const std::optional<ParsedJwt> parsed = parseJwt(input);
+            if (!parsed.has_value())
+            {
+                // 拒掉畸形令牌是本档最常见的出口，不是违例；记成错误终态供统计
+                trace.isEndedInError = true;
+                return {};
+            }
+            trace.frameKeys.push_back("parsed");
+
+            if (parsed->signingInput.size() >= input.size() || input.compare(0, parsed->signingInput.size(), parsed->signingInput) != 0 ||
+                input[parsed->signingInput.size()] != '.')
+            {
+                return "parseJwt 交出的验签输入不是令牌原文的前缀";
+            }
+
+            if (verifyRs256(*parsed, nullptr))
+            {
+                return "verifyRs256 在公钥为空时回了 true";
+            }
+
+            std::size_t segmentStart = 0;
+            for (std::size_t cursor = 0; cursor <= input.size(); ++cursor)
+            {
+                if (cursor != input.size() && input[cursor] != '.')
+                {
+                    continue;
+                }
+                const std::string_view segment(input.data() + static_cast<std::ptrdiff_t>(segmentStart), static_cast<std::ptrdiff_t>(cursor - segmentStart));
+                segmentStart                             = cursor + 1U;
+                const std::optional<std::string> decoded = base64UrlDecode(segment);
+                if (!decoded.has_value())
+                {
+                    continue;
+                }
+                if (segment.find('=') != std::string_view::npos || segment.size() % 4U == 1U)
+                {
+                    return "base64url 收下了契约写明该拒的段：" + std::string(segment);
+                }
+                // 刻意不比「逐字符相同」：尾部余位要不要归零，本层契约没写，而它不改变解出的字节。
+                // 拿它当判据就是用测试替实现新立一条规则——要收紧得先改契约与实现，再一起钉进来
+                const std::optional<std::string> recoded = base64UrlDecode(base64UrlEncode(*decoded));
+                if (!recoded.has_value() || *recoded != *decoded)
+                {
+                    return "base64url 解码与再编码在字节层面不互逆：" + std::string(segment);
+                }
+            }
+
+            const std::chrono::system_clock::time_point fixedNow{std::chrono::seconds{1000000000}};
+            const JwtClaimExpectations                  expectations{.issuer = "签发者-甲", .audience = "受众-乙", .clockSkew = std::chrono::seconds{60}};
+            if (const std::optional<std::string> reason = validateJwtClaims(parsed->payloadJson, expectations, fixedNow);
+                !reason.has_value() && (parsed->payloadJson.find("签发者-甲") == std::string::npos || parsed->payloadJson.find("受众-乙") == std::string::npos))
+            {
+                return "声明校验放行了一份不含期望 iss/aud 的载荷：" + parsed->payloadJson;
+            }
+
+            const std::size_t      firstDot = input.find('.');
+            const std::string_view modulus(input.data(), static_cast<std::ptrdiff_t>(firstDot == std::string::npos ? input.size() : firstDot));
+            const std::string_view exponent       = firstDot == std::string::npos ? std::string_view{}
+                                                                                  : std::string_view(input.data() + static_cast<std::ptrdiff_t>(firstDot) + 1,
+                                                                                                     static_cast<std::ptrdiff_t>(input.size() - firstDot - 1));
+            const auto             isAlphabetOnly = [](const std::string_view text)
+            { return !text.empty() && std::ranges::all_of(text, [](const char character) { return kBase64UrlAlphabet.find(character) != std::string_view::npos; }); };
+            if (const std::shared_ptr<EVP_PKEY> key = rsaPublicKeyFromJwk(modulus, exponent); key != nullptr && (!isAlphabetOnly(modulus) || !isAlphabetOnly(exponent)))
+            {
+                return "rsaPublicKeyFromJwk 收了非 base64url 的 n/e 还给出公钥";
+            }
+            return {};
+        }
+
         std::string makeHttpResponseInput(DeterministicRandom &random)
         {
             switch (random.nextBelow(5U))
@@ -1397,6 +1548,8 @@ namespace AsynGyanis::Net::Fuzz
                 return "PerMessageDeflate";
             case Target::HttpResponse:
                 return "HttpResponse";
+            case Target::JwtCompact:
+                return "JwtCompact";
             case Target::Count:
                 break;
         }
@@ -1440,6 +1593,9 @@ namespace AsynGyanis::Net::Fuzz
                 break;
             case Target::HttpResponse:
                 input = makeHttpResponseInput(random);
+                break;
+            case Target::JwtCompact:
+                input = makeJwtCompactInput(random);
                 break;
             case Target::Count:
                 break;
@@ -1533,6 +1689,11 @@ namespace AsynGyanis::Net::Fuzz
             case Target::HttpResponse:
                 // 一条自洽的完整响应：定长正文收齐即 Complete，截断矩阵的每个前缀都落在某个相位上
                 return "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi";
+            case Target::JwtCompact:
+                // 一条自洽的 RS256 令牌：I5 那类「复位后还能解出合法结果」的探针拿它作参照，
+                // 编码由生产端的 base64UrlEncode 产出，手写会与本档的期望口径分叉
+                return base64UrlEncode(R"({"alg":"RS256","typ":"JWT"})") + "." + base64UrlEncode(R"({"iss":"签发者-甲","aud":"受众-乙","exp":4000000000,"nbf":1})") +
+                       ".c2lnbmF0dXJl";
             case Target::Count:
                 break;
         }
@@ -2140,6 +2301,18 @@ namespace AsynGyanis::Net::Fuzz
                 if (probeTrace.isEndedInError || !wholeParser.isComplete() || wholeParser.result().statusCode != 200)
                 {
                     return "reset() 后合法响应解不出（I5）";
+                }
+                return {};
+            }
+
+            case Target::JwtCompact:
+            {
+                RunTrace          trace;
+                const std::string violation = checkJwtCompactInvariants(input, trace);
+                collect(trace);
+                if (!violation.empty())
+                {
+                    return violation;
                 }
                 return {};
             }

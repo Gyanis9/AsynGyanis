@@ -37,6 +37,8 @@ namespace AsynGyanis::Net::Fuzz
         QpackBlock,        ///< QPACK 解码器（RFC 9204）：编码器流指令与头块的增量解析（动态表 + 阻塞流两条语境一起过）
         PerMessageDeflate, ///< permessage-deflate（RFC 7692）：扩展要约的解析 + 对端压缩消息的解压（含解压上限那一道闸）
         HttpResponse,      ///< 出站 HTTP/1 响应解析器：客户端侧吃对端字节的那一段（状态行/头部/chunked/trailer）
+        JwtCompact,        ///< JWT 紧凑序列（RFC 7519）：三段 base64url 的拆分与解码、声明校验、
+                           ///< JWK 的 n/e 进 OpenSSL 造公钥（令牌与 JWKS 都来自不可信对端）
         Count,             ///< 哨兵：目标总数，用于遍历，不是可解码的目标
     };
 
