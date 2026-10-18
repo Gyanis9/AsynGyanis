@@ -312,6 +312,25 @@ namespace AsynGyanis::Platform
         return pendingError;
     }
 
+    bool Socket::isListeningStream(const int descriptor) noexcept
+    {
+        int       type       = 0;
+        socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
+        // 值参数两家不同（Windows 是 char*、POSIX 是 void*）：统一转 char* 即可，不需要平台分支
+        if (::getsockopt(descriptor, SOL_SOCKET, SO_TYPE, reinterpret_cast<char *>(&type), &typeLength) != 0)
+        {
+            return false;
+        }
+        if (type != SOCK_STREAM)
+        {
+            return false;
+        }
+
+        int       acceptConnection = 0;
+        socklen_t optionLength     = static_cast<socklen_t>(sizeof(acceptConnection));
+        return ::getsockopt(descriptor, SOL_SOCKET, SO_ACCEPTCONN, reinterpret_cast<char *>(&acceptConnection), &optionLength) == 0 && acceptConnection != 0;
+    }
+
     ssize_t Socket::writeVectored(const int descriptor, const WriteBuffer *const buffers, const std::size_t bufferCount) noexcept
     {
         // 段数与长度先按平台上限校验：这两处超限都必须当场失败。

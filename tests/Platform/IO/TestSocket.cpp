@@ -387,6 +387,38 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住：`isListeningStream` 认得出「能在本端 accept 的监听器」，四种形状各一格
+     * @details 这一句判据是 systemd socket activation 与跨进程移交的唯一分诊口：只有 LISTEN_FDS 报上来
+     *          的一串描述符，调用方无从知道哪枚是 TCP 监听器、哪枚是 QUIC 的数据报套接字。判错的代价
+     *          不是报错而是静默：把数据报当监听器交给 TcpServer，服务起来后一条连接都收不到。
+     * @details 四格分别钉：监听中的流（真）、已连上的流（假——它不该被 accept）、数据报（假）、
+     *          无效描述符（假，且不崩）。少任何一格，那个形状就会与「可以接手」同形
+     */
+    TEST(Socket, IsListeningStreamSeparatesListenerFromConnectedAndDatagramDescriptors)
+    {
+        Socket::initialize();
+
+        EXPECT_FALSE(Socket::isListeningStream(FileDescriptor::kInvalid)) << "不认得的描述符不能声称自己是监听器";
+
+        std::uint16_t assignedPort = 0;
+        const int     listener     = createLoopbackListener(assignedPort);
+        ASSERT_TRUE(FileDescriptor::isValid(listener));
+        EXPECT_TRUE(Socket::isListeningStream(listener)) << "已 bind 且 listen 的流套接字是本判据唯一要说「是」的形状";
+
+        const int client = connectToLoopback(assignedPort);
+        ASSERT_TRUE(FileDescriptor::isValid(client));
+        EXPECT_FALSE(Socket::isListeningStream(client)) << "已连上的端点也是 SOCK_STREAM，但它不该被 accept——分不开就会把客户端句柄当监听器接手";
+
+        const int datagram = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+        ASSERT_TRUE(datagram >= 0);
+        EXPECT_FALSE(Socket::isListeningStream(datagram)) << "数据报套接字要走 DatagramSocket::adopt，混进这一格就会被交给 TcpServer";
+
+        FileDescriptor::close(datagram);
+        FileDescriptor::close(client);
+        FileDescriptor::close(listener);
+    }
+
+    /**
      * @brief 钉住：段里有长度却没数据时，两平台都按参数非法收口
      * @details 此前只有 Windows 分支查这一形状；POSIX 侧把它交给 sendmsg 只会得到一个随地址取值
      *          变化的 EFAULT，同一份参数在两平台返回不同错误码，调用方的分支就没法写。

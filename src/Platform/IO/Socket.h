@@ -302,6 +302,20 @@ namespace AsynGyanis::Platform
         static int takePendingError(int descriptor) noexcept;
 
         /**
+         * @brief 这枚描述符是不是「已经在本端监听中的流套接字」
+         * @details 接手别的进程交来的监听器时要能回答这一问：systemd 的 socket activation 按
+         *          LISTEN_FDS 给一串 fd，哪一枚是监听器、哪一枚是数据报（QUIC 那一类走
+         *          `DatagramSocket::adopt`，它自己会验类型），只有问内核才知道——按参数位置或调用方
+         *          记忆去猜，猜错的症状是「服务起来了但一条连接都收不到」。
+         * @details 两档都要满足：`SO_TYPE` 是 SOCK_STREAM（普通文件、管道、数据报都排掉），且
+         *          `SO_ACCEPTCONN` 非零（已 connect 的端点也是流套接字，但它不该被 accept）。
+         * @param descriptor 待判的描述符
+         * @return true 是可以直接 accept 的监听套接字；false 是别的任何东西（含读不出选项的失效描述符——
+         *         这里不区分「不是套接字」与「没在监听」，调用方要的判据是同一个：不能接手）
+         */
+        static bool isListeningStream(int descriptor) noexcept;
+
+        /**
          * @brief 聚合写：一次系统调用提交多段数据（scatter/gather）
          * @details 典型用途是「头部块 + 正文」这类本来要拼进同一块缓冲再发的数据，分段提交
          *          可以省掉正文那次整体拷贝（大正文/文件响应最明显）。Linux 走 sendmsg

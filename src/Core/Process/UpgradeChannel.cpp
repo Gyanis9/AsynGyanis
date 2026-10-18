@@ -2,7 +2,9 @@
 
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
+#include "Platform/System/ProcessInfo.h"
 
+#include <charconv>
 #include <thread>
 
 namespace AsynGyanis::Core
@@ -22,6 +24,12 @@ namespace AsynGyanis::Core
 
         /// 连接通道的重试间隔：交棒方建通道是毫秒级的事，间隔再短只是白烧 CPU
         constexpr std::chrono::milliseconds kConnectRetryInterval{50};
+
+        /// systemd 的约定：交来的描述符从 3 开始连续排布（0/1/2 是标准输入输出与错误）
+        constexpr int kFirstActivatedDescriptor = 3;
+        /// 枚数的合理性上界：一个服务真配到几十条监听器已是罕见，超过这个数只会是坏掉的环境变量，
+        /// 按「没有交来」处理而不是让进程在启动期分配一串没人认领的 fd
+        constexpr std::uint64_t kMaximumActivatedListenerCount = 4096;
     } // namespace
 
     std::expected<UpgradeChannel, std::string> UpgradeChannel::open()
@@ -165,5 +173,59 @@ namespace AsynGyanis::Core
                                    "。若错误码是 EBADF，说明字节收齐了而里面没有描述符——通道必须是 AF_UNIX 流套接字");
         }
         return listenerDescriptor;
+    }
+
+    ActivationListeners parseActivationEnvironment(const std::optional<std::string> &listenPid, const std::optional<std::string> &listenFds, const long ownProcessId)
+    {
+        ActivationListeners listeners;
+        if (!listenFds.has_value() || !listenPid.has_value())
+        {
+            return listeners; // 没走 socket activation：两个值任缺其一就等价于「没有交来」
+        }
+
+        const auto parseUnsigned = [](const std::string &text, std::uint64_t &outcome)
+        {
+            std::uint64_t parsed = 0;
+            const char   *begin  = text.data();
+            const char   *end    = begin + text.size();
+            const auto    result = std::from_chars(begin, end, parsed);
+            if (result.ec != std::errc{} || result.ptr != end)
+            {
+                return false; // 非纯数字（含空串、带符号、尾部空格）一律按读不出处理
+            }
+            outcome = parsed;
+            return true;
+        };
+
+        std::uint64_t pid           = 0;
+        const bool    isPidReadable = parseUnsigned(*listenPid, pid);
+
+        // 枚数先按原样读出来：即使归属不是本进程，调用方也要能说出「环境交来几枚、为什么一枚都不接」
+        std::uint64_t announcedCount = 0;
+        if (parseUnsigned(*listenFds, announcedCount) && announcedCount <= kMaximumActivatedListenerCount)
+        {
+            listeners.announcedCount = announcedCount;
+        }
+
+        listeners.isForThisProcess = isPidReadable && pid == static_cast<std::uint64_t>(ownProcessId);
+        if (!listeners.isForThisProcess)
+        {
+            // LISTEN_PID 不是本进程（或根本读不出）：这批 fd 是替别人收的，一枚都不能碰
+            listeners.descriptors.clear();
+            return listeners;
+        }
+
+        listeners.descriptors.reserve(static_cast<std::size_t>(listeners.announcedCount));
+        for (std::uint64_t offset = 0; offset < listeners.announcedCount; ++offset)
+        {
+            listeners.descriptors.push_back(kFirstActivatedDescriptor + static_cast<int>(offset));
+        }
+        return listeners;
+    }
+
+    ActivationListeners activationListenerDescriptors()
+    {
+        return parseActivationEnvironment(Platform::ProcessInfo::environmentVariable("LISTEN_PID"), Platform::ProcessInfo::environmentVariable("LISTEN_FDS"),
+                                          Platform::ProcessInfo::currentProcessId());
     }
 } // namespace AsynGyanis::Core

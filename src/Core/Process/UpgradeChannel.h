@@ -16,8 +16,10 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Core
 {
@@ -106,4 +108,43 @@ namespace AsynGyanis::Core
      *         失败交中文原因
      */
     [[nodiscard]] ASYN_CORE_API std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
+
+    /**
+     * @brief systemd socket activation（LISTEN_FDS/LISTEN_PID）交来的监听描述符读数
+     * @details 三个字段而不是一个 vector：调用方要能分清「这台压根没走 activation」、「fd 是给别的
+     *          进程准备的」与「确实有几枚要接手」这三种形状——第二种必须**一枚都不碰并打一行说明**
+     *          （systemd 的约定是父进程被换掉时这些 fd 属于别人，动了它就是替别人收连接）
+     */
+    struct ASYN_CORE_API ActivationListeners
+    {
+        std::uint64_t    announcedCount{0};       ///< LISTEN_FDS 的原始读数；0 = 没有交来的描述符
+        bool             isForThisProcess{false}; ///< LISTEN_PID 是否等于本进程 pid
+        std::vector<int> descriptors{};           ///< 可直接接手的那些（从 3 起连续 announcedCount 枚）；上面不成立时为空
+    };
+
+    /**
+     * @brief 按 systemd 的约定解析两个环境值（纯函数）
+     * @details 拆成纯函数是为了能测：读环境那条路依赖进程外的东西（谁起的这个进程），而判「给谁的、
+     *          几枚、从哪号开始」是可以在用例里逐项钉死的规则。systemd 的口径是 fd 从 3 开始连续排布，
+     *          LISTEN_FDS 是枚数；两个值缺失、非数字或枚数大得离谱（超过 4096）都按「没有交来」处理，
+     *          而不是让一个坏掉的环境变量把服务拦在启动期
+     * @param listenPid LISTEN_PID 的读数（nullopt = 没设）
+     * @param listenFds LISTEN_FDS 的读数（nullopt = 没设）
+     * @param ownProcessId 本进程 pid（由调用方给，纯函数不去问平台）
+     * @return ActivationListeners 三个读数；`isForThisProcess` 为 false 时 `descriptors` 必为空
+     */
+    [[nodiscard]] ASYN_CORE_API ActivationListeners parseActivationEnvironment(const std::optional<std::string> &listenPid, const std::optional<std::string> &listenFds,
+                                                                               long ownProcessId);
+
+    /**
+     * @brief 读本进程的 systemd socket activation 环境，拿到交来的监听描述符
+     * @details 返回值不做分诊：TCP 监听器与 QUIC 的数据报套接字会一起进来，哪一枚是哪一类只有问内核
+     *          知道——用 `Platform::Socket::isListeningStream` 挑流式监听器，数据报交给
+     *          `Platform::DatagramSocket::adopt`（它自己验类型）。分诊放在调用方是因为只有部署侧知道
+     *          本机启用了哪几条通道
+     * @note 只在 POSIX 上有意义：systemd 是 Linux 的东西，Windows 上这两个环境变量不会存在，
+     *       读出来就是「没有交来」（不是错误，也不需要平台分支）
+     * @return ActivationListeners 见该结构的三个字段
+     */
+    [[nodiscard]] ASYN_CORE_API ActivationListeners activationListenerDescriptors();
 } // namespace AsynGyanis::Core

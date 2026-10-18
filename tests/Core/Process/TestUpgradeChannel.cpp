@@ -222,4 +222,47 @@ namespace AsynGyanis::Core
         static_cast<void>(Platform::FileDescriptor::close(*peer));
         static_cast<void>(Platform::FileDescriptor::close(client));
     }
+
+    /**
+     * @brief 钉住：systemd 交来的描述符按「是谁的、几枚、从 3 起」这三条规则算
+     * @details 这一格判据全是纯函数能覆盖的形状，逐条钉死而不是「测一条通的」：
+     *          LISTEN_PID 不匹配时必须**一枚都不给**（那是替别人收连接），而这条最容易写成
+     *          「顺手也给出去」；枚数读不出与读出一个荒谬的数都要落到「没有交来」，
+     *          否则一个坏掉的环境变量会让进程在启动期去接手一堆没认领的 fd。
+     */
+    TEST(UpgradeChannel, ActivationEnvironmentParsingHandsOverOnlyThisProcessesDescriptors)
+    {
+        constexpr long kOwnPid = 4242;
+
+        // 正常形状：两枚、从 3 开始连续
+        const ActivationListeners adopted = parseActivationEnvironment(std::string{"4242"}, std::string{"2"}, kOwnPid);
+        EXPECT_TRUE(adopted.isForThisProcess);
+        EXPECT_EQ(adopted.announcedCount, 2U);
+        ASSERT_EQ(adopted.descriptors.size(), 2U);
+        EXPECT_EQ(adopted.descriptors[0], 3);
+        EXPECT_EQ(adopted.descriptors[1], 4);
+
+        // 别人的 fd：一枚都不能给，但读到的枚数要留着，调用方才能把「为什么没接手」讲清楚
+        const ActivationListeners forSomeoneElse = parseActivationEnvironment(std::string{"1"}, std::string{"2"}, kOwnPid);
+        EXPECT_FALSE(forSomeoneElse.isForThisProcess);
+        EXPECT_EQ(forSomeoneElse.announcedCount, 2U);
+        EXPECT_TRUE(forSomeoneElse.descriptors.empty()) << "LISTEN_PID 不是本进程还交出描述符，就是替另一个进程收连接";
+
+        // 没走 socket activation（两个值任缺其一）与「一个都没有」：三种空形状同解
+        EXPECT_EQ(parseActivationEnvironment(std::nullopt, std::nullopt, kOwnPid).announcedCount, 0U);
+        EXPECT_EQ(parseActivationEnvironment(std::string{"4242"}, std::nullopt, kOwnPid).announcedCount, 0U);
+        const ActivationListeners zeroCount = parseActivationEnvironment(std::string{"4242"}, std::string{"0"}, kOwnPid);
+        EXPECT_TRUE(zeroCount.isForThisProcess) << "确实是本进程的、只是这一台没配监听器——与「没走 activation」不同解才有意义";
+        EXPECT_EQ(zeroCount.announcedCount, 0U);
+        EXPECT_TRUE(zeroCount.descriptors.empty());
+
+        // 读不出与荒谬值：都按「没有交来」，不去接手任何东西
+        for (const char *garbage: {"", "abc", "2 ", "-1", "4097", "99999999999999999999"})
+        {
+            const ActivationListeners parsed = parseActivationEnvironment(std::string{"4242"}, std::string{garbage}, kOwnPid);
+            EXPECT_EQ(parsed.announcedCount, 0U) << "LISTEN_FDS=「" << garbage << "」不该被当成枚数";
+            EXPECT_TRUE(parsed.descriptors.empty()) << "LISTEN_FDS=「" << garbage << "」不该交出任何描述符";
+        }
+        EXPECT_FALSE(parseActivationEnvironment(std::string{"abc"}, std::string{"2"}, kOwnPid).isForThisProcess) << "LISTEN_PID 读不出时不能声称是本进程的：认不清归属就不接手";
+    }
 } // namespace AsynGyanis::Core
