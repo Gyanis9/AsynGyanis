@@ -56,7 +56,7 @@
       "label": "工作树改动",
       "sublabel": "约定式提交",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 54, "end_line": 55, "label": "提交与 PR 两条约定" }
+        { "path": "CONTRIBUTING.md", "line": 80, "end_line": 81, "label": "提交与 PR 两条约定" }
       ]
     },
     {
@@ -69,7 +69,7 @@
       "sublabel": "有差异即红",
       "tag": "钉 23.1.1",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 42, "end_line": 43, "label": "版本与判据" }
+        { "path": "CONTRIBUTING.md", "line": 61, "end_line": 62, "label": "版本与判据" }
       ]
     },
     {
@@ -81,7 +81,7 @@
       "label": "clang-tidy",
       "sublabel": "只报告不阻塞",
       "sources": [
-        { "path": "CONTRIBUTING.md", "line": 44, "label": "静态检查一步" },
+        { "path": "CONTRIBUTING.md", "line": 63, "label": "静态检查一步" },
         { "path": ".github/workflows/linux-ci.yml", "line": 603, "label": "CI 里的 clang-tidy 作业" }
       ]
     },

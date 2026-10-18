@@ -37,6 +37,25 @@ ctest --test-dir build/debug --output-on-failure
 
 ## 开发流程
 
+下面第 2 到第 4 项那几道门（格式、复杂度、图追溯、台账日期、公开接口面、构建、用例、示例矩阵）由一条命令
+一次跑完，判据形状与 CI 一致：
+
+```bash
+bash scripts/run-gates.sh                                # 全部八道，debug 预设
+bash scripts/run-gates.sh --preset release               # 换 Release 档
+bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几道，改一处时不必等整条链
+```
+
+每道门印一行既有形状的判据（`COMPLEXITY_GATE=OK`、`ARCH_TRACE_GATE=OK`、`API_GATE=OK` 这三条由门禁脚本
+自己印，其余由这条命令按同一形状印），原始输出进 `build/gate-logs/<门名>.log`，判红的那道门把输出整片贴出来；
+最后一行给总判据与机读的 `build/gate-logs/run-gates.json`（每道门的命令、退出码、耗时、日志位置）。
+阈值不在这里抄第二份：地板与下限只在各门禁脚本与工作流那一处。格式档的 clang-format 版本现读
+`.github/workflows/linux-ci.yml` 里钉的那一版，本机对不上就换容器里那份（`--format container
+--format-container <容器名>`），点名要本机那份时（`--format local`）版本不符就退，不偷偷换裁判。
+退出码：0 全绿、1 某道门判红（构建红时后面的用例与示例没有产物可跑，链在此停住）、2 前置缺件——
+「没跑成」不许读成「没问题」。Windows 侧要先 `call vcvars64` 再进来，否则构建那一档红在编译参数上。
+覆盖率、TSan、模糊、交付物、供应链那几档各有前置（服务、容器、插桩构建），不在这条命令里：跑完它不等于 CI 全绿。
+
 1. **Fork & Clone**: 从 `main` 分支创建功能分支
 2. **编码**: 新增代码对齐 `.clang-format` 与周围既有风格。全仓已按该配置排过一遍，CI 有**格式门禁**
    （clang-format 版本钉到 23.1.1）：改动过的文件提交前跑 `clang-format --dry-run --Werror <文件>`，
@@ -57,7 +76,7 @@ ctest --test-dir build/debug --output-on-failure
    还要把 CMake 版本号的 MAJOR 抬上去，两处都留痕才放行；只抬版本而接口面一字未改同样判红（那是版本笔误）。
    它管的是源码声明面（签名与增删成员），管不住布局与大小变化，理由见脚本文件头。
    这道门挂在 CI 的格式作业与发布门禁两处，只读源码、不建不链
-4. **测试**: 确保 `ctest --output-on-failure` 全部通过
+4. **测试**: 确保 `ctest --preset debug`（在仓库根调用；并行度自己给 `-j`）全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
 6. **PR**: 提交 Pull Request，填写模板，等待审核
 

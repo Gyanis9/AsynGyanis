@@ -3,3 +3,9 @@
 # 按收据复核（archify check / browser-check --require-provenance）会误报。
 # 只圈定这一个目录，不影响 src/ 与脚本既有的行尾策略。
 assets/diagrams/** -text
+
+# 门禁脚本要在 Git Bash 与 Linux 两侧直接跑：行尾带 CR 时 bash 把 \r 当成命令的一部分，
+# 症状是脚本一进门就退 2 或报「command not found」，而 core.autocrlf=true 的 Windows 克隆
+# 默认就会把检出内容转成 CRLF——同一个脚本在写它的人手里能跑、在新克隆里跑不动。
+# 只钉 *.sh：src/ 与文档的行尾策略不变
+*.sh text eol=lf

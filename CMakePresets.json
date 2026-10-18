@@ -36,5 +36,35 @@
         "ENABLE_SANITIZERS": "OFF"
       }
     }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "description": "Build all targets of the debug preset; keep-going is passed on the command line (-- -k 0), same shape as the CI build step"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "description": "Build all targets of the release preset; keep-going is passed on the command line (-- -k 0), same shape as the CI build step"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "description": "Run the whole test suite of the debug build directory; parallelism is passed on the command line (-j, measured core count), failure output comes from here",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "description": "Run the whole test suite of the release build directory; parallelism is passed on the command line (-j, measured core count), failure output comes from here",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }
