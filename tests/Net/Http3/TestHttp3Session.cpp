@@ -2746,7 +2746,7 @@ namespace AsynGyanis::Net
      *          挂在自家等待上的处理器（等下游、等定时器）此前看到的仍是「没被取消」，于是把剩下的活
      *          干完再去写一条没人收的响应——`Middleware.h` 与 h1 侧写的都是「业务只认
      *          request.cancelToken() 一处」，而这一路没往那个出口交信号。
-     * @details 信号必须在叫醒处理器*之前*交：等待一被恢复，业务就读取消状态，晚一拍读数就成了假红。
+     * @details 信号必须在叫醒处理器之前交：等待一被恢复，业务就读取消状态，晚一拍读数就成了假红。
      *          正文刻意只喂到第一批且不告 END_STREAM，处理器因此确定还挂在派发协程上
      */
     TEST(Http3Session, PropagatesPeerStreamResetIntoStreamingHandlerCancelToken)

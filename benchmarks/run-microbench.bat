@@ -49,7 +49,7 @@ rem Within-run spread is a few percent (each case keeps the best of five rounds)
 rem lower bound here is tighter than the soak one. That claim used to be false for one
 rem case: header-first-value kept the returned optional<string> inside the timed body, so
 rem every round took and gave back a heap block, and that size class's luck moved the
-rem reading between ~320 ns and ~540 ns on the *same* binary depending on unrelated code
+rem reading between ~320 ns and ~540 ns on the same binary depending on unrelated code
 rem layout - neighbouring cases stayed within 1% the whole time, so it was never the lookup
 rem getting slower. Hoisting that optional out brought three consecutive gated runs back to
 rem 320-352 ns. Keep the habit anyway: when one case looks off, compare it against

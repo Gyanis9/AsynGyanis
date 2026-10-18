@@ -197,7 +197,7 @@ namespace AsynGyanis::Database
             case ColumnType::Timestamp:
                 // 这一家是唯一把「带时区的瞬时」做成真类型的：timestamptz 内部存的是瞬间，按会话
                 // TimeZone 渲染，交回的文本自带偏移。本库读回来时按那个偏移折回 UTC 瞬时，所以
-                // 会话改时区只改*显示*不改*瞬间*——这条由真机用例钉着，不是注释里的说法
+                // 会话改时区只改显示不改瞬间——这条由真机用例钉着，不是注释里的说法
                 return "TIMESTAMPTZ";
             case ColumnType::LocalDateTime:
                 // 与之相对的是不带时区的 timestamp：存的正是字面历法读数。精度显式写 6 位小数秒
