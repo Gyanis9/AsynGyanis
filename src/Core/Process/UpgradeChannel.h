@@ -112,7 +112,7 @@ namespace AsynGyanis::Core
     /**
      * @brief systemd socket activation（LISTEN_FDS/LISTEN_PID）交来的监听描述符读数
      * @details 三个字段而不是一个 vector：调用方要能分清「这台压根没走 activation」、「fd 是给别的
-     *          进程准备的」与「确实有几枚要接手」这三种形状——第二种必须**一枚都不碰并打一行说明**
+     *          进程准备的」与「确实有几枚要接手」这三种形状——第二种必须一枚都不碰并打一行说明
      *          （systemd 的约定是父进程被换掉时这些 fd 属于别人，动了它就是替别人收连接）
      */
     struct ASYN_CORE_API ActivationListeners

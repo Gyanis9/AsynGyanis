@@ -287,7 +287,7 @@ namespace AsynGyanis::Database
 
             if (std::optional<std::string> temporalText = Detail::renderTemporalParameterText(parameterValue, ' ', ""); temporalText.has_value())
             {
-                // 两个日期时间都按文本交出，且**不带偏移标记**：MySQL 的 DATETIME 按字面收，
+                // 两个日期时间都按文本交出，且不带偏移标记：MySQL 的 DATETIME 按字面收，
                 // 而本映射把 UTC 瞬时存成 DATETIME(6) 的 UTC 字面量（选它而不选 TIMESTAMP 的理由见
                 // MySqlDialect::columnTypeName）。墙上的那一档同样不带后缀，两者在库里就靠成员类型区分
                 if (renderedTexts.empty())

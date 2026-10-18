@@ -326,7 +326,7 @@ namespace AsynGyanis::Database::Detail
 
         if (const auto *instant = std::get_if<Timestamp>(&value))
         {
-            // UTC 瞬时那一路**必须带偏移**：timestamptz 收到不带偏移的文本时是按会话 TimeZone 解释的，
+            // UTC 瞬时那一路必须带偏移：timestamptz 收到不带偏移的文本时是按会话 TimeZone 解释的，
             // 那样同一个瞬间在 Asia/Shanghai 的会话上会被存成另一个瞬间。交回 +00 之后，
             // 会话时区只影响显示，不影响存进去的那一点
             return PostgresTextParameter{.text = renderSystemClockWithZeroOffset(*instant)};

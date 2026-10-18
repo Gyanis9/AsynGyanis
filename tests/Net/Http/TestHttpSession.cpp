@@ -1021,7 +1021,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：执行器排队已满（过载）回的是 503 + Retry-After，而不是和业务缺陷共用的 500
-     * @details 这一格的由来：饱和在 Core 侧本来是**返回值**（`SubmissionResult::RejectedBySaturatedQueue`），
+     * @details 这一格的由来：饱和在 Core 侧本来是返回值（`SubmissionResult::RejectedBySaturatedQueue`），
      *          文档写着「调用方应显式失败而不是挂起」，可 Net 侧此前一处都不认它——过载与「代码有 bug」
      *          在客户端看着是同一个 500，也没有退避提示。RFC 9110 §15.6.1 对「暂时接不住」给的是 503。
      * @details 饱和是真的造出来的而不是替身：一台只有 1 个工作线程的执行器，门闩任务占住那个线程，

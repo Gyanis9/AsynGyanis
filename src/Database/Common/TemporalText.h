@@ -7,7 +7,7 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 三家引擎在「文本形态的日期时间」上给的不是同一种写法，而本库的值类型方向坚持一件事：
- *          **线路是文本，成员是类型，中间这一层只做认与不认，不做任何猜测性换算**。这份头就是那一层。
+ *          线路是文本，成员是类型，中间这一层只做认与不认，不做任何猜测性换算。这份头就是那一层。
  *
  *          读回方向接受的写法（各家实际给出的都在里面）：
  *          - `YYYY-MM-DD` 加 `T` 或空格作分隔，`HH:MM` 之后 `:SS` 可省（MySQL 的 DATE 列没有时分秒）；
@@ -18,9 +18,9 @@
  *            `Thu 10-18-2026 09:20:30 PDT+0530`、以及 `infinity`/-infinity 这类没有历法对应的哨兵。
  *
  *          渲染方向按引擎给三种文本，因为「同一条 SQL 文本」在两家意味着不同的事：
- *          - MySQL 的 DATETIME 是字面墙上时间，不做会话时区换算，所以交出的文本**不带偏移**；
+ *          - MySQL 的 DATETIME 是字面墙上时间，不做会话时区换算，所以交出的文本不带偏移；
  *            这也正是本映射不选 TIMESTAMP 列的原因（见 MySqlDialect::columnTypeName 的 Timestamp 分支）；
- *          - PostgreSQL 的 timestamptz 会把不带偏移的文本**按会话 TimeZone** 解释，
+ *          - PostgreSQL 的 timestamptz 会把不带偏移的文本按会话 TimeZone 解释，
  *            所以 UTC 瞬时那一路必须自带 `+00`，否则服务端会替我们换一个instant；
  *            墙上时间那一路相反，必须不带偏移（TIMESTAMP WITHOUT TIME ZONE 收字面值）；
  *          - SQLite 只有存储类，文本形态完全由本库定，因此用定宽 ISO-8601：
@@ -100,7 +100,7 @@ namespace AsynGyanis::Database::Detail
 
     /**
      * @brief 解析结果折成 UTC 瞬时
-     * @param parsed 解析结果；文本没带偏移时**按 UTC 解释**（这条约定是 MySQL 那一路的前提，见文件头）
+     * @param parsed 解析结果；文本没带偏移时按 UTC 解释（这条约定是 MySQL 那一路的前提，见文件头）
      * @return std::optional<std::chrono::sys_time<std::chrono::microseconds>> 历法不成立（如 2 月 30 日）时空值
      */
     [[nodiscard]] ASYN_DATABASE_API std::optional<std::chrono::sys_time<std::chrono::microseconds>> toSystemClock(const ParsedDateTime &parsed) noexcept;
@@ -124,7 +124,7 @@ namespace AsynGyanis::Database::Detail
      * @param value 待绑定的统一值
      * @param separator 日期与时间之间的分隔符
      * @param instantSuffix 瞬时那一路尾部要加的东西；墙上时间那一路忽略本参数
-     * @return std::optional<std::string> 日期时间两档之一给出渲染好的文本（**只在真需要时分配**），
+     * @return std::optional<std::string> 日期时间两档之一给出渲染好的文本（只在真需要时分配），
      *         其余交回空值，由调用方继续按文本/二进制等档位处理
      */
     [[nodiscard]] ASYN_DATABASE_API std::optional<std::string> renderTemporalParameterText(const DatabaseValue &value, char separator, std::string_view instantSuffix);

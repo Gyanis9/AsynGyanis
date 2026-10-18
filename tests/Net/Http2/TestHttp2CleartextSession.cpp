@@ -2690,7 +2690,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：h2 认得「执行器排队已满」这个形状，回 503 + Retry-After 并落进过载那本账
-     * @details 状态码映射在三条通道各有一处，本条钉 h2 那一处。饱和的**真实来源**（执行器真的被灌满、
+     * @details 状态码映射在三条通道各有一处，本条钉 h2 那一处。饱和的真实来源（执行器真的被灌满、
      *          提交当场被拒）由 `HttpSession.Answers503WithRetryAfterWhenTheBlockingExecutorIsSaturated`
      *          钉住；这里抛的是同一个异常类型，为的是把「类型 → 状态码」这段接线在每条通道上各钉一次
      */

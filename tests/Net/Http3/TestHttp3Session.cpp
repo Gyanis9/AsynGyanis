@@ -1929,7 +1929,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 钉住：h3 的**流式派发**出口也认得过载——那里是第二个 500 映射点
+     * @brief 钉住：h3 的流式派发出口也认得过载——那里是第二个 500 映射点
      * @details 命中 `postStreaming(...)` 的请求走另一个出口（`Http3Session::serveStreamingRequest`），
      *          它有自己的一段「整体 reset 再填状态码」。漏这一处不会编译失败，只会让同一条通道上
      *          两种路由形状各回一个状态码——而「边读正文边等下游」的上传处理器恰恰是最该在过载时

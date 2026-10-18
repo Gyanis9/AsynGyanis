@@ -156,11 +156,11 @@ namespace AsynGyanis::Database
             case ColumnType::Timestamp:
             case ColumnType::LocalDateTime:
                 // 两个逻辑类型在这一家落到同一个物理类型，是有意的，理由两条（判据在真机用例里）：
-                // ① 本引擎唯一带时区语义的 TIMESTAMP 列会**按会话 time_zone** 重新渲染取值，而线上交回
+                // ① 本引擎唯一带时区语义的 TIMESTAMP 列会按会话 time_zone 重新渲染取值，而线上交回
                 //    的文本不带偏移标记——读的人无从知道它是哪个时区。换算的钥匙在会话参数里，而本驱动
                 //    不拥有那个参数（建连只定字符集与只读语句时限），不该为了一个列型去替会话做主；
                 //    ② TIMESTAMP 的取值范围只到 2038-01-19（32 位秒），而 DATETIME 到 9999 年。
-                // 于是本映射把 UTC 瞬时存成 DATETIME(6)：**字面墙上时间，按约定是 UTC**（约定写在
+                // 于是本映射把 UTC 瞬时存成 DATETIME(6)：字面墙上时间，按约定是 UTC（约定写在
                 // Common/TemporalText.h 与 README 的能力清单里）。带 6 是小数秒精度，DATETIME 不带
                 // 长度就只存整秒，写 "…:30.5" 进去读回来是 "…:30"，那才是静默丢位。
                 return "DATETIME(6)";
