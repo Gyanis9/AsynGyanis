@@ -1099,3 +1099,157 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+  # 交付物：装出去的三种形态（CMake 安装包、Conan 包、镜像）在这一格出现之前，CI 里对它们的
+  # 验证次数是 0——`cmake --install`、`conan create`、`docker build` 在 .github/workflows 全 0 命中，
+  # 于是第 4 轮那三处「会让部署白配或连不上」的样例缺陷能整轮上船。这一条把它们钉成门禁：
+  # 装出来的东西要能被外部工程 find_package + 真链接 + 跑起来，Conan 包要连它自带的 test_package
+  # 一起过，镜像要挂着仓库里那份配置样例起得来、答得出来、日志真的落盘。全程不需要任何真机服务与凭据。
+  delivery:
+    name: 交付物：安装、消费方与镜像
+    runs-on: ubuntu-latest
+    # 本作业要跑两次 Release 全树构建（一次在 runner 上、一次在镜像里）再加 conan create；
+    # 缓存冷时按 coverage 那条的量级估，上限给到 90 分钟，判据仍看每步的实测读数
+    timeout-minutes: 90
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      # ubuntu-latest 的 pip 受 PEP 668 限制不能直接装包，先建虚拟环境再进 PATH
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      - name: 配置与构建（Release，只建要装出去的五个模块）
+        run: |
+          cmake --preset release -DASYN_BUILD_TESTS=OFF -DDATABASE_WITH_MYSQL=OFF
+          cmake --build build/release --target Platform Base Core Net Database -- -k 0
+
+      - name: 安装到全新前缀
+        run: |
+          # 前缀必须先清干净：旧构建目录里残留的 cmake_install.cmake 会让「装到临时前缀」假绿
+          # （本地踩过，CI 每次都是全新 checkout，这里照样显式 rm，别把判据押在工作目录是新的上面）
+          rm -rf /tmp/asyn-prefix
+          cmake --install build/release --prefix /tmp/asyn-prefix
+          installed=$(find /tmp/asyn-prefix -type f | wc -l)
+          echo "装出文件数=$installed"
+          # 「装出来 0 个文件」也能让下一步的 find_package 报一句看不懂的话，先在这里拦下并给数
+          test "$installed" -gt 100 || { echo "装出来的东西少得可疑（<=100）：导出规则大概没跑全"; exit 1; }
+          {
+            echo "### 交付物：安装"
+            echo "装出 $installed 个文件（含 AsynGyanisConfig.cmake 与导出目标）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 消费方：find_package 装出来的包并真引用一个符号
+        run: |
+          # 只 include 头不会让链接器去解析依赖：取一次成员函数地址留在 volatile 变量里，
+          # 「地址必非空」的折叠被 volatile 挡住，包少链一个模块或漏声明一条外部依赖时
+          # 红的是这一步，而不是「编译过了」——现成写法见 packaging/conan/test_package/main.cpp
+          mkdir -p /tmp/asyn-consumer
+          cat > /tmp/asyn-consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.28)
+          project(AsynDeliveryConsumer CXX)
+
+          find_package(AsynGyanis REQUIRED COMPONENTS Net)
+
+          add_executable(asyn-consumer main.cpp)
+          target_link_libraries(asyn-consumer PRIVATE AsynGyanis::Net)
+          EOF
+          cat > /tmp/asyn-consumer/main.cpp <<'EOF'
+          #include "Net/Http/HttpServer.h"
+
+          #include <cstdio>
+
+          int main()
+          {
+              volatile auto entry = &AsynGyanis::Net::HttpServer::router;
+              static_cast<void>(entry);
+              std::printf("consumer_probe: 装出来的包能链、能跑\\n");
+              return 0;
+          }
+          EOF
+          # 库的依赖（OpenSSL/zlib/zstd/brotli/yaml-cpp）由本次构建的 Conan 生成器供给：把那份
+          # 工具链指给消费方，find_dependency 才能落到同一批包上。找不到就说明依赖没被装出来，
+          # 那一趟「消费方通过了」没有可比性，宁可红在这里
+          toolchain=$(find "$GITHUB_WORKSPACE/build/release" -name conan_toolchain.cmake | head -1)
+          test -n "$toolchain" || { echo "找不到 Conan 生成的工具链，消费方没有可比的前置依赖"; exit 1; }
+          cmake -S /tmp/asyn-consumer -B /tmp/asyn-consumer/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/tmp/asyn-prefix \
+            -DCMAKE_TOOLCHAIN_FILE="$toolchain"
+          cmake --build /tmp/asyn-consumer/build
+          /tmp/asyn-consumer/build/asyn-consumer
+
+      - name: Conan 包：conan create 连自带 test_package 的冒烟一起跑
+        run: |
+          # 这条与上面那条是两条独立通路：Conan 配方自己声明 cpp_info（含 /utf-8 与逐个外部依赖），
+          # 装出来的包漏一项就在 test_package 里链接期报错——那是「别人吃这份包」时的形状
+          conan create packaging/conan --build=missing
+
+      - name: 镜像：构建、挂载仓库里的配置样例并断言真的在应答
+        run: |
+          docker build -f packaging/Dockerfile -t asyngyanis:ci .
+          image_size=$(docker images asyngyanis:ci --format '{{.Size}}')
+          echo "镜像大小=$image_size"
+          # 样例要复制成 .yaml 再挂：ConfigManager 按扩展名认文件，直接挂 *.example 会报「读取配置文件失败」
+          mkdir -p /tmp/asyn-ci-cfg
+          cp packaging/asyngyanis.yaml.example /tmp/asyn-ci-cfg/asyngyanis.yaml
+          # --host 0.0.0.0 必须显式给：`docker run 镜像 --config …` 会整段替换 CMD，连带丢掉镜像里那条
+          # --host，服务于是只听回环——端口映射看着通，症状只有超时（这一格是第 4 轮实跑抓出来的）
+          docker run -d --name asyn-ci \
+            -v /tmp/asyn-ci-cfg:/cfg:ro \
+            -p 18099:8080 \
+            asyngyanis:ci --host 0.0.0.0 --port 8080 --config /cfg/asyngyanis.yaml
+          # 等健康检查落定（镜像 HEALTHCHECK 用 bash 的 /dev/tcp 探端口，默认 30 秒一节拍），最多 90 秒
+          healthy=none
+          for _ in $(seq 1 18); do
+            healthy=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' asyn-ci)
+            if [ "$healthy" = "healthy" ]; then break; fi
+            sleep 5
+          done
+          echo "健康状态=$healthy"
+          test "$healthy" = "healthy" || { docker logs asyn-ci; exit 1; }
+          business_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18099/ || true)
+          echo "业务口 / =$business_code"
+          # 管理口只听回环（metrics_address 默认 127.0.0.1，这是刻意的来源收口），端口映射吃不到它，
+          # 只能从容器内部探。镜像里刻意不装 curl，所以用 HEALTHCHECK 同一件工具：bash 的 /dev/tcp
+          healthz_line=$(docker exec asyn-ci bash -c 'exec 3<>/dev/tcp/127.0.0.1/9091 || exit 0; printf "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; head -n 1 <&3' || true)
+          echo "管理口 /healthz =$healthz_line"
+          test "$business_code" = "200" || { docker logs asyn-ci; exit 1; }
+          case "$healthz_line" in
+            "HTTP/1.1 200"*) ;;
+            *) docker logs asyn-ci; exit 1 ;;
+          esac
+          # 配置样例被读出来时不该留一行 LoggerConfig 诊断：那一句是「配了却不生效」唯一的出声处，
+          # 上一轮那处 loggers 写成列表的缺陷就是靠它现形的（grep 零命中时退 1，计数一律先收进变量）
+          diagnostics=$(docker logs asyn-ci 2>&1 | grep -c "LoggerConfig：" || true)
+          echo "LoggerConfig 诊断行数=$diagnostics"
+          test "$diagnostics" = "0" || { docker logs asyn-ci; exit 1; }
+          # 运行期落盘：不发 SIGHUP、不做任何收口动作，文件就得已经有字节——文件 sink 不 flush 时
+          # tail -f、Filebeat/vector 与崩溃后的取证什么都读不到
+          log_bytes=$(docker exec asyn-ci sh -c 'wc -c < /var/lib/asyngyanis/logs/asyngyanis.log' || true)
+          echo "日志文件字节数=${log_bytes:-0}"
+          test "${log_bytes:-0}" -gt 0 || { docker logs asyn-ci; exit 1; }
+          # 访问日志真进了那份文件（装机形态一条都不产是第 4 轮的同一族缺口）
+          access_lines=$(docker exec asyn-ci sh -c 'grep -c "HTTP 访问" /var/lib/asyngyanis/logs/asyngyanis.log' || true)
+          echo "访问日志行数=${access_lines:-0}"
+          test "${access_lines:-0}" -ge 1 || { docker exec asyn-ci sh -c 'tail -20 /var/lib/asyngyanis/logs/asyngyanis.log'; exit 1; }
+          {
+            echo "### 交付物：Conan 包与镜像"
+            echo "镜像 $image_size；健康状态 $healthy；业务口 / $business_code；管理口 /healthz 首行「$healthz_line」；"
+            echo "日志文件 ${log_bytes:-0} 字节、其中访问日志 ${access_lines:-0} 行；LoggerConfig 诊断 $diagnostics 行"
+          } >> "$GITHUB_STEP_SUMMARY"
