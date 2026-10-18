@@ -6,6 +6,7 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/OAuthSupport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <openssl/evp.h>
 
@@ -24,7 +25,7 @@ namespace AsynGyanis::Net
 
         /// 取一段随机 token（base64url 编码，43 字符）：密码学随机源只在熵源坏掉时失败——对 PKCE 的
         /// verifier 与 state 来说，「取不到就换个弱随机」等于把这两步的安全意义整个拿掉，宁可如实失败
-        [[nodiscard]] std::expected<std::string, std::string> makeRandomToken()
+        [[nodiscard]] OAuthExpected<std::string> makeRandomToken()
         {
             // PKCE 的 verifier 与 state 都是密钥材料，走私有 DRBG 那一侧；「取不到就换个弱随机」
             // 等于把这两步的安全意义整个拿掉，宁可如实失败并把原因带回去
@@ -34,7 +35,8 @@ namespace AsynGyanis::Net
                 return Base::base64UrlEncode(std::string_view(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
             } catch (const Base::Exception &failure)
             {
-                return std::unexpected(std::format("密码学随机源取不到 {} 字节，无法生成 PKCE verifier 与 state。原因：{}", kRandomTokenBytes, failure.what()));
+                return std::unexpected(OAuthError{OAuthErrorKind::CryptoFailed,
+                                                  std::format("密码学随机源取不到 {} 字节，无法生成 PKCE verifier 与 state。原因：{}", kRandomTokenBytes, failure.what())});
             }
         }
 
@@ -75,19 +77,19 @@ namespace AsynGyanis::Net
         }
     }
 
-    std::expected<OAuthAuthorizationRequest, std::string> OAuthAuthorizationCodeClient::beginAuthorization() const
+    OAuthExpected<OAuthAuthorizationRequest> OAuthAuthorizationCodeClient::beginAuthorization() const
     {
-        std::expected<std::string, std::string> verifier = makeRandomToken();
+        OAuthExpected<std::string> verifier = makeRandomToken();
         if (!verifier.has_value())
         {
             return std::unexpected(verifier.error());
         }
-        std::expected<std::string, std::string> state = makeRandomToken();
+        OAuthExpected<std::string> state = makeRandomToken();
         if (!state.has_value())
         {
             return std::unexpected(state.error());
         }
-        const std::expected<std::string, std::string> challenge = computePkceChallenge(*verifier);
+        const OAuthExpected<std::string> challenge = computePkceChallenge(*verifier);
         if (!challenge.has_value())
         {
             return std::unexpected(challenge.error());
@@ -110,7 +112,7 @@ namespace AsynGyanis::Net
         return OAuthAuthorizationRequest{.url = std::move(url), .state = std::move(*state), .verifier = std::move(*verifier)};
     }
 
-    std::expected<OAuthAuthorizationCallback, std::string> OAuthAuthorizationCodeClient::parseCallback(const std::string_view callback)
+    OAuthExpected<OAuthAuthorizationCallback> OAuthAuthorizationCodeClient::parseCallback(const std::string_view callback)
     {
         // 接受整条回调 URL 或裸查询串：取第一个 '?' 之后的那段；没有 '?' 时把整段当查询串
         // （调用方可能已经把 URL 拆过了）。片段（'#' 及其后）不属于一次 HTTP 请求，剥掉
@@ -145,41 +147,42 @@ namespace AsynGyanis::Net
         }
         if (parsed.code.empty())
         {
-            return std::unexpected("回调里既没有 code 也没有 error：不是一次授权响应的形状");
+            return std::unexpected(OAuthError{OAuthErrorKind::MissingAuthorizationCode, "回调里既没有 code 也没有 error：不是一次授权响应的形状"});
         }
         return parsed;
     }
 
-    std::expected<std::string, std::string> OAuthAuthorizationCodeClient::computePkceChallenge(const std::string_view codeVerifier)
+    OAuthExpected<std::string> OAuthAuthorizationCodeClient::computePkceChallenge(const std::string_view codeVerifier)
     {
         const std::optional<std::string> digest = sha256Digest(codeVerifier);
         if (!digest.has_value())
         {
-            return std::unexpected("PKCE 的 SHA-256 计算失败（EVP_Digest 未成功）");
+            return std::unexpected(OAuthError{OAuthErrorKind::CryptoFailed, "PKCE 的 SHA-256 计算失败（EVP_Digest 未成功）"});
         }
         // S256：BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))，无填充（RFC 7636 §4.2）
         return Base::base64UrlEncode(*digest);
     }
 
-    Core::Task<std::expected<OAuthAccessToken, std::string>> OAuthAuthorizationCodeClient::exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback)
+    Core::Task<OAuthExpected<OAuthAccessToken>> OAuthAuthorizationCodeClient::exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback)
     {
         // 两道本地判都在接网之前：回调带 error 就按对端原因拒；state 不符按 CSRF 嫌疑拒（RFC 6749 §10.12）
         if (!callback.error.empty())
         {
             const std::string described = "error=" + callback.error + (callback.errorDescription.empty() ? std::string{} : "：" + callback.errorDescription);
-            co_return std::unexpected("授权被拒（" + described + "）");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::AuthorizationDenied, "授权被拒（" + described + "）"});
         }
         if (callback.state != request.state)
         {
-            co_return std::unexpected("回调的 state 与本次授权请求的不一致（RFC 6749 §10.12 要求逐字核对）：可能是 CSRF 或串了两次授权，已拒绝换取");
+            co_return std::unexpected(
+                    OAuthError{OAuthErrorKind::StateMismatch, "回调的 state 与本次授权请求的不一致（RFC 6749 §10.12 要求逐字核对）：可能是 CSRF 或串了两次授权，已拒绝换取"});
         }
         if (callback.code.empty())
         {
-            co_return std::unexpected("回调里没有授权码（code），无从换取");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::MissingAuthorizationCode, "回调里没有授权码（code），无从换取"});
         }
         if (request.verifier.empty())
         {
-            co_return std::unexpected("缺少 PKCE verifier：换取授权码必须带上发起授权请求时生成的那一枚");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::InvalidLocalState, "缺少 PKCE verifier：换取授权码必须带上发起授权请求时生成的那一枚"});
         }
 
         // 表单体落在局部串上：HttpClientRequest 的 body 是视图，须活到 send 用完为止；
@@ -193,17 +196,18 @@ namespace AsynGyanis::Net
         const auto sent = co_await HttpClient::send(m_loop, m_options.tokenUrl, makeOAuthFormPost(formBody, m_options.clientId, m_options.clientSecret), m_options.requestTimeout);
         if (!sent.has_value())
         {
-            co_return std::unexpected("令牌请求（" + m_options.tokenUrl + "）失败：" + sent.error());
+            co_return std::unexpected(OAuthError{OAuthErrorKind::Transport, "令牌请求（" + m_options.tokenUrl + "）失败：" + sent.error()});
         }
         if (sent->statusCode < 200 || sent->statusCode >= 300)
         {
-            co_return std::unexpected("令牌端点（" + m_options.tokenUrl + "）回的是 HTTP " + std::to_string(sent->statusCode) + describeOauthError(sent->body));
+            co_return std::unexpected(OAuthError{OAuthErrorKind::RejectedByServer,
+                                                 "令牌端点（" + m_options.tokenUrl + "）回的是 HTTP " + std::to_string(sent->statusCode) + describeOauthError(sent->body)});
         }
 
-        std::expected<OAuthAccessToken, std::string> token = parseOAuthTokenResponse(sent->body);
+        OAuthExpected<OAuthAccessToken> token = parseOAuthTokenResponse(sent->body);
         if (!token.has_value())
         {
-            co_return std::unexpected("令牌端点（" + m_options.tokenUrl + "）：" + token.error());
+            co_return std::unexpected(OAuthError{token.error().kind, "令牌端点（" + m_options.tokenUrl + "）：" + token.error().message});
         }
         co_return std::move(*token);
     }

@@ -25,6 +25,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Net/Http/OAuthToken.h"
+#include "Net/Http/OAuthError.h"
 
 #include <chrono>
 #include <expected>
@@ -91,10 +92,10 @@ namespace AsynGyanis::Net
          * @brief 第一步：生成 state 与 PKCE 材料并组出授权 URL
          * @details state 与 verifier 都是 32 字节密码学随机（编成 43 个 base64url 字符）；
          *          挑战按 S256 计算（`code_challenge_method=S256`）。授权端点本来带查询串时正确接续 `&`。
-         * @return std::expected<OAuthAuthorizationRequest, std::string> 待打开的 URL 与要留住的材料；
+         * @return OAuthExpected<OAuthAuthorizationRequest> 待打开的 URL 与要留住的材料；
          *         失败为中文原因（密码学随机源不可用）
          */
-        [[nodiscard]] std::expected<OAuthAuthorizationRequest, std::string> beginAuthorization() const;
+        [[nodiscard]] OAuthExpected<OAuthAuthorizationRequest> beginAuthorization() const;
 
         /**
          * @brief 第二步（可选）：从回调里取出 code / state / error
@@ -102,17 +103,17 @@ namespace AsynGyanis::Net
          *          （`+` 表示空格、`%XX` 按字节）。既没有 `code` 也没有 `error` 按协议不符拒——
          *          page-not-found 一类的地址不会被猜成一次授权响应。
          * @param callback 回调原文
-         * @return std::expected<OAuthAuthorizationCallback, std::string> 解析结果；失败为中文原因
+         * @return OAuthExpected<OAuthAuthorizationCallback> 解析结果；失败为中文原因
          */
-        [[nodiscard]] static std::expected<OAuthAuthorizationCallback, std::string> parseCallback(std::string_view callback);
+        [[nodiscard]] static OAuthExpected<OAuthAuthorizationCallback> parseCallback(std::string_view callback);
 
         /**
          * @brief PKCE 的 S256 变换：BASE64URL(SHA256(verifier))，无填充（RFC 7636 §4.2/§4.6）
          * @param codeVerifier 授权请求时用的 verifier
-         * @return std::expected<std::string, std::string> 挑战；失败为中文原因（SHA-256 计算不可用）
+         * @return OAuthExpected<std::string> 挑战；失败为中文原因（SHA-256 计算不可用）
          * @note 单独摆成一个静态函数是为了可直测：RFC 7636 附录 B 的官方测试向量一条断言即可对照
          */
-        [[nodiscard]] static std::expected<std::string, std::string> computePkceChallenge(std::string_view codeVerifier);
+        [[nodiscard]] static OAuthExpected<std::string> computePkceChallenge(std::string_view codeVerifier);
 
         /**
          * @brief 第三步：把授权码换回令牌（RFC 6749 §4.1.3 + RFC 7636 §4.5）
@@ -124,9 +125,9 @@ namespace AsynGyanis::Net
          * @param request beginAuthorization 的产物。按值收：协程到首次恢复才读入参，
          *        按引用/视图接临时量会静默读到已释放内存
          * @param callback 解析过的回调。按值收，口径同上
-         * @return std::expected<OAuthAccessToken, std::string> 令牌；失败为中文原因
+         * @return OAuthExpected<OAuthAccessToken> 令牌；失败为中文原因
          */
-        [[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback);
+        [[nodiscard]] Core::Task<OAuthExpected<OAuthAccessToken>> exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback);
 
     private:
         EventLoop                    &m_loop; ///< 所属循环（非拥有；比本对象活得久）

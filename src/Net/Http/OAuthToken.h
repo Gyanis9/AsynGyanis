@@ -13,6 +13,7 @@
 #pragma once
 
 #include "AsynGyanisExport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <chrono>
 #include <expected>
@@ -38,8 +39,8 @@ namespace AsynGyanis::Net
      * @details access_token 与 token_type 必填（缺失、错类型、空串各自点名拒）；expires_in 给了
      *          必须是正整数（没给按 0 即「端点未给出」）；refresh_token / scope 可选，但类型不符即拒。
      * @param responseBody 响应正文原文
-     * @return std::expected<OAuthAccessToken, std::string> 解析结果；失败为中文原因
+     * @return OAuthExpected<OAuthAccessToken> 解析结果；失败为中文原因
      */
-    [[nodiscard]] ASYN_NET_API std::expected<OAuthAccessToken, std::string> parseOAuthTokenResponse(std::string_view responseBody);
+    [[nodiscard]] ASYN_NET_API OAuthExpected<OAuthAccessToken> parseOAuthTokenResponse(std::string_view responseBody);
 
 } // namespace AsynGyanis::Net

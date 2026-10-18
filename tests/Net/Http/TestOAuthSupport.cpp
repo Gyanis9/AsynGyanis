@@ -6,6 +6,7 @@
 
 #include "ExpectedAssertions.h"
 #include "Net/Http/OAuthSupport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <gtest/gtest.h>
 
@@ -48,7 +49,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(field.has_value()) << wrongTyped;
             if (!field.has_value())
             {
-                EXPECT_NE(field.error().find(wrongTyped), std::string::npos) << field.error();
+                EXPECT_NE(field.error().message.find(wrongTyped), std::string::npos) << field.error().message;
+                EXPECT_EQ(field.error().kind, OAuthErrorKind::MalformedResponse) << "字段类型不符点名到字段，类别统一是应答形状";
             }
         }
 
@@ -76,7 +78,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(field.has_value()) << unusable;
             if (!field.has_value())
             {
-                EXPECT_NE(field.error().find(unusable), std::string::npos) << field.error();
+                EXPECT_NE(field.error().message.find(unusable), std::string::npos) << field.error().message;
             }
         }
     }

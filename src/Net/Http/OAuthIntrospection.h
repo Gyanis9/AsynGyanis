@@ -23,6 +23,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/EventLoop/EventLoop.h"
+#include "Net/Http/OAuthError.h"
 
 #include <chrono>
 #include <cstdint>
@@ -83,10 +84,10 @@ namespace AsynGyanis::Net
          *          RFC 7662 规定无效/过期的令牌也以 200 回答并置 `active: false`，
          *          因此非 2xx 与「缺 active」都算协议不符（返回失败原因），不是「不活跃」。
          * @param token 待查询的令牌原文
-         * @return std::expected<OAuthTokenIntrospection, std::string> 解析结果；失败为中文原因
+         * @return OAuthExpected<OAuthTokenIntrospection> 解析结果；失败为中文原因
          *         （网络失败、非 2xx、正文不是 JSON 对象、缺 active 字段）
          */
-        [[nodiscard]] Core::Task<std::expected<OAuthTokenIntrospection, std::string>> introspect(std::string_view token);
+        [[nodiscard]] Core::Task<OAuthExpected<OAuthTokenIntrospection>> introspect(std::string_view token);
 
     private:
         EventLoop                &m_loop;

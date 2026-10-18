@@ -17,6 +17,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
+#include "Net/Http/OAuthError.h"
 
 #include <gtest/gtest.h>
 
@@ -207,7 +208,7 @@ namespace AsynGyanis::Net
         {
             // 正例：active 令牌的字段逐项解析
             auto active = co_await client.introspect("tok+en/With=Specials");
-            EXPECT_HAS_VALUE(active) << active.error();
+            EXPECT_HAS_VALUE(active) << active.error().message;
             if (active.has_value())
             {
                 EXPECT_TRUE(active->active);
@@ -229,7 +230,7 @@ namespace AsynGyanis::Net
             // 不活跃令牌：正常回答（200 + active:false），不是失败
             server.setResponse("200 OK", R"({"active":false})");
             auto inactive = co_await client.introspect("opaque-token");
-            EXPECT_HAS_VALUE(inactive) << inactive.error();
+            EXPECT_HAS_VALUE(inactive) << inactive.error().message;
             if (inactive.has_value())
             {
                 EXPECT_FALSE(inactive->active);
@@ -241,7 +242,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(unavailable.has_value());
             if (!unavailable.has_value())
             {
-                lastFailure = unavailable.error();
+                lastFailure = unavailable.error().message;
                 EXPECT_NE(lastFailure.find("HTTP 503"), std::string::npos) << lastFailure;
             }
 
@@ -251,7 +252,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(missingActive.has_value());
             if (!missingActive.has_value())
             {
-                EXPECT_NE(missingActive.error().find("active"), std::string::npos) << missingActive.error();
+                EXPECT_NE(missingActive.error().message.find("active"), std::string::npos) << missingActive.error().message;
+                EXPECT_EQ(missingActive.error().kind, OAuthErrorKind::MalformedResponse) << "缺 active 这个必填布尔是 RFC 7662 §2.2 的形状违例";
             }
 
             // 字段类型不符：属协议不符、要按失败返回——绝不能抛异常穿出（expected 契约）。
@@ -266,7 +268,7 @@ namespace AsynGyanis::Net
                 wrongScopeRejected    = !wrongScope.has_value();
                 if (!wrongScope.has_value())
                 {
-                    wrongScopeReason = wrongScope.error();
+                    wrongScopeReason = wrongScope.error().message;
                 }
             } catch (const std::exception &)
             {
@@ -285,7 +287,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(wrongTypedExp.has_value());
             if (!wrongTypedExp.has_value())
             {
-                EXPECT_NE(wrongTypedExp.error().find("exp"), std::string::npos) << wrongTypedExp.error();
+                EXPECT_NE(wrongTypedExp.error().message.find("exp"), std::string::npos) << wrongTypedExp.error().message;
             }
 
             loop.stop();

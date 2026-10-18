@@ -21,6 +21,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
+#include "Net/Http/OAuthError.h"
 
 #include <gtest/gtest.h>
 
@@ -238,7 +239,7 @@ namespace AsynGyanis::Net
             const OAuthAuthorizationCallback callback{.code = "code-1", .state = "st-1"};
 
             const auto token = co_await client.exchangeCode(makeRecordedRequest(), callback);
-            EXPECT_HAS_VALUE(token) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error().message;
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-code");
@@ -262,8 +263,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(reused.has_value());
             if (!reused.has_value())
             {
-                EXPECT_NE(reused.error().find("invalid_grant"), std::string::npos) << reused.error();
-                EXPECT_NE(reused.error().find("授权码已过期或已被使用"), std::string::npos) << reused.error();
+                EXPECT_NE(reused.error().message.find("invalid_grant"), std::string::npos) << reused.error().message;
+                EXPECT_NE(reused.error().message.find("授权码已过期或已被使用"), std::string::npos) << reused.error().message;
             }
             EXPECT_EQ(endpoint.requestCount(), 2U);
             loop.stop();
@@ -277,7 +278,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(token.has_value());
             if (!token.has_value())
             {
-                EXPECT_NE(token.error().find("state"), std::string::npos) << token.error();
+                EXPECT_NE(token.error().message.find("state"), std::string::npos) << token.error().message;
+                EXPECT_EQ(token.error().kind, OAuthErrorKind::StateMismatch) << "回调的 state 与本次请求不一致，这一格必须能不看文案就拒掉";
             }
             EXPECT_EQ(endpoint.requestCount(), 0U) << "state 不符就不该发出换取请求";
             loop.stop();
@@ -291,8 +293,9 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(token.has_value());
             if (!token.has_value())
             {
-                EXPECT_NE(token.error().find("access_denied"), std::string::npos) << token.error();
-                EXPECT_NE(token.error().find("用户点了拒绝"), std::string::npos) << token.error();
+                EXPECT_NE(token.error().message.find("access_denied"), std::string::npos) << token.error().message;
+                EXPECT_EQ(token.error().kind, OAuthErrorKind::AuthorizationDenied) << "用户在同意页点了拒绝，不是故障";
+                EXPECT_NE(token.error().message.find("用户点了拒绝"), std::string::npos) << token.error().message;
             }
             EXPECT_EQ(endpoint.requestCount(), 0U) << "回调已带 error 就不该再发换取请求";
             loop.stop();
@@ -303,7 +306,7 @@ namespace AsynGyanis::Net
     {
         // RFC 7636 附录 B 的官方测试向量：S256 的挑战是 verifier 的 SHA-256 的 base64url（无填充）
         const auto challenge = OAuthAuthorizationCodeClient::computePkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
-        ASSERT_HAS_VALUE(challenge) << challenge.error();
+        ASSERT_HAS_VALUE(challenge) << challenge.error().message;
         EXPECT_EQ(*challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
     }
 
@@ -317,7 +320,7 @@ namespace AsynGyanis::Net
                                                                                       .scope            = "read write"});
 
         const auto first = client.beginAuthorization();
-        ASSERT_HAS_VALUE(first) << first.error();
+        ASSERT_HAS_VALUE(first) << first.error().message;
         const std::string &url = first->url;
         EXPECT_EQ(url.find("https://auth.example/authorize?"), 0U) << url;
         EXPECT_NE(url.find("response_type=code"), std::string::npos) << url;
@@ -339,7 +342,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(first->state, first->verifier);
 
         const auto second = client.beginAuthorization();
-        ASSERT_HAS_VALUE(second) << second.error();
+        ASSERT_HAS_VALUE(second) << second.error().message;
         EXPECT_NE(second->verifier, first->verifier) << "两次授权请求的 PKCE verifier 不该相同";
         EXPECT_NE(second->state, first->state) << "两次授权请求的 state 不该相同";
     }
@@ -348,20 +351,20 @@ namespace AsynGyanis::Net
     {
         // 整条回调 URL：片段要剥掉，%2B 解成 '+'（不是空格）
         const auto fromUrl = OAuthAuthorizationCodeClient::parseCallback("https://app.example/cb?code=abc%2B123&state=st-1#access_token=x");
-        ASSERT_HAS_VALUE(fromUrl) << fromUrl.error();
+        ASSERT_HAS_VALUE(fromUrl) << fromUrl.error().message;
         EXPECT_EQ(fromUrl->code, "abc+123");
         EXPECT_EQ(fromUrl->state, "st-1");
         EXPECT_TRUE(fromUrl->error.empty());
 
         // 裸查询串：与整 URL 同解；'+' 按表单约定解成空格
         const auto fromQuery = OAuthAuthorizationCodeClient::parseCallback("code=abc%2B123&state=st+1");
-        ASSERT_HAS_VALUE(fromQuery) << fromQuery.error();
+        ASSERT_HAS_VALUE(fromQuery) << fromQuery.error().message;
         EXPECT_EQ(fromQuery->code, "abc+123");
         EXPECT_EQ(fromQuery->state, "st 1");
 
         // error 回调：错误码与描述都要取回（描述里的 '+' 解成空格）
         const auto denied = OAuthAuthorizationCodeClient::parseCallback("?error=access_denied&error_description=user+said+no&state=st-1");
-        ASSERT_HAS_VALUE(denied) << denied.error();
+        ASSERT_HAS_VALUE(denied) << denied.error().message;
         EXPECT_EQ(denied->error, "access_denied");
         EXPECT_EQ(denied->errorDescription, "user said no");
         EXPECT_EQ(denied->state, "st-1");
@@ -376,7 +379,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(callback.has_value()) << malformed;
             if (!callback.has_value())
             {
-                EXPECT_NE(callback.error().find("code"), std::string::npos) << callback.error();
+                EXPECT_NE(callback.error().message.find("code"), std::string::npos) << callback.error().message;
+                EXPECT_EQ(callback.error().kind, OAuthErrorKind::MissingAuthorizationCode) << "既没有 code 也没有 error 的回跳不是授权响应";
             }
         }
     }

@@ -14,6 +14,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Net/Http/Client/HttpClient.h"
+#include "Net/Http/OAuthError.h"
 
 #include <chrono>
 #include <cstdint>
@@ -64,10 +65,10 @@ namespace AsynGyanis::Net
      *          一行日志、再也不会重来。对端给的字节不可信，这类读取一律不抛。
      * @param object 待读的 JSON 对象
      * @param name 字段名
-     * @return std::expected<std::string, std::string> 成功交回字段值（缺失为空串）；类型不符交回原因
+     * @return OAuthExpected<std::string> 成功交回字段值（缺失为空串）；类型不符交回原因
      * @note object 不是 JSON 对象时按缺失处理：find 对非对象是未定义行为，这条兜底不留给调用方记
      */
-    [[nodiscard]] inline std::expected<std::string, std::string> optionalJsonString(const nlohmann::json &object, const char *name)
+    [[nodiscard]] inline OAuthExpected<std::string> optionalJsonString(const nlohmann::json &object, const char *name)
     {
         if (!object.is_object())
         {
@@ -80,7 +81,7 @@ namespace AsynGyanis::Net
         }
         if (!field->is_string())
         {
-            return std::unexpected(std::string{"字段「"} + name + "」不是字符串");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"字段「"} + name + "」不是字符串"});
         }
         return field->get<std::string>();
     }
@@ -91,27 +92,27 @@ namespace AsynGyanis::Net
      *          不让任何一格静默借道（与可选字段的读取同一套不抛口径）。
      * @param object 待读的 JSON 对象
      * @param name 字段名
-     * @return std::expected<std::string, std::string> 成功交回字段值；失败交回原因
+     * @return OAuthExpected<std::string> 成功交回字段值；失败交回原因
      */
-    [[nodiscard]] inline std::expected<std::string, std::string> requiredJsonString(const nlohmann::json &object, const char *name)
+    [[nodiscard]] inline OAuthExpected<std::string> requiredJsonString(const nlohmann::json &object, const char *name)
     {
         if (!object.is_object())
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」缺失（正文不是 JSON 对象）");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」缺失（正文不是 JSON 对象）"});
         }
         const auto field = object.find(name);
         if (field == object.end())
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」缺失");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」缺失"});
         }
         if (!field->is_string())
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」不是字符串");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」不是字符串"});
         }
         std::string value = field->get<std::string>();
         if (value.empty())
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」是空串");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」是空串"});
         }
         return value;
     }
@@ -120,18 +121,18 @@ namespace AsynGyanis::Net
      * @brief 读必填的正整数秒字段（expires_in 这类）：缺失、错类型、非正都失败并点名
      * @param document 待读的 JSON 对象
      * @param name 字段名
-     * @return std::expected<std::chrono::seconds, std::string> 成功交回秒数；失败交回原因
+     * @return OAuthExpected<std::chrono::seconds> 成功交回秒数；失败交回原因
      */
-    [[nodiscard]] inline std::expected<std::chrono::seconds, std::string> requiredPositiveSeconds(const nlohmann::json &document, const char *name)
+    [[nodiscard]] inline OAuthExpected<std::chrono::seconds> requiredPositiveSeconds(const nlohmann::json &document, const char *name)
     {
         const auto field = document.find(name);
         if (field == document.end())
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」缺失");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」缺失"});
         }
         if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
         {
-            return std::unexpected(std::string{"必填字段「"} + name + "」不是正整数");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"必填字段「"} + name + "」不是正整数"});
         }
         return std::chrono::seconds{field->get<std::int64_t>()};
     }
@@ -141,10 +142,9 @@ namespace AsynGyanis::Net
      * @param document 待读的 JSON 对象
      * @param name 字段名
      * @param defaultValue 字段缺失时交回的值
-     * @return std::expected<std::chrono::seconds, std::string> 成功交回秒数；失败交回原因
+     * @return OAuthExpected<std::chrono::seconds> 成功交回秒数；失败交回原因
      */
-    [[nodiscard]] inline std::expected<std::chrono::seconds, std::string> optionalPositiveSeconds(const nlohmann::json &document, const char *name,
-                                                                                                  const std::chrono::seconds defaultValue)
+    [[nodiscard]] inline OAuthExpected<std::chrono::seconds> optionalPositiveSeconds(const nlohmann::json &document, const char *name, const std::chrono::seconds defaultValue)
     {
         const auto field = document.find(name);
         if (field == document.end())
@@ -153,7 +153,7 @@ namespace AsynGyanis::Net
         }
         if (!field->is_number_integer() || field->get<std::int64_t>() <= 0)
         {
-            return std::unexpected(std::string{"字段「"} + name + "」不是正整数");
+            return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, std::string{"字段「"} + name + "」不是正整数"});
         }
         return std::chrono::seconds{field->get<std::int64_t>()};
     }
@@ -165,8 +165,8 @@ namespace AsynGyanis::Net
      */
     [[nodiscard]] inline std::string describeOauthError(const std::string &body)
     {
-        const nlohmann::json                          document  = nlohmann::json::parse(body, nullptr, false);
-        const std::expected<std::string, std::string> errorCode = optionalJsonString(document, "error");
+        const nlohmann::json             document  = nlohmann::json::parse(body, nullptr, false);
+        const OAuthExpected<std::string> errorCode = optionalJsonString(document, "error");
         if (!errorCode.has_value() || errorCode->empty())
         {
             return {};

@@ -27,6 +27,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/OAuthToken.h"
+#include "Net/Http/OAuthError.h"
 
 #include <chrono>
 #include <expected>
@@ -87,9 +88,9 @@ namespace AsynGyanis::Net
          *          device_code / user_code / verification_uri / expires_in 四个必填字段
          *          （缺失、错类型或空串都按协议不符拒并点名）。interval 没给时回退默认 5，
          *          给了荒谬值（非正整数）按协议不符拒——「没给」与「给了坏值」是两回事。
-         * @return std::expected<OAuthDeviceAuthorization, std::string> 解析结果；失败为中文原因
+         * @return OAuthExpected<OAuthDeviceAuthorization> 解析结果；失败为中文原因
          */
-        [[nodiscard]] Core::Task<std::expected<OAuthDeviceAuthorization, std::string>> requestDeviceAuthorization();
+        [[nodiscard]] Core::Task<OAuthExpected<OAuthDeviceAuthorization>> requestDeviceAuthorization();
 
         /**
          * @brief 第二步：按 interval 轮询令牌端点，直到拿到令牌或判失败（§3.4/§3.5）
@@ -100,9 +101,9 @@ namespace AsynGyanis::Net
          *          其余错误码与传输失败一律终止（error 原文带在原因里，不猜可重试性）。
          * @param authorization requestDeviceAuthorization 的结果。按值收：协程到首次恢复才读
          *        入参，按引用/视图接临时量会静默读到已释放内存
-         * @return std::expected<OAuthAccessToken, std::string> 令牌（RFC 6749 §5.1 的共用形状）；失败为中文原因
+         * @return OAuthExpected<OAuthAccessToken> 令牌（RFC 6749 §5.1 的共用形状）；失败为中文原因
          */
-        [[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> waitForToken(OAuthDeviceAuthorization authorization);
+        [[nodiscard]] Core::Task<OAuthExpected<OAuthAccessToken>> waitForToken(OAuthDeviceAuthorization authorization);
 
         /**
          * @brief §3.5 的轮询间隔规则：slow_down 时加 5 秒（此后每个请求都用新值），其余不动

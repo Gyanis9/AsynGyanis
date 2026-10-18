@@ -4,6 +4,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/OAuthSupport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <nlohmann/json.hpp>
 
@@ -23,7 +24,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<std::expected<OAuthTokenIntrospection, std::string>> OAuthIntrospectionClient::introspect(const std::string_view token)
+    Core::Task<OAuthExpected<OAuthTokenIntrospection>> OAuthIntrospectionClient::introspect(const std::string_view token)
     {
         // HttpClientRequest 的 body / contentType 是 string_view：拼接出来的表单体必须先落在
         // 局部串上（协程帧持有它，活到 send 用完为止），直接赋一个临时 string 就是悬垂视图
@@ -44,25 +45,25 @@ namespace AsynGyanis::Net
         auto sent = co_await HttpClient::send(m_loop, m_options.introspectionUrl, request, m_options.requestTimeout);
         if (!sent.has_value())
         {
-            co_return std::unexpected("自省请求（" + m_options.introspectionUrl + "）失败：" + sent.error());
+            co_return std::unexpected(OAuthError{OAuthErrorKind::Transport, "自省请求（" + m_options.introspectionUrl + "）失败：" + sent.error()});
         }
         if (sent->statusCode < 200 || sent->statusCode >= 300)
         {
-            co_return std::unexpected("自省端点（" + m_options.introspectionUrl + "）回的是 HTTP " + std::to_string(sent->statusCode) +
-                                      "；按 RFC 7662 无效令牌也应以 200 + active:false 回答，非 2xx 属协议不符");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::RejectedByServer, "自省端点（" + m_options.introspectionUrl + "）回的是 HTTP " + std::to_string(sent->statusCode) +
+                                                                                           "；按 RFC 7662 无效令牌也应以 200 + active:false 回答，非 2xx 属协议不符"});
         }
 
         const nlohmann::json document = nlohmann::json::parse(sent->body, nullptr, false);
         if (document.is_discarded() || !document.is_object())
         {
-            co_return std::unexpected("自省端点（" + m_options.introspectionUrl + "）的正文不是 JSON 对象");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, "自省端点（" + m_options.introspectionUrl + "）的正文不是 JSON 对象"});
         }
 
         // active 是 RFC 7662 §2.2 的必填字段：缺了不能猜成 false——「端点没回答」与「回答不活跃」是两件事
         const auto activeField = document.find("active");
         if (activeField == document.end() || !activeField->is_boolean())
         {
-            co_return std::unexpected("自省响应的 active 字段缺失或不是布尔（RFC 7662 §2.2 的必填字段）");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, "自省响应的 active 字段缺失或不是布尔（RFC 7662 §2.2 的必填字段）"});
         }
 
         OAuthTokenIntrospection introspection;
@@ -76,10 +77,10 @@ namespace AsynGyanis::Net
                                                                              {"token_type", &introspection.tokenType}};
         for (const auto &[fieldName, target]: optionalTextFields)
         {
-            std::expected<std::string, std::string> field = optionalJsonString(document, fieldName);
+            OAuthExpected<std::string> field = optionalJsonString(document, fieldName);
             if (!field.has_value())
             {
-                co_return std::unexpected("自省响应：" + field.error());
+                co_return std::unexpected(OAuthError{field.error().kind, "自省响应：" + field.error().message});
             }
             *target = std::move(*field);
         }
@@ -89,7 +90,7 @@ namespace AsynGyanis::Net
         {
             if (!expiration->is_number_integer())
             {
-                co_return std::unexpected("自省响应：字段「exp」不是整数（RFC 7662 §2.2 的 exp 是 Number）");
+                co_return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, "自省响应：字段「exp」不是整数（RFC 7662 §2.2 的 exp 是 Number）"});
             }
             introspection.expiresAt = expiration->get<std::int64_t>();
         }

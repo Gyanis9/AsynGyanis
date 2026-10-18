@@ -3,6 +3,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/OAuthSupport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <nlohmann/json.hpp>
 
@@ -43,7 +44,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<std::expected<OAuthDeviceAuthorization, std::string>> OAuthDeviceCodeClient::requestDeviceAuthorization()
+    Core::Task<OAuthExpected<OAuthDeviceAuthorization>> OAuthDeviceCodeClient::requestDeviceAuthorization()
     {
         // 表单体先落在局部串上：HttpClientRequest 的 body 是视图，须活到 send 用完为止
         std::string formBody = "client_id=" + percentEncodeFormComponent(m_options.clientId);
@@ -56,82 +57,88 @@ namespace AsynGyanis::Net
                                                     m_options.requestTimeout);
         if (!sent.has_value())
         {
-            co_return std::unexpected("设备授权请求（" + m_options.deviceAuthorizationUrl + "）失败：" + sent.error());
+            co_return std::unexpected(OAuthError{OAuthErrorKind::Transport, "设备授权请求（" + m_options.deviceAuthorizationUrl + "）失败：" + sent.error()});
         }
         if (sent->statusCode < 200 || sent->statusCode >= 300)
         {
-            co_return std::unexpected("设备授权端点（" + m_options.deviceAuthorizationUrl + "）回的是 HTTP " + std::to_string(sent->statusCode) + describeOauthError(sent->body));
+            co_return std::unexpected(OAuthError{OAuthErrorKind::RejectedByServer, "设备授权端点（" + m_options.deviceAuthorizationUrl + "）回的是 HTTP " +
+                                                                                           std::to_string(sent->statusCode) + describeOauthError(sent->body)});
         }
 
         const nlohmann::json document = nlohmann::json::parse(sent->body, nullptr, false);
         if (document.is_discarded() || !document.is_object())
         {
-            co_return std::unexpected("设备授权端点（" + m_options.deviceAuthorizationUrl + "）的正文不是 JSON 对象");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::MalformedResponse, "设备授权端点（" + m_options.deviceAuthorizationUrl + "）的正文不是 JSON 对象"});
         }
 
         OAuthDeviceAuthorization authorization;
 
-        const std::expected<std::string, std::string> deviceCode = requiredJsonString(document, "device_code");
+        const OAuthExpected<std::string> deviceCode = requiredJsonString(document, "device_code");
         if (!deviceCode.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + deviceCode.error());
+            co_return std::unexpected(OAuthError{deviceCode.error().kind, "设备授权响应：" + deviceCode.error().message});
         }
         authorization.deviceCode = *deviceCode;
 
-        const std::expected<std::string, std::string> userCode = requiredJsonString(document, "user_code");
+        const OAuthExpected<std::string> userCode = requiredJsonString(document, "user_code");
         if (!userCode.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + userCode.error());
+            co_return std::unexpected(OAuthError{userCode.error().kind, "设备授权响应：" + userCode.error().message});
         }
         authorization.userCode = *userCode;
 
-        const std::expected<std::string, std::string> verificationUri = requiredJsonString(document, "verification_uri");
+        const OAuthExpected<std::string> verificationUri = requiredJsonString(document, "verification_uri");
         if (!verificationUri.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + verificationUri.error());
+            co_return std::unexpected(OAuthError{verificationUri.error().kind, "设备授权响应：" + verificationUri.error().message});
         }
         authorization.verificationUri = *verificationUri;
 
-        const std::expected<std::chrono::seconds, std::string> expiresIn = requiredPositiveSeconds(document, "expires_in");
+        const OAuthExpected<std::chrono::seconds> expiresIn = requiredPositiveSeconds(document, "expires_in");
         if (!expiresIn.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + expiresIn.error());
+            co_return std::unexpected(OAuthError{expiresIn.error().kind, "设备授权响应：" + expiresIn.error().message});
         }
         authorization.expiresIn = *expiresIn;
 
-        const std::expected<std::string, std::string> completeUri = optionalJsonString(document, "verification_uri_complete");
+        const OAuthExpected<std::string> completeUri = optionalJsonString(document, "verification_uri_complete");
         if (!completeUri.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + completeUri.error());
+            co_return std::unexpected(OAuthError{completeUri.error().kind, "设备授权响应：" + completeUri.error().message});
         }
         authorization.verificationUriComplete = *completeUri;
 
         // interval 没给才回退默认；给了坏值（非正整数）按协议不符拒——「没给」与「给了坏值」是两回事
-        const std::expected<std::chrono::seconds, std::string> interval = optionalPositiveSeconds(document, "interval", kDefaultPollingInterval);
+        const OAuthExpected<std::chrono::seconds> interval = optionalPositiveSeconds(document, "interval", kDefaultPollingInterval);
         if (!interval.has_value())
         {
-            co_return std::unexpected("设备授权响应：" + interval.error());
+            co_return std::unexpected(OAuthError{interval.error().kind, "设备授权响应：" + interval.error().message});
         }
         authorization.interval = *interval;
 
         co_return authorization;
     }
 
-    Core::Task<std::expected<OAuthAccessToken, std::string>> OAuthDeviceCodeClient::waitForToken(OAuthDeviceAuthorization authorization)
+    Core::Task<OAuthExpected<OAuthAccessToken>> OAuthDeviceCodeClient::waitForToken(OAuthDeviceAuthorization authorization)
     {
         // 取值校验放最前：手拼的 authorization（不经 requestDeviceAuthorization）不该把轮询带进无界状态
         if (authorization.interval.count() <= 0)
         {
-            co_return std::unexpected("轮询间隔必须为正（authorization.interval=" + std::to_string(authorization.interval.count()) + " 秒）");
+            co_return std::unexpected(
+                    OAuthError{OAuthErrorKind::InvalidLocalState, "轮询间隔必须为正（authorization.interval=" + std::to_string(authorization.interval.count()) + " 秒）"});
         }
         if (authorization.expiresIn.count() <= 0)
         {
-            co_return std::unexpected("设备码有效期必须为正（authorization.expiresIn=" + std::to_string(authorization.expiresIn.count()) + " 秒）");
+            co_return std::unexpected(
+                    OAuthError{OAuthErrorKind::InvalidLocalState, "设备码有效期必须为正（authorization.expiresIn=" + std::to_string(authorization.expiresIn.count()) + " 秒）"});
         }
 
         const auto deadline     = std::chrono::steady_clock::now() + authorization.expiresIn;
         const auto lifetimeOver = [&authorization]
-        { return std::unexpected("device_code 的有效期（" + std::to_string(authorization.expiresIn.count()) + " 秒）已过，停止轮询：用户未在时限内完成授权"); };
+        {
+            return std::unexpected(OAuthError{OAuthErrorKind::DeviceCodeExpired,
+                                              "device_code 的有效期（" + std::to_string(authorization.expiresIn.count()) + " 秒）已过，停止轮询：用户未在时限内完成授权"});
+        };
 
         for (;;)
         {
@@ -157,27 +164,27 @@ namespace AsynGyanis::Net
                     co_await HttpClient::send(m_loop, m_options.tokenUrl, makeOAuthFormPost(formBody, m_options.clientId, m_options.clientSecret), m_options.requestTimeout);
             if (!sent.has_value())
             {
-                co_return std::unexpected("轮询令牌端点（" + m_options.tokenUrl + "）失败：" + sent.error());
+                co_return std::unexpected(OAuthError{OAuthErrorKind::Transport, "轮询令牌端点（" + m_options.tokenUrl + "）失败：" + sent.error()});
             }
 
             // 2xx：拿到令牌就交回
             if (sent->statusCode >= 200 && sent->statusCode < 300)
             {
-                std::expected<OAuthAccessToken, std::string> token = parseOAuthTokenResponse(sent->body);
+                OAuthExpected<OAuthAccessToken> token = parseOAuthTokenResponse(sent->body);
                 if (!token.has_value())
                 {
-                    co_return std::unexpected("令牌端点（" + m_options.tokenUrl + "）：" + token.error());
+                    co_return std::unexpected(OAuthError{token.error().kind, "令牌端点（" + m_options.tokenUrl + "）：" + token.error().message});
                 }
                 co_return std::move(*token);
             }
 
             // 非 2xx：按 RFC 6749 §5.2 读 error 字段定处置（§3.5 只认两种可续轮的错误码）
-            const nlohmann::json                          document   = nlohmann::json::parse(sent->body, nullptr, false);
-            const std::expected<std::string, std::string> errorField = optionalJsonString(document, "error");
+            const nlohmann::json             document   = nlohmann::json::parse(sent->body, nullptr, false);
+            const OAuthExpected<std::string> errorField = optionalJsonString(document, "error");
             if (!errorField.has_value() || errorField->empty())
             {
-                co_return std::unexpected("轮询令牌端点（" + m_options.tokenUrl + "）回了 HTTP " + std::to_string(sent->statusCode) +
-                                          "，且正文没有 RFC 6749 §5.2 形状的 error 字段");
+                co_return std::unexpected(OAuthError{OAuthErrorKind::RejectedByServer, "轮询令牌端点（" + m_options.tokenUrl + "）回了 HTTP " + std::to_string(sent->statusCode) +
+                                                                                               "，且正文没有 RFC 6749 §5.2 形状的 error 字段"});
             }
 
             const std::string &errorCode = *errorField;
@@ -197,13 +204,14 @@ namespace AsynGyanis::Net
             const std::string described   = "error=" + errorCode + (description.empty() ? std::string{} : "：" + description);
             if (errorCode == "access_denied")
             {
-                co_return std::unexpected("设备授权被拒（" + described + "）");
+                co_return std::unexpected(OAuthError{OAuthErrorKind::AuthorizationDenied, "设备授权被拒（" + described + "）"});
             }
             if (errorCode == "expired_token")
             {
-                co_return std::unexpected("设备码已过期（" + described + "）——需要重新发起设备授权");
+                co_return std::unexpected(OAuthError{OAuthErrorKind::DeviceCodeExpired, "设备码已过期（" + described + "）——需要重新发起设备授权"});
             }
-            co_return std::unexpected("令牌端点回了未预期的错误（" + described + "）：RFC 8628 §3.5 只有 authorization_pending 与 slow_down 可续轮，其余一律终止");
+            co_return std::unexpected(OAuthError{OAuthErrorKind::RejectedByServer,
+                                                 "令牌端点回了未预期的错误（" + described + "）：RFC 8628 §3.5 只有 authorization_pending 与 slow_down 可续轮，其余一律终止"});
         }
     }
 

@@ -3,6 +3,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/OAuthSupport.h"
+#include "Net/Http/OAuthError.h"
 
 #include <nlohmann/json.hpp>
 
@@ -83,15 +84,15 @@ namespace AsynGyanis::Net
             {
                 continue;
             }
-            const std::expected<std::string, std::string> keyType = optionalJsonString(key, "kty");
+            const OAuthExpected<std::string> keyType = optionalJsonString(key, "kty");
             if (!keyType.has_value() || *keyType != "RSA")
             {
                 continue;
             }
             // n / e 类型不符的键跳过（与不认识的 kty 同处置）：单条坏记录不该让整次轮换判失败，
             // 更不该把读字段的异常带进这条后台协程——它死了没有任何人会重来
-            const std::expected<std::string, std::string> modulus  = optionalJsonString(key, "n");
-            const std::expected<std::string, std::string> exponent = optionalJsonString(key, "e");
+            const OAuthExpected<std::string> modulus  = optionalJsonString(key, "n");
+            const OAuthExpected<std::string> exponent = optionalJsonString(key, "e");
             if (!modulus.has_value() || !exponent.has_value())
             {
                 continue;

@@ -8,6 +8,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/JwtVerifier.cpp
         ${CMAKE_CURRENT_LIST_DIR}/JwksKeyProvider.h
         ${CMAKE_CURRENT_LIST_DIR}/JwksKeyProvider.cpp
+        # 只有头文件：OAuth 一族的失败类别与结果别名，各 .cpp 与用例共用
+        ${CMAKE_CURRENT_LIST_DIR}/OAuthError.h
         ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.h
         ${CMAKE_CURRENT_LIST_DIR}/OAuthIntrospection.cpp
         # 只有头文件：OAuth 家族各 .cpp 共用的表单编码件（实现侧头，头内 inline，见文件注释）

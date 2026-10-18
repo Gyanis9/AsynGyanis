@@ -21,6 +21,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
+#include "Net/Http/OAuthError.h"
 
 #include <gtest/gtest.h>
 
@@ -284,7 +285,7 @@ namespace AsynGyanis::Net
         Core::Task<void> pendingThenGrantScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_HAS_VALUE(authorization) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error().message;
             if (authorization.has_value())
             {
                 EXPECT_EQ(authorization->deviceCode, "dev-123");
@@ -302,7 +303,7 @@ namespace AsynGyanis::Net
             EXPECT_NE(deviceRequest.find("scope=read%20write"), std::string::npos) << deviceRequest;
 
             const auto token = co_await client.waitForToken(*authorization);
-            EXPECT_HAS_VALUE(token) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error().message;
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-1");
@@ -332,7 +333,7 @@ namespace AsynGyanis::Net
         Core::Task<void> slowDownScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_HAS_VALUE(authorization) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error().message;
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -340,7 +341,7 @@ namespace AsynGyanis::Net
             }
 
             const auto token = co_await client.waitForToken(*authorization);
-            EXPECT_HAS_VALUE(token) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error().message;
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-slow");
@@ -356,7 +357,7 @@ namespace AsynGyanis::Net
         Core::Task<void> accessDeniedScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server, std::string &failure)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_HAS_VALUE(authorization) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error().message;
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -367,7 +368,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(token.has_value());
             if (!token.has_value())
             {
-                failure = token.error();
+                failure = token.error().message;
                 EXPECT_NE(failure.find("access_denied"), std::string::npos) << failure;
                 EXPECT_NE(failure.find("用户点了拒绝"), std::string::npos) << failure;
             }
@@ -379,7 +380,7 @@ namespace AsynGyanis::Net
         Core::Task<void> lifetimeScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server, std::string &failure)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_HAS_VALUE(authorization) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error().message;
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -390,7 +391,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(token.has_value());
             if (!token.has_value())
             {
-                failure = token.error();
+                failure = token.error().message;
                 EXPECT_NE(failure.find("有效期"), std::string::npos) << failure;
             }
             EXPECT_GE(server.tokenPollCount(), 1U) << "有效期内该发的轮询一枚都没发";
@@ -406,7 +407,8 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(missingDeviceCode.has_value());
             if (!missingDeviceCode.has_value())
             {
-                EXPECT_NE(missingDeviceCode.error().find("device_code"), std::string::npos) << missingDeviceCode.error();
+                EXPECT_NE(missingDeviceCode.error().message.find("device_code"), std::string::npos) << missingDeviceCode.error().message;
+                EXPECT_EQ(missingDeviceCode.error().kind, OAuthErrorKind::MalformedResponse) << "缺 device_code 是应答形状不对";
             }
 
             // interval 给了但不是正数：只有「没给」才回退默认 5，给了荒谬值按协议不符拒
@@ -416,7 +418,7 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(badInterval.has_value());
             if (!badInterval.has_value())
             {
-                EXPECT_NE(badInterval.error().find("interval"), std::string::npos) << badInterval.error();
+                EXPECT_NE(badInterval.error().message.find("interval"), std::string::npos) << badInterval.error().message;
             }
 
             // 令牌响应缺 access_token / token_type：RFC 6749 §5.1 的必填字段，各自点名
@@ -424,7 +426,7 @@ namespace AsynGyanis::Net
             server.setTokenResponses({{"200 OK", R"({"token_type":"Bearer"})"}, {"200 OK", R"({"access_token":"at-x"})"}});
 
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_HAS_VALUE(authorization) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error().message;
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -435,14 +437,15 @@ namespace AsynGyanis::Net
             EXPECT_FALSE(missingAccessToken.has_value());
             if (!missingAccessToken.has_value())
             {
-                EXPECT_NE(missingAccessToken.error().find("access_token"), std::string::npos) << missingAccessToken.error();
+                EXPECT_NE(missingAccessToken.error().message.find("access_token"), std::string::npos) << missingAccessToken.error().message;
+                EXPECT_EQ(missingAccessToken.error().kind, OAuthErrorKind::MalformedResponse) << "缺 access_token 同属应答形状";
             }
 
             const auto missingTokenType = co_await client.waitForToken(*authorization);
             EXPECT_FALSE(missingTokenType.has_value());
             if (!missingTokenType.has_value())
             {
-                EXPECT_NE(missingTokenType.error().find("token_type"), std::string::npos) << missingTokenType.error();
+                EXPECT_NE(missingTokenType.error().message.find("token_type"), std::string::npos) << missingTokenType.error().message;
             }
             loop.stop();
         }
