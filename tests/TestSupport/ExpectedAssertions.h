@@ -27,30 +27,25 @@ namespace AsynGyanis::TestSupport
      * @return std::string 有文案的给「类别 + 文案」，只有类别的给类别取值，都没有的明说到哪一格没文案
      * @details 类别按底层整数报：本仓的 kind 枚举取值追加在末尾且不重排，号对得上头文件就能定位。
      */
-    template <typename Error>
+    template<typename Error>
     [[nodiscard]] std::string describeFailurePayload(const Error &error)
     {
         if constexpr (std::is_same_v<std::decay_t<Error>, std::string>)
         {
             return error;
-        }
-        else if constexpr (std::is_same_v<std::decay_t<Error>, std::error_code>)
+        } else if constexpr (std::is_same_v<std::decay_t<Error>, std::error_code>)
         {
             return "error_code=" + std::to_string(error.value()) + "：" + error.message();
-        }
-        else if constexpr (requires { error.kind; } && requires { error.message; })
+        } else if constexpr (requires { error.kind; } && requires { error.message; })
         {
             return "kind=" + std::to_string(static_cast<long long>(error.kind)) + "：" + static_cast<std::string>(error.message);
-        }
-        else if constexpr (requires { error.kind; })
+        } else if constexpr (requires { error.kind; })
         {
             return "kind=" + std::to_string(static_cast<long long>(error.kind)) + "（该载荷不带文案）";
-        }
-        else if constexpr (std::is_enum_v<std::decay_t<Error>>)
+        } else if constexpr (std::is_enum_v<std::decay_t<Error>>)
         {
             return "类别=" + std::to_string(static_cast<long long>(error)) + "（该载荷不带文案）";
-        }
-        else
+        } else
         {
             return "（该载荷类型既无类别也无文案）";
         }
@@ -61,14 +56,13 @@ namespace AsynGyanis::TestSupport
      * @param result 结果对象：`std::expected` 取它的 `error()`，`std::optional` 这类没有失败载荷的另说
      * @return std::string 失败载荷的摊平文本
      */
-    template <typename Result>
+    template<typename Result>
     [[nodiscard]] std::string describeRejectedResult(const Result &result)
     {
         if constexpr (requires { result.error(); })
         {
             return describeFailurePayload(result.error());
-        }
-        else
+        } else
         {
             return "（该结果类型不带失败载荷）";
         }
