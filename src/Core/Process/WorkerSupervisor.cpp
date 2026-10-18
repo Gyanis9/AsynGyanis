@@ -679,7 +679,7 @@ namespace AsynGyanis::Core
         auto handoffChannel = UpgradeChannel::open();
         if (!handoffChannel)
         {
-            noteFailedStart(worker, workerIndex, "开不出交接通道：" + handoffChannel.error());
+            noteFailedStart(worker, workerIndex, "开不出交接通道：" + handoffChannel.error().message);
             return false;
         }
         launchOptions.arguments.push_back(std::string{kHandedOverListenerArgument});
@@ -747,14 +747,14 @@ namespace AsynGyanis::Core
         const auto                      peer          = handoffChannel->waitForPeer(handoffBudget);
         if (!peer)
         {
-            return retireWithoutListener("等 worker 连上交接通道：" + peer.error());
+            return retireWithoutListener("等 worker 连上交接通道：" + peer.error().message);
         }
         const auto isHandedOver = handoffChannel->handOffListener(*peer, m_configuration.handoff->listeningDescriptor, static_cast<std::uint64_t>(worker.handle.processId()));
         // 通道交完就没用了：本函数不关它由调用方收，这里显式收口，别留一条还能连的通道
         static_cast<void>(Platform::FileDescriptor::close(*peer));
         if (!isHandedOver)
         {
-            return retireWithoutListener("交出监听套接字：" + isHandedOver.error());
+            return retireWithoutListener("交出监听套接字：" + isHandedOver.error().message);
         }
         LOG_INFO_FMT("WorkerSupervisor: worker {} 已接手监听套接字（进程号 {}）", workerIndex, worker.handle.processId());
 #endif

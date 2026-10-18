@@ -321,7 +321,7 @@ namespace
         auto channel = UpgradeChannel::open();
         if (!channel.has_value())
         {
-            return std::unexpected("接手档建不出交接通道：" + channel.error());
+            return std::unexpected("接手档建不出交接通道：" + channel.error().message);
         }
 
         DatagramSocket boundSocket = DatagramSocket::bindTo(InetAddress("127.0.0.1", port).platformAddress());
@@ -332,28 +332,28 @@ namespace
 
         // 交与接必须分在两条线程上：接的那一方要「连上通道 → 等对方写出」，而这条顺序里的每一步
         // 都要有人先动。本端交出的一侧仍留在主线程上，join 之后两份说法才合并
-        const std::string               channelAddress = channel->address();
-        std::expected<int, std::string> adoption{};
+        const std::string                             channelAddress = channel->address();
+        AsynGyanis::Core::UpgradeHandoffExpected<int> adoption{};
         std::jthread reader([&adoption, channelAddress] { adoption = AsynGyanis::Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{5000}); });
 
         auto peer = channel->waitForPeer(std::chrono::milliseconds{5000});
         if (!peer.has_value())
         {
-            return std::unexpected("接手档等不到连上交接通道的那一方：" + peer.error());
+            return std::unexpected("接手档等不到连上交接通道的那一方：" + peer.error().message);
         }
 
         auto handed = channel->handOffListener(*peer, boundSocket.fileDescriptor(), static_cast<std::uint64_t>(ProcessInfo::currentProcessId()));
         static_cast<void>(FileDescriptor::close(*peer));
         if (!handed.has_value())
         {
-            return std::unexpected("接手档交出套接字失败：" + handed.error());
+            return std::unexpected("接手档交出套接字失败：" + handed.error().message);
         }
 
         // jthread 析构会 join：join 给出 happens-before，adoption 那份载荷才敢在主线程上读
         reader.join();
         if (!adoption.has_value())
         {
-            return std::unexpected("接手档取回套接字失败：" + adoption.error());
+            return std::unexpected("接手档取回套接字失败：" + adoption.error().message);
         }
 
         // 交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在平台层那一格做

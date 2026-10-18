@@ -236,7 +236,7 @@ namespace
         const auto adopted = Core::adoptHandedOverListener(channelAddress, std::chrono::milliseconds{10000});
         if (!adopted.has_value())
         {
-            Samples::printStartupError("新一代没能接手监听套接字：" + adopted.error());
+            Samples::printStartupError("新一代没能接手监听套接字：" + adopted.error().message);
             return 4;
         }
 
@@ -286,7 +286,7 @@ int main(int argc, char **argv)
     auto channel = Core::UpgradeChannel::open();
     if (!channel.has_value())
     {
-        Samples::printStartupError("本代没能建立交接通道：" + channel.error());
+        Samples::printStartupError("本代没能建立交接通道：" + channel.error().message);
         return 1;
     }
     const std::string channelAddress = channel->address();
@@ -325,7 +325,7 @@ int main(int argc, char **argv)
     const auto peer = channel->waitForPeer();
     if (!peer.has_value())
     {
-        samples.check(false, "新一代没连上交接通道：" + peer.error());
+        samples.check(false, "新一代没连上交接通道：" + peer.error().message);
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));
@@ -337,7 +337,7 @@ int main(int argc, char **argv)
     Platform::FileDescriptor::close(*peer);
     if (!isHandoffWritten.has_value())
     {
-        samples.check(false, std::format("交出监听套接字失败：{}", isHandoffWritten.error()));
+        samples.check(false, std::format("交出监听套接字失败：{}", isHandoffWritten.error().message));
         loop.stop();
         loopThread.join();
         static_cast<void>(Platform::Process::forceTermination(childHandle));

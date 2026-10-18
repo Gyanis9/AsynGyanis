@@ -81,7 +81,7 @@ int main(int argc, char **argv)
     const auto adopted = AsynGyanis::Core::adoptHandedOverListener(channelAddress, kAdoptBudget);
     if (!adopted)
     {
-        report("收下监听套接字失败：" + adopted.error());
+        report("收下监听套接字失败：" + adopted.error().message);
         return 3;
     }
     const int listener = *adopted;

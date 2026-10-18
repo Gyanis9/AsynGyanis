@@ -24,6 +24,37 @@
 namespace AsynGyanis::Core
 {
     /**
+     * @brief 交接通道没谈成的类别
+     *
+     * @details 分档依据是「运维下一步做什么」：调大预算、重跑一次换代、查 errno，还是承认这是本端代码的 bug。
+     *
+     * 新增类别一律追加在末尾（取值会进日志与指标）。
+     */
+    enum class UpgradeHandoffErrorKind
+    {
+        SystemCallFailed,   ///< 底层套接字调用失败：错误码与系统文本带在文案里，要查的是 OS 层（权限、路径长度、描述符已失效）
+        ChannelUnavailable, ///< 这条通道已收口或已交给过一次：一次性资源不能复用，要重开一条而不是再等
+        DeadlineExpired,    ///< 预算内新一代没连上来或没接下描述符：老进程继续服务即可，换代本身不算坏
+        InvalidDescriptor,  ///< 调用方交来的描述符为负：这是用法错误，不是对端也不是超时
+    };
+
+    /**
+     * @brief 一次交接没谈成：类别供分支，文案供人看
+     */
+    struct ASYN_CORE_API UpgradeHandoffError
+    {
+        UpgradeHandoffErrorKind kind;    ///< 失败类别，监督者据此决定是重试换代还是就地放弃
+        std::string             message; ///< 中文可操作文案，含底层错误码、通道地址与预算毫秒数
+    };
+
+    /**
+     * @brief 交接通道的结果形状：成功带 Value，失败侧固定为 UpgradeHandoffError
+     */
+    template<typename Value>
+    using UpgradeHandoffExpected = std::expected<Value, UpgradeHandoffError>;
+
+    using UpgradeHandoffStatus = std::expected<void, UpgradeHandoffError>; ///< 只问交没交出去的交接结果
+    /**
      * @brief 交棒方这一侧的交接通道（一次性：只交给一个新一代）
      *
      * @details 换代的地基是「监听套接字跨进程移交」：新一代拿到同一个端点的监听引用之后，端口从不
@@ -41,9 +72,9 @@ namespace AsynGyanis::Core
     public:
         /**
          * @brief 建一条已在监听的交接通道
-         * @return std::expected<UpgradeChannel, std::string> 成功交出新通道；失败交中文原因（带错误码）
+         * @return UpgradeHandoffExpected<UpgradeChannel> 成功交出新通道；失败交中文原因（带错误码）
          */
-        [[nodiscard]] static std::expected<UpgradeChannel, std::string> open();
+        [[nodiscard]] static UpgradeHandoffExpected<UpgradeChannel> open();
 
         UpgradeChannel() noexcept = default;
 
@@ -70,11 +101,11 @@ namespace AsynGyanis::Core
          * @param budget 等待上限；非正数表示无限等（本方法原有的阻塞语义，交棒方还没派生
          *        新一代时就要这种等法）。给出正数时，期限内没人连就收掉通道并报超时——
          *        对端是别的进程，它完全可能起崩后再也不连，无限等会把调用方的编排循环冻住
-         * @return std::expected<int, std::string> 通道描述符；失败交中文原因
+         * @return UpgradeHandoffExpected<int> 通道描述符；失败交中文原因
          * @note 与 Platform::Socket::waitForAcceptReady() 的 0 含义不同，那边是「只取当前状态」：
          *       本层不暴露那种读法，正数预算之外的取值一律按无限等处理
          */
-        [[nodiscard]] std::expected<int, std::string> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept;
+        [[nodiscard]] UpgradeHandoffExpected<int> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept;
 
         /**
          * @brief 把已 bind 的套接字交给 waitForPeer() 交回的那条通道
@@ -82,9 +113,9 @@ namespace AsynGyanis::Core
          * @param listenDescriptor 要移交的套接字：TCP 侧要已 bind + listen（backlog 与已排队连接跟着走），
          *        UDP 侧要已 bind（机制本身不限类型，交过去的类型由接收侧按头核对）
          * @param targetProcessId 接收方的进程号（Windows 按进程号认目标；POSIX 上内核自己处理，可填 0）
-         * @return std::expected<void, std::string> 已完整写出；失败交中文原因
+         * @return UpgradeHandoffStatus 已完整写出；失败交中文原因
          */
-        [[nodiscard]] std::expected<void, std::string> handOffListener(int peerDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept;
+        [[nodiscard]] UpgradeHandoffStatus handOffListener(int peerDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept;
 
         /// 主动收口（析构也会做）：交棒完成之后不必等对象出作用域就把监听端与套接字文件带走
         void closeChannel() noexcept;
@@ -104,10 +135,10 @@ namespace AsynGyanis::Core
      * @param address UpgradeChannel::address() 给出的地址文本
      * @param connectBudget 连不上时的重试预算：交棒方可能还在准备通道，一次失败不算问题。
      *        预算用完即失败，不无限期等下去
-     * @return std::expected<int, std::string> 接手方可直接 accept()（TCP）或 recvfrom()（UDP）的描述符；
+     * @return UpgradeHandoffExpected<int> 接手方可直接 accept()（TCP）或 recvfrom()（UDP）的描述符；
      *         失败交中文原因
      */
-    [[nodiscard]] ASYN_CORE_API std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
+    [[nodiscard]] ASYN_CORE_API UpgradeHandoffExpected<int> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget);
 
     /**
      * @brief systemd socket activation（LISTEN_FDS/LISTEN_PID）交来的监听描述符读数

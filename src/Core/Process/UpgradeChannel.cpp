@@ -32,7 +32,7 @@ namespace AsynGyanis::Core
         constexpr std::uint64_t kMaximumActivatedListenerCount = 4096;
     } // namespace
 
-    std::expected<UpgradeChannel, std::string> UpgradeChannel::open()
+    UpgradeHandoffExpected<UpgradeChannel> UpgradeChannel::open()
     {
         // 通道本体是套接字：Windows 上任何 socket 调用之前都要有 Winsock 初始化引用。
         // 这条引用交出去之后就没人管了，所以按不加配对的 initialize() 申请：一次换代
@@ -46,8 +46,9 @@ namespace AsynGyanis::Core
         }
         // 平台层用 error_code 交回原因，这里翻成中文：报错要让部署的人看得懂往哪儿查
         const std::error_code failure = endpoint.error();
-        return std::unexpected("交接通道开不出来：底层错误码 " + std::to_string(failure.value()) + "（" + failure.message() + "）。" +
-                               "POSIX 上先确认临时目录可写、且路径长度没超出 unix 套接字上限；Windows 上确认回环地址可用");
+        return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::SystemCallFailed,
+                                                   "交接通道开不出来：底层错误码 " + std::to_string(failure.value()) + "（" + failure.message() + "）。" +
+                                                           "POSIX 上先确认临时目录可写、且路径长度没超出 unix 套接字上限；Windows 上确认回环地址可用"});
     }
 
     UpgradeChannel::UpgradeChannel(Platform::Socket::HandoffChannelEndpoint endpoint) noexcept : m_endpoint(std::move(endpoint))
@@ -90,11 +91,11 @@ namespace AsynGyanis::Core
         Platform::Socket::closeHandoffChannel(m_endpoint);
     }
 
-    std::expected<int, std::string> UpgradeChannel::waitForPeer(const std::chrono::milliseconds budget) noexcept
+    UpgradeHandoffExpected<int> UpgradeChannel::waitForPeer(const std::chrono::milliseconds budget) noexcept
     {
         if (m_endpoint.listener < 0)
         {
-            return std::unexpected("交接通道已经收口，等不到新一代连上来");
+            return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::ChannelUnavailable, "交接通道已经收口，等不到新一代连上来"});
         }
 
         // 地址要在收口之前取走：closeChannel() 会把通道文件删掉并清空这份文本，
@@ -110,12 +111,14 @@ namespace AsynGyanis::Core
             if (!isPeerPending)
             {
                 closeChannel();
-                return std::unexpected("等待新一代连上交接通道失败：" + Platform::PlatformError::message(isPeerPending.error().value()));
+                return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::SystemCallFailed,
+                                                           "等待新一代连上交接通道失败：" + Platform::PlatformError::message(isPeerPending.error().value())});
             }
             if (!*isPeerPending)
             {
                 closeChannel();
-                return std::unexpected("新一代没在 " + std::to_string(budget.count()) + " 毫秒内连上交接通道（地址 " + channelAddress + "），这次交接作废");
+                return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::DeadlineExpired,
+                                                           "新一代没在 " + std::to_string(budget.count()) + " 毫秒内连上交接通道（地址 " + channelAddress + "），这次交接作废"});
             }
         }
 
@@ -124,25 +127,27 @@ namespace AsynGyanis::Core
         closeChannel();
         if (peerDescriptor < 0)
         {
-            return std::unexpected(describeLastFailure("等待新一代连上交接通道"));
+            return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::SystemCallFailed, describeLastFailure("等待新一代连上交接通道")});
         }
         return peerDescriptor;
     }
 
-    std::expected<void, std::string> UpgradeChannel::handOffListener(const int peerDescriptor, const int listenDescriptor, const std::uint64_t targetProcessId) noexcept
+    UpgradeHandoffStatus UpgradeChannel::handOffListener(const int peerDescriptor, const int listenDescriptor, const std::uint64_t targetProcessId) noexcept
     {
         if (peerDescriptor < 0 || listenDescriptor < 0)
         {
-            return std::unexpected("交出监听套接字失败：通道或监听描述符无效（通道 " + std::to_string(peerDescriptor) + "，监听 " + std::to_string(listenDescriptor) + "）");
+            return std::unexpected(
+                    UpgradeHandoffError{UpgradeHandoffErrorKind::InvalidDescriptor,
+                                        "交出监听套接字失败：通道或监听描述符无效（通道 " + std::to_string(peerDescriptor) + "，监听 " + std::to_string(listenDescriptor) + "）"});
         }
         if (!Platform::Socket::writeListeningSocketHandoff(peerDescriptor, listenDescriptor, targetProcessId))
         {
-            return std::unexpected(describeLastFailure("交出监听套接字"));
+            return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::SystemCallFailed, describeLastFailure("交出监听套接字")});
         }
         return {};
     }
 
-    std::expected<int, std::string> adoptHandedOverListener(const std::string_view address, const std::chrono::milliseconds connectBudget)
+    UpgradeHandoffExpected<int> adoptHandedOverListener(const std::string_view address, const std::chrono::milliseconds connectBudget)
     {
         // 同 open()：新一代这一侧也只调套接字，先补一次 Winsock 引用（POSIX 上是空操作）
         static_cast<void>(Platform::Socket::initialize());
@@ -158,8 +163,9 @@ namespace AsynGyanis::Core
             }
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                return std::unexpected("连不上交接通道「" + std::string(address) + "」：预算 " + std::to_string(connectBudget.count()) + " 毫秒已用完（" +
-                                       describeLastFailure("连接交接通道") + "）");
+                return std::unexpected(UpgradeHandoffError{UpgradeHandoffErrorKind::DeadlineExpired, "连不上交接通道「" + std::string(address) + "」：预算 " +
+                                                                                                             std::to_string(connectBudget.count()) + " 毫秒已用完（" +
+                                                                                                             describeLastFailure("连接交接通道") + "）"});
             }
             std::this_thread::sleep_for(kConnectRetryInterval);
         }
@@ -169,8 +175,9 @@ namespace AsynGyanis::Core
         if (listenerDescriptor < 0)
         {
             // EBADF 在 POSIX 上几乎都是「通道用错了类型」：内核只在 unix 域里随 SCM_RIGHTS 送描述符
-            return std::unexpected("收下移交来的监听套接字失败：" + describeLastFailure("读交接通道") +
-                                   "。若错误码是 EBADF，说明字节收齐了而里面没有描述符——通道必须是 AF_UNIX 流套接字");
+            return std::unexpected(
+                    UpgradeHandoffError{UpgradeHandoffErrorKind::SystemCallFailed, "收下移交来的监听套接字失败：" + describeLastFailure("读交接通道") +
+                                                                                           "。若错误码是 EBADF，说明字节收齐了而里面没有描述符——通道必须是 AF_UNIX 流套接字"});
         }
         return listenerDescriptor;
     }

@@ -91,7 +91,7 @@ namespace AsynGyanis::Core
         ASSERT_GE(oldGeneration, 0) << "夹具没能造出监听套接字";
 
         auto channel = UpgradeChannel::open();
-        ASSERT_HAS_VALUE(channel) << channel.error();
+        ASSERT_HAS_VALUE(channel) << channel.error().message;
         ASSERT_FALSE(channel->address().empty());
 
         // 交棒侧放到另一条线程上：通道两端都是阻塞调用，同一条线程上做两侧会自己等自己
@@ -104,13 +104,13 @@ namespace AsynGyanis::Core
                     auto peer = channel->waitForPeer();
                     if (!peer.has_value())
                     {
-                        handoffError = peer.error();
+                        handoffError = peer.error().message;
                         return;
                     }
                     auto written = channel->handOffListener(*peer, oldGeneration, static_cast<std::uint64_t>(Platform::ProcessInfo::currentProcessId()));
                     if (!written.has_value())
                     {
-                        handoffError = written.error();
+                        handoffError = written.error().message;
                         return;
                     }
                     isHandedOff.store(true, std::memory_order_release);
@@ -119,7 +119,7 @@ namespace AsynGyanis::Core
 
         auto adopted = adoptHandedOverListener(channel->address(), kAdoptBudget);
         handoffThread.join();
-        ASSERT_HAS_VALUE(adopted) << "没收回监听套接字：" << adopted.error() << "；交棒侧：" << handoffError;
+        ASSERT_HAS_VALUE(adopted) << "没收回监听套接字：" << adopted.error().message << "；交棒侧：" << handoffError;
         ASSERT_TRUE(isHandedOff.load(std::memory_order_acquire)) << "交棒侧没写完：" << handoffError;
 
         static_cast<void>(Platform::FileDescriptor::close(oldGeneration));
@@ -150,7 +150,8 @@ namespace AsynGyanis::Core
         const auto                             spent         = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
 
         ASSERT_FALSE(adopted.has_value());
-        EXPECT_NE(adopted.error().find("预算"), std::string::npos) << adopted.error();
+        EXPECT_NE(adopted.error().message.find("预算"), std::string::npos) << adopted.error().message;
+        EXPECT_EQ(adopted.error().kind, UpgradeHandoffErrorKind::DeadlineExpired) << "接手侧预算用尽要能不看文案就判成超时这一档";
         EXPECT_GE(spent, 200ms) << "没到预算就放弃了：一次竞态会被当成换代失败";
         EXPECT_LT(spent, 5000ms) << "预算用完还在试：这条路会把换代脚本挂住";
     }
@@ -168,9 +169,9 @@ namespace AsynGyanis::Core
         GTEST_SKIP() << "Windows 上的交接通道是回环端口，没有套接字文件要收尾";
 #else
         auto first = UpgradeChannel::open();
-        ASSERT_HAS_VALUE(first) << first.error();
+        ASSERT_HAS_VALUE(first) << first.error().message;
         auto second = UpgradeChannel::open();
-        ASSERT_HAS_VALUE(second) << second.error();
+        ASSERT_HAS_VALUE(second) << second.error().message;
         EXPECT_NE(first->address(), second->address());
         EXPECT_TRUE(std::filesystem::exists(first->address()));
 
@@ -188,20 +189,22 @@ namespace AsynGyanis::Core
     {
         const Platform::Socket::Initialization network;
         auto                                   channel = UpgradeChannel::open();
-        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error();
+        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error().message;
 
         const auto started = std::chrono::steady_clock::now();
         const auto peer    = channel->waitForPeer(300ms);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
         ASSERT_FALSE(peer.has_value()) << "没人连这条通道却报成交接对象拿到了";
-        EXPECT_NE(peer.error().find("毫秒内连上交接通道"), std::string::npos) << "超时那句没点名预算与地址：看不出是哪一次交接作废";
+        EXPECT_NE(peer.error().message.find("毫秒内连上交接通道"), std::string::npos) << "超时那句没点名预算与地址：看不出是哪一次交接作废";
+        EXPECT_EQ(peer.error().kind, UpgradeHandoffErrorKind::DeadlineExpired) << "交棒侧预算用尽与「通道已作废」是两档，前者老进程继续服务即可";
         // 上界给到 5 秒只用来分辨「按期返回」与「根本没返回」，不是替 300 毫秒计时
         EXPECT_LT(elapsed, 5s) << "给了 300 毫秒的预算却没按期返回：那仍然是无限阻塞";
 
         // 一次性通道在超时那一刻就作废：第二次等直接报「已经收口」，不再占第二个等待窗口
         const auto secondAttempt = channel->waitForPeer(300ms);
         ASSERT_FALSE(secondAttempt.has_value());
-        EXPECT_NE(secondAttempt.error().find("已经收口"), std::string::npos) << "超时之后通道没作废：那还会有第三个进程挤进一次作废的交接";
+        EXPECT_NE(secondAttempt.error().message.find("已经收口"), std::string::npos) << "超时之后通道没作废：那还会有第三个进程挤进一次作废的交接";
+        EXPECT_EQ(secondAttempt.error().kind, UpgradeHandoffErrorKind::ChannelUnavailable) << "一次性资源被复用要单列一档，否则与超时混成「再试一次」";
     }
 
     /**
@@ -213,13 +216,13 @@ namespace AsynGyanis::Core
     {
         const Platform::Socket::Initialization network;
         auto                                   channel = UpgradeChannel::open();
-        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error();
+        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error().message;
 
         const int client = Platform::Socket::connectHandoffChannel(channel->address());
         ASSERT_GE(client, 0) << "按通道地址连不过去：夹具自己没连上";
 
         const auto peer = channel->waitForPeer(kAdoptBudget);
-        ASSERT_HAS_VALUE(peer) << peer.error();
+        ASSERT_HAS_VALUE(peer) << peer.error().message;
         static_cast<void>(Platform::FileDescriptor::close(*peer));
         static_cast<void>(Platform::FileDescriptor::close(client));
     }
