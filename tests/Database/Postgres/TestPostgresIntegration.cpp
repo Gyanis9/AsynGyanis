@@ -14,7 +14,7 @@
  *          - 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
  *            NULL 与长文本、流式档两条哨兵，以及「在途流封锁连接」与析构收干。
  *
- * ## 口令绝不进仓库（本文件的第一条硬规矩）
+ * 口令绝不进仓库（本文件的第一条硬规矩）
  * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
  * - ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
  * - ASYN_POSTGRES_TEST_PORT      端口，默认 5432
@@ -24,14 +24,14 @@
  * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 PostgreSQL 驱动的桩
  * 构建也走跳过路径（见 kPostgresDriverCompiled）。
  *
- * ## 为什么不新建测试专用库
+ * 为什么不新建测试专用库
  * MySQL 侧可以随手 CREATE DATABASE，PostgreSQL 不行：CREATE DATABASE 不能在事务块里执行，
  * 且普通角色未必有建库权限。默认库取初始化集群时必然存在的 postgres，用例只操作自己建的表：
  * 每个用例使用独立表名，建表前先 DROP TABLE IF EXISTS，收尾在 TearDown 里再 DROP TABLE IF EXISTS，
  * 跑完不留任何残留。表名固定而非随机，是因为 TableSchema<T>::kTableName 必须是编译期常量；
  * 用例之间不共用表名，因此并行运行（ctest -j）也不会互相干扰。
  *
- * ## 与 MySQL 集成测试的两处有意差异
+ * 与 MySQL 集成测试的两处有意差异
  * - 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
  *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），把 0 字节写进 TEXT 列
  *   不是驱动能做到的事。任意字节走 BYTEA：绑定层自己编成 `\x…`（见 toPostgresByteaText），

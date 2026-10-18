@@ -30,7 +30,7 @@ namespace AsynGyanis::Database
      *          DatabaseResult 的统一接口。本对象持有 PGresult 的唯一所有权，析构时 PQclear
      *          一次性回收行缓冲与列元数据。
      *
-     * ## 为什么构造时就把整份数据读进内存
+     * 为什么构造时就把整份数据读进内存
      * PGresult 里的行数据虽然已经由 libpq 完整取回客户端内存（不是游标），但它的每个取值
      * 都只能通过 PQgetvalue / PQfname 这类句柄接口拿到，也就是说「读一行」这件事始终牵着
      * 一个第三方句柄。构造时把列名、每格已转好的 DatabaseValue 与影响行数全部快照下来之后：
@@ -41,7 +41,7 @@ namespace AsynGyanis::Database
      * - OID 到 DatabaseValue 的解析只在构造时做一遍，不随调用方的取值次数重复解析。
      * 代价与大结果集的取舍：整份数据等额占用内存（与 MySQL 驱动的 mysql_store_result 预读同源）。
      *
-     * ## 两种数据来源（与 MySqlResult 的预读/流式同形）
+     * 两种数据来源（与 MySqlResult 的预读/流式同形）
      * - 预读（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
      *   定死，可反复遍历、可 reset 重扫；代价是大结果集等额占用内存；
      * - 流式（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
@@ -50,17 +50,17 @@ namespace AsynGyanis::Database
      *   不可重扫。流式结果必须比产出它的连接短命，且在它读完或析构之前那条连接不能再执行
      *   任何语句（连接的 execute/executeStreaming 在发送前拒绝，见 PostgresConnection）。
      *
-     * ## 写回执
+     * 写回执
      * INSERT/UPDATE/DELETE/DDL/事务语句没有返回列，结果为 0 行 0 列的空集（构造时传空句柄），
      * isEmpty() 恒为 true，affectedRowCount() 给出 PQcmdTuples 快照下来的语句级影响行数。
      *
-     * ## 游标语义
+     * 游标语义
      * m_currentRow 指向「当前行」——预读时是内存快照里的一行，流式时是 m_streamingRow（每
      * next() 覆写一次的当前行缓冲）。为空表示游标没有停在有效行上（未 next()、已走完或
      * 刚 reset()），此时取值一律回 std::monostate。"有没有当前行" 与 "指针是否为空" 是同一
      * 件事，不需要额外的有效标志。
      *
-     * ## 值映射规则（实现全部收敛在 PostgresValueConversion.h，只有一份真值）
+     * 值映射规则（实现全部收敛在 PostgresValueConversion.h，只有一份真值）
      * SQL NULL→std::monostate、BOOLEAN→bool（文本形态是 't'/'f'）、
      * SMALLINT/INTEGER/BIGINT→std::int64_t、REAL/DOUBLE PRECISION→double、
      * NUMERIC→十进制文本 std::string（精确定小数，转 double 会丢精度）、

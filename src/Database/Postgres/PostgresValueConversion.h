@@ -13,7 +13,7 @@
  *          - 取回方向 convertColumnText()：PGresult 的单元格文本 → DatabaseValue
  *            （按列的 OID 决定映射，PQftype 的取值由调用方传入；BYTEA 在这一侧解回字节）。
  *
- * ## 为什么全文件都包在 DATABASE_HAS_POSTGRES 里
+ * 为什么全文件都包在 DATABASE_HAS_POSTGRES 里
  * 本头依赖 <libpq-fe.h>（需要用 Oid 常量与 BOOLOID 之类类型标识），而桩构建（CMake 未找到 libpq）
  * 下这个第三方头根本不存在。把声明留在保护外会让每一个包含它的翻译单元在桩构建里编译失败，
  * 而桩分支按设计必须能单独编译通过，因此整个头内容都放进保护内：桩构建里它就是一个空头。

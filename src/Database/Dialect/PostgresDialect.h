@@ -9,7 +9,7 @@
  * @details StandardSqlDialect 的 PostgreSQL 实现。查询树渲染（条件递归、IN 展开、
  *          三方向共用的 WHERE、参数收集顺序）全部继承自基类，本类只给出引擎知识。
  *
- * ## 与 SQLite / MySQL 方言的差异（逐项给出依据）
+ * 与 SQLite / MySQL 方言的差异（逐项给出依据）
  * - 占位符：写作 "$1" "$2" 而不是 "?"。这是 PostgreSQL 自己的语法：
  *   扩展查询协议（PQexecParams / PQprepare）要求语句文本用 $n 标出参数位置，
  *   序号从 1 开始。因此本方言是唯一真正用到 placeholder() 序号参数的实现——
@@ -29,11 +29,11 @@
  * - 表清单：查 information_schema.tables 并按 current_schema() 过滤
  *   （MySQL 用 DATABASE()，SQLite 查库内私有的 sqlite_master）。
  *
- * ## 大小写与 search_path
+ * 大小写与 search_path
  * 本方言一律给标识符加双引号，因此表名/列名的大小写被原样保留；
  * 表存在性查询用 current_schema() 限定，与不带模式名执行 DML 时的解析规则一致。
  *
- * ## 一个必须在送参数之前知道的引擎限制
+ * 一个必须在送参数之前知道的引擎限制
  * PostgreSQL 的文本类型（TEXT / VARCHAR / JSON / 字符类型）无法存储 NUL 字节：
  * 服务端会以「invalid byte sequence for encoding "UTF8": 0x00」之类报文拒绝整条语句。
  * 因此含 '\0' 的 std::string 参数不能直接用于文本列（本驱动会在送出前本地拒绝并给出中文原因，
@@ -41,7 +41,7 @@
  * 并把取值按十六进制文本（形如 \x48656c6c6f）作为普通参数送出——那是纯 ASCII、不含 NUL 的文本。
  * 注意这是引擎的存储限制，不是本方言或 ORM 的取舍；同一段带 '\0' 的文本在 MySQL / SQLite 上是合法的。
  *
- * ## 安全考量
+ * 安全考量
  * 所有来自 C++ 侧的数据（比较值、IN 列表、分页值）都只以 $n 占位符出现，
  * 值本身通过 parameters 交给 PQexecParams 绑定，因此含单引号、"--"、分号的字符串
  * 只会被当成普通文本，不会改变语句结构。
