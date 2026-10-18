@@ -36,6 +36,12 @@ namespace AsynGyanis::Database
         return "START TRANSACTION";
     }
 
+    std::optional<std::string_view> MySqlDialect::rowLockClause() const noexcept
+    {
+        // InnoDB 只在事务里真正持有这把锁：autocommit 下语句一结束就释放，等于没锁住
+        return "FOR UPDATE";
+    }
+
     std::optional<std::string> MySqlDialect::currentDatabaseNameStatement() const
     {
         // GET_LOCK 是服务器级的：把库名揉进锁键，同服务器上的两个库才不会互相挡住迁移

@@ -1093,3 +1093,25 @@ TEST(PostgresDialectMetadata, ColumnListingStaysInsideCurrentSchema)
     EXPECT_EQ(hostileStatement.sql, statement.sql);
     EXPECT_EQ(countPlaceholders(hostileStatement.sql), 1U);
 }
+
+/**
+ * @brief 验证 PostgreSQL 的行锁子句同样接在分页之后
+ * @details 占位符是 $n 形态：行锁那句不能改动参数序号，否则条件里的 $3 会整体偏移。
+ * @note 证伪：删掉 translate 里的行锁追加，这条尾读不到 "FOR UPDATE"；
+ *       把追加挪到分页之前，语句文本与期望不符——那种写法服务端当场报语法错误。
+ */
+TEST(PostgresDialectSelect, RowLockClauseFollowsPagination)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id"};
+    node.limit         = 10;
+    node.isForUpdate   = true;
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, R"(SELECT "id" FROM "users" LIMIT $1 FOR UPDATE)");
+    EXPECT_EQ(statement.parameters.size(), 1U);
+}

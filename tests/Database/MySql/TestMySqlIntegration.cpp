@@ -4227,4 +4227,52 @@ namespace AsynGyanis::Database
         static_cast<void>(connection->execute("DROP TABLE IF EXISTS Asyn_Mysql_Temporal_Pair"));
     }
 
+
+    /**
+     * @brief 悲观锁：A 会话带锁读到的行挡住 B 会话，直到 A 提交为止
+     * @details 判据 1 的 MySQL 那一格。B 的等锁上限设成 1 秒——实现没生效时用例必须红而不是挂死。
+     *          池上限取 2：悲观锁天然要两条连接同时在场，上限为 1 时第二条永远等不到名额。
+     *          count() 那一格钉的是聚合路径必须丢掉行锁标志，而不是把一句服务端必拒的语句送出去。
+     * @note 证伪：删掉 translate 里的行锁追加，A 不持锁，B 的第一句直接成功，这条当场红。
+     */
+    TEST_F(MySqlIntegrationTest, RowLockBlocksTheSecondSessionUntilTheHolderCommits)
+    {
+        ASSERT_TRUE(prepareTable(kAccountTableName, kAccountColumns)) << m_lastSetupError;
+        m_preparedTableName = std::string(kAccountTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        {
+            OrmQuery<IntegrationAccountRow> insertQuery(*pool);
+            ASSERT_EQ(1, insertQuery.insert(IntegrationAccountRow{.id = 1, .name = "锁靶", .balance = 0.0, .note = std::nullopt, .active = true}))
+                    << "写不进锁靶行，后面的判据都无从谈起";
+        }
+
+        Transaction                              holder(*pool);
+        const std::vector<IntegrationAccountRow> held = OrmQuery<IntegrationAccountRow>(holder).forUpdate().toList();
+        ASSERT_EQ(held.size(), 1U) << "带行锁的 SELECT 没读到那一行";
+
+        // 聚合路径不带锁：标志没丢掉的话这里会送出一句 COUNT(*) … FOR UPDATE
+        EXPECT_EQ(OrmQuery<IntegrationAccountRow>(holder).forUpdate().count(), 1);
+
+        {
+            PooledConnection challenger = pool->acquire();
+            ASSERT_TRUE(challenger);
+            ASSERT_TRUE(challenger->execute("SET SESSION innodb_lock_wait_timeout = 1") != nullptr) << challenger->lastError();
+
+            const std::unique_ptr<DatabaseResult> blocked = challenger->execute("SELECT id FROM Asyn_Mysql_Account WHERE id = 1 FOR UPDATE");
+            EXPECT_EQ(blocked, nullptr) << "A 还持着行锁，B 却读到了：那句 FOR UPDATE 没真的锁行";
+            EXPECT_NE(challenger->lastError().find("timeout"), std::string::npos) << challenger->lastError();
+        }
+
+        ASSERT_TRUE(holder.commit());
+
+        // 提交之后同一句立刻拿得到：挡住 B 的是那把行锁而不是别的东西
+        PooledConnection afterCommit = pool->acquire();
+        ASSERT_TRUE(afterCommit);
+        ASSERT_TRUE(afterCommit->execute("SET SESSION innodb_lock_wait_timeout = 1") != nullptr) << afterCommit->lastError();
+        const std::unique_ptr<DatabaseResult> granted = afterCommit->execute("SELECT id FROM Asyn_Mysql_Account WHERE id = 1 FOR UPDATE");
+        ASSERT_TRUE(granted != nullptr) << "A 已提交而 B 仍等不到锁：" << afterCommit->lastError();
+        ASSERT_TRUE(granted->next());
+    }
+
 } // namespace AsynGyanis::Database

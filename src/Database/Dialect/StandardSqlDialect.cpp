@@ -565,6 +565,21 @@ namespace AsynGyanis::Database
         // 三个引擎在这条子句上的差异最大，交给子类覆写的钩子处理
         appendLimitOffsetClause(sqlText, parameters, query);
 
+        // 行锁子句固定在分页之后。表达不了的方言（SQLite）在这里拒，而不是把「要锁」静默做成
+        // 「不锁」——调用方拿到的互斥与不拿到的差别只在锁这一句上，出事时无人报错
+        if (query.isForUpdate)
+        {
+            const std::optional<std::string_view> lockClause = rowLockClause();
+            if (!lockClause.has_value())
+            {
+                throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：本引擎没有行级锁，无法为 SELECT 追加行锁子句。"
+                                                                                  "要防止并发写踩同一条记录请改用乐观锁（TableSchema 里声明 kVersionColumn，"
+                                                                                  "更新时版本不匹配即抛 OptimisticLockException），或在同一事务里用带条件的 UPDATE 占位");
+            }
+            sqlText += " ";
+            sqlText += *lockClause;
+        }
+
         // 参数上限在这里按实际产出的参数数判定：渲染前那个估算值只是给 reserve 用的宽度
         // （分页按「各占一个」估，而 SQLite 把分页取值内联进文本、一个占位符都不产生），
         // 拿估计数当判据会把刚好贴着上限的查询误拒

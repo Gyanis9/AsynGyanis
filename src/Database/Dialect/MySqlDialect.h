@@ -103,6 +103,14 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept override;
 
         /**
+         * @brief 行锁子句返回 "FOR UPDATE"
+         * @details 重写 StandardSqlDialect::rowLockClause()：InnoDB 对带该子句的 SELECT 加行级排他锁，
+         *          锁随事务结束释放；autocommit 下语句一结束就放锁，因此要它得先开事务。
+         * @return std::optional<std::string_view> 恒有值 "FOR UPDATE"
+         */
+        [[nodiscard]] std::optional<std::string_view> rowLockClause() const noexcept override;
+
+        /**
          * @brief 把逻辑列类型翻译成 MySQL 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：整数按位宽与符号分家，选与 C++ 类型位宽
          *          对齐的成员；Bool→"TINYINT(1)" 是官方保留的「是否型」写法

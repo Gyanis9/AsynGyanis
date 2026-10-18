@@ -1310,3 +1310,35 @@ TEST(DialectRegistryTest, MySqlDialectIsAvailable)
     // 与 SQLite 方言必须是两个不同实例：引用符与分页语法完全不同，混用会生成非法 SQL
     EXPECT_NE(dialect.get(), DialectRegistry::dialectFor(DatabaseType::Sqlite).get());
 }
+
+/**
+ * @brief 验证行锁子句接在分页之后且不额外产出参数
+ * @details 位置不是随手挑的：MySQL 要求 FOR UPDATE 写在 LIMIT / OFFSET 之后，写在前面是语法错误。
+ * @note 证伪：删掉 StandardSqlDialect::translate 里那段行锁追加，尾部就没有 "FOR UPDATE"，这条红。
+ */
+TEST(MySqlDialectSelect, RowLockClauseFollowsPagination)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"id"};
+    node.limit         = 10;
+    node.isForUpdate   = true;
+
+    const SqlStatement statement = dialect.translate(node);
+
+    EXPECT_EQ(statement.sql, "SELECT `id` FROM `users` LIMIT ? FOR UPDATE");
+    EXPECT_EQ(statement.parameters.size(), 1U);
+}
+
+/// @brief 不开行锁时语句里不出现该子句：默认档不额外加锁，也不会因新字段而改变文本
+TEST(MySqlDialectSelect, PlainSelectCarriesNoRowLockClause)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+
+    EXPECT_EQ(dialect.translate(node).sql, "SELECT * FROM `users`");
+}

@@ -149,7 +149,7 @@
       "title": "预算与分块",
       "items": [
         "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:2368、2391）",
-        "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、715）",
+        "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、730）",
         "分页钩子在渲染里落：SQLite 内联十进制并补 LIMIT -1，MySQL 用 ?（StandardSqlDialect.cpp:400、SqliteDialect.cpp:14）"
       ]
     },

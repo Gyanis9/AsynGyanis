@@ -1727,3 +1727,43 @@ TEST(DialectRegistryTest, RedisDialectThrowsWithChineseMessage)
         EXPECT_NE(message.find("Redis"), std::string::npos);
     }
 }
+
+/**
+ * @brief 验证 SQLite 对行锁请求当场拒绝并点名引擎
+ * @details 本引擎没有行级锁。静默把「要锁」做成「不锁」是最难查的失效——两个会话各自读到同一行、
+ *          各自写回，语句全都成功。因此这里必须拒绝，并把替代做法（乐观锁版本列）写进文案。
+ * @note 证伪：给 SqliteDialect 也覆写 rowLockClause() 返回一句文本，这条红在「不抛」上；
+ *       把拒绝改成静默忽略标志，同样红。
+ */
+TEST(SqliteDialectSelect, RowLockRequestIsRejectedWithChineseReason)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName   = "users";
+    node.isForUpdate = true;
+
+    try
+    {
+        static_cast<void>(dialect.translate(node));
+        FAIL() << "SQLite 支持不了行锁，却不拒绝 forUpdate 的请求";
+    } catch (const AsynGyanis::Base::InvalidArgumentException &error)
+    {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("SQLite"), std::string::npos) << message;
+        EXPECT_NE(message.find("行"), std::string::npos) << message;
+        EXPECT_NE(message.find("乐观锁"), std::string::npos) << "文案没给出替代做法：" << message;
+    }
+}
+
+/// @brief 不开行锁时 SQLite 照旧渲染，且没有任何锁子句混进来
+TEST(SqliteDialectSelect, PlainSelectStillCarriesNoRowLockClause)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName   = "users";
+    node.isForUpdate = false;
+
+    EXPECT_EQ(dialect.translate(node).sql, "SELECT * FROM \"users\"");
+}

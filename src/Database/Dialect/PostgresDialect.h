@@ -201,6 +201,15 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::string_view isolationLevelStatement(TransactionIsolationLevel level) const noexcept override;
 
         /**
+         * @brief 行锁子句返回 "FOR UPDATE"
+         * @details 重写 StandardSqlDialect::rowLockClause()：该子句锁住本次结果集的行直到事务结束。
+         *          PostgreSQL 另有 `FOR UPDATE OF 表名`、`NOWAIT`、`SKIP LOCKED` 等修饰，本映射不暴露——
+         *          多出来的每一档都得三家各自有对应写法才有意义，SQLite 那一格是空的。
+         * @return std::optional<std::string_view> 恒有值 "FOR UPDATE"
+         */
+        [[nodiscard]] std::optional<std::string_view> rowLockClause() const noexcept override;
+
+        /**
          * @brief 隔离级别设置语句在 BEGIN 之后执行（PostgreSQL 的硬性要求）
          * @details 重写 SqlDialect::isolationLevelStatementFollowsBegin()：PostgreSQL 的
          *          `SET TRANSACTION` 只在事务块内有效，事务块外发出会得到

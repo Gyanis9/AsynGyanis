@@ -204,6 +204,17 @@ namespace AsynGyanis::Database
         virtual void appendLimitOffsetClause(std::string &sqlText, std::vector<DatabaseValue> &parameters, const Queryable::QueryNode &query) const;
 
         /**
+         * @brief 行锁子句的文本（不带前导空格），空表示本引擎表达不了行锁
+         * @details 默认空：没有行锁的引擎不覆写，于是 `forUpdate()` 在渲染阶段被拒而不是静默少一句锁。
+         *          追加位置固定在分页之后（`… LIMIT ? OFFSET ? FOR UPDATE`），MySQL 与 PostgreSQL 都收这一种写法。
+         * @return std::optional<std::string_view> 有值即追加该子句；空即不支持
+         */
+        [[nodiscard]] virtual std::optional<std::string_view> rowLockClause() const noexcept
+        {
+            return std::nullopt;
+        }
+
+        /**
          * @brief 把字段引用追加进输出缓冲：纯标识符加引用字符，表达式原样输出
          *
          * @details 处理三种情形：单个标识符（加引用）、限定名（users.id → "users"."id"）、含结构

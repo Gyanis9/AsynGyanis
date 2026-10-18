@@ -236,6 +236,25 @@ namespace AsynGyanis::Database::Queryable
         }
 
         /**
+         * @brief 为这条 SELECT 请求行锁（悲观锁）
+         *
+         * @details 渲染成方言给的行锁子句（MySQL / PostgreSQL 是 `FOR UPDATE`），锁住本次结果集的行
+         *          直到事务结束，因此必须与事务同用：autocommit 下语句一结束锁就释放，等于没锁。
+         *          SQLite 没有行级锁，本方法在那一侧于渲染阶段抛 `Base::InvalidArgumentException`
+         *          并点名引擎——「要锁」被静默做成「不锁」是最难查的一种失效。
+         *
+         * @return Queryable& 自身引用，支持链式调用
+         * @throws Base::InvalidArgumentException 引擎表达不了行锁（SQLite）
+         * @note 与 `count()` 同用时行锁被丢掉：`SELECT COUNT(*) … FOR UPDATE` 在 PostgreSQL 里被服务端
+         *       直接拒绝（聚合语句不许带行锁），而计数本来也不锁行
+         */
+        Queryable &forUpdate()
+        {
+            m_queryNode.isForUpdate = true;
+            return *this;
+        }
+
+        /**
          * @brief 设置 SELECT 列
          *
          * @details 默认（不调用此方法或传入空列表）使用 TableSchema 中 kColumns 的顺序。
@@ -522,6 +541,8 @@ namespace AsynGyanis::Database::Queryable
             countingNode.orderBy.clear();
             countingNode.limit.reset();
             countingNode.offset.reset();
+            // 行锁一并丢掉：PostgreSQL 服务端拒绝「聚合 + FOR UPDATE」，而计数本来也不锁行
+            countingNode.isForUpdate = false;
 
             const SqlDialect &dialect = requireDialect();
             ConnectionLease   lease   = acquireConnection(m_pool, m_transaction);
@@ -982,6 +1003,8 @@ namespace AsynGyanis::Database::Queryable
             countingNode.orderBy.clear();
             countingNode.limit.reset();
             countingNode.offset.reset();
+            // 行锁一并丢掉：PostgreSQL 服务端拒绝「聚合 + FOR UPDATE」，而计数本来也不锁行
+            countingNode.isForUpdate    = false;
             ConnectionPool *pool        = m_pool;
             Transaction    *transaction = m_transaction;
 

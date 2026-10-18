@@ -2175,4 +2175,55 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationPgBinaryRow>(*pool, true, &errorText)) << errorText;
     }
 
+
+    /**
+     * @brief 悲观锁：A 会话带锁读到的行挡住 B 会话，直到 A 提交为止
+     * @details 判据 1 的 PostgreSQL 那一格，形状与 MySQL 那条一致（同一条载荷、同一组断言）。
+     *          B 的等锁上限用 `SET lock_timeout`，实现没生效时用例红而不是挂死。
+     *          池上限取 2：两条连接必须同时在场，上限为 1 时第二条永远等不到名额。
+     * @note 证伪：删掉 translate 里的行锁追加，B 的第一句会成功，这条红；
+     *       把 count() 路径的行锁标志清掉那一行删了，PostgreSQL 会以「FOR UPDATE is not allowed
+     *       with aggregate functions」拒绝整条 count()，同一用例里另一格红。
+     */
+    TEST_F(PostgresIntegrationTest, RowLockBlocksTheSecondSessionUntilTheHolderCommits)
+    {
+        m_preparedTableNames.emplace_back(kMigratedTableName);
+
+        std::string                     errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        {
+            OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
+            ASSERT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "锁靶", .note = std::nullopt, .balance = 0.0, .active = true}))
+                    << "写不进锁靶行，后面的判据都无从谈起";
+        }
+
+        Transaction                               holder(*pool);
+        const std::vector<IntegrationMigratedRow> held = OrmQuery<IntegrationMigratedRow>(holder).forUpdate().toList();
+        ASSERT_EQ(held.size(), 1U) << "带行锁的 SELECT 没读到那一行";
+
+        // 聚合路径不带锁：这一家的服务端明确拒绝「聚合 + FOR UPDATE」，标志没丢掉就在这里露出来
+        EXPECT_EQ(OrmQuery<IntegrationMigratedRow>(holder).forUpdate().count(), 1);
+
+        {
+            PooledConnection challenger = pool->acquire();
+            ASSERT_TRUE(challenger);
+            ASSERT_TRUE(challenger->execute("SET lock_timeout = '1s'") != nullptr) << challenger->lastError();
+
+            const std::unique_ptr<DatabaseResult> blocked = challenger->execute(R"(SELECT id FROM "Asyn_Pg_Migrated" WHERE id = 1 FOR UPDATE)");
+            EXPECT_EQ(blocked, nullptr) << "A 还持着行锁，B 却读到了：那句 FOR UPDATE 没真的锁行";
+            EXPECT_NE(challenger->lastError().find("lock timeout"), std::string::npos) << challenger->lastError();
+        }
+
+        ASSERT_TRUE(holder.commit());
+
+        PooledConnection afterCommit = pool->acquire();
+        ASSERT_TRUE(afterCommit);
+        ASSERT_TRUE(afterCommit->execute("SET lock_timeout = '1s'") != nullptr) << afterCommit->lastError();
+        const std::unique_ptr<DatabaseResult> granted = afterCommit->execute(R"(SELECT id FROM "Asyn_Pg_Migrated" WHERE id = 1 FOR UPDATE)");
+        ASSERT_TRUE(granted != nullptr) << "A 已提交而 B 仍等不到锁：" << afterCommit->lastError();
+        ASSERT_TRUE(granted->next());
+    }
+
 } // namespace AsynGyanis::Database

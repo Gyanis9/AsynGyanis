@@ -149,6 +149,12 @@ namespace AsynGyanis::Database
         return {};
     }
 
+    std::optional<std::string_view> PostgresDialect::rowLockClause() const noexcept
+    {
+        // 与 MySQL 同一句文本：这一家的 FOR UPDATE 语义是「锁住读到的行直到本事务结束」
+        return "FOR UPDATE";
+    }
+
     bool PostgresDialect::isolationLevelStatementFollowsBegin() const noexcept
     {
         // 事务块外执行 SET TRANSACTION 只会得到警告且不生效（见头文件说明），

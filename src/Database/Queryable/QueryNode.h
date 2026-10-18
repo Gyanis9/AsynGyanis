@@ -265,6 +265,9 @@ namespace AsynGyanis::Database::Queryable
         /// 只被 translate() 的 SELECT 分支读取——INSERT / UPDATE / DELETE 方向读完即弃；
         /// 统计类查询（COUNT）整段 SELECT 列表被顶掉，ORM 因此拒绝「include + 聚合」同用
         std::vector<AliasColumn> aliasColumns;
+
+        /// 行锁请求：为真时 SELECT 末尾追加方言给的行锁子句（悲观锁：锁住本次结果集的行直到事务结束）
+        bool isForUpdate = false;
     };
 
 } // namespace AsynGyanis::Database::Queryable
