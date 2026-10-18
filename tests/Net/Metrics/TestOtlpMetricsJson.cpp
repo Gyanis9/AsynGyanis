@@ -7,6 +7,7 @@
 
 #include "Base/Config/ConfigValue.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "ExpectedAssertions.h"
 #include "Net/Tracing/SpanExporter.h"
 #include "TracingTestSupport.h"
 
@@ -69,7 +70,7 @@ TEST(OtlpMetricsJson, RendersCounterAndGaugeDataPoints)
 
     const std::string text   = formatOtlpMetricsJson(makeResource(), samples, fixedCollectionMoment());
     const auto        parsed = parseConfigValue(text);
-    ASSERT_TRUE(parsed.has_value()) << "渲染结果不是合法 JSON：" << text;
+    ASSERT_HAS_VALUE(parsed) << "渲染结果不是合法 JSON：" << text;
 
     const ConfigValue &resourceMetrics = parsed->at("resourceMetrics").at(0);
     const ConfigValue &attributes      = resourceMetrics.at("resource").at("attributes");
@@ -111,11 +112,11 @@ TEST(OtlpMetricsJson, ReportsServiceVersionOnlyWhenGiven)
     const std::vector<ProcessMetricSample> samples{makeSample("asyn_test_gauge", "瞬时量", ProcessMetricKind::Gauge, 1U)};
 
     const auto withoutVersion = parseConfigValue(formatOtlpMetricsJson(makeResource(), samples, fixedCollectionMoment()));
-    ASSERT_TRUE(withoutVersion.has_value());
+    ASSERT_HAS_VALUE(withoutVersion);
     EXPECT_EQ(withoutVersion->at("resourceMetrics").at(0).at("resource").at("attributes").size(), 1U) << "没给版本就不该出现 service.version";
 
     const auto withVersion = parseConfigValue(formatOtlpMetricsJson(makeResource("2.1.0"), samples, fixedCollectionMoment()));
-    ASSERT_TRUE(withVersion.has_value());
+    ASSERT_HAS_VALUE(withVersion);
     const ConfigValue &attributes = withVersion->at("resourceMetrics").at(0).at("resource").at("attributes");
     ASSERT_EQ(attributes.size(), 2U);
     EXPECT_EQ(jsonTextOf(attributes.at(1).at("key")), "service.version");
@@ -129,7 +130,7 @@ TEST(OtlpMetricsJson, EmptySnapshotStillRendersTheResourceShell)
 {
     // 空实参必须写全类型：标量入口与批入口两个重载之下，裸 {} 是二义的
     const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), std::vector<ProcessMetricSample>{}, fixedCollectionMoment()));
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     EXPECT_EQ(parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics").size(), 0U);
 }
 
@@ -158,7 +159,7 @@ TEST(OtlpMetricsJson, RendersHistogramDataPointsWithSecondUnits)
     const OtlpMetricsBatch batch{.histograms = {histogram}};
 
     const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), batch, fixedCollectionMoment()));
-    ASSERT_TRUE(parsed.has_value()) << "渲染结果不是合法 JSON";
+    ASSERT_HAS_VALUE(parsed) << "渲染结果不是合法 JSON";
     const ConfigValue &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 1U);
     const ConfigValue &metric = metrics.at(0);
@@ -200,7 +201,7 @@ TEST(OtlpMetricsJson, RendersMultiPointHistogramsWithRouteAttributes)
     const OtlpMetricsBatch batch{.histograms = {histogram}};
 
     const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), batch, fixedCollectionMoment()));
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     const ConfigValue &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 1U) << "两条路由应当共用一条 metric，而不是各起一个同名 metric";
     const ConfigValue &dataPoints = metrics.at(0).at("histogram").at("dataPoints");
@@ -237,7 +238,7 @@ TEST(OtlpMetricsJson, RendersLabeledSamplesAsMultiPointMetrics)
     const OtlpMetricsBatch batch{.labeled = {responses}};
 
     const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), batch, fixedCollectionMoment()));
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     const ConfigValue &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 1U);
     const ConfigValue &metric = metrics.at(0);
@@ -269,7 +270,7 @@ TEST(OtlpMetricsJson, KeepsTheThreeLanesInAFixedOrderInOneDocument)
             OtlpHistogramSample{.name = "asyn_test_histogram", .help = "分布", .explicitBoundsSeconds = {0.001}, .bucketCounts = {1U, 1U}, .count = 2U, .sumSeconds = 0.5});
 
     const auto parsed = parseConfigValue(formatOtlpMetricsJson(makeResource(), batch, fixedCollectionMoment()));
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     const ConfigValue &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 3U);
     EXPECT_EQ(jsonTextOf(metrics.at(0).at("name")), "asyn_test_scalar");

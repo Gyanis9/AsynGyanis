@@ -4,6 +4,7 @@
 // - OptionalJsonStringDistinguishesAbsentFromWrongType（缺失为空串；字符串取回；数字与 null 交回原因；非对象按缺失兜底）
 // - RequiredJsonStringRejectsMissingWrongTypedAndEmpty（必填口径：缺失、错类型、空串三者各点名拒）
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/OAuthSupport.h"
 
 #include <gtest/gtest.h>
@@ -32,12 +33,12 @@ namespace AsynGyanis::Net
 
         // 是字符串：取回原文
         const auto text = optionalJsonString(document, "text");
-        ASSERT_TRUE(text.has_value());
+        ASSERT_HAS_VALUE(text);
         EXPECT_EQ(*text, "值");
 
         // 缺失：可选字段的常态，交回空串而不是失败
         const auto absent = optionalJsonString(document, "missing");
-        ASSERT_TRUE(absent.has_value());
+        ASSERT_HAS_VALUE(absent);
         EXPECT_TRUE(absent->empty());
 
         // 类型不符：交回原因并点名（不静默按缺省、不抛异常）；null 也是「不是字符串」
@@ -55,7 +56,7 @@ namespace AsynGyanis::Net
         const nlohmann::json arrayDocument = nlohmann::json::parse("[1,2]", nullptr, false);
         ASSERT_FALSE(arrayDocument.is_discarded());
         const auto notObject = optionalJsonString(arrayDocument, "text");
-        ASSERT_TRUE(notObject.has_value());
+        ASSERT_HAS_VALUE(notObject);
         EXPECT_TRUE(notObject->empty());
     }
 
@@ -65,7 +66,7 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(document.is_discarded());
 
         const auto text = requiredJsonString(document, "text");
-        ASSERT_TRUE(text.has_value());
+        ASSERT_HAS_VALUE(text);
         EXPECT_EQ(*text, "值");
 
         // 缺失、类型不符、空串三者都不可用：各交回点名原因，不让任何一格静默借道

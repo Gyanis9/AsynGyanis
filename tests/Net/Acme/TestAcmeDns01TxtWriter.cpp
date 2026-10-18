@@ -2,6 +2,7 @@
 // 以及「凭据缺失」与「主域名推不出」这两条出口有没有各归其位。
 // 签名的期望值一律由仓库外的两份实现（Node 的 crypto 与 Python 的 hmac/hashlib）算出后写死：
 // 拿本仓库的 helper 算期望值等于让规范怎么改都绿。
+#include "ExpectedAssertions.h"
 #include "Net/Acme/AcmeAliyunDns01TxtWriter.h"
 #include "Net/Acme/AcmeClient.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
@@ -147,7 +148,7 @@ namespace AsynGyanis::Net
             for (const char *const name: kMetricNames)
             {
                 const auto lookup = findRegistrySample(name);
-                ASSERT_TRUE(lookup.has_value()) << name;
+                ASSERT_HAS_VALUE(lookup) << name;
                 EXPECT_EQ(lookup->kind, Core::ProcessMetricKind::Counter) << name << "：这类量要做 rate()，登记成 gauge 就用错了";
                 EXPECT_EQ(lookup->value, 0U) << name << "：一次 publish 都没发过就该是 0，带上一个来路不明的数是假读数";
             }

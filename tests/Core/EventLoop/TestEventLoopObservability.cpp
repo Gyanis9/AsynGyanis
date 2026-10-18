@@ -7,6 +7,7 @@
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -176,7 +177,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(driver.waitUntilRunning());
 
         const auto snapshotBefore = snapshotOwnedBy(driver.threadId());
-        ASSERT_TRUE(snapshotBefore.has_value()) << "整表里没有后台线程跑着的那条循环";
+        ASSERT_HAS_VALUE(snapshotBefore) << "整表里没有后台线程跑着的那条循环";
         EXPECT_TRUE(snapshotBefore->isRunning);
         // 线程标识是 run() 进来时写的，未启动过的循环读到的是默认值，因此这一条能分出「有没有落戳」
         EXPECT_EQ(snapshotBefore->ownerThread, driver.threadId());
@@ -185,7 +186,7 @@ namespace AsynGyanis::Core
         runOneRound(driver);
 
         const auto snapshotAfter = snapshotOwnedBy(driver.threadId());
-        ASSERT_TRUE(snapshotAfter.has_value());
+        ASSERT_HAS_VALUE(snapshotAfter);
         EXPECT_GT(snapshotAfter->completedWorkingSegments, segmentsBefore);
         EXPECT_NE(snapshotAfter->phase, LoopPhase::NotStarted);
     }

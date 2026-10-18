@@ -13,6 +13,7 @@
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -85,7 +86,7 @@ namespace AsynGyanis::Database::Detail
         const std::string                encoded = toPostgresByteaText(allBytes);
         const std::optional<BinaryBytes> decoded = parsePostgresByteaText(encoded.data(), encoded.size());
 
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(allBytes, *decoded);
     }
 
@@ -141,7 +142,7 @@ namespace AsynGyanis::Database::Detail
     {
         const std::optional<PostgresTextParameter> parameter = toPostgresTextParameter(DatabaseValue{BinaryBytes{0x00, 0x5C, 0xFF}});
 
-        ASSERT_TRUE(parameter.has_value());
+        ASSERT_HAS_VALUE(parameter);
         EXPECT_FALSE(parameter->isNull);
         EXPECT_EQ(literalView("\\x005cff"), parameter->text);
     }
@@ -151,9 +152,9 @@ namespace AsynGyanis::Database::Detail
     {
         const std::optional<PostgresTextParameter> parameter = toPostgresTextParameter(DatabaseValue{kSharedBinaryPayload});
 
-        ASSERT_TRUE(parameter.has_value());
+        ASSERT_HAS_VALUE(parameter);
         const std::optional<BinaryBytes> decoded = parsePostgresByteaText(parameter->text.data(), parameter->text.size());
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(kSharedBinaryPayload, *decoded);
     }
 

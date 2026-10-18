@@ -31,6 +31,7 @@
 #include "HttpTestSupport.h"
 
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -2229,7 +2230,7 @@ namespace AsynGyanis::Net
         }
         loop.run();
 
-        ASSERT_TRUE(outcome.has_value()) << "流式上传没走通：" << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << "流式上传没走通：" << outcome.error();
         EXPECT_EQ(outcome->statusCode, 200);
         EXPECT_TRUE(outcome->reasonPhrase.empty()) << "有原因短语＝那条其实是 HTTP/1.1 的答，h2 这一支没被走到";
         EXPECT_EQ(outcome->body, "echoed=3") << "服务端按批交付的次数不对：" << outcome->body;

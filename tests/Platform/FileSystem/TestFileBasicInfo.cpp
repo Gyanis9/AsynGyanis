@@ -3,6 +3,7 @@
 // Windows 认不出（记档）
 #include "Platform/FileSystem/FileBasicInfo.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
@@ -62,7 +63,7 @@ namespace AsynGyanis::Platform
         writeTemporaryFile(targetPath, "0123456789abc");
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(info.has_value()) << "刚写好的普通文件应当查得到基本信息";
+        ASSERT_HAS_VALUE(info) << "刚写好的普通文件应当查得到基本信息";
         EXPECT_TRUE(info->isRegularFile);
         EXPECT_EQ(info->sizeBytes, 13U);
         // 取整方向与独立换算一致：两侧都指向同一个整秒，验证器才不会因改造而漂移
@@ -81,7 +82,7 @@ namespace AsynGyanis::Platform
         const std::int64_t expectedSeconds = unixSecondsOf(std::filesystem::last_write_time(targetPath));
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(info.has_value());
+        ASSERT_HAS_VALUE(info);
         EXPECT_EQ(info->lastWriteSeconds, expectedSeconds) << "亚秒部分必须舍向更早的一秒，与 POSIX 侧 st_mtime 同口径";
     }
 
@@ -115,7 +116,7 @@ namespace AsynGyanis::Platform
         const std::int64_t expectedSeconds = unixSecondsOf(std::filesystem::last_write_time(targetPath));
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(info.has_value());
+        ASSERT_HAS_VALUE(info);
         EXPECT_EQ(expectedSeconds, -1) << "折算法自身没落在预期档位，用例的判据无从成立";
         EXPECT_EQ(info->lastWriteSeconds, expectedSeconds) << "早于纪元的半秒被向零截断，同一文件在两平台上的验证器会差出一秒";
     }
@@ -125,7 +126,7 @@ namespace AsynGyanis::Platform
         const TestSupport::TemporaryDirectory temporaryDirectory("FileBasicInfo_Directory");
 
         const std::optional<FileBasicInfo> info = queryFileBasicInfo(temporaryDirectory.path());
-        ASSERT_TRUE(info.has_value()) << "目录本身也查得到信息，只有「是不是普通文件」这一位要说清";
+        ASSERT_HAS_VALUE(info) << "目录本身也查得到信息，只有「是不是普通文件」这一位要说清";
         EXPECT_FALSE(info->isRegularFile) << "目录不能被判成可服务的普通文件";
     }
 
@@ -144,12 +145,12 @@ namespace AsynGyanis::Platform
         writeTemporaryFile(targetPath, "abc");
 
         const std::optional<FileBasicInfo> beforeRewrite = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(beforeRewrite.has_value());
+        ASSERT_HAS_VALUE(beforeRewrite);
         EXPECT_EQ(beforeRewrite->sizeBytes, 3U);
 
         writeTemporaryFile(targetPath, "abcdefghij");
         const std::optional<FileBasicInfo> afterRewrite = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(afterRewrite.has_value());
+        ASSERT_HAS_VALUE(afterRewrite);
         EXPECT_EQ(afterRewrite->sizeBytes, 10U) << "本层不缓存：改写之后必须立刻看到新大小，而不是上一次查到的那份";
     }
 
@@ -245,7 +246,7 @@ namespace AsynGyanis::Platform
 
         writeTemporaryFile(targetPath, "version-one");
         const std::optional<FileBasicInfo> beforeReplacement = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(beforeReplacement.has_value());
+        ASSERT_HAS_VALUE(beforeReplacement);
         const std::filesystem::file_time_type originalLastWrite = std::filesystem::last_write_time(targetPath);
 
         std::error_code removeError;
@@ -256,7 +257,7 @@ namespace AsynGyanis::Platform
         std::filesystem::last_write_time(targetPath, originalLastWrite);
 
         const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(afterReplacement.has_value());
+        ASSERT_HAS_VALUE(afterReplacement);
         EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
         EXPECT_EQ(afterReplacement->lastWriteSeconds, beforeReplacement->lastWriteSeconds) << "修改时间没搬过去，后面的身份判据就成了空转";
         EXPECT_NE(afterReplacement->identityTag, beforeReplacement->identityTag) << "另一个文件对象被当成了同一个文件，缓存会一直端出旧内容";
@@ -276,8 +277,8 @@ namespace AsynGyanis::Platform
 
         const std::optional<FileBasicInfo> firstQuery  = queryFileBasicInfo(targetPath);
         const std::optional<FileBasicInfo> secondQuery = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(firstQuery.has_value());
-        ASSERT_TRUE(secondQuery.has_value());
+        ASSERT_HAS_VALUE(firstQuery);
+        ASSERT_HAS_VALUE(secondQuery);
         EXPECT_EQ(firstQuery->identityTag, secondQuery->identityTag) << "同一个文件对象的身份标记不稳定，缓存无从命中";
     }
 
@@ -303,8 +304,8 @@ namespace AsynGyanis::Platform
         const std::optional<FileBasicInfo> byHandle = queryOpenedFileBasicInfo(descriptor);
         ::close(descriptor);
 
-        ASSERT_TRUE(byPath.has_value());
-        ASSERT_TRUE(byHandle.has_value());
+        ASSERT_HAS_VALUE(byPath);
+        ASSERT_HAS_VALUE(byHandle);
         EXPECT_EQ(byPath->identityTag, byHandle->identityTag) << "两条查询口的身份标记分叉，映射缓存每请求都会被误判成正文已过期";
         EXPECT_EQ(byPath->sizeBytes, byHandle->sizeBytes);
         EXPECT_EQ(byPath->lastWriteSeconds, byHandle->lastWriteSeconds);
@@ -328,14 +329,14 @@ namespace AsynGyanis::Platform
 
         writeTemporaryFile(targetPath, "version-one");
         const std::optional<FileBasicInfo> beforeReplacement = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(beforeReplacement.has_value());
+        ASSERT_HAS_VALUE(beforeReplacement);
 
         std::error_code removeError;
         ASSERT_TRUE(std::filesystem::remove(targetPath, removeError)) << "旧文件没被删掉，这里就没有重建任何东西";
         writeTemporaryFile(targetPath, "version-two");
 
         const std::optional<FileBasicInfo> afterReplacement = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(afterReplacement.has_value());
+        ASSERT_HAS_VALUE(afterReplacement);
         EXPECT_EQ(afterReplacement->sizeBytes, beforeReplacement->sizeBytes);
         EXPECT_EQ(afterReplacement->identityTag, beforeReplacement->identityTag) << "身份已不再由创建时间派生，Windows 侧的映射缓存可以打开了，见本用例的 @note";
     }

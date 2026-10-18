@@ -14,6 +14,7 @@
 #include "BaseTestSupport.h"
 #include "Platform/FileSystem/FileSystem.h"
 
+#include "ExpectedAssertions.h"
 #include "TestHelpers.h"
 
 #include <gtest/gtest.h>
@@ -1776,7 +1777,7 @@ namespace AsynGyanis::Base
         ASSERT_TRUE(reloaded.success) << (reloaded.errors.empty() ? std::string{} : reloaded.errors.front());
         // 中间那道检查别省：先确认「新值确实进了快照」，末端红时才分得清是配置没到还是装配没接
         const auto sinksSnapshot = ConfigManager::instance().getOptional("logging.loggers.root.sinks");
-        ASSERT_TRUE(sinksSnapshot.has_value()) << "reload() 之后快照里连 sinks 键都没有";
+        ASSERT_HAS_VALUE(sinksSnapshot) << "reload() 之后快照里连 sinks 键都没有";
         EXPECT_NE(sinksSnapshot->dump().find("chain_stage_two.log"), std::string::npos) << "reload() 之后快照里还是旧 sink 配置";
 
         applyLogging();

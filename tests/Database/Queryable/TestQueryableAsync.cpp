@@ -26,6 +26,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -296,7 +297,7 @@ TEST_F(QueryableAsyncTest, AsyncQueryResultsMatchSyncVersions)
         ASSERT_TRUE(completed.finished) << "异步任务未在时限内完成";
         ASSERT_EQ(completed.error, nullptr);
         ASSERT_TRUE(completed.value.has_value());
-        ASSERT_TRUE(syncFirst.has_value());
+        ASSERT_HAS_VALUE(syncFirst);
         ASSERT_TRUE(completed.value->has_value());
         EXPECT_EQ(completed.value->value().name, syncFirst->name);
         EXPECT_FALSE(completed.value->value().note.has_value());
@@ -394,14 +395,14 @@ TEST_F(QueryableAsyncTest, AsyncInsertWritesRowReadableBySyncQuery)
     EXPECT_EQ(countRows(), 3);
 
     const std::optional<AsyncAccountRow> readBackFirst = readRowBack(1);
-    ASSERT_TRUE(readBackFirst.has_value());
+    ASSERT_HAS_VALUE(readBackFirst);
     EXPECT_EQ(readBackFirst->id, 1);
     EXPECT_EQ(readBackFirst->name, "异步写入");
     ASSERT_TRUE(readBackFirst->note.has_value());
     EXPECT_EQ(readBackFirst->note.value(), "首条");
 
     const std::optional<AsyncAccountRow> readBackThird = readRowBack(3);
-    ASSERT_TRUE(readBackThird.has_value());
+    ASSERT_HAS_VALUE(readBackThird);
     EXPECT_EQ(readBackThird->id, 3);
     EXPECT_EQ(readBackThird->name, "无备注");
     // 写入时是 nullopt，读回必须仍是空 optional（NULL 不会被折成空串）
@@ -482,13 +483,13 @@ TEST_F(QueryableAsyncTest, AsyncUpdateWritesRowReadableBySyncQuery)
     EXPECT_EQ(countRows(), 2);
 
     const std::optional<AsyncAccountRow> readBackUpdated = readRowBack(1);
-    ASSERT_TRUE(readBackUpdated.has_value());
+    ASSERT_HAS_VALUE(readBackUpdated);
     EXPECT_EQ(readBackUpdated->id, 1);
     EXPECT_EQ(readBackUpdated->name, "改后");
     EXPECT_FALSE(readBackUpdated->note.has_value());
 
     const std::optional<AsyncAccountRow> readBackBystander = readRowBack(2);
-    ASSERT_TRUE(readBackBystander.has_value());
+    ASSERT_HAS_VALUE(readBackBystander);
     EXPECT_EQ(readBackBystander->name, "旁观者改后");
     ASSERT_TRUE(readBackBystander->note.has_value());
     EXPECT_EQ(readBackBystander->note.value(), "同步备注");
@@ -616,11 +617,11 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
     // 分块边界：第一块的最后一行与第二块的第一行，两侧都要在表里
     const std::int64_t                   boundaryIdentifier = static_cast<std::int64_t>(rowsPerStatement);
     const std::optional<AsyncAccountRow> lastOfFirstChunk   = readRowBack(boundaryIdentifier);
-    ASSERT_TRUE(lastOfFirstChunk.has_value()) << "第一块的最后一行丢失，分块上界算错了";
+    ASSERT_HAS_VALUE(lastOfFirstChunk) << "第一块的最后一行丢失，分块上界算错了";
     EXPECT_EQ(lastOfFirstChunk->name, "分块行" + std::to_string(rowsPerStatement));
 
     const std::optional<AsyncAccountRow> firstOfSecondChunk = readRowBack(boundaryIdentifier + 1);
-    ASSERT_TRUE(firstOfSecondChunk.has_value()) << "第二块的第一行丢失";
+    ASSERT_HAS_VALUE(firstOfSecondChunk) << "第二块的第一行丢失";
     EXPECT_EQ(firstOfSecondChunk->name, "分块行" + std::to_string(rowsPerStatement + 1U));
 
     // ---- 与同步路径对照：清空后把同一份数据交给同步 insertBatch，边界行取值必须一致 ----
@@ -632,7 +633,7 @@ TEST_F(QueryableAsyncTest, AsyncInsertBatchChunkedPathSpansLocalTransaction)
     EXPECT_EQ(countRows(), static_cast<std::int64_t>(totalRowCount));
 
     const std::optional<AsyncAccountRow> syncBoundaryRow = readRowBack(boundaryIdentifier);
-    ASSERT_TRUE(syncBoundaryRow.has_value());
+    ASSERT_HAS_VALUE(syncBoundaryRow);
     EXPECT_EQ(syncBoundaryRow->name, lastOfFirstChunk->name);
     EXPECT_EQ(syncBoundaryRow->note, lastOfFirstChunk->note);
 }
@@ -752,7 +753,7 @@ TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
     // Upsert：真 `ON CONFLICT DO UPDATE`（不是先删后插），冲突时更新并保持一行
     EXPECT_EQ(query.insert(AsyncAccountRow{7, "upserted", std::string("note")}, InsertConflict::Upsert), 1);
     const auto upsertedRow = Queryable<AsyncAccountRow>(*m_pool).where(Column(&AsyncAccountRow::id, "id") == std::int64_t{7}).first();
-    ASSERT_TRUE(upsertedRow.has_value());
+    ASSERT_HAS_VALUE(upsertedRow);
     EXPECT_EQ(upsertedRow->name, "upserted");
     EXPECT_EQ(upsertedRow->note.value_or(""), "note");
     EXPECT_EQ(Queryable<AsyncAccountRow>(*m_pool).count(), 1) << "Upsert 变成了又一次插入";
@@ -901,7 +902,7 @@ TEST_F(QueryableAsyncTest, AsyncExecutorSubmitDoesNotBlockCallingThread)
     releaseWork.count_down();
     ASSERT_TRUE(waitForCondition([&finishedFlag]() { return finishedFlag.load(std::memory_order_acquire); })) << "任务放行后仍未在时限内恢复协程";
     ASSERT_EQ(error, nullptr);
-    ASSERT_TRUE(value.has_value());
+    ASSERT_HAS_VALUE(value);
     EXPECT_EQ(value.value(), 42);
 
     m_loopRunner.parkDriver(std::move(driver));
@@ -973,12 +974,12 @@ TEST_F(QueryableAsyncTest, AsyncWriteDoesNotBlockCallingThread)
 
     ASSERT_TRUE(waitForCondition([&finishedFlag]() { return finishedFlag.load(std::memory_order_acquire); })) << "放行工作线程后异步写仍未在时限内完成";
     ASSERT_EQ(insertError, nullptr);
-    ASSERT_TRUE(insertedRows.has_value());
+    ASSERT_HAS_VALUE(insertedRows);
     EXPECT_EQ(insertedRows.value(), 1);
 
     // 同步读回：异步写确实在别的工作线程上完成并落库
     const std::optional<AsyncAccountRow> readBack = readRowBack(1);
-    ASSERT_TRUE(readBack.has_value());
+    ASSERT_HAS_VALUE(readBack);
     EXPECT_EQ(readBack->name, "不阻塞");
 }
 

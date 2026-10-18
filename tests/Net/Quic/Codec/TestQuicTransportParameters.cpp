@@ -14,6 +14,7 @@
 
 #include "Net/Quic/Codec/QuicTransportParameters.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 #include "Platform/IO/DatagramSocket.h"
 
@@ -152,7 +153,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(toUnsignedBytes(bytes), makeBytesFromHex(kServerParametersHex));
 
         const auto decoded = decodeHex(kServerParametersHex, QuicTransportParameterSenderRole::Server);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         EXPECT_EQ(*decoded, makeServerParameters());
     }
 
@@ -162,7 +163,7 @@ namespace AsynGyanis::Net
     TEST(QuicTransportParameters, DecodesParametersWrittenByAnotherImplementation)
     {
         const auto decoded = decodeHex(kInteropClientParametersHex, QuicTransportParameterSenderRole::Client);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         EXPECT_EQ(decoded->maximumIdleTimeoutMilliseconds, 30000);
         EXPECT_EQ(decoded->initialMaximumStreamDataBidirectionalRemote, 65536);
         EXPECT_EQ(decoded->initialMaximumBidirectionalStreams, 1024);
@@ -183,7 +184,7 @@ namespace AsynGyanis::Net
     {
         // 0x01 的长度域是 8，整数本身写成 8 字节档（前缀 11）的 10000：§16 只把「必须最短」留给帧类型
         const auto wide = decodeHex(withMinimalParameters("0108c000000000002710"), QuicTransportParameterSenderRole::Client);
-        ASSERT_TRUE(wide.has_value()) << wide.error().message;
+        ASSERT_HAS_VALUE(wide) << wide.error().message;
         EXPECT_EQ(wide->maximumIdleTimeoutMilliseconds, 10000);
 
         // 同样声明 3 字节，可整数只占 2 字节，多出来的 1 字节没有任何定义能解释
@@ -198,7 +199,7 @@ namespace AsynGyanis::Net
         // max_udp_payload_size 小于 1200 非法，正好 1200 合法
         expectRejected(withMinimalParameters("030244af"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         const auto atUdpFloor = decodeHex(withMinimalParameters("030244b0"), QuicTransportParameterSenderRole::Client);
-        ASSERT_TRUE(atUdpFloor.has_value()) << atUdpFloor.error().message;
+        ASSERT_HAS_VALUE(atUdpFloor) << atUdpFloor.error().message;
         EXPECT_EQ(atUdpFloor->maximumUdpPayloadSize, 1200);
 
         // ack_delay_exponent 大于 20 非法
@@ -214,7 +215,7 @@ namespace AsynGyanis::Net
         expectRejected(withMinimalParameters("0908d000000000000001"), QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // 恰好 2^60 是允许的上界
         const auto atStreamLimitCeiling = decodeHex(withMinimalParameters("0808d000000000000000"), QuicTransportParameterSenderRole::Client);
-        ASSERT_TRUE(atStreamLimitCeiling.has_value()) << atStreamLimitCeiling.error().message;
+        ASSERT_HAS_VALUE(atStreamLimitCeiling) << atStreamLimitCeiling.error().message;
         EXPECT_EQ(atStreamLimitCeiling->initialMaximumBidirectionalStreams, std::uint64_t{1} << 60);
     }
 
@@ -260,7 +261,7 @@ namespace AsynGyanis::Net
         expectRejected("01026710", QuicTransportParameterSenderRole::Client, QuicDecodeErrorKind::Malformed);
         // 选了零长连接标识时仍要带上零长的取值（§7.3 末段），所以这条合法
         const auto zeroLength = decodeHex("0f00", QuicTransportParameterSenderRole::Client);
-        ASSERT_TRUE(zeroLength.has_value()) << zeroLength.error().message;
+        ASSERT_HAS_VALUE(zeroLength) << zeroLength.error().message;
         ASSERT_TRUE(zeroLength->initialSourceConnectionId.has_value());
         EXPECT_TRUE(zeroLength->initialSourceConnectionId->empty());
         // 服务端还须带 original_destination_connection_id，只带 ISCID 的字节换成服务端交来就要判错

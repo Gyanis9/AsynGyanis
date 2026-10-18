@@ -10,6 +10,7 @@
 //   五. 四条读路径都按「大小写不敏感」认键（不要求调用方先归一化），且判定只看整 token、
 //       逗号列表的畸形写法不能让循环不推进（取值由对端控制）。
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpHeaderFieldStore.h"
 
 #include <gtest/gtest.h>
@@ -79,7 +80,7 @@ namespace AsynGyanis::Net
         const HttpHeaderFieldStore store = makeStore({{"x-blank", ""}});
 
         const std::optional<std::string> blank = store.get("x-blank");
-        ASSERT_TRUE(blank.has_value()) << "空值头部是命中，不是缺席";
+        ASSERT_HAS_VALUE(blank) << "空值头部是命中，不是缺席";
         EXPECT_TRUE(blank->empty());
         EXPECT_FALSE(store.get("x-absent").has_value()) << "缺席必须用 optional 空值表达，不能回空串";
     }
@@ -180,7 +181,7 @@ namespace AsynGyanis::Net
         store.append("Cache-Control", "public, max-age=3600");
 
         const std::optional<std::string> value = store.firstHeaderValue("cache-control");
-        EXPECT_TRUE(value.has_value());
+        EXPECT_HAS_VALUE(value);
         EXPECT_EQ(*value, "public, max-age=3600");
 
         // 清空存储后，返回值应该仍然有效（owning）
@@ -334,8 +335,8 @@ namespace AsynGyanis::Net
         // 取值有 33 字节，超过短串内联，真要拷贝必然是两块堆内存）
         const std::optional<std::string_view> view      = store.firstValueView("x-request-id");
         const std::optional<std::string_view> viewAgain = store.firstValueView("x-request-id");
-        ASSERT_TRUE(view.has_value());
-        ASSERT_TRUE(viewAgain.has_value());
+        ASSERT_HAS_VALUE(view);
+        ASSERT_HAS_VALUE(viewAgain);
         EXPECT_EQ(view->data(), viewAgain->data()) << "视图必须零拷贝指向权威记录";
         EXPECT_EQ(snapshotFields(store).size(), 4U) << "只读入口不得往权威记录里添条目";
     }
@@ -348,7 +349,7 @@ namespace AsynGyanis::Net
         // 就不是同一个意思），因此判存在性不能看值空不空，视图版也不许用空视图代替 nullopt
         EXPECT_TRUE(store.contains("x-empty"));
         const std::optional<std::string_view> emptyView = store.firstValueView("x-empty");
-        ASSERT_TRUE(emptyView.has_value());
+        ASSERT_HAS_VALUE(emptyView);
         EXPECT_TRUE(emptyView->empty());
         EXPECT_EQ(store.firstValue("x-empty").value_or("<缺失>"), "");
 

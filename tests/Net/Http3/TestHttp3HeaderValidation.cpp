@@ -1,3 +1,4 @@
+#include "ExpectedAssertions.h"
 #include "Net/Http3/Http3HeaderValidation.h"
 
 #include <gtest/gtest.h>
@@ -74,7 +75,7 @@ TEST(Http3HeaderValidation, MinimalRequestHeadPasses)
 {
     Http3HeaderValidator validator(Http3MessageKind::Request);
     const auto           result = feedRequest(validator, minimalRequestFields());
-    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_HAS_VALUE(result) << result.error().message;
 
     // 伪头要原样交给上层：路由按 :path、host 补齐按 :authority，判定器不做任何加工
     EXPECT_EQ(validator.methodText(), "GET");
@@ -231,7 +232,7 @@ TEST(Http3HeaderValidation, ContentLengthMustBeASingleConsistentNumber)
     Http3HeaderValidator sameTwice(Http3MessageKind::Request);
     const auto           sameResult =
             feedRequest(sameTwice, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {"content-length", "4"}, {"content-length", "4"}});
-    EXPECT_TRUE(sameResult.has_value()) << sameResult.error().message << "；重复但取值一致的 content-length 应接受";
+    EXPECT_HAS_VALUE(sameResult) << sameResult.error().message << "；重复但取值一致的 content-length 应接受";
     ASSERT_TRUE(sameTwice.contentLengthByteCount().has_value());
     EXPECT_EQ(*sameTwice.contentLengthByteCount(), 4ULL);
 
@@ -271,7 +272,7 @@ TEST(Http3HeaderValidation, ClassicConnectOmitsSchemeAndPath)
     // §4.4：CONNECT 必须省掉 :scheme 与 :path，且必须给 :authority
     Http3HeaderValidator plainConnect(Http3MessageKind::Request);
     const auto           okResult = feedRequest(plainConnect, {{":method", "CONNECT"}, {":authority", "example.com:443"}});
-    EXPECT_TRUE(okResult.has_value()) << okResult.error().message;
+    EXPECT_HAS_VALUE(okResult) << okResult.error().message;
     EXPECT_EQ(plainConnect.authorityText(), "example.com:443");
 
     Http3HeaderValidator withScheme(Http3MessageKind::Request);
@@ -287,7 +288,7 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
     // RFC 9220 的扩展 CONNECT：开了权限才认 :protocol，且 :scheme/:path 照普通请求要求（隧道之上还要按路径路由）
     Http3HeaderValidator permitted(Http3MessageKind::Request, true);
     const auto okResult = feedRequest(permitted, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/ws"}, {":protocol", "websocket"}});
-    EXPECT_TRUE(okResult.has_value()) << okResult.error().message;
+    EXPECT_HAS_VALUE(okResult) << okResult.error().message;
     EXPECT_EQ(permitted.protocolText(), "websocket");
 
     Http3HeaderValidator missingPath(Http3MessageKind::Request, true);
@@ -307,7 +308,7 @@ TEST(Http3HeaderValidation, ExtendedConnectNeedsPermissionAndKeepsSchemeAndPath)
     // 对照：同一个字段表把方法换成 CONNECT 就应当放行，否则上面那条在「永远拒 :protocol」的实现下也绿
     Http3HeaderValidator rightMethod(Http3MessageKind::Request, true);
     const auto allowed = feedRequest(rightMethod, {{":method", "CONNECT"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {":protocol", "websocket"}});
-    EXPECT_TRUE(allowed.has_value()) << "对照组被挡下：" << allowed.error().message;
+    EXPECT_HAS_VALUE(allowed) << "对照组被挡下：" << allowed.error().message;
 }
 
 TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
@@ -329,7 +330,7 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
 
     Http3HeaderValidator optionsStar(Http3MessageKind::Request);
     const auto           starResult = feedRequest(optionsStar, {{":method", "OPTIONS"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "*"}});
-    EXPECT_TRUE(starResult.has_value()) << starResult.error().message << "；OPTIONS 的星号形式合法（RFC 9110 §7.1）";
+    EXPECT_HAS_VALUE(starResult) << starResult.error().message << "；OPTIONS 的星号形式合法（RFC 9110 §7.1）";
 
     // 星号形式说的不是某个资源而是整台服务器，所以只有 OPTIONS 能用（RFC 9110 §7.4）。
     // 旧断言把 GET + "*" 当合法放行，而 h1 的请求行解析对同一条目标一直判语法错误——
@@ -419,7 +420,7 @@ TEST(Http3HeaderValidation, SchemeDecidesWhetherAuthorityIsRequired)
 
     Http3HeaderValidator hostOnly(Http3MessageKind::Request);
     const auto           hostResult = feedRequest(hostOnly, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"host", "example.com"}});
-    EXPECT_TRUE(hostResult.has_value()) << hostResult.error().message << "；只有 host 也满足要求";
+    EXPECT_HAS_VALUE(hostResult) << hostResult.error().message << "；只有 host 也满足要求";
     EXPECT_TRUE(hostOnly.hasHostHeader());
     EXPECT_TRUE(hostOnly.authorityText().empty()) << "没有 :authority 时不该凭空造一个";
 

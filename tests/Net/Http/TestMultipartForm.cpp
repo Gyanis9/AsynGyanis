@@ -2,6 +2,7 @@
 // 外加 HttpRequest::multipartForm() 的接线与一条真实服务器端到端上传
 #include "Net/Http/MultipartForm.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequest.h"
@@ -102,7 +103,7 @@ namespace AsynGyanis::Net
     TEST(MultipartForm, ParsesBrowserStyleFormWithFile)
     {
         const std::optional<MultipartFormData> form = parseForm(kBrowserStyleBody);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         ASSERT_EQ(form->parts().size(), 2u) << "段数不对，说明分隔符或空行界线定错了位";
 
         const MultipartPart &title = form->parts()[0];
@@ -128,7 +129,7 @@ namespace AsynGyanis::Net
     TEST(MultipartForm, PartsReferenceTheOriginalBodyWithoutCopying)
     {
         const std::optional<MultipartFormData> form = parseForm(kBrowserStyleBody);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *title = form->findPart("title");
         ASSERT_NE(title, nullptr);
         const char *bodyBegin = kBrowserStyleBody.data();
@@ -149,7 +150,7 @@ namespace AsynGyanis::Net
                                                       "--a b--\r\n"
                                                       "trailing epilogue\r\n";
         const std::optional<MultipartFormData> form = MultipartFormData::parse(body, R"(multipart/form-data; boundary="a b")");
-        ASSERT_TRUE(form.has_value()) << "带空格的引号边界是 RFC 2046 §5.1.1 允许的写法";
+        ASSERT_HAS_VALUE(form) << "带空格的引号边界是 RFC 2046 §5.1.1 允许的写法";
         ASSERT_EQ(form->parts().size(), 1u);
         EXPECT_EQ(form->parts()[0].content, "value");
     }
@@ -164,7 +165,7 @@ namespace AsynGyanis::Net
                                                       "first\r\nnot-a-boundary --b tail\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         ASSERT_EQ(form->parts().size(), 1u) << "行首判定失手会把一段切成两段";
         EXPECT_EQ(form->parts()[0].content, "first\r\nnot-a-boundary --b tail");
     }
@@ -184,7 +185,7 @@ namespace AsynGyanis::Net
                                                       "\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         ASSERT_EQ(form->parts().size(), 2u);
         EXPECT_TRUE(form->parts()[0].content.empty());
         ASSERT_TRUE(form->fieldValue("text").has_value()) << "空取值的字段被丢掉，表单就少了一个键";
@@ -207,7 +208,7 @@ namespace AsynGyanis::Net
                                                       "Content-Disposition: form-data; name=\"color\"\r\n\r\nblue\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         ASSERT_EQ(form->parts().size(), 2u) << "多选控件靠同名多段表达，丢掉第二段等于丢数据";
         EXPECT_EQ(form->fieldValue("color"), "red");
         EXPECT_EQ(form->parts()[1].content, "blue");
@@ -225,7 +226,7 @@ namespace AsynGyanis::Net
                                                       "v\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *part = form->findPart("a\"b");
         ASSERT_NE(part, nullptr) << R"(name 里的 \" 没按 RFC 9110 §5.6.4 展开)";
         EXPECT_EQ(part->fileName, "q\"b.txt");
@@ -241,7 +242,7 @@ namespace AsynGyanis::Net
                                                       "v\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = MultipartFormData::parse(body, "multipart/form-data; BOUNDARY=b");
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         ASSERT_EQ(form->parts().size(), 1u);
         EXPECT_EQ(form->parts()[0].name, "f");
     }
@@ -263,7 +264,7 @@ namespace AsynGyanis::Net
                                                       "y\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *first = form->findPart("f");
         ASSERT_NE(first, nullptr);
         EXPECT_EQ(first->fileName, "a.png");
@@ -286,7 +287,7 @@ namespace AsynGyanis::Net
                                                       "x\r\n"
                                                       "--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *part = form->findPart("f");
         ASSERT_NE(part, nullptr);
         EXPECT_TRUE(part->isFile());
@@ -327,7 +328,7 @@ namespace AsynGyanis::Net
                                                       "Content-Disposition: form-data; name=\"f\"; filename=\"\xE4\xB8\xAD\xE6\x96\x87.txt\"\r\n\r\n"
                                                       "x\r\n--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *part = form->findPart("f");
         ASSERT_NE(part, nullptr);
         EXPECT_EQ(part->fileName, "\xE4\xB8\xAD\xE6\x96\x87.txt") << "UTF-8 名字被改动过，说明有人在猜编码";
@@ -339,7 +340,7 @@ namespace AsynGyanis::Net
     TEST(MultipartForm, TreatsEmptyFileNameAsField)
     {
         const std::optional<MultipartFormData> form = parseForm("--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"\"\r\n\r\nx\r\n--b--");
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *part = form->findPart("f");
         ASSERT_NE(part, nullptr);
         EXPECT_FALSE(part->isFile());
@@ -495,7 +496,7 @@ namespace AsynGyanis::Net
                                                       "\r\n"
                                                       "x\r\n--b--";
         const std::optional<MultipartFormData> form = parseForm(body);
-        ASSERT_TRUE(form.has_value());
+        ASSERT_HAS_VALUE(form);
         const MultipartPart *part = form->findPart("f");
         ASSERT_NE(part, nullptr);
         EXPECT_EQ(part->contentType, "Text/Plain; charset=UTF-8");
@@ -518,7 +519,7 @@ namespace AsynGyanis::Net
 
         EXPECT_TRUE(request.setHeader("content-type", "MULTIPART/FORM-DATA; boundary=b"));
         const std::optional<MultipartFormData> form = request.multipartForm();
-        ASSERT_TRUE(form.has_value()) << "媒体类型大小写无关，参数写法照旧生效";
+        ASSERT_HAS_VALUE(form) << "媒体类型大小写无关，参数写法照旧生效";
         ASSERT_EQ(form->parts().size(), 2u);
         EXPECT_EQ(form->findPart("title")->content, "hello");
     }

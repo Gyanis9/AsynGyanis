@@ -16,6 +16,7 @@
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
 #include "QuicRfcVectors.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -122,7 +123,7 @@ namespace AsynGyanis::Net
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
         const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA5PacketNumber, additionalData, protectedPayload);
-        ASSERT_TRUE(opened.has_value()) << opened.error().message;
+        ASSERT_HAS_VALUE(opened) << opened.error().message;
         EXPECT_EQ(*opened, 1U);
         EXPECT_EQ(plaintext, makeBytesFromHex(kAppendixA5Plaintext));
     }
@@ -151,7 +152,7 @@ namespace AsynGyanis::Net
 
         std::vector<std::uint8_t> plaintext(protectedPayload.size() - kQuicAuthenticationTagByteLength);
         const auto                opened = openQuicProtectedPayload(plaintext, keys, kAppendixA2PacketNumber, additionalData, protectedPayload);
-        ASSERT_TRUE(opened.has_value()) << opened.error().message;
+        ASSERT_HAS_VALUE(opened) << opened.error().message;
         EXPECT_EQ(plaintext, buildAppendixA2Plaintext());
     }
 
@@ -229,7 +230,7 @@ namespace AsynGyanis::Net
         const auto                protectedPayload = sealToBytes(keys, kQuicMaximumIntegerValue, additionalData, plaintext);
         std::vector<std::uint8_t> openedPlaintext(plaintext.size());
         const auto                opened = openQuicProtectedPayload(openedPlaintext, keys, kQuicMaximumIntegerValue, additionalData, protectedPayload);
-        ASSERT_TRUE(opened.has_value()) << opened.error().message << "：最高位包号要能自洽（IV 拼接的移位边界）";
+        ASSERT_HAS_VALUE(opened) << opened.error().message << "：最高位包号要能自洽（IV 拼接的移位边界）";
         EXPECT_EQ(openedPlaintext, plaintext);
 
         // 包号不同就必须解不开，否则说明高位那几个字节根本没进 nonce

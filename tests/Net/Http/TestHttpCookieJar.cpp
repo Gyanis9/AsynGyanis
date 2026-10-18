@@ -1,4 +1,5 @@
 // HttpCookieJar 单元测试：RFC 6265 的域/路径/Secure 匹配、替换与删除语义、有界存储与发送次序。
+#include "ExpectedAssertions.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/HttpCookie.h"
 
@@ -267,7 +268,7 @@ namespace AsynGyanis::Net
         storeOne(jar, "other=3; Path=/api", "example.com", false, "/");
 
         const std::optional<std::string> header = headerFor(jar, "example.com", false, "/api/v1/orders");
-        ASSERT_TRUE(header.has_value());
+        ASSERT_HAS_VALUE(header);
         EXPECT_EQ(*header, "deep=1; other=3; root=2") << "三条都命中，按路径长度降序：" << *header;
     }
 
@@ -422,7 +423,7 @@ namespace AsynGyanis::Net
         jar.storeFromResponse("example.com", false, "/", {"late=2; Max-Age=315360000"}, kReceivedAt + std::chrono::hours{1});
         EXPECT_EQ(jar.cookieCount(), 1U) << "过期条目没被摘掉，会继续占着 maximumTotalCookies 与单域配额";
         const std::optional<std::string> header = headerFor(jar);
-        ASSERT_TRUE(header.has_value());
+        ASSERT_HAS_VALUE(header);
         EXPECT_NE(header->find("late=2"), std::string::npos);
         EXPECT_EQ(header->find("early=1"), std::string::npos);
     }

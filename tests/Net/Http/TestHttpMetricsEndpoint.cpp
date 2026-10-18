@@ -10,6 +10,7 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -268,12 +269,12 @@ namespace AsynGyanis::Net
         {
             const auto response =
                     sendAndReadResponse(fixture.listeningPort(), std::string("GET ") + std::string(path) + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            ASSERT_TRUE(response.has_value());
+            ASSERT_HAS_VALUE(response);
             EXPECT_NE(response->headers.find("200"), std::string::npos) << response->headers;
         }
 
         const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(metrics.has_value());
+        ASSERT_HAS_VALUE(metrics);
         const std::string &body = metrics->body;
 
         const std::string seriesPrefix = "asyn_http_responses_total{route=\"/user/:id\",";
@@ -307,11 +308,11 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
 
             const auto missing = sendAndReadResponse(fixture.listeningPort(), "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            ASSERT_TRUE(missing.has_value());
+            ASSERT_HAS_VALUE(missing);
             EXPECT_NE(missing->headers.find("404"), std::string::npos) << missing->headers;
 
             const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            ASSERT_TRUE(metrics.has_value());
+            ASSERT_HAS_VALUE(metrics);
             EXPECT_NE(metrics->body.find("route=\"unmatched\""), std::string::npos) << "未匹配路由没有落到 unmatched 哨兵：" << metrics->body;
             EXPECT_EQ(metrics->body.find("/no-such-route"), std::string::npos) << "未匹配的实际路径进了标签：" << metrics->body;
         }
@@ -332,11 +333,11 @@ namespace AsynGyanis::Net
             ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
 
             const auto staticFile = sendAndReadResponse(fixture.listeningPort(), "GET /assets/app.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            ASSERT_TRUE(staticFile.has_value());
+            ASSERT_HAS_VALUE(staticFile);
             EXPECT_NE(staticFile->headers.find("200"), std::string::npos) << staticFile->headers;
 
             const auto metrics = sendAndReadResponse(fixture.listeningPort(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            ASSERT_TRUE(metrics.has_value());
+            ASSERT_HAS_VALUE(metrics);
             EXPECT_NE(metrics->body.find("route=\"static\""), std::string::npos) << "通配路由没有落到 static 哨兵：" << metrics->body;
             EXPECT_EQ(metrics->body.find("/assets/app.js"), std::string::npos) << "静态文件的实际路径进了标签：" << metrics->body;
         }
@@ -618,7 +619,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(first.waitForText(helloResponse, "served-hello", kEndpointTimeout)) << "预热请求没有拿到响应";
 
         const auto parsed = sendAndReadResponse(fixture.listeningPort(), "GET /debug/connections HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_NE(parsed->body.find("\"total\""), std::string::npos) << parsed->body;
         EXPECT_NE(parsed->body.find("\"http/1.1\""), std::string::npos) << "按协议分组没有出现 http/1.1：" << parsed->body;
         EXPECT_NE(parsed->body.find("\"oldest_age_seconds\""), std::string::npos) << parsed->body;
@@ -626,7 +627,7 @@ namespace AsynGyanis::Net
 
         // 收发字节：本次 GET 的请求字节已被读入、响应字节已交给传输层，因此两条合计都应为正
         const std::optional<Base::ConfigValue> document = Base::parseConfigValue(parsed->body);
-        ASSERT_TRUE(document.has_value()) << parsed->body;
+        ASSERT_HAS_VALUE(document) << parsed->body;
         const std::uint64_t receivedBytes = document->at("received_bytes_total").get<std::uint64_t>();
         const std::uint64_t sentBytes     = document->at("sent_bytes_total").get<std::uint64_t>();
         EXPECT_GT(receivedBytes, 0U) << "连接聚合里没有收到字节：" << parsed->body;
@@ -655,14 +656,14 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "Info 档不该放行 Debug";
 
         const auto readBack = sendAndReadResponse(fixture.listeningPort(), "GET /debug/log-level HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_NE(readBack->body.find("\"level\":\"INFO\""), std::string::npos) << readBack->body;
 
         const std::string debugBody = R"({"level":"debug"})";
         const auto        writeBack =
                 sendAndReadResponse(fixture.listeningPort(), "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " +
                                                                      std::to_string(debugBody.size()) + "\r\nConnection: close\r\n\r\n" + debugBody);
-        ASSERT_TRUE(writeBack.has_value());
+        ASSERT_HAS_VALUE(writeBack);
         EXPECT_NE(writeBack->body.find("\"level\":\"DEBUG\""), std::string::npos) << writeBack->body;
         EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Debug) << "响应说改了，实际等级没变";
         EXPECT_TRUE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "新等级没有真的参与过滤";
@@ -672,7 +673,7 @@ namespace AsynGyanis::Net
         const auto        rejected = sendAndReadResponse(
                 fixture.listeningPort(), "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(badBody.size()) +
                                                  "\r\nConnection: close\r\n\r\n" + badBody);
-        ASSERT_TRUE(rejected.has_value());
+        ASSERT_HAS_VALUE(rejected);
         EXPECT_NE(rejected->headers.find("400"), std::string::npos) << rejected->headers;
         EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Debug) << "被拒的请求不该改动等级";
 
@@ -710,11 +711,11 @@ namespace AsynGyanis::Net
         } levelGuard{rootLogger, originalLevel};
 
         const auto connectionsWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /debug/connections HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(connectionsWithoutToken.has_value());
+        ASSERT_HAS_VALUE(connectionsWithoutToken);
         EXPECT_NE(connectionsWithoutToken->headers.find("401"), std::string::npos) << "连接聚合端点没有进令牌闸：" << connectionsWithoutToken->headers;
 
         const auto levelWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /debug/log-level HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(levelWithoutToken.has_value());
+        ASSERT_HAS_VALUE(levelWithoutToken);
         EXPECT_NE(levelWithoutToken->headers.find("401"), std::string::npos) << "日志等级端点没有进令牌闸：" << levelWithoutToken->headers;
 
         const std::string writeBody = R"({"level":"warn"})";
@@ -722,14 +723,14 @@ namespace AsynGyanis::Net
                                                           "PUT /debug/log-level HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nContent-Type: application/json\r\n"
                                                           "Content-Length: " +
                                                                   std::to_string(writeBody.size()) + "\r\nConnection: close\r\n\r\n" + writeBody);
-        ASSERT_TRUE(authorizedWrite.has_value());
+        ASSERT_HAS_VALUE(authorizedWrite);
         EXPECT_NE(authorizedWrite->headers.find("200"), std::string::npos) << "带对令牌的写被拒：" << authorizedWrite->headers;
         EXPECT_EQ(rootLogger.getLevel(), Base::LogLevel::Warn) << "闸门放行了，但等级没有真的改";
         EXPECT_FALSE(rootLogger.shouldLog(Base::LogLevel::Debug)) << "Warn 档不该放行 Debug";
         EXPECT_TRUE(rootLogger.shouldLog(Base::LogLevel::Warn));
 
         const auto healthWithoutToken = sendAndReadResponse(fixture.listeningPort(), "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(healthWithoutToken.has_value());
+        ASSERT_HAS_VALUE(healthWithoutToken);
         EXPECT_NE(healthWithoutToken->headers.find("200"), std::string::npos) << "存活探针不该被令牌闸拦住：" << healthWithoutToken->headers;
     }
 
@@ -781,7 +782,7 @@ namespace AsynGyanis::Net
             EXPECT_NE(receivedText.find("text/plain; version=0.0.4"), std::string::npos) << receivedText;
             // 刚打过的 /hello 必须已计入：抓 /metrics 这一次自身也会被计入，故只断言「至少 1 条」
             const std::optional<std::uint64_t> servedRequestCount = findMetricValue(receivedText, "asyn_http_requests_total ");
-            ASSERT_TRUE(servedRequestCount.has_value()) << "缺少请求总数指标：「" << receivedText << "」";
+            ASSERT_HAS_VALUE(servedRequestCount) << "缺少请求总数指标：「" << receivedText << "」";
             EXPECT_GE(*servedRequestCount, 1u) << "刚打过的请求没有计入请求总数";
             // 直方图按路由分组后，_count 带 route 标签；/hello 与 /metrics 各自一条，任取第一条验「至少 1 条」
             const std::size_t latencyCountBegin = receivedText.find("asyn_http_request_duration_seconds_count{route=");

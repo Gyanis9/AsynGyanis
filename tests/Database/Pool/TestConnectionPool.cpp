@@ -31,6 +31,7 @@
 
 #include "AllocationProbe.h"
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -1431,7 +1432,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(pool.discardedCount(), 1U) << "丢弃要直接读得到，不该让人从两个数的差里推";
 
         const auto discardedSample = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_discarded_total");
-        ASSERT_TRUE(discardedSample.has_value()) << "构造时没挂上丢弃读数，运维面就看不见这一族";
+        ASSERT_HAS_VALUE(discardedSample) << "构造时没挂上丢弃读数，运维面就看不见这一族";
         EXPECT_EQ(discardedSample->value, static_cast<std::uint64_t>(pool.discardedCount())) << "对外读数与判据用的不是同一个数";
 
         counter.sessionResetFails.store(false);
@@ -1463,8 +1464,8 @@ namespace AsynGyanis::Database
 
         const auto held   = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_held");
         const auto legacy = AsynGyanis::TestSupport::findRegistrySample("asyn_db_pool_connections_created_total");
-        ASSERT_TRUE(held.has_value()) << "新名字没挂上：按文档取 held 的面板读到的是空";
-        ASSERT_TRUE(legacy.has_value()) << "旧名字被摘掉：等于掐断随 v2.4.0 发布过的那张面板";
+        ASSERT_HAS_VALUE(held) << "新名字没挂上：按文档取 held 的面板读到的是空";
+        ASSERT_HAS_VALUE(legacy) << "旧名字被摘掉：等于掐断随 v2.4.0 发布过的那张面板";
         EXPECT_EQ(held->value, static_cast<std::uint64_t>(pool.createdCount()));
         EXPECT_EQ(legacy->value, held->value) << "两个名字报的不是同一个数——这比只留一个更难查";
     }

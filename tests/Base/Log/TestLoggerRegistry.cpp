@@ -7,6 +7,7 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -571,7 +572,7 @@ namespace AsynGyanis::Base
 
         const std::optional<LogLevel> level = LoggerRegistry::instance().loggerLevel("probe");
 
-        ASSERT_TRUE(level.has_value());
+        ASSERT_HAS_VALUE(level);
         EXPECT_EQ(level.value(), LogLevel::Warn);
     }
 

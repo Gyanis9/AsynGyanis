@@ -11,6 +11,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -44,7 +45,7 @@ namespace
     ConfigValue documentWith(const std::string &tracingJson)
     {
         const auto parsed = parseConfigValue(tracingJson);
-        EXPECT_TRUE(parsed.has_value()) << tracingJson;
+        EXPECT_HAS_VALUE(parsed) << tracingJson;
         ConfigValue document = ConfigValue::object();
         document["tracing"]  = parsed.value_or(ConfigValue{});
         return document;

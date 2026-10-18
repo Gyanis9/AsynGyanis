@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
 namespace AsynGyanis::Platform
@@ -854,7 +855,7 @@ namespace AsynGyanis::Platform
 
         EXPECT_TRUE(sawNestedEvent) << "递归根的名字是中文时，子目录里的变更没有上报：注册函数按本地代码页"
                                        "去解释那段 UTF-8 字节，递归枚举整段被跳过，而 addWatch 仍返回 true";
-        ASSERT_TRUE(nestedEventPath.has_value());
+        ASSERT_HAS_VALUE(nestedEventPath);
         EXPECT_NE(nestedEventPath->find(nonAsciiNameUtf8), std::string::npos) << "回调报回的整条路径不是 UTF-8（实测Windows 上带中文的名字经 path::string() 会得到 GBK "
                                                                                  "字节）：文件名对得上没用的，调用方拿这段字节去和配置里的路径比对永远对不上";
     }

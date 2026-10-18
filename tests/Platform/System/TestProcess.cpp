@@ -1,6 +1,7 @@
 // Process 单元测试：起进程、取退出码、观察存活、请求退出与强杀
 #include "Platform/System/Process.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/System/PlatformError.h"
 #include "Platform/System/ProcessInfo.h"
 #include "Platform/System/TextEncoding.h"
@@ -129,7 +130,7 @@ namespace AsynGyanis::Platform
         EXPECT_GT(handle.processId(), 0L) << "有效句柄应当能给出进程号";
 
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "子进程没有在时限内退出";
+        ASSERT_HAS_VALUE(exitCode) << "子进程没有在时限内退出";
         EXPECT_EQ(*exitCode, 7) << "取回的退出码不是子进程自己的";
         EXPECT_FALSE(Process::isRunning(handle)) << "已退出的子进程不该被报成还在运行";
     }
@@ -144,12 +145,12 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(handle.isValid());
 
         const std::optional<int> firstExitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(firstExitCode.has_value());
+        ASSERT_HAS_VALUE(firstExitCode);
         EXPECT_EQ(*firstExitCode, 3);
 
         // 第二次问：回收已经发生过，仍然要给同一个退出码
         const std::optional<int> secondExitCode = Process::pollExitCode(handle);
-        ASSERT_TRUE(secondExitCode.has_value()) << "退出码在第二次取用时丢了";
+        ASSERT_HAS_VALUE(secondExitCode) << "退出码在第二次取用时丢了";
         EXPECT_EQ(*secondExitCode, *firstExitCode);
     }
 
@@ -176,7 +177,7 @@ namespace AsynGyanis::Platform
 
         // 先回收：退出码被记下，pid 从此不再属于本进程
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "子进程没有在时限内退出";
+        ASSERT_HAS_VALUE(exitCode) << "子进程没有在时限内退出";
 
         EXPECT_FALSE(Process::requestTermination(handle)) << "对已回收的 pid 发出了 SIGTERM";
         EXPECT_FALSE(Process::forceTermination(handle)) << "对已回收的 pid 发出了 SIGKILL";
@@ -216,7 +217,7 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(target.processId(), childProcessId);
 
         const std::optional<int> exitCode = waitForExit(target, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "移动之后观察不到子进程退出";
+        ASSERT_HAS_VALUE(exitCode) << "移动之后观察不到子进程退出";
         EXPECT_EQ(*exitCode, 5);
     }
 
@@ -295,7 +296,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(handle.isValid()) << "无控制台宿主里 spawn 失败，错误码 " << PlatformError::lastErrorCode() << "（87 即 ERROR_INVALID_PARAMETER，指向句柄清单里的空句柄）";
 
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "子进程没在时限内退出";
+        ASSERT_HAS_VALUE(exitCode) << "子进程没在时限内退出";
         EXPECT_EQ(*exitCode, 3);
     }
 
@@ -559,13 +560,13 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(reapExternally(handle.processId())) << "测试自己没能回收这个子进程，本用例失去前提";
 
         const std::optional<int> exitCode = Process::pollExitCode(handle);
-        ASSERT_TRUE(exitCode.has_value()) << "已被别处回收也要交出「已经结束」这个事实，而不是查不到";
+        ASSERT_HAS_VALUE(exitCode) << "已被别处回收也要交出「已经结束」这个事实，而不是查不到";
         EXPECT_EQ(*exitCode, -1) << "已被别处回收时给不出真实退出码，只能记这个哨兵值";
         EXPECT_FALSE(Process::isRunning(handle)) << "已被回收的子进程不该报成还在运行";
 
         // 第二问必须有同一个答案：缓存排在有效性判定之前才做得到（进程号在上一问里已被作废）
         const std::optional<int> secondExitCode = Process::pollExitCode(handle);
-        ASSERT_TRUE(secondExitCode.has_value()) << "第二次问把记住的结果弄丢了，轮询方会永远等下去";
+        ASSERT_HAS_VALUE(secondExitCode) << "第二次问把记住的结果弄丢了，轮询方会永远等下去";
         EXPECT_EQ(*secondExitCode, -1);
     }
 
@@ -581,7 +582,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(Process::requestTermination(handle)) << "SIGTERM 没有发出去";
 
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "收到 SIGTERM 的子进程没有退出";
+        ASSERT_HAS_VALUE(exitCode) << "收到 SIGTERM 的子进程没有退出";
         EXPECT_EQ(*exitCode, 128 + SIGTERM) << "被信号终止的退出码应当按 128+信号号折算（shell 惯例）";
     }
 
@@ -597,7 +598,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(Process::forceTermination(handle)) << "SIGKILL 没有发出去";
 
         const std::optional<int> exitCode = waitForExit(handle, kWaitTimeoutMilliseconds);
-        ASSERT_TRUE(exitCode.has_value()) << "被强杀的进程没有退出";
+        ASSERT_HAS_VALUE(exitCode) << "被强杀的进程没有退出";
         EXPECT_EQ(*exitCode, 128 + SIGKILL);
         EXPECT_FALSE(Process::isRunning(handle));
     }
@@ -850,7 +851,7 @@ namespace AsynGyanis::Platform
             GTEST_SKIP() << "本用例只在被父侧以探针角色启起来时执行";
         }
         const auto reportPathText = ProcessInfo::environmentVariable(kKillProbeReportVariable);
-        ASSERT_TRUE(reportPathText.has_value()) << "父侧没交代报告落在哪";
+        ASSERT_HAS_VALUE(reportPathText) << "父侧没交代报告落在哪";
 
         const ExitCommand     command    = makeGuardProbeTargetCommand();
         const Process::Handle grandChild = Process::spawn(Process::LaunchOptions{
@@ -883,7 +884,7 @@ namespace AsynGyanis::Platform
     TEST(Process, KillWithParentGuardTakesTheChildDown)
     {
         const auto probe = runKillProbeAndReadReport("on");
-        ASSERT_TRUE(probe.has_value());
+        ASSERT_HAS_VALUE(probe);
         const long childProcessId = probe->processId;
         if (!probe->isGuardActive)
         {
@@ -912,7 +913,7 @@ namespace AsynGyanis::Platform
     TEST(Process, WithoutKillWithParentTheChildOutlivesTheProbe)
     {
         const auto probe = runKillProbeAndReadReport("off");
-        ASSERT_TRUE(probe.has_value());
+        ASSERT_HAS_VALUE(probe);
         const long childProcessId = probe->processId;
         EXPECT_FALSE(probe->isGuardActive) << "没要保护却挂上了作业，说明开关没被消费";
         ASSERT_TRUE(probe->wasRunning) << "对照组里孙进程也没起来，那「它活着」这条判据就是空的";

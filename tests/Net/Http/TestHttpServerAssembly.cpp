@@ -7,6 +7,7 @@
 #include "Net/Http/HttpsServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -101,7 +102,7 @@ namespace AsynGyanis::Net
             HttpServerConfiguration configuration;
             configuration.exposeMetrics = true;
             const auto outcome          = applyHttpServerConfiguration(server, configuration);
-            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+            ASSERT_HAS_VALUE(outcome) << outcome.error();
         };
 
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
@@ -135,7 +136,7 @@ namespace AsynGyanis::Net
         {
             const HttpServerConfiguration configuration; // accessLog 取默认（开）
             const auto                    outcome = applyHttpServerConfiguration(server, configuration);
-            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+            ASSERT_HAS_VALUE(outcome) << outcome.error();
         };
 
         RunningHttpServerFixture fixture(
@@ -175,7 +176,7 @@ namespace AsynGyanis::Net
             HttpServerConfiguration configuration;
             configuration.accessLog = false;
             const auto outcome      = applyHttpServerConfiguration(server, configuration);
-            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+            ASSERT_HAS_VALUE(outcome) << outcome.error();
         };
 
         RunningHttpServerFixture fixture(
@@ -212,7 +213,7 @@ namespace AsynGyanis::Net
             configuration.exposeMetrics  = true;
             configuration.opsBearerToken = "assemble-test-token";
             const auto outcome           = applyHttpServerConfiguration(server, configuration);
-            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+            ASSERT_HAS_VALUE(outcome) << outcome.error();
         };
 
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
@@ -253,7 +254,7 @@ namespace AsynGyanis::Net
             configuration.exposeMetrics = true;
             configuration.metricsPort   = 9101;
             const auto outcome          = applyHttpServerConfiguration(server, configuration);
-            ASSERT_TRUE(outcome.has_value()) << outcome.error();
+            ASSERT_HAS_VALUE(outcome) << outcome.error();
         };
 
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{}, {}, HttpParserLimits{}, configureServer);
@@ -498,7 +499,7 @@ namespace AsynGyanis::Net
         configuration.memoryBudgetBytes               = 4000;
 
         const auto outcome = applyHttpServerConfiguration(server, configuration);
-        ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << outcome.error();
         EXPECT_EQ(server.limits().idleTimeout, std::chrono::seconds{41}) << "HTTPS 侧没接住 limits.idle_timeout";
         EXPECT_EQ(server.parserLimits().maximumHeaderCount, 77u) << "HTTPS 侧没接住 parser_limits";
         EXPECT_EQ(server.maximumConnections(), 100u) << "单进程不摊，整机数原样落到本台";

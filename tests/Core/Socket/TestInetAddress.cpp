@@ -3,6 +3,7 @@
 #include "Core/Socket/InetAddress.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "ExpectedAssertions.h"
 #include "Platform/IO/NetworkInterface.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -78,7 +79,7 @@ namespace AsynGyanis::Core
     TEST(InetAddress, ResolveLocalhostReturnsValidAddress)
     {
         const std::optional<InetAddress> address = InetAddress::resolve("localhost", 8080);
-        ASSERT_TRUE(address.has_value());
+        ASSERT_HAS_VALUE(address);
         EXPECT_EQ(address->port(), 8080);
         // localhost 可能解析为 127.0.0.1（IPv4）或 ::1（IPv6）
         EXPECT_TRUE(address->ip() == "127.0.0.1" || address->ip() == "::1");
@@ -265,7 +266,7 @@ namespace AsynGyanis::Core
 
         // 输出的数字形式与构造用的文本是同一条通道：ip() 的产物要能被 parseLiteral 原样读回
         const std::optional<InetAddress> reparsed = InetAddress::parseLiteral(withScope.ip(), 1234);
-        ASSERT_TRUE(reparsed.has_value());
+        ASSERT_HAS_VALUE(reparsed);
         EXPECT_EQ(*reparsed, withScope);
 
         // 只有作用域号不同的两个对端（两块网卡上的同名链路本地地址）必须仍可区分
@@ -394,7 +395,7 @@ namespace AsynGyanis::Core
 
         // 端口与族都按字面量填好：这是给内核用的地址，不是只做一次格式检查
         const std::optional<InetAddress> address = InetAddress::parseLiteral("203.0.113.7", 9999);
-        ASSERT_TRUE(address.has_value());
+        ASSERT_HAS_VALUE(address);
         EXPECT_EQ(address->family(), AF_INET);
         EXPECT_EQ(address->port(), 9999);
     }
@@ -408,7 +409,7 @@ namespace AsynGyanis::Core
     TEST(InetAddress, ResolveHandlesScopedLiteralWithoutLookup)
     {
         const std::optional<InetAddress> address = InetAddress::resolve("fe80::1%5", 8080);
-        ASSERT_TRUE(address.has_value());
+        ASSERT_HAS_VALUE(address);
         EXPECT_EQ(address->scopeId(), 5U);
         EXPECT_EQ(address->ip(), "fe80::1%5");
         EXPECT_EQ(address->port(), 8080);

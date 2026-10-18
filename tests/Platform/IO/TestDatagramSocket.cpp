@@ -6,6 +6,7 @@
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
 
+#include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -812,7 +813,7 @@ namespace AsynGyanis::Platform
         ASSERT_GE(rawSocket, 0) << "夹具没能绑出端口，错误码 " << PlatformError::lastSocketErrorCode();
 
         auto adopted = DatagramSocket::adopt(rawSocket);
-        ASSERT_TRUE(adopted.has_value()) << "接管失败，错误码 " << adopted.error().value();
+        ASSERT_HAS_VALUE(adopted) << "接管失败，错误码 " << adopted.error().value();
         ASSERT_TRUE(adopted->isValid());
 
         // 端口是从那枚描述符问回来的：接手方不该知道调用方当初绑的是哪个端口

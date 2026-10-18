@@ -42,6 +42,7 @@
 #include "Database/Redis/RedisConnection.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -255,7 +256,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(getResult, nullptr) << m_connection->lastError();
 
         const std::optional<DatabaseValue> value = getResult->getValue(0);
-        ASSERT_TRUE(value.has_value()) << "写进去的键读不回来：参数没接上，或键名被改写过";
+        ASSERT_HAS_VALUE(value) << "写进去的键读不回来：参数没接上，或键名被改写过";
         EXPECT_EQ(std::get<std::string>(value.value()), "value with spaces");
     }
 
@@ -266,7 +267,7 @@ namespace AsynGyanis::Database
     {
         // 建连（含认证）已在 SetUp 里完成；这里确认链路真的可用：PING 的状态回复是 "PONG"
         const std::optional<DatabaseValue> reply = runScalar({"PING"});
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
 
         const auto *text = std::get_if<std::string>(&reply.value());
         ASSERT_NE(text, nullptr) << "状态回复应按 std::string 交出";
@@ -301,26 +302,26 @@ namespace AsynGyanis::Database
 
         // SET 的状态回复是 "OK"（REDIS_REPLY_STATUS → std::string）
         const std::optional<DatabaseValue> setReply = runScalar({"SET", key, "1"});
-        ASSERT_TRUE(setReply.has_value());
+        ASSERT_HAS_VALUE(setReply);
         ASSERT_NE(std::get_if<std::string>(&setReply.value()), nullptr);
         EXPECT_EQ(std::get<std::string>(setReply.value()), "OK");
 
         // INCR 的整数回复是 int64（REDIS_REPLY_INTEGER → std::int64_t）
         const std::optional<DatabaseValue> incremented = runScalar({"INCR", key});
-        ASSERT_TRUE(incremented.has_value());
+        ASSERT_HAS_VALUE(incremented);
         const auto *integerValue = std::get_if<std::int64_t>(&incremented.value());
         ASSERT_NE(integerValue, nullptr) << "整数回复应按 std::int64_t 交出";
         EXPECT_EQ(*integerValue, 2);
 
         // STRLEN 同样走整数回复，用于确认映射不是「只有 INCR 恰好对」
         const std::optional<DatabaseValue> length = runScalar({"STRLEN", key});
-        ASSERT_TRUE(length.has_value());
+        ASSERT_HAS_VALUE(length);
         ASSERT_NE(std::get_if<std::int64_t>(&length.value()), nullptr);
         EXPECT_EQ(std::get<std::int64_t>(length.value()), 1);
 
         // DEL 的整数回复表示删除个数
         const std::optional<DatabaseValue> deleted = runScalar({"DEL", key});
-        ASSERT_TRUE(deleted.has_value());
+        ASSERT_HAS_VALUE(deleted);
         EXPECT_EQ(std::get<std::int64_t>(deleted.value()), 1);
     }
 
@@ -336,10 +337,10 @@ namespace AsynGyanis::Database
         const std::string payload = std::string("张三 said \"hi\" -- not a comment\n") + '\0' + "tail";
 
         const std::optional<DatabaseValue> setReply = runScalar({"SET", key, payload});
-        ASSERT_TRUE(setReply.has_value());
+        ASSERT_HAS_VALUE(setReply);
 
         const std::optional<DatabaseValue> fetched = runScalar({"GET", key});
-        ASSERT_TRUE(fetched.has_value());
+        ASSERT_HAS_VALUE(fetched);
         const auto *text = std::get_if<std::string>(&fetched.value());
         ASSERT_NE(text, nullptr);
         // 逐字节相等：含 '\0' 的取值若被零终止假设截断，这里立刻暴露
@@ -360,7 +361,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(runScalar({"SET", key, payload}).has_value());
 
         const std::optional<DatabaseValue> fetched = runScalar({"GET", key});
-        ASSERT_TRUE(fetched.has_value());
+        ASSERT_HAS_VALUE(fetched);
         ASSERT_NE(std::get_if<std::string>(&fetched.value()), nullptr);
         EXPECT_EQ(std::get<std::string>(fetched.value()), payload);
     }
@@ -423,7 +424,7 @@ namespace AsynGyanis::Database
 
         // 列名是按下标合成的占位名，不承载语义（Redis 没有列名概念）
         const std::optional<std::string> firstName = result->columnName(0);
-        ASSERT_TRUE(firstName.has_value());
+        ASSERT_HAS_VALUE(firstName);
         EXPECT_EQ(firstName.value(), "value0");
     }
 
@@ -585,7 +586,7 @@ namespace AsynGyanis::Database
 
         // 反向确认：那条命令确实没到服务端（EXISTS 回 0）
         const std::optional<DatabaseValue> existsValue = runScalar({"EXISTS", key});
-        ASSERT_TRUE(existsValue.has_value());
+        ASSERT_HAS_VALUE(existsValue);
         EXPECT_EQ(std::get<std::int64_t>(*existsValue), 0) << "被丢弃的管道命令却在服务端生效了";
     }
 
@@ -613,7 +614,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_connection->executeCommand({"SET", key, "after-reset"}), nullptr) << m_connection->lastError();
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(std::get<std::string>(*readBack), "after-reset") << "复位之后写命令仍被排进上一个借用者的事务";
     }
 
@@ -634,7 +635,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(m_connection->lastError().empty()) << "事务已经了结，复位却发出了被服务端拒绝的命令：" << m_connection->lastError();
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(std::get<std::string>(*readBack), "1");
     }
 
@@ -667,7 +668,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(execReply->isEmpty()) << "事务被服务端判成冲突而中止：残留的 WATCH 没有在复位时撤掉";
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
 
         otherBorrower.disconnect();
@@ -704,7 +705,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(execReply->isEmpty()) << "被拒的 EXEC 把 WATCH 记成了已了结，下一个借用者的事务被中止";
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", key});
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(std::get<std::string>(*readBack), "committed-by-me");
 
         otherBorrower.disconnect();
@@ -769,7 +770,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(runScalar({"GET", foreignKey}).has_value()) << "复位后仍停在别处，键空间串给了下一个借用者";
         ASSERT_NE(m_connection->executeCommand({"SET", homeKey, "in-configured-db"}), nullptr) << m_connection->lastError();
         const std::optional<DatabaseValue> homeRead = runScalar({"GET", homeKey});
-        ASSERT_TRUE(homeRead.has_value()) << "回到配置库这一步没做成：连本库的写都读不到";
+        ASSERT_HAS_VALUE(homeRead) << "回到配置库这一步没做成：连本库的写都读不到";
         EXPECT_EQ(std::get<std::string>(*homeRead), "in-configured-db");
 
         // 外库那个键只能由认识它的连接来删：TearDown 的清扫扫得到配置库，扫不到 3 号库
@@ -805,7 +806,7 @@ namespace AsynGyanis::Database
         EXPECT_FALSE(runScalar({"GET", foreignKey}).has_value()) << "复位后仍停在别处：裸 SELECT 换掉的库位串给了下一个借用者";
         ASSERT_NE(m_connection->executeCommand({"SET", homeKey, "in-configured-db"}), nullptr) << m_connection->lastError();
         const std::optional<DatabaseValue> homeRead = runScalar({"GET", homeKey});
-        ASSERT_TRUE(homeRead.has_value()) << "回到配置库这一步没做成：连本库的写都读不到";
+        ASSERT_HAS_VALUE(homeRead) << "回到配置库这一步没做成：连本库的写都读不到";
         EXPECT_EQ(std::get<std::string>(*homeRead), "in-configured-db");
 
         // 外库那个键只能由认识它的连接来删：TearDown 的清扫扫得到配置库，扫不到 3 号库
@@ -1016,7 +1017,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(std::get<std::string>(freshWrite->getValue(0)), "OK");
 
         const std::optional<DatabaseValue> readBack = runScalar({"GET", freshKey});
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(std::get<std::string>(*readBack), "fresh") << "写命令被排进上一个借用者的事务，数据没落库";
     }
 
@@ -1096,7 +1097,7 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(m_connection->probeAlive()) << m_connection->lastError();
 
         const std::optional<DatabaseValue> identity = runScalar({"CLIENT", "ID"});
-        ASSERT_TRUE(identity.has_value());
+        ASSERT_HAS_VALUE(identity);
         ASSERT_NE(std::get_if<std::int64_t>(&identity.value()), nullptr) << "CLIENT ID 的整数回复没按 int64 交出";
         const std::int64_t victimId = std::get<std::int64_t>(identity.value());
 
@@ -1316,18 +1317,18 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_connection->executeCommand({"PSETEX", expiringKey, "100000", "v"}), nullptr) << m_connection->lastError();
 
         const std::optional<RedisKeyLifetime> absent = m_connection->keyLifetime(missingKey);
-        ASSERT_TRUE(absent.has_value()) << "不存在的键是一次正常的回答，不该与「问不成」共用一个空值：" << m_connection->lastError();
+        ASSERT_HAS_VALUE(absent) << "不存在的键是一次正常的回答，不该与「问不成」共用一个空值：" << m_connection->lastError();
         EXPECT_FALSE(absent->keyExists);
         EXPECT_FALSE(absent->hasExpiry());
 
         const std::optional<RedisKeyLifetime> noExpiry = m_connection->keyLifetime(foreverKey);
-        ASSERT_TRUE(noExpiry.has_value()) << m_connection->lastError();
+        ASSERT_HAS_VALUE(noExpiry) << m_connection->lastError();
         EXPECT_TRUE(noExpiry->keyExists);
         EXPECT_FALSE(noExpiry->remainingTime.has_value()) << "永不过期被读成了剩余 0，或键不存在被读成了永不过期";
         EXPECT_FALSE(noExpiry->hasExpiry());
 
         const std::optional<RedisKeyLifetime> expiring = m_connection->keyLifetime(expiringKey);
-        ASSERT_TRUE(expiring.has_value()) << m_connection->lastError();
+        ASSERT_HAS_VALUE(expiring) << m_connection->lastError();
         EXPECT_TRUE(expiring->keyExists);
         EXPECT_TRUE(expiring->hasExpiry());
         ASSERT_TRUE(expiring->remainingTime.has_value());
@@ -1373,7 +1374,7 @@ namespace AsynGyanis::Database
         do
         {
             const std::optional<RedisScanPage> page = m_connection->scanPage(cursor, pattern, std::optional<std::size_t>{1});
-            ASSERT_TRUE(page.has_value()) << m_connection->lastError();
+            ASSERT_HAS_VALUE(page) << m_connection->lastError();
             seen.insert(seen.end(), page->keys.begin(), page->keys.end());
             cursor   = page->nextCursor;
             finished = page->isFinished();

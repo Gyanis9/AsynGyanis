@@ -33,6 +33,7 @@
 #include "Database/Redis/RedisSentinel.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -181,7 +182,7 @@ namespace AsynGyanis::Database
         const std::expected<RedisSentinelAddress, std::string> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), credentials);
 
-        ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << outcome.error();
         EXPECT_FALSE(outcome->host.empty());
         EXPECT_EQ(outcome->port, expectedMasterPort()) << "哨兵报的主库端口不是预期的那个，发现链路可能连的是另一个实例";
     }
@@ -226,7 +227,7 @@ namespace AsynGyanis::Database
         const std::expected<RedisSentinelAddress, std::string> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
 
-        ASSERT_TRUE(outcome.has_value()) << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << outcome.error();
         EXPECT_EQ(outcome->port, expectedMasterPort());
     }
 
@@ -287,7 +288,7 @@ namespace AsynGyanis::Database
         const std::vector<RedisSentinelAddress>                sentinels{sentinelAddress()};
         const std::expected<RedisSentinelAddress, std::string> before =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
-        ASSERT_TRUE(before.has_value()) << before.error();
+        ASSERT_HAS_VALUE(before) << before.error();
 
         ConnectionConfig masterConfiguration = ConnectionConfig::redisDefault();
         masterConfiguration.host             = before->host;
@@ -324,7 +325,7 @@ namespace AsynGyanis::Database
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        ASSERT_TRUE(after.has_value()) << "90 秒内哨兵没有报出新主库；最后一次查询失败原因：" << lastQueryError;
+        ASSERT_HAS_VALUE(after) << "90 秒内哨兵没有报出新主库；最后一次查询失败原因：" << lastQueryError;
         EXPECT_NE(after->port, before->port) << "旧主库已被杀掉，哨兵报回来的仍是同一个端口——地址没有真的变";
 
         ConnectionConfig promotedConfiguration = ConnectionConfig::redisDefault();

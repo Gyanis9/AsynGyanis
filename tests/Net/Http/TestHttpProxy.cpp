@@ -4,6 +4,7 @@
 #include "Net/Http/Client/HttpProxyPolicy.h"
 
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
@@ -87,23 +88,23 @@ namespace AsynGyanis::Net
     TEST(HttpProxyPolicy, ParsesHttpUrlsAndBareAuthorities)
     {
         const auto full = parseProxyUrl("http://proxy.example.com:3128");
-        ASSERT_TRUE(full.has_value()) << full.error();
+        ASSERT_HAS_VALUE(full) << full.error();
         EXPECT_EQ(full->host, "proxy.example.com");
         EXPECT_EQ(full->port, 3128U);
         EXPECT_TRUE(full->authorizationHeader.empty()) << "没有凭据段却拼出了认证头";
 
         const auto bare = parseProxyUrl("proxy.internal:8080");
-        ASSERT_TRUE(bare.has_value()) << bare.error();
+        ASSERT_HAS_VALUE(bare) << bare.error();
         EXPECT_EQ(bare->host, "proxy.internal");
         EXPECT_EQ(bare->port, 8080U);
 
         const auto defaultPort = parseProxyUrl("proxy.internal");
-        ASSERT_TRUE(defaultPort.has_value()) << defaultPort.error();
+        ASSERT_HAS_VALUE(defaultPort) << defaultPort.error();
         EXPECT_EQ(defaultPort->host, "proxy.internal");
         EXPECT_EQ(defaultPort->port, 80U) << "裸主机名没有落到 http 的默认端口";
 
         const auto v6 = parseProxyUrl("http://[::1]:3128");
-        ASSERT_TRUE(v6.has_value()) << v6.error();
+        ASSERT_HAS_VALUE(v6) << v6.error();
         EXPECT_EQ(v6->host, "::1") << "IPv6 方括号没有剥掉";
         EXPECT_EQ(v6->port, 3128U);
     }
@@ -117,27 +118,27 @@ namespace AsynGyanis::Net
     TEST(HttpProxyPolicy, AcceptsHttpsProxySchemeWithTlsFlagAndPort443)
     {
         const auto defaultPort = parseProxyUrl("https://proxy.example");
-        ASSERT_TRUE(defaultPort.has_value()) << defaultPort.error();
+        ASSERT_HAS_VALUE(defaultPort) << defaultPort.error();
         EXPECT_TRUE(defaultPort->isTls) << "https:// 代理没有置 TLS 标志";
         EXPECT_EQ(defaultPort->port, 443U) << "https:// 代理没有落到 443 缺省端口";
 
         const auto explicitPort = parseProxyUrl("https://proxy.example:8443");
-        ASSERT_TRUE(explicitPort.has_value()) << explicitPort.error();
+        ASSERT_HAS_VALUE(explicitPort) << explicitPort.error();
         EXPECT_TRUE(explicitPort->isTls);
         EXPECT_EQ(explicitPort->port, 8443U);
 
         const auto uppercase = parseProxyUrl("HTTPS://Proxy.Example");
-        ASSERT_TRUE(uppercase.has_value()) << uppercase.error();
+        ASSERT_HAS_VALUE(uppercase) << uppercase.error();
         EXPECT_TRUE(uppercase->isTls) << "scheme 比较区分了大小写";
 
         const auto withCredentials = parseProxyUrl("https://alice:s3cret@proxy.example:8443");
-        ASSERT_TRUE(withCredentials.has_value()) << withCredentials.error();
+        ASSERT_HAS_VALUE(withCredentials) << withCredentials.error();
         EXPECT_TRUE(withCredentials->isTls);
         EXPECT_EQ(withCredentials->authorizationHeader, "Basic YWxpY2U6czNjcmV0");
 
         // 明文代理仍是默认档：没有 https:// 前缀时按 80 且不置 TLS 位
         const auto plain = parseProxyUrl("http://proxy.example:3128");
-        ASSERT_TRUE(plain.has_value()) << plain.error();
+        ASSERT_HAS_VALUE(plain) << plain.error();
         EXPECT_FALSE(plain->isTls) << "http:// 代理被误置 TLS 标志";
     }
 
@@ -166,13 +167,13 @@ namespace AsynGyanis::Net
     TEST(HttpProxyPolicy, TurnsUserInfoIntoBasicAuthorizationHeader)
     {
         const auto route = parseProxyUrl("http://alice:s3cret@proxy.example.com:3128");
-        ASSERT_TRUE(route.has_value()) << route.error();
+        ASSERT_HAS_VALUE(route) << route.error();
         EXPECT_EQ(route->host, "proxy.example.com") << "凭据段没有从主机名里剥掉";
         EXPECT_EQ(route->port, 3128U);
         EXPECT_EQ(route->authorizationHeader, "Basic YWxpY2U6czNjcmV0");
 
         const auto escaped = parseProxyUrl("http://alice:p%40ss@proxy.example.com:3128");
-        ASSERT_TRUE(escaped.has_value()) << escaped.error();
+        ASSERT_HAS_VALUE(escaped) << escaped.error();
         EXPECT_EQ(escaped->authorizationHeader, "Basic YWxpY2U6cEBzcw==") << "%XX 没有解码：p%40ss 应当解回 p@ss";
 
         const auto badEscape = parseProxyUrl("http://alice:p%ZZ@proxy.example.com:3128");
@@ -250,19 +251,19 @@ namespace AsynGyanis::Net
         policy.noProxy            = "direct.example";
 
         const auto plain = resolveOutboundProxy(policy, "http", "origin.example", 80);
-        ASSERT_TRUE(plain.has_value()) << plain.error();
+        ASSERT_HAS_VALUE(plain) << plain.error();
         ASSERT_TRUE(plain->has_value()) << "http 目标没有选中 http_proxy 那一支";
         EXPECT_EQ(plain->value().host, "plain-proxy");
         EXPECT_EQ(plain->value().port, 3128U);
 
         const auto secure = resolveOutboundProxy(policy, "https", "origin.example", 443);
-        ASSERT_TRUE(secure.has_value()) << secure.error();
+        ASSERT_HAS_VALUE(secure) << secure.error();
         ASSERT_TRUE(secure->has_value()) << "https 目标没有选中 https_proxy 那一支";
         EXPECT_EQ(secure->value().host, "tls-proxy");
         EXPECT_EQ(secure->value().port, 3129U);
 
         const auto exempt = resolveOutboundProxy(policy, "http", "direct.example", 80);
-        ASSERT_TRUE(exempt.has_value()) << exempt.error();
+        ASSERT_HAS_VALUE(exempt) << exempt.error();
         EXPECT_FALSE(exempt->has_value()) << "豁免表命中的目标仍在走代理";
 
         HttpProxyPolicy broken;
@@ -275,11 +276,11 @@ namespace AsynGyanis::Net
         HttpProxyPolicy none;
         none.consultEnvironment = false;
         const auto direct       = resolveOutboundProxy(none, "http", "origin.example", 80);
-        ASSERT_TRUE(direct.has_value()) << direct.error();
+        ASSERT_HAS_VALUE(direct) << direct.error();
         EXPECT_FALSE(direct->has_value()) << "没有配置代理时没有直连";
 
         const auto otherScheme = resolveOutboundProxy(policy, "ftp", "origin.example", 21);
-        ASSERT_TRUE(otherScheme.has_value()) << otherScheme.error();
+        ASSERT_HAS_VALUE(otherScheme) << otherScheme.error();
         EXPECT_FALSE(otherScheme->has_value()) << "非 http(s) 的 scheme 不该套代理";
     }
 

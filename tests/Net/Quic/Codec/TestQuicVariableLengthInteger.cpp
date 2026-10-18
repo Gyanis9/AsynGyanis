@@ -12,6 +12,7 @@
 
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -53,22 +54,22 @@ namespace AsynGyanis::Net
         const auto oneByteForm   = makeUnsignedBytes({0x25});
 
         const auto decodedEight = decodeQuicVariableLengthInteger(eightByteForm);
-        ASSERT_TRUE(decodedEight.has_value());
+        ASSERT_HAS_VALUE(decodedEight);
         EXPECT_EQ(decodedEight->value, 151288809941952652ULL);
         EXPECT_EQ(decodedEight->byteCount, 8U);
 
         const auto decodedFour = decodeQuicVariableLengthInteger(fourByteForm);
-        ASSERT_TRUE(decodedFour.has_value());
+        ASSERT_HAS_VALUE(decodedFour);
         EXPECT_EQ(decodedFour->value, 494878333ULL);
         EXPECT_EQ(decodedFour->byteCount, 4U);
 
         const auto decodedTwo = decodeQuicVariableLengthInteger(twoByteForm);
-        ASSERT_TRUE(decodedTwo.has_value());
+        ASSERT_HAS_VALUE(decodedTwo);
         EXPECT_EQ(decodedTwo->value, 15293ULL);
         EXPECT_EQ(decodedTwo->byteCount, 2U);
 
         const auto decodedOne = decodeQuicVariableLengthInteger(oneByteForm);
-        ASSERT_TRUE(decodedOne.has_value());
+        ASSERT_HAS_VALUE(decodedOne);
         EXPECT_EQ(decodedOne->value, 37ULL);
         EXPECT_EQ(decodedOne->byteCount, 1U);
     }
@@ -84,12 +85,12 @@ namespace AsynGyanis::Net
         const auto fourBytePadded = makeUnsignedBytes({0x80, 0x00, 0x00, 0x25});
 
         const auto decodedTwo = decodeQuicVariableLengthInteger(twoBytePadded);
-        ASSERT_TRUE(decodedTwo.has_value()) << "非最短的 2 字节档必须照样收下";
+        ASSERT_HAS_VALUE(decodedTwo) << "非最短的 2 字节档必须照样收下";
         EXPECT_EQ(decodedTwo->value, 37ULL);
         EXPECT_EQ(decodedTwo->byteCount, 2U);
 
         const auto decodedFour = decodeQuicVariableLengthInteger(fourBytePadded);
-        ASSERT_TRUE(decodedFour.has_value());
+        ASSERT_HAS_VALUE(decodedFour);
         EXPECT_EQ(decodedFour->value, 37ULL);
         EXPECT_EQ(decodedFour->byteCount, 4U);
     }
@@ -123,7 +124,7 @@ namespace AsynGyanis::Net
 
             // 编出来还要能原样解回同一个值与同一宽度，否则「回填长度域」这类用法会在下一层暴露
             const auto decoded = decodeQuicVariableLengthInteger(std::span<const std::uint8_t>(encodedBytes));
-            ASSERT_TRUE(decoded.has_value()) << "编码器产出的字节自身解不回，值 " << sample.value;
+            ASSERT_HAS_VALUE(decoded) << "编码器产出的字节自身解不回，值 " << sample.value;
             EXPECT_EQ(decoded->value, sample.value);
             EXPECT_EQ(decoded->byteCount, sample.bytes.size());
         }
@@ -153,13 +154,13 @@ namespace AsynGyanis::Net
         const auto buffer = makeUnsignedBytes({0x7b, 0xbd, 0x25});
 
         const auto first = decodeQuicVariableLengthInteger(buffer);
-        ASSERT_TRUE(first.has_value());
+        ASSERT_HAS_VALUE(first);
         EXPECT_EQ(first->value, 15293ULL);
         EXPECT_EQ(first->byteCount, 2U);
 
         const std::span<const std::uint8_t> remaining(buffer.begin() + static_cast<std::ptrdiff_t>(first->byteCount), buffer.end());
         const auto                          second = decodeQuicVariableLengthInteger(remaining);
-        ASSERT_TRUE(second.has_value()) << "按 byteCount 前移后，下一个字段必须能接着解";
+        ASSERT_HAS_VALUE(second) << "按 byteCount 前移后，下一个字段必须能接着解";
         EXPECT_EQ(second->value, 37ULL);
     }
 

@@ -6,6 +6,7 @@
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -65,7 +66,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] ConfigValue parseBody(const std::string &text)
         {
             const auto parsed = parseConfigValue(text);
-            EXPECT_TRUE(parsed.has_value()) << "渲染结果不是合法 JSON：" << text;
+            EXPECT_HAS_VALUE(parsed) << "渲染结果不是合法 JSON：" << text;
             return parsed.value_or(ConfigValue{});
         }
     } // namespace

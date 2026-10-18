@@ -11,6 +11,7 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Common/Decimal.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -31,7 +32,7 @@ namespace AsynGyanis::Database
         std::string parsedText(const std::string_view text)
         {
             const auto parsed = Decimal::tryParse(text);
-            EXPECT_TRUE(parsed.has_value()) << "应当被接受为十进制文本：" << text;
+            EXPECT_HAS_VALUE(parsed) << "应当被接受为十进制文本：" << text;
             return parsed.has_value() ? parsed->text() : std::string{};
         }
     } // namespace

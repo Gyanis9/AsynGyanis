@@ -9,6 +9,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogContext.h"
 #include "Core/Coroutine/Task.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -170,7 +171,7 @@ TEST(HttpTracingMiddleware, SampledRequestYieldsAServerSpanAndRepointsTheHeader)
 
     // 头部指回本节：下游从头部读到的段标识就是这一节的标识，嵌套因此是自动的
     const std::optional<TraceIdentifiers> repointed = extractTraceContext(request);
-    ASSERT_TRUE(repointed.has_value());
+    ASSERT_HAS_VALUE(repointed);
     EXPECT_EQ(repointed->traceIdText(), record.identity.traceIdText());
     EXPECT_EQ(repointed->parentIdText(), record.identity.spanIdText());
     EXPECT_TRUE(repointed->isSampled());
@@ -197,7 +198,7 @@ TEST(HttpTracingMiddleware, UpstreamContextBecomesTheParent)
     EXPECT_NE(record.identity.spanIdText(), upstream.parentIdText()) << "本节必须换一个新段标识，否则与上游同节";
     // 改写之后的头部把本节当作下一跳的上级
     const std::optional<TraceIdentifiers> repointed = extractTraceContext(request);
-    ASSERT_TRUE(repointed.has_value());
+    ASSERT_HAS_VALUE(repointed);
     EXPECT_EQ(repointed->parentIdText(), record.identity.spanIdText());
 }
 
@@ -218,7 +219,7 @@ TEST(HttpTracingMiddleware, UnsampledUpstreamRecordsNothing)
 
     EXPECT_EQ(exporter->recordCount(), 0U);
     const std::optional<TraceIdentifiers> repointed = extractTraceContext(request);
-    ASSERT_TRUE(repointed.has_value());
+    ASSERT_HAS_VALUE(repointed);
     EXPECT_EQ(repointed->traceIdText(), upstream.traceIdText());
     EXPECT_FALSE(repointed->isSampled()) << "采样位要在往下传的路上保持为 0";
     EXPECT_NE(repointed->parentIdText(), upstream.parentIdText());

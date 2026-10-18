@@ -14,6 +14,7 @@
 #include "Database/Sqlite/SqliteResult.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -698,7 +699,7 @@ namespace AsynGyanis::Database
 
         // FLOAT 存储类落到 double，不能退化成整数或文本
         const std::optional<double> score = asReal(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(score.has_value()) << databaseValueTypeName(result->getValue(std::size_t{0}));
+        ASSERT_HAS_VALUE(score) << databaseValueTypeName(result->getValue(std::size_t{0}));
         EXPECT_DOUBLE_EQ(score.value(), 95.5);
     }
 
@@ -710,7 +711,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(result->next());
 
         const std::optional<std::string> name = asText(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(name.has_value()) << databaseValueTypeName(result->getValue(std::size_t{0}));
+        ASSERT_HAS_VALUE(name) << databaseValueTypeName(result->getValue(std::size_t{0}));
         EXPECT_EQ(name.value(), "Alice");
     }
 
@@ -771,7 +772,7 @@ namespace AsynGyanis::Database
 
         // x'5c0041' 是 0x5C、0x00、0x41 三个字节：按长度拷贝才保得住中间那个 '\0'
         const std::optional<BinaryBytes> payload = asBytes(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(payload.has_value()) << databaseValueTypeName(result->getValue(std::size_t{0}));
+        ASSERT_HAS_VALUE(payload) << databaseValueTypeName(result->getValue(std::size_t{0}));
         ASSERT_EQ(payload->size(), 3u);
         EXPECT_EQ((*payload)[0], 0x5C);
         EXPECT_EQ((*payload)[1], 0x00);
@@ -817,11 +818,11 @@ namespace AsynGyanis::Database
 
         // 声明类型是 DATE / NUMERIC，但存进去的是无法无损转换的文本，SQLite 给的存储类就是 TEXT
         const std::optional<std::string> dateText = asText(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(dateText.has_value()) << databaseValueTypeName(result->getValue(std::size_t{0}));
+        ASSERT_HAS_VALUE(dateText) << databaseValueTypeName(result->getValue(std::size_t{0}));
         EXPECT_EQ(dateText.value(), "2026-09-12");
 
         const std::optional<std::string> numericText = asText(result->getValue(std::size_t{1}));
-        ASSERT_TRUE(numericText.has_value()) << databaseValueTypeName(result->getValue(std::size_t{1}));
+        ASSERT_HAS_VALUE(numericText) << databaseValueTypeName(result->getValue(std::size_t{1}));
         EXPECT_EQ(numericText.value(), "n/a");
     }
 

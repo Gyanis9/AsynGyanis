@@ -19,6 +19,7 @@
 #include "QuicRfcVectors.h"
 
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -867,7 +868,7 @@ namespace AsynGyanis::Net
         // 失败时点名的是令牌本身而不是「连接没建起来」那条远端后果
         const QuicAddressValidationTokenCodec verifier(std::span<const std::uint8_t>(kAddressValidationTestKey), std::chrono::seconds{30});
         const auto locallyVerified = verifier.verify(std::span<const std::uint8_t>(addressValidationToken), sender.localAddress(), std::chrono::system_clock::now());
-        ASSERT_TRUE(locallyVerified.has_value()) << "回包里那张令牌自家验不过，状态是 " << static_cast<int>(locallyVerified.error());
+        ASSERT_HAS_VALUE(locallyVerified) << "回包里那张令牌自家验不过，状态是 " << static_cast<int>(locallyVerified.error());
         EXPECT_EQ(locallyVerified->originalDestinationConnectionId.size(), 8U) << "令牌恢复的原始目的标识长度不对";
 
         // ② 带着这张令牌重来，目的标识换成本端给出去的那一条

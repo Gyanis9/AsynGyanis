@@ -2,6 +2,7 @@
 
 #include "Core/Process/UpgradeChannel.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -90,7 +91,7 @@ namespace AsynGyanis::Core
         ASSERT_GE(oldGeneration, 0) << "夹具没能造出监听套接字";
 
         auto channel = UpgradeChannel::open();
-        ASSERT_TRUE(channel.has_value()) << channel.error();
+        ASSERT_HAS_VALUE(channel) << channel.error();
         ASSERT_FALSE(channel->address().empty());
 
         // 交棒侧放到另一条线程上：通道两端都是阻塞调用，同一条线程上做两侧会自己等自己
@@ -118,7 +119,7 @@ namespace AsynGyanis::Core
 
         auto adopted = adoptHandedOverListener(channel->address(), kAdoptBudget);
         handoffThread.join();
-        ASSERT_TRUE(adopted.has_value()) << "没收回监听套接字：" << adopted.error() << "；交棒侧：" << handoffError;
+        ASSERT_HAS_VALUE(adopted) << "没收回监听套接字：" << adopted.error() << "；交棒侧：" << handoffError;
         ASSERT_TRUE(isHandedOff.load(std::memory_order_acquire)) << "交棒侧没写完：" << handoffError;
 
         static_cast<void>(Platform::FileDescriptor::close(oldGeneration));
@@ -167,9 +168,9 @@ namespace AsynGyanis::Core
         GTEST_SKIP() << "Windows 上的交接通道是回环端口，没有套接字文件要收尾";
 #else
         auto first = UpgradeChannel::open();
-        ASSERT_TRUE(first.has_value()) << first.error();
+        ASSERT_HAS_VALUE(first) << first.error();
         auto second = UpgradeChannel::open();
-        ASSERT_TRUE(second.has_value()) << second.error();
+        ASSERT_HAS_VALUE(second) << second.error();
         EXPECT_NE(first->address(), second->address());
         EXPECT_TRUE(std::filesystem::exists(first->address()));
 
@@ -187,7 +188,7 @@ namespace AsynGyanis::Core
     {
         const Platform::Socket::Initialization network;
         auto                                   channel = UpgradeChannel::open();
-        ASSERT_TRUE(channel.has_value()) << "开不出交接通道：" << channel.error();
+        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error();
 
         const auto started = std::chrono::steady_clock::now();
         const auto peer    = channel->waitForPeer(300ms);
@@ -212,13 +213,13 @@ namespace AsynGyanis::Core
     {
         const Platform::Socket::Initialization network;
         auto                                   channel = UpgradeChannel::open();
-        ASSERT_TRUE(channel.has_value()) << "开不出交接通道：" << channel.error();
+        ASSERT_HAS_VALUE(channel) << "开不出交接通道：" << channel.error();
 
         const int client = Platform::Socket::connectHandoffChannel(channel->address());
         ASSERT_GE(client, 0) << "按通道地址连不过去：夹具自己没连上";
 
         const auto peer = channel->waitForPeer(kAdoptBudget);
-        ASSERT_TRUE(peer.has_value()) << peer.error();
+        ASSERT_HAS_VALUE(peer) << peer.error();
         static_cast<void>(Platform::FileDescriptor::close(*peer));
         static_cast<void>(Platform::FileDescriptor::close(client));
     }

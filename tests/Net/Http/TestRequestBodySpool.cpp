@@ -11,6 +11,7 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/EventLoop/EventLoop.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -157,7 +158,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(responseText.find("bytes=" + std::to_string(payload.size())), std::string::npos) << "落盘字节数与发出的不符：" << responseText;
 
         ASSERT_TRUE(waitForCondition([&handlerFinished] { return handlerFinished.load(std::memory_order_acquire); }, kWaitTimeout));
-        ASSERT_TRUE(keptSpool.has_value()) << "处理器没交出文件：" << responseText;
+        ASSERT_HAS_VALUE(keptSpool) << "处理器没交出文件：" << responseText;
 
         const std::filesystem::path landed = keptSpool->path();
         ASSERT_TRUE(std::filesystem::exists(landed)) << "交出来的路径上并没有文件：" << landed.string();
@@ -488,7 +489,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.waitForText(responseText, "empty-bytes=", kWaitTimeout)) << "空正文没有走通：" << responseText;
         EXPECT_NE(responseText.find("empty-bytes=0"), std::string::npos) << responseText;
         ASSERT_TRUE(waitForCondition([&handlerFinished] { return handlerFinished.load(std::memory_order_acquire); }, kWaitTimeout));
-        ASSERT_TRUE(keptSpool.has_value()) << "空正文没交出文件：" << responseText;
+        ASSERT_HAS_VALUE(keptSpool) << "空正文没交出文件：" << responseText;
         EXPECT_TRUE(std::filesystem::exists(keptSpool->path())) << "交出的路径上没有文件";
         EXPECT_EQ(std::filesystem::file_size(keptSpool->path()), 0U);
 

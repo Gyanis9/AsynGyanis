@@ -13,6 +13,7 @@
 
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -68,7 +69,7 @@ namespace AsynGyanis::Net
         packet.resize(1200);
 
         const auto header = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(header.has_value()) << header.error().message;
+        ASSERT_HAS_VALUE(header) << header.error().message;
         EXPECT_TRUE(header->isLongHeader);
         EXPECT_EQ(header->longPacketType, QuicLongPacketType::Initial);
         EXPECT_EQ(header->version, kQuicVersion1);
@@ -92,7 +93,7 @@ namespace AsynGyanis::Net
         packet.resize(1200);
 
         const auto decoded = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         QuicPacketHeader header = *decoded;
         ASSERT_TRUE(refreshQuicPacketHeader(header, 0xc3, packet).has_value());
         EXPECT_EQ(header.packetNumberByteCount, 4U);
@@ -109,7 +110,7 @@ namespace AsynGyanis::Net
         packet.resize(1200);
 
         const auto decoded = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         QuicPacketHeader header = *decoded;
         ASSERT_TRUE(refreshQuicPacketHeader(header, 0xc0, packet).has_value());
         EXPECT_EQ(header.packetNumberByteCount, 1U) << "c0 的低 2 位是 00，会被当成 1 字节包号";
@@ -125,7 +126,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(packet.size(), 21U);
 
         const auto header = decodeQuicPacketHeader(packet, 0);
-        ASSERT_TRUE(header.has_value()) << header.error().message;
+        ASSERT_HAS_VALUE(header) << header.error().message;
         EXPECT_FALSE(header->isLongHeader);
         EXPECT_EQ(header->version, 0U) << "短头线上不带版本，保持 0 而不是谎报成 1";
         EXPECT_TRUE(header->destinationConnectionId.empty());
@@ -142,7 +143,7 @@ namespace AsynGyanis::Net
         const auto packet = makeBytesFromHex(kAppendixA5UnprotectedShortPacket);
 
         const auto decoded = decodeQuicPacketHeader(packet, 0);
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         QuicPacketHeader header = *decoded;
         ASSERT_TRUE(refreshQuicPacketHeader(header, 0x42, packet).has_value());
         EXPECT_EQ(header.packetNumberByteCount, 3U);
@@ -163,7 +164,7 @@ namespace AsynGyanis::Net
         packet.resize(20);
 
         const auto decoded = decodeQuicPacketHeader(packet, 0);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         QuicPacketHeader header = *decoded;
         ASSERT_TRUE(refreshQuicPacketHeader(header, 0x66, packet).has_value());
         EXPECT_TRUE(header.isSpinBitSet);
@@ -181,12 +182,12 @@ namespace AsynGyanis::Net
         packet.resize(1 + 18 + 2 + 16);
 
         const auto correct = decodeQuicPacketHeader(packet, 18);
-        ASSERT_TRUE(correct.has_value()) << correct.error().message;
+        ASSERT_HAS_VALUE(correct) << correct.error().message;
         EXPECT_EQ(copyOf(correct->destinationConnectionId), makeBytesFromHex("aabbccddeeff00112233445566778899aabb"));
         EXPECT_EQ(correct->packetNumberOffset, 19U);
 
         const auto tooLong = decodeQuicPacketHeader(packet, 20);
-        ASSERT_TRUE(tooLong.has_value()) << "按 20 字节读只是内容错，不会当场失败——正因如此必须靠断言钉住";
+        ASSERT_HAS_VALUE(tooLong) << "按 20 字节读只是内容错，不会当场失败——正因如此必须靠断言钉住";
         EXPECT_NE(copyOf(tooLong->destinationConnectionId), copyOf(correct->destinationConnectionId)) << "多吃的 2 字节把包号并进了目的连接标识";
         EXPECT_NE(tooLong->packetNumberOffset, correct->packetNumberOffset);
     }
@@ -226,7 +227,7 @@ namespace AsynGyanis::Net
         packet.resize(1200 + 50);
 
         const auto header = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(header.has_value()) << header.error().message;
+        ASSERT_HAS_VALUE(header) << header.error().message;
         EXPECT_EQ(header->packetByteCount, 1200U) << "多出来的 50 字节属于同一数据报里的下一个报文（RFC 9000 §12.2）";
     }
 
@@ -239,7 +240,7 @@ namespace AsynGyanis::Net
         packet.resize(1220);
 
         const auto header = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(header.has_value()) << header.error().message;
+        ASSERT_HAS_VALUE(header) << header.error().message;
         EXPECT_EQ(copyOf(header->token), makeBytesFromHex("deadbeef"));
         EXPECT_EQ(header->packetNumberOffset, 22U);
         EXPECT_EQ(header->packetNumberAndPayloadByteCount, 1182U);
@@ -324,7 +325,7 @@ namespace AsynGyanis::Net
         // 头部 Length=1（只够 1 字节），但首字节低 2 位掩出来是 3 → 需要 4 字节包号
         auto       packet  = makeBytesFromHex("c300000001088394c8f03e515708000001ff");
         const auto decoded = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         QuicPacketHeader header    = *decoded;
         const auto       refreshed = refreshQuicPacketHeader(header, 0xc3, packet);
         ASSERT_FALSE(refreshed.has_value());
@@ -382,7 +383,7 @@ namespace AsynGyanis::Net
         // 唯一该回的那一种：版本 0x00000002 是将来登记的下一版，本端不支持
         const std::vector<std::uint8_t>                    unsupportedVersionPacket{0xC0, 0x00, 0x00, 0x00, 0x02, 0x04, 0x01, 0x02, 0x03, 0x04, 0x02, 0xAA, 0xBB};
         const std::optional<QuicVersionNegotiationRequest> request = readQuicVersionNegotiationRequest(unsupportedVersionPacket);
-        ASSERT_TRUE(request.has_value()) << "版本不合的长头没被认出来：对端只会干等";
+        ASSERT_HAS_VALUE(request) << "版本不合的长头没被认出来：对端只会干等";
         EXPECT_EQ(request->version, 0x00000002U);
         // 两条标识先各自拷成 vector 再比：宏的实参里带花括号的初始化列表会被逗号拆成两个参数
         const std::vector<std::uint8_t> echoedDestination(request->destinationConnectionId.begin(), request->destinationConnectionId.end());

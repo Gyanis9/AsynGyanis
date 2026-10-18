@@ -13,6 +13,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -206,7 +207,7 @@ namespace AsynGyanis::Net
         {
             // 正例：active 令牌的字段逐项解析
             auto active = co_await client.introspect("tok+en/With=Specials");
-            EXPECT_TRUE(active.has_value()) << active.error();
+            EXPECT_HAS_VALUE(active) << active.error();
             if (active.has_value())
             {
                 EXPECT_TRUE(active->active);
@@ -228,7 +229,7 @@ namespace AsynGyanis::Net
             // 不活跃令牌：正常回答（200 + active:false），不是失败
             server.setResponse("200 OK", R"({"active":false})");
             auto inactive = co_await client.introspect("opaque-token");
-            EXPECT_TRUE(inactive.has_value()) << inactive.error();
+            EXPECT_HAS_VALUE(inactive) << inactive.error();
             if (inactive.has_value())
             {
                 EXPECT_FALSE(inactive->active);

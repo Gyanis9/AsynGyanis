@@ -3,6 +3,7 @@
 
 #include "Platform/IO/Socket.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/PlatformError.h"
@@ -352,7 +353,7 @@ namespace AsynGyanis::Platform
         const auto started = std::chrono::steady_clock::now();
         const auto pending = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{200});
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-        ASSERT_TRUE(pending.has_value()) << "等待本身失败，错误码 " << pending.error().value();
+        ASSERT_HAS_VALUE(pending) << "等待本身失败，错误码 " << pending.error().value();
         EXPECT_FALSE(*pending) << "没人连这条通道，却报成有连接 pending";
         // 上界给到 5 秒只用来分辨「按期返回」与「根本没返回」：这条要抓的是无限阻塞那种形状，
         // 不是替 200 毫秒计时
@@ -360,7 +361,7 @@ namespace AsynGyanis::Platform
 
         // 0 预算是「只取当前状态」，同样不该被读成一次失败
         const auto sampled = Socket::waitForAcceptReady(listener, std::chrono::milliseconds::zero());
-        ASSERT_TRUE(sampled.has_value()) << "零预算的一次取样被报成失败：它要的答案只是有没有";
+        ASSERT_HAS_VALUE(sampled) << "零预算的一次取样被报成失败：它要的答案只是有没有";
         EXPECT_FALSE(*sampled);
 
         // 负数是写错了预算：不静默当成「无限等」，也不当成「零取样」，直接点名
@@ -394,11 +395,11 @@ namespace AsynGyanis::Platform
         ASSERT_EQ(::connect(client, reinterpret_cast<const sockaddr *>(&endpoint), sizeof(endpoint)), 0) << "回环上连自己的监听口都连不上";
 
         const auto sampled = Socket::waitForAcceptReady(listener, std::chrono::milliseconds::zero());
-        ASSERT_TRUE(sampled.has_value()) << "零预算的一次取样被报成失败，错误码 " << sampled.error().value();
+        ASSERT_HAS_VALUE(sampled) << "零预算的一次取样被报成失败，错误码 " << sampled.error().value();
         EXPECT_TRUE(*sampled) << "队列里明明已有一条连接，零预算取样却报「没人来连」";
 
         const auto pending = Socket::waitForAcceptReady(listener, std::chrono::milliseconds{3000});
-        ASSERT_TRUE(pending.has_value()) << "等待本身失败，错误码 " << pending.error().value();
+        ASSERT_HAS_VALUE(pending) << "等待本身失败，错误码 " << pending.error().value();
         EXPECT_TRUE(*pending) << "已经排好队的连接没被报出来";
 
         const int accepted = Socket::acceptHandoffPeer(listener);
@@ -448,7 +449,7 @@ namespace AsynGyanis::Platform
             // 再登记一份就是同枚描述符关两次（第二次会打到别人刚拿到的同号描述符上）
             cleanup.add(adoptedDescriptor);
         }
-        ASSERT_TRUE(adopted.has_value()) << "接管失败，错误码 " << adopted.error().value();
+        ASSERT_HAS_VALUE(adopted) << "接管失败，错误码 " << adopted.error().value();
 
         // 端口跟着过来：接手方问出来的端口就是交出方当初绑的那个
         sockaddr_in adoptedLocal{};
@@ -725,7 +726,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(Socket::initialize());
 
         auto opened = Socket::openHandoffChannel();
-        ASSERT_TRUE(opened.has_value()) << "开不出交接通道，错误码 " << opened.error().value();
+        ASSERT_HAS_VALUE(opened) << "开不出交接通道，错误码 " << opened.error().value();
         ASSERT_FALSE(opened->socketFilePath.empty()) << "POSIX 上开出的通道没有套接字文件路径";
 
         const std::filesystem::path directory = std::filesystem::path(opened->socketFilePath).parent_path();

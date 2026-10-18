@@ -3,6 +3,7 @@
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/ConfigValueType.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -136,7 +137,7 @@ namespace AsynGyanis::Base
     TEST(ConfigValueTest, ParseConfigValueReturnsNulloptForMalformedDocuments)
     {
         const std::optional<ConfigValue> parsed = parseConfigValue(R"({"a": 1, "b": [true, null]})");
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(parsed->at("a").get<std::int64_t>(), 1);
         EXPECT_TRUE(parsed->at("b").is_array());
         EXPECT_EQ(parsed->at("b").size(), 2U);
@@ -170,13 +171,13 @@ namespace AsynGyanis::Base
         const ConfigValue value = ConfigValue::parse(std::string{R"({"b":2,"a":1})"});
 
         const std::optional<std::string> compact = serializeConfigValue(value);
-        ASSERT_TRUE(compact.has_value());
+        ASSERT_HAS_VALUE(compact);
         // 对象键按字典序输出：这里的映射是按键有序的 std::map，插入顺序不保留。
         // 写进用例是因为使用方常以为「我按什么顺序给的就会按什么顺序发出去」
         EXPECT_EQ(*compact, R"({"a":1,"b":2})");
 
         const std::optional<std::string> pretty = serializeConfigValue(value, 2);
-        ASSERT_TRUE(pretty.has_value());
+        ASSERT_HAS_VALUE(pretty);
         EXPECT_NE(pretty->find("\n"), std::string::npos) << "给了缩进就该换行";
 
         // NaN 在 JSON 里没有表示法：静默改成 null 或 0 都是替调用方造数据，交回空才对

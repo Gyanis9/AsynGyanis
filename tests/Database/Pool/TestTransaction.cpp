@@ -53,6 +53,7 @@
 #include "Database/Sqlite/SqliteConnection.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -274,7 +275,7 @@ TEST_F(TransactionTest, CommitMakesChangesVisibleToOtherConnections)
     ASSERT_EQ(countCommittedRows(), 2);
 
     const std::optional<LedgerRow> committedRow = findCommittedRow(1);
-    ASSERT_TRUE(committedRow.has_value());
+    ASSERT_HAS_VALUE(committedRow);
     EXPECT_EQ(committedRow->name, "张三");
     EXPECT_DOUBLE_EQ(committedRow->amount, 1234.56);
     ASSERT_TRUE(committedRow->note.has_value());
@@ -414,7 +415,7 @@ TEST_F(TransactionTest, ExceptionPathRollsBackAndKeepsDatabaseClean)
     // 异常路径同样完成了回滚：只留下事务之前提交的那一行
     EXPECT_EQ(countCommittedRows(), 1);
     const std::optional<LedgerRow> survivingRow = findCommittedRow(1);
-    ASSERT_TRUE(survivingRow.has_value());
+    ASSERT_HAS_VALUE(survivingRow);
     EXPECT_EQ(survivingRow->name, "已有数据");
     EXPECT_FALSE(findCommittedRow(2).has_value());
 }
@@ -529,12 +530,12 @@ TEST_F(TransactionTest, BatchInsertChunksAutomatically)
 
     // 分块后每一行都必须落在正确的列上：抽查跨越三个块的几个主键
     const std::optional<LedgerRow> firstOfSecondChunk = findCommittedRow(250);
-    ASSERT_TRUE(firstOfSecondChunk.has_value());
+    ASSERT_HAS_VALUE(firstOfSecondChunk);
     EXPECT_EQ(firstOfSecondChunk->name, "批量-250");
     EXPECT_DOUBLE_EQ(firstOfSecondChunk->amount, 250.0);
 
     const std::optional<LedgerRow> lastRow = findCommittedRow(500);
-    ASSERT_TRUE(lastRow.has_value());
+    ASSERT_HAS_VALUE(lastRow);
     EXPECT_EQ(lastRow->name, "批量-500");
 }
 

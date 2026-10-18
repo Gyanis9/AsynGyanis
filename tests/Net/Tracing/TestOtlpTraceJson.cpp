@@ -6,6 +6,7 @@
 #include "Net/Tracing/OtlpTraceJson.h"
 
 #include "Base/Config/ConfigValue.h"
+#include "ExpectedAssertions.h"
 #include "Net/Tracing/Span.h"
 #include "TracingTestSupport.h"
 
@@ -60,7 +61,7 @@ TEST(OtlpTraceJson, RendersTheOtlpJsonShapeOfABatch)
 
     const std::string text   = formatOtlpTracesJson(makeResource(), {root, child});
     const auto        parsed = parseConfigValue(text);
-    ASSERT_TRUE(parsed.has_value()) << "渲染结果不是合法 JSON：" << text;
+    ASSERT_HAS_VALUE(parsed) << "渲染结果不是合法 JSON：" << text;
 
     const ConfigValue &resourceSpan = parsed->at("resourceSpans").at(0);
     const ConfigValue &attributes   = resourceSpan.at("resource").at("attributes");
@@ -116,14 +117,14 @@ TEST(OtlpTraceJson, RefusesToRenderAValueThatCannotEnterJson)
 TEST(OtlpTraceJson, EmptyBatchStillRendersTheResourceShell)
 {
     const auto parsed = parseConfigValue(formatOtlpTracesJson(makeResource(), {}));
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     EXPECT_EQ(parsed->at("resourceSpans").at(0).at("scopeSpans").at(0).at("spans").size(), 0U);
     // 版本没配时不带 service.version；配了就出现在 resource 属性里
     const ConfigValue &plainAttributes = parsed->at("resourceSpans").at(0).at("resource").at("attributes");
     ASSERT_EQ(plainAttributes.size(), 1U);
 
     const auto versioned = parseConfigValue(formatOtlpTracesJson(makeResource("1.2.3"), {}));
-    ASSERT_TRUE(versioned.has_value());
+    ASSERT_HAS_VALUE(versioned);
     const ConfigValue &versionedAttributes = versioned->at("resourceSpans").at(0).at("resource").at("attributes");
     ASSERT_EQ(versionedAttributes.size(), 2U);
     EXPECT_EQ(jsonTextOf(versionedAttributes.at(1).at("key")), "service.version");

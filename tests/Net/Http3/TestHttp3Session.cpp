@@ -12,6 +12,7 @@
 
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpRequestId.h"
 #include "Net/Http/Router.h"
 #include "Net/Http/StaticFileService.h"
@@ -716,7 +717,7 @@ namespace AsynGyanis::Net
         const std::span<const std::uint8_t> frameBytes(announced.bytes.data() + 1, announced.bytes.size() - 1);
         ASSERT_TRUE(frameReader.feed(frameBytes).has_value());
         const auto nextFrame = frameReader.nextFrame();
-        ASSERT_TRUE(nextFrame.has_value()) << nextFrame.error().message;
+        ASSERT_HAS_VALUE(nextFrame) << nextFrame.error().message;
         ASSERT_TRUE(nextFrame->has_value()) << "控制流上第一段字节里没读出一个完整的帧";
         const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**nextFrame);
         ASSERT_TRUE(settingsFrame != nullptr) << "本端控制流上的第一帧不是 SETTINGS";
@@ -1174,7 +1175,7 @@ namespace AsynGyanis::Net
         while (true)
         {
             const auto nextFrame = frameReader.nextFrame();
-            ASSERT_TRUE(nextFrame.has_value()) << nextFrame.error().message;
+            ASSERT_HAS_VALUE(nextFrame) << nextFrame.error().message;
             if (!nextFrame->has_value())
             {
                 break;
@@ -1183,7 +1184,7 @@ namespace AsynGyanis::Net
             {
                 std::vector<QpackHeaderField> answerFields;
                 const auto                    decoded = answerDecoder.decodeFieldSection(0, headers->encodedFieldSection, answerFields, decoderStreamBytes);
-                ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+                ASSERT_HAS_VALUE(decoded) << decoded.error().message;
                 EXPECT_TRUE(*decoded == QpackFieldSectionDecodeStatus::Decoded) << "作答不该依赖动态表";
                 for (const auto &field: answerFields)
                 {

@@ -8,6 +8,7 @@
 #include "TracingTestSupport.h"
 
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -97,8 +98,8 @@ TEST(FileSpanExporter, WritesOneJsonObjectPerSpanAndAppendsAcrossBatches)
 
     const auto first  = parseConfigValue(lines[0]);
     const auto second = parseConfigValue(lines[1]);
-    ASSERT_TRUE(first.has_value()) << lines[0];
-    ASSERT_TRUE(second.has_value()) << lines[1];
+    ASSERT_HAS_VALUE(first) << lines[0];
+    ASSERT_HAS_VALUE(second) << lines[1];
 
     EXPECT_EQ(jsonTextOf(first->at("traceId")), kTraceId);
     EXPECT_EQ(jsonTextOf(first->at("spanId")), kSpanId);

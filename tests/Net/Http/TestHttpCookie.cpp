@@ -3,6 +3,7 @@
 #include "Net/Http/HttpCookie.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpDate.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -27,7 +28,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::chrono::system_clock::time_point sampleMoment()
         {
             const std::optional<std::chrono::system_clock::time_point> parsed = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
-            EXPECT_TRUE(parsed.has_value());
+            EXPECT_HAS_VALUE(parsed);
             return parsed.value_or(std::chrono::system_clock::time_point{});
         }
     } // namespace
@@ -159,7 +160,7 @@ namespace AsynGyanis::Net
     {
         const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie("sid=42; PATH=/api; DOMAIN=Example.COM; max-age=60; HTTPONLY; Future=1; SameSite=strict");
 
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(parsed->name(), "sid");
         EXPECT_EQ(parsed->value(), "42");
         ASSERT_TRUE(parsed->path().has_value());
@@ -185,20 +186,20 @@ namespace AsynGyanis::Net
     TEST(HttpCookie, IgnoresMaxAgeWithLeadingPlusOrNonDigits)
     {
         const std::optional<HttpCookie> plusPadded = HttpCookie::parseSetCookie("sid=42; Max-Age=+3600");
-        ASSERT_TRUE(plusPadded.has_value());
+        ASSERT_HAS_VALUE(plusPadded);
         EXPECT_FALSE(plusPadded->maxAgeSeconds().has_value()) << "带正号的 Max-Age 该按「这条属性没给」处理";
         EXPECT_FALSE(plusPadded->expiresAt().has_value()) << "忽略这条属性不等于猜一个到期时刻：0 的含义是立刻过期";
 
         for (const std::string_view attribute: {"Max-Age=1x", "Max-Age=", "Max-Age=-", "Max-Age=+0"})
         {
             const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie(std::string("sid=42; ") + attribute.data());
-            ASSERT_TRUE(parsed.has_value()) << attribute;
+            ASSERT_HAS_VALUE(parsed) << attribute;
             EXPECT_FALSE(parsed->maxAgeSeconds().has_value()) << attribute << "：不是 delta-seconds 就该整条作废";
         }
 
         // 数字与 '-' 开头的都收（后者是删除语义，不能吞掉）
         const std::optional<HttpCookie> negative = HttpCookie::parseSetCookie("sid=42; Max-Age=-1");
-        ASSERT_TRUE(negative.has_value());
+        ASSERT_HAS_VALUE(negative);
         ASSERT_TRUE(negative->maxAgeSeconds().has_value());
         EXPECT_EQ(*negative->maxAgeSeconds(), -1);
     }
@@ -219,7 +220,7 @@ namespace AsynGyanis::Net
         original.setSameSite(CookieSameSitePolicy::None);
 
         const std::optional<HttpCookie> parsed = HttpCookie::parseSetCookie(original.renderAsSetCookie());
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(parsed->renderAsSetCookie(), original.renderAsSetCookie());
         ASSERT_TRUE(parsed->expiresAt().has_value());
         EXPECT_EQ(parsed->expiresAt()->time_since_epoch(), original.expiresAt()->time_since_epoch());
@@ -249,7 +250,7 @@ namespace AsynGyanis::Net
     TEST(HttpCookie, UnwrapsQuotedStringValueAndKeepsBackslashEscapes)
     {
         const auto quoted = HttpCookie::parseSetCookie("sid=\"abc123\"; Path=/");
-        ASSERT_TRUE(quoted.has_value()) << "引号包起来的取值被当成非法字符整条丢掉了";
+        ASSERT_HAS_VALUE(quoted) << "引号包起来的取值被当成非法字符整条丢掉了";
         EXPECT_EQ(quoted->name(), "sid");
         EXPECT_EQ(quoted->value(), "abc123") << "引号没解开：存下来的值带引号，比对的宿主永远对不上";
         ASSERT_TRUE(quoted->path().has_value());
@@ -258,11 +259,11 @@ namespace AsynGyanis::Net
         // §5.1.2 的 cookie-escape 是「'\' + 任意一个字符」：反斜杠本身不留在值里。
         // 两种写法都要钉—— '\\\\'（线上是一枚转义反斜杠）读回一个 '\'，'\b'（线上是反斜杠加 b）读回 'b'
         const auto escapedBackslash = HttpCookie::parseSetCookie("tok=\"a\\\\b\"");
-        ASSERT_TRUE(escapedBackslash.has_value()) << "带转义反斜杠的 quoted-string 没收下";
+        ASSERT_HAS_VALUE(escapedBackslash) << "带转义反斜杠的 quoted-string 没收下";
         EXPECT_EQ(escapedBackslash->value(), "a\\b") << "线上的 \\\\ 应读成一枚字面反斜杠";
 
         const auto escapedLetter = HttpCookie::parseSetCookie("tok=\"a\\b\"");
-        ASSERT_TRUE(escapedLetter.has_value()) << "带字母转义的 quoted-string 没收下";
+        ASSERT_HAS_VALUE(escapedLetter) << "带字母转义的 quoted-string 没收下";
         EXPECT_EQ(escapedLetter->value(), "ab") << "转义没按 §5.1.2 还原（'\\b' 应读成 'b'）";
 
         // 只有一侧引号不算 quoted-string：引号此时就是普通字符，而它不是合法的裸取值字符
@@ -275,7 +276,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(HttpCookie::parseSetCookie("tok=\"a\\\"b\"").has_value());
         // 引号里是空的：RFC 允许空取值，解开之后就是空串
         const auto emptyQuoted = HttpCookie::parseSetCookie("tok=\"\"");
-        ASSERT_TRUE(emptyQuoted.has_value());
+        ASSERT_HAS_VALUE(emptyQuoted);
         EXPECT_TRUE(emptyQuoted->value().empty());
     }
 

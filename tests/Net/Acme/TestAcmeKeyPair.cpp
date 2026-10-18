@@ -4,6 +4,7 @@
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "Net/Acme/AcmeKeyPair.h"
 
 #include <gtest/gtest.h>
@@ -46,11 +47,11 @@ namespace AsynGyanis::Net
         void SetUp() override
         {
             auto rsa = AcmeKeyPair::generate(AcmeKeyAlgorithm::Rs256);
-            ASSERT_TRUE(rsa.has_value()) << rsa.error().message;
+            ASSERT_HAS_VALUE(rsa) << rsa.error().message;
             m_rsaKey = std::make_unique<AcmeKeyPair>(std::move(*rsa));
 
             auto ec = AcmeKeyPair::generate(AcmeKeyAlgorithm::Es256);
-            ASSERT_TRUE(ec.has_value()) << ec.error().message;
+            ASSERT_HAS_VALUE(ec) << ec.error().message;
             m_ecKey = std::make_unique<AcmeKeyPair>(std::move(*ec));
         }
 
@@ -85,7 +86,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(jwkText.find("\"d\":"), std::string_view::npos) << "私钥指数泄露进了公开表示：" << jwkText;
 
         const auto parsed = Base::parseConfigValue(jwkText);
-        ASSERT_TRUE(parsed.has_value()) << "JWK 不是合法 JSON：" << jwkText;
+        ASSERT_HAS_VALUE(parsed) << "JWK 不是合法 JSON：" << jwkText;
         EXPECT_EQ((*parsed)["kty"], "RSA");
         // 65537 的 base64url 就是 AQAB：写错成 "AgAB" 之类是把字节序倒了
         EXPECT_EQ((*parsed)["e"], "AQAB");
@@ -113,7 +114,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(m_ecKey->jsonWebAlgorithmName(), "ES256");
 
         const auto parsed = Base::parseConfigValue(jwkText);
-        ASSERT_TRUE(parsed.has_value()) << "JWK 不是合法 JSON：" << jwkText;
+        ASSERT_HAS_VALUE(parsed) << "JWK 不是合法 JSON：" << jwkText;
         EXPECT_EQ((*parsed)["kty"], "EC");
         EXPECT_EQ((*parsed)["crv"], "P-256");
         EXPECT_EQ((*parsed)["x"].get<std::string>().size(), kEncodedTwoHundredFiftySixBitLength);
@@ -133,14 +134,14 @@ namespace AsynGyanis::Net
     TEST_F(AcmeKeyPairTest, RsaSignatureVerifiesAgainstTheRequestPublicKey)
     {
         const auto request = m_rsaKey->createCertificateSigningRequest({"sign-check.example.com"});
-        ASSERT_TRUE(request.has_value()) << request.error().message;
+        ASSERT_HAS_VALUE(request) << request.error().message;
         const auto parsedRequest = TestSupport::parseCertificateSigningRequest(*request);
-        ASSERT_TRUE(parsedRequest.has_value());
+        ASSERT_HAS_VALUE(parsedRequest);
         ASSERT_NE(parsedRequest->publicKey, nullptr);
 
         const std::string signingInput = R"({"alg":"RS256","jwk":)" + m_rsaKey->publicJsonWebKeyText() + R"(},"payload")";
         const auto        signature    = m_rsaKey->signJsonWebSigningInput(signingInput);
-        ASSERT_TRUE(signature.has_value()) << signature.error().message;
+        ASSERT_HAS_VALUE(signature) << signature.error().message;
 
         EXPECT_TRUE(TestSupport::verifyJsonWebSignature(*parsedRequest->publicKey, AcmeKeyAlgorithm::Rs256, signingInput, *signature));
         // 换一段输入就必须验不过：签名与输入的绑定关系一旦丢了，重放就无人拦得住
@@ -155,17 +156,17 @@ namespace AsynGyanis::Net
     TEST_F(AcmeKeyPairTest, EcSignatureIsRawFixedWidthPairsAndNotDer)
     {
         const auto request = m_ecKey->createCertificateSigningRequest({"sign-check.example.com"});
-        ASSERT_TRUE(request.has_value()) << request.error().message;
+        ASSERT_HAS_VALUE(request) << request.error().message;
         const auto parsedRequest = TestSupport::parseCertificateSigningRequest(*request);
-        ASSERT_TRUE(parsedRequest.has_value());
+        ASSERT_HAS_VALUE(parsedRequest);
         ASSERT_NE(parsedRequest->publicKey, nullptr);
 
         const std::string signingInput = "asyn-gyanis.es256.probe";
         const auto        signature    = m_ecKey->signJsonWebSigningInput(signingInput);
-        ASSERT_TRUE(signature.has_value()) << signature.error().message;
+        ASSERT_HAS_VALUE(signature) << signature.error().message;
 
         const auto decodedSignature = Base::base64UrlDecode(*signature);
-        ASSERT_TRUE(decodedSignature.has_value());
+        ASSERT_HAS_VALUE(decodedSignature);
         EXPECT_EQ(decodedSignature->size(), kEs256SignatureLength) << "ES256 的签名段必须是 32+32 字节的裸串，DER 序列长度会随整数位长变化";
 
         EXPECT_TRUE(TestSupport::verifyJsonWebSignature(*parsedRequest->publicKey, AcmeKeyAlgorithm::Es256, signingInput, *signature));
@@ -181,9 +182,9 @@ namespace AsynGyanis::Net
         const std::vector<std::string> domainNames{"api.example.com", "www.example.com", "example.com"};
 
         const auto request = m_rsaKey->createCertificateSigningRequest(domainNames);
-        ASSERT_TRUE(request.has_value()) << request.error().message;
+        ASSERT_HAS_VALUE(request) << request.error().message;
         const auto parsedRequest = TestSupport::parseCertificateSigningRequest(*request);
-        ASSERT_TRUE(parsedRequest.has_value());
+        ASSERT_HAS_VALUE(parsedRequest);
 
         EXPECT_EQ(parsedRequest->dnsNames, domainNames);
         EXPECT_TRUE(parsedRequest->isSelfSignedValid) << "请求自签验不过：机构侧会按「csr 无效」直接判死这一单";
@@ -211,7 +212,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(m_ecKey->saveToFile(privateKeyPath).has_value());
 
         const auto loaded = AcmeKeyPair::loadFromFile(privateKeyPath);
-        ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
+        ASSERT_HAS_VALUE(loaded) << loaded.error().message;
         EXPECT_EQ(loaded->publicJsonWebKeyText(), m_ecKey->publicJsonWebKeyText());
         EXPECT_EQ(loaded->jsonWebKeyThumbprint(), m_ecKey->jsonWebKeyThumbprint());
         EXPECT_EQ(loaded->jsonWebAlgorithmName(), m_ecKey->jsonWebAlgorithmName());

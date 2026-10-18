@@ -13,6 +13,7 @@
 
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Common/TemporalText.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -31,7 +32,7 @@ namespace AsynGyanis::Database::Detail
         ParsedDateTime parsed(const std::string_view text)
         {
             const auto result = parseTemporalText(text);
-            EXPECT_TRUE(result.has_value()) << "应当被认出的文本：" << text;
+            EXPECT_HAS_VALUE(result) << "应当被认出的文本：" << text;
             return result.value_or(ParsedDateTime{});
         }
 
@@ -82,7 +83,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"2026-10-18T03:50:30.123456Z", "2026-10-18T00:00:00.000000Z", "2024-02-29T23:59:59.000001Z", "2026-12-31T23:59:59.999999Z"})
         {
             const auto instant = toSystemClock(parsed(text));
-            ASSERT_TRUE(instant.has_value()) << text;
+            ASSERT_HAS_VALUE(instant) << text;
             EXPECT_EQ(renderUtc(*instant), text) << "往返一次就不是原来那个瞬间了：" << text;
         }
     }
@@ -92,7 +93,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"2026-03-01T02:30:00.500000", "2026-10-18T09:20:30.000000"})
         {
             const auto wall = toWallClock(parsed(text));
-            ASSERT_TRUE(wall.has_value()) << text;
+            ASSERT_HAS_VALUE(wall) << text;
             EXPECT_EQ(renderWallClock(*wall, 'T'), text) << text;
         }
     }
@@ -113,7 +114,7 @@ namespace AsynGyanis::Database::Detail
     {
         // 负偏移方向不能反：-08 的 09:20 是 UTC 的 17:20（同一天）
         const auto instant = toSystemClock(parsed("2026-10-18 09:20:00-08"));
-        ASSERT_TRUE(instant.has_value());
+        ASSERT_HAS_VALUE(instant);
         EXPECT_EQ(renderUtc(*instant), "2026-10-18T17:20:00.000000Z");
     }
 
@@ -192,7 +193,7 @@ namespace AsynGyanis::Database::Detail
     {
         // 公元前后是历法的一部分：负年份要能认、能渲染回来（宽度按四位补零，符号占一位）
         const auto beforeEra = toWallClock(parsed("-0044-03-15T12:00:00"));
-        ASSERT_TRUE(beforeEra.has_value());
+        ASSERT_HAS_VALUE(beforeEra);
         EXPECT_EQ(renderWallClock(*beforeEra, 'T'), "-0044-03-15T12:00:00.000000");
     }
 

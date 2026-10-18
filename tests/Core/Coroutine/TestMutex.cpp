@@ -12,6 +12,7 @@
 #include "Base/Exception/LogicException.h"
 
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -212,7 +213,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Mutex::Guard> held = mutex.tryLock();
-        ASSERT_TRUE(held.has_value());
+        ASSERT_HAS_VALUE(held);
 
         Task<void> waiter = lockQuickTask(mutex, observation, "甲");
         submit(loop, waiter);
@@ -233,7 +234,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Mutex::Guard> held = mutex.tryLock();
-        ASSERT_TRUE(held.has_value());
+        ASSERT_HAS_VALUE(held);
 
         {
             Task<void> waiter = lockQuickTask(mutex, observation, "甲");
@@ -293,6 +294,6 @@ namespace AsynGyanis::Core
 
         runner.join();
         std::optional<Mutex::Guard> held = mutex.tryLock(); // 循环停下：判据放开
-        EXPECT_TRUE(held.has_value());
+        EXPECT_HAS_VALUE(held);
     }
 } // namespace AsynGyanis::Core

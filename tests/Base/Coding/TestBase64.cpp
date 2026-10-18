@@ -1,5 +1,6 @@
 // Base64 单元测试：RFC 4648 的标准测试向量、严格解码的几条拒绝判据与往返一致性
 #include "Base/Coding/Base64.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -32,7 +33,7 @@ namespace AsynGyanis::Base
         const std::string binary{'\x00', '\x01', '\xFF', '\x7F', '\x00', '='};
 
         const std::optional<std::string> decoded = base64Decode(base64Encode(binary));
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(*decoded, binary);
     }
 
@@ -51,7 +52,7 @@ namespace AsynGyanis::Base
 
         // 规范写法则收下：同一份字节的规范编码只有一个
         const std::optional<std::string> canonical = base64Decode("Zm9vYmFy");
-        ASSERT_TRUE(canonical.has_value());
+        ASSERT_HAS_VALUE(canonical);
         EXPECT_EQ(*canonical, "foobar");
     }
 
@@ -61,7 +62,7 @@ namespace AsynGyanis::Base
     TEST(Base64Test, DecodedLengthIncludesEmbeddedNulBytes)
     {
         const std::optional<std::string> decoded = base64Decode("AAEC");
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(decoded->size(), 3U);
         EXPECT_EQ((*decoded)[0], '\0');
         EXPECT_EQ((*decoded)[1], '\x01');
@@ -117,8 +118,8 @@ namespace AsynGyanis::Base
         // 两侧各自解回同一份字节：编码可换字母表，解码后的字节不许换
         const std::optional<std::string> fromStandard = base64Decode(standard);
         const std::optional<std::string> fromUrlSafe  = base64UrlDecode(urlSafe);
-        ASSERT_TRUE(fromStandard.has_value());
-        ASSERT_TRUE(fromUrlSafe.has_value());
+        ASSERT_HAS_VALUE(fromStandard);
+        ASSERT_HAS_VALUE(fromUrlSafe);
         EXPECT_EQ(*fromStandard, bytes);
         EXPECT_EQ(*fromUrlSafe, bytes);
     }
@@ -139,11 +140,11 @@ namespace AsynGyanis::Base
         // 规范写法则收下，含 '-' '_' 那两个只属于本字母表的字符
         const std::string                urlAlphabetBytes{'\xFB', '\xFF', '\xFE'};
         const std::optional<std::string> decoded = base64UrlDecode("-__-");
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(*decoded, urlAlphabetBytes);
 
         const std::optional<std::string> fiveBytes = base64UrlDecode("AP9_AD0");
-        ASSERT_TRUE(fiveBytes.has_value());
+        ASSERT_HAS_VALUE(fiveBytes);
         EXPECT_EQ(fiveBytes->size(), 5U);
     }
 
@@ -159,7 +160,7 @@ namespace AsynGyanis::Base
         }
 
         const std::optional<std::string> decoded = base64UrlDecode(base64UrlEncode(binary));
-        ASSERT_TRUE(decoded.has_value());
+        ASSERT_HAS_VALUE(decoded);
         EXPECT_EQ(*decoded, binary);
     }
 } // namespace AsynGyanis::Base

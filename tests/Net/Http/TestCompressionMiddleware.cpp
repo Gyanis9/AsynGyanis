@@ -6,6 +6,7 @@
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpServer.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -455,14 +456,14 @@ namespace AsynGyanis::Net
         ASSERT_NE(port, 0U);
 
         const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
         EXPECT_TRUE(hasHeaderLine(response->headers, "vary: accept-encoding")) << "压缩改变了表示，必须告诉缓存按 Accept-Encoding 分桶";
         EXPECT_LT(response->body.size(), kLargeBody.size()) << "正文没有变小，压缩可能没真正生效";
 
         const std::optional<std::string> restored = gunzip(response->body);
-        ASSERT_TRUE(restored.has_value()) << "压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
     }
 
@@ -476,18 +477,18 @@ namespace AsynGyanis::Net
         ASSERT_NE(port, 0U);
 
         const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: deflate"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: deflate")) << "响应没有声明 deflate：" << response->headers;
 
         // 用 15 解而不是 -15：裸 deflate 会在这里解不开，正是 RFC 9110 §8.4.1.2 与浏览器约定的区别
         const std::optional<std::string> restored = unzlib(response->body);
-        ASSERT_TRUE(restored.has_value()) << "deflate 应答不是 zlib 封装（RFC 1950），按裸 deflate 写出了一份对端解不开的字节";
+        ASSERT_HAS_VALUE(restored) << "deflate 应答不是 zlib 封装（RFC 1950），按裸 deflate 写出了一份对端解不开的字节";
         EXPECT_EQ(*restored, kLargeBody);
 
         // 偏好：gzip 与 deflate 同时可接受时选 gzip，deflate 只是兜底
         const std::optional<ParsedResponse> preferred =
                 sendAndReadResponse(port, makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate"}), kCompressionTestTimeout);
-        ASSERT_TRUE(preferred.has_value());
+        ASSERT_HAS_VALUE(preferred);
         EXPECT_TRUE(hasHeaderLine(preferred->headers, "content-encoding: gzip")) << "deflate 抢了 gzip 的优先级：" << preferred->headers;
     }
 
@@ -524,14 +525,14 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(port, makeRequestText("GET /declared-length HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应：content-length 可能仍是压缩前的旧值";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应：content-length 可能仍是压缩前的旧值";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "响应没有声明 gzip 编码：\n" << response->headers;
         EXPECT_EQ(parseContentLength(response->headers), response->body.size()) << "content-length 与压缩后的正文长度不符";
         EXPECT_EQ(parseContentLength(response->headers) == 999999U, false) << "旧长度被原样发上线";
 
         const std::optional<std::string> restored = gunzip(response->body);
-        ASSERT_TRUE(restored.has_value()) << "压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
     }
 
@@ -543,7 +544,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeCompressionFixture(kTestThresholdBytes);
 
         const std::optional<ParsedResponse> response = sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1"), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding")) << "对端没要求压缩却压了";
         EXPECT_FALSE(hasHeaderLine(response->headers, "vary:")) << "没压缩就不该新增 vary";
@@ -559,7 +560,7 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip;q=0"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "q=0 表示拒绝，仍然压了";
         EXPECT_EQ(response->body, kLargeBody);
@@ -575,7 +576,7 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "正文没过阈值却压了";
         EXPECT_EQ(response->body, kLargeBody);
@@ -608,7 +609,7 @@ namespace AsynGyanis::Net
         {
             const std::optional<ParsedResponse> response =
                     sendAndReadResponse(port, makeRequestText("GET /high-entropy HTTP/1.1", {std::string{"accept-encoding: "} + std::string{encoding}}), kCompressionTestTimeout);
-            ASSERT_TRUE(response.has_value()) << encoding << "：没有读到完整响应";
+            ASSERT_HAS_VALUE(response) << encoding << "：没有读到完整响应";
 
             EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding")) << encoding << "：压完更大却仍然换了表示\n" << response->headers;
             EXPECT_FALSE(hasHeaderLine(response->headers, "vary:")) << encoding << "：没换表示就不该新增 vary";
@@ -625,7 +626,7 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /preencoded HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         EXPECT_TRUE(hasHeaderLine(response->headers, "content-encoding: br")) << "上游的编码被改掉了";
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "压了第二层，对端解不开";
@@ -641,7 +642,7 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /image HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         EXPECT_FALSE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "图片类内容不该再压一遍";
         EXPECT_EQ(response->body, kLargeBody);
@@ -656,7 +657,7 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /etagged HTTP/1.1", {"accept-encoding: gzip"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value());
+        ASSERT_HAS_VALUE(response);
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: gzip")) << "前置条件不成立：这条响应没被压缩";
         EXPECT_TRUE(hasHeaderLine(response->headers, "etag: W/\"strong-validator\"")) << "压缩后 ETag 没有降级为弱校验器：\n" << response->headers;
@@ -675,7 +676,7 @@ namespace AsynGyanis::Net
         const std::optional<ParsedResponse> compressedVariant = sendAndReadResponse(
                 fixture->listeningPort(), makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: gzip", "if-none-match: \"strong-validator\""}),
                 kCompressionTestTimeout);
-        ASSERT_TRUE(compressedVariant.has_value()) << "没有读到 304 响应";
+        ASSERT_HAS_VALUE(compressedVariant) << "没有读到 304 响应";
         ASSERT_TRUE(compressedVariant->headers.starts_with("HTTP/1.1 304")) << compressedVariant->headers;
         EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "vary: accept-encoding")) << "304 没回带 Vary：\n" << compressedVariant->headers;
         EXPECT_TRUE(hasHeaderLine(compressedVariant->headers, "etag: W/\"strong-validator\"")) << "304 回的是强校验器：\n" << compressedVariant->headers;
@@ -684,7 +685,7 @@ namespace AsynGyanis::Net
         const std::optional<ParsedResponse> identityVariant = sendAndReadResponse(
                 fixture->listeningPort(), makeRequestText("GET /etagged-revalidated HTTP/1.1", {"accept-encoding: identity", "if-none-match: \"strong-validator\""}),
                 kCompressionTestTimeout);
-        ASSERT_TRUE(identityVariant.has_value()) << "没有读到对照响应";
+        ASSERT_HAS_VALUE(identityVariant) << "没有读到对照响应";
         ASSERT_TRUE(identityVariant->headers.starts_with("HTTP/1.1 304")) << identityVariant->headers;
         EXPECT_FALSE(hasHeaderLine(identityVariant->headers, "vary: accept-encoding")) << "本不压缩却加了 Vary：\n" << identityVariant->headers;
         EXPECT_TRUE(hasHeaderLine(identityVariant->headers, "etag: \"strong-validator\"")) << identityVariant->headers;
@@ -699,13 +700,13 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, deflate, br, zstd"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: zstd")) << "偏好顺序没有选 zstd：\n" << response->headers;
         EXPECT_TRUE(hasHeaderLine(response->headers, "vary: accept-encoding"));
 
         const std::optional<std::string> restored = unzstd(response->body, kLargeBody.size());
-        ASSERT_TRUE(restored.has_value()) << "zstd 压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "zstd 压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
     }
 
@@ -718,11 +719,11 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: gzip, br, zstd;q=0"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: br")) << "zstd 被拒后没有退到 brotli：\n" << response->headers;
         const std::optional<std::string> restored = unbrotli(response->body, kLargeBody.size());
-        ASSERT_TRUE(restored.has_value()) << "brotli 压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "brotli 压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
     }
 
@@ -735,11 +736,11 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> response =
                 sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large HTTP/1.1", {"accept-encoding: *"}), kCompressionTestTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(response->headers, "content-encoding: zstd")) << response->headers;
         const std::optional<std::string> restored = unzstd(response->body, kLargeBody.size());
-        ASSERT_TRUE(restored.has_value()) << "zstd 压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "zstd 压出来的正文解不开";
         EXPECT_EQ(*restored, kLargeBody);
     }
 
@@ -763,15 +764,15 @@ namespace AsynGyanis::Net
         const std::string                   requestText       = makeRequestText("GET /huge HTTP/1.1", {"accept-encoding: gzip"});
         const std::optional<ParsedResponse> inLoopResponse    = sendAndReadResponse(inLoopFixture->listeningPort(), requestText, kCompressionTestTimeout);
         const std::optional<ParsedResponse> offloadedResponse = sendAndReadResponse(offloadedFixture->listeningPort(), requestText, kCompressionTestTimeout);
-        ASSERT_TRUE(inLoopResponse.has_value()) << "就地压缩那条没读到完整响应";
-        ASSERT_TRUE(offloadedResponse.has_value()) << "外置压缩那条没读到完整响应";
+        ASSERT_HAS_VALUE(inLoopResponse) << "就地压缩那条没读到完整响应";
+        ASSERT_HAS_VALUE(offloadedResponse) << "外置压缩那条没读到完整响应";
 
         ASSERT_TRUE(hasHeaderLine(offloadedResponse->headers, "content-encoding: gzip")) << offloadedResponse->headers;
         EXPECT_TRUE(hasHeaderLine(offloadedResponse->headers, "vary: accept-encoding"));
         EXPECT_EQ(offloadedResponse->body, inLoopResponse->body) << "换执行位置换了输出字节";
 
         const std::optional<std::string> restored = gunzip(offloadedResponse->body);
-        ASSERT_TRUE(restored.has_value()) << "外置压出来的正文解不开";
+        ASSERT_HAS_VALUE(restored) << "外置压出来的正文解不开";
         EXPECT_EQ(*restored, wordyLargeBody());
     }
 
@@ -820,7 +821,7 @@ namespace AsynGyanis::Net
         // 门槛改变的只是执行位置，不是压不压：默认档仍要真的压过，而且能解回原样
         EXPECT_TRUE(hasHeaderLine(gated.secondResponse->headers, "content-encoding: gzip")) << "小正文压根没被压缩：\n" << gated.secondResponse->headers;
         const std::optional<std::string> restoredMid = gunzip(gated.secondResponse->body);
-        ASSERT_TRUE(restoredMid.has_value()) << "小正文压出来的响应解不开";
+        ASSERT_HAS_VALUE(restoredMid) << "小正文压出来的响应解不开";
         EXPECT_EQ(*restoredMid, midBody());
     }
 

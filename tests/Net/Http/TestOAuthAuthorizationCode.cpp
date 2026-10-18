@@ -17,6 +17,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -237,7 +238,7 @@ namespace AsynGyanis::Net
             const OAuthAuthorizationCallback callback{.code = "code-1", .state = "st-1"};
 
             const auto token = co_await client.exchangeCode(makeRecordedRequest(), callback);
-            EXPECT_TRUE(token.has_value()) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error();
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-code");
@@ -302,7 +303,7 @@ namespace AsynGyanis::Net
     {
         // RFC 7636 附录 B 的官方测试向量：S256 的挑战是 verifier 的 SHA-256 的 base64url（无填充）
         const auto challenge = OAuthAuthorizationCodeClient::computePkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
-        ASSERT_TRUE(challenge.has_value()) << challenge.error();
+        ASSERT_HAS_VALUE(challenge) << challenge.error();
         EXPECT_EQ(*challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
     }
 
@@ -316,7 +317,7 @@ namespace AsynGyanis::Net
                                                                                       .scope            = "read write"});
 
         const auto first = client.beginAuthorization();
-        ASSERT_TRUE(first.has_value()) << first.error();
+        ASSERT_HAS_VALUE(first) << first.error();
         const std::string &url = first->url;
         EXPECT_EQ(url.find("https://auth.example/authorize?"), 0U) << url;
         EXPECT_NE(url.find("response_type=code"), std::string::npos) << url;
@@ -327,7 +328,7 @@ namespace AsynGyanis::Net
 
         // 挑战与 verifier 自洽（computePkceChallenge 本身已被附录 B 向量钉住）
         const auto expectedChallenge = OAuthAuthorizationCodeClient::computePkceChallenge(first->verifier);
-        ASSERT_TRUE(expectedChallenge.has_value());
+        ASSERT_HAS_VALUE(expectedChallenge);
         EXPECT_NE(url.find("code_challenge=" + *expectedChallenge), std::string::npos) << url;
         EXPECT_NE(url.find("code_challenge_method=S256"), std::string::npos) << url;
 
@@ -338,7 +339,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(first->state, first->verifier);
 
         const auto second = client.beginAuthorization();
-        ASSERT_TRUE(second.has_value()) << second.error();
+        ASSERT_HAS_VALUE(second) << second.error();
         EXPECT_NE(second->verifier, first->verifier) << "两次授权请求的 PKCE verifier 不该相同";
         EXPECT_NE(second->state, first->state) << "两次授权请求的 state 不该相同";
     }
@@ -347,20 +348,20 @@ namespace AsynGyanis::Net
     {
         // 整条回调 URL：片段要剥掉，%2B 解成 '+'（不是空格）
         const auto fromUrl = OAuthAuthorizationCodeClient::parseCallback("https://app.example/cb?code=abc%2B123&state=st-1#access_token=x");
-        ASSERT_TRUE(fromUrl.has_value()) << fromUrl.error();
+        ASSERT_HAS_VALUE(fromUrl) << fromUrl.error();
         EXPECT_EQ(fromUrl->code, "abc+123");
         EXPECT_EQ(fromUrl->state, "st-1");
         EXPECT_TRUE(fromUrl->error.empty());
 
         // 裸查询串：与整 URL 同解；'+' 按表单约定解成空格
         const auto fromQuery = OAuthAuthorizationCodeClient::parseCallback("code=abc%2B123&state=st+1");
-        ASSERT_TRUE(fromQuery.has_value()) << fromQuery.error();
+        ASSERT_HAS_VALUE(fromQuery) << fromQuery.error();
         EXPECT_EQ(fromQuery->code, "abc+123");
         EXPECT_EQ(fromQuery->state, "st 1");
 
         // error 回调：错误码与描述都要取回（描述里的 '+' 解成空格）
         const auto denied = OAuthAuthorizationCodeClient::parseCallback("?error=access_denied&error_description=user+said+no&state=st-1");
-        ASSERT_TRUE(denied.has_value()) << denied.error();
+        ASSERT_HAS_VALUE(denied) << denied.error();
         EXPECT_EQ(denied->error, "access_denied");
         EXPECT_EQ(denied->errorDescription, "user said no");
         EXPECT_EQ(denied->state, "st-1");

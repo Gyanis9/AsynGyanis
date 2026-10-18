@@ -5,6 +5,7 @@
 
 #include "Platform/System/CpuAffinity.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
@@ -278,7 +279,7 @@ namespace AsynGyanis::Platform
     TEST(CpuAffinity, PinningAllowedCoreNarrowsThatThreadToOneBit)
     {
         const std::optional<std::size_t> targetCore = lowestSetCoreIndex(CpuAffinity::currentThreadCoreMask());
-        ASSERT_TRUE(targetCore.has_value()) << "本机没有放行任何核，无法验证绑定";
+        ASSERT_HAS_VALUE(targetCore) << "本机没有放行任何核，无法验证绑定";
 
         std::uint64_t maskAfterPinning = 0;
         bool          isSuccess        = false;
@@ -297,7 +298,7 @@ namespace AsynGyanis::Platform
         std::uint64_t                    maskAfterPinning = 0;
         bool                             isSuccess        = false;
         const std::optional<std::size_t> targetCore       = lowestSetCoreIndex(ownMaskBefore);
-        ASSERT_TRUE(targetCore.has_value());
+        ASSERT_HAS_VALUE(targetCore);
         ASSERT_TRUE(pinOnDedicatedThread(*targetCore, maskAfterPinning, isSuccess));
 
         EXPECT_EQ(CpuAffinity::currentThreadCoreMask(), ownMaskBefore) << "别的线程绑核改到了本线程的掩码";
@@ -375,7 +376,7 @@ namespace AsynGyanis::Platform
     TEST(CpuAffinity, AllowedCoreCountMatchesTheKernelCpuList)
     {
         const std::optional<std::size_t> kernelAllowedCount = readKernelAllowedCoreCount();
-        ASSERT_TRUE(kernelAllowedCount.has_value()) << "读不出 /proc/self/status 的 Cpus_allowed_list，这条对照没有判据可用";
+        ASSERT_HAS_VALUE(kernelAllowedCount) << "读不出 /proc/self/status 的 Cpus_allowed_list，这条对照没有判据可用";
         EXPECT_EQ(CpuAffinity::availableCoreCount(), *kernelAllowedCount) << "计数与内核上报的许可核清单不一致（清单：" << *kernelAllowedCount << "）";
     }
 #endif
@@ -401,7 +402,7 @@ namespace AsynGyanis::Platform
         for (std::size_t ordinal = 0; ordinal < allowedCoreCount; ++ordinal)
         {
             const std::optional<std::size_t> coreIndex = CpuAffinity::allowedCoreIndexAt(ordinal);
-            ASSERT_TRUE(coreIndex.has_value()) << "集合里有 " << allowedCoreCount << " 枚核，第 " << ordinal << " 枚却数不出来";
+            ASSERT_HAS_VALUE(coreIndex) << "集合里有 " << allowedCoreCount << " 枚核，第 " << ordinal << " 枚却数不出来";
             if (previousCoreIndex.has_value())
             {
                 EXPECT_GT(*coreIndex, *previousCoreIndex) << "按序号取出的编号不递增：序号语义坏了";

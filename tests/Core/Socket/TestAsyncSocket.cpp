@@ -18,6 +18,7 @@
 #include "Platform/System/ProcessInfo.h"
 
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -531,7 +532,7 @@ namespace AsynGyanis::Core
         ASSERT_NE(port, 0U);
 
         const auto handedOverDescriptor = secondReferenceViaHandoff(listener.fileDescriptor());
-        ASSERT_TRUE(handedOverDescriptor.has_value()) << "造不出同一端点的第二份引用：" << handedOverDescriptor.error();
+        ASSERT_HAS_VALUE(handedOverDescriptor) << "造不出同一端点的第二份引用：" << handedOverDescriptor.error();
 
         {
             AsyncSocket handedOver(loop, *handedOverDescriptor);
@@ -1144,7 +1145,7 @@ namespace AsynGyanis::Core
 
         ASSERT_TRUE(arming.handle().promise().result()) << "接受探针交回的是「未就绪」";
         const std::optional<int> acceptedDescriptor = listener.takeAcceptedConnection();
-        ASSERT_TRUE(acceptedDescriptor.has_value()) << "AcceptEx 完成之后必须能取到已接入的连接";
+        ASSERT_HAS_VALUE(acceptedDescriptor) << "AcceptEx 完成之后必须能取到已接入的连接";
 
         EXPECT_FALSE(listener.takeAcceptedConnection().has_value()) << "同一条连接被交出去两次：两条会话会共用同一个 socket";
 
@@ -1273,7 +1274,7 @@ namespace AsynGyanis::Core
 
         Task<ssize_t>                    emptyLength  = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
         const std::optional<std::string> emptyFailure = driveToExceptionText(loop, emptyLength);
-        ASSERT_TRUE(emptyFailure.has_value()) << "待发字节数为 0 时被静默当成「已经发完」了";
+        ASSERT_HAS_VALUE(emptyFailure) << "待发字节数为 0 时被静默当成「已经发完」了";
         EXPECT_NE(emptyFailure->find("待发字节数为 0"), std::string::npos) << "报错没有点明是长度为 0：文案为 " << *emptyFailure;
 
         socket.close();
@@ -1400,7 +1401,7 @@ namespace AsynGyanis::Core
 
         Task<ssize_t>                    sending     = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 4096, 1024);
         const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
-        ASSERT_TRUE(failureText.has_value()) << "起点已经在文件末尾之后，却被当成发成功了";
+        ASSERT_HAS_VALUE(failureText) << "起点已经在文件末尾之后，却被当成发成功了";
         EXPECT_NE(failureText->find("起点已在源文件末尾之后"), std::string::npos) << "偏移越界没有被如实报出来：文案为 " << *failureText;
         EXPECT_EQ(readWithinWindow(readerDescriptor, std::chrono::milliseconds(200)), 0u) << "既然一次都没发出去，读取侧不该收到任何字节";
 
@@ -1428,7 +1429,7 @@ namespace AsynGyanis::Core
 
         Task<ssize_t>                    sending     = sender.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 8192 + 4096);
         const std::optional<std::string> failureText = driveToExceptionText(loop, sending);
-        ASSERT_TRUE(failureText.has_value()) << "长度超出文件末尾时被当成发送成功，缺的那一截不会有人知道";
+        ASSERT_HAS_VALUE(failureText) << "长度超出文件末尾时被当成发送成功，缺的那一截不会有人知道";
         EXPECT_NE(failureText->find("到达文件末尾"), std::string::npos) << "报的不是「文件比请求的短」：文案为 " << *failureText;
 
         // 前缀必须已经在线：这条断言是「调用方不得整块重发」这条契约唯一的实证
@@ -1481,7 +1482,7 @@ namespace AsynGyanis::Core
         {
             failureText = std::string(exception.what());
         }
-        ASSERT_TRUE(failureText.has_value()) << "被唤醒之后当成「写好了」继续跑，等于向已关闭的连接发数据";
+        ASSERT_HAS_VALUE(failureText) << "被唤醒之后当成「写好了」继续跑，等于向已关闭的连接发数据";
         EXPECT_NE(failureText->find("等待可写期间套接字被关闭"), std::string::npos) << "报的不是关闭而是别的失败：文案为 " << *failureText;
 
         Platform::FileDescriptor::close(readerDescriptor);

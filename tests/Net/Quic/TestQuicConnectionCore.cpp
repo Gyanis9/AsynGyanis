@@ -45,6 +45,7 @@
 #include "Platform/IO/DatagramSocket.h"
 
 #include "AllocationProbe.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -1812,7 +1813,7 @@ namespace AsynGyanis::Net
 
         // Initial 包已被确认，因此有了一个 RTT 样本；Handshake 包全都没收，定时器只能靠探测超时
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value()) << "仍有未确认的握手包在途，必须武装定时器";
+        ASSERT_HAS_VALUE(deadline) << "仍有未确认的握手包在途，必须武装定时器";
         // 没采到样本时 PTO 约是 999 毫秒（初值 333 + 4×166），采到 9 毫秒的样本后应在 5 万微秒以内
         EXPECT_LT(*deadline, Timestamp{500000}) << "有了 RTT 样本之后 PTO 不该还停在没采过样本的初值上";
 
@@ -1874,8 +1875,8 @@ namespace AsynGyanis::Net
         {
             exchange(core, client, now);
             const std::optional<Timestamp> deadline = core.nextTimeout();
-            ASSERT_TRUE(deadline.has_value()) << "第 " << round << " 轮没有定时器，phase=" << static_cast<int>(core.phase()) << " now=" << now.count()
-                                              << " inFlight=" << core.bytesInFlightByteCount() << " window=" << core.congestionWindowByteLength();
+            ASSERT_HAS_VALUE(deadline) << "第 " << round << " 轮没有定时器，phase=" << static_cast<int>(core.phase()) << " now=" << now.count()
+                                       << " inFlight=" << core.bytesInFlightByteCount() << " window=" << core.congestionWindowByteLength();
             now = *deadline;
             core.onTimeout(now);
         }
@@ -1914,7 +1915,7 @@ namespace AsynGyanis::Net
 
         // 最大确认值抬到 1 之后，下面的空洞才有资格被判丢：时刻是发出时刻 1000 加上 9/8×最新 RTT
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value()) << "有空洞未被确认，必须武装时间阈值定时器";
+        ASSERT_HAS_VALUE(deadline) << "有空洞未被确认，必须武装时间阈值定时器";
         EXPECT_EQ(*deadline, Timestamp{11125}) << "判丢时刻应是 1000 + 9/8×9000（§6.1.2）";
 
         const std::size_t handshakeBytesBefore = client.serverCryptoByteCount(QuicEncryptionLevel::Handshake);
@@ -2024,7 +2025,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(client.handshakeDoneFrameCount(), 1U) << "另两个空间的确认不该顺带把 DONE 再发一遍";
 
         const std::optional<Timestamp> firstDeadline = core.nextTimeout();
-        ASSERT_TRUE(firstDeadline.has_value()) << "带 DONE 的包没被确认，探测超时应武装起来";
+        ASSERT_HAS_VALUE(firstDeadline) << "带 DONE 的包没被确认，探测超时应武装起来";
         EXPECT_EQ(client.pingFrameCount(), 0U) << "还在等待窗口里就不该发探针";
 
         core.onTimeout(*firstDeadline);
@@ -2151,7 +2152,7 @@ namespace AsynGyanis::Net
         for (int attempt = 0; attempt < 6; ++attempt)
         {
             const std::optional<Timestamp> deadline = core.nextTimeout();
-            ASSERT_TRUE(deadline.has_value());
+            ASSERT_HAS_VALUE(deadline);
             core.onTimeout(*deadline);
             for (const auto &datagram: drain(core))
             {
@@ -2192,7 +2193,7 @@ namespace AsynGyanis::Net
         for (int attempt = 0; attempt < 14; ++attempt)
         {
             const std::optional<Timestamp> deadline = core.nextTimeout();
-            ASSERT_TRUE(deadline.has_value());
+            ASSERT_HAS_VALUE(deadline);
             probeTime = *deadline;
             core.onTimeout(probeTime);
             ASSERT_FALSE(drain(core).empty()) << "探针豁免拥塞窗口，第 " << attempt << " 趟也该发得出东西（§7.5）";
@@ -2201,7 +2202,7 @@ namespace AsynGyanis::Net
         // 最后一趟不再丢包：客户端这才拿到服务端的 Finished，但那些探针它一条都没确认
         client.dropHandshakePackets(false);
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value());
+        ASSERT_HAS_VALUE(deadline);
         probeTime = *deadline;
         core.onTimeout(probeTime);
         for (const auto &datagram: drain(core))
@@ -2314,7 +2315,7 @@ namespace AsynGyanis::Net
         }
 
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value()) << "宣告了 max_idle_timeout 就该武装空闲定时器";
+        ASSERT_HAS_VALUE(deadline) << "宣告了 max_idle_timeout 就该武装空闲定时器";
         // 服务端只回了 ACK：不触发确认的出包不该把计时推后（§10.1 只认「第一个触发确认的包」）
         EXPECT_EQ(*deadline, lastActivity + Timestamp{30000000});
 
@@ -2348,7 +2349,7 @@ namespace AsynGyanis::Net
         drain(core);
 
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value());
+        ASSERT_HAS_VALUE(deadline);
         EXPECT_EQ(*deadline, lastActivity + Timestamp{10000000}) << "对端只宣告 10 秒，本端就不该按 30 秒留着连接";
     }
 
@@ -2484,7 +2485,7 @@ namespace AsynGyanis::Net
         for (int attempt = 0; attempt < 12; ++attempt)
         {
             const std::optional<Timestamp> deadline = core.nextTimeout();
-            ASSERT_TRUE(deadline.has_value());
+            ASSERT_HAS_VALUE(deadline);
             // 一旦 nextTimeout 给出的不再是「再探一趟」而是空闲截止点本身，说明探测已经撑满了额度
             core.onTimeout(*deadline);
             if (core.phase() == QuicConnectionPhase::Closing)
@@ -2635,7 +2636,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(client.pingFrameCount(), 0U) << "还没到期就该安静";
 
         const std::optional<Timestamp> firstDeadline = core.nextTimeout();
-        ASSERT_TRUE(firstDeadline.has_value()) << "有包没被确认，探测超时应武装起来";
+        ASSERT_HAS_VALUE(firstDeadline) << "有包没被确认，探测超时应武装起来";
         core.onTimeout(*firstDeadline);
         for (const auto &datagram: drain(core))
         {
@@ -2646,7 +2647,7 @@ namespace AsynGyanis::Net
 
         // PING 自己也是触发确认的包：继续不答就该再探一趟，退避一路涨而不是就此闭嘴
         const std::optional<Timestamp> secondDeadline = core.nextTimeout();
-        ASSERT_TRUE(secondDeadline.has_value()) << "探针发出去就没下文了，等于自己把连接晾着";
+        ASSERT_HAS_VALUE(secondDeadline) << "探针发出去就没下文了，等于自己把连接晾着";
         EXPECT_GT(*secondDeadline, *firstDeadline) << "这一趟该按退避往后推";
         core.onTimeout(*secondDeadline);
         for (const auto &datagram: drain(core))
@@ -2691,7 +2692,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(core.streamLayer().hasDeliveries());
         const std::optional<QuicStreamDelivery> delivery = core.streamLayer().takeDelivery();
-        ASSERT_TRUE(delivery.has_value());
+        ASSERT_HAS_VALUE(delivery);
         EXPECT_EQ(delivery->streamId, 0x00U);
         EXPECT_EQ(delivery->bytes, payload);
         EXPECT_TRUE(delivery->isFinal);
@@ -2737,7 +2738,7 @@ namespace AsynGyanis::Net
 
         exchange(core, client, Timestamp{120000});
         const std::optional<Timestamp> deadline = core.nextTimeout();
-        ASSERT_TRUE(deadline.has_value()) << "带数据的包在途，恢复层该亮一个判丢时刻";
+        ASSERT_HAS_VALUE(deadline) << "带数据的包在途，恢复层该亮一个判丢时刻";
         core.onTimeout(*deadline);
         for (const auto &datagram: drain(core))
         {
@@ -3193,7 +3194,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(core.receivedEcnCount(QuicEncryptionLevel::Application), (std::array<std::uint64_t, 3>{3, 1, 1})) << "ECT(0) 该是 3 条（重复那条不重复计）、ECT(1) 1 条、CE 1 条";
         const std::optional<std::array<std::uint64_t, 3>> reported = client.serverReportedEcnCounts(QuicEncryptionLevel::Application);
-        ASSERT_TRUE(reported.has_value()) << "本端读得到字段了，ACK 就该带三个计数（帧类型 0x03，§19.3.2）";
+        ASSERT_HAS_VALUE(reported) << "本端读得到字段了，ACK 就该带三个计数（帧类型 0x03，§19.3.2）";
         EXPECT_EQ(*reported, (std::array<std::uint64_t, 3>{3, 1, 1})) << "ACK 报的数与核心自己收到的计数不是同一份，对端的校验就会拿假账去比";
     }
 

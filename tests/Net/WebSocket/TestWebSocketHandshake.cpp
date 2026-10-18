@@ -10,6 +10,7 @@
 #include "Net/Http/HttpMethod.h"
 #include "Net/Http/HttpRequest.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -409,7 +410,7 @@ namespace AsynGyanis::Net
     {
         const auto request = buildWebSocketUpgradeRequest("example.com:8443", "/chat?room=1", kRfcExampleClientKey);
 
-        ASSERT_TRUE(request.has_value()) << request.error();
+        ASSERT_HAS_VALUE(request) << request.error();
         EXPECT_EQ(*request, "GET /chat?room=1 HTTP/1.1\r\n"
                             "Host: example.com:8443\r\n"
                             "Upgrade: websocket\r\n"
@@ -427,7 +428,7 @@ namespace AsynGyanis::Net
         const auto request = buildWebSocketUpgradeRequest("example.com", "/ws", kRfcExampleClientKey, std::vector<std::string>{"chat", "superchat"},
                                                           "permessage-deflate; client_max_window_bits=12");
 
-        ASSERT_TRUE(request.has_value()) << request.error();
+        ASSERT_HAS_VALUE(request) << request.error();
         EXPECT_NE(request->find("Sec-WebSocket-Protocol: chat, superchat\r\n"), std::string::npos) << *request;
         EXPECT_NE(request->find("Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=12\r\n"), std::string::npos) << *request;
         EXPECT_TRUE(request->ends_with("\r\n\r\n")) << "结束空行必须还是那一个空行：" << *request;
@@ -469,7 +470,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey);
 
-        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error();
         EXPECT_TRUE(agreement->acceptedSubprotocol.empty());
         EXPECT_FALSE(agreement->isPerMessageDeflateAccepted);
     }
@@ -561,7 +562,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate; client_max_window_bits=12");
 
-        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error();
         EXPECT_EQ(agreement->acceptedSubprotocol, "chat") << "回显值两侧的空白不属于内容，要折掉再交回";
         EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
     }
@@ -627,7 +628,7 @@ namespace AsynGyanis::Net
 
         const auto agreement = validateWebSocketUpgradeResponse(101, headers, kRfcExampleClientKey, "permessage-deflate");
 
-        ASSERT_TRUE(agreement.has_value()) << agreement.error();
+        ASSERT_HAS_VALUE(agreement) << agreement.error();
         EXPECT_TRUE(agreement->isPerMessageDeflateAccepted);
     }
 

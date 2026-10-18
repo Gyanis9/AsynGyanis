@@ -22,6 +22,7 @@
 
 #include "HttpTestSupport.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -465,7 +466,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器没有进入接受循环";
 
         const auto parsed = sendAndReadResponse(fixture.listeningPort(), "GET /ctx-log HTTP/1.1\r\nHost: test\r\nTraceparent: " + traceparent + "\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(parsed.has_value()) << "真实 TCP 请求没有拿到完整响应";
+        ASSERT_HAS_VALUE(parsed) << "真实 TCP 请求没有拿到完整响应";
 
         bool sawLineWithTrace = false;
         ASSERT_TRUE(waitForCondition(

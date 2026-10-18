@@ -1,6 +1,7 @@
 // 静态文件正文的传输路径端到端用例：大文件整份与区间响应（Linux 走 sendfile 零拷贝）、 阈值以下的小文件回退、HEAD 的正文抑制，以及一条连接上复用响应对象连发两条
 #include "HttpTestSupport.h"
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpServer.h"
 
 #include <gtest/gtest.h>
@@ -223,7 +224,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(port, 0U);
 
         const std::optional<ParsedResponse> response = sendAndReadResponse(port, makeRequestText("GET /large.bin HTTP/1.1"), kTransferTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 200")) << response->headers;
         EXPECT_TRUE(hasHeaderLine(response->headers, "content-length: " + std::to_string(kLargeFileBytes))) << response->headers;
@@ -246,7 +247,7 @@ namespace AsynGyanis::Net
 
         const std::string                   rangeLine = "range: bytes=" + std::to_string(kRangeStart) + "-" + std::to_string(kRangeStart + kRangeLength - 1);
         const std::optional<ParsedResponse> response  = sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /large.bin HTTP/1.1", {rangeLine}), kTransferTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 206")) << response->headers;
         const std::string expectedContentRange =
@@ -269,7 +270,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeStaticFileFixture(tree.directory());
 
         const std::optional<ParsedResponse> response = sendAndReadResponse(fixture->listeningPort(), makeRequestText("GET /small.bin HTTP/1.1"), kTransferTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         ASSERT_TRUE(response->headers.starts_with("HTTP/1.1 200")) << response->headers;
         expectBytesEqual(response->body, tree.smallContent(), "小文件响应");
@@ -357,8 +358,8 @@ namespace AsynGyanis::Net
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
 
-        ASSERT_TRUE(firstResponse.has_value()) << "第一条响应没有读全";
-        ASSERT_TRUE(secondResponse.has_value()) << "第二条响应没有读全（连接可能没有保活）";
+        ASSERT_HAS_VALUE(firstResponse) << "第一条响应没有读全";
+        ASSERT_HAS_VALUE(secondResponse) << "第二条响应没有读全（连接可能没有保活）";
         EXPECT_TRUE(firstResponse->headers.starts_with("HTTP/1.1 200")) << firstResponse->headers;
         EXPECT_TRUE(secondResponse->headers.starts_with("HTTP/1.1 200")) << secondResponse->headers;
 

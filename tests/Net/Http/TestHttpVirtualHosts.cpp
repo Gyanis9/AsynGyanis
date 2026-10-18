@@ -1,4 +1,5 @@
 // 按 Host 选站的端到端用例：真实 h1 服务器上三个站点各回各的正文，中间件按层生效
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpResponse.h"
 #include "Net/Http/Router.h"
@@ -110,7 +111,7 @@ namespace AsynGyanis::Net
         for (const Case &testCase: cases)
         {
             const std::optional<ParsedResponse> reply = sendAndReadResponse(fixture->listeningPort(), hostRequestText("/who", testCase.host));
-            ASSERT_TRUE(reply.has_value()) << "Host「" << testCase.host << "」没拿到响应";
+            ASSERT_HAS_VALUE(reply) << "Host「" << testCase.host << "」没拿到响应";
             EXPECT_EQ(reply->body, testCase.expectedBody) << "Host「" << testCase.host << "」落到了别的站点";
             EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << "Host「" << testCase.host << "」的响应不是 200：" << reply->headers.substr(0, 40);
         }
@@ -126,12 +127,12 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture->awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
 
         const std::optional<ParsedResponse> apiReply = sendAndReadResponse(fixture->listeningPort(), hostRequestText("/who", "api.example.com"));
-        ASSERT_TRUE(apiReply.has_value());
+        ASSERT_HAS_VALUE(apiReply);
         EXPECT_NE(apiReply->headers.find("x-root"), std::string::npos) << "外层中间件的头部没到线上，说明选站跳过了根管道";
         EXPECT_NE(apiReply->headers.find("x-site"), std::string::npos) << "本主机自己的中间件没跑";
 
         const std::optional<ParsedResponse> defaultReply = sendAndReadResponse(fixture->listeningPort(), hostRequestText("/who", "other.example.net"));
-        ASSERT_TRUE(defaultReply.has_value());
+        ASSERT_HAS_VALUE(defaultReply);
         EXPECT_NE(defaultReply->headers.find("x-root"), std::string::npos);
         EXPECT_EQ(defaultReply->headers.find("x-site"), std::string::npos) << "api 主机的中间件跑到了别的站点上，站点之间就漏了";
     }
@@ -146,7 +147,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture->awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
 
         const std::optional<ParsedResponse> reply = sendAndReadResponse(fixture->listeningPort(), hostRequestText("/root-only", "api.example.com"));
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 404")) << "根表上的 /root-only 被 api 站点拿去应答，等于两个域名共用一套路由：" << reply->headers.substr(0, 40);
         EXPECT_NE(reply->headers.find("x-root"), std::string::npos) << "回 404 时把外层中间件写下的头部复位掉了";
     }

@@ -16,6 +16,7 @@
 #include "Net/Http3/Http3Frame.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "ExpectedAssertions.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 #include "NetTestSupport.h"
 
@@ -150,7 +151,7 @@ namespace AsynGyanis::Net
             // 解出来再编回去必须逐字节还原：这一步同时核 §7.1 的「长度自洽」
             Http3FrameReader reader(expectedBytes.size() + 8);
             const auto       decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
-            ASSERT_TRUE(decoded.has_value()) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
+            ASSERT_HAS_VALUE(decoded) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
             ASSERT_TRUE(decoded->has_value()) << "字节不够解出一帧：" << testCase.hexadecimalText;
             EXPECT_EQ(**decoded, testCase.frame) << "解码结果与手工构造的帧不等：" << testCase.hexadecimalText;
             EXPECT_EQ(encodeOne(**decoded), expectedBytes) << "重编码不等于原文：" << testCase.hexadecimalText;
@@ -257,17 +258,17 @@ namespace AsynGyanis::Net
         Http3FrameReader reader(64);
 
         const auto data = decodeSoleFrame("000568656c6c6f", reader);
-        ASSERT_TRUE(data.has_value()) << data.error().message;
+        ASSERT_HAS_VALUE(data) << data.error().message;
         ASSERT_TRUE(data->has_value());
         EXPECT_EQ(**data, frameOf(Http3DataFrame{std::span<const std::uint8_t>(kHelloBytes)})) << "DATA 的载荷";
 
         const auto headers = decodeSoleFrame("0102aabb", reader);
-        ASSERT_TRUE(headers.has_value()) << headers.error().message;
+        ASSERT_HAS_VALUE(headers) << headers.error().message;
         ASSERT_TRUE(headers->has_value());
         EXPECT_EQ(**headers, frameOf(Http3HeadersFrame{std::span<const std::uint8_t>(kEncodedFieldSection)})) << "HEADERS 的头字段段";
 
         const auto settings = decodeSoleFrame("040c015000068000400007033107", reader);
-        ASSERT_TRUE(settings.has_value()) << settings.error().message;
+        ASSERT_HAS_VALUE(settings) << settings.error().message;
         ASSERT_TRUE(settings->has_value());
         const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**settings);
         ASSERT_NE(settingsFrame, nullptr) << "SETTINGS 应解成 Http3SettingsFrame";
@@ -282,24 +283,24 @@ namespace AsynGyanis::Net
         EXPECT_EQ(settingsFrame->unknownSettings[0].value, 7u) << "未知项的值";
 
         const auto cancelPush = decodeSoleFrame("03024400", reader);
-        ASSERT_TRUE(cancelPush.has_value()) << cancelPush.error().message;
+        ASSERT_HAS_VALUE(cancelPush) << cancelPush.error().message;
         ASSERT_TRUE(cancelPush->has_value());
         EXPECT_EQ(**cancelPush, frameOf(Http3CancelPushFrame{1024})) << "CANCEL_PUSH 的 Push ID";
 
         const auto pushPromise = decodeSoleFrame("050109", reader);
-        ASSERT_TRUE(pushPromise.has_value()) << pushPromise.error().message;
+        ASSERT_HAS_VALUE(pushPromise) << pushPromise.error().message;
         ASSERT_TRUE(pushPromise->has_value());
         const Http3Frame expectedPushPromise{Http3PushPromiseFrame{9, {}}};
         EXPECT_EQ(**pushPromise, expectedPushPromise) << "PUSH_PROMISE 允许头字段段为空";
 
         const auto goAway = decodeSoleFrame("0708ffffffffffffffff", reader);
-        ASSERT_TRUE(goAway.has_value()) << goAway.error().message;
+        ASSERT_HAS_VALUE(goAway) << goAway.error().message;
         ASSERT_TRUE(goAway->has_value());
         // §5.2：客户端方向的 GOAWAY 可以填 2^62-1，表示服务端可继续履行已承诺的推送
         EXPECT_EQ(**goAway, frameOf(Http3GoAwayFrame{kQuicMaximumIntegerValue})) << "GOAWAY 的 Stream ID/Push ID";
 
         const auto maxPushId = decodeSoleFrame("0d0245dc", reader);
-        ASSERT_TRUE(maxPushId.has_value()) << maxPushId.error().message;
+        ASSERT_HAS_VALUE(maxPushId) << maxPushId.error().message;
         ASSERT_TRUE(maxPushId->has_value());
         EXPECT_EQ(**maxPushId, frameOf(Http3MaxPushIdFrame{1500})) << "MAX_PUSH_ID 的 Push ID";
     }
@@ -316,7 +317,7 @@ namespace AsynGyanis::Net
         Http3FrameReader reader(64);
 
         const auto headers = decodeSoleFrame("400180000003010203", reader);
-        ASSERT_TRUE(headers.has_value()) << headers.error().message << "：非最短的帧类型/长度都不该报错";
+        ASSERT_HAS_VALUE(headers) << headers.error().message << "：非最短的帧类型/长度都不该报错";
         ASSERT_TRUE(headers->has_value());
         const auto *headersFrame = std::get_if<Http3HeadersFrame>(&**headers);
         ASSERT_NE(headersFrame, nullptr) << "0x4001 解出来就是类型 1 的 HEADERS";
@@ -350,7 +351,7 @@ namespace AsynGyanis::Net
         {
             Http3FrameReader reader(64);
             const auto       decoded = decodeSoleFrame(testCase.hexadecimalText, reader);
-            ASSERT_TRUE(decoded.has_value()) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
+            ASSERT_HAS_VALUE(decoded) << decoded.error().message << " 原文 " << testCase.hexadecimalText;
             ASSERT_TRUE(decoded->has_value()) << testCase.hexadecimalText;
             const auto *unknownFrame = std::get_if<Http3UnknownFrame>(&**decoded);
             ASSERT_NE(unknownFrame, nullptr) << "未知类型要落进 Http3UnknownFrame：" << testCase.hexadecimalText;
@@ -409,7 +410,7 @@ namespace AsynGyanis::Net
         Http3FrameReader reader(64);
         // 04 04 | 06 06 | 06 09 —— 两次 0x06（MAX_FIELD_SECTION_SIZE），值分别是 6 与 9
         const auto decoded = decodeSoleFrame("040406060609", reader);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         ASSERT_TRUE(decoded->has_value());
         const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**decoded);
         ASSERT_NE(settingsFrame, nullptr) << "SETTINGS 的变体选择";
@@ -422,7 +423,7 @@ namespace AsynGyanis::Net
         // §7.2.4.1 从 HTTP/2 继承下来的保留标识（0x02～0x05）落在未知项里，本层不判错
         Http3FrameReader reservedReader(64);
         const auto       reserved = decodeSoleFrame("04020203", reservedReader);
-        ASSERT_TRUE(reserved.has_value()) << reserved.error().message;
+        ASSERT_HAS_VALUE(reserved) << reserved.error().message;
         ASSERT_TRUE(reserved->has_value());
         const auto *reservedFrame = std::get_if<Http3SettingsFrame>(&**reserved);
         ASSERT_NE(reservedFrame, nullptr);
@@ -461,12 +462,12 @@ namespace AsynGyanis::Net
         {
             const auto bytes = makeBytesFromHex(hexadecimalText);
             const auto fed   = reader.feed(std::span<const std::uint8_t>(bytes));
-            ASSERT_TRUE(fed.has_value()) << "喂入 " << hexadecimalText << " 失败：" << fed.error().message;
+            ASSERT_HAS_VALUE(fed) << "喂入 " << hexadecimalText << " 失败：" << fed.error().message;
         };
         auto expectNoFrame = [&reader](const char *reason)
         {
             const auto pending = reader.nextFrame();
-            ASSERT_TRUE(pending.has_value()) << reason << " 时不该报错，实际：" << pending.error().message;
+            ASSERT_HAS_VALUE(pending) << reason << " 时不该报错，实际：" << pending.error().message;
             EXPECT_FALSE(pending->has_value()) << reason << " 时应交空 optional";
         };
 
@@ -485,7 +486,7 @@ namespace AsynGyanis::Net
         feedOne("cc");
 
         const auto frame = reader.nextFrame();
-        ASSERT_TRUE(frame.has_value()) << frame.error().message;
+        ASSERT_HAS_VALUE(frame) << frame.error().message;
         ASSERT_TRUE(frame->has_value()) << "补齐后即可出帧";
         const auto *unknownFrame = std::get_if<Http3UnknownFrame>(&**frame);
         ASSERT_NE(unknownFrame, nullptr) << "类型 0x40 应落进未知帧";
@@ -502,9 +503,9 @@ namespace AsynGyanis::Net
         Http3FrameReader reader(64);
         // DATA 声明 5 字节载荷，实际只来了 2 字节：不能报错，但也永远解不出帧
         const auto fed = reader.feed(std::span<const std::uint8_t>(makeBytesFromHex("00056865")));
-        ASSERT_TRUE(fed.has_value()) << fed.error().message;
+        ASSERT_HAS_VALUE(fed) << fed.error().message;
         const auto pending = reader.nextFrame();
-        ASSERT_TRUE(pending.has_value()) << pending.error().message;
+        ASSERT_HAS_VALUE(pending) << pending.error().message;
         EXPECT_FALSE(pending->has_value()) << "载荷未齐，连接层此刻要按 §7.1 判截断还是继续等";
         EXPECT_EQ(reader.pendingByteCount(), 4u) << "帧头 2 字节 + 已到载荷 2 字节都算残余";
     }
@@ -522,7 +523,7 @@ namespace AsynGyanis::Net
         // DATA 声明 100 字节载荷：100 超单字节档，长度域要走两字节档 0x4064（RFC 9000 §16），
         // 加 3 字节帧头 = 103 > 16
         const auto fed = reader.feed(std::span<const std::uint8_t>(makeBytesFromHex("004064")));
-        ASSERT_TRUE(fed.has_value()) << fed.error().message;
+        ASSERT_HAS_VALUE(fed) << fed.error().message;
         const auto exceeded = reader.nextFrame();
         ASSERT_FALSE(exceeded.has_value()) << "声明长度超上限必须当场报错";
         EXPECT_EQ(exceeded.error().kind, Http3FrameErrorKind::LimitExceeded);
@@ -538,9 +539,9 @@ namespace AsynGyanis::Net
         reader.reset();
         EXPECT_EQ(reader.pendingByteCount(), 0u) << "reset() 之后残余清零";
         const auto revived = reader.feed(std::span<const std::uint8_t>(makeBytesFromHex("0000")));
-        ASSERT_TRUE(revived.has_value()) << "reset() 之后要能接着用";
+        ASSERT_HAS_VALUE(revived) << "reset() 之后要能接着用";
         const auto emptyData = reader.nextFrame();
-        ASSERT_TRUE(emptyData.has_value()) << emptyData.error().message;
+        ASSERT_HAS_VALUE(emptyData) << emptyData.error().message;
         ASSERT_TRUE(emptyData->has_value()) << "空载荷的 DATA 是合法帧（§7.2.1 的 Data 长度任意）";
         EXPECT_EQ(**emptyData, frameOf(Http3DataFrame{})) << "0000 = DATA，声明长度 0";
 
@@ -583,14 +584,14 @@ namespace AsynGyanis::Net
         {
             const std::size_t chunkLength = std::min(stride, wireBytes.size() - offset);
             const auto        fed         = reader.feed(std::span<const std::uint8_t>(wireBytes.data() + offset, chunkLength));
-            ASSERT_TRUE(fed.has_value()) << "步长 " << stride << " 喂到第 " << offset << " 字节失败：" << fed.error().message;
+            ASSERT_HAS_VALUE(fed) << "步长 " << stride << " 喂到第 " << offset << " 字节失败：" << fed.error().message;
             offset += chunkLength;
 
             // 真实读取循环就是「喂一段、把能解的帧取干净」，此处照做
             while (true)
             {
                 const auto frame = reader.nextFrame();
-                ASSERT_TRUE(frame.has_value()) << "步长 " << stride << " 在第 " << offset << " 字节处报错：" << frame.error().message;
+                ASSERT_HAS_VALUE(frame) << "步长 " << stride << " 在第 " << offset << " 字节处报错：" << frame.error().message;
                 if (!frame->has_value())
                 {
                     break;

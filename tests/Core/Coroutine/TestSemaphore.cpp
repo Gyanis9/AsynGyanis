@@ -14,6 +14,7 @@
 #include "Base/Exception/LogicException.h"
 
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -153,7 +154,7 @@ namespace AsynGyanis::Core
 
         // 额度见底时同一条口不再放行：快速通道只认「队空且有额度」两个条件
         std::optional<Semaphore::Permit> exhausted = semaphore.tryAcquire(3);
-        ASSERT_TRUE(exhausted.has_value());
+        ASSERT_HAS_VALUE(exhausted);
         Observation second;
         Task<void>  blocked = acquireAndRecordTask(semaphore, second, "乙", 1);
         submit(loop, blocked);
@@ -171,8 +172,8 @@ namespace AsynGyanis::Core
 
         std::optional<Semaphore::Permit> holderFirst  = semaphore.tryAcquire(1);
         std::optional<Semaphore::Permit> holderSecond = semaphore.tryAcquire(1);
-        ASSERT_TRUE(holderFirst.has_value());
-        ASSERT_TRUE(holderSecond.has_value());
+        ASSERT_HAS_VALUE(holderFirst);
+        ASSERT_HAS_VALUE(holderSecond);
         ASSERT_EQ(semaphore.availablePermitCount(), 0u);
 
         Task<void> waiting = acquireAndRecordTask(semaphore, observation, "丙", 1);
@@ -201,7 +202,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Semaphore::Permit> holder = semaphore.tryAcquire(1);
-        ASSERT_TRUE(holder.has_value());
+        ASSERT_HAS_VALUE(holder);
 
         Task<void> first  = acquireAndRecordTask(semaphore, observation, "甲", 1);
         Task<void> second = acquireAndRecordTask(semaphore, observation, "乙", 1);
@@ -244,9 +245,9 @@ namespace AsynGyanis::Core
         std::optional<Semaphore::Permit> heavyHold   = semaphore.tryAcquire(3);
         std::optional<Semaphore::Permit> firstSlack  = semaphore.tryAcquire(1);
         std::optional<Semaphore::Permit> secondSlack = semaphore.tryAcquire(1);
-        ASSERT_TRUE(heavyHold.has_value());
-        ASSERT_TRUE(firstSlack.has_value());
-        ASSERT_TRUE(secondSlack.has_value());
+        ASSERT_HAS_VALUE(heavyHold);
+        ASSERT_HAS_VALUE(firstSlack);
+        ASSERT_HAS_VALUE(secondSlack);
         ASSERT_EQ(semaphore.availablePermitCount(), 0u);
 
         Task<void> heavyWaiter = acquireAndRecordTask(semaphore, observation, "大队头", 5);
@@ -290,7 +291,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Semaphore::Permit> holder = semaphore.tryAcquire(1);
-        ASSERT_TRUE(holder.has_value());
+        ASSERT_HAS_VALUE(holder);
 
         {
             Task<void> waiter = acquireAndRecordTask(semaphore, observation, "甲", 1);
@@ -353,7 +354,7 @@ namespace AsynGyanis::Core
         auto                    semaphore = std::make_unique<Semaphore>(loop, 1);
 
         std::optional<Semaphore::Permit> holder = semaphore->tryAcquire(1);
-        ASSERT_TRUE(holder.has_value());
+        ASSERT_HAS_VALUE(holder);
 
         frames.push_back(acquireAndRecordTask(*semaphore, observation, "甲", 1));
         submit(loop, frames.back());
@@ -384,7 +385,7 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(observation.woke.empty());
 
         std::optional<Semaphore::Permit> other = semaphore.tryAcquire(1); // 把最后一格占住，逼甲 排队
-        ASSERT_TRUE(other.has_value());
+        ASSERT_HAS_VALUE(other);
 
         gate.open(); // 甲 醒来取第二格：队空但余额为 0，只能挂起
         ASSERT_TRUE(observation.woke.empty());
@@ -410,7 +411,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Semaphore::Permit> all = semaphore.tryAcquire(2); // 先把池子清空，逼第一次挂起
-        ASSERT_TRUE(all.has_value());
+        ASSERT_HAS_VALUE(all);
 
         Task<void> task = takeTwiceInOneExpressionTask(semaphore, observation, "甲");
         submit(loop, task);
@@ -436,7 +437,7 @@ namespace AsynGyanis::Core
         Observation observation;
 
         std::optional<Semaphore::Permit> all = semaphore.tryAcquire(5);
-        ASSERT_TRUE(all.has_value());
+        ASSERT_HAS_VALUE(all);
 
         Task<void> waiter = acquireAndRecordTask(semaphore, observation, "甲", 3);
         submit(loop, waiter);
@@ -480,7 +481,7 @@ namespace AsynGyanis::Core
         EXPECT_EQ(semaphore.availablePermitCount(), 2u);
 
         std::optional<Semaphore::Permit> holder = semaphore.tryAcquire(1);
-        ASSERT_TRUE(holder.has_value());
+        ASSERT_HAS_VALUE(holder);
         EXPECT_THROW(semaphore.release(2), Base::LogicException); // 外面只有 1 格，放 2 个多了一格
         EXPECT_EQ(semaphore.availablePermitCount(), 1u);
 
@@ -507,7 +508,7 @@ namespace AsynGyanis::Core
 
         runner.join(); // 循环停下：判据放开
         std::optional<Semaphore::Permit> permit = semaphore.tryAcquire(1);
-        EXPECT_TRUE(permit.has_value());
+        EXPECT_HAS_VALUE(permit);
         EXPECT_NO_THROW(frames.push_back(acquireAndRecordTask(semaphore, observation, "甲", 1)));
         EXPECT_EQ(observation.woke.size(), 0u); // 只是构造了帧，没投给循环，也就没跑
     }

@@ -17,6 +17,7 @@
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -189,8 +190,8 @@ namespace
     {
         const std::optional<LockedAccount> firstView  = firstSession.where(Column(&LockedAccount::id, "id") == std::int64_t{1}).first();
         const std::optional<LockedAccount> secondView = secondSession.where(Column(&LockedAccount::id, "id") == std::int64_t{1}).first();
-        EXPECT_TRUE(firstView.has_value());
-        EXPECT_TRUE(secondView.has_value());
+        EXPECT_HAS_VALUE(firstView);
+        EXPECT_HAS_VALUE(secondView);
         return {firstView.value_or(LockedAccount{}), secondView.value_or(LockedAccount{})};
     }
 } // namespace
@@ -241,7 +242,7 @@ TEST_F(QueryableOptimisticLockTest, RejectsTheStaleWriteFromASecondSession)
 
     // 会话一写的值还在，行也仍然只有一行——冲突不是「合并写入」，什么都没落
     const std::optional<LockedAccount> after = lockedQuery().where(Column(&LockedAccount::id, "id") == std::int64_t{1}).first();
-    ASSERT_TRUE(after.has_value());
+    ASSERT_HAS_VALUE(after);
     EXPECT_EQ(after->name, "会话一写的") << "先写的那份数据被覆盖了";
     EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一";
     EXPECT_EQ(lockedQuery().count(), 1);
@@ -263,7 +264,7 @@ TEST_F(QueryableOptimisticLockTest, BumpsTheVersionOnTheServerSideAndLeavesTheSt
     EXPECT_EQ(query.update(row), 1);
 
     const std::optional<LockedAccount> afterFirst = query.where(Column(&LockedAccount::id, "id") == std::int64_t{7}).first();
-    ASSERT_TRUE(afterFirst.has_value());
+    ASSERT_HAS_VALUE(afterFirst);
     EXPECT_EQ(afterFirst->version, 1) << "版本没加一，或加的是结构体里的那个旧值";
 
     // 手里那份结构体仍是 version = 0：再写一次必须冲突（「要继续改请先重新读出」）

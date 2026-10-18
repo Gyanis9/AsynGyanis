@@ -1,5 +1,6 @@
 // permessage-deflate 用例：扩展协商、消息往返、不可压内容与解压上限 往返一律逐字节比较；解压上限那条单独钉住 zip bomb——压缩比可以做到几百倍，
 // 不设上限时一条小消息就能把服务端内存撑爆。
+#include "ExpectedAssertions.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 
 #include <gtest/gtest.h>
@@ -201,13 +202,13 @@ namespace AsynGyanis::Net
 
         const std::optional<std::string> wide   = deflateWebSocketMessage(payload, kWebSocketDefaultWindowBits);
         const std::optional<std::string> narrow = deflateWebSocketMessage(payload, 9);
-        ASSERT_TRUE(wide.has_value()) << "满档压缩失败";
-        ASSERT_TRUE(narrow.has_value()) << "9 位窗口压缩失败";
+        ASSERT_HAS_VALUE(wide) << "满档压缩失败";
+        ASSERT_HAS_VALUE(narrow) << "9 位窗口压缩失败";
         EXPECT_GT(narrow->size(), wide->size() + payload.size() / 4) << "窗口位数没进到压缩参数里：两条流应当差出整个后半段";
 
         // 窄窗口产出的字节必须能被同档的解压器逐字节还原（协商两端同档时自洽）
         const std::optional<std::string> restored = inflateWebSocketMessage(*narrow, payload.size() + 1024, 9);
-        ASSERT_TRUE(restored.has_value()) << "按对端声明的窗口压完，同档解压却解不开";
+        ASSERT_HAS_VALUE(restored) << "按对端声明的窗口压完，同档解压却解不开";
         EXPECT_EQ(*restored, payload);
 
         // 位数越界一律不出字节：宁可这一条不发压缩帧，也不发一段可能没人解得开的字节
@@ -224,10 +225,10 @@ namespace AsynGyanis::Net
         const std::string original = "permessage-deflate 往返：中文与 ASCII 混排，含空字节之前的普通文本";
 
         const std::optional<std::string> compressed = deflateWebSocketMessage(original);
-        ASSERT_TRUE(compressed.has_value()) << "压缩失败";
+        ASSERT_HAS_VALUE(compressed) << "压缩失败";
 
         const std::optional<std::string> restored = inflateWebSocketMessage(*compressed, 64 * 1024);
-        ASSERT_TRUE(restored.has_value()) << "解压失败";
+        ASSERT_HAS_VALUE(restored) << "解压失败";
         EXPECT_EQ(*restored, original);
     }
 
@@ -243,8 +244,8 @@ namespace AsynGyanis::Net
 
         const std::optional<std::string> first  = deflateWebSocketMessage(repeated);
         const std::optional<std::string> second = deflateWebSocketMessage(repeated);
-        ASSERT_TRUE(first.has_value());
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(first);
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(*first, *second) << "同一条 payload 连续两次压缩必须逐字节一致（证明按消息复位、无上下文接管）";
 
         // 交错压缩 + 解压多种长度（含空、含不可压），逐条往返一致，验证 inflate 侧复用同样不串
@@ -252,9 +253,9 @@ namespace AsynGyanis::Net
         for (const std::string &payload: payloads)
         {
             const std::optional<std::string> compressed = deflateWebSocketMessage(payload);
-            ASSERT_TRUE(compressed.has_value());
+            ASSERT_HAS_VALUE(compressed);
             const std::optional<std::string> restored = inflateWebSocketMessage(*compressed, 64 * 1024);
-            ASSERT_TRUE(restored.has_value());
+            ASSERT_HAS_VALUE(restored);
             EXPECT_EQ(*restored, payload);
         }
     }
@@ -265,10 +266,10 @@ namespace AsynGyanis::Net
     TEST(PerMessageDeflate, RoundTripsEmptyMessage)
     {
         const std::optional<std::string> compressed = deflateWebSocketMessage("");
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         const std::optional<std::string> restored = inflateWebSocketMessage(*compressed, 64);
-        ASSERT_TRUE(restored.has_value());
+        ASSERT_HAS_VALUE(restored);
         EXPECT_TRUE(restored->empty());
     }
 
@@ -280,10 +281,10 @@ namespace AsynGyanis::Net
         const std::string payload = makeIncompressiblePayload();
 
         const std::optional<std::string> compressed = deflateWebSocketMessage(payload);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         const std::optional<std::string> restored = inflateWebSocketMessage(*compressed, payload.size() + 16);
-        ASSERT_TRUE(restored.has_value());
+        ASSERT_HAS_VALUE(restored);
         EXPECT_EQ(*restored, payload);
     }
 
@@ -293,7 +294,7 @@ namespace AsynGyanis::Net
     TEST(PerMessageDeflate, ShrinksRepetitivePayload)
     {
         const std::optional<std::string> compressed = deflateWebSocketMessage(kRepetitivePayload);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
         EXPECT_LT(compressed->size(), kRepetitivePayload.size() / 10);
         EXPECT_EQ(*inflateWebSocketMessage(*compressed, kRepetitivePayload.size()), kRepetitivePayload);
     }
@@ -304,7 +305,7 @@ namespace AsynGyanis::Net
     TEST(PerMessageDeflate, RefusesToInflateBeyondTheOutputLimit)
     {
         const std::optional<std::string> compressed = deflateWebSocketMessage(kRepetitivePayload);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         // 上限比原消息小一个字节：必须判超限而不是把内容全部解出来再截断
         EXPECT_FALSE(inflateWebSocketMessage(*compressed, kRepetitivePayload.size() - 1).has_value()) << "解压输出超过上限却仍然返回了内容";
@@ -328,7 +329,7 @@ namespace AsynGyanis::Net
     {
         // 响应只回两条 no_context_takeover（服务端不额外声明窗口）：两侧都是缺省 15
         const auto defaultWindow = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; client_no_context_takeover", kPerMessageDeflateClientOffer);
-        ASSERT_TRUE(defaultWindow.has_value()) << defaultWindow.error();
+        ASSERT_HAS_VALUE(defaultWindow) << defaultWindow.error();
         ASSERT_TRUE(defaultWindow->has_value());
         EXPECT_EQ(defaultWindow->value().compressBits, 15);
         EXPECT_EQ(defaultWindow->value().decompressBits, 15);
@@ -336,14 +337,14 @@ namespace AsynGyanis::Net
         // 响应声明了窗口：本端压缩窗口受响应 client_max_window_bits 限制，解压窗口按响应 server_max_window_bits 开
         const auto narrowed = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; client_max_window_bits=12; server_max_window_bits=10",
                                                               kPerMessageDeflateClientOffer);
-        ASSERT_TRUE(narrowed.has_value()) << narrowed.error();
+        ASSERT_HAS_VALUE(narrowed) << narrowed.error();
         ASSERT_TRUE(narrowed->has_value());
         EXPECT_EQ(narrowed->value().compressBits, 12) << "本端压缩窗口要按响应的 client_max_window_bits 归位";
         EXPECT_EQ(narrowed->value().decompressBits, 10) << "本端解压窗口要按响应的 server_max_window_bits 归位";
 
         // 扩展名与参数名按 token 语义大小写不敏感（RFC 6455 §9.1），同一份响应换个大小写照收
         const auto differentCase = acceptPerMessageDeflateResponse("PerMessage-Deflate; Server_No_Context_Takeover", kPerMessageDeflateClientOffer);
-        ASSERT_TRUE(differentCase.has_value()) << differentCase.error();
+        ASSERT_HAS_VALUE(differentCase) << differentCase.error();
         EXPECT_TRUE(differentCase->has_value());
     }
 
@@ -353,11 +354,11 @@ namespace AsynGyanis::Net
     TEST(PerMessageDeflate, ReportsAbsenceOfTheExtensionAsNoAgreement)
     {
         const auto absent = acceptPerMessageDeflateResponse("", kPerMessageDeflateClientOffer);
-        ASSERT_TRUE(absent.has_value()) << absent.error();
+        ASSERT_HAS_VALUE(absent) << absent.error();
         EXPECT_FALSE(absent->has_value());
 
         const auto otherExtension = acceptPerMessageDeflateResponse("permessage-foo", kPerMessageDeflateClientOffer);
-        ASSERT_TRUE(otherExtension.has_value());
+        ASSERT_HAS_VALUE(otherExtension);
         EXPECT_FALSE(otherExtension->has_value());
     }
 
@@ -414,7 +415,7 @@ namespace AsynGyanis::Net
         // 要约没带 server_max_window_bits，服务端主动声明自己的压缩窗口（§7.1.2.1 的 MAY）：合法，本端解压按它收小
         const auto serverOwnDeclaration = acceptPerMessageDeflateResponse("permessage-deflate; server_no_context_takeover; server_max_window_bits=9",
                                                                           "permessage-deflate; server_no_context_takeover; client_max_window_bits");
-        ASSERT_TRUE(serverOwnDeclaration.has_value()) << serverOwnDeclaration.error();
+        ASSERT_HAS_VALUE(serverOwnDeclaration) << serverOwnDeclaration.error();
         ASSERT_TRUE(serverOwnDeclaration->has_value());
         EXPECT_EQ(serverOwnDeclaration->value().decompressBits, 9);
         EXPECT_EQ(serverOwnDeclaration->value().compressBits, 15) << "响应没提 client_max_window_bits，本端压缩窗口按缺省 15";

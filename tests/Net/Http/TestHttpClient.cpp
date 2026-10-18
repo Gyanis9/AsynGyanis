@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
@@ -274,7 +275,7 @@ namespace AsynGyanis::Net
         for (const std::string_view spelling: {std::string_view{"x-ratelimit-limit"}, std::string_view{"X-RateLimit-Limit"}, std::string_view{"X-RATELIMIT-LIMIT"}})
         {
             const auto value = response->headerValue(spelling);
-            ASSERT_TRUE(value.has_value()) << "按这个写法没读到：" << spelling;
+            ASSERT_HAS_VALUE(value) << "按这个写法没读到：" << spelling;
             EXPECT_EQ(value.value(), "7");
         }
         EXPECT_FALSE(response->headerValue("x-ratelimit-remaining").has_value()) << "缺的字段要读成空，不能读成空串冒充「有但为空」";
@@ -540,7 +541,7 @@ namespace AsynGyanis::Net
 
         const TraceIdentifiers identifiers = Traceparent::generate();
         const auto             parsedState = TraceState::parse("vendora=abc,vendorb=def");
-        ASSERT_TRUE(parsedState.has_value());
+        ASSERT_HAS_VALUE(parsedState);
 
         {
             HttpClientRequest request;
@@ -859,7 +860,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(result != nullptr) << "请求失败：" << reason;
         const std::optional<std::string> packed = gzipCompress(kCompressiblePayload);
-        ASSERT_TRUE(packed.has_value());
+        ASSERT_HAS_VALUE(packed);
         EXPECT_EQ(result->body, *packed) << "调用方自己管编码时本端仍然解了正文";
         EXPECT_TRUE(hasHeaderField(*result, "content-encoding")) << "本端插手时才会删头部，这里不该删";
     }
@@ -1165,7 +1166,7 @@ namespace AsynGyanis::Net
     {
         const ParsedUrl ipv6Base = parseUrl("http://[::1]:8080/docs/page.html");
         const auto      resolved = resolveUrlReference(ipv6Base, "sub/x.png");
-        ASSERT_TRUE(resolved.has_value());
+        ASSERT_HAS_VALUE(resolved);
         EXPECT_EQ(*resolved, "http://[::1]:8080/docs/sub/x.png") << "IPv6 主机必须带回方括号，否则端口分隔符会糊进地址里";
 
         const ParsedUrl reparsed = parseUrl(*resolved);

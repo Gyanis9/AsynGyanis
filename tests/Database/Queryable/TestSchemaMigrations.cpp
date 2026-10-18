@@ -19,6 +19,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/Decimal.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -718,7 +719,7 @@ TEST_F(SchemaMigrationsTest, DecimalMemberRoundTripsCharacterForCharacterOnSqlit
     for (std::size_t rowIndex = 0; rowIndex < writtenTexts.size(); ++rowIndex)
     {
         const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenTexts[rowIndex]);
-        ASSERT_TRUE(parsed.has_value()) << writtenTexts[rowIndex];
+        ASSERT_HAS_VALUE(parsed) << writtenTexts[rowIndex];
         const DecimalMoneyRow row{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed};
         ASSERT_EQ(1, OrmQuery<DecimalMoneyRow>(*m_pool).insert(row)) << "金额列没能写进去：" << writtenTexts[rowIndex];
     }
@@ -769,7 +770,7 @@ TEST_F(SchemaMigrationsTest, TemporalMembersRoundTripAndKeepTheirTextShapesOnSql
     ASSERT_EQ(1, OrmQuery<TemporalRow>(*m_pool).insert(TemporalRow{.id = 1, .bookedAt = bookedAt, .localAt = localAt, .maybeAt = std::nullopt}));
 
     const std::optional<TemporalRow> readBack = OrmQuery<TemporalRow>(*m_pool).first();
-    ASSERT_TRUE(readBack.has_value()) << "写进去的行读不回来";
+    ASSERT_HAS_VALUE(readBack) << "写进去的行读不回来";
     EXPECT_EQ(readBack->bookedAt, bookedAt) << "UTC 瞬时往返之后不是同一个瞬间";
     EXPECT_EQ(readBack->localAt, localAt) << "墙上时间往返之后不是同一个历法读数";
     EXPECT_FALSE(readBack->maybeAt.has_value()) << "没给值的可空瞬时列读回来应当是空，而不是零瞬间";

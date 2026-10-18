@@ -10,6 +10,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -178,7 +179,7 @@ TEST(OtlpHttpMetricsExporter, PostsSnapshotsOnItsOwnCadenceWithTheExtraHeaders)
     EXPECT_EQ(authorization, kCollectorToken);
 
     const auto parsed = AsynGyanis::Base::parseConfigValue(body);
-    ASSERT_TRUE(parsed.has_value()) << "采集端收到的正文不是合法 JSON：" << body;
+    ASSERT_HAS_VALUE(parsed) << "采集端收到的正文不是合法 JSON：" << body;
     EXPECT_EQ(jsonTextOf(parsed->at("resourceMetrics").at(0).at("resource").at("attributes").at(0).at("value").at("stringValue")), "otlp-metrics-exporter-test");
     const auto &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 2U);
@@ -321,7 +322,7 @@ TEST(OtlpHttpMetricsExporter, PostsLabeledAndHistogramReadingsOnTheSameCadence)
         body = state.m_body;
     }
     const auto parsed = AsynGyanis::Base::parseConfigValue(body);
-    ASSERT_TRUE(parsed.has_value()) << body;
+    ASSERT_HAS_VALUE(parsed) << body;
     const auto &metrics = parsed->at("resourceMetrics").at(0).at("scopeMetrics").at(0).at("metrics");
     ASSERT_EQ(metrics.size(), 3U) << "三路条目应当都在同一份正文里";
     EXPECT_EQ(jsonTextOf(metrics.at(0).at("name")), "asyn_test_scalar");

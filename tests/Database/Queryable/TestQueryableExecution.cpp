@@ -33,6 +33,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -473,7 +474,7 @@ TEST_F(QueryableExecutionTest, HostileTextRoundTripsThroughParameterBinding)
         Queryable<AccountRow>           query = newQuery();
         const std::optional<AccountRow> found = query.where(Column(&AccountRow::name, "name") == hostileName).first();
 
-        ASSERT_TRUE(found.has_value());
+        ASSERT_HAS_VALUE(found);
         EXPECT_EQ(found->name, hostileName);
         EXPECT_EQ(found->id, 2);
     }
@@ -493,7 +494,7 @@ TEST_F(QueryableExecutionTest, HostileTextRoundTripsThroughParameterBinding)
         Queryable<AccountRow>           query = newQuery();
         const std::optional<AccountRow> found = query.where(Column(&AccountRow::id, "id") == std::int64_t{2}).first();
 
-        ASSERT_TRUE(found.has_value());
+        ASSERT_HAS_VALUE(found);
         ASSERT_TRUE(found->note.has_value());
         EXPECT_EQ(found->note.value(), "x'); DROP TABLE accounts; --");
     }
@@ -719,7 +720,7 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
         Queryable<SpacedIdentifierRow>           filteredQuery(*m_pool);
         const std::optional<SpacedIdentifierRow> found = filteredQuery.where(Column(&SpacedIdentifierRow::fullName, "full name") == std::string("Li Si")).first();
 
-        ASSERT_TRUE(found.has_value());
+        ASSERT_HAS_VALUE(found);
         EXPECT_EQ(found->id, 2);
         EXPECT_FALSE(found->homeAddress.has_value());
     }
@@ -731,7 +732,7 @@ TEST_F(QueryableExecutionTest, SpacedIdentifiersSurviveCreateInsertAndQuery)
 
         Queryable<SpacedIdentifierRow>           verifyQuery(*m_pool);
         const std::optional<SpacedIdentifierRow> updated = verifyQuery.where(Column(&SpacedIdentifierRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(updated.has_value());
+        ASSERT_HAS_VALUE(updated);
         EXPECT_FALSE(updated->homeAddress.has_value());
     }
 }

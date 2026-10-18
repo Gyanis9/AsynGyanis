@@ -20,6 +20,7 @@
 
 #include "NetTestSupport.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -531,7 +532,7 @@ namespace AsynGyanis::Net
 
         const auto parsed = HttpTestSupport::sendAndReadResponse(fixture.listeningPort(),
                                                                  "GET /items/42?detail=1 HTTP/1.1\r\nHost: test\r\nx-request-id: req-abc\r\nConnection: close\r\n\r\n");
-        ASSERT_TRUE(parsed.has_value()) << "真实 TCP 请求没有拿到完整响应";
+        ASSERT_HAS_VALUE(parsed) << "真实 TCP 请求没有拿到完整响应";
 
         std::string accessLine;
         ASSERT_TRUE(waitForCondition(
@@ -949,7 +950,7 @@ namespace AsynGyanis::Net
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
         const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-        ASSERT_TRUE(identifiers.has_value()) << "没带 traceparent 的请求应当被起一条新链路";
+        ASSERT_HAS_VALUE(identifiers) << "没带 traceparent 的请求应当被起一条新链路";
         EXPECT_EQ(identifiers->version, 0U);
         EXPECT_TRUE(identifiers->isSampled());
         // 生成的字段必须落在请求的头部上：处理器与下游读的是同一份状态，不是中间件私藏的副本
@@ -978,7 +979,7 @@ namespace AsynGyanis::Net
         HttpResponse unsampledResponse;
         runPipeline(pipeline, unsampledRequest, unsampledResponse, terminalWriting(unsampledResponse, "index"));
         const std::optional<TraceIdentifiers> unsampled = extractTraceContext(unsampledRequest);
-        ASSERT_TRUE(unsampled.has_value());
+        ASSERT_HAS_VALUE(unsampled);
         EXPECT_FALSE(unsampled->isSampled());
     }
 
@@ -997,7 +998,7 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(request.getHeader(kTraceparentHeaderName).value_or(""), kFutureVersionValue);
         const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(identifiers->version, 1U);
     }
 
@@ -1012,7 +1013,7 @@ namespace AsynGyanis::Net
         runPipeline(pipeline, request, response, terminalWriting(response, "index"));
 
         const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-        ASSERT_TRUE(identifiers.has_value()) << "畸形取值没有被换成一条新链路：下游还会读到坏字段";
+        ASSERT_HAS_VALUE(identifiers) << "畸形取值没有被换成一条新链路：下游还会读到坏字段";
         EXPECT_NE(request.getHeader(kTraceparentHeaderName).value_or(""), "00-not-a-valid-traceparent-at-all------------01");
     }
 
@@ -1031,7 +1032,7 @@ namespace AsynGyanis::Net
         const std::vector<std::string> names = collectHeaderNames(request);
         EXPECT_EQ(std::ranges::count(names, "traceparent"), 1);
         const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_NE(identifiers->traceIdText(), "4bf92f3577b34da6a3ce929d0e0e4736");
         EXPECT_NE(identifiers->traceIdText(), "0af7651916cd43dd8448eb211c80319c");
     }
@@ -1123,7 +1124,7 @@ namespace AsynGyanis::Net
 
         const std::optional<HttpTestSupport::ParsedResponse> response =
                 HttpTestSupport::sendAndReadResponse(fixture->listeningPort(), HttpTestSupport::makeRequestText("GET /hello HTTP/1.1"), kWireProbeTimeout);
-        ASSERT_TRUE(response.has_value()) << "没有读到完整响应";
+        ASSERT_HAS_VALUE(response) << "没有读到完整响应";
 
         EXPECT_TRUE(HttpTestSupport::hasHeaderLine(response->headers, "alt-svc: h3=\":8443\"; ma=86400")) << "线上响应没有带上通告：\n" << response->headers;
     }

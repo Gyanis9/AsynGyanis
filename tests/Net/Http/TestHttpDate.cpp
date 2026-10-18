@@ -1,4 +1,5 @@
 // HttpDate 单元测试：IMF-fixdate 的格式化黄金值、解析往返与非法输入拒绝
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpDate.h"
 
 #include <gtest/gtest.h>
@@ -125,7 +126,7 @@ namespace AsynGyanis::Net
     {
         const auto parsed = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
 
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(secondsOf(*parsed), 784111777);
     }
 
@@ -137,7 +138,7 @@ namespace AsynGyanis::Net
         for (const std::int64_t instant: instants)
         {
             const auto parsed = parseHttpDate(formatHttpDate(instantFromSeconds(instant)));
-            ASSERT_TRUE(parsed.has_value()) << "秒值：" << instant;
+            ASSERT_HAS_VALUE(parsed) << "秒值：" << instant;
             EXPECT_EQ(secondsOf(*parsed), instant) << "秒值：" << instant;
         }
     }
@@ -146,7 +147,7 @@ namespace AsynGyanis::Net
     {
         const auto parsed = parseHttpDate("  Sun, 06 Nov 1994 08:49:37 GMT\t");
 
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(secondsOf(*parsed), 784111777);
     }
 
@@ -186,13 +187,13 @@ namespace AsynGyanis::Net
     TEST(HttpDate, CurrentHttpDateTextMatchesFormattingForTheSameSecond)
     {
         const std::optional<StableDateSample> sample = sampleStableCurrentHttpDateText();
-        ASSERT_TRUE(sample.has_value()) << "没能在重试上限内取到不跨秒的样本";
+        ASSERT_HAS_VALUE(sample) << "没能在重试上限内取到不跨秒的样本";
         EXPECT_EQ(sample->text, formatHttpDate(instantFromSeconds(sample->secondOfEpoch)));
         EXPECT_EQ(sample->text.size(), kHttpDateTextLength);
 
         // 同一秒内两次取值必须完全一样：缓存的意义就是这一秒内不再重复折算
         const std::optional<StableDateSample> nextSample = sampleStableCurrentHttpDateText();
-        ASSERT_TRUE(nextSample.has_value()) << "没能在重试上限内取到第二个不跨秒的样本";
+        ASSERT_HAS_VALUE(nextSample) << "没能在重试上限内取到第二个不跨秒的样本";
         if (nextSample->secondOfEpoch == sample->secondOfEpoch)
         {
             EXPECT_EQ(nextSample->text, sample->text) << "同一秒内文本却变了";
@@ -206,7 +207,7 @@ namespace AsynGyanis::Net
     TEST(HttpDate, CurrentHttpDateTextAdvancesWhenTheSecondRollsOver)
     {
         const std::optional<StableDateSample> firstSample = sampleStableCurrentHttpDateText();
-        ASSERT_TRUE(firstSample.has_value()) << "没能在重试上限内取到第一个不跨秒的样本";
+        ASSERT_HAS_VALUE(firstSample) << "没能在重试上限内取到第一个不跨秒的样本";
 
         // 等到墙钟真的跨过那一秒（上限 2 秒）：用例自己构造出「秒已改变」这个条件
         for (int waitRoundCount = 0; secondsOf(std::chrono::system_clock::now()) <= firstSample->secondOfEpoch; ++waitRoundCount)
@@ -216,7 +217,7 @@ namespace AsynGyanis::Net
         }
 
         const std::optional<StableDateSample> laterSample = sampleStableCurrentHttpDateText();
-        ASSERT_TRUE(laterSample.has_value()) << "没能在重试上限内取到跨秒后的样本";
+        ASSERT_HAS_VALUE(laterSample) << "没能在重试上限内取到跨秒后的样本";
         EXPECT_GT(laterSample->secondOfEpoch, firstSample->secondOfEpoch) << "秒已经变了，缓存却还停在旧的那一秒";
         EXPECT_EQ(laterSample->text, formatHttpDate(instantFromSeconds(laterSample->secondOfEpoch)));
     }
@@ -232,7 +233,7 @@ namespace AsynGyanis::Net
         std::thread                     worker([&threadSample] { threadSample = sampleStableCurrentHttpDateText(); });
         worker.join();
 
-        ASSERT_TRUE(threadSample.has_value()) << "工作线程没能在重试上限内取到不跨秒的样本";
+        ASSERT_HAS_VALUE(threadSample) << "工作线程没能在重试上限内取到不跨秒的样本";
         EXPECT_EQ(threadSample->text, formatHttpDate(instantFromSeconds(threadSample->secondOfEpoch)));
     }
     /**
@@ -245,8 +246,8 @@ namespace AsynGyanis::Net
         const std::optional<std::chrono::system_clock::time_point> obsolete  = parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT");
         const std::optional<std::chrono::system_clock::time_point> reference = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
 
-        ASSERT_TRUE(obsolete.has_value()) << "RFC 850 的日期被判成不可解析：老客户端的条件请求会整条作废";
-        ASSERT_TRUE(reference.has_value());
+        ASSERT_HAS_VALUE(obsolete) << "RFC 850 的日期被判成不可解析：老客户端的条件请求会整条作废";
+        ASSERT_HAS_VALUE(reference);
         EXPECT_EQ(secondsOf(*obsolete), secondsOf(*reference));
         EXPECT_EQ(secondsOf(*obsolete), 784111777LL) << "RFC 9110 的样例时刻本身就是黄金值";
     }
@@ -258,7 +259,7 @@ namespace AsynGyanis::Net
     {
         const std::optional<std::chrono::system_clock::time_point> abbreviated = parseHttpDate("Sun, 06-Nov-94 08:49:37 GMT");
 
-        ASSERT_TRUE(abbreviated.has_value());
+        ASSERT_HAS_VALUE(abbreviated);
         EXPECT_EQ(secondsOf(*abbreviated), 784111777LL);
     }
 
@@ -289,8 +290,8 @@ namespace AsynGyanis::Net
         const std::optional<std::chrono::system_clock::time_point> paddedReference = parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
         const std::optional<std::chrono::system_clock::time_point> wideReference   = parseHttpDate("Wed, 16 Nov 1994 08:49:37 GMT");
 
-        ASSERT_TRUE(paddedDay.has_value()) << "日右对齐补空格是 asctime 的原形，判不可解析等于该格式没被实现";
-        ASSERT_TRUE(wideDay.has_value());
+        ASSERT_HAS_VALUE(paddedDay) << "日右对齐补空格是 asctime 的原形，判不可解析等于该格式没被实现";
+        ASSERT_HAS_VALUE(wideDay);
         ASSERT_TRUE(paddedReference.has_value() && wideReference.has_value());
         EXPECT_EQ(secondsOf(*paddedDay), secondsOf(*paddedReference));
         EXPECT_EQ(secondsOf(*wideDay), secondsOf(*wideReference));
@@ -345,8 +346,8 @@ namespace AsynGyanis::Net
         const std::optional<std::chrono::system_clock::time_point> farFuture = parseHttpDate("Fri, 31 Dec 9999 23:59:59 GMT");
         const std::optional<std::chrono::system_clock::time_point> farPast   = parseHttpDate("Mon, 01 Jan 0001 00:00:00 GMT");
 
-        ASSERT_TRUE(farFuture.has_value()) << "远期日期被判不可解析：这类写法在真实服务器上一直在发";
-        ASSERT_TRUE(farPast.has_value());
+        ASSERT_HAS_VALUE(farFuture) << "远期日期被判不可解析：这类写法在真实服务器上一直在发";
+        ASSERT_HAS_VALUE(farPast);
         EXPECT_EQ(secondsOf(*farFuture), std::min(kFarFutureSecond, largestExpressibleSecond)) << "远期没有钳在时钟上界，而是绕了回去";
         EXPECT_EQ(secondsOf(*farPast), std::max(kFarPastSecond, smallestExpressibleSecond)) << "远期过去没有钳在时钟下界，而是绕到了将来";
 
@@ -378,7 +379,7 @@ namespace AsynGyanis::Net
 
         // 与文本解析那一侧同一条口径：同一年月日不论从日期串还是从秒数进来，落点必须一致
         const std::optional<std::chrono::system_clock::time_point> farFuture = parseHttpDate("Fri, 31 Dec 9999 23:59:59 GMT");
-        ASSERT_TRUE(farFuture.has_value());
+        ASSERT_HAS_VALUE(farFuture);
         EXPECT_EQ(timePointFromUnixSeconds(secondsOf(*farFuture)), *farFuture);
     }
 

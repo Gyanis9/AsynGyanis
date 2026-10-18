@@ -2,6 +2,7 @@
 #include "Platform/System/ProcessInfo.h"
 
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
@@ -43,7 +44,7 @@ namespace AsynGyanis::Platform
         // PATH 在 Windows 与 Linux 的进程环境中都存在
         const std::optional<std::string> pathValue = ProcessInfo::environmentVariable("PATH");
 
-        ASSERT_TRUE(pathValue.has_value());
+        ASSERT_HAS_VALUE(pathValue);
         EXPECT_FALSE(pathValue->empty());
     }
 
@@ -106,7 +107,7 @@ namespace AsynGyanis::Platform
         const std::vector<std::pair<std::string, std::string>> matches = ProcessInfo::environmentVariablesWithPrefix("ASYN_ENUM_DEMO_");
 
         const std::optional<std::string> firstValue = findVariable(matches, "ASYN_ENUM_DEMO_FIRST");
-        ASSERT_TRUE(firstValue.has_value()) << "带前缀的变量没被枚举到";
+        ASSERT_HAS_VALUE(firstValue) << "带前缀的变量没被枚举到";
         EXPECT_EQ(*firstValue, "value=with=equals") << "值应当在第一个 '=' 处切，剩下的都算值";
         EXPECT_TRUE(findVariable(matches, "ASYN_ENUM_DEMO_SECOND").has_value());
         EXPECT_FALSE(findVariable(matches, "ASYNOTHER_ENUM_DEMO").has_value()) << "前缀不完全匹配的变量混进了结果";

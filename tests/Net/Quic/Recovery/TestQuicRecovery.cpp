@@ -17,6 +17,7 @@
 
 #include "Net/Quic/Recovery/QuicRecovery.h"
 
+#include "ExpectedAssertions.h"
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Platform/IO/DatagramSocket.h"
 
@@ -359,7 +360,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(first.isPersistentCongestionDetected) << "只有一个判丢的包，构不成「两个相隔超过时长」";
 
         const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
-        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        ASSERT_HAS_VALUE(lossDeadline) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
         const QuicRecoveryTimeoutAction timer = recovery.onDeadlineReached(*lossDeadline);
         ASSERT_EQ(timer.lost.size(), 1U) << "到点该把包 2 判丢";
 
@@ -387,7 +388,7 @@ namespace AsynGyanis::Net
         std::ignore = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(3, {{3, 3}}), milliseconds(210), QuicTime{0});
 
         const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
-        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        ASSERT_HAS_VALUE(lossDeadline) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
         ASSERT_EQ(recovery.onDeadlineReached(*lossDeadline).lost.size(), 1U) << "到点该把包 2 判丢";
 
         const QuicAcknowledgementUpdate afterTimer = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(3), milliseconds(220), QuicTime{0});
@@ -421,7 +422,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(first.isPersistentCongestionDetected) << "只有一个判丢的包，构不成「两个相隔超过时长」";
 
         const std::optional<QuicTime> lossDeadline = recovery.nextDeadline();
-        ASSERT_TRUE(lossDeadline.has_value()) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
+        ASSERT_HAS_VALUE(lossDeadline) << "包 2 还悬着，必须留下按时间阈值判丢的闹钟";
         ASSERT_EQ(recovery.onDeadlineReached(*lossDeadline).lost.size(), 1U) << "到点该把包 2 判丢";
 
         const QuicAcknowledgementUpdate afterTimer = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, acknowledgementOf(3), milliseconds(220), QuicTime{0});

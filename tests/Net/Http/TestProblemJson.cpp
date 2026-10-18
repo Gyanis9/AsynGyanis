@@ -4,6 +4,7 @@
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -24,7 +25,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] Base::ConfigValue parseRenderedProblem(const std::string &text)
         {
             const std::optional<Base::ConfigValue> parsed = Base::parseConfigValue(text);
-            EXPECT_TRUE(parsed.has_value()) << "渲染结果不是合法 JSON：" << text;
+            EXPECT_HAS_VALUE(parsed) << "渲染结果不是合法 JSON：" << text;
             return parsed.value_or(Base::ConfigValue{});
         }
     } // namespace

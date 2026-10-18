@@ -5,6 +5,7 @@
 #include "AcmeTestSupport.h"
 #include "CommonTestSupport.h"
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -857,7 +858,7 @@ namespace AsynGyanis::Net
             for (const char *const name: {"asyn_acme_certificate_expiry_seconds", "asyn_acme_issuances_total", "asyn_acme_failures_total", "asyn_acme_reload_pending"})
             {
                 const auto lookup = findRegistrySample(name);
-                ASSERT_TRUE(lookup.has_value()) << name;
+                ASSERT_HAS_VALUE(lookup) << name;
                 EXPECT_EQ(lookup->value, 0U) << "刚登记就带着一个来路不明的数";
             }
         }
@@ -880,7 +881,7 @@ namespace AsynGyanis::Net
         configuration.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-seed-state.json";
 
         const auto expectedExpiry = readCertificateExpiry(configuration.certificateFile);
-        ASSERT_TRUE(expectedExpiry.has_value()) << "夹具证书读不出到期时刻，这条用例的对照就没了";
+        ASSERT_HAS_VALUE(expectedExpiry) << "夹具证书读不出到期时刻，这条用例的对照就没了";
         const auto expectedSeconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(expectedExpiry->time_since_epoch()).count());
 
         const AcmeCertificateManager manager(loop, configuration, {}, {});
@@ -912,7 +913,7 @@ namespace AsynGyanis::Net
         readable.accountStateFile = std::filesystem::temp_directory_path() / "asyn-acme-mask-b-state.json";
 
         const auto expectedExpiry = readCertificateExpiry(readable.certificateFile);
-        ASSERT_TRUE(expectedExpiry.has_value()) << "夹具证书读不出到期时刻，这条用例的对照就没了";
+        ASSERT_HAS_VALUE(expectedExpiry) << "夹具证书读不出到期时刻，这条用例的对照就没了";
         const auto expectedSeconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(expectedExpiry->time_since_epoch()).count());
 
         const AcmeCertificateManager pendingManager(loop, pending, {}, {});

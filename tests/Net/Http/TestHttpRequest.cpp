@@ -1,6 +1,7 @@
 // HttpRequest 单元测试：方法映射、头部存储模型、URI 与正文的整块交接、路径与查询串解析、取消信号
 #include "Net/Http/HttpRequest.h"
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpMethod.h"
 
 #include <gtest/gtest.h>
@@ -595,14 +596,14 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.hasHeader("cookie"));
 
         const auto encoding = request.firstHeaderValueView("accept-encoding");
-        ASSERT_TRUE(encoding.has_value());
+        ASSERT_HAS_VALUE(encoding);
         EXPECT_EQ(*encoding, "gzip, deflate, br");
         EXPECT_EQ(request.firstHeaderValue("Accept-Encoding").value_or("<缺失>"), *encoding) << "两版取到的必须是同一个首值";
 
         // 空取值算「存在」：写 `Content-Length:` 与压根不写这条头部不是同一回事
         EXPECT_TRUE(request.hasHeader("x-empty"));
         const auto emptyValue = request.firstHeaderValueView("x-empty");
-        ASSERT_TRUE(emptyValue.has_value());
+        ASSERT_HAS_VALUE(emptyValue);
         EXPECT_TRUE(emptyValue->empty());
 
         request.reset();
@@ -710,7 +711,7 @@ namespace AsynGyanis::Net
         request.setBody(R"({"name":"asyn","count":3,"tags":["a","b"]})");
 
         const std::optional<Base::ConfigValue> parsed = request.jsonBody();
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(parsed->at("name").get<std::string>(), "asyn");
         EXPECT_EQ(parsed->at("count").get<std::int64_t>(), 3);
         ASSERT_EQ(parsed->at("tags").size(), 2U);

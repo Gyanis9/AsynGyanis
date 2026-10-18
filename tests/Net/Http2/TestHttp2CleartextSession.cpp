@@ -27,6 +27,7 @@
 
 #include "HttpTestSupport.h"
 
+#include "ExpectedAssertions.h"
 #include "Http2TestSupport.h"
 
 #include <gtest/gtest.h>
@@ -2541,7 +2542,7 @@ namespace AsynGyanis::Net
                     configuration.limits         = makeCleartextLimits();
                     configuration.handlerTimeout = kStreamTimeoutHandlerBudget;
                     const auto outcome           = applyHttpServerConfiguration(server, configuration);
-                    ASSERT_TRUE(outcome.has_value()) << outcome.error();
+                    ASSERT_HAS_VALUE(outcome) << outcome.error();
                     server.setHttp2CleartextEnabled(true);
                 });
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";

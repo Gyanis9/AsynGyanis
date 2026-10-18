@@ -38,6 +38,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -1744,7 +1745,7 @@ namespace AsynGyanis::Database
                 << "MySQL 的 ON DUPLICATE KEY UPDATE 更新冲突行时应当报 2 行受影响";
 
         const std::optional<IntegrationAccountRow> row = query.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(row.has_value());
+        ASSERT_HAS_VALUE(row);
         EXPECT_EQ(row->name, "after");
         EXPECT_DOUBLE_EQ(row->balance, 2.5);
         EXPECT_EQ(row->note.value_or(""), "new");
@@ -1799,7 +1800,7 @@ namespace AsynGyanis::Database
             OrmQuery<IntegrationAccountRow>            hitQuery(*pool);
             const std::optional<IntegrationAccountRow> hit = hitQuery.where(Column(&IntegrationAccountRow::id, "id") == std::int64_t{1}).first();
 
-            ASSERT_TRUE(hit.has_value());
+            ASSERT_HAS_VALUE(hit);
             EXPECT_EQ(hit->name, "张三");
             EXPECT_DOUBLE_EQ(hit->balance, 1234.56);
             ASSERT_TRUE(hit->note.has_value());
@@ -1903,7 +1904,7 @@ namespace AsynGyanis::Database
 
         // 第一块的首行：各列取值与写入一致
         const std::optional<IntegrationBatchRow> headRow = readBackRow(1);
-        ASSERT_TRUE(headRow.has_value());
+        ASSERT_HAS_VALUE(headRow);
         EXPECT_EQ(headRow->name, "批量行1");
         EXPECT_DOUBLE_EQ(headRow->score, 1.0);
         ASSERT_TRUE(headRow->note.has_value());
@@ -1912,12 +1913,12 @@ namespace AsynGyanis::Database
 
         // 第一块的末行：恰好落在「每批行数」这个分块上界上，最常见缺陷是这里被算丢
         const std::optional<IntegrationBatchRow> boundaryRow = readBackRow(static_cast<std::int64_t>(rowsPerStatement));
-        ASSERT_TRUE(boundaryRow.has_value());
+        ASSERT_HAS_VALUE(boundaryRow);
         EXPECT_EQ(boundaryRow->name, "批量行" + std::to_string(rowsPerStatement));
 
         // 第二块的唯一一行：证明溢出到第二批的行确实被写进去了
         const std::optional<IntegrationBatchRow> tailRow = readBackRow(static_cast<std::int64_t>(totalRowCount));
-        ASSERT_TRUE(tailRow.has_value());
+        ASSERT_HAS_VALUE(tailRow);
         EXPECT_EQ(tailRow->name, "批量行" + std::to_string(totalRowCount));
         EXPECT_DOUBLE_EQ(tailRow->score, static_cast<double>(totalRowCount));
         EXPECT_FALSE(tailRow->note.has_value());
@@ -1984,7 +1985,7 @@ namespace AsynGyanis::Database
 
             OrmQuery<IntegrationQuotedRow>            updatedQuery(*pool);
             const std::optional<IntegrationQuotedRow> updated = updatedQuery.where(Column(&IntegrationQuotedRow::id, "id") == std::int64_t{3}).first();
-            ASSERT_TRUE(updated.has_value());
+            ASSERT_HAS_VALUE(updated);
             EXPECT_EQ(updated->order, "改后order");
             EXPECT_EQ(updated->tickColumn, "改后反引号");
 
@@ -2167,7 +2168,7 @@ namespace AsynGyanis::Database
             for (std::size_t rowIndex = 0; rowIndex < writtenAndExpected.size(); ++rowIndex)
             {
                 const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenAndExpected[rowIndex].first);
-                ASSERT_TRUE(parsed.has_value()) << writtenAndExpected[rowIndex].first;
+                ASSERT_HAS_VALUE(parsed) << writtenAndExpected[rowIndex].first;
                 ASSERT_EQ(1, insertQuery.insert(IntegrationDecimalRow{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed}))
                         << "写不进去：" << writtenAndExpected[rowIndex].first;
             }
@@ -2602,7 +2603,7 @@ namespace AsynGyanis::Database
 
             // 提交之前：写者自己的连接能读到，另一条连接读不到
             const std::optional<IntegrationTransactionRow> uncommittedRow = transactionalQuery.where(Column(&IntegrationTransactionRow::id, "id") == std::int64_t{1}).first();
-            ASSERT_TRUE(uncommittedRow.has_value());
+            ASSERT_HAS_VALUE(uncommittedRow);
             EXPECT_EQ(uncommittedRow->name, "事务提交");
             EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 0);
 
@@ -2613,7 +2614,7 @@ namespace AsynGyanis::Database
         // 提交之后：另一条连接立刻可见，且字段值完整
         EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 1);
         const std::optional<std::string> committedName = readTransactionRowName(*observer, kTransactionCommitTableName, 1);
-        ASSERT_TRUE(committedName.has_value());
+        ASSERT_HAS_VALUE(committedName);
         EXPECT_EQ(committedName.value(), "事务提交");
     }
 
@@ -2941,7 +2942,7 @@ namespace AsynGyanis::Database
         };
 
         const std::optional<std::int64_t> baselineTimeLimit = readTimeLimit(*connection);
-        ASSERT_TRUE(baselineTimeLimit.has_value()) << "读不出会话级只读时限，用例前提不成立";
+        ASSERT_HAS_VALUE(baselineTimeLimit) << "读不出会话级只读时限，用例前提不成立";
 
         ASSERT_TRUE(connection->execute("SET SESSION max_execution_time = 1") != nullptr) << connection->lastError();
         ASSERT_EQ(readTimeLimit(*connection), std::optional<std::int64_t>(1)) << "那条 SET 没改动这条会话，用例前提不成立";
@@ -3749,8 +3750,8 @@ namespace AsynGyanis::Database
 
         const std::optional<IntegrationVersionedRow> firstView  = firstSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
         const std::optional<IntegrationVersionedRow> secondView = secondSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(firstView.has_value());
-        ASSERT_TRUE(secondView.has_value());
+        ASSERT_HAS_VALUE(firstView);
+        ASSERT_HAS_VALUE(secondView);
         ASSERT_EQ(firstView->version, 0);
         ASSERT_EQ(secondView->version, 0);
 
@@ -3773,7 +3774,7 @@ namespace AsynGyanis::Database
         }
 
         const std::optional<IntegrationVersionedRow> after = OrmQuery<IntegrationVersionedRow>(*pool).where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(after.has_value());
+        ASSERT_HAS_VALUE(after);
         EXPECT_EQ(after->name, "会话一写的") << "先写的那份数据被覆盖了";
         EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一（MySQL 侧只统计真变了的行，加一必须由语句本身完成）";
     }
@@ -4178,7 +4179,7 @@ namespace AsynGyanis::Database
         }
 
         const std::optional<IntegrationTemporalRow> readBack = OrmQuery<IntegrationTemporalRow>(*pool).first();
-        ASSERT_TRUE(readBack.has_value()) << "日期时间行读不回来";
+        ASSERT_HAS_VALUE(readBack) << "日期时间行读不回来";
         EXPECT_EQ(readBack->bookedAt, bookedAt) << "DATETIME(6) 里的 UTC 字面量被会话时区改写了";
         EXPECT_EQ(readBack->localAt, localAt) << "墙上时间被会话时区改写了";
 

@@ -19,6 +19,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseType.h"
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -314,7 +315,7 @@ namespace AsynGyanis::Database
     {
         const std::optional<DatabaseType> guessed = DatabaseFactory::guessType(3306);
 
-        ASSERT_TRUE(guessed.has_value());
+        ASSERT_HAS_VALUE(guessed);
         EXPECT_EQ(*guessed, DatabaseType::MySql);
     }
 
@@ -323,7 +324,7 @@ namespace AsynGyanis::Database
     {
         const std::optional<DatabaseType> guessed = DatabaseFactory::guessType(6379);
 
-        ASSERT_TRUE(guessed.has_value());
+        ASSERT_HAS_VALUE(guessed);
         EXPECT_EQ(*guessed, DatabaseType::Redis);
     }
 
@@ -333,7 +334,7 @@ namespace AsynGyanis::Database
         // 5432 在 PostgreSQL 驱动接入后成为第三个被识别的默认端口（枚举里已登记 PostgreSql）
         const std::optional<DatabaseType> guessed = DatabaseFactory::guessType(5432);
 
-        ASSERT_TRUE(guessed.has_value());
+        ASSERT_HAS_VALUE(guessed);
         EXPECT_EQ(*guessed, DatabaseType::PostgreSql);
     }
 

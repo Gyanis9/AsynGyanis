@@ -9,6 +9,7 @@
 #include "Base/Coding/Base64.h"
 #include "Base/Coding/SecureCompare.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -94,14 +95,14 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
         const auto challenged = sendAndReadResponse(fixture.listeningPort(), makeRequestText("GET /admin HTTP/1.1"));
-        ASSERT_TRUE(challenged.has_value()) << "未授权请求的响应没有落回来";
+        ASSERT_HAS_VALUE(challenged) << "未授权请求的响应没有落回来";
         EXPECT_TRUE(challenged->headers.starts_with("HTTP/1.1 401")) << "名单内的路径没被闸住：" << challenged->headers.substr(0, 60);
         EXPECT_NE(challenged->headers.find("www-authenticate: Basic realm=\"ops-backend\", charset=\"US-ASCII\""), std::string::npos)
                 << "401 没带上可重试的挑战：" << challenged->headers;
         EXPECT_EQ(challenged->body.find("granted"), std::string::npos) << "被拒的请求还是把业务正文答了出去：" << challenged->body;
 
         const auto untouched = sendAndReadResponse(fixture.listeningPort(), makeRequestText("GET /public HTTP/1.1"));
-        ASSERT_TRUE(untouched.has_value()) << "名单外请求的响应没有落回来";
+        ASSERT_HAS_VALUE(untouched) << "名单外请求的响应没有落回来";
         EXPECT_TRUE(untouched->headers.starts_with("HTTP/1.1 200")) << "名单外的路径被顺带闸住了：" << untouched->headers.substr(0, 60);
         EXPECT_EQ(untouched->body, "public-granted");
     }
@@ -123,7 +124,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(strictFixture.awaitRunning(kWaitTimeout)) << "默认闸门的服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
         const auto refused = sendAndReadResponse(strictFixture.listeningPort(), requestText);
-        ASSERT_TRUE(refused.has_value()) << "明文带凭据的请求没有响应回来";
+        ASSERT_HAS_VALUE(refused) << "明文带凭据的请求没有响应回来";
         EXPECT_TRUE(refused->headers.starts_with("HTTP/1.1 403")) << "明文连接收到了凭据（回的是 401/200 而不是 403）：" << refused->headers.substr(0, 60);
         EXPECT_EQ(refused->headers.find("www-authenticate"), std::string::npos) << "403 还附一句「请给 Basic 凭据」，等于一边拒一边催：" << refused->headers;
         EXPECT_EQ(refused->body.find("granted"), std::string::npos) << "明文闸门没挡住业务：" << refused->body;
@@ -133,7 +134,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(openFixture.awaitRunning(kWaitTimeout)) << "显式放开的服务器未在时限内进入接受循环：上界 kWaitTimeout";
 
         const auto admitted = sendAndReadResponse(openFixture.listeningPort(), requestText);
-        ASSERT_TRUE(admitted.has_value()) << "放开之后的请求没有响应回来";
+        ASSERT_HAS_VALUE(admitted) << "放开之后的请求没有响应回来";
         EXPECT_TRUE(admitted->headers.starts_with("HTTP/1.1 200")) << "显式放开之后同一条请求仍不通：" << admitted->headers.substr(0, 60);
         EXPECT_EQ(admitted->body, "admin-granted");
     }

@@ -9,6 +9,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Core/Crypto/Digest.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/Compression.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Middleware.h"
@@ -242,7 +243,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false);
 
         const std::optional<ParsedResponse> reply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br"});
-        ASSERT_TRUE(reply.has_value()) << "请求没有响应回来";
+        ASSERT_HAS_VALUE(reply) << "请求没有响应回来";
         EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << reply->headers.substr(0, 60);
         EXPECT_EQ(reply->body, tree.brotliBytes()) << "正文不是磁盘上那份副本";
         EXPECT_TRUE(hasHeaderLine(reply->headers, "content-encoding: br")) << reply->headers;
@@ -263,7 +264,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false);
 
         const std::optional<ParsedResponse> zstdReply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: gzip, br, zstd"});
-        ASSERT_TRUE(zstdReply.has_value());
+        ASSERT_HAS_VALUE(zstdReply);
         EXPECT_TRUE(hasHeaderLine(zstdReply->headers, "content-encoding: zstd")) << "偏好表的第一位没胜出：" << zstdReply->headers;
         EXPECT_EQ(zstdReply->body, tree.zstdBytes());
 
@@ -273,7 +274,7 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(removeError) << "撤掉 zstd 副本失败，后面的断言就没有前提";
 
         const std::optional<ParsedResponse> brReply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: gzip, br, zstd"});
-        ASSERT_TRUE(brReply.has_value());
+        ASSERT_HAS_VALUE(brReply);
         EXPECT_TRUE(hasHeaderLine(brReply->headers, "content-encoding: br")) << "第一位缺席时没退到第二位：" << brReply->headers;
         EXPECT_EQ(brReply->body, tree.brotliBytes());
     }
@@ -289,7 +290,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false);
 
         const std::optional<ParsedResponse> reply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: identity"});
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_EQ(reply->body, tree.plainText()) << "对端没接受编码还是把副本发出去了";
         EXPECT_FALSE(hasHeaderLine(reply->headers, "content-encoding")) << reply->headers;
         EXPECT_TRUE(hasHeaderLine(reply->headers, "vary: accept-encoding")) << reply->headers;
@@ -306,7 +307,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), false, false);
 
         const std::optional<ParsedResponse> reply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br, gzip, zstd"});
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_EQ(reply->body, tree.plainText()) << "没开这一格却挑了预压缩副本";
         EXPECT_FALSE(hasHeaderLine(reply->headers, "content-encoding")) << reply->headers;
         EXPECT_FALSE(hasHeaderLine(reply->headers, "vary")) << "协商没开却声明了随 Accept-Encoding 变：" << reply->headers;
@@ -327,7 +328,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false);
 
         const std::optional<ParsedResponse> reply = requestStatic(*fixture, "/ghost.js", {"Accept-Encoding: br"});
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 404")) << "基名不在场却从副本造出了正文：" << reply->headers;
     }
 
@@ -353,7 +354,7 @@ namespace AsynGyanis::Net
 
         // 用明文那份的 ETag 去问副本：前提不成立（不是同一表示），必须是 200 带新正文
         const std::optional<ParsedResponse> crossVariant = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br", "If-None-Match: " + plainEtag});
-        ASSERT_TRUE(crossVariant.has_value());
+        ASSERT_HAS_VALUE(crossVariant);
         EXPECT_TRUE(crossVariant->headers.starts_with("HTTP/1.1 200")) << "跨变体的 If-None-Match 被当成了同一个表示：" << crossVariant->headers;
 
         // 同变体命中：304 要回带 Vary（§15.4.5 的必带清单里有它），但不回带 Content-Encoding——
@@ -361,7 +362,7 @@ namespace AsynGyanis::Net
         // 客户端恢复编码信息靠的是它自己存着的那条 200。长度仍取「同一请求的 200 会发多大」，
         // 那是副本的长度而不是明文的（§6.2）
         const std::optional<std::string> sameVariant = requestHeadersOnly(*fixture, "/app.js", {"Accept-Encoding: br", "If-None-Match: " + brEtag});
-        ASSERT_TRUE(sameVariant.has_value()) << "304 的头部块没读回来（它没有正文，按长度读满会一直等）";
+        ASSERT_HAS_VALUE(sameVariant) << "304 的头部块没读回来（它没有正文，按长度读满会一直等）";
         EXPECT_TRUE(sameVariant->starts_with("HTTP/1.1 304")) << *sameVariant;
         EXPECT_TRUE(hasHeaderLine(*sameVariant, "vary: accept-encoding")) << "304 没回带 Vary：" << *sameVariant;
         EXPECT_FALSE(hasHeaderLine(*sameVariant, "content-encoding")) << "304 带着空正文声明了编码：" << *sameVariant;
@@ -380,13 +381,13 @@ namespace AsynGyanis::Net
 
         const std::size_t                   variantSize = tree.brotliBytes().size();
         const std::optional<ParsedResponse> partial     = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br", "Range: bytes=0-3"});
-        ASSERT_TRUE(partial.has_value());
+        ASSERT_HAS_VALUE(partial);
         EXPECT_TRUE(partial->headers.starts_with("HTTP/1.1 206")) << partial->headers;
         EXPECT_EQ(partial->body, tree.brotliBytes().substr(0, 4)) << "区间取的不是副本的前 4 字节";
         EXPECT_TRUE(hasHeaderLine(partial->headers, "content-range: bytes 0-3/" + std::to_string(variantSize))) << "总长报的是明文那份：" << partial->headers;
 
         const std::optional<ParsedResponse> outOfRange = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br", "Range: bytes=" + std::to_string(variantSize + 10) + "-"});
-        ASSERT_TRUE(outOfRange.has_value());
+        ASSERT_HAS_VALUE(outOfRange);
         EXPECT_TRUE(outOfRange->headers.starts_with("HTTP/1.1 416")) << outOfRange->headers;
         EXPECT_TRUE(hasHeaderLine(outOfRange->headers, "content-range: bytes */" + std::to_string(variantSize))) << "416 报出的可用长度不是副本的：" << outOfRange->headers;
     }
@@ -403,7 +404,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> listingOn = makeVariantFixture(tree.directory(), true, true);
 
         const std::optional<ParsedResponse> negotiated = requestStatic(*listingOn, "/");
-        ASSERT_TRUE(negotiated.has_value());
+        ASSERT_HAS_VALUE(negotiated);
         EXPECT_NE(negotiated->body.find("app.js"), std::string::npos) << "基名从列表里消失了";
         EXPECT_EQ(negotiated->body.find("app.js.br"), std::string::npos) << "变体被当成独立资源列了出来：" << negotiated->body;
         EXPECT_EQ(negotiated->body.find("app.js.zst"), std::string::npos);
@@ -412,7 +413,7 @@ namespace AsynGyanis::Net
         // 反向对照：协商关着时这些后缀只是普通文件名，列表不该替部署方改写目录内容
         const std::unique_ptr<RunningHttpServerFixture> plainListing = makeVariantFixture(tree.directory(), false, true);
         const std::optional<ParsedResponse>             plain        = requestStatic(*plainListing, "/");
-        ASSERT_TRUE(plain.has_value());
+        ASSERT_HAS_VALUE(plain);
         EXPECT_NE(plain->body.find("app.js.br"), std::string::npos) << "没开协商却把文件从列表里藏掉了：" << plain->body;
     }
 
@@ -428,7 +429,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false, true);
 
         const std::optional<ParsedResponse> reply = requestStatic(*fixture, "/app.js", {"Accept-Encoding: zstd, br"});
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_EQ(reply->body, tree.zstdBytes()) << "副本又被在线压了一层，或对端接受的更高偏好没走通";
         EXPECT_TRUE(hasHeaderLine(reply->headers, "content-encoding: zstd")) << reply->headers;
         // 只出现一次编码声明：叠两层会出现第二条或改写取值
@@ -568,7 +569,7 @@ namespace AsynGyanis::Net
     TEST(HttpPrecompressedStatic, AvailableDictionaryParserAcceptsOnlyTheFullSfBinaryForm)
     {
         const std::optional<Core::Digest::Sha256Value> parsed = Detail::parseAvailableDictionaryHash(":pZGm1Av0IEBKARczz7exkNYsZb8LzaMrV7J32a2fFG4=:");
-        ASSERT_TRUE(parsed.has_value()) << "RFC 9842 的示例取值没解析出来";
+        ASSERT_HAS_VALUE(parsed) << "RFC 9842 的示例取值没解析出来";
         const Core::Digest::Sha256Value expected{0xa5, 0x91, 0xa6, 0xd4, 0x0b, 0xf4, 0x20, 0x40, 0x4a, 0x01, 0x17, 0x33, 0xcf, 0xb7, 0xb1, 0x90,
                                                  0xd6, 0x2c, 0x65, 0xbf, 0x0b, 0xcd, 0xa3, 0x2b, 0x57, 0xb2, 0x77, 0xd9, 0xad, 0x9f, 0x14, 0x6e};
         EXPECT_EQ(*parsed, expected) << "解出来的字节与独立解码的期望不符";
@@ -628,14 +629,14 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> reply =
                 requestStatic(*fixture, "/app.js", {"Accept-Encoding: dcz, zstd", "Available-Dictionary: " + availableDictionaryHeaderValue(tree.dictionaryBytes())});
-        ASSERT_TRUE(reply.has_value()) << "请求没有响应回来";
+        ASSERT_HAS_VALUE(reply) << "请求没有响应回来";
         EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << reply->headers.substr(0, 60);
         EXPECT_TRUE(hasHeaderLine(reply->headers, "content-encoding: zstd")) << "明文连接上不该出现 dcz：" << reply->headers;
         EXPECT_EQ(reply->body, tree.zstdBytes()) << "明文连接上应发常规 zstd 副本";
         EXPECT_EQ(reply->headers.find("available-dictionary"), std::string::npos) << "没有哪一份表示依赖字典协商，Vary 不该多出这一项：" << reply->headers;
 
         const std::optional<ParsedResponse> dictionaryReply = requestStatic(*fixture, "/app.dict", {"Accept-Encoding: zstd"});
-        ASSERT_TRUE(dictionaryReply.has_value());
+        ASSERT_HAS_VALUE(dictionaryReply);
         EXPECT_EQ(dictionaryReply->body, tree.dictionaryBytes()) << "字典文件本身要能照常下载";
         EXPECT_EQ(dictionaryReply->headers.find("use-as-dictionary"), std::string::npos) << "明文连接上不得宣告字典：" << dictionaryReply->headers;
     }

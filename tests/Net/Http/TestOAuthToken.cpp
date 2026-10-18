@@ -5,6 +5,7 @@
 // - RejectsWrongTypedAndEmptyValues（scope 是数字、access_token 是空串、expires_in 非正）
 // - RejectsNonJsonBody（正文不是 JSON 对象）
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/OAuthToken.h"
 
 #include <gtest/gtest.h>
@@ -17,7 +18,7 @@ namespace AsynGyanis::Net
     TEST(OAuthTokenResponseTest, ParsesTheSuccessShapeFieldByField)
     {
         const auto token = parseOAuthTokenResponse(R"({"access_token":"at-1","token_type":"Bearer","expires_in":3600,"refresh_token":"rt-1","scope":"read"})");
-        ASSERT_TRUE(token.has_value()) << token.error();
+        ASSERT_HAS_VALUE(token) << token.error();
         EXPECT_EQ(token->accessToken, "at-1");
         EXPECT_EQ(token->tokenType, "Bearer");
         EXPECT_EQ(token->expiresIn.count(), 3600);
@@ -26,7 +27,7 @@ namespace AsynGyanis::Net
 
         // 可选字段缺席：按空 / 0 交回（0 的语义是「端点未给出」），不是失败
         const auto minimal = parseOAuthTokenResponse(R"({"access_token":"at-2","token_type":"Bearer"})");
-        ASSERT_TRUE(minimal.has_value()) << minimal.error();
+        ASSERT_HAS_VALUE(minimal) << minimal.error();
         EXPECT_TRUE(minimal->refreshToken.empty());
         EXPECT_TRUE(minimal->scope.empty());
         EXPECT_EQ(minimal->expiresIn.count(), 0);

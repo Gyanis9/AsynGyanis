@@ -7,6 +7,7 @@
 #include "Net/Proxy/ProxyProtocol.h"
 
 #include "Core/Socket/InetAddress.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -106,7 +107,7 @@ namespace AsynGyanis::Net
         const std::string header   = "PROXY TCP4 203.0.113.9 198.51.100.7 65535 80\r\n";
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "203.0.113.9");
         EXPECT_EQ(endpoint->source.port(), 65535);
@@ -126,7 +127,7 @@ namespace AsynGyanis::Net
         const std::string header   = "PROXY TCP4 192.168.0.1 192.168.0.11 56324 443\r\n";
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "192.168.0.1") << "第一个地址是来源，不是目的";
         EXPECT_EQ(endpoint->source.port(), 56324);
@@ -140,7 +141,7 @@ namespace AsynGyanis::Net
         const std::string header   = "PROXY TCP6 2001:db8::1 2001:db8::2 12345 443\r\n";
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_EQ(endpoint->source.ip(), "2001:db8::1");
         EXPECT_EQ(endpoint->destination.port(), 443);
         EXPECT_EQ(consumed, header.size());
@@ -155,7 +156,7 @@ namespace AsynGyanis::Net
         const std::string header   = "PROXY UNKNOWN\r\n";
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_FALSE(endpoint->hasAddresses);
         EXPECT_EQ(consumed, header.size());
     }
@@ -166,7 +167,7 @@ namespace AsynGyanis::Net
         const std::string header   = "PROXY TCP4 192.0.2.1 192.0.2.2 1 2\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n";
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_EQ(consumed, header.find("\r\n") + 2U) << "消费数应正好到第一个 CRLF 末尾";
         EXPECT_EQ(header.substr(consumed), "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
     }
@@ -203,7 +204,7 @@ namespace AsynGyanis::Net
         const std::string header   = makeV2Header(1, 1, makeV2Ipv4Block({203, 0, 113, 9}, {198, 51, 100, 7}, 44000, 443));
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "203.0.113.9");
         EXPECT_EQ(endpoint->source.port(), 44000);
@@ -217,7 +218,7 @@ namespace AsynGyanis::Net
         const std::string header   = makeV2Header(1, 2, makeV2Ipv6Block(0x01, 0x02, 1234, 80));
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_TRUE(endpoint->hasAddresses);
         EXPECT_EQ(endpoint->source.ip(), "2001:db8::1");
         EXPECT_EQ(endpoint->destination.ip(), "2001:db8::2");
@@ -239,7 +240,7 @@ namespace AsynGyanis::Net
 
         std::size_t consumed = 0U;
         const auto  endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_EQ(endpoint->source.ip(), "192.0.2.1");
         EXPECT_EQ(consumed, header.size()) << "带 TLV 时消费数要含 TLV";
     }
@@ -261,7 +262,7 @@ namespace AsynGyanis::Net
 
         std::size_t consumed = 0U;
         const auto  endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         ASSERT_EQ(endpoint->tlvs.size(), 3U) << "TLV 条数不对（被跳过或被吞了）";
 
         EXPECT_EQ(endpoint->tlvs[0].type, static_cast<std::uint8_t>(ProxyTlvType::Authority));
@@ -283,12 +284,12 @@ namespace AsynGyanis::Net
         const std::string v2Header   = makeV2Header(1, 1, makeV2Ipv4Block({192, 0, 2, 1}, {192, 0, 2, 2}, 1000, 80));
         std::size_t       consumed   = 0U;
         const auto        v2Endpoint = parse(v2Header, consumed);
-        ASSERT_TRUE(v2Endpoint.has_value());
+        ASSERT_HAS_VALUE(v2Endpoint);
         EXPECT_TRUE(v2Endpoint->tlvs.empty()) << "没有 TLV 就不该有条目";
 
         const std::string v1Header   = "PROXY TCP4 192.0.2.1 192.0.2.2 1000 80\r\n";
         const auto        v1Endpoint = parse(v1Header, consumed);
-        ASSERT_TRUE(v1Endpoint.has_value());
+        ASSERT_HAS_VALUE(v1Endpoint);
         EXPECT_TRUE(v1Endpoint->tlvs.empty()) << "v1 没有 TLV 这一层";
     }
 
@@ -324,7 +325,7 @@ namespace AsynGyanis::Net
             const std::string header   = makeV2Header(command, 1, makeV2Ipv4Block({127, 0, 0, 1}, {127, 0, 0, 1}, 1, 1));
             std::size_t       consumed = 0U;
             const auto        endpoint = parse(header, consumed);
-            ASSERT_TRUE(endpoint.has_value()) << "命令 " << command << " 是合法的，只是不带可信地址";
+            ASSERT_HAS_VALUE(endpoint) << "命令 " << command << " 是合法的，只是不带可信地址";
             EXPECT_FALSE(endpoint->hasAddresses) << "命令 " << command << " 不许交出身份";
             EXPECT_EQ(consumed, header.size());
         }
@@ -337,7 +338,7 @@ namespace AsynGyanis::Net
             const std::string header   = makeV2Header(1, family, std::string{});
             std::size_t       consumed = 0U;
             const auto        endpoint = parse(header, consumed);
-            ASSERT_TRUE(endpoint.has_value()) << "地址族 " << family << " 应当被认出，只是没有 IP 身份";
+            ASSERT_HAS_VALUE(endpoint) << "地址族 " << family << " 应当被认出，只是没有 IP 身份";
             EXPECT_FALSE(endpoint->hasAddresses) << "地址族 " << family << " 不该交出 IP";
         }
     }
@@ -369,7 +370,7 @@ namespace AsynGyanis::Net
         const std::string header   = makeV2Header(3, 1, makeV2Ipv4Block({1, 1, 1, 1}, {2, 2, 2, 2}, 1, 2));
         std::size_t       consumed = 0U;
         const auto        endpoint = parse(header, consumed);
-        ASSERT_TRUE(endpoint.has_value());
+        ASSERT_HAS_VALUE(endpoint);
         EXPECT_FALSE(endpoint->hasAddresses);
         EXPECT_EQ(consumed, header.size());
     }

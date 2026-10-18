@@ -1,5 +1,6 @@
 // 出站 keep-alive 连接池的端到端用例
 #include "Base/Exception/InvalidArgumentException.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequestBody.h"
@@ -652,7 +653,7 @@ namespace AsynGyanis::Net
         }
         loop.run();
 
-        ASSERT_TRUE(outcome.has_value()) << "流式上传没走通：" << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << "流式上传没走通：" << outcome.error();
         EXPECT_EQ(outcome->statusCode, 200);
         EXPECT_EQ(outcome->body, "echoed=3") << "服务端按批交付的次数不对：" << outcome->body;
         EXPECT_EQ(serverBatchCount.load(std::memory_order_acquire), kStreamEchoChunkCount) << "正文不是一段一段到服务端的";

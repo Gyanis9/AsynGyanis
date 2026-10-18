@@ -13,6 +13,7 @@
 #include "MetricsTestSupport.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include "ExpectedAssertions.h"
 #include "gtest/gtest.h"
 
 #include <coroutine>
@@ -394,7 +395,7 @@ namespace AsynGyanis::Net
             WebSocketHub  hub(16U);
 
             const auto registered = findRegistrySample("asyn_websocket_hub_dropped_messages_total");
-            ASSERT_TRUE(registered.has_value()) << "构造时没挂上读数，运维面就看不见丢弃";
+            ASSERT_HAS_VALUE(registered) << "构造时没挂上读数，运维面就看不见丢弃";
             EXPECT_EQ(registered->value, 0U) << "新登记的读数应当是 0，而不是上一位使用者的残留";
 
             auto subscription = hub.subscribe("lobby", peer);
@@ -404,7 +405,7 @@ namespace AsynGyanis::Net
             EXPECT_EQ(hub.droppedMessageCount(), 1U);
 
             const auto sample = findRegistrySample("asyn_websocket_hub_dropped_messages_total");
-            ASSERT_TRUE(sample.has_value());
+            ASSERT_HAS_VALUE(sample);
             EXPECT_EQ(sample->value, static_cast<std::uint64_t>(hub.droppedMessageCount())) << "对外读数与判据用的不是同一个数";
         }
 
@@ -543,7 +544,7 @@ namespace AsynGyanis::Net
             WebSocketHub  hub(kPendingByteBound);
 
             const auto registered = findRegistrySample("asyn_websocket_hub_abandoned_messages_total");
-            ASSERT_TRUE(registered.has_value()) << "构造时没挂上读数，运维面就看不见整队作废";
+            ASSERT_HAS_VALUE(registered) << "构造时没挂上读数，运维面就看不见整队作废";
             EXPECT_EQ(registered->value, 0U) << "新登记的读数应当是 0，而不是上一位使用者的残留";
 
             auto subscription = hub.subscribe("lobby", peer);
@@ -564,7 +565,7 @@ namespace AsynGyanis::Net
             EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "队列里没人收的那条该记在作废";
 
             const auto sample = findRegistrySample("asyn_websocket_hub_abandoned_messages_total");
-            ASSERT_TRUE(sample.has_value());
+            ASSERT_HAS_VALUE(sample);
             EXPECT_EQ(sample->value, static_cast<std::uint64_t>(hub.abandonedMessageCount())) << "对外读数与判据用的不是同一个数";
         }
 

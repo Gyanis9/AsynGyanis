@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 
+#include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
 namespace AsynGyanis::Platform
@@ -27,7 +28,7 @@ namespace AsynGyanis::Platform
         [[nodiscard]] std::string readOrThrow(const std::filesystem::path &filePath, const std::size_t offset, const std::size_t length)
         {
             const std::expected<std::string, std::error_code> result = readFileContents(filePath, offset, length);
-            EXPECT_TRUE(result.has_value()) << "读取失败：" << result.error().message();
+            EXPECT_HAS_VALUE(result) << "读取失败：" << result.error().message();
             return result.has_value() ? *result : std::string{};
         }
     } // namespace
@@ -68,7 +69,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "abc"));
 
         const std::expected<std::string, std::error_code> result = readFileContents(temporaryDirectory.path() / "asset.bin", 0U, 128U);
-        ASSERT_TRUE(result.has_value()) << "文件比期望的短不是错误，应当交回实际读到的那段";
+        ASSERT_HAS_VALUE(result) << "文件比期望的短不是错误，应当交回实际读到的那段";
         EXPECT_EQ(result->size(), 3U) << "短读的长度必须如实，不许补零凑数";
         EXPECT_EQ(*result, "abc");
     }
@@ -82,7 +83,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "abc"));
 
         const std::expected<std::string, std::error_code> result = readFileContents(temporaryDirectory.path() / "asset.bin", 999999U, 16U);
-        ASSERT_TRUE(result.has_value()) << "越界偏移是「读到 0 字节」，不是失败";
+        ASSERT_HAS_VALUE(result) << "越界偏移是「读到 0 字节」，不是失败";
         EXPECT_TRUE(result->empty());
     }
 
@@ -96,7 +97,7 @@ namespace AsynGyanis::Platform
         const std::filesystem::path           missingPath = temporaryDirectory.path() / "never-created.bin";
 
         const std::expected<std::string, std::error_code> result = readFileContents(missingPath, 0U, 0U);
-        ASSERT_TRUE(result.has_value()) << "空段不需要知道文件在不在";
+        ASSERT_HAS_VALUE(result) << "空段不需要知道文件在不在";
         EXPECT_TRUE(result->empty());
     }
 
@@ -115,13 +116,13 @@ namespace AsynGyanis::Platform
         const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
 
         const std::optional<FileBasicInfo> byPath = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(byPath.has_value());
+        ASSERT_HAS_VALUE(byPath);
 
         std::string                                       contents;
         FileBasicInfo                                     opened;
         const std::expected<std::size_t, std::error_code> result = readFileContentsInto(targetPath, 0U, 17U, contents, &opened);
 
-        ASSERT_TRUE(result.has_value()) << result.error().message();
+        ASSERT_HAS_VALUE(result) << result.error().message();
         EXPECT_TRUE(opened.isRegularFile);
         EXPECT_EQ(opened.sizeBytes, byPath->sizeBytes) << "按句柄查与按路径查的大小不是同一刻度";
         EXPECT_EQ(opened.lastWriteSeconds, byPath->lastWriteSeconds) << "两条路的修改秒不是同一刻度（取整方向分叉）";
@@ -141,7 +142,7 @@ namespace AsynGyanis::Platform
         const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
 
         const std::optional<FileBasicInfo> advertised = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(advertised.has_value());
+        ASSERT_HAS_VALUE(advertised);
         ASSERT_EQ(advertised->sizeBytes, 3U);
 
         // 请求处理到「打开正文」之间，发布方把文件换成了另一份：这里走「写临时文件再 rename 覆盖」，
@@ -156,7 +157,7 @@ namespace AsynGyanis::Platform
         const std::expected<std::size_t, std::error_code> result = readFileContentsInto(targetPath, 0U, 3U, contents, &opened);
 
         // 读到 3 字节、短读判据不会响——能认出「发出去的不是那一版」的只有这份身份
-        ASSERT_TRUE(result.has_value()) << result.error().message();
+        ASSERT_HAS_VALUE(result) << result.error().message();
         ASSERT_EQ(*result, 3U);
         EXPECT_EQ(contents.size(), 3U);
         EXPECT_NE(opened.sizeBytes, advertised->sizeBytes) << "文件已被换掉，身份却没看出差别，验证器就会被发去描述另一版内容";
@@ -228,7 +229,7 @@ namespace AsynGyanis::Platform
 
         std::string                                       buffer;
         const std::expected<std::size_t, std::error_code> bytesRead = readFileContentsInto(temporaryDirectory.path() / "asset.bin", 2U, 5U, buffer);
-        ASSERT_TRUE(bytesRead.has_value()) << "读取失败：" << bytesRead.error().message();
+        ASSERT_HAS_VALUE(bytesRead) << "读取失败：" << bytesRead.error().message();
         EXPECT_EQ(*bytesRead, 5U);
         EXPECT_EQ(buffer.size(), 5U);
         EXPECT_EQ(buffer, "23456");
@@ -246,7 +247,7 @@ namespace AsynGyanis::Platform
 
         std::string                                       buffer("预先占好的一大段内容xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 40);
         const std::expected<std::size_t, std::error_code> bytesRead = readFileContentsInto(temporaryDirectory.path() / "asset.bin", 0U, 128U, buffer);
-        ASSERT_TRUE(bytesRead.has_value());
+        ASSERT_HAS_VALUE(bytesRead);
         EXPECT_EQ(*bytesRead, 3U);
         EXPECT_EQ(buffer.size(), 3U) << "缓冲没收缩，多发出去的就是旧内容的尾巴";
         EXPECT_EQ(buffer, "abc");

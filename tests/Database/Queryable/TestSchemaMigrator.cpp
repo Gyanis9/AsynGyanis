@@ -17,6 +17,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -801,7 +802,7 @@ TEST_F(SchemaMigratorSqliteTest, AddMissingColumnsEvolvesAnExistingTable)
 
     Queryable<EvolvedAccountV2> evolved(*m_pool);
     const auto                  row = evolved.where(Column(&EvolvedAccountV2::id, "id") == std::int64_t{1}).first();
-    ASSERT_TRUE(row.has_value()) << "旧行没了：加列动到了已有数据";
+    ASSERT_HAS_VALUE(row) << "旧行没了：加列动到了已有数据";
     EXPECT_EQ(row->name, "甲");
     EXPECT_FALSE(row->nickname.has_value()) << "旧行的新列应当是 NULL，而不是被填成空串或 0";
 

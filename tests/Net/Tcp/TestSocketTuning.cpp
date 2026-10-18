@@ -18,6 +18,7 @@
 #include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -473,7 +474,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
 
         const std::optional<Core::AsyncSocket> accepted = acceptOneConnection(acceptor, loop);
-        ASSERT_TRUE(accepted.has_value()) << "accept() 未在时限内交回连接";
+        ASSERT_HAS_VALUE(accepted) << "accept() 未在时限内交回连接";
         const int acceptedDescriptor = accepted->fileDescriptor();
         EXPECT_GT(queryKeepAliveSwitch(acceptedDescriptor), 0) << "配置的保活没有下发到接受到的连接";
 #if !ASYN_PLATFORM_WIN32
@@ -492,7 +493,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(plainClient.isValid());
 
         const std::optional<Core::AsyncSocket> plainAccepted = acceptOneConnection(plainAcceptor, plainLoop);
-        ASSERT_TRUE(plainAccepted.has_value()) << "accept() 未在时限内交回连接";
+        ASSERT_HAS_VALUE(plainAccepted) << "accept() 未在时限内交回连接";
         EXPECT_EQ(queryKeepAliveSwitch(plainAccepted->fileDescriptor()), 0) << "没配置的监听器不该替连接开启保活";
     }
     /**
@@ -596,7 +597,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(client.isValid());
 
         const std::optional<Core::AsyncSocket> accepted = acceptOneConnection(acceptor, loop);
-        ASSERT_TRUE(accepted.has_value()) << "accept() 未在时限内交回连接";
+        ASSERT_HAS_VALUE(accepted) << "accept() 未在时限内交回连接";
         const int acceptedDescriptor = accepted->fileDescriptor();
 
         bool isEnabled = false;
@@ -617,7 +618,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(plainClient.isValid());
 
         const std::optional<Core::AsyncSocket> plainAccepted = acceptOneConnection(plainAcceptor, plainLoop);
-        ASSERT_TRUE(plainAccepted.has_value()) << "accept() 未在时限内交回连接";
+        ASSERT_HAS_VALUE(plainAccepted) << "accept() 未在时限内交回连接";
         EXPECT_FALSE(queryLingerSeconds(plainAccepted->fileDescriptor(), isEnabled) != 0 || isEnabled) << "没配置的监听器不该替连接开启逗留";
     }
 

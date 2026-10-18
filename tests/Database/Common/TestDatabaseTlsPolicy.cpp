@@ -1,5 +1,6 @@
 // DatabaseTlsPolicy 校验的纯用例：档位与文件三路的自洽判据（无网络、无连接）。
 #include "Database/Common/ConnectionConfig.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -15,7 +16,7 @@ namespace AsynGyanis::Database
         DatabaseTlsPolicy verifyCa;
         verifyCa.mode             = DatabaseTlsPolicy::Mode::VerifyCa;
         const auto verifyCaReason = verifyCa.validate();
-        ASSERT_TRUE(verifyCaReason.has_value()) << "VerifyCa 缺 CA 应当被拒";
+        ASSERT_HAS_VALUE(verifyCaReason) << "VerifyCa 缺 CA 应当被拒";
         EXPECT_NE(verifyCaReason->find("certificateAuthorityFile"), std::string::npos) << *verifyCaReason;
 
         verifyCa.certificateAuthorityFile = "/tmp/ca.pem";
@@ -35,7 +36,7 @@ namespace AsynGyanis::Database
         onlyCertificate.mode                  = DatabaseTlsPolicy::Mode::Required;
         onlyCertificate.clientCertificateFile = "/tmp/client.pem";
         const auto pairReason                 = onlyCertificate.validate();
-        ASSERT_TRUE(pairReason.has_value()) << "只给客户端证书不给私钥应当被拒";
+        ASSERT_HAS_VALUE(pairReason) << "只给客户端证书不给私钥应当被拒";
         EXPECT_NE(pairReason->find("成对"), std::string::npos) << *pairReason;
 
         DatabaseTlsPolicy onlyKey;
@@ -60,7 +61,7 @@ namespace AsynGyanis::Database
         nulCa.mode                     = DatabaseTlsPolicy::Mode::VerifyCa;
         nulCa.certificateAuthorityFile = std::string("a\0b", 3);
         const auto nulReason           = nulCa.validate();
-        ASSERT_TRUE(nulReason.has_value()) << "CA 路径含内嵌 NUL 应当被拒";
+        ASSERT_HAS_VALUE(nulReason) << "CA 路径含内嵌 NUL 应当被拒";
         EXPECT_NE(nulReason->find("NUL"), std::string::npos) << *nulReason;
 
         DatabaseTlsPolicy nulKey;

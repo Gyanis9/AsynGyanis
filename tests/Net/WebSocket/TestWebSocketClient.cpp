@@ -7,6 +7,7 @@
 // 判据分两面：发出去的帧按线上字节判（MASK 位、键的位置、逐帧换键、异或结果、操作码），
 // 收进来的按交付给业务的东西判（消息完整、控制帧不外露、Close 的码与原因）。
 // 时限那一条断的是「有出口」而不是「够快」：对端一言不发时 connect() 必须带着原因回来。
+#include "ExpectedAssertions.h"
 #include "Net/WebSocket/WebSocketClient.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
@@ -577,8 +578,8 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.send_results, (std::vector<bool>{true, true}));
         const auto first  = frameAt(wireBytes.second, 0);
         const auto second = frameAt(wireBytes.second, 1);
-        ASSERT_TRUE(first.has_value()) << "第一帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
-        ASSERT_TRUE(second.has_value()) << "第二帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
+        ASSERT_HAS_VALUE(first) << "第一帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
+        ASSERT_HAS_VALUE(second) << "第二帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
         EXPECT_EQ(first->firstByte, kTextFrameFirstByte);
         EXPECT_EQ(second->firstByte, kBinaryFrameFirstByte);
         EXPECT_TRUE(first->isMasked) << "客户端发出的帧没置 MASK 位（RFC 6455 §5.1）";
@@ -640,7 +641,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.delivered.size(), 1U) << "Ping 不该交给业务";
         EXPECT_EQ(outcome.delivered.front().payload, "after");
         const auto pong = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(pong.has_value()) << "没看见本端回出去的 Pong";
+        ASSERT_HAS_VALUE(pong) << "没看见本端回出去的 Pong";
         EXPECT_EQ(pong->firstByte, kPongFrameFirstByte);
         EXPECT_EQ(pong->payload, "hb") << "Pong 要把 Ping 的负载原样带回去（RFC 6455 §5.5.3）";
         EXPECT_TRUE(pong->isMasked);
@@ -698,7 +699,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.delivered.front().payload, makeClosePayload(1001, "bye")) << "对端给的码与原因要原样交给业务";
         EXPECT_FALSE(outcome.is_open_after_actions);
         const auto echo = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(echo.has_value()) << "本端没回 Close";
+        ASSERT_HAS_VALUE(echo) << "本端没回 Close";
         EXPECT_EQ(echo->firstByte, kCloseFrameFirstByte);
         ASSERT_TRUE(closeCodeOf(*echo).has_value());
         EXPECT_EQ(*closeCodeOf(*echo), 1001U) << "回帧要把对端那个码原样答回去（RFC 6455 §5.5.1）";
@@ -734,10 +735,10 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.receive_error, "");
         EXPECT_FALSE(outcome.is_open_after_actions);
         const auto echo = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(echo.has_value()) << "本端没回 Close";
+        ASSERT_HAS_VALUE(echo) << "本端没回 Close";
         ASSERT_TRUE(closeCodeOf(*echo).has_value());
         EXPECT_EQ(*closeCodeOf(*echo), 1002U) << "保留码被原样答回或按正常关闭收口：对端读到的像一次合规关闭";
-        ASSERT_TRUE(observedRemoteCode.has_value()) << "对端原本那个码没有留给业务";
+        ASSERT_HAS_VALUE(observedRemoteCode) << "对端原本那个码没有留给业务";
         EXPECT_EQ(*observedRemoteCode, 1005U);
     }
 
@@ -771,10 +772,10 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
         EXPECT_EQ(outcome.receive_error, "");
         const auto echo = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(echo.has_value()) << "本端没回 Close";
+        ASSERT_HAS_VALUE(echo) << "本端没回 Close";
         ASSERT_TRUE(closeCodeOf(*echo).has_value());
         EXPECT_EQ(*closeCodeOf(*echo), 1007U) << "非 UTF-8 的原因没有按负载非法收口";
-        ASSERT_TRUE(observedRemoteCode.has_value());
+        ASSERT_HAS_VALUE(observedRemoteCode);
         EXPECT_EQ(*observedRemoteCode, 1000U) << "记的应当是对端交来的原值";
         EXPECT_TRUE(observedReason.empty()) << "非法 UTF-8 的原因原文被交回业务：那是日志注入的原料";
     }
@@ -796,7 +797,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
         ASSERT_EQ(outcome.send_results, (std::vector<bool>{true, false})) << "本端发过 Close 之后就该拒绝再发数据帧（RFC 6455 §5.5.1）";
         const auto close = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(close.has_value());
+        ASSERT_HAS_VALUE(close);
         EXPECT_EQ(close->firstByte, kCloseFrameFirstByte);
         EXPECT_EQ(close->payload, makeClosePayload(1000, "done")) << "关闭原因要跟着上线";
         EXPECT_EQ(wireBytes.second.find("late"), std::string::npos);
@@ -825,7 +826,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.send_results, (std::vector<bool>{true}));
         // 线上只该看见最后那一条合法的 Close：被拒的三次一个字节都没出去
         const auto close = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(close.has_value()) << "合法那条 Close 没上线：" << wireBytes.second;
+        ASSERT_HAS_VALUE(close) << "合法那条 Close 没上线：" << wireBytes.second;
         EXPECT_EQ(close->payload, makeClosePayload(1000, "ok"));
         EXPECT_FALSE(frameAt(wireBytes.second, 1).has_value()) << "被拒的用法错误也发了帧";
         EXPECT_FALSE(outcome.is_open_after_actions) << "合法收口之后会话就不该再对开";
@@ -919,7 +920,7 @@ namespace AsynGyanis::Net
         EXPECT_NE(outcome.receive_error.find("上限"), std::string::npos) << outcome.receive_error;
         EXPECT_FALSE(outcome.is_open_after_actions);
         const auto close = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(close.has_value()) << "越限之后没按协议出声";
+        ASSERT_HAS_VALUE(close) << "越限之后没按协议出声";
         ASSERT_TRUE(closeCodeOf(*close).has_value());
         EXPECT_EQ(*closeCodeOf(*close), 1009U) << "消息过大要按 1009 收口（RFC 6455 §7.4.1）";
     }
@@ -999,12 +1000,12 @@ namespace AsynGyanis::Net
         EXPECT_NE(wireBytes.first.find(std::string{"Sec-WebSocket-Extensions: "} + std::string{kPerMessageDeflateClientOffer} + "\r\n"), std::string::npos) << wireBytes.first;
 
         const auto frame = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(frame.has_value()) << "帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
+        ASSERT_HAS_VALUE(frame) << "帧没在线上凑齐：" << wireBytes.second.size() << " 字节";
         EXPECT_TRUE(frame->isMasked) << "压缩与否不影响客户端帧必须带掩码（RFC 6455 §5.1）";
         EXPECT_EQ(frame->firstByte, static_cast<std::uint8_t>(0xC1)) << "协商成功后数据消息要置 RSV1（FIN+RSV1+Text = 0xC1，RFC 7692 §6）";
         ASSERT_LT(frame->payload.size(), payload.size()) << "这份重复文本本该压得更短";
         const std::optional<std::string> restored = inflateWebSocketMessage(frame->payload, payload.size() + 16);
-        ASSERT_TRUE(restored.has_value()) << "线上负载不是一截合法的 permessage-deflate 流";
+        ASSERT_HAS_VALUE(restored) << "线上负载不是一截合法的 permessage-deflate 流";
         EXPECT_EQ(*restored, payload);
     }
 
@@ -1030,7 +1031,7 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.send_results, (std::vector<bool>{true}));
 
         const auto frame = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(frame.has_value());
+        ASSERT_HAS_VALUE(frame);
         EXPECT_EQ(frame->firstByte, kTextFrameFirstByte) << "两个字节的消息压完更大，不该置 RSV1";
         EXPECT_EQ(frame->payload, "hi") << "未压缩帧的负载必须是原文";
     }
@@ -1128,7 +1129,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(wireBytes.first.find("Sec-WebSocket-Extensions"), std::string::npos) << "关掉开关后不该再提扩展";
 
         const auto frame = frameAt(wireBytes.second, 0);
-        ASSERT_TRUE(frame.has_value());
+        ASSERT_HAS_VALUE(frame);
         EXPECT_EQ(frame->firstByte, kTextFrameFirstByte) << "没协商过就不该出现 RSV1 帧";
         EXPECT_EQ(frame->payload, payload);
     }

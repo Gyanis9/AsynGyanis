@@ -26,6 +26,7 @@
 #include "Database/Common/Decimal.h"
 #include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/RowMapper.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -154,7 +155,7 @@ namespace AsynGyanis::Database::Queryable
     {
         DatabaseValue                    cell{std::string(4096, 'y')}; // 远超短字符串缓冲，是真实堆缓冲
         const std::optional<std::string> converted = Detail::convertDatabaseValue<std::optional<std::string>>(std::move(cell), kColumnName);
-        ASSERT_TRUE(converted.has_value());
+        ASSERT_HAS_VALUE(converted);
         EXPECT_EQ(*converted, std::string(4096, 'y'));
         EXPECT_TRUE(std::get<std::string>(cell).empty()) << "可空文本列源缓冲应已被搬空（走移动而非拷贝路径）";
     }
@@ -185,7 +186,7 @@ namespace AsynGyanis::Database::Queryable
         const BinaryBytes                expected(4096, static_cast<std::uint8_t>(0x5A));
         DatabaseValue                    cell{expected};
         const std::optional<BinaryBytes> converted = Detail::convertDatabaseValue<std::optional<BinaryBytes>>(std::move(cell), kColumnName);
-        ASSERT_TRUE(converted.has_value());
+        ASSERT_HAS_VALUE(converted);
         EXPECT_EQ(*converted, expected);
         EXPECT_TRUE(std::get<BinaryBytes>(cell).empty()) << "可空二进制列源缓冲应已被搬空";
     }
@@ -439,7 +440,7 @@ namespace AsynGyanis::Database::Queryable
         ASSERT_TRUE(std::holds_alternative<BinaryBytes>(written)) << databaseValueTypeName(written);
 
         const std::optional<BinaryBytes> readBack = Detail::convertDatabaseValue<std::optional<BinaryBytes>>(written, kColumnName);
-        ASSERT_TRUE(readBack.has_value());
+        ASSERT_HAS_VALUE(readBack);
         EXPECT_EQ(payload, readBack.value());
 
         // 空 optional 绑定 NULL 而不是零长载荷
@@ -797,7 +798,7 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_TRUE(std::holds_alternative<std::monostate>(Detail::toDatabaseValue(InstantCell{std::nullopt}, "booked_at")));
 
         const InstantCell filled = Detail::convertDatabaseValue<InstantCell>(textValue("2026-10-18T03:50:30.123456Z"), kColumnName);
-        ASSERT_TRUE(filled.has_value());
+        ASSERT_HAS_VALUE(filled);
         EXPECT_EQ(filled->time_since_epoch().count(), 1'792'295'430'123'456LL) << "文本折出的瞬间与公历算出的不一致";
     }
 
@@ -890,7 +891,7 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_FALSE(fromNull.has_value()) << "NULL 读成了值，零金额与没有金额是两件事";
 
         const DecimalCell fromText = Detail::convertDatabaseValue<DecimalCell>(textValue("7.0200"), kColumnName);
-        ASSERT_TRUE(fromText.has_value());
+        ASSERT_HAS_VALUE(fromText);
         EXPECT_EQ(fromText->text(), "7.0200");
 
         EXPECT_TRUE(std::holds_alternative<std::monostate>(Detail::toDatabaseValue(DecimalCell{std::nullopt}, "amount")));

@@ -1,6 +1,7 @@
 // 静态目录列表端到端用例：默认关闭、打开后的形状与转义、绝对链接、Range 忽略与条目上界
 #include "HttpTestSupport.h"
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpServer.h"
 
 #include <gtest/gtest.h>
@@ -205,7 +206,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeListingFixture(tree.directory(), false);
 
         const std::optional<ParsedResponse> reply = requestPath(*fixture, "/");
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 404")) << "列表关着却列出了目录：" << reply->headers.substr(0, 60);
     }
 
@@ -218,7 +219,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeListingFixture(tree.directory(), true);
 
         const std::optional<ParsedResponse> reply = requestPath(*fixture, "/");
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         ASSERT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << reply->headers.substr(0, 60);
         EXPECT_TRUE(containsText(reply->headers, "content-type: text/html; charset=utf-8")) << reply->headers;
         EXPECT_TRUE(containsText(reply->headers, "cache-control: no-store")) << "列表被允许缓存的话，目录变化之后它还会长着旧内容";
@@ -245,7 +246,7 @@ namespace AsynGyanis::Net
         for (const std::string_view path: {"/sub", "/sub/"})
         {
             const std::optional<ParsedResponse> reply = requestPath(*fixture, path);
-            ASSERT_TRUE(reply.has_value()) << path;
+            ASSERT_HAS_VALUE(reply) << path;
             ASSERT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << path << "：" << reply->headers.substr(0, 60);
             EXPECT_TRUE(containsText(reply->body, "href=\"/sub/inner.txt\"")) << path << " 的条目链接不是绝对路径：" << reply->body;
             EXPECT_TRUE(containsText(reply->body, "href=\"/\"")) << "上一级链接要指回静态根：" << reply->body;
@@ -268,7 +269,7 @@ namespace AsynGyanis::Net
 
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeListingFixture(tree.directory(), true);
         const std::optional<ParsedResponse>             reply   = requestPath(*fixture, "/");
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         ASSERT_TRUE(reply->headers.starts_with("HTTP/1.1 200"));
 
         EXPECT_TRUE(containsText(reply->body, "a&amp;b#c.txt")) << "& 没被转义：" << reply->body;
@@ -287,8 +288,8 @@ namespace AsynGyanis::Net
 
         const std::optional<ParsedResponse> full   = requestPath(*fixture, "/");
         const std::optional<ParsedResponse> ranged = requestPath(*fixture, "/", {"Range: bytes=0-10"});
-        ASSERT_TRUE(full.has_value());
-        ASSERT_TRUE(ranged.has_value());
+        ASSERT_HAS_VALUE(full);
+        ASSERT_HAS_VALUE(ranged);
         EXPECT_TRUE(ranged->headers.starts_with("HTTP/1.1 200")) << "对列表回 206 就是承认它有稳定长度：" << ranged->headers.substr(0, 60);
         EXPECT_EQ(ranged->body, full->body) << "带 Range 的列表正文被切了一刀";
         EXPECT_TRUE(containsText(ranged->headers, "accept-ranges: none")) << ranged->headers;
@@ -304,11 +305,11 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeListingFixture(tree.directory(), true);
 
         const std::optional<ParsedResponse> reply = requestPath(*fixture, "/");
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         const std::size_t GETBodyLength = reply->body.size();
 
         const std::optional<std::string> headHeaders = requestHeadHeaders(*fixture, "/");
-        ASSERT_TRUE(headHeaders.has_value()) << "HEAD 的头部块都没读回来";
+        ASSERT_HAS_VALUE(headHeaders) << "HEAD 的头部块都没读回来";
         EXPECT_TRUE(headHeaders->starts_with("HTTP/1.1 200")) << headHeaders->substr(0, 60);
         EXPECT_EQ(parseContentLength(*headHeaders), GETBodyLength) << "HEAD 报的正文长度与同一路径 GET 的实际长度不一致";
     }
@@ -323,7 +324,7 @@ namespace AsynGyanis::Net
         const std::unique_ptr<RunningHttpServerFixture> fixture = makeListingFixture(tree.directory(), true);
 
         const std::optional<ParsedResponse> reply = requestPath(*fixture, "/");
-        ASSERT_TRUE(reply.has_value());
+        ASSERT_HAS_VALUE(reply);
         ASSERT_TRUE(reply->headers.starts_with("HTTP/1.1 200"));
         EXPECT_TRUE(containsText(reply->body, "另有 7 项未列出")) << reply->body.substr(0, 400);
         // 列出的条目数正好停在上界：多列一个就是没闸住（../ 那条不算条目，它带的是父路径）

@@ -8,6 +8,7 @@
 // - RejectsMalformedTokens / Base64UrlRejectsForeignAlphabet（形状与编码拒绝面）
 // - JwkRoundTripsExportedKeyMaterial（JWK 构造的公钥与原键同解，并能验真令牌）
 
+#include "ExpectedAssertions.h"
 #include "Net/Http/JwtVerifier.h"
 
 #include <openssl/core_names.h>
@@ -171,7 +172,7 @@ namespace AsynGyanis::Net
         const std::string tampered = base64UrlEncode(headerJson) + "." + base64UrlEncode(tamperedPayload) + "." + base64UrlEncode(signature);
 
         const std::optional<std::string> reason = verifyJwtRs256(tampered, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("签名校验失败"), std::string::npos) << *reason;
     }
 
@@ -184,7 +185,7 @@ namespace AsynGyanis::Net
 
         // 用别人的令牌对我们的公钥：验签失败（而不是「解析失败」——形状没毛病，只是签错了键）
         const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("签名校验失败"), std::string::npos) << *reason;
     }
 
@@ -193,7 +194,7 @@ namespace AsynGyanis::Net
         // exp = now - 61：偏差 60 秒已经吃完，必须拒
         const std::string expiredToken = makeToken(defaultHeader(), makePayload(kNowSeconds - 61, kNowSeconds - kOneHour, R"("https://api.example")"), signingKey.get());
         const std::optional<std::string> expiredReason = verifyJwtRs256(expiredToken, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(expiredReason.has_value());
+        ASSERT_HAS_VALUE(expiredReason);
         EXPECT_NE(expiredReason->find("已过期"), std::string::npos) << *expiredReason;
 
         // exp = now - 59：还在 60 秒偏差之内，放行——两侧各取一点，把边界钉住而不是只测「明显过期」
@@ -206,7 +207,7 @@ namespace AsynGyanis::Net
         // nbf = now + 61：还没生效
         const std::string earlyToken = makeToken(defaultHeader(), makePayload(kNowSeconds + kOneHour, kNowSeconds + 61, R"("https://api.example")"), signingKey.get());
         const std::optional<std::string> earlyReason = verifyJwtRs256(earlyToken, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(earlyReason.has_value());
+        ASSERT_HAS_VALUE(earlyReason);
         EXPECT_NE(earlyReason->find("尚未生效"), std::string::npos) << *earlyReason;
 
         // nbf = now + 59：在偏差之内，放行
@@ -223,7 +224,7 @@ namespace AsynGyanis::Net
         const std::string noneToken = signingInput + ".";
 
         const std::optional<std::string> reason = verifyJwtRs256(noneToken, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("不是 RS256"), std::string::npos) << *reason;
     }
 
@@ -234,7 +235,7 @@ namespace AsynGyanis::Net
         const std::string hs256Token  = makeToken(hs256Header, makePayload(kNowSeconds + kOneHour, kNowSeconds - kOneHour, R"("https://api.example")"), signingKey.get());
 
         const std::optional<std::string> reason = verifyJwtRs256(hs256Token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("不是 RS256"), std::string::npos) << *reason;
     }
 
@@ -245,7 +246,7 @@ namespace AsynGyanis::Net
         JwtClaimExpectations expectations;
         expectations.issuer                     = "https://another-issuer.example";
         const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), expectations, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("iss"), std::string::npos) << *reason;
     }
 
@@ -256,7 +257,7 @@ namespace AsynGyanis::Net
         JwtClaimExpectations expectations;
         expectations.audience                   = "https://other-api.example";
         const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), expectations, atUnixSeconds(kNowSeconds));
-        ASSERT_TRUE(reason.has_value());
+        ASSERT_HAS_VALUE(reason);
         EXPECT_NE(reason->find("aud"), std::string::npos) << *reason;
     }
 
@@ -274,7 +275,7 @@ namespace AsynGyanis::Net
         for (const auto &[name, token]: malformedCases)
         {
             const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
-            EXPECT_TRUE(reason.has_value()) << name << " 竟被放行";
+            EXPECT_HAS_VALUE(reason) << name << " 竟被放行";
         }
 
         // 空公钥是调用方用法错误：给原因（签名失败）而不是崩
@@ -293,7 +294,7 @@ namespace AsynGyanis::Net
         for (const std::string &sample: std::vector<std::string>{"", "M", "Ma", "Man", "hello world", std::string("\x00\xFF\x7F", 3)})
         {
             const std::optional<std::string> decoded = base64UrlDecode(base64UrlEncode(sample));
-            ASSERT_TRUE(decoded.has_value()) << sample;
+            ASSERT_HAS_VALUE(decoded) << sample;
             EXPECT_EQ(*decoded, sample);
         }
 

@@ -17,6 +17,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -283,7 +284,7 @@ namespace AsynGyanis::Net
         Core::Task<void> pendingThenGrantScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_TRUE(authorization.has_value()) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error();
             if (authorization.has_value())
             {
                 EXPECT_EQ(authorization->deviceCode, "dev-123");
@@ -301,7 +302,7 @@ namespace AsynGyanis::Net
             EXPECT_NE(deviceRequest.find("scope=read%20write"), std::string::npos) << deviceRequest;
 
             const auto token = co_await client.waitForToken(*authorization);
-            EXPECT_TRUE(token.has_value()) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error();
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-1");
@@ -331,7 +332,7 @@ namespace AsynGyanis::Net
         Core::Task<void> slowDownScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_TRUE(authorization.has_value()) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error();
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -339,7 +340,7 @@ namespace AsynGyanis::Net
             }
 
             const auto token = co_await client.waitForToken(*authorization);
-            EXPECT_TRUE(token.has_value()) << token.error();
+            EXPECT_HAS_VALUE(token) << token.error();
             if (token.has_value())
             {
                 EXPECT_EQ(token->accessToken, "at-slow");
@@ -355,7 +356,7 @@ namespace AsynGyanis::Net
         Core::Task<void> accessDeniedScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server, std::string &failure)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_TRUE(authorization.has_value()) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error();
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -378,7 +379,7 @@ namespace AsynGyanis::Net
         Core::Task<void> lifetimeScenario(Core::EventLoop &loop, OAuthDeviceCodeClient &client, MiniDeviceServer &server, std::string &failure)
         {
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_TRUE(authorization.has_value()) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error();
             if (!authorization.has_value())
             {
                 loop.stop();
@@ -423,7 +424,7 @@ namespace AsynGyanis::Net
             server.setTokenResponses({{"200 OK", R"({"token_type":"Bearer"})"}, {"200 OK", R"({"access_token":"at-x"})"}});
 
             const auto authorization = co_await client.requestDeviceAuthorization();
-            EXPECT_TRUE(authorization.has_value()) << authorization.error();
+            EXPECT_HAS_VALUE(authorization) << authorization.error();
             if (!authorization.has_value())
             {
                 loop.stop();

@@ -21,6 +21,7 @@
 #include "NetTestSupport.h"
 
 #include "AllocationProbe.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -183,7 +184,7 @@ namespace AsynGyanis::Net
         // 每条帧各自的载荷都要与解出的帧同域存活：视图字段指向的就是这些字节
         std::vector<std::uint8_t> streamStorage;
         const auto                stream = decodeSingle("0f0408020102", streamStorage);
-        ASSERT_TRUE(stream.has_value());
+        ASSERT_HAS_VALUE(stream);
         const auto &decodedStream = std::get<QuicStreamFrame>(*stream);
         EXPECT_EQ(decodedStream.streamId, 4U);
         EXPECT_EQ(decodedStream.offset, 8U);
@@ -192,7 +193,7 @@ namespace AsynGyanis::Net
 
         std::vector<std::uint8_t> acknowledgementStorage;
         const auto                acknowledgement = decodeSingle("020a0001020200", acknowledgementStorage);
-        ASSERT_TRUE(acknowledgement.has_value());
+        ASSERT_HAS_VALUE(acknowledgement);
         const auto &decodedAcknowledgement = std::get<QuicAcknowledgementFrame>(*acknowledgement);
         EXPECT_EQ(decodedAcknowledgement.largestAcknowledgedPacketNumber, 10U);
         EXPECT_FALSE(decodedAcknowledgement.hasEcnCounts);
@@ -201,20 +202,20 @@ namespace AsynGyanis::Net
 
         std::vector<std::uint8_t> delayStorage;
         const auto                withDelay = decodeSingle("0205412c0005", delayStorage);
-        ASSERT_TRUE(withDelay.has_value());
+        ASSERT_HAS_VALUE(withDelay);
         // 同一个 300 解回来还是 300：本层不拿指数去乘（那需要知道对端的 ack_delay_exponent）
         EXPECT_EQ(std::get<QuicAcknowledgementFrame>(*withDelay).acknowledgementDelay, 300U);
 
         std::vector<std::uint8_t> ecnStorage;
         const auto                withEcn = decodeSingle("0305000005010203", ecnStorage);
-        ASSERT_TRUE(withEcn.has_value());
+        ASSERT_HAS_VALUE(withEcn);
         const auto &decodedEcn = std::get<QuicAcknowledgementFrame>(*withEcn);
         EXPECT_TRUE(decodedEcn.hasEcnCounts);
         EXPECT_EQ(decodedEcn.ecnCounts, (std::array<std::uint64_t, 3>{1, 2, 3}));
 
         std::vector<std::uint8_t> identifierStorage;
         const auto                newConnectionId = decodeSingle("180100088394c8f03e515708a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", identifierStorage);
-        ASSERT_TRUE(newConnectionId.has_value());
+        ASSERT_HAS_VALUE(newConnectionId);
         const auto &decodedIdentifier = std::get<QuicNewConnectionIdFrame>(*newConnectionId);
         EXPECT_EQ(decodedIdentifier.sequenceNumber, 1U);
         EXPECT_EQ(decodedIdentifier.retirePriorTo, 0U);
@@ -224,7 +225,7 @@ namespace AsynGyanis::Net
 
         std::vector<std::uint8_t> closeStorage;
         const auto                close = decodeSingle("1c010603627965", closeStorage);
-        ASSERT_TRUE(close.has_value());
+        ASSERT_HAS_VALUE(close);
         const auto &decodedClose = std::get<QuicConnectionCloseFrame>(*close);
         EXPECT_EQ(decodedClose.errorCode, 1U);
         ASSERT_TRUE(decodedClose.triggeredFrameType.has_value());
@@ -233,12 +234,12 @@ namespace AsynGyanis::Net
         // 0x1d 形态线上不带 Frame Type：解出来必须是 nullopt，而不是「触发帧是 PADDING」
         std::vector<std::uint8_t> applicationCloseStorage;
         const auto                applicationClose = decodeSingle("1d0a00", applicationCloseStorage);
-        ASSERT_TRUE(applicationClose.has_value());
+        ASSERT_HAS_VALUE(applicationClose);
         EXPECT_FALSE(std::get<QuicConnectionCloseFrame>(*applicationClose).triggeredFrameType.has_value());
 
         std::vector<std::uint8_t> blockedStorage;
         const auto                blocked = decodeSingle("1707", blockedStorage);
-        ASSERT_TRUE(blocked.has_value());
+        ASSERT_HAS_VALUE(blocked);
         EXPECT_TRUE(std::get<QuicStreamsBlockedFrame>(*blocked).isUnidirectional);
     }
 
@@ -249,7 +250,7 @@ namespace AsynGyanis::Net
     {
         const auto payload = bytesOf("011043e80006000141");
         const auto frames  = decodeQuicFrames(payload);
-        ASSERT_TRUE(frames.has_value()) << frames.error().message;
+        ASSERT_HAS_VALUE(frames) << frames.error().message;
         ASSERT_EQ(frames->size(), 4U);
         EXPECT_TRUE(std::holds_alternative<QuicPingFrame>(frames->at(0)));
         EXPECT_TRUE(std::holds_alternative<QuicMaxDataFrame>(frames->at(1)));
@@ -266,7 +267,7 @@ namespace AsynGyanis::Net
     {
         std::vector<std::uint8_t> streamStorage;
         const auto                stream = decodeSingle("0804abcd", streamStorage);
-        ASSERT_TRUE(stream.has_value());
+        ASSERT_HAS_VALUE(stream);
         const auto &decodedStream = std::get<QuicStreamFrame>(*stream);
         EXPECT_EQ(decodedStream.streamId, 4U);
         EXPECT_EQ(decodedStream.offset, 0U) << "OFF 位为 0 时偏移就是 0（§19.8）";
@@ -316,7 +317,7 @@ namespace AsynGyanis::Net
             // 存储与帧同域，且声明在帧之前：帧里的视图指向这些字节
             std::vector<std::uint8_t> storage;
             const auto                frame = decodeSingle(hexadecimalText, storage);
-            ASSERT_TRUE(frame.has_value()) << "规范形态解不回：" << hexadecimalText;
+            ASSERT_HAS_VALUE(frame) << "规范形态解不回：" << hexadecimalText;
             EXPECT_EQ(encodeOne(*frame), makeBytesFromHex(hexadecimalText)) << "round-trip 变了字节：" << hexadecimalText;
         }
     }
@@ -335,7 +336,7 @@ namespace AsynGyanis::Net
         // 对照：同一非最短写法用在取值字段上必须照收，否则就把 §16 的「除帧类型外都合法」反着实现了
         std::vector<std::uint8_t> paddedStorage;
         const auto                paddedValue = decodeSingle("1080000003", paddedStorage);
-        ASSERT_TRUE(paddedValue.has_value());
+        ASSERT_HAS_VALUE(paddedValue);
         EXPECT_EQ(std::get<QuicMaxDataFrame>(*paddedValue).maximumData, 3U);
     }
 
@@ -424,7 +425,7 @@ namespace AsynGyanis::Net
     TEST(QuicFrame, EmptyPayloadDecodesToNoFrames)
     {
         const auto frames = decodeQuicFrames(bytesOf(""));
-        ASSERT_TRUE(frames.has_value()) << frames.error().message;
+        ASSERT_HAS_VALUE(frames) << frames.error().message;
         EXPECT_TRUE(frames->empty()) << "§12.4 要求载荷至少一帧，但那是上层判定";
     }
 

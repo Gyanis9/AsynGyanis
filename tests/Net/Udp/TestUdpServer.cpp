@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
@@ -327,7 +328,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.sendToServer(toBytes("ping")));
 
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "回环上没有收到应答：收包、交付或回包任一路没通";
+        ASSERT_HAS_VALUE(reply) << "回环上没有收到应答：收包、交付或回包任一路没通";
         EXPECT_EQ(toText(*reply), "ping") << "应答内容与请求不一致（交付的长度或缓冲的起点错了）";
 
         ASSERT_TRUE(fixture.waitUntil([&seenSourcePort] { return seenSourcePort.load(std::memory_order_acquire) != 0U; }));
@@ -360,7 +361,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.sendToServer({}));
 
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "零长报文没被交付给处理器（或应答没发出去）";
+        ASSERT_HAS_VALUE(reply) << "零长报文没被交付给处理器（或应答没发出去）";
         EXPECT_EQ(toText(*reply), "ack");
         ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().receivedDatagramCount == 1U; }));
     }
@@ -377,7 +378,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.sendToServer(toBytes("0123456789")));
 
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "小缓冲下这一条报文没有任何应答";
+        ASSERT_HAS_VALUE(reply) << "小缓冲下这一条报文没有任何应答";
         EXPECT_EQ(toText(*reply), "0123") << "交出去的不是缓冲放得下的那一段";
 
         ASSERT_TRUE(fixture.waitUntil([&seenPayloadLength] { return seenPayloadLength.load(std::memory_order_acquire) != 0U; }));
@@ -405,7 +406,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(fixture.sendToServer(toBytes("next")));
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "一条超限应答把整台服务带走了：第二次往返没有应答";
+        ASSERT_HAS_VALUE(reply) << "一条超限应答把整台服务带走了：第二次往返没有应答";
         EXPECT_EQ(toText(*reply), "next");
         ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().sentDatagramCount == 1U; }));
         EXPECT_EQ(fixture.server().stats().receivedDatagramCount, 2U);
@@ -433,7 +434,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(fixture.sendToServer(toBytes("second")));
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "处理器的异常穿出了收循环：第二次往返没有应答";
+        ASSERT_HAS_VALUE(reply) << "处理器的异常穿出了收循环：第二次往返没有应答";
         EXPECT_EQ(toText(*reply), "second");
         ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().receivedDatagramCount == 2U; }));
     }
@@ -451,7 +452,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(notice.value.value()) << "主动下发被判成失败";
 
         const std::optional<std::vector<std::uint8_t>> pushed = fixture.receiveFromServer();
-        ASSERT_TRUE(pushed.has_value()) << "服务端主动发的报文没到对端";
+        ASSERT_HAS_VALUE(pushed) << "服务端主动发的报文没到对端";
         EXPECT_EQ(toText(*pushed), "notice");
 
         const auto emptyPush = fixture.loopThread().runToCompletion(fixture.server().sendTo(fixture.peerAddress(), std::span<const std::uint8_t>{}));
@@ -459,7 +460,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(emptyPush.value.value_or(false)) << "零长报文被当成发送失败：本该交出去的空报文被判给了空指针";
 
         const std::optional<std::vector<std::uint8_t>> pushedEmpty = fixture.receiveFromServer();
-        ASSERT_TRUE(pushedEmpty.has_value()) << "零长报文没到对端";
+        ASSERT_HAS_VALUE(pushedEmpty) << "零长报文没到对端";
         EXPECT_EQ(pushedEmpty->size(), 0U);
 
         ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().sentDatagramCount == 2U; }));
@@ -545,7 +546,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(fixture.sendToServer(toBytes("taken")));
 
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "在接手来的套接字上没有应答";
+        ASSERT_HAS_VALUE(reply) << "在接手来的套接字上没有应答";
         EXPECT_EQ(toText(*reply), "taken");
         ASSERT_TRUE(fixture.waitUntil([&fixture] { return fixture.server().stats().receivedDatagramCount == 1U; }));
     }
@@ -645,7 +646,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(fixture.serverAddress().port(), servingPort) << "被拒的第二次启动换了端口";
         ASSERT_TRUE(fixture.sendToServer(toBytes("second")));
         const std::optional<std::vector<std::uint8_t>> reply = fixture.receiveFromServer();
-        ASSERT_TRUE(reply.has_value()) << "第二次 listen() 被拒之后原来的服务不再应答：那次启动并非无害";
+        ASSERT_HAS_VALUE(reply) << "第二次 listen() 被拒之后原来的服务不再应答：那次启动并非无害";
         EXPECT_EQ(toText(*reply), "second");
     }
 

@@ -8,6 +8,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Socket/InetAddress.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -70,7 +71,7 @@ TEST(QuicAddressValidationToken, RoundTripsForTheSameAddress)
     const QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> verified =
             codec.verify(std::span<const std::uint8_t>(token), peerAddressOn(44333), issuedAt() + std::chrono::seconds{1});
 
-    ASSERT_TRUE(verified.has_value()) << "自家签的令牌自家验不过，状态是 " << static_cast<int>(verified.error());
+    ASSERT_HAS_VALUE(verified) << "自家签的令牌自家验不过，状态是 " << static_cast<int>(verified.error());
     // 恢复出来的原始目的标识必须与签进去的那条逐字节相同：参数里的 ODCID 与 Initial 密钥都靠它
     EXPECT_EQ(verified->originalDestinationConnectionId, kOriginalDestinationConnectionId);
     EXPECT_EQ(verified->issuedAge, std::chrono::seconds{1});

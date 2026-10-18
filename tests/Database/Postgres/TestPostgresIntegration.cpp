@@ -63,6 +63,7 @@
 #include "Database/Queryable/TableSchema.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -1220,7 +1221,7 @@ namespace AsynGyanis::Database
             for (std::size_t rowIndex = 0; rowIndex < writtenTexts.size(); ++rowIndex)
             {
                 const auto parsed = AsynGyanis::Database::Decimal::tryParse(writtenTexts[rowIndex]);
-                ASSERT_TRUE(parsed.has_value()) << writtenTexts[rowIndex];
+                ASSERT_HAS_VALUE(parsed) << writtenTexts[rowIndex];
                 ASSERT_EQ(1, insertQuery.insert(IntegrationDecimalRow{.id = static_cast<std::int64_t>(rowIndex + 1), .amount = *parsed})) << "写不进去：" << writtenTexts[rowIndex];
             }
         }
@@ -1321,7 +1322,7 @@ namespace AsynGyanis::Database
 
             // 提交之前：写者自己的连接能读到，另一条连接读不到
             const std::optional<IntegrationTransactionRow> uncommittedRow = transactionalQuery.where(Column(&IntegrationTransactionRow::id, "id") == std::int64_t{1}).first();
-            ASSERT_TRUE(uncommittedRow.has_value());
+            ASSERT_HAS_VALUE(uncommittedRow);
             EXPECT_EQ(uncommittedRow->name, "事务提交");
             EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 0);
 
@@ -1332,7 +1333,7 @@ namespace AsynGyanis::Database
         // 提交之后：另一条连接立刻可见，且字段值完整
         EXPECT_EQ(countRows(*observer, kTransactionCommitTableName), 1);
         const std::optional<std::string> committedName = readTransactionRowName(*observer, kTransactionCommitTableName, 1);
-        ASSERT_TRUE(committedName.has_value());
+        ASSERT_HAS_VALUE(committedName);
         EXPECT_EQ(committedName.value(), "事务提交");
     }
 
@@ -1757,8 +1758,8 @@ namespace AsynGyanis::Database
 
         const std::optional<IntegrationVersionedRow> firstView  = firstSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
         const std::optional<IntegrationVersionedRow> secondView = secondSession.where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(firstView.has_value());
-        ASSERT_TRUE(secondView.has_value());
+        ASSERT_HAS_VALUE(firstView);
+        ASSERT_HAS_VALUE(secondView);
         ASSERT_EQ(firstView->version, 0);
         ASSERT_EQ(secondView->version, 0);
 
@@ -1781,7 +1782,7 @@ namespace AsynGyanis::Database
         }
 
         const std::optional<IntegrationVersionedRow> after = OrmQuery<IntegrationVersionedRow>(*pool).where(Column(&IntegrationVersionedRow::id, "id") == std::int64_t{1}).first();
-        ASSERT_TRUE(after.has_value());
+        ASSERT_HAS_VALUE(after);
         EXPECT_EQ(after->name, "会话一写的") << "先写的那份数据被覆盖了";
         EXPECT_EQ(after->version, 1) << "成功的这次没有把版本加一";
     }
@@ -2124,7 +2125,7 @@ namespace AsynGyanis::Database
 
         // 换个连接（新会话）经 ORM 读回来：偏移折叠之后必须还是原来那个瞬间
         const std::optional<IntegrationTemporalRow> readBack = OrmQuery<IntegrationTemporalRow>(*pool).first();
-        ASSERT_TRUE(readBack.has_value()) << "日期时间行读不回来";
+        ASSERT_HAS_VALUE(readBack) << "日期时间行读不回来";
         EXPECT_EQ(readBack->bookedAt, bookedAt) << "timestamptz 折回 UTC 之后不是写入的那个瞬间";
         EXPECT_EQ(readBack->localAt, localAt) << "timestamp 折回墙上时间之后不是写入的那个历法读数";
 

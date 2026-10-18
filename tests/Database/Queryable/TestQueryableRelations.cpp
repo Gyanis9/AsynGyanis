@@ -13,6 +13,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/Relations.h"
 #include "Database/Queryable/TableSchema.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -250,7 +251,7 @@ TEST_F(QueryableRelationsTest, LoadsThroughFirstAsWell)
 {
     const std::optional<RelationPost> post = Queryable<RelationPost>(*m_pool).where(Column(&RelationPost::id, "id") == std::int64_t{10}).then(&RelationPost::author).first();
 
-    ASSERT_TRUE(post.has_value());
+    ASSERT_HAS_VALUE(post);
     ASSERT_TRUE(post->author.has_value()) << "first() 没跑关系装载";
     EXPECT_EQ(post->author->name, "甲方");
 }
@@ -378,7 +379,7 @@ TEST_F(QueryableRelationsTest, IncludeThroughFirstKeepsEveryChildRow)
     const std::optional<RelationPost> post =
             Queryable<RelationPost>(*m_pool).orderBy(AsynGyanis::Database::Queryable::asc("id")).include(&RelationPost::author).include(&RelationPost::comments).first();
 
-    ASSERT_TRUE(post.has_value());
+    ASSERT_HAS_VALUE(post);
     ASSERT_TRUE(post->author.has_value()) << "first() 没跑 include 的多对一装载";
     EXPECT_EQ(post->author->name, "甲方");
     // first() 对带折叠的 include 不压 LIMIT：压到 1 会把父行的第二条评论截掉

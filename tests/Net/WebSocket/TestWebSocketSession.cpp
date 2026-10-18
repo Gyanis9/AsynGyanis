@@ -12,6 +12,7 @@
 #include "HttpTestSupport.h"
 
 #include "Core/EventLoop/Timer.h"
+#include "ExpectedAssertions.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpServerStats.h"
 #include "Net/WebSocket/WebSocketUpgradePolicy.h"
@@ -838,7 +839,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
         const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
-        ASSERT_TRUE(observedCode.has_value()) << "对端明明交了状态码，业务却读不到";
+        ASSERT_HAS_VALUE(observedCode) << "对端明明交了状态码，业务却读不到";
         EXPECT_EQ(*observedCode, kWebSocketPolicyViolationCode) << "业务读到的该是对端那个号码，而不是本侧回的";
         EXPECT_EQ(record->closeReasonSnapshot(), "policy");
     }
@@ -896,7 +897,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
         const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
-        ASSERT_TRUE(observedCode.has_value());
+        ASSERT_HAS_VALUE(observedCode);
         EXPECT_EQ(*observedCode, 1015) << "交回的是对端原本那个号码";
         EXPECT_EQ(record->closeReasonSnapshot(), "reserved");
     }
@@ -929,7 +930,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(HttpTestSupport::waitForCondition([record] { return record->closeObserved(); }, kWaitTimeout)) << "业务处理器没走到收口之后";
         const std::optional<std::uint16_t> observedCode = record->closeCodeSnapshot();
-        ASSERT_TRUE(observedCode.has_value()) << "状态码本身合法，该交回业务";
+        ASSERT_HAS_VALUE(observedCode) << "状态码本身合法，该交回业务";
         EXPECT_EQ(*observedCode, kWebSocketNormalClosureCode);
         EXPECT_TRUE(record->closeReasonSnapshot().empty()) << "非 UTF-8 的原因不该交给业务";
     }
@@ -1622,7 +1623,7 @@ namespace AsynGyanis::Net
         Core::Task<std::optional<WebSocketMessage>> receiveTask = peer.receive();
         receiveTask.handle().resume();
         const std::optional<WebSocketMessage> delivered = receiveTask.await_resume();
-        ASSERT_TRUE(delivered.has_value()) << "Pong 之后的那条文本应照常交付";
+        ASSERT_HAS_VALUE(delivered) << "Pong 之后的那条文本应照常交付";
         EXPECT_EQ(delivered->payload, "still-here");
         EXPECT_EQ(notifierCallCount, 2) << "撤掉看门狗没通知会话，被刷短的空闲截止还得不到还原";
         EXPECT_EQ(peer.idleBudgetWithin(kPhaseTimeout, std::chrono::steady_clock::now()), kPhaseTimeout);
@@ -1682,7 +1683,7 @@ namespace AsynGyanis::Net
         Core::Task<std::optional<WebSocketMessage>> receiveTask = peer.receive();
         receiveTask.handle().resume();
         const std::optional<WebSocketMessage> delivered = receiveTask.await_resume();
-        ASSERT_TRUE(delivered.has_value()) << "Pong 之后的那条文本应照常交付";
+        ASSERT_HAS_VALUE(delivered) << "Pong 之后的那条文本应照常交付";
         EXPECT_EQ(delivered->payload, "still-here") << "Pong 被当成消息交给了业务";
         EXPECT_EQ(notifierCallCount, 0) << "没有在途心跳时撤表也刷了通知：对端可用一帧 Pong 把本端的空闲截止往后推";
     }
@@ -1867,7 +1868,7 @@ namespace AsynGyanis::Net
         const std::string_view wirePayload(accumulated.data() + frameOffset + 2U, expectedPayloadLength);
         EXPECT_FALSE(wirePayload.ends_with(std::string("\x00\x00\xFF\xFF", 4))) << "四字节空块尾不该出现在线上负载里（RFC 7692 §7.2.1）";
         const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, WebSocketFrameDecoder::kMaximumMessagePayloadLength);
-        ASSERT_TRUE(inflated.has_value()) << "服务端的回帧解不开";
+        ASSERT_HAS_VALUE(inflated) << "服务端的回帧解不开";
         EXPECT_EQ(*inflated, longPayload);
 
         client.closeNow();
@@ -1943,7 +1944,7 @@ namespace AsynGyanis::Net
             // 按对端声明的那一位解：解不开就说明本端发的是超出该窗口的字节，而那正是对端会当场报错的形状
             const std::string_view           wirePayload(frameBytes.data() + 4U, wireLength);
             const std::optional<std::string> inflated = inflateWebSocketMessage(wirePayload, payload.size() + 1024, 8);
-            ASSERT_TRUE(inflated.has_value()) << "置了 RSV1 却按协商窗口解不开";
+            ASSERT_HAS_VALUE(inflated) << "置了 RSV1 却按协商窗口解不开";
             EXPECT_EQ(*inflated, payload);
         } else
         {

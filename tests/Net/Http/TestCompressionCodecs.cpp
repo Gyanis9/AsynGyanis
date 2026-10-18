@@ -1,5 +1,6 @@
 // zstd 与 brotli 压缩构件的单元测试：压得进去也解得回来、空输入、重复内容变小、越界档位被夹取 与 TestGzip 同一判据：断言一律用各自库解回来逐字节比较——只比大小无法发现
 // 「压出来的字节解不开」，而那正是响应压缩最怕的事。
+#include "ExpectedAssertions.h"
 #include "Net/Http/Compression.h"
 
 #include <gtest/gtest.h>
@@ -74,10 +75,10 @@ namespace AsynGyanis::Net
         const std::string original = "AsynGyanis 响应压缩：这是一段中文与 ASCII 混排的正文，用来验证往返一致性。";
 
         const std::optional<std::string> compressed = zstdCompress(original);
-        ASSERT_TRUE(compressed.has_value()) << "压缩返回失败";
+        ASSERT_HAS_VALUE(compressed) << "压缩返回失败";
 
         const std::optional<std::string> restored = unzstd(*compressed, original.size());
-        ASSERT_TRUE(restored.has_value()) << "zstd 压出来的字节解不开";
+        ASSERT_HAS_VALUE(restored) << "zstd 压出来的字节解不开";
         EXPECT_EQ(*restored, original);
     }
 
@@ -87,10 +88,10 @@ namespace AsynGyanis::Net
     TEST(CompressionCodecs, ZstdHandlesEmptyInput)
     {
         const std::optional<std::string> compressed = zstdCompress("");
-        ASSERT_TRUE(compressed.has_value()) << "空输入的压缩返回失败";
+        ASSERT_HAS_VALUE(compressed) << "空输入的压缩返回失败";
 
         const std::optional<std::string> restored = unzstd(*compressed, 0);
-        ASSERT_TRUE(restored.has_value()) << "空输入的 zstd 帧解不开";
+        ASSERT_HAS_VALUE(restored) << "空输入的 zstd 帧解不开";
         EXPECT_TRUE(restored->empty());
     }
 
@@ -102,7 +103,7 @@ namespace AsynGyanis::Net
         const std::string body = makeRepetitiveBody();
 
         const std::optional<std::string> compressed = zstdCompress(body);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
         EXPECT_LT(compressed->size(), body.size() / 4) << "重复内容的压缩率异常";
         EXPECT_EQ(*unzstd(*compressed, body.size()), body);
     }
@@ -117,16 +118,16 @@ namespace AsynGyanis::Net
         const std::string                repeated = "复用的 ZSTD_CCtx 不得把上一条响应的状态带进这一条：中文 + ASCII 混排正文。";
         const std::optional<std::string> first    = zstdCompress(repeated);
         const std::optional<std::string> second   = zstdCompress(repeated);
-        ASSERT_TRUE(first.has_value());
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(first);
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明每次 compressCCtx 自复位）";
 
         for (const std::string &payload: {std::string("短"), std::string(), std::string(2048, 'k')})
         {
             const std::optional<std::string> compressed = zstdCompress(payload);
-            ASSERT_TRUE(compressed.has_value());
+            ASSERT_HAS_VALUE(compressed);
             const std::optional<std::string> restored = unzstd(*compressed, payload.size());
-            ASSERT_TRUE(restored.has_value());
+            ASSERT_HAS_VALUE(restored);
             EXPECT_EQ(*restored, payload);
         }
     }
@@ -139,10 +140,10 @@ namespace AsynGyanis::Net
         const std::string original = "AsynGyanis 响应压缩：这是一段中文与 ASCII 混排的正文，用来验证往返一致性。";
 
         const std::optional<std::string> compressed = brotliCompress(original);
-        ASSERT_TRUE(compressed.has_value()) << "压缩返回失败";
+        ASSERT_HAS_VALUE(compressed) << "压缩返回失败";
 
         const std::optional<std::string> restored = unbrotli(*compressed, original.size());
-        ASSERT_TRUE(restored.has_value()) << "brotli 压出来的字节解不开";
+        ASSERT_HAS_VALUE(restored) << "brotli 压出来的字节解不开";
         EXPECT_EQ(*restored, original);
     }
 
@@ -152,10 +153,10 @@ namespace AsynGyanis::Net
     TEST(CompressionCodecs, BrotliHandlesEmptyInput)
     {
         const std::optional<std::string> compressed = brotliCompress("");
-        ASSERT_TRUE(compressed.has_value()) << "空输入的压缩返回失败";
+        ASSERT_HAS_VALUE(compressed) << "空输入的压缩返回失败";
 
         const std::optional<std::string> restored = unbrotli(*compressed, 0);
-        ASSERT_TRUE(restored.has_value()) << "空输入的 brotli 流解不开";
+        ASSERT_HAS_VALUE(restored) << "空输入的 brotli 流解不开";
         EXPECT_TRUE(restored->empty());
     }
 
@@ -167,7 +168,7 @@ namespace AsynGyanis::Net
         const std::string body = makeRepetitiveBody();
 
         const std::optional<std::string> compressed = brotliCompress(body);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
         EXPECT_LT(compressed->size(), body.size() / 4) << "重复内容的压缩率异常";
         EXPECT_EQ(*unbrotli(*compressed, body.size()), body);
     }
@@ -180,11 +181,11 @@ namespace AsynGyanis::Net
         const std::string original = "档位越界只应影响压缩率，不应让整次压缩失败。";
 
         const std::optional<std::string> zstdOutput = zstdCompress(original, 999);
-        ASSERT_TRUE(zstdOutput.has_value()) << "zstd 越界级别应被夹取而不是失败";
+        ASSERT_HAS_VALUE(zstdOutput) << "zstd 越界级别应被夹取而不是失败";
         EXPECT_EQ(*unzstd(*zstdOutput, original.size()), original);
 
         const std::optional<std::string> brotliOutput = brotliCompress(original, 999);
-        ASSERT_TRUE(brotliOutput.has_value()) << "brotli 越界质量应被夹取而不是失败";
+        ASSERT_HAS_VALUE(brotliOutput) << "brotli 越界质量应被夹取而不是失败";
         EXPECT_EQ(*unbrotli(*brotliOutput, original.size()), original);
     }
 } // namespace AsynGyanis::Net

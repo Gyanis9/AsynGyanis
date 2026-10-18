@@ -11,6 +11,7 @@
 #include "Database/Sqlite/SqliteConnection.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -178,11 +179,11 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(connection.connect()) << connection.lastError();
 
         const auto created = connection.executeChecked("CREATE TABLE probe (n INTEGER)");
-        ASSERT_TRUE(created.has_value()) << created.error().message;
+        ASSERT_HAS_VALUE(created) << created.error().message;
         ASSERT_NE(*created, nullptr);
 
         const auto selected = connection.executeChecked("SELECT 41 + 1");
-        ASSERT_TRUE(selected.has_value()) << selected.error().message;
+        ASSERT_HAS_VALUE(selected) << selected.error().message;
         ASSERT_NE(*selected, nullptr);
         ASSERT_TRUE((*selected)->next());
         EXPECT_EQ(TestSupport::asInteger((*selected)->getValue(0U)), 42);

@@ -12,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
 namespace AsynGyanis::Platform
@@ -169,12 +170,12 @@ namespace AsynGyanis::Platform
         const std::filesystem::path targetPath = temporaryDirectory.path() / "asset.bin";
 
         const std::optional<FileBasicInfo> byPath = queryFileBasicInfo(targetPath);
-        ASSERT_TRUE(byPath.has_value());
+        ASSERT_HAS_VALUE(byPath);
 
         const MemoryMappedFile mappedFile = MemoryMappedFile::open(targetPath);
         ASSERT_TRUE(mappedFile.isValid()) << mappedFile.lastError().message();
         const std::optional<FileBasicInfo> mappedAs = mappedFile.openedFileInfo();
-        ASSERT_TRUE(mappedAs.has_value());
+        ASSERT_HAS_VALUE(mappedAs);
         EXPECT_TRUE(mappedAs->isRegularFile);
         EXPECT_EQ(mappedAs->sizeBytes, byPath->sizeBytes);
         EXPECT_EQ(mappedAs->lastWriteSeconds, byPath->lastWriteSeconds);

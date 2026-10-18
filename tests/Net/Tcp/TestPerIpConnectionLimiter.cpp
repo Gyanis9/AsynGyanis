@@ -1,4 +1,5 @@
 // PerIpConnectionLimiter 单元测试：限额开关、按来源独立计数、凭据的移动语义与多线程下的不变式
+#include "ExpectedAssertions.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>
@@ -32,7 +33,7 @@ namespace AsynGyanis::Net
         for (int index = 0; index < 8; ++index)
         {
             std::optional<PerIpConnectionLimiter::Lease> lease = limiter.tryAcquire(kFirstSource);
-            ASSERT_TRUE(lease.has_value()) << "限额关闭时不应拒绝任何连接";
+            ASSERT_HAS_VALUE(lease) << "限额关闭时不应拒绝任何连接";
             // 空壳凭据：析构不归还，调用方因此不必区分「有保护」与「没保护」两条路径
             EXPECT_FALSE(lease->isTracking());
             leases.push_back(std::move(*lease));
@@ -51,11 +52,11 @@ namespace AsynGyanis::Net
         PerIpConnectionLimiter limiter(2);
 
         const std::optional<PerIpConnectionLimiter::Lease> first = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(first.has_value());
+        ASSERT_HAS_VALUE(first);
         EXPECT_TRUE(first->isTracking());
 
         const std::optional<PerIpConnectionLimiter::Lease> second = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(limiter.activeCountFor(kFirstSource), 2u);
 
         EXPECT_FALSE(limiter.tryAcquire(kFirstSource).has_value()) << "第三条应被拒";
@@ -65,7 +66,7 @@ namespace AsynGyanis::Net
         // 凭据必须存进变量——它就是「占着名额」这件事本身，写成临时对象会在语句结束时立即归还，
         // 后面的计数断言就会看到 0（这不是缺陷，正是 RAII 该有的样子）
         const std::optional<PerIpConnectionLimiter::Lease> otherSourceLease = limiter.tryAcquire(kSecondSource);
-        ASSERT_TRUE(otherSourceLease.has_value());
+        ASSERT_HAS_VALUE(otherSourceLease);
         EXPECT_EQ(limiter.activeCountFor(kSecondSource), 1u);
     }
 
@@ -78,13 +79,13 @@ namespace AsynGyanis::Net
 
         {
             const std::optional<PerIpConnectionLimiter::Lease> lease = limiter.tryAcquire(kFirstSource);
-            ASSERT_TRUE(lease.has_value());
+            ASSERT_HAS_VALUE(lease);
             EXPECT_FALSE(limiter.tryAcquire(kFirstSource).has_value());
         }
 
         EXPECT_EQ(limiter.activeCountFor(kFirstSource), 0u) << "计数归零后应删掉条目";
         const std::optional<PerIpConnectionLimiter::Lease> reacquired = limiter.tryAcquire(kFirstSource);
-        EXPECT_TRUE(reacquired.has_value()) << "归还之后应能重新占用";
+        EXPECT_HAS_VALUE(reacquired) << "归还之后应能重新占用";
     }
 
     /**
@@ -95,7 +96,7 @@ namespace AsynGyanis::Net
         PerIpConnectionLimiter limiter(1);
 
         std::optional<PerIpConnectionLimiter::Lease> source = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(source.has_value());
+        ASSERT_HAS_VALUE(source);
 
         PerIpConnectionLimiter::Lease moved = std::move(*source);
         source.reset();
@@ -121,7 +122,7 @@ namespace AsynGyanis::Net
         {
             PerIpConnectionLimiter limiter(4);
             lease = limiter.tryAcquire(kFirstSource);
-            ASSERT_TRUE(lease.has_value());
+            ASSERT_HAS_VALUE(lease);
         }
 
         // 限额对象已析构，此处归还若访问了已释放的内存，ASan 会直接报出来
@@ -214,7 +215,7 @@ namespace AsynGyanis::Net
         PerIpConnectionLimiter limiter(1);
 
         const std::optional<PerIpConnectionLimiter::Lease> mappedLease = limiter.tryAcquire("::ffff:10.0.0.1");
-        ASSERT_TRUE(mappedLease.has_value());
+        ASSERT_HAS_VALUE(mappedLease);
 
         EXPECT_FALSE(limiter.tryAcquire("10.0.0.1").has_value()) << "同一来源换一种写法就被当成另一个来源，上限翻倍";
         // 大写前缀也来自同一套语义（IPv6 文本按规范不区分大小写），不能因为写法差异分键
@@ -235,22 +236,22 @@ namespace AsynGyanis::Net
         PerIpConnectionLimiter limiter(1);
 
         std::optional<PerIpConnectionLimiter::Lease> mappedLease = limiter.tryAcquire("::ffff:10.0.0.2");
-        ASSERT_TRUE(mappedLease.has_value());
+        ASSERT_HAS_VALUE(mappedLease);
         mappedLease.reset();
         EXPECT_EQ(limiter.activeCountFor("10.0.0.2"), 0u) << "凭据里保管的应是规范化后的键，否则归还找不回那一格";
 
         const std::optional<PerIpConnectionLimiter::Lease> plainLease = limiter.tryAcquire("10.0.0.2");
-        ASSERT_TRUE(plainLease.has_value()) << "名额归还后同一来源换写法应能重新进入";
+        ASSERT_HAS_VALUE(plainLease) << "名额归还后同一来源换写法应能重新进入";
 
         // 非点分的尾段不折：`::ffff:1:2` 与 `1:2` 因此是两个键，前者也不会挤掉后者的名额
         const std::optional<PerIpConnectionLimiter::Lease> oddLease = limiter.tryAcquire("::ffff:1:2");
-        ASSERT_TRUE(oddLease.has_value());
+        ASSERT_HAS_VALUE(oddLease);
         EXPECT_EQ(limiter.activeCountFor("::ffff:1:2"), 1u) << "非法点分尾段被折掉了";
         EXPECT_EQ(limiter.activeCountFor("1:2"), 0u);
 
         // 超出十进制取值范围的也不算 IPv4：`999.0.0.1` 与点分本体是两种不同写法，不该并格
         const std::optional<PerIpConnectionLimiter::Lease> outOfRangeLease = limiter.tryAcquire("::ffff:999.0.0.1");
-        ASSERT_TRUE(outOfRangeLease.has_value());
+        ASSERT_HAS_VALUE(outOfRangeLease);
         EXPECT_EQ(limiter.activeCountFor("::ffff:999.0.0.1"), 1u);
         EXPECT_EQ(limiter.activeCountFor("999.0.0.1"), 0u);
     }
@@ -269,9 +270,9 @@ namespace AsynGyanis::Net
         PerIpConnectionLimiter limiter(2);
 
         std::optional<PerIpConnectionLimiter::Lease> first = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(first.has_value());
+        ASSERT_HAS_VALUE(first);
         std::optional<PerIpConnectionLimiter::Lease> second = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(limiter.rejectedConnectionCount(), 0u) << "放行的连接不该被算成挡下的";
 
         // 第 3、4 次都超限：两条都要留数
@@ -281,14 +282,14 @@ namespace AsynGyanis::Net
 
         // 另一个来源照样放行，不牵连计数
         const std::optional<PerIpConnectionLimiter::Lease> otherSource = limiter.tryAcquire(kSecondSource);
-        ASSERT_TRUE(otherSource.has_value());
+        ASSERT_HAS_VALUE(otherSource);
         EXPECT_EQ(limiter.rejectedConnectionCount(), 2u);
 
         // 归还一个名额之后又能进，但累计的拒绝数不往回扣
         first.reset();
         EXPECT_EQ(limiter.rejectedConnectionCount(), 2u) << "归还名额把拒绝计数冲掉了：抓取侧就没法算差值";
         const std::optional<PerIpConnectionLimiter::Lease> afterRelease = limiter.tryAcquire(kFirstSource);
-        ASSERT_TRUE(afterRelease.has_value()) << "归还之后应当能再占上";
+        ASSERT_HAS_VALUE(afterRelease) << "归还之后应当能再占上";
         EXPECT_EQ(limiter.rejectedConnectionCount(), 2u);
 
         PerIpConnectionLimiter disabled(0);

@@ -1,5 +1,6 @@
 // Gzip 单元测试：压得进去也解得回来、空输入、不可压输入、重复内容确实变小 断言一律走 zlib 的 inflate 解开再逐字节比较：只比大小无法发现「压出来的字节解不开」，
 // 而那正是响应压缩最怕的事（对端拿到一串解不开的正文）。
+#include "ExpectedAssertions.h"
 #include "Net/Http/Gzip.h"
 
 #include <gtest/gtest.h>
@@ -68,10 +69,10 @@ namespace AsynGyanis::Net
         const std::string original = "AsynGyanis 响应压缩：这是一段中文与 ASCII 混排的正文，用来验证往返一致性。";
 
         const std::optional<std::string> compressed = gzipCompress(original);
-        ASSERT_TRUE(compressed.has_value()) << "压缩返回失败";
+        ASSERT_HAS_VALUE(compressed) << "压缩返回失败";
 
         const std::optional<std::string> restored = gunzip(*compressed);
-        ASSERT_TRUE(restored.has_value()) << "压缩结果解不开";
+        ASSERT_HAS_VALUE(restored) << "压缩结果解不开";
         EXPECT_EQ(*restored, original);
     }
 
@@ -86,8 +87,8 @@ namespace AsynGyanis::Net
         const std::string                repeated = "复用的 deflate 流不得把上一条响应的字典带进这一条：中文 + ASCII 混排正文。";
         const std::optional<std::string> first    = gzipCompress(repeated);
         const std::optional<std::string> second   = gzipCompress(repeated);
-        ASSERT_TRUE(first.has_value());
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(first);
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(*first, *second) << "同一输入连压两次必须逐字节一致（证明按调用复位、无跨调用字典残留）";
 
         // 多种输入交错压缩 + gunzip，逐条往返一致，覆盖「不同长度复用同一条流」
@@ -95,9 +96,9 @@ namespace AsynGyanis::Net
         for (const std::string &payload: payloads)
         {
             const std::optional<std::string> reCompressed = gzipCompress(payload);
-            ASSERT_TRUE(reCompressed.has_value());
+            ASSERT_HAS_VALUE(reCompressed);
             const std::optional<std::string> restoredPayload = gunzip(*reCompressed);
-            ASSERT_TRUE(restoredPayload.has_value());
+            ASSERT_HAS_VALUE(restoredPayload);
             EXPECT_EQ(*restoredPayload, payload);
         }
     }
@@ -117,21 +118,21 @@ namespace AsynGyanis::Net
         const std::string original = "压缩级别写错只应影响压缩率，不应让整次压缩失败。";
 
         const std::optional<std::string> tooHigh = gzipCompress(original, 99);
-        ASSERT_TRUE(tooHigh.has_value()) << "级别 99 应被夹取到 9 而不是失败";
+        ASSERT_HAS_VALUE(tooHigh) << "级别 99 应被夹取到 9 而不是失败";
         EXPECT_EQ(gunzip(*tooHigh), original);
 
         const std::optional<std::string> tooLow = gzipCompress(original, -5);
-        ASSERT_TRUE(tooLow.has_value()) << "级别 -5 应被夹取到 1 而不是失败";
+        ASSERT_HAS_VALUE(tooLow) << "级别 -5 应被夹取到 1 而不是失败";
         EXPECT_EQ(gunzip(*tooLow), original);
     }
 
     TEST(GzipTest, HandlesEmptyInput)
     {
         const std::optional<std::string> compressed = gzipCompress("");
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         const std::optional<std::string> restored = gunzip(*compressed);
-        ASSERT_TRUE(restored.has_value());
+        ASSERT_HAS_VALUE(restored);
         EXPECT_TRUE(restored->empty());
     }
 
@@ -151,10 +152,10 @@ namespace AsynGyanis::Net
         }
 
         const std::optional<std::string> compressed = gzipCompress(randomBytes);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         const std::optional<std::string> restored = gunzip(*compressed);
-        ASSERT_TRUE(restored.has_value());
+        ASSERT_HAS_VALUE(restored);
         EXPECT_EQ(*restored, randomBytes);
     }
 
@@ -166,7 +167,7 @@ namespace AsynGyanis::Net
         const std::string repetitive(64 * 1024, 'A');
 
         const std::optional<std::string> compressed = gzipCompress(repetitive);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
         EXPECT_LT(compressed->size(), repetitive.size() / 10) << "重复内容几乎没压下去，压缩链路可能没生效";
         EXPECT_EQ(*gunzip(*compressed), repetitive);
     }
@@ -184,9 +185,9 @@ namespace AsynGyanis::Net
         for (const std::string_view text: {std::string_view{"hello decompressed world"}, std::string_view{"second payload"}, std::string_view{"third"}})
         {
             const std::optional<std::string> compressed = gzipCompress(text);
-            ASSERT_TRUE(compressed.has_value());
+            ASSERT_HAS_VALUE(compressed);
             const auto restored = inflateHttpBody(*compressed);
-            ASSERT_TRUE(restored.has_value()) << restored.error();
+            ASSERT_HAS_VALUE(restored) << restored.error();
             EXPECT_EQ(*restored, text);
         }
     }
@@ -208,7 +209,7 @@ namespace AsynGyanis::Net
                                      static_cast<char>(9),   static_cast<char>(123)};
 
         const auto restored = inflateHttpBody(zlibStream);
-        ASSERT_TRUE(restored.has_value()) << restored.error();
+        ASSERT_HAS_VALUE(restored) << restored.error();
         EXPECT_EQ(*restored, "hello decompressed world");
     }
 
@@ -227,7 +228,7 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(garbage.has_value());
 
         const std::optional<std::string> compressed = gzipCompress(std::string_view{"a rather long payload to truncate"});
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
         const auto truncated = inflateHttpBody(compressed->substr(0, compressed->size() - 3));
         ASSERT_FALSE(truncated.has_value()) << "被截断的流必须报错，实际交回了 " << (truncated.has_value() ? truncated->size() : 0) << " 字节";
     }
@@ -239,7 +240,7 @@ namespace AsynGyanis::Net
     {
         const std::string                repetitive(256 * 1024, 'A');
         const std::optional<std::string> compressed = gzipCompress(repetitive);
-        ASSERT_TRUE(compressed.has_value());
+        ASSERT_HAS_VALUE(compressed);
 
         const auto overLimit = inflateHttpBody(*compressed, 4096U);
         ASSERT_FALSE(overLimit.has_value());
@@ -247,7 +248,7 @@ namespace AsynGyanis::Net
 
         // 同一份输入，上界给够就能解：证明上一条的失败来自界限而不是数据
         const auto withinLimit = inflateHttpBody(*compressed, repetitive.size());
-        ASSERT_TRUE(withinLimit.has_value()) << withinLimit.error();
+        ASSERT_HAS_VALUE(withinLimit) << withinLimit.error();
         EXPECT_EQ(withinLimit->size(), repetitive.size());
     }
 } // namespace AsynGyanis::Net

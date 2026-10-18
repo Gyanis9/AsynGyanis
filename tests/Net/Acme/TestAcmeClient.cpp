@@ -8,6 +8,7 @@
 #include "Base/Log/Sinks/LogSink.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
+#include "ExpectedAssertions.h"
 #include "Net/Acme/AcmeClient.h"
 #include "Net/Http/HttpServer.h"
 #include "Net/Http/Router.h"
@@ -250,7 +251,7 @@ namespace AsynGyanis::Net
         void SetUp() override
         {
             auto key = AcmeKeyPair::generate(AcmeKeyAlgorithm::Es256);
-            ASSERT_TRUE(key.has_value()) << key.error().message;
+            ASSERT_HAS_VALUE(key) << key.error().message;
             m_accountKey = std::make_unique<AcmeKeyPair>(std::move(*key));
         }
 

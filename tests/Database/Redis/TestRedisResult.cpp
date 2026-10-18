@@ -11,6 +11,7 @@
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/DatabaseValue.h"
 #include "Database/Redis/RedisResult.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -344,7 +345,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr) << "含内嵌 '\\0' 的 RESP 文本解析失败，用例前置条件不成立";
 
         const std::optional<std::string> payload = textAt(*result, 0);
-        ASSERT_TRUE(payload.has_value());
+        ASSERT_HAS_VALUE(payload);
 
         // 长度保住即证明按 str + len 取值：内嵌 '\0' 之后的字节还在，没有在第一个 '\0' 处被截断
         EXPECT_EQ(payload->size(), 5u);
@@ -412,7 +413,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
 
         const std::optional<std::vector<std::string>> nestedList = listAt(*result, 0);
-        ASSERT_TRUE(nestedList.has_value());
+        ASSERT_HAS_VALUE(nestedList);
 
         EXPECT_EQ(result->columnCount(), 2u);
         EXPECT_EQ(*nestedList, (std::vector<std::string>{"7", "8"}));
@@ -430,7 +431,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
 
         const std::optional<std::vector<std::string>> bracketed = listAt(*result, 0);
-        ASSERT_TRUE(bracketed.has_value());
+        ASSERT_HAS_VALUE(bracketed);
         EXPECT_EQ(*bracketed, (std::vector<std::string>{"[7, 8]"}));
     }
 
@@ -444,7 +445,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr);
 
         const std::optional<std::vector<std::string>> withHole = listAt(*result, 0);
-        ASSERT_TRUE(withHole.has_value());
+        ASSERT_HAS_VALUE(withHole);
 
         EXPECT_EQ(result->columnCount(), 2u);
         EXPECT_EQ(*withHole, (std::vector<std::string>{"foo", ""}));
@@ -508,7 +509,7 @@ namespace AsynGyanis::Database
 
         EXPECT_EQ(result->columnCount(), 1u) << "map 被拆成了交替的两列，配对关系又得调用方自己猜";
         const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
-        ASSERT_TRUE(entries.has_value()) << "map 没有按哈希备选交出";
+        ASSERT_HAS_VALUE(entries) << "map 没有按哈希备选交出";
         EXPECT_EQ(entries->size(), 2u);
         EXPECT_EQ(entries->at("alpha"), "1");
         EXPECT_EQ(entries->at("beta"), "2.5");
@@ -529,7 +530,7 @@ namespace AsynGyanis::Database
         EXPECT_EQ(result->columnCount(), 1u);
         EXPECT_FALSE(result->isEmpty()) << "空哈希被读成了「没有回复」";
         const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
-        ASSERT_TRUE(entries.has_value());
+        ASSERT_HAS_VALUE(entries);
         EXPECT_TRUE(entries->empty());
     }
 
@@ -546,7 +547,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(result, nullptr) << "RESP 文本解析失败，用例前置条件不成立";
 
         const std::optional<std::unordered_map<std::string, std::string>> entries = hashAt(*result, 0);
-        ASSERT_TRUE(entries.has_value());
+        ASSERT_HAS_VALUE(entries);
         EXPECT_EQ(entries->size(), 2u) << "配对关系错位：多出一项或少了一项";
         EXPECT_EQ(entries->at("count"), "7") << "整数值没按十进制文本留住";
         EXPECT_EQ(entries->at("members"), "[a, b]") << "嵌套容器作为值时层级压平，但成员不能丢";

@@ -12,6 +12,7 @@
 
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -93,18 +94,18 @@ namespace AsynGyanis::Net
     {
         auto       packet  = buildAppendixA2ProtectedPacket();
         const auto decoded = decodeQuicPacketHeader(packet, 8);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         QuicPacketHeader header = *decoded;
 
         const auto sample = extractQuicHeaderProtectionSample(packet, header);
-        ASSERT_TRUE(sample.has_value()) << sample.error().message;
+        ASSERT_HAS_VALUE(sample) << sample.error().message;
         // 期望值直接取 RFC 自己给的样本，而不是复述实现的偏移
         EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()), makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc9b")) << "样本起点应是包号偏移 18 + 4";
 
         const auto keys              = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
         const auto mask              = generateQuicHeaderProtectionMask(keys, *sample);
         const auto unmaskedFirstByte = removeQuicHeaderProtection(packet, header, mask);
-        ASSERT_TRUE(unmaskedFirstByte.has_value()) << unmaskedFirstByte.error().message;
+        ASSERT_HAS_VALUE(unmaskedFirstByte) << unmaskedFirstByte.error().message;
         EXPECT_EQ(*unmaskedFirstByte, 0xc3);
 
         const std::vector<std::uint8_t> headerBytes(packet.begin(), packet.begin() + 22);
@@ -124,18 +125,18 @@ namespace AsynGyanis::Net
     {
         auto       packet  = makeBytesFromHex("4cfe4189655e5cd55c41f69080575d7999c25a5bfb");
         const auto decoded = decodeQuicPacketHeader(packet, 0);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
         QuicPacketHeader header = *decoded;
 
         const auto sample = extractQuicHeaderProtectionSample(packet, header);
-        ASSERT_TRUE(sample.has_value()) << sample.error().message;
+        ASSERT_HAS_VALUE(sample) << sample.error().message;
         EXPECT_EQ(std::vector<std::uint8_t>(sample->begin(), sample->end()), makeBytesFromHex("5e5cd55c41f69080575d7999c25a5bfb"))
                 << "样本跳过 1 字节，从包号起点 + 4 处取（§5.4.2）";
 
         const auto keys              = keysWithHeaderProtectionKey(QuicCipherSuite::ChaCha20Poly1305, kChaCha20HeaderProtectionKey);
         const auto mask              = generateQuicHeaderProtectionMask(keys, *sample);
         const auto unmaskedFirstByte = removeQuicHeaderProtection(packet, header, mask);
-        ASSERT_TRUE(unmaskedFirstByte.has_value()) << unmaskedFirstByte.error().message;
+        ASSERT_HAS_VALUE(unmaskedFirstByte) << unmaskedFirstByte.error().message;
 
         const std::vector<std::uint8_t> headerBytes(packet.begin(), packet.begin() + 4);
         EXPECT_EQ(headerBytes, makeBytesFromHex("4200bff4"));
@@ -163,13 +164,13 @@ namespace AsynGyanis::Net
         const auto sample             = std::span<const std::uint8_t>(unprotectedPacket).subspan(5, 16);
         const auto mask               = generateQuicHeaderProtectionMask(keys, sample);
         const auto protectedFirstByte = applyQuicHeaderProtection(unprotectedPacket, plainHeader, mask);
-        ASSERT_TRUE(protectedFirstByte.has_value()) << protectedFirstByte.error().message;
+        ASSERT_HAS_VALUE(protectedFirstByte) << protectedFirstByte.error().message;
         EXPECT_EQ(*protectedFirstByte, 0x4c);
         EXPECT_EQ(unprotectedPacket, protectedBytes) << "加保护的结果必须与 RFC 的保护态报文逐字节相同";
 
         // 再用同一条掩码解回去，验证两侧确实是同一个双射
         const auto restored = removeQuicHeaderProtection(unprotectedPacket, plainHeader, mask);
-        ASSERT_TRUE(restored.has_value()) << restored.error().message;
+        ASSERT_HAS_VALUE(restored) << restored.error().message;
         EXPECT_EQ(*restored, 0x42);
     }
 
@@ -180,7 +181,7 @@ namespace AsynGyanis::Net
     {
         auto       packet  = makeBytesFromHex("4cfe4189655e5cd55c");
         const auto decoded = decodeQuicPacketHeader(packet, 0);
-        ASSERT_TRUE(decoded.has_value()) << decoded.error().message;
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
 
         const auto sample = extractQuicHeaderProtectionSample(packet, *decoded);
         ASSERT_FALSE(sample.has_value());

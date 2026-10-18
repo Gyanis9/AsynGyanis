@@ -10,6 +10,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpServerLimits.h"
 #include "Net/Http/HttpRequest.h"
@@ -253,7 +254,7 @@ TEST(OtlpHttpSpanExporter, PostsTheRenderedBatchAndCarriesTheExtraHeaders)
     EXPECT_EQ(exporter.pendingBatchCount(), 0U);
 
     const auto parsed = AsynGyanis::Base::parseConfigValue(body);
-    ASSERT_TRUE(parsed.has_value()) << "采集端收到的正文不是合法 JSON：" << body;
+    ASSERT_HAS_VALUE(parsed) << "采集端收到的正文不是合法 JSON：" << body;
     EXPECT_EQ(jsonTextOf(parsed->at("resourceSpans").at(0).at("resource").at("attributes").at(0).at("value").at("stringValue")), "otlp-exporter-test");
     EXPECT_EQ(jsonTextOf(parsed->at("resourceSpans").at(0).at("scopeSpans").at(0).at("spans").at(0).at("name")), "collector-operation");
 }

@@ -17,6 +17,7 @@
 #include "Database/Redis/RedisConnection.h"
 
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -54,7 +55,7 @@ namespace AsynGyanis::Database
     TEST(RedisKeyspaceNotificationParsing, KeyspaceChannelCarriesTheKeyAndThePayloadCarriesTheEvent)
     {
         const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification("__keyspace@3__:user:42", "set");
-        ASSERT_TRUE(notification.has_value());
+        ASSERT_HAS_VALUE(notification);
         EXPECT_FALSE(notification->isKeyEvent);
         EXPECT_EQ(notification->database, 3);
         EXPECT_EQ(notification->key, "user:42") << "键名里带 ':' 时只能从第一个 ':' 切，切错就少一截";
@@ -67,7 +68,7 @@ namespace AsynGyanis::Database
     TEST(RedisKeyspaceNotificationParsing, KeyEventChannelSwapsKeyAndEvent)
     {
         const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification("__keyevent@0__:expired", "session:7");
-        ASSERT_TRUE(notification.has_value());
+        ASSERT_HAS_VALUE(notification);
         EXPECT_TRUE(notification->isKeyEvent);
         EXPECT_EQ(notification->database, 0);
         EXPECT_EQ(notification->event, "expired");
@@ -247,17 +248,17 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_writer->execute("SET " + key + " 1"), nullptr) << m_writer->lastError();
 
         const std::optional<RedisPushReply> setNotification = readWithin(subscriber, 2000);
-        ASSERT_TRUE(setNotification.has_value()) << "订阅后 SET 没有收到通知：" << subscriber.lastError();
+        ASSERT_HAS_VALUE(setNotification) << "订阅后 SET 没有收到通知：" << subscriber.lastError();
         EXPECT_EQ(setNotification->kind, "message") << "第一手就该是消息：读到 subscribe 确认说明没收干净";
         EXPECT_EQ(setNotification->channel, channel);
         EXPECT_EQ(setNotification->payload, "set");
 
         ASSERT_NE(m_writer->execute("DEL " + key), nullptr) << m_writer->lastError();
         const std::optional<RedisPushReply> delNotification = readWithin(subscriber, 2000);
-        ASSERT_TRUE(delNotification.has_value()) << subscriber.lastError();
+        ASSERT_HAS_VALUE(delNotification) << subscriber.lastError();
 
         const std::optional<RedisKeyspaceNotification> notification = RedisConnection::parseKeyspaceNotification(delNotification->channel, delNotification->payload);
-        ASSERT_TRUE(notification.has_value());
+        ASSERT_HAS_VALUE(notification);
         EXPECT_EQ(notification->key, key);
         EXPECT_EQ(notification->event, "del");
     }
@@ -287,7 +288,7 @@ namespace AsynGyanis::Database
 
         ASSERT_NE(m_writer->execute("SET " + key + " 2"), nullptr) << m_writer->lastError();
         const std::optional<RedisPushReply> reply = readWithin(subscriber, 2000);
-        ASSERT_TRUE(reply.has_value()) << "空等过之后连接再也读不到推送：" << subscriber.lastError();
+        ASSERT_HAS_VALUE(reply) << "空等过之后连接再也读不到推送：" << subscriber.lastError();
         EXPECT_EQ(reply->kind, "message");
     }
 
@@ -308,7 +309,7 @@ namespace AsynGyanis::Database
         ASSERT_NE(m_writer->execute("SET " + key + " 3"), nullptr) << m_writer->lastError();
 
         const std::optional<RedisPushReply> reply = readWithin(subscriber, 2000);
-        ASSERT_TRUE(reply.has_value()) << subscriber.lastError();
+        ASSERT_HAS_VALUE(reply) << subscriber.lastError();
         EXPECT_EQ(reply->kind, "pmessage");
         EXPECT_EQ(reply->pattern, pattern);
         EXPECT_EQ(reply->channel, "__keyevent@" + std::to_string(keySpaceIndex()) + "__:set");

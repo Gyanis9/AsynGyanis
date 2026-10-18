@@ -10,6 +10,7 @@
 #include "Net/Http/HttpSession.h"
 #include "Net/Http/Router.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/FileSystem/FileSystem.h"
 
 #include <gtest/gtest.h>
@@ -1187,7 +1188,7 @@ namespace AsynGyanis::Net
 
         const HttpResponse                                         baseline           = serveRequest(server, HttpMethod::GET, "/hello.txt");
         const std::optional<std::chrono::system_clock::time_point> lastWriteTimePoint = parseHttpDate(headerValueOf(baseline, "last-modified"));
-        ASSERT_TRUE(lastWriteTimePoint.has_value()) << "基线响应没给出可解析的 Last-Modified";
+        ASSERT_HAS_VALUE(lastWriteTimePoint) << "基线响应没给出可解析的 Last-Modified";
         const std::int64_t lastWriteSeconds = std::chrono::duration_cast<std::chrono::seconds>(lastWriteTimePoint->time_since_epoch()).count();
         const auto         dateOfSeconds    = [](const std::int64_t seconds) { return formatHttpDate(std::chrono::system_clock::time_point(std::chrono::seconds(seconds))); };
 

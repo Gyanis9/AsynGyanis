@@ -12,6 +12,7 @@
 //   8) 窗口续期按「消费掉一半」批量抬，且任何预算下都不超编（§2.2）；
 //   9) 本端收口一条流：RESET_STREAM / STOP_SENDING 各编得出、在途不重发、判丢补发同一份、确认即落定（§3.5、§13.3）。
 
+#include "ExpectedAssertions.h"
 #include "Net/Quic/Streams/QuicStreamLayer.h"
 
 #include <gtest/gtest.h>
@@ -100,7 +101,7 @@ namespace AsynGyanis::Net
         {
             const std::span<const std::uint8_t>              payload(reinterpret_cast<const std::uint8_t *>(encoded.data()), encoded.size());
             const QuicDecodeExpected<std::vector<QuicFrame>> decoded = decodeQuicFrames(payload);
-            EXPECT_TRUE(decoded.has_value()) << "编出来的帧解不回去";
+            EXPECT_HAS_VALUE(decoded) << "编出来的帧解不回去";
             return decoded.has_value() ? *decoded : std::vector<QuicFrame>{};
         }
 
@@ -255,12 +256,12 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(layer.hasDeliveries());
         const std::optional<QuicStreamDelivery> first = layer.takeDelivery();
-        ASSERT_TRUE(first.has_value());
+        ASSERT_HAS_VALUE(first);
         EXPECT_EQ(std::string(first->bytes.begin(), first->bytes.end()), "abc");
         EXPECT_FALSE(first->isFinal);
 
         const std::optional<QuicStreamDelivery> second = layer.takeDelivery();
-        ASSERT_TRUE(second.has_value());
+        ASSERT_HAS_VALUE(second);
         EXPECT_EQ(std::string(second->bytes.begin(), second->bytes.end()), "de");
         EXPECT_TRUE(second->isFinal);
         EXPECT_FALSE(layer.hasDeliveries());
@@ -277,7 +278,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, nothing, true)).has_value());
         ASSERT_TRUE(layer.hasDeliveries());
         const std::optional<QuicStreamDelivery> delivery = layer.takeDelivery();
-        ASSERT_TRUE(delivery.has_value());
+        ASSERT_HAS_VALUE(delivery);
         EXPECT_TRUE(delivery->bytes.empty());
         EXPECT_TRUE(delivery->isFinal);
 
@@ -299,13 +300,13 @@ namespace AsynGyanis::Net
         // 0..2 接上了，但 [4,5) 还空着，只能先交出一段
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, bytesOf("ab"))).has_value());
         const std::optional<QuicStreamDelivery> partial = layer.takeDelivery();
-        ASSERT_TRUE(partial.has_value());
+        ASSERT_HAS_VALUE(partial);
         EXPECT_EQ(std::string(partial->bytes.begin(), partial->bytes.end()), "ab34");
         EXPECT_FALSE(partial->isFinal);
 
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 4, bytesOf("4"))).has_value());
         const std::optional<QuicStreamDelivery> rest = layer.takeDelivery();
-        ASSERT_TRUE(rest.has_value());
+        ASSERT_HAS_VALUE(rest);
         EXPECT_EQ(std::string(rest->bytes.begin(), rest->bytes.end()), "456789");
         EXPECT_TRUE(rest->isFinal);
     }
@@ -328,7 +329,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> nothing;
         EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 25, nothing, true)).has_value());
         const std::optional<QuicStreamDelivery> finalDelivery = layer.takeDelivery();
-        ASSERT_TRUE(finalDelivery.has_value());
+        ASSERT_HAS_VALUE(finalDelivery);
         EXPECT_TRUE(finalDelivery->isFinal);
     }
 
@@ -482,7 +483,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(layer.writeStreamData(0x01, bytesOf("abc"), false), 0U) << "对端没给本端开双向流的额度";
 
         const std::optional<std::uint64_t> first = layer.openUnidirectionalStream();
-        ASSERT_TRUE(first.has_value());
+        ASSERT_HAS_VALUE(first);
         EXPECT_EQ(*first, 3U);
         EXPECT_FALSE(layer.openUnidirectionalStream().has_value()) << "唯一一条单向流已经用掉，第二次开流不该给出流号";
         EXPECT_EQ(layer.writeStreamData(*first, bytesOf("abc"), false), 3U);
@@ -841,7 +842,7 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value());
         ASSERT_TRUE(layer.hasAbortedStreams());
         const std::optional<QuicAbortedStream> aborted = layer.takeAbortedStream();
-        ASSERT_TRUE(aborted.has_value());
+        ASSERT_HAS_VALUE(aborted);
         EXPECT_EQ(aborted->streamId, 0x00U);
         // 对端给的那个码必须原样交上去：h3 那边「服务端没做任何处理就拒了这条请求」只认它（RFC 9114 §7）
         EXPECT_EQ(aborted->applicationErrorCode, 0x100U) << "复位帧里的应用层错误码被丢掉了";
@@ -913,7 +914,7 @@ namespace AsynGyanis::Net
         stopSending.applicationErrorCode = 0x200;
         EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value());
         const std::optional<QuicAbortedStream> aborted = layer.takeAbortedStream();
-        ASSERT_TRUE(aborted.has_value());
+        ASSERT_HAS_VALUE(aborted);
         EXPECT_EQ(aborted->streamId, 0x03U);
         EXPECT_FALSE(aborted->isResetByPeer) << "叫停说的是「对端不再收」，报成复位会让上层以为对端保证过什么";
         const Collected collected = collect(layer, 1200);
@@ -1347,7 +1348,7 @@ namespace AsynGyanis::Net
         for (std::size_t index = 0; index < interleavedCount; ++index)
         {
             const std::optional<QuicStreamDelivery> delivery = layer.takeDelivery();
-            ASSERT_TRUE(delivery.has_value()) << "交错第 " << index << " 次取交付就取空了";
+            ASSERT_HAS_VALUE(delivery) << "交错第 " << index << " 次取交付就取空了";
             ASSERT_FALSE(delivery->bytes.empty());
             EXPECT_EQ(delivery->bytes.front(), expectedNextByte++) << "交错取到的顺序不对";
 
@@ -1536,7 +1537,7 @@ namespace AsynGyanis::Net
         for (std::size_t takeIndex = 0; takeIndex < abortedStreamCount && layer.hasAbortedStreams(); ++takeIndex)
         {
             const std::optional<QuicAbortedStream> abortedStream = layer.takeAbortedStream();
-            ASSERT_TRUE(abortedStream.has_value());
+            ASSERT_HAS_VALUE(abortedStream);
             EXPECT_EQ(abortedStream->streamId, peerBidirectionalStreamIdOf(expectedNextIndex)) << "取回的流号顺序不对";
             ++expectedNextIndex;
             // 取一个再塞一个新的：读位置因此反复过半，回收那条路才会被反复走到。塞的必须是还没用过

@@ -10,6 +10,7 @@
 
 #include "CommonTestSupport.h"
 #include "CoreTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
 
 #if ASYN_PLATFORM_WIN32
@@ -1016,7 +1017,7 @@ namespace AsynGyanis::Core
             EXPECT_EQ(registryValue("asyn_worker_crashes_total"), 0U);
             EXPECT_EQ(registryValue("asyn_worker_slots_given_up"), 0U);
             const auto givenUp = AsynGyanis::TestSupport::findRegistrySample("asyn_worker_slots_given_up");
-            ASSERT_TRUE(givenUp.has_value());
+            ASSERT_HAS_VALUE(givenUp);
             EXPECT_EQ(givenUp->kind, Core::ProcessMetricKind::Counter) << "只增不减的累计数报成 gauge：按 rate() 取增量的人拿不到任何东西，而这条恰恰是要看增量的那个";
         }
         EXPECT_FALSE(hasRegistrySample("asyn_worker_crashes_total")) << "编排器析构后这条读数还挂在导出里";

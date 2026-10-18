@@ -22,6 +22,7 @@
 #include "NetTestSupport.h"
 
 #include "AllocationProbe.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -250,7 +251,7 @@ namespace AsynGyanis::Net
         // Initial 多一个 Token 长度字段，两包本来就不等长；要看的是第一包的 Length 域
         // 是否等于它的真实长度——对端定位第二包全靠这个数
         const auto firstHeader = decodeQuicPacketHeader(bytes, 0);
-        ASSERT_TRUE(firstHeader.has_value()) << firstHeader.error().message;
+        ASSERT_HAS_VALUE(firstHeader) << firstHeader.error().message;
         EXPECT_EQ(firstHeader->packetByteCount, initialByteCount) << "Length 域与真实长度不一致，对端就找不到下一个包";
     }
 

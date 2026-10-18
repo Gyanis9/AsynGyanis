@@ -7,6 +7,7 @@
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Http3Frame.h"
 
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -220,7 +221,7 @@ namespace
         QpackEncoder encoder(0, 0, 0);
         std::string  headerBlock;
         const auto   encoded = encoder.encodeFieldSection(static_cast<std::uint64_t>(kRequestStreamId), std::span<const QpackHeaderField>(fields), headerBlock, encoderStreamBytes);
-        EXPECT_TRUE(encoded.has_value()) << encoded.error().message;
+        EXPECT_HAS_VALUE(encoded) << encoded.error().message;
         return headerBlock;
     }
 
@@ -314,7 +315,7 @@ TEST(Http3Connection, DoesNotAdvertiseTheHttp3DatagramSetting)
         Http3FrameReader  reader(controlBytes.size() + 8);
         ASSERT_TRUE(reader.feed(bytesOfText(controlBytes).subspan(1)).has_value()) << "本端写出的控制流字节要能被自家解码器吃下";
         const auto decodedFrame = reader.nextFrame();
-        ASSERT_TRUE(decodedFrame.has_value()) << decodedFrame.error().message;
+        ASSERT_HAS_VALUE(decodedFrame) << decodedFrame.error().message;
         ASSERT_TRUE(decodedFrame->has_value()) << "控制流上没解出帧";
         const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&**decodedFrame);
         ASSERT_TRUE(settingsFrame != nullptr) << "控制流的第一个帧不是 SETTINGS";
@@ -649,7 +650,7 @@ TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesU
         QpackEncoder peerEncoder(4096, 100, 4096);
         // 第一次编码即插入：产出引用动态表的头段与对应指令
         const auto first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
-        ASSERT_TRUE(first.has_value()) << first.error().message;
+        ASSERT_HAS_VALUE(first) << first.error().message;
     }
     ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
 
@@ -687,7 +688,7 @@ TEST(Http3Connection, EndStreamOnBlockedFieldSectionDefersTheMessageEnd)
     {
         QpackEncoder peerEncoder(4096, 100, 4096);
         const auto   first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
-        ASSERT_TRUE(first.has_value()) << first.error().message;
+        ASSERT_HAS_VALUE(first) << first.error().message;
     }
     ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
 
@@ -732,7 +733,7 @@ TEST(Http3Connection, BodyArrivingWhileFieldSectionBlockedDoesNotTurnTheHeadInto
     {
         QpackEncoder peerEncoder(4096, 100, 4096);
         const auto   first = peerEncoder.encodeFieldSection(0, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
-        ASSERT_TRUE(first.has_value()) << first.error().message;
+        ASSERT_HAS_VALUE(first) << first.error().message;
     }
     ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
 
@@ -781,11 +782,11 @@ TEST(Http3Connection, HeadAndTrailerSectionsBlockedOnTheSameStreamAreBothDeliver
         QpackEncoder peerEncoder(4096, 100, 4096);
         std::string  sectionInstructions;
         const auto   head = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(headFields), headBlock, sectionInstructions);
-        ASSERT_TRUE(head.has_value()) << head.error().message;
+        ASSERT_HAS_VALUE(head) << head.error().message;
         instructions += sectionInstructions;
         sectionInstructions.clear();
         const auto trailers = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(trailerFields), trailerBlock, sectionInstructions);
-        ASSERT_TRUE(trailers.has_value()) << trailers.error().message;
+        ASSERT_HAS_VALUE(trailers) << trailers.error().message;
         instructions += sectionInstructions;
     }
     ASSERT_FALSE(instructions.empty()) << "对端确实插了动态表，两段才会都挂起";
@@ -841,7 +842,7 @@ TEST(Http3Connection, TrailerSectionBehindABlockedHeadIsNotDeliveredOutOfOrder)
     {
         QpackEncoder peerEncoder(4096, 100, 4096);
         const auto   head = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), headBlock, instructions);
-        ASSERT_TRUE(head.has_value()) << head.error().message;
+        ASSERT_HAS_VALUE(head) << head.error().message;
     }
     ASSERT_FALSE(instructions.empty()) << "头段确实引用了尚未到达的插入";
     // 尾段由一个「不接动态表」的对端编码（encodeSection 里那台）：Required Insert Count 为 0，
@@ -901,7 +902,7 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
             auto         fields = minimalRequestFields();
             fields.back().name  = "Accept"; // 大写：RFC 9114 §4.2 判畸形
             const auto encoded  = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(fields), headBlock, instructions);
-            ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+            ASSERT_HAS_VALUE(encoded) << encoded.error().message;
         }
         ASSERT_FALSE(instructions.empty()) << "对端插了表，这段的 Required Insert Count 才非 0，本端才会留下待确认的记录";
 
@@ -926,7 +927,7 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
         {
             QpackEncoder peerEncoder(4096, 100, 4096);
             const auto   encoded = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), headBlock, instructions);
-            ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+            ASSERT_HAS_VALUE(encoded) << encoded.error().message;
         }
         connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
         connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);

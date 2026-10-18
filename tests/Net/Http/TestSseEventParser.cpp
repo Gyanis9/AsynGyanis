@@ -4,6 +4,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/HttpRequest.h"
@@ -171,7 +172,7 @@ namespace AsynGyanis::Net
         // 对端在这里收线：没有那个收尾的空行，攒着的事件仍要交出去，否则最后一条就随连接丢了
         parser.endOfStream();
         const std::optional<SseEvent> flushed = parser.nextEvent();
-        ASSERT_TRUE(flushed.has_value()) << "收线时没把攒着的事件补交出来";
+        ASSERT_HAS_VALUE(flushed) << "收线时没把攒着的事件补交出来";
         EXPECT_EQ(flushed->data, "tick");
         EXPECT_TRUE(flushed->hasRetry);
         EXPECT_EQ(flushed->retryMilliseconds, 1500U);

@@ -9,6 +9,7 @@
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -29,7 +30,7 @@ namespace
     ConfigValue documentWith(const std::string &metricsJson)
     {
         const auto parsed = parseConfigValue(metricsJson);
-        EXPECT_TRUE(parsed.has_value()) << metricsJson;
+        EXPECT_HAS_VALUE(parsed) << metricsJson;
         ConfigValue document = ConfigValue::object();
         document["metrics"]  = parsed.value_or(ConfigValue{});
         return document;

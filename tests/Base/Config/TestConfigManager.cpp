@@ -17,6 +17,7 @@
 #include "Base/Log/Sinks/LogSink.h"
 #include "BaseTestSupport.h"
 #include "CommonTestSupport.h"
+#include "ExpectedAssertions.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "TestHelpers.h"
 
@@ -903,13 +904,13 @@ port: 9090
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const std::optional<ConfigValue> extra = configuration().getOptional("extra");
-        ASSERT_TRUE(extra.has_value());
+        ASSERT_HAS_VALUE(extra);
         EXPECT_EQ(extra->type(), ConfigValueType::object);
         EXPECT_TRUE(extra->empty());
         EXPECT_EQ(extra->size(), 0U);
 
         const std::optional<ConfigValue> list = configuration().getOptional("list");
-        ASSERT_TRUE(list.has_value());
+        ASSERT_HAS_VALUE(list);
         EXPECT_EQ(list->type(), ConfigValueType::array);
         EXPECT_TRUE(list->empty());
 
@@ -1026,7 +1027,7 @@ port: 9090
         EXPECT_EQ(configuration().getOptional("missing")->type(), ConfigValueType::null);
 
         const std::optional<ConfigValue> list = configuration().getOptional("list");
-        ASSERT_TRUE(list.has_value());
+        ASSERT_HAS_VALUE(list);
         EXPECT_EQ(list->size(), 2U);
         EXPECT_EQ((*list)[0].get<std::string>(), "a");
     }
@@ -1066,7 +1067,7 @@ port: 9090
 
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
         const std::optional<ConfigValue> big = configuration().getOptional("big");
-        ASSERT_TRUE(big.has_value());
+        ASSERT_HAS_VALUE(big);
         EXPECT_EQ(big->type(), ConfigValueType::number_unsigned);
         EXPECT_EQ(big->get<std::uint64_t>(), std::numeric_limits<std::uint64_t>::max());
         // 取成有符号整数会溢出，必须回落默认值而不是回绕成负数
@@ -1136,7 +1137,7 @@ port: 9090
         for (const auto &[key, expectedType]: expectedTypes)
         {
             const std::optional<ConfigValue> value = configuration().getOptional(key);
-            ASSERT_TRUE(value.has_value()) << "key=" << key;
+            ASSERT_HAS_VALUE(value) << "key=" << key;
             EXPECT_EQ(value->type(), expectedType) << "key=" << key;
         }
 
@@ -1315,12 +1316,12 @@ port: 9090
 
         ASSERT_TRUE(result.success);
         const std::optional<ConfigValue> unsignedMax = configuration().getOptional("unsignedMax");
-        ASSERT_TRUE(unsignedMax.has_value());
+        ASSERT_HAS_VALUE(unsignedMax);
         EXPECT_TRUE(unsignedMax->is_number_integer()) << "uint64 上段被折成了浮点";
         EXPECT_TRUE(unsignedMax->is_number_unsigned());
 
         const std::optional<ConfigValue> int64Min = configuration().getOptional("int64Min");
-        ASSERT_TRUE(int64Min.has_value());
+        ASSERT_HAS_VALUE(int64Min);
         EXPECT_TRUE(int64Min->is_number_integer());
         EXPECT_EQ(configuration().getInt("int64Min", 0), std::numeric_limits<std::int64_t>::min());
         EXPECT_EQ(configuration().getInt("int64Max", 0), std::numeric_limits<std::int64_t>::max());
@@ -1664,7 +1665,7 @@ port: 9090
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const std::optional<ConfigValue> present = configuration().getOptional("name");
-        ASSERT_TRUE(present.has_value());
+        ASSERT_HAS_VALUE(present);
         EXPECT_EQ(present->get<std::string>(), "test");
 
         EXPECT_FALSE(configuration().getOptional("nonexistent").has_value());

@@ -13,6 +13,7 @@
 
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -197,7 +198,7 @@ namespace AsynGyanis::Net
         const QuicTlsProgress firstProgress = server.drive();
         ASSERT_NE(firstProgress, QuicTlsProgress::Failed);
         const auto firstRecord = server.takeOutboundRecord();
-        ASSERT_TRUE(firstRecord.has_value()) << "服务端该产出首批握手数据";
+        ASSERT_HAS_VALUE(firstRecord) << "服务端该产出首批握手数据";
         EXPECT_EQ(firstRecord->level, QuicEncryptionLevel::Initial);
         EXPECT_FALSE(firstRecord->data.empty());
         // 取走的那条也要交回去，否则客户端缺了 ServerHello，后面的循环再怎么搬也握不完
@@ -269,7 +270,7 @@ namespace AsynGyanis::Net
 
         ASSERT_EQ(client->drive(), QuicTlsProgress::NeedData) << "客户端第一步就是发 ClientHello，正是在这里读参数";
         const auto record = client->takeOutboundRecord();
-        ASSERT_TRUE(record.has_value());
+        ASSERT_HAS_VALUE(record);
         EXPECT_FALSE(record->data.empty());
     }
 } // namespace AsynGyanis::Net

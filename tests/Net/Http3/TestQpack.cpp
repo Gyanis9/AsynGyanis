@@ -14,6 +14,7 @@
 #include "AllocationProbe.h"
 #include "Net/Http3/Qpack.h"
 
+#include "ExpectedAssertions.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -181,7 +182,7 @@ namespace AsynGyanis::Net
             std::string                         headerBlock;
             std::string                         encoderStreamBytes;
             const auto                          result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
-            EXPECT_TRUE(result.has_value()) << (result.has_value() ? std::string() : result.error().message);
+            EXPECT_HAS_VALUE(result) << (result.has_value() ? std::string() : result.error().message);
             EXPECT_EQ(toHex(encoderStreamBytes), "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468");
             return headerBlock;
         }
@@ -305,7 +306,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> section = hexToBytes("0000"
                                                              "510b 2f69 6e64 6578 2e68 746d 6c");
         const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded) << "本段不含动态表引用，不该挂起";
         expectFieldsEqual(fields, {{":path", "/index.html"}}, "B.1 的头列表");
         EXPECT_TRUE(controlBytes.empty()) << "Required Insert Count 为 0 的段不发 Section Ack：" << toHex(controlBytes);
@@ -327,7 +328,7 @@ namespace AsynGyanis::Net
                                                                   "c00f 7777 772e 6578 616d 706c 652e 636f 6d"
                                                                   "c10c 2f73 616d 706c 652f 7061 7468");
         const auto                      consumed     = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
+        ASSERT_HAS_VALUE(consumed) << consumed.error().message;
         EXPECT_EQ(*consumed, instructions.size()) << "整段指令都要被消费掉";
         EXPECT_TRUE(unblockedStreamIds.empty());
         EXPECT_EQ(decoder.tableCapacityByteCount(), 220U) << "Set Dynamic Table Capacity=220";
@@ -353,13 +354,13 @@ namespace AsynGyanis::Net
         std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(4, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded) << "两次插入都已收到，不必挂起";
         expectFieldsEqual(fields, {{":authority", "www.example.com"}, {":path", "/sample/path"}}, "B.2 的头列表");
         EXPECT_TRUE(controlBytes.empty()) << "解码本身不产生 Section Ack：" << toHex(controlBytes);
 
         const auto delivered = decoder.noteFieldSectionDelivered(4, controlBytes);
-        ASSERT_TRUE(delivered.has_value()) << delivered.error().message;
+        ASSERT_HAS_VALUE(delivered) << delivered.error().message;
         EXPECT_EQ(toHex(controlBytes), "84") << "RFC 的 B.2 解码器流上就是单个字节 0x84（Section Ack, stream=4）";
         EXPECT_EQ(decoder.knownReceivedInsertCount(), 2U);
 
@@ -383,7 +384,7 @@ namespace AsynGyanis::Net
         controlBytes.clear();
         const std::vector<std::uint8_t> insert   = hexToBytes("4a63 7573 746f 6d2d 6b65 790c 6375 7374 6f6d 2d76 616c 7565");
         const auto                      consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
+        ASSERT_HAS_VALUE(consumed) << consumed.error().message;
         EXPECT_EQ(*consumed, insert.size());
         EXPECT_EQ(decoder.insertCount(), 3U);
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 160U) << "RFC 的 B.3 标注 Size=160";
@@ -417,7 +418,7 @@ namespace AsynGyanis::Net
         std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(8, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         expectFieldsEqual(fields, {{":authority", "www.example.com"}, {":path", "/"}, {"custom-key", "custom-value"}}, "B.4 的头列表：Base=4，相对索引 0/1 指向绝对索引 3/2");
 
         // 头块已解出但被放弃：按 §4.4.2 只发 Stream Cancellation，之前欠的 Section Ack 一并作废
@@ -443,7 +444,7 @@ namespace AsynGyanis::Net
         controlBytes.clear();
         const std::vector<std::uint8_t> insert   = hexToBytes("810d 6375 7374 6f6d 2d76 616c 7565 32");
         const auto                      consumed = decoder.feedEncoderStream(asSpan(insert), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
+        ASSERT_HAS_VALUE(consumed) << consumed.error().message;
         EXPECT_EQ(*consumed, insert.size());
         EXPECT_EQ(decoder.insertCount(), 5U) << "累计插入数不因淘汰而回退（§3.2.4）";
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 215U) << "RFC 的 B.5 标注 Size=215";
@@ -477,7 +478,7 @@ namespace AsynGyanis::Net
         std::string                         encoderStreamBytes;
 
         const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_EQ(toHex(headerBlock), "0000510b2f696e6465782e68746d6c") << "RFC 的 B.1 原文：0000 510b 2f69 6e64 6578 2e68 746d 6c";
         EXPECT_TRUE(encoderStreamBytes.empty()) << "§3.2.3：对端上限为 0 时不得发任何编码器流指令";
         EXPECT_EQ(encoder.insertCount(), 0U);
@@ -495,7 +496,7 @@ namespace AsynGyanis::Net
         std::string                         encoderStreamBytes;
 
         const auto result = encoder.encodeFieldSection(4, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468")
                 << "RFC 的 B.2 编码器流：3fbd01 + c00f www.example.com + c10c /sample/path";
         EXPECT_EQ(toHex(headerBlock), "03811011") << "Required Insert Count=2、Base=0、两条表后索引";
@@ -523,7 +524,7 @@ namespace AsynGyanis::Net
         // B.3：只有一行 custom-key=custom-value，双字面量插入 + 表后索引
         const std::vector<QpackHeaderField> third       = makeFieldList({{"custom-key", "custom-value"}});
         const auto                          thirdResult = encoder.encodeFieldSection(8, std::span<const QpackHeaderField>(third), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(thirdResult.has_value()) << thirdResult.error().message;
+        ASSERT_HAS_VALUE(thirdResult) << thirdResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "4a637573746f6d2d6b65790c637573746f6d2d76616c7565") << "RFC 的 B.3 原文";
         EXPECT_EQ(toHex(headerBlock), "048010") << "Required Insert Count=3、Base=2";
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("01"))).has_value()) << "Insert Count Increment(1)";
@@ -532,7 +533,7 @@ namespace AsynGyanis::Net
         // B.4：命中的 :authority 落在绝对索引 0（已被 draining 甩在身后），改发 Duplicate 并引用新副本
         const std::vector<QpackHeaderField> fourth       = makeFieldList({{":authority", "www.example.com"}});
         const auto                          fourthResult = encoder.encodeFieldSection(12, std::span<const QpackHeaderField>(fourth), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(fourthResult.has_value()) << fourthResult.error().message;
+        ASSERT_HAS_VALUE(fourthResult) << fourthResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "02") << "RFC 的 B.4 原文：Duplicate（相对索引 2）";
         EXPECT_EQ(toHex(headerBlock), "058010") << "Base=3、Required Insert Count=4，引用表首的新副本";
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 217U) << "RFC 的 B.4 标注 Size=217";
@@ -541,7 +542,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("8c"))).has_value()) << "Section Ack, stream=12";
         const std::vector<QpackHeaderField> fifth       = makeFieldList({{"custom-key", "custom-value2"}});
         const auto                          fifthResult = encoder.encodeFieldSection(16, std::span<const QpackHeaderField>(fifth), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(fifthResult.has_value()) << fifthResult.error().message;
+        ASSERT_HAS_VALUE(fifthResult) << fifthResult.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "810d637573746f6d2d76616c756532") << "RFC 的 B.5 原文";
         EXPECT_EQ(encoder.insertCount(), 5U);
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 215U) << "最旧的一项被挤出（RFC 标注 Size=215）";
@@ -562,7 +563,7 @@ namespace AsynGyanis::Net
         headerBlock.clear();
         encoderStreamBytes.clear();
         const auto result = encoder.encodeFieldSection(0, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_TRUE(encoderStreamBytes.empty()) << "静态表整项命中不得产生任何指令：" << toHex(encoderStreamBytes);
         EXPECT_EQ(toHex(headerBlock), "0000"
                                       "d9"
@@ -601,17 +602,17 @@ namespace AsynGyanis::Net
     {
         QpackDynamicTable                  table(64);
         const std::optional<std::uint64_t> firstIndex = table.insert(QpackHeaderField{"a", ""});
-        ASSERT_TRUE(firstIndex.has_value()) << "33 字节的项放得进 64 字节的表";
+        ASSERT_HAS_VALUE(firstIndex) << "33 字节的项放得进 64 字节的表";
         EXPECT_EQ(*firstIndex, 0U) << "首项的绝对索引是 0（§3.2.4）";
         const std::optional<std::uint64_t> secondIndex = table.insert(QpackHeaderField{"b", ""});
-        ASSERT_TRUE(secondIndex.has_value());
+        ASSERT_HAS_VALUE(secondIndex);
         EXPECT_EQ(*secondIndex, 1U);
         // 64 字节的表装不下两项 33 字节，插入前必须先从表尾淘汰（§3.2.2），故此刻只剩刚插入的这一项
         EXPECT_EQ(table.sizeByteCount(), 33U) << "第二项把首项挤掉了，表里只有一项";
 
         // 第三项同样放不下：先淘汰表尾那一项再插入（§3.2.2 的顺序）
         const std::optional<std::uint64_t> thirdIndex = table.insert(QpackHeaderField{"c", ""});
-        ASSERT_TRUE(thirdIndex.has_value());
+        ASSERT_HAS_VALUE(thirdIndex);
         EXPECT_EQ(*thirdIndex, 2U);
         EXPECT_EQ(table.entryCount(), 1U) << "容量 64 只放得下一项";
         EXPECT_EQ(table.insertCount(), 3U);
@@ -654,7 +655,7 @@ namespace AsynGyanis::Net
         // 容量恢复后可以继续插入，新项的绝对索引接着上一次的编号
         ASSERT_TRUE(table.setCapacityByteCount(220, nullptr));
         const std::optional<std::uint64_t> nextIndex = table.insert(QpackHeaderField{"d", ""});
-        ASSERT_TRUE(nextIndex.has_value());
+        ASSERT_HAS_VALUE(nextIndex);
         EXPECT_EQ(*nextIndex, insertCountBefore);
     }
 
@@ -691,7 +692,7 @@ namespace AsynGyanis::Net
                                                                   "413000 413100 413200 413300 413400"
                                                                   "413500 413600 413700 413800 413900");
         const auto                      fed          = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(fed.has_value()) << fed.error().message;
+        ASSERT_HAS_VALUE(fed) << fed.error().message;
         EXPECT_EQ(decoder.insertCount(), 10U);
         EXPECT_EQ(decoder.dynamicTableEntries().size(), 3U);
 
@@ -701,7 +702,7 @@ namespace AsynGyanis::Net
         std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message << "：Base=9、相对索引 0 → 绝对索引 8，且 8 < 9";
+        ASSERT_HAS_VALUE(result) << result.error().message << "：Base=9、相对索引 0 → 绝对索引 8，且 8 < 9";
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded);
         EXPECT_EQ(fields.size(), 1U);
         EXPECT_EQ(fields[0].name, "8") << "还原值只可能是 9：换成 10 就会指到绝对索引 9 那一项";
@@ -716,7 +717,7 @@ namespace AsynGyanis::Net
                                                                     "80");
         std::vector<QpackHeaderField>   shallowFields;
         const auto                      shallowResult = shallowDecoder.decodeFieldSection(0, asSpan(shallowSection), shallowFields, shallowControl);
-        ASSERT_TRUE(shallowResult.has_value()) << shallowResult.error().message << "：RIC=3 时 Base=3，绝对索引 2 仍在表里";
+        ASSERT_HAS_VALUE(shallowResult) << shallowResult.error().message << "：RIC=3 时 Base=3，绝对索引 2 仍在表里";
         EXPECT_EQ(shallowFields.size(), 1U);
         EXPECT_EQ(shallowFields[0].name, "2") << "还原成 3 才落在绝对索引 2 上，还原成 9 会因超出本端插入数而挂起";
     }
@@ -755,7 +756,7 @@ namespace AsynGyanis::Net
                                                              "10");
         std::vector<QpackHeaderField>   fields;
         const auto                      blocked = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(blocked.has_value()) << blocked.error().message;
+        ASSERT_HAS_VALUE(blocked) << blocked.error().message;
         EXPECT_EQ(*blocked, QpackFieldSectionDecodeStatus::Blocked);
         EXPECT_TRUE(fields.empty()) << "挂起时不产出字段行";
         EXPECT_EQ(decoder.blockedStreamCount(), 1U);
@@ -766,19 +767,19 @@ namespace AsynGyanis::Net
                                                                    "41610162");
         controlBytes.clear();
         const auto consumed = decoder.feedEncoderStream(asSpan(encoderStream), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
+        ASSERT_HAS_VALUE(consumed) << consumed.error().message;
         ASSERT_EQ(unblockedStreamIds.size(), 1U);
         EXPECT_EQ(unblockedStreamIds[0], 0U) << "表补齐后要报出可续解的流";
 
         controlBytes.clear();
         const auto resumed = decoder.resumeBlockedFieldSection(0, fields, controlBytes);
-        ASSERT_TRUE(resumed.has_value()) << resumed.error().message;
+        ASSERT_HAS_VALUE(resumed) << resumed.error().message;
         EXPECT_EQ(*resumed, QpackFieldSectionDecodeStatus::Decoded);
         expectFieldsEqual(fields, {{"a", "b"}}, "续解出的头列表");
         EXPECT_EQ(decoder.blockedStreamCount(), 0U) << "续解后不再挂起";
 
         const auto delivered = decoder.noteFieldSectionDelivered(0, controlBytes);
-        ASSERT_TRUE(delivered.has_value()) << delivered.error().message;
+        ASSERT_HAS_VALUE(delivered) << delivered.error().message;
         EXPECT_EQ(toHex(controlBytes), "80") << "Section Ack：模式 '1' + 7 位前缀的 stream=0";
         EXPECT_EQ(decoder.knownReceivedInsertCount(), 1U);
     }
@@ -797,7 +798,7 @@ namespace AsynGyanis::Net
 
         // 表还没补齐就急着续解：仍然是挂起，且挂起记录不能被消耗掉
         const auto early = decoder.resumeBlockedFieldSection(0, fields, controlBytes);
-        ASSERT_TRUE(early.has_value()) << early.error().message;
+        ASSERT_HAS_VALUE(early) << early.error().message;
         EXPECT_EQ(*early, QpackFieldSectionDecodeStatus::Blocked);
         EXPECT_EQ(decoder.blockedStreamCount(), 1U) << "未成功的续解不得吃掉挂起的头块";
 
@@ -827,7 +828,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> another    = hexToBytes("0380"
                                                                 "10");
         const auto                      sameStream = decoder.decodeFieldSection(0, asSpan(another), fields, controlBytes);
-        ASSERT_TRUE(sameStream.has_value()) << sameStream.error().message;
+        ASSERT_HAS_VALUE(sameStream) << sameStream.error().message;
         EXPECT_EQ(*sameStream, QpackFieldSectionDecodeStatus::Blocked);
         EXPECT_EQ(decoder.blockedStreamCount(), 1U);
     }
@@ -944,7 +945,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(strayThenValid.encodeFieldSection(4, std::span<const QpackHeaderField>(authority), validHeaderBlock, validEncoderStreamBytes).has_value());
         // 0x90 是 Section Ack(stream=16)（本端从没在这条流上发过头块），0x84 才是刚发出去那段的确认
         const auto strayThenValidConsumed = strayThenValid.feedDecoderStream(asSpan(hexToBytes("9084")));
-        ASSERT_TRUE(strayThenValidConsumed.has_value()) << "无据 Ack 之后同趟的合法指令被判坏了";
+        ASSERT_HAS_VALUE(strayThenValidConsumed) << "无据 Ack 之后同趟的合法指令被判坏了";
         EXPECT_EQ(*strayThenValidConsumed, 2U) << "两条指令都要算作本趟消费";
         EXPECT_EQ(strayThenValid.knownReceivedInsertCount(), 1U) << "忽略无据 Ack 之后，后一条合法 Ack 仍要生效";
     }
@@ -1020,7 +1021,7 @@ namespace AsynGyanis::Net
             std::string                         controlBytes;
             const std::span<const std::uint8_t> oneByte(instructions.data() + index, 1);
             const auto                          consumed = decoder.feedEncoderStream(oneByte, unblockedStreamIds, controlBytes);
-            ASSERT_TRUE(consumed.has_value()) << "第 " << index << " 字节被判错：" << consumed.error().message;
+            ASSERT_HAS_VALUE(consumed) << "第 " << index << " 字节被判错：" << consumed.error().message;
             EXPECT_LE(*consumed, 1U) << "一次最多喂了一个字节";
             totalConsumed += *consumed;
             EXPECT_TRUE(unblockedStreamIds.empty());
@@ -1045,7 +1046,7 @@ namespace AsynGyanis::Net
         // 容量指令 + 第一条插入完整，第二条插入只给到名字索引
         const std::vector<std::uint8_t> firstHalf     = hexToBytes("3fbd01 c00f7777772e6578616d706c652e636f6d c1");
         const auto                      firstConsumed = decoder.feedEncoderStream(asSpan(firstHalf), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(firstConsumed.has_value()) << firstConsumed.error().message;
+        ASSERT_HAS_VALUE(firstConsumed) << firstConsumed.error().message;
         EXPECT_EQ(*firstConsumed, firstHalf.size() - 1U) << "最后那个 0xc1 是半条指令，不该被消费";
         EXPECT_EQ(decoder.insertCount(), 1U);
         EXPECT_EQ(decoder.tableCapacityByteCount(), 220U);
@@ -1053,7 +1054,7 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> secondHalf = hexToBytes("0c2f73616d706c652f70617468");
         controlBytes.clear();
         const auto secondConsumed = decoder.feedEncoderStream(asSpan(secondHalf), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(secondConsumed.has_value()) << secondConsumed.error().message;
+        ASSERT_HAS_VALUE(secondConsumed) << secondConsumed.error().message;
         EXPECT_EQ(*secondConsumed, secondHalf.size()) << "上趟的半个首字节 + 本趟全部正好凑成一条指令";
         EXPECT_EQ(decoder.insertCount(), 2U);
         EXPECT_EQ(decoder.dynamicTableSizeByteCount(), 106U);
@@ -1089,14 +1090,14 @@ namespace AsynGyanis::Net
         // 一整批里最后一条只到一半：前面两条都要生效，消费的字节数只算完整的那两条
         const std::vector<std::uint8_t> batch         = hexToBytes("80 84 ff");
         const auto                      batchConsumed = encoder.feedDecoderStream(asSpan(batch));
-        ASSERT_TRUE(batchConsumed.has_value()) << batchConsumed.error().message;
+        ASSERT_HAS_VALUE(batchConsumed) << batchConsumed.error().message;
         EXPECT_EQ(*batchConsumed, 2U) << "0xff 是半条 Section Ack，留下趟";
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 2U) << "确认了流 0（RIC=1）与流 4（RIC=2）";
         EXPECT_EQ(encoder.blockedStreamCount(), 1U);
 
         // Section Ack(stream=200) 的第二个字节：7 位前缀满值 127 + 续字节 73 = 200
         const auto finishing = feedOneByte(0x49);
-        ASSERT_TRUE(finishing.has_value()) << finishing.error().message;
+        ASSERT_HAS_VALUE(finishing) << finishing.error().message;
         EXPECT_EQ(*finishing, 1U) << "第二趟把整条指令消费完，只算本趟真正吃掉的字节";
         EXPECT_EQ(encoder.knownReceivedInsertCount(), 3U);
         EXPECT_EQ(encoder.blockedStreamCount(), 0U) << "全部确认后阻塞名额归还";
@@ -1125,7 +1126,7 @@ namespace AsynGyanis::Net
         // 容量 220 → 插一项 → 容量 0 清空表 → 容量再回到 220：四条指令一趟吃完
         const std::vector<std::uint8_t> instructions = hexToBytes("3fbd01 4a637573746f6d2d6b65790c637573746f6d2d76616c7565 20 3fbd01");
         const auto                      consumed     = decoder.feedEncoderStream(asSpan(instructions), unblockedStreamIds, controlBytes);
-        ASSERT_TRUE(consumed.has_value()) << consumed.error().message;
+        ASSERT_HAS_VALUE(consumed) << consumed.error().message;
         EXPECT_EQ(*consumed, instructions.size()) << "容量指令不必打头，中间的变更也照收";
         EXPECT_EQ(decoder.insertCount(), 1U) << "累计插入数不因清空而回退";
         EXPECT_EQ(decoder.dynamicTableEntries().size(), 0U) << "容量 0 把表清空（§3.2.2）";
@@ -1213,7 +1214,7 @@ namespace AsynGyanis::Net
                                                                  "7f55861c01fb523805");
         std::vector<QpackHeaderField>   fields;
         const auto                      result = decoder.decodeFieldSection(0, asSpan(headerBlock), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         expectFieldsEqual(fields, {{":method", "GET"}, {":path", "/index.html"}, {":scheme", "https"}, {"accept", "*/*"}, {"user-agent", "curl/8.0.0"}, {"cookie", "a=1; b=2"}},
                           "lsqpack 向量的头列表");
         EXPECT_FALSE(decoder.hasBlockedStreams());
@@ -1239,7 +1240,7 @@ namespace AsynGyanis::Net
         std::vector<QpackHeaderField>   fields;
         controlBytes.clear();
         const auto result = decoder.decodeFieldSection(4, asSpan(headerBlock), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Decoded) << "Required Insert Count=3、Base=0，全走表后索引";
         expectFieldsEqual(fields, {{":method", "GET"}, {":path", "/index.html"}, {":scheme", "https"}, {"accept", "*/*"}, {"user-agent", "curl/8.0.0"}, {"cookie", "a=1; b=2"}},
                           "lsqpack 第二段的头列表");
@@ -1261,7 +1262,7 @@ namespace AsynGyanis::Net
                                                              "71"
                                                              "00");
         const auto                      result  = decoder.decodeFieldSection(0, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         expectFieldsEqual(fields, {{":path", ""}}, "N 位为 1 的带名引用字面量");
     }
 
@@ -1279,7 +1280,7 @@ namespace AsynGyanis::Net
                                                                "20"
                                                                "00");
         const auto                      result    = decoder.decodeFieldSection(0, asSpan(bothEmpty), fields, controlBytes);
-        ASSERT_TRUE(result.has_value()) << result.error().message;
+        ASSERT_HAS_VALUE(result) << result.error().message;
         expectFieldsEqual(fields, {{"", ""}}, "名与值都为空的字面量在本层是合法的（语义由 HTTP 层判）");
 
         // 带静态名引用（索引 0 = :authority）+ 空值：0x50 = '01' + N=0 + T=1 + 索引 0
@@ -1288,7 +1289,7 @@ namespace AsynGyanis::Net
                                                                 "00");
         std::vector<QpackHeaderField>   secondFields;
         const auto                      secondResult = decoder.decodeFieldSection(4, asSpan(emptyValue), secondFields, controlBytes);
-        ASSERT_TRUE(secondResult.has_value()) << secondResult.error().message;
+        ASSERT_HAS_VALUE(secondResult) << secondResult.error().message;
         expectFieldsEqual(secondFields, {{":authority", ""}}, "静态表里 :authority 的值本就是空串");
     }
 
@@ -1462,7 +1463,7 @@ namespace AsynGyanis::Net
         // 上限为 0 表示不限（RFC 9114 §7.2.4.1 的默认取值）
         QpackDecoder unlimited(makeDecoderSettings(0, 0, 0));
         const auto   unlimitedResult = unlimited.decodeFieldSection(0, asSpan(section), fields, controlBytes);
-        ASSERT_TRUE(unlimitedResult.has_value()) << unlimitedResult.error().message;
+        ASSERT_HAS_VALUE(unlimitedResult) << unlimitedResult.error().message;
         EXPECT_EQ(fields.size(), 1U);
     }
 
@@ -1511,7 +1512,7 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(encoder.feedDecoderStream(asSpan(hexToBytes("84"))).has_value());
         encoderStreamBytes.clear();
         const auto allowed = encoder.setMaximumTableCapacityByteCount(50, encoderStreamBytes);
-        ASSERT_TRUE(allowed.has_value()) << allowed.error().message;
+        ASSERT_HAS_VALUE(allowed) << allowed.error().message;
         EXPECT_EQ(toHex(encoderStreamBytes), "3f13") << "容量 50 用 5 位前缀要两个字节";
         EXPECT_EQ(encoder.dynamicTableSizeByteCount(), 49U) << "只剩 :path 那一项，:authority 被挤掉";
         EXPECT_EQ(encoder.dynamicTableEntries().size(), 1U);
@@ -1571,7 +1572,7 @@ namespace AsynGyanis::Net
             std::vector<QpackHeaderField> fieldLines = makeFieldList(sections[index]);
             std::string                   localEncoderStream;
             const auto                    encoded = encoder.encodeFieldSection(index * 4, std::span<const QpackHeaderField>(fieldLines), headerBlock, localEncoderStream);
-            ASSERT_TRUE(encoded.has_value()) << encoded.error().message;
+            ASSERT_HAS_VALUE(encoded) << encoded.error().message;
             expectedSections.push_back(std::move(fieldLines));
             headerBlocks.push_back(headerBlock);
             accumulatedInstructions += localEncoderStream;
@@ -1586,7 +1587,7 @@ namespace AsynGyanis::Net
             const std::vector<std::uint8_t> sectionBytes(headerBlocks[index].begin(), headerBlocks[index].end());
             std::vector<QpackHeaderField>   fields;
             const auto                      result = decoder.decodeFieldSection(index * 4, asSpan(sectionBytes), fields, decoderStreamBytes);
-            ASSERT_TRUE(result.has_value()) << result.error().message;
+            ASSERT_HAS_VALUE(result) << result.error().message;
             EXPECT_EQ(*result, QpackFieldSectionDecodeStatus::Blocked) << "第 " << index << " 段引用的表项还没收到";
             EXPECT_TRUE(fields.empty()) << "挂起时不产出字段行";
             blockedStreamIds.push_back(index * 4);
@@ -1598,7 +1599,7 @@ namespace AsynGyanis::Net
         std::vector<std::uint64_t>      unblockedStreamIds;
         decoderStreamBytes.clear();
         const auto fed = decoder.feedEncoderStream(asSpan(instructionBytes), unblockedStreamIds, decoderStreamBytes);
-        ASSERT_TRUE(fed.has_value()) << fed.error().message;
+        ASSERT_HAS_VALUE(fed) << fed.error().message;
         EXPECT_EQ(unblockedStreamIds.size(), blockedStreamIds.size()) << "三条流都该被报出来";
 
         for (const std::uint64_t streamId: blockedStreamIds)
@@ -1606,17 +1607,17 @@ namespace AsynGyanis::Net
             std::vector<QpackHeaderField> fields;
             decoderStreamBytes.clear();
             const auto resumed = decoder.resumeBlockedFieldSection(streamId, fields, decoderStreamBytes);
-            ASSERT_TRUE(resumed.has_value()) << resumed.error().message;
+            ASSERT_HAS_VALUE(resumed) << resumed.error().message;
             ASSERT_EQ(*resumed, QpackFieldSectionDecodeStatus::Decoded) << "补齐后不该仍然挂起";
             expectFieldsEqual(fields, sections[streamId / 4], "流 " + std::to_string(streamId) + " 续解出的头列表");
 
             // 整段交给上层之后才发 Section Ack，并把解码器流字节送回编码器
             const auto delivered = decoder.noteFieldSectionDelivered(streamId, decoderStreamBytes);
-            ASSERT_TRUE(delivered.has_value()) << delivered.error().message;
+            ASSERT_HAS_VALUE(delivered) << delivered.error().message;
             const std::vector<std::uint8_t> acknowledgementBytes(decoderStreamBytes.begin(), decoderStreamBytes.end());
             ASSERT_FALSE(acknowledgementBytes.empty()) << "每段都要回一条 Section Ack";
             const auto fedBack = encoder.feedDecoderStream(asSpan(acknowledgementBytes));
-            ASSERT_TRUE(fedBack.has_value()) << fedBack.error().message;
+            ASSERT_HAS_VALUE(fedBack) << fedBack.error().message;
             EXPECT_EQ(*fedBack, acknowledgementBytes.size());
         }
 

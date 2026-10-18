@@ -14,6 +14,7 @@
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -64,7 +65,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"0", "-1", "42", "9223372036854775807", "-9223372036854775808"})
         {
             const std::optional<std::int64_t> parsed = withRawText(text, parseIntegerText);
-            ASSERT_TRUE(parsed.has_value()) << text;
+            ASSERT_HAS_VALUE(parsed) << text;
             EXPECT_EQ(*parsed, std::stoll(std::string(text))) << text;
         }
     }
@@ -94,7 +95,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"0", "-0", "3.5", "1e3", "-2.5E-3", "1.7976931348623157e308"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
-            ASSERT_TRUE(parsed.has_value()) << text;
+            ASSERT_HAS_VALUE(parsed) << text;
             EXPECT_DOUBLE_EQ(*parsed, std::stod(std::string(text))) << text;
         }
 
@@ -116,7 +117,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"inf", "INF", "Inf", "-inf", "infinity"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
-            ASSERT_TRUE(parsed.has_value()) << text;
+            ASSERT_HAS_VALUE(parsed) << text;
             // 用 isinf 加符号判定而不是 isposinf：后者在 C++ 里是可选设施，MSVC 不提供
             const bool positive = text.front() != '-';
             EXPECT_TRUE(std::isinf(*parsed) && (*parsed > 0.0) == positive) << text;
@@ -125,7 +126,7 @@ namespace AsynGyanis::Database::Detail
         for (const std::string_view text: {"nan", "NAN", "NaN", "-nan"})
         {
             const std::optional<double> parsed = withRawText(text, parseDoubleText);
-            ASSERT_TRUE(parsed.has_value()) << text;
+            ASSERT_HAS_VALUE(parsed) << text;
             EXPECT_TRUE(std::isnan(*parsed)) << text;
         }
     }

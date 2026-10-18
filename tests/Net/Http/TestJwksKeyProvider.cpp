@@ -10,6 +10,7 @@
 
 #include "Core/EventLoop/EventLoop.h"
 
+#include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
@@ -316,7 +317,7 @@ namespace AsynGyanis::Net
 
             // 阶段 2：头里是 k2、而当前键集只有 k1：必须拒，且原因点名 kid
             const std::optional<std::string> rejected = provider->verify(rotatedToken, JwtClaimExpectations{}, nowTimePoint);
-            EXPECT_TRUE(rejected.has_value()) << "未知 kid 的令牌竟被放行";
+            EXPECT_HAS_VALUE(rejected) << "未知 kid 的令牌竟被放行";
             if (rejected.has_value())
             {
                 EXPECT_NE(rejected->find("kid"), std::string::npos) << *rejected;
@@ -452,7 +453,7 @@ namespace AsynGyanis::Net
         ASSERT_NE(signingKey, nullptr);
         const std::string                token   = makeToken("k1", signingKey.get(), kNowSeconds + 3600);
         const std::optional<std::string> outcome = provider->verify(token, JwtClaimExpectations{}, TimePoint{std::chrono::seconds{kNowSeconds}});
-        ASSERT_TRUE(outcome.has_value());
+        ASSERT_HAS_VALUE(outcome);
         EXPECT_NE(outcome->find("尚未成功拉取"), std::string::npos) << *outcome;
     }
 

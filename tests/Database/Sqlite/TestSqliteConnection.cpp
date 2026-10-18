@@ -14,6 +14,7 @@
 #include "Database/Common/QueryExecutionException.h"
 #include "Database/Sqlite/SqliteConnection.h"
 #include "DatabaseTestSupport.h"
+#include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
 
@@ -730,18 +731,18 @@ namespace AsynGyanis::Database
         for (const Case &testCase: cases)
         {
             const std::optional<std::int64_t> baselineValue = readScalarInteger(connection(), testCase.readText);
-            ASSERT_TRUE(baselineValue.has_value()) << testCase.name << "：建连时读不出这一格，用例前提不成立";
+            ASSERT_HAS_VALUE(baselineValue) << testCase.name << "：建连时读不出这一格，用例前提不成立";
 
             // 先证明「改得动」：这一格没生效的话，后面的退回断言就是空的
             ASSERT_NE(executeRequired(connection(), testCase.changeText), nullptr) << testCase.name << "：" << connection().lastError();
             const std::optional<std::int64_t> changedValue = readScalarInteger(connection(), testCase.readText);
-            ASSERT_TRUE(changedValue.has_value()) << testCase.name << "：改完之后读不出来";
+            ASSERT_HAS_VALUE(changedValue) << testCase.name << "：改完之后读不出来";
             ASSERT_NE(*changedValue, *baselineValue) << testCase.name << "：那条 PRAGMA 没改变取值，用例前提不成立";
 
             ASSERT_TRUE(connection().resetSessionState()) << testCase.name << "：" << connection().lastError();
 
             const std::optional<std::int64_t> restoredValue = readScalarInteger(connection(), testCase.readText);
-            ASSERT_TRUE(restoredValue.has_value()) << testCase.name;
+            ASSERT_HAS_VALUE(restoredValue) << testCase.name;
             EXPECT_EQ(*restoredValue, *baselineValue) << "归还时没把 " << testCase.name << " 退回建连时那一份，下一个借用者接的是上一位的口径";
         }
     }
@@ -930,7 +931,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(result->next());
 
         const std::optional<std::string> mode = asText(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(mode.has_value());
+        ASSERT_HAS_VALUE(mode);
         EXPECT_EQ(toLowerCopy(mode.value()), "memory");
         EXPECT_TRUE(connection().lastError().empty()) << connection().lastError();
 
@@ -967,7 +968,7 @@ namespace AsynGyanis::Database
 
         // 文件库是 WAL PRAGMA 真正生效的场景，读回来必须是 wal
         const std::optional<std::string> mode = asText(result->getValue(std::size_t{0}));
-        ASSERT_TRUE(mode.has_value());
+        ASSERT_HAS_VALUE(mode);
         EXPECT_EQ(mode.value(), "wal");
     }
 

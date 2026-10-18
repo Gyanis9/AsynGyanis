@@ -8,6 +8,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpRequest.h"
 #include "Net/Http/HttpResponse.h"
@@ -148,7 +149,7 @@ TEST(HttpClientTraceContext, WritesTheHeaderBuiltFromTheGivenContext)
     carrier.setUri("/");
     ASSERT_TRUE(carrier.setHeader(kTraceparentHeaderName, echoed));
     const std::optional<TraceIdentifiers> parsed = extractTraceContext(carrier);
-    ASSERT_TRUE(parsed.has_value());
+    ASSERT_HAS_VALUE(parsed);
     EXPECT_EQ(parsed->traceIdText(), request.traceContext->traceIdText());
     EXPECT_EQ(parsed->parentIdText(), request.traceContext->parentIdText());
     EXPECT_TRUE(parsed->isSampled());

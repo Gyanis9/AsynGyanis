@@ -18,6 +18,7 @@
 
 #include "AllocationProbe.h"
 
+#include "ExpectedAssertions.h"
 #include "gtest/gtest.h"
 
 #include <algorithm>
@@ -58,7 +59,7 @@ namespace AsynGyanis::Net
     TEST(Traceparent, ParsesTheSpecExampleVerbatim)
     {
         const std::optional<TraceIdentifiers> identifiers = Traceparent::parse(kCanonicalTraceparent);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(identifiers->traceIdText(), kCanonicalTraceId);
         EXPECT_EQ(identifiers->parentIdText(), kCanonicalSpanId);
         EXPECT_EQ(identifiers->version, 0U);
@@ -75,7 +76,7 @@ namespace AsynGyanis::Net
         // flags 取 "0a"：采样位为 0，另一位按规范「原样传递、收到时忽略」
         const std::string                     unsampledWithOtherBits = corruptedByReplacing(kCanonicalTraceparent, 54U, 'a');
         const std::optional<TraceIdentifiers> identifiers            = Traceparent::parse(unsampledWithOtherBits);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(identifiers->flags, 0x0AU);
         EXPECT_FALSE(identifiers->isSampled());
     }
@@ -85,7 +86,7 @@ namespace AsynGyanis::Net
         // 版本 01 并多带一个附加字段：本实现不认识它的含义，但必须整条采信（§3.2.2）
         const std::string                     future      = "01-" + std::string(kCanonicalTraceId) + "-" + std::string(kCanonicalSpanId) + "-01-extra";
         const std::optional<TraceIdentifiers> identifiers = Traceparent::parse(future);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(identifiers->version, 1U);
         EXPECT_EQ(identifiers->traceIdText(), kCanonicalTraceId);
     }
@@ -93,7 +94,7 @@ namespace AsynGyanis::Net
     TEST(Traceparent, RenderRoundTripsTheVersionZeroValueByteForByte)
     {
         const std::optional<TraceIdentifiers> identifiers = Traceparent::parse(kCanonicalTraceparent);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(Traceparent::value(*identifiers), kCanonicalTraceparent);
 
         // 复用缓冲那条要给出同一串：容量随首条留下，稳态不碰堆
@@ -148,7 +149,7 @@ namespace AsynGyanis::Net
         {
             const TraceIdentifiers                generated = Traceparent::generate(true);
             const std::optional<TraceIdentifiers> reparsed  = Traceparent::parse(Traceparent::value(generated));
-            ASSERT_TRUE(reparsed.has_value()) << "自己生成的字段解析不回来：渲染与校验口径分叉了";
+            ASSERT_HAS_VALUE(reparsed) << "自己生成的字段解析不回来：渲染与校验口径分叉了";
             EXPECT_EQ(reparsed->version, 0U);
             EXPECT_TRUE(reparsed->isSampled());
             EXPECT_EQ(generated.traceId, reparsed->traceId);
@@ -180,7 +181,7 @@ namespace AsynGyanis::Net
     TEST(TraceState, ParsesMembersIgnoringWhitespaceAroundSeparators)
     {
         const std::optional<TraceState> state = TraceState::parse(" roto=abc ,  a=b=c , vendor-1.key=v ");
-        ASSERT_TRUE(state.has_value());
+        ASSERT_HAS_VALUE(state);
         ASSERT_EQ(state->entryCount(), 3U);
         EXPECT_EQ(state->entries()[0].key, "roto");
         EXPECT_EQ(state->entries()[0].value, "abc");
@@ -193,11 +194,11 @@ namespace AsynGyanis::Net
     TEST(TraceState, TreatsBlankFieldValueAsAbsentRatherThanMalformed)
     {
         const std::optional<TraceState> emptyState = TraceState::parse("");
-        ASSERT_TRUE(emptyState.has_value());
+        ASSERT_HAS_VALUE(emptyState);
         EXPECT_EQ(emptyState->entryCount(), 0U);
 
         const std::optional<TraceState> whitespaceState = TraceState::parse("   ");
-        ASSERT_TRUE(whitespaceState.has_value());
+        ASSERT_HAS_VALUE(whitespaceState);
         EXPECT_EQ(whitespaceState->entryCount(), 0U);
     }
 
@@ -221,7 +222,7 @@ namespace AsynGyanis::Net
     TEST(TraceState, UpsertMovesOwnKeyToFrontAndTruncatesToTheLimit)
     {
         std::optional<TraceState> parsed = TraceState::parse("a=1,b=2,c=3");
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         TraceState state = std::move(*parsed);
 
         ASSERT_TRUE(state.upsertFront("b", "fresh"));
@@ -258,7 +259,7 @@ namespace AsynGyanis::Net
             longList += "k" + std::to_string(index) + "=v";
         }
         const std::optional<TraceState> parsed = TraceState::parse(longList);
-        ASSERT_TRUE(parsed.has_value());
+        ASSERT_HAS_VALUE(parsed);
         EXPECT_EQ(parsed->entryCount(), 40U) << "条目过多不是畸形：规范许可「收到太多就删几条」";
 
         std::string rendered;
@@ -305,7 +306,7 @@ namespace AsynGyanis::Net
         request.addHeader("tracestate", "vendorb=def");
 
         const std::optional<TraceState> state = extractTraceState(request);
-        ASSERT_TRUE(state.has_value());
+        ASSERT_HAS_VALUE(state);
         ASSERT_EQ(state->entryCount(), 2U);
         EXPECT_EQ(state->entries()[0].key, "vendora");
         EXPECT_EQ(state->entries()[0].value, "abc");
@@ -338,7 +339,7 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(request.setHeader(kTraceparentHeaderName, kCanonicalTraceparent));
         const std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
-        ASSERT_TRUE(identifiers.has_value());
+        ASSERT_HAS_VALUE(identifiers);
         EXPECT_EQ(identifiers->traceIdText(), kCanonicalTraceId);
 
         static_cast<void>(request.setHeader(kTraceparentHeaderName, "not-a-traceparent"));
