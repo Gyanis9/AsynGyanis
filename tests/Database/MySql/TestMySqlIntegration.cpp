@@ -4275,4 +4275,40 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(granted->next());
     }
 
+
+    /**
+     * @brief 验证只读事务里的写语句由服务端拒，且拒绝之后数据没变
+     * @details 判据 2 的 MySQL 那一格。这一格刻意交给服务端回答：驱动要预判「这条语句是不是写」
+     *          就得自己解析 SQL，而 SELECT … FOR UPDATE、INSERT … SELECT 这类形态都会算写，
+     *          猜一次就会把能跑的语句拦死。报错里带错误码 1792，那是引擎自己的答复。
+     * @note 证伪：把事务对象取只读语句那一步换成普通开启语句，UPDATE 会成功，这条红。
+     */
+    TEST_F(MySqlIntegrationTest, ReadOnlyTransactionRejectsWritesOnTheServer)
+    {
+        ASSERT_TRUE(prepareTable(kAccountTableName, kAccountColumns)) << m_lastSetupError;
+        m_preparedTableName = std::string(kAccountTableName);
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        {
+            OrmQuery<IntegrationAccountRow> insertQuery(*pool);
+            ASSERT_EQ(1, insertQuery.insert(IntegrationAccountRow{.id = 1, .name = "只读靶", .balance = 1.0, .note = std::nullopt, .active = true}));
+        }
+
+        Transaction readOnlyTransaction(*pool, TransactionIsolationLevel::Default, TransactionAccessMode::ReadOnly);
+        ASSERT_TRUE(readOnlyTransaction.isActive());
+
+        // 同一笔事务里读得到：只读不是「读不到」
+        EXPECT_EQ(OrmQuery<IntegrationAccountRow>(readOnlyTransaction).count(), 1);
+
+        DatabaseConnection                   &holder  = readOnlyTransaction.connection();
+        const std::unique_ptr<DatabaseResult> written = holder.execute("UPDATE Asyn_Mysql_Account SET balance = 99 WHERE id = 1");
+        EXPECT_EQ(written, nullptr) << "只读事务里写成功了——那句 READ ONLY 没落到服务端";
+        EXPECT_NE(holder.lastError().find("1792"), std::string::npos) << "报错没带 MySQL 的那个错误码：" << holder.lastError();
+
+        ASSERT_TRUE(readOnlyTransaction.rollback());
+        const std::vector<IntegrationAccountRow> rows = OrmQuery<IntegrationAccountRow>(*pool).toList();
+        ASSERT_EQ(rows.size(), 1U);
+        EXPECT_EQ(rows[0].balance, 1.0) << "被拒的写还是改了数据";
+    }
+
 } // namespace AsynGyanis::Database

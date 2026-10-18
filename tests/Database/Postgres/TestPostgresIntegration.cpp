@@ -2226,4 +2226,38 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(granted->next());
     }
 
+
+    /**
+     * @brief 验证只读事务里的写语句由服务端拒（SQLSTATE 25006），读侧照旧
+     * @details 与 MySQL 那一格同形：本层不预判语句是不是写，交给引擎回答并把它的码带回来。
+     * @note 证伪：把事务对象取只读语句那一步换成普通开启语句，UPDATE 成功，这条红。
+     */
+    TEST_F(PostgresIntegrationTest, ReadOnlyTransactionRejectsWritesOnTheServer)
+    {
+        m_preparedTableNames.emplace_back(kMigratedTableName);
+
+        std::string                     errorText;
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
+        {
+            OrmQuery<IntegrationMigratedRow> insertQuery(*pool);
+            ASSERT_EQ(1, insertQuery.insert(IntegrationMigratedRow{.id = 1, .name = "只读靶", .note = std::nullopt, .balance = 1.0, .active = true}));
+        }
+
+        Transaction readOnlyTransaction(*pool, TransactionIsolationLevel::Default, TransactionAccessMode::ReadOnly);
+        ASSERT_TRUE(readOnlyTransaction.isActive());
+        EXPECT_EQ(OrmQuery<IntegrationMigratedRow>(readOnlyTransaction).count(), 1);
+
+        DatabaseConnection                   &holder  = readOnlyTransaction.connection();
+        const std::unique_ptr<DatabaseResult> written = holder.execute(R"(UPDATE "Asyn_Pg_Migrated" SET balance = 99 WHERE id = 1)");
+        EXPECT_EQ(written, nullptr) << "只读事务里写成功了——那句 READ ONLY 没落到服务端";
+        EXPECT_NE(holder.lastError().find("read-only"), std::string::npos) << "报错没带服务端那句只读拒绝：" << holder.lastError();
+
+        ASSERT_TRUE(readOnlyTransaction.rollback());
+        const std::vector<IntegrationMigratedRow> rows = OrmQuery<IntegrationMigratedRow>(*pool).toList();
+        ASSERT_EQ(rows.size(), 1U);
+        EXPECT_EQ(rows[0].balance, 1.0) << "被拒的写还是改了数据";
+    }
+
 } // namespace AsynGyanis::Database

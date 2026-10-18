@@ -1115,3 +1115,12 @@ TEST(PostgresDialectSelect, RowLockClauseFollowsPagination)
     EXPECT_EQ(statement.sql, R"(SELECT "id" FROM "users" LIMIT $1 FOR UPDATE)");
     EXPECT_EQ(statement.parameters.size(), 1U);
 }
+
+/// @brief 验证只读事务的开启语句：这一家 START TRANSACTION 与 BEGIN 同义，READ ONLY 是尾缀
+TEST(PostgresDialectTransaction, ReadOnlyTransactionUsesTheNamedStartForm)
+{
+    const PostgresDialect dialect;
+
+    ASSERT_TRUE(dialect.readOnlyTransactionStatement().has_value());
+    EXPECT_EQ(*dialect.readOnlyTransactionStatement(), "START TRANSACTION READ ONLY");
+}

@@ -111,6 +111,14 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::optional<std::string_view> rowLockClause() const noexcept override;
 
         /**
+         * @brief 只读事务的开启语句返回 "START TRANSACTION READ ONLY"
+         * @details 重写 SqlDialect::readOnlyTransactionStatement()：该形态是 MySQL 8 的正式语法，
+         *          事务期间任何写语句都会以错误 1792 被服务端拒掉（包括隐式提交的 DDL）。
+         * @return std::optional<std::string_view> 恒有值
+         */
+        [[nodiscard]] std::optional<std::string_view> readOnlyTransactionStatement() const noexcept override;
+
+        /**
          * @brief 把逻辑列类型翻译成 MySQL 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：整数按位宽与符号分家，选与 C++ 类型位宽
          *          对齐的成员；Bool→"TINYINT(1)" 是官方保留的「是否型」写法

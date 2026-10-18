@@ -155,6 +155,13 @@ namespace AsynGyanis::Database
         return "FOR UPDATE";
     }
 
+    std::optional<std::string_view> PostgresDialect::readOnlyTransactionStatement() const noexcept
+    {
+        // 这一家 START TRANSACTION 与 BEGIN 同义，READ ONLY 是它们的尾缀；
+        // 不用 SET TRANSACTION READ ONLY——那条要在 BEGIN 之后发，本形态一步到位
+        return "START TRANSACTION READ ONLY";
+    }
+
     bool PostgresDialect::isolationLevelStatementFollowsBegin() const noexcept
     {
         // 事务块外执行 SET TRANSACTION 只会得到警告且不生效（见头文件说明），

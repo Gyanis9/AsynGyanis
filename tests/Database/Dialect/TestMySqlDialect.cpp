@@ -1342,3 +1342,12 @@ TEST(MySqlDialectSelect, PlainSelectCarriesNoRowLockClause)
 
     EXPECT_EQ(dialect.translate(node).sql, "SELECT * FROM `users`");
 }
+
+/// @brief 验证只读事务的开启语句用的是 START TRANSACTION READ ONLY
+TEST(MySqlDialectTransaction, ReadOnlyTransactionUsesTheNamedStartForm)
+{
+    const MySqlDialect dialect;
+
+    ASSERT_TRUE(dialect.readOnlyTransactionStatement().has_value());
+    EXPECT_EQ(*dialect.readOnlyTransactionStatement(), "START TRANSACTION READ ONLY");
+}

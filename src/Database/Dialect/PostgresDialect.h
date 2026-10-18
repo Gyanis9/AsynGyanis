@@ -210,6 +210,15 @@ namespace AsynGyanis::Database
         [[nodiscard]] std::optional<std::string_view> rowLockClause() const noexcept override;
 
         /**
+         * @brief 只读事务的开启语句返回 "START TRANSACTION READ ONLY"
+         * @details 重写 SqlDialect::readOnlyTransactionStatement()：与 `BEGIN READ ONLY` 同义
+         *          （PostgreSQL 的 START TRANSACTION / BEGIN 是同一入口的不同拼法）。该形态下
+         *          任何写语句都由服务端以 SQLSTATE 25006 拒绝，而读侧拿到的是本事务的固定快照。
+         * @return std::optional<std::string_view> 恒有值
+         */
+        [[nodiscard]] std::optional<std::string_view> readOnlyTransactionStatement() const noexcept override;
+
+        /**
          * @brief 隔离级别设置语句在 BEGIN 之后执行（PostgreSQL 的硬性要求）
          * @details 重写 SqlDialect::isolationLevelStatementFollowsBegin()：PostgreSQL 的
          *          `SET TRANSACTION` 只在事务块内有效，事务块外发出会得到

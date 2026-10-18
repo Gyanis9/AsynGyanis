@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace AsynGyanis::Database
@@ -17,7 +18,11 @@ namespace AsynGyanis::Database
     {
     }
 
-    Transaction::Transaction(ConnectionPool &pool, const TransactionIsolationLevel isolationLevel)
+    Transaction::Transaction(ConnectionPool &pool, const TransactionIsolationLevel isolationLevel) : Transaction(pool, isolationLevel, TransactionAccessMode::ReadWrite)
+    {
+    }
+
+    Transaction::Transaction(ConnectionPool &pool, const TransactionIsolationLevel isolationLevel, const TransactionAccessMode accessMode)
     {
         // 构造的第一步就锁定连接：事务期间的每一条语句都必须落在同一条连接上，
         // 若拖到第一条语句再去池里取，BEGIN 与后续语句就可能分属不同连接（见文件头说明）
@@ -32,6 +37,18 @@ namespace AsynGyanis::Database
         // 写死在事务对象里等于把方言知识放到了错误的层。方言在此解析一次并缓存，
         // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
+
+        // 只读形态在任何语句发出之前就判定：引擎给不出那句话就当场拒绝，而不是开一笔普通事务
+        // 「反正也读不出区别」。顺序排在隔离级别语句之前还有第二层理由——SET TRANSACTION 一旦发出去
+        // 就落在连接会话上，此时再抛出，那条连接带着残留设置归还池，下一个借用者读到的是别人的一档
+        const std::optional<std::string_view> beginStatement =
+                accessMode == TransactionAccessMode::ReadOnly ? m_dialect->readOnlyTransactionStatement() : std::optional<std::string_view>{m_dialect->beginTransactionStatement()};
+        if (!beginStatement.has_value())
+        {
+            throw Base::InvalidArgumentException("数据库事务：引擎 " + std::string(databaseTypeName(m_connection->databaseType())) +
+                                                 " 没有只读事务形态，无法按 ReadOnly 开启。SQLite 的 BEGIN 只有 deferred / immediate / exclusive 三种，"
+                                                 "都不区分读写；要防误写请在同一连接上开事务后立刻执行只读约束（应用层判据），或换用 MySQL / PostgreSQL");
+        }
 
         // 请求了非默认隔离级别：取出方言的设置语句并检查可用性。语句文本的执行位置由方言决定
         // （MySQL / SQLite 的 SET TRANSACTION 必须在事务开始前生效；PostgreSQL 恰恰相反，
@@ -56,7 +73,7 @@ namespace AsynGyanis::Database
 
         // BEGIN 失败（例如同一连接上已有未结束的事务）必须让构造失败：返回一个「看起来在事务里、
         // 实际没有事务」的对象，会让后续每一条语句都静默运行在自动提交模式下
-        if (!executeControlStatement(m_dialect->beginTransactionStatement()))
+        if (!executeControlStatement(*beginStatement))
         {
             // 带上连接的原生码：m_lastError 这段文本正是从这条连接抄来的（见
             // executeControlStatement），因此两者的配对关系成立

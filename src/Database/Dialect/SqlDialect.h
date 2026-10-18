@@ -205,6 +205,18 @@ namespace AsynGyanis::Database
         [[nodiscard]] virtual std::string_view beginTransactionStatement() const noexcept = 0;
 
         /**
+         * @brief 只读事务的开启语句文本，空表示本引擎没有这一形态
+         * @details 默认空：没有只读事务形态的引擎不必覆写，事务对象据此拒绝而不是退化成普通事务。
+         *          只读事务里执行写语句由**服务端**拒（两家各有确定错误码），本层不预判语句是不是写——
+         *          裸 SQL 的动词形态无法可靠分辨（`SELECT … FOR UPDATE`、`INSERT … SELECT` 都算写）。
+         * @return std::optional<std::string_view> 有值即用该语句开启；空即不支持
+         */
+        [[nodiscard]] virtual std::optional<std::string_view> readOnlyTransactionStatement() const noexcept
+        {
+            return std::nullopt;
+        }
+
+        /**
          * @brief 开启事务之前要发的隔离级别设置语句
          *
          * @details 事务对象在 BEGIN 之前执行它，语句本身只影响紧随其后的那一笔事务

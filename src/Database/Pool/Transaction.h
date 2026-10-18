@@ -37,6 +37,16 @@
 namespace AsynGyanis::Database
 {
     /**
+     * @brief 事务的读写形态
+     * @details 与隔离级别是两条独立的轴：只读事务不等于「更低的一致性」，它承诺的是「这一笔不写」。
+     */
+    enum class TransactionAccessMode
+    {
+        ReadWrite, ///< 普通事务：读写都允许（默认）
+        ReadOnly,  ///< 只读事务：引擎把这一笔钉成只读，写语句由服务端拒
+    };
+
+    /**
      * @brief RAII 事务对象
      *
      * @details 构造即从连接池借出连接并执行方言的开启事务语句；commit() / rollback() 幂等，
@@ -71,6 +81,23 @@ namespace AsynGyanis::Database
          *       参数校验（含隔离级别可用性）排在任何语句发出之前
          */
         explicit Transaction(ConnectionPool &pool, TransactionIsolationLevel isolationLevel);
+
+        /**
+         * @brief 从连接池借出连接并按指定读写形态开启事务
+         *
+         * @param pool 提供连接的连接池，本对象在析构前一直占用其中一条连接
+         * @param isolationLevel 请求的事务隔离级别；Default 表示引擎默认（不发额外语句）
+         * @param accessMode 读写形态；ReadOnly 用方言的只读开启语句，引擎没有这一形态时当场拒绝
+         *
+         * @throws ConnectionUnavailableException 池中取不到连接
+         * @throws Base::InvalidArgumentException 引擎没有只读事务形态（SQLite、未实现方言的类型），
+         *         或所请求的隔离级别不可用——拒绝并点名引擎，不退化成一笔普通事务
+         * @throws QueryExecutionException 驱动拒绝开启语句或隔离级别语句
+         * @note 只读事务里的写语句由**服务端**拒（MySQL 错误 1792、PostgreSQL SQLSTATE 25006），
+         *       本层不预判「这条语句是不是写」：裸 SQL 的动词形态无法可靠分辨，
+         *       `SELECT … FOR UPDATE` 与 `INSERT … SELECT` 都算写，猜一次就会把能跑的语句拦死
+         */
+        explicit Transaction(ConnectionPool &pool, TransactionIsolationLevel isolationLevel, TransactionAccessMode accessMode);
 
         /**
          * @brief 从连接池借出连接并开启事务（引擎默认隔离级别）

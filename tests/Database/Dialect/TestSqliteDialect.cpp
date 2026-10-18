@@ -1767,3 +1767,15 @@ TEST(SqliteDialectSelect, PlainSelectStillCarriesNoRowLockClause)
 
     EXPECT_EQ(dialect.translate(node).sql, "SELECT * FROM \"users\"");
 }
+
+/**
+ * @brief 验证 SQLite 交出「没有只读事务形态」而不是编一句顶替
+ * @details 三种 BEGIN 模式管的是取写锁的时机，不是读写权限。返回空值才能让事务对象给出
+ *          带引擎名的拒绝；返回一句「差不多」的文本就是把拒绝变成了静默降级。
+ */
+TEST(SqliteDialectTransaction, ReadOnlyFormIsReportedAsUnavailable)
+{
+    const SqliteDialect dialect;
+
+    EXPECT_FALSE(dialect.readOnlyTransactionStatement().has_value());
+}

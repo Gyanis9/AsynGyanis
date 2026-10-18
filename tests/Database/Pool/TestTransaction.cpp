@@ -1337,3 +1337,21 @@ TEST_F(TransactionTest, BudgetCheckedAgainAfterWaitingForTheConnectionLock)
     EXPECT_TRUE(transaction.isActive());
     EXPECT_TRUE(transaction.rollback()) << transaction.lastError();
 }
+
+/**
+ * @brief 验证 SQLite 没有只读事务形态时构造当场拒绝并点名引擎
+ * @details 本引擎的 BEGIN 只有 deferred / immediate / exclusive 三种，都不区分读写。静默退化成
+ *          普通事务是最坏的形状：调用方以为钉住了「这一笔不写」，而写语句照旧落库。
+ * @note 证伪：把 Transaction 里取只读语句那一步换成普通开启语句，这条红在「不抛」上；
+ *       给 SqliteDialect 覆写出一个形态来，同样红（那时引擎就有了，本用例的前提不再成立，要改的是判据归属）。
+ */
+TEST_F(TransactionTest, ReadOnlyAccessModeIsRejectedOnSqlite)
+{
+    ASSERT_THROW(static_cast<void>(Transaction(*m_pool, TransactionIsolationLevel::Default, AsynGyanis::Database::TransactionAccessMode::ReadOnly)),
+                 AsynGyanis::Base::InvalidArgumentException);
+
+    // 抛出之后连接要照常归还：构造失败时已借出的那份由 PooledConnection 的析构收尾
+    PooledConnection connection = m_pool->acquire();
+    ASSERT_TRUE(connection) << "拒绝只读形态时把一条连接漏在池外";
+    EXPECT_EQ(countCommittedRows(), 0);
+}

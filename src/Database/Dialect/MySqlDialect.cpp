@@ -42,6 +42,13 @@ namespace AsynGyanis::Database
         return "FOR UPDATE";
     }
 
+    std::optional<std::string_view> MySqlDialect::readOnlyTransactionStatement() const noexcept
+    {
+        // MySQL 的正式写法就是 START TRANSACTION READ ONLY；不用 SET TRANSACTION READ ONLY，
+        // 那条只管紧随其后的下一笔事务，与本对象「这一笔就是只读」的意图不是一件事
+        return "START TRANSACTION READ ONLY";
+    }
+
     std::optional<std::string> MySqlDialect::currentDatabaseNameStatement() const
     {
         // GET_LOCK 是服务器级的：把库名揉进锁键，同服务器上的两个库才不会互相挡住迁移
