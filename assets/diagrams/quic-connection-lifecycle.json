@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "317967523990ba7e45db589d7da62bfb7fce7866"
+      "revision": "d60099b7c81ba5a57ce0d8e171e4200682c146d0"
     },
     "views": [
       {
@@ -257,7 +257,7 @@
         "idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:116、QuicConnectionCore.cpp:1346）",
       "「不启用」有两种来路，走的是同一条出口：两端都宣告 0，以及宣告得大到折不进 Timestamp（微秒域的一半让给「现在」）——后者不报错也不夹到上界，因为一个折不进计时器的天数说的就是「没设这一项」（QuicConnectionCore.cpp:1321-1325 的注）",
         "服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（QuicConnectionCore.cpp:1163、533）",
-        "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:93、101）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:118、493、434）"
+        "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:95、103）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:118、493、434）"
       ]
     },
     {
