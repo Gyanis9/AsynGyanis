@@ -114,11 +114,12 @@ namespace AsynGyanis::Database
      */
     TEST(RedisSentinel, RefusesAnEmptySentinelTable)
     {
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>{}, std::string_view{"mymaster"}, sentinelConfiguration());
 
         ASSERT_FALSE(outcome.has_value());
-        EXPECT_NE(outcome.error().find("没有给哨兵地址"), std::string::npos) << outcome.error();
+        EXPECT_NE(outcome.error().message.find("没有给哨兵地址"), std::string::npos) << outcome.error().message;
+        EXPECT_EQ(outcome.error().kind, RedisSentinelErrorKind::InvalidConfiguration) << "空表要在发出任何字节之前就判成配置错";
     }
 
     /**
@@ -131,13 +132,14 @@ namespace AsynGyanis::Database
      */
     TEST(RedisSentinel, RefusesAnEmptyMasterNameBeforeAsking)
     {
-        const std::vector<RedisSentinelAddress>                sentinels{RedisSentinelAddress{"127.0.0.1", 1}};
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{RedisSentinelAddress{"127.0.0.1", 1}};
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view{}, sentinelConfiguration());
 
         ASSERT_FALSE(outcome.has_value());
-        EXPECT_NE(outcome.error().find("监控名"), std::string::npos) << outcome.error();
-        EXPECT_EQ(outcome.error().find("连不上"), std::string::npos) << "这条请求走到了连线上，判据就分不出「没填名字」与「哨兵坏了」：" << outcome.error();
+        EXPECT_NE(outcome.error().message.find("监控名"), std::string::npos) << outcome.error().message;
+        EXPECT_EQ(outcome.error().message.find("连不上"), std::string::npos) << "这条请求走到了连线上，判据就分不出「没填名字」与「哨兵坏了」：" << outcome.error().message;
+        EXPECT_EQ(outcome.error().kind, RedisSentinelErrorKind::InvalidConfiguration) << "没填监控名是调用方的配置错，不许报成哨兵的可用性故障";
     }
 
     /**
@@ -146,14 +148,32 @@ namespace AsynGyanis::Database
      */
     TEST(RedisSentinel, SkipsAddressesThatMissAHostOrAPort)
     {
-        const std::vector<RedisSentinelAddress>                sentinels{RedisSentinelAddress{"", 26379}, RedisSentinelAddress{"127.0.0.1", 0}};
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{RedisSentinelAddress{"", 26379}, RedisSentinelAddress{"127.0.0.1", 0}};
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view{"mymaster"}, sentinelConfiguration());
 
         ASSERT_FALSE(outcome.has_value());
-        EXPECT_NE(outcome.error().find("地址不完整"), std::string::npos) << outcome.error();
-        EXPECT_NE(outcome.error().find("2 个哨兵"), std::string::npos) << "汇总没说清问了几台：" << outcome.error();
-        EXPECT_TRUE(containsLocalizedText(outcome.error())) << outcome.error();
+        EXPECT_NE(outcome.error().message.find("地址不完整"), std::string::npos) << outcome.error().message;
+        EXPECT_NE(outcome.error().message.find("2 个哨兵"), std::string::npos) << "汇总没说清问了几台：" << outcome.error().message;
+        EXPECT_TRUE(containsLocalizedText(outcome.error().message)) << outcome.error().message;
+        EXPECT_EQ(outcome.error().kind, RedisSentinelErrorKind::InvalidConfiguration) << "整张表都没碰上线时，这是地址表的问题而不是哨兵坏了";
+    }
+
+    /**
+     * @brief 钉住「真去连过却没人答」与「地址表本身不成形」分成两档
+     * @details 端口 1 上没有监听（回环直接回拒），因此第一台一定碰了线；第二台主机名为空，只会被跳过。
+     *          这条不需要任何哨兵在跑，判据只可能来自这一条路径本身——汇总那一档到底报哪一档，
+     *          看的就是有没有格子真的碰过线，而不是有没有格子被跳过
+     */
+    TEST(RedisSentinel, SeparatesUnreachableSentinelsFromAnIncompleteTable)
+    {
+        const std::vector<RedisSentinelAddress>           reached{RedisSentinelAddress{"127.0.0.1", 1}, RedisSentinelAddress{"", 26379}};
+        const RedisSentinelExpected<RedisSentinelAddress> mixed =
+                resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(reached), std::string_view{"mymaster"}, sentinelConfiguration());
+
+        ASSERT_FALSE(mixed.has_value());
+        EXPECT_NE(mixed.error().message.find("连不上"), std::string::npos) << mixed.error().message;
+        EXPECT_EQ(mixed.error().kind, RedisSentinelErrorKind::NoSentinelReachable) << "只要真碰过线，汇总就该报可用性故障而不是配置错";
     }
 
     // ------------------------------------------------------------------------
@@ -178,11 +198,11 @@ namespace AsynGyanis::Database
         // 不清就是每一次发现都在建连的最后一步失败，而原因看起来像「这个哨兵坏了」
         ConnectionConfig credentials = sentinelConfiguration();
         credentials.database         = "5";
-        const std::vector<RedisSentinelAddress>                sentinels{sentinelAddress()};
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{sentinelAddress()};
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), credentials);
 
-        ASSERT_HAS_VALUE(outcome) << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << outcome.error().message;
         EXPECT_FALSE(outcome->host.empty());
         EXPECT_EQ(outcome->port, expectedMasterPort()) << "哨兵报的主库端口不是预期的那个，发现链路可能连的是另一个实例";
     }
@@ -200,14 +220,15 @@ namespace AsynGyanis::Database
             GTEST_SKIP() << "未设置 ASYN_REDIS_SENTINEL_TEST_NAME，跳过哨兵真机用例";
         }
 
-        const std::vector<RedisSentinelAddress>                sentinels{sentinelAddress()};
-        const std::string                                      unknownName = masterName + "-没有这个名字";
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{sentinelAddress()};
+        const std::string                                 unknownName = masterName + "-没有这个名字";
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(unknownName), sentinelConfiguration());
 
         ASSERT_FALSE(outcome.has_value());
-        EXPECT_NE(outcome.error().find(unknownName), std::string::npos) << "原因里没点出是哪一个名字没被监控：" << outcome.error();
-        EXPECT_NE(outcome.error().find("换下一个也问不出来"), std::string::npos) << "没说清这是配置错而不是可用性故障：" << outcome.error();
+        EXPECT_NE(outcome.error().message.find(unknownName), std::string::npos) << "原因里没点出是哪一个名字没被监控：" << outcome.error().message;
+        EXPECT_NE(outcome.error().message.find("换下一个也问不出来"), std::string::npos) << "没说清这是配置错而不是可用性故障：" << outcome.error().message;
+        EXPECT_EQ(outcome.error().kind, RedisSentinelErrorKind::MasterNotMonitored) << "名字没被监控要单独成一档：换下一个哨兵也一样问不出";
     }
 
     /**
@@ -223,11 +244,11 @@ namespace AsynGyanis::Database
             GTEST_SKIP() << "未设置 ASYN_REDIS_SENTINEL_TEST_NAME，跳过哨兵真机用例";
         }
 
-        const std::vector<RedisSentinelAddress>                sentinels{RedisSentinelAddress{"127.0.0.1", 1}, sentinelAddress()};
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{RedisSentinelAddress{"127.0.0.1", 1}, sentinelAddress()};
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
 
-        ASSERT_HAS_VALUE(outcome) << outcome.error();
+        ASSERT_HAS_VALUE(outcome) << outcome.error().message;
         EXPECT_EQ(outcome->port, expectedMasterPort());
     }
 
@@ -244,14 +265,15 @@ namespace AsynGyanis::Database
             GTEST_SKIP() << "未设置 ASYN_REDIS_SENTINEL_TEST_NAME，跳过哨兵真机用例";
         }
 
-        const std::vector<RedisSentinelAddress>                sentinels{RedisSentinelAddress{"127.0.0.1", 1}, RedisSentinelAddress{"", 26379}};
-        const std::expected<RedisSentinelAddress, std::string> outcome =
+        const std::vector<RedisSentinelAddress>           sentinels{RedisSentinelAddress{"127.0.0.1", 1}, RedisSentinelAddress{"", 26379}};
+        const RedisSentinelExpected<RedisSentinelAddress> outcome =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
 
         ASSERT_FALSE(outcome.has_value());
-        EXPECT_NE(outcome.error().find("问遍 2 个哨兵"), std::string::npos) << outcome.error();
-        EXPECT_NE(outcome.error().find("连不上"), std::string::npos) << "第一台的原因没留在汇总里：" << outcome.error();
-        EXPECT_NE(outcome.error().find("地址不完整"), std::string::npos) << "第二台的原因没留在汇总里：" << outcome.error();
+        EXPECT_NE(outcome.error().message.find("问遍 2 个哨兵"), std::string::npos) << outcome.error().message;
+        EXPECT_NE(outcome.error().message.find("连不上"), std::string::npos) << "第一台的原因没留在汇总里：" << outcome.error().message;
+        EXPECT_NE(outcome.error().message.find("地址不完整"), std::string::npos) << "第二台的原因没留在汇总里：" << outcome.error().message;
+        EXPECT_EQ(outcome.error().kind, RedisSentinelErrorKind::NoSentinelReachable) << "真连过第一台，汇总就该按可用性故障交回";
     }
 
     /**
@@ -285,10 +307,10 @@ namespace AsynGyanis::Database
             GTEST_SKIP() << "未设置 ASYN_REDIS_TEST_PASSWORD：故障转移用例要连上旧主库发 SHUTDOWN，跳过";
         }
 
-        const std::vector<RedisSentinelAddress>                sentinels{sentinelAddress()};
-        const std::expected<RedisSentinelAddress, std::string> before =
+        const std::vector<RedisSentinelAddress>           sentinels{sentinelAddress()};
+        const RedisSentinelExpected<RedisSentinelAddress> before =
                 resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
-        ASSERT_HAS_VALUE(before) << before.error();
+        ASSERT_HAS_VALUE(before) << before.error().message;
 
         ConnectionConfig masterConfiguration = ConnectionConfig::redisDefault();
         masterConfiguration.host             = before->host;
@@ -309,7 +331,7 @@ namespace AsynGyanis::Database
         const auto                          deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
         while (std::chrono::steady_clock::now() < deadline)
         {
-            std::expected<RedisSentinelAddress, std::string> outcome =
+            RedisSentinelExpected<RedisSentinelAddress> outcome =
                     resolveSentinelMasterAddress(std::span<const RedisSentinelAddress>(sentinels), std::string_view(masterName), sentinelConfiguration());
             if (outcome.has_value())
             {
@@ -320,7 +342,7 @@ namespace AsynGyanis::Database
                 }
             } else
             {
-                lastQueryError = outcome.error();
+                lastQueryError = outcome.error().message;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }

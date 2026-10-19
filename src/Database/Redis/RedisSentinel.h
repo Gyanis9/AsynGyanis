@@ -36,6 +36,36 @@ namespace AsynGyanis::Database
     };
 
     /**
+     * @brief 一次主库地址发现失败的类别
+     * @details 按「调用方下一步做什么」切，不按本函数走到哪一步切：这四档在编排层是四种处置——
+     *          改配置、改监控名、换时间与重试、或报「协议对不上」并停下来
+     */
+    enum class RedisSentinelErrorKind
+    {
+        InvalidConfiguration, ///< 传进来的地址表或监控名不成形：还没发出任何字节
+        MasterNotMonitored,   ///< 哨兵明确回答「没有监控这个名字」：各哨兵之间是同步的，换下一个也一样
+        NoSentinelReachable,  ///< 问遍了都没拿到答案：连不上、答不上或地址格不完整，属可用性故障
+        MalformedReply,       ///< 哨兵答了却不是约定的形状：版本对不上或被中间层改过，该停下来查
+    };
+
+    /**
+     * @brief 一条发现失败：类别供分支，文案供人看
+     */
+    struct ASYN_DATABASE_API RedisSentinelError
+    {
+        RedisSentinelErrorKind kind;    ///< 失败类别，编排层据此选处置
+        std::string            message; ///< 中文原因，含是哪一台哨兵、哪一步与回复现场
+    };
+
+    /**
+     * @brief 发现的结果形状：成功带 Value，失败侧固定为 RedisSentinelError
+     * @details 只有这一半有消费方：发现这一步要么给出一对地址要么给不出，没有「只问成不成」的调用面，
+     *          因此不造没人用的 `RedisSentinelStatus`
+     */
+    template<typename Value>
+    using RedisSentinelExpected = std::expected<Value, RedisSentinelError>;
+
+    /**
      * @brief 向哨兵问一个被监控主库的当前地址（`SENTINEL get-master-addr-by-name`）
      *
      * @details 这是「主从失效转移」里只读的那一步：把一个监控名换成一对口前的主库地址，
@@ -57,11 +87,12 @@ namespace AsynGyanis::Database
      * @param sentinels 哨兵地址表，按尝试顺序给出；空表是配置错误
      * @param masterName `sentinel monitor` 里那个监控名
      * @param sentinelCredentials 连哨兵要用的配置（主机与端口按表覆盖；database 一格被忽略）
-     * @return std::expected<RedisSentinelAddress, std::string> 当前主库地址
-     * @return std::unexpected 配置不合法、监控名不被任何哨兵承认，或全部哨兵都问不到，
-     *         原因是中文且点明是哪一个哨兵、哪一步
+     * @return RedisSentinelExpected<RedisSentinelAddress> 当前主库地址
+     * @return RedisSentinelError 带类别与中文原因：配置不合法是 `InvalidConfiguration`，监控名不被
+     *         任何哨兵承认是 `MasterNotMonitored`，全部哨兵都问不到是 `NoSentinelReachable`，
+     *         答了却不是约定形状是 `MalformedReply`。原因一律中文且点明是哪一个哨兵、哪一步
      */
-    [[nodiscard]] ASYN_DATABASE_API std::expected<RedisSentinelAddress, std::string>
+    [[nodiscard]] ASYN_DATABASE_API RedisSentinelExpected<RedisSentinelAddress>
     resolveSentinelMasterAddress(std::span<const RedisSentinelAddress> sentinels, std::string_view masterName, const ConnectionConfig &sentinelCredentials);
 
 } // namespace AsynGyanis::Database
