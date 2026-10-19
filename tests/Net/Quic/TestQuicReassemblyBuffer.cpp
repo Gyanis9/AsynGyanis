@@ -1,4 +1,4 @@
-// TestQuicReassemblyBuffer.cpp —— 按偏移重组字节的缓存（RFC 9000 §7.5）用例
+// TestQuicReassemblyBuffer.cpp —— 按偏移重组字节的缓存（RFC 9000 §2.2 与 §19.8）用例
 //
 // 对端可以按任意边界重发同一段字节，因此这里的核心契约是「每个偏移恰好交付一次」：
 // 覆盖：1) 缺口未补时一律不交付；2) 新段起点落在已缓存段中间时要把那一段一起并进来
@@ -90,7 +90,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 已交付前缀之下的重发剪掉，只补没见过的尾巴（§7.5）
+     * @brief 已交付前缀之下的重发剪掉，只补没见过的尾巴（§2.2）
      */
     TEST(QuicReassemblyBuffer, TrimsBytesBelowDeliveredOffset)
     {

@@ -497,7 +497,7 @@ namespace AsynGyanis::Net
         if (!m_headerDecoder.decode(headerBlock, headerFields, &errorText))
         {
             // HPACK 动态表是连接级状态：解不开就等于两边的表已经错位，留着连接只会让后面的每个
-            // 头块都解歪（§7.5.1 要求按 COMPRESSION_ERROR 收尾连接）
+            // 头块都解歪（RFC 9113 §4.3 要求按 COMPRESSION_ERROR 收尾连接）
             failConnection(Http2ErrorCode::CompressionError, "响应头块解码失败：" + errorText);
             return false;
         }

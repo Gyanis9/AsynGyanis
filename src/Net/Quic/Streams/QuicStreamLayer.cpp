@@ -266,7 +266,7 @@ namespace AsynGyanis::Net
             stream.receivedHighWaterOffset = endOffset;
         }
 
-        // 重复与重叠的分片由缓存按覆盖区合并，头部重叠不必在这里先剪（§7.5）；
+        // 重复与重叠的分片由缓存按覆盖区合并，头部重叠不必在这里先剪（§2.2）；
         // 缓存也不必另设上限：能进来的偏移都已经在流级与连接级额度之内
         stream.reassembly.insert(frame.offset, frame.data);
         drainContiguousBytes(stream, streamId);

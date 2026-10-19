@@ -16,7 +16,7 @@ namespace AsynGyanis::Net
         std::span<const std::uint8_t> pendingBytes = bytes;
         if (begin < m_deliveredOffset)
         {
-            // §7.5：交付过的字节不再重复交付，只留没见过的尾巴
+            // §2.2：交付过的字节不再重复交付，只留没见过的尾巴
             const std::size_t alreadyDeliveredByteCount = static_cast<std::size_t>(m_deliveredOffset - begin);
             begin                                       = m_deliveredOffset;
             pendingBytes                                = pendingBytes.subspan(alreadyDeliveredByteCount);
