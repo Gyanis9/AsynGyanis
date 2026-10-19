@@ -153,6 +153,7 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
   转手时写「本层补充的文案 + `x.error().kind`」，只有本层自己判出来的失败才给新 kind；`AcmeCertificateManager`
   的 dns-01 写入与撤回两处按此透传，`WithdrawsTheTxtWhenThePublishStepReportsFailure` 钉住它。就地记日志而不改
   返回值的失败（撤回没干净那只进 `LOG_WARN`）不属于转手，按日志的口径写。
+- 判词在**产出处就地格式化**，不推到上报处：解码层每一条失败出口多付的就是判词那几句串（逐条读数写在用例开头，只有一处真源），与一次坏包本身的收包成本同量级；推到上报处会让每个消费点重拼同一句，而那几处要的措辞并不相同。这条判定由 `tests/Net/Quic/Codec/TestQuicDecodeFailureAllocations.cpp` 钉住——按一千次坏包摊平，钉的是**上界**而非精确值（串是否落到堆随标准库的小串内联容量变），往后在失败路径上加一次分配会当场红。
 - 异常**不得跨线程/跨回调传播**：事件循环的派发单元（`Scheduler` 的每处投递与恢复、
   `IoWatcher::handleEvents` 的每次 `resume`）、会话回调、线程池任务都必须就地收下抛出的
   异常，转成日志 + 计数（`Scheduler::failedDispatchCount()`、`FileWatcher::failedCallbackCount()`）
