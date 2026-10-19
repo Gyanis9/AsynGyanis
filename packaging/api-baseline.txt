@@ -1,8 +1,8 @@
 # AsynGyanis 公开接口面基线：由 scripts/check-api-baseline.py --write 生成，请勿手改
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
-# version=4.0.0
-# headers=300 entries=8766
+# version=5.0.0
+# headers=303 entries=8818
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1439,20 +1439,26 @@ src/Core/Process/UpgradeChannel.h	UpgradeChannel &operator=(const UpgradeChannel
 src/Core/Process/UpgradeChannel.h	UpgradeChannel() noexcept = default
 src/Core/Process/UpgradeChannel.h	UpgradeChannel(UpgradeChannel &&other) noexcept
 src/Core/Process/UpgradeChannel.h	UpgradeChannel(const UpgradeChannel &) = delete
+src/Core/Process/UpgradeChannel.h	UpgradeHandoffErrorKind kind
 src/Core/Process/UpgradeChannel.h	[[nodiscard]] ASYN_CORE_API ActivationListeners activationListenerDescriptors()
 src/Core/Process/UpgradeChannel.h	[[nodiscard]] ASYN_CORE_API ActivationListeners parseActivationEnvironment(const std::optional<std::string> &listenPid, const std::optional<std::string> &listenFds, long ownProcessId)
-src/Core/Process/UpgradeChannel.h	[[nodiscard]] ASYN_CORE_API std::expected<int, std::string> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget)
+src/Core/Process/UpgradeChannel.h	[[nodiscard]] ASYN_CORE_API UpgradeHandoffExpected<int> adoptHandedOverListener(std::string_view address, std::chrono::milliseconds connectBudget)
+src/Core/Process/UpgradeChannel.h	[[nodiscard]] UpgradeHandoffExpected<int> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept
+src/Core/Process/UpgradeChannel.h	[[nodiscard]] UpgradeHandoffStatus handOffListener(int peerDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept
 src/Core/Process/UpgradeChannel.h	[[nodiscard]] const std::string &address() const noexcept
-src/Core/Process/UpgradeChannel.h	[[nodiscard]] static std::expected<UpgradeChannel, std::string> open()
-src/Core/Process/UpgradeChannel.h	[[nodiscard]] std::expected<int, std::string> waitForPeer(std::chrono::milliseconds budget = std::chrono::milliseconds::zero()) noexcept
-src/Core/Process/UpgradeChannel.h	[[nodiscard]] std::expected<void, std::string> handOffListener(int peerDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept
+src/Core/Process/UpgradeChannel.h	[[nodiscard]] static UpgradeHandoffExpected<UpgradeChannel> open()
 src/Core/Process/UpgradeChannel.h	bool isForThisProcess
 src/Core/Process/UpgradeChannel.h	class ASYN_CORE_API UpgradeChannel
+src/Core/Process/UpgradeChannel.h	enum class UpgradeHandoffErrorKind
 src/Core/Process/UpgradeChannel.h	explicit UpgradeChannel(Platform::Socket::HandoffChannelEndpoint endpoint) noexcept
 src/Core/Process/UpgradeChannel.h	namespace AsynGyanis::Core
+src/Core/Process/UpgradeChannel.h	std::string message
 src/Core/Process/UpgradeChannel.h	std::uint64_t announcedCount
 src/Core/Process/UpgradeChannel.h	std::vector<int> descriptors
 src/Core/Process/UpgradeChannel.h	struct ASYN_CORE_API ActivationListeners
+src/Core/Process/UpgradeChannel.h	struct ASYN_CORE_API UpgradeHandoffError
+src/Core/Process/UpgradeChannel.h	template<typename Value> using UpgradeHandoffExpected = std::expected<Value, UpgradeHandoffError>
+src/Core/Process/UpgradeChannel.h	using UpgradeHandoffStatus = std::expected<void, UpgradeHandoffError>
 src/Core/Process/UpgradeChannel.h	void closeChannel() noexcept
 src/Core/Process/UpgradeChannel.h	~UpgradeChannel() noexcept
 src/Core/Process/WorkerHeartbeat.h	RoundTicker m_ticker
@@ -3084,11 +3090,16 @@ src/Database/Redis/RedisResult.h	redisReply *m_replyPointer
 src/Database/Redis/RedisResult.h	size_t m_columnCount
 src/Database/Redis/RedisResult.h	void reset() override
 src/Database/Redis/RedisResult.h	~RedisResult() override
-src/Database/Redis/RedisSentinel.h	[[nodiscard]] ASYN_DATABASE_API std::expected<RedisSentinelAddress, std::string> resolveSentinelMasterAddress(std::span<const RedisSentinelAddress> sentinels, std::string_view masterName, const ConnectionConfig &sentinelCredentials)
+src/Database/Redis/RedisSentinel.h	RedisSentinelErrorKind kind
+src/Database/Redis/RedisSentinel.h	[[nodiscard]] ASYN_DATABASE_API RedisSentinelExpected<RedisSentinelAddress> resolveSentinelMasterAddress(std::span<const RedisSentinelAddress> sentinels, std::string_view masterName, const ConnectionConfig &sentinelCredentials)
+src/Database/Redis/RedisSentinel.h	enum class RedisSentinelErrorKind
 src/Database/Redis/RedisSentinel.h	namespace AsynGyanis::Database
 src/Database/Redis/RedisSentinel.h	std::string host
+src/Database/Redis/RedisSentinel.h	std::string message
 src/Database/Redis/RedisSentinel.h	std::uint16_t port
 src/Database/Redis/RedisSentinel.h	struct ASYN_DATABASE_API RedisSentinelAddress
+src/Database/Redis/RedisSentinel.h	struct ASYN_DATABASE_API RedisSentinelError
+src/Database/Redis/RedisSentinel.h	template<typename Value> using RedisSentinelExpected = std::expected<Value, RedisSentinelError>
 src/Database/Sqlite/SqliteConnection.h	SqliteConnection &m_owner
 src/Database/Sqlite/SqliteConnection.h	SqliteConnection &operator=(SqliteConnection &&) = delete
 src/Database/Sqlite/SqliteConnection.h	SqliteConnection &operator=(const SqliteConnection &) = delete
@@ -3204,9 +3215,9 @@ src/Database/Sqlite/SqliteResult.h	void prefetchRows()
 src/Database/Sqlite/SqliteResult.h	void reset() override
 src/Database/Sqlite/SqliteResult.h	~SqliteResult() override
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	[[nodiscard]] ASYN_NET_API AcmeDns01TxtWriter makeAliyunDns01TxtWriter(Core::EventLoop &loop, AliyunDns01Configuration configuration)
+src/Net/Acme/AcmeAliyunDns01TxtWriter.h	[[nodiscard]] ASYN_NET_API AcmeExpected<std::string> aliyunRpcSignature(std::string_view httpMethod, const std::map<std::string, std::string> &parameters, std::string_view accessKeySecret)
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	[[nodiscard]] ASYN_NET_API std::chrono::milliseconds aliyunRewriteQuietPeriod(std::chrono::milliseconds sinceWithdrawal, std::uint32_t recordTtlSeconds)
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	[[nodiscard]] ASYN_NET_API std::string aliyunPercentEncode(std::string_view value)
-src/Net/Acme/AcmeAliyunDns01TxtWriter.h	[[nodiscard]] ASYN_NET_API std::string aliyunRpcSignature(std::string_view httpMethod, const std::map<std::string, std::string> &parameters, std::string_view accessKeySecret)
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	class EventLoop
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	inline constexpr std::chrono::milliseconds kAliyunMaximumRewriteQuiet
 src/Net/Acme/AcmeAliyunDns01TxtWriter.h	namespace AsynGyanis::Core
@@ -3254,19 +3265,19 @@ src/Net/Acme/AcmeCertificateManager.h	AcmeKeyAlgorithm accountKeyAlgorithm
 src/Net/Acme/AcmeCertificateManager.h	AcmeKeyAlgorithm domainKeyAlgorithm
 src/Net/Acme/AcmeCertificateManager.h	Configuration m_configuration
 src/Net/Acme/AcmeCertificateManager.h	Core::EventLoop &m_loop
-src/Net/Acme/AcmeCertificateManager.h	Core::Task<std::expected<AcmeIssuedCertificate, AcmeError>> issueIfRequired()
+src/Net/Acme/AcmeCertificateManager.h	Core::Task<AcmeExpected<AcmeIssuedCertificate>> issueIfRequired()
 src/Net/Acme/AcmeCertificateManager.h	Core::Task<std::optional<AcmeError>> authorizeDns01(AcmeClient &client, const AcmeAuthorization &authorization)
 src/Net/Acme/AcmeCertificateManager.h	Core::Task<void> runRenewalLoop()
 src/Net/Acme/AcmeCertificateManager.h	ReloadHandler m_reloadHandler
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] ASYN_NET_API std::optional<std::chrono::system_clock::time_point> readCertificateExpiry(const std::filesystem::path &certificateFile)
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] AcmeError failWith(AcmeErrorKind kind, std::string message)
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] AcmeError notedFailure(AcmeError error)
+src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] AcmeExpected<AcmeKeyPair *> ensureAccountKey()
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] AcmeManagerStatus status() const
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] const AcmeHttp01ChallengeStore &challengeStore() const noexcept
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] long long backoffGateUnixSeconds() const noexcept
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] long long remoteOrLocalDelaySeconds(std::optional<std::chrono::seconds> remoteRetryAfter) const noexcept
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] std::chrono::milliseconds nextRenewalDelay() const noexcept
-src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] std::expected<AcmeKeyPair *, AcmeError> ensureAccountKey()
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] std::optional<AcmeError> persistAccountState(const std::string &accountUrl) const
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] std::optional<std::chrono::system_clock::time_point> readExpiryFromDisk() const
 src/Net/Acme/AcmeCertificateManager.h	[[nodiscard]] std::optional<std::string> readPersistedAccountUrl() const
@@ -3315,7 +3326,7 @@ src/Net/Acme/AcmeCertificateManager.h	struct ASYN_NET_API AcmeIssuedCertificate
 src/Net/Acme/AcmeCertificateManager.h	struct ASYN_NET_API AcmeManagerStatus
 src/Net/Acme/AcmeCertificateManager.h	struct AcmeAuthorization
 src/Net/Acme/AcmeCertificateManager.h	struct Configuration
-src/Net/Acme/AcmeCertificateManager.h	using ReloadHandler = std::function<std::expected<void, std::string>()>
+src/Net/Acme/AcmeCertificateManager.h	using ReloadHandler = std::function<AcmeStatus()>
 src/Net/Acme/AcmeCertificateManager.h	void recordFailure(std::string message, std::optional<std::chrono::seconds> remoteRetryAfter =
 src/Net/Acme/AcmeCertificateManager.h	void registerChallengeRoutes(Router &router)
 src/Net/Acme/AcmeCertificateManager.h	void stopRenewalLoop() noexcept
@@ -3325,17 +3336,17 @@ src/Net/Acme/AcmeClient.h	AcmeClient(Core::EventLoop &loop, Configuration config
 src/Net/Acme/AcmeClient.h	AcmeClient(const AcmeClient &) = delete
 src/Net/Acme/AcmeClient.h	Configuration m_configuration
 src/Net/Acme/AcmeClient.h	Core::EventLoop &m_loop
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<AcmeAuthorization, AcmeError>> fetchAuthorization(const std::string &authorizationUrl)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<AcmeOrder, AcmeError>> createOrder(const std::vector<std::string> &domainNames)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<AcmeOrder, AcmeError>> finalizeOrder(const AcmeOrder &order, std::string_view encodedRequest, std::chrono::milliseconds pollInterval, std::chrono::milliseconds overallTimeout)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<AcmeReply, AcmeError>> postSignedRequest(const std::string &url, std::string_view payloadJson, bool isNewAccountRequest = false)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<std::string, AcmeError>> fetchCertificateChain(const std::string &certificateUrl)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<std::string, AcmeError>> solveChallenge(const std::string &challengeUrl, std::chrono::milliseconds pollInterval, std::chrono::milliseconds overallTimeout)
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<std::string, AcmeError>> takeNonce()
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<void, AcmeError>> fetchFreshNonce()
-src/Net/Acme/AcmeClient.h	Core::Task<std::expected<void, AcmeError>> prepareAccount(std::optional<std::string> persistedAccountUrl)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<AcmeAuthorization>> fetchAuthorization(const std::string &authorizationUrl)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<AcmeOrder>> createOrder(const std::vector<std::string> &domainNames)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<AcmeOrder>> finalizeOrder(const AcmeOrder &order, std::string_view encodedRequest, std::chrono::milliseconds pollInterval, std::chrono::milliseconds overallTimeout)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<AcmeReply>> postSignedRequest(const std::string &url, std::string_view payloadJson, bool isNewAccountRequest = false)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<std::string>> fetchCertificateChain(const std::string &certificateUrl)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<std::string>> solveChallenge(const std::string &challengeUrl, std::chrono::milliseconds pollInterval, std::chrono::milliseconds overallTimeout)
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeExpected<std::string>> takeNonce()
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeStatus> fetchFreshNonce()
+src/Net/Acme/AcmeClient.h	Core::Task<AcmeStatus> prepareAccount(std::optional<std::string> persistedAccountUrl)
+src/Net/Acme/AcmeClient.h	[[nodiscard]] ASYN_NET_API AcmeExpected<std::string> dns01ValidationText(std::string_view keyAuthorization)
 src/Net/Acme/AcmeClient.h	[[nodiscard]] ASYN_NET_API std::string dns01RecordName(std::string_view domainName)
-src/Net/Acme/AcmeClient.h	[[nodiscard]] ASYN_NET_API std::string dns01ValidationText(std::string_view keyAuthorization)
 src/Net/Acme/AcmeClient.h	[[nodiscard]] static AcmeError describeFailure(const AcmeReply &reply, std::string_view step)
 src/Net/Acme/AcmeClient.h	[[nodiscard]] static constexpr std::chrono::milliseconds boundedRequestTimeout(const std::chrono::milliseconds overallTimeout) noexcept
 src/Net/Acme/AcmeClient.h	[[nodiscard]] std::string_view accountUrl() const noexcept
@@ -3387,7 +3398,7 @@ src/Net/Acme/AcmeDns01TxtWriter.h	TxtHandler withdraw
 src/Net/Acme/AcmeDns01TxtWriter.h	[[nodiscard]] bool isUsable() const noexcept
 src/Net/Acme/AcmeDns01TxtWriter.h	namespace AsynGyanis::Net
 src/Net/Acme/AcmeDns01TxtWriter.h	struct ASYN_NET_API AcmeDns01TxtWriter
-src/Net/Acme/AcmeDns01TxtWriter.h	using TxtHandler = std::function<Core::Task<std::expected<void, std::string>>(std::string fqdn, std::string value)>
+src/Net/Acme/AcmeDns01TxtWriter.h	using TxtHandler = std::function<Core::Task<AcmeStatus>(std::string fqdn, std::string value)>
 src/Net/Acme/AcmeError.h	AcmeErrorKind kind
 src/Net/Acme/AcmeError.h	[[nodiscard]] ASYN_NET_API std::string_view acmeErrorKindName(AcmeErrorKind kind) noexcept
 src/Net/Acme/AcmeError.h	enum class AcmeErrorKind
@@ -3395,6 +3406,8 @@ src/Net/Acme/AcmeError.h	namespace AsynGyanis::Net
 src/Net/Acme/AcmeError.h	std::optional<std::chrono::seconds> retryAfter
 src/Net/Acme/AcmeError.h	std::string message
 src/Net/Acme/AcmeError.h	struct ASYN_NET_API AcmeError
+src/Net/Acme/AcmeError.h	template<typename Value> using AcmeExpected = std::expected<Value, AcmeError>
+src/Net/Acme/AcmeError.h	using AcmeStatus = std::expected<void, AcmeError>
 src/Net/Acme/AcmeHttp01ChallengeStore.h	AcmeHttp01ChallengeStore &operator=(const AcmeHttp01ChallengeStore &) = delete
 src/Net/Acme/AcmeHttp01ChallengeStore.h	AcmeHttp01ChallengeStore() = default
 src/Net/Acme/AcmeHttp01ChallengeStore.h	AcmeHttp01ChallengeStore(const AcmeHttp01ChallengeStore &) = delete
@@ -3417,13 +3430,13 @@ src/Net/Acme/AcmeKeyPair.h	AcmeKeyPair &operator=(const AcmeKeyPair &) = delete
 src/Net/Acme/AcmeKeyPair.h	AcmeKeyPair(AcmeKeyPair &&) noexcept
 src/Net/Acme/AcmeKeyPair.h	AcmeKeyPair(const AcmeKeyPair &) = delete
 src/Net/Acme/AcmeKeyPair.h	AcmeKeyPair(std::unique_ptr<EVP_PKEY, Detail::EvpKeyDeleter> key, AcmeKeyAlgorithm algorithm, Detail::PublicIdentity identity)
+src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] AcmeExpected<std::string> createCertificateSigningRequest(const std::vector<std::string> &domainNames) const
+src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] AcmeExpected<std::string> signJsonWebSigningInput(std::string_view signingInput) const
+src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] AcmeStatus saveToFile(const std::filesystem::path &privateKeyFile) const
 src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] const std::string &jsonWebKeyThumbprint() const noexcept
-src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] static std::expected<AcmeKeyPair, AcmeError> generate(AcmeKeyAlgorithm algorithm)
-src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] static std::expected<AcmeKeyPair, AcmeError> loadFromFile(const std::filesystem::path &privateKeyFile)
+src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] static AcmeExpected<AcmeKeyPair> generate(AcmeKeyAlgorithm algorithm)
+src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] static AcmeExpected<AcmeKeyPair> loadFromFile(const std::filesystem::path &privateKeyFile)
 src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] static std::string computeJsonWebKeyThumbprint(std::string_view canonicalJwkMembers)
-src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] std::expected<std::string, AcmeError> createCertificateSigningRequest(const std::vector<std::string> &domainNames) const
-src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] std::expected<std::string, AcmeError> signJsonWebSigningInput(std::string_view signingInput) const
-src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] std::expected<void, AcmeError> saveToFile(const std::filesystem::path &privateKeyFile) const
 src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] std::string publicJsonWebKeyText() const
 src/Net/Acme/AcmeKeyPair.h	[[nodiscard]] std::string_view jsonWebAlgorithmName() const noexcept
 src/Net/Acme/AcmeKeyPair.h	class ASYN_NET_API AcmeKeyPair
@@ -3516,9 +3529,9 @@ src/Net/Http/Client/HttpClient.h	void setCircuitBreaker(std::shared_ptr<Outbound
 src/Net/Http/Client/HttpClient.h	void setCookieJar(std::shared_ptr<HttpCookieJar> cookieJar) noexcept
 src/Net/Http/Client/HttpClient.h	void setHttp3Enabled(bool isEnabled) noexcept
 src/Net/Http/Client/HttpClient.h	~HttpClient()
+src/Net/Http/Client/HttpContentCoding.h	[[nodiscard]] ASYN_NET_API HttpBodyDecodeExpected<bool> decodeResponseBodyInPlace(HttpClientResponse &response, std::size_t maxOutputByteCount = kOutboundDecompressedBodyLimitBytes)
 src/Net/Http/Client/HttpContentCoding.h	[[nodiscard]] ASYN_NET_API bool applyContentEncoding(const HttpClientRequest &request, HttpClientResponse &response, std::string &failureReason)
 src/Net/Http/Client/HttpContentCoding.h	[[nodiscard]] ASYN_NET_API bool shouldAdvertiseAcceptEncoding(const std::vector<HttpClientHeaderField> &headers) noexcept
-src/Net/Http/Client/HttpContentCoding.h	[[nodiscard]] ASYN_NET_API std::expected<bool, std::string> decodeResponseBodyInPlace(HttpClientResponse &response, std::size_t maxOutputByteCount = kOutboundDecompressedBodyLimitBytes)
 src/Net/Http/Client/HttpContentCoding.h	inline constexpr std::size_t kOutboundDecompressedBodyLimitBytes = 64U * 1024U * 1024U
 src/Net/Http/Client/HttpContentCoding.h	inline constexpr std::string_view kOutboundAcceptEncodingValue
 src/Net/Http/Client/HttpContentCoding.h	namespace AsynGyanis::Net
@@ -3809,7 +3822,7 @@ src/Net/Http/FileSender.h	FileSender(const FileSender &) = delete
 src/Net/Http/FileSender.h	class ASYN_NET_API FileSender
 src/Net/Http/FileSender.h	namespace AsynGyanis::Net
 src/Net/Http/FileSender.h	static const char *contentTypeForFile(const std::string &filePath)
-src/Net/Http/Gzip.h	[[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes)
+src/Net/Http/Gzip.h	[[nodiscard]] ASYN_NET_API HttpBodyDecodeExpected<std::string> inflateHttpBody(std::string_view input, std::size_t maxOutputByteCount = kDefaultInflateOutputLimitBytes)
 src/Net/Http/Gzip.h	[[nodiscard]] ASYN_NET_API std::optional<std::string> deflateCompress(std::string_view input, int level = kDefaultGzipLevel)
 src/Net/Http/Gzip.h	[[nodiscard]] ASYN_NET_API std::optional<std::string> gzipCompress(std::string_view input, int level = kDefaultGzipLevel)
 src/Net/Http/Gzip.h	inline constexpr int kDefaultGzipLevel = 6
@@ -3817,6 +3830,12 @@ src/Net/Http/Gzip.h	inline constexpr std::size_t kDefaultInflateOutputLimitBytes
 src/Net/Http/Gzip.h	namespace AsynGyanis::Net
 src/Net/Http/HttpBodyChunk.h	namespace AsynGyanis::Net
 src/Net/Http/HttpBodyChunk.h	using HttpBodyChunkSource = std::function<Core::Task<std::optional<std::string>>()>
+src/Net/Http/HttpBodyDecodeError.h	HttpBodyDecodeErrorKind kind
+src/Net/Http/HttpBodyDecodeError.h	enum class HttpBodyDecodeErrorKind
+src/Net/Http/HttpBodyDecodeError.h	namespace AsynGyanis::Net
+src/Net/Http/HttpBodyDecodeError.h	std::string message
+src/Net/Http/HttpBodyDecodeError.h	struct ASYN_NET_API HttpBodyDecodeError
+src/Net/Http/HttpBodyDecodeError.h	template<typename Value> using HttpBodyDecodeExpected = std::expected<Value, HttpBodyDecodeError>
 src/Net/Http/HttpBodySource.h	[[nodiscard]] virtual bool isBroken() = 0
 src/Net/Http/HttpBodySource.h	[[nodiscard]] virtual bool isComplete() const noexcept = 0
 src/Net/Http/HttpBodySource.h	[[nodiscard]] virtual bool isTruncated() const noexcept
@@ -4854,10 +4873,10 @@ src/Net/Http/MultipartForm.h	struct ASYN_NET_API MultipartPart
 src/Net/Http/OAuthAuthorizationCode.h	EventLoop &m_loop
 src/Net/Http/OAuthAuthorizationCode.h	OAuthAuthorizationCodeClient(EventLoop &loop, OAuthAuthorizationCodeOptions options)
 src/Net/Http/OAuthAuthorizationCode.h	OAuthAuthorizationCodeOptions m_options
-src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback)
-src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] static std::expected<OAuthAuthorizationCallback, std::string> parseCallback(std::string_view callback)
-src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] static std::expected<std::string, std::string> computePkceChallenge(std::string_view codeVerifier)
-src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] std::expected<OAuthAuthorizationRequest, std::string> beginAuthorization() const
+src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] Core::Task<OAuthExpected<OAuthAccessToken>> exchangeCode(OAuthAuthorizationRequest request, OAuthAuthorizationCallback callback)
+src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] OAuthExpected<OAuthAuthorizationRequest> beginAuthorization() const
+src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] static OAuthExpected<OAuthAuthorizationCallback> parseCallback(std::string_view callback)
+src/Net/Http/OAuthAuthorizationCode.h	[[nodiscard]] static OAuthExpected<std::string> computePkceChallenge(std::string_view codeVerifier)
 src/Net/Http/OAuthAuthorizationCode.h	class ASYN_NET_API OAuthAuthorizationCodeClient
 src/Net/Http/OAuthAuthorizationCode.h	namespace AsynGyanis::Net
 src/Net/Http/OAuthAuthorizationCode.h	std::chrono::milliseconds requestTimeout
@@ -4882,8 +4901,8 @@ src/Net/Http/OAuthDeviceCode.h	EventLoop &m_loop
 src/Net/Http/OAuthDeviceCode.h	OAuthDeviceCodeClient(EventLoop &loop, OAuthDeviceCodeOptions options)
 src/Net/Http/OAuthDeviceCode.h	OAuthDeviceCodeOptions m_options
 src/Net/Http/OAuthDeviceCode.h	Timer m_timer
-src/Net/Http/OAuthDeviceCode.h	[[nodiscard]] Core::Task<std::expected<OAuthAccessToken, std::string>> waitForToken(OAuthDeviceAuthorization authorization)
-src/Net/Http/OAuthDeviceCode.h	[[nodiscard]] Core::Task<std::expected<OAuthDeviceAuthorization, std::string>> requestDeviceAuthorization()
+src/Net/Http/OAuthDeviceCode.h	[[nodiscard]] Core::Task<OAuthExpected<OAuthAccessToken>> waitForToken(OAuthDeviceAuthorization authorization)
+src/Net/Http/OAuthDeviceCode.h	[[nodiscard]] Core::Task<OAuthExpected<OAuthDeviceAuthorization>> requestDeviceAuthorization()
 src/Net/Http/OAuthDeviceCode.h	[[nodiscard]] static std::chrono::seconds pollingIntervalAfter(std::chrono::seconds currentInterval, std::string_view errorCode) noexcept
 src/Net/Http/OAuthDeviceCode.h	class ASYN_NET_API OAuthDeviceCodeClient
 src/Net/Http/OAuthDeviceCode.h	namespace AsynGyanis::Net
@@ -4903,10 +4922,17 @@ src/Net/Http/OAuthDeviceCode.h	struct OAuthDeviceAuthorization
 src/Net/Http/OAuthDeviceCode.h	struct OAuthDeviceCodeOptions
 src/Net/Http/OAuthDeviceCode.h	using Core::EventLoop
 src/Net/Http/OAuthDeviceCode.h	using Core::Timer
+src/Net/Http/OAuthError.h	OAuthErrorKind kind
+src/Net/Http/OAuthError.h	enum class OAuthErrorKind
+src/Net/Http/OAuthError.h	namespace AsynGyanis::Net
+src/Net/Http/OAuthError.h	std::string message
+src/Net/Http/OAuthError.h	struct ASYN_NET_API OAuthError
+src/Net/Http/OAuthError.h	template<typename Value> using OAuthExpected = std::expected<Value, OAuthError>
+src/Net/Http/OAuthError.h	using OAuthStatus = std::expected<void, OAuthError>
 src/Net/Http/OAuthIntrospection.h	EventLoop &m_loop
 src/Net/Http/OAuthIntrospection.h	OAuthIntrospectionClient(EventLoop &loop, OAuthIntrospectionOptions options)
 src/Net/Http/OAuthIntrospection.h	OAuthIntrospectionOptions m_options
-src/Net/Http/OAuthIntrospection.h	[[nodiscard]] Core::Task<std::expected<OAuthTokenIntrospection, std::string>> introspect(std::string_view token)
+src/Net/Http/OAuthIntrospection.h	[[nodiscard]] Core::Task<OAuthExpected<OAuthTokenIntrospection>> introspect(std::string_view token)
 src/Net/Http/OAuthIntrospection.h	bool active
 src/Net/Http/OAuthIntrospection.h	class ASYN_NET_API OAuthIntrospectionClient
 src/Net/Http/OAuthIntrospection.h	namespace AsynGyanis::Net
@@ -4923,7 +4949,7 @@ src/Net/Http/OAuthIntrospection.h	std::string username
 src/Net/Http/OAuthIntrospection.h	struct OAuthIntrospectionOptions
 src/Net/Http/OAuthIntrospection.h	struct OAuthTokenIntrospection
 src/Net/Http/OAuthIntrospection.h	using Core::EventLoop
-src/Net/Http/OAuthToken.h	[[nodiscard]] ASYN_NET_API std::expected<OAuthAccessToken, std::string> parseOAuthTokenResponse(std::string_view responseBody)
+src/Net/Http/OAuthToken.h	[[nodiscard]] ASYN_NET_API OAuthExpected<OAuthAccessToken> parseOAuthTokenResponse(std::string_view responseBody)
 src/Net/Http/OAuthToken.h	namespace AsynGyanis::Net
 src/Net/Http/OAuthToken.h	std::chrono::seconds expiresIn
 src/Net/Http/OAuthToken.h	std::string accessToken
@@ -4951,6 +4977,7 @@ src/Net/Http/RequestBodySpool.h	RequestBodySpool &operator=(RequestBodySpool &&o
 src/Net/Http/RequestBodySpool.h	RequestBodySpool &operator=(const RequestBodySpool &) = delete
 src/Net/Http/RequestBodySpool.h	RequestBodySpool(RequestBodySpool &&other) noexcept = default
 src/Net/Http/RequestBodySpool.h	RequestBodySpool(const RequestBodySpool &) = delete
+src/Net/Http/RequestBodySpool.h	RequestBodySpoolErrorKind kind
 src/Net/Http/RequestBodySpool.h	[[nodiscard]] const std::filesystem::path &path() const noexcept
 src/Net/Http/RequestBodySpool.h	[[nodiscard]] std::uintmax_t byteCount() const noexcept
 src/Net/Http/RequestBodySpool.h	bool isReleased
@@ -4958,20 +4985,24 @@ src/Net/Http/RequestBodySpool.h	class ASYN_NET_API RequestBodySpool final
 src/Net/Http/RequestBodySpool.h	class AsyncExecutor
 src/Net/Http/RequestBodySpool.h	class EventLoop
 src/Net/Http/RequestBodySpool.h	class HttpRequestBody
+src/Net/Http/RequestBodySpool.h	enum class RequestBodySpoolErrorKind
 src/Net/Http/RequestBodySpool.h	explicit RequestBodySpool(std::shared_ptr<Detail::SpoolFileState> state) noexcept : m_state(std::move(state))
 src/Net/Http/RequestBodySpool.h	namespace AsynGyanis::Core
 src/Net/Http/RequestBodySpool.h	namespace AsynGyanis::Net
 src/Net/Http/RequestBodySpool.h	namespace Detail
-src/Net/Http/RequestBodySpool.h	static Core::Task<std::expected<RequestBodySpool, std::string>> capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body, RequestBodySpoolOptions options =
+src/Net/Http/RequestBodySpool.h	static Core::Task<RequestBodySpoolExpected<RequestBodySpool>> capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body, RequestBodySpoolOptions options =
 src/Net/Http/RequestBodySpool.h	std::filesystem::path directory
 src/Net/Http/RequestBodySpool.h	std::filesystem::path path
 src/Net/Http/RequestBodySpool.h	std::ofstream stream
 src/Net/Http/RequestBodySpool.h	std::shared_ptr<Detail::SpoolFileState> m_state
 src/Net/Http/RequestBodySpool.h	std::size_t maximumByteCount
 src/Net/Http/RequestBodySpool.h	std::string filePrefix
+src/Net/Http/RequestBodySpool.h	std::string message
 src/Net/Http/RequestBodySpool.h	std::uintmax_t writtenByteCount
+src/Net/Http/RequestBodySpool.h	struct ASYN_NET_API RequestBodySpoolError
 src/Net/Http/RequestBodySpool.h	struct ASYN_NET_API RequestBodySpoolOptions
 src/Net/Http/RequestBodySpool.h	struct SpoolFileState
+src/Net/Http/RequestBodySpool.h	template<typename Value> using RequestBodySpoolExpected = std::expected<Value, RequestBodySpoolError>
 src/Net/Http/RequestBodySpool.h	void release() noexcept
 src/Net/Http/RequestBodySpool.h	~RequestBodySpool()
 src/Net/Http/Router.h	Core::Task<> route(HttpRequest &request, HttpResponse &response)
@@ -5826,6 +5857,8 @@ src/Net/Http3/Http3Connection.h	Http3Connection(const Http3Connection &) = delet
 src/Net/Http3/Http3Connection.h	Http3ErrorCode m_connectionErrorCode
 src/Net/Http3/Http3Connection.h	LocalSettings m_localSettings
 src/Net/Http3/Http3Connection.h	OutboundStream &outboundFor(std::int64_t streamId)
+src/Net/Http3/Http3Connection.h	QpackStatus handleControlFrame(const Http3Frame &frame)
+src/Net/Http3/Http3Connection.h	QpackStatus handleRequestFrame(std::int64_t streamId, StreamState &state, const Http3Frame &frame)
 src/Net/Http3/Http3Connection.h	StreamCrediter m_streamCrediter
 src/Net/Http3/Http3Connection.h	StreamOpener m_streamOpener
 src/Net/Http3/Http3Connection.h	StreamState &streamStateFor(std::int64_t streamId)
@@ -5833,6 +5866,13 @@ src/Net/Http3/Http3Connection.h	StreamWriter m_streamWriter
 src/Net/Http3/Http3Connection.h	[[nodiscard]] Http3ErrorCode connectionErrorCode() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] Http3MessageKind inboundMessageKind() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] Http3MessageKind outboundMessageKind() const noexcept
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackExpected<std::size_t> appendRequestBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream)
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackExpected<std::size_t> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream)
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackStatus beginGracefulDrain()
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackStatus submitRequestHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream)
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackStatus submitResponseFieldSection(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isTrailers, bool isEndOfStream)
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackStatus submitResponseHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream)
+src/Net/Http3/Http3Connection.h	[[nodiscard]] QpackStatus submitResponseTrailers(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines)
 src/Net/Http3/Http3Connection.h	[[nodiscard]] bool deliverFieldSection(std::int64_t streamId, StreamState &state, const std::vector<QpackHeaderField> &fields, bool isTrailers)
 src/Net/Http3/Http3Connection.h	[[nodiscard]] bool isBroken() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] bool isDraining() const noexcept
@@ -5843,13 +5883,6 @@ src/Net/Http3/Http3Connection.h	[[nodiscard]] bool isPeerGoAwayReceived() const 
 src/Net/Http3/Http3Connection.h	[[nodiscard]] bool isUsable() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] const std::string &connectionErrorReason() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] static bool isUnidirectionalStream(std::int64_t streamId) noexcept
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<std::size_t, QpackError> appendRequestBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream)
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<std::size_t, QpackError> appendResponseBody(std::int64_t streamId, std::span<const std::uint8_t> bytes, bool isEndStream)
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<void, QpackError> beginGracefulDrain()
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<void, QpackError> submitRequestHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream)
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<void, QpackError> submitResponseFieldSection(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isTrailers, bool isEndOfStream)
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<void, QpackError> submitResponseHead(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, bool isEndOfStream)
-src/Net/Http3/Http3Connection.h	[[nodiscard]] std::expected<void, QpackError> submitResponseTrailers(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines)
 src/Net/Http3/Http3Connection.h	[[nodiscard]] std::size_t peerTableCapacityByteCount() const noexcept
 src/Net/Http3/Http3Connection.h	[[nodiscard]] std::size_t pendingOutputByteCount(std::int64_t streamId) const noexcept
 src/Net/Http3/Http3Connection.h	bool hasContentLengthDeclaration
@@ -5875,8 +5908,6 @@ src/Net/Http3/Http3Connection.h	enum class PeerStreamKind
 src/Net/Http3/Http3Connection.h	namespace AsynGyanis::Net
 src/Net/Http3/Http3Connection.h	static constexpr std::size_t kMaximumFlushRounds = 64
 src/Net/Http3/Http3Connection.h	std::deque<std::int64_t> m_outboundOrder
-src/Net/Http3/Http3Connection.h	std::expected<void, QpackError> handleControlFrame(const Http3Frame &frame)
-src/Net/Http3/Http3Connection.h	std::expected<void, QpackError> handleRequestFrame(std::int64_t streamId, StreamState &state, const Http3Frame &frame)
 src/Net/Http3/Http3Connection.h	std::function<void(Http3ErrorCode errorCode, std::string_view reason)> onConnectionClosed
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId)> onRequestEnded
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId)> onStreamClosed
@@ -5963,6 +5994,8 @@ src/Net/Http3/Http3Frame.h	[[nodiscard]] ASYN_NET_API std::optional<Http3Setting
 src/Net/Http3/Http3Frame.h	[[nodiscard]] ASYN_NET_API std::string_view http3FrameTypeName(const std::uint64_t frameTypeValue) noexcept
 src/Net/Http3/Http3Frame.h	[[nodiscard]] ASYN_NET_API std::uint64_t http3FrameTypeValue(const Http3Frame &frame) noexcept
 src/Net/Http3/Http3Frame.h	[[nodiscard]] Http3FrameError latchError(Http3FrameErrorKind kind, std::string message)
+src/Net/Http3/Http3Frame.h	[[nodiscard]] Http3FrameExpected<std::optional<Http3Frame>> nextFrame()
+src/Net/Http3/Http3Frame.h	[[nodiscard]] Http3FrameStatus feed(std::span<const std::uint8_t> newBytes)
 src/Net/Http3/Http3Frame.h	[[nodiscard]] bool operator==(const Http3CancelPushFrame &) const = default
 src/Net/Http3/Http3Frame.h	[[nodiscard]] bool operator==(const Http3DataFrame &other) const noexcept
 src/Net/Http3/Http3Frame.h	[[nodiscard]] bool operator==(const Http3GoAwayFrame &) const = default
@@ -5974,8 +6007,6 @@ src/Net/Http3/Http3Frame.h	[[nodiscard]] bool operator==(const Http3UnknownFrame
 src/Net/Http3/Http3Frame.h	[[nodiscard]] bool operator==(const Http3UnknownSetting &) const = default
 src/Net/Http3/Http3Frame.h	[[nodiscard]] inline constexpr bool http3PayloadBytesEqual(const std::span<const std::uint8_t> left, const std::span<const std::uint8_t> right) noexcept
 src/Net/Http3/Http3Frame.h	[[nodiscard]] inline constexpr bool isHttp3ReservedExtensionIdentifier(const std::uint64_t value) noexcept
-src/Net/Http3/Http3Frame.h	[[nodiscard]] std::expected<std::optional<Http3Frame>, Http3FrameError> nextFrame()
-src/Net/Http3/Http3Frame.h	[[nodiscard]] std::expected<void, Http3FrameError> feed(std::span<const std::uint8_t> newBytes)
 src/Net/Http3/Http3Frame.h	[[nodiscard]] std::size_t pendingByteCount() const noexcept
 src/Net/Http3/Http3Frame.h	class ASYN_NET_API Http3FrameReader
 src/Net/Http3/Http3Frame.h	enum class Http3FrameErrorKind
@@ -6014,25 +6045,27 @@ src/Net/Http3/Http3Frame.h	struct ASYN_NET_API Http3PushPromiseFrame
 src/Net/Http3/Http3Frame.h	struct ASYN_NET_API Http3SettingsFrame
 src/Net/Http3/Http3Frame.h	struct ASYN_NET_API Http3UnknownFrame
 src/Net/Http3/Http3Frame.h	struct ASYN_NET_API Http3UnknownSetting
+src/Net/Http3/Http3Frame.h	template<typename Value> using Http3FrameExpected = std::expected<Value, Http3FrameError>
 src/Net/Http3/Http3Frame.h	using Http3Frame = std::variant<Http3DataFrame, Http3HeadersFrame, Http3CancelPushFrame, Http3SettingsFrame, Http3PushPromiseFrame, Http3GoAwayFrame, Http3MaxPushIdFrame, Http3UnknownFrame>
+src/Net/Http3/Http3Frame.h	using Http3FrameStatus = std::expected<void, Http3FrameError>
 src/Net/Http3/Http3Frame.h	void reset() noexcept
 src/Net/Http3/Http3Frame.h	~Http3FrameReader() = default
 src/Net/Http3/Http3HeaderValidation.h	Http3HeaderErrorKind kind
 src/Net/Http3/Http3HeaderValidation.h	Http3MessageKind m_messageKind
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] ASYN_NET_API Http3ErrorCode toHttp3ErrorCode(Http3HeaderErrorKind errorKind) noexcept
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus beginHeaderBlock(bool isTrailers) noexcept
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus endHeaderBlock() noexcept
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus onHeaderField(std::string_view name, std::string_view value)
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus onPseudoHeader(std::string_view name, std::string_view value)
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus onRegularField(std::string_view name, std::string_view value)
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus validateFieldName(std::string_view name) const
+src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] Http3HeaderStatus validateFieldValue(std::string_view value) const
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] bool hasHostHeader() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] const std::string &authorityText() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] const std::string &methodText() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] const std::string &pathText() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] const std::string &protocolText() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] const std::string &schemeText() const noexcept
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> beginHeaderBlock(bool isTrailers) noexcept
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> endHeaderBlock() noexcept
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> onHeaderField(std::string_view name, std::string_view value)
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> onPseudoHeader(std::string_view name, std::string_view value)
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> onRegularField(std::string_view name, std::string_view value)
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> validateFieldName(std::string_view name) const
-src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::expected<void, Http3HeaderError> validateFieldValue(std::string_view value) const
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::optional<int> statusCode() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	[[nodiscard]] std::optional<std::uint64_t> contentLengthByteCount() const noexcept
 src/Net/Http3/Http3HeaderValidation.h	bool m_hasHostHeader
@@ -6055,6 +6088,7 @@ src/Net/Http3/Http3HeaderValidation.h	std::string m_protocolText
 src/Net/Http3/Http3HeaderValidation.h	std::string m_schemeText
 src/Net/Http3/Http3HeaderValidation.h	std::string message
 src/Net/Http3/Http3HeaderValidation.h	struct ASYN_NET_API Http3HeaderError
+src/Net/Http3/Http3HeaderValidation.h	using Http3HeaderStatus = std::expected<void, Http3HeaderError>
 src/Net/Http3/Http3Session.h	Core::Cancelable m_shutdownCancelable
 src/Net/Http3/Http3Session.h	Deadline deadline
 src/Net/Http3/Http3Session.h	Deadline deadline
@@ -6248,7 +6282,20 @@ src/Net/Http3/Qpack.h	QpackEncoder(const QpackEncoder &) = delete
 src/Net/Http3/Qpack.h	QpackEncoder(std::size_t peerMaximumTableCapacityByteCount, std::size_t peerMaximumBlockedStreamCount, std::size_t localTableCapacityByteCount)
 src/Net/Http3/Qpack.h	QpackErrorKind kind
 src/Net/Http3/Qpack.h	[[nodiscard]] ASYN_NET_API Http3ErrorCode toHttp3ErrorCode(QpackErrorKind errorKind) noexcept
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes, bool isFrontOfPendingQueue)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::string &decoderStreamBytes, bool isFrontOfPendingQueue)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<QpackFieldSectionDecodeStatus> resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<std::size_t> feedDecoderStream(std::span<const std::uint8_t> bytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<std::size_t> feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds, std::string &decoderStreamBytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackExpected<std::uint64_t> decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const
 src/Net/Http3/Qpack.h	[[nodiscard]] QpackHeaderField &beginDecodedFieldLine()
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> section, std::size_t &cursor, std::uint64_t baseValue, std::uint64_t requiredInsertCount, std::uint64_t &maximumReferencedAbsoluteIndex)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock, std::string &encoderStreamBytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes)
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const
+src/Net/Http3/Qpack.h	[[nodiscard]] QpackStatus setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes)
 src/Net/Http3/Qpack.h	[[nodiscard]] bool hasBlockedFieldSection(std::uint64_t streamId) const noexcept
 src/Net/Http3/Qpack.h	[[nodiscard]] bool hasBlockedStreams() const noexcept
 src/Net/Http3/Qpack.h	[[nodiscard]] bool hasBlockedStreams() const noexcept
@@ -6262,19 +6309,6 @@ src/Net/Http3/Qpack.h	[[nodiscard]] const std::deque<QpackHeaderField> &dynamicT
 src/Net/Http3/Qpack.h	[[nodiscard]] const std::deque<QpackHeaderField> &entries() const noexcept
 src/Net/Http3/Qpack.h	[[nodiscard]] static std::size_t entrySizeByteCountOf(const QpackHeaderField &field) noexcept
 src/Net/Http3/Qpack.h	[[nodiscard]] static std::uint64_t maximumEntryCount(std::size_t maximumTableCapacityByteCount) noexcept
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSection(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSectionInto(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes, bool isFrontOfPendingQueue)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> decodeFieldSectionIntoScratch(std::uint64_t streamId, std::span<const std::uint8_t> encodedFieldSection, std::string &decoderStreamBytes, bool isFrontOfPendingQueue)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<QpackFieldSectionDecodeStatus, QpackError> resumeBlockedFieldSection(std::uint64_t streamId, std::vector<QpackHeaderField> &fields, std::string &decoderStreamBytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<std::size_t, QpackError> feedDecoderStream(std::span<const std::uint8_t> bytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<std::size_t, QpackError> feedEncoderStream(std::span<const std::uint8_t> bytes, std::vector<std::uint64_t> &unblockedStreamIds, std::string &decoderStreamBytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<std::uint64_t, QpackError> decodeRequiredInsertCount(std::uint64_t encodedInsertCount) const
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> blockStream(std::uint64_t streamId, std::span<const std::uint8_t> section, std::uint64_t requiredInsertCount)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> decodeFieldLineRepresentation(std::uint64_t streamId, std::span<const std::uint8_t> section, std::size_t &cursor, std::uint64_t baseValue, std::uint64_t requiredInsertCount, std::uint64_t &maximumReferencedAbsoluteIndex)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> encodeFieldSection(std::uint64_t streamId, std::span<const QpackHeaderField> fieldLines, std::string &headerBlock, std::string &encoderStreamBytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> noteFieldSectionDelivered(std::uint64_t streamId, std::string &decoderStreamBytes)
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> resolveDynamicReference(std::uint64_t absoluteIndex, std::uint64_t requiredInsertCount, QpackHeaderField &field) const
-src/Net/Http3/Qpack.h	[[nodiscard]] std::expected<void, QpackError> setMaximumTableCapacityByteCount(std::size_t capacityByteCount, std::string &encoderStreamBytes)
 src/Net/Http3/Qpack.h	[[nodiscard]] std::map<std::uint64_t, std::deque<PendingFieldSection>>::iterator findEarliestAwaitingAcknowledgement(std::uint64_t streamId) noexcept
 src/Net/Http3/Qpack.h	[[nodiscard]] std::optional<std::uint64_t> insert(QpackHeaderField field, const EvictionPredicate &evictionPermitted = nullptr)
 src/Net/Http3/Qpack.h	[[nodiscard]] std::size_t blockedStreamCount() const noexcept
@@ -6344,7 +6378,9 @@ src/Net/Http3/Qpack.h	struct ASYN_NET_API QpackError
 src/Net/Http3/Qpack.h	struct ASYN_NET_API QpackHeaderField
 src/Net/Http3/Qpack.h	struct BlockedFieldSection
 src/Net/Http3/Qpack.h	struct PendingFieldSection
+src/Net/Http3/Qpack.h	template<typename Value> using QpackExpected = std::expected<Value, QpackError>
 src/Net/Http3/Qpack.h	using EvictionPredicate = std::function<bool(std::uint64_t absoluteIndex)>
+src/Net/Http3/Qpack.h	using QpackStatus = std::expected<void, QpackError>
 src/Net/Http3/Qpack.h	void appendInsertCountIncrementIfPending(std::string &decoderStreamBytes)
 src/Net/Http3/Qpack.h	void cancelStreamReferences(std::uint64_t streamId) noexcept
 src/Net/Http3/Qpack.h	void deliverDecodedFieldLines(std::vector<QpackHeaderField> &fields) const
@@ -6541,9 +6577,11 @@ src/Net/Quic/Codec/QuicDecodeError.h	enum class QuicDecodeErrorKind
 src/Net/Quic/Codec/QuicDecodeError.h	namespace AsynGyanis::Net
 src/Net/Quic/Codec/QuicDecodeError.h	std::string message
 src/Net/Quic/Codec/QuicDecodeError.h	struct ASYN_NET_API QuicDecodeError
+src/Net/Quic/Codec/QuicDecodeError.h	template<typename Value> using QuicDecodeExpected = std::expected<Value, QuicDecodeError>
+src/Net/Quic/Codec/QuicDecodeError.h	using QuicDecodeStatus = std::expected<void, QuicDecodeError>
 src/Net/Quic/Codec/QuicFrame.h	ASYN_NET_API void appendQuicFrame(std::string &bytes, const QuicFrame &frame)
-src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API std::expected<std::vector<QuicFrame>, QuicDecodeError> decodeQuicFrames(std::span<const std::uint8_t> payload)
-src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API std::expected<void, QuicDecodeError> decodeQuicFrames(std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
+src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::vector<QuicFrame>> decodeQuicFrames(std::span<const std::uint8_t> payload)
+src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API QuicDecodeStatus decodeQuicFrames(std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
 src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API std::uint64_t quicFrameTypeValue(const QuicFrame &frame) noexcept
 src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] ASYN_NET_API std::vector<QuicAcknowledgementRange> buildQuicAcknowledgementRanges(const QuicReceivedPacketNumbers &receivedPacketNumbers, std::uint64_t acknowledgedUpTo)
 src/Net/Quic/Codec/QuicFrame.h	[[nodiscard]] bool operator==(const QuicAcknowledgementRange &) const = default
@@ -6629,8 +6667,8 @@ src/Net/Quic/Codec/QuicFrame.h	struct ASYN_NET_API QuicStreamsBlockedFrame
 src/Net/Quic/Codec/QuicFrame.h	using QuicFrame = std::variant<QuicPaddingFrame, QuicPingFrame, QuicAcknowledgementFrame, QuicResetStreamFrame, QuicStopSendingFrame, QuicCryptoFrame, QuicNewTokenFrame, QuicStreamFrame, QuicMaxDataFrame, QuicMaxStreamDataFrame, QuicMaxStreamsFrame, QuicDataBlockedFrame, QuicStreamDataBlockedFrame, QuicStreamsBlockedFrame, QuicNewConnectionIdFrame, QuicRetireConnectionIdFrame, QuicPathChallengeFrame, QuicPathResponseFrame, QuicConnectionCloseFrame, QuicHandshakeDoneFrame>
 src/Net/Quic/Codec/QuicPacketHeader.h	ASYN_NET_API void appendQuicTruncatedPacketNumber(std::string &bytes, std::uint64_t packetNumber, std::size_t packetNumberByteCount)
 src/Net/Quic/Codec/QuicPacketHeader.h	QuicLongPacketType longPacketType
-src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::expected<QuicPacketHeader, QuicDecodeError> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram, std::size_t shortHeaderDestinationConnectionIdLength)
-src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::expected<void, QuicDecodeError> refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram)
+src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicPacketHeader> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram, std::size_t shortHeaderDestinationConnectionIdLength)
+src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API QuicDecodeStatus refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::optional<QuicVersionNegotiationRequest> readQuicVersionNegotiationRequest(std::span<const std::uint8_t> datagram) noexcept
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber, std::size_t packetNumberByteCount)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::vector<std::uint8_t> buildQuicVersionNegotiationPacket(std::span<const std::uint8_t> destinationConnectionId, std::span<const std::uint8_t> sourceConnectionId, std::span<const std::uint32_t> supportedVersions)
@@ -6672,7 +6710,7 @@ src/Net/Quic/Codec/QuicPacketHeader.h	struct ASYN_NET_API QuicVersionNegotiation
 src/Net/Quic/Codec/QuicRawBytes.h	inline void appendQuicRawBytes(std::string &bytes, const std::span<const std::uint8_t> data)
 src/Net/Quic/Codec/QuicRawBytes.h	namespace AsynGyanis::Net
 src/Net/Quic/Codec/QuicTransportParameters.h	ASYN_NET_API void appendQuicTransportParameters(std::string &bytes, const QuicTransportParameters &parameters)
-src/Net/Quic/Codec/QuicTransportParameters.h	[[nodiscard]] ASYN_NET_API std::expected<QuicTransportParameters, QuicDecodeError> decodeQuicTransportParameters(std::span<const std::uint8_t> bytes, QuicTransportParameterSenderRole senderRole)
+src/Net/Quic/Codec/QuicTransportParameters.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicTransportParameters> decodeQuicTransportParameters(std::span<const std::uint8_t> bytes, QuicTransportParameterSenderRole senderRole)
 src/Net/Quic/Codec/QuicTransportParameters.h	[[nodiscard]] friend bool operator==(const QuicTransportParameters &, const QuicTransportParameters &) noexcept = default
 src/Net/Quic/Codec/QuicTransportParameters.h	[[nodiscard]] inline constexpr bool isEncodableIdleTimeout(const std::chrono::milliseconds timeout) noexcept
 src/Net/Quic/Codec/QuicTransportParameters.h	[[nodiscard]] inline constexpr std::uint64_t idleTimeoutParameterMilliseconds(const std::chrono::milliseconds timeout) noexcept
@@ -6701,7 +6739,7 @@ src/Net/Quic/Codec/QuicTransportParameters.h	std::uint64_t maximumIdleTimeoutMil
 src/Net/Quic/Codec/QuicTransportParameters.h	std::uint64_t maximumUdpPayloadSize
 src/Net/Quic/Codec/QuicTransportParameters.h	struct ASYN_NET_API QuicTransportParameters
 src/Net/Quic/Codec/QuicVariableLengthInteger.h	ASYN_NET_API void appendQuicVariableLengthInteger(std::string &bytes, std::uint64_t value)
-src/Net/Quic/Codec/QuicVariableLengthInteger.h	[[nodiscard]] ASYN_NET_API std::expected<QuicDecodedInteger, QuicDecodeError> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes)
+src/Net/Quic/Codec/QuicVariableLengthInteger.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicDecodedInteger> decodeQuicVariableLengthInteger(std::span<const std::uint8_t> bytes)
 src/Net/Quic/Codec/QuicVariableLengthInteger.h	[[nodiscard]] inline constexpr std::size_t quicVariableLengthIntegerByteCount(const std::uint64_t value) noexcept
 src/Net/Quic/Codec/QuicVariableLengthInteger.h	inline constexpr std::uint64_t kQuicMaximumFourByteIntegerValue = 1073741823ULL
 src/Net/Quic/Codec/QuicVariableLengthInteger.h	inline constexpr std::uint64_t kQuicMaximumIntegerValue = (1ULL << 62) - 1ULL
@@ -6714,10 +6752,10 @@ src/Net/Quic/Codec/QuicVariableLengthInteger.h	std::uint64_t value
 src/Net/Quic/Codec/QuicVariableLengthInteger.h	struct ASYN_NET_API QuicDecodedInteger
 src/Net/Quic/Crypto/QuicCipherContext.h	[[nodiscard]] ASYN_NET_API EVP_CIPHER_CTX *acquireQuicCipherContext() noexcept
 src/Net/Quic/Crypto/QuicCipherContext.h	namespace AsynGyanis::Net
+src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::span<const std::uint8_t>> extractQuicHeaderProtectionSample(std::span<const std::uint8_t> packet, const QuicPacketHeader &header)
+src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::uint8_t> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
+src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::uint8_t> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
 src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API QuicHeaderProtectionMask generateQuicHeaderProtectionMask(const QuicPacketKeys &keys, std::span<const std::uint8_t> sample)
-src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API std::expected<std::span<const std::uint8_t>, QuicDecodeError> extractQuicHeaderProtectionSample(std::span<const std::uint8_t> packet, const QuicPacketHeader &header)
-src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API std::expected<std::uint8_t, QuicDecodeError> applyQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
-src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] ASYN_NET_API std::expected<std::uint8_t, QuicDecodeError> removeQuicHeaderProtection(std::span<std::uint8_t> packet, const QuicPacketHeader &header, const QuicHeaderProtectionMask &mask)
 src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] bool operator==(const QuicHeaderProtectionMask &) const = default
 src/Net/Quic/Crypto/QuicHeaderProtection.h	[[nodiscard]] std::span<const std::uint8_t> first(std::size_t byteCount) const noexcept
 src/Net/Quic/Crypto/QuicHeaderProtection.h	inline constexpr std::size_t kQuicHeaderProtectionMaskByteLength = 5
@@ -6755,7 +6793,7 @@ src/Net/Quic/Crypto/QuicPacketKeys.h	std::array<std::uint8_t, kQuicMaximumKeyByt
 src/Net/Quic/Crypto/QuicPacketKeys.h	std::array<std::uint8_t, kQuicMaximumSecretByteLength> generationSecret
 src/Net/Quic/Crypto/QuicPacketKeys.h	struct ASYN_NET_API QuicPacketKeys
 src/Net/Quic/Crypto/QuicPacketProtection.h	ASYN_NET_API void appendQuicProtectedPayload(std::string &output, const QuicPacketKeys &keys, std::uint64_t packetNumber, std::span<const std::uint8_t> additionalData, std::span<const std::uint8_t> plaintext)
-src/Net/Quic/Crypto/QuicPacketProtection.h	[[nodiscard]] ASYN_NET_API std::expected<std::size_t, QuicDecodeError> openQuicProtectedPayload(std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys, std::uint64_t packetNumber, std::span<const std::uint8_t> additionalData, std::span<const std::uint8_t> protectedPayload)
+src/Net/Quic/Crypto/QuicPacketProtection.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<std::size_t> openQuicProtectedPayload(std::span<std::uint8_t> plaintextOutput, const QuicPacketKeys &keys, std::uint64_t packetNumber, std::span<const std::uint8_t> additionalData, std::span<const std::uint8_t> protectedPayload)
 src/Net/Quic/Crypto/QuicPacketProtection.h	namespace AsynGyanis::Net
 src/Net/Quic/Crypto/QuicTlsContext.h	QuicEncryptionLevel level
 src/Net/Quic/Crypto/QuicTlsContext.h	QuicEncryptionLevel m_inboundLevel
@@ -6805,10 +6843,10 @@ src/Net/Quic/Crypto/QuicTlsContext.h	void appendOutbound(QuicEncryptionLevel lev
 src/Net/Quic/Crypto/QuicTlsContext.h	void feedHandshakeData(QuicEncryptionLevel level, std::span<const std::uint8_t> data)
 src/Net/Quic/Crypto/QuicTlsContext.h	~QuicTlsContext()
 src/Net/Quic/QuicAddressValidationToken.h	QuicAddressValidationTokenCodec(std::span<const std::uint8_t> signingKey, std::chrono::seconds lifetime)
+src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] QuicAddressValidationTokenExpected<QuicAddressValidationTokenContent> verify(std::span<const std::uint8_t> token, const Platform::SocketAddress &peerAddress, std::chrono::system_clock::time_point now) const
 src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] static KeySet deriveKeySet(std::span<const std::uint8_t> signingKey)
 src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] static std::unique_ptr<QuicAddressValidationTokenCodec> createWithRandomKey(std::chrono::seconds lifetime)
 src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] std::chrono::seconds lifetime() const noexcept
-src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] std::expected<QuicAddressValidationTokenContent, QuicAddressValidationTokenStatus> verify(std::span<const std::uint8_t> token, const Platform::SocketAddress &peerAddress, std::chrono::system_clock::time_point now) const
 src/Net/Quic/QuicAddressValidationToken.h	[[nodiscard]] std::vector<std::uint8_t> issue(const Platform::SocketAddress &peerAddress, std::span<const std::uint8_t> originalDestinationConnectionId, std::chrono::system_clock::time_point issuedAt) const
 src/Net/Quic/QuicAddressValidationToken.h	class ASYN_NET_API QuicAddressValidationTokenCodec
 src/Net/Quic/QuicAddressValidationToken.h	enum class QuicAddressValidationTokenStatus
@@ -6821,6 +6859,7 @@ src/Net/Quic/QuicAddressValidationToken.h	std::vector<KeySet> m_keySets
 src/Net/Quic/QuicAddressValidationToken.h	std::vector<std::uint8_t> originalDestinationConnectionId
 src/Net/Quic/QuicAddressValidationToken.h	struct KeySet
 src/Net/Quic/QuicAddressValidationToken.h	struct QuicAddressValidationTokenContent
+src/Net/Quic/QuicAddressValidationToken.h	template<typename Value> using QuicAddressValidationTokenExpected = std::expected<Value, QuicAddressValidationTokenStatus>
 src/Net/Quic/QuicAddressValidationToken.h	void rotateSigningKey(std::span<const std::uint8_t> newSigningKey)
 src/Net/Quic/QuicClientConnection.h	Configuration m_configuration
 src/Net/Quic/QuicClientConnection.h	Core::EventLoop &m_loop
@@ -6964,6 +7003,8 @@ src/Net/Quic/QuicConnectionCore.h	QuicConnectionCore(const QuicConnectionCore &)
 src/Net/Quic/QuicConnectionCore.h	QuicConnectionCoreConfiguration m_configuration
 src/Net/Quic/QuicConnectionCore.h	QuicConnectionPhase m_phase
 src/Net/Quic/QuicConnectionCore.h	QuicConnectionRole role
+src/Net/Quic/QuicConnectionCore.h	QuicDecodeStatus handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber, const QuicPathKey &pathKey, Timestamp arrivalTime)
+src/Net/Quic/QuicConnectionCore.h	QuicDecodeStatus handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime, const QuicPathKey &pathKey)
 src/Net/Quic/QuicConnectionCore.h	QuicPathKey key
 src/Net/Quic/QuicConnectionCore.h	QuicPathKey key
 src/Net/Quic/QuicConnectionCore.h	QuicPathKey key
@@ -6983,6 +7024,7 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] ASYN_NET_API std::array<std::uin
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] PeerPathState *pathStateFor(const QuicPathKey &pathKey) noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicConnectionPhase phase() const noexcept
+src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicDecodeStatus onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime, std::optional<std::uint8_t> ecnCodepoint = std::nullopt, const QuicPathKey &pathKey = QuicPathKey
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicEcnState ecnState() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicPathMtuPhase pathMtuPhase() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicRoundTripTimeEstimate roundTripTimeEstimate() const noexcept
@@ -7011,7 +7053,6 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] static std::size_t spaceIndex(Pa
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] static std::size_t spaceIndex(QuicEncryptionLevel level) noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::array<std::uint64_t, 3> receivedEcnCount(QuicEncryptionLevel level) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::array<std::uint8_t, 16> statelessResetTokenOf(std::span<const std::uint8_t> connectionId) const
-src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::expected<void, QuicDecodeError> onDatagramReceived(std::span<const std::uint8_t> datagram, Timestamp arrivalTime, std::optional<std::uint8_t> ecnCodepoint = std::nullopt, const QuicPathKey &pathKey = QuicPathKey
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<QuicOutboundDatagram> takeOutboundDatagram()
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<Timestamp> effectiveIdleTimeout() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept
@@ -7073,8 +7114,6 @@ src/Net/Quic/QuicConnectionCore.h	std::array<std::uint8_t, 16> statelessResetTok
 src/Net/Quic/QuicConnectionCore.h	std::array<std::uint8_t, kQuicPathValidationDataByteLength> data
 src/Net/Quic/QuicConnectionCore.h	std::array<std::uint8_t, kQuicPathValidationDataByteLength> data
 src/Net/Quic/QuicConnectionCore.h	std::deque<QuicOutboundDatagram> m_outboundDatagrams
-src/Net/Quic/QuicConnectionCore.h	std::expected<void, QuicDecodeError> handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, PacketNumberSpace space, std::uint64_t packetNumber, const QuicPathKey &pathKey, Timestamp arrivalTime)
-src/Net/Quic/QuicConnectionCore.h	std::expected<void, QuicDecodeError> handlePacket(std::span<const std::uint8_t> packet, const QuicPacketHeader &plainHeader, Timestamp arrivalTime, const QuicPathKey &pathKey)
 src/Net/Quic/QuicConnectionCore.h	std::function<void()> onStatelessResetDetected
 src/Net/Quic/QuicConnectionCore.h	std::function<void(const QuicPathKey &)> onPeerPathAbandoned
 src/Net/Quic/QuicConnectionCore.h	std::function<void(const QuicPathKey &)> onPeerPathValidated
@@ -7174,7 +7213,7 @@ src/Net/Quic/QuicConnectionCore.h	void queuePathResponse(const QuicPathKey &path
 src/Net/Quic/QuicConnectionCore.h	void queuePathValidationPackets(Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void queueRetransmissions(PacketNumberSpace space, std::span<const QuicSentPacketInfo> packets)
 src/Net/Quic/QuicConnectionCore.h	void queueSpacePackets(PacketNumberSpace space, Timestamp now)
-src/Net/Quic/QuicConnectionCore.h	void reportStreamViolation(const std::expected<void, QuicStreamViolation> &result, Timestamp now)
+src/Net/Quic/QuicConnectionCore.h	void reportStreamViolation(const QuicStreamViolationStatus &result, Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void requestClose(std::uint64_t errorCode, std::string_view reasonPhrase, Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void restartIdleTimer(Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void retirePeerConnectionIdsBelow(std::uint64_t retirePriorTo)
@@ -7543,6 +7582,12 @@ src/Net/Quic/Streams/QuicStreamLayer.h	QuicTransportParameters m_localParameters
 src/Net/Quic/Streams/QuicStreamLayer.h	QuicTransportParameters m_peerParameters
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] AbortAnnouncement *abortAnnouncementOf(const QuicStreamAnnouncement &announcement)
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onMaxDataFrame(const QuicMaxDataFrame &frame)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onMaxStreamsFrame(const QuicMaxStreamsFrame &frame)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onResetStreamFrame(const QuicResetStreamFrame &frame)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onStopSendingFrame(const QuicStopSendingFrame &frame)
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] QuicStreamViolationStatus onStreamFrame(const QuicStreamFrame &frame)
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool empty() const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool hasAbortedStreams() const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool hasDeliveries() const noexcept
@@ -7552,12 +7597,6 @@ src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isLocallyInitiated(std
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isOutgoingSettled(const OutgoingStream &stream) const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isPeerStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] static std::size_t pendingQueueByteCount(const OutgoingStream &stream) noexcept
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onMaxDataFrame(const QuicMaxDataFrame &frame)
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onMaxStreamDataFrame(const QuicMaxStreamDataFrame &frame)
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onMaxStreamsFrame(const QuicMaxStreamsFrame &frame)
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onResetStreamFrame(const QuicResetStreamFrame &frame)
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onStopSendingFrame(const QuicStopSendingFrame &frame)
-src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::expected<void, QuicStreamViolation> onStreamFrame(const QuicStreamFrame &frame)
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::optional<ItemType> takeFront()
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::optional<QuicAbortedStream> takeAbortedStream()
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] std::optional<QuicStreamDelivery> takeDelivery()
@@ -7647,6 +7686,7 @@ src/Net/Quic/Streams/QuicStreamLayer.h	struct IncomingStream
 src/Net/Quic/Streams/QuicStreamLayer.h	struct OutgoingStream
 src/Net/Quic/Streams/QuicStreamLayer.h	struct QuicStreamChunk
 src/Net/Quic/Streams/QuicStreamLayer.h	template<typename ItemType> class PendingQueue
+src/Net/Quic/Streams/QuicStreamLayer.h	using QuicStreamViolationStatus = std::expected<void, QuicStreamViolation>
 src/Net/Quic/Streams/QuicStreamLayer.h	void adoptPeerParameters(const QuicTransportParameters &peerParameters)
 src/Net/Quic/Streams/QuicStreamLayer.h	void drainContiguousBytes(IncomingStream &stream, std::uint64_t streamId)
 src/Net/Quic/Streams/QuicStreamLayer.h	void noteStreamRetired(std::uint64_t streamId, bool isReceiveSide)
@@ -8059,7 +8099,7 @@ src/Net/Udp/UdpServer.h	void requireMessageHandler() const
 src/Net/Udp/UdpServer.h	void stop() noexcept
 src/Net/Udp/UdpServer.h	~UdpServer()
 src/Net/WebSocket/PerMessageDeflate.h	[[nodiscard]] ASYN_NET_API PerMessageDeflateNegotiation negotiatePerMessageDeflate(std::string_view extensionsHeader)
-src/Net/WebSocket/PerMessageDeflate.h	[[nodiscard]] ASYN_NET_API std::expected<std::optional<PerMessageDeflateWindow>, std::string> acceptPerMessageDeflateResponse(std::string_view responseHeaderValue, std::string_view offerHeaderValue)
+src/Net/WebSocket/PerMessageDeflate.h	[[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<std::optional<PerMessageDeflateWindow>> acceptPerMessageDeflateResponse(std::string_view responseHeaderValue, std::string_view offerHeaderValue)
 src/Net/WebSocket/PerMessageDeflate.h	[[nodiscard]] ASYN_NET_API std::optional<std::string> deflateWebSocketMessage(std::string_view payload, int windowBits = kWebSocketDefaultWindowBits)
 src/Net/WebSocket/PerMessageDeflate.h	[[nodiscard]] ASYN_NET_API std::optional<std::string> inflateWebSocketMessage(std::string_view payload, std::size_t maximumOutputBytes, int windowBits = kWebSocketDefaultWindowBits)
 src/Net/WebSocket/PerMessageDeflate.h	bool accepted
@@ -8086,17 +8126,17 @@ src/Net/WebSocket/WebSocketClient.h	WebSocketClient(const WebSocketClient &) = d
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes)
 src/Net/WebSocket/WebSocketClient.h	WebSocketFrameDecoder m_decoder
 src/Net/WebSocket/WebSocketClient.h	WebSocketUpgradeAgreement m_agreement
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> answerPeerClose(const WebSocketFrame &closeFrame)
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive()
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> close(std::uint16_t statusCode = 1000, std::string_view reason =
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendBinary(std::string_view binary)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendCloseBytes(std::string frameBytes)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendPing(std::string_view payload =
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendText(std::string_view text)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> writeFrameBytes(std::string frameBytes)
-src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::expected<WebSocketFrame, std::string>> answerPeerClose(const WebSocketFrame &closeFrame)
-src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::expected<WebSocketFrame, std::string>> receive()
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] bool isOpen() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] const WebSocketUpgradeAgreement &agreement() const noexcept
-src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] static Core::Task<std::expected<std::unique_ptr<WebSocketClient>, std::string>> connect(Core::EventLoop &loop, Configuration configuration)
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] static Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> connect(Core::EventLoop &loop, Configuration configuration)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] std::string prepareFrame(WebSocketOpCode opCode, std::string_view payload)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] std::string_view remoteCloseReason() const noexcept
@@ -8125,6 +8165,18 @@ src/Net/WebSocket/WebSocketClient.h	std::unique_ptr<HttpOutboundConnection> m_tr
 src/Net/WebSocket/WebSocketClient.h	std::vector<std::string> subprotocols
 src/Net/WebSocket/WebSocketClient.h	struct Configuration
 src/Net/WebSocket/WebSocketClient.h	~WebSocketClient()
+src/Net/WebSocket/WebSocketError.h	WebSocketSessionErrorKind kind
+src/Net/WebSocket/WebSocketError.h	WebSocketUpgradeErrorKind kind
+src/Net/WebSocket/WebSocketError.h	enum class WebSocketSessionErrorKind
+src/Net/WebSocket/WebSocketError.h	enum class WebSocketUpgradeErrorKind
+src/Net/WebSocket/WebSocketError.h	namespace AsynGyanis::Net
+src/Net/WebSocket/WebSocketError.h	std::string message
+src/Net/WebSocket/WebSocketError.h	std::string message
+src/Net/WebSocket/WebSocketError.h	struct ASYN_NET_API WebSocketSessionError
+src/Net/WebSocket/WebSocketError.h	struct ASYN_NET_API WebSocketUpgradeError
+src/Net/WebSocket/WebSocketError.h	template<typename Value> using WebSocketSessionExpected = std::expected<Value, WebSocketSessionError>
+src/Net/WebSocket/WebSocketError.h	template<typename Value> using WebSocketUpgradeExpected = std::expected<Value, WebSocketUpgradeError>
+src/Net/WebSocket/WebSocketError.h	using WebSocketUpgradeStatus = std::expected<void, WebSocketUpgradeError>
 src/Net/WebSocket/WebSocketFrame.h	Stage m_stage
 src/Net/WebSocket/WebSocketFrame.h	WebSocketDecodeStatus parse(const char *data, std::size_t length)
 src/Net/WebSocket/WebSocketFrame.h	WebSocketFrame m_pendingFrame
@@ -8201,11 +8253,11 @@ src/Net/WebSocket/WebSocketFrame.h	void setMaskingRequirement(WebSocketMaskingRe
 src/Net/WebSocket/WebSocketFrame.h	void setMaximumMessagePayloadLength(std::size_t maximumMessagePayloadBytes) noexcept
 src/Net/WebSocket/WebSocketFrame.h	void setPerMessageDeflateEnabled(bool enabled) noexcept
 src/Net/WebSocket/WebSocketFrame.h	~WebSocketFrameDecoder() = default
+src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<WebSocketUpgradeAgreement> validateWebSocketUpgradeResponse(int statusCode, const std::vector<std::pair<std::string, std::string>> &headers, std::string_view clientKey, std::string_view offeredExtensions =
+src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API WebSocketUpgradeExpected<std::string> buildWebSocketUpgradeRequest(std::string_view host, std::string_view requestTarget, std::string_view clientKey, const std::vector<std::string> &subprotocols =
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API bool isWebSocketUpgradeRequest(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr)
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API bool validateWebSocketKeyAndVersion(const HttpRequest &request, std::string &clientKey, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr)
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API bool validateWebSocketTunnelVersion(const HttpRequest &request, std::string *failureReason, WebSocketHandshakeRejection *rejection = nullptr)
-src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API std::expected<WebSocketUpgradeAgreement, std::string> validateWebSocketUpgradeResponse(int statusCode, const std::vector<std::pair<std::string, std::string>> &headers, std::string_view clientKey, std::string_view offeredExtensions =
-src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> buildWebSocketUpgradeRequest(std::string_view host, std::string_view requestTarget, std::string_view clientKey, const std::vector<std::string> &subprotocols =
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API std::string buildHandshakeResponse(std::string_view clientKey, std::string_view extensionsResponseValue =
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] ASYN_NET_API std::string computeWebSocketAcceptValue(std::string_view clientKey)
 src/Net/WebSocket/WebSocketHandshake.h	[[nodiscard]] constexpr ExtendedConnectKind classifyExtendedConnect(const std::string_view protocolValue) noexcept
