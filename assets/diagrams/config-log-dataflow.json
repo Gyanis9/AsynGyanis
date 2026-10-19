@@ -11,7 +11,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "f2df93ffbb5b1df5fc0c8d03ebb3aac452e75dc4"
+      "revision": "317967523990ba7e45db589d7da62bfb7fce7866"
     },
     "views": [
       {
@@ -85,7 +85,7 @@
       "stage": 0,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 1039, "label": "h1 每响应计数" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 1114, "label": "h1 每响应计数" }
       ]
     },
     {
@@ -228,8 +228,8 @@
       "stage": 3,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServerStats.h", "line": 345, "label": "snapshot" },
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1619, "label": "并入准入拒绝数" }
+        { "path": "src/Net/Http/HttpServerStats.h", "line": 534, "label": "snapshot" },
+        { "path": "src/Net/Http/HttpServer.cpp", "line": 1621, "label": "并入准入拒绝数" }
       ]
     },
     {
@@ -252,7 +252,7 @@
       "stage": 4,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1626, "label": "enableMetricsEndpoint" }
+        { "path": "src/Net/Http/HttpServer.cpp", "line": 1628, "label": "enableMetricsEndpoint" }
       ]
     },
     {
@@ -276,9 +276,9 @@
       "stage": 4,
       "row": 0,
       "sources": [
-        { "path": "src/Net/Http/HttpServerAssembly.h", "line": 145, "label": "探针为什么不进那道令牌闸" },
-        { "path": "src/Net/Http/Middleware.h", "line": 1437, "label": "要令牌的默认名单只有 /metrics 与 /debug/loops" },
-        { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 125, "label": "循环诊断口的注册函数" }
+        { "path": "src/Net/Http/HttpServerAssembly.h", "line": 167, "label": "探针为什么不进那道令牌闸" },
+        { "path": "src/Net/Http/Middleware.h", "line": 1558, "label": "要令牌的默认名单是四条运维读口" },
+        { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 165, "label": "循环诊断口的注册函数" }
       ]
     },
     {
@@ -291,7 +291,7 @@
       "row": 1,
       "sources": [
         { "path": "src/Base/Log/Logger.cpp", "line": 80, "label": "addSink 的实现" },
-        { "path": "src/Base/Log/LoggerConfigLoader.cpp", "line": 326, "label": "启动期那一路用的是同一个入口" }
+        { "path": "src/Base/Log/LoggerConfigLoader.cpp", "line": 350, "label": "启动期那一路用的是同一个入口" }
       ]
     }
   ],
@@ -339,7 +339,7 @@
       "title": "观测：两套账，两个出口",
       "items": [
         "指标按监听器各持一份采集端，多监听器共用一台服务器时会报 1/N；准入拒绝数住在限额器身上，读快照时并进来",
-      "运维面四条读口只挂两道闸：/metrics 与 /debug/loops 要 Bearer 令牌，/healthz 与 /readyz 刻意不挂牌——编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉而不是配上令牌",
+      "运维面六道读口里四条挂闸：/metrics、/debug/loops、/debug/connections、/debug/log-level 要 Bearer 令牌，/healthz 与 /readyz 刻意不挂牌——编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉而不是配上令牌",
         "Span 只走 SpanExporter（文件或 OTLP HTTP），不经过日志 Sink；两条流在图上分列正因它们不共用出口",
         "被挡下的日志不再白付一块堆：早退排在物化之前，等级不命中时不拷贝消息"
       ]

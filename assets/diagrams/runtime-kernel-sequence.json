@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "ec45340e31ca567bef80a8c69a866c3416a4fd5f"
+      "revision": "317967523990ba7e45db589d7da62bfb7fce7866"
     },
     "views": [
       {
@@ -42,7 +42,7 @@
       "label": "Task 协程",
       "sublabel": "惰性启动",
       "sources": [
-        { "path": "src/Core/Coroutine/Task.h", "line": 261, "label": "initial_suspend" }
+        { "path": "src/Core/Coroutine/Task.h", "line": 342, "label": "initial_suspend" }
       ]
     },
     {
@@ -103,7 +103,7 @@
       "label": "AsyncExecutor",
       "sublabel": "工作线程",
       "sources": [
-        { "path": "src/Core/Coroutine/AsyncExecutor.h", "line": 289, "label": "completionLoop 上回投" },
+        { "path": "src/Core/Coroutine/AsyncExecutor.h", "line": 321, "label": "completionLoop 上回投" },
         { "path": "src/Core/Coroutine/ThreadPool.cpp", "line": 99, "label": "一线程一循环" }
       ]
     }
@@ -153,7 +153,7 @@
       "items": [
         "epoll 水平触发直接返回就绪表（Epoll.cpp:84），没有重武装这一步",
         "IOCP 要重投探针模拟水平触发，另有待重投/待合成两张表与 ConnectEx、takeAcceptedSocket 专属出口（Iocp.cpp:800-838）",
-        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:734-771）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:267）"
+        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:734-771）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:404）"
       ]
     },
     {

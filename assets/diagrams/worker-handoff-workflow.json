@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "93029f5486a564e0e2f00487a22ee76c651b7b70"
+      "revision": "317967523990ba7e45db589d7da62bfb7fce7866"
     },
     "views": [
       {
@@ -138,7 +138,7 @@
       "label": "开通道",
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 769, "end_line": 773, "label": "通道文件与权限" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 788, "end_line": 792, "label": "通道文件与权限" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 677, "label": "UpgradeChannel::open" }
       ]
     },
@@ -151,8 +151,8 @@
       "label": "定长头",
       "sublabel": "family/type/blob 8B",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 368, "label": "HandoffHeader" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 536, "label": "Windows blob 长度" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 387, "label": "HandoffHeader" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 583, "label": "Windows blob 长度" }
       ]
     },
     {
@@ -165,8 +165,8 @@
       "sublabel": "POSIX 传描述符",
       "tag": "blob 归 0",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 580, "end_line": 593, "label": "控制数据装载" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 742, "label": "接手后置不可继承" }
+        { "path": "src/Platform/IO/Socket.cpp", "line": 599, "end_line": 612, "label": "控制数据装载" },
+        { "path": "src/Platform/IO/Socket.cpp", "line": 761, "label": "接手后置不可继承" }
       ]
     },
     {
@@ -190,8 +190,8 @@
       "label": "接手监听",
       "sublabel": "50ms 重试 connect",
       "sources": [
-        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 137, "label": "adoptHandedOverListener" },
-        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 163, "label": "非 AF_UNIX 的文案" }
+        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 145, "label": "adoptHandedOverListener" },
+        { "path": "src/Core/Process/UpgradeChannel.cpp", "line": 171, "label": "非 AF_UNIX 的文案" }
       ]
     },
     {

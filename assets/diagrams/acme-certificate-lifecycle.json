@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "62112be9e199a29c7ec3d326740c31f70e659947"
+      "revision": "317967523990ba7e45db589d7da62bfb7fce7866"
     },
     "views": [
       {
@@ -65,7 +65,7 @@
       "sources": [
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 510, "label": "有持久 URL 先探针" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 542, "label": "否则新建账户" },
-        { "path": "src/Net/Acme/AcmeClient.h", "line": 156, "label": "badNonce 重发上限 3" }
+        { "path": "src/Net/Acme/AcmeClient.h", "line": 163, "label": "badNonce 重发上限 3" }
       ]
     },
     {
@@ -214,7 +214,7 @@
       "sources": [
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 564, "label": "原子落盘" },
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 580, "label": "reloadHandler" },
-        { "path": "src/Net/Quic/QuicServer.cpp", "line": 222, "label": "锁内换 SSL_CTX" }
+        { "path": "src/Net/Quic/QuicServer.cpp", "line": 356, "label": "锁内换 SSL_CTX" }
       ]
     },
     {
@@ -288,7 +288,7 @@
         "判据是绝对剩余天数，不是比例：默认剩不到 30 天就签（AcmeCertificateManager.h:145 的 renewBeforeExpiry、.cpp:419 落成的 graceWindow）",
         "检查节拍 12h、挑战轮询 500ms、issuanceTimeout 180s——后者是两段轮询的总时限，单次出站时限由它折算得出（AcmeCertificateManager.cpp:487 走 boundedRequestTimeout），整轮耗时不硬卡在这个数上",
         "实际唤醒取 max(now+12h, 上次失败秒+1)；minimumRetryInterval 就落在这一步（AcmeCertificateManager.cpp:229），机构的 Retry-After 与本端下限谁大听谁",
-        "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:156）"
+        "badNonce 是唯一原样重发点，上限 3 次（AcmeClient.h:163）"
       ]
     },
     {
