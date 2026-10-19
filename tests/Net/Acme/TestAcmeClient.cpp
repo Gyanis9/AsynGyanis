@@ -248,6 +248,30 @@ namespace AsynGyanis::Net
             return runFlow(std::move(request));
         }
 
+        /**
+         * @brief 换一套桩机构的行为开关重起夹具，供「一族输入各跑一条流程」的用例按轮使用
+         * @details 注入位（`Settings::injectedProblemDetail`）在建桩时定死，所以同一族形状必须一轮一套桩。
+         *          拆除顺序照 TearDown 与成员声明的逆序：先停两台服务，再销毁两个协程帧，最后才轮到循环——
+         *          循环先走会把还在挂着的接受帧变成野指针。一轮的开销是本机四次 HTTP 往返加三次 ES256 签验
+         */
+        void restartFixtures(const AcmeStubAuthority::Settings &settings)
+        {
+            if (m_authority)
+            {
+                m_authority->stop();
+            }
+            if (m_responder)
+            {
+                m_responder->stop();
+            }
+            m_responderTask.reset();
+            m_flowTask.reset();
+            m_authority.reset();
+            m_responder.reset();
+            m_loop.reset();
+            startFixtures(settings);
+        }
+
         void SetUp() override
         {
             auto key = AcmeKeyPair::generate(AcmeKeyAlgorithm::Es256);
@@ -639,6 +663,84 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.failureMessage.find('\n'), std::string::npos) << "机构 detail 里的真换行原样进了消息：落到日志就是两条记录";
         EXPECT_NE(outcome.failureMessage.find("\\x0A"), std::string::npos) << "换行没被折成可见转义";
         EXPECT_NE(outcome.failureMessage.find("\\x1B"), std::string::npos) << "ESC 没被折掉：原样打出来会污染终端";
+    }
+
+    /**
+     * @brief 钉住整族：机构的 problem detail 再刁钻，交出去的错误文案也必须是单行且控制字节全被折成可见转义
+     * @details 上面那条只钉了一个形状，这一条钉一族，每格对着一种破坏「一条记录一行」的具体方式：LF 把一条
+     *          记录拆成两条、CR 让行首被覆盖、CRLF 走采集器的分行、ESC 把转义序列送进运维的终端（改颜色、
+     *          改窗口标题）、NUL 让按 C 字符串取日志的采集器静默丢掉后半截、DEL 与超长各管一支。每格两头都核：
+     *          坏的东西没原样出去（目的），且内容是被折而不是被整段丢掉（可观测面）。
+     *          超长那三格压的是 512 与 513 这一线——`describeFailure` 传的上限是 512，标记贴错方向比不贴更坏，
+     *          读者会把「原文到此为止」当成事实。
+     * @note 残缺 UTF-8 与非法字节序列不在这一族：桩的正文由值模型序列化而来，那种形状进不了 HTTP 层。
+     *       它归 ConfigValueText 那档模糊（`Base::parseConfigValue` 的入口直接吃任意字节），两边合起来才是整族。
+     * @note 每轮重起一套夹具：注入位在建桩时定死，一族形状就是一族桩。一轮的开销是本机四次 HTTP 往返加
+     *       三次 ES256 签验，十二轮合计在秒级——这也是这条留在 gtest 侧而不是 fuzz 闭包的原因（整链要
+     *       HttpClient 与协程池）。
+     */
+    TEST_F(AcmeClientTest, FoldsEveryHostileShapeOfTheAuthorityDetail)
+    {
+        /// 一格敌意形状：名字进失败信息，detail 进注入位，期望按折后的形式给
+        struct HostileShape
+        {
+            std::string              name;               ///< 这一格的中文名
+            std::string              detail;             ///< 注入给机构的 problem detail 原文
+            std::vector<std::string> mustContain;        ///< 折文里必须出现的片段（可见转义，或原样留下的 ASCII 正文）
+            bool                     isTruncated{false}; ///< 这一格是否应当带上截断标记
+        };
+
+        // 期望一律按「折后」写：折法只把 0x20..0x7E 原样留下，高位字节（含合法 UTF-8 的中文）也写成 \xNN，
+        // 那是 LogEscaping.h 里写明的取舍——一段无法判定编码的字节在终端、文件与采集管道里是三个样，
+        // 宁可让它确定地难看。所以这里不期望「机构说明里的」这种中文原样出现
+        const std::string               escapeMarker(1U, static_cast<char>(0x1BU));
+        const std::string               nulMarker(1U, static_cast<char>(0x00U));
+        const std::vector<HostileShape> shapes{
+                HostileShape{"裸换行", "机构说明里的\n换行", {R"(\x0A)"}, false},
+                HostileShape{"裸回车", "机构说明里的\r覆盖行首", {R"(\x0D)"}, false},
+                HostileShape{"成对的 CRLF", "机构说明里的\r\n拆行", {R"(\x0D\x0A)"}, false},
+                HostileShape{"制表与退格", "机构说明里的\t制表\b退格", {R"(\x09)", R"(\x08)"}, false},
+                HostileShape{"终端转义序列", "机构说明里的" + escapeMarker + "[31m红" + escapeMarker + "]0;伪造窗口标题", {R"(\x1B)"}, false},
+                HostileShape{"NUL", "机构说明里的" + nulMarker + "后半截", {R"(\x00)"}, false},
+                HostileShape{"DEL",
+                             "机构说明里的\x7F"
+                             "删除符",
+                             {R"(\x7F)"},
+                             false},
+                HostileShape{"恰好压在截断线上", std::string(512U, 'y'), {std::string(512U, 'y')}, false},
+                HostileShape{"超出截断线一个字节", "\n" + std::string(513U, 'y'), {"已截断", R"(\x0A)", std::string(511U, 'y')}, true},
+                HostileShape{"四千字节长文", std::string(4000U, 'x') + " 结尾", {"已截断", std::string(512U, 'x')}, true},
+                HostileShape{"看着像 JSON 的一段", R"({"error":"未闭合的机构原文\})", {R"({"error":")"}, false},
+                HostileShape{"全角空白", "机构说明里的　全角空格", {R"(\xE3\x80\x80)"}, false},
+        };
+
+        for (const HostileShape &shape: shapes)
+        {
+            AcmeStubAuthority::Settings settings;
+            settings.rejectedDomainNames   = kDefaultDomainNames;
+            settings.injectedProblemDetail = shape.detail;
+            restartFixtures(settings);
+
+            const auto        outcome = runDefaultFlow();
+            const std::string label   = "形状「" + shape.name + "」";
+            ASSERT_FALSE(outcome.isSuccess) << label << "：注入的域名本该被拒，夹具没生效";
+            EXPECT_EQ(outcome.failureKind, AcmeErrorKind::RejectedByAuthority) << label << " " << outcome.failureMessage;
+            for (const std::string &mark: shape.mustContain)
+            {
+                EXPECT_NE(outcome.failureMessage.find(mark), std::string::npos) << label << "：该留下的内容没留下，要找的是 " << mark << "，消息=" << outcome.failureMessage;
+            }
+
+            // 单行是目的，不是手段：换行让采集端多出一条记录（伪造的那半行可以顶着别的时间戳与级别），
+            // 回车让行首被覆盖，其余控制字节改写终端状态。逐个字节扫，而不是只查那两个字符
+            EXPECT_EQ(outcome.failureMessage.find('\n'), std::string::npos) << label << "：机构 detail 里的真换行原样进了消息";
+            EXPECT_EQ(outcome.failureMessage.find('\r'), std::string::npos) << label << "：机构 detail 里的裸回车原样进了消息";
+            for (std::size_t index = 0; index < outcome.failureMessage.size(); ++index)
+            {
+                const auto byte = static_cast<unsigned char>(outcome.failureMessage[index]);
+                EXPECT_TRUE(byte >= 0x20U && byte != 0x7FU) << label << "：第 " << index << " 个字节是没被折掉的裸控制字节";
+            }
+            EXPECT_EQ(outcome.failureMessage.find("已截断") != std::string::npos, shape.isTruncated) << label << "：截断标记与实际取舍不同解";
+        }
     }
 
     /**

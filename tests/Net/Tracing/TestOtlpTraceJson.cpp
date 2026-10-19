@@ -12,7 +12,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -129,4 +132,65 @@ TEST(OtlpTraceJson, EmptyBatchStillRendersTheResourceShell)
     ASSERT_EQ(versionedAttributes.size(), 2U);
     EXPECT_EQ(jsonTextOf(versionedAttributes.at(1).at("key")), "service.version");
     EXPECT_EQ(jsonTextOf(versionedAttributes.at(1).at("value").at("stringValue")), "1.2.3");
+}
+
+/**
+ * @brief 随机属性：几百组必须被转义的操作名、维度键值与服务名都要按原样待在正文里
+ * @details span 的 name 就是路由模式或调用方给的路径，属性值里会装 URL 与被截断的报错原文——
+ *          这一族形状靠手写用例钉不住。渲染器漏转义任何一个字符，要么整份正文解析失败，
+ *          要么成员变形，两种都在这里露出来。
+ * @note 固定种子是为了失败可复放。这一族留在 gtest 侧，不进 fuzz-net.sh 那份闭包：
+ *       标识文本定义在 Span.cpp 里，而它牵进 Core::CoroutinePool 整条依赖链。
+ */
+TEST(OtlpTraceJson, RandomTrickyTextsRoundTripVerbatim)
+{
+    // 整片取用而不是按字节挑：按字节会把「示」这类多字节序列拆开，造出的正是渲染器应当拒绝的
+    // 非法 UTF-8——那是驱动自己的错，不是被测代码的错
+    static constexpr std::array<std::string_view, 12> kTrickyPieces = {"\"", "\\", "\r", "\n", "\t", "\x01", "\x1f", "\x7f", " ", "a", "示", "例"};
+
+    std::mt19937                               generator(20261019U);
+    std::uniform_int_distribution<std::size_t> charPick(0U, kTrickyPieces.size() - 1U);
+    const auto                                 makeText = [&](const std::size_t maximumLength) -> std::string
+    {
+        std::uniform_int_distribution<std::size_t> lengthPick(1U, maximumLength);
+        std::string                                text;
+        for (std::size_t count = lengthPick(generator); count > 0U; --count)
+        {
+            text += kTrickyPieces[charPick(generator)];
+        }
+        return text;
+    };
+
+    for (std::size_t round = 0; round < 250U; ++round)
+    {
+        const TraceResource resource{.serviceName = makeText(24U), .serviceVersion = makeText(8U)};
+        const std::string   spanName       = makeText(48U);
+        const std::string   attributeKey   = makeText(16U);
+        const std::string   attributeValue = makeText(48U);
+
+        SpanRecord record = makeRecord(spanName, kRootTraceId, kRootSpanId);
+        record.attributes = {SpanAttribute{.key = attributeKey, .value = attributeValue}};
+
+        const std::string label  = "第 " + std::to_string(round) + " 轮";
+        const std::string body   = formatOtlpTracesJson(resource, {record});
+        const auto        parsed = parseConfigValue(body);
+        if (!parsed.has_value())
+        {
+            FAIL() << label << "：渲染结果不是合法 JSON，正文=" << body;
+            return;
+        }
+
+        const ConfigValue &spans = parsed->at("resourceSpans").at(0).at("scopeSpans").at(0).at("spans");
+        ASSERT_EQ(spans.size(), 1U) << label;
+        EXPECT_EQ(jsonTextOf(spans.at(0).at("name")), spanName) << label;
+
+        const ConfigValue &spanAttributes = spans.at(0).at("attributes");
+        ASSERT_EQ(spanAttributes.size(), 1U) << label;
+        EXPECT_EQ(jsonTextOf(spanAttributes.at(0).at("key")), attributeKey) << label;
+        EXPECT_EQ(jsonTextOf(spanAttributes.at(0).at("value").at("stringValue")), attributeValue) << label;
+
+        const ConfigValue &resourceAttributes = parsed->at("resourceSpans").at(0).at("resource").at("attributes");
+        ASSERT_GE(resourceAttributes.size(), 1U) << label;
+        EXPECT_EQ(jsonTextOf(resourceAttributes.at(0).at("value").at("stringValue")), resource.serviceName) << label;
+    }
 }

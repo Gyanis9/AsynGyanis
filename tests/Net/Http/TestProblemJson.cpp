@@ -8,8 +8,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -111,6 +113,66 @@ namespace AsynGyanis::Net
             const std::string message = error.what();
             EXPECT_NE(message.find("100..599"), std::string::npos) << message;
             EXPECT_NE(message.find("HTTP 状态行"), std::string::npos) << message;
+        }
+    }
+
+    /**
+     * @brief 随机属性：几百组「必须被转义」的字段值都要原样往返，一次都不许交出非法 JSON
+     * @details 手写那条用例钉的是一个形状，这一条钉整族形状：引号、反斜杠、CR/LF/Tab、控制符、DEL
+     *          与中文按固定种子组合出 400 组（固定种子是为了失败可复放）。渲染器漏转义任何一个字符，
+     *          要么解析失败、要么成员变形，两种都在这里露出来。
+     * @note 这一族刻意留在 gtest 侧，不进 fuzz-net.sh 那份闭包：ProblemJson.cpp 带着
+     *       setProblemJsonResponse，于是拖进 HttpResponse 整条依赖链，而那份闭包按 /MT 编、
+     *       链不动项目的 /MD 库。空 `type` 每五轮进一次，让「补 about:blank」那格也在随机路里被走到。
+     */
+    TEST(ProblemJson, RandomTrickyFieldValuesAlwaysRoundTripVerbatim)
+    {
+        // 整片取用而不是按字节挑：按字节会把「示」这类多字节序列拆开，造出的正是渲染器应当拒绝的
+        // 非法 UTF-8——那是驱动自己的错，不是被测代码的错
+        static constexpr std::array<std::string_view, 12> kTrickyPieces = {"\"", "\\", "\r", "\n", "\t", "\x01", "\x1f", "\x7f", " ", "a", "示", "例"};
+
+        std::mt19937                                generator(20261019U);
+        std::uniform_int_distribution<std::size_t>  lengthPick(0U, 40U);
+        std::uniform_int_distribution<std::size_t>  charPick(0U, kTrickyPieces.size() - 1U);
+        std::uniform_int_distribution<std::int64_t> statusPick(100, 599);
+
+        const auto makeText = [&]() -> std::string
+        {
+            std::string text;
+            for (std::size_t count = lengthPick(generator); count > 0U; --count)
+            {
+                text += kTrickyPieces[charPick(generator)];
+            }
+            return text;
+        };
+
+        for (std::size_t round = 0; round < 400U; ++round)
+        {
+            const bool isBlankType = round % 5U == 0U;
+
+            ProblemDetails problem;
+            problem.type     = isBlankType ? std::string{} : makeText();
+            problem.title    = makeText();
+            problem.status   = statusPick(generator);
+            problem.detail   = makeText();
+            problem.instance = makeText();
+
+            const std::string       rendered = renderProblemJson(problem);
+            const Base::ConfigValue parsed   = parseRenderedProblem(rendered);
+            if (!parsed.is_object())
+            {
+                FAIL() << "第 " << round << " 轮的渲染结果不是 JSON 对象：" << rendered;
+                return;
+            }
+
+            const std::string label = "第 " + std::to_string(round) + " 轮";
+            // 空 type 由渲染器补 about:blank（RFC 7807 §3.1 的缺省），所以期望按「空不空」算而不是按那一格开关算：
+            // 随机文本本身也可能恰好为空，两种空走的是同一格出口
+            EXPECT_EQ(parsed.at("type").get<std::string>(), problem.type.empty() ? std::string("about:blank") : problem.type) << label;
+            EXPECT_EQ(parsed.at("title").get<std::string>(), problem.title) << label;
+            EXPECT_EQ(parsed.at("detail").get<std::string>(), problem.detail) << label;
+            EXPECT_EQ(parsed.at("instance").get<std::string>(), problem.instance) << label;
+            EXPECT_EQ(parsed.at("status").get<std::int64_t>(), problem.status) << label;
         }
     }
 
