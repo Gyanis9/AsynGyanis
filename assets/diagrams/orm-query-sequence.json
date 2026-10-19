@@ -92,11 +92,11 @@
       "id": "driver",
       "type": "database",
       "label": "驱动连接",
-      "sublabel": "Sqlite / MySQL",
+      "sublabel": "Sqlite / MySQL / Postgres",
       "sources": [
         { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 417, "label": "未命中才 prepare" },
-        { "path": "src/Database/Sqlite/SqliteConnection.cpp", "line": 685, "label": "findCachedStatement" },
-        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 663, "label": "命中直 bindAndExecute" }
+        { "path": "src/Database/MySql/MySqlConnection.cpp", "line": 663, "label": "命中直 bindAndExecute" },
+        { "path": "src/Database/Postgres/PostgresConnection.cpp", "line": 781, "label": "命中走 PQexecPrepared" }
       ]
     },
     {

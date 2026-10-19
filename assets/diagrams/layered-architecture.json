@@ -112,11 +112,11 @@
     {
       "id": "third-db",
       "type": "external",
-      "label": "SQLite3 / MySQL / Redis",
+      "label": "SQLite3 / MySQL / Postgres / Redis",
       "sublabel": "探测不到即报错桩",
       "tag": "可选退化",
-      "pos": [810, 170],
-      "size": [190, 60],
+      "pos": [780, 170],
+      "size": [230, 60],
       "sources": [
         { "path": "src/Database/CMakeLists.txt", "line": 49, "label": "SQLite 必选" },
         { "path": "src/Database/CMakeLists.txt", "line": 54, "end_line": 95, "label": "可选驱动与报错桩" }
@@ -165,8 +165,8 @@
       "type": "security",
       "label": "OpenSSL",
       "sublabel": "TLS 与 QUIC 胶水",
-      "pos": [810, 300],
-      "size": [190, 60],
+      "pos": [780, 300],
+      "size": [230, 60],
       "sources": [
         { "path": "src/Core/CMakeLists.txt", "line": 30, "end_line": 31, "label": "Core 链入" },
         { "path": "src/Net/CMakeLists.txt", "line": 62, "end_line": 63, "label": "Net 显式声明" }
@@ -190,8 +190,8 @@
       "type": "external",
       "label": "nlohmann / yaml-cpp",
       "sublabel": "原生接口，不自研值模型",
-      "pos": [810, 430],
-      "size": [190, 60],
+      "pos": [780, 430],
+      "size": [230, 60],
       "sources": [
         { "path": "src/Base/CMakeLists.txt", "line": 70, "end_line": 71, "label": "Base 公开传递" }
       ]
@@ -214,8 +214,8 @@
       "type": "external",
       "label": "Threads / ws2_32",
       "sublabel": "Mswsock · iphlpapi",
-      "pos": [810, 560],
-      "size": [190, 60],
+      "pos": [780, 560],
+      "size": [230, 60],
       "sources": [
         { "path": "src/Platform/CMakeLists.txt", "line": 23, "label": "仅 Windows" },
         { "path": "src/Platform/CMakeLists.txt", "line": 32, "end_line": 36, "label": "Threads 登记导出" }
