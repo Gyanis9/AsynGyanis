@@ -139,7 +139,7 @@ namespace AsynGyanis::Net
                                                        } else
                                                        {
                                                            response.setStatus(500);
-                                                           response.setBody("failed=" + spooled.error());
+                                                           response.setBody("failed=" + spooled.error().message);
                                                        }
                                                        handlerFinished.store(true, std::memory_order_release);
                                                    }));
@@ -189,6 +189,7 @@ namespace AsynGyanis::Net
 
         std::atomic<bool> handlerFinished{false};
         std::atomic<bool> sawFailure{false};
+        std::atomic<int>  failureKind{-1};
         std::string       failureReason;
         std::mutex        reasonGuard;
 
@@ -196,7 +197,7 @@ namespace AsynGyanis::Net
         {
             static_cast<void>(router.postStreaming(
                     "/upload",
-                    [&loop, directory, &handlerFinished, &sawFailure, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    [&loop, directory, &handlerFinished, &sawFailure, &failureKind, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                     {
                         HttpRequestBody *stream = request.bodyStream();
                         if (stream == nullptr)
@@ -212,10 +213,11 @@ namespace AsynGyanis::Net
                         if (!spooled.has_value())
                         {
                             std::lock_guard<std::mutex> reasonLock(reasonGuard);
-                            failureReason = spooled.error();
+                            failureReason = spooled.error().message;
+                            failureKind.store(static_cast<int>(spooled.error().kind), std::memory_order_release);
                             sawFailure.store(true, std::memory_order_release);
-                            // 507 是「存储空间不足」这一类：拒的是配额，不是客户端的语法
-                            response.setStatus(507);
+                            // 按 413 拒：客户端要听见的是「这份太大」，而 507 会让运维去查磁盘，那里其实没满
+                            response.setStatus(413);
                             response.setBody("quota");
                         } else
                         {
@@ -241,6 +243,8 @@ namespace AsynGyanis::Net
             std::lock_guard<std::mutex> reasonLock(reasonGuard);
             EXPECT_NE(failureReason.find("上限"), std::string::npos) << "原因里没说清是配额：" << failureReason;
         }
+        EXPECT_EQ(failureKind.load(std::memory_order_acquire), static_cast<int>(RequestBodySpoolErrorKind::LimitExceeded))
+                << "超配额要按 LimitExceeded 交回，不许与写盘故障混成一档";
         EXPECT_EQ(countFilesIn(directory), 0U) << "拒掉的上传留下了半份文件";
 
         std::filesystem::remove_all(directory);
@@ -258,6 +262,7 @@ namespace AsynGyanis::Net
 
         std::atomic<bool> handlerFinished{false};
         std::atomic<bool> sawTruncation{false};
+        std::atomic<int>  failureKind{-1};
         std::string       failureReason;
         std::mutex        reasonGuard;
 
@@ -265,7 +270,7 @@ namespace AsynGyanis::Net
         {
             static_cast<void>(router.postStreaming(
                     "/upload",
-                    [&loop, directory, &handlerFinished, &sawTruncation, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    [&loop, directory, &handlerFinished, &sawTruncation, &failureKind, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
                     {
                         HttpRequestBody *stream = request.bodyStream();
                         if (stream == nullptr)
@@ -279,7 +284,11 @@ namespace AsynGyanis::Net
                         auto spooled      = co_await RequestBodySpool::capture(loop, Core::AsyncExecutor::shared(), *stream, options);
                         {
                             std::lock_guard<std::mutex> reasonLock(reasonGuard);
-                            failureReason = spooled.has_value() ? "handed-over-bytes=" + std::to_string(spooled->byteCount()) : spooled.error();
+                            failureReason = spooled.has_value() ? "handed-over-bytes=" + std::to_string(spooled->byteCount()) : spooled.error().message;
+                        }
+                        if (!spooled.has_value())
+                        {
+                            failureKind.store(static_cast<int>(spooled.error().kind), std::memory_order_release);
                         }
                         sawTruncation.store(!spooled.has_value(), std::memory_order_release);
                         response.setStatus(spooled.has_value() ? 200 : 400);
@@ -307,6 +316,7 @@ namespace AsynGyanis::Net
             std::lock_guard<std::mutex> reasonLock(reasonGuard);
             EXPECT_NE(failureReason.find("没收齐"), std::string::npos) << "原因里没说清是截断：" << failureReason;
         }
+        EXPECT_EQ(failureKind.load(std::memory_order_acquire), static_cast<int>(RequestBodySpoolErrorKind::IncompleteBody)) << "截断要按 IncompleteBody 交回，处理器才敢直接回 400";
         EXPECT_EQ(countFilesIn(directory), 0U) << "截断的正文留下了文件";
 
         std::filesystem::remove_all(directory);
@@ -353,7 +363,7 @@ namespace AsynGyanis::Net
                                              } else
                                              {
                                                  response.setStatus(500);
-                                                 response.setBody("failed=" + spooled.error());
+                                                 response.setBody("failed=" + spooled.error().message);
                                              }
                                              handlerFinished.store(true, std::memory_order_release);
                                          }));
@@ -390,33 +400,39 @@ namespace AsynGyanis::Net
         const std::string           payload   = makePatternPayload(4096);
 
         std::atomic<bool> handlerFinished{false};
+        std::atomic<int>  failureKind{-1};
         std::string       failureReason;
         std::mutex        reasonGuard;
 
         const auto registerRoutes = [&](Router &router, Core::EventLoop &loop)
         {
-            static_cast<void>(router.postStreaming("/upload",
-                                                   [&loop, directory, &handlerFinished, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
-                                                   {
-                                                       HttpRequestBody *stream = request.bodyStream();
-                                                       if (stream == nullptr)
-                                                       {
-                                                           response.setBody("no-stream");
-                                                           handlerFinished.store(true, std::memory_order_release);
-                                                           co_return;
-                                                       }
-                                                       RequestBodySpoolOptions options;
-                                                       options.maximumByteCount = 0;
-                                                       options.directory        = directory;
-                                                       auto spooled             = co_await RequestBodySpool::capture(loop, Core::AsyncExecutor::shared(), *stream, options);
-                                                       {
-                                                           std::lock_guard<std::mutex> reasonLock(reasonGuard);
-                                                           failureReason = spooled.has_value() ? "handed-over" : spooled.error();
-                                                       }
-                                                       response.setStatus(spooled.has_value() ? 200 : 500);
-                                                       response.setBody("answered");
-                                                       handlerFinished.store(true, std::memory_order_release);
-                                                   }));
+            static_cast<void>(router.postStreaming(
+                    "/upload",
+                    [&loop, directory, &handlerFinished, &failureKind, &reasonGuard, &failureReason](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                    {
+                        HttpRequestBody *stream = request.bodyStream();
+                        if (stream == nullptr)
+                        {
+                            response.setBody("no-stream");
+                            handlerFinished.store(true, std::memory_order_release);
+                            co_return;
+                        }
+                        RequestBodySpoolOptions options;
+                        options.maximumByteCount = 0;
+                        options.directory        = directory;
+                        auto spooled             = co_await RequestBodySpool::capture(loop, Core::AsyncExecutor::shared(), *stream, options);
+                        {
+                            std::lock_guard<std::mutex> reasonLock(reasonGuard);
+                            failureReason = spooled.has_value() ? "handed-over" : spooled.error().message;
+                            if (!spooled.has_value())
+                            {
+                                failureKind.store(static_cast<int>(spooled.error().kind), std::memory_order_release);
+                            }
+                        }
+                        response.setStatus(spooled.has_value() ? 200 : 500);
+                        response.setBody("answered");
+                        handlerFinished.store(true, std::memory_order_release);
+                    }));
         };
 
         RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, {}, registerRoutes);
@@ -432,6 +448,8 @@ namespace AsynGyanis::Net
             std::lock_guard<std::mutex> reasonLock(reasonGuard);
             EXPECT_NE(failureReason.find("上限不能为 0"), std::string::npos) << "0 上限没有按配置错误拒绝：" << failureReason;
         }
+        EXPECT_EQ(failureKind.load(std::memory_order_acquire), static_cast<int>(RequestBodySpoolErrorKind::InvalidOption))
+                << "取值用错要按 InvalidOption 交回，不许混进磁盘故障那一档";
         EXPECT_EQ(countFilesIn(directory), 0U) << "被拒的配置错误也留了文件";
 
         std::filesystem::remove_all(directory);
@@ -472,7 +490,7 @@ namespace AsynGyanis::Net
                                                        } else
                                                        {
                                                            response.setStatus(400);
-                                                           response.setBody("refused=" + spooled.error());
+                                                           response.setBody("refused=" + spooled.error().message);
                                                        }
                                                        handlerFinished.store(true, std::memory_order_release);
                                                    }));

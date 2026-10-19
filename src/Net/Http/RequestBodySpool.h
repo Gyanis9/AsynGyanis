@@ -48,6 +48,34 @@ namespace AsynGyanis::Net
     } // namespace Detail
 
     /**
+     * @brief 一次落盘失败的类别
+     * @details 按调用方要给的响应码切，不按本类内部哪一步失败切：处理器拿到的是「这条请求该怎么答复」，
+     *          而不是「本类的哪一行失败了」
+     */
+    enum class RequestBodySpoolErrorKind
+    {
+        InvalidOption,      ///< 取值本身不合法（例如上限写成 0）：调用方的代码用错了，不是运营事件
+        LocalStorageFailed, ///< 本地存储不给力：临时目录读不出、文件打不开、写盘短写；该回 507
+        LimitExceeded,      ///< 正文超过给定的落盘上限；该回 413
+        IncompleteBody,     ///< 正文没收齐就终止（对端断开、流被重置、中途解析失败）；该回 400
+    };
+
+    /**
+     * @brief 一条落盘失败：类别供分支，文案供人看
+     */
+    struct ASYN_NET_API RequestBodySpoolError
+    {
+        RequestBodySpoolErrorKind kind;    ///< 失败类别，处理器据此选响应码
+        std::string               message; ///< 中文原因，带目录、上限与实际写入字节数这些现场数字
+    };
+
+    /**
+     * @brief 落盘的结果形状：成功带 Value，失败侧固定为 RequestBodySpoolError
+     */
+    template<typename Value>
+    using RequestBodySpoolExpected = std::expected<Value, RequestBodySpoolError>;
+
+    /**
      * @brief 落盘的取值项
      * @details 三项默认都有明确的理由：上限取 64 MiB 是「明显高于解析器的 8 MiB 内存档，又不至于让一次
      *          误配写满磁盘」；目录留空走系统临时目录，把挂载与回收策略留给部署方；前缀只影响可读性，
@@ -99,13 +127,14 @@ namespace AsynGyanis::Net
          * @param body 待抽干的正文流（流式路由上是 `HttpRequest::bodyStream()`；普通路由上这份流
          *        未装配，`readNext()` 恒为 false，会按「正文不完整」失败）
          * @param options 落盘取值
-         * @return Core::Task<std::expected<RequestBodySpool, std::string>> 成功时交出一份归调用方所有的
-         *         临时文件；失败时值是中文原因，且临时文件已删掉（不留半份）
+         * @return Core::Task<RequestBodySpoolExpected<RequestBodySpool>> 成功时交出一份归调用方所有的
+         *         临时文件；失败时值带类别与中文原因，且临时文件已删掉（不留半份）
          * @note 失败通道是 expected 而不是异常：磁盘满、目录不可写、正文被截断都是预期的运营事件，
-         *       处理器要能分别回 507/500/400，而不是让异常穿过协程帧把连接一起带走
+         *       处理器要能按 `RequestBodySpoolErrorKind` 分别回 507/413/400，而不是让异常穿过协程帧
+         *       把连接一起带走。类别就是为这一条存在的——只有一句文案时，那三个码要靠子串匹配去猜
          */
-        static Core::Task<std::expected<RequestBodySpool, std::string>> capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,
-                                                                                RequestBodySpoolOptions options = {});
+        static Core::Task<RequestBodySpoolExpected<RequestBodySpool>> capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,
+                                                                              RequestBodySpoolOptions options = {});
 
         /**
          * @brief 临时文件的路径

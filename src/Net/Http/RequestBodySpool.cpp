@@ -50,14 +50,14 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    Core::Task<std::expected<RequestBodySpool, std::string>> RequestBodySpool::capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,
-                                                                                       RequestBodySpoolOptions options)
+    Core::Task<RequestBodySpoolExpected<RequestBodySpool>> RequestBodySpool::capture(Core::EventLoop &completionLoop, Core::AsyncExecutor &writerExecutor, HttpRequestBody &body,
+                                                                                     RequestBodySpoolOptions options)
     {
         if (options.maximumByteCount == 0)
         {
             // 0 不是「不限」——那两个字留给别的字段说。这里当成用法错误拒掉，
             // 免得一次误读把「任何正文都落不下去」表现成磁盘问题
-            co_return std::unexpected("落盘上限不能为 0：那既不是「不限」也没有可落的正文");
+            co_return std::unexpected(RequestBodySpoolError{RequestBodySpoolErrorKind::InvalidOption, "落盘上限不能为 0：那既不是「不限」也没有可落的正文"});
         }
 
         std::error_code       directoryError;
@@ -69,7 +69,9 @@ namespace AsynGyanis::Net
             directory = std::filesystem::temp_directory_path(directoryError);
             if (directoryError)
             {
-                co_return std::unexpected("定不下落盘目录：系统临时目录读不出来（错误码 " + std::to_string(directoryError.value()) + "），请显式给 directory");
+                co_return std::unexpected(
+                        RequestBodySpoolError{RequestBodySpoolErrorKind::LocalStorageFailed,
+                                              "定不下落盘目录：系统临时目录读不出来（错误码 " + std::to_string(directoryError.value()) + "），请显式给 directory"});
             }
         }
 
@@ -81,7 +83,7 @@ namespace AsynGyanis::Net
         state->stream.open(state->path, std::ios::out | std::ios::binary | std::ios::trunc);
         if (!state->stream.is_open())
         {
-            co_return std::unexpected("打不开落盘文件：" + Platform::FileSystem::utf8FromPath(state->path));
+            co_return std::unexpected(RequestBodySpoolError{RequestBodySpoolErrorKind::LocalStorageFailed, "打不开落盘文件：" + Platform::FileSystem::utf8FromPath(state->path)});
         }
 
         while (co_await body.readNext())
@@ -92,7 +94,8 @@ namespace AsynGyanis::Net
             if (chunk.size() > options.maximumByteCount - state->writtenByteCount)
             {
                 static_cast<void>(discardSpoolFile(state));
-                co_return std::unexpected("正文超过落盘上限 " + std::to_string(options.maximumByteCount) + " 字节");
+                co_return std::unexpected(
+                        RequestBodySpoolError{RequestBodySpoolErrorKind::LimitExceeded, "正文超过落盘上限 " + std::to_string(options.maximumByteCount) + " 字节"});
             }
 
             const std::size_t writtenLength = co_await writerExecutor.submit<std::size_t>(completionLoop,
@@ -106,7 +109,9 @@ namespace AsynGyanis::Net
             {
                 // 半截段落不进第二次重试（文件位置已经不确定了），删掉整份重来是唯一干净的选择
                 static_cast<void>(discardSpoolFile(state));
-                co_return std::unexpected("写盘只落了 " + std::to_string(writtenLength) + "/" + std::to_string(chunk.size()) + " 字节（磁盘满、目录被摘或 IO 故障）");
+                co_return std::unexpected(
+                        RequestBodySpoolError{RequestBodySpoolErrorKind::LocalStorageFailed,
+                                              "写盘只落了 " + std::to_string(writtenLength) + "/" + std::to_string(chunk.size()) + " 字节（磁盘满、目录被摘或 IO 故障）"});
             }
             state->writtenByteCount += writtenLength;
         }
@@ -115,7 +120,7 @@ namespace AsynGyanis::Net
         {
             // 交出去的每一份都要能被当成完整的那一份用；长度不足的正文按错误处理（RFC 9110 §6.6）
             static_cast<void>(discardSpoolFile(state));
-            co_return std::unexpected("正文没收齐就终止了（对端断开、流被重置或中途解析失败），不落半份");
+            co_return std::unexpected(RequestBodySpoolError{RequestBodySpoolErrorKind::IncompleteBody, "正文没收齐就终止了（对端断开、流被重置或中途解析失败），不落半份"});
         }
 
         state->stream.close();
