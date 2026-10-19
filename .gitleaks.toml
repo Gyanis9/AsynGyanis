@@ -1,4 +1,4 @@
-# gitleaks 的仓库配置（CI 由 supply-chain.yml 的 secret-scan 作业使用；本地跑法见 README「测试与验证」）。
+# gitleaks 的仓库配置（CI 由 supply-chain.yml 的 secret-scan 作业使用；本地跑法见 docs/测试与验证.md 的「供应链门」）。
 #
 # 扫描面是当前工作树（`gitleaks dir`），不是 git 历史：门禁判的是「这一刻的树里有没有凭据」。
 # 历史另一路一次性核过（2026-10-12，git bundle 全史 2144 个提交）：6 处命中全部是已从仓库删除的

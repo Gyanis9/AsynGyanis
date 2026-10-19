@@ -14,7 +14,7 @@
     走同一组规则。更早的 CHANGELOG 段落是点时刻的叙述，不回判——历史条目随文件演进必然失效，
     硬判只会让这道门变成哭狼的门。写全仓相对路径而读不到 → FAIL；只写裸文件名（可能是仓库外的
     依赖头，如 zlib 的 zconf.h）而树里找不到同名文件 → WARN，不算死引用；
-  * 交付 HTML 与源 JSON 同解：每张图旁挂的 `<slug>.html`（README 链接的交互版）内嵌一份
+  * 交付 HTML 与源 JSON 同解：每张图旁挂的 `<slug>.html`（页内导出 PNG 的那份交互图）内嵌一份
     source-evidence 块——修订号、引用总数、每元素的引用行位逐一与 JSON 比。两者由不同的手
     （改图 / 重出）推进，不同解就是「对外交付的是旧图」；HTML 缺失只记 WARN；
   * 空集防护：总提取数低于地板、或有图一条 sources 都没有 → 退 2。字段改名/结构变化会让提取数
@@ -69,7 +69,11 @@ PROSE_TEXT_FIELDS = ("label", "sublabel", "tag", "note")
 PROSE_ELEMENT_COLLECTIONS = VERTEX_COLLECTIONS + ("edges", "lanes")
 # 台账正文里也手写「路径:行号」，同一条底线要同判：SECURITY 全篇（安全面承诺的行号要活到兑现）
 # 与 CHANGELOG 的最新发布段（发布说明里的引用是对该版本交付物的主张）。旧发布段不回判，原因见文件头
-LEDGER_PROSE_FILES = (".github/SECURITY.md", "CHANGELOG.md")
+LEDGER_PROSE_FILES = (
+    ".github/SECURITY.md", "CHANGELOG.md", "README.md",
+    "docs/入门与构建.md", "docs/架构设计.md", "docs/网络编程.md", "docs/数据库访问.md",
+    "docs/部署与运维.md", "docs/配置与可观测性.md", "docs/测试与验证.md", "docs/性能测试.md",
+)
 # 提取数下限：字段改名、正则失配、图件被换掉都会让提取数塌下来而门照绿，按「门没跑成」退 2。
 # 地板取历史档（refs 237 / prose 115）往下留一截：正常增删碰不到，结构性变化一定触发
 MINIMUM_TOTAL_REFS = 200

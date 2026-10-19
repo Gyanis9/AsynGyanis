@@ -1351,7 +1351,8 @@ namespace AsynGyanis::Net
          * @return std::optional<std::unique_ptr<Core::TlsSocket>> 握手成功交出 TlsSocket；失败返回空
          * @details 外层 TLS 的对端是代理而不是目标：SNI 与主机名校验都按代理主机走（目标的证书
          *          在 https 目标的 CONNECT 隧道里由内层 TLS 各自校验）。证书链用的是与目标同一份
-         *          TLS 策略（同一 CA 信任库与客户端证书）——独立代理证书不做，触发条件见 README。
+         *          TLS 策略（同一 CA 信任库与客户端证书）——独立代理证书不做：要给代理单独一份
+         *          信任库与客户端证书，就得先有「代理与目标分属两套身份」的部署形状，本仓没有。
          *          不声明 ALPN 是有意为之：到代理的连接按 HTTP/1.1 语义说话（CONNECT 与绝对形式
          *          都是 h1 的），声明 h2 只会把协商引向本端没实现的通路
          */

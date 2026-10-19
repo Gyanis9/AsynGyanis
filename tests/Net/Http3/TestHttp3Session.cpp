@@ -3944,7 +3944,7 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief 隧道建立时把 permessage-deflate 的协商结论回给对端（README 声称三条通道共用这套协商）
+     * @brief 隧道建立时把 permessage-deflate 的协商结论回给对端（docs/网络编程.md 的 WebSocket 一节声称三条通道共用这套协商）
      * @details 只看应答头里那一行：压缩本身由 WebSocketPeer 负责，它的压缩收发已有
      *          TestWebSocketSession 的用例钉住，这里重复一遍不会多出信息
      */

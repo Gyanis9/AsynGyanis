@@ -28,6 +28,14 @@ LEDGER_FILES = (
     "CHANGELOG.md",
     ".github/SECURITY.md",
     "CONTRIBUTING.md",
+    "docs/入门与构建.md",
+    "docs/架构设计.md",
+    "docs/网络编程.md",
+    "docs/数据库访问.md",
+    "docs/部署与运维.md",
+    "docs/配置与可观测性.md",
+    "docs/测试与验证.md",
+    "docs/性能测试.md",
 )
 
 TIGHT_CITATION = re.compile(r"`([0-9a-f]{7,40})`（(20\d\d-\d\d-\d\d)")

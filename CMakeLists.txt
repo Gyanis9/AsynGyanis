@@ -13,7 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的完成端口
 # （src/Core/EventLoop/Iocp.cpp；wepoll.h 只提供 epoll_event 与事件位定义，实现已删除）。
 # 其它系统在 Core 这一层就编译不过，而报出来的会是几百行模板错误——与其让人去猜，不如在这里
-# 一句话说清「缺的是 kqueue 后端」以及补它的落点。README 的「环境要求」也写了这一点，两处一致。
+# 一句话说清「缺的是 kqueue 后端」以及补它的落点。docs/入门与构建.md 的「环境要求」也写了这一点，两处一致。
 # 这是既有决定而不是待办的缺口：目标平台就是 Linux 与 Windows，下面这段报错是「拒绝文案」本身，
 # 不是「还没做」的标记——别把它当成 TODO 去补 kqueue（macOS/BSD 也不在支持面上）。
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")

@@ -161,7 +161,7 @@ namespace AsynGyanis::Database
                 //    不拥有那个参数（建连只定字符集与只读语句时限），不该为了一个列型去替会话做主；
                 //    ② TIMESTAMP 的取值范围只到 2038-01-19（32 位秒），而 DATETIME 到 9999 年。
                 // 于是本映射把 UTC 瞬时存成 DATETIME(6)：字面墙上时间，按约定是 UTC（约定写在
-                // Common/TemporalText.h 与 README 的能力清单里）。带 6 是小数秒精度，DATETIME 不带
+                // Common/TemporalText.h 与 docs/数据库访问.md 的类型映射里）。带 6 是小数秒精度，DATETIME 不带
                 // 长度就只存整秒，写 "…:30.5" 进去读回来是 "…:30"，那才是静默丢位。
                 return "DATETIME(6)";
             default:

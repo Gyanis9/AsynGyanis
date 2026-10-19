@@ -1,6 +1,6 @@
 # AsynGyanis 的 systemd 单元样例。复制到 /etc/systemd/system/asyngyanis.service 后按现场改。
 #
-# 每一行的理由都对着引擎实现写：README 的「投产前核对」与「运行手册」是操作口径，
+# 每一行的理由都对着引擎实现写：docs/部署与运维.md 与 docs/配置与可观测性.md 是操作口径，
 # Platform::ServiceNotification / Core::ServiceWatchdog / Core::Process::WorkerSupervisor
 # 是这些口径的唯一真源。改本文件前先读那三处，别按别的服务的样子抄。
 

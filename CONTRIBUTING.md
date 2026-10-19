@@ -107,7 +107,7 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
 ## 依赖、SBOM 与安全公告
 
 - **加/升第三方依赖要走四处**：`conandata.yml` 的固定版本、`packaging/dependency-watch.json` 的公告入口与
-  `pinnedVersion`（台账每条还要带 `license` / `purlName` / `homepage` 三栏：SBOM 的上游正名、官网与许可只从这一份读，缺 license 会被 SBOM 自检判红）、README「外部依赖」表的版本、以及交付配方 `packaging/conan/conanfile.py` 里写版本的四处；
+  `pinnedVersion`（台账每条还要带 `license` / `purlName` / `homepage` 三栏：SBOM 的上游正名、官网与许可只从这一份读，缺 license 会被 SBOM 自检判红）、[docs/入门与构建.md](docs/入门与构建.md)「依赖版本」表的版本、以及交付配方 `packaging/conan/conanfile.py` 里写版本的四处；
   可选依赖还要另动根 `conanfile.py` 的选项（要给降级路径）。忘掉其中一处会被当场判红：
   `python scripts/check-dependency-advisories.py` 钉的是「四处同解」——缺登记、版本漂移、台账残留已删依赖、交付配方与真源不一致都算；这条不与构建混跑，几秒钟就能暴露。
 - **SBOM**：`python scripts/generate-sbom.py --out sbom` 产出 CycloneDX 1.6（组件按 purl 排序、
@@ -190,7 +190,11 @@ tests/        — 单元测试（GoogleTest），目录与 src 逐级对齐
 samples/      — 示例程序（ReferenceServer，随构建编译）
 ```
 
-命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），子目录不引入新命名空间；include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。模块分层与链接依赖见 README 的「架构」一节。
+命名空间一律到模块名为止（`AsynGyanis::Base`、`AsynGyanis::Core` …），子目录不引入新命名空间；include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。模块分层与链接依赖见 [docs/架构设计.md](docs/架构设计.md)。
+
+使用与验证细节按主题分在 [docs/文档导航.md](docs/文档导航.md)：构建与消费看 [入门与构建](docs/入门与构建.md)，协议与客户端语义看 [网络编程](docs/网络编程.md) 与 [数据库访问](docs/数据库访问.md)，部署与证书自动化看 [部署与运维](docs/部署与运维.md)，配置、日志与读数口径看 [配置与可观测性](docs/配置与可观测性.md)，门禁与验证面看 [测试与验证](docs/测试与验证.md)，性能测量口径看 [性能测试](docs/性能测试.md)。改这些行为时同一批文档要一起改。
+
+`docs/` 下的文件名与正文语言一律用中文（`docs/RFC/` 里的规范原文与外部标识除外），新增专题沿用同一形状。三处文档检查脚本按**文件名**认这些路径——`check-dependency-advisories.py` 只认「入门与构建」那一张依赖表，`check-ledger-dates.py` 与 `check-arch-traceability.py` 各自带一份要扫的文档清单；改名或新增专题时同一批改过去，否则新文档会静默落在门禁之外。
 
 ## 行为准则
 
