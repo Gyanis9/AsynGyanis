@@ -7,6 +7,9 @@
 用法：python scripts/check-release-version.py
 退出码：0 一致；1 不一致；2 读不到必要信息（缺文件、缺提交历史）
 
+更新日志里一个发布段都没有时退 2 而不是 1：那属于「版本号已经写在 CMake 里，而日志还没记过
+任何一笔发布」，既不是三处不一致，也不能被读成通过——判据没东西可比就是没跑成。
+
 尚未打过任何标签时只跳过标签这一项比较并给出提示——首个版本发布之前标签本来就不存在。
 提示里会点明「若远端已有标签而这里报『尚无』，那就是本地没取到标签（浅克隆），别把这条当通过」。
 """
@@ -67,7 +70,9 @@ def main():
 
     changelogVersion = readLatestChangelogVersion()
     if changelogVersion is None:
-        print(f"{CHANGELOG_FILE.name} 里找不到形如 '## [x.y.z] - 日期' 的发布段")
+        print(f"{CHANGELOG_FILE.name} 里找不到形如 '## [x.y.z] - 日期' 的发布段："
+              "本文件还没有记录过任何已发布版本（重记的起点写在该文件的「版本号策略」那节里）。"
+              "下一次发布写出第一个发布段即复绿——把它读成「门坏了」或者「已经过了」都不对")
         return 2
 
     try:
