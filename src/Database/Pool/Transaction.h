@@ -95,7 +95,7 @@ namespace AsynGyanis::Database
          * @throws Base::InvalidArgumentException 引擎没有只读事务形态（SQLite、未实现方言的类型），
          *         或所请求的隔离级别不可用——拒绝并点名引擎，不退化成一笔普通事务
          * @throws QueryExecutionException 驱动拒绝开启语句或隔离级别语句
-         * @note 只读事务里的写语句由**服务端**拒（MySQL 错误 1792、PostgreSQL SQLSTATE 25006），
+         * @note 只读事务里的写语句由服务端拒（MySQL 错误 1792、PostgreSQL SQLSTATE 25006），
          *       本层不预判「这条语句是不是写」：裸 SQL 的动词形态无法可靠分辨，
          *       `SELECT … FOR UPDATE` 与 `INSERT … SELECT` 都算写，猜一次就会把能跑的语句拦死
          */
