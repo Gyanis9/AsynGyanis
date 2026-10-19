@@ -618,14 +618,18 @@ namespace AsynGyanis::Database::Queryable
         /**
          * @brief 插入一行并取回数据库生成的自增标识
          *
-         * @details 与 insert() 走同一份语句生成与执行路径，只是把读的是写回执上的自增标识而不是影响
-         *          行数。该值在语句执行完就地快照（见 DatabaseResult::lastInsertRowId()），因此不需要
-         *          再补一条查询去问：连接由池共享，「先插入、再查 last_insert_rowid()」的两次取出可能
-         *          落到两条连接上，读到的是别人的值。
+         * @details 与 insert() 走同一份语句生成与执行路径，只是读的是生成键而不是影响行数。三条 SQL
+         *          引擎各按自己的通道在同一次往返里取回：SQLite 与 MySQL 在结果集构造时从连接句柄
+         *          就地快照（见 DatabaseResult::lastInsertRowId()），PostgreSQL 由方言给这条 INSERT 追加
+         *          `RETURNING 主键列`、值随该语句的回复一起交回（见
+         *          PostgresDialect::appendGeneratedKeyReturningTail() 与 PostgresResult::lastInsertRowId()）。
+         *          两条通道都不是「再补一条查询去问」：连接由池共享，先插入、再单独查
+         *          last_insert_rowid() 或 lastval() 的两次取出可能落到两条连接上，而 lastval() 读的还是
+         *          本会话最后一个序列——插入别的表也会串号。
          *
          * @param row 待插入的结构体；TableSchema<T>::kIsAutoIncrementPrimaryKey 为真时主键字段被忽略
-         * @return std::int64_t 数据库生成的自增标识；0 表示这条语句没有产生（未声明自增主键、
-         *         表上没有自增列、驱动不提供该信息，或值超出有符号 64 位——最后一种由结果集的
+         * @return std::int64_t 数据库生成的自增标识；0 表示这条语句没有产生可交回的生成键（未声明
+         *         自增主键、表上没有自增列、带回的值不是整数，或值超出有符号 64 位——后两种由结果集的
          *         lastError() 说明，ORM 这一层拿不到那份文本）
          *
          * @throws Base::LogicException 当前为离线模式，或声明了自增主键却没有其它可写列
@@ -639,7 +643,7 @@ namespace AsynGyanis::Database::Queryable
 
             // 语句必须先在锁外生成：方言解析要借一条连接探测数据库类型，握着租约再借一次就是把
             // 自己排在自己后面——池上限为 1 时（内存库的常见配置）直接等到 acquire 超时
-            const SqlStatement    statement = buildInsertStatement(row);
+            const SqlStatement    statement = buildInsertStatement(row, InsertConflict::Fail, true);
             const ConnectionLease lease     = acquireConnection(m_pool, m_transaction);
             return runOn(*lease.connection, statement)->lastInsertRowId();
         }
@@ -1105,7 +1109,8 @@ namespace AsynGyanis::Database::Queryable
             requireOnline("insertAndGetGeneratedIdAsync()");
 
             // 语句生成要读 row 并访问本对象的查询树，必须在提交前完成；之后按值捕获交给工作线程
-            SqlStatement    statement   = buildInsertStatement(row);
+            // 要求回读生成键这一点也写进语句里（理由与同步版相同，见 insertAndGetGeneratedId()）
+            SqlStatement    statement   = buildInsertStatement(row, InsertConflict::Fail, true);
             ConnectionPool *pool        = m_pool;
             Transaction    *transaction = m_transaction;
 
@@ -2360,9 +2365,14 @@ namespace AsynGyanis::Database::Queryable
          *          selectColumns，取值转成 DatabaseValue 后按同序排列，SQL 文本、标识符引用、
          *          占位符写法全部由方言的 translateInsert() 决定，本类不拼任何 SQL 片段。
          * @param row 待插入的结构体
-         * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"；声明为自增的主键不出现在列清单里
+         * @param conflict 唯一键冲突的处置，默认 Fail 时关键词与既有写法逐字相同
+         * @param withGeneratedKey 是否要求把生成的主键一起交回：为真时把 TableSchema 的主键写进查询树，
+         *        回读通道由方言决定（SQLite/MySQL 读连接句柄上的快照、语句一分不变；PostgreSQL 追加
+         *        RETURNING 主键列）。为假时渲染结果与加这一格之前逐字相同
+         * @return SqlStatement "INSERT INTO 表 (列…) VALUES (?, …)"；声明为自增的主键不出现在列清单里，
+         *         要求回读生成键时在 PostgreSQL 上末尾多出 RETURNING 子句
          */
-        [[nodiscard]] SqlStatement buildInsertStatement(const T &row, const InsertConflict conflict = InsertConflict::Fail)
+        [[nodiscard]] SqlStatement buildInsertStatement(const T &row, const InsertConflict conflict = InsertConflict::Fail, const bool withGeneratedKey = false)
         {
             QueryNode insertNode     = makeWriteQueryNode();
             insertNode.selectColumns = insertColumnNames();
@@ -2374,6 +2384,13 @@ namespace AsynGyanis::Database::Queryable
             if (conflict == InsertConflict::Replace || conflict == InsertConflict::Upsert)
             {
                 insertNode.conflictTargetColumns.emplace_back(TableSchema<T>::kPrimaryKey);
+            }
+            // 「插入并取回生成键」这条入口要求回读主键：列名与写入的主键同源（都取自 TableSchema），
+            // 于是不会出现「回读一列、写的是另一列」。要不要真的追加子句由方言决定——
+            // SQLite/MySQL 的驱动从连接句柄就地快照，这里给了它们也不读（见 QueryNode::generatedKeyColumn）
+            if (withGeneratedKey)
+            {
+                insertNode.generatedKeyColumn = TableSchema<T>::kPrimaryKey;
             }
 
             // 取值向量是临时对象，但它活到整条表达式结束，方言在本次调用内完成读取，不存在悬垂

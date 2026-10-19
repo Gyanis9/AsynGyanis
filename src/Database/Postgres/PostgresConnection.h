@@ -428,9 +428,11 @@ namespace AsynGyanis::Database
          *          最后读一次 PQstatus，链路已断就顺手断开本连接。
          * @param rawResult libpq 交出的结果集句柄，可为空指针（libpq 内存不足时即如此）
          * @param description 失败时面向使用者的中文动作说明，例如「执行 SQL 命令失败」
+         * @param carriesReturnedKey 本次执行的是写语句（INSERT/UPDATE/DELETE/MERGE 打头）：只有它才可能
+         *        带着 RETURNING 的行回来，结果集据此决定「首行首列是生成键」还是「那只是查询数据」
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
-        [[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description);
+        [[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description, bool carriesReturnedKey = false);
 
         /**
          * @brief 取（必要时准备）一条语句的会话级名字

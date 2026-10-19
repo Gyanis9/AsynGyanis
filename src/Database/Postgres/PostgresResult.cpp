@@ -23,6 +23,7 @@
 #include "Database/Postgres/PostgresValueConversion.h"
 
 #include <charconv>
+#include <format>
 #include <system_error>
 
 #endif // DATABASE_HAS_POSTGRES
@@ -133,7 +134,7 @@ namespace AsynGyanis::Database
         }
     } // namespace
 
-    PostgresResult::PostgresResult(PGresult *const ownedResult) : m_result(ownedResult)
+    PostgresResult::PostgresResult(PGresult *const ownedResult, const bool carriesReturnedKey) : m_result(ownedResult)
     {
         // 空句柄即「写操作的成功回执」：没有列也没有行，全部计数保持默认 0，isEmpty() 因此恒为 true
         if (m_result == nullptr)
@@ -208,6 +209,51 @@ namespace AsynGyanis::Database
             }
 
             m_rows.push_back(std::move(currentRow));
+        }
+
+        // 生成键只在发送侧判明这是写语句时才去取（判据与理由见 captureGeneratedKeyFromFirstRow()）
+        if (carriesReturnedKey)
+        {
+            captureGeneratedKeyFromFirstRow();
+        }
+    }
+
+    void PostgresResult::captureGeneratedKeyFromFirstRow()
+    {
+        // 判据是「发送侧说这条语句是写语句」，不是「有没有行」——普通 SELECT 也有一行一列，
+        // 把它的第一个取值当生成键交回就是编造一个含义；而扩展协议下的行结果不带 PQcmdStatus 标签
+        // （真机实测为空串），结果集这一侧看不出语句类型
+        if (m_rows.empty() || m_rows.front().empty())
+        {
+            // 写语句没带回值：这条语句没有 RETURNING（本引擎只在「插入并取回生成键」
+            // 那条入口追加它），0 就是「本条语句没有交回生成键」的如实表达
+            return;
+        }
+
+        const DatabaseValue &generatedKeyValue = m_rows.front().front();
+        if (const auto *integerValue = std::get_if<std::int64_t>(&generatedKeyValue); integerValue != nullptr)
+        {
+            // INT2/INT4/INT8 已由 convertColumnText 折成 int64，这是常规路径
+            m_lastInsertRowId = *integerValue;
+        } else if (const auto *textValue = std::get_if<std::string>(&generatedKeyValue); textValue != nullptr)
+        {
+            // 文本形态：convertColumnText 解析失败时会退回原文（服务端给出的形态与预期不符，
+            // 例如这一列被视图改写过类型），这里再按同一份严格整数文本规则试一次
+            if (const std::optional<std::int64_t> parsedValue = Detail::parseIntegerText(textValue->data(), textValue->size()); parsedValue.has_value())
+            {
+                m_lastInsertRowId = *parsedValue;
+            } else
+            {
+                m_lastError = std::format("PostgreSQL 带回的生成键文本「{}」不是有符号 64 位整数，本接口按 0 交出；"
+                                          "请改从该列本身查询取值",
+                                          *textValue);
+            }
+        } else
+        {
+            // NULL、布尔、浮点、容器都不是主键该有的形态：如实报 0 并写明带回了什么
+            m_lastError = std::format("PostgreSQL 的 RETURNING 带回的不是整数（取值种类下标 {}），本接口按 0 交出；"
+                                      "请检查回读列是不是整数主键列",
+                                      generatedKeyValue.index());
         }
     }
 
@@ -362,7 +408,7 @@ namespace AsynGyanis::Database
     // 桩构建里不可能有 PGresult，构造函数刻意不使用参数值（也就无需 PQclear），
     // 全部状态保持默认：0 行 0 列、isEmpty() 为 true、影响行数为 0。
     // 桩下 connect() 必失败，任何写语句都执行不了，报出非零行数只会是假信息
-    PostgresResult::PostgresResult(PGresult *)
+    PostgresResult::PostgresResult(PGresult *, bool)
     {
     }
 
@@ -544,6 +590,13 @@ namespace AsynGyanis::Database
         // 查询结果集构造时解析到的是空串（PQcmdTuples 对 SELECT 不给行计数），即 0，
         // 符合基类「只读结果集返回 0」的约定
         return m_affectedRowCount;
+    }
+
+    std::int64_t PostgresResult::lastInsertRowId() const noexcept
+    {
+        // 同 affectedRowCount()：值在构造时就从 RETURNING 带回的那一行取走了，本方法只读成员，
+        // 因此桩构建（没有 libpq）与流式结果都自然退化为 0——基类把 0 定义为「没有产生」
+        return m_lastInsertRowId;
     }
 
 } // namespace AsynGyanis::Database

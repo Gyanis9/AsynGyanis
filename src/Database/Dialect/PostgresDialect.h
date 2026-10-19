@@ -143,6 +143,21 @@ namespace AsynGyanis::Database
         void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const override;
 
         /**
+         * @brief 追加 PostgreSQL 的生成键回读子句（RETURNING 列名）
+         * @details 重写 SqlDialect::appendGeneratedKeyReturningTail()：本引擎只有这一条同轮次回读
+         *          通道——libpq 的连接句柄上没有「最近一次插入生成的键」可问（OID 自 8.1 起默认关闭，
+         *          且与 identity 列无关），而 lastval() 读的是本会话最后一个序列，插入别的表也会串号。
+         *          因此查询树带着 generatedKeyColumn 时渲染成 ` RETURNING "列名"`，由结果集把那一行
+         *          第一列的值交回（见 PostgresResult::lastInsertRowId()）。
+         *          SQLite 与 MySQL 不覆写本方法：它们的驱动在结果集构造时从连接句柄就地快照。
+         * @param sqlText 已渲染完 VALUES 行与冲突处置子句的 INSERT 文本，子句追加在其末尾
+         * @param query 提供 generatedKeyColumn 的查询树
+         * @throws Base::InvalidArgumentException generatedKeyColumn 为空时（宁可失败也不送一条
+         *         服务端必拒的「零长度标识符」语句）
+         */
+        void appendGeneratedKeyReturningTail(std::string &sqlText, const Queryable::QueryNode &query) const override;
+
+        /**
          * @brief 获取 PostgreSQL 的开启事务语句
          * @details 重写 SqlDialect::beginTransactionStatement()：返回 "BEGIN"。
          *          PostgreSQL 的 START TRANSACTION 与 BEGIN 是等价的两种写法，

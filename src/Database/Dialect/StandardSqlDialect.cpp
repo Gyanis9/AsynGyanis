@@ -614,6 +614,13 @@ namespace AsynGyanis::Database
         // 冲突处置的尾部子句由方言给（默认空串；PostgreSQL 的 ON CONFLICT 只能写在 VALUES 之后）
         appendInsertConflictTail(sqlText, query.insertConflict, query);
 
+        // 生成键的回读通道也由方言给：句柄侧带计数的引擎（SQLite、MySQL）在这里什么都不追加，
+        // 只有 PostgreSQL 追加 RETURNING。写在冲突子句之后是这两条子句在语法上的固定先后
+        if (!query.generatedKeyColumn.empty())
+        {
+            appendGeneratedKeyReturningTail(sqlText, query);
+        }
+
         requireWithinParameterBudget(statement.parameters.size());
 
         return statement;

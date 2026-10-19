@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -253,6 +254,16 @@ namespace AsynGyanis::Database::Queryable
         /// 之类），读完即弃。为空表示调用方没有提供：方言据此拒绝而不是生成一条
         /// 服务端必拒的语句（同层的纪律：宁可失败也不送畸形 SQL）
         std::vector<std::string> conflictTargetColumns;
+
+        /// 要求回读的生成键列名（见 SqlDialect::appendGeneratedKeyReturningTail()），只在 INSERT 方向
+        /// 参与渲染，其余方向读完即弃。为空表示调用方不要这个值：渲染出的语句与加这一格之前逐字相同。
+        /// 由 ORM 在「插入并取回生成键」那条入口从 TableSchema 的主键自动填上，不由调用方手填——
+        /// 让回读的列与实际写入的列同源，才不会出现「回读一列、写的是另一列」。
+        /// 类型取 string_view 而不是 string：主键名是 TableSchema 里的 constexpr string_view，本体有
+        /// 静态存储期，视图在这里没有生命周期问题；换成 string 会让每个 QueryNode 的构造多付一次堆
+        /// （MSVC Debug 给每个使用分配器的对象挂一个 proxy），而 ORM 的分配台账按次记账——本轮实测
+        /// count() 与 update() 各因此涨 1 次分配，就是这一格造成的
+        std::string_view generatedKeyColumn;
 
         /// UPDATE 方向里写成「这一列自己加一」的列（乐观锁的版本列走这里）：渲染成
         /// `"col" = "col" + 1` 而不是 `"col" = ?`——加一由服务端在一次语句里完成，因此

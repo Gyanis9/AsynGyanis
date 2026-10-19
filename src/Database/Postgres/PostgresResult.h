@@ -95,7 +95,15 @@ namespace AsynGyanis::Database
          *          传 nullptr 表示「写操作的空回执」，此时不建立游标，全部计数保持为 0。
          * @param ownedResult libpq 交出的 PGresult，所有权移交本对象；可为 nullptr
          */
-        explicit PostgresResult(PGresult *ownedResult);
+        /**
+         * @brief 预读结果的构造：把 PGresult 的行、列与生成键一次快照进内存
+         * @param ownedResult libpq 交出的结果集句柄，本对象接管其所有权并在析构时 PQclear；空句柄即写回执
+         * @param carriesReturnedKey 本次执行的是写语句（由 PostgresConnection 按语句前缀判明）：
+         *        为真时首行首列被当作 RETURNING 带回的生成键快照下来。判据不能放在结果集自己看到的
+         *        PQcmdStatus 上——真机实测，扩展协议下的行结果不带命令标签（空串），只有 SELECT 之外
+         *        的写语句才可能同时是行结果，所以这件事只有发送侧知道
+         */
+        explicit PostgresResult(PGresult *ownedResult, bool carriesReturnedKey = false);
 
         /**
          * @brief 接管一条流式查询的首块结果并交出所有权
@@ -236,6 +244,26 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] std::int64_t affectedRowCount() const noexcept override;
 
+        /**
+         * @brief 本条语句生成的主键（RETURNING 通道）
+         * @details 重写 DatabaseResult::lastInsertRowId()：libpq 的连接句柄上没有「最近一次插入生成的
+         *          键」可问（OID 自 8.1 起默认关闭，且它也不是 identity 列的值），因此本引擎的回读通道
+         *          是 `INSERT … RETURNING "列"`（由 PostgresDialect::appendGeneratedKeyReturningTail() 追加），
+         *          值就在结果集的第一行第一列里。与 SQLite/MySQL 守同一条纪律：值在构造时就地从句柄
+         *          取走并存进成员——连接由池共享，等调用方想起来再问，读到的可能已是别人那次插入。
+         *          「这一行是不是生成键」由发送侧按语句前缀告诉结果集（构造参数 carriesReturnedKey）：
+         *          真机实测，扩展协议下的行结果不带 PQcmdStatus 标签（空串），结果集自己分不出
+         *          「写语句带回的键」与「SELECT 的第一格」，而只有非 SELECT 的语句才可能既是行结果又是写回执。
+         *          三种情形各自如实回 0 并说明原因：
+         *          - 本次执行的不是写语句（普通 SELECT 等）：那一行第一列是查询数据，
+         *            把它当生成键交回就是编造一个含义；刻意不看。
+         *          - 写语句没有 RETURNING（回执是 0 行 0 列）：本条语句没有交回生成键。
+         *          - 带回的值不是整数文本（NULL、被视图改写的类型）：写进 lastError() 点名原文。
+         *          流式结果恒为 0：单行模式只为「留在服务端的大结果集」而开，写语句的 RETURNING 走预读。
+         * @return std::int64_t 生成的主键；没有可交回的生成键时为 0（含义见基类约定）
+         */
+        [[nodiscard]] std::int64_t lastInsertRowId() const noexcept override;
+
     private:
         /**
          * @brief 流式结果集构造的区分标签
@@ -264,6 +292,15 @@ namespace AsynGyanis::Database
          */
         void noteStreamEnd() noexcept;
 
+        /**
+         * @brief 从首行首列取走 RETURNING 带回的生成键
+         * @details 只在构造尾部且 carriesReturnedKey 为真时被调用：把「整数直接用、文本再解析一次、
+         *          其余种类写明原因」这三次判定收在一处，构造函数本体保持短（本仓的复杂度门禁
+         *          按函数体行数冻结，超地板的一格都不许新增）。值存进 m_lastInsertRowId，
+         *          此后 lastInsertRowId() 只读成员、不碰句柄，桩构建与流式结果自然为 0。
+         */
+        void captureGeneratedKeyFromFirstRow();
+
         PGresult *m_result{nullptr}; ///< libpq 结果集句柄，非空时由本对象负责 PQclear（预读时数据已在构造时读进内存；流式时恒为空）
 
         PGconn                    *m_connectionHandle{nullptr};  ///< 流式：产出这份结果的连接句柄（非拥有，用于取后续块）
@@ -280,6 +317,7 @@ namespace AsynGyanis::Database
         size_t                            m_nextRowIndex{0};     ///< 下一次 next() 将返回的行下标，走完即等于行数
 
         std::int64_t m_affectedRowCount{0}; ///< 构造时快照的语句级影响行数；只读结果集（含写回执之外的查询）恒为 0
+        std::int64_t m_lastInsertRowId{0};  ///< 构造时快照的生成键（写语句 RETURNING 的第一行第一列）；其余情形恒为 0
     };
 
 } // namespace AsynGyanis::Database

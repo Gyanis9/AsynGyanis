@@ -92,6 +92,26 @@ namespace AsynGyanis::Database
         }
     }
 
+    void PostgresDialect::appendGeneratedKeyReturningTail(std::string &sqlText, const Queryable::QueryNode &query) const
+    {
+        // 空列名在这里当场拒绝：appendQuotedIdentifier 会把它写成两个引号相邻的空标识符，
+        // 那是一条要到服务端才报「零长度标识符」的语句，指不出是哪一格空了
+        if (query.generatedKeyColumn.empty())
+        {
+            throw Base::InvalidArgumentException("PostgreSQL 方言：要求回读生成键，而查询树的 generatedKeyColumn 为空。"
+                                                 "请由 ORM 从 TableSchema 的主键带上（insertAndGetGeneratedId 已经带上），"
+                                                 "或直接改用 insert()——它不承诺交回生成键");
+        }
+
+        // PostgreSQL 没有 sqlite3_last_insert_rowid() / mysql_insert_id() 那类连接级入口：
+        // OID 自 8.1 起默认关闭，且它也不是 identity 列的值。RETURNING 是唯一能在同一次
+        // 往返里把生成的主键交回来的写法，因此不补第二条查询（补查询就要靠「这条连接上
+        // 还没有别人插过」这个前提，而 lastval() 读的恰恰是会话级最后一个序列，
+        // 插到别的表上也会串号）
+        sqlText += " RETURNING ";
+        appendQuotedIdentifier(sqlText, query.generatedKeyColumn);
+    }
+
     std::string_view PostgresDialect::beginTransactionStatement() const noexcept
     {
         // BEGIN 与 START TRANSACTION 在 PostgreSQL 里完全等价；选前者是因为它是

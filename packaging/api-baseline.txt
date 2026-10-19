@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=5.0.0
-# headers=303 entries=8818
+# headers=303 entries=8824
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -2118,6 +2118,7 @@ src/Database/Dialect/PostgresDialect.h	[[nodiscard]] std::string_view rollbackSt
 src/Database/Dialect/PostgresDialect.h	class ASYN_DATABASE_API PostgresDialect final : public StandardSqlDialect
 src/Database/Dialect/PostgresDialect.h	namespace AsynGyanis::Database
 src/Database/Dialect/PostgresDialect.h	static constexpr std::size_t kMaximumStatementParameters = 65535
+src/Database/Dialect/PostgresDialect.h	void appendGeneratedKeyReturningTail(std::string &sqlText, const Queryable::QueryNode &query) const override
 src/Database/Dialect/PostgresDialect.h	void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const override
 src/Database/Dialect/PostgresDialect.h	void appendPlaceholder(std::string &sqlText, std::size_t index) const override
 src/Database/Dialect/PostgresDialect.h	~PostgresDialect() override = default
@@ -2152,6 +2153,7 @@ src/Database/Dialect/SqlDialect.h	[[nodiscard]] virtual std::string_view rollbac
 src/Database/Dialect/SqlDialect.h	class ASYN_DATABASE_API SqlDialect
 src/Database/Dialect/SqlDialect.h	enum class TransactionIsolationLevel
 src/Database/Dialect/SqlDialect.h	namespace AsynGyanis::Database
+src/Database/Dialect/SqlDialect.h	virtual void appendGeneratedKeyReturningTail(std::string &sqlText, const Queryable::QueryNode &query) const
 src/Database/Dialect/SqlDialect.h	virtual void appendInsertConflictTail(std::string &sqlText, Queryable::InsertConflict conflict, const Queryable::QueryNode &query) const
 src/Database/Dialect/SqlDialect.h	virtual void appendPlaceholder(std::string &sqlText, std::size_t index) const = 0
 src/Database/Dialect/SqlDialect.h	virtual ~SqlDialect() = default
@@ -2531,7 +2533,7 @@ src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<Databas
 src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command) override
 src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters) override
 src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> openSingleRowStream()
-src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description)
+src/Database/Postgres/PostgresConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> takeResult(PGresult *rawResult, std::string_view description, bool carriesReturnedKey = false)
 src/Database/Postgres/PostgresConnection.h	bool applyStatementTimeout()
 src/Database/Postgres/PostgresConnection.h	bool beginTransaction()
 src/Database/Postgres/PostgresConnection.h	bool commit()
@@ -2577,6 +2579,7 @@ src/Database/Postgres/PostgresResult.h	[[nodiscard]] size_t columnCount() const 
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] size_t rowCount() const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] static std::unique_ptr<PostgresResult> forStreaming(PGconn *connectionHandle, PostgresConnection *owner, PGresult *firstRowResult)
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] std::int64_t affectedRowCount() const noexcept override
+src/Database/Postgres/PostgresResult.h	[[nodiscard]] std::int64_t lastInsertRowId() const noexcept override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] std::optional<size_t> columnIndex(std::string_view name) const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] std::optional<std::string> columnName(size_t index) const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] std::vector<std::string> columnNames() const override
@@ -2587,14 +2590,16 @@ src/Database/Postgres/PostgresResult.h	bool m_isStreaming
 src/Database/Postgres/PostgresResult.h	bool next() override
 src/Database/Postgres/PostgresResult.h	class ASYN_DATABASE_API PostgresResult : public DatabaseResult
 src/Database/Postgres/PostgresResult.h	const std::vector<DatabaseValue> *m_currentRow
-src/Database/Postgres/PostgresResult.h	explicit PostgresResult(PGresult *ownedResult)
+src/Database/Postgres/PostgresResult.h	explicit PostgresResult(PGresult *ownedResult, bool carriesReturnedKey = false)
 src/Database/Postgres/PostgresResult.h	namespace AsynGyanis::Database
 src/Database/Postgres/PostgresResult.h	size_t m_nextRowIndex
 src/Database/Postgres/PostgresResult.h	std::int64_t m_affectedRowCount
+src/Database/Postgres/PostgresResult.h	std::int64_t m_lastInsertRowId
 src/Database/Postgres/PostgresResult.h	std::vector<DatabaseValue> m_streamingRow
 src/Database/Postgres/PostgresResult.h	std::vector<std::string> m_columnNames
 src/Database/Postgres/PostgresResult.h	std::vector<std::vector<DatabaseValue>> m_rows
 src/Database/Postgres/PostgresResult.h	struct StreamingTag
+src/Database/Postgres/PostgresResult.h	void captureGeneratedKeyFromFirstRow()
 src/Database/Postgres/PostgresResult.h	void noteStreamEnd() noexcept
 src/Database/Postgres/PostgresResult.h	void reset() override
 src/Database/Postgres/PostgresResult.h	~PostgresResult() override
@@ -2700,6 +2705,7 @@ src/Database/Queryable/QueryNode.h	std::string tableAlias
 src/Database/Queryable/QueryNode.h	std::string tableAlias
 src/Database/Queryable/QueryNode.h	std::string tableName
 src/Database/Queryable/QueryNode.h	std::string tableName
+src/Database/Queryable/QueryNode.h	std::string_view generatedKeyColumn
 src/Database/Queryable/QueryNode.h	std::variant<ParameterValue, FieldReference> right
 src/Database/Queryable/QueryNode.h	std::vector<AliasColumn> aliasColumns
 src/Database/Queryable/QueryNode.h	std::vector<FieldReference> groupBy
@@ -2748,7 +2754,7 @@ src/Database/Queryable/Queryable.h	[[nodiscard]] Core::Task<std::int64_t> update
 src/Database/Queryable/Queryable.h	[[nodiscard]] Core::Task<std::optional<T>> firstAsync(Core::EventLoop &completionLoop)
 src/Database/Queryable/Queryable.h	[[nodiscard]] Core::Task<std::vector<T>> toListAsync(Core::EventLoop &completionLoop)
 src/Database/Queryable/Queryable.h	[[nodiscard]] QueryNode resolvedQueryNode() const
-src/Database/Queryable/Queryable.h	[[nodiscard]] SqlStatement buildInsertStatement(const T &row, const InsertConflict conflict = InsertConflict::Fail)
+src/Database/Queryable/Queryable.h	[[nodiscard]] SqlStatement buildInsertStatement(const T &row, const InsertConflict conflict = InsertConflict::Fail, const bool withGeneratedKey = false)
 src/Database/Queryable/Queryable.h	[[nodiscard]] bool hasFoldingInclude() const
 src/Database/Queryable/Queryable.h	[[nodiscard]] const SqlDialect &requireDialect()
 src/Database/Queryable/Queryable.h	[[nodiscard]] static ConnectionLease acquireConnection(ConnectionPool *pool, const Transaction *transaction)

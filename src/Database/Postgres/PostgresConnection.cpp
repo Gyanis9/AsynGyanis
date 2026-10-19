@@ -115,21 +115,28 @@ namespace AsynGyanis::Database
         constexpr int kPostgresMinorVersionDivisor = 100;
 
         /**
-         * @brief 语句是否适合进命名语句缓存（数据语句）
-         * @details 只认 SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/WITH 打头的语句。事务控制、SET 与 DDL
-         *          每次执行都便宜，且把它们塞进命名池只会占额度；更重要的是，这条判据让
-         *          「写错前缀的语句」退回 PQexecParams 的既有语义，而不是被 PQprepare 拒掉
-         * @param command 语句原文（前导空白与注释会被跳过）
-         * @return true 可以预处理并缓存
+         * @brief 跳过前导空白与注释，定位到第一个关键字的起点
+         * @details 由 isPreparableDataStatement() 与 isWriteDataStatement() 共用：语句类型这件事
+         *          只该有一份数法，两处各写一遍迟早会在注释这一格上分叉。
+         *          双横线注释到行尾；斜杠星形的块注释到它配对的结束符。块注释配不上对时交回 npos，
+         *          调用方按「认不出关键字」处置，而不是猜一个类型。
+         *          （本段刻意不写出那两个成对记号的字面形状：它们出现在这个 Doxygen 块里会
+         *          提前终止整段注释，本文件为此实际炸过一次编译）
+         * @param command 语句原文
+         * @return std::size_t 第一个关键字的起点；注释配不上对或整串是空白时交回 npos
          */
-        [[nodiscard]] bool isPreparableDataStatement(const std::string_view command) noexcept
+        [[nodiscard]] std::size_t findKeywordStart(const std::string_view command) noexcept
         {
-            std::size_t cursor = 0;
-            while (cursor < command.size() && (command[cursor] == ' ' || command[cursor] == '\t' || command[cursor] == '\r' || command[cursor] == '\n'))
+            std::size_t cursor         = 0;
+            const auto  skipWhitespace = [&command, &cursor]
             {
-                ++cursor;
-            }
-            // 跳过前导注释：`--` 到行尾，`/* ... */` 到配对的结束符。跳不过去就按「不可预处理」退回旧路径
+                while (cursor < command.size() && (command[cursor] == ' ' || command[cursor] == '\t' || command[cursor] == '\r' || command[cursor] == '\n'))
+                {
+                    ++cursor;
+                }
+            };
+
+            skipWhitespace();
             for (;;)
             {
                 if (cursor + 1U < command.size() && command[cursor] == '-' && command[cursor + 1U] == '-')
@@ -141,45 +148,98 @@ namespace AsynGyanis::Database
                     const std::size_t blockEnd = command.find("*/", cursor + 2U);
                     if (blockEnd == std::string_view::npos)
                     {
-                        return false;
+                        return std::string_view::npos;
                     }
                     cursor = blockEnd + 2U;
                 } else
                 {
                     break;
                 }
-                while (cursor < command.size() && (command[cursor] == ' ' || command[cursor] == '\t' || command[cursor] == '\r' || command[cursor] == '\n'))
+                skipWhitespace();
+            }
+
+            return cursor < command.size() ? cursor : std::string_view::npos;
+        }
+
+        /**
+         * @brief 判断起点处是不是给定的关键字（大小写不敏感，且后面必须是分隔符）
+         * @param command 语句原文
+         * @param cursor 关键字起点（来自 findKeywordStart()）
+         * @param keyword 全大写形式的关键字
+         * @return true 命中该关键字
+         */
+        [[nodiscard]] bool matchesKeywordAt(const std::string_view command, const std::size_t cursor, const std::string_view keyword) noexcept
+        {
+            if (command.size() - cursor < keyword.size())
+            {
+                return false;
+            }
+
+            for (std::size_t index = 0; index < keyword.size(); ++index)
+            {
+                const char character = command[cursor + index];
+                const char upperCase = (character >= 'a' && character <= 'z') ? static_cast<char>(character - 'a' + 'A') : character;
+                if (upperCase != keyword[index])
                 {
-                    ++cursor;
+                    return false;
                 }
+            }
+
+            // 关键字后面必须是分隔符：`SELECTED` 这样的标识符不该被当 SELECT
+            const char following = cursor + keyword.size() < command.size() ? command[cursor + keyword.size()] : ' ';
+            return following == ' ' || following == '\t' || following == '\r' || following == '\n' || following == '(';
+        }
+
+        /**
+         * @brief 语句是否是写数据语句（INSERT/UPDATE/DELETE/MERGE 打头）
+         * @details 这一格只为一件事服务：写语句带 RETURNING 时，libpq 交回的是一份行结果，
+         *          而 PQcmdStatus 在扩展协议下不带命令标签（真机实测：`INSERT … RETURNING "id"`
+         *          的 PQntuples 为 1、PQcmdStatus 为空串），因此「这一行第一列是生成键」这件事
+         *          只能由发送侧判明并告诉结果集，不能让结果集去看有没有行——`SELECT 1` 也有一行一列。
+         * @param command 语句原文（前导空白与注释会被跳过）
+         * @return true 语句以写数据关键字打头
+         */
+        [[nodiscard]] bool isWriteDataStatement(const std::string_view command) noexcept
+        {
+            const std::size_t cursor = findKeywordStart(command);
+            if (cursor == std::string_view::npos)
+            {
+                return false;
+            }
+
+            constexpr std::array<std::string_view, 4> kWriteKeywords{"INSERT", "UPDATE", "DELETE", "MERGE"};
+            for (const std::string_view keyword: kWriteKeywords)
+            {
+                if (matchesKeywordAt(command, cursor, keyword))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 语句是否适合进命名语句缓存（数据语句）
+         * @details 只认 SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES/WITH 打头的语句。事务控制、SET 与 DDL
+         *          每次执行都便宜，且把它们塞进命名池只会占额度；更重要的是，这条判据让
+         *          「写错前缀的语句」退回 PQexecParams 的既有语义，而不是被 PQprepare 拒掉
+         * @param command 语句原文（前导空白与注释会被跳过）
+         * @return true 可以预处理并缓存
+         */
+        [[nodiscard]] bool isPreparableDataStatement(const std::string_view command) noexcept
+        {
+            const std::size_t cursor = findKeywordStart(command);
+            if (cursor == std::string_view::npos)
+            {
+                return false;
             }
 
             constexpr std::array<std::string_view, 7> kPreparableKeywords{"SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "WITH"};
             for (const std::string_view keyword: kPreparableKeywords)
             {
-                if (command.size() - cursor < keyword.size())
+                if (matchesKeywordAt(command, cursor, keyword))
                 {
-                    continue;
-                }
-                bool isSameKeyword = true;
-                for (std::size_t index = 0; index < keyword.size(); ++index)
-                {
-                    const char character = command[cursor + index];
-                    const char upperCase = (character >= 'a' && character <= 'z') ? static_cast<char>(character - 'a' + 'A') : character;
-                    if (upperCase != keyword[index])
-                    {
-                        isSameKeyword = false;
-                        break;
-                    }
-                }
-                if (isSameKeyword)
-                {
-                    // 关键字后面必须是分隔符：`SELECTED` 这样的标识符不该被当 SELECT
-                    const char following = cursor + keyword.size() < command.size() ? command[cursor + keyword.size()] : ' ';
-                    if (following == ' ' || following == '\t' || following == '\r' || following == '\n' || following == '(')
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
             return false;
@@ -627,7 +687,7 @@ namespace AsynGyanis::Database
         PGresult *rawResult = PQexecParams(m_connection, commandText.c_str(), 0, nullptr, nullptr, nullptr, nullptr, 0);
 
         // 状态校验、错误采集、结果集构造与断链复位全部收敛在 takeResult 里，两条 execute 路径因此不会漂移
-        return takeResult(rawResult, "执行 SQL 命令失败");
+        return takeResult(rawResult, "执行 SQL 命令失败", isWriteDataStatement(command));
     }
 
     std::unique_ptr<DatabaseResult> PostgresConnection::execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
@@ -726,7 +786,7 @@ namespace AsynGyanis::Database
                                      valueLengths.empty() ? nullptr : valueLengths.data(), nullptr, 0);
         }
 
-        return takeResult(rawResult, "执行带参数的 SQL 命令失败");
+        return takeResult(rawResult, "执行带参数的 SQL 命令失败", isWriteDataStatement(commandText));
     }
 
     std::optional<std::string> PostgresConnection::preparedStatementName(const std::string &commandText, const int parameterCount)
@@ -947,7 +1007,8 @@ namespace AsynGyanis::Database
         // 空结果：没有「流」可言，交一份普通的预读空结果集（列元数据与行数快照在它的构造里就绪）
         if (firstChunkStatus == PGRES_TUPLES_OK)
         {
-            return takeResult(firstChunk, "执行 SQL 命令失败");
+            // 流式的块永远不承载生成键：写语句的 RETURNING 走预读，这里显式交出 false
+            return takeResult(firstChunk, "执行 SQL 命令失败", false);
         }
 
         if (firstChunkStatus != PGRES_SINGLE_TUPLE)
@@ -969,7 +1030,7 @@ namespace AsynGyanis::Database
         return PostgresResult::forStreaming(m_connection, this, firstChunk);
     }
 
-    std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const rawResult, const std::string_view description)
+    std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const rawResult, const std::string_view description, const bool carriesReturnedKey)
     {
         // PQexec / PQexecParams 只在内存不足等极少数情形返回空指针，此时连接自身的错误状态仍可读
         if (rawResult == nullptr)
@@ -1002,7 +1063,7 @@ namespace AsynGyanis::Database
         // 用带自定义释放器的 unique_ptr 罩住「构造结果集之前」这段所有权真空：
         // make_unique 若因内存分配失败抛异常，PGresult 会由守卫释放而不是像裸指针那样泄漏
         std::unique_ptr<PGresult, ResultReleaser> guardedResult{rawResult};
-        std::unique_ptr<PostgresResult>           result = std::make_unique<PostgresResult>(guardedResult.get());
+        std::unique_ptr<PostgresResult>           result = std::make_unique<PostgresResult>(guardedResult.get(), carriesReturnedKey);
 
         // 构造成功，所有权正式移交结果集：此后再由 PostgresResult 的析构负责 PQclear
         guardedResult.release();
@@ -1268,7 +1329,7 @@ namespace AsynGyanis::Database
         return {};
     }
 
-    std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const, const std::string_view)
+    std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const, const std::string_view, const bool)
     {
         // 桩构建里 connect() 必失败，execute() 在任何网络动作之前就返回，正常路径走不到这里
         m_lastError = kMissingDriverError;

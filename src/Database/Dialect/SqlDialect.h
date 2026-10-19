@@ -194,6 +194,28 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 把「回读生成键」的子句追加到 INSERT 文本末尾（默认不给子句）
+         *
+         * @details 这也是「引擎知识」而不是标准 SQL 的一部分：标准里没有「一条 INSERT 顺带把
+         *          生成的主键交回来」这一档，各引擎的通道不同——SQLite 与 MySQL 在连接句柄上
+         *          带着语句级计数器（sqlite3_last_insert_rowid() / mysql_insert_id()），结果集构造时
+         *          就地快照即可，语句文本一分不用改，因此这两家走默认的空实现；PostgreSQL 没有
+         *          这一类连接级入口（它的 OID 自 8.1 起默认关且与 identity 列无关），唯一可靠的
+         *          同轮次回读是 `RETURNING 列名`，由该方言覆写本方法追加。
+         *          默认实现什么也不追加：查询树没要求回读时，线上字节与加这一格之前逐字相同。
+         *
+         * @param sqlText 已渲染完 VALUES 行与冲突处置子句的 INSERT 文本，子句追加在其末尾
+         * @param query 提供 generatedKeyColumn 的查询树；该字段为空时本方法不被调用
+         * @throws Base::InvalidArgumentException 列名为空白等无法安全引用的取值
+         */
+        virtual void appendGeneratedKeyReturningTail(std::string &sqlText, const Queryable::QueryNode &query) const
+        {
+            // 默认空实现：句柄侧带着生成键的引擎不需要任何尾缀，追加只会改变线上字节
+            static_cast<void>(sqlText);
+            static_cast<void>(query);
+        }
+
+        /**
          * @brief 获取开启事务的语句文本
          *
          * @details 各引擎语法不同（SQLite 用 "BEGIN IMMEDIATE" 立刻取写锁，
