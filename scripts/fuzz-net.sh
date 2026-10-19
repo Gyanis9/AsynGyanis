@@ -43,7 +43,7 @@ shift || true
 # 目标清单：默认每档各跑一整轮（每档预算都是 durationSeconds），这样「哪档在推进」看得见。
 # 传 ASYN_FUZZ_TARGETS=combined 退回单次混合跑（一个进程轮转全部目标），本机快速冒烟用得上。
 # 每档的语料与日志各落一份：语料是「下次能接着挖」的起点，日志是给 CI 数执行次数用的。
-targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QpackBlock PerMessageDeflate HttpResponse QuicPacket QuicFrameSequence QuicParameters JwtCompact}"
+targetSelection="${ASYN_FUZZ_TARGETS:-Http1Request WebSocketFrame Http2Frame Http3Frame HpackBlock QpackBlock PerMessageDeflate HttpResponse QuicPacket QuicFrameSequence QuicParameters JwtCompact ConfigValueText LogEscaping}"
 corpusRoot="${ASYN_FUZZ_CORPUS_DIR:-${projectRoot}/.fuzz/corpus}"
 logRoot="${projectRoot}/.fuzz/log"
 
@@ -122,6 +122,17 @@ sources=(
     # JWT 档的本体：三段拆分与 base64url 解码、声明校验、JWK 的 n/e 进 OpenSSL 造公钥。
     # 它是本闭包第二份仓外依赖（libcrypto），Linux 侧 -lcrypto、Windows 侧按下面的开关指路
     "src/Net/Http/JwtVerifier.cpp"
+    # ConfigValueText 与 LogEscaping 两档都不需要新的翻译单元：parseConfigValue/serializeConfigValue/
+    # configValueAs 与 escapeForLog 全是头文件内联的，仓外依赖只有 nlohmann 那一份（下面已为 HttpRequest 装好）。
+    # 两档渲染器（RFC 7807 错误体、OTLP traces/logs 正文）刻意不在这里：ProblemJson.cpp 带着
+    # setProblemJsonResponse，于是拖进 HttpResponse.cpp，再往下是 Base/Log（含 LogContext）、
+    # Core::CoroutinePool、Platform::MemoryMappedFile 整条链——实测链接期报 11 个未定义符号。
+    # 本闭包按 /MT 编，链不上项目的 /MD 库，所以那条链只能整份重编一遍。它们的随机属性用例改落在
+    # tests/Net/Http/TestProblemJson.cpp 与 tests/Net/Logging、tests/Net/Tracing 的渲染器测试里：
+    # 那三处链的是完整库，两边平台、每轮 ctest 都跑，不必靠这份闭包。
+    # AcmeClient 同理不在这份清单里：它的 problem document 折法就是下面这条 LogEscaping 档吃的
+    # `Base::escapeForLog`，而「机构正文 → AcmeClient::describeFailure → 管理器那一行日志」这条整链
+    # 要 HttpClient 与协程池才走得通，随机族用例落在 tests/Net/Acme/TestAcmeClient.cpp（链完整库）。
     "src/Net/Quic/Codec/QuicVariableLengthInteger.cpp"
     # QUIC 那三档解码器各自一个 .cpp：本闭包不链 Net 库，漏一项就在链接期报未定义符号
     # （Windows 侧编不出 libFuzzer 目标，所以这种缺失只有 Linux 跑批或 CI 会暴露）

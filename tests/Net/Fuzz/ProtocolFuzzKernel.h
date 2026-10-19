@@ -33,12 +33,18 @@ namespace AsynGyanis::Net::Fuzz
         HpackBlock,        ///< HPACK 头块解码器（RFC 7541 + 动态表与头列表上限）
         QuicPacket,        ///< QUIC 报文头解码器（RFC 9000 §17；UDP 上最先被外部打到的一段，不需要任何密钥）
         QuicFrameSequence, ///< QUIC 帧序列解码器（§12.4/§19；解出的帧持有指向载荷的视图，视图越界即野指针）
-        QuicParameters,    ///< QUIC 传输参数解码器（§7.3；来自对端 TLS 扩展，未识别项必须忽略）
+        QuicParameters,    ///< QUIC 传输参数解码器（§7.4/§18；来自对端 TLS 扩展，未识别项必须忽略）
         QpackBlock,        ///< QPACK 解码器（RFC 9204）：编码器流指令与头块的增量解析（动态表 + 阻塞流两条语境一起过）
         PerMessageDeflate, ///< permessage-deflate（RFC 7692）：扩展要约的解析 + 对端压缩消息的解压（含解压上限那一道闸）
         HttpResponse,      ///< 出站 HTTP/1 响应解析器：客户端侧吃对端字节的那一段（状态行/头部/chunked/trailer）
         JwtCompact,        ///< JWT 紧凑序列（RFC 7519）：三段 base64url 的拆分与解码、声明校验、
                            ///< JWK 的 n/e 进 OpenSSL 造公钥（令牌与 JWKS 都来自不可信对端）
+        ConfigValueText,   ///< 配置/回复的 JSON 入口（`Base::parseConfigValue`）：配置文件、ACME 的 CA 正文、
+                           ///< JWKS 正文与一切被解成值模型的远端字节都过这一道；判据是「解析→序列化→再解析」
+                           ///< 交回相等的值，且再写一次文本逐字相同
+        LogEscaping,       ///< 远端自由文本进日志前的那道折（`Base::escapeForLog`）：ACME 机构 problem document
+                           ///< 的 detail、其它实现的错误串、头部缺陷原文都从这一道过；判据是「产出里没有裸控制字节，
+                           ///< 且折掉的内容逐字节还回得来」
         Count,             ///< 哨兵：目标总数，用于遍历，不是可解码的目标
     };
 

@@ -9,6 +9,8 @@
 
 #include "Fuzz/ProtocolFuzzKernel.h"
 
+#include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogEscaping.h"
 #include "Net/Http/Client/HttpResponseParser.h"
 #include "Net/Http/HttpParser.h"
 #include "Net/Http/JwtVerifier.h"
@@ -1088,6 +1090,283 @@ namespace AsynGyanis::Net::Fuzz
             return {};
         }
 
+        /// 一份自洽的 JSON 文档：对象套数组、三种数字写法、转义与中文都在里面
+        std::string makeValidConfigDocument()
+        {
+            return R"({"server":{"limits":{"idle_timeout_ms":75000,"rate":1.5,"on":true},"domains":["示例..test","别的"]},)"
+                   R"("tracing":{"attributes":{"k":"带\"引号与\\反斜杠"}}})";
+        }
+
+        /**
+         * @brief 造配置/回复 JSON 档的输入
+         * @details 五种形状各有分工：① 自洽文档（「这一档有没有被推到」的产出计数落在它身上）；
+         *          ② 重复键 + 裸 NaN + int64 上界 + `-0.0` + 空串（解析与序列化最容易在这些写法上分叉）；
+         *          ③ 200~600 层的深嵌套（栈与预算两条路都在这一格下面）；④ 数组里掺标量；
+         *          ⑤ 注释形态（`allowComments` 那一档专门吃它）。再加一档纯随机字节撞语法判定本身。
+         */
+        std::string makeConfigValueTextInput(DeterministicRandom &random)
+        {
+            switch (random.nextBelow(6U))
+            {
+                case 0U:
+                    return makeValidConfigDocument();
+                case 1U:
+                {
+                    std::string text = R"({"a":1,"a":2,"b":[null,true,false],"c":"é","d":9223372036854775807,"e":-0.0,"f":""})";
+                    if (random.next() % 2U == 0U)
+                    {
+                        text.insert(text.size() - 1U, R"(,"g":NaN)");
+                    }
+                    return text;
+                }
+                case 2U:
+                {
+                    const std::size_t depth = 200U + random.nextBelow(400U);
+                    return std::string(depth, '[') + std::string(depth, ']');
+                }
+                case 3U:
+                {
+                    std::string text = "[";
+                    for (std::size_t index = 0; index < 1U + random.nextBelow(6U); ++index)
+                    {
+                        text += "1,";
+                    }
+                    return text + R"("x"])";
+                }
+                case 4U:
+                    return "// 说明\n{\"a\": 1 /* 段内 */}";
+                default:
+                {
+                    std::string noise;
+                    appendFuzzRandomBytes(noise, random, random.nextBelow(64U));
+                    return noise;
+                }
+            }
+        }
+
+        /**
+         * @brief 配置/回复 JSON 档的不变量：解析通过的东西必须能稳定地、不改变值地再走一圈回来
+         * @details 严格档与宽松档各判一次——同一份字节在两个档位下的结论可以不同，但在自己写出去的文本上
+         *          必须再解得回来，且解回来的值与原值相等、再写一次文本逐字相同。前一半盯的是静默变形
+         *          （标量归一化、转义漏项、数字精度），后一半盯的是不稳定（同一份值两次给两个答案）。
+         *          只比两次文本会放过 `true` 被写成 `1` 这一类：那样的文本自洽，值却已经换了类型。
+         */
+        std::string checkConfigValueTextInvariants(const std::string &input, RunTrace &trace)
+        {
+            bool isRoundTripProved = false;
+            for (const bool allowComments: {false, true})
+            {
+                const std::optional<Base::ConfigValue> parsed = Base::parseConfigValue(input, allowComments);
+                if (!parsed.has_value())
+                {
+                    continue;
+                }
+
+                const std::optional<std::string> firstText = Base::serializeConfigValue(*parsed);
+                if (!firstText.has_value())
+                {
+                    // 值里带非有限浮点（`1e999` 解析成 +Inf）时这一格必然走到：parse 收得下，
+                    // serializeConfigValue 按「宁可失败也不把 Inf 悄悄换成 null」交回空。那是 ConfigValue.h
+                    // 写明的契约，不是违例——把它当违例，模糊器几秒内就会用一份 1e999 把这一档钉死
+                    continue;
+                }
+
+                const std::optional<Base::ConfigValue> reparsed = Base::parseConfigValue(*firstText, allowComments);
+                if (!reparsed.has_value())
+                {
+                    return std::string(allowComments ? "宽松档" : "严格档") + "把自己序列化出的正文再解析不回来：" + toEscapedText(*firstText);
+                }
+                // 值也要相等，而不只是「文本再稳定一次」：只比两次文本的话，`true` 被写成 `1` 这类静默变形
+                // 是自洽的（1 再解回来还是 1），判据就永远看不见它——而这正是这一档要盯的那一类
+                if (*reparsed != *parsed)
+                {
+                    return std::string(allowComments ? "宽松档" : "严格档") + "的值与它自己写出的文本再解回来的值不等（静默变形）：" + toEscapedText(*firstText);
+                }
+
+                const std::optional<std::string> secondText = Base::serializeConfigValue(*reparsed);
+                if (!secondText.has_value() || *secondText != *firstText)
+                {
+                    return "序列化不稳定：同一份值两次给出的文本不同";
+                }
+                isRoundTripProved = true;
+            }
+
+            if (!isRoundTripProved)
+            {
+                // 畸形文本被拒、或收下却不可表示：本档最常见的两种出口，都不是违例，也没有可记账的产出
+                trace.isEndedInError = true;
+                return {};
+            }
+            trace.frameKeys.push_back("parsed");
+            return {};
+        }
+
+        /// 十六进制字符的值；只在调用方已确认这一位落在 \xNN 的形状里时用
+        [[nodiscard]] constexpr std::size_t hexDigitValue(const unsigned char byte) noexcept
+        {
+            if (byte >= static_cast<unsigned char>('0') && byte <= static_cast<unsigned char>('9'))
+            {
+                return byte - static_cast<unsigned char>('0');
+            }
+            if (byte >= static_cast<unsigned char>('A') && byte <= static_cast<unsigned char>('F'))
+            {
+                return byte - static_cast<unsigned char>('A') + 10U;
+            }
+            return byte - static_cast<unsigned char>('a') + 10U;
+        }
+
+        /**
+         * @brief 造「远端文本进日志前的折」这一档的输入
+         * @details 八种形状各管一支：① 纯可打印 ASCII（原样保留那支）；② 0x00..0x1F 整片加 DEL
+         *          （日志注入的正主，NUL 还要防按 C 字符串取日志的采集器）；③ CRLF 与裸 CR（行首覆盖）；
+         *          ④ ESC 起的终端转义序列（改颜色、改窗口标题）；⑤ 高位字节与残缺 UTF-8 序列（与合法中文
+         *          走同一条折法）；⑥ 600 字节带若干换行（截断标记那支）；⑦ 空文本（机构没给 detail 那一格，
+         *          折出来也是空）；⑧ 纯随机字节。
+         *          反斜杠混在 ④ 里是故意的：折法对它原样保留，所以还原类判据只在没有反斜杠的输入上跑。
+         */
+        std::string makeLogEscapingInput(DeterministicRandom &random)
+        {
+            switch (random.nextBelow(8U))
+            {
+                case 0U:
+                    return R"(GET /path?q=1 200 OK - 只有可打印 ASCII)";
+                case 1U:
+                {
+                    std::string text;
+                    for (unsigned char byte = 0x00U; byte <= 0x1FU; ++byte)
+                    {
+                        text.push_back(static_cast<char>(byte));
+                    }
+                    text.push_back(static_cast<char>(0x7FU));
+                    return text;
+                }
+                case 2U:
+                    return "第一行\r\n第二行\r覆盖行首\n\t制表\n";
+                case 3U:
+                {
+                    const char escape = static_cast<char>(0x1BU);
+                    return std::string{escape} + "[31m红" + escape + "]0;伪造窗口标题" + escape + R"(\x41")";
+                }
+                case 4U:
+                {
+                    std::string text = "中文与高位字节：示例";
+                    for (std::size_t index = 0; index < 8U + random.nextBelow(8U); ++index)
+                    {
+                        text.push_back(static_cast<char>(0x80U + (random.next() & 0x7FU)));
+                    }
+                    return text + " 尾部";
+                }
+                case 5U:
+                {
+                    std::string text;
+                    for (std::size_t index = 0; index < 600U; ++index)
+                    {
+                        text.push_back(index % 3U == 0U ? '\n' : 'x');
+                    }
+                    return text;
+                }
+                case 6U:
+                    return std::string{};
+                default:
+                {
+                    std::string noise;
+                    appendFuzzRandomBytes(noise, random, random.nextBelow(200U));
+                    return noise;
+                }
+            }
+        }
+
+        /**
+         * @brief 折这一道的四条不变量：一行不破、内容不丢、两次同形、标记不骗人
+         * @details K1 折出的正文（去掉末尾的截断标记）只许含 0x20..0x7E——换行让一条记录在采集端变成两条，
+         *          回车让行首被覆盖，ESC 把转义序列直接送进运维的终端，NUL 让后半截静默丢掉；这四个都看不见，
+         *          日志表面完全正常而缺陷已经发生，所以这一条按字节逐个判而不是抽样。
+         *          K2 还原：把 \xNN 折回字节、其余原样读，得到的序列必须正好是原文的前若干字节。只在原文不含
+         *          反斜杠时判——可打印 ASCII 原样保留意味着原文里的 `\x41` 与真 0x41 折完同形，还原本来就是
+         *          多对一的，那是折法的取舍而不是缺陷。
+         *          K3 确定性：同一份输入两次调用逐字相同（日志的同一行被取两次要给同一个答案）。
+         *          K4 截断标记：当且仅当上限小于原文长度时出现一次、且只出现在末尾——标记骗人比没标记更坏，
+         *          读者会把「原文就到此为止」当成事实。
+         */
+        std::string checkLogEscapingInvariants(const std::string &input, RunTrace &trace)
+        {
+            static constexpr std::string_view kTruncationMarker = "…（已截断）";
+
+            /// 上限取这几格：0 与 1 管「一个都不留」，48 是缺省值，512 是 ACME 那一路实传的，
+            /// input.size() 管「恰好等于上限不许贴标记」
+            for (const std::size_t cap: {std::size_t{0}, std::size_t{1}, std::size_t{48}, std::size_t{512}, input.size()})
+            {
+                const std::string folded = Base::escapeForLog(input, cap);
+                if (folded != Base::escapeForLog(input, cap))
+                {
+                    return "同一份文本两次折出不同结果（K3）";
+                }
+
+                // 折文按「正文 + 可选标记」两段读，正文长度记成一个下标而不是 string_view：
+                // 下面两条判据都只看正文，而标记那一段的高位字节本来就不受折法管（它是框架自己贴的）
+                std::size_t bodyLength = folded.size();
+                if (const std::size_t markerAt = folded.find(kTruncationMarker); markerAt != std::string::npos)
+                {
+                    if (folded.find(kTruncationMarker, markerAt + kTruncationMarker.size()) != std::string::npos)
+                    {
+                        return "截断标记出现了不止一次（K4）";
+                    }
+                    if (markerAt + kTruncationMarker.size() != folded.size())
+                    {
+                        return "截断标记不在末尾（K4）";
+                    }
+                    bodyLength = markerAt;
+                }
+
+                const bool isTruncated = cap < input.size();
+                if (isTruncated != (bodyLength != folded.size()))
+                {
+                    return std::format("截断标记与实际取舍不同解：上限 {} 字节、原文 {} 字节（K4）", cap, input.size());
+                }
+
+                for (std::size_t index = 0; index < bodyLength; ++index)
+                {
+                    const auto byte = static_cast<unsigned char>(folded[index]);
+                    if (byte < 0x20U || byte >= 0x7FU)
+                    {
+                        return std::format("上限 {} 字节时折出的正文里有裸控制字节 0x{:02X}（K1）", cap, byte);
+                    }
+                }
+
+                if (input.find('\\') != std::string::npos)
+                {
+                    continue;
+                }
+                std::string restored;
+                for (std::size_t index = 0; index < bodyLength; ++index)
+                {
+                    if (folded[index] == '\\' && index + 3U < bodyLength && folded[index + 1U] == 'x')
+                    {
+                        const auto high = static_cast<unsigned char>(folded[index + 2U]);
+                        const auto low  = static_cast<unsigned char>(folded[index + 3U]);
+                        restored.push_back(static_cast<char>(hexDigitValue(high) * 16U + hexDigitValue(low)));
+                        index += 3U;
+                        continue;
+                    }
+                    restored.push_back(folded[index]);
+                }
+                if (restored != input.substr(0, isTruncated ? cap : input.size()))
+                {
+                    const std::string bodyText = folded.substr(0, bodyLength);
+                    return std::format("上限 {} 字节时折出的内容还原不回原文前缀（K2）：折文（转义）={}", cap, toEscapedText(bodyText));
+                }
+            }
+
+            if (input.empty())
+            {
+                // 空文本没东西可折：与其余各档的「以拒绝收场」同位记账，防空转读数看得见这一格
+                trace.isEndedInError = true;
+                return {};
+            }
+            trace.frameKeys.push_back("folded");
+            return {};
+        }
+
         std::string makeHttpResponseInput(DeterministicRandom &random)
         {
             switch (random.nextBelow(5U))
@@ -1550,6 +1829,10 @@ namespace AsynGyanis::Net::Fuzz
                 return "HttpResponse";
             case Target::JwtCompact:
                 return "JwtCompact";
+            case Target::ConfigValueText:
+                return "ConfigValueText";
+            case Target::LogEscaping:
+                return "LogEscaping";
             case Target::Count:
                 break;
         }
@@ -1596,6 +1879,12 @@ namespace AsynGyanis::Net::Fuzz
                 break;
             case Target::JwtCompact:
                 input = makeJwtCompactInput(random);
+                break;
+            case Target::ConfigValueText:
+                input = makeConfigValueTextInput(random);
+                break;
+            case Target::LogEscaping:
+                input = makeLogEscapingInput(random);
                 break;
             case Target::Count:
                 break;
@@ -1694,6 +1983,13 @@ namespace AsynGyanis::Net::Fuzz
                 // 编码由生产端的 base64UrlEncode 产出，手写会与本档的期望口径分叉
                 return base64UrlEncode(R"({"alg":"RS256","typ":"JWT"})") + "." + base64UrlEncode(R"({"iss":"签发者-甲","aud":"受众-乙","exp":4000000000,"nbf":1})") +
                        ".c2lnbmF0dXJl";
+            case Target::ConfigValueText:
+                // 一份自洽文档：截断矩阵的每个前缀都落在「语法未完成」的某个相位上，而不是崩在中途
+                return makeValidConfigDocument();
+            case Target::LogEscaping:
+                // 一段带控制字节与非 ASCII 的文本：截断矩阵的每个前缀都会换一次「哪些字节要折」的答案，
+                // 而它不含反斜杠，所以 K2 那条还原判据在每个前缀上都成立
+                return std::string{"a\r\nb\x01\x1B"} + "示例" + static_cast<char>(0x7F) + static_cast<char>(0x80);
             case Target::Count:
                 break;
         }
@@ -2309,6 +2605,30 @@ namespace AsynGyanis::Net::Fuzz
             {
                 RunTrace          trace;
                 const std::string violation = checkJwtCompactInvariants(input, trace);
+                collect(trace);
+                if (!violation.empty())
+                {
+                    return violation;
+                }
+                return {};
+            }
+
+            case Target::ConfigValueText:
+            {
+                RunTrace          trace;
+                const std::string violation = checkConfigValueTextInvariants(input, trace);
+                collect(trace);
+                if (!violation.empty())
+                {
+                    return violation;
+                }
+                return {};
+            }
+
+            case Target::LogEscaping:
+            {
+                RunTrace          trace;
+                const std::string violation = checkLogEscapingInvariants(input, trace);
                 collect(trace);
                 if (!violation.empty())
                 {

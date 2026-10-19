@@ -1,4 +1,4 @@
-// 自研协议解码器的属性化随机模糊：每一档解码器 × 六条不变量，固定种子保证失败可复现。
+// 自研协议解码器的属性化随机模糊：每一档解码器 × 各自那组不变量，固定种子保证失败可复现。
 // 与 libFuzzer 入口（FuzzTargets.cpp）共用同一份内核，因此「本地跑绿」与「CI 持续模糊」判的是同一件事。
 //
 // 粘滞、复位与「失败不留半截产出」这几条判据已按突变法证过非恒绿（2026-09-24，各自临时改坏实现后转红、
@@ -12,6 +12,15 @@
 // 两处口径要记下：① 只把 h3 的早退条件改成「几乎不成立」并不会转红，因为同样的坏字节会被重新判成
 // 同一个错——这条钉的是「不再报错」这个可观测面，不是内部那个标记位；② HPACK 的 I5 与其它三条同形状，
 // 没有单独再突变一次。
+//
+// 两档「吃不可信输入」的入口另按同一方法证过（2026-10-19，同样先转红再复原）：
+//   · LogEscaping K1「折出的正文里有裸控制字节」——把可打印下界从 0x20 放宽到 0x0A，让裸换行过关。
+//     这一改同时转红三条：本档随机轮、本档的已知形状自证、以及桩机构那族敌意 detail 的用例
+//   · ConfigValueText「值与它自己写出的文本再解回来的值不等」——把含某键的对象写成只剩那一键。
+//     教训记这条：只比两次文本的版本对这一改完全不响（那份文本自洽），所以判据加了「值也要相等」那一半；
+//     反过来，给正文加一个尾空格这种改法两轮下来同形，本档判不了它，也不该判它
+#include "Base/Config/ConfigValue.h"
+#include "Base/Log/LogEscaping.h"
 #include "CommonTestSupport.h"
 #include "Fuzz/ProtocolFuzzKernel.h"
 #include "Net/Http/JwtVerifier.h"
@@ -95,6 +104,8 @@ namespace AsynGyanis::Net::Fuzz
         constexpr std::uint64_t kSeedPerMessage     = 20261013ULL;
         constexpr std::uint64_t kSeedHttpResponse   = 20261014ULL;
         constexpr std::uint64_t kSeedJwtCompact     = 20261018ULL;
+        constexpr std::uint64_t kSeedConfigValue    = 20261019ULL;
+        constexpr std::uint64_t kSeedLogEscaping    = 20261020ULL;
 
         /**
          * @brief 对某个目标跑一轮随机模糊
@@ -248,6 +259,29 @@ namespace AsynGyanis::Net::Fuzz
     }
 
     /**
+     * @brief 配置/回复 JSON 档的不变量轮：一切远端与运维喂进来的文本进值模型的那一道门
+     * @details 这一档吃的是配置文件、ACME 机构的正文、JWKS 正文与 HTTP 的 JSON 请求体——四路的共同点
+     *          是「字节来自别人」。判据不要求它一定解得出东西，只要求解得出的那份必须能稳定地再走一圈回来。
+     */
+    TEST(ProtocolFuzz, ConfigValueTextKeepsInvariants)
+    {
+        runRandomRounds(Target::ConfigValueText, kSeedConfigValue);
+        runTruncationMatrix(Target::ConfigValueText);
+    }
+
+    /**
+     * @brief 折日志这一档的不变量轮：远端自由文本进本进程那一行之前的最后一道闸
+     * @details 这一档不是解码器，而是一道「不许把控制字节带进日志」的折法：ACME 机构 problem document
+     *          的 detail、其它实现的错误串、头部缺陷原文都从它过。它出错的方式不是崩，而是让一条记录在
+     *          采集端变成两条、让行首被覆盖、或者让运维的终端收到一段转义序列——所以判据按字节逐个核。
+     */
+    TEST(ProtocolFuzz, LogEscapingKeepsInvariants)
+    {
+        runRandomRounds(Target::LogEscaping, kSeedLogEscaping);
+        runTruncationMatrix(Target::LogEscaping);
+    }
+
+    /**
      * @brief 自证这一档会响：四份已知畸形令牌必须按契约被拒，而不是崩、也不是被宽容收下
      * @details 新加一档最怕两种假绿：生成器永远造不出能进到深处的输入（档在空转），
      *          或解析器把畸形输入当合法（真缺陷被吞）。前者由 EveryTargetDecodesAndIsCounted
@@ -280,6 +314,77 @@ namespace AsynGyanis::Net::Fuzz
         RunStats stats;
         EXPECT_TRUE(checkInvariants(Target::JwtCompact, goodToken, &stats).empty());
         EXPECT_GT(stats.producedFrameCount, 0U) << "合法令牌没被记成产出：这一档的账在 CI 上会是零";
+    }
+
+    /**
+     * @brief 自证 ConfigValueText 这一档会响：畸形正文按契约拒掉，而不许把合法出口报成违例
+     * @details 这一档最怕两种假绿：生成器永远造不出能进到解析器深处的输入，或者判据把实现自己的合法出口
+     *          当成缺陷。第一种由上面的随机轮与 EveryTargetDecodesAndIsCounted 管；这一条管后者——
+     *          `1e999` 是 libFuzzer 几秒内就会撞出来的形状，它必须按「语法不合法」被拒（实测 nlohmann 不把
+     *          溢出的数字折成 ±Inf 收下），而判据那边要把它记成一次普通拒绝。判据里还留着「解析收下却
+     *          序列化不出」那一格的放行：今天从 parse 走不到它，但真走到的那天它也不该是一条永远的红。
+     */
+    TEST(ProtocolFuzz, ConfigValueTextRejectsKnownMalformedDocuments)
+    {
+        // 语法不合法：一律「交回空」，不许抛也不许崩（parseConfigValue 走 allow_exceptions=false 的入口）
+        for (const std::string_view malformed:
+             {std::string_view{R"({"a":})"}, std::string_view{R"({)"}, std::string_view{R"([1,])"}, std::string_view{R"({"a":1,})"}, std::string_view{R"(NaN)"},
+              std::string_view{R"({"a":"未闭合)"}, std::string_view{"\xFF\x41", 2}, std::string_view{R"(1e999x)"}, std::string_view{R"({"重复键":1,"重复键":2,"尾})"}})
+        {
+            EXPECT_FALSE(Base::parseConfigValue(malformed).has_value()) << toEscapedText(malformed);
+            EXPECT_TRUE(checkInvariants(Target::ConfigValueText, std::string{malformed}).empty()) << "畸形文本本该按拒绝收场，而不是违例：" << toEscapedText(malformed);
+        }
+
+        // 非法 UTF-8 的正文（上面那格 \xFF\x41）与残缺文档都归「拒」；这里核的是另一格：注释只在宽松档进
+        static constexpr std::string_view kCommented = R"(// 说明
+{"a": 1})";
+        EXPECT_FALSE(Base::parseConfigValue(kCommented).has_value()) << "HTTP 正文那一路按 RFC 8259 不吃注释";
+        EXPECT_TRUE(Base::parseConfigValue(kCommented, true).has_value()) << "配置文件那一路要吃注释";
+
+        // 收下却不可表示那一格走不到：溢出的数字在 parse 就被判成语法错，而不是折成 ±Inf 收进值模型
+        EXPECT_FALSE(Base::parseConfigValue("1e999").has_value()) << "1e999 本该被拒；若哪天它被折成 ±Inf 收下，值模型就得按「不可表示」那一格记账";
+        RunStats overflowStats;
+        EXPECT_TRUE(checkInvariants(Target::ConfigValueText, "1e999", &overflowStats).empty()) << "被拒的输入不该判成违例";
+        EXPECT_TRUE(overflowStats.isErrorEnd) << "这一格没记进「以拒绝收场」的账，防空转读数看不见它";
+
+        // 这一档的裁判要先自证：「值也要相等」那一半若恒真，静默变形就永远看不见。
+        // bool 与整数在值模型里必须是两个值——它们各自的文本都稳定，正是只比两次文本会漏的那一类
+        const std::optional<Base::ConfigValue> asBool = Base::parseConfigValue("true");
+        const std::optional<Base::ConfigValue> asInt  = Base::parseConfigValue("1");
+        ASSERT_TRUE(asBool.has_value() && asInt.has_value());
+        EXPECT_NE(*asBool, *asInt) << "值模型把 bool 与整数判成相等，那一半判据是恒真";
+
+        // 反面对照：自洽文档要真的走通一圈并记账，否则上面那批「都别判违例」的断言等于恒真
+        RunStats goodStats;
+        EXPECT_TRUE(checkInvariants(Target::ConfigValueText, validInput(Target::ConfigValueText), &goodStats).empty());
+        EXPECT_GT(goodStats.producedFrameCount, 0U) << "自洽文档没被记成产出：这一档的账在 CI 上会是零";
+    }
+
+    /**
+     * @brief 自证 LogEscaping 这一档会响：三种「一行日志被拆开」的形状都必须变成可见转义
+     * @details 折法失效的表现不是崩，而是日志看着完全正常而缺陷已经发生，所以这里既核折文本身，
+     *          也核本档四条判据真的能认出这些形状（K1 那条裸控制字节的判据若在空转，随机轮也一样全绿）。
+     *          形状用 ASCII 造：高位字节（含合法 UTF-8 的中文）也一律被折成 \xNN，那是折法写明的取舍。
+     */
+    TEST(ProtocolFuzz, LogEscapingFoldsKnownHostileShapes)
+    {
+        for (const char hostile: {'\n', '\r', '\x1B', '\x00', '\x7F'})
+        {
+            const std::string withControl = std::string("authority says") + hostile + "tail";
+            const std::string folded      = Base::escapeForLog(withControl);
+            EXPECT_EQ(folded.find(hostile), std::string::npos) << "控制字节原样进了折文：落到日志就是两条记录或一次终端转义";
+            EXPECT_NE(folded.find("\\x"), std::string::npos) << "换成了可见转义才对，整段丢掉也是缺陷";
+
+            RunStats stats;
+            EXPECT_TRUE(checkInvariants(Target::LogEscaping, withControl, &stats).empty()) << "本档把自己的合法产出判成违例";
+            EXPECT_GT(stats.producedFrameCount, 0U);
+        }
+
+        // 截断标记不许骗人：恰好等于上限时不贴，超一个字节才贴（贴错方向就是把「原文到此为止」当成事实）
+        EXPECT_EQ(Base::escapeForLog("xxxxx", 5), "xxxxx");
+        EXPECT_EQ(Base::escapeForLog("xxxxxx", 5), "xxxxx…（已截断）");
+        // NUL 要折成字面的 \x00：按 C 字符串取日志的采集器会把后半截静默丢掉，原样带过去等于什么都没报
+        EXPECT_EQ(Base::escapeForLog(std::string("ab") + '\0' + "cd"), std::string{R"(ab\x00cd)"});
     }
 
     /**
