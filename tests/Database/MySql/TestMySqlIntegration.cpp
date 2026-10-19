@@ -980,6 +980,19 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 把迁移的两张记账表一起删掉（记录表与校验和伴生表）
+             * @details 这两张表是一个状态的两半：迁移器按记录表判断「应用过没有」，再往伴生表写校验和。
+             *          只删记录表的话，下一次跑时迁移器读到空台账、去插那一行，撞的还是上一轮留下的
+             *          主键（1062）——真机用例的「二跑必红」就是这么来的，所以清理必须成对
+             * @param connection 已连接的服务端句柄，本函数只在它上面发两条 DROP
+             */
+            static void dropMigrationLedgerTables(MySqlConnection &connection)
+            {
+                static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+                static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationChecksumTableName))));
+            }
+
+            /**
              * @brief 新建一条独立连接（不经过连接池）
              * @return std::unique_ptr<MySqlConnection> 尚未 connect() 的连接
              */
@@ -3781,7 +3794,7 @@ namespace AsynGyanis::Database
             MySqlConnection cleanup(m_configuration);
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kVersionedTableName)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+            dropMigrationLedgerTables(cleanup);
         }
         // 迁移会自己建这张表，因此只登记表名给 TearDown（不要先 prepareTable()，那样测的就不是迁移了）
         m_preparedTableName = std::string(kVersionedTableName);
@@ -3828,7 +3841,7 @@ namespace AsynGyanis::Database
         // 收尾：迁移表是库级共享对象，本用例自己清掉（表由 TearDown 管）
         MySqlConnection cleanup(m_configuration);
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
-        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        dropMigrationLedgerTables(cleanup);
     }
 
     /**
@@ -3847,7 +3860,7 @@ namespace AsynGyanis::Database
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+            dropMigrationLedgerTables(cleanup);
         }
 
         const std::unique_ptr<ConnectionPool> firstPool  = makePool(1);
@@ -3914,7 +3927,7 @@ namespace AsynGyanis::Database
         // 库级共享对象：本用例自己清掉（两张表 + 台账）
         static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
         static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
-        static_cast<void>(verification.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        dropMigrationLedgerTables(verification);
     }
 
     /**
@@ -3929,7 +3942,7 @@ namespace AsynGyanis::Database
             MySqlConnection cleanup(m_configuration);
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kSeedTableName)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+            dropMigrationLedgerTables(cleanup);
         }
         m_preparedTableName = std::string(kSeedTableName);
 
@@ -3970,7 +3983,7 @@ namespace AsynGyanis::Database
         // 收尾：迁移表是库级共享对象，本用例自己清掉（种子表由 TearDown 管）
         MySqlConnection cleanup(m_configuration);
         ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
-        static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(std::string(Queryable::SchemaMigrator::kMigrationLedgerTableName))));
+        dropMigrationLedgerTables(cleanup);
     }
 
     /**

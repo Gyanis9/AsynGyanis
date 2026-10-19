@@ -604,6 +604,30 @@ namespace AsynGyanis::Database
             }
 
             /**
+             * @brief 把迁移的两张记账表一起删掉（记录表与校验和伴生表）
+             * @details 这两张表是一个状态的两半：迁移器按记录表判断「应用过没有」，再往伴生表写校验和。
+             *          只删记录表会留下上一轮的校验和行——下一轮读到空台账、去插那一行，撞的还是
+             *          那个主键（1062）。真机用例的「二跑必红」就是这么来的，清理必须成对
+             * @param connection 已连接的服务端句柄，本函数只在它上面发两条 DROP
+             */
+            static void dropMigrationLedgerTables(PostgresConnection &connection)
+            {
+                static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+                static_cast<void>(connection.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationChecksumTableName)));
+            }
+
+            /**
+             * @brief 把两张记账表一起登记给 TearDown 兜底清理
+             * @details 与 `dropMigrationLedgerTables` 同一对表，成对登记的理由也一样：断在半路时
+             *          只清掉记录表就等于给下一轮留了一颗主键冲突
+             */
+            void registerMigrationLedgerTablesForCleanup()
+            {
+                m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+                m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationChecksumTableName);
+            }
+
+            /**
              * @brief 新建一条独立连接（不经过连接池）
              * @return std::unique_ptr<PostgresConnection> 尚未 connect() 的连接
              */
@@ -1780,12 +1804,12 @@ namespace AsynGyanis::Database
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kVersionedTableName)));
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kHalfFailedMigrationTableName)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+            dropMigrationLedgerTables(cleanup);
         }
         // 迁移自己建表，因此只登记清理名（不要先 prepareTable()，那样测的就不是迁移了）
         m_preparedTableNames.emplace_back(kVersionedTableName);
         m_preparedTableNames.emplace_back(kHalfFailedMigrationTableName);
-        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+        registerMigrationLedgerTablesForCleanup();
 
         std::unique_ptr<ConnectionPool> pool = makePool(1);
 
@@ -1860,11 +1884,11 @@ namespace AsynGyanis::Database
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableOne)));
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kConcurrentMigrationTableTwo)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+            dropMigrationLedgerTables(cleanup);
         }
         m_preparedTableNames.emplace_back(kConcurrentMigrationTableOne);
         m_preparedTableNames.emplace_back(kConcurrentMigrationTableTwo);
-        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+        registerMigrationLedgerTablesForCleanup();
 
         const std::unique_ptr<ConnectionPool> firstPool  = makePool(1);
         const std::unique_ptr<ConnectionPool> secondPool = makePool(1);
@@ -1942,10 +1966,10 @@ namespace AsynGyanis::Database
             PostgresConnection cleanup(m_configuration);
             ASSERT_TRUE(cleanup.connect()) << cleanup.lastError();
             static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(kSeedTableName)));
-            static_cast<void>(cleanup.execute("DROP TABLE IF EXISTS " + quote(SchemaMigrator::kMigrationLedgerTableName)));
+            dropMigrationLedgerTables(cleanup);
         }
         m_preparedTableNames.emplace_back(kSeedTableName);
-        m_preparedTableNames.emplace_back(SchemaMigrator::kMigrationLedgerTableName);
+        registerMigrationLedgerTablesForCleanup();
 
         std::unique_ptr<ConnectionPool> pool = makePool(1);
 
