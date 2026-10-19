@@ -163,7 +163,7 @@ python scripts/run_samples.py --only NetHttpDemo --repeat 3 # 重复跑，抓靠
 
 改动前请读 [贡献指南](CONTRIBUTING.md)：代码风格、注释与报错文案口径、提交信息规范、依赖变更要走的那四处。发现安全问题请按 [安全政策](.github/SECURITY.md) 私密报告，不要开公开 issue。
 
-版本号遵循语义化版本，唯一真源是根 `CMakeLists.txt` 的 `project(AsynGyanis VERSION ...)`；发布节奏与历史见 [更新日志](CHANGELOG.md)。
+版本号遵循语义化版本，唯一真源是根 `CMakeLists.txt` 的 `project(AsynGyanis VERSION ...)`；发布节奏与每个已发布版本的变化见 [更新日志](CHANGELOG.md)。
 
 ## 许可
 
