@@ -49,8 +49,7 @@ namespace AsynGyanis::Net
         return encoded;
     }
 
-    std::expected<std::string, std::string> aliyunRpcSignature(const std::string_view httpMethod, const std::map<std::string, std::string> &parameters,
-                                                               const std::string_view accessKeySecret)
+    AcmeExpected<std::string> aliyunRpcSignature(const std::string_view httpMethod, const std::map<std::string, std::string> &parameters, const std::string_view accessKeySecret)
     {
         // 参数表按名字的 ASCII 序拼串：map 本身就是这个序，不需要再排一次
         std::string canonicalQuery;
@@ -77,9 +76,9 @@ namespace AsynGyanis::Net
         {
             // 签名这一档不能像 nonce 那样降级：一条没签名的请求到机构那边只回 SignatureDoesNotMatch，
             // 白烧一次限流额度还查不出原因。抛出也不取——call() 是条承诺交回 expected 的协程
-            return std::unexpected(std::format("算不出阿里云 OpenAPI 请求的 HMAC-SHA1 签名：{}。这一档与域名与凭据值无关，"
-                                               "查本进程的 OpenSSL provider 配置",
-                                               failure.what()));
+            return std::unexpected(AcmeError{AcmeErrorKind::KeyMaterial, std::format("算不出阿里云 OpenAPI 请求的 HMAC-SHA1 签名：{}。这一档与域名与凭据值无关，"
+                                                                                     "查本进程的 OpenSSL provider 配置",
+                                                                                     failure.what())});
         }
     }
 
@@ -260,16 +259,16 @@ namespace AsynGyanis::Net
              * @brief 写入这条 TXT，并确认控制面已经查得到它
              * @param recordName `_acme-challenge.<域名>` 的完整名字
              * @param value      TXT 正文（keyAuthorization 的摘要）
-             * @return Core::Task<std::expected<void, std::string>> 成功即可让机构去取；失败带中文原因
+             * @return Core::Task<AcmeStatus> 成功即可让机构去取；失败带中文原因
              */
-            Core::Task<std::expected<void, std::string>> publish(std::string recordName, std::string value)
+            Core::Task<AcmeStatus> publish(std::string recordName, std::string value)
             {
                 [[maybe_unused]] const PublishTimingGuard timing{*this};
 
                 const std::optional<DnsRecordTarget> target = splitRecordName(recordName, m_configuration.zoneDomainName);
                 if (!target.has_value())
                 {
-                    co_return std::unexpected(zoneSplitFailure(recordName));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::InvalidConfiguration, zoneSplitFailure(recordName)});
                 }
 
                 // 同一个名字刚撤过就要重写：机构那侧还按旧记录的 TTL 缓存着上一条答案，等不满就去自证，
@@ -323,10 +322,11 @@ namespace AsynGyanis::Net
                     }
                     if (std::chrono::steady_clock::now() >= deadline)
                     {
-                        co_return std::unexpected(std::format("已请求云解析写入 {} 的 TXT，但等了 {} 秒仍查不到这条记录。"
-                                                              "查一下这个 AccessKey 有没有 AliyunDNSFullAccess（或等价的只写权限）、"
-                                                              "以及 {} 是不是云解析里那条主域名",
-                                                              recordName, std::chrono::duration_cast<std::chrono::seconds>(kVisibilityTimeout).count(), target->zone));
+                        co_return std::unexpected(AcmeError{AcmeErrorKind::DnsRecordRejected,
+                                                            std::format("已请求云解析写入 {} 的 TXT，但等了 {} 秒仍查不到这条记录。"
+                                                                        "查一下这个 AccessKey 有没有 AliyunDNSFullAccess（或等价的只写权限）、"
+                                                                        "以及 {} 是不是云解析里那条主域名",
+                                                                        recordName, std::chrono::duration_cast<std::chrono::seconds>(kVisibilityTimeout).count(), target->zone)});
                     }
                     co_await timer.waitFor(kVisibilityPollInterval);
                 }
@@ -337,7 +337,7 @@ namespace AsynGyanis::Net
                 }
                 // 只在「控制面查到 + 结算等完」这条出口上计数：Add 被接受但确认超时的上一次不该算写入成功
                 m_publishedCount.fetch_add(1, std::memory_order_relaxed);
-                co_return std::expected<void, std::string>{};
+                co_return AcmeStatus{};
             }
 
             /**
@@ -345,12 +345,12 @@ namespace AsynGyanis::Net
              * @details 查不到就当成功——撤回必须幂等，否则一次没删干净的记录会把下一轮签发挡在
              *          「同一名字两条不同 TXT」上，而机构的答复只会是 DNS 校验失败
              */
-            Core::Task<std::expected<void, std::string>> withdraw(std::string recordName, std::string value)
+            Core::Task<AcmeStatus> withdraw(std::string recordName, std::string value)
             {
                 const std::optional<DnsRecordTarget> target = splitRecordName(recordName, m_configuration.zoneDomainName);
                 if (!target.has_value())
                 {
-                    co_return std::unexpected(zoneSplitFailure(recordName));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::InvalidConfiguration, zoneSplitFailure(recordName)});
                 }
 
                 auto found = co_await findRecordIds(*target, value);
@@ -369,19 +369,19 @@ namespace AsynGyanis::Net
                     if (auto deleted = co_await call(parameters, "DeleteDomainRecord"); !deleted.has_value())
                     {
                         deletionFailures += deletionFailures.empty() ? "" : "; ";
-                        deletionFailures += deleted.error();
+                        deletionFailures += deleted.error().message;
                     }
                 }
                 if (!deletionFailures.empty())
                 {
-                    co_return std::unexpected(deletionFailures);
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::DnsRecordRejected, deletionFailures});
                 }
                 if (!found->empty())
                 {
                     // 真删掉过才记这一笔：下一次同名重写要按这条记录的 TTL 等机构的缓存过期
                     m_recentWithdrawals[recordName] = std::chrono::steady_clock::now();
                 }
-                co_return std::expected<void, std::string>{};
+                co_return AcmeStatus{};
             }
 
         private:
@@ -417,7 +417,7 @@ namespace AsynGyanis::Net
             /**
              * @brief 查这条主域名下与目标值完全一致的 TXT 记录，交回它们的 RecordId
              */
-            Core::Task<std::expected<std::vector<std::string>, std::string>> findRecordIds(const DnsRecordTarget &target, const std::string &value)
+            Core::Task<AcmeExpected<std::vector<std::string>>> findRecordIds(const DnsRecordTarget &target, const std::string &value)
             {
                 std::map<std::string, std::string> parameters;
                 parameters["Action"]     = "DescribeDomainRecords";
@@ -437,14 +437,15 @@ namespace AsynGyanis::Net
                 const Base::ConfigValue &root = replied.value();
                 if (!root.is_object() || !root.contains("DomainRecords"))
                 {
-                    co_return std::unexpected(std::format("云解析 DescribeDomainRecords 的应答里没有 DomainRecords 成员：{} 这条主域名可能不在这个账号下，"
-                                                          "或这个 AccessKey 看不到它",
-                                                          target.zone));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse,
+                                                        std::format("云解析 DescribeDomainRecords 的应答里没有 DomainRecords 成员：{} 这条主域名可能不在这个账号下，"
+                                                                    "或这个 AccessKey 看不到它",
+                                                                    target.zone)});
                 }
                 const Base::ConfigValue &container = root.at("DomainRecords");
                 if (!container.is_object() || !container.contains("Record") || !container.at("Record").is_array())
                 {
-                    co_return std::unexpected("云解析 DescribeDomainRecords 的 DomainRecords.Record 不是一数组，形状与预期不符");
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse, "云解析 DescribeDomainRecords 的 DomainRecords.Record 不是一数组，形状与预期不符"});
                 }
 
                 // RRKeyWord 是「包含」匹配，会把 _acme-challenge.sub 那类也带回来；按三段精确条件筛
@@ -471,14 +472,15 @@ namespace AsynGyanis::Net
              * @details 失败文案里只带 Action 与错误码/消息，不带完整 URL：URL 里含 Signature，
              *          把它抄进日志等于把一次性的签名留在人人都能看的通道里
              */
-            Core::Task<std::expected<Base::ConfigValue, std::string>> call(std::map<std::string, std::string> parameters, std::string_view action)
+            Core::Task<AcmeExpected<Base::ConfigValue>> call(std::map<std::string, std::string> parameters, std::string_view action)
             {
                 if (m_configuration.accessKeyId.empty() || m_configuration.accessKeySecret.empty())
                 {
-                    co_return std::unexpected("DNS-01 要用阿里云云解析，但凭据是空的：把两条值填进 "
-                                              "AliyunDns01Configuration::accessKeyId 与 accessKeySecret"
-                                              "（签发探针那两个值从环境变量 ASYN_ACME_DNS_ACCESS_KEY_ID 与 ASYN_ACME_DNS_ACCESS_KEY_SECRET 读）；"
-                                              "不要让密钥进配置文件——一份能改域名记录的钥匙进了版本库，等于把域名交出去");
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::InvalidConfiguration,
+                                                        "DNS-01 要用阿里云云解析，但凭据是空的：把两条值填进 "
+                                                        "AliyunDns01Configuration::accessKeyId 与 accessKeySecret"
+                                                        "（签发探针那两个值从环境变量 ASYN_ACME_DNS_ACCESS_KEY_ID 与 ASYN_ACME_DNS_ACCESS_KEY_SECRET 读）；"
+                                                        "不要让密钥进配置文件——一份能改域名记录的钥匙进了版本库，等于把域名交出去"});
                 }
 
                 parameters["Format"]           = "JSON";
@@ -512,7 +514,8 @@ namespace AsynGyanis::Net
                 auto              sent = co_await HttpClient::send(m_loop, std::string(kEndpointUrl) + "?" + query, request, kRequestTimeout);
                 if (!sent.has_value())
                 {
-                    co_return std::unexpected(std::format("调用阿里云云解析的 {} 失败：{}。dns-01 要求这台机器能出公网 443", action, sent.error()));
+                    co_return std::unexpected(
+                            AcmeError{AcmeErrorKind::Transport, std::format("调用阿里云云解析的 {} 失败：{}。dns-01 要求这台机器能出公网 443", action, sent.error())});
                 }
 
                 const std::optional<Base::ConfigValue> parsed = Base::parseConfigValue(sent->body);
@@ -526,12 +529,13 @@ namespace AsynGyanis::Net
                         message = readText(*parsed, "Message");
                     }
                     const std::string snippet = sent->body.size() > 200U ? sent->body.substr(0, 200U) : sent->body;
-                    co_return std::unexpected(std::format("阿里云云解析拒绝了 {}：HTTP {}{}{}。原文（截断）：{}", action, sent->statusCode, code.empty() ? "" : ", Code=" + code,
-                                                          message.empty() ? "" : ", Message=" + message, snippet));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::RejectedByAuthority,
+                                                        std::format("阿里云云解析拒绝了 {}：HTTP {}{}{}。原文（截断）：{}", action, sent->statusCode,
+                                                                    code.empty() ? "" : ", Code=" + code, message.empty() ? "" : ", Message=" + message, snippet)});
                 }
                 if (!parsed.has_value())
                 {
-                    co_return std::unexpected(std::format("阿里云云解析的 {} 回了 HTTP 200 但正文不是合法 JSON，无法继续", action));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::UnexpectedResponse, std::format("阿里云云解析的 {} 回了 HTTP 200 但正文不是合法 JSON，无法继续", action)});
                 }
                 co_return *parsed;
             }
@@ -577,10 +581,8 @@ namespace AsynGyanis::Net
 
         AcmeDns01TxtWriter writer;
         // 协程 lambda 的捕获与形参都要按值：帧要在第一次挂起之后仍能读到它们
-        writer.publish = [client](std::string fqdn, std::string value) -> Core::Task<std::expected<void, std::string>>
-        { co_return co_await client->publish(std::move(fqdn), std::move(value)); };
-        writer.withdraw = [client](std::string fqdn, std::string value) -> Core::Task<std::expected<void, std::string>>
-        { co_return co_await client->withdraw(std::move(fqdn), std::move(value)); };
+        writer.publish  = [client](std::string fqdn, std::string value) -> Core::Task<AcmeStatus> { co_return co_await client->publish(std::move(fqdn), std::move(value)); };
+        writer.withdraw = [client](std::string fqdn, std::string value) -> Core::Task<AcmeStatus> { co_return co_await client->withdraw(std::move(fqdn), std::move(value)); };
         return writer;
     }
 } // namespace AsynGyanis::Net

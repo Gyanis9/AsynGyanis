@@ -226,7 +226,7 @@
       "col": 4,
       "sources": [
         { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 368, "label": "publish 到权威侧" },
-        { "path": "src/Net/Acme/AcmeDns01TxtWriter.h", "line": 45, "label": "publish 动作的类型" },
+        { "path": "src/Net/Acme/AcmeDns01TxtWriter.h", "line": 46, "label": "publish 动作的类型" },
         { "path": "src/Net/Acme/AcmeAutomationConfig.h", "line": 71, "label": "只有 dns-01 才要写入口" }
       ]
     },

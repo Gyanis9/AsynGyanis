@@ -231,12 +231,12 @@ namespace AsynGyanis::Net
         /// 装回服务的动作：成不成功按本轮参数决定（存不存在由调用点决定）。计数要被它改，故非常量成员函数
         [[nodiscard]] AcmeCertificateManager::ReloadHandler makeInstallStep()
         {
-            return [this]() -> std::expected<void, std::string>
+            return [this]() -> AcmeStatus
             {
                 m_installCalls.fetch_add(1, std::memory_order_relaxed);
                 if (m_installStepFails)
                 {
-                    return std::unexpected(std::string(kInstallFailureText));
+                    return std::unexpected(AcmeError{AcmeErrorKind::ReloadRejected, std::string(kInstallFailureText)});
                 }
                 return {};
             };
@@ -252,7 +252,7 @@ namespace AsynGyanis::Net
         {
             AcmeDns01TxtWriter writer;
             // 协程形参按值取：管理器持有的这个 std::function 会被复制进签发协程的帧里
-            writer.publish = [this](std::string fqdn, std::string value) -> Core::Task<std::expected<void, std::string>>
+            writer.publish = [this](std::string fqdn, std::string value) -> Core::Task<AcmeStatus>
             {
                 ++m_dnsPublishCalls;
                 m_dnsPublishedNames.push_back(fqdn);
@@ -263,20 +263,20 @@ namespace AsynGyanis::Net
                 m_dnsPublishedValues.push_back(value);
                 if (m_dnsPublishFails)
                 {
-                    co_return std::unexpected(std::string(kDnsPublishFailureText));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::Transport, std::string(kDnsPublishFailureText)});
                 }
                 m_publishedTxt = value;
-                co_return std::expected<void, std::string>{};
+                co_return AcmeStatus{};
             };
-            writer.withdraw = [this](std::string, std::string) -> Core::Task<std::expected<void, std::string>>
+            writer.withdraw = [this](std::string, std::string) -> Core::Task<AcmeStatus>
             {
                 ++m_dnsWithdrawCalls;
                 m_publishedTxt.reset();
                 if (m_dnsWithdrawFails)
                 {
-                    co_return std::unexpected(std::string(kDnsWithdrawFailureText));
+                    co_return std::unexpected(AcmeError{AcmeErrorKind::DnsRecordRejected, std::string(kDnsWithdrawFailureText)});
                 }
-                co_return std::expected<void, std::string>{};
+                co_return AcmeStatus{};
             };
             return writer;
         }
@@ -782,7 +782,8 @@ namespace AsynGyanis::Net
 
         ASSERT_TRUE(run.result.has_value());
         ASSERT_FALSE(run.result->has_value());
-        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::DnsRecordRejected) << run.result->error().message;
+        // 写手那一档原样透传上来：Transport 是该重试，DnsRecordRejected 是机构拒了，压成后者会把处置带偏
+        EXPECT_EQ(run.result->error().kind, AcmeErrorKind::Transport) << run.result->error().message;
         EXPECT_NE(run.result->error().message.find(kDnsPublishFailureText), std::string::npos) << run.result->error().message;
         EXPECT_EQ(run.dnsPublishCalls, 1U);
         EXPECT_EQ(run.dnsWithdrawCalls, 1U) << "写入失败之后的那次撤回没跑：这是这条通路上最容易漏的出口";
@@ -977,7 +978,7 @@ namespace AsynGyanis::Net
 
         std::atomic<int>       reloadCalls{0};
         AcmeCertificateManager manager(loop, configuration,
-                                       [&reloadCalls]() -> std::expected<void, std::string>
+                                       [&reloadCalls]() -> AcmeStatus
                                        {
                                            ++reloadCalls;
                                            return {};
@@ -1157,7 +1158,7 @@ namespace AsynGyanis::Net
         std::optional<Core::Task<>>        follower;
         follower.emplace(followCertificateRotation(
                 loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20},
-                [&reloadCalls]() -> std::expected<void, std::string>
+                [&reloadCalls]() -> AcmeStatus
                 {
                     ++reloadCalls;
                     return {};
@@ -1214,10 +1215,10 @@ namespace AsynGyanis::Net
         std::optional<Core::Task<>>        follower;
         follower.emplace(followCertificateRotation(
                 loop, paths.path() / "chain.pem", paths.path() / "key.pem", std::chrono::milliseconds{20},
-                [&reloadCalls]() -> std::expected<void, std::string>
+                [&reloadCalls]() -> AcmeStatus
                 {
                     ++reloadCalls;
-                    return std::unexpected("用例里的装回总是失败");
+                    return std::unexpected(AcmeError{AcmeErrorKind::ReloadRejected, "用例里的装回总是失败"});
                 },
                 isStopping));
         // 跨线程交帧只能走全局队列：本地就绪队列只归跑 run() 的那条线程，测试线程就地排队会被调度器当场拒

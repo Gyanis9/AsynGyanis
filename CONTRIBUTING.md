@@ -147,6 +147,11 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
   的通道暂时没有别名，等各自的错误类型落地再补。用例侧判成功分支统一用 `tests/TestSupport/ExpectedAssertions.h`
   的 `ASSERT_HAS_VALUE` / `EXPECT_HAS_VALUE`——光板一句 `ASSERT_TRUE(x.has_value())` 红的时候不报失败载荷。
 - 载荷允许保持裸 `std::string` 的通道有两类，是定案不是欠账：配置与装配校验（`applyHttpServerConfiguration`、`validateAcmeAssembly`、`parseProxyUrl` 这一族纯语法与取值检查——调用方只在「过 / 不过」上分支，没有任何按类别换处置的现场，硬加 kind 就是造没人消费的配置）；以及平台层可恢复失败，按上表走 `std::error_code`。除此之外，对端可控的失败一律带 kind（`HttpBodyDecodeErrorKind`、`OAuthErrorKind`、协议层的 RFC 码族）。
+- 带上 kind 之后，**转手点保留上一层的类别**：把下层的失败重新裹成本层的另一个 kind，等于让上一层刚分好的
+  档位在转手处糊掉——`Transport`（该重试）与 `DnsRecordRejected`（该改凭据或域名）到了调用方是两种处置。
+  转手时写「本层补充的文案 + `x.error().kind`」，只有本层自己判出来的失败才给新 kind；`AcmeCertificateManager`
+  的 dns-01 写入与撤回两处按此透传，`WithdrawsTheTxtWhenThePublishStepReportsFailure` 钉住它。就地记日志而不改
+  返回值的失败（撤回没干净那只进 `LOG_WARN`）不属于转手，按日志的口径写。
 - 异常**不得跨线程/跨回调传播**：事件循环的派发单元（`Scheduler` 的每处投递与恢复、
   `IoWatcher::handleEvents` 的每次 `resume`）、会话回调、线程池任务都必须就地收下抛出的
   异常，转成日志 + 计数（`Scheduler::failedDispatchCount()`、`FileWatcher::failedCallbackCount()`）

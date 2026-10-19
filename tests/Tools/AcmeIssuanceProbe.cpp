@@ -430,7 +430,7 @@ int main(const int argc, char **argv)
     // 装回服务的动作在这里是记账：签发成功后回调必须被调到，否则「磁盘新、线上旧」这条失败模式没人拦
     AcmeCertificateManager manager(
             loop, configuration,
-            [&reloadCalls]() -> std::expected<void, std::string>
+            [&reloadCalls]() -> AsynGyanis::Net::AcmeStatus
             {
                 ++reloadCalls;
                 return {};

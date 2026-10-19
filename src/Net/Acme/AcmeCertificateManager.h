@@ -106,7 +106,7 @@ namespace AsynGyanis::Net
          * @details 交回失败值表示「磁盘上是新证书，但服务还在用旧的」。这一档会被记成
          *          ReloadRejected 而不是被忽略——证书自动化的意义就是让线上身份也跟着换新
          */
-        using ReloadHandler = std::function<std::expected<void, std::string>()>;
+        using ReloadHandler = std::function<AcmeStatus()>;
 
         /**
          * @brief 运维层的配置

@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Net/Acme/AcmeError.h"
 
 #include <expected>
 #include <functional>
@@ -40,7 +41,7 @@ namespace AsynGyanis::Net
     struct ASYN_NET_API AcmeDns01TxtWriter
     {
         /// 一条 TXT 的发布或撤回动作：fqdn 是 `_acme-challenge.<域名>` 那个整名，value 是 TXT 正文
-        using TxtHandler = std::function<Core::Task<std::expected<void, std::string>>(std::string fqdn, std::string value)>;
+        using TxtHandler = std::function<Core::Task<AcmeStatus>(std::string fqdn, std::string value)>;
 
         TxtHandler publish;  ///< 写入并确认权威侧可答；交回失败时带中文原因
         TxtHandler withdraw; ///< 撤掉这条（或这几条）TXT；失败时同样带原因

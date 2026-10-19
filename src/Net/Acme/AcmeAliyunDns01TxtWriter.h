@@ -68,13 +68,13 @@ namespace AsynGyanis::Net
      * @param httpMethod 请求方法，本实现只用 "GET"
      * @param parameters 全部业务与公共参数，不含 Signature 本身
      * @param accessKeySecret AccessKey Secret（不含尾部那个 `&`）
-     * @return std::expected<std::string, std::string> 成功是 Base64 后的签名，放进参数表时还要再走一次百分号编码；
+     * @return AcmeExpected<std::string> 成功是 Base64 后的签名，放进参数表时还要再走一次百分号编码；
      *         失败带中文原因（HMAC-SHA-1 算不出来，即本进程 OpenSSL 的摘要接口不可用）
      * @details 算不出签名交回失败而不是抛出：本函数被 `Task` 协程里的请求签名步骤调用，抛出等于给那条通路
      *          换一条失败通道。签名也不许降级——一条没签名的请求到机构那边只回 SignatureDoesNotMatch。
      */
-    [[nodiscard]] ASYN_NET_API std::expected<std::string, std::string> aliyunRpcSignature(std::string_view httpMethod, const std::map<std::string, std::string> &parameters,
-                                                                                          std::string_view accessKeySecret);
+    [[nodiscard]] ASYN_NET_API AcmeExpected<std::string> aliyunRpcSignature(std::string_view httpMethod, const std::map<std::string, std::string> &parameters,
+                                                                            std::string_view accessKeySecret);
 
     /**
      * @brief 同名重写之前，静默期的上限

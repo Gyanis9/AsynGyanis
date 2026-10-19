@@ -1874,7 +1874,7 @@ int main(int argc, char **argv)
 
         // 装回动作遍历本进程的全部 TLS 监听器：分发模式与多线程下每台都有自己的 SSL_CTX，漏一台就是
         // 那一台继续用旧身份。逐台重装再汇总失败，第一处失败不该吞掉后面几台的处置
-        const auto reloadIntoListeners = [&servers, http3Server = http3Server.get()]() -> std::expected<void, std::string>
+        const auto reloadIntoListeners = [&servers, http3Server = http3Server.get()]() -> Net::AcmeStatus
         {
             std::string failureText;
             std::size_t reloadedTlsServerCount = 0;
@@ -1904,9 +1904,9 @@ int main(int argc, char **argv)
             }
             if (!failureText.empty())
             {
-                return std::unexpected(std::format("磁盘上已经是新证书，但 {}（已装回的 {} 台不受影响）——线上身份此刻是混的，"
-                                                   "请按证书自动化失败处置",
-                                                   failureText, reloadedTlsServerCount));
+                return std::unexpected(Net::AcmeError{Net::AcmeErrorKind::ReloadRejected, std::format("磁盘上已经是新证书，但 {}（已装回的 {} 台不受影响）——线上身份此刻是混的，"
+                                                                                                      "请按证书自动化失败处置",
+                                                                                                      failureText, reloadedTlsServerCount)});
             }
             LOG_INFO_FMT("证书自动化：新证书已装回 {} 台 HTTPS 监听器{}{}，新连接立即改用", reloadedTlsServerCount, http3Server != nullptr ? "与 HTTP/3 服务端" : "",
                          "（在手的连接沿用旧上下文，握完手才换）");

@@ -110,7 +110,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(empty.isUsable());
 
         AcmeDns01TxtWriter halfFilled;
-        halfFilled.publish = [](std::string, std::string) -> Core::Task<std::expected<void, std::string>> { co_return std::expected<void, std::string>{}; };
+        halfFilled.publish = [](std::string, std::string) -> Core::Task<AcmeStatus> { co_return AcmeStatus{}; };
         EXPECT_FALSE(halfFilled.isUsable());
 
         halfFilled.withdraw = halfFilled.publish;
@@ -237,7 +237,7 @@ namespace AsynGyanis::Net
                 m_outcome.succeeded = true;
             } else
             {
-                m_outcome.failureMessage = result.error();
+                m_outcome.failureMessage = result.error().message;
             }
             loop.stop();
         }

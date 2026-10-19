@@ -373,9 +373,9 @@ namespace AsynGyanis::Net
             {
                 LOG_WARN_FMT("AcmeCertificateManager: 域名 {} 的 dns-01 记录 {} 写入失败之后的撤回也没成功：{}。"
                              "请手工到 DNS 控制台删掉这条 TXT，否则下一轮签发会在同一个名字上看到两条答案",
-                             authorization.identifier, recordName, rollback.error());
+                             authorization.identifier, recordName, rollback.error().message);
             }
-            co_return failWith(AcmeErrorKind::DnsRecordRejected, std::format("域名 {} 的 dns-01 记录 {} 没能写入：{}", authorization.identifier, recordName, published.error()));
+            co_return AcmeError{published.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能写入：{}", authorization.identifier, recordName, published.error().message)};
         }
 
         std::optional<AcmeError> solveFailure;
@@ -393,8 +393,8 @@ namespace AsynGyanis::Net
         }
         if (!withdrawn.has_value())
         {
-            co_return failWith(AcmeErrorKind::DnsRecordRejected, std::format("域名 {} 的 dns-01 记录 {} 没能撤掉：{}。自证已经过了，但那条 TXT 会留在同一个名字上，请尽快手工删掉",
-                                                                             authorization.identifier, recordName, withdrawn.error()));
+            co_return AcmeError{withdrawn.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能撤掉：{}。自证已经过了，但那条 TXT 会留在同一个名字上，请尽快手工删掉",
+                                                                    authorization.identifier, recordName, withdrawn.error().message)};
         }
         co_return std::nullopt;
     }
@@ -443,7 +443,7 @@ namespace AsynGyanis::Net
                     co_return std::unexpected(
                             failWith(AcmeErrorKind::ReloadRejected, std::format("磁盘上那张证书还够用（不必重新下单），但它此前没装上线上、这一次补装仍然失败：{}。"
                                                                                 "线上仍在用旧的那张",
-                                                                                retried.error())));
+                                                                                retried.error().message)));
                 }
             }
             co_return AcmeIssuedCertificate{m_configuration.certificateFile, m_configuration.privateKeyFile, *existing, false};
@@ -588,7 +588,7 @@ namespace AsynGyanis::Net
                 // 记下这笔欠账：下一拍到期判据会看磁盘说「还够用」，不靠它兜底
                 m_reloadPending.store(true, std::memory_order_release);
                 co_return std::unexpected(failWith(AcmeErrorKind::ReloadRejected, std::format("证书已写到 {}，但装回服务这一步失败了：{}。线上仍在用旧的那张",
-                                                                                              m_configuration.certificateFile.string(), applied.error())));
+                                                                                              m_configuration.certificateFile.string(), applied.error().message)));
             }
         } else
         {
@@ -713,7 +713,7 @@ namespace AsynGyanis::Net
             {
                 if (!reportedFailureForCurrentChange)
                 {
-                    LOG_ERROR_FMT("followCertificateRotation: 磁盘上的证书已经换了，但装回本进程失败，线上仍在用旧身份。原因：{}（下一拍仍会再试一次）", outcome.error());
+                    LOG_ERROR_FMT("followCertificateRotation: 磁盘上的证书已经换了，但装回本进程失败，线上仍在用旧身份。原因：{}（下一拍仍会再试一次）", outcome.error().message);
                     reportedFailureForCurrentChange = true;
                 }
                 // 新身份不认下：认下了就等于宣布这次变化已处置完，而它并没有
