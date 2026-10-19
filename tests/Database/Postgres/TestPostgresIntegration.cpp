@@ -164,6 +164,10 @@ namespace AsynGyanis::Database
         /// 种子幂等用例的表：由迁移建出来，表名独立以免与并行用例共用
         constexpr std::string_view kSeedTableName = "Asyn_Pg_Seed";
 
+        /// 生成键回读用例的两张表：一张主键由 identity 生成，一张主键由调用方给出
+        constexpr std::string_view kGeneratedKeyTableName = "Asyn_Pg_GeneratedKey";
+        constexpr std::string_view kExplicitKeyTableName  = "Asyn_Pg_ExplicitKey";
+
         /// 乐观锁用例的表：带版本列，两个会话同时改同一行
         constexpr std::string_view kVersionedLockTableName = "Asyn_Pg_VersionedLock";
         constexpr std::string_view kVersionedLockColumns   = "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL, \"version\" BIGINT NOT NULL";
@@ -342,11 +346,52 @@ namespace AsynGyanis::Database
             std::vector<IntegrationRelationComment>  comments; ///< 装载结果：评论
         };
 
+        /**
+         * @brief 生成键回读用例：主键由服务端 identity 生成，插入时不带它
+         */
+        struct IntegrationGeneratedKeyRow
+        {
+            std::int64_t id   = 0;  ///< 数据库生成的主键（TableSchema 声明自增后不进 INSERT 列清单）
+            std::string  name = ""; ///< 名称列：回读到的号必须能按它把自己那一行认回来
+        };
+
+        /**
+         * @brief 生成键回读用例：主键由调用方给出（表上没有 identity）
+         */
+        struct IntegrationExplicitKeyRow
+        {
+            std::int64_t id   = 0;  ///< 调用方写进语句里的主键
+            std::string  name = ""; ///< 名称列
+        };
+
     } // namespace
 
     // ========================================================================
     // TableSchema 特化：把结构体注册到各自的表
     // ========================================================================
+
+    template<>
+    struct Queryable::TableSchema<IntegrationGeneratedKeyRow>
+    {
+        static constexpr std::string_view kTableName = kGeneratedKeyTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationGeneratedKeyRow::id, "id"),
+                Column(&IntegrationGeneratedKeyRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey                = "id";
+        static constexpr bool             kIsAutoIncrementPrimaryKey = true;
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationExplicitKeyRow>
+    {
+        static constexpr std::string_view kTableName = kExplicitKeyTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationExplicitKeyRow::id, "id"),
+                Column(&IntegrationExplicitKeyRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
 
     template<>
     struct Queryable::TableSchema<IntegrationDecimalRow>
@@ -1187,6 +1232,87 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
         EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
         EXPECT_TRUE(errorText.empty()) << errorText;
+    }
+
+    /**
+     * @brief 验证 identity 主键在真实 PostgreSQL 上端到端回读：RETURNING 进得了语句、值认得出自己那一行
+     *
+     * @details PostgreSQL 的连接句柄上没有「最近一次插入生成的键」可问（libpq 的 OID 自 8.1 起默认关闭，
+     *          且它与 identity 列无关），本引擎的回读通道是方言给这条 INSERT 追加 `RETURNING "id"`，
+     *          值随同一次往返交回、在结果集构造时就地快照（见 PostgresResult::lastInsertRowId()）。
+     *          光断「回来的号非零且递增」不够：序列给的任何值都满足它。因此这里用回来的号把那一行读回来，
+     *          核对的是名称列——号与行必须互相指认，否则「插了 A 拿到 B 的号」这种串号看不见。
+     * @note 两次插入各用一个 Queryable 对象：插入方向每次都从 TableSchema 重建查询树，不读 WHERE 侧的状态，
+     *          这一格顺带钉住「插入不被前一次条件污染」。
+     * @note 证伪：把 PostgresDialect::appendGeneratedKeyReturningTail() 的追加删掉（或把 PostgresResult 里
+     *          按命令标签取首行首列的那段删掉），两个 id 都回 0，这条立刻红。
+     */
+    TEST_F(PostgresIntegrationTest, GeneratedKeyReadBackReturnsTheIdentityValueOfTheRowJustInserted)
+    {
+        m_preparedTableNames.emplace_back(kGeneratedKeyTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationGeneratedKeyRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationGeneratedKeyRow>(*pool, true, &errorText)) << errorText;
+
+        std::int64_t firstId = 0;
+        {
+            OrmQuery<IntegrationGeneratedKeyRow> insertQuery(*pool);
+            firstId = insertQuery.insertAndGetGeneratedId(IntegrationGeneratedKeyRow{.id = 0, .name = "第一张"});
+            // 主键列被 TableSchema 的自增声明挡在 INSERT 之外，服务端不会收下 0 号，因此这个值必然来自 identity
+            EXPECT_NE(firstId, 0) << "identity 主键没回读：RETURNING 通道没进到语句里，或结果集没取那一行第一列";
+
+            OrmQuery<IntegrationGeneratedKeyRow> secondQuery(*pool);
+            const std::int64_t                   secondId = secondQuery.insertAndGetGeneratedId(IntegrationGeneratedKeyRow{.id = 0, .name = "第二张"});
+            EXPECT_NE(secondId, 0);
+            EXPECT_NE(secondId, firstId) << "两次插入回读到同一个号：回读的不是本条语句生成的那个";
+
+            OrmQuery<IntegrationGeneratedKeyRow>            firstReadBack(*pool);
+            const std::optional<IntegrationGeneratedKeyRow> firstRow = firstReadBack.where(Column(&IntegrationGeneratedKeyRow::id, "id") == firstId).first();
+            ASSERT_TRUE(firstRow.has_value()) << firstId;
+            EXPECT_EQ(firstRow->name, "第一张");
+
+            OrmQuery<IntegrationGeneratedKeyRow>            secondReadBack(*pool);
+            const std::optional<IntegrationGeneratedKeyRow> secondRow = secondReadBack.where(Column(&IntegrationGeneratedKeyRow::id, "id") == secondId).first();
+            ASSERT_TRUE(secondRow.has_value()) << secondId;
+            EXPECT_EQ(secondRow->name, "第二张");
+        }
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationGeneratedKeyRow>(*pool, true, &errorText)) << errorText;
+    }
+
+    /**
+     * @brief 验证主键由调用方给出时，回读交回的就是那一个值而不是序列上的别的号
+     *
+     * @details 这张表没有 identity（TableSchema 未声明自增），主键列照常进 INSERT 列清单。
+     *          本引擎刻意用 RETURNING 而不是会话级 lastval()：后者读的是「本会话最后一个序列」，
+     *          这一格正是它的失效形状——没有序列被用过时 lastval() 直接报错，
+     *          而 RETURNING 交出的是这一行的实际主键，与有没有序列无关。
+     * @note 证伪：把回读通道换成 lastval()，这条在建表后第一次插入就报错或读不到值；
+     *          把 PostgresResult 的首行首列快照删掉则回 0，4242 对不上。
+     */
+    TEST_F(PostgresIntegrationTest, GeneratedKeyReadBackReturnsExplicitPrimaryKeyWhenTheRowSuppliesIt)
+    {
+        m_preparedTableNames.emplace_back(kExplicitKeyTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationExplicitKeyRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(2);
+        ASSERT_TRUE(SchemaMigrator::createTable<IntegrationExplicitKeyRow>(*pool, true, &errorText)) << errorText;
+
+        OrmQuery<IntegrationExplicitKeyRow> insertQuery(*pool);
+        const std::int64_t                  returnedId = insertQuery.insertAndGetGeneratedId(IntegrationExplicitKeyRow{.id = 4242, .name = "显式号"});
+        EXPECT_EQ(returnedId, 4242) << "回读的不是这一行的主键（本表没有任何序列可问）";
+
+        OrmQuery<IntegrationExplicitKeyRow>            readBackQuery(*pool);
+        const std::optional<IntegrationExplicitKeyRow> row = readBackQuery.where(Column(&IntegrationExplicitKeyRow::id, "id") == std::int64_t{4242}).first();
+        ASSERT_TRUE(row.has_value());
+        EXPECT_EQ(row->name, "显式号");
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationExplicitKeyRow>(*pool, true, &errorText)) << errorText;
     }
 
     /**

@@ -1779,3 +1779,30 @@ TEST(SqliteDialectTransaction, ReadOnlyFormIsReportedAsUnavailable)
 
     EXPECT_FALSE(dialect.readOnlyTransactionStatement().has_value());
 }
+
+/**
+ * @brief 验证要求回读生成键时 SQLite 的语句文本一分不变
+ * @details SQLite 的生成键挂在连接句柄上（sqlite3_last_insert_rowid()），结果集构造时就地快照，
+ *          因此本方言不覆写 SqlDialect::appendGeneratedKeyReturningTail()。这一条与 PostgreSQL 那一族的
+ *          「追加 RETURNING」用例同判：三家共用一条 ORM 入口，各自的回读通道不同，
+ *          改动这条默认空实现就会让既有 INSERT 的线上字节变样。
+ */
+TEST(SqliteDialectGeneratedKey, GeneratedKeyRequestAppendsNothing)
+{
+    const SqliteDialect dialect;
+
+    QueryNode node;
+    node.tableName          = "users";
+    node.selectColumns      = {"id", "name"};
+    node.generatedKeyColumn = "id";
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{7}, std::string("张三")});
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?)");
+    EXPECT_EQ(statement.sql.find("RETURNING"), std::string::npos) << statement.sql;
+
+    // 直接调用子句钩子也一样什么都不追加（默认实现即本引擎的答复）
+    std::string sqlText = statement.sql;
+    dialect.appendGeneratedKeyReturningTail(sqlText, node);
+    EXPECT_EQ(sqlText, statement.sql);
+}

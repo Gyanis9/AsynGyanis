@@ -711,6 +711,97 @@ TEST(PostgresDialectWrite, InsertUsesDollarPlaceholders)
 }
 
 /**
+ * @brief 验证生成键回读：PostgreSQL 唯一可靠的同轮次通道是 RETURNING
+ */
+TEST(PostgresDialectGeneratedKey, GeneratedKeyColumnAppendsQuotedReturningTail)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName          = "users";
+    node.selectColumns      = {"name"};
+    node.generatedKeyColumn = "id";
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::string("张三")});
+
+    // 子句挂在 VALUES 之后、列名按 PostgreSQL 的引用规则加双引号；参数一个都不多
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"name\") VALUES ($1) RETURNING \"id\"");
+    EXPECT_EQ(countPlaceholders(statement.sql), statement.parameters.size());
+}
+
+/**
+ * @brief 验证不要求回读时语句文本一分不变：这是既有调用的线上字节判据
+ */
+TEST(PostgresDialectGeneratedKey, WithoutGeneratedKeyColumnTextIsUnchanged)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName     = "users";
+    node.selectColumns = {"name"};
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::string("张三")});
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"name\") VALUES ($1)");
+    EXPECT_EQ(statement.sql.find("RETURNING"), std::string::npos) << statement.sql;
+}
+
+/**
+ * @brief 验证回读子句排在冲突处置之后：两条尾部子句的先后由语法定死
+ */
+TEST(PostgresDialectGeneratedKey, ReturningFollowsConflictTail)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName          = "users";
+    node.selectColumns      = {"name"};
+    node.insertConflict     = InsertConflict::Ignore;
+    node.generatedKeyColumn = "id";
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::string("张三")});
+
+    // DO NOTHING 不带冲突目标，RETURNING 跟在它后面；写反了服务端直接拒语法
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"name\") VALUES ($1) ON CONFLICT DO NOTHING RETURNING \"id\"");
+}
+
+/**
+ * @brief 验证列名里的引号按 SQL 规则翻倍：不能让一个带引号的列名拆开这条语句
+ */
+TEST(PostgresDialectGeneratedKey, GeneratedKeyColumnDoublesEmbeddedQuote)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName          = "users";
+    node.selectColumns      = {"name"};
+    node.generatedKeyColumn = "i\"d";
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::string("张三")});
+
+    EXPECT_EQ(statement.sql, "INSERT INTO \"users\" (\"name\") VALUES ($1) RETURNING \"i\"\"d\"");
+}
+
+/**
+ * @brief 验证空列名在子句层被拒：渲染层已经用「非空」挡住了常规路径，
+ *        这一条钉住的是直接调用方言时的拒绝（宁可不生成也不送一条零长度标识符的语句）
+ */
+TEST(PostgresDialectGeneratedKey, EmptyGeneratedKeyColumnIsRefused)
+{
+    const PostgresDialect dialect;
+
+    QueryNode node;
+    node.tableName = "users";
+
+    std::string       sqlText     = R"(INSERT INTO "users" ("name") VALUES ($1))";
+    const std::string refusalText = captureInvalidArgument([&dialect, &sqlText, &node] { dialect.appendGeneratedKeyReturningTail(sqlText, node); });
+
+    EXPECT_NE(refusalText.find("generatedKeyColumn"), std::string::npos) << refusalText;
+    // 拒绝之前一个字符都没追加：半途追加会把一条好语句写坏
+    EXPECT_EQ(sqlText, R"(INSERT INTO "users" ("name") VALUES ($1))");
+}
+
+/**
  * @brief 验证 UPDATE 的 SET 参数是 $1/$2，WHERE 参数顺延为 $3
  */
 TEST(PostgresDialectWrite, UpdateBindsAssignmentsBeforeWhereParameters)

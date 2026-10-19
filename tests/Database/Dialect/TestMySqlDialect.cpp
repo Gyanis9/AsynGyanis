@@ -1351,3 +1351,23 @@ TEST(MySqlDialectTransaction, ReadOnlyTransactionUsesTheNamedStartForm)
     ASSERT_TRUE(dialect.readOnlyTransactionStatement().has_value());
     EXPECT_EQ(*dialect.readOnlyTransactionStatement(), "START TRANSACTION READ ONLY");
 }
+
+/// @brief 验证要求回读生成键时 MySQL 的语句文本一分不变（生成键走 mysql_insert_id() 的连接级快照）
+TEST(MySqlDialectGeneratedKey, GeneratedKeyRequestAppendsNothing)
+{
+    const MySqlDialect dialect;
+
+    QueryNode node;
+    node.tableName          = "users";
+    node.selectColumns      = {"id", "name"};
+    node.generatedKeyColumn = "id";
+
+    const SqlStatement statement = dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{7}, std::string("张三")});
+
+    EXPECT_EQ(statement.sql, "INSERT INTO `users` (`id`, `name`) VALUES (?, ?)");
+    EXPECT_EQ(statement.sql.find("RETURNING"), std::string::npos) << statement.sql;
+
+    std::string sqlText = statement.sql;
+    dialect.appendGeneratedKeyReturningTail(sqlText, node);
+    EXPECT_EQ(sqlText, statement.sql);
+}
