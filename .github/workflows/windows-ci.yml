@@ -62,15 +62,30 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: 安装 Conan 与 sccache
+        id: sccache
         run: |
           pip install "conan>=2.25"
+          # sccache 装不上不能把整条作业判红：它就是没有也一样编，慢一点而已。判红的代价是把
+          # 「构建坏了」和「缓存器没装上」两件事混成一个读数，2026-10-19 那轮 main 就是这么红的：
+          # community.chocolatey.org 回 504，choco 打一句「Unable to find package 'sccache'」后按
+          # installed 0/0 收尾、退出码还是 0，于是这一步绿着，红气留到十几分钟后的每一条编译上
+          # （ninja 只会报 CreateProcess failed: 系统找不到指定的文件，看不出缺的是 sccache）
           choco install sccache -y --no-progress
+          if (-not (Get-Command sccache -ErrorAction SilentlyContinue)) {
+            choco install sccache -y --no-progress
+          }
+          # 只认 PATH 里有没有这个可执行文件，不拿 choco 的退出码当凭据——上面那条就是退出码撒谎的实例
+          $ready = if (Get-Command sccache -ErrorAction SilentlyContinue) { 'true' } else { 'false' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "ready=$ready"
+          if ($ready -ne 'true') {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'sccache 没装上（Chocolatey 源不可达）：本轮不带编译缓存器，构建耗时回到冷编译水平'
+          }
 
       - name: 探测 Conan profile
         run: conan profile detect --force
 
       - name: 配置（Debug + sanitizers + sccache；Conan 依赖由 conan_provider.cmake 自动安装）
-        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
+        run: cmake --preset debug -DDATABASE_WITH_MYSQL=OFF -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW ${{ steps.sccache.outputs.ready == 'true' && '-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache' || '' }}
 
       # 零告警是本仓库的提交硬判据：构建失败与告警都会让这一步红
       - name: 构建
@@ -78,6 +93,7 @@ jobs:
 
       # 缓存是否真的命中，看这一行的 compile requests / cache hits
       - name: sccache 统计
+        if: steps.sccache.outputs.ready == 'true'
         run: sccache --show-stats
 
       - name: 全量用例
@@ -354,10 +370,20 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@v1
 
+      # 与 build-and-test 同一套判法：choco 装不上时退出码照样是 0，只认 PATH 里有没有 sccache.exe
       - name: 安装 Conan 与 sccache
+        id: sccache
         run: |
           pip install "conan>=2.25"
           choco install sccache -y --no-progress
+          if (-not (Get-Command sccache -ErrorAction SilentlyContinue)) {
+            choco install sccache -y --no-progress
+          }
+          $ready = if (Get-Command sccache -ErrorAction SilentlyContinue) { 'true' } else { 'false' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "ready=$ready"
+          if ($ready -ne 'true') {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'sccache 没装上（Chocolatey 源不可达）：本轮不带编译缓存器，构建耗时回到冷编译水平'
+          }
 
       - name: 探测 Conan profile
         run: conan profile detect --force
@@ -368,7 +394,7 @@ jobs:
       # 这对变量受 CMP0141 管辖，而本工程的 cmake_minimum_required 停在 3.20 会让它被静默忽略，
       # 所以策略也要显式置 NEW——只传变量等于没传
       - name: 配置（Release）
-        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
+        run: cmake --preset release -DDATABASE_WITH_MYSQL=OFF -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW ${{ steps.sccache.outputs.ready == 'true' && '-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache' || '' }}
 
       - name: 构建微基准目标
         run: cmake --build build/release --target microbench
