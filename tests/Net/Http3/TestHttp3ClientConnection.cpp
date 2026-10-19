@@ -912,6 +912,16 @@ namespace AsynGyanis::Net
             {
                 return m_batches;
             }
+            /**
+             * @brief 这条链是不是被「没有进展」哨兵掐掉的
+             * @details 失败原因那句「连接已被对端或本端收口」分不开两种根因：对端自己收口，与哨兵
+             *          数满静默拍子后掐链。这一格与批数一起读，才看得出是「首批都没到」还是「交了几批才停」
+             * @return bool true 表示哨兵掐过链
+             */
+            [[nodiscard]] bool wasStallTriggered() const noexcept
+            {
+                return m_isStallTriggered.load(std::memory_order_acquire);
+            }
             [[nodiscard]] const std::vector<bool> &lastFlags() const noexcept
             {
                 return m_lastBatchFlags;
@@ -1007,6 +1017,9 @@ namespace AsynGyanis::Net
                     {
                         // 关掉之后 await 中的请求会带着「连接已不可用」回来：判据由此拿到一个
                         // 有原因的失败，而不是等一条总时限把慢的也一起判死
+                        // 先记下「是哨兵掐的链」再关：失败文案里那一句要靠它把「被掐」与
+                        // 「对端自己收口」分开，两者的根因完全不同
+                        m_isStallTriggered.store(true, std::memory_order_release);
                         link->http3().close();
                         co_return;
                     }
@@ -1027,6 +1040,7 @@ namespace AsynGyanis::Net
             bool                        m_isHealthyAfterRun{false};
             std::size_t                 m_inFlightAfterFollowUp{0U};
             std::atomic<bool>           m_isStallWatchdogArmed{false}; ///< 哨兵只管大正文那一趟：请求一回来就撤防
+            std::atomic<bool>           m_isStallTriggered{false};     ///< 链是不是被哨兵掐的：红了要分清「被掐」与「对端自己收口」，两者根因不同
             std::atomic<bool>           m_isFinished{false};
             std::atomic<const char *>   m_stage{"init"}; ///< 进展到哪一步（指字符串字面量，不持有内存）
         };
@@ -1319,6 +1333,9 @@ namespace AsynGyanis::Net
      *          交付。拼接起来逐字节等于服务端答出去的那一份，才算既没交重也没漏交。
      *          「会不会因为机器忙而超时」这一格由 `watchForStall` 处理：停与不停看的是批次数还在不在动，
      *          不是总共跑了多久（实测满载 `-j 8` 时这条曾红在 15.32 秒，单独跑 0.2 秒——那是调度不是缺陷）。
+     *          本条在全量并行下偶发红过一次（`-j 20`、16.1 秒、文案「响应没收完，连接已被对端或本端收口」），
+     *          四种负载各复现一遍都没再现，所以根因未定、哨兵的算法一个字没改；改的是现场：失败文案带上
+     *          已交批数与 `wasStallTriggered()`，下次再红就能直接分清「首批都没排到」与「交了几批才停」。
      * @note 证伪：把 `noteBodyBytes` 里「挂了接收口就攒着待交」改回直接进 body 并当场还额度 → 本条红
      *       （响应里留着整份正文、批数为 1）；只把 `deliverReceivedBody` 里的额度归还摘掉 → 也红，
      *       且红法是哨兵在 15 秒静默后掐掉链路（对端不再发一个字节），不是等总时限。
@@ -1329,8 +1346,12 @@ namespace AsynGyanis::Net
         ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
 
         Http3DeliveryAttempt attempt{server.listeningPort(), 0U};
-        ASSERT_TRUE(attempt.awaitFinished(kDeliveryWaitTimeout)) << "这条带接收口的请求既没成也没败，挂在「" << attempt.stage() << "」这一步";
-        ASSERT_TRUE(attempt.first().isOk()) << "大正文没整个收下：" << attempt.first().errorMessage;
+        ASSERT_TRUE(attempt.awaitFinished(kDeliveryWaitTimeout))
+                << "这条带接收口的请求既没成也没败，挂在「" << attempt.stage() << "」这一步，已交 " << attempt.batches().size() << " 批";
+        // 现场自带两个读数：批数与「是不是哨兵掐的链」。少了它们，红的时候分不清是「满载机器上首批都没排到」
+        // 还是「交了几批之后窗口归还漏做、对端一个字节都不再发」——前者是用例的调度余量，后者是被测面的缺陷
+        ASSERT_TRUE(attempt.first().isOk()) << "大正文没整个收下：" << attempt.first().errorMessage << "（已交 " << attempt.batches().size() << " 批，"
+                                            << (attempt.wasStallTriggered() ? "链是被「没有进展」哨兵掐的" : "链不是哨兵掐的，是对端或本端自己收的口") << "）";
         EXPECT_TRUE(attempt.first().body.empty()) << "挂了接收口还把整份正文留在响应里：白攒一份内存";
         ASSERT_FALSE(attempt.batches().empty()) << "一批都没交出去";
         EXPECT_GT(attempt.batches().size(), 1U) << "只在收齐之后交了一次：逐批交付没生效";
