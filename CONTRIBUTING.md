@@ -147,6 +147,7 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
   的通道暂时没有别名，等各自的错误类型落地再补。用例侧判成功分支统一用 `tests/TestSupport/ExpectedAssertions.h`
   的 `ASSERT_HAS_VALUE` / `EXPECT_HAS_VALUE`——光板一句 `ASSERT_TRUE(x.has_value())` 红的时候不报失败载荷。
 - 载荷允许保持裸 `std::string` 的通道有两类，是定案不是欠账：配置与装配校验（`applyHttpServerConfiguration`、`validateAcmeAssembly`、`parseProxyUrl` 这一族纯语法与取值检查——调用方只在「过 / 不过」上分支，没有任何按类别换处置的现场，硬加 kind 就是造没人消费的配置）；以及平台层可恢复失败，按上表走 `std::error_code`。除此之外，对端可控的失败一律带 kind（`HttpBodyDecodeErrorKind`、`OAuthErrorKind`、协议层的 RFC 码族）。
+- 上面那一族配置校验之外，另有三条通道按实测定案保持裸文本，判据同一条：消费方没有按类别换处置的现场。`HttpClient::send` 的原因由重定向、连接池、TLS 与解压那几层各自写进同一只 `failureReason`，改成带类别要替每一层加档位，而 13 个消费文件里 OAuth、ACME、JWKS 都把它折成自己那一族的 `Transport` 一档；重试安全性另有 `isRetrySafeAfterFailure()` 按字节事实判，不靠文案分支。`QuicServer::buildTlsContext` 只有两个消费点（构造期抛出、重载那一处记 `LOG_ERROR` 之后返回 `false`），都不分支，而那里要的正是「五处文件里哪一处读不到」这句现场。`CpuAffinity::pinCurrentThreadToCore` 没有生产消费方，只有用例按形状断言文案，加 kind 等于给用例造字段。恢复分档的条件一并写死在这里：出现一个必须在这几档之间换处置的调用方时再加，不提前铺。
 - 带上 kind 之后，**转手点保留上一层的类别**：把下层的失败重新裹成本层的另一个 kind，等于让上一层刚分好的
   档位在转手处糊掉——`Transport`（该重试）与 `DnsRecordRejected`（该改凭据或域名）到了调用方是两种处置。
   转手时写「本层补充的文案 + `x.error().kind`」，只有本层自己判出来的失败才给新 kind；`AcmeCertificateManager`
