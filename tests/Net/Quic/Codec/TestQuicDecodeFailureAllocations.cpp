@@ -5,14 +5,15 @@
 // 量法与 Http 那一族同一套（见 tests/Net/Http/TestHotPathAllocations.cpp 的开头）：被测体里不放断言，
 // 改成返回一个与「判成了坏包」成正比的标记；先跑一次本底自证探针还看得见分配。
 //
-// 读数（Linux 容器，GCC 13.3，ASan/UBSan 那一档）：
-//   · 变长整数读断：每次 1 次 / 127 字节，就是那一句判词本身；
-//   · 报文头读到版本号就断：每次 1 次 / 159 字节，同上；
-//   · 帧层读到一条断掉的 STREAM 帧：每次 5 次 / 497 字节——游标把帧名格式化成一条临时串、明细拼一条、
-//     外层再拼一句，串本体一条。
-// 钉的是上界而不是精确值：判词是一句中文串，串长与是否落到堆随标准库的小串内联容量变。上界防的方向只有
-// 一个——往后谁在失败路径上又加一次分配。把判词推到上报处（不在解码层拼）本仓不取：那会让每个消费点重拼
-// 同一句，而这一条出口的代价与一次坏包的收包成本同量级。
+// 读数（左列 Linux 容器，GCC 13.3，ASan/UBSan；右列 Windows CI 的 MSVC + ASan 那一档）：
+//   · 变长整数读断：1 次 / 127 字节 对 5 次 / 224 字节；
+//   · 报文头读到版本号就断：1 次 / 159 字节 对 6 次 / 256 字节；
+//   · 帧层读到一条断掉的 STREAM 帧：5 次 / 497 字节 对 16 次 / 736 字节——游标把帧名格式化成一条临时串、
+//     明细拼一条、外层再拼一句，串本体一条；MSVC 那一边同一句还要多几份中间缓冲。
+// 同一个形状两家的次数差到五六倍，所以上界按标准库分档，不把一家的读数抄给另一家（抄了就是假红，
+// Windows 第一轮正是这样红的）。钉的仍是上界而不是精确值：判词是一句中文串，串长与是否落到堆随标准库
+// 的小串内联容量变。上界防的方向只有一个——往后谁在失败路径上又加一次分配。把判词推到上报处（不在解码层
+// 拼）本仓不取：那会让每个消费点重拼同一句，而这一条出口的代价与一次坏包的收包成本同量级。
 
 #include "Net/Quic/Codec/QuicFrame.h"
 #include "Net/Quic/Codec/QuicPacketHeader.h"
@@ -52,11 +53,23 @@ namespace AsynGyanis::Net
         /// STREAM 帧的类型字节，后面什么都不给——帧连流标识都读不出来
         constexpr std::uint8_t kStreamFrameType = 0x08U;
 
-        /// 一句判词的上界：实测每次 1 次分配，留 1 次给标准库缓冲形状的差异
+        // 上界按标准库分档。判词是一句 std::format 折出来的中文串，而 MSVC STL 的 format 先攒一份中间缓冲
+        // 再拷进结果，同一次判词比 libstdc++ 贵出数倍——把一家的读数抄给另一家就是假红：Windows CI 第一轮
+        // 正是这么红的（Linux 量到 1 次的那一格，MSVC 实跑 5 次）。两家各按自己现测的那一份钉，各留 1 次余量；
+        // 真实读数由用例自己打印，改了实现就往上涨的那一格会先撞到自己这一家的上界。
+#ifdef _MSC_VER
+        /// MSVC STL（Windows CI 的 MSVC + ASan 那一档）实测：变长整数 5 次、报文头 6 次
+        constexpr std::uint64_t kSingleMessageAllocationCeiling = 7U;
+
+        /// MSVC STL 实测：帧层 16 次（帧名、明细、外层拼接与各自的中间缓冲）
+        constexpr std::uint64_t kFrameMessageAllocationCeiling = 17U;
+#else
+        /// libstdc++（容器 GCC 13.3，ASan/UBSan）实测：一句判词 1 次分配
         constexpr std::uint64_t kSingleMessageAllocationCeiling = 2U;
 
-        /// 帧层那一句判词的上界：帧名、明细、外层拼接与串本体，实测每次 5 次
+        /// libstdc++ 实测：帧层 5 次（帧名、明细、外层拼接与串本体）
         constexpr std::uint64_t kFrameMessageAllocationCeiling = 6U;
+#endif
     } // namespace
 
     /**
