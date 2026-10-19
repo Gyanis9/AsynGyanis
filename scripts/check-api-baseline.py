@@ -40,6 +40,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows runner 的控制台默认按 cp1252 编码：差异清单里的中文一 print 就抛 UnicodeEncodeError，
+# 读的人看不到「改破了哪一条声明」。与 check-ledger-dates.py 同形状，先钉两个流
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CMAKE_FILE = REPOSITORY_ROOT / "CMakeLists.txt"
 BASELINE_FILE = REPOSITORY_ROOT / "packaging" / "api-baseline.txt"

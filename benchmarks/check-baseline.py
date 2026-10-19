@@ -41,6 +41,13 @@ import json
 import os
 import sys
 
+# Windows runner 的控制台默认按 cp1252 编码：正文里的中文在 print 那一刻就抛 UnicodeEncodeError，
+# 判据没跑完，读的人只拿到一段 traceback（微基准那档首跑就是这么红的，红在打印 "== 基线 …" 那一行）。
+# 与其它门禁脚本同形状，进来先把两个流钉成 UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline.json")
 
 # `maximumMicroseconds` 刻意不在判定面上：它是整段最坏的一次，单次调度抖动就能翻倍，

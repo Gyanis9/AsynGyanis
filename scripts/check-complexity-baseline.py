@@ -31,6 +31,12 @@ import os
 import re
 import sys
 
+# Windows runner 的控制台默认按 cp1252 编码：中文文案一 print 就抛 UnicodeEncodeError，
+# 读的人拿到的是 traceback 而不是「哪个文件越了线」。与 check-ledger-dates.py 同形状，先钉两个流
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 FLOOR_LINES = 100
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "complexity-baseline.json")
 SCAN_DIRS = ("src",)

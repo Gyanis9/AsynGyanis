@@ -38,6 +38,12 @@ import re
 import subprocess
 import sys
 
+# Windows runner 的控制台默认按 cp1252 编码：违例文案是中文，一 print 就抛 UnicodeEncodeError，
+# 于是「红是红了，但没说是哪条引用」。与 check-ledger-dates.py 同形状，先钉两个流
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIAGRAM_DIR = os.path.join(REPO, "assets", "diagrams")
 # 只对「顶点类」集合要求证据：components/nodes/states/participants 每一格都是一句关于代码的断言，
