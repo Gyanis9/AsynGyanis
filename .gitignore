@@ -25,5 +25,11 @@ __pycache__/
 /.archify/
 
 # finalize/deliver 落在交付物旁边的收据：内容带着本机绝对路径（输入输出都是绝对路径），
-# 属于本机产物；图的溯源已经写进 HTML 自身，不需要再提交一份
+# 属于本机产物；图的溯源已经写进 HTML 自身，不需要再提交一份。
+# 一次重出会留下四类：deliver 的 delivery、浏览器门档的 browser-check、finalize 的 finalize
+# 与它的 finalize-summary——只挡第一类时，其余三类会躺在 git status 里像待提交的工件，
+# 而追溯门已经按「一个点的文件名才是候选件」把它们排除在外了
 assets/diagrams/*.delivery.json
+assets/diagrams/*.browser-check.json
+assets/diagrams/*.finalize.json
+assets/diagrams/*.finalize-summary.json

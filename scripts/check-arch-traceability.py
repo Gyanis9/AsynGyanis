@@ -79,7 +79,10 @@ MINIMUM_TOTAL_PROSE_REFS = 100
 def load_diagrams():
     """读回所有候选图 JSON。返回 (路径, 数据) 列表与一条错误说明——解不开就是工件坏了。"""
     try:
-        names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and not n.endswith(".delivery.json"))
+        # 候选件的形状是 `<slug>.json`，一个点；archify 重出时旁挂的收据是 `<slug>.<步骤>.json`
+        # （delivery / browser-check / finalize / finalize-summary），那些不是图，读成图会得到
+        # 「这张图一条 sources 都没有」这种凭空造出来的红。按点的个数筛，将来多一种收据也不用回来改
+        names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and n.count(".") == 1)
     except OSError as error:
         # 目录整个不见（被移动、改名，或从别的仓库树里跑这个脚本）也要退 2：这不是「没有违例」，
         # 而是判据压根没跑。抛 Python 栈会被 CI 读成退出码 1，看着像「查出了问题」
