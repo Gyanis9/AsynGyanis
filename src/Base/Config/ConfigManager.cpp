@@ -555,9 +555,10 @@ namespace AsynGyanis::Base
 
     std::string ConfigManager::getString(const std::string_view key, const std::string &defaultValue) const
     {
-        // 与 getText 同一口径按视图直查：走 get<std::string> 要先把整份 ConfigValue 深拷进
-        // optional、再从那份副本里拷一次字符串；而默认值形参是 const 引用，未命中时只多一次
-        // 返回拷贝。严格类型口径不变：只有字符串值才算取到，其余回落默认值
+        // 按视图直查，命中且类型是字符串时只付一次返回拷贝：走 getOptional 要先把
+        // optional<ConfigValue> 里的整棵子树深拷一份（这里只读一个标量），再从中取字符串；
+        // 默认值形参是 const 引用，未命中时也只付这一次返回拷贝，不会先把默认值拷一遍。
+        // 严格类型口径不变：只有字符串值才算取到，其余回落默认值
         const auto currentData = m_data.load(std::memory_order_acquire);
         const auto iterator    = currentData->values.find(key);
         if (iterator == currentData->values.end() || !iterator->second.is_string())
