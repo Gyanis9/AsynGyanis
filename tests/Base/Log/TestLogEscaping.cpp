@@ -85,4 +85,20 @@ namespace AsynGyanis::Base
         EXPECT_EQ(escapeForLog("abc", 0), "…（已截断）");
         EXPECT_EQ(escapeForLog("", 0), "");
     }
+
+    /**
+     * @brief 续写版与 owning 版的输出逐字节一致（含已有前缀与各种截断上限）
+     * @details 新函数要能替换旧调用点而不改变日志里的任何字节：前缀必须原样保留，转义文本续写其后。
+     *          上限覆盖 0、截断、恰好等于上限与不截断四种形状
+     */
+    TEST(LogEscaping, AppendVariantMatchesOwningVariant)
+    {
+        const std::string text = std::string{"a\nb\rc\td\0e", 9} + static_cast<char>(0x1B) + static_cast<char>(0x7F) + std::string(20, 'x');
+        for (const std::size_t cap: {0U, 5U, 20U, 256U})
+        {
+            std::string appended = "prefix:";
+            appendEscapedForLog(appended, text, cap);
+            EXPECT_EQ(appended, "prefix:" + escapeForLog(text, cap)) << "cap=" << cap;
+        }
+    }
 } // namespace AsynGyanis::Base

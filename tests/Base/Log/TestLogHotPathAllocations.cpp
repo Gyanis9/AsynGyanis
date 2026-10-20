@@ -20,6 +20,7 @@
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/Formatters/TimestampText.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
@@ -539,5 +540,33 @@ namespace AsynGyanis::Base
                     static_cast<unsigned long long>(intoProfile.totalBytes), static_cast<unsigned long long>(dumpProfile.totalAllocations),
                     static_cast<unsigned long long>(dumpProfile.totalBytes), static_cast<unsigned long long>(textProfile.totalAllocations),
                     static_cast<unsigned long long>(textProfile.totalBytes));
+    }
+
+    /**
+     * @brief 上下文里的文本字段在文本版式上不再逐行取堆
+     * @details 转义结果直接续写进 Sink 的行缓冲；本形状只测格式化，不构造事件。
+     */
+    TEST(LogHotPathAllocations, FormatterContextFieldsStayOffTheHeap)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        const std::string threadId = "tid-context";
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadId, SourceLocation{}, std::string("context_logger"), std::string(kMessageText)};
+        DefaultFormatter  formatter;
+        std::string       lineBuffer;
+        lineBuffer.reserve(512U);
+        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}});
+        const auto            formatOnce = [&formatter, &event, &lineBuffer]
+        {
+            lineBuffer.clear();
+            formatter.formatInto(lineBuffer, event);
+            return static_cast<std::uint64_t>(lineBuffer.size());
+        };
+        formatOnce();
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(formatOnce);
+        EXPECT_GT(profile.resultSum, 0U);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "上下文转义又造了中间串：应直接续写进目标缓冲";
+#endif
     }
 } // namespace AsynGyanis::Base

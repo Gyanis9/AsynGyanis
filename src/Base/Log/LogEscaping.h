@@ -16,6 +16,41 @@
 namespace AsynGyanis::Base
 {
     /**
+     * @brief 把「不是自己写的」文本折成一行，并直接续写进调用方的缓冲
+     *
+     * @details 折法与 escapeForLog 逐字节一致：可打印 ASCII（0x20..0x7E，不含 0x7F）原样保留，
+     *          其余字节写成 \xNN，超长时截断并补一个截断标记。区别只在写法——结果落在调用方
+     *          已有的缓冲里，不再为每一段文本造一份 owning 字符串。上下文这类「每行都要转义
+     *          几个短字段」的形状因此不再逐行取堆。
+     * @param out 目标缓冲；不清空，转义文本追加在其现有内容之后
+     * @param text 待折的原文，可以是外部输入的任意字节
+     * @param maximumDisplayByteCount 最多保留多少个原文字节，超出部分以截断标记表示
+     */
+    inline void appendEscapedForLog(std::string &out, const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
+    {
+        const std::string_view excerpt = text.substr(0, text.size() < maximumDisplayByteCount ? text.size() : maximumDisplayByteCount);
+        out.reserve(out.size() + excerpt.size() + 8U);
+        static constexpr char kHexDigits[] = "0123456789ABCDEF";
+        for (const char character: excerpt)
+        {
+            const auto byte = static_cast<unsigned char>(character);
+            if (byte >= 0x20 && byte < 0x7F)
+            {
+                out.push_back(character);
+                continue;
+            }
+            // 不可打印字节写成 \xNN：否则「值里夹了个 NUL」这类缺陷在日志里看着与正常值一模一样
+            out.append("\\x");
+            out.push_back(kHexDigits[(byte >> 4U) & 0x0FU]);
+            out.push_back(kHexDigits[byte & 0x0FU]);
+        }
+        if (excerpt.size() < text.size())
+        {
+            out.append("…（已截断）");
+        }
+    }
+
+    /**
      * @brief 把「不是自己写的」文本折成一行可打印文本
      *
      * @details 为什么需要：日志的一条记录对应一行，而控制字符一旦原样落进去就会破坏这件事——
@@ -37,27 +72,8 @@ namespace AsynGyanis::Base
      */
     [[nodiscard]] inline std::string escapeForLog(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
     {
-        const std::string_view excerpt = text.substr(0, text.size() < maximumDisplayByteCount ? text.size() : maximumDisplayByteCount);
-        std::string            result;
-        result.reserve(excerpt.size() + 8);
-        for (const char character: excerpt)
-        {
-            const auto byte = static_cast<unsigned char>(character);
-            if (byte >= 0x20 && byte < 0x7F)
-            {
-                result.push_back(character);
-                continue;
-            }
-            // 不可打印字节写成 \xNN：否则「值里夹了个 NUL」这类缺陷在日志里看着与正常值一模一样
-            static constexpr char kHexDigits[] = "0123456789ABCDEF";
-            result.append("\\x");
-            result.push_back(kHexDigits[(byte >> 4) & 0x0FU]);
-            result.push_back(kHexDigits[byte & 0x0FU]);
-        }
-        if (excerpt.size() < text.size())
-        {
-            result.append("…（已截断）");
-        }
+        std::string result;
+        appendEscapedForLog(result, text, maximumDisplayByteCount);
         return result;
     }
 } // namespace AsynGyanis::Base
