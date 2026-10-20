@@ -1157,6 +1157,24 @@ port: 9090
         EXPECT_EQ(configuration().getOptional("textEmptyQuoted")->get<std::string>(), "");
     }
 
+    TEST_F(ConfigManagerTest, YamlCoreSchemaSignedExponentAndLeadingZeroes)
+    {
+        writeFile("numbers.yaml", "with_plus: 1e+5\n"
+                                  "with_plus_upper: 1.5E+10\n"
+                                  "leading_zero: 007\n"
+                                  "plain_zero: 0\n"
+                                  "negative_zero: -0\n"
+                                  "hex: 0x10\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus", 0.0), 100000.0);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus_upper", 0.0), 15000000000.0);
+        EXPECT_EQ(configuration().getString("leading_zero"), "007") << "YAML 1.2 核心 schema 不允许十进制前导零";
+        EXPECT_EQ(configuration().getInt("plain_zero", -1), 0);
+        EXPECT_EQ(configuration().getInt("negative_zero", -1), 0);
+        EXPECT_EQ(configuration().getInt("hex", -1), 16);
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryScalesToHundredsOfKeys)
     {
         constexpr int kKeyCount = 500;
