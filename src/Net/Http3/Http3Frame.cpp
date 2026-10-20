@@ -404,8 +404,8 @@ namespace AsynGyanis::Net
                                                                                               newBytes.size(), m_maximumFrameByteCount)));
         }
 
-        // 上一次已交走的帧到此才从缓冲里挪走，好让那一帧的视图在本次调用前一直能读——
-        // 也正因此，之前交出的帧的载荷视图从这一刻起失效
+        // 追加之前压掉已消费的前缀：本次调用可能让缓冲扩容搬家，之前交出的帧载荷视图从这一刻起失效。
+        // nextFrame 里的「过半再压缩」只是把同一件事分摊到多次调用，视图寿命的契约不变
         m_buffer.erase(m_buffer.begin(), m_buffer.begin() + static_cast<std::ptrdiff_t>(m_consumedByteOffset));
         m_consumedByteOffset = 0;
         m_buffer.insert(m_buffer.end(), newBytes.begin(), newBytes.end());
@@ -418,10 +418,16 @@ namespace AsynGyanis::Net
         {
             return std::unexpected(*m_stickyError);
         }
-        m_buffer.erase(m_buffer.begin(), m_buffer.begin() + static_cast<std::ptrdiff_t>(m_consumedByteOffset));
-        m_consumedByteOffset = 0;
+        // 已消费的前缀攒到缓冲一半才压缩：一次喂入 N 个小帧时逐帧 erase 会把余量搬 N 次，
+        // 总搬移量按帧数平方增长。压缩只在本次调用开头做，上一次交出的视图到此刻为止一直有效
+        if (m_consumedByteOffset >= m_buffer.size() / 2)
+        {
+            m_buffer.erase(m_buffer.begin(), m_buffer.begin() + static_cast<std::ptrdiff_t>(m_consumedByteOffset));
+            m_consumedByteOffset = 0;
+        }
 
-        const std::span<const std::uint8_t> buffered(m_buffer);
+        // 解码起点由游标给出：前缀没被压缩时也不影响下一帧从哪儿开始
+        const std::span<const std::uint8_t> buffered = std::span<const std::uint8_t>(m_buffer).subspan(m_consumedByteOffset);
         // 帧头是 Type、Length 两个紧挨着的变长整数，各自都可能横跨两次 feed：
         // 解不出完整的整数字段就是「还没到齐」，交空 optional 而不算错
         const auto typeDecoded = decodeQuicVariableLengthInteger(buffered);
@@ -458,8 +464,9 @@ namespace AsynGyanis::Net
             return std::unexpected(latchError(decodedFrame.error().kind, std::move(decodedFrame.error().message)));
         }
 
-        // 只推游标不挪字节：挪动会把刚交出去的视图指向的内存抽掉，留到下一次调用开头再做
-        m_consumedByteOffset = static_cast<std::size_t>(declaredFrameByteCount);
+        // 只推游标不挪字节：挪动会把刚交出去的视图指向的内存抽掉；已消费的部分攒到下一次调用
+        // 按「过半」判据压缩，小帧连续到达时不再每帧搬移余量
+        m_consumedByteOffset += static_cast<std::size_t>(declaredFrameByteCount);
         return std::optional<Http3Frame>{std::move(*decodedFrame)};
     }
 

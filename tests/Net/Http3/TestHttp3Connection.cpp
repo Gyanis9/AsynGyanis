@@ -399,7 +399,14 @@ TEST(Http3Connection, UppercaseFieldNameMakesTheRequestHeadRejected)
     EXPECT_TRUE(connection->submitResponseHead(kRequestStreamId, responseFields, true).has_value());
 }
 
-TEST(Http3Connection, BodyBeforeHeadersIsRejectedAsUnexpectedFrameOnThatStreamOnly)
+/**
+ * @brief 请求正文出现在头段之前：H3_FRAME_UNEXPECTED 按 RFC 9114 §8.1 是连接错误
+ * @details 帧位置失序之后同连接上的帧序判定已不可信，不能把错误降格成只结这条流；
+ *          交上去的是连接级收口，流级重置事件一条都不该出现
+ * @note 证伪：把 handleRequestFrame 里那一处改回 failStream，本条的 isBroken 与
+ *       connectionClosures 判据立刻红
+ */
+TEST(Http3Connection, BodyBeforeHeadersBreaksTheConnection)
 {
     FakeTransport transport;
     EventLog      events;
@@ -407,9 +414,11 @@ TEST(Http3Connection, BodyBeforeHeadersIsRejectedAsUnexpectedFrameOnThatStreamOn
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x00, "abc")), false);
 
-    ASSERT_EQ(events.streamsReset.size(), 1u);
-    EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::FrameUnexpected);
-    EXPECT_FALSE(connection->isBroken()) << "另一条流与整条连接都还健康";
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::FrameUnexpected);
+    ASSERT_EQ(events.connectionClosures.size(), 1u);
+    EXPECT_NE(events.connectionClosures[0].second.find("头段之前"), std::string::npos);
+    EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
 }
 
 TEST(Http3Connection, ContentLengthDisagreeingWithBodyEndsTheStreamAsMessageError)
@@ -622,7 +631,12 @@ TEST(Http3Connection, ControlStreamClosedEarlyBreaksTheConnection)
     EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::ClosedCriticalStream);
 }
 
-TEST(Http3Connection, SettingsOnRequestStreamFailsOnlyThatStream)
+/**
+ * @brief 已知控制帧出现在请求流：H3_FRAME_UNEXPECTED 是连接错误（RFC 9114 §8.1）
+ * @details 帧类型本身合法、位置不合法，与「未知帧按 §9 忽略」是两回事；按连接错误收口，
+ *          不再只结这条流
+ */
+TEST(Http3Connection, ControlFrameOnRequestStreamBreaksTheConnection)
 {
     FakeTransport transport;
     EventLog      events;
@@ -630,9 +644,136 @@ TEST(Http3Connection, SettingsOnRequestStreamFailsOnlyThatStream)
 
     connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x04, "")), false);
 
-    ASSERT_EQ(events.streamsReset.size(), 1u);
-    EXPECT_EQ(events.streamsReset[0].second, Http3ErrorCode::FrameUnexpected);
-    EXPECT_FALSE(connection->isBroken());
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::FrameUnexpected);
+    EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+}
+
+/**
+ * @brief QPACK 头块解不开是连接错误：动态表已经错位，不能只结这条流
+ * @details 头块声明 Required Insert Count 为 0，却引用表后索引 0 的动态表项——绝对索引 0 不在
+ *          本段声明的表状态里。RFC 9114 §8.1 把 QPACK_DECOMPRESSION_FAILED 定为连接错误：
+ *          只结流会让错位的压缩上下文继续为同连接上的其它流服务
+ * @note 证伪：把 handleRequestFrame 里首发头块那一处改回 failStream，本条的 isBroken 判据红
+ */
+TEST(Http3Connection, QpackDecompressionFailureBreaksTheConnection)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    // 00 00 10：Required Insert Count 0、Base 0，随后是一条表后索引 0 的字段行
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, std::string("\x00\x00\x10", 3))), false);
+
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::DecompressionFailed);
+    ASSERT_EQ(events.connectionClosures.size(), 1u);
+    EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+    EXPECT_TRUE(events.headerFields.empty()) << "解不开的头块一个字段都不该交给上层";
+}
+
+/**
+ * @brief 挂起的头块在续解时解不开：同样是连接错误，不能只结这条流
+ * @details 头段先挂起（Required Insert Count 1，表里还没有项），编码器流补齐一次插入后触发续解；
+ *          这段引用的表后索引 5 换算出的绝对索引远超本段声明的表状态，续解当场失败。
+ *          RFC 9114 §8.1 把 QPACK_DECOMPRESSION_FAILED 定为连接错误
+ */
+TEST(Http3Connection, QpackResumeFailureBreaksTheConnection)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    // 对端先把解码侧动态表容量抬到 4096（3F E1 1F），不先发这条指令，插入会因容量 0 被判编码器流错误
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02) + std::string("\x3F\xE1\x1F", 3)), false);
+    // 02 00 15：Required Insert Count 1、Base 0，随后是一条表后索引 5 的字段行（换算出的绝对索引为 5）
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, std::string("\x02\x00\x15", 3))), false);
+    ASSERT_TRUE(events.headerFields.empty()) << "前提：头段还挂在解码器里等插入指令";
+    ASSERT_FALSE(connection->isBroken());
+
+    // C0 01 61：以静态表第 0 项（:authority）为名插入一个字面量值，插入数到 1 即唤醒续解
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(std::string("\xC0\x01\x61", 3)), false);
+
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::DecompressionFailed);
+    EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+}
+
+/**
+ * @brief 请求流上收到 HTTP/2 继承下来的保留帧类型：连接错误（RFC 9114 §7.2.8、§11.2.1）
+ * @details 0x02/0x06/0x08/0x09 是 MUST NOT 发送的保留值，收到按 H3_FRAME_UNEXPECTED 处置，
+ *          不得落进「未知帧忽略」那条分支
+ */
+TEST(Http3Connection, Http2ReservedFrameOnRequestStreamBreaksTheConnection)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x02, "")), false);
+
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::FrameUnexpected);
+    EXPECT_NE(connection->connectionErrorReason().find("HTTP/2"), std::string::npos) << connection->connectionErrorReason();
+    EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+}
+
+/**
+ * @brief 控制流上收到 HTTP/2 继承下来的保留帧类型：同样按连接错误收场
+ * @details 先喂一个合法 SETTINGS，让这条控制流通过「首帧必须是 SETTINGS」那道闸，
+ *          之后的 0x02 只能由保留帧类型这条判据打红；没有这条判据时它会被当成未知帧静默忽略
+ */
+TEST(Http3Connection, Http2ReservedFrameOnControlStreamBreaksTheConnection)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, "") + makeFrame(0x02, "")), false);
+
+    EXPECT_TRUE(connection->isBroken());
+    EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::FrameUnexpected);
+    EXPECT_NE(connection->connectionErrorReason().find("HTTP/2"), std::string::npos) << connection->connectionErrorReason();
+}
+
+/**
+ * @brief 请求流上的帧层解码失败：H3_FRAME_ERROR 与 H3_EXCESSIVE_LOAD 按 §8.1 都是连接错误
+ * @details 帧边界一旦不可信，同一条流上后面的字节再怎么读都是猜；只结流等于让对端用下一个流号
+ *          重复同一个形状。两格分别走 Malformed（字段越出声明长度）与 LimitExceeded（声明长度
+ *          超单帧上限）两条映射，覆盖 reader 的两类失败
+ */
+TEST(Http3Connection, FrameLayerFailuresOnRequestStreamBreakTheConnection)
+{
+    // 格一：CANCEL_PUSH 声明长度 0，必填的 Push ID 缺席 → Malformed → H3_FRAME_ERROR
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x03, "")), false);
+
+        EXPECT_TRUE(connection->isBroken());
+        EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::FrameError);
+        EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+    }
+
+    // 格二：DATA 声明 8 MiB + 1 字节载荷，一收到帧头就超单帧上限 → LimitExceeded → H3_EXCESSIVE_LOAD
+    {
+        FakeTransport transport;
+        EventLog      events;
+        auto          connection = makeConnection(transport, events);
+
+        std::string oversizedFrame;
+        oversizedFrame.push_back('\x00');
+        // 8 MiB + 1 = 0x800001 的四字节变长整数：80 80 00 01（RFC 9000 §16）
+        oversizedFrame.append("\x80\x80\x00\x01", 4);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(oversizedFrame), false);
+
+        EXPECT_TRUE(connection->isBroken());
+        EXPECT_EQ(connection->connectionErrorCode(), Http3ErrorCode::ExcessiveLoad);
+        EXPECT_TRUE(events.streamsReset.empty()) << "连接错误不该再以流错误的形式报一遍";
+    }
 }
 
 TEST(Http3Connection, BlockedFieldSectionIsDeliveredOnceTheEncoderStreamCatchesUp)
@@ -914,7 +1055,7 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
         EXPECT_NE(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos) << "本端不再解这条流，却没有在解码器流上取消它的头块";
     }
 
-    // 格二：头段还压着而本端把这条流重置了（请求流上出现 SETTINGS 帧）
+    // 格二：头段还压着而本端把这条流重置了（同一流上再压两段，第三个头段即非法序列）
     {
         FakeTransport                  transport;
         EventLog                       events;
@@ -934,7 +1075,9 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
         connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
         ASSERT_TRUE(events.headerFields.empty()) << "前提：头段还压在解码器里";
 
-        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+        // 第二段（尾段）也落进挂起队列，第三段触发「只允许头段加一个尾段」的流级重置
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
+        connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headBlock)), false);
         ASSERT_EQ(events.streamsReset.size(), 1u) << "前提：这条流被本端重置";
         connection->flush();
         EXPECT_NE(transport.bytesOf(kLocalDecoderStreamId).find(streamCancellationForStreamZero), std::string::npos) << "重置一条流之后，本端仍替它留着挂起的头块字节";

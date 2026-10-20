@@ -496,6 +496,46 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 一次喂入多个小帧：逐个解出时残余字节数按帧递减，中途压缩不许把未消费字节算丢
+     * @details 读取器只在已消费前缀跨过缓冲一半时压缩。本用例把「解出第 k 帧」与
+     *          pendingByteCount() 的每一步钉在一起，并逐帧回编核对内容：压缩点落在中间也不改变读数与帧序
+     */
+    TEST(Http3FrameReader, FeedsManySmallFramesAtOnceAndTracksTheRemainingByteCount)
+    {
+        constexpr std::size_t kFrameCount = 12;
+
+        std::vector<std::uint8_t> wireBytes;
+        wireBytes.reserve(kFrameCount * 2);
+        for (std::size_t index = 0; index < kFrameCount; ++index)
+        {
+            // 轮换 DATA（0x00）与 §7.2.8 的保留族（0x21），每帧都是「类型 1 字节 + 长度 0」的两字节小帧
+            wireBytes.push_back(static_cast<std::uint8_t>(index % 2 == 0 ? 0x00 : 0x21));
+            wireBytes.push_back(0x00);
+        }
+
+        Http3FrameReader reader(wireBytes.size());
+        ASSERT_HAS_VALUE(reader.feed(std::span<const std::uint8_t>(wireBytes)));
+        EXPECT_EQ(reader.pendingByteCount(), wireBytes.size()) << "一帧还没解，残余就是整段";
+
+        std::string reEncodedBytes;
+        for (std::size_t decodedCount = 0; decodedCount < kFrameCount; ++decodedCount)
+        {
+            const auto frame = reader.nextFrame();
+            ASSERT_HAS_VALUE(frame) << frame.error().message;
+            ASSERT_TRUE(frame->has_value()) << "第 " << decodedCount + 1 << " 帧未解出";
+            EXPECT_EQ(http3FrameTypeValue(**frame), decodedCount % 2 == 0 ? 0x00 : 0x21) << "第 " << decodedCount + 1 << " 帧类型错位";
+            appendHttp3Frame(reEncodedBytes, **frame);
+            EXPECT_EQ(reader.pendingByteCount(), (kFrameCount - decodedCount - 1) * 2) << "解出第 " << decodedCount + 1 << " 帧后残余字节数不对";
+        }
+
+        const auto drained = reader.nextFrame();
+        ASSERT_HAS_VALUE(drained) << drained.error().message;
+        EXPECT_FALSE(drained->has_value()) << "帧已全部解完，不该再出帧";
+        EXPECT_EQ(reader.pendingByteCount(), 0u);
+        EXPECT_EQ(toUnsignedBytes(reEncodedBytes), wireBytes) << "逐帧回编应与整段原文逐字节相同";
+    }
+
+    /**
      * @brief 流干净收尾时残余字节数是「最后一帧被截断」的唯一观测点（§7.1）
      */
     TEST(Http3FrameReader, ReportsTruncatedTailThroughPendingByteCount)

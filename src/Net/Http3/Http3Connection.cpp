@@ -40,6 +40,19 @@ namespace AsynGyanis::Net
             return errorKind == Http3FrameErrorKind::LimitExceeded ? Http3ErrorCode::ExcessiveLoad : Http3ErrorCode::FrameError;
         }
 
+        /**
+         * @brief 这个帧类型是不是从 HTTP/2 继承下来的保留值
+         * @details RFC 9114 §7.2.8 与 §11.2.1 把这四个值留作「HTTP/2 里用过、HTTP/3 没有对应帧」的保留类型，
+         *          发送侧 MUST NOT 使用，接收侧一律按 H3_FRAME_UNEXPECTED 判连接错误。它们不落在
+         *          0x1f * N + 0x21 的扩展保留族里，因此不能与「未知帧必须忽略」共用一条判定。
+         * @param frameTypeValue 帧类型的线上取值
+         * @return true 表示 0x02（曾用 PRIORITY）、0x06（PING）、0x08（WINDOW_UPDATE）或 0x09（CONTINUATION）
+         */
+        [[nodiscard]] constexpr bool isHttp2ReservedFrameType(const std::uint64_t frameTypeValue) noexcept
+        {
+            return frameTypeValue == 0x02 || frameTypeValue == 0x06 || frameTypeValue == 0x08 || frameTypeValue == 0x09;
+        }
+
         /// 「本端发起流上收到数据」的告警放行间隔：对端每发一帧就走到这里，一帧一条即远端可驱动的刷屏面
         constexpr std::chrono::seconds kIgnoredDataOnLocalStreamLogWindow{10};
 
@@ -505,14 +518,9 @@ namespace AsynGyanis::Net
 
         if (const auto fed = state.reader->feed(data); !fed)
         {
-            failStream(streamId, toHttp3ErrorCode(fed.error().kind), fed.error().message);
-            // 与正常出口同一条收尾，一步都不能少：这一趟喂进去的帧头字节已经消化掉却不还额度，
-            // 对端每条坏帧都在这条流的接收窗口上啃掉一块（StreamCrediter 按流号还，不是连接级的）；
-            // 而 failStream 只标记不 erase（调用链上到处握着 StreamState 引用），回收点就是下面这一句——
-            // 跳过它，这条流的记录连同读取器那块按单帧上限长出来的缓冲一起留到连接收口，
-            // 而对端可以不断开新的请求流重复这个形状
-            creditConsumedBytes(streamId, state, 0);
-            pruneAbandonedStream(streamId); // 此刻已不再用 state：擦掉之后它的引用就悬了
+            // 帧边界已经不可信，而 H3_FRAME_ERROR 与 H3_EXCESSIVE_LOAD 在 RFC 9114 §8.1 都是连接错误：
+            // 连接要关，这一趟的额度归还与流表回收都不必再做
+            breakConnection(toHttp3ErrorCode(fed.error().kind), fed.error().message);
             return;
         }
 
@@ -522,10 +530,8 @@ namespace AsynGyanis::Net
             const auto nextFrame = state.reader->nextFrame();
             if (!nextFrame)
             {
-                failStream(streamId, toHttp3ErrorCode(nextFrame.error().kind), nextFrame.error().message);
-                // 同上：本轮已经数进去的 DATA 载荷与帧头都要按同一口径还回去，被放弃的流随后回收
-                creditConsumedBytes(streamId, state, dataPayloadByteCount);
-                pruneAbandonedStream(streamId);
+                // 同 feed 失败一路：帧层错误按 §8.1 是连接错误，连接要关，额度与流表回收不再需要
+                breakConnection(toHttp3ErrorCode(nextFrame.error().kind), nextFrame.error().message);
                 return;
             }
             if (!nextFrame->has_value())
@@ -549,7 +555,7 @@ namespace AsynGyanis::Net
 
         creditConsumedBytes(streamId, state, dataPayloadByteCount);
 
-        if (isEndStream && !state.isPeerFinished && !state.isAbandoned)
+        if (isEndStream && !state.isPeerFinished && !state.isAbandoned && !m_isBroken)
         {
             state.isPeerFinished = true;
             // 头段还压在解码器等那条编码器流的指令时不收这个尾：交付点在 deliverResumedFieldSection，
@@ -566,6 +572,15 @@ namespace AsynGyanis::Net
 
     QpackStatus Http3Connection::handleRequestFrame(const std::int64_t streamId, StreamState &state, const Http3Frame &frame)
     {
+        if (const std::uint64_t frameTypeValue = http3FrameTypeValue(frame); isHttp2ReservedFrameType(frameTypeValue))
+        {
+            // RFC 9114 §7.2.8 与 §11.2.1：这四个类型不得发送，收到即 H3_FRAME_UNEXPECTED（连接错误），
+            // 不能落进下面「未知帧忽略」那条分支
+            breakConnection(Http3ErrorCode::FrameUnexpected,
+                            std::format("收到 HTTP/2 保留帧类型 0x{:x}：RFC 9114 §7.2.8 与 §11.2.1 禁止发送这些类型，收到按 H3_FRAME_UNEXPECTED 处置", frameTypeValue));
+            return {};
+        }
+
         if (std::holds_alternative<Http3HeadersFrame>(frame))
         {
             const auto &headersFrame = std::get<Http3HeadersFrame>(frame);
@@ -587,8 +602,9 @@ namespace AsynGyanis::Net
             queueQpackInstructions({}, decoderStreamBytes);
             if (!decoded)
             {
-                // 头块解不开属对端编码器的错：按 §4.5 以流级处置，不牵连整条连接
-                failStream(streamId, toHttp3ErrorCode(decoded.error().kind), decoded.error().message);
+                // QPACK_DECOMPRESSION_FAILED 是连接错误（RFC 9114 §8.1）：动态表已经错位，这条连接上
+                // 后续头块再没有可依据的压缩上下文，降格成流级处置只会让错位状态继续服务
+                breakConnection(toHttp3ErrorCode(decoded.error().kind), decoded.error().message);
                 return {};
             }
             if (!state.isHeaderSectionSeen)
@@ -613,7 +629,9 @@ namespace AsynGyanis::Net
         {
             if (!state.isHeaderSectionSeen)
             {
-                failStream(streamId, Http3ErrorCode::FrameUnexpected, "请求正文出现在头段之前（RFC 9114 §7.2.1）");
+                // H3_FRAME_UNEXPECTED 在 RFC 9114 §8.1 是连接错误：帧位置本身已经失序，只结一条流
+                // 会让同连接上其它流继续踩在同一份错乱的帧序上
+                breakConnection(Http3ErrorCode::FrameUnexpected, "请求正文出现在头段之前（RFC 9114 §7.2.1）");
                 return {};
             }
             if (state.isTrailersSeen)
@@ -641,13 +659,23 @@ namespace AsynGyanis::Net
         }
 
         // 剩下的都是「出现在错误位置的已知帧」：SETTINGS/PUSH_PROMISE/GOAWAY/MAX_PUSH_ID/CANCEL_PUSH
-        // 都只许出现在控制流上（RFC 9114 §7.2.4/§7.2.5/§7.2.6/§7.2.7/§7.2.3）
-        failStream(streamId, Http3ErrorCode::FrameUnexpected, std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在请求流上");
+        // 都只许出现在控制流上（RFC 9114 §7.2.4/§7.2.5/§7.2.6/§7.2.7/§7.2.3）；
+        // H3_FRAME_UNEXPECTED 按 §8.1 是连接错误，不能只结这条流
+        breakConnection(Http3ErrorCode::FrameUnexpected, std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在请求流上");
         return {};
     }
 
     QpackStatus Http3Connection::handleControlFrame(const Http3Frame &frame)
     {
+        if (const std::uint64_t frameTypeValue = http3FrameTypeValue(frame); isHttp2ReservedFrameType(frameTypeValue))
+        {
+            // 与请求流同一判据：这四个值 MUST NOT 发送，收到按 H3_FRAME_UNEXPECTED 处置（RFC 9114 §7.2.8、§11.2.1），
+            // 排在「未知帧忽略」之前
+            breakConnection(Http3ErrorCode::FrameUnexpected,
+                            std::format("收到 HTTP/2 保留帧类型 0x{:x}：RFC 9114 §7.2.8 与 §11.2.1 禁止发送这些类型，收到按 H3_FRAME_UNEXPECTED 处置", frameTypeValue));
+            return {};
+        }
+
         if (const auto *settingsFrame = std::get_if<Http3SettingsFrame>(&frame); settingsFrame != nullptr)
         {
             if (m_isPeerSettingsReceived)
@@ -795,6 +823,11 @@ namespace AsynGyanis::Net
 
     void Http3Connection::deliverResumedFieldSection(const std::int64_t streamId)
     {
+        if (m_isBroken)
+        {
+            // 同一批被唤醒的流里，前一条已经把连接判死（动态表错位）：余下的不再续解，也不补收尾
+            return;
+        }
         const auto entry = m_streams.find(streamId);
         if (entry == m_streams.end() || entry->second.isAbandoned)
         {
@@ -813,11 +846,9 @@ namespace AsynGyanis::Net
             queueQpackInstructions({}, decoderStreamBytes);
             if (!resumed)
             {
-                failStream(streamId, toHttp3ErrorCode(resumed.error().kind), resumed.error().message);
-                // failStream 只标记不 erase，而这一条通路本来就没有函数尾的回收点：不在此处收，
-                // 这条被放弃的流就再没人摘（对端可以只在编码器流上发一条指令把挂起的段判死，
-                // 每来一次留一份 StreamState 到连接收口）
-                pruneAbandonedStream(streamId);
+                // QPACK_DECOMPRESSION_FAILED 是连接错误（RFC 9114 §8.1）：动态表已错位，
+                // 这条连接不能再按同一个压缩上下文服务，不能降格成只结这条流
+                breakConnection(toHttp3ErrorCode(resumed.error().kind), resumed.error().message);
                 return;
             }
             if (*resumed == QpackFieldSectionDecodeStatus::Blocked)
@@ -1194,6 +1225,9 @@ namespace AsynGyanis::Net
         // §5.2 的 SHOULD：通告之后到达的新流要显式取消，让对端立刻知道这条流不会被处理，而不是
         // 等到连接关闭。走 failStream 是为了让会话在同一处收到「该流已放弃」并回收它的记账
         failStream(streamId, Http3ErrorCode::RequestRejected, "GOAWAY 已通告，新请求不再受理");
+        // failStream 只标记不擦：此后这条流再到的字节都走 isAbandoned 分支直接返回，不补这一句，
+        // GOAWAY 之后每条被拒的新流都会永久留在流表里
+        pruneAbandonedStream(streamId);
     }
 
     void Http3Connection::noteLocallyFinishedStream(const std::int64_t streamId)
