@@ -827,7 +827,9 @@ namespace AsynGyanis::Base
             logger.log(LogLevel::Info, "async context line");
         }
         logger.flush();
-        ASSERT_TRUE(TestSupport::waitForCondition([&lines] { return lines->contains("trace_id=abc123"); }, std::chrono::seconds(5))) << lines->snapshot().front();
+        const std::vector<std::string> recordedLines = lines->snapshot();
+        ASSERT_TRUE(TestSupport::waitForCondition([&lines] { return lines->contains("trace_id=abc123"); }, std::chrono::seconds(5)))
+                << (recordedLines.empty() ? std::string("没有记录到任何日志行") : recordedLines.front());
     }
 
     // ============================================================================
