@@ -1801,6 +1801,9 @@ namespace AsynGyanis::Database
             {
                 return false;
             }
+            // applyStatementTimeLimit 内部的 SET 会被 noteSessionScopedStatement 记成「借用者改过」；
+            // 这条语句本来就是归还路径自己发的，重新置真会让每次归还都多一趟往返
+            m_isStatementTimeLimitChanged = false;
         }
 #endif
         return true;
