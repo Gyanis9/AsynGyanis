@@ -574,10 +574,12 @@ namespace AsynGyanis::Base
     }
 
     /**
-     * @brief 稳定上下文的 JSON 行不比无上下文的行多付堆
+     * @brief 稳定上下文的 JSON 行不比无上下文的行多付可省的堆
      * @details 上下文键集合跨行不变时，键名缓冲与 JSON 节点都该复用：每行只为同名键更新取值，
-     *          既不重新生成键名字符串，也不把键摘掉再插回去。对照形状是同一条事件在没有上下文
-     *          时的读数，两者之差只应剩测量噪声；差出成百上千次说明仍在逐行删建。
+     *          既不重新生成键名字符串，也不把键摘掉再插回去。长键的 JSON 键名每行仍要由
+     *          nlohmann 现造一份临时串（超过小串内联，必然取一块堆），这一块与复用无关；
+     *          把它从带上下文的读数里扣掉之后，两条读数只差测量窗口第一行补齐键名槽位的几次，
+     *          差出成百上千次说明仍在逐行删建。
      */
     TEST(LogHotPathAllocations, JsonContextFieldsReuseTheirSlots)
     {
@@ -598,10 +600,11 @@ namespace AsynGyanis::Base
         resetAllocationHistogram();
         const AllocationProfile withoutContext = measurePerOperation(formatOnce);
 
-        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}});
+        // 长键超过小串内联的 15 字符，键名缓冲不复用就会每行重新为它取一块堆
+        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}, {"a-context-key-longer-than-sso", "v"}});
         formatOnce();
-        // 自检：先证明上下文确实落进了这一行，否则下面的读数量的不是带上下文的形状
-        EXPECT_NE(out.find("trace_id"), std::string::npos) << "上下文没落进日志行，读数对应的形状不对";
+        // 自检：先证明长键确实落进了这一行，否则下面的读数量的不是键名缓冲复用的形状
+        EXPECT_NE(out.find("a-context-key-longer-than-sso"), std::string::npos) << "长上下文键没落进日志行，读数对应的形状不对";
         resetAllocationHistogram();
         const AllocationProfile withContext = measurePerOperation(formatOnce);
 
@@ -612,8 +615,11 @@ namespace AsynGyanis::Base
 
         EXPECT_GT(withContext.resultSum, withoutContext.resultSum) << "带上下文的行没有变长：上下文没写进去，两条读数不是同一形状的对照";
 #ifdef NDEBUG
-        EXPECT_LE(withContext.totalAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U)
-                << "稳定上下文的 JSON 行仍在逐行删建键节点：键名缓冲与键集合应跨行复用";
+        // 带上下文每行固定多付一次：长键的 JSON 键名超过 SSO，nlohmann 的按键查找要现造临时串。
+        // 扣掉这一块后，剩余差值只允许是首行补齐键名槽位的几次；仍在逐行重建键名缓冲时会多出
+        // 每行一次，远超本上限
+        const std::uint64_t reusableAllocations = withContext.totalAllocations - kMeasurementIterations;
+        EXPECT_LE(reusableAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U) << "稳定上下文的 JSON 行仍在逐行重建键名：键名缓冲应跨行复用";
 #endif
     }
 } // namespace AsynGyanis::Base
