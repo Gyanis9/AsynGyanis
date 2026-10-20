@@ -1862,15 +1862,19 @@ namespace AsynGyanis::Base
             }
         };
 
+        // 范围 for 的 operator++ 不带 error_code，走的是会抛的那一份重载：目录读到一半遇上
+        // 不可读的子目录时，filesystem_error 会直接穿过这里逃到调用方。显式 increment(error_code)
+        // 把构造与每一次递增的失败都留在 errorCode 里：构造失败时循环条件一开始就不成立，
+        // 递增失败则让下一轮条件不成立，两种都交给循环之后那一次判定。
+        // 属性查询失败则必须就地跳出：increment(error_code) 成功时会把 errorCode 清掉，
+        // 那一处失败若跟着递增走一圈就没人报了
         if (recursive)
         {
-            for (const auto &entry: std::filesystem::recursive_directory_iterator(directory, errorCode))
+            std::filesystem::recursive_directory_iterator       iterator(directory, errorCode);
+            const std::filesystem::recursive_directory_iterator end;
+            for (; !errorCode && iterator != end; iterator.increment(errorCode))
             {
-                if (errorCode)
-                {
-                    break;
-                }
-                collect(entry);
+                collect(*iterator);
                 if (errorCode)
                 {
                     break;
@@ -1878,13 +1882,11 @@ namespace AsynGyanis::Base
             }
         } else
         {
-            for (const auto &entry: std::filesystem::directory_iterator(directory, errorCode))
+            std::filesystem::directory_iterator       iterator(directory, errorCode);
+            const std::filesystem::directory_iterator end;
+            for (; !errorCode && iterator != end; iterator.increment(errorCode))
             {
-                if (errorCode)
-                {
-                    break;
-                }
-                collect(entry);
+                collect(*iterator);
                 if (errorCode)
                 {
                     break;
@@ -1892,8 +1894,8 @@ namespace AsynGyanis::Base
             }
         }
 
-        // 循环之外的这一次判定不能省：迭代器在最后一个条目之后才出错时，循环体内的检查
-        // 永远不会再跑到，错误就这么留在 errorCode 里没人认领
+        // 循环之外的这一次判定不能省：increment 在最后一个条目之后才失败时，循环只会看到一个
+        // 已到终点的迭代器，错误只留在 errorCode 里；不在这里认领，这份少了几项的清单就会被当成全量
         if (errorCode)
         {
             return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："
