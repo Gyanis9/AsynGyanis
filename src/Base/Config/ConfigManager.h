@@ -389,11 +389,13 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string environmentOverridePrefix() const;
 
         /**
-         * @brief 当前快照里键仍留在字典中的环境变量覆盖条目数。
+         * @brief 最近一次配置提交时合入、且当时仍留在快照里的环境变量覆盖条目数。
          * @details 计的是合入后仍留在快照里的应用条目，不是互异的键：折成同一键的多个变量
          *          各算一条；后写的一条也可能把先写的那条淘汰出快照。合入前的应用条数才是
-         *          「做过几次覆盖」，本读数只数快照里还留着的那些。
-         * @return std::size_t 合入后键仍留在快照里的应用条目数；折成同一键的多个变量各算一条
+         *          「做过几次覆盖」，本读数只数那次提交后还留着的那些。
+         * @note 之后的 setValue 不会重算本读数：一次写入若按定形规则淘汰了某个覆盖键，
+         *       读数仍停留在提交时的值，可能高于当时快照里实际留存的覆盖条目。
+         * @return std::size_t 最近一次提交时仍留在快照里的应用条目数；折成同一键的多个变量各算一条
          */
         [[nodiscard]] std::size_t environmentOverrideCount() const;
 
