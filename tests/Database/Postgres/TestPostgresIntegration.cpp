@@ -164,6 +164,9 @@ namespace AsynGyanis::Database
         /// 种子幂等用例的表：由迁移建出来，表名独立以免与并行用例共用
         constexpr std::string_view kSeedTableName = "Asyn_Pg_Seed";
 
+        /// 大小写补列用例的表：建表时用引号保住了大写列名，补列要按精确大小写判断
+        constexpr std::string_view kCaseColumnTableName = "Asyn_Pg_CaseColumns";
+
         /// 生成键回读用例的两张表：一张主键由 identity 生成，一张主键由调用方给出
         constexpr std::string_view kGeneratedKeyTableName = "Asyn_Pg_GeneratedKey";
         constexpr std::string_view kExplicitKeyTableName  = "Asyn_Pg_ExplicitKey";
@@ -307,6 +310,15 @@ namespace AsynGyanis::Database
         {
             std::int64_t id;   ///< 主键（种子行的幂等键）
             std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 大小写补列用例的行型：表里已有 "NAME"，schema 要的是 name，两者在 PostgreSQL 是不同列
+         */
+        struct IntegrationCaseColumnRow
+        {
+            std::int64_t               id;   ///< 主键（表与 schema 都叫小写 id）
+            std::optional<std::string> name; ///< 名称列（新增列必须可空，旧行没有值可填）
         };
 
         /**
@@ -509,6 +521,17 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationSeedRow::id, "id"),
                 Column(&IntegrationSeedRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationCaseColumnRow>
+    {
+        static constexpr std::string_view kTableName = kCaseColumnTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationCaseColumnRow::id, "id"),
+                Column(&IntegrationCaseColumnRow::name, "name"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -1232,6 +1255,42 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationMigratedRow>(*pool, true, &errorText)) << errorText;
         EXPECT_FALSE(SchemaMigrator::tableExists<IntegrationMigratedRow>(*pool, &errorText));
         EXPECT_TRUE(errorText.empty()) << errorText;
+    }
+
+    /**
+     * @brief PostgreSQL 的 "NAME" 与 name 是两列：补列必须按精确大小写判断
+     *
+     * @details 表由引号保住大写列名，结构体要的是小写 name。按小写折叠比对会把 name 误判为
+     *          已存在，补列一次都不发生；这里断言恰好补一列、二跑幂等，并按 TableSchema
+     *          读一次——补列没发生时 SELECT 会报列不存在。
+     */
+    TEST_F(PostgresIntegrationTest, AddMissingColumnsKeepsQuotedCaseDistinctOnPostgres)
+    {
+        m_preparedTableNames.emplace_back(kCaseColumnTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationCaseColumnRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_NE(connection->execute("CREATE TABLE " + quote(kCaseColumnTableName) + " (id INTEGER PRIMARY KEY, \"NAME\" TEXT)"), nullptr) << connection->lastError();
+        }
+
+        std::size_t addedCount = 0;
+        ASSERT_TRUE(SchemaMigrator::addMissingColumns<IntegrationCaseColumnRow>(*pool, &addedCount, &errorText)) << errorText;
+        EXPECT_EQ(addedCount, 1U) << "小写 name 被误判为已存在（\"NAME\" 与 name 在 PostgreSQL 是不同列）";
+
+        // 第二次必须幂等
+        ASSERT_TRUE(SchemaMigrator::addMissingColumns<IntegrationCaseColumnRow>(*pool, &addedCount, &errorText)) << errorText;
+        EXPECT_EQ(addedCount, 0U);
+
+        // 新列可读：SELECT 走 TableSchema 的 id/name，若补列没发生这里会报列不存在
+        OrmQuery<IntegrationCaseColumnRow> query(*pool);
+        EXPECT_NO_THROW(static_cast<void>(query.toList()));
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationCaseColumnRow>(*makePool(1), true, &errorText)) << errorText;
     }
 
     /**
