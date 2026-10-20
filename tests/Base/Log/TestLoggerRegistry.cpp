@@ -7,6 +7,7 @@
 #include "Base/Log/Logger.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
+#include "AllocationProbe.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -387,6 +388,35 @@ namespace AsynGyanis::Base
         const std::vector<std::string> expected{"alpha", "beta", "gamma", "root"};
 
         EXPECT_EQ(sortedNames(LoggerRegistry::instance().getLoggerNames()), expected);
+    }
+
+    /**
+     * @brief root 登记失败时不得把缓存指针先发出去
+     * @details 先量一次干净创建需要几次分配，再让最后一次（表节点/桶数组）失败：
+     *          旧实现会在此之前就把裸指针写进缓存，栈展开后 getRootLogger() 读到悬垂对象。
+     *          Release 下悬垂读未必崩，Debug 的 ASan 会把这一格变成确定失败。
+     */
+    TEST_F(LoggerRegistryTest, FailedRootCreationDoesNotPublishADanglingCache)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        LoggerRegistry::instance().clear();
+        LoggerRegistry::instance().purgeRetiredLoggers();
+
+        TestSupport::beginAllocationTrace();
+        static_cast<void>(LoggerRegistry::instance().getLogger("root"));
+        const TestSupport::AllocationTraceSnapshot trace = TestSupport::endAllocationTrace();
+        ASSERT_GT(trace.count, 0U) << "创建 root 没有记录到任何分配，注入目标无从确定";
+
+        LoggerRegistry::instance().clear();
+        LoggerRegistry::instance().purgeRetiredLoggers();
+
+        {
+            const auto guard = TestSupport::AllocationFailureGuard(trace.count);
+            EXPECT_THROW(static_cast<void>(LoggerRegistry::instance().getLogger("root")), std::bad_alloc);
+        }
+
+        // 新实现里这次创建会重新建一份 root；旧实现的缓存若仍指着已销毁的对象，ASan 在这里报 UAF
+        EXPECT_NO_THROW(static_cast<void>(LoggerRegistry::instance().getRootLogger().getLevel()));
     }
 
     TEST_F(LoggerRegistryTest, ClearRemovesEveryLogger)
