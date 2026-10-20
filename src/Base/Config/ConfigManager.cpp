@@ -303,10 +303,19 @@ namespace AsynGyanis::Base
         std::vector<std::filesystem::path> loadedPaths;
         for (const auto &filePath: filePaths)
         {
-            if (!std::filesystem::exists(filePath))
+            // 目录扫描那条路已全程走 error_code 重载，这里是文件清单路径上最后一处会抛
+            // filesystem_error 的查询：路径查不了时同样落进结果清单，而不把异常交给调用方
+            std::error_code existsError;
+            if (const bool fileExists = std::filesystem::exists(filePath, existsError); existsError || !fileExists)
             {
+                if (existsError)
+                {
+                    result.errors.push_back("无法检查文件是否存在：" + pathText(filePath) + "（" + existsError.message() + "）");
+                } else
+                {
+                    result.errors.push_back("文件不存在：" + pathText(filePath));
+                }
                 result.failedFiles.push_back(pathText(filePath));
-                result.errors.push_back("文件不存在：" + pathText(filePath));
                 continue;
             }
             if (!isConfigFile(pathText(filePath)))
