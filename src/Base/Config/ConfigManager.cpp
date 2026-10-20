@@ -2010,13 +2010,24 @@ namespace AsynGyanis::Base
                 case ConfigValueType::array:
                 {
                     // 结构与列表只能按 JSON 收：`ASYN_SERVER__HOSTS=["a","b"]` 这种写法没有别的解释法
+                    ConfigValue parsed;
                     try
                     {
-                        return ConfigValue::parse(std::string(text));
+                        parsed = ConfigValue::parse(std::string(text));
                     } catch (const std::exception &)
                     {
                         return reject("对象与数组项的值必须是合法 JSON");
                     }
+                    // 合法 JSON 不等于形态对得上：`42` 也解析得动，但把数组顶成数字等于偷换类型
+                    if (type == ConfigValueType::object && !parsed.is_object())
+                    {
+                        return reject("对象项的值必须是合法 JSON 对象");
+                    }
+                    if (type == ConfigValueType::array && !parsed.is_array())
+                    {
+                        return reject("数组项的值必须是合法 JSON 数组");
+                    }
+                    return parsed;
                 }
                 default:
                     return ConfigValue(std::string(text));
@@ -2127,10 +2138,19 @@ namespace AsynGyanis::Base
             return 0;
         }
 
-        for (const auto &override: applied)
+        // 排序让同一批环境变量内部的冲突有确定结果：键按字典序后写的那条胜出，不再取决于
+        // 部署环境给出的变量枚举顺序。逐条经 mergeFileValues 并进快照，与文件合并共用同一套
+        // 「标量/表互斥」的定形规则，覆盖不能绕过它直接写表
+        std::ranges::sort(applied, {}, &Applied::key);
+        for (auto &entry: applied)
         {
-            values[override.key] = std::move(override.value);
-            LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", override.key);
+            LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", entry.key);
+            ConfigKeyValueMap singleEntrance;
+            singleEntrance.emplace(std::move(entry.key), std::move(entry.value));
+            for (const std::string &conflict: mergeFileValues(values, std::move(singleEntrance), "环境变量覆盖"))
+            {
+                LOG_ERROR(conflict);
+            }
         }
         return applied.size();
     }

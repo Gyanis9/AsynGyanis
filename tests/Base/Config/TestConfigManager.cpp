@@ -3196,4 +3196,66 @@ port: 9090
         ASSERT_EQ(hosts.size(), 2U);
         EXPECT_EQ(hosts[0].get<std::string>(), "a");
     }
+
+    /**
+     * @brief 环境变量把一段表写成标量时，旧子键必须让位
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideResolvesScalarTableConflicts)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable serverOverride("ASYN_TESTCFG_SERVER", "5");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getText("server"), "5");
+        EXPECT_FALSE(configuration().has("server.port")) << "标量与环境变量并存，段落形状被破坏";
+        EXPECT_EQ(configuration().getSection("server").size(), 0U);
+    }
+
+    /**
+     * @brief 环境变量在旧标量下面写子键时，旧标量必须让位
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideReplacesScalarWithTable)
+    {
+        writeFile("cfg.yaml", "server: 5\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "8080");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 该键在文件里没有对应值也没有 schema，按规则落成字符串；本条只判形状，不判类型
+        EXPECT_EQ(configuration().getText("server.port"), "8080");
+        EXPECT_FALSE(configuration().has("server")) << "标量与子键并存";
+    }
+
+    /**
+     * @brief 同一批环境变量内部冲突时按 key 排序后后者胜出，结果确定
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideInternalConflictsAreDeterministic)
+    {
+        writeFile("cfg.yaml", "kept: true\n");
+        const TestSupport::ScopedEnvironmentVariable serverOverride("ASYN_TESTCFG_SERVER", "5");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "8080");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 两条覆盖都没有文件值/schema 可依，按字符串交出；排序后 server.port 后写胜出
+        EXPECT_EQ(configuration().getText("server.port"), "8080");
+        EXPECT_FALSE(configuration().has("server"));
+    }
+
+    /**
+     * @brief 结构化覆盖的值形态必须与目标一致，数组不能被数字顶掉
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideRejectsMismatchedStructuredValue)
+    {
+        writeFile("cfg.yaml", "server:\n  hosts: [\"first\"]\n");
+        const TestSupport::ScopedEnvironmentVariable hostsOverride("ASYN_TESTCFG_SERVER__HOSTS", "42");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        const ConfigValue hosts = configuration().get("server.hosts");
+        ASSERT_TRUE(hosts.is_array());
+        EXPECT_EQ(hosts[0].get<std::string>(), "first") << "形态不符的覆盖不该落地";
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
+    }
 } // namespace AsynGyanis::Base
