@@ -283,7 +283,8 @@ namespace AsynGyanis::Base
     TEST(LogHotPathAllocations, SinklessLoggerDoesNotAllocate)
     {
         ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
-        Logger     logger("hot_path_sinkless");
+        Logger logger("hot_path_sinkless");
+        ASSERT_TRUE(logger.shouldLog(LogLevel::Info));
         const auto logOnce = [&logger]
         {
             logger.log(LogLevel::Info, kMessageText);
@@ -295,6 +296,30 @@ namespace AsynGyanis::Base
         EXPECT_EQ(profile.resultSum, kMeasurementIterations);
 #ifdef NDEBUG
         EXPECT_EQ(profile.totalAllocations, 0U) << "无 Sink 的日志仍在构造消息体或事件";
+#endif
+    }
+
+    /**
+     * @brief 无 Sink 时格式化入口也不为没有读者的结果取堆
+     * @details logFormat 的等级过滤与格式化模板都要在零 Sink 时提前返回；
+     *          本形状只测格式化入口，不经过 Sink。
+     */
+    TEST(LogHotPathAllocations, SinklessLoggerFormatDoesNotAllocate)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        Logger logger("hot_path_sinkless_format");
+        ASSERT_TRUE(logger.shouldLog(LogLevel::Info));
+        const auto formatOnce = [&logger]
+        {
+            logger.logFormat(LogLevel::Info, SourceLocation{}, "{}", kMessageText);
+            return 1U;
+        };
+        formatOnce();
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(formatOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "无 Sink 的 logFormat 仍在做格式化或构造事件";
 #endif
     }
 

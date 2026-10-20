@@ -85,8 +85,8 @@ namespace AsynGyanis::Base
                 static_cast<void>(m_index.emplace(m_touchOrder.front().key, m_touchOrder.begin()));
             }
 
-            // 新键与老键走同一次判定：LogThrottle 的首次 acquire 必然放行（窗口从这一刻立起来），
-            // 而 interval 非正数那条「不压」的口径也不必在这里再复述一遍
+            // 新键与老键走同一次判定：LogThrottle 的首次 acquire 必然放行（窗口从这一刻立起来）；
+            // 非正间隔已在入口放行，能走到这里建表的都是正间隔
             LogThrottle &throttle = m_touchOrder.front().throttle;
             if (!throttle.acquire())
             {

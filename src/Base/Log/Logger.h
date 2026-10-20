@@ -261,7 +261,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 快照中的 Sink 数，只服务「零 Sink 提前返回」这一条快速判断
          * @details 写侧在 m_sinksWriteMutex 内随快照之后发布；读侧 relaxed 取值，
-         *          与并发登记 Sink 的线程相比哪条日志被提前放掉取决于时序。
+         *          因此并发 addSink 或 clearSinks 的窗口里，读到旧值的日志可能被提前放掉，
+         *          具体哪条取决于时序。
          */
         std::atomic<std::size_t> m_sinkCount{0U};
 
