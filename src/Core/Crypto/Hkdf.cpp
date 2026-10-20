@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <format>
 #include <string>
@@ -22,11 +23,28 @@ namespace AsynGyanis::Core::Hkdf
         /// 零长输入也要给参数一个有效地址（octet string 不接受空指针）；长度仍按原始视图上报，不参与计算
         std::uint8_t g_emptyOctet = 0;
 
-        /// 取进程级共享的 HKDF 提供方算法：EVP_KDF 只读，上下文由 EVP_KDF_CTX_new 自持引用
+        /// 取进程级共享的 HKDF 提供方算法：成功才缓存，取不到留给下一次重试；EVP_KDF 只读，上下文由 EVP_KDF_CTX_new 自持引用
         [[nodiscard]] EVP_KDF *sharedHkdfAlgorithm() noexcept
         {
-            static EVP_KDF *const kdf = EVP_KDF_fetch(nullptr, OSSL_KDF_NAME_HKDF, nullptr);
-            return kdf;
+            // 失败不缓存：提供方可能下一次才载入，内存压力也可能恢复；两条线程同时首取时
+            // 只有一个装上，另一份引用还回去
+            static std::atomic<EVP_KDF *> cached{nullptr};
+            if (EVP_KDF *const existing = cached.load(std::memory_order_acquire); existing != nullptr)
+            {
+                return existing;
+            }
+            EVP_KDF *const fetched = EVP_KDF_fetch(nullptr, OSSL_KDF_NAME_HKDF, nullptr);
+            if (fetched == nullptr)
+            {
+                return nullptr;
+            }
+            EVP_KDF *expected = nullptr;
+            if (!cached.compare_exchange_strong(expected, fetched, std::memory_order_release, std::memory_order_relaxed))
+            {
+                EVP_KDF_free(fetched);
+                return expected;
+            }
+            return fetched;
         }
 
         /**

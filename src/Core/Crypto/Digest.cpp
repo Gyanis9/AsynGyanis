@@ -7,6 +7,7 @@
 #include <openssl/macros.h>
 #include <openssl/params.h>
 
+#include <atomic>
 #include <string>
 
 namespace AsynGyanis::Core::Digest
@@ -43,14 +44,32 @@ namespace AsynGyanis::Core::Digest
 
         /**
          * @brief 取进程级共享的 HMAC 算法句柄
-         * @details 每次调用都 fetch 一次等于把提供方查找放进摘要热路径；
-         *          上下文由 EVP_MAC_CTX_new 自持引用，这个静态句柄只需活到进程退出
+         * @details 成功取到的句柄缓存在原子量里，后续调用直接复用，避免把提供方查找放进摘要热路径；
+         *          取不到时不缓存，留给下一次调用重试。上下文由 EVP_MAC_CTX_new 自持引用，
+         *          这个静态句柄只需活到进程退出
          * @return EVP_MAC * 共享的算法句柄；取不到时为 nullptr
          */
         [[nodiscard]] EVP_MAC *sharedHmacAlgorithm() noexcept
         {
-            static EVP_MAC *const algorithm = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
-            return algorithm;
+            // 失败不缓存：提供方可能下一次才载入，内存压力也可能恢复；两条线程同时首取时
+            // 只有一个装上，另一份引用还回去
+            static std::atomic<EVP_MAC *> cached{nullptr};
+            if (EVP_MAC *const existing = cached.load(std::memory_order_acquire); existing != nullptr)
+            {
+                return existing;
+            }
+            EVP_MAC *const fetched = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
+            if (fetched == nullptr)
+            {
+                return nullptr;
+            }
+            EVP_MAC *expected = nullptr;
+            if (!cached.compare_exchange_strong(expected, fetched, std::memory_order_release, std::memory_order_relaxed))
+            {
+                EVP_MAC_free(fetched);
+                return expected;
+            }
+            return fetched;
         }
 
         /**
