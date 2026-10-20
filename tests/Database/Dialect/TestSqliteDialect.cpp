@@ -1,22 +1,22 @@
 // SQLite 方言翻译单元测试（不需要数据库连接）。
 // 只验证「查询树 → 参数化 SQL」的纯文本翻译结果与参数收集顺序，不打开任何数据库文件，也不经过任何驱动。
 // 覆盖场景：
-// - 标识符引用与内部引号转义
-// - 占位符文本、方言类型、LIMIT/OFFSET 支持能力
-// - SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名 / 弱形式判定边界：中文与空格名与纯数字与非法字节都落引用桶）
-// - 空字段名与空表名在翻译阶段就被拒绝（残缺 SQL 不该留给服务端去报）
-// - FROM 与表别名
-// - WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
-// - ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
-// - JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件；被连接的表名与主表同一条引用规则
+// 标识符引用与内部引号转义
+// 占位符文本、方言类型、LIMIT/OFFSET 支持能力
+// SELECT 列展开（通配符 / 显式列 / 表达式列 / 限定名 / 含空段的点号文本 / 越过短字符串缓冲的长名 / 含引号列名 / 弱形式判定边界：中文与空格名与纯数字与非法字节都落引用桶）
+// 空字段名与空表名在翻译阶段就被拒绝（残缺 SQL 不该留给服务端去报）
+// FROM 与表别名
+// WHERE：单条件、AND/OR/NOT 递归、IS NULL / IS NOT NULL、IN / NOT IN、列-列比较
+// ORDER BY、GROUP BY、HAVING、LIMIT / OFFSET
+// JOIN：INNER/LEFT/RIGHT/CROSS 与 ON 条件；被连接的表名与主表同一条引用规则
 //   （「schema.table」逐段引用，其余字节由引用字符兜住；表名为空或点号留空在翻译期被拒）
-// - 参数顺序、数量、类型与 uint64 降级
-// - 参数上限：判定按实际产出的占位符数（SQLite 内联的分页不占额度），写方向同样受上限保护
-// - 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
+// 参数顺序、数量、类型与 uint64 降级
+// 参数上限：判定按实际产出的占位符数（SQLite 内联的分页不占额度），写方向同样受上限保护
+// 写语句：INSERT / UPDATE / DELETE / 多行 INSERT 的文本、参数顺序与个数校验
 //   （DELETE 带 LIMIT / OFFSET 在翻译期就被拒：本方言不输出它，静默放行等于把有界删除做成全表删除）
-// - 事务控制语句文本与单条语句的参数上限
-// - DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
-// - DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
+// 事务控制语句文本与单条语句的参数上限
+// DDL 支撑：逻辑列类型到 SQLite 存储类的映射、表存在性元数据语句（表名走绑定）
+// DialectRegistry：SQLite 可取得，MySQL 另有方言且是不同实例（供 SQLite 测试确认两者不会互相顶替），
 //   Redis 抛出中文异常
 
 #include "Database/Dialect/ColumnType.h"

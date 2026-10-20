@@ -29,7 +29,7 @@ namespace AsynGyanis::Database
      * @brief RAII 连接包装器
      *
      * @details 析构时自动归还连接池，手工调用 release() 可提前归还。公共路径（析构与 release）
-     *          应尽可能短，归还后的过期检查与健康检查这类重活留给后台线程，不健康的连接被丢弃。
+     *          只做会话复位与状态判定；断开与周期驱逐留给锁外与后台线程，不健康的连接被丢弃。
      */
     class ASYN_DATABASE_API PooledConnection
     {

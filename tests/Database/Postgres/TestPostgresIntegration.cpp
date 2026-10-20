@@ -3,24 +3,24 @@
  * @brief PostgreSQL 真实服务端集成测试 —— 连接、参数化执行、ORM 端到端、事务与边界
  * @details 与同目录的 TestPostgresConnection.cpp（不依赖服务端的失败语义）互补：本文件只在
  *          真的能连上一个 PostgreSQL 服务端时才跑断言，覆盖只有真实服务端才能验证的部分——
- *          - 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
- *          - PQexecParams 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
+ * 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
+ * PQexecParams 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
  *            NULL 与空串可区分 / 长文本）、含单引号与 "--" 的文本原样回读、
  *            参数个数与语句里的 $n 不一致时由服务端拒绝；
- *          - ORM 端到端（SQL 由 PostgreSql 方言生成）：SchemaMigrator 建表 → insert →
+ * ORM 端到端（SQL 由 PostgreSql 方言生成）：SchemaMigrator 建表 → insert →
  *            toList（WHERE + ORDER BY + LIMIT + OFFSET）→ count → tableExists → dropTable，
  *            以及 NUMERIC(20) 列被服务端接受、取值以精确十进制文本交回；
- *          - Transaction 的提交可见、回滚不可见、析构自动回滚；
- *          - 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
+ * Transaction 的提交可见、回滚不可见、析构自动回滚；
+ * 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
  *            NULL 与长文本、流式档两条哨兵，以及「在途流封锁连接」与析构收干。
  *
  * 口令绝不进仓库（本文件的第一条硬规矩）
  * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
- * - ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
- * - ASYN_POSTGRES_TEST_PORT      端口，默认 5432
- * - ASYN_POSTGRES_TEST_USER      用户名，默认 postgres
- * - ASYN_POSTGRES_TEST_PASSWORD  口令，没有默认值；未设置时全部用例 GTEST_SKIP（不是失败）
- * - ASYN_POSTGRES_TEST_DATABASE  库名，默认 postgres（初始化集群时必然存在的维护库）
+ * ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
+ * ASYN_POSTGRES_TEST_PORT      端口，默认 5432
+ * ASYN_POSTGRES_TEST_USER      用户名，默认 postgres
+ * ASYN_POSTGRES_TEST_PASSWORD  口令，没有默认值；未设置时全部用例 GTEST_SKIP（不是失败）
+ * ASYN_POSTGRES_TEST_DATABASE  库名，默认 postgres（初始化集群时必然存在的维护库）
  * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 PostgreSQL 驱动的桩
  * 构建也走跳过路径（见 kPostgresDriverCompiled）。
  *
@@ -32,11 +32,11 @@
  * 用例之间不共用表名，因此并行运行（ctest -j）也不会互相干扰。
  *
  * 与 MySQL 集成测试的两处有意差异
- * - 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
+ * 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
  *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），把 0 字节写进 TEXT 列
  *   不是驱动能做到的事。任意字节走 BYTEA：绑定层自己编成 `\x…`（见 toPostgresByteaText），
  *   读侧解回 BinaryBytes（见 parsePostgresByteaText），因此这一家与其余两家的差别只剩协议层。
- * - 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
+ * 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
  *   立即查询——PostgreSQL 默认隔离级别是 READ COMMITTED，每条 SELECT 各自取一次快照，
  *   结论确定，不需要任何等待。
  * @author Gyanis

@@ -1,22 +1,22 @@
 // 覆盖场景（内存 SQLite 建连接池，建表后完全通过 ORM 完成插入/查询/排序/分页/计数/更新/删除）：
-// - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
-// - OrmInsertThenQueryWithWhereOrderAndLimit
-// - HostileTextRoundTripsThroughParameterBinding
-// - NonFiniteDoubleIsRejectedBeforeBinding（NaN/±Infinity 在绑定前被拒且消息点名是哪一列，插入与更新两个入口各自钉）
-// - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
-// - FirstReturnsEmptyWhenNoRowMatches
-// - CountMatchesFilteredRows
-// - UpdateByPrimaryKeyChangesOnlyTargetRow
-// - ExecuteNonQueryDeletesMatchingRows
-// - DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
-// - UnregisteredTypeNamesTheMissingSchemaSpecialization（空 kColumns 要说成真因，不推给自增主键）
-// - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
-// - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
+// ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
+// OrmInsertThenQueryWithWhereOrderAndLimit
+// HostileTextRoundTripsThroughParameterBinding
+// NonFiniteDoubleIsRejectedBeforeBinding（NaN/±Infinity 在绑定前被拒且消息点名是哪一列，插入与更新两个入口各自钉）
+// NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
+// FirstReturnsEmptyWhenNoRowMatches
+// CountMatchesFilteredRows
+// UpdateByPrimaryKeyChangesOnlyTargetRow
+// ExecuteNonQueryDeletesMatchingRows
+// DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
+// UnregisteredTypeNamesTheMissingSchemaSpecialization（空 kColumns 要说成真因，不推给自增主键）
+// SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
+// JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
 //   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
-// - HavingThroughBuilderFiltersGroups（having() 入口真的在分组后筛组，对照组是全量三组）
-// - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
-// - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
-// - LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
+// HavingThroughBuilderFiltersGroups（having() 入口真的在分组后筛组，对照组是全量三组）
+// MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
+// DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
+// LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
 //   并保留 like() 的通配符语义作为对照组）
 // 断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入：
 // 含单引号与 "--" 的文本能原样查回、注入残留的表仍存在，证明没有拼接 SQL。

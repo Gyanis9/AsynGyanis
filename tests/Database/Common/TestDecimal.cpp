@@ -1,10 +1,10 @@
 // 精确十进制承载类型的单元测试：解析文法、标度、标度整数构造、默认值语义与在统一值里的位置。
 // 覆盖场景：
-// - ParsesSignedIntegerAndFractionForms / KeepsLeadingZerosAndLongDigitRunsVerbatim
-// - RejectsFormsThatAreNotDecimalLiterals / RejectsEmptyAndSignOnlyTexts
-// - DefaultConstructionIsZeroNotMissingValue / ReportsScaleFromTheCarryingText
-// - BuildsFromScaledIntegerWithoutDividing / ScaledIntegerZeroKeepsScaleAndDropsTheSign
-// - EqualityJudgesTextNotNumber / LastAlternativeIndexComesFromTheVariantItself
+// ParsesSignedIntegerAndFractionForms / KeepsLeadingZerosAndLongDigitRunsVerbatim
+// RejectsFormsThatAreNotDecimalLiterals / RejectsEmptyAndSignOnlyTexts
+// DefaultConstructionIsZeroNotMissingValue / ReportsScaleFromTheCarryingText
+// BuildsFromScaledIntegerWithoutDividing / ScaledIntegerZeroKeepsScaleAndDropsTheSign
+// EqualityJudgesTextNotNumber / LastAlternativeIndexComesFromTheVariantItself
 // 全部用例不触驱动、不碰网络：Decimal 是纯值类型，这一格里要钉的是「文本进来什么样、出去什么样」，
 // 以及它作为 DatabaseValue 新备选的位置契约（既有备选的下标是已发布的契约，只能往后追加）。
 

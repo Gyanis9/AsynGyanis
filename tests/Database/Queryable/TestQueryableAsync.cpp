@@ -1,13 +1,13 @@
 // 覆盖场景（读路径与写路径的结果都与同步版逐项相等、不阻塞调用线程、异常按原样穿出）：
-// - AsyncQueryResultsMatchSyncVersions
-// - AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
-// - AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
-// - AsyncInsertBatchChunkedPathSpansLocalTransaction
-// - AsyncInsertBatchWithEmptyCollectionProducesNoStatement
-// - AsyncWriteDoesNotBlockCallingThread / AsyncExecutorSubmitDoesNotBlockCallingThread
-// - AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
-// - AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
-// - OfflineModeThrowsOnAsyncExecution
+// AsyncQueryResultsMatchSyncVersions
+// AsyncInsertWritesRowReadableBySyncQuery / AsyncUpdateWritesRowReadableBySyncQuery
+// AsyncInsertBatchWritesRowsEqualToSyncInsertBatch
+// AsyncInsertBatchChunkedPathSpansLocalTransaction
+// AsyncInsertBatchWithEmptyCollectionProducesNoStatement
+// AsyncWriteDoesNotBlockCallingThread / AsyncExecutorSubmitDoesNotBlockCallingThread
+// AsyncExecutorShared.SharedInstanceIsSingletonWithWorkers
+// AsyncSqlErrorSurfacesAsOriginalException / AsyncWriteSqlErrorSurfacesAsOriginalException
+// OfflineModeThrowsOnAsyncExecution
 // 异步写之后一律用同步查询读回，那是「数据真的落库」的权威证据；协程帧由常驻的 TestSupport::EventLoopThread
 // 持有，其成员声明顺序保证帧的销毁晚于 m_thread 的 join。
 

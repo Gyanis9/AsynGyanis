@@ -1,26 +1,26 @@
 // 连接池单元测试 —— 用 TestConnectionPool.h 里的 MockConnection 驱动，全程不触碰真实数据库。
 // 覆盖场景：
-// - AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
-// - QueryTimeoutChangedByABorrowerDoesNotLeakToTheNextOne：借用者改过的命令超时在归还时退回基线，不串给下一位
-// - AcquireBlocksThenSucceeds / AcquireTimeoutReturnsEmpty / TryAcquireReturnsEmptyWhenExhausted：阻塞、超时与非阻塞获取
-// - ExcessLifetimeConnectionIsDiscarded / UnhealthyConnectionIsDiscarded：过期与不健康连接都在归还时丢弃
-// - ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
-// - StatisticsAreConsistent / PooledConnectionMoveSemantics：统计方法与包装器移动语义
-// - ResetsSessionStateOnBothReturnPaths / DestructorWakesBlockedSyncWaiters：两条归还去向都复位会话状态；析构叫醒同步等待者
-// - ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect / AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect：
+// AcquireReleaseReusesConnection：取一条，归还，再取，应得同一连接
+// QueryTimeoutChangedByABorrowerDoesNotLeakToTheNextOne：借用者改过的命令超时在归还时退回基线，不串给下一位
+// AcquireBlocksThenSucceeds / AcquireTimeoutReturnsEmpty / TryAcquireReturnsEmptyWhenExhausted：阻塞、超时与非阻塞获取
+// ExcessLifetimeConnectionIsDiscarded / UnhealthyConnectionIsDiscarded：过期与不健康连接都在归还时丢弃
+// ConcurrentAcquireReleaseStress：多线程并发获取/归还，统计自洽
+// StatisticsAreConsistent / PooledConnectionMoveSemantics：统计方法与包装器移动语义
+// ResetsSessionStateOnBothReturnPaths / DestructorWakesBlockedSyncWaiters：两条归还去向都复位会话状态；析构叫醒同步等待者
+// ReturnPathDoesNotHoldTheIdleStackLockAcrossDisconnect / AcquirePathDoesNotHoldTheIdleStackLockAcrossDisconnect：
 //   两条丢弃出口都不握着 m_mutex 做 disconnect
-// - EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
-// - ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
-// - NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
-// - WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
-// - WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
-// - RefusesBorrowWhenWaitingSlotsAreFull：等待名额满（maximumWaitingRequests）后新借出当场被拒并落账，在场的等待者不被顶掉
-// - HeldDurationAndOldestBorrowReadoutTrackTheOldestBorrower：借用时间戳/持有期从拿到那刻起算，池级「最久在借」读数取最久的一条
-// - IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
-// - BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
-// - SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
-// - BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded：累计创建数与借出超时数各自只在该长的时候长
-// - ConnectionPoolMetrics.RegistersPoolCountersAndTracksTheSameReadouts：原子读数进进程级导出（含「会话没复位干净」那条异常子集），池析构即注销
+// EstablishedTimeSurvivesRepeatedBorrowAndReturn：连接的建立时刻跟着连接本身，反复借用不重新盖戳
+// ShutdownDoesNotWaitForASleepChunk：析构不等后台健康线程睡满 1 秒分片
+// NullReturnDoesNotCorruptCounters：公有归还入口收到空指针时不动活跃计数（无符号回绕）
+// WaiterRecoversWhenReturnedConnectionIsDiscarded：归还即丢弃时等待者靠腾出的名额补建，不白等超时
+// WaiterRechecksIdleStackBeforeSleeping：出锁试轮与睡下之间的空档里归还的连接，靠回锁后的复检修上
+// RefusesBorrowWhenWaitingSlotsAreFull：等待名额满（maximumWaitingRequests）后新借出当场被拒并落账，在场的等待者不被顶掉
+// HeldDurationAndOldestBorrowReadoutTrackTheOldestBorrower：借用时间戳/持有期从拿到那刻起算，池级「最久在借」读数取最久的一条
+// IdleConnectionIsEvictedByTheBackgroundSweep：没有任何流量时后台驱逐自己收走过期空闲连接（名额与销毁都跟上）
+// BorrowedConnectionSurvivesTheBackgroundSweep：后台只碰空闲栈，正被借用的连接活到释放那一刻
+// SteadyBorrowAndReturnTouchNoHeap：稳态下的借出与归还一次都不碰堆（热路径分配台账）
+// BorrowTimeoutIsCountedOnlyWhenTheWaitEndsEmptyHanded：累计创建数与借出超时数各自只在该长的时候长
+// ConnectionPoolMetrics.RegistersPoolCountersAndTracksTheSameReadouts：原子读数进进程级导出（含「会话没复位干净」那条异常子集），池析构即注销
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"

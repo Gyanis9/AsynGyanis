@@ -4,12 +4,12 @@
 // 只留一条 SKIP 用例，不去猜那些枚举的数值。
 //
 // 覆盖场景：
-// - parseIntegerText：int64 上下界；空白/小数点/科学计数/十六进制/余文/越界一律拒；
+// parseIntegerText：int64 上下界；空白/小数点/科学计数/十六进制/余文/越界一律拒；
 //   带前导 '+' 也拒（std::from_chars 的符号位只认负号，而 MySQL 印数不带正号，故无需放宽）
-// - parseDoubleText：十进制与科学计数、±0、上溢拒；非有限值拼写 inf / -inf / nan / -nan 及
+// parseDoubleText：十进制与科学计数、±0、上溢拒；非有限值拼写 inf / -inf / nan / -nan 及
 //   infinity 由 from_chars 的浮点文法认出（这点反直觉，故单独钉用例）
-// - isBinaryColumn：BLOB 与 TEXT 共用类型码，字符集 63 是唯一判据；非字节类型即使字符集是 binary 也不按二进制
-// - convertColumnText：整数列、浮点列、DECIMAL 交原文、零长 BLOB ≠ NULL、内嵌 '\0' 按长度保留；
+// isBinaryColumn：BLOB 与 TEXT 共用类型码，字符集 63 是唯一判据；非字节类型即使字符集是 binary 也不按二进制
+// convertColumnText：整数列、浮点列、DECIMAL 交原文、零长 BLOB ≠ NULL、内嵌 '\0' 按长度保留；
 //   BIT 列按大端整数还原（BIT(64) 超 int64 的那半段退回十进制文本，意外宽度一律不猜）
 
 #include "Database/Common/BinaryBytes.h"

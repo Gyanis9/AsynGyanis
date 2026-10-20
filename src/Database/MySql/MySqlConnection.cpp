@@ -22,9 +22,9 @@
 // 这两个头自带平台网络头的包含顺序，调用方无需先包含 winsock2.h 之类。
 //
 // 包含路径有「扁平」与「带 mysql/ 子目录」两种发行布局，这里用 __has_include 同时兼容而不是靠平台宏：
-// - 多数 Linux 发行版与官方源码包把 mysql.h / errmsg.h 直接放在顶层（<mysql.h>），
+// 多数 Linux 发行版与官方源码包把 mysql.h / errmsg.h 直接放在顶层（<mysql.h>），
 //   而 <mysql/mysql.h> 是 Debian 系私有头目录（libmariadb-dev 之类的兼容路径）；
-// - Conan 上的 Windows 包是扁平布局：include/ 下直接是 mysql.h，include/mysql/ 里只有
+// Conan 上的 Windows 包是扁平布局：include/ 下直接是 mysql.h，include/mysql/ 里只有
 //   client_plugin.h 等插件头，没有任何入口头。写死任一形式都会在另一种包上找不到文件，
 //   而两种布局下都包含正确的头只多一次预处理探测，没有运行期代价
 #if __has_include(<mysql/mysql.h>)
@@ -1250,7 +1250,7 @@ namespace AsynGyanis::Database
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
 
         const auto columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
-        // 这里要非 const 的字段数组：本轮取完数据后得把每列的 max_length 归零（见循环后的说明）
+        // 这里要非 const 的字段数组：本次取完数据后得把每列的 max_length 归零（见循环后的说明）
         MYSQL_FIELD *fields = mysql_fetch_fields(rawMetadata);
         if (fields == nullptr && columnCount > 0)
         {

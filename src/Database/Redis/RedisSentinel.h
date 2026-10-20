@@ -81,7 +81,7 @@ namespace AsynGyanis::Database
      *          看起来像「哨兵坏了」；`sentinelCredentials` 里的口令是哨兵那边的凭据
      *          （多数部署没有），与主库的口令无关。
      *
-     * @note 只做 Sentinel 模式，不做 Cluster（提示词判死：那是另一个子系统）。
+     * @note 只做 Sentinel 模式，不做 Cluster（这是决定，不是待办：那是另一个子系统）。
      *       Cluster 的 `CLUSTER SLOTS` 那一族本引擎不实现，也不通告支持。
      *
      * @param sentinels 哨兵地址表，按尝试顺序给出；空表是配置错误

@@ -7,10 +7,10 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 本头把驱动与 libpq 之间的两件事各收敛成一份实现，两个方向都只吃入参、不碰任何句柄：
- *          - 送出方向 toPostgresTextParameter()：DatabaseValue → libpq 文本格式参数
+ * 送出方向 toPostgresTextParameter()：DatabaseValue → libpq 文本格式参数
  *            （SQL NULL 用空指针表达、bool 用 "true"/"false"、数值用十进制文本、文本原样、
  *            二进制编成 BYTEA 的十六进制文本）；
- *          - 取回方向 convertColumnText()：PGresult 的单元格文本 → DatabaseValue
+ * 取回方向 convertColumnText()：PGresult 的单元格文本 → DatabaseValue
  *            （按列的 OID 决定映射，PQftype 的取值由调用方传入；BYTEA 在这一侧解回字节）。
  *
  * 为什么全文件都包在 DATABASE_HAS_POSTGRES 里
@@ -155,8 +155,8 @@ namespace AsynGyanis::Database::Detail
      * @brief 把 BYTEA 的文本形态解回字节序列
      *
      * @details 认两种形，两家服务端都给得出来，只认一种就会在换服务端配置时静默读成另一种东西：
-     *          - 十六进制形：`\x` 加偶数位十六进制数字（服务端默认，大小写都收）；
-     *          - 转义形：老版本的默认输出，或会话把 bytea_output 设成 escape 时给的那一系——
+     * 十六进制形：`\x` 加偶数位十六进制数字（服务端默认，大小写都收）；
+     * 转义形：老版本的默认输出，或会话把 bytea_output 设成 escape 时给的那一系——
      *            反斜杠本身写成两个反斜杠，不可打印字节写成三位八进制，其余字符按字面收。
      *          两种都不像就交回空值，由调用方按原文处理：猜一个字节序列会把「读到的不是二进制」
      *          藏进一次成功返回里，与整数列读出 "12abc" 退回原文是同一条口径。
@@ -261,16 +261,16 @@ namespace AsynGyanis::Database::Detail
      * @brief 把统一的 DatabaseValue 转成 libpq 文本格式参数
      *
      * @details 纯函数：只吃入参、不写任何状态，因此可以在任意路径上安全调用。映射规则：
-     *          - std::monostate → isNull，由调用方交出空指针（SQL NULL 的唯一表达方式。
+     * std::monostate → isNull，由调用方交出空指针（SQL NULL 的唯一表达方式。
      *            若绑成空串，"IS NULL" 不再成立，NULL 与空串也会被混淆）；
-     *          - bool → "true" / "false" 两个字面量：PostgreSQL 的 BOOLEAN 列不接受
+     * bool → "true" / "false" 两个字面量：PostgreSQL 的 BOOLEAN 列不接受
      *            '0'/'1' 文本（那是 MySQL 的 TINYINT(1) 约定），写错会在服务端报
      *            "invalid input syntax for type boolean"；
-     *          - std::int64_t / double → 十进制文本（见 toDecimalText 的两条说明）；
-     *          - std::string → 原样，不转义也不改字节：SQL 结构由 $n 占位符固定，
+     * std::int64_t / double → 十进制文本（见 toDecimalText 的两条说明）；
+     * std::string → 原样，不转义也不改字节：SQL 结构由 $n 占位符固定，
      *            取值以参数送出，单引号、"--"、分号都只是普通字符（注入面因此消失）。
-     *          - Decimal → 承载文本原样：NUMERIC 列收文本参数由服务端精确解析，中间不经浮点换算。
-     *          - BinaryBytes → BYTEA 的十六进制文本（见 toPostgresByteaText）：调用方不必自己编码，
+     * Decimal → 承载文本原样：NUMERIC 列收文本参数由服务端精确解析，中间不经浮点换算。
+     * BinaryBytes → BYTEA 的十六进制文本（见 toPostgresByteaText）：调用方不必自己编码，
      *            这一档与其余两家的差别从此只剩「协议层怎么搬字节」。
      *
      * @param value 待送出的统一值
@@ -397,14 +397,14 @@ namespace AsynGyanis::Database::Detail
      *          因此 BYTEA 的十六进制文本与包含任何字节的文本列都不会被截断。
      *
      * 映射规则（OID 常量取自本头的 Detail::TypeOid，来源与理由见那里的说明）：
-     * - BOOLOID → bool：文本形态恒为单字节 't' / 'f'；
-     * - INT2OID / INT4OID / INT8OID → std::int64_t；
-     * - FLOAT4OID / FLOAT8OID → double；
-     * - NUMERICOID → std::string：NUMERIC 是精确定小数（金额列、无符号 64 位的承载类型），
+     * BOOLOID → bool：文本形态恒为单字节 't' / 'f'；
+     * INT2OID / INT4OID / INT8OID → std::int64_t；
+     * FLOAT4OID / FLOAT8OID → double；
+     * NUMERICOID → std::string：NUMERIC 是精确定小数（金额列、无符号 64 位的承载类型），
      *   转 double 会在末位丢精度且不可逆，取舍与 MySQL 对 DECIMAL / NEWDECIMAL 的处理一致；
-     * - BYTEAOID → BinaryBytes：十六进制形与转义形都解（见 parsePostgresByteaText），与 MySQL 的
+     * BYTEAOID → BinaryBytes：十六进制形与转义形都解（见 parsePostgresByteaText），与 MySQL 的
      *   BLOB、SQLite 的 BLOB 交回同一种取值；解不开时退回原文。
-     * - 其余（TEXT / VARCHAR / NAME / 日期时间 / JSON / UUID …）→ std::string 原样。
+     * 其余（TEXT / VARCHAR / NAME / 日期时间 / JSON / UUID …）→ std::string 原样。
      *
      * @param columnType 列的 OID，来自 PQftype()
      * @param rawValue 列值首地址，调用方保证在 [rawValue, rawValue + byteLength) 内可读

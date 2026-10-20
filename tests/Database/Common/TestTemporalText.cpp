@@ -1,14 +1,14 @@
 // 日期时间文本的解析与渲染单元测试：认什么、不认什么、渲染成什么、来回是否同解。
 // 覆盖场景：
-// - RendersUnixEpochAsCivilAnchor / RendersOneMicrosecondBeforeEpochOnPreviousDay
-// - RoundTripsParsedTextThroughRenderer / WallClockRoundTripsWithoutAnyOffset
-// - AcceptsOffsetsInEveryShapeTheEnginesGive / SystemClockFoldsOffsetIntoUtc
-// - RejectsOffsetMinutesAtOrAboveSixty
-// - AcceptsDateOnlyTextAndSecondsWithoutFraction / SixtySecondsRollsIntoNextMinuteLikeTheEngines
-// - RejectsZeroDatesAndNonIsoStyles / RejectsInfinityAndUndottedAmbiguities
-// - TruncatesFractionsBeyondMicroseconds / RejectsFractionsLongerThanNineDigits
-// - RejectsImpossibleCalendarDays / WallClockRefusesTextCarryingAnOffset
-// - NegativeYearsRoundTrip / MySqlAndPostgresRenderingsDifferByOffsetMarker
+// RendersUnixEpochAsCivilAnchor / RendersOneMicrosecondBeforeEpochOnPreviousDay
+// RoundTripsParsedTextThroughRenderer / WallClockRoundTripsWithoutAnyOffset
+// AcceptsOffsetsInEveryShapeTheEnginesGive / SystemClockFoldsOffsetIntoUtc
+// RejectsOffsetMinutesAtOrAboveSixty
+// AcceptsDateOnlyTextAndSecondsWithoutFraction / SixtySecondsRollsIntoNextMinuteLikeTheEngines
+// RejectsZeroDatesAndNonIsoStyles / RejectsInfinityAndUndottedAmbiguities
+// TruncatesFractionsBeyondMicroseconds / RejectsFractionsLongerThanNineDigits
+// RejectsImpossibleCalendarDays / WallClockRefusesTextCarryingAnOffset
+// NegativeYearsRoundTrip / MySqlAndPostgresRenderingsDifferByOffsetMarker
 // 这一格是本件的全部纯逻辑：三家引擎给的都是文本，「认与不认」错了就是静默改数，
 // 所以两边都要钉 —— 认的要逐字符对回原意，不认的要有名有姓地拒掉。全部用例不碰驱动与服务端。
 

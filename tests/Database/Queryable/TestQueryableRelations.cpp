@@ -1,7 +1,7 @@
 // 显式关系装载的判据：`then()` 分批补取与 `include()` 一次 JOIN 两个方向。
 //
 // 全部用 SQLite 内存库（池上限 1）。真机那一侧另有 MySQL 版本（TestMySqlIntegration.cpp）。
-// 不做懒加载代理（提示词判死）：这里测的就是「点名装载」这一件事。
+// 不做懒加载代理：这里测的就是「点名装载」这一件事。
 
 #include "Base/Exception/LogicException.h"
 

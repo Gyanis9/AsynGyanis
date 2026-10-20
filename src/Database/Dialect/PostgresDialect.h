@@ -10,23 +10,23 @@
  *          三方向共用的 WHERE、参数收集顺序）全部继承自基类，本类只给出引擎知识。
  *
  * 与 SQLite / MySQL 方言的差异（逐项给出依据）
- * - 占位符：写作 "$1" "$2" 而不是 "?"。这是 PostgreSQL 自己的语法：
+ * 占位符：写作 "$1" "$2" 而不是 "?"。这是 PostgreSQL 自己的语法：
  *   扩展查询协议（PQexecParams / PQprepare）要求语句文本用 $n 标出参数位置，
  *   序号从 1 开始。因此本方言是唯一真正用到 placeholder() 序号参数的实现——
  *   基类保证「先取序号再压参数」，序号与 parameters 的下标严格对应；
- * - 标识符：双引号引用，内部双引号翻倍（"weird""name"），与 SQLite 相同、
+ * 标识符：双引号引用，内部双引号翻倍（"weird""name"），与 SQLite 相同、
  *   与 MySQL 的反引号不同。PostgreSQL 会把未引用的标识符折叠成小写，
  *   因此一律引用也顺带保证了大写列名的可用性；
- * - 分页：直接沿用基类的标准关键字形式，值以占位符送出。PostgreSQL 既允许
+ * 分页：直接沿用基类的标准关键字形式，值以占位符送出。PostgreSQL 既允许
  *   "LIMIT $1" 单独出现，也允许 "OFFSET $2" 单独出现（SQLite 需要补 "LIMIT -1"，
  *   MySQL 需要补无符号上界常量），因此本类不需要覆写分页钩子；
- * - 事务：开启用 "BEGIN"（PostgreSQL 的等价写法 START TRANSACTION 同样可用，
+ * 事务：开启用 "BEGIN"（PostgreSQL 的等价写法 START TRANSACTION 同样可用，
  *   BEGIN 更短且是官方文档的首选），提交 COMMIT、回滚 ROLLBACK；
- * - 参数上限：65535，依据是扩展查询协议 Bind 报文里参数个数为 Int16 字段；
- * - 类型名：BIGINT / NUMERIC(20) / DOUBLE PRECISION / BOOLEAN / TEXT / BYTEA / NUMERIC（十进制）。
+ * 参数上限：65535，依据是扩展查询协议 Bind 报文里参数个数为 Int16 字段；
+ * 类型名：BIGINT / NUMERIC(20) / DOUBLE PRECISION / BOOLEAN / TEXT / BYTEA / NUMERIC（十进制）。
  *   PostgreSQL 是三个引擎里唯一有真布尔类型的，也是唯一需要为无符号 64 位
  *   另选类型的（它没有无符号整数，见 columnTypeName() 的说明）；
- * - 表清单：查 information_schema.tables 并按 current_schema() 过滤
+ * 表清单：查 information_schema.tables 并按 current_schema() 过滤
  *   （MySQL 用 DATABASE()，SQLite 查库内私有的 sqlite_master）。
  *
  * 大小写与 search_path
@@ -126,15 +126,15 @@ namespace AsynGyanis::Database
         /**
          * @brief 追加 PostgreSQL 的冲突处置尾部子句（ON CONFLICT …）
          * @details 重写 SqlDialect::appendInsertConflictTail()：
-         *          - Fail → 不追加（普通 INSERT，冲突就报错）；
-         *          - Ignore → " ON CONFLICT DO NOTHING"（不需要冲突目标）；
-         *          - Replace → `ON CONFLICT (目标列) DO UPDATE SET 列 = EXCLUDED.列, …`：
+         * Fail → 不追加（普通 INSERT，冲突就报错）；
+         * Ignore → " ON CONFLICT DO NOTHING"（不需要冲突目标）；
+         * Replace → `ON CONFLICT (目标列) DO UPDATE SET 列 = EXCLUDED.列, …`：
          *            目标列取自 query.conflictTargetColumns（ORM 从 TableSchema 的主键自动带上），
          *            缺失时当场拒绝——不带目标的 DO UPDATE 会被服务端以 42601 拒绝（真机实测，
          *            只有 DO NOTHING 能省目标），生成它是把必拒的语句送到服务端才失败。SET 列出
          *            本次插入的全部列，未列出的列保持旧值——与 MySQL REPLACE 的整行替换在未列出的
          *            列上语义不同，这正是「按业务键覆盖」的常规写法（覆盖一行里被显式给出的部分）。
-         *          - Upsert → 与 Replace 同一份 DO UPDATE（PostgreSQL 的 Replace 本来就是真 upsert）
+         * Upsert → 与 Replace 同一份 DO UPDATE（PostgreSQL 的 Replace 本来就是真 upsert）
          * @param sqlText 已渲染完 VALUES 行的 INSERT 文本，子句追加在其末尾
          * @param conflict 唯一键冲突的处置意图
          * @param query 提供待写列与冲突目标列的查询树（Replace/Upsert 档两者都要）
@@ -246,17 +246,17 @@ namespace AsynGyanis::Database
         /**
          * @brief 把逻辑列类型翻译成 PostgreSQL 的物理类型名
          * @details 重写 SqlDialect::columnTypeName()：
-         *          - Int64 → "BIGINT"（8 字节有符号，对应 C++ 的 std::int64_t）；
-         *          - UInt64 → "NUMERIC(20)"：PostgreSQL 没有无符号整数类型，
+         * Int64 → "BIGINT"（8 字节有符号，对应 C++ 的 std::int64_t）；
+         * UInt64 → "NUMERIC(20)"：PostgreSQL 没有无符号整数类型，
          *            选 NUMERIC(20) 而不是 BIGINT 是因为前者能无损容纳 0 .. 2^64-1
          *            （20 位十进制正好覆盖 18446744073709551615），代价是服务端按精确数值
          *            处理、比整数略慢；选 BIGINT 会让上半个取值域在写入时直接溢出报错；
-         *          - Double → "DOUBLE PRECISION"（8 字节 IEEE 754，标准 SQL 写法）；
-         *          - Bool → "BOOLEAN"：三个引擎里唯一有真布尔类型的，
+         * Double → "DOUBLE PRECISION"（8 字节 IEEE 754，标准 SQL 写法）；
+         * Bool → "BOOLEAN"：三个引擎里唯一有真布尔类型的，
          *            服务端会拒绝把 '0'/'1' 以外、也不是 true/false 的文本写进布尔列；
-         *          - Text → "TEXT"（变长，上限约 1 GiB，与 varchar 无性能差异）；
-         *          - Blob → "BYTEA"（变长二进制，官方推荐的二进制承载类型）；
-         *          - Decimal → "NUMERIC"：不带精度限定就是「任意精度、按写入的标度存」，
+         * Text → "TEXT"（变长，上限约 1 GiB，与 varchar 无性能差异）；
+         * Blob → "BYTEA"（变长二进制，官方推荐的二进制承载类型）；
+         * Decimal → "NUMERIC"：不带精度限定就是「任意精度、按写入的标度存」，
          *            写几位小数读回几位，服务端不做四舍五入 —— 与 Database::Decimal 的文本承载同构。
          *            要固定标度（金额常见的 NUMERIC(19,4)）由调用方自己写 DDL，本映射不替业务定标度。
          * @param type 逻辑列类型

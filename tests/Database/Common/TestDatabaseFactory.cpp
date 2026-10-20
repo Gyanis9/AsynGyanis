@@ -1,14 +1,14 @@
 // DatabaseFactory 单元测试：按类型建驱动、按配置推断类型、端口猜测与无法判定时的报错。
 // 覆盖场景：
-// - CreateByTypeReturnsMySqlDriver / CreateByTypeReturnsRedisDriver / CreateByTypeReturnsSqliteDriver
-// - CreateByTypeKeepsEveryDriverDisconnected / CreateByTypeHandsConfigurationThroughToDriver / CreateByTypeIgnoresPortInference
-// - CreateByTypeThrowsForOutOfRangeEnumValue
-// - CreateFromConfigUsesMySqlDefaultPort / CreateFromConfigUsesRedisDefaultPort / CreateFromConfigFallsBackToSqliteWhenPortUnspecified
-// - CreateFromConfigRejectsNetworkConfigWithoutPort / CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven
-// - CreateFromConfigPrefersPortOverDatabasePath / CreateFromConfigThrowsForUnknownPortEvenWithDatabase /
+// CreateByTypeReturnsMySqlDriver / CreateByTypeReturnsRedisDriver / CreateByTypeReturnsSqliteDriver
+// CreateByTypeKeepsEveryDriverDisconnected / CreateByTypeHandsConfigurationThroughToDriver / CreateByTypeIgnoresPortInference
+// CreateByTypeThrowsForOutOfRangeEnumValue
+// CreateFromConfigUsesMySqlDefaultPort / CreateFromConfigUsesRedisDefaultPort / CreateFromConfigFallsBackToSqliteWhenPortUnspecified
+// CreateFromConfigRejectsNetworkConfigWithoutPort / CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven
+// CreateFromConfigPrefersPortOverDatabasePath / CreateFromConfigThrowsForUnknownPortEvenWithDatabase /
 //   CreateFromConfigThrowsWithoutPortAndWithoutDatabase
-// - CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing：报错只说真正缺的那一样，不对空配置宣称有网络特征
-// - GuessTypeRecognizesMySqlDefaultPort / GuessTypeRecognizesRedisDefaultPort / GuessTypeReturnsEmptyForUnrecognizedPorts
+// CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing：报错只说真正缺的那一样，不对空配置宣称有网络特征
+// GuessTypeRecognizesMySqlDefaultPort / GuessTypeRecognizesRedisDefaultPort / GuessTypeReturnsEmptyForUnrecognizedPorts
 // 工厂只负责「挑驱动」，不负责连接，因此全部用例都在未连接状态下断言：只读 databaseType() / configuration()，
 // 不触发任何 IO 与文件系统访问。异常文本只断言「非空 + 含关键子串 + 含本地化（多字节）文案」，不硬编码整句中文，
 // 实现文案调整不会连带改坏用例。

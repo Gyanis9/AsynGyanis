@@ -9,24 +9,23 @@
  * @details 三家引擎在「文本形态的日期时间」上给的不是同一种写法，而本库的值类型方向坚持一件事：
  *          线路是文本，成员是类型，中间这一层只做认与不认，不做任何猜测性换算。这份头就是那一层。
  *
- *          读回方向接受的写法（各家实际给出的都在里面）：
- *          - `YYYY-MM-DD` 加 `T` 或空格作分隔，`HH:MM` 之后 `:SS` 可省（MySQL 的 DATE 列没有时分秒）；
- *          - 小数秒 1~9 位，多于 6 位按微秒截断（截掉的是引擎给的超出本库承载精度的位数，不是数据）；
- *          - 尾部的偏移认三种：`Z`、`+HH:MM`/`-HH:MM`、`+HHMM`/`-HHMM`（PostgreSQL 两种都给）；
- *          - 认不出的一律交回空值由调用方报错，不猜：MySQL 的零值日期 `0000-00-00 00:00:00`
- *            （月份 0 不是合法历法）、PostgreSQL 在非法国 DateStyle 下给出的
- *            `Thu 10-18-2026 09:20:30 PDT+0530`、以及 `infinity`/-infinity 这类没有历法对应的哨兵。
+ *          读回方向接受的写法（各家实际给出的都在里面）：`YYYY-MM-DD` 加 `T` 或空格作分隔，
+ *          `HH:MM` 之后 `:SS` 可省（MySQL 的 DATE 列没有时分秒）；小数秒 1~9 位，多于 6 位按
+ *          微秒截断（截掉的是引擎给的超出本库承载精度的位数，不是数据）；尾部的偏移认三种：
+ *          `Z`、`+HH:MM`/`-HH:MM`、`+HHMM`/`-HHMM`（PostgreSQL 两种都给）。认不出的一律交回空值
+ *          由调用方报错，不猜：MySQL 的零值日期 `0000-00-00 00:00:00`（月份 0 不是合法历法）、
+ *          PostgreSQL 在非法国 DateStyle 下给出的 `Thu 10-18-2026 09:20:30 PDT+0530`、
+ *          以及 `infinity`/-infinity 这类没有历法对应的哨兵。
  *
- *          渲染方向按引擎给三种文本，因为「同一条 SQL 文本」在两家意味着不同的事：
- *          - MySQL 的 DATETIME 是字面墙上时间，不做会话时区换算，所以交出的文本不带偏移；
- *            这也正是本映射不选 TIMESTAMP 列的原因（见 MySqlDialect::columnTypeName 的 Timestamp 分支）；
- *          - PostgreSQL 的 timestamptz 会把不带偏移的文本按会话 TimeZone 解释，
- *            所以 UTC 瞬时那一路必须自带 `+00`，否则服务端会替我们换一个instant；
- *            墙上时间那一路相反，必须不带偏移（TIMESTAMP WITHOUT TIME ZONE 收字面值）；
- *          - SQLite 只有存储类，文本形态完全由本库定，因此用定宽 ISO-8601：
- *            `YYYY-MM-DDTHH:MM:SS.ffffff`，UTC 那一路补一个 `Z`。定宽的意义不只是好看——
- *            SQLite 的 TEXT 亲和下比较按字典序，定宽的 ISO 文本字典序与时间序一致，
- *            这一点与十进制列不同（十进制的文本字典序不等于数值序，见 SqliteDialect 的说明）。
+ *          渲染方向按引擎给三种文本，因为「同一条 SQL 文本」在两家意味着不同的事。MySQL 的 DATETIME
+ *          是字面墙上时间，不做会话时区换算，所以交出的文本不带偏移，这也正是本映射不选 TIMESTAMP
+ *          列的原因（见 MySqlDialect::columnTypeName 的 Timestamp 分支）。PostgreSQL 的 timestamptz
+ *          会把不带偏移的文本按会话 TimeZone 解释，所以 UTC 瞬时那一路必须自带 `+00`，否则服务端
+ *          会替我们换一个 instant；墙上时间那一路相反，必须不带偏移（TIMESTAMP WITHOUT TIME ZONE
+ *          收字面值）。SQLite 只有存储类，文本形态完全由本库定，因此用定宽 ISO-8601：
+ *          `YYYY-MM-DDTHH:MM:SS.ffffff`，UTC 那一路补一个 `Z`。定宽的意义不只是好看——SQLite 的
+ *          TEXT 亲和下比较按字典序，定宽的 ISO 文本字典序与时间序一致，这一点与十进制列不同
+ *          （十进制的文本字典序不等于数值序，见 SqliteDialect 的说明）。
  *
  * @note 微秒是本库的承载精度（与三家的最高精度对齐：MySQL DATETIME(6)、PostgreSQL 的 6 位小数秒、
  *       SQLite 由我们自己写 6 位）。年份范围按 `std::chrono::year` 的 int16 全幅，不额外收窄；

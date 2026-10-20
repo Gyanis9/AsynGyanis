@@ -4,12 +4,12 @@
 // 未编译 PostgreSQL 驱动的配置里本文件只留一条 SKIP 用例，不去猜那些 OID 的数值。
 //
 // 覆盖场景：
-// - toPostgresByteaText：'\x' + 小写十六进制；零长载荷只剩前缀；逐字节（含 0x00 与 0xFF）都能解回原值
-// - parsePostgresByteaText：十六进制形（大小写都收）与转义形（老服务端或 bytea_output=escape 给的那一系）
+// toPostgresByteaText：'\x' + 小写十六进制；零长载荷只剩前缀；逐字节（含 0x00 与 0xFF）都能解回原值
+// parsePostgresByteaText：十六进制形（大小写都收）与转义形（老服务端或 bytea_output=escape 给的那一系）
 //   同解；写坏的十六进制形（奇数位、非十六进制数字、八进制越界或凑不满三位）一律拒、交回调用方按原文
 //   处理，不猜半个字节；不带反斜杠的文本是合法的转义形，按字面字节收而不是拒
-// - toPostgresTextParameter：BinaryBytes 走 BYTEA 文本参数，不再是「容器参数被拒」
-// - convertColumnText：OID 17 交回 BinaryBytes；解不开的形态退回原文，与其余列的兜底口径一致
+// toPostgresTextParameter：BinaryBytes 走 BYTEA 文本参数，不再是「容器参数被拒」
+// convertColumnText：OID 17 交回 BinaryBytes；解不开的形态退回原文，与其余列的兜底口径一致
 
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/DatabaseValue.h"

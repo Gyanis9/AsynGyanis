@@ -1,24 +1,24 @@
 // 覆盖场景（Queryable 的全部公开 API：列与表结构描述、条件与表达式组合、查询树到 SQL 文本的生成，
 // 全程在内存中完成，不涉及任何数据库 IO）：
-// - ColumnDescriptorStoresCorrectMemberPointerAndName
-// - ColumnDescriptorWithExplicitPropertyName
-// - TableSchemaIsSpecializable
-// - TableSchemaWithDifferentPrimaryKey
-// - WhereConditionComparesColumnAndValue
-// - WhereConditionNullComparison
-// - QueryTreeAssemblesMultipleClauses
-// - BinaryOrderByExpression
-// - AndOrComposition
-// - InExpressionAcceptsContainer
-// - LikeExpression
-// - NotInExpression
-// - QueryNodeConvertsToSql
-// - QueryNodeConvertsToSqlWithAllClauses
-// - SelectColumnOverride
-// - LimitAndOffset
-// - NotConditionIsWrappedInParenthesesLikeTheDialect（预览与真正执行的语句同形）
-// - ColumnToColumnComparisonKeepsTheColumnNameInsteadOfAPlaceholder（列-列比较不占绑定参数）
-// - HavingThroughBuilderAppearsInSql（having() 入口 + 离线文本给出 GROUP BY 与 HAVING）
+// ColumnDescriptorStoresCorrectMemberPointerAndName
+// ColumnDescriptorWithExplicitPropertyName
+// TableSchemaIsSpecializable
+// TableSchemaWithDifferentPrimaryKey
+// WhereConditionComparesColumnAndValue
+// WhereConditionNullComparison
+// QueryTreeAssemblesMultipleClauses
+// BinaryOrderByExpression
+// AndOrComposition
+// InExpressionAcceptsContainer
+// LikeExpression
+// NotInExpression
+// QueryNodeConvertsToSql
+// QueryNodeConvertsToSqlWithAllClauses
+// SelectColumnOverride
+// LimitAndOffset
+// NotConditionIsWrappedInParenthesesLikeTheDialect（预览与真正执行的语句同形）
+// ColumnToColumnComparisonKeepsTheColumnNameInsteadOfAPlaceholder（列-列比较不占绑定参数）
+// HavingThroughBuilderAppearsInSql（having() 入口 + 离线文本给出 GROUP BY 与 HAVING）
 
 #include "Database/Queryable/Column.h"
 #include "Database/Queryable/Expression.h"

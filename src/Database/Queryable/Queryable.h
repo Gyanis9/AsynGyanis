@@ -465,7 +465,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败，原因见异常文本
-         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（如 MySQL / Redis）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（如 Redis）
          */
         [[nodiscard]] std::vector<T> toList()
         {

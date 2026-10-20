@@ -450,7 +450,7 @@ namespace AsynGyanis::Database
             //
             // 票据与入表这三步都要分配内存（make_shared 一次，deque 首次插入要 map 与块各一次），
             // 而本函数是 noexcept——内存吃紧时让 bad_alloc 穿出边界就是 std::terminate，
-            // 进程带走整个服务的在途请求。处置沿用 h2 那两个 FlushTurnAwaiter 的形状：置标记、
+            // 进程带走整个服务的在途请求。处置采用同一形状：置标记、
             // 回 false 不挂起，由 acquireAsync() 按「这一轮排不上队」结账。
             // 标记是必需的：本函数外面套着 while(true) 重挂，光回 false 只会让它立刻另造一个等待体
             // 重走这一步——实测掐掉票据那一次分配之后等待表里仍然出现一条等待体，那就是重挂的一轮；
