@@ -129,7 +129,9 @@ namespace AsynGyanis::Core
         }
 
         // 登记放在构造的最后一步：指针一发布，别的线程就能立刻读这一条循环的成员，
-        // 因此必须等所有成员都建好之后才交出去
+        // 因此必须等所有成员都建好之后才交出去；槽位满时 attachObservation 只累加
+        // 未登记计数、不拦构造——观测面少一条记录，好过让一条能跑的循环建不起来
+        // （差额由 unregisteredEventLoopCount() 报出）
         attachObservation(*this);
     }
 

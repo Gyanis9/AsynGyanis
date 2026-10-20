@@ -347,8 +347,7 @@ namespace AsynGyanis::Core
 
         while (!cursor.isFinished())
         {
-            // snapshotPending 只写前 pendingCount 项，逐轮清零整张表是白付
-            Platform::Socket::WriteBuffer pending[Platform::Socket::kMaximumVectorCount];
+            Platform::Socket::WriteBuffer pending[Platform::Socket::kMaximumVectorCount]; // snapshotPending 只写前 pendingCount 项，逐轮清零整张表是白付
             const std::size_t             pendingCount = cursor.snapshotPending(pending, Platform::Socket::kMaximumVectorCount);
             if (pendingCount == 0)
             {
