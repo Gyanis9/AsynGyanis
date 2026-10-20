@@ -2,7 +2,9 @@
 #include "Base/Log/Formatters/DefaultFormatter.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 
 namespace AsynGyanis::Base
 {
@@ -34,14 +36,26 @@ namespace AsynGyanis::Base
 
     void LogSink::setFormatter(std::unique_ptr<LogFormatter> formatter)
     {
-        // 写侧与此后 formatEvent 的 load 以 release/acquire 配对，避免数据竞争
-        m_formatter.store(std::shared_ptr<LogFormatter>(std::move(formatter)), std::memory_order_release);
+        // 替换串行化在写侧互斥下：同一时刻只有一个写者动所有权槽与退休表
+        const std::lock_guard lock(m_formatterWriteMutex);
+
+        // 旧对象先移入退休表再让位：在途读者可能还攥着指向它的裸指针，提前释放会悬垂
+        const std::shared_ptr<LogFormatter> previous = m_formatter.load(std::memory_order_acquire);
+        if (previous)
+        {
+            m_retiredFormatters.push_back(previous);
+        }
+
+        // 先落所有权槽、再发布裸指针，读侧的 acquire 保证对象构造对读者可见
+        const std::shared_ptr<LogFormatter> next = std::shared_ptr<LogFormatter>(std::move(formatter));
+        m_formatter.store(next, std::memory_order_release);
+        m_formatterPointer.store(next.get(), std::memory_order_release);
     }
 
     void LogSink::formatEventInto(std::string &out, const LogEvent &event) const
     {
-        // 与 formatEvent() 选同一份格式化器快照，只是把去处换成调用方的行缓冲
-        if (const auto formatter = m_formatter.load(std::memory_order_acquire))
+        // 热路径只读裸指针：atomic<shared_ptr> 的 load 在 MSVC/libstdc++ 上要走内部锁池
+        if (LogFormatter *const formatter = m_formatterPointer.load(std::memory_order_acquire))
         {
             formatter->formatInto(out, event);
             return;
@@ -51,7 +65,8 @@ namespace AsynGyanis::Base
 
     std::string LogSink::formatEvent(const LogEvent &event) const
     {
-        if (const auto formatter = m_formatter.load(std::memory_order_acquire))
+        // 与 formatEventInto() 读同一个裸指针，产出逐字相同的文本
+        if (LogFormatter *const formatter = m_formatterPointer.load(std::memory_order_acquire))
         {
             return formatter->format(event);
         }
