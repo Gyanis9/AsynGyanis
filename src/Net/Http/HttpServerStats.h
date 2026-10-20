@@ -148,8 +148,10 @@ namespace AsynGyanis::Net
      *       「在途正文预算不足」不在这一笔里：它回的是 503，而本字段口径是「对端的报文不合规」，
      *       全局预算用尽不是对端的错。那一格的读数是进程级的 `asyn_http_memory_budget_rejections_total`
      *       （三条通道共用同一份预算账，被拒次数一律记在那里）。
-     *       状态码类计数同样只对应已发出的响应，故 status1xxCount 至
-     *       status5xxCount 之和在稳态下等于 totalRequestCount（发送失败的应答不计入）。
+     *       状态码类计数按「已发出的响应」逐条记：1xx 是最终响应之前的过渡响应，单独计入
+     *       status1xxCount，不参与「每条请求一个最终响应」这条账；status2xxCount 至 status5xxCount
+     *       之和在稳态下等于 totalRequestCount（发送失败的应答与 WebSocket 升级的 101 不计入）。
+     *       因此 status1xx 至 status5xx 的总和可能大于 totalRequestCount，这不是漏计或重复计。
      *       这两个全局量与 routeCounts 里的同名分项同源同一次计入；按路由导出时用后者，
      *       保留前者是为了「整台服务器」这一维仍有一个现成读数。
      * @note 路由维度只细到状态码类：route × status 的笛卡尔积会突破序列预算，具体状态码明细
@@ -176,7 +178,7 @@ namespace AsynGyanis::Net
         /// @warning 口径止于本侧：已经被传输层收下、但对端再没读走的字节看不见（256 KiB 的响应
         ///          能整个塞进环回套接字缓冲，对端随后关掉，本侧一次失败都不会遇到）
         std::uint64_t writeAbortedConnectionCount{0};
-        std::uint64_t status1xxCount{0}; ///< 状态码为 1xx 的响应条数
+        std::uint64_t status1xxCount{0}; ///< 状态码为 1xx 的过渡响应条数（同一请求可有多条，不计入最终响应数）
         std::uint64_t status2xxCount{0}; ///< 状态码为 2xx 的响应条数
         std::uint64_t status3xxCount{0}; ///< 状态码为 3xx 的响应条数
         std::uint64_t status4xxCount{0}; ///< 状态码为 4xx 的响应条数

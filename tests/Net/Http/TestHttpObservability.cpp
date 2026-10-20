@@ -347,6 +347,46 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：1xx 是过渡响应，单独计数，不与最终响应一起凑「每条请求一个响应」
+     * @details 同一请求先发 103 再发 200 时，totalRequestCount 仍是 1，status1xxCount 与
+     *          status2xxCount 各为 1；三者的关系不是相加等于请求数。读口径见 HttpServerStats 的说明。
+     */
+    TEST(HttpObservability, CountsInterimResponsesSeparatelyFromTheFinalResponse)
+    {
+        RunningHttpServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+        fixture.server().router().get("/hints",
+                                      [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                      {
+                                          const std::vector<HttpResponse::InformationalHeaderField> hints{{"link", "</hint.css>; rel=preload; as=style"}};
+                                          static_cast<void>(co_await response.sendInformational(103, hints));
+                                          response.setBody("hint-ok");
+                                          co_return;
+                                      });
+
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        std::string receivedText;
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /hints HTTP/1.1"), kWaitTimeout)) << "请求未能写入";
+        ASSERT_TRUE(waitForTextOccurrences(client, receivedText, "hint-ok", 1, kWaitTimeout)) << "最终响应没到达";
+
+        ASSERT_TRUE(waitForCondition(
+                [&fixture]
+                {
+                    const HttpServerStats snapshot = fixture.server().stats();
+                    return snapshot.totalRequestCount >= 1U && snapshot.status1xxCount >= 1U && snapshot.status2xxCount >= 1U;
+                },
+                kWaitTimeout))
+                << "1xx 与最终响应没有都落账";
+
+        const HttpServerStats stats = fixture.server().stats();
+        EXPECT_EQ(stats.totalRequestCount, 1U) << "过渡响应不该多算一条请求";
+        EXPECT_EQ(stats.status1xxCount, 1U) << "103 没有单独计入 1xx";
+        EXPECT_EQ(stats.status2xxCount, 1U) << "200 没有计入 2xx";
+        EXPECT_EQ(stats.latencySampleCount(), 1U) << "过渡响应不该写延迟样本";
+    }
+
+    /**
      * @brief 钉住：被空闲清扫协程按空闲超时关闭的连接计入 timeoutClosedCount，且不计入请求条数
      */
     TEST(HttpObservability, CountsConnectionsClosedByIdleTimeout)
