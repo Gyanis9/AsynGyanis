@@ -751,6 +751,18 @@ namespace AsynGyanis::Net
         empty.setUri("/api");
         EXPECT_TRUE(empty.setHeader("content-type", "application/json"));
         EXPECT_FALSE(empty.jsonBody().has_value());
+
+        // 同名两条 content-type 没有可用的单值：按 RFC 9110 §5.2 合并成 "application/json, text/plain"
+        // 之后两种媒体类型都判不出来，JSON 与 multipart 两条读取路径都该交回空
+        HttpRequest duplicated;
+        duplicated.setMethod(HttpMethod::POST);
+        duplicated.setUri("/api");
+        duplicated.addHeader("content-type", "application/json");
+        duplicated.addHeader("content-type", "text/plain");
+        duplicated.setBody(R"({"a":1})");
+        EXPECT_EQ(duplicated.headerFieldCount("content-type"), 2U);
+        EXPECT_FALSE(duplicated.jsonBody().has_value()) << "两条 content-type 不构成可用的媒体类型";
+        EXPECT_FALSE(duplicated.multipartForm().has_value()) << "两条 content-type 不构成可用的媒体类型";
     }
 
     TEST(HttpRequest, HasMultipleHostHeadersDetectsRFC9110Violation)

@@ -2835,8 +2835,12 @@ namespace AsynGyanis::Net
         http3Context.clientPrivateKeyFile  = &m_clientPrivateKeyFile;
         http3Context.rejectedEndpoints     = &m_http3RejectedEndpoints;
 
-        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(*m_loop, effectiveRequest, parsed, *effectiveTimeout, &m_pool, m_cookieJar.get(),
-                                                                                                 failureReason, m_clientTls.get(), &http3Context, &m_proxyPolicy);
+        // 罐子要被跟随重定向那段协程跨每一跳的 co_await 使用：先取一份快照，让它活在本协程帧里。
+        // 直接把 m_cookieJar.get() 传下去时，同一条循环上有人 setCookieJar() 换罐，旧罐析构后这里就悬垂
+        const std::shared_ptr<HttpCookieJar> cookieJarSnapshot = m_cookieJar;
+
+        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(
+                *m_loop, effectiveRequest, parsed, *effectiveTimeout, &m_pool, cookieJarSnapshot.get(), failureReason, m_clientTls.get(), &http3Context, &m_proxyPolicy);
         if (!response)
         {
             if (m_circuitBreaker != nullptr)

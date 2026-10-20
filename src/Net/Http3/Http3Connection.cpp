@@ -492,6 +492,17 @@ namespace AsynGyanis::Net
         // 对端会把这条请求换一条连接重发；这里不回应，但要照还额度并放弃这条流
         if (isNewRequestStream && m_isDraining && streamId >= m_rejectedFromStreamId)
         {
+            // 拒绝时流的记录会被回收，同一条流的后续字节仍满足 isNewRequestStream：已拒绝过的
+            // 流号只还额度，不再重建状态，也不再补一次取消
+            if (streamId <= m_lastRejectedDrainedStreamId)
+            {
+                if (m_streamCrediter && !data.empty())
+                {
+                    m_streamCrediter(streamId, data.size());
+                }
+                return;
+            }
+            m_lastRejectedDrainedStreamId = streamId;
             rejectStreamAfterDrain(streamId, data);
             return;
         }
@@ -658,8 +669,9 @@ namespace AsynGyanis::Net
             return {};
         }
 
-        // 剩下的都是「出现在错误位置的已知帧」：SETTINGS/PUSH_PROMISE/GOAWAY/MAX_PUSH_ID/CANCEL_PUSH
-        // 都只许出现在控制流上（RFC 9114 §7.2.4/§7.2.5/§7.2.6/§7.2.7/§7.2.3）；
+        // 剩下的都是「出现在错误位置的已知帧」：本类按服务端角色运行，SETTINGS/GOAWAY/MAX_PUSH_ID/CANCEL_PUSH
+        // 只许出现在控制流上（RFC 9114 §7.2.4/§7.2.6/§7.2.7/§7.2.3）；PUSH_PROMISE 反过来是服务端在请求流上
+        // 发给客户端的（§7.2.5），客户端发来在本端非法（§4.6：client cannot push）；
         // H3_FRAME_UNEXPECTED 按 §8.1 是连接错误，不能只结这条流
         breakConnection(Http3ErrorCode::FrameUnexpected, std::string("帧类型 ") + std::string(http3FrameTypeName(http3FrameTypeValue(frame))) + " 不得出现在请求流上");
         return {};
@@ -1214,8 +1226,8 @@ namespace AsynGyanis::Net
 
     void Http3Connection::rejectStreamAfterDrain(const std::int64_t streamId, const std::span<const std::uint8_t> data)
     {
-        // 先建状态再立刻放弃：不建的话对端后续字节会被当成「一条全新的流」重新判一遍，
-        // 而「已受理」与「已拒绝」的边界必须稳定
+        // 先建状态再立刻放弃：failStream 要靠这条记录把流标成放弃，随后在同一处回收；
+        // 「已受理」与「已拒绝」的边界必须稳定
         StreamState &state = streamStateFor(streamId);
         state.isAbandoned  = true;
         if (m_streamCrediter && !data.empty())
@@ -1225,8 +1237,8 @@ namespace AsynGyanis::Net
         // §5.2 的 SHOULD：通告之后到达的新流要显式取消，让对端立刻知道这条流不会被处理，而不是
         // 等到连接关闭。走 failStream 是为了让会话在同一处收到「该流已放弃」并回收它的记账
         failStream(streamId, Http3ErrorCode::RequestRejected, "GOAWAY 已通告，新请求不再受理");
-        // failStream 只标记不擦：此后这条流再到的字节都走 isAbandoned 分支直接返回，不补这一句，
-        // GOAWAY 之后每条被拒的新流都会永久留在流表里
+        // failStream 只标记不擦：紧接着按安全点回收这条流的记录；此后同一流号的字节由
+        // m_lastRejectedDrainedStreamId 挡住，不再重建状态，也不会再补一次取消
         pruneAbandonedStream(streamId);
     }
 

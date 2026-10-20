@@ -49,6 +49,12 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool requestHasMediaType(const HttpRequest &request, const std::string_view expectedMediaType)
         {
+            // 同名多条按 RFC 9110 §5.2 合并后是不可解析的 "a, b"：这里只在恰好一条时取视图，
+            // 多条按「没有可用的 Content-Type」判否
+            if (request.headerFieldCount("content-type") != 1)
+            {
+                return false;
+            }
             const std::optional<std::string_view> contentTypeHeader = request.firstHeaderValueView("content-type");
             return contentTypeHeader.has_value() && contentTypeIs(*contentTypeHeader, expectedMediaType);
         }
@@ -533,6 +539,12 @@ namespace AsynGyanis::Net
 
     std::optional<MultipartFormData> HttpRequest::multipartForm() const
     {
+        // 同名多条按 RFC 9110 §5.2 合并后是不可解析的 "a, b"：这里只在恰好一条时取视图，
+        // 多条按「没有可用的 Content-Type」处理
+        if (headerFieldCount("content-type") != 1)
+        {
+            return std::nullopt;
+        }
         const std::optional<std::string_view> contentTypeHeader = firstHeaderValueView("content-type");
         if (!contentTypeHeader.has_value())
         {

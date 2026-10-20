@@ -525,6 +525,8 @@ namespace AsynGyanis::Net
         bool          m_isDraining{false};             ///< 是否已发出 GOAWAY 排空通告
         /// 排空通告里的标识：等于或高于它的请求流一律拒绝（RFC 9114 §5.2）。0 表示一条都没受理过
         std::int64_t m_rejectedFromStreamId{0};
+        /// 排空期已拒绝过的最大请求流号；用于避免同一流被重复建状态。-1 表示还没拒绝过任何流
+        std::int64_t m_lastRejectedDrainedStreamId{-1};
         /// 已受理的最大对端请求流号；-1 表示还没受理过任何请求流，决定 GOAWAY 该报哪个标识
         std::int64_t   m_lastProcessedRequestStreamId{-1};
         bool           m_isUsable{false};                              ///< 三条本端单向流是否都开出来了

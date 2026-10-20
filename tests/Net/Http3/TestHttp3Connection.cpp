@@ -1765,6 +1765,40 @@ TEST(Http3Connection, RequestsAfterTheDrainAnnouncementAreIgnoredButCredited)
 }
 
 /**
+ * @brief 同一条被拒流分两批到达只交代一次取消
+ * @details 拒绝时这条流的记录已被回收，若只看「流表里没有它」就会把第二批量当成新流再拒一遍：
+ *          每批后续字节都会多一次 onStreamReset 与一条 WARN。额度仍要按批归还，连接不受影响
+ */
+TEST(Http3Connection, RepeatedBytesOfADrainedStreamAreRejectedOnlyOnce)
+{
+    FakeTransport transport;
+    EventLog      events;
+    auto          connection = makeConnection(transport, events);
+
+    std::string encoderBytes;
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes))), true);
+    ASSERT_TRUE(connection->beginGracefulDrain().has_value());
+
+    const std::string lateRequestBytes = makeFrame(0x01, encodeSection(minimalRequestFields(), encoderBytes));
+    // 从帧中间切开：第一批不足一帧，第二批补齐并带 END_STREAM
+    const std::size_t splitPosition = lateRequestBytes.size() / 2;
+    const std::string firstBatch    = lateRequestBytes.substr(0, splitPosition);
+    const std::string secondBatch   = lateRequestBytes.substr(splitPosition);
+
+    events.headerFields.clear();
+    events.requestsEnded.clear();
+    connection->consumeStreamData(8, bytesOfText(firstBatch), false);
+    ASSERT_EQ(events.streamsReset.size(), 1U) << "第一批就该交代一次取消";
+    connection->consumeStreamData(8, bytesOfText(secondBatch), true);
+
+    EXPECT_EQ(events.streamsReset.size(), 1U) << "同一被拒流的后续字节不该再产生第二次取消";
+    EXPECT_TRUE(events.headerFields.empty()) << "拒绝过的流不该再交出任何头字段";
+    EXPECT_TRUE(events.requestsEnded.empty()) << "这条流也不该被当作「请求收齐」交给上层";
+    EXPECT_EQ(transport.creditedOf(8), lateRequestBytes.size()) << "额度按批归还，合计仍是整条流的字节数";
+    EXPECT_FALSE(connection->isBroken()) << "重复字节只是排空期的正常收尾，不该作废连接";
+}
+
+/**
  * @brief 钉住：响应头段越过对端通告的 SETTINGS_MAX_FIELD_SECTION_SIZE 时只作废那一条流
  * @details 依据 RFC 9114 §4.2.2：这一项约束的正是本端发出去的头段。不判就把处置权交给对端，
  *          而它常见做法是收掉整条连接。本端宁可只中止这一条流，且拒绝时一个字节都不上线

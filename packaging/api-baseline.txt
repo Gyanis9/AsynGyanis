@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8838
+# headers=303 entries=8839
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5928,6 +5928,7 @@ src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId, std::s
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId, std::string_view name, std::string_view value, bool isTrailers)> onHeaderField
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId, std::string_view reason)> onMalformedRequest
 src/Net/Http3/Http3Connection.h	std::int64_t m_lastProcessedRequestStreamId
+src/Net/Http3/Http3Connection.h	std::int64_t m_lastRejectedDrainedStreamId
 src/Net/Http3/Http3Connection.h	std::int64_t m_localControlStreamId
 src/Net/Http3/Http3Connection.h	std::int64_t m_localDecoderStreamId
 src/Net/Http3/Http3Connection.h	std::int64_t m_localEncoderStreamId
