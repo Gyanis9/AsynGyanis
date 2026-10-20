@@ -67,7 +67,7 @@ namespace AsynGyanis::Core::Digest
          */
         void runHmac(std::string_view key, std::string_view data, std::string_view digestName, std::span<std::uint8_t> out, std::string_view algorithmName)
         {
-            EVP_MAC *const     algorithm = sharedHmacAlgorithm();
+            EVP_MAC *const algorithm = sharedHmacAlgorithm();
             if (algorithm == nullptr)
             {
                 throw Base::Exception("Core::Digest: 无法加载 HMAC MAC 提供方（OpenSSL 未正确初始化或默认提供方未载入）");
