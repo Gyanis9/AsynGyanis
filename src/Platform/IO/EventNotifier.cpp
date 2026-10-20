@@ -116,10 +116,17 @@ namespace AsynGyanis::Platform
 
     void EventNotifier::flushDescriptor() const noexcept
     {
-        // 非阻塞描述符读到 0 或 -1 即表示已排空，循环覆盖多次 notify 合并的情况
+#if ASYN_PLATFORM_LINUX
+        // eventfd 的一次 read 取走累计计数并把计数器清零，第二次读必然 EAGAIN——
+        // 唤醒路径上每跨线程投递一次就要走这里，白付的那一次系统调用直接加在尾延迟上
+        std::uint64_t pendingWakeups = 0;
+        static_cast<void>(FileDescriptor::read(m_readDescriptor, &pendingWakeups, sizeof(pendingWakeups)));
+#else
+        // socket 对是字节流：每次通知落一个字节，合并之后仍可能有好几个，循环读到空
         char buffer[64];
         while (FileDescriptor::read(m_readDescriptor, buffer, sizeof(buffer)) > 0)
         {
         }
+#endif
     }
 } // namespace AsynGyanis::Platform

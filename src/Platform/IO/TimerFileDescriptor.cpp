@@ -2,6 +2,7 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace AsynGyanis::Platform
 {
@@ -153,11 +154,17 @@ namespace AsynGyanis::Platform
         {
             return;
         }
-        // 读空计数：Linux 返回到期次数，Windows 返回 socket 对累积的标记字节
+#if ASYN_PLATFORM_LINUX
+        // timerfd 的一次 read 返回到期次数并复位，第二次读必然 EAGAIN
+        std::uint64_t expirationCount = 0;
+        static_cast<void>(FileDescriptor::read(m_fileDescriptor, &expirationCount, sizeof(expirationCount)));
+#else
+        // Windows 侧是 socket 对累积的标记字节，循环读到空
         char buffer[64];
         while (FileDescriptor::read(m_fileDescriptor, buffer, sizeof(buffer)) > 0)
         {
         }
+#endif
     }
 
 #if ASYN_PLATFORM_WIN32

@@ -39,8 +39,8 @@ namespace AsynGyanis::Platform
     /**
      * @brief socket 层跨平台工具
      *
-     * @details Windows 上任何 socket API 调用前必须完成 WSAStartup，Linux 上
-     *          相应接口为空操作，因此调用方无需平台分支。
+     * @details Windows 上任何 socket API 调用前必须完成 WSAStartup；Linux 上
+     *          无需启动子系统，首次 initialize() 只落一次进程级设置，因此调用方无需平台分支。
      * @note initialize()/finalize() 以引用计数配对：多个持有网络资源的对象可各自成对调用，
      *       Winsock 只在首个 initialize() 时启动、在最后一个 finalize() 时清理。
      */
@@ -112,6 +112,7 @@ namespace AsynGyanis::Platform
          * @brief 申请网络子系统初始化引用（Windows 下按需执行 WSAStartup）
          * @return true 引用已建立（首次调用会真正启动 Winsock）
          * @return false Windows 下 WSAStartup 失败
+         * @note Linux 上首次调用同时忽略 SIGPIPE（sendfile 没有 per-call 标志）
          */
         static bool initialize() noexcept;
 

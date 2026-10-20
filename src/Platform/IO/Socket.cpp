@@ -94,8 +94,10 @@ namespace AsynGyanis::Platform
         // 本层所有发送都带 MSG_NOSIGNAL，唯独 sendfile 没有对应的 per-call 标志——向已关闭的
         // 对端发文件会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
         // 发送失败路径处理（与 TlsContext 对 OpenSSL 内部写入的处理同源，那边是另一条
-        // 绕不开的信号来源）。signal() 幂等，重复调用没有额外影响
-        std::signal(SIGPIPE, SIG_IGN);
+        // 绕不开的信号来源）。signal() 幂等，但 createPair 每次建 notifier/定时器都会走到这里，
+        // call_once 让重复调用只剩一次原子检查
+        static std::once_flag sigpipeGuard;
+        std::call_once(sigpipeGuard, [] { std::signal(SIGPIPE, SIG_IGN); });
         return true;
 #endif
     }
