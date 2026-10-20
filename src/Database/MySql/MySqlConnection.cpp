@@ -1524,6 +1524,11 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::commit()
     {
+        if (!isConnected())
+        {
+            m_lastError = "提交 MySQL 事务失败：未连接到数据库";
+            return false;
+        }
         if (!isTransactionOpenNow())
         {
             m_lastError = "提交 MySQL 事务失败：这条连接没有活动事务（MySQL 的 COMMIT 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";
@@ -1540,6 +1545,11 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::rollback()
     {
+        if (!isConnected())
+        {
+            m_lastError = "回滚 MySQL 事务失败：未连接到数据库";
+            return false;
+        }
         if (!isTransactionOpenNow())
         {
             m_lastError = "回滚 MySQL 事务失败：这条连接没有活动事务（MySQL 的 ROLLBACK 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";

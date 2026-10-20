@@ -307,8 +307,9 @@ namespace AsynGyanis::Database
         // 三个便捷封装都走 execute()，未连接时按同一约定返回 false
         EXPECT_FALSE(connection.beginTransaction());
         EXPECT_FALSE(connection.commit());
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
         EXPECT_FALSE(connection.rollback());
-        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
     }
 
     // ------------------------------------------------------------------------
