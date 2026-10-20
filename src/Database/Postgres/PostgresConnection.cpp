@@ -1028,7 +1028,21 @@ namespace AsynGyanis::Database
         // 开流成功：计数 +1 表示「这条连接在流读完或结果析构之前不可发新语句」，
         // 归位由结果集在读完、中断或析构收干时经 noteStreamClosed() 完成
         ++m_openStreamCount;
-        return PostgresResult::forStreaming(m_connection, this, firstChunk);
+        try
+        {
+            return PostgresResult::forStreaming(m_connection, this, firstChunk);
+        } catch (...)
+        {
+            // 结果对象的首块所有权在构造内接手；这里的 catch 只兜住 new 自身的分配失败。
+            // 首块与后续块都要收干，否则回复流留在连接上；在途计数也要归位，否则此后一直拒发命令
+            PQclear(firstChunk);
+            while (PGresult *pendingChunk = PQgetResult(m_connection))
+            {
+                PQclear(pendingChunk);
+            }
+            noteStreamClosed();
+            throw;
+        }
     }
 
     std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const rawResult, const std::string_view description, const bool carriesReturnedKey)
