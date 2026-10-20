@@ -826,6 +826,40 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 本端双向流只收响应，不占对端的流数配额：给对端的 MAX_STREAMS 不该因此抬高（§4.6）
+     * @details 流数上限数的是「对端已发起多少条流」。本端请求流的入站记录只为收响应而建，算进去
+     *          就等于把本端的请求数记成对端已用流数，本端开两条请求就会向对端宣告一个虚高的上限。
+     *          后半段用对端自己新建的流做正向对照：那条路径仍要照常续额。
+     */
+    TEST(QuicStreamLayer, DoesNotRaiseAdvertisedStreamCountForLocallyInitiatedStreams)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makePeerParameters());
+
+        const std::vector<std::uint8_t> response = bytesOf("ok");
+        for (int index = 0; index < 2; ++index)
+        {
+            const auto opened = layer.openBidirectionalStream();
+            ASSERT_HAS_VALUE(opened);
+            ASSERT_TRUE(layer.onStreamFrame(makeStreamFrame(*opened, 0, response)).has_value()) << "对端在已开出的请求流上回数据被当成了违规";
+        }
+        while (layer.hasDeliveries())
+        {
+            static_cast<void>(layer.takeDelivery());
+        }
+        EXPECT_TRUE(framesOfType<QuicMaxStreamsFrame>(collect(layer, 1200).frames).empty()) << "本端请求流被记成了对端已用流数，上限被白白抬高";
+        EXPECT_FALSE(layer.hasOutgoingFrames());
+
+        // 正向对照：对端新建两条双向流，用满本端宣告的 4 条的一半，仍要续出 6 条的上限
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x00, 0, response)).has_value());
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(0x04, 0, response)).has_value());
+        const std::vector<QuicMaxStreamsFrame> updates = framesOfType<QuicMaxStreamsFrame>(collect(layer, 1200).frames);
+        ASSERT_EQ(updates.size(), 1U);
+        EXPECT_FALSE(updates.front().isUnidirectional);
+        EXPECT_EQ(updates.front().maximumStreams, 6U) << "只按对端发起的两条流续额，本端那两条不该算进去";
+    }
+
+    /**
      * @brief 复位打断入站流：缓存作废、迟到数据丢弃，连接级额度不退
      */
     TEST(QuicStreamLayer, AbortsIncomingStreamOnReset)
@@ -1514,6 +1548,163 @@ namespace AsynGyanis::Net
             static_cast<void>(collect(layer, 1200));
             ASSERT_EQ(layer.trackedStreamCount(), 0U) << "第 " << requestIndex << " 轮之后仍有记录没被摘掉";
         }
+    }
+
+    namespace
+    {
+        /**
+         * @brief 把一条本端双向流的发送侧推到「带 FIN 的那段已确认」
+         * @param layer 被测流层
+         * @param streamId 目标流号
+         */
+        void finishLocalSendSide(QuicStreamLayer &layer, const std::uint64_t streamId)
+        {
+            const std::vector<std::uint8_t> request = bytesOf("request");
+            EXPECT_EQ(layer.writeStreamData(streamId, request, true), request.size()) << "本端双向流的正文没被收下";
+            const Collected sent = collect(layer, 1200);
+            ASSERT_FALSE(sent.ranges.empty()) << "带 FIN 的那段没排进包里";
+            layer.onSendRangesAcknowledged(sent.ranges);
+        }
+
+        /**
+         * @brief 把对端在本端双向流上的响应收完、交付完并还清额度
+         * @param layer 被测流层
+         * @param streamId 目标流号
+         * @param responseByteCount 响应长度
+         */
+        void receiveLocalResponse(QuicStreamLayer &layer, const std::uint64_t streamId, const std::size_t responseByteCount)
+        {
+            const std::vector<std::uint8_t> response(responseByteCount, 'p');
+            EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 0, response, true)).has_value()) << "对端回的数据被当成了违规";
+            while (layer.hasDeliveries())
+            {
+                static_cast<void>(layer.takeDelivery());
+            }
+            layer.releaseReceiveWindow(streamId, responseByteCount);
+        }
+    } // namespace
+
+    /**
+     * @brief 本端发起的双向流两侧都结清后要被摘掉
+     * @details 客户端每条请求都是一条本端发起的双向流：入站侧记响应、出站侧记请求。两侧都收口后
+     *          若仍留着，长连接上的两张表就会按请求数一直长
+     */
+    TEST(QuicStreamLayer, ForgetsLocallyInitiatedBidirectionalStreamOnceSettled)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const auto      opened = layer.openBidirectionalStream();
+        ASSERT_HAS_VALUE(opened);
+        const std::uint64_t streamId = *opened;
+
+        finishLocalSendSide(layer, streamId);
+        receiveLocalResponse(layer, streamId, 2);
+        EXPECT_EQ(layer.trackedStreamCount(), 2U) << "回收还没发生，两侧记录都该在";
+
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "两侧都结清之后本端双向流的记录没有留下的理由";
+    }
+
+    /**
+     * @brief 本端双向流乱序结清：后开的先摘、先开的后摘，边界最终折成连续前缀
+     * @details 先结清的那个序号落在空洞里，只有前面那条也结清之后边界才能一次折过去；
+     *          两次结清之间，已摘掉的流号靠空洞认出来，不许按新流建回去
+     */
+    TEST(QuicStreamLayer, RetiresLocallyInitiatedBidirectionalStreamsOutOfOrder)
+    {
+        QuicStreamLayer layer(makeLocalParameters(), QuicConnectionRole::Client);
+        layer.adoptPeerParameters(makePeerParameters());
+        const auto first  = layer.openBidirectionalStream();
+        const auto second = layer.openBidirectionalStream();
+        ASSERT_HAS_VALUE(first);
+        ASSERT_HAS_VALUE(second);
+        const std::uint64_t firstId  = *first;
+        const std::uint64_t secondId = *second;
+        EXPECT_EQ(firstId, 0x00U);
+        EXPECT_EQ(secondId, 0x04U);
+
+        // 后开的 0x04 先发完并确认：这一轮编帧会把它的出站记录摘掉
+        finishLocalSendSide(layer, secondId);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "0x04 的发送侧该摘，0x00 的出站记录还在";
+
+        // 发送侧已作废不影响对端继续回数据：这是本端双向流与本端单向流的分界
+        receiveLocalResponse(layer, secondId, 2);
+        EXPECT_EQ(layer.trackedStreamCount(), 2U) << "0x04 的入站记录该建出来，0x00 的出站记录还没结清";
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "0x04 两侧都结清该摘，0x00 还在";
+
+        // 0x04 已不在表里：迟到段要靠空洞认出来，不能按新流建回去
+        const std::vector<std::uint8_t> replay = bytesOf("late");
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(secondId, 1, replay)).has_value()) << "空洞里的迟到帧被当成了违规";
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "迟到帧把已摘掉的 0x04 又建了回来";
+
+        finishLocalSendSide(layer, firstId);
+        receiveLocalResponse(layer, firstId, 2);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "两条流都结清之后记录该清空";
+
+        // 边界已折到 2：先开的与后开的两条迟到段都认得出
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(firstId, 0, replay)).has_value());
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(secondId, 0, replay)).has_value());
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "边界之下与空洞里的流号都不该被重新记账";
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "迟到帧不该留下待发的额度或宣告";
+    }
+
+    /**
+     * @brief 本端双向流摘掉之后，迟到的 STREAM、额度与停发都不许把它建回来，也不许报错
+     * @details 摘记录之后本层就没了这条流收过多少的凭据：按新流建一份会带着全新的额度，
+     *          对端合法的重传当场被误判成 FLOW_CONTROL_ERROR（§4.5）
+     */
+    TEST(QuicStreamLayer, IgnoresLateFramesForRetiredLocalBidirectionalStream)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const auto      opened = layer.openBidirectionalStream();
+        ASSERT_HAS_VALUE(opened);
+        const std::uint64_t streamId = *opened;
+
+        finishLocalSendSide(layer, streamId);
+        receiveLocalResponse(layer, streamId, 2);
+        static_cast<void>(collect(layer, 1200));
+        ASSERT_EQ(layer.trackedStreamCount(), 0U) << "没摘掉就测不到迟到帧这一路";
+
+        const std::vector<std::uint8_t> late = bytesOf("xy");
+        EXPECT_TRUE(layer.onStreamFrame(makeStreamFrame(streamId, 2, late)).has_value()) << "已结清的本端双向流上迟到帧被当成了违规";
+        QuicMaxStreamDataFrame maxStreamData;
+        maxStreamData.streamId          = streamId;
+        maxStreamData.maximumStreamData = 4096;
+        EXPECT_TRUE(layer.onMaxStreamDataFrame(maxStreamData).has_value()) << "迟到的额度不该被判错";
+        QuicStopSendingFrame stopSending;
+        stopSending.streamId             = streamId;
+        stopSending.applicationErrorCode = 0x010b;
+        EXPECT_TRUE(layer.onStopSendingFrame(stopSending).has_value()) << "迟到的停发不该被判错";
+
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "迟到帧又给已结清的流建了一份记录";
+        EXPECT_FALSE(layer.hasAbortedStreams()) << "已发完的流不该因为迟到停发又排给上层";
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "迟到帧不该留下待发的 RESET_STREAM 或额度";
+        EXPECT_EQ(layer.writeStreamData(streamId, late, false), 0U) << "上游再往已结清的流写数据该被拒收";
+        layer.resetStreamSending(streamId, 0x010b);
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "复位一个已结清的流不该把记录建回来";
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "复位一个已结清的流不该编出 RESET_STREAM";
+    }
+
+    /**
+     * @brief 对照：本端单向控制流即使发完并确认也要留在表里
+     * @details 控制流与 QPACK 流各一条，数量与连接寿命无关；摘掉它反而会让后续写入无处落账
+     */
+    TEST(QuicStreamLayer, KeepsLocallyInitiatedUnidirectionalControlStream)
+    {
+        QuicStreamLayer layer(makeEstablishedLayer());
+        const auto      opened = layer.openUnidirectionalStream();
+        ASSERT_HAS_VALUE(opened);
+        const std::uint64_t streamId = *opened;
+
+        const std::vector<std::uint8_t> control = bytesOf("ctrl");
+        EXPECT_EQ(layer.writeStreamData(streamId, control, true), control.size());
+        const Collected sent = collect(layer, 1200);
+        ASSERT_FALSE(sent.ranges.empty()) << "控制流的数据没排进包里";
+        layer.onSendRangesAcknowledged(sent.ranges);
+        static_cast<void>(collect(layer, 1200));
+        EXPECT_EQ(layer.trackedStreamCount(), 1U) << "本端单向流是常驻记录，不该被回收";
     }
 
     /**

@@ -32,6 +32,7 @@
 #include <expected>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -402,8 +403,9 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isOutgoingSettled(const OutgoingStream &stream) const noexcept;
 
         /**
-         * @brief 摘掉两侧都再无事可做的对端流
-         * @details 挂在每次编帧的入口：不摘的话这两张表会随连接上做过的请求数一直长
+         * @brief 摘掉两侧都再无事可做的流
+         * @details 挂在每次编帧的入口：不摘的话这两张表会随连接上做过的请求数一直长。本端双向流
+         *          也一样摘，只有本端单向流常驻——控制流与 QPACK 流各一条，数量与连接寿命无关
          */
         void retireSettledStreams();
 
@@ -416,6 +418,15 @@ namespace AsynGyanis::Net
         void noteStreamRetired(std::uint64_t streamId, bool isReceiveSide);
 
         /**
+         * @brief 记下「这条本端双向流的某一侧已作废」
+         * @details 边界只吸收连续的一段：乱序结清时把序号放进空洞集合，等前面那些流补上再一起
+         *          折进边界，集合里只留真正的乱序空洞
+         * @param streamId 被摘掉记录的那条流
+         * @param isReceiveSide 摘的是接收侧还是发送侧
+         */
+        void noteLocalBidiStreamRetired(std::uint64_t streamId, bool isReceiveSide);
+
+        /**
          * @brief 这条对端流的某一侧记录是否已被摘掉
          * @details 同类型流号只增不减（§2.1），边界之下又不在表里的号只能是「有过、如今作废了」；
          *          按新流建一份就会带着全新的额度，把对端合法的重传判成 FLOW_CONTROL_ERROR（§4.5）。
@@ -425,6 +436,17 @@ namespace AsynGyanis::Net
          * @return true 那一侧的记录已作废
          */
         [[nodiscard]] bool isPeerStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept;
+
+        /**
+         * @brief 这条本端双向流的某一侧记录是否已被摘掉
+         * @details 本端双向流的结清顺序由上层决定，除连续边界外还要容下乱序留下的空洞；
+         *          不认这些已作废的号，迟到的重传就会按新流建一份记录，带着全新的额度把对端
+         *          合法的重传判成 FLOW_CONTROL_ERROR（§4.5）
+         * @param streamId 流号
+         * @param isReceiveSide 查接收侧还是发送侧
+         * @return true 那一侧的记录已作废；不是本端发起的双向流时恒为 false
+         */
+        [[nodiscard]] bool isLocalBidiStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept;
         /// 按宣告描述找回它对应的那份状态；流已不存在或该方向没收口即返回空
         [[nodiscard]] AbortAnnouncement *abortAnnouncementOf(const QuicStreamAnnouncement &announcement);
         /// 按流的类别取对端给的初始发送窗口；对端参数没到手时返回空
@@ -437,7 +459,7 @@ namespace AsynGyanis::Net
         /// 收口宣告排在最前：一条帧只占十几字节，却决定对端要不要继续等下去
         [[nodiscard]] std::size_t collectAbortAnnouncements(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamAnnouncement> &announcements);
         [[nodiscard]] std::size_t collectStreamData(std::string &frames, std::size_t byteBudget, std::vector<QuicStreamRange> &sentRanges);
-        /// 对端用掉一半已宣告的流数就续上限，两处入口（新建流、消费数据）共用一段判据
+        /// 对端发起的流用掉一半已宣告的流数就续上限，两处入口（对端新建流、消费数据）共用一段判据
         void raiseAdvertisedStreamLimits();
         /// 这条流现在还能发多少字节：流级与连接级额度取小
         [[nodiscard]] std::size_t sendCreditOf(const OutgoingStream &stream) const noexcept;
@@ -456,9 +478,12 @@ namespace AsynGyanis::Net
         /// 对端发起的流里「已作废」的流号边界，取的是同类型的第几条。两侧必须分开——一条请求的
         /// 入站侧往往先结清，共用一条边界会把同一条流的响应也挡掉
         std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries{}; ///< [收/发][双向/单向] 各一条边界
-        PendingQueue<QuicStreamDelivery>            m_deliveries{};                  ///< 等着交给上层的数据
-        PendingQueue<QuicAbortedStream>             m_abortedStreams{};              ///< 被打断、等上层回收的流
-        std::size_t                                 m_drainedSendByteCount{0};       ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
+        /// 本端双向流的结清顺序由上层决定：边界以下的号都已作废，边界之上还可能有乱序结清留下的空洞
+        std::array<std::uint64_t, 2>           m_retiredLocalBidiBoundaries{}; ///< [收/发] 本端双向流已作废的序号边界
+        std::array<std::set<std::uint64_t>, 2> m_retiredLocalBidiGaps{};       ///< [收/发] 边界之上乱序结清留下的空洞
+        PendingQueue<QuicStreamDelivery>       m_deliveries{};                 ///< 等着交给上层的数据
+        PendingQueue<QuicAbortedStream>        m_abortedStreams{};             ///< 被打断、等上层回收的流
+        std::size_t                            m_drainedSendByteCount{0};      ///< 自上层取数以来排进包的待发字节，上层据此续交留下的那段
 
         std::uint64_t m_connectionReceivedBytes{0};           ///< 各入站流最大结束偏移之和，§4.1 的连接级账
         std::uint64_t m_connectionConsumedBytes{0};           ///< 上层消化掉的字节总数，连接级窗口按它抬
@@ -468,8 +493,8 @@ namespace AsynGyanis::Net
         std::uint64_t m_connectionSentHighWater{0}; ///< 各出站流曾上线的最大结束偏移之和
         std::uint64_t m_connectionSendLimit{0};     ///< 对端给的连接级发送上限，参数没到之前是 0
 
-        std::uint64_t m_incomingBidirectionalCount{0};             ///< 对端发起的双向流数（按号数算，不按存活数）
-        std::uint64_t m_incomingUnidirectionalCount{0};            ///< 对端发起的单向流数
+        std::uint64_t m_incomingBidirectionalCount{0};             ///< 对端发起的双向流数（按号数算，不按存活数）；本端双向流的入站记录只为接收响应，不计入
+        std::uint64_t m_incomingUnidirectionalCount{0};            ///< 对端发起的单向流数；本端发起的流不占对端的流数配额，不计入
         std::uint64_t m_advertisedBidirectionalStreams{0};         ///< 已经给过对端的双向流数上限
         std::uint64_t m_advertisedUnidirectionalStreams{0};        ///< 已经给过的单向流数上限
         bool          m_streamsBidirectionalUpdatePending{false};  ///< 欠一条 MAX_STREAMS（双向）

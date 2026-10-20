@@ -62,7 +62,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 「已作废流号」边界按哪一档记：只分双向与单向
-         * @details 只对对端发起的流有意义（本端发起的流不摘），所以发起方那一位不必进档位
+         * @details 只给对端发起的流用：对端发起的流发起方那一位恒为对端，档位只需区分双向与单向；
+         *          本端双向流另有按收、发两侧分开的边界，本端单向流不摘
          * @param streamId 流号
          * @return std::size_t 0 为双向、1 为单向
          */
@@ -192,6 +193,11 @@ namespace AsynGyanis::Net
                 // 那份新额度会把对端合法的重传判成越界（§4.5）
                 return {};
             }
+            if (isLocalBidiStreamSideRetired(streamId, true))
+            {
+                // 本端双向流的接收侧已经结清并摘了记录：同样按迟到的重传或重复段处理，不新建记录
+                return {};
+            }
             if (isLocallyInitiated(streamId))
             {
                 if (isUnidirectional(streamId))
@@ -199,9 +205,10 @@ namespace AsynGyanis::Net
                     // 本端发起的单向流上对端没有发言权（§2.1）
                     return std::unexpected(makeViolation(kProtocolViolation, std::format("对端在本端发起的单向流 {} 上发了数据（RFC 9000 §2.1）", streamId)));
                 }
-                if (m_outgoing.find(streamId) == m_outgoing.end())
+                if (m_outgoing.find(streamId) == m_outgoing.end() && !isLocalBidiStreamSideRetired(streamId, false))
                 {
-                    // 本端发起的双向流可以回数据，但前提是这条流确实是本端开出来的（§3）
+                    // 本端发起的双向流可以回数据，但前提是这条流确实是本端开出来的（§3）。
+                    // 发送侧已经结清并摘了记录的除外：那条流确实开过，对端继续回数据是合法的
                     return std::unexpected(makeViolation(kProtocolViolation, std::format("对端在本端还没发起的双向流 {} 上回了数据（RFC 9000 §3）", streamId)));
                 }
             } else if (const std::uint64_t index = streamIndexOfType(streamId);
@@ -214,15 +221,20 @@ namespace AsynGyanis::Net
             }
             IncomingStream &fresh = m_incoming[streamId];
             fresh.streamLimit     = incomingInitialWindowOf(streamId);
-            if (isUnidirectional(streamId))
+            // 流数配额只数对端发起的流：本端双向流上的入站记录只为接收响应，算进去等于把本端
+            // 自己的请求数当成对端已用流数，给对端的 MAX_STREAMS 会被白白抬高
+            if (!isLocallyInitiated(streamId))
             {
-                m_incomingUnidirectionalCount = std::max(m_incomingUnidirectionalCount, streamIndexOfType(streamId) + 1);
-            } else
-            {
-                m_incomingBidirectionalCount = std::max(m_incomingBidirectionalCount, streamIndexOfType(streamId) + 1);
+                if (isUnidirectional(streamId))
+                {
+                    m_incomingUnidirectionalCount = std::max(m_incomingUnidirectionalCount, streamIndexOfType(streamId) + 1);
+                } else
+                {
+                    m_incomingBidirectionalCount = std::max(m_incomingBidirectionalCount, streamIndexOfType(streamId) + 1);
+                }
+                // 对端新建流本身就该触发一次上限检查：应用还没消费时也得把额度续上，否则对端开不出下一条流
+                raiseAdvertisedStreamLimits();
             }
-            // 新建流本身就该触发一次上限检查：应用还没消费时也得把额度续上，否则对端开不出下一条流
-            raiseAdvertisedStreamLimits();
             incoming = m_incoming.find(streamId);
         }
         IncomingStream &stream = incoming->second;
@@ -313,7 +325,7 @@ namespace AsynGyanis::Net
         auto stream = m_outgoing.find(frame.streamId);
         if (stream == m_outgoing.end())
         {
-            if (isPeerStreamSideRetired(frame.streamId, false))
+            if (isPeerStreamSideRetired(frame.streamId, false) || isLocalBidiStreamSideRetired(frame.streamId, false))
             {
                 // 这条流的发送侧早已收口确认：额度抬给谁都没用了，别为它凭空建一份状态
                 return {};
@@ -392,7 +404,7 @@ namespace AsynGyanis::Net
             // 本端在这条流上本来就不发东西，叫停一个不存在的发送方是状态冲突（§4.5）
             return std::unexpected(makeViolation(kStreamStateError, std::format("对端让本端停止发送本端只能收的单向流 {}（RFC 9000 §4.5）", frame.streamId)));
         }
-        if (isPeerStreamSideRetired(frame.streamId, false))
+        if (isPeerStreamSideRetired(frame.streamId, false) || isLocalBidiStreamSideRetired(frame.streamId, false))
         {
             // 本端已经把这条流发完并得到确认：再补一份状态就会凭空回一条收尾长度为 0 的 RESET_STREAM，
             // 把已经收齐的对端判成越界
@@ -425,9 +437,9 @@ namespace AsynGyanis::Net
             // 超出对端给的流数上限：这条流开不出来，一字节也不收（§4.6）
             return 0;
         }
-        if (isPeerStreamSideRetired(streamId, false))
+        if (isPeerStreamSideRetired(streamId, false) || isLocalBidiStreamSideRetired(streamId, false))
         {
-            // 这条对端流的两侧都已收口：本端却还想往上写，说明上层留着了一条已经作废的流。收下只会
+            // 这条流的发送侧早已收口：本端却还想往上写，说明上层留着了一条已经作废的流。收下只会
             // 凭空建一份状态，把已经确认收尾的流又开出正文来
             return 0;
         }
@@ -505,7 +517,7 @@ namespace AsynGyanis::Net
 
     void QuicStreamLayer::resetStreamSending(const std::uint64_t streamId, const std::uint64_t applicationErrorCode)
     {
-        if (isPeerStreamSideRetired(streamId, false))
+        if (isPeerStreamSideRetired(streamId, false) || isLocalBidiStreamSideRetired(streamId, false))
         {
             // 发送侧早已收口确认：这条流没什么可复位的，建一份状态反而会被编成收尾长度为 0 的 RESET_STREAM
             return;
@@ -822,7 +834,8 @@ namespace AsynGyanis::Net
 
     void QuicStreamLayer::raiseAdvertisedStreamLimits()
     {
-        // 对端用掉一半已宣告的流数就把上限抬高，否则它会一直卡在 0x04 上（§4.6）
+        // 对端发起的流用掉一半已宣告的流数就把上限抬高，否则它会一直卡在 0x04 上（§4.6）；
+        // 本端发起的流不占这份配额，两个计数里也就没有它们
         const auto raise = [](const std::uint64_t usedCount, const std::uint64_t initialStreams, std::uint64_t &limit, bool &isUpdatePending)
         {
             if (limit > usedCount && limit - usedCount > initialStreams / 2)
@@ -868,11 +881,23 @@ namespace AsynGyanis::Net
 
     void QuicStreamLayer::retireSettledStreams()
     {
-        // 只摘对端发起的那两档：本端发起的流由上层自己掌握寿命，且它们的数量与连接寿命无关（控制流、
-        // QPACK 流各一条），留着的账太小，不值得为它们再记一份「哪些流号已作废」
+        // 本端单向流不摘：控制流与 QPACK 流各一条，数量与连接寿命无关。本端双向流每条请求一条，
+        // 两侧结清后照摘，否则两张表会随连接上做过的请求数一直长
         for (auto entry = m_incoming.begin(); entry != m_incoming.end();)
         {
-            if (isLocallyInitiated(entry->first) || !isIncomingSettled(entry->second))
+            if (isLocallyInitiated(entry->first))
+            {
+                if (isUnidirectional(entry->first) || !isIncomingSettled(entry->second))
+                {
+                    ++entry;
+                    continue;
+                }
+                // 先抬边界再摘条目：迟到帧要靠这条边界认出曾经有过、如今已作废的流号
+                noteLocalBidiStreamRetired(entry->first, true);
+                entry = m_incoming.erase(entry);
+                continue;
+            }
+            if (!isIncomingSettled(entry->second))
             {
                 ++entry;
                 continue;
@@ -884,7 +909,18 @@ namespace AsynGyanis::Net
         }
         for (auto entry = m_outgoing.begin(); entry != m_outgoing.end();)
         {
-            if (isLocallyInitiated(entry->first) || !isOutgoingSettled(entry->second))
+            if (isLocallyInitiated(entry->first))
+            {
+                if (isUnidirectional(entry->first) || !isOutgoingSettled(entry->second))
+                {
+                    ++entry;
+                    continue;
+                }
+                noteLocalBidiStreamRetired(entry->first, false);
+                entry = m_outgoing.erase(entry);
+                continue;
+            }
+            if (!isOutgoingSettled(entry->second))
             {
                 ++entry;
                 continue;
@@ -941,6 +977,19 @@ namespace AsynGyanis::Net
         boundary                        = std::max(boundary, streamIndexOfType(streamId) + 1);
     }
 
+    void QuicStreamLayer::noteLocalBidiStreamRetired(const std::uint64_t streamId, const bool isReceiveSide)
+    {
+        const std::size_t   side  = isReceiveSide ? 0U : 1U;
+        const std::uint64_t index = streamIndexOfType(streamId);
+        m_retiredLocalBidiGaps[side].insert(index);
+        // 边界只吸收连续的一段：乱序结清留下的空洞继续留在集合里，等前面那些流补上再一起折进边界
+        std::uint64_t &boundary = m_retiredLocalBidiBoundaries[side];
+        while (m_retiredLocalBidiGaps[side].erase(boundary) != 0)
+        {
+            ++boundary;
+        }
+    }
+
     bool QuicStreamLayer::isPeerStreamSideRetired(const std::uint64_t streamId, const bool isReceiveSide) const noexcept
     {
         if (isLocallyInitiated(streamId))
@@ -948,6 +997,17 @@ namespace AsynGyanis::Net
             return false;
         }
         return streamIndexOfType(streamId) < m_retiredPeerStreamBoundaries[isReceiveSide ? 0U : 1U][retiredBoundarySlotOf(streamId)];
+    }
+
+    bool QuicStreamLayer::isLocalBidiStreamSideRetired(const std::uint64_t streamId, const bool isReceiveSide) const noexcept
+    {
+        if (!isLocallyInitiated(streamId) || isUnidirectional(streamId))
+        {
+            return false;
+        }
+        const std::size_t   side  = isReceiveSide ? 0U : 1U;
+        const std::uint64_t index = streamIndexOfType(streamId);
+        return index < m_retiredLocalBidiBoundaries[side] || m_retiredLocalBidiGaps[side].contains(index);
     }
 
     void QuicStreamLayer::onSendRangesAcknowledged(const std::vector<QuicStreamRange> &acknowledgedRanges)
