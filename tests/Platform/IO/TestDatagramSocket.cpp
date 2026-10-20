@@ -730,18 +730,34 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(source.isValid());
         ASSERT_TRUE(source.setDoNotFragment(true));
         ASSERT_TRUE(source.isDoNotFragmentSet());
+#if !ASYN_PLATFORM_WIN32
+        // POSIX 才开得出 ECN 读数；Windows 上 setEcnFieldVisible 恒失败，那一侧另由
+        // supportsPerDatagramEcnField 的用例覆盖
+        ASSERT_TRUE(source.setEcnFieldVisible(true));
+        ASSERT_TRUE(source.isEcnFieldVisible());
+#endif
 
         DatagramSocket moved(std::move(source));
         EXPECT_TRUE(moved.isDoNotFragmentSet()) << "移动构造把 DF 读数丢了：内核里还设着，新主人却报 false";
         EXPECT_FALSE(source.isDoNotFragmentSet()) << "被移动走的对象不该还自称设了 DF";
+#if !ASYN_PLATFORM_WIN32
+        EXPECT_TRUE(moved.isEcnFieldVisible()) << "移动构造把 ECN 可见性丢了：内核里还开着，新主人却报 false";
+        EXPECT_FALSE(source.isEcnFieldVisible()) << "被移动走的对象不该还自称能读 ECN 字段";
+#endif
+
+        // 目标从未设过 DF，因此「搬过来了」只能来自赋值那一侧的搬运
+        DatagramSocket assignmentSource = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(assignmentSource.isValid());
+        ASSERT_TRUE(assignmentSource.setDoNotFragment(true));
+        ASSERT_TRUE(assignmentSource.isDoNotFragmentSet());
 
         DatagramSocket displaced = DatagramSocket::bindTo(makeLoopbackAddress(0));
         ASSERT_TRUE(displaced.isValid());
-        ASSERT_TRUE(displaced.setDoNotFragment(true));
-        ASSERT_TRUE(displaced.isDoNotFragmentSet());
-        displaced = std::move(moved);
-        EXPECT_TRUE(displaced.isDoNotFragmentSet()) << "移动赋值把源对象的 DF 读数丢了";
-        EXPECT_FALSE(moved.isDoNotFragmentSet()) << "移动赋值之后源对象仍自称设了 DF";
+        EXPECT_FALSE(displaced.isDoNotFragmentSet());
+
+        displaced = std::move(assignmentSource);
+        EXPECT_TRUE(displaced.isDoNotFragmentSet()) << "移动赋值没把源对象的 DF 读数搬过来";
+        EXPECT_FALSE(assignmentSource.isDoNotFragmentSet()) << "移动赋值之后源对象仍自称设了 DF";
     }
 
 #if ASYN_PLATFORM_WIN32
