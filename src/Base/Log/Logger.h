@@ -100,7 +100,8 @@ namespace AsynGyanis::Base
         template<typename... Args>
         void logFormat(const LogLevel level, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
-            if (!shouldLog(level))
+            // 先过等级、再看提示性的 Sink 计数：零 Sink 时格式化结果没有读者
+            if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
             {
                 return;
             }
@@ -122,7 +123,8 @@ namespace AsynGyanis::Base
         template<typename... Args>
         void logExceptionFormat(const LogLevel level, const std::exception &exception, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
-            if (!shouldLog(level))
+            // 与 logFormat 同一口径：先过等级、再看提示性的 Sink 计数
+            if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
             {
                 return;
             }
@@ -255,6 +257,14 @@ namespace AsynGyanis::Base
         std::shared_ptr<const std::string>               m_name;
         std::atomic<LogLevel>                            m_level{LogLevel::Trace};         ///< 当前日志级别
         std::atomic<std::shared_ptr<const SinkSnapshot>> m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
-        std::mutex                                       m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰
+
+        /**
+         * @brief 快照中的 Sink 数，只服务「零 Sink 提前返回」这一条快速判断
+         * @details 写侧在 m_sinksWriteMutex 内随快照之后发布；读侧 relaxed 取值，
+         *          与并发登记 Sink 的线程相比哪条日志被提前放掉取决于时序。
+         */
+        std::atomic<std::size_t> m_sinkCount{0U};
+
+        std::mutex m_sinksWriteMutex; ///< 仅用于串行化替换快照的写者，读者不会触碰
     };
 } // namespace AsynGyanis::Base

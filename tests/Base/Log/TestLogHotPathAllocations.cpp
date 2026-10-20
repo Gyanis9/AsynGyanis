@@ -277,6 +277,28 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 没有 Sink 的日志器不为无人接收的消息体取堆
+     * @details 钉住「零 Sink 时正文拷贝与事件构造都不发生」：放行等级下也要在入口处提前返回。
+     */
+    TEST(LogHotPathAllocations, SinklessLoggerDoesNotAllocate)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        Logger     logger("hot_path_sinkless");
+        const auto logOnce = [&logger]
+        {
+            logger.log(LogLevel::Info, kMessageText);
+            return 1U;
+        };
+        logOnce();
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(logOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "无 Sink 的日志仍在构造消息体或事件";
+#endif
+    }
+
+    /**
      * @brief 把时刻渲染进调用方缓冲，本身付零次分配
      * @details 这是本轮改动的正面断言：历法换算按秒缓存在调用线程，文本落在栈缓冲里，
      *          因此逐条渲染既不取堆也不重复折日历。

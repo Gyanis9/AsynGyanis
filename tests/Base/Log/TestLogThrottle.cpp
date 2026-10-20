@@ -287,6 +287,11 @@ namespace AsynGyanis::Base
         {
             EXPECT_TRUE(LogThrottleRegistry::instance().acquire("zero-interval", std::chrono::milliseconds{0}).isPassed) << "该 key 被压掉了：非正间隔应按「不压」处理";
         }
+
+        // 非正间隔不建目：否则这些 key 会挤占上界，把真正需要压的键淘汰掉
+        const std::size_t keysBeforeZeroInterval = LogThrottleRegistry::instance().trackedKeyCount();
+        EXPECT_TRUE(LogThrottleRegistry::instance().acquire("zero-interval-fast-path", std::chrono::milliseconds{0}).isPassed);
+        EXPECT_EQ(LogThrottleRegistry::instance().trackedKeyCount(), keysBeforeZeroInterval) << "非正间隔不该在表里留条目";
     }
 
     TEST(LogThrottleRegistry, KeepsTheIntervalFromTheFirstEntryForAKey)

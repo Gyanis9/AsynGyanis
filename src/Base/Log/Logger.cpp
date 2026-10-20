@@ -25,8 +25,8 @@ namespace AsynGyanis::Base
     {
         // 等级过滤排在正文落地之前：本入口以 string_view 收文本，若先拷成 std::string 再问等级，
         // 一条注定被挡下的记录也要为消息体取一块堆——按 INFO 跑的进程里，满代码库的 TRACE/DEBUG
-        // 调用走的正是这条被丢弃的路径
-        if (!shouldLog(level))
+        // 调用走的正是这条被丢弃的路径。零 Sink 时正文与事件同样没有读者，一并在这里挡掉
+        if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
         {
             return;
         }
@@ -37,8 +37,8 @@ namespace AsynGyanis::Base
 
     void Logger::logWithStackTrace(const LogLevel level, const std::string_view message, const SourceLocation &location) const
     {
-        // 采栈放在等级过滤之后：被过滤掉的日志不为采集付任何代价
-        if (!shouldLog(level))
+        // 采栈放在等级与 Sink 过滤之后：被挡下的日志不为采集付任何代价
+        if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
         {
             return;
         }
@@ -48,8 +48,8 @@ namespace AsynGyanis::Base
 
     void Logger::logWithStackTrace(const LogLevel level, const std::string_view message, CapturedStackTrace stackTrace, const SourceLocation &location) const
     {
-        // 与 log() 同一口径：栈已由调用方采好，正文拷贝仍要排在等级过滤之后
-        if (!shouldLog(level))
+        // 与 log() 同一口径：栈已由调用方采好，正文拷贝仍要排在等级与 Sink 过滤之后
+        if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
         {
             return;
         }
@@ -94,7 +94,10 @@ namespace AsynGyanis::Base
         auto next   = std::make_shared<SinkSnapshot>();
         next->sinks = m_sinksSnapshot.load(std::memory_order_acquire)->sinks;
         next->sinks.push_back(std::move(sink));
+        // 先取条数再交出快照：move 之后 next 已不归本函数所有
+        const std::size_t nextSinkCount = next->sinks.size();
         m_sinksSnapshot.store(std::move(next), std::memory_order_release);
+        m_sinkCount.store(nextSinkCount, std::memory_order_release);
     }
 
     void Logger::clearSinks()
@@ -103,6 +106,7 @@ namespace AsynGyanis::Base
 
         // 旧快照可能仍被并发写日志的线程持有，Sink 会在最后一个引用释放后才销毁
         m_sinksSnapshot.store(emptySnapshot(), std::memory_order_release);
+        m_sinkCount.store(0U, std::memory_order_release);
     }
 
     void Logger::setLevel(const LogLevel level)

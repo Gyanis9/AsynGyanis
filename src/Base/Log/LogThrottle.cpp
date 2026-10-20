@@ -58,6 +58,12 @@ namespace AsynGyanis::Base
 
     LogThrottleDecision LogThrottleRegistry::acquire(const std::string_view key, const std::chrono::milliseconds interval) noexcept
     {
+        // 非正间隔等于「不压」：直接放行，不拿锁也不在表里留条目，键的洪水挤不掉别人的窗口
+        if (interval.count() <= 0)
+        {
+            return LogThrottleDecision{.isPassed = true, .droppedCount = 0U};
+        }
+
         try
         {
             const std::lock_guard lock(m_mutex);
