@@ -129,6 +129,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 析构会话：连接层与它持有的 QPACK 两侧动态表随本类一并释放
          * @note 声明在这里、定义在 .cpp：连接层只做了前向声明，析构要见到完整类型才能销毁那个 unique_ptr
+         * @note 仍挂着的隧道对端先标记关闭再随记录释放：集线器的写协程可能还持着一份共享所有权，
+         *       对端若仍可写，会经帧发送回调回写已经销毁的本会话
          */
         ~Http3Session();
 
@@ -728,7 +730,7 @@ namespace AsynGyanis::Net
         struct WebSocketTunnel
         {
             WebSocketHandler               handler;                   ///< 业务处理器
-            std::unique_ptr<WebSocketPeer> peer;                      ///< 对端对象（帧的收发都经它）
+            std::shared_ptr<WebSocketPeer> peer;                      ///< 对端对象（帧的收发都经它）：与集线器共享所有权
             std::optional<Core::Task<>>    businessTask;              ///< 业务处理器所在的协程
             std::string                    pendingIncomingBytes;      ///< 已收下、等安全点再交给对端对象的入向字节
             bool                           hasPendingFeed{false};     ///< 有待喂给对端对象的字节

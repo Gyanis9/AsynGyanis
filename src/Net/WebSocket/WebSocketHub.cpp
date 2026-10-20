@@ -85,7 +85,10 @@ namespace AsynGyanis::Net
 
     WebSocketSubscription WebSocketHub::subscribe(const std::string_view topic, WebSocketPeer &peer)
     {
-        auto member                              = std::make_shared<Detail::WebSocketHubMember>();
+        auto member = std::make_shared<Detail::WebSocketHubMember>();
+        // 先取共享所有权再记裸指针：会话用 shared_ptr 持有时，drain 靠这份所有权在挂起期间续命；
+        // 栈上对端取不到，返回空，仍按「句柄短于连接」的原契约
+        member->peerOwner                        = peer.lifetimeOwner();
         member->peer                             = &peer;
         const WebSocketSubscriptionId identifier = m_nextIdentifier++;
         m_registrations.push_back(Registration{std::string(topic), member, identifier});
@@ -176,8 +179,9 @@ namespace AsynGyanis::Net
         {
             return; // 已经被摘过：除名必须幂等，异常展开与显式 reset 可能都走到这里
         }
-        // 先把对端指针清掉再摘表：正在替它写的 drain 醒来时看到空指针就收手，
-        // 而那条连接的拥有者此刻可能正在栈展开中——绝不能再被我们碰
+        // 只清对端指针、不重置 peerOwner：正在替它写的 drain 每轮手里还握着一份共享所有权，
+        // 那份要一直续到本轮写出结束；成员析构时自然释放。空指针只表示「不再写」，
+        // 而不是「对象已经没了」——会话此刻可能正处在栈展开中，绝不能再去碰它的成员
         found->member->peer = nullptr;
         m_registrations.erase(found);
     }
@@ -209,7 +213,13 @@ namespace AsynGyanis::Net
 
         while (!member->pendingMessages.empty())
         {
-            WebSocketPeer *const peer = member->peer;
+            // 这一轮手里握一份对端的共享所有权：会话可能在本轮 co_await 挂起期间收口并释放它那份，
+            // 有这一份在手，恢复后 peer 仍指着一个活对象。栈上对端取得的是空 shared_ptr，
+            // 寿命仍按「句柄短于连接」的原契约由调用方保证
+            std::shared_ptr<WebSocketPeer> peerOwner = member->peerOwner;
+            WebSocketPeer *const           peer      = member->peer;
+            static_cast<void>(peerOwner); // 只为活到本轮 co_await 结束：显式引用一次，避免未使用变量告警
+
             if (peer == nullptr || !peer->isOpen())
             {
                 // 对端已收口或已被除名：剩下的没有接收者，整队丢掉而不是留在原地长内存

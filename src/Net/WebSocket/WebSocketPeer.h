@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -89,6 +90,8 @@ namespace AsynGyanis::Net
      *       不会把一帧本端自己会打死的东西交出去。
      *
      * @note 线程约束：全部方法都只在所属事件循环线程上调用，内部状态不加锁。
+     * @note 共享所有权：会话用 shared_ptr 持有本对象时经 setLifetimeOwner() 登记一份，集线器订阅后
+     *       据此在写协程里续命；栈上对象不登记，寿命仍由调用方按原契约保证。
      * @warning 会话收尾（读到 EOF、解码失败、业务返回）会把本对象标记为关闭：此后 send*() 一律
      *          返回 false（本侧已收口，不再新增日志）、receive() 一律返回空。挂起在 receive() 上的业务协程不会被唤醒，
      *          它的帧随会话一起销毁，因此处理器不能把「收到空结果」当作唯一的退出通知。
@@ -136,6 +139,31 @@ namespace AsynGyanis::Net
         WebSocketPeer(WebSocketPeer &&) = delete;
 
         WebSocketPeer &operator=(WebSocketPeer &&) = delete;
+
+        /**
+         * @brief 会话侧：登记本对象的共享所有权，供集线器在写协程里续命
+         *
+         * @details 会话用 shared_ptr 持有本对象时把那份所有权登记进来；集线器订阅时经
+         *          lifetimeOwner() 取一份，于是写协程挂起期间即使会话先收口并释放它那一份，
+         *          本对象也不会先析构。栈上构造的对象不必登记，调用方仍按原契约保证寿命。
+         * @param owner 本对象的共享所有权；传空即清除登记
+         */
+        void setLifetimeOwner(const std::shared_ptr<WebSocketPeer> &owner) noexcept
+        {
+            m_lifetimeOwner = owner;
+        }
+
+        /**
+         * @brief 会话侧：取回登记过的共享所有权
+         *
+         * @details 集线器订阅时调用。栈上对象（未登记或登记已被清除）返回空，调用方仍按原契约
+         *          保证对端寿命。
+         * @return std::shared_ptr<WebSocketPeer> 已登记且仍存活时的共享所有权；否则为空
+         */
+        [[nodiscard]] std::shared_ptr<WebSocketPeer> lifetimeOwner() const noexcept
+        {
+            return m_lifetimeOwner.lock();
+        }
 
         /**
          * @brief 收下一条数据消息
@@ -431,6 +459,9 @@ namespace AsynGyanis::Net
 
         /// 请会话按本相位重算并刷回连接的空闲截止；未注入该动作时是空操作
         void refreshSessionIdleDeadline() const;
+
+        /// 会话登记的共享所有权：集线器在写协程挂起期间靠它续住本对象；空表示栈上对象或未登记
+        std::weak_ptr<WebSocketPeer> m_lifetimeOwner{};
 
         FrameSender                m_frameSender;      ///< 发送路径，由会话注入
         HttpMetricsCollector      *m_metrics{nullptr}; ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数

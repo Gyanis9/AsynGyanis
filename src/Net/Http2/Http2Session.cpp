@@ -1508,16 +1508,23 @@ namespace AsynGyanis::Net
             co_return co_await flushOutgoingBytes();
         };
 
-        WebSocketPeer peer(sendFrameBytes, m_metrics.get());
-        peer.setPerMessageDeflate(deflateNegotiation.window);
+        // 对端对象由会话与集线器共享所有权：业务把它订阅进 WebSocketHub 之后，集线器的写协程
+        // 会在挂起期间持一份，避免会话先收口并销毁本对象后，那条协程恢复时踩到已释放内存。
+        // 栈上对象做不到这一点，因此这里用 shared_ptr 并在构造后立刻登记
+        const std::shared_ptr<WebSocketPeer> peer = std::make_shared<WebSocketPeer>(sendFrameBytes, m_metrics.get());
+        peer->setLifetimeOwner(peer);
+        peer->setPerMessageDeflate(deflateNegotiation.window);
         // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
-        peer.setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
+        peer->setMaximumInboundMessageBytes(m_parserLimits.maximumWebsocketMessageSize);
 
         // 空闲钟按「相位时限与在途心跳的剩余预算里更早的那一个」武装：本端发过 Ping 而 Pong 没回来时
         // 截止点落在心跳时限上，到点由清扫协程按既有的那一拍收掉这条连接——不新起线程，也不在这里
-        // 另挂一个定时器协程（那要把唤醒打在别人正挂着的读等待上）
-        const auto armIdleDeadline = [this, &peer] { refreshIdleDeadline(peer.idleBudgetWithin(m_limits->idleTimeout, std::chrono::steady_clock::now())); };
-        peer.setPongTimeout(m_limits->webSocketPongTimeout, armIdleDeadline);
+        // 另挂一个定时器协程（那要把唤醒打在别人正挂着的读等待上）。
+        // 回调抓对端的地址而不是栈上那份 shared_ptr 的地址：集线器会替对端续命，它可能比本协程帧
+        // 活得久，而回调只在对端存活期间从它自己的方法里被调用，这个地址因此始终有效
+        const WebSocketPeer *const peerAddress = peer.get();
+        const auto armIdleDeadline = [this, peerAddress] { refreshIdleDeadline(peerAddress->idleBudgetWithin(m_limits->idleTimeout, std::chrono::steady_clock::now())); };
+        peer->setPongTimeout(m_limits->webSocketPongTimeout, armIdleDeadline);
 
         bool       isBusinessFinished = false;
         const auto runBusiness        = [&isBusinessFinished](WebSocketHandler businessHandler, WebSocketPeer &businessPeer) -> Core::Task<>
@@ -1536,7 +1543,7 @@ namespace AsynGyanis::Net
             isBusinessFinished = true;
         };
 
-        Core::Task<> businessTask = runBusiness(response.webSocketHandler(), peer);
+        Core::Task<> businessTask = runBusiness(response.webSocketHandler(), *peer);
         businessTask.handle().resume();
 
         // 对端可能在 200 到达之前就抢先发了帧（RFC 8441 允许它一收到 200 就发，但实现常提前发）：
@@ -1544,12 +1551,12 @@ namespace AsynGyanis::Net
         WebSocketFeedStatus feedStatus = WebSocketFeedStatus::Accepted;
         if (!pending.request.body().empty())
         {
-            feedStatus = peer.feedBytes(pending.request.body().data(), pending.request.body().size());
+            feedStatus = peer->feedBytes(pending.request.body().data(), pending.request.body().size());
         }
 
         std::vector<char> receiveBuffer(kHttp2ReceiveWindowByteCount);
         bool              isRemoteEndStream = false;
-        while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && isAlive() && isTransportOpen() && !isRemoteEndStream)
+        while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer->isOpen() && isAlive() && isTransportOpen() && !isRemoteEndStream)
         {
             // 隧道阶段没有「半条报文」这一相位：帧与帧之间的间隔就是这条连接的空闲，与 h1 阶段同口径；
             // 本端发过 Ping 而 Pong 还没回来时，那一拍由 armIdleDeadline 折进心跳时限，取两者里更早的一个
@@ -1587,7 +1594,7 @@ namespace AsynGyanis::Net
                 {
                     if (!receivedData.data.empty())
                     {
-                        feedStatus = peer.feedBytes(receivedData.data.data(), receivedData.data.size());
+                        feedStatus = peer->feedBytes(receivedData.data.data(), receivedData.data.size());
                     }
                     if (receivedData.endStream)
                     {
@@ -1622,13 +1629,16 @@ namespace AsynGyanis::Net
         }
 
         // 收尾与 h1 阶段同一判据：协议错误按具体码收口、心跳到点判死，否则主动发正常关闭帧
-        co_await finishWebSocketTunnelPeer(streamId, peer, feedStatus);
-        peer.markClosed();
+        co_await finishWebSocketTunnelPeer(streamId, *peer, feedStatus);
+        peer->markClosed();
+        // 集线器会替登记过共享所有权的对端续命：它可能比本会话帧活得久，而空闲刷新回调捕获着
+        // this 与 m_limits。收尾时把回调清掉，此后本对象再触发刷新也不会碰到已销毁的会话
+        peer->setPongTimeout(std::chrono::milliseconds{0}, {});
 
         // 收口与 h1 阶段同一顺序（先唤醒再销毁）：业务可能正挂在 receive() 上，而 markClosed() 有意不唤醒它。
         // 随后等它跑完自己的收尾，本帧才结束——直接往下走会让业务帧随本帧一起销毁（Task 的析构无条件
         // destroy()），它 receive() 之后的代码全部丢失，而任何已投递给循环的恢复动作会指向已释放的帧
-        peer.wakeDeliveryWaiter();
+        peer->wakeDeliveryWaiter();
         co_await businessTask;
 
         // 本侧方向到此结束：零长 DATA 带 END_STREAM（对端据此知道隧道的这一半关完了）

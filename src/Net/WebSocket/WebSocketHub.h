@@ -7,8 +7,10 @@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 会话层只提供「一条连接自己收发」，广播要额外解决三件事，本类把这三件都管住：
- *          1. 成员生存期：集线器不能持有比处理器更久的对端指针。订阅是 RAII 句柄，
- *             句柄析构（处理器 return、异常展开、或显式 reset）即除名，不留悬垂指针这一类脚枪。
+ *          1. 成员生存期：订阅是 RAII 句柄，句柄析构（处理器 return、异常展开、或显式 reset）即除名，
+ *             不留悬垂指针这一类脚枪。会话用 shared_ptr 持有对端并经 lifetimeOwner() 登记时，
+ *             集线器在写协程挂起期间持一份共享所有权替它续命；栈上对端没有这份登记，
+ *             仍按「句柄短于连接」的原契约由调用方保证寿命。
  *          2. 一条连接一个写者：两条不同的连接同时向同一个成员发，会让两帧字节在线上互相穿插。
  *             成员自带「谁在替它写」的闩：已有写者在跑时，后来者只入队，不另起一条写路径。
  *          3. 慢读者的内存：队列有字节上界，越界丢最新的一条并计数——保住已入队的顺序，
@@ -64,11 +66,14 @@ namespace AsynGyanis::Net
          * @brief 集线器的一个成员：对端指针、待发队列、与「谁在替它写」的闩
          * @details 生存期由集线器与订阅句柄共持 shared_ptr：这样即使成员在某个 publish 协程
          *          挂起期间被除名，那份队列与闩也还活着， drain 能干净收尾而不是踩在被删对象上。
-         *          对端指针则由除名时清空——它才是那个会悬垂的东西。
+         *          对端一侧分两份：peer 是订阅时交来的访问点，除名时清空；peerOwner 是 subscribe()
+         *          从 peer.lifetimeOwner() 取来的共享所有权，非空时保证 drain 期间对端对象不会先析构。
+         *          栈上构造的对端没有登记共享所有权，peerOwner 为空，仍按「句柄短于连接」的原契约。
          */
         struct ASYN_NET_API WebSocketHubMember
         {
             WebSocketPeer                         *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
+            std::shared_ptr<WebSocketPeer>         peerOwner{};         ///< 由 subscribe 从 peer.lifetimeOwner() 取得；非空时保证 drain 期间对端对象不会先析构
             std::deque<WebSocketHubPendingMessage> pendingMessages;     ///< 已入队、尚未写出的消息，按到达顺序
             std::size_t                            pendingByteCount{0}; ///< pendingMessages 的占用字节数（每条按「负载 + 每帧固定开销」记，入队上界据此判定）
             bool                                   isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
@@ -81,8 +86,10 @@ namespace AsynGyanis::Net
      * @brief 一次主题订阅的 RAII 句柄：析构即除名
      *
      * @details 只能移动、不能拷贝：一份订阅对应集线器里的一个成员，复制出两份就会有两处除名点。
-     * @warning 句柄必须比它的对端连接活得短。会话侧的构造顺序本就满足这件事（对端对象在业务
+     * @warning 栈上构造的对端必须比返回的句柄活得久：会话侧的构造顺序本就满足这件事（对端对象在业务
      *          协程帧之外构造、之内销毁），把句柄放在处理器自己的栈上即可，不要把它存到别处。
+     *          会话用 shared_ptr 持有对端并登记过 lifetimeOwner() 时，集线器在写协程挂起期间持一份
+     *          共享所有权，该对端因此可以晚于句柄销毁。
      */
     class ASYN_NET_API WebSocketSubscription
     {
@@ -163,7 +170,8 @@ namespace AsynGyanis::Net
          * @details 同一个对端可以多次订阅不同主题（一次一份句柄），加入自己已加入的主题则视为
          *          两个独立成员——本类不做「按对端去重」，那是业务的语义而不是扇出的语义。
          * @param topic 主题名，原样保存（区分大小写，不做归一化）
-         * @param peer 本条循环上已升级的对端；其生存期必须覆盖返回句柄的析构
+         * @param peer 本条循环上已升级的对端；栈上对象其生存期必须覆盖返回句柄的析构与在途写，
+         *        用 shared_ptr 持有并经 setLifetimeOwner() 登记过的对端则由集线器自行续命
          * @return WebSocketSubscription 订阅句柄；析构即除名
          */
         [[nodiscard]] WebSocketSubscription subscribe(std::string_view topic, WebSocketPeer &peer);
@@ -241,6 +249,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 除名：清掉对端指针并把这条登记从表里摘掉
+         * @details peerOwner 有意不重置：成员被在途 drain 持有时，那份共享所有权要一直续到
+         *          本轮写出结束；成员析构时自然释放。
          * @param identifier 订阅标识
          */
         void unsubscribe(WebSocketSubscriptionId identifier);

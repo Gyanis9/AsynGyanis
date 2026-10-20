@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8839
+# headers=303 entries=8843
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -6208,6 +6208,7 @@ src/Net/Http3/Http3Session.h	std::shared_ptr<HttpMetricsCollector> m_metrics
 src/Net/Http3/Http3Session.h	std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator
 src/Net/Http3/Http3Session.h	std::shared_ptr<StreamingResponse> m_streamingResponse
 src/Net/Http3/Http3Session.h	std::shared_ptr<StreamingResponse> streamingResponseFor(std::int64_t streamId)
+src/Net/Http3/Http3Session.h	std::shared_ptr<WebSocketPeer> peer
 src/Net/Http3/Http3Session.h	std::shared_ptr<const HttpServerLimits> m_serverLimits
 src/Net/Http3/Http3Session.h	std::size_t headerBlockByteCount
 src/Net/Http3/Http3Session.h	std::size_t headerBlockByteCount
@@ -6221,7 +6222,6 @@ src/Net/Http3/Http3Session.h	std::string path
 src/Net/Http3/Http3Session.h	std::string pendingIncomingBytes
 src/Net/Http3/Http3Session.h	std::uint64_t applicationErrorCode
 src/Net/Http3/Http3Session.h	std::unique_ptr<Http3Connection> m_connection
-src/Net/Http3/Http3Session.h	std::unique_ptr<WebSocketPeer> peer
 src/Net/Http3/Http3Session.h	std::vector<PeerCancelledStream> m_peerCancelledStreams
 src/Net/Http3/Http3Session.h	std::vector<std::coroutine_handle<>> m_deferredWaiterResumes
 src/Net/Http3/Http3Session.h	std::vector<std::int64_t> m_deferredTunnelClosures
@@ -8339,6 +8339,7 @@ src/Net/WebSocket/WebSocketHub.h	std::atomic<std::size_t> m_droppedMessageCount
 src/Net/WebSocket/WebSocketHub.h	std::deque<WebSocketHubPendingMessage> pendingMessages
 src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<Detail::WebSocketHubMember> m_member
 src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<Detail::WebSocketHubMember> member
+src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<WebSocketPeer> peerOwner
 src/Net/WebSocket/WebSocketHub.h	std::size_t m_maximumPendingByteCount
 src/Net/WebSocket/WebSocketHub.h	std::size_t pendingByteCount
 src/Net/WebSocket/WebSocketHub.h	std::string payload
@@ -8376,6 +8377,7 @@ src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isWriteInFlight() const noe
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::chrono::milliseconds idleBudgetWithin(std::chrono::milliseconds phaseTimeout, std::chrono::steady_clock::time_point now) const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<WebSocketFrame> await_resume()
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept
+src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::shared_ptr<WebSocketPeer> lifetimeOwner() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::string decodeErrorText() const
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::string_view remoteCloseReason() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::uint16_t decodeErrorCloseCode() const noexcept
@@ -8405,6 +8407,7 @@ src/Net/WebSocket/WebSocketPeer.h	std::string m_payloadErrorMessage
 src/Net/WebSocket/WebSocketPeer.h	std::string m_remoteCloseReason
 src/Net/WebSocket/WebSocketPeer.h	std::string payload
 src/Net/WebSocket/WebSocketPeer.h	std::uint16_t m_payloadErrorCloseCode
+src/Net/WebSocket/WebSocketPeer.h	std::weak_ptr<WebSocketPeer> m_lifetimeOwner
 src/Net/WebSocket/WebSocketPeer.h	struct ASYN_NET_API WebSocketMessage
 src/Net/WebSocket/WebSocketPeer.h	using FrameSender = std::function<Core::Task<bool>(std::string_view)>
 src/Net/WebSocket/WebSocketPeer.h	using IdleDeadlineRefresh = std::function<void()>
@@ -8415,6 +8418,7 @@ src/Net/WebSocket/WebSocketPeer.h	void clearPongDeadline()
 src/Net/WebSocket/WebSocketPeer.h	void enqueueFrame(WebSocketFrame frame)
 src/Net/WebSocket/WebSocketPeer.h	void markClosed() noexcept
 src/Net/WebSocket/WebSocketPeer.h	void refreshSessionIdleDeadline() const
+src/Net/WebSocket/WebSocketPeer.h	void setLifetimeOwner(const std::shared_ptr<WebSocketPeer> &owner) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setMaximumInboundMessageBytes(std::size_t maximumInboundMessageBytes) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setPerMessageDeflate(std::optional<PerMessageDeflateWindow> window) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setPongTimeout(std::chrono::milliseconds timeout, IdleDeadlineRefresh idleDeadlineRefresh =

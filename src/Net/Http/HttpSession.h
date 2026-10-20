@@ -394,17 +394,24 @@ namespace AsynGyanis::Net
                 co_return true;
             };
 
-            WebSocketPeer peer(sendFrameBytes, metrics);
-            peer.setPerMessageDeflate(deflateWindow);
+            // 对端对象由会话与集线器共享所有权：业务把它订阅进 WebSocketHub 之后，集线器的写协程
+            // 会在挂起期间持一份，避免会话先收口并销毁本对象后，那条协程恢复时踩到已释放内存。
+            // 栈上对象做不到这一点，因此这里用 shared_ptr 并在构造后立刻登记
+            const std::shared_ptr<WebSocketPeer> peer = std::make_shared<WebSocketPeer>(sendFrameBytes, metrics);
+            peer->setLifetimeOwner(peer);
+            peer->setPerMessageDeflate(deflateWindow);
             // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
-            peer.setMaximumInboundMessageBytes(maximumInboundMessageBytes);
+            peer->setMaximumInboundMessageBytes(maximumInboundMessageBytes);
 
             // 空闲钟按「相位时限与在途心跳的剩余预算里更早的那一个」武装：本端发过 Ping 而 Pong 没回来时
             // 截止点落在心跳时限上，到点由 TcpServer 的清扫协程按既有的那一拍收掉这条连接——不新起线程，
-            // 也不在这里另挂一个定时器协程（那要把唤醒打在别人正挂着的读等待上）
-            const auto armIdleDeadline = [&connection, &limits, &peer]
-            { connection.refreshIdleDeadline(peer.idleBudgetWithin(limits.idleTimeout, std::chrono::steady_clock::now())); };
-            peer.setPongTimeout(limits.webSocketPongTimeout, armIdleDeadline);
+            // 也不在这里另挂一个定时器协程（那要把唤醒打在别人正挂着的读等待上）。
+            // 回调抓对端的地址而不是栈上那份 shared_ptr 的地址：集线器会替对端续命，它可能比本协程帧
+            // 活得久，而回调只在对端存活期间从它自己的方法里被调用，这个地址因此始终有效
+            const WebSocketPeer *const peerAddress     = peer.get();
+            const auto                 armIdleDeadline = [&connection, &limits, peerAddress]
+            { connection.refreshIdleDeadline(peerAddress->idleBudgetWithin(limits.idleTimeout, std::chrono::steady_clock::now())); };
+            peer->setPongTimeout(limits.webSocketPongTimeout, armIdleDeadline);
 
             bool isBusinessFinished = false;
 
@@ -427,21 +434,21 @@ namespace AsynGyanis::Net
             };
 
             // 启动业务：跑到首次 receive() 或首个 send*() 挂起为止（返回则标记已结束）
-            Core::Task<> businessTask = runBusiness(std::move(handler), peer);
+            Core::Task<> businessTask = runBusiness(std::move(handler), *peer);
             businessTask.handle().resume();
 
             // 客户端可能在 101 之后立刻发帧：窗口里剩下的字节先喂给解码器，别把它丢了
             WebSocketFeedStatus feedStatus = WebSocketFeedStatus::Accepted;
             if (pendingLength > 0)
             {
-                feedStatus = peer.feedBytes(receiveBuffer.data(), pendingLength);
+                feedStatus = peer->feedBytes(receiveBuffer.data(), pendingLength);
             }
 
             // 读循环：读 → 喂解码器 → 交给业务。等下一段字节前按空闲容忍度计时，依据是
             // HttpServerLimits::idleTimeout 的语义「两次能收到字节之间的容忍时长」——WebSocket
             // 阶段没有「半条报文」这一相位，帧与帧之间的间隔就是这条连接的空闲；本端发过 Ping 而 Pong
             // 还没回来时，那一拍由 armIdleDeadline 折进心跳时限，取两者里更早的一个
-            while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer.isOpen() && connection.isAlive())
+            while (feedStatus == WebSocketFeedStatus::Accepted && !isBusinessFinished && peer->isOpen() && connection.isAlive())
             {
                 armIdleDeadline();
 
@@ -462,7 +469,7 @@ namespace AsynGyanis::Net
                 connection.noteBytesReceived(static_cast<std::size_t>(receivedLength));
 
                 // 一段字节一次喂完：解码器内部按帧推进，产出即排队交给业务
-                feedStatus = peer.feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength));
+                feedStatus = peer->feedBytes(receiveBuffer.data(), static_cast<std::size_t>(receivedLength));
             }
 
             // 收尾（RFC 6455 §5.5.1）：任一侧收口都要结束会话，本侧尚未发起关闭且没有在途写时补一条
@@ -472,8 +479,8 @@ namespace AsynGyanis::Net
             {
                 // 帧格式违规回 1002、文本负载非法回 1007、体量越界回 1009：三类失败对端的处置不同，
                 // 不能合成一个码。具体是哪一类由 WebSocketPeer 按失败来源给出，会话只负责发出与收口
-                const std::uint16_t errorCode = peer.decodeErrorCloseCode();
-                LOG_ERROR_FMT("WebSocket 会话：对端违反 RFC 6455，按状态码 {} 关闭连接，原因：{}", errorCode, peer.decodeErrorText());
+                const std::uint16_t errorCode = peer->decodeErrorCloseCode();
+                LOG_ERROR_FMT("WebSocket 会话：对端违反 RFC 6455，按状态码 {} 关闭连接，原因：{}", errorCode, peer->decodeErrorText());
 
                 // 协议错误收口单独计数：三个关闭码合并为一类（都是对端违反 RFC 6455 造成的收口），
                 // 具体是哪一个已在上面那条日志里，细分三档对监控没有增量信息
@@ -482,30 +489,33 @@ namespace AsynGyanis::Net
                     metrics->countWebSocketProtocolErrorClose();
                 }
 
-                if (peer.isOpen() && !peer.isWriteInFlight())
+                if (peer->isOpen() && !peer->isWriteInFlight())
                 {
-                    [[maybe_unused]] const bool isErrorCloseSent = co_await peer.close(errorCode);
+                    [[maybe_unused]] const bool isErrorCloseSent = co_await peer->close(errorCode);
                 }
-            } else if (peer.isPongDeadlinePassedAt(std::chrono::steady_clock::now()))
+            } else if (peer->isPongDeadlinePassedAt(std::chrono::steady_clock::now()))
             {
                 // 死因是「Ping 发出去了而 Pong 没回来」，与「这条连接一直很闲」不是一回事，日志按前者写；
                 // 也不给一个不回心跳的对端补 Close。判据刻意不看 isOpen()/isBusinessFinished：清扫协程关掉
                 // 描述符之后，业务那一侧的写出失败与会话的读失败谁先落地由调度决定，看了这两者就会在
                 // 一侧漏记（Linux 实测漏的那次正是业务先写完失败、把 isBusinessFinished 置了起来）
                 LOG_ERROR_FMT("WebSocket 会话：本端发出 Ping 后 {} 毫秒没有收到 Pong，判定对端已死，本侧收口", limits.webSocketPongTimeout.count());
-                peer.markClosed();
-            } else if (peer.isOpen() && !peer.isWriteInFlight())
+                peer->markClosed();
+            } else if (peer->isOpen() && !peer->isWriteInFlight())
             {
                 // 业务返回、对端关闭或读超时：本侧主动发起正常关闭
-                [[maybe_unused]] const bool isNormalCloseSent = co_await peer.close(kWebSocketNormalClosureCode);
+                [[maybe_unused]] const bool isNormalCloseSent = co_await peer->close(kWebSocketNormalClosureCode);
             }
 
             // 收口（先唤醒再销毁）：业务可能挂在 receive() 上，也可能挂在写等待上（对端不再读、
             // 发送缓冲占满）。两种都要唤醒——关掉套接字会让挂起的 I/O 等待以失败结束，业务随即
             // 拿到那句 false。随后等它跑完自己的收尾，本帧才结束。
             // 顺序不能颠倒：直接 co_return 会让业务帧随本帧一起销毁，false 与它的收尾代码全部丢失
-            peer.markClosed();
-            peer.wakeDeliveryWaiter();
+            peer->markClosed();
+            peer->wakeDeliveryWaiter();
+            // 集线器会替登记过共享所有权的对端续命：它可能比本阶段帧活得久，而空闲刷新回调捕获着
+            // connection 与 limits 的引用。收尾时把回调清掉，此后本对象再触发刷新也不会碰到已销毁的会话
+            peer->setPongTimeout(std::chrono::milliseconds{0}, {});
             socket.close();
             co_await businessTask;
         }

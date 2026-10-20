@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -570,6 +571,35 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_FALSE(findRegistrySample("asyn_websocket_hub_abandoned_messages_total").has_value()) << "集线器析构之后读数还挂在表上，就会报一个不存在的对象";
+    }
+
+    /**
+     * @brief 钉住：会话用 shared_ptr 持有对端时，集线器在写协程挂起期间替它续命
+     * @details 会话把对端建成 shared_ptr 并经 setLifetimeOwner() 登记之后，订阅时集线器会取一份
+     *          共享所有权。调用方随后释放自己那份，挂起中的写协程恢复时对端必须仍然活着——
+     *          旧实现只存裸指针，这里恢复后的写出就是一次 UAF（ASan 下当场转红）。
+     *          栈上对端的原契约由其余用例继续守着。
+     */
+    TEST(WebSocketHub, SharedPeerOutlivesTheCallerWhileDrainIsInFlight)
+    {
+        GatedSendPath path;
+        path.isGated = true; // 第一帧停在闸门上：drain 挂起期间正是「会话可能先收口」的窗口
+
+        WebSocketHub hub;
+        auto         peer = std::make_shared<WebSocketPeer>(makeFrameSender(path));
+        peer->setLifetimeOwner(peer);
+        auto subscription = hub.subscribe("lobby", *peer);
+
+        Core::Task<void> publishTask = hub.publish("lobby", "alpha");
+        publishTask.handle().resume();
+        ASSERT_TRUE(static_cast<bool>(path.parkedWriter)) << "闸门没起作用：第一帧根本没挂起";
+
+        peer.reset(); // 会话这一侧先收口并释放它那份：此刻只剩集线器握着对端
+        path.release();
+        publishTask.handle().promise().result();
+
+        ASSERT_EQ(path.sentFrames.size(), 1U) << "对端在写协程挂起期间被销毁了：恢复后的写出没有落地";
+        EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "alpha")) << "续命之后写出的不是原消息";
     }
 
     TEST(WebSocketHub, RejectsZeroQueueBoundAtConstruction)

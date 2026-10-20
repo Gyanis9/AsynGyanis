@@ -247,7 +247,18 @@ namespace AsynGyanis::Net
         LOG_DEBUG("Http3Session: HTTP/3 会话已建立");
     }
 
-    Http3Session::~Http3Session() = default;
+    Http3Session::~Http3Session()
+    {
+        // 隧道记录可能在本端还没收口时随会话一起销毁：先把对端全部标记关闭。集线器的写协程可能还持着
+        // 一份共享所有权，对端若仍算可写，它恢复后会继续经帧发送回调回写已经销毁的本会话
+        for (const auto &entry: m_webSocketTunnels)
+        {
+            if (entry.second->peer != nullptr)
+            {
+                entry.second->peer->markClosed();
+            }
+        }
+    }
 
     void Http3Session::setParserLimits(const HttpParserLimits limits) noexcept
     {
@@ -1790,8 +1801,10 @@ namespace AsynGyanis::Net
 
         auto tunnel     = std::make_unique<WebSocketTunnel>();
         tunnel->handler = response.webSocketHandler();
-        tunnel->peer    = std::make_unique<WebSocketPeer>([this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
+        tunnel->peer    = std::make_shared<WebSocketPeer>([this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
                                                           { co_return co_await sendTunnelBytes(streamId, frameBytes); }, m_metrics.get());
+        // 登记共享所有权：集线器的写协程在挂起期间持一份，隧道记录先销毁时对端对象仍能活到本轮写出结束
+        tunnel->peer->setLifetimeOwner(tunnel->peer);
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
         tunnel->peer->setPerMessageDeflate(deflateNegotiation.window);
         // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
