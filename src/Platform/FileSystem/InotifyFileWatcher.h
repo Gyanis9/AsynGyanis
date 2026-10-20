@@ -171,7 +171,13 @@ namespace AsynGyanis::Platform
         std::jthread              m_watchThread;      ///< 事件读取线程，析构时自动 join
         std::atomic<bool>         m_isRunning{false}; ///< 监听线程是否正在运行
 
-        static constexpr std::size_t kEventBufferBytes = 4096; ///< 单次读取的事件缓冲区字节数
+        /// 单次读取的事件缓冲区字节数：4 KiB 只装得下几十条记录，突发时每轮 poll 都要重来一次；
+        /// 取 64 KiB 与 Windows 侧的目录通知缓冲同一量级，让常见突发一趟带走。缓冲区在监听线程
+        /// 的栈上，默认栈足够容纳
+        static constexpr std::size_t kEventBufferBytes = 64 * 1024;
+        /// 一次 poll 唤醒最多排空的批数：持续写入时给这一轮设上界，避免自愈复查与停止请求
+        /// 一直轮不到执行
+        static constexpr std::size_t kMaximumBatchesPerWakeup = 8;
         /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除/移出（删除），
         /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
         static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
