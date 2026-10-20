@@ -898,6 +898,13 @@ namespace AsynGyanis::Base
                 signlessText.remove_prefix(1);
             }
 
+            // 核心 schema 的浮点只有一个可选符号。剥掉它之后仍以符号开头（如 "+-1"），
+            // 剩下的 "-1" 会被 from_chars 当成负数接受，必须在数值解析之前判为非浮点
+            if (!signlessText.empty() && (signlessText.front() == '+' || signlessText.front() == '-'))
+            {
+                return std::nullopt;
+            }
+
             if (signlessText == ".inf" || signlessText == ".Inf" || signlessText == ".INF")
             {
                 return negative ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
