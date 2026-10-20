@@ -44,7 +44,7 @@ namespace AsynGyanis::Database
     {
         InvalidConfiguration, ///< 传进来的地址表或监控名不成形：还没发出任何字节
         MasterNotMonitored,   ///< 哨兵明确回答「没有监控这个名字」：各哨兵之间是同步的，换下一个也一样
-        NoSentinelReachable,  ///< 问遍了都没拿到答案：连不上、答不上或地址格不完整，属可用性故障
+        NoSentinelReachable,  ///< 问遍了都没拿到答案：连不上或答不上，属可用性故障；地址表本身不完整走 InvalidConfiguration
         MalformedReply,       ///< 哨兵答了却不是约定的形状：版本对不上或被中间层改过，该停下来查
     };
 

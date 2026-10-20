@@ -940,16 +940,16 @@ namespace AsynGyanis::Database
             return std::nullopt;
         }
 
-        const DatabaseValue cursorValue = reply->getValue(std::size_t{0});
-        const auto         *nextCursor  = std::get_if<std::string>(&cursorValue);
+        DatabaseValue cursorValue = reply->getValue(std::size_t{0});
+        auto         *nextCursor  = std::get_if<std::string>(&cursorValue);
         if (nextCursor == nullptr)
         {
             m_lastError = "读 SCAN 的回复失败：游标不是按文本给出的，原样透传是这一格的契约";
             return std::nullopt;
         }
 
-        const DatabaseValue keysValue = reply->getValue(std::size_t{1});
-        const auto         *keys      = std::get_if<std::vector<std::string>>(&keysValue);
+        DatabaseValue keysValue = reply->getValue(std::size_t{1});
+        auto         *keys      = std::get_if<std::vector<std::string>>(&keysValue);
         if (keys == nullptr)
         {
             m_lastError = "读 SCAN 的回复失败：这一页的键不是按列表给出的";
@@ -957,8 +957,8 @@ namespace AsynGyanis::Database
         }
 
         RedisScanPage page;
-        page.nextCursor = *nextCursor;
-        page.keys       = *keys;
+        page.nextCursor = std::move(*nextCursor);
+        page.keys       = std::move(*keys);
         return page;
     }
 
@@ -1904,7 +1904,8 @@ namespace AsynGyanis::Database
             const std::array<std::string_view, 1> arguments{command.first};
             if (executeArguments(arguments) == nullptr)
             {
-                command.second->clear();
+                // 确认没齐：名单必须保留，isSubscribing() 才能如实说「状态不确定」；
+                // 清空会让调用方以为已经退干净，而服务端可能仍在推送模式
                 return false;
             }
 
@@ -1917,7 +1918,8 @@ namespace AsynGyanis::Database
                     {
                         m_lastError = "没有等齐服务端为退订命令回的确认，订阅状态不确定：请按断开重连处理";
                     }
-                    command.second->clear();
+                    // 确认没齐：名单必须保留，isSubscribing() 才能如实说「状态不确定」；
+                    // 清空会让调用方以为已经退干净，而服务端可能仍在推送模式
                     return false;
                 }
             }
@@ -1956,7 +1958,10 @@ namespace AsynGyanis::Database
             if (redisSetTimeout(m_redisContext, ownTimeout) != REDIS_OK)
             {
                 captureError("设置 Redis 推送等待时限失败");
-                static_cast<void>(applyQueryTimeout());
+                if (!applyQueryTimeout())
+                {
+                    disconnect();
+                }
                 return std::nullopt;
             }
         }
@@ -1971,9 +1976,16 @@ namespace AsynGyanis::Database
         const bool timedOut = m_redisContext->err == REDIS_ERR_TIMEOUT ||
                               (m_redisContext->err == REDIS_ERR_IO && (nativeErrno == EAGAIN || nativeErrno == EWOULDBLOCK || nativeErrno == ETIMEDOUT));
 
-        if (usesOwnWait)
+        if (usesOwnWait && !applyQueryTimeout())
         {
-            static_cast<void>(applyQueryTimeout());
+            // 还原不上就说不清下一条普通命令会用哪个超时：reply 先释放，连接断开，
+            // 不能把一次成功的 push 和一条非空的 lastError 一起交出去
+            if (rawReplyPointer != nullptr)
+            {
+                freeReplyObject(rawReplyPointer);
+            }
+            disconnect();
+            return std::nullopt;
         }
 
         if (readStatus != REDIS_OK || rawReplyPointer == nullptr)
