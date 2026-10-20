@@ -261,6 +261,24 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 连续 PADDING 合并成一帧：一个 1200 字节的验证包不再解出上千个 variant 元素
+     */
+    TEST(QuicFrame, MergesConsecutivePaddingIntoOneFrame)
+    {
+        const auto frames = decodeQuicFrames(bytesOf("0000000001"));
+        ASSERT_HAS_VALUE(frames) << frames.error().message;
+        ASSERT_EQ(frames->size(), 2U) << "五个连续 0x00 加一个 PING 应当解成一帧 PADDING 加一帧 PING";
+        EXPECT_TRUE(std::holds_alternative<QuicPaddingFrame>(frames->at(0)));
+        EXPECT_TRUE(std::holds_alternative<QuicPingFrame>(frames->at(1)));
+
+        const std::vector<std::uint8_t> paddingDatagram(1200U, 0x00U);
+        const auto                      mergedPadding = decodeQuicFrames(paddingDatagram);
+        ASSERT_HAS_VALUE(mergedPadding) << mergedPadding.error().message;
+        ASSERT_EQ(mergedPadding->size(), 1U) << "整条 0x00 载荷应当只留一帧 PADDING";
+        EXPECT_TRUE(std::holds_alternative<QuicPaddingFrame>(mergedPadding->front()));
+    }
+
+    /**
      * @brief LEN 位为 0 的 STREAM：数据延伸到载荷末尾；重新编码会换成带 Length 的规范形态
      */
     TEST(QuicFrame, DecodesStreamWithoutLengthBitToPayloadEnd)

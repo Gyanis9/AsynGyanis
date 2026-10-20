@@ -226,6 +226,26 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 一帧 ACK 带多段区间时逐段确认，产出按包号递增（ACK 区间本身按包号递减）
+     */
+    TEST(QuicRecovery, AcknowledgesAcrossMultipleRangesInAscendingPacketOrder)
+    {
+        QuicRecovery recovery;
+        for (std::uint64_t packetNumber = 0; packetNumber <= 9; ++packetNumber)
+        {
+            recovery.onPacketSent(QuicRecoverySpace::Initial, makeSentPacket(packetNumber, QuicTime{0}));
+        }
+
+        const auto update = recovery.onAcknowledgementReceived(QuicRecoverySpace::Initial, makeAcknowledgement(9, {{8, 9}, {2, 3}}), milliseconds(10), QuicTime{0});
+        ASSERT_EQ(update.acknowledged.size(), 4U);
+        EXPECT_EQ(update.acknowledged[0].packetNumber, 2U);
+        EXPECT_EQ(update.acknowledged[1].packetNumber, 3U);
+        EXPECT_EQ(update.acknowledged[2].packetNumber, 8U);
+        EXPECT_EQ(update.acknowledged[3].packetNumber, 9U);
+        EXPECT_EQ(recovery.inFlightByteCount(), 100U) << "四条确认与五条按包号阈值判丢的包都要各减一次在途字节，只剩 7 号包";
+    }
+
+    /**
      * @brief 时间阈值：判丢时刻是 send_time + max(9/8*rtt, kGranularity)
      */
     TEST(QuicRecovery, DeclaresPacketsLostByTimeThreshold)

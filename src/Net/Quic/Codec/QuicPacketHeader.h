@@ -113,6 +113,26 @@ namespace AsynGyanis::Net
     inline constexpr std::size_t kQuicMaximumPacketNumberByteCount = 4;
 
     /**
+     * @brief 按本包包号选出能安全还原的最小包号字段字节数（RFC 9000 §17.1）
+     * @details 规范要求包号字段能覆盖「最大已确认包号与本包号之差的两倍」，接收方按半窗口还原
+     *          才落不到别的候选值上。这里把本包包号本身当作该差值的保守上界：等价于假设最大已确认
+     *          包号为 0，算出来的档位只会偏宽。四档封顶 4 字节，也就是 2^32 的窗口。
+     * @param packetNumber 本包的完整包号
+     * @return std::size_t 1 到 4：小于 128 取 1、小于 32768 取 2、小于 8388608 取 3，其余取 4
+     */
+    [[nodiscard]] inline constexpr std::size_t quicPacketNumberByteCountFor(const std::uint64_t packetNumber) noexcept
+    {
+        for (std::size_t byteCount = 1; byteCount < kQuicMaximumPacketNumberByteCount; ++byteCount)
+        {
+            if (packetNumber < (1ULL << (byteCount * 8U - 1U)))
+            {
+                return byteCount;
+            }
+        }
+        return kQuicMaximumPacketNumberByteCount;
+    }
+
+    /**
      * @brief 版本协商包里「本端支持的版本」这一列的取值数上限
      * @details 一条数据报净载荷上限 1200 字节，头部固定 14 字节上限（含两条 20 字节标识），
      *          32 位一档远够本实现用；设这一格是为了让编码器的入参校验有可对照的界，

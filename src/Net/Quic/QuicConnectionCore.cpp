@@ -178,17 +178,21 @@ namespace AsynGyanis::Net
          * @brief 本端出包时除帧以外占掉的字节数
          * @details 长头多带版本、源标识与 Token 长度域，且有 Length 字段；短头两者都没有（§17.3）。
          *          Length 域按 2 字节档预留：1200 的预算用不到 4 字节档，1 字节档又可能被加宽。
+         *          包号字段按实际宽度计入：§17.1 允许 1 到 4 字节，宽度随包号增长，按 1 字节估算
+         *          会让长包号报文的包头少算 1 到 3 字节，补齐尺寸与预算随之偏小。
          * @param configuration 连接配置，取两条标识的长度
          * @param isLongHeader 本包用长头还是短头
-         * @return std::size_t 包头 + 包号 + AEAD 标签 + CRYPTO 帧头上限
+         * @param packetNumberByteCount 本包包号字段的字节数（1 到 4），由 quicPacketNumberByteCountFor 按包号给出
+         * @return std::size_t 包头（含包号字段）+ AEAD 标签 + CRYPTO 帧头上限
          */
-        std::size_t packetOverheadByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader)
+        std::size_t packetOverheadByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader, const std::size_t packetNumberByteCount)
         {
-            const std::size_t headerByteLength = isLongHeader
-                                                         // 首字节、版本、两条「长度字节 + 标识」、Token 长度域、Length 域、包号
-                                                         ? 1 + 4 + 1 + configuration.peerConnectionId.size() + 1 + configuration.localConnectionId.size() + 1 + 2 + 1
-                                                         // 首字节、目的标识（没有长度字段）、包号
-                                                         : 1 + configuration.peerConnectionId.size() + 1;
+            const std::size_t headerByteLength =
+                    isLongHeader
+                            // 首字节、版本、两条「长度字节 + 标识」、Token 长度域、Length 域、包号
+                            ? 1 + 4 + 1 + configuration.peerConnectionId.size() + 1 + configuration.localConnectionId.size() + 1 + 2 + packetNumberByteCount
+                            // 首字节、目的标识（没有长度字段）、包号
+                            : 1 + configuration.peerConnectionId.size() + packetNumberByteCount;
             return headerByteLength + kQuicAuthenticationTagByteLength + kQuicCryptoFrameHeaderByteLimit;
         }
         /**
@@ -608,7 +612,9 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false);
+        // 两类帧都排在同一个包号空间里：每发一包 nextPacketNumber 就涨一格，包号字段也可能跟着跨档，
+        // 所以开销要逐包按当前包号现算，不能拿这一轮开头那一次的值套完所有包
+        const SpaceState &applicationSpace = m_spaces[spaceIndex(PacketNumberSpace::Application)];
 
         // ① 欠着的 PATH_RESPONSE：逐条回应，且必须打在挑战来的那条路径上（§8.2.2）
         if (!m_pendingPathResponses.empty())
@@ -618,7 +624,8 @@ namespace AsynGyanis::Net
             {
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{QuicPathResponseFrame{response.data}});
-                const std::size_t packetByteLength = overheadByteLength + frames.size();
+                const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber));
+                const std::size_t packetByteLength   = overheadByteLength + frames.size();
                 if (packetByteLength > amplificationLimitForPath(response.key) || !m_congestion->maySend(packetByteLength))
                 {
                     // 额度或窗口腾不出来：留到下一轮。§8.2.2 允许回应被这两者压后
@@ -644,7 +651,8 @@ namespace AsynGyanis::Net
             }
             std::string frames;
             appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{challenge.data}});
-            const std::size_t packetByteLength = overheadByteLength + frames.size();
+            const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber));
+            const std::size_t packetByteLength   = overheadByteLength + frames.size();
             if (packetByteLength > amplificationLimitForPath(challenge.key) || !m_congestion->maySend(packetByteLength))
             {
                 continue; // 下一轮再试；放弃时限照旧在走（§8.2.4 只说到期放弃，没说这期间必须一直在试）
@@ -1060,7 +1068,10 @@ namespace AsynGyanis::Net
                         reportStreamViolation(m_streams.onStopSendingFrame(specificFrame), arrivalTime);
                     } else if constexpr (std::same_as<FrameType, QuicConnectionCloseFrame>)
                     {
-                        // 对端已经收口：本端不再发任何东西，也不再回一个 CLOSE（§10.2.3）
+                        // 对端已经收口：本端不再发任何东西，也不再回一个 CLOSE（§10.2.3）。
+                        // §10.2.2 要求进入 closing 后不再发非 CLOSE 包，因此待发队列里积压的报文
+                        // 一并作废——收包与定时两条 flush 交错时不能把它们漏出去
+                        m_outboundDatagrams.clear();
                         m_phase = QuicConnectionPhase::Closing;
                     } else if constexpr (std::same_as<FrameType, QuicHandshakeDoneFrame>)
                     {
@@ -1411,9 +1422,8 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        const bool        isLongHeader            = space != PacketNumberSpace::Application;
-        const std::size_t fixedOverheadByteLength = packetOverheadByteLength(m_configuration, isLongHeader);
-        if (isBlockedByAmplificationLimit(fixedOverheadByteLength))
+        const bool isLongHeader = space != PacketNumberSpace::Application;
+        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber))))
         {
             // 连一个包头都装不进 3 倍额度：本空间这一轮什么都发不出去，等对端多打些字节再来（§8.1）
             return;
@@ -1453,7 +1463,10 @@ namespace AsynGyanis::Net
                 elicitsAcknowledgement = true;
             }
 
-            const std::size_t              remainingByteBudget = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
+            // 包号会在本轮里跨档：每发一包都要按当时的 nextPacketNumber 重算固定开销，
+            // 拿循环开头那次的值套后续包会把包头少算 1 到 3 字节
+            const std::size_t              fixedOverheadByteLength = packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber));
+            const std::size_t              remainingByteBudget     = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
             std::optional<QuicCryptoRange> carriedRange;
             if (!state.pendingRetransmissions.empty())
             {
@@ -1590,12 +1603,16 @@ namespace AsynGyanis::Net
     {
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
+        // §17.1：包号字段要覆盖最大已确认包号到本包号之差的两倍，1 字节窗口只到 128；
+        // 乱序超出窗口时接收方按 restoreQuicPacketNumber 会把高位补错，AEAD 失败后整包静默丢掉
+        const std::size_t packetNumberByteCount = quicPacketNumberByteCountFor(packetNumber);
         // 两处补尺寸补的都是 PADDING 帧（0x00 一字节一帧），落在受保护载荷里，所以差多少要等包头与标签
         // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针与路径
         // 验证的挑战/回应按各自章节补到 1200——探针的意义就在那个数上，验证的那两个是让新路先证明
-        // 自己过得去大包（§8.2.1/§8.2.2）
-        const std::size_t plainOverheadByteLength = packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application) - kQuicCryptoFrameHeaderByteLimit;
-        std::string       paddedFrameAssembly;
+        // 自己过得去大包（§8.2.1/§8.2.2）。包头里的包号就按这一包的实际宽度算，否则补齐会多出 1 到 3 字节
+        const std::size_t plainOverheadByteLength =
+                packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, packetNumberByteCount) - kQuicCryptoFrameHeaderByteLimit;
+        std::string paddedFrameAssembly;
         if (!isLocalServer() && space == PacketNumberSpace::Initial && plainOverheadByteLength + frames.size() < kQuicMinimumInitialDatagramByteLength)
         {
             paddedFrameAssembly = frames;
@@ -1612,7 +1629,7 @@ namespace AsynGyanis::Net
         packet.destinationConnectionId = m_configuration.peerConnectionId;
         packet.sourceConnectionId      = m_configuration.localConnectionId;
         packet.packetNumber            = packetNumber;
-        packet.packetNumberByteCount   = 1;
+        packet.packetNumberByteCount   = packetNumberByteCount;
         packet.isKeyPhaseBitSet        = m_isSendKeyPhaseSet;
         packet.frames                  = paddedFrameAssembly.empty() ? asBytes(frames) : asBytes(paddedFrameAssembly);
 
@@ -1718,7 +1735,9 @@ namespace AsynGyanis::Net
         std::string frames;
         appendQuicFrame(frames, QuicFrame{close});
         const PacketNumberSpace space = highestSpaceWithWriteKeys();
-        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application) + frames.size()))
+        if (isBlockedByAmplificationLimit(
+                    packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, quicPacketNumberByteCountFor(m_spaces[spaceIndex(space)].nextPacketNumber)) +
+                    frames.size()))
         {
             // 收口也受 §8.1 约束：额度不够就宁可不发，反正对端已经在把我们当放大器打了
             return;

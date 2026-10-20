@@ -24,20 +24,6 @@ namespace AsynGyanis::Net
 
         /// kPersistentCongestionThreshold：持久拥塞时长是 PTO 基准的几倍，规范给的推荐值是 3（§7.6.1）
         constexpr std::int64_t kPersistentCongestionThresholdMultiplier = 3;
-
-        /**
-         * @brief 包号是否落在 ACK 的任一区间里
-         * @details 区间来自 `QuicAcknowledgementFrame`，按包号递减且不重叠；这里线性扫，
-         *          区间条数被状态机压到很小，而发送侧的包数本来就有限
-         * @param ranges ACK 里的区间列表
-         * @param packetNumber 待判包号
-         * @return true 表示这个包号被确认了
-         */
-        bool isWithinAcknowledgementRanges(const std::vector<QuicAcknowledgementRange> &ranges, const std::uint64_t packetNumber)
-        {
-            return std::ranges::any_of(ranges, [packetNumber](const QuicAcknowledgementRange &range)
-                                       { return packetNumber >= range.smallestAcknowledged && packetNumber <= range.largestAcknowledged; });
-        }
     } // namespace
 
     std::size_t QuicRecovery::spaceIndex(const QuicRecoverySpace space) noexcept
@@ -92,23 +78,24 @@ namespace AsynGyanis::Net
 
         QuicAcknowledgementUpdate         update;
         std::optional<QuicSentPacketInfo> largestAcknowledgedPacket;
-        for (auto packetIterator = state.unacknowledged.begin(); packetIterator != state.unacknowledged.end();)
+        // 区间按包号递减，从最小的一段扫起，update.acknowledged 才能保持按包号递增；
+        // 每段只碰本段范围内的在途包，从 lower_bound(段首) 起、到越过段尾为止
+        for (auto rangeIterator = acknowledgement.ranges.rbegin(); rangeIterator != acknowledgement.ranges.rend(); ++rangeIterator)
         {
-            if (!isWithinAcknowledgementRanges(acknowledgement.ranges, packetIterator->first))
+            for (auto packetIterator = state.unacknowledged.lower_bound(rangeIterator->smallestAcknowledged);
+                 packetIterator != state.unacknowledged.end() && packetIterator->first <= rangeIterator->largestAcknowledged;)
             {
-                ++packetIterator;
-                continue;
+                const QuicSentPacketInfo acknowledged = packetIterator->second;
+                m_inFlightByteCount -= acknowledged.byteCount;
+                update.acknowledged.push_back(acknowledged);
+                noteEcnMarkedResolution(acknowledged, false);
+                // 逐条取最大而不是依赖扫描顺序：区间乱序或重叠时也不会把最大确认包号记小
+                if (!largestAcknowledgedPacket.has_value() || acknowledged.packetNumber > largestAcknowledgedPacket->packetNumber)
+                {
+                    largestAcknowledgedPacket = acknowledged;
+                }
+                packetIterator = state.unacknowledged.erase(packetIterator);
             }
-            const QuicSentPacketInfo acknowledged = packetIterator->second;
-            m_inFlightByteCount -= acknowledged.byteCount;
-            update.acknowledged.push_back(acknowledged);
-            noteEcnMarkedResolution(acknowledged, false);
-            // 区间列表按包号递增地扫过这张表，最后进来的那个就是本次确认里的最大包号
-            if (!largestAcknowledgedPacket.has_value() || acknowledged.packetNumber > largestAcknowledgedPacket->packetNumber)
-            {
-                largestAcknowledgedPacket = acknowledged;
-            }
-            packetIterator = state.unacknowledged.erase(packetIterator);
         }
         if (update.acknowledged.empty())
         {

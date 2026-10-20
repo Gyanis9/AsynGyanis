@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <format>
 #include <ranges>
 #include <vector>
@@ -233,10 +234,23 @@ namespace AsynGyanis::Net
         const std::size_t packetNumberOffset = datagram.size() - packetStartOffset;
         appendQuicTruncatedPacketNumber(datagram, packet.packetNumber, packetNumberByteCount);
 
-        // 加密会让 datagram 扩容，所以 AAD 交一份副本而不是指向它的 span（头部不超过几十字节）
-        const std::string additionalData = datagram.substr(packetStartOffset);
-        appendQuicProtectedPayload(datagram, keys, packet.packetNumber,
-                                   std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(additionalData.data()), additionalData.size()), plaintext);
+        // 加密会让 datagram 扩容，所以 AAD 必须交一份副本而不是指向它的 span。短头与不带 Token 的
+        // 长头都在 64 字节内，走栈上的定长缓冲；Initial 的 Token 可能很长，超出 64 字节时才退回堆
+        constexpr std::size_t                           kStackAdditionalDataByteCount = 64;
+        const std::size_t                               additionalDataByteCount       = datagram.size() - packetStartOffset;
+        std::array<char, kStackAdditionalDataByteCount> stackAdditionalData{};
+        std::string                                     heapAdditionalData;
+        std::span<const std::uint8_t>                   additionalData;
+        if (additionalDataByteCount <= kStackAdditionalDataByteCount)
+        {
+            std::memcpy(stackAdditionalData.data(), datagram.data() + packetStartOffset, additionalDataByteCount);
+            additionalData = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(stackAdditionalData.data()), additionalDataByteCount);
+        } else
+        {
+            heapAdditionalData = datagram.substr(packetStartOffset);
+            additionalData     = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(heapAdditionalData.data()), heapAdditionalData.size());
+        }
+        appendQuicProtectedPayload(datagram, keys, packet.packetNumber, additionalData, plaintext);
 
         // 加密之后才能取样本：此刻本包的全部字节都在缓冲尾部
         std::span<std::uint8_t> builtPacket(reinterpret_cast<std::uint8_t *>(datagram.data()) + packetStartOffset, datagram.size() - packetStartOffset);

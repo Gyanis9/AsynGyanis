@@ -557,6 +557,19 @@ namespace AsynGyanis::Net
         std::size_t readOffset = 0;
         while (readOffset < payload.size())
         {
+            // PADDING 是单字节 0x00，一段连续 0x00 语义上就是同一个帧；逐字节成帧会让一个
+            // 1200 字节的验证包解出上千个 variant 元素。上层不消费 PADDING，连续段合并成一帧，
+            // 游标直接跳到这段末尾
+            if (payload[readOffset] == 0x00U)
+            {
+                while (readOffset < payload.size() && payload[readOffset] == 0x00U)
+                {
+                    ++readOffset;
+                }
+                frames.push_back(QuicFrame{QuicPaddingFrame{}});
+                continue;
+            }
+
             // 游标逐帧新建：失败文案要指出错在哪一帧，一轮用到底会把第 5 帧的错安到第一帧头上
             FrameReader reader(payload.subspan(readOffset), readOffset);
             const auto  typeValue = reader.readFrameType();
@@ -568,10 +581,6 @@ namespace AsynGyanis::Net
             QuicFrame frame;
             switch (*typeValue)
             {
-                case static_cast<std::uint64_t>(QuicFrameType::Padding):
-                    // 连续 PADDING 合成一帧交出去没有意义，逐帧保留让上层按字节数记账（它决定拥塞窗口的用量）
-                    frame = QuicPaddingFrame{};
-                    break;
                 case static_cast<std::uint64_t>(QuicFrameType::Ping):
                     frame = QuicPingFrame{};
                     break;

@@ -1551,6 +1551,67 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 包号涨到 2 字节档之后，客户端 Initial 的补齐仍以真实包头为准
+     * @details §17.1 的包号字段随包号从 1 字节涨到 4 字节。补齐算的是「1200 减包头再减帧」，
+     *          包头若仍按 1 字节估，包号过 128 之后每条 Initial 都会多补 1 到 3 字节，
+     *          既越过 §14.1 的 1200 整格，也让路径 MTU 探针与路径验证的同款补齐一起偏大。
+     *          这里让客户端每收到一条 PING 就回一条只含 ACK 的 Initial——纯 ACK 不计拥塞在途，
+     *          不必等确认就能把包号推过 128——再逐条断言产出恰好 1200 字节。
+     */
+    TEST(QuicConnectionCore, PadsClientInitialDatagramsWithWidePacketNumberFields)
+    {
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(clientContext.get(), nullptr) << "夹具证书加载失败";
+
+        QuicConnectionCoreConfiguration configuration = makeServerConfiguration(*clientContext.get());
+        configuration.role                            = QuicConnectionRole::Client;
+        configuration.peerConnectionId                = kOriginalDestinationConnectionId;
+        configuration.originalDestinationConnectionId = kOriginalDestinationConnectionId;
+
+        QuicConnectionCore core(configuration);
+        core.drive(Timestamp{0});
+        ASSERT_FALSE(drain(core).empty()) << "客户端第一个 Initial 没发出来，后续包号无从推进";
+
+        const QuicPacketKeys serverInitialWriteKeys = deriveQuicInitialPacketKeys(kOriginalDestinationConnectionId, QuicPacketDirection::ServerToClient);
+        // Initial 的目的标识只认本端签发的那条或原始目的标识：夹具的 localConnectionId 是 kServerConnectionId
+        const std::vector<std::uint8_t> clientConnectionId       = configuration.localConnectionId;
+        const std::vector<std::uint8_t> serverSourceConnectionId = kUnknownConnectionId;
+        // 140 轮足够把客户端 Initial 的包号从 0 推过 128（每轮至少涨一格）
+        constexpr int kRoundCount        = 140;
+        std::uint64_t serverPacketNumber = 0;
+        Timestamp     now{1000};
+        for (int round = 0; round < kRoundCount; ++round)
+        {
+            std::string frames;
+            appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+            QuicOutboundPacket packet;
+            packet.isLongHeader            = true;
+            packet.longPacketType          = QuicLongPacketType::Initial;
+            packet.version                 = kQuicVersion1;
+            packet.destinationConnectionId = clientConnectionId;
+            packet.sourceConnectionId      = serverSourceConnectionId;
+            packet.packetNumber            = serverPacketNumber;
+            packet.packetNumberByteCount   = quicPacketNumberByteCountFor(serverPacketNumber);
+            packet.frames                  = asBytes(frames);
+            ++serverPacketNumber;
+
+            std::string datagram;
+            appendQuicPacket(datagram, packet, serverInitialWriteKeys);
+            ASSERT_TRUE(core.onDatagramReceived(std::vector<std::uint8_t>(datagram.begin(), datagram.end()), now).has_value());
+
+            core.drive(now + kServerSendLatency);
+            now += Timestamp{10000};
+            const std::vector<std::vector<std::uint8_t>> produced = drain(core);
+            ASSERT_FALSE(produced.empty()) << "第 " << round << " 轮客户端没回应，包号推不过 128";
+            for (const std::vector<std::uint8_t> &producedDatagram: produced)
+            {
+                EXPECT_EQ(producedDatagram.size(), kQuicMaximumDatagramPayloadByteLength)
+                        << "第 " << round << " 轮产出的 Initial 没按真实包号宽度补到 1200（§14.1），多补会让 PMTU 探针与路径验证的尺寸一起偏大";
+            }
+        }
+    }
+
+    /**
      * @brief 同一条数据报重复交来不能把握手字节喂给 TLS 第二次（§12.5）
      */
     TEST(QuicConnectionCore, IgnoresRetransmittedPackets)
@@ -3999,6 +4060,43 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(core.isFinished()) << "没有已验证地址可退时该静默收口（§9.3.2 末段）";
         EXPECT_TRUE(drainMarked(core).empty()) << "静默收口不该留下任何待发报文";
         EXPECT_FALSE(client.sawConnectionClose()) << "静默收口不许发 CONNECTION_CLOSE";
+    }
+
+    /**
+     * @brief 收到对端 CONNECTION_CLOSE 时，待发队列里已积压的报文一并作废（§10.2.2）
+     * @details 收包与定时两条 flush 交错时，进入 closing 之前排队的 ACK 仍会留在 deque 里；
+     *          先证明「欠 ACK ⇒ drive 会排队」这条通道是通的，再在同样欠着 ACK 时喂一条 CLOSE。
+     */
+    TEST(QuicConnectionCore, PeerConnectionCloseDropsQueuedDatagrams)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 第一轮：对端 PING 让本端欠一条 ACK，drive 把它排进待发队列（这一步同时校准通道是否通）
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), Timestamp{70000}).has_value());
+        core.drive(Timestamp{71000});
+        const std::vector<QuicOutboundDatagram> firstAcknowledgement = drainMarked(core);
+        ASSERT_FALSE(firstAcknowledgement.empty()) << "欠着 ACK 却没有产出，下面那条断言就证明不了任何事";
+        for (const QuicOutboundDatagram &datagram: firstAcknowledgement)
+        {
+            consumeOutbound(client, datagram);
+        }
+
+        // 第二轮：同样欠一条 ACK，这次取走之前先让对端收口
+        ASSERT_TRUE(core.onDatagramReceived(client.buildPing(QuicEncryptionLevel::Application), Timestamp{72000}).has_value());
+        core.drive(Timestamp{73000});
+        std::string closeFrames;
+        appendQuicFrame(closeFrames, QuicFrame{QuicConnectionCloseFrame{0, std::nullopt, std::span<const std::uint8_t>{}}});
+        ASSERT_TRUE(core.onDatagramReceived(client.buildDatagramWith(QuicEncryptionLevel::Application, closeFrames), Timestamp{74000}).has_value());
+
+        EXPECT_TRUE(core.isFinished()) << "收口之后仍留着积压报文，收包与定时两条 flush 会把它发出去";
+        EXPECT_TRUE(drainMarked(core).empty()) << "进入 closing 之后还取出了待发报文（§10.2.2 不许再发非 CLOSE 包）";
     }
 
     /**

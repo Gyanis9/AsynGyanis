@@ -490,8 +490,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 一个包号空间的状态
-         * @details 已收包号用有序集合而不是区间结构：握手期每空间只有几十到几百个包，区间合并的
-         *          边界条件是纯出错面，换不来什么。
+         * @details 已收包号存成区间集合：插入时与相邻区间就地合并，覆盖总数随合并增量维护，
+         *          因此几千个包号通常只占一两个节点，出 ACK 时也能直接按区间折。
          */
         struct SpaceState
         {
@@ -502,7 +502,7 @@ namespace AsynGyanis::Net
             std::uint64_t                 nextPacketNumber{0}; ///< 下一个要发出的完整包号
 
             std::optional<std::uint64_t> largestReceivedPacketNumber{};   ///< 本空间已认证的最大包号，包号还原要靠它
-            QuicReceivedPacketNumbers    receivedPacketNumbers{};         ///< 已解密成功的包号，出 ACK 的原料
+            QuicReceivedPacketNumbers    receivedPacketNumbers{};         ///< 已解密成功的包号区间集合，覆盖总数增量维护；出 ACK 的原料
             std::optional<std::uint64_t> largestAckElicitingReceived{};   ///< 最新的触发确认的包号，即 ACK 帧的最大确认值
             std::optional<Timestamp>     largestAckElicitingArrival{};    ///< 它的到达时刻，算 ack_delay
             bool                         isAcknowledgementPending{false}; ///< 有触发确认的包尚未被确认：下一次出包要带 ACK

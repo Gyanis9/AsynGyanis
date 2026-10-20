@@ -20,7 +20,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -216,6 +218,40 @@ namespace AsynGyanis::Net
         EXPECT_EQ(restoreQuicPacketNumber(0ULL, 0ULL, 1), 0ULL);
         EXPECT_THROW(static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 0)), Base::InvalidArgumentException);
         EXPECT_THROW(static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 5)), Base::InvalidArgumentException);
+    }
+
+    /**
+     * @brief 包号字段宽度按 §17.1 的两倍在途窗口挑最小档，边界逐个钉住
+     * @details 用本包包号当「最大已确认包号到本包号之差」的保守上界（等价于假设最大已确认包号为 0），
+     *          再确认按选出的宽度截断后，以 packetNumber - 1 作最大已收包号能原样还原。
+     */
+    TEST(QuicPacketHeader, ChoosesPacketNumberByteCountByDoubledWindow)
+    {
+        EXPECT_EQ(quicPacketNumberByteCountFor(0), 1U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(127), 1U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(128), 2U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(32767), 2U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(32768), 3U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(8388607), 3U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(8388608), 4U);
+        EXPECT_EQ(quicPacketNumberByteCountFor(std::numeric_limits<std::uint64_t>::max()), 4U) << "宽度封顶 4 字节";
+
+        for (const std::uint64_t packetNumber:
+             {std::uint64_t{1}, std::uint64_t{127}, std::uint64_t{128}, std::uint64_t{32767}, std::uint64_t{32768}, std::uint64_t{8388607}, std::uint64_t{8388608}})
+        {
+            const std::size_t packetNumberByteCount = quicPacketNumberByteCountFor(packetNumber);
+            std::string       bytes;
+            appendQuicTruncatedPacketNumber(bytes, packetNumber, packetNumberByteCount);
+            ASSERT_EQ(bytes.size(), packetNumberByteCount) << "包号 " << packetNumber << " 写出的字节数不对";
+
+            std::uint64_t truncatedPacketNumber = 0;
+            for (const char byte: bytes)
+            {
+                truncatedPacketNumber = (truncatedPacketNumber << 8U) | static_cast<std::uint8_t>(byte);
+            }
+            EXPECT_EQ(restoreQuicPacketNumber(packetNumber - 1U, truncatedPacketNumber, packetNumberByteCount), packetNumber)
+                    << "包号 " << packetNumber << " 按 " << packetNumberByteCount << " 字节往返后没有还原";
+        }
     }
 
     /**
