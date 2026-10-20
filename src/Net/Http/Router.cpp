@@ -469,15 +469,34 @@ namespace AsynGyanis::Net
         // 存视图不存副本——它指向路由表自己的存储，而每请求再抄一份就是一笔新的堆分配
         std::string_view selectedPattern;
 
-        // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）的判据落在「同一级之内
-        // 先严格匹配、这一级全都没中才按 GET 复用」，而不是「整张表先按 HEAD 跑一遍、没中再按 GET
-        // 跑一遍」：后者会让下一级的兜底 any("*")（HttpServer 的静态目录就是这么挂的）在 HEAD 那一遍
-        // 就把请求抢走，同路径的 GET 业务路由反而永远轮不到。级别之间的优先级因此与 GET 完全一致
+        // HEAD 复用 GET（RFC 9110 §9.1：通用服务器必须同时支持 GET 与 HEAD）的候选分两档：
+        // 第一档只认显式 head()，第二档认显式 get()（复用）与 any() 兜底。档位先于注册顺序：
+        // 显式注册的 head() 无论先注册还是后注册都压过同路径的 get()；GET 与 any() 在第二档
+        // 按注册顺序先到先得，与同一注册顺序下一条 GET 请求得到的处理器一致——先注册的兜底
+        // any("*")（HttpServer 的静态目录就是这么挂的）连 GET 请求都接走，HEAD 自然也落它手上。
+        // 档内仍是精确路径优先于模式路径、同级按注册顺序先到先得。
+        // 非 HEAD 只有一档：本方法或 any()，按注册顺序先到先得
         const auto selectHandlerForMethod = [&](const HttpMethod matchMethod) -> bool
         {
-            // 只有 HEAD 有第二遍：第一遍认「显式放行本方法」（head() 与 any()），第二遍才复用 GET。
-            // 因此显式注册的 head() 无论先注册还是后注册都赢过同路径的 get()
             const int passCount = matchMethod == HttpMethod::HEAD ? 2 : 1;
+
+            // 候选是否属于本档；未收录方法一律不进业务匹配（UNKNOWN 不能蹭上 any() 路由）
+            const auto isSelectedInPass = [matchMethod, isRequestMethodRecognized](const HttpMethod candidateMethod, const bool isAnyMethod, const int pass) -> bool
+            {
+                if (!isRequestMethodRecognized)
+                {
+                    return false;
+                }
+                if (matchMethod != HttpMethod::HEAD)
+                {
+                    return isAnyMethod || candidateMethod == matchMethod;
+                }
+                if (pass == 0)
+                {
+                    return candidateMethod == HttpMethod::HEAD && !isAnyMethod;
+                }
+                return isAnyMethod || candidateMethod == HttpMethod::GET;
+            };
 
             // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
             if (const auto exactIterator = matchTable->m_exactRoutes.find(requestPath); exactIterator != matchTable->m_exactRoutes.end())
@@ -486,25 +505,20 @@ namespace AsynGyanis::Net
                 {
                     for (const ExactRoute &candidate: exactIterator->second)
                     {
-                        // Allow 只在第一遍记：第二遍的候选是它的子集，重复记没有新信息
+                        // Allow 只在第一档扫全部候选时记：第二档只认一部分候选，
+                        // 而它们的方法在第一档都已经记过
                         if (pass == 0)
                         {
                             rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
                         }
 
-                        if (!isRequestMethodRecognized)
+                        if (!isSelectedInPass(candidate.method, candidate.isAnyMethod, pass))
                         {
                             continue;
                         }
-                        // 先到先得：同一路径上的多个条目按注册顺序取第一个放行本方法的
-                        const bool isStrictMatch = candidate.isAnyMethod || candidate.method == matchMethod;
-                        const bool isGetReuse    = pass == 1 && candidate.method == HttpMethod::GET;
-                        if (isStrictMatch || isGetReuse)
-                        {
-                            selectedHandler = &candidate.handler;
-                            selectedPattern = exactIterator->first;
-                            return true;
-                        }
+                        selectedHandler = &candidate.handler;
+                        selectedPattern = exactIterator->first;
+                        return true;
                     }
                 }
             }
@@ -517,21 +531,31 @@ namespace AsynGyanis::Net
             {
                 for (const PatternRoute &route: matchTable->m_patternRoutes)
                 {
+                    const bool isSelected = isSelectedInPass(route.method, route.isAnyMethod, pass);
+
+                    // 第一档要把 Allow 收齐，所以每个候选都要做一次路径判定；第二档只认本档候选，
+                    // 其余候选的 Allow 已在第一档记过，不必再测
+                    if (pass != 0 && !isSelected)
+                    {
+                        continue;
+                    }
+
                     // 失败候选攒下的 ":id" 在下一次 clear 里整体丢弃，不会串到别的路由上
                     candidateParameters.clear();
-                    if (!matchesPattern(route, requestPath, &candidateParameters))
+                    // 只有本档候选才收参数：其余候选即使路径命中也不会被选中，参数表随后就要丢掉，
+                    // 传 nullptr 省去每个 ":name" 段与通配剩余路径各一次 std::string 构造
+                    if (!matchesPattern(route, requestPath, isSelected ? &candidateParameters : nullptr))
                     {
                         continue;
                     }
 
                     if (pass == 0)
                     {
+                        // 路径命中而方法不属本档：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
                         rememberAllowedMethod(route.method, route.isAnyMethod);
                     }
 
-                    const bool isStrictMatch = route.isAnyMethod || route.method == matchMethod;
-                    const bool isGetReuse    = pass == 1 && route.method == HttpMethod::GET;
-                    if (isRequestMethodRecognized && (isStrictMatch || isGetReuse))
+                    if (isSelected)
                     {
                         selectedHandler = &route.handler;
                         selectedPattern = route.pattern;
@@ -539,7 +563,6 @@ namespace AsynGyanis::Net
                         commitPathParameters(request, candidateParameters);
                         return true;
                     }
-                    // 路径命中而方法不合：记下事实，扫完全部候选再决定 405，Allow 也才凑得齐
                 }
             }
             return false;

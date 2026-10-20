@@ -248,12 +248,15 @@ namespace AsynGyanis::Net
             const std::filesystem::path relativePath = candidateFilePath.lexically_relative(rootDirectoryPath);
             if (relativePath.empty())
             {
-                // 两段路径完全相同：候选路径就是根目录本身
-                return true;
+                // lexically_relative 在「两段路径完全相同」与「根名不同（Windows 上跨盘符、
+                // 或一个盘符路径对一个 UNC 路径）」两种情况下都给空路径。空路径不能一律当成
+                // 「在根目录之内」：只有两段路径逐段相等时，候选才是根目录本身
+                return candidateFilePath == rootDirectoryPath;
             }
             if (relativePath.is_absolute())
             {
-                // Windows 上「不同盘符」会算出绝对路径而不是相对路径，这条判据专门接住它
+                // 按标准，根名或根目录不一致时 lexically_relative 先返回空路径；这里只是兜底：
+                // 任何绝对结果都意味着没有落在根目录之下
                 return false;
             }
 

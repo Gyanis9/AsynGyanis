@@ -12,6 +12,7 @@
 
 #include "ExpectedAssertions.h"
 #include "Platform/FileSystem/FileSystem.h"
+#include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -680,6 +682,104 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.status(), 200);
         EXPECT_EQ(response.body(), "handler-wins");
     }
+
+    TEST(HttpServer, ServesPatternGetRouteForBothGetAndHeadWhenRegisteredBeforeStaticCatchAll)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirHeadPattern");
+        ASSERT_TRUE(tree.isReady());
+
+        // 业务模式路由先入表，静态兜底 any("*") 由 staticFileDir() 后挂上：两者在 HEAD 的第二档
+        // 同级按注册顺序竞争，HEAD 与同一 URL 的 GET 因此都落到业务路由，而不是去找一个
+        // 不存在的静态文件
+        server.router().get("/user/:id",
+                            [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                            {
+                                response.setBody("user-" + request.param("id").value_or(""));
+                                co_return;
+                            });
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse getResponse = serveRequest(server, HttpMethod::GET, "/user/42");
+        EXPECT_EQ(getResponse.status(), 200);
+        EXPECT_EQ(getResponse.body(), "user-42");
+
+        const HttpResponse headResponse = serveRequest(server, HttpMethod::HEAD, "/user/42");
+        EXPECT_EQ(headResponse.status(), 200);
+        EXPECT_EQ(headResponse.body(), "user-42") << "HEAD 与同一注册顺序下的 GET 走了不同处理器";
+    }
+
+#if ASYN_PLATFORM_WIN32
+    TEST(HttpServer, RejectsStaticCandidateResolvedToAnotherVolume)
+    {
+        Core::EventLoop     loop;
+        HttpServer          server(loop, Core::InetAddress::localhost(0));
+        TemporaryStaticTree tree("StaticDirCrossVolume");
+        ASSERT_TRUE(tree.isReady());
+
+        // 找一块与静态根不同的卷：目录连接点（junction）普通用户即可创建，
+        // 而目录符号链接在未提权的 Windows 上通常建不出来
+        const std::string     uniqueSuffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        std::filesystem::path outsideDirectory;
+        for (char driveLetter = 'A'; driveLetter <= 'Z' && outsideDirectory.empty(); ++driveLetter)
+        {
+            const std::filesystem::path driveRoot(std::string(1, driveLetter) + ":\\");
+            std::error_code             probeError;
+            if (!std::filesystem::is_directory(driveRoot, probeError) || driveRoot.root_name() == tree.staticRoot().root_name())
+            {
+                continue;
+            }
+            const std::filesystem::path candidateDirectory = driveRoot / ("AsynGyanis_Net_CrossVolume_" + uniqueSuffix);
+            std::filesystem::create_directories(candidateDirectory, probeError);
+            if (!probeError)
+            {
+                outsideDirectory = candidateDirectory;
+            }
+        }
+        if (outsideDirectory.empty())
+        {
+            GTEST_SKIP() << "这台机器没有第二块可写卷，跨根候选构造不出来";
+        }
+
+        struct Cleanup
+        {
+            std::filesystem::path junctionPath;
+            std::filesystem::path outsideDirectory;
+
+            ~Cleanup()
+            {
+                std::error_code cleanupError;
+                if (!junctionPath.empty())
+                {
+                    std::filesystem::remove(junctionPath, cleanupError);
+                }
+                std::filesystem::remove_all(outsideDirectory, cleanupError);
+            }
+        } cleanup{tree.staticRoot() / "escape", outsideDirectory};
+
+        {
+            std::ofstream leakFile(outsideDirectory / "leak.txt", std::ios::out | std::ios::binary | std::ios::trunc);
+            leakFile << kLeakedFileContent;
+        }
+
+        // 连接点让 candidatePath 的根名变成另一块卷：weakly_canonical 会把它解析过去，
+        // 而 lexically_relative 对「根名不同」返回空路径。空路径若被当成「在根目录之内」，
+        // 根外文件就会被当成静态资源发出去
+        const std::string linkCommand = "mklink /J \"" + cleanup.junctionPath.string() + "\" \"" + outsideDirectory.string() + "\" > nul 2>&1";
+        std::error_code   linkError;
+        if (std::system(linkCommand.c_str()) != 0 || !std::filesystem::is_directory(cleanup.junctionPath, linkError))
+        {
+            GTEST_SKIP() << "目录连接点建不出来，跨根候选构造不出来";
+        }
+
+        server.staticFileDir(tree.staticRootText());
+
+        const HttpResponse response = serveRequest(server, HttpMethod::GET, "/escape/leak.txt");
+        EXPECT_EQ(response.status(), 403);
+        EXPECT_EQ(response.body().find(kLeakedFileContent), std::string_view::npos);
+    }
+#endif
 
     TEST(HttpServer, MissingDirectoryStillAnswersNotFoundNotServerError)
     {

@@ -309,6 +309,75 @@ namespace AsynGyanis::Net
         EXPECT_EQ(response.body(), "business");
     }
 
+    TEST(Router, KeepsPatternGetRouteAheadOfAnyMethodCatchAllForHeadRequest)
+    {
+        Router           router;
+        std::atomic<int> catchAllCalls{0};
+        std::atomic<int> businessCalls{0};
+        std::string      capturedIdentifier;
+        // 业务 GET 路由先入表、静态兜底 any("*") 后挂上（HttpServer::staticFileDir 的常见次序）。
+        // HEAD 的第二档认 GET 与 any()，按注册顺序先到先得，选中的因此与同一顺序下的 GET 是同一条；
+        // 参数也要照常提交，否则 HEAD 复用的 GET 处理器会拿到空 id
+        router.get("/user/:id",
+                   [&businessCalls, &capturedIdentifier](HttpRequest &request, HttpResponse &response) -> Core::Task<void>
+                   {
+                       businessCalls.fetch_add(1);
+                       capturedIdentifier = request.param("id").value_or("");
+                       response.setBody("business");
+                       co_return;
+                   });
+        router.any("*", textHandler("catch-all", &catchAllCalls));
+
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/user/42");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(businessCalls.load(), 1);
+        EXPECT_EQ(catchAllCalls.load(), 0);
+        EXPECT_EQ(capturedIdentifier, "42") << "HEAD 复用的 GET 路由没有收到路径参数";
+        EXPECT_EQ(response.body(), "business");
+    }
+
+    TEST(Router, KeepsRegistrationOrderBetweenAnyMethodAndGetPatternRoutesForHeadRequest)
+    {
+        Router           router;
+        std::atomic<int> catchAllCalls{0};
+        std::atomic<int> businessCalls{0};
+        // 反向顺序：同级按注册顺序先到先得。兜底 any("*") 先入表，HEAD 与 GET 因此都落到它手上，
+        // 后注册的 GET 业务路由一次都不跑——HEAD 不允许偏离同一顺序下 GET 的结果
+        router.any("*", textHandler("catch-all", &catchAllCalls));
+        router.get("/user/:id", textHandler("business", &businessCalls));
+
+        HttpRequest  headRequest = makeRequest(HttpMethod::HEAD, "/user/42");
+        HttpResponse headResponse;
+        routeRequest(router, headRequest, headResponse);
+
+        HttpRequest  getRequest = makeRequest(HttpMethod::GET, "/user/42");
+        HttpResponse getResponse;
+        routeRequest(router, getRequest, getResponse);
+
+        EXPECT_EQ(headResponse.body(), "catch-all") << "HEAD 与同一注册顺序下的 GET 走了不同处理器";
+        EXPECT_EQ(getResponse.body(), "catch-all");
+        EXPECT_EQ(catchAllCalls.load(), 2);
+        EXPECT_EQ(businessCalls.load(), 0);
+    }
+
+    TEST(Router, FallsBackToAnyMethodCatchAllForHeadRequestWhenNoGetRouteExists)
+    {
+        Router           router;
+        std::atomic<int> catchAllCalls{0};
+        // 反向对照：any() 仍是 HEAD 的兜底档。把它从 HEAD 上拿掉，只有兜底路由的站点
+        // 就会对 HEAD 回 404/405，与同一路径上 GET 的行为不一致
+        router.any("*", textHandler("catch-all", &catchAllCalls));
+
+        HttpRequest  request = makeRequest(HttpMethod::HEAD, "/anything");
+        HttpResponse response;
+        routeRequest(router, request, response);
+
+        EXPECT_EQ(catchAllCalls.load(), 1);
+        EXPECT_EQ(response.body(), "catch-all");
+    }
+
     TEST(Router, Reports405ForHeadRequestOnPostOnlyPath)
     {
         Router           router;
