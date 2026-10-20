@@ -485,14 +485,6 @@ namespace AsynGyanis::Base
                                                      optionalFieldWithDiagnosis(sinkConfiguration, "immediate_flush", true, "rolling_file sink"));
         } else if (type == "async")
         {
-            // AsyncSink 只把事件排进队列、交给被包装的 sink 落地，自己那份 formatter 从不参与
-            // 渲染：原先通用分支会把它悄悄挂上，「配了 json」看着生效、落盘却是默认版式。
-            // 这里点名唯一有效的写法；sinkKnownFields 仍把 formatter 算作 async 认识的字段，
-            // 免得同一件事再被报成「不认识的字段」
-            if (sinkConfiguration.contains("formatter"))
-            {
-                std::cerr << "LoggerConfig：async sink 自身的 formatter 不生效，版式请写在 wrapped sink 上；已忽略该字段" << '\n';
-            }
             if (!sinkConfiguration.contains("wrapped"))
             {
                 std::cerr << "LoggerConfig：async sink 缺少 'wrapped'，已跳过" << '\n';
@@ -501,6 +493,16 @@ namespace AsynGyanis::Base
             auto wrappedSink = createSinkFromConfigImpl(sinkConfiguration.at("wrapped"), baseDirectory);
             if (!wrappedSink)
                 return nullptr;
+
+            // AsyncSink 只把事件排进队列、交给被包装的 sink 落地，自己那份 formatter 从不参与
+            // 渲染：原先通用分支会把它悄悄挂上，「配了 json」看着生效、落盘却是默认版式。
+            // 诊断排在 wrapped 建成之后：整条 sink 都会被跳过时不该再说「formatter 已忽略」，
+            // 那会让现场以为只丢了版式、sink 还在。sinkKnownFields 仍把 formatter 算作
+            // async 认识的字段，免得同一件事再被报成「不认识的字段」
+            if (sinkConfiguration.contains("formatter"))
+            {
+                std::cerr << "LoggerConfig：async sink 自身的 formatter 不生效，版式请写在 wrapped sink 上；已忽略该字段" << '\n';
+            }
 
             const int64_t configuredQueueSize = optionalFieldWithDiagnosis(sinkConfiguration, "queue_size", int64_t{1024}, "async sink");
             // 边界钳制两端都要，与 max_size_mb / max_backup 同一口径：
