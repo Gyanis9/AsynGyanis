@@ -16,9 +16,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 struct io_uring_sqe;
@@ -258,13 +258,10 @@ namespace AsynGyanis::Core
         /// 超时操作的时值：内核持有它的地址直到完成，因此必须是成员、不能是局部
         __kernel_timespec *m_timeoutValue{nullptr};
 
-        /// 按描述符的注册表。每条上报事件、改掩码与注销都要按描述符查一次，万级连接下红黑树
-        /// 每次多十几次随机访存，哈希的摊还常数更贴合这条路径。unordered_map 的节点地址同样
-        /// 稳定，槽位表与僵尸表里存的裸指针仍然有效
-        std::unordered_map<int, std::unique_ptr<Registration>> m_registrations;
+        std::map<int, std::unique_ptr<Registration>> m_registrations; ///< 按描述符的注册表
         /// 僵尸登记项（键是在途票据）：描述符键已释放、但内核还持有记录地址的那些。取消完成通知
         /// 到达时在这里释放；在那之前同一个 fd 号必须能被新连接重新注册
-        std::unordered_map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
+        std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls;
         /// 一条在途轮询的槽位：票据 =（（槽位下标 + 1）<< 32）| 代数，完成通知据此直接定位，不查表
         struct InFlightSlot
         {
