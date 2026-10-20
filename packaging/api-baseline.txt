@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8843
+# headers=303 entries=8846
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -6876,6 +6876,7 @@ src/Net/Quic/QuicAddressValidationToken.h	template<typename Value> using QuicAdd
 src/Net/Quic/QuicAddressValidationToken.h	void rotateSigningKey(std::span<const std::uint8_t> newSigningKey)
 src/Net/Quic/QuicClientConnection.h	Configuration m_configuration
 src/Net/Quic/QuicClientConnection.h	Core::EventLoop &m_loop
+src/Net/Quic/QuicClientConnection.h	Core::Timer m_expiryTimer
 src/Net/Quic/QuicClientConnection.h	Core::TlsPolicy tlsPolicy
 src/Net/Quic/QuicClientConnection.h	Platform::SocketAddress m_serverAddress
 src/Net/Quic/QuicClientConnection.h	QuicClientConnection &operator=(QuicClientConnection &&) = delete
@@ -6886,6 +6887,7 @@ src/Net/Quic/QuicClientConnection.h	QuicClientConnection(const QuicClientConnect
 src/Net/Quic/QuicClientConnection.h	QuicCongestionAlgorithmKind congestionAlgorithm
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::EventLoop &eventLoop() const noexcept
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> pumpOnce()
+src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> runExpiryLoop()
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> sendPending()
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<bool> connect(Core::InetAddress serverAddress)
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<bool> driveHandshake()
@@ -6909,6 +6911,7 @@ src/Net/Quic/QuicClientConnection.h	std::chrono::milliseconds idleTimeout
 src/Net/Quic/QuicClientConnection.h	std::function<void(std::int64_t, std::span<const std::uint8_t>, bool)> m_streamDataSink
 src/Net/Quic/QuicClientConnection.h	std::function<void(std::int64_t, std::uint64_t, bool)> m_peerStreamAbortSink
 src/Net/Quic/QuicClientConnection.h	std::map<std::int64_t, IncomingStreamState> m_incoming
+src/Net/Quic/QuicClientConnection.h	std::optional<Core::Task<void>> m_expiryTask
 src/Net/Quic/QuicClientConnection.h	std::size_t writeStream(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)
 src/Net/Quic/QuicClientConnection.h	std::string clientCertificateFile
 src/Net/Quic/QuicClientConnection.h	std::string clientPrivateKeyFile

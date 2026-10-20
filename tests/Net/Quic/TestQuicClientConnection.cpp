@@ -209,6 +209,18 @@ namespace AsynGyanis::Net
             }
 
             /**
+             * @brief 等客户端自己判出已收口（空闲超时或对端收口）
+             * @param timeout 等待上限
+             * @return true 时限内 `isClosed()` 已为真
+             * @note 读数来自 run() 在挂起循环里镜像的那一格；没传 `holdOpenAfterHandshake` 的尝试
+             *       不会更新它，调用方只应对挂着的那一档用本方法
+             */
+            [[nodiscard]] bool waitUntilClientClosed(const std::chrono::milliseconds timeout)
+            {
+                return waitForCondition([this] { return m_isClientClosed.load(std::memory_order_acquire); }, timeout);
+            }
+
+            /**
              * @brief 交还这条连接占着的名额，让它在自己的循环线程上关闭
              * @details 只在构造时传了 `holdOpenAfterHandshake` 的尝试有意义；没挂着的调用它是空操作
              */
@@ -247,11 +259,13 @@ namespace AsynGyanis::Net
                 m_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
                 // 结果先发布，再进入可能的挂起：调用方等的是结果，不是「连接已关」
                 m_isFinished.store(true, std::memory_order_release);
-                // 挂着这段时间只为占住名额。每 50 毫秒问一次放行没有：循环停了这些等待不会自己触发
-                // （Timer 的约定），而析构里的 stop 就是没人 release 时那条连接的最后一道出口
+                // 挂着这段时间只为占住名额。每 50 毫秒醒一次：既问放行没有，也把连接自身的收口状态
+                // 镜像给测试线程（空闲超时的判据由 waitUntilClientClosed 读它）。循环停了这些等待
+                // 不会自己触发（Timer 的约定），而析构里的 stop 就是没人 release 时那条连接的最后出口
                 Core::Timer ticker{m_loop};
                 while (m_isHeld.load(std::memory_order_acquire))
                 {
+                    m_isClientClosed.store(client->isClosed(), std::memory_order_relaxed);
                     co_await ticker.waitFor(std::chrono::milliseconds{50});
                 }
                 // 套接字要在循环线程上关：交给测试线程的帧销毁时再做就跨线程了
@@ -267,6 +281,7 @@ namespace AsynGyanis::Net
             std::atomic<bool>                   m_isFinished{false};               ///< 结果已就位
             std::atomic<bool>                   m_isSuccessful{false};             ///< 握手是否完成
             std::atomic<bool>                   m_isHeld{false};                   ///< 结果交出后仍把这条连接挂着（占名额用），由 releaseHold 结束
+            std::atomic<bool>                   m_isClientClosed{false};           ///< 挂起循环里镜像的 client->isClosed()
             std::string                         m_negotiatedApplicationProtocol{}; ///< 协商到的 ALPN
             std::chrono::milliseconds           m_elapsed{0};                      ///< 整次尝试耗时
         };
@@ -406,6 +421,31 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "出站握手既没成也没失败，挂在那里";
         EXPECT_TRUE(attempt.isSuccessful()) << "握手没完成：" << attempt.elapsed().count() << " 毫秒后收场";
         EXPECT_EQ(attempt.negotiatedApplicationProtocol(), "h3") << "握手成了但 ALPN 没谈定，出站侧不知道该按哪套协议说话";
+    }
+
+    /**
+     * @brief 客户端自己落实空闲超时：没有任何入站报文也必须收口
+     * @details 服务端空闲时限留 30 秒（不指望它替本端收口），客户端配 300 毫秒，握手后两边都不再发
+     *          东西。此时 `pumpOnce()` 挂在收包上永远等不到报文：若客户端没有自己的到期驱动，
+     *          `isClosed()` 就永远为假，本条在两秒后会因 `waitUntilClientClosed` 超时而失败。
+     *          连接一直挂着（holdOpenAfterHandshake=true），判据读的是连接自身的状态，而不是持有者
+     *          提前把它关掉了；收口之后再交还名额。
+     */
+    TEST(QuicClientConnection, ClosesAnIdleConnectionWithoutInboundTraffic)
+    {
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+
+        auto configuration        = makeConfiguration("127.0.0.1", kIpCertificatePath, 4s);
+        configuration.idleTimeout = std::chrono::milliseconds{300};
+
+        ConnectAttempt attempt{configuration, Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value(), true};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "握手既没成也没失败，挂在那里";
+        ASSERT_TRUE(attempt.isSuccessful()) << "握手没完成，空闲超时无从谈起：" << attempt.elapsed().count() << " 毫秒后收场";
+
+        EXPECT_TRUE(attempt.waitUntilClientClosed(2s)) << "握手后没有任何入站报文时客户端一直没判空闲超时：客户端侧的到期驱动缺失，PTO 与空闲超时都不会到点";
+
+        attempt.releaseHold();
     }
 
     /**

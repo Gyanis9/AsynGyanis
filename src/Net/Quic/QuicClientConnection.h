@@ -11,9 +11,10 @@
  *          由收到的第一个 Initial 起连接，客户端自己造连接标识并先出声。抄一份的漂移形态历来是
  *          「修了一边的收口漏了另一边」。
  *
- * @note 握手之外的推进靠 `pumpOnce()`：本类不自带后台协程，调用方（将来的 HTTP/3 出站会话）
- *       在自己的循环里一条条收。这与服务端侧「收报文 → flush」的分工同构，也让用例能精确控制
- *       每一拍送进去什么。
+ * @note 收报文的推进靠 `pumpOnce()`：调用方（将来的 HTTP/3 出站会话）在自己的循环里一条条收，
+ *       这与服务端侧「收报文 → flush」的分工同构，也让用例能精确控制每一拍送进去什么。握手完成
+ *       之后另有一条到期驱动的后台协程（见 `runExpiryLoop()`）：PTO 重传与空闲超时不能等对端先
+ *       说话，这一路是客户端侧在静默期唯一的推进入口。
  * @warning 只能在所属事件循环线程上使用（继承 `QuicConnection` 的同一份约定）。
  * @see QuicConnection
  */
@@ -23,6 +24,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncUdpSocket.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
@@ -35,6 +37,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -167,8 +170,9 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把这条连接上已排好的字节送上线
-         * @details 写完流数据之后必须显式叫它一次，否则字节只躺在 QUIC 流的待发队列里：本框架不做
-         *          「后台自动 flush」，为的是让调用方能精确控制每一拍送什么（与服务端侧同一分工）
+         * @details 写完流数据之后要显式叫它一次才能立刻上线：握手后的到期驱动只在有到期或欠刷时
+         *          补一刀（见 `runExpiryLoop()`），不承担「写完即发」的时延承诺。要精确控制每一拍
+         *          送什么，仍然走这里（与服务端侧同一分工）
          */
         [[nodiscard]] Core::Task<> sendPending();
 
@@ -265,11 +269,27 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<bool> driveHandshake();
 
-        Core::EventLoop                                                       &m_loop;             ///< 所属事件循环（非拥有）
-        Configuration                                                          m_configuration;    ///< 建好本对象时那份配置
-        std::unique_ptr<Core::TlsContext>                                      m_tlsContext{};     ///< 客户端 TLS 上下文，连接销毁前一直持有
-        std::unique_ptr<Core::AsyncUdpSocket>                                  m_socket{};         ///< 自持的 UDP 套接字，connect() 时建
-        std::unique_ptr<QuicConnection>                                        m_connection{};     ///< 跑这条连接的状态机外壳
+        /**
+         * @brief 握手完成后的到期驱动：按 `nextExpiry()` 分片等待，落实 PTO 与空闲超时
+         * @details 服务端那一半由 `QuicServer::runExpiryTicker()` 周期调用 `QuicConnection::handleExpiry()`；
+         *          客户端此前只有 `pumpOnce()`，它挂在 UDP 收包上，对端不说话时 PTO 重传与空闲超时永远
+         *          不会到点。本协程在 `connect()` 握手成功之后起，每觉不超过 100 毫秒（`nextExpiry()`
+         *          更近时按剩余时长精确唤醒），醒来在到期点调用 `handleExpiry()`、欠刷时补一次 `flush()`；
+         *          连接收口、本端停止或对象析构即退出。
+         * @note 与 `pumpOnce()` 同在事件循环线程上串行执行，两者都不加锁。任一方先 flush 之后队列已空，
+         *       `QuicConnection::flush()` 的空队列早退能承受这一次重叠。
+         * @return Core::Task<> 连接收口、本端停止或到期驱动出错后完成
+         */
+        [[nodiscard]] Core::Task<> runExpiryLoop();
+
+        Core::EventLoop                      &m_loop;          ///< 所属事件循环（非拥有）
+        Configuration                         m_configuration; ///< 建好本对象时那份配置
+        std::unique_ptr<Core::TlsContext>     m_tlsContext{};  ///< 客户端 TLS 上下文，连接销毁前一直持有
+        std::unique_ptr<Core::AsyncUdpSocket> m_socket{};      ///< 自持的 UDP 套接字，connect() 时建
+        std::unique_ptr<QuicConnection>       m_connection{};  ///< 跑这条连接的状态机外壳
+        Core::Timer                           m_expiryTimer;   ///< 到期驱动的等待定时器（只在其所属循环上使用）
+        /// 握手完成后的到期驱动协程；声明在 m_connection 之后，析构逆序保证它先于连接与套接字销毁
+        std::optional<Core::Task<void>>                                        m_expiryTask{};
         Platform::SocketAddress                                                m_serverAddress{};  ///< 服务端地址，收包时据此丢弃旁来的报文
         std::vector<std::uint8_t>                                              m_receiveBuffer{};  ///< 收包缓冲，一次一条数据报
         std::map<std::int64_t, IncomingStreamState>                            m_incoming{};       ///< 按流号记的接收账

@@ -11,6 +11,8 @@
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
+#include <chrono>
+#include <exception>
 #include <utility>
 
 namespace AsynGyanis::Net
@@ -34,7 +36,7 @@ namespace AsynGyanis::Net
         }
     } // namespace
 
-    QuicClientConnection::QuicClientConnection(Core::EventLoop &loop, Configuration configuration) : m_loop(loop), m_configuration(std::move(configuration))
+    QuicClientConnection::QuicClientConnection(Core::EventLoop &loop, Configuration configuration) : m_loop(loop), m_configuration(std::move(configuration)), m_expiryTimer(loop)
     {
         // 空主机名意味着「出去之后不校验对端身份」：SNI 与证书里的校验目标都取自它。这种配置不该
         // 被放到碰网络之后才发现，更不该有一个「可以关掉校验」的档位（见 Configuration 的说明）
@@ -53,8 +55,12 @@ namespace AsynGyanis::Net
 
     QuicClientConnection::~QuicClientConnection()
     {
-        // 先关套接字再销毁连接：连接析构时若有协程还挂在可读上，会一直等下去（AsyncUdpSocket::close()
-        // 的注释记着这条顺序的理由）。销毁顺序本身按成员声明的逆序，m_connection 已先于 m_socket 走完
+        // 先取消到期驱动：帧一销毁，帧内那个定时等待登记项就随之摘除，此后不会有人在本对象（连同
+        // m_connection）拆掉之后醒来。这一步必须排在关套接字与销毁连接之前，成员声明顺序也保证了
+        // 同一件事（m_expiryTask / m_expiryTimer 声明在 m_connection 之后，逆序先走）
+        m_expiryTask.reset();
+        // 再关套接字：连接析构时若有协程还挂在可读上，会一直等下去（AsyncUdpSocket::close() 的注释
+        // 记着这条顺序的理由）。销毁顺序本身按成员声明的逆序，m_connection 已先于 m_socket 走完
         if (m_socket != nullptr)
         {
             m_socket->close();
@@ -139,6 +145,16 @@ namespace AsynGyanis::Net
             LOG_WARN("QuicClientConnection: 出站握手未完成即收场（被对端拒绝、时限掐断，或本端已关）");
             co_return false;
         }
+
+        // 握手完成才起到期驱动：这一路此前缺失，而 pumpOnce() 挂在收包上，客户端侧就没有任何东西
+        // 按 PTO 与空闲超时推进。就地恢复第一拍（不投调度器）与 QuicServer::listen 同一理由：调用方
+        // 按契约在所属循环线程上驱动 connect()，此刻交出去的就是那个线程；投进调度器的裸句柄也不该
+        // 成为这条帧的唯一引用。重复 connect 时不动已经在跑的那一条
+        if (!m_expiryTask.has_value())
+        {
+            m_expiryTask.emplace(runExpiryLoop());
+            static_cast<void>(m_expiryTask->handle().resume());
+        }
         co_return true;
     }
 
@@ -171,6 +187,69 @@ namespace AsynGyanis::Net
                                                   ecnCodepoint);
         }
         co_return m_connection->isHandshakeComplete();
+    }
+
+    Core::Task<> QuicClientConnection::runExpiryLoop()
+    {
+        // 分片上限取 100 毫秒：`nextExpiry()` 可能在很远处（没有已武装的定时器时是 time_point::max），
+        // 也可能在近处；封顶让 needsFlush() 那一档补刷与 close() 之后的退出都不晚于这一档
+        constexpr std::chrono::milliseconds kMaximumAwait{100};
+        constexpr std::chrono::milliseconds kMinimumAwait{1};
+
+        while (m_connection != nullptr && !m_isStopped && !m_connection->isClosed())
+        {
+            const std::chrono::steady_clock::time_point now    = std::chrono::steady_clock::now();
+            const std::chrono::steady_clock::time_point expiry = m_connection->nextExpiry();
+
+            std::chrono::milliseconds awaitDuration = kMaximumAwait;
+            if (expiry <= now)
+            {
+                // 不取 0：0 会在下一个驱动周期立即到期，连接一直欠着定时器时就是空转
+                awaitDuration = kMinimumAwait;
+            } else if (expiry - now <= kMaximumAwait)
+            {
+                // 向上取整：定时器只认毫秒，向下取整会提前醒来，那一刻到期判定还不成立
+                awaitDuration = std::chrono::ceil<std::chrono::milliseconds>(expiry - now);
+                if (awaitDuration < kMinimumAwait)
+                {
+                    awaitDuration = kMinimumAwait;
+                }
+            }
+
+            co_await m_expiryTimer.waitFor(awaitDuration);
+
+            // 等待期间可能已经收口或被 close()：醒来先复查，不再碰可能已经过期的定时器
+            if (m_connection == nullptr || m_isStopped || m_connection->isClosed())
+            {
+                break;
+            }
+
+            // handleExpiry() 与 flush() 都可能经发送口抛（QuicConnection::flush 里 await 的
+            // AsyncUdpSocket::asyncSendTo 声明了 @throws）。本协程没有等待者，异常逃到终结点只会
+            // 被记一条「没人接住」然后整条 ticker 消失，连接从此不再落实 PTO 与空闲超时——就地
+            // 收下、点名一次、退出循环，不吞掉之后继续热转
+            try
+            {
+                const std::chrono::steady_clock::time_point wakeNow = std::chrono::steady_clock::now();
+                if (m_connection->nextExpiry() <= wakeNow)
+                {
+                    co_await m_connection->handleExpiry();
+                }
+                if (m_connection->needsFlush())
+                {
+                    co_await m_connection->flush();
+                }
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("QuicClientConnection: 到期驱动协程出错，ticker 退出，这条连接此后不再自动推进 PTO 与空闲超时。原因：{}", failure.what());
+                break;
+            } catch (...)
+            {
+                LOG_ERROR_FMT("QuicClientConnection: 到期驱动协程抛出非标准库异常，ticker 退出，这条连接此后不再自动推进 PTO 与空闲超时");
+                break;
+            }
+        }
+        co_return;
     }
 
     Core::Task<> QuicClientConnection::pumpOnce()
@@ -288,8 +367,9 @@ namespace AsynGyanis::Net
             m_connection->requestClose();
         }
         m_isStopped = true;
-        // 套接字要跟着关掉：叫醒挂在可读上的协程的是销毁注册对象，不是把标记翻上去，而本类不自带后台
-        // 协程——对端一旦不再发东西，那条等待就没人收得回来（与析构里同一条理由）。顺序上先置标记再关：
+        // 套接字要跟着关掉：叫醒挂在可读上的 pumpOnce() 的是销毁注册对象，不是把标记翻上去——对端一旦
+        // 不再发东西，那条等待就没人收得回来（与析构里同一条理由）。到期驱动的后台协程不靠这里叫醒：
+        // 它的每一觉都封在 100 毫秒以内，醒来看到 m_isStopped 就自行退出。顺序上先置标记再关：
         // 醒来那一轮看到 m_isStopped / isClosed() 就自己收场，不会再往发送口写。
         // 记一句实话：这条改动钉不出它自己的用例（回环上任何一条入站报文都算一次叫醒，把下面两行
         // 摘掉现有用例照样绿），依据是析构那条同型规则与一次实测——满载并行跑全量时一条 h3 请求挂在
