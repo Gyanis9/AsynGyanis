@@ -78,7 +78,8 @@ namespace AsynGyanis::Net
          *          因此单次返回的字节数可能小于请求值。
          * @param buffer 接收缓冲区首地址，调用方保证其容量
          * @param length 缓冲区可容纳的字节数
-         * @return Core::Task<ssize_t> 实际写入 buffer 的字节数；0 表示对端正常关闭；负数表示读错误
+         * @return Core::Task<ssize_t> 实际写入 buffer 的字节数；0 表示对端正常关闭。底层接收出错时
+         *         抛 Base::SystemException，不返回负数
          */
         Core::Task<ssize_t> read(void *buffer, std::size_t length);
 
@@ -96,10 +97,10 @@ namespace AsynGyanis::Net
          * @brief 读取直到出现指定分隔符
          * @details 结果不含分隔符本身（分隔符被就地消费）。常用于读取一行文本协议。
          * @param delimiter 分隔符字符，例如 '\n'
-         * @param maximumSize 允许读取的最大字节数，单位是字节；达到上限时返回已读到的部分
-         *                    且丢弃超限内容，传 0 表示不限长度。默认 kDefaultMaximumReadSize
-         * @return Core::Task<std::string> 分隔符之前的内容；对端在遇到分隔符前关闭时返回已读到的部分
-         * @throws Base::SystemException 底层接收出错（非 EOF）
+         * @param maximumSize 允许读取的最大字节数，单位是字节；达到上限时返回已读到的部分，
+         *                    超限字节留在内部缓冲、不丢弃，传 0 表示不限长度。默认 kDefaultMaximumReadSize
+         * @return Core::Task<std::string> 分隔符之前的内容；对端在遇到分隔符前关闭，或底层接收出错时，
+         *         返回已读到的部分（补货失败按前缀交付，异常不外抛）
          */
         Core::Task<std::string> readUntil(char delimiter, std::size_t maximumSize = kDefaultMaximumReadSize);
 

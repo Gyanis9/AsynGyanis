@@ -35,7 +35,8 @@ namespace AsynGyanis::Net
      * @note 条目里的映射由 `shared_ptr<const MemoryMappedFile>` 持有：淘汰、替换、整表清空都
      *       不会把还在发送队列里的响应脚下抽走（响应与缓存共同持有同一份映射）。
      * @note 可跨线程使用：一个服务器的多个事件循环会读到同一份缓存。锁内只做查表与链表搬动，
-     *       建立映射这类系统调用一律留在锁外，避免在循环线程上互相等待。
+     *       映射的解除（最后一个引用析构时的 munmap/UnmapViewOfFile 与 close）也一律推迟到锁外，
+     *       避免所有静态文件请求排在一次析构后面等锁。
      */
     class ASYN_NET_API StaticFileMappingCache
     {

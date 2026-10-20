@@ -159,10 +159,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 异步接受一条新连接
-         * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。事件循环边沿触发，
-         *          一次就绪必须把队列抽干，多余的连接存入 m_pending。可恢复错误全部在协程内消化：暂无连接挂起
-         *          等待、被信号中断直接重试、描述符或内核缓冲耗尽用 m_backoffTimer 退避（此时连新协程帧都可能
-         *          申请不到）。
+         * @details 先取走上一轮批量 accept 暂存的连接，队列为空时直接在监听描述符上收一条。监听描述符是水平
+         *          触发：本轮抽一批就返回不会丢连接，批量抽取只为少付几次回到等待的往返；多余连接存入
+         *          m_pending。可恢复错误全部在协程内消化：暂无连接挂起等待、被信号中断直接重试、描述符或
+         *          内核缓冲耗尽用 m_backoffTimer 退避（此时连新协程帧都可能申请不到）。
          * @return Core::Task<std::optional<Core::AsyncSocket>> 成功时返回已连接的套接字；
          *         监听套接字已 close() 或描述符失效时返回 std::nullopt，表示应结束接受循环
          * @throws Base::SystemException 出现无法靠重试恢复的终止性错误（如描述符被外部关闭），
@@ -180,8 +180,9 @@ namespace AsynGyanis::Net
         void close();
 
         /**
-         * @brief 获取构造时传入的监听地址
-         * @return Core::InetAddress 本地地址；端口为 0 时返回的仍是请求值，不反映内核分配的端口
+         * @brief 获取监听套接字的本地地址
+         * @return Core::InetAddress 本地地址；端口为 0 时返回绑定后回填的实际端口（getsockname），
+         *         只在 getsockname 失败时保留请求值
          */
         [[nodiscard]] Core::InetAddress localAddress() const;
 

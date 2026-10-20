@@ -1,6 +1,7 @@
 #include "Net/Http/StaticFileMappingCache.h"
 
 #include <utility>
+#include <vector>
 
 namespace AsynGyanis::Net
 {
@@ -16,8 +17,11 @@ namespace AsynGyanis::Net
             return nullptr;
         }
 
-        const std::lock_guard<std::mutex> guard(m_mutex);
-        const auto                        iterator = m_index.find(filePath);
+        // 摘下来的旧映射交给锁外的 released 持有：erase 若丢掉最后一个引用，解除映射（munmap/
+        // UnmapViewOfFile 与 close）就在返回之后、锁外发生。声明在 guard 之前才保证它比锁晚析构
+        std::shared_ptr<const Platform::MemoryMappedFile> released;
+        const std::lock_guard<std::mutex>                 guard(m_mutex);
+        const auto                                        iterator = m_index.find(filePath);
         if (iterator == m_index.end())
         {
             return nullptr;
@@ -29,6 +33,7 @@ namespace AsynGyanis::Net
         {
             // 元数据变了就是换了内容：留着只会让下一次命中给出旧字节，就地摘掉，
             // 由调用方重新映射并覆盖登记（还在发送的响应各自持有引用，页不会消失）
+            released = std::move(entry.mappedFile);
             m_entries.erase(iterator->second);
             m_index.erase(iterator);
             return nullptr;
@@ -58,13 +63,18 @@ namespace AsynGyanis::Net
         Platform::FileBasicInfo stampOfEntry = fileBasicInfo;
         stampOfEntry.sizeBytes               = mappedFile->bytes().size();
 
-        const std::lock_guard<std::mutex> guard(m_mutex);
+        // 替换与淘汰下来的旧映射都移进锁外的容器再放手：缓存这最后一份引用若在锁内析构，
+        // 解除映射的系统调用就会跟着落在锁内。容器比 guard 晚析构，真正的解除发生在锁外。
+        // 用 vector 而不是单个槽：淘汰可能连续摘掉多条，单槽的第二次赋值会把上一条在锁内释放
+        std::vector<std::shared_ptr<const Platform::MemoryMappedFile>> releasedMappings;
+        const std::lock_guard<std::mutex>                              guard(m_mutex);
 
         if (const auto existing = m_index.find(filePath); existing != m_index.end())
         {
             // 同一路径再次登记（文件被改过、或并发下有两条都未命中）：覆盖旧条目而不是并存两份，
             // 否则同一文件会长期占两个名额，淘汰也腾不出多余的那份
-            Entry &entry        = *existing->second;
+            Entry &entry = *existing->second;
+            releasedMappings.push_back(std::move(entry.mappedFile));
             entry.mappedFile    = std::move(mappedFile);
             entry.fileBasicInfo = stampOfEntry;
             if (existing->second != m_entries.begin())
@@ -79,7 +89,9 @@ namespace AsynGyanis::Net
 
         while (m_entries.size() > m_maximumEntryCount)
         {
-            // 淘汰只是放下缓存这一份引用；映射真正解除要等最后一个持有者（可能还在发送）松手
+            // 淘汰只是放下缓存这一份引用；映射真正解除要等最后一个持有者（可能还在发送）松手。
+            // 先移进锁外的容器：缓存若正是最后一个持有者，解除不会落在锁内
+            releasedMappings.push_back(std::move(m_entries.back().mappedFile));
             m_index.erase(m_entries.back().filePath);
             m_entries.pop_back();
         }
