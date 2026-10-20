@@ -22,9 +22,13 @@ namespace AsynGyanis::Base
      *          其余字节写成 \xNN，超长时截断并补一个截断标记。区别只在写法——结果落在调用方
      *          已有的缓冲里，不再为每一段文本造一份 owning 字符串。上下文这类「每行都要转义
      *          几个短字段」的形状因此不再逐行取堆。
+     *          入口的 reserve 只是容量提示：它按原文字节数加一个常数预留，不保证覆盖所有增长。
+     *          控制字节与高位字节各占四个字符，原文全是这类字节时，续写仍会让缓冲按几何增长扩容。
      * @param out 目标缓冲；不清空，转义文本追加在其现有内容之后
      * @param text 待折的原文，可以是外部输入的任意字节
      * @param maximumDisplayByteCount 最多保留多少个原文字节，超出部分以截断标记表示
+     * @warning text 不得指向 out 自身：续写途中的 reserve 与 push_back 都可能让 out 重新分配，
+     *          指向旧存储的视图随即悬空。
      */
     inline void appendEscapedForLog(std::string &out, const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
     {

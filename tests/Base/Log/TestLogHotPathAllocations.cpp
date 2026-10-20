@@ -544,7 +544,8 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 上下文里的文本字段在文本版式上不再逐行取堆
-     * @details 转义结果直接续写进 Sink 的行缓冲；本形状只测格式化，不构造事件。
+     * @details 转义结果直接续写进目标缓冲。事件在测量窗口之外构造，测量体只含格式化；
+     *          本地行缓冲与 Sink 的行缓冲同形，都是预留容量后逐行复用的那一条。
      */
     TEST(LogHotPathAllocations, FormatterContextFieldsStayOffTheHeap)
     {
@@ -562,6 +563,8 @@ namespace AsynGyanis::Base
             return static_cast<std::uint64_t>(lineBuffer.size());
         };
         formatOnce();
+        // 自检：先证明上下文确实落进了这一行，否则下面的零分配断言量的是「字段没写」的形状
+        EXPECT_NE(lineBuffer.find(" trace_id="), std::string::npos) << "上下文没落进日志行，零分配断言会假绿";
         resetAllocationHistogram();
         const AllocationProfile profile = measurePerOperation(formatOnce);
         EXPECT_GT(profile.resultSum, 0U);

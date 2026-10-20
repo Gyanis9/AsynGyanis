@@ -94,7 +94,7 @@ namespace AsynGyanis::Base
     TEST(LogEscaping, AppendVariantMatchesOwningVariant)
     {
         const std::string text = std::string{"a\nb\rc\td\0e", 9} + static_cast<char>(0x1B) + static_cast<char>(0x7F) + std::string(20, 'x');
-        for (const std::size_t cap: {0U, 5U, 20U, 256U})
+        for (const std::size_t cap: {0U, 5U, 20U, 31U, 256U})
         {
             std::string appended = "prefix:";
             appendEscapedForLog(appended, text, cap);
