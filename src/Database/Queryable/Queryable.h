@@ -2800,10 +2800,10 @@ namespace AsynGyanis::Database::Queryable
             if (!versionColumnName.empty() && columnDescriptor.columnName == versionColumnName)
             {
                 using VersionMemberType = std::remove_cvref_t<decltype(row.*(columnDescriptor.memberPointer))>;
-                if constexpr (!std::is_integral_v<VersionMemberType>)
+                if constexpr (!std::is_integral_v<VersionMemberType> || std::is_same_v<VersionMemberType, bool>)
                 {
                     throw Base::LogicException("Queryable: TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 的 kVersionColumn（" + std::string(versionColumnName) +
-                                               "）必须声明成整数列——UPDATE 由服务端对它自增加一，非整数列无法表达版本");
+                                               "）必须声明成非布尔的整数列——UPDATE 由服务端对它自增加一，布尔与非整数列无法表达版本");
                 } else
                 {
                     const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);

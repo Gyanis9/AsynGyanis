@@ -80,6 +80,13 @@ namespace
         std::int64_t id;
         std::string  version;
     };
+
+    /// 版本列声明成布尔：is_integral 认它，但它不能参与自增加一
+    struct BoolVersionedRow
+    {
+        std::int64_t id;
+        bool         version;
+    };
 } // namespace
 
 // ========================================================================
@@ -149,6 +156,15 @@ struct AsynGyanis::Database::Queryable::TableSchema<TextVersionedRow>
 {
     static constexpr std::string_view kTableName     = "text_versioned";
     static constexpr auto             kColumns       = std::tuple{Column(&TextVersionedRow::id, "id"), Column(&TextVersionedRow::version, "version")};
+    static constexpr std::string_view kPrimaryKey    = "id";
+    static constexpr std::string_view kVersionColumn = "version";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BoolVersionedRow>
+{
+    static constexpr std::string_view kTableName     = "bool_versioned";
+    static constexpr auto             kColumns       = std::tuple{Column(&BoolVersionedRow::id, "id"), Column(&BoolVersionedRow::version, "version")};
     static constexpr std::string_view kPrimaryKey    = "id";
     static constexpr std::string_view kVersionColumn = "version";
 };
@@ -387,6 +403,12 @@ TEST_F(QueryableOptimisticLockTest, UpdatesATableWithOnlyPrimaryKeyAndVersion)
     const std::optional<TouchOnlyRow> reloaded = query.where(Column(&TouchOnlyRow::id, "id") == std::int64_t{1}).first();
     ASSERT_TRUE(reloaded.has_value());
     EXPECT_EQ(reloaded->version, 1);
+}
+
+TEST_F(QueryableOptimisticLockTest, RejectsBooleanVersionColumnWhenGeneratingUpdate)
+{
+    Queryable<BoolVersionedRow> query(*m_pool);
+    EXPECT_THROW(static_cast<void>(query.update(BoolVersionedRow{.id = 1, .version = false})), AsynGyanis::Base::LogicException);
 }
 
 TEST_F(QueryableOptimisticLockTest, RejectsNonIntegralVersionColumnWhenGeneratingUpdate)
