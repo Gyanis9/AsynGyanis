@@ -190,7 +190,7 @@ namespace AsynGyanis::Core
         /**
          * @brief 比较两个地址是否相等（比较 IP 和端口）
          * @param other 另一个地址对象
-         * @return true 如果两个地址协议族、IP 和端口完全相同
+         * @return true 如果两个地址的协议族、地址、端口与 IPv6 作用域号完全相同
          */
         bool operator==(const InetAddress &other) const;
 

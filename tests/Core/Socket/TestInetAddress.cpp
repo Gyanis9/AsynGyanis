@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 
@@ -116,6 +117,23 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(sameFirst == sameSecond);
         EXPECT_TRUE(sameFirst != differentPort);
         EXPECT_TRUE(sameFirst != differentIp);
+    }
+
+    /**
+     * @brief 结构体填充字节不参与地址身份：sin_zero 不同的同一地址仍相等
+     */
+    TEST(InetAddress, EqualityIgnoresStructurePadding)
+    {
+        sockaddr_in rawWithPadding{};
+        rawWithPadding.sin_family = AF_INET;
+        rawWithPadding.sin_port   = htons(8080);
+        ASSERT_EQ(inet_pton(AF_INET, "127.0.0.1", &rawWithPadding.sin_addr), 1);
+        std::memset(rawWithPadding.sin_zero, 0x5A, sizeof(rawWithPadding.sin_zero));
+
+        const InetAddress padded(rawWithPadding);
+        const InetAddress canonical(8080, "127.0.0.1");
+        EXPECT_TRUE(padded == canonical) << "同一地址因结构体填充字节被判成不同";
+        EXPECT_TRUE(padded != InetAddress(9090, "127.0.0.1"));
     }
 
     /**
