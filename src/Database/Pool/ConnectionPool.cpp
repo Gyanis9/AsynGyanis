@@ -5,12 +5,32 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
 namespace AsynGyanis::Database
 {
+    namespace
+    {
+        /// 把一次恢复投递包进 noexcept 边界：投递要分配队列结点，失败只该丢这一条唤醒
+        template<typename PostOperation>
+        void postRemoteWithLog(PostOperation &&postOperation, const std::string_view description) noexcept
+        {
+            try
+            {
+                postOperation();
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("ConnectionPool: {}的投递未能入队，这条等待将落空（原因：{}）", description, failure.what());
+            } catch (...)
+            {
+                LOG_ERROR_FMT("ConnectionPool: {}的投递未能入队，这条等待将落空（非标准异常）", description);
+            }
+        }
+    } // namespace
 
     // ========================================================================
     // 构造 / 析构
@@ -679,16 +699,7 @@ namespace AsynGyanis::Database
         // 握着 m_asyncMutex 等它就等于把归还路径排在一个陌生锁后面
         if (resumeTicket != nullptr)
         {
-            try
-            {
-                completionLoop->scheduler().postRemote([resumeTicket]() { resumeTicket->resumeOnce(); });
-            } catch (const std::exception &failure)
-            {
-                LOG_ERROR_FMT("ConnectionPool: 交接连接后唤醒等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
-            } catch (...)
-            {
-                LOG_ERROR("ConnectionPool: 交接连接后唤醒等待者的投递未能入队，这条等待将落空（非标准异常）");
-            }
+            postRemoteWithLog([&] { completionLoop->scheduler().postRemote([resumeTicket]() { resumeTicket->resumeOnce(); }); }, "交接唤醒");
         }
     }
 
@@ -714,16 +725,7 @@ namespace AsynGyanis::Database
         // 两把锁只顺序取、不嵌套：await_suspend 里是「m_asyncMutex → m_mutex」，反过来嵌套就是 AB-BA
         if (ticket != nullptr)
         {
-            try
-            {
-                completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
-            } catch (const std::exception &failure)
-            {
-                LOG_ERROR_FMT("ConnectionPool: 释放名额后唤醒等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
-            } catch (...)
-            {
-                LOG_ERROR("ConnectionPool: 释放名额后唤醒等待者的投递未能入队，这条等待将落空（非标准异常）");
-            }
+            postRemoteWithLog([&] { completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); }); }, "释放名额唤醒");
         }
 
         // 同步侧：条件变量的通知取在 m_mutex 之内，理由与归还入栈那一处相同
@@ -1265,16 +1267,7 @@ namespace AsynGyanis::Database
         for (const ExpiredWaiter &expired: expiredWaiters)
         {
             const std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket = expired.ticket;
-            try
-            {
-                expired.completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
-            } catch (const std::exception &failure)
-            {
-                LOG_ERROR_FMT("ConnectionPool: 唤醒超时等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
-            } catch (...)
-            {
-                LOG_ERROR("ConnectionPool: 唤醒超时等待者的投递未能入队，这条等待将落空（非标准异常）");
-            }
+            postRemoteWithLog([&expired, ticket] { expired.completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); }); }, "超时唤醒");
         }
     }
 
