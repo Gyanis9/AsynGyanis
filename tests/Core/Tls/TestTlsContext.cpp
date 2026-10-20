@@ -153,12 +153,14 @@ namespace AsynGyanis::Core
          * @param clientAlpnWireFormat ALPN 线格式字节
          * @param clientAlpnWireFormatLength ALPN 线格式字节数
          * @param clientRequestsOcspStatus true 时客户端在 ClientHello 里请求 OCSP 状态（status_request）
+         * @param clientServerName 非空时作为 SNI 发给服务端
          * @return HandshakeOutcome 两端的完成情况、错误文本与协商结果
          */
         HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientOffersAlpn, const bool clientPresentsCertificate,
                                                const unsigned char *clientAlpnWireFormat     = kHttp11AlpnWireFormat,
                                                const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat), const bool clientRequestsOcspStatus = false,
-                                               const std::filesystem::path &clientCertificatePath = kTestCertificatePath, const std::filesystem::path &clientKeyPath = kTestKeyPath)
+                                               const std::filesystem::path &clientCertificatePath = kTestCertificatePath, const std::filesystem::path &clientKeyPath = kTestKeyPath,
+                                               const char *clientServerName = nullptr)
         {
             HandshakeOutcome outcome;
 
@@ -185,6 +187,12 @@ namespace AsynGyanis::Core
             // BIO 所有权交给 SSL：同一个 BIO 兼作读/写端，传两次即可，由 SSL_free 释放
             SSL_set_bio(serverSsl.get(), serverBio, serverBio);
             SSL_set_bio(clientSsl.get(), clientBio, clientBio);
+
+            if (clientServerName != nullptr)
+            {
+                // 让服务端走到 SNI 选站回调
+                static_cast<void>(SSL_set_tlsext_host_name(clientSsl.get(), clientServerName));
+            }
 
             if (clientOffersAlpn)
             {
@@ -822,6 +830,55 @@ namespace AsynGyanis::Core
                                                                    false, unlistedCertificatePath, unlistedKeyPath);
             ASSERT_FALSE(outcome.setupFailed);
             EXPECT_FALSE(outcome.serverCompleted) << "链上有效但未被点名的证书握手成功了：名单没有生效";
+        }
+
+        std::filesystem::remove(bundlePath);
+    }
+
+    /**
+     * @brief 钉住：指纹名单在 SNI 换到站点上下文之后仍然生效——被点名的放行、未点名的拒绝
+     * @details 校验回调挂在 SSL 对象上，但查名单时按「当前 SSL_CTX」的登记；站点上下文
+     *          没有这份登记时，回调会 fail-closed，把所有 SNI 连接拒掉。
+     */
+    TEST(TlsContext, PeerFingerprintAllowlistSurvivesServerNameSwitch)
+    {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
+        const std::filesystem::path unlistedCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem";
+        const std::filesystem::path unlistedKeyPath         = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_key.pem";
+        const std::string           listedFingerprint       = sha256FingerprintOfCertificateFile(kTestCertificatePath);
+        ASSERT_EQ(listedFingerprint.size(), 64U) << "被点名证书的指纹没算出来：用例前提不成立";
+
+        const std::filesystem::path bundlePath = makeCertificateBundleFile({kTestCertificatePath, unlistedCertificatePath});
+        ASSERT_FALSE(bundlePath.empty()) << "CA 包没造出来：用例前提不成立";
+
+        TlsContext server;
+        ASSERT_TRUE(server.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(server.loadClientCertificateAuthority(bundlePath.string()));
+        server.setClientCertificateRequired(true);
+        // 先登记站点、再设名单：站点上下文的登记要在 setter 里同步拿到新名单
+        ASSERT_TRUE(server.loadCertificateForHost("api.example.com", kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_NO_THROW(server.setPeerFingerprintAllowlist({listedFingerprint}));
+
+        // 被点名 + SNI：放行
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(server.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat),
+                                                                   false, kTestCertificatePath, kTestKeyPath, "api.example.com");
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_TRUE(outcome.serverCompleted) << "SNI 切换后名单把被点名的证书拒了：" << outcome.serverErrorText;
+        }
+
+        // 未点名 + SNI：拒绝（证明名单没有因切换上下文而失效）
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(server.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat),
+                                                                   false, unlistedCertificatePath, unlistedKeyPath, "api.example.com");
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_FALSE(outcome.serverCompleted) << "SNI 切换后未点名的证书被放行了：名单没有生效";
         }
 
         std::filesystem::remove(bundlePath);

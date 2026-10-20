@@ -589,6 +589,17 @@ namespace AsynGyanis::Core
             // SSL_set_SSL_CTX 只改 ssl->ctx、不给新上下文加引用（它的返回值是换上去的那个上下文，不是成败码）：
             // 这条引用链由「SSL 持有主上下文、主上下文持有登记表、登记表持有站点上下文」三段共同保证，
             // 只要这条连接还认着主上下文，站点上下文就不会先被释放
+            // 校验回调挂在 SSL 对象上，切到站点上下文后它按新上下文查登记；把主上下文
+            // 当前的名单复制过去，否则名单会把所有 SNI 连接拒掉
+            if (const PeerFingerprintRegistry *sourceRegistry = peerFingerprintRegistryOf(SSL_get_SSL_CTX(ssl)); sourceRegistry != nullptr)
+            {
+                if (PeerFingerprintRegistry *targetRegistry = peerFingerprintRegistryOf(target.get()); targetRegistry != nullptr)
+                {
+                    const std::shared_lock<std::shared_mutex> sourceGuard(sourceRegistry->mutex);
+                    const std::lock_guard<std::shared_mutex>  targetGuard(targetRegistry->mutex);
+                    targetRegistry->fingerprints = sourceRegistry->fingerprints;
+                }
+            }
             if (SSL_set_SSL_CTX(ssl, target.get()) == nullptr)
             {
                 return SSL_TLSEXT_ERR_ALERT_FATAL;
@@ -627,6 +638,19 @@ namespace AsynGyanis::Core
         {
             SSL_CTX_free(context);
             return nullptr;
+        }
+
+        // 指纹回调在 SNI 切换后按站点上下文取登记：每份站点上下文都先建好登记（名单可以为空），
+        // 切换时只复制内容，不必在握手线程上创建共享状态
+        PeerFingerprintRegistry *registry = ensurePeerFingerprintRegistry(context);
+        if (registry == nullptr)
+        {
+            SSL_CTX_free(context);
+            return nullptr;
+        }
+        {
+            const std::lock_guard<std::shared_mutex> guard(registry->mutex);
+            registry->fingerprints = policy.allowedPeerSha256Fingerprints;
         }
         return adoptContext(context);
     }
@@ -937,6 +961,20 @@ namespace AsynGyanis::Core
         if (const int currentMode = SSL_CTX_get_verify_mode(m_context); currentMode != SSL_VERIFY_NONE)
         {
             applyPeerVerification(m_context, currentMode);
+        }
+
+        // 站点上下文各有一份登记；切换后回调读的是站点那份，故这里一并刷新
+        if (VirtualHostRegistry *hostRegistry = registryOf(m_context); hostRegistry != nullptr)
+        {
+            const std::shared_lock<std::shared_mutex> hostGuard(hostRegistry->mutex);
+            for (const auto &entry: hostRegistry->contexts)
+            {
+                if (PeerFingerprintRegistry *registry = peerFingerprintRegistryOf(entry.second.get()); registry != nullptr)
+                {
+                    const std::lock_guard<std::shared_mutex> registryGuard(registry->mutex);
+                    registry->fingerprints = m_policy.allowedPeerSha256Fingerprints;
+                }
+            }
         }
     }
 
