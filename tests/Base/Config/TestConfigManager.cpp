@@ -1757,6 +1757,11 @@ port: 9090
         EXPECT_EQ(configuration().get("name", "fallback"), "test");
         EXPECT_EQ(configuration().get("missing", "fallback"), "fallback");
 
+        // 字面量 nullptr 走 std::nullptr_t 重载，不能被转发引用模板吞成 nullptr
+        static_assert(std::is_same_v<decltype(configuration().get("name", nullptr)), std::string>);
+        EXPECT_EQ(configuration().get("name", nullptr), "test");
+        EXPECT_EQ(configuration().get("missing", nullptr), "");
+
         // 左值默认值返回按值：命中时不得返回指向局部 optional 的引用
         const std::string fallback = "a-fallback-long-enough-to-leave-sso";
         const std::string name     = configuration().get("name", fallback);

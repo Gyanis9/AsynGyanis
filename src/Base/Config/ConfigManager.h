@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -205,8 +206,7 @@ namespace AsynGyanis::Base
          * @brief 以 C 字符串作为默认值的取值重载
          * @details 模板重载会把字面量推导成数组引用，decay 后是不受支持的 const char*，
          *          配置值会被整条忽略；本重载把它固定成 std::string 通道。
-         * @note 字面量 nullptr 会推导成 std::nullptr_t 并走模板重载，不经过本重载；
-         *       要空串默认值请传一个空的 const char* 变量或 std::string。
+         * @note 空的 const char* 指针按空串处理；字面量 nullptr 走下面的 std::nullptr_t 重载。
          * @param key 配置键
          * @param defaultValue 默认文本，空的 const char* 指针按空串处理
          * @return std::string 配置文本或默认文本
@@ -214,6 +214,18 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
         {
             return get<std::string>(key, std::string(defaultValue != nullptr ? defaultValue : ""));
+        }
+
+        /**
+         * @brief 以 nullptr 作为默认值的取值重载
+         * @details 字面量 nullptr 会按精确匹配推导成 std::nullptr_t 并选中转发引用模板，
+         *          配置值会被整条忽略；本重载把它固定成 std::string 通道，按空串处理。
+         * @param key 配置键
+         * @return std::string 配置文本或空串
+         */
+        [[nodiscard]] std::string get(std::string_view key, std::nullptr_t) const
+        {
+            return get<std::string>(key, std::string{});
         }
 
         /**
