@@ -181,7 +181,7 @@ namespace AsynGyanis::Net
         [[nodiscard]] static bool isValidKey(std::string_view key) noexcept;
 
         /**
-         * @brief 判定一个 tracestate 值是否合法（不含首尾空白，长度 0~256，禁 `,` `=` `;` 与控制字符）
+         * @brief 判定一个 tracestate 值是否合法（不含首尾空白，长度 0~256，禁 `,` 与 `=` 与控制字符）
          * @param value 待判定的值
          * @return true 合法
          */

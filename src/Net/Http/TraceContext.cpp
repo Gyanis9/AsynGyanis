@@ -355,8 +355,9 @@ namespace AsynGyanis::Net
         return std::ranges::all_of(value,
                                    [](const char character)
                                    {
-                                       // 可打印 ASCII，且不含分隔符：逗号是条目边界，留在值里就会撕裂字段
-                                       return character >= 0x20 && character <= 0x7E && character != ',';
+                                       // 可打印 ASCII；逗号是条目边界，等号不在规范的 value 字符集里
+                                       // （W3C §3.3.1.2 的 nblk-chr 排除 %x3D），分号则是允许的
+                                       return character >= 0x20 && character <= 0x7E && character != ',' && character != '=';
                                    });
     }
 

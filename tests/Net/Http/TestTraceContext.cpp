@@ -180,14 +180,14 @@ namespace AsynGyanis::Net
 
     TEST(TraceState, ParsesMembersIgnoringWhitespaceAroundSeparators)
     {
-        const std::optional<TraceState> state = TraceState::parse(" roto=abc ,  a=b=c , vendor-1.key=v ");
+        const std::optional<TraceState> state = TraceState::parse(" roto=abc ,  a=b;c , vendor-1.key=v ");
         ASSERT_HAS_VALUE(state);
         ASSERT_EQ(state->entryCount(), 3U);
         EXPECT_EQ(state->entries()[0].key, "roto");
         EXPECT_EQ(state->entries()[0].value, "abc");
-        // 值里的等号不参与切分：只按第一个 '=' 分名值，否则带 base64 取值的条目会被切碎
+        // 值里的分号是规范允许的；只按第一个 '=' 分名值，值里再出现等号按非法整条判废
         EXPECT_EQ(state->entries()[1].key, "a");
-        EXPECT_EQ(state->entries()[1].value, "b=c");
+        EXPECT_EQ(state->entries()[1].value, "b;c");
         EXPECT_EQ(state->entries()[2].key, "vendor-1.key");
     }
 
@@ -204,7 +204,7 @@ namespace AsynGyanis::Net
 
     TEST(TraceState, RejectsMalformedListsWholesale)
     {
-        const std::array<std::string_view, 7> rejected{
+        const std::array<std::string_view, 8> rejected{
                 "roto=abc,,other=1", // 多一个逗号留下空成员
                 ",roto=abc",         // 开头就是分隔符
                 "roto",              // 缺等号
@@ -212,6 +212,7 @@ namespace AsynGyanis::Net
                 "ROTO=abc",          // 键含大写：规范里键是小写
                 "congo=abc",         // 点名作废的键
                 "roto=abc,roto=xyz", // 重复键：整条判废，不留「一半可信」
+                "roto=ab=c",         // 值里再出现等号：W3C nblk-chr 不含 %x3D
         };
         for (const std::string_view candidate: rejected)
         {
