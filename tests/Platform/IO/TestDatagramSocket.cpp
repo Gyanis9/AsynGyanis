@@ -716,6 +716,34 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(portOf(target.localAddress()), sourcePort) << "自赋值不该改变已经拥有的套接字";
     }
 
+    /**
+     * @brief 钉住：移动要连「描述符上已经生效的选项」读数一起搬走
+     * @details DF 与 ECN 可见性都是挂在描述符上的状态，套接字换了主人但内核里的设置没变。
+     *          只搬描述符、不搬读数，新主人会对一颗确实设了 DF 的套接字报「没设」，QUIC 的
+     *          PMTU 探测据此以为探针没有生效。
+     */
+    TEST(DatagramSocket, MoveCarriesDescriptorOptionReadbackState)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DatagramSocket source = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(source.isValid());
+        ASSERT_TRUE(source.setDoNotFragment(true));
+        ASSERT_TRUE(source.isDoNotFragmentSet());
+
+        DatagramSocket moved(std::move(source));
+        EXPECT_TRUE(moved.isDoNotFragmentSet()) << "移动构造把 DF 读数丢了：内核里还设着，新主人却报 false";
+        EXPECT_FALSE(source.isDoNotFragmentSet()) << "被移动走的对象不该还自称设了 DF";
+
+        DatagramSocket displaced = DatagramSocket::bindTo(makeLoopbackAddress(0));
+        ASSERT_TRUE(displaced.isValid());
+        ASSERT_TRUE(displaced.setDoNotFragment(true));
+        ASSERT_TRUE(displaced.isDoNotFragmentSet());
+        displaced = std::move(moved);
+        EXPECT_TRUE(displaced.isDoNotFragmentSet()) << "移动赋值把源对象的 DF 读数丢了";
+        EXPECT_FALSE(moved.isDoNotFragmentSet()) << "移动赋值之后源对象仍自称设了 DF";
+    }
+
 #if ASYN_PLATFORM_WIN32
     /**
      * @brief 钉住（Windows）：绑好的数据报套接字已清掉继承位，POSIX 那一侧由 FD_CLOEXEC 用例覆盖
