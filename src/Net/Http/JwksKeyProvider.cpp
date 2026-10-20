@@ -35,6 +35,10 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("JwksKeyProvider: requestTimeout 必须为正");
         }
+        if (options.refreshRequestSlice.count() <= 0)
+        {
+            throw Base::InvalidArgumentException("JwksKeyProvider: refreshRequestSlice 必须为正——零或负的分片会让周期等待立即返回，把轮换变成忙等");
+        }
 
         std::shared_ptr<JwksKeyProvider> provider(new JwksKeyProvider(loop, std::move(options)));
 
@@ -162,7 +166,9 @@ namespace AsynGyanis::Net
             return "JWKS 尚未成功拉取过（首次拉取还没完成或一直失败），无法验签";
         }
 
-        const std::string kid = header.value("kid", std::string{});
+        // 读 kid 也走不抛的读取口：字段存在但类型不是字符串时 value() 会抛 type_error，
+        // 与上面 alg 同一套判据——按「没带 kid」处理，落到遍历键集那一路
+        const std::string kid = optionalJsonString(header, "kid").value_or(std::string{});
         if (!kid.empty())
         {
             const auto key = keys->find(kid);

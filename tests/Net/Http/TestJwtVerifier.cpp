@@ -6,6 +6,9 @@
 // - RejectsAlgNoneBeforeSignatureCheck / RejectsNonRs256Algorithm（alg 白名单先于验签）
 // - RejectsIssuerMismatch / RejectsAudienceMismatch（声明不符）
 // - RejectsMalformedTokens / Base64UrlRejectsForeignAlphabet（形状与编码拒绝面）
+// - TreatsInt64MaxExpAsNeverExpiring / TreatsInt64MinExpAsAlreadyExpired / TreatsInt64MaxNotBeforeAsNotYetValid
+//   （时间声明取到 int64 边界：判定不得因相加或转换溢出而反转）
+// - TreatsUnsignedMaxExpAsNeverExpiring（exp 为 uint64 上限：按无符号读出，不得回绕成负数而反判过期）
 // - JwkRoundTripsExportedKeyMaterial（JWK 构造的公钥与原键同解，并能验真令牌）
 
 #include "ExpectedAssertions.h"
@@ -20,6 +23,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -213,6 +217,58 @@ namespace AsynGyanis::Net
         // nbf = now + 59：在偏差之内，放行
         const std::string soonToken = makeToken(defaultHeader(), makePayload(kNowSeconds + kOneHour, kNowSeconds + 59, R"("https://api.example")"), signingKey.get());
         EXPECT_FALSE(verifyJwtRs256(soonToken, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds)).has_value());
+    }
+
+    TEST_F(JwtVerifierTest, TreatsInt64MaxExpAsNeverExpiring)
+    {
+        // exp = int64 上限：巨大但合法的到期时刻等价于永不过期。旧写法 now >= exp + skew 会在这里
+        // 加溢出成负值，把「永不过期」反判成「已过期」
+        const std::string token =
+                makeToken(defaultHeader(), makePayload(std::numeric_limits<std::int64_t>::max(), kNowSeconds - kOneHour, R"("https://api.example")"), signingKey.get());
+
+        const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
+        EXPECT_FALSE(reason.has_value()) << *reason;
+    }
+
+    TEST_F(JwtVerifierTest, TreatsUnsignedMaxExpAsNeverExpiring)
+    {
+        // exp 写成 uint64 上限：nlohmann 把这种字面量解析成无符号整数（is_number_integer() 对它同样
+        // 为真）。若直接按 int64 读会回绕成 -1，把「永不过期」反判成早已过期
+        const std::string payloadJson =
+                R"({"iss":"https://issuer.example","aud":"https://api.example","sub":"user-1","exp":18446744073709551615,"nbf":)" + std::to_string(kNowSeconds - kOneHour) + "}";
+
+        // 先确认字面量确实落在无符号域：否则这条用例测不到无符号分支
+        const nlohmann::json payload = nlohmann::json::parse(payloadJson, nullptr, false);
+        ASSERT_FALSE(payload.is_discarded());
+        ASSERT_TRUE(payload.at("exp").is_number_unsigned());
+
+        const std::string token = makeToken(defaultHeader(), payloadJson, signingKey.get());
+
+        const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
+        EXPECT_FALSE(reason.has_value()) << *reason;
+    }
+
+    TEST_F(JwtVerifierTest, TreatsInt64MinExpAsAlreadyExpired)
+    {
+        // exp = int64 下限：巨大负值等价于早已过期。这里钉住「差值」一侧——now - exp 的有符号结果
+        // 会溢出，判定必须仍给出已过期，而不是溢出后反判成有效
+        const std::string token =
+                makeToken(defaultHeader(), makePayload(std::numeric_limits<std::int64_t>::min(), kNowSeconds - kOneHour, R"("https://api.example")"), signingKey.get());
+
+        const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
+        ASSERT_HAS_VALUE(reason);
+        EXPECT_NE(reason->find("已过期"), std::string::npos) << *reason;
+    }
+
+    TEST_F(JwtVerifierTest, TreatsInt64MaxNotBeforeAsNotYetValid)
+    {
+        // nbf = int64 上限：永远还没到生效时刻，必须拒；边界值不许被当作缺失或非数值放过
+        const std::string token =
+                makeToken(defaultHeader(), makePayload(kNowSeconds + kOneHour, std::numeric_limits<std::int64_t>::max(), R"("https://api.example")"), signingKey.get());
+
+        const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
+        ASSERT_HAS_VALUE(reason);
+        EXPECT_NE(reason->find("尚未生效"), std::string::npos) << *reason;
     }
 
     TEST_F(JwtVerifierTest, RejectsAlgNoneBeforeSignatureCheck)

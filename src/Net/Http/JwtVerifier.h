@@ -94,7 +94,7 @@ namespace AsynGyanis::Net
     {
         std::string          issuer;        ///< 期望的 iss（RFC 7519 §4.1.1）；空 = 不校验
         std::string          audience;      ///< 期望的 aud：载荷里是字符串时精确相等、是数组时含于其中即命中；空 = 不校验
-        std::chrono::seconds clockSkew{60}; ///< exp / nbf 的容许偏差（两侧对称）
+        std::chrono::seconds clockSkew{60}; ///< 容许偏差（秒）：负值按 0、超过一年按一年钳制；exp / nbf 两侧都用这个值
     };
 
     /**

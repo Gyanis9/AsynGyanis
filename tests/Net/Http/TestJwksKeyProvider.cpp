@@ -4,10 +4,13 @@
 // - UnknownKidRequestsEarlierRefresh（未知 kid 拒 → 请求提前刷新 → 换键集后轮上）
 // - MalformedKeyFieldsAreSkippedInsteadOfKillingTheRefreshLoop（坏字段只跳过那条键，轮换照常）
 // - UnreachableEndpointReportsFailureAndRefusesBeforeFirstFetch（拉不到：lastError 有因、verify 拒）
+// - StartRejectsNonPositiveRefreshRequestSlice（非正分片会让轮换忙等，启动即抛）
+// - NumericKidTypesDoNotThrowFromVerify（JWKS 与令牌头的 kid 都是数字：读取口不抛，按无 kid 处理）
 // - DestroyingProviderWithSuspendedCoroutineIsSafe（挂起中选择析构——ASan 下无 UAF 即判据）
 
 #include "Net/Http/JwksKeyProvider.h"
 
+#include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"
 
 #include "ExpectedAssertions.h"
@@ -85,11 +88,9 @@ namespace AsynGyanis::Net
             return {base64UrlEncode(modulusBytes), base64UrlEncode(exponentBytes)};
         }
 
-        /// 拼一枚真令牌（头里带 kid）
-        [[nodiscard]] std::string makeToken(const std::string &kid, EVP_PKEY *privateKey, const std::int64_t expiration)
+        /// 用私钥对给定的头/载荷 JSON 文本签出一枚完整令牌
+        [[nodiscard]] std::string makeTokenFromJson(const std::string &headerJson, const std::string &payloadJson, EVP_PKEY *privateKey)
         {
-            const std::string headerJson   = R"({"alg":"RS256","typ":"JWT","kid":")" + kid + R"("})";
-            const std::string payloadJson  = R"({"iss":"https://issuer.example","aud":"https://api.example","exp":)" + std::to_string(expiration) + "}";
             const std::string signingInput = base64UrlEncode(headerJson) + "." + base64UrlEncode(payloadJson);
 
             std::string signature;
@@ -116,10 +117,24 @@ namespace AsynGyanis::Net
             return signingInput + "." + base64UrlEncode(signature);
         }
 
+        /// 拼一枚真令牌（头里带 kid）
+        [[nodiscard]] std::string makeToken(const std::string &kid, EVP_PKEY *privateKey, const std::int64_t expiration)
+        {
+            const std::string headerJson  = R"({"alg":"RS256","typ":"JWT","kid":")" + kid + R"("})";
+            const std::string payloadJson = R"({"iss":"https://issuer.example","aud":"https://api.example","exp":)" + std::to_string(expiration) + "}";
+            return makeTokenFromJson(headerJson, payloadJson, privateKey);
+        }
+
         /// 一份含单个 RSA 公钥的 JWKS 文档
         [[nodiscard]] std::string jwksDocument(const std::string &kid, const std::pair<std::string, std::string> &modulusExponent)
         {
             return R"({"keys":[{"kty":"RSA","kid":")" + kid + R"(","use":"sig","alg":"RS256","n":")" + modulusExponent.first + R"(","e":")" + modulusExponent.second + R"("}]})";
+        }
+
+        /// 同一份文档，但 kid 写成数字（类型不符的读取面）
+        [[nodiscard]] std::string jwksDocumentWithNumericKid(const std::pair<std::string, std::string> &modulusExponent)
+        {
+            return R"({"keys":[{"kty":"RSA","kid":123,"use":"sig","alg":"RS256","n":")" + modulusExponent.first + R"(","e":")" + modulusExponent.second + R"("}]})";
         }
 
         /**
@@ -455,6 +470,47 @@ namespace AsynGyanis::Net
         const std::optional<std::string> outcome = provider->verify(token, JwtClaimExpectations{}, TimePoint{std::chrono::seconds{kNowSeconds}});
         ASSERT_HAS_VALUE(outcome);
         EXPECT_NE(outcome->find("尚未成功拉取"), std::string::npos) << *outcome;
+    }
+
+    TEST(JwksKeyProviderTest, StartRejectsNonPositiveRefreshRequestSlice)
+    {
+        // 只起循环、不起对端：非正分片在 start 的参数校验里就该被拦下——放进去会让
+        // refreshLoop 的分片等待立即返回、waited 不前进，把轮换变成忙等
+        Core::EventLoop loop;
+        const auto      startWithZeroSlice = [&loop]
+        { return JwksKeyProvider::start(loop, JwksKeyProviderOptions{.jwksUrl = "http://127.0.0.1:1/jwks", .refreshRequestSlice = std::chrono::milliseconds{0}}); };
+        EXPECT_THROW(static_cast<void>(startWithZeroSlice()), Base::InvalidArgumentException);
+    }
+
+    TEST(JwksKeyProviderTest, NumericKidTypesDoNotThrowFromVerify)
+    {
+        const std::shared_ptr<EVP_PKEY> signingKey = generateRsaKeyPair();
+        ASSERT_NE(signingKey, nullptr);
+        const auto modulusExponent = exportModulusExponent(signingKey.get());
+
+        MiniJwksServer server;
+        // 两边 kid 都写成数字：读取口不抛异常是判据。旧实现里 header.value("kid", ...) 在类型不符时
+        // 会抛 type_error，穿出以 optional 为契约的 verify 口
+        server.setBody(jwksDocumentWithNumericKid(modulusExponent));
+        ASSERT_TRUE(server.start());
+
+        Core::EventLoop loop;
+        auto            provider = JwksKeyProvider::start(loop, JwksKeyProviderOptions{.jwksUrl             = "http://127.0.0.1:" + std::to_string(server.port()) + "/jwks",
+                                                                                       .refreshInterval     = std::chrono::seconds{60},
+                                                                                       .refreshRequestSlice = std::chrono::milliseconds{50}});
+
+        bool cacheReady = false;
+        runControlTask(loop, waitUntilAndStop(loop, [&provider] { return provider->cachedKeyCount() > 0; }, cacheReady));
+        ASSERT_TRUE(cacheReady) << "首次拉取没有在期限内完成，lastError=" << provider->lastError();
+
+        const std::string token =
+                makeTokenFromJson(R"({"alg":"RS256","typ":"JWT","kid":123})",
+                                  R"({"iss":"https://issuer.example","aud":"https://api.example","exp":)" + std::to_string(kNowSeconds + 3600) + "}", signingKey.get());
+
+        // 数字 kid 按「没带 kid」处理：遍历键集，签名对得上即通过——关键是这枚令牌不得让 verify 抛异常
+        std::optional<std::string> outcome;
+        EXPECT_NO_THROW(outcome = provider->verify(token, JwtClaimExpectations{}, TimePoint{std::chrono::seconds{kNowSeconds}}));
+        EXPECT_FALSE(outcome.has_value()) << *outcome;
     }
 
     TEST(JwksKeyProviderTest, DestroyingProviderWithSuspendedCoroutineIsSafe)

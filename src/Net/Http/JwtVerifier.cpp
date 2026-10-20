@@ -6,9 +6,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -38,10 +41,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 把载荷里的时间声明按 NumericDate（秒）读出来
          * @details 规范允许 exp/nbf 出现为整数；JSON 里是浮点（少见但合法）时按截断取整——
-         *          真实的签发方不会这么写，但拒绝它会比「容忍一下」更容易把合法令牌挡在门外
+         *          真实的签发方不会这么写，但拒绝它会比「容忍一下」更容易把合法令牌挡在门外。
+         *          浮点超出 int64 表示范围时不能直接转：那样的转换是未定义行为。非有限数给空，
+         *          超上限钳到 int64_max（等价于永不过期）、低于下限钳到 int64_min（等价于早已过期）。
+         *          无符号整数按 uint64 读出，超出 int64_max 时同样钳到上限——直接按 int64 读会回绕，
+         *          把 18446744073709551615 这种「永不过期」的值读成负数
          * @param payload 载荷对象
          * @param key 声明名（"exp" 或 "nbf"）
-         * @return std::optional<std::int64_t> 秒数；声明缺失或不是数值时给空
+         * @return std::optional<std::int64_t> 秒数；声明缺失、不是数值或为非有限浮点时给空
          */
         [[nodiscard]] std::optional<std::int64_t> readNumericDate(const nlohmann::json &payload, const std::string_view key)
         {
@@ -51,13 +58,37 @@ namespace AsynGyanis::Net
                 return std::nullopt;
             }
 
+            // 无符号必须先判：is_number_integer() 对它同样为真，而 get<std::int64_t>()
+            // 在值超过 int64_max 时是回绕，判定会从「永不过期」翻成「早已过期」
+            if (iterator->is_number_unsigned())
+            {
+                const std::uint64_t seconds = iterator->get<std::uint64_t>();
+                if (seconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+                {
+                    return std::numeric_limits<std::int64_t>::max();
+                }
+                return static_cast<std::int64_t>(seconds);
+            }
             if (iterator->is_number_integer())
             {
                 return iterator->get<std::int64_t>();
             }
             if (iterator->is_number_float())
             {
-                return static_cast<std::int64_t>(iterator->get<double>());
+                const double seconds = iterator->get<double>();
+                if (!std::isfinite(seconds))
+                {
+                    return std::nullopt;
+                }
+                if (seconds >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                {
+                    return std::numeric_limits<std::int64_t>::max();
+                }
+                if (seconds <= static_cast<double>(std::numeric_limits<std::int64_t>::min()))
+                {
+                    return std::numeric_limits<std::int64_t>::min();
+                }
+                return static_cast<std::int64_t>(seconds);
             }
             return std::nullopt;
         }
@@ -274,23 +305,35 @@ namespace AsynGyanis::Net
         }
 
         const std::int64_t nowSeconds = toUnixSeconds(now);
-        const auto         skew       = expectations.clockSkew.count();
 
-        // exp：到期之后（含偏差）一律拒——两边都不给宽限的写法（now < exp + skew 才放行）
+        // 偏差先钳到 [0, 一年]：负偏差会把容差变成反向宽限（提前放行未生效令牌、延后拒绝已过期令牌），
+        // 过大的偏差也没有实际意义。先钳偏差、再按差值比较，避免 exp/nbf 取到 int64 边界时相加溢出
+        const std::int64_t skew = std::clamp<std::int64_t>(expectations.clockSkew.count(), 0, 86400 * 365);
+
+        // exp：到期之后（含偏差）一律拒——now < exp + skew 才放行。差值用无符号算：
+        // 有符号的 now - exp 在 exp 取到 int64_min 时会溢出，无符号减法在这种两数之差的场景仍然精确
         if (const std::optional<std::int64_t> expiration = readNumericDate(payload, "exp"); expiration.has_value())
         {
-            if (nowSeconds >= *expiration + skew)
+            if (*expiration <= nowSeconds)
             {
-                return "JWT 已过期（exp 已过，允许偏差 " + std::to_string(skew) + " 秒）";
+                const std::uint64_t expiredSeconds = static_cast<std::uint64_t>(nowSeconds) - static_cast<std::uint64_t>(*expiration);
+                if (expiredSeconds >= static_cast<std::uint64_t>(skew))
+                {
+                    return "JWT 已过期（exp 已过，允许偏差 " + std::to_string(skew) + " 秒）";
+                }
             }
         }
 
-        // nbf：生效之前（含偏差）一律拒
+        // nbf：生效之前（含偏差）一律拒——now + skew >= nbf 才放行。同样先钳偏差、按差值比较
         if (const std::optional<std::int64_t> notBefore = readNumericDate(payload, "nbf"); notBefore.has_value())
         {
-            if (nowSeconds + skew < *notBefore)
+            if (*notBefore > nowSeconds)
             {
-                return "JWT 尚未生效（nbf 还没到，允许偏差 " + std::to_string(skew) + " 秒）";
+                const std::uint64_t earlySeconds = static_cast<std::uint64_t>(*notBefore) - static_cast<std::uint64_t>(nowSeconds);
+                if (earlySeconds > static_cast<std::uint64_t>(skew))
+                {
+                    return "JWT 尚未生效（nbf 还没到，允许偏差 " + std::to_string(skew) + " 秒）";
+                }
             }
         }
 
