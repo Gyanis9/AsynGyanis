@@ -1524,6 +1524,11 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::commit()
     {
+        if (!isTransactionOpenNow())
+        {
+            m_lastError = "提交 MySQL 事务失败：这条连接没有活动事务（MySQL 的 COMMIT 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";
+            return false;
+        }
         const MySqlDialect dialect;
         const bool         isCommitted = execute(dialect.commitStatement()) != nullptr;
         if (isCommitted)
@@ -1535,9 +1540,13 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::rollback()
     {
+        if (!isTransactionOpenNow())
+        {
+            m_lastError = "回滚 MySQL 事务失败：这条连接没有活动事务（MySQL 的 ROLLBACK 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";
+            return false;
+        }
         const MySqlDialect dialect;
-        // 没有活动事务时服务端会直接报错，这里如实返回 false，并由 lastError() 给出原因
-        const bool isRolledBack = execute(dialect.rollbackStatement()) != nullptr;
+        const bool         isRolledBack = execute(dialect.rollbackStatement()) != nullptr;
         if (isRolledBack)
         {
             m_isTransactionOpen = false;
@@ -1567,8 +1576,8 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // automatic-reconnect 是关着的（见 connect() 里那段：隐式重连会丢掉事务与会话变量），因此
-        // 这里失败就是真失败，不会顺手换一条新连接糊过去
+        // automatic-reconnect 由客户端库默认关闭（MySQL 8 / MariaDB 如此）；本驱动不显式设置
+        // MYSQL_OPT_RECONNECT，因此这里失败就是真失败，不会顺手换一条新连接糊过去
         if (mysql_ping(m_mysqlHandle) != 0)
         {
             captureError("借出前的连接探针（mysql_ping）失败");

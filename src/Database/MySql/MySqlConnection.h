@@ -248,9 +248,9 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 借出前探针：mysql_ping 一次，问服务端还在不在
-         * @details 与复位不同，这里不改动任何会话状态。automatic-reconnect 在本驱动是关着的
-         *          （见 connect() 那段：隐式重连会丢掉事务与会话变量），因此探测失败就是把一条
-         *          死人交回池里处理，不会在这里悄悄换一条新连接
+         * @details 与复位不同，这里不改动任何会话状态。automatic-reconnect 由客户端库默认关闭
+         *          （MySQL 8 / MariaDB 如此）；本驱动不显式设置 MYSQL_OPT_RECONNECT，因此探测失败
+         *          就是把一条死人交回池里处理，不会在这里悄悄换一条新连接
          * @return true 服务端答了；false 句柄不在或已失联（原因见 lastError()）
          */
         [[nodiscard]] bool probeAlive() noexcept override;
