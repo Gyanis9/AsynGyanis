@@ -2568,19 +2568,23 @@ port: 9090
         writeFile("cfg.yaml", "value: first\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        std::atomic<bool> callbackEntered{false};
-        std::atomic<bool> callbackReturned{false};
-        const bool        enabled = configuration().enableHotReload(
-                [&callbackEntered, &callbackReturned](const ConfigLoadResult &)
+        struct CallbackState
+        {
+            std::atomic<bool> entered{false};
+            std::atomic<bool> returned{false};
+        };
+        auto       callbackState = std::make_shared<CallbackState>();
+        const bool enabled       = configuration().enableHotReload(
+                [callbackState](const ConfigLoadResult &)
                 {
-                    callbackEntered.store(true, std::memory_order_release);
+                    callbackState->entered.store(true, std::memory_order_release);
                     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                     while (ConfigManager::instance().isHotReloadEnabled() && std::chrono::steady_clock::now() < deadline)
                     {
                         std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     }
                     static_cast<void>(ConfigManager::instance().enableHotReload(nullptr, std::chrono::milliseconds(50)));
-                    callbackReturned.store(true, std::memory_order_release);
+                    callbackState->returned.store(true, std::memory_order_release);
                 },
                 std::chrono::milliseconds(50));
         if (!enabled)
@@ -2591,7 +2595,8 @@ port: 9090
         // 与其余热重载用例同一处置：监听线程要先把读请求投出去
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         writeFile("cfg.yaml", "value: second\n");
-        ASSERT_TRUE(TestSupport::waitForCondition([&callbackEntered] { return callbackEntered.load(std::memory_order_acquire); }, std::chrono::seconds(8))) << "重载回调没有进入";
+        ASSERT_TRUE(TestSupport::waitForCondition([callbackState] { return callbackState->entered.load(std::memory_order_acquire); }, std::chrono::seconds(8)))
+                << "重载回调没有进入";
 
         std::atomic<bool> disableReturned{false};
         std::thread       watchdog(
@@ -2613,7 +2618,7 @@ port: 9090
         disableReturned.store(true, std::memory_order_release);
         watchdog.join();
 
-        EXPECT_TRUE(callbackReturned.load(std::memory_order_acquire)) << "disable 返回时回调还没走完";
+        EXPECT_TRUE(callbackState->returned.load(std::memory_order_acquire)) << "disable 返回时回调还没走完";
         configuration().disableHotReload();
     }
 
