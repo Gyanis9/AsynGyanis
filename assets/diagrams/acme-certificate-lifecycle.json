@@ -117,7 +117,7 @@
       "lane": "hold",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 625, "end_line": 638, "label": "循环与等待" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 627, "end_line": 640, "label": "循环与等待" },
         { "path": "src/Net/Acme/AcmeCertificateManager.h", "line": 143, "label": "renewalCheckInterval" }
       ]
     },
