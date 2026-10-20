@@ -236,6 +236,15 @@ namespace AsynGyanis::Base
     {
         const auto &configuration = ConfigManager::instance();
 
+        // getSection 只拼以「前缀.」开头的扁平键：整段写成标量（logging: 5）时一条都命中不了，
+        // 拿到的是空对象，下面那道 is_object() 因此永远不触发，反而会走「没配 loggers」那条路
+        // 安装默认 root。段类型不符要在取快照之前判，且与表形态走同一条诊断文案
+        if (const auto rawSection = configuration.getOptional(configurationPrefix); rawSection.has_value() && !rawSection->is_object())
+        {
+            std::cerr << "LoggerConfig：" << configurationPrefix << " 段不是对象（实际是 " << typeName(rawSection->type()) << "），本次不改动任何日志器" << '\n';
+            return;
+        }
+
         // 整段配置一次取回：getSection 只读一份快照。原先是 keys() 取一份、之后每个 getOptional
         // 再各取一份，跨键没有一致视图——中途插进来的一次热重载会把「A 的等级来自上一版、
         // A 的 sinks 来自这一版」拼成一份装配结果

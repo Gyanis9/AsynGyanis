@@ -1933,6 +1933,29 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(readTemporaryFile("kept_when_section_contradicts.log"), "still writing after a contradictory section"));
     }
 
+    /**
+     * @brief logging 段是标量时不动任何日志器，并说清原因
+     * @details getSection 只拼以「前缀.」开头的扁平键，整段写成标量时返回空对象，类型检查
+     *          因此永远不触发，反而会走「没配 loggers」那条路安装默认 root。已就位的 root
+     *          等级与 sink 都属于「本次不该动」的东西。
+     */
+    TEST_F(LoggerConfigLoaderTest, ScalarLoggingSectionIsDiagnosedWithoutTouchingLoggers)
+    {
+        loadConfiguration("logging: 5\n");
+        auto &root = LoggerRegistry::instance().getRootLogger();
+        root.setLevel(LogLevel::Error);
+
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            captured = capture.text();
+        }
+
+        EXPECT_EQ(root.getLevel(), LogLevel::Error) << "标量段不该触发默认 root 安装或改级";
+        EXPECT_TRUE(contains(captured, "不是对象")) << captured;
+    }
+
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)
     {
         loadConfiguration(R"(logging:
