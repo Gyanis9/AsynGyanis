@@ -76,16 +76,16 @@ namespace AsynGyanis::Base
             return *iterator->second;
         }
 
-        auto    logger    = std::make_shared<Logger>(name);
-        Logger &reference = *logger;
+        auto logger                     = std::make_shared<Logger>(name);
+        const auto [iterator, inserted] = m_loggers.emplace(name, std::move(logger));
+        static_cast<void>(inserted);
         if (name == kRootLoggerName)
         {
-            // 缓存不持有所有权：对象由 m_loggers 与退休表保活，clear/unregister 都先失效
-            // 缓存再动表，命中期间不会把已被移除的旧实例当成 root
-            storeCachedRootLogger(logger);
+            // 只在登记成功之后发布缓存：emplace 分配失败时本地 shared_ptr 仍是唯一所有者，
+            // 此时把裸指针写进缓存会在栈展开后悬垂
+            storeCachedRootLogger(iterator->second);
         }
-        m_loggers.emplace(name, std::move(logger));
-        return reference;
+        return *iterator->second;
     }
 
     Logger &LoggerRegistry::getRootLogger()
