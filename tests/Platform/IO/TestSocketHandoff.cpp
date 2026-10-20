@@ -495,9 +495,9 @@ namespace AsynGyanis::Platform
 
         const int adoptedDescriptor = Socket::readListeningSocketHandoff(channelReader);
         ASSERT_GE(adoptedDescriptor, 0) << "收端没能重建数据报套接字，错误码 " << PlatformError::lastSocketErrorCode();
-        // 接手侧要自己把继承位清掉：交出方的标志位传不过来（两侧都是新建的一份引用，POSIX 上内核
-        // 给新描述符时把 FD_CLOEXEC 清成 0），不补就等于让新一代此后派生的每个子进程都替这个端口
-        // 留一份持有
+        // 接手侧要自己确认继承位已清：交出方的标志位传不过来（两侧都是新建的一份引用）。POSIX 上
+        // MSG_CMSG_CLOEXEC 已让内核在装填时置上该位，本层仍补一次，是为不支持该标志的老内核兜底；
+        // 位若没置上，新一代此后派生的每个子进程都会替这个端口留一份持有
         EXPECT_TRUE(TestSupport::isNotInheritable(adoptedDescriptor)) << "接手来的套接字仍可随进程创建继承，端口关不干净";
         // 交接交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在 DatagramSocket 那侧
         auto adopted = DatagramSocket::adopt(adoptedDescriptor);

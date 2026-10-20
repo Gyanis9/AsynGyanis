@@ -190,7 +190,8 @@ namespace AsynGyanis::Platform
         /// 一直轮不到执行
         static constexpr std::size_t kMaximumBatchesPerWakeup = 8;
         /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除（删除）、移出（改名源路径），
-        /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
+        /// 以及监视目标自身被删除或移动——监视单个文件时只会收到目标自身的事件（写入完成/删除/移动），
+        /// 且都不带名字
         static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
     };
 } // namespace AsynGyanis::Platform

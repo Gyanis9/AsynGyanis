@@ -91,8 +91,8 @@ namespace AsynGyanis::Platform
         return true;
 #else
         // Linux 侧没有需要启动的全局子系统，但有一个进程级设置要在这里落地：忽略 SIGPIPE。
-        // 本层所有发送都带 MSG_NOSIGNAL，唯独 sendfile 没有对应的 per-call 标志——向已关闭的
-        // 对端发文件会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
+        // 本层的常规发送都带 MSG_NOSIGNAL，但 sendfile 与移交通道的 sendmsg 没有对应的 per-call
+        // 标志——向已关闭的对端发送会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
         // 发送失败路径处理（与 TlsContext 对 OpenSSL 内部写入的处理同源，那边是另一条
         // 绕不开的信号来源）。signal() 幂等，但每次 Socket 初始化都会走到这里，
         // call_once 让重复调用只剩一次原子检查

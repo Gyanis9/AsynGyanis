@@ -459,8 +459,9 @@ namespace AsynGyanis::Platform
                 changeType = FileChangeType::Deleted;
             } else if ((event.mask & IN_MOVED_FROM) != 0)
             {
-                // 改名/移动的源路径按枚举契约报 Moved：Windows 的 RENAMED_OLD_NAME 走的就是这一类，
-                // 两侧必须同判据。真实删除仍是上面的 Deleted
+                // 改名/移动的源路径报 Moved：监视目录内部的改名两侧同为 Moved；把文件移出监视范围时
+                // Windows 报 Deleted（FILE_ACTION_REMOVED）、Linux 仍报 Moved（IN_MOVED_FROM），
+                // 消费方必须两种都收。真实删除仍是上面的 Deleted
                 changeType = FileChangeType::Moved;
             }
 
