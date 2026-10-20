@@ -484,7 +484,7 @@ namespace AsynGyanis::Base
                     // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
                     // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
                     // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
-                    // 原地跳过它，本轮收尾后由 collectFinishedReloadTasks 正常回收
+                    // 原地跳过它，留待下一次 scheduleReload 或本对象析构时回收
                     if (*iterator && (*iterator)->thread.get_id() == std::this_thread::get_id())
                     {
                         ++iterator;

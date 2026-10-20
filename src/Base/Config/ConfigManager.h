@@ -176,7 +176,8 @@ namespace AsynGyanis::Base
          *       类型判定本身不拷树——走快照按引用查，判定失败时不必为这次失败深拷整棵子树
          * @note 默认值须按值传入：左值默认值会被推导成引用，命中分支返回的引用指向函数内
          *       已销毁的 optional，因此体内以 static_assert 拒绝引用推导。字符串字面量与
-         *       std::string 左值走下面的非模板重载；其它左值请传副本或显式写出模板实参
+         *       std::string 左值走下面的非模板重载；其它左值请传副本，显式写出模板实参不能
+         *       把左值绑定到 T&&
          */
         template<typename T>
         T get(const std::string_view key, T &&defaultValue) const
@@ -204,6 +205,8 @@ namespace AsynGyanis::Base
          * @brief 以 C 字符串作为默认值的取值重载
          * @details 模板重载会把字面量推导成数组引用，decay 后是不受支持的 const char*，
          *          配置值会被整条忽略；本重载把它固定成 std::string 通道。
+         * @note 字面量 nullptr 会推导成 std::nullptr_t 并走模板重载，不经过本重载；
+         *       要空串默认值请传一个空的 const char* 变量或 std::string。
          * @param key 配置键
          * @param defaultValue 默认文本，空的 const char* 指针按空串处理
          * @return std::string 配置文本或默认文本
