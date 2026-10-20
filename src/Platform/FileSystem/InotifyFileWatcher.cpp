@@ -10,6 +10,7 @@
 #include <poll.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,10 +19,12 @@ namespace AsynGyanis::Platform
     namespace
     {
         /**
-         * @brief 把绝对路径收成映射键：去掉尾部分隔符，根路径保留，空输入返回空串
+         * @brief 把绝对路径逐段收成映射键：去掉空段与 "." 段，保留 ".." 段，根路径保留 "/"，空输入返回空串
          * @details inotify_add_watch 对同一 inode 返回同一个监视描述符，两套写法却会变成两套键：
-         *          removeWatch 只摘得掉其中一套，另一套继续派发事件。空串在 absolute() 里会被
-         *          解释成当前目录，必须在这里挡掉，不能让「什么都不传」变成「监视进程落脚点」。
+         *          removeWatch 只摘得掉其中一套，另一套继续派发事件。因此重复分隔符、尾分隔符与
+         *          "." 段都要折叠掉；".." 段不能折叠——路径里若有符号链接，词法回退与内核解析出
+         *          的目标不是一回事。空串在 absolute() 里会被解释成当前目录，必须在这里挡掉，
+         *          不能让「什么都不传」变成「监视进程落脚点」。
          * @param absolutePath 已交给 std::filesystem::absolute 的路径文本
          * @return std::string 归一化后的键；空串表示这份输入不可监视
          */
@@ -31,13 +34,29 @@ namespace AsynGyanis::Platform
             {
                 return {};
             }
-            std::size_t length = absolutePath.size();
-            // size() > 1：根目录 "/" 不能收成空串
-            while (length > 1 && absolutePath[length - 1] == '/')
+
+            std::string normalizedPath;
+            normalizedPath.reserve(absolutePath.size());
+            std::size_t segmentStart = 0;
+            while (segmentStart <= absolutePath.size())
             {
-                --length;
+                const std::size_t      segmentEnd    = absolutePath.find('/', segmentStart);
+                const std::size_t      segmentLength = (segmentEnd == std::string::npos ? absolutePath.size() : segmentEnd) - segmentStart;
+                const std::string_view segment(absolutePath.data() + segmentStart, segmentLength);
+                if (!segment.empty() && segment != ".")
+                {
+                    normalizedPath.push_back('/');
+                    normalizedPath.append(segment);
+                }
+                if (segmentEnd == std::string::npos)
+                {
+                    break;
+                }
+                segmentStart = segmentEnd + 1;
             }
-            return absolutePath.substr(0, length);
+
+            // 只剩分隔符与点段时就是根："/" 不能收成空串
+            return normalizedPath.empty() ? "/" : normalizedPath;
         }
     } // namespace
 
@@ -269,6 +288,27 @@ namespace AsynGyanis::Platform
         m_watchDescriptors.erase(iterator);
     }
 
+    void InotifyFileWatcher::notifyWatchedPathMoved(const int watchDescriptor)
+    {
+        FileChangeCallback callbackSnapshot;
+        std::string        watchedPath;
+        {
+            std::shared_lock lock(m_watchMutex);
+            const auto       iterator = m_watchDescriptors.find(watchDescriptor);
+            if (iterator == m_watchDescriptors.end())
+            {
+                return;
+            }
+            watchedPath      = iterator->second;
+            callbackSnapshot = m_callback;
+        }
+        if (!shouldDispatchChange(watchedPath))
+        {
+            return;
+        }
+        notifyChange(callbackSnapshot, watchedPath, FileChangeType::Moved);
+    }
+
     void InotifyFileWatcher::setCallback(FileChangeCallback callback)
     {
         std::lock_guard lock(m_watchMutex);
@@ -387,13 +427,14 @@ namespace AsynGyanis::Platform
             return;
         }
 
-        // IN_MOVE_SELF：被监视的目录本身被改名或移到别处（len==0 才代表目标自身，带名字的
-        // 是子项改名）。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补 IN_IGNORED，
-        // 于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」挡下而不
-        // 重新注册，新目录的事件从此永久丢失。这里按同样的方式摘掉映射——递归根与调用方
-        // 点名的一层监视随后都由自愈节拍按 m_selfHealPaths 补挂
+        // IN_MOVE_SELF：被监视的目标本身被改名或移到别处（len==0 才代表目标自身，带名字的
+        // 是子项改名）。监视单个文件时这就是它下线的那一刻：先按旧路径报一次 Moved，再摘映射；
+        // 自愈节拍随后按旧路径补挂。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补
+        // IN_IGNORED，于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」
+        // 挡下而不重新注册，新目录的事件从此永久丢失
         if ((event.mask & IN_MOVE_SELF) != 0 && event.len == 0)
         {
+            notifyWatchedPathMoved(event.wd);
             removeWatchMapping(event.wd);
             return;
         }

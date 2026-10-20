@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8826
+# headers=303 entries=8827
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8497,6 +8497,7 @@ src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_r
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_selfHealPaths
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchEvent(const inotify_event &event)
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchOverflowRescan()
+src/Platform/FileSystem/InotifyFileWatcher.h	void notifyWatchedPathMoved(int watchDescriptor)
 src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents()
 src/Platform/FileSystem/InotifyFileWatcher.h	void rearmMissingWatchesIfDue()
 src/Platform/FileSystem/InotifyFileWatcher.h	void removeWatchMapping(int watchDescriptor)

@@ -134,9 +134,9 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 解析并派发一条 inotify 事件记录
-         * @details 由 processEvents() 逐条调用：IN_IGNORED 与 IN_MOVE_SELF 摘掉映射，队列
-         *          溢出转为逐条受监视路径的重扫通知，其余按监视目标分类。回调在锁内取快照、在锁外
-         *          触发，避免回调中操作监听器造成死锁。
+         * @details 由 processEvents() 逐条调用：IN_IGNORED 摘掉映射，IN_MOVE_SELF 先按旧路径
+         *          报一次 Moved 再摘映射，队列溢出转为逐条受监视路径的重扫通知，其余按监视目标分类。
+         *          回调在锁内取快照、在锁外触发，避免回调中操作监听器造成死锁。
          * @param event 读取缓冲区内的那条记录，只在本次调用期间有效
          */
         void dispatchEvent(const inotify_event &event);
@@ -164,6 +164,14 @@ namespace AsynGyanis::Platform
          * @note 不清的话，重建出来的同名路径会因「路径已在表里」而挂不上监视，事件永久丢失
          */
         void removeWatchMapping(int watchDescriptor);
+
+        /**
+         * @brief 监视目标自身被移走时，按 Moved 派发一次旧路径
+         * @details IN_MOVE_SELF 不带名字，事件里的路径就是被监视的那条路径。映射随后由调用方摘掉；
+         *          这里先取回调快照再在锁外派发，避免回调中操作监听器造成死锁。
+         * @param watchDescriptor 内核给的监视描述符
+         */
+        void notifyWatchedPathMoved(int watchDescriptor);
 
         int                                  m_inotifyFileDescriptor{-1}; ///< inotify 文件描述符
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
