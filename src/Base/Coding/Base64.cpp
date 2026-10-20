@@ -1,5 +1,6 @@
 #include "Base/Coding/Base64.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -15,6 +16,24 @@ namespace AsynGyanis::Base
         /// URL-safe 字母表（RFC 4648 §5）：'-' 与 '_' 顶掉 '+' 与 '/'，因为后者在 URL 里另有含义
         constexpr std::string_view kBase64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+        /// 解码用的反向表：字母表外的字节为 -1，命中时为 0..63。256 项静态表把每字符一次线性查找换成一次下标读。
+        struct Base64DecodeTable
+        {
+            std::array<std::int8_t, 256> values{};
+
+            constexpr explicit Base64DecodeTable(const std::string_view alphabet)
+            {
+                values.fill(-1);
+                for (std::size_t index = 0; index < alphabet.size(); ++index)
+                {
+                    values[static_cast<unsigned char>(alphabet[index])] = static_cast<std::int8_t>(index);
+                }
+            }
+        };
+
+        constexpr Base64DecodeTable kStandardDecodeTable{kBase64Alphabet}; ///< 标准字母表的反向表
+        constexpr Base64DecodeTable kUrlDecodeTable{kBase64UrlAlphabet};   ///< URL-safe 字母表的反向表
+
         /// 一段编码末尾最多两个填充符
         constexpr std::size_t kMaximumBase64PaddingLength = 2;
 
@@ -23,6 +42,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按给定字母表编码，是否补填充由 paddingCharacter 决定
+         * @details 先按输出长度建好字符串，再按索引逐位写入，省去逐字符 push_back 的容量检查。
          * @param bytes 待编码字节
          * @param alphabet 64 个字符的字母表
          * @param paddingCharacter 填充符，传 kNoPadding 表示末组不补
@@ -30,34 +50,41 @@ namespace AsynGyanis::Base
          */
         [[nodiscard]] std::string encodeWithAlphabet(const std::string_view bytes, const std::string_view alphabet, const char paddingCharacter)
         {
-            std::string encoded;
-            encoded.reserve((bytes.size() + 2) / 3 * 4);
+            const std::size_t fullGroupCount = bytes.size() / 3U;
+            const std::size_t remainder      = bytes.size() % 3U;
+            const std::size_t encodedLength  = fullGroupCount * 4U + (remainder == 0U ? 0U : (paddingCharacter == kNoPadding ? remainder + 1U : 4U));
+            std::string       encoded(encodedLength, '\0');
 
+            std::size_t outputIndex = 0;
             // 每 3 字节编成 4 个字符：24 位正好切成四段 6 位
-            for (std::size_t index = 0; index < bytes.size(); index += 3)
+            for (std::size_t index = 0; index + 2U < bytes.size(); index += 3U)
             {
-                const std::size_t   remainingLength = bytes.size() - index;
-                const std::uint32_t firstByte       = static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index]));
-                const std::uint32_t secondByte      = remainingLength > 1 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 1])) : 0U;
-                const std::uint32_t thirdByte       = remainingLength > 2 ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 2])) : 0U;
-                const std::uint32_t groupValue      = (firstByte << 16) | (secondByte << 8) | thirdByte;
-
-                encoded.push_back(alphabet[(groupValue >> 18) & 0x3FU]);
-                encoded.push_back(alphabet[(groupValue >> 12) & 0x3FU]);
+                const std::uint32_t groupValue = (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index])) << 16U) |
+                                                 (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 1U])) << 8U) |
+                                                 static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[index + 2U]));
+                encoded[outputIndex++]         = alphabet[(groupValue >> 18U) & 0x3FU];
+                encoded[outputIndex++]         = alphabet[(groupValue >> 12U) & 0x3FU];
+                encoded[outputIndex++]         = alphabet[(groupValue >> 6U) & 0x3FU];
+                encoded[outputIndex++]         = alphabet[groupValue & 0x3FU];
+            }
+            if (remainder != 0U)
+            {
+                const std::uint32_t firstByte  = static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[fullGroupCount * 3U]));
+                const std::uint32_t secondByte = remainder > 1U ? static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[fullGroupCount * 3U + 1U])) : 0U;
+                const std::uint32_t groupValue = (firstByte << 16U) | (secondByte << 8U);
+                encoded[outputIndex++]         = alphabet[(groupValue >> 18U) & 0x3FU];
+                encoded[outputIndex++]         = alphabet[(groupValue >> 12U) & 0x3FU];
                 // 末组只剩 1 字节时第三、四个字符没有信息：按规范补 '='，按无填充写法则就此收笔
-                if (remainingLength > 1)
+                if (remainder > 1U)
                 {
-                    encoded.push_back(alphabet[(groupValue >> 6) & 0x3FU]);
+                    encoded[outputIndex++] = alphabet[(groupValue >> 6U) & 0x3FU];
                 } else if (paddingCharacter != kNoPadding)
                 {
-                    encoded.push_back(paddingCharacter);
+                    encoded[outputIndex++] = paddingCharacter;
                 }
-                if (remainingLength > 2)
+                if (paddingCharacter != kNoPadding)
                 {
-                    encoded.push_back(alphabet[groupValue & 0x3FU]);
-                } else if (paddingCharacter != kNoPadding)
-                {
-                    encoded.push_back(paddingCharacter);
+                    encoded[outputIndex++] = paddingCharacter;
                 }
             }
             return encoded;
@@ -66,11 +93,11 @@ namespace AsynGyanis::Base
         /**
          * @brief 按给定字母表严格解码
          * @param text 待解码文本
-         * @param alphabet 64 个字符的字母表
+         * @param table 该字母表的反向查询表
          * @param maximumPaddingLength 末尾允许的填充符个数，0 表示这套写法根本不该出现填充
          * @return std::optional<std::string> 解码出的字节；输入非法时为空
          */
-        [[nodiscard]] std::optional<std::string> decodeWithAlphabet(const std::string_view text, const std::string_view alphabet, const std::size_t maximumPaddingLength) noexcept
+        [[nodiscard]] std::optional<std::string> decodeWithAlphabet(const std::string_view text, const Base64DecodeTable &table, const std::size_t maximumPaddingLength) noexcept
         {
             if (text.empty())
             {
@@ -99,9 +126,9 @@ namespace AsynGyanis::Base
             std::size_t   accumulatorBitCount = 0;
             for (std::size_t index = 0; index < dataLength; ++index)
             {
-                const std::size_t encodedValue = alphabet.find(text[index]);
+                const std::int8_t encodedValue = table.values[static_cast<unsigned char>(text[index])];
                 // 字母表之外的字符（含无填充写法里出现的 '='）只能出现在末尾的填充位置，出现在这里就是非法编码
-                if (encodedValue == std::string_view::npos)
+                if (encodedValue < 0)
                 {
                     return std::nullopt;
                 }
@@ -133,7 +160,7 @@ namespace AsynGyanis::Base
 
     std::optional<std::string> base64Decode(const std::string_view text) noexcept
     {
-        return decodeWithAlphabet(text, kBase64Alphabet, kMaximumBase64PaddingLength);
+        return decodeWithAlphabet(text, kStandardDecodeTable, kMaximumBase64PaddingLength);
     }
 
     std::string base64UrlEncode(const std::string_view bytes)
@@ -143,7 +170,7 @@ namespace AsynGyanis::Base
 
     std::optional<std::string> base64UrlDecode(const std::string_view text) noexcept
     {
-        // 填充上限传 0：无填充写法里出现的 '=' 走字母表查找失败这条出口，与 '+' '/' 同样判非法
-        return decodeWithAlphabet(text, kBase64UrlAlphabet, 0U);
+        // 填充上限传 0：无填充写法里出现的 '=' 走反向表查不到这条出口，与 '+' '/' 同样判非法
+        return decodeWithAlphabet(text, kUrlDecodeTable, 0U);
     }
 } // namespace AsynGyanis::Base
