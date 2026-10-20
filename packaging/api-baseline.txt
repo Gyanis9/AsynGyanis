@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8824
+# headers=303 entries=8834
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -50,6 +50,9 @@ src/Base/Config/ConfigManager.h	[[nodiscard]] std::optional<ConfigValue> getOpti
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t environmentOverrideCount() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string environmentOverridePrefix() const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const std::string &defaultValue) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, std::string &defaultValue) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> keys() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> loadedFiles() const
 src/Base/Config/ConfigManager.h	bool configDirectoryRecursive = true
@@ -250,8 +253,10 @@ src/Base/Log/LogContext.h	std::map<std::string, std::string> m_fields
 src/Base/Log/LogContext.h	using LogContextPtr = std::shared_ptr<const LogContext>
 src/Base/Log/LogContext.h	~LogContextScope()
 src/Base/Log/LogEscaping.h	[[nodiscard]] inline std::string escapeForLog(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
+src/Base/Log/LogEscaping.h	inline void appendEscapedForLog(std::string &out, const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
 src/Base/Log/LogEscaping.h	namespace AsynGyanis::Base
 src/Base/Log/LogEvent.h	CapturedStackTrace stackTrace
+src/Base/Log/LogEvent.h	LogContextPtr context
 src/Base/Log/LogEvent.h	LogEvent() = default
 src/Base/Log/LogEvent.h	LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::shared_ptr<const std::string> threadIdSnapshot, const SourceLocation &sourceLocation, std::shared_ptr<const std::string> loggerNameSnapshot, std::string message) : level(logLevel), timestamp(timestampMoment), threadId(std::move(threadIdSnapshot)), location(sourceLocation), loggerName(std::move(loggerNameSnapshot)), message(std::move(message))
 src/Base/Log/LogEvent.h	LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::string threadIdValue, const SourceLocation &sourceLocation, std::string loggerNameValue, std::string message) : level(logLevel), timestamp(timestampMoment), threadId(std::make_shared<const std::string>(std::move(threadIdValue))), location(sourceLocation), loggerName(std::make_shared<const std::string>(std::move(loggerNameValue))), message(std::move(message))
@@ -314,6 +319,7 @@ src/Base/Log/Logger.h	explicit Logger(std::string name)
 src/Base/Log/Logger.h	namespace AsynGyanis::Base
 src/Base/Log/Logger.h	std::atomic<LogLevel> m_level
 src/Base/Log/Logger.h	std::atomic<std::shared_ptr<const SinkSnapshot>> m_sinksSnapshot
+src/Base/Log/Logger.h	std::atomic<std::size_t> m_sinkCount
 src/Base/Log/Logger.h	std::mutex m_sinksWriteMutex
 src/Base/Log/Logger.h	std::shared_ptr<const std::string> m_name
 src/Base/Log/Logger.h	std::vector<std::shared_ptr<LogSink>> sinks
@@ -331,6 +337,7 @@ src/Base/Log/Logger.h	void setLevel(LogLevel level)
 src/Base/Log/Logger.h	void writeEvent(LogLevel level, std::string message, const SourceLocation &location, CapturedStackTrace stackTrace =
 src/Base/Log/Logger.h	void writeToSinks(LogEvent &event) const
 src/Base/Log/Logger.h	~Logger()
+src/Base/Log/LoggerConfigLoader.h	[[nodiscard]] static std::unique_ptr<LogSink> createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
 src/Base/Log/LoggerConfigLoader.h	class ASYN_BASE_API LoggerConfigLoader
 src/Base/Log/LoggerConfigLoader.h	namespace AsynGyanis::Base
 src/Base/Log/LoggerConfigLoader.h	static std::unique_ptr<LogSink> createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
@@ -435,9 +442,12 @@ src/Base/Log/Sinks/LogSink.h	[[nodiscard]] LogLevel getLevel() const
 src/Base/Log/Sinks/LogSink.h	[[nodiscard]] bool shouldLog(LogLevel level) const
 src/Base/Log/Sinks/LogSink.h	class ASYN_BASE_API LogSink
 src/Base/Log/Sinks/LogSink.h	namespace AsynGyanis::Base
+src/Base/Log/Sinks/LogSink.h	std::atomic<LogFormatter *> m_formatterPointer
 src/Base/Log/Sinks/LogSink.h	std::atomic<LogLevel> m_level
 src/Base/Log/Sinks/LogSink.h	std::atomic<std::shared_ptr<LogFormatter>> m_formatter
+src/Base/Log/Sinks/LogSink.h	std::mutex m_formatterWriteMutex
 src/Base/Log/Sinks/LogSink.h	std::string formatEvent(const LogEvent &event) const
+src/Base/Log/Sinks/LogSink.h	std::vector<std::shared_ptr<LogFormatter>> m_retiredFormatters
 src/Base/Log/Sinks/LogSink.h	virtual void flush() = 0
 src/Base/Log/Sinks/LogSink.h	virtual void write(LogEvent &&event)
 src/Base/Log/Sinks/LogSink.h	virtual void write(const LogEvent &event) = 0
