@@ -78,7 +78,7 @@ namespace AsynGyanis::Core
          * @param fileDescriptor 目标描述符
          * @param events         新的事件位
          * @param userData       新的用户数据
-         * @return true 已更新（含「本来就是这个掩码」）；false 未注册或提交失败
+         * @return true 已更新（含「本来就是这个掩码」与「取消已登记、由维护重试」）；false 未注册
          */
         bool modFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr);
 
@@ -248,7 +248,7 @@ namespace AsynGyanis::Core
         void         *m_submissionEntriesMapping{nullptr}; ///< SQ 条目数组的映射基址（内核侧那块）
         std::size_t   m_submissionEntriesMappingSize{0};   ///< 上面那段映射的长度
         unsigned      m_submissionCapacity{0};             ///< SQ 条目数（本地副本）
-        /// 已取走、尚未发布给内核的槽位数：取槽只推进它，尾指针等 flush 时才发布——
+        /// 下一个尾指针值（累计已取走的提交项数）：取槽只推进它，尾指针等 flush 时才发布——
         /// 内核因此不会读到半写的 SQE（「先填内容、再发布尾指针」这条顺序由它保证）
         unsigned m_reservedSubmissionCount{0};
 

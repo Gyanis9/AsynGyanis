@@ -489,7 +489,7 @@ namespace AsynGyanis::Core
         auto registration            = std::make_unique<Registration>();
         registration->fileDescriptor = fileDescriptor;
         registration->userData       = userData;
-        // EPOLLONESHOT 与 EPOLLET 是 epoll 专有位，POLL_ADD 不认：语义由本类用「一次性」承担
+        // EPOLLONESHOT 与 EPOLLET 是 epoll 专有位，POLL_ADD 不认：EPOLLONESHOT 由本类的一次性语义承担，EPOLLET 被剥掉（本后端按水平触发实现，上层从不请求边缘触发）
         registration->isOneShot = (events & EPOLLONESHOT) != 0;
         registration->events    = events & ~(EPOLLONESHOT | EPOLLET);
 
