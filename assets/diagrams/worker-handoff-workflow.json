@@ -245,7 +245,7 @@
       "sources": [
         { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 161, "label": "子进程自己挂控制台处理器" },
         { "path": "src/Platform/System/Process.cpp", "line": 461, "label": "父代按进程组投 CTRL_BREAK" },
-        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 623, "label": "进程组是这条腿的前提" }
+        { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 672, "label": "进程组是这条腿的前提" }
       ]
     }
   ],
