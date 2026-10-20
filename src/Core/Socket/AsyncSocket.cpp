@@ -89,8 +89,8 @@ namespace AsynGyanis::Core
         if (m_watcher == nullptr && m_fileDescriptor >= 0)
         {
             // 注册一次覆盖整个描述符生命周期，此后每次等待都不再有 ADD/DEL 往返；
-            // 关注位由注册对象在等待期间按需武装（见 IoWatcher 的说明：Windows 侧 wepoll
-            // 只有水平触发，长期武装一个「几乎总是就绪」的方向会让事件循环空转）
+            // 关注位由注册对象在等待期间按需武装（见 IoWatcher 的说明：后端按水平触发实现，
+            // 长期武装一个「几乎总是就绪」的方向会让事件循环空转）
             m_watcher = std::make_unique<IoWatcher>(m_loop, m_fileDescriptor);
         }
         return m_watcher.get();

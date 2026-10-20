@@ -75,7 +75,9 @@ namespace AsynGyanis::Core
         /**
          * @brief 取累计交给过工作循环的连接数（用于观测与用例断言）
          * @details 口径是「投递已排上队」，不是「接手动作已跑完」：目标循环先退出、投递随队列一起被
-         *          丢弃的那些仍计入。只有交接句柄建不起来、或投递没能排上队（那条连接当场被关闭）的不计。
+         *          丢弃的那些仍计入。只有交接句柄建不起来的那些不计。
+         * @note 跨线程队列饱和时 postRemote() 静默拒收，本层拿不到回执，这类连接也计入；
+         *       被拒条数见 Scheduler::saturatedRemoteRejectionCount()
          * @return std::size_t 累计条数
          */
         [[nodiscard]] std::size_t distributedCount() const noexcept;
@@ -90,6 +92,6 @@ namespace AsynGyanis::Core
 
         std::vector<Worker>      m_workers;             ///< 已登记的工作循环，轮转顺序即登记顺序
         std::atomic<std::size_t> m_nextWorkerIndex{0};  ///< 下一次派发给哪个工作循环（原子：多条接受循环共用一台分发器时轮转不互相踩）
-        std::atomic<std::size_t> m_distributedCount{0}; ///< 累计派发成功的连接数（投递未能排队而当场关闭的那些不算）
+        std::atomic<std::size_t> m_distributedCount{0}; ///< 累计交给过工作循环的连接数（含队列饱和被拒、由交接句柄关闭的那些，见 distributedCount()）
     };
 } // namespace AsynGyanis::Core

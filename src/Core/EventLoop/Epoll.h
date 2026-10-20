@@ -128,7 +128,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 获取 epoll 句柄
-         * @return Linux 返回 epoll 文件描述符，Windows 返回 wepoll HANDLE
+         * @return epoll 文件描述符
          */
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
