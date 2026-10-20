@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8834
+# headers=303 entries=8837
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -48,10 +48,12 @@ src/Base/Config/ConfigManager.h	[[nodiscard]] static std::expected<std::vector<s
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::filesystem::path configDirectory() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t environmentOverrideCount() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string environmentOverridePrefix() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const std::string &defaultValue) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, std::nullptr_t) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, std::string &defaultValue) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> keys() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> loadedFiles() const
@@ -82,6 +84,7 @@ src/Base/Config/ConfigManager.h	std::size_t environmentOverrideCount = 0
 src/Base/Config/ConfigManager.h	std::string getString(std::string_view key, const std::string &defaultValue = "") const
 src/Base/Config/ConfigManager.h	std::string getText(std::string_view key, const std::string &defaultValue = "") const
 src/Base/Config/ConfigManager.h	std::unique_ptr<Platform::FileWatcher> m_fileWatcher
+src/Base/Config/ConfigManager.h	std::vector<std::string> environmentOverrideKeys
 src/Base/Config/ConfigManager.h	std::vector<std::string> loadedFiles
 src/Base/Config/ConfigManager.h	std::vector<std::string> validateRequired(const std::vector<std::string> &requiredKeys) const
 src/Base/Config/ConfigManager.h	std::vector<std::unique_ptr<ReloadTask>> m_reloadTasks
