@@ -691,6 +691,9 @@ namespace AsynGyanis::Core
         // 先清空错误栈：返回 false 时调用方读到的原因必须是本次留下的
         ERR_clear_error();
 
+        // 轮换要复现当前生效的对端校验模式：服务端 mTLS 与出站客户端两条路都在这一格上
+        const int previousVerifyMode = SSL_CTX_get_verify_mode(m_context);
+
         // 关键顺序：先把整台新上下文配置好，成功之后才换。任何一步失败都直接返回 false，
         // 旧上下文一个字节都不动——轮换失败不能让正在服务的进程掉线
         SSL_CTX *newContext = nullptr;
@@ -711,12 +714,13 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 复现「要求并校验对端证书」这一档：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
-        // 但校验模式是 setClientCertificateRequired() 单独设的，漏掉这一步会让一次续期把 mTLS 悄悄关掉——
-        // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单也在这条路上随策略复现，不会丢
-        if (m_clientCertificateRequired)
+        // 复现当前生效的对端校验模式：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
+        // 但校验模式由 setClientCertificateRequired() 或 enableClientPeerVerification() 单独设定。
+        // mTLS 与出站客户端共用这一格，漏掉这一步会让一次续期把对端校验悄悄关掉，
+        // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单随同一条路复现，不会丢
+        if (previousVerifyMode != SSL_VERIFY_NONE)
         {
-            applyPeerVerification(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
+            applyPeerVerification(newContext, previousVerifyMode);
         }
 
         // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径重读而不是沿用旧字节；

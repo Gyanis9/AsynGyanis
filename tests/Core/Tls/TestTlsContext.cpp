@@ -1426,6 +1426,28 @@ namespace AsynGyanis::Core
         std::filesystem::remove(certificatePath, errorCode);
     }
 
+    /**
+     * @brief 钉住：客户端角色经 enableClientPeerVerification() 开出的对端校验，轮换后不能丢
+     */
+    TEST(TlsContext, ReloadCertificatePreservesClientPeerVerification)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("client_peer_verify_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        TlsContext context(TlsPolicy{}, TlsContext::Role::Client);
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+        context.enableClientPeerVerification();
+        ASSERT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0);
+
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EF0L));
+        ASSERT_TRUE(context.reloadCertificate());
+
+        EXPECT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0) << "客户端上下文轮换后丢失了对端证书校验";
+
+        std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
+    }
+
     // ============================================================================
     // 会话恢复（session tickets / 内部缓存）
     // ============================================================================
