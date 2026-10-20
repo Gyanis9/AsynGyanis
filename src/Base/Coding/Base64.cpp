@@ -37,12 +37,12 @@ namespace AsynGyanis::Base
         /// 一段编码末尾最多两个填充符
         constexpr std::size_t kMaximumBase64PaddingLength = 2;
 
-        /// 无填充写法的占位值：push_back 见到它就不写任何字符
+        /// 无填充写法的标记值：编码器拿它判断末组要不要补填充
         constexpr char kNoPadding = '\0';
 
         /**
          * @brief 按给定字母表编码，是否补填充由 paddingCharacter 决定
-         * @details 先按输出长度建好字符串，再按索引逐位写入，省去逐字符 push_back 的容量检查。
+         * @details 先按输出长度一次建好字符串，再按索引逐位写入，整趟编码只分配这一块缓冲。
          * @param bytes 待编码字节
          * @param alphabet 64 个字符的字母表
          * @param paddingCharacter 填充符，传 kNoPadding 表示末组不补
