@@ -136,6 +136,32 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 上下文键集合变化时按名字重建：消失的键摘掉，保留的键更新取值
+     * @details 复用上一行的键名缓冲之后，键的位置不再与上下文里的次序一一对应；新键集合必须
+     *          整体重建，旧集合里没再出现的键按集差摘除，否则会留下上一条的字段
+     */
+    TEST(JsonFormatterTest, RebuildsContextKeysWhenTheSetChanges)
+    {
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("上下文键集合变化");
+
+        {
+            const LogContextScope first({{"first", "1"}, {"shared", "s"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_EQ(textField(parsed, "first"), "1");
+            EXPECT_EQ(textField(parsed, "shared"), "s");
+        }
+
+        {
+            const LogContextScope second({{"second", "2"}, {"shared", "s2"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_FALSE(parsed.contains("first")) << "上一份上下文里消失的键仍留在 JSON 行里";
+            EXPECT_EQ(textField(parsed, "shared"), "s2");
+            EXPECT_EQ(textField(parsed, "second"), "2");
+        }
+    }
+
+    /**
      * @brief 根记录器没有名字：省略 logger 键，而不是写一个空串
      */
     TEST(JsonFormatterTest, OmitsLoggerKeyWhenLoggerNameIsEmpty)

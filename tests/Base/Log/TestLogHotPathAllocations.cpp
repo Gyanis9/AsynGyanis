@@ -572,4 +572,48 @@ namespace AsynGyanis::Base
         EXPECT_EQ(profile.totalAllocations, 0U) << "上下文转义又造了中间串：应直接续写进目标缓冲";
 #endif
     }
+
+    /**
+     * @brief 稳定上下文的 JSON 行不比无上下文的行多付堆
+     * @details 上下文键集合跨行不变时，键名缓冲与 JSON 节点都该复用：每行只为同名键更新取值，
+     *          既不重新生成键名字符串，也不把键摘掉再插回去。对照形状是同一条事件在没有上下文
+     *          时的读数，两者之差只应剩测量噪声；差出成百上千次说明仍在逐行删建。
+     */
+    TEST(LogHotPathAllocations, JsonContextFieldsReuseTheirSlots)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        JsonFormatter formatter;
+        std::string   out;
+        out.reserve(1024U);
+        const std::string threadId = "tid-json-context";
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadId, SourceLocation{}, std::string("json_context_logger"), std::string(kMessageText)};
+        const auto        formatOnce = [&formatter, &event, &out]
+        {
+            out.clear();
+            formatter.formatInto(out, event);
+            return static_cast<std::uint64_t>(out.size());
+        };
+        // 先跑一次把首行的一次性构造摘出去，测的是稳态
+        formatOnce();
+        resetAllocationHistogram();
+        const AllocationProfile withoutContext = measurePerOperation(formatOnce);
+
+        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}});
+        formatOnce();
+        // 自检：先证明上下文确实落进了这一行，否则下面的读数量的不是带上下文的形状
+        EXPECT_NE(out.find("trace_id"), std::string::npos) << "上下文没落进日志行，读数对应的形状不对";
+        resetAllocationHistogram();
+        const AllocationProfile withContext = measurePerOperation(formatOnce);
+
+        std::printf("json-context per-op=%llu total=%llu bytes=%llu (without-context total=%llu bytes=%llu)\n",
+                    static_cast<unsigned long long>(withContext.allocationsPerOperation), static_cast<unsigned long long>(withContext.totalAllocations),
+                    static_cast<unsigned long long>(withContext.totalBytes), static_cast<unsigned long long>(withoutContext.totalAllocations),
+                    static_cast<unsigned long long>(withoutContext.totalBytes));
+
+        EXPECT_GT(withContext.resultSum, withoutContext.resultSum) << "带上下文的行没有变长：上下文没写进去，两条读数不是同一形状的对照";
+#ifdef NDEBUG
+        EXPECT_LE(withContext.totalAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U)
+                << "稳定上下文的 JSON 行仍在逐行删建键节点：键名缓冲与键集合应跨行复用";
+#endif
+    }
 } // namespace AsynGyanis::Base

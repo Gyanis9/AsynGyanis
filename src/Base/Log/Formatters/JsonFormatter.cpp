@@ -36,17 +36,6 @@ namespace AsynGyanis::Base
         }
 
         /**
-         * @brief 上一条日志从上下文带进来的键名
-         * @details 复用对象不会自己忘掉键：不按这份清单摘除，没有上下文的下一条日志会带着
-         *          上一条的 trace_id，看起来像「链路串了」
-         */
-        std::vector<std::string> &reusableContextKeys()
-        {
-            static thread_local std::vector<std::string> keys;
-            return keys;
-        }
-
-        /**
          * @brief 是否为日志骨架自己的键（上下文撞名时要加前缀，不能覆盖它们）
          * @param key 待判定的键名
          * @return true 表示撞上了框架字段
@@ -56,25 +45,6 @@ namespace AsynGyanis::Base
             static constexpr std::array<std::string_view, 10> kReservedFields{"timestamp",  "level", "logger", "thread",   "message",
                                                                               "stackTrace", "file",  "line",   "function", "context"};
             return std::ranges::find(kReservedFields, key) != kReservedFields.end();
-        }
-
-        /**
-         * @brief 为一个上下文键生成不与框架字段、先前上下文键重名的名字
-         * @details 撞上任何一边都继续加 ctx. 前缀。只按保留字判一次不够：上下文里同时有
-         *          message 与 ctx.message 时，前者的前缀结果正好是后者，两条会落到同一个
-         *          JSON 键上，先写入的那条被后写入的覆盖。
-         * @param key 上下文里的原始键名
-         * @param alreadyUsed 本条日志已分配的上下文键名
-         * @return std::string 可安全写入的键名
-         */
-        [[nodiscard]] std::string makeContextFieldName(const std::string_view key, const std::vector<std::string> &alreadyUsed)
-        {
-            std::string name{key};
-            while (isReservedLogField(name) || std::ranges::find(alreadyUsed, name) != alreadyUsed.end())
-            {
-                name.insert(0, "ctx.");
-            }
-            return name;
         }
 
         /**
@@ -95,6 +65,50 @@ namespace AsynGyanis::Base
                 return;
             }
             slot = value;
+        }
+
+        /**
+         * @brief 上下文键名的跨行复用缓冲
+         * @details previous 记录上一行写进 JSON 对象的键名，next 是为这一行重建的键名。
+         *          两个向量互换而不清空：清空会销毁串、丢掉容量，下一行又要为每个键重新取堆。
+         *          字符串按位置赋值复用缓冲；键数变少时多余的元素随 resize 销毁，向量容量仍留给后面的行。
+         *          复用对象不会自己忘掉键：previous 与 next 的集差就是本行要摘掉的旧键，
+         *          否则没有上下文的下一条日志会带着上一条的 trace_id，看起来像「链路串了」。
+         */
+        struct ContextKeyScratch
+        {
+            std::vector<std::string> previous; ///< 上一行写进对象的上下文键名
+            std::vector<std::string> next;     ///< 本行要写入的上下文键名，字符串缓冲跨行复用
+        };
+
+        /**
+         * @brief 取本线程的上下文键名缓冲
+         * @return ContextKeyScratch& 线程局域的两份键名表
+         */
+        ContextKeyScratch &contextKeyScratch()
+        {
+            static thread_local ContextKeyScratch scratch;
+            return scratch;
+        }
+
+        /**
+         * @brief 把键名写进复用缓冲，必要时继续加前缀
+         * @details 先按原始键名赋值，容量够时原地改写；对保留字与本次已分配的名字反复加
+         *          ctx. 前缀。只看一次保留字不够：上下文里同时有 message 与 ctx.message 时，
+         *          前者的前缀结果正好是后者，两条会落到同一个 JSON 键上。
+         * @param fieldName 复用的键名缓冲
+         * @param key 上下文里的原始键名
+         * @param usedNames 本行已分配的键名表
+         * @param usedCount usedNames 里有效的个数（只有前这么多个是本行已经分配的）
+         */
+        void assignContextFieldName(std::string &fieldName, const std::string_view key, const std::vector<std::string> &usedNames, const std::size_t usedCount)
+        {
+            fieldName.assign(key);
+            const auto usedEnd = usedNames.begin() + static_cast<std::ptrdiff_t>(usedCount);
+            while (isReservedLogField(fieldName) || std::find(usedNames.begin(), usedEnd, fieldName) != usedEnd)
+            {
+                fieldName.insert(0, "ctx.");
+            }
         }
 
         /**
@@ -163,15 +177,11 @@ namespace AsynGyanis::Base
             // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
 
-            // 上下文：顶层键，与原有字段并列。先摘掉上一条的上下文键再写本条的；
-            // 撞上框架字段或已分配的上下文键时都加 `ctx.` 前缀，上下文既不能改写日志骨架，
-            // 也不能因为加前缀与另一条上下文落到同一个 JSON 键上
-            std::vector<std::string> &contextKeys = reusableContextKeys();
-            for (const std::string &key: contextKeys)
-            {
-                removeField(fields, key.c_str());
-            }
-            contextKeys.clear();
+            // 上下文：顶层键，与原有字段并列。键名按名字重建、同名键只更新取值；
+            // 上一行有而本行没有的键才摘除。撞上框架字段或已分配的上下文键都继续加 `ctx.` 前缀，
+            // 上下文既不能改写日志骨架，也不能因为加前缀与另一条上下文落到同一个 JSON 键上
+            ContextKeyScratch &scratch      = contextKeyScratch();
+            std::size_t        currentCount = 0U;
 
             // 优先读事件自带的快照：异步 Sink 的工作线程上 TLS 是空的，读它会丢掉日志点的上下文
             const LogContextPtr &context = event.context ? event.context : currentLogContext();
@@ -179,11 +189,28 @@ namespace AsynGyanis::Base
             {
                 for (const auto &[key, value]: context->fields())
                 {
-                    std::string fieldName = makeContextFieldName(key, contextKeys);
+                    if (currentCount == scratch.next.size())
+                    {
+                        scratch.next.emplace_back();
+                    }
+                    std::string &fieldName = scratch.next[currentCount];
+                    assignContextFieldName(fieldName, key, scratch.next, currentCount);
                     assignField(fields, fieldName.c_str(), value);
-                    contextKeys.push_back(std::move(fieldName));
+                    ++currentCount;
                 }
             }
+
+            // 旧键按集差摘除：键集合没变时这里一次 erase 都不做，JSON 节点原地保留
+            const auto nextEnd = scratch.next.begin() + static_cast<std::ptrdiff_t>(currentCount);
+            for (const std::string &staleKey: scratch.previous)
+            {
+                if (std::find(scratch.next.begin(), nextEnd, staleKey) == nextEnd)
+                {
+                    removeField(fields, staleKey.c_str());
+                }
+            }
+            scratch.next.resize(currentCount);
+            scratch.previous.swap(scratch.next);
             return fields;
         }
 
