@@ -12,6 +12,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <new>
 #include <utility>
 
@@ -50,6 +51,13 @@ namespace AsynGyanis::Core
             throw Base::SystemException("io_uring_setup 失败（内核可能不支持 io_uring 或被禁用）");
         }
         m_ringFileDescriptor = static_cast<int>(ringFileDescriptor);
+
+        // ring 描述符不能随 fork+exec 进入子进程：worker 拿到它就能向父循环的环提交或取消请求
+        if (::fcntl(m_ringFileDescriptor, F_SETFD, FD_CLOEXEC) != 0)
+        {
+            destroy();
+            throw Base::SystemException("io_uring 环形描述符无法设置 FD_CLOEXEC（子进程会继承这条环）");
+        }
 
         const std::size_t submissionRingSize = parameters.sq_off.array + parameters.sq_entries * sizeof(unsigned);
         const std::size_t completionRingSize = parameters.cq_off.cqes + parameters.cq_entries * sizeof(io_uring_cqe);
@@ -427,7 +435,11 @@ namespace AsynGyanis::Core
         // 上一次等待遗留的超时还挂着：先撤掉，否则它会在本次等待中途提前唤醒
         if (m_timeoutTicket != 0)
         {
-            submitTimeoutRemove(m_timeoutTicket);
+            // 撤不掉就不能假装它没了：旧 TIMEOUT 仍会在核内到点，提前叫醒本次等待
+            if (!submitTimeoutRemove(m_timeoutTicket))
+            {
+                return false;
+            }
             m_timeoutTicket = 0;
         }
 
