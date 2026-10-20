@@ -185,11 +185,11 @@ namespace AsynGyanis::Database::Detail
 
             // 年份按「至少四位数字」补零，负号单独占一位：{:04} 会把 -44 排成 "-044"（三位数字），
             // 而解析那一侧要求四位以上——两边不吻合，同一年份渲染出去就认不回来
-            const int         civilYear           = static_cast<int>(calendarDay.year());
-            const bool        isNegativeCivilYear = civilYear < 0;
-            const std::string yearText            = std::format("{}{:04}", isNegativeCivilYear ? "-" : "", isNegativeCivilYear ? -civilYear : civilYear);
-            return std::format("{}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}{}", yearText, static_cast<unsigned>(calendarDay.month()), static_cast<unsigned>(calendarDay.day()),
-                               separator, hourPart, minutePart, secondPart, microsecondPart, suffix);
+            const int  civilYear           = static_cast<int>(calendarDay.year());
+            const bool isNegativeCivilYear = civilYear < 0;
+            return std::format("{}{:04}-{:02}-{:02}{}{:02}:{:02}:{:02}.{:06}{}", isNegativeCivilYear ? "-" : "", isNegativeCivilYear ? -civilYear : civilYear,
+                               static_cast<unsigned>(calendarDay.month()), static_cast<unsigned>(calendarDay.day()), separator, hourPart, minutePart, secondPart, microsecondPart,
+                               suffix);
         }
 
         /**
