@@ -21,6 +21,10 @@
 #include <thread>
 #include <vector>
 
+#if !ASYN_PLATFORM_WIN32
+#include <sys/ioctl.h>
+#endif
+
 namespace AsynGyanis::Platform
 {
     namespace
@@ -366,7 +370,16 @@ namespace AsynGyanis::Platform
         // 读者先跑起来：此时只有半个头，它一定卡在补头上等剩下的字节，而不必赌内核不把两段合并
         int          receivedDescriptor = -1;
         std::jthread reader([&channelReader, &receivedDescriptor]() { receivedDescriptor = Socket::readListeningSocketHandoff(channelReader); });
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        // 等读者把首段读走：FIONREAD 归零说明它已经进入补头等待，这条用例才真的覆盖了补头路径
+        const bool firstChunkConsumed = TestSupport::waitForCondition(
+                [&channelReader]()
+                {
+                    int pendingBytes = 0;
+                    return ::ioctl(channelReader, FIONREAD, &pendingBytes) == 0 && pendingBytes == 0;
+                },
+                3000);
+        ASSERT_TRUE(firstChunkConsumed) << "读者还没把第一段读走，这条用例没有走到补头路径";
 
         const char *remaining = reinterpret_cast<const char *>(&header) + sizeof(std::uint32_t);
         ASSERT_EQ(::send(channelWriter, remaining, static_cast<int>(sizeof(header) - sizeof(std::uint32_t)), 0), static_cast<ssize_t>(sizeof(header) - sizeof(std::uint32_t)));
