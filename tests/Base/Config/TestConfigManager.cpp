@@ -1724,6 +1724,16 @@ port: 9090
 
         std::string mutableFallback = "a-mutable-fallback-long-enough-to-leave-sso";
         EXPECT_EQ(configuration().get("name", mutableFallback), "test");
+
+        // 编译期钉住三组字符串默认值的按值返回：decltype 不求值，configuration() 不必是 constexpr
+        static_assert(std::is_same_v<decltype(configuration().get("name", "fallback")), std::string>);
+        static_assert(std::is_same_v<decltype(configuration().get("name", fallback)), std::string>);
+        static_assert(std::is_same_v<decltype(configuration().get("name", mutableFallback)), std::string>);
+
+        // 指针变量走 const char* 重载：若落到转发引用模板，T 推导成指针引用会触发 static_assert
+        const char *pointerFallback = "pointer-fallback";
+        static_assert(std::is_same_v<decltype(configuration().get("name", pointerFallback)), std::string>);
+        EXPECT_EQ(configuration().get("name", pointerFallback), "test");
     }
 
     TEST_F(ConfigManagerTest, GetWithDefaultFallsBackOnTypeMismatch)

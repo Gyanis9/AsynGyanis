@@ -247,6 +247,7 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(smallProfile.resultSum, kMeasurementIterations);
         EXPECT_EQ(wideProfile.resultSum, kMeasurementIterations);
+        EXPECT_GT(smallProfile.totalAllocations, 0U) << "异常路径的分配没被探针看见，下面的字节对比可能是 0 对 0";
 #ifdef NDEBUG
         EXPECT_LE(wideProfile.totalBytes, smallProfile.totalBytes + 64U * kMeasurementIterations) << "类型判定之前把整棵配置子树拷了出来：严格取值应直接查快照";
 #endif

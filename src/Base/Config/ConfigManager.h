@@ -205,7 +205,7 @@ namespace AsynGyanis::Base
          * @details 模板重载会把字面量推导成数组引用，decay 后是不受支持的 const char*，
          *          配置值会被整条忽略；本重载把它固定成 std::string 通道。
          * @param key 配置键
-         * @param defaultValue 默认文本，nullptr 按空串处理
+         * @param defaultValue 默认文本，空的 const char* 指针按空串处理
          * @return std::string 配置文本或默认文本
          */
         [[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
