@@ -628,7 +628,17 @@ namespace AsynGyanis::Database
 
     SqlStatement StandardSqlDialect::translateUpdate(const Queryable::QueryNode &query, const std::span<const DatabaseValue> values) const
     {
-        requireMatchingColumnCount(query, values.size());
+        // 更新方向允许「没有普通赋值、只有自增列」：主键 + 版本列的表靠版本列自增加一完成写入。
+        // INSERT 方向不允许空列清单，那条判据仍由 requireMatchingColumnCount 负责
+        if (query.selectColumns.empty() && query.incrementColumns.empty())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
+        }
+        if (values.size() != query.selectColumns.size())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(values.size()) + "）与待写列数（" +
+                                                 std::to_string(query.selectColumns.size()) + "）不一致，无法生成写语句（表 " + query.tableName + "）");
+        }
 
         SqlStatement                statement;
         std::string                &sqlText    = statement.sql;

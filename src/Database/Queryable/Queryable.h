@@ -2795,13 +2795,21 @@ namespace AsynGyanis::Database::Queryable
             // 悄悄失去保护，加一也由服务端在一次语句里做完
             if (!versionColumnName.empty() && columnDescriptor.columnName == versionColumnName)
             {
-                const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);
-                versionCondition                 = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
-                                                                  .op    = SqlOperator::Eq,
-                                                                  .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
-                versionExpectationText           = describeValueForConflictMessage(versionValue);
-                incrementColumns.emplace_back(columnDescriptor.columnName);
-                return;
+                using VersionMemberType = std::remove_cvref_t<decltype(row.*(columnDescriptor.memberPointer))>;
+                if constexpr (!std::is_integral_v<VersionMemberType>)
+                {
+                    throw Base::LogicException("Queryable: TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 的 kVersionColumn（" + std::string(versionColumnName) +
+                                               "）必须声明成整数列——UPDATE 由服务端对它自增加一，非整数列无法表达版本");
+                } else
+                {
+                    const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);
+                    versionCondition                 = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
+                                                                      .op    = SqlOperator::Eq,
+                                                                      .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
+                    versionExpectationText           = describeValueForConflictMessage(versionValue);
+                    incrementColumns.emplace_back(columnDescriptor.columnName);
+                    return;
+                }
             }
 
             assignmentColumns.emplace_back(columnDescriptor.columnName);
