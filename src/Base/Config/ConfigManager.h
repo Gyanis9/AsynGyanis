@@ -404,13 +404,12 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string environmentOverridePrefix() const;
 
         /**
-         * @brief 最近一次配置提交时合入、且当时仍留在快照里的环境变量覆盖条目数。
-         * @details 计的是合入后仍留在快照里的应用条目，不是互异的键：折成同一键的多个变量
-         *          各算一条；后写的一条也可能把先写的那条淘汰出快照。合入前的应用条数才是
-         *          「做过几次覆盖」，本读数只数那次提交后还留着的那些。
-         * @note 之后的 setValue 不会重算本读数：一次写入若按定形规则淘汰了某个覆盖键，
-         *       读数仍停留在提交时的值，可能高于当时快照里实际留存的覆盖条目。
-         * @return std::size_t 最近一次提交时仍留在快照里的应用条目数；折成同一键的多个变量各算一条
+         * @brief 当前快照里仍来自环境变量覆盖的条目数。
+         * @details 计数按覆盖键集合维护：提交时只留下合入后仍在快照里的键，折成同一键的多个
+         *          变量各算一条；之后的 setValue 若改写同一个键，或按定形规则淘汰某个覆盖键，
+         *          会把该键移出集合并重算本读数。
+         * @return std::size_t 当前快照里的覆盖条目数；0 表示通道关着、没有命中，或覆盖键都被
+         *         后续写入改写/淘汰
          */
         [[nodiscard]] std::size_t environmentOverrideCount() const;
 
@@ -449,7 +448,7 @@ namespace AsynGyanis::Base
             std::filesystem::path    configDirectory;                 ///< 配置目录的路径
             bool                     configDirectoryRecursive = true; ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
 
-            std::size_t environmentOverrideCount = 0; ///< 合入后键仍留在快照里的环境变量覆盖条目数（折成同一键的变量各算一条；0 表示通道关着或没有命中）
+            std::size_t environmentOverrideCount = 0; ///< 合入后仍在快照里的环境变量覆盖条目数（折成同一键的变量各算一条；setValue 改写或淘汰覆盖键时同步重算）
             /// 本快照里来自环境变量覆盖的键；setValue 覆盖或淘汰这些键时据此重算计数
             std::vector<std::string> environmentOverrideKeys;
         };

@@ -243,7 +243,8 @@ namespace AsynGyanis::Base
             {
                 // 失败行已经写进复用对象的键必须摘掉：previous 仍是上一行的集合，
                 // 不摘就会在下一条无上下文日志里留下这一行的幽灵字段。抛错的键可能
-                // 只写了一半，也一并尝试摘除；erase 不分配，兜底本身不会再抛
+                // 只写了一半，也一并尝试摘除；若该槽位还留着上一行的名字，多摘一次是
+                // 自愈的——下一条会重建框架字段与本行上下文。erase 不分配，兜底不会再抛
                 const std::size_t writtenCount = currentCount < scratch.next.size() ? currentCount + 1U : currentCount;
                 const auto        writtenEnd   = scratch.next.begin() + static_cast<std::ptrdiff_t>(writtenCount);
                 for (auto iterator = scratch.next.begin(); iterator != writtenEnd; ++iterator)
