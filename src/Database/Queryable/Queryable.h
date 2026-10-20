@@ -47,6 +47,7 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1663,7 +1664,8 @@ namespace AsynGyanis::Database::Queryable
             std::vector<RelatedRow> related   = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, targetKey, keys);
 
             // 索引：对端的主键值 → 在结果里的位置（拷 RelatedRow 不便宜，命中的行按引用取一次）
-            std::map<std::string, std::size_t> index;
+            std::unordered_map<std::string, std::size_t> index;
+            index.reserve(related.size());
             for (std::size_t position = 0; position < related.size(); ++position)
             {
                 if (const std::optional<DatabaseValue> key = readColumnValue(related[position], targetKey); key.has_value())
@@ -1719,7 +1721,8 @@ namespace AsynGyanis::Database::Queryable
 
             std::vector<RelatedRow> children = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, relation.foreignKeyColumn, keys);
 
-            std::map<std::string, std::vector<RelatedRow>> groups;
+            std::unordered_map<std::string, std::vector<RelatedRow>> groups;
+            groups.reserve(keys.size());
             for (RelatedRow &child: children)
             {
                 if (const std::optional<DatabaseValue> key = readColumnValue(child, relation.foreignKeyColumn); key.has_value())
@@ -2250,8 +2253,9 @@ namespace AsynGyanis::Database::Queryable
          */
         static void foldIncludedParentRows(std::vector<T> &rows, const std::span<const IncludeProcessor> includes)
         {
-            std::map<std::string, std::size_t> firstSeenAt;
-            std::size_t                        keptRows = 0;
+            std::unordered_map<std::string, std::size_t> firstSeenAt;
+            firstSeenAt.reserve(rows.size());
+            std::size_t keptRows = 0;
             for (std::size_t index = 0; index < rows.size(); ++index)
             {
                 const std::optional<DatabaseValue> key = readColumnValue(rows[index], TableSchema<T>::kPrimaryKey);
