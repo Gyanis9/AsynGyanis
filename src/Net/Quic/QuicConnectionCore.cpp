@@ -459,10 +459,18 @@ namespace AsynGyanis::Net
         }
         if (m_peerPaths.size() >= kMaximumTrackedPeerPaths)
         {
-            // 表满：淘汰最老的一条「没在用」的——未验证、且不是当前发送路径（正在验证的候选就是当前
-            // 发送路径，所以只保护它这一条就够）。全是在用的就返回空，调用方跳过这次记账：宁可
-            // 少记一条账，也不能把在用的那条挤掉
-            const auto evictable = std::ranges::find_if(m_peerPaths, [this](const PeerPathState &state) { return !state.isValidated && state.key != m_sendPathKey; });
+            // 表满：淘汰最老的一条「没在用」的——已验证的、当前发送路径、以及压着候选挑战的验证候选
+            // 都还在用（验证期间发包目标留在旧路，候选路径因此不再等于当前发送路径，要单独保护）。
+            // 全是在用的就返回空，调用方跳过这次记账：宁可少记一条账，也不能把在用的那条挤掉
+            const auto isInUse = [this](const PeerPathState &state)
+            {
+                if (state.isValidated || state.key == m_sendPathKey)
+                {
+                    return true;
+                }
+                return std::ranges::any_of(m_pendingPathChallenges, [&](const PendingPathChallenge &challenge) { return challenge.isCandidate && challenge.key == state.key; });
+            };
+            const auto evictable = std::ranges::find_if(m_peerPaths, [&](const PeerPathState &state) { return !isInUse(state); });
             if (evictable == m_peerPaths.end())
             {
                 return nullptr;
@@ -500,12 +508,17 @@ namespace AsynGyanis::Net
         }
 
         const QuicPathKey previousPathKey = m_sendPathKey;
-        m_sendPathKey                     = pathKey;
-        // §9.3：换过非探测包的目标地址之后，其它地址上的验证可以放弃
-        static_cast<void>(std::erase_if(m_pendingPathChallenges, [](const PendingPathChallenge &challenge) { return challenge.isCandidate; }));
-        if (const PeerPathState *const newPathState = findPathState(pathKey); newPathState == nullptr || !newPathState->isValidated)
+        if (const PeerPathState *const newPathState = findPathState(pathKey); newPathState != nullptr && newPathState->isValidated)
         {
-            armPathChallenge(pathKey, true, now); // §9.3 的 MUST：换了地址就要验；只有验证过的地址才允许跳过（§9.3 的 MAY）
+            // 这条地址以前验过，§9.3 的 MAY 允许跳过重验：立刻切过去，候选验证都用不上了
+            m_sendPathKey      = pathKey;
+            m_validatedPathKey = pathKey;
+            static_cast<void>(std::erase_if(m_pendingPathChallenges, [](const PendingPathChallenge &challenge) { return challenge.isCandidate; }));
+        } else if (std::ranges::none_of(m_pendingPathChallenges, [&](const PendingPathChallenge &challenge) { return challenge.key == pathKey && challenge.isCandidate; }))
+        {
+            // §9.3 的 MUST：验证完成之前不许向新地址发非探测帧。发包目标因此留在旧路，ACK、DATA 这些
+            // 都还走旧路；同一条路径已有候选挑战时不再重武装，否则每来一个包就重置一次挑战数据与计时
+            armPathChallenge(pathKey, true, now);
         }
         // §9.3.3：疑似迁移时必须在原来那条活动路径上也验一次——那条挑战会把对端的真实流量引回来，
         // 离路劫持的包走得比真包快也照样会被拽回去
@@ -561,7 +574,8 @@ namespace AsynGyanis::Net
             m_outboundDatagrams.clear();
             return;
         }
-        // §9.3.2：退回上一个已验证地址。对端若真搬了家，它会从新地址再说话、再触发一轮跟随与验证
+        // §9.3.2：退回上一个已验证地址。验证期间发包目标一直留在旧路，这一步此刻是幂等的；保留它
+        // 作为放弃路径的统一出口。对端若真搬了家，它会从新地址再说话、再触发一轮跟随与验证
         m_sendPathKey = m_validatedPathKey;
     }
 
@@ -717,7 +731,10 @@ namespace AsynGyanis::Net
         m_pendingPathChallenges.erase(pending);
         if (matched.isCandidate)
         {
+            // 先确认——含 §9.4 的拥塞与 RTT 重置、以及 §8.2.3 末段的补验——再切发包目标：验证完成
+            // 之前 ACK、DATA 一直留在旧路，这里是唯一允许开始向新地址发非探测帧的时刻（§9.3 的 MUST）
             confirmPeerPathValidated(matched.key, matched.wasExpanded, now);
+            m_sendPathKey = matched.key;
         }
         // 非候选（旧路径复验 / MTU 复验）对上了什么都不做：那条路径本来就是已验证的
     }

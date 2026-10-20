@@ -3749,7 +3749,8 @@ namespace AsynGyanis::Net
     }
 
     /**
-     * @brief §9.3：只跟「编号最高的非探测包」换地址；§9.3.3：换的时候要在原来那条路上复验
+     * @brief §9.3：只跟「编号最高的非探测包」换地址，且验证完成前发包目标留在旧路；
+     *        §9.3.3：换的时候要在原来那条路上复验
      */
     TEST(QuicConnectionCore, FollowsANewPathOnlyForAHigherNumberedNonProbingPacket)
     {
@@ -3779,7 +3780,7 @@ namespace AsynGyanis::Net
             ASSERT_EQ(client.serverPathResponses().size(), 1U);
         }
 
-        // ② 非探测包来了：换过去、在新路拿挑战、并在旧路复验（§9.3.3）
+        // ② 非探测包来了：先在新路拿挑战、在旧路复验（§9.3.3）；验证完成之前发包目标留在旧路
         std::string pingFrames;
         appendQuicFrame(pingFrames, QuicFrame{QuicPingFrame{}});
         const std::vector<std::uint8_t> lateOldPathPacket = client.buildDatagramWith(QuicEncryptionLevel::Application, pingFrames); // 先编出来压着，包号更低
@@ -3795,7 +3796,17 @@ namespace AsynGyanis::Net
         EXPECT_EQ(followFlight[0].pathKey, newPathKey);
         EXPECT_LT(followFlight[0].bytes.size(), kSmallestAllowedMaximumDatagramByteLength) << "三倍额度只有小报文那么多，挑战不该硬扩到 1200（§8.2.1 的例外分支）";
         EXPECT_TRUE(isUnspecifiedQuicPathKey(followFlight[1].pathKey)) << "§9.3.3：疑似迁移时必须在原来那条活动路径上也验一次";
-        EXPECT_EQ(followFlight[2].pathKey, newPathKey) << "换地址之后确认也要打到新地址上（§9.3 的 MUST）";
+        EXPECT_TRUE(isUnspecifiedQuicPathKey(followFlight[2].pathKey)) << "验证完成之前确认也要留在旧路：ACK 同样是非探测帧，不许先发到未验证的新地址（§9.3 的 MUST）";
+
+        // ②b 拿候选挑战在新路回一条 PATH_RESPONSE：到这一刻才算验证完成，发包目标才切到新路
+        std::string responseFrames;
+        appendQuicFrame(responseFrames, QuicFrame{QuicPathResponseFrame{.data = client.serverPathChallenges().front()}});
+        feedOnPath(core, client.buildDatagramWith(QuicEncryptionLevel::Application, responseFrames), Timestamp{145000}, newPathKey);
+        for (const QuicOutboundDatagram &datagram: drainMarked(core))
+        {
+            consumeOutbound(client, datagram);
+        }
+        ASSERT_EQ(client.serverPathChallenges().size(), 3U) << "第一轮挑战没扩到 1200，验证通过后要按 §8.2.3 末段补一轮扩充的";
 
         // ③ 把压着的那条更旧的非探测包从原路径送进来：发包目标不能被它拽回去（§9.3 只认编号最高的那条）
         feedOnPath(core, lateOldPathPacket, Timestamp{150000}, QuicPathKey{});
@@ -3804,7 +3815,7 @@ namespace AsynGyanis::Net
         {
             consumeOutbound(client, datagram);
         }
-        EXPECT_EQ(client.serverPathChallenges().size(), 2U) << "一条乱序的旧包又触发了一轮验证：地址被它拽走了（§9.3）";
+        EXPECT_EQ(client.serverPathChallenges().size(), 3U) << "一条乱序的旧包又触发了一轮验证：地址被它拽走了（§9.3）";
         ASSERT_FALSE(lateOutbound.empty());
         EXPECT_TRUE(std::ranges::all_of(lateOutbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; })) << "更旧的包不该把发包目标拽回旧地址";
         EXPECT_FALSE(client.serverCloseErrorCode().has_value());
@@ -3995,14 +4006,16 @@ namespace AsynGyanis::Net
         ASSERT_EQ(client.serverPathChallenges().size(), 2U) << "换地址之后要验新路（§9.3），同时按 §9.3.3 复验原来那条活动路径";
         const Timestamp challengeSentTime = arrival + kServerSendLatency;
 
-        // 只带探测帧的报文：回显要走它来的那条路，而确认走的是本端当前发包目标——两处一对比就看出退没退。
-        // 两次探测各编一份（同一份交两遍会被包号去重挡下，那样什么也验不到）
+        // 只带探测帧的报文：回显要走它来的那条路；确认走本端当前发包目标，而验证未完成时它仍留在
+        // 旧路（§9.3 的 MUST）。两次探测各编一份（同一份交两遍会被包号去重挡下，那样什么也验不到）
         std::string probeFrames;
         appendQuicFrame(probeFrames, QuicFrame{QuicPathChallengeFrame{.data = {5, 5, 5, 5, 6, 6, 6, 6}}});
         const std::vector<std::uint8_t> firstProbingDatagram  = client.buildDatagramWith(QuicEncryptionLevel::Application, probeFrames);
         const std::vector<std::uint8_t> secondProbingDatagram = client.buildDatagramWith(QuicEncryptionLevel::Application, probeFrames);
 
-        // 未到 §8.2.4 的期限（3×max(当前 PTO, 按 kInitialRtt 的 PTO) ≈ 3.07 秒）：验证照旧，发包目标还在新地址
+        // 未到 §8.2.4 的期限（3×max(当前 PTO, 按 kInitialRtt 的 PTO) ≈ 3.07 秒）：验证照旧。
+        // 只带探测帧的报文换回的回显走新路，ACK 等非探测帧仍走旧路——验证完成之前不许向新地址
+        // 发非探测帧（§9.3 的 MUST）
         core.onTimeout(challengeSentTime + std::chrono::milliseconds{2900});
         feedOnPath(core, firstProbingDatagram, Timestamp{3000000}, newPathKey);
         {
@@ -4012,8 +4025,10 @@ namespace AsynGyanis::Net
                 consumeOutbound(client, datagram);
             }
             ASSERT_FALSE(outbound.empty());
-            EXPECT_TRUE(std::ranges::all_of(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; }))
-                    << "期限没到就把验证放弃了（§8.2.4 的时限是给「多条 PTO 之内丢一两帧」留的余地）";
+            EXPECT_TRUE(std::ranges::any_of(outbound, [&](const QuicOutboundDatagram &datagram) { return datagram.pathKey == newPathKey; }))
+                    << "回显仍要打在挑战来的那条路径上（§8.2.2）";
+            EXPECT_TRUE(std::ranges::any_of(outbound, [&](const QuicOutboundDatagram &datagram) { return isUnspecifiedQuicPathKey(datagram.pathKey); }))
+                    << "验证完成之前确认不能发到未验证的新地址上（§9.3 的 MUST）";
         }
 
         // 越过期限：放弃并退回上一个已验证地址（§8.2.4 → §9.3.2）
