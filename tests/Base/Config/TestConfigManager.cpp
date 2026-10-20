@@ -1157,24 +1157,44 @@ port: 9090
         EXPECT_EQ(configuration().getOptional("textEmptyQuoted")->get<std::string>(), "");
     }
 
+    /**
+     * @brief 普通标量按核心 schema 判定数值：前导零、前导点、尾随点与带符号指数都合法
+     * @details YAML 1.2.2 §10.3.2：十进制整数是 [-+]? [0-9]+，007 落整数 7；浮点接受 007.5、
+     *          .5、1. 与 1e+5；连续符号（+-1）不是任何核心 schema 数值，保留为字符串。
+     *          显式 !!int/!!float 走同一判定。
+     */
     TEST_F(ConfigManagerTest, YamlCoreSchemaSignedExponentAndLeadingZeroes)
     {
         writeFile("numbers.yaml", "with_plus: 1e+5\n"
                                   "with_plus_upper: 1.5E+10\n"
                                   "leading_zero: 007\n"
+                                  "leading_zero_float: 007.5\n"
+                                  "leading_dot: .5\n"
+                                  "trailing_dot: 1.\n"
                                   "double_sign: +-1\n"
                                   "plain_zero: 0\n"
                                   "negative_zero: -0\n"
-                                  "hex: 0x10\n");
+                                  "hex: 0x10\n"
+                                  "octal: 0o10\n"
+                                  "tagged_int: !!int 007\n"
+                                  "tagged_float: !!float 007\n"
+                                  "tagged_exp: !!float 1e+5\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus", 0.0), 100000.0);
-        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus_upper", 0.0), 15000000000.0);
-        EXPECT_EQ(configuration().getString("leading_zero"), "007") << "YAML 1.2 核心 schema 不允许十进制前导零";
+        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus_upper", 0.0), 1.5e10);
+        EXPECT_EQ(configuration().getInt("leading_zero", -1), 7);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("leading_zero_float", 0.0), 7.5);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("leading_dot", 0.0), 0.5);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("trailing_dot", 0.0), 1.0);
         EXPECT_EQ(configuration().getString("double_sign"), "+-1") << "核心 schema 的浮点只有一个可选符号";
         EXPECT_EQ(configuration().getInt("plain_zero", -1), 0);
         EXPECT_EQ(configuration().getInt("negative_zero", -1), 0);
         EXPECT_EQ(configuration().getInt("hex", -1), 16);
+        EXPECT_EQ(configuration().getInt("octal", -1), 8);
+        EXPECT_EQ(configuration().getInt("tagged_int", -1), 7);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("tagged_float", 0.0), 7.0);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("tagged_exp", 0.0), 100000.0);
     }
 
     TEST_F(ConfigManagerTest, LoadFromDirectoryScalesToHundredsOfKeys)

@@ -799,7 +799,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 按核心 schema 识别整数文本（十进制、0o 八进制、0x 十六进制，可带正负号）
          * @details 非负整数与 JSON 侧口径一致地落无符号数（原生解析把非负整数放进 number_unsigned）。
-         *          十进制只允许 0 或 [1-9][0-9]*，前导零不是整数文本；八进制与十六进制不受此限。
+         *          YAML 1.2.2 §10.3.2 的十进制整数是 [-+]? [0-9]+，前导零与一个正负号都允许；
+         *          八进制是 0o[0-7]+，十六进制是 0x[0-9a-fA-F]+。
          * @param text 标量文本
          * @param node 所在节点，用于错误位置
          * @return std::optional<ConfigValue> 不是整数文本时返回空
@@ -826,12 +827,6 @@ namespace AsynGyanis::Base
                 position += 2;
             }
             if (position >= text.size())
-            {
-                return std::nullopt;
-            }
-
-            // YAML 1.2 核心 schema 的十进制整数是 0 或 [1-9][0-9]*，前导零不是整数
-            if (base == 10 && position + 1U < text.size() && text[position] == '0')
             {
                 return std::nullopt;
             }
@@ -881,8 +876,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按核心 schema 识别浮点文本
-         * @details 接受十进制小数/指数形式与 .inf/.nan 系列，指数部分可带正负号；
-         *          整数部分与整数文本同一口径，只允许 0 或 [1-9][0-9]*，前导零不算浮点。
+         * @details YAML 1.2.2 §10.3.2 的浮点是
+         *          [-+]? ( \. [0-9]+ | [0-9]+ ( \. [0-9]* )? ) ( [eE] [-+]? [0-9]+ )?：
+         *          前导点（.5）、尾随点（1.）、整数部分的前导零（007.5）与带符号指数都合法，
+         *          整个数也允许一个前导 '+'。另接受 .inf/.nan 系列。
          *          裸 inf/nan 按 schema 属字符串，而库的解析会接受它们，因此先按字符集挡掉再做严格的全串解析。
          * @param text 标量文本
          * @return std::optional<double> 不是浮点文本时返回空
@@ -914,12 +911,6 @@ namespace AsynGyanis::Base
                 return std::numeric_limits<double>::quiet_NaN();
             }
 
-            // 整数部分同样不允许前导零：007 这类文本从整数判定落下后不能改判成浮点
-            if (signlessText.size() >= 2 && signlessText.front() == '0' && signlessText[1] >= '0' && signlessText[1] <= '9')
-            {
-                return std::nullopt;
-            }
-
             // 字符集先挡一道：库也接受 "inf"/"nan"/"0x1p3" 这类写法，但它们不是核心 schema 的浮点
             bool hasDigit = false;
             for (const char character: signlessText)
@@ -938,7 +929,7 @@ namespace AsynGyanis::Base
             }
 
             std::string_view numericText = text;
-            // 前导 '+'（YAML 允许）不是标准库解析所认的写法，剥掉；'-' 保留给库处理
+            // 核心 schema 允许的前导 '+' 不是标准库解析所认的写法，剥掉；'-' 保留给库处理
             if (!numericText.empty() && numericText.front() == '+')
             {
                 numericText.remove_prefix(1);
