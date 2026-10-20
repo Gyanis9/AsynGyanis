@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8824
+# headers=303 entries=8838
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -3725,6 +3725,7 @@ src/Net/Http/Client/HttpResponseParser.h	[[nodiscard]] bool isComplete() const n
 src/Net/Http/Client/HttpResponseParser.h	[[nodiscard]] bool isHeadComplete() const noexcept
 src/Net/Http/Client/HttpResponseParser.h	[[nodiscard]] const HttpResponseInfo &result() const noexcept
 src/Net/Http/Client/HttpResponseParser.h	[[nodiscard]] std::size_t maximumBodySize() const noexcept
+src/Net/Http/Client/HttpResponseParser.h	[[nodiscard]] std::string takeBody() noexcept
 src/Net/Http/Client/HttpResponseParser.h	bool m_isBodyLimitHit
 src/Net/Http/Client/HttpResponseParser.h	bool m_isChunked
 src/Net/Http/Client/HttpResponseParser.h	bool m_isCloseDelimited
@@ -5310,7 +5311,9 @@ src/Net/Http2/Http2ClientConnection.h	bool applyPeerSettings(const Http2Settings
 src/Net/Http2/Http2ClientConnection.h	bool await_suspend(std::coroutine_handle<> waiter) noexcept
 src/Net/Http2/Http2ClientConnection.h	bool finishHeaderBlock(PendingStream &stream, bool recordFields)
 src/Net/Http2/Http2ClientConnection.h	bool handleContinuationFrame(const Http2Frame &frame)
+src/Net/Http2/Http2ClientConnection.h	bool handleDataFrame(Http2Frame &&frame)
 src/Net/Http2/Http2ClientConnection.h	bool handleDataFrame(const Http2Frame &frame)
+src/Net/Http2/Http2ClientConnection.h	bool handleFrame(Http2Frame &&frame)
 src/Net/Http2/Http2ClientConnection.h	bool handleFrame(const Http2Frame &frame)
 src/Net/Http2/Http2ClientConnection.h	bool handleGoAwayFrame(const Http2Frame &frame)
 src/Net/Http2/Http2ClientConnection.h	bool handleHeadersFrame(const Http2Frame &frame)
@@ -5417,6 +5420,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] bool creditReceivedData(std::uint3
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool failConnection(Http2ErrorCode errorCode, std::string_view reason, std::string *errorText = nullptr)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool finishHeaderBlock()
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool handleContinuationFrame(const Http2Frame &frame)
+src/Net/Http2/Http2Connection.h	[[nodiscard]] bool handleDataFrame(Http2Frame &&frame)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool handleDataFrame(const Http2Frame &frame)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool handleFrame(Http2Frame frame)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool handleGoAwayFrame(const Http2Frame &frame)
@@ -5570,6 +5574,7 @@ src/Net/Http2/Http2Frame.h	Stage m_stage
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API Http2ErrorCode toHttp2ErrorCode(Http2FrameErrorKind errorKind) noexcept
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool decodeHttp2FrameHeader(std::string_view bytes, Http2FrameHeader &header, std::string *errorText = nullptr)
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool parseHttp2ContinuationPayload(const Http2Frame &frame, Http2ContinuationPayload &payload, std::string *errorText = nullptr)
+src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool parseHttp2DataPayload(Http2Frame &&frame, Http2DataPayload &payload, std::string *errorText = nullptr)
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool parseHttp2DataPayload(const Http2Frame &frame, Http2DataPayload &payload, std::string *errorText = nullptr)
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool parseHttp2GoAwayPayload(const Http2Frame &frame, Http2GoAwayPayload &payload, std::string *errorText = nullptr)
 src/Net/Http2/Http2Frame.h	[[nodiscard]] ASYN_NET_API bool parseHttp2HeadersPayload(const Http2Frame &frame, Http2HeadersPayload &payload, std::string *errorText = nullptr)
@@ -6679,6 +6684,7 @@ src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::optional<Q
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber, std::size_t packetNumberByteCount)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::vector<std::uint8_t> buildQuicVersionNegotiationPacket(std::span<const std::uint8_t> destinationConnectionId, std::span<const std::uint8_t> sourceConnectionId, std::span<const std::uint32_t> supportedVersions)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] bool areReservedBitsClear() const noexcept
+src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] inline constexpr std::size_t quicPacketNumberByteCountFor(const std::uint64_t packetNumber) noexcept
 src/Net/Quic/Codec/QuicPacketHeader.h	bool isKeyPhaseBitSet
 src/Net/Quic/Codec/QuicPacketHeader.h	bool isLongHeader
 src/Net/Quic/Codec/QuicPacketHeader.h	bool isSpinBitSet
@@ -7581,6 +7587,7 @@ src/Net/Quic/Recovery/QuicRecovery.h	void onPacketSent(QuicRecoverySpace space, 
 src/Net/Quic/Recovery/QuicRecovery.h	void processEcnFeedback(QuicRecoverySpace space, const QuicAcknowledgementFrame &acknowledgement, const std::vector<QuicSentPacketInfo> &acknowledged, const std::optional<QuicTime> &largestAcknowledgedSentTime, bool increasesLargestAcknowledged, QuicAcknowledgementUpdate &update) noexcept
 src/Net/Quic/Recovery/QuicRecovery.h	void resetForPathChange() noexcept
 src/Net/Quic/Recovery/QuicRecovery.h	void updateRoundTripTime(QuicTime latestRoundTripTime, QuicTime acknowledgementDelay)
+src/Net/Quic/Streams/QuicStreamLayer.h	IncomingStream &createIncomingStream(std::uint64_t streamId)
 src/Net/Quic/Streams/QuicStreamLayer.h	PendingQueue<QuicAbortedStream> m_abortedStreams
 src/Net/Quic/Streams/QuicStreamLayer.h	PendingQueue<QuicStreamDelivery> m_deliveries
 src/Net/Quic/Streams/QuicStreamLayer.h	QuicReassemblyBuffer reassembly
@@ -7599,6 +7606,7 @@ src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool hasAbortedStreams() co
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool hasDeliveries() const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool hasOutgoingFrames() const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isIncomingSettled(const IncomingStream &stream) const noexcept
+src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isLocalBidiStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isLocallyInitiated(std::uint64_t streamId) const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isOutgoingSettled(const OutgoingStream &stream) const noexcept
 src/Net/Quic/Streams/QuicStreamLayer.h	[[nodiscard]] bool isPeerStreamSideRetired(std::uint64_t streamId, bool isReceiveSide) const noexcept
@@ -7641,6 +7649,8 @@ src/Net/Quic/Streams/QuicStreamLayer.h	namespace AsynGyanis::Net
 src/Net/Quic/Streams/QuicStreamLayer.h	static constexpr std::size_t kMaximumConnectionPendingSendByteCount = 8U * 1024U * 1024U
 src/Net/Quic/Streams/QuicStreamLayer.h	static constexpr std::size_t kMaximumPendingSendByteCount = 1024U * 1024U
 src/Net/Quic/Streams/QuicStreamLayer.h	std::array<std::array<std::uint64_t, 2>, 2> m_retiredPeerStreamBoundaries
+src/Net/Quic/Streams/QuicStreamLayer.h	std::array<std::set<std::uint64_t>, 2> m_retiredLocalBidiGaps
+src/Net/Quic/Streams/QuicStreamLayer.h	std::array<std::uint64_t, 2> m_retiredLocalBidiBoundaries
 src/Net/Quic/Streams/QuicStreamLayer.h	std::deque<QuicStreamChunk> pendingQueue
 src/Net/Quic/Streams/QuicStreamLayer.h	std::map<std::uint64_t, IncomingStream> m_incoming
 src/Net/Quic/Streams/QuicStreamLayer.h	std::map<std::uint64_t, OutgoingStream> m_outgoing
@@ -7695,6 +7705,7 @@ src/Net/Quic/Streams/QuicStreamLayer.h	template<typename ItemType> class Pending
 src/Net/Quic/Streams/QuicStreamLayer.h	using QuicStreamViolationStatus = std::expected<void, QuicStreamViolation>
 src/Net/Quic/Streams/QuicStreamLayer.h	void adoptPeerParameters(const QuicTransportParameters &peerParameters)
 src/Net/Quic/Streams/QuicStreamLayer.h	void drainContiguousBytes(IncomingStream &stream, std::uint64_t streamId)
+src/Net/Quic/Streams/QuicStreamLayer.h	void noteLocalBidiStreamRetired(std::uint64_t streamId, bool isReceiveSide)
 src/Net/Quic/Streams/QuicStreamLayer.h	void noteStreamRetired(std::uint64_t streamId, bool isReceiveSide)
 src/Net/Quic/Streams/QuicStreamLayer.h	void onSendRangesAcknowledged(const std::vector<QuicStreamRange> &acknowledgedRanges)
 src/Net/Quic/Streams/QuicStreamLayer.h	void onSendRangesLost(const std::vector<QuicStreamRange> &lostRanges)
@@ -8133,6 +8144,7 @@ src/Net/WebSocket/WebSocketClient.h	WebSocketClient(std::unique_ptr<HttpOutbound
 src/Net/WebSocket/WebSocketClient.h	WebSocketFrameDecoder m_decoder
 src/Net/WebSocket/WebSocketClient.h	WebSocketUpgradeAgreement m_agreement
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> answerPeerClose(const WebSocketFrame &closeFrame)
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> failSession(std::uint16_t closeCode, WebSocketSessionErrorKind kind, std::string errorText)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive()
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> close(std::uint16_t statusCode = 1000, std::string_view reason =
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendBinary(std::string_view binary)
@@ -8160,6 +8172,7 @@ src/Net/WebSocket/WebSocketClient.h	static constexpr std::size_t kReadChunkByteL
 src/Net/WebSocket/WebSocketClient.h	std::chrono::milliseconds handshakeTimeout
 src/Net/WebSocket/WebSocketClient.h	std::optional<PerMessageDeflateWindow> m_deflateWindow
 src/Net/WebSocket/WebSocketClient.h	std::optional<std::uint16_t> m_remoteCloseCode
+src/Net/WebSocket/WebSocketClient.h	std::size_t m_inboundByteOffset
 src/Net/WebSocket/WebSocketClient.h	std::size_t maximumMessageSize
 src/Net/WebSocket/WebSocketClient.h	std::string hostName
 src/Net/WebSocket/WebSocketClient.h	std::string m_inboundBytes
@@ -8170,6 +8183,7 @@ src/Net/WebSocket/WebSocketClient.h	std::uint16_t port
 src/Net/WebSocket/WebSocketClient.h	std::unique_ptr<HttpOutboundConnection> m_transport
 src/Net/WebSocket/WebSocketClient.h	std::vector<std::string> subprotocols
 src/Net/WebSocket/WebSocketClient.h	struct Configuration
+src/Net/WebSocket/WebSocketClient.h	void compactInboundBytes()
 src/Net/WebSocket/WebSocketClient.h	~WebSocketClient()
 src/Net/WebSocket/WebSocketError.h	WebSocketSessionErrorKind kind
 src/Net/WebSocket/WebSocketError.h	WebSocketUpgradeErrorKind kind
