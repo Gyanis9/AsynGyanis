@@ -1774,6 +1774,30 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 流式入口执行写语句时必须报成功：命令已经生效，报失败会让调用方重试出两行
+     */
+    TEST_F(PostgresIntegrationTest, StreamingWriteCommandReportsSuccessInsteadOfFailure)
+    {
+        static constexpr std::string_view kStreamingWriteTableName = "Asyn_Pg_StreamingWrite";
+        m_preparedTableNames.emplace_back(kStreamingWriteTableName);
+        ASSERT_TRUE(prepareTable(kStreamingWriteTableName, "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL")) << m_lastSetupError;
+
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> insertResult = connection.executeStreaming("INSERT INTO " + quote(kStreamingWriteTableName) + " (\"id\", \"name\") VALUES (1, 'x')");
+        ASSERT_NE(insertResult, nullptr) << "写语句已经生效，流式入口却报失败：" << connection.lastError();
+        EXPECT_EQ(insertResult->rowCount(), 0U);
+        EXPECT_FALSE(insertResult->next());
+        EXPECT_EQ(insertResult->affectedRowCount(), 1);
+
+        const std::unique_ptr<DatabaseResult> countResult = connection.execute("SELECT COUNT(*) FROM " + quote(kStreamingWriteTableName));
+        ASSERT_NE(countResult, nullptr) << connection.lastError();
+        ASSERT_TRUE(countResult->next());
+        EXPECT_EQ(std::get<std::int64_t>(countResult->getValue(0)), 1) << "写语句没有真正生效";
+    }
+
+    /**
      * @brief 带参流式：参数绑定 + 单行模式——行序、长文本、NULL 与流式档两条哨兵都要对
      */
     TEST_F(PostgresIntegrationTest, ParameterizedStreamingReadsEveryRowWithBoundParameters)

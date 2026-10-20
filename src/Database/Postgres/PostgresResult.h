@@ -26,7 +26,7 @@ namespace AsynGyanis::Database
     /**
      * @brief PostgreSQL 查询结果集
      *
-     * @details 封装 PQexec / PQexecParams 交出的 PGresult，把 PostgreSQL 的列类型映射到
+     * @details 封装 PQexecParams / PQexecPrepared 交出的 PGresult，把 PostgreSQL 的列类型映射到
      *          DatabaseResult 的统一接口。本对象持有 PGresult 的唯一所有权，析构时 PQclear
      *          一次性回收行缓冲与列元数据。
      *
@@ -42,7 +42,7 @@ namespace AsynGyanis::Database
      * 代价与大结果集的取舍：整份数据等额占用内存（与 MySQL 驱动的 mysql_store_result 预读同源）。
      *
      * 两种数据来源（与 MySqlResult 的预读/流式同形）
-     * - 预读（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
+     * - 预读（PQexecParams / PQexecPrepared，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
      *   定死，可反复遍历、可 reset 重扫；代价是大结果集等额占用内存；
      * - 流式（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
      *   一行（libpq 的单行模式把每次 PQgetResult 变成一块一行的结果），客户端内存只装当前

@@ -74,12 +74,13 @@ namespace AsynGyanis::Database
      *        WIN1252 的服务端上会让中文列变乱码，因此这里显式协商；协商失败即判整次连接失败。
      *
      *        占位符：本驱动直接使用 $1 $2 这种 PostgreSQL 原生写法（PostgresDialect::appendPlaceholder()
-     *        生成），由 SQL 文本原样交给 PQexecParams，因此不做任何 "?" → "$n" 的改写；
+     *        生成），由 SQL 文本原样送达，因此不做任何 "?" → "$n" 的改写；
      *        参数个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错，
      *        本驱动只负责把服务端原文转成中文原因。参数格式一律文本（paramFormats 传空指针），
      *        避免二进制格式下每个类型都要自己编码。
      *
-     *          命令边界：两条 execute 路径都走扩展查询协议（PQexecParams），因此一次只可能执行一条语句——
+     *          命令边界：零参/控制语句走 PQexecParams；数据语句走 PQprepare + PQexecPrepared 的
+     *          命名语句缓存，两者都是扩展查询协议，因此一次只可能执行一条语句——
      *          简单查询协议（PQexec）会执行文本里的全部语句却只返回最后一条的结果，
      *          扩展协议在解析阶段就整次拒绝多语句。这与 MySQL 侧「握手不开 CLIENT_MULTI_STATEMENTS」
      *          是同一安全姿态：拼接出的第二条语句不执行、整条命令失败。
@@ -191,7 +192,7 @@ namespace AsynGyanis::Database
          * @brief 执行一条不带参数的 SQL 命令
          * @details 重写 DatabaseConnection::execute()：与基类约定的差异与附加约束——
          *          - 每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
-         *          - 命令文本先拷成 std::string 再把 c_str() 交给 PQexec：libpq 的这个接口
+         *          - 命令文本先拷成 std::string 再把 c_str() 交给 PQexecParams（零参数）：libpq 的这个接口
          *            只接受零终止 C 字符串，而 std::string_view 不保证末尾有 '\0'（它可能是
          *            另一个更长缓冲的切片），直接交出 data() 会读到越界内存；
          *          - 只有 PGRES_TUPLES_OK（查询）与 PGRES_COMMAND_OK（写语句/DDL/事务语句）
@@ -208,9 +209,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行一条带 $n 占位符的 SQL 命令，参数按位置绑定
          * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
-         *          本驱动用 libpq 的扩展查询协议（PQexecParams）真正绑定参数，取值绝不拼进
+         *          本驱动用 libpq 的扩展查询协议真正绑定参数（零参/控制语句走 PQexecParams；
+         *          数据语句走 PQprepare + PQexecPrepared 的命名语句缓存），取值绝不拼进
          *          SQL 文本，注入面因此彻底消失。语句文本原样送达：PostgresDialect 生成的
-         *          占位符就是 $1 $2 这种 PostgreSQL 原生写法，也就是 PQexecParams 要求的格式，
+         *          占位符就是 $1 $2 这种 PostgreSQL 原生写法，也就是扩展查询协议要求的格式，
          *          所以本方法不做任何 "?" → "$n" 的改写；parameters[i] 按下标绑定到 $i+1，
          *          个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错。
          *
@@ -290,7 +292,8 @@ namespace AsynGyanis::Database
          *          同一件事（开启事务）只能有一份语句来源，否则会随方言演进而漂移，
          *          与 Transaction + 方言这条路径产生行为差异。
          * @return true 事务已开启
-         * @return false 未连接或语句被服务端拒绝（例如同一连接上已有未结束的事务），原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool beginTransaction();
 
@@ -298,7 +301,8 @@ namespace AsynGyanis::Database
          * @brief 提交当前事务
          * @details 执行本方言给出的提交语句 "COMMIT"，语句文本同样以方言为唯一来源。
          * @return true 提交成功
-         * @return false 没有活动事务或未连接，原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool commit();
 
@@ -307,7 +311,8 @@ namespace AsynGyanis::Database
          * @details 执行本方言给出的回滚语句 "ROLLBACK"，与 commit() 一样属于事务控制便捷封装，
          *          语句文本同样以方言为唯一来源。
          * @return true 回滚成功
-         * @return false 没有活动事务或未连接，原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool rollback();
 

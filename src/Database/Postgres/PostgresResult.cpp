@@ -312,7 +312,8 @@ namespace AsynGyanis::Database
     std::unique_ptr<PostgresResult> PostgresResult::forStreaming(PGconn *const connectionHandle, PostgresConnection *const owner, PGresult *const firstRowResult)
     {
         // 与 MySqlResult::forStreaming 同一形状：new 表达式写在成员函数里，私有构造的访问权
-        // 只落在这一类；失败路径的所有权仍在调用方（它带着 ResultReleaser 守卫）
+        // 只落在这一类。首块所有权在构造内接手；构造内的分配失败按 noexcept 语义终止进程，
+        // 调用方不另设守卫
         return std::unique_ptr<PostgresResult>(new PostgresResult(connectionHandle, owner, firstRowResult, StreamingTag{}));
     }
 
