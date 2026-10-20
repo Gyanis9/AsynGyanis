@@ -94,8 +94,8 @@ namespace AsynGyanis::Database
          * @brief 将游标推进到下一行
          * @details 重写 DatabaseResult::next()：只读语句的行已在构造期预扫描并存进快照，这里只把下标
          *          往前拨一格，不再执行语句；其余情况 sqlite3_step 一次，只有 SQLITE_ROW 才算成功。
-         *          SQLITE_ERROR / SQLITE_BUSY 与游标耗尽都返回 false，按基类契约属只读路径、
-         *          不改写 m_lastError，需要区分时请检查语句是否已被连接侧报错。其余与基类一致。
+         *          SQLITE_DONE 是正常耗尽；除此之外的失败会把原因写进 lastError()，本方法属写路径，
+         *          游标耗尽时不清空错误。其余与基类一致。
          * @return true 游标停在有效行上，可以读取列值
          * @return false 已无更多行，或推进过程中出错
          */

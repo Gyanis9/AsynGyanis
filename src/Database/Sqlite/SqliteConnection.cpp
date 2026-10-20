@@ -247,9 +247,18 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // SQLite 解析器在第一个 NUL 字节处停止，nByte 再大也不看后面；不拦就会只执行前半条，
+        // 而「额外语句」探测也看不见被 NUL 截断的后半段
+        if (command.find('\0') != std::string_view::npos)
+        {
+            m_lastError = "数据库命令含 NUL 字节：SQLite 会在第一个 NUL 处截断命令，后半条会被静默丢弃。"
+                          "需要执行多条语句请拆成多次 execute()，二进制载荷请改用 BLOB 参数绑定";
+            return nullptr;
+        }
+
         // std::string_view 不保证以 '\0' 结尾，而 sqlite3_prepare_v2 依赖零终止符界定语句边界，
         // 直接把 data() 交给它可能越界读取调用方缓冲区；这里落一份带终止符的副本
-        const std::string commandText(command);
+        std::string commandText(command);
 
         // 长度超过 int 上限会被静默截断，宁可报错也不执行半条语句
         if (commandText.size() > kMaximumNativeLength)
@@ -358,8 +367,17 @@ namespace AsynGyanis::Database
             return nullptr;
         }
 
+        // SQLite 解析器在第一个 NUL 字节处停止，nByte 再大也不看后面；不拦就会只执行前半条，
+        // 而「额外语句」探测也看不见被 NUL 截断的后半段
+        if (command.find('\0') != std::string_view::npos)
+        {
+            m_lastError = "数据库命令含 NUL 字节：SQLite 会在第一个 NUL 处截断命令，后半条会被静默丢弃。"
+                          "需要执行多条语句请拆成多次 execute()，二进制载荷请改用 BLOB 参数绑定";
+            return nullptr;
+        }
+
         // 与 execute 同一份长度守卫与副本落法（sqlite3_prepare_v2 依赖零终止符，必须交副本的 c_str）
-        const std::string commandText(command);
+        std::string commandText(command);
         if (commandText.size() > kMaximumNativeLength)
         {
             m_lastError = "数据库命令过长：" + std::to_string(commandText.size()) + " 字节，超出 SQLite 单条语句上限";
@@ -841,7 +859,7 @@ namespace AsynGyanis::Database
             if (bindResult != SQLITE_OK)
             {
                 // 先取错误文本再返回：绑定失败已让语句处于不可用状态，错误文本是唯一可用的线索
-                captureError("绑定第 " + std::to_string(index) + " 个参数失败");
+                captureError("绑定第 " + std::to_string(index + 1U) + " 个参数失败");
                 return false;
             }
         }

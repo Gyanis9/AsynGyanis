@@ -472,6 +472,23 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsText(connection().lastError(), "为空")) << connection().lastError();
     }
 
+    /**
+     * @brief 含内嵌 NUL 的命令必须整条拒绝：SQLite 会在 NUL 处截断，后半段连额外语句探测都看不见
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, RejectsCommandsWithEmbeddedNul)
+    {
+        ASSERT_NE(connection().execute("CREATE TABLE nul_probe (id INTEGER)"), nullptr) << connection().lastError();
+
+        const std::string hostile = std::string("INSERT INTO nul_probe VALUES (1)") + '\0' + "DROP TABLE nul_probe";
+        EXPECT_EQ(connection().execute(hostile), nullptr);
+        EXPECT_NE(connection().lastError().find("NUL"), std::string::npos) << connection().lastError();
+
+        const std::unique_ptr<DatabaseResult> countResult = connection().execute("SELECT COUNT(*) FROM nul_probe");
+        ASSERT_NE(countResult, nullptr) << connection().lastError();
+        ASSERT_TRUE(countResult->next());
+        EXPECT_EQ(std::get<std::int64_t>(countResult->getValue(0)), 0) << "前半条被静默执行了";
+    }
+
     /** @brief 钉住无语句输入（空白/分号/注释）如实失败，不把空操作报成执行成功 */
     TEST_F(SqliteConnectedMemoryDatabase, CommandWithoutExecutableStatementIsRejected)
     {
