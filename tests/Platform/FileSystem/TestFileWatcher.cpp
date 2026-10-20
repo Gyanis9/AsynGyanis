@@ -1278,6 +1278,50 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住（Windows）：只要一层的目录被改名之后，监视范围不能自己长成递归
+     * @details 被监视目录是另一个被监视目录的子项时，改名由父目录报出，实现会把条目搬到新键。
+     *          搬的时候若无条件登记进递归覆盖集，新位置下后来新建的子目录就会被自动补挂，
+     *          调用方只要一层的请求被悄悄扩成整棵树。判据是「深层文件不出现」，
+     *          同时用「子目录本身出现了」证明监视确实跟到了新位置，避免把「监视死了」测成通过。
+     */
+    TEST(FileWatcher, RenamedNonRecursiveWatchDoesNotGrowIntoRecursiveCoverage)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameLevel");
+        const std::filesystem::path           parentDirectory = temporaryDirectory.path() / "parent";
+        const std::filesystem::path           childDirectory  = parentDirectory / "plain";
+        ASSERT_TRUE(std::filesystem::create_directories(childDirectory));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+
+        ASSERT_TRUE(watcher->addWatch(parentDirectory.string(), false));
+        ASSERT_TRUE(watcher->addWatch(childDirectory.string(), false));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        const std::filesystem::path movedDirectory = parentDirectory / "plain.moved";
+        std::error_code             renameError;
+        std::filesystem::rename(childDirectory, movedDirectory, renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名失败：" << renameError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+        const std::filesystem::path nestedDirectory = movedDirectory / "nested";
+        ASSERT_TRUE(std::filesystem::create_directories(nestedDirectory));
+        const bool sawNested = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested"); }, 3000);
+        ASSERT_TRUE(sawNested) << "改名后的监视没跟过去，下面的「深层没事件」就是假绿";
+
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("parent/plain.moved/nested/deep.yaml", "leaked: true\n"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        watcher->stop();
+        EXPECT_FALSE(recorder.sawFileNamed("deep.yaml")) << "只要一层的监视在改名后被扩成了递归监视";
+    }
+
+    /**
      * @brief 钉住（Windows）：监视目录数超过单次等待上限时，尾部目录也要收得到事件
      * @details WaitForMultipleObjects 单次最多等 64 个对象（含停止事件，因此目录只有 63 个额度）。
      *          原实现只截前 63 个、且遍历顺序稳定，排在后面的目录永远进不了等待集——它们的事件

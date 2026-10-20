@@ -100,6 +100,17 @@ namespace AsynGyanis::Platform
             }
             return true;
         }
+
+        /**
+         * @brief 判断一条路径是否已经落在某份目录集合里（按「同一个目录」比较）
+         * @param directories 带尾分隔符的目录键集合
+         * @param target 待查路径
+         * @return true 集合里有一条与 target 指向同一目录
+         */
+        bool containsSameDirectory(const std::set<std::string> &directories, const std::string_view target)
+        {
+            return std::ranges::any_of(directories, [target](const std::string &candidate) { return isSameDirectoryPath(candidate, target); });
+        }
     } // namespace
 
     Win32FileWatcher::Win32FileWatcher()
@@ -643,12 +654,19 @@ namespace AsynGyanis::Platform
             return false; // 新位置上已经有一条监视，不覆盖它
         }
 
+        const bool wasRecursiveMember = containsSameDirectory(m_recursiveWatchPaths, oldPath);
+
         auto node           = m_watches.extract(iterator);
         node.key()          = relocatedPath;
         node.mapped()->path = relocatedPath;
         m_watches.insert(std::move(node));
         // 新位置同样纳入自愈范围；旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
-        m_recursiveWatchPaths.insert(relocatedPath);
+        // 只有本来就在递归覆盖集里的条目才把新键带进去：调用方点名的一层监视（不在集合里）
+        // 改名后仍是一层，否则新位置下新建的子目录会被 watchNewSubdirectories 自动补挂
+        if (wasRecursiveMember)
+        {
+            m_recursiveWatchPaths.insert(relocatedPath);
+        }
         // 调用方点过名的那条监视搬到哪，自愈就该在新位置复查它；旧键同样留着，理由与上面一致
         if (std::ranges::any_of(m_selfHealPaths, [&oldPath](const std::string &requestedPath) { return isSameDirectoryPath(requestedPath, oldPath); }))
         {

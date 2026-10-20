@@ -75,7 +75,7 @@ namespace AsynGyanis::Platform
          * @param path 待监听的目录路径
          * @param recursive 是否递归监听子目录
          * @return true 注册成功或路径已在监听集合中
-         * @return false 目录句柄或事件句柄创建失败，或首次重叠读投递失败
+         * @return false 路径无法解析、目录句柄或事件句柄创建失败，或首次重叠读投递失败
          */
         bool addWatch(std::string_view path, bool recursive = false) override;
 
