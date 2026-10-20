@@ -189,18 +189,19 @@ namespace AsynGyanis::Net
 
     bool HttpCookie::isValidDomain(const std::string_view text) noexcept
     {
-        // 空格与控制符（含 0x7F）之外的这些字符都不属于主机名：`;` 与 `"` 会破坏属性切分，
+        // 主机名只收可打印 ASCII（0x20-0x7E）：0x7F 与 0x80 以上的字节一律拒，域名线上没有别的编码。
+        // 可打印段里也有这些字符不属于主机名：`;` 与 `"` 会破坏属性切分，
         // `=` 会让对端把整段重新解析成另一条属性，`/` 则会把路径写进域名里
         constexpr std::string_view forbiddenCharacters{" ;\"=/"};
         return !text.empty() && text.find_first_of(forbiddenCharacters) == std::string_view::npos &&
-               std::ranges::none_of(text, [](const char character) { return static_cast<unsigned char>(character) < 0x21 || static_cast<unsigned char>(character) == 0x7F; });
+               std::ranges::none_of(text, [](const char character) { return static_cast<unsigned char>(character) < 0x21 || static_cast<unsigned char>(character) >= 0x7F; });
     }
 
     void HttpCookie::setDomain(const std::string_view domain)
     {
         if (!isValidDomain(domain))
         {
-            throw Base::InvalidArgumentException("HttpCookie: Domain 不能为空或含空格、控制符与 \" ; = /：「" + std::string(domain) + "」");
+            throw Base::InvalidArgumentException("HttpCookie: Domain 不能为空或含空格、控制符、非 ASCII 字节与 \" ; = /：「" + std::string(domain) + "」");
         }
         m_domain = std::string(domain);
     }

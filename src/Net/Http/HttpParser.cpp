@@ -610,9 +610,13 @@ namespace AsynGyanis::Net
             // 100-continue expectation in an HTTP/1.0 request MUST ignore that expectation」，§15.2 又明写
             // 「Since HTTP/1.0 did not define any 1xx status codes, a server MUST NOT send a 1xx response to
             // an HTTP/1.0 client」——回了它，老客户端会把这声招呼当成最终响应，正文还没读就先拿到一个 100。
-            // 版本原文在请求行那一步已按「HTTP/主.次」验过形（见 parseRequestLine），故下标 5 与 7 就是两位数字
+            // 版本原文在请求行那一步已按「HTTP/主.次」验过形（见 parseRequestLine），故下标 5 与 7 就是两位数字。
+            // Expect 是列表字段，同一报文允许多条：先出现的 100-continue 不能被后面的未知期望抹掉，因此这里只置位、不清零
             const bool understandsInterimResponses = m_httpVersion.size() == 8 && m_httpVersion[5] == '1' && m_httpVersion[7] >= '1';
-            m_hasContinueExpectation               = isContinueExpected(value) && understandsInterimResponses;
+            if (isContinueExpected(value) && understandsInterimResponses)
+            {
+                m_hasContinueExpectation = true;
+            }
         }
 
         // Host 只许有一条（RFC 9112 §3.2：服务端对「多于一条 Host 头部行」的请求必须回 400）。

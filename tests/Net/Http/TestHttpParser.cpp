@@ -308,6 +308,21 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 同一报文里 100-continue 之后再跟一条未知期望，不得把先出现的那条抹掉
+     * @details Expect 是列表字段（RFC 9110 §10.1.1），同一报文允许多条。后一条 `something-else` 本端不认，
+     *          但它的存在不该让本端丢掉「对端在等 100」这个已经成立的事实；只有未知期望时才不该给时机。
+     */
+    TEST(HttpParser, KeepsContinueExpectationWhenALaterExpectFieldIsUnknown)
+    {
+        HttpParser        parser;
+        const std::string head = makeRequestTextWithHeaders({"Expect: 100-continue", "Expect: something-else", "Content-Length: 1"});
+        EXPECT_EQ(parser.parse(head.data(), head.size()), ParseStatus::NeedMore);
+        EXPECT_TRUE(parser.isHeaderBlockComplete()) << "头部收齐、正文还差 1 字节，正是该回 100 的阶段";
+        EXPECT_TRUE(parser.takeContinueRequest()) << "后一条未知期望把先出现的 100-continue 覆盖掉了";
+        EXPECT_FALSE(parser.takeContinueRequest()) << "同一条报文只许回一次 100";
+    }
+
+    /**
      * @brief 钉住：100-continue 的两枚门闩都随报文一起复位，keep-alive 上每条报文各拿自己的时机
      * @details 两个方向的失效各有各的难看：「对端在等 100」不清 → 下一条不带 Expect 的报文被多回一个
      *          100，正文还没到就先冒出一句状态行；「这条已经取过」不清 → 后面真带 Expect 的报文再也

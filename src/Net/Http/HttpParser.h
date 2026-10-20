@@ -439,10 +439,10 @@ namespace AsynGyanis::Net
         /// 是否已见过 Transfer-Encoding：与 Content-Length 互斥，两者并存当场判错
         bool m_hasTransferEncoding{false};
 
-        /// 本条报文头部里 Host 的行数：多于一条即畸形（RFC 9112 §3.2）。同一节还要求「HTTP/1.1 请求缺 Host」与
-        /// 「Host 的取值本身不合法」也回 400，那两格本端有意不判：前者是把新规则的账算到存量健康检查与裸工具
-        /// 头上的一次行为变更，后者要在头部语法层再长出一套主机名语法（IPv6 字面量、非 ASCII、尾点都得判对才敢拒），
-        /// 而本端的实际风险在「两条说法各走各的」这一环——那一环已经拦下
+        /// 本条报文头部里 Host 的行数：RFC 9112 §3.2 的三格在 parseHeaderLine() 与 finishHeaderBlock() 里都判——
+        /// 多于一条由 parseHeaderLine() 当场拒绝；HTTP/1.1 请求一条都没有的，由 finishHeaderBlock() 在收尾时拒绝；
+        /// 取值的语法由 parseHeaderLine() 交给 findAuthorityFieldDefect 判，非法即拒（空取值刻意放行，那是绝对形式
+        /// 目标没有权威段时的合规写法）。三格同出一节：权威段是选站与缓存键的输入，缺一条或多一条都会让链路上两处读法分叉
         std::size_t m_hostHeaderFieldCount{0};
 
         /// 头部是否已被流式派发提前提交（见 commitHeadersForStreaming()；随报文在 clearMessageScratch 里复位）

@@ -376,4 +376,28 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(HttpCookie::isValidDomain(std::string("ex") + static_cast<char>(0x7F) + "ample.com")) << "0x7F 不算可打印";
     }
 
+    /**
+     * @brief Domain 只收可打印 ASCII：0x80 以上的字节既进不了主机名，也不该被写成属性交出去
+     * @details 判据与 HttpCookie.h 的文档同一口径（只含可打印 ASCII，不含 0x7F）。放行 0x80 以上的字节，
+     *          同一条 Domain 在链路上会按各自默认的编码解释：本端按字节匹配，对端按 Latin-1 或 UTF-8 解码，
+     *          而浏览器对非 ASCII 的 Domain 本来就是一整条丢掉。
+     */
+    TEST(HttpCookie, RejectsNonAsciiDomainBytes)
+    {
+        const std::string extendedByteDomain = std::string("ex") + static_cast<char>(0x80) + "ample.com";
+        EXPECT_FALSE(HttpCookie::isValidDomain(extendedByteDomain)) << "0x80 不是可打印 ASCII";
+
+        // 未编码的 UTF-8 同样逐字节拒：主机名线上只有 ASCII，收下它等于替对端猜一种编码
+        EXPECT_FALSE(HttpCookie::isValidDomain("例子.com"));
+        EXPECT_FALSE(HttpCookie::isValidDomain(std::string(1, static_cast<char>(0xFF)))) << "0xFF 落在可打印 ASCII 之外";
+
+        HttpCookie cookie("n", "v");
+        EXPECT_THROW(cookie.setDomain(extendedByteDomain), Base::InvalidArgumentException);
+        EXPECT_THROW(cookie.setDomain("例子.com"), Base::InvalidArgumentException);
+
+        // 反向对照：可打印 ASCII 的域名照旧收，别让这条判据顺手把整个属性面焊死
+        EXPECT_TRUE(HttpCookie::isValidDomain("example.com"));
+        EXPECT_NO_THROW(cookie.setDomain("example.com"));
+    }
+
 } // namespace AsynGyanis::Net
