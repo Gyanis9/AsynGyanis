@@ -43,7 +43,10 @@ namespace AsynGyanis::Platform
 
     InotifyFileWatcher::InotifyFileWatcher()
     {
-        m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC);
+        // 非阻塞：队列里恰好是缓冲区整数倍条记录时，读满之后的那一次 read 会落在空队列上。
+        // 阻塞描述符在那里会一直睡到下一个事件，而生产者可能已经停了——监听线程再也回不到
+        // 停止检查，stop() 与析构里的 join 会永久挂住。非阻塞时同样的情况返回 EAGAIN
+        m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
         if (m_inotifyFileDescriptor < 0)
         {
             // 这里刻意用裸 std::runtime_error 而不是 Base 的框架异常：Platform 在 Base 之下
@@ -54,7 +57,7 @@ namespace AsynGyanis::Platform
             // 权限（EPERM），只有内核回来的那个数能把这两种分开
             const int failureNumber = errno;
             throw std::runtime_error(std::string("inotify 初始化失败：errno=") + std::to_string(failureNumber) + " (" + std::strerror(failureNumber) +
-                                     "；inotify_init1(IN_CLOEXEC) 返回，ENOSPC 通常是 " + "fs.inotify.max_user_instances 用满)");
+                                     "；inotify_init1(IN_CLOEXEC | IN_NONBLOCK) 返回，ENOSPC 通常是 " + "fs.inotify.max_user_instances 用满)");
         }
     }
 
@@ -346,7 +349,8 @@ namespace AsynGyanis::Platform
                 bytesRead = FileDescriptor::read(m_inotifyFileDescriptor, buffer, sizeof(buffer));
             } while (bytesRead < 0 && PlatformError::lastErrorCode() == PlatformError::kInterrupted);
 
-            // 0 表示没有可读记录，负数表示读失败；两种都结束本轮排空
+            // 描述符是非阻塞的：队列为空时 read 返回 -1，errno 为 EAGAIN，结束本轮排空；
+            // 0 不是 inotify 会产生的结果，真遇到时同样按「没有可读记录」处理
             if (bytesRead <= 0)
             {
                 return;
@@ -356,126 +360,7 @@ namespace AsynGyanis::Platform
             {
                 const auto *event = reinterpret_cast<const inotify_event *>(&buffer[offset]);
                 offset += sizeof(inotify_event) + event->len;
-
-                // IN_IGNORED：watch 被移除后内核必补的一条。它的掩码不参与本端的事件分类，
-                // 却会落到下面「len == 0 → 监视目标本身」的分支上被当成一次「已修改」派发出去——
-                // 删除之后再来一条假修改，会诱导热加载去重扫一个已经不存在的路径。
-                // 映射必须跟着摘掉：内核已经不再监视这个 wd（目录被删、文件被替换都是这条路径），
-                // 留着会让 addWatch(同一路径) 被「已经看过这个路径」挡下——重建出来的同名目录/文件
-                // 从此再也挂不上监视，事件永久丢失（这里尚未取共享锁，可以安全地做清理）
-                if ((event->mask & IN_IGNORED) != 0)
-                {
-                    removeWatchMapping(event->wd);
-                    continue;
-                }
-
-                // IN_MOVE_SELF：被监视的目录本身被改名或移到别处（len==0 才代表目标自身，带名字的
-                // 是子项改名）。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补 IN_IGNORED，
-                // 于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」挡下而不
-                // 重新注册，新目录的事件从此永久丢失。这里按同样的方式摘掉映射——递归根随后由自愈
-                // 复查补挂，非递归的由调用方下一次 addWatch 补挂
-                if ((event->mask & IN_MOVE_SELF) != 0 && event->len == 0)
-                {
-                    removeWatchMapping(event->wd);
-                    continue;
-                }
-
-                // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
-                // 对每个受监视的目录各派发一次「要重扫了」，让消费方重新扫描，绝不静默停在旧状态
-                if (event->wd == -1)
-                {
-                    dispatchOverflowRescan();
-                    continue;
-                }
-
-                // 锁内取出回调快照与目标路径，锁外触发，避免回调中操作监听器造成死锁
-                FileChangeCallback callbackSnapshot;
-                std::string        changedPath;
-                FileChangeType     changeType              = FileChangeType::Modified;
-                bool               shouldWatchNewDirectory = false;
-
-                {
-                    std::shared_lock lock(m_watchMutex);
-
-                    const auto watchIterator = m_watchDescriptors.find(event->wd);
-                    if (watchIterator == m_watchDescriptors.end())
-                    {
-                        continue;
-                    }
-
-                    const std::string &watchedPath = watchIterator->second;
-                    // 监视单个文件时内核不给名字（event->len 恒为 0），变更的就是被监视的那个文件本身；
-                    // 监视目录时 event->name 才是目录内的条目名
-                    const std::size_t nameLength = event->len == 0 ? 0 : std::strlen(event->name);
-
-                    if (nameLength == 0)
-                    {
-                        changedPath = watchedPath;
-                    } else
-                    {
-                        const bool        needsSeparator = !watchedPath.empty() && watchedPath.back() != '/';
-                        const std::size_t nameOffset     = watchedPath.size() + (needsSeparator ? 1U : 0U);
-
-                        // 一次预留到位，避免「赋值 + 两次追加」引发的逐步扩容
-                        changedPath.reserve(nameOffset + nameLength);
-                        changedPath.append(watchedPath);
-                        if (needsSeparator)
-                        {
-                            changedPath.push_back('/');
-                        }
-                        changedPath.append(event->name, nameLength);
-                    }
-
-                    if (!shouldDispatchChange(changedPath))
-                    {
-                        continue;
-                    }
-
-                    callbackSnapshot = m_callback;
-
-                    if ((event->mask & (IN_CREATE | IN_MOVED_TO)) != 0)
-                    {
-                        changeType = FileChangeType::Created;
-                    } else if ((event->mask & (IN_DELETE | IN_DELETE_SELF)) != 0)
-                    {
-                        changeType = FileChangeType::Deleted;
-                    } else if ((event->mask & (IN_MOVED_FROM | IN_MOVE_SELF)) != 0)
-                    {
-                        // 改名/移动的源路径按枚举契约报 Moved：Windows 的 RENAMED_OLD_NAME 走的就是这一类，
-                        // 两侧必须同判据。真实删除仍是上面的 Deleted
-                        changeType = FileChangeType::Moved;
-                    }
-
-                    // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报。
-                    // 前缀比较必须落在路径分隔符边界上——纯前缀匹配会把「/data」当成「/database」的根，
-                    // 给监视范围外的目录补挂监视（并把它们记进递归根集合，范围越滚越大）
-                    shouldWatchNewDirectory =
-                            changeType == FileChangeType::Created && std::ranges::any_of(m_recursiveRoots,
-                                                                                         [&watchedPath](const std::string &root)
-                                                                                         {
-                                                                                             if (watchedPath.size() < root.size() || watchedPath.compare(0, root.size(), root) != 0)
-                                                                                             {
-                                                                                                 return false;
-                                                                                             }
-                                                                                             // 完全相同，或下一个字符就是分隔符，才算「在根之下」
-                                                                                             return watchedPath.size() == root.size() || watchedPath[root.size()] == '/' ||
-                                                                                                    (!root.empty() && root.back() == '/');
-                                                                                         });
-                }
-
-                if (shouldWatchNewDirectory)
-                {
-                    std::error_code directoryError;
-                    if (std::filesystem::is_directory(changedPath, directoryError) && !directoryError)
-                    {
-                        // 锁外补挂：addWatch 要拿写锁，持锁递归注册会自死锁
-                        static_cast<void>(addWatch(changedPath, true));
-                    }
-                }
-
-                // 回调抛出的兜底与计数在基类那一侧（FileWatcher::notifyChange）：这里漏一处，
-                // 异常就会沿监听线程的线程体穿出去变成 std::terminate
-                notifyChange(callbackSnapshot, changedPath, changeType);
+                dispatchEvent(*event);
             }
 
             // 没读满说明内核队列已经空了，不必再进下一批
@@ -484,6 +369,128 @@ namespace AsynGyanis::Platform
                 return;
             }
         }
+    }
+
+    void InotifyFileWatcher::dispatchEvent(const inotify_event &event)
+    {
+        // IN_IGNORED：watch 被移除后内核必补的一条。它的掩码不参与本端的事件分类，
+        // 却会落到下面「len == 0 → 监视目标本身」的分支上被当成一次「已修改」派发出去——
+        // 删除之后再来一条假修改，会诱导热加载去重扫一个已经不存在的路径。
+        // 映射必须跟着摘掉：内核已经不再监视这个 wd（目录被删、文件被替换都是这条路径），
+        // 留着会让 addWatch(同一路径) 被「已经看过这个路径」挡下——重建出来的同名目录/文件
+        // 从此再也挂不上监视，事件永久丢失（这里尚未取共享锁，可以安全地做清理）
+        if ((event.mask & IN_IGNORED) != 0)
+        {
+            removeWatchMapping(event.wd);
+            return;
+        }
+
+        // IN_MOVE_SELF：被监视的目录本身被改名或移到别处（len==0 才代表目标自身，带名字的
+        // 是子项改名）。与 IN_IGNORED 不同，内核到这里仍然持有这个 wd、不会补 IN_IGNORED，
+        // 于是映射一直留着：原地重建同名目录后再 addWatch，会被「已经看过这个路径」挡下而不
+        // 重新注册，新目录的事件从此永久丢失。这里按同样的方式摘掉映射——递归根随后由自愈
+        // 复查补挂，非递归的由调用方下一次 addWatch 补挂
+        if ((event.mask & IN_MOVE_SELF) != 0 && event.len == 0)
+        {
+            removeWatchMapping(event.wd);
+            return;
+        }
+
+        // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
+        // 对每个受监视的目录各派发一次「要重扫了」，让消费方重新扫描，绝不静默停在旧状态
+        if (event.wd == -1)
+        {
+            dispatchOverflowRescan();
+            return;
+        }
+
+        // 锁内取出回调快照与目标路径，锁外触发，避免回调中操作监听器造成死锁
+        FileChangeCallback callbackSnapshot;
+        std::string        changedPath;
+        FileChangeType     changeType              = FileChangeType::Modified;
+        bool               shouldWatchNewDirectory = false;
+
+        {
+            std::shared_lock lock(m_watchMutex);
+
+            const auto watchIterator = m_watchDescriptors.find(event.wd);
+            if (watchIterator == m_watchDescriptors.end())
+            {
+                return;
+            }
+
+            const std::string &watchedPath = watchIterator->second;
+            // 监视单个文件时内核不给名字（event.len 恒为 0），变更的就是被监视的那个文件本身；
+            // 监视目录时 event.name 才是目录内的条目名
+            const std::size_t nameLength = event.len == 0 ? 0 : std::strlen(event.name);
+
+            if (nameLength == 0)
+            {
+                changedPath = watchedPath;
+            } else
+            {
+                const bool        needsSeparator = !watchedPath.empty() && watchedPath.back() != '/';
+                const std::size_t nameOffset     = watchedPath.size() + (needsSeparator ? 1U : 0U);
+
+                // 一次预留到位，避免「赋值 + 两次追加」引发的逐步扩容
+                changedPath.reserve(nameOffset + nameLength);
+                changedPath.append(watchedPath);
+                if (needsSeparator)
+                {
+                    changedPath.push_back('/');
+                }
+                changedPath.append(event.name, nameLength);
+            }
+
+            if (!shouldDispatchChange(changedPath))
+            {
+                return;
+            }
+
+            callbackSnapshot = m_callback;
+
+            if ((event.mask & (IN_CREATE | IN_MOVED_TO)) != 0)
+            {
+                changeType = FileChangeType::Created;
+            } else if ((event.mask & (IN_DELETE | IN_DELETE_SELF)) != 0)
+            {
+                changeType = FileChangeType::Deleted;
+            } else if ((event.mask & (IN_MOVED_FROM | IN_MOVE_SELF)) != 0)
+            {
+                // 改名/移动的源路径按枚举契约报 Moved：Windows 的 RENAMED_OLD_NAME 走的就是这一类，
+                // 两侧必须同判据。真实删除仍是上面的 Deleted
+                changeType = FileChangeType::Moved;
+            }
+
+            // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报。
+            // 前缀比较必须落在路径分隔符边界上——纯前缀匹配会把「/data」当成「/database」的根，
+            // 给监视范围外的目录补挂监视（并把它们记进递归根集合，范围越滚越大）
+            shouldWatchNewDirectory = changeType == FileChangeType::Created &&
+                                      std::ranges::any_of(m_recursiveRoots,
+                                                          [&watchedPath](const std::string &root)
+                                                          {
+                                                              if (watchedPath.size() < root.size() || watchedPath.compare(0, root.size(), root) != 0)
+                                                              {
+                                                                  return false;
+                                                              }
+                                                              // 完全相同，或下一个字符就是分隔符，才算「在根之下」
+                                                              return watchedPath.size() == root.size() || watchedPath[root.size()] == '/' || (!root.empty() && root.back() == '/');
+                                                          });
+        }
+
+        if (shouldWatchNewDirectory)
+        {
+            std::error_code directoryError;
+            if (std::filesystem::is_directory(changedPath, directoryError) && !directoryError)
+            {
+                // 锁外补挂：addWatch 要拿写锁，持锁递归注册会自死锁
+                static_cast<void>(addWatch(changedPath, true));
+            }
+        }
+
+        // 回调抛出的兜底与计数在基类那一侧（FileWatcher::notifyChange）：这里漏一处，
+        // 异常就会沿监听线程的线程体穿出去变成 std::terminate
+        notifyChange(callbackSnapshot, changedPath, changeType);
     }
 
     void InotifyFileWatcher::rearmMissingWatchesIfDue()

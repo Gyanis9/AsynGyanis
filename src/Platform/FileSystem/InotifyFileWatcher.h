@@ -126,9 +126,20 @@ namespace AsynGyanis::Platform
         void watchLoop(std::stop_token stopToken);
 
         /**
-         * @brief 读取并解析当前可读的 inotify 事件批次
+         * @brief 读取当前可读的 inotify 事件批次，逐条交给 dispatchEvent
+         * @details 描述符是非阻塞的：队列读空后再读返回 EAGAIN，本轮排空到此为止；
+         *          读满一批则继续下一批，直到批数上界或队列读空。
          */
         void processEvents();
+
+        /**
+         * @brief 解析并派发一条 inotify 事件记录
+         * @details 由 processEvents() 逐条调用：IN_IGNORED 与 IN_MOVE_SELF 摘掉映射，队列
+         *          溢出转为逐目录的重扫通知，其余按监视目标分类。回调在锁内取快照、在锁外
+         *          触发，避免回调中操作监听器造成死锁。
+         * @param event 读取缓冲区内的那条记录，只在本次调用期间有效
+         */
+        void dispatchEvent(const inotify_event &event);
 
         /**
          * @brief 事件队列溢出后的兜底：对每条受监视的路径各派发一次 NeedsRescan
@@ -171,7 +182,7 @@ namespace AsynGyanis::Platform
         std::jthread              m_watchThread;      ///< 事件读取线程，析构时自动 join
         std::atomic<bool>         m_isRunning{false}; ///< 监听线程是否正在运行
 
-        /// 单次读取的事件缓冲区字节数：4 KiB 只装得下几十条记录，突发时每轮 poll 都要重来一次；
+        /// 单次读取的事件缓冲区字节数：4 KiB 只装得下几十到一百多条记录，突发时每轮 poll 都要重来一次；
         /// 取 64 KiB 与 Windows 侧的目录通知缓冲同一量级，让常见突发一趟带走。缓冲区在监听线程
         /// 的栈上，默认栈足够容纳
         static constexpr std::size_t kEventBufferBytes = 64 * 1024;
