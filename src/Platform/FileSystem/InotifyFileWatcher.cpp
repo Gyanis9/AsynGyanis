@@ -79,15 +79,17 @@ namespace AsynGyanis::Platform
             return false;
         }
 
+        // 先置位再起线程：线程若在置位之前就因异常退出，会把 false 写回，而 start() 随后又把
+        // true 盖上去——isRunning() 从此永远说谎。线程创建失败再把标志收回
+        m_isRunning.store(true, std::memory_order_release);
         try
         {
             m_watchThread = std::jthread([this](const std::stop_token stopToken) { watchLoop(stopToken); });
         } catch (const std::system_error &)
         {
+            m_isRunning.store(false, std::memory_order_release);
             return false;
         }
-
-        m_isRunning.store(true, std::memory_order_release);
         return true;
     }
 
@@ -397,7 +399,7 @@ namespace AsynGyanis::Platform
         }
 
         // 队列溢出（wd == -1）：内核来不及投递的事件已经丢了，而且不知道丢的是哪些路径。
-        // 对每个受监视的目录各派发一次「要重扫了」，让消费方重新扫描，绝不静默停在旧状态
+        // 对每条受监视的路径各派发一次「要重扫了」，让消费方重新扫描，绝不静默停在旧状态
         if (event.wd == -1)
         {
             dispatchOverflowRescan();
@@ -455,7 +457,7 @@ namespace AsynGyanis::Platform
             } else if ((event.mask & (IN_DELETE | IN_DELETE_SELF)) != 0)
             {
                 changeType = FileChangeType::Deleted;
-            } else if ((event.mask & (IN_MOVED_FROM | IN_MOVE_SELF)) != 0)
+            } else if ((event.mask & IN_MOVED_FROM) != 0)
             {
                 // 改名/移动的源路径按枚举契约报 Moved：Windows 的 RENAMED_OLD_NAME 走的就是这一类，
                 // 两侧必须同判据。真实删除仍是上面的 Deleted

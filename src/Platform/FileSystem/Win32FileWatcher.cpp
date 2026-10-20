@@ -144,16 +144,18 @@ namespace AsynGyanis::Platform
         m_shouldStop.store(false, std::memory_order_release);
         ::ResetEvent(m_stopEvent);
 
+        // 先置位再起线程：线程一起来就可能在 isRunning() 上被读到，置位晚一步就留下
+        // 「线程已在跑、状态却报 false」的窗口；创建失败再把标志收回
+        m_running.store(true, std::memory_order_release);
         try
         {
             // jthread 直接作为成员启动，无需堆分配；循环靠 m_shouldStop 与停止事件退出
             m_watchThread = std::jthread([this] { watchLoop(); });
         } catch (const std::system_error &)
         {
+            m_running.store(false, std::memory_order_release);
             return false;
         }
-
-        m_running.store(true, std::memory_order_release);
         return true;
     }
 
@@ -660,7 +662,8 @@ namespace AsynGyanis::Platform
         node.key()          = relocatedPath;
         node.mapped()->path = relocatedPath;
         m_watches.insert(std::move(node));
-        // 新位置同样纳入自愈范围；旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
+        // 属于递归覆盖集的新位置也纳入自愈范围；调用方点名的一层监视由下面的自愈清单接管。
+        // 旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
         // 只有本来就在递归覆盖集里的条目才把新键带进去：调用方点名的一层监视（不在集合里）
         // 改名后仍是一层，否则新位置下新建的子目录会被 watchNewSubdirectories 自动补挂
         if (wasRecursiveMember)

@@ -734,17 +734,73 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住（POSIX）：头只到一半通道就断了，已经装进来的描述符必须被关掉
+     * @details 描述符随第一段控制消息到达；补头循环遇到 EOF 时若只返回不关它，
+     *          每被一条半截消息撞一次就漏一枚描述符。
+     */
+    TEST(SocketHandoff, ClosesTheInstalledDescriptorWhenTheHeaderBreaksOff)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 侧的移交不携带描述符，没有「先装进来再退回」这一步";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     listeningPort = 0U;
+        const int         listener      = makeLoopbackListener(listeningPort);
+        ASSERT_GE(listener, 0);
+        cleanup.add(listener);
+
+        int channelWriter = -1;
+        int channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelReader);
+
+        struct Header
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_STREAM, 0U};
+
+        char   controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec  firstChunk{&header, sizeof(std::uint32_t)};
+        msghdr message{};
+        message.msg_iov           = &firstChunk;
+        message.msg_iovlen        = 1;
+        message.msg_control       = controlBuffer;
+        message.msg_controllen    = sizeof(controlBuffer);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
+        ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
+
+        // 只给半个头就发 FIN：读端补头时遇到 0，必须关掉已经装进来的那枚描述符
+        static_cast<void>(FileDescriptor::close(channelWriter));
+
+        const std::size_t descriptorsBefore = openDescriptorCount();
+        ASSERT_NE(descriptorsBefore, 0U) << "读不到 /proc/self/fd，这条判据没法成立";
+
+        EXPECT_EQ(Socket::readListeningSocketHandoff(channelReader), -1) << "半截头被当成了完整移交";
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kConnectionReset);
+        EXPECT_EQ(openDescriptorCount(), descriptorsBefore) << "半截头被拒了，已经装进来的描述符却留在了本进程里";
+#endif
+    }
+
+    /**
      * @brief 通道在交出任何字节之前就被对端关掉时，报的必须是「连接被复位」，不能是槽位里的残值
      * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次成功的
      *          调用，实测它会把 last-error 清成 0，照抄槽位就是拿「没有错误」当成失败原因；POSIX 用
-     *          recvmsg，0 会落进「头没收全」那一档，报出来像格式错。
+     *          recvmsg，0 与补头循环的 EOF 都直接报连接被复位。
      * @note 读这一侧的是换代时的编排线程，它照报出的码选下一步：看成格式错会重发一条永远收不到的
      *       消息，看成连接被复位才知道新一代根本没起来
      * @note 先污染槽位再制造 EOF：不污染的话槽位里可能恰好就是同一个值，断言就成了自我实现
      * @note 证伪（Windows 实测）：把那两处 0 字节的出口改回「照抄槽位」，本条红在错误码那句——
      *       读出来的是 0 而期望是 10054，正是「没有错误却失败」那种读数
      * @note 证伪（POSIX）：把 `recvmsg` 返回 0 那一支与补头循环的 0 字节出口都改成「照抄槽位」，
-     *       读出来的是 0 而期望 104（ECONNRESET），本条红在错误码那句
+     *       读出来的是 105（槽位里预置的 ENOBUFS）而期望 104（ECONNRESET），本条红在错误码那句
      */
     TEST(SocketHandoff, ReportsConnectionResetWhenTheChannelClosesBeforeAnyBytes)
     {

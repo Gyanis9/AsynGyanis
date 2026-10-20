@@ -135,7 +135,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 解析并派发一条 inotify 事件记录
          * @details 由 processEvents() 逐条调用：IN_IGNORED 与 IN_MOVE_SELF 摘掉映射，队列
-         *          溢出转为逐目录的重扫通知，其余按监视目标分类。回调在锁内取快照、在锁外
+         *          溢出转为逐条受监视路径的重扫通知，其余按监视目标分类。回调在锁内取快照、在锁外
          *          触发，避免回调中操作监听器造成死锁。
          * @param event 读取缓冲区内的那条记录，只在本次调用期间有效
          */
@@ -189,7 +189,7 @@ namespace AsynGyanis::Platform
         /// 一次 poll 唤醒最多排空的批数：持续写入时给这一轮设上界，避免自愈复查与停止请求
         /// 一直轮不到执行
         static constexpr std::size_t kMaximumBatchesPerWakeup = 8;
-        /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除/移出（删除），
+        /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除（删除）、移出（改名源路径），
         /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
         static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
     };

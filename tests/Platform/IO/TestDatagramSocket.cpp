@@ -732,7 +732,7 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(source.isDoNotFragmentSet());
 #if !ASYN_PLATFORM_WIN32
         // POSIX 才开得出 ECN 读数；Windows 上 setEcnFieldVisible 恒失败，那一侧另由
-        // supportsPerDatagramEcnField 的用例覆盖
+        // ReadsBackEcnFieldWhenPlatformSupportsIt 覆盖
         ASSERT_TRUE(source.setEcnFieldVisible(true));
         ASSERT_TRUE(source.isEcnFieldVisible());
 #endif
