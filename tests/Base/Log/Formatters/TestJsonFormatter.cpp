@@ -120,6 +120,22 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 上下文键二次撞名时两条都要留下，后一条继续加前缀
+     * @details message 加前缀后正好等于上下文里已有的 ctx.message；只按保留字判一次撞名，
+     *          两条就会落到同一个 JSON 键上，先写入的那条被后写入的覆盖
+     */
+    TEST(JsonFormatterTest, PrefixesContextKeysThatCollideAfterPrefixing)
+    {
+        JsonFormatter         formatter;
+        const LogEvent        event = makeEvent("原始消息");
+        const LogContextScope scope({{"message", "上下文消息"}, {"ctx.message", "上下文里的 ctx.message"}});
+        const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(textField(parsed, "message"), "原始消息");
+        EXPECT_EQ(textField(parsed, "ctx.message"), "上下文里的 ctx.message");
+        EXPECT_EQ(textField(parsed, "ctx.ctx.message"), "上下文消息");
+    }
+
+    /**
      * @brief 根记录器没有名字：省略 logger 键，而不是写一个空串
      */
     TEST(JsonFormatterTest, OmitsLoggerKeyWhenLoggerNameIsEmpty)

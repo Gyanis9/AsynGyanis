@@ -59,6 +59,25 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 为一个上下文键生成不与框架字段、先前上下文键重名的名字
+         * @details 撞上任何一边都继续加 ctx. 前缀。只按保留字判一次不够：上下文里同时有
+         *          message 与 ctx.message 时，前者的前缀结果正好是后者，两条会落到同一个
+         *          JSON 键上，先写入的那条被后写入的覆盖。
+         * @param key 上下文里的原始键名
+         * @param alreadyUsed 本条日志已分配的上下文键名
+         * @return std::string 可安全写入的键名
+         */
+        [[nodiscard]] std::string makeContextFieldName(const std::string_view key, const std::vector<std::string> &alreadyUsed)
+        {
+            std::string name{key};
+            while (isReservedLogField(name) || std::ranges::find(alreadyUsed, name) != alreadyUsed.end())
+            {
+                name.insert(0, "ctx.");
+            }
+            return name;
+        }
+
+        /**
          * @brief 往复用对象上落一个字符串字段
          * @details 槽位已是字符串时原地赋值，容量够用就不重新取堆（时间戳长度固定，日志器名、
          *          线程 id 与消息在同一线程上反复取同一长度）；不是字符串（本线程第一次用这一项）
@@ -144,8 +163,9 @@ namespace AsynGyanis::Base
             // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
 
-            // 上下文：顶层键，与原有字段并列。先摘掉上一条的上下文键再写本条的，
-            // 撞上框架字段时加 `ctx.` 前缀（上下文不能改写日志骨架）
+            // 上下文：顶层键，与原有字段并列。先摘掉上一条的上下文键再写本条的；
+            // 撞上框架字段或已分配的上下文键时都加 `ctx.` 前缀，上下文既不能改写日志骨架，
+            // 也不能因为加前缀与另一条上下文落到同一个 JSON 键上
             std::vector<std::string> &contextKeys = reusableContextKeys();
             for (const std::string &key: contextKeys)
             {
@@ -159,7 +179,7 @@ namespace AsynGyanis::Base
             {
                 for (const auto &[key, value]: context->fields())
                 {
-                    std::string fieldName = isReservedLogField(key) ? "ctx." + key : key;
+                    std::string fieldName = makeContextFieldName(key, contextKeys);
                     assignField(fields, fieldName.c_str(), value);
                     contextKeys.push_back(std::move(fieldName));
                 }
