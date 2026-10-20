@@ -174,10 +174,14 @@ namespace AsynGyanis::Base
          *       类型对不上按「未配置」处理而不抛出。
          * @note 同样不是 noexcept：命中的那个值要拷出来交给调用方（字符串与容器都是堆对象）。
          *       类型判定本身不拷树——走快照按引用查，判定失败时不必为这次失败深拷整棵子树
+         * @note 默认值须按值传入：左值默认值会被推导成引用，命中分支返回的引用指向函数内
+         *       已销毁的 optional，因此体内以 static_assert 拒绝引用推导。字符串字面量与
+         *       std::string 左值走下面的非模板重载；其它左值请传副本或显式写出模板实参
          */
         template<typename T>
         T get(const std::string_view key, T &&defaultValue) const
         {
+            static_assert(std::is_same_v<T, std::decay_t<T>>, "默认值按值传入：左值默认值会让返回值指向局部 optional 的引用");
             // 快照在本函数内持强引用，因此下面那份引用只在本次调用期间有效：取的是表里的原对象
             // 而不是 getOptional 的副本（那条通道判定类型之前先把整棵子树拷进 optional，
             // 用一个 getInt 去碰一个 200 成员的表，光这次「类型不符」就要拷两千多个节点）。
@@ -194,6 +198,42 @@ namespace AsynGyanis::Base
                 return std::move(*converted);
             }
             return std::forward<T>(defaultValue);
+        }
+
+        /**
+         * @brief 以 C 字符串作为默认值的取值重载
+         * @details 模板重载会把字面量推导成数组引用，decay 后是不受支持的 const char*，
+         *          配置值会被整条忽略；本重载把它固定成 std::string 通道。
+         * @param key 配置键
+         * @param defaultValue 默认文本，nullptr 按空串处理
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue != nullptr ? defaultValue : ""));
+        }
+
+        /**
+         * @brief 以 std::string 左值作为默认值的取值重载
+         * @details 非模板重载优先于转发引用模板，避免模板把左值推导成引用后返回悬垂引用。
+         * @param key 配置键
+         * @param defaultValue 默认文本
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, const std::string &defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue));
+        }
+
+        /**
+         * @brief 以可修改的 std::string 左值作为默认值的取值重载
+         * @param key 配置键
+         * @param defaultValue 默认文本
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, std::string &defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue));
         }
 
         /**

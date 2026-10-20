@@ -1708,6 +1708,24 @@ port: 9090
         EXPECT_EQ(configuration().get<bool>("nonexistent", true), true);
     }
 
+    TEST_F(ConfigManagerTest, GetWithDefaultAcceptsStringLiteralsAndLvalueStrings)
+    {
+        writeFile("cfg.yaml", "name: test\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 字面量默认值必须仍然读取配置：T 推导成数组引用时 configValueAs 会整条落空
+        EXPECT_EQ(configuration().get("name", "fallback"), "test");
+        EXPECT_EQ(configuration().get("missing", "fallback"), "fallback");
+
+        // 左值默认值返回按值：命中时不得返回指向局部 optional 的引用
+        const std::string fallback = "a-fallback-long-enough-to-leave-sso";
+        const std::string name     = configuration().get("name", fallback);
+        EXPECT_EQ(name, "test");
+
+        std::string mutableFallback = "a-mutable-fallback-long-enough-to-leave-sso";
+        EXPECT_EQ(configuration().get("name", mutableFallback), "test");
+    }
+
     TEST_F(ConfigManagerTest, GetWithDefaultFallsBackOnTypeMismatch)
     {
         // Int 与 Double、Bool 与 Int 之间不做隐式转换，类型不符即回落默认值
