@@ -36,9 +36,10 @@ namespace AsynGyanis::Base
          * @details 整段配置按一份快照取回后再装配（不是一键一读），因此并发改掉配置也不会
          *          拼出「等级来自上一版、sinks 来自这一版」的半新半旧结果。原始段不是对象
          *          （写成标量或数组）、getSection 因段落形状自相矛盾而失败、或 loggers 段不是
-         *          对象时，报诊断并一个日志器都不动。配置形态与 sink 构造的失败（包括 sink
-         *          构造内部的分配失败）都在本函数内诊断并收口，不会作为异常逃出；其余路径
-         *          （段落复制、日志器登记等）的分配失败仍按分配错误向调用方传播。
+         *          对象时，报诊断并一个日志器都不动。经 createSinkFromConfig 构造的 sink
+         *          （包括其构造内部的分配失败）在本函数内诊断并收口，不会作为异常逃出；但
+         *          默认 root 的 ConsoleSink 由 installDefaultRootLogger 直接构造，以及段落
+         *          复制、日志器登记等其余分配路径的失败，仍按分配错误向调用方传播。
          * @param configurationPrefix 日志配置根键前缀
          * @param baseDirectory 相对日志路径的基准目录（为空时使用可执行文件目录）
          */
@@ -55,8 +56,10 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 根据配置对象创建具体日志 Sink 实例
-         * @details 构造期的失败（目标文件打不开、句柄耗尽等）在这一层收口：报一行诊断后按
-         *          nullptr 返回，异常不逃出配置装配路径。逐字段的形态诊断与具体构造见
+         * @details 构造期的失败（目标文件打不开、句柄耗尽、构造内部的分配失败等）在这一层
+         *          收口：报一行诊断后按 nullptr 返回，经本函数构造的 sink 不会把异常抛给
+         *          调用方。这个边界不覆盖默认 root 的 ConsoleSink（由 installDefaultRootLogger
+         *          直接构造），也不覆盖其余装配路径的分配失败。逐字段的形态诊断与具体构造见
          *          createSinkFromConfigImpl。
          * @param sinkConfiguration Sink 配置对象
          * @param baseDirectory 相对日志路径的基准目录

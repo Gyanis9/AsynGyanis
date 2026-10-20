@@ -254,7 +254,9 @@ namespace AsynGyanis::Base
             loggingSection = configuration.getSection(configurationPrefix);
         } catch (const ConfigValidationException &sectionError)
         {
-            // 与 createSinkFromConfig 同一口径：不让异常逃出配置装配路径。段落形状自相矛盾时
+            // 这里只收口段落形态异常：配置装配路径上连分配失败一并收口的只有经
+            // createSinkFromConfig 构造的 sink；默认 root 的 ConsoleSink 由
+            // installDefaultRootLogger 直接构造，它与其余分配路径的失败仍会传播。段落形状自相矛盾时
             // （同一个名字既配成标量、又是更长键的第一段）整棵子树都不可信，于是一个日志器都不动，
             // 比按半截树改一半更强
             std::cerr << "LoggerConfig：" << sectionError.what() << "，本次不改动任何日志器" << '\n';
@@ -365,10 +367,11 @@ namespace AsynGyanis::Base
 
     std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
     {
-        // 构造期失败（目标文件打不开、句柄耗尽）在这里收口：FileSink/RollingFileSink 抛的是
-        // Base::SystemException，而配置装配这条路对外承诺不让异常外抛。跳过这一条 sink 并点名
-        // 原因，其余 sink 与日志器照常装配。非标准异常一并收口：这个边界若只认 std::exception，
-        // 其余抛出物仍会穿透到调用方
+        // 构造期失败（目标文件打不开、句柄耗尽、构造内部的分配失败）在这里收口：
+        // FileSink/RollingFileSink 抛的是 Base::SystemException，而经本函数构造的 sink 不把
+        // 异常抛给调用方。跳过这一条 sink 并点名原因，其余 sink 与日志器照常装配。非标准异常
+        // 一并收口：这个边界若只认 std::exception，其余抛出物仍会穿透到调用方；默认 root 的
+        // ConsoleSink 与其余装配路径的分配失败不经过这里，仍会向上传播
         try
         {
             return createSinkFromConfigImpl(sinkConfiguration, baseDirectory);
