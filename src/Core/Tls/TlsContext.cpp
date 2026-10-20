@@ -720,6 +720,12 @@ namespace AsynGyanis::Core
         // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单随同一条路复现，不会丢
         if (previousVerifyMode != SSL_VERIFY_NONE)
         {
+            // enableClientPeerVerification() 在策略未接管信任库时补过系统信任库；
+            // 新上下文要一并补上，否则校验模式还在、信任锚却空了
+            if (m_role == Role::Client && m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
+            {
+                static_cast<void>(SSL_CTX_set_default_verify_paths(newContext));
+            }
             applyPeerVerification(newContext, previousVerifyMode);
         }
 
