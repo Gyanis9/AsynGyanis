@@ -239,8 +239,8 @@ namespace AsynGyanis::Net
         }
 
         std::string frame;
-        // 预留首字节、最长 10 字节的长度域与负载，避免拼接过程中反复扩容
-        frame.reserve(10 + payload.size());
+        // 预留首字节、最长 10 字节长度域、4 字节掩码键与负载，避免拼接过程中反复扩容
+        frame.reserve(14 + payload.size());
 
         // 首字节布局：FIN(1) RSV1 RSV2 RSV3 操作码(4)。RSV1 只属于「压缩过的数据消息首帧」
         // （RFC 7692 §6）：控制帧从不压缩，继续帧也不是首帧。
@@ -720,7 +720,7 @@ namespace AsynGyanis::Net
         // 控制帧的负载在自己的缓冲里（数据消息的缓冲要留给还在进行中的分片）
         std::string &payloadSource = isControlFrame ? m_controlPayloadBuffer : m_payloadBuffer;
         m_pendingFrame.payload     = std::move(payloadSource);
-        // 移动之后源串的状态未指定：显式清空，让容量留着供下一帧复用
+        // 显式清空，下一帧从确定状态开始（移动后源串容量是否保留由实现决定）
         payloadSource.clear();
         m_hasPendingFrame = true;
 

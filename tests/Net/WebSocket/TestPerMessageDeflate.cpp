@@ -103,7 +103,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(narrowerClientWindow.responseValue.find("client_max_window_bits"), std::string::npos)
                 << "这条不回显：回显一个更低的值等于要求对端改小压缩窗口，而本端不需要那个收益";
 
-        // 不带值的形态（RFC 7692 §7.1.1/§7.1.2）只表示对端能开满 15：不钳也不产生回显
+        // client_max_window_bits 的不带值形态（RFC 7692 §7.1.2.2）只表示对端接受本端在响应里指定窗口：
+        // 不钳也不产生回显。server_max_window_bits 无值则不合法，见 DeclinesValuelessServerWindowBitsOffer
         const PerMessageDeflateNegotiation valuelessOffer = negotiatePerMessageDeflate("permessage-deflate; client_max_window_bits");
         ASSERT_TRUE(valuelessOffer.window.has_value());
         EXPECT_EQ(valuelessOffer.window->decompressBits, 15);
@@ -138,6 +139,26 @@ namespace AsynGyanis::Net
         // 两个端点各自合法
         EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=8").accepted);
         EXPECT_TRUE(negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=15").accepted);
+    }
+
+    /**
+     * @brief 钉住 §7.1.2.1 的取值要求：server_max_window_bits 在要约里也必须带 8..15 的值
+     * @details 无值形态曾被当成「对端能开满 15」收下，与该节「参数必须带值」相反；
+     *          同一条判据在响应侧早已要求带值，两侧不能各解释一套。
+     */
+    TEST(PerMessageDeflate, DeclinesValuelessServerWindowBitsOffer)
+    {
+        const PerMessageDeflateNegotiation valueless = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits");
+        EXPECT_FALSE(valueless.accepted) << "server_max_window_bits 不带值仍被收下：§7.1.2.1 要求它带 8..15 的值";
+        EXPECT_TRUE(valueless.responseValue.empty()) << "婉拒就不该回任何取值";
+        EXPECT_FALSE(valueless.window.has_value()) << "婉拒就不该留下一份窗口给收发点";
+
+        // 正向对照：带上合法值仍然接受，并按它钳本端压缩窗口
+        const PerMessageDeflateNegotiation explicitWindow = negotiatePerMessageDeflate("permessage-deflate; server_max_window_bits=15");
+        ASSERT_TRUE(explicitWindow.accepted);
+        ASSERT_TRUE(explicitWindow.window.has_value());
+        EXPECT_EQ(explicitWindow.window->compressBits, 15);
+        EXPECT_NE(explicitWindow.responseValue.find("server_max_window_bits=15"), std::string::npos);
     }
 
     /**

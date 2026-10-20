@@ -559,6 +559,172 @@ namespace AsynGyanis::Net
         EXPECT_NE(wireBytes.first.find(std::string{"Sec-WebSocket-Extensions: "} + std::string{kPerMessageDeflateClientOffer} + "\r\n"), std::string::npos) << wireBytes.first;
         EXPECT_EQ(wireBytes.first.find("Sec-WebSocket-Protocol"), std::string::npos);
     }
+
+    /**
+     * @brief 文本负载不是合法 UTF-8：按 1007 收口，非法字节既不交给业务也不进拒因
+     * @details 服务端收侧对同一条判据已经有断言；客户端此前缺这一格，非法文本会被原样交给业务，
+     *          等于让一条 §8.1 要求失败的连接继续「成功」地跑下去。
+     */
+    TEST(WebSocketClient, RejectsNonUtf8TextPayloadWith1007)
+    {
+        const std::string invalidText("\xC3\x28", 2);
+        const PeerScript  script = [&invalidText](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            static_cast<void>(wire.write(makeServerFrame(kTextFrameFirstByte, invalidText)));
+            wire.readOneClientFrame();
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (!received.has_value())
+            {
+                outcome.receive_error = received.error().message;
+                outcome.receive_kind  = received.error().kind;
+            } else
+            {
+                outcome.delivered.push_back(*received);
+            }
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.delivered.size(), 0U) << "非法 UTF-8 的文本被交给了业务";
+        ASSERT_TRUE(outcome.receive_kind.has_value());
+        EXPECT_EQ(*outcome.receive_kind, WebSocketSessionErrorKind::TextPayloadNotUtf8) << "文本负载非法要与帧层违例分开成档";
+        EXPECT_NE(outcome.receive_error.find("UTF-8"), std::string::npos) << outcome.receive_error;
+        EXPECT_EQ(outcome.receive_error.find(invalidText), std::string::npos) << "拒因里带回了对端的原始非法字节";
+        EXPECT_FALSE(outcome.is_open_after_actions);
+        const auto close = frameAt(wireBytes.second, 0);
+        ASSERT_HAS_VALUE(close) << "文本负载非法之后没发 Close";
+        EXPECT_EQ(close->firstByte, kCloseFrameFirstByte);
+        ASSERT_TRUE(closeCodeOf(*close).has_value());
+        EXPECT_EQ(*closeCodeOf(*close), 1007U) << "文本负载非法要按 1007 收口（RFC 6455 §7.4.1）";
+        EXPECT_EQ(close->payload, makeClosePayload(1007, "")) << "Close 不该携带原因，更不该回显对端的非法字节";
+    }
+
+    /**
+     * @brief 合法 UTF-8 文本照常交付：上一条判据的正向对照
+     */
+    TEST(WebSocketClient, DeliversValidUtf8TextPayload)
+    {
+        const std::string validText("\xE4\xB8\xAD\xF0\x9F\x98\x80", 7); // 中 + 😀
+        const PeerScript  script = [&validText](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            static_cast<void>(wire.write(makeServerFrame(kTextFrameFirstByte, validText)));
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (received.has_value())
+            {
+                outcome.delivered.push_back(*received);
+            } else
+            {
+                outcome.receive_error = received.error().message;
+            }
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.receive_error, "");
+        ASSERT_EQ(outcome.delivered.size(), 1U);
+        EXPECT_EQ(outcome.delivered.front().opCode, WebSocketOpCode::Text);
+        EXPECT_EQ(outcome.delivered.front().payload, validText);
+        EXPECT_TRUE(outcome.is_open_after_actions);
+    }
+
+    /**
+     * @brief 压缩过的文本同样在解压之后校验：非法 UTF-8 不能靠 RSV1 绕过这一关
+     */
+    TEST(WebSocketClient, RejectsNonUtf8TextAfterInflatingCompressedFrame)
+    {
+        const std::string invalidText("\xC3\x28", 2);
+        const PeerScript  script = [&invalidText](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()),
+                                                             "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n")));
+            const std::optional<std::string> compressed = deflateWebSocketMessage(invalidText);
+            if (compressed.has_value())
+            {
+                static_cast<void>(wire.write(makeServerFrame(0xC1, *compressed))); // FIN+RSV1+Text
+            }
+            wire.readOneClientFrame();
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto received = co_await client.receive();
+            if (!received.has_value())
+            {
+                outcome.receive_error = received.error().message;
+                outcome.receive_kind  = received.error().kind;
+            } else
+            {
+                outcome.delivered.push_back(*received);
+            }
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.delivered.size(), 0U) << "解压出来的非法文本被交给了业务";
+        ASSERT_TRUE(outcome.receive_kind.has_value());
+        EXPECT_EQ(*outcome.receive_kind, WebSocketSessionErrorKind::TextPayloadNotUtf8);
+        EXPECT_FALSE(outcome.is_open_after_actions);
+        const auto close = frameAt(wireBytes.second, 0);
+        ASSERT_HAS_VALUE(close) << "解压后的文本负载非法之后没发 Close";
+        ASSERT_TRUE(closeCodeOf(*close).has_value());
+        EXPECT_EQ(*closeCodeOf(*close), 1007U);
+    }
+
+    /**
+     * @brief 一次读进多条消息：解码起点由已消费偏移给出，交付顺序与内容不受搬移策略影响
+     * @details 三帧塞进同一次写出：首帧消费后未过缓冲一半（不搬移），第二帧之后才搬移。
+     *          两条路径都要按原顺序交出整条消息，不能把前一帧的尾巴当成下一帧的开头。
+     */
+    TEST(WebSocketClient, DeliversBackToBackFramesInOrder)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            std::string bytes = makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()));
+            bytes += makeServerFrame(kTextFrameFirstByte, "first");
+            bytes += makeServerFrame(kTextFrameFirstByte, "second");
+            bytes += makeServerFrame(kTextFrameFirstByte, "third");
+            static_cast<void>(wire.write(bytes));
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            for (int index = 0; index < 3; ++index)
+            {
+                const auto received = co_await client.receive();
+                if (!received.has_value())
+                {
+                    outcome.receive_error = received.error().message;
+                    outcome.receive_kind  = received.error().kind;
+                    break;
+                }
+                outcome.delivered.push_back(*received);
+            }
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        ASSERT_EQ(outcome.delivered.size(), 3U) << outcome.receive_error;
+        EXPECT_EQ(outcome.delivered[0].payload, "first");
+        EXPECT_EQ(outcome.delivered[1].payload, "second");
+        EXPECT_EQ(outcome.delivered[2].payload, "third");
+        for (const WebSocketFrame &frame: outcome.delivered)
+        {
+            EXPECT_EQ(frame.opCode, WebSocketOpCode::Text);
+            EXPECT_TRUE(frame.isFinal);
+        }
+        EXPECT_TRUE(outcome.is_open_after_actions);
+    }
+
     TEST(WebSocketClient, EveryOutboundFrameIsMaskedWithItsOwnKey)
     {
         const PeerScript script = [](PeerWire &wire)

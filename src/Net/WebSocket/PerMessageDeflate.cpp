@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
          *          按缺省窗口继续开连接会把一条解不开的流发到线上。前导零同样判非法——§7.1.2.1 与
          *          §7.1.2.2 明写取值是「without leading zeroes」的十进制数，「09」这种写法只在
          *          语法上沾边，放行等于把一条对不上规范的表当真。
-         * @param rawValue 等号右侧已去引号的文本；空表示参数不带值（本端按 15 处理，另判）
+         * @param rawValue 等号右侧已去引号的文本；空表示参数不带值（是否合法由调用方按参数方向判）
          * @return std::optional<int> 合法位数；非法时为空
          */
         [[nodiscard]] std::optional<int> parseWindowBits(const std::string_view rawValue)
@@ -273,17 +273,19 @@ namespace AsynGyanis::Net
                         break;
                     }
                     hasServerWindow = true;
-                    if (hasValue)
+                    // §7.1.2.1 要求带 8..15 的值，无值婉拒
+                    if (!hasValue)
                     {
-                        const std::optional<int> requested = parseWindowBits(rawValue);
-                        if (!requested.has_value())
-                        {
-                            unusable = true;
-                            break;
-                        }
-                        compressBits = std::min(compressBits, *requested);
+                        unusable = true;
+                        break;
                     }
-                    // 不带值的形态（RFC 7692 §7.1.2）只表示「对端能开满 15」，本端无需收小
+                    const std::optional<int> requested = parseWindowBits(rawValue);
+                    if (!requested.has_value())
+                    {
+                        unusable = true;
+                        break;
+                    }
+                    compressBits = std::min(compressBits, *requested);
                 } else if (isClientWindow)
                 {
                     if (++clientWindowOccurrences > 1)

@@ -136,7 +136,7 @@ namespace AsynGyanis
              *          收到的 Pong 就地消费，收到的 Close 会按同一状态码回一条 Close（RFC 6455 §5.5.1）
              *          并把帧交回调用方，同时本会话置为不可用。
              * @return Core::Task<WebSocketSessionExpected<WebSocketFrame>> 交出的帧操作码只可能是 Text、Binary、Close；
-             *         失败原因点明是对端违反协议、对端未留 Close 就收口，还是本端已经收口
+             *         失败原因点明是对端违反协议、文本负载不是合法 UTF-8（按 1007 收口）、对端未留 Close 就收口，还是本端已经收口
              */
             [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive();
 
@@ -228,6 +228,9 @@ namespace AsynGyanis
             /// 读进来还没交给解码器的字节：解码器一次只消化到帧尾为止，帧之后的字节必须留到下一次
             /// `receive()` 再喂，丢掉就等于把对端连着发的那条消息截掉
             std::string m_inboundBytes;
+            /// m_inboundBytes 里已消费前缀的字节数：解码起点由它给出。契约与 H3 帧读取器一致：
+            /// 已消费部分过半才搬移，避免一次读入多帧时逐帧搬动整段缓冲（O(n²)）
+            std::size_t m_inboundByteOffset{0};
             /// 本端还能不能发出帧：发过 Close、收到对端 Close、或通路出错都把它置为假。
             /// 收侧不看它——本端发起关闭之后，对端那条回帧仍要能读
             bool m_isOpen{true};

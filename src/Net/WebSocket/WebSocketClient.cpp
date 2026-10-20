@@ -521,9 +521,19 @@ namespace AsynGyanis::Net
         }
         for (;;)
         {
-            const WebSocketDecodeStatus status = m_decoder.parse(m_inboundBytes.data(), m_inboundBytes.size());
-            // 解码器一次只消化到帧尾为止：帧之后的字节留在 m_inboundBytes 里，下一轮接着喂
-            m_inboundBytes.erase(0, m_decoder.consumedByteCount());
+            const WebSocketDecodeStatus status = m_decoder.parse(m_inboundBytes.data() + m_inboundByteOffset, m_inboundBytes.size() - m_inboundByteOffset);
+            // 解码器一次只消化到帧尾为止：帧之后的字节留在 m_inboundBytes 里，下一轮接着喂。
+            // 契约与 H3 帧读取器一致：过半才搬移——一次读入多帧时逐帧 erase 开头是 O(n²)
+            m_inboundByteOffset += m_decoder.consumedByteCount();
+            if (m_inboundByteOffset == m_inboundBytes.size())
+            {
+                m_inboundBytes.clear();
+                m_inboundByteOffset = 0;
+            } else if (m_inboundByteOffset >= m_inboundBytes.size() / 2)
+            {
+                m_inboundBytes.erase(0, m_inboundByteOffset);
+                m_inboundByteOffset = 0;
+            }
             if (status == WebSocketDecodeStatus::Error)
             {
                 // 上限越出按 1009、其余按 1002 尽力告知对端（RFC 6455 §7.4.1）；通路已死时这一步作罢，
@@ -562,6 +572,24 @@ namespace AsynGyanis::Net
                         co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::CompressedMessageUnusable, errorText});
                     }
                     frame.payload = std::move(*inflated);
+                }
+                // 文本负载必须是合法 UTF-8（RFC 6455 §5.6 的编码要求，§8.1 要求校验不过即失败连接并回 1007）：
+                // 校验点是「交给业务之前」的最后一步，解压过的文本同样要在还原之后判
+                if (frame.opCode == WebSocketOpCode::Text)
+                {
+                    const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(frame.payload);
+                    if (invalidByteOffset != std::string_view::npos)
+                    {
+                        // 原始非法字节不进文案：它一旦被写进日志，就是把对端字节注入日志的原料
+                        const std::string errorText = std::format("对端发来的文本消息不是合法 UTF-8（RFC 6455 §5.6、§8.1）：第 {} 个字节起违规，"
+                                                                  "常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；本端已按 1007 收口，负载不会交给业务",
+                                                                  invalidByteOffset);
+                        // 先把「为什么收口」发出去，再把本端置成不可用（口径同解码错误那一段）
+                        static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(kWebSocketInvalidPayloadDataCode, {}))));
+                        m_isOpen = false;
+                        m_transport->close();
+                        co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::TextPayloadNotUtf8, errorText});
+                    }
                 }
                 if (frame.opCode == WebSocketOpCode::Ping)
                 {

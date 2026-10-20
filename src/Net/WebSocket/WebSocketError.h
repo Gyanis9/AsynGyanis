@@ -66,6 +66,7 @@ namespace AsynGyanis::Net
         CompressedMessageUnusable,   ///< 压缩消息解不开或解出后越出上限（RFC 7692 §7.2.2）：连接已按协议错误收口
         PeerClosedWithoutCloseFrame, ///< 对端没留下 Close 帧就收了线（§7.1.1 的快速断开）：拿不到对端给的原因码
         ConnectionLostWhileReading,  ///< 读帧期间通路出错：连接已断、被对端复位，或本端把它关了
+        TextPayloadNotUtf8,          ///< 文本消息不是合法 UTF-8：按 1007 收口
     };
 
     /**
