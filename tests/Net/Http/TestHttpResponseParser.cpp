@@ -708,4 +708,19 @@ namespace AsynGyanis::Net
             EXPECT_TRUE(parser.hasFailed()) << "越限要判这条流不对，而不是默默收下";
         }
     }
+
+    /**
+     * @brief 钉住：正文可整块取走，取走之后解析结果里不再留第二份
+     * @details 客户端把解析结果折成响应时用 takeBody() 移交正文；若仍返回引用并复制，
+     *          每个响应都多付一次与正文长度成正比的拷贝。其余字段必须保持可读。
+     */
+    TEST(HttpResponseParser, TakeBodyMovesTheBufferedPayloadOut)
+    {
+        HttpResponseParser parser;
+        ASSERT_TRUE(feedAll(parser, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nx-keep: yes\r\n\r\nhello"));
+        EXPECT_EQ(parser.takeBody(), "hello");
+        EXPECT_TRUE(parser.result().body.empty()) << "移交之后不该再留一份正文";
+        EXPECT_EQ(parser.result().statusCode, 200);
+        EXPECT_EQ(parser.result().headers.size(), 2U) << "状态码与头部不受移交影响";
+    }
 } // namespace AsynGyanis::Net

@@ -114,6 +114,17 @@ namespace AsynGyanis::Net
         {
             return m_result;
         }
+        /**
+         * @brief 取走已收齐的正文，免去调用方再整块复制一次
+         * @details 只在 isComplete() 为 true 时有意义；取走之后 result().body 为空串，
+         *          其余字段（状态码、头部、trailer）原样保留。连接复用前解析器会 reset，
+         *          因此这里交出的串不会再被本解析器写到。
+         * @return std::string 正文；未收齐时为空串
+         */
+        [[nodiscard]] std::string takeBody() noexcept
+        {
+            return std::move(m_result.body);
+        }
         /// 通知对端已关闭（close-delimited 模式下据此完成解析）
         void endOfStream();
 

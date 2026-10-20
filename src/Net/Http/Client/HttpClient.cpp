@@ -1019,8 +1019,9 @@ namespace AsynGyanis::Net
             response->statusCode   = parser.result().statusCode;
             response->reasonPhrase = parser.result().reasonPhrase;
             response->headers      = parser.result().headers;
-            response->body         = parser.result().body;
-            response->trailers     = parser.result().trailers;
+            // 正文按移动取走：这是每响应里唯一与正文长度成正比的一笔拷贝
+            response->body     = parser.takeBody();
+            response->trailers = parser.result().trailers;
             return response;
         }
 
