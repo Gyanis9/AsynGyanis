@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -355,6 +356,21 @@ namespace AsynGyanis::Base
 
     std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
     {
+        // 构造期失败（目标文件打不开、句柄耗尽）在这里收口：FileSink/RollingFileSink 抛的是
+        // Base::SystemException，而配置装配这条路对外承诺不让异常外抛。跳过这一条 sink 并点名
+        // 原因，其余 sink 与日志器照常装配
+        try
+        {
+            return createSinkFromConfigImpl(sinkConfiguration, baseDirectory);
+        } catch (const std::exception &error)
+        {
+            std::cerr << "LoggerConfig：创建 sink 失败，已跳过该 sink：" << error.what() << '\n';
+            return nullptr;
+        }
+    }
+
+    std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
+    {
         if (!sinkConfiguration.is_object())
         {
             // 本文件的口径是「容错必须可见」：少写一个 '-'（`- type: file` 变成 `- console`，或整条
@@ -465,7 +481,7 @@ namespace AsynGyanis::Base
                 std::cerr << "LoggerConfig：async sink 缺少 'wrapped'，已跳过" << '\n';
                 return nullptr;
             }
-            auto wrappedSink = createSinkFromConfig(sinkConfiguration.at("wrapped"), baseDirectory);
+            auto wrappedSink = createSinkFromConfigImpl(sinkConfiguration.at("wrapped"), baseDirectory);
             if (!wrappedSink)
                 return nullptr;
 

@@ -52,10 +52,23 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 根据配置对象创建具体日志 Sink 实例
+         * @details 构造期的失败（目标文件打不开、句柄耗尽等）在这一层收口：报一行诊断后按
+         *          nullptr 返回，异常不逃出配置装配路径。逐字段的形态诊断与具体构造见
+         *          createSinkFromConfigImpl。
          * @param sinkConfiguration Sink 配置对象
          * @param baseDirectory 相对日志路径的基准目录
          * @return std::unique_ptr<LogSink> 构造成功返回 Sink，失败返回 nullptr
          */
         static std::unique_ptr<LogSink> createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory);
+
+        /**
+         * @brief createSinkFromConfig 的未检查实现，允许构造期异常外抛
+         * @details 配置形态不可用时仍按原有诊断返回 nullptr；Sink 自身构造抛出的异常不在这里
+         *          拦截，由 createSinkFromConfig 统一收口。
+         * @param sinkConfiguration Sink 配置对象
+         * @param baseDirectory 相对日志路径的基准目录
+         * @return std::unique_ptr<LogSink> 构造成功返回 Sink，配置不可用时返回 nullptr
+         */
+        [[nodiscard]] static std::unique_ptr<LogSink> createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory);
     };
 } // namespace AsynGyanis::Base

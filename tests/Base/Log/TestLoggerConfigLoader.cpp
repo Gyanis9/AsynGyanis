@@ -1507,6 +1507,32 @@ namespace AsynGyanis::Base
         EXPECT_EQ(listTemporaryFiles(), expected);
     }
 
+    /**
+     * @brief Sink 打不开文件时只跳过它并出声，异常不得逃出配置装配
+     * @details FileSink 构造期打不开目标文件会抛 Base::SystemException，而配置装配这条路
+     *          对外承诺不让异常逃出。path 指到目录是运维最容易写出的形态之一：此时其余 sink
+     *          与日志器必须照常装配，并且要有一行点名原因的诊断，而不是整次加载就此中断。
+     */
+    TEST_F(LoggerConfigLoaderTest, SinkConstructionFailureIsDiagnosedNotThrown)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: file
+          path: .
+)");
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            EXPECT_NO_THROW(applyLogging());
+            captured = capture.text();
+        }
+        EXPECT_TRUE(contains(captured, "创建 sink 失败")) << captured;
+    }
+
     TEST_F(LoggerConfigLoaderTest, RollingFileSinkWithoutBaseFilenameIsSkipped)
     {
         loadConfiguration(R"(logging:
