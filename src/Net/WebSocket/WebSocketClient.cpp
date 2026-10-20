@@ -511,6 +511,21 @@ namespace AsynGyanis::Net
     {
         return m_remoteCloseReason;
     }
+    void WebSocketClient::compactInboundBytes()
+    {
+        // 解码器一次只消化到帧尾为止：帧之后的字节留在 m_inboundBytes 里，下一轮接着喂。
+        // 契约与 H3 帧读取器一致：过半才搬移——一次读入多帧时逐帧 erase 开头是 O(n²)
+        m_inboundByteOffset += m_decoder.consumedByteCount();
+        if (m_inboundByteOffset == m_inboundBytes.size())
+        {
+            m_inboundBytes.clear();
+            m_inboundByteOffset = 0;
+        } else if (m_inboundByteOffset >= m_inboundBytes.size() / 2)
+        {
+            m_inboundBytes.erase(0, m_inboundByteOffset);
+            m_inboundByteOffset = 0;
+        }
+    }
     Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::receive()
     {
         // 收侧只看通路活着没有：本端发过 Close 之后仍然要能读回对端那条 Close（§5.5.1 的握手是双向的），
@@ -522,18 +537,8 @@ namespace AsynGyanis::Net
         for (;;)
         {
             const WebSocketDecodeStatus status = m_decoder.parse(m_inboundBytes.data() + m_inboundByteOffset, m_inboundBytes.size() - m_inboundByteOffset);
-            // 解码器一次只消化到帧尾为止：帧之后的字节留在 m_inboundBytes 里，下一轮接着喂。
-            // 契约与 H3 帧读取器一致：过半才搬移——一次读入多帧时逐帧 erase 开头是 O(n²)
-            m_inboundByteOffset += m_decoder.consumedByteCount();
-            if (m_inboundByteOffset == m_inboundBytes.size())
-            {
-                m_inboundBytes.clear();
-                m_inboundByteOffset = 0;
-            } else if (m_inboundByteOffset >= m_inboundBytes.size() / 2)
-            {
-                m_inboundBytes.erase(0, m_inboundByteOffset);
-                m_inboundByteOffset = 0;
-            }
+            // 解码器一次只消化到帧尾为止：帧之后的字节留到下一轮，过半才搬移（同 H3 帧读取器）
+            compactInboundBytes();
             if (status == WebSocketDecodeStatus::Error)
             {
                 // 上限越出按 1009、其余按 1002 尽力告知对端（RFC 6455 §7.4.1）；通路已死时这一步作罢，
@@ -542,13 +547,8 @@ namespace AsynGyanis::Net
                 const bool          isOverLimit = m_decoder.isLimitExceeded();
                 const std::uint16_t closeCode   = isOverLimit ? kWebSocketMessageTooBigCode : kWebSocketProtocolErrorCode;
                 const std::string   errorText   = m_decoder.errorMessage();
-                // 先把「为什么收口」发出去，再把本端置成不可用：反过来写会让这条出声的帧被自家的闸门拦下，
-                // 对端只看到一个没有原因的断开
-                static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(closeCode, {}))));
-                m_isOpen = false;
-                m_transport->close();
-                co_return std::unexpected(
-                        WebSocketSessionError{isOverLimit ? WebSocketSessionErrorKind::MessageLimitExceeded : WebSocketSessionErrorKind::ProtocolFramingRejected, errorText});
+                co_return co_await failSession(closeCode, isOverLimit ? WebSocketSessionErrorKind::MessageLimitExceeded : WebSocketSessionErrorKind::ProtocolFramingRejected,
+                                               errorText);
             }
             if (status == WebSocketDecodeStatus::Frame)
             {
@@ -565,11 +565,7 @@ namespace AsynGyanis::Net
                     if (!inflated.has_value())
                     {
                         const std::string errorText = "对端发来的压缩消息解压失败，或解压结果超过上限（RFC 7692 §7.2.2）：请核对对端的压缩实现与协商参数";
-                        // 先把「为什么收口」发出去，再把本端置成不可用（口径同上面解码错误那一段）
-                        static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(kWebSocketProtocolErrorCode, {}))));
-                        m_isOpen = false;
-                        m_transport->close();
-                        co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::CompressedMessageUnusable, errorText});
+                        co_return co_await failSession(kWebSocketProtocolErrorCode, WebSocketSessionErrorKind::CompressedMessageUnusable, errorText);
                     }
                     frame.payload = std::move(*inflated);
                 }
@@ -584,11 +580,7 @@ namespace AsynGyanis::Net
                         const std::string errorText = std::format("对端发来的文本消息不是合法 UTF-8（RFC 6455 §5.6、§8.1）：第 {} 个字节起违规，"
                                                                   "常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；本端已按 1007 收口，负载不会交给业务",
                                                                   invalidByteOffset);
-                        // 先把「为什么收口」发出去，再把本端置成不可用（口径同解码错误那一段）
-                        static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(kWebSocketInvalidPayloadDataCode, {}))));
-                        m_isOpen = false;
-                        m_transport->close();
-                        co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::TextPayloadNotUtf8, errorText});
+                        co_return co_await failSession(kWebSocketInvalidPayloadDataCode, WebSocketSessionErrorKind::TextPayloadNotUtf8, errorText);
                     }
                 }
                 if (frame.opCode == WebSocketOpCode::Ping)
@@ -628,6 +620,15 @@ namespace AsynGyanis::Net
             }
             m_inboundBytes.append(m_readBuffer.data(), static_cast<std::size_t>(received));
         }
+    }
+    Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::failSession(const std::uint16_t closeCode, const WebSocketSessionErrorKind kind, std::string errorText)
+    {
+        // 先把「为什么收口」发出去，再把本端置成不可用：反过来写会让这条出声的帧被自家的闸门拦下，
+        // 对端只看到一个没有原因的断开
+        static_cast<void>(co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Close, buildWebSocketClosePayload(closeCode, {}))));
+        m_isOpen = false;
+        m_transport->close();
+        co_return std::unexpected(WebSocketSessionError{kind, std::move(errorText)});
     }
     Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::answerPeerClose(const WebSocketFrame &closeFrame)
     {

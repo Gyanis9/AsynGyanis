@@ -180,6 +180,27 @@ namespace AsynGyanis::Net
         }
     }
 
+    QuicStreamLayer::IncomingStream &QuicStreamLayer::createIncomingStream(const std::uint64_t streamId)
+    {
+        IncomingStream &fresh = m_incoming[streamId];
+        fresh.streamLimit     = incomingInitialWindowOf(streamId);
+        // 流数配额只数对端发起的流：本端双向流上的入站记录只为接收响应，算进去等于把本端
+        // 自己的请求数当成对端已用流数，给对端的 MAX_STREAMS 会被白白抬高
+        if (!isLocallyInitiated(streamId))
+        {
+            if (isUnidirectional(streamId))
+            {
+                m_incomingUnidirectionalCount = std::max(m_incomingUnidirectionalCount, streamIndexOfType(streamId) + 1);
+            } else
+            {
+                m_incomingBidirectionalCount = std::max(m_incomingBidirectionalCount, streamIndexOfType(streamId) + 1);
+            }
+            // 对端新建流本身就该触发一次上限检查：应用还没消费时也得把额度续上，否则对端开不出下一条流
+            raiseAdvertisedStreamLimits();
+        }
+        return fresh;
+    }
+
     QuicStreamViolationStatus QuicStreamLayer::onStreamFrame(const QuicStreamFrame &frame)
     {
         const std::uint64_t streamId  = frame.streamId;
@@ -219,22 +240,7 @@ namespace AsynGyanis::Net
                         kStreamLimitError, std::format("对端发起了第 {} 条{}向流，超出本端宣告的上限 {}（RFC 9000 §4.6）", index, isUnidirectional(streamId) ? "单" : "双",
                                                        isUnidirectional(streamId) ? m_advertisedUnidirectionalStreams : m_advertisedBidirectionalStreams)));
             }
-            IncomingStream &fresh = m_incoming[streamId];
-            fresh.streamLimit     = incomingInitialWindowOf(streamId);
-            // 流数配额只数对端发起的流：本端双向流上的入站记录只为接收响应，算进去等于把本端
-            // 自己的请求数当成对端已用流数，给对端的 MAX_STREAMS 会被白白抬高
-            if (!isLocallyInitiated(streamId))
-            {
-                if (isUnidirectional(streamId))
-                {
-                    m_incomingUnidirectionalCount = std::max(m_incomingUnidirectionalCount, streamIndexOfType(streamId) + 1);
-                } else
-                {
-                    m_incomingBidirectionalCount = std::max(m_incomingBidirectionalCount, streamIndexOfType(streamId) + 1);
-                }
-                // 对端新建流本身就该触发一次上限检查：应用还没消费时也得把额度续上，否则对端开不出下一条流
-                raiseAdvertisedStreamLimits();
-            }
+            static_cast<void>(createIncomingStream(streamId));
             incoming = m_incoming.find(streamId);
         }
         IncomingStream &stream = incoming->second;

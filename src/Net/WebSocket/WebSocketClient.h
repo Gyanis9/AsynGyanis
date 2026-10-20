@@ -210,6 +210,21 @@ namespace AsynGyanis
             [[nodiscard]] Core::Task<bool> writeFrameBytes(std::string frameBytes);
 
             /**
+             * @brief 解完一帧后推进读游标：已消费部分过半才搬移缓冲
+             * @details 解码器一次只消化到帧尾为止，帧之后的字节留到下一次再喂；逐帧 erase 开头是 O(n²)。
+             */
+            void compactInboundBytes();
+
+            /**
+             * @brief 发 Close、置本端不可用并关掉传输，把失败原因按给定类别交回调用方
+             * @param closeCode 随 Close 帧发出去的状态码
+             * @param kind 交回的错误类别
+             * @param errorText 交回的原因文案
+             * @return Core::Task<WebSocketSessionExpected<WebSocketFrame>> 恒为失败
+             */
+            [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> failSession(std::uint16_t closeCode, WebSocketSessionErrorKind kind, std::string errorText);
+
+            /**
              * @brief 应答对端那条 Close：按同一状态码回一条，然后把通路收掉
              * @param closeFrame 解码器交回的 Close 帧，负载是 {2 字节大端码}[原因]
              * @return Core::Task<WebSocketSessionExpected<WebSocketFrame>> 交回对端那条帧，让业务看见对端给的码与原因

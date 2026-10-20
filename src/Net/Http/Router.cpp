@@ -84,6 +84,36 @@ namespace AsynGyanis::Net
             }
             return best;
         }
+
+        /**
+         * @brief 候选路由是否属于当前这一档
+         * @details 未收录方法一律不进业务匹配（UNKNOWN 不能蹭上 any() 路由）。HEAD 复用 GET
+         *          （RFC 9110 §9.1）的候选分两档：第一档只认显式 HEAD，第二档认 any() 与 GET。
+         *          非 HEAD 只有一档：本方法或 any()。
+         * @param matchMethod 本次派发按哪个方法匹配
+         * @param isRequestMethodRecognized 请求方法是否被本框架收录
+         * @param candidateMethod 候选路由的方法
+         * @param isAnyMethod 候选路由是否以 any() 注册
+         * @param pass 档位，从 0 起
+         * @return true 候选可进入本档的路径判定
+         */
+        constexpr bool isRouteCandidateSelected(const HttpMethod matchMethod, const bool isRequestMethodRecognized, const HttpMethod candidateMethod, const bool isAnyMethod,
+                                                const int pass) noexcept
+        {
+            if (!isRequestMethodRecognized)
+            {
+                return false;
+            }
+            if (matchMethod != HttpMethod::HEAD)
+            {
+                return isAnyMethod || candidateMethod == matchMethod;
+            }
+            if (pass == 0)
+            {
+                return candidateMethod == HttpMethod::HEAD && !isAnyMethod;
+            }
+            return isAnyMethod || candidateMethod == HttpMethod::GET;
+        }
     } // namespace
 
     // ============================================================================
@@ -480,24 +510,6 @@ namespace AsynGyanis::Net
         {
             const int passCount = matchMethod == HttpMethod::HEAD ? 2 : 1;
 
-            // 候选是否属于本档；未收录方法一律不进业务匹配（UNKNOWN 不能蹭上 any() 路由）
-            const auto isSelectedInPass = [matchMethod, isRequestMethodRecognized](const HttpMethod candidateMethod, const bool isAnyMethod, const int pass) -> bool
-            {
-                if (!isRequestMethodRecognized)
-                {
-                    return false;
-                }
-                if (matchMethod != HttpMethod::HEAD)
-                {
-                    return isAnyMethod || candidateMethod == matchMethod;
-                }
-                if (pass == 0)
-                {
-                    return candidateMethod == HttpMethod::HEAD && !isAnyMethod;
-                }
-                return isAnyMethod || candidateMethod == HttpMethod::GET;
-            };
-
             // ---- 一级：字面路径索引。命中即完成本层候选收集 ----
             if (const auto exactIterator = matchTable->m_exactRoutes.find(requestPath); exactIterator != matchTable->m_exactRoutes.end())
             {
@@ -512,7 +524,7 @@ namespace AsynGyanis::Net
                             rememberAllowedMethod(candidate.method, candidate.isAnyMethod);
                         }
 
-                        if (!isSelectedInPass(candidate.method, candidate.isAnyMethod, pass))
+                        if (!isRouteCandidateSelected(matchMethod, isRequestMethodRecognized, candidate.method, candidate.isAnyMethod, pass))
                         {
                             continue;
                         }
@@ -531,7 +543,7 @@ namespace AsynGyanis::Net
             {
                 for (const PatternRoute &route: matchTable->m_patternRoutes)
                 {
-                    const bool isSelected = isSelectedInPass(route.method, route.isAnyMethod, pass);
+                    const bool isSelected = isRouteCandidateSelected(matchMethod, isRequestMethodRecognized, route.method, route.isAnyMethod, pass);
 
                     // 第一档要把 Allow 收齐，所以每个候选都要做一次路径判定；第二档只认本档候选，
                     // 其余候选的 Allow 已在第一档记过，不必再测

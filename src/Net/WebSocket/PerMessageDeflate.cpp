@@ -274,12 +274,7 @@ namespace AsynGyanis::Net
                     }
                     hasServerWindow = true;
                     // §7.1.2.1 要求带 8..15 的值，无值婉拒
-                    if (!hasValue)
-                    {
-                        unusable = true;
-                        break;
-                    }
-                    const std::optional<int> requested = parseWindowBits(rawValue);
+                    const std::optional<int> requested = hasValue ? parseWindowBits(rawValue) : std::nullopt;
                     if (!requested.has_value())
                     {
                         unusable = true;

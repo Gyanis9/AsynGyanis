@@ -951,8 +951,7 @@ namespace AsynGyanis::Net
                 return true;
             }
             // 从未开启的流上出现 DATA：§5.1「idle」段只允许 HEADERS 与 PRIORITY。
-            // 一条记录都没被挤掉时「流号不超过已用最大值而账本里又没有」就等于「这条流从未开过」，
-            // 这种能证伪的违约帧不能替对端咽下去
+            // 一条记录都没被挤掉时「流号不超过已用最大值而账本里又没有」就等于「这条流从未开过」，这种能证伪的违约帧不能替对端咽下去
             fail(Http2ErrorCode::ProtocolError,
                  std::format("流 {} 从未开启（idle），不能在该流上发 DATA（RFC 9113 §5.1）；本端已用过的最大对端流号是 {}", streamId, m_highestPeerStreamId));
             return false;

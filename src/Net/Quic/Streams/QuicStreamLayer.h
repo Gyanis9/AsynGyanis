@@ -382,6 +382,15 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool isLocallyInitiated(std::uint64_t streamId) const noexcept;
 
+        /**
+         * @brief 为一条对端合法的新流建入站记录，并对新建的对端流做流数记账与上限续发
+         * @details 流数配额只数对端发起的流：本端双向流上的入站记录只为接收响应，算进去等于把本端
+         *          自己的请求数当成对端已用流数，给对端的 MAX_STREAMS 会被白白抬高。
+         * @param streamId 流号
+         * @return IncomingStream & 新建的记录；同号已有记录时返回既有那条
+         */
+        IncomingStream &createIncomingStream(std::uint64_t streamId);
+
         [[nodiscard]] OutgoingStream &outgoingStream(std::uint64_t streamId);
 
         /**

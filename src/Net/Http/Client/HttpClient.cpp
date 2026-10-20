@@ -1027,6 +1027,49 @@ namespace AsynGyanis::Net
 
 
         /**
+         * @brief 把流式正文逐段编成分块帧写上通路，最后补终止块
+         * @details 拉一段、发一段：上一段没写上通路就不叫下一段，这就是上传的背压。零长的段按
+         *          §7.1 就是终止块，不能当正文发出去（那等于提前把正文判完，后面的段落没人认领）。
+         * @param connection 已连上、TLS 也已握手完的连接
+         * @param bodySource 正文来源：每调一次给一段，空可选即收尾
+         * @param host 失败原因里要点出的主机名
+         * @param failureReason 输出：失败原因，成功时不动它
+         * @return Core::Task<bool> true 表示正文与终止块都已写出；false 表示已写出 failureReason
+         */
+        Core::Task<bool> sendStreamingBody(HttpOutboundConnection &connection, const HttpBodyChunkSource &bodySource, const std::string_view host, std::string &failureReason)
+        {
+            while (true)
+            {
+                const std::optional<std::string> chunk = co_await bodySource();
+                if (!chunk.has_value())
+                {
+                    break;
+                }
+                if (chunk->empty())
+                {
+                    continue;
+                }
+                std::string frame;
+                frame.reserve(chunk->size() + 16U);
+                frame += std::format("{:x}\r\n", chunk->size());
+                frame += *chunk;
+                frame += "\r\n";
+                if (!co_await connection.send(frame))
+                {
+                    failureReason = "写出流式正文失败：对端在收完正文前收线，或本次请求已到时限（主机 " + std::string(host) + "）";
+                    co_return false;
+                }
+            }
+            const std::string terminator = "0\r\n\r\n";
+            if (!co_await connection.send(terminator))
+            {
+                failureReason = "收尾流式正文失败：终止块没能写上通路（对端收线或已到时限，主机 " + std::string(host) + "）";
+                co_return false;
+            }
+            co_return true;
+        }
+
+        /**
          * @brief 在一条已建立的连接上走完一次请求/响应
          * @param loop 所属事件循环（看门狗的定时器用它）
          * @param connection 已连上、TLS 也已握手完的连接
@@ -1061,34 +1104,8 @@ namespace AsynGyanis::Net
                 exchange.isAnyByteSent = true;
                 if (bodySource)
                 {
-                    // 拉一段、发一段：上一段没写上通路就不叫下一段，这就是上传的背压。零长的段按
-                    // §7.1 就是终止块，不能当正文发出去（那等于提前把正文判完，后面的段落没人认领）
-                    while (true)
+                    if (!co_await sendStreamingBody(connection, bodySource, host, failureReason))
                     {
-                        const std::optional<std::string> chunk = co_await bodySource();
-                        if (!chunk.has_value())
-                        {
-                            break;
-                        }
-                        if (chunk->empty())
-                        {
-                            continue;
-                        }
-                        std::string frame;
-                        frame.reserve(chunk->size() + 16U);
-                        frame += std::format("{:x}\r\n", chunk->size());
-                        frame += *chunk;
-                        frame += "\r\n";
-                        if (!co_await connection.send(frame))
-                        {
-                            failureReason = "写出流式正文失败：对端在收完正文前收线，或本次请求已到时限（主机 " + host + "）";
-                            co_return exchange;
-                        }
-                    }
-                    const std::string terminator = "0\r\n\r\n";
-                    if (!co_await connection.send(terminator))
-                    {
-                        failureReason = "收尾流式正文失败：终止块没能写上通路（对端收线或已到时限，主机 " + host + "）";
                         co_return exchange;
                     }
                 }

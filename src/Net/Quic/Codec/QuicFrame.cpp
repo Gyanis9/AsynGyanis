@@ -533,14 +533,31 @@ namespace AsynGyanis::Net
                 frame);
     }
 
-    QuicDecodeStatus decodeQuicFrames(const std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
+    namespace
     {
-        // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
-        frames.clear();
+        /**
+         * @brief 把一段连续 0x00 合成一个 PADDING 帧，游标跳到这段之后
+         * @details PADDING 是单字节 0x00，一段连续 0x00 语义上就是同一个帧；逐字节成帧会让一个
+         *          1200 字节的验证包解出上千个 variant 元素。上层不消费 PADDING，连续段合并成一帧。
+         * @param payload 一个报文的净载荷
+         * @param readOffset 输入输出：当前读位置，返回时指向这段 0x00 之后
+         * @param frames 输出：追加一个 QuicPaddingFrame
+         */
+        void decodeConsecutivePadding(const std::span<const std::uint8_t> payload, std::size_t &readOffset, std::vector<QuicFrame> &frames)
+        {
+            while (readOffset < payload.size() && payload[readOffset] == 0x00U)
+            {
+                ++readOffset;
+            }
+            frames.push_back(QuicFrame{QuicPaddingFrame{}});
+        }
 
-        // 失败不交半截产出：收包路径复用的是同一块 scratch 缓冲，残帧留在里面，
-        // 下一包就可能把上一包的帧当成自己刚解出来的。用守卫而不是在每个失败出口各写一遍
-        // clear——将来多加一条 return 就会漏一处
+        /**
+         * @brief 解码中途失败时清空产出，不把半截结果交出去
+         * @details 收包路径复用的是同一块 scratch 缓冲，残帧留在里面，下一包就可能把上一包的帧
+         *          当成自己刚解出来的。用守卫而不是在每个失败出口各写一遍 clear——将来多加一条
+         *          return 就会漏一处。
+         */
         struct FailureGuard
         {
             std::vector<QuicFrame> &frames;
@@ -553,20 +570,22 @@ namespace AsynGyanis::Net
                     frames.clear();
                 }
             }
-        } guard{frames};
-        std::size_t readOffset = 0;
+        };
+    } // namespace
+
+    QuicDecodeStatus decodeQuicFrames(const std::span<const std::uint8_t> payload, std::vector<QuicFrame> &frames)
+    {
+        // 进出自明：容量留下、内容清空，调用方才敢把同一块缓冲一包接一包地交回来
+        frames.clear();
+
+        FailureGuard guard{frames};
+        std::size_t  readOffset = 0;
         while (readOffset < payload.size())
         {
-            // PADDING 是单字节 0x00，一段连续 0x00 语义上就是同一个帧；逐字节成帧会让一个
-            // 1200 字节的验证包解出上千个 variant 元素。上层不消费 PADDING，连续段合并成一帧，
-            // 游标直接跳到这段末尾
+            // 连续 0x00 语义上是同一个 PADDING 帧，逐字节成帧会让验证包解出上千个 variant 元素
             if (payload[readOffset] == 0x00U)
             {
-                while (readOffset < payload.size() && payload[readOffset] == 0x00U)
-                {
-                    ++readOffset;
-                }
-                frames.push_back(QuicFrame{QuicPaddingFrame{}});
+                decodeConsecutivePadding(payload, readOffset, frames);
                 continue;
             }
 
