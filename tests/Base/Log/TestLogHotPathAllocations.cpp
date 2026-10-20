@@ -575,11 +575,11 @@ namespace AsynGyanis::Base
 
     /**
      * @brief 稳定上下文的 JSON 行不比无上下文的行多付可省的堆
-     * @details 上下文键集合跨行不变时，键名缓冲与 JSON 节点都该复用：每行只为同名键更新取值，
-     *          既不重新生成键名字符串，也不把键摘掉再插回去。长键的 JSON 键名每行仍要由
-     *          nlohmann 现造一份临时串（超过小串内联，必然取一块堆），这一块与复用无关；
-     *          把它从带上下文的读数里扣掉之后，两条读数只差测量窗口第一行补齐键名槽位的几次，
-     *          差出成百上千次说明仍在逐行删建。
+     * @details 上下文键集合跨行不变时，键名缓冲、键名查找与 JSON 节点都该复用：每行只为同名键
+     *          更新取值，既不重新生成键名字符串，也不把键摘掉再插回去。查找直接复用跨行缓冲里
+     *          那份键名串，长键（超过小串内联）也不再为 nlohmann 的按键查找现造临时串；
+     *          两条读数只差测量窗口第一行补齐键名槽位的几次，差出成百上千次说明仍在逐行删建
+     *          或逐行为长键造临时串。
      */
     TEST(LogHotPathAllocations, JsonContextFieldsReuseTheirSlots)
     {
@@ -615,11 +615,9 @@ namespace AsynGyanis::Base
 
         EXPECT_GT(withContext.resultSum, withoutContext.resultSum) << "带上下文的行没有变长：上下文没写进去，两条读数不是同一形状的对照";
 #ifdef NDEBUG
-        // 带上下文每行固定多付一次：长键的 JSON 键名超过 SSO，nlohmann 的按键查找要现造临时串。
-        // 扣掉这一块后，剩余差值只允许是首行补齐键名槽位的几次；仍在逐行重建键名缓冲时会多出
-        // 每行一次，远超本上限
-        const std::uint64_t reusableAllocations = withContext.totalAllocations - kMeasurementIterations;
-        EXPECT_LE(reusableAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U) << "稳定上下文的 JSON 行仍在逐行重建键名：键名缓冲应跨行复用";
+        // 稳态下两条读数只差首行补齐键名槽位的几次；仍在逐行重建键名或为长键造临时串时，
+        // 带上下文的读数会每行多出一次，远超本上限
+        EXPECT_LE(withContext.totalAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U) << "稳定上下文的 JSON 行仍在逐行重建键名或造键名临时串";
 #endif
     }
 } // namespace AsynGyanis::Base

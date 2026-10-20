@@ -68,6 +68,31 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 用已有的键名串在复用对象上落一个字符串字段
+         * @details 查找直接复用调用方手里那份键名串，不为长键再造临时 std::string：
+         *          上下文键名本来就在跨行缓冲里，交给 `const char *` 重载会先构造一份临时串。
+         * @param fields 复用的字段对象
+         * @param fieldName 键名（由调用方持有，生命周期覆盖本次调用）
+         * @param value 字段文本
+         */
+        void assignField(nlohmann::json &fields, const std::string &fieldName, const std::string_view value)
+        {
+            const auto iterator = fields.find(fieldName);
+            if (iterator == fields.end())
+            {
+                fields[fieldName] = value;
+                return;
+            }
+            nlohmann::json &slot = iterator.value();
+            if (slot.is_string())
+            {
+                slot.get_ref<std::string &>() = value;
+                return;
+            }
+            slot = value;
+        }
+
+        /**
          * @brief 上下文键名的跨行复用缓冲
          * @details previous 记录上一行写进 JSON 对象的键名，next 是为这一行重建的键名。
          *          两个向量互换而不清空：清空会销毁串、丢掉容量，下一行又要为每个键重新取堆。
@@ -195,7 +220,8 @@ namespace AsynGyanis::Base
                     }
                     std::string &fieldName = scratch.next[currentCount];
                     assignContextFieldName(fieldName, key, scratch.next, currentCount);
-                    assignField(fields, fieldName.c_str(), value);
+                    // 找键时复用这份键名串：长键不必每行再为查找造一份临时串
+                    assignField(fields, fieldName, value);
                     ++currentCount;
                 }
             }
