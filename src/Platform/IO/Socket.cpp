@@ -789,7 +789,7 @@ namespace AsynGyanis::Platform
         }
         if (receivedLength == 0)
         {
-            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。下面的补头循环
+            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。下面的补头调用
             // 遇到同一个 0 也会退出，但这里直接报出来，不必再绕过一整段判定
             PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
             return -1;

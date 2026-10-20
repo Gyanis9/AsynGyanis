@@ -151,7 +151,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 按秒节拍补挂「调用方要过、但内核已经不再监视」的那些路径
          * @details 三种失效都走同一扇门：监视的文件被替换或删除（IN_IGNORED）、被监视的目录本身
-         *          被移走（IN_MOVE_SELF 之后内核照样补 IN_IGNORED）、以及注册时路径还不存在。
+         *          被移走（IN_MOVE_SELF；内核不补 IN_IGNORED，映射由本端摘掉）、以及注册时路径还不存在。
          *          失效时 removeWatchMapping() 摘掉映射，之后没有别的人会再为这条路径调 addWatch
          *          ——不补挂，它内部的变更就永久丢失。补挂时按 m_recursiveRoots 里记过的值决定要不要
          *          递归，避免把一条本来只要一层的路径悄悄扩成整棵树
