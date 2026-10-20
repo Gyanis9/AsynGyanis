@@ -446,18 +446,31 @@ namespace AsynGyanis::Core
     void GracefulShutdown::postRunnable(std::function<void()> runnable, std::shared_ptr<ShutdownHandshake> handshake) noexcept
     {
         // 投回去的动作跑完（或根本没有动作可跑）之后必须把握手放掉，否则等它的处理器线程要一直等到时限
-        // 投递要分配队列节点与闭包，而本函数是 noexcept：失败时把握手当场放掉，等它的一方立刻拿到结果
+        // 投递要分配队列节点与闭包，而本函数是 noexcept：失败时把握手当场放掉，等它的一方立刻拿到结果。
+        // 队列饱和时投递也会被拒：这一档同样要当场放行，否则等它的一方要白等满一个永远等不到的时限
         try
         {
-            m_loop->scheduler().postRemote(
-                    [inner = std::move(runnable), handshake]() mutable noexcept
-                    {
-                        inner();
-                        if (handshake != nullptr)
+            if (!m_loop->scheduler().tryPostRemote(
+                        [inner = std::move(runnable), handshake]() mutable noexcept
                         {
-                            handshake->finish();
-                        }
-                    });
+                            inner();
+                            if (handshake != nullptr)
+                            {
+                                handshake->finish();
+                            }
+                        }))
+            {
+                try
+                {
+                    LOG_ERROR("GracefulShutdown: 收尾动作未能排进事件循环的队列（队列已满），本次触发不执行这些动作");
+                } catch (...)
+                {
+                }
+                if (handshake != nullptr)
+                {
+                    handshake->finish();
+                }
+            }
         } catch (const std::exception &failure)
         {
             try
