@@ -411,17 +411,33 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().clear();
         LoggerRegistry::instance().purgeRetiredLoggers();
 
+        bool firstCreationThrew = false;
         {
             const auto guard = TestSupport::AllocationFailureGuard(trace.count);
-            EXPECT_THROW(static_cast<void>(LoggerRegistry::instance().getLogger("root")), std::bad_alloc);
+            try
+            {
+                static_cast<void>(LoggerRegistry::instance().getLogger("root"));
+            } catch (const std::bad_alloc &)
+            {
+                firstCreationThrew = true;
+            }
         }
+        EXPECT_TRUE(firstCreationThrew) << "登记分配没有按注入失败";
 
         // 旧实现此时缓存仍指着已销毁的对象：getRootLogger 直接返回它、不分配，本断言在 Release
         // 也会红；新实现的缓存为空，创建 root 的第一次分配被掐掉，因此抛 bad_alloc
+        bool cacheMissThrew = false;
         {
             const auto guard = TestSupport::AllocationFailureGuard(1U);
-            EXPECT_THROW(static_cast<void>(LoggerRegistry::instance().getRootLogger()), std::bad_alloc);
+            try
+            {
+                static_cast<void>(LoggerRegistry::instance().getRootLogger());
+            } catch (const std::bad_alloc &)
+            {
+                cacheMissThrew = true;
+            }
         }
+        EXPECT_TRUE(cacheMissThrew) << "缓存仍非空：getRootLogger 没有重新创建 root";
 
         // 新实现里这次创建会重新建一份 root；旧实现的缓存若仍指着已销毁的对象，ASan 在这里报 UAF
         EXPECT_NO_THROW(static_cast<void>(LoggerRegistry::instance().getRootLogger().getLevel()));
