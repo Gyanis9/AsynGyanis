@@ -1581,6 +1581,17 @@ namespace AsynGyanis::Database::Queryable
          */
         static void requireStrictWhereCondition(const WhereCondition &condition, const std::string &context)
         {
+            // 复合节点只填 op 与 children，left.name 本来就是空串；对空串做白名单校验会把
+            // 合法的 && / || / ! 条件整条拒掉。递归只校验真正的字段文本
+            if (condition.op == SqlOperator::And || condition.op == SqlOperator::Or || condition.op == SqlOperator::Not)
+            {
+                for (const WhereCondition &child: condition.children)
+                {
+                    requireStrictWhereCondition(child, context);
+                }
+                return;
+            }
+
             requireStrictIdentifierText(condition.left.name, context + " 的左字段");
             if (const auto *rightField = std::get_if<FieldReference>(&condition.right); rightField != nullptr)
             {

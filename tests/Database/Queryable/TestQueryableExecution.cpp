@@ -563,6 +563,18 @@ TEST_F(QueryableExecutionTest, CountMatchesFilteredRows)
 }
 
 /**
+ * @brief 严格模式必须放行由 && / || / ! 组成的合法复合条件
+ * @details 复合节点的 left.name 本来就是空串，对空串做白名单校验会把合法条件整条拒掉
+ */
+TEST_F(QueryableExecutionTest, StrictIdentifiersAcceptCompositeConditions)
+{
+    Queryable<AccountRow> query = newQuery();
+    query.strictIdentifiers();
+    EXPECT_NO_THROW(query.where((Column(&AccountRow::id, "id") == std::int64_t{1}) && (Column(&AccountRow::name, "name") == std::string{"张三"})));
+    EXPECT_NO_THROW(query.where(!(Column(&AccountRow::id, "id") == std::int64_t{2})));
+}
+
+/**
  * @brief 验证按主键更新只改动目标行
  */
 TEST_F(QueryableExecutionTest, UpdateByPrimaryKeyChangesOnlyTargetRow)
