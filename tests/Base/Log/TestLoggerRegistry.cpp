@@ -406,6 +406,7 @@ namespace AsynGyanis::Base
         static_cast<void>(LoggerRegistry::instance().getLogger("root"));
         const TestSupport::AllocationTraceSnapshot trace = TestSupport::endAllocationTrace();
         ASSERT_GT(trace.count, 0U) << "创建 root 没有记录到任何分配，注入目标无从确定";
+        ASSERT_LT(trace.count, TestSupport::kAllocationTraceCapacity) << "分配追踪被截断，最后的登记分配未必在记录里";
 
         LoggerRegistry::instance().clear();
         LoggerRegistry::instance().purgeRetiredLoggers();
@@ -413,6 +414,13 @@ namespace AsynGyanis::Base
         {
             const auto guard = TestSupport::AllocationFailureGuard(trace.count);
             EXPECT_THROW(static_cast<void>(LoggerRegistry::instance().getLogger("root")), std::bad_alloc);
+        }
+
+        // 旧实现此时缓存仍指着已销毁的对象：getRootLogger 直接返回它、不分配，本断言在 Release
+        // 也会红；新实现的缓存为空，创建 root 的第一次分配被掐掉，因此抛 bad_alloc
+        {
+            const auto guard = TestSupport::AllocationFailureGuard(1U);
+            EXPECT_THROW(static_cast<void>(LoggerRegistry::instance().getRootLogger()), std::bad_alloc);
         }
 
         // 新实现里这次创建会重新建一份 root；旧实现的缓存若仍指着已销毁的对象，ASan 在这里报 UAF
