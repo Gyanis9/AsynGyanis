@@ -6,6 +6,8 @@
 
 #include "Database/MySql/MySqlStreamingStatementResult.h"
 
+#include <utility>
+
 #ifdef DATABASE_HAS_MYSQL
 
 #include "Database/MySql/MySqlConnection.h"
@@ -19,7 +21,6 @@
 #endif
 
 #include <format>
-#include <utility>
 
 namespace AsynGyanis::Database
 {
@@ -228,3 +229,12 @@ namespace AsynGyanis::Database
 } // namespace AsynGyanis::Database
 
 #endif // DATABASE_HAS_MYSQL
+
+namespace AsynGyanis::Database
+{
+    void *MySqlStreamingStatementResult::adoptResultBindings(std::shared_ptr<void> bindings) noexcept
+    {
+        m_resultBindingsOwner = std::move(bindings);
+        return m_resultBindingsOwner.get();
+    }
+} // namespace AsynGyanis::Database

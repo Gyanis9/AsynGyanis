@@ -734,6 +734,13 @@ namespace AsynGyanis::Database
         }
         UnclaimedStatement unclaimedStatement{statement, !tableOwnsStatement};
 
+        if (!tableOwnsStatement)
+        {
+            // 语句缓存没接管这条句柄时，作用域守卫会在函数返回时关掉它，而流式结果要借用它取后续行
+            m_lastError = "MySQL 流式执行无法接管预处理语句：语句缓存分配失败，请改用 execute() 的预读路径或稍后重试";
+            return nullptr;
+        }
+
         // 预取窗口：只对「不预读、逐行取数」的本条路径有意义（store_result 过的结果用不到它）。
         // attr_set 只在取值非法时失败（窗口恒为正，正常不会发生），失败即弃这条语句
         const unsigned long prefetchWindowRows = kStatementPrefetchRows;
@@ -806,18 +813,33 @@ namespace AsynGyanis::Database
             binding.is_null       = &columnNullFlags[index];
         }
 
-        if (mysql_stmt_bind_result(statement, resultBindings.data()) != 0)
-        {
-            captureStatementError(statement, "绑定预处理语句结果缓冲区失败");
-            discardCachedStatement(command);
-            return nullptr;
-        }
-
-        // 绑定成功才记账：这一格在结果读完、中断或析构时归位（见 MySqlStreamingStatementResult::endStream）。
-        // 构造之后缓冲与元数据的地址都归结果集持有（vector 移动不改元素地址），绑定的指针始终有效
         ++m_openStreamCount;
-        return std::make_unique<MySqlStreamingStatementResult>(statement, this, std::string{command}, std::move(columnNames), std::move(columnTypes),
-                                                               std::move(columnCharacterSets), std::move(columnBuffers), std::move(columnLengths), std::move(columnNullFlags));
+        try
+        {
+            auto result =
+                    std::make_unique<MySqlStreamingStatementResult>(statement, this, std::string{command}, std::move(columnNames), std::move(columnTypes),
+                                                                    std::move(columnCharacterSets), std::move(columnBuffers), std::move(columnLengths), std::move(columnNullFlags));
+
+            // 绑定数组必须活到语句关闭或重新绑定：把 vector 的存储交给结果集，
+            // 别名构造让 shared_ptr<void> 指向数组首元素而控制块仍持有整个容器
+            const auto        bindingStorage = std::make_shared<std::vector<MYSQL_BIND>>(std::move(resultBindings));
+            MYSQL_BIND *const bindingArray   = static_cast<MYSQL_BIND *>(result->adoptResultBindings(std::shared_ptr<void>(bindingStorage, bindingStorage->data())));
+            if (mysql_stmt_bind_result(statement, bindingArray) != 0)
+            {
+                captureStatementError(statement, "绑定预处理语句结果缓冲区失败");
+                result.reset(); // 先 free_result 收干这次执行，再按命令弃掉缓存里那条语句
+                discardCachedStatement(command);
+                return nullptr;
+            }
+            return result;
+        } catch (...)
+        {
+            // 构造或持有数组的分配失败：结果集若已经建起来，会先由它自己的析构收干这次执行并归位；
+            // 这里的归位与那条路共用同一个幂等递减，两条路都只减一次
+            discardCachedStatement(command);
+            noteStreamClosed();
+            throw;
+        }
     }
 
     std::string MySqlConnection::serverVersion() const
