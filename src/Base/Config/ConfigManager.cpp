@@ -1894,8 +1894,8 @@ namespace AsynGyanis::Base
             }
         }
 
-        // 循环之外的这一次判定不能省：increment 在最后一个条目之后才失败时，循环只会看到一个
-        // 已到终点的迭代器，错误只留在 errorCode 里；不在这里认领，这份少了几项的清单就会被当成全量
+        // 循环之外的这一次判定不能省：increment 在最后一个条目之后才失败时，循环因 errorCode
+        // 非零而停止，错误只留在 errorCode 里；不在这里认领，这份少了几项的清单就会被当成全量
         if (errorCode)
         {
             return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："

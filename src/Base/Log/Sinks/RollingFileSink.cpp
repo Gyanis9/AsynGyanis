@@ -383,7 +383,8 @@ namespace AsynGyanis::Base
                 backupFiles.push_back(BackupEntry{.path = entry.path(), .writeTime = timeError ? std::filesystem::file_time_type::min() : writeTime});
             }
         }
-        if (backupFiles.size() > m_maximumBackupFiles)
+        // 扫描失败时备份清单只是半份：不许拿它驱动删除，下面的诊断承诺本次一份都没删
+        if (!scanError && backupFiles.size() > m_maximumBackupFiles)
         {
             // 取不到时间戳的条目标记为 file_time_type::min()，排序时视为最旧、优先被清理
             std::ranges::sort(backupFiles, [](const BackupEntry &left, const BackupEntry &right) { return left.writeTime > right.writeTime; });
