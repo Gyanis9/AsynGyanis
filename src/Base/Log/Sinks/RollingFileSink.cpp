@@ -383,7 +383,7 @@ namespace AsynGyanis::Base
                 backupFiles.push_back(BackupEntry{.path = entry.path(), .writeTime = timeError ? std::filesystem::file_time_type::min() : writeTime});
             }
         }
-        // 扫描失败时备份清单只是半份：不许拿它驱动删除，下面的诊断承诺本次一份都没删
+        // 扫描失败时备份清单可能不完整或未核验：不许拿它驱动删除，下面的诊断承诺本次一份都没删
         if (!scanError && backupFiles.size() > m_maximumBackupFiles)
         {
             // 取不到时间戳的条目标记为 file_time_type::min()，排序时视为最旧、优先被清理
@@ -396,8 +396,9 @@ namespace AsynGyanis::Base
         }
         if (scanError)
         {
-            // 扫不下去就等于一份备份都不会被删：max_backup 从此形同虚设，日志目录无界增长，
-            // 而除了磁盘满之外没人会知道。这一条必须出声（本 Sink 是日志的出口，只能进标准错误）
+            // 扫不下去就等于一份备份都不会被删（删除分支以 !scanError 为门）：max_backup 从此
+            // 形同虚设，日志目录无界增长，而除了磁盘满之外没人会知道。这一条必须出声
+            // （本 Sink 是日志的出口，只能进标准错误）
             std::cerr << "RollingFileSink：清理旧备份时无法读取目录：" << Platform::FileSystem::utf8FromPath(m_directory) << "；原因：" << scanError.message()
                       << "；本次滚动没有删除任何超限备份，max_backup 暂时不再成立" << '\n';
         }

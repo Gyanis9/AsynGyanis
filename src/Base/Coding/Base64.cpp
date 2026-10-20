@@ -37,7 +37,7 @@ namespace AsynGyanis::Base
         /// 一段编码末尾最多两个填充符
         constexpr std::size_t kMaximumBase64PaddingLength = 2;
 
-        /// 无填充写法的标记值：编码器拿它判断末组要不要补填充
+        /// 无填充写法的标记值：编码器据它决定末组要不要补填充（输出按长度一次建好、按索引写入）
         constexpr char kNoPadding = '\0';
 
         /**
@@ -104,8 +104,9 @@ namespace AsynGyanis::Base
                 return std::nullopt;
             }
 
-            // 长度 % 4 == 1 凑不出任何一整个字节（RFC 4648 Table 1 没这一格）；要求满 4 的倍数的那套
-            // 写法在下面这条长度检查里已经一并挡住，两条规则因此不互相覆盖
+            // 长度 % 4 == 1 凑不出任何一整个字节：RFC 4648 §4 的收尾情形只有 4n、2+2 填充与
+            // 3+1 填充三种，没有余 1 这一格；要求满 4 的倍数的那套写法在同一条件里已经一并
+            // 挡住，两条规则因此不互相覆盖
             if (text.size() % 4 == 1 || (maximumPaddingLength > 0 && text.size() % 4 != 0))
             {
                 return std::nullopt;

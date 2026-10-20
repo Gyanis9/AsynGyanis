@@ -208,7 +208,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 将日志事件分发到全部可用 Sink
          * @details 先原子加载快照再遍历，因此并发 clearSinks() 不会让遍历撞上已释放的 Sink。
-         *          最后一个愿意收的 Sink 拿到事件本体（move），其余各拿一份只读引用：
+         *          快照里只有一个 Sink 时它拿到事件本体（move）；否则各拿只读引用：
          *          异步队列那条路因此不必再为每行日志复制一份消息体。
          * @param event 已构造好的日志事件；本函数可能交出它的内容，调用方此后不得再读
          */
@@ -245,7 +245,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 以「已持有消息体与调用栈」的形式构造并分发日志事件
          * @details 消息体按值接收并移入事件，使 std::vformat 的结果零拷贝交给事件；
-         *          这是 log / logFormat / logWithStackTrace 共用的内部入口。
+         *          事件同时带上日志点的上下文快照（异步 Sink 在工作线程上格式化时读到的
+         *          因此不是那里的 TLS）。这是 log / logFormat / logWithStackTrace 共用的内部入口。
          * @param level 本次日志级别
          * @param message 已格式化好的日志消息
          * @param location 源码位置信息

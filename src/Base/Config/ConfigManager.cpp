@@ -500,8 +500,12 @@ namespace AsynGyanis::Base
                 m_fileWatcher.reset();
             }
         }
-        // join 放在控制锁之外：重载回调里再调 enable/disable 是合法用法，
-        // 持锁 join 会让回调阻塞在这把非递归互斥量上，与 join 形成死锁
+        // 这里的 join（pendingTasks 析构时隐式完成）是为了等仍活着的重载线程退出：它们可能
+        // 还在 doReload() 或用户回调里，不等它们结束就让 disable 返回，调用方紧接着销毁配置
+        // 管理器就会让这些线程继续访问已释放的对象（use-after-free）。join 放在控制锁之外：
+        // 重载回调里再调 enable/disable 是合法用法，持锁 join 会让回调阻塞在这把非递归互斥量
+        // 上，与 join 形成死锁。并发的第二个 disable 可能在本线程 join 完成之前就返回
+        // （它看到 enabled 已为 false）
         pendingTasks.clear();
     }
 
@@ -552,8 +556,8 @@ namespace AsynGyanis::Base
     std::string ConfigManager::getString(const std::string_view key, const std::string &defaultValue) const
     {
         // 与 getText 同一口径按视图直查：走 get<std::string> 要先把整份 ConfigValue 深拷进
-        // optional、再从那份副本里拷一次字符串，而进入时形参 defaultValue 已经按值构造过一份
-        // （命中时那次分配纯属白花）。严格类型口径不变：只有字符串值才算取到，其余回落默认值
+        // optional、再从那份副本里拷一次字符串；而默认值形参是 const 引用，未命中时只多一次
+        // 返回拷贝。严格类型口径不变：只有字符串值才算取到，其余回落默认值
         const auto currentData = m_data.load(std::memory_order_acquire);
         const auto iterator    = currentData->values.find(key);
         if (iterator == currentData->values.end() || !iterator->second.is_string())
@@ -1721,9 +1725,11 @@ namespace AsynGyanis::Base
         {
             const std::lock_guard lock(m_reloadTasksMutex);
 
-            // 启动线程之后不再允许分配：push_back 若在此时扩容失败，局部 jthread 析构的 join
-            // 会等一个可能已经跑完并交接了下一轮的线程，catch 里的 finishRunning 再抢一次
-            // 就破坏单轮串行。reserve 把这次扩容排到线程启动之前，此时失败还没有线程
+            // 启动线程之后不再允许分配：push_back 若在此时扩容失败，栈上局部 jthread 的析构
+            // 会在持有 m_reloadTasksMutex 的情况下 join 一个可能已收尾并交接了下一轮的工作
+            // 线程——那一轮正卡在这把锁上等登记，双方互等即死锁；catch 里的 finishRunning
+            // 再抢一次执行权只是次要后果（破坏单轮串行）。reserve 把扩容排到线程启动之前，
+            // 此时失败还没有线程，两条后果都不存在
             m_reloadTasks.reserve(m_reloadTasks.size() + 1U);
             auto        task    = std::make_unique<ReloadTask>();
             ReloadTask *rawTask = task.get();
@@ -1965,9 +1971,11 @@ namespace AsynGyanis::Base
         /**
          * @brief 按目标类型解释环境变量的文本值
          * @details 目标类型只从「文件里该键已有的类型」或「schema 声明」两处取，本函数不猜类型——
-         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。
+         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。对象与数组
+         *          解析成 JSON 后还要核对顶层形态：对象项必须是对象、数组项必须是数组，
+         *          `42` 这类解析得动但形态不符的取值同样拒绝。
          * @param text 环境变量原文
-         * @param type 目标类型（对象与数组按 JSON 解析，其余未知类型一律按字符串交出）
+         * @param type 目标类型（对象与数组按 JSON 解析并核对形态，其余未知类型一律按字符串交出）
          * @param[out] error 转换失败时的中文说明，含原值
          * @return std::optional<ConfigValue> 转换结果；失败时为空
          */

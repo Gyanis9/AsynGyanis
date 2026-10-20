@@ -51,8 +51,8 @@ namespace AsynGyanis::Base
     /**
      * @brief 单条日志事件的完整数据
      *
-     * @details 由 Logger 构造后随指针/值语义传给各 LogSink，构造完即不可变，
-     *          异步 Sink 依赖这一点完成跨线程投递。时刻、调用栈都按原始值随事件走，
+     * @details 由 Logger 构造、补写调用栈与上下文后随指针/值语义传给各 LogSink，
+     *          分发后不再修改；异步 Sink 依赖这一点完成跨线程投递。时刻、调用栈都按原始值随事件走，
      *          文本渲染推迟到各 Sink 的输出时（见 TimestampText.h 与 StackTrace.h）。
      * @note 日志器名称与线程 ID 都以 std::shared_ptr<const std::string> 共享：两者在各自
      *       宿主（Logger / 线程）内都不变，因此每条日志不为其分配/拷贝字符串，
