@@ -29,10 +29,16 @@ namespace AsynGyanis::Database
         const bool hasNetworkFeatures = !config.host.empty() || !config.userName.empty() || !config.password.empty();
 
         std::string message = "无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 推不出驱动，";
-        message += hasNetworkFeatures ? "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理："
-                                        "请补上端口，或清空这些字段并按 SQLite 使用"
-                                      : "且 database 为空，没有可作为嵌入式库依据的库名或路径："
-                                        "连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+        if (hasNetworkFeatures)
+        {
+            message += "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理：请补上端口，或清空这些字段并按 SQLite 使用";
+        } else if (config.database.empty())
+        {
+            message += "且 database 为空，没有可作为嵌入式库依据的库名或路径：连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+        } else
+        {
+            message += "且 database 非空（" + config.database + "）、却没有可用于判定驱动的主机/账号/端口：请显式指定驱动类型，或补上 host/port";
+        }
 
         throw Base::InvalidArgumentException(message);
     }

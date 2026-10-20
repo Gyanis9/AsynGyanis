@@ -263,6 +263,8 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsLocalizedText(message)) << message;
         // 文本里带上 offending 端口号，便于把报错定位回具体配置
         EXPECT_NE(message.find(std::to_string(kUnknownPort)), std::string::npos) << message;
+        // 库名其实非空：报错不能把「没有可用于判定驱动的主机/账号」说成「database 为空」
+        EXPECT_NE(message.find("database 非空"), std::string::npos) << message;
     }
 
     /** @brief 钉住既无端口也无库名时报「无法判定类型」，不以猜测填充默认驱动 */
