@@ -1,4 +1,4 @@
-// 显式关系装载（台账 3.3）的判据：`then()` 分批补取与 `include()` 一次 JOIN 两个方向。
+// 显式关系装载的判据：`then()` 分批补取与 `include()` 一次 JOIN 两个方向。
 //
 // 全部用 SQLite 内存库（池上限 1）。真机那一侧另有 MySQL 版本（TestMySqlIntegration.cpp）。
 // 不做懒加载代理（提示词判死）：这里测的就是「点名装载」这一件事。
@@ -275,8 +275,17 @@ TEST_F(QueryableRelationsTest, RefusesMembersThatAreNotDeclaredAsRelations)
     }
 }
 
+/**
+ * @brief 离线对象调用 then() 必须按文档抛逻辑错误，而不是解引用空池
+ */
+TEST(QueryableRelationsOffline, ThenRejectsOfflineModeBeforeTouchingThePool)
+{
+    Queryable<RelationPost> offline;
+    EXPECT_THROW(static_cast<void>(offline.then(&RelationPost::author)), LogicException);
+}
+
 // ========================================================================
-// include：一次 LEFT JOIN 取回（3.3 的第二半）
+// include：一次 LEFT JOIN 取回
 // ========================================================================
 
 /**

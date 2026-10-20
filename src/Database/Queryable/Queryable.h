@@ -305,6 +305,7 @@ namespace AsynGyanis::Database::Queryable
         template<typename MemberType>
         Queryable &then(MemberType T::*memberPointer)
         {
+            requireOnline("then()");
             m_relationLoaders.push_back(makeRelationLoader(memberPointer, m_pool, m_transaction, resolveDialect()));
             return *this;
         }
