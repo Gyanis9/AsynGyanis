@@ -1265,10 +1265,42 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] static RelationLoader makeRelationLoader(const MemberType T::*memberPointer, ConnectionPool *pool, Transaction *transaction,
                                                                std::shared_ptr<SqlDialect> dialect)
         {
-            if (findRelationOf(memberPointer) == nullptr)
+            const RelationDescriptor<T, MemberType> *relation = findRelationOf(memberPointer);
+            if (relation == nullptr)
             {
                 throw Base::LogicException("Queryable: then() 要装载的成员没有在 TableSchema<" + std::string(TableSchema<T>::kTableName) +
                                            ">::kRelations 里声明过——请先加一条 Relation(&T::成员, \"外键列\")");
+            }
+
+            using Target     = Detail::RelationTarget<MemberType>;
+            using RelatedRow = typename Target::RowType;
+            if constexpr (std::is_aggregate_v<RelatedRow>)
+            {
+                if constexpr (Target::isCollection)
+                {
+                    if (!columnIsDeclared<RelatedRow>(relation->foreignKeyColumn))
+                    {
+                        throw Base::LogicException("Queryable: then() 的一对多关系外键列「" + std::string(relation->foreignKeyColumn) + "」没有在 TableSchema<" +
+                                                   std::string(TableSchema<RelatedRow>::kTableName) + ">::kColumns 里声明——装载要靠它取子行");
+                    }
+                    if (!columnIsDeclared<T>(TableSchema<T>::kPrimaryKey))
+                    {
+                        throw Base::LogicException("Queryable: then() 的一对多装载要求 TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 把主键列「" +
+                                                   std::string(TableSchema<T>::kPrimaryKey) + "」声明在 kColumns 里——装载要靠它取父键");
+                    }
+                } else
+                {
+                    if (!columnIsDeclared<T>(relation->foreignKeyColumn))
+                    {
+                        throw Base::LogicException("Queryable: then() 的多对一关系外键列「" + std::string(relation->foreignKeyColumn) + "」没有在 TableSchema<" +
+                                                   std::string(TableSchema<T>::kTableName) + ">::kColumns 里声明——装载要靠它取键");
+                    }
+                    if (!columnIsDeclared<RelatedRow>(TableSchema<RelatedRow>::kPrimaryKey))
+                    {
+                        throw Base::LogicException("Queryable: then() 的多对一装载要求 TableSchema<" + std::string(TableSchema<RelatedRow>::kTableName) + "> 把主键列「" +
+                                                   std::string(TableSchema<RelatedRow>::kPrimaryKey) + "」声明在 kColumns 里——装载要靠它取对端行");
+                    }
+                }
             }
 
             return [memberPointer, pool, transaction, dialect = std::move(dialect)](std::vector<T> &rows)
