@@ -9,6 +9,7 @@
 
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigValue.h"
+#include "Base/Exception/ConfigValidationException.h"
 
 #include "AllocationProbe.h"
 
@@ -192,6 +193,65 @@ namespace AsynGyanis::Base
                     static_cast<unsigned long long>(subtreeProfile.allocationsPerOperation), static_cast<unsigned long long>(smallProfile.totalBytes),
                     static_cast<unsigned long long>(wideProfile.totalBytes), static_cast<unsigned long long>(subtreeProfile.totalBytes));
 
+        manager.clear();
+    }
+
+    /**
+     * @brief 严格类型取值失败时不得先深拷被拒的整棵子树
+     * @details get<T>(key) 原先经 get(key) 取一份 ConfigValue 副本再判类型：类型不符时
+     *          被拒的值已经整棵拷了出来。判据比「同样一次失败判定，命中小标量 vs 命中大表」
+     *          两次读数的字节量：两次都只该付查表与抛异常的钱，与被拒值的大小无关
+     */
+    TEST(ConfigHotPathAllocations, ThrowingTypedGetDoesNotCopyWideSubtree)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        auto &manager = ConfigManager::instance();
+        manager.clear();
+        ASSERT_TRUE(manager.setValue("app.flag", ConfigValue(true)));
+        ConfigObject wideObject;
+        for (int index = 0; index < 200; ++index)
+        {
+            wideObject["k" + std::to_string(index)] = ConfigValue(std::string("wide-value-") + std::to_string(index));
+        }
+        ASSERT_TRUE(manager.setValue("app.map", ConfigValue(std::move(wideObject))));
+
+        const auto readMismatchSmall = [&manager]
+        {
+            try
+            {
+                static_cast<void>(manager.get<int64_t>("app.flag"));
+            } catch (const ConfigValidationException &)
+            {
+                return 1U;
+            }
+            return 0U;
+        };
+        const auto readMismatchWide = [&manager]
+        {
+            try
+            {
+                static_cast<void>(manager.get<int64_t>("app.map"));
+            } catch (const ConfigValidationException &)
+            {
+                return 1U;
+            }
+            return 0U;
+        };
+
+        readMismatchSmall();
+        resetAllocationHistogram();
+        const AllocationProfile smallProfile = measurePerOperation(readMismatchSmall);
+        readMismatchWide();
+        resetAllocationHistogram();
+        const AllocationProfile wideProfile = measurePerOperation(readMismatchWide);
+
+        EXPECT_EQ(smallProfile.resultSum, kMeasurementIterations);
+        EXPECT_EQ(wideProfile.resultSum, kMeasurementIterations);
+#ifdef NDEBUG
+        EXPECT_LE(wideProfile.totalBytes, smallProfile.totalBytes + 64U * kMeasurementIterations) << "类型判定之前把整棵配置子树拷了出来：严格取值应直接查快照";
+#endif
+        std::printf("get-throwing-mismatch bytes small=%llu wide=%llu\n", static_cast<unsigned long long>(smallProfile.totalBytes),
+                    static_cast<unsigned long long>(wideProfile.totalBytes));
         manager.clear();
     }
 

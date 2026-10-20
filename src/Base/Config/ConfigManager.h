@@ -17,6 +17,7 @@
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/Detail/ReloadRoundGate.h"
+#include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Platform/FileSystem/FileWatcher.h"
 
@@ -143,18 +144,25 @@ namespace AsynGyanis::Base
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
          * @throws ConfigValidationException 类型不匹配（消息里带键名、期望与实际类型）
+         * @note 命中判定直接查快照里的原对象：类型不符时不会先把被拒的值深拷一份，
+         *       只为目标类型付一次拷贝
          */
         template<typename T>
         T get(const std::string_view key) const
         {
-            using ValueType = std::decay_t<T>;
-
-            const ConfigValue value = get(key);
-            if (auto converted = configValueAs<ValueType>(value))
+            using ValueType        = std::decay_t<T>;
+            const auto currentData = m_data.load(std::memory_order_acquire);
+            const auto iterator    = currentData->values.find(key);
+            if (iterator == currentData->values.end())
+            {
+                throw ConfigKeyNotFoundException(std::string(key));
+            }
+            if (auto converted = configValueAs<ValueType>(iterator->second))
             {
                 return std::move(*converted);
             }
-            throw ConfigValidationException(std::string(key), std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() + "，实际 " + typeName(value.type()));
+            throw ConfigValidationException(std::string(key),
+                                            std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() + "，实际 " + typeName(iterator->second.type()));
         }
 
         /**
