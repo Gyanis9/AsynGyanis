@@ -15,6 +15,32 @@
 
 namespace AsynGyanis::Platform
 {
+    namespace
+    {
+        /**
+         * @brief 把绝对路径收成映射键：去掉尾部分隔符，根路径保留，空输入返回空串
+         * @details inotify_add_watch 对同一 inode 返回同一个监视描述符，两套写法却会变成两套键：
+         *          removeWatch 只摘得掉其中一套，另一套继续派发事件。空串在 absolute() 里会被
+         *          解释成当前目录，必须在这里挡掉，不能让「什么都不传」变成「监视进程落脚点」。
+         * @param absolutePath 已交给 std::filesystem::absolute 的路径文本
+         * @return std::string 归一化后的键；空串表示这份输入不可监视
+         */
+        std::string normalizeWatchKey(const std::string &absolutePath)
+        {
+            if (absolutePath.empty())
+            {
+                return {};
+            }
+            std::size_t length = absolutePath.size();
+            // size() > 1：根目录 "/" 不能收成空串
+            while (length > 1 && absolutePath[length - 1] == '/')
+            {
+                --length;
+            }
+            return absolutePath.substr(0, length);
+        }
+    } // namespace
+
     InotifyFileWatcher::InotifyFileWatcher()
     {
         m_inotifyFileDescriptor = ::inotify_init1(IN_CLOEXEC);
@@ -79,9 +105,13 @@ namespace AsynGyanis::Platform
 
     bool InotifyFileWatcher::addWatch(const std::string_view path, const bool recursive)
     {
-        std::error_code error;
-        const auto      absolutePath = std::filesystem::absolute(path, error).string();
-        if (error)
+        if (path.empty())
+        {
+            return false;
+        }
+        std::error_code   error;
+        const std::string absolutePath = normalizeWatchKey(std::filesystem::absolute(path, error).string());
+        if (error || absolutePath.empty())
         {
             return false;
         }
@@ -162,9 +192,13 @@ namespace AsynGyanis::Platform
 
     bool InotifyFileWatcher::removeWatch(const std::string_view path)
     {
-        std::error_code error;
-        const auto      absolutePath = std::filesystem::absolute(path, error).string();
-        if (error)
+        if (path.empty())
+        {
+            return false;
+        }
+        std::error_code   error;
+        const std::string absolutePath = normalizeWatchKey(std::filesystem::absolute(path, error).string());
+        if (error || absolutePath.empty())
         {
             return false;
         }
@@ -391,9 +425,14 @@ namespace AsynGyanis::Platform
                 if ((event->mask & (IN_CREATE | IN_MOVED_TO)) != 0)
                 {
                     changeType = FileChangeType::Created;
-                } else if ((event->mask & (IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF)) != 0)
+                } else if ((event->mask & (IN_DELETE | IN_DELETE_SELF)) != 0)
                 {
                     changeType = FileChangeType::Deleted;
+                } else if ((event->mask & (IN_MOVED_FROM | IN_MOVE_SELF)) != 0)
+                {
+                    // 改名/移动的源路径按枚举契约报 Moved：Windows 的 RENAMED_OLD_NAME 走的就是这一类，
+                    // 两侧必须同判据。真实删除仍是上面的 Deleted
+                    changeType = FileChangeType::Moved;
                 }
 
                 // 递归根之下新出现的目录要在锁外补挂监视：新子目录里的变更否则永远不会上报。

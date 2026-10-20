@@ -744,6 +744,65 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
     }
 
+    TEST(FileWatcher, TrailingSeparatorAndPlainPathAreTheSameWatchKey)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_TrailingSeparator");
+        const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        std::string withSeparator = temporaryDirectory.path().string();
+        if (withSeparator.empty() || withSeparator.back() != std::filesystem::path::preferred_separator)
+        {
+            withSeparator.push_back(std::filesystem::path::preferred_separator);
+        }
+
+        ASSERT_TRUE(watcher->addWatch(withSeparator)) << "带尾分隔符的注册本身要成功";
+        EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string())) << "同一个目录换一种写法就撤不掉了：监视会继续派发";
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        EXPECT_TRUE(watcher->removeWatch(withSeparator)) << "反向写法同样要能撤掉";
+    }
+
+    TEST(FileWatcher, RejectsAnEmptyPathOnEveryPlatform)
+    {
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        EXPECT_FALSE(watcher->addWatch("")) << "空路径被当成当前目录挂上了监视";
+        EXPECT_FALSE(watcher->removeWatch("")) << "没挂上的空路径不该留下可撤销的东西";
+    }
+
+    /**
+     * @brief 钉住：监听目录里的改名，源路径要按 Moved 报出，两平台同一口径
+     * @details 枚举把 Moved 定义成「移动或改名的源路径」。Windows 的 RENAMED_OLD_NAME 已是
+     *          Moved，Linux 的 IN_MOVED_FROM 曾归进 Deleted；同一次改名在两侧给出不同类型，
+     *          按类型分派的消费方（配置下线动作）在 Linux 上就只能借 Deleted 猜。
+     */
+    TEST(FileWatcher, RenamingAFileReportsMovedForTheSourcePath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameSource");
+        ASSERT_TRUE(temporaryDirectory.writeFile("before.yaml", "value: 1\n"));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path() / "before.yaml", temporaryDirectory.path() / "after.yaml", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名失败：" << renameError.message();
+
+        const bool sawMovedSource = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamedWithType("before.yaml", FileChangeType::Moved); }, 3000);
+        watcher->stop();
+        EXPECT_TRUE(sawMovedSource) << "改名的源路径没有按 Moved 报出：Linux 归成了 Deleted，与枚举契约和 Windows 不一致";
+    }
+
     TEST(FileWatcher, DebounceIntervalSuppressesRapidRepeatedChanges)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Debounce");

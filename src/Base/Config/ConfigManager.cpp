@@ -1641,9 +1641,9 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
-            // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
-            // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
+            // Moved 与 Deleted 都要收：改名的源路径两侧现在都报 Moved（Windows 的 RENAMED_OLD_NAME 与
+            // Linux 的 IN_MOVED_FROM 同归这一类），真实删除报 Deleted。只收三种时，改名挪走配置这个
+            // 下线动作会在源路径上被类型判据滤掉，配置停在已经消失的那份上直到下次改动
             if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted &&
                 changeType != Platform::FileChangeType::Moved)
             {
