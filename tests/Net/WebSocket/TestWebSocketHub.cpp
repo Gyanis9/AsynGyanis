@@ -1,21 +1,27 @@
-// WebSocketHub 的用例：扇出到全员、RAII 除名、单成员单写者的合并、队满丢新并计数、没人收的整队另记一本、
-// 写路径抛出不把成员写聋、收口成员不再被碰。
-// 这里用真的 WebSocketPeer，只把它的发送回调换成可停可放的记录槽——集线器管的是「谁在写、写多少、
+// WebSocketHub 的用例：扇出到全员、RAII 除名、成员队列的合并、同一 peer 跨主题的串行写、队满丢新并计数、
+// 没人收的整队另记一本、写路径抛出不把成员写聋、收口成员不再被碰。
+// 这里用真的 WebSocketPeer，只把它的发送回调换成可停可放或带定时的记录槽——集线器管的是「谁在写、写多少、
 // 什么时候不该再写」，那三件事都不需要真 sockets 就能钉死；线上字节由对端与帧层的用例各自守着。
 //
-// 「单写者闩」那条判据按突变法证过会转红（2026-09-24：把 publish 里的 isDraining 早退改成永不成立的条件，
-// SecondPublishToABusyMember… 与 QueueBound… 两条同时红、复原后复绿）。
+// 「单写者闩」那两条判据按突变法证过会转红（2026-09-24：把 publish 里的 isDraining 早退改成永不成立的条件，
+// SecondPublishToABusyMember… 与 QueueBound… 两条同时红、复原后复绿；跨主题那条见
+// SamePeerSubscribedToTwoTopicsSerializesItsWrites 的说明）。
 // 真会话里的嵌套写另有一条端到端用例守着：TestWebSocketSession.cpp 的 WebSocketHubFanout。
 #include "Net/WebSocket/WebSocketHub.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "MetricsTestSupport.h"
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include "CoreTestSupport.h"
 #include "ExpectedAssertions.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -294,6 +300,58 @@ namespace AsynGyanis::Net
         ASSERT_EQ(path.sentFrames.size(), 2U) << "合并后应当按序发出两条";
         EXPECT_TRUE(frameCarriesText(path.sentFrames[0], "alpha"));
         EXPECT_TRUE(frameCarriesText(path.sentFrames[1], "bravo")) << "入队顺序就是上线顺序：慢读者不该看到插队";
+    }
+
+    /**
+     * @brief 钉住：同一个对端订阅两个主题时，两路发布不会同时进入它的发送路径
+     * @details 成员是每次 subscribe 一条：同一个 peer 订阅 "a" 与 "b" 就是两个成员、两条独立的队列。
+     *          旧实现各看各的 isDraining，两路 publish 会在发送窗口里同时进入 WebSocketPeer::sendText，
+     *          帧字节可以在写路径上互相穿插——文件头承诺的「一条连接一个写者」只对单一主题成立。
+     *          判据落在发送回调的并发计数上：任一瞬间最多一个写出在跑，而两条消息都要真的写出去。
+     *          临时把 publishFrame 退回按成员开写可以看它转红（maxActiveCount 变成 2）。
+     */
+    TEST(WebSocketHub, SamePeerSubscribedToTwoTopicsSerializesItsWrites)
+    {
+        Core::EventLoop loop;
+        Core::Timer     timer(loop);
+
+        int activeCount    = 0;
+        int maxActiveCount = 0;
+        int sentCount      = 0;
+        // 每次写出都在一个真实的定时器上停 10ms：窗口足够宽，两路发布一定撞得上
+        WebSocketPeer::FrameSender frameSender = [&timer, &activeCount, &maxActiveCount, &sentCount](std::string_view) -> Core::Task<bool>
+        {
+            ++activeCount;
+            maxActiveCount = std::max(maxActiveCount, activeCount);
+            co_await timer.waitFor(std::chrono::milliseconds(10));
+            --activeCount;
+            ++sentCount;
+            co_return true;
+        };
+
+        auto peer = std::make_shared<WebSocketPeer>(frameSender);
+        peer->setLifetimeOwner(peer);
+
+        WebSocketHub hub;
+        auto         firstSubscription  = hub.subscribe("a", *peer);
+        auto         secondSubscription = hub.subscribe("b", *peer);
+        EXPECT_EQ(hub.memberCount("a"), 1U);
+        EXPECT_EQ(hub.memberCount("b"), 1U);
+
+        Core::Task<void> firstPublish = hub.publish("a", "alpha");
+        firstPublish.handle().resume();
+        ASSERT_FALSE(firstPublish.isReady()) << "第一路发布没停在发送回调的定时器上，这条用例造不出并发窗口";
+
+        // 第二路走另一个主题、另一个成员：旧实现会在这里另起一条写路径，两个 sender 同时 active
+        Core::Task<void> secondPublish = hub.publish("b", "bravo");
+        secondPublish.handle().resume();
+
+        ASSERT_TRUE(Core::TestSupport::advanceUntil(loop, [&] { return firstPublish.isReady() && secondPublish.isReady(); })) << "两路发布没有在时限内跑完";
+        firstPublish.handle().promise().result();
+        secondPublish.handle().promise().result();
+
+        EXPECT_EQ(maxActiveCount, 1) << "同一个 peer 的两个主题同时进入了发送路径：帧字节可以在线上互相穿插";
+        EXPECT_EQ(sentCount, 2) << "串行不等于饿死：两条消息都该写出去";
     }
 
     TEST(WebSocketHub, QueueBoundDropsTheNewestMessageAndCountsIt)

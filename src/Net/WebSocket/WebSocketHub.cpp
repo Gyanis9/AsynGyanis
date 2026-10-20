@@ -88,8 +88,19 @@ namespace AsynGyanis::Net
         auto member = std::make_shared<Detail::WebSocketHubMember>();
         // 先取共享所有权再记裸指针：会话用 shared_ptr 持有时，drain 靠这份所有权在挂起期间续命；
         // 栈上对端取不到，返回空，仍按「句柄短于连接」的原契约
-        member->peerOwner                        = peer.lifetimeOwner();
-        member->peer                             = &peer;
+        member->peerOwner = peer.lifetimeOwner();
+        member->peer      = &peer;
+        // 同一个对端的全部主题共用一份写者状态：每 subscribe 一次只多一条队列，写出仍由那一位串行。
+        // 弱引用过期（上一份已随最后一位成员消失）就地补一份新的
+        std::weak_ptr<Detail::WebSocketHubPeerWriter>  &writerSlot = m_peerWriters[&peer];
+        std::shared_ptr<Detail::WebSocketHubPeerWriter> writer     = writerSlot.lock();
+        if (writer == nullptr)
+        {
+            writer     = std::make_shared<Detail::WebSocketHubPeerWriter>();
+            writerSlot = writer;
+        }
+        writer->members.push_back(member);
+        member->peerWriter                       = writer;
         const WebSocketSubscriptionId identifier = m_nextIdentifier++;
         m_registrations.push_back(Registration{std::string(topic), member, identifier});
         return WebSocketSubscription(*this, std::move(member), identifier);
@@ -138,11 +149,17 @@ namespace AsynGyanis::Net
             member->pendingMessages.push_back(Detail::WebSocketHubPendingMessage{.opCode = opCode, .payload = std::string(payload)});
             member->pendingByteCount += queuedByteCharge;
 
-            if (member->isDraining)
+            if (member->peerWriter == nullptr)
             {
-                continue; // 已有别的发布协程在替它写：入队即完成，那条 drain 会把这段一起带走
+                // 理论上不会发生（subscribe 总会装一份写者状态）：退回按成员开写，至少不丢这条
+                co_await drainMember(member);
+                continue;
             }
-            co_await drainMember(member); // 闩由 drain 自己的作用域卫兵上下，异常展开也照样复位
+            if (member->peerWriter->isDraining)
+            {
+                continue; // 已有 drain 在替这个 peer 写：入队即完成，那一条写路径会把这段一起带走
+            }
+            co_await drainPeer(member->peerWriter); // 对端级闩由 drainPeer 自己的作用域卫兵上下，异常展开也照样复位
         }
     }
 
@@ -182,16 +199,35 @@ namespace AsynGyanis::Net
         // 只清对端指针、不重置 peerOwner：正在替它写的 drain 每轮手里还握着一份共享所有权，
         // 那份要一直续到本轮写出结束；成员析构时自然释放。空指针只表示「不再写」，
         // 而不是「对象已经没了」——会话此刻可能正处在栈展开中，绝不能再去碰它的成员
-        found->member->peer = nullptr;
+        WebSocketPeer *const                                  peer   = found->member->peer; // 写者状态按它归档，清空之前先存下来
+        const std::shared_ptr<Detail::WebSocketHubMember>     member = found->member;
+        const std::shared_ptr<Detail::WebSocketHubPeerWriter> writer = member->peerWriter;
+        member->peer                                                 = nullptr;
         m_registrations.erase(found);
+
+        if (writer == nullptr)
+        {
+            return;
+        }
+        std::erase_if(writer->members,
+                      [&member](const std::weak_ptr<Detail::WebSocketHubMember> &weak)
+                      {
+                          const std::shared_ptr<Detail::WebSocketHubMember> alive = weak.lock();
+                          return alive == nullptr || alive == member;
+                      });
+        if (writer->members.empty() && peer != nullptr)
+        {
+            // 这个对端已经没有订阅：表里不必再留它的写者状态。在途 drain 自己持着那份收尾，
+            // 之后若再订阅同一个对端，subscribe 会补一份新的
+            m_peerWriters.erase(peer);
+        }
     }
 
     Core::Task<void> WebSocketHub::drainMember(std::shared_ptr<Detail::WebSocketHubMember> member)
     {
-        // 「谁在替它写」的闩必须覆盖栈展开这一条路：写路径是业务给的回调，契约允许它抛
-        // （WebSocketPeer 的 FrameSender 就是这么交回失败的）。少了这道卫兵，isDraining 会永远留在
-        // true——这个成员此后没人替它写，后来的发布只排队、涨到字节上界后整队被记成「队满丢弃」，
-        // 面板给出的成因是错的，而真实成因是那一次抛出。
+        // 「该成员的队列正在被写」这个标记也必须覆盖栈展开这一条路：写路径是业务给的回调，契约允许它抛
+        // （WebSocketPeer 的 FrameSender 就是这么交回失败的）。跨主题的互斥由 drainPeer 的对端级闩负责，
+        // 这一位只描述队列状态；若在抛出路径上漏复位，它会把「已无人写出」误报成「仍在写」，读现场的人会看错。
         struct DrainScope
         {
             explicit DrainScope(Detail::WebSocketHubMember &target) : m_member(target)
@@ -259,6 +295,74 @@ namespace AsynGyanis::Net
                 m_abandonedMessageCount.fetch_add(1U + member->pendingMessages.size(), std::memory_order_relaxed);
                 member->pendingMessages.clear();
                 member->pendingByteCount = 0U;
+                break;
+            }
+        }
+    }
+
+    Core::Task<void> WebSocketHub::drainPeer(std::shared_ptr<Detail::WebSocketHubPeerWriter> writer)
+    {
+        if (writer == nullptr || writer->isDraining)
+        {
+            co_return;
+        }
+
+        // 对端级闩同样必须覆盖栈展开这一条路：写路径是业务给的回调，契约允许它抛。
+        // 少了这道卫兵，isDraining 会永远留在 true——这个对端的所有主题此后都没人替它们写，
+        // 后来的发布只排队、涨到字节上界后整队被记成「队满丢弃」，面板给出的成因是错的
+        struct PeerDrainScope
+        {
+            explicit PeerDrainScope(Detail::WebSocketHubPeerWriter &target) : m_writer(target)
+            {
+                m_writer.isDraining = true;
+            }
+
+            ~PeerDrainScope()
+            {
+                m_writer.isDraining = false;
+            }
+
+            PeerDrainScope(const PeerDrainScope &)            = delete;
+            PeerDrainScope &operator=(const PeerDrainScope &) = delete;
+
+            Detail::WebSocketHubPeerWriter &m_writer; ///< 被看管的对端写者状态
+        };
+        const PeerDrainScope peerDrainScope(*writer);
+
+        for (;;)
+        {
+            // 每一轮先取一份活着的成员快照：drainMember 会挂起，这期间表里可能除名、也可能有新成员加入
+            std::vector<std::shared_ptr<Detail::WebSocketHubMember>> live;
+            std::erase_if(writer->members,
+                          [&live](const std::weak_ptr<Detail::WebSocketHubMember> &weak)
+                          {
+                              std::shared_ptr<Detail::WebSocketHubMember> member = weak.lock();
+                              if (member == nullptr)
+                              {
+                                  return true; // 成员已经析构：这条弱引用不再有用
+                              }
+                              live.push_back(std::move(member));
+                              return false;
+                          });
+            for (const std::shared_ptr<Detail::WebSocketHubMember> &member: live)
+            {
+                co_await drainMember(member);
+            }
+            // 写出会挂起，挂起期间同一个对端的其它主题可能又排进队列；也可能刚订阅并入了队。
+            // 判据重新扫 writer->members 而不是上面那份快照：快照之后加入的成员同样要被带走，
+            // 否则它的 publish 看到 isDraining 就返回，消息会一直留到下一次发布
+            bool hasPending = false;
+            for (const std::weak_ptr<Detail::WebSocketHubMember> &weak: writer->members)
+            {
+                const std::shared_ptr<Detail::WebSocketHubMember> member = weak.lock();
+                if (member != nullptr && !member->pendingMessages.empty())
+                {
+                    hasPending = true;
+                    break;
+                }
+            }
+            if (!hasPending)
+            {
                 break;
             }
         }

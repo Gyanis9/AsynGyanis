@@ -11,8 +11,10 @@
  *             不留悬垂指针这一类脚枪。会话用 shared_ptr 持有对端并经 lifetimeOwner() 登记时，
  *             集线器在写协程挂起期间持一份共享所有权替它续命；栈上对端没有这份登记，
  *             仍按「句柄短于连接」的原契约由调用方保证寿命。
- *          2. 一条连接一个写者：两条不同的连接同时向同一个成员发，会让两帧字节在线上互相穿插。
- *             成员自带「谁在替它写」的闩：已有写者在跑时，后来者只入队，不另起一条写路径。
+ *          2. 每个对端一个写者：同一条连接可以同时属于多个主题（每 subscribe 一次就是一个成员）。
+ *             若按成员各自开写，两条发布协程会同时进入同一条连接的发送路径，两帧字节在线上互相穿插。
+ *             跨主题共享的写者状态（WebSocketHubPeerWriter）因此是对端级的唯一闩：已有 drain 在替它写时，
+ *             后来者只入队；成员上的 isDraining 只表示该成员的队列正在被写。
  *          3. 慢读者的内存：队列有字节上界，越界丢最新的一条并计数——保住已入队的顺序，
  *             也不让一条不消费的连接把整机内存吃光。两本账分开读：队满丢的条数在 droppedMessageCount()，
  *             对端没了指望而整队作废的条数在 abandonedMessageCount()。
@@ -38,6 +40,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace AsynGyanis::Net
@@ -62,8 +65,22 @@ namespace AsynGyanis::Net
             std::string     payload;                       ///< 负载字节，原样写出
         };
 
+        struct WebSocketHubMember;
+
         /**
-         * @brief 集线器的一个成员：对端指针、待发队列、与「谁在替它写」的闩
+         * @brief 一个对端的跨主题写者状态：同一连接的全部订阅成员共用一份
+         * @details 同一个 peer 订阅多个主题会得到多个成员、各自一条队列；写出则必须串行，
+         *          否则两帧字节会在同一条连接上互相穿插。drain 持本结构，按 members 逐条取活着的成员、
+         *          逐个清空它们的队列；members 只存 weak_ptr，不替成员续命。
+         */
+        struct ASYN_NET_API WebSocketHubPeerWriter
+        {
+            bool                                           isDraining{false}; ///< 是否有一个 drain 正在替这个 peer 写（跨主题的唯一写者）
+            std::vector<std::weak_ptr<WebSocketHubMember>> members{};         ///< 这个 peer 的全部订阅成员；drain 逐条取活着的
+        };
+
+        /**
+         * @brief 集线器的一个成员：对端指针、待发队列、与同一对端其它成员共享的写者状态
          * @details 生存期由集线器与订阅句柄共持 shared_ptr：这样即使成员在某个 publish 协程
          *          挂起期间被除名，那份队列与闩也还活着， drain 能干净收尾而不是踩在被删对象上。
          *          对端一侧分两份：peer 是订阅时交来的访问点，除名时清空；peerOwner 是 subscribe()
@@ -72,11 +89,12 @@ namespace AsynGyanis::Net
          */
         struct ASYN_NET_API WebSocketHubMember
         {
-            WebSocketPeer                         *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
-            std::shared_ptr<WebSocketPeer>         peerOwner{};         ///< 由 subscribe 从 peer.lifetimeOwner() 取得；非空时保证 drain 期间对端对象不会先析构
-            std::deque<WebSocketHubPendingMessage> pendingMessages;     ///< 已入队、尚未写出的消息，按到达顺序
-            std::size_t                            pendingByteCount{0}; ///< pendingMessages 的占用字节数（每条按「负载 + 每帧固定开销」记，入队上界据此判定）
-            bool                                   isDraining{false};   ///< 是否已有一个发布协程正在替它写（一条连接一个写者）
+            WebSocketPeer                          *peer{nullptr};       ///< 空表示已除名或已收口：此后不再碰这条连接
+            std::shared_ptr<WebSocketPeer>          peerOwner{};         ///< 由 subscribe 从 peer.lifetimeOwner() 取得；非空时保证 drain 期间对端对象不会先析构
+            std::shared_ptr<WebSocketHubPeerWriter> peerWriter{};        ///< 同一对端的全部订阅成员共享：跨主题串行写出的唯一门闩
+            std::deque<WebSocketHubPendingMessage>  pendingMessages;     ///< 已入队、尚未写出的消息，按到达顺序
+            std::size_t                             pendingByteCount{0}; ///< pendingMessages 的占用字节数（每条按「负载 + 每帧固定开销」记，入队上界据此判定）
+            bool                                    isDraining{false};   ///< 该成员的队列是否正由一个 drain 写出；跨主题的互斥由 peerWriter->isDraining 负责
         };
     } // namespace Detail
 
@@ -168,7 +186,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 让一条已升级的连接加入主题
          * @details 同一个对端可以多次订阅不同主题（一次一份句柄），加入自己已加入的主题则视为
-         *          两个独立成员——本类不做「按对端去重」，那是业务的语义而不是扇出的语义。
+         *          两个独立成员——本类不做「按对端去重」，那是业务的语义而不是扇出的语义；
+         *          各自的队列独立，但写出由同一个 peer writer 串行，同一条连接上不会有两帧同时上线。
          * @param topic 主题名，原样保存（区分大小写，不做归一化）
          * @param peer 本条循环上已升级的对端；栈上对象其生存期必须覆盖返回句柄的析构与在途写，
          *        用 shared_ptr 持有并经 setLifetimeOwner() 登记过的对端则由集线器自行续命
@@ -179,8 +198,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 把一条消息发给该主题的全体成员
          *
-         * @details 语义是「尽力达」而不是「已达」：每个成员各自排进自己的队列，队列空闲时本次调用
-         *          顺带替它写出去（会挂起）；队列已被别的发布协程占着，就只入队立刻返回。
+         * @details 语义是「尽力达」而不是「已达」：每个成员各自排进自己的队列，这个对端当前没有
+         *          在跑的写路径时，本次调用顺带替它写出去（会挂起）；已有 drain 正在替这个对端写，
+         *          就只入队立刻返回。
          *          因此 publish 返回时不保证字节已上线——那条连接随后被关掉，队列里的东西就随它去，
          *          作废的条数从 abandonedMessageCount() 读得到。
          *          写路径抛出的那一条（业务给对端的 FrameSender 允许抛）原样交回本次发布，队列里剩下的
@@ -248,9 +268,10 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 除名：清掉对端指针并把这条登记从表里摘掉
+         * @brief 除名：清掉对端指针、把这条登记从表里摘掉，并从该对端的写者状态里除名
          * @details peerOwner 有意不重置：成员被在途 drain 持有时，那份共享所有权要一直续到
-         *          本轮写出结束；成员析构时自然释放。
+         *          本轮写出结束；成员析构时自然释放。写者状态的成员表空了就按对端指针摘掉对应项，
+         *          在途 drain 自己持着那份收尾。
          * @param identifier 订阅标识
          */
         void unsubscribe(WebSocketSubscriptionId identifier);
@@ -265,18 +286,32 @@ namespace AsynGyanis::Net
         Core::Task<void> publishFrame(std::string_view topic, std::string_view payload, WebSocketOpCode opCode);
 
         /**
-         * @brief 替一个成员把队列里的消息写完：一条连接同一时刻只有这一个写者
-         * @details 「谁在替它写」的闩由本协程的作用域卫兵上下，因此写回调抛出时也照样复位——
-         *          否则这个成员此后永远没人替它写，后来的发布只会排进队列、涨到上界后整队被记成队满。
+         * @brief 替一个成员把队列里的消息写完：调用方保证同一对端同一时刻只有这一条写路径
+         * @details 本协程只置成员自己的「队列正在被写」标记；跨主题的互斥由 drainPeer() 的对端级闩负责。
+         *          标记由本协程的作用域卫兵上下，因此写回调抛出时也照样复位——否则这个成员会一直
+         *          显示成「队列正在被写」，与它实际的空队列不符。
          *          抛出那一帧记进作废账（它已出队且随展开销毁），队列里剩下的留给下一位写者。
          * @param member 目标成员（按值持 shared_ptr：挂起期间表可能已经把它摘掉）
          * @return Core::Task<void> 队列空、或对端不可再用时返回；写回调的异常原样交回发布者
          */
         Core::Task<void> drainMember(std::shared_ptr<Detail::WebSocketHubMember> member);
 
-        std::vector<Registration> m_registrations;           ///< 全部成员，按订阅顺序
-        std::size_t               m_maximumPendingByteCount; ///< 单成员待发队列字节上界
-        WebSocketSubscriptionId   m_nextIdentifier{1U};      ///< 下一个订阅标识：从 1 起，0 留给「空句柄」
+        /**
+         * @brief 替一个对端把它的全部成员队列写完：同一个 peer 跨主题只有一个写者
+         * @details 对端级闩由本协程的作用域卫兵上下，因此成员写回调抛出时也照样复位——否则这个对端
+         *          此后永远没人替它写，后来的发布只会排进队列、涨到上界后整队被记成队满。
+         *          每一轮扫过全部活着的成员，扫完仍有队列非空就再扫一轮（写出挂起期间又入队的那部分）。
+         *          异常从 drainMember 抛出时先复位门闩、再原样上抛，队列里剩下的留给下一次发布。
+         * @param writer 目标对端的写者状态（按值持 shared_ptr：挂起期间可能已经没有成员持有它）
+         * @return Core::Task<void> 所有成员队列空、或对端不可再用时返回
+         */
+        [[nodiscard]] Core::Task<void> drainPeer(std::shared_ptr<Detail::WebSocketHubPeerWriter> writer);
+
+        std::vector<Registration> m_registrations; ///< 全部成员，按订阅顺序
+        /// 每条连接一份写者状态：键是订阅时交来的对端地址，值弱引用到成员手里的那一份
+        std::unordered_map<WebSocketPeer *, std::weak_ptr<Detail::WebSocketHubPeerWriter>> m_peerWriters{};
+        std::size_t                                                                        m_maximumPendingByteCount; ///< 单成员待发队列字节上界
+        WebSocketSubscriptionId                                                            m_nextIdentifier{1U};      ///< 下一个订阅标识：从 1 起，0 留给「空句柄」
         /// 队满丢弃的累计条数：原子量只为让 `/metrics` 的抓取读得到，递增仍在本对象的循环线程上
         std::atomic<std::size_t>  m_droppedMessageCount{0};
         Core::ProcessMetricHandle m_droppedMetric{}; ///< 挂到进程读数表上的那条丢弃计数，析构即注销

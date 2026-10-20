@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8846
+# headers=303 entries=8853
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8319,6 +8319,7 @@ src/Net/WebSocket/WebSocketHub.h	WebSocketSubscription(const WebSocketSubscripti
 src/Net/WebSocket/WebSocketHub.h	WebSocketSubscriptionId identifier
 src/Net/WebSocket/WebSocketHub.h	WebSocketSubscriptionId m_id
 src/Net/WebSocket/WebSocketHub.h	WebSocketSubscriptionId m_nextIdentifier
+src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] Core::Task<void> drainPeer(std::shared_ptr<Detail::WebSocketHubPeerWriter> writer)
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] WebSocketSubscription subscribe(std::string_view topic, WebSocketPeer &peer)
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] WebSocketSubscriptionId id() const noexcept
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] bool isActive() const noexcept
@@ -8327,6 +8328,7 @@ src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] std::size_t droppedMessageCount()
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] std::size_t maximumPendingByteCount() const noexcept
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] std::size_t memberCount(std::string_view topic) const
 src/Net/WebSocket/WebSocketHub.h	[[nodiscard]] std::size_t subscriptionCount() const noexcept
+src/Net/WebSocket/WebSocketHub.h	bool isDraining
 src/Net/WebSocket/WebSocketHub.h	bool isDraining
 src/Net/WebSocket/WebSocketHub.h	class ASYN_NET_API WebSocketHub
 src/Net/WebSocket/WebSocketHub.h	class ASYN_NET_API WebSocketSubscription
@@ -8342,14 +8344,19 @@ src/Net/WebSocket/WebSocketHub.h	std::atomic<std::size_t> m_droppedMessageCount
 src/Net/WebSocket/WebSocketHub.h	std::deque<WebSocketHubPendingMessage> pendingMessages
 src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<Detail::WebSocketHubMember> m_member
 src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<Detail::WebSocketHubMember> member
+src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<WebSocketHubPeerWriter> peerWriter
 src/Net/WebSocket/WebSocketHub.h	std::shared_ptr<WebSocketPeer> peerOwner
 src/Net/WebSocket/WebSocketHub.h	std::size_t m_maximumPendingByteCount
 src/Net/WebSocket/WebSocketHub.h	std::size_t pendingByteCount
 src/Net/WebSocket/WebSocketHub.h	std::string payload
 src/Net/WebSocket/WebSocketHub.h	std::string topic
+src/Net/WebSocket/WebSocketHub.h	std::unordered_map<WebSocketPeer *, std::weak_ptr<Detail::WebSocketHubPeerWriter>> m_peerWriters
 src/Net/WebSocket/WebSocketHub.h	std::vector<Registration> m_registrations
+src/Net/WebSocket/WebSocketHub.h	std::vector<std::weak_ptr<WebSocketHubMember>> members
 src/Net/WebSocket/WebSocketHub.h	struct ASYN_NET_API WebSocketHubMember
+src/Net/WebSocket/WebSocketHub.h	struct ASYN_NET_API WebSocketHubPeerWriter
 src/Net/WebSocket/WebSocketHub.h	struct Registration
+src/Net/WebSocket/WebSocketHub.h	struct WebSocketHubMember
 src/Net/WebSocket/WebSocketHub.h	struct WebSocketHubPendingMessage
 src/Net/WebSocket/WebSocketHub.h	using WebSocketSubscriptionId = std::uint64_t
 src/Net/WebSocket/WebSocketHub.h	void reset() noexcept
