@@ -3,6 +3,7 @@
 // - RendersUnixEpochAsCivilAnchor / RendersOneMicrosecondBeforeEpochOnPreviousDay
 // - RoundTripsParsedTextThroughRenderer / WallClockRoundTripsWithoutAnyOffset
 // - AcceptsOffsetsInEveryShapeTheEnginesGive / SystemClockFoldsOffsetIntoUtc
+// - RejectsOffsetMinutesAtOrAboveSixty
 // - AcceptsDateOnlyTextAndSecondsWithoutFraction / SixtySecondsRollsIntoNextMinuteLikeTheEngines
 // - RejectsZeroDatesAndNonIsoStyles / RejectsInfinityAndUndottedAmbiguities
 // - TruncatesFractionsBeyondMicroseconds / RejectsFractionsLongerThanNineDigits
@@ -108,6 +109,14 @@ namespace AsynGyanis::Database::Detail
         EXPECT_EQ(*withColon, *withCompact) << "带冒号与不带冒号的偏移折出了不同瞬间";
         EXPECT_EQ(renderUtc(*withColon), "2026-10-18T03:50:30.123456Z") << "偏移没有把文本折回 UTC";
         EXPECT_EQ(*withColon, *plainUtc);
+    }
+
+    TEST(TemporalText, RejectsOffsetMinutesAtOrAboveSixty)
+    {
+        // 四位数形态没有冒号分隔，后两位必须当分钟判：75 分钟不是合法偏移，不能被折算进小时
+        EXPECT_FALSE(parseTemporalText("2026-10-18T09:20:30+08:75").has_value());
+        EXPECT_FALSE(parseTemporalText("2026-10-18T09:20:30+0899").has_value());
+        EXPECT_TRUE(parseTemporalText("2026-10-18T09:20:30+0859").has_value());
     }
 
     TEST(TemporalText, SystemClockFoldsOffsetIntoUtc)

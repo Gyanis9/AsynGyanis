@@ -145,6 +145,13 @@ namespace AsynGyanis::Database::Detail
                 minutes = 0;
             }
 
+            // 四位数形态（+HHMM）没有冒号分隔，后两位同样是分钟：60 以上不是合法偏移，
+            // 不判就会把 "+0875" 当成 8 小时 75 分（总分钟仍可能落在 +23:59 的上限之内）
+            if (minutes >= 60)
+            {
+                return false;
+            }
+
             const int totalMinutes = hours * kMinutesPerHour + minutes;
             if (totalMinutes > kMaximumOffsetMinutes)
             {
