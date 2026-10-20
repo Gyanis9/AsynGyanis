@@ -55,8 +55,8 @@ namespace AsynGyanis::Core
 
     void ConnectionDistributor::addWorker(EventLoop &loop, Adopter adopter)
     {
-        // 空接手动作当场拒绝。此前的写法是悄悄不登记，留下的是一个「工作循环比配得少」的部署：
-        // 连接会集中投到剩下的循环上，而日志里一个字都没有——与「配置键没被读到」同一类静默变形。
+        // 空接手动作当场拒绝。悄悄不登记会留下一个「工作循环比配得少」的部署：
+        // 连接集中投到剩下的循环上，而日志里一个字都没有——与「配置键没被读到」同一类静默变形。
         // 真把空对象投出去则是在目标线程上抛 bad_function_call，更难查，故在这里就拒；
         // 用法错误按框架口径走 logic_error 分支，调用方能与运行期故障分开捕获
         if (!adopter)
