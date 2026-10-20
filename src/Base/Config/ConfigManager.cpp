@@ -461,42 +461,48 @@ namespace AsynGyanis::Base
 
     void ConfigManager::disableHotReload()
     {
-        // 与 enableHotReload 共用同一把控制面锁，二者对 m_fileWatcher 的读写才互斥；
-        // 这把锁总是最外层，监听线程的回调只碰 m_reloadTasksMutex，因此不会成环
-        const std::lock_guard controlLock(m_hotReloadControlMutex);
-
-        if (!m_hotReloadEnabled.exchange(false, std::memory_order_acq_rel))
-        {
-            return;
-        }
-
-        // 等待所有活跃的重载线程完成，防止 use-after-free。
-        // 锁内只摘取句柄，join 放到锁外：join 可能等到一次完整 reload 结束，
-        // 持锁 join 会让文件监听线程后续的热加载检查全部排队等待
         std::vector<std::unique_ptr<ReloadTask>> pendingTasks;
         {
-            const std::lock_guard lock(m_reloadTasksMutex);
-            pendingTasks.swap(m_reloadTasks);
-            // 重载回调里调 disableHotReload() 是合法用法（「连续几轮失败就别再监视了」），
-            // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
-            // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
-            // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
-            // 留下它，本轮收尾后由 collectFinishedReloadTasks 正常回收
-            for (auto &task: pendingTasks)
+            // 与 enableHotReload 共用同一把控制面锁，二者对 m_fileWatcher 的读写才互斥；
+            // 这把锁总是最外层，监听线程的回调只碰 m_reloadTasksMutex，因此不会成环
+            const std::lock_guard controlLock(m_hotReloadControlMutex);
+            if (!m_hotReloadEnabled.load(std::memory_order_acquire))
             {
-                if (task && task->thread.get_id() == std::this_thread::get_id())
+                return;
+            }
+            {
+                const std::lock_guard lock(m_reloadTasksMutex);
+                // 先把退出表容量留够：后面的搬移不再分配，唯一分配点排在状态切换之前
+                pendingTasks.reserve(m_reloadTasks.size());
+                if (!m_hotReloadEnabled.exchange(false, std::memory_order_acq_rel))
                 {
-                    m_reloadTasks.push_back(std::move(task));
+                    return;
+                }
+                for (auto iterator = m_reloadTasks.begin(); iterator != m_reloadTasks.end();)
+                {
+                    // 重载回调里调 disableHotReload() 是合法用法（「连续几轮失败就别再监视了」），
+                    // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
+                    // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
+                    // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
+                    // 原地跳过它，本轮收尾后由 collectFinishedReloadTasks 正常回收
+                    if (*iterator && (*iterator)->thread.get_id() == std::this_thread::get_id())
+                    {
+                        ++iterator;
+                        continue;
+                    }
+                    pendingTasks.push_back(std::move(*iterator));
+                    iterator = m_reloadTasks.erase(iterator);
                 }
             }
+            if (m_fileWatcher)
+            {
+                m_fileWatcher->stop();
+                m_fileWatcher.reset();
+            }
         }
+        // join 放在控制锁之外：重载回调里再调 enable/disable 是合法用法，
+        // 持锁 join 会让回调阻塞在这把非递归互斥量上，与 join 形成死锁
         pendingTasks.clear();
-
-        if (m_fileWatcher)
-        {
-            m_fileWatcher->stop();
-            m_fileWatcher.reset();
-        }
     }
 
     bool ConfigManager::isHotReloadEnabled() const noexcept
