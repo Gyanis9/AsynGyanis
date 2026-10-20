@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Base/Exception/StackTrace.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/SourceLocation.h"
 
@@ -68,6 +69,11 @@ namespace AsynGyanis::Base
         std::shared_ptr<const std::string> loggerName{}; ///< 日志器名称（与 Logger 共享同一份常量名字）
         std::string                        message{};    ///< 日志消息内容
         CapturedStackTrace                 stackTrace{}; ///< 调用栈原始帧；空表示本条日志不带栈
+
+        /// 日志点携带的上下文快照：Logger 在产生日志的线程上填入，格式化器优先用它；
+        /// 异步 Sink 在工作线程上格式化时因此读到日志点的上下文，而不是工作线程的 TLS。
+        /// 共享指针让上下文在事件排队期间保持存活
+        LogContextPtr context{};
 
         LogEvent() = default;
 

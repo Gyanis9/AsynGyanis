@@ -1,5 +1,7 @@
 #include "Base/Log/Logger.h"
 
+#include "Base/Log/LogContext.h"
+
 #include <chrono>
 #include <exception>
 #include <iostream>
@@ -68,6 +70,8 @@ namespace AsynGyanis::Base
         // 于是事件循环线程上一行日志不为时间戳取堆块
         LogEvent event{level, std::chrono::system_clock::now(), threadIdString(), location, m_name, std::move(message)};
         event.stackTrace = std::move(stackTrace);
+        // 上下文快照在日志点取：异步 Sink 的格式化发生在工作线程上，那里的 TLS 是空的
+        event.context = currentLogContext();
 
         writeToSinks(event);
     }

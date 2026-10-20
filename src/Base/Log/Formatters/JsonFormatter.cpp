@@ -153,7 +153,9 @@ namespace AsynGyanis::Base
             }
             contextKeys.clear();
 
-            if (const LogContextPtr &context = currentLogContext(); context != nullptr)
+            // 优先读事件自带的快照：异步 Sink 的工作线程上 TLS 是空的，读它会丢掉日志点的上下文
+            const LogContextPtr &context = event.context ? event.context : currentLogContext();
+            if (context != nullptr)
             {
                 for (const auto &[key, value]: context->fields())
                 {

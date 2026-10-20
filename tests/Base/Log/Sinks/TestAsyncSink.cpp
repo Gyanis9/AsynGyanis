@@ -16,10 +16,12 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Sinks/LogSink.h"
@@ -91,6 +93,89 @@ namespace AsynGyanis::Base
                 std::lock_guard lock(mutex);
                 return index < levels.size() ? levels[index] : LogLevel::Off;
             }
+        };
+
+        /**
+         * @brief 后台线程格式化出的日志行的共享记录
+         * @details 用共享指针承载，使 AsyncSink 与下游按值持有的格式化 Sink 析构后，
+         *          用例仍能读取工作线程落下的整行文本。
+         */
+        struct RecordedLines
+        {
+            mutable std::mutex       mutex; ///< 保护行向量
+            std::vector<std::string> lines; ///< 按到达顺序记录的行
+
+            /**
+             * @brief 追加一行文本
+             * @param line 工作线程格式化出的整行
+             */
+            void append(std::string line)
+            {
+                const std::lock_guard lock(mutex);
+                lines.push_back(std::move(line));
+            }
+
+            /**
+             * @brief 获取行快照
+             * @return std::vector<std::string> 按到达顺序的副本
+             */
+            [[nodiscard]] std::vector<std::string> snapshot() const
+            {
+                const std::lock_guard lock(mutex);
+                return lines;
+            }
+
+            /**
+             * @brief 判断已记录的行里是否有一行包含给定片段
+             * @param needle 待查找的片段
+             * @return true 至少一行包含该片段
+             */
+            [[nodiscard]] bool contains(const std::string_view needle) const
+            {
+                const std::lock_guard lock(mutex);
+                return std::any_of(lines.begin(), lines.end(), [needle](const std::string &line) { return line.find(needle) != std::string::npos; });
+            }
+        };
+
+        /**
+         * @brief 按真实版式格式化事件的桩 Sink
+         * @details 格式化发生在 AsyncSink 的工作线程上，正是「上下文是否随事件过队列」
+         *          这条性质的观测点。
+         */
+        class FormattingSink final : public LogSink
+        {
+        public:
+            /**
+             * @brief 构造格式化桩 Sink
+             * @param lines 共享的行记录
+             */
+            explicit FormattingSink(std::shared_ptr<RecordedLines> lines) : m_lines(std::move(lines))
+            {
+            }
+
+            /**
+             * @brief 用默认版式把事件格式化成整行并记录
+             * @details 重写 LogSink::write()：在本 Sink 被调用的线程（即 AsyncSink 的
+             *          工作线程）上渲染，记录的是最终落盘文本而不是事件字段。
+             * @param event 日志事件
+             */
+            void write(const LogEvent &event) override
+            {
+                std::string line;
+                formatEventInto(line, event);
+                m_lines->append(std::move(line));
+            }
+
+            /**
+             * @brief 桩无缓冲区，刷新为空操作
+             * @details 重写 LogSink::flush()：行已逐条追加进共享记录，无需刷新。
+             */
+            void flush() override
+            {
+            }
+
+        private:
+            std::shared_ptr<RecordedLines> m_lines; ///< 共享的行记录
         };
 
         /**
@@ -723,6 +808,26 @@ namespace AsynGyanis::Base
         EXPECT_EQ(events->size(), static_cast<std::size_t>(kthreadCount) * kwritesPerThread);
         EXPECT_EQ(sink.droppedEventCount(), 0u);
         EXPECT_TRUE(events->contains("async_worker3_49"));
+    }
+
+    // ============================================================================
+    // 上下文随事件跨线程
+    // ============================================================================
+
+    /**
+     * @brief 日志点的上下文要随事件到达工作线程，不能靠工作线程的 TLS
+     */
+    TEST(AsyncSinkContext, CarriesLogContextToTheWorkerThread)
+    {
+        auto   lines = std::make_shared<RecordedLines>();
+        Logger logger("async_context");
+        logger.addSink(std::make_unique<AsyncSink>(std::make_unique<FormattingSink>(lines), 16U, AsyncSink::OverflowPolicy::Block));
+        {
+            const LogContextScope scope({{"trace_id", "abc123"}});
+            logger.log(LogLevel::Info, "async context line");
+        }
+        logger.flush();
+        ASSERT_TRUE(TestSupport::waitForCondition([&lines] { return lines->contains("trace_id=abc123"); }, std::chrono::seconds(5))) << lines->snapshot().front();
     }
 
     // ============================================================================

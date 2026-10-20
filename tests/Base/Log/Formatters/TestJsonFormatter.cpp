@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -355,5 +356,18 @@ namespace AsynGyanis::Base
                 EXPECT_EQ(parsed.count("message"), 1U);
             }
         }
+    }
+
+    /**
+     * @brief 事件携带的上下文优先于当前线程的上下文
+     */
+    TEST(JsonFormatterTest, PrefersTheContextCarriedByTheEvent)
+    {
+        JsonFormatter formatter;
+        LogEvent      event = makeEvent("事件上下文");
+        event.context       = std::make_shared<const LogContext>(std::map<std::string, std::string>{{"trace_id", "event-id"}});
+        const LogContextScope scope({{"trace_id", "thread-id"}});
+        const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(textField(parsed, "trace_id"), "event-id");
     }
 } // namespace AsynGyanis::Base
