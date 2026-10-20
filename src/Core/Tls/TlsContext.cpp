@@ -691,9 +691,6 @@ namespace AsynGyanis::Core
         // 先清空错误栈：返回 false 时调用方读到的原因必须是本次留下的
         ERR_clear_error();
 
-        // 轮换要复现当前生效的对端校验模式：服务端 mTLS 与出站客户端两条路都在这一格上
-        const int previousVerifyMode = SSL_CTX_get_verify_mode(m_context);
-
         // 关键顺序：先把整台新上下文配置好，成功之后才换。任何一步失败都直接返回 false，
         // 旧上下文一个字节都不动——轮换失败不能让正在服务的进程掉线
         SSL_CTX *newContext = nullptr;
@@ -716,17 +713,10 @@ namespace AsynGyanis::Core
 
         // 复现当前生效的对端校验模式：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
         // 但校验模式由 setClientCertificateRequired() 或 enableClientPeerVerification() 单独设定。
-        // mTLS 与出站客户端共用这一格，漏掉这一步会让一次续期把对端校验悄悄关掉，
-        // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单随同一条路复现，不会丢
-        if (previousVerifyMode != SSL_VERIFY_NONE)
+        // mTLS 与出站客户端共用这一格，漏掉这一步会让一次续期把对端校验悄悄关掉，那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单随同一条路复现，不会丢
+        if (SSL_CTX_get_verify_mode(m_context) != SSL_VERIFY_NONE)
         {
-            // enableClientPeerVerification() 在策略未接管信任库时补过系统信任库；
-            // 新上下文要一并补上，否则校验模式还在、信任锚却空了
-            if (m_role == Role::Client && m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
-            {
-                static_cast<void>(SSL_CTX_set_default_verify_paths(newContext));
-            }
-            applyPeerVerification(newContext, previousVerifyMode);
+            applyPeerVerification(newContext, SSL_CTX_get_verify_mode(m_context));
         }
 
         // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径重读而不是沿用旧字节；
@@ -853,12 +843,6 @@ namespace AsynGyanis::Core
     {
         std::lock_guard<std::mutex> guard(m_contextMutex);
 
-        // 策略没接管信任库时才补系统那一份：补在两处都会的情况下会把自己 CA 签的对端
-        // 也一并放行（系统库里有公网根 CA），那等于「我只信我自己的 CA」这条要求被悄悄放宽
-        if (m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
-        {
-            SSL_CTX_set_default_verify_paths(m_context);
-        }
         // 出站一侧恒要校验：不验对端等于任何受信 CA 给他域签的证书都能冒充目标主机；
         // 指纹名单（若已设）由同一处 helper 挂上
         applyPeerVerification(m_context, SSL_VERIFY_PEER);
@@ -866,6 +850,12 @@ namespace AsynGyanis::Core
 
     void TlsContext::applyPeerVerification(SSL_CTX *const context, const int mode) const
     {
+        // 客户端校验的信任锚：策略没接管信任库时补系统那一份。轮换与各个 setter 都经这里，
+        // 因此新上下文不会出现「校验模式在、信任锚空」的状态
+        if (m_role == Role::Client && m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
+        {
+            static_cast<void>(SSL_CTX_set_default_verify_paths(context));
+        }
         // 名单搬进 SSL_CTX 的共享登记：回调只碰登记、不解引用宿主对象（回调在握手线程上跑，
         // 宿主可能已析构），替换持独占锁——与 VirtualHostRegistry 同一条理由、同一个形状
         if (PeerFingerprintRegistry *const registry = ensurePeerFingerprintRegistry(context); registry != nullptr)
