@@ -625,7 +625,7 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 /**
  * @brief 批量删除跨过方言参数上限时每一块都要真正生效
  * @details 每块的主键集合互不相交；复用同一个查询对象会让第二块带上第一块的 IN 条件，
- *          结果是「返回了少一条的成功」而不是报错。行数取上限 + 1，恰好两块。
+ *          参数数累加后越界被拒（不判上限的引擎上则是静默截短）。行数取上限 + 1，恰好两块。
  */
 TEST_F(QueryableExecutionTest, DeleteBatchSpansParameterChunks)
 {

@@ -313,7 +313,7 @@ namespace AsynGyanis::Database
             PooledConnection result = co_await awaiter;
 
             // 交接后的恢复可能晚于池析构：下面几行读的都是池的成员，判活必须排在任何一次读之前。
-            // 判死就地按空手收尾——连接已在 await_resume 交回空包装时关掉，重挂与记账都没有对象可碰
+            // 判死就地收尾，重挂与记账都没有对象可碰；连接若已在恢复时交出，随 result 一起关闭
             bool isPoolAlive = false;
             {
                 const std::lock_guard livenessLock(awaiter.m_liveness->mutex);

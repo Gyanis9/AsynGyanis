@@ -795,7 +795,7 @@ namespace AsynGyanis::Database::Queryable
                     }
 
                     // 每块独立构造：where() 是追加语义，复用同一个查询对象会让第二块起
-                    // 带上前一块的 IN 条件，两批主键不相交时静默少删
+                    // 带上前一块的 IN 条件——参数数累加越界被拒，或在不判上限的引擎上静默少删
                     Queryable<T> chunkQuery(transaction);
                     chunkQuery.where(std::move(condition));
                     affectedRowCount += chunkQuery.executeNonQuery();
