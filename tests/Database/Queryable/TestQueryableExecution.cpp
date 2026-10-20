@@ -25,6 +25,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/RowMappingException.h"
+#include "Database/Dialect/SqliteDialect.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -246,6 +247,7 @@ namespace
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
     using AsynGyanis::Database::RowMappingException;
+    using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::contains;
@@ -606,6 +608,33 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 
     ASSERT_EQ(remainingRows.size(), 1U);
     EXPECT_EQ(remainingRows[0].id, 1);
+}
+
+/**
+ * @brief 批量删除跨过方言参数上限时每一块都要真正生效
+ * @details 每块的主键集合互不相交；复用同一个查询对象会让第二块带上第一块的 IN 条件，
+ *          结果是「返回了少一条的成功」而不是报错。行数取上限 + 1，恰好两块。
+ */
+TEST_F(QueryableExecutionTest, DeleteBatchSpansParameterChunks)
+{
+    constexpr std::size_t kRowCount = SqliteDialect::kMaximumStatementParameters + 1U;
+    // 用例必须真的跨过参数上限，否则覆盖不到分块分支；整数式避免额外引入 <cmath>
+    constexpr std::size_t kChunkCount = (kRowCount + SqliteDialect::kMaximumStatementParameters - 1U) / SqliteDialect::kMaximumStatementParameters;
+
+    std::vector<AccountRow> rows;
+    rows.reserve(kRowCount);
+    for (std::size_t index = 0; index < kRowCount; ++index)
+    {
+        rows.push_back(makeRow(static_cast<std::int64_t>(index + 1U), "批量删除-" + std::to_string(index), 0.0, std::nullopt, true));
+    }
+
+    Queryable<AccountRow> query = newQuery();
+    ASSERT_EQ(static_cast<std::int64_t>(kRowCount), query.insertBatch(rows));
+    ASSERT_EQ(static_cast<std::int64_t>(kRowCount), newQuery().count());
+
+    EXPECT_EQ(static_cast<std::int64_t>(kRowCount), query.deleteBatch(rows));
+    EXPECT_EQ(0, newQuery().count()) << "第二块带上了第一块的条件：批量删除被静默截短";
+    EXPECT_EQ(2U, kChunkCount) << "用例必须真的跨过参数上限，否则覆盖不到分块分支";
 }
 
 /**

@@ -776,7 +776,7 @@ namespace AsynGyanis::Database::Queryable
                 primaryKeys.push_back(*key);
             }
 
-            const auto deleteChunks = [&](Queryable<T> &target)
+            const auto deleteChunks = [&](Transaction &transaction)
             {
                 std::int64_t affectedRowCount = 0;
                 for (std::size_t offset = 0; offset < primaryKeys.size(); offset += parameterLimit)
@@ -791,21 +791,23 @@ namespace AsynGyanis::Database::Queryable
                     {
                         condition.inValues.push_back(Detail::toParameterValueFromKey(primaryKeys[offset + index], TableSchema<T>::kPrimaryKey));
                     }
-                    target.where(std::move(condition));
-                    affectedRowCount += target.executeNonQuery();
+
+                    // 每块独立构造：where() 是追加语义，复用同一个查询对象会让第二块起
+                    // 带上前一块的 IN 条件，两批主键不相交时静默少删
+                    Queryable<T> chunkQuery(transaction);
+                    chunkQuery.where(std::move(condition));
+                    affectedRowCount += chunkQuery.executeNonQuery();
                 }
                 return affectedRowCount;
             };
 
             if (m_transaction != nullptr)
             {
-                Queryable<T> batchQuery(*m_transaction);
-                return deleteChunks(batchQuery);
+                return deleteChunks(*m_transaction);
             }
 
             Transaction        transaction(*m_pool);
-            Queryable<T>       batchQuery(transaction);
-            const std::int64_t affectedRowCount = deleteChunks(batchQuery);
+            const std::int64_t affectedRowCount = deleteChunks(transaction);
             if (!transaction.commit())
             {
                 throw QueryExecutionException("批量删除：提交事务失败：" + transaction.lastError());
