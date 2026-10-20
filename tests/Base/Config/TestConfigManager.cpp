@@ -2558,6 +2558,65 @@ port: 9090
         EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
 
+    /**
+     * @brief 另一条线程关闭热重载时，回调里再 enable 不得与关闭路径互相等待
+     * @details 旧实现持控制锁 join 重载线程；回调看到 enabled=false 后调 enable 会阻塞在同一把
+     *          非递归锁上，关闭线程又在 join 回调所在线程，形成死锁。看门狗在 5 秒后失败退出。
+     */
+    TEST_F(ConfigManagerTest, DisablingHotReloadWhileCallbackReenablesDoesNotDeadlock)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        std::atomic<bool> callbackEntered{false};
+        std::atomic<bool> callbackReturned{false};
+        const bool        enabled = configuration().enableHotReload(
+                [&callbackEntered, &callbackReturned](const ConfigLoadResult &)
+                {
+                    callbackEntered.store(true, std::memory_order_release);
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    while (ConfigManager::instance().isHotReloadEnabled() && std::chrono::steady_clock::now() < deadline)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                    static_cast<void>(ConfigManager::instance().enableHotReload(nullptr, std::chrono::milliseconds(50)));
+                    callbackReturned.store(true, std::memory_order_release);
+                },
+                std::chrono::milliseconds(50));
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        // 与其余热重载用例同一处置：监听线程要先把读请求投出去
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: second\n");
+        ASSERT_TRUE(TestSupport::waitForCondition([&callbackEntered] { return callbackEntered.load(std::memory_order_acquire); }, std::chrono::seconds(8))) << "重载回调没有进入";
+
+        std::atomic<bool> disableReturned{false};
+        std::thread       watchdog(
+                [&disableReturned]
+                {
+                    for (int tick = 0; tick < 100 && !disableReturned.load(std::memory_order_acquire); ++tick)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                    if (!disableReturned.load(std::memory_order_acquire))
+                    {
+                        std::fprintf(stderr, "disableHotReload 没能在 5 秒内返回：关闭路径与回调在互等\n");
+                        std::fflush(stderr);
+                        std::_Exit(1);
+                    }
+                });
+
+        configuration().disableHotReload();
+        disableReturned.store(true, std::memory_order_release);
+        watchdog.join();
+
+        EXPECT_TRUE(callbackReturned.load(std::memory_order_acquire)) << "disable 返回时回调还没走完";
+        configuration().disableHotReload();
+    }
+
     TEST_F(ConfigManagerTest, DisableHotReloadAfterFailedEnableIsSafeToRepeat)
     {
         configuration().clear();
