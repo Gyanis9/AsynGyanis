@@ -155,7 +155,7 @@ namespace AsynGyanis::Core
             } catch (...)
             {
             }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
             static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
             return;
         } catch (...)
@@ -166,7 +166,7 @@ namespace AsynGyanis::Core
             } catch (...)
             {
             }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
             static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
             return;
         }

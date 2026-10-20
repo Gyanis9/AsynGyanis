@@ -78,7 +78,7 @@ namespace AsynGyanis::Core
          * @param fileDescriptor 目标描述符
          * @param events         新的事件位
          * @param userData       新的用户数据
-         * @return true 已更新（含「本来就是这个掩码」与「取消已登记、由维护重试」）；false 未注册
+         * @return true 已更新（含「本来就是这个掩码」与「取消已登记、由维护重试」）；false 未注册，或在没有在途轮询时提交失败
          */
         bool modFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr);
 
