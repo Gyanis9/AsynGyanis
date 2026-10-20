@@ -717,6 +717,15 @@ namespace AsynGyanis::Core
         {
             // 起不来不重试：把该槽位按「起来就崩」记一次，连续到上限就放弃，免得把日志刷满
             closeWorkerHeartbeatPipe(worker);
+#if !ASYN_PLATFORM_WIN32
+            // 写端由 attachWatchdogPipe 记在成员上：spawn 没成功就没人会用它，下一次起 worker
+            // 会直接覆盖这个槽位，不在这里关就是每失败一次漏一个描述符
+            if (m_pendingWatchdogWriteFd >= 0)
+            {
+                static_cast<void>(::close(m_pendingWatchdogWriteFd));
+                m_pendingWatchdogWriteFd = -1;
+            }
+#endif
             noteFailedStart(worker, workerIndex, "平台错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
             return false;
         }
