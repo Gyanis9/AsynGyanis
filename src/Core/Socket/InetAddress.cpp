@@ -354,17 +354,20 @@ namespace AsynGyanis::Core
 
     std::string InetAddress::toString() const
     {
+        const std::string addressText = ip();
+
         std::string result;
-
+        result.reserve(addressText.size() + 10U);
         if (m_address.ss_family == AF_INET6)
-            result += '[';
-
-        result += ip();
-
+        {
+            result.push_back('[');
+        }
+        result += addressText;
         if (m_address.ss_family == AF_INET6)
-            result += ']';
-
-        result += ':';
+        {
+            result.push_back(']');
+        }
+        result.push_back(':');
         result += std::to_string(port());
         return result;
     }
