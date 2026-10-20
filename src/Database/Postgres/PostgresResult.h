@@ -204,6 +204,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue getValue(std::string_view name) const override;
 
         /**
+         * @brief 读出指定列并把该格载荷的所有权交给调用方
+         * @details 重写 DatabaseResult::takeValue()：预读快照与流式行缓冲都已经物化成 DatabaseValue，
+         *          逐格映射时把文本/二进制缓冲直接搬走，省掉一次整串拷贝与它的堆分配。
+         *          取用后同一格再读会得到搬空后的空值；同一行内每格只取一次是 ORM 映射的既有前提。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 列值；无当前行或越界时回 monostate
+         */
+        [[nodiscard]] DatabaseValue takeValue(size_t index) override;
+
+        /**
          * @brief 获取全部列名
          * @details 重写 DatabaseResult::columnNames()：返回构造时快照的列名列表副本。列表在构造时
          *          已按列序补齐（缺名列补空串占位），因此长度恒等于 columnCount()，

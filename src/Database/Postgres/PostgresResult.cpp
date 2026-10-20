@@ -543,6 +543,21 @@ namespace AsynGyanis::Database
         return getValue(*index);
     }
 
+    DatabaseValue PostgresResult::takeValue(const size_t index)
+    {
+        if (m_currentRow == nullptr || index >= m_currentRow->size())
+        {
+            return std::monostate{};
+        }
+
+        // 流式的当前行是每块覆写的缓冲，搬走即可；预读的当前行下标是「下一次 next() 的位置减一」
+        if (m_isStreaming)
+        {
+            return std::move(m_streamingRow[index]);
+        }
+        return std::move(m_rows[m_nextRowIndex - 1U][index]);
+    }
+
     std::vector<std::string> PostgresResult::columnNames() const
     {
         // 列名在构造时已按列序补齐（缺名列补空串），这里直接拷一份副本交给调用方，
