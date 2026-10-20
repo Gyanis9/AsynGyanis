@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace AsynGyanis::Platform
@@ -362,10 +363,16 @@ namespace AsynGyanis::Platform
         std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
         ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
 
+        // 读者先跑起来：此时只有半个头，它一定卡在补头上等剩下的字节，而不必赌内核不把两段合并
+        int          receivedDescriptor = -1;
+        std::jthread reader([&channelReader, &receivedDescriptor]() { receivedDescriptor = Socket::readListeningSocketHandoff(channelReader); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
         const char *remaining = reinterpret_cast<const char *>(&header) + sizeof(std::uint32_t);
         ASSERT_EQ(::send(channelWriter, remaining, static_cast<int>(sizeof(header) - sizeof(std::uint32_t)), 0), static_cast<ssize_t>(sizeof(header) - sizeof(std::uint32_t)));
 
-        const int receivedDescriptor = Socket::readListeningSocketHandoff(channelReader);
+        reader.join();
+
         ASSERT_GE(receivedDescriptor, 0) << "分两段到达的合法移交被当成格式错误拒掉了，错误码 " << PlatformError::lastSocketErrorCode();
         cleanup.add(receivedDescriptor);
 
@@ -754,6 +761,7 @@ namespace AsynGyanis::Platform
         int channelWriter = -1;
         int channelReader = -1;
         ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
         cleanup.add(channelReader);
 
         struct Header
@@ -777,8 +785,9 @@ namespace AsynGyanis::Platform
         std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
         ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
 
-        // 只给半个头就发 FIN：读端补头时遇到 0，必须关掉已经装进来的那枚描述符
-        static_cast<void>(FileDescriptor::close(channelWriter));
+        // 只给半个头就发 FIN：读端补头时遇到 0，必须关掉已经装进来的那枚描述符。
+        // shutdown 只做半关闭，描述符仍归 cleanup 收尾：断言失败时也不会出现同号二次关闭
+        ASSERT_EQ(::shutdown(channelWriter, SHUT_WR), 0);
 
         const std::size_t descriptorsBefore = openDescriptorCount();
         ASSERT_NE(descriptorsBefore, 0U) << "读不到 /proc/self/fd，这条判据没法成立";
@@ -810,13 +819,14 @@ namespace AsynGyanis::Platform
         int               channelWriter = -1;
         int               channelReader = -1;
         ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
         cleanup.add(channelReader);
 
         // 先放一个绝不该在这里出现的成因进槽位：读端若把它交出去，就是拿残值当失败原因
         PlatformError::setLastErrorCode(PlatformError::kNoBufferSpace);
 
-        // 关掉写端就是给这条流发出 FIN：读端此后不会再拿到任何字节
-        static_cast<void>(FileDescriptor::close(channelWriter));
+        // 半关闭写端就是给这条流发出 FIN：读端此后不会再拿到任何字节，描述符本身仍由 cleanup 收尾
+        ASSERT_EQ(::shutdown(channelWriter, SHUT_WR), 0);
 
         EXPECT_EQ(Socket::readListeningSocketHandoff(channelReader), -1) << "通道已经关了，读端却报出成功";
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kConnectionReset) << "通道被关报成了别的原因：运维据此会去查消息写法，而不是查对端进程有没有起来";

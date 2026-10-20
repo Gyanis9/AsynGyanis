@@ -98,6 +98,25 @@ namespace AsynGyanis::Platform
             }
 
             /**
+             * @brief 是否记录过以指定后缀结尾的路径
+             * @param suffix 待匹配的路径后缀（含分隔符）
+             * @return true 至少有一条事件的完整路径以它结尾
+             */
+            [[nodiscard]] bool sawPathEndingWith(const std::string_view suffix) const
+            {
+                std::lock_guard lock(m_mutex);
+                for (const auto &[filePath, changeType]: m_events)
+                {
+                    (void) changeType;
+                    if (filePath.size() >= suffix.size() && filePath.compare(filePath.size() - suffix.size(), suffix.size(), suffix) == 0)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            /**
              * @brief 统计指向指定文件名的回调条数
              * @param fileName 文件名（不含目录）
              * @param changeType 只统计这一类事件；nullopt 表示不限类型
@@ -1375,6 +1394,11 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(std::filesystem::create_directories(nestedDirectory));
         const bool sawNested = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested"); }, 3000);
         ASSERT_TRUE(sawNested) << "改名后的监视没跟过去，下面的「深层没事件」就是假绿";
+
+        // 控制写：改名后的条目必须按新路径派发，否则下面的「深层没事件」可能只是路径前缀还停在旧键
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("parent/plain.moved/marker.yaml", "moved: true\n"));
+        const bool sawMarkerFromMovedPath = TestSupport::waitForCondition([&recorder]() { return recorder.sawPathEndingWith("plain.moved\\marker.yaml"); }, 3000);
+        ASSERT_TRUE(sawMarkerFromMovedPath) << "改名后派发的路径前缀仍是旧键：条目没有被搬到新位置";
 
         ASSERT_TRUE(temporaryDirectory.writeNestedFile("parent/plain.moved/nested/deep.yaml", "leaked: true\n"));
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
