@@ -1,6 +1,6 @@
 /**
  * @file HttpClient.h
- * @brief 出站 HTTP 客户端与 URL 拆解：一次请求一条连接，明文与 https 两条路都支持
+ * @brief 出站 HTTP 客户端与 URL 拆解：连接可经池复用，明文与 https 两条路都支持
  * @author Gyanis
  * @date 2026-09-14
  * @version 1.0.0
@@ -237,7 +237,11 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API std::optional<std::string> resolveUrlReference(const ParsedUrl &base, std::string_view reference);
     /**
      * @brief 出站 HTTP 客户端
-     * @details 每次请求新建一条连接，完成后关闭（https 走 TLS，并校验服务端证书与主机名）。
+     * @details 带池的实例把 HTTP/1.1 连接留在 HttpOutboundConnectionPool 里复用（keep-alive）：
+     *          池里有同主机同端口的空闲连接就先取来用，用完且对端没声明 close 的连接还回池里。
+     *          池未启用、池里没有可复用的连接、或刚取到的空闲连接已被对端收掉时才新建一条，
+     *          并在请求失败或对端收线时关闭。静态的 get()/post()/send() 没有池，仍是一次请求一条连接。
+     *          https 走 TLS，并校验服务端证书与主机名。
      */
     class ASYN_NET_API HttpClient
     {

@@ -1,6 +1,7 @@
 // HTTP 出站客户端端到端用例
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -20,6 +21,9 @@
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Gzip.h"
 #include "Net/Http/HttpDate.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
+#include "Platform/Platform.h"
 namespace AsynGyanis::Net
 {
     namespace
@@ -83,6 +87,212 @@ namespace AsynGyanis::Net
                 loop.scheduler().schedule(task.handle());
             loop.run();
             return outcome;
+        }
+
+        /**
+         * @brief 只回一份预设字节、回完仍不关连接的假对端
+         * @details 真实服务端造不出「畸形响应之后还握着连接」这一种形状：它要么回合规响应，要么收线。
+         *          这里按请求头的空行认一次请求，回预设字节后继续等对端先关，好让「客户端有没有在
+         *          解析失败时自己收口」成为可直接观测的判据。
+         */
+        class MalformedResponsePeer
+        {
+        public:
+            explicit MalformedResponsePeer(std::string payload) : m_payload(std::move(payload))
+            {
+            }
+
+            MalformedResponsePeer(const MalformedResponsePeer &)            = delete;
+            MalformedResponsePeer &operator=(const MalformedResponsePeer &) = delete;
+
+            ~MalformedResponsePeer()
+            {
+                stop();
+            }
+
+            /// 起工作线程并等它把端口报回来
+            bool start(const std::chrono::milliseconds waitTimeout)
+            {
+                m_worker            = std::thread([this] { run(); });
+                const auto deadline = std::chrono::steady_clock::now() + waitTimeout;
+                while (m_port.load(std::memory_order_acquire) == 0U && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                return m_port.load(std::memory_order_acquire) != 0U;
+            }
+
+            /// 收摊：置停止标志并等线程退出（各处轮询都带超时）
+            void stop()
+            {
+                m_isStopping.store(true, std::memory_order_release);
+                if (m_worker.joinable())
+                {
+                    m_worker.join();
+                }
+            }
+
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port.load(std::memory_order_acquire);
+            }
+
+        private:
+            void run()
+            {
+                const Platform::Socket::Initialization network;
+                const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(listener))
+                {
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = 0;
+                if (::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 8) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                m_port.store(queryBoundPort(listener), std::memory_order_release);
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(listener, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(listener + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    const int client = static_cast<int>(::accept(listener, nullptr, nullptr));
+                    if (!Platform::FileDescriptor::isValid(client))
+                    {
+                        continue;
+                    }
+                    serve(client);
+                    Platform::FileDescriptor::close(client);
+                }
+                Platform::FileDescriptor::close(listener);
+            }
+
+            void serve(const int client)
+            {
+                std::string            buffered;
+                std::array<char, 1024> chunk{};
+                bool                   isPayloadSent = false;
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(client, &readSet);
+                    timeval   pollInterval{0, 50 * 1000};
+                    const int readyCount = ::select(client + 1, &readSet, nullptr, nullptr, &pollInterval);
+                    if (readyCount < 0)
+                    {
+                        return;
+                    }
+                    if (readyCount == 0)
+                    {
+                        continue;
+                    }
+                    const ssize_t received = ::recv(client, chunk.data(), static_cast<int>(chunk.size()), 0);
+                    if (received <= 0)
+                    {
+                        return;
+                    }
+                    buffered.append(chunk.data(), static_cast<std::size_t>(received));
+                    if (isPayloadSent || buffered.find("\r\n\r\n") == std::string::npos)
+                    {
+                        continue;
+                    }
+                    isPayloadSent             = true;
+                    std::size_t sentByteCount = 0;
+                    while (sentByteCount < m_payload.size())
+                    {
+                        const int sent = ::send(client, m_payload.data() + sentByteCount, static_cast<int>(m_payload.size() - sentByteCount), 0);
+                        if (sent <= 0)
+                        {
+                            return;
+                        }
+                        sentByteCount += static_cast<std::size_t>(sent);
+                    }
+                }
+            }
+
+            std::string                m_payload;           ///< 每份请求要回的预设字节
+            std::thread                m_worker;            ///< 接受与应答线程
+            std::atomic<bool>          m_isStopping{false}; ///< 收摊标志
+            std::atomic<std::uint16_t> m_port{0};           ///< 实际监听端口，0 表示还没起来
+        };
+
+        /// 半开探测名额用例的读数
+        struct HalfOpenProbeOutcome
+        {
+            bool routeEntered{false};     ///< 第一条请求确实进了被按住的路由
+            bool secondRejected{false};   ///< 第二条请求被本地并发闸挡下
+            bool nextProbeAllowed{false}; ///< 名额没有被第二条白占：下一次询问仍放行
+        };
+
+        /**
+         * @brief 在一条循环上造出「半开时并发闸已满」的那一刻，并读下一次探测还放不放行
+         * @details 顺序按用例需要排定：第一条请求在闭闸期出去并占住在途名额（它不占探测名额），
+         *          随后把熔断器推到半开，再发第二条。第二条被并发闸挡下时，旧实现已经先向熔断器
+         *          占走了一个探测名额；新实现把这次询问排到闸之后，名额应当还在。
+         * @param loop 客户端事件循环
+         * @param client 被测客户端
+         * @param breaker 直接读写的熔断器（与客户端共用同一份）
+         * @param endpointKey 目标端点
+         * @param url 被按住的路由
+         * @param routeEntered 路由处理器进门时置位
+         * @param routeRelease 用例置位后路由才回响应
+         * @param outcome 就地收集读数
+         */
+        Core::Task<void> runHalfOpenGateProbeTask(Core::EventLoop &loop, HttpClient &client, OutboundCircuitBreaker &breaker, const HttpOutboundEndpointKey &endpointKey,
+                                                  const std::string &url, const std::shared_ptr<std::atomic<bool>> &routeEntered,
+                                                  const std::shared_ptr<std::atomic<bool>> &routeRelease, HalfOpenProbeOutcome &outcome)
+        {
+            Core::Task<std::unique_ptr<HttpClientResponse>> firstTask  = client.get(url, std::chrono::seconds{10});
+            Core::Task<std::unique_ptr<HttpClientResponse>> secondTask = client.get(url, std::chrono::seconds{2});
+            loop.scheduler().schedule(firstTask.handle());
+
+            Core::Timer pollTimer(loop);
+            const auto  enteredDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (!routeEntered->load(std::memory_order_acquire) && std::chrono::steady_clock::now() < enteredDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            outcome.routeEntered = routeEntered->load(std::memory_order_acquire);
+            if (outcome.routeEntered)
+            {
+                // 第一条在闭闸期拿到名额，没有占探测名额；把它推到半开，模拟上一条请求仍在途中时窗口到点
+                breaker.reportFailure(endpointKey);
+                static_cast<void>(breaker.stateOf(endpointKey, OutboundCircuitBreaker::Clock::now() + std::chrono::milliseconds{5}));
+
+                loop.scheduler().schedule(secondTask.handle());
+                const auto secondDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+                while (!secondTask.isReady() && std::chrono::steady_clock::now() < secondDeadline)
+                {
+                    co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+                }
+                if (secondTask.isReady())
+                {
+                    outcome.secondRejected = secondTask.handle().promise().result() == nullptr;
+                }
+                // 此刻第一条仍被路由按住：探测名额若被第二条白占，这里一定读回 false
+                outcome.nextProbeAllowed = breaker.allowRequest(endpointKey);
+            }
+
+            routeRelease->store(true, std::memory_order_release);
+            const auto firstDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (!firstTask.isReady() && std::chrono::steady_clock::now() < firstDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            loop.stop();
+            co_return;
         }
 
         /**
@@ -342,6 +552,27 @@ namespace AsynGyanis::Net
         // 收尾前等这条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条「要等定时器才肯结束」
         // 的在途请求留到那之后（既有用例都刻意避开这个状态）
         std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 对端回畸形响应又不收线时，客户端按解析失败立即收场，不陪它耗到请求时限
+     * @details 解析器一进入 Failed 就该停：旧读循环只认 isComplete()，把失败态当成「还没收齐」
+     *          继续读，于是每条畸形响应都白等满时限。夹具回完畸形头部后保持连接不关，时限给 5 秒，
+     *          断言耗时远小于它，失败原因还要点明响应不合规范。
+     */
+    TEST(HttpClient, FailsFastWhenMalformedResponseArrivesOnAConnectionThePeerKeepsOpen)
+    {
+        MalformedResponsePeer peer("HTTP/1.1 200 OK\r\nContent-Length: not-a-number\r\n\r\n");
+        ASSERT_TRUE(peer.start(kTimeout)) << "假对端未在时限内进入监听";
+        const std::string url = "http://127.0.0.1:" + std::to_string(peer.port()) + "/malformed";
+
+        const auto        started       = std::chrono::steady_clock::now();
+        const SendOutcome outcome       = runSend(url, HttpClientRequest{}, std::chrono::seconds{5});
+        const auto        elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+
+        EXPECT_TRUE(outcome.body.empty()) << "畸形响应被当成了成功响应";
+        EXPECT_NE(outcome.reason.find("响应不合规范"), std::string::npos) << "失败原因没有点明响应不合规范：" << outcome.reason;
+        EXPECT_LT(elapsedMillis, std::chrono::milliseconds{2000}) << "客户端等到了时限（用时 " << elapsedMillis.count() << " 毫秒）：解析失败没有让读循环停下来";
     }
 
     /**
@@ -1010,6 +1241,64 @@ namespace AsynGyanis::Net
         EXPECT_EQ(results[1]->statusCode, 500);
         EXPECT_TRUE(results[2] == nullptr) << "阈值已过却没挡住第三次请求：熔断器没接进这条通路";
         EXPECT_EQ(openCountAtEnd, 1U);
+    }
+
+    /**
+     * @brief 半开时被本地并发闸挡下的请求不得占掉探测名额
+     * @details 半开态下 allowRequest 会占一个探测名额，而它只在 reportSuccess/reportFailure 里归还。
+     *          并发闸上限 1 时，第一条请求在闭闸期出去并占住在途名额（不占探测名额）；随后把熔断器
+     *          推到半开，第二条请求被并发闸挡下。旧实现先问熔断再问闸，第二条因此白占了一个探测名额；
+     *          新实现把熔断询问排到闸之后，名额应当还在，下一次询问仍放行。
+     */
+    TEST(HttpClient, GateRejectedRequestDoesNotConsumeTheHalfOpenProbe)
+    {
+        auto                     routeEntered = std::make_shared<std::atomic<bool>>(false);
+        auto                     routeRelease = std::make_shared<std::atomic<bool>>(false);
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [routeEntered, routeRelease](Router &router, Core::EventLoop &loop)
+                                         {
+                                             router.get("/held",
+                                                        [&loop, routeEntered, routeRelease](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            routeEntered->store(true, std::memory_order_release);
+                                                            Core::Timer holdTimer(loop);
+                                                            while (!routeRelease->load(std::memory_order_acquire))
+                                                            {
+                                                                co_await holdTimer.waitFor(std::chrono::milliseconds{5});
+                                                            }
+                                                            response.setBody("held");
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        Core::EventLoop                    loop;
+        HttpOutboundConnectionPool::Config poolConfig;
+        poolConfig.maximumInFlightPerEndpoint = 1;
+        poolConfig.inFlightOverflowPolicy     = InFlightOverflowPolicy::Fail;
+        HttpClient client(loop, poolConfig);
+
+        OutboundCircuitBreaker::Configuration breakerConfiguration;
+        breakerConfiguration.consecutiveFailureThreshold = 1;
+        breakerConfiguration.openDuration                = std::chrono::milliseconds{1};
+        auto breaker                                     = std::make_shared<OutboundCircuitBreaker>(breakerConfiguration);
+        client.setCircuitBreaker(breaker);
+
+        const std::string             url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/held";
+        const HttpOutboundEndpointKey endpointKey{"127.0.0.1", fixture.listeningPort(), false};
+
+        HalfOpenProbeOutcome outcome;
+        auto                 task = runHalfOpenGateProbeTask(loop, client, *breaker, endpointKey, url, routeEntered, routeRelease, outcome);
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        ASSERT_TRUE(outcome.routeEntered) << "第一条请求没有进入被按住的路由，用例前提不成立";
+        EXPECT_TRUE(outcome.secondRejected) << "并发闸上限 1 时第二条请求本该被挡下";
+        EXPECT_EQ(client.outboundGateRejectionCount(), 1U) << "第二条失败不是并发闸挡下的";
+        EXPECT_TRUE(outcome.nextProbeAllowed) << "探测名额被本地闸挡下的请求白占了：半开态的端点此后会一直拒绝探测";
     }
 
     /**

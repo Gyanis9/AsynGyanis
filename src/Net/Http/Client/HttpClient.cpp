@@ -1133,6 +1133,14 @@ namespace AsynGyanis::Net
                         {
                             break;
                         }
+                        if (connection.parser().hasFailed())
+                        {
+                            // 解析已判死：对端多半还握着这条连接，畸形报文不等于对端会收线。继续读只会
+                            // 白占着描述符等到对端关闭或看门狗到点。失败响应为空，本来就走不到还池
+                            // 那一条；仍显式收口，因为协程帧要等调用方放手才销毁，析构里的关闭来得更晚
+                            connection.close();
+                            break;
+                        }
                         continue;
                     }
                     // 头部一收齐就逐批交付：这一段交完之前不去读下一批通路字节，背压因此落在接收口上
@@ -1146,6 +1154,11 @@ namespace AsynGyanis::Net
                     }
                     if (connection.parser().isComplete() || connection.parser().hasFailed())
                     {
+                        if (!connection.parser().isComplete())
+                        {
+                            // 与上面那处同一判据：解析失败时对端可能仍开着连接，这里显式收口
+                            connection.close();
+                        }
                         break;
                     }
                 }
@@ -2757,13 +2770,6 @@ namespace AsynGyanis::Net
         std::string failureReason;
 
         const HttpOutboundEndpointKey endpointKey{parsed.host, parsed.port, parsed.scheme == "https"};
-        if (m_circuitBreaker != nullptr && !m_circuitBreaker->allowRequest(endpointKey))
-        {
-            // 开闸期间连套接字都不建：上游塌掉时这笔钱原本每个请求重付一遍，而调用方只看到「超时」
-            failureReason = std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, url);
-            LOG_ERROR_FMT("HttpClient: {}", failureReason);
-            co_return nullptr;
-        }
 
         // 出向并发闸：每个端点的在途请求数上限。Fail（默认）立即失败；Wait 在时限/截止时刻内轮询等名额。
         // 计数在闸内、释放靠守卫，覆盖整条请求（含重定向），不与空闲连接池的那条账混用
@@ -2779,6 +2785,17 @@ namespace AsynGyanis::Net
         const std::optional<std::chrono::milliseconds> effectiveTimeout = foldPostWaitTimeout(effectiveRequest, requestTimeout, requestStartedAt, failureReason);
         if (!effectiveTimeout.has_value())
         {
+            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            co_return nullptr;
+        }
+
+        // 熔断放行排在这两道本地闸之后：半开态下 allowRequest 会占掉一个探测名额，而它只有走到
+        // reportSuccess/reportFailure 才归还。前面两条早退（并发闸没拿到名额、预算已耗尽）都不会
+        // 报告任何结果，先问熔断就等于把名额永远漏在账上，端点从此在半开态里被永久拒绝。
+        // 排在这里仍有原意：开闸期间连套接字都不建，上游塌掉时这笔钱不会每个请求重付一遍
+        if (m_circuitBreaker != nullptr && !m_circuitBreaker->allowRequest(endpointKey))
+        {
+            failureReason = std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, url);
             LOG_ERROR_FMT("HttpClient: {}", failureReason);
             co_return nullptr;
         }
