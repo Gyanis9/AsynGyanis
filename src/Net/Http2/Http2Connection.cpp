@@ -17,12 +17,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 待发缓冲的压缩阈值：前缀攒到这么多就整段搬一次，均摊到每帧是 O(1)
-        constexpr std::size_t kPendingDataCompactThresholdByteCount = 64 * 1024;
-    } // namespace
-
-    namespace
-    {
         /// 把对端交来的字节折成单行可打印文本再写进错误串：这些串会经 lastStreamErrorMessage() 落进日志，
         /// 而一个带 CR/LF 的头名原样进去，就等于对端能往本进程的日志里塞第二行（或改写行首）。
         /// 折法本体只有一份（`Base::escapeForLog`），这里只留本层的默认长度与名字——h3 侧也是这个形状
@@ -886,7 +880,7 @@ namespace AsynGyanis::Net
         switch (frameType)
         {
             case Http2FrameType::Data:
-                return handleDataFrame(frame);
+                return handleDataFrame(std::move(frame));
             case Http2FrameType::Headers:
                 return handleHeadersFrame(frame);
             case Http2FrameType::Priority:
@@ -913,8 +907,17 @@ namespace AsynGyanis::Net
 
     bool Http2Connection::handleDataFrame(const Http2Frame &frame)
     {
+        return handleDataFrame(Http2Frame(frame));
+    }
+
+    bool Http2Connection::handleDataFrame(Http2Frame &&frame)
+    {
         const std::uint32_t streamId = frame.header.streamId;
-        std::string         errorText;
+        // 流控按 DATA 帧整段负载记账（RFC 9113 §6.9.1）：含帧层剥掉的 padding，也含随后会被忽略
+        // 或判错的那些帧。对端已经按自己的账扣过一次，本端不记就是漏账。这个数要在净负载被移走
+        // 之前取：帧头虽然不受移动影响，但放在解析之前读更不易被后来的改动弄错
+        const std::int64_t frameByteCount = static_cast<std::int64_t>(frame.header.payloadLength);
+        std::string        errorText;
         if (!acceptPeerStreamIdParity(streamId, &errorText))
         {
             fail(Http2ErrorCode::ProtocolError, std::move(errorText));
@@ -922,15 +925,12 @@ namespace AsynGyanis::Net
         }
 
         Http2DataPayload payload;
-        if (!parseHttp2DataPayload(frame, payload, &errorText))
+        if (!parseHttp2DataPayload(std::move(frame), payload, &errorText))
         {
             fail(Http2ErrorCode::ProtocolError, errorText);
             return false;
         }
 
-        // 流控记账（RFC 9113 §6.9.1）：DATA 帧的整段负载都占窗口——含帧层剥掉的 padding，
-        // 也含随后会被忽略或判错的那些帧。对端已经按自己的账扣过一次，本端不记就是漏账
-        const std::int64_t frameByteCount = static_cast<std::int64_t>(frame.header.payloadLength);
         m_connectionReceiveWindowByteCount -= frameByteCount;
         if (m_connectionReceiveWindowByteCount < 0)
         {
@@ -2255,14 +2255,14 @@ namespace AsynGyanis::Net
             // 中间那趟整段拷贝随载荷线性放大（一帧最大可到对端通告的 SETTINGS_MAX_FRAME_SIZE）
             appendOutgoingFrame(Http2FrameType::Data, isEndStreamSegment ? kHttp2FlagEndStream : 0U, stream.streamId,
                                 std::string_view(stream.pendingData).substr(stream.pendingDataOffset, byteCount));
-            // 只推进游标：原来每帧都 erase(0, n) 搬移整个剩余缓冲，1 MiB 响应会白搬几十 MB。
-            // 前缀攒够阈值再整段压缩一次，均摊到每帧是 O(1)
+            // 只推进游标：已消费的前缀留在缓冲里，出帧不必每帧搬移剩余全部字节。
+            // 已消费过半才整段压缩一次，每次搬移的字节数不超过已消费量，整条队列摊销 O(1)
             stream.pendingDataOffset += byteCount;
             if (stream.pendingDataOffset == stream.pendingData.size())
             {
                 stream.pendingData.clear();
                 stream.pendingDataOffset = 0;
-            } else if (stream.pendingDataOffset >= kPendingDataCompactThresholdByteCount)
+            } else if (stream.pendingDataOffset >= stream.pendingData.size() / 2)
             {
                 stream.pendingData.erase(0, stream.pendingDataOffset);
                 stream.pendingDataOffset = 0;

@@ -115,8 +115,8 @@ namespace AsynGyanis::Net
             std::uint64_t                                        sequence{0};       ///< 插入次序，用于淘汰与同长度排序
         };
 
-        /// 判断一条记录能否发往给定目标（调用方须持锁；主机名须已折成小写并去掉前导点）
-        [[nodiscard]] static bool matches(const Entry &entry, std::string_view normalizedRequestHost, bool isSecureConnection, std::string_view requestPath) noexcept;
+        /// 判断一条记录能否发往给定目标（调用方须持锁；传入的主机名须已折成小写并去掉前导点）
+        [[nodiscard]] static bool matches(const Entry &entry, std::string_view requestHost, bool isSecureConnection, std::string_view requestPath) noexcept;
 
         /// 逐字对齐的两个作用域是否相同，用于替换判定（调用方须持锁）
         [[nodiscard]] static bool isSameScope(const Entry &entry, const Entry &candidate) noexcept;

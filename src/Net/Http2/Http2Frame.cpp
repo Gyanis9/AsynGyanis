@@ -683,6 +683,14 @@ namespace AsynGyanis::Net
 
     bool parseHttp2DataPayload(const Http2Frame &frame, Http2DataPayload &payload, std::string *const errorText)
     {
+        // const 这一支必须保住原帧（测试与别的调用方还会读它）：拷贝一份再走右值那支。
+        // 拷贝次数与「payload.data = frame.payload」相同，没有多付一趟
+        Http2Frame frameCopy = frame;
+        return parseHttp2DataPayload(std::move(frameCopy), payload, errorText);
+    }
+
+    bool parseHttp2DataPayload(Http2Frame &&frame, Http2DataPayload &payload, std::string *const errorText)
+    {
         clearError(errorText);
         if (frame.header.type != Http2FrameType::Data)
         {
@@ -692,8 +700,9 @@ namespace AsynGyanis::Net
 
         payload           = Http2DataPayload{};
         payload.endStream = (frame.header.flags & kHttp2FlagEndStream) != 0;
-        // padding 已由帧层剥掉：这里拿到的就是应用数据，本层不再按标志重算偏移
-        payload.data = frame.payload;
+        // padding 已由帧层剥掉：这里拿到的就是应用数据，本层不再按标志重算偏移。
+        // 净负载按移动接管：帧此后不再被读，正文不必在「帧 → 解析结果」之间再整段拷一遍
+        payload.data = std::move(frame.payload);
         return true;
     }
 

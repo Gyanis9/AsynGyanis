@@ -321,10 +321,15 @@ namespace AsynGyanis::Net
         };
 
         /// 处理一层已解出的帧；返回 false 表示连接不可再用
+        bool handleFrame(Http2Frame &&frame);
+        /// 处理一层已解出的帧（按 const 引用收帧，留给既有调用点与用例；内部拷一份再转调右值重载）
         bool handleFrame(const Http2Frame &frame);
         bool handleSettingsFrame(const Http2Frame &frame);
         bool handleHeadersFrame(const Http2Frame &frame);
         bool handleContinuationFrame(const Http2Frame &frame);
+        /// 处理 DATA 帧：负载按移动收下，正文不再在「帧 → 解析结果」之间整段拷贝一次
+        bool handleDataFrame(Http2Frame &&frame);
+        /// 处理 DATA 帧（按 const 引用收帧，留给既有调用点与用例；内部拷一份再转调右值重载）
         bool handleDataFrame(const Http2Frame &frame);
         bool handleWindowUpdateFrame(const Http2Frame &frame);
         bool handleGoAwayFrame(const Http2Frame &frame);
@@ -334,6 +339,8 @@ namespace AsynGyanis::Net
         /// 把收完的一段头块解进这条流的响应里；解码失败时把连接判死（动态表已错位）。
         /// recordFields 为假表示「这段已被帧级判据判死」：解码照做（HPACK 是连接级状态，跳过就与对端
         /// 错位），但解出的字段一个都不落进响应记录（§8.1.1：Clients MUST NOT accept a malformed response）
+        /// @return false 表示这段头块没有被接受：HPACK 解码失败（连接已判死），或最终响应之后又出现带
+        ///         :status 的头块（按 §8.1/§8.1.1 判成畸形响应，只结这条流，连接仍可用）
         bool finishHeaderBlock(PendingStream &stream, bool recordFields);
 
         /// 把一段头块片段攒进这条流的缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位

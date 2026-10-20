@@ -230,8 +230,8 @@ namespace AsynGyanis::Net
             }
             // 帧就绪：consumedByteCount() 是「本帧到哪里结束」的唯一出处，本次调用没吃掉的都属下一帧
             offset += m_decoder.consumedByteCount();
-            const Http2Frame frame = m_decoder.takeFrame();
-            if (!handleFrame(frame))
+            Http2Frame frame = m_decoder.takeFrame();
+            if (!handleFrame(std::move(frame)))
             {
                 break; // 同上：handleFrame 判死前攒下的 GOAWAY 也得有机会上线
             }
@@ -246,6 +246,11 @@ namespace AsynGyanis::Net
     }
 
     bool Http2ClientConnection::handleFrame(const Http2Frame &frame)
+    {
+        return handleFrame(Http2Frame(frame));
+    }
+
+    bool Http2ClientConnection::handleFrame(Http2Frame &&frame)
     {
         // 头块拼接期间只允许同流的 CONTINUATION（§6.10）：任何插入都会让拼出的头块与 HPACK 上下文错位——
         // 对端是按「先把这一段编完」的顺序更新动态表的，本端却先解了插进来的那一段，此后每条响应都解歪
@@ -267,7 +272,7 @@ namespace AsynGyanis::Net
             case Http2FrameType::Continuation:
                 return handleContinuationFrame(frame);
             case Http2FrameType::Data:
-                return handleDataFrame(frame);
+                return handleDataFrame(std::move(frame));
             case Http2FrameType::WindowUpdate:
                 return handleWindowUpdateFrame(frame);
             case Http2FrameType::GoAway:
@@ -515,6 +520,18 @@ namespace AsynGyanis::Net
         stream.lastHeaderBlockWasInformational = false;
         if (carriesStatus)
         {
+            // 最终响应之后再来一段带 :status 的头块不是尾部头块：RFC 9113 §8.1 规定尾部头块不得含
+            // 伪头，§8.1.1 要求把畸形响应按流错误 PROTOCOL_ERROR 处置。不在这里拦，这段会把
+            // isFinalStatusReceived 再置一次、headers.clear() 抹掉已有响应头，调用方最后拿到的是
+            // 第二段头块凭空给出的状态码。过渡响应（1xx）只有在最终响应之前才合法，因此这道判据
+            // 必须排在下面那个 1xx 分支之前
+            if (stream.isFinalStatusReceived)
+            {
+                rejectStreamAsMalformedResponse(stream, std::format("流 {} 在最终响应之后又收到一段带 :status 的头块：RFC 9113 §8.1 规定尾部头块不得含伪头，"
+                                                                    "§8.1.1 要求按畸形响应处置",
+                                                                    stream.streamId));
+                return false;
+            }
             // 判形状而不是 strtoul 折数：非三位数字的 :status 按 RFC 9113 §8.2 就是「消息没法处理」，
             // 而折成 0 或 20 会被上层当成一个真号去分支（h1 状态行与 h3 的 :status 用同一条判据）
             const std::optional<int> parsedStatusCode = parseStatusCodeText(statusIterator->value);
@@ -612,7 +629,9 @@ namespace AsynGyanis::Net
         // 判得出就不用把它的字段落进响应记录；解码本身照做，HPACK 的动态表是连接级的
         if (!finishHeaderBlock(stream, !(hadFinalStatusBefore && !payload.endStream)))
         {
-            return false;
+            // 两种 false：HPACK 解码失败（连接已判死）与畸形响应（只结这条流）。后者连接仍可用，
+            // 不能在这里返回 false——pumpSome 会连同本次读入的其余字节一起丢掉，别的流的帧就没了
+            return stream.isReset;
         }
         // 判死只是流级处置：连接仍可用，故这里照原样返回 true
         static_cast<void>(applyHeaderBlockRules(stream, hadFinalStatusBefore, payload.endStream));
@@ -650,7 +669,8 @@ namespace AsynGyanis::Net
         const bool hadFinalStatusBefore = stream.isFinalStatusReceived;
         if (!finishHeaderBlock(stream, !(hadFinalStatusBefore && !stream.isPendingEndStream)))
         {
-            return false;
+            // 同 handleHeadersFrame：流级拒绝不应截掉本次读入里别的流的帧
+            return stream.isReset;
         }
         // 这段头块的 END_STREAM 记在最初那帧 HEADERS 上（§6.10）：CONTINUATION 自己不带这一位
         static_cast<void>(applyHeaderBlockRules(stream, hadFinalStatusBefore, stream.isPendingEndStream));
@@ -659,20 +679,30 @@ namespace AsynGyanis::Net
 
     bool Http2ClientConnection::handleDataFrame(const Http2Frame &frame)
     {
-        Http2DataPayload payload;
-        std::string      errorText;
-        if (!parseHttp2DataPayload(frame, payload, &errorText))
+        return handleDataFrame(Http2Frame(frame));
+    }
+
+    bool Http2ClientConnection::handleDataFrame(Http2Frame &&frame)
+    {
+        const std::uint32_t streamId = frame.header.streamId;
+        // 流控按 DATA 帧整段负载记账（RFC 9113 §6.9.1：「The entire DATA frame payload is included in
+        // flow control, including the Pad Length and Padding fields if present」）。帧层交出的净负载
+        // 已经剥掉 padding，只能量到业务正文；要还的额度必须按帧头声明的长度算，这个数要在净负载
+        // 被移走之前取
+        const std::uint32_t flowControlByteCount = frame.header.payloadLength;
+        Http2DataPayload    payload;
+        std::string         errorText;
+        if (!parseHttp2DataPayload(std::move(frame), payload, &errorText))
         {
             failConnection(Http2ErrorCode::ProtocolError, "DATA 帧不合规：" + errorText);
             return false;
         }
-        const std::uint32_t streamId = frame.header.streamId;
-        const auto          iterator = m_pendingStreams.find(streamId);
+        const auto iterator = m_pendingStreams.find(streamId);
         if (iterator == m_pendingStreams.end())
         {
             // 已收完或已被 RST 的流上还在来数据：字节仍占着连接窗口，账要还，内容丢掉。
             // 只还连接级——这条流本端已经不认了，替它发流级窗口更新是 §5.1 禁止的动作
-            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
+            creditConnectionWindow(flowControlByteCount);
             return true;
         }
         PendingStream &stream = iterator->second;
@@ -691,29 +721,34 @@ namespace AsynGyanis::Net
             // 这条流已经判死（本端正面上限、对端 RST、流控越界）：字节仍占着连接窗口，账要还，
             // 内容丢掉。放任它 append 就是让一份永远不会交回调用方的正文继续长。只还连接级：
             // 本端已经 RST 过的流再收窗口更新，按 §5.1 是对 closed 流的非法动作
-            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
+            creditConnectionWindow(flowControlByteCount);
             return true;
         }
         stream.response.isAnyByteReceived = true;
         // 上限按累计收到的字节判：挂了接收口时正文交一批就腾空一批，只量缓冲的话一道闸门
-        // 就只剩「一次能堆多大」，对端可以一直发下去
+        // 就只剩「一次能堆多大」，对端可以一直发下去。正文只算业务字节（padding 已由帧层剥掉），
+        // 与窗口那条账刻意分开：padding 占过窗口，却不该占调用方的正文胃口
         stream.receivedBodyByteCount += payload.data.size();
         if (m_config.maximumResponseBodyBytes != 0U && stream.receivedBodyByteCount > m_config.maximumResponseBodyBytes)
         {
             // 上限是本端的胃口，不是对端犯了协议错：只结这一条流（RST CANCEL），连接留给别的流用
             rejectStreamForBodyLimit(stream);
             // 越界那一批的连接级额度照样要还（收下不还让整条连接的窗口一路漏），但这条流已被
-            // 本端 RST，不再替它发流级窗口更新
-            creditConnectionWindow(static_cast<std::uint32_t>(payload.data.size()));
+            // 本端 RST，不再替它发流级窗口更新。padding 也占过连接窗口，按整段负载还
+            creditConnectionWindow(flowControlByteCount);
         } else if (stream.responseReceiver)
         {
             // 挂了接收口：这一段攒着待交，额度等这一批交完再还。还得早了就没有背压——
-            // 对端会照着窗口继续往下灌，本端缓冲的上界就成了正文总长而不是一档窗口
+            // 对端会照着窗口继续往下灌，本端缓冲的上界就成了正文总长而不是一档窗口。
+            // padding 是例外：帧层已经把它剥掉、不会交给接收口，它占的额度当场归还；否则每一帧
+            // 带 padding 的 DATA 都会漏掉那一截，与「整段负载计入流控」（RFC 9113 §6.9.1）不符
             stream.undeliveredBodyBytes.append(payload.data);
+            const std::uint32_t paddingByteCount = flowControlByteCount - static_cast<std::uint32_t>(payload.data.size());
+            creditWindow(streamId, paddingByteCount);
         } else
         {
             stream.response.body.append(payload.data);
-            creditWindow(streamId, static_cast<std::uint32_t>(payload.data.size()));
+            creditWindow(streamId, flowControlByteCount);
         }
         if (payload.endStream)
         {

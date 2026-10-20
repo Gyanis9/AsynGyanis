@@ -531,6 +531,18 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API bool parseHttp2DataPayload(const Http2Frame &frame, Http2DataPayload &payload, std::string *errorText = nullptr);
 
     /**
+     * @brief 解析 DATA 帧（按右值收帧，净负载整段移进解析结果）
+     * @details 判据与 const 重载完全一致，差别只在 `payload.data` 从帧里按移动接管：连接层每收到一帧
+     *          DATA 都要走这一趟，正文大时「帧 → 解析结果」的那一次整段拷贝就成了一笔实打实的开销。
+     * @param frame 帧层交出的帧，按右值移交；返回后它的 `payload` 已被移空，调用方不得再读
+     * @param payload 输出参数：解析结果，仅在返回 true 时有效
+     * @param errorText 可选输出参数：失败时的中文原因（进入调用时先清空）
+     * @return true 解析成功
+     * @return false 帧类型不是 DATA
+     */
+    [[nodiscard]] ASYN_NET_API bool parseHttp2DataPayload(Http2Frame &&frame, Http2DataPayload &payload, std::string *errorText = nullptr);
+
+    /**
      * @brief 解析 HEADERS 帧
      * @param frame 帧层交出的帧
      * @param payload 输出参数：解析结果，仅在返回 true 时有效

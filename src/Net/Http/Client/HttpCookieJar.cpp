@@ -160,15 +160,15 @@ namespace AsynGyanis::Net
         return entry.name == candidate.name && entry.domain == candidate.domain && entry.path == candidate.path && entry.isHostOnly == candidate.isHostOnly;
     }
 
-    bool HttpCookieJar::matches(const Entry &entry, const std::string_view normalizedRequestHost, const bool isSecureConnection, const std::string_view requestPath) noexcept
+    bool HttpCookieJar::matches(const Entry &entry, const std::string_view requestHost, const bool isSecureConnection, const std::string_view requestPath) noexcept
     {
         if (entry.isHostOnly)
         {
-            if (normalizedRequestHost != entry.domain)
+            if (requestHost != entry.domain)
             {
                 return false;
             }
-        } else if (!domainMatches(normalizedRequestHost, entry.domain))
+        } else if (!domainMatches(requestHost, entry.domain))
         {
             return false;
         }

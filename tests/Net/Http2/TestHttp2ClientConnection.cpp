@@ -1422,6 +1422,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 带 padding 的 DATA 帧按整段负载归还流控窗口
+     * @details RFC 9113 §6.9.1：「The entire DATA frame payload is included in flow control, including
+     *          the Pad Length and Padding fields if present」。帧层交出的净负载已经剥掉 padding，只
+     *          剩业务正文；窗口却要按帧头声明的 payloadLength 归还，否则每收一帧带 padding 的 DATA，
+     *          本端就少还一截额度，对端的发送窗口会在一笔早已还清的账上先耗尽
+     * @note 证伪：把归还量换回 payload.data.size()，两条 WINDOW_UPDATE 的增量都会是 4 而不是 9
+     */
+    TEST(Http2ClientConnection, CreditsTheWholePaddedDataPayloadAgainstFlowControl)
+    {
+        constexpr std::size_t   kBodyByteCount           = 4U;
+        constexpr std::size_t   kPaddingByteCount        = 4U;
+        constexpr std::uint32_t kExpectedCreditByteCount = static_cast<std::uint32_t>(1U + kBodyByteCount + kPaddingByteCount); // Pad Length 自己也算
+
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}});
+        // 线上负载 = 1 字节 Pad Length + 正文 + 填充；帧层剥掉首尾之后只剩正文
+        std::string paddedPayload(1U, static_cast<char>(kPaddingByteCount));
+        paddedPayload.append(kBodyByteCount, 'b');
+        paddedPayload.append(kPaddingByteCount, '\0');
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock) +
+                                   makeFrame(Http2FrameType::Data, static_cast<std::uint8_t>(kHttp2FlagPadded | kHttp2FlagEndStream), 1U, paddedPayload);
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        ASSERT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        ASSERT_EQ(outcome.statusCode, 200) << "失败原因：" << outcome.errorMessage;
+        EXPECT_EQ(outcome.body, std::string(kBodyByteCount, 'b')) << "padding 混进了交给调用方的正文：" << outcome.body;
+
+        std::size_t creditedStreamByteCount     = 0;
+        std::size_t creditedConnectionByteCount = 0;
+        for (const Http2Frame &frame: received.frames)
+        {
+            if (frame.header.type != Http2FrameType::WindowUpdate)
+            {
+                continue;
+            }
+            Http2WindowUpdatePayload windowUpdatePayload;
+            std::string              errorText;
+            ASSERT_TRUE(parseHttp2WindowUpdatePayload(frame, windowUpdatePayload, &errorText)) << errorText;
+            if (frame.header.streamId == 1U)
+            {
+                creditedStreamByteCount += windowUpdatePayload.windowSizeIncrement;
+            } else if (frame.header.streamId == 0U)
+            {
+                creditedConnectionByteCount += windowUpdatePayload.windowSizeIncrement;
+            }
+        }
+        EXPECT_EQ(creditedStreamByteCount, kExpectedCreditByteCount) << "流级窗口只还了净负载那份，padding 漏账";
+        EXPECT_EQ(creditedConnectionByteCount, kExpectedCreditByteCount) << "连接级窗口只还了净负载那份，padding 漏账";
+        EXPECT_TRUE(outcome.errorMessage.empty()) << outcome.errorMessage;
+    }
+
+    /**
      * @brief 钉住：路由没命中的 404 也要被解成状态码，而不是当成失败
      * @details 状态码来自 :status 伪头；把它丢掉或与普通字段混在一起，调用方就分不清「拿到了响应」与
      *          「连接坏了」这两件事。
@@ -1845,6 +1909,50 @@ namespace AsynGyanis::Net
         ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &errorText)) << errorText;
         EXPECT_EQ(static_cast<std::uint16_t>(resetPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError));
         EXPECT_EQ(findFrame(received.frames, Http2FrameType::GoAway, false), nullptr) << "只该结掉这一条流";
+    }
+
+    /**
+     * @brief 最终响应之后再来一段带 :status 的头块：按畸形响应结掉这条流
+     * @details RFC 9113 §8.1 规定尾部头块不得含伪头，§8.1.1 要求把畸形响应按流错误
+     *          PROTOCOL_ERROR 处置。过去这一支会把 `isFinalStatusReceived` 再置一次、`headers.clear()`
+     *          抹掉已有响应头——调用方最后拿到的是第二段头块凭空给出的状态码，前面那份 200 连同它的
+     *          字段一起消失，而且对端收不到任何拒绝的信号
+     * @note 证伪：摘掉 `finishHeaderBlock` 里 `isFinalStatusReceived` 那道判据，状态码变成 500、
+     *       响应头被清空、对端也看不到 RST_STREAM
+     */
+    TEST(Http2ClientConnection, RejectsStatusPseudoHeaderAfterTheFinalResponse)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string finalBlock  = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}});
+        const std::string secondBlock = peerEncoder.encode({HpackHeaderField{":status", "500"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, finalBlock) +
+                                        makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, secondBlock);
+
+        Core::EventLoop loop;
+        int             clientDescriptor = -1;
+        int             peerDescriptor   = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+        PeerFrames            received;
+        HeaderBlockRunOutcome outcome;
+        auto                  peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), received, script);
+        auto                  clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), outcome);
+        static_cast<void>(peerWork.handle().resume());
+        static_cast<void>(clientWork.handle().resume());
+        loop.run();
+
+        EXPECT_TRUE(outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(outcome.statusCode, 500) << "第二段带 :status 的头块把最终状态码盖掉了";
+        ASSERT_EQ(outcome.headers.size(), 1U) << "最终响应的头部被第二段头块抹掉了";
+        EXPECT_EQ(outcome.headers[0].first, "content-type");
+        EXPECT_FALSE(outcome.errorMessage.empty()) << "本端没交代这条流为什么被拒";
+        const Http2Frame *reset = findFrame(received.frames, Http2FrameType::RstStream, false);
+        ASSERT_NE(reset, nullptr) << "§8.1.1 要求按流错误处置，本端却一帧都没回";
+        Http2RstStreamPayload resetPayload;
+        std::string           errorText;
+        ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &errorText)) << errorText;
+        EXPECT_EQ(static_cast<std::uint16_t>(resetPayload.errorCode), static_cast<std::uint16_t>(Http2ErrorCode::ProtocolError));
+        EXPECT_EQ(findFrame(received.frames, Http2FrameType::GoAway, false), nullptr) << "畸形的响应只该结掉那一条流，不该牵连整条连接";
     }
 
     /**

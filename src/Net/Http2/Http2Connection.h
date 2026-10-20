@@ -598,7 +598,7 @@ namespace AsynGyanis::Net
             std::int64_t      sendWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端可发送的流级窗口，可为负（§6.9.2 要求允许并等 WINDOW_UPDATE 救回来）
             std::string       pendingData;                                           ///< 窗口不足时排队的正文
             /// 已交给对端的前缀长度（游标语义）：出帧后只推进游标，不整段搬移缓冲；
-            /// 前缀攒够一定量才整段压缩一次，均摊下来出帧是 O(1)
+            /// 已消费过半才整段压缩一次，每次搬移的字节数不超过已消费量，整条队列摊销 O(1)
             std::size_t  pendingDataOffset{0};
             bool         isEndStreamPending{false};                                ///< 队列排空后是否还要补一个 END_STREAM
             std::int64_t receiveWindowByteCount{kHttp2InitialWindowSizeByteCount}; ///< 本端已通告的流级接收窗口：对端还能发的字节数，扣成负数即 FLOW_CONTROL_ERROR
@@ -641,6 +641,13 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 处理 DATA 帧：落到活动流上就是正文，其余按流状态判定表处置
+         * @param frame 帧层交出的帧，负载按移动收下（正文不再在「帧 → 解析结果」之间整段拷贝一次）
+         */
+        [[nodiscard]] bool handleDataFrame(Http2Frame &&frame);
+
+        /**
+         * @brief 处理 DATA 帧（按 const 引用收帧，留给既有调用点与用例）
+         * @param frame 帧层交出的帧；内部先拷一份再转调右值重载，正文因此多一次整段拷贝
          */
         [[nodiscard]] bool handleDataFrame(const Http2Frame &frame);
 
