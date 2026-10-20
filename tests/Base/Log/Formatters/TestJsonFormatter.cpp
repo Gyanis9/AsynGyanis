@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "AllocationProbe.h"
 #include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -432,5 +433,44 @@ namespace AsynGyanis::Base
         const LogContextScope scope({{"trace_id", "thread-id"}});
         const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
         EXPECT_EQ(textField(parsed, "trace_id"), "event-id");
+    }
+
+    /**
+     * @brief 上下文写到一半分配失败时，已写入本行的新键不得留到下一行
+     * @details 复用对象不会自己忘掉键；异常展开若不给已写入的键登记，下一条没有上下文的
+     *          日志会带着这一行的幽灵字段。用长键的第二条覆盖触发一次 bad_alloc。
+     */
+    TEST(JsonFormatterTest, BadAllocMidContextDoesNotLeaveAField)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("异常路径");
+        std::string    out;
+        out.reserve(1024U);
+
+        {
+            const LogContextScope warm({{"a", "1"}, {"b", "2"}});
+            formatter.formatInto(out, event);
+        }
+        // 先跑一条无上下文日志，把 previous 清空，确保失败行的新键没有被上一行掩盖
+        out.clear();
+        formatter.formatInto(out, event);
+
+        const std::string longKey(300U, 'k');
+        {
+            const LogContextScope context({{"c", "3"}, {longKey, "4"}});
+            const std::uint64_t   failuresBefore = AsynGyanis::TestSupport::injectedAllocationFailureCount();
+            {
+                const auto guard = AsynGyanis::TestSupport::AllocationFailureGuard::forNextAllocationBetween(300U, 1024U);
+                EXPECT_THROW(formatter.formatInto(out, event), std::bad_alloc);
+            }
+            EXPECT_GT(AsynGyanis::TestSupport::injectedAllocationFailureCount(), failuresBefore) << "注入没有命中，后面的断言不成立";
+        }
+
+        out.clear();
+        formatter.formatInto(out, event);
+        const nlohmann::json parsed = nlohmann::json::parse(out);
+        EXPECT_FALSE(parsed.contains("c")) << "异常路径留下了本行的新上下文键";
+        EXPECT_FALSE(parsed.contains(longKey)) << "异常路径留下了未完成的长键";
     }
 } // namespace AsynGyanis::Base

@@ -222,20 +222,35 @@ namespace AsynGyanis::Base
 
             // 优先读事件自带的快照：异步 Sink 的工作线程上 TLS 是空的，读它会丢掉日志点的上下文
             const LogContextPtr &context = event.context ? event.context : currentLogContext();
-            if (context != nullptr)
+            try
             {
-                for (const auto &[key, value]: context->fields())
+                if (context != nullptr)
                 {
-                    if (currentCount == scratch.next.size())
+                    for (const auto &[key, value]: context->fields())
                     {
-                        scratch.next.emplace_back();
+                        if (currentCount == scratch.next.size())
+                        {
+                            scratch.next.emplace_back();
+                        }
+                        std::string &fieldName = scratch.next[currentCount];
+                        assignContextFieldName(fieldName, key, scratch.next, currentCount);
+                        // 找键时复用这份键名串：长键不必每行再为查找造一份临时串
+                        assignField(fields, fieldName, value);
+                        ++currentCount;
                     }
-                    std::string &fieldName = scratch.next[currentCount];
-                    assignContextFieldName(fieldName, key, scratch.next, currentCount);
-                    // 找键时复用这份键名串：长键不必每行再为查找造一份临时串
-                    assignField(fields, fieldName, value);
-                    ++currentCount;
                 }
+            } catch (...)
+            {
+                // 失败行已经写进复用对象的键必须摘掉：previous 仍是上一行的集合，
+                // 不摘就会在下一条无上下文日志里留下这一行的幽灵字段。抛错的键可能
+                // 只写了一半，也一并尝试摘除；erase 不分配，兜底本身不会再抛
+                const std::size_t writtenCount = currentCount < scratch.next.size() ? currentCount + 1U : currentCount;
+                const auto        writtenEnd   = scratch.next.begin() + static_cast<std::ptrdiff_t>(writtenCount);
+                for (auto iterator = scratch.next.begin(); iterator != writtenEnd; ++iterator)
+                {
+                    removeField(fields, *iterator);
+                }
+                throw;
             }
 
             // 旧键按集差摘除：键集合没变时这里一次 erase 都不做，JSON 节点原地保留
