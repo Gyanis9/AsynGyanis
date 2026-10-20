@@ -186,12 +186,17 @@ namespace AsynGyanis::Net
         // 不能靠主线程那一份的存续（POSIX 上这是空操作）
         const Platform::Socket::Initialization network;
 
-        // 导出协程首次恢复必须在循环线程上：在调用线程 resume 会让它就地注册观察者，
-        // 与这里的 run() 抢同一份后端。帧留在本函数的栈上，活到 run() 返回之后
-        Core::Task<void> pump = exportOncePerInterval();
-        static_cast<void>(pump.handle().resume());
-        m_loop.run();
-        // HttpClient 与它的池都归属这条循环，必须在 run() 返回之后、仍在本线程上收掉
+        {
+            // 导出协程首次恢复必须在循环线程上：在调用线程 resume 会让它就地注册观察者，
+            // 与这里的 run() 抢同一份后端
+            Core::Task<void> pump = exportOncePerInterval();
+            static_cast<void>(pump.handle().resume());
+            m_loop.run();
+            // 帧必须先于它引用的客户端收掉：帧里握着 HttpClient &client，反过来先 reset 客户端
+            // 会让帧析构时碰的等待器指向一块已经释放的对象
+        }
+        // HttpClient 与它的池都归属这条循环，必须在 run() 返回之后、仍在本线程上收掉；
+        // 上面的花括号保证这一步排在帧析构之后
         m_client.reset();
     }
 

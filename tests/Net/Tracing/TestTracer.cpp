@@ -19,8 +19,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,7 +37,53 @@ namespace
     using AsynGyanis::Net::TraceIdentifiers;
     using AsynGyanis::Net::Traceparent;
     using AsynGyanis::Net::Tracer;
+    using AsynGyanis::Net::TraceResource;
     using AsynGyanis::Net::TestSupport::CapturingSpanExporter;
+
+    /**
+     * @brief 「每次交付换一条新节」的握手台：出口与生产者线程靠它一进一出
+     * @details 出口在 exportSpans 里等到生产者确实又收口了一条节才返回，于是每当 Tracer 结算一批，
+     *          受理数一定已经比结算数多一条——这正是 flush() 水位永远追不平的形状，且不靠任何计时
+     */
+    struct ProductionRelay
+    {
+        std::mutex              mutex;             ///< 护住下面三个字段
+        std::condition_variable condition;         ///< 请求与完成的报信通道
+        std::size_t             requestCount{0};   ///< 出口要求生产者补一条的次数
+        std::size_t             completedCount{0}; ///< 生产者已经补上的条数
+        bool                    isStopping{false}; ///< 用例收尾：两边都别再等对方
+    };
+
+    /**
+     * @brief 收下一批之前先等生产者再补一条节的出口
+     * @details 生产者线程负责真正制造节（而不是在出口线程上 startSpan）：后者的 Span 会临时持有
+     *          Tracer 的强引用，用例放开最后一份持有者时 Tracer 可能就地在这条出口线程上析构，
+     *          而析构又要 join 这条线程——自己等自己
+     */
+    class OneForOneSpanExporter final : public AsynGyanis::Net::SpanExporter
+    {
+    public:
+        explicit OneForOneSpanExporter(std::shared_ptr<ProductionRelay> relay) : m_relay(std::move(relay))
+        {
+        }
+
+        bool exportSpans(const TraceResource &, const std::vector<SpanRecord> &) override
+        {
+            std::unique_lock  lock(m_relay->mutex);
+            const std::size_t request = ++m_relay->requestCount;
+            m_relay->condition.notify_all();
+            m_relay->condition.wait(lock, [this, request] { return m_relay->completedCount >= request || m_relay->isStopping; });
+            return true;
+        }
+
+        [[nodiscard]] std::string_view exporterName() const noexcept override
+        {
+            return "one-for-one-test-exporter";
+        }
+
+    private:
+        std::shared_ptr<ProductionRelay> m_relay;
+    };
 
     /// 出口时限在绝大多数用例里设成一分钟：交付只由 flush() 驱动，免得断言与出口线程抢顺序
     constexpr std::chrono::milliseconds kNoTimedFlush{60000};
@@ -342,6 +391,74 @@ TEST(Tracer, FlushWaitsForTheBatchInFlight)
 }
 
 /**
+ * @brief 生产者一直在产出时 flush() 仍要在有限时间内返回：水位是等待者自己的账，不靠全局清零
+ * @details 出口每次交付都等生产者再收口一条节才返回，于是每当 Tracer 结算一批，受理数一定已经比
+ *          结算数多一条：「settled 追平 produced」这个全局条件永远差一条。旧实现只在追平时唤醒
+ *          等待者，flush() 只能一直睡着；改成每次结算都叫醒之后，等待者用进场时的水位自己判定
+ */
+TEST(Tracer, FlushReturnsWhileTheProducerKeepsProducing)
+{
+    auto relay                         = std::make_shared<ProductionRelay>();
+    auto configuration                 = makeConfiguration();
+    configuration.exportBatchSpanCount = 1U;
+    const auto tracer                  = Tracer::create(configuration);
+    tracer->addExporter(std::make_shared<OneForOneSpanExporter>(relay));
+
+    // 先放一条真节：flush 的水位因此非零，之后每一批结算都让产出再涨一条
+    recordOneSpan(tracer, "seed");
+
+    // 生产者线程：出口每要求一次就收口一条，完成后再放行出口
+    std::thread producer(
+            [tracer, relay]
+            {
+                for (;;)
+                {
+                    std::unique_lock lock(relay->mutex);
+                    relay->condition.wait(lock, [&relay] { return relay->requestCount > relay->completedCount || relay->isStopping; });
+                    if (relay->isStopping)
+                    {
+                        return;
+                    }
+                    const std::size_t request = relay->requestCount;
+                    lock.unlock();
+                    recordOneSpan(tracer, "continuous");
+                    lock.lock();
+                    relay->completedCount = request;
+                    relay->condition.notify_all();
+                }
+            });
+
+    // 用 future 判「有限时间内返回」：不赌调度，也不让等待本身变成无界阻塞。
+    // promise 按 shared_ptr 持有，万一超时后线程还挂在 flush() 里，也不会碰已析构的测试对象
+    auto              flushReturned = std::make_shared<std::promise<void>>();
+    std::future<void> flushOutcome  = flushReturned->get_future();
+    std::thread       flushThread(
+            [tracer, flushReturned]
+            {
+                tracer->flush();
+                flushReturned->set_value();
+            });
+    const auto outcome = flushOutcome.wait_for(std::chrono::seconds{5});
+
+    // 不论判据如何都先停掉生产者与出口的相互等待，否则收尾时 Tracer 会 join 一条卡在 exportSpans 里的线程
+    {
+        const std::lock_guard lock(relay->mutex);
+        relay->isStopping = true;
+    }
+    relay->condition.notify_all();
+    producer.join();
+    if (outcome == std::future_status::ready)
+    {
+        flushThread.join();
+    } else
+    {
+        // 旧实现下 flush() 永不返回：detach 让断言成为唯一失败信号，而不是把用例挂死在这里
+        flushThread.detach();
+    }
+    EXPECT_EQ(outcome, std::future_status::ready) << "生产者持续产出时 flush() 5 秒内没有返回：唤醒还在等全局水位追平";
+}
+
+/**
  * @brief 一个出口都没挂时：节照样被丢掉并计数，不会把缓冲一直占着
  */
 TEST(Tracer, TracerWithoutExporterCountsEverythingDropped)
@@ -361,7 +478,7 @@ TEST(Tracer, TracerWithoutExporterCountsEverythingDropped)
 }
 
 /**
- * @brief 多个出口各看同一批：一路拒收不影响另一路，两本账各记各的
+ * @brief 多个出口各看同一批：一路拒收不影响另一路，条数账按「任一收下即送出」记
  */
 TEST(Tracer, OneFailingExporterDoesNotStopTheOther)
 {
@@ -383,9 +500,35 @@ TEST(Tracer, OneFailingExporterDoesNotStopTheOther)
     tracer->flush();
 
     EXPECT_EQ(good->recordCount(), 3U);
-    EXPECT_EQ(tracer->exportedSpanCount(), 3U) << "收下这一批的那个出口计一次";
-    EXPECT_EQ(tracer->droppedSpanCount(), 3U) << "拒收的那个出口把这批记成丢弃";
-    EXPECT_EQ(tracer->exportFailureCount(), 1U) << "失败按批计，不按条计";
+    EXPECT_EQ(tracer->exportedSpanCount(), 3U) << "一路收下就算送出，条数只计一次";
+    EXPECT_EQ(tracer->droppedSpanCount(), 0U) << "已经有一路收下了，这批判不上丢弃";
+    EXPECT_EQ(tracer->exportFailureCount(), 1U) << "失败按出口与批计，不按条计";
+}
+
+/**
+ * @brief 所有出口都拒收时，条数只记一次丢弃：失败次数按出口计，条数按批计
+ */
+TEST(Tracer, CountsDroppedOnceWhenEveryExporterRejects)
+{
+    const auto first  = std::make_shared<CapturingSpanExporter>();
+    const auto second = std::make_shared<CapturingSpanExporter>();
+    first->configureRejecting();
+    second->configureRejecting();
+    auto configuration                 = makeConfiguration();
+    configuration.exportBatchSpanCount = 100U; // 三条节合成一次交付，「按批计」才是确定的数
+    const auto tracer                  = Tracer::create(configuration);
+    tracer->addExporter(first);
+    tracer->addExporter(second);
+
+    for (int index = 0; index < 3; ++index)
+    {
+        recordOneSpan(tracer, "all-rejected");
+    }
+    tracer->flush();
+
+    EXPECT_EQ(tracer->exportedSpanCount(), 0U);
+    EXPECT_EQ(tracer->droppedSpanCount(), 3U) << "全部拒收只该按批计一次丢弃，不是每个出口各计一遍";
+    EXPECT_EQ(tracer->exportFailureCount(), 2U) << "两路出口各失败一次";
 }
 
 /**
@@ -427,11 +570,11 @@ TEST(Tracer, SpanAccountingIsAlsoExposedOnMetrics)
         }
         tracer->flush();
 
-        ASSERT_EQ(tracer->exportedSpanCount(), 3U);
-        ASSERT_EQ(tracer->droppedSpanCount(), 3U);
+        ASSERT_EQ(tracer->exportedSpanCount(), 3U) << "一路收下即算送出";
+        ASSERT_EQ(tracer->droppedSpanCount(), 0U) << "已经有一路收下了，不该再计丢弃";
         ASSERT_EQ(tracer->exportFailureCount(), 1U);
         EXPECT_EQ(registryValue("asyn_tracing_exported_spans_total") - exportedBefore, tracer->exportedSpanCount()) << "运维面读到的已交付数与业务面问到的不是同一份账";
-        EXPECT_EQ(registryValue("asyn_tracing_dropped_spans_total") - droppedBefore, tracer->droppedSpanCount()) << "丢节在 /metrics 上不涨：告警永远不会有依据";
+        EXPECT_EQ(registryValue("asyn_tracing_dropped_spans_total") - droppedBefore, tracer->droppedSpanCount()) << "丢弃数的口径与业务面不一致";
         EXPECT_EQ(registryValue("asyn_tracing_export_failures_total") - failuresBefore, tracer->exportFailureCount()) << "按批计的那本账没接出来";
     }
 

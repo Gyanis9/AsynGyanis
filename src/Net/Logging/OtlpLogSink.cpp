@@ -317,12 +317,13 @@ namespace AsynGyanis::Net
         const std::string body = formatOtlpLogsJson(m_resource, batch);
         if (body.empty())
         {
-            // 非法 UTF-8 让整批成不了形：按没送达计，原因留给 lastFailureReason()
+            // 非法 UTF-8 让整批成不了形：这一批已经确定不可重试——重排只会每周期再失败一次、
+            // 重复计丢弃，还把这批后面的日志堵在队列里。丢弃在这里计一次，按「已处置」交回
             static_cast<void>(m_failedBatchCount.fetch_add(1, std::memory_order_relaxed));
             static_cast<void>(m_droppedRecordCount.fetch_add(batch.size(), std::memory_order_relaxed));
             const std::lock_guard reasonLock(m_reasonMutex);
             m_lastFailureReason = "OTLP 日志出口：一批记录里有非法 UTF-8，整批成不了 JSON";
-            co_return false;
+            co_return true;
         }
 
         HttpClientRequest request;

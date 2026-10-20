@@ -788,6 +788,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(run.dnsPublishCalls, 1U);
         EXPECT_EQ(run.dnsWithdrawCalls, 1U) << "写入失败之后的那次撤回没跑：这是这条通路上最容易漏的出口";
         EXPECT_EQ(stubEvidence().dns01ValidationCount, 0U) << "写入都失败了，机构那边却已经来取过答案";
+        // 失败出口也要记进 status()：常驻循环没人接 expected 时，这是唯一看得见的一笔账
+        EXPECT_EQ(manager().status().failureCount, 1U) << "dns-01 写入失败没有计入失败次数";
+        EXPECT_NE(manager().status().lastFailureMessage.find(kDnsPublishFailureText), std::string::npos) << manager().status().lastFailureMessage;
     }
 
     /**
@@ -810,6 +813,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(run.dnsPublishCalls, 1U);
         EXPECT_EQ(run.dnsWithdrawCalls, 1U) << "自证失败之后没撤 TXT，那条错误正文会一直留在域名上";
         EXPECT_EQ(stubEvidence().dns01ValidationCount, 1U);
+        EXPECT_EQ(manager().status().failureCount, 1U) << "机构判挑战失败没有计入失败次数";
+        EXPECT_EQ(manager().status().lastFailureMessage, run.result->error().message) << "status() 里的原因与交回的那条不是同一句";
     }
 
     /**
@@ -832,6 +837,8 @@ namespace AsynGyanis::Net
         ASSERT_FALSE(run.result->has_value());
         EXPECT_EQ(run.result->error().kind, AcmeErrorKind::DnsRecordRejected) << run.result->error().message;
         EXPECT_NE(run.result->error().message.find(kDnsWithdrawFailureText), std::string::npos) << run.result->error().message;
+        EXPECT_EQ(manager().status().failureCount, 1U) << "dns-01 撤回失败没有计入失败次数";
+        EXPECT_NE(manager().status().lastFailureMessage.find(kDnsWithdrawFailureText), std::string::npos) << manager().status().lastFailureMessage;
     }
 
     namespace

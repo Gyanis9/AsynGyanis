@@ -106,10 +106,10 @@ namespace AsynGyanis::Net
                 Core::ProcessMetricsRegistry::registerMetric(
                         "asyn_tracing_exported_spans_total", "已交给出口的节数（按条计）。这是「已提交」不是「已送达」：采集端那一段的得失看出口自己的读数",
                         Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum, [this] { return m_exportedSpanCount.load(std::memory_order_relaxed); }),
-                Core::ProcessMetricsRegistry::registerMetric("asyn_tracing_dropped_spans_total", "被丢掉的节数：缓冲满、出口整批没收、停止窗口内收下的都算在这里（按条计）",
-                                                             Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
-                                                             [this] { return m_droppedSpanCount.load(std::memory_order_relaxed); }),
-                Core::ProcessMetricsRegistry::registerMetric("asyn_tracing_export_failures_total", "出口整批没收的次数（按批计，不按条：一批里几条都算一次）",
+                Core::ProcessMetricsRegistry::registerMetric(
+                        "asyn_tracing_dropped_spans_total", "被丢掉的节数：缓冲满、所有出口都没收、没有出口可交、停止窗口内收下的都算在这里（按条计）",
+                        Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum, [this] { return m_droppedSpanCount.load(std::memory_order_relaxed); }),
+                Core::ProcessMetricsRegistry::registerMetric("asyn_tracing_export_failures_total", "出口整批没收的次数（按出口与批计，不按条：一批里几条都算一次）",
                                                              Core::ProcessMetricKind::Counter, Core::ProcessMetricMerge::Sum,
                                                              [this] { return m_exportFailureCount.load(std::memory_order_relaxed); }),
         };
@@ -291,6 +291,8 @@ namespace AsynGyanis::Net
         }
 
         const std::size_t batchCount = batch.size();
+        // 条数账按批记一次：任一出口收下即算送出，只有全部拒绝（或一个出口都没挂）才是丢弃
+        bool isAnyExporterAccepted = false;
         for (const std::shared_ptr<SpanExporter> &exporter: exporters)
         {
             bool isAccepted = false;
@@ -305,18 +307,21 @@ namespace AsynGyanis::Net
 
             if (isAccepted)
             {
-                m_exportedSpanCount.fetch_add(batchCount, std::memory_order_relaxed);
+                isAnyExporterAccepted = true;
             } else
             {
+                // 失败次数按出口与批计：它回答「有几路出口整批没收过」，不是按条数
                 m_exportFailureCount.fetch_add(1, std::memory_order_relaxed);
-                m_droppedSpanCount.fetch_add(batchCount, std::memory_order_relaxed);
             }
         }
 
-        if (exporters.empty())
+        if (isAnyExporterAccepted)
         {
-            // 一个出口都没挂：这批就是白攒了。丢掉并计数，让「配了采样却没配出口」这种写法在
-            // droppedSpanCount() 上看得见，而不是把缓冲一直占着
+            m_exportedSpanCount.fetch_add(batchCount, std::memory_order_relaxed);
+        } else
+        {
+            // 全部出口都拒收，或一个出口都没挂：这批没有送到任何一路。
+            // 没有出口时也记在这里，让「配了采样却没配出口」在 droppedSpanCount() 上看得见
             m_droppedSpanCount.fetch_add(batchCount, std::memory_order_relaxed);
         }
 
@@ -324,10 +329,9 @@ namespace AsynGyanis::Net
             const std::lock_guard lock(m_stateMutex);
             // 不论送出去还是丢掉，本次受理的账到这里才算清：水位等的是「有人处理过」，不是「处理成功」
             m_settledCount += batchCount;
-            if (m_settledCount >= m_producedCount)
-            {
-                m_drainedCondition.notify_all();
-            }
+            // 水位由等待者持有，每次结算都叫醒即可：持续生产时 producedCount 一直在涨，
+            // 等「全局清零」再唤醒会让 flush() 永远等不到那个条件
+            m_drainedCondition.notify_all();
         }
         return batchCount;
     }

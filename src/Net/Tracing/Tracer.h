@@ -123,13 +123,16 @@ namespace AsynGyanis::Net
         /// @brief 缓冲里还压着多少条没交给出口
         [[nodiscard]] std::size_t pendingSpanCount() const noexcept;
 
-        /// @brief 已交给出口的条数（按每条计；一批有多个出口时也只计一次）。同在 `/metrics` 的 `asyn_tracing_exported_spans_total`
+        /// @brief 已交给出口的条数（按每条计）。一批有多个出口时也只计一次：任一出口收下即算送出。
+        ///        同在 `/metrics` 的 `asyn_tracing_exported_spans_total`
         [[nodiscard]] std::uint64_t exportedSpanCount() const noexcept;
 
-        /// @brief 被丢掉的条数：缓冲满、出口整批没收、停止窗口内收下的，都算在这里。同在 `/metrics` 的 `asyn_tracing_dropped_spans_total`
+        /// @brief 被丢掉的条数：缓冲满、所有出口都整批没收、没有出口可交、停止窗口内收下的，都算在这里。
+        ///        同在 `/metrics` 的 `asyn_tracing_dropped_spans_total`
         [[nodiscard]] std::uint64_t droppedSpanCount() const noexcept;
 
-        /// @brief 出口整批没收的次数（按批计，与 droppedSpanCount() 的条数口径互补）。同在 `/metrics` 的 `asyn_tracing_export_failures_total`
+        /// @brief 出口整批没收的次数（按出口与批计：一批送到几路出口，就有几次可能各自失败，但条数仍只算一次）。
+        ///        同在 `/metrics` 的 `asyn_tracing_export_failures_total`
         [[nodiscard]] std::uint64_t exportFailureCount() const noexcept;
 
     private:
@@ -150,7 +153,8 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把一批交给所有出口（锁外执行）
-         * @return std::size_t 这批被送出去的条数（某个出口整批没收时计为丢弃，不当成功）
+         * @return std::size_t 这批的条数；任一出口收下即算送出，全部拒绝（或没有出口）时计为丢弃，
+         *         条数只记一次。失败次数另按出口与批记
          */
         std::size_t dispatchBatch(std::vector<SpanRecord> &&batch);
 

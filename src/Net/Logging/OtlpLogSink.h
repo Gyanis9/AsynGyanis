@@ -36,6 +36,8 @@ namespace AsynGyanis::Net
      *
      * @details 语义照链路出口的批语义（不是 metrics 的快照语义）：日志丢了就是丢了，不能靠下个
      *          周期补一份「最新值」。因此有界队列、失败重试、溢出/收尾丢弃三类计数都保留。
+     *          重试只针对可重试的发送失败；整批成不了 JSON（非法 UTF-8）是确定性失败，按丢弃处置一次，
+     *          不留在队首反复重排。
      *          与链路出口的一处差异：本 Sink 的 `write()` 在产生日志的线程上把当前日志上下文摘进
      *          记录（导出线程没有请求作用域），随后才入队；上下文因此与记录同生共死。
      * @note 收尾期限是 shutdownTimeout：析构时停止收新记录，尽力把队列发完，到点剩下的按丢弃计。
@@ -123,7 +125,11 @@ namespace AsynGyanis::Net
         /// @brief 把一批放回队首（保序）；放不下时整批按丢弃计
         void requeue(const std::vector<OtlpLogRecord> &batch);
 
-        /// @brief 发一批；返回是否拿到 2xx
+        /**
+         * @brief 发一批
+         * @return true 表示这批已处置：送达（2xx），或确定不可重试（正文成不了 JSON）且已按丢弃计数；
+         *         false 表示可重试的发送失败，调用方把它放回队列等下个周期
+         */
         Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch);
 
         Configuration               m_configuration;          ///< 生效参数

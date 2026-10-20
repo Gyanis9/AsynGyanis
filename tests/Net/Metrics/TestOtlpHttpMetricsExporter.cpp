@@ -10,6 +10,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/HttpRequest.h"
@@ -240,6 +241,43 @@ TEST(OtlpHttpMetricsExporter, StopsExportingAfterShutdown)
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
     EXPECT_EQ(exporter->deliveredExportCount(), deliveredAtStop) << "收尾之后还在发起新的导出";
     EXPECT_EQ(exporter->failedExportCount(), failedAtStop);
+}
+
+/**
+ * @brief 关闭时正有在途导出：收尾等它落地或到点放弃，帧与客户端按正确顺序收掉
+ * @details 导出协程帧里握着 HttpClient 的引用，帧必须先于客户端析构。这里用一条按住不放的
+ *          采集端路由把「在途请求」造出来：处理函数进门即置位，用例等它置位再关闭，
+ *          不赌调度时序；ASan 档跑这条用例盯的就是收尾顺序有没有退回「先收客户端」。
+ * @note 关闭等待覆盖整个 requestTimeout，超时后的请求先由客户端取消、协程随后退出，
+ *       因此这条用例未必让帧停在 client.send 里被销毁；它覆盖的是关闭与在途取消的交界
+ */
+TEST(OtlpHttpMetricsExporter, ShutsDownWhileAnExportIsInFlight)
+{
+    std::atomic<bool> handlerStarted{false};
+    const auto        fixture = std::make_unique<RunningHttpServerFixture>(
+            AsynGyanis::Net::HttpServerLimits{}, std::chrono::milliseconds{100}, AsynGyanis::Net::HttpTestSupport::SlowRouteOptions{},
+            [&handlerStarted](AsynGyanis::Net::Router &router, AsynGyanis::Core::EventLoop &loop)
+            {
+                router.post("/v1/metrics",
+                            [&handlerStarted, &loop](AsynGyanis::Net::HttpRequest &, AsynGyanis::Net::HttpResponse &response) -> AsynGyanis::Core::Task<>
+                            {
+                                handlerStarted.store(true, std::memory_order_release);
+                                // 按住远超客户端时限：关闭那一刻这条请求一定还在飞
+                                AsynGyanis::Core::Timer holdTimer(loop);
+                                co_await holdTimer.waitFor(std::chrono::seconds{10});
+                                response.setStatus(200);
+                                co_return;
+                            });
+            });
+    ASSERT_TRUE(fixture->awaitRunning(kWaitBudget));
+
+    auto configuration           = makeCollectorConfiguration(fixture->listeningPort());
+    configuration.requestTimeout = std::chrono::milliseconds{200};
+    auto exporter                = std::make_unique<OtlpHttpMetricsExporter>(testResource(), configuration, fixedSnapshot(twoSampleSnapshot()));
+
+    ASSERT_TRUE(waitUntil([&handlerStarted] { return handlerStarted.load(std::memory_order_acquire); })) << "采集端没收到那次导出，在途请求这个前提没成立";
+    exporter->shutdown();
+    exporter.reset();
 }
 
 /**

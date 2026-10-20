@@ -87,6 +87,40 @@ namespace AsynGyanis::Net
         EXPECT_EQ(sink.droppedRecordCount(), 0U) << "整段过程中没有记录该被丢弃";
     }
 
+    /**
+     * @brief 一批含非法 UTF-8 的记录只计一次丢弃，且不把后面的日志堵在队列里
+     * @details 整批成不了 JSON 是确定性失败：放回队列只会每周期再失败一次、重复计丢弃，
+     *          而队首那批会一直挡着后面的记录。它必须按「已处置」出队，网络失败才值得重排
+     */
+    TEST(OtlpLogSink, CountsAMalformedUtf8BatchOnceAndKeepsLaterBatchesMoving)
+    {
+        auto state = std::make_shared<CollectorState>();
+        state->fail.store(false, std::memory_order_release);
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeCollector(state);
+        ASSERT_TRUE(fixture->awaitRunning(kWaitTimeout));
+
+        OtlpLogSink::Configuration configuration;
+        configuration.endpoint                  = "http://127.0.0.1:" + std::to_string(fixture->listeningPort()) + "/v1/logs";
+        configuration.exportInterval            = std::chrono::milliseconds{50};
+        configuration.requestTimeout            = std::chrono::milliseconds{1000};
+        configuration.shutdownTimeout           = std::chrono::milliseconds{1000};
+        configuration.maximumPendingRecordCount = 8;
+        configuration.maximumBatchRecordCount   = 8;
+        OtlpLogSink sink(TraceResource{.serviceName = "log-export-test"}, configuration);
+
+        // "\xC3\x28" 是一个不成立的两字节序列：C3 后面缺延续字节
+        sink.write(makeEvent(std::string{"\xC3\x28", 2}));
+        ASSERT_TRUE(waitForCondition([&sink] { return sink.droppedRecordCount() >= 1U; }, kWaitTimeout)) << "非法 UTF-8 的批没有按丢弃处置";
+        EXPECT_EQ(sink.droppedRecordCount(), 1U) << "一批不可重试的记录只该计一次丢弃";
+        EXPECT_GE(sink.failedBatchCount(), 1U);
+
+        sink.write(makeEvent("这一批要照常送出去"));
+        ASSERT_TRUE(waitForCondition([&sink] { return sink.deliveredBatchCount() >= 1U && sink.pendingRecordCount() == 0; }, kWaitTimeout))
+                << "非法 UTF-8 的那批把后面的日志堵住了：lastFailureReason=" << sink.lastFailureReason();
+        EXPECT_EQ(sink.droppedRecordCount(), 1U) << "不可重试的批被反复重排，丢弃数在重复上涨";
+        EXPECT_EQ(state->postCount.load(std::memory_order_relaxed), 1U) << "成不了 JSON 的批不该碰到网络";
+    }
+
     TEST(OtlpLogSink, DropsNewRecordsWhenTheBoundedQueueIsFull)
     {
         auto state = std::make_shared<CollectorState>();

@@ -362,7 +362,7 @@ namespace AsynGyanis::Net
         if (!recordValue.has_value())
         {
             // 摘要算不出就没有可发布的 TXT：这一条自证根本发不起，也不该去动 DNS
-            co_return recordValue.error();
+            co_return notedFailure(recordValue.error());
         }
 
         if (auto published = co_await m_dns01TxtWriter.publish(recordName, *recordValue); !published.has_value())
@@ -375,7 +375,8 @@ namespace AsynGyanis::Net
                              "请手工到 DNS 控制台删掉这条 TXT，否则下一轮签发会在同一个名字上看到两条答案",
                              authorization.identifier, recordName, rollback.error().message);
             }
-            co_return AcmeError{published.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能写入：{}", authorization.identifier, recordName, published.error().message)};
+            co_return notedFailure(
+                    AcmeError{published.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能写入：{}", authorization.identifier, recordName, published.error().message)});
         }
 
         std::optional<AcmeError> solveFailure;
@@ -393,8 +394,9 @@ namespace AsynGyanis::Net
         }
         if (!withdrawn.has_value())
         {
-            co_return AcmeError{withdrawn.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能撤掉：{}。自证已经过了，但那条 TXT 会留在同一个名字上，请尽快手工删掉",
-                                                                    authorization.identifier, recordName, withdrawn.error().message)};
+            co_return notedFailure(
+                    AcmeError{withdrawn.error().kind, std::format("域名 {} 的 dns-01 记录 {} 没能撤掉：{}。自证已经过了，但那条 TXT 会留在同一个名字上，请尽快手工删掉",
+                                                                  authorization.identifier, recordName, withdrawn.error().message)});
         }
         co_return std::nullopt;
     }
