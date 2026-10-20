@@ -1696,13 +1696,17 @@ namespace AsynGyanis::Base
 
     void ConfigManager::startReloadTask()
     {
-        // 起线程是这条路上唯一会失败的分配（建任务节点、开线程栈、线程数触到系统上限）。
+        // 这条路上会失败的是登记任务与起线程的分配（扩登记表、建任务节点、开线程栈、线程数触到系统上限）。
         // 让它抛出去等于把异常送到调用方的线程函数外——监视线程与重载线程都会 std::terminate。
         // 这里的收口方式是「本轮不跑，把活留给下一次事件」
         try
         {
             const std::lock_guard lock(m_reloadTasksMutex);
 
+            // 启动线程之后不再允许分配：push_back 若在此时扩容失败，局部 jthread 析构的 join
+            // 会等一个可能已经跑完并交接了下一轮的线程，catch 里的 finishRunning 再抢一次
+            // 就破坏单轮串行。reserve 把这次扩容排到线程启动之前，此时失败还没有线程
+            m_reloadTasks.reserve(m_reloadTasks.size() + 1U);
             auto        task    = std::make_unique<ReloadTask>();
             ReloadTask *rawTask = task.get();
             task->thread        = std::jthread([this, rawTask]() { runReloadTask(rawTask); });
@@ -1716,7 +1720,9 @@ namespace AsynGyanis::Base
             LOG_ERROR_FMT("ConfigManager: 启动热重载任务失败（非标准异常），本轮重载让给下一次事件");
         }
 
-        // 起不来时把刚抢到的执行权交还：本轮就此作罢，等下一次事件重新起轮。
+        // 走到这里说明扩容、建任务节点或起线程中有一步失败，此时还没有工作线程开始跑：
+        // 刚抢到的执行权由这里交还，本轮就此作罢，等下一次事件重新起轮；起得来的那一轮
+        // 由 runReloadTask 收尾时自己 releaseRound，两条路不会重复归还同一轮。
         // 这里刻意不做接力（releaseRound 会在有新变更时再起一轮）——线程本来就起不来，
         // 接力只会在这条失败路径上原地递归
         m_reloadGate.finishRunning();
