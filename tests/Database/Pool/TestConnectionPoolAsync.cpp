@@ -652,6 +652,48 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief 交接后的恢复晚于池析构：await_resume 不得再碰已释放的池
+     * @details 与上一个用例的差别只在「先跑队列还是先销毁帧」：这里让池析构之后、帧销毁之前
+     *          执行队列里那次恢复，await_resume 因此会在池已释放的情况下读活跃计数。判活必须
+     *          与碰池同锁，判死则丢弃手里的连接、交回空包装。
+     */
+    TEST(ConnectionPoolAsync, HandoffResumeAfterPoolDestructionDoesNotTouchPool)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+
+        // 不启动的循环：交接只会把恢复动作排进队列
+        Core::EventLoop loop;
+
+        std::unique_ptr<ConnectionPool>   pool;
+        std::unique_ptr<Core::Task<void>> driver;
+        AcquireProbe                      probe;
+        {
+            pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
+
+            PooledConnection occupying = pool->acquire();
+            ASSERT_TRUE(occupying);
+
+            driver = std::make_unique<Core::Task<void>>(probeAcquireAsync(*pool, loop, probe));
+            driver->handle().resume(); // 池满：挂到等待列表
+            ASSERT_EQ(pool->waitingCount(), 1U);
+
+            occupying.release(); // 交接：恢复动作排进 loop 的队列
+            pool.reset();        // 池随后的析构发生在恢复之前
+        }
+
+        loop.scheduler().runAll(); // 恢复此刻执行：await_resume 必须看见池已停摆
+
+        EXPECT_TRUE(probe.finished.load(std::memory_order_acquire));
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(probe.connection.value()) << "池已析构，这次交接必须按空手收尾";
+        EXPECT_EQ(counter.totalDestroyed.load(), 1) << "连接应随这次交接收尾被关闭";
+
+        driver.reset();
+    }
+
+    /**
      * @brief 钉住「第 N 次分配失败」开关本身：只掐一次、之后恢复正常、并且真的掐过
      * @details 下一例靠它注入 bad_alloc，而「注入其实没发生」会让那一例变成假的「没崩=通过」。
      *          三格各自钉一件事：① 挂上后下一次分配确实抛；② 抛过一次之后自动解除

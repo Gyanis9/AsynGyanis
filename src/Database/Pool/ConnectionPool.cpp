@@ -292,6 +292,18 @@ namespace AsynGyanis::Database
             AcquireAwaiter   awaiter(this, &loop, deadline, isReturnedFromWake);
             PooledConnection result = co_await awaiter;
 
+            // 交接后的恢复可能晚于池析构：下面几行读的都是池的成员，判活必须排在任何一次读之前。
+            // 判死就地按空手收尾——连接已在 await_resume 交回空包装时关掉，重挂与记账都没有对象可碰
+            bool isPoolAlive = false;
+            {
+                const std::lock_guard livenessLock(awaiter.m_liveness->mutex);
+                isPoolAlive = awaiter.m_liveness->isAlive;
+            }
+            if (!isPoolAlive)
+            {
+                co_return std::move(result);
+            }
+
             // 消费掉唤醒来源再走下一轮：本轮被唤醒后若重挂入表，await_suspend 已把标志清零，
             // 这里读回的就是常态——豁免只保「被唤醒后的第一次重挂」
             isReturnedFromWake = awaiter.m_returnedFromWake;
@@ -478,6 +490,14 @@ namespace AsynGyanis::Database
     {
         if (m_result)
         {
+            // 与析构同一条纪律：判活与碰池必须在同一段令牌锁内。池已停摆时这次取出从未开始，
+            // 连接随本帧关闭，交回空包装让调用方按「没拿到」收尾
+            const std::lock_guard livenessLock(m_liveness->mutex);
+            if (!m_liveness->isAlive)
+            {
+                m_result.reset();
+                return {};
+            }
             m_pool->m_activeCount.fetch_add(1);
             return PooledConnection(std::move(m_result), m_pool);
         }
@@ -659,7 +679,16 @@ namespace AsynGyanis::Database
         // 握着 m_asyncMutex 等它就等于把归还路径排在一个陌生锁后面
         if (resumeTicket != nullptr)
         {
-            completionLoop->scheduler().postRemote([resumeTicket]() { resumeTicket->resumeOnce(); });
+            try
+            {
+                completionLoop->scheduler().postRemote([resumeTicket]() { resumeTicket->resumeOnce(); });
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("ConnectionPool: 交接连接后唤醒等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
+            } catch (...)
+            {
+                LOG_ERROR("ConnectionPool: 交接连接后唤醒等待者的投递未能入队，这条等待将落空（非标准异常）");
+            }
         }
     }
 
@@ -685,7 +714,16 @@ namespace AsynGyanis::Database
         // 两把锁只顺序取、不嵌套：await_suspend 里是「m_asyncMutex → m_mutex」，反过来嵌套就是 AB-BA
         if (ticket != nullptr)
         {
-            completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
+            try
+            {
+                completionLoop->scheduler().postRemote([ticket]() { ticket->resumeOnce(); });
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("ConnectionPool: 释放名额后唤醒等待者的投递未能入队，这条等待将落空（原因：{}）", failure.what());
+            } catch (...)
+            {
+                LOG_ERROR("ConnectionPool: 释放名额后唤醒等待者的投递未能入队，这条等待将落空（非标准异常）");
+            }
         }
 
         // 同步侧：条件变量的通知取在 m_mutex 之内，理由与归还入栈那一处相同
@@ -1064,8 +1102,13 @@ namespace AsynGyanis::Database
             // 锁内只做「摘出与计数」；disconnect 可能走网络/系统调用，必须留到锁外，
             // 否则一次慢断开会让所有取出路径一起等在这把锁上
             std::vector<std::unique_ptr<DatabaseConnection>> expiredConnections;
+            try
             {
                 std::lock_guard lock(m_mutex);
+
+                // 先要容量再动栈：push_back 在谓词里发生，分配失败会穿出线程入口，
+                // 而 remove_if 已经搬动过的槽会留下空 connection——后续判定会解引用空指针
+                expiredConnections.reserve(m_idleStack.size());
 
                 auto removeBegin = std::ranges::remove_if(m_idleStack,
                                                           [this, &expiredConnections](IdleEntry &entry) -> bool
@@ -1085,6 +1128,12 @@ namespace AsynGyanis::Database
                 {
                     m_idleStack.erase(removeBegin, m_idleStack.end());
                 }
+            } catch (const std::exception &failure)
+            {
+                LOG_ERROR_FMT("ConnectionPool: 驱逐过期连接时分配失败，本轮跳过（原因：{}）", failure.what());
+            } catch (...)
+            {
+                LOG_ERROR("ConnectionPool: 驱逐过期连接时分配失败（非标准异常），本轮跳过");
             }
             // 锁外断开：析构 unique_ptr 即关闭底层连接
             expiredConnections.clear();
