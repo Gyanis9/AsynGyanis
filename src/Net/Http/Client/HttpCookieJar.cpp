@@ -160,15 +160,15 @@ namespace AsynGyanis::Net
         return entry.name == candidate.name && entry.domain == candidate.domain && entry.path == candidate.path && entry.isHostOnly == candidate.isHostOnly;
     }
 
-    bool HttpCookieJar::matches(const Entry &entry, const std::string_view requestHost, const bool isSecureConnection, const std::string_view requestPath) noexcept
+    bool HttpCookieJar::matches(const Entry &entry, const std::string_view normalizedRequestHost, const bool isSecureConnection, const std::string_view requestPath) noexcept
     {
         if (entry.isHostOnly)
         {
-            if (normalizeDomain(requestHost) != entry.domain)
+            if (normalizedRequestHost != entry.domain)
             {
                 return false;
             }
-        } else if (!domainMatches(normalizeDomain(requestHost), entry.domain))
+        } else if (!domainMatches(normalizedRequestHost, entry.domain))
         {
             return false;
         }
@@ -337,9 +337,16 @@ namespace AsynGyanis::Net
     std::optional<std::string> HttpCookieJar::buildRequestHeader(const std::string_view requestHost, const bool isSecureConnection, const std::string_view requestPath) const
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        const std::string                 header = [this, requestHost, isSecureConnection, requestPath]
+        if (m_entries.empty())
+        {
+            return std::nullopt;
+        }
+        const std::string header = [this, requestHost, isSecureConnection, requestPath]
         {
             const auto now = std::chrono::system_clock::now();
+
+            // 主机名归一化只做一次：放进循环就等于每条记录都折一遍大小写、各分配一份临时串
+            const std::string requestDomain = normalizeDomain(requestHost);
 
             // 已过期的不参与匹配（真正的摘除发生在存入时，见 storeFromResponse——本函数是 const，
             // 不能因为「有人来查」就改账）
@@ -351,7 +358,7 @@ namespace AsynGyanis::Net
                 {
                     continue;
                 }
-                if (matches(entry, requestHost, isSecureConnection, requestPath))
+                if (matches(entry, requestDomain, isSecureConnection, requestPath))
                 {
                     candidates.push_back(&entry);
                 }

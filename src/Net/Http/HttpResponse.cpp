@@ -231,7 +231,7 @@ namespace AsynGyanis::Net
 
     bool HttpResponse::setJsonBody(const Base::ConfigValue &value, const bool isIndented)
     {
-        const std::optional<std::string> serialized = Base::serializeConfigValue(value, isIndented ? 2 : -1);
+        std::optional<std::string> serialized = Base::serializeConfigValue(value, isIndented ? 2 : -1);
         if (!serialized.has_value())
         {
             // 值是 NaN、±Inf 或字符串里带着非 UTF-8 字节。此时一个字都不动：
@@ -239,7 +239,7 @@ namespace AsynGyanis::Net
             return false;
         }
         static_cast<void>(setHeader("content-type", "application/json; charset=utf-8"));
-        setBody(*serialized);
+        setOwnedBody(std::move(*serialized));
         return true;
     }
 

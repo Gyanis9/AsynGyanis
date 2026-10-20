@@ -49,7 +49,7 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] bool requestHasMediaType(const HttpRequest &request, const std::string_view expectedMediaType)
         {
-            const std::optional<std::string> contentTypeHeader = request.getHeader("content-type");
+            const std::optional<std::string_view> contentTypeHeader = request.firstHeaderValueView("content-type");
             return contentTypeHeader.has_value() && contentTypeIs(*contentTypeHeader, expectedMediaType);
         }
     } // namespace
@@ -533,7 +533,7 @@ namespace AsynGyanis::Net
 
     std::optional<MultipartFormData> HttpRequest::multipartForm() const
     {
-        const std::optional<std::string> contentTypeHeader = getHeader("content-type");
+        const std::optional<std::string_view> contentTypeHeader = firstHeaderValueView("content-type");
         if (!contentTypeHeader.has_value())
         {
             // 没标类型的正文不猜：multipart 的边界写在类型里，缺头部就没有可解析的前提

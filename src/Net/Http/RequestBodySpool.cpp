@@ -89,9 +89,10 @@ namespace AsynGyanis::Net
         while (co_await body.readNext())
         {
             // 先拷一段再提交：chunk() 的视图只有效到下一次 readNext()，而工作线程可能在恢复投递之前还没跑完
-            const std::string chunk(body.chunk());
+            std::string       chunk(body.chunk());
+            const std::size_t chunkSize = chunk.size();
             // 减法在「已写的那一侧」做：writtenByteCount 恒不超过上限，右边不会为负
-            if (chunk.size() > options.maximumByteCount - state->writtenByteCount)
+            if (chunkSize > options.maximumByteCount - state->writtenByteCount)
             {
                 static_cast<void>(discardSpoolFile(state));
                 co_return std::unexpected(
@@ -99,19 +100,19 @@ namespace AsynGyanis::Net
             }
 
             const std::size_t writtenLength = co_await writerExecutor.submit<std::size_t>(completionLoop,
-                                                                                          [state, chunk]
+                                                                                          [state, chunk = std::move(chunk)]
                                                                                           {
                                                                                               state->stream.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
                                                                                               state->stream.flush();
                                                                                               return state->stream.good() ? chunk.size() : static_cast<std::size_t>(0);
                                                                                           });
-            if (writtenLength != chunk.size())
+            if (writtenLength != chunkSize)
             {
                 // 半截段落不进第二次重试（文件位置已经不确定了），删掉整份重来是唯一干净的选择
                 static_cast<void>(discardSpoolFile(state));
                 co_return std::unexpected(
                         RequestBodySpoolError{RequestBodySpoolErrorKind::LocalStorageFailed,
-                                              "写盘只落了 " + std::to_string(writtenLength) + "/" + std::to_string(chunk.size()) + " 字节（磁盘满、目录被摘或 IO 故障）"});
+                                              "写盘只落了 " + std::to_string(writtenLength) + "/" + std::to_string(chunkSize) + " 字节（磁盘满、目录被摘或 IO 故障）"});
             }
             state->writtenByteCount += writtenLength;
         }

@@ -87,15 +87,6 @@ namespace AsynGyanis::Net
             data.remove_prefix(pos + 2);
             return LineVerdict::Delivered;
         }
-        /// 小写化一个 string_view（只用于头部名比较）
-        std::string toLower(const std::string_view s)
-        {
-            std::string r;
-            r.reserve(s.size());
-            for (const char c: s)
-                r.push_back(toLowerAscii(c));
-            return r;
-        }
         /// 严格解析十进制长度：只接受纯数字（不取整、不忽略后缀），超长按非法拒绝
         bool parseDecimalLength(const std::string_view text, std::size_t &length) noexcept
         {
@@ -270,8 +261,7 @@ namespace AsynGyanis::Net
                         std::string combinedTransferEncoding;
                         for (auto &[name, value]: m_result.headers)
                         {
-                            const auto lowerName = toLower(name);
-                            if (lowerName == "content-length")
+                            if (equalsIgnoringCase(name, "content-length"))
                             {
                                 // 重复出现只允许取值完全一致；取值必须是纯数字——长度有歧义就不猜
                                 std::size_t thisLength = 0;
@@ -282,7 +272,7 @@ namespace AsynGyanis::Net
                                 }
                                 declaredLength   = thisLength;
                                 hasContentLength = true;
-                            } else if (lowerName == "transfer-encoding")
+                            } else if (equalsIgnoringCase(name, "transfer-encoding"))
                             {
                                 hasTransferEncoding = true;
                                 if (!combinedTransferEncoding.empty())

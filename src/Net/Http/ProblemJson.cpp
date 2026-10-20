@@ -14,6 +14,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace AsynGyanis::Net
 {
@@ -54,13 +55,13 @@ namespace AsynGyanis::Net
     bool setProblemJsonResponse(HttpResponse &response, const ProblemDetails &problem)
     {
         // 先渲染再动响应：序列化失败时响应保持原样，不给调用方留一条「状态改了、正文还是旧的」
-        const std::string body = renderProblemJson(problem);
+        std::string body = renderProblemJson(problem);
         if (!response.setHeader("content-type", kProblemMediaType))
         {
             return false;
         }
         response.setStatus(static_cast<int>(problem.status));
-        response.setBody(body);
+        response.setOwnedBody(std::move(body));
         return true;
     }
 
