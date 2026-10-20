@@ -135,8 +135,9 @@ namespace AsynGyanis::Database
             return const_cast<void *>(valueAddress);
         }
 
-        /// 取值缓冲区的下限：max_length 为 0 的列（整列都是 NULL 或空串）也必须拿到一个合法指针
-        constexpr unsigned long kMinimumColumnBufferBytes = 1UL;
+        /// 取值缓冲区的下限：整列都是 NULL/空串时也必须拿到合法指针；流式路径取不到
+        /// store_result 更新过的 max_length，256 字节让常见文本列不必每格再补取一次
+        constexpr unsigned long kMinimumColumnBufferBytes = 256UL;
 
         /// 带参流式的预取窗口（行数）：不预读的那条路径每取一行都要一次网络往返（默认预取 1），
         /// 窗口把它降到 1/64。代价是客户端要多留「窗口 × 单行字节」的缓冲——上界随窗口线性涨，
