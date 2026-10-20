@@ -145,8 +145,9 @@ namespace AsynGyanis::Net
          * @note 三处边界一律「交回那一条 3xx 并打一行原因」，不静默换成别的请求：整条时限被前面几跳
          *       吃光、跳数越过 `maximumRedirectCount`、下一跳要重放正文而这份正文是一次性的
          *       （`bodySource` 拉着），或设了 `responseBodyReceiver`（跟随会让同一个口子收两段互不相干的正文）。
-         * @note 跨源重定向（协议、主机、端口任一变了）会剥掉 `Authorization`：凭据只能发给调用方本来
-         *       打算发的那台机器，跟着对端挑的地址走等于把凭据交出去（RFC 9110 §11.5.3）
+         * @note 跨源重定向（协议、主机、端口任一变了）会剥掉 `Authorization` 与 `Cookie`：凭据与原主机的
+         *       Cookie 只能发给调用方本来打算发的那台机器，跟着对端挑的地址走等于把它们交出去
+         *       （RFC 9110 §11.5.3）
          */
         bool followRedirects{false};
 
@@ -413,16 +414,6 @@ namespace AsynGyanis::Net
         void closeIdleConnections() noexcept;
 
         /**
-         * @brief 挂上一个 Cookie 存储罐，让这条实例自动收发放给的 Cookie。
-         * @details 装上之后：每次请求前按目标主机、连接是否加密与请求路径拼一条 Cookie 头发出去；
-         *          响应里的 Set-Cookie 全部收回罐子（作用域规则见 `HttpCookieJar`）。
-         * @details 调用方自己在 `request.headers` 里写了 cookie 头时以调用方为准，本方法不再补——
-         *          那等于静默改写他明确给出的头部。多个实例共用一个罐子即可共享会话（罐子本身可跨线程）。
-         * @note 只有实例这一路（`get`/`post`/带池的 `send`）会用到罐子；静态的 `send()` 不带任何状态，
-         *       因此也没有罐子可挂
-         * @param cookieJar 罐子；传空指针摘掉（默认就是空，不挂罐子时行为与之前完全一致）
-         */
-        /**
          * @brief 一次出站交换失败之后，换条通路重来一遍是不是安全的
          * @details 重发闸门只有这一份实现：三态判据（对端答过话／请求写上过通路／对端保证没处理过）
          *          合起来决定「重来」还是「就此失败」。三条规矩各自的出处：
@@ -441,6 +432,18 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] static bool isRetrySafeAfterFailure(std::string_view method, bool isAnyByteSent, bool isAnyByteReceived, bool isGuaranteedUnprocessed) noexcept;
 
+        /**
+         * @brief 挂上一个 Cookie 存储罐，让这条实例自动收发放给的 Cookie
+         * @details 装上之后：每次请求前按目标主机、连接是否加密与请求路径拼一条 Cookie 头发出去；
+         *          响应里的 Set-Cookie 全部收回罐子（作用域规则见 `HttpCookieJar`）。
+         * @details 重定向链逐跳按当前 URL 取 Cookie、逐跳存 Set-Cookie；跨源跳剥掉 Cookie 与 Authorization。
+         * @details 调用方自己在 `request.headers` 里写了 cookie 头时以调用方为准，本方法不再补——
+         *          那等于静默改写他明确给出的头部（跨源跳仍会剥掉它）。多个实例共用一个罐子即可共享会话
+         *          （罐子本身可跨线程）。
+         * @note 只有实例这一路（`get`/`post`/带池的 `send`）会用到罐子；静态的 `send()` 不带任何状态，
+         *       因此也没有罐子可挂
+         * @param cookieJar 罐子；传空指针摘掉（默认就是空，不挂罐子时行为与之前完全一致）
+         */
         void setCookieJar(std::shared_ptr<HttpCookieJar> cookieJar) noexcept;
 
         /**
@@ -543,7 +546,7 @@ namespace AsynGyanis::Net
         bool m_isHttp3Enabled{false};
         /// 探败过 h3 的端点：一个端点只探一次，此后这条客户端对它直接走 TCP
         std::set<HttpOutboundEndpointKey> m_http3RejectedEndpoints;
-        /// 可选的 Cookie 存储罐：为空即完全不管 Cookie（不额外拷一份请求，也不改动任何头部）
+        /// 可选的 Cookie 存储罐：为空即完全不管 Cookie（既不注入 Cookie 头，也不收 Set-Cookie）
         std::shared_ptr<HttpCookieJar> m_cookieJar;
         /// 出站熔断器。构造时即装一个默认配置的：塌掉的上游被反复重试是引擎侧的缺陷，
         /// 不该让每个使用方自己想起来开

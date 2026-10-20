@@ -1468,12 +1468,14 @@ namespace AsynGyanis::Net
     }
     namespace
     {
-        /// 服务端一侧逐跳记下的事实：请求目标、方法是不是 GET、有没有带凭据、正文多长
+        /// 服务端一侧逐跳记下的事实：请求目标、方法是不是 GET、有没有带凭据与 Cookie、正文多长
         struct RedirectHop
         {
             std::string target;
             bool        isGet{false};
             bool        hasAuthorization{false};
+            bool        hasCookie{false};
+            std::string cookie;
             std::size_t bodyLength{0};
         };
 
@@ -1546,7 +1548,12 @@ namespace AsynGyanis::Net
             hop.target           = std::string(request.path());
             hop.isGet            = request.method() == HttpMethod::GET;
             hop.hasAuthorization = request.firstHeaderValueView("authorization").has_value();
-            hop.bodyLength       = request.body().size();
+            if (const auto cookie = request.firstHeaderValueView("cookie"); cookie.has_value())
+            {
+                hop.hasCookie = true;
+                hop.cookie    = std::string(*cookie);
+            }
+            hop.bodyLength = request.body().size();
             ledger->record(std::move(hop));
             response.setStatus(status);
             if (!location.empty())
@@ -1563,7 +1570,12 @@ namespace AsynGyanis::Net
             hop.target           = std::string(request.path());
             hop.isGet            = request.method() == HttpMethod::GET;
             hop.hasAuthorization = request.firstHeaderValueView("authorization").has_value();
-            hop.bodyLength       = request.body().size();
+            if (const auto cookie = request.firstHeaderValueView("cookie"); cookie.has_value())
+            {
+                hop.hasCookie = true;
+                hop.cookie    = std::string(*cookie);
+            }
+            hop.bodyLength = request.body().size();
             ledger->record(std::move(hop));
             response.setStatus(200);
             response.setBody("landed");
@@ -1808,6 +1820,280 @@ namespace AsynGyanis::Net
         const auto sameHops = sourceLedger->snapshot();
         ASSERT_EQ(sameHops.size(), 3U) << "两次请求共用同一张台账：/away 那跳也在里面";
         EXPECT_TRUE(sameHops.back().hasAuthorization) << "同源下一跳仍该带上调用方给的凭据";
+    }
+
+    /**
+     * @brief 钉住：同源重定向链逐跳从罐子取 Cookie、逐跳收 Set-Cookie
+     * @details 首跳发的会话必须在下一跳就带上，而不是等整条链跟完才补；后续对同一主机的请求
+     *          同样要能从罐子里带上去。
+     */
+    TEST(HttpClientRedirects, JarSendsAndStoresCookiesOnEverySameOriginHop)
+    {
+        auto                     ledger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                         [ledger](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/start",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            HttpCookie session("sid", "abc");
+                                                            session.setPath("/");
+                                                            response.setCookie(session);
+                                                            response.setStatus(302);
+                                                            static_cast<void>(response.setHeader("location", "/next"));
+                                                            response.setBody("redirected");
+                                                            co_return;
+                                                        });
+                                             router.get("/next",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                             router.get("/whoami",
+                                                        [ledger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            answerLanded(ledger, request, response);
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout));
+
+        Core::EventLoop   loop;
+        int               followedStatus = 0;
+        int               laterStatus    = 0;
+        const std::string startUrl       = urlFor(fixture, "/start");
+        const std::string whoamiUrl      = urlFor(fixture, "/whoami");
+        auto              task           = [&loop, &followedStatus, &laterStatus, startUrl, whoamiUrl](HttpClient &client) -> Core::Task<void>
+        {
+            const std::unique_ptr<HttpClientResponse> followed = co_await client.send(startUrl, followingRequest("GET"));
+            followedStatus                                     = followed != nullptr ? followed->statusCode : 0;
+            const std::unique_ptr<HttpClientResponse> later    = co_await client.get(whoamiUrl);
+            laterStatus                                        = later != nullptr ? later->statusCode : 0;
+            loop.stop();
+            co_return;
+        };
+        HttpClient client(loop);
+        client.setCookieJar(std::make_shared<HttpCookieJar>());
+        auto work = task(client);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(followedStatus, 200);
+        EXPECT_EQ(laterStatus, 200);
+        const auto hops = ledger->snapshot();
+        ASSERT_EQ(hops.size(), 2U) << "第一跳之后的 /next 与后续的 /whoami 各一笔";
+        EXPECT_EQ(hops[0].target, "/next");
+        EXPECT_TRUE(hops[0].hasCookie) << "首跳发的 Set-Cookie 没有在下一跳带上";
+        EXPECT_EQ(hops[0].cookie, "sid=abc");
+        EXPECT_EQ(hops[1].target, "/whoami");
+        EXPECT_TRUE(hops[1].hasCookie) << "后续请求没有从罐子里带上会话";
+        EXPECT_EQ(hops[1].cookie, "sid=abc");
+    }
+
+    /**
+     * @brief 钉住：跨源重定向时罐里的 Cookie 只发给它自己的源，终跳的 Set-Cookie 记在终跳的域下
+     * @details 罐子按主机名判作用域，不按端口：两台服务器若都落在 127.0.0.1，A 的 Cookie 对 B
+     *          本来就合法（RFC 6265 不看端口），因此目标机监听另一个回环地址，让「跨源」同时是
+     *          「跨域」。A 的 a=1 不得出现在 B 的请求上；B 回的 b=2 也不得回灌到 A。
+     */
+    TEST(HttpClientRedirects, CrossOriginRedirectKeepsJarCookiesScopedToTheirOwnOrigin)
+    {
+        auto                                      targetLedger = std::make_shared<RedirectLedger>();
+        std::unique_ptr<RunningHttpServerFixture> target;
+        try
+        {
+            target = std::make_unique<RunningHttpServerFixture>(
+                    HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                    [targetLedger](Router &router, Core::EventLoop &)
+                    {
+                        router.get("/landed",
+                                   [targetLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                   {
+                                       HttpCookie cookie("b", "2");
+                                       cookie.setPath("/");
+                                       response.setCookie(cookie);
+                                       answerLanded(targetLedger, request, response);
+                                       co_return;
+                                   });
+                        router.get("/whoami",
+                                   [targetLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                   {
+                                       answerLanded(targetLedger, request, response);
+                                       co_return;
+                                   });
+                    },
+                    HttpParserLimits{}, ServerConfigurator{}, Core::InetAddress{0, "127.0.0.2"});
+        } catch (const std::exception &)
+        {
+            GTEST_SKIP() << "127.0.0.2 绑不上：这台机器没有第二个可用的回环地址";
+        }
+        ASSERT_TRUE(target->awaitRunning(kTimeout));
+        const std::string targetBase = "http://127.0.0.2:" + std::to_string(target->listeningPort());
+
+        auto                     sourceLedger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture source(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                        [sourceLedger, targetPort = target->listeningPort()](Router &router, Core::EventLoop &)
+                                        {
+                                            router.get("/away",
+                                                       [sourceLedger, targetPort](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           HttpCookie cookie("a", "1");
+                                                           cookie.setPath("/");
+                                                           response.setCookie(cookie);
+                                                           answerRedirect(sourceLedger, request, response, 302, "http://127.0.0.2:" + std::to_string(targetPort) + "/landed");
+                                                           co_return;
+                                                       });
+                                            router.get("/whoami",
+                                                       [sourceLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerLanded(sourceLedger, request, response);
+                                                           co_return;
+                                                       });
+                                        });
+        ASSERT_TRUE(source.awaitRunning(kTimeout));
+
+        Core::EventLoop   loop;
+        int               followedStatus    = 0;
+        int               sourceLaterStatus = 0;
+        int               targetLaterStatus = 0;
+        const std::string awayUrl           = urlFor(source, "/away");
+        const std::string sourceWhoamiUrl   = urlFor(source, "/whoami");
+        const std::string targetWhoamiUrl   = targetBase + "/whoami";
+        auto              task = [&loop, &followedStatus, &sourceLaterStatus, &targetLaterStatus, awayUrl, sourceWhoamiUrl, targetWhoamiUrl](HttpClient &client) -> Core::Task<void>
+        {
+            const std::unique_ptr<HttpClientResponse> followed    = co_await client.send(awayUrl, followingRequest("GET"));
+            followedStatus                                        = followed != nullptr ? followed->statusCode : 0;
+            const std::unique_ptr<HttpClientResponse> sourceLater = co_await client.get(sourceWhoamiUrl);
+            sourceLaterStatus                                     = sourceLater != nullptr ? sourceLater->statusCode : 0;
+            const std::unique_ptr<HttpClientResponse> targetLater = co_await client.get(targetWhoamiUrl);
+            targetLaterStatus                                     = targetLater != nullptr ? targetLater->statusCode : 0;
+            loop.stop();
+            co_return;
+        };
+        HttpClient client(loop);
+        client.setCookieJar(std::make_shared<HttpCookieJar>());
+        auto work = task(client);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(followedStatus, 200);
+        EXPECT_EQ(sourceLaterStatus, 200);
+        EXPECT_EQ(targetLaterStatus, 200);
+
+        const auto targetHops = targetLedger->snapshot();
+        ASSERT_EQ(targetHops.size(), 2U) << "跨源那一跳与后续的 /whoami 各一笔";
+        EXPECT_EQ(targetHops[0].target, "/landed");
+        EXPECT_FALSE(targetHops[0].hasCookie) << "A 的 Cookie 被带去 B：跨源跳没剥干净";
+        EXPECT_EQ(targetHops[1].target, "/whoami");
+        EXPECT_EQ(targetHops[1].cookie, "b=2") << "B 的 Set-Cookie 没记在 B 的域下";
+
+        const auto sourceHops = sourceLedger->snapshot();
+        ASSERT_EQ(sourceHops.size(), 2U) << "/away 那一跳与后续的 /whoami 各一笔";
+        EXPECT_EQ(sourceHops[0].target, "/away");
+        EXPECT_EQ(sourceHops[1].target, "/whoami");
+        EXPECT_EQ(sourceHops[1].cookie, "a=1") << "A 的 Cookie 被终跳的入库改到了别的域下";
+    }
+
+    /**
+     * @brief 钉住：调用方显式写的 Cookie 头在同源跳保留，跨源跳剥掉，罐子不覆盖调用方的值
+     * @details 罐子里先种一条源主机的会话；调用方仍写自己的 cookie 头时，同源下一跳必须原样带着
+     *          调用方那份，而不是被罐子里的值换掉。
+     */
+    TEST(HttpClientRedirects, CallerCookieHeaderSurvivesSameOriginButNotCrossOriginHop)
+    {
+        auto                     targetLedger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture target(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                        [targetLedger](Router &router, Core::EventLoop &)
+                                        {
+                                            router.get("/landed",
+                                                       [targetLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerLanded(targetLedger, request, response);
+                                                           co_return;
+                                                       });
+                                        });
+        ASSERT_TRUE(target.awaitRunning(kTimeout));
+
+        auto                     sourceLedger = std::make_shared<RedirectLedger>();
+        RunningHttpServerFixture source(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                        [sourceLedger, targetPort = target.listeningPort()](Router &router, Core::EventLoop &)
+                                        {
+                                            router.get("/keep",
+                                                       [sourceLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerRedirect(sourceLedger, request, response, 302, "/landed");
+                                                           co_return;
+                                                       });
+                                            router.get("/landed",
+                                                       [sourceLedger](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerLanded(sourceLedger, request, response);
+                                                           co_return;
+                                                       });
+                                            router.get("/away",
+                                                       [sourceLedger, targetPort](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                       {
+                                                           answerRedirect(sourceLedger, request, response, 302, "http://127.0.0.1:" + std::to_string(targetPort) + "/landed");
+                                                           co_return;
+                                                       });
+                                        });
+        ASSERT_TRUE(source.awaitRunning(kTimeout));
+
+        Core::EventLoop   loop;
+        int               sameStatus  = 0;
+        int               crossStatus = 0;
+        const std::string keepUrl     = urlFor(source, "/keep");
+        const std::string awayUrl     = urlFor(source, "/away");
+        auto              task        = [&loop, &sameStatus, &crossStatus, keepUrl, awayUrl](HttpClient &client) -> Core::Task<void>
+        {
+            HttpClientRequest staying = followingRequest("GET");
+            staying.headers.emplace_back("cookie", "mine=1");
+            const std::unique_ptr<HttpClientResponse> same = co_await client.send(keepUrl, staying);
+            sameStatus                                     = same != nullptr ? same->statusCode : 0;
+
+            HttpClientRequest crossing = followingRequest("GET");
+            crossing.headers.emplace_back("cookie", "mine=1");
+            const std::unique_ptr<HttpClientResponse> cross = co_await client.send(awayUrl, crossing);
+            crossStatus                                     = cross != nullptr ? cross->statusCode : 0;
+
+            loop.stop();
+            co_return;
+        };
+        HttpClient client(loop);
+        auto       jar = std::make_shared<HttpCookieJar>();
+        // 罐子里先种一条源主机的会话：同源下一跳若改由罐子取值，收到的就会是 sid=abc
+        jar->storeFromResponse("127.0.0.1", false, "/", {"sid=abc; Path=/"});
+        client.setCookieJar(jar);
+        auto work = task(client);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_EQ(sameStatus, 200);
+        EXPECT_EQ(crossStatus, 200);
+
+        const auto sourceHops = sourceLedger->snapshot();
+        ASSERT_EQ(sourceHops.size(), 3U) << "/keep、同源跳 /landed、/away 各一笔";
+        EXPECT_EQ(sourceHops[0].target, "/keep");
+        EXPECT_EQ(sourceHops[0].cookie, "mine=1");
+        EXPECT_EQ(sourceHops[1].target, "/landed");
+        EXPECT_EQ(sourceHops[1].cookie, "mine=1") << "同源跳把调用方的 cookie 头换成了罐子里的值";
+        EXPECT_EQ(sourceHops[2].target, "/away");
+        EXPECT_EQ(sourceHops[2].cookie, "mine=1");
+
+        const auto targetHops = targetLedger->snapshot();
+        ASSERT_EQ(targetHops.size(), 1U);
+        EXPECT_EQ(targetHops[0].target, "/landed");
+        EXPECT_FALSE(targetHops[0].hasCookie) << "跨源跳仍带着调用方写的 cookie 头";
     }
 
     /**

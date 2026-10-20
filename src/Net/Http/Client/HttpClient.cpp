@@ -623,34 +623,17 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 发送前补全头部：Cookie 罐与链路上下文；不需要改头时原样交出请求
-         * @param cookieJar Cookie 罐（可空）
+         * @brief 发送前补上链路上下文；不需要改头时原样交出请求
+         * @details Cookie 不在这里加：重定向链的每一跳要按当跳 URL 取罐子，加在这一层只能按首跳 URL 取一次
          * @param request 调用方的请求
-         * @param parsed 目标 URL（罐按主机/路径取值）
          * @param storage 需要改头时的副本槽（调用方持有，活到本次发送结束）
          * @return const HttpClientRequest & 实际要发的请求
          */
-        const HttpClientRequest &prepareOutboundRequest(const HttpCookieJar *cookieJar, const HttpClientRequest &request, const ParsedUrl &parsed,
-                                                        std::optional<HttpClientRequest> &storage)
+        const HttpClientRequest &prepareOutboundRequest(const HttpClientRequest &request, std::optional<HttpClientRequest> &storage)
         {
             const HttpClientRequest *effectiveRequest = &request;
-            if (cookieJar != nullptr)
-            {
-                // 调用方自己写了 cookie 头就以他为准：替他改成罐子里的那份，等于静默覆盖明确给出的头部
-                const bool callerHasCookieHeader =
-                        std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
-                if (!callerHasCookieHeader)
-                {
-                    if (const auto cookieHeader = cookieJar->buildRequestHeader(parsed.host, parsed.scheme == "https", parsed.path); cookieHeader.has_value())
-                    {
-                        storage = request;
-                        storage->headers.emplace_back("cookie", *cookieHeader);
-                        effectiveRequest = &storage.value();
-                    }
-                }
-            }
 
-            // 链路上下文也按「要改头部才拷」的规矩处理：不填时开销与行为都和原来一样
+            // 链路上下文按「要改头部才拷」的规矩处理：不填时开销与行为都和原来一样
             if (request.traceContext.has_value())
             {
                 if (!storage.has_value())
@@ -2467,10 +2450,16 @@ namespace AsynGyanis::Net
                           });
         }
 
-        /// 跨源时剥掉凭据：Authorization 跟着对端挑的主机走，等于把口令交给另一台机器（RFC 9110 §11.5.3）
-        void stripCredentials(HttpClientRequest &request)
+        /// 跨源时剥掉凭据与 Cookie：Authorization 跟着对端挑的主机走，等于把口令交给另一台机器（RFC 9110 §11.5.3）；
+        /// Cookie 是原主机域下的状态，跟着跳过去就是把原主机的会话交给新主机
+        void stripCrossOriginCredentials(HttpClientRequest &request)
         {
-            std::erase_if(request.headers, [](const HttpClientHeaderField &field) { return lowerFieldName(field.first) == "authorization"; });
+            std::erase_if(request.headers,
+                          [](const HttpClientHeaderField &field)
+                          {
+                              const std::string folded = lowerFieldName(field.first);
+                              return folded == "authorization" || folded == "cookie";
+                          });
         }
 
         /// 一条 3xx 折算出来的下一跳：URL 与请求两份都要换
@@ -2541,7 +2530,7 @@ namespace AsynGyanis::Net
             }
             if (isCrossOrigin(currentUrl, step.url))
             {
-                stripCredentials(step.request);
+                stripCrossOriginCredentials(step.request);
             }
             return step;
         }
@@ -2553,12 +2542,14 @@ namespace AsynGyanis::Net
          */
         Core::Task<std::unique_ptr<HttpClientResponse>> performRequestFollowingRedirects(Core::EventLoop &loop, const HttpClientRequest &request, const ParsedUrl &url,
                                                                                          const std::chrono::milliseconds requestTimeout, HttpOutboundConnectionPool *pool,
-                                                                                         std::string &failureReason, const Core::TlsContext *clientTls,
+                                                                                         HttpCookieJar *cookieJar, std::string &failureReason, const Core::TlsContext *clientTls,
                                                                                          const Http3OutboundContext *http3, const HttpProxyPolicy *proxyPolicy)
         {
             const auto        deadline   = std::chrono::steady_clock::now() + requestTimeout;
             HttpClientRequest current    = request;
             ParsedUrl         currentUrl = url;
+            // 调用方自己写了 cookie 头就以他为准：罐子在任何一跳都不补，也不覆盖
+            const bool callerSuppliedCookie = std::ranges::any_of(request.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
             for (std::size_t hop = 0;; ++hop)
             {
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
@@ -2575,7 +2566,23 @@ namespace AsynGyanis::Net
                     {
                         co_return nullptr;
                     }
-                    response = co_await performRequest(loop, current, currentUrl, remaining, pool, failureReason, clientTls, http3, proxyDecision);
+                    // current 本身不承载罐子注入的 Cookie：每一跳都从干净副本上按当跳 URL 补，跨源剥离也不会
+                    // 留下上一跳的注入结果
+                    HttpClientRequest hopRequest = current;
+                    if (!callerSuppliedCookie && cookieJar != nullptr)
+                    {
+                        std::erase_if(hopRequest.headers, [](const HttpClientHeaderField &field) { return equalsIgnoringCase(field.first, "cookie"); });
+                        if (const auto cookieHeader = cookieJar->buildRequestHeader(currentUrl.host, currentUrl.scheme == "https", currentUrl.path); cookieHeader.has_value())
+                        {
+                            hopRequest.headers.emplace_back("cookie", *cookieHeader);
+                        }
+                    }
+                    response = co_await performRequest(loop, hopRequest, currentUrl, remaining, pool, failureReason, clientTls, http3, proxyDecision);
+                }
+                if (response != nullptr)
+                {
+                    // Set-Cookie 属于发出这条响应的那一跳：按当跳 URL 入库，终跳的才不会被记到首跳的域下
+                    storeResponseCookies(cookieJar, currentUrl, *response);
                 }
                 if (response == nullptr || !request.followRedirects || !isAutoFollowableRedirectStatus(response->statusCode))
                 {
@@ -2620,10 +2627,11 @@ namespace AsynGyanis::Net
             co_return std::unexpected(std::move(failureReason));
         }
         // 静态那一路不带池、也没有承载 TLS 策略与 h3 开关的地方，因此永不走 h3（两个空指针即此意）；
-        // 代理策略同样没有实例承载，每次调用按默认策略现读一次环境（对齐 curl 每进程语义）
+        // 代理策略同样没有实例承载，每次调用按默认策略现读一次环境（对齐 curl 每进程语义）。
+        // 静态入口也不带 Cookie 罐：没有可承载罐子的实例状态
         const HttpProxyPolicy               proxyPolicy = applyProxyEnvironment(HttpProxyPolicy{});
         std::unique_ptr<HttpClientResponse> response =
-                co_await performRequestFollowingRedirects(loop, request, parsed, *effectiveTimeout, nullptr, failureReason, nullptr, nullptr, &proxyPolicy);
+                co_await performRequestFollowingRedirects(loop, request, parsed, *effectiveTimeout, nullptr, nullptr, failureReason, nullptr, nullptr, &proxyPolicy);
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
@@ -2763,9 +2771,9 @@ namespace AsynGyanis::Net
     {
         const ParsedUrl parsed = parseUrl(url);
 
-        // 挂了罐子才拷一份请求出来加头部：没挂时开销与行为都和原来一样
-        std::optional<HttpClientRequest> requestWithCookie;
-        const HttpClientRequest         &effectiveRequest = prepareOutboundRequest(m_cookieJar.get(), request, parsed, requestWithCookie);
+        // 填了 traceContext 才拷一份请求出来加头部：不填时开销与行为都和原来一样
+        std::optional<HttpClientRequest> requestWithTrace;
+        const HttpClientRequest         &effectiveRequest = prepareOutboundRequest(request, requestWithTrace);
         validateRequest(effectiveRequest);
         std::string failureReason;
 
@@ -2809,8 +2817,8 @@ namespace AsynGyanis::Net
         http3Context.clientPrivateKeyFile  = &m_clientPrivateKeyFile;
         http3Context.rejectedEndpoints     = &m_http3RejectedEndpoints;
 
-        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(*m_loop, effectiveRequest, parsed, *effectiveTimeout, &m_pool, failureReason,
-                                                                                                 m_clientTls.get(), &http3Context, &m_proxyPolicy);
+        std::unique_ptr<HttpClientResponse> response = co_await performRequestFollowingRedirects(*m_loop, effectiveRequest, parsed, *effectiveTimeout, &m_pool, m_cookieJar.get(),
+                                                                                                 failureReason, m_clientTls.get(), &http3Context, &m_proxyPolicy);
         if (!response)
         {
             if (m_circuitBreaker != nullptr)
@@ -2838,7 +2846,6 @@ namespace AsynGyanis::Net
             co_return nullptr;
         }
 
-        storeResponseCookies(m_cookieJar.get(), parsed, *response);
         co_return response;
     }
 
