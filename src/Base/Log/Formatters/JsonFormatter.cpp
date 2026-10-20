@@ -149,6 +149,18 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 用已有的键名串摘掉一个可选键
+         * @details 直接复用调用方持有的键名串，不为摘除再造临时 std::string；换到 `const char *`
+         *          重载会在内嵌 NUL 处截断，旧键摘不掉，还可能误摘同前缀的另一个键。
+         * @param fields 复用的字段对象
+         * @param fieldName 待摘除的键名（由调用方持有，生命周期覆盖本次调用）
+         */
+        void removeField(nlohmann::json &fields, const std::string &fieldName)
+        {
+            static_cast<void>(fields.erase(fieldName));
+        }
+
+        /**
          * @brief 把事件字段填进复用的 JSON 对象
          * @param event 日志事件
          * @return nlohmann::json& 线程局域的复用对象（键序由 nlohmann 的对象容器按字典序落定）
@@ -232,7 +244,8 @@ namespace AsynGyanis::Base
             {
                 if (std::find(scratch.next.begin(), nextEnd, staleKey) == nextEnd)
                 {
-                    removeField(fields, staleKey.c_str());
+                    // 摘除同样复用键名串：经 c_str() 会在内嵌 NUL 处截断，还会先造一份临时串
+                    removeField(fields, staleKey);
                 }
             }
             scratch.next.resize(currentCount);

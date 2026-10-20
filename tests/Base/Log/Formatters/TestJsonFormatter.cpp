@@ -164,6 +164,25 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief 带内嵌 NUL 的上下文键在键集合变化时也要被摘掉
+     * @details 插入走完整 std::string，摘下若走 c_str() 会在 NUL 处截断，
+     *          旧键会留在下一行里
+     */
+    TEST(JsonFormatterTest, RemovesContextKeysContainingEmbeddedNul)
+    {
+        JsonFormatter     formatter;
+        const LogEvent    event = makeEvent("内嵌 NUL 的键");
+        const std::string nulKey{"a\0b", 3};
+        {
+            const LogContextScope scope({{nulKey, "value"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_EQ(textField(parsed, nulKey), "value");
+        }
+        const nlohmann::json after = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(after.find(nulKey), after.end()) << "带 NUL 的旧上下文键没被摘掉";
+    }
+
+    /**
      * @brief 根记录器没有名字：省略 logger 键，而不是写一个空串
      */
     TEST(JsonFormatterTest, OmitsLoggerKeyWhenLoggerNameIsEmpty)
