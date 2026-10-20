@@ -2145,14 +2145,27 @@ namespace AsynGyanis::Base
         for (auto &entry: applied)
         {
             LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", entry.key);
-            ConfigKeyValueMap singleEntrance;
-            singleEntrance.emplace(std::move(entry.key), std::move(entry.value));
-            for (const std::string &conflict: mergeFileValues(values, std::move(singleEntrance), "环境变量覆盖"))
+            ConfigKeyValueMap singleOverride;
+            // 键按副本进表：后面的存活检查还要按它回查快照，搬走就查不成了
+            singleOverride.emplace(entry.key, std::move(entry.value));
+            for (const std::string &conflict: mergeFileValues(values, std::move(singleOverride), "环境变量覆盖"))
             {
                 LOG_ERROR(conflict);
             }
         }
-        return applied.size();
+
+        // 后写的一条覆盖可能把先写的那条删掉（例如 server.port 淘汰掉 server 标量），
+        // 因此计数只认合入后仍留在快照里的键：按应用条数报出的是「做过几次覆盖」，
+        // 而本字段承诺的是「快照里有几个键来自环境变量」
+        std::size_t appliedCount = 0U;
+        for (const Applied &entry: applied)
+        {
+            if (values.contains(entry.key))
+            {
+                ++appliedCount;
+            }
+        }
+        return appliedCount;
     }
 
     void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory,

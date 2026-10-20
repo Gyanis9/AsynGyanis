@@ -3241,21 +3241,27 @@ port: 9090
         // 两条覆盖都没有文件值/schema 可依，按字符串交出；排序后 server.port 后写胜出
         EXPECT_EQ(configuration().getText("server.port"), "8080");
         EXPECT_FALSE(configuration().has("server"));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U) << "server 标量已被 server.port 淘汰，计数不该仍算两条";
     }
 
     /**
      * @brief 结构化覆盖的值形态必须与目标一致，数组不能被数字顶掉
+     * @details 同批还有一条本身合法的覆盖，用来证明失败不是逐条丢弃而是整批拒绝：
+     *          文件名下的数组保持原样、这条新键也不该出现
      */
     TEST_F(ConfigManagerTest, EnvironmentOverrideRejectsMismatchedStructuredValue)
     {
         writeFile("cfg.yaml", "server:\n  hosts: [\"first\"]\n");
         const TestSupport::ScopedEnvironmentVariable hostsOverride("ASYN_TESTCFG_SERVER__HOSTS", "42");
+        const TestSupport::ScopedEnvironmentVariable nameOverride("ASYN_TESTCFG_SERVER__NAME", "kept");
         configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
         const ConfigValue hosts = configuration().get("server.hosts");
         ASSERT_TRUE(hosts.is_array());
+        ASSERT_EQ(hosts.size(), 1U);
         EXPECT_EQ(hosts[0].get<std::string>(), "first") << "形态不符的覆盖不该落地";
+        EXPECT_FALSE(configuration().has("server.name")) << "同批合法的覆盖也不该单独生效";
         EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
     }
 } // namespace AsynGyanis::Base
