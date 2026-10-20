@@ -8498,7 +8498,7 @@ src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_s
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchEvent(const inotify_event &event)
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchOverflowRescan()
 src/Platform/FileSystem/InotifyFileWatcher.h	void notifyWatchedPathMoved(int watchDescriptor)
-src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents()
+src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents(std::stop_token stopToken)
 src/Platform/FileSystem/InotifyFileWatcher.h	void rearmMissingWatchesIfDue()
 src/Platform/FileSystem/InotifyFileWatcher.h	void removeWatchMapping(int watchDescriptor)
 src/Platform/FileSystem/InotifyFileWatcher.h	void setCallback(FileChangeCallback callback) override

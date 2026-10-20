@@ -117,7 +117,7 @@ namespace AsynGyanis::Platform
     void EventNotifier::flushDescriptor() const noexcept
     {
 #if ASYN_PLATFORM_LINUX
-        // eventfd 的一次 read 取走累计计数并把计数器清零，第二次读必然 EAGAIN——
+        // eventfd 的一次 read 取走累计计数并把计数器清零，没有新的通知时再读会拿到 EAGAIN——
         // 唤醒路径上每跨线程投递一次就要走这里，白付的那一次系统调用直接加在尾延迟上
         std::uint64_t pendingWakeups = 0;
         static_cast<void>(FileDescriptor::read(m_readDescriptor, &pendingWakeups, sizeof(pendingWakeups)));

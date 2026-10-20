@@ -128,9 +128,11 @@ namespace AsynGyanis::Platform
         /**
          * @brief 读取当前可读的 inotify 事件批次，逐条交给 dispatchEvent
          * @details 描述符是非阻塞的：队列读空后再读返回 EAGAIN，本轮排空到此为止；
-         *          读满一批则继续下一批，直到批数上界或队列读空。
+         *          读满一批则继续下一批，直到批数上界或队列读空。每批开头检查一次停止请求，
+         *          单批已读出的记录仍会派发完。
+         * @param stopToken 用于在批次之间响应停止请求
          */
-        void processEvents();
+        void processEvents(std::stop_token stopToken);
 
         /**
          * @brief 解析并派发一条 inotify 事件记录

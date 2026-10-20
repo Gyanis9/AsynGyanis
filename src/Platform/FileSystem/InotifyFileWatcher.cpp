@@ -359,7 +359,7 @@ namespace AsynGyanis::Platform
 
                 if ((descriptor.revents & POLLIN) != 0)
                 {
-                    processEvents();
+                    processEvents(stopToken);
                 }
                 rearmMissingWatchesIfDue();
             } catch (...)
@@ -376,7 +376,7 @@ namespace AsynGyanis::Platform
         m_isRunning.store(false, std::memory_order_release);
     }
 
-    void InotifyFileWatcher::processEvents()
+    void InotifyFileWatcher::processEvents(const std::stop_token stopToken)
     {
         // 按 inotify_event 对齐：内核按记录写入，未对齐的缓冲区在这类结构体访问上是未定义行为
         alignas(inotify_event) char buffer[kEventBufferBytes];
@@ -384,6 +384,12 @@ namespace AsynGyanis::Platform
         // 一次唤醒最多排空这么多批：持续写入时给本轮设上界，自愈复查与停止请求才轮得到执行
         for (std::size_t batchIndex = 0; batchIndex < kMaximumBatchesPerWakeup; ++batchIndex)
         {
+            // 每批开头响应停止请求：单批最多 64 KiB，最坏延迟从 8 批降到 1 批
+            if (stopToken.stop_requested())
+            {
+                return;
+            }
+
             // EINTR 只说明这次读被信号打断，内核队列里的记录还在，重试即可
             ssize_t bytesRead = -1;
             do

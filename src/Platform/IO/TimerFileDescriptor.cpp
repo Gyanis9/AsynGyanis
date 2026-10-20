@@ -155,7 +155,7 @@ namespace AsynGyanis::Platform
             return;
         }
 #if ASYN_PLATFORM_LINUX
-        // timerfd 的一次 read 返回到期次数并复位，第二次读必然 EAGAIN
+        // timerfd 的一次 read 返回到期次数并复位，没有新的到期时再读会拿到 EAGAIN
         std::uint64_t expirationCount = 0;
         static_cast<void>(FileDescriptor::read(m_fileDescriptor, &expirationCount, sizeof(expirationCount)));
 #else
