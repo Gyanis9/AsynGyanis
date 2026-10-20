@@ -277,14 +277,35 @@ namespace AsynGyanis::Core
             return;
         }
 
-        m_loop->scheduler().postRemote(
-                [actions = std::move(actions)]() mutable noexcept
-                {
-                    for (auto &action: actions)
+        // 投递要分配 std::function 与队列结点，内存吃紧时抛出的异常会穿出本函数的 noexcept 边界；
+        // 就地收下并记一条，本次重载的动作就此丢弃
+        try
+        {
+            m_loop->scheduler().postRemote(
+                    [actions = std::move(actions)]() mutable noexcept
                     {
-                        runAction(action);
-                    }
-                });
+                        for (auto &action: actions)
+                        {
+                            runAction(action);
+                        }
+                    });
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("ReloadSignal: 重载动作未能投回事件循环（{}），本次重载的动作已丢弃", failure.what());
+            } catch (...)
+            {
+            }
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("ReloadSignal: 重载动作未能投回事件循环（非标准异常），本次重载的动作已丢弃");
+            } catch (...)
+            {
+            }
+        }
     }
 
     void ReloadSignal::runAction(const std::function<void()> &action) noexcept
