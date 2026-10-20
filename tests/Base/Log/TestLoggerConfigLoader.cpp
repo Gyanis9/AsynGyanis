@@ -1078,6 +1078,35 @@ namespace AsynGyanis::Base
     }
 
     /**
+     * @brief async sink 自己的 formatter 不生效，必须出声而不是静默吞掉
+     * @details AsyncSink 只把事件排进队列、交给被包装的 sink 落地，自己那份 formatter 从不参与
+     *          渲染。配置写在这一层原先会被通用 formatter 分支悄悄挂上，落盘却是默认版式，
+     *          与「配了 json」的预期正好相反。诊断里必须点名 wrapped，指向唯一有效的写法。
+     */
+    TEST_F(LoggerConfigLoaderTest, AsyncSinkFormatterIsDiagnosedAsIneffective)
+    {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: INFO
+      sinks:
+        - type: async
+          formatter: json
+          wrapped:
+            type: file
+            path: async_formatter_scope.log
+)");
+        std::string captured;
+        {
+            const ConsoleCapture capture;
+            applyLogging();
+            captured = capture.text();
+        }
+        EXPECT_TRUE(contains(captured, "wrapped")) << captured;
+    }
+
+    /**
      * @brief 配置装出来的文件 sink 默认逐行同步：不 flush、不收口也能立刻在文件里读到
      * @details 交付形态的采集端（tail -f、Filebeat/vector）与崩溃后的取证只读得到已经交给操作系统的
      *          字节；`FileSink` 自己的构造默认是关（既有调用方自己掌握刷新节奏），配置这一层的默认是开。
