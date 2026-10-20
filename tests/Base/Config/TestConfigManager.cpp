@@ -3226,6 +3226,43 @@ port: 9090
     }
 
     /**
+     * @brief 环境变量覆盖计数要跟着 setValue 走：同键改写或淘汰后不再计入
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideCountTracksLaterSetValue)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        // 无关写入不动覆盖计数
+        ASSERT_TRUE(configuration().setValue("other", ConfigValue(1)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        // 程序侧改写同一个键：这个值不再来自环境变量
+        ASSERT_TRUE(configuration().setValue("server.port", ConfigValue(7070)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
+        EXPECT_EQ(configuration().getInt("server.port", 0), 7070);
+    }
+
+    /**
+     * @brief 程序侧把一段表写成标量时，被淘汰的覆盖键不再计入
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideCountDropsWhenAncestorWriteEvictsIt)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        ASSERT_TRUE(configuration().setValue("server", ConfigValue(5)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U) << "被淘汰的覆盖键仍被计数";
+        EXPECT_FALSE(configuration().has("server.port"));
+    }
+
+    /**
      * @brief 对象与数组项按 JSON 解析，坏 JSON 走整批拒绝
      */
     TEST_F(ConfigManagerTest, EnvironmentOverrideParsesStructuredValuesAsJson)

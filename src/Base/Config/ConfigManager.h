@@ -450,6 +450,8 @@ namespace AsynGyanis::Base
             bool                     configDirectoryRecursive = true; ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
 
             std::size_t environmentOverrideCount = 0; ///< 合入后键仍留在快照里的环境变量覆盖条目数（折成同一键的变量各算一条；0 表示通道关着或没有命中）
+            /// 本快照里来自环境变量覆盖的键；setValue 覆盖或淘汰这些键时据此重算计数
+            std::vector<std::string> environmentOverrideKeys;
         };
 
         /**
@@ -591,6 +593,16 @@ namespace AsynGyanis::Base
          *         （失败的键与原因已逐条记入错误日志）
          */
         [[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const;
+
+        /**
+         * @brief 叠加环境变量覆盖，并交出仍在快照里的覆盖键。
+         * @details 与单参数版本同一套键名映射、类型判定、整批拒绝与定形规则；多出来的
+         *          appliedKeys 用于让快照在后续 setValue 时重算覆盖计数。
+         * @param values 待提交的扁平配置字典，就地改写
+         * @param appliedKeys 输出参数：合入后键仍留在字典里的覆盖键，别名各留一条
+         * @return std::size_t 实际留在快照里的覆盖条目数；转换失败时返回 0 且 values 不被改动
+         */
+        [[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const;
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。

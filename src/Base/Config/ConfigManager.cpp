@@ -622,6 +622,13 @@ namespace AsynGyanis::Base
             ConfigKeyValueMap incoming;
             incoming.emplace(std::string(key), std::move(value));
             shapeConflicts = mergeFileValues(newData->values, std::move(incoming), std::format("setValue(\"{}\")", key));
+            // 程序侧写入的键不再是「来自环境变量」；定形冲突淘汰掉的覆盖键也不再计入。
+            // 这一步只动拷贝出来的快照，读者仍看旧快照
+            newData->environmentOverrideKeys.erase(std::remove_if(newData->environmentOverrideKeys.begin(), newData->environmentOverrideKeys.end(),
+                                                                  [&newData, key](const std::string &overrideKey)
+                                                                  { return std::string_view(overrideKey) == key || !newData->values.contains(overrideKey); }),
+                                                   newData->environmentOverrideKeys.end());
+            newData->environmentOverrideCount = newData->environmentOverrideKeys.size();
             m_data.store(newData, std::memory_order_release);
         }
 
@@ -2083,6 +2090,13 @@ namespace AsynGyanis::Base
 
     std::size_t ConfigManager::applyEnvironmentOverrides(ConfigKeyValueMap &values) const
     {
+        std::vector<std::string> appliedKeys;
+        return applyEnvironmentOverrides(values, appliedKeys);
+    }
+
+    std::size_t ConfigManager::applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const
+    {
+        appliedKeys.clear();
         const auto prefixSnapshot = m_environmentPrefix.load(std::memory_order_acquire);
         if (prefixSnapshot == nullptr || prefixSnapshot->empty())
         {
@@ -2186,17 +2200,16 @@ namespace AsynGyanis::Base
         }
 
         // 后写的一条覆盖可能把先写的那条删掉（例如 server.port 淘汰掉 server 标量），
-        // 因此计数只认合入后键仍留在快照里的应用条目：逐条回查，折成同一键的多个变量
-        // 各算一条；这既不是互异的键数，也不是合入前的应用条数
-        std::size_t appliedCount = 0U;
+        // 因此只认合入后键仍留在快照里的应用条目：逐条回查，折成同一键的多个变量
+        // 各留一条；这既不是互异的键数，也不是合入前的应用条数
         for (const Applied &entry: applied)
         {
             if (values.contains(entry.key))
             {
-                ++appliedCount;
+                appliedKeys.push_back(entry.key);
             }
         }
-        return appliedCount;
+        return appliedKeys.size();
     }
 
     void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory,
@@ -2206,7 +2219,9 @@ namespace AsynGyanis::Base
         const auto newData = std::make_shared<ConfigData>();
         // 环境变量覆盖就加在这一处：首次加载、reload 与热重载走的都是这个出口，于是覆盖不会被下一轮
         // 热重载冲掉，也不需要每个调用点各写一遍（少写一处就是「哪条路忘了叠加」那类分叉）
-        newData->environmentOverrideCount = applyEnvironmentOverrides(values);
+        std::vector<std::string> environmentOverrideKeys;
+        newData->environmentOverrideCount = applyEnvironmentOverrides(values, environmentOverrideKeys);
+        newData->environmentOverrideKeys  = std::move(environmentOverrideKeys);
         newData->values                   = std::move(values);
         newData->loadedFiles              = loadedFiles;
         newData->configDirectory          = configDirectory;
