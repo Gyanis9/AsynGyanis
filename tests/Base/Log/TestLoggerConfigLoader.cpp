@@ -1081,7 +1081,8 @@ namespace AsynGyanis::Base
      * @brief async sink 自己的 formatter 不生效，必须出声而不是静默吞掉
      * @details AsyncSink 只把事件排进队列、交给被包装的 sink 落地，自己那份 formatter 从不参与
      *          渲染。配置写在这一层原先会被通用 formatter 分支悄悄挂上，落盘却是默认版式，
-     *          与「配了 json」的预期正好相反。诊断里必须点名 wrapped，指向唯一有效的写法。
+     *          与「配了 json」的预期正好相反。诊断里必须点名 wrapped，指向唯一有效的写法；
+     *          同时钉住 formatter 不被报成「不认识的字段」，并证明这条 async sink 仍能落盘。
      */
     TEST_F(LoggerConfigLoaderTest, AsyncSinkFormatterIsDiagnosedAsIneffective)
     {
@@ -1103,7 +1104,12 @@ namespace AsynGyanis::Base
             applyLogging();
             captured = capture.text();
         }
-        EXPECT_TRUE(contains(captured, "wrapped")) << captured;
+        EXPECT_TRUE(contains(captured, "async sink 自身的 formatter 不生效")) << captured;
+        EXPECT_EQ(captured.find("不认识的字段"), std::string::npos) << "formatter 是 async 认识的字段，不该再被报成拼错：" << captured;
+
+        logAndFlush("root", LogLevel::Info, "async formatter scope line");
+        const bool delivered = TestSupport::waitForCondition([this] { return contains(readTemporaryFile("async_formatter_scope.log"), "async formatter scope line"); }, 10000);
+        EXPECT_TRUE(delivered) << readTemporaryFile("async_formatter_scope.log");
     }
 
     /**
@@ -1541,6 +1547,7 @@ namespace AsynGyanis::Base
      * @details FileSink 构造期打不开目标文件会抛 Base::SystemException，而配置装配这条路
      *          对外承诺不让异常逃出。path 指到目录是运维最容易写出的形态之一：此时其余 sink
      *          与日志器必须照常装配，并且要有一行点名原因的诊断，而不是整次加载就此中断。
+     *          控制台 sink 排在坏 sink 之后，装配必须继续走到它。
      */
     TEST_F(LoggerConfigLoaderTest, SinkConstructionFailureIsDiagnosedNotThrown)
     {
@@ -1552,14 +1559,18 @@ namespace AsynGyanis::Base
       sinks:
         - type: file
           path: .
+        - type: console
+          color: false
 )");
         std::string captured;
         {
             const ConsoleCapture capture;
             EXPECT_NO_THROW(applyLogging());
+            logAndFlush("root", LogLevel::Info, "console survives the failed sink");
             captured = capture.text();
         }
         EXPECT_TRUE(contains(captured, "创建 sink 失败")) << captured;
+        EXPECT_TRUE(contains(captured, "console survives the failed sink")) << "坏 sink 之后的控制台 sink 没装上：" << captured;
     }
 
     TEST_F(LoggerConfigLoaderTest, RollingFileSinkWithoutBaseFilenameIsSkipped)
@@ -1966,13 +1977,26 @@ namespace AsynGyanis::Base
      * @brief logging 段是标量时不动任何日志器，并说清原因
      * @details getSection 只拼以「前缀.」开头的扁平键，整段写成标量时返回空对象，类型检查
      *          因此永远不触发，反而会走「没配 loggers」那条路安装默认 root。已就位的 root
-     *          等级与 sink 都属于「本次不该动」的东西。
+     *          等级与 sink 都属于「本次不该动」的东西：先装一条能写的文件 sink 作正对照，
+     *          标量段之后等级不变、该文件仍照常收到日志。
      */
     TEST_F(LoggerConfigLoaderTest, ScalarLoggingSectionIsDiagnosedWithoutTouchingLoggers)
     {
+        loadConfiguration(R"(logging:
+  global_level: INFO
+  loggers:
+    root:
+      level: ERROR
+      sinks:
+        - type: file
+          path: scalar_preserved.log
+)");
+        applyLogging();
+        logAndFlush("root", LogLevel::Error, "line before the scalar section");
+        ASSERT_TRUE(contains(readTemporaryFile("scalar_preserved.log"), "line before the scalar section"));
+
+        // 整段换成标量再加载：装配必须整段拒绝，而不是只把 root 等级换个值
         loadConfiguration("logging: 5\n");
-        auto &root = LoggerRegistry::instance().getRootLogger();
-        root.setLevel(LogLevel::Error);
 
         std::string captured;
         {
@@ -1981,8 +2005,11 @@ namespace AsynGyanis::Base
             captured = capture.text();
         }
 
+        auto &root = LoggerRegistry::instance().getRootLogger();
         EXPECT_EQ(root.getLevel(), LogLevel::Error) << "标量段不该触发默认 root 安装或改级";
         EXPECT_TRUE(contains(captured, "不是对象")) << captured;
+        logAndFlush("root", LogLevel::Error, "still writing after the scalar section");
+        EXPECT_TRUE(contains(readTemporaryFile("scalar_preserved.log"), "still writing after the scalar section")) << "标量段不该换掉已有的 sink";
     }
 
     TEST_F(LoggerConfigLoaderTest, ReloadingConfigurationReplacesSinksInsteadOfDuplicating)

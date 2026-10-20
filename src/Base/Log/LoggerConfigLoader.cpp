@@ -367,13 +367,18 @@ namespace AsynGyanis::Base
     {
         // 构造期失败（目标文件打不开、句柄耗尽）在这里收口：FileSink/RollingFileSink 抛的是
         // Base::SystemException，而配置装配这条路对外承诺不让异常外抛。跳过这一条 sink 并点名
-        // 原因，其余 sink 与日志器照常装配
+        // 原因，其余 sink 与日志器照常装配。非标准异常一并收口：这个边界若只认 std::exception，
+        // 其余抛出物仍会穿透到调用方
         try
         {
             return createSinkFromConfigImpl(sinkConfiguration, baseDirectory);
         } catch (const std::exception &error)
         {
             std::cerr << "LoggerConfig：创建 sink 失败，已跳过该 sink：" << error.what() << '\n';
+            return nullptr;
+        } catch (...)
+        {
+            std::cerr << "LoggerConfig：创建 sink 失败（非标准异常），已跳过该 sink" << '\n';
             return nullptr;
         }
     }
