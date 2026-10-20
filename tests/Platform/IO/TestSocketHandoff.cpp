@@ -318,6 +318,64 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(std::string_view(leftover.data(), leftover.size()), "WXYZ") << "被读走的字节应当原样留在通道里";
     }
 
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住：移交头在流式通道上分两段到达时，接收侧要拼齐再判
+     * @details AF_UNIX 流套接字不保留消息边界，头可能只到一半；描述符随第一段控制消息到达。
+     *          把「头没收全」直接判成格式错误，会让一次合法移交偶发失败。判据是接收侧拿到
+     *          一枚可用描述符，且它的类型与发送侧一致。
+     */
+    TEST(SocketHandoff, AssemblesAHeaderSplitAcrossTwoChunks)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     listeningPort = 0U;
+        const int         listener      = makeLoopbackListener(listeningPort);
+        ASSERT_GE(listener, 0) << "没造出监听套接字，错误码 " << PlatformError::lastErrorCode();
+        cleanup.add(listener);
+
+        int channelWriter = -1;
+        int channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+
+        struct Header
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_STREAM, 0U};
+
+        char   controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec  firstChunk{&header, sizeof(std::uint32_t)};
+        msghdr message{};
+        message.msg_iov           = &firstChunk;
+        message.msg_iovlen        = 1;
+        message.msg_control       = controlBuffer;
+        message.msg_controllen    = sizeof(controlBuffer);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
+        ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
+
+        const char *remaining = reinterpret_cast<const char *>(&header) + sizeof(std::uint32_t);
+        ASSERT_EQ(::send(channelWriter, remaining, static_cast<int>(sizeof(header) - sizeof(std::uint32_t)), 0), static_cast<ssize_t>(sizeof(header) - sizeof(std::uint32_t)));
+
+        const int receivedDescriptor = Socket::readListeningSocketHandoff(channelReader);
+        ASSERT_GE(receivedDescriptor, 0) << "分两段到达的合法移交被当成格式错误拒掉了，错误码 " << PlatformError::lastSocketErrorCode();
+        cleanup.add(receivedDescriptor);
+
+        int       type       = 0;
+        socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
+        ASSERT_EQ(::getsockopt(receivedDescriptor, SOL_SOCKET, SO_TYPE, &type, &typeLength), 0);
+        EXPECT_EQ(type, SOCK_STREAM) << "重装出来的描述符不是发送侧交出的那类套接字";
+    }
+#endif
+
     /**
      * @brief 参数非法要在动通道之前就拒掉
      */
@@ -685,8 +743,8 @@ namespace AsynGyanis::Platform
      * @note 先污染槽位再制造 EOF：不污染的话槽位里可能恰好就是同一个值，断言就成了自我实现
      * @note 证伪（Windows 实测）：把那两处 0 字节的出口改回「照抄槽位」，本条红在错误码那句——
      *       读出来的是 0 而期望是 10054，正是「没有错误却失败」那种读数
-     * @note 证伪（POSIX 实测）：删掉 `recvmsg` 返回 0 那一支，本条红在同一句上——读出来的是 22
-     *       （EINVAL，「不像移交消息」）而期望 104（ECONNRESET）
+     * @note 证伪（POSIX）：把 `recvmsg` 返回 0 那一支与补头循环的 0 字节出口都改成「照抄槽位」，
+     *       读出来的是 0 而期望 104（ECONNRESET），本条红在错误码那句
      */
     TEST(SocketHandoff, ReportsConnectionResetWhenTheChannelClosesBeforeAnyBytes)
     {

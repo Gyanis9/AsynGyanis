@@ -444,6 +444,11 @@ namespace AsynGyanis::Platform
                 }
                 if (pieceLength < 0)
                 {
+                    // 被信号打断是「这一段没发出去」，不是通道坏了：重发这一段即可
+                    if (PlatformError::lastSocketErrorCode() == PlatformError::kInterrupted)
+                    {
+                        continue;
+                    }
                     PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
@@ -475,6 +480,11 @@ namespace AsynGyanis::Platform
                 }
                 if (pieceLength < 0)
                 {
+                    // 被信号打断时一个字节都没读走，重读这一段不会丢数据
+                    if (PlatformError::lastSocketErrorCode() == PlatformError::kInterrupted)
+                    {
+                        continue;
+                    }
                     PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
@@ -611,10 +621,14 @@ namespace AsynGyanis::Platform
         controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
         std::memcpy(CMSG_DATA(controlHeader), &listenDescriptor, sizeof(listenDescriptor));
 
-        const ssize_t writtenByteCount = ::sendmsg(channelDescriptor, &message, 0);
-        // 契约是「true 等于完整交出一条消息」：部分写（被信号打断那一类，socket 调用不因
-        // SA_RESTART 自动重启）会把半条头留在流里，对端只能读成「不像移交消息」；交出方若记成
-        // 成功就会白等一次接手。通道本来就是一次性的，整条判失败最诚实
+        ssize_t writtenByteCount = -1;
+        do
+        {
+            writtenByteCount = ::sendmsg(channelDescriptor, &message, 0);
+        } while (writtenByteCount < 0 && errno == EINTR);
+        // 契约是「true 等于完整交出一条消息」：被信号打断的情形已由上面的重试排除，但流上
+        // 仍可能发生短写，半条头留在流里，对端只能读成「不像移交消息」；交出方若记成成功
+        // 就会白等一次接手。通道本来就是一次性的，整条判失败最诚实
         if (writtenByteCount != static_cast<ssize_t>(sizeof(header)))
         {
             PlatformError::setLastErrorCode(writtenByteCount < 0 ? PlatformError::lastSocketErrorCode() : EPIPE);
@@ -688,7 +702,13 @@ namespace AsynGyanis::Platform
         message.msg_control    = controlBuffer;
         message.msg_controllen = sizeof(controlBuffer);
 
-        const ssize_t receivedLength = ::recvmsg(channelDescriptor, &message, 0);
+        ssize_t receivedLength = -1;
+        do
+        {
+            // MSG_CMSG_CLOEXEC：内核把描述符装进本进程的那一刻就带 FD_CLOEXEC，
+            // 不再留下「收下之后、fcntl 之前被别的线程 fork+exec 继承」的窗口
+            receivedLength = ::recvmsg(channelDescriptor, &message, MSG_CMSG_CLOEXEC);
+        } while (receivedLength < 0 && errno == EINTR);
         if (receivedLength < 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
@@ -696,8 +716,8 @@ namespace AsynGyanis::Platform
         }
         if (receivedLength == 0)
         {
-            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。让它落到下面那条
-            // 「头没收全」的判定也会拒，但报出来的是「不像移交消息」，运维会去查消息写法而不是查对端进程
+            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。下面的补头循环
+            // 遇到同一个 0 也会退出，但这里直接报出来，不必再绕过一整段判定
             PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
             return -1;
         }
@@ -732,9 +752,41 @@ namespace AsynGyanis::Platform
             }
         }
 
-        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
+        // AF_UNIX 流套接字不保留消息边界：控制消息随第一段字节一起到达，头本身却可能只到这
+        // 一段。把「头没收全」当成格式错误，会让一次合法移交偶发失败——这里接着把剩余的头字节
+        // 读完。读的过程中通道断了，与「一个字节都没收到」同因：对端没交出完整消息
+        std::size_t headerByteCount = static_cast<std::size_t>(receivedLength);
+        while (headerByteCount < sizeof(header))
         {
-            // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
+            const ssize_t pieceLength = ::recv(channelDescriptor, reinterpret_cast<char *>(&header) + headerByteCount, sizeof(header) - headerByteCount, 0);
+            if (pieceLength < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+                if (receivedDescriptor >= 0)
+                {
+                    static_cast<void>(FileDescriptor::close(receivedDescriptor));
+                }
+                return -1;
+            }
+            if (pieceLength == 0)
+            {
+                PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
+                if (receivedDescriptor >= 0)
+                {
+                    static_cast<void>(FileDescriptor::close(receivedDescriptor));
+                }
+                return -1;
+            }
+            headerByteCount += static_cast<std::size_t>(pieceLength);
+        }
+
+        if ((message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
+        {
+            // 控制消息被截断、或载荷长度不像本平台的载体，都等于「这份移交不可信」：整体作废，
             // 不要拿半个描述符去 accept——那比失败更难查
             PlatformError::setLastErrorCode(EINVAL);
             if (receivedDescriptor >= 0)
@@ -1016,7 +1068,8 @@ namespace AsynGyanis::Platform
         }
         sockaddr_un target{};
         target.sun_family = AF_UNIX;
-        std::strncpy(target.sun_path, std::string(address).c_str(), sizeof(target.sun_path) - 1U);
+        // 目标是零初始化的，地址长度已在上面判过上限，memcpy 之后自然带结尾 NUL
+        std::memcpy(target.sun_path, address.data(), address.size());
         if (::connect(descriptor, reinterpret_cast<const sockaddr *>(&target), sizeof(target)) != 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
