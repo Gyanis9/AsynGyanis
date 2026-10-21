@@ -2,8 +2,8 @@
 #include "Base/Exception/SystemException.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/Platform.h"
+#include "Platform/System/TextEncoding.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -16,48 +16,6 @@ namespace AsynGyanis::Base
 {
     namespace
     {
-#if ASYN_PLATFORM_WIN32
-        // 整段圈进条件编译：GCC 把匿名命名空间里没人调用的函数按 -Wunused-function 报出来，
-        // 而 Linux 侧门禁带 -Werror（MSVC 不报这条，只有容器那一侧看得见）
-        /**
-         * @brief 就地把串里每个 `'\n'` 换成 `"\r\n"`
-         * @details Windows 上由我们自己补行尾，好把文件按二进制打开：文本模式的流逐字符走换行翻译，
-         *          实测每行多付约 110 纳秒，而两种写法落盘字节逐字相同（含每帧带换行的调用栈正文）。
-         *          绝大多数行只有行尾那一个换行，改末位字符即可；带栈的行才整段展开。
-         * @param line 待补齐的一行（已含行尾换行）
-         */
-        void translateNewlinesToCrLf(std::string &line)
-        {
-            const std::size_t newlineCount = static_cast<std::size_t>(std::ranges::count(line, '\n'));
-            if (newlineCount == 0)
-            {
-                return;
-            }
-            if (newlineCount == 1 && line.back() == '\n')
-            {
-                line.back() = '\r';
-                line.push_back('\n');
-                return;
-            }
-
-            std::string expanded;
-            expanded.reserve(line.size() + newlineCount);
-            std::size_t segmentStart = 0;
-            for (std::size_t position = 0; position < line.size(); ++position)
-            {
-                if (line[position] != '\n')
-                {
-                    continue;
-                }
-                expanded.append(line, segmentStart, position - segmentStart);
-                expanded.append("\r\n");
-                segmentStart = position + 1;
-            }
-            expanded.append(line, segmentStart, std::string::npos);
-            line.swap(expanded);
-        }
-#endif
-
         /**
          * @brief 创建缺失的父目录，失败时返回中文原因串
          * @details 一律走 std::filesystem 的 error_code 重载：日志路径上不接受
@@ -86,7 +44,7 @@ namespace AsynGyanis::Base
     {
         const std::string directoryError = createParentDirectory(m_filePath.parent_path());
 
-        // 二进制打开 + 自己补行尾（见 translateNewlinesToCrLf）：文本模式的翻译路径逐字符走，
+        // 二进制打开 + 由 Platform 按本平台约定补行尾：文本模式的翻译路径逐字符走，
         // 每行多付约 110 纳秒。POSIX 上 binary 标志不改变任何行为
         auto mode = std::ios::out | std::ios::binary;
         if (truncate)
@@ -142,12 +100,10 @@ namespace AsynGyanis::Base
             return 0;
         }
         // 换行并入缓冲后整行只做一次 <<：流插入每次都要构造 sentry 并由文件缓冲加锁，
-        // 合并后只有一轮。Windows 上自己把换行补成 "\r\n"（流已按二进制打开），落盘字节与
-        // 文本模式逐字一致
+        // 合并后只有一轮。行尾由 Platform 按本平台约定补（Windows 补 CRLF、POSIX 原样保留 LF），
+        // 流始终按二进制打开，落盘字节与文本模式逐字一致
         m_lineBuffer.push_back('\n');
-#if ASYN_PLATFORM_WIN32
-        translateNewlinesToCrLf(m_lineBuffer);
-#endif
+        Platform::TextEncoding::applyNativeLineEndings(m_lineBuffer);
         m_file << m_lineBuffer;
 
         // 逐行同步（配置装出来的 sink 默认走这一步，见构造参数）：不交出去的那半行采集端与

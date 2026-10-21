@@ -43,5 +43,13 @@ namespace AsynGyanis::Platform
          * @warning 与 toWideString 同一条长度上限：超过 int 上限按失败返回空串，不去猜转换结果
          */
         static std::string toUtf8String(const std::wstring &wideText);
+
+        /**
+         * @brief 按本平台的文件行尾约定就地改写换行
+         * @details Windows 的文件行尾是 CRLF，POSIX 是 LF。调用方一律按二进制写文件，
+         *          由本方法补平台差异；POSIX 上是空操作，不额外复制。
+         * @param text 待改写的文本（可含多个换行）
+         */
+        static void applyNativeLineEndings(std::string &text);
     };
 } // namespace AsynGyanis::Platform

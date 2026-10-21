@@ -196,4 +196,21 @@ namespace AsynGyanis::Platform
 
         EXPECT_EQ(TextEncoding::toUtf8String(wideText), utf8Text) << "MiB 级文本往返不一致";
     }
+
+    /**
+     * @brief 钉住：行尾改写按本平台的文件约定走，调用方不必再套一层条件编译
+     * @details Windows 补 CRLF，POSIX 原样保留 LF；两平台都从同一入口调用。
+     */
+    TEST(TextEncoding, ApplyNativeLineEndingsUsesPlatformConvention)
+    {
+        std::string text = "first\nsecond\n";
+
+        TextEncoding::applyNativeLineEndings(text);
+
+#if ASYN_PLATFORM_WIN32
+        EXPECT_EQ(text, "first\r\nsecond\r\n");
+#else
+        EXPECT_EQ(text, "first\nsecond\n");
+#endif
+    }
 } // namespace AsynGyanis::Platform

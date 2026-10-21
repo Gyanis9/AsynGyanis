@@ -1,6 +1,7 @@
 #include "Platform/System/TextEncoding.h"
 #include "Platform/Platform.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -186,6 +187,41 @@ namespace AsynGyanis::Platform
         }
 
         return utf8Text;
+#endif
+    }
+
+    void TextEncoding::applyNativeLineEndings(std::string &text)
+    {
+#if ASYN_PLATFORM_WIN32
+        const std::size_t newlineCount = static_cast<std::size_t>(std::ranges::count(text, '\n'));
+        if (newlineCount == 0)
+        {
+            return;
+        }
+        if (newlineCount == 1 && text.back() == '\n')
+        {
+            text.back() = '\r';
+            text.push_back('\n');
+            return;
+        }
+
+        std::string expanded;
+        expanded.reserve(text.size() + newlineCount);
+        std::size_t segmentStart = 0;
+        for (std::size_t position = 0; position < text.size(); ++position)
+        {
+            if (text[position] != '\n')
+            {
+                continue;
+            }
+            expanded.append(text, segmentStart, position - segmentStart);
+            expanded.append("\r\n");
+            segmentStart = position + 1;
+        }
+        expanded.append(text, segmentStart, std::string::npos);
+        text.swap(expanded);
+#else
+        static_cast<void>(text);
 #endif
     }
 } // namespace AsynGyanis::Platform
