@@ -11,12 +11,6 @@
   ],
   "violations": [
     {
-      "path": "src/Base/Log/Sinks/FileSink.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 2
-    },
-    {
       "path": "src/Core/EventLoop/Epoll.cpp",
       "category": "platform-conditional",
       "symbol": "_WIN32",
@@ -434,54 +428,6 @@
       "path": "src/Core/Socket/AsyncSocket.h",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Tls/TlsContext.cpp",
-      "category": "os-api",
-      "symbol": "std::signal",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Tls/TlsContext.cpp",
-      "category": "platform-conditional",
-      "symbol": "_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Database/Redis/RedisConnection.cpp",
-      "category": "os-api",
-      "symbol": "::inet_pton",
-      "count": 2
-    },
-    {
-      "path": "src/Database/Redis/RedisConnection.cpp",
-      "category": "os-header",
-      "symbol": "sys/time.h",
-      "count": 1
-    },
-    {
-      "path": "src/Database/Redis/RedisConnection.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_LINUX",
-      "count": 1
-    },
-    {
-      "path": "src/Database/Redis/RedisConnection.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Net/Acme/AcmeCertificateManager.cpp",
-      "category": "platform-conditional",
-      "symbol": "_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Net/Http/Client/HttpClient.cpp",
-      "category": "os-api",
-      "symbol": "::inet_pton",
       "count": 2
     },
     {

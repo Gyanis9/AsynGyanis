@@ -178,7 +178,7 @@
       "lane": "fault",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 208, "label": "recordFailure" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 195, "label": "recordFailure" },
         { "path": "src/Net/Acme/AcmeClient.cpp", "line": 417, "label": "429/503 归 RateLimited" }
       ]
     },
@@ -225,7 +225,7 @@
       "lane": "hold",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 368, "label": "publish 到权威侧" },
+        { "path": "src/Net/Acme/AcmeCertificateManager.cpp", "line": 355, "label": "publish 到权威侧" },
         { "path": "src/Net/Acme/AcmeDns01TxtWriter.h", "line": 46, "label": "publish 动作的类型" },
         { "path": "src/Net/Acme/AcmeAutomationConfig.h", "line": 71, "label": "只有 dns-01 才要写入口" }
       ]
@@ -309,7 +309,7 @@
         "令牌路由只注册 GET、只答已挂出的令牌，未挂或已撤一律 404（AcmeHttp01ChallengeStore.cpp:52-59、71）",
         "PresentedToken 由析构负责摘除，每条出口（含失败）都执行，不会把令牌留在公网路由上",
         "停放的睡眠按 kStopNoticeSlice 切片，叫停最迟一段内生效（AcmeCertificateManager.cpp:627-633）；切片只改醒来频次，正在进行的签发尝试照旧跑完这一轮",
-        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（AcmeCertificateManager.cpp:612）",
+        "没提供 reloadHandler 时续期循环直接拒启动并记失败，不会静默签发到磁盘（AcmeCertificateManager.cpp:606）",
       "两条自证通道按配置二选一：http-01 把令牌挂到路由上，dns-01 要把 TXT 写到权威侧才算可答（AcmeDns01TxtWriter.h:30 的契约）；通配域名只有 dns-01 验得了，配成 http-01 时当场拒而不是签一张覆盖不全的证书（AcmeClient.cpp:158）"
       ]
     },

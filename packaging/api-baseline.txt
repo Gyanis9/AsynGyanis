@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8873
+# headers=303 entries=8877
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8790,6 +8790,7 @@ src/Platform/System/PlatformError.h	static constexpr int kWouldBlock = WSAEWOULD
 src/Platform/System/PlatformError.h	static int lastErrorCode() noexcept
 src/Platform/System/PlatformError.h	static int lastSocketErrorCode() noexcept
 src/Platform/System/PlatformError.h	static std::string message(int errorCode)
+src/Platform/System/PlatformError.h	static void describeErrno(int errorNumber, char *output, std::size_t outputCapacity) noexcept
 src/Platform/System/PlatformError.h	static void setLastErrorCode(int errorCode) noexcept
 src/Platform/System/PlatformTime.h	class ASYN_PLATFORM_API PlatformTime
 src/Platform/System/PlatformTime.h	int day
@@ -8801,6 +8802,7 @@ src/Platform/System/PlatformTime.h	int weekday
 src/Platform/System/PlatformTime.h	int year
 src/Platform/System/PlatformTime.h	namespace AsynGyanis::Platform
 src/Platform/System/PlatformTime.h	static UtcTimeFields utcTime(std::time_t calendarTime) noexcept
+src/Platform/System/PlatformTime.h	static std::int64_t utcSeconds(std::tm &broken) noexcept
 src/Platform/System/PlatformTime.h	static std::tm localTime(std::time_t calendarTime) noexcept
 src/Platform/System/PlatformTime.h	struct ASYN_PLATFORM_API UtcTimeFields
 src/Platform/System/Process.h	Handle &operator=(Handle &&other) noexcept
@@ -8827,6 +8829,7 @@ src/Platform/System/Process.h	friend class Process
 src/Platform/System/Process.h	mutable int m_processId
 src/Platform/System/Process.h	mutable std::optional<int> m_exitCode
 src/Platform/System/Process.h	namespace AsynGyanis::Platform
+src/Platform/System/Process.h	static void ignoreBrokenPipeSignal() noexcept
 src/Platform/System/Process.h	std::string executablePath
 src/Platform/System/Process.h	std::vector<std::string> arguments
 src/Platform/System/Process.h	struct LaunchOptions
@@ -8876,3 +8879,4 @@ src/Platform/System/TextEncoding.h	class ASYN_PLATFORM_API TextEncoding
 src/Platform/System/TextEncoding.h	namespace AsynGyanis::Platform
 src/Platform/System/TextEncoding.h	static std::string toUtf8String(const std::wstring &wideText)
 src/Platform/System/TextEncoding.h	static std::wstring toWideString(const std::string &utf8Text)
+src/Platform/System/TextEncoding.h	static void applyNativeLineEndings(std::string &text)
