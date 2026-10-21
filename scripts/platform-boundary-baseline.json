@@ -378,63 +378,9 @@
     },
     {
       "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::bind",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::connect",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::listen",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::recv",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::send",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::shutdown",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "::socket",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "getpeername",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "os-api",
-      "symbol": "getsockname",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 5
+      "count": 3
     },
     {
       "path": "src/Core/Socket/AsyncSocket.h",

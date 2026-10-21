@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8877
+# headers=303 entries=8887
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8702,6 +8702,7 @@ src/Platform/IO/Socket.h	[[nodiscard]] bool isValid() const noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static constexpr bool hasUserTimeout() noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static int acceptHandoffPeer(int listenerDescriptor) noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static int connectHandoffChannel(std::string_view address) noexcept
+src/Platform/IO/Socket.h	[[nodiscard]] static std::error_code lastError() noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static std::expected<HandoffChannelEndpoint, std::error_code> openHandoffChannel() noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static std::expected<bool, std::error_code> waitForAcceptReady(int listenerDescriptor, std::chrono::milliseconds budget) noexcept
 src/Platform/IO/Socket.h	bool m_valid = false
@@ -8712,8 +8713,13 @@ src/Platform/IO/Socket.h	int listener
 src/Platform/IO/Socket.h	namespace AsynGyanis::Platform
 src/Platform/IO/Socket.h	sockaddr_storage storage
 src/Platform/IO/Socket.h	socklen_t length
+src/Platform/IO/Socket.h	static bool bind(int descriptor, const sockaddr *address, socklen_t addressLength) noexcept
+src/Platform/IO/Socket.h	static bool connect(int descriptor, const sockaddr *address, socklen_t addressLength) noexcept
 src/Platform/IO/Socket.h	static bool initialize() noexcept
 src/Platform/IO/Socket.h	static bool isListeningStream(int descriptor) noexcept
+src/Platform/IO/Socket.h	static bool listen(int descriptor, int backlog) noexcept
+src/Platform/IO/Socket.h	static bool localAddress(int descriptor, sockaddr *address, socklen_t *addressLength) noexcept
+src/Platform/IO/Socket.h	static bool peerAddress(int descriptor, sockaddr *address, socklen_t *addressLength) noexcept
 src/Platform/IO/Socket.h	static bool setDeferAccept(int descriptor, int seconds) noexcept
 src/Platform/IO/Socket.h	static bool setFastOpen(int descriptor, int queueLength) noexcept
 src/Platform/IO/Socket.h	static bool setIpv6Only(int descriptor, bool isOnlyV6) noexcept
@@ -8725,12 +8731,16 @@ src/Platform/IO/Socket.h	static bool setReuseAddress(int descriptor) noexcept
 src/Platform/IO/Socket.h	static bool setReusePort(int descriptor) noexcept
 src/Platform/IO/Socket.h	static bool setSendBufferSize(int descriptor, int byteCount) noexcept
 src/Platform/IO/Socket.h	static bool setUserTimeout(int descriptor, int milliseconds) noexcept
+src/Platform/IO/Socket.h	static bool shutdown(int descriptor, int how) noexcept
 src/Platform/IO/Socket.h	static bool writeListeningSocketHandoff(int channelDescriptor, int listenDescriptor, std::uint64_t targetProcessId) noexcept
 src/Platform/IO/Socket.h	static constexpr std::size_t kMaximumSendFileChunk = 0x7ffff000
 src/Platform/IO/Socket.h	static constexpr std::size_t kMaximumVectorCount = 16
 src/Platform/IO/Socket.h	static int accept(int listenDescriptor, sockaddr *address, socklen_t *addressLength) noexcept
+src/Platform/IO/Socket.h	static int create(int domain, int type) noexcept
 src/Platform/IO/Socket.h	static int readListeningSocketHandoff(int channelDescriptor) noexcept
 src/Platform/IO/Socket.h	static int takePendingError(int descriptor) noexcept
+src/Platform/IO/Socket.h	static ssize_t receive(int descriptor, void *buffer, std::size_t length, int flags) noexcept
+src/Platform/IO/Socket.h	static ssize_t send(int descriptor, const void *buffer, std::size_t length, int flags) noexcept
 src/Platform/IO/Socket.h	static ssize_t sendFileChunk(int socketDescriptor, int fileDescriptor, std::uint64_t offset, std::size_t length) noexcept
 src/Platform/IO/Socket.h	static ssize_t writeVectored(int descriptor, const WriteBuffer *buffers, std::size_t bufferCount) noexcept
 src/Platform/IO/Socket.h	static void closeHandoffChannel(HandoffChannelEndpoint &endpoint) noexcept
