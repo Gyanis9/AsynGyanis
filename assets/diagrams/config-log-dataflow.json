@@ -134,7 +134,7 @@
       "stage": 1,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Logger.cpp", "line": 138, "label": "writeToSinks" },
+        { "path": "src/Base/Log/Logger.cpp", "line": 146, "label": "writeToSinks" },
         { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 260, "label": "worker 里补做下游过滤" }
       ]
     },
