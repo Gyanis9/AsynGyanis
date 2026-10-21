@@ -95,6 +95,32 @@ def test_layering(root: Path) -> None:
     expect("layering 模块缺 CMakeLists", result, 2, "模块")
 
 
+def test_boundary(root: Path) -> None:
+    make_five_modules(root)
+    baseline = root / "baseline.json"
+    write(root / "src" / "Core" / "bad.cpp", "#include <windows.h>\n#if _WIN32\nvoid f() { ::fork(); }\n#endif\n")
+
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("boundary 缺基线", result, 2, "基线")
+
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1", "--write")
+    expect("boundary 重录", result, 0)
+
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("boundary 基线同解", result, 0, "PLATFORM_BOUNDARY_GATE=OK")
+
+    write(root / "src" / "Net" / "bad2.cpp", "void g() { ::epoll_wait(0, nullptr, 0, 0); }\n")
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("boundary 新增违例", result, 1, "epoll_wait")
+
+    (root / "src" / "Core" / "bad.cpp").unlink()
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("boundary 基线陈旧", result, 1, "收紧")
+
+    result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1", "--write")
+    expect("boundary 收紧后重录", result, 0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface"))
@@ -106,6 +132,8 @@ def main() -> int:
     try:
         if args.only in (None, "layering"):
             test_layering(root / "layering")
+        if args.only in (None, "boundary"):
+            test_boundary(root / "boundary")
         print("ARCH_GATE_SELFTEST=OK")
         return 0
     except AssertionError as error:
