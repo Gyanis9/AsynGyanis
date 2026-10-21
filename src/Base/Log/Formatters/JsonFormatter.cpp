@@ -169,8 +169,7 @@ namespace AsynGyanis::Base
         {
             nlohmann::json &fields = reusableFields();
 
-            // 时刻在本线程渲染成与文本版式同一口径的字符串：整条 JSON 本来就要落一份文本，
-            // 这里的一次拷贝不参与事件产生线程的成本
+            // 时刻在本线程渲染成与文本版式同一口径的字符串：整条 JSON 本就要落一份文本，这次拷贝不参与产生线程的成本
             std::array<char, kTimestampTextBufferSize> timestampBuffer{};
             const std::string_view                     timestampText = formatTimestampText(timestampBuffer, event.timestamp);
             assignField(fields, "timestamp", timestampText);
@@ -214,12 +213,10 @@ namespace AsynGyanis::Base
             // Release 里没有这三个键；复用的对象也不会有（同一进程内 #ifdef 的形态是常量）
 #endif
 
-            // 上下文：顶层键，与原有字段并列。键名按名字重建、同名键只更新取值；
-            // 上一行有而本行没有的键才摘除。撞上框架字段或已分配的上下文键都继续加 `ctx.` 前缀，
-            // 上下文既不能改写日志骨架，也不能因为加前缀与另一条上下文落到同一个 JSON 键上
+            // 上下文：顶层键，与原有字段并列。键名按名字重建、同名键只更新取值；上一行有而本行没有的键才摘除。
+            // 撞上框架字段或已分配的上下文键都继续加 `ctx.` 前缀，上下文既不能改写日志骨架，也不能与另一条上下文落到同一个键上
             ContextKeyScratch &scratch      = contextKeyScratch();
             std::size_t        currentCount = 0U;
-
             // 优先读事件自带的快照：异步 Sink 的工作线程上 TLS 是空的，读它会丢掉日志点的上下文
             const LogContextPtr &context = event.context ? event.context : currentLogContext();
             try

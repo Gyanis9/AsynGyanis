@@ -2069,6 +2069,36 @@ namespace AsynGyanis::Base
                     return ConfigValue(std::string(text));
             }
         }
+
+        /// 一条待应用的环境变量覆盖：原始变量名（报错点名）、折出的配置键与环境变量原文
+        struct EnvironmentOverrideCandidate
+        {
+            std::string variableName;
+            std::string key;
+            std::string value;
+        };
+
+        /**
+         * @brief 扫出带前缀的环境变量并折成候选键；名字映射不出键的逐条报错后跳过
+         * @param prefix 环境变量前缀
+         * @return std::vector<EnvironmentOverrideCandidate> 按环境枚举顺序排列的候选
+         */
+        [[nodiscard]] std::vector<EnvironmentOverrideCandidate> collectEnvironmentOverrideCandidates(const std::string &prefix)
+        {
+            std::vector<EnvironmentOverrideCandidate> candidates;
+            for (const auto &[variableName, rawValue]: Platform::ProcessInfo::environmentVariablesWithPrefix(prefix))
+            {
+                const std::optional<std::string> key = configKeyFromEnvironmentSuffix(std::string_view(variableName).substr(prefix.size()));
+                if (!key.has_value())
+                {
+                    // 名字畸形的那条直接出声：调用方以为自己在覆盖一个键，实际上什么都没发生
+                    LOG_ERROR_FMT("ConfigManager：环境变量 '{}' 的名字映射不出合法配置键（'__' 是层级分隔符，不能出现在开头或结尾），本条覆盖被忽略", variableName);
+                    continue;
+                }
+                candidates.push_back({variableName, *key, rawValue});
+            }
+            return candidates;
+        }
     } // namespace
 
     void ConfigManager::setEnvironmentOverridePrefix(std::string prefix)
@@ -2112,25 +2142,7 @@ namespace AsynGyanis::Base
             schema = m_schema;
         }
 
-        struct Candidate
-        {
-            std::string variableName; ///< 原始环境变量名，报错时要点名
-            std::string key;          ///< 折出来的配置键
-            std::string value;        ///< 环境变量原文
-        };
-
-        std::vector<Candidate> candidates;
-        for (const auto &[variableName, rawValue]: Platform::ProcessInfo::environmentVariablesWithPrefix(prefix))
-        {
-            const std::optional<std::string> key = configKeyFromEnvironmentSuffix(std::string_view(variableName).substr(prefix.size()));
-            if (!key.has_value())
-            {
-                // 名字畸形的那条直接出声：调用方以为自己在覆盖一个键，实际上什么都没发生
-                LOG_ERROR_FMT("ConfigManager：环境变量 '{}' 的名字映射不出合法配置键（'__' 是层级分隔符，不能出现在开头或结尾），本条覆盖被忽略", variableName);
-                continue;
-            }
-            candidates.push_back({variableName, *key, rawValue});
-        }
+        const std::vector<EnvironmentOverrideCandidate> candidates = collectEnvironmentOverrideCandidates(prefix);
         if (candidates.empty())
         {
             return 0;

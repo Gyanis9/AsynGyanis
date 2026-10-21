@@ -390,9 +390,9 @@ namespace AsynGyanis::Base
     {
         if (!sinkConfiguration.is_object())
         {
-            // 本文件的口径是「容错必须可见」：少写一个 '-'（`- type: file` 变成 `- console`，或整条
-            // 被写成标量）时这个 sink 就是不成立了，但一声不吭地跳过后，运维看到的是一份
-            // 「配置里有两条 sink、实际只挂上一条」的现场——与其余拒绝路径同样报出形态与原因
+            // 本文件的口径是「容错必须可见」：少写一个 '-'（`- type: file` 变成 `- console`，或整条被写成标量）时
+            // 这个 sink 就不成立了，但一声不吭地跳过后，运维看到的是一份「配置里有两条 sink、实际只挂上一条」的现场——
+            // 与其余拒绝路径同样报出形态与原因
             std::cerr << "LoggerConfig：sink 配置不是对象（实际是 " << typeName(sinkConfiguration.type()) << "），已跳过该 sink；每条 sink 要写成 '- type: ...' 加它的字段" << '\n';
             return nullptr;
         }
@@ -404,11 +404,9 @@ namespace AsynGyanis::Base
         {
             return nullptr;
         }
-        const std::string &type = *typeOptional;
-
+        const std::string       &type = *typeOptional;
         std::unique_ptr<LogSink> sink;
-        // 下面 formatter 那条要区分「控制台」：它的彩色与否有一条终端能力兜底，
-        // 必须走 setColorEnabled 而不是直接换格式化器。非控制台保持空指针
+        // 下面 formatter 那条要区分「控制台」：彩色与否有终端能力兜底，必须走 setColorEnabled 而不是换格式化器；非控制台保持空指针
         ConsoleSink *consoleSink = nullptr;
 
         if (type == "console")
