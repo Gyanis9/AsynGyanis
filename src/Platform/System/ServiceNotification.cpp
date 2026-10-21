@@ -88,6 +88,15 @@ namespace AsynGyanis::Platform
         return state;
     }
 
+    bool ServiceNotification::supportsWatchdog() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return false;
+#else
+        return true;
+#endif
+    }
+
     std::expected<WatchdogConfiguration, std::string> ServiceNotification::readWatchdogConfiguration() noexcept
     {
 #if ASYN_PLATFORM_WIN32

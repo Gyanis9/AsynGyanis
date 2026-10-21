@@ -5,6 +5,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
 #include "Platform/System/PlatformError.h"
+#include "Platform/System/ServiceNotification.h"
 
 #include <format>
 
@@ -29,10 +30,11 @@ namespace AsynGyanis::Core
 
     bool WorkerHeartbeat::arm()
     {
-#if ASYN_PLATFORM_WIN32
-        m_lastError = "Windows 没有 systemd 看门狗这条通道，worker 心跳不启用";
-        return false;
-#else
+        if (!Platform::ServiceNotification::supportsWatchdog())
+        {
+            m_lastError = "当前平台没有 systemd 看门狗这条通道，worker 心跳不启用";
+            return false;
+        }
         if (m_ticker.isArmed())
         {
             return true;
@@ -54,12 +56,10 @@ namespace AsynGyanis::Core
         LOG_INFO_FMT("WorkerHeartbeat: worker 心跳已挂上：每 {} 毫秒由 {} 条循环凑齐一轮写一拍（写端 fd {}）", m_pingInterval.count(), m_ticker.armedLoopCount(),
                      m_writeDescriptor);
         return true;
-#endif
     }
 
     void WorkerHeartbeat::writePing()
     {
-#if !ASYN_PLATFORM_WIN32
         // 计数在写之前落：这条读数要回答的是「本进程交出过几拍」，写失败也一样已经交出
         // （失败原因在下面那条一次性 WARN 里，不在这里）
         m_pingCount.fetch_add(1, std::memory_order_relaxed);
@@ -80,9 +80,6 @@ namespace AsynGyanis::Core
                          "本 worker 的收场交给父进程机制",
                          m_writeDescriptor, errorCode);
         }
-#else
-        static_cast<void>(kHeartbeatByte);
-#endif
     }
 
     bool WorkerHeartbeat::isArmed() const noexcept

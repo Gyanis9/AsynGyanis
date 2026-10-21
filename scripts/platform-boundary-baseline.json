@@ -11,18 +11,6 @@
   ],
   "violations": [
     {
-      "path": "src/Core/Process/WorkerHeartbeat.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Process/WorkerSupervisor.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 9
-    },
-    {
       "path": "src/Core/Socket/AsyncSocket.cpp",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",

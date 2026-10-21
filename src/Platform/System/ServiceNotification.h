@@ -71,6 +71,13 @@ namespace AsynGyanis::Platform
         static constexpr std::string_view kWatchdogPingState = "WATCHDOG=1";
 
         /**
+         * @brief 本平台是否有 systemd 看门狗通道
+         * @return true 有（POSIX：读 `$WATCHDOG_USEC` 并按 `WATCHDOG=1` 发节拍）
+         * @return false 本平台没有这套约定（Windows），调用方按能力关闭这条路径而不是报错
+         */
+        [[nodiscard]] static bool supportsWatchdog() noexcept;
+
+        /**
          * @brief 读监督者给出的看门狗窗口，并折成该发节拍的间隔
          * @details 判据按 sd_watchdog_enabled(3)：`$WATCHDOG_USEC` 存在且
          *          `$WATCHDOG_PID` 未设置或等于本进程才算启用；节拍取窗口的二分之一（那份文档写明

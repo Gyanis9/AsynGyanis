@@ -243,6 +243,16 @@ namespace AsynGyanis::Platform
         static bool setReusePort(int descriptor) noexcept;
 
         /**
+         * @brief 多进程共享同一监听端口时，是否必须由 master 移交监听套接字
+         * @details SO_REUSEPORT 存在时（Linux）各 worker 可自行 bind 同一端口并分摊连接；
+         *          没有等价物时（Windows）多个进程各自 bind 会让内核把连接全交给最后一个，
+         *          必须先 bind 一次再把监听引用逐个交给 worker。
+         * @return true 需要移交（Windows）
+         * @return false 可由各 worker 自行 bind（Linux）
+         */
+        [[nodiscard]] static bool requiresListenerHandoff() noexcept;
+
+        /**
          * @brief 关闭 Nagle 算法（TCP_NODELAY）
          * @details 低延迟协议（HTTP 小响应、RPC）必须关闭合批，否则小包会被攒到 ACK 才发出。
          * @param descriptor 目标套接字描述符

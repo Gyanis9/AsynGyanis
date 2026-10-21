@@ -266,6 +266,15 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    bool Socket::requiresListenerHandoff() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return true;
+#else
+        return false;
+#endif
+    }
+
     bool Socket::setNoDelay(const int descriptor) noexcept
     {
         return setIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, 1);

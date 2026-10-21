@@ -6,6 +6,7 @@
 #include "Core/Process/SignalObserverInstall.h"
 #include "Core/Process/UpgradeChannel.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 #include "Platform/System/Pipe.h"
 #include "Platform/System/PlatformError.h"
@@ -80,37 +81,36 @@ namespace AsynGyanis::Core
                                        "「起来就崩」，取 0 或负数会让这条判定永不成立，秒退的 worker 会被满速重启且永不放弃）；"
                                        "crashLoopLimit 至少为 1（连续崩这么多次就停止补那个 worker）");
         }
-#if ASYN_PLATFORM_WIN32
-        // Windows 上没有 SO_REUSEPORT 的等价物：多个进程各自 bind 同一端口时内核把全部连接交给
-        // 最后绑上的那一个，前面的进程一个错都不报却永远收不到连接——那是「起了 N 个进程、只有 1 个
-        // 在干活」的假成功。因此这边只认移交模式：master bind 一次，本类把那份监听引用逐个复制过去
-        if (!m_configuration.handoff)
+        if (Platform::Socket::requiresListenerHandoff())
         {
-            throw Base::LogicException("Windows 上多进程必须走监听套接字移交：那边没有 SO_REUSEPORT 的等价物，多个进程各自绑同一端口时"
-                                       "内核把全部连接交给最后绑上的那一个，请把 master 已经 bind + listen 的描述符填进 "
-                                       "Configuration::handoff（listeningDescriptor）。只想跑单进程时把 workers 设为 1"
-                                       "（单进程 + 多工作循环 + 接受分发），不要构造本类");
-        }
-        if (m_configuration.handoff->listeningDescriptor < 0)
+            // 没有 SO_REUSEPORT 的等价物：多个进程各自 bind 同一端口时内核把全部连接交给最后绑上的
+            // 那一个，前面的进程一个错都不报却永远收不到连接——那是「起了 N 个进程、只有 1 个在
+            // 干活」的假成功。因此只认移交模式：master bind 一次，本类把监听引用逐个复制过去
+            if (!m_configuration.handoff)
+            {
+                throw Base::LogicException("当前平台没有 SO_REUSEPORT 的等价物，多进程必须走监听套接字移交：多个进程各自绑同一端口时"
+                                           "内核把全部连接交给最后绑上的那一个，请把 master 已经 bind + listen 的描述符填进 "
+                                           "Configuration::handoff（listeningDescriptor）。只想跑单进程时把 workers 设为 1"
+                                           "（单进程 + 多工作循环 + 接受分发），不要构造本类");
+            }
+            if (m_configuration.handoff->listeningDescriptor < 0)
+            {
+                throw Base::LogicException("多进程的移交配置不合格：handoff.listeningDescriptor 是 " + std::to_string(m_configuration.handoff->listeningDescriptor) +
+                                           "，不是一个已 bind + listen 的套接字描述符");
+            }
+            // 预算非正时「等不到对端」这件事就没有期限：一次 accept 的无限阻塞会把整池的补位与收尾冻住
+            if (m_configuration.handoff->waitBudget <= std::chrono::milliseconds::zero())
+            {
+                throw Base::LogicException("多进程的移交预算必须大于 0：handoff.waitBudget 是 " + std::to_string(m_configuration.handoff->waitBudget.count()) +
+                                           " 毫秒，非正数意味着等 worker 连上通道没有期限");
+            }
+        } else if (m_configuration.handoff)
         {
-            throw Base::LogicException("Windows 上多进程的移交配置不合格：handoff.listeningDescriptor 是 " + std::to_string(m_configuration.handoff->listeningDescriptor) +
-                                       "，不是一个已 bind + listen 的套接字描述符");
+            // 每个 worker 自己 bind 同一个端口时，移交那套没有使用方：填了它就是一条「填了却不生效」
+            // 的路，当场拒而不是静默忽略
+            throw Base::LogicException("当前平台每个 worker 都自己 bind 同一端口（SO_REUSEPORT 分摊），不需要移交配置。"
+                                       "请把 Configuration::handoff 留空；要跨进程共享一份监听套接字是另一条平台形状");
         }
-        // 预算非正时「等不到对端」这件事就没有期限：一次 accept 的无限阻塞会把整池的补位与收尾冻住
-        if (m_configuration.handoff->waitBudget <= std::chrono::milliseconds::zero())
-        {
-            throw Base::LogicException("Windows 上多进程的移交预算必须大于 0：handoff.waitBudget 是 " + std::to_string(m_configuration.handoff->waitBudget.count()) +
-                                       " 毫秒，非正数意味着等 worker 连上通道没有期限");
-        }
-#else
-        // POSIX 上每个 worker 自己 bind 同一个端口（SO_REUSEPORT 由内核分摊），移交那套在本平台
-        // 没有使用方：填了它就是一条「填了却不生效」的路，当场拒而不是静默忽略
-        if (m_configuration.handoff)
-        {
-            throw Base::LogicException("POSIX 上不需要移交配置：这里的每个 worker 都自己 bind 同一个端口（SO_REUSEPORT 分摊）。"
-                                       "请把 Configuration::handoff 留空；要跨进程共享一份监听套接字是 Windows 那条形状");
-        }
-#endif
         m_workers.resize(m_configuration.workerCount);
 
         m_metricHandles = {
@@ -262,8 +262,7 @@ namespace AsynGyanis::Core
 
     std::chrono::milliseconds WorkerSupervisor::enableWatchdogFeeding()
     {
-#if !ASYN_PLATFORM_WIN32
-        if (m_configuration.watchdogNotification != nullptr)
+        if (m_configuration.watchdogNotification != nullptr && Platform::ServiceNotification::supportsWatchdog())
         {
             const auto watchdogWindow = Platform::ServiceNotification::readWatchdogConfiguration();
             if (watchdogWindow.has_value())
@@ -278,7 +277,6 @@ namespace AsynGyanis::Core
                 LOG_INFO_FMT("多进程模式未启用看门狗汇聚：{}（这不是错误——没配 WatchdogSec= 时本就没有要喂的超时）", watchdogWindow.error());
             }
         }
-#endif
         // 轮询粒度：喂点判定的分辨率必须细于节拍的一半，否则「到点」会被睡眠粒度量成「晚点」。
         // 没启用时保持调用方给的 pollInterval
         return m_isWatchdogFeedingEnabled ? std::min(m_configuration.pollInterval, std::max(m_watchdogPingInterval / 2, std::chrono::milliseconds{1}))
@@ -322,7 +320,6 @@ namespace AsynGyanis::Core
 
     bool WorkerSupervisor::attachWatchdogPipe(Worker &worker, const std::size_t workerIndex, Platform::Process::LaunchOptions &launchOptions)
     {
-#if !ASYN_PLATFORM_WIN32
         if (!m_isWatchdogFeedingEnabled)
         {
             return true;
@@ -351,17 +348,11 @@ namespace AsynGyanis::Core
         launchOptions.arguments.push_back(std::to_string(m_pendingWatchdogWriteFd));
         launchOptions.arguments.push_back(std::string{kWatchdogPingArgument});
         launchOptions.arguments.push_back(std::to_string(m_watchdogPingInterval.count()));
-#else
-        static_cast<void>(worker);
-        static_cast<void>(workerIndex);
-        static_cast<void>(launchOptions);
-#endif
         return true;
     }
 
     void WorkerSupervisor::pollWorkerHeartbeats(const std::chrono::steady_clock::time_point now) noexcept
     {
-#if !ASYN_PLATFORM_WIN32
         if (!m_isWatchdogFeedingEnabled)
         {
             return;
@@ -381,9 +372,6 @@ namespace AsynGyanis::Core
                 worker.lastHeartbeatAt = now;
             }
         }
-#else
-        static_cast<void>(now);
-#endif
     }
 
     bool WorkerSupervisor::isEligibleToFeed(const bool enabled, const bool readinessAnnounced, const bool stopRequested) noexcept
@@ -443,7 +431,6 @@ namespace AsynGyanis::Core
 
     void WorkerSupervisor::closeWorkerHeartbeatPipe(Worker &worker) noexcept
     {
-#if !ASYN_PLATFORM_WIN32
         if (worker.heartbeatReadFd >= 0)
         {
             static_cast<void>(Platform::FileDescriptor::close(worker.heartbeatReadFd));
@@ -456,9 +443,6 @@ namespace AsynGyanis::Core
             static_cast<void>(Platform::FileDescriptor::close(m_pendingWatchdogWriteFd));
             m_pendingWatchdogWriteFd = -1;
         }
-#else
-        static_cast<void>(worker);
-#endif
     }
 
     void WorkerSupervisor::launchMissingAndReapExited()
@@ -574,18 +558,6 @@ namespace AsynGyanis::Core
     {
         Platform::Process::LaunchOptions launchOptions = buildLaunchOptions(workerIndex);
 
-#if ASYN_PLATFORM_WIN32
-        // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
-        // 进程号复制一份监听引用过去。每次（重）起都开一条新的，因为一条通道只交给一个对端
-        auto handoffChannel = UpgradeChannel::open();
-        if (!handoffChannel)
-        {
-            noteFailedStart(worker, workerIndex, "开不出交接通道：" + handoffChannel.error().message);
-            return false;
-        }
-        launchOptions.arguments.push_back(std::string{kHandedOverListenerArgument});
-        launchOptions.arguments.push_back(handoffChannel->address());
-
         // 起来了却拿不到监听引用的进程不会服务任何连接：收掉它、把这个槽位按一次「起来就崩」记上。
         // 留着它等于占着一个名额却谁也不接，收尾时还要多等一轮
         const auto retireWithoutListener = [&](const std::string &failureReason)
@@ -602,15 +574,28 @@ namespace AsynGyanis::Core
             noteFailedStart(worker, workerIndex, failureReason);
             return false;
         };
-#endif
 
-#if !ASYN_PLATFORM_WIN32
+        std::optional<UpgradeChannel> handoffChannel;
+        if (Platform::Socket::requiresListenerHandoff())
+        {
+            // 移交模式：通道要先开好——对方进程靠参数里那个地址连回来，而它连回来之后才谈得上按它的
+            // 进程号复制一份监听引用过去。每次（重）起都开一条新的，因为一条通道只交给一个对端
+            auto openedChannel = UpgradeChannel::open();
+            if (!openedChannel)
+            {
+                noteFailedStart(worker, workerIndex, "开不出交接通道：" + openedChannel.error().message);
+                return false;
+            }
+            handoffChannel.emplace(std::move(*openedChannel));
+            launchOptions.arguments.push_back(std::string{kHandedOverListenerArgument});
+            launchOptions.arguments.push_back(handoffChannel->address());
+        }
+
         // 心跳管道（细节见 attachWatchdogPipe）：没启用看门狗时它什么都不做
         if (!attachWatchdogPipe(worker, workerIndex, launchOptions))
         {
             return false;
         }
-#endif
 
         worker.handle    = Platform::Process::spawn(launchOptions);
         worker.startTime = std::chrono::steady_clock::now();
@@ -622,14 +607,12 @@ namespace AsynGyanis::Core
             return false;
         }
 
-#if !ASYN_PLATFORM_WIN32
         if (m_pendingWatchdogWriteFd >= 0)
         {
             // master 侧不留写端副本：留着的副本会让「worker 是不是还在写」这件事永远为真
             static_cast<void>(Platform::FileDescriptor::close(m_pendingWatchdogWriteFd));
             m_pendingWatchdogWriteFd = -1;
         }
-#endif
 
         LOG_INFO_FMT("WorkerSupervisor: worker {} 已启动，进程号 {}", workerIndex, worker.handle.processId());
 
@@ -643,22 +626,23 @@ namespace AsynGyanis::Core
                      "「master 被硬杀时 worker 一并退出」这条保护不可用；worker 会留着占住端口，收口只能交给进程管理器");
         }
 
-#if ASYN_PLATFORM_WIN32
-        const std::chrono::milliseconds handoffBudget = m_configuration.handoff->waitBudget;
-        const auto                      peer          = handoffChannel->waitForPeer(handoffBudget);
-        if (!peer)
+        if (handoffChannel.has_value())
         {
-            return retireWithoutListener("等 worker 连上交接通道：" + peer.error().message);
+            const std::chrono::milliseconds handoffBudget = m_configuration.handoff->waitBudget;
+            const auto                      peer          = handoffChannel->waitForPeer(handoffBudget);
+            if (!peer)
+            {
+                return retireWithoutListener("等 worker 连上交接通道：" + peer.error().message);
+            }
+            const auto isHandedOver = handoffChannel->handOffListener(*peer, m_configuration.handoff->listeningDescriptor, static_cast<std::uint64_t>(worker.handle.processId()));
+            // 通道交完就没用了：本函数不关它由调用方收，这里显式收口，别留一条还能连的通道
+            static_cast<void>(Platform::FileDescriptor::close(*peer));
+            if (!isHandedOver)
+            {
+                return retireWithoutListener("交出监听套接字：" + isHandedOver.error().message);
+            }
+            LOG_INFO_FMT("WorkerSupervisor: worker {} 已接手监听套接字（进程号 {}）", workerIndex, worker.handle.processId());
         }
-        const auto isHandedOver = handoffChannel->handOffListener(*peer, m_configuration.handoff->listeningDescriptor, static_cast<std::uint64_t>(worker.handle.processId()));
-        // 通道交完就没用了：本函数不关它由调用方收，这里显式收口，别留一条还能连的通道
-        static_cast<void>(Platform::FileDescriptor::close(*peer));
-        if (!isHandedOver)
-        {
-            return retireWithoutListener("交出监听套接字：" + isHandedOver.error().message);
-        }
-        LOG_INFO_FMT("WorkerSupervisor: worker {} 已接手监听套接字（进程号 {}）", workerIndex, worker.handle.processId());
-#endif
 
         return true;
     }
