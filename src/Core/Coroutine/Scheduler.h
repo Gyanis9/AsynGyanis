@@ -139,13 +139,26 @@ namespace AsynGyanis::Core
          *          它必须在目标循环的线程上创建对象并挂进那边的在途表，语义与 scheduleRemote() 一致。
          * @param callable 待执行的可调用对象；空对象（未绑定任何函数）会被忽略
          * @note 可调用对象抛出的异常不会传到投递方，也不会穿出目标循环：它在所属循环的派发级
-         *       守卫里被就地收下（计入 failedDispatchCount()，首条告警）。此前这里是「异常向目标循环
-         *       传播」，而那条传播链的终点是线程入口——一条坏投递会带走整条循环和它上面的全部连接。
+         *       守卫里被就地收下（计入 failedDispatchCount()，首条告警）。若让异常向目标循环传播，
+         *       那条链的终点是线程入口——一条坏投递会带走整条循环和它上面的全部连接。
          * @note 目标循环若在轮到它之前就退出，队列里尚未执行的对象会被丢弃——持有系统资源的投递方应包在 RAII 句柄里
          * @note 队列已达 kMaximumRemoteBacklog 时本次投递被拒（与 scheduleRemote() 同一条上限、
-         *       同一笔计数）：可调用体随拒绝在本函数返回时释放，捕获的 RAII 句柄按自己的语义收尾
+         *       同一笔计数）：可调用体随拒绝在本函数返回时释放，捕获的 RAII 句柄按自己的语义收尾。
+         *       需要区分「已入队」与「被饱和拒绝」时用 tryPostRemote()
          */
         void postRemote(std::function<void()> callable);
+
+        /**
+         * @brief 跨线程投递一段普通代码，并回报队列是否收下
+         * @details 与 postRemote() 走同一条路径、同一道上限；区别只在返回值。需要知道
+         *          「这条投递有没有排上」的调用方（例如收尾握手的等待方）用本口，
+         *          拿 false 就立即放行，而不是等满一个永远等不到的时限
+         * @param callable 待执行的可调用对象；空对象视为无事可做，返回 true
+         * @return true 已入队（或本来就没有要投的东西）
+         * @return false 队列已达 kMaximumRemoteBacklog，本次被拒、可调用体已随返回释放
+         * @note 线程安全；饱和拒绝计数与首条告警的口径与 postRemote() 相同
+         */
+        [[nodiscard]] bool tryPostRemote(std::function<void()> callable);
 
         /**
          * @brief 执行一个就绪协程
@@ -158,7 +171,7 @@ namespace AsynGyanis::Core
          * @brief 执行所有就绪协程：本地与跨线程队列每趟合计最多取 kMaximumItemsPerPass 件就返回
          * @note 返回时若还有剩余，hasWork() 仍为真，调用方下一趟接着取（不会丢也不会误判空闲）
          * @note 每一批全部跑完，单条抛出既不丢掉同批其余、也不向调用方传播：计入
-         *       failedDispatchCount() 并在首条告警。早先是「跑完整批再把首个异常重抛」，
+         *       failedDispatchCount() 并在首条告警。若跑完整批再把首个异常重抛，
          *       而 runAll() 的调用点是事件循环的泵——那等于让一条坏投递停掉整条循环
          */
         void runAll();
@@ -186,8 +199,8 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 被派发级守卫就地收下的抛出条数（协程恢复与投递的可调用对象合并计数）
-         * @details 这是一条「循环还活着、但有人在里面抛」的判据：此前抛出会沿传播链停掉整条循环，
-         *          于是「一条坏投递」与「整个 worker 不再服务」之间没有任何可观测的中间态。
+         * @details 这是一条「循环还活着、但有人在里面抛」的判据：异常若沿传播链停掉整条循环，
+         *          那么「一条坏投递」与「整个 worker 不再服务」之间就没有任何可观测的中间态。
          *          与 remotePendingCount() 同理，本函数只读原子计数，因此任意线程可调。
          * @return std::size_t 累计条数
          */

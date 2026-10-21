@@ -35,13 +35,13 @@ namespace AsynGyanis::Platform
         Deleted,     ///< 文件被删除
         Moved,       ///< 文件被移动或重命名（源路径）
         NeedsRescan, ///< 事件队列/缓冲区溢出，本监视周期内有事件被内核丢弃且不知丢了哪些：
-                     ///< 附带的路径是被监视的目录而不是文件，消费方要据此重新扫描该目录，
+                     ///< 附带的路径是被监视的路径（目录或文件）而不是某个具体变更，消费方要据此重新扫描该路径，
                      ///< 不能按「某个文件变了」去理解（新成员只能追加在末尾，取值会被序列化）
     };
 
     /**
      * @brief 文件变更回调函数类型
-     * @param filePath 发生变更的文件绝对路径；changeType 为 NeedsRescan 时是被监视的目录路径
+     * @param filePath 发生变更的文件绝对路径；changeType 为 NeedsRescan 时是被监视的路径（目录或文件）
      * @param changeType 变更事件类型
      * @note 路径文本一律是 UTF-8（与 addWatch 收的那份同一刻度），拿它去比对配置里的路径才是对得上的
      * @note 回调在监听线程上执行，实现方不得在回调内阻塞过久或直接销毁监听器
@@ -152,8 +152,8 @@ namespace AsynGyanis::Platform
 
         /**
          * @brief 判断某路径的本次变更是否应当派发
-         * @details 实现「同一路径在防抖窗口内只触发一次」的公共语义，并在防抖表
-         *          表规模有上限，超出时按「最久没再触发」挤掉旧记录，避免递归监听大目录树时无界增长。
+         * @details 实现「同一路径在防抖窗口内只触发一次」的公共语义，并在防抖表规模有上限时
+         *          按「最久未触发」淘汰旧记录，避免递归监听大目录树时无界增长。
          * @param filePath 发生变更的文件绝对路径
          * @return true 需要派发回调
          * @return false 仍在防抖窗口内，应当丢弃
@@ -168,7 +168,7 @@ namespace AsynGyanis::Platform
          *          而漏掉的那处不是「少一条日志」——监听线程是 jthread 的线程体，
          *          抛穿出去整个进程没。空回调按「未注册」处理，不算失败。
          * @param callback 待调用的回调快照（调用方在自己的锁里取好，本函数不再取锁）
-         * @param filePath 变更路径；changeType 为 NeedsRescan 时是被监视的目录
+         * @param filePath 变更路径；changeType 为 NeedsRescan 时是被监视的路径（目录或文件）
          * @param changeType 变更事件类型
          */
         void notifyChange(const FileChangeCallback &callback, std::string_view filePath, FileChangeType changeType) noexcept;

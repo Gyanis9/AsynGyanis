@@ -126,12 +126,25 @@ namespace AsynGyanis::Platform
         void watchLoop(std::stop_token stopToken);
 
         /**
-         * @brief 读取并解析当前可读的 inotify 事件批次
+         * @brief 读取当前可读的 inotify 事件批次，逐条交给 dispatchEvent
+         * @details 描述符是非阻塞的：队列读空后再读返回 EAGAIN，本轮排空到此为止；
+         *          读满一批则继续下一批，直到批数上界或队列读空。每批开头检查一次停止请求，
+         *          单批已读出的记录仍会派发完。
+         * @param stopToken 用于在批次之间响应停止请求
          */
-        void processEvents();
+        void processEvents(std::stop_token stopToken);
 
         /**
-         * @brief 事件队列溢出后的兜底：对每个受监视的目录各派发一次 NeedsRescan
+         * @brief 解析并派发一条 inotify 事件记录
+         * @details 由 processEvents() 逐条调用：IN_IGNORED 摘掉映射，IN_MOVE_SELF 先按旧路径
+         *          报一次 Moved 再摘映射，队列溢出转为逐条受监视路径的重扫通知，其余按监视目标分类。
+         *          回调在锁内取快照、在锁外触发，避免回调中操作监听器造成死锁。
+         * @param event 读取缓冲区内的那条记录，只在本次调用期间有效
+         */
+        void dispatchEvent(const inotify_event &event);
+
+        /**
+         * @brief 事件队列溢出后的兜底：对每条受监视的路径各派发一次 NeedsRescan
          * @details 内核丢事件时无法知道丢了哪些路径（IN_Q_OVERFLOW 不带路径），
          *          消费方需要一次重新扫描的信号；条数等于注册的监视数，有界
          */
@@ -140,7 +153,7 @@ namespace AsynGyanis::Platform
         /**
          * @brief 按秒节拍补挂「调用方要过、但内核已经不再监视」的那些路径
          * @details 三种失效都走同一扇门：监视的文件被替换或删除（IN_IGNORED）、被监视的目录本身
-         *          被移走（IN_MOVE_SELF 之后内核照样补 IN_IGNORED）、以及注册时路径还不存在。
+         *          被移走（IN_MOVE_SELF；内核不补 IN_IGNORED，映射由本端摘掉）、以及注册时路径还不存在。
          *          失效时 removeWatchMapping() 摘掉映射，之后没有别的人会再为这条路径调 addWatch
          *          ——不补挂，它内部的变更就永久丢失。补挂时按 m_recursiveRoots 里记过的值决定要不要
          *          递归，避免把一条本来只要一层的路径悄悄扩成整棵树
@@ -153,6 +166,14 @@ namespace AsynGyanis::Platform
          * @note 不清的话，重建出来的同名路径会因「路径已在表里」而挂不上监视，事件永久丢失
          */
         void removeWatchMapping(int watchDescriptor);
+
+        /**
+         * @brief 监视目标自身被移走时，按 Moved 派发一次旧路径
+         * @details IN_MOVE_SELF 不带名字，事件里的路径就是被监视的那条路径。映射随后由调用方摘掉；
+         *          这里先取回调快照再在锁外派发，避免回调中操作监听器造成死锁。
+         * @param watchDescriptor 内核给的监视描述符
+         */
+        void notifyWatchedPathMoved(int watchDescriptor);
 
         int                                  m_inotifyFileDescriptor{-1}; ///< inotify 文件描述符
         std::unordered_map<int, std::string> m_watchDescriptors;          ///< 监视描述符到监听路径的映射
@@ -171,9 +192,16 @@ namespace AsynGyanis::Platform
         std::jthread              m_watchThread;      ///< 事件读取线程，析构时自动 join
         std::atomic<bool>         m_isRunning{false}; ///< 监听线程是否正在运行
 
-        static constexpr std::size_t kEventBufferBytes = 4096; ///< 单次读取的事件缓冲区字节数
-        /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除/移出（删除），
-        /// 以及监视目标自身被删除或移动——监视单个文件时只会有最后一类事件，且不带名字
+        /// 单次读取的事件缓冲区字节数：4 KiB 只装得下几十到一百多条记录，突发时每轮 poll 都要重来一次；
+        /// 取 64 KiB 与 Windows 侧的目录通知缓冲同一量级，让常见突发一趟带走。缓冲区在监听线程
+        /// 的栈上，默认栈足够容纳
+        static constexpr std::size_t kEventBufferBytes = 64 * 1024;
+        /// 一次 poll 唤醒最多排空的批数：持续写入时给这一轮设上界，避免自愈复查与停止请求
+        /// 一直轮不到执行
+        static constexpr std::size_t kMaximumBatchesPerWakeup = 8;
+        /// 注册的事件掩码：写入完成（内容修改）、新建/移入（创建）、删除（删除）、移出（改名源路径），
+        /// 以及监视目标自身被删除或移动——监视单个文件时只会收到目标自身的事件（写入完成/删除/移动），
+        /// 且都不带名字
         static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF;
     };
 } // namespace AsynGyanis::Platform

@@ -1,6 +1,6 @@
 /**
  * @file AsyncSocket.h
- * @brief 异步非阻塞 TCP socket — 基于 epoll 边缘触发的协程式 I/O
+ * @brief 异步非阻塞 TCP socket — 水平触发 + 按需武装的协程式 I/O
  * @author Gyanis
  * @date 2026-09-11
  * @version 1.0.0

@@ -129,9 +129,9 @@ namespace AsynGyanis::Core
         }
 
         // 登记放在构造的最后一步：指针一发布，别的线程就能立刻读这一条循环的成员，
-        // 因此必须等所有成员都建好之后才交出去
-        // 登记放在构造的最后一步：指针一发布，别的线程就能立刻读这一条循环的成员，
-        // 因此必须等所有成员都建好之后才交出去
+        // 因此必须等所有成员都建好之后才交出去；槽位满时 attachObservation 只累加
+        // 未登记计数、不拦构造——观测面少一条记录，好过让一条能跑的循环建不起来
+        // （差额由 unregisteredEventLoopCount() 报出）
         attachObservation(*this);
     }
 
@@ -152,7 +152,7 @@ namespace AsynGyanis::Core
             stop();
 
         // 成员销毁顺序是 m_wakeup 早于 m_epoll，若不先摘除注册，唤醒 socket 会在仍属于
-        // epoll 集合时被 closesocket，wepoll 内部线程会继续访问这个失效句柄并破坏堆
+        // 事件后端时被关闭，后端仍可能持有它的在途操作并访问失效句柄
         m_epoll.delFileDescriptor(m_wakeup.readDescriptor());
     }
 

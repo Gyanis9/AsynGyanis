@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8853
+# headers=305 entries=8954
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -48,8 +48,13 @@ src/Base/Config/ConfigManager.h	[[nodiscard]] static std::expected<std::vector<s
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::filesystem::path configDirectory() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::optional<ConfigValue> getOptional(std::string_view key) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::size_t environmentOverrideCount() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::string environmentOverridePrefix() const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, const std::string &defaultValue) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, std::nullptr_t) const
+src/Base/Config/ConfigManager.h	[[nodiscard]] std::string get(std::string_view key, std::string &defaultValue) const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> keys() const
 src/Base/Config/ConfigManager.h	[[nodiscard]] std::vector<std::string> loadedFiles() const
 src/Base/Config/ConfigManager.h	bool configDirectoryRecursive = true
@@ -79,6 +84,7 @@ src/Base/Config/ConfigManager.h	std::size_t environmentOverrideCount = 0
 src/Base/Config/ConfigManager.h	std::string getString(std::string_view key, const std::string &defaultValue = "") const
 src/Base/Config/ConfigManager.h	std::string getText(std::string_view key, const std::string &defaultValue = "") const
 src/Base/Config/ConfigManager.h	std::unique_ptr<Platform::FileWatcher> m_fileWatcher
+src/Base/Config/ConfigManager.h	std::vector<std::string> environmentOverrideKeys
 src/Base/Config/ConfigManager.h	std::vector<std::string> loadedFiles
 src/Base/Config/ConfigManager.h	std::vector<std::string> validateRequired(const std::vector<std::string> &requiredKeys) const
 src/Base/Config/ConfigManager.h	std::vector<std::unique_ptr<ReloadTask>> m_reloadTasks
@@ -250,8 +256,10 @@ src/Base/Log/LogContext.h	std::map<std::string, std::string> m_fields
 src/Base/Log/LogContext.h	using LogContextPtr = std::shared_ptr<const LogContext>
 src/Base/Log/LogContext.h	~LogContextScope()
 src/Base/Log/LogEscaping.h	[[nodiscard]] inline std::string escapeForLog(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
+src/Base/Log/LogEscaping.h	inline void appendEscapedForLog(std::string &out, const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
 src/Base/Log/LogEscaping.h	namespace AsynGyanis::Base
 src/Base/Log/LogEvent.h	CapturedStackTrace stackTrace
+src/Base/Log/LogEvent.h	LogContextPtr context
 src/Base/Log/LogEvent.h	LogEvent() = default
 src/Base/Log/LogEvent.h	LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::shared_ptr<const std::string> threadIdSnapshot, const SourceLocation &sourceLocation, std::shared_ptr<const std::string> loggerNameSnapshot, std::string message) : level(logLevel), timestamp(timestampMoment), threadId(std::move(threadIdSnapshot)), location(sourceLocation), loggerName(std::move(loggerNameSnapshot)), message(std::move(message))
 src/Base/Log/LogEvent.h	LogEvent(const LogLevel logLevel, const TimestampMoment timestampMoment, std::string threadIdValue, const SourceLocation &sourceLocation, std::string loggerNameValue, std::string message) : level(logLevel), timestamp(timestampMoment), threadId(std::make_shared<const std::string>(std::move(threadIdValue))), location(sourceLocation), loggerName(std::make_shared<const std::string>(std::move(loggerNameValue))), message(std::move(message))
@@ -314,6 +322,7 @@ src/Base/Log/Logger.h	explicit Logger(std::string name)
 src/Base/Log/Logger.h	namespace AsynGyanis::Base
 src/Base/Log/Logger.h	std::atomic<LogLevel> m_level
 src/Base/Log/Logger.h	std::atomic<std::shared_ptr<const SinkSnapshot>> m_sinksSnapshot
+src/Base/Log/Logger.h	std::atomic<std::size_t> m_sinkCount
 src/Base/Log/Logger.h	std::mutex m_sinksWriteMutex
 src/Base/Log/Logger.h	std::shared_ptr<const std::string> m_name
 src/Base/Log/Logger.h	std::vector<std::shared_ptr<LogSink>> sinks
@@ -331,6 +340,7 @@ src/Base/Log/Logger.h	void setLevel(LogLevel level)
 src/Base/Log/Logger.h	void writeEvent(LogLevel level, std::string message, const SourceLocation &location, CapturedStackTrace stackTrace =
 src/Base/Log/Logger.h	void writeToSinks(LogEvent &event) const
 src/Base/Log/Logger.h	~Logger()
+src/Base/Log/LoggerConfigLoader.h	[[nodiscard]] static std::unique_ptr<LogSink> createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
 src/Base/Log/LoggerConfigLoader.h	class ASYN_BASE_API LoggerConfigLoader
 src/Base/Log/LoggerConfigLoader.h	namespace AsynGyanis::Base
 src/Base/Log/LoggerConfigLoader.h	static std::unique_ptr<LogSink> createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
@@ -435,9 +445,12 @@ src/Base/Log/Sinks/LogSink.h	[[nodiscard]] LogLevel getLevel() const
 src/Base/Log/Sinks/LogSink.h	[[nodiscard]] bool shouldLog(LogLevel level) const
 src/Base/Log/Sinks/LogSink.h	class ASYN_BASE_API LogSink
 src/Base/Log/Sinks/LogSink.h	namespace AsynGyanis::Base
+src/Base/Log/Sinks/LogSink.h	std::atomic<LogFormatter *> m_formatterPointer
 src/Base/Log/Sinks/LogSink.h	std::atomic<LogLevel> m_level
 src/Base/Log/Sinks/LogSink.h	std::atomic<std::shared_ptr<LogFormatter>> m_formatter
+src/Base/Log/Sinks/LogSink.h	std::mutex m_formatterWriteMutex
 src/Base/Log/Sinks/LogSink.h	std::string formatEvent(const LogEvent &event) const
+src/Base/Log/Sinks/LogSink.h	std::vector<std::shared_ptr<LogFormatter>> m_retiredFormatters
 src/Base/Log/Sinks/LogSink.h	virtual void flush() = 0
 src/Base/Log/Sinks/LogSink.h	virtual void write(LogEvent &&event)
 src/Base/Log/Sinks/LogSink.h	virtual void write(const LogEvent &event) = 0
@@ -637,6 +650,7 @@ src/Core/Coroutine/Scheduler.h	EventLoop *m_ownerLoop
 src/Core/Coroutine/Scheduler.h	Platform::EventNotifier *m_wakeup
 src/Core/Coroutine/Scheduler.h	Scheduler() = default
 src/Core/Coroutine/Scheduler.h	[[nodiscard]] bool hasWork() const
+src/Core/Coroutine/Scheduler.h	[[nodiscard]] bool tryPostRemote(std::function<void()> callable)
 src/Core/Coroutine/Scheduler.h	[[nodiscard]] size_t localQueueSize() const
 src/Core/Coroutine/Scheduler.h	[[nodiscard]] std::size_t failedDispatchCount() const noexcept
 src/Core/Coroutine/Scheduler.h	[[nodiscard]] std::size_t remotePendingCount() const noexcept
@@ -6440,46 +6454,130 @@ src/Net/Logging/OtlpLogJson.h	std::string threadId
 src/Net/Logging/OtlpLogJson.h	std::vector<std::pair<std::string, std::string>> attributes
 src/Net/Logging/OtlpLogJson.h	struct ASYN_NET_API OtlpLogRecord
 src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
+src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
+src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
+src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
+src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
 src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
 src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
+src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
+src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
+src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
+src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
 src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
+src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
+src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
+src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
 src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
+src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
+src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
+src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
+src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
+src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
+src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
 src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
 src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
+src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
+src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
+src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
+src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
 src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
 src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
+src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
+src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
+src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
+src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
+src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
+src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
 src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
 src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
+src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
+src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
+src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
+src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
 src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
 src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
+src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
+src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
+src/Net/Logging/OtlpLogSink.h	std::string endpoint
+src/Net/Logging/OtlpLogSink.h	std::string endpoint
 src/Net/Logging/OtlpLogSink.h	std::string endpoint
 src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
+src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
+src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
+src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
+src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
 src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
 src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
+src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
+src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
+src/Net/Logging/OtlpLogSink.h	struct Configuration
+src/Net/Logging/OtlpLogSink.h	struct Configuration
 src/Net/Logging/OtlpLogSink.h	struct Configuration
 src/Net/Logging/OtlpLogSink.h	void flush() override
+src/Net/Logging/OtlpLogSink.h	void flush() override
+src/Net/Logging/OtlpLogSink.h	void flush() override
+src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
+src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	void runLoopThread()
+src/Net/Logging/OtlpLogSink.h	void runLoopThread()
+src/Net/Logging/OtlpLogSink.h	void runLoopThread()
+src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
+src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
 src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
 src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
+src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
+src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
+src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
+src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
 src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
 src/Net/Metrics/HttpStatsOtlp.h	[[nodiscard]] ASYN_NET_API OtlpMetricsBatch buildOtlpMetricsFromHttpStats(const HttpServerStats &stats, std::string_view metricNamePrefix)
 src/Net/Metrics/HttpStatsOtlp.h	namespace AsynGyanis::Net
@@ -8514,7 +8612,8 @@ src/Platform/FileSystem/InotifyFileWatcher.h	int m_inotifyFileDescriptor
 src/Platform/FileSystem/InotifyFileWatcher.h	mutable std::shared_mutex m_watchMutex
 src/Platform/FileSystem/InotifyFileWatcher.h	namespace AsynGyanis::Platform
 src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::chrono::seconds kRearmInterval
-src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kEventBufferBytes = 4096
+src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kEventBufferBytes = 64 * 1024
+src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kMaximumBatchesPerWakeup = 8
 src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF
 src/Platform/FileSystem/InotifyFileWatcher.h	std::atomic<bool> m_isRunning
 src/Platform/FileSystem/InotifyFileWatcher.h	std::chrono::steady_clock::time_point m_rearmDeadline
@@ -8523,8 +8622,10 @@ src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_map<int, std::string
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_map<std::string, int> m_pathToWatchDescriptor
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_recursiveRoots
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_selfHealPaths
+src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchEvent(const inotify_event &event)
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchOverflowRescan()
-src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents()
+src/Platform/FileSystem/InotifyFileWatcher.h	void notifyWatchedPathMoved(int watchDescriptor)
+src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents(std::stop_token stopToken)
 src/Platform/FileSystem/InotifyFileWatcher.h	void rearmMissingWatchesIfDue()
 src/Platform/FileSystem/InotifyFileWatcher.h	void removeWatchMapping(int watchDescriptor)
 src/Platform/FileSystem/InotifyFileWatcher.h	void setCallback(FileChangeCallback callback) override

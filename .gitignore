@@ -39,3 +39,6 @@ assets/diagrams/*.finalize-summary.json
 # 密钥向量（RFC 6750 的 access_token、RFC 9001 附录 A 的密钥、RFC 7519 的 JWT 样例），
 # 留在树里就给密钥扫描凭空加了一片面。只跟踪 docs/RFC/规范说明.md
 /docs/RFC/*.txt
+
+# superpowers 的计划、进度与复核 diff 是本机会话产物：固定落在 docs 下，但不进仓库
+/docs/.superpowers/

@@ -6,8 +6,8 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 两条导出出口（`/metrics` 的 Prometheus 文本、`OtlpHttpMetricsExporter` 的 OTLP JSON）此前
- *          各自把同一个形状写了一遍：标签键值、直方图的档位换算（毫秒上界与微秒和都换成秒）、
+ * @details 两条导出出口（`/metrics` 的 Prometheus 文本、`OtlpHttpMetricsExporter` 的 OTLP JSON）若
+ *          各自把同一个形状写一遍：标签键值、直方图的档位换算（毫秒上界与微秒和都换成秒）、
  *          以及「每格条数 ↔ 累计条数」的折算。同一件事写两遍就会有一天只改一处——本文件把它收成
  *          一份数据模型：谁采集谁负责折进模型，谁渲染谁从模型取值，两条出口对着同一份模型编码。
  *

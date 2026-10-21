@@ -34,8 +34,12 @@ namespace AsynGyanis::Base
         /**
          * @brief 从配置系统读取日志器配置并应用到注册表
          * @details 整段配置按一份快照取回后再装配（不是一键一读），因此并发改掉配置也不会
-         *          拼出「等级来自上一版、sinks 来自这一版」的半新半旧结果。段落形状自相矛盾或
-         *          整段类型不符时报诊断并一个日志器都不动，异常不逃出本函数。
+         *          拼出「等级来自上一版、sinks 来自这一版」的半新半旧结果。原始段不是对象
+         *          （写成标量或数组）、getSection 因段落形状自相矛盾而失败、或 loggers 段不是
+         *          对象时，报诊断并一个日志器都不动。经 createSinkFromConfig 构造的 sink
+         *          （包括其构造内部的分配失败）在本函数内诊断并收口，不会作为异常逃出；但
+         *          默认 root 的 ConsoleSink 由 installDefaultRootLogger 直接构造，以及段落
+         *          复制、日志器登记等其余分配路径的失败，仍按分配错误向调用方传播。
          * @param configurationPrefix 日志配置根键前缀
          * @param baseDirectory 相对日志路径的基准目录（为空时使用可执行文件目录）
          */
@@ -52,10 +56,25 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 根据配置对象创建具体日志 Sink 实例
+         * @details 构造期的失败（目标文件打不开、句柄耗尽、构造内部的分配失败等）在这一层
+         *          收口：报一行诊断后按 nullptr 返回，经本函数构造的 sink 不会把异常抛给
+         *          调用方。这个边界不覆盖默认 root 的 ConsoleSink（由 installDefaultRootLogger
+         *          直接构造），也不覆盖其余装配路径的分配失败。逐字段的形态诊断与具体构造见
+         *          createSinkFromConfigImpl。
          * @param sinkConfiguration Sink 配置对象
          * @param baseDirectory 相对日志路径的基准目录
          * @return std::unique_ptr<LogSink> 构造成功返回 Sink，失败返回 nullptr
          */
         static std::unique_ptr<LogSink> createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory);
+
+        /**
+         * @brief createSinkFromConfig 的未检查实现，允许构造期异常外抛
+         * @details 配置形态不可用时仍按原有诊断返回 nullptr；Sink 自身构造抛出的异常不在这里
+         *          拦截，由 createSinkFromConfig 统一收口。
+         * @param sinkConfiguration Sink 配置对象
+         * @param baseDirectory 相对日志路径的基准目录
+         * @return std::unique_ptr<LogSink> 构造成功返回 Sink，配置不可用时返回 nullptr
+         */
+        [[nodiscard]] static std::unique_ptr<LogSink> createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory);
     };
 } // namespace AsynGyanis::Base

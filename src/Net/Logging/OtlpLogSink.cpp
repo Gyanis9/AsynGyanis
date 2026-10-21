@@ -127,7 +127,9 @@ namespace AsynGyanis::Net
         record.message    = event.message;
         record.loggerName = std::string{event.loggerNameView()};
         record.threadId   = std::string{event.threadIdView()};
-        if (const Base::LogContextPtr &context = Base::currentLogContext(); context != nullptr)
+        // 优先读事件自带的上下文：本 Sink 可能被 AsyncSink 包着，写线程的 TLS 是空的
+        const Base::LogContextPtr &context = event.context ? event.context : Base::currentLogContext();
+        if (context != nullptr)
         {
             for (const auto &[key, value]: context->fields())
             {
@@ -159,7 +161,9 @@ namespace AsynGyanis::Net
         record.message    = std::move(event.message);
         record.loggerName = std::string{event.loggerNameView()};
         record.threadId   = std::string{event.threadIdView()};
-        if (const Base::LogContextPtr &context = Base::currentLogContext(); context != nullptr)
+        // 优先读事件自带的上下文：本 Sink 可能被 AsyncSink 包着，写线程的 TLS 是空的
+        const Base::LogContextPtr &context = event.context ? event.context : Base::currentLogContext();
+        if (context != nullptr)
         {
             for (const auto &[key, value]: context->fields())
             {

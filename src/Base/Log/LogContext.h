@@ -68,6 +68,8 @@ namespace AsynGyanis::Base
      * @return const LogContextPtr& 当前上下文；空指针表示没有
      * @note 返回引用而不是副本：每条高频日志读它只做一次线程局部访问。引用只在当前线程、
      *       当前挂起点之前有效；协程跨挂起点由 Core::Task 负责保存与恢复
+     * @note 日志事件在日志点携带自己的上下文快照，格式化器优先读事件；因此在另一个线程上
+     *       格式化的事件仍用日志点的上下文，而不是该线程的 TLS
      */
     [[nodiscard]] ASYN_BASE_API const LogContextPtr &currentLogContext() noexcept;
 

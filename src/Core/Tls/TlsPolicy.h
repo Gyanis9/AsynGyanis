@@ -22,7 +22,7 @@ namespace AsynGyanis::Core
     /**
      * @brief TLS 的可配置面：一份策略同时喂给服务端上下文与出站客户端上下文
      *
-     * @details 为什么要收成一份类型：加固项此前写死在 `TlsContext::createHardenedContext()` 里，
+     * @details 为什么要收成一份类型：加固项若写死在 `TlsContext::createHardenedContext()` 里，
      *          QUIC 服务端与出站客户端又各建各的 SSL_CTX，于是「改一处策略」要翻三处代码，而这三处
      *          迟早会漂（证书安装与 ALPN 已经是两份实现了）。本类型只描述策略，不描述身份
      *          （证书、私钥、票据密钥仍走各自的加载接口，它们是「这台服务是谁」而不是「怎么握手」）。

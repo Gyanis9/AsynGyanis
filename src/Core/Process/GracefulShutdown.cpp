@@ -171,41 +171,68 @@ namespace AsynGyanis::Core
         }
 #endif
 
-        g_owner = this;
 #if !ASYN_PLATFORM_WIN32
         sigset_t watchSet;
         fillWatchedSignalSet(watchSet);
-        m_waiter = std::jthread(
-                [this, watchSet](const std::stop_token &stopToken)
-                {
-                    // 与重载观察者互为对称的一条：屏蔽字只被子线程继承，两个观察者的构造顺序不固定。
-                    // 不补这一步，先起的这条线程就会成为 SIGHUP 的缺省动作受害者（那一枚本该触发重载）
-                    static_cast<void>(ReloadSignal::blockReloadSignal());
-
-                    for (;;)
+        // 建线程会分配栈与线程对象，线程耗尽时抛 std::system_error；本函数是 noexcept，
+        // 因此构造本身要兜住，失败时不能发布 g_owner 与安装标记
+        try
+        {
+            m_waiter = std::jthread(
+                    [this, watchSet](const std::stop_token &stopToken)
                     {
-                        if (stopToken.stop_requested())
+                        // 与重载观察者互为对称的一条：屏蔽字只被子线程继承，两个观察者的构造顺序不固定。
+                        // 不补这一步，先起的这条线程就会成为 SIGHUP 的缺省动作受害者（那一枚本该触发重载）
+                        static_cast<void>(ReloadSignal::blockReloadSignal());
+
+                        for (;;)
                         {
-                            return;
-                        }
-                        const std::chrono::nanoseconds interval = kWaitPollInterval;
-                        timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
-                        siginfo_t                      info{};
-                        const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
-                        if (received < 0)
-                        {
-                            // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
-                            if (errno == EAGAIN || errno == EINTR)
+                            if (stopToken.stop_requested())
                             {
-                                continue;
+                                return;
                             }
-                            LOG_ERROR_FMT("GracefulShutdown: 等待信号出错（errno={}），停机信号接管就此停止", errno);
-                            return;
+                            const std::chrono::nanoseconds interval = kWaitPollInterval;
+                            timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
+                            siginfo_t                      info{};
+                            const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
+                            if (received < 0)
+                            {
+                                // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
+                                if (errno == EAGAIN || errno == EINTR)
+                                {
+                                    continue;
+                                }
+                                LOG_ERROR_FMT("GracefulShutdown: 等待信号出错（errno={}），停机信号接管就此停止", errno);
+                                return;
+                            }
+                            triggerShutdown(received == SIGINT ? Reason::Interrupt : Reason::Terminate, false);
                         }
-                        triggerShutdown(received == SIGINT ? Reason::Interrupt : Reason::Terminate, false);
-                    }
-                });
+                    });
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("GracefulShutdown: 启动信号等待线程失败（{}），信号接管不会装上；收尾仍可走 requestShutdown()", failure.what());
+            } catch (...)
+            {
+            }
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
+            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
+            return;
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("GracefulShutdown: 启动信号等待线程失败（非标准异常），信号接管不会装上；收尾仍可走 requestShutdown()");
+            } catch (...)
+            {
+            }
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
+            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
+            return;
+        }
 #endif
+        g_owner = this;
         m_isInstalled.store(true, std::memory_order_release);
     }
 
@@ -303,7 +330,28 @@ namespace AsynGyanis::Core
         std::shared_ptr<ShutdownHandshake> handshake;
         if (waitsForCompletion)
         {
-            handshake = std::make_shared<ShutdownHandshake>();
+            // 握手对象要分配，而本函数是 noexcept：分配失败时留空，动作照发，
+            // 只是触发方不再等收尾跑完——这比让整个进程 terminate 好
+            try
+            {
+                handshake = std::make_shared<ShutdownHandshake>();
+            } catch (const std::exception &failure)
+            {
+                try
+                {
+                    LOG_ERROR_FMT("GracefulShutdown: 分配收尾握手对象失败（{}），本次触发不再等待收尾跑完", failure.what());
+                } catch (...)
+                {
+                }
+            } catch (...)
+            {
+                try
+                {
+                    LOG_ERROR("GracefulShutdown: 分配收尾握手对象失败（非标准异常），本次触发不再等待收尾跑完");
+                } catch (...)
+                {
+                }
+            }
         }
         dispatchActions(handshake);
 
@@ -316,6 +364,9 @@ namespace AsynGyanis::Core
     void GracefulShutdown::dispatchActions(std::shared_ptr<ShutdownHandshake> handshake) noexcept
     {
         std::vector<std::function<void()>> actions;
+        // 搬移表项同样要分配，而本函数是 noexcept：失败时放弃本次派发，
+        // 动作表原样留着，并把握手放掉，免得等它的一方白等到时限
+        try
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
             actions.reserve(m_actions.size());
@@ -324,6 +375,32 @@ namespace AsynGyanis::Core
                 actions.push_back(std::move(entry.second));
             }
             m_actions.clear();
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("GracefulShutdown: 取出收尾动作失败（{}），本次触发不执行任何动作", failure.what());
+            } catch (...)
+            {
+            }
+            if (handshake != nullptr)
+            {
+                handshake->finish();
+            }
+            return;
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("GracefulShutdown: 取出收尾动作失败（非标准异常），本次触发不执行任何动作");
+            } catch (...)
+            {
+            }
+            if (handshake != nullptr)
+            {
+                handshake->finish();
+            }
+            return;
         }
 
         if (actions.empty())
@@ -369,15 +446,56 @@ namespace AsynGyanis::Core
     void GracefulShutdown::postRunnable(std::function<void()> runnable, std::shared_ptr<ShutdownHandshake> handshake) noexcept
     {
         // 投回去的动作跑完（或根本没有动作可跑）之后必须把握手放掉，否则等它的处理器线程要一直等到时限
-        m_loop->scheduler().postRemote(
-                [inner = std::move(runnable), handshake]() mutable noexcept
+        // 投递要分配队列节点与闭包，而本函数是 noexcept：失败时把握手当场放掉，等它的一方立刻拿到结果。
+        // 队列饱和时投递也会被拒：这一档同样要当场放行，否则等它的一方要白等满一个永远等不到的时限
+        try
+        {
+            if (!m_loop->scheduler().tryPostRemote(
+                        [inner = std::move(runnable), handshake]() mutable noexcept
+                        {
+                            inner();
+                            if (handshake != nullptr)
+                            {
+                                handshake->finish();
+                            }
+                        }))
+            {
+                try
                 {
-                    inner();
-                    if (handshake != nullptr)
-                    {
-                        handshake->finish();
-                    }
-                });
+                    LOG_ERROR("GracefulShutdown: 收尾动作未能排进事件循环的队列（队列已满），本次触发不执行这些动作");
+                } catch (...)
+                {
+                }
+                if (handshake != nullptr)
+                {
+                    handshake->finish();
+                }
+            }
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("GracefulShutdown: 把收尾动作投回事件循环失败（{}），这批动作不会执行", failure.what());
+            } catch (...)
+            {
+            }
+            if (handshake != nullptr)
+            {
+                handshake->finish();
+            }
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("GracefulShutdown: 把收尾动作投回事件循环失败（非标准异常），这批动作不会执行");
+            } catch (...)
+            {
+            }
+            if (handshake != nullptr)
+            {
+                handshake->finish();
+            }
+        }
     }
 
     void GracefulShutdown::runAction(const std::function<void()> &action) noexcept

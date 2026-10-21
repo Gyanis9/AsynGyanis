@@ -60,7 +60,6 @@ namespace AsynGyanis::Base::Detail
         const std::int64_t periodSeconds = isDailyPolicy ? kSecondsPerDay : kSecondsPerHour;
 
         // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
-        // 当前周期内已过的秒数：整日策略看时分秒，整点策略只看分秒
         const std::int64_t elapsedSeconds = isDailyPolicy ? static_cast<std::int64_t>(localTime.tm_hour) * kSecondsPerHour + localTime.tm_min * 60 + localTime.tm_sec
                                                           : static_cast<std::int64_t>(localTime.tm_min) * 60 + localTime.tm_sec;
 

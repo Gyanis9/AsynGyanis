@@ -344,18 +344,17 @@ namespace AsynGyanis::Base
         const PathView backupPrefixView{backupPrefix};
         const PathView extensionView{extensionPart};
 
-        std::error_code scanError;
-        for (std::error_code errorCode; const auto &entry: std::filesystem::directory_iterator(m_directory, errorCode))
+        // 范围 for 的 operator++ 不带 error_code，走的是会抛的那一份重载：扫描中途失败会以
+        // filesystem_error 从本 Sink 的写线程上逃出去。构造与每一次 increment 都显式带上
+        // error_code，失败留在 scanError 里；构造失败时循环一次都不跑，函数末尾那条诊断照常打印
+        std::error_code                           scanError;
+        std::filesystem::directory_iterator       iterator(m_directory, scanError);
+        const std::filesystem::directory_iterator end;
+        for (; !scanError && iterator != end; iterator.increment(scanError))
         {
-            if (errorCode)
-            {
-                // 扫不下去就等于一份备份都不会被删：max_backup 从此形同虚设，日志目录无界增长，
-                // 而除了磁盘满之外没人会知道。这一条必须出声（本 Sink 是日志的出口，只能进标准错误）
-                scanError = errorCode;
-                break;
-            }
-            const PathText filename = entry.path().filename().native();
-            const PathView filenameView{filename};
+            const std::filesystem::directory_entry &entry    = *iterator;
+            const PathText                          filename = entry.path().filename().native();
+            const PathView                          filenameView{filename};
             // 备份名只有两种形态：`name.N.ext`（大小策略的序号备份）与 `name.<时间戳>[.N].ext`
             // （周期策略，时间戳形如 2026-09-16 或 2026-09-16_07，本身带连字符与下划线）。
             // 因此中间那段只允许数字、点、连字符与下划线：只按前缀匹配会把 app.audit.log 这类
@@ -384,7 +383,8 @@ namespace AsynGyanis::Base
                 backupFiles.push_back(BackupEntry{.path = entry.path(), .writeTime = timeError ? std::filesystem::file_time_type::min() : writeTime});
             }
         }
-        if (backupFiles.size() > m_maximumBackupFiles)
+        // 扫描失败时备份清单可能不完整或未核验：不许拿它驱动删除，下面的诊断承诺本次一份都没删
+        if (!scanError && backupFiles.size() > m_maximumBackupFiles)
         {
             // 取不到时间戳的条目标记为 file_time_type::min()，排序时视为最旧、优先被清理
             std::ranges::sort(backupFiles, [](const BackupEntry &left, const BackupEntry &right) { return left.writeTime > right.writeTime; });
@@ -396,6 +396,9 @@ namespace AsynGyanis::Base
         }
         if (scanError)
         {
+            // 扫不下去就等于一份备份都不会被删（删除分支以 !scanError 为门）：max_backup 从此
+            // 形同虚设，日志目录无界增长，而除了磁盘满之外没人会知道。这一条必须出声
+            // （本 Sink 是日志的出口，只能进标准错误）
             std::cerr << "RollingFileSink：清理旧备份时无法读取目录：" << Platform::FileSystem::utf8FromPath(m_directory) << "；原因：" << scanError.message()
                       << "；本次滚动没有删除任何超限备份，max_backup 暂时不再成立" << '\n';
         }

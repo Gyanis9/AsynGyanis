@@ -91,11 +91,13 @@ namespace AsynGyanis::Platform
         return true;
 #else
         // Linux 侧没有需要启动的全局子系统，但有一个进程级设置要在这里落地：忽略 SIGPIPE。
-        // 本层所有发送都带 MSG_NOSIGNAL，唯独 sendfile 没有对应的 per-call 标志——向已关闭的
-        // 对端发文件会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
+        // 本层的常规发送都带 MSG_NOSIGNAL，但 sendfile 与移交通道的 sendmsg 没有对应的 per-call
+        // 标志——向已关闭的对端发送会以默认动作打死整个进程。忽略之后写失败改以 EPIPE 返回，交给既有的
         // 发送失败路径处理（与 TlsContext 对 OpenSSL 内部写入的处理同源，那边是另一条
-        // 绕不开的信号来源）。signal() 幂等，重复调用没有额外影响
-        std::signal(SIGPIPE, SIG_IGN);
+        // 绕不开的信号来源）。signal() 幂等，但每次 Socket 初始化都会走到这里，
+        // call_once 让重复调用只剩一次原子检查
+        static std::once_flag sigpipeGuard;
+        std::call_once(sigpipeGuard, [] { std::signal(SIGPIPE, SIG_IGN); });
         return true;
 #endif
     }
@@ -444,6 +446,11 @@ namespace AsynGyanis::Platform
                 }
                 if (pieceLength < 0)
                 {
+                    // 被信号打断是「这一段没发出去」，不是通道坏了：重发这一段即可
+                    if (PlatformError::lastSocketErrorCode() == PlatformError::kInterrupted)
+                    {
+                        continue;
+                    }
                     PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
@@ -475,6 +482,11 @@ namespace AsynGyanis::Platform
                 }
                 if (pieceLength < 0)
                 {
+                    // 被信号打断时一个字节都没读走，重读这一段不会丢数据
+                    if (PlatformError::lastSocketErrorCode() == PlatformError::kInterrupted)
+                    {
+                        continue;
+                    }
                     PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
                     return false;
                 }
@@ -552,6 +564,77 @@ namespace AsynGyanis::Platform
             }
             return true;
         }
+
+#if !ASYN_PLATFORM_WIN32
+        /**
+         * @brief 从一次 recvmsg 的控制消息里摘出第一枚描述符，多带的当场关掉
+         * @details recvmsg 一成功返回，内核就已经把随消息装填的描述符放进本进程了。这条通道一次只
+         *          接手一个监听口：第一枚交给调用方，其余必须当场关闭，否则每轮漏一枚永不回收的
+         *          描述符，症状要等长跑撞到上限才看得见。
+         * @param message 已完成的 recvmsg 消息
+         * @return int 第一枚描述符；消息里没有描述符时返回 -1
+         */
+        int extractReceivedDescriptor(::msghdr &message) noexcept
+        {
+            int receivedDescriptor = -1;
+            for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr; controlHeader = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
+            {
+                if (controlHeader->cmsg_level != SOL_SOCKET || controlHeader->cmsg_type != SCM_RIGHTS || controlHeader->cmsg_len < CMSG_LEN(sizeof(int)))
+                {
+                    continue;
+                }
+                const std::size_t descriptorCount = (controlHeader->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+                const auto       *descriptorBytes = static_cast<const char *>(static_cast<const void *>(CMSG_DATA(const_cast<cmsghdr *>(controlHeader))));
+                for (std::size_t index = 0; index < descriptorCount; ++index)
+                {
+                    int descriptor = -1;
+                    std::memcpy(&descriptor, descriptorBytes + index * sizeof(int), sizeof(descriptor));
+                    if (receivedDescriptor < 0)
+                    {
+                        receivedDescriptor = descriptor;
+                        continue;
+                    }
+                    static_cast<void>(FileDescriptor::close(descriptor));
+                }
+            }
+            return receivedDescriptor;
+        }
+
+        /**
+         * @brief 把流式通道上分片到达的移交头补满
+         * @details AF_UNIX 流套接字不保留消息边界：控制消息随第一段字节一起到达，头本身却可能只到
+         *          这一段。补头途中通道断了，与「一个字节都没收到」同因：对端没交出完整消息。
+         * @param channelDescriptor 通道描述符
+         * @param header 已收到前 alreadyReadBytes 字节的头，就地补满
+         * @param alreadyReadBytes 首次 recvmsg 已收进的字节数
+         * @return true 头已补满；false 读失败或对端提前关闭（错误码已置上）
+         * @note 失败时不关闭调用方已收下的描述符：那是调用方的清理责任
+         */
+        bool completeHandoffHeader(const int channelDescriptor, HandoffHeader &header, const std::size_t alreadyReadBytes) noexcept
+        {
+            std::size_t headerByteCount = alreadyReadBytes;
+            while (headerByteCount < sizeof(header))
+            {
+                const ssize_t pieceLength = ::recv(channelDescriptor, reinterpret_cast<char *>(&header) + headerByteCount, sizeof(header) - headerByteCount, 0);
+                if (pieceLength < 0)
+                {
+                    if (errno == EINTR)
+                    {
+                        continue;
+                    }
+                    PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
+                    return false;
+                }
+                if (pieceLength == 0)
+                {
+                    PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
+                    return false;
+                }
+                headerByteCount += static_cast<std::size_t>(pieceLength);
+            }
+            return true;
+        }
+#endif
     } // namespace
 
     bool Socket::writeListeningSocketHandoff(const int channelDescriptor, const int listenDescriptor, const std::uint64_t targetProcessId) noexcept
@@ -611,10 +694,14 @@ namespace AsynGyanis::Platform
         controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
         std::memcpy(CMSG_DATA(controlHeader), &listenDescriptor, sizeof(listenDescriptor));
 
-        const ssize_t writtenByteCount = ::sendmsg(channelDescriptor, &message, 0);
-        // 契约是「true 等于完整交出一条消息」：部分写（被信号打断那一类，socket 调用不因
-        // SA_RESTART 自动重启）会把半条头留在流里，对端只能读成「不像移交消息」；交出方若记成
-        // 成功就会白等一次接手。通道本来就是一次性的，整条判失败最诚实
+        ssize_t writtenByteCount = -1;
+        do
+        {
+            writtenByteCount = ::sendmsg(channelDescriptor, &message, 0);
+        } while (writtenByteCount < 0 && errno == EINTR);
+        // 契约是「true 等于完整交出一条消息」：被信号打断的情形已由上面的重试排除，但流上
+        // 仍可能发生短写，半条头留在流里，对端只能读成「不像移交消息」；交出方若记成成功
+        // 就会白等一次接手。通道本来就是一次性的，整条判失败最诚实
         if (writtenByteCount != static_cast<ssize_t>(sizeof(header)))
         {
             PlatformError::setLastErrorCode(writtenByteCount < 0 ? PlatformError::lastSocketErrorCode() : EPIPE);
@@ -688,7 +775,13 @@ namespace AsynGyanis::Platform
         message.msg_control    = controlBuffer;
         message.msg_controllen = sizeof(controlBuffer);
 
-        const ssize_t receivedLength = ::recvmsg(channelDescriptor, &message, 0);
+        ssize_t receivedLength = -1;
+        do
+        {
+            // MSG_CMSG_CLOEXEC：内核把描述符装进本进程的那一刻就带 FD_CLOEXEC，
+            // 不再留下「收下之后、fcntl 之前被别的线程 fork+exec 继承」的窗口
+            receivedLength = ::recvmsg(channelDescriptor, &message, MSG_CMSG_CLOEXEC);
+        } while (receivedLength < 0 && errno == EINTR);
         if (receivedLength < 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());
@@ -696,45 +789,27 @@ namespace AsynGyanis::Platform
         }
         if (receivedLength == 0)
         {
-            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。让它落到下面那条
-            // 「头没收全」的判定也会拒，但报出来的是「不像移交消息」，运维会去查消息写法而不是查对端进程
+            // 0 是「调用成功、流里一个字节都没有」= 对端已经把这条通道关掉。下面的补头调用
+            // 遇到同一个 0 也会退出，但这里直接报出来，不必再绕过一整段判定
             PlatformError::setLastErrorCode(PlatformError::kConnectionReset);
             return -1;
         }
 
-        // 先把描述符从控制消息里摘出来：recvmsg 一成功返回，内核就已经把随消息装填的那枚描述符放进
-        // 本进程了，此后每一条失败出口都得关掉它——拒掉一条不可信的移交却留下一枚活描述符，
-        // 比不拒更糟（换代是旧进程交给新进程，交完还要按补位次数重复许多轮）
-        //
-        // 一条消息可以搭不止一枚描述符（发送方想少跑几趟，或对端根本不讲这套消息格式），而本通道
-        // 一次只接手一个监听口：第一枚交给调用方，多出来的本进程必须当场关掉。上面那句「每一条
-        // 失败出口都得关」若不涵盖「多带的那几枚」，漏下来的就是每轮一枚永不回收的描述符，
-        // 症状要等长跑撞到上限才看得见
-        int receivedDescriptor = -1;
-        for (const cmsghdr *controlHeader = CMSG_FIRSTHDR(&message); controlHeader != nullptr; controlHeader = CMSG_NXTHDR(&message, const_cast<cmsghdr *>(controlHeader)))
+        // 先把描述符从控制消息里摘出来，失败出口才能连它一起关
+        const int receivedDescriptor = extractReceivedDescriptor(message);
+
+        if (!completeHandoffHeader(channelDescriptor, header, static_cast<std::size_t>(receivedLength)))
         {
-            if (controlHeader->cmsg_level != SOL_SOCKET || controlHeader->cmsg_type != SCM_RIGHTS || controlHeader->cmsg_len < CMSG_LEN(sizeof(int)))
+            if (receivedDescriptor >= 0)
             {
-                continue;
+                static_cast<void>(FileDescriptor::close(receivedDescriptor));
             }
-            const std::size_t descriptorCount = (controlHeader->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-            const auto       *descriptorBytes = static_cast<const char *>(static_cast<const void *>(CMSG_DATA(const_cast<cmsghdr *>(controlHeader))));
-            for (std::size_t index = 0; index < descriptorCount; ++index)
-            {
-                int descriptor = -1;
-                std::memcpy(&descriptor, descriptorBytes + index * sizeof(int), sizeof(descriptor));
-                if (receivedDescriptor < 0)
-                {
-                    receivedDescriptor = descriptor;
-                    continue;
-                }
-                static_cast<void>(FileDescriptor::close(descriptor));
-            }
+            return -1;
         }
 
-        if (static_cast<std::size_t>(receivedLength) < sizeof(header) || (message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
+        if ((message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || header.blobByteCount != 0U)
         {
-            // 头没收全、或控制消息被截断，都等于「这份移交不可信」：整体作废，
+            // 控制消息被截断、或载荷长度不像本平台的载体，都等于「这份移交不可信」：整体作废，
             // 不要拿半个描述符去 accept——那比失败更难查
             PlatformError::setLastErrorCode(EINVAL);
             if (receivedDescriptor >= 0)
@@ -756,8 +831,8 @@ namespace AsynGyanis::Platform
             static_cast<void>(FileDescriptor::close(receivedDescriptor));
             return -1;
         }
-        // 与 Windows 侧同一件事：内核给新描述符时把 FD_CLOEXEC 清掉了（实测 flags 为 0x0），不补就等于
-        // 让接手方此后派生的任何子进程都替这个端口留一份持有
+        // MSG_CMSG_CLOEXEC 已让内核在装填描述符时置上 FD_CLOEXEC；这里再标一次是为不支持该标志的老内核兜底，
+        // 正常路径上是一次幂等的 fcntl
         static_cast<void>(FileDescriptor::markNonInheritable(receivedDescriptor));
         return receivedDescriptor;
 #endif
@@ -1016,7 +1091,8 @@ namespace AsynGyanis::Platform
         }
         sockaddr_un target{};
         target.sun_family = AF_UNIX;
-        std::strncpy(target.sun_path, std::string(address).c_str(), sizeof(target.sun_path) - 1U);
+        // 目标是零初始化的，地址长度已在上面判过上限，memcpy 之后自然带结尾 NUL
+        std::memcpy(target.sun_path, address.data(), address.size());
         if (::connect(descriptor, reinterpret_cast<const sockaddr *>(&target), sizeof(target)) != 0)
         {
             PlatformError::setLastErrorCode(PlatformError::lastSocketErrorCode());

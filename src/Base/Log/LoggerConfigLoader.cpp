@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -235,6 +236,15 @@ namespace AsynGyanis::Base
     {
         const auto &configuration = ConfigManager::instance();
 
+        // getSection 只拼以「前缀.」开头的扁平键：整段写成标量（logging: 5）时一条都命中不了，
+        // 拿到的是空对象，下面那道 is_object() 因此永远不触发，反而会走「没配 loggers」那条路
+        // 安装默认 root。段类型不符要在取快照之前判，且与表形态走同一条诊断文案
+        if (const auto rawSection = configuration.getOptional(configurationPrefix); rawSection.has_value() && !rawSection->is_object())
+        {
+            std::cerr << "LoggerConfig：" << configurationPrefix << " 段不是对象（实际是 " << typeName(rawSection->type()) << "），本次不改动任何日志器" << '\n';
+            return;
+        }
+
         // 整段配置一次取回：getSection 只读一份快照。原先是 keys() 取一份、之后每个 getOptional
         // 再各取一份，跨键没有一致视图——中途插进来的一次热重载会把「A 的等级来自上一版、
         // A 的 sinks 来自这一版」拼成一份装配结果
@@ -244,7 +254,9 @@ namespace AsynGyanis::Base
             loggingSection = configuration.getSection(configurationPrefix);
         } catch (const ConfigValidationException &sectionError)
         {
-            // 与 createSinkFromConfig 同一口径：不让异常逃出配置装配路径。段落形状自相矛盾时
+            // 这里只收口段落形态异常：配置装配路径上连分配失败一并收口的只有经
+            // createSinkFromConfig 构造的 sink；默认 root 的 ConsoleSink 由
+            // installDefaultRootLogger 直接构造，它与其余分配路径的失败仍会传播。段落形状自相矛盾时
             // （同一个名字既配成标量、又是更长键的第一段）整棵子树都不可信，于是一个日志器都不动，
             // 比按半截树改一半更强
             std::cerr << "LoggerConfig：" << sectionError.what() << "，本次不改动任何日志器" << '\n';
@@ -354,6 +366,27 @@ namespace AsynGyanis::Base
     }
 
     std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfig(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
+    {
+        // 构造期失败（目标文件打不开、句柄耗尽、构造内部的分配失败）在这里收口：
+        // FileSink/RollingFileSink 抛的是 Base::SystemException，而经本函数构造的 sink 不把
+        // 异常抛给调用方。跳过这一条 sink 并点名原因，其余 sink 与日志器照常装配。非标准异常
+        // 一并收口：这个边界若只认 std::exception，其余抛出物仍会穿透到调用方；默认 root 的
+        // ConsoleSink 与其余装配路径的分配失败不经过这里，仍会向上传播
+        try
+        {
+            return createSinkFromConfigImpl(sinkConfiguration, baseDirectory);
+        } catch (const std::exception &error)
+        {
+            std::cerr << "LoggerConfig：创建 sink 失败，已跳过该 sink：" << error.what() << '\n';
+            return nullptr;
+        } catch (...)
+        {
+            std::cerr << "LoggerConfig：创建 sink 失败（非标准异常），已跳过该 sink" << '\n';
+            return nullptr;
+        }
+    }
+
+    std::unique_ptr<LogSink> LoggerConfigLoader::createSinkFromConfigImpl(const ConfigValue &sinkConfiguration, const std::filesystem::path &baseDirectory)
     {
         if (!sinkConfiguration.is_object())
         {
@@ -465,9 +498,19 @@ namespace AsynGyanis::Base
                 std::cerr << "LoggerConfig：async sink 缺少 'wrapped'，已跳过" << '\n';
                 return nullptr;
             }
-            auto wrappedSink = createSinkFromConfig(sinkConfiguration.at("wrapped"), baseDirectory);
+            auto wrappedSink = createSinkFromConfigImpl(sinkConfiguration.at("wrapped"), baseDirectory);
             if (!wrappedSink)
                 return nullptr;
+
+            // AsyncSink 只把事件排进队列、交给被包装的 sink 落地，自己那份 formatter 从不参与
+            // 渲染：原先通用分支会把它悄悄挂上，「配了 json」看着生效、落盘却是默认版式。
+            // 诊断排在 wrapped 建成之后：整条 sink 都会被跳过时不该再说「formatter 已忽略」，
+            // 那会让现场以为只丢了版式、sink 还在。sinkKnownFields 仍把 formatter 算作
+            // async 认识的字段，免得同一件事再被报成「不认识的字段」
+            if (sinkConfiguration.contains("formatter"))
+            {
+                std::cerr << "LoggerConfig：async sink 自身的 formatter 不生效，版式请写在 wrapped sink 上；已忽略该字段" << '\n';
+            }
 
             const int64_t configuredQueueSize = optionalFieldWithDiagnosis(sinkConfiguration, "queue_size", int64_t{1024}, "async sink");
             // 边界钳制两端都要，与 max_size_mb / max_backup 同一口径：
@@ -516,7 +559,8 @@ namespace AsynGyanis::Base
             reportUnknownFields(sinkConfiguration, sinkKnownFields(type), type + " sink 配置");
         }
 
-        if (sink && sinkConfiguration.contains("formatter"))
+        // async 自己那份 formatter 已在上面点过名，这里不再套用通用分支
+        if (sink && type != "async" && sinkConfiguration.contains("formatter"))
         {
             // 版式此前只能在代码里换（LogSink::setFormatter），全靠配置起服务的部署就拿不到 JSON 日志。
             // 取值沿用本文件的小写词表（与 type / policy / overflow_policy 同一口径），非法写法照旧

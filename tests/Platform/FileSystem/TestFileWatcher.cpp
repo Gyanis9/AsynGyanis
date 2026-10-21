@@ -98,6 +98,25 @@ namespace AsynGyanis::Platform
             }
 
             /**
+             * @brief 是否记录过以指定后缀结尾的路径
+             * @param suffix 待匹配的路径后缀（含分隔符）
+             * @return true 至少有一条事件的完整路径以它结尾
+             */
+            [[nodiscard]] bool sawPathEndingWith(const std::string_view suffix) const
+            {
+                std::lock_guard lock(m_mutex);
+                for (const auto &[filePath, changeType]: m_events)
+                {
+                    (void) changeType;
+                    if (filePath.size() >= suffix.size() && filePath.compare(filePath.size() - suffix.size(), suffix.size(), suffix) == 0)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            /**
              * @brief 统计指向指定文件名的回调条数
              * @param fileName 文件名（不含目录）
              * @param changeType 只统计这一类事件；nullopt 表示不限类型
@@ -744,6 +763,127 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
     }
 
+    TEST(FileWatcher, TrailingSeparatorAndPlainPathAreTheSameWatchKey)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_TrailingSeparator");
+        const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        std::string withSeparator = temporaryDirectory.path().string();
+        if (withSeparator.empty() || withSeparator.back() != std::filesystem::path::preferred_separator)
+        {
+            withSeparator.push_back(std::filesystem::path::preferred_separator);
+        }
+
+        ASSERT_TRUE(watcher->addWatch(withSeparator)) << "带尾分隔符的注册本身要成功";
+        EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string())) << "同一个目录换一种写法就撤不掉了：监视会继续派发";
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        EXPECT_TRUE(watcher->removeWatch(withSeparator)) << "反向写法同样要能撤掉";
+    }
+
+    /**
+     * @brief 钉住（POSIX）：同一条目录路径写成带点段与不带点段是同一个监视键
+     * @details inotify 按目录本身登记监视，两种写法不该变成两套键：removeWatch 只摘得掉其中
+     *          一套时，另一套继续派发事件。Windows 的绝对路径由 GetFullPathName 折叠点段，
+     *          这种写法差异到不了监听键，因此只在 POSIX 上判。
+     */
+    TEST(FileWatcher, DotSegmentSpellingIsTheSameWatchKey)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 的绝对路径已由 GetFullPathName 折叠点段，构造不出两种键";
+#else
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_DotSegment");
+        const std::unique_ptr<FileWatcher>    watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        const std::string dottedPath = (temporaryDirectory.path() / ".").string();
+        ASSERT_NE(dottedPath, temporaryDirectory.path().string()) << "path 拼接把点段折掉了，这条用例测不到监听键";
+
+        ASSERT_TRUE(watcher->addWatch(dottedPath)) << "带点段的注册本身要成功";
+        EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string())) << "同一个目录换一种写法就撤不掉了：监视会继续派发";
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        EXPECT_TRUE(watcher->removeWatch(dottedPath)) << "反向写法同样要能撤掉";
+#endif
+    }
+
+    TEST(FileWatcher, RejectsAnEmptyPathOnEveryPlatform)
+    {
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        EXPECT_FALSE(watcher->addWatch("")) << "空路径被当成当前目录挂上了监视";
+        EXPECT_FALSE(watcher->removeWatch("")) << "没挂上的空路径不该留下可撤销的东西";
+    }
+
+    /**
+     * @brief 钉住：监听目录里的改名，源路径要按 Moved 报出，两平台同一口径
+     * @details 枚举把 Moved 定义成「移动或改名的源路径」。Windows 的 RENAMED_OLD_NAME 已是
+     *          Moved，Linux 的 IN_MOVED_FROM 曾归进 Deleted；同一次改名在两侧给出不同类型，
+     *          按类型分派的消费方（配置下线动作）在 Linux 上就只能借 Deleted 猜。
+     */
+    TEST(FileWatcher, RenamingAFileReportsMovedForTheSourcePath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameSource");
+        ASSERT_TRUE(temporaryDirectory.writeFile("before.yaml", "value: 1\n"));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+
+        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path() / "before.yaml", temporaryDirectory.path() / "after.yaml", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名失败：" << renameError.message();
+
+        const bool sawMovedSource = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamedWithType("before.yaml", FileChangeType::Moved); }, 3000);
+        watcher->stop();
+        EXPECT_TRUE(sawMovedSource) << "改名的源路径没有按 Moved 报出：Linux 归成了 Deleted，与枚举契约和 Windows 不一致";
+    }
+
+    /**
+     * @brief 钉住（POSIX）：被监视的单个文件被改名走开时，旧路径要按 Moved 报一次
+     * @details 单文件监视只会收到监视目标自身的事件，改名时是 IN_MOVE_SELF 且不带名字。
+     *          实现若只摘映射不派发，热加载单文件的消费方永远收不到这次下线。
+     * @note 只在 POSIX 编译：Windows 只能监视目录，单文件改名由父目录报出的旧名字事件覆盖。
+     */
+    TEST(FileWatcher, RenamingASinglyWatchedFileReportsMoved)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 只能监视目录：单文件改名由父目录的旧名字事件报出";
+#else
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_SingleFileRename");
+        ASSERT_TRUE(temporaryDirectory.writeFile("watched.yaml", "value: 1\n"));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+
+        ASSERT_TRUE(watcher->addWatch((temporaryDirectory.path() / "watched.yaml").string()));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        std::error_code renameError;
+        std::filesystem::rename(temporaryDirectory.path() / "watched.yaml", temporaryDirectory.path() / "renamed.yaml", renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名失败：" << renameError.message();
+
+        const bool sawMoved = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamedWithType("watched.yaml", FileChangeType::Moved); }, 3000);
+
+        watcher->stop();
+        EXPECT_TRUE(sawMoved) << "单文件被改名走开没有按 Moved 报出：消费方永远收不到这次下线";
+#endif
+    }
+
     TEST(FileWatcher, DebounceIntervalSuppressesRapidRepeatedChanges)
     {
         const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Debounce");
@@ -1216,6 +1356,55 @@ namespace AsynGyanis::Platform
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "被改名走开的子目录占住了监视键，原地重建的同名目录从此收不到事件";
+    }
+
+    /**
+     * @brief 钉住（Windows）：只要一层的目录被改名之后，监视范围不能自己长成递归
+     * @details 被监视目录是另一个被监视目录的子项时，改名由父目录报出，实现会把条目搬到新键。
+     *          搬的时候若无条件登记进递归覆盖集，新位置下后来新建的子目录就会被自动补挂，
+     *          调用方只要一层的请求被悄悄扩成整棵树。判据是「深层文件不出现」，
+     *          同时用「子目录本身出现了」证明监视确实跟到了新位置，避免把「监视死了」测成通过。
+     */
+    TEST(FileWatcher, RenamedNonRecursiveWatchDoesNotGrowIntoRecursiveCoverage)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_RenameLevel");
+        const std::filesystem::path           parentDirectory = temporaryDirectory.path() / "parent";
+        const std::filesystem::path           childDirectory  = parentDirectory / "plain";
+        ASSERT_TRUE(std::filesystem::create_directories(childDirectory));
+
+        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+        ASSERT_NE(watcher, nullptr);
+
+        FileWatchRecorder recorder;
+        watcher->setDebounceInterval(std::chrono::milliseconds(0));
+        watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+
+        ASSERT_TRUE(watcher->addWatch(parentDirectory.string(), false));
+        ASSERT_TRUE(watcher->addWatch(childDirectory.string(), false));
+        ASSERT_TRUE(watcher->start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        const std::filesystem::path movedDirectory = parentDirectory / "plain.moved";
+        std::error_code             renameError;
+        std::filesystem::rename(childDirectory, movedDirectory, renameError);
+        ASSERT_FALSE(static_cast<bool>(renameError)) << "改名失败：" << renameError.message();
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+        const std::filesystem::path nestedDirectory = movedDirectory / "nested";
+        ASSERT_TRUE(std::filesystem::create_directories(nestedDirectory));
+        const bool sawNested = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested"); }, 3000);
+        ASSERT_TRUE(sawNested) << "改名后的监视没跟过去，下面的「深层没事件」就是假绿";
+
+        // 控制写：改名后的条目必须按新路径派发，否则下面的「深层没事件」可能只是路径前缀还停在旧键
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("parent/plain.moved/marker.yaml", "moved: true\n"));
+        const bool sawMarkerFromMovedPath = TestSupport::waitForCondition([&recorder]() { return recorder.sawPathEndingWith("plain.moved\\marker.yaml"); }, 3000);
+        ASSERT_TRUE(sawMarkerFromMovedPath) << "改名后派发的路径前缀仍是旧键：条目没有被搬到新位置";
+
+        ASSERT_TRUE(temporaryDirectory.writeNestedFile("parent/plain.moved/nested/deep.yaml", "leaked: true\n"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+
+        watcher->stop();
+        EXPECT_FALSE(recorder.sawFileNamed("deep.yaml")) << "只要一层的监视在改名后被扩成了递归监视";
     }
 
     /**

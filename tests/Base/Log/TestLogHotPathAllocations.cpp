@@ -20,6 +20,7 @@
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/Formatters/TimestampText.h"
+#include "Base/Log/LogContext.h"
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
@@ -272,6 +273,53 @@ namespace AsynGyanis::Base
 #ifdef NDEBUG
         EXPECT_EQ(filteredProfile.totalAllocations, kFilteredLineTotalAllocationsPerThousand) << "被过滤的日志还在为消息体取堆：等级过滤排在了拷贝之后";
         EXPECT_EQ(acceptedProfile.totalAllocations, kLogLineTotalAllocationsPerThousand) << "对照形状的读数不对，上面那条零分配断言也就失去了意义";
+#endif
+    }
+
+    /**
+     * @brief 没有 Sink 的日志器不为无人接收的消息体取堆
+     * @details 钉住「零 Sink 时正文拷贝与事件构造都不发生」：放行等级下也要在入口处提前返回。
+     */
+    TEST(LogHotPathAllocations, SinklessLoggerDoesNotAllocate)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        Logger logger("hot_path_sinkless");
+        ASSERT_TRUE(logger.shouldLog(LogLevel::Info));
+        const auto logOnce = [&logger]
+        {
+            logger.log(LogLevel::Info, kMessageText);
+            return 1U;
+        };
+        logOnce();
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(logOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "无 Sink 的日志仍在构造消息体或事件";
+#endif
+    }
+
+    /**
+     * @brief 无 Sink 时格式化入口也不为没有读者的结果取堆
+     * @details logFormat 的等级过滤与格式化模板都要在零 Sink 时提前返回；
+     *          本形状只测格式化入口，不经过 Sink。
+     */
+    TEST(LogHotPathAllocations, SinklessLoggerFormatDoesNotAllocate)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        Logger logger("hot_path_sinkless_format");
+        ASSERT_TRUE(logger.shouldLog(LogLevel::Info));
+        const auto formatOnce = [&logger]
+        {
+            logger.logFormat(LogLevel::Info, SourceLocation{}, "{}", kMessageText);
+            return 1U;
+        };
+        formatOnce();
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(formatOnce);
+        EXPECT_EQ(profile.resultSum, kMeasurementIterations);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "无 Sink 的 logFormat 仍在做格式化或构造事件";
 #endif
     }
 
@@ -539,5 +587,84 @@ namespace AsynGyanis::Base
                     static_cast<unsigned long long>(intoProfile.totalBytes), static_cast<unsigned long long>(dumpProfile.totalAllocations),
                     static_cast<unsigned long long>(dumpProfile.totalBytes), static_cast<unsigned long long>(textProfile.totalAllocations),
                     static_cast<unsigned long long>(textProfile.totalBytes));
+    }
+
+    /**
+     * @brief 上下文里的文本字段在文本版式上不再逐行取堆
+     * @details 转义结果直接续写进目标缓冲。事件在测量窗口之外构造，测量体只含格式化；
+     *          本地行缓冲与 Sink 的行缓冲同形，都是预留容量后逐行复用的那一条。
+     */
+    TEST(LogHotPathAllocations, FormatterContextFieldsStayOffTheHeap)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        const std::string threadId = "tid-context";
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadId, SourceLocation{}, std::string("context_logger"), std::string(kMessageText)};
+        DefaultFormatter  formatter;
+        std::string       lineBuffer;
+        lineBuffer.reserve(512U);
+        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}});
+        const auto            formatOnce = [&formatter, &event, &lineBuffer]
+        {
+            lineBuffer.clear();
+            formatter.formatInto(lineBuffer, event);
+            return static_cast<std::uint64_t>(lineBuffer.size());
+        };
+        formatOnce();
+        // 自检：先证明上下文确实落进了这一行，否则下面的零分配断言量的是「字段没写」的形状
+        EXPECT_NE(lineBuffer.find(" trace_id="), std::string::npos) << "上下文没落进日志行，零分配断言会假绿";
+        resetAllocationHistogram();
+        const AllocationProfile profile = measurePerOperation(formatOnce);
+        EXPECT_GT(profile.resultSum, 0U);
+#ifdef NDEBUG
+        EXPECT_EQ(profile.totalAllocations, 0U) << "上下文转义又造了中间串：应直接续写进目标缓冲";
+#endif
+    }
+
+    /**
+     * @brief 稳定上下文的 JSON 行不比无上下文的行多付可省的堆
+     * @details 上下文键集合跨行不变时，键名缓冲、键名查找与 JSON 节点都该复用：每行只为同名键
+     *          更新取值，既不重新生成键名字符串，也不把键摘掉再插回去。查找直接复用跨行缓冲里
+     *          那份键名串，长键（超过小串内联）也不再为 nlohmann 的按键查找现造临时串；
+     *          两条读数只差测量窗口第一行补齐键名槽位的几次，差出成百上千次说明仍在逐行删建
+     *          或逐行为长键造临时串。
+     */
+    TEST(LogHotPathAllocations, JsonContextFieldsReuseTheirSlots)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        JsonFormatter formatter;
+        std::string   out;
+        out.reserve(1024U);
+        const std::string threadId = "tid-json-context";
+        const LogEvent    event{LogLevel::Info, TimestampMoment{}, threadId, SourceLocation{}, std::string("json_context_logger"), std::string(kMessageText)};
+        const auto        formatOnce = [&formatter, &event, &out]
+        {
+            out.clear();
+            formatter.formatInto(out, event);
+            return static_cast<std::uint64_t>(out.size());
+        };
+        // 先跑一次把首行的一次性构造摘出去，测的是稳态
+        formatOnce();
+        resetAllocationHistogram();
+        const AllocationProfile withoutContext = measurePerOperation(formatOnce);
+
+        // 长键超过小串内联的 15 字符，键名缓冲不复用就会每行重新为它取一块堆
+        const LogContextScope scope({{"trace_id", "4bf92f3577b34da6a3ce929d0e0e4736"}, {"span_id", "00f067aa0ba902b7"}, {"a-context-key-longer-than-sso", "v"}});
+        formatOnce();
+        // 自检：先证明长键确实落进了这一行，否则下面的读数量的不是键名缓冲复用的形状
+        EXPECT_NE(out.find("a-context-key-longer-than-sso"), std::string::npos) << "长上下文键没落进日志行，读数对应的形状不对";
+        resetAllocationHistogram();
+        const AllocationProfile withContext = measurePerOperation(formatOnce);
+
+        std::printf("json-context per-op=%llu total=%llu bytes=%llu (without-context total=%llu bytes=%llu)\n",
+                    static_cast<unsigned long long>(withContext.allocationsPerOperation), static_cast<unsigned long long>(withContext.totalAllocations),
+                    static_cast<unsigned long long>(withContext.totalBytes), static_cast<unsigned long long>(withoutContext.totalAllocations),
+                    static_cast<unsigned long long>(withoutContext.totalBytes));
+
+        EXPECT_GT(withContext.resultSum, withoutContext.resultSum) << "带上下文的行没有变长：上下文没写进去，两条读数不是同一形状的对照";
+#ifdef NDEBUG
+        // 稳态下两条读数只差首行补齐键名槽位的几次；仍在逐行重建键名或为长键造临时串时，
+        // 带上下文的读数会每行多出一次，远超本上限
+        EXPECT_LE(withContext.totalAllocations, withoutContext.totalAllocations + kMeasurementIterations / 64U) << "稳定上下文的 JSON 行仍在逐行重建键名或造键名临时串";
+#endif
     }
 } // namespace AsynGyanis::Base

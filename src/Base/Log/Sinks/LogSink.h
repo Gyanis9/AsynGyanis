@@ -17,15 +17,22 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace AsynGyanis::Base
 {
     /**
      * @brief 日志输出目标基类
      *
-     * @details 统一「等级过滤 + 格式化 + 落地」三件事：等级与格式化器均由原子成员持有，
-     *          可在运行期安全替换；落地方式由派生类（控制台/文件/滚动文件/异步包装）实现。
+     * @details 统一「等级过滤 + 格式化 + 落地」三件事：等级可在运行期安全替换，
+     *          落地方式由派生类（控制台/文件/滚动文件/异步包装）实现。
+     * @note 格式化器的所有权留在 m_formatter 这个原子 shared_ptr 槽里（该成员类型按公开 API
+     *       基线保留），只在写侧互斥下读写；每条日志的热路径只读 m_formatterPointer 这个裸指针，
+     *       避开 atomic<shared_ptr> 的 load 在 MSVC/libstdc++ 上进入内部锁池的开销。被替换下来的
+     *       格式化器移入退休表保留到 Sink 析构，因此在途读者手里的裸指针始终有效；代价是替换过
+     *       几次就多留几份实例。
      * @note Logger 会持有多个 Sink 并在每次写日志前调用 shouldLog() 预筛。
      */
     class ASYN_BASE_API LogSink
@@ -106,7 +113,10 @@ namespace AsynGyanis::Base
         void formatEventInto(std::string &out, const LogEvent &event) const;
 
     private:
-        std::atomic<LogLevel>                      m_level{LogLevel::Trace}; ///< 当前最小日志级别
-        std::atomic<std::shared_ptr<LogFormatter>> m_formatter;              ///< 原子 shared_ptr，store/load 保证线程安全的读写
+        std::atomic<LogLevel>                      m_level{LogLevel::Trace};    ///< 当前最小日志级别
+        std::atomic<std::shared_ptr<LogFormatter>> m_formatter;                 ///< formatter 的所有权槽（按 API 基线保留）：只在写侧互斥下读写
+        std::atomic<LogFormatter *>                m_formatterPointer{nullptr}; ///< 热读指针：每条日志只做一次无锁原子读
+        std::vector<std::shared_ptr<LogFormatter>> m_retiredFormatters;         ///< 被替换的 formatter：保证在读线程手里的裸指针仍有效
+        std::mutex                                 m_formatterWriteMutex;       ///< 串行化 formatter 替换
     };
 } // namespace AsynGyanis::Base

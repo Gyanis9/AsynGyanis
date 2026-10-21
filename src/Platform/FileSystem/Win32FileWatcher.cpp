@@ -100,6 +100,17 @@ namespace AsynGyanis::Platform
             }
             return true;
         }
+
+        /**
+         * @brief 判断一条路径是否已经落在某份目录集合里（按「同一个目录」比较）
+         * @param directories 带尾分隔符的目录键集合
+         * @param target 待查路径
+         * @return true 集合里有一条与 target 指向同一目录
+         */
+        bool containsSameDirectory(const std::set<std::string> &directories, const std::string_view target)
+        {
+            return std::ranges::any_of(directories, [target](const std::string &candidate) { return isSameDirectoryPath(candidate, target); });
+        }
     } // namespace
 
     Win32FileWatcher::Win32FileWatcher()
@@ -133,16 +144,18 @@ namespace AsynGyanis::Platform
         m_shouldStop.store(false, std::memory_order_release);
         ::ResetEvent(m_stopEvent);
 
+        // 先置位再起线程：线程一起来就可能在 isRunning() 上被读到，置位晚一步就留下
+        // 「线程已在跑、状态却报 false」的窗口；创建失败再把标志收回
+        m_running.store(true, std::memory_order_release);
         try
         {
             // jthread 直接作为成员启动，无需堆分配；循环靠 m_shouldStop 与停止事件退出
             m_watchThread = std::jthread([this] { watchLoop(); });
         } catch (const std::system_error &)
         {
+            m_running.store(false, std::memory_order_release);
             return false;
         }
-
-        m_running.store(true, std::memory_order_release);
         return true;
     }
 
@@ -370,13 +383,14 @@ namespace AsynGyanis::Platform
         // 本函数是 jthread 的线程体：抛穿出去就是 std::terminate，整个进程连同在途请求一起没。
         // 用户回调那一层已由 FileWatcher::notifyChange 逐条兜住并计数，走到这里的只能是监听侧
         // 自己的分配失败（收集等待集、路径拼装、补挂监视）。Platform 在 Base 之下没有日志通路，
-        // 因此只能把「本监听器已停」落到停止标志上。
-        // 警告：这一格目前只落到标志上，没人读：`isRunning()` 在 src/ 与 samples/ 里没有生产消费方
-        //          （只有 tests/Platform 的用例读它），`ConfigManager::isHotReloadEnabled()` 报的是自己那个
-        //          原子位而不是线程死活。所以真抛一次的现场表现是「热重载永久停摆而对外仍说已启用」，
-        //          既无日志也无计数。ponytail: 补法是给 ConfigManager 一个可注入的 FileWatcher 接缝，
-        //          让 isHotReloadEnabled() 变成「开关 ∧ 线程还在跑」，或把这条状态接进 /metrics 一族——
-        //          现在写不出可证伪的用例，故不动行为，只把话说准。
+        // 因此只能把「本监听器已停」落到停止标志与运行标志上。
+        // 警告：本监听器自己的 isRunning() 在这里落回 false，但它在 src/ 与 samples/ 里没有生产
+        // 消费方（只有 tests/Platform 的用例读它）。真正会被读的是
+        // ConfigManager::isHotReloadEnabled()，它报的是自己那个原子开关而不是线程死活。所以真抛
+        // 一次的现场表现仍是「热重载永久停摆而对外说已启用」，既无日志也无计数。ponytail: 补法
+        // 是给 ConfigManager 一个可注入的 FileWatcher 接缝，让 isHotReloadEnabled() 变成
+        // 「开关 ∧ 线程还在跑」，或把这条状态接进 /metrics 一族——现在写不出可证伪的用例，
+        // 故此处只把状态落地，不做接缝改造。
         // 实现体留在 watchLoopBody()：这一圈兜底要包住整条循环，就地套 try 会把 150 行正文
         // 全部重缩进，抽一层反而没有可读性代价
         try
@@ -385,6 +399,7 @@ namespace AsynGyanis::Platform
         } catch (...)
         {
             m_shouldStop.store(true, std::memory_order_release);
+            m_running.store(false, std::memory_order_release);
         }
     }
 
@@ -643,12 +658,20 @@ namespace AsynGyanis::Platform
             return false; // 新位置上已经有一条监视，不覆盖它
         }
 
+        const bool wasRecursiveMember = containsSameDirectory(m_recursiveWatchPaths, oldPath);
+
         auto node           = m_watches.extract(iterator);
         node.key()          = relocatedPath;
         node.mapped()->path = relocatedPath;
         m_watches.insert(std::move(node));
-        // 新位置同样纳入自愈范围；旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
-        m_recursiveWatchPaths.insert(relocatedPath);
+        // 属于递归覆盖集的新位置也纳入自愈范围；调用方点名的一层监视由下面的自愈清单接管。
+        // 旧键故意留着——原地重建出同名目录时靠自愈复查补挂第二条监视
+        // 只有本来就在递归覆盖集里的条目才把新键带进去：调用方点名的一层监视（不在集合里）
+        // 改名后仍是一层，否则新位置下新建的子目录会被 watchNewSubdirectories 自动补挂
+        if (wasRecursiveMember)
+        {
+            m_recursiveWatchPaths.insert(relocatedPath);
+        }
         // 调用方点过名的那条监视搬到哪，自愈就该在新位置复查它；旧键同样留着，理由与上面一致
         if (std::ranges::any_of(m_selfHealPaths, [&oldPath](const std::string &requestedPath) { return isSameDirectoryPath(requestedPath, oldPath); }))
         {

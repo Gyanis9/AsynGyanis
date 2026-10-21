@@ -50,7 +50,7 @@ namespace AsynGyanis::Base
     {
         {
             // 快路径：日志器已存在时只持读锁，避免所有线程在写锁上串行。
-            // 若查询的正是 root，顺带把强引用回填进缓存：这里仍持有读锁，
+            // 若查询的正是 root，顺带把裸指针回填进缓存：这里仍持有读锁，
             // 任何会删改 root 的写者（register/unregister/clear）都无法插入到
             // 「查到迭代器」与「写入缓存」之间，因此不会把已被移除的旧实例复活成缓存内容
             std::shared_lock readerLock(m_mutex);
@@ -76,15 +76,16 @@ namespace AsynGyanis::Base
             return *iterator->second;
         }
 
-        auto    logger    = std::make_shared<Logger>(name);
-        Logger &reference = *logger;
+        auto logger                     = std::make_shared<Logger>(name);
+        const auto [iterator, inserted] = m_loggers.emplace(name, std::move(logger));
+        static_cast<void>(inserted);
         if (name == kRootLoggerName)
         {
-            // 缓存与 map 共享同一份所有权：缓存命中期间 root 不会被析构
-            storeCachedRootLogger(logger);
+            // 只在登记成功之后发布缓存：emplace 分配失败时本地 shared_ptr 仍是唯一所有者，
+            // 此时把裸指针写进缓存会在栈展开后悬垂
+            storeCachedRootLogger(iterator->second);
         }
-        m_loggers.emplace(name, std::move(logger));
-        return reference;
+        return *iterator->second;
     }
 
     Logger &LoggerRegistry::getRootLogger()

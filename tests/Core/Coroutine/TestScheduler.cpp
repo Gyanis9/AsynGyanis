@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <coroutine>
+#include <cstddef>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -251,6 +252,31 @@ namespace AsynGyanis::Core
 
         EXPECT_FALSE(scheduler.hasWork());
         EXPECT_FALSE(scheduler.runOne());
+    }
+
+    /**
+     * @brief 队列饱和时 tryPostRemote 给出 false，拒绝计数加一；空对象按无事可做受理
+     */
+    TEST(Scheduler, TryPostRemoteReportsSaturationAndRecovers)
+    {
+        Scheduler scheduler;
+        for (std::size_t index = 0; index < Scheduler::kMaximumRemoteBacklog; ++index)
+        {
+            static_cast<void>(scheduler.tryPostRemote([] {}));
+        }
+        EXPECT_EQ(scheduler.remotePendingCount(), Scheduler::kMaximumRemoteBacklog);
+
+        const std::size_t rejectionCountBefore = scheduler.saturatedRemoteRejectionCount();
+        EXPECT_FALSE(scheduler.tryPostRemote([] {})) << "队列已满时仍报入队成功";
+        EXPECT_EQ(scheduler.saturatedRemoteRejectionCount(), rejectionCountBefore + 1);
+        EXPECT_TRUE(scheduler.tryPostRemote(std::function<void()>{})) << "空对象不该被当成一次投递";
+
+        while (scheduler.hasWork())
+        {
+            scheduler.runAll();
+        }
+        EXPECT_EQ(scheduler.remotePendingCount(), 0U);
+        EXPECT_TRUE(scheduler.tryPostRemote([] {})) << "队列排空后仍拒绝新投递";
     }
 
     /**

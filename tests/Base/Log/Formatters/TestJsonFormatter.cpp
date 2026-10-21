@@ -10,11 +10,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "AllocationProbe.h"
 #include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -116,6 +118,69 @@ namespace AsynGyanis::Base
         EXPECT_EQ(textField(parsed, "message"), "撞名") << "上下文覆盖了日志正文";
         EXPECT_EQ(textField(parsed, "ctx.message"), "不是消息");
         EXPECT_EQ(textField(parsed, "custom"), "值");
+    }
+
+    /**
+     * @brief 上下文键连续撞名时每条都要留下，前缀一直加到不再冲突
+     * @details 上下文按键升序写入：ctx.ctx.message 先占下原名，ctx.message 再占下原名，
+     *          message 撞上保留字后加一次前缀又撞上已有的 ctx.message，加到第三级才落定。
+     *          只按保留字判一次撞名或只避让一次已分配名字，都会让两条落到同一个 JSON 键上
+     */
+    TEST(JsonFormatterTest, PrefixesContextKeysThatCollideAfterPrefixing)
+    {
+        JsonFormatter         formatter;
+        const LogEvent        event = makeEvent("原始消息");
+        const LogContextScope scope({{"message", "上下文消息"}, {"ctx.message", "上下文里的 ctx.message"}, {"ctx.ctx.message", "上下文里的 ctx.ctx.message"}});
+        const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(textField(parsed, "message"), "原始消息");
+        EXPECT_EQ(textField(parsed, "ctx.message"), "上下文里的 ctx.message");
+        EXPECT_EQ(textField(parsed, "ctx.ctx.message"), "上下文里的 ctx.ctx.message");
+        EXPECT_EQ(textField(parsed, "ctx.ctx.ctx.message"), "上下文消息");
+    }
+
+    /**
+     * @brief 上下文键集合变化时按名字重建：消失的键摘掉，保留的键更新取值
+     * @details 复用上一行的键名缓冲之后，键的位置不再与上下文里的次序一一对应；新键集合必须
+     *          整体重建，旧集合里没再出现的键按集差摘除，否则会留下上一条的字段
+     */
+    TEST(JsonFormatterTest, RebuildsContextKeysWhenTheSetChanges)
+    {
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("上下文键集合变化");
+
+        {
+            const LogContextScope first({{"first", "1"}, {"shared", "s"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_EQ(textField(parsed, "first"), "1");
+            EXPECT_EQ(textField(parsed, "shared"), "s");
+        }
+
+        {
+            const LogContextScope second({{"second", "2"}, {"shared", "s2"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_FALSE(parsed.contains("first")) << "上一份上下文里消失的键仍留在 JSON 行里";
+            EXPECT_EQ(textField(parsed, "shared"), "s2");
+            EXPECT_EQ(textField(parsed, "second"), "2");
+        }
+    }
+
+    /**
+     * @brief 带内嵌 NUL 的上下文键在键集合变化时也要被摘掉
+     * @details 插入走完整 std::string，摘下若走 c_str() 会在 NUL 处截断，
+     *          旧键会留在下一行里
+     */
+    TEST(JsonFormatterTest, RemovesContextKeysContainingEmbeddedNul)
+    {
+        JsonFormatter     formatter;
+        const LogEvent    event = makeEvent("内嵌 NUL 的键");
+        const std::string nulKey{"a\0b", 3};
+        {
+            const LogContextScope scope({{nulKey, "value"}});
+            const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+            EXPECT_EQ(textField(parsed, nulKey), "value");
+        }
+        const nlohmann::json after = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(after.find(nulKey), after.end()) << "带 NUL 的旧上下文键没被摘掉";
     }
 
     /**
@@ -355,5 +420,57 @@ namespace AsynGyanis::Base
                 EXPECT_EQ(parsed.count("message"), 1U);
             }
         }
+    }
+
+    /**
+     * @brief 事件携带的上下文优先于当前线程的上下文
+     */
+    TEST(JsonFormatterTest, PrefersTheContextCarriedByTheEvent)
+    {
+        JsonFormatter formatter;
+        LogEvent      event = makeEvent("事件上下文");
+        event.context       = std::make_shared<const LogContext>(std::map<std::string, std::string>{{"trace_id", "event-id"}});
+        const LogContextScope scope({{"trace_id", "thread-id"}});
+        const nlohmann::json  parsed = nlohmann::json::parse(formatter.format(event));
+        EXPECT_EQ(textField(parsed, "trace_id"), "event-id");
+    }
+
+    /**
+     * @brief 上下文写到一半分配失败时，已写入本行的新键不得留到下一行
+     * @details 复用对象不会自己忘掉键；异常展开若不给已写入的键登记，下一条没有上下文的
+     *          日志会带着这一行的幽灵字段。用长键的第二条覆盖触发一次 bad_alloc。
+     */
+    TEST(JsonFormatterTest, BadAllocMidContextDoesNotLeaveAField)
+    {
+        ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
+        JsonFormatter  formatter;
+        const LogEvent event = makeEvent("异常路径");
+        std::string    out;
+        out.reserve(1024U);
+
+        {
+            const LogContextScope warm({{"a", "1"}, {"b", "2"}});
+            formatter.formatInto(out, event);
+        }
+        // 先跑一条无上下文日志，把 previous 清空，确保失败行的新键没有被上一行掩盖
+        out.clear();
+        formatter.formatInto(out, event);
+
+        const std::string longKey(300U, 'k');
+        {
+            const LogContextScope context({{"c", "3"}, {longKey, "4"}});
+            const std::uint64_t   failuresBefore = AsynGyanis::TestSupport::injectedAllocationFailureCount();
+            {
+                const auto guard = AsynGyanis::TestSupport::AllocationFailureGuard::forNextAllocationBetween(300U, 1024U);
+                EXPECT_THROW(formatter.formatInto(out, event), std::bad_alloc);
+            }
+            EXPECT_GT(AsynGyanis::TestSupport::injectedAllocationFailureCount(), failuresBefore) << "注入没有命中，后面的断言不成立";
+        }
+
+        out.clear();
+        formatter.formatInto(out, event);
+        const nlohmann::json parsed = nlohmann::json::parse(out);
+        EXPECT_FALSE(parsed.contains("c")) << "异常路径留下了本行的新上下文键";
+        EXPECT_FALSE(parsed.contains(longKey)) << "异常路径留下了未完成的长键";
     }
 } // namespace AsynGyanis::Base

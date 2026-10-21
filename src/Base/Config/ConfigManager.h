@@ -17,11 +17,13 @@
 #include "Base/Config/ConfigValidationResult.h"
 #include "Base/Config/ConfigValue.h"
 #include "Base/Config/Detail/ReloadRoundGate.h"
+#include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Platform/FileSystem/FileWatcher.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -143,18 +145,25 @@ namespace AsynGyanis::Base
          * @return T 配置值。
          * @throws ConfigKeyNotFoundException 键不存在
          * @throws ConfigValidationException 类型不匹配（消息里带键名、期望与实际类型）
+         * @note 命中判定直接查快照里的原对象：类型不符时不会先把被拒的值深拷一份，
+         *       只为目标类型付一次拷贝
          */
         template<typename T>
         T get(const std::string_view key) const
         {
-            using ValueType = std::decay_t<T>;
-
-            const ConfigValue value = get(key);
-            if (auto converted = configValueAs<ValueType>(value))
+            using ValueType        = std::decay_t<T>;
+            const auto currentData = m_data.load(std::memory_order_acquire);
+            const auto iterator    = currentData->values.find(key);
+            if (iterator == currentData->values.end())
+            {
+                throw ConfigKeyNotFoundException(std::string(key));
+            }
+            if (auto converted = configValueAs<ValueType>(iterator->second))
             {
                 return std::move(*converted);
             }
-            throw ConfigValidationException(std::string(key), std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() + "，实际 " + typeName(value.type()));
+            throw ConfigValidationException(std::string(key),
+                                            std::string("配置值取用类型不匹配：期望 ") + configTypeNameOf<ValueType>() + "，实际 " + typeName(iterator->second.type()));
         }
 
         /**
@@ -166,10 +175,15 @@ namespace AsynGyanis::Base
          *       类型对不上按「未配置」处理而不抛出。
          * @note 同样不是 noexcept：命中的那个值要拷出来交给调用方（字符串与容器都是堆对象）。
          *       类型判定本身不拷树——走快照按引用查，判定失败时不必为这次失败深拷整棵子树
+         * @note 默认值须按值传入：左值默认值会被推导成引用，命中分支返回的引用指向函数内
+         *       已销毁的 optional，因此体内以 static_assert 拒绝引用推导。字符串字面量与
+         *       std::string 左值走下面的非模板重载；其它左值请传副本，显式写出模板实参不能
+         *       把左值绑定到 T&&
          */
         template<typename T>
         T get(const std::string_view key, T &&defaultValue) const
         {
+            static_assert(std::is_same_v<T, std::decay_t<T>>, "默认值按值传入：左值默认值会让返回值指向局部 optional 的引用");
             // 快照在本函数内持强引用，因此下面那份引用只在本次调用期间有效：取的是表里的原对象
             // 而不是 getOptional 的副本（那条通道判定类型之前先把整棵子树拷进 optional，
             // 用一个 getInt 去碰一个 200 成员的表，光这次「类型不符」就要拷两千多个节点）。
@@ -186,6 +200,55 @@ namespace AsynGyanis::Base
                 return std::move(*converted);
             }
             return std::forward<T>(defaultValue);
+        }
+
+        /**
+         * @brief 以 C 字符串作为默认值的取值重载
+         * @details 模板重载会把字面量推导成数组引用，decay 后是不受支持的 const char*，
+         *          配置值会被整条忽略；本重载把它固定成 std::string 通道。
+         * @note 空的 const char* 指针按空串处理；字面量 nullptr 走下面的 std::nullptr_t 重载。
+         * @param key 配置键
+         * @param defaultValue 默认文本，空的 const char* 指针按空串处理
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, const char *defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue != nullptr ? defaultValue : ""));
+        }
+
+        /**
+         * @brief 以 nullptr 作为默认值的取值重载
+         * @details 字面量 nullptr 会按精确匹配推导成 std::nullptr_t 并选中转发引用模板，
+         *          配置值会被整条忽略；本重载把它固定成 std::string 通道，按空串处理。
+         * @param key 配置键
+         * @return std::string 配置文本或空串
+         */
+        [[nodiscard]] std::string get(std::string_view key, std::nullptr_t) const
+        {
+            return get<std::string>(key, std::string{});
+        }
+
+        /**
+         * @brief 以 std::string 左值作为默认值的取值重载
+         * @details 非模板重载优先于转发引用模板，避免模板把左值推导成引用后返回悬垂引用。
+         * @param key 配置键
+         * @param defaultValue 默认文本
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, const std::string &defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue));
+        }
+
+        /**
+         * @brief 以可修改的 std::string 左值作为默认值的取值重载
+         * @param key 配置键
+         * @param defaultValue 默认文本
+         * @return std::string 配置文本或默认文本
+         */
+        [[nodiscard]] std::string get(std::string_view key, std::string &defaultValue) const
+        {
+            return get<std::string>(key, std::string(defaultValue));
         }
 
         /**
@@ -317,8 +380,14 @@ namespace AsynGyanis::Base
          * @details 类型判定按「文件里该键现有的类型 → schema 声明的类型 → 字符串」三级取值，不猜类型：
          *          既没有文件值也没有 schema 声明时按字符串交出，schema 若声明了别的类型，会由提交后的
          *          校验出声。整数值接受 `1234`；布尔值接受 `1/0/true/false/yes/no/on/off`（大小写不敏感）；
-         *          对象与数组的值按 JSON 解析（例如 `ASYN_SERVER__HOSTS=["a","b"]`）。
-         *          任何一条转换失败都不应用本次覆盖，错误逐条记日志——不把半份覆盖当成全量提交。
+         *          对象与数组的值按 JSON 解析（例如 `ASYN_SERVER__HOSTS=["a","b"]`），解析成功后还要
+         *          核对形态：对象项必须是 JSON 对象、数组项必须是 JSON 数组，`42` 这类解析得动但
+         *          形态不符的取值照样拒绝。
+         *          同一批变量按键的字典序逐条合入快照，互异的键之间有确定的先后；折成同一键的
+         *          多个变量（POSIX 上仅大小写不同的写法）之间没有确定的先后——排序不稳定，别指望
+         *          靠变量名的拼写决定谁胜出。标量与表的定形规则与文件合并共用，后写的一条会让
+         *          先写的冲突形态让位。
+         *          任何一条转换或形态检查失败都不应用本次覆盖，错误逐条记日志——不把半份覆盖当成全量提交。
          * @param prefix 环境变量前缀（含分隔符本身，如 `ASYN_`）；传空串关闭这条通道，默认关闭
          * @note 覆盖只贴在「提交一份来自配置文件的快照」这一个出口，因此 clear() 不叠加（它的语义是
          *       「没有配置」），而 setValue() 写在覆盖之后、以程序侧意图为准。
@@ -335,8 +404,12 @@ namespace AsynGyanis::Base
         [[nodiscard]] std::string environmentOverridePrefix() const;
 
         /**
-         * @brief 当前快照里有几条配置值来自环境变量覆盖。
-         * @return std::size_t 条数；供运维入口与用例断言读取
+         * @brief 当前快照里仍来自环境变量覆盖的条目数。
+         * @details 计数按覆盖键集合维护：提交时只留下合入后仍在快照里的键，折成同一键的多个
+         *          变量各算一条；之后的 setValue 若改写同一个键，或按定形规则淘汰某个覆盖键，
+         *          会把该键移出集合并重算本读数。
+         * @return std::size_t 当前快照里的覆盖条目数；0 表示通道关着、没有命中，或覆盖键都被
+         *         后续写入改写/淘汰
          */
         [[nodiscard]] std::size_t environmentOverrideCount() const;
 
@@ -375,7 +448,9 @@ namespace AsynGyanis::Base
             std::filesystem::path    configDirectory;                 ///< 配置目录的路径
             bool                     configDirectoryRecursive = true; ///< 该目录当初是按递归加载的；reload() 与热重载按同一口径重扫，否则键集会在无人改文件时变化
 
-            std::size_t environmentOverrideCount = 0; ///< 这份快照里有几条值来自环境变量覆盖（0 表示通道关着或没有命中）
+            std::size_t environmentOverrideCount = 0; ///< 合入后仍在快照里的环境变量覆盖条目数（折成同一键的变量各算一条；setValue 改写或淘汰覆盖键时同步重算）
+            /// 本快照里来自环境变量覆盖的键；setValue 覆盖或淘汰这些键时据此重算计数
+            std::vector<std::string> environmentOverrideKeys;
         };
 
         /**
@@ -475,7 +550,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 处理文件监听回调并触发后台重载。
-         * @param filePath 发生变化的文件路径；changeType 为 NeedsRescan 时是被监视的目录路径，
+         * @param filePath 发生变化的文件路径；changeType 为 NeedsRescan 时是被监视的路径，
          *        此时不按扩展名过滤（那条信号要的就是「重读整份目录」）。
          * @param changeType 文件变更类型。
          */
@@ -517,6 +592,16 @@ namespace AsynGyanis::Base
          *         （失败的键与原因已逐条记入错误日志）
          */
         [[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values) const;
+
+        /**
+         * @brief 叠加环境变量覆盖，并交出仍在快照里的覆盖键。
+         * @details 与单参数版本同一套键名映射、类型判定、整批拒绝与定形规则；多出来的
+         *          appliedKeys 用于让快照在后续 setValue 时重算覆盖计数。
+         * @param values 待提交的扁平配置字典，就地改写
+         * @param appliedKeys 输出参数：合入后键仍留在字典里的覆盖键，别名各留一条
+         * @return std::size_t 实际留在快照里的覆盖条目数；转换失败时返回 0 且 values 不被改动
+         */
+        [[nodiscard]] std::size_t applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const;
 
         /**
          * @brief 对指定配置字典执行已注册 schema 的校验并记录错误日志。

@@ -1,12 +1,3 @@
-/**
- * @file SessionTicketKeyRing.cpp
- * @brief 会话票据密钥环的实现：密钥文件的读取校验，与装在 SSL_CTX 上的签发/解票回调
- * @author Gyanis
- * @date 2026-09-23
- * @version 1.0.0
- * @copyright Copyright (c) . All rights reserved.
- */
-
 #include "Core/Tls/SessionTicketKeyRing.h"
 
 #include "Core/Exception/CoreException.h"

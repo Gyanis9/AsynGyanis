@@ -7,7 +7,7 @@
 #include <openssl/macros.h>
 #include <openssl/params.h>
 
-#include <format>
+#include <atomic>
 #include <string>
 
 namespace AsynGyanis::Core::Digest
@@ -43,6 +43,36 @@ namespace AsynGyanis::Core::Digest
         }
 
         /**
+         * @brief 取进程级共享的 HMAC 算法句柄
+         * @details 成功取到的句柄缓存在原子量里，后续调用直接复用，避免把提供方查找放进摘要热路径；
+         *          取不到时不缓存，留给下一次调用重试。上下文由 EVP_MAC_CTX_new 自持引用，
+         *          这个静态句柄只需活到进程退出
+         * @return EVP_MAC * 共享的算法句柄；取不到时为 nullptr
+         */
+        [[nodiscard]] EVP_MAC *sharedHmacAlgorithm() noexcept
+        {
+            // 失败不缓存：提供方可能下一次才载入，内存压力也可能恢复；两条线程同时首取时
+            // 只有一个装上，另一份引用还回去
+            static std::atomic<EVP_MAC *> cached{nullptr};
+            if (EVP_MAC *const existing = cached.load(std::memory_order_acquire); existing != nullptr)
+            {
+                return existing;
+            }
+            EVP_MAC *const fetched = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
+            if (fetched == nullptr)
+            {
+                return nullptr;
+            }
+            EVP_MAC *expected = nullptr;
+            if (!cached.compare_exchange_strong(expected, fetched, std::memory_order_release, std::memory_order_relaxed))
+            {
+                EVP_MAC_free(fetched);
+                return expected;
+            }
+            return fetched;
+        }
+
+        /**
          * @brief 用 EVP_MAC 的 HMAC 提供方一次算完带密钥的认证码
          * @details 走 EVP_MAC 的显式流程而不是 HMAC()/EVP_Q_mac 一次性接口：前者在 OpenSSL 3.x 里被标弃用，
          *          后者的参数形状在 3.x 各小版本之间漂过（本机这份的第 5 参已是 OSSL_PARAM*），
@@ -56,13 +86,12 @@ namespace AsynGyanis::Core::Digest
          */
         void runHmac(std::string_view key, std::string_view data, std::string_view digestName, std::span<std::uint8_t> out, std::string_view algorithmName)
         {
-            EVP_MAC *const algorithm = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
+            EVP_MAC *const algorithm = sharedHmacAlgorithm();
             if (algorithm == nullptr)
             {
                 throw Base::Exception("Core::Digest: 无法加载 HMAC MAC 提供方（OpenSSL 未正确初始化或默认提供方未载入）");
             }
             EVP_MAC_CTX *const context = EVP_MAC_CTX_new(algorithm);
-            EVP_MAC_free(algorithm); // 上下文自带一份引用：先建上下文再放算法，抛出时也不会漏句柄
             if (context == nullptr)
             {
                 throw Base::Exception("Core::Digest: 无法创建 HMAC 上下文（OpenSSL 内存不足）");
@@ -164,11 +193,13 @@ namespace AsynGyanis::Core::Digest
 
     std::string toHex(const std::span<const std::uint8_t> bytes)
     {
-        std::string text;
-        text.reserve(bytes.size() * 2);
+        static constexpr char kHexDigits[] = "0123456789abcdef";
+        std::string           text(bytes.size() * 2, '\0');
+        char                 *cursor = text.data();
         for (const std::uint8_t byte: bytes)
         {
-            text += std::format("{:02x}", byte);
+            *cursor++ = kHexDigits[byte >> 4U];
+            *cursor++ = kHexDigits[byte & 0x0FU];
         }
         return text;
     }

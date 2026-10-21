@@ -14,7 +14,7 @@
 #include <iostream>
 #include <string_view>
 
-// Windows 上 winerror.h 会把 ERROR 定义成值为 0 的宏，污染 LogLevel::ERROR 这类标识符；
+// Windows 上 winerror.h 会把 ERROR 定义成值为 0 的宏，污染 ERROR 这类标识符；
 // 清理统一收敛在 "Platform/Platform.h"（对 ERROR 与 DELETE 执行 #undef），
 // 因此日志模块的使用方必须（直接或间接）先包含它。
 

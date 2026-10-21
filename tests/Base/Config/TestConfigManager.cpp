@@ -1157,6 +1157,46 @@ port: 9090
         EXPECT_EQ(configuration().getOptional("textEmptyQuoted")->get<std::string>(), "");
     }
 
+    /**
+     * @brief 普通标量按核心 schema 判定数值：前导零、前导点、尾随点与带符号指数都合法
+     * @details YAML 1.2.2 §10.3.2：十进制整数是 [-+]? [0-9]+，007 落整数 7；浮点接受 007.5、
+     *          .5、1. 与 1e+5；连续符号（+-1）不是任何核心 schema 数值，保留为字符串。
+     *          显式 !!int/!!float 走同一判定。
+     */
+    TEST_F(ConfigManagerTest, YamlCoreSchemaSignedExponentAndLeadingZeroes)
+    {
+        writeFile("numbers.yaml", "with_plus: 1e+5\n"
+                                  "with_plus_upper: 1.5E+10\n"
+                                  "leading_zero: 007\n"
+                                  "leading_zero_float: 007.5\n"
+                                  "leading_dot: .5\n"
+                                  "trailing_dot: 1.\n"
+                                  "double_sign: +-1\n"
+                                  "plain_zero: 0\n"
+                                  "negative_zero: -0\n"
+                                  "hex: 0x10\n"
+                                  "octal: 0o10\n"
+                                  "tagged_int: !!int 007\n"
+                                  "tagged_float: !!float 007\n"
+                                  "tagged_exp: !!float 1e+5\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus", 0.0), 100000.0);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("with_plus_upper", 0.0), 1.5e10);
+        EXPECT_EQ(configuration().getInt("leading_zero", -1), 7);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("leading_zero_float", 0.0), 7.5);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("leading_dot", 0.0), 0.5);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("trailing_dot", 0.0), 1.0);
+        EXPECT_EQ(configuration().getString("double_sign"), "+-1") << "核心 schema 的浮点只有一个可选符号";
+        EXPECT_EQ(configuration().getInt("plain_zero", -1), 0);
+        EXPECT_EQ(configuration().getInt("negative_zero", -1), 0);
+        EXPECT_EQ(configuration().getInt("hex", -1), 16);
+        EXPECT_EQ(configuration().getInt("octal", -1), 8);
+        EXPECT_EQ(configuration().getInt("tagged_int", -1), 7);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("tagged_float", 0.0), 7.0);
+        EXPECT_DOUBLE_EQ(configuration().getDouble("tagged_exp", 0.0), 100000.0);
+    }
+
     TEST_F(ConfigManagerTest, LoadFromDirectoryScalesToHundredsOfKeys)
     {
         constexpr int kKeyCount = 500;
@@ -1706,6 +1746,39 @@ port: 9090
         EXPECT_EQ(configuration().get<std::string>("nonexistent", "fallback"), "fallback");
         EXPECT_EQ(configuration().get<int64_t>("nonexistent", 99), 99);
         EXPECT_EQ(configuration().get<bool>("nonexistent", true), true);
+    }
+
+    TEST_F(ConfigManagerTest, GetWithDefaultAcceptsStringLiteralsAndLvalueStrings)
+    {
+        writeFile("cfg.yaml", "name: test\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 字面量默认值必须仍然读取配置：T 推导成数组引用时 configValueAs 会整条落空
+        EXPECT_EQ(configuration().get("name", "fallback"), "test");
+        EXPECT_EQ(configuration().get("missing", "fallback"), "fallback");
+
+        // 字面量 nullptr 走 std::nullptr_t 重载，不能被转发引用模板吞成 nullptr
+        static_assert(std::is_same_v<decltype(configuration().get("name", nullptr)), std::string>);
+        EXPECT_EQ(configuration().get("name", nullptr), "test");
+        EXPECT_EQ(configuration().get("missing", nullptr), "");
+
+        // 左值默认值返回按值：命中时不得返回指向局部 optional 的引用
+        const std::string fallback = "a-fallback-long-enough-to-leave-sso";
+        const std::string name     = configuration().get("name", fallback);
+        EXPECT_EQ(name, "test");
+
+        std::string mutableFallback = "a-mutable-fallback-long-enough-to-leave-sso";
+        EXPECT_EQ(configuration().get("name", mutableFallback), "test");
+
+        // 编译期钉住三组字符串默认值的按值返回：decltype 不求值，configuration() 不必是 constexpr
+        static_assert(std::is_same_v<decltype(configuration().get("name", "fallback")), std::string>);
+        static_assert(std::is_same_v<decltype(configuration().get("name", fallback)), std::string>);
+        static_assert(std::is_same_v<decltype(configuration().get("name", mutableFallback)), std::string>);
+
+        // 指针变量走 const char* 重载：若落到转发引用模板，T 推导成指针引用会触发 static_assert
+        const char *pointerFallback = "pointer-fallback";
+        static_assert(std::is_same_v<decltype(configuration().get("name", pointerFallback)), std::string>);
+        EXPECT_EQ(configuration().get("name", pointerFallback), "test");
     }
 
     TEST_F(ConfigManagerTest, GetWithDefaultFallsBackOnTypeMismatch)
@@ -2485,6 +2558,70 @@ port: 9090
         EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
 
+    /**
+     * @brief 另一条线程关闭热重载时，回调里再 enable 不得与关闭路径互相等待
+     * @details 旧实现持控制锁 join 重载线程；回调看到 enabled=false 后调 enable 会阻塞在同一把
+     *          非递归锁上，关闭线程又在 join 回调所在线程，形成死锁。看门狗在 5 秒后失败退出。
+     */
+    TEST_F(ConfigManagerTest, DisablingHotReloadWhileCallbackReenablesDoesNotDeadlock)
+    {
+        writeFile("cfg.yaml", "value: first\n");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        struct CallbackState
+        {
+            std::atomic<bool> entered{false};
+            std::atomic<bool> returned{false};
+        };
+        auto       callbackState = std::make_shared<CallbackState>();
+        const bool enabled       = configuration().enableHotReload(
+                [callbackState](const ConfigLoadResult &)
+                {
+                    callbackState->entered.store(true, std::memory_order_release);
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    while (ConfigManager::instance().isHotReloadEnabled() && std::chrono::steady_clock::now() < deadline)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                    static_cast<void>(ConfigManager::instance().enableHotReload(nullptr, std::chrono::milliseconds(50)));
+                    callbackState->returned.store(true, std::memory_order_release);
+                },
+                std::chrono::milliseconds(50));
+        if (!enabled)
+        {
+            GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
+        }
+
+        // 与其余热重载用例同一处置：监听线程要先把读请求投出去
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        writeFile("cfg.yaml", "value: second\n");
+        ASSERT_TRUE(TestSupport::waitForCondition([callbackState] { return callbackState->entered.load(std::memory_order_acquire); }, std::chrono::seconds(8)))
+                << "重载回调没有进入";
+
+        std::atomic<bool> disableReturned{false};
+        std::thread       watchdog(
+                [&disableReturned]
+                {
+                    for (int tick = 0; tick < 100 && !disableReturned.load(std::memory_order_acquire); ++tick)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                    if (!disableReturned.load(std::memory_order_acquire))
+                    {
+                        std::fprintf(stderr, "disableHotReload 没能在 5 秒内返回：关闭路径与回调在互等\n");
+                        std::fflush(stderr);
+                        std::_Exit(1);
+                    }
+                });
+
+        configuration().disableHotReload();
+        disableReturned.store(true, std::memory_order_release);
+        watchdog.join();
+
+        EXPECT_TRUE(callbackState->returned.load(std::memory_order_acquire)) << "disable 返回时回调还没走完";
+        configuration().disableHotReload();
+    }
+
     TEST_F(ConfigManagerTest, DisableHotReloadAfterFailedEnableIsSafeToRepeat)
     {
         configuration().clear();
@@ -2641,10 +2778,10 @@ port: 9090
 
     /**
      * @brief 钉住：把配置文件改名移走也要触发热重载
-     * @details 消费方接受的事件种类是 Modified/Created/Deleted 三种。Linux 的 `IN_MOVED_FROM` 被映射成
-     *          Deleted，正好落在其中；Windows 的 `FILE_ACTION_RENAMED_OLD_NAME` 映射成 Moved，于是
-     *          「把 config.yaml 改名挪走」这个下线动作在 Windows 上一条通知都不算数：旧名被 Moved 滤掉，
-     *          新名因不是配置后缀被扩展名滤掉，配置停在已经消失的那份上直到下次改动。
+     * @details 消费方接受的事件种类是 Modified/Created/Deleted/Moved。监视目录内部的改名两侧都报
+     *          Moved；把文件移出监视范围时 Windows 报 Deleted、Linux 报 Moved，两种都在接受之列。
+     *          因此「把 config.yaml 改名挪走」这个下线动作在两个平台上都会触发一次重载，配置不会
+     *          停在已经消失的那份上。
      *          先做一次普通改写当对照：确认监视通道活着，后面的判据才只指向「移走」这一条路。
      */
     TEST_F(ConfigManagerTest, RenamingConfigFileAwayTriggersHotReload)
@@ -3153,6 +3290,43 @@ port: 9090
     }
 
     /**
+     * @brief 环境变量覆盖计数要跟着 setValue 走：同键改写或淘汰后不再计入
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideCountTracksLaterSetValue)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        // 无关写入不动覆盖计数
+        ASSERT_TRUE(configuration().setValue("other", ConfigValue(1)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        // 程序侧改写同一个键：这个值不再来自环境变量
+        ASSERT_TRUE(configuration().setValue("server.port", ConfigValue(7070)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
+        EXPECT_EQ(configuration().getInt("server.port", 0), 7070);
+    }
+
+    /**
+     * @brief 程序侧把一段表写成标量时，被淘汰的覆盖键不再计入
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideCountDropsWhenAncestorWriteEvictsIt)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "9090");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+        ASSERT_EQ(configuration().environmentOverrideCount(), 1U);
+
+        ASSERT_TRUE(configuration().setValue("server", ConfigValue(5)));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U) << "被淘汰的覆盖键仍被计数";
+        EXPECT_FALSE(configuration().has("server.port"));
+    }
+
+    /**
      * @brief 对象与数组项按 JSON 解析，坏 JSON 走整批拒绝
      */
     TEST_F(ConfigManagerTest, EnvironmentOverrideParsesStructuredValuesAsJson)
@@ -3167,5 +3341,73 @@ port: 9090
         ASSERT_TRUE(hosts.is_array());
         ASSERT_EQ(hosts.size(), 2U);
         EXPECT_EQ(hosts[0].get<std::string>(), "a");
+    }
+
+    /**
+     * @brief 环境变量把一段表写成标量时，旧子键必须让位
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideResolvesScalarTableConflicts)
+    {
+        writeFile("cfg.yaml", "server:\n  port: 8080\n");
+        const TestSupport::ScopedEnvironmentVariable serverOverride("ASYN_TESTCFG_SERVER", "5");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        EXPECT_EQ(configuration().getText("server"), "5");
+        EXPECT_FALSE(configuration().has("server.port")) << "标量与环境变量并存，段落形状被破坏";
+        EXPECT_EQ(configuration().getSection("server").size(), 0U);
+    }
+
+    /**
+     * @brief 环境变量在旧标量下面写子键时，旧标量必须让位
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideReplacesScalarWithTable)
+    {
+        writeFile("cfg.yaml", "server: 5\n");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "8080");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 该键在文件里没有对应值也没有 schema，按规则落成字符串；本条只判形状，不判类型
+        EXPECT_EQ(configuration().getText("server.port"), "8080");
+        EXPECT_FALSE(configuration().has("server")) << "标量与子键并存";
+    }
+
+    /**
+     * @brief 同一批环境变量内部冲突时按 key 排序后后者胜出，结果确定
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideInternalConflictsAreDeterministic)
+    {
+        writeFile("cfg.yaml", "kept: true\n");
+        const TestSupport::ScopedEnvironmentVariable serverOverride("ASYN_TESTCFG_SERVER", "5");
+        const TestSupport::ScopedEnvironmentVariable portOverride("ASYN_TESTCFG_SERVER__PORT", "8080");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        // 两条覆盖都没有文件值/schema 可依，按字符串交出；排序后 server.port 后写胜出
+        EXPECT_EQ(configuration().getText("server.port"), "8080");
+        EXPECT_FALSE(configuration().has("server"));
+        EXPECT_EQ(configuration().environmentOverrideCount(), 1U) << "server 标量已被 server.port 淘汰，计数不该仍算两条";
+    }
+
+    /**
+     * @brief 结构化覆盖的值形态必须与目标一致，数组不能被数字顶掉
+     * @details 同批还有一条本身合法的覆盖，用来证明失败不是逐条丢弃而是整批拒绝：
+     *          文件名下的数组保持原样、这条新键也不该出现
+     */
+    TEST_F(ConfigManagerTest, EnvironmentOverrideRejectsMismatchedStructuredValue)
+    {
+        writeFile("cfg.yaml", "server:\n  hosts: [\"first\"]\n");
+        const TestSupport::ScopedEnvironmentVariable hostsOverride("ASYN_TESTCFG_SERVER__HOSTS", "42");
+        const TestSupport::ScopedEnvironmentVariable nameOverride("ASYN_TESTCFG_SERVER__NAME", "kept");
+        configuration().setEnvironmentOverridePrefix("ASYN_TESTCFG_");
+        ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
+
+        const ConfigValue hosts = configuration().get("server.hosts");
+        ASSERT_TRUE(hosts.is_array());
+        ASSERT_EQ(hosts.size(), 1U);
+        EXPECT_EQ(hosts[0].get<std::string>(), "first") << "形态不符的覆盖不该落地";
+        EXPECT_FALSE(configuration().has("server.name")) << "同批合法的覆盖也不该单独生效";
+        EXPECT_EQ(configuration().environmentOverrideCount(), 0U);
     }
 } // namespace AsynGyanis::Base

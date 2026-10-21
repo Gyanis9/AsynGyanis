@@ -21,8 +21,8 @@ namespace AsynGyanis::Base
     /**
      * @brief 配置键不存在异常
      *
-     * @details 在扁平配置字典或嵌套对象/数组中按点号路径查找失败时抛出，
-     *          数组越界时下标会以 "[index]" 形式作为键记录。
+     * @details 在扁平配置字典（点号路径就是键本身）中按点号路径查找失败时抛出；
+     *          Base 不解析嵌套对象/数组的路径，也不使用 "[index]" 形式的下标。
      */
     class ASYN_BASE_API ConfigKeyNotFoundException : public ConfigException
     {
@@ -31,7 +31,7 @@ namespace AsynGyanis::Base
          * @brief 构造配置键不存在异常
          * @details 调用 ConfigException("配置键不存在：'键'", sourceLocation)，
          *          并把原始键单独保存供 key() 读取。
-         * @param key 查找失败的配置键（点号路径或 "[下标]"）
+         * @param key 查找失败的配置键（扁平字典中的点号路径）
          * @param sourceLocation 异常抛出位置，默认取调用点
          */
         explicit ConfigKeyNotFoundException(const std::string &key, const std::source_location &sourceLocation = std::source_location::current());

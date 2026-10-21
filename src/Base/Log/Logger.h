@@ -100,7 +100,8 @@ namespace AsynGyanis::Base
         template<typename... Args>
         void logFormat(const LogLevel level, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
-            if (!shouldLog(level))
+            // 先过等级、再看提示性的 Sink 计数：零 Sink 时格式化结果没有读者
+            if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
             {
                 return;
             }
@@ -122,7 +123,8 @@ namespace AsynGyanis::Base
         template<typename... Args>
         void logExceptionFormat(const LogLevel level, const std::exception &exception, const SourceLocation &location, std::string_view formatString, Args &&...arguments) const
         {
-            if (!shouldLog(level))
+            // 与 logFormat 同一口径：先过等级、再看提示性的 Sink 计数
+            if (!shouldLog(level) || m_sinkCount.load(std::memory_order_relaxed) == 0U)
             {
                 return;
             }
@@ -206,7 +208,7 @@ namespace AsynGyanis::Base
         /**
          * @brief 将日志事件分发到全部可用 Sink
          * @details 先原子加载快照再遍历，因此并发 clearSinks() 不会让遍历撞上已释放的 Sink。
-         *          最后一个愿意收的 Sink 拿到事件本体（move），其余各拿一份只读引用：
+         *          快照里只有一个 Sink 时它拿到事件本体（move）；否则各拿只读引用：
          *          异步队列那条路因此不必再为每行日志复制一份消息体。
          * @param event 已构造好的日志事件；本函数可能交出它的内容，调用方此后不得再读
          */
@@ -243,7 +245,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 以「已持有消息体与调用栈」的形式构造并分发日志事件
          * @details 消息体按值接收并移入事件，使 std::vformat 的结果零拷贝交给事件；
-         *          这是 log / logFormat / logWithStackTrace 共用的内部入口。
+         *          事件同时带上日志点的上下文快照（异步 Sink 在工作线程上格式化时读到的
+         *          因此不是那里的 TLS）。这是 log / logFormat / logWithStackTrace 共用的内部入口。
          * @param level 本次日志级别
          * @param message 已格式化好的日志消息
          * @param location 源码位置信息
@@ -255,6 +258,15 @@ namespace AsynGyanis::Base
         std::shared_ptr<const std::string>               m_name;
         std::atomic<LogLevel>                            m_level{LogLevel::Trace};         ///< 当前日志级别
         std::atomic<std::shared_ptr<const SinkSnapshot>> m_sinksSnapshot{emptySnapshot()}; ///< 读路径无锁的 Sink 快照
-        std::mutex                                       m_sinksWriteMutex;                ///< 仅用于串行化替换快照的写者，读者不会触碰
+
+        /**
+         * @brief 快照中的 Sink 数，只服务「零 Sink 提前返回」这一条快速判断
+         * @details 写侧在 m_sinksWriteMutex 内随快照之后发布；读侧 relaxed 取值，
+         *          因此并发 addSink 或 clearSinks 的窗口里，读到旧值的日志可能被提前放掉，
+         *          具体哪条取决于时序。
+         */
+        std::atomic<std::size_t> m_sinkCount{0U};
+
+        std::mutex m_sinksWriteMutex; ///< 仅用于串行化替换快照的写者，读者不会触碰
     };
 } // namespace AsynGyanis::Base

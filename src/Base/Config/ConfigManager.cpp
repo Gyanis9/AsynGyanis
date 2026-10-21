@@ -303,10 +303,19 @@ namespace AsynGyanis::Base
         std::vector<std::filesystem::path> loadedPaths;
         for (const auto &filePath: filePaths)
         {
-            if (!std::filesystem::exists(filePath))
+            // 目录扫描那条路已全程走 error_code 重载，这里是文件清单路径上最后一处会抛
+            // filesystem_error 的查询：路径查不了时同样落进结果清单，而不把异常交给调用方
+            std::error_code existsError;
+            if (const bool fileExists = std::filesystem::exists(filePath, existsError); existsError || !fileExists)
             {
+                if (existsError)
+                {
+                    result.errors.push_back("无法检查文件是否存在：" + pathText(filePath) + "（" + existsError.message() + "）");
+                } else
+                {
+                    result.errors.push_back("文件不存在：" + pathText(filePath));
+                }
                 result.failedFiles.push_back(pathText(filePath));
-                result.errors.push_back("文件不存在：" + pathText(filePath));
                 continue;
             }
             if (!isConfigFile(pathText(filePath)))
@@ -452,42 +461,52 @@ namespace AsynGyanis::Base
 
     void ConfigManager::disableHotReload()
     {
-        // 与 enableHotReload 共用同一把控制面锁，二者对 m_fileWatcher 的读写才互斥；
-        // 这把锁总是最外层，监听线程的回调只碰 m_reloadTasksMutex，因此不会成环
-        const std::lock_guard controlLock(m_hotReloadControlMutex);
-
-        if (!m_hotReloadEnabled.exchange(false, std::memory_order_acq_rel))
-        {
-            return;
-        }
-
-        // 等待所有活跃的重载线程完成，防止 use-after-free。
-        // 锁内只摘取句柄，join 放到锁外：join 可能等到一次完整 reload 结束，
-        // 持锁 join 会让文件监听线程后续的热加载检查全部排队等待
         std::vector<std::unique_ptr<ReloadTask>> pendingTasks;
         {
-            const std::lock_guard lock(m_reloadTasksMutex);
-            pendingTasks.swap(m_reloadTasks);
-            // 重载回调里调 disableHotReload() 是合法用法（「连续几轮失败就别再监视了」），
-            // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
-            // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
-            // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
-            // 留下它，本轮收尾后由 collectFinishedReloadTasks 正常回收
-            for (auto &task: pendingTasks)
+            // 与 enableHotReload 共用同一把控制面锁，二者对 m_fileWatcher 的读写才互斥；
+            // 这把锁总是最外层，监听线程的回调只碰 m_reloadTasksMutex，因此不会成环
+            const std::lock_guard controlLock(m_hotReloadControlMutex);
+            if (!m_hotReloadEnabled.load(std::memory_order_acquire))
             {
-                if (task && task->thread.get_id() == std::this_thread::get_id())
+                return;
+            }
+            {
+                const std::lock_guard lock(m_reloadTasksMutex);
+                // 先把退出表容量留够：后面的搬移不再分配，唯一分配点排在状态切换之前
+                pendingTasks.reserve(m_reloadTasks.size());
+                if (!m_hotReloadEnabled.exchange(false, std::memory_order_acq_rel))
                 {
-                    m_reloadTasks.push_back(std::move(task));
+                    return;
+                }
+                for (auto iterator = m_reloadTasks.begin(); iterator != m_reloadTasks.end();)
+                {
+                    // 重载回调里调 disableHotReload() 是合法用法（「连续几轮失败就别再监视了」），
+                    // 而本轮任务此刻正跑在本线程上、finished 要到回调返回之后才置起。把它一起销毁
+                    // 就是让 ~jthread 去 join 自己那一条线程：std::jthread 抛
+                    // resource_deadlock_would_occur，而异常从析构里出来即 std::terminate。
+                    // 原地跳过它，留待下一次 scheduleReload 或本对象析构时回收
+                    if (*iterator && (*iterator)->thread.get_id() == std::this_thread::get_id())
+                    {
+                        ++iterator;
+                        continue;
+                    }
+                    pendingTasks.push_back(std::move(*iterator));
+                    iterator = m_reloadTasks.erase(iterator);
                 }
             }
+            if (m_fileWatcher)
+            {
+                m_fileWatcher->stop();
+                m_fileWatcher.reset();
+            }
         }
+        // 这里的 join（pendingTasks 析构时隐式完成）是为了等仍活着的重载线程退出：它们可能
+        // 还在 doReload() 或用户回调里，不等它们结束就让 disable 返回，调用方紧接着销毁配置
+        // 管理器就会让这些线程继续访问已释放的对象（use-after-free）。join 放在控制锁之外：
+        // 重载回调里再调 enable/disable 是合法用法，持锁 join 会让回调阻塞在这把非递归互斥量
+        // 上，与 join 形成死锁。并发的第二个 disable 可能在本线程 join 完成之前就返回
+        // （它看到 enabled 已为 false）
         pendingTasks.clear();
-
-        if (m_fileWatcher)
-        {
-            m_fileWatcher->stop();
-            m_fileWatcher.reset();
-        }
     }
 
     bool ConfigManager::isHotReloadEnabled() const noexcept
@@ -536,9 +555,10 @@ namespace AsynGyanis::Base
 
     std::string ConfigManager::getString(const std::string_view key, const std::string &defaultValue) const
     {
-        // 与 getText 同一口径按视图直查：走 get<std::string> 要先把整份 ConfigValue 深拷进
-        // optional、再从那份副本里拷一次字符串，而进入时形参 defaultValue 已经按值构造过一份
-        // （命中时那次分配纯属白花）。严格类型口径不变：只有字符串值才算取到，其余回落默认值
+        // 按视图直查，命中且类型是字符串时只付一次返回拷贝：走 getOptional 要先把
+        // optional<ConfigValue> 里的整棵子树深拷一份（这里只读一个标量），再从中取字符串；
+        // 默认值形参是 const 引用，未命中时也只付这一次返回拷贝，不会先把默认值拷一遍。
+        // 严格类型口径不变：只有字符串值才算取到，其余回落默认值
         const auto currentData = m_data.load(std::memory_order_acquire);
         const auto iterator    = currentData->values.find(key);
         if (iterator == currentData->values.end() || !iterator->second.is_string())
@@ -602,6 +622,13 @@ namespace AsynGyanis::Base
             ConfigKeyValueMap incoming;
             incoming.emplace(std::string(key), std::move(value));
             shapeConflicts = mergeFileValues(newData->values, std::move(incoming), std::format("setValue(\"{}\")", key));
+            // 程序侧写入的键不再是「来自环境变量」；定形冲突淘汰掉的覆盖键也不再计入。
+            // 这一步只动拷贝出来的快照，读者仍看旧快照
+            newData->environmentOverrideKeys.erase(std::remove_if(newData->environmentOverrideKeys.begin(), newData->environmentOverrideKeys.end(),
+                                                                  [&newData, key](const std::string &overrideKey)
+                                                                  { return std::string_view(overrideKey) == key || !newData->values.contains(overrideKey); }),
+                                                   newData->environmentOverrideKeys.end());
+            newData->environmentOverrideCount = newData->environmentOverrideKeys.size();
             m_data.store(newData, std::memory_order_release);
         }
 
@@ -790,6 +817,8 @@ namespace AsynGyanis::Base
         /**
          * @brief 按核心 schema 识别整数文本（十进制、0o 八进制、0x 十六进制，可带正负号）
          * @details 非负整数与 JSON 侧口径一致地落无符号数（原生解析把非负整数放进 number_unsigned）。
+         *          YAML 1.2.2 §10.3.2 的十进制整数是 [-+]? [0-9]+，前导零与一个正负号都允许；
+         *          八进制是 0o[0-7]+，十六进制是 0x[0-9a-fA-F]+。
          * @param text 标量文本
          * @param node 所在节点，用于错误位置
          * @return std::optional<ConfigValue> 不是整数文本时返回空
@@ -865,8 +894,11 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 按核心 schema 识别浮点文本
-         * @details 接受十进制小数/指数形式与 .inf/.nan 系列；裸 inf/nan 按 schema 属字符串，
-         *          而库的解析会接受它们，因此先按字符集挡掉再做严格的全串解析。
+         * @details YAML 1.2.2 §10.3.2 的浮点是
+         *          [-+]? ( \. [0-9]+ | [0-9]+ ( \. [0-9]* )? ) ( [eE] [-+]? [0-9]+ )?：
+         *          前导点（.5）、尾随点（1.）、整数部分的前导零（007.5）与带符号指数都合法，
+         *          整个数也允许一个前导 '+'。另接受 .inf/.nan 系列。
+         *          裸 inf/nan 按 schema 属字符串，而库的解析会接受它们，因此先按字符集挡掉再做严格的全串解析。
          * @param text 标量文本
          * @return std::optional<double> 不是浮点文本时返回空
          * @throws DocumentConversionException 是浮点文本但超出 double 表示范围
@@ -879,6 +911,13 @@ namespace AsynGyanis::Base
             {
                 negative = signlessText.front() == '-';
                 signlessText.remove_prefix(1);
+            }
+
+            // 核心 schema 的浮点只有一个可选符号。剥掉它之后仍以符号开头（如 "+-1"），
+            // 剩下的 "-1" 会被 from_chars 当成负数接受，必须在数值解析之前判为非浮点
+            if (!signlessText.empty() && (signlessText.front() == '+' || signlessText.front() == '-'))
+            {
+                return std::nullopt;
             }
 
             if (signlessText == ".inf" || signlessText == ".Inf" || signlessText == ".INF")
@@ -897,7 +936,7 @@ namespace AsynGyanis::Base
                 if (character >= '0' && character <= '9')
                 {
                     hasDigit = true;
-                } else if (character != '.' && character != '-' && character != 'e' && character != 'E')
+                } else if (character != '.' && character != '-' && character != '+' && character != 'e' && character != 'E')
                 {
                     return std::nullopt;
                 }
@@ -908,7 +947,7 @@ namespace AsynGyanis::Base
             }
 
             std::string_view numericText = text;
-            // 前导 '+'（YAML 允许）不是标准库解析所认的写法，剥掉；'-' 保留给库处理
+            // 核心 schema 允许的前导 '+' 不是标准库解析所认的写法，剥掉；'-' 保留给库处理
             if (!numericText.empty() && numericText.front() == '+')
             {
                 numericText.remove_prefix(1);
@@ -1641,9 +1680,9 @@ namespace AsynGyanis::Base
                 return;
             }
 
-            // Moved 也要收：Windows 把「改名走开」报成 Moved（源路径），Linux 的同一条动作被映射成 Deleted。
-            // 只收三种时，Windows 上「把 config.yaml 改名挪走」这个下线动作一条通知都不算数——旧名被类型
-            // 判据滤掉、新名因不是配置后缀被上一条滤掉，配置停在已经消失的那份上直到下次改动
+            // 四种类型都要收：监视目录内部的改名两侧同为 Moved，而把配置移出监视范围时 Windows 报
+            // Deleted、Linux 报 Moved，消费方必须两种都收；真实删除也报 Deleted。少收一种时，改名
+            // 挪走配置这个下线动作会在源路径上被类型判据滤掉，配置停在已经消失的那份上直到下次改动
             if (changeType != Platform::FileChangeType::Modified && changeType != Platform::FileChangeType::Created && changeType != Platform::FileChangeType::Deleted &&
                 changeType != Platform::FileChangeType::Moved)
             {
@@ -1687,13 +1726,19 @@ namespace AsynGyanis::Base
 
     void ConfigManager::startReloadTask()
     {
-        // 起线程是这条路上唯一会失败的分配（建任务节点、开线程栈、线程数触到系统上限）。
+        // 这条路上会失败的是登记任务与起线程的分配（扩登记表、建任务节点、开线程栈、线程数触到系统上限）。
         // 让它抛出去等于把异常送到调用方的线程函数外——监视线程与重载线程都会 std::terminate。
         // 这里的收口方式是「本轮不跑，把活留给下一次事件」
         try
         {
             const std::lock_guard lock(m_reloadTasksMutex);
 
+            // 启动线程之后不再允许分配：push_back 若在此时扩容失败，栈上局部 jthread 的析构
+            // 会在持有 m_reloadTasksMutex 的情况下 join 一个可能已收尾并交接了下一轮的工作
+            // 线程——那一轮正卡在这把锁上等登记，双方互等即死锁；catch 里的 finishRunning
+            // 再抢一次执行权只是次要后果（破坏单轮串行）。reserve 把扩容排到线程启动之前，
+            // 此时失败还没有线程，两条后果都不存在
+            m_reloadTasks.reserve(m_reloadTasks.size() + 1U);
             auto        task    = std::make_unique<ReloadTask>();
             ReloadTask *rawTask = task.get();
             task->thread        = std::jthread([this, rawTask]() { runReloadTask(rawTask); });
@@ -1707,7 +1752,9 @@ namespace AsynGyanis::Base
             LOG_ERROR_FMT("ConfigManager: 启动热重载任务失败（非标准异常），本轮重载让给下一次事件");
         }
 
-        // 起不来时把刚抢到的执行权交还：本轮就此作罢，等下一次事件重新起轮。
+        // 走到这里说明扩容、建任务节点或起线程中有一步失败，此时还没有工作线程开始跑：
+        // 刚抢到的执行权由这里交还，本轮就此作罢，等下一次事件重新起轮；起得来的那一轮
+        // 由 runReloadTask 收尾时自己 releaseRound，两条路不会重复归还同一轮。
         // 这里刻意不做接力（releaseRound 会在有新变更时再起一轮）——线程本来就起不来，
         // 接力只会在这条失败路径上原地递归
         m_reloadGate.finishRunning();
@@ -1835,15 +1882,19 @@ namespace AsynGyanis::Base
             }
         };
 
+        // 范围 for 的 operator++ 不带 error_code，走的是会抛的那一份重载：目录读到一半遇上
+        // 不可读的子目录时，filesystem_error 会直接穿过这里逃到调用方。显式 increment(error_code)
+        // 把构造与每一次递增的失败都留在 errorCode 里：构造失败时循环条件一开始就不成立，
+        // 递增失败则让下一轮条件不成立，两种都交给循环之后那一次判定。
+        // 属性查询失败则必须就地跳出：increment(error_code) 成功时会把 errorCode 清掉，
+        // 那一处失败若跟着递增走一圈就没人报了
         if (recursive)
         {
-            for (const auto &entry: std::filesystem::recursive_directory_iterator(directory, errorCode))
+            std::filesystem::recursive_directory_iterator       iterator(directory, errorCode);
+            const std::filesystem::recursive_directory_iterator end;
+            for (; !errorCode && iterator != end; iterator.increment(errorCode))
             {
-                if (errorCode)
-                {
-                    break;
-                }
-                collect(entry);
+                collect(*iterator);
                 if (errorCode)
                 {
                     break;
@@ -1851,13 +1902,11 @@ namespace AsynGyanis::Base
             }
         } else
         {
-            for (const auto &entry: std::filesystem::directory_iterator(directory, errorCode))
+            std::filesystem::directory_iterator       iterator(directory, errorCode);
+            const std::filesystem::directory_iterator end;
+            for (; !errorCode && iterator != end; iterator.increment(errorCode))
             {
-                if (errorCode)
-                {
-                    break;
-                }
-                collect(entry);
+                collect(*iterator);
                 if (errorCode)
                 {
                     break;
@@ -1865,8 +1914,8 @@ namespace AsynGyanis::Base
             }
         }
 
-        // 循环之外的这一次判定不能省：迭代器在最后一个条目之后才出错时，循环体内的检查
-        // 永远不会再跑到，错误就这么留在 errorCode 里没人认领
+        // 循环之外的这一次判定不能省：increment 在最后一个条目之后才失败时，循环因 errorCode
+        // 非零而停止，错误只留在 errorCode 里；不在这里认领，这份少了几项的清单就会被当成全量
         if (errorCode)
         {
             return std::unexpected(std::format("扫描配置目录 '{}' 时中断（{}），本轮只扫到 {} 个配置文件："
@@ -1930,9 +1979,11 @@ namespace AsynGyanis::Base
         /**
          * @brief 按目标类型解释环境变量的文本值
          * @details 目标类型只从「文件里该键已有的类型」或「schema 声明」两处取，本函数不猜类型——
-         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。
+         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。对象与数组
+         *          解析成 JSON 后还要核对顶层形态：对象项必须是对象、数组项必须是数组，
+         *          `42` 这类解析得动但形态不符的取值同样拒绝。
          * @param text 环境变量原文
-         * @param type 目标类型（对象与数组按 JSON 解析，其余未知类型一律按字符串交出）
+         * @param type 目标类型（对象与数组按 JSON 解析并核对形态，其余未知类型一律按字符串交出）
          * @param[out] error 转换失败时的中文说明，含原值
          * @return std::optional<ConfigValue> 转换结果；失败时为空
          */
@@ -1995,13 +2046,24 @@ namespace AsynGyanis::Base
                 case ConfigValueType::array:
                 {
                     // 结构与列表只能按 JSON 收：`ASYN_SERVER__HOSTS=["a","b"]` 这种写法没有别的解释法
+                    ConfigValue parsed;
                     try
                     {
-                        return ConfigValue::parse(std::string(text));
+                        parsed = ConfigValue::parse(std::string(text));
                     } catch (const std::exception &)
                     {
                         return reject("对象与数组项的值必须是合法 JSON");
                     }
+                    // 合法 JSON 不等于形态对得上：`42` 也解析得动，但把数组顶成数字等于偷换类型
+                    if (type == ConfigValueType::object && !parsed.is_object())
+                    {
+                        return reject("对象项的值必须是合法 JSON 对象");
+                    }
+                    if (type == ConfigValueType::array && !parsed.is_array())
+                    {
+                        return reject("数组项的值必须是合法 JSON 数组");
+                    }
+                    return parsed;
                 }
                 default:
                     return ConfigValue(std::string(text));
@@ -2028,6 +2090,13 @@ namespace AsynGyanis::Base
 
     std::size_t ConfigManager::applyEnvironmentOverrides(ConfigKeyValueMap &values) const
     {
+        std::vector<std::string> appliedKeys;
+        return applyEnvironmentOverrides(values, appliedKeys);
+    }
+
+    std::size_t ConfigManager::applyEnvironmentOverrides(ConfigKeyValueMap &values, std::vector<std::string> &appliedKeys) const
+    {
+        appliedKeys.clear();
         const auto prefixSnapshot = m_environmentPrefix.load(std::memory_order_acquire);
         if (prefixSnapshot == nullptr || prefixSnapshot->empty())
         {
@@ -2112,12 +2181,35 @@ namespace AsynGyanis::Base
             return 0;
         }
 
-        for (const auto &override: applied)
+        // 排序让互异键之间的冲突有确定结果：键按字典序逐条合入，后写的那条胜出，不再取决于
+        // 部署环境给出的变量枚举顺序；折成同一键的多个变量名（POSIX 上仅大小写不同的写法）
+        // 之间没有确定先后——std::ranges::sort 不稳定，谁胜出不能靠变量名的拼写推断。
+        // 逐条经 mergeFileValues 并进快照，与文件合并共用同一套「标量/表互斥」的定形规则，
+        // 覆盖不能绕过它直接写表
+        std::ranges::sort(applied, {}, &Applied::key);
+        for (auto &entry: applied)
         {
-            values[override.key] = std::move(override.value);
-            LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", override.key);
+            LOG_DEBUG_FMT("ConfigManager：配置键 '{}' 被环境变量覆盖", entry.key);
+            ConfigKeyValueMap singleOverride;
+            // 键按副本进表：后面的存活检查还要按它回查快照，搬走就查不成了
+            singleOverride.emplace(entry.key, std::move(entry.value));
+            for (const std::string &conflict: mergeFileValues(values, std::move(singleOverride), "环境变量覆盖"))
+            {
+                LOG_ERROR(conflict);
+            }
         }
-        return applied.size();
+
+        // 后写的一条覆盖可能把先写的那条删掉（例如 server.port 淘汰掉 server 标量），
+        // 因此只认合入后键仍留在快照里的应用条目：逐条回查，折成同一键的多个变量
+        // 各留一条；这既不是互异的键数，也不是合入前的应用条数
+        for (const Applied &entry: applied)
+        {
+            if (values.contains(entry.key))
+            {
+                appliedKeys.push_back(entry.key);
+            }
+        }
+        return appliedKeys.size();
     }
 
     void ConfigManager::commitConfigData(ConfigKeyValueMap values, const std::vector<std::string> &loadedFiles, const std::filesystem::path &configDirectory,
@@ -2127,7 +2219,9 @@ namespace AsynGyanis::Base
         const auto newData = std::make_shared<ConfigData>();
         // 环境变量覆盖就加在这一处：首次加载、reload 与热重载走的都是这个出口，于是覆盖不会被下一轮
         // 热重载冲掉，也不需要每个调用点各写一遍（少写一处就是「哪条路忘了叠加」那类分叉）
-        newData->environmentOverrideCount = applyEnvironmentOverrides(values);
+        std::vector<std::string> environmentOverrideKeys;
+        newData->environmentOverrideCount = applyEnvironmentOverrides(values, environmentOverrideKeys);
+        newData->environmentOverrideKeys  = std::move(environmentOverrideKeys);
         newData->values                   = std::move(values);
         newData->loadedFiles              = loadedFiles;
         newData->configDirectory          = configDirectory;

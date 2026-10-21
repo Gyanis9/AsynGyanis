@@ -42,7 +42,7 @@ namespace AsynGyanis::Base
          *        sink 传的是 true——见 `LoggerConfigLoader` 的 `immediate_flush`，那里的默认与这里不同，
          *        理由是「运维侧看不见就是没有」：`tail -f`、Filebeat/vector 这类采集与崩溃后的取证
          *        只读得到已经交出去的字节，而运行期一次 flush 都不做时，日志文件能整段时间是 0 字节
-         * @throws std::runtime_error 文件无法打开
+         * @throws Base::SystemException 文件无法打开（父目录创建失败也归在这一条）
          */
         explicit FileSink(std::filesystem::path filePath, bool truncate = false, bool immediateFlush = false);
 

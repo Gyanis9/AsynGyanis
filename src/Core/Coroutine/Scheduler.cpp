@@ -117,11 +117,11 @@ namespace AsynGyanis::Core
         m_localCallables.push_back(std::move(callable));
     }
 
-    void Scheduler::postRemote(std::function<void()> callable)
+    bool Scheduler::tryPostRemote(std::function<void()> callable)
     {
         if (!callable)
         {
-            return;
+            return true;
         }
         bool isAccepted = false;
         {
@@ -139,7 +139,7 @@ namespace AsynGyanis::Core
         if (!isAccepted)
         {
             noteRemoteQueueSaturation();
-            return;
+            return false;
         }
 
         if (m_wakeup)
@@ -151,6 +151,12 @@ namespace AsynGyanis::Core
                 reportWakeupWriteFailure();
             }
         }
+        return true;
+    }
+
+    void Scheduler::postRemote(std::function<void()> callable)
+    {
+        static_cast<void>(tryPostRemote(std::move(callable)));
     }
 
     bool Scheduler::runOne()

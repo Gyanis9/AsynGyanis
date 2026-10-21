@@ -156,8 +156,12 @@ namespace AsynGyanis::Platform
         close();
     }
 
-    DatagramSocket::DatagramSocket(DatagramSocket &&other) noexcept : m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)), m_ecnFieldVisible(other.m_ecnFieldVisible)
+    DatagramSocket::DatagramSocket(DatagramSocket &&other) noexcept :
+        m_fileDescriptor(std::exchange(other.m_fileDescriptor, -1)), m_ecnFieldVisible(std::exchange(other.m_ecnFieldVisible, false)),
+        m_isDoNotFragmentSet(std::exchange(other.m_isDoNotFragmentSet, false))
     {
+        // 两枚读数都是挂在描述符上的状态：搬描述符就得连它们一起搬，
+        // 否则新主人对内核里仍生效的选项报「没设」，上层据此做出相反的协议判断
     }
 
     DatagramSocket &DatagramSocket::operator=(DatagramSocket &&other) noexcept
@@ -168,7 +172,8 @@ namespace AsynGyanis::Platform
             m_fileDescriptor = std::exchange(other.m_fileDescriptor, -1);
             // 那个选项是挂在描述符上的，接手描述符就得连读数一起搬：只搬描述符会让新主
             // 明明收得到控制报文却报「本端没在读 ECN」，上层据此少报计数
-            m_ecnFieldVisible = other.m_ecnFieldVisible;
+            m_ecnFieldVisible    = std::exchange(other.m_ecnFieldVisible, false);
+            m_isDoNotFragmentSet = std::exchange(other.m_isDoNotFragmentSet, false);
         }
         return *this;
     }

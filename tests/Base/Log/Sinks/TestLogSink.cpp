@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -130,6 +131,57 @@ namespace AsynGyanis::Base
 
         private:
             std::string m_prefix; ///< 输出前缀标记
+        };
+
+        /**
+         * @brief 阻塞格式化器的共享同步点与销毁标记
+         */
+        struct FormatterLifetimeState
+        {
+            std::promise<void>       enteredPromise;                                ///< 格式化器已进入 format() 的信号
+            std::promise<void>       releasePromise;                                ///< 放行格式化器的信号
+            std::shared_future<void> entered = enteredPromise.get_future().share(); ///< 等待进入
+            std::shared_future<void> release = releasePromise.get_future().share(); ///< 等待放行
+            std::atomic<bool>        destroyed{false};                              ///< 析构是否已发生
+        };
+
+        /**
+         * @brief 进入 format() 后原地等待放行的格式化器
+         * @details 用来把「读者还攥着旧 formatter」的窗口造成确定发生，而不是赌线程调度。
+         */
+        class BlockingFormatter final : public LogFormatter
+        {
+        public:
+            /**
+             * @brief 绑定共享同步点
+             * @param state 同步点与销毁标记
+             */
+            explicit BlockingFormatter(std::shared_ptr<FormatterLifetimeState> state) : m_state(std::move(state))
+            {
+            }
+
+            /**
+             * @brief 标记销毁后释放同步点
+             */
+            ~BlockingFormatter() override
+            {
+                m_state->destroyed.store(true, std::memory_order_release);
+            }
+
+            /**
+             * @brief 报告已进入并等待放行
+             * @param event 日志事件
+             * @return std::string 放行后的日志行
+             */
+            std::string format(const LogEvent &event) override
+            {
+                m_state->enteredPromise.set_value();
+                m_state->release.wait();
+                return "blocked:" + event.message;
+            }
+
+        private:
+            std::shared_ptr<FormatterLifetimeState> m_state; ///< 共享同步点
         };
 
         /**
@@ -317,6 +369,38 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(firstRender, "FIRST:kept");
         EXPECT_EQ(secondRender, "SECOND:kept");
+    }
+
+    /**
+     * @brief 被替换的 formatter 要活到 Sink 析构：在途读者手里的裸指针不能悬垂
+     * @details 读者进入 format() 后停住，主线程替换 formatter；若退休表没接住旧对象，
+     *          它在替换那一刻就会析构，而读者还在里面。用 promise 造出窗口，不赌调度。
+     */
+    TEST(LogSink, RetiresReplacedFormatterUntilInFlightReadReturns)
+    {
+        auto sink  = std::make_unique<TestableSink>();
+        auto state = std::make_shared<FormatterLifetimeState>();
+        sink->setFormatter(std::make_unique<BlockingFormatter>(state));
+        const LogEvent event = makeEvent(LogLevel::Info, "in flight");
+
+        std::thread reader([&sink, &event] { static_cast<void>(sink->render(event)); });
+        if (state->entered.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+        {
+            state->releasePromise.set_value();
+            reader.join();
+            FAIL() << "读者没有在时限内进入旧 formatter";
+        }
+
+        sink->setFormatter(std::make_unique<MarkerFormatter>("new"));
+        EXPECT_FALSE(state->destroyed.load(std::memory_order_acquire)) << "旧 formatter 在读者还在 format 时被销毁";
+
+        state->releasePromise.set_value();
+        reader.join();
+        EXPECT_FALSE(state->destroyed.load(std::memory_order_acquire)) << "退休表没有把旧 formatter 留到 Sink 析构";
+        EXPECT_EQ(sink->render(event), "new:in flight");
+
+        sink.reset();
+        EXPECT_TRUE(state->destroyed.load(std::memory_order_acquire)) << "Sink 析构后旧 formatter 仍未释放";
     }
 
     TEST(LogSink, WriteForwardsEveryEventRegardlessOfLevel)

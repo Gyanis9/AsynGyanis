@@ -38,14 +38,13 @@ namespace AsynGyanis::Net
      *          周期补一份「最新值」。因此有界队列、失败重试、溢出/收尾丢弃三类计数都保留。
      *          重试只针对可重试的发送失败；整批成不了 JSON（非法 UTF-8）是确定性失败，按丢弃处置一次，
      *          不留在队首反复重排。
-     *          与链路出口的一处差异：本 Sink 的 `write()` 在产生日志的线程上把当前日志上下文摘进
-     *          记录（导出线程没有请求作用域），随后才入队；上下文因此与记录同生共死。
+     *          与链路出口的一处差异：本 Sink 的 `write()` 把事件自带的日志上下文摘进记录
+     *          （为空时回退到当前线程的 TLS），随后才入队；上下文因此与记录同生共死。
      * @note 收尾期限是 shutdownTimeout：析构时停止收新记录，尽力把队列发完，到点剩下的按丢弃计。
      * @note 队列满时丢新到的记录（与链路出口同一取舍）：旧记录已经在队列里排到队首，
      *       丢新的至少让先发生的日志先到。
-     * @warning 不要把本 Sink 再包进 `AsyncSink`：上下文是在 `write()` 所在的线程上摘的，
-     *          而 AsyncSink 的写入跑在它的工作线程上，包一层会让所有记录的 trace_id 丢失。
-     *          本 Sink 自己已有有界队列与工作线程，不需要再套一层异步。
+     * @warning 本 Sink 自己已有有界队列与工作线程，不需要再套一层 `AsyncSink`；再包一层
+     *          只会多一段排队延迟。事件上下文由事件携带，跨线程不会因此丢失。
      */
     class ASYN_NET_API OtlpLogSink final : public Base::LogSink
     {
@@ -80,7 +79,7 @@ namespace AsynGyanis::Net
         OtlpLogSink &operator=(OtlpLogSink &&)      = delete;
 
         /**
-         * @brief 把一条事件折成记录并入队（在产生日志的线程上摘上下文）
+         * @brief 把一条事件折成记录并入队（事件上下文优先，TLS 回退）
          * @param event 日志事件
          */
         void write(const Base::LogEvent &event) override;

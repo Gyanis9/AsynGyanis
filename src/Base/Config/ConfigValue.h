@@ -38,7 +38,7 @@ namespace AsynGyanis::Base
      *          而 nlohmann 缺省的异常版 parse 会把语法错误一路抛到调用栈顶上。这里走
      *          allow_exceptions=false 的入口，把它的 discarded 哨兵翻成 std::nullopt。
      * @param text 待解析文本，允许首尾空白
-     * @param allowComments 是否容忍注释（配置文件那一路开，HTTP 正文按 RFC 8259 不开）
+     * @param allowComments 是否容忍注释；当前没有生产调用方开启，HTTP 与 ACME 的正文解析都沿用默认的 false
      * @return std::optional<ConfigValue> 解析结果；不合法时为空
      * @note 顶层标量（`42`、`"s"`、`true`、`null`）都是合法 JSON，照样解析成功——
      *       是不是「只接受对象」是使用方的判据，不在这一层拦

@@ -589,6 +589,17 @@ namespace AsynGyanis::Core
             // SSL_set_SSL_CTX 只改 ssl->ctx、不给新上下文加引用（它的返回值是换上去的那个上下文，不是成败码）：
             // 这条引用链由「SSL 持有主上下文、主上下文持有登记表、登记表持有站点上下文」三段共同保证，
             // 只要这条连接还认着主上下文，站点上下文就不会先被释放
+            // 校验回调挂在 SSL 对象上，切到站点上下文后它按新上下文查登记；把主上下文
+            // 当前的名单复制过去，否则名单会把所有 SNI 连接拒掉
+            if (const PeerFingerprintRegistry *sourceRegistry = peerFingerprintRegistryOf(SSL_get_SSL_CTX(ssl)); sourceRegistry != nullptr)
+            {
+                if (PeerFingerprintRegistry *targetRegistry = peerFingerprintRegistryOf(target.get()); targetRegistry != nullptr)
+                {
+                    const std::shared_lock<std::shared_mutex> sourceGuard(sourceRegistry->mutex);
+                    const std::lock_guard<std::shared_mutex>  targetGuard(targetRegistry->mutex);
+                    targetRegistry->fingerprints = sourceRegistry->fingerprints;
+                }
+            }
             if (SSL_set_SSL_CTX(ssl, target.get()) == nullptr)
             {
                 return SSL_TLSEXT_ERR_ALERT_FATAL;
@@ -627,6 +638,19 @@ namespace AsynGyanis::Core
         {
             SSL_CTX_free(context);
             return nullptr;
+        }
+
+        // 指纹回调在 SNI 切换后按站点上下文取登记：每份站点上下文都先建好登记（名单可以为空），
+        // 切换时只复制内容，不必在握手线程上创建共享状态
+        PeerFingerprintRegistry *registry = ensurePeerFingerprintRegistry(context);
+        if (registry == nullptr)
+        {
+            SSL_CTX_free(context);
+            return nullptr;
+        }
+        {
+            const std::lock_guard<std::shared_mutex> guard(registry->mutex);
+            registry->fingerprints = policy.allowedPeerSha256Fingerprints;
         }
         return adoptContext(context);
     }
@@ -711,12 +735,12 @@ namespace AsynGyanis::Core
             return false;
         }
 
-        // 复现「要求并校验对端证书」这一档：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
-        // 但校验模式是 setClientCertificateRequired() 单独设的，漏掉这一步会让一次续期把 mTLS 悄悄关掉——
-        // 那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单也在这条路上随策略复现，不会丢
-        if (m_clientCertificateRequired)
+        // 复现当前生效的对端校验模式：CA 已随策略在新上下文上就位（信任库、校验深度都在策略里），
+        // 但校验模式由 setClientCertificateRequired() 或 enableClientPeerVerification() 单独设定。
+        // mTLS 与出站客户端共用这一格，漏掉这一步会让一次续期把对端校验悄悄关掉，那是「续期看起来成功、安全性反而降级」的典型形态；指纹名单随同一条路复现，不会丢
+        if (SSL_CTX_get_verify_mode(m_context) != SSL_VERIFY_NONE)
         {
-            applyPeerVerification(newContext, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT);
+            applyPeerVerification(newContext, SSL_CTX_get_verify_mode(m_context));
         }
 
         // 复现已加载的 OCSP 响应：续期通常把响应与证书一起更新，因此按原路径重读而不是沿用旧字节；
@@ -843,12 +867,6 @@ namespace AsynGyanis::Core
     {
         std::lock_guard<std::mutex> guard(m_contextMutex);
 
-        // 策略没接管信任库时才补系统那一份：补在两处都会的情况下会把自己 CA 签的对端
-        // 也一并放行（系统库里有公网根 CA），那等于「我只信我自己的 CA」这条要求被悄悄放宽
-        if (m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
-        {
-            SSL_CTX_set_default_verify_paths(m_context);
-        }
         // 出站一侧恒要校验：不验对端等于任何受信 CA 给他域签的证书都能冒充目标主机；
         // 指纹名单（若已设）由同一处 helper 挂上
         applyPeerVerification(m_context, SSL_VERIFY_PEER);
@@ -856,6 +874,12 @@ namespace AsynGyanis::Core
 
     void TlsContext::applyPeerVerification(SSL_CTX *const context, const int mode) const
     {
+        // 客户端校验的信任锚：策略没接管信任库时补系统那一份。轮换与各个 setter 都经这里，
+        // 因此新上下文不会出现「校验模式在、信任锚空」的状态
+        if (m_role == Role::Client && m_policy.certificateAuthorityFile.empty() && m_policy.certificateAuthorityPath.empty())
+        {
+            static_cast<void>(SSL_CTX_set_default_verify_paths(context));
+        }
         // 名单搬进 SSL_CTX 的共享登记：回调只碰登记、不解引用宿主对象（回调在握手线程上跑，
         // 宿主可能已析构），替换持独占锁——与 VirtualHostRegistry 同一条理由、同一个形状
         if (PeerFingerprintRegistry *const registry = ensurePeerFingerprintRegistry(context); registry != nullptr)
@@ -937,6 +961,20 @@ namespace AsynGyanis::Core
         if (const int currentMode = SSL_CTX_get_verify_mode(m_context); currentMode != SSL_VERIFY_NONE)
         {
             applyPeerVerification(m_context, currentMode);
+        }
+
+        // 站点上下文各有一份登记；切换后回调读的是站点那份，故这里一并刷新
+        if (VirtualHostRegistry *hostRegistry = registryOf(m_context); hostRegistry != nullptr)
+        {
+            const std::shared_lock<std::shared_mutex> hostGuard(hostRegistry->mutex);
+            for (const auto &entry: hostRegistry->contexts)
+            {
+                if (PeerFingerprintRegistry *registry = peerFingerprintRegistryOf(entry.second.get()); registry != nullptr)
+                {
+                    const std::lock_guard<std::shared_mutex> registryGuard(registry->mutex);
+                    registry->fingerprints = m_policy.allowedPeerSha256Fingerprints;
+                }
+            }
         }
     }
 

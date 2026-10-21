@@ -84,15 +84,18 @@ namespace AsynGyanis::Base::Detail
         out.append(event.message);
 #endif
         // 上下文（如有）：固定的 ` key=value` 段，键按升序；没有上下文时逐字节不变。
-        // 取值走与「对端文本」同一套转义：换行/控制字符落进来会把一条日志拆成两条
-        if (const LogContextPtr &context = currentLogContext(); context != nullptr)
+        // 取值走与「对端文本」同一套转义：换行/控制字符落进来会把一条日志拆成两条。
+        // 转义结果直接续写进本缓冲，不再为每个字段造一份中间串。
+        // 优先读事件自带的快照：异步 Sink 的工作线程上 TLS 是空的，读它会丢掉日志点的上下文
+        const LogContextPtr &context = event.context ? event.context : currentLogContext();
+        if (context != nullptr)
         {
             for (const auto &[key, value]: context->fields())
             {
                 out.push_back(' ');
                 out.append(key);
                 out.push_back('=');
-                out.append(escapeForLog(value, 256));
+                appendEscapedForLog(out, value, 256);
             }
         }
         // 栈的符号解析在调用方（Sink）选定的线程上发生，因此随本函数一起落地

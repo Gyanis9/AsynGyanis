@@ -31,7 +31,8 @@ namespace AsynGyanis::Base
      *
      * @details 管理所有命名的 Logger 实例，提供获取或创建日志器的接口，
      *          并支持默认根日志器（名称为 "root"）。
-     * @note 单例不可拷贝；全部查询与创建接口以读写锁保护，可在多线程下并发调用。
+     * @note 单例不可拷贝；查找/创建/注销这条慢路径以共享互斥量保护，根日志器的读路径是一条
+     *       无锁缓存（命中时只做一次原子读），可在多线程下并发调用。
      * @note 引用契约：getLogger()/getRootLogger() 返回 Logger&，该引用仅在
      *       「注册表对象存活 + 期间没有他人对该日志器做 registerLogger/unregisterLogger/clear」
      *       的前提下有效。注册表用 shared_ptr 持有 Logger，被替换或注销的还会移入退休表而不销毁，
@@ -142,7 +143,7 @@ namespace AsynGyanis::Base
          */
         LoggerRegistry() = default;
 
-        /// 成对更新根日志器缓存：强引用 + 热路径裸指针（实现见 .cpp）
+        /// 更新根日志器的热路径裸指针（所有权仍在 m_loggers / 退休表；实现见 .cpp）
         void storeCachedRootLogger(const std::shared_ptr<Logger> &logger) noexcept;
 
         /// 成对失效根日志器缓存（实现见 .cpp）
