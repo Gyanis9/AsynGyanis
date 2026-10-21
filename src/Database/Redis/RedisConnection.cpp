@@ -11,9 +11,6 @@
 // POSIX 则是 <sys/time.h>。统一经 Platform 层取得：它会先置好 WIN32_LEAN_AND_MEAN 与
 // NOMINMAX 再包含网络头，因此本文件不必自己分支，也不会被 windows.h 的 max/min 宏污染
 #include "Platform/Platform.h"
-#if ASYN_PLATFORM_LINUX
-#include <sys/time.h>
-#endif
 
 // hiredis 是 C 库，只在本实现文件里包含；对外只暴露 RedisConnection.h 里的前置声明
 #include <hiredis/hiredis.h>
@@ -23,6 +20,7 @@
 // 自己握手并换掉它的读/写/关闭三只钩子，认证与全部命令自然落在密文里。
 // 这两个头的包含放在驱动开关之外（见下面那一组）：析构函数销毁 m_tlsContext 那段两种构建都要编
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/PlatformError.h"
 
 #include "Database/Redis/RedisReplyText.h"
 
@@ -343,16 +341,6 @@ namespace AsynGyanis::Database
             return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 || ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
         }
 
-        /// errno 的可读文本（MSVC 把 strerror 判为弃用；同族的 strerror_s 只在 Windows 侧存在）
-        void describeErrno(char *const output, const size_t outputCapacity, const int errorNumber) noexcept
-        {
-#if ASYN_PLATFORM_WIN32
-            static_cast<void>(::strerror_s(output, outputCapacity, errorNumber));
-#else
-            std::snprintf(output, outputCapacity, "%s", std::strerror(errorNumber));
-#endif
-        }
-
         /// 读写钩子共用的失败出口：把 OpenSSL 的读数摘成一段话（超时与协议错误分开写）
         void setContextErrorFromSsl(redisContext *const context, const int sslError, const char *const action) noexcept
         {
@@ -366,7 +354,7 @@ namespace AsynGyanis::Database
             if (sslError == SSL_ERROR_SYSCALL)
             {
                 char syscallDetail[128]{};
-                describeErrno(syscallDetail, sizeof(syscallDetail), errno);
+                Platform::PlatformError::describeErrno(errno, syscallDetail, sizeof(syscallDetail));
                 std::snprintf(message, sizeof(message), "%s失败：系统调用错误：%.120s", action, syscallDetail);
             } else
             {
@@ -1162,7 +1150,7 @@ namespace AsynGyanis::Database
             if (sslDetail[0] == '\0')
             {
                 char syscallDetail[128]{};
-                describeErrno(syscallDetail, sizeof(syscallDetail), errno);
+                Platform::PlatformError::describeErrno(errno, syscallDetail, sizeof(syscallDetail));
                 std::snprintf(sslDetail, sizeof(sslDetail), "系统调用错误：%.120s", syscallDetail);
             }
             m_lastError = "Redis 链路 TLS 握手失败（档位 " + std::string(databaseTlsModeName(mode)) + "）：" + sslDetail;

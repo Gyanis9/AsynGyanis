@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <string>
 
 namespace AsynGyanis::Platform
@@ -87,6 +88,17 @@ namespace AsynGyanis::Platform
     TEST(PlatformError, MessageDoesNotThrowForUnknownCode)
     {
         EXPECT_NO_THROW(PlatformError::message(999999));
+    }
+
+    TEST(PlatformError, DescribeErrnoWritesTextForKnownAndUnknownCodes)
+    {
+        char buffer[128]{};
+        PlatformError::describeErrno(EINVAL, buffer, sizeof(buffer));
+        EXPECT_NE(buffer[0], '\0');
+
+        char unknownBuffer[128]{};
+        EXPECT_NO_THROW(PlatformError::describeErrno(123456, unknownBuffer, sizeof(unknownBuffer)));
+        EXPECT_NE(unknownBuffer[0], '\0');
     }
 
     TEST(PlatformError, FailedSystemCallPopulatesLastErrorCode)

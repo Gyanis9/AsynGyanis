@@ -149,5 +149,16 @@ namespace AsynGyanis::Platform
          * @return std::string 本地化程度取决于运行库实现
          */
         static std::string message(int errorCode);
+
+        /**
+         * @brief 将 errno 空间的错误码写成可读文本
+         * @details 与 message() 分开：message() 按平台错误空间解释，本函数固定按
+         *          errno 空间解释。Windows 上 CRT 的 errno 与 Win32 错误码不是同一套。
+         *          写缓冲而不是返回 std::string，是为了让 noexcept 的错误出口不分配内存。
+         * @param errorNumber errno 取值
+         * @param output 输出缓冲；为空或容量为 0 时直接返回
+         * @param outputCapacity 输出缓冲容量（含结尾 NUL）
+         */
+        static void describeErrno(int errorNumber, char *output, std::size_t outputCapacity) noexcept;
     };
 } // namespace AsynGyanis::Platform

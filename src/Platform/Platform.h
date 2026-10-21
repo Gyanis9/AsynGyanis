@@ -100,6 +100,7 @@ using ssize_t = __int64; ///< 与 POSIX 对齐的带符号尺寸类型
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 #endif
