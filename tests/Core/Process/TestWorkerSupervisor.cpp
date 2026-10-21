@@ -34,8 +34,10 @@
 // 看门狗汇聚用例的假收端要的几样（POSIX 专有，Windows 上那几条用例整段不编译）
 #include <cstring>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <unistd.h>
 #endif
 
 namespace AsynGyanis::Core
@@ -1315,5 +1317,95 @@ namespace AsynGyanis::Core
         static_cast<void>(::close(listener));
 #endif
     }
+
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住：起 worker 失败（fork 失败）时心跳管道的两端都要归还
+     * @details 看门狗启用时每个槽位先开一条管道再 spawn；spawn 的 fork 失败分支若只关读端，
+     *          写端会留在成员里，直到下一次补位覆盖成员时才丢。用 RLIMIT_NPROC 造出 fork 失败；
+     *          root 不受该限制，按能力跳过。
+     */
+    TEST(WorkerSupervisor, FailedForkDoesNotLeakWatchdogPipeDescriptors)
+    {
+        if (::geteuid() == 0)
+        {
+            GTEST_SKIP() << "root 不受 RLIMIT_NPROC 约束，本环境造不出 fork 失败";
+        }
+
+        const auto countPipeDescriptors = []() -> std::optional<std::size_t>
+        {
+            std::error_code errorCode;
+            std::size_t     pipeCount = 0;
+            for (std::filesystem::directory_iterator iterator("/proc/self/fd", errorCode); !errorCode && iterator != std::filesystem::directory_iterator();
+                 iterator.increment(errorCode))
+            {
+                std::error_code             linkError;
+                const std::filesystem::path target = std::filesystem::read_symlink(iterator->path(), linkError);
+                if (!linkError && target.generic_string().starts_with("pipe:"))
+                {
+                    ++pipeCount;
+                }
+            }
+            if (errorCode)
+            {
+                return std::nullopt;
+            }
+            return pipeCount;
+        };
+
+        ASSERT_EQ(::setenv("WATCHDOG_USEC", "1000000", 1), 0);
+        ASSERT_EQ(::setenv("WATCHDOG_PID", std::to_string(static_cast<long>(::getpid())).c_str(), 1), 0);
+        struct EnvironmentRestore
+        {
+            ~EnvironmentRestore()
+            {
+                static_cast<void>(::unsetenv("WATCHDOG_USEC"));
+                static_cast<void>(::unsetenv("WATCHDOG_PID"));
+            }
+        } environmentRestore;
+
+        const std::optional<std::size_t> pipesBefore = countPipeDescriptors();
+        ASSERT_TRUE(pipesBefore.has_value()) << "本环境没有 /proc/self/fd，判据没法成立";
+
+        struct RlimitRestore
+        {
+            rlimit previous{};
+            bool   isActive{false};
+
+            ~RlimitRestore()
+            {
+                if (isActive)
+                {
+                    static_cast<void>(::setrlimit(RLIMIT_NPROC, &previous));
+                }
+            }
+        } rlimitRestore;
+        ASSERT_EQ(::getrlimit(RLIMIT_NPROC, &rlimitRestore.previous), 0);
+        const rlimit noProcessLimit{0, rlimitRestore.previous.rlim_max};
+        ASSERT_EQ(::setrlimit(RLIMIT_NPROC, &noProcessLimit), 0);
+        rlimitRestore.isActive = true;
+
+        Platform::ServiceNotification   notification; // 未 open：就绪前不会走到发送
+        WorkerSupervisor::Configuration configuration;
+        configuration.executablePath       = "/bin/true";
+        configuration.workerCount          = 2;
+        configuration.pollInterval         = std::chrono::milliseconds{10};
+        configuration.restartBackoff       = std::chrono::milliseconds{10};
+        configuration.shutdownTimeout      = std::chrono::milliseconds{200};
+        configuration.crashLoopWindow      = std::chrono::milliseconds{100};
+        configuration.crashLoopLimit       = 1;
+        configuration.watchdogNotification = &notification;
+
+        WorkerSupervisor supervisor(configuration);
+        EXPECT_FALSE(supervisor.run()) << "整池起不来时 run() 应返回 false";
+
+        rlimitRestore.isActive = false;
+        ASSERT_EQ(::setrlimit(RLIMIT_NPROC, &rlimitRestore.previous), 0);
+
+        const std::optional<std::size_t> pipesAfter = countPipeDescriptors();
+        ASSERT_TRUE(pipesAfter.has_value());
+        EXPECT_EQ(*pipesAfter, *pipesBefore) << "fork 失败后心跳管道的写端没有归还";
+    }
+#endif
 
 } // namespace AsynGyanis::Core

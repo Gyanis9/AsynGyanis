@@ -1,6 +1,6 @@
 /**
  * @file EventLoop.h
- * @brief 每线程事件循环 — 基于 epoll 驱动，协程调度核心
+ * @brief 每线程事件循环 — 由 epoll / 完成端口 / io_uring 事件后端驱动，协程调度核心
  * @author Gyanis
  * @date 2026-09-12
  * @version 1.0.0

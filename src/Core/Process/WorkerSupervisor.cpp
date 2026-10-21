@@ -402,7 +402,7 @@ namespace AsynGyanis::Core
         m_hasAnnouncedReadiness = true;
         runObserver(m_configuration.onAllWorkersRunning, "onAllWorkersRunning");
 
-        // 看门狗从就绪起计：此前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
+        // 看门狗从就绪起计：就绪前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
         // 同一轮把各槽位的心跳账本翻到「宽限中」，宽限给一整个窗口（2×节拍）：监督者第一次判超时的时点
         // 就是就绪之后一整个窗口，而首拍落在什么时候取决于 fork 与挂节拍的毫秒级相位——宽限只给半程时，
         // 首拍晚到几毫秒就把第一次喂狗压到窗口末尾
@@ -554,6 +554,13 @@ namespace AsynGyanis::Core
         {
             static_cast<void>(::close(worker.heartbeatReadFd));
             worker.heartbeatReadFd = -1;
+        }
+        // 起 worker 失败时写端还挂在成员上：下一次 attachWatchdogPipe 会覆盖它，
+        // 不在这里关就是每失败一次漏一个描述符
+        if (m_pendingWatchdogWriteFd >= 0)
+        {
+            static_cast<void>(::close(m_pendingWatchdogWriteFd));
+            m_pendingWatchdogWriteFd = -1;
         }
 #else
         static_cast<void>(worker);

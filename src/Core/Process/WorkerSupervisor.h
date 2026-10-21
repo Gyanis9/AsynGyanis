@@ -381,7 +381,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 整池就绪那一刻的一次性处理：回调观察者、然后把心跳账本翻到「宽限中」
-         * @details 看门狗从就绪起计：此前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
+         * @details 看门狗从就绪起计：就绪前不判定也不喂（与单进程形态「先报就绪再挂节拍」同一顺序）。
          *          宽限让 worker 启动与起拍的时间不算陈旧——那份时间不该由监督者的超时来赔
          * @note 只在编排线程上调用；`m_hasAnnouncedReadiness` 由本方法置真
          */
@@ -484,11 +484,11 @@ namespace AsynGyanis::Core
         /// （.cpp 里对 is_always_lock_free 做了断言，平台不满足会在编译期就拦住）
         std::atomic<bool> m_isStopRequested{false};
 
-        /// 在运行的 worker 数：只由编排线程在每轮扫描末尾与收尾末尾发布，观察者线程只读它
         /// 「随父终止」保护缺席只报一次：挂不上作业是宿主性质（每个 worker 都会失败），
         /// 按 worker 报会在补位循环里把日志刷满而信息一句没多
         bool m_killGuardAbsenceReported{false};
 
+        /// 在运行的 worker 数：只由编排线程在每轮扫描末尾与收尾末尾发布，观察者线程只读它
         std::atomic<std::size_t> m_runningWorkerCount{0};
     };
 } // namespace AsynGyanis::Core

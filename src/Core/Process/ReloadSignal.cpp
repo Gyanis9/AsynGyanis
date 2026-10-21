@@ -100,52 +100,78 @@ namespace AsynGyanis::Core
             return;
         }
 
-        g_owner = this;
-        m_isInstalled.store(true, std::memory_order_release);
-
         sigset_t watchSet;
         fillWatchedSignalSet(watchSet);
-        m_waiter = std::jthread(
-                [this, watchSet](const std::stop_token &stopToken)
-                {
-                    // 这条线程不能成为停机信号的缺省动作受害者：屏蔽字只被子线程继承，而两个观察者
-                    // 的构造顺序不固定——先起的那条线程挡不住后一路的号。不补这一步的表现是
-                    // 「装了重载观察者之后，一枚 SIGTERM 被它接住并按缺省动作把进程杀掉」
-                    static_cast<void>(GracefulShutdown::blockStopSignals());
-
-                    for (;;)
+        // 建线程会分配栈与线程对象，线程耗尽时抛 std::system_error；本函数是 noexcept，
+        // 因此构造本身要兜住，失败时不能发布安装标记——否则 isInstalled() 会报一个不存在的接管
+        try
+        {
+            m_waiter = std::jthread(
+                    [this, watchSet](const std::stop_token &stopToken)
                     {
-                        if (stopToken.stop_requested())
-                        {
-                            return;
-                        }
+                        // 这条线程不能成为停机信号的缺省动作受害者：屏蔽字只被子线程继承，而两个观察者
+                        // 的构造顺序不固定——先起的那条线程挡不住后一路的号。不补这一步的表现是
+                        // 「装了重载观察者之后，一枚 SIGTERM 被它接住并按缺省动作把进程杀掉」
+                        static_cast<void>(GracefulShutdown::blockStopSignals());
 
-                        const std::chrono::nanoseconds interval = kWaitPollInterval;
-                        timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
-                        siginfo_t                      info{};
-                        const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
-                        if (received < 0)
+                        for (;;)
                         {
-                            // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
-                            if (errno == EAGAIN || errno == EINTR)
+                            if (stopToken.stop_requested())
                             {
+                                return;
+                            }
+
+                            const std::chrono::nanoseconds interval = kWaitPollInterval;
+                            timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
+                            siginfo_t                      info{};
+                            const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
+                            if (received < 0)
+                            {
+                                // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
+                                if (errno == EAGAIN || errno == EINTR)
+                                {
+                                    continue;
+                                }
+
+                                LOG_ERROR_FMT("ReloadSignal: 等待 SIGHUP 的线程因错误退出（errno={}），此后这条信号不再触发任何动作", errno);
+                                return;
+                            }
+
+                            if (received != kReloadSignalNumber)
+                            {
+                                // 信号集里只有 SIGHUP，真收到别的号说明这条路被别处动过；不猜，记下来继续等
+                                LOG_WARN_FMT("ReloadSignal: 等待线程取到预期外的信号 {}，本轮不触发重载", received);
                                 continue;
                             }
 
-                            LOG_ERROR_FMT("ReloadSignal: 等待 SIGHUP 的线程因错误退出（errno={}），此后这条信号不再触发任何动作", errno);
-                            return;
+                            fireReload();
                         }
-
-                        if (received != kReloadSignalNumber)
-                        {
-                            // 信号集里只有 SIGHUP，真收到别的号说明这条路被别处动过；不猜，记下来继续等
-                            LOG_WARN_FMT("ReloadSignal: 等待线程取到预期外的信号 {}，本轮不触发重载", received);
-                            continue;
-                        }
-
-                        fireReload();
-                    }
-                });
+                    });
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("ReloadSignal: 启动 SIGHUP 等待线程失败（{}），信号接管不会装上；重载仍可走 requestReload()", failure.what());
+            } catch (...)
+            {
+            }
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
+            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
+            return;
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("ReloadSignal: 启动 SIGHUP 等待线程失败（非标准异常），信号接管不会装上；重载仍可走 requestReload()");
+            } catch (...)
+            {
+            }
+            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
+            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
+            return;
+        }
+        g_owner = this;
+        m_isInstalled.store(true, std::memory_order_release);
         return;
 #endif
 
@@ -205,6 +231,9 @@ namespace AsynGyanis::Core
     void ReloadSignal::fireReload() noexcept
     {
         std::vector<std::function<void()>> actions;
+        // 复制整份注册表要分配内存，而本函数是 noexcept：内存吃紧时 bad_alloc 会直接 terminate。
+        // 失败只放弃这一次重载，动作表原样留着，下一条 SIGHUP 还能再跑
+        try
         {
             // 一次触发复制整份注册表，不取走：重载与停机不同，它不是一次性的——同一批动作要在每一次
             // SIGHUP 上都再跑一遍。取走就等于「第一次 reload 之后，这个进程的 reload 从此什么都不做」，
@@ -216,6 +245,24 @@ namespace AsynGyanis::Core
             {
                 actions.push_back(entry.second);
             }
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("ReloadSignal: 复制重载动作失败（{}），本次重载不执行；动作表保持不变", failure.what());
+            } catch (...)
+            {
+            }
+            return;
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("ReloadSignal: 复制重载动作失败（非标准异常），本次重载不执行；动作表保持不变");
+            } catch (...)
+            {
+            }
+            return;
         }
 
         m_reloadCount.fetch_add(1, std::memory_order_acq_rel);
@@ -234,14 +281,35 @@ namespace AsynGyanis::Core
             return;
         }
 
-        m_loop->scheduler().postRemote(
-                [actions = std::move(actions)]() mutable noexcept
-                {
-                    for (auto &action: actions)
+        // 投递要分配 std::function 与队列结点，内存吃紧时抛出的异常会穿出本函数的 noexcept 边界；
+        // 就地收下并记一条，本次重载的动作就此丢弃
+        try
+        {
+            m_loop->scheduler().postRemote(
+                    [actions = std::move(actions)]() mutable noexcept
                     {
-                        runAction(action);
-                    }
-                });
+                        for (auto &action: actions)
+                        {
+                            runAction(action);
+                        }
+                    });
+        } catch (const std::exception &failure)
+        {
+            try
+            {
+                LOG_ERROR_FMT("ReloadSignal: 重载动作未能投回事件循环（{}），本次重载的动作已丢弃", failure.what());
+            } catch (...)
+            {
+            }
+        } catch (...)
+        {
+            try
+            {
+                LOG_ERROR("ReloadSignal: 重载动作未能投回事件循环（非标准异常），本次重载的动作已丢弃");
+            } catch (...)
+            {
+            }
+        }
     }
 
     void ReloadSignal::runAction(const std::function<void()> &action) noexcept

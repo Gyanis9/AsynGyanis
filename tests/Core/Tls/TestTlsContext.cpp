@@ -7,6 +7,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include "CoreTestSupport.h"
 #include "SharedFormGuards.h"
@@ -20,10 +21,12 @@
 #include <openssl/x509v3.h>
 
 #include <cstddef>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -153,12 +156,14 @@ namespace AsynGyanis::Core
          * @param clientAlpnWireFormat ALPN 线格式字节
          * @param clientAlpnWireFormatLength ALPN 线格式字节数
          * @param clientRequestsOcspStatus true 时客户端在 ClientHello 里请求 OCSP 状态（status_request）
+         * @param clientServerName 非空时作为 SNI 发给服务端
          * @return HandshakeOutcome 两端的完成情况、错误文本与协商结果
          */
         HandshakeOutcome runInProcessHandshake(SSL_CTX *serverContext, SSL_CTX *clientContext, const bool clientOffersAlpn, const bool clientPresentsCertificate,
                                                const unsigned char *clientAlpnWireFormat     = kHttp11AlpnWireFormat,
                                                const unsigned int clientAlpnWireFormatLength = sizeof(kHttp11AlpnWireFormat), const bool clientRequestsOcspStatus = false,
-                                               const std::filesystem::path &clientCertificatePath = kTestCertificatePath, const std::filesystem::path &clientKeyPath = kTestKeyPath)
+                                               const std::filesystem::path &clientCertificatePath = kTestCertificatePath, const std::filesystem::path &clientKeyPath = kTestKeyPath,
+                                               const char *clientServerName = nullptr)
         {
             HandshakeOutcome outcome;
 
@@ -185,6 +190,12 @@ namespace AsynGyanis::Core
             // BIO 所有权交给 SSL：同一个 BIO 兼作读/写端，传两次即可，由 SSL_free 释放
             SSL_set_bio(serverSsl.get(), serverBio, serverBio);
             SSL_set_bio(clientSsl.get(), clientBio, clientBio);
+
+            if (clientServerName != nullptr)
+            {
+                // 让服务端走到 SNI 选站回调
+                static_cast<void>(SSL_set_tlsext_host_name(clientSsl.get(), clientServerName));
+            }
 
             if (clientOffersAlpn)
             {
@@ -759,6 +770,50 @@ namespace AsynGyanis::Core
             output.close();
             return bundlePath;
         }
+
+        /**
+         * @brief 临时设置一个环境变量，析构时恢复原值
+         * @details OpenSSL 的默认信任库路径读 SSL_CERT_FILE/SSL_CERT_DIR；用例把
+         *          SSL_CERT_FILE 指到仓库夹具，判据就不依赖机器装了什么根证书
+         */
+        class ScopedEnvironmentVariable
+        {
+        public:
+            ScopedEnvironmentVariable(const char *name, const std::string &value) : m_name(name)
+            {
+                if (const std::optional<std::string> previous = Platform::ProcessInfo::environmentVariable(name); previous.has_value())
+                {
+                    m_previous = *previous;
+                }
+#if ASYN_PLATFORM_WIN32
+                static_cast<void>(_putenv_s(name, value.c_str()));
+#else
+                static_cast<void>(::setenv(name, value.c_str(), 1));
+#endif
+            }
+
+            ~ScopedEnvironmentVariable()
+            {
+#if ASYN_PLATFORM_WIN32
+                static_cast<void>(_putenv_s(m_name.c_str(), m_previous.has_value() ? m_previous->c_str() : ""));
+#else
+                if (m_previous.has_value())
+                {
+                    static_cast<void>(::setenv(m_name.c_str(), m_previous->c_str(), 1));
+                } else
+                {
+                    static_cast<void>(::unsetenv(m_name.c_str()));
+                }
+#endif
+            }
+
+            ScopedEnvironmentVariable(const ScopedEnvironmentVariable &)            = delete;
+            ScopedEnvironmentVariable &operator=(const ScopedEnvironmentVariable &) = delete;
+
+        private:
+            std::string                m_name;
+            std::optional<std::string> m_previous;
+        };
     } // namespace
 
     /**
@@ -822,6 +877,55 @@ namespace AsynGyanis::Core
                                                                    false, unlistedCertificatePath, unlistedKeyPath);
             ASSERT_FALSE(outcome.setupFailed);
             EXPECT_FALSE(outcome.serverCompleted) << "链上有效但未被点名的证书握手成功了：名单没有生效";
+        }
+
+        std::filesystem::remove(bundlePath);
+    }
+
+    /**
+     * @brief 钉住：指纹名单在 SNI 换到站点上下文之后仍然生效——被点名的放行、未点名的拒绝
+     * @details 校验回调挂在 SSL 对象上，但查名单时按「当前 SSL_CTX」的登记；站点上下文
+     *          没有这份登记时，回调会 fail-closed，把所有 SNI 连接拒掉。
+     */
+    TEST(TlsContext, PeerFingerprintAllowlistSurvivesServerNameSwitch)
+    {
+        ASYN_SKIP_IF_TLS_HARNESS_IS_CROSS_INSTANCE();
+        const std::filesystem::path unlistedCertificatePath = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_cert.pem";
+        const std::filesystem::path unlistedKeyPath         = std::filesystem::path(TEST_FIXTURES_DIR) / "test_localhost_key.pem";
+        const std::string           listedFingerprint       = sha256FingerprintOfCertificateFile(kTestCertificatePath);
+        ASSERT_EQ(listedFingerprint.size(), 64U) << "被点名证书的指纹没算出来：用例前提不成立";
+
+        const std::filesystem::path bundlePath = makeCertificateBundleFile({kTestCertificatePath, unlistedCertificatePath});
+        ASSERT_FALSE(bundlePath.empty()) << "CA 包没造出来：用例前提不成立";
+
+        TlsContext server;
+        ASSERT_TRUE(server.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(server.loadClientCertificateAuthority(bundlePath.string()));
+        server.setClientCertificateRequired(true);
+        // 先登记站点、再设名单：站点上下文的登记要在 setter 里同步拿到新名单
+        ASSERT_TRUE(server.loadCertificateForHost("api.example.com", kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_NO_THROW(server.setPeerFingerprintAllowlist({listedFingerprint}));
+
+        // 被点名 + SNI：放行
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(server.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat),
+                                                                   false, kTestCertificatePath, kTestKeyPath, "api.example.com");
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_TRUE(outcome.serverCompleted) << "SNI 切换后名单把被点名的证书拒了：" << outcome.serverErrorText;
+        }
+
+        // 未点名 + SNI：拒绝（证明名单没有因切换上下文而失效）
+        {
+            SslContextPointer clientContext = createClientContext();
+            ASSERT_NE(clientContext, nullptr);
+            ASSERT_NE(SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION), 0);
+            const HandshakeOutcome outcome = runInProcessHandshake(server.nativeHandle(), clientContext.get(), false, true, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat),
+                                                                   false, unlistedCertificatePath, unlistedKeyPath, "api.example.com");
+            ASSERT_FALSE(outcome.setupFailed);
+            EXPECT_FALSE(outcome.serverCompleted) << "SNI 切换后未点名的证书被放行了：名单没有生效";
         }
 
         std::filesystem::remove(bundlePath);
@@ -1424,6 +1528,52 @@ namespace AsynGyanis::Core
 
         std::error_code errorCode;
         std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：客户端角色经 enableClientPeerVerification() 开出的对端校验，轮换后不能丢
+     */
+    TEST(TlsContext, ReloadCertificatePreservesClientPeerVerification)
+    {
+        const std::filesystem::path certificatePath = makeUniqueTemporaryPath("client_peer_verify_cert");
+        ASSERT_TRUE(copyFixtureCertificate(certificatePath));
+
+        TlsContext context(TlsPolicy{}, TlsContext::Role::Client);
+        ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
+        context.enableClientPeerVerification();
+        ASSERT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0);
+
+        ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EF0L));
+        ASSERT_TRUE(context.reloadCertificate());
+
+        EXPECT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0) << "客户端上下文轮换后丢失了对端证书校验";
+
+        std::error_code errorCode;
+        std::filesystem::remove(certificatePath, errorCode);
+    }
+
+    /**
+     * @brief 钉住：客户端上下文轮换后仍带系统信任库，出站握手能验通服务端
+     * @details enableClientPeerVerification() 在策略未接管信任库时会补系统信任库；
+     *          轮换只复现校验模式、不补信任锚时，新上下文会在握手里报找不到签发者。
+     */
+    TEST(TlsContext, ReloadCertificateRestoresClientSystemTrustStore)
+    {
+        // 把系统信任库指到仓库夹具：这条判据不依赖机器上装了什么根证书
+        const ScopedEnvironmentVariable trustAnchorOverride("SSL_CERT_FILE", kTestCertificatePath.string());
+
+        TlsContext client(TlsPolicy{}, TlsContext::Role::Client);
+        ASSERT_TRUE(client.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        client.enableClientPeerVerification();
+        ASSERT_TRUE(client.reloadCertificate()) << "证书路径未变，轮换应当成功";
+
+        TlsContext server;
+        ASSERT_TRUE(server.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        const HandshakeOutcome outcome = runInProcessHandshake(server.nativeHandle(), client.nativeHandle(), false, false);
+        ASSERT_FALSE(outcome.setupFailed);
+        EXPECT_TRUE(outcome.clientCompleted) << "轮换后的客户端没有信任锚，验不过服务端证书：" << outcome.clientErrorText;
+        EXPECT_EQ(outcome.clientVerifyResult, static_cast<long>(X509_V_OK));
     }
 
     // ============================================================================

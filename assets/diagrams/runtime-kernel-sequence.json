@@ -73,7 +73,7 @@
       "sources": [
         { "path": "src/Core/EventLoop/Epoll.cpp", "line": 84, "label": "epoll_wait" },
         { "path": "src/Core/EventLoop/Iocp.cpp", "line": 824, "label": "GetQueuedCompletionStatusEx" },
-        { "path": "src/Core/EventLoop/Uring.cpp", "line": 758, "label": "超时是一条 ring 操作" }
+        { "path": "src/Core/EventLoop/Uring.cpp", "line": 770, "label": "超时是一条 ring 操作" }
       ]
     },
     {
@@ -153,7 +153,7 @@
       "items": [
         "epoll 水平触发直接返回就绪表（Epoll.cpp:84），没有重武装这一步",
         "IOCP 要重投探针模拟水平触发，另有待重投/待合成两张表与 ConnectEx、takeAcceptedSocket 专属出口（Iocp.cpp:800-838）",
-        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:734-771）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:404）"
+        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:746-783）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:404）"
       ]
     },
     {

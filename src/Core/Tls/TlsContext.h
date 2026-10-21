@@ -255,8 +255,8 @@ namespace AsynGyanis::Core
         /**
          * @brief 按当前策略施加「校验对端证书」模式：名单为空装默认校验，非空装指纹点名回调
          * @details 三处启用校验的地方（要求客户端证书、出站校验、换代复现）共用这一份，
-         *          少走一处就是「某条路径上名单不生效」的藏身处。回调经 SSL_CTX 的 app_data
-         *          取回本对象（本类不使用 app_data，占位无冲突）
+         *          少走一处就是「某条路径上名单不生效」的藏身处。回调经 SSL_CTX 的 ex_data
+         *          取回共享登记，生命周期跟随上下文，不解引用宿主对象
          * @param context 目标上下文（SSL_CTX 或换代时的新上下文）
          * @param mode SSL_VERIFY_* 位组合
          */

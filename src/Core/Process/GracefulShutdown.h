@@ -36,7 +36,7 @@ namespace AsynGyanis::Core
      *          CTRL_CLOSE_EVENT、CTRL_LOGOFF_EVENT 与 CTRL_SHUTDOWN_EVENT。动作一律被投回构造时给出的
      *          那个事件循环去执行——收尾通常要碰服务器与会话的状态，而那些状态按本库的线程契约只允许
      *          在所属循环上读写。
-     * @details 为什么放在库里而不是示例里：此前每个使用方都要自己抄一遍 `std::signal` + 一个全局标志
+     * @details 为什么放在库里而不是示例里：放在示例里则每个使用方都要自己抄一遍 `std::signal` + 一个全局标志
      *          （`samples/Net/ReferenceServer.cpp` 就是那份抄本），抄错一次的后果是「Ctrl+C 之后连接被硬切、
      *          在途请求随进程一起丢」，而且没人会知道自己抄错了。
      * @note 一个进程只允许一个观察者：信号处理器与 SIGTERM 的屏蔽都是进程级的，两个实例会互相抢。

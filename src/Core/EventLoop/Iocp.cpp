@@ -720,8 +720,8 @@ namespace AsynGyanis::Core
     void Iocp::retryFailedArms()
     {
         // 只处理进入时已在表里的那几条：armProbe 失败会由 noteArmPending 追加到同一张表的尾部，
-        // 按长度取本轮份额、再把处理过的前几条摘掉，就不会边遍历边插入（此前是「整张表换到局部
-        // 变量再销毁」，结果等价，但每轮都把缓冲还给堆、下一轮重新长出来）。
+        // 按长度取本轮份额、再把处理过的前几条摘掉，就不会边遍历边插入（整张表换到局部
+        // 变量再销毁虽等价，但每轮都把缓冲还给堆、下一轮重新长出来）。
         // 表项是堆上的 SocketState 指针，扩容只搬表本身，按下标取用不受影响
         const std::size_t currentRoundCount = m_pendingArmRetry.size();
 
