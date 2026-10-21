@@ -29,7 +29,7 @@ for _stream in (sys.stdout, sys.stderr):
 SOURCE_SUFFIXES = {".h", ".hpp", ".cpp", ".cc", ".inl"}
 WINDOW = 8
 MIN_MEANINGFUL = 5
-SKIP_LINE_RE = re.compile(r"^\s*(?:#\s*(?:include|pragma)|public:|private:|protected:|namespace\b|using\b)")
+SKIP_LINE_RE = re.compile(r"^\s*(?:#|public:|private:|protected:|namespace\b|using\b)")
 HELPER_RE = re.compile(r"^\s*(?:static\s+)?(?:inline\s+)?(?:[\w:<>,\s*&]+?)\s+([a-z][A-Za-z0-9_]*)\s*\(")
 CONTROL_NAMES = {
     "if",
@@ -153,10 +153,11 @@ def scan(root: Path) -> tuple[dict[str, dict], dict[str, set[str]], int]:
             occurrences[digest].append((relative, start + 1))
             samples.setdefault(digest, "\n".join(window))
 
+        stripped_lines = strip_comments(text).splitlines()
         depth = 0
         anonymous_end = -1
         pending_anonymous_namespace = False
-        for line in strip_comments(text).splitlines():
+        for index, line in enumerate(stripped_lines):
             if anonymous_end < 0:
                 if re.match(r"^\s*namespace\s*\{", line):
                     anonymous_end = depth + 1
@@ -169,7 +170,10 @@ def scan(root: Path) -> tuple[dict[str, dict], dict[str, set[str]], int]:
             if anonymous_end >= 0 and depth >= anonymous_end:
                 match = HELPER_RE.match(line)
                 if match and match.group(1) not in CONTROL_NAMES:
-                    helper_files[match.group(1)].add(relative)
+                    stripped_line = line.strip()
+                    next_line = stripped_lines[index + 1].strip() if index + 1 < len(stripped_lines) else ""
+                    if not stripped_line.endswith(";") and ("{" in stripped_line or next_line.startswith("{")):
+                        helper_files[match.group(1)].add(relative)
             if anonymous_end >= 0 and depth < anonymous_end:
                 anonymous_end = -1
 

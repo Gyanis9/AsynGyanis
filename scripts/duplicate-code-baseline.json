@@ -72,6 +72,14 @@
       "occurrences": 2
     },
     {
+      "hash": "56e3785811853912",
+      "files": [
+        "src/Core/Process/GracefulShutdown.cpp",
+        "src/Core/Process/ReloadSignal.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
       "hash": "605c894e35aeb7ee",
       "files": [
         "src/Net/Http/Client/HttpClient.cpp"
@@ -97,22 +105,6 @@
       "hash": "72998dd48a54c331",
       "files": [
         "src/Net/Http2/Http2Connection.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "73f85eba37e17544",
-      "files": [
-        "src/Core/Process/GracefulShutdown.cpp",
-        "src/Core/Process/ReloadSignal.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "78bd940711935c5f",
-      "files": [
-        "src/Database/MySql/MySqlConnection.cpp",
-        "src/Database/MySql/MySqlResult.cpp"
       ],
       "occurrences": 2
     },
@@ -159,13 +151,6 @@
       "files": [
         "src/Net/Http2/Http2Session.h",
         "src/Net/Http3/Http3Session.h"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "85bdaaee272f1427",
-      "files": [
-        "src/Platform/System/ProcessInfo.cpp"
       ],
       "occurrences": 2
     },
