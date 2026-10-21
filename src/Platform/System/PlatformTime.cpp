@@ -73,6 +73,25 @@ namespace AsynGyanis::Platform
             }
             return std::tuple{static_cast<int>(calendarYear), static_cast<int>(month), static_cast<int>(day)};
         }
+
+        /**
+         * @brief 公历年月日折算成自 1970-01-01 起的天数
+         * @details 与 civilFromDays 互逆，同样是纯整数运算：不依赖 timegm/_mkgmtime，
+         *          也不受进程时区与 C 库特性宏影响。月份按 1~12、日按 1~31 给出。
+         * @param year 完整年份
+         * @param month 月份 1~12
+         * @param day 日 1~31
+         * @return std::int64_t 自 Unix 纪元起的天数（可为负）
+         */
+        constexpr std::int64_t daysFromCivil(const int year, const int month, const int day) noexcept
+        {
+            const std::int64_t adjustedYear = static_cast<std::int64_t>(year) - (month <= 2 ? 1 : 0);
+            const std::int64_t era          = floorDivide(adjustedYear, 400);
+            const std::int64_t yearOfEra    = adjustedYear - era * 400;                                      // [0, 399]
+            const std::int64_t dayOfYear    = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;      // [0, 365]
+            const std::int64_t dayOfEra     = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear; // [0, 146096]
+            return era * kDaysPerGregorianEra + dayOfEra - 719468;
+        }
     } // namespace
 
     std::tm PlatformTime::localTime(const std::time_t calendarTime) noexcept
@@ -151,10 +170,7 @@ namespace AsynGyanis::Platform
 
     std::int64_t PlatformTime::utcSeconds(std::tm &broken) noexcept
     {
-#if ASYN_PLATFORM_WIN32
-        return static_cast<std::int64_t>(::_mkgmtime(&broken));
-#else
-        return static_cast<std::int64_t>(::timegm(&broken));
-#endif
+        const std::int64_t days = daysFromCivil(broken.tm_year + 1900, broken.tm_mon + 1, broken.tm_mday);
+        return days * kSecondsPerDay + static_cast<std::int64_t>(broken.tm_hour) * 3600 + static_cast<std::int64_t>(broken.tm_min) * 60 + broken.tm_sec;
     }
 } // namespace AsynGyanis::Platform
