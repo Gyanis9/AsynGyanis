@@ -167,6 +167,77 @@ namespace AsynGyanis::Core
             }
             co_return;
         }
+        /**
+         * @brief 批次收发的观测结果
+         */
+        struct BatchTransferObservation
+        {
+            std::optional<AsyncUdpSocket::DatagramBatchSendResult> sendResult;               ///< 批次发送的交付
+            std::size_t                                            receivedDatagramCount{0}; ///< 累计收到的条数
+            int                                                    receiveErrorCode{0};      ///< 收包错误码；0 表示没有错误
+            std::array<std::string, 2>                             receivedPayloads;         ///< 按到达顺序记下的正文
+            bool                                                   isReceiveDone{false};     ///< 两条都收到（或明确收不下去）时置位
+            std::string                                            failureMessage;           ///< 协程内捕获到的异常文本
+        };
+
+        /**
+         * @brief 批次先发后收：两条报文各走一次批量接口，收侧按「够两条就停」聚合
+         * @param sender 发送套接字
+         * @param receiver 接收套接字
+         * @param observation 观测结果
+         */
+        Task<void> sendThenReceiveBatchTask(AsyncUdpSocket &sender, AsyncUdpSocket &receiver, BatchTransferObservation &observation)
+        {
+            try
+            {
+                const std::string             firstPayload    = "batch-one";
+                const std::string             secondPayload   = "batch-two";
+                const Platform::SocketAddress receiverAddress = receiver.localAddress();
+
+                std::array<Platform::DatagramSocket::BatchSendItem, 2> items{};
+                items[0].peerAddress   = receiverAddress;
+                items[0].buffer        = firstPayload.data();
+                items[0].length        = firstPayload.size();
+                items[1].peerAddress   = receiverAddress;
+                items[1].buffer        = secondPayload.data();
+                items[1].length        = secondPayload.size();
+                observation.sendResult = co_await sender.asyncSendBatch(items.data(), items.size());
+
+                // 批量收包只保证「至少交一条就返回」，不保证一次就把已排队的全交出来：
+                // 两条都到齐才停，避免把平台的窗口大小当成语义来断言
+                while (observation.receivedDatagramCount < 2)
+                {
+                    std::array<std::array<char, 32>, 2>                buffers{};
+                    std::array<Platform::DatagramSocket::BatchSlot, 2> slots{};
+                    for (std::size_t index = 0; index < slots.size(); ++index)
+                    {
+                        slots[index].buffer   = buffers[index].data();
+                        slots[index].capacity = buffers[index].size();
+                    }
+
+                    const AsyncUdpSocket::DatagramBatchReceiveResult batch = co_await receiver.asyncReceiveBatch(slots.data(), slots.size());
+                    if (batch.socketErrorCode != 0)
+                    {
+                        observation.receiveErrorCode = batch.socketErrorCode;
+                        break;
+                    }
+                    if (batch.receivedDatagramCount == 0)
+                    {
+                        break;
+                    }
+                    for (std::size_t index = 0; index < batch.receivedDatagramCount && observation.receivedDatagramCount < 2; ++index)
+                    {
+                        observation.receivedPayloads[observation.receivedDatagramCount].assign(buffers[index].data(), slots[index].receivedByteCount);
+                        ++observation.receivedDatagramCount;
+                    }
+                }
+                observation.isReceiveDone = true;
+            } catch (const Base::Exception &exception)
+            {
+                observation.failureMessage = exception.what();
+            }
+            co_return;
+        }
     } // namespace
 
     /**
@@ -576,6 +647,55 @@ namespace AsynGyanis::Core
 #else
         EXPECT_EQ(observation.readCodepoint, Platform::kEcnCodepointNotCapable) << "这一侧读不到字段，就该交回「非 ECN」而不是上一次的余值";
 #endif
+    }
+
+    /**
+     * @brief 批量发与批量收：两条报文一次交出、一次收齐，条数与正文都要对得上
+     * @details 批量接口此前只有实现没有直测；这条同时钉住「收侧可能分窗交付」这一契约——
+     *          用例循环到两条齐了才停，不把一次返回的条数当成平台语义
+     */
+    TEST(AsyncUdpSocket, SendsAndReceivesABatchOfDatagrams)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket receiver = bindLoopbackSocket(loop);
+        ASSERT_TRUE(receiver.isValid()) << "接收端绑定失败，套接字错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        AsyncUdpSocket sender = bindLoopbackSocket(loop);
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败";
+
+        BatchTransferObservation observation;
+        Task<void>               scenario = sendThenReceiveBatchTask(sender, receiver, observation);
+        loop.scheduler().schedule(scenario.handle());
+        ASSERT_TRUE(advanceUntil(loop, [&observation] { return observation.isReceiveDone; })) << "批次没有在时限内收完";
+
+        ASSERT_TRUE(observation.failureMessage.empty()) << "场景里抛了异常：" << observation.failureMessage;
+        ASSERT_TRUE(observation.sendResult.has_value()) << "批次发送没有走到";
+        EXPECT_EQ(observation.sendResult->sentDatagramCount, 2U);
+        EXPECT_TRUE(observation.sendResult->isComplete) << "两条都是小报文，发送缓冲不该只接下一部分";
+        EXPECT_EQ(observation.sendResult->socketErrorCode, 0);
+
+        EXPECT_EQ(observation.receiveErrorCode, 0) << "小批量回环收包不该带错误码";
+        ASSERT_EQ(observation.receivedDatagramCount, 2U) << "两条报文没有都收到";
+        EXPECT_EQ(observation.receivedPayloads[0], "batch-one");
+        EXPECT_EQ(observation.receivedPayloads[1], "batch-two");
+    }
+
+    /**
+     * @brief 不分片开关的回报要与查询一致；设不上时查询也必须说没设上
+     */
+    TEST(AsyncUdpSocket, DoNotFragmentToggleMatchesWhatThePlatformAccepted)
+    {
+        ASSERT_TRUE(Platform::Socket::initialize());
+
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid()) << "绑定失败";
+
+        const bool isEnabled = socket.enableDoNotFragment();
+        EXPECT_EQ(socket.isDoNotFragmentSet(), isEnabled) << "设置结果与查询结果必须同解，否则上层会把「没设上」当成「已设上」";
+        EXPECT_EQ(socket.enableDoNotFragment(), isEnabled) << "重复设置应当幂等";
+        EXPECT_EQ(socket.isDoNotFragmentSet(), isEnabled);
     }
 
 } // namespace AsynGyanis::Core
