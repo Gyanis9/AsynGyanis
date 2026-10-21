@@ -17,9 +17,13 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <thread>
 #include <utility>
 #include <vector>
+
+namespace AsynGyanis::Platform
+{
+    class SignalWatcher;
+} // namespace AsynGyanis::Platform
 
 namespace AsynGyanis::Core
 {
@@ -151,9 +155,8 @@ namespace AsynGyanis::Core
         std::atomic<bool>          m_isInstalled{false}; ///< 信号接管是否装上（每进程仅一个观察者装得上）
         std::atomic<std::uint64_t> m_reloadCount{0};     ///< 累计触发次数
 
-        /// POSIX 侧取信号的等待线程。必须声明在最后：成员按声明逆序销毁，最后声明的最先销毁，
-        /// 于是 jthread 的 join 发生在上面那批原子量与容器之前——否则等待线程可能在它们已经没了
-        /// 的时候还在读它们（sigtimedwait 带超时，所以停得下来）
-        std::jthread m_waiter;
+        /// POSIX 侧取信号的等待线程
+        /// @note 信号原语已收进 Platform：m_watcher 析构时停等待线程并还原屏蔽
+        std::unique_ptr<Platform::SignalWatcher> m_watcher;
     };
 } // namespace AsynGyanis::Core

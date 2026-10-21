@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(AsynGyanis
-        VERSION 2.0.0
+        VERSION 3.0.0
         DESCRIPTION "Industrial-grade C++23 async server framework"
         LANGUAGES C CXX
 )
@@ -397,6 +397,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "RollingPeriod.h" EXCLUDE
             PATTERN "OAuthSupport.h" EXCLUDE
             PATTERN "HttpProxyPumpedTls.h" EXCLUDE
+            PATTERN "SignalObserverInstall.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：

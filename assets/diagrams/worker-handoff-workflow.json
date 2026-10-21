@@ -243,7 +243,7 @@
       "sublabel": "GracefulShutdown 接住 CTRL_BREAK",
       "tag": "没接住就是默认处置当场终止",
       "sources": [
-        { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 161, "label": "子进程自己挂控制台处理器" },
+        { "path": "src/Core/Process/GracefulShutdown.cpp", "line": 89, "label": "子进程装停机观察者（控制台处理器在 Platform）" },
         { "path": "src/Platform/System/Process.cpp", "line": 461, "label": "父代按进程组投 CTRL_BREAK" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 672, "label": "进程组是这条腿的前提" }
       ]

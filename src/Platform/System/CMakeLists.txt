@@ -12,6 +12,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/ProcessInfo.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ServiceNotification.h
         ${CMAKE_CURRENT_LIST_DIR}/ServiceNotification.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/SignalWatcher.h
+        ${CMAKE_CURRENT_LIST_DIR}/SignalWatcher.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TextEncoding.h
         ${CMAKE_CURRENT_LIST_DIR}/TextEncoding.cpp
 )

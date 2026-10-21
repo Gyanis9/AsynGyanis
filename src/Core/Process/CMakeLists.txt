@@ -7,6 +7,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/GracefulShutdown.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ReloadSignal.h
         ${CMAKE_CURRENT_LIST_DIR}/ReloadSignal.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/SignalObserverInstall.h
+        ${CMAKE_CURRENT_LIST_DIR}/SignalObserverInstall.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ServiceWatchdog.h
         ${CMAKE_CURRENT_LIST_DIR}/ServiceWatchdog.cpp
         ${CMAKE_CURRENT_LIST_DIR}/RoundTicker.h

@@ -72,14 +72,6 @@
       "occurrences": 2
     },
     {
-      "hash": "56e3785811853912",
-      "files": [
-        "src/Core/Process/GracefulShutdown.cpp",
-        "src/Core/Process/ReloadSignal.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "605c894e35aeb7ee",
       "files": [
         "src/Net/Http/Client/HttpClient.cpp"
@@ -234,14 +226,6 @@
       "occurrences": 2
     },
     {
-      "hash": "ae0f22588fffe2a8",
-      "files": [
-        "src/Core/Process/GracefulShutdown.cpp",
-        "src/Core/Process/ReloadSignal.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "ae3acbb288971679",
       "files": [
         "src/Net/WebSocket/WebSocketClient.cpp"
@@ -282,14 +266,6 @@
       "hash": "bf236e8520da322d",
       "files": [
         "src/Database/Queryable/SchemaMigrator.h"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "c076e95730b22e8e",
-      "files": [
-        "src/Core/Process/GracefulShutdown.cpp",
-        "src/Core/Process/ReloadSignal.cpp"
       ],
       "occurrences": 2
     },

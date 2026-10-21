@@ -4,23 +4,16 @@
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Process/ReloadSignal.h"
+#include "Core/Process/SignalObserverInstall.h"
 #include "Platform/Platform.h"
+#include "Platform/System/SignalWatcher.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <memory>
-#include <stop_token>
-
-#if ASYN_PLATFORM_WIN32
-#include <windows.h>
-#else
-#include <cerrno>
-#include <csignal>
-#include <pthread.h>
-#endif
+#include <utility>
 
 namespace AsynGyanis::Core
 {
@@ -31,61 +24,6 @@ namespace AsynGyanis::Core
 
         /// 需要原地等收尾跑完的那类触发（Windows 的关闭、注销、关机事件）留给它的时间上限
         constexpr std::chrono::milliseconds kConsoleEventBudget{5000};
-
-#if ASYN_PLATFORM_WIN32
-
-        /**
-         * @brief 系统要求的 C 回调跳板
-         * @details 只经公开接口办事（isTriggered 与 requestShutdown）：控制台处理器是进程级自由函数，
-         *          让它去碰实例的私有成员就得把跳板暴露成友元，那不值。
-         * @param controlType 事件类型
-         * @return TRUE 本观察者已接管（因此挡住缺省的进程终止）；FALSE 交还给系统
-         */
-        BOOL WINAPI consoleControlHandler(const DWORD controlType)
-        {
-            GracefulShutdown *owner = g_owner;
-            if (owner == nullptr || owner->isTriggered())
-            {
-                // 已经在收尾了还来一次：交还给系统按缺省强杀，别把「卡住的退出」变成永久等待
-                return FALSE;
-            }
-
-            switch (controlType)
-            {
-                case CTRL_C_EVENT:
-                case CTRL_BREAK_EVENT:
-                    owner->requestShutdown(GracefulShutdown::Reason::Interrupt);
-                    return TRUE;
-                case CTRL_CLOSE_EVENT:
-                case CTRL_LOGOFF_EVENT:
-                case CTRL_SHUTDOWN_EVENT:
-                    // 这三类事件处理器一返回系统就终止进程，所以 requestShutdown 内部要原地等完（有上限）
-                    owner->requestShutdown(GracefulShutdown::Reason::ConsoleEvent);
-                    return TRUE;
-                default:
-                    return FALSE;
-            }
-        }
-#else
-        /// 本类接管的两路信号
-        constexpr std::array<int, 2> kHandledSignals{SIGINT, SIGTERM};
-
-        /// 等待线程的轮询周期：不带超时的 sigwait 叫不醒，析构就会挂在 join 上等一个再也不会来的信号
-        constexpr std::chrono::milliseconds kWaitPollInterval{50};
-
-        /**
-         * @brief 把 sigset_t 填成「只含本类接管的信号」
-         * @param[out] watchSet 填好的集合；失败时由调用方按空集处理
-         */
-        void fillWatchedSignalSet(sigset_t &watchSet) noexcept
-        {
-            sigemptyset(&watchSet);
-            for (const int signalNumber: kHandledSignals)
-            {
-                static_cast<void>(sigaddset(&watchSet, signalNumber));
-            }
-        }
-#endif
     } // namespace
 
     /// 收尾动作是否跑完的握手对象：等它的一方与执行动作的一方共用同一份状态
@@ -121,22 +59,12 @@ namespace AsynGyanis::Core
 
     bool GracefulShutdown::blockStopSignals() noexcept
     {
-#if ASYN_PLATFORM_WIN32
-        // Windows 的控制台事件不经信号掩码这一套，这里没有需要提前做的事
-        return true;
-#else
-        // 被挡进屏蔽字的信号不会按缺省动作终止进程，只会被本类的等待线程取走。
-        // 屏蔽只对之后派生的线程生效（子线程继承掩码），所以要在起工作线程之前调
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        const int blocked = ::pthread_sigmask(SIG_BLOCK, &watchSet, nullptr);
-        if (blocked != 0)
+        if (!Platform::SignalSet::block(Platform::SignalSet::forShutdown()))
         {
-            LOG_ERROR_FMT("GracefulShutdown: 屏蔽 SIGINT/SIGTERM 失败（errno={}），信号仍会按缺省动作直接终止进程", blocked);
+            LOG_ERROR("GracefulShutdown: 屏蔽 SIGINT/SIGTERM 失败，信号仍会按缺省动作直接终止进程");
             return false;
         }
         return true;
-#endif
     }
 
     GracefulShutdown::GracefulShutdown()
@@ -153,85 +81,18 @@ namespace AsynGyanis::Core
     {
         if (g_owner != nullptr)
         {
-            LOG_ERROR("GracefulShutdown: 本进程已经有一个停机信号观察者，这一个不会装上信号接管（信号掩码与处理器都是进程级的，两个实例只会互相抢）；停机仍可走 requestShutdown()");
+            LOG_ERROR("GracefulShutdown: 本进程已经有一个停机信号观察者，这一个不会装上信号接管（信号屏蔽与处理器都是进程级的，两个实例只会互相抢）；停机仍可走 requestShutdown()");
             return;
         }
 
-#if ASYN_PLATFORM_WIN32
-        if (!::SetConsoleCtrlHandler(&consoleControlHandler, TRUE))
-        {
-            LOG_ERROR_FMT("GracefulShutdown: 安装控制台事件处理器失败（GetLastError={}），停机信号这一路等于没接上；收尾仍可走 requestShutdown()",
-                          static_cast<unsigned long>(::GetLastError()));
-            return;
-        }
-#else
-        if (!blockStopSignals())
+        // 观察者自己完成屏蔽与等待线程/控制台处理器的安装；Core 只保留进程级属主与派发策略
+        m_watcher = installSignalObserver(
+                Platform::SignalSet::forShutdown(), [this](const Platform::SignalEvent event) noexcept { return handleSignal(event); }, "GracefulShutdown",
+                "收尾仍可走 requestShutdown()", "本平台没有可用的停机路径");
+        if (m_watcher == nullptr)
         {
             return;
         }
-#endif
-
-#if !ASYN_PLATFORM_WIN32
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        // 建线程会分配栈与线程对象，线程耗尽时抛 std::system_error；本函数是 noexcept，
-        // 因此构造本身要兜住，失败时不能发布 g_owner 与安装标记
-        try
-        {
-            m_waiter = std::jthread(
-                    [this, watchSet](const std::stop_token &stopToken)
-                    {
-                        // 与重载观察者互为对称的一条：屏蔽字只被子线程继承，两个观察者的构造顺序不固定。
-                        // 不补这一步，先起的这条线程就会成为 SIGHUP 的缺省动作受害者（那一枚本该触发重载）
-                        static_cast<void>(ReloadSignal::blockReloadSignal());
-
-                        for (;;)
-                        {
-                            if (stopToken.stop_requested())
-                            {
-                                return;
-                            }
-                            const std::chrono::nanoseconds interval = kWaitPollInterval;
-                            timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
-                            siginfo_t                      info{};
-                            const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
-                            if (received < 0)
-                            {
-                                // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
-                                if (errno == EAGAIN || errno == EINTR)
-                                {
-                                    continue;
-                                }
-                                LOG_ERROR_FMT("GracefulShutdown: 等待信号出错（errno={}），停机信号接管就此停止", errno);
-                                return;
-                            }
-                            triggerShutdown(received == SIGINT ? Reason::Interrupt : Reason::Terminate, false);
-                        }
-                    });
-        } catch (const std::exception &failure)
-        {
-            try
-            {
-                LOG_ERROR_FMT("GracefulShutdown: 启动信号等待线程失败（{}），信号接管不会装上；收尾仍可走 requestShutdown()", failure.what());
-            } catch (...)
-            {
-            }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
-            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
-            return;
-        } catch (...)
-        {
-            try
-            {
-                LOG_ERROR("GracefulShutdown: 启动信号等待线程失败（非标准异常），信号接管不会装上；收尾仍可走 requestShutdown()");
-            } catch (...)
-            {
-            }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这两枚信号从此挂起而不是按缺省动作终止
-            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
-            return;
-        }
-#endif
         g_owner = this;
         m_isInstalled.store(true, std::memory_order_release);
     }
@@ -242,18 +103,33 @@ namespace AsynGyanis::Core
         {
             return;
         }
-#if ASYN_PLATFORM_WIN32
-        static_cast<void>(::SetConsoleCtrlHandler(&consoleControlHandler, FALSE));
-#else
-        // 撤掉屏蔽即还原缺省行为：本类只在构造时把两路信号挡进去，还原不需要更细的状态。
-        // 已经跑起来的线程仍留着继承来的掩码，这是 pthread 的既有语义，不假装能收回
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
-#endif
+        // 观察者先停：POSIX 停等待线程并还原屏蔽，Windows 摘掉控制台处理器
+        m_watcher.reset();
         g_owner = nullptr;
         m_isInstalled.store(false, std::memory_order_release);
-        // 等待线程由 m_waiter 的析构负责请求停止并 join（它声明在最后，因此先于上面这些成员销毁）
+    }
+
+    bool GracefulShutdown::handleSignal(const Platform::SignalEvent event) noexcept
+    {
+        // 已经收尾过：Windows 交回系统缺省动作（连按两次 Ctrl+C 是催命），POSIX 仍消费掉这条信号
+        if (isTriggered())
+        {
+            return false;
+        }
+        switch (event)
+        {
+            case Platform::SignalEvent::Interrupt:
+                triggerShutdown(Reason::Interrupt, false);
+                return true;
+            case Platform::SignalEvent::Terminate:
+                triggerShutdown(Reason::Terminate, false);
+                return true;
+            case Platform::SignalEvent::ConsoleClose:
+                triggerShutdown(Reason::ConsoleEvent, true);
+                return true;
+            default:
+                return false;
+        }
     }
 
     std::size_t GracefulShutdown::onShutdown(std::function<void()> action)

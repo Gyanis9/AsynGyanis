@@ -1,8 +1,8 @@
 # AsynGyanis 公开接口面基线：由 scripts/check-api-baseline.py --write 生成，请勿手改
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
-# version=2.0.0
-# headers=304 entries=8914
+# version=3.0.0
+# headers=304 entries=8920
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1168,20 +1168,24 @@ src/Core/Process/GracefulShutdown.h	[[nodiscard]] bool isTriggered() const noexc
 src/Core/Process/GracefulShutdown.h	[[nodiscard]] static bool blockStopSignals() noexcept
 src/Core/Process/GracefulShutdown.h	[[nodiscard]] std::optional<Reason> triggeredBy() const noexcept
 src/Core/Process/GracefulShutdown.h	bool cancel(std::size_t token) noexcept
+src/Core/Process/GracefulShutdown.h	bool handleSignal(Platform::SignalEvent event) noexcept
 src/Core/Process/GracefulShutdown.h	class ASYN_CORE_API GracefulShutdown
 src/Core/Process/GracefulShutdown.h	class EventLoop
 src/Core/Process/GracefulShutdown.h	class ShutdownHandshake
+src/Core/Process/GracefulShutdown.h	class SignalWatcher
 src/Core/Process/GracefulShutdown.h	enum class Reason : std::uint8_t
+src/Core/Process/GracefulShutdown.h	enum class SignalEvent : std::uint8_t
 src/Core/Process/GracefulShutdown.h	explicit GracefulShutdown(EventLoop &loop)
 src/Core/Process/GracefulShutdown.h	mutable std::mutex m_mutex
 src/Core/Process/GracefulShutdown.h	namespace AsynGyanis::Core
+src/Core/Process/GracefulShutdown.h	namespace AsynGyanis::Platform
 src/Core/Process/GracefulShutdown.h	static void runAction(const std::function<void()> &action) noexcept
 src/Core/Process/GracefulShutdown.h	std::atomic<bool> m_isInstalled
 src/Core/Process/GracefulShutdown.h	std::atomic<bool> m_isTriggered
 src/Core/Process/GracefulShutdown.h	std::atomic<std::uint8_t> m_reason
-src/Core/Process/GracefulShutdown.h	std::jthread m_waiter
 src/Core/Process/GracefulShutdown.h	std::size_t m_nextToken
 src/Core/Process/GracefulShutdown.h	std::size_t onShutdown(std::function<void()> action)
+src/Core/Process/GracefulShutdown.h	std::unique_ptr<Platform::SignalWatcher> m_watcher
 src/Core/Process/GracefulShutdown.h	std::vector<std::pair<std::size_t, std::function<void()>>> m_actions
 src/Core/Process/GracefulShutdown.h	void dispatchActions(std::shared_ptr<ShutdownHandshake> handshake) noexcept
 src/Core/Process/GracefulShutdown.h	void install() noexcept
@@ -1202,15 +1206,17 @@ src/Core/Process/ReloadSignal.h	[[nodiscard]] std::uint64_t reloadCount() const 
 src/Core/Process/ReloadSignal.h	bool cancel(std::size_t token) noexcept
 src/Core/Process/ReloadSignal.h	class ASYN_CORE_API ReloadSignal
 src/Core/Process/ReloadSignal.h	class EventLoop
+src/Core/Process/ReloadSignal.h	class SignalWatcher
 src/Core/Process/ReloadSignal.h	explicit ReloadSignal(EventLoop &loop)
 src/Core/Process/ReloadSignal.h	mutable std::mutex m_mutex
 src/Core/Process/ReloadSignal.h	namespace AsynGyanis::Core
+src/Core/Process/ReloadSignal.h	namespace AsynGyanis::Platform
 src/Core/Process/ReloadSignal.h	static void runAction(const std::function<void()> &action) noexcept
 src/Core/Process/ReloadSignal.h	std::atomic<bool> m_isInstalled
 src/Core/Process/ReloadSignal.h	std::atomic<std::uint64_t> m_reloadCount
-src/Core/Process/ReloadSignal.h	std::jthread m_waiter
 src/Core/Process/ReloadSignal.h	std::size_t m_nextToken
 src/Core/Process/ReloadSignal.h	std::size_t onReload(std::function<void()> action)
+src/Core/Process/ReloadSignal.h	std::unique_ptr<Platform::SignalWatcher> m_watcher
 src/Core/Process/ReloadSignal.h	std::vector<std::pair<std::size_t, std::function<void()>>> m_actions
 src/Core/Process/ReloadSignal.h	void fireReload() noexcept
 src/Core/Process/ReloadSignal.h	void install() noexcept

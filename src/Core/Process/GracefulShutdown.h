@@ -18,9 +18,14 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <thread>
 #include <utility>
 #include <vector>
+
+namespace AsynGyanis::Platform
+{
+    class SignalWatcher;
+    enum class SignalEvent : std::uint8_t;
+} // namespace AsynGyanis::Platform
 
 namespace AsynGyanis::Core
 {
@@ -168,6 +173,13 @@ namespace AsynGyanis::Core
          */
         static void runAction(const std::function<void()> &action) noexcept;
 
+        /**
+         * @brief 把后端事件映射成停机成因并触发收尾
+         * @param event 信号事件
+         * @return true 已接管；false 表示已收尾过（Windows 交回系统缺省动作）
+         */
+        bool handleSignal(Platform::SignalEvent event) noexcept;
+
         EventLoop *m_loop{nullptr}; ///< 承接收尾动作的循环（不拥有）
 
         mutable std::mutex                                         m_mutex;        ///< 保护 m_actions 与 m_nextToken
@@ -178,9 +190,7 @@ namespace AsynGyanis::Core
         std::atomic<std::uint8_t> m_reason{0};          ///< 触发成因，取值是 Reason 的底层值；0 表示尚未触发
         std::atomic<bool>         m_isInstalled{false}; ///< 信号接管是否装上（每进程仅一个观察者装得上）
 
-        /// POSIX 侧取信号的等待线程。必须声明在最后：成员按声明逆序销毁，最后声明的最先销毁，
-        /// 于是 jthread 的 join 发生在上面那批原子量与容器之前——否则等待线程可能在它们已经没了
-        /// 的时候还在读它们（不带超时的 sigwait 是叫不醒的，所以等待用的是固定短周期轮询）
-        std::jthread m_waiter;
+        /// 信号原语的所有权：析构时先停观察者、还原屏蔽，再让上面那批原子量与容器退出
+        std::unique_ptr<Platform::SignalWatcher> m_watcher;
     };
 } // namespace AsynGyanis::Core

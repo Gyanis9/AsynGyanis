@@ -59,66 +59,6 @@
       "count": 10
     },
     {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "os-api",
-      "symbol": "::sigtimedwait",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "os-api",
-      "symbol": "GetLastError",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "os-api",
-      "symbol": "SetConsoleCtrlHandler",
-      "count": 2
-    },
-    {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "os-header",
-      "symbol": "pthread.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "os-header",
-      "symbol": "windows.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/GracefulShutdown.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 6
-    },
-    {
-      "path": "src/Core/Process/ReloadSignal.cpp",
-      "category": "os-api",
-      "symbol": "::sigtimedwait",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/ReloadSignal.cpp",
-      "category": "os-header",
-      "symbol": "pthread.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/ReloadSignal.cpp",
-      "category": "os-header",
-      "symbol": "windows.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/ReloadSignal.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 5
-    },
-    {
       "path": "src/Core/Process/WorkerHeartbeat.cpp",
       "category": "os-api",
       "symbol": "::write",

@@ -3,8 +3,8 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
-#include "Core/Process/GracefulShutdown.h"
-#include "Platform/Platform.h"
+#include "Core/Process/SignalObserverInstall.h"
+#include "Platform/System/SignalWatcher.h"
 
 #include <algorithm>
 #include <chrono>
@@ -14,57 +14,22 @@
 #include <utility>
 #include <vector>
 
-#if ASYN_PLATFORM_WIN32
-#include <windows.h>
-#else
-#include <cerrno>
-#include <csignal>
-#include <pthread.h>
-#include <time.h>
-#endif
-
 namespace AsynGyanis::Core
 {
     namespace
     {
-        /// 进程级唯一的重载观察者：屏蔽字与待取队列都是进程级的东西，两个实例会互相抢同一条 SIGHUP
+        /// 进程级唯一的重载观察者：信号屏蔽与处理器都是进程级的东西，两个实例会互相抢
         ReloadSignal *g_owner = nullptr;
-
-#if !ASYN_PLATFORM_WIN32
-        /// 本观察者取的那一个信号：SIGHUP 是运维侧「换一份配置继续跑」的通行约定
-        constexpr int kReloadSignalNumber = SIGHUP;
-
-        /// 等待线程的轮询周期：与停机观察者同值，够快又不让一条空等的线程变成 CPU 消耗
-        constexpr std::chrono::milliseconds kWaitPollInterval{50};
-
-        /**
-         * @brief 填本观察者要取的那一个信号
-         * @param watchSet 输出用的信号集（调用方给未使用过的对象）
-         */
-        void fillWatchedSignalSet(sigset_t &watchSet) noexcept
-        {
-            sigemptyset(&watchSet);
-            sigaddset(&watchSet, kReloadSignalNumber);
-        }
-#endif
     } // namespace
 
     bool ReloadSignal::blockReloadSignal() noexcept
     {
-#if ASYN_PLATFORM_WIN32
-        // Windows 没有 SIGHUP，也就没有需要提前挡的东西
-        return true;
-#else
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        const int blocked = ::pthread_sigmask(SIG_BLOCK, &watchSet, nullptr);
-        if (blocked != 0)
+        if (!Platform::SignalSet::block(Platform::SignalSet::forReload()))
         {
-            LOG_ERROR_FMT("ReloadSignal: 屏蔽 SIGHUP 失败（errno={}），这条信号仍会按缺省动作终止进程", blocked);
+            LOG_ERROR("ReloadSignal: 屏蔽 SIGHUP 失败，这条信号仍会按缺省动作终止进程");
             return false;
         }
         return true;
-#endif
     }
 
     ReloadSignal::ReloadSignal()
@@ -86,110 +51,42 @@ namespace AsynGyanis::Core
     {
         if (g_owner != nullptr)
         {
-            LOG_ERROR("ReloadSignal: 本进程已经有一个重载信号观察者，这一个不会装上信号接管（屏蔽字与待取队列都是进程级的，两个实例只会互相抢同一条 SIGHUP）；重读仍可走 "
+            LOG_ERROR("ReloadSignal: 本进程已经有一个重载信号观察者，这一个不会装上信号接管（信号屏蔽与处理器都是进程级的，两个实例只会互相抢同一条 SIGHUP）；重读仍可走 "
                       "requestReload()");
             return;
         }
 
-#if ASYN_PLATFORM_WIN32
-        LOG_ERROR("ReloadSignal: 当前平台没有 SIGHUP 这条约定（Windows 的 CTRL_* 五种全是停机向的，没有「重载」这一类事件），信号接管不会装上；重载入口请用 "
-                  "Base::ConfigManager::enableHotReload() 的文件监听，或走 requestReload()");
-#else
-        if (!blockReloadSignal())
-        {
-            return;
-        }
-
-        sigset_t watchSet;
-        fillWatchedSignalSet(watchSet);
-        // 建线程会分配栈与线程对象，线程耗尽时抛 std::system_error；本函数是 noexcept，
-        // 因此构造本身要兜住，失败时不能发布安装标记——否则 isInstalled() 会报一个不存在的接管
-        try
-        {
-            m_waiter = std::jthread(
-                    [this, watchSet](const std::stop_token &stopToken)
+        // 观察者自己完成屏蔽与等待线程/控制台处理器的安装；Core 只保留进程级属主与派发策略
+        m_watcher = installSignalObserver(
+                Platform::SignalSet::forReload(),
+                [this](const Platform::SignalEvent event) noexcept
+                {
+                    if (event != Platform::SignalEvent::Reload)
                     {
-                        // 这条线程不能成为停机信号的缺省动作受害者：屏蔽字只被子线程继承，而两个观察者
-                        // 的构造顺序不固定——先起的那条线程挡不住后一路的号。不补这一步的表现是
-                        // 「装了重载观察者之后，一枚 SIGTERM 被它接住并按缺省动作把进程杀掉」
-                        static_cast<void>(GracefulShutdown::blockStopSignals());
-
-                        for (;;)
-                        {
-                            if (stopToken.stop_requested())
-                            {
-                                return;
-                            }
-
-                            const std::chrono::nanoseconds interval = kWaitPollInterval;
-                            timespec                       timeout{static_cast<time_t>(interval.count() / 1'000'000'000LL), static_cast<long>(interval.count() % 1'000'000'000LL)};
-                            siginfo_t                      info{};
-                            const int                      received = ::sigtimedwait(&watchSet, &info, &timeout);
-                            if (received < 0)
-                            {
-                                // 超时与被中断都是「再来一轮」；其余错误说明这条路已经废了，说清楚再收手
-                                if (errno == EAGAIN || errno == EINTR)
-                                {
-                                    continue;
-                                }
-
-                                LOG_ERROR_FMT("ReloadSignal: 等待 SIGHUP 的线程因错误退出（errno={}），此后这条信号不再触发任何动作", errno);
-                                return;
-                            }
-
-                            if (received != kReloadSignalNumber)
-                            {
-                                // 信号集里只有 SIGHUP，真收到别的号说明这条路被别处动过；不猜，记下来继续等
-                                LOG_WARN_FMT("ReloadSignal: 等待线程取到预期外的信号 {}，本轮不触发重载", received);
-                                continue;
-                            }
-
-                            fireReload();
-                        }
-                    });
-        } catch (const std::exception &failure)
+                        return false;
+                    }
+                    fireReload();
+                    return true;
+                },
+                "ReloadSignal", "重载仍可走 requestReload()",
+                "当前平台没有 SIGHUP 这条约定：Windows 的 CTRL_* 五种全是停机向的，没有「重载」这一类事件；文件监听走 "
+                "Base::ConfigManager::enableHotReload()");
+        if (m_watcher == nullptr)
         {
-            try
-            {
-                LOG_ERROR_FMT("ReloadSignal: 启动 SIGHUP 等待线程失败（{}），信号接管不会装上；重载仍可走 requestReload()", failure.what());
-            } catch (...)
-            {
-            }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
-            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
-            return;
-        } catch (...)
-        {
-            try
-            {
-                LOG_ERROR("ReloadSignal: 启动 SIGHUP 等待线程失败（非标准异常），信号接管不会装上；重载仍可走 requestReload()");
-            } catch (...)
-            {
-            }
-            // 线程没起来就没有等待者；不撤掉屏蔽会让这条信号从此挂起而不是按缺省动作终止
-            static_cast<void>(::pthread_sigmask(SIG_UNBLOCK, &watchSet, nullptr));
             return;
         }
         g_owner = this;
         m_isInstalled.store(true, std::memory_order_release);
-        return;
-#endif
-
-        // Windows 分支走到这里：登记位空着，isInstalled() 保持 false（上面已经把原因说清楚了）
     }
 
     void ReloadSignal::uninstall() noexcept
     {
-#if !ASYN_PLATFORM_WIN32
-        // jthread 的析构会 request_stop 并 join：等待线程每轮最多睡 50ms，因此 join 有上限。
-        // 顺序上这里是安全的——m_waiter 声明在最后，成员逆序销毁时它最先停，
-        // 停稳之后才轮到原子量与注册表被销毁
-        m_isInstalled.store(false, std::memory_order_release);
+        m_watcher.reset();
         if (g_owner == this)
         {
             g_owner = nullptr;
         }
-#endif
+        m_isInstalled.store(false, std::memory_order_release);
     }
 
     std::size_t ReloadSignal::onReload(std::function<void()> action)
