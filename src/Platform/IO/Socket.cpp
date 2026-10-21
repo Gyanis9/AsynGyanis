@@ -217,6 +217,24 @@ namespace AsynGyanis::Platform
         return static_cast<ssize_t>(::recv(descriptor, static_cast<char *>(buffer), static_cast<int>(length), flags));
     }
 
+    bool Socket::peerAddress(const int descriptor, sockaddr *const address, socklen_t *const addressLength) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::getpeername(descriptor, address, addressLength) == 0;
+    }
+
+    bool Socket::localAddress(const int descriptor, sockaddr *const address, socklen_t *const addressLength) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::getsockname(descriptor, address, addressLength) == 0;
+    }
+
     bool Socket::shutdown(const int descriptor, const int how) noexcept
     {
         if (rejectInvalidDescriptor(descriptor))

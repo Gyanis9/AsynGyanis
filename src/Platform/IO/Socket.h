@@ -193,6 +193,24 @@ namespace AsynGyanis::Platform
         static ssize_t receive(int descriptor, void *buffer, std::size_t length, int flags) noexcept;
 
         /**
+         * @brief 取对端地址
+         * @param descriptor 目标套接字
+         * @param address 输出缓冲
+         * @param addressLength 输入输出参数：缓冲容量与实际写入长度
+         * @return true 取到；false 描述符无效或系统拒绝
+         */
+        static bool peerAddress(int descriptor, sockaddr *address, socklen_t *addressLength) noexcept;
+
+        /**
+         * @brief 取本地地址
+         * @param descriptor 目标套接字
+         * @param address 输出缓冲
+         * @param addressLength 输入输出参数：缓冲容量与实际写入长度
+         * @return true 取到；false 描述符无效或系统拒绝
+         */
+        static bool localAddress(int descriptor, sockaddr *address, socklen_t *addressLength) noexcept;
+
+        /**
          * @brief 关闭一个方向的传输
          * @param descriptor 目标套接字
          * @param how SHUT_RD/SHUT_WR/SHUT_RDWR

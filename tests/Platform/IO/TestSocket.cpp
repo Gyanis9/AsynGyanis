@@ -521,6 +521,13 @@ namespace AsynGyanis::Platform
         ASSERT_EQ(Socket::receive(accepted, response.data(), response.size(), 0), static_cast<ssize_t>(sizeof(request)));
         EXPECT_STREQ(response.data(), request);
 
+        sockaddr_storage localAddress{};
+        socklen_t        localAddressLength = sizeof(localAddress);
+        EXPECT_TRUE(Socket::localAddress(client, reinterpret_cast<sockaddr *>(&localAddress), &localAddressLength));
+        sockaddr_storage peerAddress{};
+        socklen_t        peerAddressLength = sizeof(peerAddress);
+        EXPECT_TRUE(Socket::peerAddress(accepted, reinterpret_cast<sockaddr *>(&peerAddress), &peerAddressLength));
+
         EXPECT_TRUE(Socket::shutdown(client, SHUT_WR));
         EXPECT_TRUE(Socket::shutdown(accepted, SHUT_RDWR));
         static_cast<void>(FileDescriptor::close(client));
