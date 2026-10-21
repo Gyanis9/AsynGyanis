@@ -607,6 +607,20 @@ jobs:
           # 判据只读源码与 CMake 的安装规则，不建不链
           python3 scripts/check-api-baseline.py
 
+      - name: 架构门自证（种违规必红、撤掉必绿）
+        run: |
+          # 夹具只活在 build/gate 下；自证失败时会把路径打出来，便于本地复现
+          python3 scripts/test-architecture-gates.py
+
+      - name: 模块分层门（include 与 CMake 依赖单向）
+        run: python3 scripts/check-module-layering.py
+
+      - name: Platform 边界门（系统头/OS API/平台分支不得越界）
+        run: python3 scripts/check-platform-boundary.py
+
+      - name: 重复代码门（归一化重复窗口只准减少）
+        run: python3 scripts/check-duplicate-code.py
+
   clang-tidy:
     name: 静态检查：clang-tidy
     runs-on: ubuntu-latest

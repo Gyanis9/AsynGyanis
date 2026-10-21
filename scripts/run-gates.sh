@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# 一条命令跑完本仓库的门禁链，判据形状与 CI 一致：静态五道 + 构建 + 用例 + 示例矩阵。
+# 一条命令跑完本仓库的门禁链，判据形状与 CI 一致：静态八道 + 构建 + 用例 + 示例矩阵。
 #
 # 用法（在任意目录调用都行：仓库根取自脚本自身位置，而 ctest --preset 必须在根上跑，脚本自己 cd 过去）：
-#   bash scripts/run-gates.sh                                  # 全部八道，debug 预设
+#   bash scripts/run-gates.sh                                  # 全部（默认档），debug 预设
 #   bash scripts/run-gates.sh --preset release
 #   bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几道（改一处时不必等整条链）
 #   bash scripts/run-gates.sh --format container               # 格式档强制走容器（见下）
 #   bash scripts/run-gates.sh --help
 #
-# 输出形状：每道门在 stdout 打一行既有形状的判据（COMPLEXITY_GATE=OK、ARCH_TRACE_GATE=OK、API_GATE=OK…
-# 这三条由门禁脚本自己印，其余几道由本脚本按同一形状印），门的原始输出进 build/gate-logs/<门名>.log，
+# 输出形状：每道门在 stdout 打一行既有形状的判据（COMPLEXITY_GATE=OK、ARCH_TRACE_GATE=OK、API_GATE=OK、
+# LAYERING_GATE=OK、PLATFORM_BOUNDARY_GATE=OK、DUPLICATE_CODE_GATE=OK… 这些由门禁脚本自己印，其余几道由本脚本按同一形状印），门的原始输出进 build/gate-logs/<门名>.log，
 # 判红的那道门把它的输出整片贴出来。最后一行给总判据与机读的一份 JSON（build/gate-logs/run-gates.json：
 # 每道门的命令、退出码、耗时、日志位置，还有总耗时与结论）。那份 JSON 按 UTF-8 写（结论文案是中文），
 # Windows 上读它要显式给 encoding='utf-8'——本地 locale 是 cp936 时 json.load(open(path)) 崩在读那一行
@@ -59,7 +59,7 @@ START_EPOCH="$(date +%s)"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # --gate 没给就是全跑；给了就只跑点名的几道
-GATE_NAMES="complexity arch-trace ledger-date format api-baseline build ctest samples"
+GATE_NAMES="complexity arch-trace ledger-date format api-baseline layering platform-boundary duplicates build ctest samples"
 
 usage()
 {
@@ -319,6 +319,11 @@ if want build || want ctest || want samples; then
     configure_tree
 fi
 
+if want layering || want platform-boundary || want duplicates; then
+    run_gate arch-gate-selftest ARCH_GATE_SELFTEST "$PYTHON scripts/test-architecture-gates.py" \
+        "$PYTHON" scripts/test-architecture-gates.py
+fi
+
 if want complexity; then
     run_gate complexity COMPLEXITY_GATE "$PYTHON scripts/check-complexity-baseline.py" \
         "$PYTHON" scripts/check-complexity-baseline.py
@@ -341,6 +346,21 @@ fi
 if want api-baseline; then
     run_gate api-baseline API_GATE "$PYTHON scripts/check-api-baseline.py" \
         "$PYTHON" scripts/check-api-baseline.py
+fi
+
+if want layering; then
+    run_gate layering LAYERING_GATE "$PYTHON scripts/check-module-layering.py" \
+        "$PYTHON" scripts/check-module-layering.py
+fi
+
+if want platform-boundary; then
+    run_gate platform-boundary PLATFORM_BOUNDARY_GATE "$PYTHON scripts/check-platform-boundary.py" \
+        "$PYTHON" scripts/check-platform-boundary.py
+fi
+
+if want duplicates; then
+    run_gate duplicates DUPLICATE_CODE_GATE "$PYTHON scripts/check-duplicate-code.py" \
+        "$PYTHON" scripts/check-duplicate-code.py
 fi
 
 if want build; then

@@ -76,6 +76,11 @@ bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几�
    还要把 CMake 版本号的 MAJOR 抬上去，两处都留痕才放行；只抬版本而接口面一字未改同样判红（那是版本笔误）。
    它管的是源码声明面（签名与增删成员），管不住布局与大小变化，理由见脚本文件头。
    这道门挂在 CI 的格式作业与发布门禁两处，只读源码、不建不链
+   还有三条架构门：`python3 scripts/check-module-layering.py` 钉 include 与 CMake 链接边只允许
+   `Platform ← Base ← Core ← {Net, Database}`；`python3 scripts/check-platform-boundary.py` 钉
+   `src/Platform` 之外不出现系统头、OS API 与平台条件分支；`python3 scripts/check-duplicate-code.py`
+   钉归一化后的 8 行重复窗口只准减少。三者各有 `--write` 重录基线，重录必须在提交正文说明原因；
+   `python3 scripts/test-architecture-gates.py` 在 `build/gate/` 下造夹具，证明种违规必红、撤掉必绿。
 4. **测试**: 确保 `ctest --preset debug`（在仓库根调用；并行度自己给 `-j`）全部通过
 5. **提交**: 约定式提交，类型英文小写、描述与正文中文（见下文「提交规范」）
 6. **PR**: 提交 Pull Request，填写模板，等待审核
