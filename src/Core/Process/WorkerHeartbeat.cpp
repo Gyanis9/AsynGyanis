@@ -2,14 +2,11 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/ThreadPool.h"
+#include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
+#include "Platform/System/PlatformError.h"
 
-#include <cerrno>
 #include <format>
-
-#if !ASYN_PLATFORM_WIN32
-#include <unistd.h>
-#endif
 
 namespace AsynGyanis::Core
 {
@@ -67,18 +64,21 @@ namespace AsynGyanis::Core
         // （失败原因在下面那条一次性 WARN 里，不在这里）
         m_pingCount.fetch_add(1, std::memory_order_relaxed);
 
-        if (::write(m_writeDescriptor, &kHeartbeatByte, 1) == 1)
+        if (Platform::FileDescriptor::write(m_writeDescriptor, &kHeartbeatByte, 1) == 1)
         {
             return;
         }
 
-        // 管道满（master 一时没读）不算事：字节攒着，master 读一次就全清了；其余错误（EPIPE：
-        // master 不在了）只报首条——每拍一条会把日志刷满，而这一档的后果由父死子亡机制处理
-        if (errno != EAGAIN && errno != EWOULDBLOCK && !m_hasLoggedWriteFailure.exchange(true, std::memory_order_relaxed))
+        const int errorCode = Platform::PlatformError::lastErrorCode();
+        // 管道满（master 一时没读）不算事：字节攒着，master 读一次就全清了；被信号打断时
+        // 一拍字节都没写进去，下一拍照常再写。其余错误（EPIPE：master 不在了）只报首条——
+        // 每拍一条会把日志刷满，而这一档的后果由父死子亡机制处理
+        if (errorCode != Platform::PlatformError::kWouldBlock && errorCode != Platform::PlatformError::kInterrupted &&
+            !m_hasLoggedWriteFailure.exchange(true, std::memory_order_relaxed))
         {
-            LOG_WARN_FMT("WorkerHeartbeat: 心跳写入失败（fd {}，errno {}）：master 可能已经不在，"
+            LOG_WARN_FMT("WorkerHeartbeat: 心跳写入失败（fd {}，平台错误码 {}）：master 可能已经不在，"
                          "本 worker 的收场交给父进程机制",
-                         m_writeDescriptor, errno);
+                         m_writeDescriptor, errorCode);
         }
 #else
         static_cast<void>(kHeartbeatByte);

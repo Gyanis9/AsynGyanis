@@ -152,8 +152,8 @@ namespace AsynGyanis::Core
              * @details 给「要告诉监督者我在收尾」那一类调用方用：这一刻 worker 还没被通知退出，
              *          整池仍在跑，正是一次 `STOPPING=1` 该有的位置。放在 `stopAllWorkers()` 之前而不是
              *          `run()` 返回之后——后者已经收尾完了，再报就成了事后说明。
-             * @note 同样跑在编排线程上；由信号触发的停止里，本回调是在循环线程而不是信号处理函数里跑的
-             *       （处理函数只置原子标记，见 `requestStop()`）。
+             * @note 同样跑在编排线程上；由信号触发的停止里，本回调是在编排线程而不是 Platform
+             *       的信号等待线程上跑的（等待线程只调 `requestStop()` 置原子标记）。
              */
             std::function<void()> onStopRequested{};
 
@@ -199,13 +199,15 @@ namespace AsynGyanis::Core
          * @return bool true 表示是按请求收口；false 表示全部 worker 都因「起来就崩」被放弃而提前退出
          * @note 返回值就是「这次编排算不算成了」：调用方要据此决定退出码，否则进程管理器与脚本
          *       看到的是「服务退出码 0」，分不清是被停掉的还是整池子都起不来
+         * @note 停机信号的屏蔽只作用于调用本函数的线程与之后派生的线程：请在主线程调用，或让
+         *       其余已存在的线程先屏蔽 SIGINT/SIGTERM，否则信号可能落到未屏蔽的线程上按缺省动作终止进程
          */
         [[nodiscard]] bool run();
 
         /**
-         * @brief 请求停止编排（可从信号处理函数调用）
+         * @brief 请求停止编排（可从信号等待线程调用）
          * @details 只置一个原子标记，不做任何分配、不做系统调用，因此满足异步信号安全：
-         *          SIGTERM/SIGINT 的处理函数可以直接调它，退出流程全部留给 run() 的循环。
+         *          Platform 的信号观察者在自己的线程上直接调它，退出流程全部留给 run() 的循环。
          */
         void requestStop() noexcept;
 

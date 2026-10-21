@@ -29,6 +29,7 @@ add_executable(TestPlatform
         System/TestCpuAffinity.cpp
         System/TestPlatformError.cpp
         System/TestPlatformTime.cpp
+        System/TestPipe.cpp
         System/TestProcess.cpp
         System/TestProcessInfo.cpp
         System/TestServiceNotification.cpp

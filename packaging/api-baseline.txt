@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=3.0.0
-# headers=304 entries=8920
+# headers=306 entries=8972
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8817,6 +8817,24 @@ src/Platform/System/CpuAffinity.h	[[nodiscard]] static std::string cgroupPathFro
 src/Platform/System/CpuAffinity.h	[[nodiscard]] static std::uint64_t currentThreadCoreMask() noexcept
 src/Platform/System/CpuAffinity.h	class ASYN_PLATFORM_API CpuAffinity
 src/Platform/System/CpuAffinity.h	namespace AsynGyanis::Platform
+src/Platform/System/Pipe.h	Pipe &operator=(Pipe &&other) noexcept
+src/Platform/System/Pipe.h	Pipe &operator=(const Pipe &) = delete
+src/Platform/System/Pipe.h	Pipe() noexcept = default
+src/Platform/System/Pipe.h	Pipe(Pipe &&other) noexcept
+src/Platform/System/Pipe.h	Pipe(const Pipe &) = delete
+src/Platform/System/Pipe.h	[[nodiscard]] bool isValid() const noexcept
+src/Platform/System/Pipe.h	[[nodiscard]] int readEnd() const noexcept
+src/Platform/System/Pipe.h	[[nodiscard]] int releaseReadEnd() noexcept
+src/Platform/System/Pipe.h	[[nodiscard]] int releaseWriteEnd() noexcept
+src/Platform/System/Pipe.h	[[nodiscard]] int writeEnd() const noexcept
+src/Platform/System/Pipe.h	[[nodiscard]] static std::optional<Pipe> create(bool writeEndSurvivesExec = false) noexcept
+src/Platform/System/Pipe.h	class ASYN_PLATFORM_API Pipe
+src/Platform/System/Pipe.h	int m_readEnd
+src/Platform/System/Pipe.h	int m_writeEnd
+src/Platform/System/Pipe.h	namespace AsynGyanis::Platform
+src/Platform/System/Pipe.h	void closeReadEnd() noexcept
+src/Platform/System/Pipe.h	void closeWriteEnd() noexcept
+src/Platform/System/Pipe.h	~Pipe()
 src/Platform/System/PlatformError.h	class ASYN_PLATFORM_API PlatformError
 src/Platform/System/PlatformError.h	namespace AsynGyanis::Platform
 src/Platform/System/PlatformError.h	static constexpr int kConnectionAborted = WSAECONNABORTED ECONNABORTED
@@ -8826,6 +8844,7 @@ src/Platform/System/PlatformError.h	static constexpr int kInterrupted = WSAEINTR
 src/Platform/System/PlatformError.h	static constexpr int kInvalidArgument = WSAEINVAL EINVAL
 src/Platform/System/PlatformError.h	static constexpr int kNoBufferSpace = WSAENOBUFS ENOBUFS
 src/Platform/System/PlatformError.h	static constexpr int kNotASocket = WSAENOTSOCK ENOTSOCK
+src/Platform/System/PlatformError.h	static constexpr int kNotSupported = WSAEOPNOTSUPP EOPNOTSUPP
 src/Platform/System/PlatformError.h	static constexpr int kOutOfMemory = WSAENOBUFS ENOMEM
 src/Platform/System/PlatformError.h	static constexpr int kSystemFileTableFull = WSAEMFILE ENFILE
 src/Platform/System/PlatformError.h	static constexpr int kTooManyOpenFiles = WSAEMFILE EMFILE
@@ -8918,6 +8937,39 @@ src/Platform/System/ServiceNotification.h	std::vector<char> m_destination
 src/Platform/System/ServiceNotification.h	struct ASYN_PLATFORM_API WatchdogConfiguration
 src/Platform/System/ServiceNotification.h	void close() noexcept
 src/Platform/System/ServiceNotification.h	~ServiceNotification()
+src/Platform/System/SignalWatcher.h	ErrorHandler m_errorHandler
+src/Platform/System/SignalWatcher.h	Handler m_handler
+src/Platform/System/SignalWatcher.h	SignalSet m_signals
+src/Platform/System/SignalWatcher.h	SignalSet() noexcept
+src/Platform/System/SignalWatcher.h	SignalWatcher &operator=(SignalWatcher &&) = delete
+src/Platform/System/SignalWatcher.h	SignalWatcher &operator=(const SignalWatcher &) = delete
+src/Platform/System/SignalWatcher.h	SignalWatcher(SignalSet signals, Handler handler, ErrorHandler errorHandler =
+src/Platform/System/SignalWatcher.h	SignalWatcher(SignalWatcher &&) = delete
+src/Platform/System/SignalWatcher.h	SignalWatcher(const SignalWatcher &) = delete
+src/Platform/System/SignalWatcher.h	[[nodiscard]] bool capturesConsoleShutdown() const noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] bool contains(int signalNumber) const noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] bool isEmpty() const noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] bool isInstalled() const noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] static SignalSet forReload() noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] static SignalSet forShutdown() noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] static bool block(const SignalSet &signals) noexcept
+src/Platform/System/SignalWatcher.h	[[nodiscard]] static bool unblock(const SignalSet &signals) noexcept
+src/Platform/System/SignalWatcher.h	bool add(int signalNumber) noexcept
+src/Platform/System/SignalWatcher.h	bool dispatch(SignalEvent event) noexcept
+src/Platform/System/SignalWatcher.h	bool m_capturesConsoleShutdown
+src/Platform/System/SignalWatcher.h	bool m_isInstalled
+src/Platform/System/SignalWatcher.h	class ASYN_PLATFORM_API SignalSet
+src/Platform/System/SignalWatcher.h	class ASYN_PLATFORM_API SignalWatcher
+src/Platform/System/SignalWatcher.h	enum class SignalEvent : std::uint8_t
+src/Platform/System/SignalWatcher.h	friend class SignalWatcher
+src/Platform/System/SignalWatcher.h	namespace AsynGyanis::Platform
+src/Platform/System/SignalWatcher.h	sigset_t m_set
+src/Platform/System/SignalWatcher.h	static int __stdcall consoleHandler(unsigned long controlType) noexcept
+src/Platform/System/SignalWatcher.h	std::jthread m_waiter
+src/Platform/System/SignalWatcher.h	using ErrorHandler = std::function<void(std::string_view)>
+src/Platform/System/SignalWatcher.h	using Handler = std::function<bool(SignalEvent)>
+src/Platform/System/SignalWatcher.h	void reportError(std::string_view message) const noexcept
+src/Platform/System/SignalWatcher.h	~SignalWatcher()
 src/Platform/System/TextEncoding.h	class ASYN_PLATFORM_API TextEncoding
 src/Platform/System/TextEncoding.h	namespace AsynGyanis::Platform
 src/Platform/System/TextEncoding.h	static std::string toUtf8String(const std::wstring &wideText)

@@ -110,6 +110,8 @@ namespace AsynGyanis::Platform
      *          `sigtimedwait` 轮询；这样两个观察者（停机/重载）的构造顺序不影响彼此的线程。
      *          Windows 侧只安装一个控制台处理器，把 CTRL_* 事件映射成 SignalEvent。
      * @note 一个进程只应有一个控制台停机观察者；重复安装由构造函数拒绝（Core 侧另有属主检查）。
+     * @note POSIX 的屏蔽只作用于调用线程与之后派生的线程：构造前已存在且未屏蔽这些信号的线程
+     *       仍可能收到它们并按缺省动作终止进程，因此要在起工作线程之前构造，或让那些线程自行屏蔽。
      * @note 回调在等待线程或系统控制线程上执行；控制台关闭事件会等回调返回，回调必须自行设上限。
      */
     class ASYN_PLATFORM_API SignalWatcher

@@ -6,6 +6,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/PlatformError.cpp
         ${CMAKE_CURRENT_LIST_DIR}/PlatformTime.h
         ${CMAKE_CURRENT_LIST_DIR}/PlatformTime.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/Pipe.h
+        ${CMAKE_CURRENT_LIST_DIR}/Pipe.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Process.h
         ${CMAKE_CURRENT_LIST_DIR}/Process.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ProcessInfo.h

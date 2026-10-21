@@ -124,6 +124,14 @@ namespace AsynGyanis::Platform
 #endif
                 ; ///< 参数非法：调用方传了平台不接受的值（如超出平台上限的段数/长度）
 
+        static constexpr int kNotSupported =
+#if ASYN_PLATFORM_WIN32
+                WSAEOPNOTSUPP
+#else
+                EOPNOTSUPP
+#endif
+                ; ///< 当前平台不提供这项能力（如 Windows 上创建匿名管道）
+
         /**
          * @brief 读取最近一次 CRT/文件类系统调用的错误码
          * @return int 当前线程 errno 值

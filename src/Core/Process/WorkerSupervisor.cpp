@@ -3,9 +3,11 @@
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Process/SignalObserverInstall.h"
 #include "Core/Process/UpgradeChannel.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
+#include "Platform/System/Pipe.h"
 #include "Platform/System/PlatformError.h"
 
 #include <algorithm>
@@ -13,14 +15,6 @@
 #include <optional>
 #include <thread>
 #include <utility>
-
-#if ASYN_PLATFORM_WIN32
-#include <windows.h>
-#else
-#include <csignal>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 namespace AsynGyanis::Core
 {
@@ -33,14 +27,8 @@ namespace AsynGyanis::Core
         /// 立刻释放句柄会把 pid 丢掉、从此没人收尸（POSIX 上就是僵尸进程）
         constexpr std::chrono::milliseconds kForcedReapWait{2000};
 
-        /// 停止请求的原子必须无锁，否则不能在信号处理函数里置位
-        static_assert(std::atomic<bool>::is_always_lock_free, "WorkerSupervisor::requestStop() 要求无锁原子才能在信号处理函数里调用");
-
-        /// 当前正在运行的编排器：处理器只拿得到这一个入口，因此用文件级指针登记
-        /// （同一进程同时只该有一个 master，多份编排器注册后装的就只剩最后一个）。
-        /// 用原子量而不是 volatile：volatile 只保证「不被优化掉」，处理器线程与主线程之间
-        /// 仍缺同步语义；is_always_lock_free 由上面的 static_assert 钉住
-        std::atomic<WorkerSupervisor *> g_runningSupervisor{nullptr};
+        /// 停止请求由 Platform 的信号等待线程置位、编排线程读取，原子必须无锁
+        static_assert(std::atomic<bool>::is_always_lock_free, "WorkerSupervisor::requestStop() 要求无锁原子才能在信号等待线程与编排线程之间传递");
 
         /**
          * @brief 在编排线程上跑一个观察者回调，抛出的异常就地接住
@@ -66,45 +54,6 @@ namespace AsynGyanis::Core
                 LOG_ERROR_FMT("WorkerSupervisor: {} 的观察者抛出非标准异常并被接住（后面的编排照跑）", what);
             }
         }
-
-#if !ASYN_PLATFORM_WIN32
-        /**
-         * @brief 停止信号的处理函数：只置原子标记，退出流程留给 run() 的循环
-         * @param signalNumber 信号号（未使用）
-         */
-        void handleStopSignal(int signalNumber) noexcept
-        {
-            static_cast<void>(signalNumber);
-            if (WorkerSupervisor *const supervisor = g_runningSupervisor.load(std::memory_order_acquire); supervisor != nullptr)
-            {
-                supervisor->requestStop();
-            }
-        }
-#else
-        /**
-         * @brief 控制台停机事件的接管：Ctrl+C 与 CTRL_BREAK 转成一次「请体面停止」
-         * @details 没有这一段接管时，master 收到 Ctrl+C 走的是默认处置：进程当场没了。而每个 worker 都
-         *          挂在自己名下的作业里（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），作业句柄随 master 一起
-         *          关闭，于是 worker 是被硬杀的——在途请求不收尾，「按进程组给每个 worker 发 CTRL_BREAK
-         *          让它自己收口」那一步根本没机会跑，而启动日志正承诺着这件事。
-         *          控制台处理器跑在系统另起的线程上（不是信号上下文），置一个无锁原子同样安全。
-         * @param controlType 控制台事件类型
-         * @return TRUE 这一类事件已接管，不要执行默认处置
-         * @return FALSE 登出／关窗口／系统关机：那不是「请停服」，交回默认处置
-         */
-        BOOL WINAPI handleConsoleStop(DWORD controlType) noexcept
-        {
-            if (controlType == CTRL_C_EVENT || controlType == CTRL_BREAK_EVENT)
-            {
-                if (WorkerSupervisor *const supervisor = g_runningSupervisor.load(std::memory_order_acquire); supervisor != nullptr)
-                {
-                    supervisor->requestStop();
-                }
-                return TRUE;
-            }
-            return FALSE;
-        }
-#endif
     } // namespace
 
     WorkerSupervisor::WorkerSupervisor(Configuration configuration) : m_configuration(std::move(configuration)), m_restartJitterGenerator(std::random_device{}())
@@ -194,83 +143,22 @@ namespace AsynGyanis::Core
 
     bool WorkerSupervisor::run()
     {
-#if ASYN_PLATFORM_WIN32
-        /**
-         * @brief 控制台事件处理器的登记与还原守卫：与下面 POSIX 那份 SignalRegistration 同一条理由
-         * @details 先发布指针再装处理器：装反的一拍里事件最多被当成「没人要停」丢掉，而不是解引用一个
-         *          还没定下来的 this。还原按「先摘处理器再收回指针」的反序做——处理器还在而指针已收回时，
-         *          事件会转达给一个正在消亡的对象。本函数从哪条路退出（含抛出）都由这个守卫收尾。
-         */
-        class ConsoleStopRegistration
-        {
-        public:
-            explicit ConsoleStopRegistration(WorkerSupervisor &supervisor) noexcept
-            {
-                g_runningSupervisor.store(&supervisor, std::memory_order_release);
-                m_isHandlerInstalled = ::SetConsoleCtrlHandler(&handleConsoleStop, TRUE) != 0;
-                if (!m_isHandlerInstalled)
+        // 停机信号交给 Platform：POSIX 是屏蔽 + 等待线程，Windows 是控制台处理器。没有这段接管时
+        // master 收到 Ctrl+C 走默认处置，进程当场没了；而每个 worker 都挂在自己名下的作业里，作业
+        // 句柄随 master 关闭，worker 于是被硬杀，在途请求不收尾。关闭、注销与关机不是「请停服」，
+        // 交回系统缺省处置。观察者活到 run() 返回为止，异常路径同样会摘干净。
+        [[maybe_unused]] const auto stopWatcher = installSignalObserver(
+                Platform::SignalSet::forShutdown(),
+                [this](const Platform::SignalEvent event) noexcept
                 {
-                    LOG_ERROR_FMT("WorkerSupervisor: 安装控制台事件处理器失败（GetLastError={}），Ctrl+C 这一路等于没接上："
-                                  "master 会被默认处置当场打死，worker 则随作业句柄一起被硬杀，在途请求不收尾",
-                                  static_cast<unsigned long>(::GetLastError()));
-                }
-            }
-
-            ConsoleStopRegistration(const ConsoleStopRegistration &)            = delete;
-            ConsoleStopRegistration &operator=(const ConsoleStopRegistration &) = delete;
-
-            /// 摘掉处理器并收回全局指针：之后再收到控制台事件就与本编排器无关了
-            ~ConsoleStopRegistration()
-            {
-                if (m_isHandlerInstalled)
-                {
-                    static_cast<void>(::SetConsoleCtrlHandler(&handleConsoleStop, FALSE));
-                }
-                g_runningSupervisor.store(nullptr, std::memory_order_release);
-            }
-
-        private:
-            bool m_isHandlerInstalled{false}; ///< 处理器是否真的装上了——没装上就不必去摘别人的
-        };
-
-        const ConsoleStopRegistration stopRegistration(*this);
-#else
-        /**
-         * @brief 信号处理登记与还原的守卫：本函数从哪条路退出都把它留下的痕迹抹平
-         * @details 下面的编排循环会分配（日志、进程句柄、vector），抛出时若只靠函数末尾那三行
-         *          还原，g_runningSupervisor 就一直指向这个正在栈展开中消亡的对象——
-         *          下一次 SIGTERM/SIGINT 的 handler 只做「读那个全局指针并调 requestStop()」，
-         *          那是往已释放内存上写标记。登记与还原成对放进析构里，异常路径与正常路径同一条
-         */
-        class SignalRegistration
-        {
-        public:
-            explicit SignalRegistration(WorkerSupervisor &supervisor) noexcept :
-                m_previousTerminateHandler(std::signal(SIGTERM, &handleStopSignal)), m_previousInterruptHandler(std::signal(SIGINT, &handleStopSignal))
-            {
-                // 先装 handler 再发布指针：handler 只在指针非空时才转达，装反的一拍里
-                // 信号最多被当成「没人要停」丢掉，而不是解引用一个还没定下来的 this
-                g_runningSupervisor.store(&supervisor, std::memory_order_release);
-            }
-
-            SignalRegistration(const SignalRegistration &)            = delete;
-            SignalRegistration &operator=(const SignalRegistration &) = delete;
-
-            /// 还原先前两个 handler 并收回全局指针：之后再收到停止信号就与本编排器无关了
-            ~SignalRegistration()
-            {
-                std::signal(SIGTERM, m_previousTerminateHandler);
-                std::signal(SIGINT, m_previousInterruptHandler);
-                g_runningSupervisor.store(nullptr, std::memory_order_release);
-            }
-
-        private:
-            void (*m_previousTerminateHandler)(int); ///< 被本登记换掉的 SIGTERM 处理函数
-            void (*m_previousInterruptHandler)(int); ///< 被本登记换掉的 SIGINT 处理函数
-        };
-
-        const SignalRegistration signalRegistration(*this);
-#endif
+                    if (event != Platform::SignalEvent::Interrupt && event != Platform::SignalEvent::Terminate)
+                    {
+                        return false;
+                    }
+                    requestStop();
+                    return true;
+                },
+                "WorkerSupervisor", "仍可走 requestStop()", "本平台没有可用的停机路径");
 
         LOG_INFO_FMT("WorkerSupervisor: 开始编排 {} 个 worker，可执行文件 {}", m_configuration.workerCount, m_configuration.executablePath);
 
@@ -442,16 +330,22 @@ namespace AsynGyanis::Core
         // 读端归本进程（CLOEXEC + 非阻塞——凑齐判定只看「有没有新字节」，阻塞读会把编排循环钉死），
         // 写端随 fork 继承给 worker，号码进参数。重起同一槽位每次都开新的一条：旧管道随旧 worker
         // 一起作废（reapWorker 里关），不复用
-        int pipeDescriptors[2]{-1, -1};
-        if (::pipe(pipeDescriptors) != 0)
+        std::optional<Platform::Pipe> heartbeatPipe = Platform::Pipe::create(true);
+        if (!heartbeatPipe)
         {
             noteFailedStart(worker, workerIndex, "开不出心跳管道，平台错误码 " + std::to_string(Platform::PlatformError::lastErrorCode()));
             return false;
         }
-        worker.heartbeatReadFd = pipeDescriptors[0];
-        static_cast<void>(::fcntl(worker.heartbeatReadFd, F_SETFD, FD_CLOEXEC));
-        static_cast<void>(::fcntl(worker.heartbeatReadFd, F_SETFL, O_NONBLOCK));
-        m_pendingWatchdogWriteFd = pipeDescriptors[1];
+        worker.heartbeatReadFd = heartbeatPipe->releaseReadEnd();
+        if (!Platform::FileDescriptor::setNonBlocking(worker.heartbeatReadFd))
+        {
+            // 阻塞读会把编排循环钉在一条没人写的管道上：设不成非阻塞就当场放弃这个槽位
+            const int failure = Platform::PlatformError::lastErrorCode();
+            closeWorkerHeartbeatPipe(worker);
+            noteFailedStart(worker, workerIndex, "心跳管道读端设不成非阻塞，平台错误码 " + std::to_string(failure));
+            return false;
+        }
+        m_pendingWatchdogWriteFd = heartbeatPipe->releaseWriteEnd();
 
         launchOptions.arguments.push_back(std::string{kWatchdogPipeArgument});
         launchOptions.arguments.push_back(std::to_string(m_pendingWatchdogWriteFd));
@@ -480,7 +374,7 @@ namespace AsynGyanis::Core
                 continue;
             }
             // 把攒下的字节一次读干：只要本窗口内有过一拍就够，读到的条数本身没有意义
-            while (::read(worker.heartbeatReadFd, drainBuffer.data(), drainBuffer.size()) > 0)
+            while (Platform::FileDescriptor::read(worker.heartbeatReadFd, drainBuffer.data(), drainBuffer.size()) > 0)
             {
                 // 记的是「上一拍什么时候到的」而不是「这一轮读到过没有」：后者与出拍共用同一个周期，
                 // 检查抢到拍子之前完成的那一轮会把标志清掉，于是永远喂不出去（判据见 isHeartbeatFresh）
@@ -552,14 +446,14 @@ namespace AsynGyanis::Core
 #if !ASYN_PLATFORM_WIN32
         if (worker.heartbeatReadFd >= 0)
         {
-            static_cast<void>(::close(worker.heartbeatReadFd));
+            static_cast<void>(Platform::FileDescriptor::close(worker.heartbeatReadFd));
             worker.heartbeatReadFd = -1;
         }
         // 起 worker 失败时写端还挂在成员上：下一次 attachWatchdogPipe 会覆盖它，
         // 不在这里关就是每失败一次漏一个描述符
         if (m_pendingWatchdogWriteFd >= 0)
         {
-            static_cast<void>(::close(m_pendingWatchdogWriteFd));
+            static_cast<void>(Platform::FileDescriptor::close(m_pendingWatchdogWriteFd));
             m_pendingWatchdogWriteFd = -1;
         }
 #else
@@ -732,7 +626,7 @@ namespace AsynGyanis::Core
         if (m_pendingWatchdogWriteFd >= 0)
         {
             // master 侧不留写端副本：留着的副本会让「worker 是不是还在写」这件事永远为真
-            static_cast<void>(::close(m_pendingWatchdogWriteFd));
+            static_cast<void>(Platform::FileDescriptor::close(m_pendingWatchdogWriteFd));
             m_pendingWatchdogWriteFd = -1;
         }
 #endif
