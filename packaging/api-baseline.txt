@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=303 entries=8838
+# headers=303 entries=8841
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8499,7 +8499,8 @@ src/Platform/FileSystem/InotifyFileWatcher.h	int m_inotifyFileDescriptor
 src/Platform/FileSystem/InotifyFileWatcher.h	mutable std::shared_mutex m_watchMutex
 src/Platform/FileSystem/InotifyFileWatcher.h	namespace AsynGyanis::Platform
 src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::chrono::seconds kRearmInterval
-src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kEventBufferBytes = 4096
+src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kEventBufferBytes = 64 * 1024
+src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::size_t kMaximumBatchesPerWakeup = 8
 src/Platform/FileSystem/InotifyFileWatcher.h	static constexpr std::uint32_t kWatchEventMask = IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF
 src/Platform/FileSystem/InotifyFileWatcher.h	std::atomic<bool> m_isRunning
 src/Platform/FileSystem/InotifyFileWatcher.h	std::chrono::steady_clock::time_point m_rearmDeadline
@@ -8508,8 +8509,10 @@ src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_map<int, std::string
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_map<std::string, int> m_pathToWatchDescriptor
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_recursiveRoots
 src/Platform/FileSystem/InotifyFileWatcher.h	std::unordered_set<std::string> m_selfHealPaths
+src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchEvent(const inotify_event &event)
 src/Platform/FileSystem/InotifyFileWatcher.h	void dispatchOverflowRescan()
-src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents()
+src/Platform/FileSystem/InotifyFileWatcher.h	void notifyWatchedPathMoved(int watchDescriptor)
+src/Platform/FileSystem/InotifyFileWatcher.h	void processEvents(std::stop_token stopToken)
 src/Platform/FileSystem/InotifyFileWatcher.h	void rearmMissingWatchesIfDue()
 src/Platform/FileSystem/InotifyFileWatcher.h	void removeWatchMapping(int watchDescriptor)
 src/Platform/FileSystem/InotifyFileWatcher.h	void setCallback(FileChangeCallback callback) override

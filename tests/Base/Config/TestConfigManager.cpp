@@ -2778,10 +2778,10 @@ port: 9090
 
     /**
      * @brief 钉住：把配置文件改名移走也要触发热重载
-     * @details 消费方接受的事件种类是 Modified/Created/Deleted 三种。Linux 的 `IN_MOVED_FROM` 被映射成
-     *          Deleted，正好落在其中；Windows 的 `FILE_ACTION_RENAMED_OLD_NAME` 映射成 Moved，于是
-     *          「把 config.yaml 改名挪走」这个下线动作在 Windows 上一条通知都不算数：旧名被 Moved 滤掉，
-     *          新名因不是配置后缀被扩展名滤掉，配置停在已经消失的那份上直到下次改动。
+     * @details 消费方接受的事件种类是 Modified/Created/Deleted/Moved。监视目录内部的改名两侧都报
+     *          Moved；把文件移出监视范围时 Windows 报 Deleted、Linux 报 Moved，两种都在接受之列。
+     *          因此「把 config.yaml 改名挪走」这个下线动作在两个平台上都会触发一次重载，配置不会
+     *          停在已经消失的那份上。
      *          先做一次普通改写当对照：确认监视通道活着，后面的判据才只指向「移走」这一条路。
      */
     TEST_F(ConfigManagerTest, RenamingConfigFileAwayTriggersHotReload)

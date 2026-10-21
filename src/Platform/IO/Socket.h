@@ -39,8 +39,8 @@ namespace AsynGyanis::Platform
     /**
      * @brief socket 层跨平台工具
      *
-     * @details Windows 上任何 socket API 调用前必须完成 WSAStartup，Linux 上
-     *          相应接口为空操作，因此调用方无需平台分支。
+     * @details Windows 上任何 socket API 调用前必须完成 WSAStartup；Linux 上
+     *          无需启动子系统，首次 initialize() 只落一次进程级设置，因此调用方无需平台分支。
      * @note initialize()/finalize() 以引用计数配对：多个持有网络资源的对象可各自成对调用，
      *       Winsock 只在首个 initialize() 时启动、在最后一个 finalize() 时清理。
      */
@@ -112,6 +112,7 @@ namespace AsynGyanis::Platform
          * @brief 申请网络子系统初始化引用（Windows 下按需执行 WSAStartup）
          * @return true 引用已建立（首次调用会真正启动 Winsock）
          * @return false Windows 下 WSAStartup 失败
+         * @note Linux 上首次调用同时忽略 SIGPIPE（sendfile 没有 per-call 标志）
          */
         static bool initialize() noexcept;
 
@@ -477,13 +478,16 @@ namespace AsynGyanis::Platform
          *        AF_UNIX 流套接字，见 writeListeningSocketHandoff 的那条 @note）
          * @return int 新描述符（TCP 的监听态与 backlog、UDP 的绑定都跟着过来，已排队连接也一并继承）；
          *         失败返回 -1 并置错误码——不会返回「半个套接字」
-         * @note 错误码的读法：EINVAL 表示「收到的不像本平台的移交消息」（长度不对、载荷被截断，
-         *       或重建出来的套接字与头里写的类型/地址族对不上——头里的两项是交出方从同一个套接字
-         *       问出来的，对不上就只能说明消息不可信，本层当场把它作废并关掉重建出来的句柄）；
+         * @note 错误码的读法：POSIX 上流通道可能把头拆成几片送达，本层先把头补满再判定格式，
+         *       因此「头没收全」不再算进格式错误。EINVAL 表示「收到的不像本平台的移交消息」：
+         *       控制消息被截断、载荷长度与本平台载体不符，或重建出来的套接字与头里写的类型/地址族
+         *       对不上——头里的两项是交出方从同一个套接字问出来的，对不上就只能说明消息不可信，
+         *       本层当场把它作废并关掉重建出来的句柄；
          *       不论走哪条拒绝出口，本进程都不留活描述符——POSIX 上描述符是随消息先被内核装进来的，
          *       所以「格式不对」「控制消息被截断」这些出口也得先把它关掉（换代每补一次 worker 就移交
          *       一次，漏一枚就是长跑进程里一个永不回收的描述符）；
-         *       EBADF 表示「字节收齐了但里面没有描述符」——POSIX 上这一条几乎都是通道用错了类型
+         *       POSIX 上通道在头收满之前就关掉报 kConnectionReset；EBADF 仍表示「字节收齐了但里面
+         *       没有描述符」——这一条几乎都是通道用错了类型
          * @note 换代的关键性质在这里：本端 accept 到的是上一代进程还在服务时就已排队的连接，
          *       因此新进程接手期间监听端口不曾关闭，也就没有 ECONNREFUSED 的空窗
          */

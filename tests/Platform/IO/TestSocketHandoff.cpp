@@ -18,7 +18,12 @@
 #include <cstring>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 #include <vector>
+
+#if !ASYN_PLATFORM_WIN32
+#include <sys/ioctl.h>
+#endif
 
 namespace AsynGyanis::Platform
 {
@@ -318,6 +323,79 @@ namespace AsynGyanis::Platform
         EXPECT_EQ(std::string_view(leftover.data(), leftover.size()), "WXYZ") << "被读走的字节应当原样留在通道里";
     }
 
+#if !ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住：移交头在流式通道上分两段到达时，接收侧要拼齐再判
+     * @details AF_UNIX 流套接字不保留消息边界，头可能只到一半；描述符随第一段控制消息到达。
+     *          把「头没收全」直接判成格式错误，会让一次合法移交偶发失败。判据是接收侧拿到
+     *          一枚可用描述符，且它的类型与发送侧一致。
+     */
+    TEST(SocketHandoff, AssemblesAHeaderSplitAcrossTwoChunks)
+    {
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     listeningPort = 0U;
+        const int         listener      = makeLoopbackListener(listeningPort);
+        ASSERT_GE(listener, 0) << "没造出监听套接字，错误码 " << PlatformError::lastErrorCode();
+        cleanup.add(listener);
+
+        int channelWriter = -1;
+        int channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+
+        struct Header
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_STREAM, 0U};
+
+        char   controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec  firstChunk{&header, sizeof(std::uint32_t)};
+        msghdr message{};
+        message.msg_iov           = &firstChunk;
+        message.msg_iovlen        = 1;
+        message.msg_control       = controlBuffer;
+        message.msg_controllen    = sizeof(controlBuffer);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
+        ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
+
+        // 读者先跑起来：此时只有半个头，它一定卡在补头上等剩下的字节，而不必赌内核不把两段合并
+        int          receivedDescriptor = -1;
+        std::jthread reader([&channelReader, &receivedDescriptor]() { receivedDescriptor = Socket::readListeningSocketHandoff(channelReader); });
+
+        // 等读者把首段读走：FIONREAD 归零说明它已经进入补头等待，这条用例才真的覆盖了补头路径
+        const bool firstChunkConsumed = TestSupport::waitForCondition(
+                [&channelReader]()
+                {
+                    int pendingBytes = 0;
+                    return ::ioctl(channelReader, FIONREAD, &pendingBytes) == 0 && pendingBytes == 0;
+                },
+                3000);
+        ASSERT_TRUE(firstChunkConsumed) << "读者还没把第一段读走，这条用例没有走到补头路径";
+
+        const char *remaining = reinterpret_cast<const char *>(&header) + sizeof(std::uint32_t);
+        ASSERT_EQ(::send(channelWriter, remaining, static_cast<int>(sizeof(header) - sizeof(std::uint32_t)), 0), static_cast<ssize_t>(sizeof(header) - sizeof(std::uint32_t)));
+
+        reader.join();
+
+        ASSERT_GE(receivedDescriptor, 0) << "分两段到达的合法移交被当成格式错误拒掉了，错误码 " << PlatformError::lastSocketErrorCode();
+        cleanup.add(receivedDescriptor);
+
+        int       type       = 0;
+        socklen_t typeLength = static_cast<socklen_t>(sizeof(type));
+        ASSERT_EQ(::getsockopt(receivedDescriptor, SOL_SOCKET, SO_TYPE, &type, &typeLength), 0);
+        EXPECT_EQ(type, SOCK_STREAM) << "重装出来的描述符不是发送侧交出的那类套接字";
+    }
+#endif
+
     /**
      * @brief 参数非法要在动通道之前就拒掉
      */
@@ -437,9 +515,9 @@ namespace AsynGyanis::Platform
 
         const int adoptedDescriptor = Socket::readListeningSocketHandoff(channelReader);
         ASSERT_GE(adoptedDescriptor, 0) << "收端没能重建数据报套接字，错误码 " << PlatformError::lastSocketErrorCode();
-        // 接手侧要自己把继承位清掉：交出方的标志位传不过来（两侧都是新建的一份引用，POSIX 上内核
-        // 给新描述符时把 FD_CLOEXEC 清成 0），不补就等于让新一代此后派生的每个子进程都替这个端口
-        // 留一份持有
+        // 接手侧要自己确认继承位已清：交出方的标志位传不过来（两侧都是新建的一份引用）。POSIX 上
+        // MSG_CMSG_CLOEXEC 已让内核在装填时置上该位，本层仍补一次，是为不支持该标志的老内核兜底；
+        // 位若没置上，新一代此后派生的每个子进程都会替这个端口留一份持有
         EXPECT_TRUE(TestSupport::isNotInheritable(adoptedDescriptor)) << "接手来的套接字仍可随进程创建继承，端口关不干净";
         // 交接交回来的是一枚裸描述符：接管动作（判类型、判已 bind、置非阻塞）在 DatagramSocket 那侧
         auto adopted = DatagramSocket::adopt(adoptedDescriptor);
@@ -676,17 +754,75 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 钉住（POSIX）：头只到一半通道就断了，已经装进来的描述符必须被关掉
+     * @details 描述符随第一段控制消息到达；补头循环遇到 EOF 时若只返回不关它，
+     *          每被一条半截消息撞一次就漏一枚描述符。
+     */
+    TEST(SocketHandoff, ClosesTheInstalledDescriptorWhenTheHeaderBreaksOff)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 侧的移交不携带描述符，没有「先装进来再退回」这一步";
+#else
+        ASSERT_TRUE(Socket::initialize());
+
+        DescriptorCleanup cleanup;
+        std::uint16_t     listeningPort = 0U;
+        const int         listener      = makeLoopbackListener(listeningPort);
+        ASSERT_GE(listener, 0);
+        cleanup.add(listener);
+
+        int channelWriter = -1;
+        int channelReader = -1;
+        ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
+        cleanup.add(channelReader);
+
+        struct Header
+        {
+            std::uint16_t family;
+            std::uint16_t socketType;
+            std::uint32_t blobByteCount;
+        } header{AF_INET, SOCK_STREAM, 0U};
+
+        char   controlBuffer[CMSG_SPACE(sizeof(int))] = {};
+        iovec  firstChunk{&header, sizeof(std::uint32_t)};
+        msghdr message{};
+        message.msg_iov           = &firstChunk;
+        message.msg_iovlen        = 1;
+        message.msg_control       = controlBuffer;
+        message.msg_controllen    = sizeof(controlBuffer);
+        cmsghdr *controlHeader    = CMSG_FIRSTHDR(&message);
+        controlHeader->cmsg_level = SOL_SOCKET;
+        controlHeader->cmsg_type  = SCM_RIGHTS;
+        controlHeader->cmsg_len   = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(controlHeader), &listener, sizeof(listener));
+        ASSERT_EQ(::sendmsg(channelWriter, &message, 0), static_cast<ssize_t>(sizeof(std::uint32_t)));
+
+        // 只给半个头就发 FIN：读端补头时遇到 0，必须关掉已经装进来的那枚描述符。
+        // shutdown 只做半关闭，描述符仍归 cleanup 收尾：断言失败时也不会出现同号二次关闭
+        ASSERT_EQ(::shutdown(channelWriter, SHUT_WR), 0);
+
+        const std::size_t descriptorsBefore = openDescriptorCount();
+        ASSERT_NE(descriptorsBefore, 0U) << "读不到 /proc/self/fd，这条判据没法成立";
+
+        EXPECT_EQ(Socket::readListeningSocketHandoff(channelReader), -1) << "半截头被当成了完整移交";
+        EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kConnectionReset);
+        EXPECT_EQ(openDescriptorCount(), descriptorsBefore) << "半截头被拒了，已经装进来的描述符却留在了本进程里";
+#endif
+    }
+
+    /**
      * @brief 通道在交出任何字节之前就被对端关掉时，报的必须是「连接被复位」，不能是槽位里的残值
      * @details 两侧的读法不同但都得给同一个成因：Windows 用 recv 逐段读满，返回 0 是一次成功的
      *          调用，实测它会把 last-error 清成 0，照抄槽位就是拿「没有错误」当成失败原因；POSIX 用
-     *          recvmsg，0 会落进「头没收全」那一档，报出来像格式错。
+     *          recvmsg，0 与补头循环的 EOF 都直接报连接被复位。
      * @note 读这一侧的是换代时的编排线程，它照报出的码选下一步：看成格式错会重发一条永远收不到的
      *       消息，看成连接被复位才知道新一代根本没起来
      * @note 先污染槽位再制造 EOF：不污染的话槽位里可能恰好就是同一个值，断言就成了自我实现
      * @note 证伪（Windows 实测）：把那两处 0 字节的出口改回「照抄槽位」，本条红在错误码那句——
      *       读出来的是 0 而期望是 10054，正是「没有错误却失败」那种读数
-     * @note 证伪（POSIX 实测）：删掉 `recvmsg` 返回 0 那一支，本条红在同一句上——读出来的是 22
-     *       （EINVAL，「不像移交消息」）而期望 104（ECONNRESET）
+     * @note 证伪（POSIX）：把 `recvmsg` 返回 0 那一支与补头循环的 0 字节出口都改成「照抄槽位」，
+     *       读出来的是 105（槽位里预置的 ENOBUFS）而期望 104（ECONNRESET），本条红在错误码那句
      */
     TEST(SocketHandoff, ReportsConnectionResetWhenTheChannelClosesBeforeAnyBytes)
     {
@@ -696,13 +832,14 @@ namespace AsynGyanis::Platform
         int               channelWriter = -1;
         int               channelReader = -1;
         ASSERT_TRUE(makeBlockingChannel(channelWriter, channelReader));
+        cleanup.add(channelWriter);
         cleanup.add(channelReader);
 
         // 先放一个绝不该在这里出现的成因进槽位：读端若把它交出去，就是拿残值当失败原因
         PlatformError::setLastErrorCode(PlatformError::kNoBufferSpace);
 
-        // 关掉写端就是给这条流发出 FIN：读端此后不会再拿到任何字节
-        static_cast<void>(FileDescriptor::close(channelWriter));
+        // 半关闭写端就是给这条流发出 FIN：读端此后不会再拿到任何字节，描述符本身仍由 cleanup 收尾
+        ASSERT_EQ(::shutdown(channelWriter, SHUT_WR), 0);
 
         EXPECT_EQ(Socket::readListeningSocketHandoff(channelReader), -1) << "通道已经关了，读端却报出成功";
         EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kConnectionReset) << "通道被关报成了别的原因：运维据此会去查消息写法，而不是查对端进程有没有起来";

@@ -550,7 +550,7 @@ namespace AsynGyanis::Base
 
         /**
          * @brief 处理文件监听回调并触发后台重载。
-         * @param filePath 发生变化的文件路径；changeType 为 NeedsRescan 时是被监视的目录路径，
+         * @param filePath 发生变化的文件路径；changeType 为 NeedsRescan 时是被监视的路径，
          *        此时不按扩展名过滤（那条信号要的就是「重读整份目录」）。
          * @param changeType 文件变更类型。
          */
