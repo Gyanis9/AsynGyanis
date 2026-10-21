@@ -170,6 +170,16 @@ def test_duplicates(root: Path) -> None:
     expect("duplicates 新增簇", result, 1, "新增")
 
 
+def test_surface(root: Path) -> None:
+    write(
+        root / "packaging" / "api-baseline.txt",
+        "src/Net/Http/HttpServer.h\tclass HttpServer\nsrc/Net/Http/HttpServer.h\tvoid start()\n",
+    )
+    write(root / "tests" / "TestServer.cpp", "int main() { HttpServer server; server.start(); }\n")
+    result = run_script("report-public-surface.py", root)
+    expect("surface 报告", result, 0, "HttpServer")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface"))
@@ -185,6 +195,8 @@ def main() -> int:
             test_boundary(root / "boundary")
         if args.only in (None, "duplicates"):
             test_duplicates(root / "duplicates")
+        if args.only in (None, "surface"):
+            test_surface(root / "surface")
         print("ARCH_GATE_SELFTEST=OK")
         return 0
     except AssertionError as error:
