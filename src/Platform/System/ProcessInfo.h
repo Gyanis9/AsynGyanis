@@ -76,6 +76,14 @@ namespace AsynGyanis::Platform
         static long currentProcessId() noexcept;
 
         /**
+         * @brief 取当前线程的指纹（诊断与崩溃现场用）
+         * @details 崩溃现场要回答「是哪条线程死的」：进程号只能定位到进程，多线程下一次崩溃
+         *          不带上线程身份就无法与日志里的线程活动对上。
+         * @return std::uint64_t POSIX 上是 pthread_t 的数值，Windows 上是线程 ID；不分配
+         */
+        static std::uint64_t currentThreadFingerprint() noexcept;
+
+        /**
          * @brief 取当前进程此刻占住的常驻内存字节数（RSS）
          * @details 这是「运行期内存采样」的最小读数：泄漏与缓存无界增长都先体现在它上面，而进程内没有
          *          别的通道能把它交出去（分配器统计要等 mimalloc 那一档才存在，且各家口径不同）。

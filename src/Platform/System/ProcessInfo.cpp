@@ -14,6 +14,7 @@
 // PROCESS_MEMORY_COUNTERS 与 K32GetProcessMemoryInfo 的声明都在这里（库不用另链：K32* 在 kernel32）
 #include <psapi.h>
 #else
+#include <pthread.h>
 #include <sys/resource.h>
 #include <unistd.h>
 // environ 在 glibc 与 BSD 上都由 unistd.h 给出声明，这里再声明一次是为了不依赖各家的特性宏组合：
@@ -151,6 +152,15 @@ namespace AsynGyanis::Platform
 #else
         // getpid 在 POSIX 上不失败（永远返回有效进程号）
         return static_cast<long>(::getpid());
+#endif
+    }
+
+    std::uint64_t ProcessInfo::currentThreadFingerprint() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return static_cast<std::uint64_t>(::GetCurrentThreadId());
+#else
+        return static_cast<std::uint64_t>(::pthread_self());
 #endif
     }
 

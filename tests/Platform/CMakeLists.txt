@@ -27,6 +27,7 @@ add_executable(TestPlatform
         FileSystem/TestFileWatcher.cpp
 
         System/TestCpuAffinity.cpp
+        System/TestCrashHandler.cpp
         System/TestPlatformError.cpp
         System/TestPlatformTime.cpp
         System/TestPipe.cpp

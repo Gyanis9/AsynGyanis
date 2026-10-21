@@ -2,6 +2,8 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/CpuAffinity.h
         ${CMAKE_CURRENT_LIST_DIR}/CpuAffinity.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/CrashHandler.h
+        ${CMAKE_CURRENT_LIST_DIR}/CrashHandler.cpp
         ${CMAKE_CURRENT_LIST_DIR}/PlatformError.h
         ${CMAKE_CURRENT_LIST_DIR}/PlatformError.cpp
         ${CMAKE_CURRENT_LIST_DIR}/PlatformTime.h

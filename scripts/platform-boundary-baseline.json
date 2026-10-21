@@ -11,54 +11,6 @@
   ],
   "violations": [
     {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-api",
-      "symbol": "::fork",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-api",
-      "symbol": "::sigaction",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-api",
-      "symbol": "std::signal",
-      "count": 4
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-header",
-      "symbol": "pthread.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-header",
-      "symbol": "sys/types.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-header",
-      "symbol": "unistd.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "os-header",
-      "symbol": "windows.h",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Process/CrashScene.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 10
-    },
-    {
       "path": "src/Core/Process/WorkerHeartbeat.cpp",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
