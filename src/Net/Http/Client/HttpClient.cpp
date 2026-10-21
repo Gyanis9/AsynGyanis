@@ -8,6 +8,7 @@
 #include "Core/Socket/AsyncResolver.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/ConnectionRace.h"
+#include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Core/Tls/TlsPolicy.h"
 #include "Core/Tls/TlsSocket.h"
@@ -497,8 +498,7 @@ namespace AsynGyanis::Net
         /// 判断主机名是不是 IP 字面量：IP 与 DNS 名的证书校验规则不同，必须分开处理
         bool isIpLiteral(const std::string &host)
         {
-            std::array<std::uint8_t, 16> addressBytes{};
-            return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 || ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
+            return Core::InetAddress::parseLiteral(host, 0).has_value();
         }
 
         /**

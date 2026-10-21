@@ -49,6 +49,7 @@
 // 而原先这两样只顺着 hiredis 那一段的包含链进来——桩构建里那条链不存在，当场就是「std::clamp 不是成员」。
 // Core::TlsContext 也是：头文件里 `unique_ptr<Core::TlsContext>` 只带前置声明，而开关之外定义的
 // ~RedisConnection() 要销毁它——不完整类型在桩构建里报 C2027/C2338（删除不完整类型）
+#include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Core/Tls/TlsPolicy.h"
 
@@ -337,8 +338,7 @@ namespace AsynGyanis::Database
         /// 主机的文本是不是 IP 字面量（IP 与域名的 SNI 与主机校验规则不同，必须分开走）
         bool isIpLiteralText(const std::string &host)
         {
-            std::array<std::uint8_t, 16> addressBytes{};
-            return ::inet_pton(AF_INET, host.c_str(), addressBytes.data()) == 1 || ::inet_pton(AF_INET6, host.c_str(), addressBytes.data()) == 1;
+            return Core::InetAddress::parseLiteral(host, 0).has_value();
         }
 
         /// 读写钩子共用的失败出口：把 OpenSSL 的读数摘成一段话（超时与协议错误分开写）
