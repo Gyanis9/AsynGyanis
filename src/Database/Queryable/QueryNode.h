@@ -261,7 +261,7 @@ namespace AsynGyanis::Database::Queryable
         /// 让回读的列与实际写入的列同源，才不会出现「回读一列、写的是另一列」。
         /// 类型取 string_view 而不是 string：主键名是 TableSchema 里的 constexpr string_view，本体有
         /// 静态存储期，视图在这里没有生命周期问题；换成 string 会让每个 QueryNode 的构造多付一次堆
-        /// （MSVC Debug 给每个使用分配器的对象挂一个 proxy），而 ORM 的分配台账按次记账——本轮实测
+        /// （MSVC Debug 给每个使用分配器的对象挂一个 proxy），而 ORM 的分配台账按次记账——实测
         /// count() 与 update() 各因此涨 1 次分配，就是这一格造成的
         std::string_view generatedKeyColumn;
 

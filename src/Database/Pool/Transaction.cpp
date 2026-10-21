@@ -35,7 +35,7 @@ namespace AsynGyanis::Database
 
         // 事务控制语句的文本由方言提供：SQLite 用 BEGIN IMMEDIATE、MySQL 用 START TRANSACTION，
         // 写死在事务对象里等于把方言知识放到了错误的层。方言在此解析一次并缓存，
-        // 未实现的类型（MySQL / Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
+        // 未实现方言的类型（如 Redis）会在这里抛出带中文提示的 Base::InvalidArgumentException
         m_dialect = DialectRegistry::dialectFor(m_connection->databaseType());
 
         // 只读形态在任何语句发出之前就判定：引擎给不出那句话就当场拒绝，而不是开一笔普通事务
@@ -99,8 +99,8 @@ namespace AsynGyanis::Database
     Transaction::~Transaction()
     {
         // 未提交就回滚是唯一安全的默认动作：
-        // - 已提交/已回滚的事务 m_isActive 为假，这里不会发出多余的 ROLLBACK，不影响已落库的数据；
-        // - 异常穿过事务作用域时来不及调用 rollback()，由这里补上，避免半成品数据残留
+        // 已提交/已回滚的事务 m_isActive 为假，这里不会发出多余的 ROLLBACK，不影响已落库的数据；
+        // 异常穿过事务作用域时来不及调用 rollback()，由这里补上，避免半成品数据残留
         if (m_isActive)
         {
             // 析构不能抛异常：失败只记录在 lastError() 里（对象随即销毁），

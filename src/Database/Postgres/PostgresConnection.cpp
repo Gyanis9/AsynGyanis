@@ -1004,8 +1004,9 @@ namespace AsynGyanis::Database
 
         const ExecStatusType firstChunkStatus = PQresultStatus(firstChunk);
 
-        // 空结果：没有「流」可言，交一份普通的预读空结果集（列元数据与行数快照在它的构造里就绪）
-        if (firstChunkStatus == PGRES_TUPLES_OK)
+        // 空结果：0 行的查询（PGRES_TUPLES_OK）与没有返回列的写语句（PGRES_COMMAND_OK）都没有
+        // 「流」可言，交一份普通的预读空结果集。写语句若在这里报失败，调用方会按「没执行过」重试
+        if (firstChunkStatus == PGRES_TUPLES_OK || firstChunkStatus == PGRES_COMMAND_OK)
         {
             // 流式的块永远不承载生成键：写语句的 RETURNING 走预读，这里显式交出 false
             return takeResult(firstChunk, "执行 SQL 命令失败", false);
@@ -1027,7 +1028,21 @@ namespace AsynGyanis::Database
         // 开流成功：计数 +1 表示「这条连接在流读完或结果析构之前不可发新语句」，
         // 归位由结果集在读完、中断或析构收干时经 noteStreamClosed() 完成
         ++m_openStreamCount;
-        return PostgresResult::forStreaming(m_connection, this, firstChunk);
+        try
+        {
+            return PostgresResult::forStreaming(m_connection, this, firstChunk);
+        } catch (...)
+        {
+            // 结果对象的首块所有权在构造内接手；这里的 catch 只兜住 new 自身的分配失败。
+            // 首块与后续块都要收干，否则回复流留在连接上；在途计数也要归位，否则此后一直拒发命令
+            PQclear(firstChunk);
+            while (PGresult *pendingChunk = PQgetResult(m_connection))
+            {
+                PQclear(pendingChunk);
+            }
+            noteStreamClosed();
+            throw;
+        }
     }
 
     std::unique_ptr<DatabaseResult> PostgresConnection::takeResult(PGresult *const rawResult, const std::string_view description, const bool carriesReturnedKey)

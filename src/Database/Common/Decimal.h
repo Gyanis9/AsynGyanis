@@ -6,16 +6,15 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 承载形态选的是「规范十进制文本」，不是标度整数，理由三条：
- *          - 与线路形态同构。三家引擎的十进制列在线路与 C API 上给出的本来就是十进制文本
- *            （MySQL 的 MYSQL_TYPE_NEWDECIMAL、PostgreSQL 的 NUMERICOID、SQLite 的 NUMERIC 亲和），
- *            而取回方向今天也已经按文本交出（MySqlValueConversion.h 的十进制分支、
- *            PostgresValueConversion.h 的 kNumeric）。承载形态与线路一致，往返里就没有任何一次换算，
- *            也就没有换算会引入的末位漂移。
- *          - 位宽不受 int64 约束。金额可以是 40 位数字；走标度整数还得另外约定「位宽多少、标度多少」，
- *            而这两个数在本库无处可问（列的物理精度由引擎与建表语句决定，不在类型词汇表里）。
- *          - 想要整数承载不必绕路。fromScaledInteger() 按「未标度整数值 + 标度」给出第二条入口，
- *            两条入口产出同一个内部表示，因此这里同时也是「两者皆可」。
+ * @details 承载形态选的是「规范十进制文本」，不是标度整数，理由有三。与线路形态同构：三家引擎的
+ *          十进制列在线路与 C API 上给出的本来就是十进制文本（MySQL 的 MYSQL_TYPE_NEWDECIMAL、
+ *          PostgreSQL 的 NUMERICOID、SQLite 的 NUMERIC 亲和），而取回方向今天也已经按文本交出
+ *          （MySqlValueConversion.h 的十进制分支、PostgresValueConversion.h 的 kNumeric）；
+ *          承载形态与线路一致，往返里就没有任何一次换算，也就没有换算会引入的末位漂移。
+ *          位宽不受 int64 约束：金额可以是 40 位数字，走标度整数还得另外约定「位宽多少、标度多少」，
+ *          而这两个数在本库无处可问（列的物理精度由引擎与建表语句决定，不在类型词汇表里）。
+ *          想要整数承载不必绕路：fromScaledInteger() 按「未标度整数值 + 标度」给出第二条入口，
+ *          两条入口产出同一个内部表示，因此这里同时也是「两者皆可」。
  *
  * @note 只做承载，不做算术：加减乘除与舍入留给调用方，本库不为此引第三方十进制库。
  *       要比大小就把它写进 SQL 由引擎算（十进制文本作为参数送出，服务端按列定义精确收下）。

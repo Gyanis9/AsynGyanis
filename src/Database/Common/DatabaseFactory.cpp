@@ -25,14 +25,20 @@ namespace AsynGyanis::Database
         }
 
         // 报错要说准「缺的到底是哪一样」。原先一条文案同时断言两件事，于是一份什么都没填的默认配置
-        // 会被告知「配置里还带着网络库特征」——把排查方向引向并不存在的字段（规范第 10 条：文案要可操作）
+        // 会被告知「配置里还带着网络库特征」——把排查方向引向并不存在的字段。文案要点名能动手改的那一项
         const bool hasNetworkFeatures = !config.host.empty() || !config.userName.empty() || !config.password.empty();
 
         std::string message = "无法从配置判定数据库类型：端口 " + std::to_string(config.port) + " 推不出驱动，";
-        message += hasNetworkFeatures ? "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理："
-                                        "请补上端口，或清空这些字段并按 SQLite 使用"
-                                      : "且 database 为空，没有可作为嵌入式库依据的库名或路径："
-                                        "连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+        if (hasNetworkFeatures)
+        {
+            message += "且配置里带着网络库特征（主机/账号/口令非空），不能当嵌入式库处理：请补上端口，或清空这些字段并按 SQLite 使用";
+        } else if (config.database.empty())
+        {
+            message += "且 database 为空，没有可作为嵌入式库依据的库名或路径：连远端请补 host/port（或显式指定驱动类型），用本地库请把 database 填成 \":memory:\" 或文件路径";
+        } else
+        {
+            message += "且 database 非空（" + config.database + "）、却没有可用于判定驱动的主机/账号/端口：请显式指定驱动类型，或补上 host/port";
+        }
 
         throw Base::InvalidArgumentException(message);
     }

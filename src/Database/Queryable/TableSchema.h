@@ -50,7 +50,7 @@ namespace AsynGyanis::Database::Queryable
          *          这样「忘了加版本号」不会让更新悄悄失去保护，加一由服务端在一次语句里完成，
          *          两个会话各改一次不可能都成功。更新到 0 行即抛
          *          `Database::OptimisticLockException`（消息点名表、版本列、期望版本与主键值）。
-         *          这一列必须是 `kColumns` 里声明过的整数列、且不能与主键同列——两处都在生成语句时拒绝。
+         *          这一列必须是 `kColumns` 里声明过的整数列、且不能与主键同列——这些声明错误都在生成语句时拒绝。
          * @note 走的是「读出-改-写回」的经典乐观锁：它防的是并发覆盖（后写的人把先写的人抹掉），
          *       不是「这一行还在不在」；要让「不在就报错」也成立，仍按 update() 的 @warning
          *       用 first()/count() 确认存在性。与 `InsertConflict` 三档正交：那一档管 INSERT 撞唯一键，

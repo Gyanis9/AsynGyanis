@@ -285,7 +285,7 @@ namespace AsynGyanis::Database
         }
 
         // 点号在 SQL 里是「库.表」的层级分隔，因此逐段引用：整块包起来会得到一张名叫 shop.orders
-        // 的表，而不是 shop 库下的 orders。段与段之间只判空（"a..b" 生成的是不合法的引用），
+        // 的表，而不是 shop 库下的 orders。段与段之间只判空（"a..b" 的空段当场拒绝），
         // 不做字符校验——加了引用的标识符能容纳任何字节（含空格、连字符的名字都合法），
         // 校验只会把合法名字判死，而「原样拼进语句」这条路本来就由引用堵住了
         std::size_t segmentStart = 0;
@@ -628,7 +628,17 @@ namespace AsynGyanis::Database
 
     SqlStatement StandardSqlDialect::translateUpdate(const Queryable::QueryNode &query, const std::span<const DatabaseValue> values) const
     {
-        requireMatchingColumnCount(query, values.size());
+        // 更新方向允许「没有普通赋值、只有自增列」：主键 + 版本列的表靠版本列自增加一完成写入。
+        // INSERT 方向不允许空列清单，那条判据仍由 requireMatchingColumnCount 负责
+        if (query.selectColumns.empty() && query.incrementColumns.empty())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：待写列列表为空，无法生成写语句（表 " + query.tableName + "）");
+        }
+        if (values.size() != query.selectColumns.size())
+        {
+            throw Base::InvalidArgumentException(std::string(dialectName()) + " 方言：取值个数（" + std::to_string(values.size()) + "）与待写列数（" +
+                                                 std::to_string(query.selectColumns.size()) + "）不一致，无法生成写语句（表 " + query.tableName + "）");
+        }
 
         SqlStatement                statement;
         std::string                &sqlText    = statement.sql;
@@ -948,8 +958,8 @@ namespace AsynGyanis::Database
                     } else if constexpr (std::is_same_v<ValueType, std::uint64_t>)
                     {
                         // DatabaseValue 已冻结，没有无符号备选，这里做两步降级：
-                        // - 放得进 int64_t：转成有符号整数，保持整数比较语义，也让索引与算术可用；
-                        // - 超出 int64_t：转成十进制文本。宁可让比较按文本进行（而不是静默回绕成负数
+                        // 放得进 int64_t：转成有符号整数，保持整数比较语义，也让索引与算术可用；
+                        // 超出 int64_t：转成十进制文本。宁可让比较按文本进行（而不是静默回绕成负数
                         //   给出错误数值），也不引入第二套无符号类型；这类取值现实中只出现在
                         //   哈希 ID、位掩码等场景，文本比较通常仍能得到正确结果
                         if (value <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))

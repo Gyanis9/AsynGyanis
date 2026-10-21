@@ -654,8 +654,8 @@ namespace AsynGyanis::Database::Queryable
      * @brief 约束：T 可以被行映射
      *
      * @details 三个条件缺一不可：
-     *          - T 是聚合体且可默认构造（映射时先构造空对象再逐列赋值）；
-     *          - TableSchema<T> 已特化且 kColumns 非空（未特化时主模板是空 tuple）。
+     * T 是聚合体且可默认构造（映射时先构造空对象再逐列赋值）；
+     * TableSchema<T> 已特化且 kColumns 非空（未特化时主模板是空 tuple）。
      *          不满足时 mapResultRow() 不会被选中，编译器会直接报「约束不满足」。
      *
      * @tparam T 表数据结构类型

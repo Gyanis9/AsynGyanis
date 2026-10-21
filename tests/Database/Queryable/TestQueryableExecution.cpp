@@ -1,22 +1,22 @@
 // 覆盖场景（内存 SQLite 建连接池，建表后完全通过 ORM 完成插入/查询/排序/分页/计数/更新/删除）：
-// - ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
-// - OrmInsertThenQueryWithWhereOrderAndLimit
-// - HostileTextRoundTripsThroughParameterBinding
-// - NonFiniteDoubleIsRejectedBeforeBinding（NaN/±Infinity 在绑定前被拒且消息点名是哪一列，插入与更新两个入口各自钉）
-// - NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
-// - FirstReturnsEmptyWhenNoRowMatches
-// - CountMatchesFilteredRows
-// - UpdateByPrimaryKeyChangesOnlyTargetRow
-// - ExecuteNonQueryDeletesMatchingRows
-// - DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
-// - UnregisteredTypeNamesTheMissingSchemaSpecialization（空 kColumns 要说成真因，不推给自增主键）
-// - SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
-// - JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
+// ToSqlStaysOfflineGenerator / OfflineModeThrowsOnExecution
+// OrmInsertThenQueryWithWhereOrderAndLimit
+// HostileTextRoundTripsThroughParameterBinding
+// NonFiniteDoubleIsRejectedBeforeBinding（NaN/±Infinity 在绑定前被拒且消息点名是哪一列，插入与更新两个入口各自钉）
+// NullColumnMapsToEmptyOptional / EmptyStringStaysDistinctFromNull
+// FirstReturnsEmptyWhenNoRowMatches
+// CountMatchesFilteredRows
+// UpdateByPrimaryKeyChangesOnlyTargetRow
+// ExecuteNonQueryDeletesMatchingRows
+// DeleteWithLimitIsRejectedInsteadOfDeletingEverything（有界删除不能静默做成全表删除）
+// UnregisteredTypeNamesTheMissingSchemaSpecialization（空 kColumns 要说成真因，不推给自增主键）
+// SpacedIdentifiersSurviveCreateInsertAndQuery（表名与列名含空格的建表 + 读写全链路）
+// JoinThroughBuilderNarrowsRowsByTheJoinedTable / GroupByThroughBuilderAggregatesAndMapsAliasColumn
 //   （join() 与 groupBy() 这两个公开写入口从 ORM 这头跑通，不是只喂手工搭的查询树）
-// - HavingThroughBuilderFiltersGroups（having() 入口真的在分组后筛组，对照组是全量三组）
-// - MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
-// - DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
-// - LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
+// HavingThroughBuilderFiltersGroups（having() 入口真的在分组后筛组，对照组是全量三组）
+// MissingColumnThrowsReadableError / TypeMismatchThrowsReadableError
+// DuplicateColumnNamesDoNotAliasTwoMembersOntoOneColumn（两个成员撞同一列名必须报错）
+// LiteralMatchHelpersTreatWildcardsAsLiteralText（contains/startsWith/endsWith 把 % _ ! 按字面量匹配，
 //   并保留 like() 的通配符语义作为对照组）
 // 断言映射回的结构体字段值正确（含 NULL 列、字符串、浮点、负数、中文），并验证取值确实以绑定方式传入：
 // 含单引号与 "--" 的文本能原样查回、注入残留的表仍存在，证明没有拼接 SQL。
@@ -25,6 +25,7 @@
 #include "Database/Common/DatabaseFactory.h"
 #include "Database/Common/DatabaseResult.h"
 #include "Database/Common/RowMappingException.h"
+#include "Database/Dialect/SqliteDialect.h"
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PoolConfig.h"
 #include "Database/Pool/PooledConnection.h"
@@ -246,6 +247,7 @@ namespace
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
     using AsynGyanis::Database::RowMappingException;
+    using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Queryable::asc;
     using AsynGyanis::Database::Queryable::Column;
     using AsynGyanis::Database::Queryable::contains;
@@ -561,6 +563,18 @@ TEST_F(QueryableExecutionTest, CountMatchesFilteredRows)
 }
 
 /**
+ * @brief 严格模式必须放行由 && / || / ! 组成的合法复合条件
+ * @details 复合节点的 left.name 本来就是空串，对空串做白名单校验会把合法条件整条拒掉
+ */
+TEST_F(QueryableExecutionTest, StrictIdentifiersAcceptCompositeConditions)
+{
+    Queryable<AccountRow> query = newQuery();
+    query.strictIdentifiers();
+    EXPECT_NO_THROW(query.where((Column(&AccountRow::id, "id") == std::int64_t{1}) && (Column(&AccountRow::name, "name") == std::string{"张三"})));
+    EXPECT_NO_THROW(query.where(!(Column(&AccountRow::id, "id") == std::int64_t{2})));
+}
+
+/**
  * @brief 验证按主键更新只改动目标行
  */
 TEST_F(QueryableExecutionTest, UpdateByPrimaryKeyChangesOnlyTargetRow)
@@ -606,6 +620,33 @@ TEST_F(QueryableExecutionTest, ExecuteNonQueryDeletesMatchingRows)
 
     ASSERT_EQ(remainingRows.size(), 1U);
     EXPECT_EQ(remainingRows[0].id, 1);
+}
+
+/**
+ * @brief 批量删除跨过方言参数上限时每一块都要真正生效
+ * @details 每块的主键集合互不相交；复用同一个查询对象会让第二块带上第一块的 IN 条件，
+ *          参数数累加后越界被拒（不判上限的引擎上则是静默截短）。行数取上限 + 1，恰好两块。
+ */
+TEST_F(QueryableExecutionTest, DeleteBatchSpansParameterChunks)
+{
+    constexpr std::size_t kRowCount = SqliteDialect::kMaximumStatementParameters + 1U;
+    // 用例必须真的跨过参数上限，否则覆盖不到分块分支；整数式避免额外引入 <cmath>
+    constexpr std::size_t kChunkCount = (kRowCount + SqliteDialect::kMaximumStatementParameters - 1U) / SqliteDialect::kMaximumStatementParameters;
+
+    std::vector<AccountRow> rows;
+    rows.reserve(kRowCount);
+    for (std::size_t index = 0; index < kRowCount; ++index)
+    {
+        rows.push_back(makeRow(static_cast<std::int64_t>(index + 1U), "批量删除-" + std::to_string(index), 0.0, std::nullopt, true));
+    }
+
+    Queryable<AccountRow> query = newQuery();
+    ASSERT_EQ(static_cast<std::int64_t>(kRowCount), query.insertBatch(rows));
+    ASSERT_EQ(static_cast<std::int64_t>(kRowCount), newQuery().count());
+
+    EXPECT_EQ(static_cast<std::int64_t>(kRowCount), query.deleteBatch(rows));
+    EXPECT_EQ(0, newQuery().count()) << "第二块带上了第一块的条件：批量删除被静默截短";
+    EXPECT_EQ(2U, kChunkCount) << "用例必须真的跨过参数上限，否则覆盖不到分块分支";
 }
 
 /**

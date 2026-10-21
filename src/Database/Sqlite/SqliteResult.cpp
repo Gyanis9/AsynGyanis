@@ -113,14 +113,19 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // 只有 SQLITE_ROW 代表还有数据；SQLITE_DONE 是正常耗尽，SQLITE_ERROR/SQLITE_BUSY 是出错，
-        // 三者一律返回 false——按基类契约 next() 属于读取路径，不改写 m_lastError
         const int stepResult = sqlite3_step(m_statement);
         m_hasCurrentRow      = (stepResult == SQLITE_ROW);
         if (!m_hasCurrentRow)
         {
             // 无论耗尽还是出错都记为遍历结束，后续读取稳定返回「没有下一行」
             m_scanCompleted = true;
+
+            // 只有 SQLITE_DONE 是正常耗尽；其余（BUSY、IO 错误、中断）必须留下原因。
+            // 连接侧并不知道这次 step 失败，不留文本就只剩「结果集短了一截」这一个现象
+            if (stepResult != SQLITE_DONE)
+            {
+                m_lastError = std::string("SQLite 游标推进失败：") + (m_database != nullptr ? sqlite3_errmsg(m_database) : sqlite3_errstr(stepResult));
+            }
         }
         return m_hasCurrentRow;
     }

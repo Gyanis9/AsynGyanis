@@ -47,6 +47,7 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -305,6 +306,7 @@ namespace AsynGyanis::Database::Queryable
         template<typename MemberType>
         Queryable &then(MemberType T::*memberPointer)
         {
+            requireOnline("then()");
             m_relationLoaders.push_back(makeRelationLoader(memberPointer, m_pool, m_transaction, resolveDialect()));
             return *this;
         }
@@ -463,7 +465,7 @@ namespace AsynGyanis::Database::Queryable
          *
          * @throws Base::LogicException 当前为离线模式（无连接池也未绑定事务）
          * @throws DatabaseException 取连接失败、SQL 执行失败或行映射失败，原因见异常文本
-         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（如 MySQL / Redis）
+         * @throws Base::InvalidArgumentException 该数据库类型尚无方言实现（如 Redis）
          */
         [[nodiscard]] std::vector<T> toList()
         {
@@ -776,7 +778,7 @@ namespace AsynGyanis::Database::Queryable
                 primaryKeys.push_back(*key);
             }
 
-            const auto deleteChunks = [&](Queryable<T> &target)
+            const auto deleteChunks = [&](Transaction &transaction)
             {
                 std::int64_t affectedRowCount = 0;
                 for (std::size_t offset = 0; offset < primaryKeys.size(); offset += parameterLimit)
@@ -791,21 +793,23 @@ namespace AsynGyanis::Database::Queryable
                     {
                         condition.inValues.push_back(Detail::toParameterValueFromKey(primaryKeys[offset + index], TableSchema<T>::kPrimaryKey));
                     }
-                    target.where(std::move(condition));
-                    affectedRowCount += target.executeNonQuery();
+
+                    // 每块独立构造：where() 是追加语义，复用同一个查询对象会让第二块起
+                    // 带上前一块的 IN 条件——参数数累加越界被拒，或在不判上限的引擎上静默少删
+                    Queryable<T> chunkQuery(transaction);
+                    chunkQuery.where(std::move(condition));
+                    affectedRowCount += chunkQuery.executeNonQuery();
                 }
                 return affectedRowCount;
             };
 
             if (m_transaction != nullptr)
             {
-                Queryable<T> batchQuery(*m_transaction);
-                return deleteChunks(batchQuery);
+                return deleteChunks(*m_transaction);
             }
 
             Transaction        transaction(*m_pool);
-            Queryable<T>       batchQuery(transaction);
-            const std::int64_t affectedRowCount = deleteChunks(batchQuery);
+            const std::int64_t affectedRowCount = deleteChunks(transaction);
             if (!transaction.commit())
             {
                 throw QueryExecutionException("批量删除：提交事务失败：" + transaction.lastError());
@@ -1262,10 +1266,42 @@ namespace AsynGyanis::Database::Queryable
         [[nodiscard]] static RelationLoader makeRelationLoader(const MemberType T::*memberPointer, ConnectionPool *pool, Transaction *transaction,
                                                                std::shared_ptr<SqlDialect> dialect)
         {
-            if (findRelationOf(memberPointer) == nullptr)
+            const RelationDescriptor<T, MemberType> *relation = findRelationOf(memberPointer);
+            if (relation == nullptr)
             {
                 throw Base::LogicException("Queryable: then() 要装载的成员没有在 TableSchema<" + std::string(TableSchema<T>::kTableName) +
                                            ">::kRelations 里声明过——请先加一条 Relation(&T::成员, \"外键列\")");
+            }
+
+            using Target     = Detail::RelationTarget<MemberType>;
+            using RelatedRow = typename Target::RowType;
+            if constexpr (std::is_aggregate_v<RelatedRow>)
+            {
+                if constexpr (Target::isCollection)
+                {
+                    if (!columnIsDeclared<RelatedRow>(relation->foreignKeyColumn))
+                    {
+                        throw Base::LogicException("Queryable: then() 的一对多关系外键列「" + std::string(relation->foreignKeyColumn) + "」没有在 TableSchema<" +
+                                                   std::string(TableSchema<RelatedRow>::kTableName) + ">::kColumns 里声明——装载要靠它取子行");
+                    }
+                    if (!columnIsDeclared<T>(TableSchema<T>::kPrimaryKey))
+                    {
+                        throw Base::LogicException("Queryable: then() 的一对多装载要求 TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 把主键列「" +
+                                                   std::string(TableSchema<T>::kPrimaryKey) + "」声明在 kColumns 里——装载要靠它取父键");
+                    }
+                } else
+                {
+                    if (!columnIsDeclared<T>(relation->foreignKeyColumn))
+                    {
+                        throw Base::LogicException("Queryable: then() 的多对一关系外键列「" + std::string(relation->foreignKeyColumn) + "」没有在 TableSchema<" +
+                                                   std::string(TableSchema<T>::kTableName) + ">::kColumns 里声明——装载要靠它取键");
+                    }
+                    if (!columnIsDeclared<RelatedRow>(TableSchema<RelatedRow>::kPrimaryKey))
+                    {
+                        throw Base::LogicException("Queryable: then() 的多对一装载要求 TableSchema<" + std::string(TableSchema<RelatedRow>::kTableName) + "> 把主键列「" +
+                                                   std::string(TableSchema<RelatedRow>::kPrimaryKey) + "」声明在 kColumns 里——装载要靠它取对端行");
+                    }
+                }
             }
 
             return [memberPointer, pool, transaction, dialect = std::move(dialect)](std::vector<T> &rows)
@@ -1546,6 +1582,17 @@ namespace AsynGyanis::Database::Queryable
          */
         static void requireStrictWhereCondition(const WhereCondition &condition, const std::string &context)
         {
+            // 复合节点只填 op 与 children，left.name 本来就是空串；对空串做白名单校验会把
+            // 合法的 && / || / ! 条件整条拒掉。递归只校验真正的字段文本
+            if (condition.op == SqlOperator::And || condition.op == SqlOperator::Or || condition.op == SqlOperator::Not)
+            {
+                for (const WhereCondition &child: condition.children)
+                {
+                    requireStrictWhereCondition(child, context);
+                }
+                return;
+            }
+
             requireStrictIdentifierText(condition.left.name, context + " 的左字段");
             if (const auto *rightField = std::get_if<FieldReference>(&condition.right); rightField != nullptr)
             {
@@ -1617,7 +1664,8 @@ namespace AsynGyanis::Database::Queryable
             std::vector<RelatedRow> related   = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, targetKey, keys);
 
             // 索引：对端的主键值 → 在结果里的位置（拷 RelatedRow 不便宜，命中的行按引用取一次）
-            std::map<std::string, std::size_t> index;
+            std::unordered_map<std::string, std::size_t> index;
+            index.reserve(related.size());
             for (std::size_t position = 0; position < related.size(); ++position)
             {
                 if (const std::optional<DatabaseValue> key = readColumnValue(related[position], targetKey); key.has_value())
@@ -1673,7 +1721,8 @@ namespace AsynGyanis::Database::Queryable
 
             std::vector<RelatedRow> children = fetchRelatedByKeyIn<RelatedRow>(dialect, pool, transaction, relation.foreignKeyColumn, keys);
 
-            std::map<std::string, std::vector<RelatedRow>> groups;
+            std::unordered_map<std::string, std::vector<RelatedRow>> groups;
+            groups.reserve(keys.size());
             for (RelatedRow &child: children)
             {
                 if (const std::optional<DatabaseValue> key = readColumnValue(child, relation.foreignKeyColumn); key.has_value())
@@ -2204,8 +2253,9 @@ namespace AsynGyanis::Database::Queryable
          */
         static void foldIncludedParentRows(std::vector<T> &rows, const std::span<const IncludeProcessor> includes)
         {
-            std::map<std::string, std::size_t> firstSeenAt;
-            std::size_t                        keptRows = 0;
+            std::unordered_map<std::string, std::size_t> firstSeenAt;
+            firstSeenAt.reserve(rows.size());
+            std::size_t keptRows = 0;
             for (std::size_t index = 0; index < rows.size(); ++index)
             {
                 const std::optional<DatabaseValue> key = readColumnValue(rows[index], TableSchema<T>::kPrimaryKey);
@@ -2749,13 +2799,21 @@ namespace AsynGyanis::Database::Queryable
             // 悄悄失去保护，加一也由服务端在一次语句里做完
             if (!versionColumnName.empty() && columnDescriptor.columnName == versionColumnName)
             {
-                const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);
-                versionCondition                 = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
-                                                                  .op    = SqlOperator::Eq,
-                                                                  .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
-                versionExpectationText           = describeValueForConflictMessage(versionValue);
-                incrementColumns.emplace_back(columnDescriptor.columnName);
-                return;
+                using VersionMemberType = std::remove_cvref_t<decltype(row.*(columnDescriptor.memberPointer))>;
+                if constexpr (!std::is_integral_v<VersionMemberType> || std::is_same_v<VersionMemberType, bool>)
+                {
+                    throw Base::LogicException("Queryable: TableSchema<" + std::string(TableSchema<T>::kTableName) + "> 的 kVersionColumn（" + std::string(versionColumnName) +
+                                               "）必须声明成非布尔的整数列——UPDATE 由服务端对它自增加一，布尔与非整数列无法表达版本");
+                } else
+                {
+                    const DatabaseValue versionValue = Detail::toDatabaseValue(row.*(columnDescriptor.memberPointer), columnDescriptor.columnName);
+                    versionCondition                 = WhereCondition{.left  = FieldReference{.name = std::string(columnDescriptor.columnName)},
+                                                                      .op    = SqlOperator::Eq,
+                                                                      .right = makeParameterValue(row.*(columnDescriptor.memberPointer))};
+                    versionExpectationText           = describeValueForConflictMessage(versionValue);
+                    incrementColumns.emplace_back(columnDescriptor.columnName);
+                    return;
+                }
             }
 
             assignmentColumns.emplace_back(columnDescriptor.columnName);

@@ -71,7 +71,7 @@ namespace AsynGyanis::Database
     /**
      * @brief SQL 方言抽象基类
      *
-     * @details 每个受支持的数据库对应一个实现（当前只有 SqliteDialect）。
+     * @details 每个受支持的数据库对应一个实现（SQLite / MySQL / PostgreSQL 各一个）。
      *          实例由 DialectRegistry 按 DatabaseType 提供，调用方通过共享指针持有。
      *
      * @note 本类刻意不含任何数据成员：方言是"翻译规则"而不是"连接状态"，
@@ -285,8 +285,8 @@ namespace AsynGyanis::Database
          * @brief 获取在事务里立一个保存点的语句文本
          *
          * @details 保存点是「事务内部的可回退点」：`ROLLBACK TO SAVEPOINT` 只撤到那一点而不结束事务，
-         *          所以嵌套回滚不必再开第二个事务——两个引擎都不吃嵌套 BEGIN（MySQL 的 START TRANSACTION
-         *          会隐式提交上一笔，SQLite 直接报错），而再借一条连接开的更是另一笔事务。
+         *          所以嵌套回滚不必再开第二个事务——三种引擎都不吃嵌套 BEGIN（MySQL 的 START TRANSACTION
+         *          会隐式提交上一笔，SQLite 直接报错，PostgreSQL 只发 warning），而再借一条连接开的更是另一笔事务。
          *
          * @note 默认实现放在接口上而不是某个方言里：这三条语法 SQLite、MySQL 与 PostgreSQL 通用，
          *       收在这里就只有一份文本；名字一律经本引擎的 `quoteIdentifier()` 包起来（内部的同字符翻倍），

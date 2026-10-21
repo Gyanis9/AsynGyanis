@@ -1,11 +1,11 @@
 // 数据库类型契约单元测试：类型名映射、统一值类型名映射与连接配置默认值。
 // 覆盖场景：
-// - MapsEverySupportedTypeToItsOwnName / EverySupportedTypeHasACatalogEntry / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
-// - NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
-// - NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
-// - NamesDecimalValueAsDecimal / NamesTimestampValueAsTimestamp / NamesLocalDateTimeValueAsLocalDateTime
-// - KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
-// - DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / PostgresDefault* / RedisDefault* / SqliteDefault*
+// MapsEverySupportedTypeToItsOwnName / EverySupportedTypeHasACatalogEntry / ReturnsUnknownForOutOfRangeEnumValues / KeepsNamesDistinctAcrossSupportedTypes
+// NamesEmptyValueAsNull / NamesBooleanValueAsBool / NamesIntegerValueAsInt64 / NamesDoubleValueAsDouble
+// NamesStringValueAsString / NamesStringListValueAsList / NamesStringHashMapValueAsHash / NamesBinaryValueAsBytes
+// NamesDecimalValueAsDecimal / NamesTimestampValueAsTimestamp / NamesLocalDateTimeValueAsLocalDateTime
+// KeepsNamesDistinctAcrossAllAlternatives / GivesEveryAlternativeTheDocumentedTypeName
+// DefaultConstructionLeavesEveryFieldUnset / MySqlDefault* / PostgresDefault* / RedisDefault* / SqliteDefault*
 // 覆盖 Common 层三个纯数据契约：databaseTypeName 把枚举映射成可读名称（越界取值退化成 "Unknown"）；
 // databaseValueTypeName 给出 DatabaseValue 每个备选各自的类型名（备选清单只写在 makeValueTypeNameTable 一处）；
 // ConnectionConfig 默认构造全空，

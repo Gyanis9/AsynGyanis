@@ -72,6 +72,16 @@ namespace AsynGyanis::Database
         MySqlStreamingStatementResult &operator=(MySqlStreamingStatementResult &&)      = delete;
 
         /**
+         * @brief 接管 mysql_stmt_bind_result 使用的绑定数组
+         * @details 客户端库只保存数组首地址，数组必须活到语句关闭或重新绑定为止。这里用
+         *          shared_ptr<void> 持有它，公开头因此不必暴露 mysql.h 的 C 类型；连接在
+         *          构造之后、绑定之前调用本方法。
+         * @param bindings 指向绑定数组首元素的共享所有权（别名构造，控制块持有真实容器）
+         * @return void* 绑定数组首地址，交给 mysql_stmt_bind_result
+         */
+        [[nodiscard]] void *adoptResultBindings(std::shared_ptr<void> bindings) noexcept;
+
+        /**
          * @brief 取下一行并当场按列转换成值
          * @details 重写 DatabaseResult::next()：mysql_stmt_fetch 一次取一行（预取窗口由连接设置），
          *          本行当场逐列转换；超缓冲的列就地 mysql_stmt_fetch_column 补取（绝不让截断值过界）。
@@ -167,6 +177,8 @@ namespace AsynGyanis::Database
 
         MYSQL_STMT      *m_statement{nullptr}; ///< 借用的语句句柄（归连接的语句缓存所有）
         MySqlConnection *m_owner{nullptr};     ///< 产出本结果的连接（收口时回去对账）
+
+        std::shared_ptr<void> m_resultBindingsOwner; ///< 绑定数组的共享所有权；随结果集活到语句关闭或重绑
 
         std::string m_commandText; ///< 命令文本副本：清不干净时按键弃掉缓存里的那条语句
 

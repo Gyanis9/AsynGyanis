@@ -312,7 +312,8 @@ namespace AsynGyanis::Database
     std::unique_ptr<PostgresResult> PostgresResult::forStreaming(PGconn *const connectionHandle, PostgresConnection *const owner, PGresult *const firstRowResult)
     {
         // 与 MySqlResult::forStreaming 同一形状：new 表达式写在成员函数里，私有构造的访问权
-        // 只落在这一类；失败路径的所有权仍在调用方（它带着 ResultReleaser 守卫）
+        // 只落在这一类。首块所有权在构造内接手；构造内的分配失败按 noexcept 语义终止进程，
+        // 调用方不另设守卫
         return std::unique_ptr<PostgresResult>(new PostgresResult(connectionHandle, owner, firstRowResult, StreamingTag{}));
     }
 
@@ -540,6 +541,21 @@ namespace AsynGyanis::Database
         }
 
         return getValue(*index);
+    }
+
+    DatabaseValue PostgresResult::takeValue(const size_t index)
+    {
+        if (m_currentRow == nullptr || index >= m_currentRow->size())
+        {
+            return std::monostate{};
+        }
+
+        // 流式的当前行是每块覆写的缓冲，搬走即可；预读的当前行下标是「下一次 next() 的位置减一」
+        if (m_isStreaming)
+        {
+            return std::move(m_streamingRow[index]);
+        }
+        return std::move(m_rows[m_nextRowIndex - 1U][index]);
     }
 
     std::vector<std::string> PostgresResult::columnNames() const

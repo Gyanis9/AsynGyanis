@@ -26,7 +26,7 @@ namespace AsynGyanis::Database
     /**
      * @brief PostgreSQL 查询结果集
      *
-     * @details 封装 PQexec / PQexecParams 交出的 PGresult，把 PostgreSQL 的列类型映射到
+     * @details 封装 PQexecParams / PQexecPrepared 交出的 PGresult，把 PostgreSQL 的列类型映射到
      *          DatabaseResult 的统一接口。本对象持有 PGresult 的唯一所有权，析构时 PQclear
      *          一次性回收行缓冲与列元数据。
      *
@@ -34,17 +34,17 @@ namespace AsynGyanis::Database
      * PGresult 里的行数据虽然已经由 libpq 完整取回客户端内存（不是游标），但它的每个取值
      * 都只能通过 PQgetvalue / PQfname 这类句柄接口拿到，也就是说「读一行」这件事始终牵着
      * 一个第三方句柄。构造时把列名、每格已转好的 DatabaseValue 与影响行数全部快照下来之后：
-     * - 结果集不持有连接，也不依赖语句句柄，可以比连接对象活得更久（与 MySqlStatementResult
+     * 结果集不持有连接，也不依赖语句句柄，可以比连接对象活得更久（与 MySqlStatementResult
      *   在参数化路径上的取舍一致，两条路径的结果集语义因此统一）；
-     * - 全部 const 取值接口都不再触碰 libpq，越界、NULL 之类的判定完全由本类的内存快照决定，
+     * 全部 const 取值接口都不再触碰 libpq，越界、NULL 之类的判定完全由本类的内存快照决定，
      *   不存在「句柄先被释放、读取时才炸」的时序陷阱；
-     * - OID 到 DatabaseValue 的解析只在构造时做一遍，不随调用方的取值次数重复解析。
+     * OID 到 DatabaseValue 的解析只在构造时做一遍，不随调用方的取值次数重复解析。
      * 代价与大结果集的取舍：整份数据等额占用内存（与 MySQL 驱动的 mysql_store_result 预读同源）。
      *
      * 两种数据来源（与 MySqlResult 的预读/流式同形）
-     * - 预读（PQexecParams，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
+     * 预读（PQexecParams / PQexecPrepared，公开构造那一条）：整份行数据在构造时读进内存快照，行数与列数
      *   定死，可反复遍历、可 reset 重扫；代价是大结果集等额占用内存；
-     * - 流式（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
+     * 流式（PQsetSingleRowMode，见 forStreaming()）：行留在服务端，每调用一次 next() 才取
      *   一行（libpq 的单行模式把每次 PQgetResult 变成一块一行的结果），客户端内存只装当前
      *   这一行。列元数据在首块到达时就绪；行数按基类契约回 0（含义是「无法预先知道」）；
      *   不可重扫。流式结果必须比产出它的连接短命，且在它读完或析构之前那条连接不能再执行
@@ -204,6 +204,16 @@ namespace AsynGyanis::Database
         [[nodiscard]] DatabaseValue getValue(std::string_view name) const override;
 
         /**
+         * @brief 读出指定列并把该格载荷的所有权交给调用方
+         * @details 重写 DatabaseResult::takeValue()：预读快照与流式行缓冲都已经物化成 DatabaseValue，
+         *          逐格映射时把文本/二进制缓冲直接搬走，省掉一次整串拷贝与它的堆分配。
+         *          取用后同一格再读会得到搬空后的空值；同一行内每格只取一次是 ORM 映射的既有前提。
+         * @param index 列索引，从 0 开始
+         * @return DatabaseValue 列值；无当前行或越界时回 monostate
+         */
+        [[nodiscard]] DatabaseValue takeValue(size_t index) override;
+
+        /**
          * @brief 获取全部列名
          * @details 重写 DatabaseResult::columnNames()：返回构造时快照的列名列表副本。列表在构造时
          *          已按列序补齐（缺名列补空串占位），因此长度恒等于 columnCount()，
@@ -255,10 +265,10 @@ namespace AsynGyanis::Database
          *          真机实测，扩展协议下的行结果不带 PQcmdStatus 标签（空串），结果集自己分不出
          *          「写语句带回的键」与「SELECT 的第一格」，而只有非 SELECT 的语句才可能既是行结果又是写回执。
          *          三种情形各自如实回 0 并说明原因：
-         *          - 本次执行的不是写语句（普通 SELECT 等）：那一行第一列是查询数据，
+         * 本次执行的不是写语句（普通 SELECT 等）：那一行第一列是查询数据，
          *            把它当生成键交回就是编造一个含义；刻意不看。
-         *          - 写语句没有 RETURNING（回执是 0 行 0 列）：本条语句没有交回生成键。
-         *          - 带回的值不是整数文本（NULL、被视图改写的类型）：写进 lastError() 点名原文。
+         * 写语句没有 RETURNING（回执是 0 行 0 列）：本条语句没有交回生成键。
+         * 带回的值不是整数文本（NULL、被视图改写的类型）：写进 lastError() 点名原文。
          *          流式结果恒为 0：单行模式只为「留在服务端的大结果集」而开，写语句的 RETURNING 走预读。
          * @return std::int64_t 生成的主键；没有可交回的生成键时为 0（含义见基类约定）
          */
