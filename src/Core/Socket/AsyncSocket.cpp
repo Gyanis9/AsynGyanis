@@ -20,19 +20,6 @@ namespace AsynGyanis::Core
     namespace
     {
         /**
-         * @brief 取最近一次 socket 系统调用的失败码
-         * @details winsock 失败不写 errno，而 SystemException 的隐式错误码构造函数读的正是 errno，
-         *          于是文本里带的是与本次失败无关的陈旧值（实测发送失败报成「[112] There is not
-         *          enough space on the disk」），真正的失败码反而看不到：socket 调用失败必须显式传码。
-         * @return std::error_code socket 空间的错误码（描述文本由 std::system_category 提供）
-         */
-        std::error_code lastSocketError()
-        {
-            // 读取时机必须在失败之后、其它可能覆盖它的调用之前
-            return {Platform::PlatformError::lastSocketErrorCode(), std::system_category()};
-        }
-
-        /**
          * @brief 本端套接字被关闭时用于收尾等待者的错误码
          * @details 这类失败由框架自己合成，没有底层系统调用可读：映射成本端中止连接，
          *          比让 SystemException 去读一个不存在的 errno 更能说明发生了什么
@@ -64,7 +51,7 @@ namespace AsynGyanis::Core
             std::array<char, kDiscardChunkBytes> scratchBuffer;
             for (int roundCount = 0; roundCount < kDiscardRoundLimit; ++roundCount)
             {
-                const ssize_t receivedBytes = ::recv(fileDescriptor, scratchBuffer.data(), static_cast<int>(scratchBuffer.size()), MSG_DONTWAIT);
+                const ssize_t receivedBytes = Platform::Socket::receive(fileDescriptor, scratchBuffer.data(), scratchBuffer.size(), MSG_DONTWAIT);
                 // 0 是对端已收口、-1 配 WOULD_BLOCK 是队列已空、配其它错误码是连接已不可用：
                 // 三种情况都没有需要继续丢弃的字节
                 if (receivedBytes <= 0)
@@ -126,26 +113,12 @@ namespace AsynGyanis::Core
 
     AsyncSocket AsyncSocket::create(EventLoop &loop, const int domain, const int type)
     {
-#if ASYN_PLATFORM_WIN32
-        // Windows 的 SOCKET 是无符号句柄类型：显式窄化成 int 是既有的描述符约定（全仓按 int 传递），
-        // 失败值 INVALID_SOCKET 恰好变成 -1，与下面的有效性判定对齐。POSIX 用 SOCK_CLOEXEC 在建好时
-        // 就断掉继承，Windows 的 ::socket 没有等价标志位，只能建完取消继承位——监听套接字与已建立的
-        // 连接都不该随库外消费者的 CreateProcess(bInheritHandles=TRUE) 传下去
-        const SOCKET socketHandle   = ::socket(domain, type, 0);
-        const int    fileDescriptor = static_cast<int>(socketHandle);
-        static_cast<void>(Platform::FileDescriptor::markNonInheritable(fileDescriptor));
-#else
-        const int fileDescriptor = ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-#endif
+        // 非阻塞与不可继承的差异都由 Platform::Socket::create 收口
+        const int fileDescriptor = Platform::Socket::create(domain, type);
         if (fileDescriptor < 0)
         {
-            throw Base::SystemException("创建套接字失败", lastSocketError());
+            throw Base::SystemException("创建套接字失败", Platform::Socket::lastError());
         }
-
-#if ASYN_PLATFORM_WIN32
-        // Windows 没有 SOCK_NONBLOCK，只能在创建后补设非阻塞
-        Platform::FileDescriptor::setNonBlocking(fileDescriptor);
-#endif
 
         if (type == SOCK_STREAM)
         {
@@ -160,7 +133,7 @@ namespace AsynGyanis::Core
     {
         // 统一开启地址复用：服务重启时上一代连接的 TIME_WAIT 会占住端口
         [[maybe_unused]] const bool isReuseAddressSet = Platform::Socket::setReuseAddress(m_fileDescriptor);
-        return ::bind(m_fileDescriptor, address, addressLength) == 0;
+        return Platform::Socket::bind(m_fileDescriptor, address, addressLength);
     }
 
     bool AsyncSocket::bind(const InetAddress &address) const
@@ -170,7 +143,7 @@ namespace AsynGyanis::Core
 
     bool AsyncSocket::listen(const int backlog) const
     {
-        if (::listen(m_fileDescriptor, backlog) != 0)
+        if (!Platform::Socket::listen(m_fileDescriptor, backlog))
         {
             return false;
         }
@@ -192,7 +165,7 @@ namespace AsynGyanis::Core
         // ConnectEx 的 OVERLAPPED 归后端所有，所以先建好注册对象再投递。
         if (ensureWatcher() == nullptr)
         {
-            throw Base::SystemException("发起连接失败：套接字已无效", lastSocketError());
+            throw Base::SystemException("发起连接失败：套接字已无效", Platform::Socket::lastError());
         }
 
         int immediateError = 0;
@@ -219,12 +192,13 @@ namespace AsynGyanis::Core
         }
         co_return;
 #else
-        if (const int result = ::connect(m_fileDescriptor, address, addressLength); result == 0)
+        if (Platform::Socket::connect(m_fileDescriptor, address, addressLength))
         {
             co_return;
-        } else if (Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kInProgress)
+        }
+        if (Platform::PlatformError::lastSocketErrorCode() != Platform::PlatformError::kInProgress)
         {
-            throw Base::SystemException("发起连接失败", lastSocketError());
+            throw Base::SystemException("发起连接失败", Platform::Socket::lastError());
         }
 
         // 非阻塞 connect 的完成由可写事件通知；等待失败（套接字被关闭）时不再重试
@@ -267,7 +241,7 @@ namespace AsynGyanis::Core
 
         while (true)
         {
-            const ssize_t receivedBytes = ::recv(m_fileDescriptor, static_cast<char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            const ssize_t receivedBytes = Platform::Socket::receive(m_fileDescriptor, buffer, length, MSG_NOSIGNAL);
             if (receivedBytes > 0)
                 co_return receivedBytes;
             if (receivedBytes == 0)
@@ -283,7 +257,7 @@ namespace AsynGyanis::Core
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("接收数据失败", lastSocketError());
+            throw Base::SystemException("接收数据失败", Platform::Socket::lastError());
         }
     }
 
@@ -304,7 +278,7 @@ namespace AsynGyanis::Core
 
         while (true)
         {
-            const ssize_t sentBytes = ::send(m_fileDescriptor, static_cast<const char *>(buffer), static_cast<int>(length), MSG_NOSIGNAL);
+            const ssize_t sentBytes = Platform::Socket::send(m_fileDescriptor, buffer, length, MSG_NOSIGNAL);
             if (sentBytes > 0)
                 co_return sentBytes;
             // send 返回 0 说明对端已关闭：这条路径下 errno 未被设置，
@@ -322,7 +296,7 @@ namespace AsynGyanis::Core
             }
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kInterrupted)
                 continue;
-            throw Base::SystemException("发送数据失败", lastSocketError());
+            throw Base::SystemException("发送数据失败", Platform::Socket::lastError());
         }
     }
 
@@ -381,7 +355,7 @@ namespace AsynGyanis::Core
             {
                 continue;
             }
-            throw Base::SystemException("聚合发送数据失败", lastSocketError());
+            throw Base::SystemException("聚合发送数据失败", Platform::Socket::lastError());
         }
         co_return static_cast<ssize_t>(cursor.sentLength());
     }
@@ -458,7 +432,7 @@ namespace AsynGyanis::Core
             {
                 continue;
             }
-            throw Base::SystemException("零拷贝发送失败", lastSocketError());
+            throw Base::SystemException("零拷贝发送失败", Platform::Socket::lastError());
         }
         co_return static_cast<ssize_t>(length);
     }
@@ -500,13 +474,13 @@ namespace AsynGyanis::Core
             if (!m_isListening)
             {
                 // 只关发送半轴：FIN 当场发出，随后清理入站队列期间对端仍能读完我们已经写出去的响应
-                ::shutdown(m_fileDescriptor, SHUT_WR);
+                Platform::Socket::shutdown(m_fileDescriptor, SHUT_WR);
 
                 // 接收队列里还有本端不再会读的字节时关闭，栈会改发 RST 而不是 FIN，对端把自己已收到、
                 // 还没来得及读的响应一并丢掉（管线化时第二个请求最容易踩到）；先把它们丢干净
                 discardUnreadInboundData(m_fileDescriptor);
 
-                ::shutdown(m_fileDescriptor, SHUT_RDWR);
+                Platform::Socket::shutdown(m_fileDescriptor, SHUT_RDWR);
             }
             Platform::FileDescriptor::close(m_fileDescriptor);
             m_fileDescriptor = -1;
@@ -565,10 +539,10 @@ namespace AsynGyanis::Core
 
         sockaddr_storage address{};
         socklen_t        addressLength = sizeof(address);
-        if (getpeername(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
+        if (!Platform::Socket::peerAddress(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength))
         {
-            // winsock 失败不写 errno，本文件的 lastSocketError() 就是为这条规矩准备的
-            throw Base::SystemException("获取对端地址失败", lastSocketError());
+            // winsock 失败不写 errno，错误码统一由 Platform::Socket::lastError() 取
+            throw Base::SystemException("获取对端地址失败", Platform::Socket::lastError());
         }
         return InetAddress(address, addressLength);
     }
@@ -582,9 +556,9 @@ namespace AsynGyanis::Core
     {
         sockaddr_storage address{};
         socklen_t        addressLength = sizeof(address);
-        if (getsockname(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
+        if (!Platform::Socket::localAddress(m_fileDescriptor, reinterpret_cast<sockaddr *>(&address), &addressLength))
         {
-            throw Base::SystemException("获取本地地址失败", lastSocketError());
+            throw Base::SystemException("获取本地地址失败", Platform::Socket::lastError());
         }
         return InetAddress(address, addressLength);
     }
