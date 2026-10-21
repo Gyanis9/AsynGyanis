@@ -121,6 +121,55 @@ def test_boundary(root: Path) -> None:
     expect("boundary 收紧后重录", result, 0)
 
 
+def test_duplicates(root: Path) -> None:
+    make_five_modules(root)
+    baseline = root / "baseline.json"
+    body = """int sharedWork(int value)
+{
+    int total = value;
+    total += 1;
+    total *= 2;
+    total ^= value;
+    total += 7;
+    if (total > 10)
+    {
+        total -= 3;
+    }
+    return total;
+}
+"""
+    write(root / "src" / "Core" / "a.cpp", body)
+    write(root / "src" / "Net" / "b.cpp", body)
+
+    result = run_script("check-duplicate-code.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("duplicates 缺基线", result, 2, "基线")
+
+    result = run_script("check-duplicate-code.py", root, "--baseline", str(baseline), "--min-files", "1", "--write")
+    expect("duplicates 重录", result, 0)
+
+    result = run_script("check-duplicate-code.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("duplicates 基线同解", result, 0, "DUPLICATE_CODE_GATE=OK")
+
+    second_body = """int anotherWork(int value)
+{
+    int result = value;
+    result -= 4;
+    result /= 2;
+    result <<= 1;
+    result |= value;
+    while (result < 0)
+    {
+        result += 9;
+    }
+    return result;
+}
+"""
+    write(root / "src" / "Base" / "c.cpp", second_body)
+    write(root / "src" / "Database" / "d.cpp", second_body)
+    result = run_script("check-duplicate-code.py", root, "--baseline", str(baseline), "--min-files", "1")
+    expect("duplicates 新增簇", result, 1, "新增")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface"))
@@ -134,6 +183,8 @@ def main() -> int:
             test_layering(root / "layering")
         if args.only in (None, "boundary"):
             test_boundary(root / "boundary")
+        if args.only in (None, "duplicates"):
+            test_duplicates(root / "duplicates")
         print("ARCH_GATE_SELFTEST=OK")
         return 0
     except AssertionError as error:

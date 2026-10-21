@@ -1,0 +1,392 @@
+{
+  "version": 1,
+  "clusters": [
+    {
+      "hash": "119461545c1f6444",
+      "files": [
+        "src/Net/Http/HttpSession.h",
+        "src/Net/Http2/Http2Session.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "1a88e1018ff31433",
+      "files": [
+        "src/Database/Postgres/PostgresConnection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "2df4dc5b68073439",
+      "files": [
+        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
+        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "2e4ca68b03f40d9b",
+      "files": [
+        "src/Net/Http/HttpSession.h",
+        "src/Net/Http2/Http2Session.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "43986b10e7020fa6",
+      "files": [
+        "src/Net/Http3/Qpack.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "4a51343374793a33",
+      "files": [
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "51392a68738c74be",
+      "files": [
+        "src/Database/Dialect/MySqlDialect.cpp",
+        "src/Database/Dialect/PostgresDialect.cpp",
+        "src/Database/Dialect/SqliteDialect.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "549091cede683f3d",
+      "files": [
+        "src/Net/Http2/Http2Connection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "55aaffe27c59e2b1",
+      "files": [
+        "src/Database/Dialect/MySqlDialect.cpp",
+        "src/Database/Dialect/SqliteDialect.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "605c894e35aeb7ee",
+      "files": [
+        "src/Net/Http/Client/HttpClient.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "66112194a439eeca",
+      "files": [
+        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
+        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "6d2039a39ce5ec40",
+      "files": [
+        "src/Database/Postgres/PostgresConnection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "72998dd48a54c331",
+      "files": [
+        "src/Net/Http2/Http2Connection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "73f85eba37e17544",
+      "files": [
+        "src/Core/Process/GracefulShutdown.cpp",
+        "src/Core/Process/ReloadSignal.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "78bd940711935c5f",
+      "files": [
+        "src/Database/MySql/MySqlConnection.cpp",
+        "src/Database/MySql/MySqlResult.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "7bb0963eaa96c382",
+      "files": [
+        "src/Database/Dialect/MySqlDialect.cpp",
+        "src/Database/Dialect/PostgresDialect.cpp",
+        "src/Database/Dialect/SqlDialect.h"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "7c6df11ac4f5edc7",
+      "files": [
+        "src/Net/Http/Middleware.h"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "811893edda5e69f1",
+      "files": [
+        "src/Net/Http/SseStream.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "8163158fbfa532f4",
+      "files": [
+        "src/Net/Http/Client/HttpProxyPumpedTls.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "81ad241bdf99fe32",
+      "files": [
+        "src/Net/Http/Client/HttpResponseParser.cpp",
+        "src/Net/Http/HttpHeaderRules.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "84f121c7db51e9f8",
+      "files": [
+        "src/Net/Http2/Http2Session.h",
+        "src/Net/Http3/Http3Session.h"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "85bdaaee272f1427",
+      "files": [
+        "src/Platform/System/ProcessInfo.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "8783d66062f67ce3",
+      "files": [
+        "src/Database/MySql/MySqlConnection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "87d8ae5caa2ea9fe",
+      "files": [
+        "src/Database/Common/ConnectionConfig.h",
+        "src/Database/Postgres/PostgresConnection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "8d5242626c58474c",
+      "files": [
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "916124f7f975e06e",
+      "files": [
+        "src/Core/Socket/AsyncSocket.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "989f899ae9823a08",
+      "files": [
+        "src/Net/Proxy/ProxyProtocol.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "9fec7a73d3984b3a",
+      "files": [
+        "src/Database/Dialect/MySqlDialect.cpp",
+        "src/Database/Dialect/SqliteDialect.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "a69b5946b99d38cf",
+      "files": [
+        "src/Net/Http/HttpServerConfig.cpp",
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 4
+    },
+    {
+      "hash": "ac9eaa52649d3d73",
+      "files": [
+        "src/Net/Http/Client/HttpClient.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "ad3f1b4cc0a67cfc",
+      "files": [
+        "src/Net/Logging/OtlpLogSink.cpp",
+        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
+        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "ad5165684b2547e4",
+      "files": [
+        "src/Database/Sqlite/SqliteConnection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "ae0f22588fffe2a8",
+      "files": [
+        "src/Core/Process/GracefulShutdown.cpp",
+        "src/Core/Process/ReloadSignal.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "ae3acbb288971679",
+      "files": [
+        "src/Net/WebSocket/WebSocketClient.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "aeac92f35ff172fd",
+      "files": [
+        "src/Net/Http/HttpServer.cpp",
+        "src/Net/Http/HttpsServer.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "b94811dfb80a3bae",
+      "files": [
+        "src/Core/Coroutine/Task.h"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "ba1525fc8d91fb9c",
+      "files": [
+        "src/Net/Http2/Http2Connection.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "be32a4dee6a498fe",
+      "files": [
+        "src/Net/Logging/OtlpLogSink.cpp",
+        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "bf236e8520da322d",
+      "files": [
+        "src/Database/Queryable/SchemaMigrator.h"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "c076e95730b22e8e",
+      "files": [
+        "src/Core/Process/GracefulShutdown.cpp",
+        "src/Core/Process/ReloadSignal.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "c2d2c56921b7ef10",
+      "files": [
+        "src/Database/Dialect/PostgresDialect.cpp",
+        "src/Database/Dialect/SqliteDialect.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "c73c82b9e3f21819",
+      "files": [
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "c945262d447cc069",
+      "files": [
+        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
+        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "cb86e5570f0ff6f9",
+      "files": [
+        "src/Net/Http/HttpServerConfig.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "e26a4b86a1daa51b",
+      "files": [
+        "src/Net/Http2/Http2Session.cpp",
+        "src/Net/Http3/Http3Session.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "f49a44bae8b4f773",
+      "files": [
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "f595b777b2a1bd3e",
+      "files": [
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
+      ],
+      "occurrences": 3
+    },
+    {
+      "hash": "f99eddc5c37d32f7",
+      "files": [
+        "src/Net/WebSocket/WebSocketHandshake.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "fc075eaaad3dc5df",
+      "files": [
+        "src/Net/Metrics/OtlpMetricsJson.cpp"
+      ],
+      "occurrences": 2
+    },
+    {
+      "hash": "fd91ccf0cbc214c9",
+      "files": [
+        "src/Database/Postgres/PostgresConnection.cpp"
+      ],
+      "occurrences": 4
+    }
+  ]
+}
