@@ -1,8 +1,8 @@
 #if !ASYN_PLATFORM_WIN32
 
-#include "Core/EventLoop/Uring.h"
+#include "Platform/IO/Uring.h"
 
-#include "Base/Exception/SystemException.h"
+#include "Platform/System/PlatformError.h"
 
 #include <linux/io_uring.h>
 #include <poll.h>
@@ -14,12 +14,24 @@
 #include <cstring>
 #include <fcntl.h>
 #include <new>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     namespace
     {
+        /**
+         * @brief 把最近一次系统调用失败抛成 std::system_error
+         * @param action 失败动作的中文描述
+         */
+        [[noreturn]] void throwSystemError(const std::string_view action)
+        {
+            throw std::system_error(std::error_code(PlatformError::lastErrorCode(), std::system_category()), std::string(action));
+        }
+
         /// 环形队列条目数：与 Epoll 侧的事件数组默认容量同档
         constexpr unsigned kRingEntryCount = 1024;
 
@@ -48,7 +60,7 @@ namespace AsynGyanis::Core
         const long      ringFileDescriptor = ::syscall(__NR_io_uring_setup, kRingEntryCount, &parameters);
         if (ringFileDescriptor < 0)
         {
-            throw Base::SystemException("io_uring_setup 失败（内核可能不支持 io_uring 或被禁用）");
+            throwSystemError("io_uring_setup 失败（内核可能不支持 io_uring 或被禁用）");
         }
         m_ringFileDescriptor = static_cast<int>(ringFileDescriptor);
 
@@ -56,7 +68,7 @@ namespace AsynGyanis::Core
         if (::fcntl(m_ringFileDescriptor, F_SETFD, FD_CLOEXEC) != 0)
         {
             destroy();
-            throw Base::SystemException("io_uring 环形描述符无法设置 FD_CLOEXEC（子进程会继承这条环）");
+            throwSystemError("io_uring 环形描述符无法设置 FD_CLOEXEC（子进程会继承这条环）");
         }
 
         const std::size_t submissionRingSize = parameters.sq_off.array + parameters.sq_entries * sizeof(unsigned);
@@ -70,7 +82,7 @@ namespace AsynGyanis::Core
             if (mapping == MAP_FAILED)
             {
                 destroy();
-                throw Base::SystemException("io_uring 环形队列映射失败（SQ/CQ 合并段）");
+                throwSystemError("io_uring 环形队列映射失败（SQ/CQ 合并段）");
             }
             m_submissionRingMapping     = mapping;
             m_submissionRingMappingSize = combinedSize;
@@ -82,7 +94,7 @@ namespace AsynGyanis::Core
             if (submissionMapping == MAP_FAILED)
             {
                 destroy();
-                throw Base::SystemException("io_uring 提交队列映射失败");
+                throwSystemError("io_uring 提交队列映射失败");
             }
             m_submissionRingMapping     = submissionMapping;
             m_submissionRingMappingSize = submissionRingSize;
@@ -91,7 +103,7 @@ namespace AsynGyanis::Core
             if (completionMapping == MAP_FAILED)
             {
                 destroy();
-                throw Base::SystemException("io_uring 完成队列映射失败");
+                throwSystemError("io_uring 完成队列映射失败");
             }
             m_completionRingMapping     = completionMapping;
             m_completionRingMappingSize = completionRingSize;
@@ -103,7 +115,7 @@ namespace AsynGyanis::Core
         if (submissionEntriesMapping == MAP_FAILED)
         {
             destroy();
-            throw Base::SystemException("io_uring 提交项数组映射失败");
+            throwSystemError("io_uring 提交项数组映射失败");
         }
         m_submissionEntriesMapping = submissionEntriesMapping;
 
@@ -128,7 +140,7 @@ namespace AsynGyanis::Core
         if (m_timeoutValue == nullptr)
         {
             destroy();
-            throw Base::SystemException("io_uring 超时时值分配失败");
+            throwSystemError("io_uring 超时时值分配失败");
         }
 
         // 落地缓冲一次定容：此后只 clear 不扩容，交出去的视图不会因下一次 wait() 而悬垂
@@ -749,7 +761,7 @@ namespace AsynGyanis::Core
         // 两件事一起担保：睡前不留悬着的 SQE，且 wait(0) 的「本轮能收的都收掉」成立
         if (!publishUntilQuiet())
         {
-            throw Base::SystemException("io_uring 提交失败");
+            throwSystemError("io_uring 提交失败");
         }
 
         if (!m_readyEvents.empty())
@@ -769,11 +781,11 @@ namespace AsynGyanis::Core
             // 不如与同一函数里「提交失败」的既有口径一致地报出来
             if (!submitTimeout(timeoutMs))
             {
-                throw Base::SystemException("io_uring 提交超时操作失败（提交队列拿不到位置）：本次等待无法设定时限，宁可失败也不无限睡");
+                throwSystemError("io_uring 提交超时操作失败（提交队列拿不到位置）：本次等待无法设定时限，宁可失败也不无限睡");
             }
             if (!flushSubmissions())
             {
-                throw Base::SystemException("io_uring 提交超时操作失败");
+                throwSystemError("io_uring 提交超时操作失败");
             }
         }
 
@@ -787,7 +799,7 @@ namespace AsynGyanis::Core
                 {
                     continue;
                 }
-                throw Base::SystemException("io_uring 等待完成失败");
+                throwSystemError("io_uring 等待完成失败");
             }
             break;
         }
@@ -796,10 +808,10 @@ namespace AsynGyanis::Core
         // handleCompletion 会就地按新掩码重投，而调用方完全可能马上又进到无限等待里
         if (!publishUntilQuiet())
         {
-            throw Base::SystemException("io_uring 提交失败");
+            throwSystemError("io_uring 提交失败");
         }
         return {m_readyEvents.data(), m_readyEvents.size()};
     }
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform
 
 #endif

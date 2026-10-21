@@ -10,18 +10,20 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Core/EventLoop/EventBackendContract.h"
+#include "Platform/IO/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
 
-#include "Core/EventLoop/Iocp.h"
+#include "Platform/IO/Iocp.h"
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief Windows 上的 Epoll 就是完成端口后端
@@ -35,13 +37,13 @@ namespace AsynGyanis::Core
 
     // 契约复检：走这一步的平台也把概念钉一次，本头文件在每个平台分支里都自己站得住
     static_assert(EventBackend<Epoll>);
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform
 
 #elif defined(ASYN_WITH_IO_URING)
 
-#include "Core/EventLoop/Uring.h"
+#include "Platform/IO/Uring.h"
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief 开启 ASYN_WITH_IO_URING 时的 Linux 后端：io_uring
@@ -53,21 +55,21 @@ namespace AsynGyanis::Core
 
     // 契约复检：走这一步的平台也把概念钉一次，本头文件在每个平台分支里都自己站得住
     static_assert(EventBackend<Epoll>);
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform
 
 #else
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief epoll 实例 RAII 封装
      */
-    class ASYN_CORE_API Epoll
+    class ASYN_PLATFORM_API Epoll
     {
     public:
         /**
          * @brief 创建 epoll 实例
-         * @throws Base::SystemException epoll_create1 失败（文件描述符耗尽，或内核不允许创建 epoll
+         * @throws std::system_error epoll_create1 失败（文件描述符耗尽，或内核不允许创建 epoll
          *         实例）。没有可用实例的循环无法等待任何事件，因此当场抛而不是留下一个空壳对象
          */
         Epoll();
@@ -115,7 +117,7 @@ namespace AsynGyanis::Core
          * @param timeoutMs 超时毫秒数，-1 表示无限等待，0 表示立即返回（非阻塞）
          * @return 就绪事件列表的视图（std::span<epoll_event>），
          *         长度为 0 表示超时或无事件，长度 >0 表示有事件发生
-         * @throws Base::SystemException epoll_wait 失败（句柄已销毁或内核报错）。EINTR 不算失败：
+         * @throws std::system_error epoll_wait 失败（句柄已销毁或内核报错）。EINTR 不算失败：
          *         它返回空视图，让调用方回到循环开头重新检查停止请求
          * @warning 视图指向本对象的固定容量缓冲（每次取满 kMaximumEventCount 条为止）。
          *          下一次 wait() 会覆盖它的内容，因此在持有视图期间不得再进入 wait()，
@@ -132,6 +134,22 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
+        /**
+         * @brief 安装诊断回调（epoll 没有异步探针，保留空实现以统一接口）
+         * @param handler 诊断文本的接收者
+         */
+        void setDiagnosticHandler(std::function<void(std::string_view)> handler) noexcept
+        {
+            static_cast<void>(handler);
+        }
+
+        /**
+         * @brief 清空诊断回调（epoll 的空实现）
+         */
+        void clearDiagnosticHandler() noexcept
+        {
+        }
+
     private:
         /**
          * @brief 关闭 epoll 文件描述符并重置状态
@@ -145,6 +163,6 @@ namespace AsynGyanis::Core
 
     // 契约复检：Linux epoll 分支自己的编译期判据（另两个分支在各自的后端头里钉同一个概念）
     static_assert(EventBackend<Epoll>);
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform
 
 #endif

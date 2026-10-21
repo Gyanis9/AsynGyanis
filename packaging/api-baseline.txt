@@ -1,8 +1,8 @@
 # AsynGyanis 公开接口面基线：由 scripts/check-api-baseline.py --write 生成，请勿手改
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
-# version=1.0.0
-# headers=303 entries=8887
+# version=2.0.0
+# headers=303 entries=8895
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -902,33 +902,6 @@ src/Core/EventLoop/ConnectionDistributor.h	std::vector<Worker> m_workers
 src/Core/EventLoop/ConnectionDistributor.h	struct Worker
 src/Core/EventLoop/ConnectionDistributor.h	using Adopter = std::function<void(int fileDescriptor)>
 src/Core/EventLoop/ConnectionDistributor.h	void addWorker(EventLoop &loop, Adopter adopter)
-src/Core/EventLoop/Epoll.h	Epoll &operator=(Epoll &&) noexcept
-src/Core/EventLoop/Epoll.h	Epoll &operator=(const Epoll &) = delete
-src/Core/EventLoop/Epoll.h	Epoll()
-src/Core/EventLoop/Epoll.h	Epoll(Epoll &&) noexcept
-src/Core/EventLoop/Epoll.h	Epoll(const Epoll &) = delete
-src/Core/EventLoop/Epoll.h	Platform::EpollHandle m_fileDescriptor
-src/Core/EventLoop/Epoll.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
-src/Core/EventLoop/Epoll.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
-src/Core/EventLoop/Epoll.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
-src/Core/EventLoop/Epoll.h	bool delFileDescriptor(int fileDescriptor)
-src/Core/EventLoop/Epoll.h	bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
-src/Core/EventLoop/Epoll.h	class ASYN_CORE_API Epoll
-src/Core/EventLoop/Epoll.h	namespace AsynGyanis::Core
-src/Core/EventLoop/Epoll.h	namespace AsynGyanis::Core
-src/Core/EventLoop/Epoll.h	namespace AsynGyanis::Core
-src/Core/EventLoop/Epoll.h	static constexpr int kMaximumEventCount = 1024
-src/Core/EventLoop/Epoll.h	static_assert(EventBackend<Epoll>)
-src/Core/EventLoop/Epoll.h	static_assert(EventBackend<Epoll>)
-src/Core/EventLoop/Epoll.h	static_assert(EventBackend<Epoll>)
-src/Core/EventLoop/Epoll.h	std::vector<epoll_event> m_events
-src/Core/EventLoop/Epoll.h	using Epoll = Iocp
-src/Core/EventLoop/Epoll.h	using Epoll = Uring
-src/Core/EventLoop/Epoll.h	void destroy()
-src/Core/EventLoop/Epoll.h	~Epoll()
-src/Core/EventLoop/EventBackendContract.h	namespace AsynGyanis::Core
-src/Core/EventLoop/EventBackendContract.h	template<typename Backend> concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs)
-src/Core/EventLoop/EventLoop.h	Epoll m_epoll
 src/Core/EventLoop/EventLoop.h	EventLoop &operator=(const EventLoop &) = delete
 src/Core/EventLoop/EventLoop.h	EventLoop *m_loop
 src/Core/EventLoop/EventLoop.h	EventLoop()
@@ -936,6 +909,7 @@ src/Core/EventLoop/EventLoop.h	EventLoop(const EventLoop &) = delete
 src/Core/EventLoop/EventLoop.h	EventLoopSnapshot snapshot
 src/Core/EventLoop/EventLoop.h	LoopPhase phase
 src/Core/EventLoop/EventLoop.h	Platform::EventNotifier m_wakeup
+src/Core/EventLoop/EventLoop.h	Platform::EventPoller m_epoll
 src/Core/EventLoop/EventLoop.h	Scheduler m_scheduler
 src/Core/EventLoop/EventLoop.h	TimerQueue m_timerQueue
 src/Core/EventLoop/EventLoop.h	WorkloadScope &operator=(WorkloadScope &&) = delete
@@ -944,8 +918,8 @@ src/Core/EventLoop/EventLoop.h	WorkloadScope(WorkloadScope &&) = delete
 src/Core/EventLoop/EventLoop.h	WorkloadScope(const WorkloadScope &) = delete
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] ASYN_CORE_API std::size_t unregisteredEventLoopCount() noexcept
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] ASYN_CORE_API std::vector<ObservedEventLoop> eventLoopSnapshots()
-src/Core/EventLoop/EventLoop.h	[[nodiscard]] Epoll &epoll() noexcept
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] EventLoopSnapshot snapshot() const noexcept
+src/Core/EventLoop/EventLoop.h	[[nodiscard]] Platform::EventPoller &epoll() noexcept
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] Scheduler &scheduler() noexcept
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] TimerQueue &timerQueue() noexcept
 src/Core/EventLoop/EventLoop.h	[[nodiscard]] bool isOnOwnerThread() const noexcept
@@ -1075,71 +1049,6 @@ src/Core/EventLoop/IoWatcher.h	void onStopRequested() noexcept
 src/Core/EventLoop/IoWatcher.h	void operator()() const noexcept
 src/Core/EventLoop/IoWatcher.h	~Awaiter()
 src/Core/EventLoop/IoWatcher.h	~IoWatcher()
-src/Core/EventLoop/Iocp.h	ExclusiveUse &operator=(ExclusiveUse &&) = delete
-src/Core/EventLoop/Iocp.h	ExclusiveUse &operator=(const ExclusiveUse &) = delete
-src/Core/EventLoop/Iocp.h	ExclusiveUse(ExclusiveUse &&) = delete
-src/Core/EventLoop/Iocp.h	ExclusiveUse(Iocp &backend, const char *operation)
-src/Core/EventLoop/Iocp.h	ExclusiveUse(const ExclusiveUse &) = delete
-src/Core/EventLoop/Iocp.h	Iocp &m_backend
-src/Core/EventLoop/Iocp.h	Iocp &operator=(Iocp &&) noexcept
-src/Core/EventLoop/Iocp.h	Iocp &operator=(const Iocp &) = delete
-src/Core/EventLoop/Iocp.h	Iocp()
-src/Core/EventLoop/Iocp.h	Iocp(Iocp &&) noexcept
-src/Core/EventLoop/Iocp.h	Iocp(const Iocp &) = delete
-src/Core/EventLoop/Iocp.h	Platform::EpollHandle m_iocp
-src/Core/EventLoop/Iocp.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
-src/Core/EventLoop/Iocp.h	[[nodiscard]] std::size_t findResultSlot(void *userData) const noexcept
-src/Core/EventLoop/Iocp.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
-src/Core/EventLoop/Iocp.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData)
-src/Core/EventLoop/Iocp.h	bool armAcceptProbe(SocketState &state)
-src/Core/EventLoop/Iocp.h	bool armProbe(SocketState &state, uint32_t direction)
-src/Core/EventLoop/Iocp.h	bool beginConnect(int fileDescriptor, const sockaddr *address, int addressLength, int *immediateErrorCode)
-src/Core/EventLoop/Iocp.h	bool delFileDescriptor(int fileDescriptor)
-src/Core/EventLoop/Iocp.h	bool m_isAcquired
-src/Core/EventLoop/Iocp.h	bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData)
-src/Core/EventLoop/Iocp.h	bool takeAcceptedSocket(int listenerFileDescriptor, int *acceptedFileDescriptor)
-src/Core/EventLoop/Iocp.h	bool takeConnectResult(int fileDescriptor, int *errorCode)
-src/Core/EventLoop/Iocp.h	class ASYN_CORE_API Iocp
-src/Core/EventLoop/Iocp.h	class ExclusiveUse
-src/Core/EventLoop/Iocp.h	namespace AsynGyanis::Core
-src/Core/EventLoop/Iocp.h	static constexpr int kMaximumEventCount = 1024
-src/Core/EventLoop/Iocp.h	static constexpr std::size_t kEmptyResultSlot = static_cast<std::size_t>(-1)
-src/Core/EventLoop/Iocp.h	static constexpr std::size_t kInitialResultMergeSlotCount = 2048
-src/Core/EventLoop/Iocp.h	static constexpr std::uint32_t kDrainTimeoutMilliseconds = 1000
-src/Core/EventLoop/Iocp.h	static void cancelProbes(SocketState &state) noexcept
-src/Core/EventLoop/Iocp.h	static void closeAcceptedSockets(SocketState &state) noexcept
-src/Core/EventLoop/Iocp.h	static_assert(EventBackend<Iocp>)
-src/Core/EventLoop/Iocp.h	std::atomic<std::uint64_t> m_inUseByHash
-src/Core/EventLoop/Iocp.h	std::atomic_flag m_inUse = ATOMIC_FLAG_INIT
-src/Core/EventLoop/Iocp.h	std::size_t m_resultSlotMask
-src/Core/EventLoop/Iocp.h	std::unordered_map<int, SocketState *> m_sockets
-src/Core/EventLoop/Iocp.h	std::vector<OVERLAPPED_ENTRY> m_entries
-src/Core/EventLoop/Iocp.h	std::vector<SocketState *> m_graveyard
-src/Core/EventLoop/Iocp.h	std::vector<SocketState *> m_pendingArmRetry
-src/Core/EventLoop/Iocp.h	std::vector<SocketState *> m_pendingRearm
-src/Core/EventLoop/Iocp.h	std::vector<SocketState *> m_pendingSyntheticReady
-src/Core/EventLoop/Iocp.h	std::vector<epoll_event> m_results
-src/Core/EventLoop/Iocp.h	std::vector<std::size_t> m_resultSlotIndex
-src/Core/EventLoop/Iocp.h	std::vector<std::size_t> m_usedResultSlots
-src/Core/EventLoop/Iocp.h	std::vector<void *> m_resultSlotUserData
-src/Core/EventLoop/Iocp.h	struct ProbeContext
-src/Core/EventLoop/Iocp.h	struct SocketState
-src/Core/EventLoop/Iocp.h	void destroy()
-src/Core/EventLoop/Iocp.h	void drainCompletions() noexcept
-src/Core/EventLoop/Iocp.h	void growResultMergeTable()
-src/Core/EventLoop/Iocp.h	void harvestSyntheticErrorEvents()
-src/Core/EventLoop/Iocp.h	void insertResultSlot(void *userData, std::size_t resultIndex)
-src/Core/EventLoop/Iocp.h	void noteArmFailure(SocketState &state, uint32_t direction, std::string_view reason, int socketError)
-src/Core/EventLoop/Iocp.h	void noteArmPending(SocketState &state, uint32_t direction)
-src/Core/EventLoop/Iocp.h	void noteResultSlot(void *userData, std::size_t resultIndex)
-src/Core/EventLoop/Iocp.h	void noteSyntheticReady(SocketState &state, uint32_t direction)
-src/Core/EventLoop/Iocp.h	void rearmLevelTriggered()
-src/Core/EventLoop/Iocp.h	void releaseIfDrained(SocketState &state)
-src/Core/EventLoop/Iocp.h	void resetResultMergeTable() noexcept
-src/Core/EventLoop/Iocp.h	void retryFailedArms()
-src/Core/EventLoop/Iocp.h	void translateCompletion(const OVERLAPPED_ENTRY &entry)
-src/Core/EventLoop/Iocp.h	~ExclusiveUse() noexcept
-src/Core/EventLoop/Iocp.h	~Iocp()
 src/Core/EventLoop/Timer.h	Awaiter waitFor(std::chrono::milliseconds duration)
 src/Core/EventLoop/Timer.h	TimerQueue &m_queue
 src/Core/EventLoop/Timer.h	class ASYN_CORE_API Timer
@@ -1202,97 +1111,6 @@ src/Core/EventLoop/TimerQueue.h	void resumeExpired()
 src/Core/EventLoop/TimerQueue.h	void swapHeapAt(std::size_t leftIndex, std::size_t rightIndex) noexcept
 src/Core/EventLoop/TimerQueue.h	~Awaiter()
 src/Core/EventLoop/TimerQueue.h	~TimerQueue()
-src/Core/EventLoop/Uring.h	Registration *record
-src/Core/EventLoop/Uring.h	Uring &operator=(Uring &&other) noexcept
-src/Core/EventLoop/Uring.h	Uring &operator=(const Uring &) = delete
-src/Core/EventLoop/Uring.h	Uring()
-src/Core/EventLoop/Uring.h	Uring(Uring &&other) noexcept
-src/Core/EventLoop/Uring.h	Uring(const Uring &) = delete
-src/Core/EventLoop/Uring.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
-src/Core/EventLoop/Uring.h	[[nodiscard]] Registration *findRegistration(int fileDescriptor) const
-src/Core/EventLoop/Uring.h	[[nodiscard]] Registration *takeInFlightPoll(std::uint64_t ticket) noexcept
-src/Core/EventLoop/Uring.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
-src/Core/EventLoop/Uring.h	[[nodiscard]] std::uint64_t reserveInFlightPoll(Registration &registration)
-src/Core/EventLoop/Uring.h	__kernel_timespec *m_timeoutValue
-src/Core/EventLoop/Uring.h	bool addFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr)
-src/Core/EventLoop/Uring.h	bool delFileDescriptor(int fileDescriptor)
-src/Core/EventLoop/Uring.h	bool flushSubmissions()
-src/Core/EventLoop/Uring.h	bool isOneShot
-src/Core/EventLoop/Uring.h	bool m_isValid
-src/Core/EventLoop/Uring.h	bool modFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr)
-src/Core/EventLoop/Uring.h	bool pendingDelete
-src/Core/EventLoop/Uring.h	bool pendingRearm
-src/Core/EventLoop/Uring.h	bool pendingRemove
-src/Core/EventLoop/Uring.h	bool publishUntilQuiet()
-src/Core/EventLoop/Uring.h	bool submitPoll(Registration &registration)
-src/Core/EventLoop/Uring.h	bool submitPollRemove(std::uint64_t targetTicket)
-src/Core/EventLoop/Uring.h	bool submitTimeout(int timeoutMs)
-src/Core/EventLoop/Uring.h	bool submitTimeoutRemove(std::uint64_t targetTicket)
-src/Core/EventLoop/Uring.h	class ASYN_CORE_API Uring
-src/Core/EventLoop/Uring.h	int fileDescriptor
-src/Core/EventLoop/Uring.h	int m_ringFileDescriptor
-src/Core/EventLoop/Uring.h	io_uring_cqe *m_completionEntries
-src/Core/EventLoop/Uring.h	io_uring_sqe *acquireSubmission()
-src/Core/EventLoop/Uring.h	io_uring_sqe *m_submissionEntries
-src/Core/EventLoop/Uring.h	namespace AsynGyanis::Core
-src/Core/EventLoop/Uring.h	static constexpr int kMaximumEventCount = 1024
-src/Core/EventLoop/Uring.h	static_assert(EventBackend<Uring>)
-src/Core/EventLoop/Uring.h	std::map<int, std::unique_ptr<Registration>> m_registrations
-src/Core/EventLoop/Uring.h	std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls
-src/Core/EventLoop/Uring.h	std::size_t m_completionRingMappingSize
-src/Core/EventLoop/Uring.h	std::size_t m_submissionEntriesMappingSize
-src/Core/EventLoop/Uring.h	std::size_t m_submissionRingMappingSize
-src/Core/EventLoop/Uring.h	std::uint32_t events
-src/Core/EventLoop/Uring.h	std::uint32_t generation
-src/Core/EventLoop/Uring.h	std::uint32_t inFlightEvents
-src/Core/EventLoop/Uring.h	std::uint64_t inFlightTicket
-src/Core/EventLoop/Uring.h	std::uint64_t m_nextTicket
-src/Core/EventLoop/Uring.h	std::uint64_t m_timeoutTicket
-src/Core/EventLoop/Uring.h	std::vector<InFlightSlot> m_inFlightSlots
-src/Core/EventLoop/Uring.h	std::vector<epoll_event> m_readyEvents
-src/Core/EventLoop/Uring.h	std::vector<int> m_attentionDescriptors
-src/Core/EventLoop/Uring.h	std::vector<std::uint32_t> m_freeInFlightSlots
-src/Core/EventLoop/Uring.h	struct InFlightSlot
-src/Core/EventLoop/Uring.h	struct Registration
-src/Core/EventLoop/Uring.h	struct __kernel_timespec
-src/Core/EventLoop/Uring.h	struct io_uring_cqe
-src/Core/EventLoop/Uring.h	struct io_uring_sqe
-src/Core/EventLoop/Uring.h	unsigned *m_completionHead
-src/Core/EventLoop/Uring.h	unsigned *m_completionRingMask
-src/Core/EventLoop/Uring.h	unsigned *m_completionTail
-src/Core/EventLoop/Uring.h	unsigned *m_submissionArray
-src/Core/EventLoop/Uring.h	unsigned *m_submissionEntriesCount
-src/Core/EventLoop/Uring.h	unsigned *m_submissionHead
-src/Core/EventLoop/Uring.h	unsigned *m_submissionRingMask
-src/Core/EventLoop/Uring.h	unsigned *m_submissionTail
-src/Core/EventLoop/Uring.h	unsigned m_reservedSubmissionCount
-src/Core/EventLoop/Uring.h	unsigned m_submissionCapacity
-src/Core/EventLoop/Uring.h	void *m_completionRingMapping
-src/Core/EventLoop/Uring.h	void *m_submissionEntriesMapping
-src/Core/EventLoop/Uring.h	void *m_submissionRingMapping
-src/Core/EventLoop/Uring.h	void *userData
-src/Core/EventLoop/Uring.h	void destroy()
-src/Core/EventLoop/Uring.h	void eraseRegistration(Registration *registration)
-src/Core/EventLoop/Uring.h	void handleCompletion(std::uint64_t ticket, std::int32_t result)
-src/Core/EventLoop/Uring.h	void maintainRegistrations()
-src/Core/EventLoop/Uring.h	void reapCompletions()
-src/Core/EventLoop/Uring.h	void zombifyRegistration(Registration *registration)
-src/Core/EventLoop/Uring.h	~Uring()
-src/Core/EventLoop/wepoll.h	HANDLE hnd
-src/Core/EventLoop/wepoll.h	SOCKET sock
-src/Core/EventLoop/wepoll.h	enum EPOLL_EVENTS : std::uint32_t
-src/Core/EventLoop/wepoll.h	enum EpollCtlOperation : int
-src/Core/EventLoop/wepoll.h	epoll_data_t data
-src/Core/EventLoop/wepoll.h	int fd
-src/Core/EventLoop/wepoll.h	std::uint32_t events
-src/Core/EventLoop/wepoll.h	std::uint32_t u32
-src/Core/EventLoop/wepoll.h	std::uint64_t u64
-src/Core/EventLoop/wepoll.h	struct epoll_event
-src/Core/EventLoop/wepoll.h	union epoll_data
-src/Core/EventLoop/wepoll.h	using HANDLE = void *
-src/Core/EventLoop/wepoll.h	using SOCKET = std::uintptr_t
-src/Core/EventLoop/wepoll.h	using epoll_data_t = epoll_data
-src/Core/EventLoop/wepoll.h	void *ptr
 src/Core/Exception/CoreException.h	class ASYN_CORE_API CoreException : public Base::Exception
 src/Core/Exception/CoreException.h	explicit CoreException(const std::string &message, const std::source_location &sourceLocation = std::source_location::current())
 src/Core/Exception/CoreException.h	namespace AsynGyanis::Core
@@ -8642,6 +8460,34 @@ src/Platform/IO/DatagramSocket.h	struct BatchSlot
 src/Platform/IO/DatagramSocket.h	void *buffer
 src/Platform/IO/DatagramSocket.h	void close() noexcept
 src/Platform/IO/DatagramSocket.h	~DatagramSocket()
+src/Platform/IO/Epoll.h	Epoll &operator=(Epoll &&) noexcept
+src/Platform/IO/Epoll.h	Epoll &operator=(const Epoll &) = delete
+src/Platform/IO/Epoll.h	Epoll()
+src/Platform/IO/Epoll.h	Epoll(Epoll &&) noexcept
+src/Platform/IO/Epoll.h	Epoll(const Epoll &) = delete
+src/Platform/IO/Epoll.h	Platform::EpollHandle m_fileDescriptor
+src/Platform/IO/Epoll.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
+src/Platform/IO/Epoll.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
+src/Platform/IO/Epoll.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
+src/Platform/IO/Epoll.h	bool delFileDescriptor(int fileDescriptor)
+src/Platform/IO/Epoll.h	bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
+src/Platform/IO/Epoll.h	class ASYN_PLATFORM_API Epoll
+src/Platform/IO/Epoll.h	namespace AsynGyanis::Platform
+src/Platform/IO/Epoll.h	namespace AsynGyanis::Platform
+src/Platform/IO/Epoll.h	namespace AsynGyanis::Platform
+src/Platform/IO/Epoll.h	static constexpr int kMaximumEventCount = 1024
+src/Platform/IO/Epoll.h	static_assert(EventBackend<Epoll>)
+src/Platform/IO/Epoll.h	static_assert(EventBackend<Epoll>)
+src/Platform/IO/Epoll.h	static_assert(EventBackend<Epoll>)
+src/Platform/IO/Epoll.h	std::vector<epoll_event> m_events
+src/Platform/IO/Epoll.h	using Epoll = Iocp
+src/Platform/IO/Epoll.h	using Epoll = Uring
+src/Platform/IO/Epoll.h	void clearDiagnosticHandler() noexcept
+src/Platform/IO/Epoll.h	void destroy()
+src/Platform/IO/Epoll.h	void setDiagnosticHandler(std::function<void(std::string_view)> handler) noexcept
+src/Platform/IO/Epoll.h	~Epoll()
+src/Platform/IO/EventBackendContract.h	namespace AsynGyanis::Platform
+src/Platform/IO/EventBackendContract.h	template<typename Backend> concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs)
 src/Platform/IO/EventNotifier.h	EventNotifier &operator=(EventNotifier &&) = delete
 src/Platform/IO/EventNotifier.h	EventNotifier &operator=(const EventNotifier &) = delete
 src/Platform/IO/EventNotifier.h	EventNotifier()
@@ -8671,6 +8517,75 @@ src/Platform/IO/FileDescriptor.h	static constexpr int kInvalid = -1
 src/Platform/IO/FileDescriptor.h	static int close(int fileDescriptor) noexcept
 src/Platform/IO/FileDescriptor.h	static ssize_t read(int fileDescriptor, void *buffer, std::size_t length) noexcept
 src/Platform/IO/FileDescriptor.h	static ssize_t write(int fileDescriptor, const void *buffer, std::size_t length) noexcept
+src/Platform/IO/Iocp.h	ExclusiveUse &operator=(ExclusiveUse &&) = delete
+src/Platform/IO/Iocp.h	ExclusiveUse &operator=(const ExclusiveUse &) = delete
+src/Platform/IO/Iocp.h	ExclusiveUse(ExclusiveUse &&) = delete
+src/Platform/IO/Iocp.h	ExclusiveUse(Iocp &backend, const char *operation)
+src/Platform/IO/Iocp.h	ExclusiveUse(const ExclusiveUse &) = delete
+src/Platform/IO/Iocp.h	Iocp &m_backend
+src/Platform/IO/Iocp.h	Iocp &operator=(Iocp &&) noexcept
+src/Platform/IO/Iocp.h	Iocp &operator=(const Iocp &) = delete
+src/Platform/IO/Iocp.h	Iocp()
+src/Platform/IO/Iocp.h	Iocp(Iocp &&) noexcept
+src/Platform/IO/Iocp.h	Iocp(const Iocp &) = delete
+src/Platform/IO/Iocp.h	Platform::EpollHandle m_iocp
+src/Platform/IO/Iocp.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
+src/Platform/IO/Iocp.h	[[nodiscard]] std::size_t findResultSlot(void *userData) const noexcept
+src/Platform/IO/Iocp.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
+src/Platform/IO/Iocp.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData)
+src/Platform/IO/Iocp.h	bool armAcceptProbe(SocketState &state)
+src/Platform/IO/Iocp.h	bool armProbe(SocketState &state, uint32_t direction)
+src/Platform/IO/Iocp.h	bool beginConnect(int fileDescriptor, const sockaddr *address, int addressLength, int *immediateErrorCode)
+src/Platform/IO/Iocp.h	bool delFileDescriptor(int fileDescriptor)
+src/Platform/IO/Iocp.h	bool m_isAcquired
+src/Platform/IO/Iocp.h	bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData)
+src/Platform/IO/Iocp.h	bool takeAcceptedSocket(int listenerFileDescriptor, int *acceptedFileDescriptor)
+src/Platform/IO/Iocp.h	bool takeConnectResult(int fileDescriptor, int *errorCode)
+src/Platform/IO/Iocp.h	class ASYN_PLATFORM_API Iocp
+src/Platform/IO/Iocp.h	class ExclusiveUse
+src/Platform/IO/Iocp.h	namespace AsynGyanis::Platform
+src/Platform/IO/Iocp.h	static constexpr int kMaximumEventCount = 1024
+src/Platform/IO/Iocp.h	static constexpr std::size_t kEmptyResultSlot = static_cast<std::size_t>(-1)
+src/Platform/IO/Iocp.h	static constexpr std::size_t kInitialResultMergeSlotCount = 2048
+src/Platform/IO/Iocp.h	static constexpr std::uint32_t kDrainTimeoutMilliseconds = 1000
+src/Platform/IO/Iocp.h	static void cancelProbes(SocketState &state) noexcept
+src/Platform/IO/Iocp.h	static void closeAcceptedSockets(SocketState &state) noexcept
+src/Platform/IO/Iocp.h	static_assert(EventBackend<Iocp>)
+src/Platform/IO/Iocp.h	std::atomic<std::uint64_t> m_inUseByHash
+src/Platform/IO/Iocp.h	std::atomic_flag m_inUse = ATOMIC_FLAG_INIT
+src/Platform/IO/Iocp.h	std::function<void(std::string_view)> m_diagnosticHandler
+src/Platform/IO/Iocp.h	std::size_t m_resultSlotMask
+src/Platform/IO/Iocp.h	std::unordered_map<int, SocketState *> m_sockets
+src/Platform/IO/Iocp.h	std::vector<OVERLAPPED_ENTRY> m_entries
+src/Platform/IO/Iocp.h	std::vector<SocketState *> m_graveyard
+src/Platform/IO/Iocp.h	std::vector<SocketState *> m_pendingArmRetry
+src/Platform/IO/Iocp.h	std::vector<SocketState *> m_pendingRearm
+src/Platform/IO/Iocp.h	std::vector<SocketState *> m_pendingSyntheticReady
+src/Platform/IO/Iocp.h	std::vector<epoll_event> m_results
+src/Platform/IO/Iocp.h	std::vector<std::size_t> m_resultSlotIndex
+src/Platform/IO/Iocp.h	std::vector<std::size_t> m_usedResultSlots
+src/Platform/IO/Iocp.h	std::vector<void *> m_resultSlotUserData
+src/Platform/IO/Iocp.h	struct ProbeContext
+src/Platform/IO/Iocp.h	struct SocketState
+src/Platform/IO/Iocp.h	void clearDiagnosticHandler() noexcept
+src/Platform/IO/Iocp.h	void destroy()
+src/Platform/IO/Iocp.h	void drainCompletions() noexcept
+src/Platform/IO/Iocp.h	void growResultMergeTable()
+src/Platform/IO/Iocp.h	void harvestSyntheticErrorEvents()
+src/Platform/IO/Iocp.h	void insertResultSlot(void *userData, std::size_t resultIndex)
+src/Platform/IO/Iocp.h	void noteArmFailure(SocketState &state, uint32_t direction, std::string_view reason, int socketError)
+src/Platform/IO/Iocp.h	void noteArmPending(SocketState &state, uint32_t direction)
+src/Platform/IO/Iocp.h	void noteResultSlot(void *userData, std::size_t resultIndex)
+src/Platform/IO/Iocp.h	void noteSyntheticReady(SocketState &state, uint32_t direction)
+src/Platform/IO/Iocp.h	void rearmLevelTriggered()
+src/Platform/IO/Iocp.h	void releaseIfDrained(SocketState &state)
+src/Platform/IO/Iocp.h	void reportDiagnostic(std::string_view message) const
+src/Platform/IO/Iocp.h	void resetResultMergeTable() noexcept
+src/Platform/IO/Iocp.h	void retryFailedArms()
+src/Platform/IO/Iocp.h	void setDiagnosticHandler(std::function<void(std::string_view)> handler)
+src/Platform/IO/Iocp.h	void translateCompletion(const OVERLAPPED_ENTRY &entry)
+src/Platform/IO/Iocp.h	~ExclusiveUse() noexcept
+src/Platform/IO/Iocp.h	~Iocp()
 src/Platform/IO/MemoryMappedFile.h	MemoryMappedFile &operator=(MemoryMappedFile &&other) noexcept
 src/Platform/IO/MemoryMappedFile.h	MemoryMappedFile &operator=(const MemoryMappedFile &) = delete
 src/Platform/IO/MemoryMappedFile.h	MemoryMappedFile() noexcept = default
@@ -8770,6 +8685,99 @@ src/Platform/IO/TimerFileDescriptor.h	static VOID CALLBACK timerCallback(PVOID c
 src/Platform/IO/TimerFileDescriptor.h	void cancel() noexcept
 src/Platform/IO/TimerFileDescriptor.h	void drain() const noexcept
 src/Platform/IO/TimerFileDescriptor.h	~TimerFileDescriptor()
+src/Platform/IO/Uring.h	Registration *record
+src/Platform/IO/Uring.h	Uring &operator=(Uring &&other) noexcept
+src/Platform/IO/Uring.h	Uring &operator=(const Uring &) = delete
+src/Platform/IO/Uring.h	Uring()
+src/Platform/IO/Uring.h	Uring(Uring &&other) noexcept
+src/Platform/IO/Uring.h	Uring(const Uring &) = delete
+src/Platform/IO/Uring.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
+src/Platform/IO/Uring.h	[[nodiscard]] Registration *findRegistration(int fileDescriptor) const
+src/Platform/IO/Uring.h	[[nodiscard]] Registration *takeInFlightPoll(std::uint64_t ticket) noexcept
+src/Platform/IO/Uring.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
+src/Platform/IO/Uring.h	[[nodiscard]] std::uint64_t reserveInFlightPoll(Registration &registration)
+src/Platform/IO/Uring.h	__kernel_timespec *m_timeoutValue
+src/Platform/IO/Uring.h	bool addFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr)
+src/Platform/IO/Uring.h	bool delFileDescriptor(int fileDescriptor)
+src/Platform/IO/Uring.h	bool flushSubmissions()
+src/Platform/IO/Uring.h	bool isOneShot
+src/Platform/IO/Uring.h	bool m_isValid
+src/Platform/IO/Uring.h	bool modFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr)
+src/Platform/IO/Uring.h	bool pendingDelete
+src/Platform/IO/Uring.h	bool pendingRearm
+src/Platform/IO/Uring.h	bool pendingRemove
+src/Platform/IO/Uring.h	bool publishUntilQuiet()
+src/Platform/IO/Uring.h	bool submitPoll(Registration &registration)
+src/Platform/IO/Uring.h	bool submitPollRemove(std::uint64_t targetTicket)
+src/Platform/IO/Uring.h	bool submitTimeout(int timeoutMs)
+src/Platform/IO/Uring.h	bool submitTimeoutRemove(std::uint64_t targetTicket)
+src/Platform/IO/Uring.h	class ASYN_PLATFORM_API Uring
+src/Platform/IO/Uring.h	int fileDescriptor
+src/Platform/IO/Uring.h	int m_ringFileDescriptor
+src/Platform/IO/Uring.h	io_uring_cqe *m_completionEntries
+src/Platform/IO/Uring.h	io_uring_sqe *acquireSubmission()
+src/Platform/IO/Uring.h	io_uring_sqe *m_submissionEntries
+src/Platform/IO/Uring.h	namespace AsynGyanis::Platform
+src/Platform/IO/Uring.h	static constexpr int kMaximumEventCount = 1024
+src/Platform/IO/Uring.h	static_assert(EventBackend<Uring>)
+src/Platform/IO/Uring.h	std::map<int, std::unique_ptr<Registration>> m_registrations
+src/Platform/IO/Uring.h	std::map<std::uint64_t, std::unique_ptr<Registration>> m_zombiePolls
+src/Platform/IO/Uring.h	std::size_t m_completionRingMappingSize
+src/Platform/IO/Uring.h	std::size_t m_submissionEntriesMappingSize
+src/Platform/IO/Uring.h	std::size_t m_submissionRingMappingSize
+src/Platform/IO/Uring.h	std::uint32_t events
+src/Platform/IO/Uring.h	std::uint32_t generation
+src/Platform/IO/Uring.h	std::uint32_t inFlightEvents
+src/Platform/IO/Uring.h	std::uint64_t inFlightTicket
+src/Platform/IO/Uring.h	std::uint64_t m_nextTicket
+src/Platform/IO/Uring.h	std::uint64_t m_timeoutTicket
+src/Platform/IO/Uring.h	std::vector<InFlightSlot> m_inFlightSlots
+src/Platform/IO/Uring.h	std::vector<epoll_event> m_readyEvents
+src/Platform/IO/Uring.h	std::vector<int> m_attentionDescriptors
+src/Platform/IO/Uring.h	std::vector<std::uint32_t> m_freeInFlightSlots
+src/Platform/IO/Uring.h	struct InFlightSlot
+src/Platform/IO/Uring.h	struct Registration
+src/Platform/IO/Uring.h	struct __kernel_timespec
+src/Platform/IO/Uring.h	struct io_uring_cqe
+src/Platform/IO/Uring.h	struct io_uring_sqe
+src/Platform/IO/Uring.h	unsigned *m_completionHead
+src/Platform/IO/Uring.h	unsigned *m_completionRingMask
+src/Platform/IO/Uring.h	unsigned *m_completionTail
+src/Platform/IO/Uring.h	unsigned *m_submissionArray
+src/Platform/IO/Uring.h	unsigned *m_submissionEntriesCount
+src/Platform/IO/Uring.h	unsigned *m_submissionHead
+src/Platform/IO/Uring.h	unsigned *m_submissionRingMask
+src/Platform/IO/Uring.h	unsigned *m_submissionTail
+src/Platform/IO/Uring.h	unsigned m_reservedSubmissionCount
+src/Platform/IO/Uring.h	unsigned m_submissionCapacity
+src/Platform/IO/Uring.h	void *m_completionRingMapping
+src/Platform/IO/Uring.h	void *m_submissionEntriesMapping
+src/Platform/IO/Uring.h	void *m_submissionRingMapping
+src/Platform/IO/Uring.h	void *userData
+src/Platform/IO/Uring.h	void clearDiagnosticHandler() noexcept
+src/Platform/IO/Uring.h	void destroy()
+src/Platform/IO/Uring.h	void eraseRegistration(Registration *registration)
+src/Platform/IO/Uring.h	void handleCompletion(std::uint64_t ticket, std::int32_t result)
+src/Platform/IO/Uring.h	void maintainRegistrations()
+src/Platform/IO/Uring.h	void reapCompletions()
+src/Platform/IO/Uring.h	void setDiagnosticHandler(std::function<void(std::string_view)> handler) noexcept
+src/Platform/IO/Uring.h	void zombifyRegistration(Registration *registration)
+src/Platform/IO/Uring.h	~Uring()
+src/Platform/IO/wepoll.h	HANDLE hnd
+src/Platform/IO/wepoll.h	SOCKET sock
+src/Platform/IO/wepoll.h	enum EPOLL_EVENTS : std::uint32_t
+src/Platform/IO/wepoll.h	enum EpollCtlOperation : int
+src/Platform/IO/wepoll.h	epoll_data_t data
+src/Platform/IO/wepoll.h	int fd
+src/Platform/IO/wepoll.h	std::uint32_t events
+src/Platform/IO/wepoll.h	std::uint32_t u32
+src/Platform/IO/wepoll.h	std::uint64_t u64
+src/Platform/IO/wepoll.h	struct epoll_event
+src/Platform/IO/wepoll.h	union epoll_data
+src/Platform/IO/wepoll.h	using HANDLE = void *
+src/Platform/IO/wepoll.h	using SOCKET = std::uintptr_t
+src/Platform/IO/wepoll.h	using epoll_data_t = epoll_data
+src/Platform/IO/wepoll.h	void *ptr
 src/Platform/Platform.h	constexpr bool isEpollHandleValid(EpollHandle handle) noexcept
 src/Platform/Platform.h	inline constexpr EpollHandle kInvalidEpollHandle = nullptr -1
 src/Platform/Platform.h	namespace AsynGyanis::Platform

@@ -143,8 +143,8 @@
       "pos": [40, 300],
       "size": [190, 60],
       "sources": [
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 34, "label": "Windows 别名到 Iocp" },
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 37, "end_line": 49, "label": "开 io_uring 别名到 Uring" }
+        { "path": "src/Platform/IO/Epoll.h", "line": 36, "label": "Windows 别名到 Iocp" },
+        { "path": "src/Platform/IO/Epoll.h", "line": 54, "end_line": 58, "label": "开 io_uring 别名到 Uring" }
       ]
     },
     {
@@ -217,8 +217,8 @@
       "pos": [780, 560],
       "size": [230, 60],
       "sources": [
-        { "path": "src/Platform/CMakeLists.txt", "line": 23, "label": "仅 Windows" },
-        { "path": "src/Platform/CMakeLists.txt", "line": 32, "end_line": 36, "label": "Threads 登记导出" }
+        { "path": "src/Platform/CMakeLists.txt", "line": 27, "label": "仅 Windows" },
+        { "path": "src/Platform/CMakeLists.txt", "line": 38, "end_line": 42, "label": "Threads 登记导出" }
       ]
     },
     {
@@ -230,7 +230,7 @@
       "size": [410, 60],
       "sources": [
         { "path": "CMakeLists.txt", "line": 17, "end_line": 20, "label": "其他系统配置期拒绝" },
-        { "path": "src/Core/EventLoop/Epoll.h", "line": 27, "label": "AcceptEx 只能由 Iocp 取走" }
+        { "path": "src/Platform/IO/Epoll.h", "line": 33, "label": "AcceptEx 只能由 Iocp 取走" }
       ]
     }
   ],

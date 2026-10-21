@@ -12,7 +12,7 @@
 
 
 #include "Core/Coroutine/Scheduler.h"
-#include "Core/EventLoop/Epoll.h"
+#include "Platform/IO/EventPoller.h"
 #include "Core/EventLoop/TimerQueue.h"
 #include "Platform/IO/EventNotifier.h"
 
@@ -181,9 +181,9 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 获取 epoll 监控器（非常量引用）
-         * @return Epoll& 内部 epoll 对象，可用于注册或修改文件描述符的监听事件
+         * @return Platform::EventPoller& 内部 epoll 对象，可用于注册或修改文件描述符的监听事件
          */
-        [[nodiscard]] Epoll &epoll() noexcept;
+        [[nodiscard]] Platform::EventPoller &epoll() noexcept;
 
         /**
          * @brief 获取协程调度器（非常量引用）
@@ -258,7 +258,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 把一批就绪事件派发出去：唤醒哨兵先 drain，IoWatcher 逐个查活再分发
-         * @param readyEvents 刚从 epoll 取回的一批（视图仅本次调用内有效，见 Epoll::wait 的说明）
+         * @param readyEvents 刚从 epoll 取回的一批（视图仅本次调用内有效，见 Platform::EventPoller::wait 的说明）
          * @details 从 run() 拆出：派发这一段与循环体的取事件/记账各成一段，判据逐条可对表
          */
         void dispatchReadyEvents(std::span<epoll_event> readyEvents);
@@ -267,7 +267,7 @@ namespace AsynGyanis::Core
         mutable std::mutex                    m_liveWatcherMutex; ///< 保护下面那张表的锁，跨线程注销也要用
         std::unordered_set<const IoWatcher *> m_liveWatchers;     ///< 当前还活着的 IoWatcher
 
-        Epoll                   m_epoll;                   ///< epoll 事件管理器
+        Platform::EventPoller   m_epoll;                   ///< epoll 事件管理器
         Scheduler               m_scheduler;               ///< 协程调度器，管理待运行的任务队列
         Platform::EventNotifier m_wakeup;                  ///< 跨线程唤醒器
         int                     m_wakeupSentinel;          ///< 唤醒哨兵值，用于识别唤醒事件（可选的内部标记）

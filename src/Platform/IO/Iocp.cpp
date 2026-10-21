@@ -1,17 +1,18 @@
-#include "Core/EventLoop/Iocp.h"
-
-#include "Base/Exception/LogicException.h"
-#include "Base/Exception/SystemException.h"
-#include "Base/Log/LogMacros.h"
+#include "Platform/IO/Iocp.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <format>
 #include <functional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
+#include <utility>
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     namespace
     {
@@ -144,7 +145,7 @@ namespace AsynGyanis::Core
         {
             // 必须显式传 Win32 空间的码：CreateIoCompletionPort 失败只写 GetLastError，不写 errno，
             // 走隐式 errno 通道会报出一个与本次失败无关（或干脆是 0）的描述
-            throw Base::SystemException("创建完成端口失败（CreateIoCompletionPort）", std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
+            throw std::system_error(std::error_code(static_cast<int>(::GetLastError()), std::system_category()), "创建完成端口失败（CreateIoCompletionPort）");
         }
         m_entries.resize(kMaximumEventCount);
         m_results.reserve(kMaximumEventCount);
@@ -160,9 +161,9 @@ namespace AsynGyanis::Core
     }
 
     Iocp::Iocp(Iocp &&other) noexcept :
-        m_iocp(other.m_iocp), m_entries(std::move(other.m_entries)), m_results(std::move(other.m_results)), m_resultSlotUserData(std::move(other.m_resultSlotUserData)),
-        m_resultSlotIndex(std::move(other.m_resultSlotIndex)), m_usedResultSlots(std::move(other.m_usedResultSlots)), m_resultSlotMask(other.m_resultSlotMask),
-        m_sockets(std::move(other.m_sockets)), m_graveyard(std::move(other.m_graveyard)), m_pendingRearm(std::move(other.m_pendingRearm)),
+        m_iocp(other.m_iocp), m_diagnosticHandler(std::move(other.m_diagnosticHandler)), m_entries(std::move(other.m_entries)), m_results(std::move(other.m_results)),
+        m_resultSlotUserData(std::move(other.m_resultSlotUserData)), m_resultSlotIndex(std::move(other.m_resultSlotIndex)), m_usedResultSlots(std::move(other.m_usedResultSlots)),
+        m_resultSlotMask(other.m_resultSlotMask), m_sockets(std::move(other.m_sockets)), m_graveyard(std::move(other.m_graveyard)), m_pendingRearm(std::move(other.m_pendingRearm)),
         m_pendingArmRetry(std::move(other.m_pendingArmRetry)), m_pendingSyntheticReady(std::move(other.m_pendingSyntheticReady))
     {
         other.m_iocp = nullptr;
@@ -174,6 +175,7 @@ namespace AsynGyanis::Core
         {
             destroy();
             m_iocp                  = other.m_iocp;
+            m_diagnosticHandler     = std::move(other.m_diagnosticHandler);
             m_entries               = std::move(other.m_entries);
             m_results               = std::move(other.m_results);
             m_resultSlotUserData    = std::move(other.m_resultSlotUserData);
@@ -188,6 +190,24 @@ namespace AsynGyanis::Core
             other.m_iocp            = nullptr;
         }
         return *this;
+    }
+
+    void Iocp::setDiagnosticHandler(std::function<void(std::string_view)> handler)
+    {
+        m_diagnosticHandler = std::move(handler);
+    }
+
+    void Iocp::clearDiagnosticHandler() noexcept
+    {
+        m_diagnosticHandler = nullptr;
+    }
+
+    void Iocp::reportDiagnostic(const std::string_view message) const
+    {
+        if (m_diagnosticHandler)
+        {
+            m_diagnosticHandler(message);
+        }
     }
 
     void Iocp::destroy()
@@ -259,9 +279,9 @@ namespace AsynGyanis::Core
         // 指纹只进报错文本，因此用松弛序读——它与「是否拒绝」这个决定无关，决定只来自那个原子标记
         const std::uint64_t holderFingerprint = m_backend.m_inUseByHash.load(std::memory_order_relaxed);
         const std::uint64_t selfFingerprint   = threadFingerprint(std::this_thread::get_id());
-        throw Base::LogicException("IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 " + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 " +
-                                   std::to_string(holderFingerprint) + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）") +
-                                   " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 Scheduler::postRemote()（经 EventLoop::scheduler() 取得）");
+        throw std::logic_error("IOCP 事件后端被并发使用：操作 " + std::string{operation} + " 想在线程指纹 " + std::to_string(selfFingerprint) + " 上进入，而后端正被线程指纹 " +
+                               std::to_string(holderFingerprint) + (holderFingerprint == selfFingerprint ? "（同一条线程的重入）" : "（另一条线程）") +
+                               " 占用。事件后端只该由它所属事件循环的那条线程碰，外部线程请走 Scheduler::postRemote()（经 EventLoop::scheduler() 取得）");
     }
 
     Iocp::ExclusiveUse::~ExclusiveUse() noexcept
@@ -298,7 +318,7 @@ namespace AsynGyanis::Core
         {
             // 描述符无效或已属于另一个完成端口。失败原因由系统调用自己留在 GetLastError 里，抛出方
             // 按 Win32 空间取用（见 IoWatcher 那条 throw）；不写进 errno——那是另一个错误空间，混着报
-            // 会给出与本次失败无关的描述（见 Base::SystemException::lastErrnoErrorCode 的注释）
+            // 会给出与本次失败无关的描述（见 PlatformError 的 lastSocketErrorCode 说明）
             delete state;
             return false;
         }
@@ -711,9 +731,9 @@ namespace AsynGyanis::Core
         noteArmPending(state, direction);
         if (isFirstFailure)
         {
-            LOG_WARN_FMT("IOCP 探针武装失败：{}（套接字 {}，错误码 {}）。该方向已排进重投表，每轮 wait() 前重试一次；"
-                         "若持续失败，等它的协程不会收到任何事件",
-                         reason, static_cast<std::uintptr_t>(state.socketHandle), socketError);
+            reportDiagnostic(std::format("IOCP 探针武装失败：{}（套接字 {}，错误码 {}）。该方向已排进重投表，每轮 wait() 前重试一次；"
+                                         "若持续失败，等它的协程不会收到任何事件",
+                                         reason, static_cast<std::uintptr_t>(state.socketHandle), socketError));
         }
     }
 
@@ -828,7 +848,7 @@ namespace AsynGyanis::Core
             {
                 return {};
             }
-            throw Base::SystemException("等待完成端口失败（GetQueuedCompletionStatusEx）", std::error_code(static_cast<int>(errorCode), std::system_category()));
+            throw std::system_error(std::error_code(static_cast<int>(errorCode), std::system_category()), "等待完成端口失败（GetQueuedCompletionStatusEx）");
         }
 
         m_results.clear();
@@ -1138,4 +1158,4 @@ namespace AsynGyanis::Core
         }
         m_pendingRearm.clear();
     }
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform

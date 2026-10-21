@@ -16,6 +16,11 @@ add_library(Platform ${ASYN_LIBRARY_KIND}
 # 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
 asyn_configure_module_library(Platform)
 
+if(ASYN_WITH_IO_URING)
+    # 事件后端选型宏必须对 Platform 的公共事件头与消费方一致：Epoll.h 用它选择 Uring
+    target_compile_definitions(Platform PUBLIC ASYN_WITH_IO_URING=1)
+endif()
+
 # 网络子系统仅在 Windows 需要 Winsock 库，Linux 侧由 libc 内建提供
 # iphlpapi：if_nametoindex/if_indextoname 在 Windows SDK 里由 netioapi.h 声明、iphlpapi.lib 实现
 # （Linux 侧这两个函数在 libc 内），IPv6 的 %接口名 写法要靠它换算成数字作用域号

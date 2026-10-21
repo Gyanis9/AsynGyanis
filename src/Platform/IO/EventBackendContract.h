@@ -24,7 +24,7 @@
 #include <cstdint>
 #include <span>
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief 事件后端的概念契约（三个实现都必须满足）
@@ -49,4 +49,4 @@ namespace AsynGyanis::Core
         { backend.fileDescriptor() } -> std::same_as<Platform::EpollHandle>;
     };
 
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform

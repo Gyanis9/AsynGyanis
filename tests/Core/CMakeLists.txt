@@ -12,7 +12,7 @@ add_executable(TestCore
 
         Exception/TestCoreException.cpp
 
-        EventLoop/TestEpoll.cpp
+        EventLoop/TestEventPoller.cpp
         EventLoop/TestIoWatcher.cpp
         EventLoop/TestEventLoop.cpp
         EventLoop/TestEventLoopObservability.cpp

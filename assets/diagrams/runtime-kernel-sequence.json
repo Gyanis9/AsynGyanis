@@ -71,9 +71,9 @@
       "label": "事件后端",
       "sublabel": "epoll/IOCP/uring",
       "sources": [
-        { "path": "src/Core/EventLoop/Epoll.cpp", "line": 84, "label": "epoll_wait" },
-        { "path": "src/Core/EventLoop/Iocp.cpp", "line": 824, "label": "GetQueuedCompletionStatusEx" },
-        { "path": "src/Core/EventLoop/Uring.cpp", "line": 770, "label": "超时是一条 ring 操作" }
+        { "path": "src/Platform/IO/Epoll.cpp", "line": 85, "label": "epoll_wait" },
+        { "path": "src/Platform/IO/Iocp.cpp", "line": 844, "label": "GetQueuedCompletionStatusEx" },
+        { "path": "src/Platform/IO/Uring.cpp", "line": 782, "label": "超时是一条 ring 操作" }
       ]
     },
     {
@@ -142,7 +142,7 @@
       "dot": "rose",
       "title": "一轮的九步（EventLoop::run）",
       "items": [
-        "先 runAll() 排空就绪（EventLoop.cpp:197）→ 判 m_stopRequested（:199）→ 有活则超时取 0 否则 -1（:205）→ 进 WaitingForEvents 相位（:207）→ wait()（:208）",
+        "先 runAll() 排空就绪（EventLoop.cpp:217）→ 判 m_stopRequested（:219）→ 有活则超时取 0 否则 -1（:225）→ 进 WaitingForEvents 相位（:227）→ wait()（:231）",
         "进 Working 相位（EventLoop.cpp:210）→ 哨兵优先 drain（:244），否则判 isWatcherAlive（:261）再 handleEvents（:263）",
         "定时器同一路唤醒驱动 TimerQueue::drive → 到期项走 postLocal；尾部再 runAll() 消费（EventLoop.cpp:268）"
       ]
@@ -153,7 +153,7 @@
       "items": [
         "epoll 水平触发直接返回就绪表（Epoll.cpp:84），没有重武装这一步",
         "IOCP 要重投探针模拟水平触发，另有待重投/待合成两张表与 ConnectEx、takeAcceptedSocket 专属出口（Iocp.cpp:800-838）",
-        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:746-783）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEpoll.cpp:404）"
+        "io_uring 的一次性 POLL_ADD 要补投，且超时本身是一条 ring 操作（Uring.cpp:753-817）；三后端稳态「每轮 wait() 0 分配」由同一条用例钉住（tests/Core/EventLoop/TestEventPoller.cpp:411）"
       ]
     },
     {

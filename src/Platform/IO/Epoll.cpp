@@ -1,19 +1,20 @@
-#include "Core/EventLoop/Epoll.h"
+#include "Platform/IO/Epoll.h"
 
-#include "Base/Exception/SystemException.h"
+#include "Platform/System/PlatformError.h"
 
 #include <cerrno>
+#include <system_error>
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     Epoll::Epoll()
     {
         m_fileDescriptor = epoll_create1(EPOLL_CLOEXEC);
         if (!Platform::isEpollHandleValid(m_fileDescriptor))
         {
-            // 系统调用失败交由 SystemException 承载：它会自己读 errno 并附上可读描述，
-            // 不必在这里手工 strerror，也避免把平台差异（strerror_s / strerror_r）写进 Core
-            throw Base::SystemException("epoll_create1 失败");
+            // 系统调用失败抛 std::system_error：errno 与可读描述一起带出，不必在这里手工
+            // strerror，也避免把平台差异（strerror_s / strerror_r）写进 Platform
+            throw std::system_error(std::error_code(PlatformError::lastErrorCode(), std::system_category()), "epoll_create1 失败");
         }
         m_events.resize(kMaximumEventCount);
     }
@@ -86,9 +87,9 @@ namespace AsynGyanis::Core
         {
             if (errno == EINTR)
                 return {};
-            // 交由 SystemException 读取 errno 并附上可读描述：既省掉手工 strerror，
-            // 也把 strerror_s / strerror_r 这类平台差异挡在 Core 之外
-            throw Base::SystemException("epoll_wait 失败");
+            // 由 std::system_error 带出 errno 与可读描述：既省掉手工 strerror，
+            // 也把 strerror_s / strerror_r 这类平台差异挡在 Platform 之外
+            throw std::system_error(std::error_code(PlatformError::lastErrorCode(), std::system_category()), "epoll_wait 失败");
         }
         // 缓冲容量固定、不再按负载翻倍：翻倍会把上一次 wait() 交出去的那个视图变成悬垂指针，
         // 而事件循环是跨着 handleEvents()（它会同步恢复等待中的协程）持有那个视图的——
@@ -116,4 +117,4 @@ namespace AsynGyanis::Core
         }
     }
 
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform

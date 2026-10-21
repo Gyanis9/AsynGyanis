@@ -1,7 +1,7 @@
-// Epoll 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待；
+// EventPoller 单元测试：实例句柄、移动语义、事件注册/修改/移除与超时等待；
 // Windows 侧另测完成端口的探针重投记账会不会把日志写成噪声
 
-#include "Core/EventLoop/Epoll.h"
+#include "Platform/IO/EventPoller.h"
 #include "Core/Coroutine/Scheduler.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -25,7 +25,7 @@
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
-#include "Base/Exception/LogicException.h"
+#include <stdexcept>
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
 #include "Base/Log/Logger.h"
@@ -49,6 +49,8 @@
 
 namespace AsynGyanis::Core
 {
+    using Platform::EventPoller; ///< 后端类型已移入 Platform，用例按 Core 的入口消费
+
     namespace
     {
         /**
@@ -248,23 +250,23 @@ namespace AsynGyanis::Core
     } // namespace
 
     /**
-     * @brief 构造后立即持有可用的 epoll 句柄，而不是 kInvalidEpollHandle 占位
+     * @brief 构造后立即持有可用的 epoll 句柄，而不是 kInvalidEventPollerHandle 占位
      */
-    TEST(Epoll, ConstructionAllocatesValidHandle)
+    TEST(EventPoller, ConstructionAllocatesValidHandle)
     {
-        Epoll epoll;
+        EventPoller epoll;
         ASSERT_NE(epoll.fileDescriptor(), Platform::kInvalidEpollHandle);
     }
 
     /**
      * @brief 移动构造把 epoll 句柄整体交给新对象，不重建底层实例
      */
-    TEST(Epoll, MoveConstructorTransfersHandle)
+    TEST(EventPoller, MoveConstructorTransfersHandle)
     {
-        Epoll                       first;
+        EventPoller                 first;
         const Platform::EpollHandle originalHandle = first.fileDescriptor();
 
-        Epoll second(std::move(first));
+        EventPoller second(std::move(first));
 
         EXPECT_EQ(second.fileDescriptor(), originalHandle);
     }
@@ -272,10 +274,10 @@ namespace AsynGyanis::Core
     /**
      * @brief 移动赋值同样转移句柄：源被掏空、目标持有原句柄，不泄漏也不产生两个所有者
      */
-    TEST(Epoll, MoveAssignmentTransfersHandle)
+    TEST(EventPoller, MoveAssignmentTransfersHandle)
     {
-        Epoll                       first;
-        Epoll                       second;
+        EventPoller                 first;
+        EventPoller                 second;
         const Platform::EpollHandle originalHandle = first.fileDescriptor();
 
         second = std::move(first);
@@ -286,9 +288,9 @@ namespace AsynGyanis::Core
     /**
      * @brief 注册 EPOLLIN 后触发可读即上报事件，且事件带回注册时挂载的用户数据指针（调用方靠它定位上下文）
      */
-    TEST(Epoll, AddFileDescriptorDeliversReadableEvent)
+    TEST(EventPoller, AddFileDescriptorDeliversReadableEvent)
     {
-        Epoll       epoll;
+        EventPoller epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -306,9 +308,9 @@ namespace AsynGyanis::Core
     /**
      * @brief 注销后不再投递事件：即使描述符已可读也不产生就绪项（避免等待器被已摘除的 fd 唤醒）
      */
-    TEST(Epoll, DelFileDescriptorStopsEventDelivery)
+    TEST(EventPoller, DelFileDescriptorStopsEventDelivery)
     {
-        Epoll       epoll;
+        EventPoller epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -328,9 +330,9 @@ namespace AsynGyanis::Core
      *          共同的后果：把「拒重复」实现成「先摘旧的再建新的」，第二份注册对象就会悄悄顶掉第一份
      *          的归属——上层两份注册对象于是有一份永远收不到事件。
      */
-    TEST(Epoll, RejectsInvalidAndDuplicateRegistrationWithoutHurtingTheFirst)
+    TEST(EventPoller, RejectsInvalidAndDuplicateRegistrationWithoutHurtingTheFirst)
     {
-        Epoll       backend;
+        EventPoller backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -356,9 +358,9 @@ namespace AsynGyanis::Core
      * @details 这三条都返回 bool，而调用方（IoWatcher）用它区分「内核状态未知」与「已经落好」：
      *          把失败报成成功，账本就会记成一个内核里并不存在的关注位。
      */
-    TEST(Epoll, OperationsOnUnregisteredDescriptorsReportFailure)
+    TEST(EventPoller, OperationsOnUnregisteredDescriptorsReportFailure)
     {
-        Epoll       backend;
+        EventPoller backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -377,9 +379,9 @@ namespace AsynGyanis::Core
      *          恢复关注时那份旧就绪会被当成新事件交回来；而恢复之后不再补投，那个一直可读的描述符
      *          就再也报不上来（epoll 靠内核重取状态看不见这个缺口，只有另两个后端会露出来）。
      */
-    TEST(Epoll, ClearedMaskStaysQuietAndRestoringItDeliversAgain)
+    TEST(EventPoller, ClearedMaskStaysQuietAndRestoringItDeliversAgain)
     {
-        Epoll       backend;
+        EventPoller backend;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -406,12 +408,12 @@ namespace AsynGyanis::Core
      *          注册下每轮 12 次分配，改成就地消费后归零）。io_uring 侧另有同一形状的一笔、按在途轮询
      *          条数付的节点分配，也换成了扁平表；三个后端因此共用「零分配」这一条判据。
      */
-    TEST(Epoll, LevelTriggeredWaitDoesNotAllocatePerRound)
+    TEST(EventPoller, LevelTriggeredWaitDoesNotAllocatePerRound)
     {
         ASYN_SKIP_IF_ALLOCATION_PROBE_IS_BLIND();
         constexpr std::size_t kRegisteredDescriptorCount = 32;
 
-        Epoll backend;
+        EventPoller backend;
         // std::array：注册用的用户数据是各元素自己的地址，因此这批对象一次成型、永不被搬动
         std::array<TestEventFd, kRegisteredDescriptorCount> eventFds;
         for (auto &eventFd: eventFds)
@@ -466,7 +468,7 @@ namespace AsynGyanis::Core
      *          同段后面的条目往前挪。挪错或漏挪的表现是这条空闲注册从此不再报就绪，而这是服务端
      *          最常见的一种连接（keep-alive 空转），不能等到线上才发现。
      */
-    TEST(Epoll, IdleRegistrationSurvivesTicketWraparound)
+    TEST(EventPoller, IdleRegistrationSurvivesTicketWraparound)
     {
         // 8 条「挂着不动」的注册：整个用例期间都不触发，所以票据一直留在途、且越来越旧
         constexpr std::size_t kIdleDescriptorCount = 8;
@@ -474,7 +476,7 @@ namespace AsynGyanis::Core
         constexpr std::size_t kActiveDescriptorCount = 256;
         constexpr std::size_t kRoundCount            = 24;
 
-        Epoll                                           backend;
+        EventPoller                                     backend;
         std::array<TestEventFd, kIdleDescriptorCount>   idleFds;
         std::array<TestEventFd, kActiveDescriptorCount> activeFds;
         for (auto &idleFd: idleFds)
@@ -538,12 +540,12 @@ namespace AsynGyanis::Core
      *          按注册对象分别计数、每条都至少要有轮数次；少一条就是某条重投的轮询被摘丢或错配掉了。
      * @note 单轮交回哪几条不固定（批量取只要等到一条就返回），所以断言落在每条各自的次数上
      */
-    TEST(Epoll, LargeRegistrationSetSurvivesMaskChurn)
+    TEST(EventPoller, LargeRegistrationSetSurvivesMaskChurn)
     {
         constexpr std::size_t kRegisteredDescriptorCount = 200;
         constexpr std::size_t kRoundCount                = 40;
 
-        Epoll                                               backend;
+        EventPoller                                         backend;
         std::array<TestEventFd, kRegisteredDescriptorCount> eventFds;
         for (auto &eventFd: eventFds)
         {
@@ -601,9 +603,9 @@ namespace AsynGyanis::Core
      *          钉住它有两个理由：与下面那条 POSIX 用例对照，说明「注销后重新注册」不是跨后端可行
      *          的写法；以及三种时序实测一致，免得后来人以为多等一轮就能注册回来。
      */
-    TEST(Epoll, CannotReRegisterAnOpenDescriptorAfterDelete)
+    TEST(EventPoller, CannotReRegisterAnOpenDescriptorAfterDelete)
     {
-        Epoll       backend;
+        EventPoller backend;
         TestEventFd drained;
         TestEventFd pending;
         ASSERT_GE(drained.fileDescriptor, 0);
@@ -642,9 +644,9 @@ namespace AsynGyanis::Core
      *          完成通知到齐才销毁记录——但描述符键必须当场释放，否则新连接的注册会被直接拒掉。
      *          用例用 dup2 把「号复用」做成确定性的（不赌内核挑号）；Windows 完成端口没有这个窗口。
      */
-    TEST(Epoll, AllowsReregisteringDescriptorNumberRightAfterDelete)
+    TEST(EventPoller, AllowsReregisteringDescriptorNumberRightAfterDelete)
     {
-        Epoll epoll;
+        EventPoller epoll;
 
         TestEventFd staleEventFd;
         ASSERT_GE(staleEventFd.fileDescriptor, 0);
@@ -676,9 +678,9 @@ namespace AsynGyanis::Core
     /**
      * @brief 无注册描述符时 wait() 在超时后返回空列表：既不死等也不报错
      */
-    TEST(Epoll, WaitTimeoutReturnsNoEvents)
+    TEST(EventPoller, WaitTimeoutReturnsNoEvents)
     {
-        Epoll epoll;
+        EventPoller epoll;
 
         // 无任何注册描述符时，等待应在超时后返回空事件列表
         const auto events = epoll.wait(10);
@@ -688,9 +690,9 @@ namespace AsynGyanis::Core
     /**
      * @brief modFileDescriptor() 真的替换了事件掩码：改为 EPOLLOUT 后按可写就绪，不再按可读
      */
-    TEST(Epoll, ModFileDescriptorChangesEventMask)
+    TEST(EventPoller, ModFileDescriptorChangesEventMask)
     {
-        Epoll       epoll;
+        EventPoller epoll;
         TestEventFd eventFd;
         ASSERT_GE(eventFd.fileDescriptor, 0);
 
@@ -707,9 +709,9 @@ namespace AsynGyanis::Core
     /**
      * @brief 多路注册时只上报真正就绪的那一个（用用户数据指针定位），未触发的描述符不产生误报
      */
-    TEST(Epoll, MultipleFileDescriptorsReportTriggeredOne)
+    TEST(EventPoller, MultipleFileDescriptorsReportTriggeredOne)
     {
-        Epoll       epoll;
+        EventPoller epoll;
         TestEventFd firstEventFd;
         TestEventFd secondEventFd;
         ASSERT_GE(firstEventFd.fileDescriptor, 0);
@@ -749,7 +751,7 @@ namespace AsynGyanis::Core
      *          判据不需要 sanitizer：两次 wait() 的 data() 必须同址。用 dup 把一个可读
      *          描述符复制成一片，是因为 epoll 按 fd 去重，同一个 fd 注册不了两次。
      */
-    TEST(Epoll, RepeatedWaitKeepsTheSameLandingBuffer)
+    TEST(EventPoller, RepeatedWaitKeepsTheSameLandingBuffer)
     {
         /// 至少要 1024 个就绪 fd 才能连着触发两次「达到容量一半」；留出 dup 之外的余量
         constexpr int kRequiredDescriptors = 2200;
@@ -766,7 +768,7 @@ namespace AsynGyanis::Core
         // 因此这一写让全部副本同时可读，而只要不去读它就一直是可读的（水平触发会反复上报）
         ASSERT_TRUE(trigger.trigger());
 
-        Epoll            backend;
+        EventPoller      backend;
         std::vector<int> descriptors;
         descriptors.reserve(1024);
         for (int index = 0; index < 1024; ++index)
@@ -803,11 +805,11 @@ namespace AsynGyanis::Core
      *          次轮只断言「剩下的至少补上」：水平触发的描述符仍然就绪，会被再报一次，
      *          所以两批之和大于注册数才是预期，不能拿它当「不丢」的判据。
      */
-    TEST(Epoll, WaitDeliversAtMostOneBatchAndKeepsTheRestForNextWait)
+    TEST(EventPoller, WaitDeliversAtMostOneBatchAndKeepsTheRestForNextWait)
     {
         /// 比单轮上限多出一截，才同时有「取满」与「剩下」两半可断言
         constexpr int kTriggeredDescriptorCount = 1200;
-        /// 与 Epoll/Iocp 各自那个私有常量同值：三处不一致就是缺陷，不是本用例该放宽的地方
+        /// 与 EventPoller/Iocp 各自那个私有常量同值：三处不一致就是缺陷，不是本用例该放宽的地方
         constexpr std::size_t kMaximumEventsPerWait = 1024;
 
         rlimit descriptorLimit{};
@@ -821,7 +823,7 @@ namespace AsynGyanis::Core
         // 写一次计数：dup 出来的副本共享同一个 open file description，因此全部副本同时可读
         ASSERT_TRUE(trigger.trigger());
 
-        Epoll            backend;
+        EventPoller      backend;
         std::vector<int> descriptors;
         descriptors.reserve(kTriggeredDescriptorCount);
         for (int index = 0; index < kTriggeredDescriptorCount; ++index)
@@ -858,12 +860,12 @@ namespace AsynGyanis::Core
      *          判据取「这一批里有没有可写位」而不是「最后有没有」：退化实现会在下一次等待开头把
      *          这条提交补发出去，绕几轮照样交付，只有第一批能把它和正确实现区分开。
      */
-    TEST(Epoll, InfiniteWaitDeliversInterestChangedToWritable)
+    TEST(EventPoller, InfiniteWaitDeliversInterestChangedToWritable)
     {
         /// 兜底唤醒的间隔：远大于「提交投进去就立刻完成」所需的时间，因此只有退化实现会等到它
         constexpr int kFallbackWakeupIntervalMs = 300;
 
-        Epoll backend;
+        EventPoller backend;
 
         const int timerDescriptor = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
         ASSERT_GE(timerDescriptor, 0);
@@ -910,7 +912,7 @@ namespace AsynGyanis::Core
      *          判据用比值而不是绝对值：绝对值随机器与构建档位漂，比值只反映「有没有那趟遍历」。
      *          三倍小表与三十二倍大表之间放 8 倍余量，退化实现（线性）落不进这个窗口。
      */
-    TEST(Epoll, WaitCostDoesNotScaleWithRegisteredDescriptorCount)
+    TEST(EventPoller, WaitCostDoesNotScaleWithRegisteredDescriptorCount)
     {
         constexpr std::size_t kSmallRegistrationCount = 128;
         constexpr std::size_t kLargeRegistrationCount = 4096;
@@ -939,7 +941,7 @@ namespace AsynGyanis::Core
                 descriptors.push_back(descriptor);
             }
 
-            Epoll backend;
+            EventPoller backend;
             for (const int descriptor: descriptors)
             {
                 if (!backend.addFileDescriptor(descriptor, EPOLLIN, nullptr))
@@ -1154,14 +1156,16 @@ namespace AsynGyanis::Core
      *          资源耗尽类告警就被埋进噪声里。
      * @note 只在 Windows 侧有意义：epoll 与 io_uring 后端注册即由内核盯着，没有这条重试路径。
      */
-    TEST(Epoll, ArmRetryForExpectedTransientLogsNothing)
+    TEST(EventPoller, ArmRetryForExpectedTransientLogsNothing)
     {
         ASSERT_TRUE(Platform::Socket::initialize());
 
-        ScopedWarningCapture capture;
-        std::size_t          warningCount = 0;
+        ScopedWarningCapture     capture;
+        std::size_t              warningCount = 0;
+        std::vector<std::string> diagnostics;
         {
-            Epoll backend;
+            EventPoller backend;
+            backend.setDiagnosticHandler([&diagnostics](const std::string_view message) { diagnostics.emplace_back(message); });
             // 后端先析构：它要等自己的完成通知排空，描述符不能先被关掉
             const int fileDescriptor = makeUnconnectedStreamSocket();
             ASSERT_NE(fileDescriptor, Platform::FileDescriptor::kInvalid) << "建不出套接字，环境不允许";
@@ -1177,10 +1181,12 @@ namespace AsynGyanis::Core
 
             ASSERT_TRUE(backend.delFileDescriptor(fileDescriptor));
             warningCount = capture.ledger().count();
+            backend.clearDiagnosticHandler();
             Platform::FileDescriptor::close(fileDescriptor);
         }
 
         EXPECT_EQ(warningCount, 0U) << "预期中的暂时状态被写成了告警，日志会随连接数线性膨胀";
+        EXPECT_TRUE(diagnostics.empty()) << "预期中的暂时状态被写成了后端诊断：正常发起的每条连接都会污染诊断通道";
         Platform::Socket::finalize();
     }
 
@@ -1201,16 +1207,16 @@ namespace AsynGyanis::Core
      */
     template<typename Loop>
     concept HasRemotePostOn = requires(Loop loopObject) { loopObject.postRemote(std::function<void()>{}); };
-    TEST(Epoll, RejectsConcurrentUseFromAnotherThread)
+    TEST(EventPoller, RejectsConcurrentUseFromAnotherThread)
     {
-        Epoll             backend;
+        EventPoller       backend;
         std::atomic<bool> isStopping{false};
         std::atomic<int>  rejectionCount{0};
 
         // 报错文本要当场核一遍：这条 throw 是违约者唯一看得见的指引，它点名的补救动作必须真按得下去
         std::mutex  messageGuard;
         std::string firstRejectionMessage;
-        const auto  noteRejection = [&messageGuard, &firstRejectionMessage](const Base::LogicException &error)
+        const auto  noteRejection = [&messageGuard, &firstRejectionMessage](const std::logic_error &error)
         {
             const std::lock_guard<std::mutex> guard(messageGuard);
             if (firstRejectionMessage.empty())
@@ -1229,7 +1235,7 @@ namespace AsynGyanis::Core
                                    {
                                        static_cast<void>(backend.wait(1));
                                    }
-                               } catch (const Base::LogicException &error)
+                               } catch (const std::logic_error &error)
                                {
                                    ++rejectionCount;
                                    noteRejection(error);
@@ -1244,7 +1250,7 @@ namespace AsynGyanis::Core
                                   try
                                   {
                                       static_cast<void>(backend.delFileDescriptor(0x7FFF));
-                                  } catch (const Base::LogicException &error)
+                                  } catch (const std::logic_error &error)
                                   {
                                       ++rejectionCount;
                                       noteRejection(error);
@@ -1284,13 +1290,13 @@ namespace AsynGyanis::Core
      *          后端为此留了一条按 SO_TYPE 的豁免。Linux 侧 epoll 不关心连接态，两边于是测到同一个
      *          使用方可见的后果：UDP 的可读等待会被报文叫醒。
      */
-    TEST(Epoll, DeliversReadableForAnUnconnectedDatagramSocket)
+    TEST(EventPoller, DeliversReadableForAnUnconnectedDatagramSocket)
     {
         // Windows 上任何 socket API 之前都要先有 Winsock 初始化引用，Linux 侧这个守卫是空操作
         const Platform::Socket::Initialization winsock{};
         ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
 
-        Epoll backend;
+        EventPoller backend;
 
         const auto [receiveEnd, receivePort] = bindLoopbackDatagram();
         ASSERT_GE(receiveEnd, 0) << "回环数据报套接字起不来，这条没法判";
@@ -1323,12 +1329,12 @@ namespace AsynGyanis::Core
      *          永远静默，最后只能由上层看门狗收场）。Linux 侧 epoll 在同一状态下本来就直接带上
      *          EPOLLERR|EPOLLHUP，两边判的是同一个使用方可见后果。
      */
-    TEST(Epoll, ReportsErrorBitsWhenPeerResetsTheConnection)
+    TEST(EventPoller, ReportsErrorBitsWhenPeerResetsTheConnection)
     {
         const Platform::Socket::Initialization winsock{};
         ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
 
-        Epoll backend;
+        EventPoller backend;
 
         const auto [clientEnd, peerEnd] = makeLoopbackTcpPair();
         ASSERT_GE(clientEnd, 0) << "回环 TCP 两端建不起来，这条没法判";
@@ -1365,12 +1371,12 @@ namespace AsynGyanis::Core
      *       （Windows 由 AcceptEx 接进后端自己的套接字，`::accept()` 看不见它，只能走 takeAcceptedSocket；
      *       Linux 侧直接 accept）。只判「报了就绪」会放过一份没有连接可取的空事件。
      */
-    TEST(Epoll, DeliversAcceptAfterARegisteredListenerStartsListening)
+    TEST(EventPoller, DeliversAcceptAfterARegisteredListenerStartsListening)
     {
         const Platform::Socket::Initialization winsock{};
         ASSERT_TRUE(winsock.isValid()) << "网络子系统起不来，这条没法判";
 
-        Epoll backend;
+        EventPoller backend;
         const auto [listener, listenerPort] = bindLoopbackListenerNotListening();
         ASSERT_GE(listener, 0) << "回环监听套接字起不来，这条没法判";
 

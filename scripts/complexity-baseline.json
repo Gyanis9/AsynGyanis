@@ -6,10 +6,6 @@
     "src/Base/Log/LoggerConfigLoader.cpp": [
       229
     ],
-    "src/Core/EventLoop/Iocp.cpp": [
-      129,
-      110
-    ],
     "src/Core/Process/WorkerSupervisor.cpp": [
       141
     ],
@@ -145,6 +141,10 @@
     ],
     "src/Platform/FileSystem/Win32FileWatcher.cpp": [
       172
+    ],
+    "src/Platform/IO/Iocp.cpp": [
+      129,
+      110
     ],
     "src/Platform/IO/MemoryMappedFile.cpp": [
       105

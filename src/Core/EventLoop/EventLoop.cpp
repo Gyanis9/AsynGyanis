@@ -5,6 +5,7 @@
 #include "Core/EventLoop/TimerQueue.h"
 
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace AsynGyanis::Core
@@ -13,6 +14,22 @@ namespace AsynGyanis::Core
     {
         /// 本线程正在跑的事件循环（run() 期间发布、返回前清除）：currentEventLoop() 与 WorkloadScope 读它
         thread_local EventLoop *t_currentEventLoop = nullptr;
+
+        /**
+         * @brief 建立事件后端，并把 Platform 的标准异常翻译成框架异常
+         * @details 后端构造失败发生在启动期，调用方按 Base::SystemException 兜；Platform 不依赖 Base，
+         *          翻译只发生在 Core 的边界
+         */
+        Platform::EventPoller createEventPoller()
+        {
+            try
+            {
+                return Platform::EventPoller{};
+            } catch (const std::system_error &error)
+            {
+                throw Base::SystemException(error.what(), error.code());
+            }
+        }
 
         /// @brief 探针读数的视图化：空指针交回空视图（先取一份指针再判，避免两次 load 撞出空构造）
         [[nodiscard]] std::string_view workloadViewOf(const char *const workloadName) noexcept
@@ -105,8 +122,10 @@ namespace AsynGyanis::Core
         }
     } // namespace
 
-    EventLoop::EventLoop() : m_timerQueue(*this)
+    EventLoop::EventLoop() : m_epoll(createEventPoller()), m_timerQueue(*this)
     {
+        // 事件后端的异步故障（IOCP 探针武装失败）交回本循环的日志；Platform 不认识 Base
+        m_epoll.setDiagnosticHandler([](const std::string_view message) { LOG_WARN_FMT("{}", message); });
         // 唤醒描述符挂载一个固定哨兵指针：run() 靠 data.ptr 是否等于它来区分
         // 「唤醒通知」与「IoWatcher 的 I/O 事件」，因此两者不能共用同一个用户数据槽
         m_scheduler.setWakeupNotifier(&m_wakeup);
@@ -153,6 +172,7 @@ namespace AsynGyanis::Core
 
         // 成员销毁顺序是 m_wakeup 早于 m_epoll，若不先摘除注册，唤醒 socket 会在仍属于
         // 事件后端时被关闭，后端仍可能持有它的在途操作并访问失效句柄
+        m_epoll.clearDiagnosticHandler();
         m_epoll.delFileDescriptor(m_wakeup.readDescriptor());
     }
 
@@ -205,7 +225,14 @@ namespace AsynGyanis::Core
                 const int timeoutMs = m_scheduler.hasWork() ? 0 : -1;
                 // 进等待相：这条工作段到此为止，它的时长与是否超阈值都在 enterPhase 里记账
                 enterPhase(LoopPhase::WaitingForEvents);
-                auto events = m_epoll.wait(timeoutMs);
+                std::span<epoll_event> events;
+                try
+                {
+                    events = m_epoll.wait(timeoutMs);
+                } catch (const std::system_error &error)
+                {
+                    throw Base::SystemException(error.what(), error.code());
+                }
                 // 醒过来即回到工作相。等待那一段单独记成一相，不算进工作段耗时——空闲不是停顿
                 enterPhase(LoopPhase::Working);
                 dispatchReadyEvents(events);
@@ -286,7 +313,7 @@ namespace AsynGyanis::Core
         }
     }
 
-    Epoll &EventLoop::epoll() noexcept
+    Platform::EventPoller &EventLoop::epoll() noexcept
     {
         return m_epoll;
     }

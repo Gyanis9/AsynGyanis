@@ -11,7 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Core/EventLoop/EventBackendContract.h"
+#include "Platform/IO/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 // 只借 wepoll 的 epoll_event 与 epoll 事件位定义：本后端不经过它的 AFD 轮询，
@@ -20,13 +20,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief Windows 完成端口（IOCP）事件后端，接口与 Epoll 一致
@@ -47,12 +48,12 @@ namespace AsynGyanis::Core
      *          写方向是零字节 WSASend、监听用 AcceptEx；水平触发由下一次 wait() 重新武装。
      * @see Epoll, IoWatcher, EventLoop
      */
-    class ASYN_CORE_API Iocp
+    class ASYN_PLATFORM_API Iocp
     {
     public:
         /**
          * @brief 创建完成端口
-         * @throws Base::SystemException CreateIoCompletionPort 失败
+         * @throws std::system_error CreateIoCompletionPort 失败
          */
         Iocp();
 
@@ -111,7 +112,7 @@ namespace AsynGyanis::Core
          * @brief 取出完成通知并翻译成 epoll_event 列表
          * @param timeoutMs 超时毫秒数，-1 表示无限等待
          * @return std::span<epoll_event> 本次就绪的事件（可能为空）
-         * @throws Base::SystemException GetQueuedCompletionStatusEx 失败（超时与告警等待除外）
+         * @throws std::system_error GetQueuedCompletionStatusEx 失败（超时与告警等待除外）
          */
         [[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0);
 
@@ -165,6 +166,18 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
+        /**
+         * @brief 安装诊断回调：探针武装失败等异步故障按一条文本交回调用方
+         * @details 回调只在所属事件循环线程上调用；未安装时诊断被丢弃。
+         * @param handler 诊断文本的接收者；传空函数对象等价于清空
+         */
+        void setDiagnosticHandler(std::function<void(std::string_view)> handler);
+
+        /**
+         * @brief 清空诊断回调
+         */
+        void clearDiagnosticHandler() noexcept;
+
     private:
         /**
          * @brief 后端独占标记：同一份完成端口状态不许被两个线程同时用
@@ -186,7 +199,7 @@ namespace AsynGyanis::Core
              * @brief 抢独占标记，抢不到就抛
              * @param backend 目标后端
              * @param operation 调用方所在的操作名（只用于报错文本）
-             * @throws Base::LogicException 后端正被使用（含同线程重入）
+             * @throws std::logic_error 后端正被使用（含同线程重入）
              */
             ExclusiveUse(Iocp &backend, const char *operation);
 
@@ -304,6 +317,12 @@ namespace AsynGyanis::Core
          */
         void noteArmFailure(SocketState &state, uint32_t direction, std::string_view reason, int socketError);
 
+        /**
+         * @brief 把一条诊断文本交给已安装的回调；没有回调时丢弃
+         * @param message 诊断文本
+         */
+        void reportDiagnostic(std::string_view message) const;
+
         /// 重试上一次投递失败的方向（在每次 wait() 阻塞之前）
         void retryFailedArms();
 
@@ -332,9 +351,10 @@ namespace AsynGyanis::Core
         /// 空槽标记（下标表里的哨兵值）。删除只发生在整表重置时，因此探测到空槽即可判定「没有」
         static constexpr std::size_t kEmptyResultSlot = static_cast<std::size_t>(-1);
 
-        Platform::EpollHandle         m_iocp{nullptr}; ///< 完成端口句柄
-        std::vector<OVERLAPPED_ENTRY> m_entries;       ///< 单次取出的完成通知
-        std::vector<epoll_event>      m_results;       ///< 翻译结果（wait() 的返回值指向它）
+        Platform::EpollHandle                 m_iocp{nullptr};     ///< 完成端口句柄
+        std::function<void(std::string_view)> m_diagnosticHandler; ///< 诊断回调；未安装时丢弃
+        std::vector<OVERLAPPED_ENTRY>         m_entries;           ///< 单次取出的完成通知
+        std::vector<epoll_event>              m_results;           ///< 翻译结果（wait() 的返回值指向它）
         /// 同一批完成通知的合并索引：data.ptr → m_results 下标，与 m_results 同生命周期。
         /// 用开放寻址的扁平表而不是 unordered_map：后者每插一个键分配一个节点，
         /// 而合并是每条完成通知都要走的一步（把同一注册对象两个方向的完成并入一条 epoll_event）
@@ -359,4 +379,4 @@ namespace AsynGyanis::Core
 
     // 契约复检：完成端口后端必须与 epoll / io_uring 同构（EventLoop 与 IoWatcher 因此无平台分支）
     static_assert(EventBackend<Iocp>);
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform

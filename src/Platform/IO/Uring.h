@@ -11,21 +11,23 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Core/EventLoop/EventBackendContract.h"
+#include "Platform/IO/EventBackendContract.h"
 #include "Platform/Platform.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <vector>
 
 struct io_uring_sqe;
 struct io_uring_cqe;
 struct __kernel_timespec;
 
-namespace AsynGyanis::Core
+namespace AsynGyanis::Platform
 {
     /**
      * @brief io_uring 事件后端，成员集合与 Epoll 完全一致
@@ -42,12 +44,12 @@ namespace AsynGyanis::Core
      *          本地容器要实跑得放开 seccomp：默认挡掉 `io_uring_setup`（返回 EPERM），
      *          需 `--security-opt seccomp=unconfined`。
      */
-    class ASYN_CORE_API Uring
+    class ASYN_PLATFORM_API Uring
     {
     public:
         /**
          * @brief 创建 io_uring 实例（io_uring_setup + 环形映射）
-         * @throws Base::SystemException 内核不支持 io_uring 或映射失败
+         * @throws std::system_error 内核不支持 io_uring 或映射失败
          */
         Uring();
 
@@ -97,7 +99,7 @@ namespace AsynGyanis::Core
          *          不得再进入 wait()，也不得把视图跨线程留着用（Epoll 侧同一约束）
          * @note 一次最多返回 kMaximumEventCount 条。取满不算丢：没处理的完成通知仍留在 CQ 环里
          *       （头指针不越过未处理的那条），下一次 wait() 开头就先把它们收掉
-         * @throws Base::SystemException 提交或等待的系统调用失败
+         * @throws std::system_error 提交或等待的系统调用失败
          */
         [[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0);
 
@@ -105,6 +107,22 @@ namespace AsynGyanis::Core
          * @brief 取 ring 描述符（io_uring_setup 返回的 fd）
          */
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
+
+        /**
+         * @brief 安装诊断回调（io_uring 没有异步探针，保留空实现以统一接口）
+         * @param handler 诊断文本的接收者
+         */
+        void setDiagnosticHandler(std::function<void(std::string_view)> handler) noexcept
+        {
+            static_cast<void>(handler);
+        }
+
+        /**
+         * @brief 清空诊断回调（io_uring 的空实现）
+         */
+        void clearDiagnosticHandler() noexcept
+        {
+        }
 
     private:
         /// 单次 wait() 最多交付的就绪事件数，同时是落地缓冲的固定容量。三个后端各拿这一个数定自己的
@@ -286,4 +304,4 @@ namespace AsynGyanis::Core
 
     // 契约复检：io_uring 后端必须与 epoll / IOCP 同构（EventLoop 与 IoWatcher 因此无平台分支）
     static_assert(EventBackend<Uring>);
-} // namespace AsynGyanis::Core
+} // namespace AsynGyanis::Platform
