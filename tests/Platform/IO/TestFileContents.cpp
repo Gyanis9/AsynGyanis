@@ -47,6 +47,39 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 整个文件那条便捷重载：长度取自元数据，内容与按区间读一致
+     */
+    TEST(FileContents, WholeFileOverloadReadsEveryByte)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_WholeOverload");
+        ASSERT_TRUE(temporaryDirectory.writeFile("asset.bin", "hello-static-body"));
+
+        const std::expected<std::string, std::error_code> contents = readFileContents(temporaryDirectory.path() / "asset.bin");
+        ASSERT_TRUE(contents.has_value()) << "读取失败：" << contents.error().message();
+        EXPECT_EQ(*contents, "hello-static-body");
+    }
+
+    /**
+     * @brief 空文件是成功读出的空串，不是错误；要不要把空当失败由调用方决定
+     */
+    TEST(FileContents, WholeFileOverloadKeepsAnEmptyFileAsSuccess)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_WholeEmpty");
+        ASSERT_TRUE(temporaryDirectory.writeFile("empty.bin", ""));
+
+        const std::expected<std::string, std::error_code> contents = readFileContents(temporaryDirectory.path() / "empty.bin");
+        ASSERT_TRUE(contents.has_value()) << "空文件不该被这条重载当成读取失败";
+        EXPECT_TRUE(contents->empty());
+    }
+
+    TEST(FileContents, WholeFileOverloadReportsMissingPath)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("FileContents_WholeMissing");
+
+        EXPECT_FALSE(readFileContents(temporaryDirectory.path() / "absent.bin").has_value()) << "不存在的路径必须交回错误码";
+    }
+
+    /**
      * @brief 钉住：按 (偏移, 长度) 只交出区间内的那段字节，不带头不带尾
      */
     TEST(FileContents, ReadsOnlyTheRequestedRange)

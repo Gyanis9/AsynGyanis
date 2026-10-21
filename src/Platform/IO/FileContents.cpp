@@ -176,4 +176,20 @@ namespace AsynGyanis::Platform
         }
         return contents;
     }
+
+    std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath) noexcept
+    {
+        // 先问元数据要长度，再走同一条按区间读的路径；文件在两步之间变短只会得到短读，不会越界
+        std::error_code      sizeError;
+        const std::uintmax_t fileSize = std::filesystem::file_size(filePath, sizeError);
+        if (sizeError)
+        {
+            return std::unexpected(sizeError);
+        }
+        if (fileSize > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max()))
+        {
+            return std::unexpected(std::make_error_code(std::errc::value_too_large));
+        }
+        return readFileContents(filePath, 0, static_cast<std::size_t>(fileSize));
+    }
 } // namespace AsynGyanis::Platform

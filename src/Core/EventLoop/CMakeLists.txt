@@ -12,6 +12,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/Timer.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.h
         ${CMAKE_CURRENT_LIST_DIR}/TimerQueue.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WakeupFailureReport.h
 )
 
 # 事件后端（epoll/Iocp/Uring）与契约在 Platform/IO：Core 只消费 Platform::EventPoller。

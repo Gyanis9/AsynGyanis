@@ -3,6 +3,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/EventLoop/TimerQueue.h"
+#include "Core/EventLoop/WakeupFailureReport.h"
 
 #include <string_view>
 #include <system_error>
@@ -42,19 +43,8 @@ namespace AsynGyanis::Core
          */
         void reportWakeupWriteFailure() noexcept
         {
-            static std::atomic<bool> hasWarned{false};
-            if (hasWarned.exchange(true, std::memory_order_relaxed))
-            {
-                return;
-            }
-
-            try
-            {
-                LOG_WARN_FMT("事件循环: 唤醒写入失败——本次 stop/唤醒请求可能送不出去，循环会继续睡在等待里；"
-                             "同一失败只报这一条");
-            } catch (...)
-            {
-            }
+            reportWakeupWriteFailureOnce("事件循环: 唤醒写入失败——本次 stop/唤醒请求可能送不出去，循环会继续睡在等待里；"
+                                         "同一失败只报这一条");
         }
 
         /**

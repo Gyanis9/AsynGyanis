@@ -3,6 +3,7 @@
 #include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
 #include "Core/Tls/SessionTicketKeyRing.h"
+#include "Platform/IO/FileContents.h"
 #include "Platform/System/Process.h"
 
 #include <openssl/ocsp.h>
@@ -14,8 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <iterator>
+#include <expected>
 #include <memory>
 #include <shared_mutex>
 #include <string_view>
@@ -120,24 +120,6 @@ namespace AsynGyanis::Core
             static const int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, [](void *, void *pointer, CRYPTO_EX_DATA *, int, long, void *)
                                                               { delete static_cast<StapledOcspResponse *>(pointer); });
             return index;
-        }
-
-        /**
-         * @brief 读取整个文件为字节串
-         * @param filePath 文件路径（二进制读取）
-         * @param output 出参，文件内容
-         * @return true 读取成功且文件非空
-         */
-        bool readFileBytes(const std::string &filePath, std::string &output)
-        {
-            std::ifstream stream(filePath, std::ios::in | std::ios::binary);
-            if (!stream)
-            {
-                return false;
-            }
-
-            output.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
-            return !output.empty();
         }
 
         /**
@@ -745,13 +727,13 @@ namespace AsynGyanis::Core
         // 重读失败与证书加载失败同语义——本次轮换整体失败，旧上下文继续服务
         if (!m_ocspResponseFile.empty())
         {
-            std::string responseBytes;
-            if (!readFileBytes(m_ocspResponseFile, responseBytes))
+            std::expected<std::string, std::error_code> responseBytes = Platform::readFileContents(m_ocspResponseFile);
+            if (!responseBytes.has_value() || responseBytes->empty())
             {
                 SSL_CTX_free(newContext);
                 return false;
             }
-            attachOcspResponse(newContext, std::move(responseBytes));
+            attachOcspResponse(newContext, std::move(*responseBytes));
         }
 
         // 复现已装载的票据密钥：漏掉这一步会让一次证书续期把「跨进程共享的恢复能力」悄悄退回
@@ -1000,16 +982,16 @@ namespace AsynGyanis::Core
     bool TlsContext::loadOcspResponse(const std::string &ocspResponseFile) const
     {
         // 先读文件再进锁：读盘不持锁，避免把文件 IO 拖进与 createSSL() 争用的关键区
-        std::string responseBytes;
-        if (!readFileBytes(ocspResponseFile, responseBytes))
+        std::expected<std::string, std::error_code> responseBytes = Platform::readFileContents(ocspResponseFile);
+        if (!responseBytes.has_value() || responseBytes->empty())
         {
             return false;
         }
 
         // 装订侧只认可解析的 DER（见回调里的说明）：在加载时就把坏文件挡掉，
         // 好过服务期间每次握手都解析失败、装订悄悄缺席
-        const unsigned char *cursor = reinterpret_cast<const unsigned char *>(responseBytes.data());
-        OCSP_RESPONSE       *probe  = d2i_OCSP_RESPONSE(nullptr, &cursor, static_cast<long>(responseBytes.size()));
+        const unsigned char *cursor = reinterpret_cast<const unsigned char *>(responseBytes->data());
+        OCSP_RESPONSE       *probe  = d2i_OCSP_RESPONSE(nullptr, &cursor, static_cast<long>(responseBytes->size()));
         if (probe == nullptr)
         {
             ERR_clear_error();
@@ -1018,7 +1000,7 @@ namespace AsynGyanis::Core
         OCSP_RESPONSE_free(probe);
 
         std::lock_guard<std::mutex> guard(m_contextMutex);
-        attachOcspResponse(m_context, std::move(responseBytes));
+        attachOcspResponse(m_context, std::move(*responseBytes));
         // 记住路径：reloadCertificate() 按它重读，保证响应与证书一起换新
         m_ocspResponseFile = ocspResponseFile;
         return true;

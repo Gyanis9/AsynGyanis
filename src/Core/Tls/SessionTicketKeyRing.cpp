@@ -1,6 +1,7 @@
 #include "Core/Tls/SessionTicketKeyRing.h"
 
 #include "Core/Exception/CoreException.h"
+#include "Platform/IO/FileContents.h"
 
 #include <openssl/core_names.h>
 #include <openssl/err.h>
@@ -11,8 +12,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstring>
-#include <fstream>
-#include <iterator>
+#include <expected>
 #include <memory>
 
 namespace AsynGyanis::Core
@@ -37,24 +37,6 @@ namespace AsynGyanis::Core
         bool isUsableTicketKeyLength(const std::size_t length) noexcept
         {
             return length == kTicketKeyLengthAes128 || length == kTicketKeyLengthAes256;
-        }
-
-        /**
-         * @brief 整个文件读成字节串
-         * @param filePath 文件路径（二进制读取）
-         * @param output 出参，文件内容
-         * @return true 读取成功且文件非空
-         */
-        bool readFileBytes(const std::string &filePath, std::string &output)
-        {
-            std::ifstream stream(filePath, std::ios::in | std::ios::binary);
-            if (!stream)
-            {
-                return false;
-            }
-
-            output.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
-            return !output.empty();
         }
 
         /**
@@ -194,19 +176,19 @@ namespace AsynGyanis::Core
 
         for (const std::string &keyFile: keyFiles)
         {
-            std::string keyBytes;
-            if (!readFileBytes(keyFile, keyBytes))
+            std::expected<std::string, std::error_code> keyBytes = Platform::readFileContents(keyFile);
+            if (!keyBytes.has_value() || keyBytes->empty())
             {
                 throw CoreException("装载会话票据密钥失败：读不出内容，文件不可读或为空——" + keyFile);
             }
-            if (!isUsableTicketKeyLength(keyBytes.size()))
+            if (!isUsableTicketKeyLength(keyBytes->size()))
             {
                 // 长度决定 HMAC 段与 AES 段怎么切，写错就是配置错误：48 走 AES-128、80 走 AES-256
-                throw CoreException("装载会话票据密钥失败：" + keyFile + " 是 " + std::to_string(keyBytes.size()) +
+                throw CoreException("装载会话票据密钥失败：" + keyFile + " 是 " + std::to_string(keyBytes->size()) +
                                     " 字节，只接受 48（AES-128）或 80（AES-256）字节的二进制密钥"
                                     "（openssl rand 48 > ticket.key 即可产出）");
             }
-            keys.push_back(std::move(keyBytes));
+            keys.push_back(std::move(*keyBytes));
         }
     }
 

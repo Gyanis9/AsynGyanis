@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=3.0.0
-# headers=307 entries=8985
+# headers=307 entries=8986
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8521,6 +8521,7 @@ src/Platform/IO/EventPoller.h	namespace AsynGyanis::Platform
 src/Platform/IO/EventPoller.h	static_assert(EventBackend<EventPoller>)
 src/Platform/IO/EventPoller.h	using EventPoller = Epoll
 src/Platform/IO/FileContents.h	[[nodiscard]] ASYN_PLATFORM_API std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, std::size_t offset, std::size_t length, std::string &target, FileBasicInfo *openedAs = nullptr) noexcept
+src/Platform/IO/FileContents.h	[[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath) noexcept
 src/Platform/IO/FileContents.h	[[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath, std::size_t offset, std::size_t length) noexcept
 src/Platform/IO/FileContents.h	namespace AsynGyanis::Platform
 src/Platform/IO/FileDescriptor.h	class ASYN_PLATFORM_API FileDescriptor

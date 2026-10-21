@@ -2,6 +2,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/WakeupFailureReport.h"
 #include "Platform/IO/EventNotifier.h"
 
 #include <atomic>
@@ -18,19 +19,8 @@ namespace AsynGyanis::Core
          */
         void reportWakeupWriteFailure() noexcept
         {
-            static std::atomic<bool> hasWarned{false};
-            if (hasWarned.exchange(true, std::memory_order_relaxed))
-            {
-                return;
-            }
-
-            try
-            {
-                LOG_WARN_FMT("调度器: 唤醒写入失败——投递已入队，但目标事件循环可能正睡在无限等待里，"
-                             "要等下一次唤醒（更多投递或事件）才会被处理；同一失败只报这一条");
-            } catch (...)
-            {
-            }
+            reportWakeupWriteFailureOnce("调度器: 唤醒写入失败——投递已入队，但目标事件循环可能正睡在无限等待里，"
+                                         "要等下一次唤醒（更多投递或事件）才会被处理；同一失败只报这一条");
         }
     } // namespace
 

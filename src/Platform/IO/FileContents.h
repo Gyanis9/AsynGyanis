@@ -56,4 +56,13 @@ namespace AsynGyanis::Platform
      */
     [[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath, std::size_t offset,
                                                                                                  std::size_t length) noexcept;
+
+    /**
+     * @brief 读出整个文件，交出一份新的字符串
+     * @details 长度取自文件系统元数据，再走 (0, 长度) 那条唯一实现；空文件返回空串而不是错误，
+     *          「空算不算问题」由调用方判断。
+     * @param filePath 文件路径
+     * @return std::expected<std::string, std::error_code> 全部字节（可能为空）；取不到文件大小或读失败时给出错误码
+     */
+    [[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath) noexcept;
 } // namespace AsynGyanis::Platform
