@@ -98,13 +98,18 @@ def test_layering(root: Path) -> None:
 def test_boundary(root: Path) -> None:
     make_five_modules(root)
     baseline = root / "baseline.json"
-    write(root / "src" / "Core" / "bad.cpp", "#include <windows.h>\n#if _WIN32\nvoid f() { ::fork(); }\n#endif\n")
+    write(
+        root / "src" / "Core" / "bad.cpp",
+        '#include <windows.h>\n#if _WIN32\nvoid f() { ::fork(); }\nvoid h() { getsockname(0, nullptr, nullptr); }\n#endif\n',
+    )
 
     result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
     expect("boundary 缺基线", result, 2, "基线")
 
     result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1", "--write")
     expect("boundary 重录", result, 0)
+    if "getsockname" not in baseline.read_text(encoding="utf-8"):
+        raise AssertionError("boundary 没识别未加 :: 的 getsockname")
 
     result = run_script("check-platform-boundary.py", root, "--baseline", str(baseline), "--min-files", "1")
     expect("boundary 基线同解", result, 0, "PLATFORM_BOUNDARY_GATE=OK")

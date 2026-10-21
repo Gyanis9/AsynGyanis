@@ -420,6 +420,18 @@
     },
     {
       "path": "src/Core/Socket/AsyncSocket.cpp",
+      "category": "os-api",
+      "symbol": "getpeername",
+      "count": 1
+    },
+    {
+      "path": "src/Core/Socket/AsyncSocket.cpp",
+      "category": "os-api",
+      "symbol": "getsockname",
+      "count": 1
+    },
+    {
+      "path": "src/Core/Socket/AsyncSocket.cpp",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
       "count": 5

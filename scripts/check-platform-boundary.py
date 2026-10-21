@@ -63,6 +63,7 @@ PLATFORM_TOKENS = ("ASYN_PLATFORM_WIN32", "ASYN_PLATFORM_LINUX", "_WIN32", "__li
 COND_RE = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef|elif)\b")
 INCLUDE_RE = re.compile(r"^\s*#\s*include\s*<([^>]+)>")
 GLOBAL_CALL_RE = re.compile(r"(?<![A-Za-z0-9_>:])::([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+UNQUALIFIED_CALL_RE = re.compile(r"(?<![A-Za-z0-9_>.:])(getpeername|getsockname)\s*\(")
 STD_SIGNAL_RE = re.compile(r"\bstd::signal\s*\(")
 WIN_API_RE = re.compile(
     r"\b(CreateIoCompletionPort|GetQueuedCompletionStatus|PostQueuedCompletionStatus|"
@@ -232,6 +233,8 @@ def classify(path: Path) -> list[tuple[str, str]]:
         for call in GLOBAL_CALL_RE.finditer(line):
             if call.group(1) in OS_CALL_NAMES:
                 findings.append(("os-api", "::" + call.group(1)))
+        for call in UNQUALIFIED_CALL_RE.finditer(line):
+            findings.append(("os-api", call.group(1)))
         if STD_SIGNAL_RE.search(line):
             findings.append(("os-api", "std::signal"))
         for win in WIN_API_RE.finditer(line):
