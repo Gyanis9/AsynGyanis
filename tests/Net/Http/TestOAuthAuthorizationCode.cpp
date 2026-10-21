@@ -168,6 +168,10 @@ namespace AsynGyanis::Net
                         }
                     }
 
+                    // 计数在回响应之前发布：客户端拿到响应后立刻断言 requestCount 时，
+                    // 不能还停在这条 fetch_add 之前（并行跑全量时实测过一次 1≠2 的假红）
+                    m_requests.fetch_add(1, std::memory_order_acq_rel);
+
                     std::string statusLine;
                     std::string responseBody;
                     {
@@ -202,7 +206,6 @@ namespace AsynGyanis::Net
                         sentTotal += static_cast<std::size_t>(justSent);
                     }
                     Platform::FileDescriptor::close(connection);
-                    m_requests.fetch_add(1, std::memory_order_acq_rel);
                 }
                 Platform::FileDescriptor::close(listener);
             }
