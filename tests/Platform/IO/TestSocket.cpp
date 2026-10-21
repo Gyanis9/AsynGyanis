@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string_view>
@@ -472,4 +473,67 @@ namespace AsynGyanis::Platform
         FileDescriptor::close(descriptor);
     }
 #endif
+
+    /**
+     * @brief 钉住：create() 交出的描述符可直接交给本类其它入口
+     */
+    TEST(Socket, CreateReturnsUsableDescriptor)
+    {
+        Socket::initialize();
+
+        const int descriptor = Socket::create(AF_INET, SOCK_STREAM);
+        ASSERT_GE(descriptor, 0);
+        static_cast<void>(FileDescriptor::close(descriptor));
+    }
+
+    /**
+     * @brief 钉住：数据面包装的接线完整（bind/listen/connect/accept/send/receive/shutdown）
+     * @details 连接这一对用阻塞描述符：create() 交的是非阻塞的，connect 会走 EINPROGRESS
+     *          那条路；这里要验的是包装的接线，不是非阻塞连接的状态机。
+     */
+    TEST(Socket, BindListenConnectSendReceiveRoundTrip)
+    {
+        Socket::initialize();
+
+        const int listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(listener, 0);
+
+        sockaddr_in address{};
+        address.sin_family      = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port        = 0;
+        ASSERT_TRUE(Socket::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)));
+        ASSERT_TRUE(Socket::listen(listener, 1));
+
+        socklen_t addressLength = sizeof(address);
+        ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr *>(&address), &addressLength), 0);
+
+        const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+        ASSERT_GE(client, 0);
+        ASSERT_TRUE(Socket::connect(client, reinterpret_cast<const sockaddr *>(&address), addressLength));
+
+        const int accepted = Socket::accept(listener, nullptr, nullptr);
+        ASSERT_GE(accepted, 0);
+
+        const char request[] = "ping";
+        ASSERT_EQ(Socket::send(client, request, sizeof(request), 0), static_cast<ssize_t>(sizeof(request)));
+        std::array<char, sizeof(request)> response{};
+        ASSERT_EQ(Socket::receive(accepted, response.data(), response.size(), 0), static_cast<ssize_t>(sizeof(request)));
+        EXPECT_STREQ(response.data(), request);
+
+        EXPECT_TRUE(Socket::shutdown(client, SHUT_WR));
+        EXPECT_TRUE(Socket::shutdown(accepted, SHUT_RDWR));
+        static_cast<void>(FileDescriptor::close(client));
+        static_cast<void>(FileDescriptor::close(accepted));
+        static_cast<void>(FileDescriptor::close(listener));
+    }
+
+    /**
+     * @brief 钉住：失败后 lastError() 给出非零错误码
+     */
+    TEST(Socket, LastErrorIsNonZeroAfterFailingOperation)
+    {
+        EXPECT_FALSE(Socket::bind(FileDescriptor::kInvalid, nullptr, 0));
+        EXPECT_NE(Socket::lastError().value(), 0);
+    }
 } // namespace AsynGyanis::Platform

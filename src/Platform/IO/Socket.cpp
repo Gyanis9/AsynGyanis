@@ -31,6 +31,21 @@ namespace AsynGyanis::Platform
 {
     namespace
     {
+        /// 无效描述符统一在这里拦下：Windows 的 SOCKET 是无符号的，-1 直接传进系统调用会触发
+        /// 有符号/无符号转换告警，且回报的错误码不如「不是套接字」准确
+        bool rejectInvalidDescriptor(const int descriptor) noexcept
+        {
+            if (descriptor >= 0)
+            {
+                return false;
+            }
+            PlatformError::setLastErrorCode(PlatformError::kNotASocket);
+            return true;
+        }
+    } // namespace
+
+    namespace
+    {
 #if ASYN_PLATFORM_WIN32
         /**
          * @brief Winsock 初始化引用计数状态
@@ -138,6 +153,82 @@ namespace AsynGyanis::Platform
 #else
         return ::accept4(listenDescriptor, address, addressLength, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #endif
+    }
+
+    int Socket::create(const int domain, const int type) noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        const SOCKET socketHandle   = ::socket(domain, type, 0);
+        const int    fileDescriptor = static_cast<int>(socketHandle);
+        if (fileDescriptor < 0)
+        {
+            return FileDescriptor::kInvalid;
+        }
+        static_cast<void>(FileDescriptor::markNonInheritable(fileDescriptor));
+        static_cast<void>(FileDescriptor::setNonBlocking(fileDescriptor));
+        return fileDescriptor;
+#else
+        return ::socket(domain, type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+#endif
+    }
+
+    bool Socket::bind(const int descriptor, const sockaddr *const address, const socklen_t addressLength) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::bind(descriptor, address, addressLength) == 0;
+    }
+
+    bool Socket::listen(const int descriptor, const int backlog) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::listen(descriptor, backlog) == 0;
+    }
+
+    bool Socket::connect(const int descriptor, const sockaddr *const address, const socklen_t addressLength) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::connect(descriptor, address, addressLength) == 0;
+    }
+
+    ssize_t Socket::send(const int descriptor, const void *const buffer, const std::size_t length, const int flags) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return -1;
+        }
+        return static_cast<ssize_t>(::send(descriptor, static_cast<const char *>(buffer), static_cast<int>(length), flags));
+    }
+
+    ssize_t Socket::receive(const int descriptor, void *const buffer, const std::size_t length, const int flags) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return -1;
+        }
+        return static_cast<ssize_t>(::recv(descriptor, static_cast<char *>(buffer), static_cast<int>(length), flags));
+    }
+
+    bool Socket::shutdown(const int descriptor, const int how) noexcept
+    {
+        if (rejectInvalidDescriptor(descriptor))
+        {
+            return false;
+        }
+        return ::shutdown(descriptor, how) == 0;
+    }
+
+    std::error_code Socket::lastError() noexcept
+    {
+        return std::error_code(PlatformError::lastSocketErrorCode(), std::system_category());
     }
 
     bool Socket::setReuseAddress(const int descriptor) noexcept
@@ -838,15 +929,6 @@ namespace AsynGyanis::Platform
 #endif
     }
 
-    namespace
-    {
-        /// 把最近一次套接字调用失败包成 expected 的失败值（两侧都按套接字错误码取）
-        std::error_code lastSocketError() noexcept
-        {
-            return std::error_code(PlatformError::lastSocketErrorCode(), std::system_category());
-        }
-    } // namespace
-
     std::expected<Socket::HandoffChannelEndpoint, std::error_code> Socket::openHandoffChannel() noexcept
     {
         HandoffChannelEndpoint endpoint;
@@ -854,7 +936,7 @@ namespace AsynGyanis::Platform
         const int descriptor = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         if (descriptor < 0)
         {
-            return std::unexpected(lastSocketError());
+            return std::unexpected(Socket::lastError());
         }
         // 交接通道是一次性的，不留 TIME_WAIT 干扰下一次换代；继承位一律取消
         static_cast<void>(setReuseAddress(descriptor));
@@ -866,14 +948,14 @@ namespace AsynGyanis::Platform
         address.sin_port        = 0;
         if (::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(descriptor, 1) != 0)
         {
-            const std::error_code failure = lastSocketError();
+            const std::error_code failure = Socket::lastError();
             static_cast<void>(FileDescriptor::close(descriptor));
             return std::unexpected(failure);
         }
         socklen_t addressLength = static_cast<socklen_t>(sizeof(address));
         if (::getsockname(descriptor, reinterpret_cast<sockaddr *>(&address), &addressLength) != 0)
         {
-            const std::error_code failure = lastSocketError();
+            const std::error_code failure = Socket::lastError();
             static_cast<void>(FileDescriptor::close(descriptor));
             return std::unexpected(failure);
         }
@@ -925,7 +1007,7 @@ namespace AsynGyanis::Platform
         const int descriptor = static_cast<int>(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
         if (descriptor < 0)
         {
-            const std::error_code failure = lastSocketError();
+            const std::error_code failure = Socket::lastError();
             std::error_code       ignored;
             static_cast<void>(std::filesystem::remove(directory, ignored));
             return std::unexpected(failure);
@@ -937,7 +1019,7 @@ namespace AsynGyanis::Platform
         const bool isBound = ::bind(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0 && ::listen(descriptor, 1) == 0;
         if (!isBound)
         {
-            const std::error_code failure = lastSocketError();
+            const std::error_code failure = Socket::lastError();
             static_cast<void>(FileDescriptor::close(descriptor));
             std::error_code ignored;
             static_cast<void>(std::filesystem::remove(directory, ignored));
@@ -1032,7 +1114,7 @@ namespace AsynGyanis::Platform
             }
             if (PlatformError::lastSocketErrorCode() != PlatformError::kInterrupted)
             {
-                return std::unexpected(lastSocketError());
+                return std::unexpected(Socket::lastError());
             }
         }
     }

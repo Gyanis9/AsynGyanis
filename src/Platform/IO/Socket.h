@@ -14,6 +14,7 @@
 #include "Platform/Platform.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <string>
@@ -133,6 +134,77 @@ namespace AsynGyanis::Platform
          * @return int 新连接描述符，失败返回 FileDescriptor::kInvalid
          */
         static int accept(int listenDescriptor, sockaddr *address, socklen_t *addressLength) noexcept;
+
+        /**
+         * @brief 创建一个非阻塞、close-on-exec 的套接字
+         * @details POSIX 用 SOCK_NONBLOCK|SOCK_CLOEXEC 在创建时一次置好；Windows 没有等价标志，
+         *          建完再设非阻塞与不可继承。
+         * @param domain 地址族（AF_INET/AF_INET6）
+         * @param type 套接字类型（SOCK_STREAM/SOCK_DGRAM）
+         * @return int 新描述符；失败返回 FileDescriptor::kInvalid，原因见 PlatformError::lastSocketErrorCode()
+         */
+        static int create(int domain, int type) noexcept;
+
+        /**
+         * @brief 绑定本地地址
+         * @param descriptor 目标套接字
+         * @param address 地址本体
+         * @param addressLength 地址长度
+         * @return true 绑定成功；false 描述符无效或系统拒绝
+         */
+        static bool bind(int descriptor, const sockaddr *address, socklen_t addressLength) noexcept;
+
+        /**
+         * @brief 开始监听流式套接字
+         * @param descriptor 目标套接字
+         * @param backlog 等待接受队列长度
+         * @return true 监听已开始；false 描述符无效或系统拒绝
+         */
+        static bool listen(int descriptor, int backlog) noexcept;
+
+        /**
+         * @brief 发起连接
+         * @details 非阻塞套接字的「进行中」以失败返回并置 kInProgress；调用方据此转去等可写。
+         * @param descriptor 目标套接字
+         * @param address 对端地址
+         * @param addressLength 地址长度
+         * @return true 已连接；false 失败或进行中
+         */
+        static bool connect(int descriptor, const sockaddr *address, socklen_t addressLength) noexcept;
+
+        /**
+         * @brief 发送一段字节
+         * @param descriptor 目标套接字
+         * @param buffer 段起始地址
+         * @param length 段字节数
+         * @param flags 系统调用标志（MSG_NOSIGNAL 等）
+         * @return ssize_t 实际发送字节数；失败返回 -1 并保留系统错误码
+         */
+        static ssize_t send(int descriptor, const void *buffer, std::size_t length, int flags) noexcept;
+
+        /**
+         * @brief 接收一段字节
+         * @param descriptor 目标套接字
+         * @param buffer 接收缓冲
+         * @param length 缓冲容量
+         * @param flags 系统调用标志
+         * @return ssize_t 实际接收字节数；0 表示对端关闭；失败返回 -1
+         */
+        static ssize_t receive(int descriptor, void *buffer, std::size_t length, int flags) noexcept;
+
+        /**
+         * @brief 关闭一个方向的传输
+         * @param descriptor 目标套接字
+         * @param how SHUT_RD/SHUT_WR/SHUT_RDWR
+         * @return true 已下发；false 描述符无效或系统拒绝
+         */
+        static bool shutdown(int descriptor, int how) noexcept;
+
+        /**
+         * @brief 把最近一次套接字失败包成 error_code
+         * @return std::error_code 套接字错误码；没有失败时为 0
+         */
+        [[nodiscard]] static std::error_code lastError() noexcept;
 
         /**
          * @brief 开启地址复用（SO_REUSEADDR）
