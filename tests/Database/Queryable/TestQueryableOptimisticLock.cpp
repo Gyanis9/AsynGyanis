@@ -1,4 +1,4 @@
-// ORM 乐观锁（台账 3.1）的判据。两半：
+// ORM 乐观锁的判据。两半：
 //   ① 真机两会话：两个独立会话（池里两条连接）读同一行、都改、都写回——后写的那个必须拿到
 //      OptimisticLockException，且先写的那份数据没有被抹掉。单这一条要一个文件库：
 //      SQLite 的 ":memory:" 不跨连接共享，池里两条连接会各持一份空库，那练的不是并发而是错觉。
@@ -66,6 +66,27 @@ namespace
         std::string  name;
         std::int64_t version;
     };
+
+    /// 只有主键与版本列的表：更新只做版本自增加一
+    struct TouchOnlyRow
+    {
+        std::int64_t id;
+        std::int64_t version;
+    };
+
+    /// 版本列声明成文本：生成 UPDATE 时必须当场拒绝
+    struct TextVersionedRow
+    {
+        std::int64_t id;
+        std::string  version;
+    };
+
+    /// 版本列声明成布尔：is_integral 认它，但它不能参与自增加一
+    struct BoolVersionedRow
+    {
+        std::int64_t id;
+        bool         version;
+    };
 } // namespace
 
 // ========================================================================
@@ -121,6 +142,33 @@ struct AsynGyanis::Database::Queryable::TableSchema<MissingVersionColumnAccount>
     static constexpr std::string_view kVersionColumn = "version";
 };
 
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<TouchOnlyRow>
+{
+    static constexpr std::string_view kTableName     = "touch_only";
+    static constexpr auto             kColumns       = std::tuple{Column(&TouchOnlyRow::id, "id"), Column(&TouchOnlyRow::version, "version")};
+    static constexpr std::string_view kPrimaryKey    = "id";
+    static constexpr std::string_view kVersionColumn = "version";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<TextVersionedRow>
+{
+    static constexpr std::string_view kTableName     = "text_versioned";
+    static constexpr auto             kColumns       = std::tuple{Column(&TextVersionedRow::id, "id"), Column(&TextVersionedRow::version, "version")};
+    static constexpr std::string_view kPrimaryKey    = "id";
+    static constexpr std::string_view kVersionColumn = "version";
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<BoolVersionedRow>
+{
+    static constexpr std::string_view kTableName     = "bool_versioned";
+    static constexpr auto             kColumns       = std::tuple{Column(&BoolVersionedRow::id, "id"), Column(&BoolVersionedRow::version, "version")};
+    static constexpr std::string_view kPrimaryKey    = "id";
+    static constexpr std::string_view kVersionColumn = "version";
+};
+
 namespace
 {
     using AsynGyanis::Database::ConnectionConfig;
@@ -163,6 +211,7 @@ namespace
             ASSERT_NE(connection->execute("CREATE TABLE locked_accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL)"), nullptr)
                     << connection->lastError();
             ASSERT_NE(connection->execute("CREATE TABLE unlocked_accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"), nullptr) << connection->lastError();
+            ASSERT_NE(connection->execute("CREATE TABLE touch_only (id INTEGER PRIMARY KEY, version INTEGER NOT NULL)"), nullptr) << connection->lastError();
         }
 
         void TearDown() override
@@ -342,5 +391,35 @@ TEST_F(QueryableOptimisticLockTest, RejectsVersionColumnDeclarationsThatCannotWo
         const std::string message = error.what();
         EXPECT_NE(message.find("version"), std::string::npos) << message;
         EXPECT_NE(message.find("乐观锁会静默失效"), std::string::npos) << message;
+    }
+}
+
+TEST_F(QueryableOptimisticLockTest, UpdatesATableWithOnlyPrimaryKeyAndVersion)
+{
+    Queryable<TouchOnlyRow> query(*m_pool);
+    ASSERT_EQ(query.insert(TouchOnlyRow{.id = 1, .version = 0}), 1);
+
+    EXPECT_EQ(query.update(TouchOnlyRow{.id = 1, .version = 0}), 1);
+    const std::optional<TouchOnlyRow> reloaded = query.where(Column(&TouchOnlyRow::id, "id") == std::int64_t{1}).first();
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->version, 1);
+}
+
+TEST_F(QueryableOptimisticLockTest, RejectsBooleanVersionColumnWhenGeneratingUpdate)
+{
+    Queryable<BoolVersionedRow> query(*m_pool);
+    EXPECT_THROW(static_cast<void>(query.update(BoolVersionedRow{.id = 1, .version = false})), AsynGyanis::Base::LogicException);
+}
+
+TEST_F(QueryableOptimisticLockTest, RejectsNonIntegralVersionColumnWhenGeneratingUpdate)
+{
+    Queryable<TextVersionedRow> query(*m_pool);
+    try
+    {
+        static_cast<void>(query.update(TextVersionedRow{.id = 1, .version = "0"}));
+        FAIL() << "文本版本列没有被拒绝";
+    } catch (const AsynGyanis::Base::LogicException &error)
+    {
+        EXPECT_NE(std::string{error.what()}.find("整数"), std::string::npos) << error.what();
     }
 }

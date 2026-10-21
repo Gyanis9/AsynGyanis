@@ -22,9 +22,9 @@
 // 这两个头自带平台网络头的包含顺序，调用方无需先包含 winsock2.h 之类。
 //
 // 包含路径有「扁平」与「带 mysql/ 子目录」两种发行布局，这里用 __has_include 同时兼容而不是靠平台宏：
-// - 多数 Linux 发行版与官方源码包把 mysql.h / errmsg.h 直接放在顶层（<mysql.h>），
+// 多数 Linux 发行版与官方源码包把 mysql.h / errmsg.h 直接放在顶层（<mysql.h>），
 //   而 <mysql/mysql.h> 是 Debian 系私有头目录（libmariadb-dev 之类的兼容路径）；
-// - Conan 上的 Windows 包是扁平布局：include/ 下直接是 mysql.h，include/mysql/ 里只有
+// Conan 上的 Windows 包是扁平布局：include/ 下直接是 mysql.h，include/mysql/ 里只有
 //   client_plugin.h 等插件头，没有任何入口头。写死任一形式都会在另一种包上找不到文件，
 //   而两种布局下都包含正确的头只多一次预处理探测，没有运行期代价
 #if __has_include(<mysql/mysql.h>)
@@ -135,8 +135,9 @@ namespace AsynGyanis::Database
             return const_cast<void *>(valueAddress);
         }
 
-        /// 取值缓冲区的下限：max_length 为 0 的列（整列都是 NULL 或空串）也必须拿到一个合法指针
-        constexpr unsigned long kMinimumColumnBufferBytes = 1UL;
+        /// 取值缓冲区的下限：整列都是 NULL/空串时也必须拿到合法指针；流式路径取不到
+        /// store_result 更新过的 max_length，256 字节让常见文本列不必每格再补取一次
+        constexpr unsigned long kMinimumColumnBufferBytes = 256UL;
 
         /// 带参流式的预取窗口（行数）：不预读的那条路径每取一行都要一次网络往返（默认预取 1），
         /// 窗口把它降到 1/64。代价是客户端要多留「窗口 × 单行字节」的缓冲——上界随窗口线性涨，
@@ -734,6 +735,13 @@ namespace AsynGyanis::Database
         }
         UnclaimedStatement unclaimedStatement{statement, !tableOwnsStatement};
 
+        if (!tableOwnsStatement)
+        {
+            // 语句缓存没接管这条句柄时，作用域守卫会在函数返回时关掉它，而流式结果要借用它取后续行
+            m_lastError = "MySQL 流式执行无法接管预处理语句：语句缓存分配失败，请改用 execute() 的预读路径或稍后重试";
+            return nullptr;
+        }
+
         // 预取窗口：只对「不预读、逐行取数」的本条路径有意义（store_result 过的结果用不到它）。
         // attr_set 只在取值非法时失败（窗口恒为正，正常不会发生），失败即弃这条语句
         const unsigned long prefetchWindowRows = kStatementPrefetchRows;
@@ -806,18 +814,33 @@ namespace AsynGyanis::Database
             binding.is_null       = &columnNullFlags[index];
         }
 
-        if (mysql_stmt_bind_result(statement, resultBindings.data()) != 0)
-        {
-            captureStatementError(statement, "绑定预处理语句结果缓冲区失败");
-            discardCachedStatement(command);
-            return nullptr;
-        }
-
-        // 绑定成功才记账：这一格在结果读完、中断或析构时归位（见 MySqlStreamingStatementResult::endStream）。
-        // 构造之后缓冲与元数据的地址都归结果集持有（vector 移动不改元素地址），绑定的指针始终有效
         ++m_openStreamCount;
-        return std::make_unique<MySqlStreamingStatementResult>(statement, this, std::string{command}, std::move(columnNames), std::move(columnTypes),
-                                                               std::move(columnCharacterSets), std::move(columnBuffers), std::move(columnLengths), std::move(columnNullFlags));
+        try
+        {
+            auto result =
+                    std::make_unique<MySqlStreamingStatementResult>(statement, this, std::string{command}, std::move(columnNames), std::move(columnTypes),
+                                                                    std::move(columnCharacterSets), std::move(columnBuffers), std::move(columnLengths), std::move(columnNullFlags));
+
+            // 绑定数组必须活到语句关闭或重新绑定：把 vector 的存储交给结果集，
+            // 别名构造让 shared_ptr<void> 指向数组首元素而控制块仍持有整个容器
+            const auto        bindingStorage = std::make_shared<std::vector<MYSQL_BIND>>(std::move(resultBindings));
+            MYSQL_BIND *const bindingArray   = static_cast<MYSQL_BIND *>(result->adoptResultBindings(std::shared_ptr<void>(bindingStorage, bindingStorage->data())));
+            if (mysql_stmt_bind_result(statement, bindingArray) != 0)
+            {
+                captureStatementError(statement, "绑定预处理语句结果缓冲区失败");
+                result.reset(); // 先 free_result 收干这次执行，再按命令弃掉缓存里那条语句
+                discardCachedStatement(command);
+                return nullptr;
+            }
+            return result;
+        } catch (...)
+        {
+            // 构造或持有数组的分配失败：结果集若已经建起来，会先由它自己的析构收干这次执行并归位；
+            // 这里的归位与那条路共用同一个幂等递减，两条路都只减一次
+            discardCachedStatement(command);
+            noteStreamClosed();
+            throw;
+        }
     }
 
     std::string MySqlConnection::serverVersion() const
@@ -1227,7 +1250,7 @@ namespace AsynGyanis::Database
         std::unique_ptr<MYSQL_RES, ResultReleaser> guardedMetadata{rawMetadata};
 
         const auto columnCount = static_cast<std::size_t>(mysql_num_fields(rawMetadata));
-        // 这里要非 const 的字段数组：本轮取完数据后得把每列的 max_length 归零（见循环后的说明）
+        // 这里要非 const 的字段数组：本次取完数据后得把每列的 max_length 归零（见循环后的说明）
         MYSQL_FIELD *fields = mysql_fetch_fields(rawMetadata);
         if (fields == nullptr && columnCount > 0)
         {
@@ -1501,6 +1524,16 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::commit()
     {
+        if (!isConnected())
+        {
+            m_lastError = "提交 MySQL 事务失败：未连接到数据库";
+            return false;
+        }
+        if (!isTransactionOpenNow())
+        {
+            m_lastError = "提交 MySQL 事务失败：这条连接没有活动事务（MySQL 的 COMMIT 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";
+            return false;
+        }
         const MySqlDialect dialect;
         const bool         isCommitted = execute(dialect.commitStatement()) != nullptr;
         if (isCommitted)
@@ -1512,9 +1545,18 @@ namespace AsynGyanis::Database
 
     bool MySqlConnection::rollback()
     {
+        if (!isConnected())
+        {
+            m_lastError = "回滚 MySQL 事务失败：未连接到数据库";
+            return false;
+        }
+        if (!isTransactionOpenNow())
+        {
+            m_lastError = "回滚 MySQL 事务失败：这条连接没有活动事务（MySQL 的 ROLLBACK 在无事务时是成功的空操作，本接口按文档把它如实报成 false）";
+            return false;
+        }
         const MySqlDialect dialect;
-        // 没有活动事务时服务端会直接报错，这里如实返回 false，并由 lastError() 给出原因
-        const bool isRolledBack = execute(dialect.rollbackStatement()) != nullptr;
+        const bool         isRolledBack = execute(dialect.rollbackStatement()) != nullptr;
         if (isRolledBack)
         {
             m_isTransactionOpen = false;
@@ -1544,8 +1586,8 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        // automatic-reconnect 是关着的（见 connect() 里那段：隐式重连会丢掉事务与会话变量），因此
-        // 这里失败就是真失败，不会顺手换一条新连接糊过去
+        // automatic-reconnect 由客户端库默认关闭（MySQL 8 / MariaDB 如此）；本驱动不显式设置
+        // MYSQL_OPT_RECONNECT，因此这里失败就是真失败，不会顺手换一条新连接糊过去
         if (mysql_ping(m_mysqlHandle) != 0)
         {
             captureError("借出前的连接探针（mysql_ping）失败");
@@ -1778,6 +1820,9 @@ namespace AsynGyanis::Database
             {
                 return false;
             }
+            // applyStatementTimeLimit 内部的 SET 会被 noteSessionScopedStatement 记成「借用者改过」；
+            // 这条语句本来就是归还路径自己发的，重新置真会让每次归还都多一趟往返
+            m_isStatementTimeLimitChanged = false;
         }
 #endif
         return true;

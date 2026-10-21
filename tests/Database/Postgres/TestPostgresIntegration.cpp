@@ -3,24 +3,24 @@
  * @brief PostgreSQL 真实服务端集成测试 —— 连接、参数化执行、ORM 端到端、事务与边界
  * @details 与同目录的 TestPostgresConnection.cpp（不依赖服务端的失败语义）互补：本文件只在
  *          真的能连上一个 PostgreSQL 服务端时才跑断言，覆盖只有真实服务端才能验证的部分——
- *          - 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
- *          - PQexecParams 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
+ * 建连成功、isConnected()、serverVersion()、错误口令的中文失败原因；
+ * PQexecParams 参数化执行的写与读：影响行数、列名与取值往返（中文 / 负数 / 浮点 /
  *            NULL 与空串可区分 / 长文本）、含单引号与 "--" 的文本原样回读、
  *            参数个数与语句里的 $n 不一致时由服务端拒绝；
- *          - ORM 端到端（SQL 由 PostgreSql 方言生成）：SchemaMigrator 建表 → insert →
+ * ORM 端到端（SQL 由 PostgreSql 方言生成）：SchemaMigrator 建表 → insert →
  *            toList（WHERE + ORDER BY + LIMIT + OFFSET）→ count → tableExists → dropTable，
  *            以及 NUMERIC(20) 列被服务端接受、取值以精确十进制文本交回；
- *          - Transaction 的提交可见、回滚不可见、析构自动回滚；
- *          - 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
+ * Transaction 的提交可见、回滚不可见、析构自动回滚；
+ * 带参流式（executeStreaming(command, parameters)）：绑定参数 + 单行模式下的行序、
  *            NULL 与长文本、流式档两条哨兵，以及「在途流封锁连接」与析构收干。
  *
  * 口令绝不进仓库（本文件的第一条硬规矩）
  * 连接参数一律从环境变量读取，本文件不出现任何明文口令：
- * - ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
- * - ASYN_POSTGRES_TEST_PORT      端口，默认 5432
- * - ASYN_POSTGRES_TEST_USER      用户名，默认 postgres
- * - ASYN_POSTGRES_TEST_PASSWORD  口令，没有默认值；未设置时全部用例 GTEST_SKIP（不是失败）
- * - ASYN_POSTGRES_TEST_DATABASE  库名，默认 postgres（初始化集群时必然存在的维护库）
+ * ASYN_POSTGRES_TEST_HOST      主机，默认 127.0.0.1
+ * ASYN_POSTGRES_TEST_PORT      端口，默认 5432
+ * ASYN_POSTGRES_TEST_USER      用户名，默认 postgres
+ * ASYN_POSTGRES_TEST_PASSWORD  口令，没有默认值；未设置时全部用例 GTEST_SKIP（不是失败）
+ * ASYN_POSTGRES_TEST_DATABASE  库名，默认 postgres（初始化集群时必然存在的维护库）
  * 口令缺失即跳过，因此无服务端的 CI 与本地日常构建同样保持全绿；未编译 PostgreSQL 驱动的桩
  * 构建也走跳过路径（见 kPostgresDriverCompiled）。
  *
@@ -32,11 +32,11 @@
  * 用例之间不共用表名，因此并行运行（ctest -j）也不会互相干扰。
  *
  * 与 MySQL 集成测试的两处有意差异
- * - 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
+ * 内嵌 '\0' 的往返只在 BYTEA 列上断言，不在 TEXT 列上断言：PostgreSQL 的文本类型不允许零字节
  *   （服务端会以 "invalid byte sequence for encoding UTF8: 0x00" 整条拒绝），把 0 字节写进 TEXT 列
  *   不是驱动能做到的事。任意字节走 BYTEA：绑定层自己编成 `\x…`（见 toPostgresByteaText），
  *   读侧解回 BinaryBytes（见 parsePostgresByteaText），因此这一家与其余两家的差别只剩协议层。
- * - 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
+ * 不写死 sleep：与 MySQL 侧一致，需要「另一条连接看到什么」的地方一律新建一条连接后
  *   立即查询——PostgreSQL 默认隔离级别是 READ COMMITTED，每条 SELECT 各自取一次快照，
  *   结论确定，不需要任何等待。
  * @author Gyanis
@@ -163,6 +163,9 @@ namespace AsynGyanis::Database
 
         /// 种子幂等用例的表：由迁移建出来，表名独立以免与并行用例共用
         constexpr std::string_view kSeedTableName = "Asyn_Pg_Seed";
+
+        /// 大小写补列用例的表：建表时用引号保住了大写列名，补列要按精确大小写判断
+        constexpr std::string_view kCaseColumnTableName = "Asyn_Pg_CaseColumns";
 
         /// 生成键回读用例的两张表：一张主键由 identity 生成，一张主键由调用方给出
         constexpr std::string_view kGeneratedKeyTableName = "Asyn_Pg_GeneratedKey";
@@ -307,6 +310,15 @@ namespace AsynGyanis::Database
         {
             std::int64_t id;   ///< 主键（种子行的幂等键）
             std::string  name; ///< 名称
+        };
+
+        /**
+         * @brief 大小写补列用例的行型：表里已有 "NAME"，schema 要的是 name，两者在 PostgreSQL 是不同列
+         */
+        struct IntegrationCaseColumnRow
+        {
+            std::int64_t               id;   ///< 主键（表与 schema 都叫小写 id）
+            std::optional<std::string> name; ///< 名称列（新增列必须可空，旧行没有值可填）
         };
 
         /**
@@ -509,6 +521,17 @@ namespace AsynGyanis::Database
         static constexpr auto             kColumns   = std::tuple{
                 Column(&IntegrationSeedRow::id, "id"),
                 Column(&IntegrationSeedRow::name, "name"),
+        };
+        static constexpr std::string_view kPrimaryKey = "id";
+    };
+
+    template<>
+    struct Queryable::TableSchema<IntegrationCaseColumnRow>
+    {
+        static constexpr std::string_view kTableName = kCaseColumnTableName;
+        static constexpr auto             kColumns   = std::tuple{
+                Column(&IntegrationCaseColumnRow::id, "id"),
+                Column(&IntegrationCaseColumnRow::name, "name"),
         };
         static constexpr std::string_view kPrimaryKey = "id";
     };
@@ -1235,6 +1258,42 @@ namespace AsynGyanis::Database
     }
 
     /**
+     * @brief PostgreSQL 的 "NAME" 与 name 是两列：补列必须按精确大小写判断
+     *
+     * @details 表由引号保住大写列名，结构体要的是小写 name。按小写折叠比对会把 name 误判为
+     *          已存在，补列一次都不发生；这里断言恰好补一列、二跑幂等，并按 TableSchema
+     *          读一次——补列没发生时 SELECT 会报列不存在。
+     */
+    TEST_F(PostgresIntegrationTest, AddMissingColumnsKeepsQuotedCaseDistinctOnPostgres)
+    {
+        m_preparedTableNames.emplace_back(kCaseColumnTableName);
+
+        std::string errorText;
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationCaseColumnRow>(*makePool(1), true, &errorText)) << errorText;
+
+        std::unique_ptr<ConnectionPool> pool = makePool(1);
+        {
+            PooledConnection connection = pool->acquire();
+            ASSERT_TRUE(connection);
+            ASSERT_NE(connection->execute("CREATE TABLE " + quote(kCaseColumnTableName) + " (id INTEGER PRIMARY KEY, \"NAME\" TEXT)"), nullptr) << connection->lastError();
+        }
+
+        std::size_t addedCount = 0;
+        ASSERT_TRUE(SchemaMigrator::addMissingColumns<IntegrationCaseColumnRow>(*pool, &addedCount, &errorText)) << errorText;
+        EXPECT_EQ(addedCount, 1U) << "小写 name 被误判为已存在（\"NAME\" 与 name 在 PostgreSQL 是不同列）";
+
+        // 第二次必须幂等
+        ASSERT_TRUE(SchemaMigrator::addMissingColumns<IntegrationCaseColumnRow>(*pool, &addedCount, &errorText)) << errorText;
+        EXPECT_EQ(addedCount, 0U);
+
+        // 新列可读：SELECT 走 TableSchema 的 id/name，若补列没发生这里会报列不存在
+        OrmQuery<IntegrationCaseColumnRow> query(*pool);
+        EXPECT_NO_THROW(static_cast<void>(query.toList()));
+
+        ASSERT_TRUE(SchemaMigrator::dropTable<IntegrationCaseColumnRow>(*makePool(1), true, &errorText)) << errorText;
+    }
+
+    /**
      * @brief 验证 identity 主键在真实 PostgreSQL 上端到端回读：RETURNING 进得了语句、值认得出自己那一行
      *
      * @details PostgreSQL 的连接句柄上没有「最近一次插入生成的键」可问（libpq 的 OID 自 8.1 起默认关闭，
@@ -1712,6 +1771,30 @@ namespace AsynGyanis::Database
             stream->reset();
             EXPECT_NE(stream->lastError().find("重扫"), std::string::npos) << stream->lastError();
         }
+    }
+
+    /**
+     * @brief 流式入口执行写语句时必须报成功：命令已经生效，报失败会让调用方重试出两行
+     */
+    TEST_F(PostgresIntegrationTest, StreamingWriteCommandReportsSuccessInsteadOfFailure)
+    {
+        static constexpr std::string_view kStreamingWriteTableName = "Asyn_Pg_StreamingWrite";
+        m_preparedTableNames.emplace_back(kStreamingWriteTableName);
+        ASSERT_TRUE(prepareTable(kStreamingWriteTableName, "\"id\" BIGINT PRIMARY KEY, \"name\" TEXT NOT NULL")) << m_lastSetupError;
+
+        PostgresConnection connection(configuration());
+        ASSERT_TRUE(connection.connect()) << connection.lastError();
+
+        const std::unique_ptr<DatabaseResult> insertResult = connection.executeStreaming("INSERT INTO " + quote(kStreamingWriteTableName) + " (\"id\", \"name\") VALUES (1, 'x')");
+        ASSERT_NE(insertResult, nullptr) << "写语句已经生效，流式入口却报失败：" << connection.lastError();
+        EXPECT_EQ(insertResult->rowCount(), 0U);
+        EXPECT_FALSE(insertResult->next());
+        EXPECT_EQ(insertResult->affectedRowCount(), 1);
+
+        const std::unique_ptr<DatabaseResult> countResult = connection.execute("SELECT COUNT(*) FROM " + quote(kStreamingWriteTableName));
+        ASSERT_NE(countResult, nullptr) << connection.lastError();
+        ASSERT_TRUE(countResult->next());
+        EXPECT_EQ(std::get<std::int64_t>(countResult->getValue(0)), 1) << "写语句没有真正生效";
     }
 
     /**

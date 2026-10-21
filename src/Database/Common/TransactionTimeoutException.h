@@ -21,8 +21,9 @@ namespace AsynGyanis::Database
     /**
      * @brief 整笔事务超时异常
      *
-     * @details `Transaction::setTimeLimit()` 设的额度用满之后，走这笔事务的语句、`commit()` 与三条保存点
-     *          语句都会被拒，拒的就是本类。它与 `QueryExecutionException` 分开，是因为处置完全不同：
+     * @details `Transaction::setTimeLimit()` 设的额度用满之后，走这笔事务的语句在发出前被拒时抛本类；
+     *          `commit()` 与三条保存点语句改为返回 false 并把原因写进 lastError()。它与 `QueryExecutionException`
+     *          分开，是因为处置完全不同：
      *          本类要说的是「这笔事务不该再往下走」——收尾（`rollback()` 或让它随作用域结束）另起
      *          一笔，或把额度放宽到实际需要的时长；而语句执行失败是「这一条 SQL 有问题」，重试同一条语句
      *          有意义。把两者混成一个类，调用方就会拿一条注定被拒的语句去做退避重试，把占着的连接与

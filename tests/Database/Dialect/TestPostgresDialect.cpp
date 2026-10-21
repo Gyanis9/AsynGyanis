@@ -14,19 +14,19 @@
  *          「基类的参数顺序契约在 $n 方言上真正生效」这一条。
  *
  * 覆盖场景：
- * - 方言类型、占位符为 $1/$2（从 1 开始、随参数个数连续递增）、参数上限 65535
- * - 标识符双引号引用与内部双引号翻倍（与 SQLite 相同、与 MySQL 反引号不同）
- * - SELECT 列展开、FROM 与表别名（引用字符为双引号）
- * - WHERE 条件中的 $n 序号：单条件、IN 展开、多条件组合
- * - UPDATE 的 SET 参数排在 WHERE 参数之前（$1 在前、条件序号顺延）
- * - LIMIT $n / OFFSET $n，以及只给 OFFSET 时不补任何常量（与 SQLite 的 "LIMIT -1"、
+ * 方言类型、占位符为 $1/$2（从 1 开始、随参数个数连续递增）、参数上限 65535
+ * 标识符双引号引用与内部双引号翻倍（与 SQLite 相同、与 MySQL 反引号不同）
+ * SELECT 列展开、FROM 与表别名（引用字符为双引号）
+ * WHERE 条件中的 $n 序号：单条件、IN 展开、多条件组合
+ * UPDATE 的 SET 参数排在 WHERE 参数之前（$1 在前、条件序号顺延）
+ * LIMIT $n / OFFSET $n，以及只给 OFFSET 时不补任何常量（与 SQLite 的 "LIMIT -1"、
  *   MySQL 的无符号上界常量形成对照）
- * - 综合场景下 $1..$n 的连续性与占位符个数 = 参数个数
- * - 事务控制语句：BEGIN / COMMIT / ROLLBACK
- * - DDL 支撑：六个 ColumnType 的物理类型名（含 NUMERIC(20) 承接无符号 64 位）
+ * 综合场景下 $1..$n 的连续性与占位符个数 = 参数个数
+ * 事务控制语句：BEGIN / COMMIT / ROLLBACK
+ * DDL 支撑：六个 ColumnType 的物理类型名（含 NUMERIC(20) 承接无符号 64 位）
  *   与表存在性元数据语句（current_schema() 限定 + 表名走 $1 绑定参数）
- * - 错误文本带「PostgreSQL 方言」前缀（dialectName() 的用途）
- * - DialectRegistry：PostgreSQL 可取得、与 SQLite / MySQL 是不同实例、supports() 为真
+ * 错误文本带「PostgreSQL 方言」前缀（dialectName() 的用途）
+ * DialectRegistry：PostgreSQL 可取得、与 SQLite / MySQL 是不同实例、supports() 为真
  */
 #include "Database/Dialect/ColumnType.h"
 #include "Database/Dialect/DialectRegistry.h"

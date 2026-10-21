@@ -458,8 +458,9 @@ namespace AsynGyanis::Database::Queryable
          * @details 判据来自引擎本身：先问「这张表现在有哪些列」（`SqlDialect::columnListingStatement()`），
          *          结构体里有而表里没有的每一列各发一条 ALTER。也就是说不需要一份「上次建了什么」的账，
          *          重复调用是幂等的（已存在的列被跳过），换机器、换库、手工加过列都不需要额外状态。
-         * @details 列名比对按小写：MySQL 的列名不区分大小写，而 SQLite 按声明原样给出，不折一次就会把
-         *          同一个列看成两个。
+         * @details 列名比对按方言分档：MySQL 的列名不区分大小写，SQLite 按声明原样给出，
+         *          两者都先折小写再比，否则会把同一个列看成两个；PostgreSQL 的引用标识符
+         *          区分大小写（"ID" 与 id 是两列），那一档按原样精确比对。
          *
          * @tparam T 已特化 TableSchema 的聚合类型
          * @param pool 目标库的连接池
@@ -497,6 +498,8 @@ namespace AsynGyanis::Database::Queryable
                 return false;
             }
 
+            const bool isCaseSensitiveDialect = dialect->type() == DatabaseType::PostgreSql;
+
             std::vector<std::string> existingColumns;
             {
                 PooledConnection connection = pool.acquire();
@@ -523,7 +526,7 @@ namespace AsynGyanis::Database::Queryable
                         writeError(errorText, "SchemaMigrator: 列清单查询的第一列不是文本，无法与结构体的列名比对");
                         return false;
                     }
-                    existingColumns.push_back(toLowerAscii(*existingName));
+                    existingColumns.push_back(isCaseSensitiveDialect ? *existingName : toLowerAscii(*existingName));
                 }
             }
 
@@ -540,7 +543,8 @@ namespace AsynGyanis::Database::Queryable
                                     }
 
                                     const std::string columnName(columnDescriptor.columnName);
-                                    if (std::find(existingColumns.begin(), existingColumns.end(), toLowerAscii(columnName)) != existingColumns.end())
+                                    const std::string comparableName = isCaseSensitiveDialect ? columnName : toLowerAscii(columnName);
+                                    if (std::find(existingColumns.begin(), existingColumns.end(), comparableName) != existingColumns.end())
                                     {
                                         return;
                                     }
@@ -838,7 +842,9 @@ namespace AsynGyanis::Database::Queryable
 
             [[nodiscard]] bool isReady() const noexcept
             {
-                return static_cast<bool>(m_connection);
+                // 构造函数失败时连接还在（它由成员持有），只看连接会把「锁没拿到」当成就绪；
+                // 两种成功形态是「会话锁已取到」与「整段写事务已接管互斥」
+                return static_cast<bool>(m_connection) && (m_isSessionLocked || m_isTransactionScope);
             }
 
             [[nodiscard]] bool ensureLedger(std::string *errorText)
@@ -1624,7 +1630,7 @@ namespace AsynGyanis::Database::Queryable
          * @brief 把标识符折成小写用于比对（只折 ASCII 大写）
          * @details MySQL 的列名不区分大小写，SQLite 按声明原样给出；不折一次就会把同一个列看成两个，
          *          结果是重复加列（引擎报错）或漏判已有列。非 ASCII 部分原样保留，两侧折法一致，
-         *          比较仍然成立
+         *          比较仍然成立。PostgreSQL 的引用标识符区分大小写，那一档不经过本函数，按原样比对
          * @param text 原始文本
          * @return std::string 折过小写后的副本
          */

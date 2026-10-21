@@ -50,9 +50,9 @@ namespace AsynGyanis::Database
      *
      * ConnectionConfig 的五个字段在本驱动全部有效，且以 PQconnectdbParams 的关键字/取值对
      * 下发（不拼连接字符串：拼接要处理引号与转义，参数化接口没有这个问题）：
-     * - host / port：连接地址。host 为空视为配置错误当场失败；port 为 0 时省略该关键字，
+     * host / port：连接地址。host 为空视为配置错误当场失败；port 为 0 时省略该关键字，
      *   由 libpq 回落到默认端口 5432；
-     * - userName / password / database：认证信息与默认库名，按字节原样交给 libpq，本类不做转义。
+     * userName / password / database：认证信息与默认库名，按字节原样交给 libpq，本类不做转义。
      *   空串一律省略对应关键字，让 libpq 用它自己的默认规则（用户名默认取操作系统账号、
      *   口令走 PGPASSWORD 或 ~/.pgpass、库名默认取用户名）。传空串与省略在 libpq 里是两种语义：
      *   前者会被当成「值就是空」，服务端会回 "database \"\" does not exist" 一类错误。
@@ -74,12 +74,13 @@ namespace AsynGyanis::Database
      *        WIN1252 的服务端上会让中文列变乱码，因此这里显式协商；协商失败即判整次连接失败。
      *
      *        占位符：本驱动直接使用 $1 $2 这种 PostgreSQL 原生写法（PostgresDialect::appendPlaceholder()
-     *        生成），由 SQL 文本原样交给 PQexecParams，因此不做任何 "?" → "$n" 的改写；
+     *        生成），由 SQL 文本原样送达，因此不做任何 "?" → "$n" 的改写；
      *        参数个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错，
      *        本驱动只负责把服务端原文转成中文原因。参数格式一律文本（paramFormats 传空指针），
      *        避免二进制格式下每个类型都要自己编码。
      *
-     *          命令边界：两条 execute 路径都走扩展查询协议（PQexecParams），因此一次只可能执行一条语句——
+     *          命令边界：零参/控制语句走 PQexecParams；数据语句走 PQprepare + PQexecPrepared 的
+     *          命名语句缓存，两者都是扩展查询协议，因此一次只可能执行一条语句——
      *          简单查询协议（PQexec）会执行文本里的全部语句却只返回最后一条的结果，
      *          扩展协议在解析阶段就整次拒绝多语句。这与 MySQL 侧「握手不开 CLIENT_MULTI_STATEMENTS」
      *          是同一安全姿态：拼接出的第二条语句不执行、整条命令失败。
@@ -190,16 +191,16 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行一条不带参数的 SQL 命令
          * @details 重写 DatabaseConnection::execute()：与基类约定的差异与附加约束——
-         *          - 每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
-         *          - 命令文本先拷成 std::string 再把 c_str() 交给 PQexec：libpq 的这个接口
+         * 每次调用开头清空 m_lastError，成功调用不会残留上一轮的失败文本；
+         * 命令文本先拷成 std::string 再把 c_str() 交给 PQexecParams（零参数）：libpq 的这个接口
          *            只接受零终止 C 字符串，而 std::string_view 不保证末尾有 '\0'（它可能是
          *            另一个更长缓冲的切片），直接交出 data() 会读到越界内存；
-         *          - 只有 PGRES_TUPLES_OK（查询）与 PGRES_COMMAND_OK（写语句/DDL/事务语句）
+         * 只有 PGRES_TUPLES_OK（查询）与 PGRES_COMMAND_OK（写语句/DDL/事务语句）
          *            算成功，其余状态（含 PGRES_FATAL_ERROR、PGRES_COPY_*）一律失败；
-         *          - 失败原因优先取 PQresultErrorMessage（挂在本条结果上），为空时退回
+         * 失败原因优先取 PQresultErrorMessage（挂在本条结果上），为空时退回
          *            PQerrorMessage（连接级错误），保证一定有可读原因；
-         *          - PQstatus 变成 CONNECTION_BAD 时顺手断开连接，因为该句柄已无法复用；
-         *          - 命令为空时直接失败，不发送任何字节。
+         * PQstatus 变成 CONNECTION_BAD 时顺手断开连接，因为该句柄已无法复用；
+         * 命令为空时直接失败，不发送任何字节。
          * @param command SQL 文本，例如 "SELECT id, name FROM users"
          * @return std::unique_ptr<DatabaseResult> 结果集；失败返回 nullptr，原因见 lastError()
          */
@@ -208,9 +209,10 @@ namespace AsynGyanis::Database
         /**
          * @brief 执行一条带 $n 占位符的 SQL 命令，参数按位置绑定
          * @details 重写 DatabaseConnection::execute()：与基类默认实现（直接报「暂不支持」）不同，
-         *          本驱动用 libpq 的扩展查询协议（PQexecParams）真正绑定参数，取值绝不拼进
+         *          本驱动用 libpq 的扩展查询协议真正绑定参数（零参/控制语句走 PQexecParams；
+         *          数据语句走 PQprepare + PQexecPrepared 的命名语句缓存），取值绝不拼进
          *          SQL 文本，注入面因此彻底消失。语句文本原样送达：PostgresDialect 生成的
-         *          占位符就是 $1 $2 这种 PostgreSQL 原生写法，也就是 PQexecParams 要求的格式，
+         *          占位符就是 $1 $2 这种 PostgreSQL 原生写法，也就是扩展查询协议要求的格式，
          *          所以本方法不做任何 "?" → "$n" 的改写；parameters[i] 按下标绑定到 $i+1，
          *          个数就是 parameters.size()，与语句里的 $n 个数不一致时由服务端报错。
          *
@@ -243,11 +245,11 @@ namespace AsynGyanis::Database
          *          PQsendQueryParams 送出（与另两条 execute 同一扩展协议，多语句同样被整次拒绝）
          *          后调 PQsetSingleRowMode，每次 PQgetResult 交出一块一行的结果，结果集只装当前行。
          *          代价是三条契约（与基类的 @warning 逐条对应）：
-         *          - 结果集必须比本连接短命：在它读完或析构之前，本连接不能再执行任何语句——
+         * 结果集必须比本连接短命：在它读完或析构之前，本连接不能再执行任何语句——
          *            execute 两条路径与 executeStreaming 都在发送之前拒绝（见 m_openStreamCount），
          *            在途未清的时刻连事务控制语句也不放行；
-         *          - rowCount() 回 0 的含义是「未知」，isEmpty() 恒回 false（不宣称自己空）；
-         *          - 不支持 reset() 重扫（行是一次性流过来的）。
+         * rowCount() 回 0 的含义是「未知」，isEmpty() 恒回 false（不宣称自己空）；
+         * 不支持 reset() 重扫（行是一次性流过来的）。
          * @param command 命令文本（只对有返回列的语句有意义）
          * @return std::unique_ptr<DatabaseResult> 流式结果集；失败返回 nullptr，原因见 lastError()
          * @note 0 行结果在首块就是收尾块时被识别，交出的是一份普通的预读空结果集：空结果没有
@@ -290,7 +292,8 @@ namespace AsynGyanis::Database
          *          同一件事（开启事务）只能有一份语句来源，否则会随方言演进而漂移，
          *          与 Transaction + 方言这条路径产生行为差异。
          * @return true 事务已开启
-         * @return false 未连接或语句被服务端拒绝（例如同一连接上已有未结束的事务），原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool beginTransaction();
 
@@ -298,7 +301,8 @@ namespace AsynGyanis::Database
          * @brief 提交当前事务
          * @details 执行本方言给出的提交语句 "COMMIT"，语句文本同样以方言为唯一来源。
          * @return true 提交成功
-         * @return false 没有活动事务或未连接，原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool commit();
 
@@ -307,7 +311,8 @@ namespace AsynGyanis::Database
          * @details 执行本方言给出的回滚语句 "ROLLBACK"，与 commit() 一样属于事务控制便捷封装，
          *          语句文本同样以方言为唯一来源。
          * @return true 回滚成功
-         * @return false 没有活动事务或未连接，原因见 lastError()
+         * @return false 只在未连接时返回 false；事务位置错误（重复 BEGIN、空 COMMIT/ROLLBACK）是
+         *         服务端 warning，命令仍成功，本方法如实返回 true
          */
         bool rollback();
 
@@ -340,12 +345,12 @@ namespace AsynGyanis::Database
          * @brief 归还连接池时的会话状态复位（DISCARD ALL）
          * @details 重写 DatabaseConnection::resetSessionState()：PostgreSQL 提供了一键复位的标准语句，
          *          比 MySQL 侧的「逐项退回基线」简单得多——
-         *          - 事务开着（含失败事务 INERROR）时 DISCARD ALL 会被服务端拒（cannot run inside a
+         * 事务开着（含失败事务 INERROR）时 DISCARD ALL 会被服务端拒（cannot run inside a
          *            transaction block），先用 PQtransactionStatus 读一次本地状态位（不发网络往返），
          *            在事务里就先发 ROLLBACK；
-         *          - DISCARD ALL 复位 SET 变量（含 statement_timeout）、PREPARE 的语句、临时表、
+         * DISCARD ALL 复位 SET 变量（含 statement_timeout）、PREPARE 的语句、临时表、
          *            游标、LISTEN 注册等一切会话级可变状态——上一个借用者留下的东西不会串给下一位；
-         *          - DISCARD ALL 把 statement_timeout 一并复位成默认（不限），因此在它之后按当前
+         * DISCARD ALL 把 statement_timeout 一并复位成默认（不限），因此在它之后按当前
          *            queryTimeout() 重下发一次：池的归还顺序是「先本方法、后 restoreQueryTimeoutBaseline」，
          *            而后者只在借用者改过取值时才动手，不在这里重下发就会把「比配置更宽」的会话交出去。
          * @return true 会话已复位；false 没能复位干净（池据此丢弃这条连接），原因见 lastError()

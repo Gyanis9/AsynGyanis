@@ -1,10 +1,10 @@
 // 覆盖场景（真实 hiredis 驱动的离线路径；测试环境没有可用的 Redis 服务）：
-// - 未连接初值与配置：databaseType、五个配置字段原样回显、超时默认值与 setter 往返
-// - connect() 失败路径：空主机零网络往返、未监听端口有界失败、失败文本中文且点明 Redis 驱动
-// - 未连接时的执行入口：execute / executeCommand / selectDatabase / flushPipeline 一律返回 nullptr 并写原因
-// - 管道登记与丢弃：切词失败当场拒绝、未连接时 flush 不发送且丢弃缓冲、空管道不是错误
-// - disconnect() 在未连接与失败后都幂等，析构安全
-// - 键存活状态与扫描页的模型：三档各自是一个不同形状（不存在 / 永不过期 / 还剩多久），
+// 未连接初值与配置：databaseType、五个配置字段原样回显、超时默认值与 setter 往返
+// connect() 失败路径：空主机零网络往返、未监听端口有界失败、失败文本中文且点明 Redis 驱动
+// 未连接时的执行入口：execute / executeCommand / selectDatabase / flushPipeline 一律返回 nullptr 并写原因
+// 管道登记与丢弃：切词失败当场拒绝、未连接时 flush 不发送且丢弃缓冲、空管道不是错误
+// disconnect() 在未连接与失败后都幂等，析构安全
+// 键存活状态与扫描页的模型：三档各自是一个不同形状（不存在 / 永不过期 / 还剩多久），
 //   SCAN 只认游标 "0" 为终止；两个新入口在未连接时一律「问不成 + 中文原因」而不是交回一个空档
 // 需要真实服务端的语义（认证、命令往返、键空间选择）由 TestRedisIntegration.cpp 在真机侧覆盖；
 // 超时取百毫秒量级并用 steady_clock 判定上界（回环未监听端口会立刻回 RST，超时只是防挂死的保险）。

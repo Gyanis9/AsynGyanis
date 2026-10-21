@@ -64,25 +64,30 @@ namespace AsynGyanis::Database
         const auto          unsignedValue = static_cast<std::uint64_t>(unscaledValue);
         const std::uint64_t magnitude     = isNegative ? (std::uint64_t{0} - unsignedValue) : unsignedValue;
 
-        std::string digits = std::to_string(magnitude);
+        const std::string digits = std::to_string(magnitude);
+
         std::string text;
+        text.reserve(digits.size() + static_cast<std::size_t>(scale) + 2U);
         // 负零不存在：-0 与 0 是同一个数，写成 "-0.000" 只是把符号留在文本里骗人
         if (isNegative && magnitude != 0)
         {
-            text += '-';
-        }
-        if (scale == 0)
-        {
-            return Decimal{text + digits};
+            text.push_back('-');
         }
 
-        // 位数不足时补前导零到「小数点左边至少还有一位」：5 / 标度 3 → "0.005"
-        while (digits.size() <= scale)
+        if (scale == 0)
         {
-            digits.insert(digits.begin(), '0');
+            text += digits;
+            return Decimal{std::move(text)};
         }
-        digits.insert(digits.end() - static_cast<std::ptrdiff_t>(scale), '.');
-        return Decimal{text + digits};
+
+        // 位数不足时一次补足前导零到「小数点左边至少还有一位」，不再逐字符向串首插入
+        if (digits.size() <= scale)
+        {
+            text.append(static_cast<std::size_t>(scale) + 1U - digits.size(), '0');
+        }
+        text += digits;
+        text.insert(text.end() - static_cast<std::ptrdiff_t>(scale), '.');
+        return Decimal{std::move(text)};
     }
 
     std::uint32_t Decimal::scale() const noexcept

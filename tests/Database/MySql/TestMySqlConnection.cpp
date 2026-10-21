@@ -1,7 +1,7 @@
 // 覆盖场景（两种构建配置下同义：libmysqlclient 可用时是真实驱动，否则是报错桩）：
-// - 与驱动无关的连接骨架：databaseType、配置回显、超时默认值与 setter 往返
-// - 未连接 / 空主机 / 未监听端口的失败路径：有界返回、原因中文且点明 MySQL、句柄不残留
-// - 未连接时各 execute 重载与事务便捷封装一律明确失败，不静默丢弃参数或按 NULL 执行
+// 与驱动无关的连接骨架：databaseType、配置回显、超时默认值与 setter 往返
+// 未连接 / 空主机 / 未监听端口的失败路径：有界返回、原因中文且点明 MySQL、句柄不残留
+// 未连接时各 execute 重载与事务便捷封装一律明确失败，不静默丢弃参数或按 NULL 执行
 // 真实驱动专属的行为（参数个数不匹配、真实查询结果、serverVersion()）需要可用服务端，不在此文件断言。
 
 #include "Database/Common/ConnectionConfig.h"
@@ -307,8 +307,9 @@ namespace AsynGyanis::Database
         // 三个便捷封装都走 execute()，未连接时按同一约定返回 false
         EXPECT_FALSE(connection.beginTransaction());
         EXPECT_FALSE(connection.commit());
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
         EXPECT_FALSE(connection.rollback());
-        EXPECT_FALSE(connection.lastError().empty());
+        EXPECT_NE(connection.lastError().find("未连接"), std::string::npos) << connection.lastError();
     }
 
     // ------------------------------------------------------------------------

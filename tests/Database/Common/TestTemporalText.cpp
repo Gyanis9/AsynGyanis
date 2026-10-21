@@ -1,13 +1,14 @@
 // 日期时间文本的解析与渲染单元测试：认什么、不认什么、渲染成什么、来回是否同解。
 // 覆盖场景：
-// - RendersUnixEpochAsCivilAnchor / RendersOneMicrosecondBeforeEpochOnPreviousDay
-// - RoundTripsParsedTextThroughRenderer / WallClockRoundTripsWithoutAnyOffset
-// - AcceptsOffsetsInEveryShapeTheEnginesGive / SystemClockFoldsOffsetIntoUtc
-// - AcceptsDateOnlyTextAndSecondsWithoutFraction / SixtySecondsRollsIntoNextMinuteLikeTheEngines
-// - RejectsZeroDatesAndNonIsoStyles / RejectsInfinityAndUndottedAmbiguities
-// - TruncatesFractionsBeyondMicroseconds / RejectsFractionsLongerThanNineDigits
-// - RejectsImpossibleCalendarDays / WallClockRefusesTextCarryingAnOffset
-// - NegativeYearsRoundTrip / MySqlAndPostgresRenderingsDifferByOffsetMarker
+// RendersUnixEpochAsCivilAnchor / RendersOneMicrosecondBeforeEpochOnPreviousDay
+// RoundTripsParsedTextThroughRenderer / WallClockRoundTripsWithoutAnyOffset
+// AcceptsOffsetsInEveryShapeTheEnginesGive / SystemClockFoldsOffsetIntoUtc
+// RejectsOffsetMinutesAtOrAboveSixty
+// AcceptsDateOnlyTextAndSecondsWithoutFraction / SixtySecondsRollsIntoNextMinuteLikeTheEngines
+// RejectsZeroDatesAndNonIsoStyles / RejectsInfinityAndUndottedAmbiguities
+// TruncatesFractionsBeyondMicroseconds / RejectsFractionsLongerThanNineDigits
+// RejectsImpossibleCalendarDays / WallClockRefusesTextCarryingAnOffset
+// NegativeYearsRoundTrip / MySqlAndPostgresRenderingsDifferByOffsetMarker
 // 这一格是本件的全部纯逻辑：三家引擎给的都是文本，「认与不认」错了就是静默改数，
 // 所以两边都要钉 —— 认的要逐字符对回原意，不认的要有名有姓地拒掉。全部用例不碰驱动与服务端。
 
@@ -108,6 +109,14 @@ namespace AsynGyanis::Database::Detail
         EXPECT_EQ(*withColon, *withCompact) << "带冒号与不带冒号的偏移折出了不同瞬间";
         EXPECT_EQ(renderUtc(*withColon), "2026-10-18T03:50:30.123456Z") << "偏移没有把文本折回 UTC";
         EXPECT_EQ(*withColon, *plainUtc);
+    }
+
+    TEST(TemporalText, RejectsOffsetMinutesAtOrAboveSixty)
+    {
+        // 四位数形态没有冒号分隔，后两位必须当分钟判：75 分钟不是合法偏移，不能被折算进小时
+        EXPECT_FALSE(parseTemporalText("2026-10-18T09:20:30+08:75").has_value());
+        EXPECT_FALSE(parseTemporalText("2026-10-18T09:20:30+0899").has_value());
+        EXPECT_TRUE(parseTemporalText("2026-10-18T09:20:30+0859").has_value());
     }
 
     TEST(TemporalText, SystemClockFoldsOffsetIntoUtc)

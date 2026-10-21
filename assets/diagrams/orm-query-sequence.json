@@ -74,7 +74,7 @@
       "sublabel": "空闲栈 LIFO",
       "sources": [
         { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 158, "label": "acquire 三段" },
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 185, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 205, "label": "acquireTimeout" },
         { "path": "src/Database/Pool/PoolConfig.h", "line": 43, "end_line": 45, "label": "32 / 5000ms / 五个 0" }
       ]
     },
@@ -148,7 +148,7 @@
       "dot": "rose",
       "title": "预算与分块",
       "items": [
-        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:2368、2391）",
+        "参数上限按方言实际产出的占位符数判：SQLite 999、MySQL 65535；批量写取 rowsPerStatement = 上限 / 列数，分块必须同连接同事务（Queryable.h:2689）",
         "IS NULL、列-列比较不占参数；IN 展开才按元素个数计（StandardSqlDialect.cpp:320、730）",
         "分页钩子在渲染里落：SQLite 内联十进制并补 LIMIT -1，MySQL 用 ?（StandardSqlDialect.cpp:400、SqliteDialect.cpp:14）"
       ]
@@ -166,7 +166,7 @@
       "dot": "cyan",
       "title": "事务与串行的真因",
       "items": [
-        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:966、ConnectionPool 的 acquireStatementLock）",
+        "一个驱动句柄就是一条协议流且非线程安全：BEGIN 在 A 线程、写在 B 线程会变成自动提交 + 回滚空事务，所以租约持语句锁（Queryable.h:967、ConnectionPool 的 acquireStatementLock）",
         "commit 失败保留活跃标志让析构补 ROLLBACK；rollback 失败先 disconnect，脏会话绝不回池（Transaction.cpp:118、120、143）",
         "池耗尽返回空 PooledConnection 而不是抛，抛点在调用方；PoolConfig 有五个 0，含义各写各的：idleTimeout 0=不因空闲驱逐、maximumLifetime 0=一归还就过期、maximumPoolSize 0=一条都不许建、acquireTimeout 0=不排队直接拿空、maximumWaitingRequests 0=同样不排队（PoolConfig.h:29-39）"
       ]

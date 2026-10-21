@@ -1,7 +1,7 @@
-// 显式关系装载（台账 3.3）的判据：`then()` 分批补取与 `include()` 一次 JOIN 两个方向。
+// 显式关系装载的判据：`then()` 分批补取与 `include()` 一次 JOIN 两个方向。
 //
 // 全部用 SQLite 内存库（池上限 1）。真机那一侧另有 MySQL 版本（TestMySqlIntegration.cpp）。
-// 不做懒加载代理（提示词判死）：这里测的就是「点名装载」这一件事。
+// 不做懒加载代理：这里测的就是「点名装载」这一件事。
 
 #include "Base/Exception/LogicException.h"
 
@@ -61,6 +61,23 @@ namespace
         std::optional<RelationAuthor> author;   ///< 装载结果：作者
         std::vector<RelationComment>  comments; ///< 装载结果：评论
     };
+
+    /// 外键列名拼错的多对一关系：外键列不在 kColumns 里
+    struct MistypedRelationPost
+    {
+        std::int64_t                  id;       ///< 主键
+        std::string                   title;    ///< 标题
+        std::int64_t                  authorId; ///< 外键列
+        std::optional<RelationAuthor> author;   ///< 装载结果：作者
+    };
+
+    /// 主键列没有登记在 kColumns 里的一对多关系：装载要靠它取父键
+    struct NoPrimaryKeyChildPost
+    {
+        std::int64_t                 id;       ///< 主键（列名不进 kColumns）
+        std::string                  title;    ///< 唯一登记的列
+        std::vector<RelationComment> comments; ///< 装载结果：评论
+    };
 } // namespace
 
 // ========================================================================
@@ -107,6 +124,38 @@ struct AsynGyanis::Database::Queryable::TableSchema<RelationPost>
     static constexpr auto kRelations = std::tuple{
             Relation(&RelationPost::author, "author_id"),
             Relation(&RelationPost::comments, "post_id"),
+    };
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<MistypedRelationPost>
+{
+    static constexpr std::string_view kTableName = "rel_posts_mistyped";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&MistypedRelationPost::id, "id"),
+            Column(&MistypedRelationPost::title, "title"),
+            Column(&MistypedRelationPost::authorId, "authorId"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+
+    /// 外键列故意拼错：装载所需的列不存在，then() 必须在建装载器时就拒绝
+    static constexpr auto kRelations = std::tuple{
+            Relation(&MistypedRelationPost::author, "author_idd"),
+    };
+};
+
+template<>
+struct AsynGyanis::Database::Queryable::TableSchema<NoPrimaryKeyChildPost>
+{
+    static constexpr std::string_view kTableName = "rel_posts_no_pk";
+    static constexpr auto             kColumns   = std::tuple{
+            Column(&NoPrimaryKeyChildPost::title, "title"),
+    };
+    static constexpr std::string_view kPrimaryKey = "id";
+
+    /// 子表外键列 post_id 已声明，缺的是父表主键列 id
+    static constexpr auto kRelations = std::tuple{
+            Relation(&NoPrimaryKeyChildPost::comments, "post_id"),
     };
 };
 
@@ -275,8 +324,44 @@ TEST_F(QueryableRelationsTest, RefusesMembersThatAreNotDeclaredAsRelations)
     }
 }
 
+/**
+ * @brief 钉住多对一关系的外键列没有声明在 kColumns 里时当场拒绝
+ * @details 外键列拼错时装载会静默取不到键、一条也挂不上；装配错误必须在 then() 就点名那一列
+ */
+TEST_F(QueryableRelationsTest, RefusesRelationWhoseForeignKeyIsNotAColumn)
+{
+    Queryable<MistypedRelationPost> query(*m_pool);
+    try
+    {
+        static_cast<void>(query.then(&MistypedRelationPost::author));
+        FAIL() << "拼错的外键列没有被拒绝";
+    } catch (const LogicException &exception)
+    {
+        EXPECT_NE(std::string{exception.what()}.find("author_idd"), std::string::npos) << exception.what();
+    }
+}
+
+/**
+ * @brief 钉住一对多装载要求父表主键列在 kColumns 里声明过
+ * @details 子表外键列齐全但父键读不出来时，补取查询会没有键可用；此时必须在 then() 拒绝
+ */
+TEST_F(QueryableRelationsTest, RefusesOneToManyWhenOwnerPrimaryKeyIsNotAColumn)
+{
+    Queryable<NoPrimaryKeyChildPost> query(*m_pool);
+    EXPECT_THROW(static_cast<void>(query.then(&NoPrimaryKeyChildPost::comments)), LogicException);
+}
+
+/**
+ * @brief 离线对象调用 then() 必须按文档抛逻辑错误，而不是解引用空池
+ */
+TEST(QueryableRelationsOffline, ThenRejectsOfflineModeBeforeTouchingThePool)
+{
+    Queryable<RelationPost> offline;
+    EXPECT_THROW(static_cast<void>(offline.then(&RelationPost::author)), LogicException);
+}
+
 // ========================================================================
-// include：一次 LEFT JOIN 取回（3.3 的第二半）
+// include：一次 LEFT JOIN 取回
 // ========================================================================
 
 /**

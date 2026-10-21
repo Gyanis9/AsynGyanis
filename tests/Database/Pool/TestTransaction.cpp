@@ -4,36 +4,36 @@
 // （池满时第二个事务拿不到连接）与批量插入的分块执行。
 // 用文件库而不是 ":memory:"：内存库不跨连接共享，只有一个连接时根本观察不到「提交前不可见」，事务语义无从验证。
 // 覆盖场景：
-// - CommitMakesChangesVisibleToOtherConnections
-// - RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
-// - DestructorRollsBackEvenWhenPoolResetDoesNot（回滚归属：池的会话复位会替事务析构擦屁股）
-// - PoolResetRollsBackTransactionOpenedByRawSql（绕过 beginTransaction() 的手工 BEGIN 也按引擎真值滚掉）
-// - ExceptionPathRollsBackAndKeepsDatabaseClean
-// - RepeatedCommitAndRollbackAreIdempotent / CommitThenRollbackKeepsCommittedData
-// - TransactionHoldsItsConnectionUntilItEnds
-// - BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt / BatchInsertEdgeCases
-// - StatementsComeFromTheDialect（事务控制语句来自方言）
-// - RefusesUnsupportedIsolationLevelWithoutLeakingTheConnection（SQLite 拒绝非默认级别并点名，被拒的连接还回池；Default 照常开局）
-// - StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
-// - ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch（分块批量插入整批占住使用权，块间不插进别的语句）
-// - SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
-// - SavepointRollbackKeepsEarlierWorkAndLeavesTransactionOpen（保存点回退只退那一段，事务照旧开着）
-// - ReleaseSavepointKeepsWorkAfterIt（丢弃名字不回滚也不提交）
-// - RollbackToUnknownSavepointFailsWithoutEndingTransaction（回退不存在的点是失败而不是结束事务）
-// - SavepointAfterCommitRefusesToSendAnything（已结束的事务上一条都不发，尤其不能顺手起一个新事务）
-// - SavepointNameRejectsBlankAndNul / SavepointNameIsQuotedNotSpliced（名字是数据不是 SQL 片段）
-// - StatementAfterTimeLimitIsRejected（整笔时限到期后续语句被拒，已写入的行没落库）
-// - CommitAfterTimeLimitIsRefused（时限把「跑飞的事务还能落库」变成不可能）
-// - RollbackAfterTimeLimitStillWorks（收尾永不被拒：拦住回滚等于把事务钉得更死）
-// - SavepointStatementsAfterTimeLimitAreRefused（保存点也是往前走的一步）
-// - ChunkedBatchInsertAfterTimeLimitSendsNoChunk（分块那条分支同样过闸）
-// - TransactionHasNoTimeLimitByDefault / NonPositiveTimeLimitMeansNoLimit（默认与 0／负数都是不设限）
-// - EndedTransactionIsNotReportedAsTimedOut（「已结束」与「超时」两条原因不混成一句）
-// - StatementExecutionForwardsRemainingBudgetToQueryTimeout（剩余预算透传到语句级超时的读数）
-// - ForwardingBudgetNeverLoosensTheConnectionsOwnTimeout（取更严者：预算比会话超时宽时不动它）
-// - ForwardingBudgetTightensAnUnlimitedSessionTimeout（会话超时 0＝不设限，透传不能把预算吞掉）
-// - NoTimeLimitLeavesTheConnectionsTimeoutAlone（不设限的事务不碰连接的会话超时）
-// - BudgetCheckedAgainAfterWaitingForTheConnectionLock（排队等锁期间越限，取到锁后又被拒）
+// CommitMakesChangesVisibleToOtherConnections
+// RollbackDiscardsChanges / DestructorRollsBackUncommittedWork
+// DestructorRollsBackEvenWhenPoolResetDoesNot（回滚归属：池的会话复位会替事务析构擦屁股）
+// PoolResetRollsBackTransactionOpenedByRawSql（绕过 beginTransaction() 的手工 BEGIN 也按引擎真值滚掉）
+// ExceptionPathRollsBackAndKeepsDatabaseClean
+// RepeatedCommitAndRollbackAreIdempotent / CommitThenRollbackKeepsCommittedData
+// TransactionHoldsItsConnectionUntilItEnds
+// BatchInsertChunksAutomatically / BatchInsertOnTransactionRollsBackWithIt / BatchInsertEdgeCases
+// StatementsComeFromTheDialect（事务控制语句来自方言）
+// RefusesUnsupportedIsolationLevelWithoutLeakingTheConnection（SQLite 拒绝非默认级别并点名，被拒的连接还回池；Default 照常开局）
+// StatementsOnOneTransactionWaitForTheConnection（同一事务上的语句互斥：ORM 查询与 COMMIT 都排队）
+// ChunkedBatchInsertHoldsTheConnectionForTheWholeBatch（分块批量插入整批占住使用权，块间不插进别的语句）
+// SequentialStatementsFromDifferentThreadsBothRun（互斥不等于绑死线程，先后换线程仍可用）
+// SavepointRollbackKeepsEarlierWorkAndLeavesTransactionOpen（保存点回退只退那一段，事务照旧开着）
+// ReleaseSavepointKeepsWorkAfterIt（丢弃名字不回滚也不提交）
+// RollbackToUnknownSavepointFailsWithoutEndingTransaction（回退不存在的点是失败而不是结束事务）
+// SavepointAfterCommitRefusesToSendAnything（已结束的事务上一条都不发，尤其不能顺手起一个新事务）
+// SavepointNameRejectsBlankAndNul / SavepointNameIsQuotedNotSpliced（名字是数据不是 SQL 片段）
+// StatementAfterTimeLimitIsRejected（整笔时限到期后续语句被拒，已写入的行没落库）
+// CommitAfterTimeLimitIsRefused（时限把「跑飞的事务还能落库」变成不可能）
+// RollbackAfterTimeLimitStillWorks（收尾永不被拒：拦住回滚等于把事务钉得更死）
+// SavepointStatementsAfterTimeLimitAreRefused（保存点也是往前走的一步）
+// ChunkedBatchInsertAfterTimeLimitSendsNoChunk（分块那条分支同样过闸）
+// TransactionHasNoTimeLimitByDefault / NonPositiveTimeLimitMeansNoLimit（默认与 0／负数都是不设限）
+// EndedTransactionIsNotReportedAsTimedOut（「已结束」与「超时」两条原因不混成一句）
+// StatementExecutionForwardsRemainingBudgetToQueryTimeout（剩余预算透传到语句级超时的读数）
+// ForwardingBudgetNeverLoosensTheConnectionsOwnTimeout（取更严者：预算比会话超时宽时不动它）
+// ForwardingBudgetTightensAnUnlimitedSessionTimeout（会话超时 0＝不设限，透传不能把预算吞掉）
+// NoTimeLimitLeavesTheConnectionsTimeoutAlone（不设限的事务不碰连接的会话超时）
+// BudgetCheckedAgainAfterWaitingForTheConnectionLock（排队等锁期间越限，取到锁后又被拒）
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"

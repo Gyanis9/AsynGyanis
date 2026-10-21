@@ -22,6 +22,21 @@
 namespace AsynGyanis::Database
 {
     /**
+     * @brief UTC 瞬时（微秒精度）—— 带时区语义的那一档日期时间
+     * @details 值本身是「时间线上的一个点」，与哪个时区怎么显示它无关。三家里只有 PostgreSQL 的
+     *          timestamptz 存的就是这个语义；MySQL 按本映射存成 DATETIME(6) 的 UTC 字面量
+     *          （选它的理由见 MySqlDialect::columnTypeName），SQLite 则写成带 `Z` 的定宽 ISO 文本。
+     */
+    using Timestamp = std::chrono::sys_time<std::chrono::microseconds>;
+
+    /**
+     * @brief 无偏移的墙上时间（微秒精度）—— 只有历法读数、不属于任何时区的那一档
+     * @details 「2026-03-01 02:30:00」这样一个读数，配上时区才构成时间线上的一个点。
+     *          与 Timestamp 是两个类型而不是一个带标志的结构，理由见下面 DatabaseValue 的注释。
+     */
+    using LocalDateTime = std::chrono::local_time<std::chrono::microseconds>;
+
+    /**
      * @brief 数据库统一值类型
      *
      * @details 用 std::variant 屏蔽各数据库的类型方言：NULL / 布尔 / 整数 / 浮点 / 文本 / 列表 / 哈希 / 二进制 /
@@ -41,21 +56,6 @@ namespace AsynGyanis::Database
      * @note 新增备选一律追加在末尾：既有备选的下标是已发布的契约，调整顺序会让所有
      *       按固定下标取值的调用点静默取错类型。
      */
-    /**
-     * @brief UTC 瞬时（微秒精度）—— 带时区语义的那一档日期时间
-     * @details 值本身是「时间线上的一个点」，与哪个时区怎么显示它无关。三家里只有 PostgreSQL 的
-     *          timestamptz 存的就是这个语义；MySQL 按本映射存成 DATETIME(6) 的 UTC 字面量
-     *          （选它的理由见 MySqlDialect::columnTypeName），SQLite 则写成带 `Z` 的定宽 ISO 文本。
-     */
-    using Timestamp = std::chrono::sys_time<std::chrono::microseconds>;
-
-    /**
-     * @brief 无偏移的墙上时间（微秒精度）—— 只有历法读数、不属于任何时区的那一档
-     * @details 「2026-03-01 02:30:00」这样一个读数，配上时区才构成时间线上的一个点。
-     *          与 Timestamp 是两个类型而不是一个带标志的结构，理由见下面 DatabaseValue 的注释。
-     */
-    using LocalDateTime = std::chrono::local_time<std::chrono::microseconds>;
-
     using DatabaseValue = std::variant<std::monostate, bool, std::int64_t, double, std::string, std::vector<std::string>, std::unordered_map<std::string, std::string>,
                                        std::vector<std::uint8_t>, Decimal, Timestamp, LocalDateTime>;
 

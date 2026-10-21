@@ -1,12 +1,12 @@
 // 覆盖场景（ORM 执行链路「池 → 驱动 → 绑定」所依赖的底层能力：DatabaseConnection 的带参数执行接口）：
-// - SqliteBindsScalarParameterTypes（整型/文本/浮点/布尔）
-// - SqliteBindsNullParameter（NULL 与空串语义不同）
-// - SqliteParameterizedSelectReturnsRows
-// - SqliteRejectsParameterCountMismatch（少给 / 多给参数都失败）
-// - SqliteRejectsContainerParameter
-// - EveryDriverAnswersParameterizedExecuteWithoutDroppingArguments（MySQL 已实现绑定：离线时以「未连接」
+// SqliteBindsScalarParameterTypes（整型/文本/浮点/布尔）
+// SqliteBindsNullParameter（NULL 与空串语义不同）
+// SqliteParameterizedSelectReturnsRows
+// SqliteRejectsParameterCountMismatch（少给 / 多给参数都失败）
+// SqliteRejectsContainerParameter
+// EveryDriverAnswersParameterizedExecuteWithoutDroppingArguments（MySQL 已实现绑定：离线时以「未连接」
 //   拒绝；Redis 已接通 argv 通道：离线时走到发送判定，而 SQL 式 "?" 占位符被单独拒）
-// - PooledConnectionForwardsParameterizedExecute（经池与基类指针的虚派发）
+// PooledConnectionForwardsParameterizedExecute（经池与基类指针的虚派发）
 
 #include "Database/Common/ConnectionConfig.h"
 #include "Database/Common/DatabaseConnection.h"

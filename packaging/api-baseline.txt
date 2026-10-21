@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=305 entries=8954
+# headers=303 entries=8873
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -2339,12 +2339,14 @@ src/Database/MySql/MySqlStreamingStatementResult.h	[[nodiscard]] size_t rowCount
 src/Database/MySql/MySqlStreamingStatementResult.h	[[nodiscard]] std::optional<size_t> columnIndex(std::string_view name) const override
 src/Database/MySql/MySqlStreamingStatementResult.h	[[nodiscard]] std::optional<std::string> columnName(size_t index) const override
 src/Database/MySql/MySqlStreamingStatementResult.h	[[nodiscard]] std::vector<std::string> columnNames() const override
+src/Database/MySql/MySqlStreamingStatementResult.h	[[nodiscard]] void *adoptResultBindings(std::shared_ptr<void> bindings) noexcept
 src/Database/MySql/MySqlStreamingStatementResult.h	bool buildCurrentRow()
 src/Database/MySql/MySqlStreamingStatementResult.h	bool m_isStreamEnded
 src/Database/MySql/MySqlStreamingStatementResult.h	bool next() override
 src/Database/MySql/MySqlStreamingStatementResult.h	class ASYN_DATABASE_API MySqlStreamingStatementResult final : public DatabaseResult
 src/Database/MySql/MySqlStreamingStatementResult.h	class MySqlConnection
 src/Database/MySql/MySqlStreamingStatementResult.h	namespace AsynGyanis::Database
+src/Database/MySql/MySqlStreamingStatementResult.h	std::shared_ptr<void> m_resultBindingsOwner
 src/Database/MySql/MySqlStreamingStatementResult.h	std::string m_commandText
 src/Database/MySql/MySqlStreamingStatementResult.h	std::unique_ptr<bool[]> m_columnNullFlags
 src/Database/MySql/MySqlStreamingStatementResult.h	std::vector<DatabaseValue> m_currentRow
@@ -2588,6 +2590,7 @@ src/Database/Postgres/PostgresResult.h	PostgresResult(PostgresResult &&) = delet
 src/Database/Postgres/PostgresResult.h	PostgresResult(const PostgresResult &) = delete
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] DatabaseValue getValue(size_t index) const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] DatabaseValue getValue(std::string_view name) const override
+src/Database/Postgres/PostgresResult.h	[[nodiscard]] DatabaseValue takeValue(size_t index) override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] bool isEmpty() const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] size_t columnCount() const override
 src/Database/Postgres/PostgresResult.h	[[nodiscard]] size_t rowCount() const override
@@ -6454,130 +6457,46 @@ src/Net/Logging/OtlpLogJson.h	std::string threadId
 src/Net/Logging/OtlpLogJson.h	std::vector<std::pair<std::string, std::string>> attributes
 src/Net/Logging/OtlpLogJson.h	struct ASYN_NET_API OtlpLogRecord
 src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
-src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
-src/Net/Logging/OtlpLogSink.h	Configuration m_configuration
-src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
-src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
 src/Net/Logging/OtlpLogSink.h	Core::EventLoop m_loop
 src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
-src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
-src/Net/Logging/OtlpLogSink.h	Core::Task<bool> sendBatch(const std::vector<OtlpLogRecord> &batch)
-src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
-src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
 src/Net/Logging/OtlpLogSink.h	Core::Task<void> pump()
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink &operator=(const OtlpLogSink &) = delete
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(OtlpLogSink &&) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(TraceResource resource, Configuration configuration)
 src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
-src/Net/Logging/OtlpLogSink.h	OtlpLogSink(const OtlpLogSink &) = delete
-src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
-src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
 src/Net/Logging/OtlpLogSink.h	TraceResource m_resource
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::size_t pendingRecordCount() const
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::string lastFailureReason() const
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t deliveredBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t droppedRecordCount() const noexcept
 src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	[[nodiscard]] std::uint64_t failedBatchCount() const noexcept
-src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
-src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	bool takeBatch(std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
-src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
-src/Net/Logging/OtlpLogSink.h	class ASYN_NET_API OtlpLogSink final : public Base::LogSink
-src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
-src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
 src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_queueMutex
 src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
-src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
-src/Net/Logging/OtlpLogSink.h	mutable std::mutex m_reasonMutex
-src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
-src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
 src/Net/Logging/OtlpLogSink.h	namespace AsynGyanis::Net
 src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
-src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
-src/Net/Logging/OtlpLogSink.h	std::atomic<bool> m_isStopping
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_deliveredBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_droppedRecordCount
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
-src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
 src/Net/Logging/OtlpLogSink.h	std::atomic<std::uint64_t> m_failedBatchCount
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds exportInterval
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds requestTimeout
 src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
-src/Net/Logging/OtlpLogSink.h	std::chrono::milliseconds shutdownTimeout
-src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
-src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
 src/Net/Logging/OtlpLogSink.h	std::deque<OtlpLogRecord> m_queue
 src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
-src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
-src/Net/Logging/OtlpLogSink.h	std::jthread m_workerThread
-src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
-src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
 src/Net/Logging/OtlpLogSink.h	std::size_t maximumBatchRecordCount
 src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
-src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
-src/Net/Logging/OtlpLogSink.h	std::size_t maximumPendingRecordCount
-src/Net/Logging/OtlpLogSink.h	std::string endpoint
-src/Net/Logging/OtlpLogSink.h	std::string endpoint
 src/Net/Logging/OtlpLogSink.h	std::string endpoint
 src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
-src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
-src/Net/Logging/OtlpLogSink.h	std::string m_lastFailureReason
-src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
-src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
 src/Net/Logging/OtlpLogSink.h	std::unique_ptr<HttpClient> m_client
 src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
-src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
-src/Net/Logging/OtlpLogSink.h	std::vector<HttpClientHeaderField> extraHeaders
-src/Net/Logging/OtlpLogSink.h	struct Configuration
-src/Net/Logging/OtlpLogSink.h	struct Configuration
 src/Net/Logging/OtlpLogSink.h	struct Configuration
 src/Net/Logging/OtlpLogSink.h	void flush() override
-src/Net/Logging/OtlpLogSink.h	void flush() override
-src/Net/Logging/OtlpLogSink.h	void flush() override
-src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
-src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	void requeue(const std::vector<OtlpLogRecord> &batch)
 src/Net/Logging/OtlpLogSink.h	void runLoopThread()
-src/Net/Logging/OtlpLogSink.h	void runLoopThread()
-src/Net/Logging/OtlpLogSink.h	void runLoopThread()
-src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
-src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
 src/Net/Logging/OtlpLogSink.h	void write(Base::LogEvent &&event) override
 src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
-src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
-src/Net/Logging/OtlpLogSink.h	void write(const Base::LogEvent &event) override
-src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
-src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
 src/Net/Logging/OtlpLogSink.h	~OtlpLogSink() override
 src/Net/Metrics/HttpStatsOtlp.h	[[nodiscard]] ASYN_NET_API OtlpMetricsBatch buildOtlpMetricsFromHttpStats(const HttpServerStats &stats, std::string_view metricNamePrefix)
 src/Net/Metrics/HttpStatsOtlp.h	namespace AsynGyanis::Net

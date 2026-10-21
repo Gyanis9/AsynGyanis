@@ -35,8 +35,8 @@ namespace AsynGyanis::Database::Queryable
      * @brief 一条关系的声明：成员指针 + 外键列名
      * @tparam OwnerType 声明它的行类型（`TableSchema<OwnerType>` 里写 `kRelations`）
      * @tparam MemberType 承载被装载对象的那一个成员的类型，方向由它决定：
-     *         - `std::vector<U>` → 一对多：外键列在 U 的表里（指向本行的主键）；
-     *         - `U` / `std::optional<U>` → 多对一：外键列在 本行所在的表里（指向 U 的主键）。
+     * `std::vector<U>` → 一对多：外键列在 U 的表里（指向本行的主键）；
+     * `U` / `std::optional<U>` → 多对一：外键列在 本行所在的表里（指向 U 的主键）。
      */
     template<typename OwnerType, typename MemberType>
     struct RelationDescriptor

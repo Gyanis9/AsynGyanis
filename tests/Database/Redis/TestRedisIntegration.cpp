@@ -1,34 +1,34 @@
 // 覆盖场景（只覆盖必须连上真实 Redis 才能验证的部分；不需要服务端即可成立的行为归 TestRedisConnection.cpp 管）：
-// - ConnectsAndAnswersPing（含认证成功）
-// - ConnectWithWrongPasswordFailsWithLocalizedReason
-// - StatusAndIntegerRepliesMapToTheirTypes
-// - StringValuesRoundTripVerbatim（中文/引号/空格/换行/内嵌 '\0'）
-// - MultiArgumentCommandKeepsArgumentsSeparate（参数不被拼成一条命令）
-// - MissingKeyYieldsEmptyResult / EmptyArrayYieldsEmptyResult
-// - ArrayReplyExposesOneColumnPerElement
-// - CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
-// - PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
-// - PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact（参数条数升降交替仍逐条对齐）
-// - SingleCommandArgumentTableHoldsAcrossInlineCapacity（单命令参数表在栈上容量两侧都等值送达）
-// - ResetSessionStateDiscardsPendingPipelineCommands
-// - ResetSessionStateDiscardsLeftoverTransaction（残留 MULTI 会让下一个借用者的写全被排队）
-// - CompletedTransactionLeavesNothingForSessionReset（EXEC 之后复位不再发命令）
-// - ResetSessionStateUnwatchesLeftoverWatch（残留 WATCH 会让下一个借用者的 EXEC 中止）
-// - RejectedExecDoesNotSettleTheWatchItImplies（被退回的 EXEC 不算了结，复位仍补 UNWATCH）
-// - PipelineSessionBookkeepingFollowsTheReply（管道那条路径同样按回复定记账）
-// - SessionResetReturnsToTheConfiguredKeySpace（selectDatabase 换走的库在归还时还回配置值）
-// - MonitorStyleSessionIsDroppedOnReturn（MONITOR 这类退不回去的模式：归还时断开而不是回池）
-// - NonPositiveConnectTimeoutDoesNotMeanInstantFailure（connectTimeout 的 0 与负数＝不设超时，守卫性质见用例注释）
-// - PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
-// - ConfiguredKeyspaceIsSelectedOnConnect
-// - TextCommandPathSplitsArguments（execute() 的切词路径）
-// - QueryTimeoutChangeAppliesToEstablishedConnection（建连后改超时当场生效，不必重连）
-// - ProbeAliveAsksTheServerAndNotTheLocalFlag（被 CLIENT KILL 杀掉的会话：状态读起来还连着，探针判死）
-// - ProbeAliveRefusesWhilePipelineIsPending（管道没 flush 时探针不发，flush 的回复仍逐条对齐）
-// - RESP3 那一族：HGETALL 从交替数组换成一份哈希、SMEMBERS 按成员逐列而 SMISMEMBER 服务端答的是整数、
+// ConnectsAndAnswersPing（含认证成功）
+// ConnectWithWrongPasswordFailsWithLocalizedReason
+// StatusAndIntegerRepliesMapToTheirTypes
+// StringValuesRoundTripVerbatim（中文/引号/空格/换行/内嵌 '\0'）
+// MultiArgumentCommandKeepsArgumentsSeparate（参数不被拼成一条命令）
+// MissingKeyYieldsEmptyResult / EmptyArrayYieldsEmptyResult
+// ArrayReplyExposesOneColumnPerElement
+// CommandErrorFailsWithLocalizedReason（连接级：nullptr + 中文原因）
+// PipelineBatchesCommandsAndFlushesInOrder / PipelineErrorReplySurfacesOnItsOwnResult
+// PipelineAcrossRisingAndFallingArgumentCountsKeepsCommandsIntact（参数条数升降交替仍逐条对齐）
+// SingleCommandArgumentTableHoldsAcrossInlineCapacity（单命令参数表在栈上容量两侧都等值送达）
+// ResetSessionStateDiscardsPendingPipelineCommands
+// ResetSessionStateDiscardsLeftoverTransaction（残留 MULTI 会让下一个借用者的写全被排队）
+// CompletedTransactionLeavesNothingForSessionReset（EXEC 之后复位不再发命令）
+// ResetSessionStateUnwatchesLeftoverWatch（残留 WATCH 会让下一个借用者的 EXEC 中止）
+// RejectedExecDoesNotSettleTheWatchItImplies（被退回的 EXEC 不算了结，复位仍补 UNWATCH）
+// PipelineSessionBookkeepingFollowsTheReply（管道那条路径同样按回复定记账）
+// SessionResetReturnsToTheConfiguredKeySpace（selectDatabase 换走的库在归还时还回配置值）
+// MonitorStyleSessionIsDroppedOnReturn（MONITOR 这类退不回去的模式：归还时断开而不是回池）
+// NonPositiveConnectTimeoutDoesNotMeanInstantFailure（connectTimeout 的 0 与负数＝不设超时，守卫性质见用例注释）
+// PooledReturnClearsSessionForNextBorrower（经连接池借还这一形状下，管道与 MULTI 都不串给下一个）
+// ConfiguredKeyspaceIsSelectedOnConnect
+// TextCommandPathSplitsArguments（execute() 的切词路径）
+// QueryTimeoutChangeAppliesToEstablishedConnection（建连后改超时当场生效，不必重连）
+// ProbeAliveAsksTheServerAndNotTheLocalFlag（被 CLIENT KILL 杀掉的会话：状态读起来还连着，探针判死）
+// ProbeAliveRefusesWhilePipelineIsPending（管道没 flush 时探针不发，flush 的回复仍逐条对齐）
+// RESP3 那一族：HGETALL 从交替数组换成一份哈希、SMEMBERS 按成员逐列而 SMISMEMBER 服务端答的是整数、
 //   INFO 的 verbatim 交出正文、建连时的 HELLO 不进会话记账（中途发 HELLO 照旧断开）、
 //   订阅与读推送在发送前就被拒（RESP3 的确认是推送，本模型收不到——实测会等满 30 秒）
-// - 键存活状态与扫描页的三档/续扫往返：-2 与 -1 各自成形（毫秒精度走 PTTL），SCAN 按游标续到 0 且 MATCH 生效
+// 键存活状态与扫描页的三档/续扫往返：-2 与 -1 各自成形（毫秒精度走 PTTL），SCAN 按游标续到 0 且 MATCH 生效
 // 门控：`ASYN_REDIS_TEST_PASSWORD` 没有默认值，未设置时整组 GTEST_SKIP，仓库零明文口令；
 // 键空间默认 15（不用 0，免得混进使用者的工作库），键名由 makeKey() 保证唯一，清理只 DEL 自己的键、不 FLUSHDB。
 

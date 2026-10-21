@@ -940,16 +940,16 @@ namespace AsynGyanis::Database
             return std::nullopt;
         }
 
-        const DatabaseValue cursorValue = reply->getValue(std::size_t{0});
-        const auto         *nextCursor  = std::get_if<std::string>(&cursorValue);
+        DatabaseValue cursorValue = reply->getValue(std::size_t{0});
+        auto         *nextCursor  = std::get_if<std::string>(&cursorValue);
         if (nextCursor == nullptr)
         {
             m_lastError = "读 SCAN 的回复失败：游标不是按文本给出的，原样透传是这一格的契约";
             return std::nullopt;
         }
 
-        const DatabaseValue keysValue = reply->getValue(std::size_t{1});
-        const auto         *keys      = std::get_if<std::vector<std::string>>(&keysValue);
+        DatabaseValue keysValue = reply->getValue(std::size_t{1});
+        auto         *keys      = std::get_if<std::vector<std::string>>(&keysValue);
         if (keys == nullptr)
         {
             m_lastError = "读 SCAN 的回复失败：这一页的键不是按列表给出的";
@@ -957,8 +957,8 @@ namespace AsynGyanis::Database
         }
 
         RedisScanPage page;
-        page.nextCursor = *nextCursor;
-        page.keys       = *keys;
+        page.nextCursor = std::move(*nextCursor);
+        page.keys       = std::move(*keys);
         return page;
     }
 
@@ -1780,6 +1780,37 @@ namespace AsynGyanis::Database
             return element->integer;
         }
 
+        /**
+         * @brief 把一条推送回复转成 RedisPushReply（不接管 reply 的所有权）
+         * @param reply 服务端回的数组回复
+         * @return RedisPushReply 按 kind 填好的字段
+         */
+        RedisPushReply convertPushReply(const redisReply &reply)
+        {
+            const std::string kind = pushReplyField(reply, 0);
+
+            RedisPushReply push;
+            push.kind = kind;
+            if (kind == "pmessage")
+            {
+                push.pattern = pushReplyField(reply, 1);
+                push.channel = pushReplyField(reply, 2);
+                push.payload = pushReplyField(reply, 3);
+            } else if (kind == "message" || kind == "smessage")
+            {
+                push.channel = pushReplyField(reply, 1);
+                push.payload = pushReplyField(reply, 2);
+            } else
+            {
+                // subscribe / unsubscribe / psubscribe / punsubscribe，以及本机制还不认识的 kind：
+                // 一律按「第 2 段是目标、第 3 段是计数」的形状读，认不出的字段留空而不报错——
+                // 服务端将来加新形态时调用方仍然看得见它，比在这里静默丢掉好查
+                push.channel           = pushReplyField(reply, 1);
+                push.subscriptionCount = pushReplyCount(reply, 2);
+            }
+            return push;
+        }
+
         /// 收订阅/退订确认时的单次等待上限：确认紧随命令到达，等满这么久就是没来（按失败收场）
         constexpr std::chrono::milliseconds kConfirmationWait{5000};
 
@@ -1792,7 +1823,7 @@ namespace AsynGyanis::Database
          *          永远等不到东西，实测是等满 30 秒读写超时后报 `recv timeout`。
          *          把这条挂死伪装成「探针式地试一下」比直接拒更坏：调用方看到的是超时错误码，
          *          看不出档位与协议模型不相容这件事。要支持它需要的是推送回调 + 「发出订阅后不再
-         *          等命令回复」的那套改法，属另一件事，进度记在交付报告的未结案里
+         *          等命令回复」的那套改法，属另一件事
          */
         constexpr std::string_view kResp3PushPathRefusal = "这条命令在 RESP3 档下不可用：订阅确认与服务端推送在 RESP3 里走 `>` 推送，而本驱动按「一条命令一条回复」执行，"
                                                            "hiredis 未接推送回调时这类回复会被就地丢弃、命令永远等不到回答。请把 redisProtocol 留在 Resp2 用它，"
@@ -1904,7 +1935,8 @@ namespace AsynGyanis::Database
             const std::array<std::string_view, 1> arguments{command.first};
             if (executeArguments(arguments) == nullptr)
             {
-                command.second->clear();
+                // 确认没齐：名单必须保留，isSubscribing() 才能如实说「状态不确定」；
+                // 清空会让调用方以为已经退干净，而服务端可能仍在推送模式
                 return false;
             }
 
@@ -1917,7 +1949,8 @@ namespace AsynGyanis::Database
                     {
                         m_lastError = "没有等齐服务端为退订命令回的确认，订阅状态不确定：请按断开重连处理";
                     }
-                    command.second->clear();
+                    // 确认没齐：名单必须保留，isSubscribing() 才能如实说「状态不确定」；
+                    // 清空会让调用方以为已经退干净，而服务端可能仍在推送模式
                     return false;
                 }
             }
@@ -1956,7 +1989,10 @@ namespace AsynGyanis::Database
             if (redisSetTimeout(m_redisContext, ownTimeout) != REDIS_OK)
             {
                 captureError("设置 Redis 推送等待时限失败");
-                static_cast<void>(applyQueryTimeout());
+                if (!applyQueryTimeout())
+                {
+                    disconnect();
+                }
                 return std::nullopt;
             }
         }
@@ -1971,9 +2007,16 @@ namespace AsynGyanis::Database
         const bool timedOut = m_redisContext->err == REDIS_ERR_TIMEOUT ||
                               (m_redisContext->err == REDIS_ERR_IO && (nativeErrno == EAGAIN || nativeErrno == EWOULDBLOCK || nativeErrno == ETIMEDOUT));
 
-        if (usesOwnWait)
+        if (usesOwnWait && !applyQueryTimeout())
         {
-            static_cast<void>(applyQueryTimeout());
+            // 还原不上就说不清下一条普通命令会用哪个超时：reply 先释放，连接断开，
+            // 不能把一次成功的 push 和一条非空的 lastError 一起交出去
+            if (rawReplyPointer != nullptr)
+            {
+                freeReplyObject(rawReplyPointer);
+            }
+            disconnect();
+            return std::nullopt;
         }
 
         if (readStatus != REDIS_OK || rawReplyPointer == nullptr)
@@ -2000,28 +2043,7 @@ namespace AsynGyanis::Database
 
         auto *const reply = static_cast<redisReply *>(rawReplyPointer);
         // 所有权在这条路径上一直归本函数：既没交给 RedisResult 也没被连接持有，读完必须自己释放
-        const std::string kind = pushReplyField(*reply, 0);
-
-        RedisPushReply push;
-        push.kind = kind;
-        if (kind == "pmessage")
-        {
-            push.pattern = pushReplyField(*reply, 1);
-            push.channel = pushReplyField(*reply, 2);
-            push.payload = pushReplyField(*reply, 3);
-        } else if (kind == "message" || kind == "smessage")
-        {
-            push.channel = pushReplyField(*reply, 1);
-            push.payload = pushReplyField(*reply, 2);
-        } else
-        {
-            // subscribe / unsubscribe / psubscribe / punsubscribe，以及本机制还不认识的 kind：
-            // 一律按「第 2 段是目标、第 3 段是计数」的形状读，认不出的字段留空而不报错——
-            // 服务端将来加新形态时调用方仍然看得见它，比在这里静默丢掉好查
-            push.channel           = pushReplyField(*reply, 1);
-            push.subscriptionCount = pushReplyCount(*reply, 2);
-        }
-
+        const RedisPushReply push = convertPushReply(*reply);
         freeReplyObject(reply);
         return push;
     }

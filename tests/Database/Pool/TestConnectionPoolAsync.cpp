@@ -3,21 +3,21 @@
 // 归还连接的一方把恢复动作投递回 `acquireAsync()` 给定的 `EventLoop`（`Scheduler::scheduleRemote`），
 // 因此恢复后的代码仍运行在那个事件循环线程上；本文件断言恢复线程 == 事件循环线程，且不等于调用线程。
 // 覆盖场景：
-// - AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
-// - AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
-// - AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
-// - DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
-// - DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
-// - DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
-// - DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
-// - WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
-// - AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
-// - RefusedByWaitingCapSettlesEmptyWithoutSuspending（等待名额满时不挂起、当场空手收尾并落账，先到的等待者不被顶掉）
-// - WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
-// - FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
-// - AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
-// - AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter（排队途中分配失败：当场空手收尾、等待表不留半条）
-// - AllocationFailureWhileReturningDiscardsConnectionInsteadOfLosingIt（归还入栈分配失败：那条连接走丢弃那本账）
+// AcquireAsyncCreatesConnectionImmediatelyWhenPoolNotFull（快路径：池未满时直接建连，不挂起）
+// AcquireAsyncReusesIdleConnectionImmediately（快路径：复用空闲连接，不新建）
+// AcquireAsyncResumesOnGivenEventLoop（慢路径：隔线程归还后，恢复发生在循环线程上）
+// DestructorWakesWaitersWithEmptyConnection（池销毁时以空连接唤醒，不永久挂起）
+// DestructorDoesNotDeadlockWhenResumedWaiterReturnsConnection（析构期唤醒的协程归还连接，不得同线程死锁）
+// DiscardingTaskAfterHandoffDoesNotResumeFreedFrame（交接后销毁 Task 不得 resume 已释放帧）
+// DiscardedTaskAfterHandoffReturnsConnectionToPool（丢弃已交接的帧要把连接与配额还回池）
+// WaiterRebuildsInsteadOfTakingExpiredHandover（过期连接不直接交接，协程被腾出的名额救活后另建一条）
+// AsyncBorrowTimeoutSharesTheCounter（异步空手收尾与同步共用同一份借出超时计数）
+// RefusedByWaitingCapSettlesEmptyWithoutSuspending（等待名额满时不挂起、当场空手收尾并落账，先到的等待者不被顶掉）
+// WaitingMetricMatchesWaitingCountWhileCoroutinesQueue（协程排队要在 /metrics 上看得见，与 waitingCount() 同一个数）
+// FrameOutlivingDestroyedPoolDoesNotTouchIt（帧活过池析构时不再碰已析构的池，连接随帧关闭）
+// AllocationFailureProbeInjectsExactlyOneFailurePerArm（「第 N 次分配失败」开关自证：掐一次、随后恢复、计数可查）
+// AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter（排队途中分配失败：当场空手收尾、等待表不留半条）
+// AllocationFailureWhileReturningDiscardsConnectionInsteadOfLosingIt（归还入栈分配失败：那条连接走丢弃那本账）
 
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Pool/ConnectionPool.h"
@@ -649,6 +649,48 @@ namespace AsynGyanis::Database
         // 帧没了，队列里那次恢复此刻执行：票据句柄已随帧清空，它什么都不做
         loop.scheduler().runAll();
         EXPECT_FALSE(probe.finished.load(std::memory_order_acquire));
+    }
+
+    /**
+     * @brief 交接后的恢复晚于池析构：await_resume 不得再碰已释放的池
+     * @details 与上一个用例的差别只在「先跑队列还是先销毁帧」：这里让池析构之后、帧销毁之前
+     *          执行队列里那次恢复，await_resume 因此会在池已释放的情况下读活跃计数。判活必须
+     *          与碰池同锁，判死则丢弃手里的连接、交回空包装。
+     */
+    TEST(ConnectionPoolAsync, HandoffResumeAfterPoolDestructionDoesNotTouchPool)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize = 1;
+
+        // 不启动的循环：交接只会把恢复动作排进队列
+        Core::EventLoop loop;
+
+        std::unique_ptr<ConnectionPool>   pool;
+        std::unique_ptr<Core::Task<void>> driver;
+        AcquireProbe                      probe;
+        {
+            pool = std::make_unique<ConnectionPool>(makeMockFactory(counter), configuration);
+
+            PooledConnection occupying = pool->acquire();
+            ASSERT_TRUE(occupying);
+
+            driver = std::make_unique<Core::Task<void>>(probeAcquireAsync(*pool, loop, probe));
+            driver->handle().resume(); // 池满：挂到等待列表
+            ASSERT_EQ(pool->waitingCount(), 1U);
+
+            occupying.release(); // 交接：恢复动作排进 loop 的队列
+            pool.reset();        // 池随后的析构发生在恢复之前
+        }
+
+        loop.scheduler().runAll(); // 恢复此刻执行：await_resume 必须看见池已停摆
+
+        EXPECT_TRUE(probe.finished.load(std::memory_order_acquire));
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(probe.connection.value()) << "池已析构，这次交接必须按空手收尾";
+        EXPECT_EQ(counter.totalDestroyed.load(), 1) << "连接应随这次交接收尾被关闭";
+
+        driver.reset();
     }
 
     /**

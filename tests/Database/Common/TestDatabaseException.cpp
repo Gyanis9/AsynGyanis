@@ -1,8 +1,8 @@
 // 数据库异常体系测试：家族继承关系与调用方实际可用的捕获面。
 // 覆盖场景：
-// - EveryRuntimeFailureDerivesFromProjectExceptionBase / UsageErrorsStayOutsideTheRuntimeFailureFamily
-// - OneCatchOfProjectBaseCoversEverySubclass / EachSubclassIsCatchableOnItsOwn / RootAndStandardBaseAlsoCatchSubclasses
-// - MessageKeepsOriginalTextAndCarriesThrowSite
+// EveryRuntimeFailureDerivesFromProjectExceptionBase / UsageErrorsStayOutsideTheRuntimeFailureFamily
+// OneCatchOfProjectBaseCoversEverySubclass / EachSubclassIsCatchableOnItsOwn / RootAndStandardBaseAlsoCatchSubclasses
+// MessageKeepsOriginalTextAndCarriesThrowSite
 // 钉住的契约：运行期故障家族（DatabaseException 及其全部子类）都派生自 Base::Exception，调用方能用一个 catch
 // 网住整个框架的可恢复故障，且都能被根类型与标准库 std::runtime_error 捕获；用法错误（Base::LogicException /
 // Base::InvalidArgumentException）刻意不在本家族内，该边界由本文件与 tests/Base/Exception/TestException.cpp 共同钉住。

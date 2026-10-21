@@ -1,4 +1,4 @@
-// 关系装载的异步面（台账 3.3）：`toListAsync()` 走的是同一条装载路径——`then()` 的补取与
+// 关系装载的异步面：`toListAsync()` 走的是同一条装载路径——`then()` 的补取与
 // `include()` 的一次 JOIN 都在工作线程上执行。
 //
 // 与 TestQueryableRelations.cpp 分开成文件，是因为这里要起一个常驻事件循环线程（EventLoopThread）；

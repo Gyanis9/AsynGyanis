@@ -156,7 +156,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取得提交事务的语句文本
          *
-         * @details 重写 SqlDialect::commitStatement()：两个引擎都用标准 SQL 的 "COMMIT"，
+         * @details 重写 SqlDialect::commitStatement()：三种引擎都用标准 SQL 的 "COMMIT"，
          *          实现收在此处；差异只在开启事务一侧（见各子类）。
          *
          * @return std::string_view 恒为 "COMMIT"
@@ -166,7 +166,7 @@ namespace AsynGyanis::Database
         /**
          * @brief 取得回滚事务的语句文本
          *
-         * @details 重写 SqlDialect::rollbackStatement()：两个引擎都用标准 SQL 的 "ROLLBACK"。
+         * @details 重写 SqlDialect::rollbackStatement()：三种引擎都用标准 SQL 的 "ROLLBACK"。
          *
          * @return std::string_view 恒为 "ROLLBACK"
          */

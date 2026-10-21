@@ -60,13 +60,12 @@ namespace AsynGyanis::Database
 
         /**
          * @brief 重试同一条语句有没有可能变好
-         * @details 判定表刻意只收「服务端主动让这条语句重来」这一类，其余一律 false：
-         *          - MySQL 1205（锁等待超时）、1213（死锁被选为牺牲者）→ true；
-         *          - SQLite 5（SQLITE_BUSY）、6（SQLITE_LOCKED）→ true；
-         *          - 约束冲突（MySQL 1062 / SQLite 19）、语法与对象不存在、权限不足 → false；
-         *          - 语句超时被打断（MySQL 3024 / SQLite 9 INTERRUPT）→ false：写语句可能
-         *            已经在服务端生效，重试就是二次写入，其代价远大于多一趟往返；
-         *          - 码未知（-1）→ false：宁可少重试一次，也不要把一条注定失败的语句打进循环。
+         * @details 判定表刻意只收「服务端主动让这条语句重来」这一类，其余一律 false。MySQL 1205（锁等待超时）、
+         *          1213（死锁被选为牺牲者）为 true；SQLite 5（SQLITE_BUSY）、6（SQLITE_LOCKED）为 true。
+         *          约束冲突（MySQL 1062 / SQLite 19）、语法与对象不存在、权限不足为 false。语句超时被打断
+         *          （MySQL 3024 / SQLite 9 INTERRUPT）也为 false：写语句可能已经在服务端生效，重试就是二次写入，
+         *          其代价远大于多一趟往返。码未知（-1）同样为 false：宁可少重试一次，也不要把一条注定失败的
+         *          语句打进循环。
          * @note 未列出 2006/2013（连接中断类）：那条语句同样可能已在服务端生效，
          *       跨连接重放属于「换一个连接重做整笔业务」的决策，不是本函数能替调用方拍的。
          * @return true 属于可重试的冲突类失败

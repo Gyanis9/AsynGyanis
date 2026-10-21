@@ -1,14 +1,14 @@
 // DatabaseFactory 单元测试：按类型建驱动、按配置推断类型、端口猜测与无法判定时的报错。
 // 覆盖场景：
-// - CreateByTypeReturnsMySqlDriver / CreateByTypeReturnsRedisDriver / CreateByTypeReturnsSqliteDriver
-// - CreateByTypeKeepsEveryDriverDisconnected / CreateByTypeHandsConfigurationThroughToDriver / CreateByTypeIgnoresPortInference
-// - CreateByTypeThrowsForOutOfRangeEnumValue
-// - CreateFromConfigUsesMySqlDefaultPort / CreateFromConfigUsesRedisDefaultPort / CreateFromConfigFallsBackToSqliteWhenPortUnspecified
-// - CreateFromConfigRejectsNetworkConfigWithoutPort / CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven
-// - CreateFromConfigPrefersPortOverDatabasePath / CreateFromConfigThrowsForUnknownPortEvenWithDatabase /
+// CreateByTypeReturnsMySqlDriver / CreateByTypeReturnsRedisDriver / CreateByTypeReturnsSqliteDriver
+// CreateByTypeKeepsEveryDriverDisconnected / CreateByTypeHandsConfigurationThroughToDriver / CreateByTypeIgnoresPortInference
+// CreateByTypeThrowsForOutOfRangeEnumValue
+// CreateFromConfigUsesMySqlDefaultPort / CreateFromConfigUsesRedisDefaultPort / CreateFromConfigFallsBackToSqliteWhenPortUnspecified
+// CreateFromConfigRejectsNetworkConfigWithoutPort / CreateFromConfigFallsBackToSqliteWhenOnlyDatabaseNameGiven
+// CreateFromConfigPrefersPortOverDatabasePath / CreateFromConfigThrowsForUnknownPortEvenWithDatabase /
 //   CreateFromConfigThrowsWithoutPortAndWithoutDatabase
-// - CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing：报错只说真正缺的那一样，不对空配置宣称有网络特征
-// - GuessTypeRecognizesMySqlDefaultPort / GuessTypeRecognizesRedisDefaultPort / GuessTypeReturnsEmptyForUnrecognizedPorts
+// CreateFromConfigRejectionNamesTheFieldThatIsActuallyMissing：报错只说真正缺的那一样，不对空配置宣称有网络特征
+// GuessTypeRecognizesMySqlDefaultPort / GuessTypeRecognizesRedisDefaultPort / GuessTypeReturnsEmptyForUnrecognizedPorts
 // 工厂只负责「挑驱动」，不负责连接，因此全部用例都在未连接状态下断言：只读 databaseType() / configuration()，
 // 不触发任何 IO 与文件系统访问。异常文本只断言「非空 + 含关键子串 + 含本地化（多字节）文案」，不硬编码整句中文，
 // 实现文案调整不会连带改坏用例。
@@ -263,6 +263,8 @@ namespace AsynGyanis::Database
         EXPECT_TRUE(containsLocalizedText(message)) << message;
         // 文本里带上 offending 端口号，便于把报错定位回具体配置
         EXPECT_NE(message.find(std::to_string(kUnknownPort)), std::string::npos) << message;
+        // 库名其实非空：报错不能把「没有可用于判定驱动的主机/账号」说成「database 为空」
+        EXPECT_NE(message.find("database 非空"), std::string::npos) << message;
     }
 
     /** @brief 钉住既无端口也无库名时报「无法判定类型」，不以猜测填充默认驱动 */

@@ -1,9 +1,9 @@
 // 覆盖场景（两个层次：离线 DDL 文本断言 + 内存 SQLite 端到端）：
-// - 离线：createTableStatement / dropTableStatement 的类型映射、可空规则、主键、标识符引用与 IF [NOT] EXISTS 开关
-// - 端到端：建表 → ORM 读写 → tableExists → dropTable 全链路；重复建表幂等，不带 IF NOT EXISTS 时对已存在表如实失败
-// - 二进制列专项：用 typeof() 断言存储类确实是 blob（声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、
+// 离线：createTableStatement / dropTableStatement 的类型映射、可空规则、主键、标识符引用与 IF [NOT] EXISTS 开关
+// 端到端：建表 → ORM 读写 → tableExists → dropTable 全链路；重复建表幂等，不带 IF NOT EXISTS 时对已存在表如实失败
+// 二进制列专项：用 typeof() 断言存储类确实是 blob（声明成 BLOB 却按文本绑定会存成 text，只看 DDL 发现不了）、
 //   零长载荷与 NULL 可区分、按二进制列做参数化条件查询；成功返回的调用清空出参（表不存在 vs 查询失败的判据）
-// - 自增主键专项：两副方言各按本引擎的语法给出列定义（关键字位置不同）、文本主键声明自增时在建表前就被拒绝、
+// 自增主键专项：两副方言各按本引擎的语法给出列定义（关键字位置不同）、文本主键声明自增时在建表前就被拒绝、
 //   SQLite 上「方言生成的 DDL → 省略主键的 INSERT → 读回生成的标识」整条链路成立
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/ConnectionConfig.h"
