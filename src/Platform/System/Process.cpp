@@ -508,4 +508,11 @@ namespace AsynGyanis::Platform
         return true;
 #endif
     }
+
+    void Process::ignoreBrokenPipeSignal() noexcept
+    {
+#if !ASYN_PLATFORM_WIN32
+        static_cast<void>(std::signal(SIGPIPE, SIG_IGN));
+#endif
+    }
 } // namespace AsynGyanis::Platform

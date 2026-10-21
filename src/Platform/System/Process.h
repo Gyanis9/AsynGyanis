@@ -218,5 +218,15 @@ namespace AsynGyanis::Platform
          * @return false 句柄无效或平台调用失败（原因见 PlatformError::lastErrorCode()）
          */
         [[nodiscard]] static bool forceTermination(const Handle &handle) noexcept;
+
+        /**
+         * @brief 忽略本进程的 SIGPIPE（POSIX）
+         * @details OpenSSL 内部的 write 绕不开 MSG_NOSIGNAL：向已关闭的对端写数据时，
+         *          Linux 会先投 SIGPIPE，默认动作是直接终止整个进程。忽略后写失败改以
+         *          EPIPE 返回，交给既有错误路径处理。该处置是进程级且幂等的；
+         *          Windows 没有 SIGPIPE，本函数是空操作。
+         * @note 要在其它线程创建之前调用；已经跑起来的线程仍可能自己收到信号。
+         */
+        static void ignoreBrokenPipeSignal() noexcept;
     };
 } // namespace AsynGyanis::Platform

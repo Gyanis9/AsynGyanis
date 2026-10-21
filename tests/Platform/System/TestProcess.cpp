@@ -22,7 +22,9 @@
 #if !ASYN_PLATFORM_WIN32
 #include <cerrno>
 #include <csignal>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace AsynGyanis::Platform
@@ -934,4 +936,49 @@ namespace AsynGyanis::Platform
         terminateProbeTarget(childProcessId);
     }
 #endif
+
+    /**
+     * @brief 钉住：忽略 SIGPIPE 的入口在两平台都可调用且幂等
+     * @details Windows 上是空操作；POSIX 的行为由下一条 fork 用例验证。
+     */
+    TEST(Process, IgnoreBrokenPipeSignalIsIdempotent)
+    {
+        Process::ignoreBrokenPipeSignal();
+        Process::ignoreBrokenPipeSignal();
+        SUCCEED();
+    }
+
+    /**
+     * @brief 钉住（POSIX）：ignoreBrokenPipeSignal() 之后，向无读端的管道写不再打死进程
+     * @details 子进程先把 SIGPIPE 处置复位成默认，再调用被测函数，排除「继承自父进程」的假绿；
+     *          写入返回 EPIPE 而不是被信号终止，才说明处置真的生效。Windows 没有 SIGPIPE，跳过。
+     */
+    TEST(Process, IgnoringBrokenPipeSurvivesWriteToClosedPipe)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 没有 SIGPIPE";
+#else
+        const pid_t child = ::fork();
+        ASSERT_GE(child, 0);
+        if (child == 0)
+        {
+            static_cast<void>(std::signal(SIGPIPE, SIG_DFL));
+            Process::ignoreBrokenPipeSignal();
+            int descriptors[2]{};
+            if (::pipe(descriptors) != 0)
+            {
+                ::_exit(2);
+            }
+            static_cast<void>(::close(descriptors[0]));
+            const char    byte    = 'x';
+            const ssize_t written = ::write(descriptors[1], &byte, 1);
+            static_cast<void>(::close(descriptors[1]));
+            ::_exit(written < 0 ? 0 : 3);
+        }
+        int status = 0;
+        ASSERT_EQ(::waitpid(child, &status, 0), child);
+        ASSERT_TRUE(WIFEXITED(status)) << "子进程被信号打死：SIGPIPE 没有被忽略";
+        EXPECT_EQ(WEXITSTATUS(status), 0);
+#endif
+    }
 } // namespace AsynGyanis::Platform
