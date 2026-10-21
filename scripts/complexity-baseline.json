@@ -6,9 +6,6 @@
     "src/Base/Log/LoggerConfigLoader.cpp": [
       229
     ],
-    "src/Core/Process/WorkerSupervisor.cpp": [
-      141
-    ],
     "src/Core/Tls/TlsContext.cpp": [
       106
     ],
@@ -148,10 +145,6 @@
     ],
     "src/Platform/IO/MemoryMappedFile.cpp": [
       105
-    ],
-    "src/Platform/IO/Socket.cpp": [
-      138,
-      102
     ],
     "src/Platform/System/Process.cpp": [
       194

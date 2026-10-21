@@ -75,25 +75,6 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 把公历年月日折成「距 1970-01-01 的天数」
-         * @details Howard Hinnant 的 civil 算法，全整数运算、不依赖本地时区；以三月为年首，
-         *          把闰日放到年末，闰年规则因此可用整除表达。
-         * @param year 完整年份
-         * @param month 月份 1~12
-         * @param day 日 1~31
-         * @return 距纪元的天数，可为负
-         */
-        constexpr std::int64_t daysFromCivil(const int year, const unsigned month, const unsigned day)
-        {
-            const int          adjustedYear = year - (month <= 2 ? 1 : 0);
-            const std::int64_t era          = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
-            const unsigned     yearOfEra    = static_cast<unsigned>(adjustedYear - era * 400);
-            const unsigned     dayOfYear    = (153u * (month > 2 ? month - 3 : month + 9) + 2u) / 5u + day - 1u;
-            const unsigned     dayOfEra     = yearOfEra * 365u + yearOfEra / 4u - yearOfEra / 100u + dayOfYear;
-            return era * 146097 + static_cast<std::int64_t>(dayOfEra) - 719468;
-        }
-
-        /**
          * @brief 解析一段全数字文本为无符号整数
          * @details 必须整段消费，多余字符（含前导符号、空格）一律判失败，不做部分解析。
          * @param text 待解析文本
@@ -214,7 +195,7 @@ namespace AsynGyanis::Net
                 return std::nullopt;
             }
 
-            const std::int64_t days = daysFromCivil(static_cast<int>(year), month, day);
+            const std::int64_t days = Platform::PlatformTime::daysSinceEpochUtc(static_cast<int>(year), month, day);
             const std::int64_t seconds =
                     days * kSecondsPerDay + static_cast<std::int64_t>(hour) * 3600 + static_cast<std::int64_t>(minute) * 60 + static_cast<std::int64_t>(second);
             // 这一步构造 time_point 会把「秒」换成时钟的周期（libstdc++ 是 1 纳秒、MSVC 是 100 纳秒），

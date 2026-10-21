@@ -138,7 +138,7 @@
       "label": "开通道",
       "sublabel": "mkdtemp 0700 + sock",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 788, "end_line": 792, "label": "通道文件与权限" },
+        { "path": "src/Platform/IO/SocketHandoff.cpp", "line": 538, "end_line": 542, "label": "通道文件与权限" },
         { "path": "src/Core/Process/WorkerSupervisor.cpp", "line": 583, "label": "UpgradeChannel::open" }
       ]
     },
@@ -151,8 +151,8 @@
       "label": "定长头",
       "sublabel": "family/type/blob 8B",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 387, "label": "HandoffHeader" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 583, "label": "Windows blob 长度" }
+        { "path": "src/Platform/IO/SocketHandoff.cpp", "line": 29, "label": "HandoffHeader" },
+        { "path": "src/Platform/IO/SocketHandoff.cpp", "line": 278, "label": "Windows blob 长度" }
       ]
     },
     {
@@ -165,8 +165,8 @@
       "sublabel": "POSIX 传描述符",
       "tag": "blob 归 0",
       "sources": [
-        { "path": "src/Platform/IO/Socket.cpp", "line": 599, "end_line": 612, "label": "控制数据装载" },
-        { "path": "src/Platform/IO/Socket.cpp", "line": 761, "label": "接手后置不可继承" }
+        { "path": "src/Platform/IO/SocketHandoff.cpp", "line": 300, "end_line": 303, "label": "控制数据装载" },
+        { "path": "src/Platform/IO/SocketHandoff.cpp", "line": 455, "label": "接手后置不可继承" }
       ]
     },
     {

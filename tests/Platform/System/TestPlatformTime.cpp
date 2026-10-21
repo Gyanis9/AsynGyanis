@@ -178,6 +178,25 @@ namespace AsynGyanis::Platform
     }
 
     /**
+     * @brief 公历日期到纪元天数的折算：与 UTC 分解互逆
+     * @details 期望值按公开历法手算；末尾用同一批秒数验证两条路对同一天给出同一格，
+     *          任一侧写错都会在这条对照上分开。
+     */
+    TEST(PlatformTime, DaysSinceEpochUtcMatchesTheCalendarAndUtcTime)
+    {
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(1970, 1, 1), 0);
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(1969, 12, 31), -1);
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(2000, 3, 1), 11017);
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(2024, 2, 29), 19782);
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(1900, 2, 28), -25509) << "1900 不是闰年，2 月只有 28 天";
+
+        constexpr std::time_t knownInstant = 1709164800; // 2024-02-29T00:00:00Z
+        const UtcTimeFields   fields       = PlatformTime::utcTime(knownInstant);
+        EXPECT_EQ(PlatformTime::daysSinceEpochUtc(fields.year, static_cast<unsigned>(fields.month), static_cast<unsigned>(fields.day)),
+                  static_cast<std::int64_t>(knownInstant) / 86400);
+    }
+
+    /**
      * @brief 钉住：1970 年之前不得按「转换失败」处理
      * @details 头文件只写了「转换失败时返回零值结构」，没界定什么算失败——而 glibc 的 gmtime_r 与
      *          UCRT 的 gmtime_s 实测都能折出 1968/1969 的日历。把这条钉住：哪天换成下界更窄的接口

@@ -77,5 +77,16 @@ namespace AsynGyanis::Platform
          * @return std::int64_t 自 Unix 纪元起的秒数
          */
         static std::int64_t utcSeconds(std::tm &broken) noexcept;
+
+        /**
+         * @brief 公历日期折算成自 1970-01-01 起的天数
+         * @details 与 utcTime()/utcSeconds() 共用同一套纯整数历法，不依赖时区与 C 库；
+         *          月份按 1~12、日按 1~31 解释，不做合法性钳制，越界日期由调用方拒绝。
+         * @param year 完整年份
+         * @param month 月份 1~12
+         * @param day 日 1~31
+         * @return std::int64_t 距 Unix 纪元的天数；1970 年之前为负
+         */
+        [[nodiscard]] static std::int64_t daysSinceEpochUtc(int year, unsigned month, unsigned day) noexcept;
     };
 } // namespace AsynGyanis::Platform

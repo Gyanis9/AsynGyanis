@@ -173,4 +173,9 @@ namespace AsynGyanis::Platform
         const std::int64_t days = daysFromCivil(broken.tm_year + 1900, broken.tm_mon + 1, broken.tm_mday);
         return days * kSecondsPerDay + static_cast<std::int64_t>(broken.tm_hour) * 3600 + static_cast<std::int64_t>(broken.tm_min) * 60 + broken.tm_sec;
     }
+
+    std::int64_t PlatformTime::daysSinceEpochUtc(const int year, const unsigned month, const unsigned day) noexcept
+    {
+        return daysFromCivil(year, static_cast<int>(month), static_cast<int>(day));
+    }
 } // namespace AsynGyanis::Platform

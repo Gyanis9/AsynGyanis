@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=3.0.0
-# headers=307 entries=8984
+# headers=307 entries=8985
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8864,6 +8864,7 @@ src/Platform/System/PlatformError.h	static int lastSocketErrorCode() noexcept
 src/Platform/System/PlatformError.h	static std::string message(int errorCode)
 src/Platform/System/PlatformError.h	static void describeErrno(int errorNumber, char *output, std::size_t outputCapacity) noexcept
 src/Platform/System/PlatformError.h	static void setLastErrorCode(int errorCode) noexcept
+src/Platform/System/PlatformTime.h	[[nodiscard]] static std::int64_t daysSinceEpochUtc(int year, unsigned month, unsigned day) noexcept
 src/Platform/System/PlatformTime.h	class ASYN_PLATFORM_API PlatformTime
 src/Platform/System/PlatformTime.h	int day
 src/Platform/System/PlatformTime.h	int hour
