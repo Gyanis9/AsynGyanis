@@ -349,6 +349,26 @@ namespace AsynGyanis::Base
         EXPECT_TRUE(contains(message, "[13]"));
     }
 
+    /**
+     * @brief 统一异常文本：固定前缀、末段文件名与调用行号都在，构建目录不外泄
+     */
+    TEST(ExceptionMessage, FormatExceptionMessageKeepsLeafNameAndHidesBuildPath)
+    {
+        const std::source_location location = std::source_location::current();
+        const std::string          text     = Detail::formatExceptionMessage("配置缺失", location);
+
+        EXPECT_NE(text.find("[异常] 配置缺失"), std::string::npos) << text;
+        // 取方括号里、冒号前的那一段：它必须恰好是文件名。只看「不含 G:\Codes」在 Linux 上是恒真，
+        // 突变（换回完整路径）在那一侧就抓不住
+        const std::size_t fileBegin = text.rfind('[');
+        const std::size_t fileEnd   = text.find(':', fileBegin);
+        ASSERT_NE(fileBegin, std::string::npos) << text;
+        ASSERT_NE(fileEnd, std::string::npos) << text;
+        EXPECT_EQ(text.substr(fileBegin + 1, fileEnd - fileBegin - 1), "TestException.cpp") << "文件必须缩成末段：" << text;
+        EXPECT_EQ(text.find("G:\\Codes"), std::string::npos) << "构建目录不该出现在 what() 里：" << text;
+        EXPECT_NE(text.find(" in "), std::string::npos) << text;
+    }
+
     TEST(SystemException, ReadsErrnoWhenErrorCodeIsOmitted)
     {
         errno = 17;
@@ -356,6 +376,19 @@ namespace AsynGyanis::Base
 
         EXPECT_EQ(exception.nativeError(), 17);
         errno = 0;
+    }
+
+    /**
+     * @brief 公开的 errno 取码入口也必须交回 errno 语义的类别
+     */
+    TEST(SystemException, LastErrnoErrorCodeUsesTheErrnoCategory)
+    {
+        errno                           = ENOENT;
+        const std::error_code errorCode = SystemException::lastErrnoErrorCode();
+        errno                           = 0;
+
+        EXPECT_EQ(errorCode.value(), ENOENT);
+        EXPECT_EQ(errorCode.category(), std::generic_category()) << "类别写成 system_category() 会让 Windows 按 Win32 码解释";
     }
 
     /**
