@@ -399,6 +399,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpProxyPumpedTls.h" EXCLUDE
             PATTERN "SignalObserverInstall.h" EXCLUDE
             PATTERN "WakeupFailureReport.h" EXCLUDE
+            PATTERN "WorkerSupervisorSupport.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：

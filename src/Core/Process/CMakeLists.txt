@@ -3,6 +3,9 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisor.h
         ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisor.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisorLaunch.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisorWatchdog.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisorSupport.h
         ${CMAKE_CURRENT_LIST_DIR}/GracefulShutdown.h
         ${CMAKE_CURRENT_LIST_DIR}/GracefulShutdown.cpp
         ${CMAKE_CURRENT_LIST_DIR}/ReloadSignal.h
