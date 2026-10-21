@@ -148,4 +148,13 @@ namespace AsynGyanis::Platform
         fields.weekday = static_cast<int>(weekdayIndexModuloSeven(days + kWeekdayOffsetOfEpoch));
         return fields;
     }
+
+    std::int64_t PlatformTime::utcSeconds(std::tm &broken) noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        return static_cast<std::int64_t>(::_mkgmtime(&broken));
+#else
+        return static_cast<std::int64_t>(::timegm(&broken));
+#endif
+    }
 } // namespace AsynGyanis::Platform

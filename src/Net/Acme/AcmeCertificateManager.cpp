@@ -9,6 +9,7 @@
 #include "Platform/FileSystem/AtomicFileWriter.h"
 #include "Platform/FileSystem/FileBasicInfo.h"
 #include "Platform/IO/FileContents.h"
+#include "Platform/System/PlatformTime.h"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -66,20 +67,6 @@ namespace AsynGyanis::Net
                 BIO_free(bio);
             }
         };
-
-        /**
-         * @brief 把 tm 按 UTC 折成 Unix 秒
-         * @details 两侧的函数名不同（MSVC 是 _mkgmtime），而到期判据要的必须是同一个数：
-         *          证书里的 notAfter 本来就是 UTC，按本地时区折会差出一个时区，续期时机跟着歪
-         */
-        [[nodiscard]] long long toUtcUnixSeconds(struct tm &broken) noexcept
-        {
-#ifdef _WIN32
-            return static_cast<long long>(_mkgmtime(&broken));
-#else
-            return static_cast<long long>(timegm(&broken));
-#endif
-        }
 
         /**
          * @brief 挂出去的令牌的作用域守卫：无论从哪条出口离开，令牌都从自证仓库里撤掉
@@ -144,7 +131,7 @@ namespace AsynGyanis::Net
         // 折成 time_point 要走那把钳子：ASN.1 的 GENERALIZEDTIME 允许写到 9999 年，而 from_time_t
         // 与直接构造 time_point 一样是一次「秒 × 时钟周期」的乘法，越界就是有符号溢出（UB），
         // 它的落法是把「永不到期」折成「早就过期」——续期判据会当场开始每一拍都去签一张
-        return timePointFromUnixSeconds(static_cast<std::int64_t>(toUtcUnixSeconds(notAfterTime)));
+        return timePointFromUnixSeconds(Platform::PlatformTime::utcSeconds(notAfterTime));
     }
 
     AcmeCertificateManager::AcmeCertificateManager(Core::EventLoop &loop, Configuration configuration, ReloadHandler reloadHandler, AcmeDns01TxtWriter dns01TxtWriter) :

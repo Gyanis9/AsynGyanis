@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <limits>
 #include <thread>
@@ -256,4 +257,26 @@ namespace AsynGyanis::Platform
         }
     }
 #endif
+
+    /**
+     * @brief 钉住：utcSeconds() 与 utcTime() 互为逆运算
+     * @details 用四个可表示的 UTC 秒数往返，避开本地时区与夏令时：两个方向都只按 UTC 解释。
+     */
+    TEST(PlatformTime, UtcSecondsInvertsUtcTime)
+    {
+        for (const std::time_t instant: {std::time_t{0}, std::time_t{1}, std::time_t{951782400}, std::time_t{1700000000}})
+        {
+            const UtcTimeFields fields = PlatformTime::utcTime(instant);
+            std::tm             broken{};
+            broken.tm_year  = fields.year - 1900;
+            broken.tm_mon   = fields.month - 1;
+            broken.tm_mday  = fields.day;
+            broken.tm_hour  = fields.hour;
+            broken.tm_min   = fields.minute;
+            broken.tm_sec   = fields.second;
+            broken.tm_isdst = 0;
+
+            EXPECT_EQ(PlatformTime::utcSeconds(broken), static_cast<std::int64_t>(instant));
+        }
+    }
 } // namespace AsynGyanis::Platform

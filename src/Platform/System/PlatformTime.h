@@ -13,6 +13,7 @@
 
 #include "Platform/Platform.h"
 
+#include <cstdint>
 #include <ctime>
 
 namespace AsynGyanis::Platform
@@ -66,5 +67,14 @@ namespace AsynGyanis::Platform
          * @return UtcTimeFields UTC 分解结果；年份超出 int 表达范围时返回零值结构（各字段为 0）
          */
         static UtcTimeFields utcTime(std::time_t calendarTime) noexcept;
+
+        /**
+         * @brief 将 UTC 日历时间折算成 Unix 秒
+         * @details 与 utcTime() 互为逆运算。POSIX 用 timegm、MSVC 用 _mkgmtime；
+         *          两者都按 UTC 解释，不受进程时区影响。
+         * @param broken UTC 日历时间，tm_isdst 不参与
+         * @return std::int64_t 自 Unix 纪元起的秒数
+         */
+        static std::int64_t utcSeconds(std::tm &broken) noexcept;
     };
 } // namespace AsynGyanis::Platform
