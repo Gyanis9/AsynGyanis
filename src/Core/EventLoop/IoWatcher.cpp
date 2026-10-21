@@ -180,14 +180,8 @@ namespace AsynGyanis::Core
         {
             const std::string_view reason = "把文件描述符注册到事件后端失败（该描述符可能已被另一个 IoWatcher 注册、"
                                             "不是有效的描述符，或已关联到别的完成端口）";
-#if ASYN_PLATFORM_WIN32
-            // Windows 上这一句拒绝来自 kernel32（CreateIoCompletionPort），码在 GetLastError 空间里，
-            // 必须按该空间显式给出：走默认的 errno 重载会报成「[0] success」，读日志的人据此以为没失败过。
-            // 跨进程移交来的监听套接字撞的正是这条——句柄只能关联一个完成端口，而关联不可解除
-            throw Base::SystemException(std::string(reason), std::error_code(static_cast<int>(::GetLastError()), std::system_category()));
-#else
-            throw Base::SystemException(std::string(reason));
-#endif
+            // 错误码由后端按自己的空间给出：IOCP 是 Win32/GetLastError，epoll/io_uring 是 errno
+            throw Base::SystemException(std::string(reason), m_loop->epoll().lastError());
         }
         m_isRegistered = true;
         m_armedEvents  = EPOLLIN;

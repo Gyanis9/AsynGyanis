@@ -17,6 +17,7 @@
 #include <functional>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #if ASYN_PLATFORM_WIN32
@@ -133,6 +134,57 @@ namespace AsynGyanis::Platform
          * @return epoll 文件描述符
          */
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
+
+        /**
+         * @brief epoll 没有完成式接受，恒为 false
+         * @return false
+         */
+        [[nodiscard]] bool supportsCompletionAccept() const noexcept
+        {
+            return false;
+        }
+
+        /**
+         * @brief epoll 没有 ConnectEx，恒为 false
+         * @return false
+         */
+        [[nodiscard]] bool supportsCompletionConnect() const noexcept
+        {
+            return false;
+        }
+
+        /**
+         * @brief 取最近一次 epoll 系统调用失败的错误码
+         * @return std::error_code errno 空间
+         */
+        [[nodiscard]] std::error_code lastError() const noexcept;
+
+        /**
+         * @brief 完成式接受（epoll 不支持）
+         * @return false
+         */
+        bool takeAcceptedSocket(int, int *) noexcept
+        {
+            return false;
+        }
+
+        /**
+         * @brief 完成式连接（epoll 不支持）
+         * @return false
+         */
+        bool beginConnect(int, const sockaddr *, int, int *) noexcept
+        {
+            return false;
+        }
+
+        /**
+         * @brief 取完成式连接结果（epoll 不支持）
+         * @return false
+         */
+        bool takeConnectResult(int, int *) noexcept
+        {
+            return false;
+        }
 
         /**
          * @brief 安装诊断回调（epoll 没有异步探针，保留空实现以统一接口）

@@ -104,6 +104,11 @@ namespace AsynGyanis::Platform
         return m_fileDescriptor;
     }
 
+    std::error_code Epoll::lastError() const noexcept
+    {
+        return {PlatformError::lastErrorCode(), std::system_category()};
+    }
+
     void Epoll::destroy()
     {
         if (Platform::isEpollHandleValid(m_fileDescriptor))

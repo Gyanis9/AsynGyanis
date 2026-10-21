@@ -167,6 +167,30 @@ namespace AsynGyanis::Platform
         [[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept;
 
         /**
+         * @brief 完成端口支持 AcceptEx 完成式接受
+         * @return true
+         */
+        [[nodiscard]] bool supportsCompletionAccept() const noexcept
+        {
+            return true;
+        }
+
+        /**
+         * @brief 完成端口支持 ConnectEx 完成式连接
+         * @return true
+         */
+        [[nodiscard]] bool supportsCompletionConnect() const noexcept
+        {
+            return true;
+        }
+
+        /**
+         * @brief 取最近一次完成端口系统调用失败的错误码
+         * @return std::error_code Win32 错误空间
+         */
+        [[nodiscard]] std::error_code lastError() const noexcept;
+
+        /**
          * @brief 安装诊断回调：探针武装失败等异步故障按一条文本交回调用方
          * @details 回调只在所属事件循环线程上调用；未安装时诊断被丢弃。
          * @param handler 诊断文本的接收者；传空函数对象等价于清空

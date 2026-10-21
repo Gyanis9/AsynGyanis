@@ -23,6 +23,7 @@
 #include <concepts>
 #include <cstdint>
 #include <span>
+#include <system_error>
 
 namespace AsynGyanis::Platform
 {
@@ -41,12 +42,18 @@ namespace AsynGyanis::Platform
      *       三处同为 1024 的一致性由各自的 wait() 注释与共用用例管。
      */
     template<typename Backend>
-    concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs) {
+    concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs, const sockaddr *address) {
         { backend.addFileDescriptor(fileDescriptor, events, userData) } -> std::same_as<bool>;
         { backend.modFileDescriptor(fileDescriptor, events, userData) } -> std::same_as<bool>;
         { backend.delFileDescriptor(fileDescriptor) } -> std::same_as<bool>;
         { backend.wait(timeoutMs) } -> std::same_as<std::span<epoll_event>>;
         { backend.fileDescriptor() } -> std::same_as<Platform::EpollHandle>;
+        { backend.supportsCompletionAccept() } -> std::same_as<bool>;
+        { backend.supportsCompletionConnect() } -> std::same_as<bool>;
+        { backend.lastError() } -> std::same_as<std::error_code>;
+        { backend.takeAcceptedSocket(fileDescriptor, &fileDescriptor) } -> std::same_as<bool>;
+        { backend.beginConnect(fileDescriptor, address, 0, &timeoutMs) } -> std::same_as<bool>;
+        { backend.takeConnectResult(fileDescriptor, &timeoutMs) } -> std::same_as<bool>;
     };
 
 } // namespace AsynGyanis::Platform

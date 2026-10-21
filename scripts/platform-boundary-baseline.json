@@ -11,18 +11,6 @@
   ],
   "violations": [
     {
-      "path": "src/Core/EventLoop/IoWatcher.cpp",
-      "category": "os-api",
-      "symbol": "GetLastError",
-      "count": 1
-    },
-    {
-      "path": "src/Core/EventLoop/IoWatcher.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
       "path": "src/Core/Process/CrashScene.cpp",
       "category": "os-api",
       "symbol": "::fork",
@@ -218,13 +206,13 @@
       "path": "src/Core/Socket/AsyncSocket.cpp",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 3
+      "count": 1
     },
     {
       "path": "src/Core/Socket/AsyncSocket.h",
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 2
+      "count": 1
     },
     {
       "path": "src/Net/Http/HttpResponse.cpp",
@@ -249,12 +237,6 @@
       "category": "platform-conditional",
       "symbol": "ASYN_PLATFORM_WIN32",
       "count": 3
-    },
-    {
-      "path": "src/Net/Tcp/TcpAcceptor.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
     }
   ]
 }

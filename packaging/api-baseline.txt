@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=2.0.0
-# headers=303 entries=8895
+# headers=304 entries=8914
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1425,6 +1425,7 @@ src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitReadable() co
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitWritable() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool isWaitingReadable() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool isWaitingWritable() const noexcept
+src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool supportsCompletionAccept() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] int fileDescriptor() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] int releaseFileDescriptor() noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] std::optional<int> takeAcceptedConnection()
@@ -8467,10 +8468,16 @@ src/Platform/IO/Epoll.h	Epoll(Epoll &&) noexcept
 src/Platform/IO/Epoll.h	Epoll(const Epoll &) = delete
 src/Platform/IO/Epoll.h	Platform::EpollHandle m_fileDescriptor
 src/Platform/IO/Epoll.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
+src/Platform/IO/Epoll.h	[[nodiscard]] bool supportsCompletionAccept() const noexcept
+src/Platform/IO/Epoll.h	[[nodiscard]] bool supportsCompletionConnect() const noexcept
+src/Platform/IO/Epoll.h	[[nodiscard]] std::error_code lastError() const noexcept
 src/Platform/IO/Epoll.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
 src/Platform/IO/Epoll.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
+src/Platform/IO/Epoll.h	bool beginConnect(int, const sockaddr *, int, int *) noexcept
 src/Platform/IO/Epoll.h	bool delFileDescriptor(int fileDescriptor)
 src/Platform/IO/Epoll.h	bool modFileDescriptor(int fileDescriptor, uint32_t events, void *userData = nullptr)
+src/Platform/IO/Epoll.h	bool takeAcceptedSocket(int, int *) noexcept
+src/Platform/IO/Epoll.h	bool takeConnectResult(int, int *) noexcept
 src/Platform/IO/Epoll.h	class ASYN_PLATFORM_API Epoll
 src/Platform/IO/Epoll.h	namespace AsynGyanis::Platform
 src/Platform/IO/Epoll.h	namespace AsynGyanis::Platform
@@ -8487,7 +8494,7 @@ src/Platform/IO/Epoll.h	void destroy()
 src/Platform/IO/Epoll.h	void setDiagnosticHandler(std::function<void(std::string_view)> handler) noexcept
 src/Platform/IO/Epoll.h	~Epoll()
 src/Platform/IO/EventBackendContract.h	namespace AsynGyanis::Platform
-src/Platform/IO/EventBackendContract.h	template<typename Backend> concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs)
+src/Platform/IO/EventBackendContract.h	template<typename Backend> concept EventBackend = requires(Backend backend, int fileDescriptor, std::uint32_t events, void *userData, int timeoutMs, const sockaddr *address)
 src/Platform/IO/EventNotifier.h	EventNotifier &operator=(EventNotifier &&) = delete
 src/Platform/IO/EventNotifier.h	EventNotifier &operator=(const EventNotifier &) = delete
 src/Platform/IO/EventNotifier.h	EventNotifier()
@@ -8504,6 +8511,9 @@ src/Platform/IO/EventNotifier.h	namespace AsynGyanis::Platform
 src/Platform/IO/EventNotifier.h	void drain() const noexcept
 src/Platform/IO/EventNotifier.h	void flushDescriptor() const noexcept
 src/Platform/IO/EventNotifier.h	~EventNotifier()
+src/Platform/IO/EventPoller.h	namespace AsynGyanis::Platform
+src/Platform/IO/EventPoller.h	static_assert(EventBackend<EventPoller>)
+src/Platform/IO/EventPoller.h	using EventPoller = Epoll
 src/Platform/IO/FileContents.h	[[nodiscard]] ASYN_PLATFORM_API std::expected<std::size_t, std::error_code> readFileContentsInto(const std::filesystem::path &filePath, std::size_t offset, std::size_t length, std::string &target, FileBasicInfo *openedAs = nullptr) noexcept
 src/Platform/IO/FileContents.h	[[nodiscard]] ASYN_PLATFORM_API std::expected<std::string, std::error_code> readFileContents(const std::filesystem::path &filePath, std::size_t offset, std::size_t length) noexcept
 src/Platform/IO/FileContents.h	namespace AsynGyanis::Platform
@@ -8530,6 +8540,9 @@ src/Platform/IO/Iocp.h	Iocp(Iocp &&) noexcept
 src/Platform/IO/Iocp.h	Iocp(const Iocp &) = delete
 src/Platform/IO/Iocp.h	Platform::EpollHandle m_iocp
 src/Platform/IO/Iocp.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
+src/Platform/IO/Iocp.h	[[nodiscard]] bool supportsCompletionAccept() const noexcept
+src/Platform/IO/Iocp.h	[[nodiscard]] bool supportsCompletionConnect() const noexcept
+src/Platform/IO/Iocp.h	[[nodiscard]] std::error_code lastError() const noexcept
 src/Platform/IO/Iocp.h	[[nodiscard]] std::size_t findResultSlot(void *userData) const noexcept
 src/Platform/IO/Iocp.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
 src/Platform/IO/Iocp.h	bool addFileDescriptor(int fileDescriptor, uint32_t events, void *userData)
@@ -8694,10 +8707,14 @@ src/Platform/IO/Uring.h	Uring(const Uring &) = delete
 src/Platform/IO/Uring.h	[[nodiscard]] Platform::EpollHandle fileDescriptor() const noexcept
 src/Platform/IO/Uring.h	[[nodiscard]] Registration *findRegistration(int fileDescriptor) const
 src/Platform/IO/Uring.h	[[nodiscard]] Registration *takeInFlightPoll(std::uint64_t ticket) noexcept
+src/Platform/IO/Uring.h	[[nodiscard]] bool supportsCompletionAccept() const noexcept
+src/Platform/IO/Uring.h	[[nodiscard]] bool supportsCompletionConnect() const noexcept
+src/Platform/IO/Uring.h	[[nodiscard]] std::error_code lastError() const noexcept
 src/Platform/IO/Uring.h	[[nodiscard]] std::span<epoll_event> wait(int timeoutMs = 0)
 src/Platform/IO/Uring.h	[[nodiscard]] std::uint64_t reserveInFlightPoll(Registration &registration)
 src/Platform/IO/Uring.h	__kernel_timespec *m_timeoutValue
 src/Platform/IO/Uring.h	bool addFileDescriptor(int fileDescriptor, std::uint32_t events, void *userData = nullptr)
+src/Platform/IO/Uring.h	bool beginConnect(int, const sockaddr *, int, int *) noexcept
 src/Platform/IO/Uring.h	bool delFileDescriptor(int fileDescriptor)
 src/Platform/IO/Uring.h	bool flushSubmissions()
 src/Platform/IO/Uring.h	bool isOneShot
@@ -8711,6 +8728,8 @@ src/Platform/IO/Uring.h	bool submitPoll(Registration &registration)
 src/Platform/IO/Uring.h	bool submitPollRemove(std::uint64_t targetTicket)
 src/Platform/IO/Uring.h	bool submitTimeout(int timeoutMs)
 src/Platform/IO/Uring.h	bool submitTimeoutRemove(std::uint64_t targetTicket)
+src/Platform/IO/Uring.h	bool takeAcceptedSocket(int, int *) noexcept
+src/Platform/IO/Uring.h	bool takeConnectResult(int, int *) noexcept
 src/Platform/IO/Uring.h	class ASYN_PLATFORM_API Uring
 src/Platform/IO/Uring.h	int fileDescriptor
 src/Platform/IO/Uring.h	int m_ringFileDescriptor

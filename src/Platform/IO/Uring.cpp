@@ -238,6 +238,11 @@ namespace AsynGyanis::Platform
         return m_ringFileDescriptor;
     }
 
+    std::error_code Uring::lastError() const noexcept
+    {
+        return {PlatformError::lastErrorCode(), std::system_category()};
+    }
+
     // ---- 注册表维护 ---------------------------------------------------------
 
     Uring::Registration *Uring::findRegistration(const int fileDescriptor) const

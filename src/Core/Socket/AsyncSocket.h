@@ -218,19 +218,20 @@ namespace AsynGyanis::Core
          */
         Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const;
 
-#if ASYN_PLATFORM_WIN32
         /**
-         * @brief 取走监听描述符上由完成端口后端接入的连接（仅 Windows）
-         *
-         * @details Windows 的接受路径由 AcceptEx 完成：连接到达时它已经被摘下并接入后端的
-         *          接受套接字，`::accept()` 看不到它，只能由这里取走。调用方（TcpAcceptor）
-         *          的用法是「先取，取不到就 waitReadable() 等一次，再取」。
+         * @brief 当前后端是否支持完成式接受（IOCP）
+         * @return true 表示 takeAcceptedConnection 有意义；epoll/io_uring 为 false
+         */
+        [[nodiscard]] bool supportsCompletionAccept() const noexcept;
+
+        /**
+         * @brief 取走监听描述符上由完成端口后端接入的连接
+         * @details IOCP 的 AcceptEx 在完成时已经把连接摘下并接入后端的接受套接字，
+         *          `::accept()` 看不到它；其他后端没有这条路径，恒返回 std::nullopt。
          * @return 已接入连接的描述符（所有权归调用方）；std::nullopt 表示当前没有待取的连接
          * @note 只对监听描述符有意义；非监听描述符或未注册的描述符一律返回 std::nullopt
          */
         [[nodiscard]] std::optional<int> takeAcceptedConnection();
-
-#endif
 
 #if !ASYN_PLATFORM_WIN32
         /**

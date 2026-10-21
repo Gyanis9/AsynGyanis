@@ -256,6 +256,11 @@ namespace AsynGyanis::Platform
         return m_iocp;
     }
 
+    std::error_code Iocp::lastError() const noexcept
+    {
+        return {static_cast<int>(::GetLastError()), std::system_category()};
+    }
+
     namespace
     {
         /// 线程指纹：0 留给「没人持有」，所以实际值取哈希再 +1
