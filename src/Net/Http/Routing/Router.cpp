@@ -603,7 +603,13 @@ namespace AsynGyanis::Net
             };
 
             // 中间件与 handler 的异常一律向上传播，由会话统一重置成 500，路由器不吞也不翻译
-            if (hostTable == nullptr)
+            if (hostTable == nullptr && m_pipeline.middlewareCount() == 0)
+            {
+                // 空管道就是终点处理器本身：跳过 run/invoke 两层只负责转发的协程帧。
+                // 标注直接放在本协程帧上，存活期覆盖这次 co_await，不因走近路而丢
+                const Core::WorkloadScope workloadScope(selectedPattern.empty() ? nullptr : selectedPattern.data());
+                co_await (*selectedHandler)(request, response);
+            } else if (hostTable == nullptr)
             {
                 co_await m_pipeline.run(request, response, terminalHandler);
             } else
