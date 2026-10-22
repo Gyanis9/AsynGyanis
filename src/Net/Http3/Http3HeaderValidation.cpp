@@ -17,12 +17,6 @@ namespace AsynGyanis::Net
             return Http3HeaderError{.kind = errorKind, .message = std::move(messageText)};
         }
 
-        /// 把字节写成可读文本再进日志与错误串：转义与截断的词表住在 `Base::escapeForLog`，这里只留
-        /// 本层的默认长度与名字（同一套折法在两处各写一遍，迟早会分叉成「一条挡得住 NUL、另一条挡不住」）
-        std::string printableFieldText(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
-        {
-            return Base::escapeForLog(text, maximumDisplayByteCount);
-        }
     } // namespace
 
     Http3ErrorCode toHttp3ErrorCode(const Http3HeaderErrorKind /*errorKind*/) noexcept
@@ -120,7 +114,7 @@ namespace AsynGyanis::Net
             if (value.size() != 3 || value[0] < '1' || value[0] > '9' || value[1] < '0' || value[1] > '9' || value[2] < '0' || value[2] > '9')
             {
                 return std::unexpected(
-                        makeHeaderError(Http3HeaderErrorKind::InvalidStatusValue, ":status 取值 \"" + printableFieldText(value) + "\" 不是三位十进制状态码（RFC 9114 §4.3.2）"));
+                        makeHeaderError(Http3HeaderErrorKind::InvalidStatusValue, ":status 取值 \"" + Base::escapeForLog(value) + "\" 不是三位十进制状态码（RFC 9114 §4.3.2）"));
             }
             m_statusCode = (value[0] - '0') * 100 + (value[1] - '0') * 10 + (value[2] - '0');
             return {};
@@ -142,7 +136,7 @@ namespace AsynGyanis::Net
             if (!containsOnlyTokenCharacters(value))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MalformedPseudoValue,
-                                                       ":method 取值 \"" + printableFieldText(value) + "\" 含 token 之外的字符：方法名必须符合字段名语法（RFC 9110 §9）"));
+                                                       ":method 取值 \"" + Base::escapeForLog(value) + "\" 含 token 之外的字符：方法名必须符合字段名语法（RFC 9110 §9）"));
             }
             m_methodText.assign(value);
             return {};
@@ -156,7 +150,7 @@ namespace AsynGyanis::Net
             if (!isUriSchemeSyntax(value))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader,
-                                                       ":scheme 取值 \"" + printableFieldText(value) + "\" 不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字与 + - .）"));
+                                                       ":scheme 取值 \"" + Base::escapeForLog(value) + "\" 不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字与 + - .）"));
             }
             m_schemeText.assign(value);
             return {};
@@ -175,7 +169,7 @@ namespace AsynGyanis::Net
             // 与缓存键的输入，同一个取值不能因为写在 :authority 上就被拒、写在 host 上就被收
             if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
             {
-                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, ":authority 取值 \"" + printableFieldText(value) + "\" 不是合法的权威段（" +
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, ":authority 取值 \"" + Base::escapeForLog(value) + "\" 不是合法的权威段（" +
                                                                                                               std::string(*defect) + "）：RFC 9110 §7.2 规定它是 uri-host[:端口]"));
             }
             m_authorityText.assign(value);
@@ -196,7 +190,7 @@ namespace AsynGyanis::Net
             if (value != "*" && value.front() != '/')
             {
                 return std::unexpected(
-                        makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 取值 \"" + printableFieldText(value) + "\" 不是以 / 开头的 path-absolute（RFC 9114 §4.3.1）"));
+                        makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 取值 \"" + Base::escapeForLog(value) + "\" 不是以 / 开头的 path-absolute（RFC 9114 §4.3.1）"));
             }
             for (const char character: value)
             {
@@ -204,7 +198,7 @@ namespace AsynGyanis::Net
                 // 目标，RFC 9110 §7.1）、`\`、空格与控制字符都不收，而超出 ASCII 的字节照收
                 if (!isRequestTargetCharacter(character))
                 {
-                    return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 取值 \"" + printableFieldText(value) + "\" 含请求目标不允许的字符"));
+                    return std::unexpected(makeHeaderError(Http3HeaderErrorKind::EmptyPath, ":path 取值 \"" + Base::escapeForLog(value) + "\" 含请求目标不允许的字符"));
                 }
             }
             m_pathText.assign(value);
@@ -231,7 +225,7 @@ namespace AsynGyanis::Net
             if (!containsOnlyTokenCharacters(value))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MalformedPseudoValue,
-                                                       ":protocol 取值 \"" + printableFieldText(value) + "\" 含 token 之外的字符：协议名必须符合字段名语法（RFC 9220 §3.1.1）"));
+                                                       ":protocol 取值 \"" + Base::escapeForLog(value) + "\" 含 token 之外的字符：协议名必须符合字段名语法（RFC 9220 §3.1.1）"));
             }
             m_protocolText.assign(value);
             return {};
@@ -261,7 +255,7 @@ namespace AsynGyanis::Net
             if (!teValueIsTrailers(value))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::TeValueNotAllowed,
-                                                       "TE 的取值 \"" + printableFieldText(value) + "\" 不是 trailers：HTTP/3 只放行这一个值（RFC 9114 §4.2）"));
+                                                       "TE 的取值 \"" + Base::escapeForLog(value) + "\" 不是 trailers：HTTP/3 只放行这一个值（RFC 9114 §4.2）"));
             }
             return {};
         }
@@ -296,7 +290,7 @@ namespace AsynGyanis::Net
             // 还是写在 :authority 上是同一个问题，两条通路折出的是同一个选站键
             if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
             {
-                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, "host 字段取值 \"" + printableFieldText(value) + "\" 不是合法的权威段（" +
+                return std::unexpected(makeHeaderError(Http3HeaderErrorKind::AuthorityFieldMalformed, "host 字段取值 \"" + Base::escapeForLog(value) + "\" 不是合法的权威段（" +
                                                                                                               std::string(*defect) + "）：RFC 9110 §7.2 规定它是 uri-host[:端口]"));
             }
             m_hasHostHeader = true;
@@ -311,7 +305,7 @@ namespace AsynGyanis::Net
             if (!parseContentLengthValue(value, declaredLength))
             {
                 return std::unexpected(makeHeaderError(Http3HeaderErrorKind::ContentLengthInvalid,
-                                                       "content-length 取值 \"" + printableFieldText(value) + "\" 不是非负十进制整数（RFC 9110 §8.6）"));
+                                                       "content-length 取值 \"" + Base::escapeForLog(value) + "\" 不是非负十进制整数（RFC 9110 §8.6）"));
             }
             if (m_contentLengthByteCount.has_value() && *m_contentLengthByteCount != declaredLength)
             {
@@ -334,13 +328,13 @@ namespace AsynGyanis::Net
             if (!isTokenCharacter(static_cast<unsigned char>(character)))
             {
                 return std::unexpected(
-                        makeHeaderError(Http3HeaderErrorKind::IllegalFieldNameCharacter, "字段名 \"" + printableFieldText(name) + "\" 含 tchar 之外的字符（RFC 9110 §5.1）"));
+                        makeHeaderError(Http3HeaderErrorKind::IllegalFieldNameCharacter, "字段名 \"" + Base::escapeForLog(name) + "\" 含 tchar 之外的字符（RFC 9110 §5.1）"));
             }
             // 大小写折叠只在字段名上从严：RFC 9114 §4.2 要求编码前转小写，带大写即畸形
             if (character >= 'A' && character <= 'Z')
             {
                 return std::unexpected(
-                        makeHeaderError(Http3HeaderErrorKind::UppercaseFieldName, "字段名 \"" + printableFieldText(name) + "\" 含大写字母：必须在编码前转为小写（RFC 9114 §4.2）"));
+                        makeHeaderError(Http3HeaderErrorKind::UppercaseFieldName, "字段名 \"" + Base::escapeForLog(name) + "\" 含大写字母：必须在编码前转为小写（RFC 9114 §4.2）"));
             }
         }
         return {};

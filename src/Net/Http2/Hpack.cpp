@@ -1,5 +1,6 @@
 #include "Net/Http2/Hpack.h"
 
+#include "Net/Http2/Http2ErrorOut.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -15,6 +16,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using Http2Detail::clearError;
+        using Http2Detail::writeError;
+
         /// 索引表示的模式位：1xxxxxxx（RFC 7541 §6.1）
         constexpr std::uint8_t kIndexedRepresentationPattern = 0x80;
 
@@ -34,33 +38,6 @@ namespace AsynGyanis::Net
 
         /// 字符串字面量里的 H 位（RFC 7541 §5.2）
         constexpr std::uint8_t kHuffmanFlag = 0x80;
-
-        /**
-         * @brief 在对外方法入口清空可选出参
-         * @details 调用方常复用同一个字符串跨多次调用，若只在失败时写入，成功返回的调用会把上一次的
-         *          失败原因留在出参里，「这次是不是失败」的判据随即失效。
-         * @param errorText 出参指针，为空时什么都不做
-         */
-        void clearError(std::string *errorText) noexcept
-        {
-            if (errorText != nullptr)
-            {
-                errorText->clear();
-            }
-        }
-
-        /**
-         * @brief 把失败原因写入可选出参
-         * @param errorText 出参指针，为空时什么都不做
-         * @param reason 中文失败原因，须写清原因与替代做法
-         */
-        void writeError(std::string *errorText, std::string reason)
-        {
-            if (errorText != nullptr)
-            {
-                *errorText = std::move(reason);
-            }
-        }
 
         /**
          * @brief Huffman 前缀树的节点

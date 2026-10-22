@@ -929,6 +929,13 @@ namespace AsynGyanis::Net
         void fail(Http2ErrorCode errorCode, std::string reason);
 
         /**
+         * @brief 记一次协议错误并返回 false，供「判错即退出」的分支直接 return
+         * @param reason 中文原因
+         * @return false 恒定，便于调用方 `return failProtocol(...)`
+         */
+        [[nodiscard]] bool failProtocol(std::string reason);
+
+        /**
          * @brief 记一帧控制帧并判它是否越过每连接频次额度（RFC 9113 §10.5 的 SHOULD）
          * @details 整数令牌桶：按距上次的毫秒数回填（毫帧 = 毫秒数 × 每秒帧数），封顶桶容量；
          *          扣不出 1 帧即判超量，fail(ENHANCE_YOUR_CALM) 并返回 false。桶只在所属事件

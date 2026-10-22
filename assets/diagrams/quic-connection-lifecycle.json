@@ -16,28 +16,57 @@
       {
         "id": "phases",
         "label": "三相位",
-        "focus": ["handshaking", "established", "closing", "closed"],
+        "focus": [
+          "handshaking",
+          "established",
+          "closing",
+          "closed"
+        ],
         "note": "QuicConnectionPhase 只有这三档：Handshaking、Established、Closing"
       },
       {
         "id": "spaces",
         "label": "包号空间",
-        "focus": ["initial", "hsspace", "appspace", "keyupd"],
+        "focus": [
+          "initial",
+          "hsspace",
+          "appspace",
+          "keyupd"
+        ],
         "note": "Initial 在 Handshake 密钥就位后退休，此后只剩 Application 空间"
       },
       {
         "id": "recovery",
         "label": "恢复与闸门",
-        "focus": ["retransmit", "probing", "cap", "streamerr", "idlecalc", "dropped"],
+        "focus": [
+          "retransmit",
+          "probing",
+          "cap",
+          "streamerr",
+          "idlecalc",
+          "dropped"
+        ],
         "note": "判丢按偏移重发；反放大超限的包直接丢而不杀连接；空闲超时压根不启用时没有这一条到期出口"
       }
     ]
   },
   "lanes": [
-    { "id": "main", "label": "连接相位" },
-    { "id": "space", "label": "包号空间与密钥" },
-    { "id": "recover", "label": "恢复与闸门" },
-    { "id": "terminal", "label": "收口" }
+    {
+      "id": "main",
+      "label": "连接相位"
+    },
+    {
+      "id": "space",
+      "label": "包号空间与密钥"
+    },
+    {
+      "id": "recover",
+      "label": "恢复与闸门"
+    },
+    {
+      "id": "terminal",
+      "label": "收口"
+    }
   ],
   "states": [
     {
@@ -49,7 +78,11 @@
       "col": 0,
       "step": "01",
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 79, "label": "QuicConnectionPhase" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.h",
+          "line": 79,
+          "label": "QuicConnectionPhase"
+        }
       ]
     },
     {
@@ -61,7 +94,11 @@
       "col": 1,
       "step": "02",
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 863, "label": "装入 1-RTT 后翻相位" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 863,
+          "label": "装入 1-RTT 后翻相位"
+        }
       ]
     },
     {
@@ -73,8 +110,16 @@
       "col": 2,
       "step": "03",
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1178, "label": "beginClose" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 601, "label": "收对端 CLOSE 也进这里" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1178,
+          "label": "beginClose"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1069,
+          "label": "收对端 CLOSE 也进这里"
+        }
       ]
     },
     {
@@ -86,8 +131,16 @@
       "lane": "space",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.h", "line": 362, "label": "PacketNumberSpace" },
-        { "path": "src/Net/Quic/Codec/QuicPacketHeader.h", "line": 56, "label": "数据报上限" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.h",
+          "line": 362,
+          "label": "PacketNumberSpace"
+        },
+        {
+          "path": "src/Net/Quic/Codec/QuicPacketHeader.h",
+          "line": 56,
+          "label": "数据报上限"
+        }
       ]
     },
     {
@@ -98,7 +151,11 @@
       "lane": "space",
       "col": 1,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 191, "label": "spaceOf" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 191,
+          "label": "spaceOf"
+        }
       ]
     },
     {
@@ -109,7 +166,11 @@
       "lane": "space",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 331, "label": "confirmHandshake" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 331,
+          "label": "confirmHandshake"
+        }
       ]
     },
     {
@@ -121,8 +182,16 @@
       "lane": "space",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1391, "label": "canInitiateKeyUpdate 门禁" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1470, "label": "retireStaleKeyPhase" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1391,
+          "label": "canInitiateKeyUpdate 门禁"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1470,
+          "label": "retireStaleKeyPhase"
+        }
       ]
     },
     {
@@ -133,8 +202,16 @@
       "lane": "recover",
       "col": 0,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1361, "label": "按丢失空间重发" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 696, "label": "ACK 处理体内" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1361,
+          "label": "按丢失空间重发"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 696,
+          "label": "ACK 处理体内"
+        }
       ]
     },
     {
@@ -145,7 +222,11 @@
       "lane": "recover",
       "col": 1,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 902, "label": "DONE 未 ACK 前持续带出" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 902,
+          "label": "DONE 未 ACK 前持续带出"
+        }
       ]
     },
     {
@@ -156,8 +237,16 @@
       "lane": "recover",
       "col": 2,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1163, "label": "出站倍数判据" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 533, "label": "m_isAddressValidated 置位" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1163,
+          "label": "出站倍数判据"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 533,
+          "label": "m_isAddressValidated 置位"
+        }
       ]
     },
     {
@@ -168,8 +257,16 @@
       "lane": "recover",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 792, "label": "按流码收口流" },
-        { "path": "src/Net/Quic/Streams/QuicStreamLayer.h", "line": 68, "label": "QuicStreamViolation" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 792,
+          "label": "按流码收口流"
+        },
+        {
+          "path": "src/Net/Quic/Streams/QuicStreamLayer.h",
+          "line": 68,
+          "label": "QuicStreamViolation"
+        }
       ]
     },
     {
@@ -181,8 +278,16 @@
       "lane": "terminal",
       "col": 3,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1346, "label": "空闲到期出口" },
-        { "path": "src/Net/Quic/QuicServer.h", "line": 116, "label": "idleTimeout 默认 30s" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1346,
+          "label": "空闲到期出口"
+        },
+        {
+          "path": "src/Net/Quic/QuicServer.h",
+          "line": 116,
+          "label": "idleTimeout 默认 30s"
+        }
       ]
     },
     {
@@ -193,7 +298,11 @@
       "lane": "terminal",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1197, "label": "发出 CLOSE" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1197,
+          "label": "发出 CLOSE"
+        }
       ]
     },
     {
@@ -205,30 +314,143 @@
       "lane": "recover",
       "col": 4,
       "sources": [
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1874, "label": "本端与对端各宣告一个" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1884, "label": "两个都是 0：不启用" },
-        { "path": "src/Net/Quic/QuicConnectionCore.cpp", "line": 1894, "label": "大得折不进 Timestamp：同一条不启用出口" }
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1874,
+          "label": "本端与对端各宣告一个"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1854,
+          "label": "两个都是 0：不启用"
+        },
+        {
+          "path": "src/Net/Quic/QuicConnectionCore.cpp",
+          "line": 1894,
+          "label": "大得折不进 Timestamp：同一条不启用出口"
+        }
       ]
     }
   ],
   "transitions": [
-    { "id": "q-established", "from": "handshaking", "to": "established", "label": "1-RTT 就位", "variant": "emphasis" },
-    { "id": "q-close", "from": "established", "to": "closing", "label": "beginClose" },
-    { "id": "q-initial", "from": "handshaking", "to": "initial", "label": "先走 Initial", "labelDy": 25, "variant": "dashed" },
-    { "id": "q-app", "from": "established", "to": "appspace", "label": "只剩 1-RTT", "variant": "dashed" },
-    { "id": "q-discard", "from": "initial", "to": "hsspace", "label": "Initial 退休" },
-    { "id": "q-confirm", "from": "hsspace", "to": "appspace", "label": "握手判完" },
-    { "id": "q-update", "from": "appspace", "to": "keyupd", "label": "满足门禁", "variant": "security" },
-    { "id": "q-loss", "from": "appspace", "to": "retransmit", "label": "判丢", "variant": "security" },
-    { "id": "q-probe", "from": "retransmit", "to": "probing", "label": "PTO 到期" },
-    { "id": "q-back", "from": "probing", "to": "appspace", "label": "探到了", "variant": "dashed" },
-    { "id": "q-cap", "from": "initial", "to": "cap", "label": "地址未验证", "variant": "dashed" },
-    { "id": "q-clearrate", "from": "cap", "to": "appspace", "label": "超限包丢弃", "variant": "dashed" },
-    { "id": "q-stream", "from": "keyupd", "to": "streamerr", "label": "流层违规", "labelDy": 25, "variant": "security" },
-    { "id": "q-drop", "from": "streamerr", "to": "dropped", "label": "按码收口", "labelDy": 25, "variant": "security" },
-    { "id": "q-closed", "from": "closing", "to": "closed", "label": "带错误码", "variant": "emphasis" },
-    { "id": "t-idle-calc", "from": "appspace", "to": "idlecalc", "label": "每次活动重算截止", "variant": "dashed" },
-    { "id": "t-idle-drop", "from": "idlecalc", "to": "dropped", "label": "启用且到期", "variant": "security" }
+    {
+      "id": "q-established",
+      "from": "handshaking",
+      "to": "established",
+      "label": "1-RTT 就位",
+      "variant": "emphasis"
+    },
+    {
+      "id": "q-close",
+      "from": "established",
+      "to": "closing",
+      "label": "beginClose"
+    },
+    {
+      "id": "q-initial",
+      "from": "handshaking",
+      "to": "initial",
+      "label": "先走 Initial",
+      "labelDy": 25,
+      "variant": "dashed"
+    },
+    {
+      "id": "q-app",
+      "from": "established",
+      "to": "appspace",
+      "label": "只剩 1-RTT",
+      "variant": "dashed"
+    },
+    {
+      "id": "q-discard",
+      "from": "initial",
+      "to": "hsspace",
+      "label": "Initial 退休"
+    },
+    {
+      "id": "q-confirm",
+      "from": "hsspace",
+      "to": "appspace",
+      "label": "握手判完"
+    },
+    {
+      "id": "q-update",
+      "from": "appspace",
+      "to": "keyupd",
+      "label": "满足门禁",
+      "variant": "security"
+    },
+    {
+      "id": "q-loss",
+      "from": "appspace",
+      "to": "retransmit",
+      "label": "判丢",
+      "variant": "security"
+    },
+    {
+      "id": "q-probe",
+      "from": "retransmit",
+      "to": "probing",
+      "label": "PTO 到期"
+    },
+    {
+      "id": "q-back",
+      "from": "probing",
+      "to": "appspace",
+      "label": "探到了",
+      "variant": "dashed"
+    },
+    {
+      "id": "q-cap",
+      "from": "initial",
+      "to": "cap",
+      "label": "地址未验证",
+      "variant": "dashed"
+    },
+    {
+      "id": "q-clearrate",
+      "from": "cap",
+      "to": "appspace",
+      "label": "超限包丢弃",
+      "variant": "dashed"
+    },
+    {
+      "id": "q-stream",
+      "from": "keyupd",
+      "to": "streamerr",
+      "label": "流层违规",
+      "labelDy": 25,
+      "variant": "security"
+    },
+    {
+      "id": "q-drop",
+      "from": "streamerr",
+      "to": "dropped",
+      "label": "按码收口",
+      "labelDy": 25,
+      "variant": "security"
+    },
+    {
+      "id": "q-closed",
+      "from": "closing",
+      "to": "closed",
+      "label": "带错误码",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t-idle-calc",
+      "from": "appspace",
+      "to": "idlecalc",
+      "label": "每次活动重算截止",
+      "variant": "dashed"
+    },
+    {
+      "id": "t-idle-drop",
+      "from": "idlecalc",
+      "to": "dropped",
+      "label": "启用且到期",
+      "variant": "security"
+    }
   ],
   "cards": [
     {
@@ -255,7 +477,7 @@
       "items": [
         "数据报负载上限 1200 B，Initial 也补足到同值（Codec/QuicPacketHeader.h:56）",
         "idleTimeout 默认 30s，有效值取两端小者并抬到 ≥3×PTO；到期出口不发 CONNECTION_CLOSE（QuicServer.h:116、QuicConnectionCore.cpp:1910）",
-      "「不启用」有两种来路，走的是同一条出口：两端都宣告 0，以及宣告得大到折不进 Timestamp（微秒域的一半让给「现在」）——后者不报错也不夹到上界，因为一个折不进计时器的天数说的就是「没设这一项」（QuicConnectionCore.cpp:1888-1892 的注）",
+        "「不启用」有两种来路，走的是同一条出口：两端都宣告 0，以及宣告得大到折不进 Timestamp（微秒域的一半让给「现在」）——后者不报错也不夹到上界，因为一个折不进计时器的天数说的就是「没设这一项」（QuicConnectionCore.cpp:1888-1892 的注）",
         "服务端且地址未验证时出站不得超过已收字节的 3×；地址验证由首个能解开的 Handshake+ 包置位（QuicConnectionCore.cpp:1163、533）",
         "待发闸门：单流 1 MiB、连接 8 MiB（QuicStreamLayer.h:95、103）；节拍 10ms、空表 1s、drain 50ms（QuicServer.h:118、493、434）"
       ]

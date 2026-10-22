@@ -1,5 +1,6 @@
 #include "Net/Quic/QuicConnection.h"
 
+#include "Net/Quic/QuicSupport.h"
 #include "Base/Exception/Exception.h"
 #include "Core/Crypto/Random.h"
 #include "Base/Log/LogMacros.h"
@@ -18,6 +19,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using QuicDetail::randomBytes;
+
         /// 一次 flush 里最多写出多少条报文：防止窗口充裕时在一条连接上转太久
         constexpr std::size_t kMaximumDatagramsPerFlush = 64;
 
@@ -33,26 +36,6 @@ namespace AsynGyanis::Net
 
         /// 空闲超时越界的告警窗口：这条判据每建一条连接都走一次，配置错了就是每条都错，不限流会自己把日志刷爆
         constexpr std::chrono::hours kInvalidIdleTimeoutLogWindow{1};
-
-        /**
-         * @brief 取一段随机字节
-         * @details 随机失败没有安全的降级路径（QUIC 的密钥与连接标识都以随机数为前提），
-         *          此时交回空 vector 由调用方放弃这条连接，而不是拿全零标识去接客端
-         * @param length 需要的字节数
-         * @return std::vector<std::uint8_t> 随机字节；随机数不可用时为空
-         */
-        std::vector<std::uint8_t> randomBytes(const std::size_t length)
-        {
-            // 取不到交回空 vector：调用方（accept/connect）据此放弃这条连接；取字节与报错在
-            // Core::Random 那一侧，本处只留「这条通路怎么处置失败」的策略
-            try
-            {
-                return Core::Random::bytes(length);
-            } catch (const Base::Exception &)
-            {
-                return {};
-            }
-        }
 
         /**
          * @brief 把本端要宣告的流量控制额度与空闲超时填进状态机配置

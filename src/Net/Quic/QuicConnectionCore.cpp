@@ -1,5 +1,6 @@
 // OpenSSL 的 Windows 头会把 windef.h 的 min/max 宏一起带进来，`std::max<...>` 会被展开成非法表达式。
-// 必须在任何头文件之前定义 NOMINMAX 才能挡住这对宏：放在文件最顶部是唯一与包含顺序无关的写法。
+
+#include "Net/Quic/QuicSupport.h" // 必须在任何头文件之前定义 NOMINMAX 才能挡住这对宏：放在文件最顶部是唯一与包含顺序无关的写法。
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -30,6 +31,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using QuicDetail::randomBytes;
+        using QuicDetail::saturatingSubtract;
+
         /// 乱序早到的 CRYPTO 分片总量上限，超了直接收口。这是本实现自设的自我保护值，不是规范值
         constexpr std::size_t kQuicCryptoBufferByteLimit = 65536;
 
@@ -80,18 +84,6 @@ namespace AsynGyanis::Net
         /// 配置里给的下限只有 16（§10.3.2 只要求不可预测的 128 位），自造这一把没有理由按下限取
         constexpr std::size_t kQuicSelfGeneratedStatelessResetKeyByteLength = 32;
 
-        std::vector<std::uint8_t> randomBytes(const std::size_t byteLength)
-        {
-            // 取不到交回空 vector，由调用方处置（本类是纯计算件，不写日志也不抛出）
-            try
-            {
-                return Core::Random::bytes(byteLength);
-            } catch (const Base::Exception &)
-            {
-                return {};
-            }
-        }
-
         /**
          * @brief 校验配置里的连接标识没有超过 v1 上限
          * @param connectionId 待检的标识
@@ -105,17 +97,6 @@ namespace AsynGyanis::Net
                 throw Base::InvalidArgumentException(
                         std::format("QUIC 连接建立失败：{}连接标识有 {} 字节，超过 v1 上限 {} 字节（RFC 9000 §5.1）", label, connectionId.size(), kQuicMaximumConnectionIdLength));
             }
-        }
-
-        /**
-         * @brief 减去一个不应超过被减数的量
-         * @param total 被减数
-         * @param part 减数
-         * @return std::size_t 差；算出负数表示「装不下」，收成 0 而不是回绕
-         */
-        std::size_t saturatingSubtract(const std::size_t total, const std::size_t part)
-        {
-            return part > total ? 0 : total - part;
         }
 
         /**

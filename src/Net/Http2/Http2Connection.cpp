@@ -1,5 +1,6 @@
 #include "Net/Http2/Http2Connection.h"
 
+#include "Net/Http2/Http2ErrorOut.h"
 #include "Base/Log/LogEscaping.h"
 #include "Net/Http/HttpHeaderRules.h"
 
@@ -17,13 +18,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// 把对端交来的字节折成单行可打印文本再写进错误串：这些串会经 lastStreamErrorMessage() 落进日志，
-        /// 而一个带 CR/LF 的头名原样进去，就等于对端能往本进程的日志里塞第二行（或改写行首）。
-        /// 折法本体只有一份（`Base::escapeForLog`），这里只留本层的默认长度与名字——h3 侧也是这个形状
-        [[nodiscard]] std::string printableFieldText(const std::string_view text, const std::size_t maximumDisplayByteCount = 48)
-        {
-            return Base::escapeForLog(text, maximumDisplayByteCount);
-        }
+        using Http2Detail::clearError;
+        using Http2Detail::writeError;
 
         /// RFC 9113 §6 定义过的帧类型取值上界（CONTINUATION = 0x9）：大于它的按 §4.1 忽略
         constexpr std::uint8_t kLastKnownFrameTypeValue = 0x9;
@@ -33,33 +29,6 @@ namespace AsynGyanis::Net
 
         /// 连接特定头（RFC 9113 §8.2.2）：HTTP/2 里一律不得出现，收到即判该流不合规
         constexpr std::string_view kConnectionSpecificHeaderNames[] = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"};
-
-        /**
-         * @brief 在对外方法入口清空可选出参
-         * @details 调用方常复用同一个字符串跨多次调用，若只在失败时写入，成功返回的调用会把上一次的
-         *          失败原因留在出参里，「这次是不是失败」的判据随即失效。
-         * @param errorText 出参指针，为空时什么都不做
-         */
-        void clearError(std::string *errorText) noexcept
-        {
-            if (errorText != nullptr)
-            {
-                errorText->clear();
-            }
-        }
-
-        /**
-         * @brief 把失败原因写入可选出参
-         * @param errorText 出参指针，为空时什么都不做
-         * @param reason 中文失败原因，须写清原因与替代做法
-         */
-        void writeError(std::string *errorText, std::string reason)
-        {
-            if (errorText != nullptr)
-            {
-                *errorText = std::move(reason);
-            }
-        }
 
         /**
          * @brief 校验一条 host 请求头：多条 host 之间、以及与 :authority（在场且非空时）都必须指向同一实体
@@ -86,14 +55,14 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头 host 的取值 \"{}\" 不是合法的权威段（{}）：RFC 9110 §7.2 规定它是 uri-host[:端口]，"
                                                   "不带 userinfo、空白与路径",
-                                                  printableFieldText(hostValue), *defect));
+                                                  Base::escapeForLog(hostValue), *defect));
                 return false;
             }
             if (hasAuthorityField && !authority.empty() && normalizeHostComparisonKey(hostValue) != normalizeHostComparisonKey(authority))
             {
                 writeError(errorText, std::format("请求头 host 的取值 \"{}\" 与 :authority \"{}\" 不是同一个实体：RFC 9113 §8.3.1 要求两者一致"
                                                   "（比较前按 RFC 3986 §6.2 归一化——去端口、折小写、去结尾的根点），请让对端只保留一种说法",
-                                                  printableFieldText(hostValue), printableFieldText(authority)));
+                                                  Base::escapeForLog(hostValue), Base::escapeForLog(authority)));
                 return false;
             }
             // 重复出现的 host 之间也必须指向同一实体（RFC 9110 §7.2：发送方不得生成多条 Host）：本端
@@ -103,7 +72,7 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头 host 出现了取值不一致的多条：\"{}\" 与 \"{}\" 折出的比对键不同"
                                                   "（RFC 9110 §7.2 要求发送方不得生成多条 Host；比较与 :authority 那条判据、选站共用同一份归一化），请让对端只保留一条",
-                                                  printableFieldText(firstHostValue), printableFieldText(hostValue)));
+                                                  Base::escapeForLog(firstHostValue), Base::escapeForLog(hostValue)));
                 return false;
             }
             if (!hasHostField)
@@ -134,7 +103,7 @@ namespace AsynGyanis::Net
             }
             writeError(errorText, std::format(":authority 取值 \"{}\" 不是合法的权威段（{}）：RFC 9113 §8.3.1 禁止 http/https 的 :authority 带 userinfo，"
                                               "其余按 RFC 9110 §7.2 的 uri-host[:端口] 判",
-                                              printableFieldText(authorityValue), *defect));
+                                              Base::escapeForLog(authorityValue), *defect));
             return false;
         }
 
@@ -854,10 +823,9 @@ namespace AsynGyanis::Net
         {
             if (frameTypeValue != static_cast<std::uint8_t>(Http2FrameType::Continuation) || frame.header.streamId != m_pendingHeaderStreamId)
             {
-                fail(Http2ErrorCode::ProtocolError, std::format("流 {} 的头块还没收完（缺 END_HEADERS），此刻收到{}（流 {}）：RFC 9113 §6.10 要求 CONTINUATION "
-                                                                "不得被任何其它帧打断",
-                                                                m_pendingHeaderStreamId, http2FrameTypeName(frameType), frame.header.streamId));
-                return false;
+                return failProtocol(std::format("流 {} 的头块还没收完（缺 END_HEADERS），此刻收到{}（流 {}）：RFC 9113 §6.10 要求 CONTINUATION "
+                                                "不得被任何其它帧打断",
+                                                m_pendingHeaderStreamId, http2FrameTypeName(frameType), frame.header.streamId));
             }
             return handleContinuationFrame(frame);
         }
@@ -866,9 +834,7 @@ namespace AsynGyanis::Net
         if (m_state == Http2ConnectionState::AwaitingSettings &&
             (frameTypeValue != static_cast<std::uint8_t>(Http2FrameType::Settings) || (frame.header.flags & kHttp2FlagAcknowledge) != 0))
         {
-            fail(Http2ErrorCode::ProtocolError,
-                 std::format("客户端前奏之后的第一个帧必须是 SETTINGS（RFC 9113 §3.4），收到{}（流 {}）", http2FrameTypeName(frameType), frame.header.streamId));
-            return false;
+            return failProtocol(std::format("客户端前奏之后的第一个帧必须是 SETTINGS（RFC 9113 §3.4），收到{}（流 {}）", http2FrameTypeName(frameType), frame.header.streamId));
         }
 
         // 未定义的类型按 §4.1 忽略：不改变任何状态，也不回帧
@@ -1578,7 +1544,7 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名必须全小写，"
                                                   "请让对端改成小写",
-                                                  printableFieldText(field.name)));
+                                                  Base::escapeForLog(field.name)));
                 return false;
             }
 
@@ -1587,7 +1553,7 @@ namespace AsynGyanis::Net
                 // 伪头必须全部出现在普通头部之前（§8.3）
                 if (hasSeenRegularHeader)
                 {
-                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 9113 §8.3 要求所有伪头必须排在普通头部之前", printableFieldText(field.name)));
+                    writeError(errorText, std::format("伪头 \"{}\" 出现在普通头部之后：RFC 9113 §8.3 要求所有伪头必须排在普通头部之前", Base::escapeForLog(field.name)));
                     return false;
                 }
                 if (field.name == ":method")
@@ -1615,7 +1581,7 @@ namespace AsynGyanis::Net
                     {
                         writeError(errorText, std::format(":scheme 取值 \"{}\" 不是合法的协议名：RFC 3986 §3.1 要求字母打头，"
                                                           "其后只允许字母/数字与 + - .",
-                                                          printableFieldText(field.value)));
+                                                          Base::escapeForLog(field.value)));
                         return false;
                     }
                 } else if (field.name == ":path")
@@ -1642,7 +1608,7 @@ namespace AsynGyanis::Net
                         {
                             writeError(errorText, std::format(":path 取值 \"{}\" 含请求目标不允许的字符：裸 # 与反斜杠都不收"
                                                               "（片段不属于请求目标，RFC 9110 §7.1；要表达 # 请写成 %23）",
-                                                              printableFieldText(request.path)));
+                                                              Base::escapeForLog(request.path)));
                             return false;
                         }
                     }
@@ -1672,14 +1638,14 @@ namespace AsynGyanis::Net
                 {
                     writeError(errorText, std::format("出现未知伪头 \"{}\"：RFC 9113 §8.3 只定义了 :method/:scheme/:path/:authority 四个"
                                                       "（:protocol 见 RFC 8441）",
-                                                      printableFieldText(field.name)));
+                                                      Base::escapeForLog(field.name)));
                     return false;
                 }
                 if (!isHeaderValueBytes(field.value))
                 {
                     writeError(errorText, std::format("伪头 \"{}\" 的值含 CR/LF/NUL 之类的控制字符：这类字节既不是合法头值，"
                                                       "又是注入的经典入口，请让对端改用百分号编码",
-                                                      printableFieldText(field.name)));
+                                                      Base::escapeForLog(field.name)));
                     return false;
                 }
                 continue;
@@ -1691,27 +1657,27 @@ namespace AsynGyanis::Net
             {
                 writeError(errorText, std::format("请求头里出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止 connection/keep-alive/"
                                                   "proxy-connection/transfer-encoding/upgrade 出现在 HTTP/2 报文里",
-                                                  printableFieldText(field.name)));
+                                                  Base::escapeForLog(field.name)));
                 return false;
             }
             // te 是唯一的例外：只允许取值 trailers（§8.2.2），比较走与 h3 同一份判据
             if (field.name == "te" && !teValueIsTrailers(field.value))
             {
-                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers，请让对端改掉", printableFieldText(field.value)));
+                writeError(errorText, std::format("请求头 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers，请让对端改掉", Base::escapeForLog(field.value)));
                 return false;
             }
             if (!isTokenName(field.name))
             {
                 writeError(errorText, std::format("请求头名 \"{}\" 含 token 之外的字符（空白、冒号前空白等）：RFC 9113 §8.2 要求头部名"
                                                   "符合字段名语法，请让对端按 token 字符集拼头名",
-                                                  printableFieldText(field.name)));
+                                                  Base::escapeForLog(field.name)));
                 return false;
             }
             if (!isHeaderValueBytes(field.value))
             {
                 writeError(errorText, std::format("请求头 \"{}\" 的值含 CR/LF/NUL 之类的控制字符：这类字节既不是合法头值，"
                                                   "又是注入的经典入口，请让对端改用百分号编码",
-                                                  printableFieldText(field.name)));
+                                                  Base::escapeForLog(field.name)));
                 return false;
             }
             // content-length 与 h1 侧同一口径：取值必须是单个十进制数字，重复出现必须完全一致。
@@ -1723,7 +1689,7 @@ namespace AsynGyanis::Net
                 {
                     writeError(errorText, std::format("请求头 content-length 的取值 \"{}\" 非法或前后冲突：RFC 9110 §8.6 要求它是"
                                                       "单个十进制数字，重复出现时必须完全一致",
-                                                      printableFieldText(field.value)));
+                                                      Base::escapeForLog(field.value)));
                     return false;
                 }
                 hasContentLengthField = true;
@@ -1884,29 +1850,29 @@ namespace AsynGyanis::Net
             }
             if (containsUppercaseAscii(field.name))
             {
-                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名必须全小写", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块的头名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名必须全小写", Base::escapeForLog(field.name)));
                 return false;
             }
             if (field.name.front() == ':')
             {
-                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 9113 §8.3 要求尾部头块不得包含伪头", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块里出现伪头 \"{}\"：RFC 9113 §8.3 要求尾部头块不得包含伪头", Base::escapeForLog(field.name)));
                 return false;
             }
             if (isConnectionSpecificHeaderName(field.name))
             {
-                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止这类头部出现在 HTTP/2 报文里", printableFieldText(field.name)));
+                writeError(errorText, std::format("尾部头块里出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止这类头部出现在 HTTP/2 报文里", Base::escapeForLog(field.name)));
                 return false;
             }
             if (field.name == "te" && !teValueIsTrailers(field.value))
             {
-                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers", printableFieldText(field.value)));
+                writeError(errorText, std::format("尾部头块里 te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers", Base::escapeForLog(field.value)));
                 return false;
             }
             if (!isTokenName(field.name) || !isHeaderValueBytes(field.value))
             {
                 writeError(errorText, std::format("尾部头块的头 \"{}\" 含 token 之外的头名或 CR/LF/NUL 之类的头值控制字符，"
                                                   "请让对端按字段语法重新拼",
-                                                  printableFieldText(field.name)));
+                                                  Base::escapeForLog(field.name)));
                 return false;
             }
         }
@@ -2378,6 +2344,12 @@ namespace AsynGyanis::Net
         payload.errorCode    = errorCode;
         payload.debugData    = m_errorMessage;
         appendOutgoing(encodeHttp2GoAwayFrame(payload));
+    }
+
+    bool Http2Connection::failProtocol(std::string reason)
+    {
+        fail(Http2ErrorCode::ProtocolError, std::move(reason));
+        return false;
     }
 
     void Http2Connection::failStream(StreamRecord &stream, const Http2ErrorCode errorCode, std::string reason)

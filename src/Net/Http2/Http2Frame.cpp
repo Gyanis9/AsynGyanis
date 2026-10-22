@@ -1,5 +1,6 @@
 #include "Net/Http2/Http2Frame.h"
 
+#include "Net/Http2/Http2ErrorOut.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using Http2Detail::clearError;
+        using Http2Detail::writeError;
+
         /// 32 位字段的最高位掩码，两处用途：帧头流号的保留位 R（§4.1，接收侧忽略）与
         /// PRIORITY 依赖字段里的 E 位（§6.3，那是有定义的一段，取出来就是 isExclusive）
         constexpr std::uint32_t kStreamIdReservedBitMask = 0x80000000U;
@@ -27,33 +31,6 @@ namespace AsynGyanis::Net
 
         /// GOAWAY 的固定部分长度：4 字节最后流号 + 4 字节错误码（RFC 9113 §6.8）
         constexpr std::size_t kGoAwayFixedByteCount = 8;
-
-        /**
-         * @brief 在对外方法入口清空可选出参
-         * @details 调用方常复用同一个字符串跨多次调用，若只在失败时写入，成功返回的调用会把上一次的
-         *          失败原因留在出参里，「这次是不是失败」的判据随即失效。
-         * @param errorText 出参指针，为空时什么都不做
-         */
-        void clearError(std::string *errorText) noexcept
-        {
-            if (errorText != nullptr)
-            {
-                errorText->clear();
-            }
-        }
-
-        /**
-         * @brief 把失败原因写入可选出参
-         * @param errorText 出参指针，为空时什么都不做
-         * @param reason 中文失败原因，须写清原因与替代做法
-         */
-        void writeError(std::string *errorText, std::string reason)
-        {
-            if (errorText != nullptr)
-            {
-                *errorText = std::move(reason);
-            }
-        }
 
         /**
          * @brief 判断帧类型取值是否落在 RFC 9113 §6 定义过的类型里

@@ -3,6 +3,7 @@
 # 流层（Streams/）都在树内，本模块不链接任何第三方 QUIC 实现；跨实现验收走进程外的 aioquic
 #（scripts/quic_cross_check.sh + tests/Tools/QuicProbeServer.cpp），树内不留裁判
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
+        ${CMAKE_CURRENT_LIST_DIR}/QuicSupport.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnection.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnection.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionRole.h

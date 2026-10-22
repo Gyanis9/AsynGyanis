@@ -1,5 +1,6 @@
 #include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 
+#include "Net/Quic/QuicSupport.h"
 #include "Net/Quic/Recovery/QuicCongestionControl.h"
 #include "Net/Quic/Recovery/QuicCubicCongestion.h"
 
@@ -10,6 +11,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using QuicDetail::saturatingSubtract;
+
         /// §7.2 里那个「较大者」的字节数：UDP 只算 8 字节开销，比 TCP 的 20 字节少一截
         constexpr std::size_t kInitialWindowFloorByteLength = 14720;
 
@@ -19,16 +22,6 @@ namespace AsynGyanis::Net
         /// 最小窗口的倍数（§7.2：两倍最大数据报）
         constexpr std::size_t kMinimumWindowDatagramMultiple = 2;
 
-        /**
-         * @brief 减去一个不应超过被减数的量
-         * @param total 被减数
-         * @param part 减数
-         * @return std::size_t 差；算出负数说明两边记账不配对，收成 0 而不是回绕成天文数字
-         */
-        std::size_t saturatingSubtract(const std::size_t total, const std::size_t part)
-        {
-            return part > total ? 0 : total - part;
-        }
     } // namespace
 
     QuicCongestionAlgorithm::QuicCongestionAlgorithm(const std::size_t maximumDatagramByteLength) noexcept :
