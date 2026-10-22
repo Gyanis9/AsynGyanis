@@ -14,7 +14,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "d48059df48ce49b628cbf9222e2112932faea570"
+      "revision": "8a92454786e1bf2820cb50340065c38d45899423"
     },
     "views": [
       {
@@ -141,7 +141,7 @@
       "sources": [
         {
           "path": "src/Net/Http/Server/HttpSession.h",
-          "line": 1120,
+          "line": 1121,
           "label": "h1 每响应计数"
         }
       ]
@@ -364,7 +364,7 @@
       "sources": [
         {
           "path": "src/Net/Http/Server/HttpServerStats.h",
-          "line": 534,
+          "line": 537,
           "label": "snapshot"
         },
         {
@@ -446,7 +446,7 @@
         },
         {
           "path": "src/Net/Http/Server/HttpMetricsEndpoint.h",
-          "line": 165,
+          "line": 167,
           "label": "循环诊断口的注册函数"
         }
       ]

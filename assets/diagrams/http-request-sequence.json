@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "d48059df48ce49b628cbf9222e2112932faea570"
+      "revision": "8a92454786e1bf2820cb50340065c38d45899423"
     },
     "views": [
       {
@@ -76,9 +76,9 @@
       "label": "HttpSession",
       "sublabel": "事务循环",
       "sources": [
-        { "path": "src/Net/Http/Server/HttpSession.h", "line": 558, "label": "httpKeepAliveLoop" },
-        { "path": "src/Net/Http/Server/HttpSession.h", "line": 820, "label": "readIntoWindow" },
-        { "path": "src/Net/Http/Server/HttpSession.h", "line": 1400, "label": "route" }
+        { "path": "src/Net/Http/Server/HttpSession.h", "line": 559, "label": "httpKeepAliveLoop" },
+        { "path": "src/Net/Http/Server/HttpSession.h", "line": 821, "label": "readIntoWindow" },
+        { "path": "src/Net/Http/Server/HttpSession.h", "line": 1401, "label": "route" }
       ]
     },
     {
@@ -98,7 +98,7 @@
       "sublabel": "手写增量",
       "sources": [
         { "path": "src/Net/Http/Message/HttpParser.cpp", "line": 54, "label": "parse" },
-        { "path": "src/Net/Http/Server/HttpSession.h", "line": 1387, "label": "Done 相位取请求" }
+        { "path": "src/Net/Http/Server/HttpSession.h", "line": 1388, "label": "Done 相位取请求" }
       ]
     },
     {
@@ -187,19 +187,19 @@
       "title": "背压与写出",
       "items": [
         "读写在同一协程内 co_await：发送挂起即整条会话停住，不是只停写",
-        "发送前把截止时间切到 writeTimeout（src/Net/Http/Server/HttpSession.h:697），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）",
-        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/Server/HttpSession.h:1044 的 requires 分支）"
+        "发送前把截止时间切到 writeTimeout（src/Net/Http/Server/HttpSession.h:698），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）",
+        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/Server/HttpSession.h:1045 的 requires 分支）"
       ]
     },
     {
       "dot": "violet",
       "title": "错误出口各有形状",
       "items": [
-        "解析失败按原因回 431/413/400 并收口连接（src/Net/Http/Server/HttpSession.h:1324、HttpSession.cpp:110）",
-      "挡新请求与等在途工作是两件事：/readyz 读的是「还接不接」，探针因此能看到「在排空但还在答话」这一档（src/Net/Http/Server/HttpMetricsEndpoint.h:106 收的是 isAccepting 出口）；/healthz 与 /readyz 都不挂令牌闸，编排器拿不到凭据（src/Net/Http/Server/HttpServerAssembly.h:167）",
-        "正文超全局内存预算回 503 + retry-after: 1（src/Net/Http/Server/HttpSession.h:1105-1117），预算默认不启用",
-        "处理器抛异常先整份 reset 再回 500；chunked 头部已上线时只能补终止块，改不了状态码（src/Net/Http/Server/HttpSession.h:912-915，补终止块那条在 :888）",
-        "WebSocket 升级不合规回 400 + Connection: close；合规就逐字节写 101 并离开本循环（src/Net/Http/Server/HttpSession.h:1327-1372）"
+        "解析失败按原因回 431/413/400 并收口连接（src/Net/Http/Server/HttpSession.h:1325、HttpSession.cpp:110）",
+      "挡新请求与等在途工作是两件事：/readyz 读的是「还接不接」，探针因此能看到「在排空但还在答话」这一档（src/Net/Http/Server/HttpMetricsEndpoint.h:148 收的是 isAccepting 出口）；/healthz 与 /readyz 都不挂令牌闸，编排器拿不到凭据（src/Net/Http/Server/HttpServerAssembly.h:167）",
+        "正文超全局内存预算回 503 + retry-after: 1（src/Net/Http/Server/HttpSession.h:1186-1199），预算默认不启用",
+        "处理器抛异常先整份 reset 再回 500；chunked 头部已上线时只能补终止块，改不了状态码（src/Net/Http/Server/HttpSession.h:913-916，补终止块那条在 :889）",
+        "WebSocket 升级不合规回 400 + Connection: close；合规就逐字节写 101 并离开本循环（src/Net/Http/Server/HttpSession.h:1328-1373）"
       ]
     }
   ]
