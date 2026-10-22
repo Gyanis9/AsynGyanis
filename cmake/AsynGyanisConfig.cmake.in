@@ -2,9 +2,9 @@
 
 include(CMakeFindDependencyMacro)
 
-# 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、ZLIB::ZLIB 等）；这里带出被请求
-# 组件及其传递依赖真正需要的那些（Base 的消费方不必去找 OpenSSL）。清单由各模块 configure 期按组件
-# 登记（见 cmake/AsynGyanisInstall.cmake 的组件依赖图），因此不会漏掉 Net 私有链接的 zlib。
+# 五个模块默认静态库，BUILD_SHARED_LIBS=ON 时为共享库；接口里留着外部依赖的目标名（OpenSSL::SSL、
+# ZLIB::ZLIB 等），这里带出被请求组件及其传递依赖所需（Base 消费方不必去找 OpenSSL）。清单由各模块
+# configure 期按组件登记（见 cmake/AsynGyanisInstall.cmake），因此不会漏掉 Net 私有链接的 zlib。
 @ASYN_CONFIG_COMPONENT_DEPENDENCIES@
 
 # 本机 CMake 的 install(EXPORT) 不支持 COMPONENTS，组件归属在这里声明：

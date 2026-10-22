@@ -36,7 +36,7 @@ VERTEX_COLLECTIONS = ("components", "nodes", "states", "participants")
 # 不参与任何 FAIL 判定，所以宁可写宽一点——把代码行误判成注释只会漏一条 WARN。
 COMMENT_PREFIXES = ("//", "*", "/*", "#", ";;", "<!--")
 # 卡片正文与节点标签里也手写「路径:行号」，形状有四种（完整路径、只带后缀、单冒号续写、顿号续写），
-# 后三种都从前一个完整路径继承文件。这一轮补它，是因为按出图那行的原文复核时发现 23 处号还在、
+# 后三种都从前一个完整路径继承文件。对照出图那行的原文复核，发现 23 处号还在、
 # 说的已经不是那件事——全部落在只查 sources 的判据射程之外。
 SOURCE_EXTS = r"cpp|h|hpp|py|sh|json|ya?ml|md|txt"
 PROSE_REF_RE = re.compile(

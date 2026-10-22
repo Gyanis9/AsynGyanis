@@ -1,6 +1,6 @@
 # tests/Tools —— 测试期可执行体：不是用例，是给外部工具当对手或夹具的小程序。
-# 与 tests/<模块>/ 的 gtest 源不同，这里放独立进程形态的夹具；判据由外部实现给出，
-# 改本仓库代码改不动它。
+# 与 tests/<模块>/ 的 gtest 源不同，这里放独立进程形态的夹具；QUIC/ACME 探针的判据由外部实现给出，
+# 改本仓库代码改不动它；handoff_worker、heartbeat_worker 由仓库内 TestWorkerSupervisor gtest 判定。
 
 # QUIC 跨实现校验探针的被测端：把 QuicServer 的传输层行为打成 stdout 事件行，
 # 由 scripts/quic_cross_check.py（aioquic）与 scripts/quic_cross_check.sh 消费

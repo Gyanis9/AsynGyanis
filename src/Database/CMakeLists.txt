@@ -7,9 +7,9 @@ find_package(SQLite3 REQUIRED)
 # 登记随包导出的外部依赖（按组件记）：消费方链接 Database 时也要能找到 SQLite::SQLite3
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database SQLite3)
 
-# 可选驱动统一接线：探测（QUIET + TARGET，绝不 REQUIRED——缺一个只退化，不失败）、链接、
-# PUBLIC 宏、依赖登记与 status 收在一处；驱动名进 GLOBAL 属性 AsynGyanisDatabaseDrivers，
-# cmakePackage 与 cmakeTarget 是查找名与目标名，libraryName 是用户要装的客户端包名。
+# 可选驱动统一接线：探测（QUIET + TARGET，绝不 REQUIRED，缺则退化）、链接、依赖登记；driverName 进
+# GLOBAL 属性 AsynGyanisDatabaseDrivers，也拼成 DATABASE_WITH_<name> 选项与 DATABASE_HAS_<name> 宏；
+# cmakePackage/cmakeTarget 是查找名/目标名，libraryName 是客户端包名，displayName 是选项/状态文案。
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseDrivers "")
 function(asyn_configure_database_driver driverName cmakePackage cmakeTarget libraryName displayName)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseDrivers "${driverName}")

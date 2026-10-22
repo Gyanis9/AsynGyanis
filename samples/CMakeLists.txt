@@ -1,5 +1,5 @@
 # 示例程序：每个子系统一个独立可运行的程序，各自自检并以退出码报告结果。
-# 其余示例按模块拆开，scripts/run_samples.py 全量运行并按退出码判定系统完整性。
+# 各示例按模块拆开，scripts/run_samples.py 全量运行并按退出码判定系统完整性。
 
 # 一个示例一个目标：目标名与程序名同为 PascalCase（CoreLoop、ReferenceServer…），是对外名字，
 # 文档、脚本、CI 与按可执行体名认进程的判据都按它引用；唯一偏离是 PlatformPrimitives：
