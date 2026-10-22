@@ -23,6 +23,7 @@ namespace AsynGyanis::Net
         // 启动时刻读的是进程事实，取快照多次读数相同；另两条随进程状态走
         stats.processCpuSeconds       = Platform::ProcessInfo::cpuSeconds();
         stats.openHandleCount         = Platform::ProcessInfo::openHandleCount();
+        stats.openHandleLimit         = Platform::ProcessInfo::openHandleLimit();
         stats.processStartTimeSeconds = Platform::ProcessInfo::startTimeSeconds();
     }
 

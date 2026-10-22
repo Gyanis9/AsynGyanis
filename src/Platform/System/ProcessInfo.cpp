@@ -274,6 +274,27 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    std::uint64_t ProcessInfo::openHandleLimit() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // Windows 没有按进程的句柄配额；CRT 的 _getmaxstdio 只限制 stdio 流，不是句柄上限，
+        // 拿它当 process_max_fds 会让容量判据建立在错误的数上。按「本平台没有这条口径」交回 0
+        return 0;
+#else
+        rlimit descriptorLimit{};
+        if (::getrlimit(RLIMIT_NOFILE, &descriptorLimit) != 0)
+        {
+            return 0;
+        }
+        // RLIM_INFINITY 表示不设上限：与「读不出」共用 0，调用方按「没有硬上限」处理
+        if (descriptorLimit.rlim_cur == RLIM_INFINITY)
+        {
+            return 0;
+        }
+        return static_cast<std::uint64_t>(descriptorLimit.rlim_cur);
+#endif
+    }
+
     std::uint64_t ProcessInfo::startTimeSeconds() noexcept
     {
 #if ASYN_PLATFORM_WIN32

@@ -287,6 +287,9 @@ namespace AsynGyanis::Net
         /// 取快照这一刻本进程打开的句柄/文件描述符数（进程级，0 表示平台读不出）——连接/文件泄漏的通用信号
         std::uint64_t openHandleCount{0};
 
+        /// 取快照这一刻本进程可同时打开的描述符软上限（进程级；0 表示平台读不出、不设上限或 Windows 无此口径）
+        std::uint64_t openHandleLimit{0};
+
         /// 本进程的启动时刻（Unix epoch 秒；进程级，0 表示平台读不出）——计数器回落时据它判断「进程重启过」
         std::uint64_t processStartTimeSeconds{0};
 

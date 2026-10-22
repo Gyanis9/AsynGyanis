@@ -345,6 +345,9 @@ namespace AsynGyanis::Net
         appendCounter(out, makeMetricName(metricNamePrefix, "process_cpu_seconds_total"), "本进程累计消耗的 CPU 时间（用户态加内核态，整数秒；进程级；0 表示平台读不出）",
                       stats.processCpuSeconds);
         appendGauge(out, makeMetricName(metricNamePrefix, "process_open_fds"), "本进程此刻打开的句柄/文件描述符数（进程级；0 表示平台读不出）", stats.openHandleCount);
+        // 与上一格配成一对分母：只有「用了多少」时，fd 泄漏要等撞到上限才看得见
+        appendGauge(out, makeMetricName(metricNamePrefix, "process_max_fds"), "本进程可同时打开的文件描述符软上限（进程级；0 表示平台读不出、不设上限或 Windows 无此口径）",
+                    stats.openHandleLimit);
         appendGauge(out, makeMetricName(metricNamePrefix, "process_start_time_seconds"),
                     "本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启", stats.processStartTimeSeconds);
 

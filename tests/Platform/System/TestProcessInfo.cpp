@@ -19,6 +19,10 @@
 #include <utility>
 #include <vector>
 
+#if !ASYN_PLATFORM_WIN32
+#include <sys/resource.h>
+#endif
+
 namespace AsynGyanis::Platform
 {
     TEST(ProcessInfo, ApplicationDirectoryIsAbsoluteAndExisting)
@@ -264,6 +268,34 @@ namespace AsynGyanis::Platform
         const std::uint64_t closedCount = ProcessInfo::openHandleCount();
         EXPECT_LT(closedCount, holdingCount) << "文件都关掉了，句柄数没落";
     }
+
+#if ASYN_PLATFORM_WIN32
+    /**
+     * @brief 钉住：Windows 没有按进程的句柄配额，上限读数固定为 0（不拿 CRT 流上限冒充）
+     */
+    TEST(ProcessInfo, OpenHandleLimitIsUnavailableOnWindows)
+    {
+        EXPECT_EQ(ProcessInfo::openHandleLimit(), 0U);
+    }
+#else
+    /**
+     * @brief 钉住：fd 上限取自 RLIMIT_NOFILE 的软上限，且当前打开数不超过它
+     */
+    TEST(ProcessInfo, OpenHandleLimitMatchesTheDescriptorSoftLimit)
+    {
+        rlimit descriptorLimit{};
+        ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &descriptorLimit), 0);
+
+        const std::uint64_t expectedLimit = descriptorLimit.rlim_cur == RLIM_INFINITY ? 0U : static_cast<std::uint64_t>(descriptorLimit.rlim_cur);
+        EXPECT_EQ(ProcessInfo::openHandleLimit(), expectedLimit);
+
+        // 两格读数配成一对：有上限时，当前打开数不能超过它
+        if (expectedLimit > 0)
+        {
+            EXPECT_LE(ProcessInfo::openHandleCount(), expectedLimit);
+        }
+    }
+#endif
 
     /**
      * @brief 钉住：启动时刻是进程事实——两次读数相同、落在可信区间里

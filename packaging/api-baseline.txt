@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=8997
+# headers=308 entries=8999
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -4825,6 +4825,7 @@ src/Net/Http/Server/HttpServerStats.h	std::uint64_t executorSaturatedResponseCou
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t maximumConnections
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t maximumConnectionsPerIp
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t openHandleCount
+src/Net/Http/Server/HttpServerStats.h	std::uint64_t openHandleLimit
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t overLimitRejectedConnectionCount
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t processCpuSeconds
 src/Net/Http/Server/HttpServerStats.h	std::uint64_t processStartTimeSeconds
@@ -8931,6 +8932,7 @@ src/Platform/System/ProcessInfo.h	static std::optional<std::string> environmentV
 src/Platform/System/ProcessInfo.h	static std::uint64_t cpuSeconds() noexcept
 src/Platform/System/ProcessInfo.h	static std::uint64_t currentThreadFingerprint() noexcept
 src/Platform/System/ProcessInfo.h	static std::uint64_t openHandleCount() noexcept
+src/Platform/System/ProcessInfo.h	static std::uint64_t openHandleLimit() noexcept
 src/Platform/System/ProcessInfo.h	static std::uint64_t residentMemoryBytes() noexcept
 src/Platform/System/ProcessInfo.h	static std::uint64_t startTimeSeconds() noexcept
 src/Platform/System/ProcessInfo.h	static std::vector<std::pair<std::string, std::string>> environmentVariablesWithPrefix(const std::string &prefix)

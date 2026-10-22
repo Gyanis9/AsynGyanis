@@ -137,6 +137,7 @@ namespace AsynGyanis::Net
             stats.maximumConnectionsPerIp          = 21;
             stats.processCpuSeconds                = 22;
             stats.openHandleCount                  = 23;
+            stats.openHandleLimit                  = 25;
             stats.processStartTimeSeconds          = 24;
             // 具体状态码明细：只放出现过的码，槽位顺序不影响输出（出口按码升序）
             stats.statusCodeCounts[0]   = HttpStatusCodeCount{.statusCode = 429, .count = 3};
@@ -179,9 +180,10 @@ namespace AsynGyanis::Net
         EXPECT_NE(text.find("# TYPE asyn_http_blocking_task_rejected_total counter\nasyn_http_blocking_task_rejected_total 17\n"), std::string::npos);
         // 常驻内存是进程级的瞬时量：名字要跟着 process_* 的既成约定，类型必须是 gauge
         EXPECT_NE(text.find("# TYPE asyn_http_process_resident_memory_bytes gauge\nasyn_http_process_resident_memory_bytes 18\n"), std::string::npos);
-        // process_* 三件套：CPU 计数器、句柄数、启动时刻。名字与类型是采集端契约，三行各删一行都必须有人红
+        // process_* 四件套：CPU 计数器、已用/上限句柄数、启动时刻。名字与类型是采集端契约，四行各删一行都必须有人红
         EXPECT_NE(text.find("# TYPE asyn_http_process_cpu_seconds_total counter\nasyn_http_process_cpu_seconds_total 22\n"), std::string::npos) << text;
         EXPECT_NE(text.find("# TYPE asyn_http_process_open_fds gauge\nasyn_http_process_open_fds 23\n"), std::string::npos) << text;
+        EXPECT_NE(text.find("# TYPE asyn_http_process_max_fds gauge\nasyn_http_process_max_fds 25\n"), std::string::npos) << text;
         EXPECT_NE(text.find("# TYPE asyn_http_process_start_time_seconds gauge\nasyn_http_process_start_time_seconds 24\n"), std::string::npos) << text;
 
         // 日志被丢的规模也是进程级读数，取值不由本夹具决定（别的用例可能丢过），因此钉「三处都在」：

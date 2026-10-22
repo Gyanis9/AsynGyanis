@@ -113,6 +113,15 @@ namespace AsynGyanis::Platform
         static std::uint64_t openHandleCount() noexcept;
 
         /**
+         * @brief 取当前进程可同时打开的文件描述符软上限（RLIMIT_NOFILE）
+         * @details 与 openHandleCount() 配成「用了多少 / 最多多少」，用于在 fd 泄漏撞到上限前预警；
+         *          只读，不修改限额。Windows 没有按进程的句柄配额，_getmaxstdio 只是 CRT 流上限，
+         *          不能当句柄上限，故返回 0。
+         * @return std::uint64_t 软上限；0 表示平台读不出、不设上限（RLIM_INFINITY）或 Windows 无此口径
+         */
+        static std::uint64_t openHandleLimit() noexcept;
+
+        /**
          * @brief 取当前进程的启动时刻（Unix epoch 秒）
          * @details Prometheus 惯例里 process_start_time_seconds 用来识别「进程重启过」——计数器回落时
          *          有它才能判断是新进程从零开始还是真的掉了。Windows 取 GetProcessTimes 的创建时间；
