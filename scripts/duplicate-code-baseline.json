@@ -17,12 +17,13 @@
       "occurrences": 2
     },
     {
-      "hash": "2df4dc5b68073439",
+      "hash": "1c4901c51beeb305",
       "files": [
-        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
-        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
+        "src/Net/Logging/LogExportConfiguration.cpp",
+        "src/Net/Metrics/MetricsExportConfiguration.cpp",
+        "src/Net/Tracing/TracingConfiguration.cpp"
       ],
-      "occurrences": 2
+      "occurrences": 3
     },
     {
       "hash": "2e4ca68b03f40d9b",
@@ -82,14 +83,6 @@
       "hash": "605c894e35aeb7ee",
       "files": [
         "src/Net/Http/Client/HttpClient.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "66112194a439eeca",
-      "files": [
-        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
-        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
       ],
       "occurrences": 2
     },
@@ -190,15 +183,6 @@
       "occurrences": 3
     },
     {
-      "hash": "ad3f1b4cc0a67cfc",
-      "files": [
-        "src/Net/Logging/OtlpLogSink.cpp",
-        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
-        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
-      ],
-      "occurrences": 3
-    },
-    {
       "hash": "ad5165684b2547e4",
       "files": [
         "src/Database/Sqlite/SqliteConnection.cpp"
@@ -216,14 +200,6 @@
       "hash": "b94811dfb80a3bae",
       "files": [
         "src/Core/Coroutine/Task.h"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "be32a4dee6a498fe",
-      "files": [
-        "src/Net/Logging/OtlpLogSink.cpp",
-        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
       ],
       "occurrences": 2
     },
@@ -257,15 +233,6 @@
         "src/Net/Http3/Http3Session.cpp"
       ],
       "occurrences": 2
-    },
-    {
-      "hash": "f49a44bae8b4f773",
-      "files": [
-        "src/Net/Logging/LogExportConfiguration.cpp",
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 3
     },
     {
       "hash": "f99eddc5c37d32f7",

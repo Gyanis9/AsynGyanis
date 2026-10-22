@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -118,6 +119,28 @@ namespace AsynGyanis::Net::HttpConfig
             throw Base::ConfigValidationException(key, "不能是空串");
         }
         return text;
+    }
+
+    /**
+     * @brief 读一个可选的布尔开关
+     * @param node 本层对象
+     * @param key 键名
+     * @param pathPrefix 本层路径，用于把「不是布尔值」的错误点回具体键
+     * @return std::optional<bool> 键存在时给出取值；不存在时为空
+     * @throws Base::ConfigValidationException 键存在但不是布尔值
+     */
+    [[nodiscard]] inline std::optional<bool> readOptionalBoolean(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
+    {
+        if (!node.contains(key))
+        {
+            return std::nullopt;
+        }
+        const Base::ConfigValue &value = node.at(key);
+        if (!value.is_boolean())
+        {
+            throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是 true 或 false");
+        }
+        return value.get<bool>();
     }
 
     [[nodiscard]] inline const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)

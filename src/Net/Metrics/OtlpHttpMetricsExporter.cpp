@@ -20,9 +20,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        using Telemetry::hasUnsafeHeaderByte;
-        using Telemetry::isReservedHeaderName;
-
         /// 采集端响应的正文上限：OTLP 的回复只可能是一份很小的 partial_success JSON
         constexpr std::size_t kMaximumOtlpResponseBodyBytes = 64U * 1024U;
 
@@ -64,23 +61,7 @@ namespace AsynGyanis::Net
         {
             rejectConfiguration("单次请求时限与导出周期都必须大于 0，否则导出会没有终点、周期会永远空转");
         }
-        for (const HttpClientHeaderField &header: m_configuration.extraHeaders)
-        {
-            if (header.first.empty())
-            {
-                rejectConfiguration("附加头部的名字为空：请求行会被撕裂。请给一个非空的头部名");
-            }
-            if (hasUnsafeHeaderByte(header.first) || hasUnsafeHeaderByte(header.second))
-            {
-                rejectConfiguration("附加头部「" + header.first + "」的名字或值里有 CR、LF 或 NUL：那等于在请求里塞进额外一行");
-            }
-            if (isReservedHeaderName(header.first))
-            {
-                rejectConfiguration("附加头部占用了「" + header.first +
-                                    "」：这一项由本出口自己写"
-                                    "（正文媒体类型固定是 application/json），再给一份就会出现两条同名头部");
-            }
-        }
+        Telemetry::validateOtlpExtraHeaders(m_configuration.extraHeaders, "OTLP metrics 出口无法启动：");
 
         HttpOutboundConnectionPool::Config poolConfig;
         poolConfig.idleTimeout              = kOutboundIdleTimeout;
@@ -198,32 +179,10 @@ namespace AsynGyanis::Net
             request.body        = body;
             request.headers     = m_configuration.extraHeaders;
 
-            std::unique_ptr<HttpClientResponse> response;
-            std::string                         failureReason;
-            try
-            {
-                response = co_await client.send(m_configuration.endpoint, request, m_configuration.requestTimeout);
-            } catch (const std::exception &exception)
-            {
-                // 出站这一段的异常不能让导出协程带出去：那会顺着 run() 打断整条循环线程。
-                // 这一次导出按失败计，原因留给 lastFailureReason()
-                failureReason = "OTLP metrics 出口：发 POST 时抛出：" + std::string{exception.what()};
-            }
+            const Telemetry::OtlpHttpExportAttempt attempt =
+                    co_await Telemetry::sendOtlpHttpRequest(client, m_configuration.endpoint, request, m_configuration.requestTimeout, "OTLP metrics 出口");
 
-            if (failureReason.empty())
-            {
-                // 三段判定写成显式分支：空串在这里的含义是「送达到且 2xx」，与「没拿到响应」
-                // 与「拿到非 2xx」三种结果都要能被读者一眼分开
-                if (response == nullptr)
-                {
-                    failureReason = "OTLP metrics 出口：向 " + m_configuration.endpoint + " 发 POST 没能拿到响应（连不上、超时或对端关闭）";
-                } else if (response->statusCode < 200 || response->statusCode >= 300)
-                {
-                    failureReason = "OTLP metrics 出口：采集端回了状态码 " + std::to_string(response->statusCode);
-                }
-            }
-
-            if (failureReason.empty())
+            if (attempt.failureReason.empty())
             {
                 static_cast<void>(m_deliveredExportCount.fetch_add(1, std::memory_order_relaxed));
             } else
@@ -231,7 +190,7 @@ namespace AsynGyanis::Net
                 static_cast<void>(m_failedExportCount.fetch_add(1, std::memory_order_relaxed));
                 {
                     const std::lock_guard reasonLock(m_reasonMutex);
-                    m_lastFailureReason = failureReason;
+                    m_lastFailureReason = attempt.failureReason;
                 }
                 // 不做额外退避：快照语义下每个周期本来就发最新全量值，下个周期就是天然的重试——
                 // 照对端说的等下去只会让「指标明明在变」晚到一个没有意义的时刻（与链路出口的批语义刻意不同）

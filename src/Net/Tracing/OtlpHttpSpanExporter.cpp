@@ -18,9 +18,6 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        using Telemetry::hasUnsafeHeaderByte;
-        using Telemetry::isReservedHeaderName;
-
         /// 采集端响应的正文上限：OTLP 的回复只可能是一份很小的 partial_success JSON
         constexpr std::size_t kMaximumOtlpResponseBodyBytes = 64U * 1024U;
 
@@ -90,23 +87,7 @@ namespace AsynGyanis::Net
         {
             rejectConfiguration("单次请求时限与收尾期限都必须大于 0，否则发送会没有终点、收尾会永远等下去");
         }
-        for (const HttpClientHeaderField &header: m_configuration.extraHeaders)
-        {
-            if (header.first.empty())
-            {
-                rejectConfiguration("附加头部的名字为空：请求行会被撕裂。请给一个非空的头部名");
-            }
-            if (hasUnsafeHeaderByte(header.first) || hasUnsafeHeaderByte(header.second))
-            {
-                rejectConfiguration("附加头部「" + header.first + "」的名字或值里有 CR、LF 或 NUL：那等于在请求里塞进额外一行");
-            }
-            if (isReservedHeaderName(header.first))
-            {
-                rejectConfiguration("附加头部占用了「" + header.first +
-                                    "」：这一项由本出口自己写"
-                                    "（正文媒体类型固定是 application/json），再给一份就会出现两条同名头部");
-            }
-        }
+        Telemetry::validateOtlpExtraHeaders(m_configuration.extraHeaders, "OTLP 出口无法启动：");
 
         HttpOutboundConnectionPool::Config poolConfig;
         poolConfig.idleTimeout              = kOutboundIdleTimeout;
@@ -250,32 +231,10 @@ namespace AsynGyanis::Net
                 request.body    = batch.body;
                 request.headers = m_configuration.extraHeaders;
 
-                std::unique_ptr<HttpClientResponse> response;
-                std::string                         failureReason;
-                try
-                {
-                    response = co_await client.send(m_configuration.endpoint, request, m_configuration.requestTimeout);
-                } catch (const std::exception &exception)
-                {
-                    // 出站这一段的异常不能让发送协程带出去：那会顺着 run() 打断整条循环线程。
-                    // 这一批按没送达计，原因留给 lastFailureReason()
-                    failureReason = "OTLP 出口：发 POST 时抛出：" + std::string{exception.what()};
-                }
+                const Telemetry::OtlpHttpExportAttempt attempt =
+                        co_await Telemetry::sendOtlpHttpRequest(client, m_configuration.endpoint, request, m_configuration.requestTimeout, "OTLP 出口");
 
-                if (failureReason.empty())
-                {
-                    // 三段判定写成显式分支：空串在这里的含义是「送达到且 2xx」，与「没拿到响应」
-                    // 与「拿到非 2xx」三种结果都要能被读者一眼分开
-                    if (response == nullptr)
-                    {
-                        failureReason = "OTLP 出口：向 " + m_configuration.endpoint + " 发 POST 没能拿到响应（连不上、超时或对端关闭）";
-                    } else if (response->statusCode < 200 || response->statusCode >= 300)
-                    {
-                        failureReason = "OTLP 出口：采集端回了状态码 " + std::to_string(response->statusCode);
-                    }
-                }
-
-                if (failureReason.empty())
+                if (attempt.failureReason.empty())
                 {
                     static_cast<void>(m_deliveredBatchCount.fetch_add(1, std::memory_order_relaxed));
                 } else
@@ -283,14 +242,14 @@ namespace AsynGyanis::Net
                     static_cast<void>(m_failedBatchCount.fetch_add(1, std::memory_order_relaxed));
                     {
                         const std::lock_guard reasonLock(m_reasonMutex);
-                        m_lastFailureReason = failureReason;
+                        m_lastFailureReason = attempt.failureReason;
                     }
 
                     // 失败就停在这一次，剩下的批次留在队列里：一次网络故障后面跟着的原本是整个队列
                     // 对着正在拒绝的采集端连环撞光，而撞光的每一批都只能按失败计——它们本可以在对端
                     // 缓过来之后送达。退避时长见 retryPauseFor()；收尾期间照同一节奏走，整段等待仍被
                     // shutdownTimeout 兜住，不会因此把进程退出挡在门外
-                    co_await backoffTimer.waitFor(retryPauseFor(response.get()));
+                    co_await backoffTimer.waitFor(retryPauseFor(attempt.response.get()));
                     break;
                 }
             }

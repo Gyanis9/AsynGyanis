@@ -22,6 +22,7 @@ namespace AsynGyanis::Net
     {
         using HttpConfig::findOptionalObject;
         using HttpConfig::joinKeys;
+        using HttpConfig::readOptionalBoolean;
         using HttpConfig::rejectUnknownKeys;
         using HttpConfig::requireNonEmptyString;
         using HttpConfig::requirePositiveInteger;
@@ -66,15 +67,7 @@ namespace AsynGyanis::Net
         const std::string sectionPath(kMetricsExportConfigSection);
         rejectUnknownKeys(section, kMetricsKeys.data(), kMetricsKeys.size(), sectionPath);
 
-        if (section.contains("enabled"))
-        {
-            const Base::ConfigValue &value = section.at("enabled");
-            if (!value.is_boolean())
-            {
-                throw Base::ConfigValidationException(sectionPath + ".enabled", "必须是 true 或 false");
-            }
-            configuration.enabled = value.get<bool>();
-        }
+        configuration.enabled = readOptionalBoolean(section, "enabled", sectionPath).value_or(configuration.enabled);
         // 关着的时候其余取值一概不看：开了才要求服务名与地址，关掉却还在校验地址，等于让一段用不上的配置挡住启动
         if (!configuration.enabled)
         {

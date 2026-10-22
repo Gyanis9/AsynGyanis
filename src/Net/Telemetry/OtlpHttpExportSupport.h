@@ -10,12 +10,16 @@
 #pragma once
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpClient.h"
 
 #include <algorithm>
+#include <chrono>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace AsynGyanis::Net::Telemetry
 {
@@ -90,5 +94,71 @@ namespace AsynGyanis::Net::Telemetry
             throw Base::InvalidArgumentException(std::string(rejectionPrefix) + "采集端地址「" + endpoint + "」不是一枚可用的 http(s) URL：" + error.what() +
                                                  "。请写成 http(s)://host:port" + std::string(examplePath));
         }
+    }
+
+    /**
+     * @brief 校验附加头部：名字非空、不含撕裂请求行的字节、不占用出口自己写的名字
+     * @param headers 配置里的附加头部
+     * @param rejectionPrefix 该出口的异常前缀（如「OTLP 日志出口无法启动：」）
+     * @throws Base::InvalidArgumentException 任一条不成立，文案点回出问题的头部名
+     */
+    inline void validateOtlpExtraHeaders(const std::vector<HttpClientHeaderField> &headers, const std::string_view rejectionPrefix)
+    {
+        const auto reject = [rejectionPrefix](const std::string &reason) { throw Base::InvalidArgumentException(std::string(rejectionPrefix) + reason); };
+        for (const HttpClientHeaderField &header: headers)
+        {
+            if (header.first.empty())
+            {
+                reject("附加头部的名字为空：请求行会被撕裂。请给一个非空的头部名");
+            }
+            if (hasUnsafeHeaderByte(header.first) || hasUnsafeHeaderByte(header.second))
+            {
+                reject("附加头部「" + header.first + "」的名字或值里有 CR、LF 或 NUL：那等于在请求里塞进额外一行");
+            }
+            if (isReservedHeaderName(header.first))
+            {
+                reject("附加头部占用了「" + header.first + "」：这一项由本出口自己写（正文媒体类型固定是 application/json），再给一份就会出现两条同名头部");
+            }
+        }
+    }
+
+    /// 一次导出投递的结果：失败原因非空即未送达；成功时 response 非空且状态码为 2xx
+    struct OtlpHttpExportAttempt
+    {
+        std::unique_ptr<HttpClientResponse> response;
+        std::string                         failureReason;
+    };
+
+    /**
+     * @brief 向采集端发一次 OTLP 请求，把「抛异常 / 没拿到响应 / 非 2xx」折成同一条失败原因
+     * @details 出站异常不能带出导出协程：那会顺着 run() 打断整条循环线程。这里就地折成原因文本，
+     *          三个出口的程序计数与退避策略仍各留各的。
+     * @param client 出站客户端
+     * @param endpoint 采集端地址，同时用于失败文案
+     * @param request 装配好的请求；正文视图须活到本次 co_await 返回
+     * @param requestTimeout 单次请求时限
+     * @param failurePrefix 失败文案前缀（如「OTLP metrics 出口」）
+     * @return Core::Task<OtlpHttpExportAttempt> 投递结果
+     */
+    inline Core::Task<OtlpHttpExportAttempt> sendOtlpHttpRequest(HttpClient &client, const std::string &endpoint, const HttpClientRequest &request,
+                                                                 const std::chrono::milliseconds requestTimeout, const std::string_view failurePrefix)
+    {
+        OtlpHttpExportAttempt attempt;
+        try
+        {
+            attempt.response = co_await client.send(endpoint, request, requestTimeout);
+        } catch (const std::exception &exception)
+        {
+            attempt.failureReason = std::string(failurePrefix) + "：发 POST 时抛出：" + std::string{exception.what()};
+            co_return attempt;
+        }
+        if (attempt.response == nullptr)
+        {
+            attempt.failureReason = std::string(failurePrefix) + "：向 " + endpoint + " 发 POST 没能拿到响应（连不上、超时或对端关闭）";
+        } else if (attempt.response->statusCode < 200 || attempt.response->statusCode >= 300)
+        {
+            attempt.failureReason = std::string(failurePrefix) + "：采集端回了状态码 " + std::to_string(attempt.response->statusCode);
+        }
+        co_return attempt;
     }
 } // namespace AsynGyanis::Net::Telemetry
