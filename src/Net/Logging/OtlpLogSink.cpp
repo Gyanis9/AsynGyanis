@@ -1,5 +1,6 @@
 #include "Net/Logging/OtlpLogSink.h"
 
+#include "Net/Telemetry/OtlpHttpExportSupport.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Log/LogContext.h"
 #include "Core/EventLoop/Timer.h"
@@ -14,6 +15,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using Telemetry::hasUnsafeHeaderByte;
+        using Telemetry::isReservedHeaderName;
+
         /// 一次 POST 最多收这么多响应字节：OTLP 的 2xx 正文是空的，留一点余量就够
         constexpr std::size_t kMaximumOtlpResponseBodyBytes = 64U * 1024U;
 
@@ -23,8 +27,6 @@ namespace AsynGyanis::Net
         /// 退出等待的切片：停止标记最多这么久被看到一次
         constexpr std::chrono::milliseconds kStopPollInterval{100};
 
-        /// 本出口自己会写的头部（大小写无关）
-        constexpr std::string_view kReservedHeaderNames[] = {"host", "content-length", "connection", "content-type"};
 
         /// @brief 抛出一条配置不成立的中文原因
         [[noreturn]] void rejectConfiguration(const std::string &reason)
@@ -32,44 +34,11 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("OTLP 日志出口无法启动：" + reason);
         }
 
-        /// @brief 两个头部名忽略大小写是否相同
-        bool isSameHeaderNameIgnoringCase(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            const auto fold = [](const char character) { return character >= 'A' && character <= 'Z' ? static_cast<char>(character + 0x20) : character; };
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                if (fold(left[index]) != fold(right[index]))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
 
-        /// @brief 头部名或值里有没有会撕裂请求行的字节
-        bool hasUnsafeHeaderByte(const std::string_view text)
-        {
-            return std::ranges::any_of(text, [](const char character) { return character == '\r' || character == '\n' || character == '\0'; });
-        }
-
-        /// @brief 把采集端地址拆成 ParsedUrl；空与畸形在构造期拒
+        /// @brief 把采集端地址拆成 ParsedUrl，错误前缀与本出口的配置字段在这里定死
         ParsedUrl makeTarget(const std::string &endpoint)
         {
-            if (endpoint.empty())
-            {
-                rejectConfiguration("采集端地址为空。请在 log_export.otlp.endpoint 里给出形如 http(s)://collector:4318/v1/logs 的地址");
-            }
-            try
-            {
-                return parseUrl(endpoint);
-            } catch (const Base::InvalidArgumentException &error)
-            {
-                rejectConfiguration("采集端地址「" + endpoint + "」不是一枚可用的 http(s) URL：" + error.what() + "。请写成 http(s)://host:port/v1/logs");
-            }
+            return Telemetry::makeOtlpTarget(endpoint, "OTLP 日志出口无法启动：", "log_export.otlp.endpoint", "/v1/logs");
         }
     } // namespace
 
@@ -96,7 +65,7 @@ namespace AsynGyanis::Net
             {
                 rejectConfiguration("附加头部「" + header.first + "」的名字或值里有 CR、LF 或 NUL：那等于在请求里塞进额外一行");
             }
-            if (std::ranges::any_of(kReservedHeaderNames, [&header](const std::string_view reserved) { return isSameHeaderNameIgnoringCase(reserved, header.first); }))
+            if (isReservedHeaderName(header.first))
             {
                 rejectConfiguration("附加头部占用了「" + header.first + "」：这一项由本出口自己写（正文媒体类型固定是 application/json）");
             }

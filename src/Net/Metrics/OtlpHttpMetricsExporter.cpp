@@ -1,5 +1,6 @@
 #include "Net/Metrics/OtlpHttpMetricsExporter.h"
 
+#include "Net/Telemetry/OtlpHttpExportSupport.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
@@ -19,14 +20,15 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using Telemetry::hasUnsafeHeaderByte;
+        using Telemetry::isReservedHeaderName;
+
         /// 采集端响应的正文上限：OTLP 的回复只可能是一份很小的 partial_success JSON
         constexpr std::size_t kMaximumOtlpResponseBodyBytes = 64U * 1024U;
 
         /// 那条到采集端的连接空闲多久就收掉：留着一条长期不用的连接不如让对端说了算
         constexpr std::chrono::milliseconds kOutboundIdleTimeout{30000};
 
-        /// 本出口自己占用的头部名：调用方再给一份就会出现两条同名头部
-        constexpr std::string_view kReservedHeaderNames[] = {"host", "content-length", "connection", "content-type"};
 
         /// 停止察觉切片：叫醒导出协程的唯一办法是让它自己醒来，而 shutdown() 只落一个标志——
         /// 整段睡下去时收尾要等到下一拍。切片只改醒来频次，导出节拍仍由 exportInterval 决定
@@ -38,58 +40,11 @@ namespace AsynGyanis::Net
             throw Base::InvalidArgumentException("OTLP metrics 出口无法启动：" + reason);
         }
 
-        /**
-         * @brief 把配置里的采集端地址拆成 ParsedUrl，空与畸形都在此刻拒掉
-         * @details 拆 URL 的活交给 parseUrl，但报错要落到本出口的字段上：直接把它那句
-         *          「URL 里没有主机部分」抛出去，调用方看不出自己填错的是哪个配置项。
-         * @param endpoint 配置给出的地址
-         * @return ParsedUrl 拆好的目标
-         * @throws Base::InvalidArgumentException 地址为空，或 parseUrl 判它不成形
-         */
+
+        /// @brief 把采集端地址拆成 ParsedUrl，错误前缀与本出口的配置字段在这里定死
         ParsedUrl makeTarget(const std::string &endpoint)
         {
-            if (endpoint.empty())
-            {
-                rejectConfiguration("采集端地址为空。请在 OtlpHttpMetricsExporter::Configuration::endpoint 里给出"
-                                    "形如 http(s)://collector:4318/v1/metrics 的地址");
-            }
-            try
-            {
-                return parseUrl(endpoint);
-            } catch (const Base::InvalidArgumentException &error)
-            {
-                rejectConfiguration("采集端地址「" + endpoint + "」不是一枚可用的 http(s) URL：" + error.what() + "。请写成 http(s)://host:port/v1/metrics");
-            }
-        }
-
-        /// @brief 两个头部名忽略大小写是否相同（头部名按 ASCII 折，不走 locale）
-        bool isSameHeaderNameIgnoringCase(const std::string_view left, const std::string_view right)
-        {
-            if (left.size() != right.size())
-            {
-                return false;
-            }
-            const auto foldCharacter = [](const char character) { return character >= 'A' && character <= 'Z' ? static_cast<char>(character + 0x20) : character; };
-            for (std::size_t index = 0; index < left.size(); ++index)
-            {
-                if (foldCharacter(left[index]) != foldCharacter(right[index]))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /// @brief 头部名是否属于「本出口自己会写」的那几个（大小写无关）
-        bool isReservedHeaderName(const std::string_view name)
-        {
-            return std::ranges::any_of(kReservedHeaderNames, [&](const std::string_view reserved) { return isSameHeaderNameIgnoringCase(reserved, name); });
-        }
-
-        /// @brief 头部名或值里有没有会撕裂请求行的字节（CR、LF 与 NUL）
-        bool hasUnsafeHeaderByte(const std::string_view text)
-        {
-            return std::ranges::any_of(text, [](const char character) { return character == '\r' || character == '\n' || character == '\0'; });
+            return Telemetry::makeOtlpTarget(endpoint, "OTLP metrics 出口无法启动：", "OtlpHttpMetricsExporter::Configuration::endpoint", "/v1/metrics");
         }
     } // namespace
 
