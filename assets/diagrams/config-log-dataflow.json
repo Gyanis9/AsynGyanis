@@ -14,7 +14,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "d60099b7c81ba5a57ce0d8e171e4200682c146d0"
+      "revision": "00293d449052370b9eba3e0a2e13ada399de3746"
     },
     "views": [
       {
@@ -141,7 +141,7 @@
       "sources": [
         {
           "path": "src/Net/Http/HttpSession.h",
-          "line": 1124,
+          "line": 1120,
           "label": "h1 每响应计数"
         }
       ]
@@ -369,7 +369,7 @@
         },
         {
           "path": "src/Net/Http/HttpServer.cpp",
-          "line": 1621,
+          "line": 1627,
           "label": "并入准入拒绝数"
         }
       ]
@@ -404,7 +404,7 @@
       "sources": [
         {
           "path": "src/Net/Http/HttpServer.cpp",
-          "line": 1628,
+          "line": 1634,
           "label": "enableMetricsEndpoint"
         }
       ]

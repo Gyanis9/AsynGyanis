@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "d60099b7c81ba5a57ce0d8e171e4200682c146d0"
+      "revision": "00293d449052370b9eba3e0a2e13ada399de3746"
     },
     "views": [
       {
@@ -73,8 +73,8 @@
       "label": "ConnectionPool",
       "sublabel": "空闲栈 LIFO",
       "sources": [
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 158, "label": "acquire 三段" },
-        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 205, "label": "acquireTimeout" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 190, "label": "acquire 三段" },
+        { "path": "src/Database/Pool/ConnectionPool.cpp", "line": 217, "label": "acquireTimeout" },
         { "path": "src/Database/Pool/PoolConfig.h", "line": 43, "end_line": 45, "label": "32 / 5000ms / 五个 0" }
       ]
     },

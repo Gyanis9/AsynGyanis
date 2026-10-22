@@ -12,7 +12,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "d60099b7c81ba5a57ce0d8e171e4200682c146d0"
+      "revision": "00293d449052370b9eba3e0a2e13ada399de3746"
     },
     "views": [
       {
@@ -76,8 +76,8 @@
       "label": "HttpSession",
       "sublabel": "事务循环",
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 492, "label": "httpKeepAliveLoop" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 778, "label": "readIntoWindow" },
+        { "path": "src/Net/Http/HttpSession.h", "line": 558, "label": "httpKeepAliveLoop" },
+        { "path": "src/Net/Http/HttpSession.h", "line": 820, "label": "readIntoWindow" },
         { "path": "src/Net/Http/HttpSession.h", "line": 1400, "label": "route" }
       ]
     },
@@ -87,8 +87,8 @@
       "label": "AsyncSocket",
       "sublabel": "向量写与游标",
       "sources": [
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 329, "label": "asyncSendVectored" },
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 374, "label": "等可写" }
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 303, "label": "asyncSendVectored" },
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 348, "label": "等可写" }
       ]
     },
     {
@@ -98,7 +98,7 @@
       "sublabel": "手写增量",
       "sources": [
         { "path": "src/Net/Http/HttpParser.cpp", "line": 54, "label": "parse" },
-        { "path": "src/Net/Http/HttpSession.h", "line": 1303, "label": "Done 相位取请求" }
+        { "path": "src/Net/Http/HttpSession.h", "line": 1387, "label": "Done 相位取请求" }
       ]
     },
     {
