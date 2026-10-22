@@ -167,7 +167,7 @@
       "tag": "覆盖率 ≥60%",
       "sources": [
         { "path": ".github/workflows/linux-ci.yml", "line": 496, "label": "TSan 另起 build/tsan" },
-        { "path": ".github/workflows/linux-ci.yml", "line": 765, "label": "模糊各档每档 90 秒" },
+        { "path": ".github/workflows/linux-ci.yml", "line": 803, "end_line": 804, "label": "模糊各档每档 90 秒" },
         { "path": "scripts/check-coverage-gate.py", "line": 46, "label": "覆盖率总行下限的取值处" }
       ]
     },
@@ -279,7 +279,7 @@
         "build-and-test：platform-base-core / net / database 三分片并行，fail-fast: false，一个红不掩盖其它（linux-ci.yml:34-49）",
         "protocol-conformance：h2spec v2.6.0 明文 + TLS + --strict、WS 互操作探针、Autobahn 判 behavior=FAILED 必须为 0",
         "http3-acceptance：h3_cross_check、quic_cross_check、quic_outbound_cross_check（Release 构建）",
-        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:765 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
+        "thread-sanitizer 另起 build/tsan 只跑并发用例集；protocol-fuzz 每目标 90 秒（linux-ci.yml:803-804 把 90 传给 scripts/fuzz-net.sh）且 -error_exitcode=1",
         "formatting 与 coverage 是硬失败，clang-tidy 只报告；mysql-driver-compile 只编不连（linux-ci.yml:323），io-uring-compile 编 + 跑（:373），acme-pebble 拉真机构镜像做跨实现验收（:1018）"
       ]
     },

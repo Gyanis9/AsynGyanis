@@ -211,6 +211,14 @@ def test_comment_budget(root: Path) -> None:
     result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget 编码行号限制", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
 
+    write(cmake_root / "CMakeLists.txt", "# encoding=utf-8\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget 首行散文 encoding", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(cmake_root / "CMakeLists.txt", "# coding: utf-8\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget 首行 coding 声明", result, 0, "COMMENT_BUDGET_GATE=OK")
+
     write(cmake_root / "CMakeLists.txt", "#[[\nline one\nline two\nline three\n]]\n")
     result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget CMake 三行块注释", result, 0, "COMMENT_BUDGET_GATE=OK")
@@ -218,6 +226,19 @@ def test_comment_budget(root: Path) -> None:
     write(cmake_root / "CMakeLists.txt", "#[[\nline one\nline two\nline three\nline four\n]]\n")
     result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget CMake 四行块注释", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(cmake_root / "CMakeLists.txt", "#[[ text\nline one\nline two\nline three\n]]\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget CMake 开头行算正文", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(cmake_root / "CMakeLists.txt", "#[[ text\nline one\nline two\n]]\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget CMake 开头行加两行", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    long_bracket_url = "https://example.com/" + "segment/" * 12
+    write(cmake_root / "CMakeLists.txt", "#[[\n" + long_bracket_url + "\nline two\nline three\n]]\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget CMake 块内单 token", result, 0, "COMMENT_BUDGET_GATE=OK")
 
     doc_root = root / "docstrings"
     long_doc = '"""' + "\n".join(f"line {index}" for index in range(11)) + '"""\n'
@@ -264,9 +285,13 @@ def test_comment_budget(root: Path) -> None:
     result = run_script("check-comment-budget.py", shell_root)
     expect("comment-budget shell 引号内双尖括号三行", result, 0, "COMMENT_BUDGET_GATE=OK")
 
-    write(shell_root / "quoted.sh", "#!/usr/bin/env bash\necho $((a << 2))\n# one\n# two\n# three\n")
+    write(shell_root / "shift.sh", "#!/usr/bin/env bash\necho $((a << b))\n# one\n# two\n# three\n# four\n")
     result = run_script("check-comment-budget.py", shell_root)
-    expect("comment-budget shell 算术移位", result, 0, "COMMENT_BUDGET_GATE=OK")
+    expect("comment-budget shell 算术移位不吞后续块", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(shell_root / "shift.sh", "#!/usr/bin/env bash\necho $((a << b))\n# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 算术移位三行", result, 0, "COMMENT_BUDGET_GATE=OK")
 
     long_url = "https://example.com/" + "segment/" * 12
     write(
@@ -307,6 +332,10 @@ def test_comment_budget(root: Path) -> None:
     write(python_root / "coding.py", "# -*- coding: utf-8 -*-\n# one\n# two\n# three\n")
     result = run_script("check-comment-budget.py", python_root)
     expect("comment-budget Python 编码声明", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(python_root / "prose.py", "# encoding=utf-8\n# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", python_root)
+    expect("comment-budget Python 散文 encoding", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
 
     result = run_script("check-comment-budget.py", root / "missing")
     expect("comment-budget 根不存在", result, 2, "COMMENT_BUDGET_GATE=FAIL", "bad-root")

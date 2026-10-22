@@ -54,7 +54,11 @@ PREPROCESSOR_PATTERN = re.compile(r"^[ \t]*#[^\n]*\n", re.MULTILINE)
 def trackedPublicHeaders():
     """按安装规则现读公开头清单：tracked 的 src/**/*.h 减去 install 明确排除的那几个名字。"""
 
-    installText = INSTALL_FILE.read_text(encoding="utf-8")
+    try:
+        installText = INSTALL_FILE.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError("读不到 cmake/AsynGyanisInstall.cmake：安装规则是公开面覆盖范围的唯一真源，"
+                           "文件缺失或被挪走时这道门不能退化成「没有差异」") from error
     blockMatch = INSTALL_BLOCK_PATTERN.search(installText)
     if blockMatch is None:
         raise RuntimeError("cmake/AsynGyanisInstall.cmake 里找不到 "

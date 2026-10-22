@@ -29,7 +29,7 @@ OTHER_DOCSTRING_MAX_LINES = 4
 DIRECTIVE_PATTERN = re.compile(
     r"^#\s*(?:(?:shellcheck|noqa|clang-format|cmake-format)\b|(?:type|pragma|pylint|mypy|isort|fmt):)"
 )
-CODING_PATTERN = re.compile(r"coding[:=]\s*[-\w.]+")
+CODING_PATTERN = re.compile(r"(?<![A-Za-z0-9_])coding[:=]\s*[-\w.]+")
 HEREDOC_WORD_PATTERN = re.compile(r"-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 for _stream in (sys.stdout, sys.stderr):
@@ -51,11 +51,14 @@ def is_exempt_comment(comment_text: str, line_number: int) -> bool:
     return bool(DIRECTIVE_PATTERN.match(stripped))
 
 
-def is_single_token_reference(comment_text: str) -> bool:
-    body = comment_text.lstrip()[1:].strip()
+def is_single_token_body(body: str) -> bool:
     if not body or any(character.isspace() for character in body):
         return False
     return "://" in body or "/" in body or "\\" in body
+
+
+def is_single_token_reference(comment_text: str) -> bool:
+    return is_single_token_body(comment_text.lstrip()[1:].strip())
 
 
 def iter_source_files(root: Path) -> list[Path]:
@@ -246,7 +249,7 @@ def check_plain(path: Path, root: Path, language: str) -> list[str]:
             run += 1
             if run > MAX_COMMENT_BLOCK_LINES:
                 errors.append(f"{relative}:{line_number}: block: 连续注释超过 {MAX_COMMENT_BLOCK_LINES} 行")
-            if display_width(line) > MAX_DISPLAY_COLUMNS:
+            if display_width(line) > MAX_DISPLAY_COLUMNS and not is_single_token_body(line.strip()):
                 errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
             if "]]" in line:
                 bracket_comment = False
@@ -268,9 +271,12 @@ def check_plain(path: Path, root: Path, language: str) -> list[str]:
         comment_text = line[comment_index:]
         comment_only = line[:comment_index].strip() == ""
         if language == "cmake" and comment_text.startswith("#[[") and "]]" not in comment_text:
+            # 开头的 #[[ 只是界符，同一行界符之后的文字是正文：光秃秃的 #[[ 不占额度，带字的要算一行
             bracket_comment = True
-            run = 0
-            if display_width(comment_text) > MAX_DISPLAY_COLUMNS:
+            run = 0 if comment_text.strip() == "#[[" else 1
+            if run > MAX_COMMENT_BLOCK_LINES:
+                errors.append(f"{relative}:{line_number}: block: 连续注释超过 {MAX_COMMENT_BLOCK_LINES} 行")
+            if display_width(comment_text) > MAX_DISPLAY_COLUMNS and not is_single_token_reference(comment_text):
                 errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
             continue
         if not comment_only:
