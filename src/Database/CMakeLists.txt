@@ -21,7 +21,7 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database SQLit
 # DATABASE_HAS_<名>）；cmakePackage 是 find_package 的名字（也是消费方要 find_dependency
 # 的名字）；cmakeTarget 是它导出的目标；libraryName 是文案里点名的客户端库（用户要去装的
 # 那个包名，PostgreSQL 上它与 find_package 名不同：包叫 libpq、配置叫 PostgreSQL）。
-# 清单经 GLOBAL 属性给根 CMakeLists 的能力清单段遍历——加驱动而没同步
+# 清单经 GLOBAL 属性给 cmake/AsynGyanisInstall.cmake 的能力清单段遍历——加驱动而没同步
 # cmake/AsynGyanisFeatures.h.in 的宏，配置期当场拒绝而不是静默给 0。
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseDrivers "")
 function(asyn_configure_database_driver driverName cmakePackage cmakeTarget libraryName displayName)

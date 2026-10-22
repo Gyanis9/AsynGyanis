@@ -4,7 +4,7 @@ include(CMakeFindDependencyMacro)
 
 # 五个模块都是静态库，接口里留着外部依赖的目标名（OpenSSL::SSL、ZLIB::ZLIB 等），
 # 这里带出被请求组件及其传递依赖组件真正需要的那些：只要 Base 的消费方不必去找 OpenSSL。
-# 每个组件的外部依赖清单由各模块 configure 期按组件登记（见顶层 CMakeLists 的组件依赖图），
+# 每个组件的外部依赖清单由各模块 configure 期按组件登记（见 cmake/AsynGyanisInstall.cmake 的组件依赖图），
 # 因此这里不会出现「清单里漏了某个模块的依赖」这类漂移（例如 Net 私有链接的 zlib）。
 @ASYN_CONFIG_COMPONENT_DEPENDENCIES@
 

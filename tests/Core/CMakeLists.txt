@@ -98,5 +98,5 @@ include(GoogleTest)
 gtest_discover_tests(TestCore
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
-# ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
+# ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）
 asyn_copy_sanitizer_runtime(TestCore)

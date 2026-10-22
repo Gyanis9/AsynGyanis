@@ -23,7 +23,7 @@ function(asyn_add_sample sample_name)
                 ${CMAKE_SOURCE_DIR}/src
         )
         target_compile_features(${sample_name} PRIVATE cxx_std_23)
-        # ASan 运行库拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
+        # ASan 运行库拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）
         asyn_copy_sanitizer_runtime(${sample_name})
 endfunction()
 

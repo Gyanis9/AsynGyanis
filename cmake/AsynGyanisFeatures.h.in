@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 由 CMake 在配置期生成（真源见 cmake/AsynGyanisFeatures.h.in 与根 CMakeLists 的
+ * @details 由 CMake 在配置期生成（真源见 cmake/AsynGyanisFeatures.h.in 与 cmake/AsynGyanisInstall.cmake 的
  *          configure_file），随包安装到 include 下。缺了它，使用方只能靠「链接得过」猜库体
  *          是怎么编的：分配器换没换、带不带 sanitizer、是静态还是共享形态，这些在构建侧都是
  *          开关，而开关的取值过去只活在构建目录里。

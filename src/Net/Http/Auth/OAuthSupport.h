@@ -6,7 +6,7 @@
  * @version 1.0.0
  * @copyright Copyright (c) . All rights reserved.
  *
- * @details 这是实现侧的头（在根 CMakeLists 的安装排除面里，不随包发给使用方）：
+ * @details 这是实现侧的头（在 cmake/AsynGyanisInstall.cmake 的安装排除面里，不随包发给使用方）：
  *          只有 OAuth 家族各件自己的 `.cpp` 与直测用例包含它，不构成对外契约。
  *          函数声明为 inline 是为了不额外增加编译单元（与驱动内部的转换件同一做法）。
  */

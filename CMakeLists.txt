@@ -10,12 +10,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 事件循环只有两个后端：Linux 的 epoll（src/Core/EventLoop/Epoll.cpp）与 Windows 的完成端口
-# （src/Core/EventLoop/Iocp.cpp；wepoll.h 只提供 epoll_event 与事件位定义，实现已删除）。
-# 其它系统在 Core 这一层就编译不过，而报出来的会是几百行模板错误——与其让人去猜，不如在这里
-# 一句话说清「缺的是 kqueue 后端」以及补它的落点。docs/入门与构建.md 的「环境要求」也写了这一点，两处一致。
-# 这是既有决定而不是待办的缺口：目标平台就是 Linux 与 Windows，下面这段报错是「拒绝文案」本身，
-# 不是「还没做」的标记——别把它当成 TODO 去补 kqueue（macOS/BSD 也不在支持面上）。
+# 目标平台只有 Linux 与 Windows：事件后端是 epoll 与完成端口，没有 kqueue。
+# 这是拒绝文案而不是待办：不要为 macOS/BSD 补后端。
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR
             "AsynGyanis 目前只支持 Linux 与 Windows：事件循环的实现是 epoll 与完成端口，"
@@ -23,217 +19,40 @@ if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "需要新增一个与 Core/EventLoop/Epoll.h 同接口的事件通知实现，并在 Core 的 CMakeLists 里按平台选用。")
 endif()
 
-# 各模块用 CMAKE_INSTALL_INCLUDEDIR 描述安装后的头文件根目录，故在子目录之前引入
 include(GNUInstallDirs)
-
-# 库种类（静态 / 共享）与符号导出宏的地基：五个模块的 add_library 要用 ASYN_LIBRARY_KIND，
-# 导出宏 ASYN_<模块>_API 由 src/AsynGyanisExport.h 提供
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisLibrary.cmake)
 
-# MSVC: 强制 UTF-8 源码编码，解决中文注释和字符串在 GBK 环境下编译失败的问题
+# MSVC 强制 UTF-8 源码编码。
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-# Release 也要带调试信息：异常与日志的调用栈按「构造时采原始帧、输出时才符号解析」实现，
-# 而 MSVC 的 Release 默认不产 PDB——部署形态下每条异常日志只剩「MyServer+0x1A2B3」，
-# 等于把这项可观测性关掉。PDB 是独立文件，链接期之外的运行期开销本应为零，前提是下面
-# 那两个链接器开关没被 /DEBUG 顺手关掉（见其注释）。
+# Release 也带 PDB：异常与日志的调用栈需要符号；/OPT:REF,ICF 必须显式写回。
 if(MSVC)
-    # 直接给编译器与链接器加开关，而不是走 CMAKE_MSVC_DEBUG_INFORMATION_FORMAT：
-    # 后者受 CMP0141 管辖，而本文件声明的 3.20 下限把该策略停在 OLD，变量会被静默忽略
-    # 调用方显式点了那一档时这里让位：CI 的 MSVC 并行 Release 构建要 Embedded，
-    # /Zi 写的是共享 PDB，多个 cl.exe 同时抢就报 C1041（实测 Platform 一批翻译单元同时红）。
-    # 两边同时给会让编译器按最后一个记，读命令行的人分不清实际生效的是哪档，所以只留一份
+    # 不用 CMAKE_MSVC_DEBUG_INFORMATION_FORMAT：CMP0141 在 3.20 下限停在 OLD，变量会被忽略。
+    # 调用方显式点 Embedded 时让位：CI 并行 Release 用 /Zi 共享 PDB 会撞 C1041。
     if(NOT CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
         add_compile_options($<$<CONFIG:Release>:/Zi>)
     endif()
-    # /OPT:REF 与 /OPT:ICF 必须显式写回来：链接器只在「不做完整调试链接」时才默认启用它们，
-    # 给了 /DEBUG 就退化成 NOREF/NOICF。实测只写 /DEBUG 时 http1-parse-request 由 730 ns
-    # 涨到 961 ns（+31%）——死代码留下、相同代码不再折叠，代码布局散开之后指令缓存命中变差
+    # 给 /DEBUG 会关掉默认的 /OPT:REF,ICF；实测 h1 解析 730→961 ns，必须显式写回。
     string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
 else()
-    # GCC/Clang 侧同理：栈回溯靠 -g 才能给出函数名与行号，没有它就只剩地址
+    # GCC/Clang 的栈回溯靠 -g 给出函数名与行号。
     add_compile_options($<$<CONFIG:Release>:-g>)
 endif()
 
-# ============================================================================
-# 内存与未定义行为检测（Debug preset 里的 ENABLE_SANITIZERS）
-# ============================================================================
-# 此前 ENABLE_SANITIZERS 只写在 CMakePresets.json 里、没有任何 CMakeLists 读它：
-# Debug 构建自称「with sanitizers」，而编译器命令行里什么都没有——对一个跑着事件循环、
-# 线程池与异步数据库的工程来说，这是最不该存在的假安全。这里把它真正接上。
-#
-# 能力边界（决定了这里为什么不是一套参数打天下）：
-# - MSVC 只提供 AddressSanitizer（/fsanitize=address），既无 UBSan 也无 TSan；
-# - GCC/Clang 上顺带打开 UBSan（ASan 不覆盖未定义行为）；
-# - 线程竞态检测（TSan）与 ASan 互斥、且 MSVC 不提供，需要在 Linux 侧单独配置构建。
-option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）" OFF)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisOptions.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisSanitizers.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisTargetFlags.cmake)
 
-# 线程竞态检测（ThreadSanitizer）：与 ASan 互斥、MSVC 不提供，因此单列一个开关而不是塞进
-# ENABLE_SANITIZERS。事件循环、线程池与跨循环投递（scheduleRemote/全局队列/TimerQueue 唤醒）
-# 这些路径此前只有注释级约定，TSan 是唯一能自动兜住它们的工具；Linux CI 用本开关另起一个
-# 构建目录跑并发相关的用例集（见 .github/workflows/linux-ci.yml）。
-option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
-
-# 不为「证明架构不变式」加第二预设（既有决定，别再说它是缺口）：架构约定（某层不许包含某层、
-# 平台调用不许漏出 Platform、事件循环对象的线程归属等）由用例与源级检查守——前者跑在既有预设上，
-# 后者是 scripts/ 下的静态检查；再起一棵只为「换个开关看它编不编得过」的构建树，等于每个不变式都要
-# 在两套配置里各维护一遍，且它证明的东西（编译通过）与不变式本身（运行期行为）并不是一回事。
-# 需要验证「某条降级路径也能编」时，用 OBJECT 形状的编译单元就地编它（见 feedback 里那条
-# 「宣称编得过的降级档要真编一次」），不要新开预设。
-
-# 可选全局分配器：mimalloc（跨平台；jemalloc 在 Windows 上长期无人维护，mimalloc 是这里唯一现实的选择）。
-# 默认关闭：接管整个进程的 malloc/free 属于部署决策（调试器、其它库的分配统计都会受影响）。
-# 与 sanitizer 互斥——mimalloc 会遮蔽 ASan/TSan 的分配拦截，二者同开等于把内存检查静默废掉，
-# 因此在这里当场拦住而不是等链接出一堆难解的错误
-option(ASYN_WITH_MIMALLOC "链接 mimalloc 作为全局分配器（生产构建用；与 sanitizer 互斥）" OFF)
-if(ASYN_WITH_MIMALLOC AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
-    message(FATAL_ERROR "ASYN_WITH_MIMALLOC 与 sanitizer 互斥：mimalloc 会遮蔽分配拦截，请只开一个"
-                        "（例如 -DENABLE_SANITIZERS=OFF -DSANITIZE_THREADS=OFF）")
-endif()
-
-# 可选事件后端：Linux 上用 io_uring 替换 epoll（需要内核 5.6+）。
-# 默认关闭：epoll 是各发行版都能用的基线，io_uring 在受限容器（seccomp 拦截 io_uring_setup）
-# 里会直接启动失败，因此由部署方按环境显式选择。开启后 Epoll.h 以 using Epoll = Uring
-# 指过去，EventLoop / IoWatcher / AsyncSocket 的接口与语义不变。
-option(ASYN_WITH_IO_URING "Linux 事件后端改用 io_uring（需要内核 5.6+；Windows 无效）" OFF)
-if(ASYN_WITH_IO_URING AND WIN32)
-    message(FATAL_ERROR "ASYN_WITH_IO_URING 只对 Linux 有效：Windows 侧的事件后端是完成端口（Iocp）")
-endif()
-
-# ============================================================================
-# 部署形态的编译期与链接期加固
-# ============================================================================
-# 此前整棵构建里 `-fstack-protector-strong`、`_FORTIFY_SOURCE`、`/guard:cf`、FULL RELRO 一条都没有
-# （现查 CMakeLists / presets / Conan 配方为空）：一个常驻公网的服务器引擎把「缓冲区被打穿之后还算不算
-# 控制流劫持」整段交给工具链默认值，等于这道题空着。
-#
-# 三条边界写在这里，因为它们决定了下面为什么长成这样：
-# - 只落在本仓自己的目标上，用的是上面那条告警门同一份目标清单。全局 `add_compile_options` 会一并
-#   命中将来 vendor 进来的第三方源码，而加固位落在它们身上既不是我们要修的，也会改变它们的性能形状；
-# - 不把链接期策略推给消费者：全部 PRIVATE。`-z now` 与 `/guard:cf` 是「最终可执行体的所有者」该做的
-#   决定——静态库的消费者可能用 `--no-pie`、纯静态 glibc，或干脆自己有一套 CET 策略，替他决定只会在
-#   他的链接线上炸出一段难读的错；
-# - sanitizer 档自动不叠：ASan/UBSan/TSan 自带一套栈与内存检查，再叠 `_FORTIFY_SOURCE` 与栈保护，
-#   一次 trap 到底是哪一层报的就说不清了（本仓的判据一贯是「谁触发要能归因」）。因此 sanitizer 开着时
-#   本开关整体失效，并在配置期打一行说明，不让它悄悄变成「配了却没生效」。
-option(ASYN_ENABLE_HARDENING "给本仓产出的目标加上加固位（栈保护、_FORTIFY_SOURCE、FULL RELRO、MSVC 的 CFG）" ON)
-
-if(ASYN_ENABLE_HARDENING AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
-    message(STATUS "AsynGyanis: 加固随 sanitizer 关闭（两份检查叠在一起会让一次 trap 归因不清）")
-endif()
-
-# 生效判定收成一处：下面施加加固的函数与任何想问「这一刻加固到底落没落」的地方都读这个变量，
-# 不各自重算一遍 `NOT ENABLE_SANITIZERS AND ...`——两处算式分叉是最难发现的那种漂移
-if(ASYN_ENABLE_HARDENING AND NOT ENABLE_SANITIZERS AND NOT SANITIZE_THREADS)
-    set(asynHardeningActive TRUE)
-else()
-    set(asynHardeningActive FALSE)
-endif()
-
-# 把 ASan 运行时拷到可执行文件旁边。
-# MSVC 的 ASan 运行库不在系统 PATH 上（它随 Visual Studio 提供，位于 cl.exe 同目录），
-# 因此插桩出来的可执行文件若在「没有 vcvars 环境」的裸 shell 里直接运行，会以
-# 0xC0000135（STATUS_DLL_NOT_FOUND）启动失败——而这个错误不给任何可读提示，
-# 只会让人以为「测试莫名跑不起来」。拷到输出目录即可让二进制自洽。
-#
-# 两份都拷：Debug 产物实测并不只依赖 _dbg_ 那一份（只拷 _dbg_ 仍会以同样的错误启动失败，
-# 把两份补齐后正常）。两份 DLL 各自只有几百 KiB，为省这点体积去猜实际依赖不值得。
-#
-# 用法：在各个可执行目标定义之后调用 asyn_copy_sanitizer_runtime(<目标名>)。
-function(asyn_copy_sanitizer_runtime target_name)
-    if(NOT ENABLE_SANITIZERS OR NOT MSVC)
-        return()
-    endif()
-
-    get_filename_component(compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
-
-    foreach(runtime_name clang_rt.asan_dbg_dynamic-x86_64.dll clang_rt.asan_dynamic-x86_64.dll)
-        add_custom_command(TARGET ${target_name} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${compiler_directory}/${runtime_name}"
-                        "$<TARGET_FILE_DIR:${target_name}>"
-                COMMENT "拷贝 AddressSanitizer 运行时（${runtime_name}）到 ${target_name} 输出目录")
-    endforeach()
-endfunction()
-
-if(ENABLE_SANITIZERS)
-    if(MSVC)
-        # 运行库（clang_rt.asan_*_dynamic-x86_64.dll）由 MSVC 自带并位于 cl.exe 同目录，
-        # 构建期无需额外处理；运行期由 asyn_copy_sanitizer_runtime() 拷到可执行文件旁
-        add_compile_options(/fsanitize=address)
-        add_link_options(/fsanitize=address)
-
-        # MSVC 的 ASan 默认给 <vector>/<string>/<optional> 加上容器注解，并在目标文件里留下
-        # annotate_vector / annotate_string / annotate_optional 三个 ABI 标记。Conan 提供的
-        # gtest 没有用 ASan 编译（标记为 0），我们插桩后的对象标记为 1，链接会直接失败
-        # （LNK2038「值不匹配」）。关掉注解即可对齐。代价与出路：
-        # - 失去的是容器越界/迭代器失效这类注解检查；
-        # - 堆、栈、use-after-free、溢出、双重释放等主要检测不受影响；
-        # - 要在 MSVC 上恢复注解，得把 gtest 也用 /fsanitize=address 重建（Conan 侧注入
-        #   cxxflags 重编整个依赖图），代价是第三方库全部插桩；
-        # - GCC/Clang 无此问题（其 ASan 不加容器注解），因此注解只在 MSVC 分支关闭。
-        add_compile_definitions(_DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION _DISABLE_OPTIONAL_ANNOTATION)
-
-        message(STATUS "Sanitizers: 已启用 AddressSanitizer（MSVC 无 UBSan / TSan；"
-                       "因 gtest 未插桩而关闭容器注解，见 CMakeLists 注释）")
-    else()
-        # -fno-omit-frame-pointer：栈回溯才有意义，否则报告里的调用栈会缺帧
-        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=address,undefined)
-        message(STATUS "Sanitizers: 已启用 AddressSanitizer + UndefinedBehaviorSanitizer")
-    endif()
-endif()
-
-if(SANITIZE_THREADS)
-    if(MSVC)
-        message(FATAL_ERROR "SANITIZE_THREADS=ON 在 MSVC 上不可用：MSVC 不提供 ThreadSanitizer，请在 Linux（GCC/Clang）侧配置该构建")
-    endif()
-    if(ENABLE_SANITIZERS)
-        message(FATAL_ERROR "SANITIZE_THREADS 与 ENABLE_SANITIZERS 互斥：ASan 与 TSan 不能同时插桩，请只开一个")
-    endif()
-
-    # -fno-omit-frame-pointer：竞态报告里的调用栈才有意义；-g 让报告能指回源码行
-    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
-    add_link_options(-fsanitize=thread)
-    message(STATUS "Sanitizers: 已启用 ThreadSanitizer（线程竞态检测；与 ASan 互斥）")
-endif()
-
-# 行/分支覆盖率开关：只在 GCC/Clang 侧有意义（MSVC 没有 gcov 兼容的工具链）。
-# 与 sanitizer 可以同开（gcov 计数不受 ASan 插桩影响），但两份开销叠起来很慢，
-# 出报告时通常单独配一个 coverage 构建；-O0 是为了让行归属与源码一致（优化会把行合并）。
-option(ASYN_ENABLE_COVERAGE "用 gcov 插桩以生成行/分支覆盖率报告（GCC/Clang；配 gcovr 或 lcov 消费）" OFF)
-if(ASYN_ENABLE_COVERAGE)
-    if(MSVC)
-        message(FATAL_ERROR "ASYN_ENABLE_COVERAGE=ON 在 MSVC 上不可用：请在 Linux（GCC/Clang）侧配置该构建")
-    endif()
-    add_compile_options(--coverage -O0)
-    add_link_options(--coverage)
-    message(STATUS "Coverage: 已用 gcov 插桩（跑完 ctest 与 samples/ 后用 gcovr 出报告）")
-endif()
-
-# Debug 构建注入 ASYN_DEBUG：日志输出线程号与源码位置，Release 走精简格式
+# Debug 注入 ASYN_DEBUG：日志输出线程号与源码位置。
 add_compile_definitions($<$<CONFIG:Debug>:ASYN_DEBUG>)
 
 enable_testing()
 
-# 认 CMake 的标准开关而不是再造一个本仓专属名：Conan 的 shared 选项与 vcpkg 的 triplet 都直接映射到
-# BUILD_SHARED_LIBS，多一个同义开关只会让两边不一致。默认关，静态仍是交付形态。
-# 共享形态下公开接口里的 std::string / std::vector 会跨 ABI 边界，生产方与消费方必须是同一套
-# 编译器、同一份 CRT 与同一套标准库配置——这条约束由 C++ 动态库本身带来，不靠导出宏解决。
-#
-# 位置必须在 add_subdirectory(src) 之前：这两个变量是给五个模块的 add_library 用的，而 CMake 的
-# 普通变量只向下游子目录传播——写在 src 之后，库种类仍由命令行缓存值决定（所以 DLL 建得出来），
-# 但落点变量对 src 不可见，DLL 会留在 build/src/<模块>/ 而可执行体在别处，一启动就是 0xC0000135。
-option(BUILD_SHARED_LIBS "把五个模块产出为共享库（.so / .dll）而不是静态库" OFF)
-
-# Windows 上 DLL 的落点：.dll 属于 RUNTIME 产物，而 CMake 不给 Ninja 生成「把依赖 DLL 拷到可执行体
-# 旁边」这一步（那是 Visual Studio 生成器才有的），所以按默认落点编完后，测试可执行体与 DLL 各在
-# 一处，一启动就是 0xC0000135「找不到模块」——现象和「库写坏了」几乎一样，只有收进同一个目录才自洽。
-# Linux 侧不需要这条：.so 是 LIBRARY 产物，而构建树的 RPATH 由 CMake 自动写进可执行体。
-# 静态形态完全不进这个分支，现有落点一字未动。
+# Windows DLL 与可执行体必须同目录，否则 Ninja 下启动是 0xC0000135。
+# Linux 的 .so 走 RPATH，静态形态不进这个分支。
 if(BUILD_SHARED_LIBS AND WIN32)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -241,318 +60,14 @@ endif()
 
 add_subdirectory(src)
 
-# 两个开发者开关：默认全开（本地开发与 CI 都要它们），只有把本仓库打成对外分发包时才关。
-# tests 需要 GTest、微基准与示例是纯粹的开发者产物，消费方不该为它们付出配置与构建代价。
-# 关掉之后库本身与安装规则完全不受影响，因此这两个开关不改变任何对外行为。
-option(ASYN_BUILD_TESTS "构建测试与热路径微基准" ON)
-option(ASYN_BUILD_SAMPLES "构建示例程序" ON)
-
 if(ASYN_BUILD_TESTS)
     add_subdirectory(tests)
-
-    # 热路径微基准（HPACK 编解码、h1 解析器、h2 帧解码、HTTP 日期、request-id 生成）。
-    # 与测试同开关：它量的是库的热路径，一旦不编译就会在库接口变化时悄悄失效。
     add_subdirectory(benchmarks/microbench)
 endif()
 
 if(ASYN_BUILD_SAMPLES)
-    # 示例程序纳入构建：它的 CMakeLists 早已就绪，但此前从未被加入，示例与库的 API 脱节
-    # 因此长期无人发现。纳入后示例随常规构建一起编译，任何时候都是可用的
     add_subdirectory(samples)
 endif()
 
-# ============================================================================
-# 告警门禁：零编译器告警是提交硬判据
-# ============================================================================
-# CI 的注释一直写着「构建失败与告警都会让这一步红」，但此前没有任何告警开关——Linux 侧只开
-# 了 GCC 默认那几条，未初始化、未使用、窄化这类常见缺陷根本不会被拦下。这里把门禁真正接上。
-#
-# 只加在本仓库自己的目标上：将来若再 vendor 第三方源码，它们不参与，
-# 它们的告警不是我们要修的，也不能靠改它们的代码消掉；而全局 add_compile_options 会一并命中它们，
-# 再在第三方目录里用 /W0 覆盖又会触发 MSVC 的 D9025（/WX 下直接变成错误）——因此按目标逐个开启。
-function(asyn_enable_strict_warnings target_name)
-    if(MSVC)
-        target_compile_options(${target_name} PRIVATE /W4 /WX)
-    else()
-        # 两条按「针对性豁免」关掉（不是降级告警级别），理由都写在这儿：
-        # - -Wmissing-field-initializers：C++ 的指定初始化器只填当前分支用得上的字段是
-        #   本仓库的既定写法（其余字段由默认成员初值兜住）；GCC 会对它报「少填字段」，
-        #   而本仓库与第三方结构都不可能逐个填满——`Http2Setting{.identifier = ..., .value = ...}`
-        #   这类「只填当前分支用得上的字段」是既定写法，其余字段由默认成员初值兜住。
-        # - -Wcomment：文档里写路由模式（"/static/*" 这类）难免出现 "/*" 序列；
-        #   该告警想抓的是「误以为注释可嵌套」，与本仓库的实际写法不符。
-        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Werror
-                -Wno-missing-field-initializers -Wno-comment)
-    endif()
-endfunction()
-
-set(asynStrictWarningTargets Platform Base Core Net Database)
-
-if(ASYN_BUILD_TESTS)
-    list(APPEND asynStrictWarningTargets TestPlatform TestBase TestCore TestNet TestDatabase microbench quic_probe_server)
-endif()
-
-if(ASYN_BUILD_SAMPLES)
-    list(APPEND asynStrictWarningTargets ReferenceServer)
-endif()
-
-# 给单个目标施加加固位。用 generator expression 按配置分档：`_FORTIFY_SOURCE` 要求真的优化过才有意义
-# （-O0 下 glibc 的那些 *_chk 包装会一路退到未检查版本，白担一次「以为加固了」的名），MSVC 的 CFG
-# 同理只在 Release 上开——Debug 档还要它做验证工具链的对照。链接期的 FULL RELRO 与配置无关，
-# 它改变的是镜像的段属性，不改变生成代码。
-function(asyn_apply_hardening target_name)
-    if(NOT asynHardeningActive)
-        return()
-    endif()
-
-    if(MSVC)
-        # /guard:cf 编译侧只产出受保护的间接调用序列，真正的 CFG 是链接器策略：静态库这一档
-        # CMake 不会把 link options 传给消费者（PRIVATE），因此本仓自己的可执行体（测试、示例、探针）
-        # 会真的开起来，而库的消费者按自己的部署口径决定
-        target_compile_options(${target_name} PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-        target_link_options(${target_name} PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-    else()
-        # 栈保护与优化级别无关（它是往栈帧里插金丝雀），因此每个非 sanitizer 档都落；
-        # -U 在前：部分发行版的工具链已把 _FORTIFY_SOURCE 预定义进来说明手册里的默认值，
-        # 直接 -D 会撞重定义警告，而本仓开着 -Werror——那道门会把「加固开关」变成构建失败。
-        # 而 _FORTIFY_SOURCE 只有真的优化过才有意义：-O0 下 glibc 的那些 *_chk 包装会一路退到
-        # 未检查版本，白担一次「以为加固了」的名，因此它只进 Release
-        target_compile_options(${target_name} PRIVATE
-                -fstack-protector-strong
-                $<$<CONFIG:Release>:-U_FORTIFY_SOURCE>
-                $<$<CONFIG:Release>:-D_FORTIFY_SOURCE=2>)
-        # 只加在本仓链接出的镜像上：READONLY-after-relocation + 加载期解析完所有符号，
-        # GOT 覆盖这类打法就没有可写的重定位表可用
-        target_link_options(${target_name} PRIVATE -Wl,-z,relro -Wl,-z,now)
-    endif()
-endfunction()
-
-foreach(asynWarningTarget IN LISTS asynStrictWarningTargets)
-    if(TARGET ${asynWarningTarget})
-        asyn_enable_strict_warnings(${asynWarningTarget})
-        asyn_apply_hardening(${asynWarningTarget})
-    endif()
-endforeach()
-
-# ============================================================================
-# 对外发布：安装规则与 CMake 包配置
-# ============================================================================
-# 五个模块库与公开头文件随安装落到 <前缀>/lib 与 <前缀>/include，并按组件导出
-# AsynGyanis::Platform / Base / Core / Net / Database：外部工程 find_package(AsynGyanis) 后
-# 可直接链接；只请求部分组件（COMPONENTS）时，包配置只为被请求的组件及其传递依赖组件
-# 拉取外部依赖（见下面的组件依赖图）。
-# 关闭后只保留纯构建行为：make install / cmake --install 不再产出任何东西。
-option(ASYN_ENABLE_INSTALL "生成安装规则与 CMake 包配置，供外部工程 find_package 消费" ON)
-
-if(ASYN_ENABLE_INSTALL)
-    include(CMakePackageConfigHelpers)
-
-    # 每个模块单独一条 install(TARGETS) 并标注自己的组件名（COMPONENT 是安装期组件；
-    # 本机 CMake 的 install(TARGETS/EXPORT) 不支持复数 COMPONENTS，组件门控因此在
-    # 包配置模板里按请求的组件自行判定）
-    install(TARGETS Platform EXPORT AsynGyanisTargets COMPONENT Platform
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-    install(TARGETS Base EXPORT AsynGyanisTargets COMPONENT Base
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-    install(TARGETS Core EXPORT AsynGyanisTargets COMPONENT Core
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-    install(TARGETS Net EXPORT AsynGyanisTargets COMPONENT Net
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-    install(TARGETS Database EXPORT AsynGyanisTargets COMPONENT Database
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
-
-    # 头文件保持 src 下的相对路径，安装后 "Core/Socket/AsyncSocket.h" 这类
-    # 库内既有写法仍可直接使用（vendored 的 wepoll.h 也随此规则一起落地，供 Epoll.h 引用）
-    #
-    # 下面排除的七份是实现侧的头：判据是「没有任何一份被安装出去的公开头包含」（逐个查过），
-    # 装上它们等于把内部结构当成对外契约，也让使用方的包含链多出厂商头——
-    # MySqlValueConversion.h 会带进 <mysql/mysql.h>、RedisReplyText.h 会带进 <hiredis/hiredis.h>，
-    # 而这两个名字各自的 .h 里就写着「只允许被本驱动的 .cpp 包含」；OAuthSupport.h 是
-    # OAuth 家族各 .cpp 共用的表单编码件，只有同族实现包含它，同样不构成对外契约；
-    # HttpProxyPumpedTls.h 是 https 代理那一路的 TLS-in-TLS 泵，只被客户端实现包含。
-    # 刻意不排除 Base/Config/Detail/ReloadRoundGate.h：ConfigManager.h 确实包含它，排掉会让
-    # 使用方包含 ConfigManager.h 就找不到文件。哪天要让那张表只归实现侧，得先把这层包含拆掉
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-            FILES_MATCHING PATTERN "*.h"
-            PATTERN "MySqlValueConversion.h" EXCLUDE
-            PATTERN "MySqlResult.h" EXCLUDE
-            PATTERN "RedisReplyText.h" EXCLUDE
-            PATTERN "PlainTextLogLine.h" EXCLUDE
-            PATTERN "RollingPeriod.h" EXCLUDE
-            PATTERN "OAuthSupport.h" EXCLUDE
-            PATTERN "HttpProxyPumpedTls.h" EXCLUDE
-            PATTERN "SignalObserverInstall.h" EXCLUDE
-            PATTERN "WakeupFailureReport.h" EXCLUDE
-            PATTERN "WorkerSupervisorSupport.h" EXCLUDE
-            PATTERN "ConfigDocument.h" EXCLUDE
-            PATTERN "ConfigEnvironmentOverride.h" EXCLUDE
-            PATTERN "Http2ErrorOut.h" EXCLUDE
-            PATTERN "QuicSupport.h" EXCLUDE
-            PATTERN "OtlpHttpExportSupport.h" EXCLUDE
-            PATTERN "OtlpJsonSupport.h" EXCLUDE
-            PATTERN "OtlpConfigurationSupport.h" EXCLUDE
-            PATTERN "HttpConfigDuration.h" EXCLUDE
-            PATTERN "HttpConfigValidation.h" EXCLUDE
-            PATTERN "HttpEndpointPath.h" EXCLUDE
-            PATTERN "TlsPeerIdentitySupport.h" EXCLUDE
-            PATTERN "WebSocketUpgradeAdmission.h" EXCLUDE
-            PATTERN "HttpClientUrl.h" EXCLUDE
-            PATTERN "HttpClientSupport.h" EXCLUDE
-            PATTERN "Http2SessionSupport.h" EXCLUDE
-            PATTERN "Http3SessionSupport.h" EXCLUDE
-            PATTERN "RedisConnectionSupport.h" EXCLUDE
-            PATTERN "SchemaMigratorImpl.h" EXCLUDE
-            PATTERN "QueryableImpl.h" EXCLUDE
-    )
-
-    # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：
-    # 按 Conan 消费的包要给消费方重复同一个编译宏，而宏的真源只有这一次探测
-    install(FILES ${CMAKE_BINARY_DIR}/src/Base/AsynGyanisStacktraceSupport.txt
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/asyngyanis
-    )
-
-    # 构建期能力清单：mimalloc、sanitizer、覆盖计数、共享形态这些开关的取值过去只活在构建目录里，
-    # 使用方要么重编一遍要么靠「链接得过」猜。生成一份只含 0/1 宏的头随包发出，让使用方能在
-    # 编译期分支。排在 add_subdirectory(tests) 之后是有意的：ASYN_BUILD_FUZZ_TARGETS 那个选项
-    # 定义在 tests/Net 里，提前 configure 会把它读成未定义
-    #
-    # 改名而不是把开关名直接发出去：BUILD_SHARED_LIBS / ENABLE_SANITIZERS 这些是构建侧的词汇，
-    # 进了公开头就是替使用方决定了一批预处理名字，还可能与它们自己的同名宏打架
-    set(ASYN_HAS_IO_URING ${ASYN_WITH_IO_URING})
-    set(ASYN_HAS_MIMALLOC ${ASYN_WITH_MIMALLOC})
-    set(ASYN_IS_SANITIZED ${ENABLE_SANITIZERS})
-    set(ASYN_SANITIZES_THREADS ${SANITIZE_THREADS})
-    # 覆盖计数取事实而不是取选项：CI 的 coverage 档是拿裸旗标 `--coverage` 配的、没给 ASYN_ENABLE_COVERAGE，
-    # 只跟选项就会让自述报「没编覆盖计数」而产物其实全是插桩过的
-    if(ASYN_ENABLE_COVERAGE OR CMAKE_CXX_FLAGS MATCHES "--coverage" OR CMAKE_C_FLAGS MATCHES "--coverage")
-        set(ASYN_HAS_COVERAGE ON)
-    else()
-        set(ASYN_HAS_COVERAGE OFF)
-    endif()
-    set(ASYN_IS_SHARED_BUILD ${BUILD_SHARED_LIBS})
-    set(ASYN_HAS_FUZZ_TARGETS ${ASYN_BUILD_FUZZ_TARGETS})
-    # 另外几项改变的是使用方怎么写代码（真驱动还是报错桩、CapturedStackTrace 是哪一种 ABI 形状），
-    # 此前只以模块自己的 PUBLIC 宏发出去而没进这份清单。取值直接从各模块实际导出的编译定义读，
-    # 不在这里复述一遍探测条件——复述就是第二处真源，与现场分叉时没人报错
-    get_target_property(asynDatabaseExportedDefinitions Database INTERFACE_COMPILE_DEFINITIONS)
-    get_target_property(asynBaseExportedDefinitions Base INTERFACE_COMPILE_DEFINITIONS)
-    if(NOT asynDatabaseExportedDefinitions)
-        set(asynDatabaseExportedDefinitions "")
-    endif()
-    if(NOT asynBaseExportedDefinitions)
-        set(asynBaseExportedDefinitions "")
-    endif()
-    # 可选驱动逐个判：清单由 Database 模块在接线每个驱动时登记（asyn_configure_database_driver），
-    # 新增驱动不必在这里改代码。清单为空时当场拒绝——空表会让 configure_file 把每个
-    # ASYN_HAS_*_DRIVER 静默落成 0，看起来像「都没编」，而那是「没跑到」的形状
-    get_property(asynDatabaseDrivers GLOBAL PROPERTY AsynGyanisDatabaseDrivers)
-    if(NOT asynDatabaseDrivers)
-        message(FATAL_ERROR "Database 模块没有登记任何可选驱动（AsynGyanisDatabaseDrivers 为空）：检查 src 的 add_subdirectory 顺序或驱动清单")
-    endif()
-    foreach(asynDriverName IN LISTS asynDatabaseDrivers)
-        if(asynDatabaseExportedDefinitions MATCHES "DATABASE_HAS_${asynDriverName}=1")
-            set(ASYN_HAS_${asynDriverName}_DRIVER ON)
-        else()
-            set(ASYN_HAS_${asynDriverName}_DRIVER OFF)
-        endif()
-    endforeach()
-    if(asynBaseExportedDefinitions MATCHES "ASYN_HAS_STACKTRACE=1")
-        set(ASYN_HAS_STACKTRACE_SUPPORT ON)
-    else()
-        set(ASYN_HAS_STACKTRACE_SUPPORT OFF)
-    endif()
-    configure_file(${CMAKE_SOURCE_DIR}/cmake/AsynGyanisFeatures.h.in
-                   ${CMAKE_BINARY_DIR}/src/AsynGyanisFeatures.h
-                   @ONLY)
-    install(FILES ${CMAKE_BINARY_DIR}/src/AsynGyanisFeatures.h
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-
-    # 组件依赖图（谁链接谁）；外部依赖清单不在这里重复——各模块启用依赖时已按组件登记进
-    # GLOBAL 属性（imported 目标只在创建它的目录及其子目录可见，根作用域 here 看不见，
-    # 所以不能在本文件里用 if(TARGET ...) 反查）
-    set(ASYN_PACKAGE_COMPONENTS Platform Base Core Net Database)
-    set(ASYN_COMPONENT_REQUIRES_Base Platform)
-    set(ASYN_COMPONENT_REQUIRES_Core Base)
-    set(ASYN_COMPONENT_REQUIRES_Net Core)
-    set(ASYN_COMPONENT_REQUIRES_Database Core)
-
-    # 为每个组件求出「本身 + 传递依赖组件」的外部依赖并集：只要 Base 的消费方不该去找 OpenSSL
-    set(ASYN_CONFIG_COMPONENT_DEPENDENCIES "")
-    set(ASYN_CONFIG_ALL_DEPENDENCIES "")
-    foreach(component IN LISTS ASYN_PACKAGE_COMPONENTS)
-        set(pendingComponents "${component};${ASYN_COMPONENT_REQUIRES_${component}}")
-        set(visitedComponents "")
-        set(componentDependencies "")
-        while(pendingComponents)
-            list(POP_FRONT pendingComponents currentComponent)
-            if(currentComponent IN_LIST visitedComponents)
-                continue()
-            endif()
-            list(APPEND visitedComponents "${currentComponent}")
-            get_property(currentDependencies GLOBAL PROPERTY AsynGyanisPackageDependencies_${currentComponent})
-            list(APPEND componentDependencies ${currentDependencies})
-            list(APPEND pendingComponents ${ASYN_COMPONENT_REQUIRES_${currentComponent}})
-        endwhile()
-        list(REMOVE_DUPLICATES componentDependencies)
-        string(APPEND ASYN_CONFIG_COMPONENT_DEPENDENCIES "set(AsynGyanis_${component}_DEPENDENCIES ${componentDependencies})\n")
-        list(APPEND ASYN_CONFIG_ALL_DEPENDENCIES ${componentDependencies})
-    endforeach()
-    list(REMOVE_DUPLICATES ASYN_CONFIG_ALL_DEPENDENCIES)
-    # 全量清单在模板里当字面量用（未请求组件时走这条，保持 find_package(AsynGyanis) 的旧行为）
-    string(REPLACE ";" " " ASYN_CONFIG_ALL_DEPENDENCIES "${ASYN_CONFIG_ALL_DEPENDENCIES}")
-
-    # 容器注解开关是 ABI 契约（原因见上面的 sanitizers 段）：Debug+MSVC 下库以这三条编译，
-    # 消费方不带就会在链接期以 LNK2038（annotate_string/vector/optional 值不匹配）失败。
-    # 因此随导出接口按 Debug 配置带出；非 Debug 构建的对象本来就没有这些标记
-    if(MSVC AND ENABLE_SANITIZERS)
-        foreach(asyn_module Platform Base Core Net Database)
-            target_compile_definitions(${asyn_module} INTERFACE
-                    $<$<CONFIG:Debug>:_DISABLE_VECTOR_ANNOTATION>
-                    $<$<CONFIG:Debug>:_DISABLE_STRING_ANNOTATION>
-                    $<$<CONFIG:Debug>:_DISABLE_OPTIONAL_ANNOTATION>
-            )
-        endforeach()
-    endif()
-
-    configure_package_config_file(
-            ${CMAKE_SOURCE_DIR}/cmake/AsynGyanisConfig.cmake.in
-            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfig.cmake
-            INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
-    )
-
-    # 版本号取自 project()，同一主版本内视为兼容
-    write_basic_package_version_file(
-            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfigVersion.cmake
-            VERSION ${PROJECT_VERSION}
-            COMPATIBILITY SameMajorVersion
-    )
-
-    install(EXPORT AsynGyanisTargets
-            FILE AsynGyanisTargets.cmake
-            NAMESPACE AsynGyanis::
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
-    )
-
-    install(FILES
-            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfig.cmake
-            ${CMAKE_CURRENT_BINARY_DIR}/AsynGyanisConfigVersion.cmake
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/AsynGyanis
-    )
-endif()
+asyn_apply_project_target_flags()
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/AsynGyanisInstall.cmake)

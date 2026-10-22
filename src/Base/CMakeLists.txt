@@ -44,7 +44,7 @@ else()
     message(STATUS "Base: std::stacktrace 不可用，调用栈退化为空实现")
 endif()
 
-# 把上面那次探测的结果落成一个标记文件（安装规则在根 CMakeLists 里把它随包交出去）。
+# 把上面那次探测的结果落成一个标记文件（安装规则在 cmake/AsynGyanisInstall.cmake 里把它随包交出去）。
 # 为什么要交：这个宏是 PUBLIC 的，`Exception/StackTrace.h` 按它换 CapturedStackTrace 的类型
 # （有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。消费方拿到的必须是与 libBase.a
 # 同一份形状，而它在自己的配置阶段读不到这次探测的结果——CMake 那侧靠 INTERFACE 编译定义自动带，

@@ -211,7 +211,7 @@ include(GoogleTest)
 gtest_discover_tests(TestNet
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
-# ASan 运行时拷到本目标输出目录（见根 CMakeLists 的 asyn_copy_sanitizer_runtime）
+# ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）
 asyn_copy_sanitizer_runtime(TestNet)
 
 # libFuzzer 入口：默认不构建。开这个开关要求整份项目用带 fuzzer 运行时的 Clang 配置
