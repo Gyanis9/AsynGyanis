@@ -34,6 +34,8 @@ ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerConfig.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpConfigDuration.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpConfigValidation.h
+        # 只有头文件：运维端点路径的形状校验，明文与 TLS 两台服务器共用
+        ${CMAKE_CURRENT_LIST_DIR}/HttpEndpointPath.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerStats.cpp

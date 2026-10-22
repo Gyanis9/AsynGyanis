@@ -87,22 +87,6 @@ namespace AsynGyanis::Net
             data.remove_prefix(pos + 2);
             return LineVerdict::Delivered;
         }
-        /// 严格解析十进制长度：只接受纯数字（不取整、不忽略后缀），超长按非法拒绝
-        bool parseDecimalLength(const std::string_view text, std::size_t &length) noexcept
-        {
-            // 19 位十进制已覆盖现实里可能的长度，再多就是损坏或恶意的取值
-            if (text.empty() || text.size() > 19)
-                return false;
-            std::size_t value = 0;
-            for (const char character: text)
-            {
-                if (character < '0' || character > '9')
-                    return false;
-                value = value * 10 + static_cast<std::size_t>(character - '0');
-            }
-            length = value;
-            return true;
-        }
         /// 严格解析十六进制块大小：只接受 1 个以上的十六进制数字（RFC 9112 §7.1）
         bool parseChunkSize(const std::string_view text, std::size_t &chunkSize) noexcept
         {
@@ -265,7 +249,8 @@ namespace AsynGyanis::Net
                             {
                                 // 重复出现只允许取值完全一致；取值必须是纯数字——长度有歧义就不猜
                                 std::size_t thisLength = 0;
-                                if (!parseDecimalLength(trimOptionalWhitespace(value), thisLength) || (hasContentLength && thisLength != declaredLength))
+                                // 字段值按 RFC 9110 §5.5 允许首尾 OWS，复用服务端同一份解析
+                                if (!parseContentLengthValue(value, thisLength) || (hasContentLength && thisLength != declaredLength))
                                 {
                                     m_stage = Stage::Failed;
                                     return startSize - data.size();

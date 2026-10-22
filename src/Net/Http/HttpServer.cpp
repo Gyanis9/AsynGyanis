@@ -10,6 +10,7 @@
 #include "Net/Http/FileSender.h"
 #include "Net/Http/HttpConditionalValidators.h"
 #include "Net/Http/HttpDate.h"
+#include "Net/Http/HttpEndpointPath.h"
 #include "Net/Http/HttpHeaderRules.h"
 #include "Net/Http/HttpMetricsEndpoint.h"
 #include "Net/Http/HttpSession.h"
@@ -1634,10 +1635,7 @@ namespace AsynGyanis::Net
     {
         // 路径形状先拦下来：不以 / 开头的路径永远匹配不到任何请求，静默注册等于给人一个
         // 「明明调了却没有端点」的假象，而调用方很难自己看出来
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 指标端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "指标");
 
         // 前缀也要过 Prometheus 的名字语法（与登记侧同一份判据）：带 `.`、`-` 或空格的前缀会安静地
         // 拼出 `asyn.srv_requests_total` 这类整片非法名字——端点照样回 200，而抓取端把每一行都拒掉，
@@ -1656,10 +1654,7 @@ namespace AsynGyanis::Net
     void HttpServer::enableHealthEndpoint(const std::string_view path)
     {
         // 与指标端点同样的形状校验，理由同上
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 健康检查端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "健康检查");
 
         // 应答固定且无依赖：能走到这里就说明事件循环在转、连接还能被服务（存活性）；
         // 渲染交给两台共用的实现，形状校验留在点名服务器的那一侧
@@ -1669,10 +1664,7 @@ namespace AsynGyanis::Net
     void HttpServer::enableReadinessEndpoint(const std::string_view path, ReadinessCheck dependencyCheck)
     {
         // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 就绪探针端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "就绪探针");
 
         // 判据现读 isRunning()：排空没有推送口，编排器只能靠轮询问出来，缓存一份就会把「已经停了」
         // 晚一拍报出去；依赖检查原样转交，由调用方保证它只读快照
@@ -1681,10 +1673,7 @@ namespace AsynGyanis::Net
 
     void HttpServer::enableConnectionsEndpoint(const std::string_view path)
     {
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 连接聚合端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "连接聚合");
         m_router.get(std::string(path),
                      [this](HttpRequest &, HttpResponse &response) -> Core::Task<>
                      {
@@ -1697,20 +1686,14 @@ namespace AsynGyanis::Net
 
     void HttpServer::enableLogLevelEndpoint(const std::string_view path)
     {
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 日志等级端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "日志等级");
         registerLogLevelEndpoint(m_router, path);
     }
 
     void HttpServer::enableLoopDiagnosticsEndpoint(const std::string_view path)
     {
         // 与另两个端点同样的形状校验：不以 / 开头的路径永远匹配不到，静默注册就是给人一个假象
-        if (path.empty() || path.front() != '/')
-        {
-            throw Base::InvalidArgumentException("HttpServer: 事件循环观测端点路径必须以 / 开头，收到的是「" + std::string(path) + "」");
-        }
+        HttpEndpoint::requireAbsolutePath(path, "HttpServer", "事件循环观测");
 
         // 现取整表现场渲染：读的是各条循环自己的原子量，渲染只留一份实现
         registerLoopDiagnosticsEndpoint(m_router, path);

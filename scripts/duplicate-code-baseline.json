@@ -138,14 +138,6 @@
       "occurrences": 2
     },
     {
-      "hash": "81ad241bdf99fe32",
-      "files": [
-        "src/Net/Http/Client/HttpResponseParser.cpp",
-        "src/Net/Http/HttpHeaderRules.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "84f121c7db51e9f8",
       "files": [
         "src/Net/Http2/Http2Session.h",
@@ -217,14 +209,6 @@
       "hash": "ae3acbb288971679",
       "files": [
         "src/Net/WebSocket/WebSocketClient.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "aeac92f35ff172fd",
-      "files": [
-        "src/Net/Http/HttpServer.cpp",
-        "src/Net/Http/HttpsServer.cpp"
       ],
       "occurrences": 2
     },
