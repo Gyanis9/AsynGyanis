@@ -12,9 +12,9 @@
 
 #pragma once
 
-#include <algorithm>
+#include "Database/Redis/RedisConnection.h"
+
 #include <cstdint>
-#include <limits>
 #include <utility>
 
 #ifdef DATABASE_HAS_REDIS
@@ -23,23 +23,10 @@
 
 namespace AsynGyanis::Database
 {
-    inline constexpr std::int64_t kMillisecondsPerSecond      = 1000; ///< 1 秒等于 1000 毫秒
-    inline constexpr std::int64_t kMicrosecondsPerMillisecond = 1000; ///< 1 毫秒等于 1000 微秒
-
     namespace Detail
     {
-        /**
-         * @brief 把毫秒拆成 hiredis 需要的「秒 + 微秒」
-         * @details 越界按「这套结构能表达的最长」钳住，而不是折回 0——0 在 hiredis 的约定里是「不设超时」，
-         *          那正是调用方要长等的反面。
-         * @param milliseconds 时长毫秒数
-         * @return std::pair<std::int64_t, std::int64_t> 秒与微秒
-         */
-        inline std::pair<std::int64_t, std::int64_t> makeTimeoutParts(const std::int64_t milliseconds) noexcept
-        {
-            const std::int64_t clampedMilliseconds = std::clamp(milliseconds, static_cast<std::int64_t>(0), static_cast<std::int64_t>(std::numeric_limits<int>::max()));
-            return {clampedMilliseconds / kMillisecondsPerSecond, (clampedMilliseconds % kMillisecondsPerSecond) * kMicrosecondsPerMillisecond};
-        }
+        // makeTimeoutParts() 在 RedisConnection.cpp 里给出线定义：公开头只放声明，Release 下
+        // 编译器不会为一个未被本翻译单元引用的 inline 函数留下弱符号，测试因此会在链接期找不到它
 
 #ifdef DATABASE_HAS_REDIS
         /**

@@ -63,10 +63,30 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace AsynGyanis::Database
 {
+    namespace Detail
+    {
+        /**
+         * @brief 把毫秒拆成「秒 + 微秒」，越界钳到 int 能表达的最大毫秒数
+         * @details 公开头只放声明，定义必须留在出线位置：Release 下未被本翻译单元引用的 inline
+         *          函数不会留下弱符号，调用方会在链接期找不到它。
+         * @param milliseconds 时长毫秒数；负数按 0（不设超时）处理
+         * @return std::pair<std::int64_t, std::int64_t> 秒数与剩余微秒数，两者都非负
+         */
+        std::pair<std::int64_t, std::int64_t> makeTimeoutParts(const std::int64_t milliseconds) noexcept
+        {
+            constexpr std::int64_t kMillisecondsPerSecond      = 1000;
+            constexpr std::int64_t kMicrosecondsPerMillisecond = 1000;
+
+            const std::int64_t clampedMilliseconds = std::clamp(milliseconds, static_cast<std::int64_t>(0), static_cast<std::int64_t>(std::numeric_limits<int>::max()));
+            return {clampedMilliseconds / kMillisecondsPerSecond, (clampedMilliseconds % kMillisecondsPerSecond) * kMicrosecondsPerMillisecond};
+        }
+    } // namespace Detail
+
 #ifdef DATABASE_HAS_REDIS
 
     namespace
