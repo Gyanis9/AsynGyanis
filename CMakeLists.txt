@@ -411,6 +411,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpEndpointPath.h" EXCLUDE
             PATTERN "HttpClientUrl.h" EXCLUDE
             PATTERN "Http2SessionSupport.h" EXCLUDE
+            PATTERN "Http3SessionSupport.h" EXCLUDE
             PATTERN "RedisConnectionSupport.h" EXCLUDE
     )
 
