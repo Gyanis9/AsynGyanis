@@ -173,9 +173,9 @@ find_package(ZLIB REQUIRED)
 find_package(zstd REQUIRED)
 find_package(brotli REQUIRED)
 
-# HTTP/3 用例的对端是测试自己按 RFC 9114/9204 排字节的（TestHttp3Session 的 Http3ClientPeer）：
-# 曾经链接 nghttp3 当跨实现裁判，但链接进来的裁判与被测代码同属一次构建、可以一起改软，
-# 字节级的一致性判定已移到进程外（scripts/h3_acceptance.py 与 scripts/quic_cross_check.sh 用 aioquic）
+# HTTP/3 用例对端是测试自己按 RFC 9114/9204 排的字节（TestHttp3Session 的 Http3ClientPeer）；
+# 不链接 nghttp3 这类同构建裁判，字节一致性判定放在进程外（scripts/h3_acceptance.py 与
+# scripts/quic_cross_check.sh 用 aioquic）。
 
 target_link_libraries(TestNet PRIVATE
         Net
@@ -214,11 +214,9 @@ gtest_discover_tests(TestNet
 # ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）
 asyn_copy_sanitizer_runtime(TestNet)
 
-# libFuzzer 入口：默认不构建。开这个开关要求整份项目用带 fuzzer 运行时的 Clang 配置
-# （llvm.org 的 clang 可以；Qt 自带的 llvm-mingw clang 对 windows-gnu 目标根本不支持这个 sanitizer）。
-# 本机日常想跑模糊不必走这条路：scripts/fuzz-net.sh 只编「内核 + 四个解码器 + 依赖闭包」，
-# 因为 compiler-rt 的 Windows fuzzer 运行时是静态 CRT，混不上本项目 /MD 编出来的库。
-# 开关打开但不是 Clang 时当场拒绝，不要静默产出一个「链接成功但没有模糊能力」的可执行体。
+# libFuzzer 入口默认不构建。开开关要求整份项目用带 fuzzer 运行时的 Clang（Qt 的 llvm-mingw
+# 不支持 windows-gnu 目标）。日常模糊走 scripts/fuzz-net.sh：compiler-rt 的 Windows 运行库
+# 是静态 CRT，混不上本项目 /MD 编出的库。非 Clang 时当场拒绝，不静默产出无模糊能力的可执行体。
 option(ASYN_BUILD_FUZZ_TARGETS "构建 Net 协议解码器的 libFuzzer 目标（需要 Clang）" OFF)
 if(ASYN_BUILD_FUZZ_TARGETS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")

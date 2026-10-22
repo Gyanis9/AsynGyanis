@@ -84,9 +84,9 @@ add_dependencies(TestCore handoff_worker heartbeat_worker)
 
 target_include_directories(TestCore PRIVATE
         ${CMAKE_SOURCE_DIR}/src
-        # src 用于 "Core/..." 形式的生产头包含，本目录用于 "CoreTestSupport.h" 同级包含，
-        # tests/TestSupport 用于复用 CommonTestSupport.h 的临时目录与等待夹具，
-        # tests/Platform 用于复用 Platform 专有的描述符判据（下游模块复用上游测试头，方向与生产依赖一致）
+        # src 用于 "Core/..." 头包含，本目录用于 "CoreTestSupport.h" 同级包含；
+        # tests/TestSupport 复用 CommonTestSupport.h 的临时目录与等待夹具，
+        # tests/Platform 复用 Platform 的描述符判据（下游复用上游测试头，方向与生产依赖一致）
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/tests/TestSupport
         ${CMAKE_SOURCE_DIR}/tests/Platform

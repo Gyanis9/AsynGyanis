@@ -1,5 +1,5 @@
-# Core/Process —— 进程侧的编排与接管：多进程 worker 的启停看护、停机信号的接管、重载信号（SIGHUP）的接管、
-# 服务管理器的看门狗节拍、换代交接通道，以及崩溃现场记录
+# Core/Process —— 进程编排与接管：worker 启停看护、停机与重载信号接管、服务管理器看门狗
+# 节拍、换代交接通道与崩溃现场记录
 set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisor.h
         ${CMAKE_CURRENT_LIST_DIR}/WorkerSupervisor.cpp

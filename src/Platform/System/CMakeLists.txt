@@ -1,4 +1,4 @@
-# Platform/System —— 操作系统信息：cgroup 读数、错误码、本地时间、进程信息、子进程、文本编码、线程绑核、服务管理器通知
+# Platform/System —— 操作系统信息：cgroup、错误码、时间、进程、子进程、文本编码、绑核、服务通知
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPlatformSources
         ${CMAKE_CURRENT_LIST_DIR}/CgroupInfo.h
         ${CMAKE_CURRENT_LIST_DIR}/CgroupInfo.cpp

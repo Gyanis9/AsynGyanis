@@ -1,7 +1,6 @@
-# tests/Tools —— 测试期可执行体：不是用例，是给外部工具当对手或夹具的小程序
-#
-# 与 tests/<模块>/ 的区别：那边是「与 src 逐级对应的 gtest 源」，这里放独立进程形态的夹具。
-# 裁判换成这些工具 + 外部实现之后，判据不再由本仓库的代码给出，改代码时也就改不动判据。
+# tests/Tools —— 测试期可执行体：不是用例，是给外部工具当对手或夹具的小程序。
+# 与 tests/<模块>/ 的 gtest 源不同，这里放独立进程形态的夹具；判据由外部实现给出，
+# 改本仓库代码改不动它。
 
 # QUIC 跨实现校验探针的被测端：把 QuicServer 的传输层行为打成 stdout 事件行，
 # 由 scripts/quic_cross_check.py（aioquic）与 scripts/quic_cross_check.sh 消费
@@ -25,9 +24,9 @@ add_executable(handoff_worker
 
 target_link_libraries(handoff_worker PRIVATE Core Base Platform)
 
-# worker 侧心跳的跨进程夹具：认 --watchdog-pipe-fd/--watchdog-ping-ms，挂上 WorkerHeartbeat 后活着
-# 直到被终止。由 TestWorkerSupervisor.cpp 当子进程派生——master 的看门狗汇聚要求「另一个进程真的在拍」，
-# 同进程内自造管道测不到「建管道 → fork 继承 → worker 起拍」这条完整路径
+# worker 侧心跳的跨进程夹具：认 --watchdog-pipe-fd/--watchdog-ping-ms，挂上 WorkerHeartbeat
+# 后活着直到被终止；由 TestWorkerSupervisor.cpp 派生，同进程自造管道测不到「建管道 → fork
+# 继承 → 起拍」这条完整路径。
 add_executable(heartbeat_worker
         HeartbeatWorker.cpp)
 

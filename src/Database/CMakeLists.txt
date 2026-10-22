@@ -1,28 +1,15 @@
-# ============================================================================
-# Database 模块 — 统一数据库抽象层与四种驱动实现
-# ============================================================================
-# Common  定义 DatabaseConnection / DatabaseResult / ConnectionConfig / 工厂契约
-# Sqlite  嵌入式驱动，无需外部服务，故为必选依赖
-# MySql / Postgres / Redis 依赖外部服务与第三方客户端库，按可选依赖处理：
-#         Conan 能提供时编译真实驱动，缺失时编译返回明确错误的桩实现
-# ============================================================================
+# Database 模块：统一数据库抽象层与四种驱动实现。Common 定义连接、结果、配置与工厂契约；
+# Sqlite 嵌入式且无需外部服务，为必选依赖；MySql / Postgres / Redis 按可选依赖处理：
+# Conan 提供客户端库时编译真实驱动，缺失时编译返回明确错误的桩实现。
 
 find_package(SQLite3 REQUIRED)
 
 # 登记随包导出的外部依赖（按组件记）：消费方链接 Database 时也要能找到 SQLite::SQLite3
 set_property(GLOBAL APPEND PROPERTY AsynGyanisPackageDependencies_Database SQLite3)
 
-# 可选驱动的统一接线：每个驱动都是「缓存或系统里有客户端包就编译真实实现，探测不到就
-# 退化为每个入口都给中文错误的桩」。探测（QUIET + TARGET 判定，绝不 REQUIRED——缺一个
-# 可选驱动不该让整个工程的 configure 失败）、链接、PUBLIC 宏、依赖登记与 status 五件事
-# 收在一个函数里，新增驱动只需在下面加一行调用。
-#
-# 参数：driverName 是大写词干（同时是 option 名与宏名：option(DATABASE_WITH_<名>)、
-# DATABASE_HAS_<名>）；cmakePackage 是 find_package 的名字（也是消费方要 find_dependency
-# 的名字）；cmakeTarget 是它导出的目标；libraryName 是文案里点名的客户端库（用户要去装的
-# 那个包名，PostgreSQL 上它与 find_package 名不同：包叫 libpq、配置叫 PostgreSQL）。
-# 清单经 GLOBAL 属性给 cmake/AsynGyanisInstall.cmake 的能力清单段遍历——加驱动而没同步
-# cmake/AsynGyanisFeatures.h.in 的宏，配置期当场拒绝而不是静默给 0。
+# 可选驱动统一接线：探测（QUIET + TARGET，绝不 REQUIRED——缺一个只退化，不失败）、链接、
+# PUBLIC 宏、依赖登记与 status 收在一处；驱动名进 GLOBAL 属性 AsynGyanisDatabaseDrivers，
+# cmakePackage 与 cmakeTarget 是查找名与目标名，libraryName 是用户要装的客户端包名。
 set_property(GLOBAL PROPERTY AsynGyanisDatabaseDrivers "")
 function(asyn_configure_database_driver driverName cmakePackage cmakeTarget libraryName displayName)
     set_property(GLOBAL APPEND PROPERTY AsynGyanisDatabaseDrivers "${driverName}")
