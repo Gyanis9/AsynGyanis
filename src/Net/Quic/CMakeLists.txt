@@ -19,6 +19,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/QuicAddressValidationToken.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCore.cpp
+        # 对端路径跟随、挑战记账与 PATH_RESPONSE 处理
+        ${CMAKE_CURRENT_LIST_DIR}/QuicConnectionCorePaths.cpp
         ${CMAKE_CURRENT_LIST_DIR}/QuicOutboundDatagram.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicReassemblyBuffer.h
         ${CMAKE_CURRENT_LIST_DIR}/QuicReassemblyBuffer.cpp

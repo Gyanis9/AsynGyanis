@@ -5557,7 +5557,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>ACK 里出 lost 集合后按空间重发：CRYPTO 按字节偏移补，流数据交给 onSendRangesLost（QuicConnectionCore.cpp:1187、1559、1938）</li>
-          <li>PTO 到期时补一个 PING 探测，探测空间记在 m_probeSpace；HANDSHAKE_DONE 没被 ACK 前会持续带出（QuicConnectionCore.cpp:1905、1431）</li>
+          <li>PTO 到期时补一个 PING 探测，探测空间记在 m_probeSpace；HANDSHAKE_DONE 没被 ACK 前会持续带出（QuicConnectionCore.cpp:1569、1170）</li>
           <li>关键更新有两道门禁：上一相位必须已被 ACK，且距上次更新静置满 3×PTO（QuicConnectionCore.cpp:1391），换完再 retireStaleKeyPhase 退役旧相位（.cpp:1470）</li>
         </ul>
       </div>
