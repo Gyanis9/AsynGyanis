@@ -29,6 +29,7 @@
 #include "Database/Pool/ConnectionPool.h"
 #include "Database/Pool/PooledConnection.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -213,7 +214,9 @@ namespace AsynGyanis::Database
          */
         [[nodiscard]] bool isActive() const noexcept
         {
-            return m_isActive;
+            // 查询线程会读这个标志，提交/回滚线程会写；底层对象不是 const，const 方法里只借用
+            // 一个非 const 视图给 atomic_ref，所有访问仍走原子操作
+            return std::atomic_ref<bool>(const_cast<bool &>(m_isActive)).load(std::memory_order_acquire);
         }
 
         /**
@@ -353,7 +356,7 @@ namespace AsynGyanis::Database
 
         PooledConnection            m_connection;       ///< 事务独占的连接，析构时归还池
         std::shared_ptr<SqlDialect> m_dialect;          ///< 本连接的方言，构造时解析并缓存（提供事务语句文本）
-        bool                        m_isActive = false; ///< 事务是否仍在进行，决定析构是否回滚
+        bool                        m_isActive = false; ///< 事务是否仍在进行，决定析构是否回滚；跨线程读写全部经 atomic_ref
         std::string                 m_lastError;        ///< 最后一次收尾动作没做成的原因（引擎拒绝或整笔时限到期）
 
         // 时限是本端计时：计时起点在 BEGIN 成功那一刻戳下，因此「先构造后设时限」与「设了时限再构造」

@@ -14,6 +14,21 @@
 
 namespace AsynGyanis::Database
 {
+    namespace
+    {
+        /// 事务活动标志的跨线程读：查询线程与提交/回滚线程之间只靠这一处原子操作同步
+        [[nodiscard]] bool readActiveFlag(const bool &flag) noexcept
+        {
+            return std::atomic_ref<bool>(const_cast<bool &>(flag)).load(std::memory_order_acquire);
+        }
+
+        /// 事务活动标志的跨线程写
+        void writeActiveFlag(bool &flag, const bool value) noexcept
+        {
+            std::atomic_ref<bool>(flag).store(value, std::memory_order_release);
+        }
+    } // namespace
+
     Transaction::Transaction(ConnectionPool &pool) : Transaction(pool, TransactionIsolationLevel::Default)
     {
     }
@@ -82,7 +97,7 @@ namespace AsynGyanis::Database
 
         // BEGIN 成功即已进入事务：先标记为活动，使随后任何失败路径（含下面 BEGIN 后置的隔离级别
         // 语句）在栈展开时都被析构回滚，而不是把开着的事务随连接还回池
-        m_isActive = true;
+        writeActiveFlag(m_isActive, true);
 
         // BEGIN 后置的引擎（PostgreSQL）：必须在事务第一条语句之前发出，失败同样让构造抛出，
         // 由上面的标记保证回滚
@@ -101,7 +116,7 @@ namespace AsynGyanis::Database
         // 未提交就回滚是唯一安全的默认动作：
         // 已提交/已回滚的事务 m_isActive 为假，这里不会发出多余的 ROLLBACK，不影响已落库的数据；
         // 异常穿过事务作用域时来不及调用 rollback()，由这里补上，避免半成品数据残留
-        if (m_isActive)
+        if (readActiveFlag(m_isActive))
         {
             // 析构不能抛异常：失败只记录在 lastError() 里（对象随即销毁），
             // rollback() 内部会断开连接，让池在归还时丢弃这条状态不明的连接
@@ -115,7 +130,7 @@ namespace AsynGyanis::Database
     bool Transaction::commit()
     {
         // 幂等：事务已经结束（提交过或回滚过）时不再发送 COMMIT
-        if (!m_isActive)
+        if (!readActiveFlag(m_isActive))
         {
             return true;
         }
@@ -136,14 +151,14 @@ namespace AsynGyanis::Database
         }
 
         // 提交成功，事务结束；此后再调用 commit()/rollback() 都是无操作
-        m_isActive = false;
+        writeActiveFlag(m_isActive, false);
         return true;
     }
 
     bool Transaction::rollback()
     {
         // 幂等：事务已经结束时直接返回成功
-        if (!m_isActive)
+        if (!readActiveFlag(m_isActive))
         {
             return true;
         }
@@ -157,7 +172,7 @@ namespace AsynGyanis::Database
             return false;
         }
 
-        m_isActive = false;
+        writeActiveFlag(m_isActive, false);
         return true;
     }
 
@@ -227,7 +242,7 @@ namespace AsynGyanis::Database
         // 事务已结束就一条都不发。这一步不是形式主义：SQLite 上没有活动事务时 SAVEPOINT 会另起一个
         // 事务（文档明写等价于 BEGIN DEFERRED），而这个对象的 m_isActive 已假、析构不再回滚也不再提交，
         // 那条连接就会带着一个没人负责的事务回到池里——把「保存点」变成一次意外的开事务
-        if (!m_isActive)
+        if (!readActiveFlag(m_isActive))
         {
             m_lastError = "数据库事务：事务已结束（已提交或已回滚），无法" + std::string(action) + "保存点";
             return false;
@@ -246,7 +261,7 @@ namespace AsynGyanis::Database
     {
         // 没设限（0 或负数）与已结束的事务一律回 false：后者已经有「已结束」那条判据在前面挡着，
         // 把两条原因混成一句会让人去查错的分支
-        if (!m_isActive || m_timeLimit <= std::chrono::milliseconds::zero())
+        if (!readActiveFlag(m_isActive) || m_timeLimit <= std::chrono::milliseconds::zero())
         {
             return false;
         }
@@ -265,7 +280,7 @@ namespace AsynGyanis::Database
     {
         // 没有预算要守（不设限，或事务已结束）就别碰连接的会话级设置：不设限时误把「预算 0」
         // 写回去，正好会把调用方设过的更严超时静默放松成无限
-        if (!m_isActive || m_timeLimit <= std::chrono::milliseconds::zero())
+        if (!readActiveFlag(m_isActive) || m_timeLimit <= std::chrono::milliseconds::zero())
         {
             return;
         }
