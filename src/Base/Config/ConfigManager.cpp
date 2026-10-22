@@ -1,5 +1,6 @@
 #include "Base/Config/ConfigManager.h"
 #include "Base/Config/ConfigDocument.h"
+#include "Base/Config/ConfigEnvironmentOverride.h"
 #include "Base/Config/ConfigSchema.h"
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
@@ -1033,178 +1034,6 @@ namespace AsynGyanis::Base
         return configFiles;
     }
 
-    namespace
-    {
-        /**
-         * @brief 只按 ASCII 把大写字母转小写
-         * @details 不用 std::tolower：它受 locale 影响，土耳其语环境下 'I' 会折成无点的 ı，
-         *          同一个环境变量名在不同机器的语言设置里折出不同的配置键，是查不出来的那类错。
-         * @param character 输入字符
-         * @return char 转换结果；非 ASCII 大写字母原样返回
-         */
-        [[nodiscard]] char toAsciiLower(const char character) noexcept
-        {
-            return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a') : character;
-        }
-
-        /**
-         * @brief 把去掉前缀的环境变量名折成配置键
-         * @details 规则：`__`（两个连续下划线）是层级分隔符，段内的单个下划线原样保留，整段转 ASCII
-         *          小写，于是 `SERVER__PORT` 对应 `server.port`。
-         * @param body 去掉前缀之后的变量名
-         * @return std::optional<std::string> 配置键；开头/结尾是分隔符这类映射不出合法键的写法返回空
-         */
-        [[nodiscard]] std::optional<std::string> configKeyFromEnvironmentSuffix(const std::string_view body)
-        {
-            std::string key;
-            key.reserve(body.size());
-            for (std::size_t index = 0; index < body.size(); ++index)
-            {
-                const char character = body[index];
-                if (character == '_' && index + 1 < body.size() && body[index + 1] == '_')
-                {
-                    // 前导与尾随的分隔符都映射不出合法的段名，宁可不认也不造一个空段
-                    if (key.empty() || key.back() == '.')
-                    {
-                        return std::nullopt;
-                    }
-                    key.push_back('.');
-                    ++index;
-                    continue;
-                }
-                key.push_back(toAsciiLower(character));
-            }
-            if (key.empty() || key.back() == '.')
-            {
-                return std::nullopt;
-            }
-            return key;
-        }
-
-        /**
-         * @brief 按目标类型解释环境变量的文本值
-         * @details 目标类型只从「文件里该键已有的类型」或「schema 声明」两处取，本函数不猜类型——
-         *          `8080` 该存成整数还是字符串是使用方的语义，不是这一层能定的。对象与数组
-         *          解析成 JSON 后还要核对顶层形态：对象项必须是对象、数组项必须是数组，
-         *          `42` 这类解析得动但形态不符的取值同样拒绝。
-         * @param text 环境变量原文
-         * @param type 目标类型（对象与数组按 JSON 解析并核对形态，其余未知类型一律按字符串交出）
-         * @param[out] error 转换失败时的中文说明，含原值
-         * @return std::optional<ConfigValue> 转换结果；失败时为空
-         */
-        [[nodiscard]] std::optional<ConfigValue> coerceEnvironmentValue(const std::string_view text, const ConfigValueType type, std::string &error)
-        {
-            const auto reject = [&text, &error](const std::string &reason) -> std::optional<ConfigValue>
-            {
-                error = std::format("{}，原值 '{}' 不是合法写法", reason, text);
-                return std::nullopt;
-            };
-
-            switch (type)
-            {
-                case ConfigValueType::boolean:
-                {
-                    std::string lowered;
-                    lowered.reserve(text.size());
-                    for (const char character: text)
-                    {
-                        lowered.push_back(toAsciiLower(character));
-                    }
-                    if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on")
-                    {
-                        return ConfigValue(true);
-                    }
-                    if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off")
-                    {
-                        return ConfigValue(false);
-                    }
-                    return reject("布尔项只认 1/0、true/false、yes/no、on/off");
-                }
-                case ConfigValueType::number_integer:
-                {
-                    long long parsed = 0;
-                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
-                    {
-                        return ConfigValue(parsed);
-                    }
-                    return reject("取值不是合法整数");
-                }
-                case ConfigValueType::number_unsigned:
-                {
-                    unsigned long long parsed = 0;
-                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
-                    {
-                        return ConfigValue(parsed);
-                    }
-                    return reject("取值不是合法非负整数");
-                }
-                case ConfigValueType::number_float:
-                {
-                    double parsed = 0.0;
-                    if (const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed); ec == std::errc{} && ptr == text.data() + text.size())
-                    {
-                        return ConfigValue(parsed);
-                    }
-                    return reject("取值不是合法浮点数");
-                }
-                case ConfigValueType::object:
-                case ConfigValueType::array:
-                {
-                    // 结构与列表只能按 JSON 收：`ASYN_SERVER__HOSTS=["a","b"]` 这种写法没有别的解释法
-                    ConfigValue parsed;
-                    try
-                    {
-                        parsed = ConfigValue::parse(std::string(text));
-                    } catch (const std::exception &)
-                    {
-                        return reject("对象与数组项的值必须是合法 JSON");
-                    }
-                    // 合法 JSON 不等于形态对得上：`42` 也解析得动，但把数组顶成数字等于偷换类型
-                    if (type == ConfigValueType::object && !parsed.is_object())
-                    {
-                        return reject("对象项的值必须是合法 JSON 对象");
-                    }
-                    if (type == ConfigValueType::array && !parsed.is_array())
-                    {
-                        return reject("数组项的值必须是合法 JSON 数组");
-                    }
-                    return parsed;
-                }
-                default:
-                    return ConfigValue(std::string(text));
-            }
-        }
-
-        /// 一条待应用的环境变量覆盖：原始变量名（报错点名）、折出的配置键与环境变量原文
-        struct EnvironmentOverrideCandidate
-        {
-            std::string variableName;
-            std::string key;
-            std::string value;
-        };
-
-        /**
-         * @brief 扫出带前缀的环境变量并折成候选键；名字映射不出键的逐条报错后跳过
-         * @param prefix 环境变量前缀
-         * @return std::vector<EnvironmentOverrideCandidate> 按环境枚举顺序排列的候选
-         */
-        [[nodiscard]] std::vector<EnvironmentOverrideCandidate> collectEnvironmentOverrideCandidates(const std::string &prefix)
-        {
-            std::vector<EnvironmentOverrideCandidate> candidates;
-            for (const auto &[variableName, rawValue]: Platform::ProcessInfo::environmentVariablesWithPrefix(prefix))
-            {
-                const std::optional<std::string> key = configKeyFromEnvironmentSuffix(std::string_view(variableName).substr(prefix.size()));
-                if (!key.has_value())
-                {
-                    // 名字畸形的那条直接出声：调用方以为自己在覆盖一个键，实际上什么都没发生
-                    LOG_ERROR_FMT("ConfigManager：环境变量 '{}' 的名字映射不出合法配置键（'__' 是层级分隔符，不能出现在开头或结尾），本条覆盖被忽略", variableName);
-                    continue;
-                }
-                candidates.push_back({variableName, *key, rawValue});
-            }
-            return candidates;
-        }
-    } // namespace
 
     void ConfigManager::setEnvironmentOverridePrefix(std::string prefix)
     {
@@ -1247,7 +1076,7 @@ namespace AsynGyanis::Base
             schema = m_schema;
         }
 
-        const std::vector<EnvironmentOverrideCandidate> candidates = collectEnvironmentOverrideCandidates(prefix);
+        const std::vector<Detail::EnvironmentOverrideCandidate> candidates = Detail::collectEnvironmentOverrideCandidates(prefix);
         if (candidates.empty())
         {
             return 0;
@@ -1279,7 +1108,7 @@ namespace AsynGyanis::Base
             }
 
             std::string                error;
-            std::optional<ConfigValue> converted = coerceEnvironmentValue(candidate.value, *targetType, error);
+            std::optional<ConfigValue> converted = Detail::coerceEnvironmentValue(candidate.value, *targetType, error);
             if (!converted.has_value())
             {
                 failures.push_back(std::format("配置键 '{}'（按类型 '{}' 解释，来自环境变量 '{}'）：{}", candidate.key, typeName(*targetType), candidate.variableName, error));

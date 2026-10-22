@@ -401,6 +401,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "WakeupFailureReport.h" EXCLUDE
             PATTERN "WorkerSupervisorSupport.h" EXCLUDE
             PATTERN "ConfigDocument.h" EXCLUDE
+            PATTERN "ConfigEnvironmentOverride.h" EXCLUDE
             PATTERN "Http2ErrorOut.h" EXCLUDE
             PATTERN "QuicSupport.h" EXCLUDE
             PATTERN "OtlpHttpExportSupport.h" EXCLUDE
