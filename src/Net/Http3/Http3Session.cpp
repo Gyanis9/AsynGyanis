@@ -7,6 +7,7 @@
 #include "Net/Http/Message/HttpHeaderRules.h"
 #include "Net/Http/Routing/Router.h"
 #include "Net/Http/Message/TraceContext.h"
+#include "Net/Http/WebSocketUpgradeAdmission.h"
 #include "Net/Http3/Http3Connection.h"
 #include "Net/Http3/Qpack.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
@@ -1567,18 +1568,7 @@ namespace AsynGyanis::Net
 
     bool Http3Session::rejectWebSocketUpgradeByPolicy(const std::int64_t streamId, HttpRequest &request, HttpResponse &response)
     {
-        const WebSocketUpgradePolicy    &upgradePolicy = response.webSocketUpgradePolicy();
-        const std::optional<std::string> hostField     = request.getHeader("host");
-        const std::optional<std::string> originField   = request.getHeader("origin");
-        const std::optional<std::string> offeredField  = request.getHeader(kWebSocketSubprotocolHeaderName);
-        // 三条 Optional 都按「有才取」写成视图，不用 value_or：optional<string>::value_or 要求实参可
-        // 转成 string，而 string_view → string 是显式构造（LWG-3424 把它写成了 static_assert）
-        const std::string_view hostText    = hostField.has_value() ? std::string_view{*hostField} : std::string_view{};
-        const std::string_view originText  = originField.has_value() ? std::string_view{*originField} : std::string_view{};
-        const std::string_view offeredText = offeredField.has_value() ? std::string_view{*offeredField} : std::string_view{};
-        const std::string      sameOrigin  = makeWebSocketSameOrigin(request.overTls(), hostText);
-
-        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgrade(originText, offeredText, sameOrigin, upgradePolicy);
+        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgradeForRequest(request, response.webSocketUpgradePolicy());
         if (decision.isAccepted)
         {
             if (decision.selectedSubprotocol.has_value())

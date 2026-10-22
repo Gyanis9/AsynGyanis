@@ -10,6 +10,7 @@
 #include "Base/Log/LogThrottle.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Message/HttpDate.h"
+#include "Net/Http/WebSocketUpgradeAdmission.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketPeer.h"
@@ -1346,18 +1347,7 @@ namespace AsynGyanis::Net
     Core::Task<std::optional<Http2Session::RequestServeOutcome>> Http2Session::evaluateWebSocketUpgradeGate(const std::uint32_t streamId, HttpRequest &request,
                                                                                                             HttpResponse &response, std::vector<HpackHeaderField> &acceptFields)
     {
-        const WebSocketUpgradePolicy    &upgradePolicy = response.webSocketUpgradePolicy();
-        const std::optional<std::string> hostField     = request.getHeader("host");
-        const std::optional<std::string> originField   = request.getHeader("origin");
-        const std::optional<std::string> offeredField  = request.getHeader(kWebSocketSubprotocolHeaderName);
-        // 三条 Optional 都按「有才取」写成视图，不用 value_or：optional<string>::value_or 要求实参可
-        // 转成 string，而 string_view → string 是显式构造（LWG-3424 把它写成了 static_assert）
-        const std::string_view hostText    = hostField.has_value() ? std::string_view{*hostField} : std::string_view{};
-        const std::string_view originText  = originField.has_value() ? std::string_view{*originField} : std::string_view{};
-        const std::string_view offeredText = offeredField.has_value() ? std::string_view{*offeredField} : std::string_view{};
-        const std::string      sameOrigin  = makeWebSocketSameOrigin(request.overTls(), hostText);
-
-        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgrade(originText, offeredText, sameOrigin, upgradePolicy);
+        const WebSocketUpgradeDecision decision = evaluateWebSocketUpgradeForRequest(request, response.webSocketUpgradePolicy());
         if (!decision.isAccepted)
         {
             // 403（来源不可接受）与 400（谈不成子协议而策略要求拒）都由判定函数给码；两档都不进

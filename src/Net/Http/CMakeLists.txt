@@ -1,5 +1,7 @@
 # Net/Http —— HTTP/HTTPS 报文、会话、服务器、路由与中间件
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
+        # 只有头文件：h1/h2/h3 共用的 WebSocket 升级判定，不安装
+        ${CMAKE_CURRENT_LIST_DIR}/WebSocketUpgradeAdmission.h
         # 只有头文件：压缩正文解码的失败类别与结果别名，Gzip 与 Client/HttpContentCoding 共用
         ${CMAKE_CURRENT_LIST_DIR}/Message/HttpBodyDecodeError.h
 ${CMAKE_CURRENT_LIST_DIR}/Message/ParseStatus.h

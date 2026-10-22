@@ -24,6 +24,7 @@
 #include "Net/Http/Config/HttpServerLimits.h"
 #include "Net/Http/Server/HttpServerStats.h"
 #include "Net/Http/Routing/Router.h"
+#include "Net/Http/WebSocketUpgradeAdmission.h"
 #include "Net/Http/Message/TraceContext.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
@@ -1453,20 +1454,9 @@ namespace AsynGyanis::Net
                         co_return;
                     }
 
-                    // ---------------- Origin 准入与子协议协商（三条通道共用一份判定）----------------
-                    // 同源串吃的是「传输层是不是 TLS + 本连接的权威段」，不是对端自报的 :scheme；
-                    // h1 在这里取到的 host 已由解析器判过形状（见 findAuthorityFieldDefect）
-                    const WebSocketUpgradePolicy    &upgradePolicy = response.webSocketUpgradePolicy();
-                    const std::optional<std::string> hostField     = request.getHeader("host");
-                    const std::optional<std::string> originField   = request.getHeader("origin");
-                    const std::optional<std::string> offeredField  = request.getHeader(kWebSocketSubprotocolHeaderName);
-                    // 三条 Optional 都按「有才取」写成视图，不用 value_or：optional<string>::value_or 要求
-                    // 实参可转成 string，而 string_view → string 是显式构造（LWG-3424 把它写成 static_assert）
-                    const std::string_view         hostText        = hostField.has_value() ? std::string_view{*hostField} : std::string_view{};
-                    const std::string_view         originText      = originField.has_value() ? std::string_view{*originField} : std::string_view{};
-                    const std::string_view         offeredText     = offeredField.has_value() ? std::string_view{*offeredField} : std::string_view{};
-                    const std::string              sameOrigin      = makeWebSocketSameOrigin(request.overTls(), hostText);
-                    const WebSocketUpgradeDecision upgradeDecision = evaluateWebSocketUpgrade(originText, offeredText, sameOrigin, upgradePolicy);
+                    // Origin 准入与子协议协商（三条通道共用一份判定）；h1 取到的 host 已由解析器
+                    // 判过形状（见 findAuthorityFieldDefect），同源串的拼法与另两条通道同解
+                    const WebSocketUpgradeDecision upgradeDecision = evaluateWebSocketUpgradeForRequest(request, response.webSocketUpgradePolicy());
                     if (!upgradeDecision.isAccepted)
                     {
                         // 403（来源不可接受）与 400（谈不成子协议且策略要求拒）都由判定函数给码。两档都不进
