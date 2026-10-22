@@ -70,6 +70,12 @@ add_library(Database ${ASYN_LIBRARY_KIND}
 # 静态是默认形态；打开 BUILD_SHARED_LIBS 时本模块要带上自己的导出宏定义与可见性预设
 asyn_configure_module_library(Database)
 
+if(MSVC)
+    # Queryable/SchemaMigrator 的模板实例化会把单个消费方 TU 推到 MSVC 目标文件段数上限；
+    # /bigobj 只放大段表容量，不改变代码生成，交给所有消费方而不是只给某一个测试
+    target_compile_options(Database INTERFACE /bigobj)
+endif()
+
 # Base 是显式依赖：本模块的异常体系（DatabaseException 家族）派生自 Base::Exception，
 # 虽然 Base 会经 Core 传递到本目标，但既然直接使用了它的类型就应当自己声明
 target_link_libraries(Database PUBLIC

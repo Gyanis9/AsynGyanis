@@ -56,6 +56,13 @@
       "occurrences": 2
     },
     {
+      "hash": "4cde61341495f4be",
+      "files": [
+        "src/Database/Queryable/SchemaMigratorImpl.h"
+      ],
+      "occurrences": 2
+    },
+    {
       "hash": "51392a68738c74be",
       "files": [
         "src/Database/Dialect/MySqlDialect.cpp",
@@ -192,7 +199,7 @@
     {
       "hash": "bf236e8520da322d",
       "files": [
-        "src/Database/Queryable/SchemaMigrator.h"
+        "src/Database/Queryable/SchemaMigratorImpl.h"
       ],
       "occurrences": 2
     },
