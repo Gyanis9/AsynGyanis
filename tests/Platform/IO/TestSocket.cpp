@@ -543,4 +543,18 @@ namespace AsynGyanis::Platform
         EXPECT_FALSE(Socket::bind(FileDescriptor::kInvalid, nullptr, 0));
         EXPECT_NE(Socket::lastError().value(), 0);
     }
+
+    /**
+     * @brief 钉住：监听器是否需要跨进程移交按平台语义给出
+     * @details Windows 没有 SO_REUSEPORT 等价物，必须先 bind 一次再逐 worker 移交；Linux 可由
+     *          各 worker 自己 bind 同一端口。这个查询是 WorkerSupervisor 选启动路径的唯一判据。
+     */
+    TEST(Socket, RequiresListenerHandoffMatchesPlatformSemantics)
+    {
+#if ASYN_PLATFORM_WIN32
+        EXPECT_TRUE(Socket::requiresListenerHandoff());
+#else
+        EXPECT_FALSE(Socket::requiresListenerHandoff());
+#endif
+    }
 } // namespace AsynGyanis::Platform

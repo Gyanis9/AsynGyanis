@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -74,6 +76,24 @@ namespace AsynGyanis::Platform
 
         EXPECT_GT(firstProcessId, 0L) << "当前进程号应为正数";
         EXPECT_EQ(firstProcessId, secondProcessId) << "同一次运行里进程号不该变";
+    }
+
+    /**
+     * @brief 钉住：线程指纹同线程稳定、不同线程可区分，且非零
+     */
+    TEST(ProcessInfo, CurrentThreadFingerprintIsStableAndThreadSpecific)
+    {
+        const std::uint64_t mainFingerprint = ProcessInfo::currentThreadFingerprint();
+        ASSERT_NE(mainFingerprint, 0U) << "指纹为零说明没接上平台线程标识";
+        EXPECT_EQ(ProcessInfo::currentThreadFingerprint(), mainFingerprint);
+
+        std::atomic<std::uint64_t> workerFingerprint{0};
+        std::thread                worker([&workerFingerprint] { workerFingerprint.store(ProcessInfo::currentThreadFingerprint(), std::memory_order_relaxed); });
+        worker.join();
+
+        const std::uint64_t observedWorkerFingerprint = workerFingerprint.load(std::memory_order_relaxed);
+        ASSERT_NE(observedWorkerFingerprint, 0U);
+        EXPECT_NE(observedWorkerFingerprint, mainFingerprint) << "两条线程给出了同一个指纹，诊断时无法区分是谁";
     }
 
     namespace
