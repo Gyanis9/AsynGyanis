@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=8999
+# headers=308 entries=9001
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -2199,6 +2199,7 @@ src/Database/Pool/ConnectionPool.h	PooledConnection await_resume() noexcept
 src/Database/Pool/ConnectionPool.h	PooledConnection tryAcquire() noexcept
 src/Database/Pool/ConnectionPool.h	[[nodiscard]] bool isEntryExpired(const IdleEntry &entry) const noexcept
 src/Database/Pool/ConnectionPool.h	[[nodiscard]] bool isPastMaximumLifetime(const DatabaseConnection &connection, std::chrono::steady_clock::time_point now) const noexcept
+src/Database/Pool/ConnectionPool.h	[[nodiscard]] bool needsToSuspendAfterPostQueueRetry() noexcept
 src/Database/Pool/ConnectionPool.h	[[nodiscard]] static PoolConfig validateConfiguration(const PoolConfig &config)
 src/Database/Pool/ConnectionPool.h	[[nodiscard]] static bool isConnectionHealthy(DatabaseConnection *connection) noexcept
 src/Database/Pool/ConnectionPool.h	[[nodiscard]] std::pair<std::unique_ptr<DatabaseConnection>, bool> attemptCreateConnection() noexcept
@@ -2267,6 +2268,7 @@ src/Database/Pool/ConnectionPool.h	struct IdleEntry
 src/Database/Pool/ConnectionPool.h	struct ResumeTicket
 src/Database/Pool/ConnectionPool.h	template<typename Callback> auto withTransaction(Callback &&callback)
 src/Database/Pool/ConnectionPool.h	void closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
+src/Database/Pool/ConnectionPool.h	void discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
 src/Database/Pool/ConnectionPool.h	void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
 src/Database/Pool/ConnectionPool.h	void expireTimedOutWaiters() noexcept
 src/Database/Pool/ConnectionPool.h	void healthCheckLoop(const std::stop_token &stopToken)

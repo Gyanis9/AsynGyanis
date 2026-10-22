@@ -249,7 +249,7 @@ namespace AsynGyanis::Database
     {
         std::unique_ptr<DatabaseConnection> connection;
         std::unique_lock                    lock(m_mutex);
-        m_syncWaitingCount.fetch_add(1);
+        m_syncWaitingCount.fetch_add(1, std::memory_order_seq_cst);
 
         while (!m_isShuttingDown.load(std::memory_order_acquire))
         {
@@ -503,7 +503,32 @@ namespace AsynGyanis::Database
             }
         }
 
-        return true;
+        // 入表后复取一次：补住「首次尝试与入表之间刚好腾出名额」的唤醒窗口。
+        // 这一次尝试只走慢路径，抖动形态（没人等）不会付它，也不会为每次丢弃加原子写
+        return needsToSuspendAfterPostQueueRetry();
+    }
+
+    bool ConnectionPool::AcquireAwaiter::needsToSuspendAfterPostQueueRetry() noexcept
+    {
+        std::unique_ptr<DatabaseConnection> connection = m_pool->tryAcquireOrCreateInternal();
+        if (!connection)
+        {
+            return true;
+        }
+
+        const std::lock_guard lock(m_pool->m_asyncMutex);
+        if (m_inList)
+        {
+            m_pool->removeAsyncWaiterLocked(this);
+            m_inList = false;
+            m_resumeTicket.reset();
+            m_result = std::move(connection);
+            return false;
+        }
+
+        // 唤醒方已经把一条连接交接进来：这条补取的不再占名额，按池的丢弃出口结账
+        m_pool->discardConnection(std::move(connection));
+        return false;
     }
 
     PooledConnection ConnectionPool::AcquireAwaiter::await_resume() noexcept
@@ -597,42 +622,42 @@ namespace AsynGyanis::Database
         }
 
         m_activeCount.fetch_sub(1);
-
         if (isDiscard)
         {
             // 调用方判定了这条连接的会话状态不可信（语句在驱动侧失败、事务半路出错那一类）：
             // 不复位、不交接、不入栈，直接关掉并叫醒等待者——名额确实空了出来。
             // 跳过会话复位是有意的：没有下一个借用者要保护，那条往返是白付的
-            discardConnection(std::move(connection));
-            wakeWaitersForFreedSlot();
+            discardAndWakeReturnedConnection(std::move(connection));
             return;
         }
 
-        // 会话状态复位必须早于「放回空闲栈」与「直接交给等待者」两条去向：
-        // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者
-        const bool isSessionResetClean = connection->resetSessionState();
-
-        // ---- 判复位、判失联与判存活期：都排在两条去向之前 ----
-        // 三条判据同一条去向：复位没干净意味着上一个借用者的 MULTI/事务还挂在服务端，这种连接交出去
-        // 就是「会话状态串给下一位」最贵的那一种——不报错、语句照收、锁照握。
-        // 两条去向（直接交给等待者 / 放回空闲栈）也必须拿到同一条「还活着且还在存活期内」的连接：
+        // ---- 先判失联与存活期：这两条命中时连接直接丢弃，不必再做会话复位 ----
+        // 两条去向（直接交给等待者 / 放回空闲栈）必须拿到同一条「还活着且还在存活期内」的连接：
         // 空闲栈一侧的取出路径早就在判这两条，而直接交接此前只判了失联——把一条已过存活期的连接
         // 从后门塞给协程，等于绕过 maximumLifetimeSeconds 的轮换约定（对端已单方面掐线的连接同理）
         // 判定只读这条连接自己的建立时刻与池配置，不涉及共享状态，因此不必进 m_mutex
         const auto returnedAt = std::chrono::steady_clock::now();
-        if (!isSessionResetClean || !isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
+        if (!isConnectionHealthy(connection.get()) || isPastMaximumLifetime(*connection, returnedAt))
+        {
+            // 丢弃并退还名额（断开留在锁外，与 healthCheckLoop 同一条纪律），
+            // 再叫醒等待者：空闲栈没变多，但名额确实空了出来
+            discardAndWakeReturnedConnection(std::move(connection));
+            return;
+        }
+
+        // 会话状态复位必须早于「放回空闲栈」与「直接交给等待者」两条去向：
+        // 上一个借用者留下的会话级状态（Redis 的未发送管道、临时表等）不能串给下一个借用者。
+        // 复位没干净意味着上一个借用者的 MULTI/事务还挂在服务端，这种连接交出去就是
+        // 「会话状态串给下一位」最贵的那一种——不报错、语句照收、锁照握
+        if (!connection->resetSessionState())
         {
             // 「复位没干净」这一条单独记数：它说的是「驱动清不掉上一个借用者留下的状态」，
             // 与失联、过期那两条正常生命周期不是一回事，混进丢弃总数里就分不出「轮换到了」与「有人在还脏连接」
-            if (!isSessionResetClean)
-            {
-                m_sessionResetFailures.fetch_add(1, std::memory_order_relaxed);
-            }
+            m_sessionResetFailures.fetch_add(1, std::memory_order_relaxed);
 
             // 丢弃并退还名额（断开留在锁外，与 healthCheckLoop 同一条纪律），
             // 再叫醒等待者：空闲栈没变多，但名额确实空了出来
-            discardConnection(std::move(connection));
-            wakeWaitersForFreedSlot();
+            discardAndWakeReturnedConnection(std::move(connection));
             return;
         }
 
@@ -705,6 +730,14 @@ namespace AsynGyanis::Database
 
     void ConnectionPool::wakeWaitersForFreedSlot() noexcept
     {
+        // 无等待者时整段跳过两把锁：抖动形态每次归还都走丢弃出口，而绝大多数时刻池里没人排队。
+        // 两个计数都用 acquire：异步侧在锁内以 release 发布，同步侧在 m_mutex 内以 release 增加；
+        // 若这里读到 0 而恰好有等待者正在注册，它会在注册后的复检/世代号核对里看见刚腾出的名额
+        if (m_asyncWaitingCount.load(std::memory_order_seq_cst) == 0 && m_syncWaitingCount.load(std::memory_order_seq_cst) == 0)
+        {
+            return;
+        }
+
         // 异步侧先叫醒一位：取走票据要持 m_asyncMutex，而恢复动作必须在锁外投
         // （就地恢复等于让协程的后续代码跑到本次归还的线程上，与「回调在事件循环线程」的约定相悖）
         std::shared_ptr<AcquireAwaiter::ResumeTicket> ticket;
@@ -972,8 +1005,9 @@ namespace AsynGyanis::Database
     void ConnectionPool::refreshAsyncWaitingCount() noexcept
     {
         // 只在持有 m_asyncMutex 的段里、改动 m_asyncWaiters 之后调用。灌的是「当下有多少」而不是增减量：
-        // 漏调一处只会让这一格少报，不会一路漂走，而用例把这份镜像与 waitingCount() 逐轮对齐
-        m_asyncWaitingCount.store(m_asyncWaiters.size(), std::memory_order_relaxed);
+        // 漏调一处只会让这一格少报，不会一路漂走，而用例把这份镜像与 waitingCount() 逐轮对齐。
+        // 用 release 发布：无等待者的唤醒快路径以 acquire 读它，读到非零才去取等待表锁
+        m_asyncWaitingCount.store(m_asyncWaiters.size(), std::memory_order_seq_cst);
     }
 
     void ConnectionPool::removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
@@ -1002,6 +1036,12 @@ namespace AsynGyanis::Database
         closeTrackedConnection(std::move(connection));
         m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
         m_totalDiscarded.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void ConnectionPool::discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
+    {
+        discardConnection(std::move(connection));
+        wakeWaitersForFreedSlot();
     }
 
     bool ConnectionPool::returnConnectionIfAlive(std::unique_ptr<DatabaseConnection> &connection, const std::shared_ptr<PoolLiveness> &liveness, const bool isDiscard) noexcept

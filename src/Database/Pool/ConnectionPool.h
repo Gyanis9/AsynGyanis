@@ -347,6 +347,15 @@ namespace AsynGyanis::Database
 
         private:
             /**
+             * @brief 入表后再尝试一次取连接，决定是否还值得挂起
+             * @details 补住「首次尝试与入表之间刚好有连接腾出名额」的唤醒窗口：那次唤醒可能
+             *          发生在注册之前。拿到连接就摘表返回，拿不到才真正挂起。
+             * @return true 仍无连接、需要挂起
+             * @return false 已拿到连接，或唤醒方已经交接了一条（`m_result` 已就绪）
+             */
+            [[nodiscard]] bool needsToSuspendAfterPostQueueRetry() noexcept;
+
+            /**
              * @brief 恢复票据：把「恢复这次等待」与「等待器是否还活着」分开
              * @details 交接连接时池把恢复动作投回事件循环，而那一刻之后调用方随时可能销毁 Task
              *          （帧连同等待器一起析构）。池投出去的若是裸句柄，循环那边就会 resume 一块
@@ -524,6 +533,13 @@ namespace AsynGyanis::Database
          * @note 名额在取出（或预占）时就已记上，丢弃不还回去会让池永久少一个位置
          */
         void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
+
+        /**
+         * @brief 丢弃归还的连接并叫醒为它腾出的名额
+         * @details 归还路径的三条失败出口共用，避免漏掉「丢弃」或「叫醒」其中一步。
+         * @param connection 要丢弃的连接（可为空，空时丢弃是空操作，仍会叫醒等待者）
+         */
+        void discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
 
         /**
          * @brief 有名额被腾出来时叫醒等待者（同步一位、异步一位）
