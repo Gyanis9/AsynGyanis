@@ -171,13 +171,13 @@
       "row": 1,
       "sources": [
         {
-          "path": "src/Base/Config/ConfigManager.cpp",
-          "line": 973,
+          "path": "src/Base/Config/ConfigHotReload.cpp",
+          "line": 18,
           "label": "handleFileChange"
         },
         {
-          "path": "src/Base/Config/ConfigManager.cpp",
-          "line": 982,
+          "path": "src/Base/Config/ConfigHotReload.cpp",
+          "line": 27,
           "label": "Rescan 先于扩展名过滤"
         },
         {
@@ -258,7 +258,7 @@
       "sources": [
         {
           "path": "src/Base/Config/ConfigManager.cpp",
-          "line": 1537,
+          "line": 1332,
           "label": "commitConfigData"
         },
         {
@@ -314,7 +314,7 @@
       "sources": [
         {
           "path": "src/Base/Config/ConfigManager.cpp",
-          "line": 1437,
+          "line": 1232,
           "label": "环境变量覆盖"
         }
       ]
@@ -333,8 +333,8 @@
           "label": "HotReloadCallback"
         },
         {
-          "path": "src/Base/Config/ConfigManager.cpp",
-          "line": 1073,
+          "path": "src/Base/Config/ConfigHotReload.cpp",
+          "line": 118,
           "label": "runReloadTask"
         }
       ]
