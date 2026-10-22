@@ -233,7 +233,7 @@ namespace AsynGyanis::Net
 
     std::string_view Http2Session::chunkFramePayload(const std::string_view chunkFrame)
     {
-        // 剥离逻辑已上收到 Net/Http/HttpChunkFrame：h2 与 h3 面对的是同一份 h1 分块帧，
+        // 剥离逻辑已上收到 Net/Http/Message/HttpChunkFrame：h2 与 h3 面对的是同一份 h1 分块帧，
         // 各自实现一遍只会让两边的边界判定慢慢走偏。这里保留一个转发的成员函数，叫法不变
         return Net::chunkFramePayload(chunkFrame);
     }
