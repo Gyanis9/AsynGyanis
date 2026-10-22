@@ -3,7 +3,8 @@
 # 用本框架的 acme_issuance_probe 走完整台 RFC 8555 状态机，再拿 Pebble 本次启动生成的根验链。
 
 # 进程内桩与本仓同源、一起被改；真机构用例只走到「取目录 + 建号」，Pebble 让回环走完整条链路：
-# HTTP-01 的取令牌端口配成 5002，域名用 127.0.0.1.sslip.io 这类通配解析回本机。
+# HTTP-01 的 httpPort 从 Pebble 默认 5002 改为 ASYN_ACME_CROSS_HTTP_PORT（默认 15002），
+# 域名用 127.0.0.1.sslip.io 这类通配解析回本机。
 
 # 这一步真抓到过两个缺陷：ACME 请求漏 User-Agent（Boulder/Pebble 一律 400 malformed）；
 # 机构复用已 valid 的授权时客户端又去触发挑战
