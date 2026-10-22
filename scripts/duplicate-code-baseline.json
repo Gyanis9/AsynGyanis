@@ -169,15 +169,6 @@
       "occurrences": 2
     },
     {
-      "hash": "8d5242626c58474c",
-      "files": [
-        "src/Net/Logging/LogExportConfiguration.cpp",
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 3
-    },
-    {
       "hash": "916124f7f975e06e",
       "files": [
         "src/Core/Socket/AsyncSocket.cpp"
@@ -198,16 +189,6 @@
         "src/Database/Dialect/SqliteDialect.cpp"
       ],
       "occurrences": 2
-    },
-    {
-      "hash": "a69b5946b99d38cf",
-      "files": [
-        "src/Net/Http/HttpServerConfig.cpp",
-        "src/Net/Logging/LogExportConfiguration.cpp",
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 4
     },
     {
       "hash": "ac9eaa52649d3d73",
@@ -276,23 +257,6 @@
         "src/Database/Dialect/SqliteDialect.cpp"
       ],
       "occurrences": 2
-    },
-    {
-      "hash": "c73c82b9e3f21819",
-      "files": [
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
-      "hash": "cb86e5570f0ff6f9",
-      "files": [
-        "src/Net/Http/HttpServerConfig.cpp",
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 3
     },
     {
       "hash": "cff7c8dcf7deec42",

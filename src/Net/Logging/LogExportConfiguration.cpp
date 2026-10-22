@@ -1,5 +1,7 @@
 #include "Net/Logging/LogExportConfiguration.h"
 
+#include "Net/Telemetry/OtlpConfigurationSupport.h"
+#include "Net/Http/HttpConfigValidation.h"
 #include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/LogicException.h"
@@ -17,6 +19,12 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::findOptionalObject;
+        using HttpConfig::joinKeys;
+        using HttpConfig::rejectUnknownKeys;
+        using HttpConfig::requireNonEmptyString;
+        using HttpConfig::requirePositiveInteger;
+
         using HttpConfig::toMilliseconds;
 
         /// log_export 段直接支持的键
@@ -24,120 +32,16 @@ namespace AsynGyanis::Net
                 "enabled", "service_name", "service_version", "export_interval_ms", "shutdown_timeout_ms", "maximum_pending_records", "maximum_batch_records", "otlp",
         };
 
-        /// otlp 子段支持的键
-        constexpr std::array<std::string_view, 3> kOtlpKeys{"endpoint", "timeout_ms", "headers"};
-
-        /// @brief 把一组可接受的键拼成一句可读的提示
-        std::string joinKeys(const std::string_view *keys, const std::size_t keyCount)
-        {
-            std::string text;
-            for (std::size_t index = 0; index < keyCount; ++index)
-            {
-                if (index != 0)
-                {
-                    text += "、";
-                }
-                text += keys[index];
-            }
-            return text;
-        }
-
-        /// @brief 拒绝该层不认得的键
-        void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount, const std::string &pathPrefix)
-        {
-            for (const auto &[memberName, memberValue]: node.items())
-            {
-                const bool isAccepted = std::any_of(keys, keys + keyCount, [&memberName](const std::string_view accepted) { return accepted == memberName; });
-                if (!isAccepted)
-                {
-                    throw Base::ConfigValidationException(pathPrefix + "." + memberName, "未知的配置键；本层支持：" + joinKeys(keys, keyCount));
-                }
-            }
-        }
-
-        /// @brief 取可选对象子段
-        const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
-        {
-            if (!node.contains(key))
-            {
-                return nullptr;
-            }
-            const Base::ConfigValue &child = node.at(key);
-            if (!child.is_object())
-            {
-                throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是一个对象");
-            }
-            return &child;
-        }
-
-        /// @brief 取正整数
-        std::uint64_t requirePositiveInteger(const Base::ConfigValue &value, const std::string &key)
-        {
-            if (!value.is_number_integer() && !value.is_number_unsigned())
-            {
-                throw Base::ConfigValidationException(key, "必须是整数（不能写成字符串或小数）");
-            }
-            if (value.is_number_integer())
-            {
-                const std::int64_t signedValue = value.get<std::int64_t>();
-                if (signedValue <= 0)
-                {
-                    throw Base::ConfigValidationException(key, "必须大于 0");
-                }
-                return static_cast<std::uint64_t>(signedValue);
-            }
-            const std::uint64_t magnitude = value.get<std::uint64_t>();
-            if (magnitude == 0U)
-            {
-                throw Base::ConfigValidationException(key, "必须大于 0");
-            }
-            return magnitude;
-        }
-        /// @brief 取非空文本
-        std::string requireNonEmptyString(const Base::ConfigValue &value, const std::string &key)
-        {
-            if (!value.is_string())
-            {
-                throw Base::ConfigValidationException(key, "必须是字符串");
-            }
-            std::string text = value.get<std::string>();
-            if (text.empty())
-            {
-                throw Base::ConfigValidationException(key, "不能是空串");
-            }
-            return text;
-        }
-
         /// @brief 读 otlp 子段
         void readOtlpSection(const Base::ConfigValue &node, LogExportConfiguration &configuration, const std::string &sectionPath)
         {
-            const std::string pathPrefix = sectionPath + ".otlp";
-            rejectUnknownKeys(node, kOtlpKeys.data(), kOtlpKeys.size(), pathPrefix);
-
-            if (node.contains("endpoint"))
+            Telemetry::OtlpSectionValues values = Telemetry::readOtlpSection(node, sectionPath);
+            configuration.otlpEndpoint          = std::move(values.endpoint);
+            if (values.requestTimeout.has_value())
             {
-                configuration.otlpEndpoint = requireNonEmptyString(node.at("endpoint"), pathPrefix + ".endpoint");
+                configuration.requestTimeout = *values.requestTimeout;
             }
-            if (node.contains("timeout_ms"))
-            {
-                configuration.requestTimeout = toMilliseconds(requirePositiveInteger(node.at("timeout_ms"), pathPrefix + ".timeout_ms"), pathPrefix + ".timeout_ms");
-            }
-            if (node.contains("headers"))
-            {
-                const Base::ConfigValue &headers = node.at("headers");
-                if (!headers.is_object())
-                {
-                    throw Base::ConfigValidationException(pathPrefix + ".headers", "必须是一个「头部名: 值」的对象");
-                }
-                for (const auto &[name, value]: headers.items())
-                {
-                    if (!value.is_string())
-                    {
-                        throw Base::ConfigValidationException(pathPrefix + ".headers." + name, "头部取值必须是字符串");
-                    }
-                    configuration.otlpHeaders.emplace_back(name, value.get<std::string>());
-                }
-            }
+            configuration.otlpHeaders = std::move(values.headers);
         }
     } // namespace
 

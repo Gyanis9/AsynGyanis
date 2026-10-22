@@ -2,4 +2,5 @@
 set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/OtlpHttpExportSupport.h
         ${CMAKE_CURRENT_LIST_DIR}/OtlpJsonSupport.h
+        ${CMAKE_CURRENT_LIST_DIR}/OtlpConfigurationSupport.h
 )

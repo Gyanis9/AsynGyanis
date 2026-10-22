@@ -33,6 +33,7 @@ ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerConfig.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerConfig.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpConfigDuration.h
+        ${CMAKE_CURRENT_LIST_DIR}/HttpConfigValidation.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.h
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerAssembly.cpp
         ${CMAKE_CURRENT_LIST_DIR}/HttpServerStats.cpp

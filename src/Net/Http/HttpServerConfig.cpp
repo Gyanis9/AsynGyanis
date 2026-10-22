@@ -1,5 +1,6 @@
 #include "Net/Http/HttpServerConfig.h"
 
+#include "Net/Http/HttpConfigValidation.h"
 #include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Core/Socket/InetAddress.h"
@@ -19,6 +20,10 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::findOptionalObject;
+        using HttpConfig::joinKeys;
+        using HttpConfig::rejectUnknownKeys;
+
         using HttpConfig::toMilliseconds;
 
         /// server 段直接支持的键
@@ -87,46 +92,6 @@ namespace AsynGyanis::Net
                 {"maximum_chunk_size_line_length", &HttpParserLimits::maximumChunkSizeLineLength},
                 {"maximum_websocket_message_size", &HttpParserLimits::maximumWebsocketMessageSize},
         }};
-
-        /**
-         * @brief 把一组可接受的键拼成一句可读的提示
-         * @param keys 键表
-         * @return std::string 形如 "a、b、c" 的中文枚举
-         */
-        [[nodiscard]] std::string joinKeys(const std::string_view *keys, const std::size_t keyCount)
-        {
-            std::string text;
-            for (std::size_t index = 0; index < keyCount; ++index)
-            {
-                if (index != 0)
-                {
-                    text += "、";
-                }
-                text += keys[index];
-            }
-            return text;
-        }
-
-        /**
-         * @brief 拒绝该层不认得的键
-         * @details 未知键一律报错而不是忽略：把 idle_timeout 写成 idle_timeout_ms 时静默忽略等于
-         *          「配置没生效却看不出来」，正是最难查的一类问题
-         * @param node 待检查的对象节点
-         * @param keys 该层支持的键
-         * @param pathPrefix 出错时用于拼出完整键路径的前缀
-         */
-        void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount, const std::string &pathPrefix)
-        {
-            for (const auto &[memberName, memberValue]: node.items())
-            {
-                const bool isAccepted = std::any_of(keys, keys + keyCount, [&memberName](const std::string_view accepted) { return accepted == memberName; });
-                if (!isAccepted)
-                {
-                    throw Base::ConfigValidationException(pathPrefix + "." + memberName, "未知的配置键；本层支持：" + joinKeys(keys, keyCount));
-                }
-            }
-        }
-
         /**
          * @brief 从值里取一个非负整数
          * @param value 配置值
@@ -204,31 +169,6 @@ namespace AsynGyanis::Net
             }
             return number;
         }
-
-        /**
-         * @brief 取一个可选的子对象节点
-         * @param node 父节点
-         * @param key 子键名
-         * @param pathPrefix 出错时拼键路径的前缀
-         * @return const Base::ConfigValue* 子节点；不存在时为空指针
-         * @throws Base::ConfigValidationException 子键存在但不是对象（含写成空的 null）
-         * @details 与 TracingConfiguration.cpp 里那份同名同签名的实现同口径：写成空的那一格按
-         *          「写了却没配上」拒绝，不按缺席静默回落默认值
-         */
-        [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
-        {
-            if (!node.contains(key))
-            {
-                return nullptr;
-            }
-            const Base::ConfigValue &child = node.at(key);
-            if (!child.is_object())
-            {
-                throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是一个对象");
-            }
-            return &child;
-        }
-
         /**
          * @brief 把协议版本档位文本解成策略里的枚举
          * @details 只认这两档：更低的 TLS 1.0/1.1 由 RFC 8996 列为废弃，本框架不接受、也不给配置项——

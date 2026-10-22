@@ -1,5 +1,7 @@
 #include "Net/Metrics/MetricsExportConfiguration.h"
 
+#include "Net/Telemetry/OtlpConfigurationSupport.h"
+#include "Net/Http/HttpConfigValidation.h"
 #include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/LogicException.h"
@@ -18,128 +20,27 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::findOptionalObject;
+        using HttpConfig::joinKeys;
+        using HttpConfig::rejectUnknownKeys;
+        using HttpConfig::requireNonEmptyString;
+        using HttpConfig::requirePositiveInteger;
+
         using HttpConfig::toMilliseconds;
 
         /// metrics 段直接支持的键
         constexpr std::array<std::string_view, 5> kMetricsKeys{"enabled", "service_name", "service_version", "export_interval_ms", "otlp"};
 
-        /// otlp 子段支持的键
-        constexpr std::array<std::string_view, 3> kOtlpKeys{"endpoint", "timeout_ms", "headers"};
-
-        /// @brief 把一组可接受的键拼成一句可读的提示
-        [[nodiscard]] std::string joinKeys(const std::string_view *keys, const std::size_t keyCount)
-        {
-            std::string text;
-            for (std::size_t index = 0; index < keyCount; ++index)
-            {
-                if (index != 0)
-                {
-                    text += "、";
-                }
-                text += keys[index];
-            }
-            return text;
-        }
-
-        /**
-         * @brief 拒绝该层不认得的键
-         * @details 未知键一律报错：把 export_interval_ms 写成 export_interval 时静默忽略等于「配置没生效却看不出来」
-         */
-        void rejectUnknownKeys(const Base::ConfigValue &node, const std::string_view *keys, const std::size_t keyCount, const std::string &pathPrefix)
-        {
-            for (const auto &[memberName, memberValue]: node.items())
-            {
-                const bool isAccepted = std::any_of(keys, keys + keyCount, [&memberName](const std::string_view accepted) { return accepted == memberName; });
-                if (!isAccepted)
-                {
-                    throw Base::ConfigValidationException(pathPrefix + "." + memberName, "未知的配置键；本层支持：" + joinKeys(keys, keyCount));
-                }
-            }
-        }
-
-        /// @brief 取一个可选对象子段；缺失交出 nullptr，不是对象（含写成空的 null）则抛
-        [[nodiscard]] const Base::ConfigValue *findOptionalObject(const Base::ConfigValue &node, const std::string_view key, const std::string &pathPrefix)
-        {
-            if (!node.contains(key))
-            {
-                return nullptr;
-            }
-            const Base::ConfigValue &child = node.at(key);
-            if (!child.is_object())
-            {
-                throw Base::ConfigValidationException(pathPrefix + "." + std::string(key), "必须是一个对象");
-            }
-            return &child;
-        }
-
-        /// @brief 取一个正整数（毫秒数与条数都用它：0 在这两处都是「永远不来」而不是「不限」）
-        [[nodiscard]] std::uint64_t requirePositiveInteger(const Base::ConfigValue &value, const std::string &key)
-        {
-            if (!value.is_number_integer() && !value.is_number_unsigned())
-            {
-                throw Base::ConfigValidationException(key, "必须是整数（不能写成字符串或小数）");
-            }
-            if (value.is_number_integer())
-            {
-                const std::int64_t signedValue = value.get<std::int64_t>();
-                if (signedValue <= 0)
-                {
-                    throw Base::ConfigValidationException(key, "必须大于 0");
-                }
-                return static_cast<std::uint64_t>(signedValue);
-            }
-            const std::uint64_t magnitude = value.get<std::uint64_t>();
-            if (magnitude == 0U)
-            {
-                throw Base::ConfigValidationException(key, "必须大于 0");
-            }
-            return magnitude;
-        }
-        /// @brief 取一段非空文本（服务名与地址都吃这条判据）
-        [[nodiscard]] std::string requireNonEmptyString(const Base::ConfigValue &value, const std::string &key)
-        {
-            if (!value.is_string())
-            {
-                throw Base::ConfigValidationException(key, "必须是字符串");
-            }
-            std::string text = value.get<std::string>();
-            if (text.empty())
-            {
-                throw Base::ConfigValidationException(key, "不能是空串");
-            }
-            return text;
-        }
-
         /// @brief 读 otlp 子段：地址、时限与附加头部
         void readOtlpSection(const Base::ConfigValue &node, MetricsExportConfiguration &configuration, const std::string &sectionPath)
         {
-            const std::string pathPrefix = sectionPath + ".otlp";
-            rejectUnknownKeys(node, kOtlpKeys.data(), kOtlpKeys.size(), pathPrefix);
-
-            if (node.contains("endpoint"))
+            Telemetry::OtlpSectionValues values = Telemetry::readOtlpSection(node, sectionPath);
+            configuration.otlpEndpoint          = std::move(values.endpoint);
+            if (values.requestTimeout.has_value())
             {
-                configuration.otlpEndpoint = requireNonEmptyString(node.at("endpoint"), pathPrefix + ".endpoint");
+                configuration.otlpRequestTimeout = *values.requestTimeout;
             }
-            if (node.contains("timeout_ms"))
-            {
-                configuration.otlpRequestTimeout = toMilliseconds(requirePositiveInteger(node.at("timeout_ms"), pathPrefix + ".timeout_ms"), pathPrefix + ".timeout_ms");
-            }
-            if (node.contains("headers"))
-            {
-                const Base::ConfigValue &headers = node.at("headers");
-                if (!headers.is_object())
-                {
-                    throw Base::ConfigValidationException(pathPrefix + ".headers", "必须是一个「头部名: 值」的对象");
-                }
-                for (const auto &[name, value]: headers.items())
-                {
-                    if (!value.is_string())
-                    {
-                        throw Base::ConfigValidationException(pathPrefix + ".headers." + name, "头部取值必须是字符串");
-                    }
-                    configuration.otlpHeaders.emplace_back(name, value.get<std::string>());
-                }
-            }
+            configuration.otlpHeaders = std::move(values.headers);
         }
     } // namespace
 
