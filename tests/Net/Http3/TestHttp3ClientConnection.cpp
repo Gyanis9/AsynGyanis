@@ -153,6 +153,20 @@ namespace AsynGyanis::Net
                                  co_return;
                              });
 
+                // 把本连接的对端证书身份记下来：h3 的身份在 QUIC 连接层，业务侧拿到的应是同一个快照
+                m_router.get("/whoami",
+                             [fingerprint = m_peerFingerprint, verified = m_peerVerified](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 if (const Core::TlsPeerIdentityPtr &identity = request.tlsPeerIdentity(); identity != nullptr)
+                                 {
+                                     *fingerprint = identity->sha256FingerprintHex();
+                                     verified->store(identity->isVerified(), std::memory_order_release);
+                                 }
+                                 response.setStatus(200);
+                                 response.setBody("ok");
+                                 co_return;
+                             });
+
                 // 比本端单流接收窗口还大的一整份正文：出站侧「收下多少就得还多少窗口」的判据要拿它当对端
                 m_router.get("/large",
                              [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
@@ -239,12 +253,26 @@ namespace AsynGyanis::Net
                 return m_server->connectionCount();
             }
 
+            /// /whoami 最近一次记录到的客户端证书指纹
+            [[nodiscard]] std::string peerFingerprint() const
+            {
+                return *m_peerFingerprint;
+            }
+
+            /// /whoami 最近一次记录到的证书链校验结论
+            [[nodiscard]] bool peerVerified() const noexcept
+            {
+                return m_peerVerified->load(std::memory_order_acquire);
+            }
+
         private:
-            Core::EventLoop             m_loop;
-            Router                      m_router;
-            std::unique_ptr<QuicServer> m_server{};
-            std::optional<Core::Task<>> m_listenTask{};
-            std::thread                 m_loopThread{};
+            Core::EventLoop                    m_loop;
+            Router                             m_router;
+            std::shared_ptr<std::string>       m_peerFingerprint{std::make_shared<std::string>()};
+            std::shared_ptr<std::atomic<bool>> m_peerVerified{std::make_shared<std::atomic<bool>>(false)};
+            std::unique_ptr<QuicServer>        m_server{};
+            std::optional<Core::Task<>>        m_listenTask{};
+            std::thread                        m_loopThread{};
         };
 
         /**
@@ -1127,6 +1155,25 @@ namespace AsynGyanis::Net
         EXPECT_EQ(attempt.response().statusCode, 200);
         EXPECT_EQ(attempt.response().body, std::string{kServedBody});
         EXPECT_EQ(server.servedRequestCount(), 1U) << "服务端没数到这条请求：本端的结论是自己拼的";
+    }
+
+    /**
+     * @brief 钉住 h3 的对端证书身份能交到业务：QUIC 连接层的快照与请求读到的是同一份
+     * @details h3 没有套接字可问证书；这条走完整 mTLS 请求，断言业务侧拿到非空指纹且 verified 为真。
+     *          指纹内容本身由 HTTPS/h2 那条用例与证书夹具独立对过，这里钉的是 h3 的接线。
+     */
+    TEST(Http3ClientConnection, HandsTheClientCertificateFingerprintToTheRequestOverHttp3)
+    {
+        RunningHttp3Server server{true};
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3RequestAttempt attempt{server.listeningPort(), (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_cert.pem").string(),
+                                    (std::filesystem::path(TEST_FIXTURES_DIR) / "test_ip_key.pem").string(), "/whoami"};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "带身份的请求既没成也没败";
+        ASSERT_TRUE(attempt.response().isOk()) << "带身份的 h3 请求没走通：" << attempt.response().errorMessage;
+        EXPECT_EQ(attempt.response().statusCode, 200);
+        EXPECT_EQ(server.peerFingerprint().size(), 64U) << "h3 业务侧没拿到客户端证书指纹";
+        EXPECT_TRUE(server.peerVerified()) << "客户端证书通过了服务端校验，业务却读到未验证";
     }
 
     /**

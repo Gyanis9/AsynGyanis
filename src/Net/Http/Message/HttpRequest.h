@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Base/Config/ConfigValue.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/Http/Message/HttpCookie.h"
 #include "Net/Http/Message/HttpHeaderFieldStore.h"
 #include "Net/Http/Message/HttpMethod.h"
@@ -436,6 +437,22 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool overTls() const noexcept;
 
         /**
+         * @brief 会话在派发之前落定本连接的对端证书身份
+         * @param identity 握手后抓取的快照；明文连接传空
+         * @details 与 setRemoteAddress()/setOverTls() 同一处落定。同一连接上的多条请求共享同一个
+         *          shared_ptr，逐请求复制不搬证书字节。
+         */
+        void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept;
+
+        /**
+         * @brief 本连接对端出示的 TLS 证书身份
+         * @return 快照；明文连接、单向 TLS（对端没证书）或握手未提供证书时为空
+         * @note `isVerified()` 为假表示对端出示了证书但链校验未通过；要求客户端证书的服务器
+         *       在握手阶段就会拒绝这种连接
+         */
+        [[nodiscard]] const Core::TlsPeerIdentityPtr &tlsPeerIdentity() const noexcept;
+
+        /**
          * @brief 发起这条请求的对端 IP，不带端口
          * @return std::string IP 文本；地址为空时返回空串，形状认不出来时原样交回整条文本
          * @details 「按来源限流、按地区放行、审计落的是谁」要的键是不带端口的 IP：`remoteAddress()` 里那段
@@ -618,6 +635,8 @@ namespace AsynGyanis::Net
         /// 与其余会话注入的事实一起在 reset() 里清回未落定的一侧：一条连接不会中途换传输层，
         /// 但把正确性押在「每条协议通道都记得重新落定」上，将来漏一条就会发出无人执行的 HSTS
         bool m_overTls{false}; ///< 传输层是否加密（true = HTTPS / h3）
+        /// 对端证书身份快照：同一连接上的请求共享一份；明文/无证书时为空
+        Core::TlsPeerIdentityPtr m_tlsPeerIdentity{};
         /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
         /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
         std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定

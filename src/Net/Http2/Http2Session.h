@@ -186,6 +186,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool isSecureTransport() const noexcept override;
 
         /**
+         * @brief 取本连接 TLS 对端证书身份；明文 h2c 恒为空
+         * @return 握手完成后抓取的叶证书快照；没有证书或明文时为空
+         */
+        [[nodiscard]] Core::TlsPeerIdentityPtr tlsPeerIdentity() const noexcept override;
+
+        /**
          * @brief 服务器要优雅收口本连接时，发一条收尾 GOAWAY 告诉对端「不再受理新流」
          *
          * @details 重写 onGracefulShutdownRequested()：服务器决定结束无在途工作的连接时、在 close() 之前调用，
@@ -786,6 +792,8 @@ namespace AsynGyanis::Net
 
         /// TLS 通道；空表示本会话跑在明文连接上（h2c 先验知识），此时真实描述符归基类套接字所有
         std::optional<Core::TlsSocket> m_tlsSocket;
+        /// 握手完成后抓取的对端身份：一条连接一份，h1 回退与 h2 各流共享同一份快照
+        Core::TlsPeerIdentityPtr m_peerIdentity{};
 
         /// HTTP/1.1 回退路径（TLS 上 ALPN 未协商出 h2 时）的解析器与接收窗口。
         /// 基类的同名成员是私有的，因此回退路径各持一份，两条路径不共用状态

@@ -410,6 +410,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpConfigDuration.h" EXCLUDE
             PATTERN "HttpConfigValidation.h" EXCLUDE
             PATTERN "HttpEndpointPath.h" EXCLUDE
+            PATTERN "TlsPeerIdentitySupport.h" EXCLUDE
             PATTERN "WebSocketUpgradeAdmission.h" EXCLUDE
             PATTERN "HttpClientUrl.h" EXCLUDE
             PATTERN "HttpClientSupport.h" EXCLUDE

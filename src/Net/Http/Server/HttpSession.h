@@ -872,6 +872,7 @@ namespace AsynGyanis::Net
                 // 传输层这一格也排在派发之前：h1 的保活循环被模板复用到 TLS 与明文两种套接字上
                 // （HttpsServer 认不出 h2 的 ALPN 就走这条路），会话自己报得出加密与否，业务不必猜
                 request.setOverTls(connection.isSecureTransport());
+                request.setTlsPeerIdentity(connection.tlsPeerIdentity());
                 response.reset();
                 response.setHttpVersion(request.httpVersion()); // 状态行版本跟随请求，不硬编码 1.1
                 // HEAD 的响应只有头部、没有正文（RFC 9112 §6.1）：流式路径下分块帧与终止块都算正文，

@@ -37,6 +37,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/Quic/QuicOutboundDatagram.h"
 #include "Net/Quic/Recovery/QuicCongestionAlgorithm.h"
 #include "Platform/IO/Socket.h"
@@ -243,6 +244,12 @@ namespace AsynGyanis::Net
          *       一次，业务因此在一批请求里读到的是同一个来源，不会半批换 IP
          */
         [[nodiscard]] std::string remoteAddress() const;
+
+        /**
+         * @brief 取对端证书身份快照
+         * @return 握手完成后读取；对端没出示证书或握手未完成时为空
+         */
+        [[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const;
 
         /**
          * @brief 开一条本端发起的单向流并返回流号

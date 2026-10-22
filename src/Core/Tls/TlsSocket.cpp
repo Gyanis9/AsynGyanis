@@ -1,5 +1,6 @@
 #include "Core/Tls/TlsSocket.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Tls/TlsPeerIdentitySupport.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
 #include "Core/Exception/CoreException.h"
@@ -431,6 +432,16 @@ namespace AsynGyanis::Core
         // 按「指针 + 长度」构造：协议名里可能出现的字节都由 RFC 7301 限定，但长度感知的写法与
         // 本仓库其它二进制安全接口保持一致，不依赖零终止
         return std::string(reinterpret_cast<const char *>(protocolName), protocolNameLength);
+    }
+
+    TlsPeerIdentityPtr TlsSocket::peerIdentity() const
+    {
+        // SSL 对象已经释放：握手结果随之消失，没有可读的证书
+        if (!m_ssl)
+        {
+            return nullptr;
+        }
+        return readTlsPeerIdentity(m_ssl.get());
     }
 
     InetAddress TlsSocket::remoteAddress() const

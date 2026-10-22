@@ -174,6 +174,9 @@ namespace AsynGyanis::Net
             co_return;
         }
 
+        // 证书身份在握手完成之后抓一份：后面的 h1 回退与 h2 各流都共享它，逐请求不再解析 X509
+        m_peerIdentity = m_tlsSocket->peerIdentity();
+
         // ALPN 分流点：结果产生于握手过程，因此只有这里读到的那一个值是可信的。
         // 非 h2（http/1.1 或客户端没提 ALPN）按 HTTP/1.1 事务循环继续，与明文侧共用同一份实现
         const std::string selectedProtocol = m_tlsSocket->selectedAlpnProtocol();
@@ -235,6 +238,11 @@ namespace AsynGyanis::Net
         return m_tlsSocket.has_value();
     }
 
+    Core::TlsPeerIdentityPtr Http2Session::tlsPeerIdentity() const noexcept
+    {
+        return m_peerIdentity;
+    }
+
     void Http2Session::attachSessionFactsToRequest(HttpRequest &request)
     {
         // 三条「只有会话知道」的事实排在派发之前，与 h1 侧 prepareRequestDispatch 同一处口径：
@@ -246,6 +254,7 @@ namespace AsynGyanis::Net
         // h2 一条连接上并发跑多条流，取址只按连接做一次，逐流只指过去
         request.setRemoteAddress(cachedRemoteAddress());
         request.setOverTls(isSecureTransport());
+        request.setTlsPeerIdentity(m_peerIdentity);
     }
 
     void Http2Session::onGracefulShutdownRequested()

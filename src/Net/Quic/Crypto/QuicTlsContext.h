@@ -18,6 +18,7 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/Quic/Crypto/QuicPacketKeys.h"
 
 #include <openssl/core.h>
@@ -165,6 +166,12 @@ namespace AsynGyanis::Net
          * @return 已收到时返回编码字节的视图，否则为空视图；解码由连接层的参数编解码器负责
          */
         [[nodiscard]] std::span<const std::uint8_t> peerTransportParameters() const noexcept;
+
+        /**
+         * @brief 对端证书身份快照
+         * @return 握手完成后读取；对端没出示证书或尚未完成握手时为空
+         */
+        [[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const noexcept;
 
         /**
          * @brief 已协商出的密码套件

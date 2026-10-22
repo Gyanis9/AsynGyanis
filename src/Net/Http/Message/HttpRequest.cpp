@@ -342,6 +342,16 @@ namespace AsynGyanis::Net
         return m_overTls;
     }
 
+    void HttpRequest::setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
+    {
+        m_tlsPeerIdentity = std::move(identity);
+    }
+
+    const Core::TlsPeerIdentityPtr &HttpRequest::tlsPeerIdentity() const noexcept
+    {
+        return m_tlsPeerIdentity;
+    }
+
     void HttpRequest::setMatchedRoute(const std::string_view routePattern) noexcept
     {
         // 只记一个视图：模式原文住在路由表里，比本请求活得久（路由器不被改的前提下），

@@ -13,6 +13,7 @@
 
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/Http/Message/HttpMemoryBudget.h"
 #include "Net/Http/Message/HttpParserLimits.h"
 #include "Net/Http/Message/HttpRequest.h"
@@ -173,6 +174,14 @@ namespace AsynGyanis::Net
          * @param loop 承载层的事件循环；必须在建立 WebSocket 隧道之前设置
          */
         void setEventLoop(Core::EventLoop &loop) noexcept;
+
+        /**
+         * @brief 交入承载连接的对端证书身份快照
+         * @param identity 握手完成后的快照；单向 TLS 或没有证书时为空
+         * @details QUIC 的 TLS 在连接层，h3 会话没有 SSL 对象可问；承载层把这份值交进来，
+         *          各条请求在派发前共享同一个 shared_ptr。
+         */
+        void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept;
 
         /**
          * @brief 按时限收口「收不全」的请求：一段时段内没有新字节的流不再等下去
@@ -926,13 +935,14 @@ namespace AsynGyanis::Net
             ExtendedConnectKind           extendedConnect{ExtendedConnectKind::NotExtended}; ///< 扩展 CONNECT 的归属：Unsupported 时服务阶段回 501
         };
 
-        std::unique_ptr<Http3Connection>      m_connection;      ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
-        StreamWriter                          m_writer;          ///< 流数据出口
-        StreamCrediter                        m_crediter;        ///< 接收窗口归还口
-        StreamAborter                         m_aborter;         ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
-        Router                               *m_router{nullptr}; ///< 路由器（不持有；由服务端保证其寿命）
-        std::shared_ptr<HttpMetricsCollector> m_metrics;         ///< 统计采集端（可空：空表示本会话不采集）
-        Core::EventLoop                      *m_loop{nullptr};   ///< 承载层循环（非拥有）；空表示没有可挂定时器的循环
+        std::unique_ptr<Http3Connection>      m_connection;        ///< HTTP/3 连接层：帧的编解码与 QPACK 都在它那里；开不出本端单向流时为空
+        StreamWriter                          m_writer;            ///< 流数据出口
+        StreamCrediter                        m_crediter;          ///< 接收窗口归还口
+        StreamAborter                         m_aborter;           ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
+        Router                               *m_router{nullptr};   ///< 路由器（不持有；由服务端保证其寿命）
+        std::shared_ptr<HttpMetricsCollector> m_metrics;           ///< 统计采集端（可空：空表示本会话不采集）
+        Core::EventLoop                      *m_loop{nullptr};     ///< 承载层循环（非拥有）；空表示没有可挂定时器的循环
+        Core::TlsPeerIdentityPtr              m_tlsPeerIdentity{}; ///< 承载连接的对端证书身份；单向 TLS 时为空
         /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;
         HttpParserLimits                        m_parserLimits{}; ///< 请求解析上限（正文总量上限等）

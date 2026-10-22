@@ -13,6 +13,7 @@
 #include "Core/Coroutine/Cancelable.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncSocket.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 
 #include <atomic>
 #include <chrono>
@@ -192,6 +193,14 @@ namespace AsynGyanis::Core
          * @return true 表示经过 TLS，false 表示明文
          */
         [[nodiscard]] virtual bool isSecureTransport() const noexcept;
+
+        /**
+         * @brief 本连接 TLS 对端证书的身份快照
+         * @details 明文连接恒为空；TLS 会话在握手完成后重写本函数，交出会话抓取的那一份。
+         *          值语义快照，业务可在处理请求时安全复制。
+         * @return 对端身份；没有证书或非 TLS 时为空
+         */
+        [[nodiscard]] virtual TlsPeerIdentityPtr tlsPeerIdentity() const noexcept;
 
         /**
          * @brief 与 remoteAddress() 同一个值，但按连接只取一次且不抛

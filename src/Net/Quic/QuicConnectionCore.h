@@ -390,6 +390,12 @@ namespace AsynGyanis::Net
         [[nodiscard]] const QuicTransportParameters *peerTransportParameters() const noexcept;
 
         /**
+         * @brief 对端证书身份快照
+         * @return 握手完成后读取；对端没出示证书或握手未完成时为空
+         */
+        [[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const noexcept;
+
+        /**
          * @brief 流层本体：读写数据、归还额度、取交付都归它
          * @details 核心只负责把入站帧路由进来、把出站帧编进 1-RTT 包，因此这里刻意不做一层同签名转发。
          *          写完数据要再调一次 `drive(now)` 才会真的上线；本层不自己决定发包时刻。

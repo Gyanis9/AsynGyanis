@@ -6,6 +6,9 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisCoreSources
         ${CMAKE_CURRENT_LIST_DIR}/TlsContext.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsVirtualHosts.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsVerification.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/TlsPeerIdentity.h
+        ${CMAKE_CURRENT_LIST_DIR}/TlsPeerIdentitySupport.h
+        ${CMAKE_CURRENT_LIST_DIR}/TlsPeerIdentitySupport.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsPolicy.h
         ${CMAKE_CURRENT_LIST_DIR}/TlsPolicy.cpp
         ${CMAKE_CURRENT_LIST_DIR}/TlsSocket.h

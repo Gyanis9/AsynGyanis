@@ -99,6 +99,12 @@ namespace AsynGyanis::Core
         return false;
     }
 
+    TlsPeerIdentityPtr Connection::tlsPeerIdentity() const noexcept
+    {
+        // 明文连接没有 TLS 对端证书可言；TLS 会话在握手完成后重写本函数
+        return nullptr;
+    }
+
     void Connection::refreshIdleDeadline(const std::chrono::milliseconds timeout) noexcept
     {
         // 非正数一律按「关闭本项保护」处理：设一个已经过去的截止时间会让清扫协程立刻关掉连接，

@@ -36,13 +36,17 @@
 
 #include <gtest/gtest.h>
 
+#include <openssl/bio.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -2141,6 +2145,82 @@ namespace AsynGyanis::Net
         const ClientTlsAttemptOutcome anonymous = getWithClientTls(url, policy, {}, {}, std::chrono::milliseconds{4000});
         EXPECT_EQ(anonymous.response, nullptr) << "服务端要求客户端证书，不带身份的客户端却连上了：mTLS 没生效";
         EXPECT_EQ(fixture.server().stats().totalRequestCount, 1U) << "服务端数到了第二条：那条其实被握手续了进去";
+    }
+
+    /**
+     * @brief 钉住 mTLS 对端身份能交到业务：指纹就是客户端出示的那张叶证书
+     * @details 只断言「有值」会把写死一份假身份的实现放过去；这里从证书夹具自己算一遍
+     *          SHA-256，再与 request.tlsPeerIdentity() 交回的指纹比对，同时钉住 verified 标记。
+     */
+    TEST(HttpsServer, HandsTheVerifiedClientCertificateFingerprintToTheRequest)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端证书夹具：" << kLoopbackCertificatePath.string();
+
+        const auto expectedFingerprint = []
+        {
+            BIO *file = BIO_new_file(kLoopbackCertificatePath.string().c_str(), "rb");
+            if (file == nullptr)
+            {
+                return std::string{};
+            }
+            X509 *certificate = PEM_read_bio_X509(file, nullptr, nullptr, nullptr);
+            BIO_free(file);
+            if (certificate == nullptr)
+            {
+                return std::string{};
+            }
+            unsigned char *der    = nullptr;
+            const int      length = i2d_X509(certificate, &der);
+            std::string    fingerprint;
+            if (length > 0)
+            {
+                fingerprint = Core::Digest::sha256Hex(std::string_view(reinterpret_cast<const char *>(der), static_cast<std::size_t>(length)));
+            }
+            OPENSSL_free(der);
+            X509_free(certificate);
+            return fingerprint;
+        }();
+        ASSERT_EQ(expectedFingerprint.size(), 64U) << "证书夹具的指纹没算出来：下面的比对没有前提";
+
+        const auto                            observedFingerprint = std::make_shared<std::string>();
+        const auto                            observedVerified    = std::make_shared<std::atomic<bool>>(false);
+        const HttpTestSupport::RouteRegistrar registrar           = [observedFingerprint, observedVerified](Router &router, Core::EventLoop &)
+        {
+            router.get("/whoami",
+                       [observedFingerprint, observedVerified](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                       {
+                           if (const Core::TlsPeerIdentityPtr &identity = request.tlsPeerIdentity(); identity != nullptr)
+                           {
+                               *observedFingerprint = identity->sha256FingerprintHex();
+                               observedVerified->store(identity->isVerified(), std::memory_order_release);
+                           }
+                           response.setStatus(200);
+                           response.setBody("ok");
+                           co_return;
+                       });
+        };
+
+        bool                      clientAuthorityLoaded{false};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, registrar, HttpParserLimits{},
+                [&clientAuthorityLoaded](HttpsServer &server)
+                {
+                    clientAuthorityLoaded = server.loadClientCertificateAuthority(kLoopbackCertificatePath.string());
+                    server.setClientCertificateRequired(true);
+                },
+                kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(clientAuthorityLoaded);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/whoami";
+        Core::TlsPolicy   policy;
+        policy.certificateAuthorityFile       = kLoopbackCertificatePath.string();
+        const ClientTlsAttemptOutcome outcome = getWithClientTls(url, policy, kLoopbackCertificatePath.string(), kLoopbackKeyPath.string(), std::chrono::milliseconds{8000});
+        ASSERT_TRUE(outcome.identityLoaded);
+        ASSERT_NE(outcome.response, nullptr) << "带客户端证书的请求没走通";
+        EXPECT_EQ(outcome.response->statusCode, 200);
+        EXPECT_TRUE(observedVerified->load(std::memory_order_acquire)) << "客户端证书通过了服务端校验，业务却读到未验证";
+        EXPECT_EQ(*observedFingerprint, expectedFingerprint) << "业务拿到的不是客户端出示的那张叶证书";
     }
 
     /**

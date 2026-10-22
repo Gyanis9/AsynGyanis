@@ -10,6 +10,8 @@
 
 #include "AsynGyanisExport.h"
 
+#include "Core/Tls/TlsPeerIdentity.h"
+
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
@@ -137,6 +139,14 @@ namespace AsynGyanis::Core
          *       调用方若在握手前分流会永远看到「未协商」
          */
         [[nodiscard]] std::string selectedAlpnProtocol() const;
+
+        /**
+         * @brief 读取对端叶证书身份快照
+         * @details 必须在握手完成之后调用。单向 TLS（对端没有出示证书）返回空；mTLS 下返回验证结论、
+         *          叶证书 DER 与 SHA-256 指纹。快照值语义，可跨线程复制，不暴露 SSL/X509 指针。
+         * @return 身份快照；没有证书或读取失败时为空
+         */
+        [[nodiscard]] TlsPeerIdentityPtr peerIdentity() const;
 
         /**
          * @brief 获取对端的 IP 地址与端口。

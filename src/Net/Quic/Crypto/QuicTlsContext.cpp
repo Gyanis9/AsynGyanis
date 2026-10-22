@@ -2,6 +2,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Tls/TlsPeerIdentitySupport.h"
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
 #include "Net/Quic/QuicOpenSslError.h"
 
@@ -263,6 +264,16 @@ namespace AsynGyanis::Net
     std::span<const std::uint8_t> QuicTlsContext::peerTransportParameters() const noexcept
     {
         return m_peerTransportParameters;
+    }
+
+    Core::TlsPeerIdentityPtr QuicTlsContext::peerIdentity() const noexcept
+    {
+        // 握手没完成时证书链校验结果还不算数；m_session 为空则根本没有可读对象
+        if (m_session == nullptr || !m_handshakeCompleted)
+        {
+            return nullptr;
+        }
+        return Core::readTlsPeerIdentity(m_session);
     }
 
     std::string_view QuicTlsContext::selectedApplicationProtocol() const noexcept

@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=9030
+# headers=308 entries=9042
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1508,6 +1508,7 @@ src/Core/Socket/Connection.h	[[nodiscard]] std::chrono::steady_clock::time_point
 src/Core/Socket/Connection.h	[[nodiscard]] std::string_view cachedRemoteAddress() noexcept
 src/Core/Socket/Connection.h	[[nodiscard]] std::uint64_t receivedBytes() const noexcept
 src/Core/Socket/Connection.h	[[nodiscard]] std::uint64_t sentBytes() const noexcept
+src/Core/Socket/Connection.h	[[nodiscard]] virtual TlsPeerIdentityPtr tlsPeerIdentity() const noexcept
 src/Core/Socket/Connection.h	[[nodiscard]] virtual bool isAlive() const noexcept
 src/Core/Socket/Connection.h	[[nodiscard]] virtual bool isSecureTransport() const noexcept
 src/Core/Socket/Connection.h	[[nodiscard]] virtual std::string localAddress() const
@@ -1690,6 +1691,7 @@ src/Core/Tls/TlsSocket.h	TlsSocket(const TlsSocket &) = delete
 src/Core/Tls/TlsSocket.h	[[nodiscard]] InetAddress localAddress() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] InetAddress remoteAddress() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] Task<bool> yieldForPeerProgress() const
+src/Core/Tls/TlsSocket.h	[[nodiscard]] TlsPeerIdentityPtr peerIdentity() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] int fileDescriptor() const noexcept
 src/Core/Tls/TlsSocket.h	[[nodiscard]] std::string selectedAlpnProtocol() const
 src/Core/Tls/TlsSocket.h	bool m_handshakeDone
@@ -4132,6 +4134,7 @@ src/Net/Http/Message/HttpParserLimits.h	std::size_t maximumHeaderFieldValueLengt
 src/Net/Http/Message/HttpParserLimits.h	std::size_t maximumUriLength
 src/Net/Http/Message/HttpParserLimits.h	std::size_t maximumWebsocketMessageSize
 src/Net/Http/Message/HttpParserLimits.h	struct ASYN_NET_API HttpParserLimits
+src/Net/Http/Message/HttpRequest.h	Core::TlsPeerIdentityPtr m_tlsPeerIdentity
 src/Net/Http/Message/HttpRequest.h	HttpHeaderFieldStore m_headerStore
 src/Net/Http/Message/HttpRequest.h	HttpMethod m_method
 src/Net/Http/Message/HttpRequest.h	HttpRequest() = default
@@ -4145,6 +4148,7 @@ src/Net/Http/Message/HttpRequest.h	[[nodiscard]] bool hasMultipleHostHeaders() c
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] bool hasTrailerFields() const noexcept
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] bool overTls() const noexcept
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] bool setHeader(std::string_view key, std::string_view value)
+src/Net/Http/Message/HttpRequest.h	[[nodiscard]] const Core::TlsPeerIdentityPtr &tlsPeerIdentity() const noexcept
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] const std::string &httpVersion() const
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] const std::string &uri() const
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] const std::unordered_map<std::string, std::string> &headers() const
@@ -4206,6 +4210,7 @@ src/Net/Http/Message/HttpRequest.h	void setOverTls(bool isSecure) noexcept
 src/Net/Http/Message/HttpRequest.h	void setParam(std::string key, std::string value)
 src/Net/Http/Message/HttpRequest.h	void setRemoteAddress(std::string_view address) noexcept
 src/Net/Http/Message/HttpRequest.h	void setRequestId(std::string_view requestId)
+src/Net/Http/Message/HttpRequest.h	void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
 src/Net/Http/Message/HttpRequest.h	void setUri(std::string uri)
 src/Net/Http/Message/HttpRequestBody.h	HttpBodySource *m_source
 src/Net/Http/Message/HttpRequestBody.h	Pump m_pump
@@ -5539,6 +5544,7 @@ src/Net/Http2/Http2Session.h	Core::Scheduler &m_scheduler
 src/Net/Http2/Http2Session.h	Core::Task<> finishWebSocketTunnelPeer(std::uint32_t streamId, WebSocketPeer &peer, WebSocketFeedStatus feedStatus)
 src/Net/Http2/Http2Session.h	Core::Task<> runHttp2Loop()
 src/Net/Http2/Http2Session.h	Core::Task<> start() override
+src/Net/Http2/Http2Session.h	Core::TlsPeerIdentityPtr m_peerIdentity
 src/Net/Http2/Http2Session.h	ExtendedConnectKind extendedConnect
 src/Net/Http2/Http2Session.h	Http2Connection m_connection
 src/Net/Http2/Http2Session.h	Http2Session(Core::EventLoop &loop, Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits = nullptr, std::shared_ptr<HttpMetricsCollector> metrics = nullptr, std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator = nullptr, HttpParserLimits parserLimits =
@@ -5570,6 +5576,7 @@ src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> serveWebSocketTunnel
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<ssize_t> transportReceive(void *buffer, std::size_t length)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<ssize_t> transportSend(const void *buffer, std::size_t length)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<std::optional<RequestServeOutcome>> evaluateWebSocketUpgradeGate(std::uint32_t streamId, HttpRequest &request, HttpResponse &response, std::vector<HpackHeaderField> &acceptFields)
+src/Net/Http2/Http2Session.h	[[nodiscard]] Core::TlsPeerIdentityPtr tlsPeerIdentity() const noexcept override
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool await_ready() const noexcept
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool hasRejection() const noexcept
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool hasSendQueueRoom(std::uint32_t streamId) const noexcept
@@ -5954,6 +5961,7 @@ src/Net/Http3/Http3HeaderValidation.h	struct ASYN_NET_API Http3HeaderError
 src/Net/Http3/Http3HeaderValidation.h	using Http3HeaderStatus = std::expected<void, Http3HeaderError>
 src/Net/Http3/Http3Session.h	Core::Cancelable m_shutdownCancelable
 src/Net/Http3/Http3Session.h	Core::EventLoop *m_loop
+src/Net/Http3/Http3Session.h	Core::TlsPeerIdentityPtr m_tlsPeerIdentity
 src/Net/Http3/Http3Session.h	Deadline deadline
 src/Net/Http3/Http3Session.h	Deadline deadline
 src/Net/Http3/Http3Session.h	ExtendedConnectKind extendedConnect
@@ -6135,6 +6143,7 @@ src/Net/Http3/Http3Session.h	void resumeStreamingResponseWaiters()
 src/Net/Http3/Http3Session.h	void setEventLoop(Core::EventLoop &loop) noexcept
 src/Net/Http3/Http3Session.h	void setParserLimits(HttpParserLimits limits) noexcept
 src/Net/Http3/Http3Session.h	void setServerLimits(std::shared_ptr<const HttpServerLimits> limits) noexcept
+src/Net/Http3/Http3Session.h	void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
 src/Net/Http3/Http3Session.h	void submitResponse(std::int64_t streamId, const HttpResponse &response, bool isHeadRequest)
 src/Net/Http3/Http3Session.h	void wakeStreamingRequests()
 src/Net/Http3/Http3Session.h	void wakeWebSocketTunnels()
@@ -6670,6 +6679,7 @@ src/Net/Quic/Crypto/QuicTlsContext.h	QuicTlsContext &operator=(const QuicTlsCont
 src/Net/Quic/Crypto/QuicTlsContext.h	QuicTlsContext(SSL_CTX &tlsContext, bool isServerSide, std::span<const std::uint8_t> localTransportParameters, const QuicClientTlsSettings *clientSettings = nullptr)
 src/Net/Quic/Crypto/QuicTlsContext.h	QuicTlsContext(const QuicTlsContext &) = delete
 src/Net/Quic/Crypto/QuicTlsContext.h	SSL *m_session
+src/Net/Quic/Crypto/QuicTlsContext.h	[[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const noexcept
 src/Net/Quic/Crypto/QuicTlsContext.h	[[nodiscard]] QuicTlsProgress drive()
 src/Net/Quic/Crypto/QuicTlsContext.h	[[nodiscard]] bool isHandshakeCompleted() const noexcept
 src/Net/Quic/Crypto/QuicTlsContext.h	[[nodiscard]] const QuicPacketKeys *keys(QuicEncryptionLevel level, QuicKeyDirection direction) const noexcept
@@ -6804,6 +6814,7 @@ src/Net/Quic/QuicConnection.h	[[nodiscard]] Core::Task<> flush()
 src/Net/Quic/QuicConnection.h	[[nodiscard]] Core::Task<> handleDatagram(const Platform::SocketAddress peerAddress, std::span<const std::uint8_t> datagram, std::optional<std::uint8_t> ecnCodepoint = std::nullopt)
 src/Net/Quic/QuicConnection.h	[[nodiscard]] Core::Task<> handleExpiry()
 src/Net/Quic/QuicConnection.h	[[nodiscard]] Core::Task<bool> sendOutboundBatch(const std::vector<OutboundDatagram> &outboundBatch)
+src/Net/Quic/QuicConnection.h	[[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const
 src/Net/Quic/QuicConnection.h	[[nodiscard]] bool hasActivity() const noexcept
 src/Net/Quic/QuicConnection.h	[[nodiscard]] bool isClosed() const noexcept
 src/Net/Quic/QuicConnection.h	[[nodiscard]] bool isHandshakeComplete() const noexcept
@@ -6892,6 +6903,7 @@ src/Net/Quic/QuicConnectionCore.h	Timestamp abandonDeadline
 src/Net/Quic/QuicConnectionCore.h	Timestamp retransmitDeadline
 src/Net/Quic/QuicConnectionCore.h	Timestamp sentTime
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] ASYN_NET_API std::array<std::uint8_t, kQuicStatelessResetTokenByteLength> deriveQuicStatelessResetToken(std::span<const std::uint8_t> staticKey, std::span<const std::uint8_t> connectionId) noexcept
+src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] Core::TlsPeerIdentityPtr peerIdentity() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] PacketNumberSpace highestSpaceWithWriteKeys() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] PeerPathState *pathStateFor(const QuicPathKey &pathKey) noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicConnectionPhase phase() const noexcept

@@ -768,6 +768,8 @@ namespace AsynGyanis::Net
                 m_configuration.http3Settings);
         // h3 会话没有套接字可问循环；把承载层这条交下去，WebSocket 隧道才能挂 receiveFor 的超时定时器
         session->setEventLoop(m_eventLoop);
+        // 对端证书身份在连接层握手时已经抓过一份；会话没有 SSL 对象，直接共享那个快照
+        session->setTlsPeerIdentity(connection.peerIdentity());
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);

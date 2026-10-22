@@ -2098,4 +2098,9 @@ namespace AsynGyanis::Net
     {
         return m_peerParameters.has_value() ? &*m_peerParameters : nullptr;
     }
+
+    Core::TlsPeerIdentityPtr QuicConnectionCore::peerIdentity() const noexcept
+    {
+        return m_tls != nullptr ? m_tls->peerIdentity() : nullptr;
+    }
 } // namespace AsynGyanis::Net

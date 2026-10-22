@@ -291,6 +291,11 @@ namespace AsynGyanis::Net
         return Core::InetAddress(m_peerAddress.storage, m_peerAddress.length).toString();
     }
 
+    Core::TlsPeerIdentityPtr QuicConnection::peerIdentity() const
+    {
+        return m_core != nullptr ? m_core->peerIdentity() : nullptr;
+    }
+
     std::int64_t QuicConnection::openUnidirectionalStream()
     {
         if (m_core == nullptr || isClosed())

@@ -13,6 +13,8 @@
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 
+#include <utility>
+
 namespace AsynGyanis::Net
 {
     namespace
@@ -1798,6 +1800,11 @@ namespace AsynGyanis::Net
         m_loop = &loop;
     }
 
+    void Http3Session::setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
+    {
+        m_tlsPeerIdentity = std::move(identity);
+    }
+
     bool Http3Session::isDrainedAndFinished() const noexcept
     {
         // 两个条件缺一不可：只看过 GOAWAY 但手上还有请求，收连接就是把在途响应丢掉
@@ -1836,6 +1843,7 @@ namespace AsynGyanis::Net
         }
         // 来源地址与它排在一起，三条协议通道的业务因此不需要按协议分叉写法
         request.setRemoteAddress(cachedRemoteAddress());
+        request.setTlsPeerIdentity(m_tlsPeerIdentity);
         // h3 这一路恒为加密：QUIC 只有 TLS 1.3 这一档（QuicServer 的构造要求交来 SSL_CTX，
         // 见 QuicServer.h 的「QUIC 只跑 TLS 1.3」与 QuicConnectionCoreConfiguration 的上下文），
         // 本仓也没有第二条构造 h3 会话的生产通路——不写这行的话明文假设会一路带到 HSTS 与 Secure 判定里
