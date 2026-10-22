@@ -585,6 +585,9 @@ jobs:
           # 越线的文件没有登记项就判红，逼着「新写的长函数要么拆、要么明写进基线」
           python3 scripts/check-complexity-baseline.py
 
+      - name: 构建脚本注释预算
+        run: python3 scripts/check-comment-budget.py
+
       - name: 架构工件可追溯性（图里每条引用都要当场读得到）
         run: |
           # 九张图把 src 里的每条引用钉在自己的修订上（条数只看脚本自己打印的 TOTAL_REFS，这里不复述一份，

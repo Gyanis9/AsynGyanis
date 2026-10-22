@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 一条命令跑完本仓库的门禁链，判据形状与 CI 一致：静态八道 + 构建 + 用例 + 示例矩阵。
-# 门禁名单：complexity、arch-trace、ledger-date、format、api-baseline、layering、
-# platform-boundary、duplicates、build、ctest、samples。
+# 一条命令跑完本仓库的门禁链，判据形状与 CI 一致：静态九道 + 构建 + 用例 + 示例矩阵。
+# 门禁名单以 GATE_NAMES 为准：comment-budget、complexity、arch-trace、ledger-date、format、
+# api-baseline、layering、platform-boundary、duplicates、build、ctest、samples。
 
 # 用法（任意目录可调用：仓库根取自脚本位置；ctest --preset 必须在根上跑，脚本自己 cd 过去）：
 #   bash scripts/run-gates.sh                                  # 全部（默认档），debug 预设
@@ -66,7 +66,7 @@ START_EPOCH="$(date +%s)"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # --gate 没给就是全跑；给了就只跑点名的几道
-GATE_NAMES="complexity arch-trace ledger-date format api-baseline layering platform-boundary duplicates build ctest samples"
+GATE_NAMES="comment-budget complexity arch-trace ledger-date format api-baseline layering platform-boundary duplicates build ctest samples"
 
 usage()
 {
@@ -344,6 +344,11 @@ fi
 if want ledger-date; then
     run_gate ledger-date LEDGER_DATE_GATE "$PYTHON scripts/check-ledger-dates.py" \
         "$PYTHON" scripts/check-ledger-dates.py
+fi
+
+if want comment-budget; then
+    run_gate comment-budget COMMENT_BUDGET_GATE "$PYTHON scripts/check-comment-budget.py" \
+        "$PYTHON" scripts/check-comment-budget.py
 fi
 
 if want format; then
