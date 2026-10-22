@@ -80,13 +80,6 @@
       "occurrences": 2
     },
     {
-      "hash": "605c894e35aeb7ee",
-      "files": [
-        "src/Net/Http/Client/HttpClient.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "6d2039a39ce5ec40",
       "files": [
         "src/Database/Postgres/PostgresConnection.cpp"
@@ -176,13 +169,6 @@
       "occurrences": 2
     },
     {
-      "hash": "ac9eaa52649d3d73",
-      "files": [
-        "src/Net/Http/Client/HttpClient.cpp"
-      ],
-      "occurrences": 3
-    },
-    {
       "hash": "ad5165684b2547e4",
       "files": [
         "src/Database/Sqlite/SqliteConnection.cpp"
@@ -229,8 +215,8 @@
     {
       "hash": "e26a4b86a1daa51b",
       "files": [
-        "src/Net/Http2/Http2Session.cpp",
-        "src/Net/Http3/Http3Session.cpp"
+        "src/Net/Http2/Http2SessionResponses.cpp",
+        "src/Net/Http3/Http3SessionResponses.cpp"
       ],
       "occurrences": 2
     },

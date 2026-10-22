@@ -410,6 +410,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpConfigValidation.h" EXCLUDE
             PATTERN "HttpEndpointPath.h" EXCLUDE
             PATTERN "HttpClientUrl.h" EXCLUDE
+            PATTERN "HttpClientSupport.h" EXCLUDE
             PATTERN "Http2SessionSupport.h" EXCLUDE
             PATTERN "Http3SessionSupport.h" EXCLUDE
             PATTERN "RedisConnectionSupport.h" EXCLUDE
