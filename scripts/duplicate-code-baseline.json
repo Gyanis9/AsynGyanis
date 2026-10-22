@@ -286,14 +286,6 @@
       "occurrences": 2
     },
     {
-      "hash": "c945262d447cc069",
-      "files": [
-        "src/Net/Metrics/OtlpHttpMetricsExporter.cpp",
-        "src/Net/Tracing/OtlpHttpSpanExporter.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "cb86e5570f0ff6f9",
       "files": [
         "src/Net/Http/HttpServerConfig.cpp",

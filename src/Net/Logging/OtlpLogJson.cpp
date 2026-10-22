@@ -1,5 +1,6 @@
 #include "Net/Logging/OtlpLogJson.h"
 
+#include "Net/Telemetry/OtlpJsonSupport.h"
 #include "Base/Config/ConfigValue.h"
 
 #include <chrono>
@@ -11,28 +12,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// @brief 一段文本折成 OTLP 的 AnyValue（stringValue 那一支）
-        Base::ConfigValue stringValueOf(const std::string_view text)
-        {
-            Base::ConfigValue value = Base::ConfigValue::object();
-            value["stringValue"]    = text;
-            return value;
-        }
-
-        /// @brief 把一个键值对折成 OTLP 的 KeyValue
-        Base::ConfigValue keyValueOf(const std::string_view key, Base::ConfigValue value)
-        {
-            Base::ConfigValue entry = Base::ConfigValue::object();
-            entry["key"]            = key;
-            entry["value"]          = std::move(value);
-            return entry;
-        }
-
-        /// @brief 墙钟时刻折成自 Unix 纪元起的纳秒文本（protojson 的 64 位整数一律是字符串）
-        std::string unixNanoTextOf(const std::chrono::system_clock::time_point moment)
-        {
-            return std::to_string(std::chrono::floor<std::chrono::nanoseconds>(moment.time_since_epoch()).count());
-        }
+        using Telemetry::keyValueOf;
+        using Telemetry::textValueOf;
+        using Telemetry::unixNanoTextOf;
 
         /// @brief OTLP 的 severityNumber：取各档的起点值（TRACE=1、DEBUG=5、INFO=9、WARN=13、ERROR=17、FATAL=21）
         int severityNumber(const Base::LogLevel level) noexcept
@@ -74,20 +56,20 @@ namespace AsynGyanis::Net
             object["timeUnixNano"]   = unixNanoTextOf(record.timestamp);
             object["severityText"]   = severityTextOf(record.level);
             object["severityNumber"] = severityNumber(record.level);
-            object["body"]           = stringValueOf(record.message);
+            object["body"]           = textValueOf(record.message);
 
             Base::ConfigValue attributes = Base::ConfigValue::array();
             if (!record.loggerName.empty())
             {
-                attributes.push_back(keyValueOf("logger.name", stringValueOf(record.loggerName)));
+                attributes.push_back(keyValueOf("logger.name", textValueOf(record.loggerName)));
             }
             if (!record.threadId.empty())
             {
-                attributes.push_back(keyValueOf("thread.id", stringValueOf(record.threadId)));
+                attributes.push_back(keyValueOf("thread.id", textValueOf(record.threadId)));
             }
             for (const auto &[key, value]: record.attributes)
             {
-                attributes.push_back(keyValueOf(key, stringValueOf(value)));
+                attributes.push_back(keyValueOf(key, textValueOf(value)));
             }
             object["attributes"] = std::move(attributes);
             return object;
@@ -110,10 +92,10 @@ namespace AsynGyanis::Net
         scopeLogs["logRecords"]     = std::move(recordArray);
 
         Base::ConfigValue resourceAttributes = Base::ConfigValue::array();
-        resourceAttributes.push_back(keyValueOf("service.name", stringValueOf(resource.serviceName)));
+        resourceAttributes.push_back(keyValueOf("service.name", textValueOf(resource.serviceName)));
         if (!resource.serviceVersion.empty())
         {
-            resourceAttributes.push_back(keyValueOf("service.version", stringValueOf(resource.serviceVersion)));
+            resourceAttributes.push_back(keyValueOf("service.version", textValueOf(resource.serviceVersion)));
         }
 
         Base::ConfigValue resourceObject = Base::ConfigValue::object();

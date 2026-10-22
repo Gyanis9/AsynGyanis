@@ -1,5 +1,6 @@
 #include "Net/Metrics/OtlpMetricsJson.h"
 
+#include "Net/Telemetry/OtlpJsonSupport.h"
 #include "Base/Config/ConfigValue.h"
 
 #include <chrono>
@@ -12,32 +13,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /**
-         * @brief 墙钟时刻折成自 Unix 纪元起的纳秒文本
-         * @details 用 floor 而不是 duration_cast：后者对 time_point::min 这类极端值会溢出成负数
-         *          （与链路出口同一条换算）
-         */
-        std::string unixNanoTextOf(const std::chrono::system_clock::time_point &moment)
-        {
-            return std::to_string(std::chrono::floor<std::chrono::nanoseconds>(moment.time_since_epoch()).count());
-        }
-
-        /// @brief 一段文本折成 OTLP 的 AnyValue（stringValue 那一支）
-        Base::ConfigValue textValueOf(std::string_view text)
-        {
-            Base::ConfigValue value = Base::ConfigValue::object();
-            value["stringValue"]    = text;
-            return value;
-        }
-
-        /// @brief 一个键值对折成 OTLP 的 KeyValue
-        Base::ConfigValue keyValueOf(std::string_view key, Base::ConfigValue value)
-        {
-            Base::ConfigValue entry = Base::ConfigValue::object();
-            entry["key"]            = key;
-            entry["value"]          = std::move(value);
-            return entry;
-        }
+        using Telemetry::keyValueOf;
+        using Telemetry::textValueOf;
+        using Telemetry::unixNanoTextOf;
 
         /// @brief 一条读数折成 OTLP 的 Metric 对象
         Base::ConfigValue metricObjectOf(const Core::ProcessMetricSample &sample, std::string_view timeUnixNano)

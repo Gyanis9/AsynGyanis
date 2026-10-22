@@ -1,5 +1,6 @@
 #include "Net/Tracing/OtlpTraceJson.h"
 
+#include "Net/Telemetry/OtlpJsonSupport.h"
 #include "Base/Config/ConfigValue.h"
 
 #include <chrono>
@@ -12,13 +13,9 @@ namespace AsynGyanis::Net
 {
     namespace
     {
-        /// @brief 一段文本折成 OTLP 的 AnyValue（stringValue 那一支）
-        Base::ConfigValue textValueOf(std::string_view text)
-        {
-            Base::ConfigValue value = Base::ConfigValue::object();
-            value["stringValue"]    = text;
-            return value;
-        }
+        using Telemetry::keyValueOf;
+        using Telemetry::textValueOf;
+        using Telemetry::unixNanoTextOf;
 
         /**
          * @brief 把一个维度取值折成 OTLP 的 AnyValue
@@ -45,30 +42,6 @@ namespace AsynGyanis::Net
                     },
                     value);
         }
-
-        /**
-         * @brief 把一个键值对折成 OTLP 的 KeyValue
-         * @param key 维度名
-         * @param value 已经折成 AnyValue 的取值
-         */
-        Base::ConfigValue keyValueOf(std::string_view key, Base::ConfigValue value)
-        {
-            Base::ConfigValue entry = Base::ConfigValue::object();
-            entry["key"]            = key;
-            entry["value"]          = std::move(value);
-            return entry;
-        }
-
-        /**
-         * @brief 墙钟时刻折成自 Unix 纪元起的纳秒文本
-         * @details 用 floor 而不是 duration_cast：后者对 time_point::min 这类极端值会溢出成负数，
-         *          而那正好是「未设置开始时刻」的记录会走到的地方。
-         */
-        std::string unixNanoTextOf(const std::chrono::system_clock::time_point &moment)
-        {
-            return std::to_string(std::chrono::floor<std::chrono::nanoseconds>(moment.time_since_epoch()).count());
-        }
-
         /**
          * @brief 结束时刻 = 开始时刻的纳秒数 + 时长
          * @details 在纳秒整数上相加，而不是先做 time_point 相加再折纳秒：两个平台的 system_clock
