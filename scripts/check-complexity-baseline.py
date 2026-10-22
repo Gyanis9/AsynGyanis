@@ -2,25 +2,11 @@
 # -*- coding: utf-8 -*-
 """复杂度基线冻禁：超地板的函数只准降不准升、只准少不准多。
 
-判据的形状：
-  * 任何 .cpp 里「一个函数体的行数」超过 FLOOR_LINES 的每一个都要在基线里登记过（头文件刻意不量，
-    理由见 SOURCE_SUFFIXES 那段注释：类内内联体的花括号计数会被模板与深层协程带偏，量出谁都不信的数）；
-  * 登记过的文件按各自记录的列表降序按位比对：第 i 长函数不得涨过基线第 i 长，且不得多出新的
-    超地板函数（早先每文件只记单一最大值，往一个有 393 行函数的文件里新塞 150 行函数门禁毫无反应
-    ——101 到 max-1 之间整个是盲区；列表化之后，多一个超地板函数就多一格，按位立刻看得见）；
-  * 拆分大函数也会让列表变长一位——那不是增漏，门一样会红：形状变了就跑 --write 重录（重录前确认
-    每一格确实变小了，重录是「收下新形状」，不是「洗掉差值」）；
-  * 低于记录值不报告警——那是改进，改完把基线一起降下来（--write 重新生成）；
-  * 一个文件都没量到（src 被挪走、SCAN_DIRS 或后缀被改错）判红而不是判过——「门没跑」不能读成「门通过」；
-  * 基线里指向已消失文件的条目单独点名（不判红）：它们是没人认领的天花板，随 --write 才会清掉。
-
-为什么是一道脚本而不是 clang-tidy 的一条检查：仓库里那个 tidy 作业是「只报告不阻塞」档，
-挂上去的东西不会让任何人流红；冻结判据必须有牙齿。
-
-用法：
-    python3 scripts/check-complexity-baseline.py            # 检查（CI 用）
-    python3 scripts/check-complexity-baseline.py --write     # 重新生成基线
-退出码：0 通过；1 违例；2 基线或输入本身有问题。
+判据：.cpp 里函数体行数超过 FLOOR_LINES（100）的必须登记，并按降序列表按位比对——第 i 长
+不得涨、不得多出新的超地板函数；低于记录值不报警（改进后跑 --write 降基线）；拆分让列表
+变长也会红，形状变了就 --write 重录。一个文件都没量到判红，不读成通过；基线里的死条目只点名。
+用法：python3 scripts/check-complexity-baseline.py [--write]；退出码 0 通过、1 违例、2 输入有问题。
+为什么是脚本而不是 clang-tidy：tidy 作业只报告不阻塞，冻结判据必须有牙齿。
 """
 
 from __future__ import annotations
@@ -40,18 +26,14 @@ for _stream in (sys.stdout, sys.stderr):
 FLOOR_LINES = 100
 BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "complexity-baseline.json")
 SCAN_DIRS = ("src",)
-# 已知天花板：只量 .cpp。头文件里的内联体在类内，一旦体内出现「本层没闭合的花括号形状」（模板段、
-# 嵌套很深的协程），括号计数器会把外层块一起算进来，量出 900 行这种谁都不信的数——修它要引一个真正
-# 的 C++ 词法器，而这条判据的目的是冻住最长的几个函数。.cpp 那一侧的读数已与人工目测逐一对齐
-# （393/371/363/342/330/286）。要覆盖头文件时改用 libclang 取 FunctionDecl 的起止行，别再调正则。
+# 已知天花板：只量 .cpp。头文件内联体的花括号计数会被模板与深层协程带偏，量出 900 行假数；
+# .cpp 侧读数已与人工目测对齐（393/371/363/342/330/286）。要覆盖头文件请改用 libclang
+# 取 FunctionDecl 起止行，别再调正则。
 SOURCE_SUFFIXES = (".cpp",)
 
-# 函数体的起点：定义行以「限定名 + 名字 + (」开头，参数表可以跨几行（中间不出现 ; 或花括号），
-# 收口行的下一非空行必须是单独一个 '{'。两条判据都要，缺一就出错：
-#   * 只看「有 ( 且开头像声明符」会把多行签名的中间那行（`const std::function<bool()> &isAlive,`）
-#     当成函数起点，于是从签名中段数到外层块的末尾，一个 900 行的假函数就这么出来了——故要求
-#     上一非空行是「一条语句/一个块/一个访问段的结尾」，不接受以 ',' 或 '(' 收尾的续行；
-#   * 只要求同行收口又会漏掉头文件里那些签名换行的内联体（HttpSession.h 的几条正是这种形状）。
+# 函数起点：定义行以「限定名 + 名字 + (」开头，参数表可跨行，收口行的下一非空行必须是单独 '{'。
+# 只看「有 ( 且开头像声明符」会把多行签名的中段当起点，数出 900 行假函数；只要求同行收口又会
+# 漏掉签名换行的内联体。故还要求上一非空行是语句/块/访问段的结尾，不接受 , 或 ( 收尾的续行。
 FUNCTION_HEAD = re.compile(r"^[A-Za-z_~][\w:<>,\s\*&]*(::[\w~<>]+)?\s*\(")
 FUNCTION_TAIL = re.compile(r"\)\s*((const|noexcept|override|final)\s*)*(\{)?$")
 CONTINUATION_ENDINGS = (',', '(', '&&', '||', '?', '.', '->', '+', '-', '*', '/', '=')
@@ -79,7 +61,7 @@ INLINE_EMPTY_BRACES = re.compile(r"\{[^{}]*\}")
 
 
 def stripInlineBraces(body):
-    """去掉参数表里的就地初始化/默认实参（`= {}`、`= Options{}`）——它们是值，不是块的开始。"""
+    """去掉参数表里的就地初始化/默认实参（= {}、= Options{}）——它们是值，不是块的开始。"""
     previous = None
     while previous != body:
         previous = body
@@ -88,12 +70,10 @@ def stripInlineBraces(body):
 
 
 def signatureEndIndex(lines, index):
-    """从定义行起找参数表的收口行；参数表里出现 ; 或花括号就不算一条签名。
+    """从定义行起找参数表收口行；参数表里出现 ; 或花括号就不算签名。
 
-    括号深度要跨行累计：一条签名的后半截常常单独成行（`std::optional<X> last)`)，
-    按「这一行左右括号相等」判会漏掉它，接着撞上函数体的 '{' 就整条判废。
-    默认实参里的 `{}` 要先剥掉，否则那一行带着一个多出来的 '{'，整个体的闭合点会被推后一层
-    ——推后的表现不是报错，而是把函数一路数到文件末尾，量出一个谁都不会信的假读数。
+    括号深度要跨行累计（后半截常单独成行）；默认实参里的 {} 先剥掉，否则闭合点被推后一层，
+    函数会一路数到文件末尾，量出假读数。
     """
     depth = 0
     for cursor in range(index, min(index + MAX_SIGNATURE_LINES, len(lines))):
@@ -112,11 +92,10 @@ def signatureEndIndex(lines, index):
 
 
 def codeOnly(line, state):
-    """去掉字符串/字符字面量的内容与注释，只留下真正的代码字符。
+    """去掉字符串/字符字面量与注释，只留下真正的代码字符。
 
-    不剥这一步会数错花括号：日志格式串里的 `{}` 成对时没事，一条只写了一半的（JSON 样例、
-    或者注释里引用的半个大括号）就会让深度永远回不到零，于是一个几百行的函数被读成 900 行。
-    state 是一个集合，跨行携带块注释与 raw string 的状态。
+    日志格式串里的 {} 成对时没事，只写一半的（JSON 样例或注释里引用的半个大括号）会让深度
+    永远回不到零，几百行的函数被读成 900 行。state 跨行携带块注释与 raw string 状态。
     """
     out = []
     index = 0
@@ -172,7 +151,7 @@ def codeOnly(line, state):
 
 
 def bodies_above_floor(lines, floor):
-    """返回文件里所有「函数体行数 > floor」的读数，按长度降序（体行数＝整条签名 + 配对的花括号）。"""
+    """返回文件里函数体行数 > floor 的读数，按长度降序（体行数＝签名 + 配对花括号）。"""
     bodies = []
     index = 0
     total = len(lines)
@@ -270,7 +249,6 @@ def main():
     violations = []
     if not measured:
         # 实测集为空就是这道门没跑到：src 被挪走、SCAN_DIRS 写错、后缀判据改掉都会走到这里。
-        # 早先的形状是「只对实测集判」，于是量到 0 个文件也报 OK——把「没跑」读成「通过」
         sys.stderr.write("一个源文件都没量到（SCAN_DIRS=%s，后缀=%s）：这道门没有跑到东西，判红\n"
                          % ("/".join(SCAN_DIRS), "/".join(SOURCE_SUFFIXES)))
         print("COMPLEXITY_GATE=FAIL")
@@ -290,8 +268,7 @@ def main():
             violations.append("%s 超地板函数比基线多 %d 个（基线 %d 个，本轮 %d 个，最短 %d 行）"
                               % (path, len(bodies) - len(recorded), len(recorded), len(bodies), bodies[-1]))
 
-    # 基线里的死条目：文件已删或已降到地板以下，这一项就没人再判。它们不会让任何作业变红，
-    # 于是「天花板」名单只会越来越长——点名出来，随下一次 --write 收敛
+    # 基线里的死条目（文件已删或已降到地板以下）不会让任何作业变红；点名出来，随下次 --write 收敛。
     dead_entries = sorted(path for path in baseline if path not in measured)
 
     print("MEASURED_FILES=%d FLOOR=%d DEAD_BASELINE_ENTRIES=%d" % (len(measured), FLOOR_LINES, len(dead_entries)))

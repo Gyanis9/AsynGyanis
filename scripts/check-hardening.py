@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """加固位的核对：CMake 说它加了，与编译命令行、镜像头里真的带着，是三件不同的事。
 
-判据的形状照本仓其它门禁来：
-
-* 期望从构建目录自己的 CMakeCache.txt 现读（`ASYN_ENABLE_HARDENING` / `ENABLE_SANITIZERS` /
-  `SANITIZE_THREADS` / `CMAKE_BUILD_TYPE` / 编译器 id），脚本里不再抄一份策略——两处算式分叉是
-  最难发现的那种漂移，而「配了却没生效」正是本仓在 sanitizer 上踩过的那类假安全；
-* 编译侧读 `compile_commands.json`：本仓 `src/` 下每个翻译单元都要带着该带的开关；
-* 镜像侧读产物头：ELF 看 `GNU_RELRO` + `BIND_NOW` + 不可执行栈，PE 看 NX / DYNAMIC_BASE /
-  Control Flow Guard；
-* 退出码分三档：0 全对、1 有落点不对（被测面的问题）、2 前置缺件（没有 compile_commands、找不到
-  readelf/dumpbin 之类）——缺件绝不被读成「通过」。
-
-    python3 scripts/check-hardening.py --build build/release
-    python3 scripts/check-hardening.py --build build/debug --build build/release
+期望从构建目录的 CMakeCache.txt 现读（ASYN_ENABLE_HARDENING / ENABLE_SANITIZERS /
+SANITIZE_THREADS / CMAKE_BUILD_TYPE / 编译器 id），脚本不抄第二份策略。编译侧读
+compile_commands.json，要求 src/ 下每个翻译单元都带该带的开关；镜像侧 ELF 看 GNU_RELRO +
+BIND_NOW + 不可执行栈，PE 看 NX / DYNAMIC_BASE / Control Flow Guard。
+用法：python3 scripts/check-hardening.py --build build/release（可重复 --build）
+退出码：0 全对；1 有落点不对；2 前置缺件（没有 compile_commands、找不到 readelf/dumpbin），
+缺件绝不读成通过。
 """
 
 from __future__ import annotations
@@ -27,10 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 两个流固定按 UTF-8 写：这张表的每一行都是中文，而 Windows 侧的默认编码可能是 cp1252
-# （GitHub 的 runner 实测就是，本机是 936 所以看不见）。按默认编码走，脚本会在打印第一行读数时
-# 抛 UnicodeEncodeError 退 1——看上去像「加固落空」，实际一条判据都没跑完。
-# 这条门第一次上 CI 就红在这里（2026-10-10，Linux 侧同一件跑过），所以补得不算早。
+# 两个流固定按 UTF-8 写：每行都是中文，Windows 默认编码可能是 cp1252（GitHub runner 实测就是），
+# 按默认编码会在打印第一行时抛 UnicodeEncodeError 退 1，看着像「加固落空」，实际判据没跑完。
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
@@ -158,7 +150,7 @@ def check_pe_binary(binary: Path, dumpbin: str, expect: dict) -> list[str]:
     """核 PE 头的 DLL characteristics：NX 与 DYNAMIC_BASE 常开，CFG 只在加固且 Release 时才该在。"""
     problems: list[str] = []
     headers = run_tool([dumpbin, "/headers", str(binary)])
-    # 特征位是十六进制且常以 A-F 开头（如 C160）：用 `\d+` 会从串中间截出一段数字，
+    # 特征位是十六进制且常以 A-F 开头（如 C160）：用 \d+ 会从串中间截出一段数字，
     # 于是 NX 与 DYNAMIC_BASE 恰好落在那截里、看着「过了」，而高位（CFG 是 0x4000）整个被丢掉
     match = re.search(r"([0-9A-Fa-f]+)\s+DLL characteristics", headers)
     if match is None:
@@ -174,7 +166,7 @@ def check_pe_binary(binary: Path, dumpbin: str, expect: dict) -> list[str]:
 
 
 def check_binary_side(build_dir: Path, expect: dict, args: argparse.Namespace) -> list[str]:
-    """核镜像头。`--no-binaries` 给「只配置不构建」的那一档用（那里没有产物可读）。
+    """核镜像头。--no-binaries 给「只配置不构建」的那一档用（那里没有产物可读）。
 
     只抽前几件产物：同一棵树里所有产物出自同一份编译与链接选项，逐件读一遍除了耗时不增加判据；
     打印读了几件，免得被读成「整棵树都核过了」。

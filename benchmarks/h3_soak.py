@@ -1,29 +1,13 @@
 #!/usr/bin/env python3
-"""HTTP/3 的进程外压测：用 aioquic 这个独立实现向本框架的 h3 服务端发负载。
-
-为什么要有这一条：`soak.py` 走的是裸 socket，只覆盖 h1/h2c；h3 需要 QUIC 客户端，而框架本身
-不带 h3 客户端，所以这条传输面此前只有「一次一条请求」的验收探针（`scripts/h3_acceptance.py`），
-没有并发、没有连接 churn、更没有「连接带着挂起的业务协程一起没掉」这种收口场景。本脚本把这三段
-补上：
-
-    阶段一  并发连接 × 每条若干 GET：核对状态码与正文，给出 p50/p95/max 与 rps
-            （对端是 Python 的 aioquic，这几位数读的是「客户端 + 服务端」一整圈，只用来做
-            量级对照与失败检测，不当作服务端延迟基准）
-    阶段二  压缩协商：带 accept-encoding 的 GET（服务端要 `--compress`），按响应头解回来核对
-    阶段三  半开收口：建好 WebSocket 隧道、收到回显后客户端停手（按客户端空闲上限主动收口），
-            让服务端在业务协程还挂在 receive() 上时把连接与会话一起收掉；随后再跑一轮阶段一的
-            子集，要求服务照常应答、句柄与私有内存不随批次增长
-
-用法（服务端由调用方起，与 soak.py 同一口径）：
-    ReferenceServer --host 127.0.0.1 --port 18443 --https --h3 --cert cert.pem --key key.pem
-    python3 benchmarks/h3_soak.py --host 127.0.0.1 --port 18443 --pid <服务进程号>
-
-资源漂移怎么读（本机 2026-09-21 实测，同一服务进程连跑多轮）：首轮那点正向漂移是暖机不是泄漏——
-句柄在带压缩的进程里第一轮 177→185、随后各轮 185→185 与另一进程四轮 177→177；工作集只在开
-`--compress` 时抬升（前三轮 5.9→6.6→6.9 MiB 后不再涨，即每条干活的线程懒建自己的压缩上下文，
-上限就是线程数），`--skip-compression` 的四轮一直停在 4.2~4.9 MiB。要看的是同一进程内逐轮是否还在涨。
-
-退出码 0 表示三段全过；任一段有失败即非 0。依赖：pip install aioquic
+"""HTTP/3 的进程外压测：用 aioquic 独立实现向本框架的 h3 服务端发负载。
+用法：ReferenceServer --host 127.0.0.1 --port 18443 --https --h3 --cert cert.pem --key key.pem
+      python3 benchmarks/h3_soak.py --host 127.0.0.1 --port 18443 --pid <服务进程号>
+阶段一：并发连接各发若干 GET，给 p50/p95/max 与 rps（含客户端一整圈，只作量级对照）。
+阶段二：带 accept-encoding 的 GET（服务端要 --compress），按响应头解回来核对。
+阶段三：半开收口——建 WebSocket 隧道后停手，让服务端在业务协程挂起时收掉连接；随后复查负载。
+资源漂移（本机 2026-09-21 实测）：句柄首轮 177→185 后 185→185 或 177→177；工作集在
+--compress 下 5.9→6.6→6.9 MiB 后不涨，--skip-compression 停在 4.2~4.9 MiB。看同进程逐轮是否在涨。
+退出码：0 三段全过；任一段失败非 0。依赖：pip install aioquic
 """
 
 import argparse
@@ -175,12 +159,10 @@ async def runLoad(host, port, connectionCount, requestsPerConnection, stats, pat
 
 
 async def openAbandonedTunnels(host, port, tunnelCount, stats, clientIdleTimeout=None):
-    """建好隧道、收到一条回显后把连接晾着：本函数不负责收尾，连接要活着回去。
+    """建好隧道、收到一条回显后把连接晾着；连接要活着返回，收尾由调用方负责。
 
-    刻意不用 `async with`：连接要跨过后面的等待才轮到「服务端怎么收口」登场——
-    `clientIdleTimeout` 给秒数就是「客户端自己发 CONNECTION_CLOSE」，给 None 就是「客户端彻底静默、
-    等服务端的空闲上限收」。aioquic 的 `connect()` 是异步上下文管理器而不是可等待对象，
-    因此显式取它的进入/退出两口。
+    不用 async with 是刻意的：连接要跨过等待才轮到服务端收口。clientIdleTimeout 给秒数即客户端
+    自己发 CONNECTION_CLOSE，给 None 即客户端静默、等服务端 idleTimeout 收。
     """
     authority = f"{host}:{port}"
     configuration = make_quic_configuration(idle_timeout_seconds=clientIdleTimeout)
@@ -357,7 +339,7 @@ async def runAbandonedTunnelPhase(arguments, closeStats, silentStats, recheckSta
     """阶段三：两种「连接带着挂起的业务协程一起没掉」的收口形态，各要服务照常应答。
 
     3a 是客户端自己发 CONNECTION_CLOSE（快，2 秒就到）；3b 是客户端彻底静默，等服务端的
-    `idleTimeout`（默认 30 秒）把连接收掉——3b 才是 `abandonPendingStreams` 那一支的正主。
+    idleTimeout（默认 30 秒）把连接收掉——3b 才是 abandonPendingStreams 那一支的正主。
     """
     closeCount = arguments.tunnels // 2
     silentCount = arguments.tunnels - closeCount

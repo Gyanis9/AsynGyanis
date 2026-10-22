@@ -1,37 +1,14 @@
 #!/usr/bin/env python3
 """监听套接字交接与 socket activation 的进程外实测（POSIX 才有这条路）。
-
-这里验的是「部署形态」那一格：镜像与 systemd 单元装的是 ReferenceServer，换代时监听套接字能不能
-交接到新一代手里。库里那段（Core::adoptHandedOverListener 与各 adopt 构造子）有单测，示例的命令行
-接线只有真起进程才测得出来——而这条路上最坏的形状不是报错，是「以为在接手、其实各绑各的」。
-
-判据（任一条不成立就退出码非 0）：
-
-  1  --adopt-fd 交一枚已在监听的 TCP 套接字 → 新一代在同一个端口上应答；交棒方关掉自己那一份
-     之后仍应答（端口从不关闭，这就是零停机的读数）
-  2  systemd 的形状：LISTEN_PID=本进程 + LISTEN_FDS=1 → 同一端口应答，不用写 --adopt-fd
-  3  LISTEN_PID 是别人的 pid → 日志里必须出现「忽略 systemd 交来的」，随后按老路自己 bind 并服务
-  4  strace：接管形状下不许对任何描述符 bind/listen。重复 listen 的实测症状是「端口换了、原服务
-     不再应答」而不是报错，sanitizer 也不报，只能这样钉
-  5  数据报那一枚：接管来的 UDP 套接字交给 QuicServer 后 h3 在同一端口上真应答——不看 alt-svc
-     那种静态通告（那是路由表里写死的头，服务没起来也照发）
-  6  换代：A 台服务完一条真 h3 连接后退场，B 台带同一份 --stateless-reset-key 接手同一批描述符 →
-     老连接那条目的标识由 B 回一条无状态重置，尾部 16 字节逐字等于 A 当初宣告的那枚；同端口上
-     新开一条 h3 连接照样 200（在途 QUIC 连接状态本身不可转移，判据就到「客户端能快速重连」为止）
-
-第 6 条的两枚令牌都是独立裁判：一枚是线路上由服务端在传输参数里签发、被 aioquic 存下来的；另一枚
-按 RFC 9000 §10.3.2 用同一份密钥在本地现算（HMAC-SHA-256 取前 16 字节），与本仓代码不同源。aioquic
-1.3.0 认不出入向的无状态重置（receive_datagram 里没有拿 _peer_cid.stateless_reset_token 比对报文尾部
-的分支，解不开头就丢），所以「客户端收到了」只能在包一层判，不能等它抛事件。
-
-用法（要在带 aioquic 的解释器下跑；没有就把第 5、6 组自动跳过，其余照样钉）：
-
-    scripts/fd_takeover_probe.py --server build/release/samples/ReferenceServer \
-        --cert tests/Core/fixtures/test_localhost_cert.pem \
-        --key tests/Core/fixtures/test_localhost_key.pem
-
-Windows 上描述符不随 exec 继承（那份形状由 CoreWorker 示例经 SCM_RIGHTS 之外的通道演示），本脚本
-如实报「本平台不适用」并退出 0；示例在那一侧遇到接管的描述符会当场失败而不是退化成自己 bind。
+判据（任一不成立即非 0）：1) --adopt-fd 交一枚监听中的 TCP 套接字，新一代在同端口应答，
+交棒方关闭后仍应答；2) LISTEN_PID 与 LISTEN_FDS 形状免 --adopt-fd 直接接手；3) LISTEN_PID
+是别人的 pid 时忽略交来的 fd 并自行 bind；4) strace 下不许对任何描述符 bind/listen；
+5) 接管的 UDP 套接字交给 QuicServer 后 h3 真应答；6) 带同一 --stateless-reset-key 换代表，
+B 对老连接回无状态重置且尾部 16 字节等于 A 宣告的令牌，同端口新连接照常 200；令牌两路独立
+核对（RFC 9000 §10.3.2，HMAC-SHA-256 取前 16 字节，另一路由 aioquic 存服务端签发的）。
+用法：scripts/fd_takeover_probe.py --server build/release/samples/ReferenceServer --cert
+tests/Core/fixtures/test_localhost_cert.pem --key tests/Core/fixtures/test_localhost_key.pem
+（需 aioquic，缺则跳过 5、6）。Windows 上描述符不随 exec 继承：报「本平台不适用」并退出 0。
 """
 
 import argparse

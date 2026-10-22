@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""绑核 A/B：在负载下统计每条工作循环线程的跨核迁移次数，用来判 --pin-threads 值不值。
+"""绑核 A/B：在负载下统计每条工作循环线程的跨核迁移次数，判 --pin-threads 值不值。
 
 用法：pin_ab.py <ReferenceServer 路径> <端口> <线程数> <绑核 0/1> <负载秒数> <并发连接数>
 输出：单行 CSV —— pinned,threads,migrations,requests
-
-口径与坑（都是实测出来的，别绕过）：
-  · 迁移数按 /proc/<pid>/task/<tid>/stat 的 processor 字段（第 39 个，跳过含空格的 comm 之后
-    的下标 36）逐次采样比对得到，4 ms 一轮；小于该间隔发生的来回迁移看不见面，
-    所以这是下界，只适合两组之间做相对比较。
-  · requests 只用于确认两侧都真的跑到了负载，不能当吞吐看：Python 客户端受 GIL 限制，
-    实测每条连接稳定在 ~1000 请求/6 秒，服务端远未饱和。要比吞吐得换成多进程客户端
-    （benchmarks/soak.py 那条路子）。
-  · 采样必须落在负载窗口之内：先起负载再在同一时刻记 deadline，采样跑到 deadline 就停。
+迁移数取自 /proc/<pid>/task/<tid>/stat 的 processor 字段（跳过含空格的 comm 后下标 36），
+4 ms 一轮，期间的来回迁移看不见，所以是下界，只适合两组相对比较。
+requests 只确认两侧都跑到负载，不能当吞吐：Python 客户端受 GIL 限制，实测每条连接约
+1000 请求/6 秒，服务端远未饱和；要比吞吐得换多进程客户端（benchmarks/soak.py）。
+采样窗口落在负载窗口内：先起负载再记 deadline，采样到 deadline 即停。
 """
 import os
 import socket

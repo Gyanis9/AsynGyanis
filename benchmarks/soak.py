@@ -1,27 +1,13 @@
-"""HTTP 服务器进程外压测：协议正确性 + 保持连接负载 + 短连接 churn + 空闲连接驻留，并采样句柄/内存。
-
-用法：
-    python benchmarks/soak.py --port 18080 [--host 127.0.0.1] [--pid <服务进程号>]
-                              [--keepalive-rounds N] [--churn-connections N] [--idle-connections N]
-                              [--json-out <结果文件>]
-
-`--pid` 给出服务进程号才会采样句柄与内存（Windows 上用 ctypes 直接问内核，Linux 上读 /proc/<pid>，
-都不需要额外工具；两侧采的量分别是 句柄数/私有字节/工作集 与 文件描述符数/私有 RSS/常驻 RSS）。
-`--json-out` 把本次结果写成 JSON（结构见 benchmarks/baseline.json 的 note 字段），供 check-baseline.py 比对。
-
-参考基线（2026-09-13，本机 Windows / MSVC / 4 工作线程，仅供回归对比，不是性能上限）：
-    Release（无插桩、开 LTO，各 4 次取中位数）：保持连接 30,305 请求/s、p50 242us、p95 435us，
-    短连接 1,764 连接/s；同一份代码的离散范围分别是 24.8k~30.8k 与 1.3k~2.1k，换一次会话还能差近 2 倍。
-    Debug+ASan：保持连接约 7.7k 请求/s、p50 ≈ 0.97ms、p95 ≈ 1.2ms，短连接约 1k 连接/s。
-    两者都是 22.4 万级请求零失败、句柄数不漂移。本脚本只发压不做构建，换构建类型请自行换可执行文件。
-
-    注意保持连接那一路的 p50 主要不是单次服务耗时，而是排队延迟：8 线程 × 8 连接共 64 条并发连接压在
-    4 个工作线程上，单条请求要排在同循环的其它连接之后（8 个客户端线程自己还在争 GIL）。所以这个数
-    适合看「同一台机器上的前后变化」，不适合当单次请求延迟的绝对值。
-
-    「门禁」的用法：改动前在同一台机器上跑出基线 JSON，改动后重跑并跑 check-baseline.py 比对——
-    跨机器比较没有意义（CPU 频率、电源策略、后台负载都会盖过代码差异）。benchmarks/baseline.json
-    就是这份参考基线的机器可读版本。
+"""HTTP 服务器进程外压测：协议正确性、保持连接负载、短连接 churn、空闲驻留，并采样句柄/内存。
+用法：python benchmarks/soak.py --port 18080 [--host 127.0.0.1] [--pid <服务进程号>]
+      [--keepalive-rounds N] [--churn-connections N] [--idle-connections N] [--json-out <结果文件>]
+--pid：Windows 用 ctypes 问内核，Linux 读 /proc/<pid>；两侧分别采 句柄/私有字节/工作集 与
+fd/私有 RSS/常驻 RSS。--json-out 结构见 benchmarks/baseline.json 的 note。
+参考基线（2026-09-13，本机 Windows / MSVC / 4 工作线程）：Release 保持连接 30,305 请求/s、
+p50 242us、p95 435us，短连接 1,764 连接/s，离散 24.8k~30.8k 与 1.3k~2.1k；Debug+ASan 约
+7.7k 请求/s、p50 0.97ms、p95 1.2ms、短连接 1k 连接/s。两者都是 22.4 万级请求零失败、句柄不漂移。
+保持连接的 p50 主要是排队延迟（64 条连接压在 4 个工作线程上），只适合同机前后对比。
+门禁：同机改动前后各跑一次 check-baseline.py 比对，跨机器无意义；baseline.json 是参考基线。
 """
 
 import argparse
@@ -159,12 +145,10 @@ def workingSetBytesNow(monitor) -> int:
 
 
 def latencySummary(sortedSeconds: list) -> dict:
-    """把排好序的秒级延迟折算成门禁认的那几档分位（单位 us）。
+    """把排好序的秒级延迟折算成门禁认的分位（单位 us）。
 
-    两处生产者（本文件的 `Statistics` 与 `soak_h2c.py`）共用这一个换算：分位只在这里定义，
-    新增一档不会变成「一边已经产出、另一边还按老口径写文件」——那正是 p99 这一档差点摊上的。
-    p95 到 max 之间是整段最坏的一小撮，量的是「有没有偶发的几十毫秒尾巴」，排队与调度都影响它，
-    所以单独钉一条 p99；max 太抖，只当描述性读数用（`check-baseline.py` 里也不判它）。
+    两处生产者（本文件与 soak_h2c.py）共用这一换算，新增一档只改这里。p99 单独盯偶发
+    几十毫秒尾巴；max 太抖，只当描述性读数，check-baseline.py 不判。
     """
     count = len(sortedSeconds)
     return {
@@ -241,11 +225,10 @@ def readResponse(connection: socket.socket, buffer: bytes, headOnly: bool = Fals
 
 
 def requestOnce(connection: socket.socket, buffer: bytes, path: bytes, method: bytes = b"GET", host: str = "127.0.0.1"):
-    """发一条请求并校验响应：状态 200 且 content-length 与实收正文字节数一致。
+    """发一条请求并校验状态 200、content-length 与实收正文一致，返回 (正文, 剩余缓冲, 是否收口)。
 
-    第三个返回值 isConnectionClosing 表示服务端已声明本条连接到此为止（Connection: close）。
-    调用方必须据此换新连接再发下一条：往已声明收口的连接上继续写，是对端违约后的正常失败，
-    会被误记成服务端缺陷。
+    isConnectionClosing 为真表示服务端已声明 Connection: close；调用方必须换新连接，
+    否则后续失败是对端违约后的正常失败，会被误记成服务端缺陷。
     """
     connection.sendall(method + b" " + path + b" HTTP/1.1\r\nHost: " + host.encode() + b"\r\n\r\n")
     status, headers, body, buffer = readResponse(connection, buffer)
@@ -299,11 +282,10 @@ def runProtocolChecks(host: str, port: int) -> int:
 
 
 def runCompressionCheck(host: str, port: int) -> int:
-    """响应压缩的端到端验收：同一份大正文带与不带 Accept-Encoding 各要一次，解压后逐字节比对。
+    """响应压缩的端到端验收：大正文带与不带 Accept-Encoding 各取一次，解压后逐字节比对。
 
-    判据要能在两种服务端配置下都成立：没开 --compress 时 gzip 那次拿回未压缩正文，
-    属于「本阶段无从判定」，按跳过说明原因，不给假绿；而 `gzip;q=0` 是明确拒绝，
-    任何配置下都必须原样发正文，这一条始终要成立。
+    服务端没开 --compress 时 gzip 那次拿回未压缩正文，按跳过说明原因，不给假绿；
+    gzip;q=0 是明确拒绝，任何配置下都必须原样发正文。
     """
     print("== 阶段：响应压缩协商 ==")
     failures = 0
@@ -359,12 +341,10 @@ def runCompressionCheck(host: str, port: int) -> int:
 
 
 def runKeepAliveLoad(host: str, port: int, threadCount: int, connectionCount: int, requestCount: int):
-    """保持连接负载：每线程若干连接，每条连接上串行压满 requestCount 条。返回 (失败数, 结果字典)。
+    """保持连接负载：每线程若干连接，每条串行压满 requestCount 条，返回 (失败数, 结果字典)。
 
-    服务端按 HttpServerLimits::maximumRequestsPerConnection（默认 1000）到点收口，回完第 1000 条
-    就声明 Connection: close。本阶段要把 rounds 调到上限之上（例如 1001），所以见到 close 声明就
-    换一条新连接继续跑剩余请求：这既守住「不给已收口的连接再发报文」的客户端本分，也让吞吐与
-    分位在任何 rounds 下都量得准。代价是实际建立的连接数会略多于 connectionCount。
+    服务端到 maximumRequestsPerConnection（默认 1000）会声明 Connection: close，见到就换新连接
+    继续跑剩余请求；因此实际建连数会略多于 connectionCount。
     """
     print(f"== 阶段二：保持连接负载（{threadCount} 线程 × {connectionCount} 连接 × {requestCount} 请求）==")
     statistics = Statistics("keep-alive")
@@ -479,7 +459,7 @@ def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: 
         try:
             connections.append(socket.create_connection((host, port), timeout=5))
         except OSError as exception:
-            # 在监听却接不住连接（backlog 灌满时 Windows 直接回 WSAECONNREFUSED）说明服务端已经卡住，
+            # 在监听却接不住连接（backlog 灌满时 Windows 直接回 WSAECONNREFUSED）说明服务端已卡住，
             # 继续灌更多连接只会掩盖现场：记一笔失败就停手，让上面那行报出断在第几条
             failures += 1
             print(f"  建立第 {len(connections) + 1} 条连接失败：{type(exception).__name__}: {exception}")
@@ -520,10 +500,8 @@ def runIdleConnections(host: str, port: int, connectionCount: int, holdSeconds: 
 def runSlowClientResilience(host: str, port: int, connectionCount: int, holdSeconds: float) -> int:
     """慢客户端（slowloris 式）：只发半截请求头就挂住，服务端必须照常服务其他连接。
 
-    慢连接发一小段请求头后停住；挂住期间用一条正常连接连做 20 次请求并要求全部成功——
-    这正是「慢客户端不影响正常服务」的判据。保持 holdSeconds 后统计被服务端收口的慢连接数
-    （默认读超时 60s，短期保持内收口为 0 属正常，只作观测不作断言）。
-    所有失败（建连失败、正常请求未完成）一律计入返回值，不抛 traceback。
+    挂住期间用一条正常连接做 20 次请求并要求全部成功；holdSeconds 后被收口的慢连接数只作观测
+    （默认读超时 60s，短期为 0 属正常）。所有失败计入返回值，不抛 traceback。
     """
     print(f"== 阶段：慢客户端（{connectionCount} 条半截请求，挂住 {holdSeconds:.1f}s）==")
     failures = 0
@@ -576,12 +554,10 @@ def runSlowClientResilience(host: str, port: int, connectionCount: int, holdSeco
 
 
 def runConnectionSweep(host: str, port: int, levels, monitor=None) -> tuple:
-    """连接数扫描：按并发档位建立 keep-alive 连接并各做一次请求，全部必须成功。
+    """连接数扫描：按并发档建立 keep-alive 连接并各做一次请求，全部必须成功。
 
-    每个档位先把该档连接全部建好、再逐条发请求，用来观察「并发连接数」维度下有没有
-    建连失败或请求失败；返回值是失败项条数与各档位测量值（供 JSON 落盘比对）。
-    monitor 给了才记每档的工作集峰值：并发档的资源峰值正是容量规划要看的量，取「档起、
-    连接全部在手、档末」三次就地读数的最大者（后台采样每秒一采，够不着毫秒级的档位）。
+    每档先建齐再逐条发请求，返回 (失败条数, 各档测量值)。monitor 给了才记工作集峰值，
+    取「档起、连接全部在手、档末」三次就地读数的最大者。
     """
     print("== 阶段：连接数扫描 " + "/".join(str(level) for level in levels) + " ==")
     failures = 0
@@ -628,9 +604,8 @@ def runConnectionSweep(host: str, port: int, levels, monitor=None) -> tuple:
 def runRateLimitCheck(host: str, port: int, burstRequests: int) -> int:
     """限流触发：连发 burstRequests 条请求，必须出现 429（带 retry-after），随后恢复放行。
 
-    前提是被测服务按小速率启动（run-soak.bat 的 ASYN_SOAK_RATE_LIMIT=1 模式会写入
-    速率 2/s、容量 2 的配置）。一条 429 都没有说明限流没生效——计为失败而不是跳过：
-    静默跳过会让限流回归无人发现。限流窗口过后轮询等待放行，超时同样计失败。
+    服务端需按小速率启动（ASYN_SOAK_RATE_LIMIT=1 写入 2/s、容量 2）。一条 429 都没有计为失败，
+    不静默跳过；限流窗口过后轮询等待放行，10 秒超时同样计失败。
     """
     print(f"== 阶段：限流触发（连发 {burstRequests} 条）==")
     failures = 0
@@ -729,7 +704,7 @@ def main() -> int:
             if sweepLevels:
                 sweepFailures, sweepSummary = runConnectionSweep(arguments.host, arguments.port, sweepLevels, monitor)
                 failures += sweepFailures
-                # 每档单独成项（connection-sweep-<档位>）：门禁按项跨多份实测取中位数、单独判工作集峰值
+                # 每档单独成项 connection-sweep-<档位>：门禁跨多份实测取中位数并单独判工作集峰值
                 measurements.update(sweepSummary)
         except (OSError, ValueError) as probeError:
             # 探针跑不通要报成「一条失败」并给出下一步，不能让 Python 回溯把结论糊掉：

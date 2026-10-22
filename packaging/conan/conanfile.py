@@ -1,33 +1,10 @@
-"""
-@file conanfile.py
-@brief 把本仓库的五个静态库与公开头文件打成 Conan 库包（asyngyanis/<版本>）
-@author Gyanis
-@date 2026-09-13
-@version 1.0.0
-@copyright Copyright (c) . All rights reserved.
+"""把五个静态库与公开头文件打成 Conan 库包 asyngyanis/<版本>。
 
-用法（在仓库根目录执行，源在导出时从仓库根整棵快照进包）：
-
-    conan create packaging/conan --build=missing
-
-消费方在 conanfile 里 `self.tool_requires/requires` 上写 `asyngyanis/<版本号>`（版本号就是根
-CMakeLists 的 `project(VERSION ...)`，见下面的 set_version），用 CMakeDeps + CMakeToolchain 生成器，
-然后 find_package(AsynGyanis) 并按目标取用：AsynGyanis::Platform / Base / Core / Net / Database
-。各组件之间的依赖关系由本文件的 cpp_info.components
-如实声明，因此只需链顶层用到的那个目标。
-
-本包只出静态库（`package_type = "static-library"`，且不提供 `shared` 选项）：共享形态是仓库自己
-用 `-DBUILD_SHARED_LIBS=ON` 直接配 CMake 走的那条路，双端双形态都有门禁；这条包路线没有会跑共享档的
-作业，加一个没人验过的开关等于造死配置。
-
-与仓库根 conanfile.py 的分工：那份是开发用配方（application 角色，只负责为本地构建与 CI
-装依赖，并放行 MySQL 依赖的可选跳过）；这份是分发用配方，只装库本体必需的四项依赖
-（zlib / openssl / sqlite3 / hiredis，可选 libmysqlclient），不引入 GTest——测试与示例由
-ASYN_BUILD_TESTS / ASYN_BUILD_SAMPLES 两个开关在配置阶段关掉。
-
-版本号只有一个来源：`set_version()` 现读根 CMakeLists 的 `project(VERSION ...)`。此前这里写死一份
-1.0.0，而 `scripts/check-release-version.py` 只比「CMake / 更新日志 / 标签」三处，包版本从来不在
-它的管理范围里——「一致性由脚本把关」那句话对这一处并不成立，于是它一路漂到了现在。
+用法：conan create packaging/conan --build=missing
+消费：requires asyngyanis/<版本>，CMakeDeps + CMakeToolchain 生成后 find_package(AsynGyanis)。
+只出静态库；共享形态走仓库自身的 -DBUILD_SHARED_LIBS=ON。
+版本取自根 CMakeLists 的 project(VERSION)，依赖清单须与 conandata.yml 同解。
+与根 conanfile.py 分工：那份是开发配方（application 角色，可跳过 MySQL），这份只管分发库本体。
 """
 
 import os
@@ -38,15 +15,9 @@ from conan.errors import ConanException
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
 from conan.tools.files import copy
 
-# 库本体必需的外部依赖：TLS 与摘要走 openssl，HTTP 响应压缩与 permessage-deflate 走 zlib，
-# 压缩协商里还有 zstd 与 brotli（gzip/deflate/zstd/br 四选一的其余两项），
-# Database 模块的 SQLite 与 Redis 驱动分别走 sqlite3 与 hiredis。
-# 这份清单必须与 src/*/CMakeLists.txt 里的 find_package(... REQUIRED) 对齐：漏一项，
-# 包就在 configure 阶段直接失败（本清单曾漏掉 zstd/brotli/nghttp3，conan create 从来没跑到过）
-# HTTP/3 的帧与 QPACK 已全部自研，测试的对端也是自带的字节级实现，仓库任何一侧都不再链接
-# 第三方 h3 实现，因此它既不进库包也不进测试依赖。
-# 本文件里写版本的四处（这份列表与下面三个 *_REQUIREMENT）都必须与 conandata.yml 同解：
-# 升 conandata 而漏跟这里，交付包就钉在旧版本上，scripts/check-dependency-advisories.py 机检这一面。
+# 库本体必需依赖：openssl 管 TLS 与摘要，zlib/zstd/brotli 管压缩协商，sqlite3/hiredis 管 Database。
+# 须与 src/*/CMakeLists.txt 的 find_package(... REQUIRED) 及 conandata.yml 同解：漏一项就在
+# configure 阶段失败，check-dependency-advisories.py 机检。HTTP/3 与 QPACK 自研，故无 h3 依赖。
 BASE_REQUIREMENTS = [
     "zlib/1.3.1",
     "zstd/1.5.7",
@@ -56,18 +27,17 @@ BASE_REQUIREMENTS = [
     "hiredis/1.3.0",
 ]
 
-# Base 的原生格式接口：JSON 头文件直接出现在公开头（ConfigValue.h）里，消费方需要它的包含目录；
-# YAML 库只在实现里使用，但 Base 是静态库，它的符号要由消费方在链接时一并向库解析
+# Base 的原生格式接口：JSON 头文件直接出现在公开头 ConfigValue.h 里，消费方需要它的包含目录；
+# YAML 只在实现里使用，但 Base 是静态库，符号要由消费方在链接时一并向库解析。
 JSON_REQUIREMENT = "nlohmann_json/3.12.0"
 YAML_REQUIREMENT = "yaml-cpp/0.9.0"
 
 # MySQL 驱动是可选依赖：ConanCenter 上只有源码包，装它要现场编译十几分钟。
-# 不开这个选项时库照常构建，MySQL 驱动退化为报错桩（-DDATABASE_WITH_MYSQL=OFF）
+# 不开时库照常构建，MySQL 驱动退化为报错桩（-DDATABASE_WITH_MYSQL=OFF）。
 MYSQL_REQUIREMENT = "libmysqlclient/8.1.0"
 
-# PostgreSQL 驱动同为可选依赖，理由与形状和 MySQL 完全一致（不开则退化为报错桩，
-# -DDATABASE_WITH_POSTGRES=OFF）。ConanCenter 上它各平台有预编译的 Release 二进制，
-# 只有 Debug 档要现场源码构建（meson，约一分钟量级）
+# PostgreSQL 驱动同为可选依赖，不开则退化为报错桩（-DDATABASE_WITH_POSTGRES=OFF）。
+# ConanCenter 上各平台有预编译的 Release 二进制，只有 Debug 档要源码构建（meson，约一分钟）。
 POSTGRES_REQUIREMENT = "libpq/17.11"
 
 
@@ -83,8 +53,7 @@ class AsynGyanisLibrary(ConanFile):
     default_options = {"with_mysql": False, "with_postgres": False}
 
     def set_version(self):
-        # 版本号只有一个来源：根 CMakeLists 的 project(AsynGyanis VERSION x.y.z)。读不到就当场拒，
-        # 而不是退回一个写死的数——「静默用一个旧版本」正是这条从 1.0.0 漂到 2.3.0 的过程
+        """从根 CMakeLists 的 project(AsynGyanis VERSION x.y.z) 读版本号，单一真源；读不到就拒。"""
         repositoryRoot = os.path.abspath(os.path.join(self.recipe_folder, "..", ".."))
         with open(os.path.join(repositoryRoot, "CMakeLists.txt"), encoding="utf-8") as source:
             match = re.search(r"project\(\s*AsynGyanis\s+VERSION\s+(\d+\.\d+\.\d+)", source.read())
@@ -93,18 +62,14 @@ class AsynGyanisLibrary(ConanFile):
         self.version = match.group(1)
 
     def export_sources(self):
-        # 源就在本仓库里，导出时从仓库根整棵快照：包内容因此与仓库版本严格对应，不需要在
-        # 配方里复制任何一份源。三项都是构建库本体必需的：CMakeLists.txt（顶层入口）、
-        # src/**（模块源）、cmake/**（构建助手）。曾经还导出过 third_party/**，那份 vendored
-        # 清单已清空、目录整体删除；将来若再 vendor 源码，这里要记得补上导出。
-        # 测试/示例/基准目录不进来：它们由下面的两个开关在配置阶段关掉，缺目录也不会被碰到
+        # 源就在仓库里，导出时从仓库根整棵快照：包内容与仓库版本严格对应，配方不复制任何源。
+        # 只导出构建必需的 CMakeLists.txt、src/**、cmake/**；测试与示例由 generate() 的开关关掉。
+        # LICENSE 必须一起导出：包在别处构建时 self.recipe_folder 指向缓存，仓库根已不存在。
         repository_root = os.path.abspath(os.path.join(self.recipe_folder, "..", ".."))
         copy(self, "CMakeLists.txt", src=repository_root, dst=self.export_sources_folder)
-        # 目录必须用 ** 递归匹配：不带通配符的 "src" 只会去找一个叫 src 的文件，目录匹配不上
+        # 目录必须用 ** 递归匹配：不带通配符的 "src" 只会去找一个叫 src 的文件。
         copy(self, "src/**", src=repository_root, dst=self.export_sources_folder)
         copy(self, "cmake/**", src=repository_root, dst=self.export_sources_folder)
-        # LICENSE 跟着源码一起导出：包在别的机器上构建时，仓库根那个路径已经不存在了
-        # （`self.recipe_folder` 那时指向缓存里的配方目录），只有导出下来的这一份拿得到
         copy(self, "LICENSE", src=repository_root, dst=self.export_sources_folder)
 
     def layout(self):
@@ -125,10 +90,8 @@ class AsynGyanisLibrary(ConanFile):
 
         toolchain = CMakeToolchain(self)
         toolchain.user_presets_path = False
-        # C++ 标准不在这里再说一遍：根 CMakeLists.txt 的 set(CMAKE_CXX_STANDARD 23 / REQUIRED / EXTENSIONS)
-        # 是唯一那一份，且它写的是普通变量——会盖掉这里传进去的缓存值。此前这里留着一句 "20"，
-        # 于是「配方说 20、实际编 23」两个答案并存了好几个版本
-        # 开发者产物一律不构建：消费方只需要库与它的安装规则
+        # C++ 标准只在根 CMakeLists.txt 定义：那里写的普通变量会盖掉这里的缓存值，不再重复传。
+        # 开发者产物一律不构建：消费方只需要库与它的安装规则。
         toolchain.cache_variables["ASYN_BUILD_TESTS"] = "OFF"
         toolchain.cache_variables["ASYN_BUILD_SAMPLES"] = "OFF"
         toolchain.cache_variables["DATABASE_WITH_MYSQL"] = "ON" if self.options.with_mysql else "OFF"
@@ -142,26 +105,20 @@ class AsynGyanisLibrary(ConanFile):
         cmake.build(target="install")
 
     def package(self):
-        # 库本体已在 build() 里按 install 规则落进包目录（CMakeToolchain 把前缀指向包），这里只补
-        # 许可证文本：`license = "MIT"` 是元数据，包里没有那份文件就等于对外说 MIT 却不随包交付。
-        # 取的是 export_sources 导下来的那份——包在别的机器上构建时仓库根路径已经不存在
+        # 库本体已在 build() 里按 install 规则落进包目录（CMakeToolchain 把前缀指向包）。
+        # 这里只补许可证文本：license = "MIT" 是元数据，包里没有文件等于对外说 MIT 却不交付。
         copy(self, "LICENSE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"))
 
     def _stacktraceSupportMarker(self) -> dict:
-        """读构建期那份 std::stacktrace 探测的结果，真源在 `src/Base/CMakeLists.txt` 的 check_cxx_source_compiles
+        """读构建期 std::stacktrace 探测落下的标记文件，缺失就拒打包。
 
-        为什么不在这里复述一遍工具链矩阵：宏是 PUBLIC 的，而 `Base/Exception/StackTrace.h` 按它换
-        `CapturedStackTrace` 的类型（有栈时是 std::stacktrace 的别名，没栈时是一个空的替身类）。
-        复述过一次就漂一次——本函数原先写死「Windows 一律没有、Linux 只认 gcc>=13」，而 MSVC 与 clang
-        上那次探测其实会通过：一旦通过，包里编进去的是有栈那份形状，而消费方按宏缺失拿到空替身，
-        静态链接不会报错，错的是两边对同一个类的布局。
-
-        读不到标记就拒而不是猜：这条路径上「按默认值继续」正好会重新造出上面那种分叉
+        真源是 src/Base/CMakeLists.txt 的 check_cxx_source_compiles：宏是 PUBLIC 的，
+        StackTrace.h 按它换 CapturedStackTrace 的类型，在配方里复述工具链矩阵必然分叉。
         """
         markerName = "AsynGyanisStacktraceSupport.txt"
         markerPath = None
-        # 它落在 <datarootdir>/asyngyanis 下，而 datarootdir 具体是 res/ 还是 share/ 由 CMake 的
-        # GNUInstallDirs 与生成器决定，所以按名字找、不拼死路径；找不到就是拒打包
+        # 标记落在 <datarootdir>/asyngyanis 下，res/ 还是 share/ 由 GNUInstallDirs 与生成器决定，
+        # 因此按名字找、不拼死路径；找不到就拒打包。
         for root, _, fileNames in os.walk(self.package_folder):
             if markerName in fileNames:
                 markerPath = os.path.join(root, markerName)
@@ -181,15 +138,10 @@ class AsynGyanisLibrary(ConanFile):
         return fields
 
     def _installedDriverDefines(self) -> list:
-        """从随包交付的能力清单里读「哪几个驱动编的是真实现」，真源在 `src/Database/CMakeLists.txt`
+        """从随包交付的能力清单读哪几个驱动编的是真实现，真源是 src/Database/CMakeLists.txt。
 
-        为什么不在这里复述 with_mysql/with_postgres 这些选项：选项开着而客户端库装不上时，CMake 会把
-        那一路退化成报错桩，此时 PUBLIC 宏 `DATABASE_HAS_<名>` 根本不存在，消费方包含驱动头拿到的应当
-        是桩那份形状。按选项复述就会发一个库体里其实没有的宏——静态链接不报错，错的是两边对同一个类
-        的布局。这份清单是那次探测唯一随包交付的机器可读记录，与上面 ASYN_HAS_STACKTRACE 的读法同源
-        （见 _stacktraceSupportMarker 的理由）。
-
-        读不到清单就拒，不按「三个都没有」继续：那正是消费方按桩编译、库里却是真驱动的那种分叉
+        选项开着而客户端库装不上时 CMake 退化为报错桩，此时 PUBLIC 宏 DATABASE_HAS_<名> 不存在；
+        按选项复述会发出库体里没有的宏，静态链接不报错，错的是两边对同一个类的布局。缺清单就拒。
         """
         featuresPath = os.path.join(self.package_folder, "include", "AsynGyanisFeatures.h")
         if not os.path.exists(featuresPath):
@@ -203,19 +155,16 @@ class AsynGyanisLibrary(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "AsynGyanis")
 
-        # 组件的依赖关系与 src/*/CMakeLists.txt 的 target_link_libraries 一一对应：组件之间
-        # 用组件名，外部依赖用 <包名>::<包名> 的形式引用，CMakeDeps 据此把它们的导入目标接到
-        # 我们的目标上。静态库不会把外部依赖自动带给最终可执行文件，因此这里必须逐个声明，
-        # 少一个的后果就是消费方链接时报「无法解析的外部符号 deflate/SSL_new/...」
+        # 组件依赖与 src/*/CMakeLists.txt 的 target_link_libraries 一一对应：组件名指内部目标，
+        # <包名>::<包名> 指外部依赖。静态库不把外部依赖带给最终可执行文件，少一个就是链接期
+        # 「无法解析的外部符号 deflate/SSL_new/...」。
         platform = self.cpp_info.components["platform"]
         platform.libs = ["Platform"]
         platform.set_property("cmake_target_name", "AsynGyanis::Platform")
         if self.settings.os == "Windows":
-            # Winsock 只在 Windows 需要（Linux 侧由 libc 内建提供）；Linux 侧补 pthread。
-            # 这份清单与 src/Platform/CMakeLists.txt 的 target_link_libraries 必须逐项一致：
-            # 静态库不会把外部依赖带给最终可执行文件，少一项就是消费方链接期一条未解析外部符号。
-            # iphlpapi 曾被漏掉，而 `Platform/IO/NetworkInterface.h` 是公开头、里面直接
-            # include <iphlpapi.h>（if_nametoindex/if_indextoname 在 Windows SDK 里由它实现）
+            # Winsock 只在 Windows 需要（Linux 由 libc 内建），Linux 侧补 pthread。清单须与
+            # src/Platform/CMakeLists.txt 的 target_link_libraries 逐项一致：少一项就是链接期
+            # 未解析符号。iphlpapi 不能漏，NetworkInterface.h 是公开头且直接 include <iphlpapi.h>。
             platform.system_libs = ["ws2_32", "Mswsock", "iphlpapi"]
         else:
             platform.system_libs = ["pthread"]
@@ -225,15 +174,9 @@ class AsynGyanisLibrary(ConanFile):
         base.requires = ["platform", "nlohmann_json::nlohmann_json", "yaml-cpp::yaml-cpp"]
         base.set_property("cmake_target_name", "AsynGyanis::Base")
 
-        # 调用栈那条能力（std::stacktrace）在 CMake 侧是 PUBLIC 的：`src/Base/CMakeLists.txt` 探测通过
-        # 后同时给 Base 挂 `ASYN_HAS_STACKTRACE=1` 编译宏与 `stdc++exp` 链接。包这一侧必须把同一件事
-        # 再说一遍，而两遍都可能漏：
-        #   少 defines —— `Exception/StackTrace.h` 按这个宏换 CapturedStackTrace 的类型，消费方会拿
-        #                「没有栈」的那份头去编译，而 libBase.a 里编进去的是另一份形状；
-        #   少 system_libs —— 链接期报 undefined reference to `__glibcxx_backtrace_simple`。
-        # 这条不是推演：接上 Conan 那轮按 `conan create` 真跑过，消费方冒烟就在链接那步挂掉。
-        # 说两遍不等于各说一遍：这里的取值读的是构建期那次探测落下的标记文件（随 install 进包），
-        # 不在配方里复述工具链矩阵，缘由见 _stacktraceSupportMarker()
+        # std::stacktrace 能力在 CMake 是 PUBLIC：探测通过后挂 ASYN_HAS_STACKTRACE=1 与 stdc++exp。
+        # 包这一侧必须同样声明：少 defines 会让消费方按空替身编译、与 libBase.a 布局不一致；
+        # 少 system_libs 则链接期 undefined reference to __glibcxx_backtrace_simple。
         stacktraceSupport = self._stacktraceSupportMarker()
         if stacktraceSupport["has-stacktrace"] == "1":
             base.defines = ["ASYN_HAS_STACKTRACE=1"]
@@ -257,23 +200,20 @@ class AsynGyanisLibrary(ConanFile):
         database.libs = ["Database"]
         database.requires = ["core", "sqlite3::sqlite3", "hiredis::hiredis"]
         database.set_property("cmake_target_name", "AsynGyanis::Database")
-        # 三个驱动的 PUBLIC 编译宏也要发给消费方：CMakeDeps 只认 cpp_info 里声明的编译定义，
-        # install(EXPORT) 那份 INTERFACE_COMPILE_DEFINITIONS 不会经这条路走到使用方手里。
-        # 少了这一步，消费方包含 RedisConnection.h 一类头时按「没编真驱动」那份形状编译，
-        # 而 libDatabase.a 里编进去的是真驱动那份——链接不报错，错的是两边的类型布局
+        # 三个驱动的 PUBLIC 编译宏也要发给消费方：CMakeDeps 只认 cpp_info 的编译定义，
+        # install(EXPORT) 的 INTERFACE_COMPILE_DEFINITIONS 不走这条路。少了它，消费方按桩形状
+        # 编译而 libDatabase.a 里是真驱动——链接不报错，错的是两边的类型布局。
         database.defines = list(database.defines) + self._installedDriverDefines()
         if self.options.with_mysql:
             database.requires.append("libmysqlclient::libmysqlclient")
         if self.options.with_postgres:
-            # 组件名是 libpq 包里的 "pq"（它的 cmake_target_name 属性指向 PostgreSQL::PostgreSQL），
-            # 写成 libpq::libpq 会在 CMakeDeps 生成期报「找不到该组件」——这条已经用最小消费者探针实测过
+            # 组件名是 libpq 包里的 pq（其 cmake_target_name 指向 PostgreSQL::PostgreSQL）；
+            # 写成 libpq::libpq 会在 CMakeDeps 生成期报找不到该组件。
             database.requires.append("libpq::pq")
 
-        # 公开头文件是 UTF-8（含中文注释），而 MSVC 默认按系统代码页解码源码：在 GBK 环境里
-        # 会把注释字节吃进下一行，报出「找不到标识符」这类假语法错误。库在 CMake 里把它作为
-        # INTERFACE 选项传给使用方，但 CMakeDeps 只认 cpp_info 里声明的编译选项，因此这里必须
-        # 再声明一次——少了它，消费方一旦在自己的源文件里写中文（或仅仅是包含我们的头文件）
-        # 就会踩到同一个坑
+        # 公开头是 UTF-8（含中文注释），MSVC 默认按系统代码页解码会把注释放进下一行，报假语法错误。
+        # CMake 里它是 INTERFACE 选项，但 CMakeDeps 只认 cpp_info 的编译选项，因此这里再声明一次；
+        # 少它，消费方只要包含我们的头就会踩同一个坑。
         if self.settings.compiler == "msvc":
             for component in self.cpp_info.components.values():
                 component.cxxflags = ["/utf-8"]

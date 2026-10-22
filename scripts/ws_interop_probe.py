@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
-"""WebSocket 一致性验收：用 websockets 这套独立实现当对端，把 RFC 6455 的几条主干路径走一遍。
+"""WebSocket 一致性验收：用 websockets 这套独立实现当对端，走一遍 RFC 6455 的主干路径。
 
-理由与 h3 探针一样：两边都照规范办事，谁理解错了都会在这里露出来，自写客户端只会重复本框架自己的
-误会。本框架自带的用例与示例已经把「帧进得来、出得去」与一批畸形帧判废钉住了，这里补的是跨实现
-那一半：真实客户端的分片重组、UTF-8 与 astral 字符、控制帧应答、关闭握手的完整往返、
-permessage-deflate（RFC 7692）协商之后大正文仍然等价。
-
-用法：
-    python3 ws_interop_probe.py <host> <port> [--path /ws] [--wss] [--no-deflate]
-退出码 0 表示全部核对通过；任一不通过时把原因打到 stderr 并以 1 退出；启动参数不合法退 2。
-在 Git Bash/MSYS 下传 --path 要加 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'（见 main 里的判据）。
-
-先起服务（明文示例）：
-    build/debug/samples/ReferenceServer.exe --port 18080
-TLS 版：
-    build/debug/samples/ReferenceServer.exe --port 18443 --https --cert tests/Core/fixtures/test_cert.pem
-        --key tests/Core/fixtures/test_key.pem
-
+本框架自己的用例已钉住帧收发与畸形帧判废，这里补跨实现那一半：分片重组、UTF-8 与 astral
+字符、控制帧应答、关闭握手完整往返、permessage-deflate（RFC 7692）协商后大正文等价。
+用法：python3 ws_interop_probe.py <host> <port> [--path /ws] [--wss] [--no-deflate]
+退出码：0 全过；1 有核对不通过；2 启动参数不合法。Git Bash/MSYS 下传 --path 要加
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'（见 main 里的判据）。
+先起服务：build/debug/samples/ReferenceServer.exe --port 18080；TLS 版加 --https --cert
+tests/Core/fixtures/test_cert.pem --key tests/Core/fixtures/test_key.pem。
 依赖：pip install websockets
 """
 
@@ -137,11 +128,9 @@ async def run_one(url: str, label: str, check_deflate: bool) -> None:
         elif echoed_binary is not None:
             fail(f"{label}/二进制回显：服务端把 Binary 回成了 Text——回显必须保留消息类型")
 
-        # 4. 分片重组：走 websockets 自己的成帧代码（掩码、帧头与 permessage-deflate 都由它生成），
-        #    分片是连续切段，拼回去必须正好等于原消息——这条自证放在发送前，免得把探针自己的错
-        #    算到服务端头上。协商了 deflate 之后每一片都是独立压缩块（client_no_context_takeover），
-        #    片尾还要带 Z_SYNC_FLUSH，这是跨实现最容易各写各的一处。
-        #    按帧回显、没把 continuation 拼回去的实现，在这一步收到的就是三分之一的长度。
+        # 4. 分片重组：用 websockets 的成帧代码，分片连续切段，拼回去必须等于原消息（先自证，
+        #    免得把探针的错算到服务端头上）。协商 deflate 后每片是独立压缩块，片尾带 Z_SYNC_FLUSH，
+        #    这是跨实现最容易各写各的一处；按帧回显不重组的实现会短三分之二。
         send_context = getattr(connection, "send_context", None)
         if send_context is None:
             print(f"SKIP {label}：本版 websockets 没有 send_context，分片这一项未由对端驱动", flush=True)

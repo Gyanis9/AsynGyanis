@@ -1,32 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""架构工件可追溯性检查：图里每条 sources 引用都要在当场读得到，读不到就红。
+"""架构工件可追溯性检查：图与台账里每条「路径:行号」引用都要在当场读得到，读不到就红。
 
-判据的形状：
-  * 引用路径不存在 → FAIL（改名或删文件留下的死引用，worker-handoff 那张就踩过一次）；
-  * 行号越过文件末尾 → FAIL；引到空行 → FAIL（这一条最阴：文件还在、号还在，但那行什么都没有）；
-  * 引到注释行或 doc-comment 起始 → WARN（本仓惯于引注释，不算坏，但要看得见有多少）；
-  * 顶点类元素（components/nodes/states/participants）一条 sources 都没有 → WARN（图上的说法没有
-    可回读的证据）；边与泳道不查——本仓的图里它们从不单独挂引用，硬要求只会造出噪声；
-  * 新鲜度：按 meta.repository.revision 那一版做反向索引，被引文件自那之后改过就把受影响的
-    节点列出来——这一条只列不拦，因为图落后于代码是常态，拦不住也不该由图来决定提交能不能合；
-  * 台账正文同判：`.github/SECURITY.md` 全篇与 `CHANGELOG.md` 的最新发布段里手写的「路径:行号」
-    走同一组规则。更早的 CHANGELOG 段落是点时刻的叙述，不回判——历史条目随文件演进必然失效，
-    硬判只会让这道门变成哭狼的门。写全仓相对路径而读不到 → FAIL；只写裸文件名（可能是仓库外的
-    依赖头，如 zlib 的 zconf.h）而树里找不到同名文件 → WARN，不算死引用；
-  * 交付 HTML 与源 JSON 同解：每张图旁挂的 `<slug>.html`（页内导出 PNG 的那份交互图）内嵌一份
-    source-evidence 块——修订号、引用总数、每元素的引用行位逐一与 JSON 比。两者由不同的手
-    （改图 / 重出）推进，不同解就是「对外交付的是旧图」；HTML 缺失只记 WARN；
-  * 空集防护：总提取数低于地板、或有图一条 sources 都没有 → 退 2。字段改名/结构变化会让提取数
-    悄悄塌到 0 而门照绿，与覆盖率、复杂度两道门同一条规矩：「什么都没查」不许被读成通过。
-
-为什么是一道脚本而不是「记得改图」：383 笔提交里零次回图，靠人记住在这个变更速率下不成立。
-判据必须自己会红。
-
-用法：
-    python3 scripts/check-arch-traceability.py                 # 检查（CI 用）
-    python3 scripts/check-arch-traceability.py --stale-since HEAD~50   # 换新鲜度的基准
-退出码：0 通过；1 有违例；2 工件本身读不了（没有图、JSON 解不开、拿不到修订号）。
+路径不存在、行号越界、引到空行 → FAIL；引到注释行或 doc-comment 起始 → WARN；顶点类元素
+没有 sources → WARN，边与泳道不查。按 meta.repository.revision 做新鲜度反向索引，之后改过的
+受影响节点只列不拦。台账判 .github/SECURITY.md 全篇与 CHANGELOG 最新发布段；写全仓相对路径
+读不到 FAIL，裸文件名对不上树内文件 WARN。交付 HTML 内嵌的 source-evidence 须与源 JSON 同解，
+HTML 缺失记 WARN。总提取数低于地板或有图零 sources → 退 2：什么都没查不许读成通过。
+用法：python3 scripts/check-arch-traceability.py [--stale-since HEAD~50]
+退出码：0 通过；1 有违例；2 工件读不了（没有图、JSON 解不开、拿不到修订号）。
 """
 
 from __future__ import annotations
@@ -63,7 +45,7 @@ PROSE_REF_RE = re.compile(
     rf"|(?<![\w.]):(?P<colon>\d+)"
     rf"|、(?P<comma>\d+)(?![-\d.])"
 )
-# 正文里的行号区间尾巴：`path:40-56` 与 `path:40..56` 两种写法都在用
+# 正文里的行号区间尾巴：path:40-56 与 path:40..56 两种写法都在用
 PROSE_RANGE_RE = re.compile(r"^(?:-(?P<dash>\d+)|\.\.(?P<dots>\d+))")
 PROSE_TEXT_FIELDS = ("label", "sublabel", "tag", "note")
 PROSE_ELEMENT_COLLECTIONS = VERTEX_COLLECTIONS + ("edges", "lanes")
@@ -83,7 +65,7 @@ MINIMUM_TOTAL_PROSE_REFS = 100
 def load_diagrams():
     """读回所有候选图 JSON。返回 (路径, 数据) 列表与一条错误说明——解不开就是工件坏了。"""
     try:
-        # 候选件的形状是 `<slug>.json`，一个点；archify 重出时旁挂的收据是 `<slug>.<步骤>.json`
+        # 候选件的形状是 <slug>.json，一个点；archify 重出时旁挂的收据是 <slug>.<步骤>.json
         # （delivery / browser-check / finalize / finalize-summary），那些不是图，读成图会得到
         # 「这张图一条 sources 都没有」这种凭空造出来的红。按点的个数筛，将来多一种收据也不用回来改
         names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and n.count(".") == 1)
@@ -223,13 +205,10 @@ def git_changed_files(revision):
 
 
 def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_external_bare_names=False):
-    """对一段正文跑「路径:行号」判据。
+    """对一段正文跑「路径:行号」判据，返回 (已核对条数, FAIL 列表, WARN 列表)。
 
-    @param trail 这段正文在图或台账里的位置（进消息用）
-    @param allow_external_bare_names 只写裸文件名（不含 '/'）且对不到树内文件时，按「可能是仓库外的
-           依赖头」记 WARN 跳过（SECURITY 里引 zlib 的 zconf.h 就属这类）；写全仓相对路径而读不到
-           一律 FAIL。图那边的既有口径是两者都 FAIL，行为不变
-    @return (已核对的引用条数, 新增 FAIL 列表, 新增 WARN 列表)
+    trail 是这段正文在图或台账里的位置（进消息用）。allow_external_bare_names 为真时，裸文件名
+    对不到树内文件按仓库外依赖头记 WARN，写全仓相对路径读不到仍一律 FAIL（图那边两者都 FAIL）。
     """
     failures = []
     warnings = []
@@ -246,7 +225,7 @@ def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_externa
                     warnings.append("REF_OUTSIDE_TREE %s -> %s（裸文件名且树内无同名文件：按仓库外引用跳过）" % (trail, match.group("path")))
                 else:
                     failures.append("PROSE_MISSING_PATH %s -> %s（正文点名的文件不在树里）" % (trail, match.group("path")))
-            # 只写了 `:123` 或 `、123` 而前面没有完整路径：续写没有可继承的对象，这条压根
+            # 只写了 :123 或 、123 而前面没有完整路径：续写没有可继承的对象，这条压根
             # 无法定位。判红等于逼人重写文案，所以略过——但它不等于「已核对过」
             continue
         matchedCount += 1
@@ -444,9 +423,8 @@ def main() -> int:
     for name in sorted(per_diagram_refs):
         print("DIAGRAM %s refs=%d" % (name, per_diagram_refs[name]))
 
-    # 新鲜度这一半必须要么给出清单、要么当场说「没跑成」。此前的形状是「各图钉的修订不止一个就整段跳过并退 0」，
-    # 于是九张图钉着两个修订的那几轮里，反向索引与 stale 清单一次都没产出，而作业是绿的——
-    # 那份跳过把「门没跑」读成了「门通过」。基准取不到按文件头的承诺退 2（宁可让作业变红）
+    # 新鲜度这一半必须要么给出清单、要么当场说「没跑成」：基准取不到按文件头的承诺退 2，
+    # 跳过会把「门没跑」读成「门通过」。
     bases = {}
     if args.stale_since:
         bases[args.stale_since] = sorted(name for name, _ in diagrams)

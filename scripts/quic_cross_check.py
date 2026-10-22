@@ -1,29 +1,12 @@
 #!/usr/bin/env python3
-"""QUIC 跨实现校验探针：用 aioquic 这个独立实现当对端，核对本框架 QUIC 服务端的对外行为。
+"""QUIC 跨实现校验探针：用 aioquic 当独立实现，核对本框架 QUIC 服务端的对外行为。
 
-为什么换成独立实现：这些判据此前由链接进来的 ngtcp2 客户端给出，而「同一棵树里互测」有两个
-改不掉的毛病——① 双方共享的误解不会在这里露出来；② 实现一改，裁判跟着一起被改松（本轮就要把
-服务端与流收尾改掉，正是要盯住这类倒退的时候）。改成进程外的独立实现之后，帧合不合规范由对方的
-解析器判，探针只报「看到/没看到」，本仓库改不动它。
-
-被测端是 tests/Tools/QuicProbeServer.cpp：它把内部事件打成 stdout 行（PORT/READY/CONNECTIONS/
-ABORTED/DRAINING…），由 scripts/quic_cross_check.sh 起停并核对。
-
-用法（每个场景一条，成功打印 OK <场景> 并以 0 退出）：
-    quic_cross_check.py handshake-echo <port>
-    quic_cross_check.py garbage-tolerant <port>
-    quic_cross_check.py alpn-refusal <port>
-    quic_cross_check.py stream-abort <port> [期望错误码]
-    quic_cross_check.py close-on-drain <port>
-    quic_cross_check.py drain-refuses-new <port>
-    quic_cross_check.py per-ip-limit <port>
-    quic_cross_check.py no-starve <port>
-    quic_cross_check.py resume <portA> <portB>            # 第二次必须落在恢复上
-    quic_cross_check.py resume-miss <portA> <portB>       # 对照组：B 没装同一份密钥
-    quic_cross_check.py idle-reap <port>                  # 空闲超时后本端被收掉
-    quic_cross_check.py handshake-abandon <port>          # 只发 Initial 就停：服务端要自己收掉
-    quic_cross_check.py migration <port>                  # 换本地端口再说话：服务端要跟新地址并验证它
-
+换成独立实现的目的：同树互测的双方会共享误解，且改实现会连带改松裁判；这里帧是否合规由
+对方解析器判，探针只报「看到/没看到」。被测端是 tests/Tools/QuicProbeServer.cpp，由
+scripts/quic_cross_check.sh 起停并核对。
+用法：quic_cross_check.py <场景> <port>，成功打印 OK <场景> 退出 0。场景：handshake-echo、
+garbage-tolerant、alpn-refusal、stream-abort、close-on-drain、drain-refuses-new、per-ip-limit、
+no-starve、resume、resume-miss、idle-reap、handshake-abandon、migration（resume 用 portA portB）。
 依赖：pip install aioquic
 """
 
@@ -64,7 +47,7 @@ class Probe(QuicConnectionProtocol):
         self.terminated = None
         self.reset_codes = {}
         self.stream_data = {}
-        # 「这次握手是恢复来的」这个结论在 HandshakeCompleted 事件里，连接对象上没有这个属性
+        # 「本条握手是恢复来的」这个结论在 HandshakeCompleted 事件里，连接对象上没有这个属性
         self.session_resumed = False
         self._next_event_stream_id = 0
         self.tickets = []
@@ -138,10 +121,8 @@ async def open_connection(port: int, configuration: QuicConfiguration, *, ticket
                           quiet_after_initial: bool = False) -> Probe:
     """手工起一条连接：直接构造 QuicConnection 才拿得到票据回调与恢复标志。
 
-    aioquic 的 asyncio 客户端助手不暴露 `session_ticket_handler`，也就拿不到 NewSessionTicket；
-    恢复场景要把第一趟的票据喂给第二趟，只能自己造连接对象再交给协议。
-    @param ticket_sink 收到 NewSessionTicket 时被调用一次，用来把票据带到下一条连接上
-    @param quiet_after_initial 只发出第一批包就停手：留给服务端的空闲计时器去收
+    aioquic 的 asyncio 助手不暴露 session_ticket_handler；恢复场景要把第一趟票据喂给第二趟。
+    ticket_sink 收到 NewSessionTicket 时调用一次；quiet_after_initial 只发首批包就停手。
     """
     loop = asyncio.get_running_loop()
     connection = QuicConnection(
@@ -278,11 +259,10 @@ async def scenario_handshake_abandon(port: int) -> None:
 
 
 async def scenario_retry_handshake(port: int) -> None:
-    """服务端开了地址验证：本端必须先收到一条 Retry，带令牌重来才握上手、回上显。
+    """服务端开了地址验证：本端必须先收到 Retry，带令牌重来才握上手、回上显。
 
-    「收到过 Retry」由客户端自己在原始字节上认（长头且类型位为 3），不看 aioquic 的内部状态。
-    aioquic 会核 Retry 的完整性标签——标签算错就直接丢掉这条报文，握手就会停在这里，
-    因此「握上了」本身就是对 §17.2.5 与 RFC 9001 §5.8 那套算法的跨实现认可。
+    Retry 由客户端在原始字节上认（长头且类型位为 3）；aioquic 会核它的完整性标签，算错就丢包，
+    握上了即是对 RFC 9000 §17.2.5 与 RFC 9001 §5.8 那套算法的跨实现认可。
     """
     transport = await open_connection(port, make_configuration())
     if not transport.saw_retry:
@@ -297,11 +277,8 @@ async def scenario_retry_handshake(port: int) -> None:
 async def scenario_migration(port: int) -> None:
     """连接迁移：客户端换一个本地端口继续说话，服务端必须跟过去并在新地址上验证本端。
 
-    asyncio 那层一条连接绑一个传输，做不出「换源端口」；这里直接用 aioquic 的同步连接对象
-    （它不认套接字，收发由探针自己管），两个本地套接字分别当迁移前后的腿。三条判据：
-    ① 握手在第一个端口上完成；② 从第二个端口发的请求，回显必须落在第二个端口上——服务端跟了
-    新地址（RFC 9000 §9.3 的 MUST）；③ 服务端的帧日志里要出现它发来的 PATH_CHALLENGE 与本端
-    回的 PATH_RESPONSE（§8.2.1/§8.2.2；日志是 aioquic 自己的 qlog，不看服务端内部状态）。
+    两个本地套接字当迁移前后的腿。判据：握手在第一个端口完成；第二个端口发的请求回显落在第二个
+    端口（RFC 9000 §9.3 的 MUST）；帧日志出现 PATH_CHALLENGE 与 PATH_RESPONSE（§8.2.1/§8.2.2）。
     """
     configuration = make_configuration()
     quic_logger = QuicLogger()

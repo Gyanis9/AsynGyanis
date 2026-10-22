@@ -4,7 +4,7 @@
 为什么不只判总行覆盖：总数 77% 达标时，Database 可以只有 50%——聚合数会替死角掩护。
 这里把每个模块单独钉一条下限，并把函数/分支两条也判上（gcovr 的 CSV 一次给全，成本为零）。
 
-下限的取法：全部按本轮实测往下留一档（实测见 --help 里那条注），不是随手拍的整数；
+下限的取法：全部按 2026-10-01 实测往下留一档（实测见 --help 里那条注），不是随手拍的整数；
 调高任何一条之前先实测一遍，两处必须同解。
 
 用法：python scripts/check-coverage-gate.py --csv /tmp/gcovr.csv
@@ -20,8 +20,8 @@ import os
 import sys
 from collections import defaultdict
 
-# 本轮（2026-10-01，CI 同配置：关 MySQL 驱动与示例、跑全量用例）实测：
-#   TOTAL 行 77.08 / 函数 85.44 / 分支 62.38；Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50
+# 2026-10-01（CI 同配置：关 MySQL 驱动与示例、跑全量用例）实测：TOTAL 行 77.08 /
+# 函数 85.44 / 分支 62.38；Net 89.94、Platform 87.08、Core 84.98、Base 75.74、Database 50.50
 DEFAULT_MODULE_FLOORS = "Net=85,Core=80,Platform=80,Base=70,Database=45"
 # 聚合读数必须大到不像「筛错目录筛出个空表」：本仓 src/ 的可执行行是三万级
 kMinimumTotalLines = 20000

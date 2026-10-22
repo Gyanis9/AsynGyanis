@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""HTTP/3 验收探针：用 aioquic 这个独立实现向本框架的 h3 服务端发一条 GET，核对状态码与正文。
+"""HTTP/3 验收探针：用 aioquic 独立实现向本框架的 h3 服务端发一条 GET，核对状态码与正文。
 
-用独立实现当对端，比自写探针强：两边都按 RFC 9114/9000 办事，谁理解错了都会在这里露出来。
-
-用法：
-    python3 h3_acceptance.py <host> <port> <path> [期望状态码] [正文应包含的片段]
-    python3 h3_acceptance.py <host> <port> <path> --head
-    python3 h3_acceptance.py <host> <port> <path> --stream [期望状态码] [正文片段]
-    python3 h3_acceptance.py <host> <port> <path> --expect-header content-length=2 \
-        --expect-header date
-    python3 h3_acceptance.py <host> <port> <path> --websocket <帧负载文本>
-    python3 h3_acceptance.py <host> <port> <path> --accept-encoding gzip [期望状态码] [正文片段]
-第一条发普通 GET；--head 换成 HEAD（响应不许有正文）；--stream 在此之上再要求正文分趟到达且不带
-content-length（流式响应的形状）；--expect-header 可重复，按名字数响应头（带 =值 时比取值）；
-带 --websocket 时改成扩展 CONNECT（RFC 9220）隧道，在同一流上发两条 WebSocket 帧并核对回显。
-带 --accept-encoding 时在请求里声明该编码，并按响应里的 content-encoding 把正文解回来再核对片段
-（探针只带 gzip 解码器）。退出码 0 表示核对通过；非 0 打印原因后退出。
-
+用法：python3 h3_acceptance.py <host> <port> <path> [期望状态码] [正文片段] [--head|--stream]
+      [--expect-header 名[=值] ...] [--websocket 帧负载] [--accept-encoding gzip]
+第一条发普通 GET；--head 换 HEAD（响应不许有正文）；--stream 还要求正文分趟到达且无
+content-length；--expect-header 可重复，按名字数响应头，带 =值 时比取值；--websocket 改成
+扩展 CONNECT（RFC 9220）隧道，发两条 WebSocket 帧核对回显；--accept-encoding 声明编码并按
+content-encoding 解回（探针只带 gzip 解码器）。退出码 0 表示核对通过，非 0 打印原因。
 依赖：pip install aioquic
 """
 
@@ -47,10 +37,8 @@ _trace_enabled = bool(os.environ.get("ASYN_H3_TRACE"))
 class ProbeH3Connection(H3Connection):
     """知道「本端这条流发的是 HEAD」的 H3Connection。
 
-    aioquic 的编解码器不记请求方法：它把响应里的 content-length 当成「后面该来这么多正文字节」，
-    HEAD 的响应因此被它判成 `content-length does not match data size` 并作废整条连接。RFC 9110
-    §9.3.2 明确允许 HEAD 给出 GET 会发出的那份头部而不带正文，因此探针在自己标记过的流上跳过这一项
-    长度核对。跳过的只有这一处：帧的布局、QPACK 的解析、伪头齐备性与控制流规则仍由独立实现判定。
+    aioquic 把响应 content-length 当成必须到齐的正文字节数，HEAD 会被判不一致并作废连接；
+    RFC 9110 §9.3.2 允许 HEAD 只发头，故探针在自己标记的流上跳过长度核对，其余仍由独立实现判定。
     """
 
     def __init__(self, quic, server=False):
@@ -259,9 +247,7 @@ def run_websocket_mode(host, port, path, text):
 def check_expected_headers(client, expected_headers):
     """按名字核对响应头：同名多条时数条数，给了期望值就逐条比。
 
-    :param client: 跑完的探针
-    :param expected_headers: 形如 ``name`` 或 ``name=value`` 的期望串（value 允许是 *，只要求存在）
-    :return: 不合期望的说明列表，空列表表示全部对上
+    expected_headers 形如 name 或 name=value（value 允许是 *，只要求存在）；返回不合期望的说明列表。
     """
     problems = []
     for expectation in expected_headers:
@@ -280,12 +266,10 @@ def check_expected_headers(client, expected_headers):
 
 
 def run_head_mode(host, port, path, expected_headers=None):
-    """HEAD 验收：状态码与 content-length 都要在，正文一个字节都不许出现在线上。
+    """HEAD 验收：状态码与 content-length 都在，正文一个字节都不许出现在线上。
 
-    RFC 9110 §9.3.2 要 HEAD 的响应给出「GET 会给出的那份头部」而不带正文。严格的对端会把多出来的
-    正文当成畸形响应，所以这条放在进程外判；本端自解自只会把「正文没删干净」读成正常。
-
-    :param expected_headers: 与 GET 路径同一份响应头期望（HEAD 必须给出 GET 会发出的那份头部）
+    RFC 9110 §9.3.2 要求 HEAD 给出 GET 的那份头部但不带正文；严格对端会把多出的正文当畸形，
+    故在进程外判。expected_headers 与 GET 路径同一份期望。
     """
     try:
         client = asyncio.run(run_probe(host, port, path, method="HEAD"))
@@ -333,8 +317,8 @@ def main():
     # 流式响应的判据要单独看「分了几趟」：正文拼起来一样长，看不出是没分趟还是并成了一趟
     expect_stream = "--stream" in sys.argv
 
-    # 一次线性扫描把开关与位置参数分开收：带值的开关连它的取值一起吃掉，剩下的才按位置读
-    # （原先按「在不在列表里」逐个捞，加一个带值开关就要改两处过滤，改漏一次状态码会读到开关名）
+    # 一次线性扫描把开关与位置参数分开收：带值的开关连它的取值一起吃掉，剩下的才按位置读。
+    # 带值开关必须走同一条过滤，分开捞会把状态码读成开关名。
     accept_encoding = None
     expected_headers = []
     positional_arguments = []

@@ -1,39 +1,12 @@
-"""性能门禁：把 soak*.py --json-out 产出的实测结果与 benchmarks/baseline.json 逐项比对，越界即非零退出。
-
-用法：
-    python benchmarks/check-baseline.py <实测1.json> [实测2.json ...]
-                                    [--baseline benchmarks/baseline.json]
-                                    [--minimum-throughput-ratio 0.6]
-                                    [--maximum-p50-ratio 1.5]
-                                    [--maximum-p95-ratio 2.0]
-                                    [--maximum-p99-ratio 2.5]
-                                    [--maximum-working-set-ratio 1.5]
-
-判定口径：
-    · 实测 JSON 里的 failures 必须为 0（协议不变式与负载失败都算）——先修正确性，再看性能；
-    · 同一个指标名给了多份实测时取中位数，baseline.json 里的数也是同口径的中位数，两侧一致。
-      （中位数而不是最优值：最优值两边都得跟着「取最优」才公平，而单跑一次时最优值就是那一次本身，
-      于是噪声直接进判定——实测里 h2c 32 条一批的 p50 在三次之间是 362/735/778us，按最优比会把
-      一次正常发挥判成 2.03 倍退化。）建议每次传 3 份以上的实测，只有 1 份时中位数就是那一次。
-    · 吞吐：不得低于基线的 --minimum-throughput-ratio 倍（默认 0.6）；
-    · 每一档分位（p50 / p95 / p99）：不得高于基线的对应 `--maximum-<档>-ratio` 倍，默认 1.5 / 2.0 / 2.5；
-      倍数按「分位越靠后越抖」递增。`maximumMicroseconds` 只录不判——单次调度抖动就能让它翻倍，
-      判它等于判机器状态；
-    · 基线里有、实测里没有的项判失败（漏测等于没测）；实测里多出来的项只提示。
-    · 两套基线同吃：soak 基线（每项带 p50/p95/p99 分位键）按上面那条判；微基准那种「点式」基线
-      （每项只有 throughputPerSecond/nanosecondsPerOperation）只判吞吐，不套「缺分位档即红」——
-      那条规则只服务于 soak 侧的分位补录历史，套到点式上会把 microbench 那条入口变成恒红。
-    · `connection-sweep-*` 档（并发扫描）判的是工作集峰值这个容量规划量（键 workingSetPeakKib）：
-      基线录了该档就按 --maximum-working-set-ratio 判，没录只打印读数、不硬造阈值；建成数与档内
-      失败由文档级 failures 统一判（它们本就计进那份账），这里不重复。工作集峰值是绝对值量，
-      没有基线值就没有参照系——「不判」与「判过」要分得开。
-
-这道门禁能抓什么、不能抓什么：它抓的是量级回归；抓不住 10% 级的漂移——那需要更严谨的测量方法
-（固定 CPU 频率、绑核、关后台负载、多轮取中位数），不是脚本能补的。默认阈值是按本机实测噪声定的：
-同一份 Release 代码连跑四次，h1 保持连接吞吐 24.8k~30.8k、h2c 32 条一批 38k~58k（约 1.5 倍）。
-为什么是「本机门禁」而不是 CI 门禁：共享 runner 的 CPU 型号、频率与邻居负载都不可控，
-跨机器比较会把机器噪声当成代码回归。CI 只跑正确性（windows-ci.yml / linux-ci.yml）；
-这道门禁的正确用法是「改动前在同一台机器上留一份基线，改动后重跑并比对」，由跑的人保证环境一致。
+"""性能门禁：把 soak*.py --json-out 的实测与 benchmarks/baseline.json 逐项比对，越界即非零退出。
+用法：python benchmarks/check-baseline.py <实测.json ...> [--baseline PATH]
+      [--minimum-throughput-ratio 0.6] [--maximum-p50-ratio 1.5] [--maximum-p95-ratio 2.0]
+      [--maximum-p99-ratio 2.5] [--maximum-working-set-ratio 1.5]
+判据：failures 为 0；多份实测同一指标取中位数（不是最优值，噪声会直接进判定）；
+      吞吐不低于基线 0.6 倍；p50/p95/p99 不超过 1.5/2.0/2.5 倍；maximumMicroseconds 只录不判；
+      基线有而实测缺的项判失败，多出的项只提示；点式基线只判吞吐；connection-sweep-* 判峰值。
+退出码：0 全部在阈值内；1 有违反项；2 基线或实测读不了（前置缺件，不是回归结论）。
+本机门禁：共享 runner 噪声不可控，CI 只跑正确性；改动前后同机留基线再比对。
 """
 
 import argparse
@@ -41,16 +14,15 @@ import json
 import os
 import sys
 
-# Windows runner 的控制台默认按 cp1252 编码：正文里的中文在 print 那一刻就抛 UnicodeEncodeError，
-# 判据没跑完，读的人只拿到一段 traceback（微基准那档首跑就是这么红的，红在打印 "== 基线 …" 那一行）。
-# 与其它门禁脚本同形状，进来先把两个流钉成 UTF-8
+# Windows runner 控制台默认 cp1252：中文正文在 print 时抛 UnicodeEncodeError，只剩 traceback。
+# 与其它门禁脚本同形状，进来先把两个流钉成 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline.json")
 
-# `maximumMicroseconds` 刻意不在判定面上：它是整段最坏的一次，单次调度抖动就能翻倍，
+# maximumMicroseconds 刻意不在判定面上：它是整段最坏的一次，单次调度抖动就能翻倍，
 # 判它等于判机器状态。分位这条线判到 p99 为止，max 只作描述性读数
 GAUGED_KEYS = ("throughputPerSecond", "p50Microseconds", "p95Microseconds", "p99Microseconds")
 DESCRIPTIVE_KEYS = ("connections", "pipeline", "requests", "throughputUnit")
@@ -91,11 +63,8 @@ def accumulateMeasurement(samples: dict, incoming: dict, sourcePath: str) -> dic
     return samples
 
 
-# 跨运行离散度的可信上限：同一指标各次实测之间 max/min 超过这个倍数，说明这批读数量的是
-# 「这次跑落在哪个区」而不是被测代码。本机实测会整段进入 ~1.5 倍的负载区——同一份二进制
-# 连续三跑全在 1100 ns、隔一批又全在 736 ns，而组内离散只有 1.01，所以「分批各跑几轮」看不出来。
-# 本会话有两次 0.78x 的假报红（qpack-decode、header-first-value）就是这么来的，故只做提示、
-# 不判失败：判失败会把机器状态当成代码回归。
+# 跨运行离散度上限：同一指标各次实测的 max/min 超过它，量的是机器状态而不是被测代码。
+# 本机会整段落进 ~1.5 倍负载区，故只做提示、不判失败，避免把机器噪声当成代码回归。
 kDispersionRatioLimit = 1.3
 
 
@@ -117,12 +86,10 @@ def dispersionRatio(samples: dict) -> tuple:
 
 
 def compareSweepTier(name: str, expected: dict | None, samples: dict, arguments) -> list:
-    """连接数扫描档的判定：工作集峰值。
+    """连接数扫描档判工作集峰值（workingSetPeakKib），容量规划看的就是并发 N 条连接时驻留多少。
 
-    扫描档判的不是吞吐与分位，而是「并发 N 条连接时服务端驻留多少」——容量规划看的就是这个量。
-    它是绝对值读数，没有基线值就没有参照系，所以基线录了 workingSetPeakKib 才判；没录时只打印
-    读数并标明「只落盘不判」——把「这一档还没进基线」如实说出来，而不是硬造一个阈值或静默跳过。
-    建成数与档内失败不在这里判：它们计进文档级 failures，由「实测本身报告 N 条失败」统一拦。
+    基线录了该档才判（绝对值量，没基线就没参照系），没录只打印读数；建成数与档内失败由
+    文档级 failures 统一判，这里不重复。
     """
     violations = []
     runCount = len(samples["sources"])
@@ -207,7 +174,7 @@ def compareMeasurement(name: str, expected: dict, samples: dict, arguments) -> l
             if not passed:
                 violations.append(f"{name}：{label} {actualValue:.1f}us 高于基线的 {ratioLimit:.2f} 倍（上限 {maximum:.1f}us）")
 
-    # 可信度自检放在判定之后：它不改变本项的输赢，只标出「这次的中位数不值得信」
+    # 可信度自检放在判定之后：它不改变本项的输赢，只标出「这一批的中位数不值得信」
     widestRatio, widestKey = dispersionRatio(samples)
     if widestRatio > kDispersionRatioLimit:
         print(f"     [噪声] {widestKey} 跨 {runCount} 份实测的 max/min = {widestRatio:.2f}x，"

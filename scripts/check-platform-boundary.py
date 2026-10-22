@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """Platform 边界门：src/Platform 之外不许出现系统头、OS API 与平台条件分支。
 
-判据：
-  * 系统头：windows.h / winsock2.h / unistd.h / pthread.h / sys/* / linux/* / netinet/* 等；
-  * 平台条件：含 ASYN_PLATFORM_*、_WIN32、__linux__、__unix__、__APPLE__ 的 #if 族；
-  * OS API：全局作用域的 socket/进程/文件系统调用，以及 Windows API 与 std::signal；
-  * 基线按 (路径, 类别, 符号) 聚合计数，只准减不准增；例外必须带理由与复核日期。
+判据：系统头：windows.h / winsock2.h / unistd.h / pthread.h / sys/* / linux/* / netinet/* 等；
+平台条件：含 ASYN_PLATFORM_*、_WIN32、__linux__、__unix__、__APPLE__ 的 #if 族；
+OS API：全局作用域的 socket/进程/文件系统调用，以及 Windows API 与 std::signal；
+基线按 (路径, 类别, 符号) 聚合计数，只准减不准增；例外必须带理由与复核日期。
 
-用法：python scripts/check-platform-boundary.py [--root PATH] [--baseline PATH] [--write] [--min-files N]
+用法：python scripts/check-platform-boundary.py [--root PATH] [--baseline PATH] [--write]
+      [--min-files N]
 退出码：0 通过；1 违例或基线陈旧；2 前置缺件。
 """
 

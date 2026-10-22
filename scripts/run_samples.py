@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """按模块跑完 samples/ 下的自检示例，汇总成一张矩阵并据此判断系统完整性。
 
-示例自己报告结论：stdout 上打印 `RESULT <name> PASS|FAIL <步数> gated <跳过数>`，退出码 0 表示全绿。
+示例自己报告结论：stdout 上打印 RESULT <name> PASS|FAIL <步数> gated <跳过数>，退出码 0 表示全绿。
 本脚本不假设示例清单——它扫构建目录里现成的可执行文件，所以新增示例不需要改这里。
 ReferenceServer 是部署形态的服务器（不作自检），只按 --help 做一次冒烟运行。
 
@@ -47,8 +47,8 @@ SMOKE_ONLY = {"ReferenceServer"}
 def infer_module(name: str) -> str:
     """按名字前缀归组；归不进已知模块时落到 other，让矩阵自己把「这个示例没归组」暴露出来。
 
-    取最长匹配：程序名没有分隔符可切，`PlatformPrimitives` 的首段是 `Platform`，而
-    `ReferenceServer` 要靠 `Reference` 才归得到 Net——按最短前缀匹配会把两者都读成 other。
+    取最长匹配：程序名没有分隔符可切，PlatformPrimitives 的首段是 Platform，而
+    ReferenceServer 要靠 Reference 才归得到 Net——按最短前缀匹配会把两者都读成 other。
     """
     matched = [prefix for prefix in MODULE_BY_PREFIX if name.startswith(prefix)]
     if not matched:
@@ -81,12 +81,10 @@ def find_sample_executables(build_dir: Path) -> list[Path]:
 
 
 def targets_known_to_build(build_dir: Path) -> set[str] | None:
-    """问构建系统「这一份配置到底产出哪些示例」；问不出来返回 None（退回按目录里有什么跑）。
+    """问构建系统「这份配置产出哪些示例」；问不出来返回 None（退回按目录里有什么跑）。
 
-    只按目录 glob 会把已从构建清单里删掉或按平台关掉的示例的残留可执行文件也算一份证据——那份
-    二进制属于上一轮配置，跑它得出的红或绿都不属于当前这份代码（实测：Windows 上关掉的 CoreUpgrade
-    留着一份 .exe，矩阵因此白红两条）。反过来，配置里有、目录里却没有的可执行文件也不能当没看见：
-    那正是「示例根本没跑」的形态，门禁要出声。
+    只按目录 glob 会把已删或按平台关掉的残留可执行文件也算证据（Windows 上关掉的 CoreUpgrade
+    留下 .exe，矩阵白红两条）；反过来配置有、目录无也不能当没看见——那是「示例根本没跑」。
     """
     cache = build_dir / "CMakeCache.txt"
     if not cache.is_file():

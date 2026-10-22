@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """QUIC/HTTP/3 出站验收的对端：用 aioquic（独立实现）起一个真的 HTTP/3 服务端。
 
-被测端是本框架的探针（tests/Tools/QuicProbeClient.cpp）。判据由 aioquic 的解析器给出：
-它得能把我们的 Initial 解成一条握手完成的连接、协商到 h3、认出我们开的控制流与 QPACK 流、
-把头段解成一条合法请求，才谈得上「两型实现一致」。本脚本只打印事实行，不做成功/失败断言——
-断言在 scripts/quic_outbound_cross_check.sh 里对两边的说法各核一遍。
-
-输出协议（每行一条，立即 flush）：
-  LISTENING <port>        已绑定的端口
-  INBOUND <n>             收到第一条报文（字节数）；ALPN 谈不拢时只有这一行
-  HANDSHAKE alpn=<名字>   握手完成与协商到的 ALPN（'-' 表示没谈成）
-  REQUEST <stream> <method> <path>   解出来的一条请求
-  ANSWERED <stream> <n>   已把 n 字节的响应正文交给 aioquic 的编码器
-  CLOSED ...              连接收口
-  SERVER-EXIT             服务端退出
+被测端是 tests/Tools/QuicProbeClient.cpp。判据由 aioquic 的解析器给出：能解我们的 Initial、
+协商到 h3、认出控制流与 QPACK 流、把头段解成合法请求。本脚本只打印事实行，不做断言——
+断言在 scripts/quic_outbound_cross_check.sh 里对两边各核一遍。
+输出（每行一条，立即 flush）：LISTENING <port>；INBOUND <n>（ALPN 谈不拢时只有这一行）；
+HANDSHAKE alpn=<名字>（'-' 表示没谈成）；REQUEST <stream> <method> <path>；
+ANSWERED <stream> <n>；CLOSED ...；SERVER-EXIT。
 """
 
 import asyncio

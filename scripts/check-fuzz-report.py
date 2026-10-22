@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""核对模糊测试这一轮的读数：各档解码器是不是每档都被推到、执行量够不够、有没有真跑完。
+"""核对模糊测试的读数：各档解码器是不是每档都被推到、执行量够不够、有没有真跑完。
 
 总执行数回答不了「其中一类根本没被走到」——混合跑里那类可能一条都没进。本脚本按
-`scripts/fuzz-net.sh` 每类一份的日志逐类判，并把结果写成一张表进作业摘要。
+scripts/fuzz-net.sh 每类一份的日志逐类判，并把结果写成一张表进作业摘要。
 
 用法：python scripts/check-fuzz-report.py <日志目录> [--targets A B C D] [--min-executions N]
 退出码：0 全部达标；1 有目标没被推到 / 没跑完 / 执行量低于下限；2 参数或现场不对。
@@ -16,12 +16,12 @@ import re
 import sys
 from pathlib import Path
 
-# libFuzzer 的收尾行形如 `#123456 DONE   cov: 789 ft: 1234 ...`；崩掉的运行里则是 `#123456 pulse` 之类
+# libFuzzer 收尾行形如 #123456 DONE   cov: 789 ft: 1234 ...；崩掉的运行里是 #123456 pulse 之类
 EXECUTIONS_DONE_PATTERN = re.compile(r"#(\d+)\s+DONE")
-# 本仓的入口在退出前打的一行账：`FUZZ-TARGET-CALLS WebSocketFrame=12 Http2Frame=34 ...`
+# 本仓入口退出前打的一行账：FUZZ-TARGET-CALLS WebSocketFrame=12 Http2Frame=34 ...
 TARGET_CALLS_PATTERN = re.compile(r"FUZZ-TARGET-CALLS((?:\s+\w+=\d+)+)")
-# 崩溃/违例标记：泄漏报告的两条固定形状（`ERROR: LeakSanitizer: …` 与 `SUMMARY: AddressSanitizer: … leaked …`）
-# 必须在这里也认出来——`-jobs` 下父进程不保证把 worker 的退出码带出来，日志面是漏检的最后一道
+# 崩溃/违例标记：泄漏报告的两条固定形状 ERROR: LeakSanitizer: … 与 SUMMARY: AddressSanitizer:
+# … leaked …。必须认出来——-jobs 下父进程不一定把 worker 退出码带出来，日志面是漏检的最后一道。
 CRASH_PATTERN = re.compile(r"ERROR: (libFuzzer|AddressSanitizer|LeakSanitizer)|Test unit written|SUMMARY: (?:lib)?Fuzzer|SUMMARY: AddressSanitizer")
 
 # 档位清单的两处真源：内核枚举与 fuzz-net.sh 的默认目标清单。单目标模式下新档若只加进内核

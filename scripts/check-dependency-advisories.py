@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-# 依赖公告台账的核对：conandata.yml 与 packaging/dependency-watch.json 必须同解。
-#
-# 这条门禁刻意不宣称「已核对无 CVE」——自动判定命中需要解析各家公告正文的格式，
-# 猜错方向的后果是「绿着漏掉一条真漏洞」，比不跑更糟。它钉的是下面这几件可机器判定的事：
-#   1) 每条依赖都在台账里登记了公告入口（新增依赖忘了登记 → 红）；
-#   2) 台账里的 pinnedVersion 与 conandata.yml 一致（升了版本没复核 → 红）；
-#   3) 台账里没有已消失的依赖（改名/移除没同步 → 红）；
-#   4) docs/入门与构建.md「依赖版本」表与 conandata.yml 逐行同解（库名与版本配对都要对上——只比版本集合的话，
-#      两行版本对调这种错位照样绿；那是第三份拷贝）；
-#   5) packaging/conan/conanfile.py 的交付配方里写版本的四处与 conandata.yml 同解
-#      （第四份拷贝：升 conandata 而漏跟配方，交付出去的包就钉在旧版本上）。
-# 加 --fetch 时另做一次「公告入口链接还活着」的连通性核对；网络不通只提示，不判红——
-# 上游页面挂掉不是本仓库的缺陷，但也不能因此把前几条一起跳过。
+"""依赖公告台账的核对：conandata.yml、packaging/dependency-watch.json、依赖表与交付配方同解。
+
+不宣称「已核对无 CVE」——自动判定命中要解析各家公告正文，猜错的后果是绿着漏掉真漏洞。
+机检五件事：每条依赖在台账登记公告入口；pinnedVersion 与 conandata.yml 一致；台账无已消失依赖；
+docs/入门与构建.md 依赖表与清单逐行同解（库名与版本配对）；packaging/conan/conanfile.py 的
+四处版本与清单同解。任一不一致退 1；--fetch 只核对链接可达性，网络不通只提示、不判红。
+"""
 
 import argparse
 import json
@@ -64,7 +58,7 @@ DOCUMENT_NAME_ALIASES = {"OpenSSL": "openssl", "GoogleTest": "gtest", "SQLite3":
 
 
 def read_dependency_table_pairs() -> dict:
-    """docs/入门与构建.md「依赖版本」表 → {配方名: 版本}（一行多库时版本列同样用 / 分隔且一一对应）。"""
+    """docs/入门与构建.md「依赖版本」表 → {配方名: 版本}（一行多库时库名与版本都按 / 分隔）。"""
     if not DEPENDENCY_GUIDE.exists():
         raise SystemExit("缺少 DEPENDENCY_GUIDE.md")
     pairs = {}
@@ -94,7 +88,7 @@ def read_dependency_table_pairs() -> dict:
 
 
 def check_document_versions(requirements: dict, documentPairs: dict) -> list:
-    """docs/入门与构建.md「依赖版本」表与 conandata.yml 逐行同解（库名↔版本配对也要对上，不只比版本集合）。"""
+    """docs/入门与构建.md 依赖表与 conandata.yml 逐行同解（库名与版本配对也要对上）。"""
     problems = []
     for name, version in sorted(requirements.items()):
         listed = documentPairs.get(name)
@@ -136,7 +130,7 @@ def read_packaging_recipe_requirements() -> dict:
 
 
 def check_packaging_recipe_versions(requirements: dict, recipeRequirements: dict) -> list:
-    """交付用配方的依赖版本与 conandata.yml 同解（第四份拷贝：升版漏跟这一处，包就钉在旧版本上）。"""
+    """交付配方的依赖版本与 conandata.yml 同解（升版漏跟这一处，包就钉在旧版本上）。"""
     problems = []
     for name, version in sorted(recipeRequirements.items()):
         knownVersion = requirements.get(name)

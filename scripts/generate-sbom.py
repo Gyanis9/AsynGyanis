@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-# 生成 CycloneDX 1.6 SBOM（JSON），供制品审计与依赖公告核对使用。
-#
-# 为什么自己写而不装 cyclonedx-conan：这台机器到 GitHub 的下载速度按分钟计，而一个「把
-# conandata.yml 的固定依赖清单换成标准字段」的转换不值得让 CI 依赖外部工具的可用性。
-# 覆盖面要说清楚：本脚本记的是清单（名字、版本、来源、下载校验和），不是哈希后的二进制——
-# 交付方要制品级 provenance 还得配签名构建，这里不假称已经做到。
-#
-# 用法：python scripts/generate-sbom.py [--out 目录]
-# 退出码非 0 的情况：依赖清单缺失、字段不全，或生成的 JSON 自检不过（宁可红也不交一份空壳）。
+"""生成 CycloneDX 1.6 SBOM（JSON），供制品审计与依赖公告核对使用。
+
+自己写而不装 cyclonedx-conan：转换 conandata.yml 的固定清单不值得让 CI 依赖外部工具。
+记的是清单（名字、版本、来源、下载校验和），不是哈希后的二进制；制品级 provenance 需签名构建。
+用法：python scripts/generate-sbom.py [--out 目录]；退出码非 0：清单缺失、字段不全或 JSON 自检不过。
+"""
 
 import argparse
 import hashlib
@@ -27,9 +24,8 @@ WATCH_LIST = REPO_ROOT / "packaging" / "dependency-watch.json"
 def load_watch_entries() -> dict:
     """读 packaging/dependency-watch.json 的 dependencies 段。
 
-    每条依赖的静态元数据（上游正名、许可、官网）都住在这儿——这是单源：加依赖时
-    在 conandata.yml 与这份台账各补一条（台账本身有公告入口检查守着），SBOM 不再维护
-    第二份名字/许可映射。许可缺失不在这里判，留给 main 的自检统一报。
+    每条依赖的静态元数据（上游正名、许可、官网）只住这儿：加依赖时清单与台账各补一条，
+    SBOM 不维护第二份映射。许可缺失留给 main 的自检统一报。
     """
     if not WATCH_LIST.exists():
         raise SystemExit("缺少 packaging/dependency-watch.json，依赖元数据无从生成")
@@ -68,7 +64,7 @@ def git_remote_url() -> str:
 
 
 def parse_requirements() -> list:
-    """读 conandata.yml 的 requirements 列表（`"name/version"`）。
+    """读 conandata.yml 的 requirements 列表（"name/version"）。
 
     这里只认仓库自己那份清单的固定形状（一行一条、双引号包住），不引入 PyYAML 依赖：
     SBOM 生成要能在最小环境里跑，不该为了五行文本拖进一个第三方包。
@@ -184,8 +180,8 @@ def main() -> int:
 
     checksumFile = outputDirectory / "SHA256SUMS"
     if problems:
-        # 失败时连校验和文件一起收掉：留着它是上一轮（或本次已写出的）同名产物的残凭据，
-        # 下游按 SHA256SUMS 核验时会拿它对着一个已被删除（或压根不完整）的 SBOM 报「通过」
+        # 失败时连校验和文件一起收掉：留着它是旧产物的残凭据，下游按 SHA256SUMS 核验时
+        # 会把一个已被删除（或压根不完整）的 SBOM 读成「通过」。
         target.unlink(missing_ok=True)
         checksumFile.unlink(missing_ok=True)
         print("SBOM 自检失败：" + "；".join(problems), file=sys.stderr)
