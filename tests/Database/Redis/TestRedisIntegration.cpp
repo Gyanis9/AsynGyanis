@@ -1182,7 +1182,9 @@ namespace AsynGyanis::Database
      *          `SMEMBERS` 回 `~2`（成员是批量字符串，一列一个），`SMISMEMBER` 回 `*2` 里两个
      *          `:1` / `:0`。Redis 自己的命令文档把后者写成「Array of Booleans」，服务端实际没这么答——
      *          照着文档去 `std::get<bool>` 会一律读到「没有值」。这里把线上真相钉住；布尔与浮点那两档的
-     *          映射由 `TestRedisResult.cpp` 用 RESP 文本夹具直测（hiredis 的解析器就是那条通路的裁判）
+     *          映射由 `TestRedisResult.cpp` 用 RESP 文本夹具直测（hiredis 的解析器就是那条通路的裁判）。
+     * @note SET 不承诺成员顺序：判据按集合比，不按列的下标。写死「第一列 here、第二列 there」
+     *       在别的服务端版本或哈希布局下会假红，而它要证明的只是「成员各占一列」
      */
     TEST_F(RedisIntegrationTest, Resp3KeepsSetMembersAsColumnsAndSmisMemberAsIntegers)
     {
@@ -1196,9 +1198,15 @@ namespace AsynGyanis::Database
 
         const std::unique_ptr<DatabaseResult> members = resp3.executeCommand({"SMEMBERS", key});
         ASSERT_NE(members, nullptr) << resp3.lastError();
-        EXPECT_EQ(members->columnCount(), 2U) << "SET 的成员没有各占一列";
-        EXPECT_EQ(std::get<std::string>(members->getValue(std::size_t{0})), "here");
-        EXPECT_EQ(std::get<std::string>(members->getValue(std::size_t{1})), "there");
+        ASSERT_EQ(members->columnCount(), 2U) << "SET 的成员没有各占一列";
+        std::vector<std::string> memberValues;
+        memberValues.reserve(members->columnCount());
+        for (std::size_t columnIndex = 0; columnIndex < members->columnCount(); ++columnIndex)
+        {
+            memberValues.push_back(std::get<std::string>(members->getValue(columnIndex)));
+        }
+        std::ranges::sort(memberValues);
+        EXPECT_EQ(memberValues, (std::vector<std::string>{"here", "there"})) << "SET 的成员没有逐列交出（顺序不作判据）";
 
         const std::unique_ptr<DatabaseResult> membership = resp3.executeCommand({"SMISMEMBER", key, "here", "missing"});
         ASSERT_NE(membership, nullptr) << resp3.lastError();
