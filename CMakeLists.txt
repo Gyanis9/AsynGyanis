@@ -411,6 +411,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpEndpointPath.h" EXCLUDE
             PATTERN "HttpClientUrl.h" EXCLUDE
             PATTERN "Http2SessionSupport.h" EXCLUDE
+            PATTERN "RedisConnectionSupport.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：
