@@ -11,6 +11,9 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Http2ConnectionFrames.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.cpp
+        # 响应头组装、响应写出与流式收尾；共用头只给这两份翻译单元
+        ${CMAKE_CURRENT_LIST_DIR}/Http2SessionSupport.h
+        ${CMAKE_CURRENT_LIST_DIR}/Http2SessionResponses.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2ClientConnection.h
         ${CMAKE_CURRENT_LIST_DIR}/Http2ClientConnection.cpp
 )
