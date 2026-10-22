@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=3.0.0
-# headers=307 entries=8987
+# headers=307 entries=8988
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8636,6 +8636,7 @@ src/Platform/IO/Socket.h	Initialization() noexcept : m_valid(initialize())
 src/Platform/IO/Socket.h	Initialization(const Initialization &) = delete
 src/Platform/IO/Socket.h	[[nodiscard]] bool isValid() const noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static bool requiresListenerHandoff() noexcept
+src/Platform/IO/Socket.h	[[nodiscard]] static bool supportsZeroCopySend() noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static constexpr bool hasUserTimeout() noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static int acceptHandoffPeer(int listenerDescriptor) noexcept
 src/Platform/IO/Socket.h	[[nodiscard]] static int connectHandoffChannel(std::string_view address) noexcept

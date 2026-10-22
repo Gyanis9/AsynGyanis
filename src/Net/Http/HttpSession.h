@@ -168,13 +168,12 @@ namespace AsynGyanis::Net
         /// 它同时就是 keep-alive 的消息边界，因此流式响应写完不必断开连接
         inline constexpr std::string_view kChunkedTerminator = "0\r\n\r\n";
 
-#if !ASYN_PLATFORM_WIN32
         /// 走零拷贝发送（sendfile）的最小正文长度，单位字节
         /// @details 零拷贝比聚合写多一次系统调用（头部要单独发一次，正文不能跟它拼成一次提交），
         ///          因此正文很小时是净亏；超过这个量级之后，省下的整份正文拷贝与映射首触缺页
         ///          才盖过那次调用开销。阈值取「明显划算」的一档，避免在分界附近来回摇摆
+        /// @note 只在 Platform::Socket::supportsZeroCopySend() 为 true 的平台上参与判定
         inline constexpr std::size_t kZeroCopySendMinimumBytes = 64ull * 1024;
-#endif
 
         /**
          * @brief 把一整块字节按游标写到出门为止
@@ -691,7 +690,6 @@ namespace AsynGyanis::Net
                 co_return true;
             };
 
-#if !ASYN_PLATFORM_WIN32
             // 零拷贝发送（sendfile）：头部仍走普通写出（含写超时刷新与失败收口），正文交给内核
             // 从文件页缓存直接推给协议栈，不经过用户态视图——省掉整份正文的拷贝与映射首触缺页。
             // 失败契约与 sendResponse 完全一致：false = 本段未发出、连接不可再用、调用方应停止
@@ -751,7 +749,6 @@ namespace AsynGyanis::Net
                 connection.noteBytesSent(head.size() + static_cast<std::size_t>(zeroCopyBody.length));
                 co_return true;
             };
-#endif
 
             // 流式响应的发送回调：把一段字节直接写到这条连接。复用上面那条分段/聚合写路径，
             // 因此 writeChunk 的每一段都是当场流出去的，不存在「先攒在内存里再整块发」的中间态；
@@ -1057,15 +1054,15 @@ namespace AsynGyanis::Net
                     // 本条响应是否已经发出（零拷贝分支发出后不再走普通分段写）
                     bool isResponseSent = false;
 
-#if !ASYN_PLATFORM_WIN32
                     // 静态文件等「整块正文来自文件映射」的响应走零拷贝发送：正文交给内核搬运，
-                    // 不经用户态视图。三个条件缺一不可——传输层支持（TLS 没有该能力，探测在
-                    // 编译期落空）、正文确实可零拷贝（堆正文与压缩后的正文都没有文件描述符）、
-                    // 正文足够大（见 kZeroCopySendMinimumBytes）。HEAD 的正文一个字节都不发，
-                    // 直接按普通路径走，避免白白多一次 sendfile 的系统调用
+                    // 不经用户态视图。四个条件缺一不可——传输层支持（TLS 没有该能力，探测在
+                    // 编译期落空）、平台提供该原语（Windows 没有，运行期判定）、正文确实可零拷贝
+                    // （堆正文与压缩后的正文都没有文件描述符）、正文足够大（见 kZeroCopySendMinimumBytes）。
+                    // HEAD 的正文一个字节都不发，直接按普通路径走，避免白白多一次 sendfile 的系统调用
                     if constexpr (requires { socket.asyncSendFile(0, std::uint64_t{}, std::size_t{}); })
                     {
-                        const std::optional<HttpResponse::ZeroCopyBody> zeroCopyBody = request.method() == HttpMethod::HEAD ? std::nullopt : response.zeroCopyBody();
+                        const std::optional<HttpResponse::ZeroCopyBody> zeroCopyBody =
+                                Platform::Socket::supportsZeroCopySend() && request.method() != HttpMethod::HEAD ? response.zeroCopyBody() : std::nullopt;
                         if (zeroCopyBody.has_value() && zeroCopyBody->length >= kZeroCopySendMinimumBytes)
                         {
                             if (!co_await sendResponseWithZeroCopyBody(serializedHead, *zeroCopyBody))
@@ -1080,7 +1077,6 @@ namespace AsynGyanis::Net
                             isResponseSent = true;
                         }
                     }
-#endif
 
                     if (!isResponseSent)
                     {

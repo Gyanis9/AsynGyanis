@@ -19,6 +19,7 @@
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/IO/FileContents.h"
 #include "Platform/IO/MemoryMappedFile.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
 #include <algorithm>
@@ -1377,10 +1378,9 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-            // 取这份文件的映射（仅 POSIX：那里 sendfile 是真零拷贝）：返回空指针时响应已被写成
+            // 取这份文件的映射（供支持零拷贝发送的平台使用）：返回空指针时响应已被写成
             // 500/413，调用方直接收尾。先查缓存，命中即免去「打开文件 + 建立映射」那约 17 µs；
-            // 未命中才真的建，建成再回填
-#if !ASYN_PLATFORM_WIN32
+            // 未命中才真的建，建成再回填。平台没有零拷贝发送时调用方不会走到这里
             const auto prepareMappedFile = [&]() -> std::shared_ptr<const Platform::MemoryMappedFile>
             {
                 if (const std::shared_ptr<const Platform::MemoryMappedFile> cached = settings->mappingCache->find(servedPath, fileBasicInfo); cached != nullptr)
@@ -1419,7 +1419,6 @@ namespace AsynGyanis::Net
                 settings->mappingCache->store(servedPath, mappedFile, fileBasicInfo);
                 return mappedFile;
             };
-#endif
 
             // 正文取哪段、取多少：206 只给区间那一段，200 给整份。HEAD 报的 content-length 也取自
             // 这两个数，与「同一个请求的 GET 会发多大」严格一致
@@ -1430,36 +1429,38 @@ namespace AsynGyanis::Net
             // 表示头部一旦写下就与状态码绑定了，所以正文必须在此之前拿稳：这里失败的话，响应还只是
             // 一条光秃秃的错误（content-type + 正文），不会留下「500 带 Content-Range 与 ETag」这种
             // 自相矛盾的报文
-#if ASYN_PLATFORM_WIN32
-            // 本平台把正文读进响应自己的堆缓冲，不建映射。理由全是实测的：TransmitFile 在非阻塞
-            // 套接字上仍会阻塞线程（不可用），所以映射并不能省掉「把字节交给内核」那次拷贝，只额外
-            // 付出整段缺页 —— 同一文件两条路的中位数为 4 KiB 17.2–18.4/12.7–15.1 µs、
-            // 64 KiB（含首触）29.4–31.1/15.5、1 MiB 343/46.7；且映射存活期间发布方的 rename 与就地
-            // 截断分别以 5 与 1224 失败，读完即松手就没有这条占用。缓冲取自响应对象本身（按连接
-            // 复用），第二条请求起这条路上一次堆分配都不发生
-            if (!isHeadRequest)
-            {
-                std::string                                      &bodyBuffer = response.prepareBodyBuffer(bodyLength);
-                Platform::FileBasicInfo                           openedBody;
-                const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(servedPath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
-                // 验证器取自查元数据那一次，正文取自这一次打开：两次之间文件被原子替换时，发出去的是
-                // 新版本的字节配的却是旧版本的 ETag/Last-Modified，客户端会把这份内容长期挂在旧验证器
-                // 下。两处必须是同一个对象，否则与短读一样按服务端故障收口
-                // 正文长度为 0 时那一步压根没打开文件（少一次系统调用），openedBody 也就无从填起：
-                // 空文件是一条合法表示，不能因为「比不了」被判成服务端故障
-                const bool isVersionMismatch = bodyLength > 0U && (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
-                                                                   openedBody.identityTag != fileBasicInfo.identityTag);
-                if (!readResult.has_value() || *readResult < bodyLength || isVersionMismatch)
-                {
-                    // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
-                    // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件
-                    writeStaticErrorResponse(response, 500, "Internal Server Error");
-                    co_return;
-                }
-            }
-#else
+            // 正文的承载方式按平台能力在运行期选。没有零拷贝发送的平台把正文读进响应自己的
+            // 堆缓冲，不建映射。理由全是实测的：TransmitFile 在非阻塞套接字上仍会阻塞线程
+            // （不可用），所以映射并不能省掉「把字节交给内核」那次拷贝，只额外付出整段缺页 ——
+            // 同一文件两条路的中位数为 4 KiB 17.2–18.4/12.7–15.1 µs、64 KiB（含首触）
+            // 29.4–31.1/15.5、1 MiB 343/46.7；且映射存活期间发布方的 rename 与就地截断分别以
+            // 5 与 1224 失败，读完即松手就没有这条占用。缓冲取自响应对象本身（按连接复用），
+            // 第二条请求起这条路上一次堆分配都不发生。支持零拷贝发送的平台改走映射，
+            // 发送时由 sendfile 把页直接交给内核
             std::shared_ptr<const Platform::MemoryMappedFile> mappedFile;
-            if (!isHeadRequest)
+            if (!Platform::Socket::supportsZeroCopySend())
+            {
+                if (!isHeadRequest)
+                {
+                    std::string                                      &bodyBuffer = response.prepareBodyBuffer(bodyLength);
+                    Platform::FileBasicInfo                           openedBody;
+                    const std::expected<std::size_t, std::error_code> readResult = Platform::readFileContentsInto(servedPath, bodyOffset, bodyLength, bodyBuffer, &openedBody);
+                    // 验证器取自查元数据那一次，正文取自这一次打开：两次之间文件被原子替换时，发出去的是
+                    // 新版本的字节配的却是旧版本的 ETag/Last-Modified，客户端会把这份内容长期挂在旧验证器
+                    // 下。两处必须是同一个对象，否则与短读一样按服务端故障收口
+                    // 正文长度为 0 时那一步压根没打开文件（少一次系统调用），openedBody 也就无从填起：
+                    // 空文件是一条合法表示，不能因为「比不了」被判成服务端故障
+                    const bool isVersionMismatch = bodyLength > 0U && (openedBody.sizeBytes != fileSize || openedBody.lastWriteSeconds != lastWriteSeconds ||
+                                                                       openedBody.identityTag != fileBasicInfo.identityTag);
+                    if (!readResult.has_value() || *readResult < bodyLength || isVersionMismatch)
+                    {
+                        // 两种情形都不是「可以发出去的正文」：文件在 stat 之后被删/改权限（TOCTOU 窗口），
+                        // 或被截断到比请求的那段还短。按服务端故障收口，不回半个文件
+                        writeStaticErrorResponse(response, 500, "Internal Server Error");
+                        co_return;
+                    }
+                }
+            } else if (!isHeadRequest)
             {
                 mappedFile = prepareMappedFile();
                 if (mappedFile == nullptr)
@@ -1475,7 +1476,6 @@ namespace AsynGyanis::Net
                     co_return;
                 }
             }
-#endif
 
             // 200 与 206 共有的表示头部：都要声明支持按字节取区间
             response.setHeader("content-type", mimeType);
@@ -1494,11 +1494,12 @@ namespace AsynGyanis::Net
                     co_return;
                 }
 
-#if !ASYN_PLATFORM_WIN32
-                // 上限已限在 64 MiB 且区间经过 fileSize 钳制，折算到 size_t 不会窄化。
-                // Windows 的这一段正文已经在上面就地写进响应缓冲，无需再挂任何东西
-                response.setSharedMappedBody(mappedFile, bodyOffset, bodyLength);
-#endif
+                // 支持零拷贝发送的平台才挂映射正文：另一侧的这段正文已经在上面就地写进响应缓冲。
+                // 上限已限在 64 MiB 且区间经过 fileSize 钳制，折算到 size_t 不会窄化
+                if (Platform::Socket::supportsZeroCopySend())
+                {
+                    response.setSharedMappedBody(mappedFile, bodyOffset, bodyLength);
+                }
                 co_return;
             }
 
@@ -1512,12 +1513,13 @@ namespace AsynGyanis::Net
                 co_return;
             }
 
-#if !ASYN_PLATFORM_WIN32
-            // 映射整份文件当正文：不经过堆缓冲，发送时由 sendfile 直接把页交给内核，
-            // 省掉「文件 → 堆正文」那次等量拷贝与分配。缓存让同一份页能同时服务多条在途响应。
-            // 长度取映射自身而不是 stat 读数，因此正文与它自己描述的是同一份字节
-            response.setSharedMappedBody(mappedFile, 0, mappedFile->bytes().size());
-#endif
+            if (Platform::Socket::supportsZeroCopySend())
+            {
+                // 映射整份文件当正文：不经过堆缓冲，发送时由 sendfile 直接把页交给内核，
+                // 省掉「文件 → 堆正文」那次等量拷贝与分配。缓存让同一份页能同时服务多条在途响应。
+                // 长度取映射自身而不是 stat 读数，因此正文与它自己描述的是同一份字节
+                response.setSharedMappedBody(mappedFile, 0, mappedFile->bytes().size());
+            }
         }
     } // namespace
 
@@ -1727,19 +1729,17 @@ namespace AsynGyanis::Net
         // 缓存随配置一起建立：上限取登记那一刻的限额（限额要在静态目录之前设），之后只做读写、
         // 不再重建，处理函数因此只依赖 settings 而不依赖任何一台服务器本身
         std::size_t mappedFileCountLimit = maximumMappedStaticFiles;
-#if ASYN_PLATFORM_WIN32
-        // Windows 上刻意不缓存映射：文件只要还挂着一个活动映射，既不能就地截断，也不能被 rename
-        // 覆盖（实测 5 与 1224，共享位换不来这两条）。「写临时文件 + rename」是静态资源发布的常规
-        // 做法，让缓存把它挡掉，代价比省下的那次「打开 + 建映射」重得多。本平台的静态正文因此走
-        // 堆读取、压根不建映射（实测更省，见 serveStaticFileRequest 的说明），这个限额在 Windows 上
-        // 无论取什么值都不再有作用；POSIX 不受影响。
-        if (mappedFileCountLimit != 0)
+        // 不支持零拷贝发送的平台刻意不缓存映射：文件只要还挂着一个活动映射，既不能就地截断，
+        // 也不能被 rename 覆盖（实测 5 与 1224，共享位换不来这两条）。「写临时文件 + rename」
+        // 是静态资源发布的常规做法，让缓存把它挡掉，代价比省下的那次「打开 + 建映射」重得多。
+        // 这些平台的静态正文因此走堆读取、压根不建映射（实测更省，见 serveStaticFileRequest
+        // 的说明），这个限额无论取什么值都不再有作用；支持零拷贝发送的平台不受影响
+        if (!Platform::Socket::supportsZeroCopySend() && mappedFileCountLimit != 0)
         {
             LOG_INFO("StaticFile: 本平台不启用静态文件映射缓存（映射期间文件无法被替换或截断），"
-                     "已按关闭处理；需要省掉这次映射开销请把服务跑在 POSIX 平台上");
+                     "已按关闭处理；需要省掉这次映射开销请把服务跑在提供零拷贝发送的平台上");
             mappedFileCountLimit = 0;
         }
-#endif
         m_settings->mappingCache = std::make_shared<StaticFileMappingCache>(mappedFileCountLimit);
         router.any("*", [settings = m_settings](HttpRequest &request, HttpResponse &response) -> Core::Task<> { co_await serveStaticFileRequest(request, response, settings); });
     }

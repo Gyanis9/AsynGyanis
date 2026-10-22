@@ -448,7 +448,6 @@ namespace AsynGyanis::Net
         m_mappedBodyLength = length;
     }
 
-#if !ASYN_PLATFORM_WIN32
     std::optional<HttpResponse::ZeroCopyBody> HttpResponse::zeroCopyBody() const noexcept
     {
         // 只有「有效映射 + 非空区间」才给得出可发送的描述：堆正文、空文件、流式响应
@@ -457,9 +456,14 @@ namespace AsynGyanis::Net
         {
             return std::nullopt;
         }
-        return ZeroCopyBody{m_mappedBody->nativeFileDescriptor(), m_mappedBodyOffset, m_mappedBodyLength};
+        const int fileDescriptor = m_mappedBody->nativeFileDescriptor();
+        // 平台没有零拷贝发送时映射不提供描述符（恒为 -1）：交出去只会让底层按参数非法失败
+        if (fileDescriptor < 0)
+        {
+            return std::nullopt;
+        }
+        return ZeroCopyBody{fileDescriptor, m_mappedBodyOffset, m_mappedBodyLength};
     }
-#endif
 
     void HttpResponse::releaseMappedBody() noexcept
     {

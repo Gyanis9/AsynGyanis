@@ -97,15 +97,15 @@ namespace AsynGyanis::Platform
          */
         [[nodiscard]] std::optional<FileBasicInfo> openedFileInfo() const noexcept;
 
-#if !ASYN_PLATFORM_WIN32
         /**
          * @brief 取底层文件描述符（零拷贝发送路径使用）
          * @details 映射建立之后描述符刻意不关：sendfile 这类零拷贝发送需要它把文件的一段
          *          直接交给内核搬运，句柄因此与映射同生命周期，随对象析构一起释放。
-         * @return int 文件描述符；无效对象（默认构造、打开失败、已关闭、已被移动走）返回 -1
+         * @return int 文件描述符；无效对象（默认构造、打开失败、已关闭、已被移动走）返回 -1。
+         *         本平台没有零拷贝发送能力（Socket::supportsZeroCopySend() 为 false）时，
+         *         本方法恒返回 -1：那条路径本来就用不到文件描述符
          */
         [[nodiscard]] int nativeFileDescriptor() const noexcept;
-#endif
 
     private:
         /**

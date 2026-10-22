@@ -9,42 +9,5 @@
       "reviewAfter": "2026-12-31"
     }
   ],
-  "violations": [
-    {
-      "path": "src/Core/Socket/AsyncSocket.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Core/Socket/AsyncSocket.h",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Net/Http/HttpResponse.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Net/Http/HttpResponse.h",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 1
-    },
-    {
-      "path": "src/Net/Http/HttpServer.cpp",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 5
-    },
-    {
-      "path": "src/Net/Http/HttpSession.h",
-      "category": "platform-conditional",
-      "symbol": "ASYN_PLATFORM_WIN32",
-      "count": 3
-    }
-  ]
+  "violations": []
 }

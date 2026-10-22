@@ -180,7 +180,13 @@ namespace AsynGyanis::Platform
         return m_lastError;
     }
 
-#if !ASYN_PLATFORM_WIN32
+#if ASYN_PLATFORM_WIN32
+    int MemoryMappedFile::nativeFileDescriptor() const noexcept
+    {
+        // 本平台没有零拷贝发送，调用方不会走到这条路径；句柄是 HANDLE，不能折成 int 交出去
+        return -1;
+    }
+#else
     int MemoryMappedFile::nativeFileDescriptor() const noexcept
     {
         return m_fileDescriptor;

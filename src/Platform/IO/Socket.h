@@ -253,6 +253,16 @@ namespace AsynGyanis::Platform
         [[nodiscard]] static bool requiresListenerHandoff() noexcept;
 
         /**
+         * @brief 本平台是否提供「文件到套接字」的零拷贝发送
+         * @details 只有 Linux 的 sendfile 可用：Windows 的 TransmitFile 在非阻塞套接字上仍会
+         *          阻塞线程，且单次调用停在中途仍返回成功、进度无法按返回值推进，本引擎不用它。
+         *          调用方据此在运行期在「映射 + sendFileChunk」与「读入堆缓冲再聚合写」之间选，
+         *          自己的代码不必按平台切开。
+         * @return true 可以调用 sendFileChunk；false 该能力不可用，请走普通发送路径
+         */
+        [[nodiscard]] static bool supportsZeroCopySend() noexcept;
+
+        /**
          * @brief 关闭 Nagle 算法（TCP_NODELAY）
          * @details 低延迟协议（HTTP 小响应、RPC）必须关闭合批，否则小包会被攒到 ACK 才发出。
          * @param descriptor 目标套接字描述符
@@ -439,6 +449,7 @@ namespace AsynGyanis::Platform
          *          字节数推进偏移即可，不必关心这个平台上限。
          */
         static constexpr std::size_t kMaximumSendFileChunk = 0x7ffff000;
+#endif
 
         /**
          * @brief 零拷贝发送：把文件的一段直接写进套接字（Linux sendfile）
@@ -451,7 +462,8 @@ namespace AsynGyanis::Platform
          * @param length 期望发送的字节数，内部按 kMaximumSendFileChunk 钳制
          * @return ssize_t 实际写入的字节数；非阻塞套接字在缓冲区满时返回 -1 并置 kWouldBlock
          *         （调用方应等可写后按新偏移重试）；参数非法时返回 -1 并置 kInvalidArgument；
-         *         该文件系统不支持零拷贝发送时返回 -1 并置系统错误码
+         *         该文件系统不支持零拷贝发送时返回 -1 并置系统错误码；本平台没有该能力时
+         *         返回 -1 并置 kNotSupported
          * @note 只发起一次系统调用，部分写由调用方按「offset 加上返回值」推进。源文件的读写
          *       偏移不受影响（本层显式传偏移指针，不动描述符自身的偏移），同一个文件可被多条
          *       响应并发发送
@@ -460,14 +472,10 @@ namespace AsynGyanis::Platform
          *       按 kWouldBlock 原地空转成死循环
          * @note SIGPIPE 由 Socket::initialize() 在初始化时忽略，本函数不必带 MSG_NOSIGNAL
          *       这类标志（sendfile 也没有对应标志）
-         * @note 只有 Linux 提供：Windows 的 TransmitFile 在本引擎里不可用——实测（非阻塞套接字、
-         *       对端只读 8 MiB 文件）首次调用就把线程阻塞住，直到对端把数据收完；且它一次调用
-         *       只推进 32768 字节后仍返回成功、文件指针不再前进，进度无法反推。要用它必须走
-         *       重叠 I/O 并把完成事件接到完成端口上，而那需要 IOCP 后端支持用户发起的异步操作。
-         *       在此之前 Windows 静态文件仍走聚合写（非阻塞、正确，只是多一次用户态拷贝）
+         * @note 先用 supportsZeroCopySend() 判定平台是否提供该能力；不支持的平台上本函数
+         *       仍可链接（返回 kNotSupported），调用方因此不需要平台条件编译
          */
         static ssize_t sendFileChunk(int socketDescriptor, int fileDescriptor, std::uint64_t offset, std::size_t length) noexcept;
-#endif
 
         // ============================================================================
         // 跨进程移交监听套接字：零停机换代的地基

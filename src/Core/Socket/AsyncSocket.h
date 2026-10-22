@@ -233,7 +233,6 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] std::optional<int> takeAcceptedConnection();
 
-#if !ASYN_PLATFORM_WIN32
         /**
          * @brief 异步零拷贝发送：把文件的一段直接推给套接字（Linux sendfile）
          * @param fileDescriptor 源文件描述符（须为普通文件，如 MemoryMappedFile::nativeFileDescriptor()）
@@ -241,16 +240,17 @@ namespace AsynGyanis::Core
          * @param length 待发送的字节数
          * @return 全部发送完成时返回总字节数；不会返回部分长度或 -1，失败一律抛异常
          * @note 正文不经过用户态缓冲：内核把文件页缓存直接推给协议栈，省掉整份文件的拷贝与首触缺页
-         * @note 只有 Linux 与普通 TCP 套接字可用：TLS 记录层没有零拷贝发送能力，本方法也不在
-         *       TlsSocket 上（调用方用 requires 探测该能力）；Windows 无等价原语，见 sendFileChunk
+         * @note 调用前用 Platform::Socket::supportsZeroCopySend() 判定平台能力；没有该能力时
+         *       本方法仍可调用并抛出 SystemException，因此调用方不必按平台条件编译
+         * @note 只有普通 TCP 套接字具备该能力：TLS 记录层没有零拷贝发送，本方法也不在
+         *       TlsSocket 上（调用方用 requires 探测该能力）
          * @throws Base::InvalidArgumentException 源文件描述符非法、待发字节数为 0（取值非法走 logic_error
          *         分支，与 TlsSocket 同一条口径）
          * @throws Base::SystemException 发送失败（连接重置、对端在发送期间关闭、请求的偏移/长度越过
-         *         源文件末尾等运行期故障）。越界一律按失败收口，但两种越界报法不同：起点越界时一个
-         *         字节都没上线，长度越界时前缀已经上线且不可整块重发
+         *         源文件末尾等运行期故障），或本平台不提供零拷贝发送。越界一律按失败收口，但两种越界
+         *         报法不同：起点越界时一个字节都没上线，长度越界时前缀已经上线且不可整块重发
          */
         Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const;
-#endif
 
         /**
          * @brief 关闭 socket：注销等待者 → shutdown(SHUT_WR) 发出 FIN → 丢弃未读的入站字节 →

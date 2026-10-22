@@ -52,6 +52,16 @@ namespace AsynGyanis::Platform
 #endif
     }
 
+    bool Socket::supportsZeroCopySend() noexcept
+    {
+#if ASYN_PLATFORM_WIN32
+        // TransmitFile 在非阻塞套接字上仍会阻塞线程，且单次调用停在中途仍报成功、进度无法反推
+        return false;
+#else
+        return true;
+#endif
+    }
+
     bool Socket::setNoDelay(const int descriptor) noexcept
     {
         return setIntegerOption(descriptor, IPPROTO_TCP, TCP_NODELAY, 1);

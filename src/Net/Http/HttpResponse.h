@@ -380,7 +380,6 @@ namespace AsynGyanis::Net
          */
         void releaseMappedBody() noexcept;
 
-#if !ASYN_PLATFORM_WIN32
         /**
          * @brief 映射正文的零拷贝发送描述：文件描述符 + 文件内区间
          */
@@ -394,11 +393,12 @@ namespace AsynGyanis::Net
         /**
          * @brief 取映射正文的零拷贝发送描述（sendfile 用）
          * @return std::optional<ZeroCopyBody> 有映射正文且长度非零时给出描述；堆正文、空正文、
-         *         流式响应都返回空，调用方据此退回普通发送路径
+         *         流式响应、以及平台不提供零拷贝发送时都返回空，调用方据此退回普通发送路径
          * @note 只给描述、不转移所有权：文件描述符随本对象存活，调用方须在响应对象存活期间使用
+         * @note 调用方应先用 Platform::Socket::supportsZeroCopySend() 判定平台能力；没有该能力
+         *       时本方法恒返回空，判定因此只是省一次无谓调用
          */
         [[nodiscard]] std::optional<ZeroCopyBody> zeroCopyBody() const noexcept;
-#endif
 
         /**
          * @brief 流式发送回调：把一段字节写到本响应所属的连接

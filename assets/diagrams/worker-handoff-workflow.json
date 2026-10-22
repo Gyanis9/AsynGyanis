@@ -204,7 +204,7 @@
       "sublabel": "close 不 shutdown",
       "sources": [
         { "path": "src/Core/Socket/AsyncSocket.h", "line": 128, "label": "markAsListening" },
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 481, "label": "仅非监听才 shutdown" }
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 486, "label": "仅非监听才 shutdown" }
       ]
     },
     {

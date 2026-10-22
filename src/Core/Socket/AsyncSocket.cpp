@@ -380,9 +380,15 @@ namespace AsynGyanis::Core
         return acceptedDescriptor;
     }
 
-#if !ASYN_PLATFORM_WIN32
     Task<ssize_t> AsyncSocket::asyncSendFile(const int fileDescriptor, const std::uint64_t offset, const std::size_t length) const
     {
+        // 能力判定放在参数校验之前：本平台没有这条原语时，调用方给的参数对不对都不改变
+        // 「发不出去」这个结论，先报能力缺失能让排查少走一段路
+        if (!Platform::Socket::supportsZeroCopySend())
+        {
+            throw Base::SystemException("零拷贝发送失败：本平台不提供文件到套接字的零拷贝原语，请改走普通发送路径",
+                                        std::error_code(Platform::PlatformError::kNotSupported, std::system_category()));
+        }
         // 源描述符与长度属于调用方契约，交给底层会被折成同一个 kInvalidArgument，
         // 在这里当场报错能把「哪一侧的参数不对」说清楚
         if (fileDescriptor < 0)
@@ -443,7 +449,6 @@ namespace AsynGyanis::Core
         }
         co_return static_cast<ssize_t>(length);
     }
-#endif
 
     int AsyncSocket::releaseFileDescriptor() noexcept
     {

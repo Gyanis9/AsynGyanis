@@ -70,7 +70,19 @@ namespace AsynGyanis::Platform
 #endif
     }
 
-#if !ASYN_PLATFORM_WIN32
+#if ASYN_PLATFORM_WIN32
+    ssize_t Socket::sendFileChunk(const int socketDescriptor, const int fileDescriptor, const std::uint64_t offset, const std::size_t length) noexcept
+    {
+        // 能力面与实现面分家：声明与链接在两端一致，调用方用 supportsZeroCopySend() 选路径。
+        // 真走到这里说明调用方跳过了能力判定，按「本平台不支持」明确失败而不是假发送
+        (void) socketDescriptor;
+        (void) fileDescriptor;
+        (void) offset;
+        (void) length;
+        PlatformError::setLastErrorCode(PlatformError::kNotSupported);
+        return -1;
+    }
+#else
     ssize_t Socket::sendFileChunk(const int socketDescriptor, const int fileDescriptor, const std::uint64_t offset, const std::size_t length) noexcept
     {
         if (!FileDescriptor::isValid(socketDescriptor) || !FileDescriptor::isValid(fileDescriptor) || length == 0)
