@@ -192,7 +192,13 @@ namespace AsynGyanis::Database
             {
                 LOG_ERROR("ConnectionPool: 驱逐过期连接时分配失败（非标准异常），本轮跳过");
             }
+            // 驱逐同样腾出了名额：正在注册的等待者不在等待表里，靠世代号让它重走一轮建连。
             // 锁外断开：析构 unique_ptr 即关闭底层连接
+            if (!expiredConnections.empty())
+            {
+                noteSlotFreedForRegisteringWaiters();
+                wakeWaitersForFreedSlot();
+            }
             expiredConnections.clear();
         }
     }

@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=9001
+# headers=308 entries=9005
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -2240,16 +2240,19 @@ src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_activeCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_asyncWaitingCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_borrowTimeoutCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_connectRetryCount
+src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_pendingRegistrations
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_probeCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_sessionResetFailures
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_syncWaitingCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_totalCreated
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_totalDiscarded
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_waitingRejectedCount
+src/Database/Pool/ConnectionPool.h	std::atomic<std::uint64_t> m_freedSlotEpoch
 src/Database/Pool/ConnectionPool.h	std::chrono::steady_clock::time_point m_deadline
 src/Database/Pool/ConnectionPool.h	std::chrono::steady_clock::time_point returnedTime
 src/Database/Pool/ConnectionPool.h	std::condition_variable m_healthWakeCondition
 src/Database/Pool/ConnectionPool.h	std::condition_variable m_idleCondition
+src/Database/Pool/ConnectionPool.h	std::coroutine_handle<> m_handle
 src/Database/Pool/ConnectionPool.h	std::deque<AcquireAwaiter *> m_asyncWaiters
 src/Database/Pool/ConnectionPool.h	std::function<std::unique_ptr<DatabaseConnection>()> m_factory
 src/Database/Pool/ConnectionPool.h	std::jthread m_healthThread
@@ -2272,6 +2275,7 @@ src/Database/Pool/ConnectionPool.h	void discardAndWakeReturnedConnection(std::un
 src/Database/Pool/ConnectionPool.h	void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
 src/Database/Pool/ConnectionPool.h	void expireTimedOutWaiters() noexcept
 src/Database/Pool/ConnectionPool.h	void healthCheckLoop(const std::stop_token &stopToken)
+src/Database/Pool/ConnectionPool.h	void noteSlotFreedForRegisteringWaiters() noexcept
 src/Database/Pool/ConnectionPool.h	void noteWaitingRefusal() noexcept
 src/Database/Pool/ConnectionPool.h	void refreshAsyncWaitingCount() noexcept
 src/Database/Pool/ConnectionPool.h	void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept

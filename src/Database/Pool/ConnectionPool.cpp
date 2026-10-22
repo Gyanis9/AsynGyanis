@@ -422,113 +422,110 @@ namespace AsynGyanis::Database
 
     bool ConnectionPool::AcquireAwaiter::await_suspend(std::coroutine_handle<> handle) noexcept
     {
-        // 再试一次：在 await_ready 和 await_suspend 之间可能已有连接归还
-        m_result = m_pool->tryAcquireOrCreateInternal();
-        if (m_result)
+        // 注册窗口的 RAII 计数：入表之前归还/丢弃路径只读等待表，看不见「正在注册」的这一位。
+        // 计数在第一次尝试之前就加上，因此窗口内每一次腾名额都会在 m_freedSlotEpoch 上留痕；
+        // 本函数返回时才减，入表那一侧已经先把 m_asyncWaitingCount 发布出去，快路径不会漏看。
+        m_pool->m_pendingRegistrations.fetch_add(1, std::memory_order_seq_cst);
+        struct PendingRegistrationGuard
         {
-            return false;
-        }
-
-        // 不必再等的两种情形就地放行：截止时刻已过（等后台线程的下一拍才发现只会白睡一拍，
-        // 而调用方拿到空连接的收尾与超时同解）、池正在停摆（停摆中不会再有东西可交接，
-        // 入表反而会把这条协程留在正在销毁的池的等待表里）
-        if (std::chrono::steady_clock::now() >= m_deadline || m_pool->m_isShuttingDown.load(std::memory_order_acquire))
-        {
-            return false;
-        }
-
-        // 仍无可用连接：加入等待列表。这次判定必须与入表同锁：唤醒方（归还路径的「交接或入栈」）拿的
-        // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
-        // 归还侧判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
-        {
-            std::lock_guard lock(m_pool->m_asyncMutex);
-            // 锁里只从空闲栈摘一条，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
-            // 会让归还路径、后台超时唤醒与健康检查全排在它后面。池未满时的建连已经在上面
-            // 那次无锁尝试里做过了，这里还是空栈就说明确实没有立即可用的连接
-            // （摘到的那条若不可用，其断开已在 m_mutex 之外；它仍落在本把锁内，因为等待表与
-            //   空闲栈的这笔交换必须同锁完成，否则会被判成「没人等」而漏唤醒）
-            m_result = m_pool->tryAcquireInternal();
-            if (m_result)
+            std::atomic<std::size_t> &counter;
+            ~PendingRegistrationGuard()
             {
-                return false;
+                counter.fetch_sub(1, std::memory_order_seq_cst);
             }
+        } pendingRegistrationGuard{m_pool->m_pendingRegistrations};
 
-            // 等待名额判据（与同步 acquire() 同一条、同一笔计数）：合计等待数已到上限就不再入表，
-            // 置标记按空手收尾——acquireAsync() 看到标记会直接结账，不会另造等待体重走这一步。
-            // 合计判据带一次瞬时误差（同步那份计数在 m_mutex 下维护，两把锁按约定不互相嵌套），
-            // 安全阀方向取「宁可多放进几个」：误放只多一点内存，误杀会白白掐掉一个本可等到连接的请求
-            if (!m_returnedFromWake && m_pool->m_asyncWaiters.size() + m_pool->m_syncWaitingCount.load(std::memory_order_relaxed) >= m_pool->m_config.maximumWaitingRequests)
-            {
-                m_isWaitingCapReached = true;
-                return false;
-            }
-            m_returnedFromWake = false; // 只保被唤醒后的第一次重挂：入表即消费（acquireAsync() 读回的就是清零后的值）
-            // 票据与入表同锁创建：唤醒方持锁读它，放锁之后再建会让唤醒方读到空票据。
-            // 截止时刻不在这儿定：它由 acquireAsync() 造出本等待体时给一次，重挂的每轮共用，
-            // 因此「反复失败的重试把超时无限顺延」这条路根本不存在；它在入表之前就已写好，
-            // 后台线程持同一把锁读它，看见的只会是已写定的值（不是默认的时钟纪元）
-            //
-            // 票据与入表这三步都要分配内存（make_shared 一次，deque 首次插入要 map 与块各一次），
-            // 而本函数是 noexcept——内存吃紧时让 bad_alloc 穿出边界就是 std::terminate，
-            // 进程带走整个服务的在途请求。处置采用同一形状：置标记、
-            // 回 false 不挂起，由 acquireAsync() 按「这一轮排不上队」结账。
-            // 标记是必需的：本函数外面套着 while(true) 重挂，光回 false 只会让它立刻另造一个等待体
-            // 重走这一步——实测掐掉票据那一次分配之后等待表里仍然出现一条等待体，那就是重挂的一轮；
-            // 内存持续吃紧时这就是在调用方的线程上空转到截止时刻。
-            // 入表半途失败时把票据一起收回：等待表里没有这条，唤醒方就永远不会读它，留着只会
-            // 让这条等待体带着一张指向自己帧的票据走出本函数。
-            // 注入点已钉住（tests/Database/Pool/TestConnectionPoolAsync.cpp 的
-            // AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter）：先把驱动协程建好，
-            // 再用探针的追踪档（beginAllocationTrace）量出「挂上开关到 resume 返回」这段窗口里本线程
-            // 碰了几次堆，然后逐档掐。序号与字节数都不写死：MSVC Debug 实测这个窗口是 416（协程帧）/
-            // 24（票据）/64/16 四笔，libstdc++ 连四笔都不到，两家的标准库各自量各自的。用例断的是
-            // 一条与平台无关的不变量——掐到分配就不许留下等待体，并且至少要有一档真的落进本 try。
-            // 序号是靠探针的分配序列追踪（beginAllocationTrace）量出来的；换标准库实现时那几个字节数
-            // 会变，而用例的命中点判据不变——「等待表为空 + 协程当场完成 + 没记进超时账」三格自证。
-            try
-            {
-                m_resumeTicket = std::make_shared<ResumeTicket>();
-                m_resumeTicket->handle.store(handle, std::memory_order_release);
-                m_pool->m_asyncWaiters.push_back(this);
-                m_inList = true;
-                m_pool->refreshAsyncWaitingCount();
-            } catch (...)
-            {
-                // 不必摘表：deque::push_back 的强保证是「分配不出来时容器不变」，而 m_inList 排在它之后
-                // 才置真，所以抛到这里时这一条根本还没进表。只把票据收回——留着会让等待体带着一张
-                // 指向自己帧的票据走出本函数
-                m_resumeTicket.reset();
-                m_isQueueingFailed = true;
-                return false;
-            }
-        }
-
-        // 入表后复取一次：补住「首次尝试与入表之间刚好腾出名额」的唤醒窗口。
-        // 这一次尝试只走慢路径，抖动形态（没人等）不会付它，也不会为每次丢弃加原子写
+        m_handle = handle;
         return needsToSuspendAfterPostQueueRetry();
     }
 
     bool ConnectionPool::AcquireAwaiter::needsToSuspendAfterPostQueueRetry() noexcept
     {
-        std::unique_ptr<DatabaseConnection> connection = m_pool->tryAcquireOrCreateInternal();
-        if (!connection)
+        while (true)
         {
-            return true;
-        }
+            // 再试一次：在 await_ready 和 await_suspend 之间可能已有连接归还。
+            // 世代号在尝试之前取：这次尝试期间若有人腾出名额，下面的锁内核对会看见变化并重走一轮。
+            // 这样就不必在入表之后再补一次取连接——那次补取会把「已经可被唤醒」的状态暴露给
+            // 归还/超时路径，却在协程真正挂起之前就把它 resume 掉（TSan 实测到的帧释放竞争）
+            const std::uint64_t slotEpochBefore = m_pool->m_freedSlotEpoch.load(std::memory_order_seq_cst);
+            m_result                            = m_pool->tryAcquireOrCreateInternal();
+            if (m_result)
+            {
+                return false;
+            }
 
-        const std::lock_guard lock(m_pool->m_asyncMutex);
-        if (m_inList)
-        {
-            m_pool->removeAsyncWaiterLocked(this);
-            m_inList = false;
-            m_resumeTicket.reset();
-            m_result = std::move(connection);
-            return false;
-        }
+            // 不必再等的两种情形就地放行：截止时刻已过（等后台线程的下一拍才发现只会白睡一拍，
+            // 而调用方拿到空连接的收尾与超时同解）、池正在停摆（停摆中不会再有东西可交接，
+            // 入表反而会把这条协程留在正在销毁的池的等待表里）
+            if (std::chrono::steady_clock::now() >= m_deadline || m_pool->m_isShuttingDown.load(std::memory_order_acquire))
+            {
+                return false;
+            }
 
-        // 唤醒方已经把一条连接交接进来：这条补取的不再占名额，按池的丢弃出口结账
-        m_pool->discardConnection(std::move(connection));
-        return false;
+            // 仍无可用连接：加入等待列表。这次判定必须与入表同锁：唤醒方（归还路径的「交接或入栈」）拿的
+            // 也是 m_asyncMutex，两者若不同锁，「再试失败」到「入表」之间归还的连接会被
+            // 归还侧判成「没人等」而躺回空闲栈，本协程此后再也等不到唤醒。
+            {
+                std::lock_guard lock(m_pool->m_asyncMutex);
+                // 锁里只从空闲栈摘一条，不建连：建连要跑工厂 + connect（秒级），握着 m_asyncMutex
+                // 会让归还路径、后台超时唤醒与健康检查全排在它后面。池未满时的建连已经在上面
+                // 那次无锁尝试里做过了，这里还是空栈就说明确实没有立即可用的连接
+                // （摘到的那条若不可用，其断开已在 m_mutex 之外；它仍落在本把锁内，因为等待表与
+                //   空闲栈的这笔交换必须同锁完成，否则会被判成「没人等」而漏唤醒）
+                m_result = m_pool->tryAcquireInternal();
+                if (m_result)
+                {
+                    return false;
+                }
+
+                // 本次尝试期间有人腾出名额：那一格可能是刚被丢弃的连接（空闲栈没变多）或别的等待者
+                // 没接住的交接。释放锁后重走一轮，让刚腾出的名额参与本次判断，而不是带着它入表去睡。
+                if (m_pool->m_freedSlotEpoch.load(std::memory_order_seq_cst) != slotEpochBefore)
+                {
+                    continue;
+                }
+
+                // 停摆可能发生在第一次判定之后：停摆方先置标志、再持同一把锁收等待表；这里在锁内
+                // 再核一次，避免把刚入表的这一位留给一个已经收完表的析构过程
+                if (m_pool->m_isShuttingDown.load(std::memory_order_acquire))
+                {
+                    return false;
+                }
+
+                // 等待名额判据（与同步 acquire() 同一条、同一笔计数）：合计等待数已到上限就不再入表，
+                // 置标记按空手收尾——acquireAsync() 看到标记会直接结账，不会另造等待体重走这一步。
+                // 合计判据带一次瞬时误差（同步那份计数在 m_mutex 下维护，两把锁按约定不互相嵌套），
+                // 安全阀方向取「宁可多放进几个」：误放只多一点内存，误杀会白白掐掉一个本可等到连接的请求
+                if (!m_returnedFromWake && m_pool->m_asyncWaiters.size() + m_pool->m_syncWaitingCount.load(std::memory_order_relaxed) >= m_pool->m_config.maximumWaitingRequests)
+                {
+                    m_isWaitingCapReached = true;
+                    return false;
+                }
+                m_returnedFromWake = false; // 只保被唤醒后的第一次重挂：入表即消费（acquireAsync() 读回的就是清零后的值）
+                // 票据与入表同锁创建：唤醒方持锁读它，放锁后再建会让它读到空票据。三步都要分配，
+                // 而本函数是 noexcept：分配失败置 m_isQueueingFailed、回 false，由 acquireAsync()
+                // 按「这一轮排不上队」就地结账，不再重挂空转。票据一并收回，避免带着指向本帧的票据
+                // 走出函数。注入点见 AllocationFailureWhileQueueingYieldsEmptyConnectionAndLeavesNoWaiter
+                try
+                {
+                    m_resumeTicket = std::make_shared<ResumeTicket>();
+                    m_resumeTicket->handle.store(m_handle, std::memory_order_release);
+                    m_pool->m_asyncWaiters.push_back(this);
+                    m_inList = true;
+                    m_pool->refreshAsyncWaitingCount();
+                } catch (...)
+                {
+                    // 不必摘表：deque::push_back 的强保证是「分配不出来时容器不变」，而 m_inList 排在它之后
+                    // 才置真，所以抛到这里时这一条根本还没进表。只把票据收回——留着会让等待体带着一张
+                    // 指向自己帧的票据走出本函数
+                    m_resumeTicket.reset();
+                    m_isQueueingFailed = true;
+                    return false;
+                }
+
+                return true;
+            }
+        }
     }
 
     PooledConnection ConnectionPool::AcquireAwaiter::await_resume() noexcept
@@ -668,15 +665,15 @@ namespace AsynGyanis::Database
         connection->restoreQueryTimeoutBaseline();
 
         // ---- 交给排队的异步等待者，没人等就入空闲栈 ----
-        // 两件事必须在同一段 m_asyncMutex 之内决定：等待者的 await_suspend 是「持着这把锁先摘一次
-        // 空闲栈，摘不到才把自己挂进等待表」的形状。判定与入栈若分处两段锁，「判没人等 → 等待者入表
-        // → 连接入栈」这条交错会让连接躺在栈里、等待者睡到超时，而两侧各自的复检都拦不住它。
-        // 锁序沿用既定方向（m_asyncMutex → m_mutex，反向嵌套就是 AB-BA）；恢复动作照纪律挪到锁外投递。
+        // 判定与入栈必须同锁：等待者的 await_suspend 也是「持这把锁先摘空闲栈、摘不到才入表」，
+        // 分处两段锁会让连接躺在栈里而等待者睡到超时，两侧各自复检都拦不住。
+        // 锁序沿用 m_asyncMutex → m_mutex；恢复动作照纪律挪到锁外投递。
         std::shared_ptr<AcquireAwaiter::ResumeTicket> resumeTicket;
         Core::EventLoop                              *completionLoop = nullptr;
         {
             const std::lock_guard asyncLock(m_asyncMutex);
 
+            noteSlotFreedForRegisteringWaiters();
             if (!m_asyncWaiters.empty())
             {
                 // 队首优先：先等的先拿到连接（FIFO 公平）
@@ -731,9 +728,12 @@ namespace AsynGyanis::Database
     void ConnectionPool::wakeWaitersForFreedSlot() noexcept
     {
         // 无等待者时整段跳过两把锁：抖动形态每次归还都走丢弃出口，而绝大多数时刻池里没人排队。
-        // 两个计数都用 acquire：异步侧在锁内以 release 发布，同步侧在 m_mutex 内以 release 增加；
-        // 若这里读到 0 而恰好有等待者正在注册，它会在注册后的复检/世代号核对里看见刚腾出的名额
-        if (m_asyncWaitingCount.load(std::memory_order_seq_cst) == 0 && m_syncWaitingCount.load(std::memory_order_seq_cst) == 0)
+        // 三个计数都用 seq_cst：异步侧在锁内发布等待表，同步侧在 m_mutex 内发布；注册中的那一位
+        // 还没进等待表，但它会用自己的世代号核对看见这次腾出的名额，前提是这里不能把它漏过去。
+        // 前两个为零、注册计数非零时仍要进来取锁：丢弃路径没有空闲连接可留，注册者等的是这一次
+        // 「名额空出来了」的信号，不能因为表里暂时没人就跳过
+        if (m_asyncWaitingCount.load(std::memory_order_seq_cst) == 0 && m_syncWaitingCount.load(std::memory_order_seq_cst) == 0 &&
+            m_pendingRegistrations.load(std::memory_order_seq_cst) == 0)
         {
             return;
         }
@@ -1036,6 +1036,17 @@ namespace AsynGyanis::Database
         closeTrackedConnection(std::move(connection));
         m_totalCreated.fetch_sub(1, std::memory_order_relaxed);
         m_totalDiscarded.fetch_add(1, std::memory_order_relaxed);
+        // 丢弃同样退还了名额，但空闲栈没变多：正在注册的等待者只靠等待表看不见这一笔，
+        // 必须借世代号告诉它「有东西腾出来了，重走一轮建连」
+        noteSlotFreedForRegisteringWaiters();
+    }
+
+    void ConnectionPool::noteSlotFreedForRegisteringWaiters() noexcept
+    {
+        if (m_pendingRegistrations.load(std::memory_order_seq_cst) != 0)
+        {
+            m_freedSlotEpoch.fetch_add(1, std::memory_order_seq_cst);
+        }
     }
 
     void ConnectionPool::discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept

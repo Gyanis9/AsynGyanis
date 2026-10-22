@@ -29,6 +29,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <coroutine>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -347,11 +349,12 @@ namespace AsynGyanis::Database
 
         private:
             /**
-             * @brief 入表后再尝试一次取连接，决定是否还值得挂起
-             * @details 补住「首次尝试与入表之间刚好有连接腾出名额」的唤醒窗口：那次唤醒可能
-             *          发生在注册之前。拿到连接就摘表返回，拿不到才真正挂起。
-             * @return true 仍无连接、需要挂起
-             * @return false 已拿到连接，或唤醒方已经交接了一条（`m_result` 已就绪）
+             * @brief 注册并尝试取连接，决定是否还需要挂起
+             * @details 入表前先按注册世代核对「第一次尝试期间有没有东西被腾出来」：有就释放锁重走一轮，
+             *          没有才入表挂起。入表与计数发布在同一段 m_asyncMutex 内完成。
+             * @return true 已入表，需要挂起
+             * @return false 已拿到连接、已不必等（截止时刻已过、池在停摆、等待名额满）或排队分配失败
+             * @note 调用方必须已设置 m_handle，并在本函数返回后才释放注册计数
              */
             [[nodiscard]] bool needsToSuspendAfterPostQueueRetry() noexcept;
 
@@ -402,8 +405,9 @@ namespace AsynGyanis::Database
             ConnectionPool                     *m_pool;           ///< 所属连接池
             Core::EventLoop                    *m_completionLoop; ///< 恢复本协程的事件循环，恒非空
             std::shared_ptr<PoolLiveness>       m_liveness; ///< 池的存活令牌（构造时取）：析构里「是否碰池」整段由它把关，判活必须排在任何取消引用 m_pool 之前，见 ~AcquireAwaiter
-            std::unique_ptr<DatabaseConnection> m_result;   ///< 获取到的连接（await_ready 或 notify 时设置）
-            bool                                m_inList{false}; ///< 是否已加入等待列表，用于析构时判断
+            std::coroutine_handle<>             m_handle{nullptr}; ///< 当前协程句柄：await_suspend 写入，注册/入表由 needsToSuspendAfterPostQueueRetry 取用
+            std::unique_ptr<DatabaseConnection> m_result;          ///< 获取到的连接（await_ready 或 notify 时设置）
+            bool                                m_inList{false};   ///< 是否已加入等待列表，用于析构时判断
             /// 排队这一步是否分配失败：`await_suspend` 的 catch 置真，`acquireAsync()` 据此按空手收尾
             /// 而不再重挂（内存持续吃紧时重挂就是「造票据→抛出→再造」的空转，一直转到截止时刻为止）
             bool m_isQueueingFailed{false};
@@ -542,6 +546,16 @@ namespace AsynGyanis::Database
         void discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept;
 
         /**
+         * @brief 把「刚有连接或名额腾出」记进注册世代的当前值
+         * @details 只在有异步等待者正在注册时递增：注册者用这个世代号核对「第一次尝试与入表之间
+         *          有没有东西被腾出来」。没有注册者时不必记账，未来的等待者会从空闲栈或未达上限
+         *          的建连路径直接看到它。
+         * @note 本函数不取锁：调用点可能在 m_asyncMutex 之内（取出路径丢弃一条过期连接），
+         *       也可能在锁外。递增是原子上限极低的写法，且只在注册窗口内发生。
+         */
+        void noteSlotFreedForRegisteringWaiters() noexcept;
+
+        /**
          * @brief 有名额被腾出来时叫醒等待者（同步一位、异步一位）
          * @details 归还的连接被判失联或过存活期时是被当场丢弃的，空闲栈并没有变多；
          *          两类等待者盯着的都是「有人把连接交到我手上」，因此需要一次额外的叫醒。
@@ -634,6 +648,15 @@ namespace AsynGyanis::Database
         /// 存在的唯一理由是让指标抓取不碰池的锁（见 m_metricHandles 的说明）——写的是「当下有多少」
         /// 而不是增减量，所以漏改一处只会少报一格，不会一路漂移
         std::atomic<std::size_t> m_asyncWaitingCount{0};
+
+        /// 正在注册的异步等待者数：从 await_suspend 的第一次尝试开始，到入表（或当场返回）为止。
+        /// 它把「等待表里还没有我」这段窗口告诉归还/丢弃路径——只读等待表会把这段时间里腾出的名额
+        /// 当成没人等而漏掉。窗口之外为零，归还路径的快路径照旧不取锁。
+        std::atomic<std::size_t> m_pendingRegistrations{0};
+
+        /// 名额或连接腾出的世代号：注册者核对「第一次尝试期间有没有东西被腾出来」。
+        /// 只在 m_pendingRegistrations 非零时递增，因此稳态归还不会为它付一次原子写。
+        std::atomic<std::uint64_t> m_freedSlotEpoch{0};
 
         /// 借出前探针的累计次数（只在 `probeBeforeAcquire` 打开时增）：见 asyn_db_pool_connection_probes_total
         std::atomic<std::size_t> m_probeCount{0};
