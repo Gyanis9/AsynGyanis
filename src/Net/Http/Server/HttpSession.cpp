@@ -1,0 +1,147 @@
+#include "Net/Http/Server/HttpSession.h"
+
+#include "Net/Http/Routing/Middleware.h"
+
+#include <cstddef>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace AsynGyanis::Net
+{
+    HttpSession::HttpSession(Core::AsyncSocket socket, Router &router, std::shared_ptr<const HttpServerLimits> limits, std::shared_ptr<HttpMetricsCollector> metrics,
+                             std::shared_ptr<HttpRequestIdGenerator> requestIdGenerator, HttpParserLimits parserLimits, std::shared_ptr<HttpMemoryBudget> memoryBudget) :
+        Core::Connection(std::move(socket)), m_router(router),
+        // 解析器上限按值交给解析器并在构造时固定：本连接此后每条报文都按同一份尺子定界
+        m_parser(parserLimits),
+        // 空配置按默认限额执行：让只关心协议的调用方不必显式传一份配置，会话内也不必到处判空
+        m_limits(limits != nullptr ? std::move(limits) : std::make_shared<const HttpServerLimits>()),
+        // 统计对象与生成器允许为空：这两种空值都表示「本会话不采集」，是明确的关闭语义，
+        // 而不是待填补的缺省——因此不在构造里补一份新的，否则统计会散进没人读的对象里
+        m_metrics(std::move(metrics)), m_requestIdGenerator(std::move(requestIdGenerator)), m_memoryBudget(std::move(memoryBudget))
+    {
+        // 接收窗口不在这里分配：真正开始读之前它一直是空的，第一次读时按固定大小一次性分配
+    }
+
+    Core::Task<> HttpSession::start()
+    {
+        /**
+         * @brief 退出时无条件收口的守卫
+         *
+         * @details 事务循环内部的失败折成返回值，但协议与实现类异常仍会穿过本函数；若只在正常路径 close()，
+         *          连接会被误标为存活、取消源收不到停止请求、描述符要等析构才归还。协程帧销毁会析构局部对象，
+         *          故用 RAII 守卫覆盖全部退出路径；基类 close() 幂等，重复调用是空操作。
+         */
+        struct ConnectionCloser
+        {
+            HttpSession *session = nullptr; ///< 需要在退出时收口的会话
+
+            ~ConnectionCloser()
+            {
+                if (session != nullptr)
+                {
+                    session->close();
+                }
+            }
+        } closer{this};
+
+        // 谓词提成命名局部：它要以 const std::function 引用的形式活过整个 co_await，
+        // 直接传临时量就把正确性押在「挂起中的全表达式结束时才析构临时量」这条规则上，
+        // 读代码的人不易一眼确认；放在本协程帧里则一目了然
+        const std::function<bool()> alivePredicate = [this]() { return isAlive(); };
+
+        // 事务循环与 HTTPS 共用同一份模板实现，差别只在传输层对象、「连接是否存活」的谓词、
+        // 限额配置与可选的采集端；把 *this 传进去是为了让循环按相位刷新本连接的空闲截止时间
+        co_await Detail::httpKeepAliveLoop(socket(), cancelable(), m_router, m_parser, m_receiveBuffer, alivePredicate, *this, *m_limits, m_metrics.get(),
+                                           m_requestIdGenerator.get(), m_memoryBudget.get());
+
+        // 不再在此处 close()：统一交给上面的守卫，正常路径与异常路径只有一处收口
+        co_return;
+    }
+
+    void HttpSession::onIdleTimeoutClosed() noexcept
+    {
+        // 只累加计数：清扫协程已经把「哪条连接、误差多大」写进了日志，这里再写一条只会让它翻倍。
+        // 未持有统计对象时什么都不做——那表示调用方只关心协议本身
+        if (m_metrics != nullptr)
+        {
+            m_metrics->countTimeoutClosedConnection();
+        }
+    }
+
+    bool HttpSession::shouldKeepAlive(const HttpRequest &request, const HttpResponse &response)
+    {
+        // 保活判定只看 token 在不在，不需要把同名取值整列拷出来：下面三条 token 判定都走
+        // hasHeaderValueToken，它在存储内部逐段比对（keep-alive 是每条请求的热路径）
+
+        // ---- 第 1 优先级：请求显式 close。客户端的明确指令不可被任何一侧的响应头反转 ----
+        if (request.hasHeaderValueToken("connection", "close"))
+        {
+            return false;
+        }
+
+        // ---- 第 2 优先级：响应显式 close。中间件或 handler 主动收口时同样不可被保活 ----
+        if (response.hasHeaderValueToken("connection", "close"))
+        {
+            return false;
+        }
+
+        // ---- 第 3 优先级：请求显式 keep-alive。对 HTTP/1.0 是「要求保活」，对 1.1 只是重申默认 ----
+        if (request.hasHeaderValueToken("connection", "keep-alive"))
+        {
+            return true;
+        }
+
+        // ---- 第 4 优先级：按协议版本的默认值。1.0/0.9 逐请求断连，1.1 起默认持久连接 ----
+        const std::string_view version         = request.httpVersion();
+        const bool             isHttp10OrOlder = version.starts_with("HTTP/1.0") || version.starts_with("HTTP/0.9") || version.empty();
+        return !isHttp10OrOlder;
+    }
+
+    namespace Detail
+    {
+        ConnectionCancelForwarder::ConnectionCancelForwarder(Core::Cancelable &cancelable, HttpRequest &request) :
+            m_stopCallback(cancelable.stopToken(), RequestCancelForwarder{&request})
+        {
+            // 构造即注册：路由器与中间件跑完之后本对象析构注销，回调的作用域恰好等于「本次请求」
+        }
+
+        void writeParseErrorResponse(HttpResponse &response, const HttpParseErrorKind errorKind)
+        {
+            // 状态码与英文正文由解析器给出的类别决定；中文说明留在注释与日志里，
+            // 协议字段里塞非 ASCII 字节会让对端按自己的编码猜
+            switch (errorKind)
+            {
+                case HttpParseErrorKind::HeaderTooLarge:
+                    // 431：头部过大，与 nginx 的 large_client_header_buffers 行为一致
+                    response.setStatus(431);
+                    response.setBody("Request Header Fields Too Large");
+                    break;
+                case HttpParseErrorKind::BodyTooLarge:
+                    // 413：形态合法但体量越界（声明的长度、分块块大小与解码后的实收字节数都在此列）
+                    response.setStatus(413);
+                    response.setBody("Payload Too Large");
+                    break;
+                case HttpParseErrorKind::UriTooLarge:
+                    // 414：请求目标超出本端愿意解释的长度（RFC 9110 §15.5.15）。与 431 分开是因为
+                    // 病因不同——431 让客户端去减头部，而这里要缩的是 URL
+                    response.setStatus(414);
+                    response.setBody("URI Too Long");
+                    break;
+                case HttpParseErrorKind::Malformed:
+                case HttpParseErrorKind::None:
+                default:
+                    // 报文读不懂：给 400 兜底而不是让响应停在默认 200。
+                    // None 不该走到这里（只有 Error 才调用本函数），同样按 400 收口
+                    response.setStatus(400);
+                    response.setBody("Bad Request");
+                    break;
+            }
+
+            response.setHeader("content-type", kPlainTextContentType);
+            response.setHeader("connection", "close");
+        }
+
+    } // namespace Detail
+} // namespace AsynGyanis::Net

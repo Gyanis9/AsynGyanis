@@ -1205,7 +1205,7 @@ jobs:
           target_link_libraries(asyn-consumer PRIVATE AsynGyanis::Net)
           EOF
           cat > /tmp/asyn-consumer/main.cpp <<'EOF'
-          #include "Net/Http/HttpServer.h"
+          #include "Net/Http/Server/HttpServer.h"
 
           #include <cstdio>
 

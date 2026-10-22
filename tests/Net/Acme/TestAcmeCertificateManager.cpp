@@ -15,8 +15,8 @@
 #include "Net/Acme/AcmeClient.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 #include "Platform/IO/FileContents.h"
 
 #include <gtest/gtest.h>

@@ -11,16 +11,16 @@
 // 用例全部走真实回环套接字（清扫协程在 TcpServer 内部），不依赖任何外部服务。
 // 回环夹具（RunningHttpServerFixture / LoopbackClient）在 HttpTestSupport.h 中，与观测性用例共用一份。
 
-#include "Net/Http/HttpServer.h"
+#include "Net/Http/Server/HttpServer.h"
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "HttpTestSupport.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServerLimits.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Config/HttpServerLimits.h"
+#include "Net/Http/Routing/Router.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"

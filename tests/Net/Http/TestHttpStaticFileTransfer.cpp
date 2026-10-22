@@ -2,7 +2,7 @@
 #include "HttpTestSupport.h"
 
 #include "ExpectedAssertions.h"
-#include "Net/Http/HttpServer.h"
+#include "Net/Http/Server/HttpServer.h"
 
 #include <gtest/gtest.h>
 

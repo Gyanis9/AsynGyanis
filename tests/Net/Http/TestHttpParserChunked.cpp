@@ -6,12 +6,12 @@
 //       块大小行与块数据后缺 CRLF、trailer 行畸形、单块大小与解码后总长超上限。
 // HttpParser 的上限常量是私有成员，测试侧按同一口径复述一份数值。
 
-#include "Net/Http/HttpParser.h"
+#include "Net/Http/Message/HttpParser.h"
 
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpParseErrorKind.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/ParseStatus.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpParseErrorKind.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/ParseStatus.h"
 
 #include <gtest/gtest.h>
 

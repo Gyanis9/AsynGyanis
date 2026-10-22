@@ -51,21 +51,21 @@
     "src/Net/Http/Client/HttpResponseParser.cpp": [
       337
     ],
-    "src/Net/Http/HttpMetricsEndpoint.cpp": [
-      130
-    ],
-    "src/Net/Http/HttpParser.cpp": [
+    "src/Net/Http/Message/HttpParser.cpp": [
       141
     ],
-    "src/Net/Http/HttpResponse.cpp": [
+    "src/Net/Http/Message/HttpResponse.cpp": [
       130
     ],
-    "src/Net/Http/HttpServer.cpp": [
+    "src/Net/Http/Routing/Router.cpp": [
+      228
+    ],
+    "src/Net/Http/Server/HttpMetricsEndpoint.cpp": [
+      130
+    ],
+    "src/Net/Http/Server/HttpServer.cpp": [
       343,
       131
-    ],
-    "src/Net/Http/Router.cpp": [
-      228
     ],
     "src/Net/Http2/Http2ClientConnection.cpp": [
       169

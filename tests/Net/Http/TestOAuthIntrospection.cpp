@@ -5,7 +5,7 @@
 // - FailsOnNon2xxAndOnMissingActiveField（协议不符要带原因，而不是猜成「不活跃」）
 // - 字段类型不符（scope 是数字、exp 是字符串）：按失败返回并点名，不抛异常穿出 expected 契约
 
-#include "Net/Http/OAuthIntrospection.h"
+#include "Net/Http/Auth/OAuthIntrospection.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 
@@ -17,7 +17,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
-#include "Net/Http/OAuthError.h"
+#include "Net/Http/Auth/OAuthError.h"
 
 #include <gtest/gtest.h>
 

@@ -10,8 +10,8 @@
 #include "Core/Socket/InetAddress.h"
 #include "ExpectedAssertions.h"
 #include "Net/Acme/AcmeClient.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 
 #include <gtest/gtest.h>
 

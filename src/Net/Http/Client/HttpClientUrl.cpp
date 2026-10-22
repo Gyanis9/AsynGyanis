@@ -13,7 +13,7 @@
 #include "Net/Http/Client/HttpClientUrl.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <charconv>
 #include <cstdint>

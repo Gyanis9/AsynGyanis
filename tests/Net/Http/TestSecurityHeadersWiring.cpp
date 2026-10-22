@@ -3,10 +3,10 @@
 // 这段逻辑本身正确，证明不了它真的在服务器上跑——挂错位置、只在某一条协议通道上注册，都会让
 // 「配了安全头」这件事在浏览器里悄悄不生效。
 
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Middleware.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Middleware.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "HttpTestSupport.h"
 

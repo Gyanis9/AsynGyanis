@@ -20,7 +20,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Http/HttpBodyDecodeError.h"
+#include "Net/Http/Message/HttpBodyDecodeError.h"
 
 #include "Net/Http/Client/HttpClient.h"
 

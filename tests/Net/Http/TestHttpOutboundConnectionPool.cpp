@@ -3,7 +3,7 @@
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpRequestBody.h"
+#include "Net/Http/Message/HttpRequestBody.h"
 #include "Platform/Platform.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"

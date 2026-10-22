@@ -11,7 +11,7 @@
 // - SurfacesTokenEndpointErrors（400 invalid_grant 与 §5.2 描述透传）
 // - RejectsEmptyConfigurationAtConstruction（四个必填取值）
 
-#include "Net/Http/OAuthAuthorizationCode.h"
+#include "Net/Http/Auth/OAuthAuthorizationCode.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 
@@ -21,7 +21,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
-#include "Net/Http/OAuthError.h"
+#include "Net/Http/Auth/OAuthError.h"
 
 #include <gtest/gtest.h>
 

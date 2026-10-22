@@ -1,7 +1,7 @@
 // /debug/loops 的应答渲染（纯函数，逐字段钉）与回环上的一次真实抓取
 
-#include "Net/Http/HttpMetricsEndpoint.h"
-#include "Net/Http/HttpServer.h"
+#include "Net/Http/Server/HttpMetricsEndpoint.h"
+#include "Net/Http/Server/HttpServer.h"
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"

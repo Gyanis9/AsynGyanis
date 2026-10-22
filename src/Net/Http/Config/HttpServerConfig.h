@@ -1,0 +1,170 @@
+/**
+ * @file HttpServerConfig.h
+ * @brief 把 HTTP 服务器的可配置项接到配置文档的值上（限额、按 IP 限额、限流、指标开关）
+ * @author Gyanis
+ * @date 2026-09-13
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "AsynGyanisExport.h"
+
+#include "Base/Config/ConfigValue.h"
+#include "Core/Tls/TlsPolicy.h"
+#include "Net/Http/Message/HttpParserLimits.h"
+#include "Net/Http/Config/HttpServerLimits.h"
+
+#include <cstddef>
+#include <string_view>
+
+namespace AsynGyanis::Net
+{
+    /// 服务器配置在文档里的段名
+    inline constexpr std::string_view kHttpServerConfigSection = "server";
+
+    /**
+     * @brief 一台 HTTP 服务器的可配置项集合。
+     *
+     * @details 每个字段的默认值与对应结构体的默认值一致，因此配置里只写要改的那几项即可，
+     *          没写的键保持默认——这也让「升级后新增的键」在旧配置上自动取到合理取值。
+     * @note 其中 `limits`（超时与单连接请求上限）可由 `HttpServer::setLimits()` / `HttpsServer::setLimits()`
+     *       在运行期整体换代，只影响此后新建的连接；其余项与端点开关仍在 start() 之前落定。
+     * @see readHttpServerConfiguration(), HttpServerLimits, HttpParserLimits
+     */
+    /**
+     * @brief 每监听器并发连接上限的内置默认值
+     * @details 取有限值而不是 0：不限并发等于把连接表与每连接的缓冲交给对端，而默认值长得像「已经配好了」
+     *          是最难发现的那类配置事故。要真的不限，显式写 0（语义没变，只是不再由默认值给）。
+     */
+    inline constexpr std::size_t kDefaultMaximumConnections = 4096;
+
+    /**
+     * @brief 单个来源并发连接上限的内置默认值
+     * @details 取 256 而不是更小的数：一条默认值会误杀真实客户——运营商级 NAT 与企业出口让一群人共用一个地址，
+     *          上限压到几十就会把其中一部分拒在门外。256 足够容纳这类共享出口，同时仍挡住「一个来源吃满整机名额」
+     *          （单机单监听器时总额 4096，即单来源最多占 1/16；两条限额都按「进程数 × 每进程台数」摊下来，见 HttpServerAssemblyContext）。要真的不限，显式写 0。
+     */
+    inline constexpr std::size_t kDefaultMaximumConnectionsPerIp = 256;
+
+    struct ASYN_NET_API HttpServerConfiguration
+    {
+        HttpServerLimits limits{};                                                 ///< 连接级限额：超时与单连接请求数上限
+        HttpParserLimits parserLimits{};                                           ///< 单条报文的内存上限
+        std::size_t      maximumConnections{kDefaultMaximumConnections};           ///< 整机并发连接上限；装配时按「worker 进程数 × 每进程监听器数」摊到每台，显式写 0 = 不限
+        std::size_t      maximumConnectionsPerIp{kDefaultMaximumConnectionsPerIp}; ///< 单个来源的并发连接上限；显式写 0 = 不限
+        double           requestsPerSecond{0.0};                                   ///< 全局请求速率上限（令牌桶速率），0 = 不限流
+        double           rateLimitBurstCapacity{1.0};                              ///< 令牌桶容量，即瞬时允许的突发量；速率不为 0 时必须 ≥ 1
+        /**
+         * @brief 在途请求正文的总量上限，单位字节（整机口径，装配时摊到每个 worker 进程）
+         * @details 补的是「单条报文的上限挡不住很多条连接」这一格：`parser_limits.maximum_body_size`
+         *          限的是一条请求的正文，N 条连接各压着一条大正文时总占用与连接数同增，而每个
+         *          分量看着都合规。超出本预算的新请求回 503 并收口，把额度留给已收下正文的连接。
+         * @note 默认 0 = 不设这道账。刻意不给有限默认值：一个有限数会在「升级后什么都没改」的部署上
+         *       突然开始回 503，而配置文件的每一行看着都对——这类默认值只能由部署方自己选
+         * @note 账只覆盖三条 HTTP 通道（h1/h2/h3）的请求正文；WebSocket 帧缓冲、每连接接收窗口
+         *       与响应正文都不在本预算之内
+         * @note h2/h3 的流式路由也不在这本账上：那条路上正文不在服务端留存，未消费的字节由每流
+         *       接收窗口钉住上界（不消费就不还窗口，对端本来就发不出来），再记一遍等于把「业务读得慢」
+         *       判成超限——那时响应已在路上，503 也回不出去。h1 相反：它的预留发生在派发之前
+         *       （那时还判不出这条会不会走流式），所以流式路由照样进账。因此
+         *       `asyn_http_inflight_body_bytes` 报的是「服务端替业务攒着的那部分」，三条通道的口径
+         *       并不相同（判据：`Http2CleartextSession.StreamingRouteKeepsItsBytesOffTheInflightBodyLedger`
+         *       读 0、`HttpMemoryBudgetTest.ChargesStreamingIntakeOnTheLedgerBeforeDispatch` 读正文全长）
+         */
+        std::size_t memoryBudgetBytes{0};
+        bool        exposeMetrics{false}; ///< 是否注册 /metrics、/healthz、/readyz、/debug/loops
+        /**
+         * @brief 运维端点的 Bearer 令牌；空 = 不鉴权
+         * @details 只保护 `/metrics` 与 `/debug/loops`（内部计数与循环状态），`/healthz` 与 `/readyz` 刻意不管：
+         *          进程存活探针与就绪探针都要能被编排器无凭据访问。端点开到 `0.0.0.0` 上而不给令牌，等于把
+         *          「现在有多少连接、每条循环在干什么」公开发出去。
+         * @note 这条只能写在配置文件里：命令行上的令牌会进 shell 历史与进程列表，等于把秘密交给运维通道
+         */
+        std::string opsBearerToken{};
+        /**
+         * @brief 运维端点单独听在哪个端口；0 = 端点仍留在业务口上
+         * @details 两个用处：① 来源收口——管理口默认只听回环（`metricsAddress`），业务口可以继续开
+         *          在 0.0.0.0；② 多进程部署时每个进程各听一个端口（调用方按进程序号错开），
+         *          采集端就能按进程聚合而不是随机命中某一台。
+         * @note 管理口是另一台服务器，由调用方自己起：本仓的参考实现只在它上面发 HTTP/1.1，
+         *       业务口开了 h2c 也不会带过去。抓取端（Prometheus 一类）本来就是 h1，运维面上多一条
+         *       协议栈只是多一处可被打的入口。想确认这一步没走偏，看用例
+         *       `Http2CleartextSession.RefusesH2cPrefaceWhenCleartextSupportIsOff`——没开 h2c 的端口
+         *       收到 `PRI * HTTP/2.0` 前奏时按 HTTP/1.1 语法判 400，而不是发 SETTINGS 把它当 h2 接走
+         * @note 只在 `exposeMetrics` 打开时有意义，两者都不开等于配了个没人听的端口
+         */
+        std::uint16_t metricsPort{0};
+        /// 管理口的监听地址，默认只听回环。写成 `0.0.0.0` 就是把指标公开到所有网卡上，请连同令牌一起想清楚
+        std::string metricsAddress{"127.0.0.1"};
+        /**
+         * @brief 是否给每条请求记一行访问日志，默认开
+         * @details 默认开是因为「装出去的服务器一条访问日志都不产」比多一行日志的代价更难查：这条不对称
+         *          从第一眼就没法看出来（服务答得好好的，只是什么都没留下），而排障、按来源统计与
+         *          「这条请求到底进没进来」全靠这一行。不要就在配置里显式写 `access_log: false`
+         * @note 写进根日志器（Info 级），因此跟着 `logging.loggers.root.sinks` 与它的等级走：
+         *       root 抬到 warn 以上就没有访问日志了。刻意不另起一个命名日志器——命名日志器没配 sink
+         *       时不会回落到 root（见 LoggerConfigLoader），默认部署会把这一行静默丢掉
+         * @note 三条通道各挂一次，判断只有一处实现（@see applyAccessLogMiddleware）：h1/h2 由装配出口挂，
+         *       h3 的路由器由调用方在起 `QuicServer` 之前挂
+         */
+        bool accessLog{true};
+        /**
+         * @brief `server.tls` 段解出来的加密策略，直接交给 `HttpsServer` 与 `QuicServer`
+         * @details 这一格的由来：`Core::TlsPolicy` 的旋钮早就齐了，而配置里没有任何一段能填到它上，
+         *          于是「版本下限／套件／曲线／安全等级／信任库／吊销」只在库层成立——运维不改代码
+         *          就收不住加密策略。这里只做文本到字段的映射，不新造策略类型，也不预先校验
+         *          套件串与曲线名：什么算合法由 OpenSSL 说了算，它拒绝时启动抛出的消息带着那份原文。
+         * @note 不写这一段时本成员就是默认构造的 `Core::TlsPolicy{}`，握手行为与加它之前逐字相同
+         *       （每个字段的「没给」都有默认档，见 `Core/Tls/TlsPolicy.h`）
+         * @note 三条通道的适用面不同：QUIC 只跑 TLS 1.3，`cipherList` 对 h3 恒不适用；信任库、
+         *       校验深度与吊销那几项只在 @c requireClientCertificates 打开时参与校验
+         *       （不要求客户端证书时服务端根本不会向对端要证书，那些字段装进信任库也没人去查）
+         */
+        Core::TlsPolicy tlsPolicy{};
+        /**
+         * @brief 是否要求并校验客户端证书（双向 TLS / mTLS），默认关
+         * @details 放在这一层是因为它是上面那份策略的「用不用」开关：`HttpsServer` 靠
+         *          `setClientCertificateRequired()`、`QuicServer` 靠配置里同名的构造期字段，
+         *          两侧都要求先有信任锚——所以配 true 而 `tls` 段里 CA 文件与 CA 目录都没给时，
+         *          读配置当场拒（那条状态在握手里的形态是每条连接都失败）。
+         */
+        bool requireClientCertificates{false};
+        /**
+         * @brief 单条请求的处理器时限（毫秒），0 = 不设这道保护
+         * @details 为什么要单独一格：h1 的处理器执行本来就归 `limits.write_timeout_ms` 管（那条时限
+         *          同时覆盖「等可写」），而 h2 上一条连接复用几十条流，连接级那把钟表达不了
+         *          「这一条流的处理器跑了多久」——只有它到期时会把整条连接连同兄弟流一起收掉。
+         *          这一格走的是每请求的软时限：到期把协作式取消交给业务、把响应改写成 504，
+         *          只收这一条请求，同连接其它流照常完成。
+         * @note 不配合取消的处理器（既不看 `request.cancelToken()`、又永远不返回）不会得到这条 504：
+         *       时限到点只是把取消交出去，改写响应发生在业务链返回的那一刻。要「硬收口」得让处理器
+         *       可中断，或把长任务放到线程池——这一格不假装能替业务做到它
+         * @note 与 `limits` 不同，这一项不能运行期换代：它决定的是路由器上装不装那条中间件，
+         *       而管道由装配出口在 `start()` 之前一次装定，`limits` 的热换代不碰它
+         */
+        std::chrono::milliseconds handlerTimeout{0};
+    };
+
+    /**
+     * @brief 从配置文档里读出 HTTP 服务器的可配置项。
+     *
+     * @details 读的是文档的 `server` 段，键名与 HttpServerConfiguration 的字段同名（超时一律带 `_ms`
+     *          后缀，单位毫秒）。三层嵌套：`limits`（连接级）、`parser_limits`（单条报文）、
+     *          `rate_limit`（令牌桶）。没有任何配置时返回一份全默认值，调用方因此不必区分
+     *          「配置里没有 server 段」与「配置里有但没写这一项」。
+     *
+     * @param configurationRoot 配置文档的根值，即一个以 `server` 为键的对象。从
+     *        Base::ConfigManager 取时用 `getSection("server")` 再补上段名这一层外壳
+     *        （ConfigManager 的键是扁平的，get("server") 取不到中间层节点）
+     * @return HttpServerConfiguration 读出来的配置；缺失的键取结构体默认值
+     * @throws Base::ConfigValidationException 段或子段不是对象、出现未知键、类型不符或取值越界。
+     *         未知键也算错是刻意的：把 `idle_timeout` 写成 `idle_timeout_ms` 时静默忽略
+     *         等于配置没生效却看不出来，正是最难查的一类问题。
+     * @note 只读不写，线程安全取决于调用方传入的值树是否可变（本函数不做任何修改）
+     * @see HttpServerConfiguration, Base::ConfigManager
+     */
+    [[nodiscard]] ASYN_NET_API HttpServerConfiguration readHttpServerConfiguration(const Base::ConfigValue &configurationRoot);
+
+} // namespace AsynGyanis::Net

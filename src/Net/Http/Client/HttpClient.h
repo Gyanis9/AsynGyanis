@@ -26,8 +26,8 @@
 #include "Net/Http/Client/HttpProxyPolicy.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Client/HttpResponseParser.h"
-#include "Net/Http/HttpBodyChunk.h"
-#include "Net/Http/TraceContext.h"
+#include "Net/Http/Message/HttpBodyChunk.h"
+#include "Net/Http/Message/TraceContext.h"
 namespace AsynGyanis::Core
 {
     class EventLoop;

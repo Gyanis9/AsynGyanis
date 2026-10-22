@@ -1,7 +1,7 @@
 #include "Net/Http3/Http3HeaderValidation.h"
 
 #include "Base/Log/LogEscaping.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <cstddef>
 #include <expected>

@@ -10,9 +10,9 @@
 #include "Base/Coding/Base64.h"
 #include "Core/Crypto/Digest.h"
 #include "ExpectedAssertions.h"
-#include "Net/Http/Compression.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Middleware.h"
+#include "Net/Http/Features/Compression.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Middleware.h"
 
 #include <gtest/gtest.h>
 

@@ -1,8 +1,8 @@
 #include "Net/Tracing/TracingConfiguration.h"
 
 #include "Net/Telemetry/OtlpConfigurationSupport.h"
-#include "Net/Http/HttpConfigValidation.h"
-#include "Net/Http/HttpConfigDuration.h"
+#include "Net/Http/Config/HttpConfigValidation.h"
+#include "Net/Http/Config/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Net/Tracing/FileSpanExporter.h"
 #include "Net/Tracing/OtlpHttpSpanExporter.h"

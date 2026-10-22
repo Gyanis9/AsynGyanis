@@ -1,8 +1,8 @@
 #include "Net/Logging/LogExportConfiguration.h"
 
 #include "Net/Telemetry/OtlpConfigurationSupport.h"
-#include "Net/Http/HttpConfigValidation.h"
-#include "Net/Http/HttpConfigDuration.h"
+#include "Net/Http/Config/HttpConfigValidation.h"
+#include "Net/Http/Config/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/LogicException.h"
 #include "Net/Logging/OtlpLogSink.h"

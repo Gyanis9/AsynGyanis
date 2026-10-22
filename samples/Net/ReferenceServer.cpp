@@ -28,15 +28,15 @@
 #include "Core/Tls/TlsContext.h"
 #include "Net/Acme/AcmeAutomationConfig.h"
 #include "Net/Acme/AcmeCertificateManager.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/HttpServerAssembly.h"
-#include "Net/Http/ReadinessCheck.h"
-#include "Net/Http/HttpServerConfig.h"
-#include "Net/Http/HttpsServer.h"
-#include "Net/Http/HttpServerStats.h"
-#include "Net/Http/Middleware.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Server/HttpServerAssembly.h"
+#include "Net/Http/Server/ReadinessCheck.h"
+#include "Net/Http/Config/HttpServerConfig.h"
+#include "Net/Http/Server/HttpsServer.h"
+#include "Net/Http/Server/HttpServerStats.h"
+#include "Net/Http/Routing/Middleware.h"
+#include "Net/Http/Routing/Router.h"
 #include "Net/Logging/LogExportConfiguration.h"
 #include "Net/Metrics/HttpStatsOtlp.h"
 #include "Net/Metrics/MetricsExportConfiguration.h"
@@ -717,7 +717,7 @@ int main(int argc, char **argv)
         LOG_INFO("            （证书自动化：enabled/directory_url/domains/落点四件/contact_email/tos_accepted/");
         LOG_INFO("            challenge/两个节奏/dns 子段）——开了 acme 之后服务端证书与私钥的路径以 acme 的落点为准，");
         LOG_INFO("            监听器与续期写盘必须是同一条路径，否则签完的新那张装不回去；");
-        LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/HttpServerConfig.h 的键名说明；");
+        LOG_INFO("            命令行上显式给出的开关优先于文件，详见 Net/Http/Config/HttpServerConfig.h 的键名说明；");
         LOG_INFO("            运维令牌只能写在文件里：命令行上的令牌会进 shell 历史与进程列表");
         return 0;
     }
@@ -1433,7 +1433,7 @@ int main(int argc, char **argv)
         return Net::compressionMiddleware();
     };
 
-    // 配置键到 setter 的对接只有一处实现（见 Net/Http/HttpServerAssembly.h）：这里只交进
+    // 配置键到 setter 的对接只有一处实现（见 Net/Http/Server/HttpServerAssembly.h）：这里只交进
     // 「跨监听器共用的那几份对象」与「整机限额要摊给几个进程」，其余键（含在途正文预算）由装配出口落
     const auto assembleServer = [&](auto &server)
     {
@@ -1467,7 +1467,7 @@ int main(int argc, char **argv)
     };
 
     // --trace-context：把链路上下文归一化到请求头上（合法的沿用、缺席或畸形的重起），
-    // 业务与下游读的是同一份状态；三端（h1/h2/https 与 h3）各挂一次，见 Net/Http/TraceContext.h
+    // 业务与下游读的是同一份状态；三端（h1/h2/https 与 h3）各挂一次，见 Net/Http/Message/TraceContext.h
     const auto enableTraceContextIfRequested = [&](Net::Router &router)
     {
         if (useTraceContext)

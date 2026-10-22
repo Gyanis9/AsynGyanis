@@ -13,8 +13,8 @@
 #include "Base/Config/ConfigValue.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Acme/AcmeKeyPair.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include <cstddef>
 #include <cstdint>

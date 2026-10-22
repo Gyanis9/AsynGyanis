@@ -1,6 +1,6 @@
 #include "Net/Http/Client/HttpResponseParser.h"
 
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <cstdlib>

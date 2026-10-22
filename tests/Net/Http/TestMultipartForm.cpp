@@ -1,13 +1,13 @@
 // multipart/form-data 解析单元测试：边界与参数、段头部消费、零拷贝视图与整体拒绝的口径，
 // 外加 HttpRequest::multipartForm() 的接线与一条真实服务器端到端上传
-#include "Net/Http/MultipartForm.h"
+#include "Net/Http/Message/MultipartForm.h"
 
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Router.h"
 
 #include <gtest/gtest.h>
 

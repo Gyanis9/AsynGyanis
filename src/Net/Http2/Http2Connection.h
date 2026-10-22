@@ -11,8 +11,8 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Http/HttpHeaderFieldStore.h"
-#include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/Message/HttpHeaderFieldStore.h"
+#include "Net/Http/Message/HttpParserLimits.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 

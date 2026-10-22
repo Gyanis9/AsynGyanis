@@ -5,11 +5,11 @@
 //   四. 前缀隔离：HTTP 与 HTTPS 各自的 request-id 前缀不相等。
 // 夹具在本文件内自建（TestHttpsServer + TlsLoopbackClient），回环端口由内核分配，用例之间不共用端口。
 
-#include "Net/Http/HttpsServer.h"
+#include "Net/Http/Server/HttpsServer.h"
 
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpMetricsEndpoint.h"
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpMetricsEndpoint.h"
+#include "Net/Http/Server/HttpServerStats.h"
 
 #include "Base/Coding/Base64.h"
 #include "Base/Config/ConfigValue.h"
@@ -17,13 +17,13 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsPolicy.h"
-#include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServerConfig.h"
-#include "Net/Http/HttpServerLimits.h"
-#include "Net/Http/Middleware.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpParserLimits.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Config/HttpServerConfig.h"
+#include "Net/Http/Config/HttpServerLimits.h"
+#include "Net/Http/Routing/Middleware.h"
+#include "Net/Http/Routing/Router.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"

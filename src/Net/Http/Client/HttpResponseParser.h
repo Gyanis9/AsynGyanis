@@ -9,7 +9,7 @@
 #pragma once
 
 #include "AsynGyanisExport.h"
-#include "Net/Http/HttpParserLimits.h"
+#include "Net/Http/Message/HttpParserLimits.h"
 #include <cstddef>
 #include <cstdint>
 #include <string>

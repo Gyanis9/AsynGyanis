@@ -32,8 +32,8 @@
 #include "Net/Acme/AcmeAutomationConfig.h"
 #include "Net/Acme/AcmeCertificateManager.h"
 #include "Net/Acme/AcmeDns01TxtWriter.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 #include "Platform/IO/FileContents.h"
 
 #include <chrono>

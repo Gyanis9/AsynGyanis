@@ -11,7 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Http/TraceContext.h"
+#include "Net/Http/Message/TraceContext.h"
 
 #include <array>
 #include <chrono>

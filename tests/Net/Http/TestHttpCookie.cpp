@@ -1,12 +1,12 @@
 // HttpCookie 单元测试：Set-Cookie 的渲染与解析、属性校验、请求侧 Cookie 头解析，
 // 以及 HttpRequest::cookies() 与 HttpResponse::setCookie() 这两处接线。
-#include "Net/Http/HttpCookie.h"
+#include "Net/Http/Message/HttpCookie.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "ExpectedAssertions.h"
-#include "Net/Http/HttpDate.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpDate.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include <gtest/gtest.h>
 

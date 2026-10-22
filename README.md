@@ -57,8 +57,8 @@ kill %1
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Process/GracefulShutdown.h"
 #include "Core/Socket/InetAddress.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 
 #include <cstddef>
 #include <memory>

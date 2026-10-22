@@ -3,7 +3,7 @@
 // 这里只测判据本身（纯函数、不起服务器）；端到端的 412/304 判定在
 // tests/Net/Http/TestHttpServer.cpp 的 RejectsStaleIfMatchWith412 里。
 
-#include "Net/Http/HttpConditionalValidators.h"
+#include "Net/Http/Message/HttpConditionalValidators.h"
 
 #include <gtest/gtest.h>
 

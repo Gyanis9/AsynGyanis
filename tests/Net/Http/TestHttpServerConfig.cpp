@@ -1,10 +1,10 @@
 // HttpServerConfig 单元测试：逐键读取、缺省保持默认、未知键与越界值的拒绝面
-#include "Net/Http/HttpServerConfig.h"
+#include "Net/Http/Config/HttpServerConfig.h"
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/ConfigValidationException.h"
-#include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpServerLimits.h"
+#include "Net/Http/Message/HttpParserLimits.h"
+#include "Net/Http/Config/HttpServerLimits.h"
 
 #include <gtest/gtest.h>
 

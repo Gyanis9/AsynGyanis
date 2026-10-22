@@ -1,8 +1,8 @@
 // HttpRequest 单元测试：方法映射、头部存储模型、URI 与正文的整块交接、路径与查询串解析、取消信号
-#include "Net/Http/HttpRequest.h"
+#include "Net/Http/Message/HttpRequest.h"
 
 #include "ExpectedAssertions.h"
-#include "Net/Http/HttpMethod.h"
+#include "Net/Http/Message/HttpMethod.h"
 
 #include <gtest/gtest.h>
 

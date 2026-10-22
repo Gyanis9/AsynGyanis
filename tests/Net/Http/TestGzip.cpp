@@ -1,7 +1,7 @@
 // Gzip 单元测试：压得进去也解得回来、空输入、不可压输入、重复内容确实变小 断言一律走 zlib 的 inflate 解开再逐字节比较：只比大小无法发现「压出来的字节解不开」，
 // 而那正是响应压缩最怕的事（对端拿到一串解不开的正文）。
 #include "ExpectedAssertions.h"
-#include "Net/Http/Gzip.h"
+#include "Net/Http/Features/Gzip.h"
 
 #include <gtest/gtest.h>
 

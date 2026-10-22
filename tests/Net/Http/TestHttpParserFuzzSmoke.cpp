@@ -11,11 +11,11 @@
 // 随机源是自带种子的 LCG（不用 std::random_device），因此失败可复现：日志里给出轮次与字节。
 // 真正的 libFuzzer 目标需要 clang + Linux，本机工具链没有，故用这套属性化用例作为常驻防线。
 
-#include "Net/Http/HttpParser.h"
+#include "Net/Http/Message/HttpParser.h"
 
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/ParseStatus.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/ParseStatus.h"
 
 #include <gtest/gtest.h>
 

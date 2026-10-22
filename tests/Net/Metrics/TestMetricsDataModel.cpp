@@ -3,8 +3,8 @@
 // 判据分三处：映射层给的上界/条数/和与手算逐条对齐；两条出口（Prometheus 文本、OTLP 批）从同一份
 // 快照出发必须对上——且对照的期望值在用例里手工累加得出，不复用被测实现的折算函数。
 
-#include "Net/Http/HttpMetricsEndpoint.h"
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpMetricsEndpoint.h"
+#include "Net/Http/Server/HttpServerStats.h"
 #include "Net/Metrics/HttpStatsOtlp.h"
 
 #include <gtest/gtest.h>

@@ -11,14 +11,14 @@
 //       判据住哪儿就测在哪儿；出站默认尺与入站出厂尺同出一处，也在这里钉住。
 // 默认上限的用例保留在 TestHttpParser.cpp，两侧不重复；报文拼接的辅助函数与那边同口径。
 
-#include "Net/Http/HttpParser.h"
+#include "Net/Http/Message/HttpParser.h"
 
 #include "Net/Http/Client/HttpResponseParser.h"
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpParseErrorKind.h"
-#include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/ParseStatus.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpParseErrorKind.h"
+#include "Net/Http/Message/HttpParserLimits.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/ParseStatus.h"
 
 #include "NetTestSupport.h"
 

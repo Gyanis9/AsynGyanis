@@ -9,7 +9,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "MetricsTestSupport.h"
-#include "Net/Http/TraceContext.h"
+#include "Net/Http/Message/TraceContext.h"
 #include "Net/Tracing/Span.h"
 #include "TracingTestSupport.h"
 

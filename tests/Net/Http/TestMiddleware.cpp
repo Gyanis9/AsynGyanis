@@ -1,5 +1,5 @@
 // 中间件单元测试：管道顺序与短路、日志、CORS、HTTP/3 端点通告、协作式超时、体积与速率限制
-#include "Net/Http/Middleware.h"
+#include "Net/Http/Routing/Middleware.h"
 
 #include "Base/Log/LogEvent.h"
 #include "Base/Log/LogLevel.h"
@@ -8,13 +8,13 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
-#include "Net/Http/Gzip.h"
-#include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Features/Gzip.h"
+#include "Net/Http/Message/HttpMemoryBudget.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "CoreTestSupport.h"
 

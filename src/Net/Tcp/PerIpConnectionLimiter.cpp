@@ -1,5 +1,5 @@
 #include "Net/Tcp/PerIpConnectionLimiter.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <cstddef>
 #include <string_view>

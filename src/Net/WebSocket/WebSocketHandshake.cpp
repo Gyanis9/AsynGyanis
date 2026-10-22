@@ -2,7 +2,7 @@
 
 #include "Base/Coding/Base64.h"
 #include "Core/Crypto/Digest.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketError.h"
 

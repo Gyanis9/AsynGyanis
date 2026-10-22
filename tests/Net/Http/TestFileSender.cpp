@@ -1,5 +1,5 @@
 // FileSender 单元测试：扩展名到 MIME 的查表映射、大小写不敏感与不可实例化契约
-#include "Net/Http/FileSender.h"
+#include "Net/Http/Server/FileSender.h"
 
 #include <gtest/gtest.h>
 

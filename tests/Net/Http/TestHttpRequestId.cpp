@@ -11,9 +11,9 @@
 //   四. resolve() 与 resolveInto()：合法值原样沿用、非法值改由服务器生成，绝不把对端原文回显；
 //       两条入口共用同一份判定，就地写入那条还要与交出新串那条逐字节一致。
 
-#include "Net/Http/HttpRequestId.h"
+#include "Net/Http/Message/HttpRequestId.h"
 
-#include "Net/Http/HttpRequest.h"
+#include "Net/Http/Message/HttpRequest.h"
 
 #include <gtest/gtest.h>
 

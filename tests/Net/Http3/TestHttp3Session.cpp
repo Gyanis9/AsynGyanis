@@ -13,9 +13,9 @@
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/Coroutine/Task.h"
 #include "ExpectedAssertions.h"
-#include "Net/Http/HttpRequestId.h"
-#include "Net/Http/Router.h"
-#include "Net/Http/StaticFileService.h"
+#include "Net/Http/Message/HttpRequestId.h"
+#include "Net/Http/Routing/Router.h"
+#include "Net/Http/Server/StaticFileService.h"
 #include "Net/Http3/Http3Frame.h"
 #include "Net/Http3/Qpack.h"
 

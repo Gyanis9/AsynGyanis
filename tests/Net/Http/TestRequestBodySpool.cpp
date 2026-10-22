@@ -3,10 +3,10 @@
 // 超过上限时不留半份文件、正文没收齐时拒绝交出、析构自己把文件收走、以及上限为 0 这种含糊配置
 // 当场拒。客户端与服务器在同一条回环连接上，落盘目录由用例自己建、自己看，判据不靠计时。
 
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/RequestBodySpool.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Message/RequestBodySpool.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "Core/Coroutine/AsyncExecutor.h"
 #include "Core/EventLoop/EventLoop.h"

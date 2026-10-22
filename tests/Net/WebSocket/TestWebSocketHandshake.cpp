@@ -7,8 +7,8 @@
 
 #include "Net/WebSocket/WebSocketHandshake.h"
 
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpRequest.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpRequest.h"
 
 #include "ExpectedAssertions.h"
 #include "NetTestSupport.h"

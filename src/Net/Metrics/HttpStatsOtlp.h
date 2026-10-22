@@ -11,7 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpServerStats.h"
 #include "Net/Metrics/OtlpMetricsJson.h"
 
 #include <string_view>

@@ -2,7 +2,7 @@
 
 #include "Net/Http2/Http2ErrorOut.h"
 #include "Base/Log/LogEscaping.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <chrono>

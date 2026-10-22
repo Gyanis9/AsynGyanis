@@ -1,0 +1,955 @@
+#include "Net/Http/Message/HttpParser.h"
+
+#include "Base/Log/LogEscaping.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
+
+#include <algorithm>
+#include <charconv>
+#include <cstring>
+#include <format>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace AsynGyanis::Net
+{
+    namespace
+    {
+        /**
+         * @brief 判断字符是否可以出现在请求目标里
+         * @details 取值范围与 h2/h3 共用一份判据（`HttpHeaderRules.h` 的 `isRequestTargetCharacter`）：
+         *          空格、控制字符与 DEL 不收，裸 `#`（片段不属于请求目标）与 `\`（不在 pchar 里）不收，
+         *          超出 ASCII 的字节按 UTF-8 收下而不判畸形（URI 的字符集只到 ASCII，RFC 3986 §2.1；IRI 转
+         *          URI 的约定编码是 UTF-8，RFC 3987 §3.1）。
+         * @param character 待判断字节
+         * @return true 表示合法
+         */
+        bool isTargetCharacter(const unsigned char character) noexcept
+        {
+            return isRequestTargetCharacter(static_cast<char>(character));
+        }
+
+        /**
+         * @brief 判断字符是否为十进制数字
+         * @param character 待判断字节
+         * @return true 表示是 0-9
+         */
+        bool isDigit(const char character) noexcept
+        {
+            return character >= '0' && character <= '9';
+        }
+
+        // isSingleChunkedEncoding 的真源在 Net/Http/Message/HttpHeaderRules.h：入站与出站两条路
+        // 必须按同一判据认 Transfer-Encoding，各写一遍就会出现「一侧判死、一侧照收」的分裂
+
+    } // namespace
+
+    HttpParser::HttpParser(HttpParserLimits limits) : m_limits(limits)
+    {
+        // 上限只在构造时落定：解析按字节增量推进，若中途换一份更紧的配置，
+        // 同一条报文的前后两段就会按不同尺子判定，出错位置不可预期
+    }
+
+    ParseStatus HttpParser::parse(const char *const data, const size_t length)
+    {
+        // 已收齐：一字节都不再吃。这些字节属于流水线里的下一条报文，喂进已完成的解析器
+        // 会被当作新报文的开头，把上一条已定稿的结果改坏
+        if (m_stage == Stage::Complete)
+        {
+            m_consumedByteCount = 0;
+            return ParseStatus::Done;
+        }
+
+        // 错误粘滞：非 reset() 不能恢复，调用方要么重置要么断开连接
+        if (m_stage == Stage::Failed)
+        {
+            m_consumedByteCount = 0;
+            return ParseStatus::Error;
+        }
+
+        std::size_t consumed = 0;
+        while (consumed < length && m_stage != Stage::Complete && m_stage != Stage::Failed)
+        {
+            if (m_stage == Stage::Body)
+            {
+                const std::size_t remainingBodyLength = m_contentLength - m_receivedBodyLength;
+                const std::size_t chunkLength         = std::min(remainingBodyLength, length - consumed);
+
+                // 上限按累计已收（不止当前缓冲）判定：流式消费方每轮都会把缓冲取走，
+                // 只算 m_body.size() 等于把上限交给「调用方取走的快慢」，狂发数据照样能撑爆内存。
+                // 声明 1 字节然后狂发同样防住——判据是实收总量，不是头部声明
+                if (exceedsBudget(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
+                {
+                    failBodyTooLarge(std::format("请求体超出上限 {} 字节", m_limits.maximumBodySize));
+                    break;
+                }
+
+                m_body.append(data + consumed, chunkLength);
+                consumed += chunkLength;
+                m_receivedBodyLength += chunkLength;
+
+                if (m_receivedBodyLength == m_contentLength)
+                {
+                    commitMessage();
+                    m_stage = Stage::Complete;
+                }
+                continue;
+            }
+
+            if (m_stage == Stage::ChunkData)
+            {
+                // 块数据按字节数整段搬：内容可能含任意字节（含 CR/LF），因此只按长度拷、不扫描
+                const std::size_t chunkLength = std::min(m_chunkRemainingBytes, length - consumed);
+
+                // 上限按「解码后」的正文字节数判定，且用累计已收（理由同上：流式消费方
+                // 会把缓冲取走，只算当前缓冲的话上限形同虚设）；编码后的体积不能用来代替它
+                if (exceedsBudget(m_receivedBodyLength + chunkLength, m_limits.maximumBodySize))
+                {
+                    failBodyTooLarge(std::format("分块解码后的请求体超出上限 {} 字节", m_limits.maximumBodySize));
+                    break;
+                }
+
+                m_body.append(data + consumed, chunkLength);
+                consumed += chunkLength;
+                m_receivedBodyLength += chunkLength;
+                m_chunkRemainingBytes -= chunkLength;
+
+                // 本块收满：接着必须是一个 CRLF，改由 ChunkDataTerminator 逐字节核对
+                if (m_chunkRemainingBytes == 0)
+                {
+                    m_stage                    = Stage::ChunkDataTerminator;
+                    m_chunkTerminatorBytesSeen = 0;
+                }
+                continue;
+            }
+
+            if (m_stage == Stage::ChunkDataTerminator)
+            {
+                // 逐字节核对 CRLF：切在 CR 与 LF 之间时靠已收字节数续上，不需要另做暂存
+                const char expectedCharacter = m_chunkTerminatorBytesSeen == 0 ? '\r' : '\n';
+                if (data[consumed] != expectedCharacter)
+                {
+                    failMalformed("HTTP 报文解析失败：分块的块数据之后必须是 CRLF，请在块数据与下一个块大小之间补齐");
+                    break;
+                }
+                ++consumed;
+                ++m_chunkTerminatorBytesSeen;
+
+                if (m_chunkTerminatorBytesSeen == 2)
+                {
+                    m_chunkTerminatorBytesSeen = 0;
+                    m_stage                    = Stage::ChunkSize;
+                }
+                continue;
+            }
+
+            // 行导向阶段（请求行、头部行、块大小行、trailer 行）都按「整行」推进：
+            // 行体跨两次输入时由 takeLine 拼接
+            std::string_view line;
+            if (!takeLine(data, length, consumed, line))
+            {
+                break;
+            }
+
+            if (m_stage == Stage::RequestLine)
+            {
+                if (!parseRequestLine(line))
+                {
+                    break;
+                }
+                m_stage = Stage::Headers;
+                continue;
+            }
+            if (m_stage == Stage::Headers)
+            {
+                if (!parseHeaderLine(line))
+                {
+                    break;
+                }
+                continue;
+            }
+            if (m_stage == Stage::ChunkSize)
+            {
+                if (!parseChunkSizeLine(line))
+                {
+                    break;
+                }
+                continue;
+            }
+            // 只剩 Trailer：空行会在这里收尾整条报文，成功后阶段变为 Complete、循环随即退出
+            if (!parseTrailerLine(line))
+            {
+                break;
+            }
+        }
+
+        if (m_stage == Stage::Failed)
+        {
+            m_consumedByteCount = consumed;
+            return ParseStatus::Error;
+        }
+        m_consumedByteCount = consumed;
+        return m_stage == Stage::Complete ? ParseStatus::Done : ParseStatus::NeedMore;
+    }
+
+    void HttpParser::reset()
+    {
+        m_currentRequest.reset();
+        clearMessageScratch();
+        m_pendingLine.clear();
+        m_isPendingLineHandedOut = false;
+
+        m_stage     = Stage::RequestLine;
+        m_hasError  = false;
+        m_errorKind = HttpParseErrorKind::None;
+        m_errorMessage.clear();
+        m_consumedByteCount = 0;
+    }
+
+    HttpRequest &HttpParser::request()
+    {
+        return m_currentRequest;
+    }
+
+    bool HttpParser::hasError() const
+    {
+        return m_hasError;
+    }
+
+    bool HttpParser::isBroken()
+    {
+        return m_hasError;
+    }
+
+    std::string_view HttpParser::completedBody()
+    {
+        // 收齐那一刻正文已随 commitMessage() 搬进请求对象：这里交出的就是那份内容。
+        // 未收齐时请求对象里没有正文，返回空视图即可（读取器只在 isComplete() 为真时问它）
+        return m_currentRequest.body();
+    }
+
+    bool HttpParser::isLimitExceeded() const
+    {
+        // 「超限」是失败类别的一个子集：头部越界（431）、正文越界（413）与请求目标越界（414）都算，
+        // 三者都说明报文形态合法、只是体量太大
+        return m_errorKind == HttpParseErrorKind::HeaderTooLarge || m_errorKind == HttpParseErrorKind::BodyTooLarge || m_errorKind == HttpParseErrorKind::UriTooLarge;
+    }
+
+    std::string HttpParser::errorMessage() const
+    {
+        return m_errorMessage;
+    }
+
+    HttpParseErrorKind HttpParser::errorKind() const
+    {
+        return m_errorKind;
+    }
+
+    std::size_t HttpParser::consumedByteCount() const
+    {
+        return m_consumedByteCount;
+    }
+
+    std::size_t HttpParser::bufferedBodyByteCount() const noexcept
+    {
+        return m_body.size();
+    }
+
+    bool HttpParser::isComplete() const noexcept
+    {
+        return m_stage == Stage::Complete;
+    }
+
+    bool HttpParser::isHeaderBlockComplete() const noexcept
+    {
+        // 与 takeContinueRequest() 的「正文待收」同一组阶段，另加 trailer：
+        // 头部块收齐之后、整条报文收齐之前的所有中间态
+        return m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData || m_stage == Stage::ChunkDataTerminator || m_stage == Stage::Trailer;
+    }
+
+    std::string_view HttpParser::uri() const noexcept
+    {
+        return m_uri;
+    }
+
+    HttpMethod HttpParser::method() const noexcept
+    {
+        return m_method;
+    }
+
+    std::string_view HttpParser::host() const
+    {
+        // 首条 host 的取值视图：同名多条在 h1 里属于畸形报文，判定只认第一条，与请求侧读法一致
+        return m_headerStaging.firstValueView("host").value_or(std::string_view{});
+    }
+
+    bool HttpParser::commitHeadersForStreaming()
+    {
+        if (!isHeaderBlockComplete())
+        {
+            return false;
+        }
+        if (m_headersCommitted)
+        {
+            return true;
+        }
+
+        // 与 commitMessage() 的头部段同一遍搬运；区别只在正文仍留在解析器内部，
+        // 由调用方经 bufferedBodyView()/discardBufferedBody() 边收边取
+        m_currentRequest.reset();
+        m_currentRequest.setMethod(m_method);
+        m_currentRequest.adoptStagedUri(m_uri);
+        m_currentRequest.setHttpVersion(std::move(m_httpVersion));
+        m_currentRequest.adoptStagedHeaders(m_headerStaging);
+        m_headersCommitted = true;
+        return true;
+    }
+
+    std::string_view HttpParser::bufferedBodyView() const noexcept
+    {
+        return m_body;
+    }
+
+    void HttpParser::discardBufferedBody() noexcept
+    {
+        m_body.clear();
+    }
+
+    bool HttpParser::takeLine(const char *const data, const std::size_t length, std::size_t &consumed, std::string_view &line)
+    {
+        // 上一次慢路径交出去的视图按契约已经用完（调用方当场解析完），暂存可以清掉；
+        // 而「还没等到 LF 的半行」必须留着继续拼，两者用一个标记区分
+        if (m_isPendingLineHandedOut)
+        {
+            m_pendingLine.clear();
+            m_isPendingLineHandedOut = false;
+        }
+
+        const char *const begin     = data + consumed;
+        const std::size_t available = length - consumed;
+        const void *const newline   = std::memchr(begin, '\n', available);
+
+        if (m_pendingLine.empty())
+        {
+            // 快路径：整行落在本段输入里，直接在输入上切视图，零拷贝
+            if (newline == nullptr)
+            {
+                // 本段凑不齐一行：整段并入暂存，等下一次调用继续拼。长度上限兜住
+                // 「一行永远不结束」的输入：没有它，一个超长的头部行就能把内存一直撑下去。
+                // 量的是行体：末尾若是 CR，它可能是行尾的前半，不该算进来（见 lineBodyByteCountWithoutTerminator）
+                if (!checkLineLength(lineBodyByteCountWithoutTerminator(0, available, available != 0 && begin[available - 1] == '\r')))
+                {
+                    return false;
+                }
+                m_pendingLine.assign(begin, available);
+                consumed = length;
+                return false;
+            }
+
+            const auto lineEnd = static_cast<const char *>(newline);
+            if (lineEnd == begin || lineEnd[-1] != '\r')
+            {
+                failMalformed("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+                return false;
+            }
+
+            // 整行落在本段输入里同样要过长度闸门：漏掉它，块大小行等阶段的限额会形同虚设。
+            // 闸门量的是行体（不含 CRLF），与下面慢路径以及出站响应解析器共用同一把尺
+            const std::size_t lineByteCount = lineBodyByteCountWithTerminator(static_cast<std::size_t>(lineEnd - begin) + 1);
+            if (!checkLineLength(lineByteCount))
+            {
+                return false;
+            }
+
+            line = std::string_view(begin, lineByteCount);
+            consumed += static_cast<std::size_t>(lineEnd - begin) + 1;
+            return true;
+        }
+
+        // 慢路径：行体跨在上一次的暂存与本次输入之间，先把本次输入里直到 LF 的部分并进来
+        const std::size_t appendLength = newline == nullptr ? available : static_cast<std::size_t>(static_cast<const char *>(newline) - begin) + 1;
+        // 同一把尺的第二处：见到行尾就按「CRLF 定长两字节」扣掉行尾，没见到就只按上界放行。旧写法把
+        // 这 2 个字节算进行体，于是「行体恰好等于上限」的报文会被 TCP 分段切成两种判决——整段到达放行，
+        // CR 与 LF 落到下一段就 413/431；判决应当只由报文内容决定，不由字节怎么切决定
+        const std::size_t bodyByteCount = newline == nullptr ? lineBodyByteCountWithoutTerminator(m_pendingLine.size(), available, available != 0 && begin[available - 1] == '\r')
+                                                             : lineBodyByteCountWithTerminator(m_pendingLine.size() + appendLength);
+        if (!checkLineLength(bodyByteCount))
+        {
+            return false;
+        }
+        m_pendingLine.append(begin, appendLength);
+        consumed += appendLength;
+
+        if (newline == nullptr)
+        {
+            return false;
+        }
+
+        if (m_pendingLine.size() < 2 || m_pendingLine[m_pendingLine.size() - 2] != '\r')
+        {
+            failMalformed("HTTP 报文解析失败：行尾必须是 CRLF（不允许单独出现 LF）");
+            return false;
+        }
+
+        // 视图指向暂存：调用方必须在下一次 takeLine() 之前解析完，本函数的开头会清掉它
+        line                     = std::string_view(m_pendingLine.data(), m_pendingLine.size() - 2);
+        m_isPendingLineHandedOut = true;
+        return true;
+    }
+
+    bool HttpParser::checkLineLength(const std::size_t length)
+    {
+        if (m_stage == Stage::RequestLine)
+        {
+            // 整行上限由 URI 上限推出（URI + 方法名与版本串的固定余量）：放宽 URI 时这道闸门自动跟随
+            const std::size_t requestLineLimit = m_limits.requestLineLengthLimit();
+            if (exceedsBudget(length, requestLineLimit))
+            {
+                failUriTooLarge(std::format("请求行超出上限 {} 字节", requestLineLimit));
+                return false;
+            }
+            return true;
+        }
+
+        if (m_stage == Stage::ChunkSize)
+        {
+            // 块大小行属于正文的帧结构而不是头部，超限按正文过大判定（上层回 413）
+            if (exceedsBudget(length, m_limits.maximumChunkSizeLineLength))
+            {
+                failBodyTooLarge(std::format("分块块大小行超出上限 {} 字节", m_limits.maximumChunkSizeLineLength));
+                return false;
+            }
+            return true;
+        }
+
+        const std::size_t headerLineLimit = m_limits.headerLineLengthLimit();
+        if (exceedsBudget(length, headerLineLimit))
+        {
+            failHeaderTooLarge(std::format("头部行超出上限 {} 字节", headerLineLimit));
+            return false;
+        }
+        return true;
+    }
+
+    bool HttpParser::parseRequestLine(const std::string_view line)
+    {
+        // 三段由空格分隔，且目标里不允许再出现空格：用首个与末个空格切成三段后，
+        // 中间那段自然就是「不含空格的目标」
+        const std::size_t firstSpace = line.find(' ');
+        const std::size_t lastSpace  = line.rfind(' ');
+        if (firstSpace == std::string_view::npos || firstSpace == lastSpace)
+        {
+            failMalformed("HTTP 报文解析失败：请求行必须是「方法 目标 版本」三段，以空格分隔");
+            return false;
+        }
+
+        const std::string_view methodText  = line.substr(0, firstSpace);
+        const std::string_view targetText  = line.substr(firstSpace + 1, lastSpace - firstSpace - 1);
+        const std::string_view versionText = line.substr(lastSpace + 1);
+
+        if (methodText.empty() || methodText.size() > kMaximumMethodLength)
+        {
+            failMalformed(std::format("HTTP 报文解析失败：请求方法长度必须在 1 到 {} 字节之间", kMaximumMethodLength));
+            return false;
+        }
+        if (!containsOnlyTokenCharacters(methodText))
+        {
+            failMalformed("HTTP 报文解析失败：请求方法只能由 token 字符组成");
+            return false;
+        }
+
+        if (targetText.empty())
+        {
+            failMalformed("HTTP 报文解析失败：请求目标不能为空");
+            return false;
+        }
+        if (exceedsBudget(targetText.size(), m_limits.maximumUriLength))
+        {
+            // 请求目标超限有自己的类别：RFC 9110 §15.5.15 为它留了 414，而 431 说的是头部太大——
+            // 客户端据此判断该缩短 URL 还是该减少头部
+            failUriTooLarge(std::format("请求 URI 超出上限 {} 字节", m_limits.maximumUriLength));
+            return false;
+        }
+        for (const char character: targetText)
+        {
+            if (!isTargetCharacter(static_cast<unsigned char>(character)))
+            {
+                failMalformed("HTTP 报文解析失败：请求目标含非法字符（空格、控制字符、裸 # 与反斜杠都不允许；"
+                              "要表达字符 # 请写成 %23）");
+                return false;
+            }
+        }
+
+        // asterisk-form（请求目标就是一个 "*"）只属于 OPTIONS 与 CONNECT，见 RFC 9112 §3.2.3：
+        // 它说的不是某个资源而是整台服务器。本服务器不代理 CONNECT，所以除 OPTIONS 之外收到 "*"
+        // 就是请求目标不成形，按语法错误当场判掉——留给它一路走到「没有路由匹配」会把一个语法错误
+        // 报成 404，告诉客户端「这个资源不存在」，而事实是这条请求根本没指明资源
+        if (targetText == "*" && methodText != "OPTIONS")
+        {
+            failMalformed(std::format("HTTP 报文解析失败：请求目标 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}；"
+                                      "请给出 origin-form 的路径（以 / 开头）",
+                                      methodText));
+            return false;
+        }
+
+        // 版本：HTTP/主.次，主版本只认 0 与 1、次版本一位十进制数字。这条不是保守取值而是
+        // 协议事实：HTTP/2 及以上走完全不同的帧格式（二进制、不同握手），把它当 1.x 继续按
+        // 文本解析等于用错误的语法去猜边界，因此这里当场判错，而不是收下版本号再装作能处理
+        constexpr std::string_view kVersionPrefix      = "HTTP/";
+        const bool                 isVersionWellFormed = versionText.size() == kVersionPrefix.size() + 3 && versionText.starts_with(kVersionPrefix) &&
+                                                         (versionText[5] == '0' || versionText[5] == '1') && versionText[6] == '.' && isDigit(versionText[7]);
+        if (!isVersionWellFormed)
+        {
+            failMalformed("HTTP 报文解析失败：版本必须是 HTTP/1.x 或 HTTP/0.x 的形式");
+            return false;
+        }
+
+        m_method = HttpRequest::methodFromString(methodText);
+        m_uri.assign(targetText);
+
+        // 版本按收到的原文保存：上层要按 1.0/0.9 判定保活策略，重新拼装反而可能丢掉差异
+        m_httpVersion.assign(versionText);
+        return true;
+    }
+
+    bool HttpParser::parseFieldLine(const std::string_view line, const std::string_view fieldContextLabel, std::string_view &name, std::string_view &value)
+    {
+        // 折行（obs-fold）：RFC 9112 已把以空白开头的续行判为过时，这里明确拒绝而不是静默拼接，
+        // 否则同一个头部名可能被两个来源写出不同含义（请求走私的经典入口）
+        if (line.front() == ' ' || line.front() == '\t')
+        {
+            failMalformed("HTTP 报文解析失败：不支持折行（obs-fold）头部，请把值写在同一行");
+            return false;
+        }
+
+        const std::size_t colonPosition = line.find(':');
+        if (colonPosition == std::string_view::npos || colonPosition == 0)
+        {
+            failMalformed(std::format("HTTP 报文解析失败：{}行必须是「名: 值」的形式", fieldContextLabel));
+            return false;
+        }
+
+        const std::string_view fieldName = line.substr(0, colonPosition);
+        // 冒号前若有空白也会在这里被判掉：token 字符集不含 SP 与 HTAB
+        if (!containsOnlyTokenCharacters(fieldName))
+        {
+            failMalformed(std::format("HTTP 报文解析失败：{}名只能由 token 字符组成（冒号前不得有空白）", fieldContextLabel));
+            return false;
+        }
+        if (exceedsBudget(fieldName.size(), m_limits.maximumHeaderFieldNameLength))
+        {
+            failHeaderTooLarge(std::format("{}名超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderFieldNameLength));
+            return false;
+        }
+
+        const std::string_view fieldValue = trimOptionalWhitespace(line.substr(colonPosition + 1));
+        if (exceedsBudget(fieldValue.size(), m_limits.maximumHeaderFieldValueLength))
+        {
+            failHeaderTooLarge(std::format("{}值超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderFieldValueLength));
+            return false;
+        }
+        if (!containsOnlyFieldValueCharacters(fieldValue))
+        {
+            failMalformed(std::format("HTTP 报文解析失败：{}值含非法控制字符", fieldContextLabel));
+            return false;
+        }
+
+        // 头部块总长（名与值的净字节）与条数是两道独立的闸：单条名、单条值、条数各自合规，
+        // 架不住上百条头部叠出来的总量。两道判定都在落库之前，拒绝路径不留半成品
+        if (exceedsBudget(m_headerBlockLength + fieldName.size() + fieldValue.size(), m_limits.maximumHeaderBlockLength))
+        {
+            failHeaderTooLarge(std::format("{}总长超出上限 {} 字节", fieldContextLabel, m_limits.maximumHeaderBlockLength));
+            return false;
+        }
+        if (exceedsBudget(m_headerFieldCount + 1, m_limits.maximumHeaderCount))
+        {
+            failHeaderTooLarge(std::format("{}条数超出上限 {} 条", fieldContextLabel, m_limits.maximumHeaderCount));
+            return false;
+        }
+
+        m_headerBlockLength += fieldName.size() + fieldValue.size();
+        ++m_headerFieldCount;
+
+        name  = fieldName;
+        value = fieldValue;
+        return true;
+    }
+
+    bool HttpParser::parseHeaderLine(const std::string_view line)
+    {
+        // 空行 = 头部块结束
+        if (line.empty())
+        {
+            finishHeaderBlock();
+            return m_stage != Stage::Failed;
+        }
+
+        std::string_view name;
+        std::string_view value;
+        if (!parseFieldLine(line, "请求头部", name, value))
+        {
+            return false;
+        }
+
+        // 两个定界头都要落到暂存上：Content-Length 决定长度，Transfer-Encoding 的取值要攒到
+        // 头部块结束才能判「是否唯一的 chunked、有没有和它并列的其它编码」
+        if (equalsIgnoringCase(name, "content-length"))
+        {
+            if (!parseContentLength(value))
+            {
+                return false;
+            }
+        } else if (equalsIgnoringCase(name, "transfer-encoding") && !appendTransferEncodingValue(value))
+        {
+            return false;
+        } else if (equalsIgnoringCase(name, "expect"))
+        {
+            // 只记「对端在等 100」这一件事：头部收齐、正文未收时由 takeContinueRequest() 一次性交给上层。
+            // 而 HTTP/1.1 之前的版本不认 1xx：RFC 9110 §10.1.1 要求「A server that receives a
+            // 100-continue expectation in an HTTP/1.0 request MUST ignore that expectation」，§15.2 又明写
+            // 「Since HTTP/1.0 did not define any 1xx status codes, a server MUST NOT send a 1xx response to
+            // an HTTP/1.0 client」——回了它，老客户端会把这声招呼当成最终响应，正文还没读就先拿到一个 100。
+            // 版本原文在请求行那一步已按「HTTP/主.次」验过形（见 parseRequestLine），故下标 5 与 7 就是两位数字。
+            // Expect 是列表字段，同一报文允许多条：先出现的 100-continue 不能被后面的未知期望抹掉，因此这里只置位、不清零
+            const bool understandsInterimResponses = m_httpVersion.size() == 8 && m_httpVersion[5] == '1' && m_httpVersion[7] >= '1';
+            if (isContinueExpected(value) && understandsInterimResponses)
+            {
+                m_hasContinueExpectation = true;
+            }
+        }
+
+        // Host 只许有一条（RFC 9112 §3.2：服务端对「多于一条 Host 头部行」的请求必须回 400）。
+        // 这一条在本端不是纸面合规：host() 只能挑一条来读，而链路上的前端与共享缓存可能按另一条分诊、
+        // 另一条记缓存键——两份说法各走各的正是把请求送到非预期站点、或给共享缓存投毒的经典形状
+        if (equalsIgnoringCase(name, "host"))
+        {
+            if (++m_hostHeaderFieldCount > 1)
+            {
+                failMalformed("HTTP 报文解析失败：请求里出现多于一条 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
+                              "请只保留一条 Host");
+                return false;
+            }
+
+            // 取值语法同样归 RFC 9112 §3.2 那句「Host 取值非法 → 必须 400」：判据与 h2/h3 的
+            // :authority 共用 findAuthorityFieldDefect，一条请求走哪条通道都得到同一个结论。
+            // 空值放行是那条判据的另一半——绝对形式的目标 URI 没有权威段时，RFC 9112 §3.2 要求客户端
+            // 发一个空 Host，把它判死会把一条合规范的请求拒掉
+            if (const std::optional<std::string_view> defect = findAuthorityFieldDefect(value); defect.has_value())
+            {
+                failMalformed(std::format("HTTP 报文解析失败：Host 头部的取值 \"{}\" 不是合法的权威段（{}）："
+                                          "RFC 9110 §7.2 规定它是 uri-host[:端口]，请去掉用户名段、空白、路径与控制字符后重试",
+                                          Base::escapeForLog(value), *defect));
+                return false;
+            }
+        }
+
+        // 名与值就地进暂存缓冲（名字折小写也在这一趟做完）：这里不再为一条头部造两个 std::string
+        m_headerStaging.append(name, value);
+        return true;
+    }
+
+    bool HttpParser::appendTransferEncodingValue(const std::string_view value)
+    {
+        if (value.empty())
+        {
+            failMalformed("HTTP 报文解析失败：Transfer-Encoding 的取值不能为空，请写 Transfer-Encoding: chunked");
+            return false;
+        }
+
+        // 多条 Transfer-Encoding 按到达顺序拼成一份列表：要看到全部取值才能判 chunked 是否唯一
+        if (m_hasTransferEncoding)
+        {
+            m_transferEncodingValue.append(", ");
+        }
+        m_transferEncodingValue.append(value);
+        m_hasTransferEncoding = true;
+        return true;
+    }
+
+    bool HttpParser::parseChunkSizeLine(const std::string_view line)
+    {
+        // 块扩展从第一个分号起：大小部分只到今天之前的那一段
+        const std::size_t      semicolonPosition = line.find(';');
+        const std::string_view sizeText          = line.substr(0, semicolonPosition);
+
+        if (sizeText.empty())
+        {
+            failMalformed("HTTP 报文解析失败：分块块大小必须至少有一位十六进制数字");
+            return false;
+        }
+
+        std::size_t chunkSize = 0;
+        for (const char character: sizeText)
+        {
+            // 十六进制位手工转值：std::stoul 会抛异常，而本解析器对外的契约是「增量、无异常」
+            const int digitValue = hexadecimalDigitValue(character);
+            if (digitValue < 0)
+            {
+                failMalformed("HTTP 报文解析失败：分块块大小只能由十六进制数字组成，请检查块大小行");
+                return false;
+            }
+
+            // 回绕判定放在移位之前：size_t 静默回绕会把一个天文数字读成「看起来正常」的小块，
+            // 从而绕开下面那道上限。这一道与配置无关，正文上限关掉也仍然生效
+            if (chunkSize > std::numeric_limits<std::size_t>::max() >> 4U)
+            {
+                failBodyTooLarge("分块单块大小超出可表示范围，无法解码：请把块大小写成实际要发送的字节数");
+                return false;
+            }
+            chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digitValue);
+        }
+        if (exceedsBudget(chunkSize, m_limits.maximumBodySize))
+        {
+            failBodyTooLarge(std::format("分块单块大小超出上限 {} 字节", m_limits.maximumBodySize));
+            return false;
+        }
+
+        // 扩展只校验语法、不解释语义：它不参与块边界计算，因此忽略内容而不忽略它的合法性
+        if (semicolonPosition != std::string_view::npos && !areChunkExtensionsWellFormed(line.substr(semicolonPosition)))
+        {
+            failMalformed("HTTP 报文解析失败：分块块扩展语法非法，每一段应为「;名字」或「;名字=值」且名字由 token 字符组成");
+            return false;
+        }
+
+        m_chunkRemainingBytes = chunkSize;
+        // 零长度块是终止块：它之后只剩 trailer 段（若干字段行加一个空行）
+        m_stage = chunkSize == 0 ? Stage::Trailer : Stage::ChunkData;
+        return true;
+    }
+
+    bool HttpParser::parseTrailerLine(const std::string_view line)
+    {
+        // 空行 = trailer 段结束：解码后的正文与头部此刻才整体移交给对外请求对象
+        if (line.empty())
+        {
+            commitMessage();
+            m_stage = Stage::Complete;
+            return true;
+        }
+
+        std::string_view trailerName;
+        std::string_view trailerValue;
+        // 语法与各项上限照头部行判（条数与总长两道闸由 parseFieldLine 统一记账）
+        if (!parseFieldLine(line, "trailer 头部", trailerName, trailerValue))
+        {
+            return false;
+        }
+
+        // 只有「不定义报文边界、也不是连接级」的字段才交给上层。RFC 9110 §6.5.1 本就禁止尾部
+        // 带这几个字段，但禁归禁，收端仍要自己守住：trailer 里的 content-length / transfer-encoding
+        // 一旦被读成头部，同一份报文就有了两个长度解释（请求走私面）。名字先折小写再比对，
+        // 因为对端写「Content-Length」与「content-length」是同一个字段
+        std::string normalizedName = HttpHeaderFieldStore::toCanonicalHeaderName(trailerName);
+        if (normalizedName == "content-length" || isConnectionSpecificHeaderName(normalizedName))
+        {
+            return true;
+        }
+
+        m_trailerFields.emplace_back(std::move(normalizedName), std::string(trailerValue));
+        return true;
+    }
+
+    bool HttpParser::parseContentLength(const std::string_view value)
+    {
+        if (value.empty())
+        {
+            failMalformed("HTTP 报文解析失败：Content-Length 不能为空");
+            return false;
+        }
+
+        std::size_t                  parsedLength = 0;
+        const char *const            begin        = value.data();
+        const char *const            end          = value.data() + value.size();
+        const std::from_chars_result parseResult  = std::from_chars(begin, end, parsedLength);
+
+        // 只接受纯十进制数字：前导 '+'/'-'、空白、十六进制与任何非数字字符都会让 ptr 停在中间，
+        // 溢出则返回 result_out_of_range
+        if (parseResult.ec != std::errc{} || parseResult.ptr != end)
+        {
+            failMalformed("HTTP 报文解析失败：Content-Length 只能是十进制数字");
+            return false;
+        }
+
+        // 重复出现时只允许取值一致：不一致意味着「同一份报文有两个长度解释」，
+        // 收端各自按己方理解切包正是请求走私的温床。这一口径与上层定界器一致
+        if (m_hasContentLength && parsedLength != m_contentLength)
+        {
+            failMalformed("HTTP 报文解析失败：Content-Length 出现多个不一致的取值");
+            return false;
+        }
+
+        // 声明的长度本身就超限：现在判错，而不是等正文真的收满上限才判——
+        // 那样等于按对端的声明替它预留内存，声明一个天文数字就能把缓冲区耗光
+        if (exceedsBudget(parsedLength, m_limits.maximumBodySize))
+        {
+            failBodyTooLarge(std::format("请求体声明长度 {} 字节超出上限 {} 字节", parsedLength, m_limits.maximumBodySize));
+            return false;
+        }
+
+        m_contentLength    = parsedLength;
+        m_hasContentLength = true;
+        return true;
+    }
+
+    void HttpParser::failMalformed(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::Malformed, std::move(message));
+    }
+
+    void HttpParser::failHeaderTooLarge(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::HeaderTooLarge, std::move(message));
+    }
+
+    void HttpParser::failBodyTooLarge(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::BodyTooLarge, std::move(message));
+    }
+
+    void HttpParser::failUriTooLarge(std::string message)
+    {
+        recordFailure(HttpParseErrorKind::UriTooLarge, std::move(message));
+    }
+
+    void HttpParser::recordFailure(const HttpParseErrorKind errorKind, std::string message)
+    {
+        m_hasError     = true;
+        m_errorKind    = errorKind;
+        m_errorMessage = std::move(message);
+        m_stage        = Stage::Failed;
+    }
+
+    void HttpParser::finishHeaderBlock()
+    {
+        // HTTP/1.1 及以后的请求必须带 Host：RFC 9112 §3.2「A server MUST respond with a 400 (Bad Request)
+        // status code to any HTTP/1.1 request message that lacks a Host header field」。这一格在本端不是
+        // 保守，而是选站与缓存键的输入缺一半——没有权威段时，本端只能按默认站点走，而链路上任何按 Host
+        // 分诊的前端都会把它送到另一个站点。1.0/0.9 不判：那一版没有定义这个字段
+        const bool requiresHostField = m_httpVersion.size() == 8 && m_httpVersion[5] == '1' && m_httpVersion[7] >= '1';
+        if (requiresHostField && m_hostHeaderFieldCount == 0)
+        {
+            failMalformed("HTTP 报文解析失败：HTTP/1.1 请求缺少 Host 头部：RFC 9112 §3.2 要求服务端按 400 处理，"
+                          "请补一行 Host: <权威段>（形如 Host: example.org 或 Host: example.org:8080）");
+            return;
+        }
+
+        // 分块请求体：先把「一条报文两个长度解释」的组合拒掉，再要求 Transfer-Encoding 只声明 chunked
+        if (m_hasTransferEncoding)
+        {
+            // RFC 9112 §6.3：Transfer-Encoding 与 Content-Length 并存时收端必须拒绝（或只认一条并
+            // 视另一条为错误），这里选拒绝——两侧各按己方理解切包正是请求走私的经典面
+            if (m_hasContentLength)
+            {
+                failMalformed("HTTP 报文解析失败：Content-Length 与 Transfer-Encoding 不能同时出现，请只保留其中一个");
+                return;
+            }
+            // 只实现 chunked：取值里出现 gzip 之类其它编码、或 chunked 重复出现都判错，
+            // 绝不悄悄按 identity 处理（那等于按对端没声明的边界切包）
+            if (!isSingleChunkedEncoding(m_transferEncodingValue))
+            {
+                failMalformed("HTTP 报文解析失败：Transfer-Encoding 只接受唯一的 chunked（不接受 gzip 等其它编码，"
+                              "chunked 也不能与其它编码并列），请改写为 Transfer-Encoding: chunked 或改用 Content-Length");
+                return;
+            }
+            m_stage = Stage::ChunkSize;
+            return;
+        }
+
+        // 没有正文定界头的报文（GET/HEAD/DELETE 一类）在头部块结束时即完整，
+        // 排在后面的字节归下一条报文，解析器一个都不吃
+        if (m_contentLength == 0)
+        {
+            commitMessage();
+            m_stage = Stage::Complete;
+            return;
+        }
+        m_stage = Stage::Body;
+    }
+
+    void HttpParser::commitMessage()
+    {
+        // 移交：先把上一条报文留下的内容整体清掉（取消源一并重建，避免继承上一条的取消状态），
+        // 再按解析结果逐项落进去。URI、头部与正文都按整块交换交付：两条缓冲各留各的容量，
+        // 稳态下一条报文不再为它们取还堆块；版本号短到进小串内联，按值移动即可。
+        // 移交之前对外请求对象一直是空壳，因此半成品阶段的 request() 读不出任何东西
+        // （比「可读但不许放行」更强）
+        //
+        // 流式派发已用 commitHeadersForStreaming() 提前提交过头部时不再重复搬运：
+        // 头部已在 request() 里就位，这里只补尚未被取走的正文（已流式交付的部分不在其中）
+        if (!m_headersCommitted)
+        {
+            m_currentRequest.reset();
+            m_currentRequest.setMethod(m_method);
+            m_currentRequest.adoptStagedUri(m_uri);
+            m_currentRequest.setHttpVersion(std::move(m_httpVersion));
+            m_currentRequest.adoptStagedHeaders(m_headerStaging);
+        }
+        m_currentRequest.adoptStagedBody(m_body);
+
+        // trailer 字段在最后那个空行之前全部到齐，此刻一次性交给请求对象：它们进的是请求的
+        // 另一档存储（见 HttpRequest::addTrailerField），不会与头部互相覆盖
+        for (const auto &[name, value]: m_trailerFields)
+        {
+            m_currentRequest.addTrailerField(name, value);
+        }
+
+        // 暂存清回初态供下一条报文复用：clear 保留容量，因此稳态下不再为它们分配内存
+        clearMessageScratch();
+    }
+
+    bool HttpParser::takeContinueRequest() noexcept
+    {
+        if (!m_hasContinueExpectation || m_hasTakenContinue)
+        {
+            return false;
+        }
+
+        // 「正文还没收完」的四种阶段：定长正文、分块的大小行/块数据/块尾 CRLF。
+        // Trailer 阶段正文已经收完（对端不再等本端表态），Complete/Failed 同理
+        const bool isRequestBodyPending = m_stage == Stage::Body || m_stage == Stage::ChunkSize || m_stage == Stage::ChunkData || m_stage == Stage::ChunkDataTerminator;
+        if (!isRequestBodyPending)
+        {
+            return false;
+        }
+
+        m_hasTakenContinue = true;
+        return true;
+    }
+
+    void HttpParser::clearMessageScratch() noexcept
+    {
+        m_method = HttpMethod::UNKNOWN;
+        m_uri.clear();
+        m_httpVersion.clear();
+        m_headerStaging.clear();
+        m_body.clear();
+
+        // trailer 与头部同为「本条报文的一次性暂存」：commitMessage 已把它们复制进请求对象，
+        // 残留会让下一条报文带上上一条的尾部字段（clear 保留容量，稳态下不额外分配）
+        m_trailerFields.clear();
+
+        m_contentLength        = 0;
+        m_receivedBodyLength   = 0;
+        m_headerFieldCount     = 0;
+        m_headerBlockLength    = 0;
+        m_hasContentLength     = false;
+        m_hostHeaderFieldCount = 0;
+
+        // 100-continue 的两项也随报文一起清：跨报文复用解析器时，上一条的「等 100」不能让
+        // 下一条报文被多回一个 100
+        m_hasContinueExpectation = false;
+        m_hasTakenContinue       = false;
+
+        // 分块解码的进度必须与正文一起清空：跨报文复用同一个解析器对象时，残留的
+        // 「当前块剩余字节」会把下一条报文的正文按上一条的块边界切开
+        m_hasTransferEncoding = false;
+        m_transferEncodingValue.clear();
+        m_chunkRemainingBytes      = 0;
+        m_chunkTerminatorBytesSeen = 0;
+
+        // 提前提交标记随报文复位：下一条报文重新走「空壳到 Done」的正常契约
+        m_headersCommitted = false;
+    }
+
+} // namespace AsynGyanis::Net

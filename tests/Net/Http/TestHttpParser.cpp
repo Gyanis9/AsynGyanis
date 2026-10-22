@@ -1,11 +1,11 @@
 // HttpParser 单元测试：增量解析、报文定界、头部存储模型与资源上限
-#include "Net/Http/HttpParser.h"
+#include "Net/Http/Message/HttpParser.h"
 
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/ParseStatus.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/ParseStatus.h"
 
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include "NetTestSupport.h"
 

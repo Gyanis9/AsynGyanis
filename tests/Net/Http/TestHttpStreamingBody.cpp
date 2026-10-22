@@ -8,7 +8,7 @@
 //   五. 普通路由的流同样可用：请求收齐后派发，流交出全量正文后 EOF
 //   六. Expect: 100-continue：先收到 100 Continue 再进流式派发，正文照常交付
 
-#include "Net/Http/HttpRequestBody.h"
+#include "Net/Http/Message/HttpRequestBody.h"
 
 #include "HttpTestSupport.h"
 

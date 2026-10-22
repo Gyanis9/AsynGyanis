@@ -10,8 +10,8 @@
 //   六. 共享采集端：两台服务器换接到同一份采集端后，请求条数与活跃连接数都报合计，抓哪台口径一致。
 // 夹具（RunningHttpServerFixture / LoopbackClient / 报文组装）在 HttpTestSupport.h 中，与限额用例共用一份。
 
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Server/HttpServerStats.h"
 
 #include "Base/Log/Formatters/JsonFormatter.h"
 #include "Base/Log/LogMacros.h"

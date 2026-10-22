@@ -2,9 +2,9 @@
 // 管道用例（TestMiddleware.cpp 的 BasicAuthMiddleware.*）是手工 `setOverTls()` 的，它证明这段逻辑本身；
 // 「这条连接走没走 TLS」由会话从连接上取下来，挂错位置、或者只挂在某一条协议通道上，都只有真连接测得出。
 
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/Middleware.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Routing/Middleware.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "Base/Coding/Base64.h"
 #include "Base/Coding/SecureCompare.h"

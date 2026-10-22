@@ -12,7 +12,7 @@
 #include "Core/Coroutine/Mutex.h"
 #include "Core/Coroutine/Task.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
-#include "Net/Http/HttpBodyChunk.h"
+#include "Net/Http/Message/HttpBodyChunk.h"
 #include "Net/Http2/Hpack.h"
 #include "Net/Http2/Http2Frame.h"
 

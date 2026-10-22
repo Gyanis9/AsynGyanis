@@ -1,14 +1,14 @@
 // HttpServer 单元测试：静态目录配置的幂等语义、请求路径清洗的越权拦截、HEAD 收尾， 以及静态文件的条件请求（ETag / Last-Modified / 304）与单区间 Range（206/416）
-#include "Net/Http/HttpServer.h"
+#include "Net/Http/Server/HttpServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/Connection.h"
 #include "Core/Socket/InetAddress.h"
-#include "Net/Http/HttpDate.h"
-#include "Net/Http/HttpSession.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpDate.h"
+#include "Net/Http/Server/HttpSession.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "ExpectedAssertions.h"
 #include "Platform/FileSystem/FileSystem.h"

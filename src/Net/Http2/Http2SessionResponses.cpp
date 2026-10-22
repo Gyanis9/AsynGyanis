@@ -15,8 +15,8 @@
 #include "Net/Http2/Http2SessionSupport.h"
 
 #include "Base/Log/LogMacros.h"
-#include "Net/Http/HttpChunkFrame.h"
-#include "Net/Http/HttpDate.h"
+#include "Net/Http/Message/HttpChunkFrame.h"
+#include "Net/Http/Message/HttpDate.h"
 
 #include <algorithm>
 #include <chrono>

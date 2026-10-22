@@ -4,7 +4,7 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/DeadlineGuard.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include <algorithm>
 #include <array>

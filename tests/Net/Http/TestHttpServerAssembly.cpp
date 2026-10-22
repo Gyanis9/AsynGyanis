@@ -1,10 +1,10 @@
 // server 段配置的装配入口：配置里的键要真的落到服务器上，特别是 expose_metrics——
 // 它此前在库内没有任何消费方，写了也不注册端点，是最典型的「静默不生效」。
 
-#include "Net/Http/HttpMemoryBudget.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/HttpServerAssembly.h"
-#include "Net/Http/HttpsServer.h"
+#include "Net/Http/Message/HttpMemoryBudget.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Server/HttpServerAssembly.h"
+#include "Net/Http/Server/HttpsServer.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include "ExpectedAssertions.h"

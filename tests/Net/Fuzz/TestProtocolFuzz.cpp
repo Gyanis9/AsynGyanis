@@ -23,7 +23,7 @@
 #include "Base/Log/LogEscaping.h"
 #include "CommonTestSupport.h"
 #include "Fuzz/ProtocolFuzzKernel.h"
-#include "Net/Http/JwtVerifier.h"
+#include "Net/Http/Auth/JwtVerifier.h"
 
 #include <gtest/gtest.h>
 

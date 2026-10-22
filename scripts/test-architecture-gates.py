@@ -178,7 +178,7 @@ def test_duplicates(root: Path) -> None:
 def test_surface(root: Path) -> None:
     write(
         root / "packaging" / "api-baseline.txt",
-        "src/Net/Http/HttpServer.h\tclass HttpServer\nsrc/Net/Http/HttpServer.h\tvoid start()\n",
+        "src/Net/Http/Server/HttpServer.h\tclass HttpServer\nsrc/Net/Http/Server/HttpServer.h\tvoid start()\n",
     )
     write(root / "tests" / "TestServer.cpp", "int main() { HttpServer server; server.start(); }\n")
     result = run_script("report-public-surface.py", root)

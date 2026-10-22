@@ -1,8 +1,8 @@
 // 按 Host 选站的端到端用例：真实 h1 服务器上三个站点各回各的正文，中间件按层生效
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Router.h"
 
 #include <gtest/gtest.h>
 

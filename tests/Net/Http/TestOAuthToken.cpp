@@ -6,8 +6,8 @@
 // - RejectsNonJsonBody（正文不是 JSON 对象）
 
 #include "ExpectedAssertions.h"
-#include "Net/Http/OAuthToken.h"
-#include "Net/Http/OAuthError.h"
+#include "Net/Http/Auth/OAuthToken.h"
+#include "Net/Http/Auth/OAuthError.h"
 
 #include <gtest/gtest.h>
 

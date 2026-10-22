@@ -140,7 +140,7 @@
       "row": 3,
       "sources": [
         {
-          "path": "src/Net/Http/HttpSession.h",
+          "path": "src/Net/Http/Server/HttpSession.h",
           "line": 1120,
           "label": "h1 每响应计数"
         }
@@ -363,12 +363,12 @@
       "row": 3,
       "sources": [
         {
-          "path": "src/Net/Http/HttpServerStats.h",
+          "path": "src/Net/Http/Server/HttpServerStats.h",
           "line": 534,
           "label": "snapshot"
         },
         {
-          "path": "src/Net/Http/HttpServer.cpp",
+          "path": "src/Net/Http/Server/HttpServer.cpp",
           "line": 1627,
           "label": "并入准入拒绝数"
         }
@@ -403,7 +403,7 @@
       "row": 3,
       "sources": [
         {
-          "path": "src/Net/Http/HttpServer.cpp",
+          "path": "src/Net/Http/Server/HttpServer.cpp",
           "line": 1634,
           "label": "enableMetricsEndpoint"
         }
@@ -435,17 +435,17 @@
       "row": 0,
       "sources": [
         {
-          "path": "src/Net/Http/HttpServerAssembly.h",
+          "path": "src/Net/Http/Server/HttpServerAssembly.h",
           "line": 167,
           "label": "探针为什么不进那道令牌闸"
         },
         {
-          "path": "src/Net/Http/Middleware.h",
+          "path": "src/Net/Http/Routing/Middleware.h",
           "line": 1558,
           "label": "要令牌的默认名单是四条运维读口"
         },
         {
-          "path": "src/Net/Http/HttpMetricsEndpoint.h",
+          "path": "src/Net/Http/Server/HttpMetricsEndpoint.h",
           "line": 165,
           "label": "循环诊断口的注册函数"
         }

@@ -20,7 +20,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "HttpTestSupport.h"
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include <gtest/gtest.h>
 

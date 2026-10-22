@@ -14,7 +14,7 @@
  *            专门盯「重渲染会丢掉看不懂的尾字段」这一类自以为干净的实现。
  */
 
-#include "Net/Http/TraceContext.h"
+#include "Net/Http/Message/TraceContext.h"
 
 #include "AllocationProbe.h"
 

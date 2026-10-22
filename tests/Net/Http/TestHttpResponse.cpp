@@ -1,6 +1,6 @@
 // HttpResponse 单元测试：头部写入校验、可重复头部模型、序列化顺序、自动补齐（date/content-type/content-length）、
 // 中间响应（1xx）的报文形状与映射正文（整份与区间）的字节精确性
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"

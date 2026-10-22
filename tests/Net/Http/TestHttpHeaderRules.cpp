@@ -10,11 +10,11 @@
 //       且含 NUL 的文本按长度判定而不是当成零终止串（否则 NUL 之后的非法字节会被静默忽略）；
 //   四. 接线：解析器与响应序列化确实走这两张表，而不只是表本身正确。
 
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
-#include "Net/Http/HttpParser.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/ParseStatus.h"
+#include "Net/Http/Message/HttpParser.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Message/ParseStatus.h"
 
 #include <gtest/gtest.h>
 

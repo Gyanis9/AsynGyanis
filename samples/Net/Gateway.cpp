@@ -11,10 +11,10 @@
 #include "Core/EventLoop/IoContext.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Routing/Router.h"
 #include "common/SampleSupport.h"
 
 #include <atomic>

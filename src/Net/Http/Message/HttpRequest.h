@@ -1,0 +1,627 @@
+/**
+ * @file HttpRequest.h
+ * @brief 解析后的 HTTP 请求数据对象
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "AsynGyanisExport.h"
+
+#include "Base/Config/ConfigValue.h"
+#include "Net/Http/Message/HttpCookie.h"
+#include "Net/Http/Message/HttpHeaderFieldStore.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/MultipartForm.h"
+
+#include <concepts>
+#include <cstddef>
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace AsynGyanis::Net
+{
+    /**
+     * @brief 判定 Expect 头部是否在等 `100-continue`（RFC 9110 §10.1.1）
+     *
+     * @details 取值是逗号分隔的 token 列表（大小写不敏感），因此 `100-Continue`、`100-continue, foo`
+     *          都算命中。h1 的解析器与 h2 的会话共用这一份判定：同一条规范语义只留一个出处，
+     *          两处不会各自漂移。
+     * @param expectHeaderValue Expect 头部的值；对端没给这个头时传空串
+     * @return true 对端声明了 100-continue：本端应在读正文之前先回一个 100（或不等正文就回最终状态）
+     */
+    [[nodiscard]] ASYN_NET_API bool isContinueExpected(std::string_view expectHeaderValue) noexcept;
+
+    class HttpRequestBody;
+
+    /**
+     * @brief HTTP 请求数据对象
+     *
+     * @details 存储解析后的 HTTP 请求内容：方法、URI、版本、头部、正文与路由参数。
+     *          本对象由 HttpParser 逐字段填充，本身不做任何 IO，也不校验报文合法性。
+     *
+     * @note 头部存储见 HttpHeaderFieldStore：按到达顺序的权威记录 + 按需重建的单值视图
+     *       （普通头部按 RFC 9110 §5.2 用 ", " 合并、可重复头部保留首条）。
+     *       头部名一律转小写存储（RFC 9110 §5.1 大小写不敏感），查询侧同样归一化。
+     */
+    class ASYN_NET_API HttpRequest
+    {
+    public:
+        /**
+         * @brief 默认构造函数，创建一个空请求对象。
+         */
+        HttpRequest() = default;
+
+        /**
+         * @brief 将字符串转换为 HttpMethod 枚举。
+         * @param method HTTP 方法原文，区分大小写，须为 "GET"、"POST" 这类大写形式
+         * @return 对应的 HttpMethod 枚举值；不在收录表内（含小写形式）返回 HttpMethod::UNKNOWN
+         */
+        static HttpMethod methodFromString(std::string_view method);
+
+        /**
+         * @brief 设置 HTTP 请求方法。
+         * @param method HTTP 方法枚举值
+         */
+        void setMethod(HttpMethod method);
+
+        /**
+         * @brief 获取 HTTP 请求方法。
+         * @return HttpMethod 枚举值；未经解析器填充时为 HttpMethod::UNKNOWN
+         */
+        [[nodiscard]] HttpMethod method() const;
+
+        /**
+         * @brief 设置请求 URI（请求行中的原始 URI，含查询串）。
+         * @param uri URI 字符串
+         */
+        void setUri(std::string uri);
+
+        /**
+         * @brief 接手解析器暂存的 URI 缓冲，整块换下本请求当前的 URI
+         * @details 与 adoptStagedHeaders() 同一条理由：按值移动会把解析器那块缓冲连着容量一起交出去，
+         *          下一条报文就得重新取一块。调用前本请求必须已经 reset()，否则上一条报文的 URI
+         *          会被换进解析器的暂存里而不是被丢弃。
+         * @param stagedUri 解析器暂存的 URI；返回时它接手到本请求刚清空的那份，容量照旧留着
+         */
+        void adoptStagedUri(std::string &stagedUri) noexcept;
+
+        /**
+         * @brief 获取原始 URI。
+         * @return URI 字符串引用
+         */
+        [[nodiscard]] const std::string &uri() const;
+
+        /**
+         * @brief 设置 HTTP 版本（如 "HTTP/1.1"）。
+         * @param version 版本字符串，按解析器读到的原文保存
+         */
+        void setHttpVersion(std::string version);
+
+        /**
+         * @brief 获取 HTTP 版本。
+         * @return 版本字符串引用
+         */
+        [[nodiscard]] const std::string &httpVersion() const;
+
+        /**
+         * @brief 追加一条 HTTP 头部字段。
+         * @details 头部名折小写入库。权威记录按到达顺序逐条留档：同一个名字在线上出现几条就占几项，
+         *          互不覆盖，`headerFieldCount(key)`、`forEachHeaderField()` 与 `headerValues()` 读到的都是
+         *          这份逐条记录（因此重新转发一条请求时不会把多条 `Via` 并成一行）。
+         *          以 ", " 合并只发生在单值读口（`headers()` / `getHeader()`）：普通头部按
+         *          RFC 9110 §5.2 的收件人规则把同名多条拼成一条，可重复头部（目前只有 `set-cookie`）
+         *          不合并、取首条——那种值本身可以含逗号，合并后就还原不回来。
+         * @param key   头部字段名，大小写不敏感
+         * @param value 头部字段值，原样保存不做裁剪
+         * @see headerValues(), headers()
+         */
+        void addHeader(std::string_view key, std::string_view value);
+
+        /**
+         * @brief 追加一条 trailer 字段（RFC 9112 §7.1 分块正文之后的尾部头字段）
+         * @details 与 addHeader 分开存：把 trailer 并进头部等于给同一个字段造出两个解释位置
+         *          （`content-length` 这类定界字段尤其危险，收端读哪一份都可能被对端利用）。
+         *          解析侧只把「不定义报文边界、也不是连接级」的字段交进来，见 HttpParser 的 trailer 段
+         * @param name 字段名，大小写不敏感（入库转小写）
+         * @param value 字段值，原样保存
+         */
+        void addTrailerField(std::string_view name, std::string_view value);
+
+        /**
+         * @brief 取一条 trailer 字段的值
+         * @param name 字段名，大小写不敏感
+         * @return 命中时返回该名字的取值（同名多条按 addHeader 的同一口径合并）；未命中返回空 optional
+         */
+        [[nodiscard]] std::optional<std::string> getTrailerField(std::string_view name) const;
+
+        /// 本条请求是否带有可交付的 trailer 字段（被解析侧按规则丢弃的那些不算，见 HttpParser）
+        [[nodiscard]] bool hasTrailerFields() const noexcept
+        {
+            return m_trailerStore.has_value();
+        }
+
+        /**
+         * @brief 按线上到达顺序遍历全部 trailer 字段（权威记录）
+         * @details 只给遍历而不给存储引用：没有 trailer 时那份存储根本不存在，而返回引用就要为
+         *          「空的那一份」造一个全局对象——遍历是这里唯一真实的用法。
+         * @param visitor 形如 `void (std::string_view name, std::string_view value)` 的可调用体；
+         *                名字已折小写，视图只在本次回调内有效
+         */
+        template<typename Visitor>
+            requires std::invocable<Visitor, std::string_view, std::string_view>
+        void forEachTrailerField(const Visitor &visitor) const
+        {
+            if (m_trailerStore.has_value())
+            {
+                m_trailerStore->forEachField(visitor);
+            }
+        }
+
+        /**
+         * @brief 覆盖或新增一条请求头部（与 HttpResponse::setHeader 同一口径）
+         * @details 请求对象原本是「解析产物只追加」的：只有 addHeader。归一化链路上下文这类横切逻辑
+         *          必须能改写一条头部，否则中间件读到的与下游看到的就是两份状态。
+         *          同名多条时按覆盖式写法收拢成一条（条目位置不变）；可重复头部（Set-Cookie）退化为
+         *          追加一条，与响应侧同一套语义。
+         * @param key   头部名，大小写不敏感（入库转小写）；必须是合法 token 且非空
+         * @param value 头部值；CR/LF/NUL 会让头部块提前结束（响应拆分），一律拒绝（HTAB 是允许的 OWS）
+         * @return true 已写入
+         * @return false 名字或取值不合法，已有状态一字未改
+         */
+        [[nodiscard]] bool setHeader(std::string_view key, std::string_view value);
+
+        /**
+         * @brief 删掉某名字的全部头部记录
+         * @details 「一条声明已经被兑现」与「这条声明是错的」都需要同一个出口：留着一行
+         *          `content-encoding: gzip` 而正文已经是明文，下游会再解一次。单值视图由存储内部
+         *          标脏，下次查询按权威记录重建，不会留下「查得到而序列化里没有」的鬼条目。
+         * @param key 头部名，大小写不敏感；不存在时是空操作
+         */
+        void removeHeader(std::string_view key);
+
+        /**
+         * @brief 接手解析器暂存的头部记录，整块换下本请求当前的头部
+         * @details 报文收齐那一刻由解析器调用：只做容器交换，不逐字节拷贝，也不问调用方要临时串。
+         *          调用前本请求必须已经 reset()（否则上一条报文的头部会被换进解析器的暂存里，
+         *          而不是被丢弃）。
+         * @param stagedHeaders 解析器持有的头部暂存；返回时它接手到本请求那份空缓冲，容量照旧留着
+         */
+        void adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept;
+
+        /**
+         * @brief 一次留够整块头部的容量，逐条 addHeader 时不再反复扩容
+         * @details 给「一条请求从零装配头部」的调用方用（HTTP/3 收请求头就是逐条写进本对象）。
+         *          h1 那条按缓冲交换交接整块头部的路径不需要它——那边容量本来就在请求与解析器之间滚。
+         * @param fieldCount 预计的头部条数；实到条数超出时照常扩容
+         * @param byteCount 预计要写入的名值字节数；超出时照常扩容
+         */
+        void reserveHeaders(std::size_t fieldCount, std::size_t byteCount);
+
+        /**
+         * @brief 获取指定名称的 HTTP 头部值。
+         * @param key 头部字段名，大小写不敏感（内部统一按小写存储与查找）
+         * @return 命中时返回该名字的单个值：普通头部为 ", " 合并后的完整值，
+         *         可重复头部为首条的值；未命中时返回空 optional
+         * @see headerValues() 需要逐条取值时使用
+         */
+        [[nodiscard]] std::optional<std::string> getHeader(std::string_view key) const;
+
+        /**
+         * @brief 获取指定名称的全部头部值，按线上到达顺序返回。
+         * @details 用于 Set-Cookie 这类禁止合并的头部，以及确实收到多条同名普通头部的场景。
+         * @param key 头部字段名，大小写不敏感
+         * @return 值列表；名字不存在时为空列表
+         */
+        [[nodiscard]] std::vector<std::string> headerValues(std::string_view key) const;
+
+        /**
+         * @brief 取指定名称的首条头部值（原样，不参与同名多条的 ", " 合并）
+         * @details 与 headerValues() 的首元素同值，但不为「只要一个值」构造整列值列表。
+         *          链路 id 这类同名多条各表一个来源的头部，要的就是首条原值。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::optional<std::string> 首条值；名字不存在时为空
+         */
+        [[nodiscard]] std::optional<std::string> firstHeaderValue(std::string_view key) const;
+
+        /**
+         * @brief 取指定名称的首条头部值视图：不拷贝、不向堆要内存
+         * @details 给「读完就丢」的判定用（比对格式、取前缀、按分隔符切一段）。owning 的
+         *          firstHeaderValue() 每查一条超过短串内联长度的取值就分配一次，而这些地方
+         *          读完就扔，那份拷贝是白付的。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::optional<std::string_view> 首条值；名字不存在时为空（取到空视图表示
+         *         「有这条头部且取值为空」，不与缺席混淆）
+         * @note 视图指向请求内部的取值，只在本请求下次改写头部之前有效；要跨过改写点就得自己拷走
+         */
+        [[nodiscard]] std::optional<std::string_view> firstHeaderValueView(std::string_view key) const;
+
+        /**
+         * @brief 本请求声明的正文长度（content-length 的首条取值）
+         * @details 「实收对不对得上声明」这一判据在本框架里不止一处：h1 的解析器、h2 的收尾判定、
+         *          h3 的产出时限与体量闸门读的是同一个数，于是这个读法也只留一份。按合并口径的
+         *          `getHeader("content-length")` 会把两条一致的「17, 17」拼成非法值（RFC 9110 §8.6 只拒
+         *          不一致的重复，那份拒绝在头部校验层已经做过），而这里要的是首条原值。
+         * @return std::optional<std::size_t> 声明的字节数；头部缺席或取值非法时为空。
+         *         空与「声明为 0」不是一回事：0 是「必须没有正文」的真声明，空是「判不出体量」
+         */
+        [[nodiscard]] std::optional<std::size_t> declaredBodyLength() const;
+
+        /**
+         * @brief 判断指定名称的头部是否出现过（只看存在性，不看取值）
+         * @details 取代 `getHeader(x).has_value()`：后者会为一次判定把整个取值拷出来。
+         * @param key 头部字段名，大小写不敏感
+         * @return true 至少有一条该名的记录
+         */
+        [[nodiscard]] bool hasHeader(std::string_view key) const;
+
+        /**
+         * @brief 该名的头部记录有几条（不合并、不拷贝取值）
+         * @details 给「缺席 / 恰好一条 / 多于一条」必须分开的判定用：traceparent 这类严格字段
+         *          收到多条就是歧义，而 hasHeader 与取值入口都看不出这个差别。
+         * @param key 头部字段名，大小写不敏感
+         * @return std::size_t 记录条数；未出现为 0
+         */
+        [[nodiscard]] std::size_t headerFieldCount(std::string_view key) const;
+
+        /**
+         * @brief host 字段是否收到了两条及以上（RFC 9110 §7.1.2 与 §8.3.1：这是请求走私面，必须回 400）
+         * @details 数的是头部存储里的记录条数，而不是解析器中途递过来的一个计数：h2 与 h3 的字段
+         *          是经映射写进请求对象的，那条通路上没有 h1 的解析器可问；而 h1 上第二条 host 行
+         *          在解析期就被拒掉（`HttpParser` 自己的那份 host 计数），因此这一句真会答「有」的
+         *          场合恰好就是另两条通道。会话按 `:authority` 补齐 host 那一步只在「一条都没有」时
+         *          发生，不会在此造出假的两条。
+         * @return true 收到了多于一条 host 字段
+         */
+        [[nodiscard]] bool hasMultipleHostHeaders() const noexcept;
+
+        /**
+         * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
+         * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
+         *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表：Connection/Upgrade
+         *          这类判定每条请求都要跑几遍，而调用方只需要一个布尔结果。
+         * @param key 头部字段名，大小写不敏感
+         * @param expectedToken 待查找的 token，大小写不敏感
+         * @return true 至少一条取值列出了该 token
+         */
+        [[nodiscard]] bool hasHeaderValueToken(std::string_view key, std::string_view expectedToken) const;
+
+        /**
+         * @brief 取出这条请求带来的 Cookie。
+         * @details 解析全部 Cookie 头部（同名多条按到达顺序合并），请求侧只有名字与取值，
+         *          属性一律为未设。单项畸形（名字非法、缺 '='）跳过而不判整条头失败——
+         *          浏览器与代理拼出的 Cookie 头里混一个怪项，不该让其余的也读不到。
+         * @return std::vector<HttpCookie> 按出现顺序给出；没有 Cookie 头时为空
+         */
+        [[nodiscard]] std::vector<HttpCookie> cookies() const;
+
+        /**
+         * @brief 获取所有头部字段的单值视图。
+         * @return 名到值的 unordered_map 引用，键为小写头部名；
+         *         可重复头部在此只有一条（首次出现的值），逐条取值请用 headerValues()
+         */
+        [[nodiscard]] const std::unordered_map<std::string, std::string> &headers() const;
+
+        /**
+         * @brief 按到达顺序遍历请求的全部头部记录，同名多条各访问一次
+         * @details 与 HttpResponse 同一条目：走 headers() 单值视图既要先重建哈希表，又会把
+         *          「同名多条」折成一条；要看线上到底有几条、按什么顺序，只有权威记录这一份。
+         *          断言头部改写是否「只覆盖不追加」也用它——单值视图分不出「一条」与「两条被合并」。
+         * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
+         * @param visitor 每个头部访问一次
+         */
+        template<typename Visitor>
+        void forEachHeaderField(const Visitor &visitor) const
+        {
+            m_headerStore.forEachField(visitor);
+        }
+
+        /**
+         * @brief 设置请求正文，覆盖已有内容。
+         * @param body 正文内容
+         */
+        void setBody(std::string body);
+
+        /**
+         * @brief 接手解析器暂存的正文缓冲，整块换下本请求当前的正文
+         * @details 覆盖语义与 setBody() 一致（旧正文作废），区别只在两条缓冲交换而不是移动：
+         *          解析器留着本请求那份容量，长正文的保活连接不必每条报文重新取一块。
+         * @param stagedBody 解析器暂存的正文；返回时它接手到本请求的旧正文，由调用方清零后复用
+         */
+        void adoptStagedBody(std::string &stagedBody) noexcept;
+
+        /**
+         * @brief 向请求正文尾部追加一段字节。
+         * @param data   数据起始指针，调用方保证非空且可读
+         * @param length 追加长度，单位字节
+         * @note 不做上限校验，资源上限由 HttpParser 把关
+         */
+        void appendBody(const char *data, size_t length);
+
+        /**
+         * @brief 获取请求正文（字符串视图）。
+         * @return 正文内容的 string_view，视图生命周期跟随本请求对象
+         */
+        [[nodiscard]] std::string_view body() const;
+
+        /**
+         * @brief 获取本请求的正文流（普通与流式派发都可读）
+         *
+         * @details 会话在连接建立时装配一次，因此对 h1 的每一条请求都非空。两种派发下的行为：
+         *          @li 普通路由在请求收齐后派发：流把已缓冲的全部正文作为一段交出、随后 EOF；
+         *              此时 body() 同样给出全量正文（两者等价，流是为统一写法提供的）；
+         *          @li 流式路由（Router::postStreaming()/putStreaming() 注册）在头部收齐即派发：
+         *              正文边收边交、且处理器不拉取时连接不再读入（背压）；此时 body() 只含
+         *              「已收但尚未经流交付」的残余字节，正文的权威来源是流。
+         *
+         * @return HttpRequestBody* 正文流指针；h2 会话与直接构造的请求对象上可能为空，取用前判空
+         * @see HttpRequestBody, Router::postStreaming()
+         */
+        [[nodiscard]] HttpRequestBody *bodyStream() const noexcept;
+
+        /**
+         * @brief 装配正文流（会话内部使用，按连接调用一次）
+         * @param bodyStream 正文流对象；生命周期由会话保证覆盖整条连接（跨请求复用同一对象）
+         * @note 指针不参与 reset()：它属于连接而不是单条报文，解析器复位不应把它清掉
+         */
+        void setBodyStream(HttpRequestBody *bodyStream) noexcept;
+
+        /**
+         * @brief 设置本次请求的 request-id
+         *
+         * @details 由会话在请求收齐、进入业务之前落定（见 Detail::httpKeepAliveLoop()）：
+         *          客户端自带合法的 x-request-id 就沿用，否则用服务器侧生成器发一个。
+         *          业务、中间件与日志因此都从一处读到同一个值。
+         *
+         * @param requestId 本次请求的标识文本，原样保存不裁剪；传空表示不采集（例如该会话没有生成器）
+         * @note 它是可观测性标识，不是安全令牌：不参与鉴权，也不要求不可预测
+         * @note 按视图接收并原地写入本对象的缓冲：按值收 std::string 会把源侧刚取到的那块堆连着
+         *       容量一起接过来、再把手上那块还掉（实测每请求一次堆分配），请求按连接复用时容量本该留着
+         */
+        void setRequestId(std::string_view requestId);
+
+        /**
+         * @brief 获取本次请求的 request-id
+         * @return 标识文本的视图，生命周期跟随本请求对象；会话未设置时为空视图
+         * @see setRequestId(), HttpRequestIdGenerator
+         */
+        [[nodiscard]] std::string_view requestId() const noexcept;
+
+        /**
+         * @brief 记下发起这条请求的对端地址
+         * @param address 地址文本，形如 "IP:Port"（IPv6 侧带方括号）；传空串表示本条给不出来源
+         * @details 与 setRequestId() 排在同一处（派发之前）：这类「这条请求从哪来」的事实只有会话知道，
+         *          而业务处理器的签名里只有请求与响应两个对象，没有第三条通道把连接身份带过去。
+         * @note 存的是视图：文本由会话按连接缓存一份（见 Core::Connection::cachedRemoteAddress()），
+         *       请求对象只指过去。因此调用方给的这块内存必须活得比本会话的连接久
+         */
+        void setRemoteAddress(std::string_view address) noexcept;
+
+        /**
+         * @brief 发起这条请求的对端地址，形如 "IP:Port"（IPv6 侧为 "[::1]:8080" 这种带方括号的写法）
+         * @return std::string 地址副本；会话没能取到地址时为空串
+         * @details 业务侧做「按来源限流、按地区放行、审计里落的是谁」这一类判定就读这里。开启 PROXY
+         *          协议时它已经是代理交来的真实来源而不是代理记账
+         *          （见 TcpServer::setProxyProtocolRequired()，三条协议通道同一份来源）。
+         * @note 交回副本而不是视图：这条文本指向的是会话那一份按连接缓存的缓冲，连接一收口它就没了，
+         *       而把它抄进审计队列正是本接口最常见的用法。requestId() 交视图是因为它指向本请求自己的
+         *       缓冲，两处形状不同是有意的
+         */
+        [[nodiscard]] std::string remoteAddress() const;
+
+        /**
+         * @brief 记下这条请求所在的连接是否跑在 TLS 上
+         * @param isSecure 由会话在派发之前落定（`Core::Connection::isSecureTransport()`）
+         * @details 与 setRemoteAddress() 排在同一处：「这条请求走没走 HTTPS」只有会话知道，
+         *          而业务处理器的签名里只有请求与响应两个对象。h2/h1-over-TLS 由 Http2Session 报出
+         *          自己有没有持有 TlsSocket，h3 恒为真（QUIC 只跑 TLS 1.3）。
+         * @note 报的是本端这一跳的事实，刻意不看 X-Forwarded-Proto：那一句谁都能写，把它当可信来源
+         *       会让一条明文连接拿到 HSTS 与 Secure 判定
+         */
+        void setOverTls(bool isSecure) noexcept;
+
+        /**
+         * @brief 这条请求是否经由 TLS 到达
+         * @return true 加密（HTTPS / h3），false 明文（h1 over TCP、h2c）
+         * @details 三个用途：HSTS 头（RFC 6797 §7.2 要求非安全传输上收到的该头被浏览器忽略，明文发出去
+         *          等于写一句没人执行的承诺）、业务侧构造 https 跳转、以及给 Cookie 置 Secure 前的判据
+         */
+        [[nodiscard]] bool overTls() const noexcept;
+
+        /**
+         * @brief 发起这条请求的对端 IP，不带端口
+         * @return std::string IP 文本；地址为空时返回空串，形状认不出来时原样交回整条文本
+         * @details 「按来源限流、按地区放行、审计落的是谁」要的键是不带端口的 IP：`remoteAddress()` 里那段
+         *          端口每条连接都换，直接拿去当键会得到「每条连接一个桶」，限流因此形同不存在。
+         *          IPv6 一侧保留百分号后的作用域号（`fe80::1%3`）：链路本地地址在不同网卡上靠它区分来源，
+         *          剥掉就把两块网卡上的流量并进同一个键。
+         * @note 认的是本框架 `InetAddress::toString()` 的产出形状——`"1.2.3.4:5678"` 与
+         *       `"[fe80::1%3]:8080"`（IPv6 一律带方括号，双栈上的映射地址也带着它，形如
+         *       `"[::ffff:1.2.3.4]:8080"`），另加两种没端口的写法与不带括号的映射文本。刻意不做通用
+         *       IPv6 文法猜测：猜错时静默给出一个错的限额键，比认不出来时原样交回更难查
+         *       （裸写的 `"::1"` 因此不被当作带端口，原样交回）
+         */
+        [[nodiscard]] std::string remoteIp() const;
+
+        /**
+         * @brief 记下本次派发命中的路由模式原文
+         * @param routePattern 注册时给出的路径模式原文（如 "/users/:id"）；空视图表示没有命中任何路由
+         * @details 由路由器在跑中间件管道之前落定，因此访问日志、指标打点这类横切逻辑也读得到。
+         * @note 存的是视图：文本指向路由表里那条模式自己那份存储，路由器在 start() 之后仍增删条目时
+         *       这块内存可能被搬走。要跨请求留存（存进队列、异步落库）请自己抄一份
+         */
+        void setMatchedRoute(std::string_view routePattern) noexcept;
+
+        /**
+         * @brief 本次派发命中的路由模式原文，未命中（404/405）时为空
+         * @return std::string_view 注册时的模式原文，如 "/users/:id"；不是请求的实际路径
+         * @details 分组用的键应当是这里而不是 `path()`：按实际 URI 打指标会让标签基数等于访问过的 URL
+         *          数，一轮 404 扫描就能把采集端撑爆；而模式原文是有限集合（注册了多少条就有多少个值）
+         * @see setMatchedRoute(), path()
+         */
+        [[nodiscard]] std::string_view matchedRoute() const noexcept;
+
+        /**
+         * @brief 从 URI 中提取路径部分（'?' 之前的内容，不含查询参数）。
+         * @return 路径视图；URI 为空时返回空视图
+         * @note 返回的是原始文本，未做百分号解码
+         * @note 返回视图而不是副本：它指向本对象持有的 URI，生命周期跟随本请求对象。
+         *       路由这类每请求都要看路径的地方因此不必再付一次字符串拷贝
+         */
+        [[nodiscard]] std::string_view path() const;
+
+        /**
+         * @brief 解析 URI 中的查询参数（'?' 之后的 key=value 串）。
+         *
+         * @details 先按 '&' 拆成一个个分对，每对再按「第一个 '='」拆成键与值，键值都做百分号
+         *          解码（'+' 按空格处理，序列规则见 percentDecode()）。无 '?' 或其后为空 → 空表；
+         *          无值键与没有 '=' 的分对 → 值为空串；键为空的分对（"?&a=1"、"?=v"）直接跳过；
+         *          值中的 '=' 整体算作值（"?q=a=b" 得 "a=b"）；重复键后出现的覆盖先出现的。
+         * @return 查询参数的 unordered_map，键值均为解码后的文本
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string> queryParams() const;
+
+        /**
+         * @brief 解析 `application/x-www-form-urlencoded` 的请求正文为表单字段。
+         * @details 与 queryParams() 走同一份解析（同一套分对规则、同一个百分号解码、同一个
+         *          '+' 当空格的约定），所以 `a%20b`、`a+b`、`a=b=c` 这类写法在两条路上必然得到
+         *          同一个解释——写两份就会漂移。规则同查询串：无 '=' 的分对值为空串，键为空的分对
+         *          跳过，重复键后出现的覆盖先出现的。
+         * @note 媒体类型不是 `application/x-www-form-urlencoded` 时交回空表，不去猜：把 JSON 或
+         *       二进制正文按 '&' 切开拼成「参数」是凭空造数据。类型参数（`; charset=utf-8`）不参与判定，
+         *       媒体类型本身大小写不敏感。
+         * @note 流式正文（`bodyStream()` 那一路）不适用：这条只读已经收齐的整份正文。
+         * @return 表单字段的 unordered_map，键值均为解码后的文本
+         */
+        [[nodiscard]] std::unordered_map<std::string, std::string> formFields() const;
+
+        /**
+         * @brief 按 www-form-urlencoded 的形状拆一段文本（查询串与表单正文共用）
+         * @details 先按 '&' 拆分对，每对再按「第一个 '='」拆键值，键值都做百分号解码。
+         * @param text 待解析文本（不含前导 '?'）
+         * @return 解码后的键值表；重复键后出现的覆盖先出现的
+         * @note 摆成公开静态是为了让库外也拿到同一份解码：OAuth 的授权回调查询串就与入站查询串
+         *       同解——两处各写一版必然在边角规则上分叉
+         */
+        [[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text);
+
+        /**
+         * @brief 把请求正文按 JSON 解析成一份配置值（与 `Base::ConfigValue` 同一个类型，不做二次搬运）。
+         * @details 媒体类型不是 `application/json` 时交回空，语法不合法也交回空：调用方判空即可，
+         *          不需要接异常——外部输入不该靠异常否定一次调用。
+         * @note 正文里的注释不宽容（RFC 8259 没有注释这一说）：在这里放宽一次，就会和配置文件
+         *       那条路分成两套解析器，而两套的差异只会以「同一份 JSON 一边能读一边不能」的形式暴露。
+         * @note 流式正文那一路不适用，这条只读已经收齐的整份正文。
+         * @return std::optional<Base::ConfigValue> 解析结果；不适用或语法错误时为空
+         */
+        [[nodiscard]] std::optional<Base::ConfigValue> jsonBody() const;
+
+        /**
+         * @brief 把请求正文按 `multipart/form-data` 解析成段序列（RFC 7578）。
+         * @details 上传文件在框架里唯一的表达途径：`formFields()` 按 '&' 切正文，遇到二进制正文
+         *          只会切出一堆垃圾，所以正文类型是 multipart 时走这里。段正文是指向本请求正文的
+         *          视图（零拷贝），返回对象的寿命因此不得超过本请求。
+         * @note 媒体类型不是 `multipart/form-data`、缺 content-type、或正文畸形（边界缺失、段没有
+         *       name、缺结束分隔符、带无法还原的传输编码）一律交回空：调用方判空回 400 即可，
+         *       不接异常——外部输入不该靠异常否定一次调用。
+         * @note 流式正文（`bodyStream()` 那一路）不适用：这条只读已经收齐的整份正文。
+         * @return std::optional<MultipartFormData> 解析结果；不适用或格式非法时为空
+         * @see MultipartFormData, formFields()
+         */
+        [[nodiscard]] std::optional<MultipartFormData> multipartForm() const;
+
+        /**
+         * @brief 设置路由参数（路径中的 ":id" 之类占位符匹配到的值）。
+         * @param key   参数名
+         * @param value 参数值，同名覆盖
+         */
+        void setParam(std::string key, std::string value);
+
+        /**
+         * @brief 获取路由参数值。
+         * @param key 参数名，区分大小写（与路由模板中的写法一致，不做归一化）
+         * @return 参数值的 optional，若不存在则为空
+         */
+        [[nodiscard]] std::optional<std::string> param(const std::string &key) const;
+
+        /**
+         * @brief 重置请求对象，清空所有字段（方法、URI、头部、正文、参数等）。
+         * @details 取消信号一并重建：旧的 stop_source 可能已被超时中间件触发，
+         *          复用连接时必须让下一条请求拿到一个未被取消的令牌。
+         */
+        void reset();
+
+        // ====================================================================
+        // 协作式取消支持（用于超时中间件等场景）
+        // ====================================================================
+
+        /**
+         * @brief 获取与本次请求关联的取消令牌。
+         * @details 交信号的有三处：`timeoutMiddleware` 的时限到点、本端关停这条连接/会话
+         *          （h1 的 ConnectionCancelForwarder、h2 的会话取消源、h3 的会话停止源），以及
+         *          对端取消这一条流（h2 收到 RST_STREAM、h3 收到 RESET_STREAM）。三处都只写这一个出口，
+         *          业务只认 request.cancelToken() 一处——它不会打断处理器，信号是协作式的：
+         *          处理器要么在等待之间问一次，要么根本不问。
+         * @details 可抄的写法（`Core::Timer` 不接 stop_token，因此在两次唤醒之间问一次）：
+         *          `for (;;) { if (request.cancelToken().stop_requested()) { co_return; } co_await timer.waitFor(50ms); }`
+         *          挂在 `bodyStream()->readNext()` 上的流式处理器不必自己轮询：正文那条路已经带唤醒，
+         *          被取消/被断开时它返回终止值，醒来再读一次本令牌就知道是哪种情况
+         * @return 当前取消源的令牌快照；每次调用返回的令牌共享同一个状态源
+         */
+        [[nodiscard]] std::stop_token cancelToken() const noexcept;
+
+        /**
+         * @brief 获取内部 stop_source 的可写引用，供中间件设置取消信号。
+         * @return stop_source 可变引用
+         */
+        [[nodiscard]] std::stop_source &cancelSource() noexcept;
+
+        /**
+         * @brief 请求取消本次处理（由中间件在超时等条件下调用）。
+         * @return true 本次调用发出了新的取消信号；false 早已被取消过，重复调用不会二次通知
+         */
+        bool requestCancel() const;
+
+    private:
+        /**
+         * @brief URL 百分号解码
+         * @details 宽松解码，永不报错："%XX" → 对应字节、'+' → 空格（表单编码约定），其余字符原样保留；
+         *          非法或残缺的序列（"%"、"%4"、"%4G"）连同百分号按原文保留，不吞字符也不报错。不报错是
+         *          因为查询串来自外部输入，解码失败不足以否定整个请求。
+         * @param source 待解码文本
+         * @return 解码后的文本
+         */
+        static std::string percentDecode(std::string_view source);
+
+        HttpMethod           m_method{HttpMethod::UNKNOWN}; ///< HTTP 方法
+        std::string          m_uri;                         ///< 原始 URI，含查询串
+        std::string          m_httpVersion;                 ///< HTTP 版本原文
+        HttpHeaderFieldStore m_headerStore;                 ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        /// trailer 字段的存储：与头部同一套存储与查找语义，但单独一档，永不与头部互相覆盖。
+        /// 按需创建——绝大多数请求不带 trailer，而一份 HttpHeaderFieldStore 在 MSVC 上光是构造
+        /// 就要两次堆分配（内部那张单值视图的哈希表），直接当成员会把这两个字节成本摊给每条请求
+        std::optional<HttpHeaderFieldStore> m_trailerStore;
+        std::string                         m_body;                ///< 消息正文
+        HttpRequestBody                    *m_bodyStream{nullptr}; ///< 正文流（按连接装配，见 bodyStream()；不随 reset() 清除）
+        std::string                         m_requestId;           ///< 本次请求的可观测性标识，由会话在业务之前落定（见 setRequestId()）
+        /// 对端地址文本，指向会话按连接缓存的那一份（见 setRemoteAddress()）：按连接复用的请求对象
+        /// 因此不为它付一次堆分配，reset() 只把视图清回去
+        std::string_view m_remoteAddress; ///< 发起方地址，由会话在业务之前落定（见 setRemoteAddress()）
+        /// 这条请求所在的连接是否跑在 TLS 上，由会话在派发之前落定（见 setOverTls()）。
+        /// 与其余会话注入的事实一起在 reset() 里清回未落定的一侧：一条连接不会中途换传输层，
+        /// 但把正确性押在「每条协议通道都记得重新落定」上，将来漏一条就会发出无人执行的 HSTS
+        bool m_overTls{false}; ///< 传输层是否加密（true = HTTPS / h3）
+        /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
+        /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
+        std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定
+        std::unordered_map<std::string, std::string> m_params;       ///< 路由参数
+        mutable std::stop_source                     m_cancelSource; ///< 协作式取消源：被触发过才在 reset() 里重建，未触发则跨请求沿用（省掉每请求一次分配）
+    };
+} // namespace AsynGyanis::Net

@@ -1,11 +1,11 @@
 // Router 单元测试：两级匹配优先级、方法与 404/405 判定、HEAD 复用 GET、参数提交、响应收尾与按 Host 选站
-#include "Net/Http/Router.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include <gtest/gtest.h>
 

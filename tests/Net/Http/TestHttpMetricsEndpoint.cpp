@@ -1,7 +1,7 @@
 // 指标导出与健康检查端点：Prometheus 文本渲染的逐字节契约，以及回环上的真实抓取
-#include "Net/Http/HttpMetricsEndpoint.h"
-#include "Net/Http/HttpServer.h"
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpMetricsEndpoint.h"
+#include "Net/Http/Server/HttpServer.h"
+#include "Net/Http/Server/HttpServerStats.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Config/ConfigValue.h"
@@ -12,9 +12,9 @@
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
 
 #include <gtest/gtest.h>

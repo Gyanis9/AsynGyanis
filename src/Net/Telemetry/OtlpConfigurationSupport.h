@@ -10,8 +10,8 @@
 #pragma once
 
 #include "Base/Config/ConfigValue.h"
-#include "Net/Http/HttpConfigDuration.h"
-#include "Net/Http/HttpConfigValidation.h"
+#include "Net/Http/Config/HttpConfigDuration.h"
+#include "Net/Http/Config/HttpConfigValidation.h"
 
 #include <chrono>
 #include <cstdint>

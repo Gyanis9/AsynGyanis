@@ -11,8 +11,8 @@
 #include "Base/Log/Sinks/RollingFileSink.h"
 #include "Database/MySql/MySqlConnection.h"
 #include "Database/Redis/RedisConnection.h"
-#include "Net/Http/Gzip.h"
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Features/Gzip.h"
+#include "Net/Http/Message/HttpResponse.h"
 #include "Platform/IO/NetworkInterface.h"
 
 #include <cstdio>

@@ -2,8 +2,8 @@
 
 #include "Base/Exception/LogicException.h"
 #include "Base/Log/LogContext.h"
-#include "Net/Http/HttpMethod.h"
-#include "Net/Http/TraceContext.h"
+#include "Net/Http/Message/HttpMethod.h"
+#include "Net/Http/Message/TraceContext.h"
 #include "Net/Tracing/Span.h"
 
 #include <exception>

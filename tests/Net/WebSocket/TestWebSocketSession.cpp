@@ -13,10 +13,10 @@
 
 #include "Core/EventLoop/Timer.h"
 #include "ExpectedAssertions.h"
-#include "Net/Http/HttpServerLimits.h"
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Config/HttpServerLimits.h"
+#include "Net/Http/Server/HttpServerStats.h"
 #include "Net/WebSocket/WebSocketUpgradePolicy.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Routing/Router.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketHub.h"

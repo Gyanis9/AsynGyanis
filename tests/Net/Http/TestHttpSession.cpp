@@ -1,5 +1,5 @@
 // HttpSession 单元测试：保持活跃判定、跨次读取的缓冲与流水线残留、定界超限应答、 HEAD 只发头部（与 GET 逐字节一致），以及取消转发
-#include "Net/Http/HttpSession.h"
+#include "Net/Http/Server/HttpSession.h"
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
@@ -9,9 +9,9 @@
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/Connection.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Router.h"
 #include "Platform/IO/FileDescriptor.h"
 
 #include "HttpTestSupport.h"

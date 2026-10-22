@@ -12,7 +12,7 @@
 // - JwkRoundTripsExportedKeyMaterial（JWK 构造的公钥与原键同解，并能验真令牌）
 
 #include "ExpectedAssertions.h"
-#include "Net/Http/JwtVerifier.h"
+#include "Net/Http/Auth/JwtVerifier.h"
 
 #include <openssl/core_names.h>
 #include <openssl/bn.h>

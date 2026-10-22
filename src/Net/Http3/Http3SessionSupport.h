@@ -12,7 +12,7 @@
 
 #pragma once
 
-#include "Net/Http/HttpResponse.h"
+#include "Net/Http/Message/HttpResponse.h"
 
 #include <string_view>
 

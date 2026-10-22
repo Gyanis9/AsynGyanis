@@ -6,7 +6,7 @@
 
 #include "Net/Metrics/HttpStatsOtlp.h"
 
-#include "Net/Http/HttpMetricsEndpoint.h"
+#include "Net/Http/Server/HttpMetricsEndpoint.h"
 
 #include <gtest/gtest.h>
 

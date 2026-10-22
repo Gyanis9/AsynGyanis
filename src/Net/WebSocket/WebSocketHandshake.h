@@ -12,7 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Base/Exception/Exception.h"
-#include "Net/Http/HttpRequest.h"
+#include "Net/Http/Message/HttpRequest.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketError.h"
 

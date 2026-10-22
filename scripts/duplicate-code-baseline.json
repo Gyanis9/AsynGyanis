@@ -4,7 +4,7 @@
     {
       "hash": "119461545c1f6444",
       "files": [
-        "src/Net/Http/HttpSession.h",
+        "src/Net/Http/Server/HttpSession.h",
         "src/Net/Http2/Http2Session.cpp"
       ],
       "occurrences": 2
@@ -28,7 +28,7 @@
     {
       "hash": "2e4ca68b03f40d9b",
       "files": [
-        "src/Net/Http/HttpSession.h",
+        "src/Net/Http/Server/HttpSession.h",
         "src/Net/Http2/Http2Session.cpp"
       ],
       "occurrences": 2
@@ -105,14 +105,14 @@
     {
       "hash": "7c6df11ac4f5edc7",
       "files": [
-        "src/Net/Http/Middleware.h"
+        "src/Net/Http/Routing/Middleware.h"
       ],
       "occurrences": 2
     },
     {
       "hash": "811893edda5e69f1",
       "files": [
-        "src/Net/Http/SseStream.cpp"
+        "src/Net/Http/Features/SseStream.cpp"
       ],
       "occurrences": 2
     },

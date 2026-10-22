@@ -6,16 +6,16 @@
 // 用例走真实回环套接字，端口由内核分配，用例之间不共用任何固定资源；
 // 回环夹具（RunningHttpServerFixture / LoopbackClient）在 HttpTestSupport.h 中。
 
-#include "Net/Http/HttpServer.h"
+#include "Net/Http/Server/HttpServer.h"
 
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "HttpTestSupport.h"
-#include "Net/Http/HttpParserLimits.h"
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/HttpServerLimits.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpParserLimits.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Config/HttpServerLimits.h"
+#include "Net/Http/Routing/Router.h"
 
 #include <gtest/gtest.h>
 

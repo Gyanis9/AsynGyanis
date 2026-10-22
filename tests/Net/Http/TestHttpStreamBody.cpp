@@ -1,5 +1,5 @@
 // HttpStreamBody 单元测试：交付语义与「消费才归还接收窗口」的记账
-#include "Net/Http/HttpStreamBody.h"
+#include "Net/Http/Message/HttpStreamBody.h"
 
 #include <gtest/gtest.h>
 

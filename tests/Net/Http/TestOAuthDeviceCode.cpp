@@ -10,7 +10,7 @@
 // - RejectsWrongShapedPeerPayloadsWithNamedReasons（缺必填字段、interval 非正、缺 access_token/token_type）
 // - RejectsEmptyConfigurationAtConstruction（三个必填取值）
 
-#include "Net/Http/OAuthDeviceCode.h"
+#include "Net/Http/Auth/OAuthDeviceCode.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 
@@ -21,7 +21,7 @@
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
-#include "Net/Http/OAuthError.h"
+#include "Net/Http/Auth/OAuthError.h"
 
 #include <gtest/gtest.h>
 

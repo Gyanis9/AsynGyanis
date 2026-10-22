@@ -1,7 +1,7 @@
 #include "Net/Http/Client/HttpContentCoding.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
-#include "Net/Http/Gzip.h"
+#include "Net/Http/Features/Gzip.h"
 
 #include <algorithm>
 #include <cctype>

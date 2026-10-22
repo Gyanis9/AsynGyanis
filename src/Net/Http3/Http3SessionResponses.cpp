@@ -14,9 +14,9 @@
 #include "Net/Http3/Http3SessionSupport.h"
 
 #include "Base/Log/LogMacros.h"
-#include "Net/Http/HttpChunkFrame.h"
-#include "Net/Http/HttpDate.h"
-#include "Net/Http/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpChunkFrame.h"
+#include "Net/Http/Message/HttpDate.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 #include "Net/Http3/Qpack.h"
 
 #include <cstdint>

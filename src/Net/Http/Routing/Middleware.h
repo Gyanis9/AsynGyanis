@@ -1,0 +1,1975 @@
+/**
+ * @file Middleware.h
+ * @brief HTTP 请求/响应中间件管道与常用中间件工厂
+ * @author Gyanis
+ * @date 2026-09-12
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "AsynGyanisExport.h"
+
+#include "Core/Coroutine/AsyncExecutor.h"
+#include "Core/Coroutine/Task.h"
+#include "Core/Crypto/Digest.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
+#include "Net/Http/Features/Compression.h"
+#include "Net/Http/Features/Gzip.h"
+#include "Net/Http/Message/HttpBodyDecodeError.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
+#include "Net/Http/Message/HttpMemoryBudget.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Message/TraceContext.h"
+
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Coding/Base64.h"
+#include "Base/Coding/SecureCompare.h"
+#include "Base/Log/LogEscaping.h"
+#include "Base/Log/LogMacros.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/SourceLocation.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <ranges>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace AsynGyanis::Net
+{
+    /**
+     * @brief 中间件函数类型。
+     *
+     * @details next 是「继续走下游」的入口：不调用它即短路，下游中间件与业务处理器都不再执行
+     *          （限流、CORS 预检就是这么做的）。
+     *
+     * @note next 只在本次中间件调用期间有效：它捕获的是管道内部的局部状态，
+     *       中间件不得把它存起来留到别的请求里再调用，那是悬垂引用。
+     */
+    using MiddlewareFunc = std::function<Core::Task<void>(HttpRequest &, HttpResponse &, std::function<Core::Task<void>()>)>;
+
+    /**
+     * @brief 中间件管道的终点：已经绑定好业务处理器的可调用对象。
+     *
+     * @details Router 把「调用命中的 handler」包装成这个类型交给管道，
+     *          管道全程按 const 引用传递，避免每条请求拷贝一次 std::function。
+     */
+    using TerminalHandler = std::function<Core::Task<void>()>;
+
+    /**
+     * @brief 中间件管道，按注册顺序依次执行中间件，最终执行业务处理器。
+     *
+     * @details 执行顺序为「注册顺序正向进入、逆向退出」的洋葱模型：
+     *          middleware[0] 的前置 → middleware[1] 的前置 → … → handler → … → middleware[1] 的后置 → middleware[0] 的后置。
+     *          任一中间件不 `co_await next()` 即短路，其后的中间件与业务处理器都不再执行。
+     *
+     * @note 管道本身不做任何加锁：一条 HTTP 连接从头到尾在同一个事件循环线程上串行执行，
+     *       中间件内部若要放共享状态，请自行保证与「单循环线程」假设一致（见 rateLimiterMiddleware）。
+     */
+    class ASYN_NET_API MiddlewarePipeline
+    {
+    public:
+        /**
+         * @brief 默认构造函数，创建一个空管道。
+         */
+        MiddlewarePipeline() = default;
+
+        /**
+         * @brief 注册一个中间件到管道末尾。
+         * @param middleware 中间件函数，所有权转移给管道
+         */
+        void use(MiddlewareFunc middleware);
+
+        /**
+         * @brief 已注册的中间件数量。
+         * @return std::size_t 中间件条数，空管道返回 0
+         */
+        [[nodiscard]] std::size_t middlewareCount() const noexcept;
+
+        /**
+         * @brief 运行中间件管道，从第一个中间件开始依次执行，最终调用业务处理器。
+         * @param request  HTTP 请求对象（可被中间件修改）
+         * @param response HTTP 响应对象（可被中间件修改）
+         * @param handler  终点业务处理器；按 const 引用贯穿整条链，本函数不接管其生命周期
+         * @return Core::Task<> 协程任务，整条链结束后完成
+         * @throws std::exception 中间件或业务处理器抛出的异常原样向上传播
+         * @note handler 必须活到返回的协程结束，调用方（Router）是在自己的协程帧里 co_await 本任务的，
+         *       因此把 handler 放在调用方栈上就是安全的
+         */
+        Core::Task<> run(HttpRequest &request, HttpResponse &response, const TerminalHandler &handler);
+
+    private:
+        /**
+         * @brief 递归调用中间件链
+         * @param index    当前要执行的中间件下标，等于 m_middlewares.size() 时执行终点处理器
+         * @param request  请求对象
+         * @param response 响应对象
+         * @param handler  终点业务处理器（const 引用，逐层继续按引用下传）
+         * @return Core::Task<> 协程
+         */
+        Core::Task<> invoke(std::size_t index, HttpRequest &request, HttpResponse &response, const TerminalHandler &handler);
+
+        std::vector<MiddlewareFunc> m_middlewares; ///< 已注册的中间件，按注册顺序排列
+    };
+
+    // ============================================================================
+    // MiddlewarePipeline 内联实现
+    // ============================================================================
+
+    inline void MiddlewarePipeline::use(MiddlewareFunc middleware)
+    {
+        // 直接 push_back 并转移所有权：中间件对象可能持有捕获，拷贝一次是白给的开销
+        m_middlewares.push_back(std::move(middleware));
+    }
+
+    inline std::size_t MiddlewarePipeline::middlewareCount() const noexcept
+    {
+        return m_middlewares.size();
+    }
+
+    inline Core::Task<> MiddlewarePipeline::run(HttpRequest &request, HttpResponse &response, const TerminalHandler &handler)
+    {
+        // 空管道也要 co_await：终点处理器的异常必须沿同一条传播路径回到调用方
+        co_await invoke(0, request, response, handler);
+    }
+
+    inline Core::Task<> MiddlewarePipeline::invoke(const std::size_t index, HttpRequest &request, HttpResponse &response, const TerminalHandler &handler)
+    {
+        // 递归出口：中间件用尽，执行绑定了业务处理器的终点回调
+        if (index >= m_middlewares.size())
+        {
+            co_await handler();
+            co_return;
+        }
+
+        // next 只按引用捕获下游状态，不进 std::function 的对象里再复制一份 handler，
+        // 否则每层中间件都会拷贝一次终点 std::function（大 lambda 的捕获会退化成每请求堆分配）
+        co_await m_middlewares[index](request, response,
+                                      [this, index, &request, &response, &handler]() -> Core::Task<void> { co_await invoke(index + 1, request, response, handler); });
+    }
+
+    // ============================================================================
+    // 常用中间件工厂
+    // ============================================================================
+
+    namespace Detail
+    {
+        /// 看门狗首个睡眠分片，单位毫秒：短请求只多等一个分片就能被回收，量级取「人眼不可察」的 1ms
+        inline constexpr std::chrono::milliseconds::rep kTimeoutWatchdogInitialSliceMs = 1;
+
+        /// 看门狗睡眠分片上限，单位毫秒：再长也不会让已完成请求的回收等待超过一个数量级，同时避免高频醒来
+        inline constexpr std::chrono::milliseconds::rep kTimeoutWatchdogMaxSliceMs = 25;
+
+        /**
+         * @brief 超时看门狗与中间件之间共享的状态
+         *
+         * @details 只放「标志位」，不放响应对象指针：响应由中间件在链路收口后单点改写，
+         *          避免看门狗协程与业务协程在各自的挂起间隙交替写同一个 HttpResponse。
+         *          用 shared_ptr 持有是为了让看门狗协程在任何一条退出路径上都不会读到已销毁的状态。
+         */
+        struct ASYN_NET_API TimeoutGuardState
+        {
+            bool isChainFinished{false};    ///< 业务链是否已经跑完（看门狗据此提前收工）
+            bool isDeadlineReached{false};  ///< 到期标志，由看门狗在超时点位置位
+            bool isTimerUnavailable{false}; ///< 定时器创建失败，本轮不做超时约束
+        };
+
+        /**
+         * @brief 超时看门狗协程：分片睡眠到「业务链结束」或「截止时刻到达」
+         * @param loop 事件循环，定时器与调度器都取自它
+         * @param request 请求对象，到期时对它发出协作式取消
+         * @param timeout 超时时长
+         * @param state 与中间件共享的标志位状态
+         * @return Core::Task<> 协程，两条正常退出路径（结束/到期）都会正常完成
+         * @note 睡眠分片采用「指数增长 + 上限封顶」：短请求只花一个最小分片就能被发现结束，
+         *       长请求也不会因为高频醒来而烧 CPU。最后一跳总是夹到截止时刻，超时判定因此是准的。
+         */
+        inline Core::Task<> timeoutWatchdog(Core::EventLoop &loop, HttpRequest &request, const std::chrono::milliseconds timeout, const std::shared_ptr<TimeoutGuardState> &state)
+        {
+            try
+            {
+                // 每请求一个定时器：Timer 内部只有一个描述符，多个并发请求共用会互相覆盖 epoll 注册
+                Core::Timer timer(loop);
+                const auto  deadline = std::chrono::steady_clock::now() + timeout;
+
+                // 指数退避的分片长度，单位毫秒；初值与上限见调用处的常量说明
+                std::chrono::milliseconds slice{kTimeoutWatchdogInitialSliceMs};
+
+                while (true)
+                {
+                    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+
+                    // 已到截止时刻：发出协作式取消后收工，响应改写交给中间件本体（单点写入）
+                    if (remaining <= std::chrono::milliseconds::zero())
+                    {
+                        state->isDeadlineReached = true;
+                        // 这里只「请求」取消：底层业务是否中断取决于它是否检查 cancelToken()
+                        request.requestCancel();
+                        co_return;
+                    }
+
+                    // 挂起点：醒来要么是定时器到期，要么是循环被其他事件唤醒后重新排队
+                    co_await timer.waitFor(std::min(slice, remaining));
+
+                    // 业务链已经跑完，中间件马上会回收本协程，无需再等到截止时刻
+                    if (state->isChainFinished)
+                    {
+                        co_return;
+                    }
+
+                    // 分片翻倍但封顶，兼顾「短请求少等待」与「长请求少空转」
+                    slice = std::min(slice * 2, std::chrono::milliseconds{kTimeoutWatchdogMaxSliceMs});
+                }
+            } catch (const std::exception &)
+            {
+                // 定时器描述符创建失败（文件描述符耗尽一类）：退化成「本轮不做超时约束」，
+                // 绝不因为超时中间件本身失败而让业务请求直接失败
+                state->isTimerUnavailable = true;
+                co_return;
+            }
+        }
+
+        /**
+         * @brief 往 Vary 上补一个 token（已含则不重复，比对按 ASCII 大小写不敏感）
+         * @details Vary 是列表头，而 `setHeader` 是把整条换掉：一条先写 `accept-language` 的中间件
+         *          与一条后写 `Origin` 的 CORS 串起来，前者那个 token 就整条没了——共享缓存按剩下的
+         *          那个维度分桶，于是 A 来源的应答会被发给 B 来源，压缩副本会被发给不接受压缩的客户端。
+         *          框架里凡是要动 Vary 的都从这一个出口走，不再各写一份追加逻辑。
+         * @param response 响应
+         * @param token 要补上的字段名，如 `Origin`、`accept-encoding`
+         */
+        inline void appendVaryToken(HttpResponse &response, const std::string_view token)
+        {
+            const std::optional<std::string> existingVary = response.getHeader("vary");
+            if (!existingVary.has_value())
+            {
+                response.setHeader("vary", std::string(token));
+                return;
+            }
+
+            // 切分、裁 OWS 与大小写不敏感比较都在 `containsFieldValueToken` 那一份实现里（头部的
+            // `Connection`/`TE` 判定也走它），这里不再重复一份扫描
+            if (containsFieldValueToken(*existingVary, token))
+            {
+                return;
+            }
+
+            response.setHeader("vary", *existingVary + ", " + std::string(token));
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 创建一个访问日志中间件，按稳定字段顺序记录一条可被日志平台解析的访问日志。
+     * @param logger 日志器；为空指针时本中间件退化为透传（不记日志）
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 前置什么都不做，只在 `co_await next()` 返回后记一条 Info 日志，
+     *          因此业务短路响应（429、504）同样会被记录，方便压障。
+     *          输出是一行 `key=value` 段，键序固定：method/uri/status/duration_ms/bytes/
+     *          request_id/client/proto/tls/route；取不到的值为 `-`，便于按空格切分后再按等号取值。
+     *
+     * @note 参数按 shared_ptr 收取：中间件会被塞进类型擦除的 std::function 里长期存活，
+     *       按引用捕获外部对象等于把生命周期交给调用方口头保证，一旦对方传的是局部 logger 就是悬垂引用。
+     *       借用 Base::LoggerRegistry 持有的日志器时，可用「空 shared_ptr + 裸指针」构造一个不拥有的
+     *       共享指针（注册表单例的生命周期覆盖全进程）；若将来会 unregisterLogger()/clear()，
+     *       请改为调用方自己拥有的 shared_ptr。
+     * @note `bytes` 取 `HttpResponse::body()` 的字节数：本类不记已发字节，流式响应（分块/SSE）
+     *       的正文由会话逐段写出，这里恒报 0。要覆盖流式那一档得另加计数器，那会碰三条协议路径。
+     * @note `route` 是路由器落定的模式原文（如 `/users/:id`），不是实际 URI：按它出账与打点不会
+     *       让标签基数随访问过的 URL 增长；未命中的请求报 `-`。
+     * @warning 刻意不记录 Authorization/Cookie 一类凭据字段。
+     */
+    inline MiddlewareFunc loggingMiddleware(std::shared_ptr<const Base::Logger> logger)
+    {
+        return [logger = std::move(logger)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const auto startTimePoint = std::chrono::steady_clock::now();
+            co_await next();
+
+            // 空指针即「不记录」：让上层无需为「日志可选」这件事再包一层条件判断
+            if (logger == nullptr)
+            {
+                co_return;
+            }
+
+            // 耗时用毫秒整数：日志里读数量级够用，浮点秒反而把噪声写进眼睛
+            const auto        elapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTimePoint).count();
+            const auto        method              = methodKeyword(request.method());
+            const auto        requestId           = request.requestId();
+            const auto        route               = request.matchedRoute();
+            const std::string clientAddress       = request.remoteAddress();
+
+            logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(),
+                              "HTTP 访问 method={} uri={} status={} duration_ms={} bytes={} request_id={} client={} proto={} tls={} route={}",
+                              method.empty() ? std::string_view{"-"} : method, request.uri(), response.status(), elapsedMilliseconds, response.body().size(),
+                              requestId.empty() ? std::string_view{"-"} : requestId, clientAddress.empty() ? std::string_view{"-"} : std::string_view{clientAddress},
+                              request.httpVersion(), request.overTls() ? "1" : "0", route.empty() ? std::string_view{"-"} : route);
+        };
+    }
+
+    /**
+     * @brief CORS 策略，corsMiddleware 的可选项集合
+     */
+    struct ASYN_NET_API CorsPolicy
+    {
+        std::string          allowOrigin{"*"};                                       ///< Access-Control-Allow-Origin 取值，默认放开任意来源
+        std::string          allowMethods{"GET, POST, PUT, DELETE, PATCH, OPTIONS"}; ///< 预检应答里声明的方法集合，ASCII 逗号分隔
+        std::string          allowHeaders{"Content-Type, Authorization"};            ///< 预检应答里允许的申请头集合
+        std::chrono::seconds maxAge{86400};                                          ///< 预检结果缓存秒数，0 表示要求每次都发预检
+        bool                 allowCredentials{false};                                ///< 是否声明 Access-Control-Allow-Credentials
+    };
+
+    /**
+     * @brief 创建一个 CORS 中间件，处理跨域请求与 OPTIONS 预检。
+     * @param policy 跨域策略，默认值为「允许任意来源、不携带凭据」
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 预检请求（OPTIONS 且带 Access-Control-Request-Method）就地生成 204 预检应答，
+     *          不进入业务路由：业务 handler 收下一个它根本不该处理的 OPTIONS 只会回 404/405，
+     *          浏览器侧表现为「CORS 一直不通」。实际请求先挂上允许来源的头再放行下游。
+     *
+     * @warning 凭据与通配来源不能共存：`Access-Control-Allow-Origin: *` 与
+     *          `Access-Control-Allow-Credentials: true` 的组合会被浏览器直接判为失败，
+     *          而若为了「让它通」把 `*` 换成回显请求头里的 Origin，就等于允许任意站点
+     *          带着 Cookie 读取你的接口（CSRF 的翻版）。因此本实现在 allowOrigin 为 `*` 时
+     *          一律不输出 allow-credentials，并附一条 `Vary: Origin` 说明应答随来源而变。
+     *          确实要带凭据，请把 allowOrigin 写成具体站点并且自己维护白名单。
+     * @throws Base::InvalidArgumentException `allowOrigin`/`allowMethods`/`allowHeaders` 之一含
+     *         CR/LF/NUL 一类会撕裂字段值的字节，或 `maxAge` 为负。判据排在装配期而不是请求期：
+     *         留到请求期只会让 `setHeader` 静默拒写，现场表现是「配了 CORS 而响应上没有头」。
+     */
+    inline MiddlewareFunc corsMiddleware(CorsPolicy policy = {})
+    {
+        // 装得进来就一定写得出去：这三个取值都是原样上线的字段值，含 CR/LF/NUL 时
+        // `HttpResponse::setHeader` 会当场拒写（回 false 而不改任何状态），症状是「配了 CORS
+        // 而响应上一个头都没有」——浏览器只报 CORS 不通，服务端一声不响。判据与
+        // `altSvcMiddleware` 对端点主机名那条同一把尺：直接复用 `setHeader` 内部用的那一份谓词，
+        // 两处永远不会分出两套答案。
+        const auto requireWritableFieldValue = [](const std::string_view fieldName, const std::string &value)
+        {
+            if (!containsOnlyFieldValueCharacters(value))
+            {
+                throw Base::InvalidArgumentException("corsMiddleware: CORS 策略的「" + std::string(fieldName) +
+                                                     "」含 CR/LF/NUL 一类会撕裂头部字段值的字节——这样的值会被 setHeader 静默拒写，等于没配 CORS，请在装配前洗干净");
+            }
+        };
+        requireWritableFieldValue("allowOrigin", policy.allowOrigin);
+        requireWritableFieldValue("allowMethods", policy.allowMethods);
+        requireWritableFieldValue("allowHeaders", policy.allowHeaders);
+
+        if (policy.maxAge.count() < 0)
+        {
+            throw Base::InvalidArgumentException("corsMiddleware: 预检缓存秒数不能为负（负数被浏览器按「不缓存」处理，等于把 maxAge 这一格配废）；要每次都得发预检就填 0");
+        }
+
+        return [policy = std::move(policy)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isPreflightRequest = request.method() == HttpMethod::OPTIONS && request.hasHeader("access-control-request-method");
+
+            // 预检分支：应答只描述「允许的跨域方式」，与业务资源无关，所以直接短路
+            if (isPreflightRequest)
+            {
+                response.reset();
+                // 204 不带正文：预检应答没有内容体，省掉一次无意义的 Content-Length 计算
+                response.setStatus(204);
+                response.setHeader("access-control-allow-methods", policy.allowMethods);
+                response.setHeader("access-control-allow-headers", policy.allowHeaders);
+                response.setHeader("access-control-max-age", std::to_string(policy.maxAge.count()));
+                response.setHeader("access-control-allow-origin", policy.allowOrigin);
+                Detail::appendVaryToken(response, "Origin");
+
+                // 通配来源下不声明允许凭据，理由见 @warning
+                if (policy.allowCredentials && policy.allowOrigin != "*")
+                {
+                    response.setHeader("access-control-allow-credentials", "true");
+                }
+                co_return;
+            }
+
+            // 实际请求分支：头要在下游之前设好，业务若自行改写 origin 也仍有机会覆盖
+            response.setHeader("access-control-allow-origin", policy.allowOrigin);
+            Detail::appendVaryToken(response, "Origin");
+            if (policy.allowCredentials && policy.allowOrigin != "*")
+            {
+                response.setHeader("access-control-allow-credentials", "true");
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief alt-svc 通告的缺省缓存时长（RFC 7838 §3.2 的 ma 参数，单位秒）
+     *
+     * @details 取 24 小时：与 nginx 文档示例、Kestrel 的自动通告同值。客户端把它当成「这条备选端点
+     *          信息最多可信这么久」，到期后回落到原来的端点重新学一次，因此它同时是「h3 关掉之后
+     *          旧客户端还会敲多久 UDP」的上界。
+     */
+    inline constexpr std::chrono::seconds kAltSvcDefaultMaxAge{86400};
+
+    /**
+     * @brief 创建一个通告 HTTP/3 备选端点的中间件（RFC 7838 的 Alt-Svc）。
+     * @param http3Port             HTTP/3 服务在监听的 UDP 端口，不能为 0
+     * @param maxAge                通告的缓存时长（`ma` 参数），必须为正
+     * @param alternativeAuthority  备选端点的主机名；留空表示「与本次响应同一个主机」，
+     *                              只在 h3 挂在另一台主机上（前置 TLS 终结、CDN 回源）时才需要给出
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException 端口为 0、maxAge 非正，或 alternativeAuthority 里带了
+     *         会撕裂字段值的字符（CR/LF/NUL、双引号、分号）
+     *
+     * @details 产出形如 `alt-svc: h3=":8443"; ma=86400`（给了主机名则是 `h3="edge.example.com:8443"; ma=86400`）。
+     *          取值与请求无关，因此在工厂里渲染一次由所有请求共享，逐条请求不再拼字符串、不分配。
+     *
+     *          头在下游之前挂上，与 corsMiddleware、x-request-id 自动补齐同一个优先级口径：
+     *          业务处理器自己 `setHeader("alt-svc", ...)` 就会覆盖掉这条通告。
+     *
+     * @note 已经跑在 HTTP/3 上的请求（`HttpRequest::httpVersion()` 以 `HTTP/3` 开头）不通告：
+     *       它不需要被告知怎么切到自己正在用的协议。
+     * @note 只有走到路由器的请求才经过管道，因此会话在派发之前就收口的那些应答（头部过大的 431、
+     *       过载的 503）不带这条通告。客户端从任意一条正常应答学到即可，覆盖面不需要做到 100%。
+     * @note 通告只是「另一个端点在那儿等着」，本框架不会替你把 QUIC 服务起起来：h3 侧要另行
+     *       构造 QuicServer 并让它与 HttpsServer 用同一套证书，端口号才与本中间件声明的一致。
+     */
+    inline MiddlewareFunc altSvcMiddleware(const std::uint16_t http3Port, const std::chrono::seconds maxAge = kAltSvcDefaultMaxAge,
+                                           const std::string_view alternativeAuthority = {})
+    {
+        if (http3Port == 0U)
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: HTTP/3 端口不能为 0，那不是可连接的端点");
+        }
+        if (maxAge <= std::chrono::seconds::zero())
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: 通告缓存时长必须为正数；不想被缓存就不要注册本中间件");
+        }
+        if (!containsOnlyFieldValueCharacters(alternativeAuthority) || alternativeAuthority.find_first_of("\";") != std::string_view::npos)
+        {
+            throw Base::InvalidArgumentException("altSvcMiddleware: 备选端点主机名不能含 CR/LF/NUL/双引号/分号，否则会撕裂 alt-svc 字段值");
+        }
+
+        std::string advertisement = "h3=\"";
+        advertisement.append(alternativeAuthority);
+        advertisement += ':';
+        advertisement += std::to_string(http3Port);
+        advertisement += "\"; ma=";
+        advertisement += std::to_string(maxAge.count());
+
+        return [advertisement = std::move(advertisement)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            if (!request.httpVersion().starts_with("HTTP/3"))
+            {
+                static_cast<void>(response.setHeader("alt-svc", advertisement));
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief traceContextMiddleware 的策略开关
+     */
+    struct ASYN_NET_API TraceContextOptions
+    {
+        bool        isGeneratedWhenAbsent{true}; ///< 上游没给、或给的形态不合法时，是否新起一条链路
+        bool        isSampledByDefault{true};    ///< 新起链路的采样位初值；已存在的链路一律沿用上游的采样位
+        std::string vendorKey{};                 ///< 非空时把自己的条目 upsert 进 tracestate，键须合 W3C §3.2.3
+    };
+
+    /**
+     * @brief 创建 W3C Trace Context 中间件：把请求上的链路上下文归一化成一条可信的 traceparent
+     *
+     * @details 三条口径，都是踩过坑的取舍：
+     *          - 上下文的权威形态就是那条头部，本中间件不另存第二份。合法就原样放过（一个字都不写、
+     *            一次分配都不碰），缺席/畸形才生成并 `setHeader` 写回——处理器与下游看到的永远是同一串字节，
+     *            不会出现「中间件记了一份、头部还是另一份」的两处状态。读侧用 extractTraceContext()。
+     *          - 畸形包含「同一请求带多条 traceparent」：读侧按名计数把这种歧义与「恰好一条」分开，
+     *            多条一律按「上游没给」重起一条。歧义不该被猜成任何一种解释，而写回时存储会把这个名
+     *            收拢成一条，下游不会再看到两份链路。
+     *          - tracestate 只在显式给出 vendorKey 时才动：它按规范要把自己的键挪到最前并丢掉后面的同名项，
+     *            而条目表按值持串，默认做这件事等于给每条被跟踪的请求加一次分配。无效 tracestate 按缺席处理
+     *            （规范就是这么规定的），不影响本条链路。
+     *          - 响应上刻意什么都不写：traceparent/tracestate 是请求侧的传播字段，规范没定义响应形态，
+     *            自创一个回声头只会让下游误以为可以照它续链。
+     *
+     * @param options 策略开关；vendorKey 非空但键不合法时在注册期抛异常，不留到运行期静默不写
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException 用法错误：vendorKey 不是合法的 tracestate 键
+     * @see Traceparent, TraceState, extractTraceContext()
+     */
+    inline MiddlewareFunc traceContextMiddleware(TraceContextOptions options = {})
+    {
+        if (!options.vendorKey.empty() && !TraceState::isValidKey(options.vendorKey))
+        {
+            throw Base::InvalidArgumentException("traceContextMiddleware: tracestate 的键「" + options.vendorKey +
+                                                 "」不合 W3C §3.2.3（小写字母/数字起头，字符集 a-z 0-9 _ - . @ / *，"
+                                                 "且不得是 congo 或 tircongo）");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, [[maybe_unused]] HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            std::optional<TraceIdentifiers> identifiers = extractTraceContext(request);
+            if (!identifiers.has_value() && options.isGeneratedWhenAbsent)
+            {
+                identifiers = Traceparent::generate(options.isSampledByDefault);
+                // 渲染进循环线程自己的复用缓冲再写回头部：与 request-id 的落定同一条路子，
+                // 稳态下这条路径一次堆分配也不碰
+                thread_local std::string traceparentText;
+                Traceparent::renderInto(traceparentText, *identifiers);
+                static_cast<void>(request.setHeader(kTraceparentHeaderName, traceparentText));
+            }
+
+            if (!options.vendorKey.empty() && identifiers.has_value())
+            {
+                // 多条同名头部按 RFC 9110 §5.3 合并后再解析（读第一条会在网关分片转发时丢后半段）
+                std::optional<TraceState> parsedState = extractTraceState(request);
+                TraceState                state;
+                if (parsedState.has_value())
+                {
+                    state = std::move(*parsedState);
+                }
+                // 条目值取本段的 span-id：下游据此能把「谁参与过这条链路」与具体那一段对上
+                static_cast<void>(state.upsertFront(options.vendorKey, identifiers->parentIdText()));
+                thread_local std::string traceStateText;
+                state.renderInto(traceStateText);
+                static_cast<void>(request.setHeader(kTracestateHeaderName, traceStateText));
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief 创建一个协作式超时中间件：到期即请求取消业务链并回 504。
+     * @param loop    事件循环，用于创建定时器与投递看门狗协程，必须比路由器活得久
+     * @param timeout 超时时长；非正值等价于「不启用超时」，只做透传
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 看门狗协程投递到调度器上睡到截止时刻，醒来调用 HttpRequest::requestCancel()
+     *          并把「已超时」写进共享状态；业务链返回时中间件据该标志把响应重置为 504。
+     *          只比实际耗时的写法既取消不了业务、也改不动本轮已经发出的响应。
+     *
+     * @warning 这是协作式超时。单线程协程模型里没有抢占：
+     *          @li 业务 handler 必须周期性检查 `request.cancelToken().stop_requested()`
+     *              并尽快 `co_return`，否则中间件只能等它跑完再改写 504；
+     *          @li 全程不让出 CPU 的 handler（死循环、长同步计算、阻塞调用）既不会被定时唤醒打断，
+     *              也会把看门狗一起饿死，因为它同样需要循环空出来才能被调度。
+     *          需要「硬超时」请在业务侧使用可中断的等待，或把长任务放到 ThreadPool 并配合 Core::Cancelable。
+     *
+     * @note 取消信号的落点是 HttpRequest；连接的统一取消入口是 Core::Connection::cancelable()。
+     *       三条通道各自在每次路由前注册一次转发（`HttpSession` 的 ConnectionCancelForwarder 按连接注册
+     *       一次覆盖整条 keep-alive 循环、`Http2Session::serveOneRequest` 每请求一份、h3 的两个派发出口
+     *       `Http3Session::pump` 与 `Http3Session::serveStreamingRequest` 各一份），
+     *       两条来源到期都体现在同一个 request.cancelToken() 上。第三种来源是「对端取消这一条流」：
+     *       h2 在 `Http2Session::noteCancelledStreams` 里交、h3 在 `Http3Session::drainPeerCancelledStreams`
+     *       里交（都在叫醒等待者之前交，处理器醒来读到的就是本条请求自己的状态），h1 没有第三种——
+     *       处理器执行期间不并发读这条连接，理由见 `HttpSession::ConnectionCancelForwarder` 的注释。
+     *       h3 会话没有 Core::Connection 那一层
+     *       （字节走 UDP 承载，收口由 QuicServer 按连接/流做），故由会话自己的停止源
+     *       `Http3Session::m_shutdownCancelable` 承担同一角色：只有「承载连接已经没了」那一步请求它停止，
+     *       优雅排空那一步刻意不请求——在途的已受理请求要能跑完，这一格与 h1/h2 的 drain 只停非 busy
+     *       连接是同一条判据。
+     * @note 每条在途请求会额外占一个定时器描述符与一个协程帧，因此本中间件是按需安装的，
+     *       不作为默认管道成员。
+     */
+    inline MiddlewareFunc timeoutMiddleware(Core::EventLoop &loop, const std::chrono::milliseconds timeout)
+    {
+        return [&loop, timeout](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 非正数视为「不超时」：省掉一次定时器与协程帧，语义比「立刻超时」更符合调用方直觉
+            if (timeout <= std::chrono::milliseconds::zero())
+            {
+                co_await next();
+                co_return;
+            }
+
+            auto state = std::make_shared<Detail::TimeoutGuardState>();
+
+            // 业务链的起始时刻：正常路径由看门狗判到期，这里只给「定时器不可用」的退化路径兜底
+            const auto chainStartTimePoint = std::chrono::steady_clock::now();
+
+            // 用 optional 持有：业务跑完之后直接销毁它（见下方收尾处），不必等它按分片醒来
+            std::optional<Core::Task<>> watchdogTask = Detail::timeoutWatchdog(loop, request, timeout, state);
+            // 就地首拍而不是把句柄投给调度器：投出去的裸句柄摘不回来——它若在业务链跑完之前
+            // 还躺在就绪队列里，收尾处销毁帧就会给队列留下一个悬空句柄。就地启动让帧的归属
+            // 只留在本作用域的 Task 上，收尾因此只剩「直接销毁」一种状态
+            watchdogTask->handle().resume();
+
+            // 业务链的异常先存起来：无论它正常返回还是抛出，都必须先把看门狗收干净再往上抛
+            std::exception_ptr chainException = nullptr;
+            try
+            {
+                co_await next();
+            } catch (...)
+            {
+                chainException = std::current_exception();
+            }
+
+            // 置位结束标志：看门狗最迟在当前睡眠分片末尾看到它并正常完成
+            state->isChainFinished = true;
+
+            // 回收看门狗协程帧：就地首拍保证本协程必然已经开跑——要么挂在定时器分片上、
+            // 要么已停在终结点，两种状态销毁帧都安全（帧内 Timer 随帧析构注销登记），
+            // 不必等它自己按分片醒来（最长 25ms，而此刻已经不需要它了）。
+            // 不能带着未完成的子协程返回——否则请求对象与响应对象都可能在协程余下的
+            // 生命周期里被会话复用掉
+            watchdogTask.reset();
+
+            // 定时器申请不到描述符时看门狗根本没能跑起来，退化成「事后按实际耗时判超时」：
+            // 至少不会悄悄丢掉超时语义；两条判据互斥，正常路径只走前者
+            const bool isElapsedOverTimeout = std::chrono::steady_clock::now() - chainStartTimePoint > timeout && state->isTimerUnavailable;
+
+            // 超时判定只在此处单点改写响应：晚于业务的一切写入，保证线上发的就是 504
+            if (state->isDeadlineReached || isElapsedOverTimeout)
+            {
+                // 流式响应已经发过至少一段时不能改写：头部（状态码与头字段）早在上线那一刻定稿，
+                // 而 reset() 会把 isChunked/hasSentChunkedHead 一并清掉——会话据此以为这是「新响应」，
+                // 于是分块正文中间又插进一条完整的 504，对端直接报协议错。
+                // 此时唯一正确的动作是记一条日志、让这条流按已发出的状态码收尾
+                if (response.isChunkedResponse() && response.hasSentChunkedHead())
+                {
+                    LOG_WARN_FMT("TimeoutMiddleware: 请求已超时，但流式响应的头部早已上线，无法改写成 504；"
+                                 "该流将按已发出的状态码收尾（对端不会看到超时语义）");
+                } else
+                {
+                    // 先重置再填：业务在半路上写的头与正文都可能带着「已经成功」的痕迹，留着会误导客户端
+                    response.reset();
+                    response.setStatus(504);
+                    response.setBody("Gateway Timeout");
+                    response.setHeader("content-type", kPlainTextContentType);
+                }
+            }
+
+            // 异常原样上抛，由会话统一转成 500：超时中间件不改变业务的失败语义
+            if (chainException)
+            {
+                std::rethrow_exception(chainException);
+            }
+        };
+    }
+
+    /**
+     * @brief 创建一个速率限制中间件。
+     * @param maximumRequestCount 在 windowDuration 时间窗口内允许的最大请求数，0 表示全部拒绝
+     * @param windowDuration      时间窗口长度；以毫秒为单位接收，传秒字面量会自动换算
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 固定窗口计数（窗口到期整体清零）。超出上限时直接回 429 Too Many Requests
+     *          并带上 Retry-After，不调用下游，因此业务 handler 不会被无谓唤醒。
+     *
+     * @note 计数器为「每个中间件实例一份」，进程内全局共享，非线程安全：
+     *       它假定所有会话跑在同一个事件循环线程上。多循环/多进程部署请换用原子计数或外部存储。
+     * @warning 固定窗口有两个坑：
+     *          @li 临界突发：窗口切换的前后各放行一整批，瞬时速率可达配置值的两倍；
+     *          @li 额度按实例算：本中间件注册到哪个服务器，额度就只属于那个服务器。多监听器
+     *             部署（每循环一个服务器）时若逐个注册，进程级的实际上限会乘上监听器数量。
+     *          要一个真正的全局上限，用下面基于共享令牌桶的 tokenBucketRateLimiterMiddleware()。
+     */
+    inline MiddlewareFunc rateLimiterMiddleware(const std::size_t maximumRequestCount, const std::chrono::milliseconds windowDuration)
+    {
+        struct WindowBucket
+        {
+            std::chrono::steady_clock::time_point windowStartTimePoint{std::chrono::steady_clock::now()}; ///< 本窗口起点
+            std::size_t                           requestCount{0};                                        ///< 本窗口已放行的请求数
+        };
+
+        auto bucket = std::make_shared<WindowBucket>();
+
+        return [bucket, maximumRequestCount, windowDuration]([[maybe_unused]] HttpRequest &request, HttpResponse &response,
+                                                             const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 先滑动窗口再计数：窗口刚过期的请求应该落进新窗口，而不是被旧窗口的余额拒绝
+            const auto nowTimePoint = std::chrono::steady_clock::now();
+            if (nowTimePoint - bucket->windowStartTimePoint > windowDuration)
+            {
+                bucket->windowStartTimePoint = nowTimePoint;
+                bucket->requestCount         = 0;
+            }
+
+            ++bucket->requestCount;
+
+            // 超限分支：429 + Retry-After，正文 ASCII，原因短语由 HttpResponse 侧统一给出
+            if (bucket->requestCount > maximumRequestCount)
+            {
+                response.setStatus(429);
+                response.setBody("Too Many Requests");
+                response.setHeader("content-type", kPlainTextContentType);
+                // Retry-After 按 RFC 9110 §10.2.3 是「秒」为单位的 delta-seconds，
+                // 窗口以毫秒配置时向上取整换算，避免亚秒窗口被截成 0 让客户端立刻重试
+                const auto retryAfterSeconds = (windowDuration.count() + 999) / 1000;
+                response.setHeader("retry-after", std::to_string(retryAfterSeconds));
+                co_return;
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief 令牌桶：按恒定速率补令牌，取不到即拒绝
+     *
+     * @details 与固定窗口的分工：固定窗口在窗口切换的前后各放行一整批（瞬时速率可达配置值的两倍），
+     *          令牌桶按经过的时间连续补令牌、超出容量的部分丢弃，长期速率精确等于配置值，
+     *          桶容量则决定能容忍多大的瞬时突发。
+     *
+     * @note 线程安全（一把互斥量护住桶状态）：会话可能跑在不同循环线程上。要在所有监听器之间
+     *       共享同一实例才能构成进程级的全局 RPS 上限——每个服务器各持一份的话，实际上限会乘上
+     *       监听器数量（与 PerIpConnectionLimiter 同一类坑）。
+     */
+    class ASYN_NET_API TokenBucket
+    {
+    public:
+        /**
+         * @brief 构造令牌桶
+         * @param tokensPerSecond 补令牌速率（每秒多少个），必须为正
+         * @param burstCapacity 桶容量，即瞬时允许的突发量，必须 ≥ 1
+         * @throws Base::InvalidArgumentException 速率非正或容量小于 1
+         * @note 容量必须 ≥ 1：容量小于 1 的桶永远攒不满一个令牌，等于把所有请求都拒掉——
+         *       那是配置错误，不是「严格限流」，所以直接抛而不是静默全拒
+         */
+        TokenBucket(const double tokensPerSecond, const double burstCapacity) : m_tokensPerSecond(tokensPerSecond), m_burstCapacity(burstCapacity), m_tokenCount(burstCapacity)
+        {
+            if (!(m_tokensPerSecond > 0.0))
+            {
+                throw Base::InvalidArgumentException("TokenBucket: 补令牌速率必须为正数");
+            }
+            if (!(m_burstCapacity >= 1.0))
+            {
+                throw Base::InvalidArgumentException("TokenBucket: 桶容量必须不小于 1，否则永远放行不了任何请求");
+            }
+        }
+
+        /**
+         * @brief 尝试取走一个令牌
+         * @return true 取到（放行）；false 桶里不足一个令牌（拒绝）
+         */
+        [[nodiscard]] bool tryAcquire()
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+
+            // 先按经过的时间补令牌，再封顶到桶容量：不封顶的话，空闲一天攒下的令牌够放行一整天的流量，
+            // 限流形同虚设。补令牌只算经过的时间，因此长期平均速率恰为配置值
+            const auto   nowTimePoint   = std::chrono::steady_clock::now();
+            const double elapsedSeconds = std::chrono::duration<double>(nowTimePoint - m_lastRefillTimePoint).count();
+            m_tokenCount                = std::min(m_burstCapacity, m_tokenCount + elapsedSeconds * m_tokensPerSecond);
+            m_lastRefillTimePoint       = nowTimePoint;
+
+            if (m_tokenCount < 1.0)
+            {
+                return false;
+            }
+            m_tokenCount -= 1.0;
+            return true;
+        }
+
+        /**
+         * @brief 补令牌速率（观测用，不参与判定）
+         * @return double 每秒补多少枚令牌
+         * @note 给装配出口的「共享桶与整机配置是否对得上」判据用：桶的速率在构造时定死，
+         *       传进来一份与配置摊分结果不一致的桶就等于配置没生效，而这类偏差只能问桶
+         */
+        [[nodiscard]] double tokensPerSecond() const noexcept
+        {
+            return m_tokensPerSecond;
+        }
+
+        /**
+         * @brief 桶容量（观测用，不参与判定）
+         * @return double 瞬时允许突发多少枚
+         */
+        [[nodiscard]] double burstCapacity() const noexcept
+        {
+            return m_burstCapacity;
+        }
+
+        /**
+         * @brief 当前桶里的令牌数（观测用，不参与判定）
+         * @return double 令牌数，取值在 [0, 桶容量] 内
+         */
+        [[nodiscard]] double availableTokenCount() const
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+            return m_tokenCount;
+        }
+
+        /**
+         * @brief 距离下一个令牌可用还有多久
+         * @return std::chrono::milliseconds 等待时长；桶里已有令牌时为 0
+         * @note 给 Retry-After 用：按「还差多少令牌 ÷ 补令牌速率」折算，不四舍五入成 0
+         */
+        [[nodiscard]] std::chrono::milliseconds timeUntilTokenAvailable() const
+        {
+            std::lock_guard<std::mutex> guard(m_mutex);
+            if (m_tokenCount >= 1.0)
+            {
+                return std::chrono::milliseconds::zero();
+            }
+
+            const double secondsUntilAvailable      = (1.0 - m_tokenCount) / m_tokensPerSecond;
+            const auto   millisecondsUntilAvailable = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(secondsUntilAvailable));
+            // 亚毫秒的等待向上取整到 1ms：返回 0 会让调用方以为「立刻就能重试」，反而制造空转
+            return std::max(millisecondsUntilAvailable, std::chrono::milliseconds{1});
+        }
+
+    private:
+        mutable std::mutex                    m_mutex;                                                 ///< 保护下面几项；桶可能被多个循环线程同时取
+        double                                m_tokensPerSecond;                                       ///< 补令牌速率（个/秒）
+        double                                m_burstCapacity;                                         ///< 桶容量（瞬时突发上限）
+        double                                m_tokenCount;                                            ///< 当前令牌数
+        std::chrono::steady_clock::time_point m_lastRefillTimePoint{std::chrono::steady_clock::now()}; ///< 上次补令牌的时刻
+    };
+
+    /**
+     * @brief 创建基于共享令牌桶的速率限制中间件（超限回 429 Too Many Requests）
+     * @param bucket 令牌桶；由调用方在所有监听器之间共享同一份才能构成全局 RPS 上限
+     * @return MiddlewareFunc 中间件函数
+     * @throws Base::InvalidArgumentException bucket 为空指针
+     *
+     * @details 取不到令牌时直接回 429 并附 Retry-After，不调用下游：业务 handler 不会被唤醒。
+     *
+     * @note 空指针是用法错误而不是「不限制」：静默放行会让调用方以为限流生效，实际完全没有保护；
+     *       要「不限制」就不要注册本中间件。
+     * @see TokenBucket, rateLimiterMiddleware()
+     */
+    inline MiddlewareFunc tokenBucketRateLimiterMiddleware(std::shared_ptr<TokenBucket> bucket)
+    {
+        if (bucket == nullptr)
+        {
+            throw Base::InvalidArgumentException("tokenBucketRateLimiterMiddleware: 令牌桶不能为空指针；不需要限流就不要注册本中间件");
+        }
+
+        return [bucket = std::move(bucket)]([[maybe_unused]] HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            if (!bucket->tryAcquire())
+            {
+                response.setStatus(429);
+                response.setBody("Too Many Requests");
+                response.setHeader("content-type", kPlainTextContentType);
+
+                // Retry-After 的单位是秒（RFC 9110 §10.2.3 的 delta-seconds），因此把毫秒向上取整到秒、
+                // 且不低于 1：报 0 等于告诉客户端「立刻重试」，那正是限流要避免的
+                const auto waitMilliseconds  = bucket->timeUntilTokenAvailable().count();
+                const auto retryAfterSeconds = std::max<std::int64_t>(1, (waitMilliseconds + 999) / 1000);
+                response.setHeader("retry-after", std::to_string(retryAfterSeconds));
+                co_return;
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief 创建一个请求体大小限制中间件。
+     * @param maximumBodySize 允许的最大请求体字节数
+     * @return MiddlewareFunc 中间件函数
+     *
+     * @details 只看 Content-Length 声明值，在路由到业务处理器之前拦下超限请求并回 413。
+     *          这是一道「便宜的前置闸」：真正的硬上限由 HttpParser 在收字节时把关，
+     *          所以即使客户端谎报 Content-Length，也不会绕过解析器那一层。
+     *
+     * @note 与解析器策略保持一致：Content-Length 非法（非数字、越界）判 400 而不是放行，
+     *       谎报长度的报文要么走私要么残缺，交给业务处理没有好处。
+     */
+    inline MiddlewareFunc bodySizeLimitMiddleware(const std::size_t maximumBodySize)
+    {
+        return [maximumBodySize](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 只看首条而不是合并视图：取值一致的 content-length 允许重复出现（RFC 9110 §8.6），
+            // 合并口径会把它拼成「17, 17」，于是这道前置闸会把一条合法请求判成 400——h3 与 h2 的
+            //  framing 读的都是首条，这里必须与它们同口径。顺带省掉每条请求一次取值拷贝
+            if (const auto declaredLengthHeader = request.firstHeaderValueView("content-length"))
+            {
+                const std::string_view declaredText = *declaredLengthHeader;
+
+                // Content-Length 必须是纯十进制数字串（RFC 9110 §8.6）。不用 std::stoull：
+                // "-1" 会绕进 unsigned long long 变成 ULLONG_MAX，"12abc" 按前缀解析成 12，
+                // 只有越界才抛异常，三类畸形口径不一致。from_chars 判据统一：解析失败或有残留即不合法
+                unsigned long long           declaredBodyLength = 0;
+                const std::from_chars_result parseResult        = std::from_chars(declaredText.data(), declaredText.data() + declaredText.size(), declaredBodyLength);
+
+                if (parseResult.ec != std::errc{} || parseResult.ptr != declaredText.data() + declaredText.size())
+                {
+                    response.setStatus(400);
+                    response.setBody("Bad Request: Invalid Content-Length");
+                    response.setHeader("content-type", kPlainTextContentType);
+                    co_return;
+                }
+
+                // 声明值超上限：立刻短路，后续字节连解析都不用进
+                if (declaredBodyLength > maximumBodySize)
+                {
+                    response.setStatus(413);
+                    response.setBody("Payload Too Large");
+                    response.setHeader("content-type", kPlainTextContentType);
+                    co_return;
+                }
+            }
+
+            co_await next();
+        };
+    }
+
+    namespace Detail
+    {
+        /**
+         * @brief 判断 Accept-Encoding 是否接受某个编码（含 q 值语义）
+         * @details 既要认出目标编码名（大小写不敏感），也要认出 `*`（通配）与 `gzip;q=0`（明确拒绝）。
+         *          q=0 是拒绝而不是「优先级最低」：按 RFC 9110 §12.5.3 必须当作不可接受，
+         *          发该编码的正文等于违反协商。
+         * @param acceptEncoding Accept-Encoding 头部的值，缺头时传空串
+         * @param targetEncoding 待判定的编码名（小写，如 "gzip"/"br"/"zstd"）
+         * @param honorWildcard 传 false 时 `*` 不参选、只认显式列出的编码名：RFC 9842 §6.1 的模型是
+         *        「客户端把支持的字典编码显式加进 Accept-Encoding」，`*` 是「其余编码都行」的
+         *        历史语法，替它推断「支持字典解码」超出了题干；代价是漏掉不合规客户端，换来的是
+         *        绝不把 dcz 发给不认识它的对端
+         * @return true 可以使用该编码
+         */
+        [[nodiscard]] inline bool acceptsEncoding(const std::string_view acceptEncoding, const std::string_view targetEncoding, const bool honorWildcard = true)
+        {
+            std::size_t offset           = 0;
+            bool        wildcardAccepted = false;
+
+            while (offset < acceptEncoding.size())
+            {
+                const std::size_t commaPosition = acceptEncoding.find(',', offset);
+                const std::size_t entryEnd      = commaPosition == std::string_view::npos ? acceptEncoding.size() : commaPosition;
+
+                std::string_view entry = acceptEncoding.substr(offset, entryEnd - offset);
+                offset                 = entryEnd + 1;
+
+                // 拆出编码名与参数（形如 gzip;q=0.5）
+                const std::size_t      semicolonPosition = entry.find(';');
+                std::string_view       encodingName      = entry.substr(0, semicolonPosition);
+                const std::string_view parameters        = semicolonPosition == std::string_view::npos ? std::string_view{} : entry.substr(semicolonPosition + 1);
+
+                // 去掉首尾空白：头部里 "gzip ; q=0" 这种写法同样合法
+                while (!encodingName.empty() && (encodingName.front() == ' ' || encodingName.front() == '\t'))
+                {
+                    encodingName.remove_prefix(1);
+                }
+                while (!encodingName.empty() && (encodingName.back() == ' ' || encodingName.back() == '\t'))
+                {
+                    encodingName.remove_suffix(1);
+                }
+
+                bool        isRejected      = false;
+                std::size_t parameterOffset = 0;
+                while (parameterOffset < parameters.size())
+                {
+                    const std::size_t nextSeparator = parameters.find(';', parameterOffset);
+                    const std::size_t parameterEnd  = nextSeparator == std::string_view::npos ? parameters.size() : nextSeparator;
+                    std::string_view  parameter     = parameters.substr(parameterOffset, parameterEnd - parameterOffset);
+                    parameterOffset                 = parameterEnd + 1;
+
+                    // 参数自身也要去空白："gzip ; q=0" 里 q 之前有空格，不裁掉就认不出这次拒绝
+                    while (!parameter.empty() && (parameter.front() == ' ' || parameter.front() == '\t'))
+                    {
+                        parameter.remove_prefix(1);
+                    }
+                    while (!parameter.empty() && (parameter.back() == ' ' || parameter.back() == '\t'))
+                    {
+                        parameter.remove_suffix(1);
+                    }
+
+                    if (parameter.size() >= 2 && (parameter[0] == 'q' || parameter[0] == 'Q') && parameter[1] == '=')
+                    {
+                        const std::string_view quality = parameter.substr(2);
+                        // q=0 与 q=0.0、q=0.000 都是拒绝；只判「值是否全为 0 与小数点」足够，不必真解析
+                        bool isZeroQuality = !quality.empty();
+                        for (const char character: quality)
+                        {
+                            if (character != '0' && character != '.')
+                            {
+                                isZeroQuality = false;
+                                break;
+                            }
+                        }
+                        isRejected = isRejected || isZeroQuality;
+                    }
+                }
+
+                if (encodingName == "*")
+                {
+                    // 不认通配时整条跳过：`*` 不是「显式列出了这个编码」，而字典编码只认显式列出
+                    if (honorWildcard)
+                    {
+                        wildcardAccepted = !isRejected;
+                    }
+                    continue;
+                }
+
+                // 编码名按 token 语义大小写不敏感（RFC 9110 §12.5.3）
+                if (equalsIgnoringCase(encodingName, targetEncoding))
+                {
+                    return !isRejected;
+                }
+            }
+
+            return wildcardAccepted;
+        }
+
+        /**
+         * @brief 判断内容类型是否属于「已经压过、再压没用」的一类
+         * @param contentType Content-Type 头部的值（含可能的 charset 参数）
+         * @return true 不值得压缩
+         */
+        [[nodiscard]] inline bool isIncompressibleContentType(const std::string_view contentType)
+        {
+            // 只比前缀，参数（;charset=...）不参与比较；媒体类型大小写不敏感
+            constexpr std::string_view kIncompressiblePrefixes[] = {"image/",
+                                                                    "video/",
+                                                                    "audio/",
+                                                                    "font/",
+                                                                    "application/zip",
+                                                                    "application/gzip",
+                                                                    "application/x-gzip",
+                                                                    "application/x-7z-compressed",
+                                                                    "application/x-rar-compressed"};
+            for (const std::string_view prefix: kIncompressiblePrefixes)
+            {
+                if (contentType.size() < prefix.size())
+                {
+                    continue;
+                }
+
+                bool isSamePrefix = true;
+                for (std::size_t index = 0; index < prefix.size(); ++index)
+                {
+                    const char actual   = contentType[index];
+                    const char expected = prefix[index];
+                    const char lowered  = (actual >= 'A' && actual <= 'Z') ? static_cast<char>(actual - 'A' + 'a') : actual;
+                    if (lowered != expected)
+                    {
+                        isSamePrefix = false;
+                        break;
+                    }
+                }
+                if (isSamePrefix)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * @brief 把 Vary 补上 accept-encoding（已含则不重复）
+         * @details 压缩后的表示与 Accept-Encoding 有关，缓存必须按它分桶，否则会把压缩副本发给
+         *          不接受压缩的客户端（反之亦然）。追加与去重都走 Detail::appendVaryToken 那一份实现。
+         * @param response 响应
+         */
+        inline void appendVaryAcceptEncoding(HttpResponse &response)
+        {
+            appendVaryToken(response, "accept-encoding");
+        }
+
+
+        /**
+         * @brief 一种响应压缩算法的两件对外事实：编码名与静态预压缩副本的后缀
+         * @details 只在这张表里登记过的算法才会被协商选中，也才会被静态服务的变体查找认出来
+         */
+        struct CompressionCodec
+        {
+            std::string_view name;               ///< 写进 `Content-Encoding` 的编码名
+            std::string_view fileSuffix;         ///< 静态预压缩副本的后缀约定（如 `.br`）
+            bool             requiresDictionary; ///< 该编码必须带着字典才解得出（RFC 9842 的 dcz）；在线压缩产不出它
+        };
+
+        /// 压缩算法表：表的顺序就是服务器偏好——zstd 压缩率与速度综合最好、brotli 次之（静态内容
+        /// 尤佳）、gzip 兜底兼容。在线协商与静态预压缩的变体查找读的都是这一张表，于是「本端认为 br
+        /// 比 gz 好」这件事只有一处结论；加算法改这一行，两处一起跟上。
+        /// dcz（RFC 9842 的字典压缩 zstd）排在最前：只有对端手里确有匹配字典时它才参选，而那种场合
+        /// 它必然比不带字典的 zstd 小；`selectPreferredEncoding` 在线协商一路直接跳过标了
+        /// `requiresDictionary` 的表项——在线路径没有字典，发 dcz 等于给对端一份解不开的字节
+        inline constexpr std::array<CompressionCodec, 4> kCompressionCodecs{{{"dcz", ".dcz", true}, {"zstd", ".zst", false}, {"br", ".br", false}, {"gzip", ".gz", false}}};
+
+        /**
+         * @brief 按偏好顺序挑出本请求要用的编码
+         * @param acceptEncoding 请求的 Accept-Encoding 原文
+         * @return std::string_view 选中的编码名（取值见 kCompressionCodecs 的 `name`）；空表示按未压缩的原文发
+         * @note 字典编码（requiresDictionary）不在本函数的候选里：在线压缩没有字典可用
+         */
+        [[nodiscard]] inline std::string_view selectPreferredEncoding(const std::string_view acceptEncoding)
+        {
+            for (const CompressionCodec &codec: kCompressionCodecs)
+            {
+                if (codec.requiresDictionary)
+                {
+                    continue;
+                }
+                if (acceptsEncoding(acceptEncoding, codec.name))
+                {
+                    return codec.name;
+                }
+            }
+            // deflate 只参与在线协商，不进上面那张共享表：静态预压缩没有 `.deflate` 的部署约定，
+            // 表项会被文件变体查找当成一个真实后缀。它排在所有表项之后（兼容兜底，压缩率最差）
+            if (acceptsEncoding(acceptEncoding, "deflate"))
+            {
+                return "deflate";
+            }
+            return {};
+        }
+
+        /**
+         * @brief 把响应标记成「正文是被转换过的表示」：强校验器降级为弱，并补上 Vary
+         * @details 压缩副本与未压缩副本是同一资源的不同表示，共用一个强 ETag 会让缓存把两者当成同一份
+         *          （RFC 9110 §8.8.1）；Vary 则是告诉缓存要按 Accept-Encoding 分桶（§12.5.5）。
+         *          304 也要走这里：§15.4.5 要求它回带 200 本该给出的那几个头部，缺一样就是把缓存引向错的变体。
+         * @param response 待改写的响应
+         */
+        inline void markTransformedRepresentationValidators(HttpResponse &response)
+        {
+            if (const std::optional<std::string> entityTag = response.getHeader("etag"); entityTag.has_value() && !entityTag->starts_with("W/"))
+            {
+                response.setHeader("etag", "W/" + *entityTag);
+            }
+            appendVaryAcceptEncoding(response);
+        }
+
+        /**
+         * @brief 解析请求的 Available-Dictionary（RFC 9842 §2.2 的 sf-binary），取出 32 字节 SHA-256
+         * @details 形态固定为 `:<base64>:`——冒号包裹的标准字母表 Base64（RFC 8941 §4.2.7 引用
+         *          RFC 4648 §4，带填充）。严格解码（Base::base64Decode 的那套判据），且解码结果
+         *          必须恰好 32 字节：多一字节少一字节都不是 SHA-256，按「没有匹配字典」处置，
+         *          而不是报错——这条头部来自由公网驱动的客户端，含糊的输入不该换回非 2xx 的差异。
+         * @param headerValue Available-Dictionary 头部的值；缺头时传空串
+         * @return std::optional<Core::Digest::Sha256Value> 解码出的 32 字节哈希；形态不对或长度不对时为空
+         */
+        [[nodiscard]] inline std::optional<Core::Digest::Sha256Value> parseAvailableDictionaryHash(const std::string_view headerValue)
+        {
+            std::string_view payload = headerValue;
+            while (!payload.empty() && (payload.front() == ' ' || payload.front() == '\t'))
+            {
+                payload.remove_prefix(1);
+            }
+            while (!payload.empty() && (payload.back() == ' ' || payload.back() == '\t'))
+            {
+                payload.remove_suffix(1);
+            }
+
+            // sf-binary 的定界符：两端各一个冒号；base64 字母表里没有冒号，中段可以整段取
+            if (payload.size() < 2 || payload.front() != ':' || payload.back() != ':')
+            {
+                return std::nullopt;
+            }
+            const std::optional<std::string> decoded = Base::base64Decode(payload.substr(1, payload.size() - 2));
+            if (!decoded.has_value() || decoded->size() != Core::Digest::kSha256Length)
+            {
+                return std::nullopt;
+            }
+
+            Core::Digest::Sha256Value hash{};
+            std::copy(decoded->begin(), decoded->end(), hash.begin());
+            return hash;
+        }
+
+        /**
+         * @brief 写 Use-As-Dictionary 响应头（RFC 9842 §2.1）：本响应即此后匹配请求可用的压缩字典
+         * @details 值是一个 sf-dictionary 的 `match="..."`（sf-string 转义 `"` 与 `\`，RFC 8941 §4.2.5）。
+         *          控制字符（< 0x20 与 0x7f）在 sf-string 里非法，由配置期把关拒绝——本函数信任入参
+         *          已经过那道闸，只做转义不做校验。
+         * @param response 待改写的响应
+         * @param matchPattern 字典匹配的 URL 模式（"/" 开头的路径模式）
+         */
+        inline void appendUseAsDictionaryHeader(HttpResponse &response, const std::string_view matchPattern)
+        {
+            std::string value = "match=\"";
+            value.reserve(matchPattern.size() + 9);
+            for (const char character: matchPattern)
+            {
+                if (character == '"' || character == '\\')
+                {
+                    value.push_back('\\');
+                }
+                value.push_back(character);
+            }
+            value += '"';
+            response.setHeader("use-as-dictionary", std::move(value));
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 响应压缩选项
+     * @details 在线协商支持 zstd / br / gzip / deflate 四种（deflate 排在最后，复用 gzip 档位；
+     *          静态预压缩只认前三种的后缀约定）。gzip 与 deflate 共用 zlib 的 1..9 级别（6 是折中）、
+     *          brotli 质量 0..11（6 与 gzip 6 同档）、zstd 级别 1..22（3 是库自身的平衡点）。
+     *          越界由各压缩构件夹取
+     */
+    struct ASYN_NET_API CompressionOptions
+    {
+        std::size_t minimumBodySize = 1024; ///< 正文达到该字节数才压缩；小正文压缩后往往更大，白烧 CPU
+        /// 外置给工作线程时要达到的正文长度（字节）：小于它就就地压。一次「工作线程 → 循环」的
+        /// 投递加唤醒实测约 9.7 µs（热循环下的下限，整跳按两趟算约 20 µs），而 4 KiB 正文压一次
+        /// zstd 只要 8.1 µs——比那一跳还便宜，外派反而把循环和响应一起拖慢
+        std::size_t offloadMinimumBodySize = 8 * 1024;
+        int         gzipLevel              = kDefaultGzipLevel;     ///< gzip 压缩级别，1..9
+        int         brotliQuality          = kDefaultBrotliQuality; ///< brotli 压缩质量，0..11
+        int         zstdLevel              = kDefaultZstdLevel;     ///< zstd 压缩级别，1..22
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 按选定编码压一次正文，没压成或压完不更短都返回空
+         * @details 就地压与外置到工作线程压共用这一份实现：两条路径的产物必须逐字节相同，
+         *          否则开关一拨就换了一套编码语义
+         * @param encoding 选定的编码名，取值见 kCompressionCodecs 的 `name`
+         * @param body 待压的正文
+         * @param options 各算法的档位
+         * @return std::optional<std::string> 压缩结果；为空表示没压成，或压了不会更短
+         */
+        [[nodiscard]] inline std::optional<std::string> compressWithEncoding(const std::string_view encoding, const std::string_view body, const CompressionOptions options)
+        {
+            std::optional<std::string> compressed;
+            if (encoding == "zstd")
+            {
+                compressed = zstdCompress(body, options.zstdLevel);
+            } else if (encoding == "br")
+            {
+                compressed = brotliCompress(body, options.brotliQuality);
+            } else if (encoding == "deflate")
+            {
+                // 复用 gzip 的档位：两者都是 zlib 的 deflate 参数，1..9
+                compressed = deflateCompress(body, options.gzipLevel);
+            } else
+            {
+                compressed = gzipCompress(body, options.gzipLevel);
+            }
+
+            // 压完不比原文短就不换表示：长度阈值只是「值不值得压」的粗略代理，真判据是前后的实际字节数。
+            // 高熵正文（已压过的档案、随机内容）过了阈值也会被撑大几个百分点，而换表示的代价不止带宽：
+            // 对端要多解一次，缓存里还多一份比原文更胖的变体
+            if (compressed.has_value() && compressed->size() >= body.size())
+            {
+                return std::nullopt;
+            }
+            return compressed;
+        }
+    } // namespace Detail
+
+    namespace Detail
+    {
+        /**
+         * @brief 响应压缩中间件的实现体：就地压与外置到工作线程压共用同一套判断与头部改写
+         * @details 两条路径必须产出一样的字节与头，否则「换一种执行位置」本身就成了行为变更
+         * @param offloadExecutor 非空时把压缩交给它的工作线程，为空时在调用协程所在线程上压完
+         * @param completionLoop 外置时恢复协程用的事件循环，须是处理器所属的那条循环
+         * @param options 压缩选项（阈值与各算法档位）
+         * @return MiddlewareFunc 中间件
+         */
+        inline MiddlewareFunc compressionMiddlewareImplementation(Core::AsyncExecutor *offloadExecutor, Core::EventLoop *completionLoop, const CompressionOptions options)
+        {
+            return [offloadExecutor, completionLoop, options](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+            {
+                co_await next();
+
+                // 已经声明过编码（业务自己压的，或上游中间件压的）：再压一层对端解不开
+                if (response.hasHeader("content-encoding"))
+                {
+                    co_return;
+                }
+
+                // 流式响应逐段写出、长度对序列化层未知，压不了整块。
+                // 按块压缩需要另定 flush 语义：SSE 的事件边界与压缩器的块边界不是一回事——每段都 flush
+                // 会让小事件膨胀（gzip 头发+同步块比正文还长），不 flush 又要跨事件缓冲，事件就失去
+                // 「写出即送达」的语义（text/event-stream 的消费方按事件计时）。因此这一格不覆盖流式，
+                // 需要压缩的流式接口请调用方自己按协议选边界
+                if (response.isChunkedResponse())
+                {
+                    co_return;
+                }
+
+                // 无正文的状态码没有可压的内容，但 304 是例外：它得回带「同一请求的 200 会给出的」
+                // 验证器与 Vary（RFC 9110 §15.4.5）。判不准会不会真压成（压缩失败时发原文）只会多降级
+                // 一次——弱校验器不会把两个变体并成一份，强校验器却会，所以宁可往这个方向偏
+                if (response.carriesNoContent())
+                {
+                    if (response.status() == 304 && !Detail::selectPreferredEncoding(request.getHeader("accept-encoding").value_or(std::string{})).empty())
+                    {
+                        Detail::markTransformedRepresentationValidators(response);
+                    }
+                    co_return;
+                }
+
+                // 区间响应：正文只是某个区间的一段字节，压缩它会让对端的区间语义错乱（206 必带 content-range）
+                if (response.hasHeader("content-range"))
+                {
+                    co_return;
+                }
+
+                // 协商：按偏好顺序（zstd > br > gzip）挑第一个被对端接受的编码；
+                // q=0 视为明确拒绝，`*` 视为接受（语义见 Detail::acceptsEncoding）
+                const std::string      acceptEncodingHeader = request.getHeader("accept-encoding").value_or(std::string{});
+                const std::string_view selectedEncoding     = Detail::selectPreferredEncoding(acceptEncodingHeader);
+                if (selectedEncoding.empty())
+                {
+                    co_return;
+                }
+
+                const std::string_view body = response.body();
+                if (body.size() < options.minimumBodySize)
+                {
+                    co_return;
+                }
+
+                if (const std::optional<std::string> contentType = response.getHeader("content-type"); contentType.has_value() && Detail::isIncompressibleContentType(*contentType))
+                {
+                    co_return;
+                }
+
+                std::optional<std::string> compressed;
+                if (offloadExecutor != nullptr && body.size() >= options.offloadMinimumBodySize)
+                {
+                    // 交给工作线程的只有这份副本与编码名：响应对象、协程帧都属于循环线程，
+                    // 跨线程碰它们就是数据竞争。恢复落在 completionLoop 上，因此下面的改写仍在原线程
+                    std::string            bodyCopy{body};
+                    const std::string_view encoding = selectedEncoding;
+                    compressed                      = co_await offloadExecutor->submit<std::optional<std::string>>(*completionLoop, [bodyCopy, encoding, options]
+                                                                                                                   { return compressWithEncoding(encoding, bodyCopy, options); });
+                } else
+                {
+                    compressed = compressWithEncoding(selectedEncoding, body, options);
+                }
+                if (!compressed.has_value())
+                {
+                    // 压缩失败（内存不足）不是错误响应：照原样发未压缩正文，别让对端拿到半截数据
+                    co_return;
+                }
+
+                // 正文表示变了：强 ETag 降级为弱校验器并补上 Vary（与 304 那条路径共用同一份改写）
+                Detail::markTransformedRepresentationValidators(response);
+                response.setHeader("content-encoding", std::string(selectedEncoding));
+                // 正文表示变了，业务此前显式声明过的 content-length（如静态文件对 HEAD 用的
+                // 「先声明长度、不读正文」）此刻描述的是未压缩正文的字节数，必须按压缩后的
+                // 实际字节数改写：留着旧值就是「头部说一万字节、实际只有三千」，keep-alive 上
+                // 对端按旧长度截断，余下字节被当成下一条响应。
+                // setBody 刻意保留调用方声明过的长度（那是 HEAD/静态文件路径赖以省一次读的手段），
+                // 因此改写这条头是替换正文的一方——也就是本中间件——自己的责任
+                response.setHeader("content-length", std::to_string(compressed->size()));
+                // 压缩结果此刻只被本中间件持有，交出所有权直接移动进响应，省掉一整份压缩字节的拷贝与再分配
+                response.setOwnedBody(std::move(*compressed));
+                co_return;
+            };
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 响应压缩中间件（zstd / brotli / gzip），压缩在调用协程所在线程上做完
+     *
+     * @details 在业务处理完之后判断并压缩响应正文；对所有路由生效，静态文件命中压缩时从 mmap 零拷贝换成
+     *          内存正文（阈值默认 1 KiB，是「省带宽」与「多一次拷贝 + 一次压缩」的取舍）。对端接受多种编码时
+     *          按固定偏好挑选：zstd > br > gzip，不支持按 q 值重排。
+     * @param options 压缩选项（阈值与各算法档位），见 CompressionOptions
+     * @return MiddlewareFunc 中间件
+     * @note 不压缩的情形（都会原样发正文）：对端不接受任何受支持的编码（含 `gzip;q=0` 这类明确拒绝）、
+     *       响应已带 content-encoding、流式响应、无正文的状态码、区间响应（206/content-range）、
+     *       正文小于阈值、内容类型属于已压缩媒体
+     * @note 流式响应这一格是有意不覆盖：按块压缩要先定 flush 语义，而 SSE 的事件边界与压缩器的
+     *       块边界不是一回事——逐段 flush 会让小事件膨胀，跨事件缓冲又破坏「写完即送达」。需要压缩的
+     *       流式接口由调用方按自己的协议边界处理（见 compressionMiddlewareImplementation 里的说明）
+     * @note 压缩会改写 ETag 为弱校验器（RFC 9110 §8.8.1）：正文表示变了，强校验器不能再复用；
+     *       h1 与 h2 共用同一份响应序列化，因此两条路径都生效
+     * @warning 正文可能很大时别用这一版：HTTP 三条路径的协程都跑在事件循环线程上，一条正文压多久，
+     *          同一条循环上的其他连接就等多久。256 KiB 近似真实正文的占用是 gzip6 4.4 ms、
+     *          brotli6 4.2 ms、gzip1 1.3 ms、zstd3 0.45 ms（微基准四条 `*-response-compress-256k`）；
+     *          线上同结论：单条循环上只跑一路持续要 gzip 大正文的客户端，就能把同循环小请求的 p50
+     *          从 37us 顶到 5.9ms。改用下面带执行器的那一版把压缩挪出循环线程
+     * @see compressionMiddleware(Core::EventLoop &, Core::AsyncExecutor &, CompressionOptions)
+     */
+    inline MiddlewareFunc compressionMiddleware(const CompressionOptions options = {})
+    {
+        return Detail::compressionMiddlewareImplementation(nullptr, nullptr, options);
+    }
+
+    /**
+     * @brief 响应压缩中间件，压缩交给工作线程、完成后回到指定事件循环
+     * @details 判断、头部改写与就地版完全同源（同一份实现体），差别只在压缩那一步落在哪个线程：
+     *          循环线程因此不会被一次压缩占住数毫秒，代价是多一份正文副本（按值交给工作线程）与
+     *          一次跨线程恢复。正文不足 `offloadMinimumBodySize` 的仍就地压：那份压缩比这一跳更便宜，
+     *          外派只会同时拖慢响应与循环。
+     * @param completionLoop 恢复协程用的事件循环，必须是处理器所属的那条循环——否则响应改写会
+     *        发生在别的线程上，与那条循环的会话状态构成数据竞争
+     * @param offloadExecutor 承载压缩的工作线程池，见 Core::AsyncExecutor
+     * @param options 压缩选项（阈值与各算法档位）
+     * @return MiddlewareFunc 中间件
+     * @warning 执行器与循环都必须比返回的中间件活得久：中间件只握着它们的裸指针，
+     *          注册进服务器后由每条请求复用
+     * @warning 前提是这条传输路径的会话收尾会等处理器协程跑完：挂起的帧若被提前销毁，已经投回
+     *          循环的那次恢复就是悬垂句柄。三条通道都满足——HTTP/1.1 与 HTTP/2 的请求路径按结构成立
+     *          （帧在会话帧里、服务器只在 isReady() 之后回收），HTTP/3 由承载层在摘掉连接之前调用
+     *          Http3Session::abandonPendingStreams()，叫醒并等完在途的派发协程
+     */
+    inline MiddlewareFunc compressionMiddleware(Core::EventLoop &completionLoop, Core::AsyncExecutor &offloadExecutor, const CompressionOptions options = {})
+    {
+        return Detail::compressionMiddlewareImplementation(&offloadExecutor, &completionLoop, options);
+    }
+
+    /**
+     * @brief 请求正文解压中间件的档位
+     */
+    struct ASYN_NET_API RequestDecompressionOptions
+    {
+        /**
+         * @brief 解出来的正文上界（字节）
+         * @details gzip 的压缩比可以到上千倍，不设上界等于让对端用几百字节决定本进程分配多少内存。
+         *          默认与 `inflateHttpBody` 的默认同一档（8 MiB，与 `HttpParserLimits::maximumBodySize`
+         *          同档）：解出来的东西最终也要过那一道闸，两处不同值只会让「收得下但解不出」或
+         *          「解得出但收不下」这两种半截形态出现。装配时把它对准同一份配置——示例按
+         *          `configuration.parserLimits.maximumBodySize` 传入，收紧线上正文上限即同步收紧解压出口
+         */
+        std::size_t maximumDecompressedByteCount = kDefaultInflateOutputLimitBytes;
+    };
+
+    /**
+     * @brief 请求正文解压中间件：按 `Content-Encoding` 把压缩过的正文解回来再交给业务
+     *
+     * @details 出站客户端早就替调用方解响应正文（见 `Client/HttpContentCoding`），入站这一半此前
+     *          一行都没有：对端 POST 一份 `Content-Encoding: gzip`，业务从 `body()` 拿到的是压缩字节，
+     *          而 `jsonBody()` 只会回一句「解析失败」——现场看不出生是被编码过。RFC 9110 §8.4 的口径是
+     *          「源服务器不支持请求里声明的某种编码，就必须回 415」，而不是把编码字节当正文交下去。
+     *
+     *          判据与出站那一份同源：`identity` 与没有声明都是「正文原样就是最终内容」，空正文不解也不报错；
+     *          链式声明（`gzip, deflate`）要按声明的反序逐层解，半途解错一层的后果是「看着正常的坏数据」，
+     *          因此同样拒绝；只解 deflate 家族（gzip / x-gzip / deflate），其余一律 415。
+     *          解成功之后：正文换成解出来的那份，`content-encoding` 删掉（声明已被兑现，留着会让下游
+     *          再解一次），`content-length` 按解码后的字节数改写（旧值描述的是压缩字节，留着就是给一份
+     *          新正文配一个旧长度）。
+     *
+     * @note 流式路由（`Router::postStreaming()` 那一类）在头部收齐时就派发，此刻 `body()` 只是「已收而
+     *       尚未交付」的那一段，整份压缩流不在这里。中间件这一层能依据的只有声明长度：声明的
+     *       content-length 与实际字节不符、或压根没有声明长度（分块正文）时原样交回，由处理器按段
+     *       自己解——把一段合法上传判成 400 比不解更坏。编码本身不合规那两档（链式、没有解码器）
+     *       与正文到没到齐无关，照旧先判 415。
+     * @param options 解压档位
+     * @param inflatedBodyBudget 解出来的正文要计入的「在途正文字节」预算，可为空；
+     *        三条会话收正文时各自记同一份预算（HttpServer::memoryBudget()），装配处把同一份传进来即可。
+     *        为空时解出的缓冲不进这份账——正文仍受会话侧收进来那份的约束，只是解压多出的那一截不在账上
+     * @return MiddlewareFunc 中间件
+     * @see compressionMiddleware()（响应方向的那一半）
+     */
+    inline MiddlewareFunc requestDecompressionMiddleware(const RequestDecompressionOptions options = {}, std::shared_ptr<HttpMemoryBudget> inflatedBodyBudget = nullptr)
+    {
+        return [options, inflatedBodyBudget = std::move(inflatedBodyBudget)](HttpRequest &request, HttpResponse &response,
+                                                                             const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            // 只看首条而不是合并视图：与出站那一份、bodySizeLimitMiddleware 同一口径
+            const std::optional<std::string_view> declaredEncoding = request.firstHeaderValueView("content-encoding");
+            const std::string_view                encoding         = declaredEncoding.has_value() ? trimOptionalWhitespace(*declaredEncoding) : std::string_view{};
+
+            // 没声明、声明为空、声明 identity、没有正文——四者都是「没有要解的东西」
+            if (encoding.empty() || equalsIgnoringCase(encoding, "identity") || request.body().empty())
+            {
+                co_await next();
+                co_return;
+            }
+
+            const auto reject = [&response, encoding](const int statusCode, const std::string_view bodyText, const std::string_view reason)
+            {
+                // 对端给的编码名是不可信文本：进日志先过折法，别让一个带控制字节的名字伪造出本进程的一行
+                LOG_WARN_FMT("requestDecompressionMiddleware: {}（对端声明「{}」）", reason, Base::escapeForLog(encoding));
+                response.setStatus(statusCode);
+                response.setBody(std::string(bodyText));
+                response.setHeader("content-type", kPlainTextContentType);
+            };
+
+            if (encoding.find(',') != std::string_view::npos)
+            {
+                reject(415, "Unsupported Media Type: chained Content-Encoding", "不支持链式的 Content-Encoding，只解单一编码");
+                co_return;
+            }
+
+            if (!equalsIgnoringCase(encoding, "gzip") && !equalsIgnoringCase(encoding, "x-gzip") && !equalsIgnoringCase(encoding, "deflate"))
+            {
+                reject(415, "Unsupported Media Type: unsupported Content-Encoding", "本端没有对应的解码器（只解 gzip / x-gzip / deflate）");
+                co_return;
+            }
+
+            // 「整份压缩流到齐了没有」在这一层只有声明长度这一个依据：流式路由（`Router::postStreaming()`
+            // 那一类）在头部收齐时就派发，此刻 body() 只是已收而尚未交付的那一段——拿一段去解整份流，
+            // 结果是「解不出」，于是这条合法的流式上传被本中间件判成 400。声明长度与实际字节不符时
+            // 原样交回，让处理器按段自己解；没有声明长度的分块正文同样交回——「收齐」的信号不在这一层，
+            // 而错判成 400 比不解更坏。长度写法本身不合法不归这里，那是 bodySizeLimitMiddleware 的活
+            if (const auto declaredLengthText = request.firstHeaderValueView("content-length"))
+            {
+                std::size_t                  declaredLength = 0;
+                const std::from_chars_result lengthParse    = std::from_chars(declaredLengthText->data(), declaredLengthText->data() + declaredLengthText->size(), declaredLength);
+
+                if (lengthParse.ec == std::errc{} && lengthParse.ptr == declaredLengthText->data() + declaredLengthText->size() && declaredLength != request.body().size())
+                {
+                    co_await next();
+                    co_return;
+                }
+            }
+
+            // 到界即判失败：交回前 N 字节等于把损坏藏起来，调用方看到的是一份长度对、内容却错了的数据
+            HttpBodyDecodeExpected<std::string> decompressed = inflateHttpBody(request.body(), options.maximumDecompressedByteCount);
+            if (!decompressed.has_value())
+            {
+                // 状态码按类别分档：超上限不是「格式错」而是「太大」（RFC 9110 §15.5.13），本端资源起不来
+                // 更不该算客户端错（§15.5.4）；并成 400 会让客户端以为重发同样的请求就能通过
+                const HttpBodyDecodeErrorKind failureKind = decompressed.error().kind;
+                if (failureKind == HttpBodyDecodeErrorKind::DecompressedSizeExceeded)
+                {
+                    reject(413, "Content Too Large: decompressed body exceeds the limit", "解压后的正文超过本端上限，已拒绝而不交回半截正文");
+                } else if (failureKind == HttpBodyDecodeErrorKind::LocalResourceFailed)
+                {
+                    reject(503, "Service Unavailable: decompressor unavailable", "本端解压器起不来（与请求内容无关），可稍后重试");
+                } else
+                {
+                    reject(400, "Bad Request: malformed encoded request body", "声明的编码解不出正文");
+                }
+                co_return;
+            }
+
+            const std::size_t decodedByteCount = decompressed->size();
+
+            // 解出来的正文同样占「在途正文字节」预算（与三条会话收正文的同一条口径：growTo 只增不减，
+            // 压缩原文已腾出的空间照旧算着——保守方向）。超限按 503 收口，与会话侧「超预算立刻 503」
+            // 同一条判据；预留在本中间件协程帧里，链跑完随帧归还。没接预算（空）时这一步整个不发生
+            HttpMemoryBudget::Reservation inflatedBodyReservation(inflatedBodyBudget.get());
+            if (inflatedBodyReservation.hasBudget() && !inflatedBodyReservation.growTo(decodedByteCount))
+            {
+                reject(503, "Service Unavailable", "解压后的请求正文超出全局在途正文预算（与会话侧同一条账），已按 503 收口");
+                co_return;
+            }
+
+            // 先换正文再改头部：decompressed 是独立缓冲，视图不指向 request.body()，两步之间没有悬垂
+            request.setBody(std::move(decompressed.value()));
+            request.removeHeader("content-encoding");
+            static_cast<void>(request.setHeader("content-length", std::to_string(decodedByteCount)));
+            co_await next();
+            co_return;
+        };
+    }
+
+    /**
+     * @brief 运维端点的访问策略
+     * @details 给 `opsAccessMiddleware()` 用。默认保护 `/metrics`、`/debug/loops`、`/debug/connections`
+     *          与 `/debug/log-level`：前两条是内部计数与循环状态，第三条暴露在途连接的聚合，第四条
+     *          能改整个进程的日志音量。`/healthz` 不在名单里是刻意的——进程存活探针要能被编排器
+     *          无凭据访问（正文固定、不含任何业务数据），给它加令牌会让探针长期失败而被人关掉，
+     *          比暴露几个计数更糟。
+     */
+    struct ASYN_NET_API OpsAccessOptions
+    {
+        std::string              bearerToken{}; ///< 要求的 Bearer 令牌；空是用法错误（等于挂一道永远放行的闸）
+        std::vector<std::string> protectedPaths{"/metrics", "/debug/loops", "/debug/connections", "/debug/log-level"}; ///< 需要令牌的路径，逐条精确匹配
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 按 auth-scheme 前缀剥出 Authorization 头的凭据段（RFC 9110 §11.2）
+         * @details 方案名大小写不敏感，但整段前缀都要对上才剥：按固定偏移顺手切一刀，会把另一种
+         *          方案里恰好合法的 base64 也当成凭据收下。对不上就交回「没有凭据」，不替非法输入猜解释
+         * @param headerValue 头取值原文
+         * @param lowerCaseSchemePrefix 小写书写、含尾随空格的方案前缀（如 `"basic "`）
+         * @return std::optional<std::string_view> 凭据段原文；方案不符或长度不足时空
+         */
+        [[nodiscard]] inline std::optional<std::string_view> stripAuthScheme(const std::string_view headerValue, const std::string_view lowerCaseSchemePrefix)
+        {
+            if (headerValue.size() < lowerCaseSchemePrefix.size())
+            {
+                return std::nullopt;
+            }
+            for (std::size_t index = 0; index < lowerCaseSchemePrefix.size(); ++index)
+            {
+                if (std::tolower(static_cast<unsigned char>(headerValue[index])) != lowerCaseSchemePrefix[index])
+                {
+                    return std::nullopt;
+                }
+            }
+            return headerValue.substr(lowerCaseSchemePrefix.size());
+        }
+
+        /**
+         * @brief 从 Authorization 头里取出 Bearer 凭据
+         * @details auth-scheme 大小写不敏感（RFC 9110 §11.2）；方案不是 Bearer 时视为「没给凭据」，
+         *          不顺着别的方案去解释那段字符串
+         * @param headerValue 头取值原文
+         * @return std::string_view 凭据部分；不是 Bearer 方案时为空
+         */
+        [[nodiscard]] inline std::string_view extractBearerCredential(const std::string_view headerValue) noexcept
+        {
+            return stripAuthScheme(headerValue, "bearer ").value_or(std::string_view{});
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给运维端点挂一道 Bearer 令牌闸门
+     * @details 指标与循环诊断端点原本谁都能抓：开到 0.0.0.0 上等于把内部计数、连接数与每条循环的相位
+     *          公开。令牌为空时抛而不是放行——那正是「配了闸却没关」最难发现的一种。
+     *          比较走 Base::constantTimeEquals，避免把「前几位猜对了」泄漏进响应耗时里。
+     * @param options 访问策略（令牌与受保护路径），按值捕获进中间件
+     * @return MiddlewareFunc 中间件；未授权时回 401 且不调用下游
+     * @throws Base::InvalidArgumentException bearerToken 为空
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     */
+    inline MiddlewareFunc opsAccessMiddleware(OpsAccessOptions options)
+    {
+        if (options.bearerToken.empty())
+        {
+            throw Base::InvalidArgumentException("opsAccessMiddleware: 没有令牌就等于挂一道永远放行的闸；不需要鉴权就不要注册本中间件");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const std::string_view path        = request.path();
+            const bool             isProtected = std::ranges::find(options.protectedPaths, path) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            // 出现多条就当没有凭据：取值原文取第一条，但「有几条」这件事必须先问，否则歧义会被静默挑一边
+            const bool isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const bool isAuthorized       = presented.has_value() && Base::constantTimeEquals(Detail::extractBearerCredential(*presented), options.bearerToken);
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", "Bearer realm=\"ops\", error=\"invalid_token\"");
+            response.setHeader("content-type", kPlainTextContentType);
+            // 不回显「你差在哪一位」也不区分「没给/给错/给了多条」之外的细节：这些差别只帮攻击者缩小搜索面
+            response.setBody("运维端点需要 Bearer 令牌（Authorization: Bearer <token>）");
+            co_return;
+        };
+    }
+
+    /**
+     * @brief 安全响应头的取值
+     * @details 给 `securityHeadersMiddleware()` 用。留空即不发这一条——这些头各自的默认值在不同
+     *          部署里结论相反（内嵌 iframe 的管理台会把 DENY 改成 SAMEORIGIN 或干脆不发），
+     *          本层不替调用方选边；只有 nosniff / DENY / no-referrer 这三条取「默认收紧」，
+     *          因为它们是「浏览器多做一步猜测」这类风险的兜底，收紧的代价远小于放松。
+     * @note 取值在构造中间件时逐条按 RFC 9110 §5.6.2 的字段值集合校验，含 CR/LF/NUL 的直接抛——
+     *       这类文案常由配置拼出来，写进响应头就是 HTTP 响应拆分
+     */
+    struct ASYN_NET_API SecurityHeadersOptions
+    {
+        std::string contentSecurityPolicy{};                         ///< Content-Security-Policy 的策略原文；空 = 不发
+        std::string frameOptions{"DENY"};                            ///< X-Frame-Options（DENY / SAMEORIGIN）；空 = 不发
+        std::string referrerPolicy{"no-referrer"};                   ///< Referrer-Policy；空 = 不发
+        std::string contentTypeOptions{"nosniff"};                   ///< X-Content-Type-Options；空 = 不发
+        std::string permissionsPolicy{};                             ///< Permissions-Policy；空 = 不发
+        std::string crossOriginResourcePolicy{};                     ///< Cross-Origin-Resource-Policy；空 = 不发
+        std::size_t strictTransportSecurityMaxAgeSeconds{0};         ///< HSTS 的 max-age 秒数；0 = 不发这一条
+        bool        strictTransportSecurityIncludeSubDomains{false}; ///< HSTS 是否带 includeSubDomains
+        bool        strictTransportSecurityPreload{false};           ///< HSTS 是否带 preload（要求同时带 includeSubDomains）
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 安全响应头的「字段名 ↔ 取值槽」对照表
+         * @details 校验与下发共用同一张表：写两张就会有一张先动，结果是「校验过的字段没下发」
+         *          或「下发的字段没校验」，两种都静默
+         * @return 每项是（响应头字段名，SecurityHeadersOptions 里对应的取值成员）
+         */
+        inline const std::array<std::pair<std::string_view, std::string SecurityHeadersOptions::*>, 6> &securityHeaderFieldTable()
+        {
+            static const std::array<std::pair<std::string_view, std::string SecurityHeadersOptions::*>, 6> table = {
+                    {{"content-security-policy", &SecurityHeadersOptions::contentSecurityPolicy},
+                     {"x-frame-options", &SecurityHeadersOptions::frameOptions},
+                     {"referrer-policy", &SecurityHeadersOptions::referrerPolicy},
+                     {"x-content-type-options", &SecurityHeadersOptions::contentTypeOptions},
+                     {"permissions-policy", &SecurityHeadersOptions::permissionsPolicy},
+                     {"cross-origin-resource-policy", &SecurityHeadersOptions::crossOriginResourcePolicy}}};
+            return table;
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给每条响应挂上一组安全响应头
+     * @details 这些头的共同点是「服务端一句声明，换浏览器一类行为的收紧」：不嗅探内容类型、
+     *          不被别人框进 iframe、不把来源 URL 递给第三方、只在 HTTPS 上继续访问本站。
+     *          此前引擎一条都不发（本仓从未出现 Strict-Transport-Security / Content-Security-Policy
+     *          这些字段名），业务要自己一条条 setHeader，且很容易在某个路由上漏掉。
+     *          已存在的头部不覆盖：排在更外层的中间件或已经写定策略的业务才是取值的主人。
+     *          HSTS 只在加密连接上发（见 HttpRequest::overTls()）：RFC 6797 §7.2 要求浏览器忽略
+     *          非安全传输上收到的这一条，明文发出去不但不生效，还会让人以为这个站点已经有了这道保护。
+     * @param options 各条头的取值，按值捕获进中间件
+     * @return MiddlewareFunc 中间件；在下游之前把配好的头挂上响应
+     * @throws Base::InvalidArgumentException 取值含非法字段值字节；或 preload 没配 includeSubDomains
+     * @note 刻意不发 `X-XSS-Protection`：那条早已被规范废弃（浏览器已停用这一过滤器），
+     *       继续发它会诱导人把「有这行头」当成有防护，反而盖住真正该配的 CSP
+     * @note 这一层只管响应头：CSP 的内容对不对、`frame-ancestors` 与 X-Frame-Options 是否互相矛盾，
+     *       本层不判（判也判不准），交给写策略的人
+     */
+    inline MiddlewareFunc securityHeadersMiddleware(SecurityHeadersOptions options)
+    {
+        for (const auto &[fieldName, fieldMember]: Detail::securityHeaderFieldTable())
+        {
+            const std::string &value = options.*fieldMember;
+            if (value.empty() || containsOnlyFieldValueCharacters(value))
+            {
+                continue;
+            }
+            throw Base::InvalidArgumentException("securityHeadersMiddleware: " + std::string(fieldName) + " 的取值含非法字段值字节（CR/LF/NUL 或 DEL）");
+        }
+        if (options.strictTransportSecurityPreload && !options.strictTransportSecurityIncludeSubDomains)
+        {
+            // preload 是提交给浏览器内置名单的声明，那份名单硬性要求同时带 includeSubDomains：
+            // 少了那一格就是「配了 preload 却永远进不了名单」，构造期拦下来比线上静默无效好查
+            throw Base::InvalidArgumentException("securityHeadersMiddleware: strictTransportSecurityPreload 要求同时置 strictTransportSecurityIncludeSubDomains");
+        }
+
+        // HSTS 的整条文案在这里拼一次：中间件按值捕获，每条响应不再重复拼串
+        std::string strictTransportSecurityValue;
+        if (options.strictTransportSecurityMaxAgeSeconds > 0)
+        {
+            strictTransportSecurityValue = "max-age=" + std::to_string(options.strictTransportSecurityMaxAgeSeconds);
+            if (options.strictTransportSecurityIncludeSubDomains)
+            {
+                strictTransportSecurityValue += "; includeSubDomains";
+            }
+            if (options.strictTransportSecurityPreload)
+            {
+                strictTransportSecurityValue += "; preload";
+            }
+        }
+
+        return [options = std::move(options), strictTransportSecurityValue = std::move(strictTransportSecurityValue)](HttpRequest &request, HttpResponse &response,
+                                                                                                                      const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            for (const auto &[fieldName, fieldMember]: Detail::securityHeaderFieldTable())
+            {
+                const std::string &value = options.*fieldMember;
+                if (!value.empty() && !response.hasHeader(fieldName))
+                {
+                    static_cast<void>(response.setHeader(fieldName, value));
+                }
+            }
+            if (!strictTransportSecurityValue.empty() && request.overTls() && !response.hasHeader("strict-transport-security"))
+            {
+                static_cast<void>(response.setHeader("strict-transport-security", strictTransportSecurityValue));
+            }
+
+            co_await next();
+        };
+    }
+
+    /**
+     * @brief HTTP Basic 认证（RFC 7617）的取值
+     * @details 引擎不猜口令存在哪里：`verify` 是调用方的判定入口（查表、查库、比对哈希都行），
+     *          本层只负责把 `Authorization` 那一段拆对、按规范答 401/403，以及把「明文连接上
+     *          不该收 Basic 凭据」这条默认守住。
+     * @note 口令的比较时机安全在 verify 里：要比对字面口令，请用 `Base::constantTimeEquals`，
+     *       不要用 `operator==`——短路比较会把「前几位猜对了」泄漏进响应耗时里
+     */
+    struct ASYN_NET_API BasicAuthOptions
+    {
+        std::string                                                         realm{"restricted"};          ///< WWW-Authenticate 的 realm 提示文本
+        std::vector<std::string>                                            protectedPaths{};             ///< 需要鉴权的路径，逐条精确匹配；空表示全部路径都要鉴权
+        bool                                                                requireSecureTransport{true}; ///< false 才允许在明文连接上收 Basic 凭据
+        std::function<bool(std::string_view user, std::string_view secret)> verify{};                     ///< 凭据判定，空是用法错误（等于挂一道永远拒的闸）
+    };
+
+    namespace Detail
+    {
+        /**
+         * @brief 从 Authorization 头里取出 Basic 凭据的解码原文
+         * @details 方案判定共用 `stripAuthScheme()`（与 Bearer 那道同一实现，同一条纪律不写两遍）；
+         *          方案不是 Basic、或那段不是合法 base64，都按「没给凭据」处理——不去替非法输入猜一个解释
+         * @param headerValue 头取值原文
+         * @return std::optional<std::string> `user:secret` 原文；不是 Basic 方案或解不开时空
+         */
+        [[nodiscard]] inline std::optional<std::string> extractBasicCredential(const std::string_view headerValue)
+        {
+            const auto credential = stripAuthScheme(headerValue, "basic ");
+            return credential.has_value() ? Base::base64Decode(*credential) : std::optional<std::string>{};
+        }
+    } // namespace Detail
+
+    /**
+     * @brief 给路由挂一道 HTTP Basic 认证闸
+     * @details 引擎此前只有 `opsAccessMiddleware()` 那一道闸：它比的是单个 Bearer 令牌，守的是固定
+     *          名单里的运维端点；业务侧要按 `user:secret` 保护一条管理路由，仍得自己在处理器里写一遍
+     *          ——而「忘了写的那条路由」正是最难发现的暴露面，所以这一件也做成按路径名单挂的中间件，
+     *          与运维端点那道共用同一套纪律（方案判定、多条凭据按未授权处理、构造期校验入参）。
+     *          未授权时回 401 并带上 `WWW-Authenticate: Basic realm="...", charset="US-ASCII"`
+     *          （RFC 7617 §2.1 的 charset 参数），正文固定、不回显「差在哪一位」。
+     * @details 默认拒绝在明文连接上收 Basic 凭据（回 403 而不是 401：401 附带的那句提示等于
+     *          邀请客户端把口令发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，
+     *          报的是本端这一跳的传输层事实，不看 `X-Forwarded-Proto`。确实要在明文上放开
+     *          （本机调试、或已在反代之后），显式置 `requireSecureTransport=false`。
+     * @param options 认证取值；`verify` 为空即抛
+     * @return MiddlewareFunc 中间件
+     * @throws Base::InvalidArgumentException verify 缺席；或 realm 含 CR/LF/NUL/引号那类会破坏头取值的字节
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     * @note 切分按第一个冒号：user-id 里不允许出现冒号（RFC 7617 §2），所以冒号之后的整体都是口令，
+     *       含冒号的口令因此能用，而用户名不能
+     */
+    inline MiddlewareFunc basicAuthMiddleware(BasicAuthOptions options)
+    {
+        if (!options.verify)
+        {
+            throw Base::InvalidArgumentException("basicAuthMiddleware: 没有 verify 就等于挂一道永远拒绝的闸；不需要鉴权就不要注册本中间件");
+        }
+        // realm 会被拼进 WWW-Authenticate 的引号里：带引号或控制字符就不是「提示文本写错了」，
+        // 而是响应头被注入——与 securityHeadersMiddleware 同一类构造期判据
+        if (options.realm.find('"') != std::string::npos || !containsOnlyFieldValueCharacters(options.realm))
+        {
+            throw Base::InvalidArgumentException("basicAuthMiddleware: realm 不能含引号或 CR/LF/NUL 这类非法字段值字节");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isProtected = options.protectedPaths.empty() ? true : std::ranges::find(options.protectedPaths, request.path()) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            if (options.requireSecureTransport && !request.overTls())
+            {
+                response.setStatus(403);
+                response.setHeader("content-type", kPlainTextContentType);
+                response.setBody("Basic 凭据不在明文连接上接受：请走 HTTPS，或在配置里显式置 requireSecureTransport=false");
+                co_return;
+            }
+
+            const bool    isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto    presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const auto    decoded            = presented.has_value() ? Detail::extractBasicCredential(*presented) : std::optional<std::string>{};
+            bool          isAuthorized       = false;
+            std::uint64_t attemptedUserLength{0};
+            if (decoded.has_value())
+            {
+                const std::size_t separator = decoded->find(':');
+                if (separator != std::string::npos)
+                {
+                    const std::string_view secret = std::string_view{*decoded}.substr(separator + 1);
+                    attemptedUserLength           = decoded->size() - secret.size() - 1;
+                    isAuthorized                  = options.verify(std::string_view{*decoded}.substr(0, separator), secret);
+                }
+            }
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", "Basic realm=\"" + options.realm + "\", charset=\"US-ASCII\"");
+            response.setHeader("content-type", kPlainTextContentType);
+            // 长度只用来把「没给凭据」与「给了但不对」分开报给用户看，不回显用户名本身
+            response.setBody(isSingleCredential && decoded.has_value() && attemptedUserLength > 0 ? "用户名或口令不对"
+                                                                                                  : "需要 Basic 凭据（Authorization: Basic <base64(user:secret)>）");
+            co_return;
+        };
+    }
+
+    /**
+     * @brief Bearer 令牌认证（RFC 6750 §2、§3）的取值
+     * @details 引擎此前有两道相关的闸：`opsAccessMiddleware()` 比的是一个写死的令牌且只守运维端点名单，
+     *          `basicAuthMiddleware()` 走的是 `user:secret`。业务侧要按自己的令牌存储、会话服务或签名
+     *          校验来保护一条路由，仍然得在处理器里手写拆头、多条判定与挑战头——而「忘了写的那条路由」
+     *          是最难发现的暴露面。判定交给 `verify`（引擎不猜令牌存在哪里），本层只负责把
+     *          `Authorization` 拆对、按规范答 401/403，以及把「明文连接上不该收凭据」这条默认守住。
+     * @note 令牌的比较时机安全在 verify 里：要比对字面令牌，请用 `Base::constantTimeEquals`，
+     *       短路比较会把「前几位猜对了」泄漏进响应耗时里
+     */
+    struct ASYN_NET_API BearerAuthOptions
+    {
+        std::string                                      realm{"restricted"};          ///< WWW-Authenticate 的 realm 提示文本
+        std::vector<std::string>                         protectedPaths{};             ///< 需要鉴权的路径，逐条精确匹配；空表示全部路径都要鉴权
+        bool                                             requireSecureTransport{true}; ///< false 才允许在明文连接上收 Bearer 凭据
+        std::function<bool(std::string_view credential)> verify{};                     ///< 凭据判定，空是用法错误（等于挂一道永远拒的闸）
+    };
+
+    /**
+     * @brief 给路由挂一道 Bearer 令牌认证闸
+     * @details 与运维端点那道（`opsAccessMiddleware()`）的分工：那道守固定名单、比固定令牌、构造时就要求
+     *          给出令牌；这道守调用方给的路径名单（空名单=整台服务）、把「这个令牌算不算数」交回调用方，
+     *          因此能接查表、查库、验签名这三种完全不同的令牌来源。两条纪律是共用的：方案判定走同一个
+     *          `Detail::extractBearerCredential()`，同名多条 `Authorization` 一律按未授权处理。
+     * @details 挑战头按 RFC 6750 §3.1 分两种形状：没给凭据时只带 realm（此时客户端该去取凭据），
+     *          给了但不被接受时才带 `error="invalid_token"`（此时客户端该停下重试循环）。把两者合成
+     *          一条发出去，等于对没登录的客户端谎报「你那条令牌被拒了」。正文固定，不回显令牌本身，
+     *          也不区分「没给/给了不对/给了多条」之外的细节——那些差别只帮攻击者缩小搜索面。
+     * @details 默认拒绝在明文连接上收凭据（回 403 而不是 401：401 附带的那句提示等于邀请客户端把
+     *          令牌发到一个不加密的信道上）。判据是 `HttpRequest::overTls()`，报的是本端这一跳的传输层
+     *          事实，不看 `X-Forwarded-Proto`。确实要在明文上放开（本机调试、或已在反代之后），
+     *          显式置 `requireSecureTransport=false`。
+     * @param options 认证取值；`verify` 为空即抛
+     * @return MiddlewareFunc 中间件
+     * @throws Base::InvalidArgumentException verify 缺席；或 realm 含引号、CR/LF/NUL 这类会破坏头取值的字节
+     * @note 同名多条 Authorization 一律按未授权处理：只取第一条来解释，会让「塞一条对的再塞一条错的」
+     *       随头部顺序时通时不通，那种不稳定比直接拒更难查
+     */
+    inline MiddlewareFunc bearerAuthMiddleware(BearerAuthOptions options)
+    {
+        if (!options.verify)
+        {
+            throw Base::InvalidArgumentException("bearerAuthMiddleware: 没有 verify 就等于挂一道永远拒绝的闸；不需要鉴权就不要注册本中间件");
+        }
+        // realm 会被拼进 WWW-Authenticate 的引号里：带引号或控制字符就不是「提示文本写错了」，而是
+        // 响应头被注入——与 basicAuthMiddleware、securityHeadersMiddleware 同一类构造期判据
+        if (options.realm.find('"') != std::string::npos || !containsOnlyFieldValueCharacters(options.realm))
+        {
+            throw Base::InvalidArgumentException("bearerAuthMiddleware: realm 不能含引号或 CR/LF/NUL 这类非法字段值字节");
+        }
+
+        return [options = std::move(options)](HttpRequest &request, HttpResponse &response, const std::function<Core::Task<void>()> next) -> Core::Task<>
+        {
+            const bool isProtected = options.protectedPaths.empty() ? true : std::ranges::find(options.protectedPaths, request.path()) != options.protectedPaths.end();
+            if (!isProtected)
+            {
+                co_await next();
+                co_return;
+            }
+
+            if (options.requireSecureTransport && !request.overTls())
+            {
+                response.setStatus(403);
+                response.setHeader("content-type", kPlainTextContentType);
+                response.setBody("Bearer 凭据不在明文连接上接受：请走 HTTPS，或在配置里显式置 requireSecureTransport=false");
+                co_return;
+            }
+
+            const bool             isSingleCredential = request.headerFieldCount("authorization") <= 1;
+            const auto             presented          = isSingleCredential ? request.firstHeaderValueView("authorization") : std::optional<std::string_view>{};
+            const std::string_view credential         = presented.has_value() ? Detail::extractBearerCredential(*presented) : std::string_view{};
+            // 空串是「没给凭据」与「方案不是 Bearer」的共用形状：extractBearerCredential 对后者交回空，
+            // 本层不顺着另一种方案去解释那段字符串
+            const bool hasCredential = !credential.empty();
+            const bool isAuthorized  = hasCredential && options.verify(credential);
+            if (isAuthorized)
+            {
+                co_await next();
+                co_return;
+            }
+
+            response.setStatus(401);
+            response.setHeader("www-authenticate", hasCredential ? "Bearer realm=\"" + options.realm + "\", error=\"invalid_token\"" : "Bearer realm=\"" + options.realm + '"');
+            response.setHeader("content-type", kPlainTextContentType);
+            response.setBody(hasCredential ? "Bearer 凭据不被接受" : "需要 Bearer 凭据（Authorization: Bearer <token>）");
+            co_return;
+        };
+    }
+
+} // namespace AsynGyanis::Net

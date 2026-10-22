@@ -1,4 +1,4 @@
-#include "Net/Http/StaticFileMappingCache.h"
+#include "Net/Http/Server/StaticFileMappingCache.h"
 
 #include "NetTestSupport.h"
 

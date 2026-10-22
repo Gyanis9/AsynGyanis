@@ -1,6 +1,6 @@
 // RFC 7807 problem+json 渲染器：字段齐全性、status 与 HTTP 状态码同解、
 // detail 的 JSON 转义（中文/引号/反斜杠/换行）、type 缺省值，以及越界状态的拒绝。
-#include "Net/Http/ProblemJson.h"
+#include "Net/Http/Message/ProblemJson.h"
 
 #include "Base/Config/ConfigValue.h"
 #include "Base/Exception/InvalidArgumentException.h"

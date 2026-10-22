@@ -5,8 +5,8 @@
 // - RequiredJsonStringRejectsMissingWrongTypedAndEmpty（必填口径：缺失、错类型、空串三者各点名拒）
 
 #include "ExpectedAssertions.h"
-#include "Net/Http/OAuthSupport.h"
-#include "Net/Http/OAuthError.h"
+#include "Net/Http/Auth/OAuthSupport.h"
+#include "Net/Http/Auth/OAuthError.h"
 
 #include <gtest/gtest.h>
 

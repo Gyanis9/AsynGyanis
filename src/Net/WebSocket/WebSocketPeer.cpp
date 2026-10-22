@@ -1,6 +1,6 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
-#include "Net/Http/HttpServerStats.h"
+#include "Net/Http/Server/HttpServerStats.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
 

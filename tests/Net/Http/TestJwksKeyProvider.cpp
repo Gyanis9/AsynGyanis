@@ -8,7 +8,7 @@
 // - NumericKidTypesDoNotThrowFromVerify（JWKS 与令牌头的 kid 都是数字：读取口不抛，按无 kid 处理）
 // - DestroyingProviderWithSuspendedCoroutineIsSafe（挂起中选择析构——ASan 下无 UAF 即判据）
 
-#include "Net/Http/JwksKeyProvider.h"
+#include "Net/Http/Auth/JwksKeyProvider.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"

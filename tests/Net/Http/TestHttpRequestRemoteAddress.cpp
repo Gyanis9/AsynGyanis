@@ -6,9 +6,9 @@
 // h2 与 h3 的同一判据分别落在 tests/Net/Http2 与 tests/Net/Http3，TLS 那一侧的「读到加密」在
 // TestHttpsServer.cpp。
 
-#include "Net/Http/HttpRequest.h"
-#include "Net/Http/HttpResponse.h"
-#include "Net/Http/Router.h"
+#include "Net/Http/Message/HttpRequest.h"
+#include "Net/Http/Message/HttpResponse.h"
+#include "Net/Http/Routing/Router.h"
 
 #include "HttpTestSupport.h"
 

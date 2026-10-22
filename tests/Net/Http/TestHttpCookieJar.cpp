@@ -1,7 +1,7 @@
 // HttpCookieJar 单元测试：RFC 6265 的域/路径/Secure 匹配、替换与删除语义、有界存储与发送次序。
 #include "ExpectedAssertions.h"
 #include "Net/Http/Client/HttpCookieJar.h"
-#include "Net/Http/HttpCookie.h"
+#include "Net/Http/Message/HttpCookie.h"
 
 #include <gtest/gtest.h>
 

@@ -11,7 +11,7 @@
 
 #include "AsynGyanisExport.h"
 
-#include "Net/Http/HttpCookie.h"
+#include "Net/Http/Message/HttpCookie.h"
 
 #include <chrono>
 #include <cstddef>

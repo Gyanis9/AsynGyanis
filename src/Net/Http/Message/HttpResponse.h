@@ -1,0 +1,831 @@
+/**
+ * @file HttpResponse.h
+ * @brief HTTP 响应构建器与序列化器
+ * @author Gyanis
+ * @date 2026-09-13
+ * @version 1.0.0
+ * @copyright Copyright (c) . All rights reserved.
+ */
+
+#pragma once
+
+#include "AsynGyanisExport.h"
+
+#include "Base/Config/ConfigValue.h"
+#include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
+#include "Core/Coroutine/Task.h"
+#include "Net/Http/Message/HttpCookie.h"
+#include "Net/Http/Message/HttpHeaderFieldStore.h"
+#include "Net/WebSocket/WebSocketPeer.h"
+#include "Net/WebSocket/WebSocketUpgradePolicy.h"
+#include "Platform/IO/MemoryMappedFile.h"
+
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace AsynGyanis::Net
+{
+    /**
+     * @brief 调用方自设的 content-length 在上线时的三档处置
+     * @details 三条出站通路（h1 的序列化层、h2/h3 的头块采集器）共用这一份判定。分开写三份就会
+     *          有一档漂：这一条管报文边界，错一个字节不是「某条响应不对」而是「这条连接上之后的
+     *          每一条都不对」——对端按声明切包，多出的字节就成了下一条响应的开头
+     */
+    enum class ContentLengthSendDisposition
+    {
+        KeepDeclared,  ///< 原样采信声明值：没有正文要发，而调用方仍报了长度（HEAD 与 304 的省读靠它）
+        UseBodyLength, ///< 改成正文真实字节数：声明与要上线的字节不符时，由声明给正文让位
+        Omit           ///< 整条不下发：这个状态码按定义没有正文可承诺
+    };
+
+    /**
+     * @brief 纯文本响应的媒体类型，三条出站通路（h1 序列化层、h2 头块采集器、h3 头块采集器）唯一取值
+     * @details 带 charset 是必需的而不是修饰：拒绝与运维面的正文允许是中文，而 text/plain 缺省
+     *          按 RFC 2046 §4.1.3 解释成 US-ASCII，不声明就把非 ASCII 正文标错了编码
+     */
+    inline constexpr std::string_view kPlainTextContentType = "text/plain; charset=utf-8";
+
+    /**
+     * @brief HTTP 响应类，用于构建并序列化 HTTP/1.1 响应消息
+     *
+     * @details 支持设置状态码、头部、正文，toString() 生成可直接写入 socket 的报文；
+     *          另提供 ok()、notFound()、serverError() 等常用工厂方法。
+     *          一个响应对象只服务一条请求：需要复用时先 reset()。
+     *
+     * @note 头部存储模型：
+     *       @li 权威记录按「设置顺序」保存每条头部，toString() 就按它逐条输出，
+     *           因此报文头部顺序稳定可复现，多条 Set-Cookie 也保持先后次序；
+     *       @li 单值视图是名到值的映射（可重复头部只留首条），供 headers()/getHeader()
+     *           使用，逐条取值请用 headerValues()；首次查询时才由权威记录建出（写入只把视图标脏），
+     *           HTTP/1.1 的序列化从不读它，因此那条路径不再为每个响应维护一张映射表；
+     *           头部名一律转小写存储（RFC 9110 §5.1）。
+     * @warning 头部值会被原样写入报文，调用方不得传入含 CR/LF 的内容，否则构成响应拆分注入。
+     *          正文与状态码由本类自行序列化，不受此限。
+     *
+     * @note 流式模式（startChunkedResponse() + writeChunk()）与整块正文互斥：进入之后正文只能
+     *       逐段写出，头部按 transfer-encoding: chunked 序列化且不写 content-length。
+     *       头部不在 startChunkedResponse() 里发出（那是同步接口，发不出去字节），而是随首段正文
+     *       一起上线，因此状态码与头部必须在首次 writeChunk() 之前定稿。
+     */
+    class ASYN_NET_API HttpResponse
+    {
+    public:
+        /**
+         * @brief 构造一个默认响应（状态码 200 OK，无正文）。
+         */
+        HttpResponse();
+
+        // 可移动、不可拷贝：换成共享所有权存映射正文之后，编译器本会把拷贝操作放出来，
+        // 而「复制一份响应」意味着复制一份它正在引用的文件页视图——语义上就该由调用方显式做
+        HttpResponse(const HttpResponse &)                = delete;
+        HttpResponse &operator=(const HttpResponse &)     = delete;
+        HttpResponse(HttpResponse &&) noexcept            = default;
+        HttpResponse &operator=(HttpResponse &&) noexcept = default;
+
+        /**
+         * @brief 设置 HTTP 状态码。
+         * @param code 状态码，如 200、404、500
+         * @note 这里有意不校验取值范围：越界的原值要能被上层日志与调试原样看到。真正不许上线的判定在
+         *       序列化那一处——状态行按 `normalizeWireStatusCode()` 折回 500（h3 早就是这个做法，
+         *       两条通道共用同一份判据），原先 h1 会把 -1 或 1000 原样写出去，对端按行解析时看到的
+         *       是一行无法解释的状态字段
+         */
+        void setStatus(int code);
+
+        /**
+         * @brief 获取当前状态码。
+         * @return 状态码
+         */
+        [[nodiscard]] int status() const;
+
+        /**
+         * @brief 设置一个 HTTP 头部字段。
+         *
+         * @details 头部名按小写形态入库。普通头部同名即就地覆盖值、条目位置不变；
+         *          可重复头部（当前只有 set-cookie）每次调用新增一条独立头部，先设先发。
+         * @param name  头部字段名（如 "Content-Type"），大小写不敏感
+         * @param value 头部字段值（如 "text/html"）
+         * @return true 已写入
+         * @return false 参数非法，响应未被改动
+         * @note 值里出现 CR、LF 或 NUL 一律拒绝：头部以 CRLF 定界，放行就等于让调用方
+         *       （常常是把用户输入写进 Location/X-Header 的业务代码）提前结束头部块，
+         *       即 HTTP 响应拆分。非法头部名同理拒收。
+         * @note 204 与 1xx 不得带 content-length（RFC 9112 §6.2 的 MUST NOT）：这里既不自动补，
+         *       调用方显式设置的那一条也不会上线——序列化时按 declaredContentLengthDisposition()
+         *       剥掉（`Router::finalizeResponse()` 对 204 是「清正文而留着声明」，那一份就落在这里）。
+         */
+        bool setHeader(std::string_view name, std::string_view value);
+
+        /**
+         * @brief 获取指定名称的 HTTP 头部值。
+         * @param name 头部字段名，大小写不敏感
+         * @return 命中时返回该名字的单值（可重复头部为首条）；未命中返回空 optional
+         * @see headerValues() 需要逐条取值时使用
+         */
+        [[nodiscard]] std::optional<std::string> getHeader(std::string_view name) const;
+
+        /**
+         * @brief 判断指定名称的头部是否已设置（只看存在性，不看取值）
+         * @details 取代 `getHeader(x).has_value()`：后者会为一次判定把整个取值拷出来，
+         *          而保活与链路 id 这类判定每条响应都要跑。
+         * @param name 头部字段名，大小写不敏感
+         * @return true 至少有一条该名的记录
+         */
+        [[nodiscard]] bool hasHeader(std::string_view name) const;
+
+        /**
+         * @brief 判断指定名称的头部取值里是否出现了某个逗号分隔的 token（RFC 9110 §5.6.1）
+         * @details 例如 `Connection: keep-alive, Upgrade` 含 "upgrade" 而不含 "close"。
+         *          判定在存储内部逐段完成，既不拷贝取值也不构造值列表；保活判定每条响应都要跑，
+         *          而它只需要一个布尔结果。
+         * @param name 头部字段名，大小写不敏感
+         * @param expectedToken 待查找的 token，大小写不敏感
+         * @return true 至少一条取值列出了该 token
+         * @see headerValues() 需要逐条取值时使用
+         */
+        [[nodiscard]] bool hasHeaderValueToken(std::string_view name, std::string_view expectedToken) const;
+
+        /**
+         * @brief 获取指定名称的全部头部值，按设置顺序返回。
+         * @details 主要给 Set-Cookie 这类可重复头部使用：setHeader 每调一次就多条一项。
+         * @param name 头部字段名，大小写不敏感
+         * @return 值列表；名字不存在时为空列表
+         */
+        [[nodiscard]] std::vector<std::string> headerValues(std::string_view name) const;
+
+        /**
+         * @brief 只发流式响应的头部、不发正文（HEAD 请求用）
+         * @details HEAD 的响应「只有头部、没有正文」：对端在头部之后的第一个空行就认为消息结束
+         *          （RFC 9112 §6.1）。分块帧与终止块都算正文，发出去会被对端当成下一条报文的开头，
+         *          因此一并不发；头部照发（它描述的正是 GET 会返回什么）。会话在派发前按请求方法设置，
+         *          重置（reset）时清除
+         */
+        void suppressStreamingBody() noexcept;
+
+        /**
+         * @brief 流式响应的正文是否被抑制（见 suppressStreamingBody）
+         * @return true 只发头部、不发正文段
+         */
+        [[nodiscard]] bool isStreamingBodySuppressed() const noexcept;
+
+        /**
+         * @brief 用一段 JSON 作为响应正文，并顺带把媒体类型设成 `application/json; charset=utf-8`。
+         * @details 序列化失败（值是 NaN、±Inf，或字符串里带着非 UTF-8 字节）时返回 false 且不改动
+         *          已经设好的正文与头部：发出一条语法上不合法的 JSON 比发不出响应更糟——对端的解析器
+         *          会把它当成一次成功的响应去读，读出来的是什么没人知道。
+         * @param value 要交出的值（`Base::ConfigValue`，即本仓统一使用的 JSON 值类型）
+         * @param isIndented 是否按两格缩进美化输出；缺省紧凑，因为响应通常是被机器读的
+         * @return true 已写入；false 该值无法表示成合法 JSON，响应未被改动
+         */
+        [[nodiscard]] bool setJsonBody(const Base::ConfigValue &value, bool isIndented = false);
+
+        /**
+         * @brief 追加一条 Set-Cookie。
+         * @details 与 `setHeader("set-cookie", cookie.renderAsSetCookie())` 同效，区别在属性由
+         *          `HttpCookie` 拼装：手写属性串最容易漏掉 Secure/HttpOnly，或把 Expires 写成
+         *          对端不认的日期格式——那种错在响应里是静默的。
+         * @details 与那条手写写法不等效的一处：本方法会拒掉「SameSite=None 却没设 Secure」的 Cookie。
+         *          浏览器对这种组合整条丢弃（RFC 6265bis §4.1.2.1），而字面上那条头部看不出毛病——
+         *          现场只剩「Cookie 存不住」。本类不替调用方补 Secure：那等于在明文连接上发一条它没要的
+         *          Secure Cookie（见 `HttpCookie` 的「只写显式设过的属性」口径）。
+         * @details 名字不合规（最常见的是默认构造出来的空名字）也在这里拒掉：发出去是一条 `Set-Cookie: =值`，
+         *          对端按畸形丢掉（RFC 6265 §5.2），现场同样只剩「Cookie 设了没生效」。
+         * @details set-cookie 是可重复头部，调几次就发几条，先设先发，顺序稳定可复现。
+         * @param cookie 待发出的 Cookie
+         * @throws Base::InvalidArgumentException Cookie 名字为空或含控制符/分隔符（RFC 6265 §4.1.1）
+         * @throws Base::InvalidArgumentException Cookie 设了 SameSite=None 却没设 Secure
+         */
+        void setCookie(const HttpCookie &cookie);
+
+        /**
+         * @brief 获取所有头部字段的单值视图。
+         * @return 名到值的 unordered_map 引用，键为小写头部名；可重复头部在此只有首条值。
+         *         序列化顺序不看这张表，一律按权威记录的插入顺序输出
+         */
+        [[nodiscard]] const std::unordered_map<std::string, std::string> &headers() const;
+
+        /**
+         * @brief 登记一条要随正文一起收尾的 trailer 字段（RFC 9112 §7.1.2 的尾部头字段）
+         *
+         * @details 与 setHeader 分开存：尾部字段并进头部就会出现「同一个字段两个解释位置」，
+         *          `content-length` 这类定界字段尤其危险（收端读哪一份都可能被对端利用）。
+         *          三条出站通路（h1 的分块终止块、h2 的尾部头块、h3 的尾段）都从这一份记录取值——
+         *          但 h1 只有分块（流式）响应带得动它们：非分块报文的正文由 content-length 或
+         *          「读到关闭」定界，正文之后没有放字段段的位置（RFC 9112 §7.1.2）。那种响应上登记的
+         *          字段不会上线，序列化时会写一条 WARN 把这件事说出来（h2/h3 不受此限，尾部是独立的
+         *          一个头块/段）。
+         *          头部里那条 `Trailer:` 声明由序列化层按本方法的登记结果自动生成，调用方不必自己写；
+         *          但声明只在头部上线前那一刻有效：流式响应的首段之前头部就已发出，此后登记的字段
+         *          仍会上线，只是没进声明——按 RFC 9110 §6.5.1 严格的收端有权忽略未声明的尾部字段，
+         *          因此要把字段交给对端读，就得在首次 writeChunk 之前登记完。
+         * @param name 字段名，大小写不敏感（入库转小写）；必须是合法 token 且非空
+         * @param value 字段值；CR/LF/NUL 会让字段块提前结束（响应拆分），一律拒绝
+         * @return true 已写入
+         * @return false 参数非法，或这个名字不许出现在尾部：以 `:` 开头的伪头（h2/h3 的尾部头块里
+         *         它们非法，RFC 9113 §8.1）、`content-length`、`transfer-encoding`
+         *         与其余连接级字段（`Connection`/`Keep-Alive`/`Proxy-Connection`/`Upgrade`，
+         *         RFC 9110 §6.5.1 禁止）。拒收而不是静默丢弃——写错的业务代码需要当场知道自己没生效
+         * @see trailerDeclarationValue(), chunkedTerminatorText()
+         */
+        bool addTrailerField(std::string_view name, std::string_view value);
+
+        /**
+         * @brief 取一条已登记的 trailer 字段取值
+         * @param name 字段名，大小写不敏感
+         * @return 命中时返回该名字的取值（同名多条按 setHeader 的同一口径合并）；未命中返回空 optional
+         */
+        [[nodiscard]] std::optional<std::string> getTrailerField(std::string_view name) const;
+
+        /// 本条响应是否登记了可交付的尾部字段（决定 `Trailer:` 声明与终止块的形状，见 addTrailerField）
+        [[nodiscard]] bool hasTrailerFields() const noexcept
+        {
+            return m_trailerStore.has_value();
+        }
+
+        /**
+         * @brief 按登记顺序遍历全部尾部字段（权威记录）
+         * @details 只给遍历不给存储引用：没有尾部字段时那份存储根本不存在，而返回引用就得为
+         *          「空的那一份」造一个全局对象——遍历是这里唯一真实的用法。
+         * @tparam Visitor 可调用体，形如 `void (std::string_view name, std::string_view value)`
+         * @param visitor 每个字段访问一次；名字已折小写，视图只在本次回调内有效
+         */
+        template<typename Visitor>
+        void forEachTrailerField(const Visitor &visitor) const
+        {
+            if (m_trailerStore.has_value())
+            {
+                m_trailerStore->forEachField(visitor);
+            }
+        }
+
+        /**
+         * @brief 生成 `Trailer:` 声明的取值（登记过的字段名按顺序用「, 」连成一条）
+         * @details 三条出站通路共用这一份拼法：h1 直接把它写进头部块，h2/h3 的头部块里没有分块帧，
+         *          但同一个声明字段仍然照 RFC 9110 §6.5 的口径带上，免得对端只看得到尾部却不知道头里承诺过什么。
+         * @return 尾部字段名列表；没登记任何字段时返回空串（调用方据此不输出这条头部）
+         */
+        [[nodiscard]] std::string trailerDeclarationValue() const;
+
+        /**
+         * @brief 设置响应正文，覆盖已有内容。
+         * @param body 正文字符串视图（内容会被复制存储）
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
+         * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
+         * @note 记录里调用方显式设过的 content-length 原样保留（HEAD 与静态文件服务靠「先声明
+         *       长度、不读正文」省一次整文件 IO），但上线的那一条按正文真实字节数下发：
+         *       正文非空时声明必须与它同值，否则对端按声明切包会把这条连接后面的每一条都弄错位
+         *       （见 declaredContentLengthDisposition）。替换正文的中间件因此不必记得清这条头
+         */
+        void setBody(std::string_view body);
+
+        /**
+         * @brief 用「调用方交出所有权的字符串」当正文：把正文移动进响应，免去 setBody 的那次整块拷贝
+         *
+         * @details 中间件（如响应压缩）已经构造好一整块正文 std::string，用 setBody(string_view)
+         *          会把这份字节再拷一遍进响应内部缓冲；本入口直接接管调用方的缓冲。语义与不变式
+         *          与 setBody 完全一致（互斥流式模式、解除旧映射、记录里保留调用方显式声明的
+         *          content-length，而上线的那一条按正文真实字节数下发），差别只在正文按所有权移动而非复制。
+         * @param body 正文字符串，内容被移入本响应
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
+         * @note 与 setMappedBody() 互斥：调用本函数会丢弃已映射的文件
+         * @see setBody
+         */
+        void setOwnedBody(std::string body);
+
+        /**
+         * @brief 备好一段长度为 length 的堆正文缓冲，交给调用方就地写入
+         * @details 正文由「一次读取」产生的调用方（静态文件服务）走这里可以省掉每请求的堆分配：
+         *          响应对象按连接复用，第一条之后缓冲的容量就在，读第二个文件只是往同一块内存里
+         *          覆写。不变式与 setOwnedBody 一致（互斥流式模式、解除旧映射、显式声明的
+         *          content-length 留在记录里而上线时按正文真实字节数下发），返回的引用即内部缓冲，
+         *          写满 length 字节后正文就已经就位。
+         * @param length 正文长度，单位字节；缓冲被调整成这一长度
+         * @return std::string & 指向响应内部正文缓冲的引用，长度为 length，内容尚未定义
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥
+         * @warning 拿到引用就要把 length 字节全写完；中途放弃要改用 setBody()/setOwnedBody()
+         *          重设正文，否则这份缓冲会按原长度被当成正文发出去。
+         * @see setOwnedBody
+         */
+        std::string &prepareBodyBuffer(std::size_t length);
+
+        /**
+         * @brief 用「内存映射的文件」当正文：整份文件不复制进堆，直接以映射视图参与发送
+         *
+         * @details 静态文件响应的正文动辄几十 KiB 到几十 MiB，先读进堆再发等于白白多一次
+         *          等量拷贝与分配。映射之后正文就是文件页的视图，发送时直接引用（本响应
+         *          持有映射的所有权，因此映射在发送期间一定有效）。
+         * @param mappedFile 已映射好的文件；无效对象会被当作空正文
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         * @see Platform::MemoryMappedFile
+         */
+        void setMappedBody(Platform::MemoryMappedFile mappedFile);
+
+        /**
+         * @brief 用「内存映射文件里的一个区间」当正文，供 206 区间响应零拷贝引用
+         *
+         * @details 区间视图由 [offset, offset + length) 界定，body() 与序列化都只看到这一段，
+         *          发送时仍指向文件页，因此 206 不必为切片额外拷一份堆内存。
+         * @param mappedFile 已映射好的文件
+         * @param offset 区间起始偏移，单位字节
+         * @param length 区间长度，单位字节；0 表示空正文
+         * @throws Base::InvalidArgumentException 交来的映射不可用（空指针、打开失败、已关闭或已被移走）
+         *         而区间又非空：没有字节的映射给不出非空区间，这种组合按清正文处理会把失败吞掉
+         * @throws Base::InvalidArgumentException 区间超出映射范围（offset 或 length 越界）。
+         *         越界属于调用方的用法错误，拒绝静默钳制——那会让 content-length 与实际
+         *         字节数悄悄不一致
+         * @throws Base::LogicException 响应已进入流式模式：整块正文与流式模式互斥，
+         *         正文只能由 writeChunk() 逐段写出
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         * @see Platform::MemoryMappedFile
+         */
+        void setMappedBody(Platform::MemoryMappedFile mappedFile, std::size_t offset, std::size_t length);
+
+        /**
+         * @brief 用「多份响应共享的一份映射」里的一个区间当正文，供静态文件的映射缓存零拷贝引用
+         * @details 与上面的按值重载差在所有权：本入口不接管映射，只与其余持有者共同持有一份引用。
+         *          缓存因此可以在淘汰之后仍让在途响应读到完整的页——按值那份会在响应之前析构。
+         * @param mappedFile 共享的映射；空指针或指向无效映射，在 offset 与 length 都是 0 时按
+         *        「无映射正文」处理，区间非空则当场拒（见下面的 @throws）
+         * @param offset 区间起始偏移，单位字节
+         * @param length 区间长度，单位字节；0 表示空正文
+         * @throws Base::InvalidArgumentException 交来的映射不可用而区间非空，或区间超出映射范围
+         *         （offset 或 length 越界）
+         * @throws Base::LogicException 响应已进入流式模式
+         * @note 与 setBody() 互斥：调用本函数会丢弃已存下的堆正文
+         */
+        void setSharedMappedBody(std::shared_ptr<const Platform::MemoryMappedFile> mappedFile, std::size_t offset, std::size_t length);
+
+        /**
+         * @brief 获取响应正文。
+         * @return 正文字符串视图，视图生命周期跟随本响应对象（映射正文时指向文件映射）
+         */
+        [[nodiscard]] std::string_view body() const;
+
+        /**
+         * @brief 释放映射正文（解除映射并关闭其持有的文件句柄），头部与状态码不受影响
+         * @details 正文在响应发出之后就不再需要，而空闲的 keep-alive 连接会一直持有响应对象
+         *          直到下一条报文派发时才复位：静态文件响应因此可能长时间占着映射与句柄。
+         *          会话在发送完成后调用本方法提前归还，占用的文件资源只覆盖真正的发送期间。
+         * @note 调用后 bodyView() 变为空视图；reset() 与 setBody() 也会做同样的释放
+         */
+        void releaseMappedBody() noexcept;
+
+        /**
+         * @brief 映射正文的零拷贝发送描述：文件描述符 + 文件内区间
+         */
+        struct ZeroCopyBody
+        {
+            int         fileDescriptor{-1}; ///< 承载正文的文件描述符；-1 表示本响应没有可零拷贝发送的正文
+            std::size_t offset{0};          ///< 区间在文件中的起始偏移，单位字节
+            std::size_t length{0};          ///< 区间字节数
+        };
+
+        /**
+         * @brief 取映射正文的零拷贝发送描述（sendfile 用）
+         * @return std::optional<ZeroCopyBody> 有映射正文且长度非零时给出描述；堆正文、空正文、
+         *         流式响应、以及平台不提供零拷贝发送时都返回空，调用方据此退回普通发送路径
+         * @note 只给描述、不转移所有权：文件描述符随本对象存活，调用方须在响应对象存活期间使用
+         * @note 调用方应先用 Platform::Socket::supportsZeroCopySend() 判定平台能力；没有该能力
+         *       时本方法恒返回空，判定因此只是省一次无谓调用
+         */
+        [[nodiscard]] std::optional<ZeroCopyBody> zeroCopyBody() const noexcept;
+
+        /**
+         * @brief 流式发送回调：把一段字节写到本响应所属的连接
+         *
+         * @details 由会话在路由之前装配（HttpResponse 自己不认识 socket）。false = 本段未发出、连接不可
+         *          再用、调用方应停止写入，两种来源：本侧已收口（此前必已记录过收口原因，本次不再记）与
+         *          传输失败（对端关闭或复位、描述符被关闭、等可写期间被关闭，本次记一条中文日志）。
+         *          失败一律折成 false 不抛异常；回调是协程，写不下时挂起等待可写而不是丢弃这段字节。
+         */
+        using ChunkSender = std::function<Core::Task<bool>(std::string_view)>;
+
+        /**
+         * @brief 装配流式发送回调（由会话在路由之前调用）
+         * @param chunkSender 发送回调；传空 std::function 表示清除装配
+         * @note 回调绑定的是连接而不是某一条报文，因此 reset() 不清理它；未装配时
+         *       writeChunk() 会直接报错，绝不把正文段悄悄丢掉
+         */
+        void setChunkSender(ChunkSender chunkSender);
+
+        /// 一条中间响应携带的字段：名与值都按调用方给的原文上线（不做大小写归一）
+        using InformationalHeaderField = std::pair<std::string, std::string>;
+
+        /**
+         * @brief 中间响应（1xx）的写出回调：把一条信息性报文写到本响应所属的连接
+         *
+         * @details 与 ChunkSender 同一装配时机（会话在路由之前装配，HttpResponse 自己不认识 socket）。
+         *          回调只写「状态行 + 给定字段 + 空行」，不写正文，也不读不写本响应的状态与头部——
+         *          中间响应是一条独立报文，最终响应照常由本对象给出。
+         *          false = 没写成、连接不可再用（失败口径与 ChunkSender 逐字相同）。
+         */
+        using InformationalWriter = std::function<Core::Task<bool>(int statusCode, const std::vector<InformationalHeaderField> &fields)>;
+
+        /**
+         * @brief 装配中间响应写出回调（由会话在路由之前调用）
+         * @param informationalWriter 写出回调；传空 std::function 表示清除装配
+         * @note 回调绑定的是连接而不是某一条报文，因此 reset() 不清理它（与 setChunkSender() 同口径）
+         */
+        void setInformationalWriter(InformationalWriter informationalWriter);
+
+        /**
+         * @brief 本响应能不能发中间响应
+         * @return true 会话已装配写出回调；false 表示这个响应对象没有可写的连接（手工构造，或该通道未接）
+         */
+        [[nodiscard]] bool canSendInformational() const noexcept;
+
+        /**
+         * @brief 先写一条中间响应（1xx），本响应照常等着被填满最终答复
+         *
+         * @details 用途两条：`103 Early Hints`（RFC 8297：最终响应还在生成时先把 `Link: rel=preload`
+         *          交出去，浏览器可以据此提前取 CSS 与字体）与 `102 Processing`（长任务先表态）。
+         *          三条通道同一个语义出处：h1 是一条独立的状态行报文，h2/h3 是不带 END_STREAM 的
+         *          HEADERS 块（RFC 9113 §8.1、RFC 9114 §4.1），因此处理函数换协议不必改写法。
+         *
+         * @param statusCode 必须落在 1xx（100~199）。100 由会话在收到 `Expect: 100-continue` 时自动回，
+         *        处理函数要的一般是 102 或 103
+         * @param fields 这条中间响应携带的字段（103 至少要有一条 Link），原样上线
+         * @return Core::Task<bool> true 已写出；false 表示连接已不可用，或本对象没装配写出回调
+         * @throws Base::InvalidArgumentException statusCode 不在 1xx 区间，或字段写法会破坏头部结构
+         *         （名字带空格冒号、取值含 CR/LF）——那等于让这条报文自己撕裂
+         * @note 不影响本响应的状态码与头部：中间响应是一条独立消息，本对象照常等待最终答复
+         * @see setInformationalWriter(), canSendInformational()
+         */
+        [[nodiscard]] Core::Task<bool> sendInformational(int statusCode, std::vector<InformationalHeaderField> fields = {});
+
+        /**
+         * @brief 组一条 HTTP/1.1 的中间响应（1xx）报文文本：状态行 + 给定字段 + 空行
+         *
+         * @details 与最终响应的序列化分开的理由有两条：一条中间响应没有正文，也不该被写成一份
+         *          可缓存的答复——所以不补 Date、不补 Server、不写 content-length（RFC 9112 §6.1 里
+         *          那份日期是给最终响应的）；同时它也不读不写本对象的头部，是同一条连接上的另一份报文。
+         *          h2/h3 不用这个函数：那两条通道上中间响应是一个不带 END_STREAM 的 HEADERS 块。
+         *
+         * @param statusCode 必须落在 1xx（调用方由 `sendInformational()` 保证）
+         * @param fields 随这条报文上线的字段（103 一般是若干条 Link），按原样写出
+         * @return std::string 完整报文文本，以空行收尾
+         */
+        [[nodiscard]] static std::string informationalMessage(int statusCode, const std::vector<InformationalHeaderField> &fields);
+
+        /**
+         * @brief 进入流式响应模式：正文此后只能由 writeChunk() 逐段写出
+         *
+         * @details 头部按 transfer-encoding: chunked 序列化（RFC 9112 §6），不写 content-length；
+         *          先设下的 content-length 会被删掉（两者不得并存）。状态码与头部须在首次
+         *          writeChunk() 之前定稿：头部随首段正文一起上线，上线之后改不了。
+         * @param statusCode 响应状态码
+         * @throws Base::LogicException 状态码不允许携带正文（1xx、204、304，RFC 9110 §6.3）、
+         *         已经设过整块正文、或流式头部已经上线
+         * @warning 分块传输是 HTTP/1.1 的机制：在 HTTP/1.0 请求的响应上使用会产出对端无法解析的报文。
+         *          另按 RFC 9110 §9.3.2，HEAD 的响应不得带正文，其处理函数不应进入流式模式。
+         * @see writeChunk()
+         */
+        void startChunkedResponse(int statusCode);
+
+        /**
+         * @brief 把一段正文按 chunked 帧立即写出
+         *
+         * @details 帧格式为 `<十六进制的长度>\r\n<数据>\r\n`（RFC 9112 §7.1），经会话装配的回调
+         *          直接写连接，不在内存里攒整块正文；首段之前先把头部推出去。
+         * @param data 本次写出的正文段，按「指针 + 长度」取，可以是任意字节
+         * @return true 已写出（data 为空时同样为 true，表示无需写出）
+         * @return false 本段未发出、连接不可再用、调用方应停止继续写并收手；来源有两种：
+         *         本侧已收口（此前必已记录过收口原因，本次不新增日志）与传输失败（对端关闭、
+         *         对端复位、描述符被关闭、等可写期间被关闭，会话本次记一条中文日志）。该失败不抛异常；
+         *         「false 且日志里没有新记录」通常意味着本侧已收口，排查请回看收口那一刻的日志
+         * @throws Base::LogicException 用法错误，仍抛异常：当前不在流式模式（请先调用
+         *         startChunkedResponse()），或响应对象未装配发送回调（只对会话交给处理器的响应对象有效）
+         * @note data 指向的字节必须活到本次 co_await 结束：协程到首次 resume 才读入参
+         * @note data 为空时不发送并直接返回 true：零长度块是终止块的语义（RFC 9112 §7.1），
+         *       发一个空段既无信息又会被对端当成消息结束
+         * @note 每次写出之前会把连接的空闲截止时间按 HttpServerLimits::writeTimeout 刷新，
+         *       因此相邻两段之间超过该时限仍会被清扫协程当成慢消费者收口：长间隔的流（如 SSE
+         *       心跳）要在期限内补一段数据，或把 writeTimeout 配大、配 0（关闭该项保护）
+         * @see startChunkedResponse()
+         */
+        Core::Task<bool> writeChunk(std::string_view data);
+
+        /**
+         * @brief 本响应是否处于流式模式。
+         * @return true 已由 startChunkedResponse() 进入流式模式
+         */
+        [[nodiscard]] bool isChunkedResponse() const noexcept;
+
+        /**
+         * @brief 流式头部是否已随首段正文上线
+         *
+         * @details 会话据此判断收尾时该做什么：头部未上线还能整份重写（例如换成 500），
+         *          已上线则只能补终止块。
+         * @return true 状态行与头部已经在对端手里，此后只能写正文段与终止块
+         */
+        [[nodiscard]] bool hasSentChunkedHead() const noexcept;
+
+        /**
+         * @brief 生成分块响应收尾要补的那段字节：终止块，或「终止块 + 尾部字段 + 空行」
+         *
+         * @details 形状是 `0\r\n\r\n`（RFC 9112 §7.1）与 `0\r\n<字段行>*\r\n`（§7.1.2 的尾部字段段）。
+         *          放在响应而不是会话里：一条流式响应的收尾只有两处出口（正常跑完、中途抛异常），
+         *          两处都得带上同一批字段，拼法分叉就会出现「一处带尾部一处不带」这种对端解不开的报文。
+         * @return 直接可写的字节串；没登记尾部字段时就是那五个字节的终止块（落在短字符串缓冲里，不碰分配器）
+         * @see addTrailerField()
+         */
+        [[nodiscard]] std::string chunkedTerminatorText() const;
+
+        /**
+         * @brief 登记「本次请求要把这条连接升级成 WebSocket」（RFC 6455 §4）
+         *
+         * @details 只登记意图，不做任何 IO：会话在此后的循环里校验升级请求、把 101 报文原样写出，
+         *          然后把连接交给该处理器。处理器一直运行到它返回或连接收口，期间会话不再回到
+         *          HTTP 事务循环——一条连接要么是 HTTP，要么是 WebSocket。
+         * @param handler 升级成功后的业务处理器，所有权转移给本响应
+         * @throws Base::InvalidArgumentException handler 为空
+         * @throws Base::LogicException 已设过整块正文或已进入流式模式：升级应答由握手模块逐字节生成，
+         *         与 HttpResponse 的正文/分块序列化互斥
+         * @note 校验可能失败（请求并不构成合法握手），此时会话回 400 而不会调用处理器
+         * @note reset() 会连同处理器一起清掉：复用的响应对象不会把升级意图带到下一条报文
+         * @see isWebSocketUpgradeRequested(), webSocketHandler()
+         */
+        void upgradeToWebSocket(WebSocketHandler handler);
+
+        /**
+         * @brief 登记「本次请求要把这条连接升级成 WebSocket」，并带上这次握手的策略
+         *
+         * @details 策略登记在响应上而不是服务器上：三条入站通道（h1 的 `Upgrade`、h2 的扩展 CONNECT、
+         *          h3 的 CONNECT 隧道）都从这一份读，Origin 准入与子协议协商因此不因承载方式分叉——
+         *          同一处服务经三条通道被访问是这台引擎的常态，把判定交给应用层各判一遍等于没判。
+         * @param handler 升级成功后的业务处理器，所有权转移给本响应
+         * @param policy 这次升级按哪些规则判；`allowedOrigins` 里任何一条不是合法的源就当场拒收
+         * @throws Base::InvalidArgumentException handler 为空，或某条 allowedOrigins 写法不是
+         *         `scheme://host[:端口]`（登记时就判形状，而不是等到握手时让它悄悄落空）
+         * @throws Base::LogicException 已设过整块正文或已进入流式模式
+         * @see upgradeToWebSocket(WebSocketHandler), webSocketUpgradePolicy()
+         */
+        void upgradeToWebSocket(WebSocketHandler handler, WebSocketUpgradePolicy policy);
+
+        /**
+         * @brief 本次响应是否登记了 WebSocket 升级。
+         * @return true 已由 upgradeToWebSocket() 登记，会话应尝试升级而不是按响应序列化应答
+         */
+        [[nodiscard]] bool isWebSocketUpgradeRequested() const noexcept;
+
+        /**
+         * @brief 取本次升级登记的握手策略。
+         * @return 策略的常引用；未登记升级时是默认值（只放同源、不参与子协议协商）
+         * @note 引用跟随本响应的生命周期；三条通道都在发出应答之前读它
+         */
+        [[nodiscard]] const WebSocketUpgradePolicy &webSocketUpgradePolicy() const noexcept;
+
+        /**
+         * @brief 取已登记的升级处理器。
+         * @return 处理器的常引用；未登记时为空 std::function
+         * @note 引用跟随本响应的生命周期；会话在升级成功后才取用它
+         */
+        [[nodiscard]] const WebSocketHandler &webSocketHandler() const noexcept;
+
+        /**
+         * @brief 设置 HTTP 协议版本（默认 "HTTP/1.1"），用于状态行序列化。
+         * @param version 版本字符串，形状必须是 `HTTP/<主>[.<次>]`，主与次各一位十进制数字
+         * @return true 已记下这个版本
+         * @return false 形状不合（含 CR/LF、空白与乱写的版本号）：拒写且不改动已有值。状态行是按原文
+         *         拼出去的，留一个 CR/LF 等于让调用方提前结束状态行、再往自己发出的响应里插一条头部
+         *         （HTTP 响应拆分）——与本类 `setHeader()` 拒 CR/LF/NUL 是同一类判据，此前状态行没人判
+         * @note 主版本这里收得比入站宽（那边只认 HTTP/0.x 与 HTTP/1.x）：h2/h3 会话把请求版本记成
+         *       "HTTP/2"、"HTTP/3" 并沿用到响应上，那两路不序列化这一行，但这个值必须存得下
+         */
+        bool setHttpVersion(std::string version);
+
+        /**
+         * @brief 将响应序列化为 HTTP 格式的字符串。
+         *
+         * @details 输出结构：状态行 + 头部块 + 空白行 + 正文，行分隔符一律 CRLF；头部块按设置顺序输出，
+         *          随后按需补三条自动头部：未设 date 时补一条当前时刻的 IMF-fixdate；正文非空且未设
+         *          content-type 时补 text/plain；未设 content-length 时按正文实际字节数补一条。
+         *          自动补出的头部为小写名，排在自设头部之后。
+         * @return 完整的 HTTP 响应字符串
+         * @note 返回串的长度即上线字节数，调用方直接整块发送即可
+         */
+        [[nodiscard]] std::string toString() const;
+
+        /**
+         * @brief 只序列化响应头部（状态行 + 头部块 + 空白行），不含正文
+         *
+         * @details 配合 body() 使用，可把「头部块 + 正文」作为两段交给聚合写一次提交，
+         *          省掉把正文拼进头部块的那次整体拷贝（大正文与文件响应最明显）。
+         *          补齐规则与 toString() 完全一致。
+         * @return 响应头部块字符串，长度不包含正文
+         * @note 与 toString() 拼接后的结果逐字节相同：toString() 就是「本函数 + 正文」，
+         *       差别只在于正文是否需要额外一份拷贝
+         */
+        [[nodiscard]] std::string serializeHead() const;
+
+        /**
+         * @brief 把响应头部序列化进调用方提供的缓冲，复用其已分配的容量
+         *
+         * @details 保活连接上每条响应都要发一段头部，逐条新建串即逐条 malloc/free。调用方把缓冲
+         *          提到循环作用域、按连接复用，这里先 clear 再按预估长度 reserve（容量够即空操作），
+         *          稳定后不再触碰分配器。补齐规则与 serializeHead() 逐字一致（同一 appendHead 分发）。
+         * @param out 目标串：进入时先清空，随后写入头部块；调用方持有其生命周期
+         * @note out 不得与响应内部存储（正文视图等）别名，否则 appendHead 边读边写会读到半成品
+         */
+        void serializeHeadInto(std::string &out) const;
+
+        /**
+         * @brief 创建一个 200 OK 响应。
+         * @param body 响应正文
+         * @return HttpResponse 对象，已带 content-type: text/plain
+         */
+        static HttpResponse ok(std::string body);
+
+        /**
+         * @brief 创建一个 404 Not Found 响应。
+         * @return HttpResponse 对象，正文为 "Not Found"
+         */
+        static HttpResponse notFound();
+
+        /**
+         * @brief 创建一个 500 Internal Server Error 响应。
+         * @param message 错误描述正文，默认为空串
+         * @return HttpResponse 对象，已带 content-type: text/plain
+         */
+        static HttpResponse serverError(std::string message = "");
+
+        /**
+         * @brief 重置响应对象到初始状态（状态码 200、版本 HTTP/1.1，清空头部和正文）。
+         * @details 两条头部存储一起清空，保持「视图与权威记录一致」的不变式；流式模式标记与
+         *          WebSocket 升级意图一并复位（否则下一条报文会被按分块定界、或被当成升级请求）；
+         *          发送回调刻意不清，它绑定连接而不是本条报文。复用响应对象时必须先调用本方法，
+         *          否则上一轮的 Set-Cookie 会残留。
+         */
+        void reset();
+
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @param statusCode 待判定的状态码
+         * @return true 表示该状态码的响应不得有正文，因此不能进入流式模式
+         */
+        [[nodiscard]] static bool isBodylessStatusCode(int statusCode) noexcept;
+
+        /**
+         * @brief 该状态码的响应是否不允许携带正文（RFC 9110 §6.3：1xx、204、304）
+         * @return true 表示序列化时不得输出正文
+         */
+        [[nodiscard]] bool carriesNoContent() const noexcept;
+
+        /**
+         * @brief 定下调用方自设的那条 content-length 上线时的处置（h1/h2/h3 共用）
+         * @details 这条声明只是调用方的一句话，真正上线的是 bodyView() 那些字节；两句对不上时必须
+         *          有一句让位，否则对端按声明切包：h1 上多出的字节成为同一条 keep-alive 连接上下一条
+         *          响应的开头，h2/h3 上这条流被直接判畸形（RFC 9113 §8.1.1、RFC 9114 §4.2）。三档：
+         * @li 204 与 1xx → `Omit`：RFC 9112 §6.2 的 MUST NOT。路由器正是「清掉正文而留着声明」走过来
+         *     的（见 `Router::finalizeResponse()`），留着等于让严格收端白等一段不存在的正文；
+         * @li 手里有正文要发 → `UseBodyLength`：一律按真实字节数。HEAD 也走这一档——它报的本就该是
+         *     「同一请求的 GET 会发多大」，而此刻正文视图正是那么大；
+         * @li 没有正文可发而调用方仍给了长度 → `KeepDeclared`：静态文件的 HEAD 与 304 靠这一格省掉
+         *     整文件读取，此时只有生成响应的一方知道那个长度。
+         * @return ContentLengthSendDisposition 三档之一
+         */
+        [[nodiscard]] ContentLengthSendDisposition declaredContentLengthDisposition() const noexcept;
+
+        /**
+         * @brief 按设置顺序遍历响应的全部头部记录，同名多条各访问一次
+         * @details h1 序列化与 h2/h3 的头块组装共用这一份权威顺序：走 headers() 单值视图既要先重建
+         *          哈希表，又因 unordered_map 的遍历顺序不稳而让同一份响应两次编码给出不同的头部次序；
+         *          按权威记录走则顺序确定，也不为名与值做任何拷贝。
+         * @tparam Visitor 可调用对象，接受 (头名视图, 头值视图)
+         * @param visitor 每个头部访问一次
+         */
+        template<typename Visitor>
+        void forEachHeaderField(const Visitor &visitor) const
+        {
+            m_headerStore.forEachField(visitor);
+        }
+
+    private:
+        /**
+         * @brief 根据状态码获取标准原因短语。
+         * @param code 状态码
+         * @return 原因短语字符串（如 "OK"、"Not Found"）；未收录的状态码返回空串，
+         *         此时状态行原因为空（RFC 9110 允许）
+         */
+        static const char *statusMessage(int code);
+
+        /**
+         * @brief 删除指定名字的全部条目
+         * @param name 头部名，大小写不敏感；不存在时为空操作
+         */
+        void removeHeaderField(std::string_view name);
+
+        /**
+         * @brief setBody、setOwnedBody 与 prepareBodyBuffer 的共用前置：校验流式互斥并解除旧映射
+         * @details 三条堆正文入口只在「复制 / 移动 / 就地写进 m_body」上不同，其余不变式集中在
+         *          这一处维护，避免三份实现各自漂移。刻意不动记录里显式设过的 content-length：
+         *          那份声明是 HEAD 与 304 的省读依据，线格式那一侧另有判据按正文真实字节数下发。
+         * @throws Base::LogicException 响应已进入流式模式
+         */
+        void beginHeapBodyStorage();
+
+        /**
+         * @brief setBody 与 setOwnedBody 的共用落点：过完前置检查后把正文移动进堆缓冲
+         * @param body 已交出所有权的正文字符串，移动进 m_body
+         * @throws Base::LogicException 响应已进入流式模式
+         */
+        void assignBody(std::string body);
+
+        /**
+         * @brief 该状态码是否不得自动补 content-length
+         * @details 与 carriesNoContent() 刻意不同：304 允许携带 content-length，但只允许取
+         *          「同一请求的 200 会发出的正文长度」（RFC 9112 §6.2）——自动补出来的是 0，
+         *          正好违反该条 MUST NOT。因此 1xx / 204 / 304 一律不补，要带就由知道真实长度的
+         *          调用方显式设置
+         * @return true 表示不补 content-length
+         */
+        [[nodiscard]] bool mustNotDeclareContentLength() const noexcept;
+
+        /**
+         * @brief 取当前正文的视图，与正文的来源（堆串或文件映射）无关
+         * @return std::string_view 映射正文时指向文件页，堆正文时指向 m_body；无正文时为空视图
+         * @note 序列化、补 content-length、对外 body() 都经此一处取值，
+         *       只要两条正文存储的互斥不变式被 setBody/setMappedBody/reset 维持住，
+         *       调用方就看不到区别
+         */
+        [[nodiscard]] std::string_view bodyView() const noexcept;
+
+        /**
+         * @brief 取自动补出的 date 头部值，首次调用时按当前时刻生成并缓存
+         * @details 缓存保证同一响应的多次序列化给出逐字一致的 date：serializeHead() 与 toString()
+         *          若各自取一次 now()，跨秒的两次调用会产出不同的头部字节。文本本身取自
+         *          `currentHttpDateText()` 的按秒缓存，这一层保证的是「同一响应内不变」。
+         * @return 自动生成的 IMF-fixdate 文本
+         */
+        [[nodiscard]] std::string_view autoDateText() const;
+
+        /**
+         * @brief 计算头部块（状态行 + 头部 + 空白行）的预留长度，不含正文
+         * @return std::size_t 预留字节数
+         */
+        [[nodiscard]] std::size_t headReserveLength() const;
+
+        /**
+         * @brief 把头部块追加到目标串
+         * @param result 目标串（调用方已按 headReserveLength 预留容量）
+         */
+        void appendHead(std::string &result) const;
+
+        int                  m_status{200};             ///< HTTP 状态码，默认 200
+        std::string          m_httpVersion{"HTTP/1.1"}; ///< HTTP 版本，默认 1.1
+        HttpHeaderFieldStore m_headerStore;             ///< 头部存储：权威记录 + 按需重建的单值视图（见该类注释）
+        /// 尾部字段存储，按需创建：不带尾部的响应一次额外分配也不付。`reset()` 要把它整份解除
+        /// 而不是清空，否则 hasTrailerFields() 会因为「空的那一份也存在」而说谎
+        std::optional<HttpHeaderFieldStore> m_trailerStore;
+        bool                                m_isStreamingBodySuppressed{false}; ///< HEAD 请求：流式响应只发头部、不发正文段
+        std::string                         m_body;                             ///< 响应正文（堆存储），与 m_mappedBody 互斥
+        /**
+         * @brief 映射正文的来源；空指针表示没有映射正文
+         * @details 刻意用共享所有权而非内嵌对象：一份映射可以同时支撑多条在途响应（静态文件的
+         *          映射缓存淘汰时不能把还在发送的响应脚下抽走），响应只保证「自己活着时页有效」
+         */
+        std::shared_ptr<const Platform::MemoryMappedFile> m_mappedBody;
+        std::size_t                                       m_mappedBodyOffset{0};       ///< 映射正文的起始偏移，单位为字节（整份文件时为 0）
+        std::size_t                                       m_mappedBodyLength{0};       ///< 映射正文的长度，单位为字节（决定 bodyView 与 content-length）
+        bool                                              m_isChunked{false};          ///< 是否处于流式响应模式：正文由 writeChunk 逐段写出，头部按 chunked 序列化
+        bool                                              m_hasSentChunkedHead{false}; ///< 流式头部是否已随首段正文上线；上线之后状态码与头部都改不了
+        ChunkSender                                       m_chunkSender;               ///< 流式发送回调，由会话装配；空表示这条响应没有可写的连接
+
+        /// 中间响应（1xx）写出回调，由会话装配；空表示这条连接没有可写的通道
+        InformationalWriter    m_informationalWriter;
+        std::string            m_chunkFrameBuffer;                   ///< writeChunk 的帧缓冲，跨段复用；只 clear 不缩容量，reset 也不清空
+        WebSocketHandler       m_webSocketHandler;                   ///< 升级成功后的业务处理器；空表示本次没有登记升级
+        WebSocketUpgradePolicy m_webSocketUpgradePolicy{};           ///< 本次升级的握手策略（Origin 准入与子协议协商），三条通道共用这一份
+        bool                   m_isWebSocketUpgradeRequested{false}; ///< 是否登记了 WebSocket 升级；会话据此走升级分支而不是序列化应答
+        mutable std::string    m_autoDateValue;                      ///< 自动补出的 date 值，首次序列化时生成并缓存；空串表示尚未生成
+    };
+
+    class HttpMetricsCollector; // 前置声明即可：本头不牵 HttpServerStats.h 那份重量，指针参数只要一个名字
+
+    /**
+     * @brief 按业务异常的形状改写「处理失败」的响应：过载归 503 + Retry-After，其余归 500
+     * @details 为什么要有这一处：四条通道各有一段「整体 reset 再填 500」的映射（h1 一处、h2 一处、
+     *          h3 两处），把过载也各写一遍就是让同一判据存在四份副本——漏一档不会编译失败，只会让
+     *          某一通道的客户端把「该退避」当成「别重试」。这里收的是状态码的形状与那笔账，
+     *          日志文案留给调用方：那一句要带通道自己的字段（流号、request-id、trace），搬不动
+     * @details 两类不许混：`Core::ExecutorSaturatedException` 说的是「此刻接不住」（RFC 9110 §15.6.1
+     *          的形状是 503，并给 `Retry-After: 1`——排队是瞬时状态，一秒后多半已排空，报更长只是让
+     *          客户端在一台还能接活的机器上多等，也与内存预算那条 503 同口径）；其余异常是代码缺陷，
+     *          重试多少次都是同一个错，因此既不换状态码也不给退避提示
+     * @param response 待改写的响应；本函数先整体 reset（业务在半路上写的头部与正文一并抹掉），再填形状
+     * @param exception 业务链抛出的异常；空指针按「不是过载」处理
+     * @param metrics 采集端，可为空；按过载降级时在这里落 `executor_saturated_responses_total` 那一笔
+     * @return true 本条是按过载降级的 503（调用方据此点名日志）；false 是 500
+     */
+    ASYN_NET_API bool applyHandlerFailureAnswer(HttpResponse &response, const std::exception_ptr &exception, HttpMetricsCollector *metrics);
+} // namespace AsynGyanis::Net

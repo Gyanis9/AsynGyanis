@@ -9,7 +9,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
 #include "Net/Http/Client/HttpClient.h"
-#include "Net/Http/HttpDate.h"
+#include "Net/Http/Message/HttpDate.h"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>

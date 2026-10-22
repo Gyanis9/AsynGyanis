@@ -121,7 +121,7 @@ sources=(
     "src/Net/Http/Client/HttpResponseParser.cpp"
     # JWT 档的本体：三段拆分与 base64url 解码、声明校验、JWK 的 n/e 进 OpenSSL 造公钥。
     # 它是本闭包第二份仓外依赖（libcrypto），Linux 侧 -lcrypto、Windows 侧按下面的开关指路
-    "src/Net/Http/JwtVerifier.cpp"
+    "src/Net/Http/Auth/JwtVerifier.cpp"
     # ConfigValueText 与 LogEscaping 两档都不需要新的翻译单元：parseConfigValue/serializeConfigValue/
     # configValueAs 与 escapeForLog 全是头文件内联的，仓外依赖只有 nlohmann 那一份（下面已为 HttpRequest 装好）。
     # 两档渲染器（RFC 7807 错误体、OTLP traces/logs 正文）刻意不在这里：ProblemJson.cpp 带着
@@ -139,17 +139,17 @@ sources=(
     "src/Net/Quic/Codec/QuicPacketHeader.cpp"
     "src/Net/Quic/Codec/QuicFrame.cpp"
     "src/Net/Quic/Codec/QuicTransportParameters.cpp"
-    "src/Net/Http/HttpHeaderFieldStore.cpp"
-    "src/Net/Http/HttpRequest.cpp"
+    "src/Net/Http/Message/HttpHeaderFieldStore.cpp"
+    "src/Net/Http/Message/HttpRequest.cpp"
     # h1 请求档的本体：本闭包不链 Net 库，构造/parse/reset/request() 全在这里，漏一项链接期就报
-    "src/Net/Http/HttpParser.cpp"
+    "src/Net/Http/Message/HttpParser.cpp"
     # 解析器直接调用的头部规则（逐跳头名判定等）也自成一份翻译单元
-    "src/Net/Http/HttpHeaderRules.cpp"
+    "src/Net/Http/Message/HttpHeaderRules.cpp"
     # 请求对象的两条成员函数各自落在自己的文件里：cookies() 要 HttpCookie.cpp、multipartForm()
     # 要 MultipartForm.cpp，少哪一个都在链接期报未定义（清单本身就是按链接器的报错补齐的）
-    "src/Net/Http/HttpCookie.cpp"
-    "src/Net/Http/MultipartForm.cpp"
-    "src/Net/Http/HttpDate.cpp"
+    "src/Net/Http/Message/HttpCookie.cpp"
+    "src/Net/Http/Message/MultipartForm.cpp"
+    "src/Net/Http/Message/HttpDate.cpp"
     "src/Base/Exception/Exception.cpp"
     # 三条异常链的抛出点与调用栈上收成一份载荷基之后，Exception.cpp 只剩转调：那份载荷的构造函数
     # 定义在自己的 .cpp 里，不列进来链接期就报 ExceptionPayload 未定义（fuzz 作业实测红过一轮）
