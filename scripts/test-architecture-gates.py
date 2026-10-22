@@ -185,9 +185,66 @@ def test_surface(root: Path) -> None:
     expect("surface 报告", result, 0, "HttpServer")
 
 
+def test_comment_budget(root: Path) -> None:
+    write(root / "CMakeLists.txt", "# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 合规", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(root / "CMakeLists.txt", "# one\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 四行块", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(root / "CMakeLists.txt", "# " + "x" * 101 + "\n")
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 超宽", result, 1, "COMMENT_BUDGET_GATE=FAIL", "width")
+
+    write(root / "CMakeLists.txt", "# one\n# two\n# three\n")
+    long_doc = '"""' + "\n".join(f"line {index}" for index in range(11)) + '"""\n'
+    write(root / "scripts" / "long_doc.py", long_doc)
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 模块 docstring", result, 1, "docstring-lines")
+
+    short_doc = '"""' + "\n".join(f"line {index}" for index in range(10)) + '"""\n'
+    write(root / "scripts" / "long_doc.py", short_doc)
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 十行模块 docstring", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    long_function = 'def f():\n    """\n' + "\n".join(f"    line {index}" for index in range(5)) + '\n    """\n'
+    write(root / "scripts" / "function_doc.py", long_function)
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 函数 docstring", result, 1, "docstring-lines")
+
+    short_function = 'def f():\n    """\n' + "\n".join(f"    line {index}" for index in range(4)) + '\n    """\n'
+    write(root / "scripts" / "function_doc.py", short_function)
+    (root / "scripts" / "long_doc.py").unlink()
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget 四行函数 docstring", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    long_url = "https://example.com/" + "segment/" * 12
+    write(
+        root / "scripts" / "ok.sh",
+        "#!/usr/bin/env bash\n"
+        "# shellcheck disable=SC2086\n"
+        "# 一\n"
+        "# 二\n"
+        "# 三\n"
+        "cat <<'EOF'\n"
+        "# 一\n# 二\n# 三\n# 四\n# 五\n"
+        "EOF\n"
+        f"# {long_url}\n",
+    )
+    result = run_script("check-comment-budget.py", root)
+    expect("comment-budget heredoc 与豁免", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    empty = root / "empty"
+    empty.mkdir()
+    result = run_script("check-comment-budget.py", empty)
+    expect("comment-budget 空扫描面", result, 2, "no-files")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface"))
+    parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface", "comment-budget"))
     args = parser.parse_args()
 
     FIXTURE_PARENT.mkdir(parents=True, exist_ok=True)
@@ -202,6 +259,8 @@ def main() -> int:
             test_duplicates(root / "duplicates")
         if args.only in (None, "surface"):
             test_surface(root / "surface")
+        if args.only in (None, "comment-budget"):
+            test_comment_budget(root / "comment-budget")
         print("ARCH_GATE_SELFTEST=OK")
         return 0
     except AssertionError as error:
