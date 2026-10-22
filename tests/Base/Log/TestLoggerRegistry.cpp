@@ -402,6 +402,12 @@ namespace AsynGyanis::Base
         LoggerRegistry::instance().clear();
         LoggerRegistry::instance().purgeRetiredLoggers();
 
+        // 先做一次干净创建再量：桶数组与日志器内部的一次性分配都落在这一遍，注入点才对应
+        // 稳定态那几次分配；不预热会把一次性分配算进 trace.count，注入落空在创建过程之外
+        static_cast<void>(LoggerRegistry::instance().getLogger("root"));
+        LoggerRegistry::instance().clear();
+        LoggerRegistry::instance().purgeRetiredLoggers();
+
         TestSupport::beginAllocationTrace();
         static_cast<void>(LoggerRegistry::instance().getLogger("root"));
         const TestSupport::AllocationTraceSnapshot trace = TestSupport::endAllocationTrace();
