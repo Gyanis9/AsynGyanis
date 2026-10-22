@@ -1949,59 +1949,11 @@ int main(int argc, char **argv)
 
     pool.start();
 
-    // 报成功之前先确认监听器真的进入了监听态：绑定失败发生在分离投递的协程里（异常由 Task 记进错误日志，
-    // 见 Core/Coroutine/Task.h 的无人接手上报），这里再不核一次的话，端口上其实没人守着，
-    // 进程却照旧一副在服务的样子、退出码还是 0
-    const std::size_t stuckListenerCount = waitForListenersToComeUp(listeningServers, http3Server.get(), kStartupConfirmTimeout);
-    if (stuckListenerCount > 0)
+    // 就绪上报与看门狗挂载收在一处：自绑与接管两条启动路径都必须走完这一步。接管路径漏报 READY=1 时，
+    // systemd 的 Type=notify 会一直停在 activating，连接触发的服务看着能用、启动超时一到却整台被判失败，
+    // 而日志里只有一句「接管模式已生效」——这条通道存在的意义就是别让部署方看到两种相反的状态
+    const auto announceReadyAndArmWatchdog = [&]()
     {
-        LOG_ERROR_FMT("{} 个监听器在 {}ms 内没有进入监听状态，服务未运行。监听地址：{}（协程里抛出的原因见上面的错误日志）", stuckListenerCount, kStartupConfirmTimeout.count(),
-                      address->toString());
-        // 关停走既有那条路径：真的起来的那几台照样体面收口，不另起一套收尾
-        g_running.store(false);
-    } else if (adoptedStreamFd >= 0 || isQuicSocketAdopted)
-    {
-        // 接手来的监听器必须真的在配置的那个端口上。端口对不上就是接错了别人的套接字（.socket 与
-        // 配置文件各写一个端口时正是这个形状），而此刻最坏的处置是「照常开服务」：新一代在一个没人
-        // 期望的端口上应答，交棒方那边看到的就是「换代之后服务不见了」——比当场退出难查得多
-        const auto mismatchReason = [](const std::string_view channel, const std::uint16_t actual, const std::uint16_t expected)
-        {
-            if (actual == expected)
-            {
-                return std::string{};
-            }
-            return std::string(channel) + " 接手的监听器实际在端口 " + std::to_string(actual) + "，而配置要的是 " + std::to_string(expected);
-        };
-        std::string mismatch;
-        for (const Net::TcpServer *listener: listeningServers)
-        {
-            mismatch = mismatchReason("TCP", listener->listeningPort(), port);
-            if (!mismatch.empty())
-            {
-                break;
-            }
-        }
-        if (mismatch.empty() && http3Server != nullptr)
-        {
-            mismatch = mismatchReason("HTTP/3", http3Server->listeningPort(), port);
-        }
-        if (!mismatch.empty())
-        {
-            LOG_ERROR_FMT("{}：接手失败就如实退出，不退化成自己再 bind 一个（那会与交棒方抢同一端口，症状是原服务不再应答而不是报错）", mismatch);
-            isAdoptedListenerMismatch = true;
-            g_running.store(false);
-        } else
-        {
-            LOG_INFO_FMT("接管模式已生效：本进程在交棒方原先的端口 {} 上继续应答（TCP {}，HTTP/3 {}）", port, adoptedStreamFd >= 0 ? "接手" : "自绑",
-                         isQuicSocketAdopted ? "接手" : (useHttp3 ? "自绑" : "未启用"));
-        }
-    } else
-    {
-        LOG_INFO("" + std::string(proto) + " server started  " + proto + "://" + address->toString());
-        LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
-        LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
-        LOG_INFO("Press Ctrl+C to exit");
-
         // 只有真正确认过监听器在听了才报 READY=1：报早了，监督者会把「端口上其实没人」这一形态
         // 读成启动成功，而这条通道存在的意义恰恰是别让部署方看到第二种样子
         if (isWorkerProcess)
@@ -2052,6 +2004,65 @@ int main(int argc, char **argv)
                         static_cast<void>(serviceStatus.send(Platform::ServiceNotification::statusState(std::format("正在收尾，{} 个监听器", listenerCount))));
                     });
         }
+    };
+
+    // 报成功之前先确认监听器真的进入了监听态：绑定失败发生在分离投递的协程里（异常由 Task 记进错误日志，
+    // 见 Core/Coroutine/Task.h 的无人接手上报），这里再不核一次的话，端口上其实没人守着，
+    // 进程却照旧一副在服务的样子、退出码还是 0
+    const std::size_t stuckListenerCount = waitForListenersToComeUp(listeningServers, http3Server.get(), kStartupConfirmTimeout);
+    if (stuckListenerCount > 0)
+    {
+        LOG_ERROR_FMT("{} 个监听器在 {}ms 内没有进入监听状态，服务未运行。监听地址：{}（协程里抛出的原因见上面的错误日志）", stuckListenerCount, kStartupConfirmTimeout.count(),
+                      address->toString());
+        // 关停走既有那条路径：真的起来的那几台照样体面收口，不另起一套收尾
+        g_running.store(false);
+    } else if (adoptedStreamFd >= 0 || isQuicSocketAdopted)
+    {
+        // 接手来的监听器必须真的在配置的那个端口上。端口对不上就是接错了别人的套接字（.socket 与
+        // 配置文件各写一个端口时正是这个形状），而此刻最坏的处置是「照常开服务」：新一代在一个没人
+        // 期望的端口上应答，交棒方那边看到的就是「换代之后服务不见了」——比当场退出难查得多
+        const auto mismatchReason = [](const std::string_view channel, const std::uint16_t actual, const std::uint16_t expected)
+        {
+            if (actual == expected)
+            {
+                return std::string{};
+            }
+            return std::string(channel) + " 接手的监听器实际在端口 " + std::to_string(actual) + "，而配置要的是 " + std::to_string(expected);
+        };
+        std::string mismatch;
+        for (const Net::TcpServer *listener: listeningServers)
+        {
+            mismatch = mismatchReason("TCP", listener->listeningPort(), port);
+            if (!mismatch.empty())
+            {
+                break;
+            }
+        }
+        if (mismatch.empty() && http3Server != nullptr)
+        {
+            mismatch = mismatchReason("HTTP/3", http3Server->listeningPort(), port);
+        }
+        if (!mismatch.empty())
+        {
+            LOG_ERROR_FMT("{}：接手失败就如实退出，不退化成自己再 bind 一个（那会与交棒方抢同一端口，症状是原服务不再应答而不是报错）", mismatch);
+            isAdoptedListenerMismatch = true;
+            g_running.store(false);
+        } else
+        {
+            LOG_INFO_FMT("接管模式已生效：本进程在交棒方原先的端口 {} 上继续应答（TCP {}，HTTP/3 {}）", port, adoptedStreamFd >= 0 ? "接手" : "自绑",
+                         isQuicSocketAdopted ? "接手" : (useHttp3 ? "自绑" : "未启用"));
+            // 接管也是「确认监听器在听」之后：systemd 的 Type=notify 认的是这条 READY=1，
+            // 不报就会在服务已应答的情况下一直停在 activating，启动超时一到整台被判失败
+            announceReadyAndArmWatchdog();
+        }
+    } else
+    {
+        LOG_INFO("" + std::string(proto) + " server started  " + proto + "://" + address->toString());
+        LOG_INFO("Worker threads: " + std::to_string(actualThreads) + " (logical cores: " + std::to_string(std::thread::hardware_concurrency()) + ")");
+        LOG_INFO("Endpoints: GET /  |  GET /json  |  GET /bench  |  GET /big");
+        LOG_INFO("Press Ctrl+C to exit");
+
+        announceReadyAndArmWatchdog();
 
         // 指标端点是进程内的口径：多 worker 进程共用同一个监听端口时，一次抓取只命中其中一个进程，
         // 计数器会在两次抓取之间回落（同一进程内的多个监听器已在装配时共用一份采集端，跨进程没有
