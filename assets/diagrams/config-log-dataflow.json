@@ -5,7 +5,10 @@
     "title": "配置、日志、指标与追踪四条数据流",
     "locale": "zh-CN",
     "output": "assets/diagrams/config-log-dataflow.html",
-    "viewBox": [1240, 790],
+    "viewBox": [
+      1240,
+      790
+    ],
     "quality_profile": "standard",
     "repository": {
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
@@ -17,29 +20,60 @@
       {
         "id": "config",
         "label": "配置流",
-        "focus": ["cfgsrc", "parse", "rescan", "snap", "readers", "hotcb"],
+        "focus": [
+          "cfgsrc",
+          "parse",
+          "rescan",
+          "snap",
+          "readers",
+          "hotcb"
+        ],
         "note": "一轮装载失败保留旧快照：读者永远看到完整一致的一份"
       },
       {
         "id": "log",
         "label": "日志流",
-        "focus": ["logcalls", "filter", "ring", "worker", "sinks", "logcfg"],
+        "focus": [
+          "logcalls",
+          "filter",
+          "ring",
+          "worker",
+          "sinks",
+          "logcfg"
+        ],
         "note": "等级过滤三处，异步 Sink 的下游过滤在 worker 里补做"
       },
       {
         "id": "observe",
         "label": "观测流",
-        "focus": ["reqmeter", "collect", "prom", "tracers", "pend", "spanout"],
+        "focus": [
+          "reqmeter",
+          "collect",
+          "prom",
+          "tracers",
+          "pend",
+          "spanout"
+        ],
         "note": "Span 只走 SpanExporter，与日志不共用出口"
       }
     ]
   },
   "stages": [
-    { "label": "来源" },
-    { "label": "闸门与转换" },
-    { "label": "快照与缓冲" },
-    { "label": "消费" },
-    { "label": "落点" }
+    {
+      "label": "来源"
+    },
+    {
+      "label": "闸门与转换"
+    },
+    {
+      "label": "快照与缓冲"
+    },
+    {
+      "label": "消费"
+    },
+    {
+      "label": "落点"
+    }
   ],
   "nodes": [
     {
@@ -50,8 +84,16 @@
       "stage": 0,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 286, "label": "loadFromDirectory" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1256, "label": "按后缀选解析器" }
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 283,
+          "label": "loadFromDirectory"
+        },
+        {
+          "path": "src/Base/Config/ConfigDocument.cpp",
+          "line": 698,
+          "label": "按后缀选解析器"
+        }
       ]
     },
     {
@@ -62,8 +104,16 @@
       "stage": 0,
       "row": 1,
       "sources": [
-        { "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp", "line": 300, "label": "processEvents" },
-        { "path": "src/Platform/FileSystem/Win32FileWatcher.cpp", "line": 368, "label": "watchLoop" }
+        {
+          "path": "src/Platform/FileSystem/InotifyFileWatcher.cpp",
+          "line": 300,
+          "label": "processEvents"
+        },
+        {
+          "path": "src/Platform/FileSystem/Win32FileWatcher.cpp",
+          "line": 368,
+          "label": "watchLoop"
+        }
       ]
     },
     {
@@ -74,7 +124,11 @@
       "stage": 0,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/LogMacros.h", "line": 34, "label": "先判等级再物化" }
+        {
+          "path": "src/Base/Log/LogMacros.h",
+          "line": 34,
+          "label": "先判等级再物化"
+        }
       ]
     },
     {
@@ -85,7 +139,11 @@
       "stage": 0,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpSession.h", "line": 1124, "label": "h1 每响应计数" }
+        {
+          "path": "src/Net/Http/HttpSession.h",
+          "line": 1124,
+          "label": "h1 每响应计数"
+        }
       ]
     },
     {
@@ -96,7 +154,11 @@
       "stage": 0,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Span.cpp", "line": 158, "label": "finish 成 SpanRecord" }
+        {
+          "path": "src/Net/Tracing/Span.cpp",
+          "line": 158,
+          "label": "finish 成 SpanRecord"
+        }
       ]
     },
     {
@@ -108,9 +170,21 @@
       "stage": 1,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1624, "label": "handleFileChange" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1633, "label": "Rescan 先于扩展名过滤" },
-        { "path": "src/Base/Config/Detail/ReloadRoundGate.h", "line": 37, "label": "不漏轮" }
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 973,
+          "label": "handleFileChange"
+        },
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 982,
+          "label": "Rescan 先于扩展名过滤"
+        },
+        {
+          "path": "src/Base/Config/Detail/ReloadRoundGate.h",
+          "line": 37,
+          "label": "不漏轮"
+        }
       ]
     },
     {
@@ -122,8 +196,16 @@
       "stage": 1,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1015, "label": "yamlNodeToConfigValue" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1569, "label": "flattenValue" }
+        {
+          "path": "src/Base/Config/ConfigDocument.cpp",
+          "line": 428,
+          "label": "yamlNodeToConfigValue"
+        },
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 918,
+          "label": "flattenValue"
+        }
       ]
     },
     {
@@ -134,8 +216,16 @@
       "stage": 1,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Logger.cpp", "line": 146, "label": "writeToSinks" },
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 260, "label": "worker 里补做下游过滤" }
+        {
+          "path": "src/Base/Log/Logger.cpp",
+          "line": 146,
+          "label": "writeToSinks"
+        },
+        {
+          "path": "src/Base/Log/Sinks/AsyncSink.cpp",
+          "line": 260,
+          "label": "worker 里补做下游过滤"
+        }
       ]
     },
     {
@@ -146,8 +236,16 @@
       "stage": 1,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Tracer.cpp", "line": 238, "label": "accept" },
-        { "path": "src/Net/Tracing/Tracer.cpp", "line": 283, "label": "dispatchBatch" }
+        {
+          "path": "src/Net/Tracing/Tracer.cpp",
+          "line": 238,
+          "label": "accept"
+        },
+        {
+          "path": "src/Net/Tracing/Tracer.cpp",
+          "line": 283,
+          "label": "dispatchBatch"
+        }
       ]
     },
     {
@@ -158,8 +256,16 @@
       "stage": 2,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2123, "label": "commitConfigData" },
-        { "path": "src/Base/Config/ConfigManager.h", "line": 393, "label": "m_data" }
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 1537,
+          "label": "commitConfigData"
+        },
+        {
+          "path": "src/Base/Config/ConfigManager.h",
+          "line": 393,
+          "label": "m_data"
+        }
       ]
     },
     {
@@ -171,8 +277,16 @@
       "stage": 2,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Sinks/AsyncSink.h", "line": 78, "label": "kMaximumQueueSize" },
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 79, "label": "write 入环" }
+        {
+          "path": "src/Base/Log/Sinks/AsyncSink.h",
+          "line": 78,
+          "label": "kMaximumQueueSize"
+        },
+        {
+          "path": "src/Base/Log/Sinks/AsyncSink.cpp",
+          "line": 79,
+          "label": "write 入环"
+        }
       ]
     },
     {
@@ -183,7 +297,11 @@
       "stage": 2,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/Tracer.h", "line": 167, "label": "m_pending" }
+        {
+          "path": "src/Net/Tracing/Tracer.h",
+          "line": 167,
+          "label": "m_pending"
+        }
       ]
     },
     {
@@ -194,7 +312,11 @@
       "stage": 3,
       "row": 0,
       "sources": [
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 2029, "label": "环境变量覆盖" }
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 1437,
+          "label": "环境变量覆盖"
+        }
       ]
     },
     {
@@ -205,8 +327,16 @@
       "stage": 3,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Config/ConfigLoadResult.h", "line": 55, "label": "HotReloadCallback" },
-        { "path": "src/Base/Config/ConfigManager.cpp", "line": 1716, "label": "runReloadTask" }
+        {
+          "path": "src/Base/Config/ConfigLoadResult.h",
+          "line": 55,
+          "label": "HotReloadCallback"
+        },
+        {
+          "path": "src/Base/Config/ConfigManager.cpp",
+          "line": 1073,
+          "label": "runReloadTask"
+        }
       ]
     },
     {
@@ -217,7 +347,11 @@
       "stage": 3,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Sinks/AsyncSink.cpp", "line": 245, "label": "取出并写下游" }
+        {
+          "path": "src/Base/Log/Sinks/AsyncSink.cpp",
+          "line": 245,
+          "label": "取出并写下游"
+        }
       ]
     },
     {
@@ -228,8 +362,16 @@
       "stage": 3,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServerStats.h", "line": 534, "label": "snapshot" },
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1621, "label": "并入准入拒绝数" }
+        {
+          "path": "src/Net/Http/HttpServerStats.h",
+          "line": 534,
+          "label": "snapshot"
+        },
+        {
+          "path": "src/Net/Http/HttpServer.cpp",
+          "line": 1621,
+          "label": "并入准入拒绝数"
+        }
       ]
     },
     {
@@ -240,8 +382,16 @@
       "stage": 4,
       "row": 2,
       "sources": [
-        { "path": "src/Base/Log/Sinks/ConsoleSink.cpp", "line": 21, "label": "ConsoleSink::write" },
-        { "path": "src/Base/Log/Sinks/RollingFileSink.cpp", "line": 160, "label": "RollingFileSink::write" }
+        {
+          "path": "src/Base/Log/Sinks/ConsoleSink.cpp",
+          "line": 21,
+          "label": "ConsoleSink::write"
+        },
+        {
+          "path": "src/Base/Log/Sinks/RollingFileSink.cpp",
+          "line": 160,
+          "label": "RollingFileSink::write"
+        }
       ]
     },
     {
@@ -252,7 +402,11 @@
       "stage": 4,
       "row": 3,
       "sources": [
-        { "path": "src/Net/Http/HttpServer.cpp", "line": 1628, "label": "enableMetricsEndpoint" }
+        {
+          "path": "src/Net/Http/HttpServer.cpp",
+          "line": 1628,
+          "label": "enableMetricsEndpoint"
+        }
       ]
     },
     {
@@ -263,7 +417,11 @@
       "stage": 4,
       "row": 4,
       "sources": [
-        { "path": "src/Net/Tracing/FileSpanExporter.cpp", "line": 118, "label": "exportSpans" }
+        {
+          "path": "src/Net/Tracing/FileSpanExporter.cpp",
+          "line": 118,
+          "label": "exportSpans"
+        }
       ]
     },
     {
@@ -276,9 +434,21 @@
       "stage": 4,
       "row": 0,
       "sources": [
-        { "path": "src/Net/Http/HttpServerAssembly.h", "line": 167, "label": "探针为什么不进那道令牌闸" },
-        { "path": "src/Net/Http/Middleware.h", "line": 1558, "label": "要令牌的默认名单是四条运维读口" },
-        { "path": "src/Net/Http/HttpMetricsEndpoint.h", "line": 165, "label": "循环诊断口的注册函数" }
+        {
+          "path": "src/Net/Http/HttpServerAssembly.h",
+          "line": 167,
+          "label": "探针为什么不进那道令牌闸"
+        },
+        {
+          "path": "src/Net/Http/Middleware.h",
+          "line": 1558,
+          "label": "要令牌的默认名单是四条运维读口"
+        },
+        {
+          "path": "src/Net/Http/HttpMetricsEndpoint.h",
+          "line": 165,
+          "label": "循环诊断口的注册函数"
+        }
       ]
     },
     {
@@ -290,29 +460,152 @@
       "stage": 4,
       "row": 1,
       "sources": [
-        { "path": "src/Base/Log/Logger.cpp", "line": 80, "label": "addSink 的实现" },
-        { "path": "src/Base/Log/LoggerConfigLoader.cpp", "line": 350, "label": "启动期那一路用的是同一个入口" }
+        {
+          "path": "src/Base/Log/Logger.cpp",
+          "line": 80,
+          "label": "addSink 的实现"
+        },
+        {
+          "path": "src/Base/Log/LoggerConfigLoader.cpp",
+          "line": 350,
+          "label": "启动期那一路用的是同一个入口"
+        }
       ]
     }
   ],
   "flows": [
-    { "id": "f-src-parse", "from": "cfgsrc", "to": "parse", "label": "文件清单", "classification": "按后缀选解析器", "variant": "emphasis" },
-    { "id": "f-watch-gate", "from": "watch", "to": "rescan", "label": "原生事件", "classification": "改动类型" },
-    { "id": "f-gate-parse", "from": "rescan", "to": "parse", "label": "重扫整目录", "variant": "dashed", "classification": "防抖到期", "labelDy": -14 },
-    { "id": "f-parse-snap", "from": "parse", "to": "snap", "label": "扁平化键值", "classification": "点号键", "variant": "emphasis" },
-    { "id": "f-snap-readers", "from": "snap", "to": "readers", "label": "一致快照", "classification": "shared_ptr" },
-    { "id": "f-gate-cb", "from": "rescan", "to": "hotcb", "label": "重载结果", "variant": "dashed", "classification": "成功才通知" },
-    { "id": "f-log-filter", "from": "logcalls", "to": "filter", "label": "LogEvent", "classification": "等级/线程/栈", "variant": "emphasis" },
-    { "id": "f-filter-ring", "from": "filter", "to": "ring", "label": "进环候选", "classification": "Block/Drop" },
-    { "id": "f-ring-worker", "from": "ring", "to": "worker", "label": "槽位唤醒", "classification": "批量取" },
-    { "id": "f-worker-sinks", "from": "worker", "to": "sinks", "label": "格式化行", "classification": "default/color/json", "variant": "emphasis", "labelDy": -40 },
-    { "id": "f-filter-sinks", "from": "filter", "to": "sinks", "label": "同步 Sink", "variant": "dashed", "classification": "不经环", "route": "bottom-channel" },
-    { "id": "f-meter-collect", "from": "reqmeter", "to": "collect", "label": "每响应计数", "classification": "状态码 + 耗时", "variant": "emphasis" },
-    { "id": "f-collect-prom", "from": "collect", "to": "prom", "label": "统计快照", "classification": "read-only" },
-    { "id": "f-trace-gate", "from": "tracers", "to": "tracegate", "label": "SpanRecord", "classification": "采样后入队", "variant": "emphasis" },
-    { "id": "f-gate-pend", "from": "tracegate", "to": "pend", "label": "批量攒", "classification": "阈值/定时" },
-    { "id": "f-pend-out", "from": "pend", "to": "spanout", "label": "批次导出", "classification": "文件 / OTLP" },
-    { "id": "f-sinkapi-sinks", "from": "sinkapi", "to": "sinks", "label": "挂上即参与写入", "labelDy": 25, "classification": "写侧构造新快照" }
+    {
+      "id": "f-src-parse",
+      "from": "cfgsrc",
+      "to": "parse",
+      "label": "文件清单",
+      "classification": "按后缀选解析器",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-watch-gate",
+      "from": "watch",
+      "to": "rescan",
+      "label": "原生事件",
+      "classification": "改动类型"
+    },
+    {
+      "id": "f-gate-parse",
+      "from": "rescan",
+      "to": "parse",
+      "label": "重扫整目录",
+      "variant": "dashed",
+      "classification": "防抖到期",
+      "labelDy": -14
+    },
+    {
+      "id": "f-parse-snap",
+      "from": "parse",
+      "to": "snap",
+      "label": "扁平化键值",
+      "classification": "点号键",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-snap-readers",
+      "from": "snap",
+      "to": "readers",
+      "label": "一致快照",
+      "classification": "shared_ptr"
+    },
+    {
+      "id": "f-gate-cb",
+      "from": "rescan",
+      "to": "hotcb",
+      "label": "重载结果",
+      "variant": "dashed",
+      "classification": "成功才通知"
+    },
+    {
+      "id": "f-log-filter",
+      "from": "logcalls",
+      "to": "filter",
+      "label": "LogEvent",
+      "classification": "等级/线程/栈",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-filter-ring",
+      "from": "filter",
+      "to": "ring",
+      "label": "进环候选",
+      "classification": "Block/Drop"
+    },
+    {
+      "id": "f-ring-worker",
+      "from": "ring",
+      "to": "worker",
+      "label": "槽位唤醒",
+      "classification": "批量取"
+    },
+    {
+      "id": "f-worker-sinks",
+      "from": "worker",
+      "to": "sinks",
+      "label": "格式化行",
+      "classification": "default/color/json",
+      "variant": "emphasis",
+      "labelDy": -40
+    },
+    {
+      "id": "f-filter-sinks",
+      "from": "filter",
+      "to": "sinks",
+      "label": "同步 Sink",
+      "variant": "dashed",
+      "classification": "不经环",
+      "route": "bottom-channel"
+    },
+    {
+      "id": "f-meter-collect",
+      "from": "reqmeter",
+      "to": "collect",
+      "label": "每响应计数",
+      "classification": "状态码 + 耗时",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-collect-prom",
+      "from": "collect",
+      "to": "prom",
+      "label": "统计快照",
+      "classification": "read-only"
+    },
+    {
+      "id": "f-trace-gate",
+      "from": "tracers",
+      "to": "tracegate",
+      "label": "SpanRecord",
+      "classification": "采样后入队",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-gate-pend",
+      "from": "tracegate",
+      "to": "pend",
+      "label": "批量攒",
+      "classification": "阈值/定时"
+    },
+    {
+      "id": "f-pend-out",
+      "from": "pend",
+      "to": "spanout",
+      "label": "批次导出",
+      "classification": "文件 / OTLP"
+    },
+    {
+      "id": "f-sinkapi-sinks",
+      "from": "sinkapi",
+      "to": "sinks",
+      "label": "挂上即参与写入",
+      "labelDy": 25,
+      "classification": "写侧构造新快照"
+    }
   ],
   "cards": [
     {
@@ -339,7 +632,7 @@
       "title": "观测：两套账，两个出口",
       "items": [
         "指标按监听器各持一份采集端，多监听器共用一台服务器时会报 1/N；准入拒绝数住在限额器身上，读快照时并进来",
-      "运维面六道读口里四条挂闸：/metrics、/debug/loops、/debug/connections、/debug/log-level 要 Bearer 令牌，/healthz 与 /readyz 刻意不挂牌——编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉而不是配上令牌",
+        "运维面六道读口里四条挂闸：/metrics、/debug/loops、/debug/connections、/debug/log-level 要 Bearer 令牌，/healthz 与 /readyz 刻意不挂牌——编排器的探针拿不到凭据，给探针加闸的结局是探针被人关掉而不是配上令牌",
         "Span 只走 SpanExporter（文件或 OTLP HTTP），不经过日志 Sink；两条流在图上分列正因它们不共用出口",
         "被挡下的日志不再白付一块堆：早退排在物化之前，等级不命中时不拷贝消息"
       ]

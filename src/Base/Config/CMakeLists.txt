@@ -11,4 +11,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisBaseSources
         ${CMAKE_CURRENT_LIST_DIR}/Detail/ReloadRoundGate.h
         ${CMAKE_CURRENT_LIST_DIR}/ConfigManager.h
         ${CMAKE_CURRENT_LIST_DIR}/ConfigManager.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/ConfigDocument.h
+        ${CMAKE_CURRENT_LIST_DIR}/ConfigDocument.cpp
 )

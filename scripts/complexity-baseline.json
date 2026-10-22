@@ -1,8 +1,5 @@
 {
   "files": {
-    "src/Base/Config/ConfigManager.cpp": [
-      106
-    ],
     "src/Base/Log/LoggerConfigLoader.cpp": [
       229
     ],
