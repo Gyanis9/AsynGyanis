@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "96d96cab88059219964ab6b6ff27ee2fc278089d"
+      "revision": "9ed5396b5c215ca7868c36050a5212d2662bacce"
     },
     "views": [
       {
@@ -68,8 +68,8 @@
       ],
       "sources": [
         {
-          "path": "CMakeLists.txt",
-          "line": 345,
+          "path": "cmake/AsynGyanisOptions.cmake",
+          "line": 13,
           "label": "ASYN_ENABLE_INSTALL 出包配置"
         },
         {
@@ -95,14 +95,14 @@
       ],
       "sources": [
         {
-          "path": "CMakeLists.txt",
-          "line": 248,
+          "path": "cmake/AsynGyanisOptions.cmake",
+          "line": 12,
           "label": "ASYN_BUILD_SAMPLES"
         },
         {
           "path": "CMakeLists.txt",
-          "line": 258,
-          "end_line": 262,
+          "line": 68,
+          "end_line": 70,
           "label": "示例进构建"
         }
       ]
@@ -122,14 +122,14 @@
       ],
       "sources": [
         {
-          "path": "CMakeLists.txt",
-          "line": 247,
+          "path": "cmake/AsynGyanisOptions.cmake",
+          "line": 11,
           "label": "ASYN_BUILD_TESTS"
         },
         {
           "path": "CMakeLists.txt",
-          "line": 250,
-          "end_line": 256,
+          "line": 63,
+          "end_line": 66,
           "label": "tests 与 microbench"
         }
       ]
@@ -151,7 +151,7 @@
       "sources": [
         {
           "path": "src/Net/CMakeLists.txt",
-          "line": 32,
+          "line": 24,
           "label": "${ASYN_LIBRARY_KIND}"
         },
         {
@@ -240,7 +240,7 @@
         {
           "path": "src/Database/CMakeLists.txt",
           "line": 54,
-          "end_line": 95,
+          "end_line": 80,
           "label": "可选驱动与报错桩"
         }
       ]
@@ -321,9 +321,9 @@
           "label": "开关内链入"
         },
         {
-          "path": "CMakeLists.txt",
-          "line": 82,
-          "end_line": 86,
+          "path": "cmake/AsynGyanisOptions.cmake",
+          "line": 18,
+          "end_line": 21,
           "label": "与 sanitizer 互斥"
         }
       ]
@@ -351,7 +351,6 @@
         {
           "path": "src/Net/CMakeLists.txt",
           "line": 63,
-          "end_line": 64,
           "label": "Net 显式声明"
         }
       ]
@@ -597,7 +596,7 @@
       "dot": "emerald",
       "title": "交付形态",
       "items": [
-        "静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（CMakeLists.txt:225、cmake/AsynGyanisLibrary.cmake:13），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（.github/workflows/windows-ci.yml:115）",
+        "静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（cmake/AsynGyanisOptions.cmake:16、cmake/AsynGyanisLibrary.cmake:13），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（.github/workflows/windows-ci.yml:115）",
         "只支持 Linux 与 Windows：其他系统在配置阶段 FATAL_ERROR，事件后端没有 kqueue",
         "命名空间到模块名为止（AsynGyanis::Core 等），子目录不引入新命名空间，include 从 src/ 起算"
       ]
@@ -606,8 +605,8 @@
       "dot": "cyan",
       "title": "构建装配与打包",
       "items": [
-        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（CMakeLists.txt:245-251），samples 挂 ASYN_BUILD_SAMPLES（:253-257）",
-        "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（CMakeLists.txt:340）",
+        "add_subdirectory(src) 恒开；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（cmake/AsynGyanisOptions.cmake:11、CMakeLists.txt:63-66），samples 挂 ASYN_BUILD_SAMPLES（cmake/AsynGyanisOptions.cmake:12、CMakeLists.txt:68-70）",
+        "关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（cmake/AsynGyanisOptions.cmake:13）",
         "第三方一律由 Conan 在配置期自动安装，conandata.yml 是唯一依赖事实；曾加过的第二份 vcpkg 清单已删除"
       ]
     },
@@ -617,14 +616,14 @@
       "items": [
         "Epoll.h 用别名选后端：Windows 是 using Epoll = Iocp（:34），开 ASYN_WITH_IO_URING 是 using Epoll = Uring（:49），成员集合一致故 EventLoop/IoWatcher 没有平台分支",
         "IOCP 有一条别的后端没有的出口：AcceptEx 接进来的连接只能由 Iocp::takeAcceptedSocket() 取走（Epoll.h:27-33）",
-        "io_uring 只改后端选择，需要内核 5.6+；沙箱挡 io_uring_setup 时相关用例按能力 SKIP 而不是失败（根 CMakeLists.txt:87-89）"
+        "io_uring 只改后端选择，需要内核 5.6+；沙箱挡 io_uring_setup 时相关用例按能力 SKIP 而不是失败（cmake/AsynGyanisOptions.cmake:9）"
       ]
     },
     {
       "dot": "rose",
       "title": "依赖可见性口径",
       "items": [
-        "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:51、:65）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
+        "Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:41-43、:52）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它",
         "Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:43-50）",
         "压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli",
         "QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3，跨实现验收走进程外裁判",

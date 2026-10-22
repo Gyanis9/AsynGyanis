@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """公开接口面基线：安装出去的每份公开头里，每条声明都要在基线登记过；改动只准显式重录。
 
-覆盖面＝install(DIRECTORY src/ … PATTERN "*.h") 实际装走的头，排除名单从 CMakeLists 现读；
+覆盖面＝install(DIRECTORY src/ … PATTERN "*.h") 装走的头，排除名单见 cmake/AsynGyanisInstall.cmake；
 规则形状读不出退 2。基线是排序纯文本，一行头文件相对路径与规范化声明，以制表符分隔，git diff 可读。
 声明体不进基线；类体、命名空间体要进；预处理指令不参与（不同 DATABASE_HAS_* 面不同）。
 diff 有删除即破坏性：需重录基线并抬高 CMAKE 版本 MAJOR，否则拒绝。本门只管源码声明面，
@@ -26,6 +26,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CMAKE_FILE = REPOSITORY_ROOT / "CMakeLists.txt"
+INSTALL_FILE = REPOSITORY_ROOT / "cmake" / "AsynGyanisInstall.cmake"
 BASELINE_FILE = REPOSITORY_ROOT / "packaging" / "api-baseline.txt"
 
 # install(DIRECTORY …/src/ … FILES_MATCHING PATTERN "*.h" PATTERN "<名字>" EXCLUDE …)
@@ -53,10 +54,11 @@ PREPROCESSOR_PATTERN = re.compile(r"^[ \t]*#[^\n]*\n", re.MULTILINE)
 def trackedPublicHeaders():
     """按安装规则现读公开头清单：tracked 的 src/**/*.h 减去 install 明确排除的那几个名字。"""
 
-    cmakeText = CMAKE_FILE.read_text(encoding="utf-8")
-    blockMatch = INSTALL_BLOCK_PATTERN.search(cmakeText)
+    installText = INSTALL_FILE.read_text(encoding="utf-8")
+    blockMatch = INSTALL_BLOCK_PATTERN.search(installText)
     if blockMatch is None:
-        raise RuntimeError("CMakeLists.txt 里找不到 install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ …) 那一段："
+        raise RuntimeError("cmake/AsynGyanisInstall.cmake 里找不到 "
+                           "install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/ …) 那一段："
                            "覆盖面读本段现读，规则改了要同步改本脚本，不能退回抄一份名单")
 
     excludedNames = set(EXCLUDED_NAME_PATTERN.findall(blockMatch.group(0)))
@@ -228,7 +230,7 @@ def main():
         header = [
             "# AsynGyanis 公开接口面基线：由 scripts/check-api-baseline.py --write 生成，请勿手改",
             "# 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。",
-            "# 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。",
+            "# 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。",
             "# version=%d.%d.%d" % (majorVersion, int(versionMatch.group(2)), int(versionMatch.group(3))),
             "# headers=%d entries=%d" % (headerCount, len(entries)),
         ]

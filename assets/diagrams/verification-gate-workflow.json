@@ -10,7 +10,7 @@
       "url": "https://github.com/Gyanis9/AsynGyanis.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "96d96cab88059219964ab6b6ff27ee2fc278089d"
+      "revision": "9ed5396b5c215ca7868c36050a5212d2662bacce"
     },
     "views": [
       {
@@ -95,8 +95,8 @@
       "sublabel": "MSVC + 容器 GCC",
       "tag": "零告警/零泄漏",
       "sources": [
-        { "path": "CMakeLists.txt", "line": 266, "label": "/W4 /WX" },
-        { "path": "CMakeLists.txt", "line": 175, "label": "ASan + UBSan" },
+        { "path": "cmake/AsynGyanisTargetFlags.cmake", "line": 6, "label": "/W4 /WX" },
+        { "path": "cmake/AsynGyanisSanitizers.cmake", "line": 14, "end_line": 15, "label": "ASan + UBSan" },
         { "path": "CMakePresets.json", "line": 10, "label": "debug 预设" }
       ]
     },
@@ -111,7 +111,7 @@
       "tag": "两档 CI 都跑",
       "sources": [
         { "path": "scripts/run_samples.py", "line": 194, "end_line": 206, "label": "缺产出也计失败" },
-        { "path": "scripts/run_samples.py", "line": 231, "label": "有失败即 return 1" }
+        { "path": "scripts/run_samples.py", "line": 229, "label": "有失败即 return 1" }
       ]
     },
     {
