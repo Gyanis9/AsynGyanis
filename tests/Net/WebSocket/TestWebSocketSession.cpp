@@ -810,6 +810,58 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 h1 会话里的 receiveFor()：首条消息超时后连接仍能收下一条
+     * @details 直测等待体只能证明定时器本身；这一条走完整的升级、会话循环与业务处理器，
+     *          证明循环确实交到了 WebSocketPeer 手里（认证首包超时后继续服务）。
+     */
+    TEST(WebSocketSession, ReceiveForTimeoutKeepsTheConnectionForTheNextMessage)
+    {
+        const auto timedOut   = std::make_shared<std::atomic<bool>>(false);
+        const auto gotMessage = std::make_shared<std::atomic<bool>>(false);
+
+        const HttpTestSupport::RouteRegistrar registrar = [timedOut, gotMessage](Router &router, Core::EventLoop &)
+        {
+            router.any(std::string(kHandshakePath),
+                       [timedOut, gotMessage](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket(
+                                   [timedOut, gotMessage](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       const std::optional<WebSocketMessage> first = co_await peer.receiveFor(std::chrono::milliseconds{80});
+                                       timedOut->store(!first.has_value() && peer.isOpen(), std::memory_order_release);
+
+                                       const std::optional<WebSocketMessage> second = co_await peer.receiveFor(std::chrono::seconds{2});
+                                       if (second.has_value())
+                                       {
+                                           gotMessage->store(true, std::memory_order_release);
+                                           [[maybe_unused]] const bool isEchoSent = co_await peer.sendText(second->payload);
+                                       }
+                                   });
+                           co_return;
+                       });
+        };
+
+        const std::unique_ptr<RunningHttpServerFixture> server =
+                std::make_unique<RunningHttpServerFixture>(HttpServerLimits{}, kSweepInterval, HttpTestSupport::SlowRouteOptions{}, registrar, HttpParserLimits{});
+        ASSERT_TRUE(server->awaitRunning(kWaitTimeout));
+
+        const std::string handshake = expectedHandshakeResponseText();
+        LoopbackClient    client(server->listeningPort());
+        ASSERT_TRUE(client.isValid());
+        ASSERT_TRUE(client.sendText(upgradeRequestText(), kWaitTimeout));
+
+        std::string accumulated;
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size(), kWaitTimeout)) << "升级响应没读全";
+        ASSERT_TRUE(HttpTestSupport::waitForCondition([&timedOut] { return timedOut->load(std::memory_order_acquire); }, kWaitTimeout)) << "首条 receiveFor 没有在时限内超时";
+
+        const std::string expectedEcho = serverFrameBytes(0x1, "after-timeout");
+        ASSERT_TRUE(client.sendText(maskedClientFrame(0x1, "after-timeout"), kWaitTimeout));
+        ASSERT_TRUE(readUntilLength(client, accumulated, handshake.size() + expectedEcho.size(), kWaitTimeout)) << "超时之后这条连接没再收消息";
+        EXPECT_EQ(accumulated.substr(handshake.size(), expectedEcho.size()), expectedEcho);
+        EXPECT_TRUE(gotMessage->load(std::memory_order_acquire));
+    }
+
+    /**
      * @brief 钉住「对端说了什么」要交回业务：收口后读得到对端的关闭码与原因
      *
      * @details 关闭码的存在意义就是让对端说出为什么关——1008（按策略拒绝了你）与 1000（收工）
@@ -1535,6 +1587,121 @@ namespace AsynGyanis::Net
         EXPECT_EQ(static_cast<unsigned char>(reply[1]), 2U) << "带状态码的 Close 负载恒为 2 字节";
         const auto replyCode = static_cast<std::uint16_t>(static_cast<std::uint16_t>(static_cast<unsigned char>(reply[2])) << 8 | static_cast<unsigned char>(reply[3]));
         EXPECT_EQ(replyCode, kWebSocketProtocolErrorCode) << "非法状态码必须按 1002 回敬，不得原样送回 1005";
+    }
+
+    /**
+     * @brief 钉住 receiveFor()：没有消息时按整次时限返回空，连接仍可继续收
+     * @details 认证首包那类业务需要「等 5 秒，超时就拒绝」；为此单开计时线程既浪费又难收口。
+     *          这里用真实事件循环跑一次超时，并断言连接没有因为超时被关掉。
+     */
+    TEST(WebSocketPeerContract, ReceiveForTimesOutWithoutClosingTheConnection)
+    {
+        Core::EventLoop loop;
+        WebSocketPeer   peer([](const std::string_view) -> Core::Task<bool> { co_return true; }, nullptr, loop);
+
+        std::optional<WebSocketMessage> received;
+        std::atomic<bool>               isDone{false};
+        auto                            receiverBody = [&]() -> Core::Task<>
+        {
+            received = co_await peer.receiveFor(std::chrono::milliseconds{30});
+            isDone.store(true, std::memory_order_release);
+            loop.stop();
+        };
+        Core::Task<> receiver = receiverBody();
+        loop.scheduler().schedule(receiver.handle());
+
+        const auto  startedAt = std::chrono::steady_clock::now();
+        std::thread loopThread([&loop] { loop.run(); });
+        const bool  isTimedOut = HttpTestSupport::waitForCondition([&isDone] { return isDone.load(std::memory_order_acquire); }, kWaitTimeout);
+        loopThread.join();
+
+        EXPECT_TRUE(isTimedOut) << "receiveFor 没有在时限内返回";
+        EXPECT_FALSE(received.has_value()) << "安静连接上不该凭空收到消息";
+        EXPECT_TRUE(peer.isOpen()) << "接收超时把连接收掉了：认证超时应由业务决定关不关";
+        EXPECT_GE(std::chrono::steady_clock::now() - startedAt, std::chrono::milliseconds{20}) << "返回得比时限还早";
+    }
+
+    /**
+     * @brief 钉住 receiveFor() 的帧优先路径：消息在时限内到达时照常交付，定时器被撤销
+     */
+    TEST(WebSocketPeerContract, ReceiveForDeliversAFrameBeforeTheDeadline)
+    {
+        Core::EventLoop loop;
+        WebSocketPeer   peer([](const std::string_view) -> Core::Task<bool> { co_return true; }, nullptr, loop);
+
+        std::optional<WebSocketMessage> received;
+        std::atomic<bool>               isDone{false};
+        auto                            receiverBody = [&]() -> Core::Task<>
+        {
+            received = co_await peer.receiveFor(std::chrono::seconds{2});
+            isDone.store(true, std::memory_order_release);
+            loop.stop();
+        };
+        auto feederBody = [&]() -> Core::Task<>
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(std::chrono::milliseconds{10});
+            const std::string frame = maskedClientFrame(0x1, "hello");
+            static_cast<void>(peer.feedBytes(frame.data(), frame.size()));
+        };
+        Core::Task<> receiver = receiverBody();
+        Core::Task<> feeder   = feederBody();
+        loop.scheduler().schedule(receiver.handle());
+        loop.scheduler().schedule(feeder.handle());
+
+        std::thread loopThread([&loop] { loop.run(); });
+        const bool  didFinish = HttpTestSupport::waitForCondition([&isDone] { return isDone.load(std::memory_order_acquire); }, kWaitTimeout);
+        loopThread.join();
+
+        ASSERT_TRUE(didFinish) << "receiveFor 没在帧到达后返回";
+        ASSERT_TRUE(received.has_value()) << "时限内到达的帧没有交给业务";
+        EXPECT_EQ(received->opCode, WebSocketOpCode::Text);
+        EXPECT_EQ(received->payload, "hello");
+        EXPECT_TRUE(peer.isOpen());
+    }
+
+    /**
+     * @brief 钉住 close() 唤醒挂起中的接收：业务不必等帧被销毁才看得到收口
+     */
+    TEST(WebSocketPeerContract, CloseWakesAPendingReceive)
+    {
+        Core::EventLoop   loop;
+        std::atomic<bool> closeFrameSent{false};
+        WebSocketPeer     peer(
+                [&closeFrameSent](const std::string_view) -> Core::Task<bool>
+                {
+                    closeFrameSent.store(true, std::memory_order_release);
+                    co_return true;
+                },
+                nullptr, loop);
+
+        std::optional<WebSocketMessage> received;
+        std::atomic<bool>               isDone{false};
+        auto                            receiverBody = [&]() -> Core::Task<>
+        {
+            received = co_await peer.receiveFor(std::chrono::seconds{5});
+            isDone.store(true, std::memory_order_release);
+            loop.stop();
+        };
+        Core::Task<> receiver = receiverBody();
+        loop.scheduler().schedule(receiver.handle());
+        loop.scheduler().postLocal(
+                [&peer]
+                {
+                    // close() 是协程；sendFrame 的替身立即完成，因此一次 resume 就能跑完整条关闭握手
+                    Core::Task<bool> closing = peer.close();
+                    closing.handle().resume();
+                    static_cast<void>(closing.await_resume());
+                });
+
+        std::thread loopThread([&loop] { loop.run(); });
+        const bool  didFinish = HttpTestSupport::waitForCondition([&isDone] { return isDone.load(std::memory_order_acquire); }, kWaitTimeout);
+        loopThread.join();
+
+        ASSERT_TRUE(didFinish) << "close() 没有唤醒挂起中的 receiveFor";
+        EXPECT_FALSE(received.has_value()) << "连接已主动关闭，接收却拿到了一条消息";
+        EXPECT_FALSE(peer.isOpen()) << "close() 之后 isOpen() 应为 false";
+        EXPECT_TRUE(closeFrameSent.load(std::memory_order_acquire)) << "关闭帧没有交给发送回调";
     }
 
     /**

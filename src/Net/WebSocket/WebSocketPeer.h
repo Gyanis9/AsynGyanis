@@ -27,6 +27,12 @@
 #include <string>
 #include <string_view>
 
+namespace AsynGyanis::Core
+{
+    class CoroutineResumeTicket;
+    class EventLoop;
+} // namespace AsynGyanis::Core
+
 namespace AsynGyanis::Net
 {
     class HttpMetricsCollector;
@@ -127,6 +133,16 @@ namespace AsynGyanis::Net
         explicit WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *metrics = nullptr);
 
         /**
+         * @brief 构造对端对象并同时交入所属事件循环
+         * @details 与两参构造的区别只在于 receiveFor() 能不能挂超时定时器：没有循环时只能用
+         *          无超时的 receive()，调用 receiveFor() 会在协程内抛出用法错误。
+         * @param frameSender 发送回调，由会话装配
+         * @param metrics 统计采集端（可空）
+         * @param loop 所属事件循环；生命周期必须覆盖本对象
+         */
+        WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *metrics, Core::EventLoop &loop);
+
+        /**
          * @brief 析构函数：成员都是按值的标准容器，无额外资源需要回收。
          */
         ~WebSocketPeer() = default;
@@ -174,6 +190,20 @@ namespace AsynGyanis::Net
          * @note 返回空之后再次调用会立即再次返回空，不会挂起
          */
         Core::Task<std::optional<WebSocketMessage>> receive();
+
+        /**
+         * @brief 在时限内收下一条数据消息
+         * @details 语义与 receive() 相同，只是等待被 timeout 截断：到点返回空，连接保持可用。
+         *          用于「首条消息必须带认证」这类业务——不要为了一个 5 秒窗口单开计时线程。
+         *          控制帧（Ping/Pong/Close）照旧在内部处理；反复到达的 Ping 不会续命整个时限，
+         *          时限从调用时刻算起，不随中途的控制帧重置。
+         * @param timeout 整次接收的时限；非正数表示只做一次非阻塞检查
+         * @return 消息；std::nullopt 表示超时、对端关闭或连接不可用。调用方用 isOpen() 区分：
+         *         仍为 true 表示这次是超时，false 表示连接已收口
+         * @throws Base::LogicException 构造本对象时没有给 EventLoop，或当前不在该循环线程上
+         * @note 必须在构造时给的 EventLoop 线程上调用；与 receive() 同一位置，业务是顺序执行的
+         */
+        Core::Task<std::optional<WebSocketMessage>> receiveFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief 发送一条文本消息
@@ -417,6 +447,73 @@ namespace AsynGyanis::Net
         };
 
         /**
+         * @brief receiveFor() 的等待体：在「有帧交付」与「定时器到期」之间只恢复一次
+         * @details 两条唤醒来源共享一张 CoroutineResumeTicket：投递方取走句柄再恢复，因此不会
+         *          两次 resume 同一条协程。定时任务归本等待体所有——帧先到时析构会摘掉队列登记，
+         *          定时先到时任务已在 final suspend，析构是空操作。
+         */
+        class TimedDeliveryAwaiter
+        {
+        public:
+            /**
+             * @brief 构造等待体
+             * @param peer 所属对端对象
+             * @param timeout 整次等待的剩余时限；非正数表示只做一次非阻塞检查
+             */
+            TimedDeliveryAwaiter(WebSocketPeer &peer, std::chrono::milliseconds timeout);
+
+            /**
+             * @brief 析构：撤销票据并销毁定时任务（定时器在挂起中时随之摘除）
+             */
+            ~TimedDeliveryAwaiter();
+
+            /**
+             * @brief 队列非空、连接已收口或时限已到时就地完成
+             */
+            [[nodiscard]] bool await_ready() noexcept;
+
+            /**
+             * @brief 登记票据与定时任务，挂起当前协程
+             * @param waiter 当前协程句柄
+             * @throws Base::LogicException 构造本对端时没有给 EventLoop
+             */
+            void await_suspend(std::coroutine_handle<> waiter);
+
+            /**
+             * @brief 取走队首帧；超时/收口时为空
+             */
+            [[nodiscard]] std::optional<WebSocketFrame> await_resume();
+
+        private:
+            /**
+             * @brief 等 timeout 后把票据投回循环；不在计时任务栈上直接 resume
+             * @details 定时任务归等待体所有：直接 resume 会让接收方在恢复后析构本任务帧，
+             *          等于在正在执行的协程里 destroy 自己。投回循环让本任务先完成到 final suspend。
+             */
+            Core::Task<> watchTimeout(std::chrono::milliseconds timeout);
+
+            WebSocketPeer                               *m_peer;
+            std::chrono::milliseconds                    m_timeout;
+            std::shared_ptr<Core::CoroutineResumeTicket> m_ticket;
+            std::optional<Core::Task<>>                  m_timeoutTask;
+        };
+
+        /// consumeFrame() 的处置：继续等下一条、连接已收口、或交出一条数据消息
+        enum class FrameDisposition
+        {
+            Continue,
+            Closed,
+            Message
+        };
+
+        /**
+         * @brief 处理一条已出队的帧：心跳就地应答/撤钟，Close 回帧并收口，数据帧交回业务
+         * @param frame 已从队列取走的帧
+         * @return 处置与可选的数据消息；Continue 时消息为空，Closed 时消息为空
+         */
+        Core::Task<std::pair<FrameDisposition, std::optional<WebSocketMessage>>> consumeFrame(WebSocketFrame frame);
+
+        /**
          * @brief 编码并写出一帧（send*() 与关闭握手共用）
          * @param opCode 操作码
          * @param payload 负载，按「指针 + 长度」取
@@ -465,16 +562,19 @@ namespace AsynGyanis::Net
 
         FrameSender                m_frameSender;      ///< 发送路径，由会话注入
         HttpMetricsCollector      *m_metrics{nullptr}; ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
+        Core::EventLoop           *m_loop{nullptr};    ///< 所属事件循环（非拥有）；receiveFor() 的定时器挂在它上面，空表示未注入
         WebSocketFrameDecoder      m_decoder;          ///< 帧解码器：掩码校验、分片重组都在它内部完成
         std::deque<WebSocketFrame> m_incomingFrames;   ///< 已解出、等待业务取走的帧（FIFO）
         /// 待交付帧的积压计数：enqueueFrame() 累加、出队处扣减，两处必须配对
-        std::size_t                            m_queuedPayloadByteCount{0}; ///< 队列里待交付帧的负载总字节数
-        std::coroutine_handle<>                m_deliveryWaiter{};          ///< 业务正挂在 receive() 上的句柄，空表示无人等待
-        bool                                   m_isOpen{true};              ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
-        bool                                   m_isWriteInFlight{false};    ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
-        std::string                            m_payloadErrorMessage;       ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
-        std::uint16_t                          m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
-        std::optional<PerMessageDeflateWindow> m_deflateWindow{}; ///< 协商出的两侧窗口位数；空表示未协商 permessage-deflate，决定收发两侧是否压缩
+        std::size_t             m_queuedPayloadByteCount{0}; ///< 队列里待交付帧的负载总字节数
+        std::coroutine_handle<> m_deliveryWaiter{};          ///< 业务正挂在 receive() 上的句柄，空表示无人等待
+        /// receiveFor() 的恢复票据：定时器与帧交付只允许一方 resume。与 m_deliveryWaiter 互斥使用
+        std::shared_ptr<Core::CoroutineResumeTicket> m_deliveryTicket{};
+        bool                                         m_isOpen{true};           ///< 本侧是否仍可收发：关闭握手或连接不可用即置 false
+        bool                                         m_isWriteInFlight{false}; ///< 是否有帧正在写，供会话收尾判定（见 isWriteInFlight()）
+        std::string                                  m_payloadErrorMessage;    ///< 负载层失败的中文原因（文本非法含违规字节位置）；空表示最近一次失败不在负载层
+        std::uint16_t                                m_payloadErrorCloseCode{kWebSocketInvalidPayloadDataCode}; ///< 负载层失败对应的关闭状态码
+        std::optional<PerMessageDeflateWindow>       m_deflateWindow{}; ///< 协商出的两侧窗口位数；空表示未协商 permessage-deflate，决定收发两侧是否压缩
 
         std::chrono::milliseconds m_pongTimeout{};         ///< 「发出 Ping 后多久没收到 Pong」的时限；0 表示不设这项保护
         IdleDeadlineRefresh       m_idleDeadlineRefresh{}; ///< 会话注入的「重刷本连接空闲截止」动作；空表示这条通道不靠它落实时限

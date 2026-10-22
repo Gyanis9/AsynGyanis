@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=9005
+# headers=308 entries=9030
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1426,6 +1426,7 @@ src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t le
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const
+src/Core/Socket/AsyncSocket.h	[[nodiscard]] EventLoop &eventLoop() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher *ensureWatcher() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitReadable() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitWritable() const
@@ -5952,6 +5953,7 @@ src/Net/Http3/Http3HeaderValidation.h	std::string message
 src/Net/Http3/Http3HeaderValidation.h	struct ASYN_NET_API Http3HeaderError
 src/Net/Http3/Http3HeaderValidation.h	using Http3HeaderStatus = std::expected<void, Http3HeaderError>
 src/Net/Http3/Http3Session.h	Core::Cancelable m_shutdownCancelable
+src/Net/Http3/Http3Session.h	Core::EventLoop *m_loop
 src/Net/Http3/Http3Session.h	Deadline deadline
 src/Net/Http3/Http3Session.h	Deadline deadline
 src/Net/Http3/Http3Session.h	ExtendedConnectKind extendedConnect
@@ -6023,12 +6025,14 @@ src/Net/Http3/Http3Session.h	bool sendInformationalResponse(std::int64_t streamI
 src/Net/Http3/Http3Session.h	bool submitStreamingResponseHead(std::int64_t streamId, StreamingResponse &state, HttpResponse &response)
 src/Net/Http3/Http3Session.h	class ASYN_NET_API Http3Session
 src/Net/Http3/Http3Session.h	class BodyWaitAwaiter
+src/Net/Http3/Http3Session.h	class EventLoop
 src/Net/Http3/Http3Session.h	class Http3Connection
 src/Net/Http3/Http3Session.h	class ResponseSpaceAwaiter
 src/Net/Http3/Http3Session.h	class Router
 src/Net/Http3/Http3Session.h	enum class Rejection
 src/Net/Http3/Http3Session.h	explicit BodyWaitAwaiter(StreamingRequest *streamingRequest) noexcept : m_streamingRequest(streamingRequest)
 src/Net/Http3/Http3Session.h	explicit ResponseSpaceAwaiter(Http3Session &session, const std::int64_t streamId, std::shared_ptr<StreamingResponse> streamingResponse) noexcept : m_session(&session), m_streamId(streamId), m_streamingResponse(std::move(streamingResponse))
+src/Net/Http3/Http3Session.h	namespace AsynGyanis::Core
 src/Net/Http3/Http3Session.h	namespace AsynGyanis::Net
 src/Net/Http3/Http3Session.h	static constexpr const char *kHttp3RequestVersion = "HTTP/3"
 src/Net/Http3/Http3Session.h	static constexpr std::size_t kStreamingResponseBufferByteCount = 256U * 1024U
@@ -6128,6 +6132,7 @@ src/Net/Http3/Http3Session.h	void refreshProduceDeadline(std::int64_t streamId) 
 src/Net/Http3/Http3Session.h	void rejectWebSocketTunnelResponse(std::int64_t streamId, HttpResponse &response, int status, const std::string &body, bool isVersionHintNeeded)
 src/Net/Http3/Http3Session.h	void resumeDeferredWaiters()
 src/Net/Http3/Http3Session.h	void resumeStreamingResponseWaiters()
+src/Net/Http3/Http3Session.h	void setEventLoop(Core::EventLoop &loop) noexcept
 src/Net/Http3/Http3Session.h	void setParserLimits(HttpParserLimits limits) noexcept
 src/Net/Http3/Http3Session.h	void setServerLimits(std::shared_ptr<const HttpServerLimits> limits) noexcept
 src/Net/Http3/Http3Session.h	void submitResponse(std::int64_t streamId, const HttpResponse &response, bool isHeadRequest)
@@ -8212,29 +8217,38 @@ src/Net/WebSocket/WebSocketHub.h	using WebSocketSubscriptionId = std::uint64_t
 src/Net/WebSocket/WebSocketHub.h	void reset() noexcept
 src/Net/WebSocket/WebSocketHub.h	void unsubscribe(WebSocketSubscriptionId identifier)
 src/Net/WebSocket/WebSocketHub.h	~WebSocketSubscription()
+src/Net/WebSocket/WebSocketPeer.h	Core::EventLoop *m_loop
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<> echoCloseFrame(std::string_view payload)
+src/Net/WebSocket/WebSocketPeer.h	Core::Task<> watchTimeout(std::chrono::milliseconds timeout)
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> close(std::uint16_t code = kWebSocketNormalClosureCode, std::string_view reason =
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> sendBinary(std::string_view payload)
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> sendFrame(WebSocketOpCode opCode, std::string_view payload)
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> sendPing(std::string_view payload =
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> sendText(std::string_view text)
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::optional<WebSocketMessage>> receive()
+src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::optional<WebSocketMessage>> receiveFor(std::chrono::milliseconds timeout)
+src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::pair<FrameDisposition, std::optional<WebSocketMessage>>> consumeFrame(WebSocketFrame frame)
 src/Net/WebSocket/WebSocketPeer.h	FrameSender m_frameSender
 src/Net/WebSocket/WebSocketPeer.h	HttpMetricsCollector *m_metrics
 src/Net/WebSocket/WebSocketPeer.h	IdleDeadlineRefresh m_idleDeadlineRefresh
+src/Net/WebSocket/WebSocketPeer.h	TimedDeliveryAwaiter(WebSocketPeer &peer, std::chrono::milliseconds timeout)
 src/Net/WebSocket/WebSocketPeer.h	WebSocketFeedStatus feedBytes(const char *data, std::size_t length)
 src/Net/WebSocket/WebSocketPeer.h	WebSocketFrameDecoder m_decoder
 src/Net/WebSocket/WebSocketPeer.h	WebSocketOpCode opCode
 src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer &operator=(WebSocketPeer &&) = delete
 src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer &operator=(const WebSocketPeer &) = delete
 src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer *m_peer
+src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer *m_peer
+src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *metrics, Core::EventLoop &loop)
 src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer(WebSocketPeer &&) = delete
 src/Net/WebSocket/WebSocketPeer.h	WebSocketPeer(const WebSocketPeer &) = delete
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool await_ready() const noexcept
+src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool await_ready() noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isOpen() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isPongDeadlinePassedAt(std::chrono::steady_clock::time_point now) const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isWriteInFlight() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::chrono::milliseconds idleBudgetWithin(std::chrono::milliseconds phaseTimeout, std::chrono::steady_clock::time_point now) const noexcept
+src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<WebSocketFrame> await_resume()
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<WebSocketFrame> await_resume()
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::shared_ptr<WebSocketPeer> lifetimeOwner() const noexcept
@@ -8245,9 +8259,13 @@ src/Net/WebSocket/WebSocketPeer.h	bool m_isEchoingPeerClose
 src/Net/WebSocket/WebSocketPeer.h	bool m_isOpen
 src/Net/WebSocket/WebSocketPeer.h	bool m_isWriteInFlight
 src/Net/WebSocket/WebSocketPeer.h	class ASYN_NET_API WebSocketPeer
+src/Net/WebSocket/WebSocketPeer.h	class CoroutineResumeTicket
 src/Net/WebSocket/WebSocketPeer.h	class DeliveryAwaiter
+src/Net/WebSocket/WebSocketPeer.h	class EventLoop
 src/Net/WebSocket/WebSocketPeer.h	class HttpMetricsCollector
+src/Net/WebSocket/WebSocketPeer.h	class TimedDeliveryAwaiter
 src/Net/WebSocket/WebSocketPeer.h	class WebSocketPeer
+src/Net/WebSocket/WebSocketPeer.h	enum class FrameDisposition
 src/Net/WebSocket/WebSocketPeer.h	enum class WebSocketFeedStatus
 src/Net/WebSocket/WebSocketPeer.h	explicit DeliveryAwaiter(WebSocketPeer &peer) noexcept
 src/Net/WebSocket/WebSocketPeer.h	explicit WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *metrics = nullptr)
@@ -8255,13 +8273,18 @@ src/Net/WebSocket/WebSocketPeer.h	inline constexpr std::size_t kWebSocketFrameOv
 src/Net/WebSocket/WebSocketPeer.h	inline constexpr std::size_t kWebSocketMaximumQueuedPayloadByteCount = 16 * 1024 * 1024
 src/Net/WebSocket/WebSocketPeer.h	inline constexpr std::uint16_t kWebSocketMessageTooBigCode = 1009
 src/Net/WebSocket/WebSocketPeer.h	inline constexpr std::uint16_t kWebSocketPolicyViolationCode = 1008
+src/Net/WebSocket/WebSocketPeer.h	namespace AsynGyanis::Core
 src/Net/WebSocket/WebSocketPeer.h	namespace AsynGyanis::Net
 src/Net/WebSocket/WebSocketPeer.h	std::chrono::milliseconds m_pongTimeout
+src/Net/WebSocket/WebSocketPeer.h	std::chrono::milliseconds m_timeout
 src/Net/WebSocket/WebSocketPeer.h	std::coroutine_handle<> m_deliveryWaiter
 src/Net/WebSocket/WebSocketPeer.h	std::deque<WebSocketFrame> m_incomingFrames
+src/Net/WebSocket/WebSocketPeer.h	std::optional<Core::Task<>> m_timeoutTask
 src/Net/WebSocket/WebSocketPeer.h	std::optional<PerMessageDeflateWindow> m_deflateWindow
 src/Net/WebSocket/WebSocketPeer.h	std::optional<std::chrono::steady_clock::time_point> m_outstandingPongDeadline
 src/Net/WebSocket/WebSocketPeer.h	std::optional<std::uint16_t> m_remoteCloseCode
+src/Net/WebSocket/WebSocketPeer.h	std::shared_ptr<Core::CoroutineResumeTicket> m_deliveryTicket
+src/Net/WebSocket/WebSocketPeer.h	std::shared_ptr<Core::CoroutineResumeTicket> m_ticket
 src/Net/WebSocket/WebSocketPeer.h	std::size_t m_queuedPayloadByteCount
 src/Net/WebSocket/WebSocketPeer.h	std::string m_payloadErrorMessage
 src/Net/WebSocket/WebSocketPeer.h	std::string m_remoteCloseReason
@@ -8273,6 +8296,7 @@ src/Net/WebSocket/WebSocketPeer.h	using FrameSender = std::function<Core::Task<b
 src/Net/WebSocket/WebSocketPeer.h	using IdleDeadlineRefresh = std::function<void()>
 src/Net/WebSocket/WebSocketPeer.h	using WebSocketHandler = std::function<Core::Task<>(WebSocketPeer &)>
 src/Net/WebSocket/WebSocketPeer.h	void armPongDeadline()
+src/Net/WebSocket/WebSocketPeer.h	void await_suspend(std::coroutine_handle<> waiter)
 src/Net/WebSocket/WebSocketPeer.h	void await_suspend(std::coroutine_handle<> waiter) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void clearPongDeadline()
 src/Net/WebSocket/WebSocketPeer.h	void enqueueFrame(WebSocketFrame frame)
@@ -8283,6 +8307,7 @@ src/Net/WebSocket/WebSocketPeer.h	void setMaximumInboundMessageBytes(std::size_t
 src/Net/WebSocket/WebSocketPeer.h	void setPerMessageDeflate(std::optional<PerMessageDeflateWindow> window) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setPongTimeout(std::chrono::milliseconds timeout, IdleDeadlineRefresh idleDeadlineRefresh =
 src/Net/WebSocket/WebSocketPeer.h	void wakeDeliveryWaiter() noexcept
+src/Net/WebSocket/WebSocketPeer.h	~TimedDeliveryAwaiter()
 src/Net/WebSocket/WebSocketPeer.h	~WebSocketPeer() = default
 src/Net/WebSocket/WebSocketUpgradePolicy.h	WebSocketOriginMode originMode
 src/Net/WebSocket/WebSocketUpgradePolicy.h	WebSocketSubprotocolMismatch subprotocolMismatch

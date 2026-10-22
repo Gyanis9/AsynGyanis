@@ -1,5 +1,9 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
+#include "Base/Exception/LogicException.h"
+#include "Core/Coroutine/Semaphore.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Net/Http/Server/HttpServerStats.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketUtf8.h"
@@ -48,6 +52,11 @@ namespace AsynGyanis::Net
     {
         // 发送路径在构造时注入：本对象没有「未装配」状态，省掉每次 send*() 里的判空分支。
         // 采集端可空：空表示只跑协议不上报统计，因此每个上报点都判一次空
+    }
+
+    WebSocketPeer::WebSocketPeer(FrameSender frameSender, HttpMetricsCollector *const metrics, Core::EventLoop &loop) : WebSocketPeer(std::move(frameSender), metrics)
+    {
+        m_loop = &loop;
     }
 
     bool WebSocketPeer::isOpen() const noexcept
@@ -212,6 +221,116 @@ namespace AsynGyanis::Net
         return frame;
     }
 
+    WebSocketPeer::TimedDeliveryAwaiter::TimedDeliveryAwaiter(WebSocketPeer &peer, const std::chrono::milliseconds timeout) : m_peer(&peer), m_timeout(timeout)
+    {
+    }
+
+    WebSocketPeer::TimedDeliveryAwaiter::~TimedDeliveryAwaiter()
+    {
+        // 先撤销票据，再销毁定时任务：投回循环里的那次恢复会看到空句柄而跳过
+        if (m_peer->m_deliveryTicket == m_ticket)
+        {
+            m_peer->m_deliveryTicket.reset();
+        }
+        if (m_ticket != nullptr)
+        {
+            m_ticket->revoke();
+        }
+        m_timeoutTask.reset();
+    }
+
+    bool WebSocketPeer::TimedDeliveryAwaiter::await_ready() noexcept
+    {
+        // 与 receive() 同一条快速路径；时限非正时只做这一次检查，不登记定时器
+        return !m_peer->m_incomingFrames.empty() || !m_peer->m_isOpen || m_timeout <= std::chrono::milliseconds::zero();
+    }
+
+    void WebSocketPeer::TimedDeliveryAwaiter::await_suspend(const std::coroutine_handle<> waiter)
+    {
+        if (m_peer->m_loop == nullptr)
+        {
+            throw Base::LogicException("WebSocketPeer::receiveFor：构造本对象时没有提供 EventLoop，无法挂接收超时定时器");
+        }
+
+        m_ticket = std::make_shared<Core::CoroutineResumeTicket>();
+        m_ticket->attach(waiter);
+        m_peer->m_deliveryTicket = m_ticket;
+
+        // 定时任务归本等待体所有；帧先到时析构会摘掉 TimerQueue 里的登记，定时先到时任务已到 final suspend
+        m_timeoutTask.emplace(watchTimeout(m_timeout));
+        m_peer->m_loop->scheduler().schedule(m_timeoutTask->handle());
+    }
+
+    std::optional<WebSocketFrame> WebSocketPeer::TimedDeliveryAwaiter::await_resume()
+    {
+        // 票据与定时任务都先收干净：恢复方可能是定时器，也可能是帧交付；两条路都只在这里做一次收尾
+        if (m_peer->m_deliveryTicket == m_ticket)
+        {
+            m_peer->m_deliveryTicket.reset();
+        }
+        if (m_ticket != nullptr)
+        {
+            m_ticket->revoke();
+            m_ticket.reset();
+        }
+        m_timeoutTask.reset();
+
+        if (m_peer->m_incomingFrames.empty())
+        {
+            return std::nullopt;
+        }
+
+        WebSocketFrame frame = std::move(m_peer->m_incomingFrames.front());
+        m_peer->m_incomingFrames.pop_front();
+        m_peer->m_queuedPayloadByteCount -= frame.payload.size() + kWebSocketFrameOverheadByteCount;
+        return frame;
+    }
+
+    Core::Task<> WebSocketPeer::TimedDeliveryAwaiter::watchTimeout(const std::chrono::milliseconds timeout)
+    {
+        Core::Timer timer(*m_peer->m_loop);
+        co_await timer.waitFor(timeout);
+        // 投回循环而不是就地 resume：接收方恢复后会析构本任务帧，就地 resume 等于在正在执行的
+        // 协程里 destroy 自己。投递只捕获票据，对端先析构也只是看到空句柄
+        m_peer->m_loop->scheduler().postLocal([ticket = m_ticket] { ticket->resumeOnce(); });
+        co_return;
+    }
+
+    Core::Task<std::pair<WebSocketPeer::FrameDisposition, std::optional<WebSocketMessage>>> WebSocketPeer::consumeFrame(WebSocketFrame frame)
+    {
+        switch (frame.opCode)
+        {
+            case WebSocketOpCode::Ping:
+            {
+                // 心跳应答（RFC 6455 §5.5.2）：负载必须原样回显，业务无需感知这次往返
+                [[maybe_unused]] const bool isPongSent = co_await sendFrame(WebSocketOpCode::Pong, frame.payload);
+                co_return std::make_pair(FrameDisposition::Continue, std::optional<WebSocketMessage>{});
+            }
+            case WebSocketOpCode::Pong:
+            {
+                // 心跳的回音：撤掉看门狗那把钟，会话据此把连接的空闲截止还回相位时限。不看载荷是否
+                // 与本端发出的 Ping 逐字相同——对端按 §5.5.3 把负载原样带回来是常态而非义务，
+                // 而这帧本身到场就是「对端应用还活着」的证据
+                clearPongDeadline();
+                co_return std::make_pair(FrameDisposition::Continue, std::optional<WebSocketMessage>{});
+            }
+            case WebSocketOpCode::Close:
+            {
+                // 对端发起关闭握手（RFC 6455 §5.5.1）：计入对端一侧，回一条同状态码的 Close 后终止交付
+                // （那条回帧不再计入本侧发起，否则一次对端关闭会被算成两笔）
+                if (m_metrics != nullptr)
+                {
+                    m_metrics->countWebSocketPeerClose();
+                }
+                co_await echoCloseFrame(frame.payload);
+                co_return std::make_pair(FrameDisposition::Closed, std::optional<WebSocketMessage>{});
+            }
+            default:
+                // 解码器只交付 Text 与 Binary：分片消息在解码层已重组，控制帧在上面三条分支里处理完
+                co_return std::make_pair(FrameDisposition::Message, std::optional<WebSocketMessage>{WebSocketMessage{.opCode = frame.opCode, .payload = std::move(frame.payload)}});
+        }
+    }
+
     Core::Task<std::optional<WebSocketMessage>> WebSocketPeer::receive()
     {
         while (true)
@@ -223,34 +342,40 @@ namespace AsynGyanis::Net
                 co_return std::nullopt;
             }
 
-            if (frame->opCode == WebSocketOpCode::Ping)
+            auto [disposition, message] = co_await consumeFrame(std::move(*frame));
+            if (disposition == FrameDisposition::Continue)
             {
-                // 心跳应答（RFC 6455 §5.5.2）：负载必须原样回显，业务无需感知这次往返
-                [[maybe_unused]] const bool isPongSent = co_await sendFrame(WebSocketOpCode::Pong, frame->payload);
                 continue;
             }
-            if (frame->opCode == WebSocketOpCode::Pong)
+            co_return std::move(message);
+        }
+    }
+
+    Core::Task<std::optional<WebSocketMessage>> WebSocketPeer::receiveFor(const std::chrono::milliseconds timeout)
+    {
+        if (m_loop == nullptr)
+        {
+            throw Base::LogicException("WebSocketPeer::receiveFor：构造本对象时没有提供 EventLoop，无法挂接收超时定时器");
+        }
+
+        // 时限从调用时刻算起：中途到达的 Ping/Pong 不重置它，否则对端可以用心跳把认证窗口无限续命
+        const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds::zero());
+        while (true)
+        {
+            const auto                          remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            const std::optional<WebSocketFrame> frame     = co_await TimedDeliveryAwaiter(*this, remaining);
+            if (!frame.has_value())
             {
-                // 心跳的回音：撤掉看门狗那把钟，会话据此把连接的空闲截止还回相位时限。不看载荷是否
-                // 与本端发出的 Ping 逐字相同——对端按 §5.5.3 把负载原样带回来是常态而非义务，
-                // 而这帧本身到场就是「对端应用还活着」的证据
-                clearPongDeadline();
-                continue;
-            }
-            if (frame->opCode == WebSocketOpCode::Close)
-            {
-                // 对端发起关闭握手（RFC 6455 §5.5.1）：计入对端一侧，回一条同状态码的 Close 后终止交付
-                // （那条回帧不再计入本侧发起，否则一次对端关闭会被算成两笔）
-                if (m_metrics != nullptr)
-                {
-                    m_metrics->countWebSocketPeerClose();
-                }
-                co_await echoCloseFrame(frame->payload);
+                // 超时、对端关闭或连接不可用：三者都按空结果交回，调用方用 isOpen() 区分
                 co_return std::nullopt;
             }
 
-            // 解码器只交付 Text 与 Binary：分片消息在解码层已重组，控制帧在上面三条分支里处理完
-            co_return WebSocketMessage{.opCode = frame->opCode, .payload = std::move(frame->payload)};
+            auto [disposition, message] = co_await consumeFrame(std::move(*frame));
+            if (disposition == FrameDisposition::Continue)
+            {
+                continue;
+            }
+            co_return std::move(message);
         }
     }
 
@@ -353,6 +478,10 @@ namespace AsynGyanis::Net
             m_metrics->countWebSocketServerClose();
         }
 
+        // 本侧主动关闭也要唤醒挂起的接收：业务可能阻塞在 receive()/receiveFor() 上等一条
+        // 永远不会再来的消息。连接已置为不可用，被唤醒后它看到的空结果就是「已收口」
+        wakeDeliveryWaiter();
+
         // 负载 = 2 字节大端状态码 + 原因（RFC 6455 §5.5.1）：线上顺序只有 `buildWebSocketClosePayload`
         // 那一份实现，出站客户端与本机共用，写反字节序这种事不会再只发生在一侧
         const std::string payload = buildWebSocketClosePayload(code, reason);
@@ -434,8 +563,13 @@ namespace AsynGyanis::Net
         // 每帧再算一份固定开销，零负载帧因此同样计入上界（见 kWebSocketFrameOverheadByteCount）
         m_queuedPayloadByteCount += m_incomingFrames.back().payload.size() + kWebSocketFrameOverheadByteCount;
 
-        // 业务正挂在 receive() 上：就地恢复它，把控制权交给它——交付与唤醒都由会话侧驱动，
-        // 业务侧的任一挂起点（收消息、发帧）都在本对象的调用链上
+        // 业务正挂着接收：就地恢复它，把控制权交给它。receiveFor() 的等待体走票据，
+        // receive() 的等待体走裸句柄，两者互斥；票据取走即与定时器那条路只允许一方恢复
+        if (const std::shared_ptr<Core::CoroutineResumeTicket> ticket = std::exchange(m_deliveryTicket, nullptr); ticket != nullptr)
+        {
+            ticket->resumeOnce();
+            return;
+        }
         if (m_deliveryWaiter != nullptr)
         {
             const std::coroutine_handle<> waiter = std::exchange(m_deliveryWaiter, nullptr);
@@ -539,14 +673,24 @@ namespace AsynGyanis::Net
 
     void WebSocketPeer::markClosed() noexcept
     {
-        // 有意不唤醒挂起中的 receive()：会话收尾时业务协程的帧会随之销毁，
-        // 让它在别人的栈上接着跑没有意义。需要「先唤醒再收尾」的路径调 wakeDeliveryWaiter()
+        // 有意不唤醒挂起中的接收：会话收尾时业务协程的帧会随之销毁，让它在别人的栈上接着跑没有意义。
+        // 但要把 receiveFor() 的票据撤掉：定时器可能比帧的销毁更早到，撤销后那次投递只是空操作。
+        // 需要「先唤醒再收尾」的路径调 wakeDeliveryWaiter()
+        if (const std::shared_ptr<Core::CoroutineResumeTicket> ticket = std::exchange(m_deliveryTicket, nullptr); ticket != nullptr)
+        {
+            ticket->revoke();
+        }
         m_isOpen = false;
     }
 
     void WebSocketPeer::wakeDeliveryWaiter() noexcept
     {
-        // 取走句柄再恢复：业务恢复后可能立刻走到收尾并销毁本对象，此后不能再访问成员
+        // 取走票据/句柄再恢复：业务恢复后可能立刻走到收尾并销毁本对象，此后不能再访问成员
+        if (const std::shared_ptr<Core::CoroutineResumeTicket> ticket = std::exchange(m_deliveryTicket, nullptr); ticket != nullptr)
+        {
+            ticket->resumeOnce();
+            return;
+        }
         if (const std::coroutine_handle<> waiter = std::exchange(m_deliveryWaiter, nullptr); waiter != nullptr)
         {
             waiter.resume();

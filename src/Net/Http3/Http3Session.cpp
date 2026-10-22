@@ -1640,10 +1640,12 @@ namespace AsynGyanis::Net
             m_metrics->countWebSocketUpgrade();
         }
 
-        auto tunnel     = std::make_unique<WebSocketTunnel>();
-        tunnel->handler = response.webSocketHandler();
-        tunnel->peer    = std::make_shared<WebSocketPeer>([this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
-                                                          { co_return co_await sendTunnelBytes(streamId, frameBytes); }, m_metrics.get());
+        auto tunnel                                   = std::make_unique<WebSocketTunnel>();
+        tunnel->handler                               = response.webSocketHandler();
+        const WebSocketPeer::FrameSender tunnelSender = [this, streamId](const std::string_view frameBytes) -> Core::Task<bool>
+        { co_return co_await sendTunnelBytes(streamId, frameBytes); };
+        // 承载层没交循环时退回两参构造：隧道照常收发，只是 receiveFor() 没有可挂的定时器
+        tunnel->peer = m_loop != nullptr ? std::make_shared<WebSocketPeer>(tunnelSender, m_metrics.get(), *m_loop) : std::make_shared<WebSocketPeer>(tunnelSender, m_metrics.get());
         // 登记共享所有权：集线器的写协程在挂起期间持一份，隧道记录先销毁时对端对象仍能活到本轮写出结束
         tunnel->peer->setLifetimeOwner(tunnel->peer);
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
@@ -1789,6 +1791,11 @@ namespace AsynGyanis::Net
     void Http3Session::setServerLimits(const std::shared_ptr<const HttpServerLimits> limits) noexcept
     {
         m_serverLimits = std::move(limits);
+    }
+
+    void Http3Session::setEventLoop(Core::EventLoop &loop) noexcept
+    {
+        m_loop = &loop;
     }
 
     bool Http3Session::isDrainedAndFinished() const noexcept

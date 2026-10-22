@@ -268,6 +268,17 @@ namespace AsynGyanis::Core
         [[nodiscard]] int fileDescriptor() const noexcept;
 
         /**
+         * @brief 取本套接字所属的事件循环
+         * @details 套接字的所有异步操作都登记在这条循环上；需要在该循环上挂定时器或投递任务的上层
+         *          （例如 WebSocketPeer 的超时接收）必须拿到同一份引用，不能另建循环。
+         * @return EventLoop& 构造本套接字时给出的循环，引用在套接字生命周期内恒定有效
+         */
+        [[nodiscard]] EventLoop &eventLoop() const noexcept
+        {
+            return m_loop;
+        }
+
+        /**
          * @brief 交出描述符所有权（不搬事件注册）
          *
          * @details 用于把一条刚接受的连接转交给别的循环：调用方拿走描述符后必须立即接管，

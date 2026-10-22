@@ -43,6 +43,11 @@
 #include <utility>
 #include <vector>
 
+namespace AsynGyanis::Core
+{
+    class EventLoop;
+} // namespace AsynGyanis::Core
+
 namespace AsynGyanis::Net
 {
     class Router;
@@ -160,6 +165,14 @@ namespace AsynGyanis::Net
          *       在途请求做完后由承载层收掉这条连接
          */
         void setServerLimits(std::shared_ptr<const HttpServerLimits> limits) noexcept;
+
+        /**
+         * @brief 交入承载本会话的事件循环
+         * @details h3 会话没有套接字，拿不到循环也就挂不了 receiveFor() 的超时定时器。承载层在
+         *          建会话时把 QuicServer 所属循环交进来，h3 的 WebSocketPeer 才能与 h1/h2 同解。
+         * @param loop 承载层的事件循环；必须在建立 WebSocket 隧道之前设置
+         */
+        void setEventLoop(Core::EventLoop &loop) noexcept;
 
         /**
          * @brief 按时限收口「收不全」的请求：一段时段内没有新字节的流不再等下去
@@ -919,6 +932,7 @@ namespace AsynGyanis::Net
         StreamAborter                         m_aborter;         ///< 单条流的收口出口（可空：空则只丢本端记账，对端收不到信号）
         Router                               *m_router{nullptr}; ///< 路由器（不持有；由服务端保证其寿命）
         std::shared_ptr<HttpMetricsCollector> m_metrics;         ///< 统计采集端（可空：空表示本会话不采集）
+        Core::EventLoop                      *m_loop{nullptr};   ///< 承载层循环（非拥有）；空表示没有可挂定时器的循环
         /// request-id 生成器（可空）：与服务器共享一份，前缀标识服务器实例
         std::shared_ptr<HttpRequestIdGenerator> m_requestIdGenerator;
         HttpParserLimits                        m_parserLimits{}; ///< 请求解析上限（正文总量上限等）

@@ -766,6 +766,8 @@ namespace AsynGyanis::Net
                 [rawConnection] { return rawConnection->remoteAddress(); },
                 // 本端公布的能力交下去：连接层按这一份接 QPACK 两侧、限单帧缓冲、决定认不认扩展 CONNECT
                 m_configuration.http3Settings);
+        // h3 会话没有套接字可问循环；把承载层这条交下去，WebSocket 隧道才能挂 receiveFor 的超时定时器
+        session->setEventLoop(m_eventLoop);
         if (m_router != nullptr)
         {
             session->attachRouter(*m_router);

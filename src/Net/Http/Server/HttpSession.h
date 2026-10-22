@@ -397,7 +397,7 @@ namespace AsynGyanis::Net
             // 对端对象由会话与集线器共享所有权：业务把它订阅进 WebSocketHub 之后，集线器的写协程
             // 会在挂起期间持一份，避免会话先收口并销毁本对象后，那条协程恢复时踩到已释放内存。
             // 栈上对象做不到这一点，因此这里用 shared_ptr 并在构造后立刻登记
-            const std::shared_ptr<WebSocketPeer> peer = std::make_shared<WebSocketPeer>(sendFrameBytes, metrics);
+            const std::shared_ptr<WebSocketPeer> peer = std::make_shared<WebSocketPeer>(sendFrameBytes, metrics, connection.socket().eventLoop());
             peer->setLifetimeOwner(peer);
             peer->setPerMessageDeflate(deflateWindow);
             // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
