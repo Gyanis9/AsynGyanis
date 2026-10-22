@@ -405,6 +405,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "QuicSupport.h" EXCLUDE
             PATTERN "OtlpHttpExportSupport.h" EXCLUDE
             PATTERN "OtlpJsonSupport.h" EXCLUDE
+            PATTERN "HttpConfigDuration.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：

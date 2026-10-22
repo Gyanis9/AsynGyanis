@@ -1,5 +1,6 @@
 #include "Net/Http/HttpServerConfig.h"
 
+#include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/HttpHeaderRules.h"
@@ -18,6 +19,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::toMilliseconds;
+
         /// server 段直接支持的键
         constexpr std::array<std::string_view, 13> kServerKeys{
                 "maximum_connections",
@@ -175,30 +178,6 @@ namespace AsynGyanis::Net
             }
             destination = value.get<bool>();
         }
-
-        /**
-         * @brief 把非负整数毫秒换算成时长
-         * @param milliseconds 毫秒数（已确保非负）
-         * @param key 键路径，用于错误信息
-         * @return std::chrono::milliseconds 时长
-         * @throws Base::ConfigValidationException 超出「能与当前时刻相加」的可用上限
-         */
-        [[nodiscard]] std::chrono::milliseconds toMilliseconds(const std::uint64_t milliseconds, const std::string &key)
-        {
-            // 时长的底层是有符号 64 位，但那只管「装得下」：这几个值最终都要与 steady_clock 的当前时刻
-            // 相加。按 rep 的上限放行时，越过一半上界的取值在相加那一刻折回成过去——「配得越大」于是变成
-            // 「立刻到期」，每条连接在第一次清扫里被掐断，而配置文件看着完全正常。因此上界取可表示范围的
-            // 一半，另一半留给 now()；按各自的 tick 周期换算，MSVC（100ns）与 libstdc++（1ns）都自洽
-            constexpr std::int64_t kMaximumUsableTimeoutMilliseconds =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2;
-            if (milliseconds > static_cast<std::uint64_t>(kMaximumUsableTimeoutMilliseconds))
-            {
-                throw Base::ConfigValidationException(
-                        key, std::format("超出可用的毫秒上限 {}：时限要与当前时刻相加，越过上界会折回成过去，等于「配得越大反倒立刻到期」", kMaximumUsableTimeoutMilliseconds));
-            }
-            return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(milliseconds));
-        }
-
         /**
          * @brief 从值里取一个非负数值（整数或小数都接受）
          * @param value 配置值

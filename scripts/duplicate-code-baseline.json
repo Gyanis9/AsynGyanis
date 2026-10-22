@@ -320,15 +320,6 @@
       "occurrences": 3
     },
     {
-      "hash": "f595b777b2a1bd3e",
-      "files": [
-        "src/Net/Logging/LogExportConfiguration.cpp",
-        "src/Net/Metrics/MetricsExportConfiguration.cpp",
-        "src/Net/Tracing/TracingConfiguration.cpp"
-      ],
-      "occurrences": 3
-    },
-    {
       "hash": "f99eddc5c37d32f7",
       "files": [
         "src/Net/WebSocket/WebSocketHandshake.cpp"

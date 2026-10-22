@@ -1,5 +1,6 @@
 #include "Net/Metrics/MetricsExportConfiguration.h"
 
+#include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
@@ -17,6 +18,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::toMilliseconds;
+
         /// metrics 段直接支持的键
         constexpr std::array<std::string_view, 5> kMetricsKeys{"enabled", "service_name", "service_version", "export_interval_ms", "otlp"};
 
@@ -92,28 +95,6 @@ namespace AsynGyanis::Net
             }
             return magnitude;
         }
-
-        /**
-         * @brief 把配置里的毫秒数折成时长，越界当场拒
-         * @details 超过「能与当前时刻相加」可用上限的取值会折回成过去，等于「配得越大反倒立刻到期」，
-         *          与 HttpServerConfig.cpp 的 toMilliseconds 是同一个界、同一个理由
-         * @param milliseconds 毫秒数（已由 requirePositiveInteger 确保大于 0）
-         * @param key 键路径，用于错误信息
-         * @return std::chrono::milliseconds 时长
-         * @throws Base::ConfigValidationException 超出可用上限
-         */
-        [[nodiscard]] std::chrono::milliseconds toMilliseconds(const std::uint64_t milliseconds, const std::string &key)
-        {
-            constexpr std::int64_t kMaximumUsableTimeoutMilliseconds =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2;
-            if (milliseconds > static_cast<std::uint64_t>(kMaximumUsableTimeoutMilliseconds))
-            {
-                throw Base::ConfigValidationException(
-                        key, std::format("超出可用的毫秒上限 {}：时限要与当前时刻相加，越过上界会折回成过去，等于「配得越大反倒立刻到期」", kMaximumUsableTimeoutMilliseconds));
-            }
-            return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(milliseconds));
-        }
-
         /// @brief 取一段非空文本（服务名与地址都吃这条判据）
         [[nodiscard]] std::string requireNonEmptyString(const Base::ConfigValue &value, const std::string &key)
         {

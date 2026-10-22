@@ -1,5 +1,6 @@
 #include "Net/Logging/LogExportConfiguration.h"
 
+#include "Net/Http/HttpConfigDuration.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Exception/LogicException.h"
 #include "Net/Logging/OtlpLogSink.h"
@@ -16,6 +17,8 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        using HttpConfig::toMilliseconds;
+
         /// log_export 段直接支持的键
         constexpr std::array<std::string_view, 8> kLogExportKeys{
                 "enabled", "service_name", "service_version", "export_interval_ms", "shutdown_timeout_ms", "maximum_pending_records", "maximum_batch_records", "otlp",
@@ -90,19 +93,6 @@ namespace AsynGyanis::Net
             }
             return magnitude;
         }
-
-        /// @brief 毫秒数折时长，越界当场拒（与 metrics/tracing 两个读取器同一界）
-        std::chrono::milliseconds toMilliseconds(const std::uint64_t milliseconds, const std::string &key)
-        {
-            constexpr std::int64_t kMaximumUsableTimeoutMilliseconds =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::duration::max()).count() / 2;
-            if (milliseconds > static_cast<std::uint64_t>(kMaximumUsableTimeoutMilliseconds))
-            {
-                throw Base::ConfigValidationException(key, std::format("超出可用的毫秒上限 {}", kMaximumUsableTimeoutMilliseconds));
-            }
-            return std::chrono::milliseconds(static_cast<std::chrono::milliseconds::rep>(milliseconds));
-        }
-
         /// @brief 取非空文本
         std::string requireNonEmptyString(const Base::ConfigValue &value, const std::string &key)
         {
