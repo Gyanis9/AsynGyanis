@@ -458,6 +458,41 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：带 userinfo 的 URL 被明确拒绝，异常文本里不出现用户名或口令
+     * @details 先按冒号数量判 IPv6 会把 `user:pass@host:port` 误报成「IPv6 没加方括号」，
+     *          而那条文案会把 authority 整段回显。这里同时钉两件事：拒绝的理由是 userinfo
+     *          （RFC 9110 §4.2.4），以及异常文本里没有任何输入里的凭据字节。
+     * @note 正向对照：`@` 出现在路径或查询里不是 userinfo，必须照常解析
+     */
+    TEST(HttpClientUrl, RejectsUserInfoWithoutEchoingCredentials)
+    {
+        const auto expectRejectedWithoutSecret = [](const std::string_view url, const std::string_view secret, const std::string_view expectedReason)
+        {
+            try
+            {
+                static_cast<void>(parseUrl(url));
+                FAIL() << "带 userinfo 的 URL 被放行了：" << url;
+            } catch (const std::invalid_argument &failure)
+            {
+                const std::string text = failure.what();
+                EXPECT_NE(text.find(expectedReason), std::string::npos) << "拒绝理由没点明问题：" << text;
+                EXPECT_EQ(text.find(secret), std::string::npos) << "异常文本回显了凭据：" << text;
+                EXPECT_EQ(text.find("alice"), std::string::npos) << "异常文本回显了用户名：" << text;
+            }
+        };
+
+        expectRejectedWithoutSecret("http://alice:topsecret@example.com:8080/x", "topsecret", "userinfo");
+        expectRejectedWithoutSecret("https://alice@example.com/x", "alice", "userinfo");
+        expectRejectedWithoutSecret("http://alice:topsecret@[::1]:8080/x", "topsecret", "userinfo");
+        // 撕裂请求行的错误发生在 userinfo 识别之前：这条也必须是脱敏后的文本
+        expectRejectedWithoutSecret("http://alice:topsecret@example.com/a b", "topsecret", "空白或控制字符");
+
+        const ParsedUrl pathAt = parseUrl("http://example.com/a@b?mail=a@b");
+        EXPECT_EQ(pathAt.host, "example.com") << "路径/查询里的 @ 被误当成 userinfo";
+        EXPECT_EQ(pathAt.path, "/a@b?mail=a@b");
+    }
+
+    /**
      * @brief 钉住：响应头能按大小写不敏感读出来，读不到时是空而不是猜
      * @details `headers` 按对端给什么留什么（不折叠、不重排），而 RFC 9110 §5.1 规定头部名
      *          大小写不敏感。此前消费方要么自己写一份折小写的循环（本仓写过三份），要么

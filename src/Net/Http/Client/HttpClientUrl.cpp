@@ -90,6 +90,121 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 把 URL 里的 userinfo 换成 `***@`，只给诊断文本用
+         * @details 异常与失败原因会进日志、投递记录与调用方的错误面板；原样带上 `user:pass@`
+         *          就是把口令复制到每一个读日志的地方。这里按 RFC 3986 §3.2 的 authority 边界
+         *          找最后一个 `@`（userinfo 的定界符），整段替换而不是只遮口令——用户名同样不该外泄。
+         * @param url 原始 URL 或缺少协议名的半成品
+         * @return std::string 可安全写进诊断文本的副本
+         */
+        [[nodiscard]] std::string redactUrlForDiagnostics(const std::string_view url)
+        {
+            const std::size_t      schemeSeparator = url.find("://");
+            const std::size_t      authorityStart  = schemeSeparator != std::string_view::npos ? schemeSeparator + 3U : (url.starts_with("//") ? 2U : 0U);
+            const std::size_t      authorityEnd    = url.find_first_of("/?#", authorityStart);
+            const std::string_view authority       = url.substr(authorityStart, authorityEnd == std::string_view::npos ? std::string_view::npos : authorityEnd - authorityStart);
+            const std::size_t      userInfoEnd     = authority.rfind('@');
+            if (userInfoEnd == std::string_view::npos)
+            {
+                return std::string(url);
+            }
+
+            std::string redacted;
+            redacted.reserve(url.size());
+            redacted.append(url.substr(0U, authorityStart));
+            redacted.append("***@");
+            redacted.append(authority.substr(userInfoEnd + 1U));
+            if (authorityEnd != std::string_view::npos)
+            {
+                redacted.append(url.substr(authorityEnd));
+            }
+            return redacted;
+        }
+
+        /**
+         * @brief 拆解 authority：拒绝 userinfo，识别方括号 IPv6 与端口，写进 ParsedUrl
+         * @param authority URL 里 `scheme://` 与 `/?#` 之间那一段
+         * @param url 原始 URL，仅用于脱敏后的诊断文本
+         * @param parsed 协议已填好、主机与端口待填的输出
+         * @throws Base::InvalidArgumentException authority 带 userinfo、方括号/端口畸形或主机为空
+         * @note 诊断文本一律走 redactUrlForDiagnostics()：这条路径上的错误最容易被原样写进日志
+         */
+        void parseAuthorityInto(const std::string_view authority, const std::string_view url, ParsedUrl &parsed)
+        {
+            // userinfo 必须先认出来：按冒号数量判 IPv6 会把 `user:pass@host:port` 误报成
+            // 「IPv6 没加方括号」，而那条文案会把整个 authority 连同口令回显出去。
+            // RFC 9110 §4.2.4 已不鼓励在 http(s) URI 里带凭据；这里明确拒绝，并把调用方
+            // 指向 Authorization 头。拒绝文案不回显输入，口令因此不会进异常、日志或调用方记录
+            if (authority.rfind('@') != std::string_view::npos)
+            {
+                throw Base::InvalidArgumentException("HttpClient：URL 里不允许带 userinfo（user:pass@ 形式）。HTTP(S) 的凭据请放在 Authorization 头里"
+                                                     "（RFC 9110 §4.2.4）；本条 URL 已被拒绝，输入内容不会写入本消息");
+            }
+
+            // 方括号里的是 IP 字面量（RFC 3986 §3.2.2）：IPv6 自带冒号，不这样区分就分不清哪段是端口
+            std::string_view hostText = authority;
+            std::string_view portText;
+            bool             hasExplicitPort = false;
+            if (!authority.empty() && authority.front() == '[')
+            {
+                const std::size_t closingBracket = authority.find(']');
+                if (closingBracket == std::string_view::npos)
+                {
+                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分方括号没闭合（IPv6 字面量要写成 "[::1]:8080" 的形式）：「)" + redactUrlForDiagnostics(url) +
+                                                         R"(」)");
+                }
+                hostText                            = authority.substr(1, closingBracket - 1);
+                const std::string_view afterBracket = authority.substr(closingBracket + 1);
+                if (!afterBracket.empty())
+                {
+                    if (afterBracket.front() != ':')
+                    {
+                        throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分在 "]" 之后还跟着多余字符（端口要写成 ":8080"）：「)" + redactUrlForDiagnostics(url) +
+                                                             R"(」)");
+                    }
+                    hasExplicitPort = true;
+                    portText        = afterBracket.substr(1);
+                }
+            } else
+            {
+                const std::size_t portSeparator = authority.rfind(':');
+                if (portSeparator != std::string_view::npos)
+                {
+                    // 冒号不止一个又没有方括号：那是没按规范包起来的 IPv6，拆出来的「主机」会是半截地址
+                    if (authority.find(':') != portSeparator)
+                    {
+                        throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机是 IPv6 时必须写成方括号形式（"[::1]:8080"）：「)" + redactUrlForDiagnostics(url) + R"(」)");
+                    }
+                    hasExplicitPort = true;
+                    hostText        = authority.substr(0, portSeparator);
+                    portText        = authority.substr(portSeparator + 1);
+                }
+            }
+
+            if (hostText.empty())
+            {
+                throw Base::InvalidArgumentException(R"(HttpClient：URL 里没有主机部分：「)" + redactUrlForDiagnostics(url) + R"(」)");
+            }
+            parsed.host = std::string(hostText);
+
+            if (hasExplicitPort)
+            {
+                std::uint32_t port = 0U;
+                if (!parsePort(portText, port))
+                {
+                    // 原先这里回落到 80：一个写错的 https 端口会静默连到明文端口上，
+                    // 宁可当场报错也不替调用方猜一个
+                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的端口「)" + std::string(portText) + R"(」不是 1..65535 的十进制数：完整 URL 是「)" +
+                                                         redactUrlForDiagnostics(url) + R"(」)");
+                }
+                parsed.port = static_cast<uint16_t>(port);
+            } else
+            {
+                parsed.port = (parsed.scheme == "https") ? 443 : 80;
+            }
+        }
+
+        /**
          * @brief 判一段文本是不是合法的协议名（RFC 3986 §3.1：字母打头，其后字母/数字/+/-/.）
          * @details 判据住在 `HttpHeaderRules.h`，与 h3 的 `:scheme` 校验、h2 的伪头校验同一份——
          *          三份各写一遍时，「本端发出去的 URL 能不能被本端收下来」这件事就成了运气。
@@ -213,7 +328,7 @@ namespace AsynGyanis::Net
         // 甚至插进新的头部（请求分裂）。这不是「请求失败」，是用法错误，当场报出来
         if (urlHasTearableCharacter(url))
         {
-            throw Base::InvalidArgumentException("HttpClient：URL 里不允许出现空白或控制字符（会撕裂请求行）：「" + std::string(url) + "」");
+            throw Base::InvalidArgumentException("HttpClient：URL 里不允许出现空白或控制字符（会撕裂请求行）：「" + redactUrlForDiagnostics(url) + "」");
         }
 
         ParsedUrl         parsed;
@@ -223,7 +338,7 @@ namespace AsynGyanis::Net
         // 猜 https 又会连到一个只有明文端口的服务——两种猜法的失败都不出声
         if (schemeSeparator == std::string_view::npos)
         {
-            throw Base::InvalidArgumentException(R"(HttpClient：URL 少了协议名，要写成 http:// 或 https:// 开头：「)" + std::string(url) +
+            throw Base::InvalidArgumentException(R"(HttpClient：URL 少了协议名，要写成 http:// 或 https:// 开头：「)" + redactUrlForDiagnostics(url) +
                                                  R"(」。这里不替调用方补默认协议：补错一次就是把 TLS 整段绕过去)");
         }
         const std::string_view schemeText = remainder.substr(0, schemeSeparator);
@@ -253,65 +368,7 @@ namespace AsynGyanis::Net
             pathPart = pathPart.substr(0U, fragmentOffset);
         }
 
-        // 方括号里的是 IP 字面量（RFC 3986 §3.2.2）：IPv6 自带冒号，不这样区分就分不清哪段是端口
-        std::string_view hostText = authority;
-        std::string_view portText;
-        bool             hasExplicitPort = false;
-        if (!authority.empty() && authority.front() == '[')
-        {
-            const std::size_t closingBracket = authority.find(']');
-            if (closingBracket == std::string_view::npos)
-            {
-                throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分方括号没闭合（IPv6 字面量要写成 "[::1]:8080" 的形式）：「)" + std::string(authority) + R"(」)");
-            }
-            hostText                            = authority.substr(1, closingBracket - 1);
-            const std::string_view afterBracket = authority.substr(closingBracket + 1);
-            if (!afterBracket.empty())
-            {
-                if (afterBracket.front() != ':')
-                {
-                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机部分在 "]" 之后还跟着多余字符（端口要写成 ":8080"）：「)" + std::string(authority) + R"(」)");
-                }
-                hasExplicitPort = true;
-                portText        = afterBracket.substr(1);
-            }
-        } else
-        {
-            const std::size_t portSeparator = authority.rfind(':');
-            if (portSeparator != std::string_view::npos)
-            {
-                // 冒号不止一个又没有方括号：那是没按规范包起来的 IPv6，拆出来的「主机」会是半截地址
-                if (authority.find(':') != portSeparator)
-                {
-                    throw Base::InvalidArgumentException(R"(HttpClient：URL 的主机是 IPv6 时必须写成方括号形式（"[::1]:8080"）：「)" + std::string(authority) + R"(」)");
-                }
-                hasExplicitPort = true;
-                hostText        = authority.substr(0, portSeparator);
-                portText        = authority.substr(portSeparator + 1);
-            }
-        }
-
-        if (hostText.empty())
-        {
-            throw Base::InvalidArgumentException(R"(HttpClient：URL 里没有主机部分：「)" + std::string(url) + R"(」)");
-        }
-        parsed.host = std::string(hostText);
-
-        if (hasExplicitPort)
-        {
-            std::uint32_t port = 0U;
-            if (!parsePort(portText, port))
-            {
-                // 原先这里回落到 80：一个写错的 https 端口会静默连到明文端口上，
-                // 宁可当场报错也不替调用方猜一个
-                throw Base::InvalidArgumentException(R"(HttpClient：URL 的端口「)" + std::string(portText) + R"(」不是 1..65535 的十进制数：完整 URL 是「)" + std::string(url) +
-                                                     R"(」)");
-            }
-            parsed.port = static_cast<uint16_t>(port);
-        } else
-        {
-            parsed.port = (parsed.scheme == "https") ? 443 : 80;
-        }
+        parseAuthorityInto(authority, url, parsed);
         if (!pathPart.empty())
         {
             // 只有查询（`http://host?a=1`）：authority 之后没有路径段。origin-form 的请求目标不能是空的
