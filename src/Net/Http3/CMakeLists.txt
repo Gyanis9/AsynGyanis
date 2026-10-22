@@ -16,4 +16,6 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Http3ClientConnection.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http3Session.cpp
+        # 整段响应、流式响应与收尾
+        ${CMAKE_CURRENT_LIST_DIR}/Http3SessionResponses.cpp
 )
