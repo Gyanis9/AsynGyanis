@@ -2,6 +2,7 @@
 
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Platform/IO/Socket.h"
 
 #include <atomic>
@@ -163,7 +164,8 @@ namespace AsynGyanis::Core
             /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
             /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
             std::atomic<std::coroutine_handle<>> callerHandle{nullptr};
-            std::vector<InetAddress>             addresses; ///< 解析结果
+            std::atomic<bool>                    timedOut{false}; ///< 时限先到：结果即使后来回来也不再用
+            std::vector<InetAddress>             addresses;       ///< 解析结果
 
             /// 本次解析占住的名额：随这份状态一起活到「解析线程与等待方都松手」，那时才归还
             std::shared_ptr<ResolutionSlotGuard> slot;
@@ -177,6 +179,20 @@ namespace AsynGyanis::Core
                 }
             }
         };
+
+        /**
+         * @brief 解析时限：到点后把等待方叫醒，后台线程以后投回的那次唤醒自然落空
+         * @details 不在计时任务栈上直接 resume：等待方恢复后会析构本任务帧。先 co_return，
+         *          再由 postLocal 投回循环执行唤醒。
+         */
+        Core::Task<> armResolveTimeout(EventLoop &loop, std::shared_ptr<ResolveState> state, const std::chrono::milliseconds timeout)
+        {
+            Core::Timer timer(loop);
+            co_await timer.waitFor(timeout);
+            state->timedOut.store(true, std::memory_order_release);
+            loop.scheduler().postLocal([state] { state->wakeCaller(); });
+            co_return;
+        }
 
         /**
          * @brief 把结果交回等待方：先确认还有人等，再碰目标循环
@@ -269,9 +285,95 @@ namespace AsynGyanis::Core
             }
             deliverResult(targetLoop, state);
         }
+        // await_suspend 里先存句柄再启线程 —— 保证线程要么看不到 callerHandle 的旧值、
+        // 要么看到刚设好的新值，永远不存在「postRemote 跑完但句柄还没设进来」的竞态
+        struct ResolveAwaiter
+        {
+            EventLoop                    &targetLoop;
+            std::string                   host;
+            uint16_t                      port;
+            std::shared_ptr<ResolveState> state;
+            std::chrono::milliseconds     timeout;     ///< 非正数表示不挂时限
+            std::optional<Task<>>         timeoutTask; ///< 定时任务归等待器所有；帧先到就析构取消
+
+            bool await_ready() const noexcept
+            {
+                return false;
+            }
+
+            bool await_suspend(const std::coroutine_handle<> handle) noexcept
+            {
+                state->callerHandle.store(handle, std::memory_order_release);
+
+                // 并发上限与线程创建放在同一个 try 里：守卫的构造要分配内存，noexcept 函数里抛出即
+                // terminate，而这里两条都是「资源耗尽就按失败收尾」的同一处置
+                try
+                {
+                    // 名额在发起线程上就占住（构造即加计），不是等解析线程起跑后才计：一批协程在
+                    // 同一个循环线程上连着挂起时，只读计数的发起方全都看到「还没到顶」，上限被整片冲开
+                    auto slot = std::make_shared<ResolutionSlotGuard>();
+                    if (g_activeResolutionCount.load(std::memory_order_relaxed) > kMaximumConcurrentResolutions)
+                    {
+                        // 局部 slot 出作用域即归还这一份加计
+                        LOG_WARN_FMT("AsyncResolver: 同时在跑的解析已达上限 {}，本次解析按失败返回空地址列表", kMaximumConcurrentResolutions);
+                        return false;
+                    }
+
+                    // 名额改由状态持有：解析线程与等待方最后松手的那一个负责归还
+                    state->slot = std::move(slot);
+
+                    // 时限任务先挂上：解析线程一旦跑起来，等待方就必须有一条在时限内醒来的路。
+                    // 定时任务归本等待器所有，解析先到时析构会把它从 TimerQueue 摘掉
+                    if (timeout > std::chrono::milliseconds::zero())
+                    {
+                        try
+                        {
+                            timeoutTask.emplace(armResolveTimeout(targetLoop, state, timeout));
+                            targetLoop.scheduler().schedule(timeoutTask->handle());
+                        } catch (...)
+                        {
+                            timeoutTask.reset();
+                            LOG_WARN("AsyncResolver: 解析时限定时器挂不上（资源耗尽），本次解析退回无时限等待");
+                        }
+                    }
+
+                    // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
+                    // 结果保持空列表，按文档的「空列表表示解析失败」收尾
+                    std::thread worker(blockingResolve, std::move(host), port, &targetLoop, state);
+                    worker.detach();
+                } catch (...)
+                {
+                    LOG_WARN("AsyncResolver: 启动解析线程失败（资源耗尽），本次解析按失败返回空地址列表");
+                    // 线程没起来就立刻把名额还回去，不等状态销毁：否则反复失败会把名额耗干，
+                    // 让此后的解析永远被上限拒绝
+                    state->slot.reset();
+                    return false;
+                }
+                return true;
+            }
+
+            void await_resume() const noexcept
+            {
+            }
+
+            ~ResolveAwaiter()
+            {
+                // 定时任务先收：挂起中的 TimerQueue::Awaiter 随帧析构会从队列摘除
+                timeoutTask.reset();
+                // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒——把句柄置空，
+                // 后台线程投回的唤醒取到空句柄，自然跳过 resume（那是释放后使用）
+                state->callerHandle.store(nullptr, std::memory_order_release);
+            }
+        };
+
     } // namespace
 
     Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port)
+    {
+        co_return co_await resolve(loop, std::move(host), port, std::chrono::milliseconds::zero());
+    }
+
+    Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port, const std::chrono::milliseconds timeout)
     {
         if (host.empty())
         {
@@ -303,69 +405,13 @@ namespace AsynGyanis::Core
         // state 在协程帧里存活，覆盖整个 co_await 期以及后面的结果读取
         auto state = std::make_shared<ResolveState>();
 
-        // await_suspend 里先存句柄再启线程 —— 保证线程要么看不到 callerHandle 的旧值、
-        // 要么看到刚设好的新值，永远不存在「postRemote 跑完但句柄还没设进来」的竞态
-        struct ResolveAwaiter
+        co_await ResolveAwaiter{loop, std::move(host), port, state, timeout, std::nullopt};
+        if (state->timedOut.load(std::memory_order_acquire))
         {
-            EventLoop                    &targetLoop;
-            std::string                   host;
-            uint16_t                      port;
-            std::shared_ptr<ResolveState> state;
-
-            bool await_ready() const noexcept
-            {
-                return false;
-            }
-
-            bool await_suspend(const std::coroutine_handle<> handle) noexcept
-            {
-                state->callerHandle.store(handle, std::memory_order_release);
-
-                // 并发上限与线程创建放在同一个 try 里：守卫的构造要分配内存，noexcept 函数里抛出即
-                // terminate，而这里两条都是「资源耗尽就按失败收尾」的同一处置
-                try
-                {
-                    // 名额在发起线程上就占住（构造即加计），不是等解析线程起跑后才计：一批协程在
-                    // 同一个循环线程上连着挂起时，只读计数的发起方全都看到「还没到顶」，上限被整片冲开
-                    auto slot = std::make_shared<ResolutionSlotGuard>();
-                    if (g_activeResolutionCount.load(std::memory_order_relaxed) > kMaximumConcurrentResolutions)
-                    {
-                        // 局部 slot 出作用域即归还这一份加计
-                        LOG_WARN_FMT("AsyncResolver: 同时在跑的解析已达上限 {}，本次解析按失败返回空地址列表", kMaximumConcurrentResolutions);
-                        return false;
-                    }
-
-                    // 名额改由状态持有：解析线程与等待方最后松手的那一个负责归还
-                    state->slot = std::move(slot);
-
-                    // noexcept 里不能抛出：线程创建失败（句柄/内存耗尽）时返回 false 就地恢复，
-                    // 结果保持空列表，按文档的「空列表表示解析失败」收尾
-                    std::thread worker(blockingResolve, std::move(host), port, &targetLoop, state);
-                    worker.detach();
-                } catch (...)
-                {
-                    LOG_WARN("AsyncResolver: 启动解析线程失败（资源耗尽），本次解析按失败返回空地址列表");
-                    // 线程没起来就立刻把名额还回去，不等状态销毁：否则反复失败会把名额耗干，
-                    // 让此后的解析永远被上限拒绝
-                    state->slot.reset();
-                    return false;
-                }
-                return true;
-            }
-
-            void await_resume() const noexcept
-            {
-            }
-
-            ~ResolveAwaiter()
-            {
-                // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒——把句柄置空，
-                // 后台线程投回的唤醒取到空句柄，自然跳过 resume（那是释放后使用）
-                state->callerHandle.store(nullptr, std::memory_order_release);
-            }
-        };
-
-        co_await ResolveAwaiter{loop, std::move(host), port, state};
+            // 时限先到：结果即使已经在后台收集了一部分也不再交出，更不能写进缓存——
+            // 那份「半截地址」会被后续请求当成一次成功解析用满 TTL
+            co_return std::vector<InetAddress>{};
+        }
         writeCache(cacheKey, state->addresses);
         co_return std::move(state->addresses);
     }

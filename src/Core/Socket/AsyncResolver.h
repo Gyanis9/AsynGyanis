@@ -14,6 +14,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/InetAddress.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -72,6 +73,21 @@ namespace AsynGyanis::Core
          *       循环若会在有在途解析时被销毁，先把那些协程的帧收掉
          */
         static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port);
+
+        /**
+         * @brief 带时限的异步解析：到点返回空列表，不再等 getaddrinfo
+         * @param loop 发起方的事件循环（结果也投回这里）
+         * @param host 主机名；空字符串返回空列表
+         * @param port 端口号（主机字节序）
+         * @param timeout 等待上限；非正数等同无时限，调用原三参版本
+         * @return 与三参版本同形；超时也返回空列表
+         * @details getaddrinfo 没有可移植的取消入口，超时只是「不再等这次结果」：后台线程会继续跑完，
+         *          投回时发现等待帧已经收尾就丢弃。把不可取消的阻塞调用放进请求时限里，至少不让
+         *          一次 DNS 卡顿把调用方的整个预算拖穿。
+         * @note 超时与「域名确实没有记录」都交回空列表，调用方要区分就自己计时；这里不新增结果类型，
+         *       避免为一次诊断把公开面再扩一层
+         */
+        static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout);
 
         /**
          * @brief 取进程级的解析读数

@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=308 entries=9042
+# headers=309 entries=9053
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1409,6 +1409,7 @@ src/Core/Socket/AsyncResolver.h	class ASYN_CORE_API AsyncResolver
 src/Core/Socket/AsyncResolver.h	class EventLoop
 src/Core/Socket/AsyncResolver.h	namespace AsynGyanis::Core
 src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port)
+src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout)
 src/Core/Socket/AsyncResolver.h	std::uint64_t cacheHitCount
 src/Core/Socket/AsyncResolver.h	std::uint64_t lookupCount
 src/Core/Socket/AsyncResolver.h	struct Stats
@@ -1660,6 +1661,16 @@ src/Core/Tls/TlsContext.h	void loadSessionTicketKeys(const std::vector<std::stri
 src/Core/Tls/TlsContext.h	void setClientCertificateRequired(bool required) const
 src/Core/Tls/TlsContext.h	void setPeerFingerprintAllowlist(std::vector<std::string> sha256HexFingerprints) const
 src/Core/Tls/TlsContext.h	~TlsContext()
+src/Core/Tls/TlsPeerIdentity.h	TlsPeerIdentity(const bool isVerified, std::vector<std::uint8_t> certificateDer, std::string sha256FingerprintHex) : m_isVerified(isVerified), m_certificateDer(std::move(certificateDer)), m_sha256FingerprintHex(std::move(sha256FingerprintHex))
+src/Core/Tls/TlsPeerIdentity.h	[[nodiscard]] bool isVerified() const noexcept
+src/Core/Tls/TlsPeerIdentity.h	[[nodiscard]] const std::string &sha256FingerprintHex() const noexcept
+src/Core/Tls/TlsPeerIdentity.h	[[nodiscard]] const std::vector<std::uint8_t> &certificateDer() const noexcept
+src/Core/Tls/TlsPeerIdentity.h	bool m_isVerified
+src/Core/Tls/TlsPeerIdentity.h	class ASYN_CORE_API TlsPeerIdentity final
+src/Core/Tls/TlsPeerIdentity.h	namespace AsynGyanis::Core
+src/Core/Tls/TlsPeerIdentity.h	std::string m_sha256FingerprintHex
+src/Core/Tls/TlsPeerIdentity.h	std::vector<std::uint8_t> m_certificateDer
+src/Core/Tls/TlsPeerIdentity.h	using TlsPeerIdentityPtr = std::shared_ptr<const TlsPeerIdentity>
 src/Core/Tls/TlsPolicy.h	ASYN_CORE_API void applyTlsPolicy(SSL_CTX *context, const TlsPolicy &policy, const char *builtInCipherList)
 src/Core/Tls/TlsPolicy.h	bool areSessionTicketsEnabled
 src/Core/Tls/TlsPolicy.h	bool revocationCoversWholeChain

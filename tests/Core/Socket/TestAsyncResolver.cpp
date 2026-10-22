@@ -1,5 +1,6 @@
 // AsyncResolver 单元测试：空主机名与不存在的主机、回环解析、IP 文本与惰性两步调用
 
+#include <chrono>
 #include <cstddef>
 #include <gtest/gtest.h>
 #include <string>
@@ -27,9 +28,40 @@ namespace AsynGyanis::Core
         return result;
     }
 
+    /// 带时限版本的同形驱动：结果写入 result 后停 loop
+    static Core::Task<void> doResolveWithTimeout(Core::EventLoop &loop, std::vector<InetAddress> &result, std::string host, uint16_t port, std::chrono::milliseconds timeout)
+    {
+        result = co_await AsyncResolver::resolve(loop, host, port, timeout);
+        loop.stop();
+    }
+
+    /// 在专用 EventLoop 上执行带时限解析，阻塞等它完成
+    static std::vector<InetAddress> resolveInLoopWithTimeout(std::string_view host, uint16_t port, std::chrono::milliseconds timeout)
+    {
+        Core::EventLoop          loop;
+        std::vector<InetAddress> result;
+        auto                     work = doResolveWithTimeout(loop, result, std::string(host), port, timeout);
+        if (!work.isReady())
+            loop.scheduler().schedule(work.handle());
+        loop.run();
+        return result;
+    }
+
     TEST(AsyncResolver, ReturnsEmptyForEmptyHost)
     {
         EXPECT_TRUE(resolveInLoop("", 80).empty());
+    }
+
+    /**
+     * @brief 带时限的重载在字面量快路径上不误伤：1 毫秒预算也照样立刻拿到地址
+     * @details 这条钉的是「定时器不能抢在已经就绪的结果前面」；真正的解析卡死无法在单测里
+     *          稳定制造，超时路径靠 HttpClient 的请求时限做端到端兜底
+     */
+    TEST(AsyncResolver, TimedOverloadKeepsTheLiteralFastPath)
+    {
+        const std::vector<InetAddress> resolved = resolveInLoopWithTimeout("127.0.0.1", 8080, std::chrono::milliseconds{1});
+        ASSERT_EQ(resolved.size(), 1U) << "字面量被 1 毫秒的时限误伤";
+        EXPECT_EQ(resolved[0].ip(), "127.0.0.1");
     }
 
     TEST(AsyncResolver, ResolvesLocalhost)

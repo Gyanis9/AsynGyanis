@@ -11,22 +11,21 @@
     ],
     "src/Database/Dialect/StandardSqlDialect.cpp": [
       148,
-      134
+      133
     ],
     "src/Database/MySql/MySqlConnection.cpp": [
       144,
-      141,
-      132
+      133
     ],
     "src/Database/Pool/ConnectionPool.cpp": [
       115
     ],
     "src/Database/Redis/RedisConnection.cpp": [
-      148,
+      141,
       113
     ],
     "src/Database/Sqlite/SqliteConnection.cpp": [
-      197,
+      115,
       108
     ],
     "src/Net/Acme/AcmeAutomationConfig.cpp": [
@@ -42,9 +41,6 @@
       273,
       118
     ],
-    "src/Net/Http/Client/HttpClientUrl.cpp": [
-      113
-    ],
     "src/Net/Http/Client/HttpCookieJar.cpp": [
       104
     ],
@@ -58,13 +54,13 @@
       130
     ],
     "src/Net/Http/Routing/Router.cpp": [
-      228
+      221
     ],
     "src/Net/Http/Server/HttpMetricsEndpoint.cpp": [
-      130
+      126
     ],
     "src/Net/Http/Server/HttpServer.cpp": [
-      343,
+      339,
       131
     ],
     "src/Net/Http2/Http2ClientConnection.cpp": [
@@ -81,36 +77,36 @@
       109
     ],
     "src/Net/Http2/Http2Session.cpp": [
-      388,
-      249,
+      387,
+      240,
       138
     ],
     "src/Net/Http3/Http3ClientConnection.cpp": [
       111
     ],
     "src/Net/Http3/Http3HeaderValidation.cpp": [
-      168
+      165
     ],
     "src/Net/Http3/Http3Session.cpp": [
-      274,
+      268,
       130,
       109
     ],
     "src/Net/Http3/Qpack.cpp": [
-      211,
-      201,
-      185,
+      210,
+      200,
+      184,
       105
     ],
     "src/Net/Quic/Codec/QuicFrame.cpp": [
-      371
+      359
     ],
     "src/Net/Quic/Codec/QuicTransportParameters.cpp": [
-      121
+      120
     ],
     "src/Net/Quic/QuicConnectionCore.cpp": [
-      156,
-      135
+      148,
+      123
     ],
     "src/Net/Quic/Streams/QuicStreamLayer.cpp": [
       109
@@ -122,7 +118,7 @@
       130
     ],
     "src/Net/WebSocket/PerMessageDeflate.cpp": [
-      139
+      136
     ],
     "src/Net/WebSocket/WebSocketClient.cpp": [
       106
@@ -134,7 +130,7 @@
       104
     ],
     "src/Platform/FileSystem/InotifyFileWatcher.cpp": [
-      131
+      123
     ],
     "src/Platform/FileSystem/Win32FileWatcher.cpp": [
       172

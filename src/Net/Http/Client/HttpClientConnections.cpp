@@ -133,14 +133,24 @@ namespace AsynGyanis::Net
         Core::Task<std::optional<Core::AsyncSocket>> connectWithDeadline(Core::EventLoop &loop, const std::string &host, const std::uint16_t port,
                                                                          const std::chrono::milliseconds connectTimeout, std::string &failureReason)
         {
-            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, host, port);
+            // DNS 也吃这份连接预算：解析卡住时不能把整条请求拖过自己的时限。解析超时后不再把
+            // 整个 connectTimeout 交给建连，剩余多少用多少
+            const auto                           resolveDeadline = std::chrono::steady_clock::now() + connectTimeout;
+            const auto                           resolveTimeout  = connectTimeout > std::chrono::milliseconds::zero() ? connectTimeout : std::chrono::milliseconds{1};
+            const std::vector<Core::InetAddress> addresses       = co_await Core::AsyncResolver::resolve(loop, host, port, resolveTimeout);
             if (addresses.empty())
             {
-                failureReason = "解析地址失败：没能把「" + host + "」解析成可用地址";
+                failureReason = "解析地址失败或超时：没能把「" + host + "」解析成可用地址";
                 co_return std::nullopt;
             }
 
-            auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses), connectTimeout);
+            const auto remainingConnectBudget = std::chrono::duration_cast<std::chrono::milliseconds>(resolveDeadline - std::chrono::steady_clock::now());
+            if (remainingConnectBudget <= std::chrono::milliseconds::zero())
+            {
+                failureReason = "解析地址耗尽了连接预算：还没开始建连就已到时限（主机 " + host + "）";
+                co_return std::nullopt;
+            }
+            auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses), remainingConnectBudget);
             if (!connected)
             {
                 failureReason = "建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 " + host + ":" + std::to_string(port) + "）";

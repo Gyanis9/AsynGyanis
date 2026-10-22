@@ -1140,10 +1140,11 @@ namespace AsynGyanis::Net
         Core::Task<std::shared_ptr<Http3OutboundLink>> establishHttp3Link(Core::EventLoop &loop, const ParsedUrl &u, const HttpOutboundConnectionPool &pool,
                                                                           const Http3OutboundContext &http3, std::string &failureReason)
         {
-            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, u.host, u.port);
+            // DNS 也归 h3 探测这一小段预算：解析卡住时不把整条请求拖过自己的时限
+            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, u.host, u.port, kHttp3ProbeTimeout);
             if (addresses.empty())
             {
-                failureReason = "解析地址失败：没能把「" + u.host + "」解析成可用地址";
+                failureReason = "解析地址失败或超时：没能把「" + u.host + "」解析成可用地址";
                 co_return nullptr;
             }
 
