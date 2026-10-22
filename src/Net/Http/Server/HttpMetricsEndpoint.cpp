@@ -11,6 +11,7 @@
 #include "Net/Http/Message/HttpRequest.h"
 #include "Net/Http/Message/HttpResponse.h"
 #include "Net/Http/Routing/Router.h"
+#include "Platform/System/CgroupInfo.h"
 
 #include <algorithm>
 #include <array>
@@ -68,6 +69,43 @@ namespace AsynGyanis::Net
         void appendGauge(std::string &out, const std::string &metricName, const std::string_view help, const std::uint64_t value)
         {
             out += std::format("# HELP {} {}\n# TYPE {} gauge\n{} {}\n", metricName, help, metricName, metricName, value);
+        }
+
+        /**
+         * @brief 追加一格可缺省的 gauge
+         * @param out 输出缓冲
+         * @param metricName 完整指标名
+         * @param help 中文说明（该格式是 UTF-8，无需转义）
+         * @param value 读数；nullopt 表示本环境读不出
+         * @note 读不出时连 HELP/TYPE 一起不输出：限额类读数里的 0 表示内核明确报「无限制」，
+         *       缺序列与 0 是两种含义，不能拿 0 兜底
+         */
+        void appendOptionalGauge(std::string &out, const std::string &metricName, const std::string_view help, const std::optional<std::uint64_t> &value)
+        {
+            if (!value.has_value())
+            {
+                return;
+            }
+            appendGauge(out, metricName, help, *value);
+        }
+
+        /**
+         * @brief 追加 cgroup 的两对分母（内存与进程/线程数）
+         * @param out 输出缓冲
+         * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务
+         * @note 读不出的那一格整条不输出；限额的 0 表示内核明确报无限制，两者不能混成一个数
+         */
+        void appendCgroupGauges(std::string &out, const std::string_view metricNamePrefix)
+        {
+            const Platform::CgroupLimits cgroupLimits = Platform::CgroupInfo::read();
+            appendOptionalGauge(out, makeMetricName(metricNamePrefix, "cgroup_memory_limit_bytes"),
+                                "本进程所在 cgroup 的内存上限字节数（0 = 内核明确报无限制；整行缺失 = 本环境读不出，不代表无限制）", cgroupLimits.memoryLimitBytes);
+            appendOptionalGauge(out, makeMetricName(metricNamePrefix, "cgroup_memory_current_bytes"),
+                                "本进程所在 cgroup 的内存当前用量字节数（含页缓存，不是本进程的活跃分配量；整行缺失 = 读不出）", cgroupLimits.memoryCurrentBytes);
+            appendOptionalGauge(out, makeMetricName(metricNamePrefix, "cgroup_pids_limit"), "本进程所在 cgroup 的进程/线程数上限（0 = 内核明确报无限制；整行缺失 = 读不出）",
+                                cgroupLimits.pidsLimit);
+            appendOptionalGauge(out, makeMetricName(metricNamePrefix, "cgroup_pids_current"),
+                                "本进程所在 cgroup 的进程/线程数当前值（含同组其它进程，不是本进程的线程数；整行缺失 = 读不出）", cgroupLimits.pidsCurrent);
         }
 
         /**
@@ -309,6 +347,9 @@ namespace AsynGyanis::Net
         appendGauge(out, makeMetricName(metricNamePrefix, "process_open_fds"), "本进程此刻打开的句柄/文件描述符数（进程级；0 表示平台读不出）", stats.openHandleCount);
         appendGauge(out, makeMetricName(metricNamePrefix, "process_start_time_seconds"),
                     "本进程启动时刻（Unix epoch 秒；进程级；0 表示平台读不出）——计数器回落时据它判断是不是进程重启", stats.processStartTimeSeconds);
+
+        // cgroup 的两对分母：容器里 OOM 与线程耗尽发生之前，只有它们能给出「离上限还有多远」
+        appendCgroupGauges(out, metricNamePrefix);
 
         // 进程级登记的读数：名字是登记时给的完整名字，不套本监听器的业务前缀——
         // 这些数不属于某台 HTTP 服务器，抓哪台监听器都该是同一份（口径与上面那几条进程级读数一致）

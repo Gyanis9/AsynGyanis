@@ -53,7 +53,9 @@ namespace AsynGyanis::Net
      * @param stats 统计快照
      * @param metricNamePrefix 指标名前缀，用于同一进程内区分多套服务；空串表示不带前缀
      * @return std::string 可直接作为 200 响应正文的文本，以换行结尾
-     * @note 行序固定（计数器、状态码分类、直方图、WebSocket、HTTP/2、发送路径、准入闸门、进程级读数），便于人眼比对两次抓取
+     * @note 行序固定（计数器、状态码分类、直方图、WebSocket、HTTP/2、发送路径、准入闸门、进程级读数、cgroup 读数），便于人眼比对两次抓取
+     * @note cgroup 的两对读数是控制组口径，抓哪台监听器都是同一份；读不出时该条序列整体不出现，
+     *       限额的 0 表示内核明确报「无限制」，两者不可用同一个数表达
      * @note 响应计数与延迟直方图都带 `route` 标签：取值是路由模式原文（如 `/user/:id`）或固定哨兵
      *       （`unmatched` / `static` / `merged`），绝不取请求的实际 URI。路由明细表有界，占满后新模式
      *       归并到 `merged`，归并条数见 `route_series_merged_total`。

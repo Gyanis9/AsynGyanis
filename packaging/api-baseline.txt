@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 CMakeLists.txt 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=4.0.0
-# headers=307 entries=8988
+# headers=308 entries=8997
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8812,6 +8812,15 @@ src/Platform/Platform.h	inline constexpr EpollHandle kInvalidEpollHandle = nullp
 src/Platform/Platform.h	namespace AsynGyanis::Platform
 src/Platform/Platform.h	using EpollHandle = HANDLE int
 src/Platform/Platform.h	using ssize_t = __int64
+src/Platform/System/CgroupInfo.h	[[nodiscard]] static CgroupLimits read() noexcept
+src/Platform/System/CgroupInfo.h	[[nodiscard]] static CgroupLimits readFrom(const std::filesystem::path &cgroupRoot, std::string_view selfCgroupContents) noexcept
+src/Platform/System/CgroupInfo.h	class ASYN_PLATFORM_API CgroupInfo
+src/Platform/System/CgroupInfo.h	namespace AsynGyanis::Platform
+src/Platform/System/CgroupInfo.h	std::optional<std::uint64_t> memoryCurrentBytes
+src/Platform/System/CgroupInfo.h	std::optional<std::uint64_t> memoryLimitBytes
+src/Platform/System/CgroupInfo.h	std::optional<std::uint64_t> pidsCurrent
+src/Platform/System/CgroupInfo.h	std::optional<std::uint64_t> pidsLimit
+src/Platform/System/CgroupInfo.h	struct ASYN_PLATFORM_API CgroupLimits
 src/Platform/System/CpuAffinity.h	[[nodiscard]] static std::expected<void, std::string> pinCurrentThreadToCore(std::size_t coreIndex)
 src/Platform/System/CpuAffinity.h	[[nodiscard]] static std::optional<std::size_t> allowedCoreIndexAt(std::size_t ordinal) noexcept
 src/Platform/System/CpuAffinity.h	[[nodiscard]] static std::size_t availableCoreCount() noexcept

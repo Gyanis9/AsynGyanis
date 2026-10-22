@@ -16,6 +16,8 @@
 #include "Net/Http/Message/HttpResponse.h"
 #include "Net/Http/Routing/Router.h"
 #include "Net/Tcp/PerIpConnectionLimiter.h"
+#include "Platform/Platform.h"
+#include "Platform/System/CgroupInfo.h"
 
 #include <gtest/gtest.h>
 
@@ -931,6 +933,51 @@ namespace AsynGyanis::Net
         handle                         = Core::ProcessMetricHandle{};
         const std::string afterRelease = formatPrometheusMetrics(HttpServerStats{}, "asyn_http");
         EXPECT_EQ(afterRelease.find("asyn_test_endpoint_probe_total"), std::string::npos) << "把手析构后这条读数还留在导出里";
+    }
+
+    /**
+     * @brief 钉住：cgroup 四格 gauge 接到导出上，读不出的字段整条不出现
+     * @details 限额的 0 与缺序列是两种含义（明确无限制 / 本环境读不出），渲染端不能拿 0 兜底；
+     *          本用例在 Linux 容器里验证接线，在没有 cgroup 的环境里只验证「不凭空造序列」。
+     */
+    TEST(HttpMetricsEndpoint, RendersCgroupReadingsOnlyWhenKernelProvidesThem)
+    {
+        const Platform::CgroupLimits limits = Platform::CgroupInfo::read();
+        const std::string            text   = formatPrometheusMetrics(HttpServerStats{}, "asyn_http");
+
+        const auto expectGauge = [&text](const std::string &metricName, const std::optional<std::uint64_t> &value)
+        {
+            if (!value.has_value())
+            {
+                EXPECT_EQ(text.find(metricName + " "), std::string::npos) << "读不出的 " << metricName << " 不应凭空输出 0 序列";
+                return;
+            }
+
+            // 不逐字比数值：memory.current 这类用量在用例取值与渲染取值之间会变，数值正确性
+            // 由 CgroupInfo 的真机一致性用例负责，这里只钉「这一族确实被接到了导出上」
+            const std::string samplePrefix   = "# TYPE " + metricName + " gauge\n" + metricName + " ";
+            const std::size_t samplePosition = text.find(samplePrefix);
+            ASSERT_NE(samplePosition, std::string::npos) << "cgroup 读数没进 /metrics：" << metricName;
+            const std::size_t valueBegin = samplePosition + samplePrefix.size();
+            const std::size_t valueEnd   = text.find('\n', valueBegin);
+            ASSERT_NE(valueEnd, std::string::npos) << "cgroup 读数行没有换行结尾：" << metricName;
+
+            std::uint64_t                renderedValue = 0;
+            const std::from_chars_result parsed        = std::from_chars(text.data() + valueBegin, text.data() + valueEnd, renderedValue);
+            EXPECT_EQ(parsed.ec, std::errc{}) << "cgroup 读数的值不是非负十进制整数：" << metricName;
+        };
+        expectGauge("asyn_http_cgroup_memory_limit_bytes", limits.memoryLimitBytes);
+        expectGauge("asyn_http_cgroup_memory_current_bytes", limits.memoryCurrentBytes);
+        expectGauge("asyn_http_cgroup_pids_limit", limits.pidsLimit);
+        expectGauge("asyn_http_cgroup_pids_current", limits.pidsCurrent);
+
+#if !ASYN_PLATFORM_WIN32
+        const bool hasAnyReading = limits.memoryLimitBytes.has_value() || limits.memoryCurrentBytes.has_value() || limits.pidsLimit.has_value() || limits.pidsCurrent.has_value();
+        if (!hasAnyReading)
+        {
+            GTEST_SKIP() << "本环境没有可读的 cgroup 读数，接线只在有 cgroup 的 Linux 上验证";
+        }
+#endif
     }
 
 } // namespace AsynGyanis::Net
