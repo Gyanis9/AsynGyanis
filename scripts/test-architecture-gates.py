@@ -186,43 +186,91 @@ def test_surface(root: Path) -> None:
 
 
 def test_comment_budget(root: Path) -> None:
-    write(root / "CMakeLists.txt", "# one\n# two\n# three\n")
-    result = run_script("check-comment-budget.py", root)
+    cmake_root = root / "cmake"
+    write(cmake_root / "CMakeLists.txt", "# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget 合规", result, 0, "COMMENT_BUDGET_GATE=OK")
 
-    write(root / "CMakeLists.txt", "# one\n# two\n# three\n# four\n")
-    result = run_script("check-comment-budget.py", root)
+    write(cmake_root / "CMakeLists.txt", "# one\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget 四行块", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
 
-    write(root / "CMakeLists.txt", "# " + "x" * 101 + "\n")
-    result = run_script("check-comment-budget.py", root)
+    write(cmake_root / "CMakeLists.txt", "# " + "x" * 101 + "\n")
+    result = run_script("check-comment-budget.py", cmake_root)
     expect("comment-budget 超宽", result, 1, "COMMENT_BUDGET_GATE=FAIL", "width")
 
-    write(root / "CMakeLists.txt", "# one\n# two\n# three\n")
+    write(cmake_root / "CMakeLists.txt", "# one\n# two\n# type: ignore\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget 指令重置块", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(cmake_root / "CMakeLists.txt", "# encoding='utf-8' 说明\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget 编码声明形状", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(cmake_root / "CMakeLists.txt", "# one\n# two\n# encoding=utf-8\n# four\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget 编码行号限制", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(cmake_root / "CMakeLists.txt", "#[[\nline one\nline two\nline three\n]]\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget CMake 三行块注释", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(cmake_root / "CMakeLists.txt", "#[[\nline one\nline two\nline three\nline four\n]]\n")
+    result = run_script("check-comment-budget.py", cmake_root)
+    expect("comment-budget CMake 四行块注释", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    doc_root = root / "docstrings"
     long_doc = '"""' + "\n".join(f"line {index}" for index in range(11)) + '"""\n'
-    write(root / "scripts" / "long_doc.py", long_doc)
-    result = run_script("check-comment-budget.py", root)
+    write(doc_root / "scripts" / "long_doc.py", long_doc)
+    result = run_script("check-comment-budget.py", doc_root)
     expect("comment-budget 模块 docstring", result, 1, "docstring-lines")
 
     short_doc = '"""' + "\n".join(f"line {index}" for index in range(10)) + '"""\n'
-    write(root / "scripts" / "long_doc.py", short_doc)
-    result = run_script("check-comment-budget.py", root)
+    write(doc_root / "scripts" / "long_doc.py", short_doc)
+    result = run_script("check-comment-budget.py", doc_root)
     expect("comment-budget 十行模块 docstring", result, 0, "COMMENT_BUDGET_GATE=OK")
 
     long_function = 'def f():\n    """\n' + "\n".join(f"    line {index}" for index in range(5)) + '\n    """\n'
-    write(root / "scripts" / "function_doc.py", long_function)
-    result = run_script("check-comment-budget.py", root)
+    write(doc_root / "scripts" / "function_doc.py", long_function)
+    result = run_script("check-comment-budget.py", doc_root)
     expect("comment-budget 函数 docstring", result, 1, "docstring-lines")
 
     short_function = 'def f():\n    """\n' + "\n".join(f"    line {index}" for index in range(4)) + '\n    """\n'
-    write(root / "scripts" / "function_doc.py", short_function)
-    (root / "scripts" / "long_doc.py").unlink()
-    result = run_script("check-comment-budget.py", root)
+    write(doc_root / "scripts" / "function_doc.py", short_function)
+    (doc_root / "scripts" / "long_doc.py").unlink()
+    result = run_script("check-comment-budget.py", doc_root)
     expect("comment-budget 四行函数 docstring", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    shell_root = root / "shell"
+    write(shell_root / "block.sh", "#!/usr/bin/env bash\n# one\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 四行块", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(shell_root / "block.sh", "#!/usr/bin/env bash\n# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 三行块", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(
+        shell_root / "quoted.sh",
+        '#!/usr/bin/env bash\necho "use <<TAG for input"\n# one\n# two\n# three\n# four\n',
+    )
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 引号内双尖括号", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(
+        shell_root / "quoted.sh",
+        '#!/usr/bin/env bash\necho "use <<TAG for input"\n# one\n# two\n# three\n',
+    )
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 引号内双尖括号三行", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(shell_root / "quoted.sh", "#!/usr/bin/env bash\necho $((a << 2))\n# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell 算术移位", result, 0, "COMMENT_BUDGET_GATE=OK")
 
     long_url = "https://example.com/" + "segment/" * 12
     write(
-        root / "scripts" / "ok.sh",
+        shell_root / "ok.sh",
         "#!/usr/bin/env bash\n"
         "# shellcheck disable=SC2086\n"
         "# 一\n"
@@ -233,13 +281,44 @@ def test_comment_budget(root: Path) -> None:
         "EOF\n"
         f"# {long_url}\n",
     )
-    result = run_script("check-comment-budget.py", root)
+    result = run_script("check-comment-budget.py", shell_root)
     expect("comment-budget heredoc 与豁免", result, 0, "COMMENT_BUDGET_GATE=OK")
 
+    write(
+        shell_root / "dash_heredoc.sh",
+        "#!/usr/bin/env bash\ncat <<-EOF\n# 一\n# 二\n# 三\n# 四\nEOF\n",
+    )
+    result = run_script("check-comment-budget.py", shell_root)
+    expect("comment-budget shell <<- heredoc", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    python_root = root / "python"
+    write(python_root / "comments.py", "# one\n# two\n# three\n# four\n")
+    result = run_script("check-comment-budget.py", python_root)
+    expect("comment-budget Python 四行块", result, 1, "COMMENT_BUDGET_GATE=FAIL", "block")
+
+    write(python_root / "comments.py", "# " + "x" * 101 + "\n")
+    result = run_script("check-comment-budget.py", python_root)
+    expect("comment-budget Python 超宽", result, 1, "COMMENT_BUDGET_GATE=FAIL", "width")
+
+    write(python_root / "comments.py", 'text = "# not a comment"\n# one\n# two\n# three\n')
+    result = run_script("check-comment-budget.py", python_root)
+    expect("comment-budget Python 字符串井号", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    write(python_root / "coding.py", "# -*- coding: utf-8 -*-\n# one\n# two\n# three\n")
+    result = run_script("check-comment-budget.py", python_root)
+    expect("comment-budget Python 编码声明", result, 0, "COMMENT_BUDGET_GATE=OK")
+
+    result = run_script("check-comment-budget.py", root / "missing")
+    expect("comment-budget 根不存在", result, 2, "COMMENT_BUDGET_GATE=FAIL", "bad-root")
+    if "bad-root" not in result.stdout:
+        raise AssertionError("comment-budget 根不存在: bad-root 未写到 stdout")
+
     empty = root / "empty"
-    empty.mkdir()
+    empty.mkdir(parents=True)
     result = run_script("check-comment-budget.py", empty)
-    expect("comment-budget 空扫描面", result, 2, "no-files")
+    expect("comment-budget 空扫描面", result, 2, "COMMENT_BUDGET_GATE=FAIL", "no-files")
+    if "no-files" not in result.stdout:
+        raise AssertionError("comment-budget 空扫描面: no-files 未写到 stdout")
 
 
 def main() -> int:

@@ -27,10 +27,10 @@ MODULE_DOCSTRING_MAX_LINES = 10
 OTHER_DOCSTRING_MAX_LINES = 4
 
 DIRECTIVE_PATTERN = re.compile(
-    r"^#\s*(shellcheck|noqa|type:|pragma:|pylint:|mypy:|isort:|fmt:|clang-format|cmake-format)\b"
+    r"^#\s*(?:(?:shellcheck|noqa|clang-format|cmake-format)\b|(?:type|pragma|pylint|mypy|isort|fmt):)"
 )
-CODING_PATTERN = re.compile(r"coding[:=]")
-HEREDOC_PATTERN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+CODING_PATTERN = re.compile(r"coding[:=]\s*[-\w.]+")
+HEREDOC_WORD_PATTERN = re.compile(r"-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -42,11 +42,11 @@ def display_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(character) in ("W", "F") else 1 for character in text)
 
 
-def is_exempt_comment(comment_text: str) -> bool:
+def is_exempt_comment(comment_text: str, line_number: int) -> bool:
     stripped = comment_text.lstrip()
     if stripped.startswith("#!"):
         return True
-    if CODING_PATTERN.search(stripped):
+    if line_number <= 2 and CODING_PATTERN.search(stripped):
         return True
     return bool(DIRECTIVE_PATTERN.match(stripped))
 
@@ -95,6 +95,51 @@ def shell_comment_index(line: str) -> int | None:
     return None
 
 
+def shell_heredoc_terminator(line: str, comment_index: int | None) -> str | None:
+    limit = len(line) if comment_index is None else comment_index
+    quote: str | None = None
+    arithmetic_depth = 0
+    index = 0
+    while index < limit:
+        character = line[index]
+        if quote is not None:
+            if character == "\\" and quote == '"':
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character == "\\":
+            index += 2
+            continue
+        if character in ("'", '"'):
+            quote = character
+            index += 1
+            continue
+        if arithmetic_depth:
+            if character == "(":
+                arithmetic_depth += 1
+            elif character == ")":
+                arithmetic_depth -= 1
+            index += 1
+            continue
+        if line.startswith("$((", index):
+            arithmetic_depth = 2
+            index += 3
+            continue
+        if line.startswith("((", index):
+            arithmetic_depth = 2
+            index += 2
+            continue
+        if line.startswith("<<", index) and (index == 0 or line[index - 1] != "<"):
+            match = HEREDOC_WORD_PATTERN.match(line, index + 2, limit)
+            if match:
+                return match.group(2)
+        index += 1
+    return None
+
+
 def cmake_comment_index(line: str) -> int | None:
     in_quote = False
     escaped = False
@@ -139,7 +184,7 @@ def check_python(path: Path, root: Path) -> list[str]:
             if display_width(token.string) > MAX_DISPLAY_COLUMNS and not is_single_token_reference(token.string):
                 errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
             continue
-        if is_exempt_comment(token.string):
+        if is_exempt_comment(token.string, line_number):
             run = 0
             continue
         run += 1
@@ -194,6 +239,10 @@ def check_plain(path: Path, root: Path, language: str) -> list[str]:
                 heredoc = None
             continue
         if language == "cmake" and bracket_comment:
+            if line.strip() == "]]":
+                bracket_comment = False
+                run = 0
+                continue
             run += 1
             if run > MAX_COMMENT_BLOCK_LINES:
                 errors.append(f"{relative}:{line_number}: block: 连续注释超过 {MAX_COMMENT_BLOCK_LINES} 行")
@@ -201,14 +250,14 @@ def check_plain(path: Path, root: Path, language: str) -> list[str]:
                 errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
             if "]]" in line:
                 bracket_comment = False
+                run = 0
             continue
 
         if language == "shell":
             comment_index = shell_comment_index(line)
-            code_part = line if comment_index is None else line[:comment_index]
-            match = HEREDOC_PATTERN.search(code_part)
-            if match:
-                heredoc = match.group(2)
+            terminator = shell_heredoc_terminator(line, comment_index)
+            if terminator is not None:
+                heredoc = terminator
         else:
             comment_index = cmake_comment_index(line)
 
@@ -218,14 +267,18 @@ def check_plain(path: Path, root: Path, language: str) -> list[str]:
 
         comment_text = line[comment_index:]
         comment_only = line[:comment_index].strip() == ""
-        if language == "cmake" and comment_text.startswith("#[["):
-            bracket_comment = "]]" not in comment_text
+        if language == "cmake" and comment_text.startswith("#[[") and "]]" not in comment_text:
+            bracket_comment = True
+            run = 0
+            if display_width(comment_text) > MAX_DISPLAY_COLUMNS:
+                errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
+            continue
         if not comment_only:
             run = 0
             if display_width(comment_text) > MAX_DISPLAY_COLUMNS and not is_single_token_reference(comment_text):
                 errors.append(f"{relative}:{line_number}: width: 注释超过 {MAX_DISPLAY_COLUMNS} 列")
             continue
-        if is_exempt_comment(comment_text):
+        if is_exempt_comment(comment_text, line_number):
             run = 0
             continue
         run += 1
@@ -240,24 +293,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="检查构建脚本的注释预算")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     args = parser.parse_args()
-    root = args.root.resolve()
+    try:
+        root = args.root.resolve()
+    except OSError as error:
+        print(f"COMMENT_BUDGET_GATE=FAIL reason=bad-root error={error}")
+        return 2
     if not root.is_dir():
-        print(f"COMMENT_BUDGET_GATE=FAIL reason=bad-root root={root}", file=sys.stderr)
+        print(f"COMMENT_BUDGET_GATE=FAIL reason=bad-root root={root}")
         return 2
 
-    files = iter_source_files(root)
+    try:
+        files = iter_source_files(root)
+    except OSError as error:
+        print(f"COMMENT_BUDGET_GATE=FAIL reason=scan-error path={root} error={error}")
+        return 2
     if not files:
-        print("COMMENT_BUDGET_GATE=FAIL reason=no-files", file=sys.stderr)
+        print("COMMENT_BUDGET_GATE=FAIL reason=no-files")
         return 2
 
     violations = []
     for path in files:
-        if path.suffix == ".py":
-            violations.extend(check_python(path, root))
-        elif path.suffix == ".sh":
-            violations.extend(check_plain(path, root, "shell"))
-        else:
-            violations.extend(check_plain(path, root, "cmake"))
+        try:
+            if path.suffix == ".py":
+                violations.extend(check_python(path, root))
+            elif path.suffix == ".sh":
+                violations.extend(check_plain(path, root, "shell"))
+            else:
+                violations.extend(check_plain(path, root, "cmake"))
+        except OSError as error:
+            print(f"COMMENT_BUDGET_GATE=FAIL reason=scan-error path={path} error={error}")
+            return 2
 
     if violations:
         for violation in violations:
