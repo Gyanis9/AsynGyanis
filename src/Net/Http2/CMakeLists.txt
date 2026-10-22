@@ -7,6 +7,8 @@ set_property(GLOBAL APPEND PROPERTY AsynGyanisNetSources
         ${CMAKE_CURRENT_LIST_DIR}/Hpack.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2Connection.h
         ${CMAKE_CURRENT_LIST_DIR}/Http2Connection.cpp
+        # 入站帧分派与逐类帧处理
+        ${CMAKE_CURRENT_LIST_DIR}/Http2ConnectionFrames.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.h
         ${CMAKE_CURRENT_LIST_DIR}/Http2Session.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Http2ClientConnection.h

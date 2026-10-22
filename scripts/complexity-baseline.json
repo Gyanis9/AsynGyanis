@@ -72,7 +72,9 @@
     ],
     "src/Net/Http2/Http2Connection.cpp": [
       330,
-      120,
+      120
+    ],
+    "src/Net/Http2/Http2ConnectionFrames.cpp": [
       104
     ],
     "src/Net/Http2/Http2Frame.cpp": [
