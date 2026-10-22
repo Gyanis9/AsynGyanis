@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# ACME 的跨实现验收：起一份 Pebble（Let's Encrypt 官方那套 ACME 测试服务端，Go 写的独立实现），
-# 用本框架的 acme_issuance_probe 走完整台 RFC 8555 状态机，再拿 Pebble 本次启动生成的根去验那张链。
-#
-# 为什么需要这份脚本：进程内的桩机构虽然按「拿 JWK 重建公钥再验签」这条独立路径判，但它与本仓同源、
-# 一起被改；真机构那条按环境变量门控的用例只走到「取目录 + 建号」，因为真签发要一台公网可达、域名又
-# 解析到本机的机器。Pebble 把 HTTP-01 的取令牌端口配成 5002，于是回环就能走完整条链路：域名用
-# 127.0.0.1.sslip.io 这类通配解析，对面解析回来的就是本机。
-# 这一步已经真抓到过两个缺陷：ACME 请求漏 User-Agent（Boulder/Pebble 一律 400 malformed，连目录都取不到）、
-# 机构复用已 valid 的授权时客户端又去触发那条挑战（Boulder 原文「Cannot update challenge with status valid」）。
-# 两条都不是桩会拒的形状——桩当时不会复用授权，也不看 User-Agent。
-#
+# ACME 跨实现验收：起一份 Pebble（Let's Encrypt 官方的 ACME 测试服务端，Go 写的独立实现），
+# 用本框架的 acme_issuance_probe 走完整台 RFC 8555 状态机，再拿 Pebble 本次启动生成的根验链。
+
+# 进程内桩与本仓同源、一起被改；真机构用例只走到「取目录 + 建号」，Pebble 让回环走完整条链路：
+# HTTP-01 的取令牌端口配成 5002，域名用 127.0.0.1.sslip.io 这类通配解析回本机。
+
+# 这一步真抓到过两个缺陷：ACME 请求漏 User-Agent（Boulder/Pebble 一律 400 malformed）；
+# 机构复用已 valid 的授权时客户端又去触发挑战
+# （Boulder 原文 Cannot update challenge with status valid）。
+
 # 用法：bash scripts/acme_pebble_cross_check.sh [构建目录] [Pebble 目录]
-#   构建目录默认 build/asan（要带 acme_issuance_probe 这个目标）
-#   Pebble 目录默认 /root/pebble-lab，里面要有 app 二进制与 test/config、test/certs（镜像里都有）
-# 退出码分档：0 = 全部场景过；1 = 某个场景失败；2 = 前置缺件（不是实现的问题，别当成通过）
-# 判据是「场景条数 + 收尾标记」，不是 grep 的退出码：grep 在零命中时返回 1，会把跑完的一轮读成失败
+# 构建目录默认 build/asan（要带 acme_issuance_probe）；Pebble 目录默认 /root/pebble-lab，
+# 里面要有 app 二进制与 test/config、test/certs（镜像里都有）。
+
+# 环境变量：ASYN_ACME_CROSS_DOMAIN（默认 127.0.0.1.sslip.io）、
+# ASYN_ACME_CROSS_HTTP_PORT（默认 15002）、ASYN_ACME_CROSS_PEBBLE_PORT（默认 24000）、
+# ASYN_ACME_CROSS_MANAGEMENT_PORT（默认 25000）、ASYN_ACME_CROSS_LOG（探针日志落点）。
+
+# 退出码：0 全部场景过；1 某个场景失败；2 前置缺件（不是实现的问题，别当成通过）。
+# 判据是「场景条数 + 收尾标记」，不是 grep 的退出码：grep 零命中返回 1，会把跑完的一轮读成失败。
 set -uo pipefail
 
 build_dir="${1:-build/asan}"
@@ -62,9 +66,8 @@ if ! getent hosts "$domain" >/dev/null 2>&1; then
 fi
 
 # ---- 起对面 ----
-# 配置按本次端口现造一份：直接复用镜像里那份会撞上一个还没退干净的实例——那时判的是别人的进程，
-# 而标记一样会全绿。相对路径（test/certs、test/config）仍以 pebble_dir 为工作目录解析
-# 端口必须空着：撞上别人（或自己上一轮泄漏的）实例时，判据就不再属于本次实现
+# 配置按本次端口现造：复用镜像里那份会撞上没退干净的实例，判的是别人的进程且标记照样全绿。
+# 相对路径（test/certs、test/config）以 pebble_dir 为工作目录解析；端口必须空着。
 for busy_port in "$pebble_port" "$management_port"; do
     if (exec 3<>"/dev/tcp/127.0.0.1/$busy_port") 2>/dev/null; then
         note "端口 $busy_port 已经有东西在听：那不是我起的实例，判出来的结论不属于本次实现"
@@ -181,7 +184,7 @@ scenarios=$((scenarios + 1))
 note "场景 7 过：链能验到对面本次的根（$verify_output）"
 
 # 证书里的身份必须就是下单的那个域名——签错了身份也算失败。
-# 判据取 x509 -checkhost 而不是 grep：后者未锚定、点号还当通配，`DNS:…前缀` 与 `host.evil` 形状都能蒙混
+# 判据取 x509 -checkhost 而不是 grep：后者未锚定、点号还当通配，前缀匹配与 host.evil 都能蒙混。
 if ! openssl x509 -in leaf.pem -noout -checkhost "$domain" >/dev/null 2>&1; then
     note "证书的 SAN 与下单的域名不等（x509 -checkhost $domain 不过）：$(openssl x509 -in leaf.pem -noout -ext subjectAltName 2>/dev/null)"
     exit 1

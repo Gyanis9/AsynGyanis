@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# HTTP/2 明文（h2c）对手探针：用 curl 自带的 nghttp2 这套独立实现去打本框架的 ReferenceServer，
-# 专走「客户端不按常理收场」那几条路——读到一半放弃（RST_STREAM）、超大的头部、HEAD、
-# Expect: 100-continue、一条连接上并发多路复用。
-#
-# 选独立实现而不是自写客户端的理由与 h3 探针一样：两边对协议的理解不一致才会在这里露出来，
-# 自写探针只会重复本框架自己的误会。h3 那侧就是这样查出一条「客户端每条连接取消一次请求
-# 就能把连接打掉」的问题，这条探针是给 h2 的同等覆盖。
-#
-# 探针自己要能被证伪：第 4 项（超大头部按 431 与限内头值原样到达）与第 8 项（合法放弃不记成坏请求）
-# 都读 /metrics、服务端给的状态码或回显正文，而不是只看 curl 的退出码——只看 curl 会测到空气（实测：
-# 正文一秒就写完的 /sse 用 --max-time 去放弃，服务端一条取消都不会记）。取数需要服务端带 --metrics 启动。
-# 差值判据成立的前提是「这条计数是进程口径」：同一端口上多个监听器各持一份采集端时，一次抓取
-# 只命中其中一台，读数能在两次抓取之间变小。第 6 项前先做一道相邻两取的自证，把这种情况报出来
-# 而不是拿它当「服务端记坏了请求」（ReferenceServer 从 2026-09-23 起让全部监听器共用一份采集端）。
-#
+# HTTP/2 明文（h2c）对手探针：用 curl 自带的 nghttp2 打 ReferenceServer，专走客户端不按常理收场：
+# 读到一半放弃（RST_STREAM）、超大头部、HEAD、Expect: 100-continue、一条连接上并发多路复用。
+
+# 选独立实现而不是自写客户端：两边理解不一致才会露出来，自写探针只会重复本框架的误会。
+# h3 那侧就是这样查出一条「客户端每条连接取消一次请求就能把连接打掉」的问题。
+
+# 探针自己要能被证伪：第 4 项（431 与限内头值原样到达）与第 8 项（合法放弃不记坏请求）
+# 都读 /metrics、状态码或回显正文，不只看 curl 退出码；取数需要服务端带 --metrics 启动。
+# 实测：正文一秒就写完的 /sse 用 --max-time 放弃，服务端一条取消都不会记。
+
+# 差值判据前提是「这条计数是进程口径」：多监听器各持一份采集端时，一次抓取只命中其中一台。
+
+# 第 6 项前先做相邻两取自证，把这种情况报出来，而不是当成「服务端记坏了请求」。
+# ReferenceServer 让全部监听器共用一份采集端。
+
 # 用法：h2_adversarial_probe.sh <port>
 # 退出码 0 = 全部核对通过；非 0 时把每个失败项打到 stderr。
 set -u
@@ -54,14 +54,13 @@ head_readout=$(curl -s -I --http2-prior-knowledge --max-time 8 -o /dev/null -w '
 status=$(status_of -X POST --data-binary 'a body' "${BASE}/json")
 [ "$status" = "405" ] || fail "POST /json 应按 405 收口，实得 ${status}"
 
-# 4) 超大头部：单条头值远超本端上限。必须按 431 答复并且只作废这一条流——实得 000 说明连接
-#    被这条请求带走了（那是本端把越限当成压缩上下文错误的旧口径）。上限之内的单条字段（8000 字节）
-#    不光要拿到 200，原文还得真的到达处理函数：只看状态码区分不出「送达并被接受」与「收到但
-#    静默丢弃大字段」——正例因此走 /echo-header 把这条头值的原文取回来逐字比对（注入「某个长度
-#    以上就丢字段」的实现时这一项会红，而只看 200 的旧形状在那种实现下照样绿）。
-#    两个数贴着 HttpParserLimits 的出厂值取（单条头值上限 8 KiB）：8000 在限内、20000 越限；
-#    部署方若改过 parser_limits，这两个要跟着调，否则量到的不是这条边界。
-#    注：单条 70 KB 的字段到不了服务端——curl 在本地就拒着发（实测退出码 55），那种形状量的是 curl
+# 4) 超大头部：单条头值远超本端上限，必须按 431 答复并只作废这一条流；
+#    000 说明连接被这条请求带走了（旧口径把越限当成压缩上下文错误）。
+#    8000 字节在限内（HttpParserLimits 出厂 8 KiB），不光要 200，原文还得原样回来。
+
+#    只看状态码区分不出「收到但静默丢弃大字段」，正例因此走 /echo-header 取回原文逐字比对。
+#    20000 越限；部署方改过 parser_limits 时这两个数要跟着调。单条 70 KB 的字段到不了服务端：
+#    curl 在本地就拒发（实测退出码 55）。
 huge=$(head -c 20000 /dev/zero | tr '\0' 'a')
 status=$(status_of -H "x-huge: ${huge}" "${BASE}/json")
 [ "$status" = "431" ] || fail "超大头部应按 431 只作废这一条流，实得 ${status}（000 表示整条连接被带走）"
@@ -76,23 +75,20 @@ echoed=$(curl -s --http2-prior-knowledge --max-time 8 -H "x-echo-value: ${mid}" 
 status=$(status_of -X POST -H 'Expect: 100-continue' --data-binary 'continued body' "${BASE}/json")
 [ "$status" = "405" ] || fail "Expect: 100-continue 的 POST 没有直接拿到 405，实得 ${status}"
 
-# 6) 一批「读到一半放弃」的流：正文选 /big（256 KiB）并把客户端读速压到每秒 32 字节，一秒内只可能
-#    读到几十字节，放弃一定落在响应还没被读完的时候。
-#    这批不核对 asyn_http_http2_stream_cancelled_total：实测那条计数在 curl 这条路上一动不动——
-#    本端把 2xx 记在「响应排入待发字节」那一刻，而那个计数的口径是「本端因此未发响应」，两条永远对不上。
-#    价值在于另一件事：客户端在响应写了一半时把连接抽走，这条路径在 ASan 下不能报任何东西。
-#    「对端在响应发出前取消这条流」由 tests/Net/Http2 的会话用例覆盖（那里能精确控制 RST 的时机）
+# 6) 一批「读到一半放弃」的流：正文选 /big（256 KiB）并把读速压到每秒 32 字节，
+#    一秒内只可能读到几十字节，放弃一定落在响应还没被读完的时候。
+#    这批不核对 asyn_http_http2_stream_cancelled_total：实测它在这条路上一直不动。
+
+#    本端把 2xx 记在「响应排入待发字节」那一刻，而该计数口径是「本端因此未发响应」。
+#    价值在另一件事：客户端在响应写了一半时抽走连接，这条路径在 ASan 下不能报任何东西；
+#    「响应发出前取消」由 tests/Net/Http2 的会话用例精确控制 RST 时机。
 beforeAborts=$(metric_of bad_requests_total)
 [ -n "$beforeAborts" ] || fail "读不到 asyn_http_bad_requests_total，服务端没带 --metrics 启动？"
-# 相邻两次抓取必须不减：这条计数是进程级单调量，读数变小只有两种解释——端口上坐着不止一个
-# 监听进程（上一轮没杀干净），或者这些监听器没共用一份采集端（各自报自己那 1/N）。
-# 两种情况都让下面的差值判据失去意义，所以先自证取数通道，再谈「多出了几条」
+# 相邻两次抓取必须不减：这条计数是进程级单调量，变小只有两种解释——端口上坐着多个监听进程
+# （--workers 或上一轮残留），或监听器没共用一份采集端（各自报 1/N）。两种情况都让差值判据失效，
+# 所以先自证取数通道，再谈「多出了几条」。
 beforeAbortsAgain=$(metric_of bad_requests_total)
 [ -n "$beforeAbortsAgain" ] || fail "第二次取 asyn_http_bad_requests_total 就取空了：服务端中途停了？"
-# 自证取数通道：这两次抓取之间除了抓取自身没有别的流量，坏请求数因此必须一动不动。动了就说明
-# 一次抓取命中的不是同一份口径——端口上坐着多个 worker 进程（--workers 之间没有共用采集端这条
-# 通道）、有上一轮没杀干净的监听进程，或这些监听器没共用一份采集端。那种情况下第 8 项的差值
-# 判据没有意义：报这一条原因就够，再报一个「多出 -1 条」只会把人引向服务端计数逻辑
 countIsProcessWide=1
 if [ "$beforeAbortsAgain" != "$beforeAborts" ]; then
     fail "相邻两次抓取里 ${beforeAborts} → ${beforeAbortsAgain}：这份计数不是进程口径，端口上有多个进程（--workers 或残留监听）或采集端没共用"
@@ -113,7 +109,7 @@ afterAborts=$(metric_of bad_requests_total)
 # 取空要当场判失败，不能悄悄跳过：静默跳过等于这条检查在服务器上什么都没核对
 [ -n "$afterAborts" ] || fail "八次放弃之后取不到 asyn_http_bad_requests_total，无法核对坏请求计数"
 if [ "$countIsProcessWide" != "1" ]; then
-    # 上面那条自证已经把原因报过一次了，这里只说明本项没核对，不再算一次必然无意义的差值
+    # 上面那条自证已经把原因报过一次，这里只说明本项没核对，不再算一次必然无意义的差值
     echo "SKIP: 第 8 项没核对（口径不是进程级，差值判据在这种部署下无效）" >&2
 else
 badFromAborts=$((afterAborts - beforeAborts))
@@ -127,9 +123,9 @@ elif [ "$badFromAborts" != "0" ]; then
 fi
 fi
 
-# 9) 一条连接上真并发多路复用：同一个 curl 进程带多个 URL 加 -Z 才会把它们并发复用到同一条连接。
-#    八个进程各带一个 URL 是八条连接，量的就不是多路复用了。
-#    -o 与 URL 按位置配对，一个 -o /dev/null 只管第一条——其余正文会直接打到标准输出上
+# 9) 真并发多路复用：同一 curl 进程带多个 URL 加 -Z 才会并发复用到一条连接。
+#    八个进程各带一个 URL 是八条连接，量的就不是多路复用。
+#    -o 与 URL 按位置配对，一个 -o /dev/null 只管第一条，其余正文会直接打到标准输出。
 parallel=$(curl -s -Z --http2-prior-knowledge --max-time 8 -w '%{http_code}\n' \
     -o /dev/null -o /dev/null -o /dev/null -o /dev/null \
     -o /dev/null -o /dev/null -o /dev/null -o /dev/null \

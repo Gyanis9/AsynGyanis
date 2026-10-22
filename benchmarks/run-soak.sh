@@ -1,24 +1,20 @@
 #!/usr/bin/env bash
-#
-# 进程外压测的 Linux 侧驱动：起服务端 → 跑压测脚本 → 收进程，与 benchmarks/run-soak.bat 同一件事。
-#
-# 为什么补这一件：性能门禁此前只有 Windows 的 .bat，基线也就只能在一台机器上录。
-# 而部署与 CI 都在 Linux 上——那份快照对 Linux 的任何改动都判不出东西。
-# 口径不变：基线只对「同一台机器 + 同一个构建配置」有意义，所以 Linux 侧用自己那份
-# benchmarks/baseline-linux.json，比对时显式 --baseline 指过去，不与 Windows 那份互比。
-#
+# 进程外压测的 Linux 侧驱动：起服务端、跑压测脚本、收进程，与 benchmarks/run-soak.bat 同一件事。
+# 基线只对「同一台机器 + 同一个构建配置」有意义：Linux 侧用 benchmarks/baseline-linux.json，
+# 比对时显式 --baseline 指过去，不与 Windows 那份互比。
+
 # 用法（服务端由本脚本起，跑完收掉；额外参数原样转给对应的压测脚本）：
 #   ASYN_SOAK_BUILD=release benchmarks/run-soak.sh 18080 4 --json-out build/soak-r1.json
-#   ASYN_SOAK_BUILD=release ASYN_SOAK_STAGE=h2c benchmarks/run-soak.sh 18081 4 --pipeline 32 --json-out ...
+
+#   ASYN_SOAK_BUILD=release ASYN_SOAK_STAGE=h2c benchmarks/run-soak.sh 18081 4 --pipeline 32
 #   ASYN_SOAK_BUILD=release ASYN_SOAK_STAGE=h3  benchmarks/run-soak.sh 18443 4 --json-out ...
-#       # h3 那一档要对端是 aioquic：用 ASYN_SOAK_PYTHON 指到有 aioquic 的那个解释器
-#
-# 录满一份基线要跑的五档（与 baseline-linux.json 的键一一对应）：
-#   run-soak.sh                                  --json-out build/soak-r1.json        # http1-keepalive + http1-churn
-#   ASYN_SOAK_STAGE=h2c run-soak.sh ... --pipeline 1  --json-out build/h2c-p1-r1.json # http2-h2c-pipeline1
-#   ASYN_SOAK_STAGE=h2c run-soak.sh ... --pipeline 32 --json-out build/h2c-p32-r1.json
-#   ASYN_SOAK_STAGE=h3  run-soak.sh ... --json-out build/h3-r1.json                   # http3-load
-#   每档各跑三次，再按中位数与离散范围写进基线；然后
+# h3 那一档要对端是 aioquic：用 ASYN_SOAK_PYTHON 指到有 aioquic 的那个解释器。
+
+# 录满一份基线要跑的五档（与 baseline-linux.json 的键一一对应）：默认档 --json-out
+# build/soak-r1.json 覆盖 http1-keepalive 与 http1-churn；h2c 档 --pipeline 1 与 32 分别落
+# build/h2c-p1-r1.json、build/h2c-p32-r1.json；h3 档 --json-out build/h3-r1.json 覆盖 http3-load。
+
+# 每档各跑三次，取中位数与离散范围写进基线，再跑：
 #   python3 benchmarks/check-baseline.py build/*.json --baseline benchmarks/baseline-linux.json
 set -uo pipefail
 

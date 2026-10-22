@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # QUIC 跨实现验收：起本框架的服务端夹具，逐场景让 aioquic（独立实现）当对端。
-#
-# 这份脚本是「裁判」的接线板：判据在 scripts/quic_cross_check.py 里（由 aioquic 的解析器给出），
-# 服务端侧的事件由 tests/Tools/QuicProbeServer.cpp 打成 stdout 行，这里负责起停、取端口、
-# 核对两边的说法是否一致。任一条不成立就退出码非 0。
-#
+
+# 判据在 scripts/quic_cross_check.py（由 aioquic 的解析器给出），服务端事件由
+# tests/Tools/QuicProbeServer.cpp 打成 stdout 行；本脚本起停、取端口、核对两边说法。
+# 任一条不成立即非 0。
+
 # 用法：
 #   scripts/quic_cross_check.sh [构建目录] [带 aioquic 的 python]
 #   scripts/quic_cross_check.sh build/release /root/h3venv/bin/python
@@ -186,8 +186,8 @@ stopServer
 
 echo "== 场景三：接手档（端口由别人 bind、服务端只接手，判据与场景一的基本行为同一条）"
 # 跨进程共享一条 UDP 端口在 worker 侧就是这一形状（Windows 没有 SO_REUSEPORT，多个进程各自 bind
-# 只会让最后绑上的那个收到全部报文）。这一档判的是「对外行为不许因为套接字是交来的而有差别」，
-# 交接与接管本身由 tests/Platform 的交接用例钉住
+# 只会让最后绑上的那个收到全部报文）。这一档判「对外行为不因套接字是交来的而有差别」，
+# 交接与接管本身由 tests/Platform 的交接用例钉住。
 port="$(startServer adopted --adopt-through-self-channel --abort-on abort --abort-code 0x010b --large-reply-on block)" || exit 2
 # 先确认这一档真的走了接手路径（否则等于把场景一又跑一遍）
 expectLog adopted-path adopted '^ADOPTED$'

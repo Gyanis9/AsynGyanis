@@ -1,37 +1,44 @@
 #!/usr/bin/env bash
 # 一条命令跑完本仓库的门禁链，判据形状与 CI 一致：静态八道 + 构建 + 用例 + 示例矩阵。
-#
-# 用法（在任意目录调用都行：仓库根取自脚本自身位置，而 ctest --preset 必须在根上跑，脚本自己 cd 过去）：
+# 门禁名单：complexity、arch-trace、ledger-date、format、api-baseline、layering、
+# platform-boundary、duplicates、build、ctest、samples。
+
+# 用法（任意目录可调用：仓库根取自脚本位置；ctest --preset 必须在根上跑，脚本自己 cd 过去）：
 #   bash scripts/run-gates.sh                                  # 全部（默认档），debug 预设
 #   bash scripts/run-gates.sh --preset release
-#   bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几道（改一处时不必等整条链）
-#   bash scripts/run-gates.sh --format container               # 格式档强制走容器（见下）
+
+#   bash scripts/run-gates.sh --gate format --gate arch-trace  # 只跑点名的几道
+#   bash scripts/run-gates.sh --format container               # 格式档强制走容器
 #   bash scripts/run-gates.sh --help
-#
-# 输出形状：每道门在 stdout 打一行既有形状的判据（COMPLEXITY_GATE=OK、ARCH_TRACE_GATE=OK、API_GATE=OK、
-# LAYERING_GATE=OK、PLATFORM_BOUNDARY_GATE=OK、DUPLICATE_CODE_GATE=OK… 这些由门禁脚本自己印，其余几道由本脚本按同一形状印），门的原始输出进 build/gate-logs/<门名>.log，
-# 判红的那道门把它的输出整片贴出来。最后一行给总判据与机读的一份 JSON（build/gate-logs/run-gates.json：
-# 每道门的命令、退出码、耗时、日志位置，还有总耗时与结论）。那份 JSON 按 UTF-8 写（结论文案是中文），
-# Windows 上读它要显式给 encoding='utf-8'——本地 locale 是 cp936 时 json.load(open(path)) 崩在读那一行
-#
-# 阈值不在这里抄第二份：复杂度地板、覆盖率下限、格式清单的数量下限都只有工作流与门禁脚本那一个出处，
+
+# 输出形状：每道门在 stdout 打一行既有形状的判据（COMPLEXITY_GATE=OK、ARCH_TRACE_GATE=OK、
+# API_GATE=OK、LAYERING_GATE=OK、PLATFORM_BOUNDARY_GATE=OK、DUPLICATE_CODE_GATE=OK…），
+# 门的原始输出进 build/gate-logs/<门名>.log，判红的那道门把输出整片贴出来。
+
+# 最后一行给总判据与机读 JSON（build/gate-logs/run-gates.json）：每道门的命令、退出码、耗时、
+# 日志位置，还有总耗时与结论。JSON 按 UTF-8 写（结论文案是中文），Windows 上读它要显式给
+# encoding='utf-8'——本地 locale 是 cp936 时 json.load(open(path)) 崩在读那一行。
+
+# 阈值不在这里抄第二份：复杂度地板、覆盖率下限、格式清单数量下限只有工作流与门禁脚本一个出处，
 # 本脚本只按顺序调用并如实汇总。
-#
-# 格式档的 clang-format 版本钉在 .github/workflows/linux-ci.yml 的 pip 安装行，本脚本现读那一行，
-# 本机 PATH 上的（或 ASYN_CLANG_FORMAT 指的那件）版本对得上就地用，对不上就换容器里那份——
-# 版本不同折行结果就变，那种红与改动无关，所以宁可换裁判也不放过版本差。容器路线的做法：
-#   前提：docker 在 PATH 上、目标容器在跑、容器里有 /root/fmt-venv/bin/clang-format
-#   调用：bash scripts/run-gates.sh --format container --format-container <容器名>
-#   机制：把 git ls-files 的源文件连同 .clang-format 与文件清单打成 tar 从 stdin 送进容器的临时目录解包，
-#         在解包目录里跑钉版 clang-format --style=file --dry-run -Werror，用完删临时目录
-#
-# 本链镜像的是 CI 的格式作业加构建作业那几道静态与功能门；覆盖率、TSan、模糊、交付物、供应链、微基准
-# 那几档各有作业与前置（服务、容器、插桩构建），不在这条命令里，别把它读成「跑完就等于 CI 全绿」。
-#
-# 退出码：0 全绿；1 某道门判红（构建红时后面的用例与示例没有产物可跑，链在此停住）；
-# 2 前置缺件（python、clang-format、cmake、容器、构建树配置不下来——「没跑成」不许读成「没问题」）
-#
-# Windows 侧的运行前提：先 call vcvars64（或在 Developer Command Prompt 里跑）再进来，否则 cl 读不到
+
+# 格式档的 clang-format 版本钉在 .github/workflows/linux-ci.yml 的 pip 安装行，本脚本现读那一行；
+# 本机 PATH 上的（或 ASYN_CLANG_FORMAT 指的）版本对得上就地用，对不上就换容器里那份：
+# 版本不同折行结果就变，那种红与改动无关。
+
+# 容器路线前提：docker 在 PATH 上、目标容器在跑、容器里有 /root/fmt-venv/bin/clang-format；
+# 调用 bash scripts/run-gates.sh --format container --format-container <容器名>。
+
+# 机制：源文件连同 .clang-format 与清单打成 tar 从 stdin 送进容器临时目录解包，
+# 在解包目录里跑钉版 clang-format --style=file --dry-run -Werror，用完删临时目录。
+
+# 本链镜像 CI 的格式作业加构建作业那几道静态与功能门；覆盖率、TSan、模糊、交付物、供应链、
+# 微基准各有作业与前置（服务、容器、插桩构建），不在这条命令里，别把它读成「跑完就等于 CI 全绿」。
+
+# 退出码：0 全绿；1 某道门判红（构建红时后面没有产物可跑，链在此停住）；
+# 2 前置缺件（python、clang-format、cmake、容器、构建树配置不下来——「没跑成」不许读成「没问题」）。
+
+# Windows 侧先 call vcvars64（或在 Developer Command Prompt 里跑）再进来，否则 cl 读不到
 # INCLUDE/LIB，构建那一档会红在编译参数上而不是代码上。
 set -u -o pipefail
 
@@ -203,7 +210,7 @@ run_gate()
 
 check_format_local()
 {
-    # xargs 拿到 123 就是「至少一个文件有差异」，如实回传给 run_gate；-z/-0 配对，文件名带空格也不会被拆开
+    # xargs 的 123 表示文件有差异，如实回传；-z/-0 配对，文件名带空格也不会被拆开
     git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' | xargs -0 "$1" --style=file --dry-run -Werror
 }
 

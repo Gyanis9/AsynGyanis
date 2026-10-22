@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # HTTP/3 的对外一致性验收：起一份 ReferenceServer --h3，再用 aioquic（独立实现）按场景逐条打它。
-#
-# 为什么需要这份脚本：h3 会话用例的对端是测试自己按 RFC 9114/9204 排字节的（第三方实现已移出
-# 构建），它对「字节合不合规范」只算自证。跨实现的判定必须在进程外做——aioquic 不认识本仓的
-# 代码，也不会跟着本仓一起被改软：头块编错、HEAD 漏了正文、流式响应并成一趟、该忽略的头被吞了，
-# 都只在这里才会变红。
-#
+# h3 会话用例的对端是测试自己按 RFC 9114/9204 排字节的，只能自证；跨实现判定在进程外做，
+# 头块编错、HEAD 漏正文、流式响应并成一趟、该忽略的头被吞，都只在这里变红。
+
+# 判据：runScenario 的每条场景断言全过；任一失败即非 0，并打服务端日志末尾。
+
 # 用法：bash scripts/h3_cross_check.sh [构建目录] [python 可执行体]
 # 端口可用 ASYN_H3_CROSS_PORT 覆盖；ASYN_H3_CROSS_LOG 指定服务端日志落点（CI 要取它当工件）；
 # ASYN_H3_TRACE=1 把每条场景的收发事件打出来。
@@ -105,10 +104,9 @@ runScenario static-get /greeting.txt 200 "$static_body" \
 runScenario static-head /greeting.txt --head --expect-header "content-length=$static_bytes" --expect-header etag
 # 目录里没有的名字：兜底路由要把请求让给 404，而不是回一份空正文当作命中
 runScenario static-missing /no-such-file.txt 404
-# 取消通路：h3_acceptance.py 判的是「答得对不对」，这一支判的是「被对端半路掐掉的流会不会把整条
-# 连接带走」——RESET_STREAM 与 STOP_SENDING 两侧同时收口时，服务端要在业务协程还挂着的时候把流记录
-# 摘掉：摘早了把合法重传判成越界，摘漏了记账一直涨。两种错在自家按 RFC 排字节的对端里都看不全，
-# 所以换 aioquic 当真对端。它的参数形状与 h3_acceptance.py 不同，因此不复用 runScenario
+# 取消通路：h3_acceptance.py 判「答得对不对」，这一支判「被半路掐掉的流会不会把整条连接带走」——
+# RESET_STREAM 与 STOP_SENDING 两侧同时收口时，服务端要在业务协程还挂着时摘掉流记录：
+# 摘早了把合法重传判成越界，摘漏了记账一直涨。参数形状与 h3_acceptance.py 不同，不复用 runScenario。
 printf '%-22s ' "cancel-streams"
 if "$python_binary" scripts/h3_cancellation_probe.py 127.0.0.1 "$port" /bench 8; then
     printf 'PASS\n'

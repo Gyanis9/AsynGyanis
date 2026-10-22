@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # QUIC 出站方向的跨实现验收：aioquic（独立实现）起服务端并回显，本框架的探针当客户端。
-#
-# 与 scripts/quic_cross_check.sh 的方向相反：那份是「外部客户端打我们的服务端」，这份是
-# 「我们的客户端打外部服务端」。角色化传输核心之后必须两边都验，否则两型实现共享的误解
-# （密钥方向、该不该发 original_destination_connection_id、握手确认的时刻）验不出来。
-#
+# 与 scripts/quic_cross_check.sh 方向相反；角色化传输核心之后必须两边都验，否则两型实现
+# 共享的误解（密钥方向、original_destination_connection_id、握手确认时刻）验不出来。
+
 # 判据取两边的说法：aioquic 侧打印它解到了什么，探针侧打印它做了什么，任何一侧缺行即失败。
-# 不要只看退出码——脚本没跑起来与跑起来但判据不成立，都可能是非 0 或 0。
-#
+# 不要只看退出码——没跑起来与跑起来但判据不成立，都可能是非 0 或 0。
+
 # 用法：
 #   scripts/quic_outbound_cross_check.sh [构建目录] [带 aioquic 的 python]
 #   scripts/quic_outbound_cross_check.sh build-asan /root/h3venv/bin/python
@@ -55,8 +53,8 @@ if ! "$python" -c 'import aioquic' >/dev/null 2>&1; then
 fi
 
 findFreePort() {
-    # 单行 -c 而不是 heredoc：heredoc 形式在 Git Bash 下会把附带的实参当成脚本内容，端口取回来是空的，
-    # 于是服务端收到 `int("")` 直接崩——报出来的是「对端没起来」，看不出根因在这一步
+    # 单行 -c 而不是 heredoc：heredoc 在 Git Bash 下会把实参当成脚本内容，端口取回来是空的，
+    # 服务端收到 `int("")` 直接崩，报出来的是「对端没起来」，看不出根因在这一步。
     "$python" -c 'import socket; sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()' 2>/dev/null
 }
 
@@ -112,9 +110,9 @@ runScenario() {
         return
     fi
 
-    # MSYS2_ARG_CONV_EXCL：Git Bash 会把 `--path /probe` 里那个以 / 开头的取值换成一个真实存在的
-    # Windows 路径（实测换成 C:/Users/.../probe），本端的 :path 校验会把它判成非法——
-    # 看着像实现坏了，其实是命令行参数被换算过（本仓库踩过两次同型坑）
+    # MSYS2_ARG_CONV_EXCL：Git Bash 会把 `--path /probe` 里以 / 开头的取值换成真实存在的
+    # Windows 路径（实测 C:/Users/.../probe），本端的 :path 校验会判它非法：
+    # 看着像实现坏了，其实是命令行参数被换算过（本仓库踩过两次同型坑）。
     MSYS2_ARG_CONV_EXCL='*' "$probe" --port "$port" --host localhost --ca "$certificate" --alpn "$clientAlpn" \
         --path /probe --handshake-timeout 3000 --wait-timeout 6000 >"$clientLog" 2>&1
     local clientExit=$?

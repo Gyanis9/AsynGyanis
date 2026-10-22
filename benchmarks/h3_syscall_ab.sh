@@ -1,41 +1,36 @@
 #!/bin/bash
-# h3 服务端的系统调用画像：固定负载下数每种收发的调用次数（A/B 的守护读数，不看计时）
+# h3 服务端系统调用画像：固定负载下数每种收发的调用次数，作 A/B 守护读数，不看计时。
 # 用法：h3_syscall_ab.sh <构建目录> <标签> [额外的 ReferenceServer 参数]
-#
-# 为什么数调用次数而不是数吞吐：aioquic 那个 Python 客户端自己就是瓶颈（每条连接稳定在
-# ~1000 请求/6 秒），拿它的 rps 判服务端改动的收益等于读噪声。系统调用次数是确定量，同一份
-# 输入两次跑出同一个数，才配当「这条守护能不能检出回归」的判据。
-#
-# 2026-09-26 首测读数（ubuntu24 容器、build-asan、4 连接 × 25 请求、--threads 1）：
-#   epoll_wait 41913 / recvfrom 445（37 次 EAGAIN）/ sendto 402 / recvmsg 2
-#   —— 数据面每请求约 4.5 次读、4 次写，逐条 recvfrom，没有批量
-#   —— epoll_wait 那四万次不是自旋：QUIC 服务端有一个 10 毫秒的 expiry ticker
-#      （QuicServer::Configuration::expiryTickInterval），每次唤醒约两趟 epoll_wait，
-#      而 strace 把整场压到三分多钟，于是 200 次/秒 × 200 秒 ≈ 四万。空闲开销由节拍主导，
-#      与负载无关：要降它得把「固定节拍轮询」换成「按最早的交易截止时间睡」，
-#      加 recvmmsg 批量并不能碰它一分
-#
-#   改完再跑同一条负载（`--threads 1`，同一台容器、同一棵树）：epoll_wait 2126、
-#   recvfrom 417、sendto 379 —— 唤醒少了 95%，数据面两次调用几乎没动，省下的确实都是空转。
-#   这就是这条画像当守护读数的理由：两侧都过得了用例，只有它能分出差别。
-#
-# 2026-09-27 实测否决一条：一次唤醒里「抽干」已到的报文（读完一条就用不挂起的读数再探一次，
-# 不等下一趟后端唤醒）。同一棵树、同一负载、同一开关前后两跑（4 连接 × 25 请求、--threads 1）：
-#   抽干前  epoll_wait 83 / recvfrom 416（32 次 EAGAIN）/ sendto 378 / 合计 877
-#   抽干后  epoll_wait 82 / recvfrom 447（63 次 EAGAIN）/ sendto 378 / 合计 907
-#   唤醒一分没省（每 13 条读数才摊到一次 EAGAIN，说明绝大多数读数本来就是「数据已在、读完就回来」，
-#   本来就不堵在 epoll 上），多出来的却是每批一次空探的系统调用。
-# 真要减读数只能上 recvmmsg，而那要求每个槽位都是整条报文的上限（数据报不能被截断），四条一批就是
-# 256 KiB 常驻在每条监听循环上——按这份画像折算每请求省不到 1 µs，不值这份内存与平台分叉。
-# 两条都记在这里，别再试第三回。
-#
-# 两处实测出来的坑，别绕过：
-#   ① 不能用 `strace -p` 挂到已存在的进程上——这个容器不给 PTRACE_SEIZE 权限
-#      （"ptrace(PTRACE_SEIZE, ...): Operation not permitted"），只有随 strace 一起 fork
-#      出来的子进程能被跟。于是服务必须由 strace 带着起、由服务自己收口（SIGINT）。
-#   ② 认进程要按可执行体名（pgrep -x ReferenceServer）而不是命令行（pgrep -f）：strace 自己的
-#      命令行里就带着 ReferenceServer 的路径，-f 会先命中它，SIGINT 送给 strace 只是让它 detach，
-#      服务留在场上没人收，脚本卡在 wait 上（实测卡过两次，留了一排僵尸）。
+
+# 数调用而不是数吞吐：aioquic 客户端自身是瓶颈（约 1000 请求/6 秒），它的 rps 判收益等于读噪声。
+# 系统调用次数是确定量，同一输入两次同数，才配当「这条守护能不能检出回归」的判据。
+
+# 首测（ubuntu24 容器、build-asan、4 连接 × 25 请求、--threads 1）：
+# epoll_wait 41913 / recvfrom 445（37 次 EAGAIN）/ sendto 402 / recvmsg 2，
+# 数据面每请求约 4.5 次读、4 次写，逐条 recvfrom，没有批量。
+
+# epoll_wait 四万次不是自旋：QUIC 服务端有 10 毫秒的 expiry ticker
+# （QuicServer::Configuration::expiryTickInterval），每次唤醒约两趟 epoll_wait；
+# strace 把整场压到三分多钟，200 次/秒 × 200 秒 ≈ 四万。
+
+# 空闲开销由节拍主导，与负载无关：降它要把固定节拍轮询换成按最早的交易截止时间睡，
+# 加 recvmmsg 批量并不能碰它一分。
+
+# 改完同负载复测：epoll_wait 2126、recvfrom 417、sendto 379，唤醒少 95%，数据面两次调用几乎没动。
+# 两侧都过得了用例，只有这份画像分得出差别，这就是它当守护读数的理由。
+
+# 一次唤醒里抽干已到报文经实测否决：抽干前 epoll_wait 83 / recvfrom 416（32 次 EAGAIN）/
+# sendto 378 / 合计 877；抽干后 82 / 447（63 次 EAGAIN）/ 378 / 907。
+# 唤醒一分没省，多出来的是每批一次空探的系统调用。
+
+# 真要减读数只能上 recvmmsg，要求每槽位按整条报文上限（四条一批 256 KiB 常驻每条监听循环）；
+# 按这份画像折算每请求省不到 1 µs，不值这份内存与平台分叉。
+
+# 实测坑一：不能用 strace -p 挂已存在的进程（容器不给 PTRACE_SEIZE，Operation not permitted），
+# 服务必须由 strace 带着起、由服务自己收口（SIGINT）。
+
+# 实测坑二：认进程按可执行体名（pgrep -x ReferenceServer），不用 pgrep -f。
+# -f 会先命中 strace 自己的命令行，SIGINT 只是让它 detach，服务留在场上，脚本卡在 wait。
 set -u
 build_dir="${1:-/root/ticketgate/build-asan}"
 label="${2:-baseline}"
@@ -63,8 +58,6 @@ for _ in $(seq 1 60); do
   sleep 0.2
 done
 sleep 1
-# 认进程要按可执行体名而不是命令行：`pgrep -f samples/ReferenceServer` 会先命中 strace 自己
-# （它的命令行里就带着这个路径），SIGINT 送给 strace 只是让它 detach，服务留在场上没人收
 server_pid="$(pgrep -x ReferenceServer | head -1)"
 
 /root/h3venv/bin/python benchmarks/h3_soak.py --host 127.0.0.1 --port "$port" \
