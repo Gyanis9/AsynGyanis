@@ -1,10 +1,7 @@
-// 零拷贝发送的单元测试：整段字节一致、源文件末尾语义，以及「慢消费者不得阻塞调用方」 Windows 下本文件整体展开为空：该平台没有可用的零拷贝发送原语，Platform 层因此不声明
-// sendFileChunk，原因（实测的阻塞与进度不可反推）见 Socket.h 中该函数的说明
+// 零拷贝发送的单元测试：整段字节一致、源文件末尾语义，以及「慢消费者不得阻塞调用方」
+// 平台没有该原语时（Windows）钉住能力查询与桩实现的失败语义，POSIX 用例在下方护栏里展开
 #include "Platform/Platform.h"
 #include "PlatformTestSupport.h"
-
-// 平台判定要先有 Platform.h：下面的整体护栏靠它给出的 ASYN_PLATFORM_WIN32
-#if !ASYN_PLATFORM_WIN32
 
 #include "Platform/IO/Socket.h"
 
@@ -27,6 +24,23 @@
 
 namespace AsynGyanis::Platform
 {
+    /**
+     * @brief 能力查询与实际实现同一口径
+     * @details 提供 sendfile 的平台报告 true；不提供的平台上桩实现必须按 kNotSupported
+     *          失败，而不是把参数问题折成别的错误码
+     */
+    TEST(SocketZeroCopySend, CapabilityQueryMatchesTheImplementation)
+    {
+#if ASYN_PLATFORM_WIN32
+        EXPECT_FALSE(Socket::supportsZeroCopySend());
+        EXPECT_EQ(Socket::sendFileChunk(0, 0, 0, 1), -1);
+        EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kNotSupported);
+#else
+        EXPECT_TRUE(Socket::supportsZeroCopySend());
+#endif
+    }
+
+#if !ASYN_PLATFORM_WIN32
     namespace
     {
         using TestSupport::TemporaryDirectory;
@@ -470,6 +484,5 @@ namespace AsynGyanis::Platform
         EXPECT_TRUE(chunkResult > 0 || errorCode == PlatformError::kWouldBlock) << "返回形态既不是部分写也不是 kWouldBlock：" << PlatformError::message(errorCode);
         EXPECT_LT(chunkResult, static_cast<ssize_t>(kBigFileBytes)) << "缓冲区被压到 4 KiB 却报称整份发出，进度反推有误";
     }
-} // namespace AsynGyanis::Platform
-
 #endif
+} // namespace AsynGyanis::Platform

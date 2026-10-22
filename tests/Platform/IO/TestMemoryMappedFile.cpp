@@ -3,6 +3,7 @@
 
 #include <optional>
 #include "Platform/FileSystem/FileBasicInfo.h"
+#include "Platform/IO/Socket.h"
 
 #include <gtest/gtest.h>
 
@@ -199,5 +200,29 @@ namespace AsynGyanis::Platform
 
         EXPECT_FALSE(mappedFile.isValid());
         EXPECT_TRUE(static_cast<bool>(mappedFile.lastError()));
+    }
+
+    /**
+     * @brief 零拷贝描述符只在提供该能力的平台上有值，其余平台恒为 -1
+     * @details 不提供 sendfile 的平台把文件句柄留在映射对象内部；交出一个 int 描述符
+     *          只会让调用方拿它去做一次注定失败的零拷贝发送
+     */
+    TEST(MemoryMappedFile, NativeFileDescriptorIsOnlyAvailableWithZeroCopySend)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Mmap_NativeFd");
+        ASSERT_TRUE(temporaryDirectory.writeFile("payload.txt", "abc"));
+        const MemoryMappedFile mappedFile = MemoryMappedFile::open(temporaryDirectory.path() / "payload.txt");
+        ASSERT_TRUE(mappedFile.isValid());
+
+        if (Socket::supportsZeroCopySend())
+        {
+            EXPECT_GE(mappedFile.nativeFileDescriptor(), 0) << "平台提供零拷贝发送，有效映射却没有给出描述符";
+        } else
+        {
+            EXPECT_EQ(mappedFile.nativeFileDescriptor(), -1) << "平台没有零拷贝发送，不该交出描述符";
+        }
+
+        const MemoryMappedFile invalidFile;
+        EXPECT_EQ(invalidFile.nativeFileDescriptor(), -1);
     }
 } // namespace AsynGyanis::Platform
