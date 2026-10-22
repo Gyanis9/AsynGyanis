@@ -97,6 +97,9 @@ ${CMAKE_CURRENT_LIST_DIR}/ParseStatus.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpProxyPumpedTls.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClient.cpp
+        # 只有实现侧包含：URL 拆解与 Host/:authority 拼装，独立成一份翻译单元
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClientUrl.h
+        ${CMAKE_CURRENT_LIST_DIR}/Client/HttpClientUrl.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpCookieJar.h
         ${CMAKE_CURRENT_LIST_DIR}/Client/HttpCookieJar.cpp
         ${CMAKE_CURRENT_LIST_DIR}/Client/OutboundCircuitBreaker.h

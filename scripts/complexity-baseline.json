@@ -40,9 +40,10 @@
     ],
     "src/Net/Http/Client/HttpClient.cpp": [
       273,
-      131,
-      113,
-      101
+      118
+    ],
+    "src/Net/Http/Client/HttpClientUrl.cpp": [
+      113
     ],
     "src/Net/Http/Client/HttpCookieJar.cpp": [
       104

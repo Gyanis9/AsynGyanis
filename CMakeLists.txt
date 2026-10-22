@@ -409,6 +409,7 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "HttpConfigDuration.h" EXCLUDE
             PATTERN "HttpConfigValidation.h" EXCLUDE
             PATTERN "HttpEndpointPath.h" EXCLUDE
+            PATTERN "HttpClientUrl.h" EXCLUDE
     )
 
     # Base 那次 std::stacktrace 现场探测的结果随包交出去（生成处见 src/Base/CMakeLists.txt）：
