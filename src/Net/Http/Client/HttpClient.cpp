@@ -1010,7 +1010,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<OutboundExchange> exchangeOnHttp2(Http2ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
                                                      const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
-                                                     std::string &failureReason)
+                                                     const std::stop_token cancelToken, std::string &failureReason)
         {
             OutboundExchange exchange;
             // 主机文本与协议名都要先落到具名对象上：co_await 挂起期间 string_view 指着的临时串会先析构
@@ -1038,11 +1038,12 @@ namespace AsynGyanis::Net
                 h2Receiver = [delivererPointer](const Http2ClientResponse &record, const std::string_view batch, const bool isLastBatch) -> Core::Task<bool>
                 { co_return co_await delivererPointer->deliver(record, batch, isLastBatch); };
             }
-            const std::string_view scheme   = u.scheme == "https" ? "https" : "http";
-            Http2ClientResponse    response = bodySource ? co_await client.requestStreamed(scheme, authority, method, u.path, extraFields, bodySource, *exchangeBudget, h2Receiver)
-                                                         : co_await client.request(scheme, authority, method, u.path, extraFields, body, *exchangeBudget, h2Receiver);
-            exchange.isAnyByteReceived      = response.isAnyByteReceived;
-            exchange.isAnyByteSent          = response.isAnyByteSent;
+            const std::string_view scheme = u.scheme == "https" ? "https" : "http";
+            Http2ClientResponse    response =
+                    bodySource ? co_await client.requestStreamed(scheme, authority, method, u.path, extraFields, bodySource, *exchangeBudget, h2Receiver, cancelToken)
+                               : co_await client.request(scheme, authority, method, u.path, extraFields, body, *exchangeBudget, h2Receiver, cancelToken);
+            exchange.isAnyByteReceived = response.isAnyByteReceived;
+            exchange.isAnyByteSent     = response.isAnyByteSent;
             // h2 是三条通路里唯一能拿到「保证没处理过」这个信号的：§8.7 的两种机制都是帧级的
             exchange.isGuaranteedUnprocessed = response.isGuaranteedUnprocessed;
             if (!response.isOk())
@@ -1073,7 +1074,7 @@ namespace AsynGyanis::Net
          */
         Core::Task<OutboundExchange> exchangeOnHttp3(Http3ClientConnection &client, const ParsedUrl &u, const HttpClientRequest &request,
                                                      const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
-                                                     std::string &failureReason)
+                                                     const std::stop_token cancelToken, std::string &failureReason)
         {
             OutboundExchange                                       exchange;
             const std::vector<std::pair<std::string, std::string>> extraFields = buildVersionedExtraFields(request, !request.body.empty());
@@ -1096,7 +1097,7 @@ namespace AsynGyanis::Net
                 { co_return co_await delivererPointer->deliver(record, batch, isLastBatch); };
             }
             // QUIC 的 TLS 是强制的，:scheme 因此在 h3 上恒为 https（能走到这里已由 canUseHttp3 保证）
-            Http3ClientResponse response = co_await client.request("https", authority, method, u.path, extraFields, body, *exchangeBudget, h3Receiver);
+            Http3ClientResponse response = co_await client.request("https", authority, method, u.path, extraFields, body, *exchangeBudget, h3Receiver, cancelToken);
             exchange.isAnyByteReceived   = response.isAnyByteReceived;
             exchange.isAnyByteSent       = response.isAnyByteSent;
             // h3 的保证来自 §5.2 的 H3_REQUEST_REJECTED 与 GOAWAY 通告值及以上的那些流（§7）
@@ -1332,8 +1333,7 @@ namespace AsynGyanis::Net
             // 这次请求有没有资格走 h3：开关与 URL 形状之外还要端点没被探败过；被代理命中一律跳过（QUIC 不经 HTTP 代理）
             const bool isHttp3Eligible = pool != nullptr && canUseHttp3(u, request, http3) && !isHttp3ProbeRejected(endpointKey, *http3) && !decision.route.has_value();
 
-            // 复用→建连这一整段要能重跑一遍：等同一端点建连的人醒来之后，第一件该做的
-            // 还是回池里看有没有现成的连接，而不是就地假设「有」或「没有」。
+            // 复用→建连这整段要能重跑：等建连的人醒来先回池里看，而不是假设有或没有。
             while (true)
             {
                 if (pool != nullptr)
@@ -1343,7 +1343,8 @@ namespace AsynGyanis::Net
                     {
                         if (auto cachedHttp3 = pool->acquireHttp3(endpointKey); cachedHttp3 != nullptr)
                         {
-                            OutboundExchange cachedHttp3Exchange = co_await exchangeOnHttp3(cachedHttp3->http3(), u, request, startedAt, requestTimeout, failureReason);
+                            OutboundExchange cachedHttp3Exchange =
+                                    co_await exchangeOnHttp3(cachedHttp3->http3(), u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                             switch (classifyMultiplexedExchange(cachedHttp3Exchange, request.method, u.host, failureReason))
                             {
                                 case ReuseDisposition::Serve:
@@ -1360,7 +1361,7 @@ namespace AsynGyanis::Net
                     // h2 的待命连接问在 h1 的空闲表之前：一台主机的 ALPN 结果是稳定的，两处不会同时有货
                     if (auto cachedHttp2 = pool->acquireHttp2(endpointKey); cachedHttp2 != nullptr)
                     {
-                        OutboundExchange cachedExchange = co_await exchangeOnHttp2(*cachedHttp2, u, request, startedAt, requestTimeout, failureReason);
+                        OutboundExchange cachedExchange = co_await exchangeOnHttp2(*cachedHttp2, u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                         switch (classifyMultiplexedExchange(cachedExchange, request.method, u.host, failureReason))
                         {
                             case ReuseDisposition::Serve:
@@ -1368,9 +1369,8 @@ namespace AsynGyanis::Net
                             case ReuseDisposition::Fail:
                                 co_return nullptr;
                             case ReuseDisposition::Retry:
-                                // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条
-                                // 连接收了（与 h1 的 keep-alive 同一条竞态）。这条就此作废——不作废也没有下一句，
-                                // HPACK 动态表跟着连接一起丢——往下重开一条重来一次，对调用方仍是一次成功请求
+                                // 一个字节没发出、也没收到，或是幂等方法发出去没了回音：多半是对端在我们手里把这条连接收了。
+                                // 这条就此作废（HPACK 动态表跟着连接一起丢），往下重开一条，对调用方仍是一次成功请求
                                 break;
                         }
                     }
@@ -1433,7 +1433,8 @@ namespace AsynGyanis::Net
                     {
                         if (auto sharedHttp3 = pool->acquireHttp3(endpointKey); sharedHttp3 != nullptr)
                         {
-                            OutboundExchange sharedHttp3Exchange = co_await exchangeOnHttp3(sharedHttp3->http3(), u, request, startedAt, requestTimeout, failureReason);
+                            OutboundExchange sharedHttp3Exchange =
+                                    co_await exchangeOnHttp3(sharedHttp3->http3(), u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                             switch (classifyMultiplexedExchange(sharedHttp3Exchange, request.method, u.host, failureReason))
                             {
                                 case ReuseDisposition::Serve:
@@ -1448,7 +1449,7 @@ namespace AsynGyanis::Net
                     // 领导者建成了可共享的 h2 连接：直接拿它，一次握手都不用再付
                     if (auto shared = pool->acquireHttp2(endpointKey); shared != nullptr)
                     {
-                        OutboundExchange sharedExchange = co_await exchangeOnHttp2(*shared, u, request, startedAt, requestTimeout, failureReason);
+                        OutboundExchange sharedExchange = co_await exchangeOnHttp2(*shared, u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                         switch (classifyMultiplexedExchange(sharedExchange, request.method, u.host, failureReason))
                         {
                             case ReuseDisposition::Serve:
@@ -1491,7 +1492,7 @@ namespace AsynGyanis::Net
                         rejectHttp3Probe(endpointKey, *http3);
                     } else
                     {
-                        OutboundExchange freshHttp3 = co_await exchangeOnHttp3(link->http3(), u, request, startedAt, requestTimeout, failureReason);
+                        OutboundExchange freshHttp3 = co_await exchangeOnHttp3(link->http3(), u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                         switch (classifyMultiplexedExchange(freshHttp3, request.method, u.host, failureReason))
                         {
                             case ReuseDisposition::Serve:
@@ -1553,7 +1554,7 @@ namespace AsynGyanis::Net
                         settleEstablishmentNow();
                         co_return nullptr;
                     }
-                    OutboundExchange freshExchange = co_await exchangeOnHttp2(*http2Connection, u, request, startedAt, requestTimeout, failureReason);
+                    OutboundExchange freshExchange = co_await exchangeOnHttp2(*http2Connection, u, request, startedAt, requestTimeout, request.cancelToken, failureReason);
                     if (pool == nullptr)
                     {
                         // 没有池就是一次性的：主动 shutdown 而不是任其析构，否则对端把这次收口记成 abrupt

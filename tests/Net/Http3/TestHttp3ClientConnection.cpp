@@ -297,8 +297,8 @@ namespace AsynGyanis::Net
              */
             Http3RequestAttempt(const std::uint16_t port, const std::string &clientCertificateFile = {}, const std::string &clientPrivateKeyFile = {},
                                 const std::string path = "/probe", const std::chrono::milliseconds requestTimeout = std::chrono::milliseconds{4000},
-                                std::vector<std::pair<std::string, std::string>> extraHeaders = {}, const bool judgeByProgress = false) :
-                m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile)
+                                std::vector<std::pair<std::string, std::string>> extraHeaders = {}, const bool judgeByProgress = false, const bool followUpAfterCancel = false) :
+                m_port(port), m_clientCertificateFile(clientCertificateFile), m_clientPrivateKeyFile(clientPrivateKeyFile), m_followUpAfterCancel(followUpAfterCancel)
             {
                 // 路径在排协程之前落定：run() 第一次被驱动就已经在读它
                 m_path            = path;
@@ -336,6 +336,24 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool isStarted() const noexcept
             {
                 return m_isStarted;
+            }
+
+            /// 请求协程是否已经走到提交那一刻（取消要打在途请求上，不是打握手）
+            [[nodiscard]] bool isRequestBegun() const noexcept
+            {
+                return m_isRequestBegun.load(std::memory_order_acquire);
+            }
+
+            /// 从测试线程请求停止；线程安全，实际收口发生在循环线程
+            void cancel()
+            {
+                static_cast<void>(m_cancelSource.request_stop());
+            }
+
+            /// 取消之后在**同一条连接**上再提的那条请求（只有 followUpAfterCancel 为真时有意义）
+            [[nodiscard]] const Http3ClientResponse &followUpResponse() const noexcept
+            {
+                return m_followUpResponse;
             }
 
             /// 整次尝试（握手 + 起 h3 + 等响应）的耗时：判「是被立刻收掉还是等满自己的时限」用它
@@ -398,17 +416,22 @@ namespace AsynGyanis::Net
                     m_batches.emplace_back(batch);
                     co_return true;
                 };
+                m_isRequestBegun.store(true, std::memory_order_release);
                 if (m_judgeByProgress)
                 {
                     m_isStallWatchdogArmed.store(true, std::memory_order_release);
                     m_watchdogTask.emplace(watchForStall(http3));
                     m_loop.scheduler().schedule(m_watchdogTask->handle());
-                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout, receiver);
+                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout, receiver, m_cancelSource.get_token());
                 } else
                 {
-                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout);
+                    m_response = co_await http3.request("https", authority, "GET", m_path, m_extraHeaders, {}, m_requestTimeout, {}, m_cancelSource.get_token());
                 }
                 m_isStallWatchdogArmed.store(false, std::memory_order_release);
+                if (m_followUpAfterCancel)
+                {
+                    m_followUpResponse = co_await http3.request("https", authority, "GET", "/probe", m_extraHeaders, {}, m_requestTimeout);
+                }
                 co_await http3.shutdown();
                 client.reset();
                 finish();
@@ -465,6 +488,10 @@ namespace AsynGyanis::Net
             std::vector<std::pair<std::string, std::string>> m_extraHeaders{};              ///< 附加普通头：构造函数里落定，协程只读不写
             std::chrono::milliseconds                        m_requestTimeout{4000};        ///< 这条请求自己的时限（静默对端那条要调小）
             bool                                             m_judgeByProgress{false};      ///< 停与不停按「有没有进展」判（大正文那一条）
+            bool                                             m_followUpAfterCancel{false};  ///< 取消之后在同一条连接上再提一条（证明连接仍可用）
+            std::atomic<bool>                                m_isRequestBegun{false};       ///< 请求协程是否已走到提交那一刻
+            std::stop_source                                 m_cancelSource{};              ///< 测试线程请求停止的来源
+            Http3ClientResponse                              m_followUpResponse{};          ///< 取消之后那条请求的结论
             std::vector<std::string>                         m_batches{};                   ///< 逐批收到的正文，只在判进展那一支里被写
             std::optional<Core::Task<>>                      m_watchdogTask{};              ///< 「没有进展」哨兵那一路协程
             std::atomic<bool>                                m_isStallWatchdogArmed{false}; ///< 哨兵只管那一趟：请求一回来就撤防
@@ -1491,6 +1518,27 @@ namespace AsynGyanis::Net
      * @note 证伪：把「收到过响应字节就不认」这道防御摘掉，第二格红；把码的判断放宽成「任何 RESET_STREAM」，
      *       后三格红；把「只有复位才算」那道形状闸摘掉（叫停也当保证），第五格红
      */
+    /**
+     * @brief 钉住取消一条在途 h3 请求：请求及时失败，同一条连接上的下一条请求仍能走通
+     */
+    TEST(Http3ClientConnection, CancelOneRequestKeepsTheConnectionUsable)
+    {
+        RunningHttp3Server server;
+        ASSERT_NE(server.listeningPort(), 0U) << "服务端没进入监听，后面的判据都是空的";
+
+        Http3RequestAttempt attempt{server.listeningPort(), {}, {}, "/brief", std::chrono::seconds{4}, {}, false, true};
+        ASSERT_TRUE(waitForCondition([&attempt] { return attempt.isRequestBegun(); }, std::chrono::seconds{2})) << "请求协程还没走到提交那一刻";
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        attempt.cancel();
+        ASSERT_TRUE(attempt.awaitFinished(std::chrono::seconds{3})) << "取消之后请求仍挂着";
+
+        EXPECT_FALSE(attempt.response().isOk()) << "取消的请求交出了成功结论";
+        EXPECT_NE(attempt.response().errorMessage.find("取消"), std::string::npos) << "失败原因没有点明取消：" << attempt.response().errorMessage;
+        EXPECT_LT(attempt.elapsed(), std::chrono::seconds{2}) << "取消没有及时收场";
+        EXPECT_TRUE(attempt.followUpResponse().isOk()) << "取消一条流之后同一条连接不能再用：" << attempt.followUpResponse().errorMessage;
+        EXPECT_EQ(attempt.followUpResponse().body, std::string{kServedBody});
+    }
+
     TEST(Http3ClientConnection, OnlyAnUnansweredRequestRejectionCountsAsUnprocessed)
     {
         EXPECT_TRUE(Http3ClientConnection::isUnprocessedRejection(Http3ErrorCode::RequestRejected, false)) << "§5.2 那一条保证没被认出来：优雅停机里被拒的非幂等请求会白失败一次";

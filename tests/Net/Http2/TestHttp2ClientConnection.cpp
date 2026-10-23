@@ -16,6 +16,7 @@
 #include <coroutine>
 #include <format>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1531,6 +1532,84 @@ namespace AsynGyanis::Net
         EXPECT_LT(elapsedMillis, kSlowRouteTime) << "一直等到了服务端写完响应（" << elapsedMillis.count() << " 毫秒）：时限没有生效";
 
         // 收尾前让那条慢路由自己跑完：夹具销毁会先让循环停手，不该把一条要靠定时器才结束的在途请求留到那之后
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住取消一条 h2 流不会连累同连接上的另一条，也不会把连接判死
+     * @details 取消要落在流级：RST_STREAM(CANCEL) 结掉这一条，连接仍能服务兄弟流。
+     *          单条请求的取消若只能关整条连接，多路复用就失去了意义。
+     */
+    TEST(Http2ClientConnection, CancelOneStreamWithoutHarmingSibling)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute, RouteRegistrar{}, HttpParserLimits{},
+                                         [](TestHttpServer &server) { static_cast<void>(server.setHttp2CleartextEnabled(true)); });
+        ASSERT_TRUE(fixture.awaitRunning(kClientWaitTimeout)) << "服务端未在时限内进入接受循环";
+
+        Core::EventLoop           loop;
+        std::stop_source          source;
+        Http2ClientResponse       cancelledResponse;
+        Http2ClientResponse       siblingResponse;
+        bool                      isHealthyAfter = false;
+        std::chrono::milliseconds cancelElapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            std::unique_ptr<Http2ClientConnection> connection = co_await openConnection(loop, fixture.listeningPort());
+            if (connection == nullptr)
+            {
+                loop.stop();
+                co_return;
+            }
+            const std::string               authority     = "127.0.0.1:" + std::to_string(fixture.listeningPort());
+            Core::Task<Http2ClientResponse> cancelledTask = connection->request("http", authority, "GET", "/slow", {}, {}, std::chrono::seconds{3}, {}, source.get_token());
+            Core::Task<Http2ClientResponse> siblingTask   = connection->request("http", authority, "GET", "/hello", {}, {}, std::chrono::seconds{3});
+            loop.scheduler().schedule(cancelledTask.handle());
+            loop.scheduler().schedule(siblingTask.handle());
+
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            Core::Timer pollTimer(loop);
+            const auto  started  = std::chrono::steady_clock::now();
+            const auto  deadline = started + std::chrono::seconds{4};
+            while ((!cancelledTask.isReady() || !siblingTask.isReady()) && std::chrono::steady_clock::now() < deadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            cancelElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            if (cancelledTask.isReady())
+            {
+                cancelledResponse = cancelledTask.handle().promise().result();
+            }
+            if (siblingTask.isReady())
+            {
+                siblingResponse = siblingTask.handle().promise().result();
+            }
+            isHealthyAfter = connection->isHealthy();
+            co_await connection->shutdown();
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_EQ(cancelledResponse.statusCode, 0) << "取消的流交出了成功状态码";
+        EXPECT_NE(cancelledResponse.errorMessage.find("取消"), std::string::npos) << "取消原因没有点明调用方请求停止：" << cancelledResponse.errorMessage;
+        EXPECT_LT(cancelElapsed, std::chrono::milliseconds{500}) << "取消没有及时收场";
+        EXPECT_EQ(siblingResponse.statusCode, 200) << "兄弟流被取消连累：" << siblingResponse.errorMessage;
+        EXPECT_NE(siblingResponse.body.find("served-hello"), std::string::npos);
+        EXPECT_TRUE(isHealthyAfter) << "取消一条流把整条 h2 连接判死了";
         std::this_thread::sleep_for(kSlowRouteTime);
     }
 

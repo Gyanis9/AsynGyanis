@@ -18,6 +18,7 @@
 
 #include <openssl/types.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -102,6 +103,13 @@ namespace AsynGyanis::Core
          * @throws CoreException 本端会话已释放：close() 之后调用，或协程挂起期间被 close()
          */
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
+
+        /**
+         * @brief 有上限地等可读：SSL 已解出的明文也算可读
+         * @param timeout 等待上限
+         * @return true 可读；false 到点或套接字已关闭
+         */
+        [[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief TLS 加密发送数据。

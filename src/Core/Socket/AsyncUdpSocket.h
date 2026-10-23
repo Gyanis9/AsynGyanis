@@ -16,6 +16,7 @@
 #include "Core/EventLoop/IoWatcher.h"
 #include "Platform/IO/DatagramSocket.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -133,6 +134,13 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException 套接字无效（已被移动走或关闭）
          */
         [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
+
+        /**
+         * @brief 有上限地等可读：到点交回 false，不消费任何报文
+         * @param timeout 等待上限；非正数等同立即检查一次
+         * @return true 至少有一条报文可读；false 到点、套接字已关闭或等待被取消
+         */
+        [[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief 一次批次收包的交付

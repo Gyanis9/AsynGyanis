@@ -3,6 +3,7 @@
 #include "Net/Http2/Http2ClientConnection.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/CancellationWatch.h"
 #include "Core/Coroutine/DeadlineGuard.h"
 #include "Net/Http/Message/HttpHeaderRules.h"
 
@@ -243,6 +244,39 @@ namespace AsynGyanis::Net
             co_return false;
         }
         co_return isHealthy();
+    }
+
+    Core::Task<bool> Http2ClientConnection::pumpSomeUntil(const std::chrono::steady_clock::time_point deadline)
+    {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::milliseconds::zero())
+        {
+            co_return true; // 这一轮没时间了：把控制权交回请求循环
+        }
+        if (!co_await m_transport->waitReadableFor(remaining))
+        {
+            co_return true; // 到点或通路已关：由请求循环看流记录决定收场
+        }
+        co_return co_await pumpSome();
+    }
+
+    Core::Task<void> Http2ClientConnection::cancelStream(const std::uint32_t streamId)
+    {
+        const auto iterator = m_pendingStreams.find(streamId);
+        if (iterator == m_pendingStreams.end() || iterator->second.isReset || iterator->second.isResponseComplete)
+        {
+            co_return; // 已经收尾或已被别的路径复位：不补第二枚 RST_STREAM
+        }
+        PendingStream &stream = iterator->second;
+        stream.isReset        = true;
+        if (stream.response.errorMessage.empty())
+        {
+            stream.response.errorMessage = "请求已取消：调用方请求停止";
+        }
+        appendOutgoing(encodeHttp2RstStreamFrame(Http2RstStreamPayload{.errorCode = Http2ErrorCode::Cancel}, streamId));
+        wakeWaitingStreams();
+        static_cast<void>(co_await flushOutgoing());
+        co_return;
     }
 
     bool Http2ClientConnection::handleFrame(const Http2Frame &frame)
@@ -1003,30 +1037,63 @@ namespace AsynGyanis::Net
         co_return co_await flushOutgoing();
     }
 
+    namespace
+    {
+        /// 组装一条 h2 请求的字段段：四个伪头在前，调用方给的 Host 一律丢掉
+        std::vector<HpackHeaderField> buildRequestFields(const std::string_view scheme, const std::string_view authority, const std::string_view method,
+                                                         const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders)
+        {
+            std::vector<HpackHeaderField> fields;
+            fields.reserve(extraHeaders.size() + 4U);
+            // 四个伪头必须排在普通头之前（§8.3），顺序按 :method :path :scheme :authority
+            fields.push_back(HpackHeaderField{":method", std::string(method)});
+            fields.push_back(HpackHeaderField{":path", std::string(path)});
+            fields.push_back(HpackHeaderField{":scheme", std::string(scheme)});
+            fields.push_back(HpackHeaderField{":authority", std::string(authority)});
+            for (const auto &header: extraHeaders)
+            {
+                // 调用方另塞了一份 Host 时丢掉它：本端每条请求都带 :authority，而 RFC 9113 §8.3.1 要客户端
+                // 不得生成两者取值不同的请求。经 `HttpClient` 来的这一支在上层就按「保留头部」拒了，
+                // 这道闸门护的是直接用本类的调用方——本类的入参没有任何地方保证 host 与 authority 同源
+                if (equalsIgnoringCase(header.first, "host"))
+                {
+                    continue;
+                }
+                fields.push_back(HpackHeaderField{header.first, header.second});
+            }
+            return fields;
+        }
+    } // namespace
+
     Core::Task<Http2ClientResponse> Http2ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                    const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                                    const std::string_view body, const std::chrono::milliseconds waitTimeout,
-                                                                   const Http2ResponseBodyReceiver &responseReceiver)
+                                                                   const Http2ResponseBodyReceiver &responseReceiver, const std::stop_token cancelToken)
     {
-        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout, responseReceiver ? &responseReceiver : nullptr);
+        co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout, responseReceiver ? &responseReceiver : nullptr, cancelToken);
     }
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                                            const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout,
-                                                                           const Http2ResponseBodyReceiver &responseReceiver)
+                                                                           const Http2ResponseBodyReceiver &responseReceiver, const std::stop_token cancelToken)
     {
         co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{}, &bodySource, waitTimeout,
-                                           responseReceiver ? &responseReceiver : nullptr);
+                                           responseReceiver ? &responseReceiver : nullptr, cancelToken);
     }
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::requestWithBody(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                            const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                                            const std::string_view body, const HttpBodyChunkSource *const bodySourceOrNull,
                                                                            const std::chrono::milliseconds        waitTimeout,
-                                                                           const Http2ResponseBodyReceiver *const responseReceiverOrNull)
+                                                                           const Http2ResponseBodyReceiver *const responseReceiverOrNull, const std::stop_token cancelToken)
     {
         Http2ClientResponse response;
+        if (cancelToken.stop_requested())
+        {
+            response.errorMessage = "请求已取消：调用方在提交流之前已请求停止";
+            co_return response;
+        }
         if (!isHealthy())
         {
             // 三种「提不了新流」各说各的原因：对端通告收尾那一句要点名 GOAWAY，否则调用方只看到
@@ -1044,24 +1111,7 @@ namespace AsynGyanis::Net
             co_return response;
         }
 
-        std::vector<HpackHeaderField> fields;
-        fields.reserve(extraHeaders.size() + 4U);
-        // 四个伪头必须排在普通头之前（§8.3），顺序按 :method :path :scheme :authority
-        fields.push_back(HpackHeaderField{":method", std::string(method)});
-        fields.push_back(HpackHeaderField{":path", std::string(path)});
-        fields.push_back(HpackHeaderField{":scheme", std::string(scheme)});
-        fields.push_back(HpackHeaderField{":authority", std::string(authority)});
-        for (const auto &header: extraHeaders)
-        {
-            // 调用方另塞了一份 Host 时丢掉它：本端每条请求都带 :authority，而 RFC 9113 §8.3.1 要客户端
-            // 不得生成两者取值不同的请求。经 `HttpClient` 来的这一支在上层就按「保留头部」拒了，
-            // 这道闸门护的是直接用本类的调用方——本类的入参没有任何地方保证 host 与 authority 同源
-            if (equalsIgnoringCase(header.first, "host"))
-            {
-                continue;
-            }
-            fields.push_back(HpackHeaderField{header.first, header.second});
-        }
+        const std::vector<HpackHeaderField> fields = buildRequestFields(scheme, authority, method, path, extraHeaders);
 
         PendingStream pending;
         pending.streamId = streamId;
@@ -1074,6 +1124,8 @@ namespace AsynGyanis::Net
             pending.responseReceiver = *responseReceiverOrNull;
         }
         PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
+
+        Core::CancellationWatch cancellationWatch(m_loop, cancelToken, [this, streamId](std::stop_token) -> Core::Task<> { co_await cancelStream(streamId); });
 
         const std::string headerBlock = m_encoder.encode(fields);
         // 只有「既没有整份正文、也没有流式来源」才轮到 HEADERS 收尾：END_STREAM 落在头块上就等于
@@ -1161,7 +1213,13 @@ namespace AsynGyanis::Net
                 continue;
             }
             const PumpLease lease(*this);
-            if (!co_await pumpSome())
+            if (cancelToken.stop_possible())
+            {
+                if (!co_await pumpSomeUntil(std::chrono::steady_clock::now() + std::chrono::milliseconds{5}))
+                {
+                    break;
+                }
+            } else if (!co_await pumpSome())
             {
                 break;
             }

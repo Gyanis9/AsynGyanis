@@ -127,6 +127,14 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<> pumpOnce();
 
         /**
+         * @brief 有上限的收包：到点没有报文就返回，把控制权交回请求循环
+         * @param timeout 本轮等待上限
+         * @details 与 pumpOnce 的差别只有这一处：不把请求协程永远挂在 UDP 收包上，
+         *          取消检查因此能按自己的节拍跑
+         */
+        [[nodiscard]] Core::Task<> pumpOnceFor(std::chrono::milliseconds timeout);
+
+        /**
          * @brief 握手是否已完成
          * @return true 已可开流收发
          */

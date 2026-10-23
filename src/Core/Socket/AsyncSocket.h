@@ -23,6 +23,7 @@
 #include "Platform/IO/Socket.h"
 #include "Platform/Platform.h"
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -335,6 +336,14 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException 套接字无效或已关闭
          */
         [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
+
+        /**
+         * @brief 有上限地等可读：到点交回 false，不消费任何字节
+         * @param timeout 等待上限；非正数等同立即检查一次
+         * @return true 可读；false 到点、描述符已关闭或等待被取消
+         * @note 可读不等于一定能读到完整一帧：调用方仍要按实际读取结果处理短读
+         */
+        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief 读方向上是否已有协程在等待

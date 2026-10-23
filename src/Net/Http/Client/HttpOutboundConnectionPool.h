@@ -146,6 +146,13 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length);
 
         /**
+         * @brief 有上限地等可读：不消费字节，仅供需要轮询取消的请求循环使用
+         * @param timeout 等待上限
+         * @return true 可读；false 到点、连接已关闭或底层缓冲为空
+         */
+        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+
+        /**
          * @brief 写完一段字节
          * @param data 待写数据
          * @return Core::Task<bool> 全部写出为 true；出错、对端关闭或本端已收口为 false

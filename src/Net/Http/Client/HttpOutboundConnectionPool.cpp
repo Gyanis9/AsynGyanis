@@ -95,6 +95,27 @@ namespace AsynGyanis::Net
         close();
     }
 
+    Core::Task<bool> HttpOutboundConnection::waitReadableFor(const std::chrono::milliseconds timeout)
+    {
+        if (!m_isOpen)
+        {
+            co_return false;
+        }
+        if (m_tlsSocket != nullptr)
+        {
+            co_return co_await m_tlsSocket->waitReadableFor(timeout);
+        }
+        if (m_pumpedSocket != nullptr)
+        {
+            co_return co_await m_pumpedSocket->waitReadableFor(timeout);
+        }
+        if (m_plainSocket != nullptr)
+        {
+            co_return co_await m_plainSocket->waitReadableFor(timeout);
+        }
+        co_return false;
+    }
+
     Core::Task<ssize_t> HttpOutboundConnection::receive(void *const buffer, const std::size_t length)
     {
         if (!m_isOpen)

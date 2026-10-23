@@ -2,9 +2,11 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/SystemException.h"
+#include "Core/EventLoop/Timer.h"
 #include "Platform/IO/DatagramSocket.h"
 #include "Platform/System/PlatformError.h"
 
+#include <stop_token>
 #include <string>
 #include <utility>
 
@@ -95,6 +97,27 @@ namespace AsynGyanis::Core
             throw Base::SystemException("等待数据报套接字可写失败：套接字无效或已关闭");
         }
         return watcher->waitWritable();
+    }
+
+    Task<bool> AsyncUdpSocket::waitReadableFor(const std::chrono::milliseconds timeout)
+    {
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
+        {
+            throw Base::SystemException("等待数据报套接字可读失败：套接字无效或已关闭");
+        }
+
+        std::stop_source stopSource;
+        Timer            timer(*m_loop);
+        auto             stopper = [&]() -> Task<>
+        {
+            co_await timer.waitFor(timeout);
+            stopSource.request_stop();
+        };
+        Task<> stopperTask = stopper();
+        // 就地首拍，理由同 AsyncSocket::waitReadableFor
+        stopperTask.handle().resume();
+        co_return co_await watcher->waitReadable(stopSource.get_token());
     }
 
     Task<AsyncUdpSocket::DatagramReceiveResult> AsyncUdpSocket::asyncReceiveFrom(void *const buffer, const std::size_t capacity)

@@ -33,6 +33,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -154,7 +155,8 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<Http3ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                               const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                              std::chrono::milliseconds waitTimeout, const Http3ResponseBodyReceiver &responseReceiver = {});
+                                                              std::chrono::milliseconds waitTimeout, const Http3ResponseBodyReceiver &responseReceiver = {},
+                                                              std::stop_token cancelToken = {});
 
         /**
          * @brief 礼貌收尾：发一条 GOAWAY 再关掉底层连接
@@ -233,6 +235,15 @@ namespace AsynGyanis::Net
         void noteBodyBytes(std::int64_t streamId, std::span<const std::uint8_t> bytes);
         void noteMessageEnded(std::int64_t streamId);
         void noteStreamFailed(std::int64_t streamId, std::string_view reason);
+
+        /**
+         * @brief 提交一条请求的头段与可选正文
+         * @param streamId 目标流
+         * @param fieldLines 已排好序的字段段
+         * @param body 整份正文；空表示头段自带收尾
+         * @return 空表示已提交；有值表示协议层拒绝的原因
+         */
+        [[nodiscard]] std::optional<std::string> submitRequest(std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, std::string_view body);
 
         /**
          * @brief 承载层报来「对端复位或叫停了这条流」：先定能不能安全重发，再让协议层收账

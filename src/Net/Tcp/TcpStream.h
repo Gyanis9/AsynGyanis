@@ -14,6 +14,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/Socket/AsyncSocket.h"
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -82,6 +83,13 @@ namespace AsynGyanis::Net
          *         抛 Base::SystemException，不返回负数
          */
         Core::Task<ssize_t> read(void *buffer, std::size_t length);
+
+        /**
+         * @brief 有上限地等可读：缓冲里还有未消费字节时立即为真
+         * @param timeout 等待上限
+         * @return true 可读；false 到点或套接字已关闭
+         */
+        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief 精确读取指定长度字节

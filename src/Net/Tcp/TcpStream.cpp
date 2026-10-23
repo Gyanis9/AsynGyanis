@@ -143,6 +143,15 @@ namespace AsynGyanis::Net
         }
     }
 
+    Core::Task<bool> TcpStream::waitReadableFor(const std::chrono::milliseconds timeout)
+    {
+        if (m_readPosition < m_readBuffer.size())
+        {
+            co_return true;
+        }
+        co_return co_await m_socket.waitReadableFor(timeout);
+    }
+
     Core::Task<ssize_t> TcpStream::write(const void *const buffer, const std::size_t length) const
     {
         // 写入不经缓冲区：套接字发送缓冲由内核管理，这里的短写由 writeAll 负责补偿

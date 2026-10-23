@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -177,7 +178,8 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                               const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                              std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {});
+                                                              std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {},
+                                                              std::stop_token cancelToken = {});
 
         /**
          * @brief 提一条流式正文的请求：正文由 bodySource 一段一段交出，交完才收尾流
@@ -199,7 +201,8 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                                       const std::vector<std::pair<std::string, std::string>> &extraHeaders, const HttpBodyChunkSource &bodySource,
-                                                                      std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {});
+                                                                      std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {},
+                                                                      std::stop_token cancelToken = {});
 
         /**
          * @brief 礼貌收尾：先尽力把 GOAWAY 发出去，再关掉通路
@@ -349,6 +352,19 @@ namespace AsynGyanis::Net
         /// 从通路上读一段字节、处理其中完整的帧，并把攒下的回帧一次写出；返回 false 表示通路不可用
         Core::Task<bool> pumpSome();
 
+        /**
+         * @brief 有上限的 pumpSome：先等最多到截止时刻，没有可读就返回 true 把控制权交回请求循环
+         * @param deadline 本轮等待的截止时刻
+         * @return false 通路不可用；true 本轮结束（有没有处理到帧由上层看流记录）
+         */
+        Core::Task<bool> pumpSomeUntil(std::chrono::steady_clock::time_point deadline);
+
+        /**
+         * @brief 取消一条在途流：标记复位、排 RST_STREAM(CANCEL)、叫醒等待者并尽力写出
+         * @param streamId 目标流
+         */
+        Core::Task<void> cancelStream(std::uint32_t streamId);
+
         /// 本端已经开过几条流：流号从 1 起按 2 递增，故「下一条 - 1」除以 2 就是已用条数
         [[nodiscard]] std::uint32_t openedStreamCount() const noexcept
         {
@@ -412,7 +428,7 @@ namespace AsynGyanis::Net
         Core::Task<Http2ClientResponse> requestWithBody(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
                                                         const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
                                                         const HttpBodyChunkSource *bodySourceOrNull, std::chrono::milliseconds waitTimeout,
-                                                        const Http2ResponseBodyReceiver *responseReceiverOrNull);
+                                                        const Http2ResponseBodyReceiver *responseReceiverOrNull, std::stop_token cancelToken);
 
         /**
          * @brief 把这条流上到了货的正文交一批给接收口，交完才归还这一批的流控额度

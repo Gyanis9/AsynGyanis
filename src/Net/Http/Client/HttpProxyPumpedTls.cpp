@@ -225,6 +225,16 @@ namespace AsynGyanis::Net
         }
     }
 
+    Core::Task<bool> HttpProxyPumpedTls::waitReadableFor(const std::chrono::milliseconds timeout)
+    {
+        requireAlive("等待可读");
+        if (SSL_pending(m_inner.get()) > 0)
+        {
+            co_return true;
+        }
+        co_return co_await m_outer->waitReadableFor(timeout);
+    }
+
     Core::Task<ssize_t> HttpProxyPumpedTls::asyncSend(const void *const buffer, const size_t length)
     {
         requireAlive("写入");

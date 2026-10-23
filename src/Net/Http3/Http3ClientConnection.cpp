@@ -1,6 +1,7 @@
 #include "Net/Http3/Http3ClientConnection.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/CancellationWatch.h"
 #include "Core/Coroutine/DeadlineGuard.h"
 #include "Net/Http/Message/HttpHeaderRules.h"
 #include "Net/Http3/Qpack.h"
@@ -90,12 +91,64 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
+    namespace
+    {
+        /// 组装一条 h3 请求的字段段：顺序与 h2 出站侧一致，调用方给的 Host 一律丢掉
+        std::vector<QpackHeaderField> buildFieldLines(const std::string_view scheme, const std::string_view authority, const std::string_view method, const std::string_view path,
+                                                      const std::vector<std::pair<std::string, std::string>> &extraHeaders)
+        {
+            std::vector<QpackHeaderField> fieldLines;
+            fieldLines.reserve(extraHeaders.size() + 4U);
+            // 顺序与 h2 出站侧逐字一致（:method、:path、:scheme、:authority）：伪头之间 RFC 9114 不排序，
+            // 但自家两型用同一份顺序，校验出问题时的可读性更好
+            fieldLines.push_back({":method", std::string{method}});
+            fieldLines.push_back({":path", std::string{path}});
+            fieldLines.push_back({":scheme", std::string{scheme}});
+            fieldLines.push_back({":authority", std::string{authority}});
+            for (const auto &[name, value]: extraHeaders)
+            {
+                // 调用方另塞的一份 Host 不上线：本端每条请求都带 :authority，而 RFC 9114 §4.3.1 要求两者同时
+                // 在场时必须是同一个值（本端服务端正按这条拒入站请求）。与 h2 出站侧同一条形状，护的是直接用
+                // 本类的那条路——本类入参没有任何地方保证两者同源
+                if (equalsIgnoringCase(name, "host"))
+                {
+                    continue;
+                }
+                fieldLines.push_back({name, value});
+            }
+            return fieldLines;
+        }
+    } // namespace
+
+    std::optional<std::string> Http3ClientConnection::submitRequest(const std::int64_t streamId, const std::vector<QpackHeaderField> &fieldLines, const std::string_view body)
+    {
+        const bool hasBody = !body.empty();
+        if (const auto submitted = m_protocol->submitRequestHead(streamId, fieldLines, !hasBody); !submitted)
+        {
+            return submitted.error().message;
+        }
+        if (hasBody)
+        {
+            const std::span<const std::uint8_t> bodyBytes{reinterpret_cast<const std::uint8_t *>(body.data()), body.size()};
+            if (const auto appended = m_protocol->appendRequestBody(streamId, bodyBytes, true); !appended)
+            {
+                return appended.error().message;
+            }
+        }
+        return std::nullopt;
+    }
+
     Core::Task<Http3ClientResponse> Http3ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
                                                                    const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
                                                                    const std::string_view body, const std::chrono::milliseconds waitTimeout,
-                                                                   const Http3ResponseBodyReceiver &responseReceiver)
+                                                                   const Http3ResponseBodyReceiver &responseReceiver, const std::stop_token cancelToken)
     {
         Http3ClientResponse outcome{};
+        if (cancelToken.stop_requested())
+        {
+            outcome.errorMessage = "请求已取消：调用方在提交流之前已请求停止";
+            co_return outcome;
+        }
         if (!m_isHealthy || m_protocol == nullptr)
         {
             outcome.errorMessage = "这条 HTTP/3 连接不可用，请求没有发出";
@@ -116,50 +169,32 @@ namespace AsynGyanis::Net
         }
         ++m_openedStreamCount;
 
-        std::vector<QpackHeaderField> fieldLines;
-        fieldLines.reserve(extraHeaders.size() + 4U);
-        // 顺序与 h2 出站侧逐字一致（:method、:path、:scheme、:authority）：伪头之间 RFC 9114 不排序，
-        // 但自家两型用同一份顺序，校验出问题时的可读性更好
-        fieldLines.push_back({":method", std::string{method}});
-        fieldLines.push_back({":path", std::string{path}});
-        fieldLines.push_back({":scheme", std::string{scheme}});
-        fieldLines.push_back({":authority", std::string{authority}});
-        for (const auto &[name, value]: extraHeaders)
-        {
-            // 调用方另塞的一份 Host 不上线：本端每条请求都带 :authority，而 RFC 9114 §4.3.1 要求两者同时
-            // 在场时必须是同一个值（本端服务端正按这条拒入站请求）。与 h2 出站侧同一条形状，护的是直接用
-            // 本类的那条路——本类入参没有任何地方保证两者同源
-            if (equalsIgnoringCase(name, "host"))
-            {
-                continue;
-            }
-            fieldLines.push_back({name, value});
-        }
+        const std::vector<QpackHeaderField> fieldLines = buildFieldLines(scheme, authority, method, path, extraHeaders);
 
         PendingExchange &exchange = exchangeFor(streamId);
+
+        Core::CancellationWatch cancellationWatch(m_connection.eventLoop(), cancelToken,
+                                                  [this, streamId](std::stop_token) -> Core::Task<>
+                                                  {
+                                                      LOG_WARN_FMT("Http3ClientConnection: 流 {} 被调用方取消", streamId);
+                                                      noteStreamFailed(streamId, "请求已取消：调用方请求停止");
+                                                      m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
+                                                      m_protocol->flush();
+                                                      co_await m_connection.sendPending();
+                                                  });
+
         // 接收口按值存进这条流的账：调用方那份只保证活到 co_await 返回，而这份账要在好几轮里
         // 都认得「该把正文交给谁」
         if (static_cast<bool>(responseReceiver))
         {
             exchange.responseReceiver = responseReceiver;
         }
-        const bool hasBody = !body.empty();
-        if (const auto submitted = m_protocol->submitRequestHead(streamId, fieldLines, !hasBody); !submitted)
+        if (const auto submitError = submitRequest(streamId, fieldLines, body); submitError.has_value())
         {
-            // 头段没被编出去，也就没有需要收口的流：把这条记账摘掉直接回因即可
+            // 头段或正文没被编出去：把这条记账摘掉直接回因
             m_pendingStreams.erase(streamId);
-            outcome.errorMessage = submitted.error().message;
+            outcome.errorMessage = *submitError;
             co_return outcome;
-        }
-        if (hasBody)
-        {
-            const std::span<const std::uint8_t> bodyBytes{reinterpret_cast<const std::uint8_t *>(body.data()), body.size()};
-            if (const auto appended = m_protocol->appendRequestBody(streamId, bodyBytes, true); !appended)
-            {
-                m_pendingStreams.erase(streamId);
-                outcome.errorMessage = appended.error().message;
-                co_return outcome;
-            }
         }
 
         // 时限挂在底层连接上：到点 close() 会把仍挂在可读上的收发协程叫醒，本循环才能退出。
@@ -189,7 +224,13 @@ namespace AsynGyanis::Net
                     noteStreamFailed(streamId, exchange.response.isAnyByteReceived ? "响应没收完，连接已被对端或本端收口" : "连接在收到任何字节之前就被收口");
                     break;
                 }
-                co_await m_connection.pumpOnce();
+                if (cancelToken.stop_possible())
+                {
+                    co_await m_connection.pumpOnceFor(std::chrono::milliseconds{5});
+                } else
+                {
+                    co_await m_connection.pumpOnce();
+                }
             }
         }
 

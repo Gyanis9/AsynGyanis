@@ -20,6 +20,7 @@
 
 #include <openssl/types.h>
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -88,6 +89,13 @@ namespace AsynGyanis::Net
          * @throws Core::CoreException 会话失效或外层隧道中断
          */
         Core::Task<ssize_t> asyncReceive(void *buffer, size_t length);
+
+        /**
+         * @brief 有上限地等可读：内层已解出的明文也算可读
+         * @param timeout 等待上限
+         * @return true 可读；false 到点或外层隧道已关闭
+         */
+        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
 
         /**
          * @brief 写出内层 TLS 的明文

@@ -270,6 +270,20 @@ namespace AsynGyanis::Net
         co_return;
     }
 
+    Core::Task<> QuicClientConnection::pumpOnceFor(const std::chrono::milliseconds timeout)
+    {
+        if (m_connection == nullptr || m_socket == nullptr || m_isStopped)
+        {
+            co_return;
+        }
+        if (!co_await m_socket->waitReadableFor(timeout))
+        {
+            co_return; // 到点或套接字已关：请求循环回到自己的取消检查
+        }
+        co_await pumpOnce();
+        co_return;
+    }
+
     bool QuicClientConnection::isReady() const noexcept
     {
         return m_connection != nullptr && m_connection->isHandshakeComplete();

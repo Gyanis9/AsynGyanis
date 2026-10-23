@@ -3,6 +3,7 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Socket/VectoredSendCursor.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -12,6 +13,7 @@
 #include <array>
 #include <cerrno>
 #include <limits>
+#include <stop_token>
 #include <string>
 #include <system_error>
 
@@ -525,6 +527,27 @@ namespace AsynGyanis::Core
             throw Base::SystemException("等待套接字可写失败：套接字无效或已关闭");
         }
         return watcher->waitWritable();
+    }
+
+    Task<bool> AsyncSocket::waitReadableFor(const std::chrono::milliseconds timeout)
+    {
+        IoWatcher *const watcher = ensureWatcher();
+        if (watcher == nullptr)
+        {
+            throw Base::SystemException("等待套接字可读失败：套接字无效或已关闭");
+        }
+
+        std::stop_source stopSource;
+        Timer            timer(m_loop);
+        auto             stopper = [&]() -> Task<>
+        {
+            co_await timer.waitFor(timeout);
+            stopSource.request_stop();
+        };
+        Task<> stopperTask = stopper();
+        // 就地首拍：把定时器挂上再等可读；投进调度器会让这个局部 Task 在收尾时留下一个悬空句柄
+        stopperTask.handle().resume();
+        co_return co_await watcher->waitReadable(stopSource.get_token());
     }
 
     void AsyncSocket::setNonBlocking() const
