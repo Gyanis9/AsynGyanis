@@ -18,6 +18,7 @@
 
 #include "CoreTestSupport.h"
 
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include "ExpectedAssertions.h"
@@ -59,6 +60,18 @@ namespace AsynGyanis::Net
 
         /// 速率限制窗口过期用例用的窗口长度
         constexpr auto kRateLimitWindow = std::chrono::milliseconds(20);
+
+        /**
+         * @brief 断言装配期按用法错误拒绝，并交回原因供调用方核对
+         * @param action 注册或构造动作
+         * @param expected 原因里必须出现的片段（键名、取值或规则）
+         */
+        template<typename Action>
+        void expectConfigurationRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "装配期配置");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
 
         /**
          * @brief 在超时上限内逐毫秒轮询等待条件成立（定义见 CoreTestSupport.h）
@@ -454,7 +467,9 @@ namespace AsynGyanis::Net
         auto chainTask = pipeline.run(request, response, handler);
         chainTask.handle().resume();
         ASSERT_TRUE(chainTask.isReady());
-        EXPECT_THROW(static_cast<void>(chainTask.handle().promise().result()), std::runtime_error);
+        const std::string reason =
+                AsynGyanis::TestSupport::requireFailureText<std::runtime_error>([&] { static_cast<void>(chainTask.handle().promise().result()); }, "处理器抛异常");
+        EXPECT_NE(reason.find("handler failed"), std::string::npos) << "管道改写了处理器的异常正文：" << reason;
     }
 
     // ============================================================================
@@ -727,7 +742,7 @@ namespace AsynGyanis::Net
     {
         CorsPolicy policy;
         policy.maxAge = std::chrono::seconds{-5};
-        EXPECT_THROW(static_cast<void>(corsMiddleware(policy)), Base::InvalidArgumentException) << "负秒数等于把 maxAge 这一格配废，装配期就该拒";
+        expectConfigurationRejected([&] { static_cast<void>(corsMiddleware(policy)); }, "预检缓存秒数不能为负");
     }
 
     TEST(CorsMiddleware, DeclaresConfiguredMethodsHeadersAndMaxAge)
@@ -908,21 +923,21 @@ namespace AsynGyanis::Net
 
     TEST(AltSvcMiddleware, RejectsZeroPort)
     {
-        EXPECT_THROW(altSvcMiddleware(0), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(0)); }, "端口不能为 0");
     }
 
     TEST(AltSvcMiddleware, RejectsNonPositiveMaxAge)
     {
-        EXPECT_THROW(altSvcMiddleware(8443, std::chrono::seconds{0}), Base::InvalidArgumentException);
-        EXPECT_THROW(altSvcMiddleware(8443, std::chrono::seconds{-1}), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(8443, std::chrono::seconds{0})); }, "通告缓存时长必须为正数");
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(8443, std::chrono::seconds{-1})); }, "通告缓存时长必须为正数");
     }
 
     TEST(AltSvcMiddleware, RejectsAuthorityThatWouldSplitFieldValue)
     {
         // 双引号会提前结束 quoted-string，分号会被读成下一个参数，CR/LF 直接撕裂报文
-        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge\".example.com"), Base::InvalidArgumentException);
-        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com; ma=1"), Base::InvalidArgumentException);
-        EXPECT_THROW(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com\r\nx"), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge\".example.com")); }, "备选端点主机名不能含");
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com; ma=1")); }, "备选端点主机名不能含");
+        expectConfigurationRejected([&] { static_cast<void>(altSvcMiddleware(8443, kAltSvcDefaultMaxAge, "edge.example.com\r\nx")); }, "备选端点主机名不能含");
     }
 
     // ============================================================================
@@ -1087,13 +1102,14 @@ namespace AsynGyanis::Net
 
     TEST(TraceContextMiddleware, RejectsInvalidVendorKeyAtRegistration)
     {
+        // BadKey 先被拒：大写字母不在 tracestate 键的字符集里；congo 是规范保留字
         TraceContextOptions options;
         options.vendorKey = "BadKey";
-        EXPECT_THROW(traceContextMiddleware(std::move(options)), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(traceContextMiddleware(std::move(options))); }, "不合 W3C §3.2.3");
 
         TraceContextOptions reservedKey;
         reservedKey.vendorKey = "congo";
-        EXPECT_THROW(traceContextMiddleware(std::move(reservedKey)), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(traceContextMiddleware(std::move(reservedKey))); }, "congo");
     }
 
     /**
@@ -1862,9 +1878,9 @@ namespace AsynGyanis::Net
     TEST(TokenBucket, RejectsInvalidConfiguration)
     {
         // 速率非正无法补令牌；容量小于 1 永远攒不满一个令牌——两者都是配置错误，必须当场抛
-        EXPECT_THROW(TokenBucket(0.0, 1.0), Base::InvalidArgumentException);
-        EXPECT_THROW(TokenBucket(-1.0, 1.0), Base::InvalidArgumentException);
-        EXPECT_THROW(TokenBucket(1.0, 0.5), Base::InvalidArgumentException);
+        expectConfigurationRejected([] { static_cast<void>(TokenBucket(0.0, 1.0)); }, "补令牌速率必须为正数");
+        expectConfigurationRejected([] { static_cast<void>(TokenBucket(-1.0, 1.0)); }, "补令牌速率必须为正数");
+        expectConfigurationRejected([] { static_cast<void>(TokenBucket(1.0, 0.5)); }, "桶容量必须不小于 1");
     }
 
     TEST(TokenBucket, ReportsWaitTimeUntilNextToken)
@@ -1910,7 +1926,7 @@ namespace AsynGyanis::Net
     TEST(TokenBucket, RejectsNullBucketAtFactoryTime)
     {
         // 空桶是用法错误，不是「不限制」：静默放行会让人以为限流生效
-        EXPECT_THROW(tokenBucketRateLimiterMiddleware(nullptr), Base::InvalidArgumentException);
+        expectConfigurationRejected([] { static_cast<void>(tokenBucketRateLimiterMiddleware(nullptr)); }, "令牌桶不能为空指针");
     }
 
     TEST(TokenBucket, ConcurrentAcquireNeverExceedsCapacity)
@@ -2049,7 +2065,7 @@ namespace AsynGyanis::Net
         SecurityHeadersOptions options;
         options.strictTransportSecurityMaxAgeSeconds = 31'536'000;
         options.strictTransportSecurityPreload       = true;
-        EXPECT_THROW(securityHeadersMiddleware(options), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(securityHeadersMiddleware(options)); }, "strictTransportSecurityPreload");
 
         options.strictTransportSecurityIncludeSubDomains = true;
         EXPECT_NO_THROW(securityHeadersMiddleware(options));
@@ -2064,15 +2080,15 @@ namespace AsynGyanis::Net
     {
         SecurityHeadersOptions withSplit;
         withSplit.contentSecurityPolicy = "default-src 'self';\r\nX-Fake: 1";
-        EXPECT_THROW(securityHeadersMiddleware(withSplit), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(securityHeadersMiddleware(withSplit)); }, "非法字段值字节");
 
         SecurityHeadersOptions withNul;
         withNul.frameOptions = std::string("SAMEORIGIN") + '\0';
-        EXPECT_THROW(securityHeadersMiddleware(withNul), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(securityHeadersMiddleware(withNul)); }, "非法字段值字节");
 
         SecurityHeadersOptions withLineFeedOnly;
         withLineFeedOnly.referrerPolicy = "no-referrer\n";
-        EXPECT_THROW(securityHeadersMiddleware(withLineFeedOnly), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(securityHeadersMiddleware(withLineFeedOnly)); }, "非法字段值字节");
     }
 
     /**
@@ -2256,17 +2272,17 @@ namespace AsynGyanis::Net
     TEST(BasicAuthMiddleware, RefusesAMissingVerifierAndAnInjectableRealm)
     {
         BasicAuthOptions noVerifier;
-        EXPECT_THROW(basicAuthMiddleware(noVerifier), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(basicAuthMiddleware(noVerifier)); }, "没有 verify");
 
         BasicAuthOptions quotedRealm;
         quotedRealm.verify = [](std::string_view, std::string_view) { return true; };
         quotedRealm.realm  = "a\", Set-Cookie: x=1";
-        EXPECT_THROW(basicAuthMiddleware(quotedRealm), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(basicAuthMiddleware(quotedRealm)); }, "realm 不能含引号");
 
         BasicAuthOptions lineFeedRealm;
         lineFeedRealm.verify = [](std::string_view, std::string_view) { return true; };
         lineFeedRealm.realm  = "two\r\nlines";
-        EXPECT_THROW(basicAuthMiddleware(lineFeedRealm), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(basicAuthMiddleware(lineFeedRealm)); }, "realm 不能含引号");
     }
 
     /**
@@ -2472,16 +2488,16 @@ namespace AsynGyanis::Net
     TEST(BearerAuthMiddleware, RefusesAMissingVerifierAndAnInjectableRealm)
     {
         BearerAuthOptions noVerifier;
-        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(noVerifier)), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(bearerAuthMiddleware(noVerifier)); }, "没有 verify");
 
         BearerAuthOptions quotedRealm;
         quotedRealm.verify = [](const std::string_view) { return true; };
         quotedRealm.realm  = "troublesome\"realm";
-        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(quotedRealm)), Base::InvalidArgumentException) << "realm 会被拼进引号里，带引号就是响应头注入";
+        expectConfigurationRejected([&] { static_cast<void>(bearerAuthMiddleware(quotedRealm)); }, "realm 不能含引号");
 
         BearerAuthOptions lineFeedRealm;
         lineFeedRealm.verify = [](const std::string_view) { return true; };
         lineFeedRealm.realm  = "two\r\nlines";
-        EXPECT_THROW(static_cast<void>(bearerAuthMiddleware(lineFeedRealm)), Base::InvalidArgumentException);
+        expectConfigurationRejected([&] { static_cast<void>(bearerAuthMiddleware(lineFeedRealm)); }, "realm 不能含引号");
     }
 } // namespace AsynGyanis::Net
