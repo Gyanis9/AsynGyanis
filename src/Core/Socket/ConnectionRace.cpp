@@ -4,6 +4,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/CancellationWatch.h"
 #include "Core/Coroutine/DeadlineGuard.h"
 #include "Core/EventLoop/EventLoop.h"
 
@@ -96,7 +97,7 @@ namespace AsynGyanis::Core
              */
             void launchPending()
             {
-                while (!m_winner.has_value() && !m_isBudgetExhausted && m_inFlightCount < kMaximumConcurrentCandidates && m_launchedCount < m_candidates.size())
+                while (!m_winner.has_value() && !m_isBudgetExhausted && !m_isCancelled && m_inFlightCount < kMaximumConcurrentCandidates && m_launchedCount < m_candidates.size())
                 {
                     if (remainingBudget().count() <= 0)
                     {
@@ -132,7 +133,7 @@ namespace AsynGyanis::Core
              */
             bool claimWin(const std::size_t index)
             {
-                if (m_winner.has_value())
+                if (m_winner.has_value() || m_isCancelled)
                 {
                     return false;
                 }
@@ -148,7 +149,43 @@ namespace AsynGyanis::Core
              */
             std::optional<ConnectedCandidate> takeWinner()
             {
+                if (m_isCancelled)
+                {
+                    return std::nullopt;
+                }
                 return std::move(m_winner);
+            }
+
+            /**
+             * @brief 取消整场竞赛：关闭所有候选套接字并唤醒等待方
+             * @details 关套接字是唤醒挂在 connect 上的候选协程的唯一手段；已选出的胜者也要关，
+             *          因为取消发生在它被取走之前时，调用方不应该再拿到它。
+             */
+            void cancel() noexcept
+            {
+                if (m_isCancelled)
+                {
+                    return;
+                }
+                m_isCancelled       = true;
+                m_isBudgetExhausted = true;
+                for (std::optional<AsyncSocket> &socket: m_sockets)
+                {
+                    if (socket.has_value())
+                    {
+                        socket->close();
+                    }
+                }
+                if (m_winner.has_value())
+                {
+                    m_winner->socket.close();
+                }
+                // 在途候选要先自己收口：它们的帧还挂在 m_attempts 里，提前唤醒等待方会让账本
+                // 在候选协程仍可能被套接字唤醒时销毁
+                if (m_inFlightCount == 0U && m_waiter)
+                {
+                    m_loop.scheduler().schedule(std::exchange(m_waiter, {}));
+                }
             }
 
             /**
@@ -157,7 +194,7 @@ namespace AsynGyanis::Core
              */
             [[nodiscard]] bool isSettled() const noexcept
             {
-                return m_inFlightCount == 0U && (m_winner.has_value() || m_isBudgetExhausted || m_launchedCount == m_candidates.size());
+                return m_inFlightCount == 0U && (m_isCancelled || m_winner.has_value() || m_isBudgetExhausted || m_launchedCount == m_candidates.size());
             }
 
             /// 登记等待方协程：定局时由最后一路收口的候选把它排回循环
@@ -212,6 +249,7 @@ namespace AsynGyanis::Core
             std::size_t                                 m_inFlightCount{0};         ///< 在途（已发起未收口）的候选数
             std::size_t                                 m_launchedCount{0};         ///< 已发起过的候选条数（发到哪里为止）
             bool                                        m_isBudgetExhausted{false}; ///< 预算用尽，剩下的候选不再发起
+            bool                                        m_isCancelled{false};       ///< 调用方取消：不再发起候选，等待方立刻收口
             std::coroutine_handle<>                     m_waiter{};                 ///< 等待整场收口的协程
         };
 
@@ -341,10 +379,32 @@ namespace AsynGyanis::Core
 
     Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline)
     {
+        co_return co_await connectCandidates(loop, std::move(candidates), deadline, {});
+    }
+
+    Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline,
+                                                              const std::stop_token cancelToken)
+    {
         CandidateRace race(loop, std::move(candidates), deadline);
+        // 看门狗先就位：令牌已经停止时，launchPending 不再发起任何候选
+        Core::CancellationWatch cancelWatch(loop, cancelToken,
+                                            [&race](std::stop_token) -> Task<>
+                                            {
+                                                race.cancel();
+                                                co_return;
+                                            });
         race.launchPending();
         // 一次 co_await 就把胜者带走：await_resume() 是搬空账本里的胜者，多调一次第二次只会拿到
         // 一个描述符已归还的空壳
-        co_return co_await RaceAwaiter{race};
+        std::optional<ConnectedCandidate> winner = co_await RaceAwaiter{race};
+        if (cancelToken.stop_requested())
+        {
+            if (winner.has_value())
+            {
+                winner->socket.close();
+            }
+            co_return std::nullopt;
+        }
+        co_return winner;
     }
 } // namespace AsynGyanis::Core

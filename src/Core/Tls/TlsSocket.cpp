@@ -210,6 +210,11 @@ namespace AsynGyanis::Core
 
     Task<ssize_t> TlsSocket::asyncReceive(void *const buffer, const size_t length) const
     {
+        co_return co_await asyncReceive(buffer, length, {});
+    }
+
+    Task<ssize_t> TlsSocket::asyncReceive(void *const buffer, const size_t length, const std::stop_token stopToken) const
+    {
         if (length == 0)
         {
             co_return 0;
@@ -248,9 +253,13 @@ namespace AsynGyanis::Core
             const int error = SSL_get_error(m_ssl.get(), ret);
             if (error == SSL_ERROR_WANT_READ)
             {
-                if (!co_await m_socket.waitReadable())
+                // 半条记录也会让 SSL_read 走到这里：套接字「可读」只说明有字节，
+                // 凑不齐一条记录就得继续等，因此令牌要一直传到这次等待上。
+                // 等待器只借道非 const 入口登记瞬时等待位，读取本身不改套接字的任何状态
+                AsyncSocket &socket = const_cast<AsyncSocket &>(m_socket);
+                if (!co_await socket.waitReadable(stopToken))
                 {
-                    throw CoreException("TLS 读取失败：等待可读期间套接字被关闭");
+                    throw CoreException("TLS 读取失败：等待可读期间套接字被关闭或调用方已取消");
                 }
                 continue;
             }

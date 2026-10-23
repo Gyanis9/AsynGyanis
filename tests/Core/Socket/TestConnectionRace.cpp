@@ -11,6 +11,7 @@
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/InetAddress.h"
 
@@ -24,6 +25,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -175,6 +177,33 @@ namespace AsynGyanis::Core
             return std::move(*completed.value);
         }
 
+        /// 带取消令牌的竞赛观测：到点请求停止，用来验证候选连接能被唤醒收口
+        Task<RaceObservation> observeCancelledRace(EventLoop &loop, std::vector<InetAddress> candidates, const std::chrono::milliseconds deadline, std::stop_source &source,
+                                                   const std::chrono::milliseconds cancelAfter)
+        {
+            RaceObservation observation;
+            const auto      startedAt = std::chrono::steady_clock::now();
+
+            Timer cancelTimer(loop);
+            auto  canceller = [&]() -> Task<>
+            {
+                co_await cancelTimer.waitFor(cancelAfter);
+                static_cast<void>(source.request_stop());
+            };
+            Task<> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            std::optional<ConnectedCandidate> winner = co_await connectCandidates(loop, std::move(candidates), deadline, source.get_token());
+            observation.isConcluded                  = true;
+            observation.elapsed                      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+            if (winner.has_value())
+            {
+                observation.winnerPort = winner->address.port();
+                winner->socket.close();
+            }
+            co_return observation;
+        }
+
         /**
          * @brief 探一次本机会不会把黑洞地址当真黑洞
          * @param runner 后台事件循环
@@ -305,6 +334,27 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(outcome.isConcluded) << "整场没收场：到点的那条候选没被关掉或没报收口";
         EXPECT_FALSE(outcome.winnerPort.has_value()) << "一条都连不上，却交出了胜者";
         EXPECT_GE(outcome.elapsed, std::chrono::milliseconds{250}) << "比时限早这么多就收场，看门狗的时限没生效";
+    }
+
+    /**
+     * @brief 取消令牌要能把挂在黑洞候选上的竞赛叫醒，而不是等满整场时限
+     */
+    TEST(ConnectionRace, CancelsPendingCandidatesWhenTheTokenStops)
+    {
+        EventLoopThread runner;
+        if (!isBlackholePending(runner))
+        {
+            GTEST_SKIP() << "本机对 192.0.2.1 立刻给出不可达而不是静默丢包，取消唤醒没有可挂的候选";
+        }
+
+        std::stop_source source;
+        auto             completed = runner.runToCompletion(
+                observeCancelledRace(runner.loop(), {InetAddress(kBlackholeIp, kBlackholePort)}, std::chrono::seconds{2}, source, std::chrono::milliseconds{50}));
+        ASSERT_FALSE(completed.error) << "取消路径把异常抛出了竞赛契约";
+        ASSERT_TRUE(completed.finished) << "取消之后竞赛仍未收场";
+        EXPECT_TRUE(completed.value->isConcluded);
+        EXPECT_FALSE(completed.value->winnerPort.has_value()) << "取消之后仍交出了胜者";
+        EXPECT_LT(completed.value->elapsed, std::chrono::milliseconds{500}) << "取消没有及时唤醒候选";
     }
 
     /**

@@ -20,20 +20,27 @@
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
 
 #include "AllocationProbe.h"
 #include "CoreTestSupport.h"
 #include "MetricsTestSupport.h"
-#include "MetricsTestSupport.h"
 
 #include <gtest/gtest.h>
 
+#include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace AsynGyanis::Core
@@ -883,6 +890,280 @@ namespace AsynGyanis::Core
         // 一轮里两端各算一次「握手完成」：这一条数的是握手事件而不是连接条数（指标说明里写的是这个口径）
         EXPECT_EQ(registryValue("asyn_tls_handshakes_total") - handshakesBefore, 4U) << "两轮两端共四次握手完成，导出的总量却没有走四次";
         EXPECT_EQ(registryValue("asyn_tls_session_reused_total") - reusedBefore, reusedByOpenssl) << "复用计数与 OpenSSL 自己报的判定不一致";
+    }
+
+    namespace
+    {
+        /**
+         * @brief 用内存 BIO 驱动的 TLS 服务端：密文由用例决定怎么切、怎么送上通路
+         * @details 绑定描述符的 SSL 会把整条记录一次写出去，造不出「半条记录」的形状。这里让 SSL
+         *          把记录写进内存 BIO，再由用例按任意长度切开发送：客户端因此会停在
+         *          「凑不齐一条记录」的内层等待上，而不是「一个字节都没有」的外层等待。
+         */
+        class MemoryBioTlsServer
+        {
+        public:
+            /**
+             * @brief 建一个服务端 SSL 并把收发都接到内存 BIO 上
+             * @param context 已加载证书与私钥的服务端上下文
+             * @param descriptor 与客户端相连的通路（须为非阻塞）
+             */
+            MemoryBioTlsServer(TlsContext &context, const int descriptor) : m_descriptor(descriptor), m_ssl(SSL_new(context.nativeHandle()), &SSL_free)
+            {
+                if (!m_ssl)
+                {
+                    return;
+                }
+                SSL_set_accept_state(m_ssl.get());
+                BIO *readBio  = BIO_new(BIO_s_mem());
+                BIO *writeBio = BIO_new(BIO_s_mem());
+                if (readBio == nullptr || writeBio == nullptr)
+                {
+                    BIO_free(readBio);
+                    BIO_free(writeBio);
+                    m_ssl.reset();
+                    return;
+                }
+                SSL_set0_rbio(m_ssl.get(), readBio);
+                SSL_set0_wbio(m_ssl.get(), writeBio);
+            }
+
+            MemoryBioTlsServer(const MemoryBioTlsServer &)            = delete;
+            MemoryBioTlsServer &operator=(const MemoryBioTlsServer &) = delete;
+            MemoryBioTlsServer(MemoryBioTlsServer &&)                 = delete;
+            MemoryBioTlsServer &operator=(MemoryBioTlsServer &&)      = delete;
+
+            ~MemoryBioTlsServer() = default;
+
+            /// 内存 BIO 与 SSL 是否都已就绪
+            [[nodiscard]] bool isReady() const noexcept
+            {
+                return m_ssl != nullptr;
+            }
+
+            /// 推进一次握手：先收净可读字节，再让 OpenSSL 走一步，最后把产出的记录送上通路
+            bool stepHandshake()
+            {
+                if (!m_ssl)
+                {
+                    return false;
+                }
+                feedInput();
+                ERR_clear_error();
+                const int result = SSL_do_handshake(m_ssl.get());
+                flushOutput();
+                return result == 1;
+            }
+
+            /**
+             * @brief 把一段明文编成密文交出来（不送上通路）
+             * @param plaintext 待加密的明文
+             * @return std::string 产出的密文记录；失败为空
+             */
+            std::string encrypt(const std::string_view plaintext)
+            {
+                if (!m_ssl)
+                {
+                    return {};
+                }
+                ERR_clear_error();
+                if (SSL_write(m_ssl.get(), plaintext.data(), static_cast<int>(plaintext.size())) <= 0)
+                {
+                    return {};
+                }
+                return drainOutput();
+            }
+
+            /// 把字节整段送上通路
+            bool sendToPeer(const std::string_view bytes)
+            {
+                std::size_t sentByteCount = 0;
+                while (sentByteCount < bytes.size())
+                {
+                    const int written = static_cast<int>(::send(m_descriptor, bytes.data() + sentByteCount, static_cast<int>(bytes.size() - sentByteCount), 0));
+                    if (written <= 0)
+                    {
+                        return false;
+                    }
+                    sentByteCount += static_cast<std::size_t>(written);
+                }
+                return true;
+            }
+
+        private:
+            /// 把通路上此刻可读的字节全部灌进读 BIO
+            void feedInput()
+            {
+                for (;;)
+                {
+                    char      chunk[4096];
+                    const int receivedByteCount = static_cast<int>(::recv(m_descriptor, chunk, static_cast<int>(sizeof(chunk)), 0));
+                    if (receivedByteCount <= 0 || BIO_write(SSL_get_rbio(m_ssl.get()), chunk, receivedByteCount) <= 0)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            /// 把写 BIO 里已产出的记录全部取出来
+            std::string drainOutput()
+            {
+                std::string output;
+                for (;;)
+                {
+                    char      chunk[4096];
+                    const int pendingByteCount = static_cast<int>(BIO_ctrl_pending(SSL_get_wbio(m_ssl.get())));
+                    if (pendingByteCount <= 0)
+                    {
+                        break;
+                    }
+                    const int chunkByteCount = pendingByteCount < static_cast<int>(sizeof(chunk)) ? pendingByteCount : static_cast<int>(sizeof(chunk));
+                    const int readByteCount  = BIO_read(SSL_get_wbio(m_ssl.get()), chunk, chunkByteCount);
+                    if (readByteCount <= 0)
+                    {
+                        break;
+                    }
+                    output.append(chunk, static_cast<std::size_t>(readByteCount));
+                }
+                return output;
+            }
+
+            /// 把写 BIO 里攒下的记录整段送上通路
+            void flushOutput()
+            {
+                const std::string output = drainOutput();
+                if (!output.empty())
+                {
+                    static_cast<void>(sendToPeer(output));
+                }
+            }
+
+            int                                   m_descriptor; ///< 与客户端相连的通路
+            std::unique_ptr<SSL, void (*)(SSL *)> m_ssl;        ///< 服务端 SSL（内存 BIO 随它一起归还）
+        };
+
+        /**
+         * @brief 在一对描述符上把客户端与服务端的握手推完
+         * @param loop 客户端 TlsSocket 所属循环
+         * @param server 内存 BIO 服务端
+         * @param clientHandshake 已经启动的客户端握手任务
+         * @return true 客户端握手在时限内完成
+         */
+        bool driveMemoryBioHandshake(EventLoop &loop, MemoryBioTlsServer &server, Task<> &clientHandshake)
+        {
+            clientHandshake.handle().resume();
+            return TestSupport::advanceUntil(loop,
+                                             [&server, &clientHandshake]
+                                             {
+                                                 static_cast<void>(server.stepHandshake());
+                                                 return clientHandshake.isReady();
+                                             });
+        }
+    } // namespace
+
+    /**
+     * @brief 正对照：内存 BIO 服务端写出的完整记录能被读到
+     * @details 下一条用例判的是「半条记录上的取消能叫醒读取」，得先证明同一套装置在记录完整时
+     *          确实能读到明文，否则等待可能压根没走到记录拼装那一步，判据就没有鉴别力。
+     */
+    TEST(TlsSocket, ReceivesPlaintextFromAWholeRecordWrittenByAMemoryBioServer)
+    {
+        const Platform::Socket::Initialization network;
+        EventLoop                              loop;
+        TlsContext                             serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int serverDescriptor = -1;
+        int clientDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+        ASSERT_TRUE(Platform::FileDescriptor::setNonBlocking(serverDescriptor)) << "服务端通路没能转成非阻塞，握手泵会挂住测试线程";
+
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+        SSL *clientHandle = SSL_new(clientContext.get());
+        ASSERT_NE(clientHandle, nullptr);
+        ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+        TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+        MemoryBioTlsServer server(serverContext, serverDescriptor);
+        ASSERT_TRUE(server.isReady()) << "内存 BIO 没有建起来";
+        Task<> clientHandshake = clientSocket.handshake();
+        ASSERT_TRUE(driveMemoryBioHandshake(loop, server, clientHandshake)) << "客户端与服务端没有在时限内完成握手";
+
+        constexpr std::string_view kPayload = "whole-record-payload";
+        const std::string          record   = server.encrypt(kPayload);
+        ASSERT_FALSE(record.empty()) << "服务端没有产出记录";
+        ASSERT_TRUE(server.sendToPeer(record)) << "记录没能送上通路";
+
+        std::array<char, 64> buffer{};
+        Task<ssize_t>        readTask = clientSocket.asyncReceive(buffer.data(), kPayload.size());
+        readTask.handle().resume();
+        ASSERT_TRUE(advanceUntil(loop, [&readTask] { return readTask.isReady(); })) << "完整记录没被读出来";
+        EXPECT_EQ(readTask.handle().promise().result(), static_cast<ssize_t>(kPayload.size()));
+        EXPECT_EQ(std::string_view(buffer.data(), kPayload.size()), kPayload);
+        clientSocket.close();
+    }
+
+    /**
+     * @brief 钉住：停在半条记录上时，停止令牌要能把读取叫醒
+     * @details 客户端只收到记录的前半截，OpenSSL 会一直等剩下的字节；这段等待发生在
+     *          asyncReceive 内部的「凑齐记录」循环里，不是外层那次 waitReadable。先让循环跑一会儿
+     *          再请求停止，判据才压在这条路径上；没有令牌的旧实现会一直等到套接字被关闭。
+     */
+    TEST(TlsSocket, StopTokenWakesAReceiveStuckOnAPartialRecord)
+    {
+        const Platform::Socket::Initialization network;
+        EventLoop                              loop;
+        TlsContext                             serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int serverDescriptor = -1;
+        int clientDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+        ASSERT_TRUE(Platform::FileDescriptor::setNonBlocking(serverDescriptor)) << "服务端通路没能转成非阻塞，握手泵会挂住测试线程";
+
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+        SSL *clientHandle = SSL_new(clientContext.get());
+        ASSERT_NE(clientHandle, nullptr);
+        ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+        TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+        MemoryBioTlsServer server(serverContext, serverDescriptor);
+        ASSERT_TRUE(server.isReady()) << "内存 BIO 没有建起来";
+        Task<> clientHandshake = clientSocket.handshake();
+        ASSERT_TRUE(driveMemoryBioHandshake(loop, server, clientHandshake)) << "客户端与服务端没有在时限内完成握手";
+
+        const std::string record = server.encrypt("partial-record-payload");
+        ASSERT_GT(record.size(), 2U) << "记录太短，切不出半条";
+        ASSERT_TRUE(server.sendToPeer(std::string_view(record).substr(0, record.size() / 2U))) << "前半条记录没能送上通路";
+
+        std::array<char, 64> buffer{};
+        std::stop_source     source;
+        Task<ssize_t>        readTask = clientSocket.asyncReceive(buffer.data(), buffer.size(), source.get_token());
+        readTask.handle().resume();
+        ASSERT_FALSE(readTask.isReady()) << "半条记录就交出了明文：这条用例的前提不成立";
+
+        // 让循环把前半截吃进 OpenSSL 的记录缓冲：读取此时挂在内层的「等剩余字节」上
+        static_cast<void>(advanceUntil(loop, [] { return false; }, std::chrono::milliseconds{100}));
+        ASSERT_FALSE(readTask.isReady()) << "半条记录被当成了结束或失败，没有走到等剩余字节那一步";
+
+        const auto started = std::chrono::steady_clock::now();
+        static_cast<void>(source.request_stop());
+        ASSERT_TRUE(advanceUntil(loop, [&readTask] { return readTask.isReady(); })) << "停止令牌没有叫醒卡在半条记录上的读取";
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "取消没有及时收场，等了 " << elapsed.count() << " ms";
+
+        std::string failureText;
+        try
+        {
+            static_cast<void>(readTask.handle().promise().result());
+        } catch (const std::exception &failure)
+        {
+            failureText = failure.what();
+        }
+        EXPECT_NE(failureText.find("取消"), std::string::npos) << "失败原因没有点明取消：" << failureText;
+        clientSocket.close();
     }
 
 } // namespace AsynGyanis::Core

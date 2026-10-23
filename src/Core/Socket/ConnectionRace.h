@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stop_token>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -75,4 +76,15 @@ namespace AsynGyanis::Core
      *       全场结束，因此本函数返回时所有已发起的描述符都已归还
      */
     ASYN_CORE_API Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline);
+
+    /**
+     * @brief 可取消的并发连接：在令牌停止时收掉在途候选并交回空值
+     * @param loop 所属事件循环
+     * @param candidates 候选地址（按值接收，理由同不带令牌的那一支）
+     * @param deadline 整场竞赛的时限
+     * @param cancelToken 调用方的停止令牌
+     * @return Task<std::optional<ConnectedCandidate>> 连上交出胜者；取消、全部失败或时限到点交出空值
+     */
+    ASYN_CORE_API Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline,
+                                                                            std::stop_token cancelToken);
 } // namespace AsynGyanis::Core

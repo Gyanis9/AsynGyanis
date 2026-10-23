@@ -106,6 +106,17 @@ namespace AsynGyanis::Core
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
         /**
+         * @brief 带停止令牌的 TLS 加密接收
+         * @param buffer 接收缓冲区
+         * @param length 缓冲区长度，不得超过 INT_MAX
+         * @param stopToken 取消令牌：等待下一条记录期间令牌停止时按异常收场
+         * @return Task<ssize_t> 语义与不带令牌的那一支逐条相同
+         * @details 套接字可读只说明有字节；SSL 需要凑齐一整条记录才会交明文，这段等待也在本方法内。
+         *          令牌因此一路传到收侧等待上，卡在半条记录上时同样能被叫醒。
+         */
+        Task<ssize_t> asyncReceive(void *buffer, size_t length, std::stop_token stopToken) const;
+
+        /**
          * @brief 等可读直到令牌停止：SSL 已解出的明文也算可读
          * @param stopToken 取消令牌
          * @return true 可读；false 令牌被停止或套接字已关闭
