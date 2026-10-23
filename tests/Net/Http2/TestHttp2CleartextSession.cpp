@@ -822,32 +822,46 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         TestHttpServer  server(loop, Core::InetAddress::localhost(0));
 
+        const auto expectRejectedNaming = [&server](Http2ConnectionConfiguration configuration, const std::string_view firstFragment, const std::string_view secondFragment)
+        {
+            try
+            {
+                server.setHttp2Configuration(configuration);
+                FAIL() << "非法 h2 配置被接受了";
+            } catch (const Base::InvalidArgumentException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find(firstFragment), std::string::npos) << "拒绝原因没有点名配置项：" << message;
+                EXPECT_NE(message.find(secondFragment), std::string::npos) << "拒绝原因没有带上取值或边界：" << message;
+            }
+        };
+
         Http2ConnectionConfiguration tooSmallFrame;
         tooSmallFrame.maximumFrameSize = 8192; // 低于 RFC 9113 §6.5.2 的下界 16384
-        EXPECT_THROW(server.setHttp2Configuration(tooSmallFrame), Base::InvalidArgumentException);
+        expectRejectedNaming(tooSmallFrame, "MAX_FRAME_SIZE", "16384");
 
         Http2ConnectionConfiguration tooLargeFrame;
         tooLargeFrame.maximumFrameSize = 16777216; // 上界是 16777215
-        EXPECT_THROW(server.setHttp2Configuration(tooLargeFrame), Base::InvalidArgumentException);
+        expectRejectedNaming(tooLargeFrame, "MAX_FRAME_SIZE", "16777215");
 
         Http2ConnectionConfiguration badPush;
         badPush.enablePush = 2;
-        EXPECT_THROW(server.setHttp2Configuration(badPush), Base::InvalidArgumentException);
+        expectRejectedNaming(badPush, "ENABLE_PUSH", "0");
 
         // INITIAL_WINDOW_SIZE 线上是有符号 32 位，越过 2^31-1 的写法要么被对端按连接错误收场，
         // 要么在本端参与流控算式时变成负数——两种都比「当场拒」难查得多
         Http2ConnectionConfiguration tooLargeWindow;
         tooLargeWindow.initialWindowSize = 2147483648U;
-        EXPECT_THROW(server.setHttp2Configuration(tooLargeWindow), Base::InvalidArgumentException);
+        expectRejectedNaming(tooLargeWindow, "INITIAL_WINDOW_SIZE", "2147483647");
 
         // 这两项取 0 的语义是「一律拒绝」，正是把它们误当成「0 = 不限」时会写下的值
         Http2ConnectionConfiguration zeroHeaderList;
         zeroHeaderList.maximumHeaderListSize = 0;
-        EXPECT_THROW(server.setHttp2Configuration(zeroHeaderList), Base::InvalidArgumentException);
+        expectRejectedNaming(zeroHeaderList, "maximumHeaderListSize", "0");
 
         Http2ConnectionConfiguration zeroHeaderBlock;
         zeroHeaderBlock.maximumHeaderBlockByteCount = 0;
-        EXPECT_THROW(server.setHttp2Configuration(zeroHeaderBlock), Base::InvalidArgumentException);
+        expectRejectedNaming(zeroHeaderBlock, "maximumHeaderBlockByteCount", "0");
 
         // 合法边界值必须仍然收得下：上界本身（2^31-1）与 RFC 允许的最小窗口 0 之外，
         // 窗口取 1 是合法配置，不能被新判据误伤
