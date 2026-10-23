@@ -207,6 +207,16 @@ namespace AsynGyanis::Core
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
         /**
+         * @brief 带停止令牌的发送：令牌停止时从「等可写」直接返回
+         * @param buffer 发送缓冲区
+         * @param length 缓冲区长度
+         * @param stopToken 取消令牌；空令牌等同不带令牌的 asyncSend
+         * @return 实际发送的字节数；-1 表示对端已关闭
+         * @throws Base::SystemException 等待可写期间套接字被关闭或令牌停止
+         */
+        Task<ssize_t> asyncSend(const void *buffer, size_t length, std::stop_token stopToken) const;
+
+        /**
          * @brief 聚合发送：一次系统调用提交多段数据，全部发完才返回
          * @param buffers 段数组，按序拼接即为要发送的字节流
          * @param bufferCount 段数，必须落在 [1, Platform::Socket::kMaximumVectorCount] 内
@@ -337,6 +347,13 @@ namespace AsynGyanis::Core
          * @throws Base::SystemException 套接字无效或已关闭
          */
         [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
+
+        /**
+         * @brief 等可写直到令牌停止
+         * @param stopToken 取消令牌；停止时等待器交回 false
+         * @return IoWatcher::Awaiter 等待器，可直接 co_await
+         */
+        [[nodiscard]] IoWatcher::Awaiter waitWritable(std::stop_token stopToken) const;
 
         /**
          * @brief 等可读直到令牌停止：停止时交回 false，不消费任何字节

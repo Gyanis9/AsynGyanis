@@ -41,6 +41,71 @@ namespace AsynGyanis::Net
 
     namespace
     {
+        /**
+         * @brief 单次发送的截止令牌：到点请求停止，让等可写的协程从等待器返回
+         * @details 与 DeadlineGuard 的区别是只请求停止、不关连接；取消由发送路径自己收口，
+         *          这样对端不读时不会依赖「close 能否唤醒可写等待」这条更窄的路径。
+         */
+        class SendDeadline
+        {
+        public:
+            SendDeadline(Core::EventLoop &loop, const std::chrono::milliseconds timeout) : m_watchdog(watch(loop, timeout, m_source))
+            {
+                m_watchdog->handle().resume();
+            }
+
+            ~SendDeadline()
+            {
+                m_watchdog.reset();
+            }
+
+            SendDeadline(const SendDeadline &)            = delete;
+            SendDeadline &operator=(const SendDeadline &) = delete;
+
+            [[nodiscard]] std::stop_token token() const noexcept
+            {
+                return m_source.get_token();
+            }
+
+        private:
+            static Core::Task<> watch(Core::EventLoop &loop, const std::chrono::milliseconds timeout, std::stop_source &source)
+            {
+                Core::Timer timer(loop);
+                co_await timer.waitFor(timeout);
+                source.request_stop();
+            }
+
+            std::stop_source            m_source;   ///< 本次发送的停止源
+            std::optional<Core::Task<>> m_watchdog; ///< 到点请求停止的看门狗；析构即撤销
+        };
+
+        /**
+         * @brief 校验 Configuration 里必须为正的两个时限
+         * @param configuration 握手参数
+         * @return 失败时交回可直接上报的升级错误；通过时为空
+         */
+        std::optional<WebSocketUpgradeError> validateTimeouts(const WebSocketClient::Configuration &configuration)
+        {
+            if (configuration.handshakeTimeout <= std::chrono::milliseconds::zero())
+            {
+                return WebSocketUpgradeError{
+                        WebSocketUpgradeErrorKind::LocalRequestInvalid,
+                        std::format("WebSocket 出站的 handshakeTimeout 是 {} 毫秒：建 TCP 连接、TLS 握手与等 101 这三段必须各有时限，0 或负数会让协程停在这三段里出不来。"
+                                    "要放宽就写一个更大的正数",
+                                    configuration.handshakeTimeout.count())};
+            }
+            if (configuration.sendTimeout <= std::chrono::milliseconds::zero())
+            {
+                return WebSocketUpgradeError{
+                        WebSocketUpgradeErrorKind::LocalRequestInvalid,
+                        std::format("WebSocket 出站的 sendTimeout 是 {} 毫秒：单帧写出必须有正时限，0 或负数会让对端不读时的发送永久挂住", configuration.sendTimeout.count())};
+            }
+            return std::nullopt;
+        }
+    } // namespace
+
+    namespace
+    {
         /// 明文与 TLS 的默认端口：Configuration.port 留 0 时按 TLS 那一位回落
         constexpr std::uint16_t kDefaultPlainTextPort = 80;
         constexpr std::uint16_t kDefaultSecurePort    = 443;
@@ -389,7 +454,7 @@ namespace AsynGyanis::Net
     WebSocketClient::WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration,
                                      std::string pendingBytes, Core::EventLoop &loop) :
         m_transport(std::move(transport)), m_agreement(std::move(agreement)), m_deflateWindow(m_agreement.deflateWindow), m_readBuffer(kReadChunkByteLength, '\0'),
-        m_inboundBytes(std::move(pendingBytes)), m_pendingRead(std::make_unique<PendingRead>()), m_loop(&loop)
+        m_inboundBytes(std::move(pendingBytes)), m_pendingRead(std::make_unique<PendingRead>()), m_loop(&loop), m_sendTimeout(configuration.sendTimeout)
     {
         // 本端是客户端：对端（服务端）发来的帧必须不带掩码，带了就当场判错（RFC 6455 §5.1）
         m_decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
@@ -408,13 +473,9 @@ namespace AsynGyanis::Net
                     WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid,
                                           "WebSocket 出站缺 Configuration.hostName：请给出目标主机名或 IP 字面量（它同时用作 Host、SNI 与证书主机名校验的对象）"});
         }
-        if (configuration.handshakeTimeout <= std::chrono::milliseconds::zero())
+        if (const std::optional<WebSocketUpgradeError> failure = validateTimeouts(configuration); failure.has_value())
         {
-            co_return std::unexpected(WebSocketUpgradeError{
-                    WebSocketUpgradeErrorKind::LocalRequestInvalid,
-                    std::format("WebSocket 出站的 handshakeTimeout 是 {} 毫秒：建 TCP 连接、TLS 握手与等 101 这三段必须各有时限，0 或负数会让协程停在这三段里出不来。"
-                                "要放宽就写一个更大的正数",
-                                configuration.handshakeTimeout.count())});
+            co_return std::unexpected(*failure);
         }
         const auto startedAt = std::chrono::steady_clock::now();
         // 三段共用一份总时限，各拿「此刻还剩下多少」：连接、TLS 握手、等 101 缺一段都会让总时限形同虚设
@@ -818,7 +879,13 @@ namespace AsynGyanis::Net
         {
             m_receiveInterrupt->request_stop();
         }
-        co_return co_await m_transport->send(frameBytes);
+        SendDeadline deadline(*m_loop, m_sendTimeout);
+        const bool   isSent = co_await m_transport->send(frameBytes, deadline.token());
+        if (!isSent)
+        {
+            m_transport->close();
+        }
+        co_return isSent;
     }
     Core::Task<bool> WebSocketClient::writeFrameBytes(std::string frameBytes)
     {
@@ -826,6 +893,13 @@ namespace AsynGyanis::Net
         {
             co_return false;
         }
-        co_return co_await m_transport->send(frameBytes);
+        SendDeadline deadline(*m_loop, m_sendTimeout);
+        const bool   isSent = co_await m_transport->send(frameBytes, deadline.token());
+        if (!isSent)
+        {
+            m_isOpen = false;
+            m_transport->close();
+        }
+        co_return isSent;
     }
 } // namespace AsynGyanis::Net

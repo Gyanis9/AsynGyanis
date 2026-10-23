@@ -140,6 +140,16 @@ namespace AsynGyanis::Core
         Task<ssize_t> asyncSend(const void *buffer, size_t length) const;
 
         /**
+         * @brief 带停止令牌的 TLS 加密发送
+         * @param buffer 发送缓冲区
+         * @param length 缓冲区长度，不得超过 INT_MAX
+         * @param stopToken 取消令牌；令牌停止时从等可写/等可读的让出点返回
+         * @return Task<ssize_t> 实际写出的字节数（可能小于 length）
+         * @throws CoreException 会话失效、对端关闭，或等待期间令牌停止/套接字被关闭
+         */
+        Task<ssize_t> asyncSend(const void *buffer, size_t length, std::stop_token stopToken) const;
+
+        /**
          * @brief 关闭连接，释放 SSL 对象并关闭底层 socket。
          */
         void close();

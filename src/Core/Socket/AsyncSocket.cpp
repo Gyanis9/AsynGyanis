@@ -265,6 +265,11 @@ namespace AsynGyanis::Core
 
     Task<ssize_t> AsyncSocket::asyncSend(const void *const buffer, const size_t length) const
     {
+        co_return co_await asyncSend(buffer, length, std::stop_token{});
+    }
+
+    Task<ssize_t> AsyncSocket::asyncSend(const void *const buffer, const size_t length, const std::stop_token stopToken) const
+    {
         if (length == 0)
         {
             co_return 0;
@@ -290,9 +295,9 @@ namespace AsynGyanis::Core
             if (Platform::PlatformError::lastSocketErrorCode() == Platform::PlatformError::kWouldBlock)
             {
                 // 同 asyncReceive：等待失败即套接字已关闭，不再重试
-                if (!co_await waitWritable())
+                if (!co_await waitWritable(stopToken))
                 {
-                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭", localSocketClosedError());
+                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭或调用方已取消", localSocketClosedError());
                 }
                 continue;
             }
@@ -520,13 +525,18 @@ namespace AsynGyanis::Core
 
     IoWatcher::Awaiter AsyncSocket::waitWritable() const
     {
+        return waitWritable(std::stop_token{});
+    }
+
+    IoWatcher::Awaiter AsyncSocket::waitWritable(const std::stop_token stopToken) const
+    {
         // 注册推迟到这一次等待，理由同 waitReadable()
         IoWatcher *const watcher = ensureWatcher();
         if (watcher == nullptr)
         {
             throw Base::SystemException("等待套接字可写失败：套接字无效或已关闭");
         }
-        return watcher->waitWritable();
+        return watcher->waitWritable(stopToken);
     }
 
     Task<bool> AsyncSocket::waitReadable(const std::stop_token stopToken)

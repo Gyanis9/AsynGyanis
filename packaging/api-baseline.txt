@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.1.0
-# headers=310 entries=9096
+# headers=310 entries=9103
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1441,6 +1441,7 @@ src/Core/Socket/AsyncSocket.h	Task<> asyncConnect(InetAddress address) const
 src/Core/Socket/AsyncSocket.h	Task<> asyncConnect(const sockaddr *address, socklen_t addressLength) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length) const
+src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length, std::stop_token stopToken) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
@@ -1448,6 +1449,7 @@ src/Core/Socket/AsyncSocket.h	[[nodiscard]] EventLoop &eventLoop() const noexcep
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher *ensureWatcher() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitReadable() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitWritable() const
+src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitWritable(std::stop_token stopToken) const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool isWaitingReadable() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool isWaitingWritable() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] bool supportsCompletionAccept() const noexcept
@@ -1714,6 +1716,7 @@ src/Core/Tls/TlsSocket.h	Task<> handshake()
 src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t length) const
 src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t length, std::stop_token stopToken) const
 src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length) const
+src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length, std::stop_token stopToken) const
 src/Core/Tls/TlsSocket.h	TlsSocket &operator=(TlsSocket &&other) noexcept
 src/Core/Tls/TlsSocket.h	TlsSocket &operator=(const TlsSocket &) = delete
 src/Core/Tls/TlsSocket.h	TlsSocket(SSL *ssl, EventLoop &loop, AsyncSocket socket, Role role = Role::Server)
@@ -3602,6 +3605,7 @@ src/Net/Http/Client/HttpOutboundConnectionPool.h	HttpOutboundEndpointKey m_endpo
 src/Net/Http/Client/HttpOutboundConnectionPool.h	HttpResponseParser m_parser
 src/Net/Http/Client/HttpOutboundConnectionPool.h	InFlightOverflowPolicy inFlightOverflowPolicy
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> send(std::string_view data)
+src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> send(std::string_view data, std::stop_token stopToken)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length, std::stop_token stopToken)
@@ -7773,6 +7777,7 @@ src/Net/Tcp/TcpStream.h	TcpStream(const TcpStream &) = delete
 src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::AsyncSocket &socket() noexcept
 src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<ssize_t> write(const void *buffer, std::size_t length) const
+src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<ssize_t> write(const void *buffer, std::size_t length, std::stop_token stopToken) const
 src/Net/Tcp/TcpStream.h	class ASYN_NET_API TcpStream
 src/Net/Tcp/TcpStream.h	explicit TcpStream(Core::AsyncSocket socket)
 src/Net/Tcp/TcpStream.h	inline constexpr std::size_t kDefaultMaximumReadSize = 65536
@@ -8092,6 +8097,8 @@ src/Net/WebSocket/WebSocketClient.h	namespace Core
 src/Net/WebSocket/WebSocketClient.h	namespace Net
 src/Net/WebSocket/WebSocketClient.h	static constexpr std::size_t kReadChunkByteLength = 16384
 src/Net/WebSocket/WebSocketClient.h	std::chrono::milliseconds handshakeTimeout
+src/Net/WebSocket/WebSocketClient.h	std::chrono::milliseconds m_sendTimeout
+src/Net/WebSocket/WebSocketClient.h	std::chrono::milliseconds sendTimeout
 src/Net/WebSocket/WebSocketClient.h	std::optional<PerMessageDeflateWindow> m_deflateWindow
 src/Net/WebSocket/WebSocketClient.h	std::optional<std::uint16_t> m_remoteCloseCode
 src/Net/WebSocket/WebSocketClient.h	std::shared_ptr<std::stop_source> m_receiveInterrupt

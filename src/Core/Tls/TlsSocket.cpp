@@ -309,6 +309,11 @@ namespace AsynGyanis::Core
 
     Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length) const
     {
+        co_return co_await asyncSend(buffer, length, std::stop_token{});
+    }
+
+    Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length, const std::stop_token stopToken) const
+    {
         if (length == 0)
         {
             co_return 0;
@@ -369,9 +374,9 @@ namespace AsynGyanis::Core
                     // 让出期间本端可能被关停，由循环开头的闸门统一复查
                     continue;
                 }
-                if (!co_await m_socket.waitWritable())
+                if (!co_await m_socket.waitWritable(stopToken))
                 {
-                    throw CoreException("TLS 写入失败：等待可写期间套接字被关闭");
+                    throw CoreException("TLS 写入失败：等待可写期间套接字被关闭或调用方已取消");
                 }
                 continue;
             }
@@ -390,10 +395,10 @@ namespace AsynGyanis::Core
                     }
                     continue;
                 }
-                if (!co_await m_socket.waitReadable())
+                if (!co_await const_cast<AsyncSocket &>(m_socket).waitReadable(stopToken))
                 {
                     // 前缀按「哪条操作失败」算：这里等的是可读事件，但发起方是写入
-                    throw CoreException("TLS 写入失败：等待可读期间套接字被关闭");
+                    throw CoreException("TLS 写入失败：等待可读期间套接字被关闭或调用方已取消");
                 }
                 continue;
             }

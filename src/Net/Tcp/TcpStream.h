@@ -122,6 +122,16 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<ssize_t> write(const void *buffer, std::size_t length) const;
 
         /**
+         * @brief 带停止令牌的写出：令牌停止时从「等可写」直接返回
+         * @param buffer 发送缓冲区
+         * @param length 缓冲区长度
+         * @param stopToken 取消令牌
+         * @return 实际写出的字节数；-1 表示对端已关闭
+         * @throws Base::SystemException 等待可写期间套接字被关闭或令牌停止
+         */
+        [[nodiscard]] Core::Task<ssize_t> write(const void *buffer, std::size_t length, std::stop_token stopToken) const;
+
+        /**
          * @brief 写入全部数据，反复重试直到写完或出错
          * @param buffer 待写入数据首地址
          * @param length 待写入字节数

@@ -69,6 +69,7 @@ namespace AsynGyanis::Net
             std::string                              failure_reason;               ///< 失败时点明断在哪一段
             std::vector<WebSocketFrame>              delivered;                    ///< 会话交给业务的消息
             std::vector<bool>                        send_results;                 ///< 用例里几次 send*/close 的结论
+            std::chrono::milliseconds                send_elapsed{0};              ///< 用例里那次 send* 的墙钟时长
             std::string                              receive_error;                ///< receive() 交回的拒因
             std::optional<WebSocketSessionErrorKind> receive_kind;                 ///< receive() 交回的类别：拒因文本会改，这一格才是调用方能分支的那一层
             std::string                              accepted_subprotocol;         ///< 握手谈定的子协议
@@ -143,6 +144,11 @@ namespace AsynGyanis::Net
                     sentByteCount += static_cast<std::size_t>(sent);
                 }
                 return true;
+            }
+            /// 把接收缓冲压小：让「对端不读」尽快变成写侧背压
+            bool shrinkReceiveBuffer() const
+            {
+                return Platform::Socket::setReceiveBufferSize(m_socket, 4096);
             }
 
         private:
@@ -1529,4 +1535,44 @@ namespace AsynGyanis::Net
         EXPECT_EQ(frame->firstByte, kTextFrameFirstByte) << "没协商过就不该出现 RSV1 帧";
         EXPECT_EQ(frame->payload, payload);
     }
+    /// 背压用例的帧载荷：放在命名空间作用域，协程 lambda 不捕获它
+    std::string g_sendBackpressurePayload(1024U * 1024U, 'x');
+
+    /**
+     * @brief 钉住：对端不读时单帧写出有界，不会把调用方永久挂住
+     * @details 对端完成 101 后把接收缓冲压小并停止读取；1 MiB x 256 帧会让发送缓冲填满。
+     *          sendTimeout 100ms 到点请求停止，等可写的协程从等待器返回，sendText 交回 false、
+     *          会话置为不可写。对端最多等 1 秒再收线，作为实现缺停止令牌时的硬上界。
+     */
+    TEST(WebSocketClient, SendIsBoundedWhenThePeerStopsReading)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            static_cast<void>(wire.shrinkReceiveBuffer());
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto started = std::chrono::steady_clock::now();
+            bool       isSent  = true;
+            for (int frameIndex = 0; frameIndex < 256 && isSent; ++frameIndex)
+            {
+                isSent = co_await client.sendText(g_sendBackpressurePayload);
+            }
+            outcome.send_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            outcome.send_results.push_back(isSent);
+            co_return;
+        };
+        WebSocketClient::Configuration configuration = baseConfiguration();
+        configuration.sendTimeout                    = std::chrono::milliseconds{100};
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, configuration, wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        ASSERT_EQ(outcome.send_results.size(), 1U);
+        EXPECT_FALSE(outcome.send_results.front()) << "对端不读时发送仍然报成功";
+        EXPECT_FALSE(outcome.is_open_after_actions) << "发送超时后会话仍报告可写";
+        EXPECT_LT(outcome.send_elapsed, std::chrono::milliseconds{900}) << "单帧写出没有在 sendTimeout 附近收口，实测 " << outcome.send_elapsed.count() << " ms";
+    }
+
 } // namespace AsynGyanis::Net

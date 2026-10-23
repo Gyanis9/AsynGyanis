@@ -170,6 +170,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> send(std::string_view data);
 
         /**
+         * @brief 带停止令牌的发送
+         * @param data 待发字节
+         * @param stopToken 取消令牌；明文与直连 TLS 的等可写会观察它
+         * @return true 全部字节已写出；false 通路已关闭、写出失败或令牌停止
+         * @note 代理泵通路（内层 TLS 经外层隧道）暂不把令牌传到隧道写出；WS 客户端不使用这一支
+         */
+        [[nodiscard]] Core::Task<bool> send(std::string_view data, std::stop_token stopToken);
+
+        /**
          * @brief 本连接是否还能收发（没被 close()、也没被超时看门狗掐断）
          * @return true 还开着
          */

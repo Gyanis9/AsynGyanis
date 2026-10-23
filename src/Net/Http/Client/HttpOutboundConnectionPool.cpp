@@ -184,6 +184,11 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> HttpOutboundConnection::send(const std::string_view data)
     {
+        co_return co_await send(data, std::stop_token{});
+    }
+
+    Core::Task<bool> HttpOutboundConnection::send(const std::string_view data, const std::stop_token stopToken)
+    {
         if (!m_isOpen)
         {
             co_return false;
@@ -198,7 +203,7 @@ namespace AsynGyanis::Net
                 // asyncSend 可能只写出一部分（也可能抛异常）：按返回值推进，别假设一次就写完
                 try
                 {
-                    const ssize_t segmentWrittenByteCount = co_await m_tlsSocket->asyncSend(segmentBegin, remainingByteCount);
+                    const ssize_t segmentWrittenByteCount = co_await m_tlsSocket->asyncSend(segmentBegin, remainingByteCount, stopToken);
                     if (segmentWrittenByteCount <= 0)
                     {
                         m_isOpen = false;
@@ -215,6 +220,12 @@ namespace AsynGyanis::Net
 
             if (m_pumpedSocket != nullptr)
             {
+                // 代理泵通路的写等待在内层 TLS 的待发队列上，暂不接受令牌；段落边界先尊重取消
+                if (stopToken.stop_requested())
+                {
+                    m_isOpen = false;
+                    co_return false;
+                }
                 try
                 {
                     const ssize_t segmentWrittenByteCount = co_await m_pumpedSocket->asyncSend(segmentBegin, remainingByteCount);
@@ -232,13 +243,20 @@ namespace AsynGyanis::Net
                 continue;
             }
 
-            const ssize_t segmentWrittenByteCount = co_await m_plainSocket->write(segmentBegin, remainingByteCount);
-            if (segmentWrittenByteCount <= 0)
+            try
+            {
+                const ssize_t segmentWrittenByteCount = co_await m_plainSocket->write(segmentBegin, remainingByteCount, stopToken);
+                if (segmentWrittenByteCount <= 0)
+                {
+                    m_isOpen = false;
+                    co_return false;
+                }
+                writtenByteCount += static_cast<std::size_t>(segmentWrittenByteCount);
+            } catch (const std::exception &)
             {
                 m_isOpen = false;
                 co_return false;
             }
-            writtenByteCount += static_cast<std::size_t>(segmentWrittenByteCount);
         }
         co_return true;
     }

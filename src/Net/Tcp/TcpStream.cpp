@@ -154,8 +154,13 @@ namespace AsynGyanis::Net
 
     Core::Task<ssize_t> TcpStream::write(const void *const buffer, const std::size_t length) const
     {
+        co_return co_await write(buffer, length, std::stop_token{});
+    }
+
+    Core::Task<ssize_t> TcpStream::write(const void *const buffer, const std::size_t length, const std::stop_token stopToken) const
+    {
         // 写入不经缓冲区：套接字发送缓冲由内核管理，这里的短写由 writeAll 负责补偿
-        co_return co_await m_socket.asyncSend(buffer, length);
+        co_return co_await m_socket.asyncSend(buffer, length, stopToken);
     }
 
     Core::Task<> TcpStream::writeAll(const void *const buffer, const std::size_t length) const

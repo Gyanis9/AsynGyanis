@@ -71,6 +71,7 @@ namespace AsynGyanis
                 std::vector<std::string>  subprotocols{};         ///< 提议的子协议名，按优先级；空表示不提
                 const Core::TlsContext   *clientTls{nullptr};     ///< 非空即走 wss；上下文由调用方持有并须活过本会话
                 std::chrono::milliseconds handshakeTimeout{5000}; ///< `connect()` 全程（建 TCP、TLS 握手、等到 101）的总时限，各段拿剩余预算；必须是正数
+                std::chrono::milliseconds sendTimeout{30000};     ///< 单帧写出的时限：对端不读、发送缓冲填满时到点请求停止并从等可写返回；必须是正数
                 std::size_t               maximumMessageSize{WebSocketFrameDecoder::kMaximumMessagePayloadLength}; ///< 一条消息的字节上限；0 表示不设（解压输出上限同吃这一格）
                 bool                      negotiatePerMessageDeflate{true}; ///< 是否在升级请求里提议 permessage-deflate（RFC 7692，要约形态见 kPerMessageDeflateClientOffer）。
                                                                             ///< 默认开＝与主流客户端一致；对端不回应约时连接照常按明文收发。对端回出可接受的参数后，
@@ -291,7 +292,8 @@ namespace AsynGyanis
             /// receive()/receiveFor() 的挂起读：只允许一个在途读，超时后保留，下一次等待直接复用
             struct PendingRead;
             std::unique_ptr<PendingRead> m_pendingRead;
-            Core::EventLoop             *m_loop{nullptr}; ///< 所属事件循环；receiveFor 的到期检查挂在它上面
+            Core::EventLoop             *m_loop{nullptr};                         ///< 所属事件循环；receiveFor 的到期检查挂在它上面
+            std::chrono::milliseconds    m_sendTimeout{std::chrono::seconds{30}}; ///< 单帧写出时限；由 Configuration.sendTimeout 落定
             /// 本端 close() 用来唤醒挂起读的中断源；每次 receive 开始时换一份新的
             std::shared_ptr<std::stop_source> m_receiveInterrupt;
         };
