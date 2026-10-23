@@ -5,7 +5,7 @@ include_guard(GLOBAL)
 option(ENABLE_SANITIZERS "启用 AddressSanitizer（GCC/Clang 上并含 UBSan）" OFF)
 option(SANITIZE_THREADS "启用 ThreadSanitizer（仅 GCC/Clang；与 ENABLE_SANITIZERS 互斥）" OFF)
 option(ASYN_ENABLE_COVERAGE "用 gcov 插桩以生成行/分支覆盖率报告（GCC/Clang；配 gcovr 或 lcov 消费）" OFF)
-option(ASYN_WITH_MIMALLOC "链接 mimalloc 作为全局分配器（生产构建用；与 sanitizer 互斥）" OFF)
+option(ASYN_WITH_MIMALLOC "链接 mimalloc 作为全局分配器（生产构建默认开启；与 sanitizer 互斥，sanitizer 档显式关闭）" ON)
 option(ASYN_WITH_IO_URING "Linux 事件后端改用 io_uring（需要内核 5.6+；Windows 无效）" OFF)
 option(ASYN_ENABLE_HARDENING "给本仓产出的目标加上加固位（栈保护、_FORTIFY_SOURCE、FULL RELRO、MSVC 的 CFG）" ON)
 option(ASYN_BUILD_TESTS "构建测试与热路径微基准" ON)
@@ -17,7 +17,7 @@ option(BUILD_SHARED_LIBS "把五个模块产出为共享库（.so / .dll）而�
 
 if(ASYN_WITH_MIMALLOC AND (ENABLE_SANITIZERS OR SANITIZE_THREADS))
     message(FATAL_ERROR "ASYN_WITH_MIMALLOC 与 sanitizer 互斥：mimalloc 会遮蔽分配拦截，请只开一个"
-                        "（例如 -DENABLE_SANITIZERS=OFF -DSANITIZE_THREADS=OFF）")
+                        "（例如加 -DASYN_WITH_MIMALLOC=OFF，或关掉 ENABLE_SANITIZERS / SANITIZE_THREADS）")
 endif()
 
 if(ASYN_WITH_IO_URING AND WIN32)

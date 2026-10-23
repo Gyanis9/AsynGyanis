@@ -18,7 +18,8 @@
         "CMAKE_CXX_EXTENSIONS": "OFF",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
-        "ENABLE_SANITIZERS": "ON"
+        "ENABLE_SANITIZERS": "ON",
+        "ASYN_WITH_MIMALLOC": "OFF"
       }
     },
     {
@@ -33,7 +34,8 @@
         "CMAKE_CXX_EXTENSIONS": "OFF",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/conan_provider.cmake",
-        "ENABLE_SANITIZERS": "OFF"
+        "ENABLE_SANITIZERS": "OFF",
+        "ASYN_WITH_MIMALLOC": "ON"
       }
     }
   ],

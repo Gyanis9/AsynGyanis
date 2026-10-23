@@ -369,8 +369,8 @@ jobs:
   # 描述符、改掩码时机与 epoll 不同，这两处真实偏离就是这么找到的）。内核不放行 io_uring 时跳过运行
   # 而不是让全仓 PR 变红：这一步要抓的是后端契约回归，不是 runner 的内核策略。
   #
-  # mimalloc 分支不在其中：它要先在 conanfile 里声明依赖（find_package(mimalloc REQUIRED)），
-  # 而本仓库的 Conan 依赖清单里没有它——加作业之前得先补依赖，见 PR 说明。
+  # mimalloc 已默认开启（Release 档），Conan 依赖清单里有 mimalloc/3.5.1；sanitizer 与覆盖率档
+  # 显式关掉它，因此这里不再单列编译作业。
   io-uring-compile:
     name: io_uring 的编译档
     runs-on: ubuntu-latest
@@ -883,6 +883,7 @@ jobs:
           cmake -S . -B build/coverage -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DENABLE_SANITIZERS=OFF \
+            -DASYN_WITH_MIMALLOC=OFF \
             -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
             -DCMAKE_C_FLAGS="--coverage -O0 -g" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \

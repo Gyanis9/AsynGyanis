@@ -25,6 +25,9 @@ BASE_REQUIREMENTS = [
     "openssl/3.6.5",
     "sqlite3/3.51.3",
     "hiredis/1.3.0",
+    # 全局分配器：默认开启（cmake/AsynGyanisOptions.cmake），Core 以 PUBLIC 链入 mimalloc-static；
+    # 包这一侧必须声明它，消费方的 AsynGyanis::Core 才能解析 find_dependency(mimalloc)
+    "mimalloc/3.5.1",
 ]
 
 # Base 的原生格式接口：JSON 头文件直接出现在公开头 ConfigValue.h 里，消费方需要它的包含目录；
@@ -82,6 +85,13 @@ class AsynGyanisLibrary(ConanFile):
 
     def requirements(self):
         for requirement in BASE_REQUIREMENTS:
+            if requirement.startswith("mimalloc/"):
+                # mimalloc 是 Core 的 PUBLIC 链接依赖：不给 transitive_libs，消费方链接
+                # AsynGyanis::Core 时会缺 mimalloc-static 这个目标。其余依赖保持原来的调用形状，
+                # 不能顺手补一个 transitive_libs=False——那会把 zstd/brotli/sqlite3 从消费方的
+                # CMakeDeps 依赖表里挤掉，最终可执行体链接 Net/Core 时缺 zlib/OpenSSL 符号
+                self.requires(requirement, transitive_libs=True)
+                continue
             self.requires(requirement, transitive_headers=requirement.startswith(PUBLIC_HEADER_REQUIREMENT_PREFIXES))
         self.requires(JSON_REQUIREMENT, transitive_headers=True)
         self.requires(YAML_REQUIREMENT, transitive_libs=True)
@@ -191,7 +201,7 @@ class AsynGyanisLibrary(ConanFile):
 
         core = self.cpp_info.components["core"]
         core.libs = ["Core"]
-        core.requires = ["base", "openssl::openssl"]
+        core.requires = ["base", "openssl::openssl", "mimalloc::mimalloc"]
         core.set_property("cmake_target_name", "AsynGyanis::Core")
 
         net = self.cpp_info.components["net"]
