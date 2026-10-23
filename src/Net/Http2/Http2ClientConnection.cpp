@@ -1100,17 +1100,17 @@ namespace AsynGyanis::Net
     } // namespace
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::request(const std::string_view scheme, const std::string_view authority, const std::string_view method,
-                                                                   const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
+                                                                   const std::string_view path, std::vector<std::pair<std::string, std::string>> extraHeaders,
                                                                    const std::string_view body, const std::chrono::milliseconds waitTimeout,
-                                                                   const Http2ResponseBodyReceiver &responseReceiver, const std::stop_token cancelToken)
+                                                                   Http2ResponseBodyReceiver responseReceiver, const std::stop_token cancelToken)
     {
         co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, body, nullptr, waitTimeout, responseReceiver ? &responseReceiver : nullptr, cancelToken);
     }
 
     Core::Task<Http2ClientResponse> Http2ClientConnection::requestStreamed(const std::string_view scheme, const std::string_view authority, const std::string_view method,
-                                                                           const std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders,
-                                                                           const HttpBodyChunkSource &bodySource, const std::chrono::milliseconds waitTimeout,
-                                                                           const Http2ResponseBodyReceiver &responseReceiver, const std::stop_token cancelToken)
+                                                                           const std::string_view path, std::vector<std::pair<std::string, std::string>> extraHeaders,
+                                                                           HttpBodyChunkSource bodySource, const std::chrono::milliseconds waitTimeout,
+                                                                           Http2ResponseBodyReceiver responseReceiver, const std::stop_token cancelToken)
     {
         co_return co_await requestWithBody(scheme, authority, method, path, extraHeaders, std::string_view{}, &bodySource, waitTimeout,
                                            responseReceiver ? &responseReceiver : nullptr, cancelToken);

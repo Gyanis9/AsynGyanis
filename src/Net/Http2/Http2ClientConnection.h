@@ -184,10 +184,13 @@ namespace AsynGyanis::Net
          * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body（挂法见
          *        `Http2ResponseBodyReceiver`：交一批才还一批的额度）
          * @return Http2ClientResponse 响应；失败时 errorMessage 给出断在哪一段
+         * @note 本方法是惰性协程：scheme/authority/method/path/body 的视图必须在返回的 Task 完成前
+         *       保持有效（传临时 std::string 会在首次 resume 前销毁）；extraHeaders 与
+         *       responseReceiver 按值收，传临时量安全
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
-                                                              const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body,
-                                                              std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {},
+                                                              std::vector<std::pair<std::string, std::string>> extraHeaders, std::string_view body,
+                                                              std::chrono::milliseconds waitTimeout, Http2ResponseBodyReceiver responseReceiver = {},
                                                               std::stop_token cancelToken = {});
 
         /**
@@ -207,10 +210,12 @@ namespace AsynGyanis::Net
          * @param waitTimeout 本次请求的整体时限（含生产正文那一段）
          * @param responseReceiver 响应正文的接收口；留空即整份攒进返回值的 body
          * @return Http2ClientResponse 结论；正文写到一半被对端中止时按失败交出
+         * @note 与 request() 同一条惰性协程约束：视图必须在 Task 完成前有效；extraHeaders、bodySource
+         *       与 responseReceiver 按值收，传临时量安全
          */
         [[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path,
-                                                                      const std::vector<std::pair<std::string, std::string>> &extraHeaders, const HttpBodyChunkSource &bodySource,
-                                                                      std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver = {},
+                                                                      std::vector<std::pair<std::string, std::string>> extraHeaders, HttpBodyChunkSource bodySource,
+                                                                      std::chrono::milliseconds waitTimeout, Http2ResponseBodyReceiver responseReceiver = {},
                                                                       std::stop_token cancelToken = {});
 
         /**
