@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <gtest/gtest.h>
 #include <memory>
 #include <mutex>
@@ -15,6 +16,7 @@
 #include "ExpectedAssertions.h"
 #include "HttpTestSupport.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Socket/AsyncResolver.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
@@ -1156,6 +1158,49 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.reason.find("建立 TCP 连接失败"), std::string::npos) << "时限失败被折成了建连失败：" << outcome.reason;
         EXPECT_EQ(outcome.reason.find("解析地址"), std::string::npos) << "时限失败被折成了解析失败：" << outcome.reason;
         std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住：DNS 卡住时请求在自身时限内失败，且客户端随后仍能发新请求
+     * @details 真实解析器在本机与 CI 上都会很快返回；这条用一个阻塞的注入 lookup 制造
+     *          「解析卡住」的形状，并检查失败原因没有被折成建连失败。
+     */
+    TEST(HttpClient, DnsLookupTimeoutIsReportedAndLeavesClientUsable)
+    {
+        auto                           release  = std::make_shared<std::promise<void>>();
+        const std::shared_future<void> released = release->get_future().share();
+        Core::AsyncResolver::setLookupFunction(
+                [released](const std::string &, const std::uint16_t)
+                {
+                    released.wait();
+                    return std::vector<Core::InetAddress>{};
+                });
+        struct LookupReset
+        {
+            ~LookupReset()
+            {
+                Core::AsyncResolver::clearLookupFunction();
+            }
+        } reset;
+
+        const auto        started = std::chrono::steady_clock::now();
+        const SendOutcome outcome = runSend("http://blocked-lookup.test:18080/", HttpClientRequest{}, std::chrono::milliseconds{100});
+        const auto        elapsed = std::chrono::steady_clock::now() - started;
+
+        EXPECT_TRUE(outcome.body.empty()) << "DNS 卡住时不该拿到响应";
+        EXPECT_NE(outcome.reason.find("解析地址"), std::string::npos) << "原因没有点明解析阶段：" << outcome.reason;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "DNS 卡住把请求拖过了 100 ms 时限";
+
+        release->set_value();
+        ASSERT_TRUE(waitForCondition([] { return Core::AsyncResolver::activeLookupCount() == 0; }, std::chrono::seconds{2})) << "阻塞的解析线程结束后名额没有归还";
+        Core::AsyncResolver::clearLookupFunction();
+
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url   = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+        const SendOutcome after = runSend(url, HttpClientRequest{}, std::chrono::seconds{2});
+        EXPECT_TRUE(after.reason.empty()) << "DNS 超时之后客户端没有恢复：" << after.reason;
+        EXPECT_EQ(after.body, "served-hello") << "DNS 超时之后后续请求没有拿到预期正文";
     }
 
     // ============================================================================

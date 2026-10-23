@@ -2,11 +2,14 @@
 
 #include <chrono>
 #include <cstddef>
+#include <future>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <vector>
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncResolver.h"
+#include "CoreTestSupport.h"
 namespace AsynGyanis::Core
 {
     /// 把解析结果写入 result，然后停掉 loop（作为被调度到 loop 上的协程使用）
@@ -152,6 +155,42 @@ namespace AsynGyanis::Core
         const auto after = AsyncResolver::stats();
         EXPECT_EQ(after.lookupCount - before.lookupCount, 2U) << "两次失败查询没有各算一次解析";
         EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 0U) << "失败结果被缓存：一次临时故障会粘住 60 秒";
+    }
+
+    /**
+     * @brief 钉住：lookup 真的卡住时，带时限的解析按时返回空，后台线程结束后名额归还
+     * @details 真实 getaddrinfo 在本机与 CI 上都会很快返回，制造不出「解析卡住」的形状；
+     *          这条用例用一个可控 lookup 阻塞到测试放行，判据只看时间窗与活动计数。
+     */
+    TEST(AsyncResolver, TimesOutWhileLookupIsBlockedAndReleasesTheSlot)
+    {
+        auto                           release  = std::make_shared<std::promise<void>>();
+        const std::shared_future<void> released = release->get_future().share();
+        AsyncResolver::setLookupFunction(
+                [released](const std::string &, const std::uint16_t)
+                {
+                    released.wait();
+                    return std::vector<InetAddress>{};
+                });
+
+        struct LookupReset
+        {
+            ~LookupReset()
+            {
+                AsyncResolver::clearLookupFunction();
+            }
+        } reset;
+
+        const auto started = std::chrono::steady_clock::now();
+        const auto result  = resolveInLoopWithTimeout("blocked-lookup.test", 80, std::chrono::milliseconds{50});
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+
+        EXPECT_TRUE(result.empty()) << "阻塞的 lookup 不该交出地址";
+        EXPECT_GE(elapsed, std::chrono::milliseconds{40}) << "比时限还早返回，说明没有真的等";
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "解析卡住把调用方拖过了自己的时限";
+
+        release->set_value();
+        EXPECT_TRUE(TestSupport::waitForCondition([] { return AsyncResolver::activeLookupCount() == 0; }, std::chrono::seconds{2})) << "后台解析结束后活动名额没有归还";
     }
 
     /// 两步写法：先建 Task，再丢掉临时串，最后才 await

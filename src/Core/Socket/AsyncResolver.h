@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,22 @@ namespace AsynGyanis::Core
          *       避免为一次诊断把公开面再扩一层
          */
         static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout);
+
+        /// 可替换的名字查找：返回空表示解析失败；实现方负责线程安全
+        using LookupFunction = std::function<std::vector<InetAddress>(const std::string &host, std::uint16_t port)>;
+
+        /**
+         * @brief 替换进程级名字查找
+         * @param lookup 查找函数；传空表示恢复默认的 getaddrinfo
+         * @note 进程级状态，只应在启动阶段或测试里设置；变更时不要有在途解析
+         */
+        static void setLookupFunction(LookupFunction lookup);
+
+        /// 恢复默认 getaddrinfo
+        static void clearLookupFunction();
+
+        /// 当前在途的名字查找数（测试与诊断用；包含默认实现与注入实现）
+        [[nodiscard]] static std::size_t activeLookupCount() noexcept;
 
         /**
          * @brief 取进程级的解析读数

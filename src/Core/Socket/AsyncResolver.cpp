@@ -59,6 +59,10 @@ namespace AsynGyanis::Core
         std::atomic<std::uint64_t> g_lookupCount{0};
         std::atomic<std::uint64_t> g_cacheHitCount{0};
 
+        /// 注入的名字查找与其锁：后台线程只拷贝一份再调用，不在锁里跑用户代码
+        std::mutex                    g_lookupFunctionMutex;
+        AsyncResolver::LookupFunction g_lookupFunction;
+
         /**
          * @brief 缓存键：主机文本按 ASCII 折小写，端口用单元分隔符接在后面
          * @details 域名大小写无关（RFC 4343），不折叠就会让 Example.COM 与 example.com 各占一格。
@@ -233,6 +237,27 @@ namespace AsynGyanis::Core
          */
         void blockingResolve(const std::string host, const uint16_t port, EventLoop *targetLoop, std::shared_ptr<ResolveState> state)
         {
+            AsyncResolver::LookupFunction injectedLookup;
+            {
+                const std::lock_guard<std::mutex> guard(g_lookupFunctionMutex);
+                injectedLookup = g_lookupFunction;
+            }
+            if (injectedLookup)
+            {
+                try
+                {
+                    state->addresses = injectedLookup(host, port);
+                } catch (const std::exception &failure)
+                {
+                    LOG_ERROR_EXCEPTION(failure, "AsyncResolver: 注入的查找函数抛出异常，本次解析按失败返回空地址");
+                } catch (...)
+                {
+                    LOG_ERROR("AsyncResolver: 注入的查找函数抛出非标准异常，本次解析按失败返回空地址");
+                }
+                deliverResult(targetLoop, state);
+                return;
+            }
+
             // Windows 上 getaddrinfo 需要 Winsock 已初始化
             const Platform::Socket::Initialization winsock;
             if (!winsock.isValid())
@@ -414,6 +439,23 @@ namespace AsynGyanis::Core
         }
         writeCache(cacheKey, state->addresses);
         co_return std::move(state->addresses);
+    }
+
+    void AsyncResolver::setLookupFunction(LookupFunction lookup)
+    {
+        const std::lock_guard<std::mutex> guard(g_lookupFunctionMutex);
+        g_lookupFunction = std::move(lookup);
+    }
+
+    void AsyncResolver::clearLookupFunction()
+    {
+        const std::lock_guard<std::mutex> guard(g_lookupFunctionMutex);
+        g_lookupFunction = {};
+    }
+
+    std::size_t AsyncResolver::activeLookupCount() noexcept
+    {
+        return static_cast<std::size_t>(g_activeResolutionCount.load(std::memory_order_relaxed));
     }
 
     AsyncResolver::Stats AsyncResolver::stats() noexcept
