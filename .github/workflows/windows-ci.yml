@@ -482,13 +482,15 @@ jobs:
           set -o pipefail
           # 两个流都钉成 UTF-8：cp1252 会把中文明细读成问号，判据就没法比对
           export PYTHONIOENCODING=utf-8
-          cmake -S packaging/consumer-journey -B build/consumer-journey -G Ninja \
+          # 不传 -G：Windows 的 Conan 工具链会钉 CMAKE_GENERATOR_PLATFORM=x64，
+          # 与 Ninja 的「不支持平台参数」冲突；让它用工具链给的生成器，构建走 --config
+          cmake -S packaging/consumer-journey -B build/consumer-journey \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$PWD/build/version-deps/conan_toolchain.cmake" \
             -DCMAKE_PREFIX_PATH="$PWD/build/version-deps" \
             -DJOURNEY_EXPECTED_VERSION="${PACKAGE_VERSION}"
-          cmake --build build/consumer-journey
-          ./build/consumer-journey/consumer_journey.exe --require-all \
+          cmake --build build/consumer-journey --config Release
+          ./build/consumer-journey/Release/consumer_journey.exe --require-all \
             --server-cert tests/Core/fixtures/test_ip_cert.pem \
             --server-key tests/Core/fixtures/test_ip_key.pem \
             --client-cert tests/Core/fixtures/test_localhost_cert.pem \
