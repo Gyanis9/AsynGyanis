@@ -27,7 +27,7 @@
 - **WebSocket 客户端接收超时与本地关闭唤醒**（`78b67529`）：新增 `WebSocketClient::receiveFor(timeout)`——到点返回 `ReceiveTimedOut`，只停止等待，不消费已到的帧、不关闭连接，下一次 `receive()`/`receiveFor()` 仍能继续收；本端 `close()` 通过停止源唤醒挂起读并返回 `ReceiveInterruptedByLocalClose`，连接保留给下一次 `receive()` 读对端那条 Close 回帧。超时后的挂起读保留在客户端上，析构时随客户端一起释放。
 - **可替换的名字查找**（`905fdca8`）：`AsyncResolver::setLookupFunction()`/`clearLookupFunction()` 与 `activeLookupCount()`；默认仍走 `getaddrinfo`，调用方可在启动阶段注入自己的查找实现。新增两条判据：阻塞 lookup 下 50 ms 解析返回空且名额归还；`HttpClient` 在 DNS 卡住时按请求时限失败，恢复后仍能发下一条请求。
 - **入站请求处理截止时刻**（`e073642e`）：`HttpRequest::setDeadline()`/`deadline()` 由 `timeoutMiddleware` 在进入业务链时落定，`reset()` 清空；网关处理器可把 `request.deadline()` 直接填进 `HttpClientRequest::deadline`，下游慢于入站预算时上游先失败，不再让超时沿调用链放大。
-- **出站请求取消**（`5a6d2f98`、`2c305a0c`）：`HttpClientRequest::cancelToken` 接受 `std::stop_token`；H1 关闭当前连接，H2 用 RST_STREAM(CANCEL)、H3 用 RESET_STREAM 与 STOP_SENDING 只结一条流，兄弟请求与连接保留。socket、stream、TLS、代理与池化连接新增 `waitReadableFor(timeout)`，阻塞中的泵按取消节拍醒来；未带令牌的请求仍走原来的阻塞泵。取消的连接不还空闲池，并发闸排队同样可取消。
+- **出站请求取消**（`5a6d2f98`、`2c305a0c`）：`HttpClientRequest::cancelToken` 接受 `std::stop_token`；H1 关闭当前连接，H2 用 RST_STREAM(CANCEL)、H3 用 RESET_STREAM 与 STOP_SENDING 只结一条流，兄弟请求与连接保留。socket、stream、TLS、代理与池化连接新增 `waitReadableFor(timeout)`，阻塞中的泵按取消节拍醒来；域名解析也接受同一令牌；可读等待在已关闭通路上交回不可读，不再把异常穿透到调用方。未带令牌的请求仍走原来的阻塞泵。取消的连接不还空闲池，并发闸排队同样可取消。
 
 ### 修复
 
