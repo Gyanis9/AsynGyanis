@@ -26,6 +26,7 @@
 #include "Database/Common/Decimal.h"
 #include "Database/Common/RowMappingException.h"
 #include "Database/Queryable/RowMapper.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -98,6 +99,21 @@ namespace AsynGyanis::Database::Queryable
         DatabaseValue booleanValue(const bool booleanValue)
         {
             return DatabaseValue{booleanValue};
+        }
+
+        /**
+         * @brief 断言值转换按指定类型失败，且原因点名列名与拒绝的取值或规则
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 值转换动作
+         * @param expectedFragment 原因里必须出现的片段（被拒的取值或规则名）
+         * @details 只判「抛了」的用例改掉文案、少点名列都照样绿；列名与环境里的列名常量同一份
+         */
+        template<typename ExceptionType, typename Action>
+        void expectConversionRejected(Action &&action, const std::string_view expectedFragment)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "值转换");
+            EXPECT_NE(reason.find(kColumnName), std::string::npos) << "原因没有点名是哪一列：" << reason;
+            EXPECT_NE(reason.find(expectedFragment), std::string::npos) << "原因没有点明拒绝的取值或规则：" << reason;
         }
 
     } // namespace
@@ -208,7 +224,7 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_EQ(maximumSigned, Detail::convertDatabaseValue<std::uint64_t>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName));
 
         // 负值在无符号成员上无从表达：静默回绕成巨大正数是能藏最久的错误
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(integerValue(-1), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(integerValue(-1), kColumnName)); }, "值 -1 超出");
     }
 
     // ------------------------------------------------------------------------
@@ -231,11 +247,12 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperUnsigned, RejectsTextBeyondTargetWidth)
     {
         // 2^64：比 uint64 上界大 1，必须拒绝而不是回绕成 0
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551616"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("18446744073709551616"), kColumnName)); },
+                                                     "18446744073709551616");
 
         // 32 位无符号成员同样按自己的上界判定（文本支路不能只看 uint64）
         EXPECT_EQ(4294967295U, Detail::convertDatabaseValue<std::uint32_t>(textValue("4294967295"), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint32_t>(textValue("4294967296"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint32_t>(textValue("4294967296"), kColumnName)); }, "4294967296");
     }
 
     /**
@@ -244,17 +261,18 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperUnsigned, RejectsNonIntegerText)
     {
         // 无符号成员收到负号：它不是「越界」而是根本不适用，因此与前一组用例分开钉
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("-1"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("-1"), kColumnName)); },
+                                                     "\"-1\" 无法映射到无符号整型");
 
         // 小数点与科学计数法：取整会静默改变数值（1.9 → 1），因此必须拒绝
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("1.9"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("1e3"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("1.9"), kColumnName)); }, "\"1.9\"");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("1e3"), kColumnName)); }, "\"1e3\"");
 
         // 前后空格与尾部余文：from_chars 不跳空白，因此这些都不是合法整数
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue(" 12"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("12 "), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("12abc"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue(""), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue(" 12"), kColumnName)); }, "\" 12\"");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("12 "), kColumnName)); }, "\"12 \"");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue("12abc"), kColumnName)); }, "12abc");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint64_t>(textValue(""), kColumnName)); }, "无法映射到无符号整型");
     }
 
     // ------------------------------------------------------------------------
@@ -278,11 +296,13 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperSigned, RejectsTextOutOfRangeOrMalformed)
     {
         // 2^63 放不进 int64：即便它是 uint64 的有效取值，对 int64 成员也必须失败
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775808"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775809"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("9223372036854775808"), kColumnName)); },
+                                                     "9223372036854775808");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("-9223372036854775809"), kColumnName)); },
+                                                     "-9223372036854775809");
 
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("1.5"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("1.5"), kColumnName)); }, "\"1.5\"");
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName)); }, "无法映射到整型");
     }
 
     /**
@@ -291,11 +311,11 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperNarrow, AppliesTargetWidthToTextPath)
     {
         EXPECT_EQ(255U, Detail::convertDatabaseValue<std::uint8_t>(textValue("255"), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::uint8_t>(textValue("256"), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::uint8_t>(textValue("256"), kColumnName)); }, "256");
 
         // int64 支路上的窄化校验是既有行为，这里补钉一条，保证两条支路判定一致
         EXPECT_EQ(static_cast<std::int8_t>(-128), Detail::convertDatabaseValue<std::int8_t>(integerValue(-128), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::int8_t>(integerValue(300), kColumnName)), std::runtime_error);
+        expectConversionRejected<std::runtime_error>([&] { static_cast<void>(Detail::convertDatabaseValue<std::int8_t>(integerValue(300), kColumnName)); }, "300");
     }
 
     // ------------------------------------------------------------------------
