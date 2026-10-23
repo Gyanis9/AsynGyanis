@@ -8,6 +8,7 @@
 // 收进来的按交付给业务的东西判（消息完整、控制帧不外露、Close 的码与原因）。
 // 时限那一条断的是「有出口」而不是「够快」：对端一言不发时 connect() 必须带着原因回来。
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "Net/WebSocket/WebSocketClient.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
@@ -1197,10 +1198,14 @@ namespace AsynGyanis::Net
         {
             // 用法判据都在调用点跑完：Task 是惰性启动的，把判据放进协程体就要等到首次恢复才露出来，
             // 抛出时既不建帧也不留半条帧在线上
-            EXPECT_THROW(static_cast<void>(client.close(1005, std::string_view{})), Base::InvalidArgumentException);
-            EXPECT_THROW(static_cast<void>(client.close(1000, std::string{"\xFF\xFE", 2})), Base::InvalidArgumentException);
-            EXPECT_THROW(static_cast<void>(client.close(1000, std::string(200, 'x'))), Base::InvalidArgumentException);
-            EXPECT_THROW(static_cast<void>(client.sendPing(std::string(200, 'p'))), Base::InvalidArgumentException);
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(client.close(1005, std::string_view{})); }, "不允许出现在线上",
+                                                                                   "保留关闭码");
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(client.close(1000, std::string{"\xFF\xFE", 2})); }, "不是合法 UTF-8",
+                                                                                   "关闭原因非 UTF-8");
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(client.close(1000, std::string(200, 'x'))); }, "超过上限",
+                                                                                   "关闭原因超长");
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(client.sendPing(std::string(200, 'p'))); }, "控制帧负载不得超过",
+                                                                                   "Ping 200 字节");
             outcome.send_results.push_back(co_await client.close(1000, "ok"));
             co_return;
         };

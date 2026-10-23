@@ -13,6 +13,7 @@
 #include "Net/WebSocket/WebSocketUtf8.h"
 
 #include "NetTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -857,9 +858,9 @@ namespace AsynGyanis::Net
     {
         WebSocketFrameDecoder decoder;
 
-        EXPECT_THROW(static_cast<void>(decoder.takeFrame()), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(decoder.takeFrame()); }, "当前没有待取走的帧", "无帧可取");
         // 用法错误归 std::logic_error 分支，不并入运行期故障的捕获面
-        EXPECT_THROW(static_cast<void>(decoder.takeFrame()), std::logic_error);
+        AsynGyanis::TestSupport::expectFailure<std::logic_error>([&] { static_cast<void>(decoder.takeFrame()); }, "当前没有待取走的帧", "无帧可取（logic_error）");
     }
 
     // ============================================================================
@@ -871,12 +872,16 @@ namespace AsynGyanis::Net
      */
     TEST(WebSocketFrame, EncoderRejectsControlFrameMisuse)
     {
-        EXPECT_THROW(static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Ping, std::string(126, 'x'))), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Close, "x", false)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeWebSocketFrame(static_cast<WebSocketOpCode>(0x3), "x")), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Ping, std::string(126, 'x'))); },
+                                                                               "控制帧负载不得超过", "Ping 126 字节");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Close, "x", false)); },
+                                                                               "控制帧不得分片", "Close 非 FIN");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(encodeWebSocketFrame(static_cast<WebSocketOpCode>(0x3), "x")); }, "未定义",
+                                                                               "保留操作码");
 
         // 用途错误也留在 std::logic_error 这条分支上，便于调用方一次网住所有用法错误
-        EXPECT_THROW(static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Ping, std::string(126, 'x'))), std::invalid_argument);
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>([&] { static_cast<void>(encodeWebSocketFrame(WebSocketOpCode::Ping, std::string(126, 'x'))); },
+                                                                      "控制帧负载不得超过", "Ping 126 字节（invalid_argument）");
 
         // 125 字节是控制帧的合法上界：帧头 2 字节 + 负载 125 字节
         EXPECT_EQ(encodeWebSocketFrame(WebSocketOpCode::Ping, std::string(125, 'x')).size(), 127U);

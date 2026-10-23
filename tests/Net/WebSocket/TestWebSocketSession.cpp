@@ -13,6 +13,7 @@
 
 #include "Core/EventLoop/Timer.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "Net/Http/Config/HttpServerLimits.h"
 #include "Net/Http/Server/HttpServerStats.h"
 #include "Net/WebSocket/WebSocketUpgradePolicy.h"
@@ -1452,7 +1453,7 @@ namespace AsynGyanis::Net
 
         Core::Task<bool> textTask = peer.sendText("boom");
         textTask.handle().resume();
-        EXPECT_THROW(static_cast<void>(textTask.await_resume()), std::runtime_error);
+        AsynGyanis::TestSupport::expectFailure<std::runtime_error>([&] { static_cast<void>(textTask.await_resume()); }, "假发送回调：写出时抛异常", "写出回调异常");
         EXPECT_FALSE(peer.isWriteInFlight()) << "标记未随异常展开复位";
     }
 
@@ -1479,7 +1480,8 @@ namespace AsynGyanis::Net
         {
             Core::Task<bool> illegalTask = peer.close(illegalCode);
             illegalTask.handle().resume();
-            EXPECT_THROW(illegalTask.await_resume(), Base::InvalidArgumentException) << "状态码 " << illegalCode << " 不允许出现在线上";
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(illegalTask.await_resume()); }, "不允许出现在线上",
+                                                                                   "关闭码 " + std::to_string(illegalCode));
             EXPECT_TRUE(peer.isOpen()) << "被拒的调用不得改变连接状态";
         }
 
@@ -1488,21 +1490,21 @@ namespace AsynGyanis::Net
         const std::string overlongReason(124, 'x');
         Core::Task<bool>  overlongTask = peer.close(kWebSocketNormalClosureCode, overlongReason);
         overlongTask.handle().resume();
-        EXPECT_THROW(overlongTask.await_resume(), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(overlongTask.await_resume()); }, "超过上限", "超长关闭原因");
 
         // 原因前半段是合法的三字节汉字、尾随一个 0xFF：RFC 6455 §7.4 要求状态码之后的正文按 UTF-8 编码，
         // 这样的帧发出去对端只能按 1007 收口，而本端收到同样的一帧也正是这么处置的
         const std::string brokenUtf8Reason("\xE5\xAD\x97\xFF");
         Core::Task<bool>  brokenUtf8Task = peer.close(kWebSocketNormalClosureCode, brokenUtf8Reason);
         brokenUtf8Task.handle().resume();
-        EXPECT_THROW(brokenUtf8Task.await_resume(), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(brokenUtf8Task.await_resume()); }, "不是合法 UTF-8", "关闭原因含 0xFF");
         EXPECT_TRUE(peer.isOpen()) << "被拒的关闭不该把连接记成已收口";
 
         // 截断的多字节序列同样非法（不是「结尾多个字节」那种可以放过去的写法）
         const std::string truncatedUtf8Reason("\xE5\xAD");
         Core::Task<bool>  truncatedUtf8Task = peer.close(kWebSocketNormalClosureCode, truncatedUtf8Reason);
         truncatedUtf8Task.handle().resume();
-        EXPECT_THROW(truncatedUtf8Task.await_resume(), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(truncatedUtf8Task.await_resume()); }, "不是合法 UTF-8", "关闭原因截断");
 
         EXPECT_EQ(sentFrameCount, 0) << "被拒的调用一条帧都不该写出";
 
@@ -1542,14 +1544,14 @@ namespace AsynGyanis::Net
         const std::string brokenUtf8("\xE5\xAD\x97\xFF"); // 一个合法汉字后跟一个不属于任何序列的字节
         Core::Task<bool>  brokenTask = peer.sendText(brokenUtf8);
         brokenTask.handle().resume();
-        EXPECT_THROW(brokenTask.await_resume(), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(brokenTask.await_resume()); }, "文本负载从第", "文本含 0xFF");
         EXPECT_EQ(sentFrameCount, 0) << "非法 UTF-8 的文本帧还是交给了连接：对端只能按 1007 打死这条连接";
         EXPECT_TRUE(peer.isOpen()) << "被拒的发送不该把连接记成已收口";
 
         const std::string truncatedUtf8("\xF0\x9F\x98"); // 四字节序列差一个尾字节
         Core::Task<bool>  truncatedTask = peer.sendText(truncatedUtf8);
         truncatedTask.handle().resume();
-        EXPECT_THROW(truncatedTask.await_resume(), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(truncatedTask.await_resume()); }, "文本负载从第", "文本截断");
 
         // 正向对照：ASCII 与多字节 UTF-8 照常发出
         Core::Task<bool> okTask = peer.sendText("你好, world");

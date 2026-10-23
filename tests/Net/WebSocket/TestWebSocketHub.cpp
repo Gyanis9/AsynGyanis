@@ -17,6 +17,7 @@
 #include "Net/WebSocket/WebSocketPeer.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 #include "gtest/gtest.h"
 
@@ -541,7 +542,7 @@ namespace AsynGyanis::Net
 
         path.throwOnNextSend = true; // 放开闸门后那一帧抛出：异常该原样交回正在发布的那一位
         path.release();
-        EXPECT_THROW(first.handle().promise().result(), std::runtime_error) << "写路径的抛出被集线器吞掉了";
+        AsynGyanis::TestSupport::expectFailure<std::runtime_error>([&] { static_cast<void>(first.handle().promise().result()); }, "发送回调抛出", "写路径异常");
         EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "随展开销毁的那一帧没记进作废账";
 
         // 关键判据：闩已复位——下一次发布必须真的去写，并且把积压的两条按序一起带走
@@ -572,7 +573,7 @@ namespace AsynGyanis::Net
         const std::string protobufLike = std::string("\xFF\xFE") + "blob"; // 二进制负载错投了文本通道
         Core::Task<void>  failing      = hub.publish("lobby", protobufLike);
         failing.handle().resume();
-        EXPECT_THROW(failing.handle().promise().result(), Base::InvalidArgumentException) << "非法 UTF-8 的扇出没抛回发布者";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(failing.handle().promise().result()); }, "文本负载从第", "扇出非 UTF-8");
 
         EXPECT_TRUE(path.sentFrames.empty()) << "这样一帧还是上线了：每个对端都会按 1007 打死这条连接";
         EXPECT_EQ(hub.abandonedMessageCount(), 1U) << "被把关挡下的那一条没记进作废账";
@@ -662,13 +663,13 @@ namespace AsynGyanis::Net
 
     TEST(WebSocketHub, RejectsZeroQueueBoundAtConstruction)
     {
-        EXPECT_THROW(
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>(
                 []
                 {
                     const WebSocketHub zeroBound(0U);
                     static_cast<void>(zeroBound);
-                }(),
-                Base::InvalidArgumentException);
+                },
+                "不能为 0", "零队列上界");
     }
 
     TEST(WebSocketHub, PublishWithNoMembersDoesNothingAndStaysSynchronous)
