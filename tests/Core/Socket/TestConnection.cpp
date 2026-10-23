@@ -12,10 +12,38 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 可控的 remoteAddress()：计调用次数，并可切换成抛异常
+         * @details cachedRemoteAddress() 的契约是「问一次、成功与失败都缓存」；基类真实套接字
+         *          只能给出一个固定答案，必须借派生类才能观察「问了几次」。
+         */
+        class AddressProbeConnection final : public Connection
+        {
+        public:
+            using Connection::Connection;
+
+            [[nodiscard]] std::string remoteAddress() const override
+            {
+                ++remoteAddressCallCount;
+                if (shouldThrow)
+                {
+                    throw Base::SystemException("测试用：取不到对端地址");
+                }
+                return "203.0.113.7:4321";
+            }
+
+            mutable int remoteAddressCallCount{0};
+            bool        shouldThrow{false};
+        };
+    } // namespace
+
     /**
      * @brief 构造后连接立即处于存活态并持有传入的 socket（描述符原样保留，不做替换）
      */
@@ -26,6 +54,36 @@ namespace AsynGyanis::Core
 
         EXPECT_TRUE(connection.isAlive());
         EXPECT_EQ(connection.socket().fileDescriptor(), -1);
+    }
+
+    /**
+     * @brief 钉住公开读数：忙碌位、累计收发字节与建连时刻都随调用如实变化
+     * @details 这三个读数分别喂给 drain 的「有在途工作」判定与 /debug/connections 的聚合；
+     *          它们全是静默的普通赋值/原子累加，写错了不会让任何请求失败，只有直测抓得住。
+     */
+    TEST(Connection, PublicReadoutsReflectLifecycleCalls)
+    {
+        const auto beforeConstruction = std::chrono::steady_clock::now();
+        EventLoop  loop;
+        Connection connection(AsyncSocket(loop, -1));
+        const auto afterConstruction = std::chrono::steady_clock::now();
+
+        EXPECT_FALSE(connection.isBusy()) << "刚建立的连接不该自称有在途工作";
+        connection.setBusy(true);
+        EXPECT_TRUE(connection.isBusy());
+        connection.setBusy(false);
+        EXPECT_FALSE(connection.isBusy());
+
+        connection.noteBytesReceived(3U);
+        connection.noteBytesReceived(4U);
+        connection.noteBytesSent(5U);
+        EXPECT_EQ(connection.receivedBytes(), 7U) << "接收字节没有累加";
+        EXPECT_EQ(connection.sentBytes(), 5U) << "发送字节没有累加";
+
+        const auto createdAt = connection.createdAt();
+        EXPECT_LE(beforeConstruction, createdAt) << "建连时刻早于构造调用";
+        EXPECT_LE(createdAt, afterConstruction) << "建连时刻晚于构造返回";
+        EXPECT_EQ(connection.createdAt(), createdAt) << "建连时刻不是定值，后续读数会漂";
     }
 
     /**
@@ -90,6 +148,27 @@ namespace AsynGyanis::Core
         // （MSVC 据此报 C4834 并因「告警即错误」直接拒绝构建，GCC 不报这一条）
         const auto readPeerAddress = [&connection]() { return connection.remoteAddress(); };
         EXPECT_THROW(readPeerAddress(), Base::SystemException) << "只绑定未连接的套接字问不出对端，必须报错而不是交出「0.0.0.0:0」这类假地址";
+    }
+
+    /**
+     * @brief 钉住 cachedRemoteAddress() 只问一次，并把失败也缓存成空
+     * @details 这条读数供每条请求落定来源；旧写法若在失败后重试，一条坏连接会让每条请求都付一次
+     *          取址与异常构造。成功与失败两种形状都必须在第二次调用时复用第一次的答案。
+     */
+    TEST(Connection, CachedRemoteAddressAsksOnceAndCachesFailure)
+    {
+        EventLoop              loop;
+        AddressProbeConnection connection(AsyncSocket(loop, -1));
+
+        EXPECT_EQ(connection.cachedRemoteAddress(), std::string_view{"203.0.113.7:4321"});
+        EXPECT_EQ(connection.cachedRemoteAddress(), std::string_view{"203.0.113.7:4321"});
+        EXPECT_EQ(connection.remoteAddressCallCount, 1) << "第二次取址又问了底层：缓存没有生效";
+
+        AddressProbeConnection failing(AsyncSocket(loop, -1));
+        failing.shouldThrow = true;
+        EXPECT_EQ(failing.cachedRemoteAddress(), std::string_view{}) << "取不到地址时应交回空视图";
+        EXPECT_EQ(failing.cachedRemoteAddress(), std::string_view{});
+        EXPECT_EQ(failing.remoteAddressCallCount, 1) << "失败被缓存成了「可重试」：每条请求都会再抛一次";
     }
 
     /**
