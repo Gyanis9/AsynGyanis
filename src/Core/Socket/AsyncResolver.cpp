@@ -1,5 +1,6 @@
 #include "Core/Socket/AsyncResolver.h"
 
+#include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
@@ -31,13 +32,16 @@ namespace AsynGyanis::Core
         std::atomic<int> g_activeResolutionCount{0};
 
         /**
-         * @brief 解析结果的缓存有效期
+         * @brief 默认的缓存有效期
          * @details getaddrinfo 不把记录的 TTL 交出来，所以这个数只能自己定。定短（而不是「一天」这类
          *          常见默认）的理由是「换 IP 的域名要能自己恢复」：一次 DNS 故障、一次重绑定、或一次
          *          运维改记录，最坏情况下也只有这么久在继续用旧地址。定长省下的那几次解析不值钱——
-         *          一次解析几毫秒，而用错地址的代价是一次连不上。
+         *          一次解析几毫秒，而用错地址的代价是一次连不上。setCacheTimeToLive() 可按部署调整。
          */
-        constexpr std::chrono::seconds kCacheTimeToLive{60};
+        constexpr std::chrono::milliseconds kDefaultCacheTimeToLive{std::chrono::seconds{60}};
+
+        /// 当前生效的缓存有效期（毫秒）：测试用它把过期路径压到可观察的时长
+        std::atomic<std::int64_t> g_cacheTimeToLiveMilliseconds{kDefaultCacheTimeToLive.count()};
 
         /// 缓存条数上界：解析必须能继续，缓存不能吃掉内存
         constexpr std::size_t kMaximumCacheEntryCount = 256U;
@@ -129,7 +133,7 @@ namespace AsynGyanis::Core
                     g_addressCache.clear();
                 }
             }
-            g_addressCache.insert_or_assign(key, CacheEntry{addresses, now + kCacheTimeToLive});
+            g_addressCache.insert_or_assign(key, CacheEntry{addresses, now + AsyncResolver::cacheTimeToLive()});
         }
 
         /**
@@ -492,6 +496,21 @@ namespace AsynGyanis::Core
     {
         const std::lock_guard<std::mutex> guard(g_lookupFunctionMutex);
         g_lookupFunction = {};
+    }
+
+    void AsyncResolver::setCacheTimeToLive(const std::chrono::milliseconds timeToLive)
+    {
+        // 非正是用法错误：0 会让条目写入即过期，负数更没有意义
+        if (timeToLive <= std::chrono::milliseconds::zero())
+        {
+            throw Base::InvalidArgumentException("AsyncResolver::setCacheTimeToLive：缓存有效期必须是正数；要缩短缓存请给毫秒数而不是 0");
+        }
+        g_cacheTimeToLiveMilliseconds.store(timeToLive.count(), std::memory_order_release);
+    }
+
+    std::chrono::milliseconds AsyncResolver::cacheTimeToLive() noexcept
+    {
+        return std::chrono::milliseconds{g_cacheTimeToLiveMilliseconds.load(std::memory_order_acquire)};
     }
 
     std::size_t AsyncResolver::activeLookupCount() noexcept

@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.1.0
-# headers=310 entries=9094
+# headers=310 entries=9096
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1415,6 +1415,7 @@ src/Core/Socket/AsyncResolver.h	AsyncResolver &operator=(const AsyncResolver &) 
 src/Core/Socket/AsyncResolver.h	AsyncResolver() = default
 src/Core/Socket/AsyncResolver.h	AsyncResolver(const AsyncResolver &) = delete
 src/Core/Socket/AsyncResolver.h	[[nodiscard]] static Stats stats() noexcept
+src/Core/Socket/AsyncResolver.h	[[nodiscard]] static std::chrono::milliseconds cacheTimeToLive() noexcept
 src/Core/Socket/AsyncResolver.h	[[nodiscard]] static std::size_t activeLookupCount() noexcept
 src/Core/Socket/AsyncResolver.h	class ASYN_CORE_API AsyncResolver
 src/Core/Socket/AsyncResolver.h	class EventLoop
@@ -1422,6 +1423,7 @@ src/Core/Socket/AsyncResolver.h	namespace AsynGyanis::Core
 src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port)
 src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout, std::stop_token cancelToken =
 src/Core/Socket/AsyncResolver.h	static void clearLookupFunction()
+src/Core/Socket/AsyncResolver.h	static void setCacheTimeToLive(std::chrono::milliseconds timeToLive)
 src/Core/Socket/AsyncResolver.h	static void setLookupFunction(LookupFunction lookup)
 src/Core/Socket/AsyncResolver.h	std::uint64_t cacheHitCount
 src/Core/Socket/AsyncResolver.h	std::uint64_t lookupCount

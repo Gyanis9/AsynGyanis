@@ -1,14 +1,18 @@
 // AsyncResolver 单元测试：空主机名与不存在的主机、回环解析、IP 文本与惰性两步调用
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <future>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+#include "Base/Exception/Exception.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncResolver.h"
+#include "AssertionSupport.h"
 #include "CoreTestSupport.h"
 namespace AsynGyanis::Core
 {
@@ -155,6 +159,61 @@ namespace AsynGyanis::Core
         const auto after = AsyncResolver::stats();
         EXPECT_EQ(after.lookupCount - before.lookupCount, 2U) << "两次失败查询没有各算一次解析";
         EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 0U) << "失败结果被缓存：一次临时故障会粘住 60 秒";
+    }
+
+    /**
+     * @brief 钉住：缓存条目按配置的有效期过期，过期后必须重新解析
+     * @details 默认 60 秒的过期路径没法在单测里真等；把有效期压到 200 毫秒、用注入 lookup
+     *          返回固定地址，再用有界轮询等到「下一次查询真的走进解析流程」。判据取 stats()
+     *          的增量：第一次是解析，第二次是命中，过期后必须再解析一次。
+     */
+    TEST(AsyncResolver, CacheEntriesExpireAfterTheConfiguredTimeToLive)
+    {
+        struct ResolverSeamReset
+        {
+            ~ResolverSeamReset()
+            {
+                AsyncResolver::clearLookupFunction();
+                AsyncResolver::setCacheTimeToLive(std::chrono::seconds{60});
+            }
+        } reset;
+
+        constexpr std::string_view kHost = "cache-ttl-expiry.test";
+        // stats().lookupCount 统计的是「查询次数」（命中与否都算），真实的后台查找次数由注入实现自己数
+        const auto lookupCalls = std::make_shared<std::atomic<std::size_t>>(0);
+        AsyncResolver::setLookupFunction(
+                [lookupCalls](const std::string &, const std::uint16_t)
+                {
+                    lookupCalls->fetch_add(1, std::memory_order_relaxed);
+                    return std::vector<InetAddress>{InetAddress("127.0.0.1", 1234)};
+                });
+        AsyncResolver::setCacheTimeToLive(std::chrono::milliseconds{200});
+        EXPECT_EQ(AsyncResolver::cacheTimeToLive(), std::chrono::milliseconds{200});
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([] { AsyncResolver::setCacheTimeToLive(std::chrono::milliseconds::zero()); }, "缓存有效期必须是正数",
+                                                                               "零有效期");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([] { AsyncResolver::setCacheTimeToLive(std::chrono::milliseconds{-1}); }, "缓存有效期必须是正数",
+                                                                               "负有效期");
+        EXPECT_EQ(AsyncResolver::cacheTimeToLive(), std::chrono::milliseconds{200}) << "非法设置不该改变当前值";
+
+        const auto before = AsyncResolver::stats();
+        ASSERT_EQ(resolveInLoop(kHost, 80).size(), 1U) << "注入 lookup 没有交出地址";
+        ASSERT_EQ(resolveInLoop(kHost, 80).size(), 1U);
+        const auto afterHit = AsyncResolver::stats();
+        EXPECT_EQ(afterHit.lookupCount - before.lookupCount, 2U) << "两次同键查询没有都算进查询读数";
+        EXPECT_EQ(afterHit.cacheHitCount - before.cacheHitCount, 1U) << "第二次同键查询没有走缓存";
+        ASSERT_EQ(lookupCalls->load(std::memory_order_relaxed), 1U) << "第一次查询没有真的调用注入 lookup";
+
+        // 窗口型：有界轮询等 TTL 过期，判据是后台 lookup 被第二次真正调用
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (std::chrono::steady_clock::now() < deadline && lookupCalls->load(std::memory_order_relaxed) < 2U)
+        {
+            static_cast<void>(resolveInLoop(kHost, 80));
+            if (lookupCalls->load(std::memory_order_relaxed) < 2U)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+        }
+        EXPECT_EQ(lookupCalls->load(std::memory_order_relaxed), 2U) << "过了配置的有效期缓存仍然命中：过期路径没有生效";
     }
 
     /**

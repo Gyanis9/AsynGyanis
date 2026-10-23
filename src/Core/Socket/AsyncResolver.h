@@ -104,6 +104,20 @@ namespace AsynGyanis::Core
         /// 恢复默认 getaddrinfo
         static void clearLookupFunction();
 
+        /**
+         * @brief 设置进程级名字缓存的有效期
+         * @param timeToLive 有效期；必须为正
+         * @throws Base::InvalidArgumentException timeToLive 非正
+         * @note 对之后写入的缓存条目生效；默认 60 秒。进程级状态，只应在启动阶段或测试里设置
+         */
+        static void setCacheTimeToLive(std::chrono::milliseconds timeToLive);
+
+        /**
+         * @brief 当前进程级名字缓存的有效期
+         * @return std::chrono::milliseconds 当前生效的时长
+         */
+        [[nodiscard]] static std::chrono::milliseconds cacheTimeToLive() noexcept;
+
         /// 当前在途的名字查找数（测试与诊断用；包含默认实现与注入实现）
         [[nodiscard]] static std::size_t activeLookupCount() noexcept;
 
