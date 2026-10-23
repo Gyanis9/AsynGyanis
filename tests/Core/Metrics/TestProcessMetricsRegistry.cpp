@@ -1,4 +1,5 @@
 #include "Core/Metrics/ProcessMetricsRegistry.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -192,28 +193,47 @@ namespace AsynGyanis::Core
      */
     TEST(ProcessMetricsRegistry, RefusesBadRegistrationsAtRegistrationTime)
     {
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("has a space", "空格不合法", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, [] { return 0U; })),
-                     std::invalid_argument);
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("9starts-with-digit", "首位不能是数字", ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
-                                                                              [] { return 0U; })),
-                     std::invalid_argument);
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_empty", "空回调", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, nullptr)),
-                     std::invalid_argument);
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&]
+                { static_cast<void>(ProcessMetricsRegistry::registerMetric("has a space", "空格不合法", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, [] { return 0U; })); },
+                "名字不合法", "含空格");
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(
+                            ProcessMetricsRegistry::registerMetric("9starts-with-digit", "首位不能是数字", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, [] { return 0U; }));
+                },
+                "名字不合法", "数字开头");
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&] { static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_empty", "空回调", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, nullptr)); },
+                "回调是空的", "空回调");
 
         const auto handle =
                 ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, [] { return 1U; });
         // 类型不同
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Gauge, ProcessMetricMerge::Sum,
-                                                                              [] { return 1U; })),
-                     std::invalid_argument);
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Gauge, ProcessMetricMerge::Sum,
+                                                                             [] { return 1U; }));
+                },
+                "已被登记", "类型不同");
         // 并法不同
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Counter, ProcessMetricMerge::Min,
-                                                                              [] { return 1U; })),
-                     std::invalid_argument);
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Counter, ProcessMetricMerge::Min,
+                                                                             [] { return 1U; }));
+                },
+                "已被登记", "并法不同");
         // 说明不同
-        EXPECT_THROW(static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "换了个说法", ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
-                                                                              [] { return 1U; })),
-                     std::invalid_argument);
+        AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "换了个说法", ProcessMetricKind::Counter, ProcessMetricMerge::Sum,
+                                                                             [] { return 1U; }));
+                },
+                "已被登记", "说明不同");
         // 三项一致的重复登记是支持的（多台同类对象各登记一份），把手握着才会在本条结束时注销
         const auto duplicate =
                 ProcessMetricsRegistry::registerMetric("asyn_test_probe_conflict_total", "先登记的说明", ProcessMetricKind::Counter, ProcessMetricMerge::Sum, [] { return 1U; });

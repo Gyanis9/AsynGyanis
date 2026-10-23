@@ -8,6 +8,7 @@
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Exception/CoreException.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -86,9 +87,9 @@ namespace AsynGyanis::Core
     {
         const CoreException failure("TLS 握手失败：对端证书不受信");
 
-        EXPECT_THROW(throw failure, CoreException);
-        EXPECT_THROW(throw failure, Base::Exception);
-        EXPECT_THROW(throw failure, std::exception);
+        AsynGyanis::TestSupport::expectCatchableWithSameText<CoreException>(failure);
+        AsynGyanis::TestSupport::expectCatchableWithSameText<Base::Exception>(failure);
+        AsynGyanis::TestSupport::expectCatchableWithSameText<std::exception>(failure);
     }
 
     // ============================================================================

@@ -5,6 +5,7 @@
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "Core/Coroutine/Task.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -206,9 +207,9 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(task.handle().promise().result(), 42);
 
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException) << "第二次读取结果应当被拒绝，而不是返回一个值";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(task.handle().promise().result()); }, "已经被取走一次", "第二次读取结果");
         // 用法错误必须落在 std::logic_error 分支，不能被「可重试的运行期故障」那一侧的 catch 兜住
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), std::logic_error) << "报错类型不在 logic_error 分支上，调用方会把它当成可重试的故障";
+        AsynGyanis::TestSupport::expectFailure<std::logic_error>([&] { static_cast<void>(task.handle().promise().result()); }, "已经被取走一次", "第二次读取结果（logic_error）");
 
         try
         {
@@ -235,7 +236,8 @@ namespace AsynGyanis::Core
         ASSERT_NE(firstPayload, nullptr) << "第一次读取本该拿到值";
         EXPECT_EQ(*firstPayload, 7);
 
-        EXPECT_THROW(static_cast<void>(task.handle().promise().result()), Base::InvalidArgumentException) << "第二次读取交出的是被搬空的指针：必须报错，不能静默给一个空值";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(task.handle().promise().result()); }, "已经被取走一次",
+                                                                               "move-only 二次读取");
     }
 
     /**
@@ -262,7 +264,7 @@ namespace AsynGyanis::Core
         task.handle().resume();
         ASSERT_TRUE(task.isReady());
 
-        EXPECT_THROW(task.handle().promise().result(), std::runtime_error);
+        AsynGyanis::TestSupport::expectFailure<std::runtime_error>([&] { static_cast<void>(task.handle().promise().result()); }, "test error", "协程体异常");
     }
 
     /**

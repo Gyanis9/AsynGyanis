@@ -28,6 +28,7 @@
 #include "Platform/IO/FileDescriptor.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -516,7 +517,7 @@ namespace AsynGyanis::Core
         Task<WaitOutcome> second = waitReadableOnce(watcher);
         second.handle().resume();
         ASSERT_TRUE(second.isReady()) << "第二个等待者应当以异常结束";
-        EXPECT_THROW(second.handle().promise().result(), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(second.handle().promise().result()); }, "已有协程在等待", "同方向第二个等待者");
 
         Platform::FileDescriptor::close(localDescriptor);
         Platform::FileDescriptor::close(peerDescriptor);

@@ -25,6 +25,7 @@
 #include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 
 #include "AllocationProbe.h"
 
@@ -193,7 +194,7 @@ namespace AsynGyanis::Core
     {
         EventLoop             worker;
         ConnectionDistributor distributor;
-        EXPECT_THROW(distributor.addWorker(worker, {}), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { distributor.addWorker(worker, {}); }, "接手动作为空", "缺 adopter");
 
         EXPECT_EQ(distributor.workerCount(), 0U);
         EXPECT_FALSE(distributor.distribute(makeDetachedSocketDescriptor()));

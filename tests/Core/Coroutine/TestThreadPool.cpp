@@ -8,6 +8,7 @@
 #include "Platform/System/CpuAffinity.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -90,7 +91,16 @@ namespace AsynGyanis::Core
 
         // 每个索引返回各自独立的 EventLoop，越界索引按 at() 的约定抛出
         EXPECT_NE(&pool.eventLoop(0), &pool.eventLoop(1));
-        EXPECT_THROW(static_cast<void>(pool.eventLoop(2)), std::out_of_range);
+        try
+        {
+            static_cast<void>(pool.eventLoop(2));
+            ADD_FAILURE() << "越界索引没有按 at() 约定抛出";
+        } catch (const std::out_of_range &failure)
+        {
+            EXPECT_FALSE(std::string(failure.what()).empty()) << "越界没有给出原因";
+        }
+        // 被拒之后池子仍可用：合法索引照常交出循环
+        EXPECT_NO_THROW(static_cast<void>(pool.eventLoop(1)));
     }
 
     /**
@@ -101,7 +111,15 @@ namespace AsynGyanis::Core
         ThreadPool pool(2);
 
         EXPECT_NE(&pool.scheduler(0), &pool.scheduler(1));
-        EXPECT_THROW(static_cast<void>(pool.scheduler(2)), std::out_of_range);
+        try
+        {
+            static_cast<void>(pool.scheduler(2));
+            ADD_FAILURE() << "越界索引没有按 at() 约定抛出";
+        } catch (const std::out_of_range &failure)
+        {
+            EXPECT_FALSE(std::string(failure.what()).empty()) << "越界没有给出原因";
+        }
+        EXPECT_NO_THROW(static_cast<void>(pool.scheduler(1)));
     }
 
     /**
@@ -244,7 +262,7 @@ namespace AsynGyanis::Core
                 << "投递没有在工作线程上跑完，这条路径没被走到";
 
         ASSERT_NE(stopError, nullptr) << "工作线程自己 stop() 没被拒：它会 join 自己并让进程 terminate";
-        EXPECT_THROW(std::rethrow_exception(stopError), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { std::rethrow_exception(stopError); }, "不能从自己的工作线程上调用", "工作线程自停");
 
         // 被拒的那一次不能把池子留在「已请求停止却没 join 完」的半停状态
         EXPECT_NO_THROW(pool.stop());

@@ -12,6 +12,7 @@
 #include "Base/Exception/LogicException.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -289,8 +290,8 @@ namespace AsynGyanis::Core
         ASSERT_TRUE(runner.waitUntilRunning());
 
         Mutex mutex(runner.loop());
-        EXPECT_THROW(static_cast<void>(mutex.tryLock()), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(mutex.lock()), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(mutex.tryLock()); }, "被外来线程使用", "tryLock");
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(mutex.lock()); }, "被外来线程使用", "lock");
 
         runner.join();
         std::optional<Mutex::Guard> held = mutex.tryLock(); // 循环停下：判据放开

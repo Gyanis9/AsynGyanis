@@ -8,6 +8,7 @@
 #include "Core/Crypto/Hkdf.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -110,13 +111,16 @@ namespace AsynGyanis::Core::Hkdf
 
         // 255 × Hash.length 之内是合法的（这里正好取到边界），越一格就是调用方算错了额度
         EXPECT_EQ(expand(Digest::Algorithm::Sha256, prk, {}, 255U * Digest::byteLength(Digest::Algorithm::Sha256)).size(), 8160U);
-        EXPECT_THROW(static_cast<void>(expand(Digest::Algorithm::Sha256, prk, {}, 255U * Digest::byteLength(Digest::Algorithm::Sha256) + 1U)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(expand(Digest::Algorithm::Sha256, prk, {}, 255U * Digest::byteLength(Digest::Algorithm::Sha256) + 1U)); }, "超过所选哈希的上限",
+                "超长输出");
     }
 
     TEST(HkdfTest, RefusesAnEmptyExpandKeyInsteadOfDerivingFromZeros)
     {
         // 空密钥扩展出来的是一份确定的、谁都能重算的「密钥」：把它当派生结果用等于没有派生
-        EXPECT_THROW(static_cast<void>(expand(Digest::Algorithm::Sha256, {}, {}, 32U)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(expand(Digest::Algorithm::Sha256, {}, {}, 32U)); }, "伪随机密钥为空",
+                                                                               "空 prk");
     }
 
     TEST(HkdfTest, SaltAndInfoAreTakenByLengthNotTerminator)

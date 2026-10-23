@@ -10,6 +10,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -86,7 +87,9 @@ namespace AsynGyanis::Core::Random
     {
         // OpenSSL 的取字节接口按 int 收长度：静默截断会给出「要了 2^31+1 字节、只拿到一半」的结果。
         // 判据落在按长度取的那两条口上——按视图取的那条，视图本身就不可能超过可表达的范围
-        EXPECT_THROW(static_cast<void>(bytes(static_cast<std::size_t>(INT_MAX) + 1U)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(secretBytes(static_cast<std::size_t>(INT_MAX) + 1U)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(bytes(static_cast<std::size_t>(INT_MAX) + 1U)); },
+                                                                               "超出 OpenSSL 接口能表达的长度上限", "bytes");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(secretBytes(static_cast<std::size_t>(INT_MAX) + 1U)); },
+                                                                               "超出 OpenSSL 接口能表达的长度上限", "secretBytes");
     }
 } // namespace AsynGyanis::Core::Random

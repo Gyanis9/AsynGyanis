@@ -6,6 +6,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/InetAddress.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -147,7 +148,7 @@ namespace AsynGyanis::Core
         // 取对端的动作要包一层：EXPECT_THROW 会丢掉返回值，而本方法是 [[nodiscard]] 的
         // （MSVC 据此报 C4834 并因「告警即错误」直接拒绝构建，GCC 不报这一条）
         const auto readPeerAddress = [&connection]() { return connection.remoteAddress(); };
-        EXPECT_THROW(readPeerAddress(), Base::SystemException) << "只绑定未连接的套接字问不出对端，必须报错而不是交出「0.0.0.0:0」这类假地址";
+        AsynGyanis::TestSupport::expectFailure<Base::SystemException>([&] { static_cast<void>(readPeerAddress()); }, "获取对端地址失败", "未连接套接字");
     }
 
     /**

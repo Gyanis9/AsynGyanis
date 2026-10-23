@@ -14,6 +14,7 @@
 #include "Base/Exception/LogicException.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -464,9 +465,9 @@ namespace AsynGyanis::Core
         EventLoop loop;
         Semaphore semaphore(loop, 2);
 
-        EXPECT_THROW(static_cast<void>(semaphore.acquire(0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(semaphore.tryAcquire(0)), Base::InvalidArgumentException);
-        EXPECT_THROW(semaphore.release(0), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(semaphore.acquire(0)); }, "许可个数为 0", "acquire(0)");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(semaphore.tryAcquire(0)); }, "许可个数为 0", "tryAcquire(0)");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { semaphore.release(0); }, "许可个数为 0", "release(0)");
         EXPECT_EQ(semaphore.availablePermitCount(), 2u);
         EXPECT_EQ(semaphore.waitingCount(), 0u);
     }
@@ -477,12 +478,12 @@ namespace AsynGyanis::Core
         EventLoop loop;
         Semaphore semaphore(loop, 2);
 
-        EXPECT_THROW(semaphore.release(1), Base::LogicException); // 一格都没出去，放回来就是超容量
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { semaphore.release(1); }, "超出容量", "空账放回 1 个"); // 一格都没出去，放回来就是超容量
         EXPECT_EQ(semaphore.availablePermitCount(), 2u);
 
         std::optional<Semaphore::Permit> holder = semaphore.tryAcquire(1);
         ASSERT_HAS_VALUE(holder);
-        EXPECT_THROW(semaphore.release(2), Base::LogicException); // 外面只有 1 格，放 2 个多了一格
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { semaphore.release(2); }, "超出容量", "外面只有 1 格时放 2 个"); // 外面只有 1 格，放 2 个多了一格
         EXPECT_EQ(semaphore.availablePermitCount(), 1u);
 
         holder.reset(); // 正常归还：账回到容量
@@ -501,9 +502,9 @@ namespace AsynGyanis::Core
         Observation             observation;
         std::vector<Task<void>> frames;
 
-        EXPECT_THROW(static_cast<void>(semaphore.acquire(1)), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(semaphore.tryAcquire(1)), Base::LogicException);
-        EXPECT_THROW(semaphore.release(1), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(semaphore.acquire(1)); }, "被外来线程使用", "acquire");
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(semaphore.tryAcquire(1)); }, "被外来线程使用", "tryAcquire");
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { semaphore.release(1); }, "被外来线程使用", "release");
         EXPECT_EQ(semaphore.availablePermitCount(), 2u); // 三次拒绝都没改账
 
         runner.join(); // 循环停下：判据放开
