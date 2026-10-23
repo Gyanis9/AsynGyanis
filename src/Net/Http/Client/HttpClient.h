@@ -247,7 +247,7 @@ namespace AsynGyanis::Net
     class ASYN_NET_API HttpClient
     {
     public:
-        /// 单次请求的默认整体时限（连接、握手、发送、收完响应四段之和）
+        /// 单次请求的默认整体时限（域名解析、连接、握手、发送、收完响应各段之和）
         static constexpr std::chrono::milliseconds kDefaultRequestTimeout{30000};
 
         /**
@@ -272,7 +272,7 @@ namespace AsynGyanis::Net
          *        把调用方永远挂住。TLS 握手、写出、收完响应之外，TCP 连接也在其中——这一段的时限
          *        是补上的：Windows 的完成端口后端上「连不上」并没有可写事件可等（实测系统 2 秒内就把
          *        连接拒了，挂在可写上的协程却永远等不到那一次唤醒），交给内核的 SYN 重试兜底等于让
-         *        调用方无限期停在这里。只有域名解析不在其中，那一步由系统解析器兜底
+         *        调用方无限期停在这里。域名解析也吃这份预算：解析卡住时到点即失败，不再等系统解析器兜底
          * @return std::unique_ptr<HttpClientResponse> 响应；失败（含超时）返回空
          * @note 失败原因会记进 ERROR 日志；要按原因分支就走 send()。需要附加头部也用 send()
          */
