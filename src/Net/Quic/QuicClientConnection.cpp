@@ -270,18 +270,18 @@ namespace AsynGyanis::Net
         co_return;
     }
 
-    Core::Task<> QuicClientConnection::pumpOnceFor(const std::chrono::milliseconds timeout)
+    Core::Task<bool> QuicClientConnection::pumpOnceCancellable(const std::stop_token stopToken)
     {
         if (m_connection == nullptr || m_socket == nullptr || m_isStopped)
         {
-            co_return;
+            co_return false;
         }
-        if (!co_await m_socket->waitReadableFor(timeout))
+        if (!co_await m_socket->waitReadable(stopToken))
         {
-            co_return; // 到点或套接字已关：请求循环回到自己的取消检查
+            co_return stopToken.stop_requested();
         }
         co_await pumpOnce();
-        co_return;
+        co_return true;
     }
 
     bool QuicClientConnection::isReady() const noexcept

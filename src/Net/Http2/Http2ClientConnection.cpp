@@ -246,16 +246,12 @@ namespace AsynGyanis::Net
         co_return isHealthy();
     }
 
-    Core::Task<bool> Http2ClientConnection::pumpSomeUntil(const std::chrono::steady_clock::time_point deadline)
+    Core::Task<bool> Http2ClientConnection::pumpSomeCancellable(const std::stop_token stopToken)
     {
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (remaining <= std::chrono::milliseconds::zero())
+        if (!co_await m_transport->waitReadable(stopToken))
         {
-            co_return true; // 这一轮没时间了：把控制权交回请求循环
-        }
-        if (!co_await m_transport->waitReadableFor(remaining))
-        {
-            co_return true; // 到点或通路已关：由请求循环看流记录决定收场
+            // 令牌停止时取消动作已经把流标成复位；通路关闭则交回 false 收口
+            co_return stopToken.stop_requested();
         }
         co_return co_await pumpSome();
     }
@@ -1123,17 +1119,21 @@ namespace AsynGyanis::Net
         {
             pending.responseReceiver = *responseReceiverOrNull;
         }
-        PendingStream &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
-
-        Core::CancellationWatch cancellationWatch(m_loop, cancelToken, [this, streamId](std::stop_token) -> Core::Task<> { co_await cancelStream(streamId); });
+        PendingStream          &stream = m_pendingStreams.emplace(streamId, std::move(pending)).first->second;
+        std::stop_source        pumpWake;
+        Core::CancellationWatch cancellationWatch(m_loop, cancelToken,
+                                                  [this, streamId, &pumpWake](std::stop_token) -> Core::Task<>
+                                                  {
+                                                      pumpWake.request_stop();
+                                                      co_await cancelStream(streamId);
+                                                  });
 
         const std::string headerBlock = m_encoder.encode(fields);
         // 只有「既没有整份正文、也没有流式来源」才轮到 HEADERS 收尾：END_STREAM 落在头块上就等于
         // 宣告正文为空，流式那一支的正文还在后面，提前收尾会让对端把请求当成没正文的
         const bool isEndStreamOnHeaders = body.empty() && bodySourceOrNull == nullptr;
-        // 头块按对端能收的最大帧负载切片：一条 HEADERS 的负载越过 SETTINGS_MAX_FRAME_SIZE 是对端
-        // 会拒的帧尺寸错误（§4.2 与 §6.5.2 的取值区间），拆成 HEADERS + CONTINUATION 才是规范
-        // 给的办法（§6.10：续帧必须紧跟同一条流的头块，最后一条带 END_HEADERS）。
+        // 头块按对端能收的最大帧负载切片：一条 HEADERS 越过 SETTINGS_MAX_FRAME_SIZE 是对端会拒的帧尺寸错误
+        // （§4.2 与 §6.5.2），拆成 HEADERS + CONTINUATION 才是规范给的办法（§6.10：续帧必须紧跟同一条流的头块）。
         // END_STREAM 只能落在 HEADERS 上（§6.1 的 flags 位），不跟着最后一片走。
         const std::size_t maximumFragmentByteCount = static_cast<std::size_t>(m_peerMaximumFrameByteSize);
         for (std::size_t offset = 0U;;)
@@ -1215,7 +1215,7 @@ namespace AsynGyanis::Net
             const PumpLease lease(*this);
             if (cancelToken.stop_possible())
             {
-                if (!co_await pumpSomeUntil(std::chrono::steady_clock::now() + std::chrono::milliseconds{5}))
+                if (!co_await pumpSomeCancellable(pumpWake.get_token()))
                 {
                     break;
                 }

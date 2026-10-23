@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -105,11 +106,11 @@ namespace AsynGyanis::Core
         Task<ssize_t> asyncReceive(void *buffer, size_t length) const;
 
         /**
-         * @brief 有上限地等可读：SSL 已解出的明文也算可读
-         * @param timeout 等待上限
-         * @return true 可读；false 到点或套接字已关闭
+         * @brief 等可读直到令牌停止：SSL 已解出的明文也算可读
+         * @param stopToken 取消令牌
+         * @return true 可读；false 令牌被停止或套接字已关闭
          */
-        [[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Task<bool> waitReadable(std::stop_token stopToken);
 
         /**
          * @brief TLS 加密发送数据。

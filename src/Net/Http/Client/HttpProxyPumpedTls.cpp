@@ -225,17 +225,17 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<bool> HttpProxyPumpedTls::waitReadableFor(const std::chrono::milliseconds timeout)
+    Core::Task<bool> HttpProxyPumpedTls::waitReadable(const std::stop_token stopToken)
     {
         if (m_isClosed || m_inner == nullptr)
         {
-            co_return false; // 本端已收口：等待按不可读结束，由泵折成请求失败
+            co_return false;
         }
         if (SSL_pending(m_inner.get()) > 0)
         {
             co_return true;
         }
-        co_return co_await m_outer->waitReadableFor(timeout);
+        co_return co_await m_outer->waitReadable(stopToken);
     }
 
     Core::Task<ssize_t> HttpProxyPumpedTls::asyncSend(const void *const buffer, const size_t length)

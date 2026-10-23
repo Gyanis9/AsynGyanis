@@ -1441,7 +1441,7 @@ src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t le
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendFile(int fileDescriptor, std::uint64_t offset, size_t length) const
 src/Core/Socket/AsyncSocket.h	Task<ssize_t> asyncSendVectored(const Platform::Socket::WriteBuffer *buffers, size_t bufferCount) const
-src/Core/Socket/AsyncSocket.h	[[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout)
+src/Core/Socket/AsyncSocket.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] EventLoop &eventLoop() const noexcept
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher *ensureWatcher() const
 src/Core/Socket/AsyncSocket.h	[[nodiscard]] IoWatcher::Awaiter waitReadable() const
@@ -1485,7 +1485,7 @@ src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Platform::SocketAddress localAddr
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<DatagramBatchReceiveResult> asyncReceiveBatch(Platform::DatagramSocket::BatchSlot *slots, std::size_t slotCount)
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<DatagramBatchSendResult> asyncSendBatch(const Platform::DatagramSocket::BatchSendItem *items, std::size_t itemCount)
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity)
-src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout)
+src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<bool> waitReadable(std::stop_token stopToken)
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] Task<ssize_t> asyncSendTo(Platform::SocketAddress peerAddress, const void *buffer, std::size_t length, std::uint8_t ecnCodepoint = Platform::kEcnCodepointNotCapable)
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] bool enableDoNotFragment() noexcept
 src/Core/Socket/AsyncUdpSocket.h	[[nodiscard]] bool enableEcnFieldVisibility() noexcept
@@ -1717,7 +1717,7 @@ src/Core/Tls/TlsSocket.h	TlsSocket(TlsSocket &&other) noexcept
 src/Core/Tls/TlsSocket.h	TlsSocket(const TlsSocket &) = delete
 src/Core/Tls/TlsSocket.h	[[nodiscard]] InetAddress localAddress() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] InetAddress remoteAddress() const
-src/Core/Tls/TlsSocket.h	[[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout)
+src/Core/Tls/TlsSocket.h	[[nodiscard]] Task<bool> waitReadable(std::stop_token stopToken)
 src/Core/Tls/TlsSocket.h	[[nodiscard]] Task<bool> yieldForPeerProgress() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] TlsPeerIdentityPtr peerIdentity() const
 src/Core/Tls/TlsSocket.h	[[nodiscard]] int fileDescriptor() const noexcept
@@ -3598,7 +3598,7 @@ src/Net/Http/Client/HttpOutboundConnectionPool.h	HttpOutboundEndpointKey m_endpo
 src/Net/Http/Client/HttpOutboundConnectionPool.h	HttpResponseParser m_parser
 src/Net/Http/Client/HttpOutboundConnectionPool.h	InFlightOverflowPolicy inFlightOverflowPolicy
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> send(std::string_view data)
-src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout)
+src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] HttpEstablishmentAwait awaitEstablishment(const HttpOutboundEndpointKey &endpointKey, Core::EventLoop &loop)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] HttpResponseParser &parser() noexcept
@@ -5163,7 +5163,7 @@ src/Net/Http2/Http2ClientConnection.h	Core::Task<Http2ClientResponse> requestWit
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> deliverReceivedBody(PendingStream &stream)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> flushOutgoing()
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSome()
-src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSomeUntil(std::chrono::steady_clock::time_point deadline)
+src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSomeCancellable(std::stop_token stopToken)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> sendBody(PendingStream &stream, std::string_view body, bool isEndOfBody = true)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<void> cancelStream(std::uint32_t streamId)
@@ -6788,11 +6788,11 @@ src/Net/Quic/QuicClientConnection.h	QuicClientConnection(const QuicClientConnect
 src/Net/Quic/QuicClientConnection.h	QuicCongestionAlgorithmKind congestionAlgorithm
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::EventLoop &eventLoop() const noexcept
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> pumpOnce()
-src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> pumpOnceFor(std::chrono::milliseconds timeout)
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> runExpiryLoop()
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<> sendPending()
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<bool> connect(Core::InetAddress serverAddress)
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<bool> driveHandshake()
+src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Core::Task<bool> pumpOnceCancellable(std::stop_token stopToken)
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] Platform::SocketAddress localAddress() const noexcept
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] bool isClosed() const noexcept
 src/Net/Quic/QuicClientConnection.h	[[nodiscard]] bool isEndStreamReceived(std::int64_t streamId) const noexcept
@@ -7763,7 +7763,7 @@ src/Net/Tcp/TcpStream.h	TcpStream &operator=(const TcpStream &) = delete
 src/Net/Tcp/TcpStream.h	TcpStream(TcpStream &&other) noexcept = default
 src/Net/Tcp/TcpStream.h	TcpStream(const TcpStream &) = delete
 src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::AsyncSocket &socket() noexcept
-src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout)
+src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Net/Tcp/TcpStream.h	[[nodiscard]] Core::Task<ssize_t> write(const void *buffer, std::size_t length) const
 src/Net/Tcp/TcpStream.h	class ASYN_NET_API TcpStream
 src/Net/Tcp/TcpStream.h	explicit TcpStream(Core::AsyncSocket socket)

@@ -15,6 +15,7 @@
 #include "Core/Socket/AsyncSocket.h"
 
 #include <chrono>
+#include <stop_token>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -85,11 +86,11 @@ namespace AsynGyanis::Net
         Core::Task<ssize_t> read(void *buffer, std::size_t length);
 
         /**
-         * @brief 有上限地等可读：缓冲里还有未消费字节时立即为真
-         * @param timeout 等待上限
-         * @return true 可读；false 到点或套接字已关闭
+         * @brief 等可读直到令牌停止：缓冲里还有未消费字节时立即为真
+         * @param stopToken 取消令牌
+         * @return true 可读；false 令牌被停止或套接字已关闭
          */
-        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken);
 
         /**
          * @brief 精确读取指定长度字节

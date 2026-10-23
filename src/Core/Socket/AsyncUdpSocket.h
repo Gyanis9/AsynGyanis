@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stop_token>
 
 namespace AsynGyanis::Core
 {
@@ -136,11 +137,11 @@ namespace AsynGyanis::Core
         [[nodiscard]] Task<DatagramReceiveResult> asyncReceiveFrom(void *buffer, std::size_t capacity);
 
         /**
-         * @brief 有上限地等可读：到点交回 false，不消费任何报文
-         * @param timeout 等待上限；非正数等同立即检查一次
-         * @return true 至少有一条报文可读；false 到点、套接字已关闭或等待被取消
+         * @brief 等可读直到令牌停止：停止时交回 false，不消费任何报文
+         * @param stopToken 取消令牌；空令牌等同一直等可读
+         * @return true 至少有一条报文可读；false 令牌被停止或套接字已关闭
          */
-        [[nodiscard]] Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Task<bool> waitReadable(std::stop_token stopToken);
 
         /**
          * @brief 一次批次收包的交付

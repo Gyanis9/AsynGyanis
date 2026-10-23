@@ -10,6 +10,7 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/InetAddress.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/IO/MemoryMappedFile.h"
@@ -931,7 +932,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 钉住有上限等待的关闭面：连接已关时交回 false，不能把异常抛给上层请求
      */
-    TEST(AsyncSocket, WaitReadableForReturnsFalseAfterClose)
+    TEST(AsyncSocket, WaitReadableReturnsFalseAfterClose)
     {
         EventLoop loop;
 
@@ -949,7 +950,7 @@ namespace AsynGyanis::Core
         {
             try
             {
-                readable = co_await socket.waitReadableFor(std::chrono::milliseconds{10});
+                readable = co_await socket.waitReadable(std::stop_token{});
             } catch (...)
             {
                 threw = true;
@@ -962,6 +963,44 @@ namespace AsynGyanis::Core
 
         EXPECT_FALSE(threw) << "关闭后的可读等待抛了异常，调用方的 expected 契约会被穿透";
         EXPECT_FALSE(readable) << "关闭后的套接字被报成了可读";
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 钉住停止令牌能唤醒挂在可读上的协程，而不是让它等到下一批字节
+     */
+    TEST(AsyncSocket, WaitReadableWakesWhenTheTokenStops)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket      socket(loop, localDescriptor);
+        std::stop_source source;
+        bool             readable = true;
+        bool             returned = false;
+        auto             waiter   = [&]() -> Task<void>
+        {
+            readable = co_await socket.waitReadable(source.get_token());
+            returned = true;
+            loop.stop();
+        };
+        auto stopper = [&]() -> Task<void>
+        {
+            Timer timer(loop);
+            co_await timer.waitFor(std::chrono::milliseconds{20});
+            static_cast<void>(source.request_stop());
+        };
+        Task<void> waitTask    = waiter();
+        Task<void> stopperTask = stopper();
+        loop.scheduler().schedule(waitTask.handle());
+        loop.scheduler().schedule(stopperTask.handle());
+        loop.run();
+
+        EXPECT_TRUE(returned) << "停止令牌没有唤醒可读等待";
+        EXPECT_FALSE(readable) << "停止令牌把等待报成了可读";
         Platform::FileDescriptor::close(peerDescriptor);
     }
 

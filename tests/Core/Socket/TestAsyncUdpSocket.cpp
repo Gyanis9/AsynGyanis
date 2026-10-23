@@ -587,7 +587,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 钉住有上限等待的关闭面：套接字已关时交回 false，不把异常抛给上层请求
      */
-    TEST(AsyncUdpSocket, WaitReadableForReturnsFalseAfterClose)
+    TEST(AsyncUdpSocket, WaitReadableReturnsFalseAfterClose)
     {
         EventLoop      loop;
         AsyncUdpSocket socket = bindLoopbackSocket(loop);
@@ -600,7 +600,7 @@ namespace AsynGyanis::Core
         {
             try
             {
-                readable = co_await socket.waitReadableFor(std::chrono::milliseconds{10});
+                readable = co_await socket.waitReadable(std::stop_token{});
             } catch (...)
             {
                 threw = true;

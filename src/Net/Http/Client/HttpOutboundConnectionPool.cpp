@@ -95,7 +95,7 @@ namespace AsynGyanis::Net
         close();
     }
 
-    Core::Task<bool> HttpOutboundConnection::waitReadableFor(const std::chrono::milliseconds timeout)
+    Core::Task<bool> HttpOutboundConnection::waitReadable(const std::stop_token stopToken)
     {
         if (!m_isOpen)
         {
@@ -103,15 +103,15 @@ namespace AsynGyanis::Net
         }
         if (m_tlsSocket != nullptr)
         {
-            co_return co_await m_tlsSocket->waitReadableFor(timeout);
+            co_return co_await m_tlsSocket->waitReadable(stopToken);
         }
         if (m_pumpedSocket != nullptr)
         {
-            co_return co_await m_pumpedSocket->waitReadableFor(timeout);
+            co_return co_await m_pumpedSocket->waitReadable(stopToken);
         }
         if (m_plainSocket != nullptr)
         {
-            co_return co_await m_plainSocket->waitReadableFor(timeout);
+            co_return co_await m_plainSocket->waitReadable(stopToken);
         }
         co_return false;
     }

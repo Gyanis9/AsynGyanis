@@ -173,9 +173,11 @@ namespace AsynGyanis::Net
 
         PendingExchange &exchange = exchangeFor(streamId);
 
+        std::stop_source        pumpWake;
         Core::CancellationWatch cancellationWatch(m_connection.eventLoop(), cancelToken,
-                                                  [this, streamId](std::stop_token) -> Core::Task<>
+                                                  [this, streamId, &pumpWake](std::stop_token) -> Core::Task<>
                                                   {
+                                                      pumpWake.request_stop();
                                                       LOG_WARN_FMT("Http3ClientConnection: 流 {} 被调用方取消", streamId);
                                                       noteStreamFailed(streamId, "请求已取消：调用方请求停止");
                                                       m_connection.abortStream(streamId, static_cast<std::uint64_t>(Http3ErrorCode::RequestCancelled));
@@ -226,7 +228,10 @@ namespace AsynGyanis::Net
                 }
                 if (cancelToken.stop_possible())
                 {
-                    co_await m_connection.pumpOnceFor(std::chrono::milliseconds{5});
+                    if (!co_await m_connection.pumpOnceCancellable(pumpWake.get_token()))
+                    {
+                        break;
+                    }
                 } else
                 {
                     co_await m_connection.pumpOnce();

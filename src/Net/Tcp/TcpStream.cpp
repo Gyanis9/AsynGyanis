@@ -143,13 +143,13 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<bool> TcpStream::waitReadableFor(const std::chrono::milliseconds timeout)
+    Core::Task<bool> TcpStream::waitReadable(const std::stop_token stopToken)
     {
         if (m_readPosition < m_readBuffer.size())
         {
             co_return true;
         }
-        co_return co_await m_socket.waitReadableFor(timeout);
+        co_return co_await m_socket.waitReadable(stopToken);
     }
 
     Core::Task<ssize_t> TcpStream::write(const void *const buffer, const std::size_t length) const

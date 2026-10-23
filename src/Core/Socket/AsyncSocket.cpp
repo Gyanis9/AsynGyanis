@@ -529,25 +529,14 @@ namespace AsynGyanis::Core
         return watcher->waitWritable();
     }
 
-    Task<bool> AsyncSocket::waitReadableFor(const std::chrono::milliseconds timeout)
+    Task<bool> AsyncSocket::waitReadable(const std::stop_token stopToken)
     {
         IoWatcher *const watcher = ensureWatcher();
         if (watcher == nullptr)
         {
-            co_return false; // 已关闭/无效：交给调用方按「这一轮不可读」收口，不抛异常
+            co_return false;
         }
-
-        std::stop_source stopSource;
-        Timer            timer(m_loop);
-        auto             stopper = [&]() -> Task<>
-        {
-            co_await timer.waitFor(timeout);
-            stopSource.request_stop();
-        };
-        Task<> stopperTask = stopper();
-        // 就地首拍：把定时器挂上再等可读；投进调度器会让这个局部 Task 在收尾时留下一个悬空句柄
-        stopperTask.handle().resume();
-        co_return co_await watcher->waitReadable(stopSource.get_token());
+        co_return co_await watcher->waitReadable(stopToken);
     }
 
     void AsyncSocket::setNonBlocking() const

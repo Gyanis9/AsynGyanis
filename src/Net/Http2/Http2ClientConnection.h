@@ -353,11 +353,11 @@ namespace AsynGyanis::Net
         Core::Task<bool> pumpSome();
 
         /**
-         * @brief 有上限的 pumpSome：先等最多到截止时刻，没有可读就返回 true 把控制权交回请求循环
-         * @param deadline 本轮等待的截止时刻
+         * @brief 可取消的 pumpSome：等可读直到令牌停止，停止或通路关闭时返回
+         * @param stopToken 每请求唤醒令牌；停止表示取消动作已处理完，交回请求循环收尾
          * @return false 通路不可用；true 本轮结束（有没有处理到帧由上层看流记录）
          */
-        Core::Task<bool> pumpSomeUntil(std::chrono::steady_clock::time_point deadline);
+        Core::Task<bool> pumpSomeCancellable(std::stop_token stopToken);
 
         /**
          * @brief 取消一条在途流：标记复位、排 RST_STREAM(CANCEL)、叫醒等待者并尽力写出

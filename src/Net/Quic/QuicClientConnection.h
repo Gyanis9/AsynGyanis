@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <span>
 #include <string>
 #include <vector>
@@ -127,12 +128,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<> pumpOnce();
 
         /**
-         * @brief 有上限的收包：到点没有报文就返回，把控制权交回请求循环
-         * @param timeout 本轮等待上限
-         * @details 与 pumpOnce 的差别只有这一处：不把请求协程永远挂在 UDP 收包上，
-         *          取消检查因此能按自己的节拍跑
+         * @brief 可取消的收包：等可读直到令牌停止，停止或通路关闭时返回
+         * @param stopToken 每请求唤醒令牌；停止表示取消动作已处理完
+         * @return false 通路已关闭；true 本轮结束（有没有报文由上层看流记录）
          */
-        [[nodiscard]] Core::Task<> pumpOnceFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Core::Task<bool> pumpOnceCancellable(std::stop_token stopToken);
 
         /**
          * @brief 握手是否已完成

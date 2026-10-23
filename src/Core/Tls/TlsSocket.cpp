@@ -285,18 +285,17 @@ namespace AsynGyanis::Core
         }
     }
 
-    Task<bool> TlsSocket::waitReadableFor(const std::chrono::milliseconds timeout)
+    Task<bool> TlsSocket::waitReadable(const std::stop_token stopToken)
     {
         if (m_ssl == nullptr)
         {
-            co_return false; // 本端已收口：等待按不可读结束，由泵折成请求失败
+            co_return false;
         }
-        // OpenSSL 可能已经把明文解在自己手里：此时 fd 不一定可读，但下一次 SSL_read 会立刻返回
         if (SSL_pending(m_ssl.get()) > 0)
         {
             co_return true;
         }
-        co_return co_await m_socket.waitReadableFor(timeout);
+        co_return co_await m_socket.waitReadable(stopToken);
     }
 
     Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length) const

@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <stop_token>
 #include <memory>
 #include <string>
 
@@ -91,11 +92,11 @@ namespace AsynGyanis::Net
         Core::Task<ssize_t> asyncReceive(void *buffer, size_t length);
 
         /**
-         * @brief 有上限地等可读：内层已解出的明文也算可读
-         * @param timeout 等待上限
-         * @return true 可读；false 到点或外层隧道已关闭
+         * @brief 等可读直到令牌停止：内层已解出的明文也算可读
+         * @param stopToken 取消令牌
+         * @return true 可读；false 令牌被停止或外层隧道已关闭
          */
-        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken);
 
         /**
          * @brief 写出内层 TLS 的明文

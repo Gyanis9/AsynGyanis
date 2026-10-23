@@ -26,6 +26,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <stop_token>
 
 namespace AsynGyanis::Core
 {
@@ -338,12 +339,11 @@ namespace AsynGyanis::Core
         [[nodiscard]] IoWatcher::Awaiter waitWritable() const;
 
         /**
-         * @brief 有上限地等可读：到点交回 false，不消费任何字节
-         * @param timeout 等待上限；非正数等同立即检查一次
-         * @return true 可读；false 到点、描述符已关闭或等待被取消
-         * @note 可读不等于一定能读到完整一帧：调用方仍要按实际读取结果处理短读
+         * @brief 等可读直到令牌停止：停止时交回 false，不消费任何字节
+         * @param stopToken 取消令牌；空令牌等同一直等可读
+         * @return true 可读；false 令牌被停止或套接字已关闭
          */
-        [[nodiscard]] Core::Task<bool> waitReadableFor(std::chrono::milliseconds timeout);
+        [[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken);
 
         /**
          * @brief 读方向上是否已有协程在等待
