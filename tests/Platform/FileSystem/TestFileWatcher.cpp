@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -250,6 +251,33 @@ namespace AsynGyanis::Platform
             }
             return writtenNames;
         }
+
+        /**
+         * @brief 反复执行一次写动作，直到监听回调观察到结果或时限到点
+         * @param write 每轮执行的写动作；轮次会让内容变化，才能触发新事件
+         * @param observed 观察条件
+         * @param timeout 总时限
+         * @return true 条件在时限内成立
+         * @details 文件监听的武装没有公开读数：在武装前写的那一次会丢。把「睡到大致武装完」换成
+         *          「写到听见为止」：听见一次即停，没听见就换内容再写。
+         */
+        bool writeUntilObserved(const std::function<void(int)> &write, const std::function<bool()> &observed, const std::chrono::milliseconds timeout)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            for (int round = 0; std::chrono::steady_clock::now() < deadline; ++round)
+            {
+                if (observed())
+                {
+                    return true;
+                }
+                write(round);
+                if (TestSupport::waitForCondition(observed, std::chrono::milliseconds{200}))
+                {
+                    return true;
+                }
+            }
+            return observed();
+        }
     } // namespace
 
     TEST(FileWatcher, CreateReturnsInstanceForCurrentPlatform)
@@ -296,11 +324,9 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
 
-        // 等待监听就绪后再改写文件
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        ASSERT_TRUE(temporaryDirectory.writeFile("watched.yaml", "value: 2\n"));
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("watched.yaml"); }, 3000);
+        // 监听就绪没有公开读数：改内容重写到听见为止
+        const bool receivedEvent = writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("watched.yaml", "value: " + std::to_string(round + 2) + "\n")); },
+                                                      [&recorder] { return recorder.sawFileNamed("watched.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "未收到 watched.yaml 的变更回调";
@@ -320,10 +346,9 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        ASSERT_TRUE(temporaryDirectory.writeFile("brand-new.yaml", "fresh: true\n"));
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("brand-new.yaml"); }, 3000);
+        // 监听就绪没有公开读数：改内容重写到听见为止
+        const bool receivedEvent = writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("brand-new.yaml", "fresh: " + std::to_string(round) + "\n")); },
+                                                      [&recorder] { return recorder.sawFileNamed("brand-new.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "未收到新建文件的变更回调";
@@ -488,14 +513,11 @@ namespace AsynGyanis::Platform
             sink << "value: true\n";
         };
 
-        // 对照：子目录里的写入必须真的报上来，否则下面那条「没有新事件」是空转
-        writeFileInto(controlDirectory, "control.yaml");
-        const auto controlDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-        while (!recorder.sawFileNamed("control.yaml") && std::chrono::steady_clock::now() < controlDeadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        ASSERT_TRUE(recorder.sawFileNamed("control.yaml")) << "递归监视没挂到子目录上，本用例失去对照";
+        // 对照：子目录里的写入必须真的报上来，否则下面那条「没有新事件」是空转。
+        // 递归监视的武装没有公开读数：写到听见为止
+        const bool sawControl = writeUntilObserved([&](int) { writeFileInto(controlDirectory, "control.yaml"); }, [&recorder] { return recorder.sawFileNamed("control.yaml"); },
+                                                   std::chrono::seconds(3));
+        ASSERT_TRUE(sawControl) << "递归监视没挂到子目录上，本用例失去对照";
 
         EXPECT_TRUE(watcher->removeWatch(temporaryDirectory.path().string()));
 
@@ -590,10 +612,9 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(std::filesystem::create_directories(temporaryDirectory.path()));
         ASSERT_TRUE(watcher->addWatch(watchedPath));
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        ASSERT_TRUE(temporaryDirectory.writeFile("reborn.yaml", "back: true\n"));
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("reborn.yaml"); }, 3000);
+        // 监听重新武装没有公开读数：改内容重写到听见为止
+        const bool receivedEvent = writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("reborn.yaml", "back: " + std::to_string(round) + "\n")); },
+                                                      [&recorder] { return recorder.sawFileNamed("reborn.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "重建出来的目录收不到事件：监视没挂上（IN_IGNORED 之后映射没清）";
@@ -623,11 +644,10 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(watchedFilePath));
         ASSERT_TRUE(watcher->start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: 2\n"));
-
-        // 先确认单文件监视挂得上：这一步红了就别去怪后面的补挂
-        const bool firstEventArrived = TestSupport::waitForCondition([&recorder]() { return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > 0; }, 3000);
+        // 先确认单文件监视挂得上：这一步红了就别去怪后面的补挂。武装没有公开读数，写到听见为止
+        const bool firstEventArrived =
+                writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("single.yaml", "value: " + std::to_string(round + 2) + "\n")); },
+                                   [&recorder] { return recorder.eventCountForFile("single.yaml", FileChangeType::Modified) > 0; }, std::chrono::seconds(3));
         ASSERT_TRUE(firstEventArrived) << "监视单个文件本身就没有效果，补挂的判据无从谈起";
 
         std::error_code removeError;
@@ -837,7 +857,10 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        // 先让监视武装起来：往同目录写一份对照文件并等它被报出（改名类型判据只认 before.yaml）
+        const bool watchArmed = writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("arming.yaml", "arming: " + std::to_string(round) + "\n")); },
+                                                   [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3));
+        ASSERT_TRUE(watchArmed) << "监视没有武装起来：改名判据无从谈起";
 
         std::error_code renameError;
         std::filesystem::rename(temporaryDirectory.path() / "before.yaml", temporaryDirectory.path() / "after.yaml", renameError);
@@ -928,15 +951,14 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        // 子目录内的文件写入应被下层监听捕获
-        {
-            std::ofstream subFile(temporaryDirectory.path() / "sub" / "nested.yaml");
-            subFile << "nested: true\n";
-        }
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("nested.yaml"); }, 3000);
+        // 递归武装没有公开读数：改内容重写到子目录里的文件被报出
+        const bool receivedEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream subFile(temporaryDirectory.path() / "sub" / "nested.yaml");
+                    subFile << "nested: " << round << "\n";
+                },
+                [&recorder] { return recorder.sawFileNamed("nested.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "递归监听未能覆盖子目录中的文件";

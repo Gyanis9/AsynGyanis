@@ -197,12 +197,7 @@ namespace AsynGyanis::Database
 
             // 等到第二个线程真的挂在等待列表上再归还：固定 sleep 只能缩小「还没开始等」的窗口，
             // 慢机器上下面那条断言就退化成赌调度（同文件其它用例已统一改成这种有界轮询）
-            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
+            ASSERT_TRUE(TestSupport::waitForCondition([&pool]() { return pool.waitingCount() > 0; }, 2000)) << "等待者没有挂上：用例前提不成立";
 
             // 归还连接 — 应唤醒等待者
             taken.release();
@@ -244,12 +239,7 @@ namespace AsynGyanis::Database
             PooledConnection woken;
             std::thread      waiterThread([&pool, &woken] { woken = pool.acquire(); });
 
-            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
+            ASSERT_TRUE(TestSupport::waitForCondition([&pool]() { return pool.waitingCount() > 0; }, 2000)) << "等待者没有挂上：用例前提不成立";
 
             const auto releasedAt = std::chrono::steady_clock::now();
             occupying.release();
@@ -729,12 +719,7 @@ namespace AsynGyanis::Database
                     });
 
             // 等它真的挂在等待列表上再归还，保证走的是「直接交给等待者」那条路
-            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (pool.waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            ASSERT_EQ(pool.waitingCount(), 1U) << "等待者没有挂上：用例前提不成立";
+            ASSERT_TRUE(TestSupport::waitForCondition([&pool]() { return pool.waitingCount() > 0; }, 2000)) << "等待者没有挂上：用例前提不成立";
 
             held.release();
             waiter.join();
@@ -785,23 +770,15 @@ namespace AsynGyanis::Database
                     });
 
             // 等它真的挂进等待列表再析构：否则考的是「析构之后才来等」，不是这条用例要钉的场景
-            const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (pool->waitingCount() == 0 && std::chrono::steady_clock::now() < waitDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
-            ASSERT_GT(pool->waitingCount(), 0U) << "等待者没有挂上：用例前提不成立";
+            ASSERT_TRUE(TestSupport::waitForCondition([&pool]() { return pool->waitingCount() > 0; }, 2000)) << "等待者没有挂上：用例前提不成立";
 
             pool.reset();
 
             // 析构只是把等待者从条件变量上叫醒，它未必来得及在 reset() 返回前跑完 acquire()，
             // 直接断言就是赌调度（Linux 满载的 CI 上实测红过两次）；先等它回来再断言形态——
             // 析构真没叫醒它时这里只会等满时限，用例照样红
-            const auto returnDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (!isWaiterReturned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < returnDeadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
+            ASSERT_TRUE(TestSupport::waitForCondition([&isWaiterReturned]() { return isWaiterReturned.load(std::memory_order_acquire); }, 2000))
+                    << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
 
             EXPECT_TRUE(isWaiterReturned.load(std::memory_order_acquire)) << "析构返回后同步等待者还睡着：它只能等满 30 秒超时，而条件变量已经随对象销毁";
             EXPECT_FALSE(isWaiterGotConnection.load()) << "池停摆时被唤醒的同步等待者应拿到空连接";

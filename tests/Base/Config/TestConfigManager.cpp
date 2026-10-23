@@ -351,6 +351,35 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 改写配置文件并等到观察条件成立；监听尚未武装时改内容重写
+         * @param relativePath 配置文件相对路径
+         * @param contentPrefix 每轮写入的 YAML 正文前缀（后接注释轮次，保证内容变化而取值不变）
+         * @param condition 观察条件
+         * @param timeout 总时限
+         * @return true 条件在时限内成立
+         * @details 文件监听的就绪没有公开读数：`enableHotReload()` 返回时监听线程可能还没把读请求投出去，
+         *          紧跟着写的那一次会落空。把「等监听武装」改成条件：每 200 ms 改一次内容重写，
+         *          条件成立即停；注释只改字节、不改 YAML 取值，断言里读到的仍是 contentPrefix 里的值。
+         */
+        bool writeUntilObserved(const std::string &relativePath, const std::string &contentPrefix, const std::function<bool()> &condition, const std::chrono::milliseconds timeout)
+        {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            for (int round = 0; std::chrono::steady_clock::now() < deadline; ++round)
+            {
+                if (condition())
+                {
+                    return true;
+                }
+                writeFile(relativePath, contentPrefix + " # nudge " + std::to_string(round));
+                if (TestSupport::waitForCondition(condition, std::chrono::milliseconds{200}))
+                {
+                    return true;
+                }
+            }
+            return condition();
+        }
+
+        /**
          * @brief 记录临时目录内的文件清单与各自文本内容（按文件名升序）
          * @details 用于断言「库不写盘」：调用前后取两次快照并整体比较，即可同时覆盖
          *          「新增了文件」与「改写了已有文件」两种情况。
@@ -2508,17 +2537,15 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        // 监听线程要先把读请求投出去，紧跟着 enableHotReload 就写文件会落在武装之前
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: second\n");
-        ASSERT_TRUE(TestSupport::waitForCondition([&firstCallbackCount] { return firstCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
+        // 监听线程要先把读请求投出去；改为「改内容重写到听见为止」
+        ASSERT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: second", [&firstCallbackCount] { return firstCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
                 << "第一次接线就没出声，换回调的判据无从谈起";
 
         EXPECT_TRUE(configuration().enableHotReload([&secondCallbackCount](const ConfigLoadResult &) { secondCallbackCount.fetch_add(1); }, std::chrono::milliseconds(50)));
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: third\n");
-        EXPECT_TRUE(TestSupport::waitForCondition([&secondCallbackCount] { return secondCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
+        EXPECT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: third", [&secondCallbackCount] { return secondCallbackCount.load() >= 1; }, std::chrono::seconds(8)))
                 << "重复 enableHotReload 把新回调丢了：返回 true 却没人接线";
 
         configuration().disableHotReload();
@@ -2550,10 +2577,8 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: second\n");
-
-        ASSERT_TRUE(TestSupport::waitForCondition([&isDisableReturned] { return isDisableReturned.load(std::memory_order_acquire); }, std::chrono::seconds(10)))
+        ASSERT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: second", [&isDisableReturned] { return isDisableReturned.load(std::memory_order_acquire); }, std::chrono::seconds(10)))
                 << "回调里的 disableHotReload() 没有返回：它在 join 自己那条重载线程";
         EXPECT_FALSE(configuration().isHotReloadEnabled());
     }
@@ -2592,10 +2617,9 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        // 与其余热重载用例同一处置：监听线程要先把读请求投出去
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: second\n");
-        ASSERT_TRUE(TestSupport::waitForCondition([callbackState] { return callbackState->entered.load(std::memory_order_acquire); }, std::chrono::seconds(8)))
+        // 与其余热重载用例同一处置：改内容重写到回调进入为止
+        ASSERT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: second", [callbackState] { return callbackState->entered.load(std::memory_order_acquire); }, std::chrono::seconds(8)))
                 << "重载回调没有进入";
 
         std::atomic<bool> disableReturned{false};
@@ -2673,21 +2697,21 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        // 静置一小段再写：监听线程要先把 ReadDirectoryChangesW/inotify 投出去，
-        // 紧跟着 enableHotReload 就写文件会落在武装之前（与其它监听用例同一处置）
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: trigger-first-round\n");
-
-        {
-            std::unique_lock lock(callbackMutex);
-            ASSERT_TRUE(callbackCondition.wait_for(lock, std::chrono::seconds(8), [&isFirstCallbackEntered] { return isFirstCallbackEntered; })) << "第一次变更没有触发重载回调";
-        }
+        // 静置一小段再写会赌监听武装；改为改内容重写到第一次回调进入
+        ASSERT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: trigger-first-round",
+                [&]
+                {
+                    std::unique_lock lock(callbackMutex);
+                    return isFirstCallbackEntered;
+                },
+                std::chrono::seconds(8)))
+                << "第一次变更没有触发重载回调";
 
         // 重载正卡在回调里：此刻再写一次，事件只能被记成「之后还要再来一轮」。
         // 先等过防抖窗口——同一路径 50ms 内的重复事件会被监听器按设计抑制（那是防抖，不是丢事件）
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         writeFile("cfg.yaml", "value: second\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(300)); // 让文件监听把事件送达
 
         {
             std::unique_lock lock(callbackMutex);
@@ -2735,43 +2759,18 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        writeFile("cfg.yaml", "value: second\n");
-
-        const bool receivedFirstCallback = [&callbackCount]
-        {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (callbackCount.load(std::memory_order_relaxed) > 0)
-                {
-                    return true;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            return false;
-        }();
-        EXPECT_TRUE(receivedFirstCallback) << "抛异常的回调一次都没被调用：重载任务压根没跑";
+        EXPECT_TRUE(writeUntilObserved(
+                "cfg.yaml", "value: second", [&callbackCount] { return callbackCount.load(std::memory_order_relaxed) > 0; }, std::chrono::seconds(5)))
+                << "抛异常的回调一次都没被调用：重载任务压根没跑";
 
         // 再改一次：任务机制必须还能继续工作（异常没有把 pending/dirty 卡死）
         const int countBeforeSecondChange = callbackCount.load(std::memory_order_relaxed);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         writeFile("cfg.yaml", "value: third\n");
 
-        bool receivedAnotherCallback = false;
-        {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (callbackCount.load(std::memory_order_relaxed) > countBeforeSecondChange)
-                {
-                    receivedAnotherCallback = true;
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        }
-        EXPECT_TRUE(receivedAnotherCallback) << "第一次异常之后重载再也没被触发：任务状态被卡死了";
+        EXPECT_TRUE(TestSupport::waitForCondition([&callbackCount, countBeforeSecondChange] { return callbackCount.load(std::memory_order_relaxed) > countBeforeSecondChange; },
+                                                  std::chrono::seconds(5)))
+                << "第一次异常之后重载再也没被触发：任务状态被卡死了";
 
         configuration().disableHotReload();
     }
@@ -2798,25 +2797,10 @@ port: 9090
             GTEST_SKIP() << "本平台的文件监听器不可用，热重载用例跳过";
         }
 
-        const auto waitsForMoreCallbacks = [&callbackCount](const int expectedCount)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (callbackCount.load(std::memory_order_acquire) >= expectedCount)
-                {
-                    return true;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            return false;
-        };
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         // 对照走的是另一个文件：同一条路径在监听器的防抖窗口内被再次上报会被压掉，
         // 用同一个文件做对照就会把「移走那一步到底通不通」和「防抖恰好吃掉了它」混在一起
-        writeFile("control.yaml", "control: 2\n");
-        const bool sawControlReload = waitsForMoreCallbacks(1);
+        const bool sawControlReload =
+                writeUntilObserved("control.yaml", "control: 2", [&callbackCount] { return callbackCount.load(std::memory_order_acquire) >= 1; }, std::chrono::seconds(5));
         EXPECT_TRUE(sawControlReload) << "普通改写就没触发重载：监视通道没建立，下面的判据无从谈起";
         if (!sawControlReload)
         {
@@ -2829,7 +2813,9 @@ port: 9090
         std::filesystem::rename(directory() / "cfg.yaml", directory() / "cfg.retired", renameError);
         ASSERT_FALSE(static_cast<bool>(renameError)) << "改名移走配置文件失败：" << renameError.message();
 
-        EXPECT_TRUE(waitsForMoreCallbacks(countBeforeRename + 1)) << "改名移走配置文件没有触发热重载：Moved 事件被消费方的种类判据滤掉了";
+        EXPECT_TRUE(TestSupport::waitForCondition([&callbackCount, countBeforeRename] { return callbackCount.load(std::memory_order_acquire) >= countBeforeRename + 1; },
+                                                  std::chrono::seconds(5)))
+                << "改名移走配置文件没有触发热重载：Moved 事件被消费方的种类判据滤掉了";
 
         configuration().disableHotReload();
     }
@@ -2860,22 +2846,8 @@ port: 9090
         }
 
         // 有界轮询：构造不出「日志已落地」时用例该报失败，而不是赌调度
-        const auto waitsFor = [](const auto &condition)
-        {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            while (std::chrono::steady_clock::now() < deadline)
-            {
-                if (condition())
-                {
-                    return true;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            return false;
-        };
-
-        writeFile("cfg.yaml", "value: second\n");
-        const bool watcherAlive = waitsFor([] { return ConfigManager::instance().getString("value") == "second"; });
+        const bool watcherAlive =
+                writeUntilObserved("cfg.yaml", "value: second", [] { return ConfigManager::instance().getString("value") == "second"; }, std::chrono::seconds(10));
         EXPECT_TRUE(watcherAlive) << "普通改写没触发热重载：监视通道没建立，后面的判据无从谈起";
 
         bool sawFailureLogged = false;
@@ -2883,12 +2855,13 @@ port: 9090
         {
             // 保留字符 @ 不能作为标量开头：这条改动会让那一轮重载整轮失败
             writeFile("other.yaml", "other: 1\nbroken: @invalid\n");
-            sawFailureLogged = waitsFor(
+            sawFailureLogged = TestSupport::waitForCondition(
                     [recorderPointer]
                     {
                         const std::vector<std::string> recorded = recorderPointer->snapshot();
                         return anyEntryContains(recorded, "热重载本轮失败") && anyEntryContains(recorded, "YAML 语法错误");
-                    });
+                    },
+                    std::chrono::seconds(10));
             EXPECT_TRUE(sawFailureLogged) << "热重载失败且没有回调时，一条诊断都没落到日志上";
         }
 
