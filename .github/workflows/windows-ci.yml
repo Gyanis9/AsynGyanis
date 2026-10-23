@@ -426,3 +426,93 @@ jobs:
           name: microbench-readings
           path: ${{ runner.temp }}/microbench-run*.json
           if-no-files-found: warn
+
+  # 消费者旅程在 Windows 上也要有一次真跑：Linux 列的消费者是 GCC/ELF，MSVC 侧的头文件、
+  # 运行期库与 DLL 搜索路径都不能由那一列代为证明。这里走与 Linux 版本矩阵相同的形状——
+  # conan create 装包、CMakeDeps 生成配置、旅程源作为仓库外工程编译并运行。
+  # 输出流钉 UTF-8：runner 默认代码页是 cp1252，中文判据经管道会被读成问号；
+  # 程序自身按 UTF-8 写字节，这里只保证环境不转码。
+  consumer-journey:
+    name: 消费者旅程：装出来的包（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-consumer-journey-${{ hashFiles('conandata.yml', 'packaging/conan/conanfile.py') }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 安装 Conan
+        run: pip install "conan>=2.25"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 版本号只从包元数据读；conan create 与显式 conan test 各跑一次 consumer_smoke
+      - name: 装包并跑 consumer_smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          packageVersion="$(conan inspect packaging/conan --format=json | python -c "import json, sys; print(json.load(sys.stdin)['version'])")"
+          test -n "$packageVersion" || { echo "conan inspect 没给出包版本"; exit 1; }
+          echo "PACKAGE_VERSION=$packageVersion" >> "$GITHUB_ENV"
+          conan create packaging/conan --build=missing 2>&1 | tee "$RUNNER_TEMP/conan-create.log"
+          conan test packaging/conan/test_package "asyngyanis/${packageVersion}" 2>&1 | tee -a "$RUNNER_TEMP/conan-create.log"
+          echo "consumer_smoke=通过（conan create 与显式 conan test 各跑一次）"
+
+      - name: 生成消费方工具链
+        shell: bash
+        run: |
+          conan install --requires="asyngyanis/${PACKAGE_VERSION}" \
+            -g CMakeToolchain -g CMakeDeps -of build/version-deps --build=missing
+
+      - name: 构建并运行消费者旅程（UTF-8 输出）
+        shell: bash
+        run: |
+          set -o pipefail
+          # 两个流都钉成 UTF-8：cp1252 会把中文明细读成问号，判据就没法比对
+          export PYTHONIOENCODING=utf-8
+          cmake -S packaging/consumer-journey -B build/consumer-journey -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/build/version-deps/conan_toolchain.cmake" \
+            -DCMAKE_PREFIX_PATH="$PWD/build/version-deps" \
+            -DJOURNEY_EXPECTED_VERSION="${PACKAGE_VERSION}"
+          cmake --build build/consumer-journey
+          ./build/consumer-journey/consumer_journey.exe --require-all \
+            --server-cert tests/Core/fixtures/test_ip_cert.pem \
+            --server-key tests/Core/fixtures/test_ip_key.pem \
+            --client-cert tests/Core/fixtures/test_localhost_cert.pem \
+            --client-key tests/Core/fixtures/test_localhost_key.pem \
+            --ca tests/Core/fixtures/test_ip_cert.pem 2>&1 | tee "$RUNNER_TEMP/consumer-journey.log"
+
+      - name: 落读数
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### 消费者旅程（Windows）"
+            echo "- 包版本（conan inspect 读出）：${PACKAGE_VERSION}"
+            echo '```'
+            grep -E '^JOURNEY_(STEP|RESULT)' "$RUNNER_TEMP/consumer-journey.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consumer-journey-logs-windows
+          path: |
+            ${{ runner.temp }}/conan-create.log
+            ${{ runner.temp }}/consumer-journey.log
+          if-no-files-found: ignore

@@ -456,7 +456,11 @@ jobs:
       # 2026-10-12 再补两类：`Tls`（指纹名单的校验回调在握手线程读、setter 在配置线程换，
       # 对应 ConcurrentHandshakeAndAllowlistUpdatesRemainSafeWithSharedRegistry）与 `Crash`（崩溃处理器
       # 在多线程进程里的投递面，对应 FatalSignalFromOneOfMultipleThreadsStillLeavesSceneAndDiesBySignal）
-      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash"
+      # 2026-10-23 补上入站 deadline 与出站取消引入的跨线程面：`AsyncResolver`（lookup 注入）、
+      # `HttpClient`/`HttpOutboundConnectionPool`/`HttpProxyE2E`（出站建立、整池收口与代理隧道）、
+      # `Http2ClientConnection`（共享连接上的流取消）、`ConnectionRace`/`CancellationWatch`/`Cancelable`/
+      # `DeadlineGuard`（建连竞速与取消观察者）。这些类的协程帧会跨循环投递，名字不在这份词表里就一条都不跑
+      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash|AsyncResolver|HttpClient|HttpOutboundConnectionPool|HttpProxyE2E|ConnectionRace|CancellationWatch|Cancelable|DeadlineGuard"
       # 筛面下限：2026-10-01 实测命中 1325 / 全量 3669，往下留一档。
       # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 30 个词里——
       # 两者的外观都与「TSan 全绿」同形，所以判据必须钉在条数上而不是只跑一次
@@ -1319,3 +1323,83 @@ jobs:
             echo "### systemd 单元样例"
             echo "两份样例 verify 通过：.socket 零报告；.service 只剩「/usr/local/bin/ReferenceServer 不在本机」这一族预期抱怨"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 安装包与消费者旅程：当前版本线的包从 conan create 装出来，再按仓库外工程消费一次。
+  # 旧版本列（HEAD vs 上一发布）要等当前版本线打出第一个发布标签才有意义：
+  # 仓库里现有的 v1.1.0 / v4.0.0 标签都属于版本线重置前的旧编号线，不能当 1.1.0 的兼容基线。
+  # 发布后在这一档旁边加回一列（checkout 该标签 + 同一份 consumer journey）即可，版本号只从包元数据读。
+  package-consumer:
+    name: 安装包与消费者旅程
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASYN_SKIP_MYSQL_DEPS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 Conan 依赖
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: conan-${{ runner.os }}-package-consumer-${{ hashFiles('conandata.yml', 'conanfile.py') }}
+
+      - name: 安装 Conan
+        run: |
+          python3 -m venv "$HOME/conan-venv"
+          "$HOME/conan-venv/bin/pip" install "conan>=2.25"
+          echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 探测 Conan profile
+        run: conan profile detect --force
+
+      # 版本只从包元数据读：conan inspect 会跑配方的 set_version（真源是 CMakeLists）。
+      # create 负责打包并跑一次 test_package；再显式 conan test 一次，让 consumer_smoke 的
+      # 通过/失败是一条独立读数，而不是从 create 的日志里猜它有没有被跳过
+      - name: 读包版本并装包（conan create + 显式 consumer_smoke）
+        run: |
+          set -o pipefail
+          packageVersion="$(conan inspect packaging/conan --format=json | python3 -c "import json, sys; print(json.load(sys.stdin)['version'])")"
+          echo "包版本=${packageVersion}"
+          test -n "$packageVersion" || { echo "conan inspect 没给出包版本：后面的旅程无从对账"; exit 1; }
+          echo "PACKAGE_VERSION=$packageVersion" >> "$GITHUB_ENV"
+          conan create packaging/conan --build=missing 2>&1 | tee /tmp/conan-create.log
+          conan test packaging/conan/test_package "asyngyanis/${packageVersion}" 2>&1 | tee -a /tmp/conan-create.log
+          echo "CONSUMER_SMOKE_NOTE=PASS（test_package 全过）" >> "$GITHUB_ENV"
+
+      # 生成 CMake 消费方要用的两件：工具链（编译器与依赖路径）与 CMakeDeps 的包配置
+      - name: 生成消费方工具链
+        run: conan install --requires="asyngyanis/${PACKAGE_VERSION}" -g CMakeToolchain -g CMakeDeps -of /tmp/consumer-deps --build=missing
+
+      # 旅程源作为仓库外工程编译：它只经 find_package 使用公开 API，不引用仓库内的构建产物
+      - name: 消费者旅程（安装 → 建连 → 升级/认证 → 首包超时 → mTLS → 错误 → 限流 → 停机 → 重连）
+        run: |
+          set -o pipefail
+          cmake -S packaging/consumer-journey -B /tmp/consumer-journey -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/tmp/consumer-deps/conan_toolchain.cmake -DCMAKE_PREFIX_PATH=/tmp/consumer-deps -DJOURNEY_EXPECTED_VERSION="${PACKAGE_VERSION}"
+          cmake --build /tmp/consumer-journey
+          /tmp/consumer-journey/consumer_journey --require-all --server-cert tests/Core/fixtures/test_ip_cert.pem --server-key tests/Core/fixtures/test_ip_key.pem --client-cert tests/Core/fixtures/test_localhost_cert.pem --client-key tests/Core/fixtures/test_localhost_key.pem --ca tests/Core/fixtures/test_ip_cert.pem 2>&1 | tee /tmp/consumer-journey.log
+
+      - name: 落读数
+        run: |
+          profileLine="$(conan profile show -pr default 2>/dev/null | grep -E '^(compiler|compiler.version|compiler.cppstd|build_type)=' | paste -sd ' ' -)"
+          {
+            echo "### 安装包与消费者旅程"
+            echo "- 包版本（conan inspect 读出）：${PACKAGE_VERSION}"
+            echo "- 编译器：${profileLine}"
+            echo "- consumer_smoke：${CONSUMER_SMOKE_NOTE}"
+            echo '```'
+            grep -E '^JOURNEY_(STEP|RESULT)' /tmp/consumer-journey.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-consumer-logs
+          path: |
+            /tmp/conan-create.log
+            /tmp/consumer-journey.log
+          if-no-files-found: ignore
