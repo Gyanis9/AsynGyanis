@@ -22,5 +22,5 @@ namespace AsynGyanis::Core
      * @param session 已完成握手的 SSL 会话；空指针返回空
      * @return 身份快照；对端没有出示证书（单向 TLS）时为空
      */
-    [[nodiscard]] TlsPeerIdentityPtr readTlsPeerIdentity(SSL *session) noexcept;
+    [[nodiscard]] ASYN_CORE_API TlsPeerIdentityPtr readTlsPeerIdentity(SSL *session) noexcept;
 } // namespace AsynGyanis::Core
