@@ -1145,6 +1145,23 @@ namespace AsynGyanis::Net
             }
             return condition();
         }
+
+        /**
+         * @brief 在循环线程上等一个协程收口，把结果落到原子标志
+         * @param loop 所属事件循环
+         * @param watched 被观察的协程（非拥有；必须由同一条循环线程驱动）
+         * @param isReady 观察结果：收口后置 true
+         * @details 协程句柄只在循环线程上读：测试线程直接查询等于跨线程碰循环对象
+         */
+        Core::Task<> observeTaskReady(Core::EventLoop &loop, Core::Task<> &watched, std::atomic<bool> &isReady)
+        {
+            Core::Timer timer(loop);
+            while (!watched.isReady())
+            {
+                co_await timer.waitFor(std::chrono::milliseconds{5});
+            }
+            isReady.store(true, std::memory_order_release);
+        }
     } // namespace
 
     /**
@@ -1178,6 +1195,7 @@ namespace AsynGyanis::Net
 
         // 什么也没改的一段时间里不该叫过一次：把「每次轮询都重装」这种形状挡在门外
         static_cast<void>(waitUntil([&loopThread] { return loopThread.isRunning(); }, std::chrono::seconds{2}));
+        // 这一格判的是「一段时间内一次都不叫」：条件在窗口内恒真，只能按时间取窗口
         std::this_thread::sleep_for(std::chrono::milliseconds{150});
         EXPECT_EQ(reloadCalls.load(), 0) << "文件没变就叫了装回，跟随协程成了每拍重装";
 
@@ -1191,13 +1209,12 @@ namespace AsynGyanis::Net
         }
         ASSERT_TRUE(waitUntil([&reloadCalls] { return reloadCalls.load() >= 1; }, std::chrono::seconds{5})) << "换了证书之后 5 秒内没有触发装回";
 
-        // 静默一拍再取数：兜底那次写盘可能恰好在 2 秒窗口过去之后才被看见，于是 v2 与 v3 各算一次真变化。
-        // 装回次数因此只能按「观察到几次变化」界定（1 或 2 次都合法），不能写死成 1——原来那句
-        // 「两次写入不会都被看见」在慢档上不成立，覆盖率档就是这样红的。
-        // 这一格真正的判据是「一次变化最多叫一次」与「没有新变化时它不再自己长」，两头都留在这里。
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        // 兜底那次写盘可能恰好在 2 秒窗口过去之后才被看见，于是 v2 与 v3 各算一次真变化；
+        // 等到第二拍或窗口结束（先到者为准）再取数，不靠固定睡眠猜它什么时候落地
+        static_cast<void>(waitUntil([&reloadCalls] { return reloadCalls.load() >= 2; }, std::chrono::milliseconds{300}));
         const int settledReloadCalls = reloadCalls.load();
         EXPECT_LE(settledReloadCalls, 2) << "两次写盘之外还在叫装回：一次变化被装回了不止一次";
+        // 这一格判的是「没有新变化时一段时间内不再叫」：条件在观察窗之前恒真，只能按时间取窗口
         std::this_thread::sleep_for(std::chrono::milliseconds{300});
         EXPECT_EQ(reloadCalls.load(), settledReloadCalls) << "没有新的变化却仍在按拍叫装回，等于身份每 20ms 重装一遍";
 
@@ -1266,10 +1283,13 @@ namespace AsynGyanis::Net
         // 跨线程交帧只能走全局队列：本地就绪队列只归跑 run() 的那条线程，测试线程就地排队会被调度器当场拒
         loopThread.loop().scheduler().scheduleRemote(follower->handle());
 
-        // 收口判据改到循环停干净之后单线程读：在主线程上轮询协程句柄本身就是跨线程碰循环对象。
-        // 先叫停再等 200 ms（够这条帧被投出去跑完），循环一停就没人再动它
+        // 收口判据在循环线程上轮询，测试线程只等那个标志：固定睡 200 ms 在满载 runner 上会赌输
+        std::atomic<bool> isReadyObserved{false};
+        Core::Task<>      observer = observeTaskReady(loop, *follower, isReadyObserved);
+        loopThread.schedule(observer);
+        ASSERT_TRUE(waitUntil([&isReadyObserved] { return isReadyObserved.load(std::memory_order_acquire); }, std::chrono::seconds{2}))
+                << "空的装回动作本该让这条协程当场收口，而不是挂在定时器上";
         isStopping.store(true);
-        std::this_thread::sleep_for(std::chrono::milliseconds{200});
         loopThread.join();
         EXPECT_TRUE(follower->isReady()) << "空的装回动作本该让这条协程当场收口，而不是挂在定时器上";
     }

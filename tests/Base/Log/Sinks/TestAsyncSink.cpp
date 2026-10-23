@@ -645,12 +645,8 @@ namespace AsynGyanis::Base
         AsyncSink              sink(std::move(downstream), 64);
         sink.write(makeEvent(LogLevel::Info, "blocked-before-stop"));
 
-        const auto enteredDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        while (events->enteredCount.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < enteredDeadline)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
-        }
-        ASSERT_GT(events->enteredCount.load(std::memory_order_acquire), 0U) << "worker 没进入下游 write，构造不出「stop 卡在 join」的形状";
+        ASSERT_TRUE(TestSupport::waitForCondition([events] { return events->enteredCount.load(std::memory_order_acquire) > 0U; }, kWaitTimeoutMilliseconds))
+                << "worker 没进入下游 write，构造不出「stop 卡在 join」的形状";
 
         std::thread stopper([&sink] { sink.stop(); });
         auto        flushing              = std::async(std::launch::async, [&sink] { sink.flush(); });
@@ -1141,11 +1137,14 @@ namespace AsynGyanis::Base
             void write(const LogEvent &event) override
             {
                 static_cast<void>(event);
+                enteredCount.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::microseconds{200});
             }
             void flush() override
             {
             }
+
+            std::atomic<unsigned> enteredCount{0}; ///< 进入过下游的事件数：用例据此确认 worker 已开始消费
         };
     } // namespace
 
@@ -1159,7 +1158,9 @@ namespace AsynGyanis::Base
     TEST(AsyncSinkFlush, WaitsOnlyForEventsAcceptedBeforeTheCall)
     {
         constexpr std::size_t kQueueCapacity = 64U;
-        AsyncSink             sink(std::make_unique<DelayedDownstream>(), kQueueCapacity, AsyncSink::OverflowPolicy::Drop);
+        auto                  downstream     = std::make_unique<DelayedDownstream>();
+        DelayedDownstream    *rawDownstream  = downstream.get();
+        AsyncSink             sink(std::move(downstream), kQueueCapacity, AsyncSink::OverflowPolicy::Drop);
 
         // 生产者每分钟约 1 万条、下游每条约 200 微秒（5 千条/秒）：队列保持饱和，
         // 「待落地数清零」因此永远不成立。写入之间刻意留一拍，免得把结论下在锁的公平性上
@@ -1173,7 +1174,9 @@ namespace AsynGyanis::Base
                         std::this_thread::sleep_for(std::chrono::microseconds{100});
                     }
                 });
-        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        // 等 worker 真的开始消费再进 flush：这个前提由读数造出来，不靠固定睡眠
+        ASSERT_TRUE(TestSupport::waitForCondition([rawDownstream] { return rawDownstream->enteredCount.load(std::memory_order_acquire) > 0U; }, kWaitTimeoutMilliseconds))
+                << "worker 没开始消费，flush 的水位判据无从谈起";
 
         std::atomic<bool>      flushReturned{false};
         std::atomic<long long> waitedMs{-1};
