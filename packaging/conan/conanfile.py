@@ -86,10 +86,9 @@ class AsynGyanisLibrary(ConanFile):
     def requirements(self):
         for requirement in BASE_REQUIREMENTS:
             if requirement.startswith("mimalloc/"):
-                # mimalloc 是 Core 的 PUBLIC 链接依赖：不给 transitive_libs，消费方链接
-                # AsynGyanis::Core 时会缺 mimalloc-static 这个目标。其余依赖保持原来的调用形状，
-                # 不能顺手补一个 transitive_libs=False——那会把 zstd/brotli/sqlite3 从消费方的
-                # CMakeDeps 依赖表里挤掉，最终可执行体链接 Net/Core 时缺 zlib/OpenSSL 符号
+                # mimalloc 是 Core 的 PUBLIC 依赖；其余依赖保持原调用形状，补
+                # transitive_libs=False 会把 zstd/brotli/sqlite3 挤出消费方 CMakeDeps，
+                # 链接 Net/Core 时缺 zlib/OpenSSL 符号
                 self.requires(requirement, transitive_libs=True)
                 continue
             self.requires(requirement, transitive_headers=requirement.startswith(PUBLIC_HEADER_REQUIREMENT_PREFIXES))
