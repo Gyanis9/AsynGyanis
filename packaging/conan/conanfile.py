@@ -36,6 +36,11 @@ YAML_REQUIREMENT = "yaml-cpp/0.9.0"
 # 不开时库照常构建，MySQL 驱动退化为报错桩（-DDATABASE_WITH_MYSQL=OFF）。
 MYSQL_REQUIREMENT = "libmysqlclient/8.1.0"
 
+# 公开头直接包含第三方头：消费方必须拿到这些包含目录。TlsPolicy.h 等用 openssl/，
+# RedisReplyText.h 用 hiredis/，两个值转换头分别用 mysql.h 与 libpq-fe.h。
+# transitive_headers=True 才会把目录交给消费方；冒烟包含 TLS 头才能发现这一格。
+PUBLIC_HEADER_REQUIREMENT_PREFIXES = ("openssl/", "hiredis/", "libmysqlclient/", "libpq/")
+
 # PostgreSQL 驱动同为可选依赖，不开则退化为报错桩（-DDATABASE_WITH_POSTGRES=OFF）。
 # ConanCenter 上各平台有预编译的 Release 二进制，只有 Debug 档要源码构建（meson，约一分钟）。
 POSTGRES_REQUIREMENT = "libpq/17.11"
@@ -77,13 +82,13 @@ class AsynGyanisLibrary(ConanFile):
 
     def requirements(self):
         for requirement in BASE_REQUIREMENTS:
-            self.requires(requirement)
+            self.requires(requirement, transitive_headers=requirement.startswith(PUBLIC_HEADER_REQUIREMENT_PREFIXES))
         self.requires(JSON_REQUIREMENT, transitive_headers=True)
         self.requires(YAML_REQUIREMENT, transitive_libs=True)
         if self.options.with_mysql:
-            self.requires(MYSQL_REQUIREMENT)
+            self.requires(MYSQL_REQUIREMENT, transitive_headers=True)
         if self.options.with_postgres:
-            self.requires(POSTGRES_REQUIREMENT)
+            self.requires(POSTGRES_REQUIREMENT, transitive_headers=True)
 
     def generate(self):
         CMakeDeps(self).generate()

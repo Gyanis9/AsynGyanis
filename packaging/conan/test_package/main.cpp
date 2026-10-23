@@ -9,6 +9,8 @@
 #include "Base/Exception/StackTrace.h"
 #include "Base/Log/Formatters/DefaultFormatter.h"
 #include "Base/Log/Sinks/RollingFileSink.h"
+#include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Database/MySql/MySqlConnection.h"
 #include "Database/Redis/RedisConnection.h"
 #include "Net/Http/Features/Gzip.h"
@@ -89,9 +91,16 @@ int main()
 #error "Redis 驱动两处不同解：模块宏与能力清单给出了相反答案"
 #endif
 
+    // 公开的 TLS 头直接 include <openssl/types.h>，构造上下文还要链上 OpenSSL：
+    // 这一条把「包是否把公开依赖的包含目录与库一并交给消费方」钉在冒烟里，
+    // 而不是等消费方 include 到 TLS 头时才在编译期缺 openssl/types.h
+    const AsynGyanis::Core::TlsContext tlsContext(AsynGyanis::Core::TlsPolicy{}, AsynGyanis::Core::TlsContext::Role::Client);
+    static_cast<void>(tlsContext);
+
     std::printf(
             "consumer_smoke: AsynGyanis::Net 可用，响应头 %zu 字节，压缩后 %zu 字节；库版本 %s，io_uring=%d mimalloc=%d 共享形态=%d 调用栈=%d MySQL=%d PostgreSQL=%d Redis=%d\n",
             head.size(), compressed->size(), ASYN_VERSION_STRING, ASYN_HAS_IO_URING, ASYN_HAS_MIMALLOC, ASYN_IS_SHARED_BUILD, ASYN_HAS_STACKTRACE_SUPPORT, ASYN_HAS_MYSQL_DRIVER,
             ASYN_HAS_POSTGRES_DRIVER, ASYN_HAS_REDIS_DRIVER);
+    std::printf("consumer_smoke: 公开 TLS 头可包含、OpenSSL 上下文可构造\n");
     return 0;
 }
