@@ -52,6 +52,41 @@ namespace AsynGyanis::Core
     } // namespace
 
     /**
+     * @brief 钉住 isOnOwnerThread() 的两侧：循环跑在别的线程上时外来线程为 false，停机后恢复为 true
+     * @details 这条读数决定「能不能就地动本循环上的对象」。它偏偏在循环没跑时返回 true（构造期与
+     *          停机后的顺序交接都是良性形态），因此只测静态值证明不了任何事：必须真让循环在另一条
+     *          线程上跑起来，再分别从两条线程读。
+     */
+    TEST(EventLoop, IsOnOwnerThreadTracksTheRunningThread)
+    {
+        EventLoop         loop;
+        std::atomic<bool> ownerObserved{false};
+        std::atomic<bool> entered{false};
+
+        EXPECT_TRUE(loop.isOnOwnerThread()) << "循环未运行时按契约允许就地操作";
+
+        std::thread worker(
+                [&loop, &ownerObserved, &entered]
+                {
+                    loop.scheduler().postLocal(
+                            [&loop, &ownerObserved, &entered]
+                            {
+                                ownerObserved.store(loop.isOnOwnerThread(), std::memory_order_release);
+                                entered.store(true, std::memory_order_release);
+                            });
+                    loop.run();
+                });
+
+        ASSERT_TRUE(waitForCondition([&entered] { return entered.load(std::memory_order_acquire); })) << "循环线程没有跑到投递的动作上";
+        EXPECT_TRUE(ownerObserved.load(std::memory_order_acquire)) << "循环自己的线程被误判成外来线程";
+        EXPECT_FALSE(loop.isOnOwnerThread()) << "循环正在另一条线程上跑，外来线程却被判为属主";
+
+        loop.stop();
+        worker.join();
+        EXPECT_TRUE(loop.isOnOwnerThread()) << "停机后没有恢复成可就地操作";
+    }
+
+    /**
      * @brief 钉住：后端抛过一次之后 run() 真的返回，而不是「读数说停了、线程还在派发」
      * @details run() 的两个 catch 置 `m_stoppedByFailure` 与 `m_running=false`，而这两个原子量是全仓
      *          唯一的「这条循环还在不在跑」判据（EventLoop.h 对 isRunning()/stoppedByFailure 的 @note
