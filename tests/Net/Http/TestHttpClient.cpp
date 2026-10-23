@@ -590,6 +590,48 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住超时后的连接归属：掐断的那条不能还回池里，同一客户端随后仍能发新请求
+     * @details 旧读循环在时限到点时只把请求判失败；连接若被当作「用完」还池，下一条请求会从一条
+     *          已经半途而废的通路上读响应。判据取池的空闲计数（直接读连接归属）与下一条请求的
+     *          200（证明客户端还能重新建连），两处缺一都抓不到「失败后状态被污染」。
+     */
+    TEST(HttpClient, TimedOutRequestDoesNotLeaveAReusableConnection)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+
+        const std::string slowUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        const std::string fastUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+
+        Core::EventLoop loop;
+        HttpClient      client(loop);
+        bool            firstWasEmpty     = false;
+        std::size_t     idleAfterTimeout  = 1U;
+        bool            secondAnswered200 = false;
+        auto            drive             = [&]() -> Core::Task<void>
+        {
+            const std::unique_ptr<HttpClientResponse> first  = co_await client.get(slowUrl, std::chrono::milliseconds{150});
+            firstWasEmpty                                    = first == nullptr;
+            idleAfterTimeout                                 = client.idleConnectionCount();
+            const std::unique_ptr<HttpClientResponse> second = co_await client.get(fastUrl, std::chrono::seconds{2});
+            secondAnswered200                                = second != nullptr && second->statusCode == 200;
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(firstWasEmpty) << "慢路由没在时限内失败";
+        EXPECT_EQ(idleAfterTimeout, 0U) << "超时的连接被还回了空闲池：下一条请求可能拿它当干净通路";
+        EXPECT_TRUE(secondAnswered200) << "超时之后同一客户端没能重新建连并拿到 200";
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
      * @brief 对端回畸形响应又不收线时，客户端按解析失败立即收场，不陪它耗到请求时限
      * @details 解析器一进入 Failed 就该停：旧读循环只认 isComplete()，把失败态当成「还没收齐」
      *          继续读，于是每条畸形响应都白等满时限。夹具回完畸形头部后保持连接不关，时限给 5 秒，
@@ -756,6 +798,89 @@ namespace AsynGyanis::Net
             EXPECT_EQ(rejections, 0U);
         }
         std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住并发闸排队也吃请求时限：排在 Wait 队列里的第二条到点就失败，不等前一条跑完
+     * @details 「整条请求的预算」包括闸门等待那一段；旧实现只把预算用在连接与读写上，排队的请求
+     *          会一直等到前一条让出名额，调用方的 150 ms 时限变成 600 ms 以上。判据先让第一条真占住
+     *          名额（服务端慢路由已进入处理），再发第二条，因此不靠调度顺序。
+     */
+    TEST(HttpClient, WaitPolicyHonoursTheRequestDeadlineWhileQueued)
+    {
+        constexpr auto    kSlowRouteTime = std::chrono::milliseconds{600};
+        std::atomic<bool> slowRouteEntered{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        slowRoute.handlerStarted = &slowRouteEntered;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+
+        Core::EventLoop                    loop;
+        HttpOutboundConnectionPool::Config poolConfig;
+        poolConfig.maximumInFlightPerEndpoint = 1;
+        poolConfig.inFlightOverflowPolicy     = InFlightOverflowPolicy::Wait;
+        HttpClient client(loop, poolConfig);
+
+        bool                      firstAnswered      = false;
+        bool                      secondQueuedFailed = false;
+        bool                      routeEntered       = false;
+        std::chrono::milliseconds secondElapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Task<std::unique_ptr<HttpClientResponse>> firstTask = client.get(url, std::chrono::seconds{3});
+            loop.scheduler().schedule(firstTask.handle());
+
+            Core::Timer pollTimer(loop);
+            const auto  enteredDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (!slowRouteEntered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < enteredDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            routeEntered = slowRouteEntered.load(std::memory_order_acquire);
+            if (!routeEntered)
+            {
+                loop.stop();
+                co_return;
+            }
+
+            const auto                                      secondStarted = std::chrono::steady_clock::now();
+            Core::Task<std::unique_ptr<HttpClientResponse>> secondTask    = client.get(url, std::chrono::milliseconds{150});
+            loop.scheduler().schedule(secondTask.handle());
+            const auto secondDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (!secondTask.isReady() && std::chrono::steady_clock::now() < secondDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            secondElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - secondStarted);
+            if (secondTask.isReady())
+            {
+                const std::unique_ptr<HttpClientResponse> secondResponse = secondTask.handle().promise().result();
+                secondQueuedFailed                                       = secondResponse == nullptr;
+            }
+
+            const auto firstDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (!firstTask.isReady() && std::chrono::steady_clock::now() < firstDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            if (firstTask.isReady())
+            {
+                const std::unique_ptr<HttpClientResponse> firstResponse = firstTask.handle().promise().result();
+                firstAnswered                                           = firstResponse != nullptr && firstResponse->statusCode == 200;
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(routeEntered) << "第一条请求没进入慢路由：名额归属不成立";
+        EXPECT_TRUE(secondQueuedFailed) << "排队中的第二条没有被时限拦下";
+        EXPECT_LT(secondElapsed, kSlowRouteTime) << "第二条等到了前一条跑完（用时 " << secondElapsed.count() << " ms）：闸门等待没有吃请求时限";
+        EXPECT_TRUE(firstAnswered) << "第一条被排队者拖累，没能正常拿到 200";
     }
 
     /**
@@ -980,6 +1105,57 @@ namespace AsynGyanis::Net
         const SendOutcome       refused = runSend("http://127.0.0.1:" + std::to_string(closedPort) + "/", request, std::chrono::seconds{5});
         EXPECT_TRUE(refused.body.empty());
         EXPECT_NE(refused.reason.find("建立 TCP 连接失败"), std::string::npos) << "要指出断在连接这一段：" << refused.reason;
+    }
+
+    /**
+     * @brief 钉住解析失败与建连失败在原因里分得开
+     * @details 超长标签在 DNS 协议里必然非法，getaddrinfo 不问网络就会拒；这条既不依赖本机解析器
+     *          答什么，也不依赖网络是否可用。旧文案只给一句「请求失败」时，重试策略只能靠猜。
+     */
+    TEST(HttpClient, NamesDnsFailureStage)
+    {
+        const std::string invalidHost(200U, 'a');
+        const SendOutcome outcome = runSend("http://" + invalidHost + "/", HttpClientRequest{}, std::chrono::seconds{2});
+        EXPECT_TRUE(outcome.body.empty()) << "非法主机名不该拿到响应";
+        EXPECT_NE(outcome.reason.find("解析地址"), std::string::npos) << "原因要点明断在解析这一段：" << outcome.reason;
+        EXPECT_EQ(outcome.reason.find("建立 TCP 连接失败"), std::string::npos) << "解析失败被折成了建连失败：" << outcome.reason;
+    }
+
+    /**
+     * @brief 钉住 TLS 握手失败与 TCP 建连失败在原因里分得开
+     * @details 对端是一台明文 HTTP 服务器：TCP 连得上，TLS 一定握手不过。这正是两种故障在诊断上
+     *          必须分开的形状——前者查证书/协议，后者查网络与端口。
+     */
+    TEST(HttpClient, NamesTlsHandshakeFailureStage)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/";
+
+        const SendOutcome outcome = runSend(url, HttpClientRequest{}, std::chrono::seconds{5});
+        EXPECT_TRUE(outcome.body.empty()) << "明文对端不该完成 TLS 握手";
+        EXPECT_NE(outcome.reason.find("TLS 握手"), std::string::npos) << "原因要点明断在 TLS 握手这一段：" << outcome.reason;
+        EXPECT_EQ(outcome.reason.find("建立 TCP 连接失败"), std::string::npos) << "握手失败被折成了建连失败：" << outcome.reason;
+    }
+
+    /**
+     * @brief 钉住请求时限到点时原因仍点明「时限」，不折成建连或解析失败
+     */
+    TEST(HttpClient, NamesTimeoutStageDistinctFromConnectFailure)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+
+        const std::string url     = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        const SendOutcome outcome = runSend(url, HttpClientRequest{}, std::chrono::milliseconds{150});
+        EXPECT_TRUE(outcome.body.empty()) << "慢路由不该在时限内交出响应";
+        EXPECT_NE(outcome.reason.find("时限"), std::string::npos) << "原因要点明是时限到点：" << outcome.reason;
+        EXPECT_EQ(outcome.reason.find("建立 TCP 连接失败"), std::string::npos) << "时限失败被折成了建连失败：" << outcome.reason;
+        EXPECT_EQ(outcome.reason.find("解析地址"), std::string::npos) << "时限失败被折成了解析失败：" << outcome.reason;
+        std::this_thread::sleep_for(kSlowRouteTime);
     }
 
     // ============================================================================
