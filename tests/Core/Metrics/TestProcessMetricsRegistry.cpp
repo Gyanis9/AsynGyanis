@@ -3,8 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <array>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace AsynGyanis::Core
@@ -70,6 +72,26 @@ namespace AsynGyanis::Core
 
         EXPECT_EQ(ProcessMetricsRegistry::nameCount(), namesBefore);
         EXPECT_FALSE(findByName("asyn_test_probe_total").found);
+    }
+
+    /**
+     * @brief 钉住 Prometheus 指标名校验的字符类：首字符与后续字符各按声明逐格验
+     * @details 登记侧与 /metrics 渲染侧共用这一份判据；只测「几个坏名字被拒」会漏掉
+     *          「冒号与下划线到底许不许」这类边界，而渲染侧放行一个这样的名字就是整片抓取失败。
+     */
+    TEST(ProcessMetricsRegistry, PrometheusNameRuleMatchesTheDocumentedCharacterClass)
+    {
+        constexpr std::array<std::string_view, 9> kLegalNames{"a", "A", "_", ":", "a:b", "A_1", "a_1:b2", "___", ":::"};
+        for (const std::string_view name: kLegalNames)
+        {
+            EXPECT_TRUE(isLegalPrometheusMetricName(name)) << "合法名字被拒：「" << name << "」";
+        }
+
+        constexpr std::array<std::string_view, 8> kIllegalNames{"", "1a", "a-b", "a.b", "a/b", "a b", "a\tb", "a\x7f"};
+        for (const std::string_view name: kIllegalNames)
+        {
+            EXPECT_FALSE(isLegalPrometheusMetricName(name)) << "非法名字被放行：「" << name << "」";
+        }
     }
 
     /**
