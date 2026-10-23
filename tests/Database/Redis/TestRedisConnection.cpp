@@ -16,6 +16,10 @@
 #include "Database/Redis/RedisConnection.h"
 #include "DatabaseTestSupport.h"
 
+#include "Core/Socket/InetAddress.h"
+#include "Platform/IO/FileDescriptor.h"
+#include "Platform/IO/Socket.h"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -56,23 +60,86 @@ namespace AsynGyanis::Database
         constexpr long long kMaximumOfflineCallMilliseconds = 1000;
 
         /**
-         * @brief 本机上一个确定没有监听的端口
-         * @details 取注册端口区间内、远离 Redis(6379)/Sentinel(26379)/MySQL(3306) 等常见服务，
-         *          且在 Linux(32768+) 与 Windows(49152+) 临时端口范围之下，
-         *          因此既不会被本机服务占用，也不会被系统当作源端口分配出去。
-         *          若某台机器确实在此端口起了服务，本文件依赖拒绝的用例会误报，换端口即可。
+         * @brief 进程内占住一个「确定没有监听」的端口
+         * @details 固定端口会在装了对应服务的机器上把拒绝用例变成假红；这里让内核挑一个空闲端口，
+         *          并一直持有那条已 bind、未 listen 的套接字：别的进程拿不走它，连接它则被内核拒绝。
+         *          析构才关闭，因此本进程里每个用例看到的都是同一个确定不可连的端口。
          */
-        constexpr std::uint16_t kUnmonitoredPort = 16390;
+        class OfflinePortReservation
+        {
+        public:
+            OfflinePortReservation()
+            {
+                if (!m_initialization.isValid())
+                {
+                    return;
+                }
+                m_descriptor = Platform::Socket::create(AF_INET, SOCK_STREAM);
+                if (!Platform::FileDescriptor::isValid(m_descriptor))
+                {
+                    m_descriptor = Platform::FileDescriptor::kInvalid;
+                    return;
+                }
+                const Core::InetAddress requestedAddress("127.0.0.1", 0);
+                if (!Platform::Socket::bind(m_descriptor, requestedAddress.nativeAddress(), requestedAddress.nativeAddressLength()))
+                {
+                    Platform::FileDescriptor::close(m_descriptor);
+                    m_descriptor = Platform::FileDescriptor::kInvalid;
+                    return;
+                }
+                sockaddr_storage localStorage{};
+                socklen_t        localLength = sizeof(localStorage);
+                if (!Platform::Socket::localAddress(m_descriptor, reinterpret_cast<sockaddr *>(&localStorage), &localLength))
+                {
+                    Platform::FileDescriptor::close(m_descriptor);
+                    m_descriptor = Platform::FileDescriptor::kInvalid;
+                    return;
+                }
+                m_port = Core::InetAddress(localStorage, localLength).port();
+            }
+
+            ~OfflinePortReservation()
+            {
+                if (Platform::FileDescriptor::isValid(m_descriptor))
+                {
+                    Platform::FileDescriptor::close(m_descriptor);
+                }
+            }
+
+            OfflinePortReservation(const OfflinePortReservation &)            = delete;
+            OfflinePortReservation &operator=(const OfflinePortReservation &) = delete;
+
+            /// 保留到的端口；保留失败时为 0
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port;
+            }
+
+        private:
+            Platform::Socket::Initialization m_initialization;                                 ///< Winsock 生命周期
+            int                              m_descriptor{Platform::FileDescriptor::kInvalid}; ///< 已 bind 未 listen 的描述符
+            std::uint16_t                    m_port{0};                                        ///< 内核选出的端口
+        };
+
+        /**
+         * @brief 取本进程占住的那个不可连端口
+         * @return std::uint16_t 端口号；占不到时为 0（连接仍然失败，但原因不再是拒绝）
+         */
+        std::uint16_t unmonitoredPort()
+        {
+            static const OfflinePortReservation reservation;
+            return reservation.port();
+        }
 
         /**
          * @brief 构造一份指向本机未监听端口的离线配置
-         * @return ConnectionConfig host 为本机回环、port 为未监听端口
+         * @return ConnectionConfig host 为本机回环、port 为进程内保留的空闲端口
          */
         ConnectionConfig makeOfflineConfiguration()
         {
             ConnectionConfig configuration;
             configuration.host = "127.0.0.1";
-            configuration.port = kUnmonitoredPort;
+            configuration.port = unmonitoredPort();
             return configuration;
         }
 
