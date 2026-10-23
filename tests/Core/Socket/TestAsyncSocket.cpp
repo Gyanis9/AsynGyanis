@@ -929,6 +929,43 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 钉住有上限等待的关闭面：连接已关时交回 false，不能把异常抛给上层请求
+     */
+    TEST(AsyncSocket, WaitReadableForReturnsFalseAfterClose)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket socket(loop, localDescriptor);
+        socket.close();
+        ASSERT_EQ(socket.fileDescriptor(), -1) << "close() 之后描述符仍在";
+
+        bool threw    = false;
+        bool readable = true;
+        auto task     = [&]() -> Task<void>
+        {
+            try
+            {
+                readable = co_await socket.waitReadableFor(std::chrono::milliseconds{10});
+            } catch (...)
+            {
+                threw = true;
+            }
+            loop.stop();
+        };
+        Task<void> work = task();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_FALSE(threw) << "关闭后的可读等待抛了异常，调用方的 expected 契约会被穿透";
+        EXPECT_FALSE(readable) << "关闭后的套接字被报成了可读";
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
      * @brief 参数取值非法必须落在「用法错误」那条分支上，而不是运行期故障链
      * @details 明文套接字与 TLS 套接字在 HttpSession 里是可替换的（调用方用 requires 探测能力），
      *          同一条误用因此必须走同一条分支：TlsSocket 早就把这类拒绝放在 std::invalid_argument

@@ -534,7 +534,7 @@ namespace AsynGyanis::Core
         IoWatcher *const watcher = ensureWatcher();
         if (watcher == nullptr)
         {
-            throw Base::SystemException("等待套接字可读失败：套接字无效或已关闭");
+            co_return false; // 已关闭/无效：交给调用方按「这一轮不可读」收口，不抛异常
         }
 
         std::stop_source stopSource;

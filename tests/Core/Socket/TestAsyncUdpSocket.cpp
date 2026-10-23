@@ -584,6 +584,37 @@ namespace AsynGyanis::Core
      * @note 证伪：把 `AsyncUdpSocket::close()` 里 `m_watcher.reset()` 摘掉 → 那条接收协程永不收尾，
      *       本条红。
      */
+    /**
+     * @brief 钉住有上限等待的关闭面：套接字已关时交回 false，不把异常抛给上层请求
+     */
+    TEST(AsyncUdpSocket, WaitReadableForReturnsFalseAfterClose)
+    {
+        EventLoop      loop;
+        AsyncUdpSocket socket = bindLoopbackSocket(loop);
+        ASSERT_TRUE(socket.isValid());
+        socket.close();
+
+        bool threw    = false;
+        bool readable = true;
+        auto task     = [&]() -> Task<void>
+        {
+            try
+            {
+                readable = co_await socket.waitReadableFor(std::chrono::milliseconds{10});
+            } catch (...)
+            {
+                threw = true;
+            }
+            loop.stop();
+        };
+        Task<void> work = task();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_FALSE(threw) << "关闭后的可读等待抛了异常，调用方的 expected 契约会被穿透";
+        EXPECT_FALSE(readable) << "关闭后的套接字被报成了可读";
+    }
+
     TEST(AsyncUdpSocket, CloseWakesCoroutineBlockedOnReceive)
     {
         ASSERT_TRUE(Platform::Socket::initialize());

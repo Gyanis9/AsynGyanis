@@ -227,7 +227,10 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> HttpProxyPumpedTls::waitReadableFor(const std::chrono::milliseconds timeout)
     {
-        requireAlive("等待可读");
+        if (m_isClosed || m_inner == nullptr)
+        {
+            co_return false; // 本端已收口：等待按不可读结束，由泵折成请求失败
+        }
         if (SSL_pending(m_inner.get()) > 0)
         {
             co_return true;

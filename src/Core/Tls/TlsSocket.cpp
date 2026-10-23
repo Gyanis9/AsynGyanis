@@ -287,7 +287,10 @@ namespace AsynGyanis::Core
 
     Task<bool> TlsSocket::waitReadableFor(const std::chrono::milliseconds timeout)
     {
-        requireLiveContext("TLS 等待可读");
+        if (m_ssl == nullptr)
+        {
+            co_return false; // 本端已收口：等待按不可读结束，由泵折成请求失败
+        }
         // OpenSSL 可能已经把明文解在自己手里：此时 fd 不一定可读，但下一次 SSL_read 会立刻返回
         if (SSL_pending(m_ssl.get()) > 0)
         {
