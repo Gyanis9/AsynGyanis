@@ -5503,7 +5503,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Redis 借这张图的会话位</h3>
         </div>
         <ul>
-          <li>argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:229、1222、742、778）</li>
+          <li>argv 组装走内联 8 槽的 ArgumentViewTable → redisCommandArgv；管道是 redisAppendCommandArgv + flushPipeline（RedisConnection.cpp:247、1240、760、796）</li>
           <li>归还前必须 resetSessionState：残留管道会被下一个借用者的 flush 代发、MULTI/WATCH 留在服务端侧本地清不掉、库位不还回就把键写进别人的库（RedisConnection.cpp:1538）</li>
           <li>订阅模式首条回复是命令回复，循环从 index 1 起只补收 targets-1 条（RedisSubscription.cpp:195）；发布/订阅与命令共用同一个池，但订阅连接不可归还</li>
           <li>可选依赖缺失时是报错桩：六个入口写「缺少 hiredis」，isConnected 恒 false，RedisResult 给 0 列与 monostate</li>
