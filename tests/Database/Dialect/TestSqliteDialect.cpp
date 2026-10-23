@@ -28,6 +28,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 
+#include "AssertionSupport.h"
 #include "DatabaseTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -42,6 +43,18 @@
 
 namespace
 {
+    /**
+     * @brief 断言方言翻译按用法错误拒绝，并交回原因供调用方核对
+     * @tparam ExceptionType 期望的异常类型（多数是 InvalidArgumentException，少数走 std::invalid_argument）
+     * @param action 翻译动作
+     * @param expected 原因里必须出现的片段（哪一项查询树字段、哪一条方言限制）
+     */
+    template<typename ExceptionType, typename Action>
+    void expectDialectRejected(Action &&action, const std::string_view expected)
+    {
+        const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "方言翻译");
+        EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+    }
     using AsynGyanis::Database::ColumnType;
     using AsynGyanis::Database::DatabaseType;
     using AsynGyanis::Database::DatabaseValue;
@@ -275,27 +288,27 @@ TEST(SqliteDialectSelect, EmptyFieldNameAndEmptyTableNameAreRejected)
     {
         QueryNode node     = makeNode("users");
         node.selectColumns = {"id", ""};
-        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+        expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translate(node)); }, "字段名为空");
     }
 
     // GROUP BY 里的空字段
     {
         QueryNode node = makeNode("users");
         node.groupBy   = {FieldReference{""}};
-        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+        expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translate(node)); }, "字段名为空");
     }
 
     // 条件左值是空字段
     {
         QueryNode node = makeNode("users");
         node.whereConditions.push_back(WhereCondition{.left = FieldReference{""}, .op = SqlOperator::Eq, .right = ParameterValue{static_cast<std::int64_t>(1)}});
-        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+        expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translate(node)); }, "字段名为空");
     }
 
     // 空表名：引用成 "" 是一个合法但必定不存在的名字，报出的 "no such table" 指不到真因
     {
         const QueryNode node = makeNode("");
-        EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+        expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translate(node)); }, "表名为空");
     }
 
     // 反向对照：通配符与表达式列照常通过
@@ -487,7 +500,7 @@ TEST(SqliteDialectWhere, NotWithMultipleChildrenIsRejectedInsteadOfSilentlyDropp
                                                   .children = {makeComparison("age", SqlOperator::Ge, ParameterValue{static_cast<std::int64_t>(18)}),
                                                                makeComparison("score", SqlOperator::Lt, ParameterValue{static_cast<std::int64_t>(60)})}});
 
-    EXPECT_THROW(static_cast<void>(dialect.translate(node)), AsynGyanis::Base::InvalidArgumentException);
+    expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translate(node)); }, "NOT 条件带了");
 
     // 对照组：单个子条件的 NOT 是合法形态，必须仍按 "NOT (...)" 渲染
     QueryNode singleNode;
@@ -606,7 +619,7 @@ TEST(SqliteDialectWrite, InsertAndBatchBeyondTheParameterBudgetAreRejected)
     {
         const QueryNode                  overNode = makeWideNode(budget + 1U);
         const std::vector<DatabaseValue> values(budget + 1U, static_cast<std::int64_t>(1));
-        EXPECT_THROW(static_cast<void>(dialect.translateInsert(overNode, values)), AsynGyanis::Base::InvalidArgumentException);
+        expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translateInsert(overNode, values)); }, "超过该引擎单条语句的上限");
 
         const QueryNode                  atNode = makeWideNode(budget);
         const std::vector<DatabaseValue> atValues(budget, static_cast<std::int64_t>(1));
@@ -1305,8 +1318,8 @@ TEST(SqliteDialectWrite, EmptyTableNameIsRejectedInInsertDirection)
     const std::vector<DatabaseValue>              values{std::int64_t{1}};
     const std::vector<std::vector<DatabaseValue>> rows{values};
 
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, values)), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, rows)), AsynGyanis::Base::InvalidArgumentException);
+    expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translateInsert(node, values)); }, "表名为空");
+    expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translateInsertBatch(node, rows)); }, "表名为空");
 
     try
     {
@@ -1327,15 +1340,18 @@ TEST(SqliteDialectWrite, InsertRejectsColumnAndValueCountMismatch)
     node.selectColumns = {"id", "name"};
 
     // 少给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})), std::invalid_argument);
+    expectDialectRejected<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})); },
+                                                 "取值个数（1）与待写列数（2）");
 
     // 多给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})), std::invalid_argument);
+    expectDialectRejected<std::invalid_argument>(
+            [&] { static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})); },
+            "取值个数（3）与待写列数（2）");
 
     // 没有任何待写列
     QueryNode emptyColumnNode;
     emptyColumnNode.tableName = "users";
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})), std::invalid_argument);
+    expectDialectRejected<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})); }, "待写列列表为空");
 }
 
 /**
@@ -1508,12 +1524,12 @@ TEST(SqliteDialectWrite, DeleteWithLimitOrOffsetIsRejectedRatherThanMadeUnbounde
 
     // 行数上限：被丢掉之后「只删 1 行」变成「删掉全部匹配行」
     node.limit = 1U;
-    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException) << "带 LIMIT 的 DELETE 被静默渲染成无界删除";
+    expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translateDelete(node)); }, "DELETE 不支持 LIMIT / OFFSET");
 
     // 偏移量：同样改变被删的行集合（跳过前 N 行），必须一起拒
     node.limit  = std::nullopt;
     node.offset = 10U;
-    EXPECT_THROW(static_cast<void>(dialect.translateDelete(node)), AsynGyanis::Base::InvalidArgumentException) << "带 OFFSET 的 DELETE 被静默渲染成无界删除";
+    expectDialectRejected<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(dialect.translateDelete(node)); }, "DELETE 不支持 LIMIT / OFFSET");
 
     // 对照组：只带 ORDER BY 的删除仍渲染得出来——本方言同样不输出它，但它不改变被删的行集合
     QueryNode orderedNode;
@@ -1570,11 +1586,11 @@ TEST(SqliteDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
     node.selectColumns = {"id", "name"};
 
     // 空行集合：SQL 里 "VALUES" 后面必须有至少一组括号，无法生成合法语句
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})), std::invalid_argument);
+    expectDialectRejected<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})); }, "批量插入的行集合为空");
 
     // 某行少给一列：列与值错位会让数据写进错误的列，必须当场失败
     const std::vector<std::vector<DatabaseValue>> mismatchedRows{{std::int64_t{1}, std::string("张三")}, {std::int64_t{2}}};
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)), std::invalid_argument);
+    expectDialectRejected<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)); }, "取值个数（1）与待写列数（2）");
 }
 
 /**

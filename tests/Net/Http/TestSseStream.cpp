@@ -15,6 +15,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
+#include "AssertionSupport.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Message/HttpResponse.h"
 #include "Net/Http/Features/SseStream.h"
@@ -38,6 +39,19 @@ namespace AsynGyanis::Net
     {
         /// 事件帧里 data 部分之外的固定开销："data: " 前缀（6 字节）加行尾与收尾空行（各 1 字节）
         constexpr std::size_t kDataFrameOverhead = 6U + 2U;
+
+        /**
+         * @brief 断言一次 SSE 写入按指定类型拒绝，并交回原因
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 驱动写入动作
+         * @param expected 原因里必须出现的片段（哪一条字段、哪一条上限）
+         */
+        template<typename ExceptionType, typename Action>
+        void expectSseRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "SSE 写入");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
 
         /**
          * @brief 驱动一个惰性协程到终结点并取出 bool 结果
@@ -282,26 +296,27 @@ namespace AsynGyanis::Net
         SseStream stream(response);
         EXPECT_TRUE(stream.isOpen());
 
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "bad\nevent"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "bad\revent"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", std::string_view("bad\0event", 9)))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\nid"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\rid"))), Base::LogicException);
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", "ok", std::string_view("bad\0id", 6)))), Base::LogicException);
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", "bad\nevent"))); }, "事件名（eventName）");
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", "bad\revent"))); }, "事件名（eventName）");
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", std::string_view("bad\0event", 9)))); }, "事件名（eventName）");
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\nid"))); }, "事件标识（eventId）");
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", "ok", "bad\rid"))); }, "事件标识（eventId）");
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", "ok", std::string_view("bad\0id", 6)))); }, "事件标识（eventId）");
 
         // retry 是用法错误：抛兄弟分支 invalid_argument，与 LogicException 同属 std::logic_error
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent("data", {}, {}, std::chrono::milliseconds{-1}))), Base::InvalidArgumentException);
+        expectSseRejected<Base::InvalidArgumentException>([&] { static_cast<void>(driveTask(stream.sendEvent("data", {}, {}, std::chrono::milliseconds{-1}))); },
+                                                          "重连间隔 retry 不能为负数");
 
         // 边界对照：帧长度恰好等于上限时接受，多一个字节即拒绝 —— 差异只来自帧长
         const std::string atLimitData(SseStream::kMaximumFrameLength - kDataFrameOverhead, 'x');
         EXPECT_TRUE(driveTask(stream.sendEvent(atLimitData))) << "帧恰好等于上限时应当被接受";
 
         const std::string overLimitData(SseStream::kMaximumFrameLength - kDataFrameOverhead + 1, 'x');
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendEvent(overLimitData))), Base::LogicException);
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendEvent(overLimitData))); }, "超过单帧上限");
 
         // 注释帧同样受单帧上限约束
         const std::string overLimitComment(SseStream::kMaximumFrameLength, 'y');
-        EXPECT_THROW(static_cast<void>(driveTask(stream.sendComment(overLimitComment))), Base::LogicException);
+        expectSseRejected<Base::LogicException>([&] { static_cast<void>(driveTask(stream.sendComment(overLimitComment))); }, "超过单帧上限");
 
         // 被拒的帧一个字节都没写出去，流本身仍然可用
         EXPECT_TRUE(stream.isOpen()) << "校验失败不该把流标记成不可用";

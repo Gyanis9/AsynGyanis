@@ -24,6 +24,7 @@
 #include "Platform/System/PlatformError.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -47,6 +48,19 @@ namespace AsynGyanis::Net
 
         /// 夹具等待上限
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
+
+        /**
+         * @brief 断言 QUIC 服务端构造/配置按指定类型拒绝，并交回原因
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 构造或配置动作
+         * @param expected 原因里必须出现的片段（哪一份文件、哪一项配置或哪一条前置）
+         */
+        template<typename ExceptionType, typename Action>
+        void expectQuicRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "QUIC 服务端");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
 
         /// 对端等一条报文/一个结果的有界上限：回环上本该在毫秒级完成，超了就是没回来
         constexpr std::chrono::milliseconds kPeerWaitTimeout{5000};
@@ -247,9 +261,13 @@ namespace AsynGyanis::Net
 
         // 文件根本不存在同样要抛，且不能留下半构造的对象：上面那台已经抛在构造期，
         // 这里的断言只判「会不会抛」，端口与握手都不参与
-        EXPECT_THROW(
-                static_cast<void>(std::make_unique<RunningQuicServer>(std::chrono::seconds{30}, nullptr, std::vector<std::string>{(directory.path() / "missing.key").string()})),
-                Base::Exception);
+        expectQuicRejected<Base::Exception>(
+                [&]
+                {
+                    static_cast<void>(
+                            std::make_unique<RunningQuicServer>(std::chrono::seconds{30}, nullptr, std::vector<std::string>{(directory.path() / "missing.key").string()}));
+                },
+                "missing.key");
     }
 
     /**
@@ -267,23 +285,23 @@ namespace AsynGyanis::Net
         QuicServer::Configuration missingCertificate;
         missingCertificate.certificateFile = std::string(TEST_FIXTURES_DIR) + "/no-such-cert.pem";
         missingCertificate.privateKeyFile  = privateKeyPath();
-        EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
+        expectQuicRejected<Base::SystemException>([&] { QuicServer server(loop, missingCertificate); }, "no-such-cert.pem");
 
         QuicServer::Configuration missingPrivateKey;
         missingPrivateKey.certificateFile = certificatePath();
         missingPrivateKey.privateKeyFile  = std::string(TEST_FIXTURES_DIR) + "/no-such-key.pem";
-        EXPECT_THROW(QuicServer server(loop, missingPrivateKey), Base::SystemException);
+        expectQuicRejected<Base::SystemException>([&] { QuicServer server(loop, missingPrivateKey); }, "no-such-key.pem");
 
         // 两个文件各自都在、也能各自加载，只有配对检查拦得住：这一道是构造里最后一道抛点
         QuicServer::Configuration mismatchedPair;
         mismatchedPair.certificateFile = certificatePath();
         mismatchedPair.privateKeyFile  = std::string(TEST_FIXTURES_DIR) + "/test_ip_key.pem";
-        EXPECT_THROW(QuicServer server(loop, mismatchedPair), Base::SystemException);
+        expectQuicRejected<Base::SystemException>([&] { QuicServer server(loop, mismatchedPair); }, "私钥加载失败");
 
         // 反复构造失败也要抛，且不留残留：以上三道各来一轮，退出时 LSan 不许报任何东西
         for (int attempt = 0; attempt < 3; ++attempt)
         {
-            EXPECT_THROW(QuicServer server(loop, missingCertificate), Base::SystemException);
+            expectQuicRejected<Base::SystemException>([&] { QuicServer server(loop, missingCertificate); }, "证书加载失败");
         }
     }
 
@@ -299,7 +317,7 @@ namespace AsynGyanis::Net
 
         QuicServer::Configuration outdatedDraft = makeServerConfiguration();
         outdatedDraft.applicationProtocol       = "h3-29";
-        EXPECT_THROW(QuicServer server(loop, outdatedDraft), Base::InvalidArgumentException);
+        expectQuicRejected<Base::InvalidArgumentException>([&] { QuicServer server(loop, outdatedDraft); }, "只服务 h3");
 
         // 反向那一格必须放行：判据不能顺手把唯一正确的写法也拒掉
         const QuicServer::Configuration current = makeServerConfiguration();
@@ -373,11 +391,12 @@ namespace AsynGyanis::Net
         };
         for (const auto &[label, mutate]: refused)
         {
+            SCOPED_TRACE(std::string(label));
             QuicServer::Configuration configuration;
             configuration.certificateFile = certificatePath();
             configuration.privateKeyFile  = privateKeyPath();
             mutate(configuration.tlsPolicy);
-            EXPECT_THROW(QuicServer server(loop, configuration), Base::Exception) << "这一项 OpenSSL 认不出来却起了服务：" << label;
+            expectQuicRejected<Base::Exception>([&] { QuicServer server(loop, configuration); }, "策略");
         }
     }
 
@@ -497,10 +516,10 @@ namespace AsynGyanis::Net
         configuration.privateKeyFile  = privateKeyPath();
         QuicServer server(loop, configuration);
 
-        EXPECT_THROW(server.staticFileDir("web"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}), Base::InvalidArgumentException);
+        expectQuicRejected<Base::InvalidArgumentException>([&] { server.staticFileDir("web"); }, "必须先 setRouter()");
+        expectQuicRejected<Base::InvalidArgumentException>([&] { server.setStaticFileCacheControl(std::optional<std::string>{"max-age=5"}); }, "必须先 setRouter()");
         // 目录列表开关与另外两条静态配置同一条前置：兜底路由没登记时没有可设置的配置本体
-        EXPECT_THROW(server.staticDirectoryListing(true), Base::InvalidArgumentException);
+        expectQuicRejected<Base::InvalidArgumentException>([&] { server.staticDirectoryListing(true); }, "必须先 setRouter()");
 
         Router router;
         server.setRouter(router);
@@ -643,7 +662,7 @@ namespace AsynGyanis::Net
     {
         Core::EventLoop           loop;
         QuicServer::Configuration configuration = makeServerConfiguration();
-        EXPECT_THROW(QuicServer server(loop, configuration, Platform::DatagramSocket{}), Base::InvalidArgumentException);
+        expectQuicRejected<Base::InvalidArgumentException>([&] { QuicServer server(loop, configuration, Platform::DatagramSocket{}); }, "交来的套接字无效");
     }
 
     /**
