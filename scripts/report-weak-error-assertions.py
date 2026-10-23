@@ -74,6 +74,10 @@ def scan_file(path: str) -> tuple[list[dict], list[dict]]:
     sleeps: list[dict] = []
     lines = (REPOSITORY_ROOT / path).read_text(encoding="utf-8", errors="replace").splitlines()
     for index, line in enumerate(lines):
+        # 注释里出现的 EXPECT_THROW 是说明文字，不是断言：跳过整行注释与块注释正文
+        trimmed = line.lstrip()
+        if trimmed.startswith(("//", "/*", "*", "*/")):
+            continue
         if THROW_PATTERN.search(line):
             window = "\n".join(lines[index:index + ASSERTION_WINDOW])
             if not any(marker in window for marker in STRONG_MARKERS):
