@@ -47,6 +47,13 @@ namespace AsynGyanis::Core
         return result;
     }
 
+    /// 解析一定失败的形状：DNS 标签上限 63 字节，200 个 'a' 在问网络之前就会被 getaddrinfo 拒掉。
+    /// 不用 `.example` 那类保留域：本机或 CI 的解析器把它们答成什么都可能，断言会跟着机器变。
+    static std::string overlongInvalidHostName()
+    {
+        return std::string(200U, 'a');
+    }
+
     TEST(AsyncResolver, ReturnsEmptyForEmptyHost)
     {
         EXPECT_TRUE(resolveInLoop("", 80).empty());
@@ -125,16 +132,33 @@ namespace AsynGyanis::Core
         EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 2U) << "第二次与换大小写那次该走缓存，实测命中增量=" << after.cacheHitCount - before.cacheHitCount;
     }
 
-    TEST(AsyncResolver, ReturnsEmptyForNonexistentHost)
+    TEST(AsyncResolver, ReturnsEmptyForMalformedHost)
     {
-        EXPECT_TRUE(resolveInLoop("i-definitely-do-not-exist-99999999.example", 80).empty());
+        EXPECT_TRUE(resolveInLoop(overlongInvalidHostName(), 80).empty());
+    }
+
+    /**
+     * @brief 钉住：解析失败不写缓存，同一次抖动不会被放大成 60 秒连不上
+     * @details 缓存只存非空结果（见 AsyncResolver 的类注释）。判据取 stats() 的增量：两次同一主机
+     *          的失败查询都要真的走进解析流程，缓存命中数不能增加；把「空结果也缓存」改回去时，
+     *          第二次会记成命中，这里当场红。
+     */
+    TEST(AsyncResolver, FailedLookupsAreNotCached)
+    {
+        const std::string host   = overlongInvalidHostName();
+        const auto        before = AsyncResolver::stats();
+        EXPECT_TRUE(resolveInLoop(host, 80).empty());
+        EXPECT_TRUE(resolveInLoop(host, 80).empty());
+        const auto after = AsyncResolver::stats();
+        EXPECT_EQ(after.lookupCount - before.lookupCount, 2U) << "两次失败查询没有各算一次解析";
+        EXPECT_EQ(after.cacheHitCount - before.cacheHitCount, 0U) << "失败结果被缓存：一次临时故障会粘住 60 秒";
     }
 
     /// 两步写法：先建 Task，再丢掉临时串，最后才 await
     static Core::Task<void> doResolveTwoStep(Core::EventLoop &loop, std::vector<InetAddress> &result)
     {
         // 主机名长度超过 SSO 阈值，确保它真的在堆上：只抄视图的话，这一行之后读的就是已释放内存
-        Core::Task<std::vector<InetAddress>> pending = AsyncResolver::resolve(loop, std::string("no-such-host-with-a-long-name-99999999.example"), 80);
+        Core::Task<std::vector<InetAddress>> pending = AsyncResolver::resolve(loop, overlongInvalidHostName(), 80);
         result                                       = co_await pending;
         loop.stop();
     }
