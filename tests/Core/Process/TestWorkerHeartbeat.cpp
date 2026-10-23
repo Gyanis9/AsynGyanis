@@ -105,14 +105,15 @@ namespace AsynGyanis::Core
 
         WorkerHeartbeat badDescriptor(pool, -1, std::chrono::milliseconds{100});
         EXPECT_FALSE(badDescriptor.arm());
-        EXPECT_FALSE(badDescriptor.lastError().empty()) << "拒绝要给得出原因";
+        EXPECT_NE(badDescriptor.lastError().find("描述符"), std::string::npos) << "拒绝原因没有点明是描述符：" << badDescriptor.lastError();
         EXPECT_EQ(badDescriptor.armedLoopCount(), 0U);
 
         int pipeDescriptors[2]{-1, -1};
         ASSERT_EQ(::pipe(pipeDescriptors), 0);
         WorkerHeartbeat badInterval(pool, pipeDescriptors[1], std::chrono::milliseconds{0});
         EXPECT_FALSE(badInterval.arm());
-        EXPECT_FALSE(badInterval.lastError().empty());
+        EXPECT_NE(badInterval.lastError().find("间隔"), std::string::npos) << "拒绝原因没有点明是拍间隔：" << badInterval.lastError();
+        EXPECT_NE(badInterval.lastError().find("0"), std::string::npos) << "拒绝原因没有带上实际取值：" << badInterval.lastError();
         EXPECT_EQ(badInterval.armedLoopCount(), 0U);
 
         pool.stop();
