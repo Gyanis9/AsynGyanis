@@ -3,7 +3,7 @@
  * @brief 构建期能力清单：这份库是怎么配出来的，使用方据此在编译期分支
  * @author Gyanis
  * @date 2026-10-07
- * @version 1.0.0
+ * @version @PROJECT_VERSION@
  * @copyright Copyright (c) . All rights reserved.
  *
  * @details 由 CMake 在配置期生成（真源见 cmake/AsynGyanisFeatures.h.in 与 cmake/AsynGyanisInstall.cmake 的
