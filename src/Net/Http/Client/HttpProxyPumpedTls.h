@@ -152,6 +152,24 @@ namespace AsynGyanis::Net
         /// 把 SSL_get_error 的结果折成可读原因（不含 OpenSSL 错误队列原文）
         [[nodiscard]] static std::string describeSslFailure(int sslErrorCode);
 
+        /**
+         * @brief 按 flushPendingWire 的结果收口：取消与外层隧道中断分开上报
+         * @param isFlushed flushPendingWire 的返回值
+         * @param stopToken 本次操作的令牌
+         * @param failurePrefix 失败前缀（内层 TLS 读取/写入失败）
+         * @throws Core::CoreException flush 失败时
+         */
+        void requireFlushSucceeded(bool isFlushed, std::stop_token stopToken, std::string_view failurePrefix) const;
+
+        /**
+         * @brief 按 pumpIncomingOnce 的结果收口：取消与外层对端收口分开上报
+         * @param isPumped pumpIncomingOnce 的返回值
+         * @param stopToken 本次操作的令牌
+         * @param failurePrefix 失败前缀（内层 TLS 读取/写入失败）
+         * @throws Core::CoreException pump 失败时
+         */
+        void requirePumpSucceeded(bool isPumped, std::stop_token stopToken, std::string_view failurePrefix) const;
+
         InnerSslHandle                   m_inner;             ///< 内层 SSL（内存 BIO 的所有者）
         std::unique_ptr<Core::TlsSocket> m_outer;             ///< 外层传输（与代理的 TLS 会话）
         std::string                      m_pendingWire;       ///< 等待送出的密文（入队顺序即线序）
