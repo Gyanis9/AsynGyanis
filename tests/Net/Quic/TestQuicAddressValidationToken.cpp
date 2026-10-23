@@ -9,6 +9,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Socket/InetAddress.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -216,14 +217,18 @@ TEST(QuicAddressValidationToken, RefusesWeakConfiguration)
 {
     const std::vector<std::uint8_t> shortKey(15, 0x01U);
     // 密钥短于 128 位就不叫「难猜」：构造当场拒，而不是签出一张能被穷举的令牌
-    EXPECT_THROW(QuicAddressValidationTokenCodec(std::span<const std::uint8_t>(shortKey), kDefaultLifetime), AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>(
+            [&] { QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(shortKey), kDefaultLifetime); }, "密钥只有", "短签名密钥");
     // 有效期为非正数：签出来即过期，等于让每笔握手白跑一趟
-    EXPECT_THROW(QuicAddressValidationTokenCodec(std::span<const std::uint8_t>(kSigningKey), std::chrono::seconds{0}), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(QuicAddressValidationTokenCodec(std::span<const std::uint8_t>(kSigningKey), std::chrono::seconds{-5}), AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>(
+            [&] { QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), std::chrono::seconds{0}); }, "有效期配成了", "零有效期");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>(
+            [&] { QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), std::chrono::seconds{-5}); }, "有效期配成了", "负有效期");
 
     // 轮换会改对象自己那份密钥表，因此这一格的载体不是 const 对象
     QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), kDefaultLifetime);
-    EXPECT_THROW(codec.rotateSigningKey(std::span<const std::uint8_t>(shortKey)), AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { codec.rotateSigningKey(std::span<const std::uint8_t>(shortKey)); }, "轮换用的新密钥",
+                                                                                       "轮换短密钥");
     EXPECT_EQ(codec.lifetime(), kDefaultLifetime) << "读数该原样说出配置的那一档";
 }
 

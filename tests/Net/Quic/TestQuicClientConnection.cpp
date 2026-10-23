@@ -20,6 +20,7 @@
 
 #include "CommonTestSupport.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -601,7 +602,7 @@ namespace AsynGyanis::Net
         QuicClientConnection::Configuration configuration;
         configuration.applicationProtocolIdentifiers = {std::string{"h3"}};
 
-        EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException) << "空主机名被放过了：这条连接出去不会校验对端身份";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(QuicClientConnection{loop, configuration}); }, "主机名为空", "空主机名");
     }
 
     /**
@@ -669,8 +670,8 @@ namespace AsynGyanis::Net
             configuration.clientCertificateFile = halfSupplied.first;
             configuration.clientPrivateKeyFile  = halfSupplied.second;
 
-            EXPECT_THROW(static_cast<void>(QuicClientConnection{loop, configuration}), Base::InvalidArgumentException)
-                    << "证书与私钥只给了一项却被放过：证书=\"" << halfSupplied.first << "\"，私钥=\"" << halfSupplied.second << "\"";
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(QuicClientConnection{loop, configuration}); }, "必须同时给或同时不给",
+                                                                                   "半套客户端身份：证书=\"" + halfSupplied.first + "\"，私钥=\"" + halfSupplied.second + "\"");
         }
     }
 

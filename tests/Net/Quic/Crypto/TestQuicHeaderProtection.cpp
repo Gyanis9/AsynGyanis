@@ -13,6 +13,7 @@
 #include "Net/Quic/Crypto/QuicHeaderProtection.h"
 
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -196,6 +197,7 @@ namespace AsynGyanis::Net
     {
         const auto keys        = keysWithHeaderProtectionKey(QuicCipherSuite::Aes128Gcm, kClientInitialHeaderProtectionKey);
         const auto shortSample = makeBytesFromHex("d1b1c98dd7689fb8ec11d242b123dc");
-        EXPECT_THROW(static_cast<void>(generateQuicHeaderProtectionMask(keys, shortSample)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(generateQuicHeaderProtectionMask(keys, shortSample)); },
+                                                                               "头部保护样本必须是", "短样本");
     }
 } // namespace AsynGyanis::Net

@@ -14,6 +14,7 @@
 #include "Net/Quic/Crypto/QuicKeySchedule.h"
 
 #include "NetTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -140,9 +141,11 @@ namespace AsynGyanis::Net
     {
         const auto sha256SizedSecret = makeBytesFromHex("9ac312a7f877468ebe69422748ad00a1"
                                                         "5443f18203a07d6060f688f30f21632b");
-        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes256Gcm, sha256SizedSecret)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes256Gcm, sha256SizedSecret)); },
+                                                                               "流量秘密必须是", "SHA-256 长度的秘密给 AES-256");
 
         const auto shortSecret = makeBytesFromHex("00112233");
-        EXPECT_THROW(static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes128Gcm, shortSecret)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(deriveQuicPacketKeys(QuicCipherSuite::Aes128Gcm, shortSecret)); },
+                                                                               "流量秘密必须是", "过短的秘密");
     }
 } // namespace AsynGyanis::Net

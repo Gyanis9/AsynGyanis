@@ -13,6 +13,7 @@
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -207,7 +208,8 @@ namespace AsynGyanis::Net
     {
         std::string bytes;
         // 2^62 这个值没有合法档位：静默降档或回绕都会产出对端解不开的字节，必须当场抛
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL); },
+                                                                               "超过 QUIC 变长整数的上限", "越界取值");
     }
 
     /**
@@ -216,7 +218,8 @@ namespace AsynGyanis::Net
     TEST(QuicVariableLengthInteger, LeavesBufferUntouchedWhenRejectingArguments)
     {
         std::string bytes = "keep";
-        EXPECT_THROW(appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { appendQuicVariableLengthInteger(bytes, kQuicMaximumIntegerValue + 1ULL); },
+                                                                               "超过 QUIC 变长整数的上限", "越界取值（缓冲不变）");
         EXPECT_EQ(bytes, "keep") << "先算好再写：半途写入会污染调用方正在组装的报文";
     }
 } // namespace AsynGyanis::Net

@@ -17,6 +17,7 @@
 #include "QuicRfcVectors.h"
 
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -239,7 +240,8 @@ namespace AsynGyanis::Net
                                                          protectedPayload);
         EXPECT_FALSE(mismatched.has_value());
 
-        EXPECT_THROW(static_cast<void>(sealToBytes(keys, kQuicMaximumIntegerValue + 1ULL, additionalData, plaintext)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(sealToBytes(keys, kQuicMaximumIntegerValue + 1ULL, additionalData, plaintext)); }, "包号", "越界包号");
     }
 
     /**
@@ -254,11 +256,9 @@ namespace AsynGyanis::Net
         std::vector<std::uint8_t> tooSmall(0);
         std::vector<std::uint8_t> tooLarge(8);
 
-        EXPECT_THROW(static_cast<void>(openQuicProtectedPayload(tooSmall, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)),
-
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(openQuicProtectedPayload(tooLarge, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)),
-
-                     Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(openQuicProtectedPayload(tooSmall, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)); }, "明文缓冲是", "零长输出缓冲");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(openQuicProtectedPayload(tooLarge, keys, kAppendixA5PacketNumber, additionalData, protectedPayload)); }, "明文缓冲是", "过大的输出缓冲");
     }
 } // namespace AsynGyanis::Net
