@@ -335,7 +335,7 @@ namespace AsynGyanis::Net
     {
         while (true)
         {
-            const std::optional<WebSocketFrame> frame = co_await DeliveryAwaiter(*this);
+            std::optional<WebSocketFrame> frame = co_await DeliveryAwaiter(*this);
             if (!frame.has_value())
             {
                 // 连接收口：对端关闭、本侧已发起关闭或连接不可用
@@ -362,8 +362,8 @@ namespace AsynGyanis::Net
         const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds::zero());
         while (true)
         {
-            const auto                          remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            const std::optional<WebSocketFrame> frame     = co_await TimedDeliveryAwaiter(*this, remaining);
+            const auto                    remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            std::optional<WebSocketFrame> frame     = co_await TimedDeliveryAwaiter(*this, remaining);
             if (!frame.has_value())
             {
                 // 超时、对端关闭或连接不可用：三者都按空结果交回，调用方用 isOpen() 区分
