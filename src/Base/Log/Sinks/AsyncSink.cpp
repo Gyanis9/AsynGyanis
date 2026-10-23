@@ -230,9 +230,12 @@ namespace AsynGyanis::Base
                                // worker 会永远睡在条件变量上、随后的 join() 永久阻塞
                                const std::lock_guard lock(m_queueMutex);
                                m_workerThread.request_stop();
-                               // 两类等待者各有各的条件变量，两条都要叫：只叫一条会把另一类留在睡梦里
+                               // 三类等待者各有各的条件变量，三条都要叫：只叫一条会把另一类留在睡梦里。
+                               // flush() 的谓词虽然认 stop_requested()，但没人叫醒它就会一直睡着——
+                               // worker 正卡在下游写时，settle 也不会发生，收尾时最后那次 flush 就此挂死
                                m_workCondition.notify_all();
                                m_spaceCondition.notify_all();
+                               m_flushCondition.notify_all();
                            }
                            m_workerThread.join();
                            if (m_wrappedSink)
