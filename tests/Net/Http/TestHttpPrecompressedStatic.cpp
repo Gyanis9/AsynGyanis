@@ -253,6 +253,50 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住压缩字典配置的失败面：非法模式/越界路径/缺失文件/换根都必须把字典清掉
+     * @details 字典一旦残留，静态响应会继续按旧哈希协商 `.dcz`，而实际根目录已经变了；
+     *          这种状态在请求期只表现为「客户端拿不到字典副本」，配置面却读不出任何异常。
+     */
+    TEST(HttpPrecompressedStatic, CompressionDictionaryFailuresClearThePreviousConfiguration)
+    {
+        AsynGyanis::TestSupport::TemporaryDirectory root("StaticDictionaryRoot");
+        AsynGyanis::TestSupport::TemporaryDirectory otherRoot("StaticDictionaryOther");
+        ASSERT_TRUE(root.writeBinaryFile("app.dict", std::string("dictionary-bytes")));
+        ASSERT_TRUE(otherRoot.writeBinaryFile("other.dict", std::string("other-dictionary")));
+        ASSERT_TRUE(root.writeBinaryFile("plain.txt", std::string("plain")));
+
+        Router            router;
+        StaticFileService service;
+        service.install(router, 0);
+        service.setDirectory(root.path().string());
+        ASSERT_NE(service.settings(), nullptr);
+
+        service.setCompressionDictionary("app.dict", "/assets/*");
+        ASSERT_TRUE(service.settings()->dictionary.has_value()) << "合法字典没有登记";
+
+        service.setCompressionDictionary("app.dict", "assets/*");
+        EXPECT_FALSE(service.settings()->dictionary.has_value()) << "不带前导 / 的模式没有被清掉";
+
+        service.setCompressionDictionary("app.dict", "/assets/*");
+        ASSERT_TRUE(service.settings()->dictionary.has_value());
+        service.setCompressionDictionary("../outside.dict", "/assets/*");
+        EXPECT_FALSE(service.settings()->dictionary.has_value()) << "越界的字典路径没有清掉旧字典";
+
+        service.setCompressionDictionary("app.dict", "/assets/*");
+        ASSERT_TRUE(service.settings()->dictionary.has_value());
+        service.setCompressionDictionary("missing.dict", "/assets/*");
+        EXPECT_FALSE(service.settings()->dictionary.has_value()) << "缺失的字典文件没有清掉旧字典";
+
+        service.setCompressionDictionary("app.dict", "/assets/*");
+        ASSERT_TRUE(service.settings()->dictionary.has_value());
+        service.setDirectory(otherRoot.path().string());
+        EXPECT_FALSE(service.settings()->dictionary.has_value()) << "换根后旧字典仍挂着：它指向的绝对路径已经不属于新的静态根";
+
+        service.setDirectory((root.path() / "not-created").string());
+        EXPECT_TRUE(service.directory().empty()) << "缺失目录没有把静态服务清成关闭态";
+    }
+
+    /**
      * @brief 钉住：挑选顺序与在线压缩用的是同一张偏好表
      * @details 三种副本都在场时按 zstd > br > gzip（表的第一位胜出）；把 zstd 那份撤掉就退到 br。
      *          这两条一起钉住「协商顺序只有一处结论」——把表重排会让在线与离线两侧同时变，

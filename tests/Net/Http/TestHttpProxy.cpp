@@ -295,6 +295,25 @@ namespace AsynGyanis::Net
         EXPECT_EQ(redactProxyCredentials(""), "");
     }
 
+    /**
+     * @brief 坏代理地址的错误文本也必须打码，而不只是独立的 redact 函数
+     * @details 独立的打码用例证明不了错误路径真的调了它；带凭据的坏地址走一次
+     *          resolveOutboundProxy，才能把「运维日志里出现口令」这条真实泄漏钉死。
+     */
+    TEST(HttpProxyPolicy, RejectedCredentialedProxyDoesNotEchoTheCredentials)
+    {
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpProxy          = "http://alice:s3cret@bad.example:99999";
+
+        const auto refusal = resolveOutboundProxy(policy, "http", "origin.example", 80);
+        ASSERT_FALSE(refusal.has_value()) << "带凭据的坏代理地址被放行了";
+        const std::string &message = refusal.error();
+        EXPECT_NE(message.find("***"), std::string::npos) << "错误文本没有打码标记：" << message;
+        EXPECT_EQ(message.find("s3cret"), std::string::npos) << "错误文本回显了口令：" << message;
+        EXPECT_EQ(message.find("alice"), std::string::npos) << "错误文本回显了用户名：" << message;
+    }
+
     // ============================================================================
     // e2e 面：脚本化 TCP 对端（当代理或当起点）+ 真 TLS 起点，判据落在线上字节与响应上
     // ============================================================================

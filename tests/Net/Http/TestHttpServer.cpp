@@ -793,8 +793,15 @@ namespace AsynGyanis::Net
         const std::string absentDirectory = (tree.staticRoot() / "not-created").string();
         server.staticFileDir(absentDirectory);
 
+        EXPECT_TRUE(server.staticFileDir().empty()) << "缺失目录被当成了已生效配置：读回来的目录仍是那条不存在的路径";
         const HttpResponse response = serveRequest(server, HttpMethod::GET, "/hello.txt");
         EXPECT_EQ(response.status(), 404);
+
+        // 有效目录与缺失目录交替：每次失败都必须把上一份有效配置清掉，而不是保留旧目录继续服务
+        server.staticFileDir(tree.staticRoot().string());
+        EXPECT_FALSE(server.staticFileDir().empty());
+        server.staticFileDir(absentDirectory);
+        EXPECT_TRUE(server.staticFileDir().empty()) << "缺失目录没有清掉上一份有效目录";
     }
 
     // ============================================================================
