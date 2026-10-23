@@ -14,6 +14,7 @@
 
 #include "Net/Http2/Http2Frame.h"
 
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include "Http2TestSupport.h"
@@ -45,6 +46,19 @@ namespace AsynGyanis::Net
          * @brief 把 32 位无符号数按大端写成 4 字节（定义见 NetTestSupport.h）
          */
         using AsynGyanis::Net::TestSupport::makeBigEndian32;
+
+        /**
+         * @brief 断言帧编码/取帧在产出线上字节前按指定类型拒绝，并交回原因
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 编码或取帧动作
+         * @param expected 原因里必须出现的片段（字段名、取值或 RFC 条款）
+         */
+        template<typename ExceptionType, typename Action>
+        void expectFrameRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "帧编码");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
 
         /**
          * @brief 手拼 9 字节帧头
@@ -253,20 +267,21 @@ namespace AsynGyanis::Net
         EXPECT_EQ(encodeHttp2FrameHeader(header).substr(0, 3), makeBytes({0xff, 0xff, 0xff}));
 
         header.payloadLength = kHttp2MaximumFramePayloadByteCount + 1;
-        EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2FrameHeader(header)); }, "超出 24 位长度域");
 
         header.payloadLength = 0;
         header.streamId      = kHttp2MaximumStreamId + 1;
-        EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2FrameHeader(header)); }, "超出 31 位");
 
         // 未定义类型不允许被编出去：对端只会忽略它，发出去等于白占带宽
         header.streamId = 1;
         header.type     = static_cast<Http2FrameType>(0xF);
-        EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(header)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2FrameHeader(header)); }, "未定义");
 
         // 负载整体超长同样在编码侧挡住（encodeHttp2Frame 先判后转，不会静默回绕）
-        EXPECT_THROW(static_cast<void>(encodeHttp2Frame(Http2FrameType::Data, 0, 1, std::string(static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount) + 1, 'x'))),
-                     Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(encodeHttp2Frame(Http2FrameType::Data, 0, 1, std::string(static_cast<std::size_t>(kHttp2MaximumFramePayloadByteCount) + 1, 'x'))); },
+                "超出 24 位长度域");
     }
 
     /**
@@ -297,7 +312,7 @@ namespace AsynGyanis::Net
 
         // 帧头校验在写缓冲之前：抛错时目标缓冲保持原样
         appended = "PREFIX";
-        EXPECT_THROW(static_cast<void>(appendHttp2Frame(appended, static_cast<Http2FrameType>(0xF), 0U, 1U, "x")), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(appendHttp2Frame(appended, static_cast<Http2FrameType>(0xF), 0U, 1U, "x")); }, "未定义");
         EXPECT_EQ(appended, "PREFIX") << "校验不过时不能留下半帧";
     }
 
@@ -335,7 +350,7 @@ namespace AsynGyanis::Net
 
         // 流号为 0 判错（§6.2 要求流级帧），且抛错前不动目标缓冲
         std::string untouched = "PREFIX";
-        EXPECT_THROW(static_cast<void>(appendHttp2HeadersFrame(untouched, block, true, true, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(appendHttp2HeadersFrame(untouched, block, true, true, 0)); }, "必须关联到一条流");
         EXPECT_EQ(untouched, "PREFIX") << "校验不过时不能留下半帧";
     }
 
@@ -369,7 +384,7 @@ namespace AsynGyanis::Net
         Http2FrameHeader outbound{};
         outbound.type     = Http2FrameType::Data;
         outbound.streamId = 0x80000001U;
-        EXPECT_THROW(static_cast<void>(encodeHttp2FrameHeader(outbound)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2FrameHeader(outbound)); }, "超出 31 位");
     }
 
     /**
@@ -418,7 +433,7 @@ namespace AsynGyanis::Net
 
         // 带参数却置 ACK 是用法错误：对端按连接错误处理（§6.5）
         acknowledgement.parameters.push_back({0x0, 0x0});
-        EXPECT_THROW(static_cast<void>(encodeHttp2SettingsFrame(acknowledgement)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2SettingsFrame(acknowledgement)); }, "ACK 帧负载必须为空");
     }
 
     /**
@@ -547,12 +562,12 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(decoder.hasError());
 
         windowUpdate.windowSizeIncrement = 0;
-        EXPECT_THROW(static_cast<void>(encodeHttp2WindowUpdateFrame(windowUpdate, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2WindowUpdateFrame(windowUpdate, 0)); }, "窗口增量不得为 0");
         windowUpdate.windowSizeIncrement = kHttp2MaximumStreamId + 1;
-        EXPECT_THROW(static_cast<void>(encodeHttp2WindowUpdateFrame(windowUpdate, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2WindowUpdateFrame(windowUpdate, 0)); }, "超出 31 位");
 
         // 流级帧不允许流号为 0（§6.4）
-        EXPECT_THROW(static_cast<void>(encodeHttp2RstStreamFrame(rstStream, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2RstStreamFrame(rstStream, 0)); }, "必须关联到一条流");
     }
 
     // ============================================================================
@@ -597,7 +612,7 @@ namespace AsynGyanis::Net
         // DATA 必须关联到一条流（§6.1）
         Http2DataPayload noStream;
         noStream.data = "x";
-        EXPECT_THROW(static_cast<void>(encodeHttp2DataFrame(noStream, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2DataFrame(noStream, 0)); }, "必须关联到一条流");
     }
 
     /**
@@ -721,8 +736,9 @@ namespace AsynGyanis::Net
     {
         EXPECT_NO_THROW(static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16384, 0})));
         EXPECT_NO_THROW(static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16777215, 0})));
-        EXPECT_THROW(static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16383, 0})), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16777216, 0})), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16383, 0})); }, "不在 SETTINGS_MAX_FRAME_SIZE 的合法区间");
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(Http2FrameDecoder(Http2FrameLimits{16777216, 0})); },
+                                                            "不在 SETTINGS_MAX_FRAME_SIZE 的合法区间");
 
         // 上限放宽到 2 MiB 后，同样一段 1 MiB 的声明就变成合法的了
         Http2FrameDecoder decoder(Http2FrameLimits{2ull * 1024 * 1024, 0});
@@ -871,8 +887,8 @@ namespace AsynGyanis::Net
         // 编码侧同样拒绝，不把必然被判错的帧发出去
         Http2Priority priority;
         priority.streamDependency = 7;
-        EXPECT_THROW(static_cast<void>(encodeHttp2PriorityFrame(priority, 7)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeHttp2PriorityFrame(priority, 0)), Base::InvalidArgumentException);
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2PriorityFrame(priority, 7)); }, "父流号等于自身流号");
+        expectFrameRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHttp2PriorityFrame(priority, 0)); }, "必须关联到一条流");
     }
 
     /**
@@ -1129,13 +1145,13 @@ namespace AsynGyanis::Net
     {
         Http2FrameDecoder decoder;
 
-        EXPECT_THROW(static_cast<void>(decoder.takeFrame()), Base::LogicException);
+        expectFrameRejected<Base::LogicException>([&] { static_cast<void>(decoder.takeFrame()); }, "当前没有待取走的帧");
         // 用法错误归 std::logic_error 分支，不并入运行期故障的捕获面
-        EXPECT_THROW(static_cast<void>(decoder.takeFrame()), std::logic_error);
+        expectFrameRejected<std::logic_error>([&] { static_cast<void>(decoder.takeFrame()); }, "当前没有待取走的帧");
 
         // 已经失败的解码器同样没有帧可取：取帧不是「清错误」的手段
         static_cast<void>(feed(decoder, makeFrameHeaderBytes(0, 0x6, 0, 1)));
-        EXPECT_THROW(static_cast<void>(decoder.takeFrame()), Base::LogicException);
+        expectFrameRejected<Base::LogicException>([&] { static_cast<void>(decoder.takeFrame()); }, "当前没有待取走的帧");
     }
 
     // ============================================================================
