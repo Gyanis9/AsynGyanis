@@ -20,6 +20,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "HttpTestSupport.h"
+#include "AssertionSupport.h"
 #include "Net/Http/Message/HttpResponse.h"
 
 #include <gtest/gtest.h>
@@ -165,22 +166,23 @@ namespace AsynGyanis::Net
         for (const int bodylessStatusCode: {100, 103, 204, 304})
         {
             HttpResponse response;
-            EXPECT_THROW(response.startChunkedResponse(bodylessStatusCode), Base::LogicException) << "状态码 " << bodylessStatusCode << " 的响应不允许正文，不该被接受";
+            AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { response.startChunkedResponse(bodylessStatusCode); }, "不允许携带正文",
+                                                                         "无正文状态码 " + std::to_string(bodylessStatusCode));
         }
 
         // 方向一：已经设过整块正文，再进流式模式（不报错就等于把这段正文悄悄丢掉）
         HttpResponse withBody;
         withBody.setBody("already-set");
-        EXPECT_THROW(withBody.startChunkedResponse(200), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { withBody.startChunkedResponse(200); }, "已经设置过整块正文", "先设正文再进流式");
 
         // 方向二：流式模式下不能再设整块正文，堆正文与映射正文两条路都要拦
         HttpResponse chunked;
         chunked.startChunkedResponse(200);
-        EXPECT_THROW(chunked.setBody("late-body"), Base::LogicException);
-        EXPECT_THROW(chunked.setMappedBody(Platform::MemoryMappedFile{}), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { chunked.setBody("late-body"); }, "已进入流式模式", "流式下 setBody");
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { chunked.setMappedBody(Platform::MemoryMappedFile{}); }, "已进入流式模式", "流式下 setMappedBody");
 
         // 未装配发送回调（会话之外构造的响应对象）：报错而不是把正文段静默丢掉
-        EXPECT_THROW(static_cast<void>(driveWriteChunk(chunked.writeChunk("data"))), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { static_cast<void>(driveWriteChunk(chunked.writeChunk("data"))); }, "没有装配发送回调", "未装配回调");
 
         // 未进入流式模式就写正文段：文案必须指出正确的做法
         HttpResponse plain;
@@ -199,7 +201,7 @@ namespace AsynGyanis::Net
         streaming.startChunkedResponse(200);
         ASSERT_TRUE(driveWriteChunk(streaming.writeChunk("first")));
         EXPECT_TRUE(streaming.hasSentChunkedHead());
-        EXPECT_THROW(streaming.startChunkedResponse(503), Base::LogicException);
+        AsynGyanis::TestSupport::expectFailure<Base::LogicException>([&] { streaming.startChunkedResponse(503); }, "头部已经写出", "写完头再改状态码");
     }
 
     TEST(HttpStreaming, StreamsThreeChunksInOrderOverRealLoopback)

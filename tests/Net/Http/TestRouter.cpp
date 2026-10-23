@@ -6,6 +6,7 @@
 #include "Net/Http/Message/HttpMethod.h"
 #include "Net/Http/Message/HttpRequest.h"
 #include "Net/Http/Message/HttpResponse.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -1003,7 +1004,7 @@ namespace AsynGyanis::Net
         auto routeTask = router.route(request, response);
         routeTask.handle().resume();
         ASSERT_TRUE(routeTask.isReady());
-        EXPECT_THROW(static_cast<void>(routeTask.handle().promise().result()), std::runtime_error);
+        AsynGyanis::TestSupport::expectFailure<std::runtime_error>([&] { static_cast<void>(routeTask.handle().promise().result()); }, "handler failed", "处理器异常穿透");
     }
 
     TEST(Router, DetectsStreamingRouteAcrossParameterizedAndWildcardPaths)
@@ -1232,12 +1233,13 @@ namespace AsynGyanis::Net
     {
         Router  router;
         Router &apiSite = router.virtualHost("api.example.com");
-        EXPECT_THROW(apiSite.virtualHost("inner.example.com"), Base::InvalidArgumentException) << "两层选站要扯清中间件谁套谁，那不是能推出来的答案";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { apiSite.virtualHost("inner.example.com"); }, "虚拟主机只能登记在服务器根路由上", "嵌套选站");
 
         for (const std::string_view meaningless: {"", "*", "*.", ":", "  "})
         {
             Router plain;
-            EXPECT_THROW(plain.virtualHost(std::string(meaningless)), Base::InvalidArgumentException) << "收下「" << meaningless << "」就是一条永不命中的规则";
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { plain.virtualHost(std::string(meaningless)); }, "虚拟主机名不能是空串",
+                                                                                   "无意义主机名 " + std::string(meaningless));
         }
 
         // 重复登记交回同一张表：与 get() 的「同 (方法, 路径) 重复注册幂等」同口径

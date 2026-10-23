@@ -11,6 +11,7 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "HttpTestSupport.h"
 #include "Net/Http/Message/HttpRequest.h"
 #include "Net/Http/Message/HttpResponse.h"
@@ -425,10 +426,10 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         HttpServer      server(loop, Core::InetAddress::localhost(0));
 
-        EXPECT_THROW(server.enableMetricsEndpoint("metrics"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableMetricsEndpoint(""), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableHealthEndpoint("healthz"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableReadinessEndpoint("readyz"), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableMetricsEndpoint("metrics"); }, "端点路径必须以 / 开头", "指标路径");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableMetricsEndpoint(""); }, "端点路径必须以 / 开头", "空指标路径");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableHealthEndpoint("healthz"); }, "端点路径必须以 / 开头", "健康检查路径");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableReadinessEndpoint("readyz"); }, "端点路径必须以 / 开头", "就绪探针路径");
     }
 
     /**
@@ -445,7 +446,8 @@ namespace AsynGyanis::Net
 
         for (const std::string_view badPrefix: {"asyn.srv", "asyn-srv", "asyn srv", "1asyn"})
         {
-            EXPECT_THROW(server.enableMetricsEndpoint("/metrics", badPrefix), Base::InvalidArgumentException) << "前缀「" << badPrefix << "」本该当场拒";
+            AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableMetricsEndpoint("/metrics", badPrefix); }, "指标名前缀",
+                                                                                   "非法前缀 " + std::string(badPrefix));
         }
 
         EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics", "asyn_srv")) << "合法前缀不该被这道闸挡下";

@@ -7,6 +7,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -133,8 +134,9 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         HttpServer      server(loop, Core::InetAddress::localhost(0));
 
-        EXPECT_THROW(server.enableLoopDiagnosticsEndpoint("debug/loops"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableLoopDiagnosticsEndpoint(""), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableLoopDiagnosticsEndpoint("debug/loops"); }, "端点路径必须以 / 开头",
+                                                                               "循环观测路径");
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { server.enableLoopDiagnosticsEndpoint(""); }, "端点路径必须以 / 开头", "空循环观测路径");
     }
 
     /**
