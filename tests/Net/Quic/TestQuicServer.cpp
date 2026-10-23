@@ -184,6 +184,45 @@ namespace AsynGyanis::Net
     } // namespace
 
     /**
+     * @brief 钉住运行时轮换入口的两条用法闸：保护没开、或新密钥短于下限
+     * @details 轮换是「密钥泄露了就换一把」的唯一入口；静默成功会让运维以为换了而实际没换，
+     *          短密钥则把地址验证的认证码降成可穷举的量（RFC 9000 §8.1.4）。
+     */
+    TEST(QuicServer, RotateAddressValidationKeyRejectsDisabledAndShortKeys)
+    {
+        Core::EventLoop loop;
+
+        QuicServer::Configuration disabled      = makeServerConfiguration();
+        disabled.addressValidationTokenLifetime = std::chrono::seconds{0};
+        QuicServer                      disabledServer(loop, disabled);
+        const std::vector<std::uint8_t> key(32U, 0xA7U);
+        try
+        {
+            disabledServer.rotateAddressValidationKey(std::span<const std::uint8_t>(key));
+            FAIL() << "没开地址验证的服务端接受了轮换";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("没开地址验证"), std::string::npos) << failure.what();
+        }
+
+        QuicServer::Configuration enabled      = makeServerConfiguration();
+        enabled.addressValidationTokenLifetime = std::chrono::seconds{30};
+        enabled.addressValidationKey           = key;
+        QuicServer enabledServer(loop, enabled);
+
+        const std::vector<std::uint8_t> shortKey(15U, 0x3BU);
+        try
+        {
+            enabledServer.rotateAddressValidationKey(std::span<const std::uint8_t>(shortKey));
+            FAIL() << "低于下限的新密钥被接受了";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("16"), std::string::npos) << "原因没有点明下限：" << failure.what();
+        }
+        EXPECT_NO_THROW(enabledServer.rotateAddressValidationKey(std::span<const std::uint8_t>(key)));
+    }
+
+    /**
      * @brief 票据密钥不合格时构造当场失败，而不是悄悄退回「每个上下文一份随机密钥」
      * @details 退回随机密钥的表现是恢复命中率归零而服务一切正常——既没有错误日志也没有失败请求，
      *          是这类配置最贵的失败形态。异常文本还要点名是哪一份文件：本条失败没有 OpenSSL

@@ -130,6 +130,40 @@ TEST(QuicAddressValidationToken, AcceptsUntilTheLastSecondAndRefusesAfter)
     EXPECT_EQ(fromTheFuture.error(), QuicAddressValidationTokenStatus::Expired);
 }
 
+TEST(QuicAddressValidationToken, RefusesOversizedOriginalConnectionId)
+{
+    const QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), kDefaultLifetime);
+    const std::vector<std::uint8_t>       oversized(21U, 0xAAU);
+    try
+    {
+        static_cast<void>(codec.issue(peerAddressOn(44333), std::span<const std::uint8_t>(oversized), issuedAt()));
+        FAIL() << "21 字节的原始目的标识被塞进了令牌";
+    } catch (const AsynGyanis::Base::InvalidArgumentException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find("20"), std::string::npos) << "拒绝原因没有点明 v1 上限：" << message;
+        EXPECT_NE(message.find("RFC 9000"), std::string::npos) << "拒绝原因没有指向规范：" << message;
+    }
+}
+
+TEST(QuicAddressValidationToken, RotationWindowKeepsOnlyTheCurrentAndPreviousKey)
+{
+    const std::vector<std::uint8_t> thirdSigningKey(32U, 0x5CU);
+    QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), kDefaultLifetime);
+    const auto                      firstToken = issueOrFail(codec, peerAddressOn(44333));
+
+    codec.rotateSigningKey(std::span<const std::uint8_t>(kOtherSigningKey));
+    const auto secondToken = issueOrFail(codec, peerAddressOn(44333));
+    codec.rotateSigningKey(std::span<const std::uint8_t>(thirdSigningKey));
+    const auto thirdToken = issueOrFail(codec, peerAddressOn(44333));
+
+    const auto later = issuedAt() + std::chrono::seconds{1};
+    EXPECT_EQ(codec.verify(std::span<const std::uint8_t>(firstToken), peerAddressOn(44333), later).error(), QuicAddressValidationTokenStatus::IntegrityFailed)
+            << "两次轮换后第一把密钥签的令牌还能验过：密钥表没有按窗口裁剪";
+    EXPECT_TRUE(codec.verify(std::span<const std::uint8_t>(secondToken), peerAddressOn(44333), later).has_value()) << "上一把密钥签的令牌被提前作废";
+    EXPECT_TRUE(codec.verify(std::span<const std::uint8_t>(thirdToken), peerAddressOn(44333), later).has_value());
+}
+
 TEST(QuicAddressValidationToken, KeepsAcceptingOldTokensForOneLifetimeAfterRotation)
 {
     QuicAddressValidationTokenCodec codec(std::span<const std::uint8_t>(kSigningKey), kDefaultLifetime);
