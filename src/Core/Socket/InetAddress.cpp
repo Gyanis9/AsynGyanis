@@ -1,5 +1,6 @@
 #include "Core/Socket/InetAddress.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Log/LogEscaping.h"
 #include "Platform/IO/NetworkInterface.h"
 #include "Platform/IO/Socket.h"
 
@@ -395,7 +396,9 @@ namespace AsynGyanis::Core
             return;
         }
 
-        std::string message = "IP 地址格式非法：'" + std::string(ip) +
+        // 回显前把控制字节折成 \xNN：原文里混进 NUL 时，按零终止取 what() 的调用方会在这里
+        // 把后半截（包括真正的原因）静默丢掉，排查时只剩一段被截断的地址
+        std::string message = "IP 地址格式非法：'" + Base::escapeForLog(ip, ip.size()) +
                               "'（仅接受 IPv4 点分十进制如 192.168.1.1，"
                               "或 IPv6 冒号十六进制如 ::1、fe80::1%3、fe80::1%eth0；主机名请改用 resolve()）";
         if (!failureReason.empty())
