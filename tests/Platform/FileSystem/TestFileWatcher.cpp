@@ -993,13 +993,14 @@ namespace AsynGyanis::Platform
         // 交给监视器的是调用方手里那段 UTF-8 文本（配置读来的、URI 解出来的都是这种形态）
         ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        {
-            std::ofstream topLevelFile(nonAsciiDirectory / "top.yaml");
-            topLevelFile << "top: true\n";
-        }
-        const bool sawRootEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("top.yaml"); }, 3000);
+        // 武装没有公开读数：先写到根目录的对照文件被报出为止
+        const bool sawRootEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream topLevelFile(nonAsciiDirectory / "top.yaml");
+                    topLevelFile << "top: " << round << "\n";
+                },
+                [&recorder] { return recorder.sawFileNamed("top.yaml"); }, std::chrono::seconds(3));
         EXPECT_TRUE(sawRootEvent) << "根目录里的文件没有事件，这条用例的对照步骤不成立";
 
         {
@@ -1046,13 +1047,14 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(FileSystem::utf8FromPath(nonAsciiDirectory), true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        {
-            std::ofstream nestedFile(nonAsciiDirectory / "sub" / "first.yaml");
-            nestedFile << "first: true\n";
-        }
-        const bool sawFirstEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("first.yaml"); }, 3000);
+        // 递归武装没有公开读数：改内容重写到子目录里的第一份文件被报出
+        const bool sawFirstEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream nestedFile(nonAsciiDirectory / "sub" / "first.yaml");
+                    nestedFile << "first: " << round << "\n";
+                },
+                [&recorder] { return recorder.sawFileNamed("first.yaml"); }, std::chrono::seconds(3));
         EXPECT_TRUE(sawFirstEvent) << "子目录没被覆盖，撤销这一步就没有可撤销的东西";
 
         EXPECT_TRUE(watcher->removeWatch(FileSystem::utf8FromPath(nonAsciiDirectory / "sub"))) << "按 UTF-8 报出的子目录路径摘不掉那条监视：登记表里存的键是本地代码页的字节";
@@ -1095,13 +1097,14 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        {
-            std::ofstream promotedFile(temporaryDirectory.path() / "nested" / "promoted.yaml");
-            promotedFile << "promoted: true\n";
-        }
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("promoted.yaml"); }, 3000);
+        // 升级后的递归武装没有公开读数：改内容重写到子目录里的文件被报出
+        const bool receivedEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream promotedFile(temporaryDirectory.path() / "nested" / "promoted.yaml");
+                    promotedFile << "promoted: " << round << "\n";
+                },
+                [&recorder] { return recorder.sawFileNamed("promoted.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "addWatch 第二次要递归时被「已注册」挡回，先就存在的子目录成了监听盲区";
@@ -1127,7 +1130,10 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // 递归武装没有公开读数：先在根目录写到对照文件被报出，再建子目录
+        const bool watchArmed = writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("arming.yaml", "arming: " + std::to_string(round) + "\n")); },
+                                                   [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3));
+        ASSERT_TRUE(watchArmed) << "递归监视没有武装起来：后面的补挂判据无从谈起";
 
         // 监听已经在跑：此刻新建子目录，框架要自己把它补进监听集合
         std::error_code error;
@@ -1166,7 +1172,11 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(watchedPath, /*recursive=*/true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 武装没有公开读数：先写到根目录的对照文件被报出，再换掉整个目录
+        ASSERT_TRUE(writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeFile("arming.yaml", "arming: " + std::to_string(round) + "\n")); },
+                                       [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3)))
+                << "递归监视没有武装起来";
 
         // 把整个目录换掉：删掉再重建，不重新 addWatch
         std::error_code removeError;
@@ -1207,7 +1217,11 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 武装没有公开读数：写到目录里的对照文件被报出再换掉目录
+        ASSERT_TRUE(writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/arming.yaml", "arming: " + std::to_string(round) + "\n")); },
+                                       [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3)))
+                << "非递归监视没有武装起来";
 
         std::error_code removeError;
         static_cast<void>(std::filesystem::remove_all(watchedDirectory, removeError));
@@ -1250,7 +1264,11 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(watchedDirectory.string(), /*recursive=*/false));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 武装没有公开读数：写到目录里的对照文件被报出再换掉目录
+        ASSERT_TRUE(writeUntilObserved([&](int round) { ASSERT_TRUE(temporaryDirectory.writeNestedFile("plain/arming.yaml", "arming: " + std::to_string(round) + "\n")); },
+                                       [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3)))
+                << "非递归监视没有武装起来";
 
         // 换掉被监视的目录，逼出自愈补挂（这条触发路径由 NonRecursiveWatchIsRewatchedAfterDirectoryIsReplaced
         // 单独钉着；这里只借它把「补挂之后」的状态造出来）
@@ -1318,14 +1336,15 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(targetPath.string(), true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-        {
-            std::ofstream probeFile(targetPath / "inside.yaml");
-            probeFile << "inside: true";
-        }
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("inside.yaml"); }, 3000);
+        // 武装没有公开读数：改内容重写到目录里的探针文件被报出
+        const bool receivedEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream probeFile(targetPath / "inside.yaml");
+                    probeFile << "inside: " << round;
+                },
+                [&recorder] { return recorder.sawFileNamed("inside.yaml"); }, std::chrono::seconds(3));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "先前那次失败的注册挡住了这个目录，换成功后事件永久丢失";
@@ -1357,7 +1376,16 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 武装没有公开读数：先写子目录里的对照文件并等它被报出，再改名
+        ASSERT_TRUE(writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream armingFile(subPath / "arming.yaml");
+                    armingFile << "arming: " << round;
+                },
+                [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3)))
+                << "递归监视没有武装起来";
 
         // 把子目录改名走开，再在原位置建一个同名新目录：之后不重新 addWatch，只看框架自己收尾
         const std::filesystem::path movedPath = temporaryDirectory.path() / "sub.moved";
@@ -1404,7 +1432,16 @@ namespace AsynGyanis::Platform
         ASSERT_TRUE(watcher->addWatch(parentDirectory.string(), false));
         ASSERT_TRUE(watcher->addWatch(childDirectory.string(), false));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // 武装没有公开读数：写子目录里的对照文件并等它被报出，再改名
+        ASSERT_TRUE(writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream armingFile(childDirectory / "arming.yaml");
+                    armingFile << "arming: " << round;
+                },
+                [&recorder] { return recorder.sawFileNamed("arming.yaml"); }, std::chrono::seconds(3)))
+                << "子目录监视没有武装起来";
 
         const std::filesystem::path movedDirectory = parentDirectory / "plain.moved";
         std::error_code             renameError;
@@ -1455,15 +1492,16 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string(), true));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        // 写在最靠后的子目录里：只截前 63 个的实现恰好把它排在等待集之外
-        {
-            std::ofstream tailFile(temporaryDirectory.path() / ("sub-" + std::to_string(kSubDirectoryCount - 1)) / "tail.yaml");
-            tailFile << "tail: true\n";
-        }
-
-        const bool receivedEvent = TestSupport::waitForCondition([&recorder]() { return recorder.sawFileNamed("tail.yaml"); }, 5000);
+        // 写在最靠后的子目录里：只截前 63 个的实现恰好把它排在等待集之外。
+        // 递归武装没有公开读数，改内容重写到 tail.yaml 被报出为止
+        const bool receivedEvent = writeUntilObserved(
+                [&](int round)
+                {
+                    std::ofstream tailFile(temporaryDirectory.path() / ("sub-" + std::to_string(kSubDirectoryCount - 1)) / "tail.yaml");
+                    tailFile << "tail: " << round << "\n";
+                },
+                [&recorder] { return recorder.sawFileNamed("tail.yaml"); }, std::chrono::seconds(5));
 
         watcher->stop();
         EXPECT_TRUE(receivedEvent) << "排在等待批次之外的目录收不到事件：批次没有轮转";
@@ -1495,22 +1533,33 @@ namespace AsynGyanis::Platform
 
         ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
         ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
-        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+        // 武装没有公开读数：先写到对照文件被报出，再开始灌入
+        ASSERT_TRUE(writeUntilObserved(
+                [&](int round) {
+            ASSERT_TRUE(temporaryDirectory.writeFile(
+                    "arming.yaml",
+                    "arming: " + std::to_string(round) +
+                            "
+                            ")); },
+                            [&recorder] { return recorder.sawFileNamed("arming.yaml"); },
+                    std::chrono::seconds(3)))
+                    << "监视没有武装起来";
 
-        const bool everythingArrived = TestSupport::waitForCondition(
-                [&recorder, &writtenNames]()
-                {
-                    // 两支任一到位即算判定完成：收齐了（没溢出），或漏了但拿到重扫信号
-                    return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0;
-                },
-                8000);
-        const std::size_t missingCount = recorder.missingFileCount(writtenNames);
+            const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
+            ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
-        watcher->stop();
-        EXPECT_TRUE(everythingArrived || recorder.sawRescan()) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+            const bool everythingArrived = TestSupport::waitForCondition(
+                    [&recorder, &writtenNames]()
+                    {
+                        // 两支任一到位即算判定完成：收齐了（没溢出），或漏了但拿到重扫信号
+                        return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0;
+                    },
+                    8000);
+            const std::size_t missingCount = recorder.missingFileCount(writtenNames);
+
+            watcher->stop();
+            EXPECT_TRUE(everythingArrived || recorder.sawRescan()) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
     }
 
     /**
@@ -1526,78 +1575,78 @@ namespace AsynGyanis::Platform
      */
     TEST(FileWatcher, StalledConsumerIsToldToRescanInsteadOfLosingEvents)
     {
-        constexpr std::size_t                 kFloodFileCount   = 2000;
-        constexpr std::size_t                 kFloodThreadCount = 8;
-        const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_StalledConsumer");
+            constexpr std::size_t                 kFloodFileCount   = 2000;
+            constexpr std::size_t                 kFloodThreadCount = 8;
+            const TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_StalledConsumer");
 
-        const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
-        ASSERT_NE(watcher, nullptr);
+            const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+            ASSERT_NE(watcher, nullptr);
 
-        FileWatchRecorder recorder;
-        std::atomic_flag  hasStalled = ATOMIC_FLAG_INIT;
-        std::atomic<bool> isFloodFinished{false};
-        watcher->setDebounceInterval(std::chrono::milliseconds(0));
-        watcher->setCallback(
-                [&recorder, &hasStalled, &isFloodFinished](const std::string_view filePath, const FileChangeType changeType)
-                {
-                    recorder.record(filePath, changeType);
-                    // 只停这一次，且停在第一批刚被取走的时候。停到「灌完」为止而不是赌一个固定毫秒数：
-                    // 挂着的读要被灌满才谈得上溢出，而写线程在满载 runner 上能多慢是没准的——实测 CI 上
-                    // 停 200 毫秒一条都没丢，于是下面那两条「必须溢出」的判据双双落空（用例红，红的还是
-                    // 构造而不是实现）。等到灌完，这个溢出条件就是造出来的，不是等出来的
-                    if (!hasStalled.test_and_set())
+            FileWatchRecorder recorder;
+            std::atomic_flag  hasStalled = ATOMIC_FLAG_INIT;
+            std::atomic<bool> isFloodFinished{false};
+            watcher->setDebounceInterval(std::chrono::milliseconds(0));
+            watcher->setCallback(
+                    [&recorder, &hasStalled, &isFloodFinished](const std::string_view filePath, const FileChangeType changeType)
                     {
-                        const auto stallDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
-                        while (!isFloodFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < stallDeadline)
+                        recorder.record(filePath, changeType);
+                        // 只停这一次，且停在第一批刚被取走的时候。停到「灌完」为止而不是赌一个固定毫秒数：
+                        // 挂着的读要被灌满才谈得上溢出，而写线程在满载 runner 上能多慢是没准的——实测 CI 上
+                        // 停 200 毫秒一条都没丢，于是下面那两条「必须溢出」的判据双双落空（用例红，红的还是
+                        // 构造而不是实现）。等到灌完，这个溢出条件就是造出来的，不是等出来的
+                        if (!hasStalled.test_and_set())
                         {
-                            std::this_thread::sleep_for(std::chrono::milliseconds{2});
+                            const auto stallDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+                            while (!isFloodFinished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < stallDeadline)
+                            {
+                                std::this_thread::sleep_for(std::chrono::milliseconds{2});
+                            }
                         }
-                    }
-                });
+                    });
 
-        ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
-        ASSERT_TRUE(watcher->start());
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+            ASSERT_TRUE(watcher->start());
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
-        isFloodFinished.store(true, std::memory_order_release);
-        ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
+            const std::vector<std::string> writtenNames = floodDirectory(temporaryDirectory, kFloodFileCount, kFloodThreadCount);
+            isFloodFinished.store(true, std::memory_order_release);
+            ASSERT_GT(writtenNames.size(), kFloodFileCount * 3 / 4) << "灌入本身就失败了大半，这条用例没法判断事件有没有丢";
 
-        const bool everythingArrived =
-                TestSupport::waitForCondition([&recorder, &writtenNames]() { return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0; }, 8000);
-        const std::size_t missingCount = recorder.missingFileCount(writtenNames);
-        const bool        rescanned    = recorder.sawRescan();
+            const bool everythingArrived =
+                    TestSupport::waitForCondition([&recorder, &writtenNames]() { return recorder.sawRescan() || recorder.missingFileCount(writtenNames) == 0; }, 8000);
+            const std::size_t missingCount = recorder.missingFileCount(writtenNames);
+            const bool        rescanned    = recorder.sawRescan();
 
-        watcher->stop();
-        EXPECT_TRUE(everythingArrived || rescanned) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
+            watcher->stop();
+            EXPECT_TRUE(everythingArrived || rescanned) << "丢了 " << missingCount << " 个文件的事件，又没有派发任何「该重扫」信号——事件被静默丢弃";
 #ifdef _WIN32
-        // 停摆覆盖整个灌入过程，因此这一档必然丢出溢出（探针读数见 @details），Windows 侧再钉两条：
-        // 一条没丢就是构造失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出
-        // 告状被当成没事发生
-        EXPECT_GT(missingCount, 0U) << "消费方停摆 200 ms 也一条都没丢掉：这个构造已不触溢出路径，用例需要加强";
-        EXPECT_TRUE(rescanned) << "丢了 " << missingCount << " 个文件的事件却没告状：零字节完成被当成「没事发生」";
+            // 停摆覆盖整个灌入过程，因此这一档必然丢出溢出（探针读数见 @details），Windows 侧再钉两条：
+            // 一条没丢就是构造失效（用例白跑而报告全绿）；丢了却没告状就是那条「成功、零字节」的溢出
+            // 告状被当成没事发生
+            EXPECT_GT(missingCount, 0U) << "消费方停摆 200 ms 也一条都没丢掉：这个构造已不触溢出路径，用例需要加强";
+            EXPECT_TRUE(rescanned) << "丢了 " << missingCount << " 个文件的事件却没告状：零字节完成被当成「没事发生」";
 #endif
     }
 
     TEST(FileWatcher, DestructorStopsRunningWatcherSafely)
     {
-        TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Destructor");
-        {
-            // recorder 必须先于 watcher 声明：作用域退出时按声明逆序销毁，watcher 先析构
-            // （停线程并等它退出），回调不可能再触碰 recorder；反过来写则是 recorder 先
-            // 销毁，watcher 线程的最后一次回调会写进已析构的对象（LeakSanitizer 报泄漏）
-            FileWatchRecorder recorder;
+            TestSupport::TemporaryDirectory temporaryDirectory("FileWatcher_Destructor");
+            {
+                // recorder 必须先于 watcher 声明：作用域退出时按声明逆序销毁，watcher 先析构
+                // （停线程并等它退出），回调不可能再触碰 recorder；反过来写则是 recorder 先
+                // 销毁，watcher 线程的最后一次回调会写进已析构的对象（LeakSanitizer 报泄漏）
+                FileWatchRecorder recorder;
 
-            const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
-            ASSERT_NE(watcher, nullptr);
-            watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
+                const std::unique_ptr<FileWatcher> watcher = FileWatcher::create();
+                ASSERT_NE(watcher, nullptr);
+                watcher->setCallback([&recorder](const std::string_view filePath, const FileChangeType changeType) { recorder.record(filePath, changeType); });
 
-            ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
-            ASSERT_TRUE(watcher->start());
-            ASSERT_TRUE(temporaryDirectory.writeFile("before-destroy.yaml", "x: 1\n"));
-            // 故意不调用 stop()，析构必须自行停线程且不崩溃
-        }
-        SUCCEED();
+                ASSERT_TRUE(watcher->addWatch(temporaryDirectory.path().string()));
+                ASSERT_TRUE(watcher->start());
+                ASSERT_TRUE(temporaryDirectory.writeFile("before-destroy.yaml", "x: 1\n"));
+                // 故意不调用 stop()，析构必须自行停线程且不崩溃
+            }
+            SUCCEED();
     }
 
     /**
@@ -1614,62 +1663,62 @@ namespace AsynGyanis::Platform
         bool touch(const std::string &filePath)
         {
             return shouldDispatchChange(filePath);
-        }
-
-        bool addWatch(const std::string_view, const bool) override
-        {
-            return true;
-        }
-        bool removeWatch(const std::string_view) override
-        {
-            return true;
-        }
-        void setCallback(FileChangeCallback) override
-        {
-        }
-        bool start() override
-        {
-            return true;
-        }
-        void stop() override
-        {
-        }
-        [[nodiscard]] bool isRunning() const noexcept override
-        {
-            return false;
-        }
-    };
-
-    /**
-     * @brief 钉住：涌入的路径数超过防抖表上限时，已记账的抑制仍然有效，只有挤不进表的路径不抑制
-     * @details 上限的实现换过两版，两版都有代价：「每次插入都重扫整表」把单次判定从 934 ns 顶到
-     *          8115 ns（6000 条路径实测），监听线程一停摆就是通知缓冲被憋爆；「满表即整表清空」更糟，
-     *          把刚派发过、还在窗口里的路径全放回去重复派发。现在按「最近触发」淘汰，且表满到连表尾
-     *          都在窗口内时不再挤占。
-     */
-    TEST(FileWatcher, SuppressionsSurviveAPathFloodBeyondTheTableCap)
-    {
-        constexpr std::size_t kFloodPathCount = 5000;
-        DebounceProbeWatcher  watcher;
-        watcher.setDebounceInterval(std::chrono::milliseconds(5000));
-
-        // 表还没满之前记下的路径，要能在整轮涌入之后仍处于被抑制状态
-        const std::string earlyPath = "config-early.yaml";
-        EXPECT_TRUE(watcher.touch(earlyPath)) << "第一次见到这条路径本就该派发";
-        EXPECT_FALSE(watcher.touch(earlyPath)) << "窗口内的重复事件应当被抑制";
-
-        for (std::size_t index = 0; index < kFloodPathCount; ++index)
-        {
-            static_cast<void>(watcher.touch("flood-" + std::to_string(index) + ".yaml"));
-        }
-
-        EXPECT_FALSE(watcher.touch(earlyPath)) << "防抖表被涌入的路径撑满后，把已在窗口内的记录整表清空了：这条路径会被重复派发";
-
-        // 表满且最旧一条都还在窗口内时，新路径不记账：本窗口内它每次都派发（这是有意的取舍，
-        // 挤占只会让被挤掉的那条立刻当「新路径」插回来，来回抖动）
-        const std::string untrackedPath = "config-untracked.yaml";
-        EXPECT_TRUE(watcher.touch(untrackedPath)) << "挤不进防抖表的路径按「未记账」处理，照常派发";
-        EXPECT_TRUE(watcher.touch(untrackedPath)) << "同一条未记账的路径不该被窗口抑制";
     }
+
+    bool addWatch(const std::string_view, const bool) override
+    {
+        return true;
+    }
+    bool removeWatch(const std::string_view) override
+    {
+        return true;
+    }
+    void setCallback(FileChangeCallback) override
+    {
+    }
+    bool start() override
+    {
+        return true;
+    }
+    void stop() override
+    {
+    }
+    [[nodiscard]] bool isRunning() const noexcept override
+    {
+        return false;
+    }
+};
+
+/**
+ * @brief 钉住：涌入的路径数超过防抖表上限时，已记账的抑制仍然有效，只有挤不进表的路径不抑制
+ * @details 上限的实现换过两版，两版都有代价：「每次插入都重扫整表」把单次判定从 934 ns 顶到
+ *          8115 ns（6000 条路径实测），监听线程一停摆就是通知缓冲被憋爆；「满表即整表清空」更糟，
+ *          把刚派发过、还在窗口里的路径全放回去重复派发。现在按「最近触发」淘汰，且表满到连表尾
+ *          都在窗口内时不再挤占。
+ */
+TEST(FileWatcher, SuppressionsSurviveAPathFloodBeyondTheTableCap)
+{
+    constexpr std::size_t kFloodPathCount = 5000;
+    DebounceProbeWatcher  watcher;
+    watcher.setDebounceInterval(std::chrono::milliseconds(5000));
+
+    // 表还没满之前记下的路径，要能在整轮涌入之后仍处于被抑制状态
+    const std::string earlyPath = "config-early.yaml";
+    EXPECT_TRUE(watcher.touch(earlyPath)) << "第一次见到这条路径本就该派发";
+    EXPECT_FALSE(watcher.touch(earlyPath)) << "窗口内的重复事件应当被抑制";
+
+    for (std::size_t index = 0; index < kFloodPathCount; ++index)
+    {
+        static_cast<void>(watcher.touch("flood-" + std::to_string(index) + ".yaml"));
+    }
+
+    EXPECT_FALSE(watcher.touch(earlyPath)) << "防抖表被涌入的路径撑满后，把已在窗口内的记录整表清空了：这条路径会被重复派发";
+
+    // 表满且最旧一条都还在窗口内时，新路径不记账：本窗口内它每次都派发（这是有意的取舍，
+    // 挤占只会让被挤掉的那条立刻当「新路径」插回来，来回抖动）
+    const std::string untrackedPath = "config-untracked.yaml";
+    EXPECT_TRUE(watcher.touch(untrackedPath)) << "挤不进防抖表的路径按「未记账」处理，照常派发";
+    EXPECT_TRUE(watcher.touch(untrackedPath)) << "同一条未记账的路径不该被窗口抑制";
+}
 
 } // namespace AsynGyanis::Platform
