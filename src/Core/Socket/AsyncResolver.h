@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -88,7 +89,7 @@ namespace AsynGyanis::Core
          * @note 超时与「域名确实没有记录」都交回空列表，调用方要区分就自己计时；这里不新增结果类型，
          *       避免为一次诊断把公开面再扩一层
          */
-        static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout);
+        static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout, std::stop_token cancelToken = {});
 
         /// 可替换的名字查找：返回空表示解析失败；实现方负责线程安全
         using LookupFunction = std::function<std::vector<InetAddress>(const std::string &host, std::uint16_t port)>;

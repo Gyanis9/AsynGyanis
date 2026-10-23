@@ -1234,10 +1234,20 @@ namespace AsynGyanis::Net
          * @return std::shared_ptr<Http3OutboundLink> 已可提请求的链路；任何一段没成返回空
          */
         Core::Task<std::shared_ptr<Http3OutboundLink>> establishHttp3Link(Core::EventLoop &loop, const ParsedUrl &u, const HttpOutboundConnectionPool &pool,
-                                                                          const Http3OutboundContext &http3, std::string &failureReason)
+                                                                          const Http3OutboundContext &http3, const std::stop_token cancelToken, std::string &failureReason)
         {
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：建立 HTTP/3 链路前调用方已请求停止（主机 " + u.host + "）";
+                co_return nullptr;
+            }
             // DNS 也归 h3 探测这一小段预算：解析卡住时不把整条请求拖过自己的时限
-            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, u.host, u.port, kHttp3ProbeTimeout);
+            const std::vector<Core::InetAddress> addresses = co_await Core::AsyncResolver::resolve(loop, u.host, u.port, kHttp3ProbeTimeout, cancelToken);
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：HTTP/3 域名解析期间调用方请求停止（主机 " + u.host + "）";
+                co_return nullptr;
+            }
             if (addresses.empty())
             {
                 failureReason = "解析地址失败或超时：没能把「" + u.host + "」解析成可用地址";
@@ -1273,6 +1283,12 @@ namespace AsynGyanis::Net
                 // 与其它几段一样折成返回值，不让异常穿过这一段
                 LOG_WARN_FMT("HttpClient: 与 {} 建 HTTP/3 链路失败。底层原因：{}", u.host, failure.what());
                 failureReason = "HTTP/3 这一侧没走通：本端建不起 UDP 套接字（主机 " + u.host + "）";
+                co_return nullptr;
+            }
+            if (cancelToken.stop_requested())
+            {
+                link->http3().close();
+                failureReason = "请求已取消：HTTP/3 握手期间调用方请求停止（主机 " + u.host + "）";
                 co_return nullptr;
             }
             co_return link;
@@ -1485,7 +1501,7 @@ namespace AsynGyanis::Net
                 // 也不替这个端点记下「没有 h3」
                 if (isHttp3Eligible && canAffordHttp3Probe(startedAt, requestTimeout))
                 {
-                    std::shared_ptr<Http3OutboundLink> link = co_await establishHttp3Link(loop, u, *pool, *http3, failureReason);
+                    std::shared_ptr<Http3OutboundLink> link = co_await establishHttp3Link(loop, u, *pool, *http3, request.cancelToken, failureReason);
                     if (link == nullptr)
                     {
                         // 这个端点的 h3 没走通：记一笔，此后同端点的请求直接走 TCP，不再各付一次探测时限
@@ -1520,10 +1536,10 @@ namespace AsynGyanis::Net
                 std::unique_ptr<HttpOutboundConnection> connection;
                 if (u.scheme == "https")
                 {
-                    connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls, decision.route);
+                    connection = co_await establishSecureConnection(loop, u, startedAt, requestTimeout, failureReason, clientTls, decision.route, request.cancelToken);
                 } else
                 {
-                    connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout, failureReason, decision.route, clientTls);
+                    connection = co_await establishPlainConnection(loop, endpointKey, startedAt, requestTimeout, failureReason, decision.route, clientTls, request.cancelToken);
                 }
                 if (!connection)
                 {

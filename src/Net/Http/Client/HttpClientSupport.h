@@ -19,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 
 namespace AsynGyanis::Core
@@ -60,7 +61,7 @@ namespace AsynGyanis::Net::HttpClientDetail
     Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop, const HttpOutboundEndpointKey &key,
                                                                                  std::chrono::steady_clock::time_point startedAt, std::chrono::milliseconds requestTimeout,
                                                                                  std::string &failureReason, const std::optional<HttpProxyRoute> &proxyRoute,
-                                                                                 const Core::TlsContext *clientTls);
+                                                                                 const Core::TlsContext *clientTls, std::stop_token cancelToken);
 
     /**
      * @brief 建一条 TLS 出站连接（可经代理隧道）
@@ -75,5 +76,6 @@ namespace AsynGyanis::Net::HttpClientDetail
      */
     Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &url, std::chrono::steady_clock::time_point startedAt,
                                                                                   std::chrono::milliseconds requestTimeout, std::string &failureReason,
-                                                                                  const Core::TlsContext *clientTls, const std::optional<HttpProxyRoute> &proxyRoute);
+                                                                                  const Core::TlsContext *clientTls, const std::optional<HttpProxyRoute> &proxyRoute,
+                                                                                  std::stop_token cancelToken);
 } // namespace AsynGyanis::Net::HttpClientDetail

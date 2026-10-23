@@ -1420,7 +1420,7 @@ src/Core/Socket/AsyncResolver.h	class ASYN_CORE_API AsyncResolver
 src/Core/Socket/AsyncResolver.h	class EventLoop
 src/Core/Socket/AsyncResolver.h	namespace AsynGyanis::Core
 src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port)
-src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout)
+src/Core/Socket/AsyncResolver.h	static Task<std::vector<InetAddress>> resolve(EventLoop &loop, std::string host, uint16_t port, std::chrono::milliseconds timeout, std::stop_token cancelToken =
 src/Core/Socket/AsyncResolver.h	static void clearLookupFunction()
 src/Core/Socket/AsyncResolver.h	static void setLookupFunction(LookupFunction lookup)
 src/Core/Socket/AsyncResolver.h	std::uint64_t cacheHitCount

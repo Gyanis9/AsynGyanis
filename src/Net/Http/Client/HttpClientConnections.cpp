@@ -131,13 +131,24 @@ namespace AsynGyanis::Net
             co_return std::optional<std::unique_ptr<Core::TlsSocket>>{std::move(tlsSocket)};
         }
         Core::Task<std::optional<Core::AsyncSocket>> connectWithDeadline(Core::EventLoop &loop, const std::string &host, const std::uint16_t port,
-                                                                         const std::chrono::milliseconds connectTimeout, std::string &failureReason)
+                                                                         const std::chrono::milliseconds connectTimeout, const std::stop_token cancelToken,
+                                                                         std::string &failureReason)
         {
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：进入域名解析前调用方已请求停止（主机 " + host + "）";
+                co_return std::nullopt;
+            }
             // DNS 也吃这份连接预算：解析卡住时不能把整条请求拖过自己的时限。解析超时后不再把
             // 整个 connectTimeout 交给建连，剩余多少用多少
             const auto                           resolveDeadline = std::chrono::steady_clock::now() + connectTimeout;
             const auto                           resolveTimeout  = connectTimeout > std::chrono::milliseconds::zero() ? connectTimeout : std::chrono::milliseconds{1};
-            const std::vector<Core::InetAddress> addresses       = co_await Core::AsyncResolver::resolve(loop, host, port, resolveTimeout);
+            const std::vector<Core::InetAddress> addresses       = co_await Core::AsyncResolver::resolve(loop, host, port, resolveTimeout, cancelToken);
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：域名解析期间调用方请求停止（主机 " + host + "）";
+                co_return std::nullopt;
+            }
             if (addresses.empty())
             {
                 failureReason = "解析地址失败或超时：没能把「" + host + "」解析成可用地址";
@@ -151,6 +162,15 @@ namespace AsynGyanis::Net
                 co_return std::nullopt;
             }
             auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses), remainingConnectBudget);
+            if (cancelToken.stop_requested())
+            {
+                if (connected)
+                {
+                    connected->socket.close();
+                }
+                failureReason = "请求已取消：建立 TCP 连接期间调用方请求停止（目标 " + host + ":" + std::to_string(port) + "）";
+                co_return std::nullopt;
+            }
             if (!connected)
             {
                 failureReason = "建立 TCP 连接失败：对端拒绝、不可达或还没连上就超时（目标 " + host + ":" + std::to_string(port) + "）";
@@ -518,8 +538,14 @@ namespace AsynGyanis::Net
         Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop, const HttpOutboundEndpointKey &key,
                                                                                      const std::chrono::steady_clock::time_point startedAt,
                                                                                      const std::chrono::milliseconds requestTimeout, std::string &failureReason,
-                                                                                     const std::optional<HttpProxyRoute> &proxyRoute, const Core::TlsContext *clientTls)
+                                                                                     const std::optional<HttpProxyRoute> &proxyRoute, const Core::TlsContext *clientTls,
+                                                                                     const std::stop_token cancelToken)
         {
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：建立连接前调用方已请求停止（目标 " + key.host + "）";
+                co_return nullptr;
+            }
             // 经代理的明文请求拨的是代理地址，池键仍是目标——连接的身份按用途记，拨号按路由走
             const auto [dialHost, dialPort] = dialTargetForConnection(key.host, key.port, proxyRoute);
 
@@ -529,7 +555,7 @@ namespace AsynGyanis::Net
                 failureReason = "本次请求已到时限：还没开始连接（目标 " + key.host + ":" + std::to_string(key.port) + "）";
                 co_return nullptr;
             }
-            auto socket = co_await connectWithDeadline(loop, dialHost, dialPort, *connectBudget, failureReason);
+            auto socket = co_await connectWithDeadline(loop, dialHost, dialPort, *connectBudget, cancelToken, failureReason);
             if (!socket)
             {
                 noteProxyDialFailure(failureReason, dialHost, dialPort, proxyRoute.has_value());
@@ -565,11 +591,15 @@ namespace AsynGyanis::Net
          * @param proxyRoute 非空即经代理：先拨代理、开 CONNECT 隧道，TLS 仍按目标的 SNI 与主机名校验走
          * @return std::unique_ptr<HttpOutboundConnection> 握手成功就交出连接；任一步失败返回空
          */
-        Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &u,
-                                                                                      const std::chrono::steady_clock::time_point startedAt,
-                                                                                      const std::chrono::milliseconds requestTimeout, std::string &failureReason,
-                                                                                      const Core::TlsContext *clientTls, const std::optional<HttpProxyRoute> &proxyRoute)
+        Core::Task<std::unique_ptr<HttpOutboundConnection>>
+        establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &u, const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
+                                  std::string &failureReason, const Core::TlsContext *clientTls, const std::optional<HttpProxyRoute> &proxyRoute, const std::stop_token cancelToken)
         {
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：建立 TLS 连接前调用方已请求停止（主机 " + u.host + "）";
+                co_return nullptr;
+            }
             HttpOutboundEndpointKey key{u.host, u.port, true};
 
             // 经代理的 TLS 连接拨的是代理地址，CONNECT 之后的 TLS 与 SNI 仍按目标走（代理只搬字节）
@@ -580,7 +610,7 @@ namespace AsynGyanis::Net
                 failureReason = "本次请求已到时限：还没开始连接（主机 " + u.host + "）";
                 co_return nullptr;
             }
-            auto socket = co_await connectWithDeadline(loop, dialHost, dialPort, *connectBudget, failureReason);
+            auto socket = co_await connectWithDeadline(loop, dialHost, dialPort, *connectBudget, cancelToken, failureReason);
             if (!socket)
             {
                 noteProxyDialFailure(failureReason, dialHost, dialPort, proxyRoute.has_value());

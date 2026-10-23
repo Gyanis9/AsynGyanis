@@ -172,9 +172,10 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 协作式取消令牌（可选）：调用方请求停止后，在途请求尽快收场
-         * @details 令牌来自调用方自己的 `std::stop_source`；本客户端只在等待间隙检查它，
-         *          不打断已经进入的同步调用。当前 HTTP/1.1 通路会在等待期间关闭这条连接来唤醒
-         *          收发协程；HTTP/2 与 HTTP/3 的流级取消仍按各自时限收场。
+         * @details 令牌来自调用方自己的 `std::stop_source`；本客户端在请求阶段边界与收发等待中检查它。
+         *          HTTP/1.1 取消会关闭当前连接；HTTP/2 与 HTTP/3 只复位对应的一条流，连接留给其它请求。
+         *          域名解析已接受该令牌；TCP 建连、TLS 握手与调用方提供的 `bodySource` 若正卡在自身
+         *          等待里，仍以 `requestTimeout` 收场，不保证立即返回。
          * @note 默认空令牌＝行为与加这一项之前逐字相同
          */
         std::stop_token cancelToken{};

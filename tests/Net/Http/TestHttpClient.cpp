@@ -1267,6 +1267,70 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：请求在域名解析阶段被取消时不再等解析线程，原因点明取消
+     */
+    TEST(HttpClient, CancelDuringDnsLookupReturnsPromptly)
+    {
+        auto                           release  = std::make_shared<std::promise<void>>();
+        const std::shared_future<void> released = release->get_future().share();
+        Core::AsyncResolver::setLookupFunction(
+                [released](const std::string &, const std::uint16_t)
+                {
+                    released.wait();
+                    return std::vector<Core::InetAddress>{};
+                });
+        struct LookupReset
+        {
+            ~LookupReset()
+            {
+                Core::AsyncResolver::clearLookupFunction();
+            }
+        } reset;
+
+        Core::EventLoop   loop;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool                      wasCancelled = false;
+        std::string               reason;
+        std::chrono::milliseconds elapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto started = std::chrono::steady_clock::now();
+            const auto sent    = co_await HttpClient::send(loop, "http://blocked-cancel.test/", request, std::chrono::seconds{3});
+            elapsed            = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            wasCancelled       = !sent.has_value();
+            if (!sent.has_value())
+            {
+                reason = sent.error();
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "取消之后请求仍然拿到了响应";
+        EXPECT_NE(reason.find("取消"), std::string::npos) << "失败原因没有点明取消：" << reason;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "DNS 取消没有及时收场：" << elapsed.count() << " ms";
+
+        release->set_value();
+        ASSERT_TRUE(waitForCondition([] { return Core::AsyncResolver::activeLookupCount() == 0; }, std::chrono::seconds{2}));
+    }
+
+    /**
      * @brief 钉住：慢响应期间请求停止信号能让等待在几百毫秒内收场，而不是拖到请求时限
      */
     TEST(HttpClient, CancelDuringSlowResponseReturnsPromptly)

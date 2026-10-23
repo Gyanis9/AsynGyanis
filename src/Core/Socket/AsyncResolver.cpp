@@ -168,8 +168,9 @@ namespace AsynGyanis::Core
             /// 「先判活再 resume」本身有个窗口——判活通过之后帧仍可能被销毁。改成一取一空
             /// （exchange）：谁取到句柄谁负责恢复，帧销毁时置空则那次恢复自然作废
             std::atomic<std::coroutine_handle<>> callerHandle{nullptr};
-            std::atomic<bool>                    timedOut{false}; ///< 时限先到：结果即使后来回来也不再用
-            std::vector<InetAddress>             addresses;       ///< 解析结果
+            std::atomic<bool>                    timedOut{false};  ///< 时限先到：结果即使后来回来也不再用
+            std::atomic<bool>                    cancelled{false}; ///< 调用方请求取消：结果即使后来回来也不再用
+            std::vector<InetAddress>             addresses;        ///< 解析结果
 
             /// 本次解析占住的名额：随这份状态一起活到「解析线程与等待方都松手」，那时才归还
             std::shared_ptr<ResolutionSlotGuard> slot;
@@ -312,14 +313,36 @@ namespace AsynGyanis::Core
         }
         // await_suspend 里先存句柄再启线程 —— 保证线程要么看不到 callerHandle 的旧值、
         // 要么看到刚设好的新值，永远不存在「postRemote 跑完但句柄还没设进来」的竞态
+        /// 停止回调的落点：请求取消时把等待方叫醒；线程安全，交给 postRemote 投回循环
+        struct StopWake
+        {
+            EventLoop                    *loop;
+            std::shared_ptr<ResolveState> state;
+
+            void operator()() const noexcept
+            {
+                state->cancelled.store(true, std::memory_order_release);
+                const std::shared_ptr<ResolveState> stateSnapshot = state;
+                try
+                {
+                    loop->scheduler().postRemote([stateSnapshot] { stateSnapshot->wakeCaller(); });
+                } catch (...)
+                {
+                    // 循环已停：等待方随后会随帧销毁，这里没有第二条唤醒路径
+                }
+            }
+        };
+
         struct ResolveAwaiter
         {
-            EventLoop                    &targetLoop;
-            std::string                   host;
-            uint16_t                      port;
-            std::shared_ptr<ResolveState> state;
-            std::chrono::milliseconds     timeout;     ///< 非正数表示不挂时限
-            std::optional<Task<>>         timeoutTask; ///< 定时任务归等待器所有；帧先到就析构取消
+            EventLoop                                  &targetLoop;
+            std::string                                 host;
+            uint16_t                                    port;
+            std::shared_ptr<ResolveState>               state;
+            std::chrono::milliseconds                   timeout;      ///< 非正数表示不挂时限
+            std::stop_token                             cancelToken;  ///< 空令牌表示不接取消
+            std::optional<std::stop_callback<StopWake>> stopCallback; ///< 取消唤醒：随等待器析构注销
+            std::optional<Task<>>                       timeoutTask;  ///< 定时任务归等待器所有；帧先到就析构取消
 
             bool await_ready() const noexcept
             {
@@ -329,6 +352,16 @@ namespace AsynGyanis::Core
             bool await_suspend(const std::coroutine_handle<> handle) noexcept
             {
                 state->callerHandle.store(handle, std::memory_order_release);
+
+                if (cancelToken.stop_requested())
+                {
+                    state->cancelled.store(true, std::memory_order_release);
+                    return false;
+                }
+                if (cancelToken.stop_possible())
+                {
+                    stopCallback.emplace(cancelToken, StopWake{&targetLoop, state});
+                }
 
                 // 并发上限与线程创建放在同一个 try 里：守卫的构造要分配内存，noexcept 函数里抛出即
                 // terminate，而这里两条都是「资源耗尽就按失败收尾」的同一处置
@@ -383,6 +416,8 @@ namespace AsynGyanis::Core
 
             ~ResolveAwaiter()
             {
+                // 停止回调先注销：它的析构会等正在执行的回调跑完，之后才允许拆下面的状态
+                stopCallback.reset();
                 // 定时任务先收：挂起中的 TimerQueue::Awaiter 随帧析构会从队列摘除
                 timeoutTask.reset();
                 // 本等待器随协程帧一起析构：帧没了就再也不能被唤醒——把句柄置空，
@@ -398,7 +433,8 @@ namespace AsynGyanis::Core
         co_return co_await resolve(loop, std::move(host), port, std::chrono::milliseconds::zero());
     }
 
-    Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port, const std::chrono::milliseconds timeout)
+    Task<std::vector<InetAddress>> AsyncResolver::resolve(EventLoop &loop, std::string host, const uint16_t port, const std::chrono::milliseconds timeout,
+                                                          const std::stop_token cancelToken)
     {
         if (host.empty())
         {
@@ -430,7 +466,12 @@ namespace AsynGyanis::Core
         // state 在协程帧里存活，覆盖整个 co_await 期以及后面的结果读取
         auto state = std::make_shared<ResolveState>();
 
-        co_await ResolveAwaiter{loop, std::move(host), port, state, timeout, std::nullopt};
+        co_await ResolveAwaiter{loop, std::move(host), port, state, timeout, cancelToken, std::nullopt, std::nullopt};
+        if (state->cancelled.load(std::memory_order_acquire))
+        {
+            // 调用方先取消：结果即使已经在后台收集了一部分也不再交出，更不能写进缓存
+            co_return std::vector<InetAddress>{};
+        }
         if (state->timedOut.load(std::memory_order_acquire))
         {
             // 时限先到：结果即使已经在后台收集了一部分也不再交出，更不能写进缓存——
