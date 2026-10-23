@@ -205,13 +205,27 @@ namespace AsynGyanis::Core
             const RawContext context;
             TlsPolicy        policy;
             policy.securityLevel = -1;
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
+            try
+            {
+                applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
+                FAIL() << "安全等级为负本该被拒，而不是静默接受";
+            } catch (const CoreException &failure)
+            {
+                EXPECT_NE(std::string(failure.what()).find("安全等级不能为负"), std::string::npos) << "原因没有点名哪一项失效：" << failure.what();
+            }
         }
         {
             const RawContext context;
             TlsPolicy        policy;
             policy.verifyDepth = 0;
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
+            try
+            {
+                applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
+                FAIL() << "校验深度为 0 本该被拒，而不是静默忽略";
+            } catch (const CoreException &failure)
+            {
+                EXPECT_NE(std::string(failure.what()).find("校验深度必须是正数"), std::string::npos) << "原因没有点名哪一项失效：" << failure.what();
+            }
         }
         // 显式给等级 1 与深度 2 都要生效（1 是「要放宽」时的合法写法，本层不替调用方决定不能放）
         const RawContext context;
@@ -300,7 +314,15 @@ namespace AsynGyanis::Core
         EXPECT_NO_THROW(contextWithCa.setClientCertificateRequired(true));
 
         TlsContext bareContext;
-        EXPECT_THROW(bareContext.setClientCertificateRequired(true), CoreException) << "没 CA 就该拒，而不是放行一条必失败的配置";
+        try
+        {
+            bareContext.setClientCertificateRequired(true);
+            FAIL() << "没 CA 就该拒，而不是放行一条必失败的配置";
+        } catch (const CoreException &failure)
+        {
+            EXPECT_NE(std::string(failure.what()).find("尚未加载"), std::string::npos) << "原因没有点明缺少信任库：" << failure.what();
+            EXPECT_NE(std::string(failure.what()).find("loadClientCertificateAuthority"), std::string::npos) << "原因没有给修复动作：" << failure.what();
+        }
         // 走老接口同样成立：加载 CA 之后开启校验不再抛
         ASSERT_TRUE(bareContext.loadClientCertificateAuthority(kTestCertificatePath.string()));
         EXPECT_NO_THROW(bareContext.setClientCertificateRequired(true));

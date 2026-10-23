@@ -100,6 +100,32 @@ namespace AsynGyanis::Core
         }
 
         /**
+         * @brief 断言动作按指定类型抛出，并交回原因正文供调用方核对
+         * @tparam ExceptionType 期望的异常类型
+         * @tparam Action 应当抛出的动作
+         * @param action 被测动作
+         * @param context 失败时附在断言后面的上下文（哪个取值、哪一步）
+         * @return std::string 异常正文；没有抛出或类型不符时为空（已记失败）
+         */
+        template<typename ExceptionType, typename Action>
+        std::string requireThrowReason(Action &&action, const std::string &context)
+        {
+            try
+            {
+                action();
+            } catch (const ExceptionType &failure)
+            {
+                return failure.what();
+            } catch (const std::exception &unexpected)
+            {
+                ADD_FAILURE() << context << "：抛出的异常类型不符：" << unexpected.what();
+                return {};
+            }
+            ADD_FAILURE() << context << "：本该抛出异常，却正常返回了";
+            return {};
+        }
+
+        /**
          * @brief 交替推进服务端与客户端到终态，并把过程快照写进 outcome
          * @details 内存 BIO 对的写端不阻塞，因此两端各调一次 SSL_accept/SSL_connect 交替推进即可：
          *          返回 WANT_READ 只表示还在等对端产出数据，无需套接字与事件循环，也不受时序影响。
@@ -351,9 +377,14 @@ namespace AsynGyanis::Core
 
         for (const std::string_view unusable: {"", "   ", "*", "*.example.com", "api.example.com:443", "a b.example.com"})
         {
-            EXPECT_THROW(static_cast<void>(tlsContext.loadCertificateForHost(std::string(unusable), kTestCertificatePath.string(), kTestKeyPath.string())),
-                         Base::InvalidArgumentException)
-                    << "「" << unusable << "」不该被当成一个站点名收下";
+            const std::string reason = requireThrowReason<Base::InvalidArgumentException>(
+                    [&] { static_cast<void>(tlsContext.loadCertificateForHost(std::string(unusable), kTestCertificatePath.string(), kTestKeyPath.string())); },
+                    "「" + std::string(unusable) + "」");
+            EXPECT_NE(reason.find("SNI 站点名"), std::string::npos) << "原因没有点明被拒的是站点名：「" << unusable << "」→" << reason;
+            if (!unusable.empty() && unusable.find_first_of(" \t") == std::string_view::npos)
+            {
+                EXPECT_NE(reason.find(unusable), std::string::npos) << "原因没有点名被拒的取值：" << reason;
+            }
         }
     }
 
@@ -362,9 +393,10 @@ namespace AsynGyanis::Core
      */
     TEST(TlsContext, LoadCertificateForHostRejectsClientRoleContext)
     {
-        const TlsContext clientContext(TlsPolicy{}, TlsContext::Role::Client);
-        EXPECT_THROW(static_cast<void>(clientContext.loadCertificateForHost("api.example.com", kTestCertificatePath.string(), kTestKeyPath.string())),
-                     Base::InvalidArgumentException);
+        const TlsContext  clientContext(TlsPolicy{}, TlsContext::Role::Client);
+        const std::string reason = requireThrowReason<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(clientContext.loadCertificateForHost("api.example.com", kTestCertificatePath.string(), kTestKeyPath.string())); }, "客户端上下文");
+        EXPECT_NE(reason.find("只有服务端上下文"), std::string::npos) << "原因没有点明角色不对：" << reason;
     }
 
     /**
@@ -625,12 +657,14 @@ namespace AsynGyanis::Core
             EXPECT_NE(message.find("setClientCertificateRequired(false)"), std::string::npos) << message;
         }
 
-        // 异常类型要落在框架基类上，调用方能用一条 catch 兜住
-        EXPECT_THROW(tlsContext.setClientCertificateRequired(true), Base::Exception);
+        // 异常类型要落在框架基类上，调用方能用一条 catch 兜住；文案仍要指向修复动作
+        const std::string baseReason = requireThrowReason<Base::Exception>([&] { tlsContext.setClientCertificateRequired(true); }, "基类捕获");
+        EXPECT_NE(baseReason.find("loadClientCertificateAuthority"), std::string::npos) << "原因没有给修复动作：" << baseReason;
 
         // 加载失败同样不算「已加载」：此后依然必须拒绝
         EXPECT_FALSE(tlsContext.loadClientCertificateAuthority("/nonexistent/ca.pem"));
-        EXPECT_THROW(tlsContext.setClientCertificateRequired(true), CoreException);
+        const std::string unloadedReason = requireThrowReason<CoreException>([&] { tlsContext.setClientCertificateRequired(true); }, "CA 加载失败之后");
+        EXPECT_NE(unloadedReason.find("尚未加载"), std::string::npos) << "原因没有点明缺少信任库：" << unloadedReason;
 
         // 关闭校验不需要 CA：任何状态下调用都应当被接受
         EXPECT_NO_THROW(tlsContext.setClientCertificateRequired(false));
@@ -1042,7 +1076,9 @@ namespace AsynGyanis::Core
         }
 
         // 反向：名单还在时不许关校验（关了它就成死判据）；清空名单后可以关
-        EXPECT_THROW(tlsContext.setClientCertificateRequired(false), CoreException);
+        const std::string allowlistReason = requireThrowReason<CoreException>([&] { tlsContext.setClientCertificateRequired(false); }, "名单仍在时关闭校验");
+        EXPECT_NE(allowlistReason.find("指纹名单"), std::string::npos) << "原因没有点明是哪项配置挡着：" << allowlistReason;
+        EXPECT_NE(allowlistReason.find("setPeerFingerprintAllowlist"), std::string::npos) << "原因没有给修复动作：" << allowlistReason;
         ASSERT_NO_THROW(tlsContext.setPeerFingerprintAllowlist({}));
         EXPECT_NO_THROW(tlsContext.setClientCertificateRequired(false));
     }
@@ -2045,13 +2081,17 @@ namespace AsynGyanis::Core
 
         TlsContext context;
         installFixtureCertificate(context);
-        EXPECT_THROW(context.loadSessionTicketKeys({tooShort}), CoreException);
-        EXPECT_THROW(context.loadSessionTicketKeys({tooLong}), CoreException);
-        EXPECT_THROW(context.loadSessionTicketKeys({inBetween}), CoreException);
+        for (const std::string &wrongLength: {tooShort, tooLong, inBetween})
+        {
+            const std::string reason = requireThrowReason<CoreException>([&] { context.loadSessionTicketKeys({wrongLength}); }, wrongLength);
+            EXPECT_NE(reason.find(std::filesystem::path(wrongLength).filename().string()), std::string::npos) << "原因没有点名是哪一份文件：" << reason;
+            EXPECT_NE(reason.find("只接受 48（AES-128）或 80（AES-256）"), std::string::npos) << "原因没有给出合法长度：" << reason;
+        }
 
         // 列表里有一份不对就整批拒绝：半份生效的密钥环比不生效更难排查
-        const std::string valid = writeTicketKeyFile(directory, "valid.key", 11);
-        EXPECT_THROW(context.loadSessionTicketKeys({valid, inBetween}), CoreException);
+        const std::string valid       = writeTicketKeyFile(directory, "valid.key", 11);
+        const std::string batchReason = requireThrowReason<CoreException>([&] { context.loadSessionTicketKeys({valid, inBetween}); }, "合法与非法混在一张表里");
+        EXPECT_NE(batchReason.find("middle.key"), std::string::npos) << "整批拒绝时没有点名坏的那一份：" << batchReason;
     }
 
     /**
@@ -2061,7 +2101,8 @@ namespace AsynGyanis::Core
     {
         TlsContext context;
         installFixtureCertificate(context);
-        EXPECT_THROW(context.loadSessionTicketKeys({}), CoreException);
+        const std::string reason = requireThrowReason<CoreException>([&] { context.loadSessionTicketKeys({}); }, "空列表");
+        EXPECT_NE(reason.find("列表为空"), std::string::npos) << "原因没有点明列表为空：" << reason;
     }
 
     /**
@@ -2093,7 +2134,9 @@ namespace AsynGyanis::Core
         std::ofstream     emptyFile(directory.path() / "empty.key", std::ios::out | std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(emptyFile.is_open());
         emptyFile.close();
-        EXPECT_THROW(context.loadSessionTicketKeys({emptyPath}), CoreException);
+        const std::string emptyReason = requireThrowReason<CoreException>([&] { context.loadSessionTicketKeys({emptyPath}); }, "空文件");
+        EXPECT_NE(emptyReason.find("empty.key"), std::string::npos) << "原因没有点名是哪一份文件：" << emptyReason;
+        EXPECT_NE(emptyReason.find("读不出内容"), std::string::npos) << "原因没有点明读取失败：" << emptyReason;
     }
 
     // ============================================================================
@@ -2813,7 +2856,8 @@ namespace AsynGyanis::Core
 
             const SslContextPointer context = createClientContext();
             ASSERT_NE(context, nullptr);
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, nullptr), CoreException) << "这份列表读不出来却准备静默放过：" << candidate.string();
+            const std::string reason = requireThrowReason<CoreException>([&] { applyTlsPolicy(context.get(), policy, nullptr); }, candidate.string());
+            EXPECT_NE(reason.find(candidate.filename().string()), std::string::npos) << "原因没有点名读不出来的文件：" << reason;
         }
 
         // 消息要点名是哪一份文件（同一个循环里两份文件时，光说「加载不了」分不出是哪一步）

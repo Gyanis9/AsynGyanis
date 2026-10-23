@@ -347,7 +347,14 @@ namespace AsynGyanis::Core
 
         // 拒绝面：描述符被关掉之后再问地址，只能失败（静默返回空地址会让调用方以为拿到了对端）
         tlsSocket.close();
-        EXPECT_THROW(static_cast<void>(tlsSocket.remoteAddress()), Base::SystemException);
+        try
+        {
+            static_cast<void>(tlsSocket.remoteAddress());
+            FAIL() << "已关闭的会话仍给出了对端地址";
+        } catch (const Base::SystemException &failure)
+        {
+            EXPECT_NE(std::string(failure.what()).find("获取对端地址失败"), std::string::npos) << "原因没有点明是哪一步：" << failure.what();
+        }
 
         listener.close();
     }
@@ -379,10 +386,27 @@ namespace AsynGyanis::Core
         handshakeTask.handle().resume();
         ASSERT_TRUE(handshakeTask.isReady()) << "握手应当已失败返回，而不是挂起等待";
 
-        // 握手失败必须落在 CoreException 上，且能被框架的异常基类统一捕获
+        // 握手失败必须落在 CoreException 上，文案点明失败发生在握手、且对端没发关闭通知
         auto &promise = handshakeTask.handle().promise();
-        EXPECT_THROW(promise.result(), CoreException);
-        EXPECT_THROW(promise.result(), Base::Exception);
+        try
+        {
+            static_cast<void>(promise.result());
+            FAIL() << "握手失败却没有抛出";
+        } catch (const CoreException &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_NE(message.find("TLS 握手失败"), std::string::npos) << "异常前缀没有点明是握手：" << message;
+            EXPECT_NE(message.find("关闭通知"), std::string::npos) << "没有把对端未发关闭通知这件事说清楚：" << message;
+        }
+        // 同一次失败也要能被框架基类统一捕获，且原因仍是同一条
+        try
+        {
+            static_cast<void>(promise.result());
+            FAIL() << "同一次失败第二次读取时不再抛出";
+        } catch (const Base::Exception &failure)
+        {
+            EXPECT_NE(std::string(failure.what()).find("TLS 握手失败"), std::string::npos) << "基类捕获拿到的原因不完整：" << failure.what();
+        }
 
         tlsSocket.close();
     }

@@ -313,7 +313,16 @@ namespace AsynGyanis::Net
     TEST(OAuthIntrospectionClientTest, RejectsEmptyEndpointAtConstruction)
     {
         Core::EventLoop loop;
-        EXPECT_THROW(static_cast<void>(OAuthIntrospectionClient(loop, OAuthIntrospectionOptions{})), Base::InvalidArgumentException);
+        try
+        {
+            OAuthIntrospectionClient client(loop, OAuthIntrospectionOptions{});
+            ADD_FAILURE() << "没有自省端点时构造函数仍然成功";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_NE(message.find("introspectionUrl"), std::string::npos) << "原因没有点名缺少的字段：" << message;
+            EXPECT_NE(message.find("不能为空"), std::string::npos) << message;
+        }
     }
 
 } // namespace AsynGyanis::Net

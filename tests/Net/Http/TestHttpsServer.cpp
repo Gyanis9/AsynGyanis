@@ -1395,8 +1395,19 @@ namespace AsynGyanis::Net
         RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{},
                                           [&isConfiguratorChecked](HttpsServer &server)
                                           {
-                                              EXPECT_THROW(server.enableMetricsEndpoint("/metrics", "asyn.srv"), Base::InvalidArgumentException);
-                                              EXPECT_THROW(server.enableMetricsEndpoint("/metrics", "asyn-srv"), Base::InvalidArgumentException);
+                                              for (const std::string_view badPrefix: {"asyn.srv", "asyn-srv"})
+                                              {
+                                                  try
+                                                  {
+                                                      server.enableMetricsEndpoint("/metrics", std::string(badPrefix));
+                                                      ADD_FAILURE() << "「" << badPrefix << "」不合 Prometheus 名字语法，却被收下";
+                                                  } catch (const Base::InvalidArgumentException &failure)
+                                                  {
+                                                      const std::string message = failure.what();
+                                                      EXPECT_NE(message.find("指标名前缀"), std::string::npos) << message;
+                                                      EXPECT_NE(message.find(badPrefix), std::string::npos) << "原因没有点名被拒的前缀：" << message;
+                                                  }
+                                              }
                                               EXPECT_NO_THROW(server.enableMetricsEndpoint("/metrics", "asyn_srv")) << "合法前缀不该被这道闸挡下";
                                               isConfiguratorChecked = true;
                                           });
@@ -3037,17 +3048,37 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         HttpsServer     server(loop, Core::InetAddress::localhost(0), kTestCertificatePath.string(), kTestKeyPath.string());
 
-        // 四条 setter 的路径判据：不以 / 开头（含空串）一律当场拒
-        EXPECT_THROW(server.enableMetricsEndpoint("metrics"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableHealthEndpoint(""), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableReadinessEndpoint("readyz"), Base::InvalidArgumentException);
-        EXPECT_THROW(server.enableLoopDiagnosticsEndpoint("loops"), Base::InvalidArgumentException);
+        // 四条 setter 的路径判据：不以 / 开头（含空串）一律当场拒，文案点名是哪个端点收到了什么
+        const auto expectPathRejected = [&server](const std::string_view endpointName, const auto &setter)
+        {
+            try
+            {
+                setter();
+                ADD_FAILURE() << endpointName << "端点接受了不以 / 开头的路径";
+            } catch (const Base::InvalidArgumentException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find(endpointName), std::string::npos) << message;
+                EXPECT_NE(message.find("必须以 / 开头"), std::string::npos) << message;
+            }
+        };
+        expectPathRejected("指标", [&server] { server.enableMetricsEndpoint("metrics"); });
+        expectPathRejected("健康检查", [&server] { server.enableHealthEndpoint(""); });
+        expectPathRejected("就绪探针", [&server] { server.enableReadinessEndpoint("readyz"); });
+        expectPathRejected("事件循环观测", [&server] { server.enableLoopDiagnosticsEndpoint("loops"); });
 
         // /debug/loops 的合法注册：TLS 侧此前无直测，补上钉住「这条路径确实挂得上去、不抛」
         EXPECT_NO_THROW(server.enableLoopDiagnosticsEndpoint("/debug/loops"));
 
         // 空采集端等于没有计数出口，读出来恒零却与「没流量」看不出差别，按用法错误直接拒绝
-        EXPECT_THROW(server.setMetricsCollector(nullptr), Base::InvalidArgumentException);
+        try
+        {
+            server.setMetricsCollector(nullptr);
+            ADD_FAILURE() << "空采集端被收下了，这条服务器此后读数恒零";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            EXPECT_NE(std::string(failure.what()).find("统计采集端不能为空"), std::string::npos) << "原因没有点明空采集端：" << failure.what();
+        }
     }
 
 } // namespace AsynGyanis::Net

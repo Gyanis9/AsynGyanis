@@ -479,9 +479,17 @@ namespace AsynGyanis::Net
         Core::EventLoop loop;
         const auto      startWithZeroSlice = [&loop]
         { return JwksKeyProvider::start(loop, JwksKeyProviderOptions{.jwksUrl = "http://127.0.0.1:1/jwks", .refreshRequestSlice = std::chrono::milliseconds{0}}); };
-        EXPECT_THROW(static_cast<void>(startWithZeroSlice()), Base::InvalidArgumentException);
+        try
+        {
+            static_cast<void>(startWithZeroSlice());
+            ADD_FAILURE() << "非正分片被收下了，刷新循环会退化成忙等";
+        } catch (const Base::InvalidArgumentException &failure)
+        {
+            const std::string message = failure.what();
+            EXPECT_NE(message.find("refreshRequestSlice"), std::string::npos) << "原因没有点名是哪一项配置：" << message;
+            EXPECT_NE(message.find("必须为正"), std::string::npos) << message;
+        }
     }
-
     TEST(JwksKeyProviderTest, NumericKidTypesDoNotThrowFromVerify)
     {
         const std::shared_ptr<EVP_PKEY> signingKey = generateRsaKeyPair();

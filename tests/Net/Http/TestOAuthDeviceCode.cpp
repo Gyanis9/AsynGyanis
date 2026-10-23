@@ -566,15 +566,23 @@ namespace AsynGyanis::Net
     TEST(OAuthDeviceCodeClientTest, RejectsEmptyConfigurationAtConstruction)
     {
         Core::EventLoop loop;
-        // 三个必填取值各自缺一即抛：没有端点、没有客户端标识就无从发起设备授权
-        EXPECT_THROW(static_cast<void>(OAuthDeviceCodeClient(loop, OAuthDeviceCodeOptions{.tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1"})),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(
-                static_cast<void>(OAuthDeviceCodeClient(loop, OAuthDeviceCodeOptions{.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization", .clientId = "client-1"})),
-                Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(OAuthDeviceCodeClient(
-                             loop, OAuthDeviceCodeOptions{.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization", .tokenUrl = "http://127.0.0.1:1/token"})),
-                     Base::InvalidArgumentException);
+        // 三个必填取值各自缺一即抛：没有端点、没有客户端标识就无从发起设备授权，文案点名缺的那一项
+        const auto expectMissingField = [&loop](OAuthDeviceCodeOptions options, const std::string_view field)
+        {
+            try
+            {
+                OAuthDeviceCodeClient client(loop, std::move(options));
+                ADD_FAILURE() << "缺少 " << field << " 时构造函数仍然成功";
+            } catch (const Base::InvalidArgumentException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find(field), std::string::npos) << "原因没有点名缺少的字段：" << message;
+                EXPECT_NE(message.find("不能为空"), std::string::npos) << message;
+            }
+        };
+        expectMissingField(OAuthDeviceCodeOptions{.tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1"}, "deviceAuthorizationUrl");
+        expectMissingField(OAuthDeviceCodeOptions{.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization", .clientId = "client-1"}, "tokenUrl");
+        expectMissingField(OAuthDeviceCodeOptions{.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization", .tokenUrl = "http://127.0.0.1:1/token"}, "clientId");
     }
 
 } // namespace AsynGyanis::Net

@@ -432,22 +432,30 @@ namespace AsynGyanis::Net
     TEST(OAuthAuthorizationCodeClientTest, RejectsEmptyConfigurationAtConstruction)
     {
         Core::EventLoop loop;
-        // 授权端点、令牌端点、客户端标识、回调地址四个取值各自缺一即抛
-        EXPECT_THROW(static_cast<void>(OAuthAuthorizationCodeClient(
-                             loop, OAuthAuthorizationCodeOptions{.tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1", .redirectUri = "https://app.example/cb"})),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(OAuthAuthorizationCodeClient(
-                             loop,
-                             OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize", .clientId = "client-1", .redirectUri = "https://app.example/cb"})),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(OAuthAuthorizationCodeClient(loop, OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize",
-                                                                                                        .tokenUrl         = "http://127.0.0.1:1/token",
-                                                                                                        .redirectUri      = "https://app.example/cb"})),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(
-                static_cast<void>(OAuthAuthorizationCodeClient(
-                        loop, OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize", .tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1"})),
-                Base::InvalidArgumentException);
+        // 授权端点、令牌端点、客户端标识、回调地址四个取值各自缺一即抛，文案点名缺的那一项
+        const auto expectMissingField = [&loop](OAuthAuthorizationCodeOptions options, const std::string_view field)
+        {
+            try
+            {
+                OAuthAuthorizationCodeClient client(loop, std::move(options));
+                ADD_FAILURE() << "缺少 " << field << " 时构造函数仍然成功";
+            } catch (const Base::InvalidArgumentException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find(field), std::string::npos) << "原因没有点名缺少的字段：" << message;
+                EXPECT_NE(message.find("不能为空"), std::string::npos) << message;
+            }
+        };
+        expectMissingField(OAuthAuthorizationCodeOptions{.tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1", .redirectUri = "https://app.example/cb"},
+                           "authorizationUrl");
+        expectMissingField(OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize", .clientId = "client-1", .redirectUri = "https://app.example/cb"},
+                           "tokenUrl");
+        expectMissingField(OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize",
+                                                         .tokenUrl         = "http://127.0.0.1:1/token",
+                                                         .redirectUri      = "https://app.example/cb"},
+                           "clientId");
+        expectMissingField(OAuthAuthorizationCodeOptions{.authorizationUrl = "https://auth.example/authorize", .tokenUrl = "http://127.0.0.1:1/token", .clientId = "client-1"},
+                           "redirectUri");
     }
 
 } // namespace AsynGyanis::Net
