@@ -892,6 +892,43 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 关闭套接字必须唤醒正卡在「等可读」上的协程，并让它观察到「已关闭」而不是 EOF
+     * @details 与 CloseWakesCoroutineBlockedOnSend 同一契约的读方向：关闭描述符本身不会唤醒事件后端，
+     *          只有注销注册对象那一步会。缺了它，挂在 receive 上的会话协程永远不回来；把它当 0 交回
+     *          则会把「本端关闭」误报成「对端正常收线」。
+     */
+    TEST(AsyncSocket, CloseWakesCoroutineBlockedOnReceive)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket   reader(loop, localDescriptor);
+        std::string   buffer(64, '\0');
+        Task<ssize_t> receiving = reader.asyncReceive(buffer.data(), buffer.size());
+        receiving.handle().resume();
+        ASSERT_FALSE(receiving.isReady()) << "对端一个字都没写，接收却没有挂到「等可读」上：本机构造不出该场景";
+
+        reader.close();
+        loop.scheduler().runAll();
+
+        ASSERT_TRUE(receiving.isReady()) << "关闭套接字之后，卡在等可读上的协程仍未被唤醒";
+        try
+        {
+            static_cast<void>(receiving.handle().promise().result());
+            FAIL() << "本端关闭被当成了 EOF 或一次就绪：await_resume 没有交回失败";
+        } catch (const Base::SystemException &failure)
+        {
+            EXPECT_NE(std::string{failure.what()}.find("等待可读期间套接字被关闭"), std::string::npos) << "原因没有点明是本端关闭：" << failure.what();
+            EXPECT_EQ(failure.nativeError(), Platform::PlatformError::kConnectionAborted) << "异常携带的错误号不是 socket 空间的「本端中止连接」";
+        }
+
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
      * @brief 参数取值非法必须落在「用法错误」那条分支上，而不是运行期故障链
      * @details 明文套接字与 TLS 套接字在 HttpSession 里是可替换的（调用方用 requires 探测能力），
      *          同一条误用因此必须走同一条分支：TlsSocket 早就把这类拒绝放在 std::invalid_argument
