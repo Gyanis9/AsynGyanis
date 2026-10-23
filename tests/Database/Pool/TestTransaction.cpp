@@ -37,8 +37,10 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/ConnectionUnavailableException.h"
 #include "Database/Common/DatabaseConnection.h"
 #include "Database/Common/DatabaseFactory.h"
+#include "Database/Common/QueryExecutionException.h"
 #include "Database/Common/TransactionTimeoutException.h"
 #include "Database/Dialect/SqlDialect.h"
 #include "Database/Dialect/SqliteDialect.h"
@@ -123,10 +125,12 @@ namespace
 {
     using AsynGyanis::Database::ConnectionConfig;
     using AsynGyanis::Database::ConnectionPool;
+    using AsynGyanis::Database::ConnectionUnavailableException;
     using AsynGyanis::Database::DatabaseConnection;
     using AsynGyanis::Database::DatabaseFactory;
     using AsynGyanis::Database::PoolConfig;
     using AsynGyanis::Database::PooledConnection;
+    using AsynGyanis::Database::QueryExecutionException;
     using AsynGyanis::Database::SqliteConnection;
     using AsynGyanis::Database::SqliteDialect;
     using AsynGyanis::Database::Transaction;
@@ -497,7 +501,16 @@ TEST_F(TransactionTest, TransactionHoldsItsConnectionUntilItEnds)
     EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(1, "单连接事务", 3.0, std::nullopt)), 1);
 
     // 第二个事务拿不到连接：绝不允许它复用第一条连接（那会把两个事务混在一条会话上）
-    EXPECT_THROW(static_cast<void>(Transaction(singleConnectionPool)), std::runtime_error);
+    try
+    {
+        static_cast<void>(Transaction(singleConnectionPool));
+        FAIL() << "池里唯一一条连接已被占用，第二个事务却拿到了连接";
+    } catch (const ConnectionUnavailableException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find("无法从连接池获取连接"), std::string::npos) << "原因没有点明取连接失败：" << message;
+        EXPECT_NE(message.find("事务未开启"), std::string::npos) << "原因没有说明事务未开启：" << message;
+    }
 
     // 第一个事务不受影响：仍然可以继续写并提交
     EXPECT_EQ(transactionalQuery.insert(makeLedgerRow(2, "仍然可用", 4.0, std::nullopt)), 1);
@@ -1411,4 +1424,36 @@ TEST_F(TransactionTest, WithTransactionRollsBackWhenCallbackThrows)
     // 借出与归还都要平：异常路径上那条连接不能留在池外
     PooledConnection connection = m_pool->acquire();
     ASSERT_TRUE(connection) << "回滚之后连接没归还池";
+}
+
+/**
+ * @brief COMMIT 失败必须抛出并让池丢掉那条脏连接，而不是把失败静默成成功
+ * @details 回调里绕过事务对象执行裸 ROLLBACK，随即让 withTransaction 发 COMMIT：SQLite 会以
+ *          「no transaction is active」拒绝。此时若把 commit() 的 false 当成功返回，调用方会
+ *          以为数据已落库；若把这条连接还回池，下一位借用者会继承一个状态不明的会话。
+ */
+TEST_F(TransactionTest, WithTransactionReportsCommitFailureAndKeepsPoolUsable)
+{
+    const std::size_t discardedBefore = m_pool->discardedCount();
+
+    try
+    {
+        m_pool->withTransaction(
+                [](Transaction &transaction)
+                {
+                    const auto result = transaction.connection().execute("ROLLBACK");
+                    ASSERT_NE(result, nullptr) << "裸 ROLLBACK 没执行成功，构造不出「COMMIT 失败」的前提";
+                });
+        FAIL() << "COMMIT 失败被当成了成功返回";
+    } catch (const QueryExecutionException &failure)
+    {
+        const std::string message = failure.what();
+        EXPECT_NE(message.find("事务提交失败"), std::string::npos) << "原因没有点名提交失败：" << message;
+    }
+
+    EXPECT_GE(m_pool->discardedCount(), discardedBefore + 1U) << "提交失败的连接没有被丢弃，仍可能被下一位借用者复用";
+
+    PooledConnection next = m_pool->acquire();
+    ASSERT_TRUE(next) << "丢弃脏连接后池没能再借出连接";
+    EXPECT_NE(next->execute("SELECT 1"), nullptr) << "新借出的连接不可用";
 }
