@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.1.0
-# headers=310 entries=9088
+# headers=310 entries=9094
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1569,6 +1569,7 @@ src/Core/Socket/ConnectionManager.h	void setSharedActiveCountMirror(std::atomic<
 src/Core/Socket/ConnectionManager.h	void shutdown()
 src/Core/Socket/ConnectionManager.h	void waitAll()
 src/Core/Socket/ConnectionRace.h	ASYN_CORE_API Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline)
+src/Core/Socket/ConnectionRace.h	ASYN_CORE_API Task<std::optional<ConnectedCandidate>> connectCandidates(EventLoop &loop, std::vector<InetAddress> candidates, std::chrono::milliseconds deadline, std::stop_token cancelToken)
 src/Core/Socket/ConnectionRace.h	AsyncSocket socket
 src/Core/Socket/ConnectionRace.h	InetAddress address
 src/Core/Socket/ConnectionRace.h	[[nodiscard]] ASYN_CORE_API std::vector<InetAddress> orderForConnectionRace(const std::vector<InetAddress> &resolved)
@@ -1709,6 +1710,7 @@ src/Core/Tls/TlsSocket.h	EventLoop *m_loop
 src/Core/Tls/TlsSocket.h	Role m_role
 src/Core/Tls/TlsSocket.h	Task<> handshake()
 src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t length) const
+src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncReceive(void *buffer, size_t length, std::stop_token stopToken) const
 src/Core/Tls/TlsSocket.h	Task<ssize_t> asyncSend(const void *buffer, size_t length) const
 src/Core/Tls/TlsSocket.h	TlsSocket &operator=(TlsSocket &&other) noexcept
 src/Core/Tls/TlsSocket.h	TlsSocket &operator=(const TlsSocket &) = delete
@@ -3600,6 +3602,7 @@ src/Net/Http/Client/HttpOutboundConnectionPool.h	InFlightOverflowPolicy inFlight
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> send(std::string_view data)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<bool> waitReadable(std::stop_token stopToken)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length)
+src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length, std::stop_token stopToken)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] HttpEstablishmentAwait awaitEstablishment(const HttpOutboundEndpointKey &endpointKey, Core::EventLoop &loop)
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] HttpResponseParser &parser() noexcept
 src/Net/Http/Client/HttpOutboundConnectionPool.h	[[nodiscard]] bool isOpen() const noexcept
@@ -5163,9 +5166,11 @@ src/Net/Http2/Http2ClientConnection.h	Core::Task<Http2ClientResponse> requestWit
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> deliverReceivedBody(PendingStream &stream)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> flushOutgoing()
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSome()
+src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSome(std::stop_token stopToken)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> pumpSomeCancellable(std::stop_token stopToken)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> sendBody(PendingStream &stream, std::string_view body, bool isEndOfBody = true)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource)
+src/Net/Http2/Http2ClientConnection.h	Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource, std::stop_token cancelToken)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<void> cancelStream(std::uint32_t streamId)
 src/Net/Http2/Http2ClientConnection.h	Core::Task<void> retireIfStreamBudgetSpent()
 src/Net/Http2/Http2ClientConnection.h	Core::Task<void> shutdown()
@@ -5186,6 +5191,7 @@ src/Net/Http2/Http2ClientConnection.h	StreamAwaiter(Http2ClientConnection &conne
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] Core::Task<Http2ClientResponse> request(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders, std::string_view body, std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver =
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] Core::Task<Http2ClientResponse> requestStreamed(std::string_view scheme, std::string_view authority, std::string_view method, std::string_view path, const std::vector<std::pair<std::string, std::string>> &extraHeaders, const HttpBodyChunkSource &bodySource, std::chrono::milliseconds waitTimeout, const Http2ResponseBodyReceiver &responseReceiver =
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] Core::Task<bool> start(std::chrono::milliseconds waitTimeout)
+src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] Core::Task<bool> start(std::chrono::milliseconds waitTimeout, std::stop_token cancelToken)
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] bool await_ready() const noexcept
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] bool isHealthy() const noexcept
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] bool isOk() const noexcept
