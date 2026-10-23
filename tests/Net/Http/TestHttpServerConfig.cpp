@@ -60,6 +60,28 @@ namespace AsynGyanis::Net
         {
             static_cast<void>(readHttpServerConfiguration(document));
         }
+
+        /**
+         * @brief 断言读配置按校验错误失败，并交回出错的键名与正文
+         * @param document 待读的配置文档
+         * @return std::pair<std::string, std::string> 键名与异常正文；该拒没拒或类型不符时为空并记失败
+         */
+        std::pair<std::string, std::string> rejectionOf(const Base::ConfigValue &document)
+        {
+            try
+            {
+                static_cast<void>(readHttpServerConfiguration(document));
+            } catch (const Base::ConfigValidationException &failure)
+            {
+                return {failure.key(), failure.what()};
+            } catch (const std::exception &unexpected)
+            {
+                ADD_FAILURE() << "抛出的异常类型不符：" << unexpected.what();
+                return {};
+            }
+            ADD_FAILURE() << "该拒的配置被接受了";
+            return {};
+        }
     } // namespace
 
     /**
@@ -355,10 +377,12 @@ namespace AsynGyanis::Net
                 {"limits", object(Base::ConfigObject{{"read_timeout_ms", text("60000")}})},
         };
 
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(serverMembers)), Base::ConfigValidationException);
+        const auto [typeKey, typeMessage] = rejectionOf(makeRootDocument(serverMembers));
+        EXPECT_EQ(typeKey, "server.limits.read_timeout_ms") << typeMessage;
 
         const Base::ConfigObject booleanMismatch{{"expose_metrics", text("yes")}};
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(booleanMismatch)), Base::ConfigValidationException);
+        const auto [booleanKey, booleanMessage] = rejectionOf(makeRootDocument(booleanMismatch));
+        EXPECT_EQ(booleanKey, "server.expose_metrics") << booleanMessage;
 
         // 访问日志那一格同样只认真布尔：`on`/`1`/`enabled` 在 YAML 里各有自己的解释，
         // 静默猜一侧等于「配了关而实际还开着」
@@ -428,18 +452,21 @@ namespace AsynGyanis::Net
         const Base::ConfigObject negativeTimeout{
                 {"limits", object(Base::ConfigObject{{"write_timeout_ms", integer(-1)}})},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(negativeTimeout)), Base::ConfigValidationException);
+        const auto [timeoutKey, timeoutMessage] = rejectionOf(makeRootDocument(negativeTimeout));
+        EXPECT_EQ(timeoutKey, "server.limits.write_timeout_ms") << timeoutMessage;
 
         const Base::ConfigObject negativeRate{
                 {"rate_limit", object(Base::ConfigObject{{"requests_per_second", floating(-2.0)}})},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(negativeRate)), Base::ConfigValidationException);
+        const auto [rateKey, rateMessage] = rejectionOf(makeRootDocument(negativeRate));
+        EXPECT_EQ(rateKey, "server.rate_limit.requests_per_second") << rateMessage;
 
         // 字节数这道账同族：负数折成 size_t 是一个天文数字，等于「配了限制而它永远不生效」
         const Base::ConfigObject negativeMemoryBudget{
                 {"memory_budget_bytes", integer(-1)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(negativeMemoryBudget)), Base::ConfigValidationException);
+        const auto [memoryKey, memoryMessage] = rejectionOf(makeRootDocument(negativeMemoryBudget));
+        EXPECT_EQ(memoryKey, "server.memory_budget_bytes") << memoryMessage;
     }
 
     /**
@@ -449,10 +476,12 @@ namespace AsynGyanis::Net
     {
         Base::ConfigObject root;
         root.emplace(std::string(kHttpServerConfigSection), integer(42));
-        EXPECT_THROW(expectConfigurationRejected(Base::ConfigValue(std::move(root))), Base::ConfigValidationException);
+        const auto [sectionKey, sectionMessage] = rejectionOf(Base::ConfigValue(std::move(root)));
+        EXPECT_EQ(sectionKey, "server") << sectionMessage;
 
         const Base::ConfigObject scalarLimits{{"limits", integer(1)}};
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(scalarLimits)), Base::ConfigValidationException);
+        const auto [limitsKey, limitsMessage] = rejectionOf(makeRootDocument(scalarLimits));
+        EXPECT_EQ(limitsKey, "server.limits") << limitsMessage;
     }
 
     /**
@@ -464,7 +493,8 @@ namespace AsynGyanis::Net
                 {"rate_limit", object(Base::ConfigObject{{"requests_per_second", floating(10.0)}, {"burst_capacity", floating(0.5)}})},
         };
 
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(serverMembers)), Base::ConfigValidationException);
+        const auto [burstKey, burstMessage] = rejectionOf(makeRootDocument(serverMembers));
+        EXPECT_EQ(burstKey, "server.rate_limit.burst_capacity") << burstMessage;
 
         // 不限流时容量取多少都无所谓：没有速率就没有桶
         const Base::ConfigObject unlimitedRequests{
@@ -484,19 +514,22 @@ namespace AsynGyanis::Net
                 {"expose_metrics", boolean(true)},
                 {"ops_bearer_token", Base::ConfigValue("")},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(emptyToken)), Base::ConfigValidationException);
+        const auto [emptyKey, emptyMessage] = rejectionOf(makeRootDocument(emptyToken));
+        EXPECT_EQ(emptyKey, "server.ops_bearer_token") << emptyMessage;
 
         const Base::ConfigObject tokenWithoutEndpoints{
                 {"ops_bearer_token", Base::ConfigValue("a-real-token")},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(tokenWithoutEndpoints)), Base::ConfigValidationException);
+        const auto [lonelyKey, lonelyMessage] = rejectionOf(makeRootDocument(tokenWithoutEndpoints));
+        EXPECT_EQ(lonelyKey, "server.ops_bearer_token") << lonelyMessage;
 
         // 非字符串的令牌也是拒：把令牌写成数字会静默变成「有值」的假象
         const Base::ConfigObject tokenIsNumber{
                 {"expose_metrics", boolean(true)},
                 {"ops_bearer_token", integer(42)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(tokenIsNumber)), Base::ConfigValidationException);
+        const auto [numberKey, numberMessage] = rejectionOf(makeRootDocument(tokenIsNumber));
+        EXPECT_EQ(numberKey, "server.ops_bearer_token") << numberMessage;
     }
 
     /**
@@ -512,14 +545,16 @@ namespace AsynGyanis::Net
                 {"expose_metrics", boolean(true)},
                 {"metrics_port", integer(70000)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portTooLarge)), Base::ConfigValidationException);
+        const auto [largeKey, largeMessage] = rejectionOf(makeRootDocument(portTooLarge));
+        EXPECT_EQ(largeKey, "server.metrics_port") << largeMessage;
 
         // 负数端口：取模后会去听一个高位端口，而配置文件上写的是「-1」
         const Base::ConfigObject portNegative{
                 {"expose_metrics", boolean(true)},
                 {"metrics_port", integer(-1)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portNegative)), Base::ConfigValidationException);
+        const auto [negativeKey, negativeMessage] = rejectionOf(makeRootDocument(portNegative));
+        EXPECT_EQ(negativeKey, "server.metrics_port") << negativeMessage;
 
         // 地址不是可解析的 IP 字面量：写成主机名要的是 DNS，而这里只收字面量
         const Base::ConfigObject addressIsHostname{
@@ -527,7 +562,8 @@ namespace AsynGyanis::Net
                 {"metrics_port", integer(9101)},
                 {"metrics_address", text("localhost")},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressIsHostname)), Base::ConfigValidationException);
+        const auto [hostnameKey, hostnameMessage] = rejectionOf(makeRootDocument(addressIsHostname));
+        EXPECT_EQ(hostnameKey, "server.metrics_address") << hostnameMessage;
 
         // 地址写成数字类型
         const Base::ConfigObject addressIsNumber{
@@ -535,20 +571,23 @@ namespace AsynGyanis::Net
                 {"metrics_port", integer(9101)},
                 {"metrics_address", integer(1)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressIsNumber)), Base::ConfigValidationException);
+        const auto [addressKey, addressMessage] = rejectionOf(makeRootDocument(addressIsNumber));
+        EXPECT_EQ(addressKey, "server.metrics_address") << addressMessage;
 
         // 配了管理口却没开端点：这个口上什么都听不到
         const Base::ConfigObject portWithoutEndpoints{
                 {"metrics_port", integer(9101)},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(portWithoutEndpoints)), Base::ConfigValidationException);
+        const auto [lonelyPortKey, lonelyPortMessage] = rejectionOf(makeRootDocument(portWithoutEndpoints));
+        EXPECT_EQ(lonelyPortKey, "server.metrics_port") << lonelyPortMessage;
 
         // 只改监听地址而端口是 0：端点还挂在业务口上，这个地址没人用
         const Base::ConfigObject addressWithoutPort{
                 {"expose_metrics", boolean(true)},
                 {"metrics_address", text("0.0.0.0")},
         };
-        EXPECT_THROW(expectConfigurationRejected(makeRootDocument(addressWithoutPort)), Base::ConfigValidationException);
+        const auto [lonelyAddressKey, lonelyAddressMessage] = rejectionOf(makeRootDocument(addressWithoutPort));
+        EXPECT_EQ(lonelyAddressKey, "server.metrics_address") << lonelyAddressMessage;
 
         // 正向对照：三项齐配才收，且默认地址（回环）在端口为 0 时不算冲突
         const Base::ConfigObject wellFormed{
