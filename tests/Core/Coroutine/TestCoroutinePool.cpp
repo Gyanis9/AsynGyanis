@@ -73,7 +73,7 @@ namespace AsynGyanis::Core
     /**
      * @brief 小档装不下的帧由更高的档接手：仍然整段可写，且指针归属本池而不是一次性全局堆分配
      *
-     * @details 池按帧大小分三档（256 / 2048 / 3072）：小档装得下的小帧不浪费，往上各档接住框架里
+     * @details 池按帧大小分三档（256 / 2048 / 4096）：小档装得下的小帧不浪费，往上各档接住框架里
      *          会话与路由那类帧。实测过：不分档时每请求有 5–7 个帧落到全局堆，占每请求分配字节数的大头。
      */
     TEST(CoroutinePool, ServesOversizedFramesFromTheLargeTier)
@@ -104,14 +104,14 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 顶档要盖住实测最大的那个热帧：路由派发帧（2704 字节）必须从池里拿，不回退全局堆
+     * @brief 顶档要盖住实测最大的那个热帧：路由派发帧（3248 字节）必须从池里拿，不回退全局堆
      * @details 这条是 2026-10-10 那笔变红的直接护栏：`Router::route` 的帧涨到 2704 字节后越过当时
      *          只有两档时的顶档 2048，于是每条被派发的请求都要向全局分配器要一次内存——
      *          台账 `TestHotPathAllocations.RouterDispatchExactPathAllocations`（钉「一千次共 0 次」）
-     *          当场变红。2704 是 MSVC 14.51 Release 的实测帧尺寸（用分配追踪探针量出：只创建帧、
-     *          不恢复执行，窗口里就剩这一笔），写在这里判的是池的规格——顶档必须容得下它，
-     *          而不是断言路由帧将来还这么大（那是编译器的槽位排布，本仓钉不住）。
-     *          证伪：把顶档规格降回 2048，这条与那条台账一起红。
+     *          当场变红。该帧后来继续长到 3248 字节（MSVC 14.51 Release 用分配追踪探针量出：只创建帧、
+     *          不恢复执行，窗口里就剩这一笔），越过 3072；同一笔台账再次变红，于是补了 4096 档。
+     *          写在这里判的是池的规格——顶档必须容得下它，而不是断言路由帧将来还这么大。
+     *          证伪：把顶档规格降回 3072，这条与那条台账一起红。
      */
     TEST(CoroutinePool, ServesRouterSizedFramesWithoutFallingBackToGlobalNew)
     {
@@ -122,7 +122,7 @@ namespace AsynGyanis::Core
 
         auto &pool = CoroutinePool::instance();
 
-        constexpr size_t routerFrameBytes = 2704U; ///< MSVC 14.51 Release 实测的 Router::route 帧尺寸
+        constexpr size_t routerFrameBytes = 3248U; ///< MSVC 14.51 Release 实测的 Router::route 帧尺寸
         void            *pointer          = pool.allocate(routerFrameBytes);
         ASSERT_NE(pointer, nullptr);
         EXPECT_TRUE(pool.owns(pointer)) << "热帧落到全局堆就是每请求一次分配器调用，顶档没盖住实测尺寸";
@@ -145,8 +145,8 @@ namespace AsynGyanis::Core
     {
         auto &pool = CoroutinePool::instance();
 
-        // 十六倍小档（默认 4 KiB）：超过顶档规格，只能向全局分配器要
-        const size_t hugeSize = pool.blockSize() * 16;
+        // 三十二倍小档（默认 8 KiB）：超过顶档规格 4096，只能向全局分配器要
+        const size_t hugeSize = pool.blockSize() * 32;
         void        *pointer  = pool.allocate(hugeSize);
         ASSERT_NE(pointer, nullptr);
         EXPECT_FALSE(pool.owns(pointer)) << "超过最大档的帧应当来自全局堆";

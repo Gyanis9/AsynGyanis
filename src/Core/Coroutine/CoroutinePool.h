@@ -87,22 +87,21 @@ namespace AsynGyanis::Core
         [[nodiscard]] size_t allocatedCount() const noexcept;
 
     private:
-        // 规格分档：协程帧大小分布很宽（框架里实测从几十字节到 2.7 KB），单一规格必然二选一地亏——
+        // 规格分档：协程帧大小分布很宽（框架里实测从几十字节到 3.2 KB），单一规格必然二选一地亏——
         // 按小的定，大帧每次都要向全局分配器要内存；按大的定，小帧要占着大块、活跃连接一多就是成倍常驻内存。
         // 阶梯按观测到的帧尺寸排布，最后一档之上才回退全局堆。
         //
-        // 第三档（3072）是 2026-10-10 补的，理由写在这里，因为它是「为什么不再只有两档」的唯一记录：
-        // `Router::route` 的帧在 MSVC 14.51 的 Release 下实测 2704 字节（用分配追踪探针量的：只创建帧、
-        // 不恢复执行，窗口里就剩这一笔），越过了当时的大档 2048，于是每一条被派发的请求都向全局分配器
-        // 要一次内存——台账 `TestHotPathAllocations.RouterDispatchExactPathAllocations` 当场从「一千次共 0 次」
-        // 变红成「一千次共 1000 次」。帧尺寸由编译器的槽位排布决定，不是本仓钉得住的量，所以修法是给阶梯
-        // 补上实测最大热帧之上的那一档，而不是去削函数体。顶档取 3072 而不是 4096：热帧（2704）与落在
-        // 2–3 KB 的会话帧都装得下，而每条常驻连接按 4096 一块要多留 1.9 KB，那个代价没有读数支撑。
-        // 「热路径不掉回全局堆」仍由那条台账每次提交重验——将来有热帧涨过 3072，它一样会红
-        static constexpr std::array<size_t, 3> kTierBlockSizes{{256, 2048, 3072}};             ///< 各档块大小：小帧 / 会话这类中帧 / 实测最大的热帧（路由派发帧 2704）
+        // 第三档（原 3072）当初覆盖 `Router::route` 的 2704 字节帧；后来该帧涨到 3248 字节（MSVC 14.51
+        // Release 用分配追踪探针量出：只创建帧、不恢复执行，窗口里就剩这一笔），3072 不再覆盖，台账
+        // `TestHotPathAllocations.RouterDispatchExactPathAllocations` 从「一千次共 0 次」变红成
+        // 「一千次共 1000 次」。顶档改为 4096，而不是改台账期望：覆盖 3248 并留 848 字节余量。中间
+        // 3072 档被并入顶档后，2–3 KB 的会话帧会多占最多 2 KB；这是「不给公开头加第四档、不动类布局」
+        // 的取舍，池上限按顶档算 64 MiB。热路径不掉回全局堆仍由那条台账每次提交重验——将来有热帧
+        // 涨过 4096，它一样会红
+        static constexpr std::array<size_t, 3> kTierBlockSizes{{256, 2048, 4096}};             ///< 各档块大小：小帧 / 会话这类中帧 / 实测最大的热帧（路由派发帧 3248）
         static constexpr size_t                kTierCount            = kTierBlockSizes.size(); ///< 规格档数：每档各有自己的空闲链表、每线程缓存与内存段
         static constexpr size_t                kDefaultInitialBlocks = 128;                    ///< 首次扩容的块数
-        static constexpr size_t                kMaximumTotalBlocks   = 16384;                  ///< 块数上限（各档合计）：全按小档算约 4 MiB、全按顶档算约 48 MiB
+        static constexpr size_t                kMaximumTotalBlocks   = 16384;                  ///< 块数上限（各档合计）：全按小档算约 4 MiB、全按顶档算约 64 MiB
         static constexpr size_t                kLocalCacheCapacity   = 64;                     ///< 每线程每档缓存上限
         static constexpr size_t                kMaximumChunkCount    = 64;                     ///< 段数上限（各档合计；倍增扩容下 16384 块只需约 8 段）
 
