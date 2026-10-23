@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <limits>
@@ -427,6 +428,32 @@ namespace AsynGyanis::Database
         // 整行只有空白等价于零参数命令，Redis 侧只会得到一条 ERR，这里直接拒绝
         EXPECT_FALSE(connection.pipelineCommand("   \t "));
         EXPECT_FALSE(connection.lastError().empty());
+    }
+
+    /**
+     * @brief 钉住命令词法错误只报命令名，不回显原文里可能带着的口令
+     * @details 管道登记与带参 execute 都在连接检查之前切词，失败文本会被日志与监控拿走。
+     *          AUTH 的口令就写在命令原文里，整段回显等于把凭据写进 lastError()。判据同时
+     *          保留正向对照：命令名必须还在，否则修成「什么都不说」会让现场无从定位。
+     */
+    TEST(RedisConnection, MalformedCommandTextDoesNotEchoCredentials)
+    {
+        RedisConnection            connection(ConnectionConfig::redisDefault());
+        constexpr std::string_view kPasswordMarker = "s3cr3t-marker-not-a-real-password";
+
+        EXPECT_FALSE(connection.pipelineCommand("AUTH \"" + std::string(kPasswordMarker)));
+        const std::string pipelineReason = connection.lastError();
+        EXPECT_EQ(pipelineReason.find(kPasswordMarker), std::string::npos) << "管道登记错误回显了口令：" << pipelineReason;
+        EXPECT_NE(pipelineReason.find("AUTH"), std::string::npos) << "命令名没保留，诊断失去定位：" << pipelineReason;
+
+        const std::vector<DatabaseValue> noParameters;
+        EXPECT_EQ(connection.execute("AUTH \"" + std::string(kPasswordMarker), std::span<const DatabaseValue>(noParameters)), nullptr);
+        const std::string executeReason = connection.lastError();
+        EXPECT_EQ(executeReason.find(kPasswordMarker), std::string::npos) << "带参执行错误回显了口令：" << executeReason;
+        EXPECT_NE(executeReason.find("AUTH"), std::string::npos) << "命令名没保留，诊断失去定位：" << executeReason;
+
+        EXPECT_FALSE(connection.pipelineCommand("SET \"unclosed"));
+        EXPECT_NE(connection.lastError().find("SET"), std::string::npos) << "普通命令名也该保留：" << connection.lastError();
     }
 
     /**

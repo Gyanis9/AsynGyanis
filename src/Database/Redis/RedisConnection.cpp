@@ -97,6 +97,24 @@ namespace AsynGyanis::Database
         // 参数分隔空白，与 redis-cli 的切词行为一致；手写集合而不是 std::isspace，免得引入 locale 依赖
         constexpr std::string_view kWhitespaceCharacters = " \t\n\v\f\r";
 
+        /**
+         * @brief 把不合法的命令原文压成可安全写进错误文本的片段：只留命令词
+         * @details 原文里可能带着 AUTH 的口令、SET 的值或 URL 里的令牌，而 lastError() 会被日志与
+         *          监控拿走。命令词是定位问题所需的坐标，保留它；其余内容一律不落进文本。
+         * @param command 切词失败的原始命令文本
+         * @return std::string 形如「命令名「AUTH」，其余内容不回显（可能含凭据）」
+         */
+        std::string redactedCommandText(const std::string_view command)
+        {
+            const std::size_t commandBegin = command.find_first_not_of(kWhitespaceCharacters);
+            if (commandBegin == std::string_view::npos)
+            {
+                return "命令内容为空";
+            }
+            const std::size_t commandEnd = command.find_first_of(kWhitespaceCharacters, commandBegin);
+            return "命令名「" + std::string(command.substr(commandBegin, commandEnd - commandBegin)) + "」，其余内容不回显（可能含凭据）";
+        }
+
         using Detail::makeTimeval;
 
         /**
@@ -648,7 +666,7 @@ namespace AsynGyanis::Database
         const std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
-            m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + std::string(command);
+            m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + redactedCommandText(command);
             return nullptr;
         }
 
@@ -665,7 +683,7 @@ namespace AsynGyanis::Database
         std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
-            m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + std::string(command);
+            m_lastError = "Redis 命令不合法（内容为空或引号未闭合）：" + redactedCommandText(command);
             return nullptr;
         }
 
@@ -730,7 +748,7 @@ namespace AsynGyanis::Database
         const std::optional<std::vector<std::string>> argumentValues = splitCommandLine(command);
         if (!argumentValues.has_value())
         {
-            m_lastError = "Redis 管道命令不合法（内容为空或引号未闭合）：" + std::string(command);
+            m_lastError = "Redis 管道命令不合法（内容为空或引号未闭合）：" + redactedCommandText(command);
             return false;
         }
 
