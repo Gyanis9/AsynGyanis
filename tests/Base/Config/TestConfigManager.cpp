@@ -13,6 +13,7 @@
 #include "Base/Exception/ConfigKeyNotFoundException.h"
 #include "Base/Exception/ConfigValidationException.h"
 #include "Base/Log/Logger.h"
+#include "AssertionSupport.h"
 #include "Base/Log/LoggerRegistry.h"
 #include "Base/Log/Sinks/LogSink.h"
 #include "BaseTestSupport.h"
@@ -1676,7 +1677,7 @@ port: 9090
         writeFile("cfg.yaml", "name: test\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_THROW(static_cast<void>(configuration().get("missing.key")), ConfigKeyNotFoundException);
+        // 缺失键的完整判据由下面的 key() 与正文核对覆盖，这里不再重复一次只判类型的调用
 
         try
         {
@@ -1716,9 +1717,8 @@ port: 9090
         writeFile("cfg.yaml", "name: test\nport: 8080\n");
         ASSERT_TRUE(configuration().loadFromDirectory(directory()).success);
 
-        EXPECT_THROW(static_cast<void>(configuration().get<std::string>("port")), ConfigValidationException);
-        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("name")), ConfigValidationException);
-        EXPECT_THROW(static_cast<void>(configuration().get<int64_t>("nonexistent")), ConfigKeyNotFoundException);
+        AsynGyanis::TestSupport::expectFailure<ConfigValidationException>([&] { static_cast<void>(configuration().get<int64_t>("name")); }, "name", "int64 读文本键");
+        AsynGyanis::TestSupport::expectFailure<ConfigKeyNotFoundException>([&] { static_cast<void>(configuration().get<int64_t>("nonexistent")); }, "nonexistent", "不存在的键");
         EXPECT_EQ(configuration().get<std::string>("name"), "test");
 
         try

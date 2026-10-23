@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "AllocationProbe.h"
+#include "AssertionSupport.h"
 #include "BaseTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -260,7 +261,7 @@ namespace AsynGyanis::Base
         message += "字节";
         JsonFormatter formatter;
 
-        EXPECT_THROW(static_cast<void>(formatter.format(makeEvent(message))), Exception);
+        AsynGyanis::TestSupport::expectFailure<Exception>([&] { static_cast<void>(formatter.format(makeEvent(message))); }, "非法 UTF-8", "format");
     }
 
     /**
@@ -291,7 +292,7 @@ namespace AsynGyanis::Base
 
         JsonFormatter formatter;
         std::string   buffer = "已经写好的内容";
-        EXPECT_THROW(formatter.formatInto(buffer, makeEvent(message)), Exception);
+        AsynGyanis::TestSupport::expectFailure<Exception>([&] { formatter.formatInto(buffer, makeEvent(message)); }, "非法 UTF-8", "formatInto");
         EXPECT_EQ(buffer, "已经写好的内容");
     }
 
@@ -457,12 +458,21 @@ namespace AsynGyanis::Base
         formatter.formatInto(out, event);
 
         const std::string longKey(300U, 'k');
+        const std::string beforeFailure = out;
         {
             const LogContextScope context({{"c", "3"}, {longKey, "4"}});
             const std::uint64_t   failuresBefore = AsynGyanis::TestSupport::injectedAllocationFailureCount();
             {
                 const auto guard = AsynGyanis::TestSupport::AllocationFailureGuard::forNextAllocationBetween(300U, 1024U);
-                EXPECT_THROW(formatter.formatInto(out, event), std::bad_alloc);
+                try
+                {
+                    formatter.formatInto(out, event);
+                    ADD_FAILURE() << "注入分配失败后 formatInto 仍然成功";
+                } catch (const std::bad_alloc &)
+                {
+                    // 资源判据：失败的那一行一个字节都不能留在调用方缓冲里
+                    EXPECT_EQ(out, beforeFailure) << "分配失败后调用方缓冲被写了半条 JSON";
+                }
             }
             EXPECT_GT(AsynGyanis::TestSupport::injectedAllocationFailureCount(), failuresBefore) << "注入没有命中，后面的断言不成立";
         }

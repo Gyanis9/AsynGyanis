@@ -23,6 +23,7 @@
 #include "Base/Log/SourceLocation.h"
 
 #include "BaseTestSupport.h"
+#include "AssertionSupport.h"
 
 namespace AsynGyanis::Base
 {
@@ -547,8 +548,16 @@ namespace AsynGyanis::Base
             }
         }
 
-        // 阈值 1 字节 -> 这一行必然进入滚动，进而走到重开并抛出
-        EXPECT_THROW(sink.write(makeEvent(LogLevel::Info, "lost_during_outage_payload")), std::exception);
+        // 阈值 1 字节 -> 这一行必然进入滚动，进而走到重开并抛出；原因来自平台文件层，
+        // 这里只核对「有原因」，真正的判据是下面撤掉故障后的恢复
+        try
+        {
+            sink.write(makeEvent(LogLevel::Info, "lost_during_outage_payload"));
+            ADD_FAILURE() << "重开失败时 write() 没有抛出";
+        } catch (const std::exception &failure)
+        {
+            EXPECT_FALSE(std::string(failure.what()).empty()) << "重开失败没有留下原因";
+        }
 
         // 撤掉故障：只读位解除即可（备份位那两个目录留着不影响本行的落盘位置断言）
         ASSERT_NO_THROW(fs::permissions(activePath, fs::perms::all, fs::perm_options::add));
