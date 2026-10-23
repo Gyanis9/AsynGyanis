@@ -2,8 +2,11 @@
 #include "Base/Coding/Base64.h"
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/DeadlineGuard.h"
 #include "Core/Crypto/Random.h"
+#include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncResolver.h"
 #include "Core/Socket/ConnectionRace.h"
 #include "Core/Socket/InetAddress.h"
@@ -30,6 +33,12 @@
 #include <utility>
 namespace AsynGyanis::Net
 {
+    struct WebSocketClient::PendingRead
+    {
+        /// 惰性 Task 只在这里启动一次；到期后不销毁，下一次等待继续用它
+        std::optional<Core::Task<ssize_t>> task;
+    };
+
     namespace
     {
         /// 明文与 TLS 的默认端口：Configuration.port 留 0 时按 TLS 那一位回落
@@ -43,6 +52,8 @@ namespace AsynGyanis::Net
         constexpr std::size_t kMaskKeyByteLength = 4;
         /// 关闭原因的长度上限：控制帧整体不得过 125 字节，其中状态码占 2（RFC 6455 §5.5、§5.5.1）
         constexpr std::size_t kMaximumCloseReasonLength = kWebSocketMaximumControlPayloadLength - kWebSocketCloseCodeByteLength;
+        /// 挂起读的检查节拍：不追求毫秒级精确，只保证到期与本地关闭都能在下一拍被看见
+        constexpr std::chrono::milliseconds kReceivePollInterval{5};
         /**
          * @brief 从系统的密码学随机源取 length 字节
          * @details 取不到就抛出：全零或复用的键等于放弃 §5.3 要防的那种中间设施缓存重放，
@@ -376,9 +387,9 @@ namespace AsynGyanis::Net
         }
     } // namespace
     WebSocketClient::WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration,
-                                     std::string pendingBytes) :
+                                     std::string pendingBytes, Core::EventLoop &loop) :
         m_transport(std::move(transport)), m_agreement(std::move(agreement)), m_deflateWindow(m_agreement.deflateWindow), m_readBuffer(kReadChunkByteLength, '\0'),
-        m_inboundBytes(std::move(pendingBytes))
+        m_inboundBytes(std::move(pendingBytes)), m_pendingRead(std::make_unique<PendingRead>()), m_loop(&loop)
     {
         // 本端是客户端：对端（服务端）发来的帧必须不带掩码，带了就当场判错（RFC 6455 §5.1）
         m_decoder.setMaskingRequirement(WebSocketMaskingRequirement::PeerMustNotMask);
@@ -491,7 +502,7 @@ namespace AsynGyanis::Net
         {
             co_return std::unexpected(agreement.error());
         }
-        co_return std::unique_ptr<WebSocketClient>(new WebSocketClient(std::move(transport), std::move(*agreement), configuration, std::move((*exchanged)->leftover)));
+        co_return std::unique_ptr<WebSocketClient>(new WebSocketClient(std::move(transport), std::move(*agreement), configuration, std::move((*exchanged)->leftover), loop));
     }
     const WebSocketUpgradeAgreement &WebSocketClient::agreement() const noexcept
     {
@@ -528,12 +539,67 @@ namespace AsynGyanis::Net
     }
     Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::receive()
     {
-        // 收侧只看通路活着没有：本端发过 Close 之后仍然要能读回对端那条 Close（§5.5.1 的握手是双向的），
-        // 「还能不能再发」由 m_isOpen 单独管
-        if (!m_transport->isOpen())
+        co_return co_await receiveUntil(std::nullopt);
+    }
+    Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::receiveFor(const std::chrono::milliseconds timeout)
+    {
+        if (timeout <= std::chrono::milliseconds::zero())
         {
-            co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "通路已经关了：这条会话收不到后续消息"});
+            co_return co_await receiveUntil(std::chrono::steady_clock::now());
         }
+        co_return co_await receiveUntil(std::chrono::steady_clock::now() + timeout);
+    }
+    Core::Task<std::optional<std::ptrdiff_t>> WebSocketClient::waitForRead(const std::optional<std::chrono::steady_clock::time_point> deadline, bool &interrupted)
+    {
+        interrupted = false;
+        if (m_loop == nullptr)
+        {
+            throw Base::LogicException("WebSocketClient::receiveFor：构造时没有事件循环，无法挂接收超时");
+        }
+        if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline && !m_pendingRead->task.has_value())
+        {
+            // 非正 timeout：只检查已经挂着的读，不为一次「不等」新建读
+            co_return std::nullopt;
+        }
+        if (!m_pendingRead->task.has_value())
+        {
+            m_pendingRead->task.emplace(m_transport->receive(m_readBuffer.data(), m_readBuffer.size()));
+            // Task 是惰性的：这里手动首拍，之后由套接字就绪唤醒它
+            m_pendingRead->task->handle().resume();
+        }
+
+        const std::stop_token interrupt = m_receiveInterrupt != nullptr ? m_receiveInterrupt->get_token() : std::stop_token{};
+        Core::Timer           poll(*m_loop);
+        for (;;)
+        {
+            if (interrupt.stop_requested())
+            {
+                interrupted = true;
+                co_return std::nullopt;
+            }
+            if (m_pendingRead->task->isReady())
+            {
+                const ssize_t received = m_pendingRead->task->handle().promise().result();
+                m_pendingRead->task.reset();
+                co_return std::optional<std::ptrdiff_t>{static_cast<std::ptrdiff_t>(received)};
+            }
+            if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline)
+            {
+                // 不销毁 m_pendingRead：下一次 receive 继续等同一个读，已经到达的字节不会丢
+                co_return std::nullopt;
+            }
+
+            std::chrono::milliseconds wait = kReceivePollInterval;
+            if (deadline.has_value())
+            {
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*deadline - std::chrono::steady_clock::now());
+                wait                 = std::min(wait, std::max(remaining, std::chrono::milliseconds::zero()));
+            }
+            co_await poll.waitFor(wait);
+        }
+    }
+    Core::Task<std::optional<WebSocketSessionExpected<WebSocketFrame>>> WebSocketClient::decodeBufferedFrame()
+    {
         for (;;)
         {
             const WebSocketDecodeStatus status = m_decoder.parse(m_inboundBytes.data() + m_inboundByteOffset, m_inboundBytes.size() - m_inboundByteOffset);
@@ -550,75 +616,108 @@ namespace AsynGyanis::Net
                 co_return co_await failSession(closeCode, isOverLimit ? WebSocketSessionErrorKind::MessageLimitExceeded : WebSocketSessionErrorKind::ProtocolFramingRejected,
                                                errorText);
             }
-            if (status == WebSocketDecodeStatus::Frame)
+            if (status != WebSocketDecodeStatus::Frame)
             {
-                WebSocketFrame frame = m_decoder.takeFrame();
-                // 压缩消息先解压再交付（RFC 7692 §7.2.2）：解不开的连接按协议错误收口——
-                // 字节流本端解不了，留在连接上只会越走越偏（与 WebSocketPeer 的收侧同一条口径）
-                if (frame.isCompressed)
-                {
-                    // 窗口位数按协商走（服务端声明它按多大压缩）；未协商时带 RSV1 的帧已被解码器判错，
-                    // 这里按满窗口兜底只是不让一个不可能的组合变成崩溃点
-                    const int                  decompressBits = m_deflateWindow.has_value() ? m_deflateWindow->decompressBits : kWebSocketDefaultWindowBits;
-                    const std::size_t          maximumPayload = m_decoder.maximumMessagePayloadLength();
-                    std::optional<std::string> inflated       = inflateWebSocketMessage(frame.payload, maximumPayload, decompressBits);
-                    if (!inflated.has_value())
-                    {
-                        const std::string errorText = "对端发来的压缩消息解压失败，或解压结果超过上限（RFC 7692 §7.2.2）：请核对对端的压缩实现与协商参数";
-                        co_return co_await failSession(kWebSocketProtocolErrorCode, WebSocketSessionErrorKind::CompressedMessageUnusable, errorText);
-                    }
-                    frame.payload = std::move(*inflated);
-                }
-                // 文本负载必须是合法 UTF-8（RFC 6455 §5.6 的编码要求，§8.1 要求校验不过即失败连接并回 1007）：
-                // 校验点是「交给业务之前」的最后一步，解压过的文本同样要在还原之后判
-                if (frame.opCode == WebSocketOpCode::Text)
-                {
-                    const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(frame.payload);
-                    if (invalidByteOffset != std::string_view::npos)
-                    {
-                        // 原始非法字节不进文案：它一旦被写进日志，就是把对端字节注入日志的原料
-                        const std::string errorText = std::format("对端发来的文本消息不是合法 UTF-8（RFC 6455 §5.6、§8.1）：第 {} 个字节起违规，"
-                                                                  "常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；本端已按 1007 收口，负载不会交给业务",
-                                                                  invalidByteOffset);
-                        co_return co_await failSession(kWebSocketInvalidPayloadDataCode, WebSocketSessionErrorKind::TextPayloadNotUtf8, errorText);
-                    }
-                }
-                if (frame.opCode == WebSocketOpCode::Ping)
-                {
-                    // 心跳必须按原负载回 Pong（RFC 6455 §5.5.3）：不回就是让对端把这条连接判成死的
-                    if (!co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Pong, frame.payload)))
-                    {
-                        m_isOpen = false;
-                        co_return std::unexpected(
-                                WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "回应 Pong 时通路已不可用：这次心跳没能答出去，连接按已断开处理"});
-                    }
-                    continue;
-                }
-                if (frame.opCode == WebSocketOpCode::Pong)
-                {
-                    // Pong 在这一格消费掉：调用方要的是数据消息。发过 Ping 之后「有没有别的流量」由上层
-                    // 自己计时，本层不替它攒状态
-                    continue;
-                }
-                if (frame.opCode == WebSocketOpCode::Close)
-                {
-                    co_return co_await answerPeerClose(frame);
-                }
-                co_return frame;
+                co_return std::nullopt;
             }
-            const auto received = co_await m_transport->receive(m_readBuffer.data(), m_readBuffer.size());
-            if (received == 0)
+
+            WebSocketFrame frame = m_decoder.takeFrame();
+            // 压缩消息先解压再交付（RFC 7692 §7.2.2）：解不开的连接按协议错误收口——
+            // 字节流本端解不了，留在连接上只会越走越偏（与 WebSocketPeer 的收侧同一条口径）
+            if (frame.isCompressed)
+            {
+                // 窗口位数按协商走（服务端声明它按多大压缩）；未协商时带 RSV1 的帧已被解码器判错，
+                // 这里按满窗口兜底只是不让一个不可能的组合变成崩溃点
+                const int                  decompressBits = m_deflateWindow.has_value() ? m_deflateWindow->decompressBits : kWebSocketDefaultWindowBits;
+                const std::size_t          maximumPayload = m_decoder.maximumMessagePayloadLength();
+                std::optional<std::string> inflated       = inflateWebSocketMessage(frame.payload, maximumPayload, decompressBits);
+                if (!inflated.has_value())
+                {
+                    const std::string errorText = "对端发来的压缩消息解压失败，或解压结果超过上限（RFC 7692 §7.2.2）：请核对对端的压缩实现与协商参数";
+                    co_return co_await failSession(kWebSocketProtocolErrorCode, WebSocketSessionErrorKind::CompressedMessageUnusable, errorText);
+                }
+                frame.payload = std::move(*inflated);
+            }
+            // 文本负载必须是合法 UTF-8（RFC 6455 §5.6 的编码要求，§8.1 要求校验不过即失败连接并回 1007）：
+            // 校验点是「交给业务之前」的最后一步，解压过的文本同样要在还原之后判
+            if (frame.opCode == WebSocketOpCode::Text)
+            {
+                const std::size_t invalidByteOffset = findInvalidWebSocketUtf8ByteOffset(frame.payload);
+                if (invalidByteOffset != std::string_view::npos)
+                {
+                    // 原始非法字节不进文案：它一旦被写进日志，就是把对端字节注入日志的原料
+                    const std::string errorText = std::format("对端发来的文本消息不是合法 UTF-8（RFC 6455 §5.6、§8.1）：第 {} 个字节起违规，"
+                                                              "常见原因有过长编码、代理区码点（U+D800~U+DFFF）与截断的多字节序列；本端已按 1007 收口，负载不会交给业务",
+                                                              invalidByteOffset);
+                    co_return co_await failSession(kWebSocketInvalidPayloadDataCode, WebSocketSessionErrorKind::TextPayloadNotUtf8, errorText);
+                }
+            }
+            if (frame.opCode == WebSocketOpCode::Ping)
+            {
+                // 心跳必须按原负载回 Pong（RFC 6455 §5.5.3）：不回就是让对端把这条连接判成死的
+                if (!co_await writeFrameBytes(prepareFrame(WebSocketOpCode::Pong, frame.payload)))
+                {
+                    m_isOpen = false;
+                    co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "回应 Pong 时通路已不可用：这次心跳没能答出去，连接按已断开处理"});
+                }
+                continue;
+            }
+            if (frame.opCode == WebSocketOpCode::Pong)
+            {
+                // Pong 在这一格消费掉：调用方要的是数据消息。发过 Ping 之后「有没有别的流量」由上层
+                // 自己计时，本层不替它攒状态
+                continue;
+            }
+            if (frame.opCode == WebSocketOpCode::Close)
+            {
+                co_return co_await answerPeerClose(frame);
+            }
+            co_return WebSocketSessionExpected<WebSocketFrame>{std::move(frame)};
+        }
+    }
+    Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::receiveUntil(const std::optional<std::chrono::steady_clock::time_point> deadline)
+    {
+        // 收侧只看通路活着没有：本端发过 Close 之后仍然要能读回对端那条 Close（§5.5.1 的握手是双向的），
+        // 「还能不能再发」由 m_isOpen 单独管
+        if (!m_transport->isOpen())
+        {
+            co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::SessionClosed, "通路已经关了：这条会话收不到后续消息"});
+        }
+
+        // 每次接收换一份中断源：本端上一次 close() 的停止信号不能带到这一次上
+        m_receiveInterrupt = std::make_shared<std::stop_source>();
+
+        for (;;)
+        {
+            const auto decoded = co_await decodeBufferedFrame();
+            if (decoded.has_value())
+            {
+                co_return std::move(*decoded);
+            }
+
+            bool       interrupted = false;
+            const auto received    = co_await waitForRead(deadline, interrupted);
+            if (interrupted)
+            {
+                co_return std::unexpected(
+                        WebSocketSessionError{WebSocketSessionErrorKind::ReceiveInterruptedByLocalClose, "本端已发起关闭：这次等待被唤醒；对端的回帧仍可用下一次 receive() 读取"});
+            }
+            if (!received.has_value())
+            {
+                co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::ReceiveTimedOut, "等待消息超时：连接仍可用，可以稍后重试 receive() 或加大时限"});
+            }
+            if (*received == 0)
             {
                 m_isOpen = false;
                 co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::PeerClosedWithoutCloseFrame,
                                                                 "对端没有留下 Close 帧就收了线（RFC 6455 §7.1.1 的快速断开）：本端按已关闭处理"});
             }
-            if (received < 0)
+            if (*received < 0)
             {
                 m_isOpen = false;
                 co_return std::unexpected(WebSocketSessionError{WebSocketSessionErrorKind::ConnectionLostWhileReading, "读取帧时通路出错：连接已断开、被对端复位，或本端把它关了"});
             }
-            m_inboundBytes.append(m_readBuffer.data(), static_cast<std::size_t>(received));
+            m_inboundBytes.append(m_readBuffer.data(), static_cast<std::size_t>(*received));
         }
     }
     Core::Task<WebSocketSessionExpected<WebSocketFrame>> WebSocketClient::failSession(const std::uint16_t closeCode, const WebSocketSessionErrorKind kind, std::string errorText)
@@ -714,6 +813,11 @@ namespace AsynGyanis::Net
         // 状态先落定再发帧：写出期间协程会挂起，此时业务若再调 send*() 必须已经看到「不能再发」。
         // 收侧不受这个标记影响——调用方还要靠 receive() 读回对端那条 Close 和它给的原因
         m_isOpen = false;
+        // 只中断「正在等待」的那一次接收；连接不关，对端回帧留给下一次 receive()
+        if (m_receiveInterrupt != nullptr)
+        {
+            m_receiveInterrupt->request_stop();
+        }
         co_return co_await m_transport->send(frameBytes);
     }
     Core::Task<bool> WebSocketClient::writeFrameBytes(std::string frameBytes)

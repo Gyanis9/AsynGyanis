@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=309 entries=9053
+# headers=309 entries=9061
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -8018,22 +8018,27 @@ src/Net/WebSocket/PerMessageDeflate.h	std::optional<PerMessageDeflateWindow> win
 src/Net/WebSocket/PerMessageDeflate.h	std::string responseValue
 src/Net/WebSocket/PerMessageDeflate.h	struct ASYN_NET_API PerMessageDeflateNegotiation
 src/Net/WebSocket/PerMessageDeflate.h	struct ASYN_NET_API PerMessageDeflateWindow
+src/Net/WebSocket/WebSocketClient.h	Core::EventLoop *m_loop
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient &operator=(WebSocketClient &&) = delete
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient &operator=(const WebSocketClient &) = delete
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient(WebSocketClient &&) = delete
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient(const WebSocketClient &) = delete
-src/Net/WebSocket/WebSocketClient.h	WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes)
+src/Net/WebSocket/WebSocketClient.h	WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes, Core::EventLoop &loop)
 src/Net/WebSocket/WebSocketClient.h	WebSocketFrameDecoder m_decoder
 src/Net/WebSocket/WebSocketClient.h	WebSocketUpgradeAgreement m_agreement
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> answerPeerClose(const WebSocketFrame &closeFrame)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> failSession(std::uint16_t closeCode, WebSocketSessionErrorKind kind, std::string errorText)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive()
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receiveFor(std::chrono::milliseconds timeout)
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receiveUntil(std::optional<std::chrono::steady_clock::time_point> deadline)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> close(std::uint16_t statusCode = 1000, std::string_view reason =
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendBinary(std::string_view binary)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendCloseBytes(std::string frameBytes)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendPing(std::string_view payload =
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> sendText(std::string_view text)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> writeFrameBytes(std::string frameBytes)
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::optional<WebSocketSessionExpected<WebSocketFrame>>> decodeBufferedFrame()
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::optional<std::ptrdiff_t>> waitForRead(std::optional<std::chrono::steady_clock::time_point> deadline, bool &interrupted)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] bool isOpen() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] const WebSocketUpgradeAgreement &agreement() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] static Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> connect(Core::EventLoop &loop, Configuration configuration)
@@ -8054,6 +8059,7 @@ src/Net/WebSocket/WebSocketClient.h	static constexpr std::size_t kReadChunkByteL
 src/Net/WebSocket/WebSocketClient.h	std::chrono::milliseconds handshakeTimeout
 src/Net/WebSocket/WebSocketClient.h	std::optional<PerMessageDeflateWindow> m_deflateWindow
 src/Net/WebSocket/WebSocketClient.h	std::optional<std::uint16_t> m_remoteCloseCode
+src/Net/WebSocket/WebSocketClient.h	std::shared_ptr<std::stop_source> m_receiveInterrupt
 src/Net/WebSocket/WebSocketClient.h	std::size_t m_inboundByteOffset
 src/Net/WebSocket/WebSocketClient.h	std::size_t maximumMessageSize
 src/Net/WebSocket/WebSocketClient.h	std::string hostName
@@ -8063,8 +8069,10 @@ src/Net/WebSocket/WebSocketClient.h	std::string m_remoteCloseReason
 src/Net/WebSocket/WebSocketClient.h	std::string requestTarget
 src/Net/WebSocket/WebSocketClient.h	std::uint16_t port
 src/Net/WebSocket/WebSocketClient.h	std::unique_ptr<HttpOutboundConnection> m_transport
+src/Net/WebSocket/WebSocketClient.h	std::unique_ptr<PendingRead> m_pendingRead
 src/Net/WebSocket/WebSocketClient.h	std::vector<std::string> subprotocols
 src/Net/WebSocket/WebSocketClient.h	struct Configuration
+src/Net/WebSocket/WebSocketClient.h	struct PendingRead
 src/Net/WebSocket/WebSocketClient.h	void compactInboundBytes()
 src/Net/WebSocket/WebSocketClient.h	~WebSocketClient()
 src/Net/WebSocket/WebSocketError.h	WebSocketSessionErrorKind kind

@@ -60,13 +60,15 @@ namespace AsynGyanis::Net
      */
     enum class WebSocketSessionErrorKind
     {
-        SessionClosed,               ///< 通路已经关了（本端收口或已发过 Close）：这条会话不会再收到消息
-        MessageLimitExceeded,        ///< 解码越出消息或帧长度上限：按 1009 收口（RFC 6455 §7.4.1），要放宽就调上限
-        ProtocolFramingRejected,     ///< 帧本身违例（掩码、保留位、控制帧分片等）：按 1002 收口，对端不按协议发
-        CompressedMessageUnusable,   ///< 压缩消息解不开或解出后越出上限（RFC 7692 §7.2.2）：连接已按协议错误收口
-        PeerClosedWithoutCloseFrame, ///< 对端没留下 Close 帧就收了线（§7.1.1 的快速断开）：拿不到对端给的原因码
-        ConnectionLostWhileReading,  ///< 读帧期间通路出错：连接已断、被对端复位，或本端把它关了
-        TextPayloadNotUtf8,          ///< 文本消息不是合法 UTF-8：按 1007 收口
+        SessionClosed,                 ///< 通路已经关了（本端收口或已发过 Close）：这条会话不会再收到消息
+        MessageLimitExceeded,          ///< 解码越出消息或帧长度上限：按 1009 收口（RFC 6455 §7.4.1），要放宽就调上限
+        ProtocolFramingRejected,       ///< 帧本身违例（掩码、保留位、控制帧分片等）：按 1002 收口，对端不按协议发
+        CompressedMessageUnusable,     ///< 压缩消息解不开或解出后越出上限（RFC 7692 §7.2.2）：连接已按协议错误收口
+        PeerClosedWithoutCloseFrame,   ///< 对端没留下 Close 帧就收了线（§7.1.1 的快速断开）：拿不到对端给的原因码
+        ConnectionLostWhileReading,    ///< 读帧期间通路出错：连接已断、被对端复位，或本端把它关了
+        TextPayloadNotUtf8,            ///< 文本消息不是合法 UTF-8：按 1007 收口
+        ReceiveTimedOut,               ///< 等待超过调用方给的时限：未消费帧，连接仍可用
+        ReceiveInterruptedByLocalClose ///< 本端 close() 唤醒了挂起的读：连接仍可继续 receive() 读对端回帧
     };
 
     /**

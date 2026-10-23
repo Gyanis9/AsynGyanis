@@ -13,6 +13,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Core/EventLoop/Timer.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -72,8 +73,9 @@ namespace AsynGyanis::Net
             std::string                              accepted_subprotocol;         ///< 握手谈定的子协议
             bool                                     is_open_after_actions{false}; ///< 动作跑完时会话是否仍对开
         };
-        using Action     = std::function<Core::Task<void>(WebSocketClient &, ClientRunOutcome &)>;
-        using PeerScript = std::function<void(class PeerWire &)>;
+        using Action         = std::function<Core::Task<void>(WebSocketClient &, ClientRunOutcome &)>;
+        using ActionWithLoop = std::function<Core::Task<void>(WebSocketClient &, Core::EventLoop &, ClientRunOutcome &)>;
+        using PeerScript     = std::function<void(class PeerWire &)>;
         /**
          * @brief 脚本用的字接口：在已接受的那条连接上读与写
          * @details 升级请求原文与之后的帧字节分开累计：断言「线上第几帧」时不必再去切请求头。
@@ -480,6 +482,25 @@ namespace AsynGyanis::Net
             loop.stop();
         }
         /**
+         * @brief 带循环的动作版本：动作需要在同一循环上另起一个协程时用
+         */
+        Core::Task<void> driveClientWithLoop(Core::EventLoop &loop, const WebSocketClient::Configuration &configuration, const ActionWithLoop &action, ClientRunOutcome &outcome)
+        {
+            auto connected = co_await WebSocketClient::connect(loop, configuration);
+            if (!connected.has_value())
+            {
+                outcome.failure_reason = connected.error().message;
+                loop.stop();
+                co_return;
+            }
+            outcome.is_connected         = true;
+            outcome.accepted_subprotocol = connected.value()->agreement().acceptedSubprotocol;
+            co_await action(*connected.value(), loop, outcome);
+            outcome.is_open_after_actions = connected.value()->isOpen();
+            connected.value().reset();
+            loop.stop();
+        }
+        /**
          * @brief 在脚本的陪同下跑一次客户端
          * @param peerScript 对端要演的戏（在工作线程上执行）
          * @param action 会话建好后要做的动作（在循环线程上执行）
@@ -507,6 +528,32 @@ namespace AsynGyanis::Net
             }
             loop.run();
             // 会话已经收手：等脚本跑完，之后那两份线上读数才是完整的
+            static_cast<void>(peer.finished());
+            wireBytes = {peer.headBytes(), peer.frameBytes()};
+            return outcome;
+        }
+        /**
+         * @brief 带循环的动作版本：动作需要在同一循环上另起一个协程时用
+         */
+        ClientRunOutcome runClientAgainst(const PeerScript &peerScript, const ActionWithLoop &action, WebSocketClient::Configuration configuration,
+                                          std::pair<std::string, std::string> &wireBytes)
+        {
+            ScriptedWsPeer peer(peerScript);
+            if (!peer.start())
+            {
+                ADD_FAILURE() << "对端没能在回环上监听";
+                return {};
+            }
+            configuration.hostName = "127.0.0.1";
+            configuration.port     = peer.port();
+            Core::EventLoop  loop;
+            ClientRunOutcome outcome;
+            auto             work = driveClientWithLoop(loop, configuration, action, outcome);
+            if (!work.isReady())
+            {
+                loop.scheduler().schedule(work.handle());
+            }
+            loop.run();
             static_cast<void>(peer.finished());
             wireBytes = {peer.headBytes(), peer.frameBytes()};
             return outcome;
@@ -1017,6 +1064,128 @@ namespace AsynGyanis::Net
         ASSERT_HAS_VALUE(sentClose);
         EXPECT_EQ(sentClose->payload, makeClosePayload(1000, "done"));
     }
+
+    /**
+     * @brief 钉住接收超时：到期只停止等待，不消费帧、不关连接，下一次仍能收到
+     */
+    TEST(WebSocketClient, ReceiveForTimesOutWithoutLosingTheNextFrame)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            std::this_thread::sleep_for(std::chrono::milliseconds{150});
+            static_cast<void>(wire.write(makeServerFrame(kTextFrameFirstByte, "after-timeout")));
+            wire.readOneClientFrame();
+        };
+
+        bool         timedOut        = false;
+        bool         secondDelivered = false;
+        std::string  secondPayload;
+        const Action action = [&](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            const auto first = co_await client.receiveFor(std::chrono::milliseconds{50});
+            timedOut         = !first.has_value() && first.error().kind == WebSocketSessionErrorKind::ReceiveTimedOut;
+            if (!first.has_value() && first.error().kind != WebSocketSessionErrorKind::ReceiveTimedOut)
+            {
+                outcome.receive_error = first.error().message;
+            }
+
+            const auto second = co_await client.receiveFor(std::chrono::seconds{2});
+            if (second.has_value())
+            {
+                secondDelivered = true;
+                secondPayload   = second->payload;
+            } else
+            {
+                outcome.receive_error = second.error().message;
+            }
+            outcome.send_results.push_back(co_await client.close());
+            co_return;
+        };
+
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_TRUE(timedOut) << "50 ms 内没有超时，或超时被折成了别的错误";
+        EXPECT_TRUE(secondDelivered) << "超时后的下一次 receiveFor 没收到帧；连接被这次超时弄坏了";
+        EXPECT_EQ(secondPayload, "after-timeout");
+        EXPECT_TRUE(outcome.send_results.empty() || outcome.send_results.back()) << "超时之后 close 失败";
+        EXPECT_FALSE(outcome.is_open_after_actions);
+    }
+
+    /**
+     * @brief 钉住超时后直接析构：挂起读的帧随客户端一起释放，进程不会挂在等套接字上
+     */
+    TEST(WebSocketClient, DestroyAfterReceiveForTimeoutReleasesThePendingRead)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        };
+        const Action action = [](WebSocketClient &client, ClientRunOutcome &) -> Core::Task<void>
+        {
+            static_cast<void>(co_await client.receiveFor(std::chrono::milliseconds{50}));
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        EXPECT_TRUE(outcome.is_connected) << outcome.failure_reason;
+    }
+
+    /**
+     * @brief 钉住本地关闭唤醒挂起的接收，且不影响之后读对端回帧
+     * @details 关闭握手是双向的：本端发出 Close 后，正在等数据的协程要立刻醒；
+     *          连接不能关，因为对端那条 Close 回帧还要交给业务。
+     */
+    TEST(WebSocketClient, CloseWakesPendingReceiveAndStillReadsPeerCloseReply)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            wire.readOneClientFrame();
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            static_cast<void>(wire.write(makeServerFrame(kCloseFrameFirstByte, makeClosePayload(1000, "bye"))));
+        };
+
+        bool                 woke         = false;
+        bool                 gotPeerClose = false;
+        std::string          wakeText;
+        const ActionWithLoop action = [&](WebSocketClient &client, Core::EventLoop &loop, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            Core::Timer closerTimer(loop);
+            auto        closer = [&client, &closerTimer]() -> Core::Task<void>
+            {
+                co_await closerTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(co_await client.close(1000, "done"));
+                co_return;
+            };
+            Core::Task<void> closerTask = closer();
+            loop.scheduler().schedule(closerTask.handle());
+
+            const auto first = co_await client.receive();
+            woke             = !first.has_value() && first.error().kind == WebSocketSessionErrorKind::ReceiveInterruptedByLocalClose;
+            if (!first.has_value())
+            {
+                wakeText = first.error().message;
+            }
+
+            const auto second = co_await client.receive();
+            gotPeerClose      = second.has_value() && second->opCode == WebSocketOpCode::Close;
+            if (!second.has_value())
+            {
+                outcome.receive_error = second.error().message;
+            }
+            co_return;
+        };
+
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_TRUE(woke) << "本端 close() 没有唤醒挂起的 receive：" << wakeText;
+        EXPECT_TRUE(gotPeerClose) << "本地关闭之后仍然读不到对端回帧：" << outcome.receive_error;
+    }
+
     TEST(WebSocketClient, RejectsBadCloseArgumentsBeforeTouchingTheWire)
     {
         const PeerScript script = [](PeerWire &wire)

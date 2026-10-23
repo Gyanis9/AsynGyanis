@@ -21,6 +21,8 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -141,6 +143,17 @@ namespace AsynGyanis
             [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receive();
 
             /**
+             * @brief 收下一条数据消息，最多等待 timeout
+             * @details 超时只停止等待，不消费帧、不关闭连接；下一条 receive()/receiveFor() 仍可继续收。
+             *          等待期间的 Ping/Pong 照常就地处理；对端 Close 照常交回。
+             * @param timeout 本次等待上限；非正数表示只做一次非阻塞检查
+             * @return 成功交出 Text/Binary/Close；超时交回 ReceiveTimedOut；本端 close() 唤醒交回
+             *         ReceiveInterruptedByLocalClose
+             * @note 与 receive() 一样是单消费者接口，不得并发调用
+             */
+            [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receiveFor(std::chrono::milliseconds timeout);
+
+            /**
              * @brief 发一条文本消息（单个末帧，负载必须是合法 UTF-8 由调用方保证）
              * @param text 文本内容，按「指针 + 长度」取，可以含 NUL 之外的任意字节
              * @return Core::Task<bool> 全部写出为 true；通路已死或本端已收口为 false
@@ -181,7 +194,29 @@ namespace AsynGyanis
             [[nodiscard]] Core::Task<bool> close(std::uint16_t statusCode = 1000, std::string_view reason = {});
 
         private:
-            WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes);
+            WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes,
+                            Core::EventLoop &loop);
+
+            /**
+             * @brief 等一段已经挂上的读；到期或被本端关闭打断时交回空
+             * @param deadline 等待截止时刻；空表示不限时
+             * @param interrupted 输出：true 表示等待被本端关闭唤醒，而不是到期
+             * @return 读到的字节数；到期/被唤醒/无需等待时为空
+             */
+            [[nodiscard]] Core::Task<std::optional<std::ptrdiff_t>> waitForRead(std::optional<std::chrono::steady_clock::time_point> deadline, bool &interrupted);
+
+            /**
+             * @brief 从已读入的字节里解出一帧；控制帧就地处理
+             * @return 已解出的帧或失败；缓冲里还没有完整帧时为空
+             */
+            [[nodiscard]] Core::Task<std::optional<WebSocketSessionExpected<WebSocketFrame>>> decodeBufferedFrame();
+
+            /**
+             * @brief receive()/receiveFor() 共用的收帧循环
+             * @param deadline 等待截止时刻；空表示不限时
+             * @return 解出的帧，或失败类别
+             */
+            [[nodiscard]] Core::Task<WebSocketSessionExpected<WebSocketFrame>> receiveUntil(std::optional<std::chrono::steady_clock::time_point> deadline);
 
             /**
              * @brief 拼一帧的线上字节：取本帧的掩码键并编码
@@ -253,6 +288,12 @@ namespace AsynGyanis
             std::optional<std::uint16_t> m_remoteCloseCode{};
             /// 对端 Close 帧里交来的原因文本（仅在合法 UTF-8 时保留，见 remoteCloseReason()）
             std::string m_remoteCloseReason{};
+            /// receive()/receiveFor() 的挂起读：只允许一个在途读，超时后保留，下一次等待直接复用
+            struct PendingRead;
+            std::unique_ptr<PendingRead> m_pendingRead;
+            Core::EventLoop             *m_loop{nullptr}; ///< 所属事件循环；receiveFor 的到期检查挂在它上面
+            /// 本端 close() 用来唤醒挂起读的中断源；每次 receive 开始时换一份新的
+            std::shared_ptr<std::stop_source> m_receiveInterrupt;
         };
     } // namespace Net
 } // namespace AsynGyanis
