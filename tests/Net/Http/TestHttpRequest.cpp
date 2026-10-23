@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <stop_token>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -509,6 +510,8 @@ namespace AsynGyanis::Net
         request.addTrailerField("X-Old-Tail", "9");
         request.setBody("body");
         request.setParam("id", "9");
+        request.setTlsPeerIdentity(std::make_shared<Core::TlsPeerIdentity>(true, std::vector<std::uint8_t>{1U, 2U, 3U}, std::string(64U, 'a')));
+        ASSERT_NE(request.tlsPeerIdentity(), nullptr) << "身份没落进请求：下面的 reset 判据没有前提";
 
         request.reset();
 
@@ -520,6 +523,7 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.param("id").has_value());
         EXPECT_FALSE(request.getHeader("x-old").has_value());
         EXPECT_FALSE(request.getTrailerField("x-old-tail").has_value());
+        EXPECT_EQ(request.tlsPeerIdentity(), nullptr) << "复用请求对象时上一条连接的对端证书身份仍在：下一条请求会冒用别人的身份";
     }
 
     /**

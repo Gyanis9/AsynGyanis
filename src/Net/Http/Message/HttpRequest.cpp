@@ -594,6 +594,8 @@ namespace AsynGyanis::Net
         // 但会话注入的事实就得由 reset() 一次清干净：漏掉这一行时正确性全靠每条通道都记得重新落定，
         // 将来新增一条协议通道忘了落定，复用的对象就会带着上一条的 true 去发 HSTS
         m_overTls = false;
+        // 对端证书身份同上：复用的请求对象不能把上一条连接的身份带到下一条
+        m_tlsPeerIdentity.reset();
         // 命中的路由也一样：上一条命中的模式不能冒到这一条上，否则按路由打点会把两条混进同一个桶
         m_matchedRoute = {};
         m_params.clear();
