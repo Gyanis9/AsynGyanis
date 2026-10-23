@@ -33,6 +33,7 @@ add_executable(TestCore
         Coroutine/TestLogContext.cpp
         Coroutine/TestCoroutinePool.cpp
         Coroutine/TestDeadlineGuard.cpp
+        Coroutine/TestCancellationWatch.cpp
         Coroutine/TestCancelable.cpp
         Coroutine/TestCursorRange.cpp
         Coroutine/TestThreadPool.cpp

@@ -47,7 +47,9 @@ namespace AsynGyanis::Core
                 return;
             }
             m_task.emplace(watch(loop, token, m_finished, std::move(action)));
-            loop.scheduler().schedule(m_task->handle());
+            // 就地首拍：投进调度器会让析构先于首次派发时留下一个悬空句柄。
+            // 令牌已经停止时动作会在这里直接跑完；否则协程挂在定时器上，帧归本对象所有。
+            m_task->handle().resume();
         }
 
         /// 撤销看门狗：先置完成标志，再销毁帧（帧里的定时器随之注销）
