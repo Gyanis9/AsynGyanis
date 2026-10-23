@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -168,6 +169,15 @@ namespace AsynGyanis::Net
          *       直接失败，连套接字都不建。
          */
         std::optional<std::chrono::steady_clock::time_point> deadline{};
+
+        /**
+         * @brief 协作式取消令牌（可选）：调用方请求停止后，在途请求尽快收场
+         * @details 令牌来自调用方自己的 `std::stop_source`；本客户端只在等待间隙检查它，
+         *          不打断已经进入的同步调用。当前 HTTP/1.1 通路会在等待期间关闭这条连接来唤醒
+         *          收发协程；HTTP/2 与 HTTP/3 的流级取消仍按各自时限收场。
+         * @note 默认空令牌＝行为与加这一项之前逐字相同
+         */
+        std::stop_token cancelToken{};
 
         /**
          * @brief 要上线的链路上下文：填了就由本客户端按它写出 traceparent 头部

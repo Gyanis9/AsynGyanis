@@ -38,6 +38,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -277,6 +278,11 @@ namespace AsynGyanis::Net
             for (;;)
             {
                 const auto nowMoment = std::chrono::steady_clock::now();
+                if (request.cancelToken.stop_requested())
+                {
+                    failureReason = "请求已取消：等待出向并发闸名额时调用方请求停止";
+                    break;
+                }
                 if (request.deadline.has_value() && nowMoment >= *request.deadline)
                 {
                     failureReason = "出向并发闸：等待端点名额时到达请求的截止时刻";
@@ -349,6 +355,63 @@ namespace AsynGyanis::Net
         private:
             HttpOutboundConnectionPool &m_pool; ///< 名额所属的池
             HttpOutboundEndpointKey     m_key;  ///< 端点
+        };
+
+        /**
+         * @brief 请求取消的看门狗：令牌被请求停止时关掉当前连接，把阻塞中的收发协程唤醒
+         * @details 套接字的等待器没有取消接口，「关掉这条连接」是本框架唤醒挂起协程的既定手段。
+         *          看门狗跑在所属循环上，只轮询 `stop_token` 这一个线程安全的读数；连接对象由
+         *          请求协程持有，本对象的析构先于它，因此不会留下一个醒来关已销毁连接的帧。
+         */
+        class CancellationGuard
+        {
+        public:
+            CancellationGuard(Core::EventLoop &loop, HttpOutboundConnection &connection, const std::stop_token token, const std::string_view description) :
+                m_watchdog(watchCancellation(loop, connection, token, m_isCancelled, m_isTriggered, description))
+            {
+                m_watchdog->handle().resume();
+            }
+
+            ~CancellationGuard()
+            {
+                m_isCancelled = true;
+                m_watchdog.reset();
+            }
+
+            CancellationGuard(const CancellationGuard &)            = delete;
+            CancellationGuard &operator=(const CancellationGuard &) = delete;
+
+            /// 这次交换是否真的被取消看门狗掐断
+            [[nodiscard]] bool isTriggered() const noexcept
+            {
+                return m_isTriggered;
+            }
+
+        private:
+            static Core::Task<> watchCancellation(Core::EventLoop &loop, HttpOutboundConnection &connection, const std::stop_token token, const bool &isCancelled,
+                                                  bool &isTriggered, const std::string_view description)
+            {
+                if (!token.stop_possible())
+                {
+                    co_return;
+                }
+                Core::Timer timer(loop);
+                while (!isCancelled)
+                {
+                    if (token.stop_requested())
+                    {
+                        isTriggered = true;
+                        LOG_WARN_FMT("{}: 请求被调用方取消，已关闭当前连接", description);
+                        connection.close();
+                        co_return;
+                    }
+                    co_await timer.waitFor(std::chrono::milliseconds{5});
+                }
+            }
+
+            bool                        m_isTriggered{false}; ///< 看门狗是否已关闭连接（只在本循环线程读写）
+            bool                        m_isCancelled{false}; ///< 监视已结束（看门狗协程按引用持有）
+            std::optional<Core::Task<>> m_watchdog;           ///< 看门狗协程帧：置空即撤销
         };
 
         /**
@@ -659,6 +722,54 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 收尾一次 h1 交换：处理接收口收口、补最后一批、把解析结果搬成对外响应
+         * @param connection 这条交换所在的连接
+         * @param exchange 已经记下收发事实的交换记录
+         * @param responseBodyReceiver 调用方的响应正文接收口（可空）
+         * @param deliveredBatch 最后一批正文的落地缓冲
+         * @param isStoppedByReceiver 接收口主动收口
+         * @param cancellation 取消看门狗（读是否被取消掐断）
+         * @param cancelledText 取消时使用的失败文案
+         * @param host 目标主机（失败文案用）
+         * @param failureReason 失败原因输出
+         * @return OutboundExchange 收尾后的交换记录
+         */
+        Core::Task<OutboundExchange> finishExchange(HttpOutboundConnection &connection, OutboundExchange exchange, const HttpResponseBodyReceiver &responseBodyReceiver,
+                                                    std::string &deliveredBatch, const bool isStoppedByReceiver, const CancellationGuard &cancellation,
+                                                    const std::string &cancelledText, const std::string &host, std::string &failureReason)
+        {
+            if (isStoppedByReceiver)
+            {
+                // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。剩下的字节留在通路里，
+                // 这条连接当场关掉——留着它还回池，下一条请求会把剩下的正文当自己的响应头读
+                connection.close();
+                auto stoppedResponse          = std::make_unique<HttpClientResponse>();
+                stoppedResponse->statusCode   = connection.parser().result().statusCode;
+                stoppedResponse->reasonPhrase = connection.parser().result().reasonPhrase;
+                stoppedResponse->headers      = connection.parser().result().headers;
+                exchange.response             = std::move(stoppedResponse);
+                co_return exchange;
+            }
+            if (!connection.parser().isComplete())
+            {
+                connection.parser().endOfStream();
+            }
+            // 最后一批要在收齐之后交出去（零长的收尾也要交），接收口由此能分清「走完了」与「断了」；
+            // 中途失败时不再交——那批字节是残缺的，调用方从返回的响应为空就能看出这条没成
+            if (responseBodyReceiver && connection.parser().isComplete())
+            {
+                connection.parser().takeBodyBytes(deliveredBatch);
+                static_cast<void>(co_await responseBodyReceiver(connection.parser().result(), std::string_view(deliveredBatch), true));
+            }
+            exchange.response = takeParsedResponse(connection.parser(), host, failureReason);
+            if (cancellation.isTriggered() && !exchange.response)
+            {
+                failureReason = cancelledText;
+            }
+            co_return exchange;
+        }
+
+        /**
          * @brief 在一条已建立的连接上走完一次请求/响应
          * @param loop 所属事件循环（看门狗的定时器用它）
          * @param connection 已连上、TLS 也已握手完的连接
@@ -671,14 +782,21 @@ namespace AsynGyanis::Net
          */
         Core::Task<OutboundExchange> exchangeOnConnection(Core::EventLoop &loop, HttpOutboundConnection &connection, const std::string &requestText,
                                                           const HttpBodyChunkSource &bodySource, const HttpResponseBodyReceiver &responseBodyReceiver, const bool isHeadRequest,
-                                                          const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+                                                          const std::chrono::milliseconds requestTimeout, const std::stop_token cancelToken, std::string &failureReason)
         {
             const Core::DeadlineGuard<HttpOutboundConnection> deadline(loop, connection, requestTimeout, "HttpClient");
+            const CancellationGuard                           cancellation(loop, connection, cancelToken, "HttpClient");
             OutboundExchange                                  exchange;
-            const std::string                                 host = connection.endpointKey().host;
+            const std::string                                 host          = connection.endpointKey().host;
+            const std::string                                 cancelledText = "请求已取消：调用方在等待期间请求停止（主机 " + host + "）";
             // 接收口自己收的口：响应只交到那一为止，连接当场关掉（半条正文的连接不能还池）
             bool        isStoppedByReceiver = false;
             std::string deliveredBatch;
+            if (cancelToken.stop_requested())
+            {
+                failureReason = cancelledText;
+                co_return exchange;
+            }
             if (isHeadRequest)
             {
                 connection.parser().markAsHeadResponse();
@@ -687,7 +805,7 @@ namespace AsynGyanis::Net
             {
                 if (!co_await connection.send(requestText))
                 {
-                    failureReason = "写出请求失败：对端在收完请求前收线，或本次请求已到时限（主机 " + host + "）";
+                    failureReason = cancellation.isTriggered() ? cancelledText : "写出请求失败：对端在收完请求前收线，或本次请求已到时限（主机 " + host + "）";
                     co_return exchange;
                 }
                 exchange.isAnyByteSent = true;
@@ -705,7 +823,7 @@ namespace AsynGyanis::Net
                     const ssize_t receivedByteCount = co_await connection.receive(buffer.data(), buffer.size());
                     if (receivedByteCount < 0)
                     {
-                        failureReason = "读响应失败：通路报出不合规范的读取（主机 " + host + "）";
+                        failureReason = cancellation.isTriggered() ? cancelledText : "读响应失败：通路报出不合规范的读取（主机 " + host + "）";
                         co_return exchange;
                     }
                     if (receivedByteCount == 0)
@@ -757,35 +875,12 @@ namespace AsynGyanis::Net
                 // 等待中套接字被关掉（超时掐断、对端收尾）时底层抛异常：本接口的契约是「失败返回空响应」，
                 // 异常不许逃给调用方。抛出点之后的字节序已经不可信，这条连接当场收口——绝不还回池里
                 LOG_WARN_FMT("HttpClient: 请求中断。底层原因：{}", failure.what());
-                failureReason = "请求中断：套接字在等待中被关掉（时限掐断或对端收线，主机 " + host + "）";
+                failureReason = cancellation.isTriggered() ? cancelledText : "请求中断：套接字在等待中被关掉（时限掐断或对端收线，主机 " + host + "）";
                 connection.close();
                 co_return exchange;
             }
-            if (isStoppedByReceiver)
-            {
-                // 调用方主动收的口：头部仍是完整可信的响应，正文到此为止。剩下的字节留在通路里，
-                // 这条连接当场关掉——留着它还回池，下一条请求会把剩下的正文当自己的响应头读
-                connection.close();
-                auto stoppedResponse          = std::make_unique<HttpClientResponse>();
-                stoppedResponse->statusCode   = connection.parser().result().statusCode;
-                stoppedResponse->reasonPhrase = connection.parser().result().reasonPhrase;
-                stoppedResponse->headers      = connection.parser().result().headers;
-                exchange.response             = std::move(stoppedResponse);
-                co_return exchange;
-            }
-            if (!connection.parser().isComplete())
-            {
-                connection.parser().endOfStream();
-            }
-            // 最后一批要在收齐之后交出去（零长的收尾也要交），接收口由此能分清「走完了」与「断了」；
-            // 中途失败时不再交——那批字节是残缺的，调用方从返回的响应为空就能看出这条没成
-            if (responseBodyReceiver && connection.parser().isComplete())
-            {
-                connection.parser().takeBodyBytes(deliveredBatch);
-                static_cast<void>(co_await responseBodyReceiver(connection.parser().result(), std::string_view(deliveredBatch), true));
-            }
-            exchange.response = takeParsedResponse(connection.parser(), host, failureReason);
-            co_return exchange;
+            co_return co_await finishExchange(connection, std::move(exchange), responseBodyReceiver, deliveredBatch, isStoppedByReceiver, cancellation, cancelledText, host,
+                                              failureReason);
         }
 
         /**
@@ -1286,7 +1381,7 @@ namespace AsynGyanis::Net
                         {
                             const std::string requestText = makeRequestText();
                             OutboundExchange  exchange = co_await exchangeOnConnection(loop, *reused, requestText, request.bodySource, request.responseBodyReceiver, isHeadRequest,
-                                                                                       *reusedBudget, failureReason);
+                                                                                       *reusedBudget, request.cancelToken, failureReason);
                             if (exchange.response)
                             {
                                 // isOpen() 这一位是给「接收口半路收口、连接已被关掉」留的：那种连接
@@ -1488,7 +1583,7 @@ namespace AsynGyanis::Net
                 }
                 const std::string requestText = makeRequestText();
                 OutboundExchange  exchange    = co_await exchangeOnConnection(loop, *connection, requestText, request.bodySource, request.responseBodyReceiver, isHeadRequest,
-                                                                              *exchangeBudget, failureReason);
+                                                                              *exchangeBudget, request.cancelToken, failureReason);
                 if (exchange.response && pool != nullptr && connection->isOpen() && isResponseReusable(exchange.response->headers))
                 {
                     connection->prepareForNextRequest();
@@ -1690,6 +1785,10 @@ namespace AsynGyanis::Net
         // 畸形 URL 与不合规范的头部都是用法错误，按 parseUrl 的既有口径抛出，不折进 expected 的失败值
         const ParsedUrl parsed = parseUrl(url);
         validateRequest(request);
+        if (request.cancelToken.stop_requested())
+        {
+            co_return std::unexpected("请求已取消：调用方在发送前已请求停止（目标 " + std::string(url) + "）");
+        }
         if (request.traceContext.has_value())
         {
             // request 是按下标传进来的副本：改它的头部不影响调用方，也不必再有一份实现去拼那条头部
@@ -1852,6 +1951,12 @@ namespace AsynGyanis::Net
         const HttpClientRequest         &effectiveRequest = prepareOutboundRequest(request, requestWithTrace);
         validateRequest(effectiveRequest);
         std::string failureReason;
+        if (effectiveRequest.cancelToken.stop_requested())
+        {
+            failureReason = "请求已取消：调用方在发送前已请求停止（目标 " + std::string(url) + "）";
+            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            co_return nullptr;
+        }
 
         const HttpOutboundEndpointKey endpointKey{parsed.host, parsed.port, parsed.scheme == "https"};
 

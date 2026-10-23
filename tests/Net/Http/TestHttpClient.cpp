@@ -1266,6 +1266,187 @@ namespace AsynGyanis::Net
         EXPECT_LT(elapsed, std::chrono::milliseconds{600}) << "上游被下游拖过了自己的 200 ms 预算";
     }
 
+    /**
+     * @brief 钉住：慢响应期间请求停止信号能让等待在几百毫秒内收场，而不是拖到请求时限
+     */
+    TEST(HttpClient, CancelDuringSlowResponseReturnsPromptly)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+
+        Core::EventLoop   loop;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool                      wasCancelled = false;
+        std::string               reason;
+        std::chrono::milliseconds elapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto started = std::chrono::steady_clock::now();
+            const auto sent    = co_await HttpClient::send(loop, url, request, std::chrono::seconds{3});
+            elapsed            = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            wasCancelled       = !sent.has_value();
+            if (!sent.has_value())
+            {
+                reason = sent.error();
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "停止信号之后请求仍然拿到了响应";
+        EXPECT_NE(reason.find("取消"), std::string::npos) << "失败原因没有点明是调用方取消：" << reason;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "取消没有及时收场，等了 " << elapsed.count() << " ms";
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住：取消的那条连接不还池，同一客户端随后仍能发新请求
+     */
+    TEST(HttpClient, CancelledRequestDoesNotReturnConnectionToPool)
+    {
+        constexpr auto   kSlowRouteTime = std::chrono::milliseconds{900};
+        SlowRouteOptions slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string slowUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        const std::string fastUrl = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+
+        Core::EventLoop   loop;
+        HttpClient        client(loop);
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool        wasCancelled     = false;
+        std::size_t idleAfterCancel  = 1U;
+        bool        followupAnswered = false;
+        auto        drive            = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const std::unique_ptr<HttpClientResponse> cancelled = co_await client.send(slowUrl, request, std::chrono::seconds{3});
+            wasCancelled                                        = cancelled == nullptr;
+            idleAfterCancel                                     = client.idleConnectionCount();
+            const std::unique_ptr<HttpClientResponse> after     = co_await client.get(fastUrl, std::chrono::seconds{2});
+            followupAnswered                                    = after != nullptr && after->statusCode == 200;
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "停止信号之后请求仍然拿到了响应";
+        EXPECT_EQ(idleAfterCancel, 0U) << "取消的连接被还回了空闲池";
+        EXPECT_TRUE(followupAnswered) << "取消之后同一客户端没能再发一条请求";
+        std::this_thread::sleep_for(kSlowRouteTime);
+    }
+
+    /**
+     * @brief 钉住：排队等出向闸的请求也能被停止信号取消，且不拖累已经占住名额的那条
+     */
+    TEST(HttpClient, CancelWhileQueuedInWaitGateReturnsPromptly)
+    {
+        constexpr auto    kSlowRouteTime = std::chrono::milliseconds{600};
+        std::atomic<bool> slowRouteEntered{false};
+        SlowRouteOptions  slowRoute;
+        slowRoute.processingTime = kSlowRouteTime;
+        slowRoute.handlerStarted = &slowRouteEntered;
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100}, slowRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+
+        Core::EventLoop                    loop;
+        HttpOutboundConnectionPool::Config poolConfig;
+        poolConfig.maximumInFlightPerEndpoint = 1;
+        poolConfig.inFlightOverflowPolicy     = InFlightOverflowPolicy::Wait;
+        HttpClient client(loop, poolConfig);
+
+        std::stop_source  source;
+        HttpClientRequest queuedRequest;
+        queuedRequest.cancelToken = source.get_token();
+
+        bool                      firstAnswered   = false;
+        bool                      queuedCancelled = false;
+        std::chrono::milliseconds queuedElapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Task<std::unique_ptr<HttpClientResponse>> firstTask = client.get(url, std::chrono::seconds{3});
+            loop.scheduler().schedule(firstTask.handle());
+
+            Core::Timer pollTimer(loop);
+            const auto  enteredDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (!slowRouteEntered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < enteredDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto started = std::chrono::steady_clock::now();
+            const auto queued  = co_await client.send(url, queuedRequest, std::chrono::seconds{3});
+            queuedElapsed      = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            queuedCancelled    = queued == nullptr;
+
+            const auto firstDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (!firstTask.isReady() && std::chrono::steady_clock::now() < firstDeadline)
+            {
+                co_await pollTimer.waitFor(std::chrono::milliseconds{5});
+            }
+            if (firstTask.isReady())
+            {
+                const std::unique_ptr<HttpClientResponse> first = firstTask.handle().promise().result();
+                firstAnswered                                   = first != nullptr && first->statusCode == 200;
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(queuedCancelled) << "排队中的请求没有被停止信号取消";
+        EXPECT_LT(queuedElapsed, kSlowRouteTime) << "排队中的请求等到了前一条跑完（用时 " << queuedElapsed.count() << " ms）";
+        EXPECT_TRUE(firstAnswered) << "占住名额的第一条被取消拖累";
+    }
+
     // ============================================================================
     // 透明解压：代为声明 Accept-Encoding，并把压缩正文解回来
     // ============================================================================
