@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "HttpTestSupport.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncResolver.h"
@@ -34,6 +35,18 @@ namespace AsynGyanis::Net
     {
         using namespace HttpTestSupport;
         constexpr auto kTimeout = std::chrono::seconds{10};
+
+        /**
+         * @brief 断言 URL 解析按用法错误拒绝，并交回原因供调用方核对
+         * @param url 待解析的地址（按视图收：含 NUL 的字节串也保持原长度）
+         * @param expected 原因里必须出现的片段（缺的是协议名、端口、方括号等）
+         * @details 错误文本会脱敏后回显 URL；这里的断言只读「拒绝理由」那一句，不把回显整段钉死
+         */
+        void expectUrlRejected(const std::string_view url, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<std::invalid_argument>([&] { static_cast<void>(parseUrl(std::string(url))); }, "URL 解析");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
 
         Core::Task<void> doGetTask(Core::EventLoop &loop, std::unique_ptr<HttpClientResponse> &result, std::string url, std::chrono::milliseconds requestTimeout)
         {
@@ -493,9 +506,9 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClientUrl, RequiresAnExplicitScheme)
     {
-        ASSERT_THROW(static_cast<void>(parseUrl("127.0.0.1:8080/x")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("api.example.com")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("example.com:443/v1")), std::invalid_argument) << "看着像 https 的地址会被静默按明文发出";
+        expectUrlRejected("127.0.0.1:8080/x", "少了协议名");
+        expectUrlRejected("api.example.com", "少了协议名");
+        expectUrlRejected("example.com:443/v1", "少了协议名");
 
         try
         {
@@ -514,11 +527,11 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClientUrl, RejectsMalformedPort)
     {
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com:abc/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com:/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com:99999/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com:8080x/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com:0/")), std::invalid_argument);
+        expectUrlRejected("http://example.com:abc/", "不是 1..65535");
+        expectUrlRejected("http://example.com:/", "不是 1..65535");
+        expectUrlRejected("http://example.com:99999/", "不是 1..65535");
+        expectUrlRejected("http://example.com:8080x/", "不是 1..65535");
+        expectUrlRejected("http://example.com:0/", "不是 1..65535");
     }
 
     /**
@@ -531,17 +544,16 @@ namespace AsynGyanis::Net
     TEST(HttpClientUrl, RejectsEveryTearingCharacter)
     {
         const std::string nulInTarget = std::string("http://example.com/a") + '\0' + "b"; // 按字节拼：字面量会在 NUL 处被截掉
-        ASSERT_THROW(static_cast<void>(parseUrl(std::string_view(nulInTarget))), std::invalid_argument) << "NUL 混在请求目标里照样放行";
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x01"
-                                                "b")),
-                     std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x0b"
-                                                "b")),
-                     std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://example.com/a\x7f"
-                                                "b")),
-                     std::invalid_argument)
-                << "DEL 不是可见字符，放行等于让对端自己判断这段到哪为止";
+        expectUrlRejected(nulInTarget, "空白或控制字符");
+        expectUrlRejected("http://example.com/a\x01"
+                          "b",
+                          "空白或控制字符");
+        expectUrlRejected("http://example.com/a\x0b"
+                          "b",
+                          "空白或控制字符");
+        expectUrlRejected("http://example.com/a\x7f"
+                          "b",
+                          "空白或控制字符");
 
         // 正向对照：百分号编码与可打印字符照常收（把合规 URL 也挡了就是自伤），片段按规范剥掉
         const ParsedUrl encoded = parseUrl("http://example.com/a%20b?x=1#frag");
@@ -572,11 +584,11 @@ namespace AsynGyanis::Net
      */
     TEST(HttpClientUrl, RejectsMalformedAuthorityAndScheme)
     {
-        ASSERT_THROW(static_cast<void>(parseUrl("http://::1:8080/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://[::1/x")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://[::1]extra/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("http://:8080/")), std::invalid_argument);
-        ASSERT_THROW(static_cast<void>(parseUrl("ftp://example.com/x")), std::invalid_argument);
+        expectUrlRejected("http://::1:8080/", "必须写成方括号形式");
+        expectUrlRejected("http://[::1/x", "方括号没闭合");
+        expectUrlRejected("http://[::1]extra/", "还跟着多余字符");
+        expectUrlRejected("http://:8080/", "没有主机部分");
+        expectUrlRejected("ftp://example.com/x", "只支持");
     }
 
     /**

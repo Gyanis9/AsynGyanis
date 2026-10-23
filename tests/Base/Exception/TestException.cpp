@@ -39,6 +39,30 @@ namespace AsynGyanis::Base
         }
 
         /**
+         * @brief 断言异常可按指定基类捕获，且捕获到的正文与对象自身逐字一致
+         * @tparam CatchType 捕获时写的类型
+         * @tparam ExceptionType 异常的具体类型（按它抛出，避免按基类抛出时切片）
+         * @param exception 被抛出的异常对象
+         * @details 只判「能按基类捕获」看不出捕获后正文有没有被包一层或截断；分类前缀与抛出点
+         *          正是下游日志依赖的部分，两条一起判
+         */
+        template<typename CatchType, typename ExceptionType>
+        void expectCatchableWithSameText(const ExceptionType &exception)
+        {
+            try
+            {
+                throw exception;
+            } catch (const CatchType &caught)
+            {
+                EXPECT_STREQ(caught.what(), exception.what()) << "按基类捕获后正文变了";
+                return;
+            } catch (...)
+            {
+                ADD_FAILURE() << "异常没有落在期望的基类上";
+            }
+        }
+
+        /**
          * @brief 从「[异常] 消息 [文件:行 in 函数]」的外壳里取出文件段
          * @param message 异常 what() 原文
          * @return std::string 外壳里冒号之前的那一段；外壳不在时返回空串
@@ -74,9 +98,9 @@ namespace AsynGyanis::Base
     {
         Exception exception("base error");
 
-        EXPECT_THROW(throw exception, std::runtime_error);
-        EXPECT_THROW(throw exception, std::exception);
-        EXPECT_THROW(throw exception, Exception);
+        expectCatchableWithSameText<std::runtime_error>(exception);
+        expectCatchableWithSameText<std::exception>(exception);
+        expectCatchableWithSameText<Exception>(exception);
     }
 
     TEST(Exception, MessageCarriesLocationOfThrow)
@@ -225,9 +249,9 @@ namespace AsynGyanis::Base
     {
         const ConfigException exception("test error");
 
-        EXPECT_THROW(throw exception, Exception);
-        EXPECT_THROW(throw exception, std::runtime_error);
-        EXPECT_THROW(throw exception, std::exception);
+        expectCatchableWithSameText<Exception>(exception);
+        expectCatchableWithSameText<std::runtime_error>(exception);
+        expectCatchableWithSameText<std::exception>(exception);
     }
 
     TEST(ConfigException, MessageIsPrefixedWithCategory)
@@ -262,8 +286,8 @@ namespace AsynGyanis::Base
     {
         const ConfigKeyNotFoundException exception("server.port");
 
-        EXPECT_THROW(throw exception, ConfigException);
-        EXPECT_THROW(throw exception, std::runtime_error);
+        expectCatchableWithSameText<ConfigException>(exception);
+        expectCatchableWithSameText<std::runtime_error>(exception);
     }
 
     TEST(ConfigKeyNotFoundException, ExposesMissingKey)
@@ -304,8 +328,8 @@ namespace AsynGyanis::Base
     {
         const ConfigValidationException exception("server.port", "must be between 1 and 65535");
 
-        EXPECT_THROW(throw exception, ConfigException);
-        EXPECT_THROW(throw exception, std::runtime_error);
+        expectCatchableWithSameText<ConfigException>(exception);
+        expectCatchableWithSameText<std::runtime_error>(exception);
     }
 
     TEST(ConfigValidationException, ExposesKeyAndReason)
@@ -333,8 +357,8 @@ namespace AsynGyanis::Base
     {
         const SystemException exception("system call", std::error_code(2, std::system_category()));
 
-        EXPECT_THROW(throw exception, Exception);
-        EXPECT_THROW(throw exception, std::runtime_error);
+        expectCatchableWithSameText<Exception>(exception);
+        expectCatchableWithSameText<std::runtime_error>(exception);
     }
 
     TEST(SystemException, ExplicitErrorCodeIsExposedAndFormatted)
@@ -503,8 +527,8 @@ namespace AsynGyanis::Base
         static_assert(!std::is_base_of_v<std::runtime_error, LogicException>);
 
         const LogicException exception("离线模式下不允许执行该操作");
-        EXPECT_THROW(throw exception, std::logic_error);
-        EXPECT_THROW(throw exception, LogicException);
+        expectCatchableWithSameText<std::logic_error>(exception);
+        expectCatchableWithSameText<LogicException>(exception);
     }
 
     TEST(LogicException, MessageUsesSharedFormatAndKeepsThrowLocation)
@@ -528,8 +552,8 @@ namespace AsynGyanis::Base
         static_assert(!std::is_base_of_v<Exception, InvalidArgumentException>);
 
         const InvalidArgumentException exception("取值个数与列数不一致");
-        EXPECT_THROW(throw exception, std::invalid_argument);
-        EXPECT_THROW(throw exception, std::logic_error);
+        expectCatchableWithSameText<std::invalid_argument>(exception);
+        expectCatchableWithSameText<std::logic_error>(exception);
     }
 
     TEST(LogicException, DoesNotCatchItsSiblingInvalidArgumentException)

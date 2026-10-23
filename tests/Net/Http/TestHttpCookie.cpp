@@ -3,6 +3,7 @@
 #include "Net/Http/Message/HttpCookie.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 #include "Net/Http/Message/HttpDate.h"
 #include "Net/Http/Message/HttpRequest.h"
@@ -21,6 +22,17 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 断言 Cookie 属性写入被拒，并交回原因供调用方核对
+         * @param action 构造或属性写入动作
+         * @param expected 原因里必须出现的片段（哪条属性、违反了哪条规则）
+         */
+        template<typename Action>
+        void expectCookieRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "Cookie 写入");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
         /**
          * @brief 取一个可复现的时刻（RFC 9110 的样例时刻）
          * @return 1994-11-06T08:49:37Z
@@ -61,15 +73,15 @@ namespace AsynGyanis::Net
      */
     TEST(HttpCookie, RejectsInvalidNameAndValueAtConstruction)
     {
-        EXPECT_THROW(HttpCookie("bad name", "v"), Base::InvalidArgumentException);
-        EXPECT_THROW(HttpCookie("", "v"), Base::InvalidArgumentException);
-        EXPECT_THROW(HttpCookie("n", "va;lue"), Base::InvalidArgumentException);
-        EXPECT_THROW(HttpCookie("n", "value with space"), Base::InvalidArgumentException);
+        expectCookieRejected([] { static_cast<void>(HttpCookie("bad name", "v")); }, "token");
+        expectCookieRejected([] { static_cast<void>(HttpCookie("", "v")); }, "token");
+        expectCookieRejected([] { static_cast<void>(HttpCookie("n", "va;lue")); }, "取值含非法字符");
+        expectCookieRejected([] { static_cast<void>(HttpCookie("n", "value with space")); }, "取值含非法字符");
 
         HttpCookie cookie("n", "ok");
         EXPECT_NO_THROW(cookie.setValue(""));
         EXPECT_EQ(cookie.value(), "") << "空取值是 RFC 6265 允许的";
-        EXPECT_THROW(cookie.setValue("bad\r\nvalue"), Base::InvalidArgumentException);
+        expectCookieRejected([&cookie] { cookie.setValue("bad\r\nvalue"); }, "取值含非法字符");
     }
 
     /**
@@ -142,11 +154,11 @@ namespace AsynGyanis::Net
     TEST(HttpCookie, ValidatesPathAndDomainAttributes)
     {
         HttpCookie cookie("n", "v");
-        EXPECT_THROW(cookie.setPath("app"), Base::InvalidArgumentException);
-        EXPECT_THROW(cookie.setPath(""), Base::InvalidArgumentException);
-        EXPECT_THROW(cookie.setDomain(""), Base::InvalidArgumentException);
-        EXPECT_THROW(cookie.setDomain("a b.com"), Base::InvalidArgumentException);
-        EXPECT_THROW(cookie.setDomain("a;b.com"), Base::InvalidArgumentException);
+        expectCookieRejected([&cookie] { cookie.setPath("app"); }, "Path 必须以 '/' 开头");
+        expectCookieRejected([&cookie] { cookie.setPath(""); }, "Path 必须以 '/' 开头");
+        expectCookieRejected([&cookie] { cookie.setDomain(""); }, "Domain 不能为空");
+        expectCookieRejected([&cookie] { cookie.setDomain("a b.com"); }, "Domain 不能为空");
+        expectCookieRejected([&cookie] { cookie.setDomain("a;b.com"); }, "Domain 不能为空");
         EXPECT_NO_THROW(cookie.setPath("/"));
         EXPECT_NO_THROW(cookie.setDomain(".example.com")) << "前导点是 RFC 6265 认可的写法，保留原样交出去";
     }
@@ -392,8 +404,8 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(HttpCookie::isValidDomain(std::string(1, static_cast<char>(0xFF)))) << "0xFF 落在可打印 ASCII 之外";
 
         HttpCookie cookie("n", "v");
-        EXPECT_THROW(cookie.setDomain(extendedByteDomain), Base::InvalidArgumentException);
-        EXPECT_THROW(cookie.setDomain("例子.com"), Base::InvalidArgumentException);
+        expectCookieRejected([&] { cookie.setDomain(extendedByteDomain); }, "Domain 不能为空");
+        expectCookieRejected([&cookie] { cookie.setDomain("例子.com"); }, "Domain 不能为空");
 
         // 反向对照：可打印 ASCII 的域名照旧收，别让这条判据顺手把整个属性面焊死
         EXPECT_TRUE(HttpCookie::isValidDomain("example.com"));
