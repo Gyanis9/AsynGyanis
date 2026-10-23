@@ -30,6 +30,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -41,6 +42,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using namespace AsynGyanis;
 
