@@ -342,6 +342,16 @@ namespace AsynGyanis::Net
         return m_overTls;
     }
 
+    void HttpRequest::setDeadline(const std::optional<std::chrono::steady_clock::time_point> deadline) noexcept
+    {
+        m_deadline = deadline;
+    }
+
+    std::optional<std::chrono::steady_clock::time_point> HttpRequest::deadline() const noexcept
+    {
+        return m_deadline;
+    }
+
     void HttpRequest::setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
     {
         m_tlsPeerIdentity = std::move(identity);
@@ -596,6 +606,8 @@ namespace AsynGyanis::Net
         m_overTls = false;
         // 对端证书身份同上：复用的请求对象不能把上一条连接的身份带到下一条
         m_tlsPeerIdentity.reset();
+        // 业务截止时刻是服务器为本条落定的策略，复用请求对象时不能把上一条的预算带过来
+        m_deadline.reset();
         // 命中的路由也一样：上一条命中的模式不能冒到这一条上，否则按路由打点会把两条混进同一个桶
         m_matchedRoute = {};
         m_params.clear();

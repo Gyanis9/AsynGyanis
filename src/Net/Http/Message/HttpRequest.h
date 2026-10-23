@@ -18,6 +18,7 @@
 #include "Net/Http/Message/HttpMethod.h"
 #include "Net/Http/Message/MultipartForm.h"
 
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <optional>
@@ -396,6 +397,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view requestId() const noexcept;
 
         /**
+         * @brief 记下本次业务处理的截止时刻
+         * @param deadline 绝对截止时刻；空表示没有业务时限
+         * @details 由服务器侧超时中间件在进入业务链时落定，供网关把入站剩余预算交给下游。
+         *          它不是从线上读到的值，也不是请求到达时刻；未配置处理时限时保持空。
+         */
+        void setDeadline(std::optional<std::chrono::steady_clock::time_point> deadline) noexcept;
+
+        /**
+         * @brief 本次业务处理的截止时刻
+         * @return 有值表示业务链必须在此之前收尾；空表示没有配置处理时限
+         * @note 与 `setDeadline()` 同一口径，不是请求到达时刻
+         */
+        [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> deadline() const noexcept;
+
+        /**
          * @brief 记下发起这条请求的对端地址
          * @param address 地址文本，形如 "IP:Port"（IPv6 侧带方括号）；传空串表示本条给不出来源
          * @details 与 setRequestId() 排在同一处（派发之前）：这类「这条请求从哪来」的事实只有会话知道，
@@ -637,6 +653,8 @@ namespace AsynGyanis::Net
         bool m_overTls{false}; ///< 传输层是否加密（true = HTTPS / h3）
         /// 对端证书身份快照：同一连接上的请求共享一份；明文/无证书时为空
         Core::TlsPeerIdentityPtr m_tlsPeerIdentity{};
+        /// 本次业务处理的截止时刻，由超时中间件落定；空表示没有配置处理时限
+        std::optional<std::chrono::steady_clock::time_point> m_deadline{};
         /// 命中的路由模式原文，指向路由表里那条模式自己的存储（见 setMatchedRoute()）：按连接复用的
         /// 请求对象不为它付一次堆分配，reset() 只把视图清回去
         std::string_view                             m_matchedRoute; ///< 本次派发命中的路由模式，由路由器在管道之前落定

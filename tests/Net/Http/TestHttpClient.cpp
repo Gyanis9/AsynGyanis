@@ -19,6 +19,7 @@
 #include "Core/Socket/AsyncResolver.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
+#include "Net/Http/Routing/Middleware.h"
 #include "Net/Http/Client/HttpOutboundConnectionPool.h"
 #include "Net/Http/Client/OutboundCircuitBreaker.h"
 #include "Net/Http/Features/Gzip.h"
@@ -1201,6 +1202,68 @@ namespace AsynGyanis::Net
         const SendOutcome after = runSend(url, HttpClientRequest{}, std::chrono::seconds{2});
         EXPECT_TRUE(after.reason.empty()) << "DNS 超时之后客户端没有恢复：" << after.reason;
         EXPECT_EQ(after.body, "served-hello") << "DNS 超时之后后续请求没有拿到预期正文";
+    }
+
+    /**
+     * @brief 钉住网关把入站预算传给下游：下游慢于入站时限时，出站请求先失败，上游按时返回
+     * @details 没有这条通路时，处理器只能给下游一个独立的相对时限；上游 200 ms 的预算
+     *          会被下游 700 ms 的处理拖穿，整条调用链的超时逐层放大。
+     */
+    TEST(HttpClient, GatewayPropagatesInboundDeadlineToDownstream)
+    {
+        std::atomic<bool> downstreamEntered{false};
+        SlowRouteOptions  downstreamSlow;
+        downstreamSlow.processingTime = std::chrono::milliseconds{700};
+        downstreamSlow.handlerStarted = &downstreamEntered;
+        RunningHttpServerFixture downstream(HttpServerLimits{}, std::chrono::milliseconds{100}, downstreamSlow);
+        ASSERT_TRUE(downstream.awaitRunning(kTimeout)) << "下游服务器未在时限内进入接受循环";
+        const std::string downstreamUrl = "http://127.0.0.1:" + std::to_string(downstream.listeningPort()) + "/slow";
+
+        bool                     upstreamSawDeadline = false;
+        RunningHttpServerFixture upstream(HttpServerLimits{}, std::chrono::milliseconds{100}, SlowRouteOptions{},
+                                          [&downstreamUrl, &upstreamSawDeadline](Router &router, Core::EventLoop &loop)
+                                          {
+                                              router.addMiddleware(timeoutMiddleware(loop, std::chrono::milliseconds{200}));
+                                              router.get("/proxy",
+                                                         [&loop, &downstreamUrl, &upstreamSawDeadline](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                                                         {
+                                                             const auto deadline = request.deadline();
+                                                             upstreamSawDeadline = deadline.has_value();
+                                                             if (!deadline.has_value())
+                                                             {
+                                                                 response.setStatus(500);
+                                                                 response.setBody("missing-deadline");
+                                                                 co_return;
+                                                             }
+
+                                                             HttpClientRequest outbound;
+                                                             outbound.deadline = deadline;
+                                                             const auto sent   = co_await HttpClient::send(loop, downstreamUrl, outbound, std::chrono::seconds{2});
+                                                             if (sent.has_value())
+                                                             {
+                                                                 response.setStatus(200);
+                                                                 response.setBody(sent->body);
+                                                             } else
+                                                             {
+                                                                 response.setStatus(504);
+                                                                 response.setBody(sent.error());
+                                                             }
+                                                             co_return;
+                                                         });
+                                          });
+        ASSERT_TRUE(upstream.awaitRunning(kTimeout)) << "上游服务器未在时限内进入接受循环";
+        const std::string upstreamUrl = "http://127.0.0.1:" + std::to_string(upstream.listeningPort()) + "/proxy";
+
+        const auto        started = std::chrono::steady_clock::now();
+        const SendOutcome outcome = runSend(upstreamUrl, HttpClientRequest{}, std::chrono::seconds{2});
+        const auto        elapsed = std::chrono::steady_clock::now() - started;
+
+        EXPECT_TRUE(upstreamSawDeadline) << "上游处理器没有拿到入站截止时刻";
+        EXPECT_TRUE(waitForCondition([&downstreamEntered] { return downstreamEntered.load(std::memory_order_acquire); }, std::chrono::seconds{1}))
+                << "下游慢路由没有被进入：出站请求可能在建连前就失败了";
+        EXPECT_EQ(outcome.body.find("missing-deadline"), std::string::npos) << "缺少入站截止时刻，网关路径没有建立";
+        EXPECT_EQ(outcome.body.find("served-slow"), std::string::npos) << "下游跑完了整段处理：入站预算没有传下去";
+        EXPECT_LT(elapsed, std::chrono::milliseconds{600}) << "上游被下游拖过了自己的 200 ms 预算";
     }
 
     // ============================================================================

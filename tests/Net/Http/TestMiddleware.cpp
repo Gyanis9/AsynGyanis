@@ -1155,6 +1155,38 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(exceptionCaught.load());
     }
 
+    /**
+     * @brief 钉住：超时中间件把这次业务链的截止时刻交给请求对象
+     * @details 网关要把入站剩余预算传给下游，业务处理器只能从请求对象上读到它；
+     *          截止时刻必须落在「进入业务链」这一侧，而不是响应写出之后。
+     */
+    TEST_F(MiddlewareLoopFixture, ExposesHandlerDeadlineToBusiness)
+    {
+        MiddlewarePipeline pipeline;
+        pipeline.use(timeoutMiddleware(m_loop, kGenerousTimeout));
+
+        HttpRequest                                          request = makeRequest(HttpMethod::GET, "/deadline");
+        HttpResponse                                         response;
+        std::optional<std::chrono::steady_clock::time_point> observedDeadline;
+        std::atomic<bool>                                    exceptionCaught{false};
+        std::atomic<bool>                                    isFinished{false};
+        const TerminalHandler                                handler = [&request, &response, &observedDeadline]() -> Core::Task<void>
+        {
+            observedDeadline = request.deadline();
+            response.setBody("fast");
+            co_return;
+        };
+
+        Core::Task<void> chainTask = runChainOnLoop(pipeline, request, response, handler, exceptionCaught, isFinished);
+        ASSERT_TRUE(runOnLoop(chainTask, isFinished));
+
+        ASSERT_TRUE(observedDeadline.has_value()) << "业务处理器没有拿到本次处理的截止时刻";
+        const auto remaining = *observedDeadline - std::chrono::steady_clock::now();
+        EXPECT_GT(remaining, std::chrono::milliseconds::zero()) << "截止时刻在业务开始时已经过去";
+        EXPECT_LE(remaining, kGenerousTimeout) << "截止时刻比配置的处理时限还远";
+        EXPECT_FALSE(exceptionCaught.load());
+    }
+
     TEST_F(MiddlewareLoopFixture, RequestsCancelAndWritesGatewayTimeoutWhenDeadlineElapses)
     {
         MiddlewarePipeline pipeline;
@@ -1242,6 +1274,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(handlerCalls.load(), 1);
         EXPECT_EQ(response.status(), 200);
         EXPECT_FALSE(request.cancelToken().stop_requested());
+        EXPECT_FALSE(request.deadline().has_value()) << "未配置处理时限时不该凭空给出截止时刻";
     }
 
     TEST_F(MiddlewareLoopFixture, RethrowsHandlerExceptionAfterReapingWatchdog)

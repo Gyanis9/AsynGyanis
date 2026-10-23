@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.1.0
-# headers=309 entries=9065
+# headers=309 entries=9068
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -4170,6 +4170,7 @@ src/Net/Http/Message/HttpRequest.h	[[nodiscard]] const std::unordered_map<std::s
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] static std::unordered_map<std::string, std::string> parseUrlEncoded(std::string_view text)
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<Base::ConfigValue> jsonBody() const
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<MultipartFormData> multipartForm() const
+src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<std::chrono::steady_clock::time_point> deadline() const noexcept
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<std::size_t> declaredBodyLength() const
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<std::string> firstHeaderValue(std::string_view key) const
 src/Net/Http/Message/HttpRequest.h	[[nodiscard]] std::optional<std::string> getHeader(std::string_view key) const
@@ -4198,6 +4199,7 @@ src/Net/Http/Message/HttpRequest.h	namespace AsynGyanis::Net
 src/Net/Http/Message/HttpRequest.h	static HttpMethod methodFromString(std::string_view method)
 src/Net/Http/Message/HttpRequest.h	static std::string percentDecode(std::string_view source)
 src/Net/Http/Message/HttpRequest.h	std::optional<HttpHeaderFieldStore> m_trailerStore
+src/Net/Http/Message/HttpRequest.h	std::optional<std::chrono::steady_clock::time_point> m_deadline
 src/Net/Http/Message/HttpRequest.h	std::string m_body
 src/Net/Http/Message/HttpRequest.h	std::string m_httpVersion
 src/Net/Http/Message/HttpRequest.h	std::string m_requestId
@@ -4218,6 +4220,7 @@ src/Net/Http/Message/HttpRequest.h	void reserveHeaders(std::size_t fieldCount, s
 src/Net/Http/Message/HttpRequest.h	void reset()
 src/Net/Http/Message/HttpRequest.h	void setBody(std::string body)
 src/Net/Http/Message/HttpRequest.h	void setBodyStream(HttpRequestBody *bodyStream) noexcept
+src/Net/Http/Message/HttpRequest.h	void setDeadline(std::optional<std::chrono::steady_clock::time_point> deadline) noexcept
 src/Net/Http/Message/HttpRequest.h	void setHttpVersion(std::string version)
 src/Net/Http/Message/HttpRequest.h	void setMatchedRoute(std::string_view routePattern) noexcept
 src/Net/Http/Message/HttpRequest.h	void setMethod(HttpMethod method)

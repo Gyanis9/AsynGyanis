@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <stop_token>
 #include <memory>
 #include <string>
@@ -524,6 +525,23 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(request.getHeader("x-old").has_value());
         EXPECT_FALSE(request.getTrailerField("x-old-tail").has_value());
         EXPECT_EQ(request.tlsPeerIdentity(), nullptr) << "复用请求对象时上一条连接的对端证书身份仍在：下一条请求会冒用别人的身份";
+    }
+
+    /**
+     * @brief 钉住业务截止时刻：设置后按原值读回，reset 必须清掉，免得复用对象带上下一条的预算
+     */
+    TEST(HttpRequest, DeadlineRoundTripsAndResetClearsIt)
+    {
+        HttpRequest request;
+        const auto  deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+
+        EXPECT_FALSE(request.deadline().has_value()) << "新请求不该凭空带一个截止时刻";
+        request.setDeadline(deadline);
+        ASSERT_TRUE(request.deadline().has_value());
+        EXPECT_EQ(*request.deadline(), deadline);
+
+        request.reset();
+        EXPECT_FALSE(request.deadline().has_value()) << "复用请求对象时上一条的截止时刻仍在";
     }
 
     /**

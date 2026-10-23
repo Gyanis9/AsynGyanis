@@ -601,6 +601,8 @@ namespace AsynGyanis::Net
 
             // 业务链的起始时刻：正常路径由看门狗判到期，这里只给「定时器不可用」的退化路径兜底
             const auto chainStartTimePoint = std::chrono::steady_clock::now();
+            // 把同一份预算交给请求对象：网关处理器据此把剩余时限传给下游，避免层层放大
+            request.setDeadline(chainStartTimePoint + timeout);
 
             // 用 optional 持有：业务跑完之后直接销毁它（见下方收尾处），不必等它按分片醒来
             std::optional<Core::Task<>> watchdogTask = Detail::timeoutWatchdog(loop, request, timeout, state);
