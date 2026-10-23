@@ -969,6 +969,54 @@ namespace AsynGyanis::Net
         EXPECT_EQ(close->payload, makeClosePayload(1000, "done")) << "关闭原因要跟着上线";
         EXPECT_EQ(wireBytes.second.find("late"), std::string::npos);
     }
+
+    /**
+     * @brief 钉住本端先发 Close 之后仍能读到对端的回帧：关闭握手是双向的
+     * @details RFC 6455 §5.5.1 要求收到 Close 的一方回一条 Close；本端先发不等于可以不再收。
+     *          旧实现把「已发 Close」当成「接收结束」，receive() 直接返回错误，对端的状态码与
+     *          原因就丢了——上层无法区分「对端确认关闭」与「对端断线」。
+     */
+    TEST(WebSocketClient, ReadsPeersCloseReplyAfterLocalClose)
+    {
+        const PeerScript script = [](PeerWire &wire)
+        {
+            static_cast<void>(wire.write(makeUpgradeResponse(extractKeyFrom(wire.readUpgradeRequest()))));
+            wire.readOneClientFrame(); // 本端发出去的那条 Close
+            static_cast<void>(wire.write(makeServerFrame(kCloseFrameFirstByte, makeClosePayload(4000, "bye"))));
+        };
+        std::optional<std::uint16_t> remoteCode;
+        std::string                  remoteReason;
+        const Action                 action = [&remoteCode, &remoteReason](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
+        {
+            outcome.send_results.push_back(co_await client.close(1000, "done"));
+            const auto received = co_await client.receive();
+            if (received.has_value())
+            {
+                outcome.delivered.push_back(*received);
+            } else
+            {
+                outcome.receive_error = received.error().message;
+            }
+            remoteCode   = client.remoteCloseCode();
+            remoteReason = std::string(client.remoteCloseReason());
+            co_return;
+        };
+        std::pair<std::string, std::string> wireBytes;
+        const ClientRunOutcome              outcome = runClientAgainst(script, action, baseConfiguration(), wireBytes);
+        ASSERT_TRUE(outcome.is_connected) << outcome.failure_reason;
+        EXPECT_EQ(outcome.send_results, (std::vector<bool>{true}));
+        EXPECT_EQ(outcome.receive_error, "") << "本端发过 Close 之后 receive 被提前拒绝，读不到对端的回帧";
+        ASSERT_EQ(outcome.delivered.size(), 1U);
+        EXPECT_EQ(outcome.delivered.front().opCode, WebSocketOpCode::Close);
+        EXPECT_EQ(outcome.delivered.front().payload, makeClosePayload(4000, "bye"));
+        ASSERT_HAS_VALUE(remoteCode);
+        EXPECT_EQ(*remoteCode, 4000U);
+        EXPECT_EQ(remoteReason, "bye");
+        EXPECT_FALSE(outcome.is_open_after_actions);
+        const auto sentClose = frameAt(wireBytes.second, 0);
+        ASSERT_HAS_VALUE(sentClose);
+        EXPECT_EQ(sentClose->payload, makeClosePayload(1000, "done"));
+    }
     TEST(WebSocketClient, RejectsBadCloseArgumentsBeforeTouchingTheWire)
     {
         const PeerScript script = [](PeerWire &wire)
