@@ -53,6 +53,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -1604,6 +1605,72 @@ namespace AsynGyanis::Net
         ASSERT_NE(transport, nullptr) << "问传输层这一趟没走通";
         EXPECT_EQ(transport->body, "tls=1") << "h2 over TLS 被报成明文：HSTS 会在该发的地方缺席";
         EXPECT_TRUE(transport->reasonPhrase.empty()) << "这一趟退回 HTTP/1.1，传输层那条没验到 h2";
+    }
+
+    /**
+     * @brief 钉住 h2-over-TLS 的取消：慢响应在令牌停止后及时收场，而不是等 TLS 读侧超时
+     */
+    TEST(HttpsServer, CancelSlowHttp2RequestOverTls)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100},
+                [](Router &router, Core::EventLoop &serverLoop)
+                {
+                    router.get("/slow",
+                               [&serverLoop](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   Core::Timer silence(serverLoop);
+                                   co_await silence.waitFor(std::chrono::milliseconds{700});
+                                   response.setBody("eventually");
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        const std::string url = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/slow";
+        Core::EventLoop   loop;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool                      cancelled = false;
+        std::string               reason;
+        std::chrono::milliseconds elapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto started = std::chrono::steady_clock::now();
+            const auto sent    = co_await HttpClient::send(loop, url, request, std::chrono::seconds{3});
+            elapsed            = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            cancelled          = !sent.has_value();
+            if (!sent.has_value())
+            {
+                reason = sent.error();
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(cancelled) << "取消之后请求仍然拿到了响应";
+        EXPECT_NE(reason.find("取消"), std::string::npos) << "失败原因没有点明取消：" << reason;
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "h2-over-TLS 取消没有及时收场：" << elapsed.count() << " ms";
+        std::this_thread::sleep_for(std::chrono::milliseconds{700});
     }
 
     /**
