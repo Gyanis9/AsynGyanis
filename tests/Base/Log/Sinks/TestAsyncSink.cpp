@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <future>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -629,6 +630,37 @@ namespace AsynGyanis::Base
         EXPECT_EQ(acceptedCount, 1u);
         EXPECT_EQ(events->size(), 1u);
         EXPECT_FALSE(events->contains("rejected"));
+    }
+
+    /**
+     * @brief 钉住 stop() 进行中的 flush() 不会被一个卡在下游 write 的 worker 永远吊住
+     * @details stop() 先在锁内发布 stop_token 再去 join；worker 若正卡在下游 write，join 不会返回。
+     *          flush() 的等待谓词必须认得这个停止信号，否则日志系统收尾时最后一个 flush 会挂死。
+     */
+    TEST(AsyncSink, FlushReturnsWhileStopIsWaitingForABlockedWorker)
+    {
+        auto                   events     = std::make_shared<RecordedEvents>();
+        auto                   downstream = std::make_unique<BlockingRecordingSink>(events);
+        BlockingRecordingSink *rawSink    = downstream.get();
+        AsyncSink              sink(std::move(downstream), 64);
+        sink.write(makeEvent(LogLevel::Info, "blocked-before-stop"));
+
+        const auto enteredDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (events->enteredCount.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < enteredDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        ASSERT_GT(events->enteredCount.load(std::memory_order_acquire), 0U) << "worker 没进入下游 write，构造不出「stop 卡在 join」的形状";
+
+        std::thread stopper([&sink] { sink.stop(); });
+        auto        flushing              = std::async(std::launch::async, [&sink] { sink.flush(); });
+        const bool  returnedBeforeRelease = flushing.wait_for(std::chrono::milliseconds{250}) == std::future_status::ready;
+
+        rawSink->release();
+        stopper.join();
+        flushing.wait();
+        EXPECT_TRUE(returnedBeforeRelease) << "stop() 等待阻塞 worker 时，flush() 一直没有返回：停止信号没有进入等待谓词";
+        EXPECT_GE(events->flushCount.load(), 1U) << "flush 返回了却没有刷新下游";
     }
 
     // ============================================================================
