@@ -1143,13 +1143,8 @@ namespace AsynGyanis::Net
         loop.scheduler().scheduleRemote(startTask.handle());
 
         // 接手来的端口应当被原样报出来：偷偷重绑另一个端口，这条先红
-        std::uint16_t reportedPort = 0U;
-        for (int attempt = 0; attempt < 200 && reportedPort == 0U; ++attempt)
-        {
-            reportedPort = server.listeningPort();
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        }
-        EXPECT_EQ(reportedPort, listeningPort) << "接手入口没有报出交来的端口";
+        ASSERT_TRUE(waitForCondition([&server] { return server.listeningPort() != 0U; }, kWaitTimeout)) << "接手入口没有在时限内报出端口";
+        EXPECT_EQ(server.listeningPort(), listeningPort) << "接手入口没有报出交来的端口";
 
         const int client = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         EXPECT_GE(client, 0);
@@ -1160,13 +1155,7 @@ namespace AsynGyanis::Net
             Platform::FileDescriptor::close(client);
         }
 
-        std::size_t createdConnections = 0U;
-        for (int attempt = 0; attempt < 200 && createdConnections == 0U; ++attempt)
-        {
-            createdConnections = server.createConnectionCalls();
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        }
-        EXPECT_GE(createdConnections, 1U) << "接受循环没能在交来的描述符上收到连接";
+        ASSERT_TRUE(waitForCondition([&server] { return server.createConnectionCalls() >= 1U; }, kWaitTimeout)) << "接受循环没能在交来的描述符上收到连接";
         EXPECT_EQ(server.recordedLocalPort(), listeningPort) << "会话看到的本地端口不是交来的那个";
 
         // 收口顺序要按线程契约来：close() 只能在跑这条循环的线程上调，所以投递过去，
