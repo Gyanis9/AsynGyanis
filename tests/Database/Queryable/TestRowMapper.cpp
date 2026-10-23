@@ -189,8 +189,8 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_FALSE(converted.has_value()) << "SQL NULL 应映射成空 optional";
 
         DatabaseValue integerCell{std::int64_t{7}};
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<std::optional<std::string>>(std::move(integerCell), kColumnName)), RowMappingException)
-                << "整数落到 optional<std::string> 仍须报列类型不一致，移动分支不得放宽拒绝面";
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<std::optional<std::string>>(std::move(integerCell), kColumnName)); },
+                                                      "std::string");
     }
 
     /**
@@ -486,7 +486,7 @@ namespace AsynGyanis::Database::Queryable
             EXPECT_NE(message.find("二进制"), std::string::npos) << message;
         }
 
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(integerValue(7), kColumnName)), std::runtime_error);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<BinaryBytes>(integerValue(7), kColumnName)); }, "二进制（Bytes）");
     }
 
     /**
@@ -513,10 +513,14 @@ namespace AsynGyanis::Database::Queryable
     {
         const auto throwMappingFailure = [] { static_cast<void>(Detail::convertDatabaseValue<std::int64_t>(textValue("abc"), kColumnName)); };
 
-        EXPECT_THROW(throwMappingFailure(), RowMappingException);
-        EXPECT_THROW(throwMappingFailure(), DatabaseException);
-        EXPECT_THROW(throwMappingFailure(), Base::Exception);
-        EXPECT_THROW(throwMappingFailure(), std::runtime_error);
+        // 四层捕获都要保留同一句原因：调用方按哪一层兜住，拿到的都是能定位到列的那句话
+        expectConversionRejected<RowMappingException>([&] { throwMappingFailure(); }, "无法映射到整型");
+        const std::string databaseText = AsynGyanis::TestSupport::requireFailureText<DatabaseException>([&] { throwMappingFailure(); }, "DatabaseException");
+        EXPECT_NE(databaseText.find("无法映射到整型"), std::string::npos) << databaseText;
+        const std::string baseText = AsynGyanis::TestSupport::requireFailureText<Base::Exception>([&] { throwMappingFailure(); }, "Base::Exception");
+        EXPECT_NE(baseText.find("无法映射到整型"), std::string::npos) << baseText;
+        const std::string runtimeText = AsynGyanis::TestSupport::requireFailureText<std::runtime_error>([&] { throwMappingFailure(); }, "std::runtime_error");
+        EXPECT_NE(runtimeText.find("无法映射到整型"), std::string::npos) << runtimeText;
     }
 
     /**
@@ -544,13 +548,14 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperBool, RejectsIntegersOutsideZeroAndOne)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(2), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(-1), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(std::numeric_limits<std::int64_t>::min()), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(2), kColumnName)); }, "不是 0 或 1");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(7), kColumnName)); }, "不是 0 或 1");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(-1), kColumnName)); }, "不是 0 或 1");
+        expectConversionRejected<RowMappingException>(
+                [&] { static_cast<void>(Detail::convertDatabaseValue<bool>(integerValue(std::numeric_limits<std::int64_t>::min()), kColumnName)); }, "不是 0 或 1");
 
         // 文本形态同样拒绝：本方法只认布尔备选与 0/1 整数
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<bool>(textValue("1"), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<bool>(textValue("1"), kColumnName)); }, "bool");
 
         // 错误文本要能定位到列并给出替代做法，否则调用方只能自己去猜
         try
@@ -586,10 +591,15 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperFloating, RejectsIntegersBeyondTheExactRepresentableBound)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird + 1), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(-16777217), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(kTwoToTheFiftyThird + 1), kColumnName)); },
+                                                      "超出其能精确表示的整数范围");
+        expectConversionRejected<RowMappingException>(
+                [&] { static_cast<void>(Detail::convertDatabaseValue<double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)); },
+                "超出其能精确表示的整数范围");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(kTwoToTheTwentyFourth + 1), kColumnName)); },
+                                                      "超出其能精确表示的整数范围");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(integerValue(-16777217), kColumnName)); },
+                                                      "超出其能精确表示的整数范围");
     }
 
     /**
@@ -614,7 +624,9 @@ namespace AsynGyanis::Database::Queryable
             EXPECT_EQ(static_cast<long double>(beyondDoubleExactness), Detail::convertDatabaseValue<long double>(integerValue(beyondDoubleExactness), kColumnName));
         } else
         {
-            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<long double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)), RowMappingException);
+            expectConversionRejected<RowMappingException>(
+                    [&] { static_cast<void>(Detail::convertDatabaseValue<long double>(integerValue(std::numeric_limits<std::int64_t>::max()), kColumnName)); },
+                    "超出其能精确表示的整数范围");
         }
     }
 
@@ -628,8 +640,8 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperFloating, RejectsFloatOverflowButKeepsInfiniteAndNotANumber)
     {
         EXPECT_FLOAT_EQ(3.4e38F, Detail::convertDatabaseValue<float>(realValue(3.4e38), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(realValue(1e300), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(realValue(-1e300), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(realValue(1e300), kColumnName)); }, "超出其上下界");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(realValue(-1e300), kColumnName)); }, "超出其上下界");
         // double 成员没有这条上界问题：同一个取值原样收下
         EXPECT_DOUBLE_EQ(1e300, Detail::convertDatabaseValue<double>(realValue(1e300), kColumnName));
 
@@ -651,9 +663,10 @@ namespace AsynGyanis::Database::Queryable
     TEST(RowMapperFloating, RejectsBinaryButAcceptsWellFormedDecimalText)
     {
         EXPECT_DOUBLE_EQ(1.5, Detail::convertDatabaseValue<double>(textValue("1.5"), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(booleanValue(true), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{BinaryBytes{0x01}}, kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{}, kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(booleanValue(true), kColumnName)); }, "浮点（Double");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{BinaryBytes{0x01}}, kColumnName)); },
+                                                      "浮点（Double");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(DatabaseValue{}, kColumnName)); }, "浮点（Double");
     }
 
     /**
@@ -673,15 +686,15 @@ namespace AsynGyanis::Database::Queryable
                 << "15 位（double 的 digits10）应当收：这是无损上限之内";
 
         // 第 16 位有效数字起，十进制转二进制浮点已经在改值
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1234567890123456"), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1234567890123456"), kColumnName)); }, "位有效数字");
         // float 的无损位数是 6 位：同一个取值给 float 就要被拒
         EXPECT_FLOAT_EQ(1.23456F, Detail::convertDatabaseValue<float>(textValue("1.23456"), kColumnName));
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1.234567"), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1.234567"), kColumnName)); }, "位有效数字");
 
         // 上下界：溢出与下溢都按 ERANGE 或收窄越界报出，而不是给出 inf/0
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1e300"), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e309"), kColumnName)), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e-330"), kColumnName)), RowMappingException);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<float>(textValue("1e300"), kColumnName)); }, "超出");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e309"), kColumnName)); }, "超出");
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(textValue("1e-330"), kColumnName)); }, "超出");
     }
 
     /**
@@ -693,8 +706,8 @@ namespace AsynGyanis::Database::Queryable
     {
         for (const char *malformedText: {"", " ", " 1.5", "1.5 ", "1.5abc", "1.2.3", ".", "-", "+", "e5", "1.5e", "1.5e+", "inf", "-inf", "nan", "0x1p3", "1.5f"})
         {
-            EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<double>(textValue(malformedText), kColumnName)), RowMappingException)
-                    << "形状「" << malformedText << "」不该被当成十进制小数";
+            expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<double>(textValue(malformedText), kColumnName)); },
+                                                          "不是十进制小数");
         }
     }
 
@@ -709,13 +722,20 @@ namespace AsynGyanis::Database::Queryable
         EXPECT_TRUE(std::holds_alternative<double>(Detail::toDatabaseValue(1.5, "balance"))) << "正常值照常绑定";
         EXPECT_TRUE(std::holds_alternative<double>(Detail::toDatabaseValue(0.0, "balance")));
 
-        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<double>::quiet_NaN(), "balance")), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<double>::infinity(), "balance")), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(-std::numeric_limits<double>::infinity(), "balance")), RowMappingException);
-        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::numeric_limits<float>::infinity(), "ratio")), RowMappingException) << "float 成员同样要挡（收窄时它就是 ±inf）";
+        const auto expectNonFiniteRejected = [](const auto &value, const std::string_view column, const std::string_view reason)
+        {
+            const std::string text = AsynGyanis::TestSupport::requireFailureText<RowMappingException>(
+                    [&] { static_cast<void>(Detail::toDatabaseValue(value, std::string(column))); }, "非有限浮点绑定");
+            EXPECT_NE(text.find(column), std::string::npos) << "原因没有点名是哪一列：" << text;
+            EXPECT_NE(text.find(reason), std::string::npos) << "原因没有点明是非有限值：" << text;
+        };
+        expectNonFiniteRejected(std::numeric_limits<double>::quiet_NaN(), "balance", "NaN");
+        expectNonFiniteRejected(std::numeric_limits<double>::infinity(), "balance", "正无穷");
+        expectNonFiniteRejected(-std::numeric_limits<double>::infinity(), "balance", "负无穷");
+        expectNonFiniteRejected(std::numeric_limits<float>::infinity(), "ratio", "正无穷");
 
         // 可选量里的非有限值也要挡：解包之后走的是同一条判据
-        EXPECT_THROW(static_cast<void>(Detail::toDatabaseValue(std::optional<double>{std::numeric_limits<double>::quiet_NaN()}, "balance")), RowMappingException);
+        expectNonFiniteRejected(std::optional<double>{std::numeric_limits<double>::quiet_NaN()}, "balance", "NaN");
         EXPECT_NO_THROW(static_cast<void>(Detail::toDatabaseValue(std::optional<double>{std::nullopt}, "balance"))) << "空 optional 是 SQL NULL，正当写法";
 
         try
@@ -800,13 +820,18 @@ namespace AsynGyanis::Database::Queryable
     /** @brief 钉住零值日期与非 ISO 文本被拒（不猜），以及列被折成浮点时也不猜 */
     TEST(RowMapperTemporal, RejectsZeroDatesNonIsoTextAndFloatColumns)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("0000-00-00 00:00:00"), kColumnName)), std::runtime_error);
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("Thu 10-18-2026 09:20:30 PDT+0530"), kColumnName)),
-                     std::runtime_error);
+        expectConversionRejected<RowMappingException>(
+                [&] { static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("0000-00-00 00:00:00"), kColumnName)); },
+                "不是本库认得的日期时间文本");
+        expectConversionRejected<RowMappingException>(
+                [&] { static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(textValue("Thu 10-18-2026 09:20:30 PDT+0530"), kColumnName)); },
+                "不是本库认得的日期时间文本");
         // SQLite 的 date/time 函数会给出 REAL（儒略日）：那是另一种承载，认它就等于猜一个瞬间
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(realValue(2460000.5), kColumnName)), std::runtime_error);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(realValue(2460000.5), kColumnName)); },
+                                                      "日期时间（Timestamp");
         // 整数也不行：20261018 这种「看起来像日期」的整数按儒略日/自纪元秒都能解释，选哪个都是猜
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(integerValue(20261018), kColumnName)), std::runtime_error);
+        expectConversionRejected<RowMappingException>(
+                [&] { static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Timestamp>(integerValue(20261018), kColumnName)); }, "日期时间（Timestamp");
     }
 
     /** @brief 钉住可空的日期时间列：NULL ↔ 空 optional，两个方向都不同零瞬间混 */
@@ -880,7 +905,8 @@ namespace AsynGyanis::Database::Queryable
      */
     TEST(RowMapperDecimal, RejectsDoubleCellInsteadOfRetextualisingIt)
     {
-        EXPECT_THROW(static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(realValue(0.1), kColumnName)), std::runtime_error);
+        expectConversionRejected<RowMappingException>([&] { static_cast<void>(Detail::convertDatabaseValue<AsynGyanis::Database::Decimal>(realValue(0.1), kColumnName)); },
+                                                      "精确十进制（Decimal");
     }
 
     /** @brief 钉住解析不出来的文本如实报错，并把原文抄进消息（PostgreSQL 的 NUMERIC 允许 NaN） */
