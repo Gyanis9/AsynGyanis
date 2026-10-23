@@ -8,6 +8,7 @@
 #include "Platform/IO/MemoryMappedFile.h"
 
 #include "NetTestSupport.h"
+#include "AssertionSupport.h"
 #include "HttpTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -41,6 +42,21 @@ namespace AsynGyanis::Net
          * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
          */
         using AsynGyanis::Net::TestSupport::containsText;
+
+        /**
+         * @brief 断言响应在写报文前按指定类型拒绝，并交回原因供调用方核对
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 写入/登记动作
+         * @param expected 原因里必须出现的片段（键名、取值或规则）
+         * @return std::string 异常正文，便于继续断言「没有半条留在响应里」
+         */
+        template<typename ExceptionType, typename Action>
+        std::string expectResponseRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "响应写入");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+            return reason;
+        }
 
         /**
          * @brief 取子串在文本中的位置，便于断言序列化先后顺序
@@ -396,15 +412,15 @@ namespace AsynGyanis::Net
         hostWithDomain.setSecure();
         hostWithDomain.setPath("/");
         hostWithDomain.setDomain("example.com");
-        EXPECT_THROW(response.setCookie(hostWithDomain), AsynGyanis::Base::InvalidArgumentException) << "带 Domain 的 __Host- 正是这个前缀明令不许的那一型";
+        expectResponseRejected<AsynGyanis::Base::InvalidArgumentException>([&] { response.setCookie(hostWithDomain); }, "带了 Domain 属性");
 
         HttpCookie hostWithSubtreePath("__Host-sid", "1");
         hostWithSubtreePath.setSecure();
         hostWithSubtreePath.setPath("/admin");
-        EXPECT_THROW(response.setCookie(hostWithSubtreePath), AsynGyanis::Base::InvalidArgumentException) << "Path 必须是明确写出的 /";
+        expectResponseRejected<AsynGyanis::Base::InvalidArgumentException>([&] { response.setCookie(hostWithSubtreePath); }, "Path 属性不是明确写出的");
 
         HttpCookie securePrefixWithoutSecure("__Secure-csrf", "token");
-        EXPECT_THROW(response.setCookie(securePrefixWithoutSecure), AsynGyanis::Base::InvalidArgumentException);
+        expectResponseRejected<AsynGyanis::Base::InvalidArgumentException>([&] { response.setCookie(securePrefixWithoutSecure); }, "__Secure- 前缀却没带 Secure");
 
         // 合规格的那条要发得出去，且属性按本类固定次序排
         HttpCookie wellFormed("__Host-sid", "1");
@@ -452,7 +468,7 @@ namespace AsynGyanis::Net
     TEST(HttpResponse, RejectsCookieWithInvalidName)
     {
         HttpResponse emptyNameResponse;
-        EXPECT_THROW(emptyNameResponse.setCookie(HttpCookie{}), AsynGyanis::Base::InvalidArgumentException);
+        expectResponseRejected<AsynGyanis::Base::InvalidArgumentException>([&] { emptyNameResponse.setCookie(HttpCookie{}); }, "至少一个字符");
         EXPECT_EQ(emptyNameResponse.headerValues("Set-Cookie").size(), 0U) << "被拒的 Cookie 不该有一半留在响应里";
 
         emptyNameResponse.setCookie(HttpCookie("sid", "42"));
@@ -776,7 +792,7 @@ namespace AsynGyanis::Net
         HttpResponse chunked;
         chunked.startChunkedResponse(200);
         std::string rejected = "x";
-        EXPECT_THROW(chunked.setOwnedBody(std::move(rejected)), Base::LogicException);
+        expectResponseRejected<Base::LogicException>([&] { chunked.setOwnedBody(std::move(rejected)); }, "已进入流式模式");
     }
 
     /**
@@ -813,7 +829,7 @@ namespace AsynGyanis::Net
 
         HttpResponse chunked;
         chunked.startChunkedResponse(200);
-        EXPECT_THROW(chunked.prepareBodyBuffer(8), Base::LogicException);
+        expectResponseRejected<Base::LogicException>([&] { static_cast<void>(chunked.prepareBodyBuffer(8)); }, "已进入流式模式");
     }
 
     TEST(HttpResponse, BuildsOkayResponseFromFactory)
@@ -1081,10 +1097,13 @@ namespace AsynGyanis::Net
         HttpResponse response;
 
         // offset 越界、以及 offset + length 越过末尾，两种都要拦住
-        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 10, 1), Base::InvalidArgumentException);
-        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 8, 3), Base::InvalidArgumentException);
+        expectResponseRejected<Base::InvalidArgumentException>([&] { response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 10, 1); },
+                                                               "区间越界，offset=10，length=1");
+        expectResponseRejected<Base::InvalidArgumentException>([&] { response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 8, 3); },
+                                                               "区间越界，offset=8，length=3");
         // 用法错误据此可归入 std::invalid_argument 分支：调用方能一次捕获所有「自己用错了」
-        EXPECT_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 11, 0), std::invalid_argument);
+        expectResponseRejected<std::invalid_argument>([&] { response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 11, 0); },
+                                                      "区间越界，offset=11，length=0");
 
         // 恰好贴住边界不算越界：整段与零长度都要放行
         EXPECT_NO_THROW(response.setMappedBody(Platform::MemoryMappedFile::open(temporaryFile.path()), 10, 0));
@@ -1116,7 +1135,8 @@ namespace AsynGyanis::Net
         }
 
         Platform::MemoryMappedFile movedAway;
-        EXPECT_THROW(sharedView.setSharedMappedBody(std::make_shared<Platform::MemoryMappedFile>(std::move(movedAway)), 2, 1), Base::InvalidArgumentException);
+        expectResponseRejected<Base::InvalidArgumentException>([&] { sharedView.setSharedMappedBody(std::make_shared<Platform::MemoryMappedFile>(std::move(movedAway)), 2, 1); },
+                                                               "映射不可用");
 
         // 清正文的那条通路照旧放行：只判映射可用性会把「nullptr + 0/0」这个惯用写法一起挡掉
         HttpResponse cleared;
@@ -1482,7 +1502,8 @@ namespace AsynGyanis::Net
         HttpResponse response;
         for (const int badStatus: {0, 99, 200, 404})
         {
-            EXPECT_THROW(static_cast<void>(driveInformationalSend(response.sendInformational(badStatus))), Base::InvalidArgumentException) << "状态码 " << badStatus;
+            expectResponseRejected<Base::InvalidArgumentException>([&] { static_cast<void>(driveInformationalSend(response.sendInformational(badStatus))); },
+                                                                   std::to_string(badStatus));
         }
     }
 
@@ -1491,10 +1512,11 @@ namespace AsynGyanis::Net
     {
         HttpResponse response;
 
-        EXPECT_THROW(static_cast<void>(driveInformationalSend(response.sendInformational(103, {{"bad name", "x"}}))), Base::InvalidArgumentException);
+        expectResponseRejected<Base::InvalidArgumentException>([&] { static_cast<void>(driveInformationalSend(response.sendInformational(103, {{"bad name", "x"}}))); },
+                                                               "破坏头部结构");
 
         Core::Task<bool> injectedValue = response.sendInformational(103, {{"link", "x\r\ncontent-length: 99"}});
-        EXPECT_THROW(static_cast<void>(driveInformationalSend(std::move(injectedValue))), Base::InvalidArgumentException);
+        expectResponseRejected<Base::InvalidArgumentException>([&] { static_cast<void>(driveInformationalSend(std::move(injectedValue))); }, "「link」");
     }
 
     /**
@@ -1629,19 +1651,19 @@ namespace AsynGyanis::Net
         {
             HttpResponse response;
             response.setBody("body");
-            EXPECT_THROW(response.upgradeToWebSocket(handler), Base::LogicException);
+            expectResponseRejected<Base::LogicException>([&] { response.upgradeToWebSocket(handler); }, "已经设置过整块正文");
             EXPECT_FALSE(response.isWebSocketUpgradeRequested());
         }
         {
             HttpResponse response;
-            EXPECT_THROW(response.upgradeToWebSocket(WebSocketHandler{}), Base::InvalidArgumentException);
+            expectResponseRejected<Base::InvalidArgumentException>([&] { response.upgradeToWebSocket(WebSocketHandler{}); }, "升级处理器为空");
             EXPECT_FALSE(response.isWebSocketUpgradeRequested());
         }
         {
             HttpResponse           response;
             WebSocketUpgradePolicy policy;
             policy.allowedOrigins.emplace_back("https://example.com/path");
-            EXPECT_THROW(response.upgradeToWebSocket(handler, policy), Base::InvalidArgumentException);
+            expectResponseRejected<Base::InvalidArgumentException>([&] { response.upgradeToWebSocket(handler, policy); }, "https://example.com/path");
             EXPECT_FALSE(response.isWebSocketUpgradeRequested());
             EXPECT_TRUE(response.webSocketUpgradePolicy().allowedOrigins.empty()) << "被拒的策略留在了响应上";
         }
@@ -1649,13 +1671,13 @@ namespace AsynGyanis::Net
             HttpResponse           response;
             WebSocketUpgradePolicy policy;
             policy.subprotocolCandidates.emplace_back("chat, superchat");
-            EXPECT_THROW(response.upgradeToWebSocket(handler, policy), Base::InvalidArgumentException);
+            expectResponseRejected<Base::InvalidArgumentException>([&] { response.upgradeToWebSocket(handler, policy); }, "chat, superchat");
             EXPECT_FALSE(response.isWebSocketUpgradeRequested());
         }
         {
             HttpResponse response;
             response.startChunkedResponse(200);
-            EXPECT_THROW(response.upgradeToWebSocket(handler), Base::LogicException);
+            expectResponseRejected<Base::LogicException>([&] { response.upgradeToWebSocket(handler); }, "已进入流式模式");
             EXPECT_FALSE(response.isWebSocketUpgradeRequested());
         }
     }
