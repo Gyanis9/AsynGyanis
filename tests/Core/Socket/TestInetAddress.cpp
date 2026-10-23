@@ -3,6 +3,7 @@
 #include "Core/Socket/InetAddress.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 #include "Platform/IO/NetworkInterface.h"
 #include "Platform/IO/Socket.h"
@@ -18,6 +19,21 @@
 
 namespace AsynGyanis::Core
 {
+    namespace
+    {
+        /**
+         * @brief 断言地址构造按用法错误拒绝，并交回原因
+         * @param action 构造动作
+         * @param expected 原因里必须出现的片段（哪一段文本、哪一种作用域写法、哪一个长度）
+         */
+        template<typename Action>
+        void expectAddressRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "地址构造");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
+    } // namespace
+
     /**
      * @brief 默认构造得到的是 IPv4 通配地址 0.0.0.0:0，而不是未初始化的地址字段
      */
@@ -218,7 +234,7 @@ namespace AsynGyanis::Core
         }
 
         // 主机名同样不算合法 IP 文本（解析主机名是 resolve() 的职责）
-        EXPECT_THROW(static_cast<void>(InetAddress("localhost", 80)), Base::InvalidArgumentException);
+        expectAddressRejected([] { static_cast<void>(InetAddress("localhost", 80)); }, "IP 地址格式非法");
     }
 
     /**
@@ -230,7 +246,7 @@ namespace AsynGyanis::Core
         // "1.2.3.4\0evil" 会被当成 1.2.3.4 接受、后半段被静默丢弃——属于静默变形，
         // 因此必须在进入 C API 之前显式失败
         const std::string textWithNul("1.2.3.4\0evil", 12);
-        EXPECT_THROW(static_cast<void>(InetAddress(8080, textWithNul)), Base::InvalidArgumentException);
+        expectAddressRejected([&] { static_cast<void>(InetAddress(8080, textWithNul)); }, "文本含 NUL 字节");
     }
 
     /**
@@ -243,7 +259,7 @@ namespace AsynGyanis::Core
     {
         for (const char *ipText: {"0177.0.0.1", "1.2.3.04", "1.2.3.4 ", "256.1.1.1"})
         {
-            EXPECT_THROW(static_cast<void>(InetAddress(80, ipText)), Base::InvalidArgumentException) << "该文本不该被当成合法 IPv4：" << ipText;
+            expectAddressRejected([&] { static_cast<void>(InetAddress(80, ipText)); }, "IP 地址格式非法");
         }
     }
 
@@ -372,13 +388,13 @@ namespace AsynGyanis::Core
     TEST(InetAddress, RejectsUnusableZoneIdentifiers)
     {
         // IPv4 没有作用域这个概念（RFC 4007 §11 只给 IPv6）
-        EXPECT_THROW(static_cast<void>(InetAddress(80, "1.2.3.4%eth0")), Base::InvalidArgumentException);
+        expectAddressRejected([] { static_cast<void>(InetAddress(80, "1.2.3.4%eth0")); }, "作用域");
 
         // 空标识、查不到的接口名、超出 uint32 的数字都算不可用
         for (const char *ipText: {"fe80::1%", "fe80::1%no-such-iface-99", "fe80::1%4294967296", "fe80::1%3%4", "fe80::1%+3"})
         {
             EXPECT_FALSE(InetAddress::parseLiteral(ipText, 80).has_value()) << "该写法不该被接受：" << ipText;
-            EXPECT_THROW(static_cast<void>(InetAddress(80, ipText)), Base::InvalidArgumentException) << ipText;
+            expectAddressRejected([&] { static_cast<void>(InetAddress(80, ipText)); }, "IPv6 作用域标识「");
         }
 
         // 文案要指认是哪一段不可用，配置写错的人才能自己改对
@@ -446,8 +462,8 @@ namespace AsynGyanis::Core
         sockaddr_storage storage{};
         storage.ss_family = AF_INET;
 
-        EXPECT_THROW(static_cast<void>(InetAddress(storage, 0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(InetAddress(storage, static_cast<socklen_t>(sizeof(sockaddr_storage) + 1))), Base::InvalidArgumentException);
+        expectAddressRejected([&] { static_cast<void>(InetAddress(storage, 0)); }, "地址长度 0 非法");
+        expectAddressRejected([&] { static_cast<void>(InetAddress(storage, static_cast<socklen_t>(sizeof(sockaddr_storage) + 1))); }, "地址长度");
         // 恰好放得下的两种真实长度都应当被接受：IPv4 与 IPv6 的地址长度不同，不能只认一种
         EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_in))));
         EXPECT_NO_THROW(static_cast<void>(InetAddress(storage, sizeof(sockaddr_storage))));

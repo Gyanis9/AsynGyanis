@@ -14,6 +14,7 @@
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -29,6 +30,17 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 断言帧头解析/构造按用法错误拒绝，并交回原因
+         * @param action 解析或构造动作
+         * @param expected 原因里必须出现的片段（哪一项长度、哪一个取值）
+         */
+        template<typename Action>
+        void expectHeaderRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "QUIC 帧头");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
         /**
          * @brief 由字节序列拼出待解码的字节容器（定义见 NetTestSupport.h）
          */
@@ -216,8 +228,8 @@ namespace AsynGyanis::Net
         EXPECT_EQ(restoreQuicPacketNumber(250ULL, 3ULL, 1), 259ULL);
         // 期望值小于半窗口时，判据不能因无符号回绕而反过来：最大包号 0 之后的截断值 0 仍是 0
         EXPECT_EQ(restoreQuicPacketNumber(0ULL, 0ULL, 1), 0ULL);
-        EXPECT_THROW(static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 5)), Base::InvalidArgumentException);
+        expectHeaderRejected([&] { static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 0)); }, "不在 1..4");
+        expectHeaderRejected([&] { static_cast<void>(restoreQuicPacketNumber(0ULL, 0ULL, 5)); }, "不在 1..4");
     }
 
     /**
@@ -350,7 +362,7 @@ namespace AsynGyanis::Net
     TEST(QuicPacketHeader, RejectsLocalConnectionIdLengthAboveRange)
     {
         const auto packet = makeBytesFromHex("4000112233");
-        EXPECT_THROW(static_cast<void>(decodeQuicPacketHeader(packet, kQuicMaximumConnectionIdLength + 1)), Base::InvalidArgumentException);
+        expectHeaderRejected([&] { static_cast<void>(decodeQuicPacketHeader(packet, kQuicMaximumConnectionIdLength + 1)); }, "超过版本 1 的上限");
     }
 
     /**
@@ -440,13 +452,12 @@ namespace AsynGyanis::Net
         const std::vector<std::uint8_t> smallConnectionId{0x22};
         const std::uint32_t             oneVersion[]{kQuicVersion1};
 
-        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(oversizedConnectionId, smallConnectionId, std::span{oneVersion})), Base::InvalidArgumentException)
-                << "8 位长度域装不下的标识被静默截断发出去了";
-        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, oversizedConnectionId, std::span{oneVersion})), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span<const std::uint32_t>{})), Base::InvalidArgumentException)
-                << "空的版本列表被当成一条合法回包";
+        expectHeaderRejected([&] { static_cast<void>(buildQuicVersionNegotiationPacket(oversizedConnectionId, smallConnectionId, std::span{oneVersion})); }, "超过 255");
+        expectHeaderRejected([&] { static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, oversizedConnectionId, std::span{oneVersion})); }, "超过 255");
+        expectHeaderRejected([&] { static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span<const std::uint32_t>{})); },
+                             "版本列表有 0 条");
 
         const std::vector<std::uint32_t> tooManyVersions(kQuicMaximumVersionNegotiationListLength + 1U, kQuicVersion1);
-        EXPECT_THROW(static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span{tooManyVersions})), Base::InvalidArgumentException);
+        expectHeaderRejected([&] { static_cast<void>(buildQuicVersionNegotiationPacket(smallConnectionId, smallConnectionId, std::span{tooManyVersions})); }, "不在 1..");
     }
 } // namespace AsynGyanis::Net

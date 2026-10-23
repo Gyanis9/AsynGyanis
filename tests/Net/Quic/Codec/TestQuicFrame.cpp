@@ -21,6 +21,7 @@
 #include "NetTestSupport.h"
 
 #include "AllocationProbe.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -38,6 +39,17 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 断言 QUIC 帧编码按用法错误拒绝，并交回原因
+         * @param action 编码动作
+         * @param expected 原因里必须出现的片段（哪一段区间、哪一个长度）
+         */
+        template<typename Action>
+        void expectFrameRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "QUIC 帧编码");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
         using AsynGyanis::Net::TestSupport::containsText;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
         using AsynGyanis::Net::TestSupport::toUnsignedBytes;
@@ -454,19 +466,19 @@ namespace AsynGyanis::Net
     {
         QuicAcknowledgementFrame empty;
         empty.largestAcknowledgedPacketNumber = 5;
-        EXPECT_THROW(static_cast<void>(encodeOne(empty)), Base::InvalidArgumentException);
+        expectFrameRejected([&] { static_cast<void>(encodeOne(empty)); }, "区间列表为空");
 
         // 首区间的最大值不等于声明的最大确认包号
         QuicAcknowledgementFrame mismatched;
         mismatched.largestAcknowledgedPacketNumber = 10;
         mismatched.ranges                          = {{8, 9}};
-        EXPECT_THROW(static_cast<void>(encodeOne(mismatched)), Base::InvalidArgumentException);
+        expectFrameRejected([&] { static_cast<void>(encodeOne(mismatched)); }, "不一致");
 
         // 第二段与第一段之间留不出 gap 要求的至少一个未确认包
         QuicAcknowledgementFrame overlapping;
         overlapping.largestAcknowledgedPacketNumber = 10;
         overlapping.ranges                          = {{8, 10}, {6, 7}};
-        EXPECT_THROW(static_cast<void>(encodeOne(overlapping)), Base::InvalidArgumentException);
+        expectFrameRejected([&] { static_cast<void>(encodeOne(overlapping)); }, "留不出 gap");
     }
 
     /**
@@ -478,10 +490,11 @@ namespace AsynGyanis::Net
         const auto shortToken = bytesOf("a0a1a2");
         const auto fullToken  = bytesOf("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");
 
-        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>{}, std::span<const std::uint8_t>(fullToken)})),
-                     Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>(identifier), std::span<const std::uint8_t>(shortToken)})),
-                     Base::InvalidArgumentException);
+        expectFrameRejected([&] { static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>{}, std::span<const std::uint8_t>(fullToken)})); },
+                            "连接标识长度");
+        expectFrameRejected([&]
+                            { static_cast<void>(encodeOne(QuicNewConnectionIdFrame{1, 0, std::span<const std::uint8_t>(identifier), std::span<const std::uint8_t>(shortToken)})); },
+                            "无状态重置令牌长度");
     }
 
     /**

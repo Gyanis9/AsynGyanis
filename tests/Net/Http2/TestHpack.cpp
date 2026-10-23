@@ -10,6 +10,7 @@
 
 #include "Net/Http2/Hpack.h"
 
+#include "AssertionSupport.h"
 #include "NetTestSupport.h"
 
 #include <gtest/gtest.h>
@@ -28,6 +29,18 @@ namespace AsynGyanis::Net
 {
     namespace
     {
+        /**
+         * @brief 断言 HPACK 整数编码按用法错误拒绝，并交回原因
+         * @tparam ExceptionType 期望的异常类型
+         * @param action 编码动作
+         * @param expected 原因里必须出现的片段（越界的位宽或压到前缀上的模式位）
+         */
+        template<typename ExceptionType, typename Action>
+        void expectHpackRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<ExceptionType>(action, "HPACK 编码");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
         /// RFC 7541 各类示例里的头列表都按「名 = 值」的二元组表述
         using HeaderListEntry = std::pair<const char *, const char *>;
 
@@ -319,9 +332,9 @@ namespace AsynGyanis::Net
         EXPECT_EQ(consumed, encodedLarge.size());
 
         // 编码侧的用法错误：前缀位数越界、模式位压到前缀位上
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(1, 0, 0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(1, 9, 0)), Base::InvalidArgumentException);
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(1, 7, 0x40)), Base::InvalidArgumentException);
+        expectHpackRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHpackInteger(1, 0, 0)); }, "前缀位数");
+        expectHpackRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHpackInteger(1, 9, 0)); }, "前缀位数");
+        expectHpackRejected<Base::InvalidArgumentException>([&] { static_cast<void>(encodeHpackInteger(1, 7, 0x40)); }, "模式位");
     }
 
     /**
@@ -1249,10 +1262,10 @@ namespace AsynGyanis::Net
      */
     TEST(Hpack, RejectsIllegalPrefixWidthAndPatternOverlap)
     {
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 0, 0x00)), std::invalid_argument);
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 9, 0x00)), std::invalid_argument);
+        expectHpackRejected<std::invalid_argument>([&] { static_cast<void>(encodeHpackInteger(10, 0, 0x00)); }, "前缀位数");
+        expectHpackRejected<std::invalid_argument>([&] { static_cast<void>(encodeHpackInteger(10, 9, 0x00)); }, "前缀位数");
         // 5 位前缀的低 5 位归整数所有：模式位 0x01 落进了前缀区间
-        EXPECT_THROW(static_cast<void>(encodeHpackInteger(10, 5, 0x01)), std::invalid_argument);
+        expectHpackRejected<std::invalid_argument>([&] { static_cast<void>(encodeHpackInteger(10, 5, 0x01)); }, "模式位");
     }
 
 } // namespace AsynGyanis::Net

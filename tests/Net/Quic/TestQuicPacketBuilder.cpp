@@ -22,6 +22,7 @@
 #include "NetTestSupport.h"
 
 #include "AllocationProbe.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -40,6 +41,18 @@ namespace AsynGyanis::Net
     namespace
     {
         using AsynGyanis::Net::TestSupport::buildAppendixA2Plaintext;
+
+        /**
+         * @brief 断言 QUIC 组包按用法错误拒绝，并交回原因
+         * @param action 组包动作
+         * @param expected 原因里必须出现的片段（哪一项取值或哪一条 RFC 限制）
+         */
+        template<typename Action>
+        void expectPacketRejected(Action &&action, const std::string_view expected)
+        {
+            const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(action, "QUIC 组包");
+            EXPECT_NE(reason.find(expected), std::string::npos) << "原因没有点明拒绝的是哪一项：" << reason;
+        }
         using AsynGyanis::Net::TestSupport::kAppendixA2AdditionalDataHex;
         using AsynGyanis::Net::TestSupport::kAppendixA2PacketNumber;
         using AsynGyanis::Net::TestSupport::kAppendixA2ProtectedPacketHex;
@@ -272,26 +285,26 @@ namespace AsynGyanis::Net
 
         std::string datagram;
         packet.frames = {};
-        EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicPacket(datagram, packet, keys); }, "至少要含一个帧");
         packet.frames = frame;
 
         packet.packetNumberByteCount = 5;
-        EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicPacket(datagram, packet, keys); }, "不在 1..4");
         packet.packetNumberByteCount = 1;
 
         packet.destinationConnectionId = oversizedConnectionId;
-        EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicPacket(datagram, packet, keys); }, "超过版本 1 的上限");
         packet.destinationConnectionId = destinationConnectionId;
 
         // 只有 Initial 的长头里有 Token 字段
         packet.longPacketType = QuicLongPacketType::Handshake;
         packet.token          = token;
-        EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicPacket(datagram, packet, keys); }, "Token 只存在于 Initial");
         packet.longPacketType = QuicLongPacketType::Initial;
         packet.token          = {};
 
         packet.packetNumber = kQuicMaximumIntegerValue + 1ULL;
-        EXPECT_THROW(appendQuicPacket(datagram, packet, keys), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicPacket(datagram, packet, keys); }, "超过 2^62-1");
         EXPECT_TRUE(datagram.empty()) << "校验在建头之前，五种非法输入都不该留下半个字节";
     }
 
@@ -338,7 +351,7 @@ namespace AsynGyanis::Net
                 .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
                 .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
         };
-        EXPECT_THROW(appendQuicRetryPacket(datagram, emptyTokenPacket), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicRetryPacket(datagram, emptyTokenPacket); }, "地址验证令牌为空");
 
         // 本端新选的标识与客户端 Initial 的目的标识相同：§17.2.5.1 的 MUST NOT
         const QuicRetryPacket unchangedConnectionIdPacket{
@@ -346,14 +359,14 @@ namespace AsynGyanis::Net
                 .sourceConnectionId              = std::span<const std::uint8_t>(originalDestinationConnectionId),
                 .token                           = std::span<const std::uint8_t>(retryToken),
         };
-        EXPECT_THROW(appendQuicRetryPacket(datagram, unchangedConnectionIdPacket), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicRetryPacket(datagram, unchangedConnectionIdPacket); }, "逐字节相同");
 
         const QuicRetryPacket oversizedPacket{
                 .originalDestinationConnectionId = std::span<const std::uint8_t>(oversizedConnectionId),
                 .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
                 .token                           = std::span<const std::uint8_t>(retryToken),
         };
-        EXPECT_THROW(appendQuicRetryPacket(datagram, oversizedPacket), Base::InvalidArgumentException);
+        expectPacketRejected([&] { appendQuicRetryPacket(datagram, oversizedPacket); }, "超过版本 1 的上限");
 
         EXPECT_TRUE(datagram.empty()) << "三条非法描述都排在写字节之前，一条也不该留下残余";
     }
