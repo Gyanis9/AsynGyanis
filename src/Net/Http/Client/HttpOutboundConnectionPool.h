@@ -147,6 +147,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length);
 
         /**
+         * @brief 带停止令牌的读取
+         * @param buffer 接收缓冲区首地址
+         * @param length 缓冲区容量
+         * @param stopToken 取消令牌：TLS 通路卡在半条记录上时也能被叫醒；取消不算连接故障
+         * @return Core::Task<ssize_t> 语义同不带令牌的那一支；取消时交回负数
+         */
+        [[nodiscard]] Core::Task<ssize_t> receive(void *buffer, std::size_t length, std::stop_token stopToken);
+
+        /**
          * @brief 等可读直到令牌停止：不消费字节
          * @param stopToken 取消令牌
          * @return true 可读；false 令牌被停止或连接已关闭

@@ -17,6 +17,7 @@
 #include "HttpTestSupport.h"
 #include "Core/EventLoop/Timer.h"
 #include "Core/Socket/AsyncResolver.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpCookieJar.h"
 #include "Net/Http/Routing/Middleware.h"
@@ -227,6 +228,124 @@ namespace AsynGyanis::Net
 
             std::string                m_payload;           ///< 每份请求要回的预设字节
             std::thread                m_worker;            ///< 接受与应答线程
+            std::atomic<bool>          m_isStopping{false}; ///< 收摊标志
+            std::atomic<std::uint16_t> m_port{0};           ///< 实际监听端口，0 表示还没起来
+        };
+
+        /**
+         * @brief 只接受连接、一个字节都不回的对端
+         * @details 用来把客户端按在「等对端第一句话」上：TCP 三连由内核完成，应用层保持沉默。
+         *          收摊靠停止标志与 50 毫秒轮询，测试线程只等端口出现与 join，不会挂在 accept 上。
+         */
+        class SilentPeer
+        {
+        public:
+            SilentPeer() = default;
+
+            SilentPeer(const SilentPeer &)            = delete;
+            SilentPeer &operator=(const SilentPeer &) = delete;
+
+            ~SilentPeer()
+            {
+                stop();
+            }
+
+            /// 起工作线程并等它把端口报回来
+            bool start(const std::chrono::milliseconds waitTimeout)
+            {
+                m_worker            = std::thread([this] { run(); });
+                const auto deadline = std::chrono::steady_clock::now() + waitTimeout;
+                while (m_port.load(std::memory_order_acquire) == 0U && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                return m_port.load(std::memory_order_acquire) != 0U;
+            }
+
+            /// 收摊：置停止标志并等线程退出（各处轮询都带超时）
+            void stop()
+            {
+                m_isStopping.store(true, std::memory_order_release);
+                if (m_worker.joinable())
+                {
+                    m_worker.join();
+                }
+            }
+
+            [[nodiscard]] std::uint16_t port() const noexcept
+            {
+                return m_port.load(std::memory_order_acquire);
+            }
+
+        private:
+            void run()
+            {
+                const Platform::Socket::Initialization network;
+                const int                              listener = static_cast<int>(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+                if (!Platform::FileDescriptor::isValid(listener))
+                {
+                    return;
+                }
+                sockaddr_in address{};
+                address.sin_family      = AF_INET;
+                address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                address.sin_port        = 0;
+                if (::bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0 || ::listen(listener, 8) != 0)
+                {
+                    Platform::FileDescriptor::close(listener);
+                    return;
+                }
+                m_port.store(queryBoundPort(listener), std::memory_order_release);
+
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(listener, &readSet);
+                    timeval pollInterval{0, 50 * 1000};
+                    if (::select(listener + 1, &readSet, nullptr, nullptr, &pollInterval) <= 0)
+                    {
+                        continue;
+                    }
+                    const int client = static_cast<int>(::accept(listener, nullptr, nullptr));
+                    if (!Platform::FileDescriptor::isValid(client))
+                    {
+                        continue;
+                    }
+                    holdWithoutAnswering(client);
+                    Platform::FileDescriptor::close(client);
+                }
+                Platform::FileDescriptor::close(listener);
+            }
+
+            /// 只等对端先收线：不写也不答，客户端停在等第一句回话上
+            void holdWithoutAnswering(const int client) const
+            {
+                while (!m_isStopping.load(std::memory_order_acquire))
+                {
+                    fd_set readSet{};
+                    FD_ZERO(&readSet);
+                    FD_SET(client, &readSet);
+                    timeval   pollInterval{0, 50 * 1000};
+                    const int readyCount = ::select(client + 1, &readSet, nullptr, nullptr, &pollInterval);
+                    if (readyCount < 0)
+                    {
+                        return;
+                    }
+                    if (readyCount == 0)
+                    {
+                        continue;
+                    }
+                    char          discarded[4096];
+                    const ssize_t received = ::recv(client, discarded, static_cast<int>(sizeof(discarded)), 0);
+                    if (received <= 0)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            std::thread                m_worker;            ///< 接受与静默线程
             std::atomic<bool>          m_isStopping{false}; ///< 收摊标志
             std::atomic<std::uint16_t> m_port{0};           ///< 实际监听端口，0 表示还没起来
         };
@@ -1328,6 +1447,163 @@ namespace AsynGyanis::Net
 
         release->set_value();
         ASSERT_TRUE(waitForCondition([] { return Core::AsyncResolver::activeLookupCount() == 0; }, std::chrono::seconds{2}));
+    }
+
+    /**
+     * @brief 钉住：TLS 握手停在「等对端第一句」时，停止令牌能把它叫醒
+     * @details 对端只完成 TCP 三连、一个字节都不说。请求时限给 3 秒：取消若没接进握手，
+     *          用例会等满时限才收场，耗时读数直接把这条缺口暴露出来。
+     * @note 用实例客户端而不是静态 send()：静态那一路的 SSL 上下文按进程缓存，第一次建好就冻结了
+     *       默认信任库，后面的用例再设 SSL_CERT_FILE 不会生效，会给同进程里的 TLS 用例留下一道
+     *       与执行顺序相关的假失败。
+     */
+    TEST(HttpClient, CancelDuringTlsHandshakeReturnsPromptly)
+    {
+        SilentPeer peer;
+        ASSERT_TRUE(peer.start(kTimeout)) << "静默对端没在时限内开始监听";
+        const std::string url = "https://127.0.0.1:" + std::to_string(peer.port()) + "/";
+
+        Core::EventLoop   loop;
+        HttpClient        client(loop, HttpOutboundConnectionPool::Config{}, Core::TlsPolicy{});
+        LogCapture        logs;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool                      wasCancelled = false;
+        std::chrono::milliseconds elapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto                                started = std::chrono::steady_clock::now();
+            const std::unique_ptr<HttpClientResponse> sent    = co_await client.send(url, request, std::chrono::seconds{3});
+            elapsed                                           = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            wasCancelled                                      = sent == nullptr;
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "取消之后请求仍然拿到了响应";
+        EXPECT_GE(logs.countContainingWithin("取消", std::chrono::milliseconds{500}), 1U) << "失败日志没有点明取消";
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "TLS 握手取消没有及时收场，等了 " << elapsed.count() << " ms";
+    }
+
+    /**
+     * @brief 钉住：等代理 CONNECT 应答期间，停止令牌能让请求立刻收场
+     * @details 代理只完成 TCP 三连、从不回 CONNECT 应答。目标取 TEST-NET-1 的 IP 字面量，
+     *          解析这一步不碰 DNS；拨号拨的是代理地址，因此客户端会停在「等代理回话」上。
+     */
+    TEST(HttpClient, CancelWhileWaitingForProxyConnectReturnsPromptly)
+    {
+        SilentPeer proxy;
+        ASSERT_TRUE(proxy.start(kTimeout)) << "静默代理没在时限内开始监听";
+
+        Core::EventLoop loop;
+        HttpProxyPolicy policy;
+        policy.consultEnvironment = false;
+        policy.httpsProxy         = "http://127.0.0.1:" + std::to_string(proxy.port());
+        HttpClient client(loop, HttpOutboundConnectionPool::Config{}, Core::TlsPolicy{}, policy);
+
+        LogCapture        logs;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.cancelToken = source.get_token();
+
+        bool                      wasCancelled = false;
+        std::chrono::milliseconds elapsed{0};
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            Core::Timer cancelTimer(loop);
+            auto        canceller = [&]() -> Core::Task<void>
+            {
+                co_await cancelTimer.waitFor(std::chrono::milliseconds{50});
+                static_cast<void>(source.request_stop());
+                co_return;
+            };
+            Core::Task<void> cancelTask = canceller();
+            loop.scheduler().schedule(cancelTask.handle());
+
+            const auto                                started = std::chrono::steady_clock::now();
+            const std::unique_ptr<HttpClientResponse> sent    = co_await client.send("https://192.0.2.55/", request, std::chrono::seconds{3});
+            elapsed                                           = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            wasCancelled                                      = sent == nullptr;
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "取消之后请求仍然拿到了响应";
+        EXPECT_GE(logs.countContainingWithin("取消", std::chrono::milliseconds{500}), 1U) << "失败日志没有点明取消";
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "代理隧道取消没有及时收场，等了 " << elapsed.count() << " ms";
+    }
+
+    /**
+     * @brief 钉住：bodySource 在段落边界观察停止信号，取消后不再向来源要下一段
+     * @details 来源自己的等待不可抢占（协作式契约），所以这条用例让来源在交出第一段之后、
+     *          第二次被调用时请求停止并回 nullopt：客户端必须在这一段之后立刻按取消收场，
+     *          而不是继续要第三段、发终止块、再等响应。
+     */
+    TEST(HttpClient, CancelStopsStreamingBodyAtTheNextChunk)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{100});
+        ASSERT_TRUE(fixture.awaitRunning(kTimeout)) << "服务器未在时限内进入接受循环";
+        const std::string url = "http://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/hello";
+
+        Core::EventLoop   loop;
+        std::stop_source  source;
+        HttpClientRequest request;
+        request.method      = "POST";
+        request.cancelToken = source.get_token();
+        auto chunkPullCount = std::make_shared<int>(0);
+        request.bodySource  = [chunkPullCount, &source]() -> Core::Task<std::optional<std::string>>
+        {
+            ++*chunkPullCount;
+            if (*chunkPullCount == 1)
+            {
+                co_return std::optional<std::string>{"streamed-before-cancel"};
+            }
+            static_cast<void>(source.request_stop());
+            co_return std::nullopt;
+        };
+
+        std::chrono::milliseconds elapsed{0};
+        bool                      wasCancelled = false;
+        std::string               reason;
+        auto                      drive = [&]() -> Core::Task<void>
+        {
+            const auto started = std::chrono::steady_clock::now();
+            const auto sent    = co_await HttpClient::send(loop, url, request, std::chrono::seconds{3});
+            elapsed            = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+            wasCancelled       = !sent.has_value();
+            if (!sent.has_value())
+            {
+                reason = sent.error();
+            }
+            loop.stop();
+            co_return;
+        };
+        auto work = drive();
+        loop.scheduler().schedule(work.handle());
+        loop.run();
+
+        EXPECT_TRUE(wasCancelled) << "停止信号之后请求仍然拿到了响应";
+        EXPECT_NE(reason.find("取消"), std::string::npos) << "失败原因没有点明取消：" << reason;
+        EXPECT_EQ(*chunkPullCount, 2) << "取消之后仍向正文来源索取了下一段";
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "流式正文取消没有及时收场，等了 " << elapsed.count() << " ms";
     }
 
     /**

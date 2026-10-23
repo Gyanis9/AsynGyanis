@@ -685,14 +685,30 @@ namespace AsynGyanis::Net
          * @param connection 已连上、TLS 也已握手完的连接
          * @param bodySource 正文来源：每调一次给一段，空可选即收尾
          * @param host 失败原因里要点出的主机名
+         * @param cancelToken 调用方的停止令牌：每段之间检查，停止即放弃这条半发的正文
          * @param failureReason 输出：失败原因，成功时不动它
          * @return Core::Task<bool> true 表示正文与终止块都已写出；false 表示已写出 failureReason
          */
-        Core::Task<bool> sendStreamingBody(HttpOutboundConnection &connection, const HttpBodyChunkSource &bodySource, const std::string_view host, std::string &failureReason)
+        Core::Task<bool> sendStreamingBody(HttpOutboundConnection &connection, const HttpBodyChunkSource &bodySource, const std::string_view host,
+                                           const std::stop_token cancelToken, std::string &failureReason)
         {
+            const std::string cancelledText = "请求已取消：生产或写出流式正文期间调用方请求停止（主机 " + std::string(host) + "）";
             while (true)
             {
+                // 来源自己的等待不可抢占，但每段之间是明确的检查点：取消后不再向来源要下一段
+                if (cancelToken.stop_requested())
+                {
+                    connection.close();
+                    failureReason = cancelledText;
+                    co_return false;
+                }
                 const std::optional<std::string> chunk = co_await bodySource();
+                if (cancelToken.stop_requested())
+                {
+                    connection.close();
+                    failureReason = cancelledText;
+                    co_return false;
+                }
                 if (!chunk.has_value())
                 {
                     break;
@@ -708,14 +724,14 @@ namespace AsynGyanis::Net
                 frame += "\r\n";
                 if (!co_await connection.send(frame))
                 {
-                    failureReason = "写出流式正文失败：对端在收完正文前收线，或本次请求已到时限（主机 " + std::string(host) + "）";
+                    failureReason = cancelToken.stop_requested() ? cancelledText : "写出流式正文失败：对端在收完正文前收线，或本次请求已到时限（主机 " + std::string(host) + "）";
                     co_return false;
                 }
             }
             const std::string terminator = "0\r\n\r\n";
             if (!co_await connection.send(terminator))
             {
-                failureReason = "收尾流式正文失败：终止块没能写上通路（对端收线或已到时限，主机 " + std::string(host) + "）";
+                failureReason = cancelToken.stop_requested() ? cancelledText : "收尾流式正文失败：终止块没能写上通路（对端收线或已到时限，主机 " + std::string(host) + "）";
                 co_return false;
             }
             co_return true;
@@ -811,7 +827,7 @@ namespace AsynGyanis::Net
                 exchange.isAnyByteSent = true;
                 if (bodySource)
                 {
-                    if (!co_await sendStreamingBody(connection, bodySource, host, failureReason))
+                    if (!co_await sendStreamingBody(connection, bodySource, host, cancelToken, failureReason))
                     {
                         co_return exchange;
                     }
@@ -1323,6 +1339,13 @@ namespace AsynGyanis::Net
             return true;
         }
 
+        /// h2 前奏失败的原因：取消与协商失败要分开说，否则排查的人会去查对端协议实现
+        std::string describeHttp2StartFailure(const std::string &host, const std::stop_token cancelToken)
+        {
+            return cancelToken.stop_requested() ? "请求已取消：HTTP/2 前奏期间调用方请求停止（主机 " + host + "）"
+                                                : "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + host + "）";
+        }
+
         /**
          * @brief 走完一次出站请求：有池就先复用、用完还回去，没池就按一次一条连接的老口径
          * @param loop 所属事件循环
@@ -1564,9 +1587,9 @@ namespace AsynGyanis::Net
                         http2Config.maximumResponseBodyBytes = pool->config().maximumResponseBodyBytes;
                     }
                     auto http2Connection = std::make_shared<Http2ClientConnection>(loop, std::move(connection), std::move(http2Config));
-                    if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget))
+                    if (!startBudget.has_value() || !co_await http2Connection->start(*startBudget, request.cancelToken))
                     {
-                        failureReason = "HTTP/2 前奏没走完：对端没接我们的 SETTINGS，或时限先到（主机 " + u.host + "）";
+                        failureReason = describeHttp2StartFailure(u.host, request.cancelToken);
                         settleEstablishmentNow();
                         co_return nullptr;
                     }

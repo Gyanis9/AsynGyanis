@@ -56,6 +56,7 @@ namespace AsynGyanis::Net::HttpClientDetail
      * @param failureReason 失败原因输出
      * @param proxyRoute 非空表示经代理拨号
      * @param clientTls 调用方提供的 TLS 客户端上下文，可为空
+     * @param cancelToken 调用方的停止令牌：建立阶段收到停止请求即收场
      * @return Core::Task<std::unique_ptr<HttpOutboundConnection>> 建成的连接；失败为空
      */
     Core::Task<std::unique_ptr<HttpOutboundConnection>> establishPlainConnection(Core::EventLoop &loop, const HttpOutboundEndpointKey &key,
@@ -72,6 +73,7 @@ namespace AsynGyanis::Net::HttpClientDetail
      * @param failureReason 失败原因输出
      * @param clientTls 调用方提供的 TLS 客户端上下文，可为空
      * @param proxyRoute 非空表示经代理
+     * @param cancelToken 调用方的停止令牌：建立阶段收到停止请求即收场
      * @return Core::Task<std::unique_ptr<HttpOutboundConnection>> 建成的连接；失败为空
      */
     Core::Task<std::unique_ptr<HttpOutboundConnection>> establishSecureConnection(Core::EventLoop &loop, const ParsedUrl &url, std::chrono::steady_clock::time_point startedAt,

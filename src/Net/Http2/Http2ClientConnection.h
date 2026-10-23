@@ -154,6 +154,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] Core::Task<bool> start(std::chrono::milliseconds waitTimeout);
 
         /**
+         * @brief 带停止令牌的连接前奏
+         * @param waitTimeout 等对端 SETTINGS 的上限
+         * @param cancelToken 调用方的停止令牌：停止时前奏立刻收场
+         * @return true 连接可用（本端已能提交请求）
+         * @return false 通路或协商失败（含调用方取消），本对象此后不可再用
+         */
+        [[nodiscard]] Core::Task<bool> start(std::chrono::milliseconds waitTimeout, std::stop_token cancelToken);
+
+        /**
          * @brief 提交一条请求并等它收齐；同一条连接上可以并发提多条（各占一条流）
          * @details 并发的正确性由两件事保证：通路同一时刻只有一个协程在读（驱动租约），而解出来的帧
          *          按流号分发到各自的记录上；驱动者跑完一轮把挂着的人都叫醒，谁发现自己那条流还没收齐
@@ -353,6 +362,13 @@ namespace AsynGyanis::Net
         Core::Task<bool> pumpSome();
 
         /**
+         * @brief 带停止令牌的泵：读取等待也能被取消叫醒
+         * @param stopToken 取消令牌：TLS 通路卡在半条记录上时同样生效
+         * @return false 表示通路不可用，或本次读取因令牌停止而收场（由调用方按令牌分辨）
+         */
+        Core::Task<bool> pumpSome(std::stop_token stopToken);
+
+        /**
          * @brief 可取消的 pumpSome：等可读直到令牌停止，停止或通路关闭时返回
          * @param stopToken 每请求唤醒令牌；停止表示取消动作已处理完，交回请求循环收尾
          * @return false 通路不可用；true 本轮结束（有没有处理到帧由上层看流记录）
@@ -411,6 +427,15 @@ namespace AsynGyanis::Net
          * @return true 整个正文发完且收尾已写上通路；false 中途通路或流已不可用（原因在流记录里）
          */
         Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource);
+
+        /**
+         * @brief 带停止令牌的流式正文发送
+         * @param stream 目标流
+         * @param bodySource 正文来源；交 nullopt 表示结束
+         * @param cancelToken 调用方的停止令牌：每段之间检查，停止即复位这条流
+         * @return true 整个正文发完且收尾已写上通路；false 中途通路、流已不可用或调用方取消
+         */
+        Core::Task<bool> sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource, std::stop_token cancelToken);
 
         /**
          * @brief request() 两支共用的实现：bodySource 非空即走流式那一条

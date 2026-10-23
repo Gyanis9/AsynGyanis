@@ -117,12 +117,12 @@ namespace AsynGyanis::Net
         co_return true;
     }
 
-    Core::Task<bool> HttpProxyPumpedTls::pumpIncomingOnce()
+    Core::Task<bool> HttpProxyPumpedTls::pumpIncomingOnce(const std::stop_token stopToken)
     {
         char buffer[8192];
         try
         {
-            const ssize_t receivedBytes = co_await m_outer->asyncReceive(buffer, sizeof(buffer));
+            const ssize_t receivedBytes = co_await m_outer->asyncReceive(buffer, sizeof(buffer), stopToken);
             if (receivedBytes <= 0)
             {
                 co_return false;
@@ -154,7 +154,7 @@ namespace AsynGyanis::Net
                 {
                     throw Core::CoreException("内层 TLS 握手失败：外层隧道已中断");
                 }
-                if (!co_await pumpIncomingOnce())
+                if (!co_await pumpIncomingOnce({}))
                 {
                     throw Core::CoreException("内层 TLS 握手失败：外层隧道对端已收口");
                 }
@@ -172,7 +172,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<ssize_t> HttpProxyPumpedTls::asyncReceive(void *const buffer, const size_t length)
+    Core::Task<ssize_t> HttpProxyPumpedTls::asyncReceive(void *const buffer, const size_t length, const std::stop_token stopToken)
     {
         requireAlive("读取");
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -206,10 +206,10 @@ namespace AsynGyanis::Net
                 {
                     throw Core::CoreException("内层 TLS 读取失败：外层隧道已中断");
                 }
-                if (!co_await pumpIncomingOnce())
+                if (!co_await pumpIncomingOnce(stopToken))
                 {
                     // 外层收口而内层没给 close_notify：与 TlsSocket 对「TCP 被截断」的归类一致，按失败处置
-                    throw Core::CoreException("内层 TLS 读取失败：外层隧道对端在记录中途收口");
+                    throw Core::CoreException("内层 TLS 读取失败：外层隧道对端在记录中途收口（或调用方已取消）");
                 }
                 continue;
             }
@@ -278,7 +278,7 @@ namespace AsynGyanis::Net
                 {
                     throw Core::CoreException("内层 TLS 写入失败：外层隧道已中断");
                 }
-                if (!co_await pumpIncomingOnce())
+                if (!co_await pumpIncomingOnce({}))
                 {
                     throw Core::CoreException("内层 TLS 写入失败：外层隧道对端已收口");
                 }

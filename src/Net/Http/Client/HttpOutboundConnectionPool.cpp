@@ -118,6 +118,11 @@ namespace AsynGyanis::Net
 
     Core::Task<ssize_t> HttpOutboundConnection::receive(void *const buffer, const std::size_t length)
     {
+        co_return co_await receive(buffer, length, {});
+    }
+
+    Core::Task<ssize_t> HttpOutboundConnection::receive(void *const buffer, const std::size_t length, const std::stop_token stopToken)
+    {
         if (!m_isOpen)
         {
             co_return -1;
@@ -126,10 +131,11 @@ namespace AsynGyanis::Net
         {
             // TLS 侧不返回负数：对端正常收口给 0，其余一律抛异常（会话失效、已被 close()）。
             // 这里把异常折成 -1，是为了让「这条连接不能再复用」成为唯一的结论——把异常抛给池的
-            // 持有者只会让同一个失败在两个地方各写一遍收口逻辑
+            // 持有者只会让同一个失败在两个地方各写一遍收口逻辑。取消不是连接故障：令牌已经停止时
+            // 那条异常只是叫醒等待的手段，不能把别的流还要用的连接判死
             try
             {
-                const ssize_t receivedByteCount = co_await m_tlsSocket->asyncReceive(buffer, length);
+                const ssize_t receivedByteCount = co_await m_tlsSocket->asyncReceive(buffer, length, stopToken);
                 if (receivedByteCount == 0)
                 {
                     m_isOpen = false;
@@ -137,7 +143,10 @@ namespace AsynGyanis::Net
                 co_return receivedByteCount;
             } catch (const std::exception &)
             {
-                m_isOpen = false;
+                if (!stopToken.stop_requested())
+                {
+                    m_isOpen = false;
+                }
                 co_return -1;
             }
         }
@@ -148,7 +157,7 @@ namespace AsynGyanis::Net
             // 让「这条连接不能再复用」成为唯一的结论
             try
             {
-                const ssize_t receivedByteCount = co_await m_pumpedSocket->asyncReceive(buffer, length);
+                const ssize_t receivedByteCount = co_await m_pumpedSocket->asyncReceive(buffer, length, stopToken);
                 if (receivedByteCount == 0)
                 {
                     m_isOpen = false;
@@ -156,7 +165,10 @@ namespace AsynGyanis::Net
                 co_return receivedByteCount;
             } catch (const std::exception &)
             {
-                m_isOpen = false;
+                if (!stopToken.stop_requested())
+                {
+                    m_isOpen = false;
+                }
                 co_return -1;
             }
         }

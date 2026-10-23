@@ -17,6 +17,7 @@
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
+#include "Core/Coroutine/CancellationWatch.h"
 #include "Core/Coroutine/DeadlineGuard.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/AsyncResolver.h"
@@ -35,6 +36,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -71,6 +73,22 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 造一个取消动作：令牌停止时关掉被监视对象
+         * @tparam WatchedType 带 close() 的对象类型（套接字、TLS 会话、泵与池化连接都满足）
+         * @param watched 被监视对象（非拥有；持有看门狗的协程帧保证它活得更久）
+         * @return Core::CancellationWatch::CancelAction 交给看门狗的动作
+         */
+        template<typename WatchedType>
+        Core::CancellationWatch::CancelAction closeOnCancel(WatchedType *const watched)
+        {
+            return [watched](std::stop_token) -> Core::Task<>
+            {
+                watched->close();
+                co_return;
+            };
+        }
+
+        /**
          * @brief 建一个客户端 SSL 会话并接上 TLS 上下文
          * @param clientTls 调用方提供的上下文；空时用进程级缓存的那一份
          * @param failureReason 失败原因输出
@@ -102,15 +120,21 @@ namespace AsynGyanis::Net
          * @param deadlineText 时限已经耗尽的失败文案
          * @param failureText 握手失败的失败文案（不含底层原因）
          * @param deadlineTag 握手时限守卫的阶段名
+         * @param cancelToken 调用方的停止令牌：握手被取消时关掉套接字把等待叫醒
          * @param failureReason 失败原因输出
          * @return std::optional<std::unique_ptr<Core::TlsSocket>> 握手成功交出会话；失败为空
          */
-        Core::Task<std::optional<std::unique_ptr<Core::TlsSocket>>> finishTlsHandshake(std::unique_ptr<Core::TlsSocket> tlsSocket, Core::EventLoop &loop,
-                                                                                       const std::chrono::steady_clock::time_point startedAt,
-                                                                                       const std::chrono::milliseconds requestTimeout, const std::string_view peerLabel,
-                                                                                       const std::string &deadlineText, const std::string &failureText,
-                                                                                       const std::string_view deadlineTag, std::string &failureReason)
+        Core::Task<std::optional<std::unique_ptr<Core::TlsSocket>>>
+        finishTlsHandshake(std::unique_ptr<Core::TlsSocket> tlsSocket, Core::EventLoop &loop, const std::chrono::steady_clock::time_point startedAt,
+                           const std::chrono::milliseconds requestTimeout, const std::string_view peerLabel, const std::string &deadlineText, const std::string &failureText,
+                           const std::string_view deadlineTag, const std::stop_token cancelToken, std::string &failureReason)
         {
+            if (cancelToken.stop_requested())
+            {
+                tlsSocket->close();
+                failureReason = "请求已取消：进入 TLS 握手前调用方已请求停止（对端 " + std::string(peerLabel) + "）";
+                co_return std::nullopt;
+            }
             const std::optional<std::chrono::milliseconds> handshakeBudget = remainingBudget(startedAt, requestTimeout);
             if (!handshakeBudget.has_value())
             {
@@ -119,13 +143,27 @@ namespace AsynGyanis::Net
                 co_return std::nullopt;
             }
             const Core::DeadlineGuard<Core::TlsSocket> handshakeDeadline(loop, *tlsSocket, *handshakeBudget, deadlineTag);
+            // 握手挂在可读/可写等待上，而等待器没有取消接口：令牌停止时关掉套接字让它立刻收口。
+            // 看门狗声明在协程帧里，任何返回路径都会先撤销它，再销毁它引用的套接字
+            const Core::CancellationWatch cancelWatch(loop, cancelToken, closeOnCancel(tlsSocket.get()));
             try
             {
                 co_await tlsSocket->handshake();
             } catch (const Base::Exception &failure)
             {
+                if (cancelToken.stop_requested())
+                {
+                    failureReason = "请求已取消：TLS 握手期间调用方请求停止（对端 " + std::string(peerLabel) + "）";
+                    co_return std::nullopt;
+                }
                 LOG_WARN_FMT("HttpClient: 与 {} 的 TLS 握手失败。底层原因：{}", peerLabel, failure.what());
                 failureReason = failureText;
+                co_return std::nullopt;
+            }
+            if (cancelToken.stop_requested())
+            {
+                tlsSocket->close();
+                failureReason = "请求已取消：TLS 握手完成时调用方已请求停止（对端 " + std::string(peerLabel) + "）";
                 co_return std::nullopt;
             }
             co_return std::optional<std::unique_ptr<Core::TlsSocket>>{std::move(tlsSocket)};
@@ -161,7 +199,7 @@ namespace AsynGyanis::Net
                 failureReason = "解析地址耗尽了连接预算：还没开始建连就已到时限（主机 " + host + "）";
                 co_return std::nullopt;
             }
-            auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses), remainingConnectBudget);
+            auto connected = co_await Core::connectCandidates(loop, Core::orderForConnectionRace(addresses), remainingConnectBudget, cancelToken);
             if (cancelToken.stop_requested())
             {
                 if (connected)
@@ -236,12 +274,14 @@ namespace AsynGyanis::Net
          * @param clientTls 复用的 TLS 客户端上下文，可空
          * @param startedAt 本次请求的开始时刻
          * @param requestTimeout 整体时限
+         * @param cancelToken 调用方的停止令牌
          * @param failureReason 输出：失败在哪一段
          * @return std::optional<std::unique_ptr<Core::TlsSocket>> 握手成功交出 TlsSocket；失败返回空
          */
         Core::Task<std::optional<std::unique_ptr<Core::TlsSocket>>> openTlsToTarget(Core::AsyncSocket socket, Core::EventLoop &loop, const ParsedUrl &u,
                                                                                     const Core::TlsContext *clientTls, const std::chrono::steady_clock::time_point startedAt,
-                                                                                    const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+                                                                                    const std::chrono::milliseconds requestTimeout, const std::stop_token cancelToken,
+                                                                                    std::string &failureReason)
         {
             // 带池那一路用本实例自己的上下文（策略、信任库、客户端证书都在那上面）；
             // 静态那一路没有承载策略的地方，仍用进程级默认上下文
@@ -270,7 +310,8 @@ namespace AsynGyanis::Net
 
             auto tlsSocket = std::make_unique<Core::TlsSocket>(ssl, loop, std::move(socket), Core::TlsSocket::Role::Client);
             co_return co_await finishTlsHandshake(std::move(tlsSocket), loop, startedAt, requestTimeout, u.host, "本次请求已到时限：还没做 TLS 握手（主机 " + u.host + "）",
-                                                  "TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线（主机 " + u.host + "）", "HttpClient", failureReason);
+                                                  "TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线（主机 " + u.host + "）", "HttpClient", cancelToken,
+                                                  failureReason);
         }
 
         /**
@@ -281,6 +322,7 @@ namespace AsynGyanis::Net
          * @param clientTls 复用的 TLS 客户端上下文，可空
          * @param startedAt 本次请求的开始时刻
          * @param requestTimeout 整体时限
+         * @param cancelToken 调用方的停止令牌
          * @param failureReason 输出：失败在哪一段、点名到「代理」这一层
          * @return std::optional<std::unique_ptr<Core::TlsSocket>> 握手成功交出 TlsSocket；失败返回空
          * @details 外层 TLS 的对端是代理而不是目标：SNI 与主机名校验都按代理主机走（目标的证书
@@ -292,7 +334,8 @@ namespace AsynGyanis::Net
          */
         Core::Task<std::optional<std::unique_ptr<Core::TlsSocket>>> openTlsToProxy(Core::AsyncSocket socket, Core::EventLoop &loop, const HttpProxyRoute &route,
                                                                                    const Core::TlsContext *clientTls, const std::chrono::steady_clock::time_point startedAt,
-                                                                                   const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+                                                                                   const std::chrono::milliseconds requestTimeout, const std::stop_token cancelToken,
+                                                                                   std::string &failureReason)
         {
             SSL *ssl = createClientSsl(clientTls, failureReason);
             if (ssl == nullptr)
@@ -314,7 +357,7 @@ namespace AsynGyanis::Net
             co_return co_await finishTlsHandshake(std::move(tlsSocket), loop, startedAt, requestTimeout, peerText, "本次请求已到时限：还没与代理做 TLS 握手（" + peerText + "）",
                                                   "与代理「" + route.host + ":" + std::to_string(route.port) +
                                                           "」的 TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或对端在握手中途收线",
-                                                  "HttpClient 代理 TLS", failureReason);
+                                                  "HttpClient 代理 TLS", cancelToken, failureReason);
         }
 
         /**
@@ -325,6 +368,7 @@ namespace AsynGyanis::Net
          * @param clientTls 复用的 TLS 客户端上下文，可空
          * @param startedAt 本次请求的开始时刻
          * @param requestTimeout 整体时限
+         * @param cancelToken 调用方的停止令牌
          * @param failureReason 输出：失败点在哪一段
          * @return std::optional<std::unique_ptr<HttpProxyPumpedTls>> 内层握手成功交出泵；失败返回空
          * @details 内层 SSL 不绑文件描述符——它的收发全走内存 BIO，由泵经外层隧道的明文流搬运；
@@ -333,7 +377,8 @@ namespace AsynGyanis::Net
         Core::Task<std::optional<std::unique_ptr<HttpProxyPumpedTls>>> openInnerTlsThroughTunnel(std::unique_ptr<Core::TlsSocket> outer, Core::EventLoop &loop, const ParsedUrl &u,
                                                                                                  const Core::TlsContext                     *clientTls,
                                                                                                  const std::chrono::steady_clock::time_point startedAt,
-                                                                                                 const std::chrono::milliseconds requestTimeout, std::string &failureReason)
+                                                                                                 const std::chrono::milliseconds requestTimeout, const std::stop_token cancelToken,
+                                                                                                 std::string &failureReason)
         {
             SSL *ssl = createClientSsl(clientTls, failureReason);
             if (ssl == nullptr)
@@ -368,14 +413,32 @@ namespace AsynGyanis::Net
                 failureReason = "本次请求已到时限：还没做内层 TLS 握手（主机 " + u.host + "）";
                 co_return std::nullopt;
             }
+            if (cancelToken.stop_requested())
+            {
+                pumpedSocket->close();
+                failureReason = "请求已取消：进入内层 TLS 握手前调用方已请求停止（主机 " + u.host + "）";
+                co_return std::nullopt;
+            }
             const Core::DeadlineGuard<HttpProxyPumpedTls> handshakeDeadline(loop, *pumpedSocket, *handshakeBudget, "HttpClient 内层 TLS");
+            const Core::CancellationWatch                 cancelWatch(loop, cancelToken, closeOnCancel(pumpedSocket.get()));
             try
             {
                 co_await pumpedSocket->handshake();
             } catch (const Base::Exception &failure)
             {
+                if (cancelToken.stop_requested())
+                {
+                    failureReason = "请求已取消：内层 TLS 握手期间调用方请求停止（主机 " + u.host + "）";
+                    co_return std::nullopt;
+                }
                 LOG_WARN_FMT("HttpClient: 经代理隧道与 {} 的 TLS 握手失败。底层原因：{}", u.host, failure.what());
                 failureReason = "经代理隧道与「" + u.host + "」的 TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或隧道在握手中途中断";
+                co_return std::nullopt;
+            }
+            if (cancelToken.stop_requested())
+            {
+                pumpedSocket->close();
+                failureReason = "请求已取消：内层 TLS 握手完成时调用方已请求停止（主机 " + u.host + "）";
                 co_return std::nullopt;
             }
             co_return std::optional<std::unique_ptr<HttpProxyPumpedTls>>{std::move(pumpedSocket)};
@@ -403,6 +466,56 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 读代理的 CONNECT 应答头区
+         * @param socket 已发出 CONNECT 的通路
+         * @param deadlineAt 这一段的截止时刻（用来区分到点与对端收线）
+         * @param targetAuthority 失败文案里的目标
+         * @param cancelToken 调用方的停止令牌
+         * @param failureReason 输出：失败原因
+         * @return std::optional<std::string> 头区（含结尾空行）；失败为空
+         */
+        template<typename StreamT>
+        Core::Task<std::optional<std::string>> readProxyConnectResponseHead(StreamT &socket, const std::chrono::steady_clock::time_point deadlineAt,
+                                                                            const std::string &targetAuthority, const std::stop_token cancelToken, std::string &failureReason)
+        {
+            // 只读头区：CONNECT 的应答没有正文，读到空行即止；封顶防坏代理拖内存
+            std::string responseHead;
+            while (responseHead.find("\r\n\r\n") == std::string::npos)
+            {
+                char    buffer[2048];
+                ssize_t received = 0;
+                try
+                {
+                    received = co_await socket.asyncReceive(buffer, sizeof(buffer));
+                } catch (const Base::Exception &failure)
+                {
+                    failureReason = cancelToken.stop_requested()
+                                            ? "请求已取消：等待代理 CONNECT 应答期间调用方请求停止（目标 " + targetAuthority + "）"
+                                            : (std::chrono::steady_clock::now() >= deadlineAt
+                                                       ? "等待代理的 CONNECT 应答耗尽了本次请求的剩余时限（目标 " + targetAuthority + "）"
+                                                       : "等待代理的 CONNECT 应答时外层传输报错（" + std::string(failure.what()) + "）（目标 " + targetAuthority + "）");
+                    co_return std::nullopt;
+                }
+                if (received <= 0)
+                {
+                    // 三种成因分开报：本端取消、看门狗关套接字（到点）与代理自己收线，排查去向完全不同
+                    failureReason = cancelToken.stop_requested()
+                                            ? "请求已取消：等待代理 CONNECT 应答期间调用方请求停止（目标 " + targetAuthority + "）"
+                                            : (std::chrono::steady_clock::now() >= deadlineAt ? "等待代理的 CONNECT 应答耗尽了本次请求的剩余时限（目标 " + targetAuthority + "）"
+                                                                                              : "代理在 CONNECT 应答前关闭了连接（目标 " + targetAuthority + "）");
+                    co_return std::nullopt;
+                }
+                responseHead.append(buffer, static_cast<std::size_t>(received));
+                if (responseHead.size() > kProxyConnectHeadByteLimit)
+                {
+                    failureReason = "代理的 CONNECT 应答头超过 " + std::to_string(kProxyConnectHeadByteLimit) + " 字节仍未结束（目标 " + targetAuthority + "）";
+                    co_return std::nullopt;
+                }
+            }
+            co_return responseHead;
+        }
+
+        /**
          * @brief 在已连上的代理连接上开一条 CONNECT 隧道
          * @param socket 已连到代理的套接字（成功即从此按隧道字节流用）
          * @param loop 所属事件循环（看门狗挂它）
@@ -410,16 +523,22 @@ namespace AsynGyanis::Net
          * @param targetPort 目标端口
          * @param route 代理路由（带凭据时在 CONNECT 上写 Proxy-Authorization）
          * @param budget 本次 CONNECT 应答可花的剩余时限
+         * @param cancelToken 调用方的停止令牌
          * @param failureReason 输出：失败在哪一段、代理给了什么状态码
          * @return true 隧道已建立（2xx 且应答头之后无抢跑字节）
          */
         template<typename StreamT>
         Core::Task<bool> openProxyTunnel(StreamT &socket, Core::EventLoop &loop, const std::string &targetHost, const std::uint16_t targetPort, const HttpProxyRoute &route,
-                                         const std::chrono::milliseconds budget, std::string &failureReason)
+                                         const std::chrono::milliseconds budget, const std::stop_token cancelToken, std::string &failureReason)
         {
             std::string targetAuthority = targetHost.find(':') != std::string::npos ? '[' + targetHost + ']' : targetHost;
             targetAuthority += ':';
             targetAuthority += std::to_string(targetPort);
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：进入代理隧道前调用方已请求停止（目标 " + targetAuthority + "）";
+                co_return false;
+            }
 
             std::string requestText;
             requestText += "CONNECT " + targetAuthority + " HTTP/1.1\r\n";
@@ -433,6 +552,7 @@ namespace AsynGyanis::Net
             // 写与读都吃剩余预算：看门狗到点关套接字，把挂在读上的等待叫醒（理由同 TLS 握手那一段）
             const auto                         tunnelDeadlineAt = std::chrono::steady_clock::now() + budget;
             const Core::DeadlineGuard<StreamT> tunnelDeadline(loop, socket, budget, "HttpClient 代理隧道");
+            const Core::CancellationWatch      cancelWatch(loop, cancelToken, closeOnCancel(&socket));
 
             // TLS 侧（外层隧道）的收发以异常报失败、明文侧以返回值报失败：两条都折成 false + 原因，
             // 让调用方的一条分支同时管住两种传输
@@ -442,7 +562,9 @@ namespace AsynGyanis::Net
                 sentCount = co_await socket.asyncSend(requestText.data(), requestText.size());
             } catch (const Base::Exception &failure)
             {
-                failureReason = "连接代理隧道失败：CONNECT 请求发送时外层传输报错（" + std::string(failure.what()) + "）（目标 " + targetAuthority + "）";
+                failureReason = cancelToken.stop_requested()
+                                        ? "请求已取消：代理隧道发送 CONNECT 请求期间调用方请求停止（目标 " + targetAuthority + "）"
+                                        : "连接代理隧道失败：CONNECT 请求发送时外层传输报错（" + std::string(failure.what()) + "）（目标 " + targetAuthority + "）";
                 co_return false;
             }
             if (sentCount != static_cast<ssize_t>(requestText.size()))
@@ -452,46 +574,22 @@ namespace AsynGyanis::Net
             }
 
             // 只读头区：CONNECT 的应答没有正文，读到空行即止；封顶防坏代理拖内存
-            std::string responseHead;
-            while (responseHead.find("\r\n\r\n") == std::string::npos)
+            const std::optional<std::string> responseHead = co_await readProxyConnectResponseHead(socket, tunnelDeadlineAt, targetAuthority, cancelToken, failureReason);
+            if (!responseHead.has_value())
             {
-                char    buffer[2048];
-                ssize_t received = 0;
-                try
-                {
-                    received = co_await socket.asyncReceive(buffer, sizeof(buffer));
-                } catch (const Base::Exception &failure)
-                {
-                    failureReason = std::chrono::steady_clock::now() >= tunnelDeadlineAt
-                                            ? "等待代理的 CONNECT 应答耗尽了本次请求的剩余时限（目标 " + targetAuthority + "）"
-                                            : "等待代理的 CONNECT 应答时外层传输报错（" + std::string(failure.what()) + "）（目标 " + targetAuthority + "）";
-                    co_return false;
-                }
-                if (received <= 0)
-                {
-                    // 两种成因分开报：看门狗关套接字（到点）与代理自己收线，排查去向完全不同
-                    failureReason = std::chrono::steady_clock::now() >= tunnelDeadlineAt ? "等待代理的 CONNECT 应答耗尽了本次请求的剩余时限（目标 " + targetAuthority + "）"
-                                                                                         : "代理在 CONNECT 应答前关闭了连接（目标 " + targetAuthority + "）";
-                    co_return false;
-                }
-                responseHead.append(buffer, static_cast<std::size_t>(received));
-                if (responseHead.size() > kProxyConnectHeadByteLimit)
-                {
-                    failureReason = "代理的 CONNECT 应答头超过 " + std::to_string(kProxyConnectHeadByteLimit) + " 字节仍未结束（目标 " + targetAuthority + "）";
-                    co_return false;
-                }
+                co_return false;
             }
 
-            const std::size_t headEnd = responseHead.find("\r\n\r\n") + 4U;
-            if (responseHead.size() > headEnd)
+            const std::size_t headEnd = responseHead->find("\r\n\r\n") + 4U;
+            if (responseHead->size() > headEnd)
             {
                 // 200 之后紧跟隧道字节是坏代理的抢跑：那几字节进不了 TLS 层也退不回去，宁可当场拒绝
-                failureReason = "代理在 CONNECT 应答之后抢跑了 " + std::to_string(responseHead.size() - headEnd) + " 字节（目标 " + targetAuthority + "）";
+                failureReason = "代理在 CONNECT 应答之后抢跑了 " + std::to_string(responseHead->size() - headEnd) + " 字节（目标 " + targetAuthority + "）";
                 co_return false;
             }
 
             int statusCode = 0;
-            if (!parseConnectResponseStatus(responseHead, statusCode))
+            if (!parseConnectResponseStatus(*responseHead, statusCode))
             {
                 failureReason = "代理的 CONNECT 应答没有可解析的状态行（目标 " + targetAuthority + "）";
                 co_return false;
@@ -509,15 +607,20 @@ namespace AsynGyanis::Net
         template<typename StreamT>
         Core::Task<bool> openProxyTunnelWithBudget(StreamT &socket, Core::EventLoop &loop, const ParsedUrl &u, const HttpProxyRoute &route,
                                                    const std::chrono::steady_clock::time_point startedAt, const std::chrono::milliseconds requestTimeout,
-                                                   std::string &failureReason)
+                                                   const std::stop_token cancelToken, std::string &failureReason)
         {
+            if (cancelToken.stop_requested())
+            {
+                failureReason = "请求已取消：建立代理隧道前调用方已请求停止（目标 " + u.host + "）";
+                co_return false;
+            }
             const std::optional<std::chrono::milliseconds> tunnelBudget = remainingBudget(startedAt, requestTimeout);
             if (!tunnelBudget.has_value())
             {
                 failureReason = "本次请求已到时限：还没建立到「" + u.host + "」的代理隧道";
                 co_return false;
             }
-            co_return co_await openProxyTunnel(socket, loop, u.host, u.port, route, *tunnelBudget, failureReason);
+            co_return co_await openProxyTunnel(socket, loop, u.host, u.port, route, *tunnelBudget, cancelToken, failureReason);
         }
     } // namespace
 
@@ -567,7 +670,7 @@ namespace AsynGyanis::Net
             if (proxyRoute.has_value() && proxyRoute->isTls)
             {
                 std::optional<std::unique_ptr<Core::TlsSocket>> tlsSocket =
-                        co_await openTlsToProxy(std::move(*socket), loop, *proxyRoute, clientTls, startedAt, requestTimeout, failureReason);
+                        co_await openTlsToProxy(std::move(*socket), loop, *proxyRoute, clientTls, startedAt, requestTimeout, cancelToken, failureReason);
                 if (!tlsSocket.has_value())
                 {
                     co_return nullptr;
@@ -623,17 +726,17 @@ namespace AsynGyanis::Net
             if (proxyRoute.has_value() && proxyRoute->isTls)
             {
                 std::optional<std::unique_ptr<Core::TlsSocket>> outerTls =
-                        co_await openTlsToProxy(std::move(sock), loop, *proxyRoute, clientTls, startedAt, requestTimeout, failureReason);
+                        co_await openTlsToProxy(std::move(sock), loop, *proxyRoute, clientTls, startedAt, requestTimeout, cancelToken, failureReason);
                 if (!outerTls.has_value())
                 {
                     co_return nullptr;
                 }
-                if (!co_await openProxyTunnelWithBudget(**outerTls, loop, u, *proxyRoute, startedAt, requestTimeout, failureReason))
+                if (!co_await openProxyTunnelWithBudget(**outerTls, loop, u, *proxyRoute, startedAt, requestTimeout, cancelToken, failureReason))
                 {
                     co_return nullptr;
                 }
                 std::optional<std::unique_ptr<HttpProxyPumpedTls>> innerTls =
-                        co_await openInnerTlsThroughTunnel(std::move(*outerTls), loop, u, clientTls, startedAt, requestTimeout, failureReason);
+                        co_await openInnerTlsThroughTunnel(std::move(*outerTls), loop, u, clientTls, startedAt, requestTimeout, cancelToken, failureReason);
                 if (!innerTls.has_value())
                 {
                     co_return nullptr;
@@ -641,12 +744,13 @@ namespace AsynGyanis::Net
                 co_return HttpOutboundConnection::forPumpedTls(key, std::move(*innerTls));
             }
 
-            if (proxyRoute.has_value() && !co_await openProxyTunnelWithBudget(sock, loop, u, *proxyRoute, startedAt, requestTimeout, failureReason))
+            if (proxyRoute.has_value() && !co_await openProxyTunnelWithBudget(sock, loop, u, *proxyRoute, startedAt, requestTimeout, cancelToken, failureReason))
             {
                 co_return nullptr;
             }
 
-            std::optional<std::unique_ptr<Core::TlsSocket>> targetTls = co_await openTlsToTarget(std::move(sock), loop, u, clientTls, startedAt, requestTimeout, failureReason);
+            std::optional<std::unique_ptr<Core::TlsSocket>> targetTls =
+                    co_await openTlsToTarget(std::move(sock), loop, u, clientTls, startedAt, requestTimeout, cancelToken, failureReason);
             if (!targetTls.has_value())
             {
                 co_return nullptr;

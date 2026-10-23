@@ -85,11 +85,12 @@ namespace AsynGyanis::Net
          * @brief 读取内层 TLS 的明文
          * @param buffer 接收缓冲区
          * @param length 缓冲区长度，不得超过 INT_MAX
+         * @param stopToken 取消令牌：等待下一条记录期间令牌停止时按失败收场
          * @return Core::Task<ssize_t> 实际读到的字节数；0 表示对端发来 close_notify
          * @throws Base::InvalidArgumentException 长度超过 INT_MAX
          * @throws Core::CoreException 会话失效或外层隧道中断
          */
-        Core::Task<ssize_t> asyncReceive(void *buffer, size_t length);
+        Core::Task<ssize_t> asyncReceive(void *buffer, size_t length, std::stop_token stopToken = {});
 
         /**
          * @brief 等可读直到令牌停止：内层已解出的明文也算可读
@@ -133,7 +134,7 @@ namespace AsynGyanis::Net
         Core::Task<bool> flushPendingWire();
 
         /// 从外层收一段字节灌进读 BIO；外层收口或断链返回 false
-        Core::Task<bool> pumpIncomingOnce();
+        Core::Task<bool> pumpIncomingOnce(std::stop_token stopToken);
 
         /// 把 SSL_get_error 的结果折成可读原因（不含 OpenSSL 错误队列原文）
         [[nodiscard]] static std::string describeSslFailure(int sslErrorCode);

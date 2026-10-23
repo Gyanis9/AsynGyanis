@@ -159,6 +159,11 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2ClientConnection::start(const std::chrono::milliseconds waitTimeout)
     {
+        co_return co_await start(waitTimeout, {});
+    }
+
+    Core::Task<bool> Http2ClientConnection::start(const std::chrono::milliseconds waitTimeout, const std::stop_token cancelToken)
+    {
         // 前奏与本端 SETTINGS 一次写出：前奏不是帧，但顺序上必须在 SETTINGS 之前，攒在一起既少一次
         // 系统调用也让 flushOutgoing 的异常收口只有一处
         appendOutgoing(std::string(kClientPrefaceBytes));
@@ -177,12 +182,12 @@ namespace AsynGyanis::Net
         const PumpLease startLease(*this);
         while (isHealthy() && !m_isPeerSettingsReceived)
         {
-            if (!co_await pumpSome())
+            if (!co_await pumpSome(cancelToken))
             {
                 break;
             }
         }
-        if (!m_isPeerSettingsReceived)
+        if (!m_isPeerSettingsReceived && !cancelToken.stop_requested())
         {
             fail(m_errorMessage.empty() ? "没等到对端的 SETTINGS：连接前奏没走完" : m_errorMessage);
         }
@@ -191,13 +196,23 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2ClientConnection::pumpSome()
     {
+        co_return co_await pumpSome({});
+    }
+
+    Core::Task<bool> Http2ClientConnection::pumpSome(const std::stop_token stopToken)
+    {
         std::array<char, kReadChunkByteCount> buffer{};
         ssize_t                               receivedByteCount = -1;
         try
         {
-            receivedByteCount = co_await m_transport->receive(buffer.data(), buffer.size());
+            receivedByteCount = co_await m_transport->receive(buffer.data(), buffer.size(), stopToken);
         } catch (const std::exception &)
         {
+            if (stopToken.stop_requested())
+            {
+                // 令牌停止不是通路故障：别的流还在这条连接上跑，不能因为一条请求取消就判死整条通路
+                co_return false;
+            }
             // 与 flushOutgoing 同理：通路异常（含时限看门狗把套接字关掉）必须折成本端结论，
             // 否则异常穿过协程帧，调用方的 co_await 就再也回不来了
             fail(m_errorMessage.empty() ? "读对端字节异常：通路已不可用" : m_errorMessage);
@@ -205,6 +220,10 @@ namespace AsynGyanis::Net
         }
         if (receivedByteCount < 0)
         {
+            if (stopToken.stop_requested())
+            {
+                co_return false;
+            }
             fail(m_errorMessage.empty() ? "读对端字节失败" : m_errorMessage);
             co_return false;
         }
@@ -253,7 +272,9 @@ namespace AsynGyanis::Net
             // 令牌停止时取消动作已经把流标成复位；通路关闭则交回 false 收口
             co_return stopToken.stop_requested();
         }
-        co_return co_await pumpSome();
+        // 可读只保证有字节，TLS 侧还要凑齐一条记录才交得出来；读取本身也带上令牌，
+        // 才能让卡在半条记录上的这一次调用被叫醒
+        co_return co_await pumpSome(stopToken);
     }
 
     Core::Task<void> Http2ClientConnection::cancelStream(const std::uint32_t streamId)
@@ -1004,9 +1025,26 @@ namespace AsynGyanis::Net
 
     Core::Task<bool> Http2ClientConnection::sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource)
     {
+        co_return co_await sendStreamedBody(stream, bodySource, {});
+    }
+
+    Core::Task<bool> Http2ClientConnection::sendStreamedBody(PendingStream &stream, const HttpBodyChunkSource &bodySource, const std::stop_token cancelToken)
+    {
         while (true)
         {
+            // 来源自己的等待不可抢占，但每段之间是明确的检查点：取消后不再向来源要下一段，
+            // 并当场复位这条流（看门狗要到下一拍才轮询到，这里先做可以让原因立刻落进流记录）
+            if (cancelToken.stop_requested())
+            {
+                co_await cancelStream(stream.streamId);
+                co_return false;
+            }
             const std::optional<std::string> chunk = co_await bodySource();
+            if (cancelToken.stop_requested())
+            {
+                co_await cancelStream(stream.streamId);
+                co_return false;
+            }
             if (!chunk.has_value())
             {
                 break;
@@ -1171,7 +1209,7 @@ namespace AsynGyanis::Net
         {
             if (bodySourceOrNull != nullptr)
             {
-                isBodyWritten = co_await sendStreamedBody(stream, *bodySourceOrNull);
+                isBodyWritten = co_await sendStreamedBody(stream, *bodySourceOrNull, cancelToken);
             } else
             {
                 isBodyWritten = body.empty() || co_await sendBody(stream, body);
