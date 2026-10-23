@@ -19,6 +19,7 @@
 #include "Platform/System/ProcessInfo.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 #include "PlatformTestSupport.h"
 
@@ -619,7 +620,8 @@ namespace AsynGyanis::Core
         AsyncSocket asyncSocket = AsyncSocket::create(loop);
         ASSERT_GE(asyncSocket.fileDescriptor(), 0);
 
-        EXPECT_THROW(asyncSocket.remoteAddress(), Base::SystemException);
+        const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::SystemException>([&] { static_cast<void>(asyncSocket.remoteAddress()); }, "未连接的套接字");
+        EXPECT_NE(reason.find("获取对端地址失败"), std::string::npos) << "原因没有点明是哪一步：" << reason;
 
         asyncSocket.close();
     }
@@ -764,20 +766,26 @@ namespace AsynGyanis::Core
         Task<ssize_t> emptyTask = socket.asyncSendVectored(nullptr, 0);
         emptyTask.handle().resume();
         ASSERT_TRUE(emptyTask.isReady());
-        EXPECT_THROW(static_cast<void>(emptyTask.handle().promise().result()), Base::InvalidArgumentException);
+        const std::string emptyReason =
+                AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>([&] { static_cast<void>(emptyTask.handle().promise().result()); }, "零段");
+        EXPECT_NE(emptyReason.find("段数组为空"), std::string::npos) << "原因没有点明段数为 0：" << emptyReason;
 
         constexpr std::size_t                                          kTooManyCount = Platform::Socket::kMaximumVectorCount + 1;
         const std::array<Platform::Socket::WriteBuffer, kTooManyCount> tooManyBuffers{};
         Task<ssize_t>                                                  tooManyTask = socket.asyncSendVectored(tooManyBuffers.data(), kTooManyCount);
         tooManyTask.handle().resume();
         ASSERT_TRUE(tooManyTask.isReady());
-        EXPECT_THROW(static_cast<void>(tooManyTask.handle().promise().result()), Base::InvalidArgumentException);
+        const std::string tooManyReason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(tooManyTask.handle().promise().result()); }, "段数超过平台上限");
+        EXPECT_NE(tooManyReason.find("超过平台上限"), std::string::npos) << "原因没有点明段数超限：" << tooManyReason;
 
         Task<ssize_t> singleTask = socket.asyncSendVectored(single, 1);
         singleTask.handle().resume();
         ASSERT_TRUE(singleTask.isReady());
         // 参数合法但描述符无效：以平台错误收场，而不是抛参数类异常
-        EXPECT_THROW(singleTask.handle().promise().result(), Base::SystemException);
+        const std::string invalidSocketReason =
+                AsynGyanis::TestSupport::requireFailureText<Base::SystemException>([&] { static_cast<void>(singleTask.handle().promise().result()); }, "描述符无效");
+        EXPECT_NE(invalidSocketReason.find("聚合发送数据失败"), std::string::npos) << "原因没有点明失败在发送这一步：" << invalidSocketReason;
     }
 
     /**
@@ -1382,8 +1390,10 @@ namespace AsynGyanis::Core
         Task<ssize_t> invalidDescriptor = socket.asyncSendFile(-1, 0, 1024);
         invalidDescriptor.handle().resume();
         ASSERT_TRUE(invalidDescriptor.isReady());
-        EXPECT_THROW(static_cast<void>(invalidDescriptor.handle().promise().result()), Base::InvalidArgumentException)
-                << "源描述符非法是传进来的取值不对，必须落在用法错误那条分支上";
+        const std::string descriptorReason = AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>(
+                [&] { static_cast<void>(invalidDescriptor.handle().promise().result()); }, "源描述符为 -1");
+        EXPECT_NE(descriptorReason.find("源文件描述符无效"), std::string::npos) << "原因没有点明哪一侧的参数不对：" << descriptorReason;
+        EXPECT_NE(descriptorReason.find("-1"), std::string::npos) << "原因没有点名收到的取值：" << descriptorReason;
 
         Task<ssize_t>                    emptyLength  = socket.asyncSendFile(mappedFile.nativeFileDescriptor(), 0, 0);
         const std::optional<std::string> emptyFailure = driveToExceptionText(loop, emptyLength);

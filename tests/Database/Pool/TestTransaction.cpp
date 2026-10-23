@@ -55,6 +55,7 @@
 #include "Database/Sqlite/SqliteConnection.h"
 
 #include "DatabaseTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 
 #include <gtest/gtest.h>
@@ -414,7 +415,8 @@ TEST_F(TransactionTest, ExceptionPathRollsBackAndKeepsDatabaseClean)
         // 正常流程走不到这里；即便走到，析构也会因为未提交而回滚
     };
 
-    EXPECT_THROW(failingInserts(), std::runtime_error);
+    const std::string failure = AsynGyanis::TestSupport::requireFailureText<std::runtime_error>([&] { failingInserts(); }, "重复主键");
+    EXPECT_FALSE(failure.empty()) << "驱动失败没有带任何原因";
 
     // 异常路径同样完成了回滚：只留下事务之前提交的那一行
     EXPECT_EQ(countCommittedRows(), 1);
@@ -598,7 +600,9 @@ TEST_F(TransactionTest, BatchInsertEdgeCases)
 
     {
         Queryable<LedgerRow> query(*m_pool);
-        EXPECT_THROW(static_cast<void>(query.insertBatch(rows)), std::runtime_error);
+        const std::string    failure =
+                AsynGyanis::TestSupport::requireFailureText<std::runtime_error>([&query, &rows] { static_cast<void>(query.insertBatch(rows)); }, "批量中途冲突");
+        EXPECT_FALSE(failure.empty()) << "驱动失败没有带任何原因";
     }
 
     // 前两块已经写入，但本地事务在异常路径上回滚，库里仍是 0 行
@@ -895,11 +899,16 @@ TEST_F(TransactionTest, SavepointNameRejectsBlankAndNul)
 {
     Transaction transaction(*m_pool);
 
-    EXPECT_THROW(static_cast<void>(transaction.savepoint("")), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(transaction.savepoint("   \t\r\n ")), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(transaction.savepoint(std::string_view("a\0b", 3))), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(transaction.rollbackToSavepoint("")), AsynGyanis::Base::InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(transaction.releaseSavepoint("  ")), AsynGyanis::Base::InvalidArgumentException);
+    const auto requireRejected = [&transaction](const std::string_view expectedReason, const auto &action)
+    {
+        const std::string reason = AsynGyanis::TestSupport::requireFailureText<AsynGyanis::Base::InvalidArgumentException>(action, "保存点名");
+        EXPECT_NE(reason.find(expectedReason), std::string::npos) << "原因没有点明拒绝的是哪一种形状：" << reason;
+    };
+    requireRejected("非空且不含 NUL", [&] { static_cast<void>(transaction.savepoint("")); });
+    requireRejected("不能全是空白字符", [&] { static_cast<void>(transaction.savepoint("   \t\r\n ")); });
+    requireRejected("非空且不含 NUL", [&] { static_cast<void>(transaction.savepoint(std::string_view("a\0b", 3))); });
+    requireRejected("非空且不含 NUL", [&] { static_cast<void>(transaction.rollbackToSavepoint("")); });
+    requireRejected("不能全是空白字符", [&] { static_cast<void>(transaction.releaseSavepoint("  ")); });
 
     // 三次拒绝都没碰过这条连接：事务仍在进行，写入与提交照常
     EXPECT_TRUE(transaction.isActive());

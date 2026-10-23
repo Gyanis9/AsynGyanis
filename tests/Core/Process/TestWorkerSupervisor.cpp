@@ -9,6 +9,7 @@
 #include "Platform/System/ProcessInfo.h"
 
 #include "CommonTestSupport.h"
+#include "AssertionSupport.h"
 #include "CoreTestSupport.h"
 #include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
@@ -221,7 +222,9 @@ namespace AsynGyanis::Core
         configuration.executablePath = "some-server";
         configuration.workerCount    = 1;
 
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::LogicException);
+        const std::string reason = AsynGyanis::TestSupport::requireFailureText<Base::LogicException>([&] { static_cast<void>(WorkerSupervisor(configuration)); }, "worker 数为 1");
+        EXPECT_NE(reason.find("至少为 2"), std::string::npos) << "原因没有点明下限：" << reason;
+        EXPECT_NE(reason.find("当前 1"), std::string::npos) << "原因没有点名收到的取值：" << reason;
     }
 
     /**
@@ -232,7 +235,9 @@ namespace AsynGyanis::Core
         WorkerSupervisor::Configuration configuration;
         configuration.workerCount = 2;
 
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(configuration)), Base::LogicException);
+        const std::string reason =
+                AsynGyanis::TestSupport::requireFailureText<Base::LogicException>([&] { static_cast<void>(WorkerSupervisor(configuration)); }, "可执行文件路径为空");
+        EXPECT_NE(reason.find("可执行文件路径为空"), std::string::npos) << "原因没有点明缺的是哪一项：" << reason;
     }
 
     /**
@@ -339,11 +344,16 @@ namespace AsynGyanis::Core
         WorkerSupervisor::Configuration badDescriptor = configuration;
         badDescriptor.handoff                         = WorkerSupervisor::Handoff{};
         badDescriptor.handoff->listeningDescriptor    = -1;
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(badDescriptor)), Base::LogicException);
+        const std::string descriptorReason =
+                AsynGyanis::TestSupport::requireFailureText<Base::LogicException>([&] { static_cast<void>(WorkerSupervisor(badDescriptor)); }, "移交描述符为 -1");
+        EXPECT_NE(descriptorReason.find("listeningDescriptor"), std::string::npos) << "原因没有点名是哪一项：" << descriptorReason;
+        EXPECT_NE(descriptorReason.find("-1"), std::string::npos) << "原因没有点名收到的取值：" << descriptorReason;
 
         WorkerSupervisor::Configuration badBudget = configuration;
         badBudget.handoff                         = WorkerSupervisor::Handoff{1, std::chrono::milliseconds::zero()};
-        EXPECT_THROW(static_cast<void>(WorkerSupervisor(badBudget)), Base::LogicException) << "预算 0 意味着等 worker 连上通道没有期限";
+        const std::string budgetReason = AsynGyanis::TestSupport::requireFailureText<Base::LogicException>([&] { static_cast<void>(WorkerSupervisor(badBudget)); }, "移交预算为 0");
+        EXPECT_NE(budgetReason.find("waitBudget"), std::string::npos) << "原因没有点名是哪一项：" << budgetReason;
+        EXPECT_NE(budgetReason.find("0"), std::string::npos) << "原因没有点名收到的取值：" << budgetReason;
     }
 
     /**

@@ -30,6 +30,7 @@
 #include "TestConnectionPool.h"
 
 #include "AllocationProbe.h"
+#include "AssertionSupport.h"
 #include "CommonTestSupport.h"
 #include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
@@ -1350,7 +1351,9 @@ namespace AsynGyanis::Database
         }
 
         // 池构造走同一条判据：拒在线程启动之前，不留一条已经在跑的后台线程
-        EXPECT_THROW(static_cast<void>(ConnectionPool(factory, absurd)), Base::InvalidArgumentException);
+        const std::string constructReason =
+                AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>([&] { static_cast<void>(ConnectionPool(factory, absurd)); }, "池构造");
+        EXPECT_NE(constructReason.find("healthCheckIntervalSeconds"), std::string::npos) << "构造期报错没有点名是哪个键：" << constructReason;
         EXPECT_EQ(counter.totalCreated.load(), 0) << "被拒的构造仍然建了连接";
 
         // 上限本身可用（正向对照，判据不能宽到把合法的长间隔也拒掉）
@@ -1389,7 +1392,9 @@ namespace AsynGyanis::Database
                     << "文案要给出这一平台实际允许的上限，只说「太大」等于让人自己算：" << failure.what();
         }
 
-        EXPECT_THROW(static_cast<void>(ConnectionPool(factory, absurd)), Base::InvalidArgumentException);
+        const std::string constructReason =
+                AsynGyanis::TestSupport::requireFailureText<Base::InvalidArgumentException>([&] { static_cast<void>(ConnectionPool(factory, absurd)); }, "池构造");
+        EXPECT_NE(constructReason.find("acquireTimeoutMilliseconds"), std::string::npos) << "构造期报错没有点名是哪个键：" << constructReason;
         EXPECT_EQ(counter.totalCreated.load(), 0) << "被拒的构造仍然建了连接";
 
         // 上限本身可用，且上限之内的「长到不现实」也不得被顺手拒掉（正向对照）
