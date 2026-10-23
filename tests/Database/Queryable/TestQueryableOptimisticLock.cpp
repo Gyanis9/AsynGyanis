@@ -18,6 +18,7 @@
 #include "Database/Queryable/Queryable.h"
 #include "Database/Queryable/TableSchema.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -318,7 +319,7 @@ TEST_F(QueryableOptimisticLockTest, BumpsTheVersionOnTheServerSideAndLeavesTheSt
 
     // 手里那份结构体仍是 version = 0：再写一次必须冲突（「要继续改请先重新读出」）
     row.name = "拿旧版本再写";
-    EXPECT_THROW(static_cast<void>(query.update(row)), OptimisticLockException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Database::OptimisticLockException>([&] { static_cast<void>(query.update(row)); }, "乐观锁冲突", "旧版本再写");
 
     // 重新读出、改、再写：一路顺畅，版本走到 2
     LockedAccount fresh = *query.where(Column(&LockedAccount::id, "id") == std::int64_t{7}).first();
@@ -341,7 +342,7 @@ TEST_F(QueryableOptimisticLockTest, TreatsADeletedRowAsAConflictAsWell)
     ASSERT_EQ(query.where(Column(&LockedAccount::id, "id") == std::int64_t{9}).executeNonQuery(), 1);
 
     row.name = "删了之后再写";
-    EXPECT_THROW(static_cast<void>(query.update(row)), OptimisticLockException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Database::OptimisticLockException>([&] { static_cast<void>(query.update(row)); }, "乐观锁冲突", "旧版本再写");
 }
 
 // ========================================================================
@@ -408,7 +409,8 @@ TEST_F(QueryableOptimisticLockTest, UpdatesATableWithOnlyPrimaryKeyAndVersion)
 TEST_F(QueryableOptimisticLockTest, RejectsBooleanVersionColumnWhenGeneratingUpdate)
 {
     Queryable<BoolVersionedRow> query(*m_pool);
-    EXPECT_THROW(static_cast<void>(query.update(BoolVersionedRow{.id = 1, .version = false})), AsynGyanis::Base::LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(query.update(BoolVersionedRow{.id = 1, .version = false})); },
+                                                                             "必须声明成非布尔的整数列", "bool 版本列");
 }
 
 TEST_F(QueryableOptimisticLockTest, RejectsNonIntegralVersionColumnWhenGeneratingUpdate)

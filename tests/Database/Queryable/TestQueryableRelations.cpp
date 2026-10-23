@@ -14,6 +14,7 @@
 #include "Database/Queryable/Relations.h"
 #include "Database/Queryable/TableSchema.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -348,7 +349,7 @@ TEST_F(QueryableRelationsTest, RefusesRelationWhoseForeignKeyIsNotAColumn)
 TEST_F(QueryableRelationsTest, RefusesOneToManyWhenOwnerPrimaryKeyIsNotAColumn)
 {
     Queryable<NoPrimaryKeyChildPost> query(*m_pool);
-    EXPECT_THROW(static_cast<void>(query.then(&NoPrimaryKeyChildPost::comments)), LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(query.then(&NoPrimaryKeyChildPost::comments)); }, "主键列", "父表主键未声明");
 }
 
 /**
@@ -357,7 +358,7 @@ TEST_F(QueryableRelationsTest, RefusesOneToManyWhenOwnerPrimaryKeyIsNotAColumn)
 TEST(QueryableRelationsOffline, ThenRejectsOfflineModeBeforeTouchingThePool)
 {
     Queryable<RelationPost> offline;
-    EXPECT_THROW(static_cast<void>(offline.then(&RelationPost::author)), LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offline.then(&RelationPost::author)); }, "当前为离线模式", "离线 then()");
 }
 
 // ========================================================================

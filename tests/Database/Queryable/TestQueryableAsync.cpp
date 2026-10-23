@@ -27,6 +27,7 @@
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -739,7 +740,8 @@ TEST_F(QueryableAsyncTest, InsertConflictPoliciesBehaveDifferentlyOnARealEngine)
     ASSERT_EQ(query.insert(AsyncAccountRow{7, "first", std::nullopt}), 1);
 
     // Fail：与不带该参数的版本同形，冲突就抛
-    EXPECT_THROW(static_cast<void>(query.insert(AsyncAccountRow{7, "second", std::nullopt}, InsertConflict::Fail)), AsynGyanis::Database::DatabaseException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Database::DatabaseException>(
+            [&] { static_cast<void>(query.insert(AsyncAccountRow{7, "second", std::nullopt}, InsertConflict::Fail)); }, "UNIQUE constraint", "Fail 冲突");
 
     // Ignore：不抛也不写——SQLite 对跳过的行不计入 changes()
     EXPECT_EQ(query.insert(AsyncAccountRow{7, "ignored", std::nullopt}, InsertConflict::Ignore), 0) << "跳过的行被计成写入了";
@@ -788,8 +790,10 @@ TEST_F(QueryableAsyncTest, StrictIdentifiersRejectSuspiciousTextAndStayOffByDefa
         EXPECT_NE(text.find("select() 的第 1 项"), std::string::npos) << text;
         EXPECT_NE(text.find("0x3B"), std::string::npos) << text;
     }
-    EXPECT_THROW(static_cast<void>(strict.orderBy(asc("name -- comment"))), InvalidArgumentException);
-    EXPECT_THROW(static_cast<void>(strict.groupBy({"name/*comment*/"})), InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(strict.orderBy(asc("name -- comment"))); }, "orderBy() 的字段",
+                                                                                       "orderBy 注释串");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(strict.groupBy({"name/*comment*/"})); }, "groupBy() 的第 1 项",
+                                                                                       "groupBy 注释串");
 
     WhereCondition suspiciousCondition;
     suspiciousCondition.left  = FieldReference{.name = "name; DROP TABLE users"};
@@ -811,7 +815,7 @@ TEST_F(QueryableAsyncTest, StrictIdentifiersRejectSuspiciousTextAndStayOffByDefa
     // 先写进可疑文本、再开严格模式：开启那一刻回溯校验并拒绝
     Queryable<AsyncAccountRow> late(*m_pool);
     late.select({"name; DROP TABLE users"});
-    EXPECT_THROW(static_cast<void>(late.strictIdentifiers()), InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(late.strictIdentifiers()); }, "select() 的第 1 项", "回溯校验");
 }
 
 // ========================================================================
@@ -1171,7 +1175,7 @@ TEST_F(QueryableAsyncTest, UpdateAsyncSurfacesTheOptimisticLockConflict)
     ASSERT_TRUE(conflicted.finished) << "协程没在时限内收尾";
     ASSERT_NE(conflicted.error, nullptr) << "异步路径把冲突吞成了「0 行」";
     // rethrow_exception 是 [[noreturn]]：后面再写断言会被判成不可达代码（/W4 C4702）
-    EXPECT_THROW(std::rethrow_exception(conflicted.error), OptimisticLockException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Database::OptimisticLockException>([&] { std::rethrow_exception(conflicted.error); }, "乐观锁冲突", "异步冲突");
 
     // 重新读出、用当前版本再写：异步路径照常成功，版本走到 2
     AsyncVersionedRow freshRow                = *query.where(Column(&AsyncVersionedRow::id, "id") == std::int64_t{1}).first();

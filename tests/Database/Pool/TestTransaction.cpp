@@ -1370,8 +1370,9 @@ TEST_F(TransactionTest, BudgetCheckedAgainAfterWaitingForTheConnectionLock)
  */
 TEST_F(TransactionTest, ReadOnlyAccessModeIsRejectedOnSqlite)
 {
-    ASSERT_THROW(static_cast<void>(Transaction(*m_pool, TransactionIsolationLevel::Default, AsynGyanis::Database::TransactionAccessMode::ReadOnly)),
-                 AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>(
+            [&] { static_cast<void>(Transaction(*m_pool, TransactionIsolationLevel::Default, AsynGyanis::Database::TransactionAccessMode::ReadOnly)); }, "没有只读事务形态",
+            "只读开启");
 
     // 抛出之后连接要照常归还：构造失败时已借出的那份由 PooledConnection 的析构收尾
     PooledConnection connection = m_pool->acquire();
@@ -1419,14 +1420,18 @@ TEST_F(TransactionTest, WithTransactionAcceptsVoidCallbackAndCommits)
  */
 TEST_F(TransactionTest, WithTransactionRollsBackWhenCallbackThrows)
 {
-    ASSERT_THROW(m_pool->withTransaction(
-                         [](Transaction &transaction) -> int
-                         {
-                             Queryable<LedgerRow> query(transaction);
-                             static_cast<void>(query.insert(LedgerRow{.id = 3, .name = "半途而废", .amount = 3.0, .note = std::nullopt}));
-                             throw std::runtime_error("业务在这个点失败");
-                         }),
-                 std::runtime_error);
+    AsynGyanis::TestSupport::expectFailure<std::runtime_error>(
+            [&]
+            {
+                m_pool->withTransaction(
+                        [](Transaction &transaction) -> int
+                        {
+                            Queryable<LedgerRow> query(transaction);
+                            static_cast<void>(query.insert(LedgerRow{.id = 3, .name = "半途而废", .amount = 3.0, .note = std::nullopt}));
+                            throw std::runtime_error("业务在这个点失败");
+                        });
+            },
+            "业务在这个点失败", "回调异常原样外传");
 
     EXPECT_FALSE(findCommittedRow(3).has_value()) << "回调抛异常而那一行仍落库：事务没回滚";
 

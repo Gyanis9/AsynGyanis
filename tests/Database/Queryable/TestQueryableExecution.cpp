@@ -35,6 +35,7 @@
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -351,11 +352,12 @@ TEST(QueryableOfflineMode, OfflineModeThrowsOnExecution)
 {
     Queryable<AccountRow> offlineQuery;
 
-    EXPECT_THROW(static_cast<void>(offlineQuery.toList()), std::logic_error);
-    EXPECT_THROW(static_cast<void>(offlineQuery.first()), std::logic_error);
-    EXPECT_THROW(static_cast<void>(offlineQuery.count()), std::logic_error);
-    EXPECT_THROW(static_cast<void>(offlineQuery.executeNonQuery()), std::logic_error);
-    EXPECT_THROW(static_cast<void>(offlineQuery.insert(makeRow(9, "离线", 0.0, std::nullopt, true))), std::logic_error);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offlineQuery.toList()); }, "当前为离线模式", "toList");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offlineQuery.first()); }, "当前为离线模式", "first");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offlineQuery.count()); }, "当前为离线模式", "count");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offlineQuery.executeNonQuery()); }, "当前为离线模式", "executeNonQuery");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(offlineQuery.insert(makeRow(9, "离线", 0.0, std::nullopt, true))); },
+                                                                             "当前为离线模式", "insert");
 }
 
 // ========================================================================

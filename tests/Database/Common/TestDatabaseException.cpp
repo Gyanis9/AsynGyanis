@@ -17,6 +17,7 @@
 #include "Database/Common/QueryExecutionException.h"
 #include "Database/Common/RowMappingException.h"
 #include "Database/Common/TransactionTimeoutException.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -108,10 +109,10 @@ namespace AsynGyanis::Database
     TEST(DatabaseExceptionFamily, EachSubclassIsCatchableOnItsOwn)
     {
         // 各类失败的处置方式不同（重试 / 记日志失败 / 对齐结构体 / 另起一笔），因此必须能各自精确捕获
-        EXPECT_THROW(throw ConnectionUnavailableException("池已达上限"), ConnectionUnavailableException);
-        EXPECT_THROW(throw QueryExecutionException("语句被拒"), QueryExecutionException);
-        EXPECT_THROW(throw RowMappingException("列类型不符"), RowMappingException);
-        EXPECT_THROW(throw TransactionTimeoutException("整笔事务超时"), TransactionTimeoutException);
+        AsynGyanis::TestSupport::expectCatchableWithSameText<ConnectionUnavailableException>(ConnectionUnavailableException("池已达上限"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<QueryExecutionException>(QueryExecutionException("语句被拒"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<RowMappingException>(RowMappingException("列类型不符"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<TransactionTimeoutException>(TransactionTimeoutException("整笔事务超时"));
 
         // 子类之间也不互相捕获。这条边界是给重试逻辑划的：那些代码按 QueryExecutionException 分支、
         // 再查 isRetryable() 决定重来一次；若超时异常也是它的子类，一笔注定被拒的事务就会被拿去
@@ -138,10 +139,10 @@ namespace AsynGyanis::Database
     TEST(DatabaseExceptionFamily, RootAndStandardBaseAlsoCatchSubclasses)
     {
         // 捕获根类型或 std::exception 同样能命中子类：放宽捕获面不会漏掉任何一类失败
-        EXPECT_THROW(throw RowMappingException("列类型不符"), DatabaseException);
-        EXPECT_THROW(throw QueryExecutionException("语句被拒"), DatabaseException);
-        EXPECT_THROW(throw TransactionTimeoutException("整笔事务超时"), DatabaseException);
-        EXPECT_THROW(throw ConnectionUnavailableException("池已达上限"), std::exception);
+        AsynGyanis::TestSupport::expectCatchableWithSameText<DatabaseException>(RowMappingException("列类型不符"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<DatabaseException>(QueryExecutionException("语句被拒"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<DatabaseException>(TransactionTimeoutException("整笔事务超时"));
+        AsynGyanis::TestSupport::expectCatchableWithSameText<std::exception>(ConnectionUnavailableException("池已达上限"));
     }
 
     // ============================================================================

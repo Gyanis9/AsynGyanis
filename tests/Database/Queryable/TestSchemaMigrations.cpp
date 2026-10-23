@@ -20,6 +20,7 @@
 #include "Database/Common/BinaryBytes.h"
 #include "Database/Common/Decimal.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -474,11 +475,12 @@ TEST_F(SchemaMigrationsTest, RefusesListsThatDoNotMatchTheAppliedHistory)
 TEST_F(SchemaMigrationsTest, RejectsEmptyAndDuplicateStepNames)
 {
     const std::vector<SchemaMigrator::MigrationStep> withEmptyName{SchemaMigrator::MigrationStep{.name = ""}};
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::migrate(*m_pool, withEmptyName)), AsynGyanis::Base::LogicException);
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::rollbackLast(*m_pool, withEmptyName, 1)), AsynGyanis::Base::LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::migrate(*m_pool, withEmptyName)); }, "空名字", "迁移空名");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::rollbackLast(*m_pool, withEmptyName, 1)); }, "空名字",
+                                                                             "回退空名");
 
     const std::vector<SchemaMigrator::MigrationStep> duplicated{m_steps[0], m_steps[0]};
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::migrate(*m_pool, duplicated)), AsynGyanis::Base::LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::migrate(*m_pool, duplicated)); }, "重名", "迁移重名");
 }
 
 // ========================================================================

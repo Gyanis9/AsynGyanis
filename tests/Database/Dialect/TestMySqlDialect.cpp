@@ -24,6 +24,7 @@
 #include "Database/Queryable/QueryNode.h"
 
 #include "DatabaseTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -960,15 +961,19 @@ TEST(MySqlDialectWrite, InsertRejectsColumnAndValueCountMismatch)
     node.selectColumns = {"id", "name"};
 
     // 少给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})), std::invalid_argument);
+    AsynGyanis::TestSupport::expectFailure<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}})); },
+                                                                  "取值个数（1）与待写列数（2）", "少给值");
 
     // 多给值
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})), std::invalid_argument);
+    AsynGyanis::TestSupport::expectFailure<std::invalid_argument>(
+            [&] { static_cast<void>(dialect.translateInsert(node, std::vector<DatabaseValue>{std::int64_t{1}, std::string("a"), std::string("b")})); },
+            "取值个数（3）与待写列数（2）", "多给值");
 
     // 没有任何待写列
     QueryNode emptyColumnNode;
     emptyColumnNode.tableName = "users";
-    EXPECT_THROW(static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})), std::invalid_argument);
+    AsynGyanis::TestSupport::expectFailure<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsert(emptyColumnNode, std::vector<DatabaseValue>{})); },
+                                                                  "待写列列表为空", "没有待写列");
 }
 
 /**
@@ -1167,11 +1172,13 @@ TEST(MySqlDialectWrite, InsertBatchRejectsEmptyRowsAndColumnMismatch)
     node.selectColumns = {"id", "name"};
 
     // 空行集合：SQL 里 "VALUES" 后面必须有至少一组括号，无法生成合法语句
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})), std::invalid_argument);
+    AsynGyanis::TestSupport::expectFailure<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsertBatch(node, std::vector<std::vector<DatabaseValue>>{})); },
+                                                                  "批量插入的行集合为空", "空行集合");
 
     // 某行少给一列：列与值错位会让数据写进错误的列，必须当场失败
     const std::vector<std::vector<DatabaseValue>> mismatchedRows{{std::int64_t{1}, std::string("张三")}, {std::int64_t{2}}};
-    EXPECT_THROW(static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)), std::invalid_argument);
+    AsynGyanis::TestSupport::expectFailure<std::invalid_argument>([&] { static_cast<void>(dialect.translateInsertBatch(node, mismatchedRows)); }, "取值个数（1）与待写列数（2）",
+                                                                  "某行缺列");
 }
 
 /**

@@ -18,6 +18,7 @@
 #include "Database/Queryable/SchemaMigrator.h"
 #include "Database/Queryable/TableSchema.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -353,8 +354,10 @@ TEST(SchemaMigratorOffline, InvalidSchemaIsRejectedWithLocalizedReason)
     }
 
     // 未特化 kTableName：生成 "CREATE TABLE """ 毫无意义，必须在生成之前就失败
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::createTableStatement<MissingTableNameRow>(dialect)), std::logic_error);
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<MissingTableNameRow>(dialect)), std::logic_error);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::createTableStatement<MissingTableNameRow>(dialect)); },
+                                                                             "kTableName 为空", "建表缺表名");
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::dropTableStatement<MissingTableNameRow>(dialect)); },
+                                                                             "kTableName 为空", "删表缺表名");
 }
 
 /**
@@ -380,7 +383,8 @@ TEST(SchemaMigratorOffline, SchemaPrefixedTableNameIsRejected)
     }
 
     // 删表同一判据：只拒建表会留下「建不出来也删不掉」的名字
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::dropTableStatement<QualifiedTableNameRow>(dialect)), std::logic_error);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::dropTableStatement<QualifiedTableNameRow>(dialect)); },
+                                                                             "含点号", "带库前缀的表名");
 }
 
 /**
@@ -776,11 +780,14 @@ TEST(SchemaMigratorOffline, AddColumnStatementRendersTheEngineOwnAlter)
     using AsynGyanis::Base::LogicException;
 
     // 不可空的新列：已有行没有值可填，两个引擎都会拒，这里在生成语句时就拒
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2NotNull>(sqlite, "visits")), LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>(
+            [&] { static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2NotNull>(sqlite, "visits")); }, "不可空", "补不可空列");
     // 主键列不能后补
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "id")), LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "id")); },
+                                                                             "不能后补", "补主键列");
     // kColumns 里没有这个名字
-    EXPECT_THROW(static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "nosuch")), LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(SchemaMigrator::addColumnStatement<EvolvedAccountV2>(sqlite, "nosuch")); },
+                                                                             "kColumns 里没有列", "不存在的列");
 }
 
 /**

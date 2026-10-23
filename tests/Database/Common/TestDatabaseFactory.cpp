@@ -20,6 +20,7 @@
 #include "Database/Common/DatabaseType.h"
 #include "DatabaseTestSupport.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -157,7 +158,6 @@ namespace AsynGyanis::Database
         const DatabaseType     unknownType   = static_cast<DatabaseType>(99);
         const ConnectionConfig configuration = ConnectionConfig::sqliteDefault();
 
-        EXPECT_THROW(static_cast<void>(DatabaseFactory::create(unknownType, configuration)), std::invalid_argument);
 
         const std::string message = captureInvalidArgumentMessage([&unknownType, &configuration]() { static_cast<void>(DatabaseFactory::create(unknownType, configuration)); });
 
@@ -220,7 +220,8 @@ namespace AsynGyanis::Database
         configuration.userName = "root";
         configuration.database = ":memory:";
 
-        EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(DatabaseFactory::create(configuration)); }, "带着网络库特征",
+                                                                               "缺端口的网络配置");
     }
 
     /** @brief 钉住「只想用嵌入式库」的形态（只给库名、无网络特征）才走 SQLite 回落 */
@@ -255,7 +256,6 @@ namespace AsynGyanis::Database
         configuration.port     = kUnknownPort;
         configuration.database = "analytics";
 
-        EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), std::invalid_argument);
 
         const std::string message = captureInvalidArgumentMessage([&configuration]() { static_cast<void>(DatabaseFactory::create(configuration)); });
 
@@ -274,7 +274,6 @@ namespace AsynGyanis::Database
         ConnectionConfig configuration;
         configuration.host = "127.0.0.1";
 
-        EXPECT_THROW(static_cast<void>(DatabaseFactory::create(configuration)), std::invalid_argument);
 
         const std::string message = captureInvalidArgumentMessage([&configuration]() { static_cast<void>(DatabaseFactory::create(configuration)); });
 
