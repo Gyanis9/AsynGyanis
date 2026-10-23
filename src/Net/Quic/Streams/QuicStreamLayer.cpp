@@ -34,6 +34,26 @@ namespace AsynGyanis::Net
             return usedByteCount < limitByteCount ? limitByteCount - usedByteCount : 0;
         }
 
+        /**
+         * @brief 一段待发字节里有多少能现在上线：高水位以内的重传不占新额度
+         * @details 高水位以内的字节已经计入过流级与连接级额度，RFC 9000 §4.1 只要求新字节不越过额度。
+         *          旧算法把「额度 − 高水位」当成所有待发字节的通行证；丢包恰好撞上额度用尽时，
+         *          判丢的旧字节会永远排在出站队列里（大响应卡在窗口边界）。
+         * @param chunkBeginOffset 本段在流上的起始偏移
+         * @param chunkByteCount 本段字节数
+         * @param sentHighWater 本流已发出的最高偏移
+         * @param newCreditByteCount 流级与连接级新额度里更严的那一个
+         * @return std::size_t 本段可上线的字节数
+         */
+        [[nodiscard]] std::size_t sendableByteCountOf(const std::uint64_t chunkBeginOffset, const std::size_t chunkByteCount, const std::uint64_t sentHighWater,
+                                                      const std::size_t newCreditByteCount) noexcept
+        {
+            const std::uint64_t chunkEndOffset = chunkBeginOffset + static_cast<std::uint64_t>(chunkByteCount);
+            const std::uint64_t resendableEnd  = std::min(chunkEndOffset, sentHighWater);
+            const std::uint64_t resendable     = resendableEnd > chunkBeginOffset ? resendableEnd - chunkBeginOffset : 0;
+            return static_cast<std::size_t>(std::min<std::uint64_t>(chunkByteCount, resendable + newCreditByteCount));
+        }
+
         /// 同类流号每隔 4 一条：0x00、0x04、0x08……（§2.1）
         constexpr std::uint64_t kStreamIdStride = 4;
 
@@ -720,11 +740,11 @@ namespace AsynGyanis::Net
                 }
                 while (!stream.pendingQueue.empty())
                 {
-                    const std::size_t      remainingBudget  = saturatingRoomOf(byteBudget, usedByteCount);
-                    const QuicStreamChunk &front            = stream.pendingQueue.front();
-                    const std::size_t      headerByteLength = streamFrameHeaderByteLength(streamId, front.beginOffset);
-                    const std::size_t      creditByteCount  = sendCreditOf(stream);
-                    if (creditByteCount == 0)
+                    const std::size_t      remainingBudget   = saturatingRoomOf(byteBudget, usedByteCount);
+                    const QuicStreamChunk &front             = stream.pendingQueue.front();
+                    const std::size_t      headerByteLength  = streamFrameHeaderByteLength(streamId, front.beginOffset);
+                    const std::size_t      sendableByteCount = sendableByteCountOf(front.beginOffset, front.bytes.size(), stream.sentHighWater, sendCreditOf(stream));
+                    if (sendableByteCount == 0 && !(front.isFinal && front.bytes.empty()))
                     {
                         // 这条流的额度见底，换下一条：额度是分流的，后面的流可能还很宽裕
                         break;
@@ -736,14 +756,14 @@ namespace AsynGyanis::Net
                     }
                     // 长度域的宽度取决于载荷多长，而载荷多长又取决于留出多少长度域：先按最窄档算，
                     // 算出来的值跨档就按宽一档重算一次。第二次一定收敛（载荷只会变小）
-                    std::size_t payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - 1});
+                    std::size_t payloadByteLength = std::min({front.bytes.size(), sendableByteCount, remainingBudget - headerByteLength - 1});
                     if (const std::size_t widenedByteCount = quicVariableLengthIntegerByteCount(static_cast<std::uint64_t>(payloadByteLength)); widenedByteCount > 1)
                     {
                         if (remainingBudget <= headerByteLength + widenedByteCount)
                         {
                             return;
                         }
-                        payloadByteLength = std::min({front.bytes.size(), creditByteCount, remainingBudget - headerByteLength - widenedByteCount});
+                        payloadByteLength = std::min({front.bytes.size(), sendableByteCount, remainingBudget - headerByteLength - widenedByteCount});
                     }
                     if (payloadByteLength == 0 && !front.isFinal)
                     {

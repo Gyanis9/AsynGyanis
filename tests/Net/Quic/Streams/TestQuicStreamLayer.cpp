@@ -715,6 +715,32 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 新额度用尽之后，判丢的旧字节仍要能重传
+     * @details 重传的是已经计入发送高水位的字节，RFC 9000 §4.1 只要求新字节不越过额度，
+     *          并不要求重传再付一次额度。旧实现把「额度 − 高水位」当成所有待发字节的通行证，
+     *          流额度恰好用尽时判丢的段会永远排不出去——大响应在 256 KiB 窗口边界上停住、
+     *          对端只收到前半段，正是这条缺口。
+     */
+    TEST(QuicStreamLayer, RetransmitsLostRangesAfterNewCreditIsExhausted)
+    {
+        QuicStreamLayer layer(makeLocalParameters());
+        layer.adoptPeerParameters(makeParameters(8192, 6, 6, 6, 4, 2));
+        EXPECT_EQ(layer.writeStreamData(0x03, bytesOf("abcdefghij"), false), 10U);
+        const Collected first = collect(layer, 1200);
+        ASSERT_EQ(payloadTextOf(firstFrameOf<QuicStreamFrame>(first.frames)), "abcdef") << "先把 6 字节新额度用完";
+        EXPECT_FALSE(collect(layer, 1200).hasFrames) << "额度用尽后新字节不该继续发";
+
+        layer.onSendRangesLost(first.ranges);
+        const Collected resent = collect(layer, 1200);
+        ASSERT_TRUE(resent.hasFrames) << "判丢的旧字节被新额度闸门挡住：额度用尽时重传永远发不出去";
+        EXPECT_EQ(payloadTextOf(firstFrameOf<QuicStreamFrame>(resent.frames)), "abcdef");
+        EXPECT_EQ(resent.ranges.front(), first.ranges.front()) << "重传偏移必须与原发一致";
+
+        // 反向对照：重传放行不能顺手把高水位之后的新字节也放出去
+        EXPECT_FALSE(collect(layer, 1200).hasFrames) << "剩余 4 字节是新数据，没有新额度就不该上线";
+    }
+
+    /**
      * @brief 确认只销在途账：之后的数据照常往前发
      */
     TEST(QuicStreamLayer, ReleasesInFlightRangesOnAcknowledgement)

@@ -62,9 +62,13 @@ namespace AsynGyanis::Net
 
         constexpr std::string_view kProbeRoutePath = "/probe";
         constexpr std::string_view kBigRoutePath   = "/big";
+        constexpr std::string_view kHugeRoutePath  = "/huge";
 
         /// 大路由的正文长度：远过用例里那条小上限，又不至于让测试进程搬太多字节
         constexpr std::size_t kBigBodyByteCount = 200U * 1024U;
+
+        /// 跨过 QuicStreamLayer 单流待发队列上界（1 MiB）的正文：续交边界上的截断/停摆只有这一档看得见
+        constexpr std::size_t kHugeBodyByteCount = 1200U * 1024U;
 
         /**
          * @brief 把「定正文」的 GET/POST 与一条「大正文」GET 挂到给定路由表上
@@ -91,6 +95,12 @@ namespace AsynGyanis::Net
                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
                        {
                            response.setBody(std::string(kBigBodyByteCount, 'x'));
+                           co_return;
+                       });
+            router.get(std::string{kHugeRoutePath},
+                       [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setBody(std::string(kHugeBodyByteCount, 'y'));
                            co_return;
                        });
         }
@@ -362,6 +372,11 @@ namespace AsynGyanis::Net
             return "https://127.0.0.1:" + std::to_string(port) + std::string{kBigRoutePath};
         }
 
+        std::string hugeUrl(const std::uint16_t port)
+        {
+            return "https://127.0.0.1:" + std::to_string(port) + std::string{kHugeRoutePath};
+        }
+
         /// 「h3 上挂接收口」这一趟的结论
         struct Http3StreamingRunOutcome
         {
@@ -605,6 +620,28 @@ namespace AsynGyanis::Net
         EXPECT_EQ(defaultSized.statusCodes[0], 200);
         EXPECT_EQ(defaultSized.bodies[0].size(), kBigBodyByteCount);
         EXPECT_EQ(defaultSized.bodies[0], std::string(kBigBodyByteCount, 'x')) << "大正文没按字节收齐";
+    }
+
+    /**
+     * @brief 钉住跨过 1 MiB 单流待发队列上界的正文：续交边界之后既不截断也不丢字节
+     * @details 传输层每流最多压 1 MiB，更大的响应必然在多次 flush 之间续交。旧实现每轮把余量
+     *          append 进新缓冲，4 MiB 的一轮 flush 里拷过 199 MB；既有用例最大只到 200 KiB，
+     *          从没跨过这道边界。对端只有 UDP 在听，答得出来就等于走的是 h3。
+     * @note 证伪：把续交游标改回「每轮从余量开头重交」或把超过边界的余量截掉，正文长度与内容
+     *       两条当场红；整条通路停摆时状态码先红。
+     */
+    TEST(HttpClientHttp3, DeliversABodyBeyondTheOneMiBTransportQueueBoundary)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少证书夹具：" << kLoopbackCertificatePath.string();
+        RunningPeer peer{PeerShape::Http3Only};
+        ASSERT_TRUE(peer.awaitRunning()) << "对端没进入服务循环";
+
+        const Http3ClientRunOutcome outcome = runClientRequests({hugeUrl(peer.port())}, true, {}, std::chrono::seconds{60});
+        ASSERT_EQ(outcome.statusCodes.size(), 1U);
+        EXPECT_EQ(outcome.statusCodes[0], 200) << "跨过单流待发队列上界的正文没走通";
+        ASSERT_EQ(outcome.bodies.size(), 1U);
+        EXPECT_EQ(outcome.bodies[0].size(), kHugeBodyByteCount) << "正文在 1 MiB 续交边界后被截断（实收 " << outcome.bodies[0].size() << " 字节）";
+        EXPECT_EQ(outcome.bodies[0], std::string(kHugeBodyByteCount, 'y')) << "正文内容在续交边界后失真";
     }
     /**
      * @brief 钉住：挂了接收口的请求照样走 h3，并按到达批次交付
