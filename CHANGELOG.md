@@ -28,7 +28,7 @@
 - **可替换的名字查找**（`905fdca8`）：`AsyncResolver::setLookupFunction()`/`clearLookupFunction()` 与 `activeLookupCount()`；默认仍走 `getaddrinfo`，调用方可在启动阶段注入自己的查找实现。新增两条判据：阻塞 lookup 下 50 ms 解析返回空且名额归还；`HttpClient` 在 DNS 卡住时按请求时限失败，恢复后仍能发下一条请求。
 - **入站请求处理截止时刻**（`e073642e`）：`HttpRequest::setDeadline()`/`deadline()` 由 `timeoutMiddleware` 在进入业务链时落定，`reset()` 清空；网关处理器可把 `request.deadline()` 直接填进 `HttpClientRequest::deadline`，下游慢于入站预算时上游先失败，不再让超时沿调用链放大。
 - **名字缓存有效期可配置**（`afbfaf25`）：`AsyncResolver::setCacheTimeToLive()`/`cacheTimeToLive()`，默认 60 秒；对之后写入的缓存条目生效，非正拒绝。过期路径用 200 ms 有效期 + 注入 lookup 直测，撤掉 `readCache` 的过期检查时用例红。
-- **WebSocket 客户端发送时限**（`788f8773`）：`Configuration.sendTimeout`（默认 30 秒）给单帧写出设上限；`AsyncSocket::asyncSend`、`TcpStream::write`、`TlsSocket::asyncSend` 与 `HttpOutboundConnection::send` 新增带 `std::stop_token` 的路径，令牌停止时从等可写返回。对端不读时不再永久挂住：1 MiB × 256 帧的背压用例在 100 ms 收口，摘掉令牌路径时用例红。
+- **WebSocket 客户端发送时限**（`788f8773`）：`Configuration.sendTimeout`（默认 30 秒）给单帧写出设上限；`AsyncSocket::asyncSend`、`TcpStream::write`、`TlsSocket::asyncSend` 与 `HttpOutboundConnection::send` 新增带 `std::stop_token` 的路径，令牌停止时从等可写返回，且「调用方取消」与「套接字被关闭」分开上报。对端不读时不再永久挂住：1 MiB × 256 帧的背压用例在 100 ms 收口，摘掉令牌路径时用例红。
 - **出站请求取消**（`5a6d2f98`、`2c305a0c`）：`HttpClientRequest::cancelToken` 接受 `std::stop_token`；H1 关闭当前连接，H2 用 RST_STREAM(CANCEL)、H3 用 RESET_STREAM 与 STOP_SENDING 只结一条流，兄弟请求与连接保留。socket、stream、TLS、代理与池化连接新增 `waitReadable(stop_token)`，阻塞泵直接等可读或取消唤醒，不再每个节拍新建定时器与协程；域名解析、TCP 建连、TLS 握手（直连、代理外层与隧道内层）与代理 CONNECT 应答也接受同一令牌；流式正文在段落边界观察取消，下一段不再向来源索取；TLS 读取把令牌带到「凑齐一条记录」的内层等待上，卡在半条记录也能被叫醒，且取消不把别的流还要用的连接判死。可读等待在已关闭通路上交回不可读，不再把异常穿透到调用方。未带令牌的请求仍走原来的阻塞泵。取消的连接不还空闲池，并发闸排队同样可取消。
 
 ### 修复

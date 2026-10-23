@@ -307,6 +307,33 @@ namespace AsynGyanis::Core
         co_return co_await m_socket.waitReadable(stopToken);
     }
 
+    Task<> TlsSocket::awaitWritableOrThrow(const std::stop_token stopToken) const
+    {
+        if (!co_await m_socket.waitWritable(stopToken))
+        {
+            if (stopToken.stop_requested())
+            {
+                throw CoreException("TLS 写入失败：调用方已取消");
+            }
+            throw CoreException("TLS 写入失败：等待可写期间套接字被关闭");
+        }
+        co_return;
+    }
+
+    Task<> TlsSocket::awaitReadableOrThrow(const std::stop_token stopToken) const
+    {
+        if (!co_await const_cast<AsyncSocket &>(m_socket).waitReadable(stopToken))
+        {
+            // 前缀按「哪条操作失败」算：这里等的是可读事件，但发起方是写入
+            if (stopToken.stop_requested())
+            {
+                throw CoreException("TLS 写入失败：调用方已取消");
+            }
+            throw CoreException("TLS 写入失败：等待可读期间套接字被关闭");
+        }
+        co_return;
+    }
+
     Task<ssize_t> TlsSocket::asyncSend(const void *const buffer, const size_t length) const
     {
         co_return co_await asyncSend(buffer, length, std::stop_token{});
@@ -345,6 +372,11 @@ namespace AsynGyanis::Core
 
         while (true)
         {
+            // 令牌在反方向让轮、重试 SSL_write 的各个入口都复查：取消不能只挂在某一次等待上
+            if (stopToken.stop_requested())
+            {
+                throw CoreException("TLS 写入失败：调用方已取消");
+            }
             // 本端可能在任何一个让出点上被 close()（等可写、等可读、为反方向让出一次调度），
             // 恢复后先过闸门再交给 SSL_write
             requireLiveContext("TLS 写入");
@@ -374,10 +406,7 @@ namespace AsynGyanis::Core
                     // 让出期间本端可能被关停，由循环开头的闸门统一复查
                     continue;
                 }
-                if (!co_await m_socket.waitWritable(stopToken))
-                {
-                    throw CoreException("TLS 写入失败：等待可写期间套接字被关闭或调用方已取消");
-                }
+                co_await awaitWritableOrThrow(stopToken);
                 continue;
             }
 
@@ -395,11 +424,7 @@ namespace AsynGyanis::Core
                     }
                     continue;
                 }
-                if (!co_await const_cast<AsyncSocket &>(m_socket).waitReadable(stopToken))
-                {
-                    // 前缀按「哪条操作失败」算：这里等的是可读事件，但发起方是写入
-                    throw CoreException("TLS 写入失败：等待可读期间套接字被关闭或调用方已取消");
-                }
+                co_await awaitReadableOrThrow(stopToken);
                 continue;
             }
 

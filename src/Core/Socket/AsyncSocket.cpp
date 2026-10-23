@@ -1,5 +1,6 @@
 #include "Core/Socket/AsyncSocket.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/Exception.h"
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/IoWatcher.h"
@@ -297,7 +298,11 @@ namespace AsynGyanis::Core
                 // 同 asyncReceive：等待失败即套接字已关闭，不再重试
                 if (!co_await waitWritable(stopToken))
                 {
-                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭或调用方已取消", localSocketClosedError());
+                    if (stopToken.stop_requested())
+                    {
+                        throw Base::Exception("发送数据失败：调用方已取消");
+                    }
+                    throw Base::SystemException("发送数据失败：等待可写期间套接字被关闭", localSocketClosedError());
                 }
                 continue;
             }

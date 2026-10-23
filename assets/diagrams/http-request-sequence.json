@@ -66,7 +66,7 @@
       "sublabel": "握手与 ALPN",
       "sources": [
         { "path": "src/Core/Tls/TlsSocket.cpp", "line": 178, "label": "SSL_connect/accept" },
-        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 448, "label": "读 ALPN 结果" },
+        { "path": "src/Core/Tls/TlsSocket.cpp", "line": 478, "label": "读 ALPN 结果" },
         { "path": "src/Core/Tls/TlsContext.cpp", "line": 330, "label": "挂 ALPN 回调" }
       ]
     },
@@ -87,8 +87,8 @@
       "label": "AsyncSocket",
       "sublabel": "向量写与游标",
       "sources": [
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 303, "label": "asyncSendVectored" },
-        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 348, "label": "等可写" }
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 315, "label": "asyncSendVectored" },
+        { "path": "src/Core/Socket/AsyncSocket.cpp", "line": 360, "label": "等可写" }
       ]
     },
     {
@@ -188,7 +188,7 @@
       "items": [
         "读写在同一协程内 co_await：发送挂起即整条会话停住，不是只停写",
         "发送前把截止时间切到 writeTimeout（src/Net/Http/Server/HttpSession.h:698），到点由 idleSweepLoop 关描述符唤醒等待者（src/Net/Tcp/TcpServer.cpp:421-456）",
-        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:351-362）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/Server/HttpSession.h:1045 的 requires 分支）"
+        "部分写由 VectoredSendCursor 记游标续发（src/Core/Socket/AsyncSocket.cpp:346-365）；明文走聚合写/零拷贝，TLS 下没有这条路（src/Net/Http/Server/HttpSession.h:1045 的 requires 分支）"
       ]
     },
     {

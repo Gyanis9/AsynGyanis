@@ -237,6 +237,20 @@ namespace AsynGyanis::Core
          */
         [[nodiscard]] Task<bool> yieldForPeerProgress() const;
 
+        /**
+         * @brief 等可写；令牌停止与套接字关闭分别抛出可读原因
+         * @param stopToken 取消令牌
+         * @throws CoreException 令牌停止或等待期间套接字被关闭
+         */
+        Task<> awaitWritableOrThrow(std::stop_token stopToken) const;
+
+        /**
+         * @brief 等可读；令牌停止与套接字关闭分别抛出可读原因
+         * @param stopToken 取消令牌
+         * @throws CoreException 令牌停止或等待期间套接字被关闭
+         */
+        Task<> awaitReadableOrThrow(std::stop_token stopToken) const;
+
         EventLoop  *m_loop{nullptr};        ///< 关联的事件循环，用于等待 socket 事件
         AsyncSocket m_socket;               ///< 底层异步 socket
         Role        m_role{Role::Server};   ///< 本端角色：决定握手入口

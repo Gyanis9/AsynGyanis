@@ -220,6 +220,7 @@ namespace AsynGyanis::Core
         {
             bool isFailureObserved       = false; ///< asyncSend 是否如实报告了「套接字已不可用」
             bool isClosedFailureObserved = false; ///< 失败原因是否为「等待可写期间套接字被关闭」
+            bool isCancelledObserved     = false; ///< 失败原因是否为「调用方已取消」
             int  observedErrorCode       = 0;     ///< 异常携带的原生错误号（必须取自 socket 空间）
             int  completedRoundCount     = 0;     ///< 失败之前完整提交出去的轮数
         };
@@ -233,6 +234,29 @@ namespace AsynGyanis::Core
          * @param payload 每轮发送的负载，必须在本次 co_await 恢复之前一直有效
          * @param observation 观测结果出参
          */
+        Task<> sendUntilBlockedWithToken(AsyncSocket &socket, const std::string &payload, const std::stop_token token, SendObservation &observation)
+        {
+            for (int round = 0; round < kBlockingSendRoundLimit; ++round)
+            {
+                try
+                {
+                    const ssize_t sentBytes = co_await socket.asyncSend(payload.data(), payload.size(), token);
+                    if (sentBytes <= 0)
+                    {
+                        observation.completedRoundCount = round;
+                        observation.isFailureObserved   = true;
+                        co_return;
+                    }
+                } catch (const Base::Exception &exception)
+                {
+                    observation.completedRoundCount = round;
+                    observation.isFailureObserved   = true;
+                    observation.isCancelledObserved = std::string_view(exception.what()).find("调用方已取消") != std::string_view::npos;
+                    co_return;
+                }
+            }
+        }
+
         Task<> sendUntilBlocked(AsyncSocket &socket, const std::string &payload, SendObservation &observation)
         {
             for (int round = 0; round < kBlockingSendRoundLimit; ++round)
@@ -897,6 +921,41 @@ namespace AsynGyanis::Core
         EXPECT_EQ(observation.observedErrorCode, Platform::PlatformError::kConnectionAborted) << "异常携带的错误号不是 socket 空间的「本端中止连接」：多半又去读了 errno";
         EXPECT_LT(observation.completedRoundCount, kBlockingSendRoundLimit) << "对端从未读过，写侧却宣称把负载全部提交成功了";
 
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 停止令牌必须唤醒卡在「等可写」上的协程，并把取消与关闭分开报告
+     * @details 与 CloseWakesCoroutineBlockedOnSend 同一构造，区别是收口手段为请求停止而不是关本端套接字；
+     *          失败原因必须点明「调用方已取消」，且不携带 socket 空间的原生错误号。
+     */
+    TEST(AsyncSocket, StopTokenWakesCoroutineBlockedOnSend)
+    {
+        EventLoop loop;
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+
+        AsyncSocket sender(loop, localDescriptor);
+        int         sendBufferLength = 4096;
+        static_cast<void>(sender.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
+
+        const std::string payload(kBlockingSendChunkLength, 'x');
+        SendObservation   observation;
+        std::stop_source  source;
+        Task<>            sending = sendUntilBlockedWithToken(sender, payload, source.get_token(), observation);
+        sending.handle().resume();
+        ASSERT_FALSE(sending.isReady()) << "对端不读，发送却没有落到「等可写」上";
+
+        source.request_stop();
+        loop.scheduler().runAll();
+
+        EXPECT_TRUE(sending.isReady()) << "停止令牌没有唤醒卡在等可写上的协程";
+        EXPECT_TRUE(observation.isFailureObserved) << "协程虽然被唤醒，却没有报告失败";
+        EXPECT_TRUE(observation.isCancelledObserved) << "取消被报告成了套接字关闭或其它原因";
+        EXPECT_EQ(observation.observedErrorCode, 0) << "取消不是 socket 错误，不该带原生错误号";
+        sender.close();
         Platform::FileDescriptor::close(peerDescriptor);
     }
 

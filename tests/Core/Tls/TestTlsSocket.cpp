@@ -1190,4 +1190,61 @@ namespace AsynGyanis::Core
         clientSocket.close();
     }
 
+    /**
+     * @brief 停止令牌必须唤醒卡在「等可写」上的 TLS 发送，并把取消与关闭分开报告
+     * @details 服务端完成握手后不再读取，客户端把 1 MiB 交给 SSL_write 后落在等可写上；
+     *          请求停止后 asyncSend 必须及时返回，原因点明取消，而不是等套接字被关闭。
+     */
+    TEST(TlsSocket, StopTokenWakesASendStuckOnWritable)
+    {
+        const Platform::Socket::Initialization network;
+        EventLoop                              loop;
+        TlsContext                             serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+
+        int serverDescriptor = -1;
+        int clientDescriptor = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor));
+        ASSERT_TRUE(Platform::FileDescriptor::setNonBlocking(serverDescriptor)) << "服务端通路没能转成非阻塞，握手泵会挂住测试线程";
+
+        auto clientContext = makeClientContext(kTestCertificatePath);
+        ASSERT_NE(clientContext, nullptr);
+        SSL *clientHandle = SSL_new(clientContext.get());
+        ASSERT_NE(clientHandle, nullptr);
+        ASSERT_NE(SSL_set_fd(clientHandle, clientDescriptor), 0);
+
+        AsyncSocket clientTransport(loop, clientDescriptor);
+        int         sendBufferLength = 4096;
+        static_cast<void>(clientTransport.setSockOpt(SOL_SOCKET, SO_SNDBUF, &sendBufferLength, sizeof(sendBufferLength)));
+        TlsSocket clientSocket(clientHandle, loop, std::move(clientTransport), TlsSocket::Role::Client);
+
+        MemoryBioTlsServer server(serverContext, serverDescriptor);
+        ASSERT_TRUE(server.isReady()) << "内存 BIO 没有建起来";
+        Task<> clientHandshake = clientSocket.handshake();
+        ASSERT_TRUE(driveMemoryBioHandshake(loop, server, clientHandshake)) << "客户端与服务端没有在时限内完成握手";
+
+        const std::string payload(1024U * 1024U, 'x');
+        std::stop_source  source;
+        Task<ssize_t>     sendTask = clientSocket.asyncSend(payload.data(), payload.size(), source.get_token());
+        sendTask.handle().resume();
+        ASSERT_FALSE(sendTask.isReady()) << "服务端不读，发送却没有落到等可写上：本机没构造出该场景";
+
+        const auto started = std::chrono::steady_clock::now();
+        source.request_stop();
+        ASSERT_TRUE(advanceUntil(loop, [&sendTask] { return sendTask.isReady(); }, std::chrono::seconds{2})) << "停止令牌没有唤醒卡在等可写上的发送";
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        EXPECT_LT(elapsed, std::chrono::milliseconds{500}) << "取消没有及时收场，等了 " << elapsed.count() << " ms";
+
+        std::string failureText;
+        try
+        {
+            static_cast<void>(sendTask.handle().promise().result());
+        } catch (const std::exception &failure)
+        {
+            failureText = failure.what();
+        }
+        EXPECT_NE(failureText.find("取消"), std::string::npos) << "失败原因没有点明取消：" << failureText;
+        clientSocket.close();
+    }
+
 } // namespace AsynGyanis::Core
