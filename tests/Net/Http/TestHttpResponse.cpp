@@ -3,6 +3,7 @@
 #include "Net/Http/Message/HttpResponse.h"
 
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "Platform/IO/MemoryMappedFile.h"
 
@@ -1615,4 +1616,48 @@ namespace AsynGyanis::Net
             EXPECT_EQ(statusLine.find('\n'), std::string::npos) << code << " 的状态行里出现了 LF";
         }
     }
+
+    /**
+     * @brief 钉住 WS 升级登记的拒绝面：非法策略/已有正文/流式模式失败后，响应状态必须原样不动
+     * @details 升级标记一旦被半路置真，会话就会按升级路径发一条没有验收过策略的 101/2xx；
+     *          因此这里的每个失败出口都同时断言「没登记升级」与可观察的旧状态。
+     */
+    TEST(HttpResponse, WebSocketUpgradeValidationLeavesStateUntouched)
+    {
+        const WebSocketHandler handler = [](WebSocketPeer &) -> Core::Task<> { co_return; };
+
+        {
+            HttpResponse response;
+            response.setBody("body");
+            EXPECT_THROW(response.upgradeToWebSocket(handler), Base::LogicException);
+            EXPECT_FALSE(response.isWebSocketUpgradeRequested());
+        }
+        {
+            HttpResponse response;
+            EXPECT_THROW(response.upgradeToWebSocket(WebSocketHandler{}), Base::InvalidArgumentException);
+            EXPECT_FALSE(response.isWebSocketUpgradeRequested());
+        }
+        {
+            HttpResponse           response;
+            WebSocketUpgradePolicy policy;
+            policy.allowedOrigins.emplace_back("https://example.com/path");
+            EXPECT_THROW(response.upgradeToWebSocket(handler, policy), Base::InvalidArgumentException);
+            EXPECT_FALSE(response.isWebSocketUpgradeRequested());
+            EXPECT_TRUE(response.webSocketUpgradePolicy().allowedOrigins.empty()) << "被拒的策略留在了响应上";
+        }
+        {
+            HttpResponse           response;
+            WebSocketUpgradePolicy policy;
+            policy.subprotocolCandidates.emplace_back("chat, superchat");
+            EXPECT_THROW(response.upgradeToWebSocket(handler, policy), Base::InvalidArgumentException);
+            EXPECT_FALSE(response.isWebSocketUpgradeRequested());
+        }
+        {
+            HttpResponse response;
+            response.startChunkedResponse(200);
+            EXPECT_THROW(response.upgradeToWebSocket(handler), Base::LogicException);
+            EXPECT_FALSE(response.isWebSocketUpgradeRequested());
+        }
+    }
+
 } // namespace AsynGyanis::Net

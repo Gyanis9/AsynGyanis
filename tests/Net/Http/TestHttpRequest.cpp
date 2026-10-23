@@ -527,6 +527,29 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住头部的拒绝面与删除面：非法名字/值不覆盖已有状态，删除按大小写不敏感且清掉视图
+     */
+    TEST(HttpRequest, RejectsInvalidHeaderWritesAndRemovesByFoldedName)
+    {
+        HttpRequest request;
+        ASSERT_TRUE(request.setHeader("X-Keep", "one"));
+        ASSERT_TRUE(request.setHeader("x-keep", "two"));
+
+        EXPECT_FALSE(request.setHeader("bad name", "value")) << "头部名含空白被接受了";
+        EXPECT_FALSE(request.setHeader("x-bad", "a\r\nb")) << "头部值含 CRLF 被接受了";
+        EXPECT_EQ(request.getHeader("x-keep").value_or(""), "two") << "被拒的写入改动了已有头部";
+        EXPECT_EQ(request.headerFieldCount("bad name"), 0U);
+
+        // 先让单值视图建出来，再删；视图不失效会留下「查得到但序列化里没有」的鬼条目
+        EXPECT_EQ(request.firstHeaderValue("X-Keep").value_or(""), "two");
+        request.removeHeader("x-KEEP");
+
+        EXPECT_FALSE(request.hasHeader("x-keep")) << "删除按大小写折叠后没命中";
+        EXPECT_FALSE(request.getHeader("x-keep").has_value());
+        EXPECT_EQ(request.headerFieldCount("x-keep"), 0U);
+    }
+
+    /**
      * @brief 单值视图按需重建：先查询、再追加同名头部，第二次查询必须看到合并后的结果
      *
      * @details 视图是惰性的（首次查询才由权威记录建出，见 rebuildSingleValueView），

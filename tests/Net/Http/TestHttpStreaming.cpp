@@ -402,6 +402,50 @@ namespace AsynGyanis::Net
         client.closeNow();
     }
 
+    /**
+     * @brief 钉住 HEAD 对流式响应的抑制：一个正文字节都不发，头部仍描述 GET 的形状，连接还可继续用
+     * @details 流式路径的正文由分块帧与终止块两段组成，HEAD 必须两段都不发；漏掉任一段都会让
+     *          对端把正文当成了下一条响应的开始，正是管线化 keep-alive 的经典错位。
+     */
+    TEST(HttpStreaming, HeadSuppressesChunkedBodyAndKeepsConnectionUsable)
+    {
+        RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds{50}, {},
+                                         [](Router &router, Core::EventLoop &)
+                                         {
+                                             router.get("/head-stream",
+                                                        [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                        {
+                                                            response.startChunkedResponse(200);
+                                                            response.setHeader("content-type", "text/plain");
+                                                            co_await response.writeChunk("stream-secret-body");
+                                                            co_return;
+                                                        });
+                                         });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+        LoopbackClient client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+
+        ASSERT_TRUE(client.sendText(makeRequestText("HEAD /head-stream HTTP/1.1"), kWaitTimeout));
+        std::string responseText;
+        ASSERT_TRUE(client.waitForText(responseText, "\r\n\r\n", kWaitTimeout)) << "HEAD 响应头没到达：" << responseText;
+        const std::size_t headEnd = responseText.find("\r\n\r\n");
+        ASSERT_NE(headEnd, std::string::npos);
+        EXPECT_NE(responseText.find("HTTP/1.1 200"), std::string::npos) << responseText;
+        EXPECT_NE(responseText.find("transfer-encoding: chunked"), std::string::npos) << "HEAD 头部应保留 GET 会用的分块声明：" << responseText;
+        EXPECT_EQ(responseText.find("stream-secret-body"), std::string::npos) << "HEAD 响应出现了正文：" << responseText;
+        EXPECT_EQ(responseText.size(), headEnd + 4U) << "HEAD 头部之后出现了字节（分块帧或终止块）：" << responseText;
+
+        // 同一条连接再发 GET：HEAD 没有留下任何正文残渣，消息边界仍对齐
+        ASSERT_TRUE(client.sendText(makeRequestText("GET /head-stream HTTP/1.1"), kWaitTimeout));
+        ASSERT_TRUE(client.waitForText(responseText, "0\r\n\r\n", kWaitTimeout)) << "HEAD 之后的 GET 没有完整流式响应：" << responseText;
+        const std::string secondResponse = responseText.substr(headEnd + 4U);
+        EXPECT_NE(secondResponse.find("stream-secret-body"), std::string::npos) << secondResponse;
+        EXPECT_TRUE(secondResponse.ends_with("0\r\n\r\n")) << secondResponse;
+        EXPECT_EQ(countStatusLines(responseText), 2U) << "HEAD 与 GET 应当恰好两条响应：" << responseText;
+
+        client.closeNow();
+    }
+
     TEST(HttpStreaming, TerminatesAndClosesWhenHandlerThrowsAfterFirstChunk)
     {
         // 钉住异常收尾：头部已随第一段上线，改 500 是不可能的，只能补终止块并按关闭收口
