@@ -10,6 +10,7 @@
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -131,7 +132,8 @@ TEST(MetricsExportConfiguration, BuildRejectsMalformedEndpoint)
 {
     const MetricsExportConfiguration configuration =
             readMetricsExportConfiguration(documentWith(R"({"enabled": true, "service_name": "svc", "otlp": {"endpoint": "collector:4318"}})"));
-    EXPECT_THROW(static_cast<void>(buildMetricsExporter(configuration)), AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(buildMetricsExporter(configuration)); },
+                                                                                       "不是一枚可用的 http(s) URL", "缺协议的采集端");
 }
 
 /**

@@ -3,6 +3,7 @@
 #include "Net/Logging/LogExportConfiguration.h"
 
 #include "Base/Exception/ConfigValidationException.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -48,18 +49,39 @@ namespace AsynGyanis::Net
     {
         Base::ConfigValue root                = makeRoot();
         root["log_export"]["export_interval"] = 5000; // 少写 _ms
-        EXPECT_THROW(static_cast<void>(readLogExportConfiguration(root)), AsynGyanis::Base::ConfigValidationException);
+        try
+        {
+            static_cast<void>(readLogExportConfiguration(root));
+            ADD_FAILURE() << "未知键 export_interval 没有被拒绝";
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            EXPECT_EQ(failure.key(), "log_export.export_interval") << failure.what();
+        }
     }
 
     TEST(LogExportConfiguration, RequiresServiceNameAndEndpointWhenEnabled)
     {
         Base::ConfigValue noService = makeRoot();
         noService["log_export"].erase("service_name");
-        EXPECT_THROW(static_cast<void>(readLogExportConfiguration(noService)), AsynGyanis::Base::ConfigValidationException);
+        try
+        {
+            static_cast<void>(readLogExportConfiguration(noService));
+            ADD_FAILURE() << "缺服务名没有被拒绝";
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            EXPECT_EQ(failure.key(), "log_export.service_name") << failure.what();
+        }
 
         Base::ConfigValue noEndpoint = makeRoot();
         noEndpoint["log_export"]["otlp"].erase("endpoint");
-        EXPECT_THROW(static_cast<void>(readLogExportConfiguration(noEndpoint)), AsynGyanis::Base::ConfigValidationException);
+        try
+        {
+            static_cast<void>(readLogExportConfiguration(noEndpoint));
+            ADD_FAILURE() << "缺采集端地址没有被拒绝";
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            EXPECT_EQ(failure.key(), "log_export.otlp.endpoint") << failure.what();
+        }
     }
 
     TEST(LogExportConfiguration, DisabledSectionIgnoresValuesButStillRejectsUnknownKeys)
@@ -70,6 +92,13 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(readLogExportConfiguration(root).enabled);
 
         root["log_export"]["bogus"] = 1;
-        EXPECT_THROW(static_cast<void>(readLogExportConfiguration(root)), AsynGyanis::Base::ConfigValidationException);
+        try
+        {
+            static_cast<void>(readLogExportConfiguration(root));
+            ADD_FAILURE() << "关闭状态下未知键没有被拒绝";
+        } catch (const AsynGyanis::Base::ConfigValidationException &failure)
+        {
+            EXPECT_EQ(failure.key(), "log_export.bogus") << failure.what();
+        }
     }
 } // namespace AsynGyanis::Net

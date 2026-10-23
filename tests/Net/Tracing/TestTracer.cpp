@@ -12,6 +12,7 @@
 #include "Net/Http/Message/TraceContext.h"
 #include "Net/Tracing/Span.h"
 #include "TracingTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -649,7 +650,6 @@ TEST(Tracer, RejectedConfigurationNamesTheField)
 
     for (const Case &testCase: cases)
     {
-        EXPECT_THROW(static_cast<void>(Tracer::create(testCase.configuration)), AsynGyanis::Base::LogicException);
         try
         {
             static_cast<void>(Tracer::create(testCase.configuration));

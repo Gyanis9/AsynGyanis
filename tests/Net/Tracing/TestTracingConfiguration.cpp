@@ -12,6 +12,7 @@
 #include "Base/Exception/LogicException.h"
 #include "Core/Coroutine/Task.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "Net/Http/Message/HttpMethod.h"
 #include "Net/Http/Message/HttpRequest.h"
 #include "Net/Http/Message/HttpResponse.h"
@@ -264,7 +265,8 @@ TEST(TracingConfiguration, RejectsAnUnusableOtlpEndpointWhenBuilding)
 {
     const TracingConfiguration configuration =
             readTracingConfiguration(documentWith(R"({"enabled": true, "service_name": "bad-endpoint", "otlp": {"endpoint": "collector:4318"}})"));
-    EXPECT_THROW(static_cast<void>(buildTracer(configuration)), AsynGyanis::Base::InvalidArgumentException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::InvalidArgumentException>([&] { static_cast<void>(buildTracer(configuration)); }, "不是一枚可用的 http(s) URL",
+                                                                                       "缺协议的采集端");
 }
 
 /**

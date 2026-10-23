@@ -9,6 +9,7 @@
 
 #include "CommonTestSupport.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -183,5 +184,6 @@ TEST(FileSpanExporter, ConstructorRejectsAnUnusablePath)
     ASSERT_TRUE(blockerStream.is_open());
     blockerStream.close();
 
-    EXPECT_THROW(static_cast<void>(FileSpanExporter(blocker / "spans.jsonl")), AsynGyanis::Base::SystemException) << "父路径是个普通文件：目录建不出来就该在构造期报错";
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::SystemException>([&] { FileSpanExporter exporter(blocker / "spans.jsonl"); }, "创建链路文件的目录失败",
+                                                                              "父路径是普通文件");
 }

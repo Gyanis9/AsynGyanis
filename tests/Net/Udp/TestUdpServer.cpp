@@ -12,6 +12,7 @@
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/Socket/InetAddress.h"
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 #include "ExpectedAssertions.h"
 #include "MetricsTestSupport.h"
 #include "Platform/IO/DatagramSocket.h"
@@ -503,11 +504,11 @@ namespace AsynGyanis::Net
 
         UdpServer::Configuration tooSmall = makeSilentConfiguration();
         tooSmall.maximumDatagramByteCount = 0;
-        EXPECT_THROW(UdpServer server(loopThread.loop(), tooSmall), Base::InvalidArgumentException) << "容量 0 连一条空报文都放不下，必须拒";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { UdpServer server(loopThread.loop(), tooSmall); }, "不在 1..", "零容量");
 
         UdpServer::Configuration tooLarge = makeSilentConfiguration();
         tooLarge.maximumDatagramByteCount = Platform::DatagramSocket::kMaximumDatagramBytes + 1;
-        EXPECT_THROW(UdpServer server(loopThread.loop(), tooLarge), Base::InvalidArgumentException) << "缓冲超过单条报文上限：收得到却答不出去";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { UdpServer server(loopThread.loop(), tooLarge); }, "不在 1..", "超上限容量");
     }
 
     TEST(UdpServer, ContinuesAfterReceiveFailureOnlyForPeerGoneErrors)

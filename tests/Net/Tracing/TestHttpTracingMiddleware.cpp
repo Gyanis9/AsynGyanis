@@ -10,6 +10,7 @@
 #include "Base/Log/LogContext.h"
 #include "Core/Coroutine/Task.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "Net/Http/Message/HttpMethod.h"
 #include "Net/Http/Message/HttpRequest.h"
 #include "Net/Http/Message/HttpResponse.h"
@@ -335,7 +336,7 @@ TEST(HttpTracingMiddleware, PublishesTraceAndRequestIdToTheLogContext)
  */
 TEST(HttpTracingMiddleware, RejectsANullTracerAtCreation)
 {
-    EXPECT_THROW(static_cast<void>(tracingSpanMiddleware(nullptr)), AsynGyanis::Base::LogicException);
+    AsynGyanis::TestSupport::expectFailure<AsynGyanis::Base::LogicException>([&] { static_cast<void>(tracingSpanMiddleware(nullptr)); }, "tracer 是空的", "空 tracer");
     try
     {
         static_cast<void>(tracingSpanMiddleware(nullptr));

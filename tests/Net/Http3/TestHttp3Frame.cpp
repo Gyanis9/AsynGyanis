@@ -17,6 +17,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "ExpectedAssertions.h"
+#include "AssertionSupport.h"
 #include "Net/Quic/Codec/QuicVariableLengthInteger.h"
 #include "NetTestSupport.h"
 
@@ -242,10 +243,12 @@ namespace AsynGyanis::Net
     {
         std::string bytes;
         // 2^62 已越出变长整数 8 字节档能表示的满值（RFC 9000 §16 表 4），没有合法编码
-        EXPECT_THROW(appendHttp3Frame(bytes, Http3GoAwayFrame{kQuicMaximumIntegerValue + 1}), Base::InvalidArgumentException) << "GOAWAY 的 Stream ID/Push ID 越界时必须抛用法错误";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { appendHttp3Frame(bytes, Http3GoAwayFrame{kQuicMaximumIntegerValue + 1}); },
+                                                                               "超过 QUIC 变长整数的上限", "GOAWAY 越界 ID");
         EXPECT_TRUE(bytes.empty()) << "载荷还没拼完就抛错，不该先写帧头";
 
-        EXPECT_THROW(appendHttp3Frame(bytes, Http3UnknownFrame{kQuicMaximumIntegerValue + 1, {}}), Base::InvalidArgumentException) << "未知帧的类型值同样受 62 位上限约束";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { appendHttp3Frame(bytes, Http3UnknownFrame{kQuicMaximumIntegerValue + 1, {}}); },
+                                                                               "超过 QUIC 变长整数的上限", "未知帧越界类型");
     }
 
     /**
@@ -557,7 +560,7 @@ namespace AsynGyanis::Net
      */
     TEST(Http3FrameReader, EnforcesTheFrameSizeLimitAndLatchesFailure)
     {
-        EXPECT_THROW(Http3FrameReader(0), Base::InvalidArgumentException) << "上限为 0 连最小的空帧都容不下";
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { Http3FrameReader reader(0); }, "单帧上限不能是 0", "零上限");
 
         Http3FrameReader reader(16);
         // DATA 声明 100 字节载荷：100 超单字节档，长度域要走两字节档 0x4064（RFC 9000 §16），

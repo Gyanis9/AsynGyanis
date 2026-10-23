@@ -12,6 +12,7 @@
 #include "Platform/Platform.h"
 
 #include "CoreTestSupport.h"
+#include "AssertionSupport.h"
 
 #include <gtest/gtest.h>
 
@@ -594,7 +595,8 @@ namespace AsynGyanis::Net
     TEST(TcpAcceptor, RejectsInvalidAdoptedDescriptor)
     {
         Core::EventLoop loop;
-        EXPECT_THROW(static_cast<void>(TcpAcceptor(loop, Platform::FileDescriptor::kInvalid)), Base::InvalidArgumentException);
+        AsynGyanis::TestSupport::expectFailure<Base::InvalidArgumentException>([&] { static_cast<void>(TcpAcceptor(loop, Platform::FileDescriptor::kInvalid)); },
+                                                                               "接手的监听套接字描述符无效", "无效描述符");
     }
 
     TEST(TcpAcceptor, RebindAfterCloseSucceedsOnFreshInstance)
