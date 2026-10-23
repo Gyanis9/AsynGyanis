@@ -144,20 +144,47 @@ namespace AsynGyanis::Core
             const RawContext context;
             TlsPolicy        policy;
             policy.cipherList = "NO_SUCH_CIPHER_SUITE_AT_ALL";
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
+            try
+            {
+                applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
+                FAIL() << "非法套件列表没有抛出";
+            } catch (const CoreException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find("NO_SUCH_CIPHER_SUITE_AT_ALL"), std::string::npos) << "原因没有带上原始套件串：" << message;
+                EXPECT_NE(message.find("TLS 1.2 及以下的套件列表"), std::string::npos) << "原因没有点明是哪一项：" << message;
+            }
         }
         {
             const RawContext context;
             TlsPolicy        policy;
             policy.tls13CipherSuites = "TLS_13_NOT_A_THING";
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
+            try
+            {
+                applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
+                FAIL() << "非法 TLS 1.3 套件列表没有抛出";
+            } catch (const CoreException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find("TLS_13_NOT_A_THING"), std::string::npos) << "原因没有带上原始套件串：" << message;
+                EXPECT_NE(message.find("TLS 1.3 套件列表"), std::string::npos) << "原因没有点明是哪一项：" << message;
+            }
         }
         {
             const RawContext context;
             TlsPolicy        policy;
             // 逗号不是分隔符：OpenSSL 的曲线列表用冒号，写错的人需要被告知原文
             policy.supportedGroups = "X25519,secp384r1";
-            EXPECT_THROW(applyTlsPolicy(context.get(), policy, kBuiltInCipherList), CoreException);
+            try
+            {
+                applyTlsPolicy(context.get(), policy, kBuiltInCipherList);
+                FAIL() << "非法曲线列表没有抛出";
+            } catch (const CoreException &failure)
+            {
+                const std::string message = failure.what();
+                EXPECT_NE(message.find("X25519,secp384r1"), std::string::npos) << "原因没有带上原始曲线串：" << message;
+                EXPECT_NE(message.find("命名曲线/组列表"), std::string::npos) << "原因没有点明是哪一项：" << message;
+            }
         }
 
         // 合法写法照旧收：X25519 在两套 OpenSSL 构建里都在
