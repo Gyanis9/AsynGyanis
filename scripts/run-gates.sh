@@ -210,8 +210,8 @@ run_gate()
 
 check_format_local()
 {
-    # xargs 的 123 表示文件有差异，如实回传；-z/-0 配对，文件名带空格也不会被拆开
-    git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' | xargs -0 "$1" --style=file --dry-run -Werror
+    # 清单由 list-format-files.sh 统一生成；xargs 的 123 表示文件有差异，如实回传
+    xargs -0 "$1" --style=file --dry-run -Werror < "$2"
 }
 
 check_format_container()
@@ -229,9 +229,11 @@ run_format_gate()
     pinned="$(sed -n 's/.*clang-format==\([0-9][0-9.]*\).*/\1/p' .github/workflows/linux-ci.yml | head -n 1)"
     [ -n "$pinned" ] || prereq_fail "读不到 .github/workflows/linux-ci.yml 里钉住的 clang-format 版本，格式档没有可比对的裁判"
 
-    fileCount="$(git ls-files '*.h' '*.hpp' '*.cpp' '*.cc' | wc -l)"
+    listFile="$LOG_DIR/format-list.z"
+    bash scripts/list-format-files.sh --check > "$listFile" || prereq_fail "格式清单生成失败：list-format-files.sh --check 退非零"
+    fileCount="$(grep -z -c '' "$listFile")"
     # 清单为空等于「什么都没查」：CI 里那条数量下限判的是同一个形状，这里不抄它的数字，只判有没有
-    [ "$fileCount" -gt 0 ] || prereq_fail "git ls-files 交出 0 个源文件，格式检查不会查到任何东西"
+    [ "$fileCount" -gt 0 ] || prereq_fail "格式清单为空，格式检查不会查到任何东西"
 
     if [ "$formatMode" != container ]; then
         bin="${ASYN_CLANG_FORMAT:-$(command -v clang-format || true)}"
@@ -239,8 +241,8 @@ run_format_gate()
             reported="$("$bin" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
             if [ "$reported" = "$pinned" ]; then
                 printf '格式档裁判：本机 %s（版本 %s，与 CI 钉住的同一版），参与检查 %s 个跟踪源文件\n' "$bin" "$reported" "$fileCount"
-                run_gate format FORMAT_GATE "clang-format --style=file --dry-run -Werror 吃 git ls-files 的源文件清单" \
-                    check_format_local "$bin"
+                run_gate format FORMAT_GATE "clang-format --style=file --dry-run -Werror 吃 list-format-files.sh 的源文件清单" \
+                    check_format_local "$bin" "$listFile"
                 return $?
             fi
             # 点名要本机那份时不许偷偷换裁判：读的人以为判的是 CI 那一版，实际判的是另一件工具，
@@ -261,9 +263,7 @@ run_format_gate()
     reported="$(MSYS_NO_PATHCONV=1 docker exec "$formatContainer" "$CONTAINER_FORMAT_BIN" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
     [ "$reported" = "$pinned" ] || prereq_fail "容器 $formatContainer 里的 $CONTAINER_FORMAT_BIN 报的是 ${reported:-那件工具不存在}，与 CI 钉住的 $pinned 不同"
 
-    listFile="$LOG_DIR/format-list.z"
     tarInput="$LOG_DIR/format-tar-input.z"
-    git ls-files -z '*.h' '*.hpp' '*.cpp' '*.cc' >"$listFile" || prereq_fail "git ls-files 写清单失败"
     cp "$listFile" "$tarInput" || prereq_fail "准备 tar 清单失败"
     # .clang-format 与清单本身一起进包：配置不在包里，--style=file 会静默退回默认档并把整片重排
     printf '%s\0%s\0' '.clang-format' "$listFile" >>"$tarInput"
