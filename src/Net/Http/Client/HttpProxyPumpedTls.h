@@ -109,6 +109,18 @@ namespace AsynGyanis::Net
          */
         Core::Task<ssize_t> asyncSend(const void *buffer, size_t length);
 
+        /**
+         * @brief 带停止令牌的内层 TLS 写出
+         * @param buffer 发送缓冲区
+         * @param length 缓冲区长度，不得超过 INT_MAX
+         * @param stopToken 取消令牌：等外层隧道可写、等对端读取期间令牌停止时按失败收场
+         * @return Core::Task<ssize_t> 实际写出的字节数（可能小于 length）
+         * @throws Core::CoreException 会话失效、外层隧道中断，或调用方已取消
+         * @note 若另一方向的协程正持有 drainer，本调用把字节留给它后直接返回；那一条 drainer
+         *       用的是它自己调用方的令牌，本令牌不会打断它（它本身仍受自己的时限约束）
+         */
+        Core::Task<ssize_t> asyncSend(const void *buffer, size_t length, std::stop_token stopToken);
+
         /// 关闭：释放内层 SSL 并关闭外层传输（幂等）
         void close() noexcept;
 
@@ -127,11 +139,12 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 把待发队列经外层送出去
-         * @return Core::Task<bool> true = 队已空（或正由别的协程在发）；false = 外层传输失效
+         * @param stopToken 取消令牌：drainer 在外层等可写时观察它
+         * @return Core::Task<bool> true = 队已空（或正由别的协程在发）；false = 外层传输失效或被取消
          * @details 同一时刻只有一个 drainer：没抢到标志的调用方直接回 true（字节由抢到的一方发完，
          *          它循环到队列为空才放手）。跨挂起点只发生在这一处，且只有 drainer 碰外层 asyncSend
          */
-        Core::Task<bool> flushPendingWire();
+        Core::Task<bool> flushPendingWire(std::stop_token stopToken);
 
         /// 从外层收一段字节灌进读 BIO；外层收口或断链返回 false
         Core::Task<bool> pumpIncomingOnce(std::stop_token stopToken);

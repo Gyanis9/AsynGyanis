@@ -174,7 +174,7 @@ namespace AsynGyanis::Net
          * @param data 待发字节
          * @param stopToken 取消令牌；明文与直连 TLS 的等可写会观察它
          * @return true 全部字节已写出；false 通路已关闭、写出失败或令牌停止
-         * @note 代理泵通路（内层 TLS 经外层隧道）暂不把令牌传到隧道写出；WS 客户端不使用这一支
+         * @note 代理泵通路把令牌传到外层隧道写出；若另一方向正持有 drainer，令牌不打断那条 drainer（它按自己的时限收口）
          */
         [[nodiscard]] Core::Task<bool> send(std::string_view data, std::stop_token stopToken);
 

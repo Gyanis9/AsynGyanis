@@ -82,7 +82,7 @@ namespace AsynGyanis::Net
         }
     }
 
-    Core::Task<bool> HttpProxyPumpedTls::flushPendingWire()
+    Core::Task<bool> HttpProxyPumpedTls::flushPendingWire(const std::stop_token stopToken)
     {
         // 没抢到标志的一方直接返回：字节留在队列里，由正在发的一方循环到空为止
         if (m_isFlushing || m_pendingWire.empty())
@@ -99,7 +99,7 @@ namespace AsynGyanis::Net
                 std::size_t sent = 0;
                 while (sent < batch.size())
                 {
-                    const ssize_t writtenBytes = co_await m_outer->asyncSend(batch.data() + sent, batch.size() - sent);
+                    const ssize_t writtenBytes = co_await m_outer->asyncSend(batch.data() + sent, batch.size() - sent, stopToken);
                     if (writtenBytes <= 0)
                     {
                         m_isFlushing = false;
@@ -150,7 +150,7 @@ namespace AsynGyanis::Net
             if (error == SSL_ERROR_WANT_READ)
             {
                 // 先把本端已产出的记录送出去（握手期两端互相等待是常态），再收一批
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire({}))
                 {
                     throw Core::CoreException("内层 TLS 握手失败：外层隧道已中断");
                 }
@@ -162,7 +162,7 @@ namespace AsynGyanis::Net
             }
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire({}))
                 {
                     throw Core::CoreException("内层 TLS 握手失败：外层隧道已中断");
                 }
@@ -189,8 +189,12 @@ namespace AsynGyanis::Net
             drainInnerOutput();
             if (result > 0)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 读取失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 读取失败：外层隧道已中断");
                 }
                 co_return result;
@@ -202,8 +206,12 @@ namespace AsynGyanis::Net
             }
             if (error == SSL_ERROR_WANT_READ)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 读取失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 读取失败：外层隧道已中断");
                 }
                 if (!co_await pumpIncomingOnce(stopToken))
@@ -215,8 +223,12 @@ namespace AsynGyanis::Net
             }
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 读取失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 读取失败：外层隧道已中断");
                 }
                 continue;
@@ -240,6 +252,11 @@ namespace AsynGyanis::Net
 
     Core::Task<ssize_t> HttpProxyPumpedTls::asyncSend(const void *const buffer, const size_t length)
     {
+        co_return co_await asyncSend(buffer, length, std::stop_token{});
+    }
+
+    Core::Task<ssize_t> HttpProxyPumpedTls::asyncSend(const void *const buffer, const size_t length, const std::stop_token stopToken)
+    {
         requireAlive("写入");
         if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
@@ -251,13 +268,21 @@ namespace AsynGyanis::Net
         }
         for (;;)
         {
+            if (stopToken.stop_requested())
+            {
+                throw Core::CoreException("内层 TLS 写入失败：调用方已取消");
+            }
             // WANT 之后必须用相同参数重试（OpenSSL 对 SSL_write 的硬要求），循环即满足
             const int result = SSL_write(m_inner.get(), buffer, static_cast<int>(length));
             drainInnerOutput();
             if (result > 0)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 写入失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 写入失败：外层隧道已中断");
                 }
                 co_return result;
@@ -265,8 +290,12 @@ namespace AsynGyanis::Net
             const int error = SSL_get_error(m_inner.get(), result);
             if (error == SSL_ERROR_WANT_WRITE)
             {
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 写入失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 写入失败：外层隧道已中断");
                 }
                 continue;
@@ -274,8 +303,12 @@ namespace AsynGyanis::Net
             if (error == SSL_ERROR_WANT_READ)
             {
                 // TLS 1.3 的 KeyUpdate 一类会让写需要先读：把队列送出去再收一批
-                if (!co_await flushPendingWire())
+                if (!co_await flushPendingWire(stopToken))
                 {
+                    if (stopToken.stop_requested())
+                    {
+                        throw Core::CoreException("内层 TLS 写入失败：调用方已取消");
+                    }
                     throw Core::CoreException("内层 TLS 写入失败：外层隧道已中断");
                 }
                 if (!co_await pumpIncomingOnce({}))

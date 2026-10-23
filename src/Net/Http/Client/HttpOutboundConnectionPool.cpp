@@ -228,7 +228,7 @@ namespace AsynGyanis::Net
                 }
                 try
                 {
-                    const ssize_t segmentWrittenByteCount = co_await m_pumpedSocket->asyncSend(segmentBegin, remainingByteCount);
+                    const ssize_t segmentWrittenByteCount = co_await m_pumpedSocket->asyncSend(segmentBegin, remainingByteCount, stopToken);
                     if (segmentWrittenByteCount <= 0)
                     {
                         m_isOpen = false;
