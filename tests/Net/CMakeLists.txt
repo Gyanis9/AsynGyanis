@@ -126,6 +126,8 @@ add_executable(TestNet
         Http/TestRequestBodySpool.cpp
         Http/TestFileSender.cpp
         Http/TestHttpsServer.cpp
+        # 跨层网关：入站 HTTP 时限 → 数据库语句取消（本目标因此额外链接 Database，见下方说明）
+        Http/TestDatabaseGateway.cpp
 
         Tcp/TestTcpStream.cpp
         Tcp/TestTcpClient.cpp
@@ -179,6 +181,9 @@ find_package(brotli REQUIRED)
 
 target_link_libraries(TestNet PRIVATE
         Net
+        # TestDatabaseGateway 要跑「入站时限 → 数据库语句取消」的端到端链路；生产代码里 Net
+        # 不依赖 Database，这里只给测试补上这一层，别把这条链接当成可以往 Net 里加数据库调用的许可
+        Database
         ZLIB::ZLIB
         zstd::libzstd
         brotli::brotli

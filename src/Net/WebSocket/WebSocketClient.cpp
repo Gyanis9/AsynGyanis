@@ -530,6 +530,7 @@ namespace AsynGyanis::Net
         std::optional<TcpStream>                                 plainStream;
         std::unique_ptr<Core::TlsSocket>                         tlsSocket;
         std::optional<WebSocketUpgradeExpected<UpgradeExchange>> exchanged;
+        Core::TlsPeerIdentityPtr                                 tlsPeerIdentity{};
         if (isTls)
         {
             auto secured = co_await makeClientTlsSocket(loop, *configuration.clientTls, std::move(candidate->socket), configuration.hostName, remainingBudget());
@@ -537,8 +538,9 @@ namespace AsynGyanis::Net
             {
                 co_return std::unexpected(secured.error());
             }
-            tlsSocket = std::move(*secured);
-            exchanged = co_await exchangeOverTls(loop, *tlsSocket, remainingBudget(), *requestText, target);
+            tlsSocket       = std::move(*secured);
+            tlsPeerIdentity = tlsSocket->peerIdentity();
+            exchanged       = co_await exchangeOverTls(loop, *tlsSocket, remainingBudget(), *requestText, target);
         } else
         {
             plainStream.emplace(std::move(candidate->socket));
@@ -563,7 +565,9 @@ namespace AsynGyanis::Net
         {
             co_return std::unexpected(agreement.error());
         }
-        co_return std::unique_ptr<WebSocketClient>(new WebSocketClient(std::move(transport), std::move(*agreement), configuration, std::move((*exchanged)->leftover), loop));
+        auto client = std::unique_ptr<WebSocketClient>(new WebSocketClient(std::move(transport), std::move(*agreement), configuration, std::move((*exchanged)->leftover), loop));
+        client->m_tlsPeerIdentity = std::move(tlsPeerIdentity);
+        co_return client;
     }
     const WebSocketUpgradeAgreement &WebSocketClient::agreement() const noexcept
     {
@@ -572,6 +576,11 @@ namespace AsynGyanis::Net
     bool WebSocketClient::isOpen() const noexcept
     {
         return m_isOpen;
+    }
+
+    const Core::TlsPeerIdentityPtr &WebSocketClient::peerIdentity() const noexcept
+    {
+        return m_tlsPeerIdentity;
     }
 
     std::optional<std::uint16_t> WebSocketClient::remoteCloseCode() const noexcept

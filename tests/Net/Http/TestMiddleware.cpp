@@ -580,6 +580,67 @@ namespace AsynGyanis::Net
         EXPECT_EQ(countSubstring(accessLine, "route=/items/:id"), 1U);
     }
 
+    /**
+     * @brief 访问日志不把查询串里的敏感值写出去
+     * @details 令牌与口令同级；非敏感的 `detail` 仍要保留，日志才还能用于排查。
+     */
+    TEST(LoggingMiddleware, RedactsSensitiveQueryValuesFromAccessLog)
+    {
+        auto                                      records = std::make_shared<LogRecords>();
+        HttpTestSupport::RunningHttpServerFixture fixture(HttpServerLimits{}, std::chrono::milliseconds(50), {},
+                                                          [records](Router &router, Core::EventLoop &)
+                                                          {
+                                                              router.addMiddleware(loggingMiddleware(makeRecordingLogger(records)));
+                                                              router.get("/items/:id",
+                                                                         [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                                                                         {
+                                                                             response.setBody("payload");
+                                                                             co_return;
+                                                                         });
+                                                          });
+        ASSERT_TRUE(fixture.awaitRunning(HttpTestSupport::kWaitTimeout)) << "服务器没有进入接受循环";
+
+        const auto parsed =
+                HttpTestSupport::sendAndReadResponse(fixture.listeningPort(), "GET /items/42?token=s3cr3t-marker&detail=1 HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+        ASSERT_HAS_VALUE(parsed) << "真实 TCP 请求没有拿到完整响应";
+
+        std::string accessLine;
+        ASSERT_TRUE(waitForCondition(
+                [&accessLine, &records]
+                {
+                    const std::lock_guard<std::mutex> recordLock(records->mutex);
+                    for (const std::string &message: records->messages)
+                    {
+                        if (message.find("HTTP 访问") != std::string::npos)
+                        {
+                            accessLine = message;
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                kConditionTimeout))
+                << "访问日志没有写出";
+
+        EXPECT_EQ(accessLine.find("s3cr3t-marker"), std::string::npos) << "访问日志回显了查询串里的令牌：" << accessLine;
+        EXPECT_NE(accessLine.find("uri=/items/42?token=***&detail=1"), std::string::npos) << accessLine;
+        EXPECT_NE(accessLine.find("route=/items/:id"), std::string::npos) << accessLine;
+    }
+
+    /**
+     * @brief 查询串脱敏只遮敏感键的值，键名大小写与百分号转义都要认出
+     */
+    TEST(HttpUrlRedaction, MasksSensitiveQueryValues)
+    {
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?token=abc&detail=1"), "/x?token=***&detail=1");
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?ToKeN=abc"), "/x?ToKeN=***");
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?%74oken=abc&access_token=def"), "/x?%74oken=***&access_token=***");
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?monkey=abc"), "/x?monkey=abc") << "子串相同但不是敏感键，不能误遮";
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?token=abc#frag"), "/x?token=***#frag");
+        EXPECT_EQ(redactSensitiveQueryParameters("/x?token=abc;detail=1"), "/x?token=***;detail=1");
+        EXPECT_EQ(redactUrlForDiagnostics("http://alice:secret@example.com/x?token=abc"), "http://***@example.com/x?token=***");
+    }
+
     // ============================================================================
     // corsMiddleware
     // ============================================================================

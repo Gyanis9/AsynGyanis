@@ -65,6 +65,8 @@ if(ASYN_ENABLE_INSTALL)
             PATTERN "RedisConnectionSupport.h" EXCLUDE
             PATTERN "SchemaMigratorImpl.h" EXCLUDE
             PATTERN "QueryableImpl.h" EXCLUDE
+            # 句柄创建失败的测试注入点：只给仓库内测试用，不随安装包发布
+            PATTERN "HandleFaultInjection.h" EXCLUDE
     )
 
     # Base 的 std::stacktrace 探测结果随包交出；Conan 消费方需要同一个宏。

@@ -2,11 +2,15 @@
 // 覆盖场景：
 // - FatalSignalLeavesSceneOnStandardErrorAndDiesBySignal（POSIX：fork 出子进程踩 SIGSEGV，
 //   校验 stderr 上有现场、进程仍以该信号致死——WIFSIGNALED 与上层看护的口径都保住）
+// - FatalLogLineAndEarlierRecordsSurviveSignalDeath（POSIX：LOG_FATAL 刷盘后信号致死，
+//   文件里同时留有 FATAL 与更早的 INFO；崩溃现场本身不替日志系统补刷）
 // - TerminateLeavesSceneWithEscapingExceptionOnStandardError（POSIX：子进程里抛出后调
 //   std::terminate，现场里要带出逃逸异常原文）
 // - InstallIsIdempotent（重复安装如实报「早就装过」）
 #include "Core/Process/CrashScene.h"
 
+#include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/FileSink.h"
 #include "Platform/Platform.h"
 
 #include <gtest/gtest.h>
@@ -15,7 +19,11 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <sys/wait.h>
 #include <thread>
@@ -29,6 +37,10 @@ namespace AsynGyanis::Core
 #if !ASYN_PLATFORM_WIN32
     namespace
     {
+        using Base::FileSink;
+        using Base::Logger;
+        using Base::LogLevel;
+
         /// 子进程的记录：现场文本与退出状态从管道/状态码带回来
         struct ChildCrashOutcome
         {
@@ -148,6 +160,45 @@ namespace AsynGyanis::Core
         EXPECT_EQ(WTERMSIG(outcome.status), SIGSEGV);
         EXPECT_NE(outcome.standardErrorText.find("崩溃现场"), std::string::npos) << "stderr 上没有现场，收到：" << outcome.standardErrorText;
         EXPECT_NE(outcome.standardErrorText.find("线程指纹"), std::string::npos) << "现场没有交出线程指纹，收到：" << outcome.standardErrorText;
+    }
+
+    /**
+     * @brief 钉住崩溃前的日志契约：LOG_FATAL 返回时记录已在盘上，信号随后致死也不丢
+     * @details FileSink 默认不逐行同步，一条短记录留在流缓冲里；信号致死不会走析构，缓冲就随进程消失。
+     *          Fatal 在分发后刷新每个收下它的 Sink，因此它自己与更早的普通记录应当一起落盘。
+     *          崩溃前的普通等级不作保证（那要调用方自己 flush），故这里只断言 FATAL 拉齐的那一批。
+     */
+    TEST(CrashScene, FatalLogLineAndEarlierRecordsSurviveSignalDeath)
+    {
+        const std::filesystem::path logPath = std::filesystem::temp_directory_path() / ("asyn-crash-scene-fatal-" + std::to_string(static_cast<long long>(::getpid())) + ".log");
+        std::filesystem::remove(logPath);
+
+        CrashScene::install();
+        const ChildCrashOutcome outcome = runCrashInChildProcess(
+                [logPath]
+                {
+                    Logger logger("crash_scene_fatal");
+                    logger.setLevel(LogLevel::Trace);
+                    logger.addSink(std::make_shared<FileSink>(logPath, /*truncate*/ true));
+                    logger.log(LogLevel::Info, "info-before-fatal");
+                    logger.log(LogLevel::Fatal, "fatal-before-crash");
+                    std::raise(SIGSEGV);
+                });
+
+        std::ifstream     logFile(logPath, std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(logFile)), std::istreambuf_iterator<char>());
+        logFile.close();
+        std::filesystem::remove(logPath);
+
+        ASSERT_TRUE(WIFSIGNALED(outcome.status)) << "子进程没有按信号致死（状态字 " << outcome.status << "）";
+        EXPECT_EQ(WTERMSIG(outcome.status), SIGSEGV);
+        EXPECT_NE(contents.find("fatal-before-crash"), std::string::npos) << "LOG_FATAL 返回时那一条还没落盘：信号一死，缓冲区跟着进程没了。文件内容：" << contents;
+        EXPECT_NE(contents.find("info-before-fatal"), std::string::npos) << "Fatal 只刷了自己那一条，之前同一 Sink 的普通记录仍留在缓冲里。文件内容：" << contents;
+    }
+#else
+    TEST(CrashScene, FatalLogLineAndEarlierRecordsSurviveSignalDeath)
+    {
+        GTEST_SKIP() << "Windows 侧崩溃现场的完整路径未验证；本用例的 fork 剧本只在 POSIX 上可用";
     }
 #endif
 

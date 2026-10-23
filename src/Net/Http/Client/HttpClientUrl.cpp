@@ -90,38 +90,6 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 把 URL 里的 userinfo 换成 `***@`，只给诊断文本用
-         * @details 异常与失败原因会进日志、投递记录与调用方的错误面板；原样带上 `user:pass@`
-         *          就是把口令复制到每一个读日志的地方。这里按 RFC 3986 §3.2 的 authority 边界
-         *          找最后一个 `@`（userinfo 的定界符），整段替换而不是只遮口令——用户名同样不该外泄。
-         * @param url 原始 URL 或缺少协议名的半成品
-         * @return std::string 可安全写进诊断文本的副本
-         */
-        [[nodiscard]] std::string redactUrlForDiagnostics(const std::string_view url)
-        {
-            const std::size_t      schemeSeparator = url.find("://");
-            const std::size_t      authorityStart  = schemeSeparator != std::string_view::npos ? schemeSeparator + 3U : (url.starts_with("//") ? 2U : 0U);
-            const std::size_t      authorityEnd    = url.find_first_of("/?#", authorityStart);
-            const std::string_view authority       = url.substr(authorityStart, authorityEnd == std::string_view::npos ? std::string_view::npos : authorityEnd - authorityStart);
-            const std::size_t      userInfoEnd     = authority.rfind('@');
-            if (userInfoEnd == std::string_view::npos)
-            {
-                return std::string(url);
-            }
-
-            std::string redacted;
-            redacted.reserve(url.size());
-            redacted.append(url.substr(0U, authorityStart));
-            redacted.append("***@");
-            redacted.append(authority.substr(userInfoEnd + 1U));
-            if (authorityEnd != std::string_view::npos)
-            {
-                redacted.append(url.substr(authorityEnd));
-            }
-            return redacted;
-        }
-
-        /**
          * @brief 拆解 authority：拒绝 userinfo，识别方括号 IPv6 与端口，写进 ParsedUrl
          * @param authority URL 里 `scheme://` 与 `/?#` 之间那一段
          * @param url 原始 URL，仅用于脱敏后的诊断文本

@@ -14,6 +14,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <utility>
@@ -715,4 +716,43 @@ namespace AsynGyanis::Base
         EXPECT_EQ(writeAfterSecondFailure, 0U) << "流已失效之后还在报「写成功了」";
     }
 #endif
+
+    /**
+     * @brief 注入一个 flush 必失败、写入可接受的输出流：两平台都要出声且只出声一次
+     * @details Windows 没有 /dev/full；这条用 std::streambuf 造出同一形状，判据与平台无关。
+     */
+    TEST(FileSinkInjectedWriteFailure, FlushReportsInjectedFailureOnEveryPlatform)
+    {
+        class FailingSyncStreamBuffer final : public std::streambuf
+        {
+        protected:
+            std::streamsize xsputn(const char *, const std::streamsize count) override
+            {
+                return count;
+            }
+
+            int sync() override
+            {
+                return -1;
+            }
+        };
+
+        FailingSyncStreamBuffer buffer;
+        std::ostream            stream(&buffer);
+        std::ostringstream      captured;
+        std::size_t             writtenByteCount = 0;
+        {
+            const TestSupport::ScopedStreamRedirect redirect(std::cerr, captured.rdbuf());
+            FileSink                                sink(stream);
+            writtenByteCount = sink.writeLine("the last line before abort");
+            sink.flush();
+            sink.flush();
+        }
+
+        const std::string diagnostic = captured.str();
+        EXPECT_GT(writtenByteCount, 0U) << "注入流接受字节，writeLine 应报出写入长度";
+        EXPECT_NE(diagnostic.find("写日志失败"), std::string::npos) << "注入流 flush 失败没有出声";
+        EXPECT_NE(diagnostic.find("<injected>"), std::string::npos) << "诊断里没点名注入目标";
+        EXPECT_EQ(std::ranges::count(diagnostic, '\n'), 1) << "两次 flush 只许报一条";
+    }
 } // namespace AsynGyanis::Base

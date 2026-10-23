@@ -627,6 +627,50 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 出站失败日志不回显查询串里的令牌值
+     */
+    TEST(HttpClient, FailureLogRedactsSensitiveQueryValues)
+    {
+        SilentPeer peer;
+        ASSERT_TRUE(peer.start(kTimeout)) << "静默对端没有在时限内开始监听";
+        LogCapture                          logs;
+        Core::EventLoop                     loop;
+        std::unique_ptr<HttpClientResponse> response;
+        const std::string                   url  = "http://127.0.0.1:" + std::to_string(peer.port()) + "/fail?token=s3cr3t-marker";
+        Core::Task<void>                    task = doGetTask(loop, response, url, std::chrono::milliseconds{250});
+        loop.scheduler().schedule(task.handle());
+        loop.run();
+
+        EXPECT_EQ(response, nullptr) << "静默对端不该给出响应";
+        EXPECT_GE(logs.countContainingWithin("HttpClient", std::chrono::milliseconds{500}), 1U) << "失败日志没有写出";
+        EXPECT_EQ(logs.countContaining("s3cr3t-marker"), 0U) << "失败日志回显了查询串里的令牌";
+    }
+
+    /**
+     * @brief 交给调用方的失败原因也不回显查询串里的令牌
+     */
+    TEST(HttpClient, FailureReasonRedactsSensitiveQueryValues)
+    {
+        MalformedResponsePeer peer("HTTP/1.1 200 OK\r\nContent-Length: not-a-number\r\n\r\n");
+        ASSERT_TRUE(peer.start(kTimeout)) << "畸形响应对端没有在时限内开始监听";
+        const std::string url     = "http://127.0.0.1:" + std::to_string(peer.port()) + "/malformed?token=s3cr3t-marker";
+        const SendOutcome outcome = runSend(url, HttpClientRequest{}, std::chrono::seconds{5});
+
+        EXPECT_FALSE(outcome.reason.empty()) << "失败却没有留下原因，下面的判据没有对象";
+        EXPECT_NE(outcome.reason.find("响应不合规范"), std::string::npos) << "前提不成立：没有走到带目标 URI 的解析失败路径：" << outcome.reason;
+        EXPECT_EQ(outcome.reason.find("s3cr3t-marker"), std::string::npos) << outcome.reason;
+
+        // 发送前已取消：这条路径不碰网络，失败原因直接把完整 URL 拼进去
+        std::stop_source source;
+        static_cast<void>(source.request_stop());
+        HttpClientRequest cancelledRequest;
+        cancelledRequest.cancelToken       = source.get_token();
+        const SendOutcome cancelledOutcome = runSend("http://127.0.0.1:1/fail?token=s3cr3t-marker", cancelledRequest, std::chrono::milliseconds{250});
+        EXPECT_NE(cancelledOutcome.reason.find("请求已取消"), std::string::npos) << "前提不成立：没有走到取消路径：" << cancelledOutcome.reason;
+        EXPECT_EQ(cancelledOutcome.reason.find("s3cr3t-marker"), std::string::npos) << cancelledOutcome.reason;
+    }
+
+    /**
      * @brief 钉住：响应头能按大小写不敏感读出来，读不到时是空而不是猜
      * @details `headers` 按对端给什么留什么（不折叠、不重排），而 RFC 9110 §5.1 规定头部名
      *          大小写不敏感。此前消费方要么自己写一份折小写的循环（本仓写过三份），要么

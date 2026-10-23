@@ -340,7 +340,7 @@ namespace AsynGyanis::Net
         template<typename Socket>
         Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, std::size_t maximumInboundMessageBytes,
                                            HttpMetricsCollector *metrics, WebSocketHandler handler, std::vector<char> &receiveBuffer, std::size_t pendingLength,
-                                           std::optional<PerMessageDeflateWindow> deflateWindow)
+                                           std::optional<PerMessageDeflateWindow> deflateWindow, Core::TlsPeerIdentityPtr tlsPeerIdentity)
         {
             // 帧发送路径：把一整帧按写超时约束写出去。写之前刷新截止时间的依据与 HTTP 阶段发送响应
             // 一致（HttpServerLimits::writeTimeout 约束的是「等待可写的最长空闲」，慢消费者防线）；
@@ -399,6 +399,7 @@ namespace AsynGyanis::Net
             // 栈上对象做不到这一点，因此这里用 shared_ptr 并在构造后立刻登记
             const std::shared_ptr<WebSocketPeer> peer = std::make_shared<WebSocketPeer>(sendFrameBytes, metrics, connection.socket().eventLoop());
             peer->setLifetimeOwner(peer);
+            peer->setTlsPeerIdentity(std::move(tlsPeerIdentity));
             peer->setPerMessageDeflate(deflateWindow);
             // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
             peer->setMaximumInboundMessageBytes(maximumInboundMessageBytes);
@@ -1500,7 +1501,7 @@ namespace AsynGyanis::Net
                     // 客户端可能已经在里面发了第一帧，必须一并交给解码器。
                     // 整段 WebSocket 通话都算在途工作（上面的 BusyScope 覆盖到这里）：优雅关闭会等它结束
                     co_return co_await Detail::webSocketSessionStage(socket, connection, limits, parser.limits().maximumWebsocketMessageSize, metrics, response.webSocketHandler(),
-                                                                     receiveBuffer, windowLength, deflateNegotiation.window);
+                                                                     receiveBuffer, windowLength, deflateNegotiation.window, request.tlsPeerIdentity());
                 }
 
                 if (!co_await respondAndFinish(request, response, handlerException, requestReceivedTime, false))
@@ -1509,6 +1510,19 @@ namespace AsynGyanis::Net
                     co_return;
                 }
             }
+        }
+
+        /**
+         * @brief 升级阶段的原入口：不携带 TLS 身份
+         * @details 保留旧签名作为声明面入口；需要把 mTLS 身份交给业务时用带 identity 的重载。
+         */
+        template<typename Socket>
+        Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, std::size_t maximumInboundMessageBytes,
+                                           HttpMetricsCollector *metrics, WebSocketHandler handler, std::vector<char> &receiveBuffer, std::size_t pendingLength,
+                                           std::optional<PerMessageDeflateWindow> deflateWindow)
+        {
+            return webSocketSessionStage(socket, connection, limits, maximumInboundMessageBytes, metrics, handler, receiveBuffer, pendingLength, deflateWindow,
+                                         Core::TlsPeerIdentityPtr{});
         }
     } // namespace Detail
 } // namespace AsynGyanis::Net

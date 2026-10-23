@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.1.0
-# headers=310 entries=9105
+# headers=310 entries=9152
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -421,17 +421,21 @@ src/Base/Log/Sinks/ConsoleSink.h	void applyFormatter()
 src/Base/Log/Sinks/ConsoleSink.h	void flush() override
 src/Base/Log/Sinks/ConsoleSink.h	void setColorEnabled(bool enabled)
 src/Base/Log/Sinks/ConsoleSink.h	void write(const LogEvent &event) override
+src/Base/Log/Sinks/FileSink.h	[[nodiscard]] bool isStreamOpen() const noexcept
 src/Base/Log/Sinks/FileSink.h	[[nodiscard]] std::size_t skippedLineCount() const noexcept
 src/Base/Log/Sinks/FileSink.h	bool m_hasReportedReopenFailure
 src/Base/Log/Sinks/FileSink.h	bool m_hasReportedWriteFailure
 src/Base/Log/Sinks/FileSink.h	bool m_immediateFlush
 src/Base/Log/Sinks/FileSink.h	class ASYN_BASE_API FileSink : public LogSink
 src/Base/Log/Sinks/FileSink.h	explicit FileSink(std::filesystem::path filePath, bool truncate = false, bool immediateFlush = false)
+src/Base/Log/Sinks/FileSink.h	explicit FileSink(std::ostream &stream)
 src/Base/Log/Sinks/FileSink.h	namespace AsynGyanis::Base
 src/Base/Log/Sinks/FileSink.h	std::atomic<std::size_t> m_skippedLineCount
 src/Base/Log/Sinks/FileSink.h	std::filesystem::path m_filePath
 src/Base/Log/Sinks/FileSink.h	std::mutex m_mutex
 src/Base/Log/Sinks/FileSink.h	std::ofstream m_file
+src/Base/Log/Sinks/FileSink.h	std::ostream &targetStream() noexcept
+src/Base/Log/Sinks/FileSink.h	std::ostream *m_injectedStream
 src/Base/Log/Sinks/FileSink.h	std::size_t writeLine(std::string_view line)
 src/Base/Log/Sinks/FileSink.h	std::size_t writePreparedLineLocked()
 src/Base/Log/Sinks/FileSink.h	std::string m_lineBuffer
@@ -458,7 +462,9 @@ src/Base/Log/Sinks/LogSink.h	virtual ~LogSink() = default
 src/Base/Log/Sinks/LogSink.h	void formatEventInto(std::string &out, const LogEvent &event) const
 src/Base/Log/Sinks/LogSink.h	void setFormatter(std::unique_ptr<LogFormatter> formatter)
 src/Base/Log/Sinks/LogSink.h	void setLevel(LogLevel level)
+src/Base/Log/Sinks/RollingFileSink.h	Clock m_clock
 src/Base/Log/Sinks/RollingFileSink.h	RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes = 10 * 1024 * 1024, size_t maximumBackupFiles = 10, bool immediateFlush = false)
+src/Base/Log/Sinks/RollingFileSink.h	RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes, size_t maximumBackupFiles, bool immediateFlush, Clock clock)
 src/Base/Log/Sinks/RollingFileSink.h	RollingPolicy m_policy
 src/Base/Log/Sinks/RollingFileSink.h	[[nodiscard]] std::filesystem::path getCurrentFilename() const
 src/Base/Log/Sinks/RollingFileSink.h	[[nodiscard]] std::string generateTimestampSuffix() const
@@ -480,6 +486,7 @@ src/Base/Log/Sinks/RollingFileSink.h	std::time_t m_lastObservedPeriodSeconds = 0
 src/Base/Log/Sinks/RollingFileSink.h	std::time_t m_nextPeriodBoundary = 0
 src/Base/Log/Sinks/RollingFileSink.h	std::uintmax_t m_bytesInCurrentFile = 0
 src/Base/Log/Sinks/RollingFileSink.h	std::unique_ptr<FileSink> m_currentSink
+src/Base/Log/Sinks/RollingFileSink.h	using Clock = std::function<std::time_t()>
 src/Base/Log/Sinks/RollingFileSink.h	void checkAndRoll()
 src/Base/Log/Sinks/RollingFileSink.h	void cleanupOldFiles() const
 src/Base/Log/Sinks/RollingFileSink.h	void flush() override
@@ -1805,6 +1812,7 @@ src/Database/Common/DatabaseConnection.h	[[nodiscard]] std::int64_t nativeCode()
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual DatabaseType databaseType() const = 0
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual bool isConnected() const = 0
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual bool probeAlive() noexcept
+src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual bool requestQueryCancel() noexcept
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual bool resetSessionState() noexcept
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual std::string lastError() const
 src/Database/Common/DatabaseConnection.h	[[nodiscard]] virtual std::unique_ptr<DatabaseResult> execute(const std::string_view command, const std::span<const DatabaseValue> parameters)
@@ -1877,10 +1885,12 @@ src/Database/Common/DatabaseResult.h	[[nodiscard]] virtual std::string lastError
 src/Database/Common/DatabaseResult.h	[[nodiscard]] virtual std::vector<std::string> columnNames() const = 0
 src/Database/Common/DatabaseResult.h	class ASYN_DATABASE_API DatabaseResult
 src/Database/Common/DatabaseResult.h	namespace AsynGyanis::Database
+src/Database/Common/DatabaseResult.h	std::shared_ptr<void> m_lifetimeLease
 src/Database/Common/DatabaseResult.h	std::string m_lastError
 src/Database/Common/DatabaseResult.h	virtual bool next() = 0
 src/Database/Common/DatabaseResult.h	virtual void reset() = 0
 src/Database/Common/DatabaseResult.h	virtual ~DatabaseResult() = default
+src/Database/Common/DatabaseResult.h	void attachLifetimeLease(std::shared_ptr<void> lease) noexcept
 src/Database/Common/DatabaseType.h	ASYN_DATABASE_API const char *databaseTypeName(DatabaseType type) noexcept
 src/Database/Common/DatabaseType.h	enum class DatabaseType
 src/Database/Common/DatabaseType.h	namespace AsynGyanis::Database
@@ -2233,6 +2243,9 @@ src/Database/Pool/ConnectionPool.h	ConnectionPool(ConnectionPool &&) = delete
 src/Database/Pool/ConnectionPool.h	ConnectionPool(const ConnectionPool &) = delete
 src/Database/Pool/ConnectionPool.h	Core::EventLoop *m_completionLoop
 src/Database/Pool/ConnectionPool.h	Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop)
+src/Database/Pool/ConnectionPool.h	Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop, std::chrono::steady_clock::time_point deadline, std::stop_token stopToken)
+src/Database/Pool/ConnectionPool.h	Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop, std::stop_token stopToken)
+src/Database/Pool/ConnectionPool.h	Core::Task<PooledConnection> acquireAsyncUntil(Core::EventLoop &loop, std::chrono::steady_clock::time_point deadline, std::stop_token stopToken)
 src/Database/Pool/ConnectionPool.h	PoolConfig m_config
 src/Database/Pool/ConnectionPool.h	PooledConnection acquire()
 src/Database/Pool/ConnectionPool.h	PooledConnection await_resume() noexcept
@@ -2274,7 +2287,11 @@ src/Database/Pool/ConnectionPool.h	mutable std::mutex m_mutex
 src/Database/Pool/ConnectionPool.h	namespace AsynGyanis::Core
 src/Database/Pool/ConnectionPool.h	namespace AsynGyanis::Database
 src/Database/Pool/ConnectionPool.h	std::array<Core::ProcessMetricHandle, 11> m_metricHandles
+src/Database/Pool/ConnectionPool.h	std::atomic<bool> *expiryRequested
+src/Database/Pool/ConnectionPool.h	std::atomic<bool> *stopRequested
+src/Database/Pool/ConnectionPool.h	std::atomic<bool> m_asyncExpiryRequested
 src/Database/Pool/ConnectionPool.h	std::atomic<bool> m_isShuttingDown
+src/Database/Pool/ConnectionPool.h	std::atomic<bool> m_stopRequested
 src/Database/Pool/ConnectionPool.h	std::atomic<std::coroutine_handle<>> handle
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_activeCount
 src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_asyncWaitingCount
@@ -2290,13 +2307,17 @@ src/Database/Pool/ConnectionPool.h	std::atomic<std::size_t> m_waitingRejectedCou
 src/Database/Pool/ConnectionPool.h	std::atomic<std::uint64_t> m_freedSlotEpoch
 src/Database/Pool/ConnectionPool.h	std::chrono::steady_clock::time_point m_deadline
 src/Database/Pool/ConnectionPool.h	std::chrono::steady_clock::time_point returnedTime
+src/Database/Pool/ConnectionPool.h	std::condition_variable *healthWakeCondition
 src/Database/Pool/ConnectionPool.h	std::condition_variable m_healthWakeCondition
 src/Database/Pool/ConnectionPool.h	std::condition_variable m_idleCondition
 src/Database/Pool/ConnectionPool.h	std::coroutine_handle<> m_handle
 src/Database/Pool/ConnectionPool.h	std::deque<AcquireAwaiter *> m_asyncWaiters
 src/Database/Pool/ConnectionPool.h	std::function<std::unique_ptr<DatabaseConnection>()> m_factory
 src/Database/Pool/ConnectionPool.h	std::jthread m_healthThread
+src/Database/Pool/ConnectionPool.h	std::mutex *healthWakeMutex
 src/Database/Pool/ConnectionPool.h	std::mutex m_healthWakeMutex
+src/Database/Pool/ConnectionPool.h	std::optional<std::stop_callback<StopCallback>> m_stopCallback
+src/Database/Pool/ConnectionPool.h	std::shared_ptr<PoolLiveness> liveness
 src/Database/Pool/ConnectionPool.h	std::shared_ptr<PoolLiveness> m_liveness
 src/Database/Pool/ConnectionPool.h	std::shared_ptr<PoolLiveness> m_liveness
 src/Database/Pool/ConnectionPool.h	std::shared_ptr<ResumeTicket> m_resumeTicket
@@ -2306,10 +2327,13 @@ src/Database/Pool/ConnectionPool.h	std::unique_ptr<DatabaseConnection> m_result
 src/Database/Pool/ConnectionPool.h	std::unique_ptr<DatabaseConnection> tryAcquireInternal() noexcept
 src/Database/Pool/ConnectionPool.h	std::unique_ptr<DatabaseConnection> tryAcquireOrCreateInternal() noexcept
 src/Database/Pool/ConnectionPool.h	std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadline(std::chrono::steady_clock::time_point deadline)
+src/Database/Pool/ConnectionPool.h	std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadlineWithReason(std::chrono::steady_clock::time_point deadline, PoolAcquireFailure &failure)
 src/Database/Pool/ConnectionPool.h	std::vector<IdleEntry> m_idleStack
 src/Database/Pool/ConnectionPool.h	struct IdleEntry
 src/Database/Pool/ConnectionPool.h	struct ResumeTicket
+src/Database/Pool/ConnectionPool.h	struct StopCallback
 src/Database/Pool/ConnectionPool.h	template<typename Callback> auto withTransaction(Callback &&callback)
+src/Database/Pool/ConnectionPool.h	void armCancellation(std::stop_token stopToken) noexcept
 src/Database/Pool/ConnectionPool.h	void closeTrackedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
 src/Database/Pool/ConnectionPool.h	void discardAndWakeReturnedConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
 src/Database/Pool/ConnectionPool.h	void discardConnection(std::unique_ptr<DatabaseConnection> connection) noexcept
@@ -2317,6 +2341,7 @@ src/Database/Pool/ConnectionPool.h	void expireTimedOutWaiters() noexcept
 src/Database/Pool/ConnectionPool.h	void healthCheckLoop(const std::stop_token &stopToken)
 src/Database/Pool/ConnectionPool.h	void noteSlotFreedForRegisteringWaiters() noexcept
 src/Database/Pool/ConnectionPool.h	void noteWaitingRefusal() noexcept
+src/Database/Pool/ConnectionPool.h	void operator()() const noexcept
 src/Database/Pool/ConnectionPool.h	void refreshAsyncWaitingCount() noexcept
 src/Database/Pool/ConnectionPool.h	void removeAsyncWaiterLocked(AcquireAwaiter *waiter) noexcept
 src/Database/Pool/ConnectionPool.h	void resumeOnce() noexcept
@@ -2347,17 +2372,26 @@ src/Database/Pool/PoolLiveness.h	void releaseBorrowSlot(const std::size_t slot) 
 src/Database/Pool/PooledConnection.h	ConnectionPool *m_pool = nullptr
 src/Database/Pool/PooledConnection.h	DatabaseConnection &operator*() const
 src/Database/Pool/PooledConnection.h	DatabaseConnection *operator->() const
+src/Database/Pool/PooledConnection.h	PoolAcquireFailure m_failure
 src/Database/Pool/PooledConnection.h	PooledConnection &operator=(PooledConnection &&other) noexcept
 src/Database/Pool/PooledConnection.h	PooledConnection &operator=(const PooledConnection &) = delete
 src/Database/Pool/PooledConnection.h	PooledConnection() noexcept = default
 src/Database/Pool/PooledConnection.h	PooledConnection(PooledConnection &&other) noexcept
 src/Database/Pool/PooledConnection.h	PooledConnection(const PooledConnection &) = delete
+src/Database/Pool/PooledConnection.h	[[nodiscard]] PoolAcquireFailure failureReason() const noexcept
 src/Database/Pool/PooledConnection.h	[[nodiscard]] std::chrono::milliseconds heldDuration() const noexcept
 src/Database/Pool/PooledConnection.h	[[nodiscard]] std::chrono::steady_clock::time_point borrowedAt() const noexcept
+src/Database/Pool/PooledConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::span<const DatabaseValue> parameters, std::stop_token stopToken = std::stop_token
+src/Database/Pool/PooledConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> execute(std::string_view command, std::stop_token stopToken = std::stop_token
+src/Database/Pool/PooledConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters, std::stop_token stopToken = std::stop_token
+src/Database/Pool/PooledConnection.h	[[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::stop_token stopToken = std::stop_token
 src/Database/Pool/PooledConnection.h	class ASYN_DATABASE_API PooledConnection
 src/Database/Pool/PooledConnection.h	class ConnectionPool
+src/Database/Pool/PooledConnection.h	enum class PoolAcquireFailure
+src/Database/Pool/PooledConnection.h	explicit PooledConnection(PoolAcquireFailure failure) noexcept
 src/Database/Pool/PooledConnection.h	explicit PooledConnection(std::unique_ptr<DatabaseConnection> connection, ConnectionPool *pool) noexcept
 src/Database/Pool/PooledConnection.h	explicit operator bool() const noexcept
+src/Database/Pool/PooledConnection.h	friend class ConnectionPool
 src/Database/Pool/PooledConnection.h	namespace AsynGyanis::Database
 src/Database/Pool/PooledConnection.h	std::chrono::steady_clock::time_point m_borrowedAt
 src/Database/Pool/PooledConnection.h	std::shared_ptr<PoolLiveness> m_poolLiveness
@@ -3004,6 +3038,7 @@ src/Database/Sqlite/SqliteConnection.h	StatementDeadlineGuard(const StatementDea
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] DatabaseType databaseType() const override
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] bool bindParameters(sqlite3_stmt *statement, std::span<const DatabaseValue> parameters)
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] bool isConnected() const override
+src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] bool requestQueryCancel() noexcept override
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] int busyTimeoutMilliseconds() const noexcept
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] sqlite3 *nativeHandle() const noexcept
 src/Database/Sqlite/SqliteConnection.h	[[nodiscard]] sqlite3_stmt *findCachedStatement(const std::string &sqlText) noexcept
@@ -3040,6 +3075,7 @@ src/Database/Sqlite/SqliteConnection.h	sqlite3_stmt *statement
 src/Database/Sqlite/SqliteConnection.h	static constexpr int kProgressHandlerInterval = 1000
 src/Database/Sqlite/SqliteConnection.h	static constexpr std::size_t kMaximumCachedStatements = 64
 src/Database/Sqlite/SqliteConnection.h	static int enforceStatementDeadline(void *ownerPointer)
+src/Database/Sqlite/SqliteConnection.h	std::atomic<bool> m_cancelRequested
 src/Database/Sqlite/SqliteConnection.h	std::chrono::steady_clock::time_point m_statementDeadline
 src/Database/Sqlite/SqliteConnection.h	std::uint64_t lastUseStamp
 src/Database/Sqlite/SqliteConnection.h	std::uint64_t m_statementCacheHits
@@ -4022,6 +4058,7 @@ src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool containsOnlyTok
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool contentTypeIs(const std::string_view contentTypeHeader, const std::string_view expectedMediaType) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool equalsIgnoringCase(const std::string_view left, const std::string_view right) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool isRequestTargetCharacter(const char character) noexcept
+src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool isSensitiveQueryParameterName(const std::string_view key)
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool isSingleChunkedEncoding(const std::string_view listValue) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool isUriSchemeSyntax(const std::string_view scheme) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline bool isValidHeaderFieldName(const std::string_view fieldName) noexcept
@@ -4032,9 +4069,13 @@ src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline constexpr std::strin
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline int hexadecimalDigitValue(const char character) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline int normalizeWireStatusCode(const int statusCode) noexcept
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline std::optional<int> parseStatusCodeText(const std::string_view text) noexcept
+src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline std::string decodeQueryKeyForComparison(const std::string_view key)
 src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline std::string normalizeHostComparisonKey(const std::string_view authority)
+src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline std::string redactSensitiveQueryParameters(const std::string_view target)
+src/Net/Http/Message/HttpHeaderRules.h	[[nodiscard]] inline std::string redactUrlForDiagnostics(const std::string_view url)
 src/Net/Http/Message/HttpHeaderRules.h	inline constexpr std::array<bool, 256> kHttpFieldValueCharacterSet = []
 src/Net/Http/Message/HttpHeaderRules.h	inline constexpr std::array<bool, 256> kHttpTokenCharacterSet = []
+src/Net/Http/Message/HttpHeaderRules.h	inline constexpr std::array<std::string_view, 14> kSensitiveQueryParameterNames =
 src/Net/Http/Message/HttpHeaderRules.h	namespace AsynGyanis::Net
 src/Net/Http/Message/HttpHeaderRules.h	static_assert(!kHttpFieldValueCharacterSet[0], "NUL 不属于字段值")
 src/Net/Http/Message/HttpHeaderRules.h	static_assert(!kHttpFieldValueCharacterSet[0x7F], "DEL 不属于字段值")
@@ -4963,6 +5004,7 @@ src/Net/Http/Server/HttpSession.h	std::vector<char> m_receiveBuffer
 src/Net/Http/Server/HttpSession.h	struct ASYN_NET_API RequestCancelForwarder
 src/Net/Http/Server/HttpSession.h	template<typename Socket> Core::Task<> httpKeepAliveLoop(Socket &socket, Core::Cancelable &cancelable, Router &router, HttpParser &parser, std::vector<char> &receiveBuffer, const std::function<bool()> &isAlive, Core::Connection &connection, const HttpServerLimits &limits, HttpMetricsCollector *metrics = nullptr, const HttpRequestIdGenerator *requestIdGenerator = nullptr, HttpMemoryBudget *memoryBudget = nullptr)
 src/Net/Http/Server/HttpSession.h	template<typename Socket> Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, std::size_t maximumInboundMessageBytes, HttpMetricsCollector *metrics, WebSocketHandler handler, std::vector<char> &receiveBuffer, std::size_t pendingLength, std::optional<PerMessageDeflateWindow> deflateWindow)
+src/Net/Http/Server/HttpSession.h	template<typename Socket> Core::Task<> webSocketSessionStage(Socket &socket, Core::Connection &connection, const HttpServerLimits &limits, std::size_t maximumInboundMessageBytes, HttpMetricsCollector *metrics, WebSocketHandler handler, std::vector<char> &receiveBuffer, std::size_t pendingLength, std::optional<PerMessageDeflateWindow> deflateWindow, Core::TlsPeerIdentityPtr tlsPeerIdentity)
 src/Net/Http/Server/HttpSession.h	template<typename Socket> Core::Task<bool> sendBlockCompletely(Socket &transport, const std::string_view payload)
 src/Net/Http/Server/HttpSession.h	void onIdleTimeoutClosed() noexcept override
 src/Net/Http/Server/HttpSession.h	void operator()() const
@@ -8061,6 +8103,7 @@ src/Net/WebSocket/PerMessageDeflate.h	std::string responseValue
 src/Net/WebSocket/PerMessageDeflate.h	struct ASYN_NET_API PerMessageDeflateNegotiation
 src/Net/WebSocket/PerMessageDeflate.h	struct ASYN_NET_API PerMessageDeflateWindow
 src/Net/WebSocket/WebSocketClient.h	Core::EventLoop *m_loop
+src/Net/WebSocket/WebSocketClient.h	Core::TlsPeerIdentityPtr m_tlsPeerIdentity
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient &operator=(WebSocketClient &&) = delete
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient &operator=(const WebSocketClient &) = delete
 src/Net/WebSocket/WebSocketClient.h	WebSocketClient(WebSocketClient &&) = delete
@@ -8082,6 +8125,7 @@ src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<bool> writeFrameByt
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::optional<WebSocketSessionExpected<WebSocketFrame>>> decodeBufferedFrame()
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] Core::Task<std::optional<std::ptrdiff_t>> waitForRead(std::optional<std::chrono::steady_clock::time_point> deadline, bool &interrupted)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] bool isOpen() const noexcept
+src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] const Core::TlsPeerIdentityPtr &peerIdentity() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] const WebSocketUpgradeAgreement &agreement() const noexcept
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] static Core::Task<WebSocketUpgradeExpected<std::unique_ptr<WebSocketClient>>> connect(Core::EventLoop &loop, Configuration configuration)
 src/Net/WebSocket/WebSocketClient.h	[[nodiscard]] std::optional<std::uint16_t> remoteCloseCode() const noexcept
@@ -8303,6 +8347,7 @@ src/Net/WebSocket/WebSocketPeer.h	Core::Task<bool> sendText(std::string_view tex
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::optional<WebSocketMessage>> receive()
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::optional<WebSocketMessage>> receiveFor(std::chrono::milliseconds timeout)
 src/Net/WebSocket/WebSocketPeer.h	Core::Task<std::pair<FrameDisposition, std::optional<WebSocketMessage>>> consumeFrame(WebSocketFrame frame)
+src/Net/WebSocket/WebSocketPeer.h	Core::TlsPeerIdentityPtr m_tlsPeerIdentity
 src/Net/WebSocket/WebSocketPeer.h	FrameSender m_frameSender
 src/Net/WebSocket/WebSocketPeer.h	HttpMetricsCollector *m_metrics
 src/Net/WebSocket/WebSocketPeer.h	IdleDeadlineRefresh m_idleDeadlineRefresh
@@ -8322,6 +8367,7 @@ src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool await_ready() noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isOpen() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isPongDeadlinePassedAt(std::chrono::steady_clock::time_point now) const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] bool isWriteInFlight() const noexcept
+src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] const Core::TlsPeerIdentityPtr &peerIdentity() const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::chrono::milliseconds idleBudgetWithin(std::chrono::milliseconds phaseTimeout, std::chrono::steady_clock::time_point now) const noexcept
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<WebSocketFrame> await_resume()
 src/Net/WebSocket/WebSocketPeer.h	[[nodiscard]] std::optional<WebSocketFrame> await_resume()
@@ -8381,6 +8427,7 @@ src/Net/WebSocket/WebSocketPeer.h	void setLifetimeOwner(const std::shared_ptr<We
 src/Net/WebSocket/WebSocketPeer.h	void setMaximumInboundMessageBytes(std::size_t maximumInboundMessageBytes) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setPerMessageDeflate(std::optional<PerMessageDeflateWindow> window) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void setPongTimeout(std::chrono::milliseconds timeout, IdleDeadlineRefresh idleDeadlineRefresh =
+src/Net/WebSocket/WebSocketPeer.h	void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
 src/Net/WebSocket/WebSocketPeer.h	void wakeDeliveryWaiter() noexcept
 src/Net/WebSocket/WebSocketPeer.h	~TimedDeliveryAwaiter()
 src/Net/WebSocket/WebSocketPeer.h	~WebSocketPeer() = default

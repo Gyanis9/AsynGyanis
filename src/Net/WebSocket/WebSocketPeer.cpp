@@ -74,6 +74,16 @@ namespace AsynGyanis::Net
         return m_remoteCloseReason;
     }
 
+    void WebSocketPeer::setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept
+    {
+        m_tlsPeerIdentity = std::move(identity);
+    }
+
+    const Core::TlsPeerIdentityPtr &WebSocketPeer::peerIdentity() const noexcept
+    {
+        return m_tlsPeerIdentity;
+    }
+
     bool WebSocketPeer::isWriteInFlight() const noexcept
     {
         return m_isWriteInFlight;

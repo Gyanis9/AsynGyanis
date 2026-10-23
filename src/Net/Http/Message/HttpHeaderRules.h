@@ -304,6 +304,144 @@ namespace AsynGyanis::Net
         return -1;
     }
 
+    /// 查询串里按凭据对待的键：只遮值，键名保留下来便于定位是哪一个参数
+    inline constexpr std::array<std::string_view, 14> kSensitiveQueryParameterNames = {"token",  "access_token", "refresh_token", "id_token", "api_key",   "apikey", "password",
+                                                                                       "passwd", "secret",       "client_secret", "sig",      "signature", "auth",   "jwt"};
+
+    /**
+     * @brief 还原查询键里的百分号转义，供敏感键名比较使用
+     * @details 只用于判定；非法转义按原字节保留，避免把畸形输入吞成另一个键。
+     * @param key 原始查询键
+     * @return std::string 还原后的键
+     */
+    [[nodiscard]] inline std::string decodeQueryKeyForComparison(const std::string_view key)
+    {
+        std::string decoded;
+        decoded.reserve(key.size());
+        for (std::size_t index = 0; index < key.size(); ++index)
+        {
+            if (key[index] == '%' && index + 2U < key.size())
+            {
+                const int highNibble = hexadecimalDigitValue(key[index + 1U]);
+                const int lowNibble  = hexadecimalDigitValue(key[index + 2U]);
+                if (highNibble >= 0 && lowNibble >= 0)
+                {
+                    decoded.push_back(static_cast<char>((highNibble << 4) | lowNibble));
+                    index += 2U;
+                    continue;
+                }
+            }
+            decoded.push_back(key[index]);
+        }
+        return decoded;
+    }
+
+    /**
+     * @brief 判断查询键是否按凭据对待
+     * @param key 原始查询键
+     * @return true 表示该键的值不能回显
+     */
+    [[nodiscard]] inline bool isSensitiveQueryParameterName(const std::string_view key)
+    {
+        const std::string decodedKey = decodeQueryKeyForComparison(key);
+        for (const std::string_view sensitiveName: kSensitiveQueryParameterNames)
+        {
+            if (equalsIgnoringCase(decodedKey, sensitiveName))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @brief 把查询串里敏感键的值替换成 `***`
+     * @details 访问日志与诊断文本会带上请求目标；令牌、口令一类查询参数与 Authorization 同级，
+     *          不能原样落进日志。只遮值、保留键与非敏感参数，便于仍按日志排查。
+     * @param target 原始请求目标或 URL
+     * @return std::string 脱敏后的副本；没有查询串时原样返回
+     */
+    [[nodiscard]] inline std::string redactSensitiveQueryParameters(const std::string_view target)
+    {
+        const std::size_t queryStart = target.find('?');
+        if (queryStart == std::string_view::npos)
+        {
+            return std::string(target);
+        }
+        const std::size_t firstFragment = target.find('#');
+        if (firstFragment != std::string_view::npos && firstFragment < queryStart)
+        {
+            return std::string(target);
+        }
+
+        const std::size_t fragmentStart = target.find('#', queryStart + 1U);
+        const std::size_t queryEnd      = fragmentStart == std::string_view::npos ? target.size() : fragmentStart;
+        std::string       redacted;
+        redacted.reserve(target.size());
+        redacted.append(target.substr(0U, queryStart + 1U));
+
+        std::size_t pairStart = queryStart + 1U;
+        while (pairStart < queryEnd)
+        {
+            std::size_t pairEnd = target.find_first_of("&;", pairStart);
+            if (pairEnd == std::string_view::npos || pairEnd > queryEnd)
+            {
+                pairEnd = queryEnd;
+            }
+            const std::string_view pair      = target.substr(pairStart, pairEnd - pairStart);
+            const std::size_t      equalSign = pair.find('=');
+            if (equalSign == std::string_view::npos)
+            {
+                redacted.append(pair);
+            } else
+            {
+                redacted.append(pair.substr(0U, equalSign + 1U));
+                const std::string_view key = pair.substr(0U, equalSign);
+                redacted.append(isSensitiveQueryParameterName(key) ? "***" : pair.substr(equalSign + 1U));
+            }
+            if (pairEnd < queryEnd)
+            {
+                redacted.push_back(target[pairEnd]);
+            }
+            pairStart = pairEnd + 1U;
+        }
+        if (fragmentStart != std::string_view::npos)
+        {
+            redacted.append(target.substr(fragmentStart));
+        }
+        return redacted;
+    }
+
+    /**
+     * @brief 把 URL 里的 userinfo 与敏感查询参数值替换成 `***`
+     * @details 诊断文本可能同时带 `user:pass@` 与 `?token=…`；两处都遮掉才适合写进日志或错误面板。
+     * @param url 原始 URL 或缺少协议名的半成品
+     * @return std::string 脱敏后的副本
+     */
+    [[nodiscard]] inline std::string redactUrlForDiagnostics(const std::string_view url)
+    {
+        const std::size_t      schemeSeparator = url.find("://");
+        const std::size_t      authorityStart  = schemeSeparator != std::string_view::npos ? schemeSeparator + 3U : (url.starts_with("//") ? 2U : 0U);
+        const std::size_t      authorityEnd    = url.find_first_of("/?#", authorityStart);
+        const std::string_view authority       = url.substr(authorityStart, authorityEnd == std::string_view::npos ? std::string_view::npos : authorityEnd - authorityStart);
+        const std::size_t      userInfoEnd     = authority.rfind('@');
+        if (userInfoEnd == std::string_view::npos)
+        {
+            return redactSensitiveQueryParameters(url);
+        }
+
+        std::string redacted;
+        redacted.reserve(url.size());
+        redacted.append(url.substr(0U, authorityStart));
+        redacted.append("***@");
+        redacted.append(authority.substr(userInfoEnd + 1U));
+        if (authorityEnd != std::string_view::npos)
+        {
+            redacted.append(url.substr(authorityEnd));
+        }
+        return redactSensitiveQueryParameters(redacted);
+    }
+
     /**
      * @brief 判断字符串是否是合法的 HTTP 头部字段名
      * @details 按 RFC 9110 §5.1 的 tchar 集合校验，请求侧与响应侧共用同一张表：两侧判定不一致时，

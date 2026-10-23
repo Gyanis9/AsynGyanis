@@ -3,14 +3,24 @@
 
 #include "AsynGyanisFeatures.h"
 
+#include "Base/Config/ConfigManager.h"
 #include "Base/Exception/Exception.h"
+#include "Base/Log/Logger.h"
+#include "Base/Log/Sinks/FileSink.h"
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Process/GracefulShutdown.h"
+#include "Core/Process/UpgradeChannel.h"
+#include "Core/Process/WorkerSupervisor.h"
+#include "Core/Socket/AsyncSocket.h"
 #include "Core/Socket/InetAddress.h"
 #include "Core/Tls/TlsContext.h"
 #include "Core/Tls/TlsPeerIdentity.h"
 #include "Core/Tls/TlsPolicy.h"
+#include "Database/Common/ConnectionConfig.h"
+#include "Database/Common/DatabaseResult.h"
+#include "Database/Sqlite/SqliteConnection.h"
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Config/HttpServerLimits.h"
 #include "Net/Http/Message/HttpRequest.h"
@@ -21,6 +31,8 @@
 #include "Net/WebSocket/WebSocketClient.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketPeer.h"
+#include "Platform/Platform.h"
+#include "Platform/System/ProcessInfo.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -33,15 +45,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <expected>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace AsynGyanis;
@@ -59,6 +76,11 @@ namespace
 
     /// 就绪与收尾的有界轮询间隔
     constexpr std::chrono::milliseconds kPollInterval{5};
+
+    /// worker 子进程的内部参数：由多进程网关步骤自己拼，普通旅程参数里不出现
+    constexpr std::string_view kWorkerChildFlag   = "--worker-child";
+    constexpr std::string_view kWorkerPortOption  = "--port";
+    constexpr std::string_view kWorkerIndexOption = "--worker-index";
 
     /**
      * @brief 等到条件成立或时限到点
@@ -161,6 +183,79 @@ namespace
         std::size_t m_passedCount{0};  ///< 通过步数
         std::size_t m_failedCount{0};  ///< 失败步数
         std::size_t m_skippedCount{0}; ///< 跳过步数
+    };
+
+    /**
+     * @brief 把一步的结论写进机读报告
+     * @param report 报告收集器
+     * @param name 步骤名
+     * @param outcome 步骤结论
+     */
+    void recordOutcome(JourneyReport &report, const std::string_view name, const StepOutcome &outcome)
+    {
+        if (outcome.isOk)
+        {
+            report.pass(name, outcome.detail);
+        } else
+        {
+            report.fail(name, outcome.detail);
+        }
+    }
+
+    /**
+     * @brief 旅程临时目录：构造即建，析构即清
+     */
+    class JourneyTemporaryDirectory
+    {
+    public:
+        JourneyTemporaryDirectory()
+        {
+            std::error_code             error;
+            const std::filesystem::path base = std::filesystem::temp_directory_path(error);
+            if (error)
+            {
+                m_failureReason = "临时目录不可用：" + error.message();
+                return;
+            }
+            m_path = base / ("asyn-journey-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            std::filesystem::create_directories(m_path, error);
+            if (error)
+            {
+                m_failureReason = "临时目录建不出来：" + error.message();
+                m_path.clear();
+            }
+        }
+
+        ~JourneyTemporaryDirectory()
+        {
+            if (!m_path.empty())
+            {
+                std::error_code error;
+                std::filesystem::remove_all(m_path, error);
+            }
+        }
+
+        JourneyTemporaryDirectory(const JourneyTemporaryDirectory &)            = delete;
+        JourneyTemporaryDirectory &operator=(const JourneyTemporaryDirectory &) = delete;
+
+        [[nodiscard]] bool isReady() const noexcept
+        {
+            return m_failureReason.empty();
+        }
+
+        [[nodiscard]] const std::filesystem::path &path() const noexcept
+        {
+            return m_path;
+        }
+
+        [[nodiscard]] const std::string &failureReason() const noexcept
+        {
+            return m_failureReason;
+        }
+
+    private:
+        std::filesystem::path m_path;
+        std::string           m_failureReason;
     };
 
     /**
@@ -293,6 +388,50 @@ namespace
             }
             const auto startedAt   = std::chrono::steady_clock::now();
             auto       requestBody = [&]() -> Core::Task<>
+            {
+                try
+                {
+                    result.response = co_await client.send(url, request, timeout);
+                } catch (const std::exception &failure)
+                {
+                    result.failure = failure.what();
+                }
+                result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt);
+                loop.stop();
+                co_return;
+            };
+            Core::Task<> requestTask = requestBody();
+            if (!requestTask.isReady())
+            {
+                loop.scheduler().schedule(requestTask.handle());
+            }
+            loop.run();
+        } catch (const std::exception &failure)
+        {
+            result.failure = failure.what();
+        }
+        return result;
+    }
+
+    /**
+     * @brief 用实例客户端发一次明文 HTTP GET（多进程网关自检用，不碰证书材料）
+     * @param url 目标地址
+     * @param timeout 整体时限
+     * @return HttpCall 响应、时长与本端失败原因
+     */
+    HttpCall callPlainHttp(const std::string &url, const std::chrono::milliseconds timeout)
+    {
+        HttpCall result;
+        try
+        {
+            Core::EventLoop      loop;
+            Net::HttpProxyPolicy proxyPolicy;
+            // 与 callHttp 同一条理由：CI 的代理环境变量会把回环请求交给代理
+            proxyPolicy.consultEnvironment = false;
+            Net::HttpClient        client(loop, Net::HttpOutboundConnectionPool::Config{}, Core::TlsPolicy{}, proxyPolicy);
+            Net::HttpClientRequest request;
+            const auto             startedAt   = std::chrono::steady_clock::now();
+            auto                   requestBody = [&]() -> Core::Task<>
             {
                 try
                 {
@@ -931,6 +1070,378 @@ namespace
     }
 
     /**
+     * @brief 从一条单值查询里读整数
+     * @param connection 已连接的数据库连接
+     * @param sql 只返回一行一列的语句
+     * @param failure 输出失败原因
+     * @return std::optional<std::int64_t> 读到的整数；失败为空
+     */
+    std::optional<std::int64_t> readSingleInteger(Database::DatabaseConnection &connection, const std::string_view sql, std::string &failure)
+    {
+        const std::unique_ptr<Database::DatabaseResult> result = connection.execute(sql);
+        if (result == nullptr)
+        {
+            failure = connection.lastError();
+            return std::nullopt;
+        }
+        if (!result->next())
+        {
+            failure = "查询没有返回任何行";
+            return std::nullopt;
+        }
+        const Database::DatabaseValue value = result->getValue(0);
+        if (const auto *number = std::get_if<std::int64_t>(&value); number != nullptr)
+        {
+            return *number;
+        }
+        failure = "COUNT(*) 没有交出整型";
+        return std::nullopt;
+    }
+
+    /**
+     * @brief 业务事务步：回滚不落库、提交落一行
+     * @param workspace 旅程临时目录
+     * @return StepOutcome 结论与读数
+     */
+    StepOutcome stepDatabaseTransaction(const std::filesystem::path &workspace)
+    {
+        if (workspace.empty())
+        {
+            return {.isOk = false, .detail = "临时目录不可用"};
+        }
+        const std::filesystem::path databasePath = workspace / "journey.sqlite";
+        Database::SqliteConnection  connection(Database::ConnectionConfig::sqliteDefault(databasePath.string()));
+        if (!connection.connect())
+        {
+            return {.isOk = false, .detail = "SQLite 建连失败：" + connection.lastError()};
+        }
+        if (connection.execute("CREATE TABLE journey_tx (id INTEGER PRIMARY KEY, value TEXT NOT NULL)") == nullptr)
+        {
+            return {.isOk = false, .detail = "建表失败：" + connection.lastError()};
+        }
+        if (!connection.beginTransaction() || connection.execute("INSERT INTO journey_tx (id, value) VALUES (1, 'rolled-back')") == nullptr || !connection.rollback())
+        {
+            return {.isOk = false, .detail = "回滚事务失败：" + connection.lastError()};
+        }
+        std::string failure;
+        const auto  rollbackCount = readSingleInteger(connection, "SELECT COUNT(*) FROM journey_tx", failure);
+        if (!rollbackCount.has_value() || *rollbackCount != 0)
+        {
+            return {.isOk = false, .detail = "回滚后计数不是 0：" + failure};
+        }
+        if (!connection.beginTransaction() || connection.execute("INSERT INTO journey_tx (id, value) VALUES (2, 'committed')") == nullptr || !connection.commit())
+        {
+            return {.isOk = false, .detail = "提交事务失败：" + connection.lastError()};
+        }
+        const auto commitCount = readSingleInteger(connection, "SELECT COUNT(*) FROM journey_tx", failure);
+        if (!commitCount.has_value() || *commitCount != 1)
+        {
+            return {.isOk = false, .detail = "提交后计数不是 1：" + failure};
+        }
+        return {.isOk = true, .detail = "rolled_back=0 committed=1 path=" + databasePath.string()};
+    }
+
+    /**
+     * @brief 配置装载步：从临时 YAML 读到整数与字符串
+     * @param workspace 旅程临时目录
+     * @return StepOutcome 结论与读数
+     */
+    StepOutcome stepConfigLoad(const std::filesystem::path &workspace)
+    {
+        if (workspace.empty())
+        {
+            return {.isOk = false, .detail = "临时目录不可用"};
+        }
+        const std::filesystem::path configPath = workspace / "journey.yaml";
+        {
+            std::ofstream output(configPath, std::ios::binary | std::ios::trunc);
+            output << "journey:\n  value: 41\n  name: consumer\n";
+            if (!output)
+            {
+                return {.isOk = false, .detail = "配置文件写不出来：" + configPath.string()};
+            }
+        }
+        auto &manager = Base::ConfigManager::instance();
+        manager.clear();
+        const Base::ConfigLoadResult loaded = manager.loadFiles({configPath});
+        const int                    value  = manager.getInt("journey.value", 0);
+        const std::string            name   = manager.getString("journey.name");
+        manager.clear();
+        if (!loaded.success || value != 41 || name != "consumer")
+        {
+            return {.isOk = false, .detail = "loaded=" + std::to_string(loaded.success) + " value=" + std::to_string(value) + " name=" + name};
+        }
+        return {.isOk = true, .detail = "value=41 name=consumer files=" + std::to_string(loaded.loadedFiles.size())};
+    }
+
+    /**
+     * @brief 日志 Sink 步：一条 Info 必须落进临时文件
+     * @param workspace 旅程临时目录
+     * @return StepOutcome 结论与读数
+     */
+    StepOutcome stepLogSink(const std::filesystem::path &workspace)
+    {
+        if (workspace.empty())
+        {
+            return {.isOk = false, .detail = "临时目录不可用"};
+        }
+        const std::filesystem::path logPath = workspace / "journey.log";
+        {
+            Base::Logger logger("journey.logger");
+            logger.setLevel(Base::LogLevel::Trace);
+            logger.addSink(std::make_shared<Base::FileSink>(logPath, true));
+            logger.log(Base::LogLevel::Info, "journey-log-line");
+            logger.flush();
+        }
+        std::ifstream     input(logPath, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        if (text.find("journey-log-line") == std::string::npos)
+        {
+            return {.isOk = false, .detail = "日志没有落盘：" + logPath.string() + " bytes=" + std::to_string(text.size())};
+        }
+        return {.isOk = true, .detail = "bytes=" + std::to_string(text.size()) + " path=" + logPath.string()};
+    }
+
+    /**
+     * @brief 把 argv[0] 落成绝对路径：worker 由 supervisor 另起进程，相对路径会按它自己的 CWD 解析
+     * @param argv0 本进程的 argv[0]
+     * @return std::string 绝对路径；解析失败时原样交回
+     */
+    std::string resolveExecutablePath(const char *argv0)
+    {
+        const std::string original = argv0 == nullptr ? std::string{} : std::string(argv0);
+        if (original.empty())
+        {
+            return original;
+        }
+        std::error_code             error;
+        const std::filesystem::path absolutePath = std::filesystem::absolute(original, error);
+        return error ? original : absolutePath.string();
+    }
+
+    /**
+     * @brief 在 worker 的循环上驱动服务器，把启动异常留在本地而不是带崩循环线程
+     * @param server 待启动的服务器
+     * @param loop 服务器所属循环（失败时用来停它）
+     * @param startFailed 启动是否抛过（输出）
+     * @param failure 异常文本（输出）
+     * @return Core::Task<> 服务器跑完或启动失败后完成
+     */
+    Core::Task<> driveWorkerServer(Net::HttpServer &server, Core::EventLoop &loop, std::atomic<bool> &startFailed, std::string &failure)
+    {
+        try
+        {
+            co_await server.start();
+        } catch (const std::exception &error)
+        {
+            failure = error.what();
+            startFailed.store(true, std::memory_order_release);
+            loop.stop();
+        }
+        co_return;
+    }
+
+    /**
+     * @brief worker 子进程：在指定/接手的监听套接字上跑一台最小 HTTP 网关
+     * @details master 由 WorkerSupervisor 起两个这样的进程：POSIX 各自 bind 同一端口（SO_REUSEPORT），
+     *          Windows 接手 master 交来的监听描述符。停机信号由 GracefulShutdown 接住，在循环线程上
+     *          停服务器。子进程不打印任何 JOURNEY_STEP 行，避免污染 master 的机读报告。
+     * @param argc 参数个数（master 拼出来的内部参数）
+     * @param argv 参数数组
+     * @return int 进程退出码；0 表示按停机请求正常收尾
+     */
+    int runWorkerChild(const int argc, char **argv)
+    {
+        std::uint16_t port           = 0;
+        std::string   workerIndex    = "-";
+        std::string   handoffAddress = {};
+        for (int index = 1; index < argc; ++index)
+        {
+            const std::string_view option = argv[index];
+            if (index + 1 >= argc)
+            {
+                continue;
+            }
+            if (option == kWorkerPortOption)
+            {
+                const std::string_view value        = argv[index + 1];
+                std::uint32_t          parsedPort   = 0;
+                const auto [endPointer, parseError] = std::from_chars(value.data(), value.data() + value.size(), parsedPort);
+                if (parseError == std::errc{} && endPointer == value.data() + value.size() && parsedPort <= 65535U)
+                {
+                    port = static_cast<std::uint16_t>(parsedPort);
+                }
+            } else if (option == kWorkerIndexOption)
+            {
+                workerIndex = argv[index + 1];
+            } else if (option == Core::kHandedOverListenerArgument)
+            {
+                handoffAddress = argv[index + 1];
+            }
+        }
+
+        try
+        {
+            Core::EventLoop                  loop;
+            std::unique_ptr<Net::HttpServer> server;
+            if (!handoffAddress.empty())
+            {
+                std::expected<int, Core::UpgradeHandoffError> adopted = Core::adoptHandedOverListener(handoffAddress, kStepTimeout);
+                if (!adopted.has_value())
+                {
+                    std::fprintf(stderr, "worker 接手监听套接字失败：%s\n", adopted.error().message.c_str());
+                    return 4;
+                }
+                // 所有权随构造交给服务器，收口时由它关闭
+                server = std::make_unique<Net::HttpServer>(loop, *adopted);
+            } else
+            {
+                if (port == 0)
+                {
+                    std::fprintf(stderr, "worker 既没有接手监听套接字，也没有拿到端口\n");
+                    return 3;
+                }
+                server = std::make_unique<Net::HttpServer>(loop, Core::InetAddress::localhost(port));
+            }
+
+            Core::GracefulShutdown shutdown(loop);
+            shutdown.onShutdown(
+                    [&server, &loop]
+                    {
+                        server->stop();
+                        loop.stop();
+                    });
+            server->router().get("/worker-health",
+                                 [workerIndex](Net::HttpRequest &, Net::HttpResponse &response) -> Core::Task<>
+                                 {
+                                     response.setStatus(200);
+                                     response.setBody("worker index=" + workerIndex + " pid=" + std::to_string(Platform::ProcessInfo::currentProcessId()));
+                                     co_return;
+                                 });
+
+            std::atomic<bool> startFailed{false};
+            std::string       startFailure;
+            Core::Task<>      startTask = driveWorkerServer(*server, loop, startFailed, startFailure);
+            loop.scheduler().schedule(startTask.handle());
+            loop.run();
+            if (startFailed.load(std::memory_order_acquire))
+            {
+                std::fprintf(stderr, "worker 服务器启动失败：%s\n", startFailure.c_str());
+                return 6;
+            }
+            return 0;
+        } catch (const std::exception &failure)
+        {
+            std::fprintf(stderr, "worker 启动失败：%s\n", failure.what());
+            return 5;
+        }
+    }
+
+    /**
+     * @brief 多进程网关一步的读数
+     */
+    struct WorkerGatewayEvidence
+    {
+        bool        isGatewayAnswered{false}; ///< 端口上确实有 worker 应答了 200
+        int         statusCode{0};            ///< 网关返回的状态码
+        std::string body;                     ///< 网关返回的正文（带 worker 序号与进程号）
+        std::string failure;                  ///< 最近一次自检失败的原因
+    };
+
+    /**
+     * @brief 多进程网关一步：起两个 worker 共享同一端口，验证应答后请求停止并确认端口关闭
+     * @details 两个平台的分摊形状由 WorkerSupervisor 自己选：POSIX 各 worker 自己 bind 同一端口
+     *          （SO_REUSEPORT），Windows 由本进程建好监听套接字后逐个移交。端口先由内核分配再传给
+     *          worker，不写死端口。自检发生在「整池进程都活着」的回调里，随后直接请求停止——
+     *          run() 必须在单线程进程里 fork，因此不能在它旁边另起一条观察线程。
+     * @param executablePath 本可执行文件的绝对路径（worker 就是同一个二进制的 --worker-child 模式）
+     * @return StepOutcome 结论与读数（网关状态/正文、停止结果、停止后端口是否拒绝连接）
+     */
+    StepOutcome stepWorkerStartStop(const std::string &executablePath)
+    {
+        Core::EventLoop   listenerLoop;
+        Core::AsyncSocket listener = Core::AsyncSocket::create(listenerLoop);
+        if (!listener.bind(Core::InetAddress::localhost(0)) || !listener.listen(128))
+        {
+            return {.isOk = false, .detail = "worker 网关的监听套接字建不起来"};
+        }
+        const std::uint16_t port = listener.localAddress().port();
+        if (port == 0)
+        {
+            return {.isOk = false, .detail = "worker 网关读不出分配到的端口"};
+        }
+#if ASYN_PLATFORM_WIN32
+        // 移交档位要的是这枚已 bind + listen 的描述符；所有权仍在本进程，收尾时由本进程关闭
+        const int handedOverDescriptor = listener.fileDescriptor();
+#else
+        // POSIX 上 worker 各自 bind 同一端口：探针只用来让内核分配端口，关上之后才轮到 worker
+        listener.close();
+#endif
+
+        Core::WorkerSupervisor::Configuration configuration;
+        configuration.executablePath      = executablePath;
+        configuration.workerArguments     = {std::string(kWorkerChildFlag), std::string(kWorkerPortOption), std::to_string(port)};
+        configuration.workerIndexArgument = std::string(kWorkerIndexOption);
+        configuration.workerCount         = 2;
+        configuration.pollInterval        = std::chrono::milliseconds{50};
+        configuration.shutdownTimeout     = std::chrono::seconds{5};
+#if ASYN_PLATFORM_WIN32
+        configuration.handoff = Core::WorkerSupervisor::Handoff{handedOverDescriptor, std::chrono::seconds{5}};
+#endif
+
+        const std::string     healthUrl = "http://127.0.0.1:" + std::to_string(port) + "/worker-health";
+        WorkerGatewayEvidence evidence;
+        auto                  stopHook    = std::make_shared<std::function<void()>>();
+        configuration.onAllWorkersRunning = [&evidence, healthUrl, stopHook]()
+        {
+            // 整池进程活着不等于端口已在应答：两者之间隔着 bind/listen 与首轮 accept，按有界轮询等
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (std::chrono::steady_clock::now() < deadline)
+            {
+                const HttpCall call = callPlainHttp(healthUrl, std::chrono::milliseconds{500});
+                if (call.response != nullptr && call.response->statusCode == 200 && !call.response->body.empty())
+                {
+                    evidence.isGatewayAnswered = true;
+                    evidence.statusCode        = call.response->statusCode;
+                    evidence.body              = call.response->body;
+                    evidence.failure.clear();
+                    break;
+                }
+                evidence.failure = call.failure.empty() ? "网关没有返回 200" : call.failure;
+                std::this_thread::sleep_for(kPollInterval);
+            }
+            if (*stopHook)
+            {
+                (*stopHook)();
+            }
+        };
+
+        bool isStoppedByRequest = false;
+        try
+        {
+            Core::WorkerSupervisor supervisor(std::move(configuration));
+            *stopHook          = [&supervisor] { supervisor.requestStop(); };
+            isStoppedByRequest = supervisor.run();
+        } catch (const std::exception &failure)
+        {
+#if ASYN_PLATFORM_WIN32
+            listener.close();
+#endif
+            return {.isOk = false, .detail = "worker 编排失败：" + std::string(failure.what())};
+        }
+#if ASYN_PLATFORM_WIN32
+        // 先放掉本进程这枚监听引用：同一内核对象的另一个句柄还开着时，「停止后端口拒绝连接」永远是假
+        listener.close();
+#endif
+        const HttpCall afterStop    = callPlainHttp(healthUrl, std::chrono::milliseconds{500});
+        const bool     isPortClosed = afterStop.response == nullptr;
+        const bool     isOk         = evidence.isGatewayAnswered && isStoppedByRequest && isPortClosed;
+        return {.isOk   = isOk,
+                .detail = "workers=2 gateway_status=" + std::to_string(evidence.statusCode) + " body=" + evidence.body + " stopped=" + (isStoppedByRequest ? "1" : "0") +
+                          " port_closed=" + (isPortClosed ? "1" : "0") + (evidence.failure.empty() ? std::string{} : " reason=" + evidence.failure)};
+    }
+
+    /**
      * @brief 安装步：包里报的版本必须与 find_package 读到的版本一致
      */
     StepOutcome stepInstall()
@@ -947,6 +1458,15 @@ namespace
 
 int main(const int argc, char **argv)
 {
+    // worker 分支必须排在参数校验之前：master 传给 worker 的只有内部参数，没有证书材料
+    for (int index = 1; index < argc; ++index)
+    {
+        if (std::string_view(argv[index]) == kWorkerChildFlag)
+        {
+            return runWorkerChild(argc, argv);
+        }
+    }
+
     JourneyMaterial material;
     bool            isStrict = false;
     if (!parseArguments(argc, argv, material, isStrict))
@@ -964,6 +1484,13 @@ int main(const int argc, char **argv)
     {
         report.fail("install", installOutcome.detail);
     }
+
+    // 三条非网络步骤不依赖证书材料：缺料时也要真跑，才能证明包里带出了 Database/Base
+    JourneyTemporaryDirectory workspace;
+    recordOutcome(report, "database_transaction", workspace.isReady() ? stepDatabaseTransaction(workspace.path()) : StepOutcome{false, workspace.failureReason()});
+    recordOutcome(report, "config_load", workspace.isReady() ? stepConfigLoad(workspace.path()) : StepOutcome{false, workspace.failureReason()});
+    recordOutcome(report, "log_sink", workspace.isReady() ? stepLogSink(workspace.path()) : StepOutcome{false, workspace.failureReason()});
+    recordOutcome(report, "worker_start_stop", stepWorkerStartStop(resolveExecutablePath(argc > 0 ? argv[0] : nullptr)));
 
     if (!isMaterialComplete(material))
     {
@@ -1003,28 +1530,17 @@ int main(const int argc, char **argv)
     const std::uint16_t port    = server->listeningPort();
     const std::string   baseUrl = "https://127.0.0.1:" + std::to_string(port);
 
-    const auto recordStep = [&report](const std::string_view name, const StepOutcome &outcome)
-    {
-        if (outcome.isOk)
-        {
-            report.pass(name, outcome.detail);
-        } else
-        {
-            report.fail(name, outcome.detail);
-        }
-    };
-
-    recordStep("connect", stepConnect(material, baseUrl));
-    recordStep("upgrade_auth", stepUpgradeAndAuthentication(material, baseUrl, port));
-    recordStep("first_packet_timeout", stepFirstPacketTimeout(material, baseUrl, state));
-    recordStep("mtls_identity", stepMutualTlsIdentity(material, baseUrl));
-    recordStep("error_display", stepErrorDisplay(material, baseUrl));
-    recordStep("rate_limit", stepRateLimit(material, baseUrl));
-    recordStep("graceful_shutdown", stepGracefulShutdown(material, baseUrl, *server, state));
+    recordOutcome(report, "connect", stepConnect(material, baseUrl));
+    recordOutcome(report, "upgrade_auth", stepUpgradeAndAuthentication(material, baseUrl, port));
+    recordOutcome(report, "first_packet_timeout", stepFirstPacketTimeout(material, baseUrl, state));
+    recordOutcome(report, "mtls_identity", stepMutualTlsIdentity(material, baseUrl));
+    recordOutcome(report, "error_display", stepErrorDisplay(material, baseUrl));
+    recordOutcome(report, "rate_limit", stepRateLimit(material, baseUrl));
+    recordOutcome(report, "graceful_shutdown", stepGracefulShutdown(material, baseUrl, *server, state));
 
     // 停机之后同端口重新起一台：先彻底收掉旧服务（含监听套接字），再让新服务占回同一个端口
     server.reset();
-    recordStep("reconnect", stepReconnect(material, port, state));
+    recordOutcome(report, "reconnect", stepReconnect(material, port, state));
 
     report.skip("external_dns", "旅程不依赖公网 DNS：解析器注入与超时判据在仓库用例里覆盖");
     report.skip("real_acme_issuer", "真实 ACME 签发由 Pebble 跨实现作业覆盖，本旅程不外连机构");

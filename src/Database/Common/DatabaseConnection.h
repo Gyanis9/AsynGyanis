@@ -318,6 +318,21 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 请求中断当前正在执行的命令
+         * @details 供另一条线程在超时或取消时调用：驱动应尽快让正在跑的 execute/executeStreaming
+         *          以失败返回，而不是等它自然结束。中断过的语句可能留下未完成的事务，调用方应回滚
+         *          并丢弃这条连接，不要直接交回池里复用。
+         * @return true 已向驱动发出中断请求
+         * @return false 该驱动不支持中断，或连接尚未建立
+         * @note 实现必须线程安全且不阻塞；对空闲连接发出的请求可能落到下一条语句，调用方应在
+         *       确认有语句在执行时再请求
+         */
+        [[nodiscard]] virtual bool requestQueryCancel() noexcept
+        {
+            return false;
+        }
+
+        /**
          * @brief 获取数据库类型
          * @return DatabaseType 具体驱动对应的类型枚举
          */

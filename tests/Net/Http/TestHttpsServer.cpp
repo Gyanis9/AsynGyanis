@@ -24,6 +24,8 @@
 #include "Net/Http/Config/HttpServerLimits.h"
 #include "Net/Http/Routing/Middleware.h"
 #include "Net/Http/Routing/Router.h"
+#include "Net/WebSocket/WebSocketClient.h"
+#include "Net/WebSocket/WebSocketPeer.h"
 #include "Platform/FileSystem/FileSystem.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/Platform.h"
@@ -121,6 +123,36 @@ namespace AsynGyanis::Net
             limits.readTimeout  = std::chrono::seconds{10};
             limits.writeTimeout = std::chrono::seconds{10};
             return limits;
+        }
+
+        /**
+         * @brief 从 PEM 文件算叶证书 DER 的 SHA-256
+         * @param path 证书文件
+         * @return std::string 64 位小写十六进制；读不出时为空
+         */
+        std::string certificateSha256Fingerprint(const std::filesystem::path &path)
+        {
+            BIO *file = BIO_new_file(path.string().c_str(), "rb");
+            if (file == nullptr)
+            {
+                return {};
+            }
+            X509 *certificate = PEM_read_bio_X509(file, nullptr, nullptr, nullptr);
+            BIO_free(file);
+            if (certificate == nullptr)
+            {
+                return {};
+            }
+            unsigned char *der    = nullptr;
+            const int      length = i2d_X509(certificate, &der);
+            std::string    fingerprint;
+            if (length > 0)
+            {
+                fingerprint = Core::Digest::sha256Hex(std::string_view(reinterpret_cast<const char *>(der), static_cast<std::size_t>(length)));
+            }
+            OPENSSL_free(der);
+            X509_free(certificate);
+            return fingerprint;
         }
 
         /**
@@ -2234,30 +2266,7 @@ namespace AsynGyanis::Net
     {
         ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端证书夹具：" << kLoopbackCertificatePath.string();
 
-        const auto expectedFingerprint = []
-        {
-            BIO *file = BIO_new_file(kLoopbackCertificatePath.string().c_str(), "rb");
-            if (file == nullptr)
-            {
-                return std::string{};
-            }
-            X509 *certificate = PEM_read_bio_X509(file, nullptr, nullptr, nullptr);
-            BIO_free(file);
-            if (certificate == nullptr)
-            {
-                return std::string{};
-            }
-            unsigned char *der    = nullptr;
-            const int      length = i2d_X509(certificate, &der);
-            std::string    fingerprint;
-            if (length > 0)
-            {
-                fingerprint = Core::Digest::sha256Hex(std::string_view(reinterpret_cast<const char *>(der), static_cast<std::size_t>(length)));
-            }
-            OPENSSL_free(der);
-            X509_free(certificate);
-            return fingerprint;
-        }();
+        const std::string expectedFingerprint = certificateSha256Fingerprint(kLoopbackCertificatePath);
         ASSERT_EQ(expectedFingerprint.size(), 64U) << "证书夹具的指纹没算出来：下面的比对没有前提";
 
         const auto                            observedFingerprint = std::make_shared<std::string>();
@@ -2299,6 +2308,109 @@ namespace AsynGyanis::Net
         EXPECT_EQ(outcome.response->statusCode, 200);
         EXPECT_TRUE(observedVerified->load(std::memory_order_acquire)) << "客户端证书通过了服务端校验，业务却读到未验证";
         EXPECT_EQ(*observedFingerprint, expectedFingerprint) << "业务拿到的不是客户端出示的那张叶证书";
+    }
+
+    /**
+     * @brief 钉住：mTLS 的双方证书身份都能到 WebSocket 业务边界
+     * @details 服务端业务从 WebSocketPeer 读客户端叶证书，客户端从 WebSocketClient 读服务端叶证书；
+     *          两份指纹都与夹具证书独立算出的 SHA-256 比对，不用实现自己的读数当期望。
+     */
+    TEST(HttpsServer, HandsMutualTlsIdentityToWebSocketBusinessOnBothEnds)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端证书夹具：" << kLoopbackCertificatePath.string();
+        const std::string expectedFingerprint = certificateSha256Fingerprint(kLoopbackCertificatePath);
+        ASSERT_EQ(expectedFingerprint.size(), 64U) << "证书夹具的指纹没算出来：下面的比对没有前提";
+
+        const auto                            serverObserved = std::make_shared<std::string>();
+        const auto                            serverVerified = std::make_shared<std::atomic<bool>>(false);
+        const HttpTestSupport::RouteRegistrar registrar      = [serverObserved, serverVerified](Router &router, Core::EventLoop &)
+        {
+            router.get("/ws",
+                       [serverObserved, serverVerified](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.upgradeToWebSocket(
+                                   [serverObserved, serverVerified](WebSocketPeer &peer) -> Core::Task<>
+                                   {
+                                       if (const Core::TlsPeerIdentityPtr &identity = peer.peerIdentity(); identity != nullptr)
+                                       {
+                                           *serverObserved = identity->sha256FingerprintHex();
+                                           serverVerified->store(identity->isVerified(), std::memory_order_release);
+                                       }
+                                       // 等客户端先发一条，确认升级后的业务确实拿得到这条连接
+                                       const auto message = co_await peer.receiveFor(std::chrono::seconds{2});
+                                       if (message.has_value())
+                                       {
+                                           static_cast<void>(co_await peer.sendText(*serverObserved));
+                                       }
+                                       co_return;
+                                   });
+                           co_return;
+                       });
+        };
+
+        bool                      clientAuthorityLoaded{false};
+        RunningHttpsServerFixture fixture(
+                makeLongTimeoutLimits(), std::chrono::milliseconds{100}, registrar, HttpParserLimits{},
+                [&clientAuthorityLoaded](HttpsServer &server)
+                {
+                    clientAuthorityLoaded = server.loadClientCertificateAuthority(kLoopbackCertificatePath.string());
+                    server.setClientCertificateRequired(true);
+                },
+                kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(clientAuthorityLoaded);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout));
+
+        Core::TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kLoopbackCertificatePath.string();
+        Core::TlsContext clientContext(clientPolicy, Core::TlsContext::Role::Client);
+        ASSERT_TRUE(clientContext.loadCertificate(kLoopbackCertificatePath.string(), kLoopbackKeyPath.string()));
+
+        WebSocketClient::Configuration configuration;
+        configuration.hostName         = "127.0.0.1";
+        configuration.port             = fixture.listeningPort();
+        configuration.requestTarget    = "/ws";
+        configuration.clientTls        = &clientContext;
+        configuration.handshakeTimeout = std::chrono::seconds{5};
+
+        Core::EventLoop loop;
+        bool            isConnected{false};
+        std::string     clientObserved;
+        std::string     serverReply;
+        std::string     failure;
+        auto            driver = [&]() -> Core::Task<>
+        {
+            auto connectedClient = co_await WebSocketClient::connect(loop, configuration);
+            if (!connectedClient.has_value())
+            {
+                failure = connectedClient.error().message;
+                loop.stop();
+                co_return;
+            }
+            isConnected = true;
+            if (const Core::TlsPeerIdentityPtr &identity = (*connectedClient)->peerIdentity(); identity != nullptr)
+            {
+                clientObserved = identity->sha256FingerprintHex();
+            }
+            static_cast<void>(co_await (*connectedClient)->sendText("hello"));
+            const auto reply = co_await (*connectedClient)->receiveFor(std::chrono::seconds{2});
+            if (reply.has_value())
+            {
+                serverReply = reply->payload;
+            }
+            static_cast<void>(co_await (*connectedClient)->close());
+            loop.stop();
+        };
+        Core::Task<> task = driver();
+        if (!task.isReady())
+        {
+            loop.scheduler().schedule(task.handle());
+        }
+        loop.run();
+
+        ASSERT_TRUE(isConnected) << failure;
+        EXPECT_TRUE(serverVerified->load(std::memory_order_acquire)) << "服务端业务读到的身份未验证";
+        EXPECT_EQ(serverReply, expectedFingerprint) << "服务端业务没把客户端证书身份交出来";
+        EXPECT_EQ(clientObserved, expectedFingerprint) << "客户端没把服务端证书身份交出来";
     }
 
     /**

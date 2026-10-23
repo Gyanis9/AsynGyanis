@@ -12,6 +12,7 @@
 
 #include "Database/Common/DatabaseValue.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -140,6 +141,18 @@ namespace AsynGyanis::Database
         }
 
         /**
+         * @brief 挂上一份与本结果集同生命周期的租约
+         * @details 池借出的连接用它在结果集存活期间保持借出状态：租约随结果集析构而释放，
+         *          连接才回到池里被复用或关闭。空租约表示不挂。
+         * @param lease 不透明租约；其析构不得抛异常（析构路径不处理异常）
+         * @note 后挂的租约替换前一份：一份结果集同时只归属于一个所有者
+         */
+        void attachLifetimeLease(std::shared_ptr<void> lease) noexcept
+        {
+            m_lifetimeLease = std::move(lease);
+        }
+
+        /**
          * @brief 最近一次写语句影响的行数
          *
          * @details 本方法带默认实现（返回 0），不提供该信息的驱动可直接复用，调用方只依赖
@@ -172,6 +185,10 @@ namespace AsynGyanis::Database
         {
             return 0;
         }
+
+    private:
+        /// 与结果集同生共死的所有者（池借出的连接）；先声明以便最后析构，驱动先收完游标
+        std::shared_ptr<void> m_lifetimeLease;
 
     protected:
         std::string m_lastError; ///< 最后一次错误信息

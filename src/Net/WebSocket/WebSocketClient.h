@@ -12,6 +12,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/WebSocketError.h"
@@ -194,6 +195,12 @@ namespace AsynGyanis
              */
             [[nodiscard]] Core::Task<bool> close(std::uint16_t statusCode = 1000, std::string_view reason = {});
 
+            /**
+             * @brief 对端（服务端）证书的身份快照
+             * @return wss 且服务端出示了证书时为其叶证书身份；明文 ws 或未出示时为空
+             */
+            [[nodiscard]] const Core::TlsPeerIdentityPtr &peerIdentity() const noexcept;
+
         private:
             WebSocketClient(std::unique_ptr<HttpOutboundConnection> transport, WebSocketUpgradeAgreement agreement, const Configuration &configuration, std::string pendingBytes,
                             Core::EventLoop &loop);
@@ -270,9 +277,10 @@ namespace AsynGyanis
             /// 取一条消息用的读缓冲大小：与 TcpStream 同档，够让一帧在少数几轮里读完
             static constexpr std::size_t kReadChunkByteLength = 16384;
 
-            std::unique_ptr<HttpOutboundConnection> m_transport; ///< 已经换了协议的通路（明文或 TLS 都由它承载）
-            WebSocketUpgradeAgreement               m_agreement; ///< 握手谈成的事实
-            WebSocketFrameDecoder                   m_decoder;   ///< 帧解码器，已按客户端档位配置
+            std::unique_ptr<HttpOutboundConnection> m_transport;         ///< 已经换了协议的通路（明文或 TLS 都由它承载）
+            Core::TlsPeerIdentityPtr                m_tlsPeerIdentity{}; ///< 服务端证书身份；明文 ws 时为空
+            WebSocketUpgradeAgreement               m_agreement;         ///< 握手谈成的事实
+            WebSocketFrameDecoder                   m_decoder;           ///< 帧解码器，已按客户端档位配置
             /// 协商出的两侧窗口位数（未协商成功为空）：发送侧据此压缩数据消息、接收侧据此解压带 RSV1 的帧
             std::optional<PerMessageDeflateWindow> m_deflateWindow{};
             std::string                            m_readBuffer; ///< 一次读取的落地缓冲，容量固定为 kReadChunkByteLength

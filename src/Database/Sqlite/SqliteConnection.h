@@ -13,6 +13,7 @@
 
 #include "Database/Common/DatabaseConnection.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -156,6 +157,18 @@ namespace AsynGyanis::Database
          * @return std::unique_ptr<DatabaseResult> 流式结果集；失败为 nullptr，原因见 lastError()
          */
         [[nodiscard]] std::unique_ptr<DatabaseResult> executeStreaming(std::string_view command, std::span<const DatabaseValue> parameters) override;
+
+        /**
+         * @brief 请求中断当前正在执行的语句
+         * @details 重写 DatabaseConnection::requestQueryCancel()：置一个原子标记并调用 SQLite 官方的
+         *          跨线程中断入口 sqlite3_interrupt，正在 step 的语句在下一个虚拟指令批次内以
+         *          SQLITE_INTERRUPT 结束。标记只用于把底层那句 "interrupted" 换成可区分原因的中文文案，
+         *          每条语句执行前清零。
+         * @return true 已发出中断请求
+         * @return false 连接尚未建立
+         * @note 可在任意线程调用，不碰本类的语句缓存与时限状态
+         */
+        [[nodiscard]] bool requestQueryCancel() noexcept override;
 
         /**
          * @brief 获取数据库类型
@@ -500,6 +513,7 @@ namespace AsynGyanis::Database
         int                                   m_statementDeadlineMilliseconds{0}; ///< 装时限时使用毫秒数，只用于错误文案里报出上限
         bool                                  m_statementDeadlineArmed{false};    ///< 时限是否生效，false 时回调不做任何时钟读取
         bool                                  m_statementDeadlineHit{false};      ///< 本次执行是否真的因超时被打断，用于把 SQLITE_INTERRUPT 翻成可操作的中文原因
+        std::atomic<bool>                     m_cancelRequested{false};           ///< 是否有外部线程请求中断当前语句（每条语句执行前清零）
     };
 
 } // namespace AsynGyanis::Database

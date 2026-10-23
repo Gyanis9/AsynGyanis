@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <thread>
 #include <utility>
 
@@ -64,10 +65,19 @@ namespace AsynGyanis::Database
          * @brief 驱动协程：等待一次异步获取，并记录恢复发生在哪个线程上
          *
          * @details 记录线程 id 的那一行必须紧跟在 `co_await` 之后：它正是本文件要验证的恢复点。
+         * @param stopToken 取消令牌；默认空令牌表示不可取消
+         * @param deadline 单次截止时刻；为空时用池配置的借出时限
          */
-        Core::Task<void> probeAcquireAsync(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe)
+        Core::Task<void> probeAcquireAsync(ConnectionPool &pool, Core::EventLoop &loop, AcquireProbe &probe, const std::stop_token stopToken = {},
+                                           const std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt)
         {
-            probe.connection.emplace(co_await pool.acquireAsync(loop));
+            if (deadline.has_value())
+            {
+                probe.connection.emplace(co_await pool.acquireAsync(loop, *deadline, stopToken));
+            } else
+            {
+                probe.connection.emplace(co_await pool.acquireAsync(loop, stopToken));
+            }
             probe.resumeThreadId = std::this_thread::get_id();
             probe.finished.store(true, std::memory_order_release);
         }
@@ -305,9 +315,93 @@ namespace AsynGyanis::Database
 
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "占着唯一额度时异步借出应当空手";
+        EXPECT_EQ(probe.connection.value().failureReason(), PoolAcquireFailure::TimedOut);
         EXPECT_EQ(pool.borrowTimeoutCount(), 1U) << "异步空手没收进与同步共用的那份超时账";
         EXPECT_EQ(pool.createdCount(), 1U) << "空手收尾不该再建一条连接";
 
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 取消令牌唤醒排队中的异步等待者，池仍可用
+     * @details 配置的借出时限是 5 秒，用例只等 2 秒：取消没生效时会停在「没在时限内完成」，
+     *          不会把 5 秒的超时误当成取消已实现。
+     */
+    TEST(ConnectionPoolAsync, StopTokenWakesQueuedWaiterWithCancelled)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 5000;
+
+        ConnectionPool  pool(makeMockFactory(counter), configuration);
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        AcquireProbe     probe;
+        std::stop_source source;
+        Core::Task<void> driver = probeAcquireAsync(pool, loopThread.loop(), probe, source.get_token());
+        driver.handle().resume();
+        ASSERT_TRUE(waitForCondition([&pool]() { return pool.waitingCount() == 1U; }, std::chrono::seconds{2})) << "等待者没有入表";
+        ASSERT_FALSE(probe.finished.load(std::memory_order_acquire));
+
+        static_cast<void>(source.request_stop());
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }, std::chrono::seconds{2})) << "取消没有在配置的 5 秒时限前唤醒等待者";
+
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "取消却交出了连接";
+        EXPECT_EQ(probe.connection.value().failureReason(), PoolAcquireFailure::Cancelled);
+        EXPECT_EQ(pool.waitingCount(), 0U) << "取消之后等待表里还有一位";
+        EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "取消被记成借出超时";
+        EXPECT_EQ(pool.createdCount(), 1U) << "取消不该再建一条连接";
+
+        occupying.release();
+        const PooledConnection reused = pool.acquire();
+        ASSERT_TRUE(reused) << "取消之后池不可用";
+        loopThread.parkDriver(std::move(driver));
+    }
+
+    /**
+     * @brief 单次截止时刻早于池配置时以单次为准
+     * @details 配置 5 秒、单次 100 毫秒；健康线程每秒扫一次，用例等 2 秒。没按单次截止时刻收尾
+     *          就会停在 5 秒，本用例在 2 秒处红。
+     */
+    TEST(ConnectionPoolAsync, PerCallDeadlineBeatsConfiguredBorrowTimeout)
+    {
+        ConnectionCounter counter;
+        PoolConfig        configuration;
+        configuration.maximumPoolSize            = 1;
+        configuration.idleTimeoutSeconds         = 3600;
+        configuration.maximumLifetimeSeconds     = 3600;
+        configuration.healthCheckIntervalSeconds = 3600;
+        configuration.acquireTimeoutMilliseconds = 5000;
+
+        ConnectionPool  pool(makeMockFactory(counter), configuration);
+        EventLoopThread loopThread;
+        ASSERT_TRUE(loopThread.waitUntilRunning());
+        PooledConnection occupying = pool.acquire();
+        ASSERT_TRUE(occupying);
+
+        AcquireProbe     probe;
+        const auto       deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+        Core::Task<void> driver   = probeAcquireAsync(pool, loopThread.loop(), probe, std::stop_token{}, deadline);
+        driver.handle().resume();
+        ASSERT_TRUE(waitForCondition([&pool]() { return pool.waitingCount() == 1U; }, std::chrono::seconds{2})) << "等待者没有入表";
+
+        ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }, std::chrono::seconds{2}))
+                << "单次截止时刻没有生效：配置的 5 秒时限仍压着它";
+
+        ASSERT_TRUE(probe.connection.has_value());
+        EXPECT_FALSE(static_cast<bool>(probe.connection.value()));
+        EXPECT_EQ(probe.connection.value().failureReason(), PoolAcquireFailure::TimedOut);
+        EXPECT_EQ(pool.borrowTimeoutCount(), 1U);
+        EXPECT_EQ(pool.waitingCount(), 0U);
+        occupying.release();
         loopThread.parkDriver(std::move(driver));
     }
 
@@ -354,6 +448,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(secondProbe.finished.load(std::memory_order_acquire)) << "名额满的异步借出挂起了：它应当当场空手收尾";
         ASSERT_TRUE(secondProbe.connection.has_value());
         EXPECT_FALSE(static_cast<bool>(secondProbe.connection.value())) << "当场收尾应当交回空连接";
+        EXPECT_EQ(secondProbe.connection.value().failureReason(), PoolAcquireFailure::WaitingQueueFull);
         EXPECT_EQ(secondProbe.resumeThreadId, std::this_thread::get_id()) << "没挂起意味着没有线程切换";
         EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "被拒的借出没有落账";
         EXPECT_EQ(pool.waitingCount(), 1U) << "拒绝动了在场的等待者（顶掉或提前叫醒）";
@@ -469,6 +564,7 @@ namespace AsynGyanis::Database
         ASSERT_TRUE(waitForCondition([&probe]() { return probe.finished.load(std::memory_order_acquire); }));
         ASSERT_TRUE(probe.connection.has_value());
         EXPECT_FALSE(probe.connection.value()) << "池停摆时被唤醒的等待者应拿到空连接";
+        EXPECT_EQ(probe.connection.value().failureReason(), PoolAcquireFailure::ShuttingDown);
 
         loopThread.parkDriver(std::move(driver));
     }
@@ -900,6 +996,7 @@ namespace AsynGyanis::Database
                 settledAtLeastOnce = true;
                 ASSERT_TRUE(probe.connection.has_value());
                 EXPECT_FALSE(static_cast<bool>(probe.connection.value())) << "排队失败却交出了一条连接";
+                EXPECT_EQ(probe.connection.value().failureReason(), PoolAcquireFailure::AllocationFailed);
                 EXPECT_EQ(pool.activeCount(), 1U) << "空手收尾被记成一次借出";
                 EXPECT_EQ(pool.borrowTimeoutCount(), 0U) << "分配失败被记成了借出超时：这一格的成因是内存而不是截止时刻";
                 EXPECT_EQ(pool.createdCount(), 1U) << "排队失败不该再建一条连接";

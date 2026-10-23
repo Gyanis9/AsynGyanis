@@ -14,6 +14,7 @@
 
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Client/HttpProxyPumpedTls.h"
+#include "Net/Http/Message/HttpHeaderRules.h"
 
 #include "Base/Exception/Exception.h"
 #include "Base/Log/LogMacros.h"
@@ -156,7 +157,7 @@ namespace AsynGyanis::Net
                     failureReason = "请求已取消：TLS 握手期间调用方请求停止（对端 " + std::string(peerLabel) + "）";
                     co_return std::nullopt;
                 }
-                LOG_WARN_FMT("HttpClient: 与 {} 的 TLS 握手失败。底层原因：{}", peerLabel, failure.what());
+                LOG_WARN_FMT("HttpClient: 与 {} 的 TLS 握手失败。底层原因：{}", peerLabel, redactSensitiveQueryParameters(failure.what()));
                 failureReason = failureText;
                 co_return std::nullopt;
             }
@@ -431,7 +432,7 @@ namespace AsynGyanis::Net
                     failureReason = "请求已取消：内层 TLS 握手期间调用方请求停止（主机 " + u.host + "）";
                     co_return std::nullopt;
                 }
-                LOG_WARN_FMT("HttpClient: 经代理隧道与 {} 的 TLS 握手失败。底层原因：{}", u.host, failure.what());
+                LOG_WARN_FMT("HttpClient: 经代理隧道与 {} 的 TLS 握手失败。底层原因：{}", u.host, redactSensitiveQueryParameters(failure.what()));
                 failureReason = "经代理隧道与「" + u.host + "」的 TLS 握手失败：证书没通过校验、协议或密码套件不匹配，或隧道在握手中途中断";
                 co_return std::nullopt;
             }

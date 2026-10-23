@@ -460,7 +460,9 @@ jobs:
       # `HttpClient`/`HttpOutboundConnectionPool`/`HttpProxyE2E`（出站建立、整池收口与代理隧道）、
       # `Http2ClientConnection`（共享连接上的流取消）、`ConnectionRace`/`CancellationWatch`/`Cancelable`/
       # `DeadlineGuard`（建连竞速与取消观察者）。这些类的协程帧会跨循环投递，名字不在这份词表里就一条都不跑
-      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash|AsyncResolver|HttpClient|HttpOutboundConnectionPool|HttpProxyE2E|ConnectionRace|CancellationWatch|Cancelable|DeadlineGuard"
+      # Transaction 族的 m_isActive 由同事务语句线程与提交路径共享；过滤集此前只覆盖 ConnectionPool，
+      # 该用例因此从未进过 TSan 档
+      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|Transaction|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash|AsyncResolver|HttpClient|HttpOutboundConnectionPool|HttpProxyE2E|ConnectionRace|CancellationWatch|Cancelable|DeadlineGuard"
       # 筛面下限：2026-10-01 实测命中 1325 / 全量 3669，往下留一档。
       # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 30 个词里——
       # 两者的外观都与「TSan 全绿」同形，所以判据必须钉在条数上而不是只跑一次
@@ -524,6 +526,10 @@ jobs:
             echo "筛面只剩 ${matchedCount} 条：要么类名改了，要么这份构建根本没生成用例——都不算「TSan 通过」"
             exit 1
           fi
+          # 过滤集里有 Transaction 不等于 ctest 真的列出了它：这条用例是 m_isActive 竞态的裁判，
+          # 构建漏掉 TestDatabase 或测试名改了，都必须在跑之前就红
+          transactionTests="$(ctest --test-dir build/tsan -N -R "TransactionTest.StatementsOnOneTransactionWaitForTheConnection")"
+          printf '%s\n' "${transactionTests}" | grep -q "TransactionTest.StatementsOnOneTransactionWaitForTheConnection"
           ctest --test-dir build/tsan --output-on-failure -j"$(nproc)" -R "${TSAN_TEST_FILTER}"
 
       - name: 失败时上传用例日志

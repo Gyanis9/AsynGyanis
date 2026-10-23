@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -860,6 +861,52 @@ namespace AsynGyanis::Database
         // 被打断的语句不能把连接一起废掉：语句缓存里那条要 reset 回可用，后续照常执行
         const std::unique_ptr<DatabaseResult> followUp = connection().execute("SELECT 1");
         ASSERT_NE(followUp, nullptr) << "打断后连接不可用：" << connection().lastError();
+    }
+
+    /**
+     * @brief 钉住外部取消：另一条线程请求中断后，正在跑的语句在毫秒级结束、原因可区分，连接仍可用
+     * @details 与语句时限走的是两条互不依赖的路：这里 queryTimeout 设为 0（不设时限），中断只可能来自
+     *          requestQueryCancel()。查询本身要跑数十秒，没有中断时用例等不到结束。
+     */
+    TEST_F(SqliteConnectedMemoryDatabase, ExternalCancelInterruptsARunningQuery)
+    {
+        connection().setQueryTimeout(0);
+
+        std::atomic<bool>               started{false};
+        std::atomic<bool>               finished{false};
+        std::unique_ptr<DatabaseResult> result;
+        std::string                     lastError;
+        std::jthread                    worker(
+                [this, &started, &finished, &result, &lastError]
+                {
+                    started.store(true, std::memory_order_release);
+                    result    = connection().execute(kUnboundedCountSql);
+                    lastError = connection().lastError();
+                    finished.store(true, std::memory_order_release);
+                });
+        while (!started.load(std::memory_order_acquire))
+        {
+            std::this_thread::yield();
+        }
+        // 100 毫秒足够让 execute 的准备阶段跑完并进入 step：查询本身要跑数十秒，这段时间不会自行结束
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        ASSERT_TRUE(connection().requestQueryCancel()) << "SQLite 驱动必须支持外部取消";
+
+        const auto cancelDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!finished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < cancelDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ASSERT_TRUE(finished.load(std::memory_order_acquire)) << "取消之后语句仍在跑：外部中断没有送到 SQLite";
+        worker.join();
+
+        EXPECT_EQ(result, nullptr);
+        EXPECT_TRUE(containsText(lastError, "外部取消")) << lastError;
+        EXPECT_EQ(connection().lastNativeErrorCode(), /* SQLITE_INTERRUPT */ 9) << lastError;
+
+        // 取消只作用于那一条语句：入口清零后连接照常可用
+        const std::unique_ptr<DatabaseResult> followUp = connection().execute("SELECT 1");
+        ASSERT_NE(followUp, nullptr) << "取消后连接不可用：" << connection().lastError();
     }
 
     /**

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -424,6 +425,49 @@ namespace AsynGyanis::Base
         const std::vector<fs::path> activeFiles = collectFilesMatching(temporaryDirectory.path(), R"(stable\.\d{4}-\d{2}-\d{2}\.log)");
         ASSERT_EQ(activeFiles.size(), 1u);
         EXPECT_EQ(countLines(activeFiles.front()), 6u);
+    }
+
+    /**
+     * @brief 注入时钟跨过午夜后，按天策略必须换到新日期的活动文件
+     * @details 用可推进的假时钟造出边界，不靠真实等待；两条日志分别落到前后两天的文件。
+     */
+    TEST(RollingFileSink, DailyPolicyRollsWhenInjectedClockCrossesMidnight)
+    {
+        const TestSupport::TemporaryDirectory temporaryDirectory("Rolling_ClockBoundary");
+        const auto                            makeTime = [](const int day, const int hour, const int minute, const int second)
+        {
+            std::tm value{};
+            value.tm_year  = 126; // 2026
+            value.tm_mon   = 0;
+            value.tm_mday  = day;
+            value.tm_hour  = hour;
+            value.tm_min   = minute;
+            value.tm_sec   = second;
+            value.tm_isdst = -1;
+            return std::mktime(&value);
+        };
+
+        std::time_t     now = makeTime(1, 23, 59, 59);
+        RollingFileSink sink("clock.log", temporaryDirectory.path(), RollingPolicy::Daily, 10 * 1024 * 1024, 5, false, [&now] { return now; });
+        sink.write(makeEvent(LogLevel::Info, "before_midnight"));
+        sink.flush();
+
+        ASSERT_EQ(collectFilesMatching(temporaryDirectory.path(), R"(clock\.2026-01-01\.log)").size(), 1U) << "假时钟的 23:59:59 没有落到 1 月 1 日的文件：时钟缝没有接上";
+
+        now = makeTime(2, 0, 0, 1);
+        sink.write(makeEvent(LogLevel::Info, "after_midnight"));
+        sink.flush();
+
+        const std::vector<fs::path> firstDay  = collectFilesMatching(temporaryDirectory.path(), R"(clock\.2026-01-01\.log)");
+        const std::vector<fs::path> secondDay = collectFilesMatching(temporaryDirectory.path(), R"(clock\.2026-01-02\.log)");
+        ASSERT_EQ(firstDay.size(), 1U) << "跨午夜后 1 月 1 日的活动文件不见了";
+        ASSERT_EQ(secondDay.size(), 1U) << "跨午夜后没有生成 1 月 2 日的活动文件";
+        const std::string firstDayText  = readWholeFile(firstDay.front());
+        const std::string secondDayText = readWholeFile(secondDay.front());
+        EXPECT_NE(firstDayText.find("before_midnight"), std::string::npos);
+        EXPECT_EQ(firstDayText.find("after_midnight"), std::string::npos) << "午夜后的行仍写进了前一天的文件";
+        EXPECT_NE(secondDayText.find("after_midnight"), std::string::npos);
+        EXPECT_EQ(secondDayText.find("before_midnight"), std::string::npos) << "午夜前的行被带进了新一天的文件";
     }
 
     TEST(RollingFileSink, ExtensionlessBaseFilenameAlsoRolls)

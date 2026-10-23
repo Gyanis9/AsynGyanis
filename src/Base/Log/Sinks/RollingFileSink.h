@@ -17,7 +17,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -54,6 +56,9 @@ namespace AsynGyanis::Base
          */
         static constexpr std::size_t kMaximumBackupFileCount = 4096U;
 
+        /// 取墙上时钟的函数：默认 std::time(nullptr)，测试可注入固定/可推进的时钟
+        using Clock = std::function<std::time_t()>;
+
         /**
          * @brief 构造滚动文件 Sink
          * @param baseFilename 基础文件名（路径刻度）。含目录段时只取其中的文件名段，活动文件与
@@ -69,6 +74,19 @@ namespace AsynGyanis::Base
          */
         RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes = 10 * 1024 * 1024,
                         size_t maximumBackupFiles = 10, bool immediateFlush = false);
+
+        /**
+         * @brief 构造滚动文件 Sink，并注入取墙上时钟的函数
+         * @param baseFilename 基础文件名；目录段的处理与主构造相同
+         * @param directory 日志目录
+         * @param policy 滚动策略
+         * @param maximumSizeBytes 按大小滚动阈值（字节）
+         * @param maximumBackupFiles 最大保留备份文件数
+         * @param immediateFlush 每写一行是否立刻同步
+         * @param clock 取当前 epoch 秒的函数；必须可调用
+         */
+        RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, RollingPolicy policy, size_t maximumSizeBytes, size_t maximumBackupFiles,
+                        bool immediateFlush, Clock clock);
 
         /**
          * @brief 析构滚动文件 Sink 并刷新残留数据
@@ -141,6 +159,7 @@ namespace AsynGyanis::Base
         size_t                m_maximumSizeBytes;   ///< 按大小滚动阈值（字节）
         size_t                m_maximumBackupFiles; ///< 最大备份文件数
         bool                  m_immediateFlush;     ///< 转交给活动 FileSink 的逐行同步口径（滚动后的新文件同值）
+        Clock                 m_clock;              ///< 取墙上时钟的函数：周期后缀与边界判定共用同一份
 
         std::unique_ptr<FileSink> m_currentSink;   ///< 当前活动文件 Sink
         std::string               m_currentSuffix; ///< 当前时间后缀（按时间滚动时使用）

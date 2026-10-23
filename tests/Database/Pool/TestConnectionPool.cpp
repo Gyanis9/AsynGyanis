@@ -303,6 +303,7 @@ namespace AsynGyanis::Database
             // 本线程（乙）：等待名额已满——当场空手返回，且不许动甲
             const PooledConnection refused = pool.acquire();
             EXPECT_FALSE(refused) << "等待名额已满的借出没有当场被拒（要么排了队、要么等到了东西）";
+            EXPECT_EQ(refused.failureReason(), PoolAcquireFailure::WaitingQueueFull);
             EXPECT_EQ(pool.waitingRejectedCount(), 1U) << "被拒的借出没有落账";
             EXPECT_EQ(registryValue("asyn_db_pool_waiting_rejections_total"), 1U) << "被拒数没有出现在进程级导出里";
             EXPECT_EQ(pool.waitingCount(), 1U) << "拒绝动了在场的等待者（顶掉或提前叫醒）";
@@ -393,6 +394,7 @@ namespace AsynGyanis::Database
             PooledConnection connection = pool.acquire();
 
             EXPECT_FALSE(connection) << "容量为 0 时 acquire 应超时并返回空连接";
+            EXPECT_EQ(connection.failureReason(), PoolAcquireFailure::TimedOut);
         }
 
         // ========================================================================

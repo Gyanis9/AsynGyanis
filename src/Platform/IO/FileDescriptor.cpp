@@ -1,8 +1,10 @@
 #include "Platform/IO/FileDescriptor.h"
 
+#include "Platform/IO/HandleFaultInjection.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 
@@ -18,7 +20,101 @@ namespace AsynGyanis::Platform
          *          一侧悄悄少搬 bytes。
          */
         constexpr std::size_t kMaximumTransferLength = static_cast<std::size_t>(std::numeric_limits<int>::max());
+
+#if ASYN_PLATFORM_WIN32
+        /// 测试注入：还要放行多少次成功创建；-1 表示没有注入
+        std::atomic<int> g_allowedHandleCreations{-1};
+        /// 注入命中时要置入的 WSA 错误码
+        std::atomic<int> g_injectedHandleError{0};
+
+        /**
+         * @brief 判断本次句柄创建是否按注入失败收场
+         * @return int 0 = 继续真实调用；非 0 = 以该错误码失败
+         */
+        int consumeHandleCreationFailure() noexcept
+        {
+            const int remaining = g_allowedHandleCreations.load(std::memory_order_relaxed);
+            if (remaining < 0)
+            {
+                return 0;
+            }
+            if (remaining > 0)
+            {
+                g_allowedHandleCreations.store(remaining - 1, std::memory_order_relaxed);
+                return 0;
+            }
+            // 一次性：命中后自动恢复真实调用，测试不必记得清
+            g_allowedHandleCreations.store(-1, std::memory_order_relaxed);
+            return g_injectedHandleError.load(std::memory_order_relaxed);
+        }
+
+        /**
+         * @brief 建 socket 的唯一入口：注入命中时置好错误码并交回无效句柄
+         */
+        SOCKET createSocketHandle(const int domain, const int type, const int protocol) noexcept
+        {
+            if (const int injectedError = consumeHandleCreationFailure(); injectedError != 0)
+            {
+                ::WSASetLastError(injectedError);
+                errno = injectedError;
+                return INVALID_SOCKET;
+            }
+            return ::socket(domain, type, protocol);
+        }
+
+        /**
+         * @brief accept 的唯一入口：与 socket 共用同一份注入计数（接收连接同样消耗一个句柄）
+         */
+        SOCKET acceptHandle(const SOCKET listener, sockaddr *address, int *addressLength) noexcept
+        {
+            if (const int injectedError = consumeHandleCreationFailure(); injectedError != 0)
+            {
+                ::WSASetLastError(injectedError);
+                errno = injectedError;
+                return INVALID_SOCKET;
+            }
+            return ::accept(listener, address, addressLength);
+        }
+
+        /**
+         * @brief Windows 失败收尾：先把失败原因留住，再关已建出的句柄，最后把原因放回去
+         * @details closesocket 会覆盖 WSA 错误码；不先留就会把「句柄不够」报成关闭那一步的错误
+         * @param errorCode 失败那一刻的错误码
+         * @param listener 已建出的监听句柄，无效时跳过
+         * @param client 已建出的客户端句柄，无效时跳过
+         * @return bool 恒定 false，便于各失败分支直接 return
+         */
+        bool failWindowsPairCreation(const int errorCode, const SOCKET listener, const SOCKET client) noexcept
+        {
+            if (listener != INVALID_SOCKET)
+            {
+                ::closesocket(listener);
+            }
+            if (client != INVALID_SOCKET)
+            {
+                ::closesocket(client);
+            }
+            PlatformError::setLastErrorCode(errorCode);
+            return false;
+        }
+#endif
     } // namespace
+
+#if ASYN_PLATFORM_WIN32
+    namespace Testing
+    {
+        void failHandleCreationAfter(const int allowedSuccesses, const int errorCode) noexcept
+        {
+            g_injectedHandleError.store(errorCode, std::memory_order_relaxed);
+            g_allowedHandleCreations.store(allowedSuccesses > 0 ? allowedSuccesses : 0, std::memory_order_relaxed);
+        }
+
+        void clearHandleCreationFailure() noexcept
+        {
+            g_allowedHandleCreations.store(-1, std::memory_order_relaxed);
+        }
+    } // namespace Testing
+#endif
 
     bool FileDescriptor::setNonBlocking(const int fileDescriptor) noexcept
     {
@@ -121,11 +217,12 @@ namespace AsynGyanis::Platform
         Socket::initialize();
 
 #if ASYN_PLATFORM_WIN32
-        // Windows 无 socketpair，用 loopback TCP 的 监听-连接-接受 构造等价描述符对
-        const auto listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (listener < 0)
+        // Windows 无 socketpair，用 loopback TCP 的 监听-连接-接受 构造等价描述符对。
+        // 每个失败出口都先留住错误码再关闭已建句柄：关闭会覆盖 WSA 错误码
+        const SOCKET listener = createSocketHandle(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listener == INVALID_SOCKET)
         {
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), INVALID_SOCKET, INVALID_SOCKET);
         }
 
         constexpr BOOL kreuseAddress = TRUE;
@@ -137,51 +234,44 @@ namespace AsynGyanis::Platform
         loopbackAddress.sin_port        = 0;
         if (::bind(listener, reinterpret_cast<sockaddr *>(&loopbackAddress), sizeof(loopbackAddress)) < 0)
         {
-            close(static_cast<int>(listener));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, INVALID_SOCKET);
         }
 
         socklen_t addressLength = sizeof(loopbackAddress);
         if (::getsockname(listener, reinterpret_cast<sockaddr *>(&loopbackAddress), &addressLength) < 0)
         {
-            close(static_cast<int>(listener));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, INVALID_SOCKET);
         }
 
         if (::listen(listener, 1) < 0)
         {
-            close(static_cast<int>(listener));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, INVALID_SOCKET);
         }
 
-        const auto client = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (client < 0)
+        const SOCKET client = createSocketHandle(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (client == INVALID_SOCKET)
         {
-            close(static_cast<int>(listener));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, INVALID_SOCKET);
         }
 
         if (::connect(client, reinterpret_cast<sockaddr *>(&loopbackAddress), sizeof(loopbackAddress)) < 0)
         {
-            close(static_cast<int>(listener));
-            close(static_cast<int>(client));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, client);
         }
 
-        const auto server = ::accept(listener, nullptr, nullptr);
-        close(static_cast<int>(listener));
-        if (server < 0)
+        const SOCKET server = acceptHandle(listener, nullptr, nullptr);
+        if (server == INVALID_SOCKET)
         {
-            close(static_cast<int>(client));
-            return false;
+            return failWindowsPairCreation(::WSAGetLastError(), listener, client);
         }
+        ::closesocket(listener);
 
         readDescriptor  = static_cast<int>(server);
         writeDescriptor = static_cast<int>(client);
         if (!setNonBlocking(readDescriptor) || !setNonBlocking(writeDescriptor))
         {
-            close(readDescriptor);
-            close(writeDescriptor);
+            const int failureCode = ::WSAGetLastError();
+            static_cast<void>(failWindowsPairCreation(failureCode, server, client));
             readDescriptor  = kInvalid;
             writeDescriptor = kInvalid;
             return false;

@@ -231,15 +231,15 @@ namespace AsynGyanis::Database
         {
             // 计数与告警放在锁外：日志通路可能阻塞，不能带进 m_mutex
             noteWaitingRefusal();
-            return {};
+            return PooledConnection(PoolAcquireFailure::WaitingQueueFull);
         }
 
-        std::unique_ptr<DatabaseConnection> connection = waitForConnectionUnderDeadline(deadline);
+        PoolAcquireFailure                  failure    = PoolAcquireFailure::None;
+        std::unique_ptr<DatabaseConnection> connection = waitForConnectionUnderDeadlineWithReason(deadline, failure);
         if (!connection)
         {
-            // 超时或池已停摆：拿不到连接就交出空的包装，让调用方看见「没拿到」而不是异常。
-            // 账已在等待段记过，这里只交出空的包装
-            return {};
+            // 超时或池已停摆：拿不到连接就交出带原因的空包装，让调用方分诊而不是只能猜
+            return PooledConnection(failure);
         }
 
         return PooledConnection(std::move(connection), this);
@@ -247,8 +247,16 @@ namespace AsynGyanis::Database
 
     std::unique_ptr<DatabaseConnection> ConnectionPool::waitForConnectionUnderDeadline(const std::chrono::steady_clock::time_point deadline)
     {
+        // 原入口保留；需要区分超时与停摆时走带原因的版本
+        PoolAcquireFailure failure = PoolAcquireFailure::None;
+        return waitForConnectionUnderDeadlineWithReason(deadline, failure);
+    }
+
+    std::unique_ptr<DatabaseConnection> ConnectionPool::waitForConnectionUnderDeadlineWithReason(const std::chrono::steady_clock::time_point deadline, PoolAcquireFailure &failure)
+    {
         std::unique_ptr<DatabaseConnection> connection;
-        std::unique_lock                    lock(m_mutex);
+        failure = PoolAcquireFailure::None;
+        std::unique_lock lock(m_mutex);
         m_syncWaitingCount.fetch_add(1, std::memory_order_seq_cst);
 
         while (!m_isShuttingDown.load(std::memory_order_acquire))
@@ -279,14 +287,19 @@ namespace AsynGyanis::Database
         // 记账必须排在「同步等待者计数减一」之前且留在锁内：池析构等的就是这条计数归零，计数一降
         // 它随时可能把本对象释放掉，此后再碰任何成员都是踩已释放内存（TSan 实测报出过一次）。
         // 取出主流程的第一、二段各记自己那一次，这里只负责等待段的出口
+        const bool isShuttingDown = m_isShuttingDown.load(std::memory_order_acquire);
         if (connection)
         {
             m_activeCount.fetch_add(1);
-        } else if (!m_isShuttingDown.load(std::memory_order_acquire))
+        } else if (!isShuttingDown)
         {
             // 只记「等到截止时刻仍空手」：停摆期空手是正常收尾，混进来会让这道容量指标在每次
             // 优雅停机时虚涨
+            failure = PoolAcquireFailure::TimedOut;
             m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+        } else
+        {
+            failure = PoolAcquireFailure::ShuttingDown;
         }
 
         m_syncWaitingCount.fetch_sub(1);
@@ -301,16 +314,49 @@ namespace AsynGyanis::Database
 
     Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop)
     {
-        // 截止时刻在这里定一次，重挂的每一轮共用它：被叫醒却没拿到连接不会把等待上限往后推
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds);
+        return acquireAsyncUntil(loop, std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds), std::stop_token{});
+    }
+
+    Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop, const std::stop_token stopToken)
+    {
+        return acquireAsyncUntil(loop, std::chrono::steady_clock::now() + std::chrono::milliseconds(m_config.acquireTimeoutMilliseconds), stopToken);
+    }
+
+    Core::Task<PooledConnection> ConnectionPool::acquireAsync(Core::EventLoop &loop, const std::chrono::steady_clock::time_point deadline, const std::stop_token stopToken)
+    {
+        return acquireAsyncUntil(loop, deadline, stopToken);
+    }
+
+    Core::Task<PooledConnection> ConnectionPool::acquireAsyncUntil(Core::EventLoop &loop, const std::chrono::steady_clock::time_point deadline, const std::stop_token stopToken)
+    {
+        // 已经停止的令牌不再入队：交给调用方 Cancelled，池里不留等待者
+        if (stopToken.stop_requested())
+        {
+            co_return PooledConnection(PoolAcquireFailure::Cancelled);
+        }
 
         // 「上一轮是不是被腾名额唤醒的」存在帧里跨轮存活：等待体每轮都是新造的，唤醒方写的标志
         // 落在旧实例上，只写在那里的话下一轮的新实例看不到它——豁免形同虚设（用例实测被二次拒绝）
         bool isReturnedFromWake = false;
         while (true)
         {
-            AcquireAwaiter   awaiter(this, &loop, deadline, isReturnedFromWake);
+            if (stopToken.stop_requested())
+            {
+                co_return PooledConnection(PoolAcquireFailure::Cancelled);
+            }
+            AcquireAwaiter awaiter(this, &loop, deadline, isReturnedFromWake);
+            awaiter.armCancellation(stopToken);
             PooledConnection result = co_await awaiter;
+            // 取消可能由健康线程摘表后叫醒，也可能与一次交接同时发生：结果里若有连接就先丢弃，
+            // 不让一条已取消的请求把连接带回业务层
+            if (stopToken.stop_requested() || awaiter.m_stopRequested.load(std::memory_order_acquire))
+            {
+                if (result)
+                {
+                    result.discard();
+                }
+                co_return PooledConnection(PoolAcquireFailure::Cancelled);
+            }
 
             // 交接后的恢复可能晚于池析构：下面几行读的都是池的成员，判活必须排在任何一次读之前。
             // 判死就地收尾，重挂与记账都没有对象可碰；连接若已在恢复时交出，随 result 一起关闭
@@ -321,6 +367,10 @@ namespace AsynGyanis::Database
             }
             if (!isPoolAlive)
             {
+                if (!result)
+                {
+                    co_return PooledConnection(PoolAcquireFailure::ShuttingDown);
+                }
                 co_return std::move(result);
             }
 
@@ -335,6 +385,10 @@ namespace AsynGyanis::Database
             if (awaiter.m_isQueueingFailed)
             {
                 LOG_ERROR("ConnectionPool: 异步借出排队时分配失败（恢复票据或等待表建不出来），本次借出按空手收尾，不计入超时");
+                if (!result)
+                {
+                    co_return PooledConnection(PoolAcquireFailure::AllocationFailed);
+                }
                 co_return std::move(result);
             }
 
@@ -342,23 +396,32 @@ namespace AsynGyanis::Database
             // 同样不计入超时账：截止时刻根本没到
             if (awaiter.m_isWaitingCapReached)
             {
-                noteWaitingRefusal();
+                if (!result)
+                {
+                    noteWaitingRefusal();
+                    co_return PooledConnection(PoolAcquireFailure::WaitingQueueFull);
+                }
                 co_return std::move(result);
             }
 
             // 三种情况收尾：拿到了连接；到了截止时刻；池正在停摆（停摆中以空连接就地唤醒，
             // 再挂一轮也等不到东西，而且等待表马上要随池一起销毁）
             const bool isShuttingDown = m_isShuttingDown.load(std::memory_order_acquire);
-            if (result || isShuttingDown || std::chrono::steady_clock::now() >= deadline)
+            if (result)
             {
-                // 停摆标志只读一次：两侧两次读之间它若翻假→真，同一次借出会被判成两种收尾。
+                co_return std::move(result);
+            }
+            if (isShuttingDown)
+            {
+                // 停摆标志只读一次：两侧两次读之间它若翻假→真，同一次借出会被判成两种收尾
+                co_return PooledConnection(PoolAcquireFailure::ShuttingDown);
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
                 // 记账口径与同步 acquire() 完全一致——空手且不是停摆造成的才算超时，
                 // 否则「异步借出超时」在这个指标上是个黑洞
-                if (!result && !isShuttingDown)
-                {
-                    m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
-                }
-                co_return std::move(result);
+                m_borrowTimeoutCount.fetch_add(1, std::memory_order_relaxed);
+                co_return PooledConnection(PoolAcquireFailure::TimedOut);
             }
         }
     }
@@ -413,8 +476,29 @@ namespace AsynGyanis::Database
         }
     }
 
+    void ConnectionPool::AcquireAwaiter::armCancellation(const std::stop_token stopToken) noexcept
+    {
+        if (!stopToken.stop_possible())
+        {
+            return;
+        }
+        try
+        {
+            m_stopCallback.emplace(stopToken,
+                                   StopCallback{&m_stopRequested, m_liveness, &m_pool->m_healthWakeMutex, &m_pool->m_healthWakeCondition, &m_pool->m_asyncExpiryRequested});
+        } catch (...)
+        {
+            // 注册失败只失去可取消性：截止时刻与池停摆仍会把这条等待收尾
+        }
+    }
+
     bool ConnectionPool::AcquireAwaiter::await_ready() noexcept
     {
+        // 已经请求停止就不再尝试取连接：直接恢复，由 acquireAsyncUntil() 交回 Cancelled
+        if (m_stopRequested.load(std::memory_order_acquire))
+        {
+            return true;
+        }
         // 尝试非阻塞获取：空闲栈为空但未达上限时会新建，与同步 acquire() 的口径一致
         m_result = m_pool->tryAcquireOrCreateInternal();
         return m_result != nullptr;
@@ -443,6 +527,11 @@ namespace AsynGyanis::Database
     {
         while (true)
         {
+            // 取消请求落在第一次尝试之前：不入表，按空手收尾
+            if (m_stopRequested.load(std::memory_order_acquire))
+            {
+                return false;
+            }
             // 再试一次：在 await_ready 和 await_suspend 之间可能已有连接归还。
             // 世代号在尝试之前取：这次尝试期间若有人腾出名额，下面的锁内核对会看见变化并重走一轮。
             // 这样就不必在入表之后再补一次取连接——那次补取会把「已经可被唤醒」的状态暴露给
@@ -513,6 +602,13 @@ namespace AsynGyanis::Database
                     m_pool->m_asyncWaiters.push_back(this);
                     m_inList = true;
                     m_pool->refreshAsyncWaitingCount();
+                    // 取消请求落在「入表前最后一次检查」与这一次入表之间：还在锁里就摘掉，
+                    // 不能把一条已取消的等待留给健康线程下一拍去发现
+                    if (m_stopRequested.load(std::memory_order_acquire))
+                    {
+                        m_pool->removeAsyncWaiterLocked(this);
+                        return false;
+                    }
                 } catch (...)
                 {
                     // 不必摘表：deque::push_back 的强保证是「分配不出来时容器不变」，而 m_inList 排在它之后
@@ -1096,16 +1192,17 @@ namespace AsynGyanis::Database
             // 「其余留到下一轮」才是真的。原先的顺序是先 erase_if 摘链、再逐条收集，收集那次
             // push_back 一抛，剩下的几条已经离开 m_asyncWaiters 却没人唤醒：那条协程永远睡着，
             // 而下一轮扫描再也看不见它（它已不在表里），借用超时的读数也不涨——现场只剩「调用方不动了」
-            const std::size_t timedOutCount = static_cast<std::size_t>(
-                    std::count_if(m_asyncWaiters.begin(), m_asyncWaiters.end(), [now](const AcquireAwaiter *const waiter) { return waiter->m_deadline <= now; }));
+            const std::size_t timedOutCount =
+                    static_cast<std::size_t>(std::count_if(m_asyncWaiters.begin(), m_asyncWaiters.end(), [now](const AcquireAwaiter *const waiter)
+                                                           { return waiter->m_deadline <= now || waiter->m_stopRequested.load(std::memory_order_acquire); }));
             expiredWaiters.reserve(timedOutCount);
             timedOutWaiters.reserve(timedOutCount);
 
             std::erase_if(m_asyncWaiters,
                           [&timedOutWaiters, now](AcquireAwaiter *const waiter)
                           {
-                              // 尚未到点的留着；到点的摘出列表，结果保持空（等价的「超时返回空」）
-                              if (waiter->m_deadline > now)
+                              // 尚未到点也没有取消的留着；到点或已取消的摘出列表，结果保持空
+                              if (waiter->m_deadline > now && !waiter->m_stopRequested.load(std::memory_order_acquire))
                               {
                                   return false;
                               }

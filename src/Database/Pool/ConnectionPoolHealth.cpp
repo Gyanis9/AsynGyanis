@@ -132,20 +132,29 @@ namespace AsynGyanis::Database
             auto remainingMilliseconds = totalSleepMilliseconds;
             while (remainingMilliseconds > 0 && !stopToken.stop_requested())
             {
-                const auto chunk = std::min(static_cast<int64_t>(kSleepChunkMilliseconds), remainingMilliseconds);
+                const auto chunk             = std::min(static_cast<int64_t>(kSleepChunkMilliseconds), remainingMilliseconds);
+                bool       isExpiryRequested = false;
                 {
                     std::unique_lock lock(m_healthWakeMutex);
-                    // 谓词判定与 notify 共用这把锁，因此停止请求落在「刚要进 wait_for 之前」也不会漏唤醒
-                    m_healthWakeCondition.wait_for(lock, std::chrono::milliseconds(chunk), [&stopToken] { return stopToken.stop_requested(); });
+                    // 谓词判定与 notify 共用这把锁，因此停止或取消落在「刚要进 wait_for 之前」也不会漏唤醒
+                    m_healthWakeCondition.wait_for(lock, std::chrono::milliseconds(chunk),
+                                                   [&stopToken, this] { return stopToken.stop_requested() || m_asyncExpiryRequested.load(std::memory_order_acquire); });
+                    isExpiryRequested = m_asyncExpiryRequested.exchange(false, std::memory_order_acq_rel);
                 }
 
                 if (stopToken.stop_requested())
                 {
                     break;
                 }
+                if (isExpiryRequested)
+                {
+                    // 取消请求把本线程提前叫醒：立即扫一遍等待表，不再等满这个分片
+                    expireTimedOutWaiters();
+                    continue;
+                }
                 remainingMilliseconds -= chunk;
 
-                // 每秒一次：把等到截止时刻的异步等待者以「空连接」唤醒。
+                // 每秒一次：把等到截止时刻或已请求取消的异步等待者以「空连接」唤醒。
                 // 放在这里而不是等下一个健康检查周期，是为了让异步超时的粒度与同步一致（秒级以内）
                 expireTimedOutWaiters();
             }

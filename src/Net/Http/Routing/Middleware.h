@@ -314,10 +314,12 @@ namespace AsynGyanis::Net
             const auto        requestId           = request.requestId();
             const auto        route               = request.matchedRoute();
             const std::string clientAddress       = request.remoteAddress();
+            // 令牌与口令常在查询串里：访问日志只留非敏感参数，别把凭据复制到每个读日志的地方
+            const std::string requestTarget = redactUrlForDiagnostics(request.uri());
 
             logger->logFormat(Base::LogLevel::Info, Base::SourceLocation::current(),
                               "HTTP 访问 method={} uri={} status={} duration_ms={} bytes={} request_id={} client={} proto={} tls={} route={}",
-                              method.empty() ? std::string_view{"-"} : method, request.uri(), response.status(), elapsedMilliseconds, response.body().size(),
+                              method.empty() ? std::string_view{"-"} : method, requestTarget, response.status(), elapsedMilliseconds, response.body().size(),
                               requestId.empty() ? std::string_view{"-"} : requestId, clientAddress.empty() ? std::string_view{"-"} : std::string_view{clientAddress},
                               request.httpVersion(), request.overTls() ? "1" : "0", route.empty() ? std::string_view{"-"} : route);
         };

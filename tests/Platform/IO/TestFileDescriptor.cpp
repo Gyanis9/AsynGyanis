@@ -1,6 +1,8 @@
 // FileDescriptor 单元测试：有效性判定、非阻塞、描述符对与读写关闭
 #include "Platform/IO/FileDescriptor.h"
 
+#include "Platform/IO/HandleFaultInjection.h"
+#include "Platform/IO/Socket.h"
 #include "Platform/System/PlatformError.h"
 
 #include <gtest/gtest.h>
@@ -9,6 +11,19 @@
 #include <limits>
 #include <string>
 #include <thread>
+
+#if !ASYN_PLATFORM_WIN32
+#include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
+#include <filesystem>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <vector>
+#endif
 
 #include "PlatformTestSupport.h"
 
@@ -278,5 +293,209 @@ namespace AsynGyanis::Platform
         FileDescriptor::close(readDescriptor);
         FileDescriptor::close(writeDescriptor);
     }
+
+    /**
+     * @brief 钉住（Windows）：句柄建不出来按当次调用分类，清理不覆盖原因，注入清除后能再建
+     * @details Windows 没有可用的 per-process 句柄上限，真耗尽会伤及整台机器；经测试注入点
+     *          分别让监听 socket、客户端 socket、accept 失败，三条出口都要给出 WSAEMFILE，
+     *          输出保持无效。旧实现的 `listener < 0` 判不出 INVALID_SOCKET（SOCKET 是无符号的），
+     *          第一条会在下一步 bind 处把原因换成 WSAENOTSOCK。
+     */
+    TEST(FileDescriptor, InjectedHandleExhaustionIsClassifiedAndRecovers)
+    {
+        const auto expectInjectedFailureAndRecovery = [](const int allowedSuccesses)
+        {
+            Platform::Testing::failHandleCreationAfter(allowedSuccesses, PlatformError::kTooManyOpenFiles);
+            PlatformError::setLastErrorCode(0);
+
+            int readDescriptor  = FileDescriptor::kInvalid;
+            int writeDescriptor = FileDescriptor::kInvalid;
+            EXPECT_FALSE(FileDescriptor::createPair(readDescriptor, writeDescriptor)) << "第 " << (allowedSuccesses + 1) << " 次句柄创建失败后 createPair 仍报成功";
+            EXPECT_EQ(readDescriptor, FileDescriptor::kInvalid);
+            EXPECT_EQ(writeDescriptor, FileDescriptor::kInvalid);
+            EXPECT_EQ(PlatformError::lastErrorCode(), PlatformError::kTooManyOpenFiles) << "失败原因被清理路径覆盖了：读到的是关闭或下一步调用的错误";
+            EXPECT_EQ(PlatformError::lastSocketErrorCode(), PlatformError::kTooManyOpenFiles);
+
+            Platform::Testing::clearHandleCreationFailure();
+            EXPECT_TRUE(FileDescriptor::createPair(readDescriptor, writeDescriptor)) << "清除注入后仍建不出描述符对";
+            FileDescriptor::close(readDescriptor);
+            FileDescriptor::close(writeDescriptor);
+        };
+
+        expectInjectedFailureAndRecovery(0);
+        expectInjectedFailureAndRecovery(1);
+        expectInjectedFailureAndRecovery(2);
+    }
 #endif
+
+    /**
+     * @brief 真实 fd 耗尽后 accept/createPair 按 EMFILE/ENFILE 分类，关掉一条即恢复
+     * @details 监听队列里有待接受连接时 fd 限额被占满，内核会让 accept 以 EMFILE 失败；
+     *          释放一条后再 accept 必须成功——这正是上层接受循环「退避后重试」依赖的前提。
+     *          子进程里改限额，父进程的其余用例不受影响；Windows 没有可用的 per-process
+     *          句柄限额，且句柄工厂 seam 尚未实现，本档显式 SKIP。
+     */
+    TEST(FileDescriptor, ReportsExhaustionAndRecoversAfterOneClose)
+    {
+#if ASYN_PLATFORM_WIN32
+        GTEST_SKIP() << "Windows 没有可用的 per-process 句柄上限；句柄工厂 seam 尚未实现";
+#elif defined(__linux__)
+        const pid_t child = ::fork();
+        ASSERT_NE(child, -1) << "fork 失败，无法造出独立 fd 限额";
+        if (child == 0)
+        {
+            // 子进程不跑 gtest 断言：所有出口都先收掉自己开的东西，再用退出码把阶段带回父进程
+            int              listener = FileDescriptor::kInvalid;
+            int              client   = FileDescriptor::kInvalid;
+            std::vector<int> heldDescriptors;
+            const auto       finish = [&](const int exitCode)
+            {
+                for (const int descriptor: heldDescriptors)
+                {
+                    ::close(descriptor);
+                }
+                if (client >= 0)
+                {
+                    ::close(client);
+                }
+                if (listener >= 0)
+                {
+                    FileDescriptor::close(listener);
+                }
+                ::_exit(exitCode);
+            };
+
+            // 先备好一条「已在监听、且队列里有待接受连接」的套接字：限额压下去之后就没法再建了
+            listener = Socket::create(AF_INET, SOCK_STREAM);
+            if (!FileDescriptor::isValid(listener))
+            {
+                finish(10);
+            }
+            constexpr int kreuseAddress = 1;
+            if (::setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &kreuseAddress, sizeof(kreuseAddress)) != 0)
+            {
+                finish(11);
+            }
+            sockaddr_in listenAddress{};
+            listenAddress.sin_family      = AF_INET;
+            listenAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            listenAddress.sin_port        = 0;
+            if (!Socket::bind(listener, reinterpret_cast<const sockaddr *>(&listenAddress), sizeof(listenAddress)))
+            {
+                finish(12);
+            }
+            socklen_t addressLength = sizeof(listenAddress);
+            if (::getsockname(listener, reinterpret_cast<sockaddr *>(&listenAddress), &addressLength) != 0)
+            {
+                finish(13);
+            }
+            if (!Socket::listen(listener, 4))
+            {
+                finish(14);
+            }
+            // 客户端用阻塞套接字：未 accept 的连接也能完成三次握手并排在监听队列里
+            client = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (client < 0)
+            {
+                finish(15);
+            }
+            if (::connect(client, reinterpret_cast<const sockaddr *>(&listenAddress), sizeof(listenAddress)) != 0)
+            {
+                finish(16);
+            }
+
+            rlimit limit{};
+            if (::getrlimit(RLIMIT_NOFILE, &limit) != 0)
+            {
+                finish(17);
+            }
+            std::size_t     currentOpenCount = 0;
+            std::error_code error;
+            for ([[maybe_unused]] const auto &entry: std::filesystem::directory_iterator("/proc/self/fd", error))
+            {
+                ++currentOpenCount;
+            }
+            if (error)
+            {
+                finish(18);
+            }
+            limit.rlim_cur = static_cast<rlim_t>(currentOpenCount + 8U);
+            if (limit.rlim_max < limit.rlim_cur)
+            {
+                limit.rlim_max = limit.rlim_cur;
+            }
+            if (::setrlimit(RLIMIT_NOFILE, &limit) != 0)
+            {
+                finish(19);
+            }
+
+            bool sawLimit = false;
+            for (int attempt = 0; attempt < 64; ++attempt)
+            {
+                const int descriptor = ::open("/dev/null", O_RDONLY);
+                if (descriptor < 0)
+                {
+                    sawLimit = errno == EMFILE || errno == ENFILE;
+                    break;
+                }
+                heldDescriptors.push_back(descriptor);
+            }
+            if (!sawLimit)
+            {
+                finish(20);
+            }
+
+            // 一：accept 必须失败并把「名额不够」如实分类，而不是返回一个看起来有效的描述符
+            const int refusedDescriptor = Socket::accept(listener, nullptr, nullptr);
+            if (FileDescriptor::isValid(refusedDescriptor))
+            {
+                FileDescriptor::close(refusedDescriptor);
+                finish(21);
+            }
+            const int acceptErrorCode = PlatformError::lastSocketErrorCode();
+            if (acceptErrorCode != EMFILE && acceptErrorCode != ENFILE)
+            {
+                finish(22);
+            }
+
+            // 二：成对描述符要两条名额，同样必须失败且分类一致（不能退回 pipe 之类只占一条的兜底）
+            int readDescriptor  = FileDescriptor::kInvalid;
+            int writeDescriptor = FileDescriptor::kInvalid;
+            if (FileDescriptor::createPair(readDescriptor, writeDescriptor))
+            {
+                FileDescriptor::close(readDescriptor);
+                FileDescriptor::close(writeDescriptor);
+                finish(23);
+            }
+            const int pairErrorCode = PlatformError::lastErrorCode();
+            if (pairErrorCode != EMFILE && pairErrorCode != ENFILE)
+            {
+                finish(24);
+            }
+
+            // 三：只释放一条，accept 需要的正是这一条；不恢复就说明失败被记成了「监听器已坏」
+            ::close(heldDescriptors.back());
+            heldDescriptors.pop_back();
+            const int acceptedDescriptor = Socket::accept(listener, nullptr, nullptr);
+            if (!FileDescriptor::isValid(acceptedDescriptor))
+            {
+                finish(25);
+            }
+            FileDescriptor::close(acceptedDescriptor);
+            finish(0);
+        }
+
+        int status = 0;
+        ASSERT_EQ(::waitpid(child, &status, 0), child);
+        ASSERT_TRUE(WIFEXITED(status)) << "子进程没有正常退出";
+        EXPECT_EQ(WEXITSTATUS(status), 0) << "退出码 10=建监听套接字失败，11=setsockopt 失败，12=bind 失败，13=getsockname 失败，"
+                                             "14=listen 失败，15=建客户端失败，16=connect 失败，17=getrlimit 失败，"
+                                             "18=/proc/self/fd 读不出来，19=setrlimit 失败，20=没开满，"
+                                             "21=耗尽后 accept 仍成功，22=accept 错误码不是 EMFILE/ENFILE，"
+                                             "23=耗尽后 createPair 仍成功，24=createPair 错误码不是 EMFILE/ENFILE，"
+                                             "25=关掉一条后 accept 仍未恢复";
+#else
+        GTEST_SKIP() << "本平台的 fd 限额制造方式未覆盖";
+#endif
+    }
 } // namespace AsynGyanis::Platform

@@ -131,23 +131,36 @@ namespace AsynGyanis::Base
 
     RollingFileSink::RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, const RollingPolicy policy, const size_t maximumSizeBytes,
                                      const size_t maximumBackupFiles, const bool immediateFlush) :
+        RollingFileSink(std::move(baseFilename), std::move(directory), policy, maximumSizeBytes, maximumBackupFiles, immediateFlush, [] { return std::time(nullptr); })
+    {
+    }
+
+    RollingFileSink::RollingFileSink(std::filesystem::path baseFilename, std::filesystem::path directory, const RollingPolicy policy, const size_t maximumSizeBytes,
+                                     const size_t maximumBackupFiles, const bool immediateFlush, Clock clock) :
         // 备份数上限自行钳制：它同时决定每次滚动要探测多少个序号，配置侧虽已夹过一道，
         // 但本类是公开可构造的，不能把「不会被卡死」的责任推给调用方
         // 只取文件名段（构造参数的注释对此已有承诺）：带目录段的 base_filename 会把活动文件写到
         // 那个目录里去（operator/ 遇到绝对路径的右操作数会整体替换左操作数），而备份与清理都在
         // m_directory 下按「主名.序号.扩展名」找——两半不在同一目录时滚动照样发生，备份却永远清不掉
         m_baseFilename(baseFilename.filename()), m_directory(std::move(directory)), m_policy(policy), m_maximumSizeBytes(maximumSizeBytes),
-        m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount)), m_immediateFlush(immediateFlush)
+        m_maximumBackupFiles(std::min(maximumBackupFiles, kMaximumBackupFileCount)), m_immediateFlush(immediateFlush), m_clock(std::move(clock))
     {
         // error_code 重载：目录创建失败时不让 std::filesystem_error 从构造路径逃逸，
         // 随后的 FileSink 打开文件会失败并抛出带路径的中文异常，定位信息更准确
         std::error_code directoryError;
         std::filesystem::create_directories(m_directory, directoryError);
 
+        if (!m_clock)
+        {
+            // 公开构造允许调用方交空函数对象：退回系统时钟，别让空 std::function 在首次写入时抛坏调用
+            m_clock = [] { return std::time(nullptr); };
+        }
         if (m_policy == RollingPolicy::Daily || m_policy == RollingPolicy::Hourly)
         {
-            m_currentSuffix      = generateTimestampSuffix();
-            m_nextPeriodBoundary = nextPeriodBoundary(std::time(nullptr));
+            const std::time_t now       = m_clock();
+            m_currentSuffix             = generateTimestampSuffix();
+            m_nextPeriodBoundary        = nextPeriodBoundary(now);
+            m_lastObservedPeriodSeconds = now;
         }
         reopenActiveFile();
     }
@@ -201,7 +214,7 @@ namespace AsynGyanis::Base
             // 每行只做一次 time_t 比较；只有跨过周期边界才做本地时间转换与后缀格式化。
             // 用后缀字符串是否变化作为二次判据：夏令时切换等情况下边界可能估算偏差一小时，
             // 此时后缀不变即不滚动，并把边界推到下一个周期，自然收敛
-            if (const std::time_t now = std::time(nullptr); Detail::shouldRecheckRollingPeriod(now, m_lastObservedPeriodSeconds, m_nextPeriodBoundary))
+            if (const std::time_t now = m_clock(); Detail::shouldRecheckRollingPeriod(now, m_lastObservedPeriodSeconds, m_nextPeriodBoundary))
             {
                 m_lastObservedPeriodSeconds = now;
                 m_nextPeriodBoundary        = nextPeriodBoundary(now);
@@ -324,7 +337,7 @@ namespace AsynGyanis::Base
     std::string RollingFileSink::generateTimestampSuffix() const
     {
         // 换算本身收在 Detail/RollingPeriod.h：那里是纯函数，周期边界的判定才能脱离时钟直测
-        return Detail::rollingPeriodSuffix(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()), m_policy);
+        return Detail::rollingPeriodSuffix(m_clock(), m_policy);
     }
 
     std::time_t RollingFileSink::nextPeriodBoundary(const std::time_t timeValue) const noexcept

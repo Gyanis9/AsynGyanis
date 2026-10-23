@@ -13,6 +13,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/Coroutine/Task.h"
+#include "Core/Tls/TlsPeerIdentity.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Net/WebSocket/WebSocketFrame.h"
 
@@ -299,6 +300,20 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::string_view remoteCloseReason() const noexcept;
 
         /**
+         * @brief 设置承载连接的对端证书身份快照
+         * @param identity 握手时抓取的快照；明文连接或未启用 mTLS 时为空
+         * @note 会话在把本对象交给业务之前调用一次；设置后本对象不再改写
+         */
+        void setTlsPeerIdentity(Core::TlsPeerIdentityPtr identity) noexcept;
+
+        /**
+         * @brief 承载连接的对端证书身份快照
+         * @return 对端叶证书身份；明文连接、未启用 mTLS 或尚未设置时为空
+         * @note 只在所属事件循环线程上调用；身份对象只读
+         */
+        [[nodiscard]] const Core::TlsPeerIdentityPtr &peerIdentity() const noexcept;
+
+        /**
          * @brief 会话侧：交出 permessage-deflate 的协商结论（RFC 7692）
          *
          * @details 有值即启用：sendText()/sendBinary() 自动压缩负载并置 RSV1，收到的压缩消息自动解压；
@@ -560,11 +575,12 @@ namespace AsynGyanis::Net
         /// 会话登记的共享所有权：集线器在写协程挂起期间靠它续住本对象；空表示栈上对象或未登记
         std::weak_ptr<WebSocketPeer> m_lifetimeOwner{};
 
-        FrameSender                m_frameSender;      ///< 发送路径，由会话注入
-        HttpMetricsCollector      *m_metrics{nullptr}; ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
-        Core::EventLoop           *m_loop{nullptr};    ///< 所属事件循环（非拥有）；receiveFor() 的定时器挂在它上面，空表示未注入
-        WebSocketFrameDecoder      m_decoder;          ///< 帧解码器：掩码校验、分片重组都在它内部完成
-        std::deque<WebSocketFrame> m_incomingFrames;   ///< 已解出、等待业务取走的帧（FIFO）
+        FrameSender                m_frameSender;       ///< 发送路径，由会话注入
+        HttpMetricsCollector      *m_metrics{nullptr};  ///< 统计采集端（非拥有）；空表示不上报 WebSocket 各项计数
+        Core::TlsPeerIdentityPtr   m_tlsPeerIdentity{}; ///< 承载连接的对端证书身份；明文或未设置时为空
+        Core::EventLoop           *m_loop{nullptr};     ///< 所属事件循环（非拥有）；receiveFor() 的定时器挂在它上面，空表示未注入
+        WebSocketFrameDecoder      m_decoder;           ///< 帧解码器：掩码校验、分片重组都在它内部完成
+        std::deque<WebSocketFrame> m_incomingFrames;    ///< 已解出、等待业务取走的帧（FIFO）
         /// 待交付帧的积压计数：enqueueFrame() 累加、出队处扣减，两处必须配对
         std::size_t             m_queuedPayloadByteCount{0}; ///< 队列里待交付帧的负载总字节数
         std::coroutine_handle<> m_deliveryWaiter{};          ///< 业务正挂在 receive() 上的句柄，空表示无人等待

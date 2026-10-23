@@ -18,6 +18,7 @@ add_executable(TestDatabase
         Pool/TestConnectionPool.cpp
         Pool/TestConnectionPoolAsync.cpp
         Pool/TestConnectionPoolResilience.cpp
+        Pool/TestPooledResultLease.cpp
         Pool/TestTransaction.cpp
 
         Dialect/TestSqliteDialect.cpp

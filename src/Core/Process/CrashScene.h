@@ -35,6 +35,8 @@ namespace AsynGyanis::Core
      *       （Linux 侧由 TestCrashScene 的用例覆盖）。
      * @note 现场写 stderr 而不是日志器：崩溃时刻日志器可能正持锁或有未刷出的缓冲，
      *       而服务的 stderr 按部署口径本来就该落到文件（run-soak 与 CI 都是这么接的）。
+     * @note 信号致死不替日志系统补刷：要在崩溃现场留住哪条记录，用 `LOG_FATAL`（返回前刷新每个
+     *       收下它的 Sink）或提前显式调用 `Logger::flush()`；普通等级经 AsyncSink 时可能还在队列里。
      */
     class ASYN_CORE_API CrashScene
     {

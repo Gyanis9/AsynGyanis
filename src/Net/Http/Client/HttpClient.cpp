@@ -270,7 +270,8 @@ namespace AsynGyanis::Net
             }
             if (failFast)
             {
-                failureReason = std::format("{} {} 被出向并发闸挡下：端点在途已达上限 {}（处置为立即失败）", method, url, pool.config().maximumInFlightPerEndpoint);
+                failureReason = std::format("{} {} 被出向并发闸挡下：端点在途已达上限 {}（处置为立即失败）", method, redactUrlForDiagnostics(url),
+                                            pool.config().maximumInFlightPerEndpoint);
                 co_return false;
             }
 
@@ -401,7 +402,7 @@ namespace AsynGyanis::Net
                     if (token.stop_requested())
                     {
                         isTriggered = true;
-                        LOG_WARN_FMT("{}: 请求被调用方取消，已关闭当前连接", description);
+                        LOG_WARN_FMT("{}: 请求被调用方取消，已关闭当前连接", redactSensitiveQueryParameters(description));
                         connection.close();
                         co_return;
                     }
@@ -656,15 +657,15 @@ namespace AsynGyanis::Net
                     failureReason = "响应正文超过本端上限 " + std::to_string(parser.maximumBodySize()) +
                                     " 字节（HttpOutboundConnectionPool::Config::maximumResponseBodyBytes，"
                                     "填 0 表示不限）：目标 " +
-                                    std::string(target);
+                                    redactSensitiveQueryParameters(target);
                     return nullptr;
                 }
-                failureReason = "响应不合规范或超出本端上限（状态行、头部与正文三条里的一项）：目标 " + std::string(target);
+                failureReason = "响应不合规范或超出本端上限（状态行、头部与正文三条里的一项）：目标 " + redactSensitiveQueryParameters(target);
                 return nullptr;
             }
             if (!parser.isComplete())
             {
-                failureReason = "响应没读完就断了：对端提前收线，或本次请求已到时限（目标 " + std::string(target) + "）";
+                failureReason = "响应没读完就断了：对端提前收线，或本次请求已到时限（目标 " + redactSensitiveQueryParameters(target) + "）";
                 return nullptr;
             }
             auto response          = std::make_unique<HttpClientResponse>();
@@ -890,7 +891,7 @@ namespace AsynGyanis::Net
             {
                 // 等待中套接字被关掉（超时掐断、对端收尾）时底层抛异常：本接口的契约是「失败返回空响应」，
                 // 异常不许逃给调用方。抛出点之后的字节序已经不可信，这条连接当场收口——绝不还回池里
-                LOG_WARN_FMT("HttpClient: 请求中断。底层原因：{}", failure.what());
+                LOG_WARN_FMT("HttpClient: 请求中断。底层原因：{}", redactSensitiveQueryParameters(failure.what()));
                 failureReason = cancellation.isTriggered() ? cancelledText : "请求中断：套接字在等待中被关掉（时限掐断或对端收线，主机 " + host + "）";
                 connection.close();
                 co_return exchange;
@@ -1297,7 +1298,7 @@ namespace AsynGyanis::Net
             {
                 // UDP 套接字建不起来是这条链路上唯一的抛出点（见 QuicClientConnection::connect 的 @throws）：
                 // 与其它几段一样折成返回值，不让异常穿过这一段
-                LOG_WARN_FMT("HttpClient: 与 {} 建 HTTP/3 链路失败。底层原因：{}", u.host, failure.what());
+                LOG_WARN_FMT("HttpClient: 与 {} 建 HTTP/3 链路失败。底层原因：{}", u.host, redactSensitiveQueryParameters(failure.what()));
                 failureReason = "HTTP/3 这一侧没走通：本端建不起 UDP 套接字（主机 " + u.host + "）";
                 co_return nullptr;
             }
@@ -1809,10 +1810,10 @@ namespace AsynGyanis::Net
                 auto        step = planRedirectStep(*response, current, currentUrl, stopReason);
                 if (!step.has_value())
                 {
-                    LOG_WARN_FMT("HttpClient: 没有跟随这条 {} 重定向（主机 {}）：{}", response->statusCode, currentUrl.host, stopReason);
+                    LOG_WARN_FMT("HttpClient: 没有跟随这条 {} 重定向（主机 {}）：{}", response->statusCode, currentUrl.host, redactSensitiveQueryParameters(stopReason));
                     co_return std::move(response);
                 }
-                LOG_DEBUG_FMT("HttpClient: 跟随 {} 重定向到 {}{}（第 {} 跳）", response->statusCode, step->url.host, step->url.path, hop + 1);
+                LOG_DEBUG_FMT("HttpClient: 跟随 {} 重定向到 {}{}（第 {} 跳）", response->statusCode, step->url.host, redactSensitiveQueryParameters(step->url.path), hop + 1);
                 current    = std::move(step->request);
                 currentUrl = std::move(step->url);
             }
@@ -1827,7 +1828,7 @@ namespace AsynGyanis::Net
         validateRequest(request);
         if (request.cancelToken.stop_requested())
         {
-            co_return std::unexpected("请求已取消：调用方在发送前已请求停止（目标 " + std::string(url) + "）");
+            co_return std::unexpected("请求已取消：调用方在发送前已请求停止（目标 " + redactUrlForDiagnostics(url) + "）");
         }
         if (request.traceContext.has_value())
         {
@@ -1850,7 +1851,7 @@ namespace AsynGyanis::Net
         if (!response)
         {
             // 每条失败路径都会先写下原因；这里兜住的是「哪天新增了忘了写的出口」，而不是让调用方拿到空原因
-            co_return std::unexpected(failureReason.empty() ? "请求失败：没拿到响应，也没有记下原因（目标 " + std::string(url) + "）" : std::move(failureReason));
+            co_return std::unexpected(failureReason.empty() ? "请求失败：没拿到响应，也没有记下原因（目标 " + redactUrlForDiagnostics(url) + "）" : std::move(failureReason));
         }
         // 解压放在这里：两条承载（h1 与 h2）的响应都汇到这一处，代加声明与解回来的判据只写一遍
         if (!applyContentEncoding(request, *response, failureReason))
@@ -1866,7 +1867,7 @@ namespace AsynGyanis::Net
         auto                    sent = co_await send(loop, url, request, requestTimeout);
         if (!sent.has_value())
         {
-            LOG_ERROR_FMT("HttpClient: GET {} 失败。原因：{}", url, sent.error());
+            LOG_ERROR_FMT("HttpClient: GET {} 失败。原因：{}", redactUrlForDiagnostics(url), redactSensitiveQueryParameters(sent.error()));
             co_return nullptr;
         }
         co_return std::make_unique<HttpClientResponse>(std::move(*sent));
@@ -1884,7 +1885,7 @@ namespace AsynGyanis::Net
         auto sent           = co_await send(loop, url, request, requestTimeout);
         if (!sent.has_value())
         {
-            LOG_ERROR_FMT("HttpClient: POST {} 失败。原因：{}", url, sent.error());
+            LOG_ERROR_FMT("HttpClient: POST {} 失败。原因：{}", redactUrlForDiagnostics(url), redactSensitiveQueryParameters(sent.error()));
             co_return nullptr;
         }
         co_return std::make_unique<HttpClientResponse>(std::move(*sent));
@@ -1993,8 +1994,8 @@ namespace AsynGyanis::Net
         std::string failureReason;
         if (effectiveRequest.cancelToken.stop_requested())
         {
-            failureReason = "请求已取消：调用方在发送前已请求停止（目标 " + std::string(url) + "）";
-            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            failureReason = "请求已取消：调用方在发送前已请求停止（目标 " + redactUrlForDiagnostics(url) + "）";
+            LOG_ERROR_FMT("HttpClient: {}", redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
 
@@ -2005,7 +2006,7 @@ namespace AsynGyanis::Net
         const auto requestStartedAt = std::chrono::steady_clock::now();
         if (!co_await acquireOutboundInFlightSlot(m_pool, *m_loop, endpointKey, effectiveRequest, request.method, url, requestTimeout, requestStartedAt, failureReason))
         {
-            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            LOG_ERROR_FMT("HttpClient: {}", redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
         OutboundInFlightGuard inFlightGuard{m_pool, endpointKey};
@@ -2014,7 +2015,7 @@ namespace AsynGyanis::Net
         const std::optional<std::chrono::milliseconds> effectiveTimeout = foldPostWaitTimeout(effectiveRequest, requestTimeout, requestStartedAt, failureReason);
         if (!effectiveTimeout.has_value())
         {
-            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            LOG_ERROR_FMT("HttpClient: {}", redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
 
@@ -2024,8 +2025,9 @@ namespace AsynGyanis::Net
         // 排在这里仍有原意：开闸期间连套接字都不建，上游塌掉时这笔钱不会每个请求重付一遍
         if (m_circuitBreaker != nullptr && !m_circuitBreaker->allowRequest(endpointKey))
         {
-            failureReason = std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, url);
-            LOG_ERROR_FMT("HttpClient: {}", failureReason);
+            failureReason =
+                    std::format("{} {} 被本地熔断器挡下：该端点处于开闸期，不解析地址、不建连接也不握手（到点会自动放一条探测请求）", request.method, redactUrlForDiagnostics(url));
+            LOG_ERROR_FMT("HttpClient: {}", redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
 
@@ -2050,7 +2052,7 @@ namespace AsynGyanis::Net
             {
                 m_circuitBreaker->reportFailure(endpointKey);
             }
-            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
+            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, redactUrlForDiagnostics(url), redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
         if (m_circuitBreaker != nullptr)
@@ -2067,7 +2069,7 @@ namespace AsynGyanis::Net
         }
         if (!applyContentEncoding(effectiveRequest, *response, failureReason))
         {
-            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, url, failureReason);
+            LOG_ERROR_FMT("HttpClient: {} {} 失败。原因：{}", request.method, redactUrlForDiagnostics(url), redactSensitiveQueryParameters(failureReason));
             co_return nullptr;
         }
 

@@ -35,6 +35,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 #include <vector>
@@ -158,6 +159,26 @@ namespace AsynGyanis::Database
          *       判据、同一笔 waitingRejectedCount() 计数，当场以空连接收尾（也不记进借出超时账）
          */
         Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop);
+
+        /**
+         * @brief 协程异步获取连接，等待期间可被停止令牌取消
+         * @details 截止时刻仍按 PoolConfig::acquireTimeoutMilliseconds 计算；取消只摘出本等待者并交回
+         *          Cancelled，不关闭池、也不影响其他等待者。
+         * @param loop 恢复本协程用的事件循环
+         * @param stopToken 等待期间的取消令牌
+         * @return Core::Task<PooledConnection> 获取结果；取消时为空且 failureReason() 为 Cancelled
+         */
+        Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop, std::stop_token stopToken);
+
+        /**
+         * @brief 协程异步获取连接，使用调用方给定的截止时刻并可取消
+         * @details 给网关一类调用方把入站请求的剩余预算传下来用；截止时刻早于配置值时以它为准。
+         * @param loop 恢复本协程用的事件循环
+         * @param deadline 本次借出的绝对截止时刻
+         * @param stopToken 等待期间的取消令牌
+         * @return Core::Task<PooledConnection> 获取结果；超时或取消时为空并带 failureReason()
+         */
+        Core::Task<PooledConnection> acquireAsync(Core::EventLoop &loop, std::chrono::steady_clock::time_point deadline, std::stop_token stopToken);
 
         /**
          * @brief 非阻塞尝试获取连接
@@ -292,6 +313,45 @@ namespace AsynGyanis::Database
          */
         class AcquireAwaiter
         {
+        private:
+            /**
+             * @brief 停止令牌的回调：置取消标记并叫醒健康线程
+             * @details 不直接恢复协程：回调可能落在任意线程，而恢复必须回到调用方的事件循环；
+             *          摘表与投递交给健康线程，沿用既有的超时唤醒路径。
+             */
+            struct StopCallback
+            {
+                std::atomic<bool>            *stopRequested;       ///< 等待体的取消标记
+                std::shared_ptr<PoolLiveness> liveness;            ///< 池存活令牌：判活后才碰健康线程的同步原语
+                std::mutex                   *healthWakeMutex;     ///< 健康线程的等待锁
+                std::condition_variable      *healthWakeCondition; ///< 健康线程的唤醒点
+                std::atomic<bool>            *expiryRequested;     ///< 通知健康线程立即扫等待表
+
+                void operator()() const noexcept
+                {
+                    if (stopRequested != nullptr)
+                    {
+                        stopRequested->store(true, std::memory_order_release);
+                    }
+                    if (liveness == nullptr || healthWakeMutex == nullptr || healthWakeCondition == nullptr || expiryRequested == nullptr)
+                    {
+                        return;
+                    }
+                    // 判活与碰池的同步原语在同一段令牌锁内：池析构置假之后这里不再动它的成员
+                    const std::lock_guard livenessLock(liveness->mutex);
+                    if (!liveness->isAlive)
+                    {
+                        return;
+                    }
+                    // 标记与健康线程的谓词共用这把锁，避免「刚判完谓词、通知就丢了」
+                    {
+                        const std::lock_guard healthLock(*healthWakeMutex);
+                        expiryRequested->store(true, std::memory_order_release);
+                    }
+                    healthWakeCondition->notify_all();
+                }
+            };
+
         public:
             /**
              * @brief 构造等待体
@@ -359,6 +419,12 @@ namespace AsynGyanis::Database
             [[nodiscard]] bool needsToSuspendAfterPostQueueRetry() noexcept;
 
             /**
+             * @brief 挂上取消回调
+             * @param stopToken 等待期间的取消令牌；不可取消时传空令牌
+             */
+            void armCancellation(std::stop_token stopToken) noexcept;
+
+            /**
              * @brief 恢复票据：把「恢复这次等待」与「等待器是否还活着」分开
              * @details 交接连接时池把恢复动作投回事件循环，而那一刻之后调用方随时可能销毁 Task
              *          （帧连同等待器一起析构）。池投出去的若是裸句柄，循环那边就会 resume 一块
@@ -421,6 +487,10 @@ namespace AsynGyanis::Database
             bool                                  m_returnedFromWake{false};
             std::shared_ptr<ResumeTicket>         m_resumeTicket; ///< 恢复票据（await_suspend 时创建）：析构时清空其中的句柄，投递回来的恢复动作因此失效
             std::chrono::steady_clock::time_point m_deadline{};   ///< 等待截止时刻（构造时由 acquireAsync() 给定）：到点由后台线程以「空连接」唤醒，重试轮次共用同一截止时刻
+            std::atomic<bool>                     m_stopRequested{false}; ///< 调用方已请求停止：健康线程扫描到它后按取消唤醒
+            /// 停止回调只置标记与叫醒健康线程、不碰等待体；声明在 m_stopRequested 之后，析构顺序因此
+            /// 保证回调先注销、标记后销毁
+            std::optional<std::stop_callback<StopCallback>> m_stopCallback;
         };
 
         friend class AcquireAwaiter;
@@ -452,8 +522,26 @@ namespace AsynGyanis::Database
          *          判据留在 acquire()），本方法只管等待本身
          * @param deadline 本次借出的截止时刻（由 acquire() 一次算定，重试轮次不顺延）
          * @return 连接；空手返回表示等满截止时刻或池已停摆（超时账在本方法内记，停摆不计）
+         * @note 需要区分空手原因时用 waitForConnectionUnderDeadlineWithReason()
          */
         std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadline(std::chrono::steady_clock::time_point deadline);
+
+        /**
+         * @brief 同步等待路径的带原因实现
+         * @param deadline 本次借出的截止时刻
+         * @param failure 输出空手原因：成功时保持 None，停摆与超时分别写 ShuttingDown/TimedOut
+         * @return 连接；空手返回表示等满截止时刻或池已停摆
+         */
+        std::unique_ptr<DatabaseConnection> waitForConnectionUnderDeadlineWithReason(std::chrono::steady_clock::time_point deadline, PoolAcquireFailure &failure);
+
+        /**
+         * @brief 异步获取的公共实现：显式截止时刻与停止令牌
+         * @param loop 恢复本协程用的事件循环
+         * @param deadline 本次借出的绝对截止时刻
+         * @param stopToken 等待期间的取消令牌
+         * @return Core::Task<PooledConnection> 获取结果
+         */
+        Core::Task<PooledConnection> acquireAsyncUntil(Core::EventLoop &loop, std::chrono::steady_clock::time_point deadline, std::stop_token stopToken);
 
         /**
          * @brief 创建新连接：按配置的次数建连，失败且属「连不上」那一类时按退避重试
@@ -666,8 +754,9 @@ namespace AsynGyanis::Database
         // ----- 后台线程 -----
         // 这两个必须声明在 m_healthThread 之前：成员按声明逆序销毁，jthread 的隐式 join 会先跑，
         // 而它要在这对同步原语还活着时才能把睡眠中的循环叫醒
-        std::mutex              m_healthWakeMutex;     ///< 只给健康线程的等待用，不保护任何数据
-        std::condition_variable m_healthWakeCondition; ///< 停止请求的落点：让健康线程不必睡满一个分片
+        std::mutex              m_healthWakeMutex;             ///< 只给健康线程的等待用，不保护任何数据
+        std::condition_variable m_healthWakeCondition;         ///< 停止请求与取消请求的落点：让健康线程不必睡满一个分片
+        std::atomic<bool>       m_asyncExpiryRequested{false}; ///< 有等待者请求取消：健康线程醒来后立即扫等待表
 
         std::jthread m_healthThread; ///< 后台健康检查线程
 

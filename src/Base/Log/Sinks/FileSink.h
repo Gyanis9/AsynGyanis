@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <ostream>
 #include <string>
 #include <string_view>
 
@@ -45,6 +46,13 @@ namespace AsynGyanis::Base
          * @throws Base::SystemException 文件无法打开（父目录创建失败也归在这一条）
          */
         explicit FileSink(std::filesystem::path filePath, bool truncate = false, bool immediateFlush = false);
+
+        /**
+         * @brief 构造一个写向调用方输出流的 Sink，供确定性注入写/刷失败
+         * @param stream 调用方持有的输出流；必须活过本 Sink，本类不接管所有权
+         * @note 流不落到真实文件，reopen() 只改诊断名；写与刷新仍走同一套失败上报与丢行账
+         */
+        explicit FileSink(std::ostream &stream);
 
         /**
          * @brief 析构文件 Sink 并确保缓存落盘
@@ -111,6 +119,12 @@ namespace AsynGyanis::Base
          */
         std::size_t writePreparedLineLocked();
 
+        /// 当前输出流：注入流优先，否则是真实文件
+        std::ostream &targetStream() noexcept;
+
+        /// 当前输出流是否可用：注入流恒视为已打开，真实文件看 is_open
+        [[nodiscard]] bool isStreamOpen() const noexcept;
+
         /**
          * @brief 流已失效时上报一次，恢复后重新武装这条一次性上报
          * @details 调用方必须已持有 m_mutex。写日志这条路与刷新这条路共用同一个判据与开关：
@@ -129,6 +143,7 @@ namespace AsynGyanis::Base
 
         std::filesystem::path m_filePath;                       ///< 当前日志文件路径
         std::ofstream         m_file;                           ///< 日志文件输出流
+        std::ostream         *m_injectedStream{nullptr};        ///< 注入的输出流（非拥有）；空表示走 m_file
         bool                  m_immediateFlush;                 ///< 每行写出后是否立刻同步（见构造参数）
         std::string           m_lineBuffer;                     ///< 写入用的行缓冲：拼接换行后整行一次写出，仅 write/writeLine 在互斥锁内复用
         std::mutex            m_mutex;                          ///< 保护文件写入的互斥锁

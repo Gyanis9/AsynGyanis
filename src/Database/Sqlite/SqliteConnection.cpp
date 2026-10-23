@@ -35,6 +35,16 @@ namespace AsynGyanis::Database
         // 的长度形参都是 int，超限会被静默截断成半条语句或半段数据，因此共用同一上限
         constexpr size_t kMaximumNativeLength = static_cast<size_t>(std::numeric_limits<int>::max());
         /**
+         * @brief 外部取消的中文原因：底层只报 "interrupted"，看不出是谁打断的
+         * @return std::string 带原生码与处置建议的文本
+         */
+        std::string queryCancelErrorText()
+        {
+            return composeNativeErrorText("执行中的 SQL 语句被外部取消请求中断", "interrupted；调用方应回滚未完成的事务，并丢弃或重置这条连接后再复用",
+                                          sqlite3_errstr(SQLITE_INTERRUPT), SQLITE_INTERRUPT);
+        }
+
+        /**
          * @brief 把一段文本载荷绑进槽位，超长在发起绑定之前就拒
          * @details 绑定长度的形参是 int，超限会被静默截断，写进去的就不是原来那串，因此在这里就拒并交出原因。
          *          SQLITE_TRANSIENT 让 SQLite 立刻复制一份文本：语句的 step 可能晚于本函数返回（带返回列的
@@ -303,13 +313,13 @@ namespace AsynGyanis::Database
                     detachCachedStatement(commandText);
                 }
 
-                // 被语句时限打断时，结果集只能报出底层的 "interrupted"，看不出是谁打断的、该调哪个参数，
-                // 这里换成本驱动的中文文案；与时限无关的错误（锁超时、IO 错误）原样交给调用方。
-                // 打断那一支要把 SQLITE_INTERRUPT 一起配上码：文案写着「（错误码 9）」而
-                // lastNativeErrorCode() 读出 -1，就等于告诉调用方「这条原因没有码」
-                if (m_statementDeadlineHit)
+                // 被语句时限或外部取消打断时，结果集只能报出底层的 "interrupted"，看不出是谁打断的，
+                // 这里换成本驱动的中文文案；其余错误（锁超时、IO 错误）原样交给调用方。打断都要配上
+                // SQLITE_INTERRUPT：文案写着「（错误码 9）」而 lastNativeErrorCode() 是 -1 就是自相矛盾
+                const bool isExternalCancel = m_cancelRequested.load(std::memory_order_acquire) && sqlite3_errcode(m_database) == SQLITE_INTERRUPT;
+                if (isExternalCancel || m_statementDeadlineHit)
                 {
-                    m_lastError.assignNative(statementDeadlineErrorText(), SQLITE_INTERRUPT);
+                    m_lastError.assignNative(isExternalCancel ? queryCancelErrorText() : statementDeadlineErrorText(), SQLITE_INTERRUPT);
                 } else
                 {
                     m_lastError = preScanError;
@@ -867,10 +877,26 @@ namespace AsynGyanis::Database
         return true;
     }
 
+    bool SqliteConnection::requestQueryCancel() noexcept
+    {
+        if (m_database == nullptr)
+        {
+            return false;
+        }
+        // 标记先置：captureError 靠它把「外部取消」与「语句时限」「外部锁竞争」分开
+        m_cancelRequested.store(true, std::memory_order_release);
+        // SQLite 官方的跨线程中断入口：正在 step 的语句在下一个虚拟指令边界以 SQLITE_INTERRUPT 结束，
+        // 对空闲连接调用则落到下一条语句（调用方应在确认有语句在跑时再请求）
+        sqlite3_interrupt(m_database);
+        return true;
+    }
+
     void SqliteConnection::armStatementDeadline(const int milliseconds) noexcept
     {
         // 每次装时限都先清掉上一次的打断标记：残留标记会把下一次不相关的失败文案改写成「超时」
         m_statementDeadlineHit = false;
+        // 取消请求只作用于「调用时正在执行的那一条」：上一条遗留的请求不能打断这一条
+        m_cancelRequested.store(false, std::memory_order_relaxed);
 
         if (milliseconds <= 0)
         {
@@ -917,15 +943,14 @@ namespace AsynGyanis::Database
 
     void SqliteConnection::captureError(const std::string_view description)
     {
-        // 本驱动主动打断的语句，底层错误文本只剩 "interrupted" 这一个词：换成带原因与出路的中文文案，
-        // 否则调用方分不清是自己调了 sqlite3_interrupt、是被时限打断、还是外部锁竞争。
-        // 判据只看装时限期间置起的那个标记：它每执行一条语句先清零，只有本驱动的回调会置位，
-        // 而回调一旦置位本次 step 就以 SQLITE_INTERRUPT 收场，等锁超时（SQLITE_BUSY）走不到这一格
-        if (m_statementDeadlineHit)
+        // 外部取消与语句时限都以 SQLITE_INTERRUPT 收场：先看原生码再看标记，避免把语法错、锁竞争
+        // 这类同样走 captureError 的失败误报成「被取消」。两个标记都在每条语句入口清零
+        const bool isExternalCancel = m_cancelRequested.load(std::memory_order_acquire) && m_database != nullptr && sqlite3_errcode(m_database) == SQLITE_INTERRUPT;
+        if (isExternalCancel || m_statementDeadlineHit)
         {
-            // 与时限无关的错误才走下面的 errmsg 路径；这一支同样要成对：只写文本会让码停在 -1，
-            // 而 QueryExecutionException 那张判定表点名的就是「SQLite 9 INTERRUPT」
-            m_lastError.assignNative(statementDeadlineErrorText(), SQLITE_INTERRUPT);
+            // 两类打断都要把码配上：只写文本会让 lastNativeErrorCode() 停在 -1，而 QueryExecutionException
+            // 的判定表点名的正是「SQLite 9 INTERRUPT」这一格
+            m_lastError.assignNative(isExternalCancel ? queryCancelErrorText() : statementDeadlineErrorText(), SQLITE_INTERRUPT);
             return;
         }
 

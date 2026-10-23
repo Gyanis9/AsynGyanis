@@ -1554,6 +1554,7 @@ namespace AsynGyanis::Net
         };
         const Action action = [](WebSocketClient &client, ClientRunOutcome &outcome) -> Core::Task<void>
         {
+            EXPECT_EQ(client.peerIdentity(), nullptr) << "明文 ws 没有对端证书，身份必须是空";
             const auto started = std::chrono::steady_clock::now();
             bool       isSent  = true;
             for (int frameIndex = 0; frameIndex < 256 && isSent; ++frameIndex)

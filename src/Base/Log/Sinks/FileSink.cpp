@@ -68,9 +68,23 @@ namespace AsynGyanis::Base
         }
     }
 
+    FileSink::FileSink(std::ostream &stream) : m_filePath("<injected>"), m_injectedStream(&stream), m_immediateFlush(false)
+    {
+    }
+
     FileSink::~FileSink()
     {
         FileSink::flush();
+    }
+
+    std::ostream &FileSink::targetStream() noexcept
+    {
+        return m_injectedStream != nullptr ? *m_injectedStream : m_file;
+    }
+
+    bool FileSink::isStreamOpen() const noexcept
+    {
+        return m_injectedStream != nullptr || m_file.is_open();
     }
 
     void FileSink::write(const LogEvent &event)
@@ -92,7 +106,7 @@ namespace AsynGyanis::Base
 
     std::size_t FileSink::writePreparedLineLocked()
     {
-        if (!m_file.is_open())
+        if (!isStreamOpen())
         {
             // 文件没打开（重开失败）时整条 Sink 不写：这一笔要留下读数，
             // 否则「日志在偷偷少」只有人肉翻标准错误才发现得到
@@ -104,21 +118,21 @@ namespace AsynGyanis::Base
         // 流始终按二进制打开，落盘字节与文本模式逐字一致
         m_lineBuffer.push_back('\n');
         Platform::TextEncoding::applyNativeLineEndings(m_lineBuffer);
-        m_file << m_lineBuffer;
+        targetStream() << m_lineBuffer;
 
         // 逐行同步（配置装出来的 sink 默认走这一步，见构造参数）：不交出去的那半行采集端与
         // 崩溃后的现场都读不到。放在流状态检查之前，让 flush 期间的失败（设备满、配额耗尽）
         // 与写入失败走同一个判据与同一本丢行账，不再多一条只在一侧出声的路
         if (m_immediateFlush)
         {
-            m_file.flush();
+            targetStream().flush();
         }
 
         // 写入后必须看流状态：磁盘写满或配额耗尽时插入不会抛异常，只会把 failbit/badbit 置起，
         // 此后每次 << 都是空操作——日志整片静默消失，而返回值还在报「写成功了」。
         // 这里如实返回 0，诊断交给 reportStreamFailureOnceLocked（连续失败只报第一条）
         reportStreamFailureOnceLocked();
-        if (!m_file.good())
+        if (!targetStream().good())
         {
             m_skippedLineCount.fetch_add(1, std::memory_order_relaxed);
             return 0;
@@ -132,7 +146,7 @@ namespace AsynGyanis::Base
 
     void FileSink::reportStreamFailureOnceLocked()
     {
-        if (m_file.good())
+        if (targetStream().good())
         {
             // 恢复过一次成功写入就重新武装：下一次故障还要出声
             m_hasReportedWriteFailure = false;
@@ -151,9 +165,9 @@ namespace AsynGyanis::Base
     void FileSink::flush()
     {
         std::lock_guard lock(m_mutex);
-        if (m_file.is_open())
+        if (isStreamOpen())
         {
-            m_file.flush();
+            targetStream().flush();
             // 缓冲没满时 << 只在内存里追加，设备满、配额耗尽往往要到这一次同步才浮出来。
             // 刷完不回头看流状态，「Fatal 那条已经落盘」就等于没人核过：打完就 abort 的调用方
             // 丢了最后一条日志，而现场连一句诊断都没有
@@ -164,6 +178,12 @@ namespace AsynGyanis::Base
     void FileSink::reopen(const std::filesystem::path &newPath)
     {
         std::lock_guard lock(m_mutex);
+        if (m_injectedStream != nullptr)
+        {
+            // 注入流没有真实文件可换；只更新诊断目标，写/刷仍走调用方交来的那条流
+            m_filePath = newPath;
+            return;
+        }
         m_file.close();
         m_filePath = newPath;
         // 换了一条流，上一个流上的失败不该压着新的：下一次再失败要重新报一次

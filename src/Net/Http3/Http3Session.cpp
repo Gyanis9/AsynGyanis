@@ -1650,6 +1650,7 @@ namespace AsynGyanis::Net
         tunnel->peer = m_loop != nullptr ? std::make_shared<WebSocketPeer>(tunnelSender, m_metrics.get(), *m_loop) : std::make_shared<WebSocketPeer>(tunnelSender, m_metrics.get());
         // 登记共享所有权：集线器的写协程在挂起期间持一份，隧道记录先销毁时对端对象仍能活到本轮写出结束
         tunnel->peer->setLifetimeOwner(tunnel->peer);
+        tunnel->peer->setTlsPeerIdentity(m_tlsPeerIdentity);
         // 协商结论交给对端对象：决定收发两侧是否用 RSV1 压缩帧
         tunnel->peer->setPerMessageDeflate(deflateNegotiation.window);
         // 入站消息的闸门跟着本会话的解析上限走：不交这一句就等于这条通道只认出厂那 8 MiB
