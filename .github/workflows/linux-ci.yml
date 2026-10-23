@@ -462,7 +462,10 @@ jobs:
       # `DeadlineGuard`（建连竞速与取消观察者）。这些类的协程帧会跨循环投递，名字不在这份词表里就一条都不跑
       # Transaction 族的 m_isActive 由同事务语句线程与提交路径共享；过滤集此前只覆盖 ConnectionPool，
       # 该用例因此从未进过 TSan 档
-      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|Transaction|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash|AsyncResolver|HttpClient|HttpOutboundConnectionPool|HttpProxyE2E|ConnectionRace|CancellationWatch|Cancelable|DeadlineGuard"
+      # 2026-10-23 把两个新类的名字显式写进来：PooledResultLease 的流式用例名不含 Connection
+      # （此前只会靠该子串偶然命中，改名就会掉出筛面），HttpDatabaseGateway 也不该依赖偶然命中。
+      # 实测筛面由 2401 增到 2402
+      TSAN_TEST_FILTER: "Scheduler|Thread|Timer|EventLoop|IoWatcher|TcpServer|TcpAcceptor|TcpStream|Connection|HttpSession|HttpStreaming|Http2|WebSocket|FileWatcher|EventNotifier|AsyncSink|ConnectionPool|Transaction|AsyncExecutor|Logger|Config|WorkerSupervisor|ServiceWatchdog|Tracer|Reload|Http3|Middleware|Budget|CoroutinePool|Tls|Crash|AsyncResolver|HttpClient|HttpOutboundConnectionPool|HttpProxyE2E|ConnectionRace|CancellationWatch|Cancelable|DeadlineGuard|PooledResultLease|HttpDatabaseGateway"
       # 筛面下限：2026-10-01 实测命中 1325 / 全量 3669，往下留一档。
       # 掉到这条线以下有两种真相：类名改了，或新增的跨线程面根本不在这 30 个词里——
       # 两者的外观都与「TSan 全绿」同形，所以判据必须钉在条数上而不是只跑一次
