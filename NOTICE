@@ -5,7 +5,8 @@ This product is licensed under the Apache License, Version 2.0.
 You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
 This product includes a vendored copy of conan_provider.cmake from the
-CMake-Conan project (conan-io/cmake-conan). That project's LICENSE file states
+CMake-Conan project (conan-io/cmake-conan,
+https://github.com/conan-io/cmake-conan). That project's LICENSE file states
 the MIT License, Copyright (c) 2019 JFrog. The vendored file itself carries no
 copyright or permission header, and this repository ships no copy of the
 upstream license text, so the upstream LICENSE file is where that grant can be
