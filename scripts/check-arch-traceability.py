@@ -33,7 +33,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMMENT_PREFIXES = ("//", "*", "/*", "#", ";;", "<!--")
 # 正文里手写的「路径:行号」有四种形状：完整路径、只带后缀、单冒号续写、顿号续写，后三种都从
 # 前一个完整路径继承所属文件，所以一段正文一次扫完、按出现顺序接力：续写才找得着主人。
-SOURCE_EXTS = r"cpp|h|hpp|py|sh|json|ya?ml|md|txt"
+SOURCE_EXTS = r"cpp|h|hpp|py|sh|json|ya?ml|md|txt|cmake"
 PROSE_REF_RE = re.compile(
     rf"(?P<path>[A-Za-z0-9_./+-]+\.(?:{SOURCE_EXTS})):(?P<full>\d+)"
     rf"|(?P<ext>\.{SOURCE_EXTS}):(?P<suffixed>\d+)"
