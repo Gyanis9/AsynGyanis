@@ -352,10 +352,42 @@ def test_comment_budget(root: Path) -> None:
 
 def test_traceability(root: Path) -> None:
     """追溯门自证：夹具树里造台账正文，种违规必红、撤掉必绿，提取数塌了按「门没跑成」退 2。"""
-    write(root / "README.md", "# 标题\n\n见 src/Base/Log/Logger.h:2 的类声明。\n")
-    write(root / "src" / "Base" / "Log" / "Logger.h", "#pragma once\nclass Logger {};\n")
+    readme = root / "README.md"
+    source = root / "src" / "Base" / "Log" / "Logger.h"
+    # 末行留一个空行：正文引用落到它时要判成「引到空行」而不是「越过文件末尾」，两种红不同判据
+    write(source, "#pragma once\nclass Logger {};\nint makeLogger();\n\n")
+    write(readme, "# 标题\n\n证据：src/Base/Log/Logger.h:2。\n")
     result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
-    expect("traceability 图工件缺失时退 2（判据此刻仍读图）", result, 2, "读不到")
+    expect("traceability 无图工件仍判正文", result, 0, "ARCH_TRACE_GATE=OK", "TOTAL_PROSE_REFS=1")
+
+    write(readme, "# 标题\n\n证据：src/Base/Log/Logger.h:5。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 越 EOF", result, 1, "PROSE_LINE_BEYOND_EOF", "ARCH_TRACE_GATE=FAIL")
+
+    write(readme, "# 标题\n\n证据：src/Base/Log/Logger.h:4。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 空行", result, 1, "PROSE_LINE_BLANK")
+
+    write(readme, "# 标题\n\n区间：src/Base/Log/Logger.h:2..9 与倒挂 src/Base/Log/Logger.h:4..2。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 区间越界与倒挂", result, 1, "PROSE_END_LINE_BEYOND_EOF", "PROSE_END_LINE_BEFORE_START")
+
+    write(readme, "# 标题\n\n```mermaid\nflowchart LR\n    A[Base] --> B[Core]\n```\n\n证据：src/Base/Log/Logger.h:2。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 栅栏后的证据行照样计数", result, 0, "TOTAL_PROSE_REFS=1")
+
+    write(readme, "# 标题\n\n证据：src/Base/Log/Logger.h:2、3。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "3")
+    expect("traceability 提取数塌到地板下", result, 2, "判据没吃到东西")
+
+    write(source, "// 注释行\nint f();\n")
+    write(readme, "# 标题\n\n证据：src/Base/Log/Logger.h:1。\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 注释行只警告", result, 0, "PROSE_LINE_ON_COMMENT", "ARCH_TRACE_GATE=OK")
+
+    (root / "empty").mkdir(parents=True, exist_ok=True)
+    result = run_script("check-arch-traceability.py", root / "empty", "--min-refs", "1")
+    expect("traceability 扫描面整片消失退 2", result, 2, "一份都没读到")
 
 
 def main() -> int:
