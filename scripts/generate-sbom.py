@@ -54,8 +54,8 @@ def project_version() -> str:
 def read_truth_source(path: Path, purpose: str) -> str:
     """读一处判据的真值来源；文件不在就是判据没跑成，红在明面上而不是抛 FileNotFoundError 栈。
 
-    产物先写、核对后做，核对一崩已写出的 SBOM 就留在盘上没人收——所以真值缺位要走
-    SystemExit 的成文口径，与本脚本对台账、对 conandata.yml 的处理完全一致。
+    真值缺位走 SystemExit 的成文口径，与本脚本对台账、对 conandata.yml 的处理完全一致；
+    调用点的核对段会把已写出的产物连同校验和文件一并收掉。
     """
     if not path.exists():
         raise SystemExit(f"缺少 {path.relative_to(REPO_ROOT).as_posix()}，{purpose}")
@@ -188,59 +188,67 @@ def main() -> int:
     # 行尾钉成 LF：跨平台逐字节稳定（Windows 文本模式默认写 CRLF，POSIX 侧 sha256sum -c 会读不了）
     target.write_text(json.dumps(bom, ensure_ascii=False, indent=2, sort_keys=False) + "\n", encoding="utf-8", newline="\n")
 
-    # 自检：能解析、组件数与清单条数一致、每个组件都有版本与 purl。过不了就删掉产物并非零退出，
-    # 免得一份「看着有其实是空壳」的 SBOM 被当成审计证据交出去
-    with target.open(encoding="utf-8") as handle:
-        parsed = json.load(handle)
-    parsedComponents = parsed.get("components", [])
-    problems = []
-    if len(parsedComponents) != len(components):
-        problems.append(f"组件数 {len(parsedComponents)} 与清单条数 {len(components)} 不一致")
-    for component in parsedComponents:
-        if not component.get("version") or not component.get("purl"):
-            problems.append("存在缺 version/purl 的组件：" + str(component.get("name")))
-        # 许可必须在：新增依赖而台账没补 license 字段时，这里当场红——第三方台账的「许可」一面
-        # 不能靠人记着补（台账的 license 字段与 SBOM 的 licenses 是同一份数据的两个出口）
-        if not component.get("licenses"):
-            problems.append("存在缺 licenses 的组件（补 packaging/dependency-watch.json 的 license 字段）：" + str(component.get("name")))
-
-    selfComponent = parsed.get("metadata", {}).get("component", {})
-    # 自家许可也有两个出口（LICENSE 正文与包元数据），与依赖台账同一条底线：分叉就红
-    selfLicenses = selfComponent.get("licenses")
-    if not selfLicenses:
-        problems.append("SBOM 的顶层组件缺 licenses：自家许可不能只在 LICENSE 里说一遍")
-    else:
-        # 缺键已经单独报过，不再补一条「'' 与 … 不同解」：一个根因只许占一条问题
-        declared = (selfLicenses[0].get("license") or {}).get("id", "")
-        if declared != licenseId:
-            problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {licenseId!r} 不同解")
-
-    # 配方的 license 字段只认唯一命中：多处命中时先出现的那条会顶掉包元数据，判据就成了空转
-    recipeText = read_truth_source(CONAN_RECIPE, "配方许可读不到，三处同解的核对跑不成")
-    recipeHits = re.findall(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
-    if not recipeHits:
-        problems.append(
-            "判据在 packaging/conan/conanfile.py 里没找到 license 字段：这一路的真值缺位"
-        )
-    elif len(recipeHits) > 1:
-        problems.append(
-            f"packaging/conan/conanfile.py 里命中 {len(recipeHits)} 处 license 赋值，"
-            "判据无法认定哪一处是包元数据"
-        )
-    elif recipeHits[0] != licenseId:
-        problems.append(f"Conan 配方许可 {recipeHits[0]!r} 与 LICENSE 判型 {licenseId!r} 不同解")
-
     checksumFile = outputDirectory / "SHA256SUMS"
-    if problems:
-        # 失败时连校验和文件一起收掉：留着它是旧产物的残凭据，下游按 SHA256SUMS 核验时
-        # 会把一个已被删除（或压根不完整）的 SBOM 读成「通过」。
+    # 自检与真值核对共用一处清理：真值缺失抛的是 SystemExit，不走下面的 problems 分支，
+    # 不兜住就会把没核对完的 SBOM 留在盘上，正是自检要防的「看着有其实是空壳」
+    try:
+        # 自检：能解析、组件数与清单条数一致、每个组件都有版本与 purl。过不了就删掉产物并非零退出，
+        # 免得一份「看着有其实是空壳」的 SBOM 被当成审计证据交出去
+        with target.open(encoding="utf-8") as handle:
+            parsed = json.load(handle)
+        parsedComponents = parsed.get("components", [])
+        problems = []
+        if len(parsedComponents) != len(components):
+            problems.append(f"组件数 {len(parsedComponents)} 与清单条数 {len(components)} 不一致")
+        for component in parsedComponents:
+            if not component.get("version") or not component.get("purl"):
+                problems.append("存在缺 version/purl 的组件：" + str(component.get("name")))
+            # 许可必须在：新增依赖而台账没补 license 字段时，这里当场红——第三方台账的「许可」一面
+            # 不能靠人记着补（台账的 license 字段与 SBOM 的 licenses 是同一份数据的两个出口）
+            if not component.get("licenses"):
+                problems.append("存在缺 licenses 的组件（补 packaging/dependency-watch.json 的 license 字段）：" + str(component.get("name")))
+
+        selfComponent = parsed.get("metadata", {}).get("component", {})
+        # 自家许可也有两个出口（LICENSE 正文与包元数据），与依赖台账同一条底线：分叉就红
+        selfLicenses = selfComponent.get("licenses")
+        if not selfLicenses:
+            problems.append("SBOM 的顶层组件缺 licenses：自家许可不能只在 LICENSE 里说一遍")
+        else:
+            # 缺键已经单独报过，不再补一条「'' 与 … 不同解」：一个根因只许占一条问题
+            declared = (selfLicenses[0].get("license") or {}).get("id", "")
+            if declared != licenseId:
+                problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {licenseId!r} 不同解")
+
+        # 配方的 license 字段只认唯一命中：多处命中时先出现的那条会顶掉包元数据，判据就成了空转
+        recipeText = read_truth_source(CONAN_RECIPE, "配方许可读不到，三处同解的核对跑不成")
+        recipeHits = re.findall(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
+        if not recipeHits:
+            problems.append(
+                "判据在 packaging/conan/conanfile.py 里没找到 license 字段：这一路的真值缺位"
+            )
+        elif len(recipeHits) > 1:
+            problems.append(
+                f"packaging/conan/conanfile.py 里命中 {len(recipeHits)} 处 license 赋值，"
+                "判据无法认定哪一处是包元数据"
+            )
+        elif recipeHits[0] != licenseId:
+            problems.append(f"Conan 配方许可 {recipeHits[0]!r} 与 LICENSE 判型 {licenseId!r} 不同解")
+
+        if problems:
+            # 失败时连校验和文件一起收掉：留着它是旧产物的残凭据，下游按 SHA256SUMS 核验时
+            # 会把一个已被删除（或压根不完整）的 SBOM 读成「通过」。
+            target.unlink(missing_ok=True)
+            checksumFile.unlink(missing_ok=True)
+            print("SBOM 自检失败：" + "；".join(problems), file=sys.stderr)
+            return 1
+
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        checksumFile.write_text(f"{digest}  {target.name}\n", encoding="utf-8", newline="\n")
+    except BaseException:
+        # 任何非零出口都先收掉产物，再让异常照原样冒出去
         target.unlink(missing_ok=True)
         checksumFile.unlink(missing_ok=True)
-        print("SBOM 自检失败：" + "；".join(problems), file=sys.stderr)
-        return 1
-
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    checksumFile.write_text(f"{digest}  {target.name}\n", encoding="utf-8", newline="\n")
+        raise
 
     print(f"已生成 {target}（{len(parsedComponents)} 个组件，版本 {version}，提交 {revision[:8]}）")
     print(f"SHA256 {digest}")
