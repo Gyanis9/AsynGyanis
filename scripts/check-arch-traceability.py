@@ -51,8 +51,9 @@ LEDGER_PROSE_FILES = (
     "docs/部署与运维.md", "docs/配置与可观测性.md", "docs/测试与验证.md", "docs/性能测试.md",
 )
 # 提取数下限：正则失配、扫描清单被改名、台账整片不见都会让提取数塌下来而门照绿。
-# 地板取历史档（正文 114）往下留一截：正常增删碰不到，结构性变化一定触发
-MINIMUM_TOTAL_PROSE_REFS = 100
+# 本档取裁掉图解半边后 markdown 台账的实测提取数（SECURITY 3 条、其余台账 0 条，含续写形式共 2）；
+# 图内引用搬回正文的那批提交完成后，按当时同一实测重钉。正常增删碰不到，结构性变化一定触发
+MINIMUM_TOTAL_PROSE_REFS = 2
 
 
 def classify_line(lines, number):
