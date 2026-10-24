@@ -1664,10 +1664,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住 receiveFor() 的超时任务不会把裸句柄留在调度队列里
-     * @details 帧在超时任务首次派发之前到达时，等待体就地恢复并在 await_resume() 里销毁定时任务。
-     *          定时任务若是被 schedule() 排进队列的，队列里那条句柄随后就指向已释放的帧，派发侧
-     *          对帧调 done() 即释放后使用。循环刻意不启动，由本线程 runAll() 制造「帧已销毁」
-     *          与「句柄待派发」的确定先后，不依赖调度运气。
+     * @details 帧在时限内到达时，等待体就地恢复并在 await_resume() 里销毁定时任务；随后由本线程
+     *          派发队列里剩下的东西。定时任务若被排进调度器而不是就地首拍，那条裸句柄就会在
+     *          这一趟派发里指向已释放的帧，派发侧对帧调 done() 即释放后使用。循环刻意不启动，
+     *          由 runAll() 制造确定先后，不依赖调度运气。
      */
     TEST(WebSocketPeerContract, ReceiveForLeavesNoQueuedHandleWhenAFrameBeatsTheTimeoutTask)
     {
@@ -1678,7 +1678,7 @@ namespace AsynGyanis::Net
         auto                            receiverBody = [&]() -> Core::Task<> { received = co_await peer.receiveFor(std::chrono::seconds{2}); };
         Core::Task<>                    receiver     = receiverBody();
 
-        receiver.handle().resume(); // 挂在 receiveFor 上：超时任务已创建，尚未首拍
+        receiver.handle().resume(); // 挂在 receiveFor 上：超时任务已在其中就地首拍，挂在定时器上
         const std::string frame = maskedClientFrame(0x1, "hello");
         ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted);
         ASSERT_TRUE(receiver.isReady()) << "帧到达没有就地恢复接收方";
