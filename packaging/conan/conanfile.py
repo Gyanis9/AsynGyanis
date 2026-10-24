@@ -78,7 +78,7 @@ class AsynGyanisLibrary(ConanFile):
         copy(self, "src/**", src=repository_root, dst=self.export_sources_folder)
         copy(self, "cmake/**", src=repository_root, dst=self.export_sources_folder)
         # LICENSE 与 NOTICE 必须一起导出：包在别处构建时 self.recipe_folder 指向缓存，仓库根已不存在，
-        # 而 Apache-2.0 第 4 条要求再分发时连带 NOTICE。
+        # 而 Apache-2.0 第 4(d) 条要求再分发时连带 NOTICE。
         copy(self, "LICENSE", src=repository_root, dst=self.export_sources_folder)
         copy(self, "NOTICE", src=repository_root, dst=self.export_sources_folder)
 

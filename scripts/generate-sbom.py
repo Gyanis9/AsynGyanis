@@ -49,6 +49,16 @@ def project_version() -> str:
     return match.group(1)
 
 
+def project_license() -> str:
+    """从 LICENSE 正文判项目自有许可，读不出就是说不清自己是什么许可，按红处理。"""
+    text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8", errors="replace")
+    if "Apache License" in text and "Version 2.0" in text:
+        return "Apache-2.0"
+    if "Permission is hereby granted, free of charge" in text:
+        return "MIT"
+    raise SystemExit("LICENSE 判不出许可：只认 Apache-2.0 与 MIT 两种正文形状")
+
+
 def git_revision() -> str:
     """当前提交号；CI 里 checkout 之后一定有，本地也一定有。拿不到就当场失败。"""
     result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True)
@@ -144,6 +154,7 @@ def main() -> int:
                 "name": "AsynGyanis",
                 "version": version,
                 "description": "C++23 协程异步服务器引擎（HTTP/1.1、HTTP/2、HTTP/3+QUIC、WebSocket、数据库驱动）",
+                "licenses": [{"license": {"id": project_license()}}],
                 "properties": [{"name": "vcs:commit", "value": revision}],
                 "externalReferences": [{"type": "vcs", "url": git_remote_url()}] if git_remote_url() else [],
             },
@@ -177,6 +188,21 @@ def main() -> int:
         # 不能靠人记着补（台账的 license 字段与 SBOM 的 licenses 是同一份数据的两个出口）
         if not component.get("licenses"):
             problems.append("存在缺 licenses 的组件（补 packaging/dependency-watch.json 的 license 字段）：" + str(component.get("name")))
+
+    selfComponent = parsed.get("metadata", {}).get("component", {})
+    # 自家许可也有两个出口（LICENSE 正文与包元数据），与依赖台账同一条底线：分叉就红
+    if not selfComponent.get("licenses"):
+        problems.append("SBOM 的顶层组件缺 licenses：自家许可不能只在 LICENSE 里说一遍")
+    recipeLicense = ""
+    recipeText = (REPO_ROOT / "packaging" / "conan" / "conanfile.py").read_text(encoding="utf-8", errors="replace")
+    match = re.search(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
+    if match:
+        recipeLicense = match.group(1)
+    declared = (selfComponent.get("licenses") or [{}])[0].get("license", {}).get("id", "")
+    if declared != project_license():
+        problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {project_license()!r} 不同解")
+    if recipeLicense != project_license():
+        problems.append(f"Conan 配方许可 {recipeLicense!r} 与 LICENSE 判型 {project_license()!r} 不同解")
 
     checksumFile = outputDirectory / "SHA256SUMS"
     if problems:
