@@ -7,6 +7,7 @@
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -52,14 +53,18 @@ def project_version() -> str:
 
 
 def read_truth_source(path: Path, purpose: str) -> str:
-    """读一处判据的真值来源；文件不在就是判据没跑成，红在明面上而不是抛 FileNotFoundError 栈。
+    """读一处判据的真值来源；文件不在或读不了都是判据没跑成，红在明面上而不是抛 OSError 栈。
 
-    真值缺位走 SystemExit 的成文口径，与本脚本对台账、对 conandata.yml 的处理完全一致；
-    调用点的核对段会把已写出的产物连同校验和文件一并收掉。
+    真值缺位走 SystemExit 的成文口径，与本脚本对台账、对 conandata.yml 的处理一致；
+    权限与路径是目录同样走这个口径：判据没跑成不是脚本崩溃，接收方要看的是同一句说明。
     """
+    displayPath = path.relative_to(REPO_ROOT).as_posix()
     if not path.exists():
-        raise SystemExit(f"缺少 {path.relative_to(REPO_ROOT).as_posix()}，{purpose}")
-    return path.read_text(encoding="utf-8", errors="replace")
+        raise SystemExit(f"缺少 {displayPath}，{purpose}")
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise SystemExit(f"读不了 {displayPath}（{error.strerror or error}），{purpose}") from error
 
 
 def project_license() -> str:
@@ -70,6 +75,47 @@ def project_license() -> str:
     if "Permission is hereby granted, free of charge" in text:
         return "MIT"
     raise SystemExit("LICENSE 判不出许可：只认 Apache-2.0 与 MIT 两种正文形状")
+
+
+def recipe_license_assignments() -> list:
+    """读配方 ConanFile 类体里对 license 的类级赋值，按出现次序返回字符串常量值。
+
+    只认类体这一层的普通赋值与带注解赋值：Conan 从类属性读元数据，方法体里的同名赋值
+    不参与；文本扫描分不清这一层，换行与转义还会让命中数偏离真实赋值数。
+    """
+    text = read_truth_source(CONAN_RECIPE, "配方许可读不到，三处同解的核对跑不成")
+    try:
+        tree = ast.parse(text, filename=CONAN_RECIPE.as_posix())
+    except SyntaxError as error:
+        raise SystemExit(
+            f"packaging/conan/conanfile.py 第 {error.lineno} 行解析不了，配方许可无从核对"
+        ) from error
+    values = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        # 只认直接继承 ConanFile 的配方类：同文件里别的辅助类不承载包元数据
+        isRecipeClass = any(
+            (isinstance(base, ast.Name) and base.id == "ConanFile")
+            or (isinstance(base, ast.Attribute) and base.attr == "ConanFile")
+            for base in node.bases
+        )
+        if not isRecipeClass:
+            continue
+        for statement in node.body:
+            if isinstance(statement, ast.Assign):
+                names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                names = [statement.target.id]
+                value = statement.value
+            else:
+                continue
+            if "license" not in names:
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                values.append(value.value)
+    return values
 
 
 def git_revision() -> str:
@@ -142,10 +188,21 @@ def main() -> int:
     parser.add_argument("--out", default=str(REPO_ROOT / "sbom"), help="输出目录（默认仓库根下的 sbom/）")
     arguments = parser.parse_args()
 
+    outputDirectory = Path(arguments.out)
+    outputDirectory.mkdir(parents=True, exist_ok=True)
+    # 输出目录一到手就先收掉上一轮的同名产物：真值随后才读，读不出来时目录里也不能留着
+    # 上一轮的 SBOM 与 SHA256SUMS 冒充本轮结果。这一步在任何真值读取之前。
+    for staleArtifact in outputDirectory.glob("AsynGyanis-*.cdx.json"):
+        staleArtifact.unlink(missing_ok=True)
+    checksumFile = outputDirectory / "SHA256SUMS"
+    checksumFile.unlink(missing_ok=True)
+
     version = project_version()
     # 自有许可只判一次：写产物与自检读同一个值，不给「同一轮里读出两种答案」留口子
     licenseId = project_license()
     revision = git_revision()
+    # origin URL 同样只读一次：两次读之间配置变了，同一份 SBOM 的两处 vcs 信息就会分叉
+    remoteUrl = git_remote_url()
     watchEntries = load_watch_entries()
     requirements = parse_requirements()
     # 每条依赖都要在台账里有条目：名与许可从那里读，缺了就是「新增依赖没走登记」
@@ -171,7 +228,7 @@ def main() -> int:
                 "description": "C++23 协程异步服务器引擎（HTTP/1.1、HTTP/2、HTTP/3+QUIC、WebSocket、数据库驱动）",
                 "licenses": [{"license": {"id": licenseId}}],
                 "properties": [{"name": "vcs:commit", "value": revision}],
-                "externalReferences": [{"type": "vcs", "url": git_remote_url()}] if git_remote_url() else [],
+                "externalReferences": [{"type": "vcs", "url": remoteUrl}] if remoteUrl else [],
             },
         },
         "components": components,
@@ -182,16 +239,15 @@ def main() -> int:
     }
     bom["metadata"]["component"]["bom-ref"] = "pkg:generic/AsynGyanis@" + version
 
-    outputDirectory = Path(arguments.out)
-    outputDirectory.mkdir(parents=True, exist_ok=True)
     target = outputDirectory / f"AsynGyanis-{version}.cdx.json"
-    # 行尾钉成 LF：跨平台逐字节稳定（Windows 文本模式默认写 CRLF，POSIX 侧 sha256sum -c 会读不了）
-    target.write_text(json.dumps(bom, ensure_ascii=False, indent=2, sort_keys=False) + "\n", encoding="utf-8", newline="\n")
-
-    checksumFile = outputDirectory / "SHA256SUMS"
-    # 自检与真值核对共用一处清理：真值缺失抛的是 SystemExit，不走下面的 problems 分支，
-    # 不兜住就会把没核对完的 SBOM 留在盘上，正是自检要防的「看着有其实是空壳」
+    # 写入、自检与写校验和共用一处清理：任何出口（含 Ctrl-C）都先收掉两个文件再让异常
+    # 照原样冒出去，盘上不留半份 SBOM 或与它配不上对的 SHA256SUMS
     try:
+        # 行尾钉成 LF：跨平台逐字节稳定（Windows 文本模式默认写 CRLF，
+        # POSIX 侧 sha256sum -c 会读不了）
+        payload = json.dumps(bom, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+        target.write_text(payload, encoding="utf-8", newline="\n")
+
         # 自检：能解析、组件数与清单条数一致、每个组件都有版本与 purl。过不了就删掉产物并非零退出，
         # 免得一份「看着有其实是空壳」的 SBOM 被当成审计证据交出去
         with target.open(encoding="utf-8") as handle:
@@ -219,9 +275,9 @@ def main() -> int:
             if declared != licenseId:
                 problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {licenseId!r} 不同解")
 
-        # 配方的 license 字段只认唯一命中：多处命中时先出现的那条会顶掉包元数据，判据就成了空转
-        recipeText = read_truth_source(CONAN_RECIPE, "配方许可读不到，三处同解的核对跑不成")
-        recipeHits = re.findall(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
+        # 配方的 license 类级赋值只认唯一一处：Conan 多处赋值时取哪一处由它自己决定，
+        # 判据无法认定哪一条是包元数据，只能红
+        recipeHits = recipe_license_assignments()
         if not recipeHits:
             problems.append(
                 "判据在 packaging/conan/conanfile.py 里没找到 license 字段：这一路的真值缺位"
