@@ -190,14 +190,14 @@ def main() -> int:
 
     outputDirectory = Path(arguments.out)
     outputDirectory.mkdir(parents=True, exist_ok=True)
-    # 输出目录一到手就先收掉上一轮的同名产物：真值随后才读，读不出来时目录里也不能留着
-    # 上一轮的 SBOM 与 SHA256SUMS 冒充本轮结果。这一步在任何真值读取之前。
-    for staleArtifact in outputDirectory.glob("AsynGyanis-*.cdx.json"):
-        staleArtifact.unlink(missing_ok=True)
+    # 产物名带版本号，先读版本才点名得到本轮自己的两份产物；预清理只删这两条路径，
+    # 同目录里别的版本 SBOM 与其它文件都不归这次运行处置。
+    version = project_version()
+    target = outputDirectory / f"AsynGyanis-{version}.cdx.json"
     checksumFile = outputDirectory / "SHA256SUMS"
+    target.unlink(missing_ok=True)
     checksumFile.unlink(missing_ok=True)
 
-    version = project_version()
     # 自有许可只判一次：写产物与自检读同一个值，不给「同一轮里读出两种答案」留口子
     licenseId = project_license()
     revision = git_revision()
@@ -239,7 +239,6 @@ def main() -> int:
     }
     bom["metadata"]["component"]["bom-ref"] = "pkg:generic/AsynGyanis@" + version
 
-    target = outputDirectory / f"AsynGyanis-{version}.cdx.json"
     # 写入、自检与写校验和共用一处清理：任何出口（含 Ctrl-C）都先收掉两个文件再让异常
     # 照原样冒出去，盘上不留半份 SBOM 或与它配不上对的 SHA256SUMS
     try:
