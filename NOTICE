@@ -5,8 +5,11 @@ This product is licensed under the Apache License, Version 2.0.
 You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
 This product includes a vendored copy of conan_provider.cmake from the
-CMake-Conan project (conan-io/cmake-conan), licensed under the MIT License.
-It was vendored unmodified from that project, added by commit 323cd037
+CMake-Conan project (conan-io/cmake-conan). That project's LICENSE file states
+the MIT License, Copyright (c) 2019 JFrog. The vendored file itself carries no
+copyright or permission header, and this repository ships no copy of the
+upstream license text, so the upstream LICENSE file is where that grant can be
+checked. The copy was vendored from that project and added by commit 323cd037
 (2026-04-29); exactly one commit has ever touched this path, so the copy has
 not been modified in this repository since it was vendored. Its git blob
 object id is 0682ee520addb66c0e82ac13e853b93e2f80bb4f. That is the id of the
@@ -14,9 +17,10 @@ content stored in the repository, which uses LF line endings, not the hash of
 a checked-out file; a checkout with different line endings hashes differently.
 Any later modification must be recorded here.
 
-Third-party dependencies are resolved at configure time by Conan and are not
-shipped inside this repository. Each dependency's license is recorded in
-packaging/dependency-watch.json and emitted into the generated SBOM.
-The optional MySQL driver links against libmysqlclient, which is
-GPL-2.0-only WITH Universal-FOSS-exception-1.0; that option (with_mysql) is
+Third-party library dependencies are resolved at configure time by Conan and
+are not shipped inside this repository; the vendored script above is a
+build-time CMake/Conan helper, not a library dependency. Each dependency's
+license is recorded in packaging/dependency-watch.json and emitted into the
+generated SBOM. The optional MySQL driver links against libmysqlclient, which
+is GPL-2.0-only WITH Universal-FOSS-exception-1.0; that option (with_mysql) is
 disabled by default and degrades to an error stub when the library is absent.
