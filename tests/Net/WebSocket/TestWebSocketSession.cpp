@@ -1663,6 +1663,35 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住 receiveFor() 的超时任务不会把裸句柄留在调度队列里
+     * @details 帧在超时任务首次派发之前到达时，等待体就地恢复并在 await_resume() 里销毁定时任务。
+     *          定时任务若是被 schedule() 排进队列的，队列里那条句柄随后就指向已释放的帧，派发侧
+     *          对帧调 done() 即释放后使用。循环刻意不启动，由本线程 runAll() 制造「帧已销毁」
+     *          与「句柄待派发」的确定先后，不依赖调度运气。
+     */
+    TEST(WebSocketPeerContract, ReceiveForLeavesNoQueuedHandleWhenAFrameBeatsTheTimeoutTask)
+    {
+        Core::EventLoop loop;
+        WebSocketPeer   peer([](const std::string_view) -> Core::Task<bool> { co_return true; }, nullptr, loop);
+
+        std::optional<WebSocketMessage> received;
+        auto                            receiverBody = [&]() -> Core::Task<> { received = co_await peer.receiveFor(std::chrono::seconds{2}); };
+        Core::Task<>                    receiver     = receiverBody();
+
+        receiver.handle().resume(); // 挂在 receiveFor 上：超时任务已创建，尚未首拍
+        const std::string frame = maskedClientFrame(0x1, "hello");
+        ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted);
+        ASSERT_TRUE(receiver.isReady()) << "帧到达没有就地恢复接收方";
+        receiver.await_resume();
+
+        // 超时任务若仍在队列里，这一趟派发就会对已随等待体销毁的帧调 done()
+        loop.scheduler().runAll();
+
+        ASSERT_TRUE(received.has_value()) << "时限内到达的帧没有交给业务";
+        EXPECT_EQ(received->payload, "hello");
+    }
+
+    /**
      * @brief 钉住 close() 唤醒挂起中的接收：业务不必等帧被销毁才看得到收口
      */
     TEST(WebSocketPeerContract, CloseWakesAPendingReceive)

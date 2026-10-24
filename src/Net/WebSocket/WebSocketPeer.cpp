@@ -266,9 +266,11 @@ namespace AsynGyanis::Net
         m_ticket->attach(waiter);
         m_peer->m_deliveryTicket = m_ticket;
 
-        // 定时任务归本等待体所有；帧先到时析构会摘掉 TimerQueue 里的登记，定时先到时任务已到 final suspend
+        // 定时任务归本等待体所有：帧先到时析构会摘掉 TimerQueue 里的登记，定时先到时任务已到 final suspend。
+        // 这里就地首拍（惰性协程手动启动），不交给调度器排队：队列里存的是裸句柄，等待体若在那次派发
+        // 之前被帧交付恢复，await_resume() 会先销毁帧，队列随后再对这块内存调 done()
         m_timeoutTask.emplace(watchTimeout(m_timeout));
-        m_peer->m_loop->scheduler().schedule(m_timeoutTask->handle());
+        m_timeoutTask->handle().resume();
     }
 
     std::optional<WebSocketFrame> WebSocketPeer::TimedDeliveryAwaiter::await_resume()

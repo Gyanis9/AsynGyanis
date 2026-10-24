@@ -488,9 +488,11 @@ namespace AsynGyanis::Net
             [[nodiscard]] bool await_ready() noexcept;
 
             /**
-             * @brief 登记票据与定时任务，挂起当前协程
+             * @brief 登记票据、就地启动定时任务，挂起当前协程
              * @param waiter 当前协程句柄
              * @throws Base::LogicException 构造本对端时没有给 EventLoop
+             * @note 定时任务在这里手动首拍而不是排进调度器：队列里存的是裸句柄，等待体可能在
+             *       那次派发之前被帧交付恢复，析构时就给队列留下一个指向已释放帧的句柄
              */
             void await_suspend(std::coroutine_handle<> waiter);
 
