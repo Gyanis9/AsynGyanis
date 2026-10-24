@@ -350,9 +350,17 @@ def test_comment_budget(root: Path) -> None:
         raise AssertionError("comment-budget 空扫描面: no-files 未写到 stdout")
 
 
+def test_traceability(root: Path) -> None:
+    """追溯门自证：夹具树里造台账正文，种违规必红、撤掉必绿，提取数塌了按「门没跑成」退 2。"""
+    write(root / "README.md", "# 标题\n\n见 src/Base/Log/Logger.h:2 的类声明。\n")
+    write(root / "src" / "Base" / "Log" / "Logger.h", "#pragma once\nclass Logger {};\n")
+    result = run_script("check-arch-traceability.py", root, "--min-refs", "1")
+    expect("traceability 图工件缺失时退 2（判据此刻仍读图）", result, 2, "读不到")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface", "comment-budget"))
+    parser.add_argument("--only", choices=("layering", "boundary", "duplicates", "surface", "comment-budget", "traceability"))
     args = parser.parse_args()
 
     FIXTURE_PARENT.mkdir(parents=True, exist_ok=True)
@@ -369,6 +377,8 @@ def main() -> int:
             test_surface(root / "surface")
         if args.only in (None, "comment-budget"):
             test_comment_budget(root / "comment-budget")
+        if args.only in (None, "traceability"):
+            test_traceability(root / "traceability")
         print("ARCH_GATE_SELFTEST=OK")
         return 0
     except AssertionError as error:

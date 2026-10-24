@@ -7,7 +7,7 @@
 受影响节点只列不拦。台账判 .github/SECURITY.md 全篇与 CHANGELOG 最新发布段；写全仓相对路径
 读不到 FAIL，裸文件名对不上树内文件 WARN。交付 HTML 内嵌的 source-evidence 须与源 JSON 同解，
 HTML 缺失记 WARN。总提取数低于地板或有图零 sources → 退 2：什么都没查不许读成通过。
-用法：python3 scripts/check-arch-traceability.py [--stale-since HEAD~50]
+用法：python3 scripts/check-arch-traceability.py [--root PATH] [--min-refs N]
 退出码：0 通过；1 有违例；2 工件读不了（没有图、JSON 解不开、拿不到修订号）。
 """
 
@@ -27,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DIAGRAM_DIR = os.path.join(REPO, "assets", "diagrams")
+
 # 只对「顶点类」集合要求证据：components/nodes/states/participants 每一格都是一句关于代码的断言，
 # 而 edges/transitions/messages/lanes/phases/groups 在本仓的图里从不单独挂引用——把它们也算进
 # 警告会一次产出 160 多行噪声，其结果就是没人再看这道门（实测过这个反面）。
@@ -62,20 +62,20 @@ MINIMUM_TOTAL_REFS = 200
 MINIMUM_TOTAL_PROSE_REFS = 100
 
 
-def load_diagrams():
+def load_diagrams(diagram_dir):
     """读回所有候选图 JSON。返回 (路径, 数据) 列表与一条错误说明——解不开就是工件坏了。"""
     try:
         # 候选件的形状是 <slug>.json，一个点；archify 重出时旁挂的收据是 <slug>.<步骤>.json
         # （delivery / browser-check / finalize / finalize-summary），那些不是图，读成图会得到
         # 「这张图一条 sources 都没有」这种凭空造出来的红。按点的个数筛，将来多一种收据也不用回来改
-        names = sorted(n for n in os.listdir(DIAGRAM_DIR) if n.endswith(".json") and n.count(".") == 1)
+        names = sorted(n for n in os.listdir(diagram_dir) if n.endswith(".json") and n.count(".") == 1)
     except OSError as error:
         # 目录整个不见（被移动、改名，或从别的仓库树里跑这个脚本）也要退 2：这不是「没有违例」，
         # 而是判据压根没跑。抛 Python 栈会被 CI 读成退出码 1，看着像「查出了问题」
-        return None, "读不到 %s：%s" % (DIAGRAM_DIR, error)
+        return None, "读不到 %s：%s" % (diagram_dir, error)
     found = []
     for name in names:
-        path = os.path.join(DIAGRAM_DIR, name)
+        path = os.path.join(diagram_dir, name)
         try:
             with open(path, encoding="utf-8") as handle:
                 found.append((name, json.load(handle)))
@@ -124,10 +124,10 @@ def classify_line(lines, number):
     return "OK", content
 
 
-def tracked_file_index():
+def tracked_file_index(root):
     """文件名 → 仓库内路径列表，用来把正文里只写文件名的引用对上真文件。git 不可用时回 None。"""
     try:
-        result = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True)
+        result = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True)
     except (OSError, subprocess.CalledProcessError):
         return None
     index = {}
@@ -138,12 +138,12 @@ def tracked_file_index():
     return index
 
 
-def prose_ref_path(match, owner, index):
+def prose_ref_path(match, owner, index, root):
     """把一条正文引用对到仓库内路径。写全路径直接认；只写文件名时按仓库内唯一同名文件补全，
     重名就不猜（猜错会把「引用有效」报给一个根本没被核对的行）。"""
     if match.group("path"):
         rel = match.group("path")
-        if os.path.isfile(os.path.join(REPO, rel)):
+        if os.path.isfile(os.path.join(root, rel)):
             return rel
         if index is None:
             return None
@@ -190,13 +190,13 @@ def iter_prose_texts(data, name):
                     yield "%s/%s[%d]/sources[%d].label" % (name, collection, i, si), source["label"]
 
 
-def git_changed_files(revision):
+def git_changed_files(revision, root):
     """自 revision 起被改过的文件集合。拿不到就返回 None，让新鲜度这段明确报「没跑成」。"""
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", "%s..HEAD" % revision, "--", "src", "tests", "samples", "CMakeLists.txt", "cmake",
              "scripts", ".github", "README.md", "CONTRIBUTING.md", "packaging", "benchmarks", "CMakePresets.json"],
-            cwd=REPO, capture_output=True, text=True, check=True,
+            cwd=root, capture_output=True, text=True, check=True,
         )
     except (OSError, subprocess.CalledProcessError) as error:
         sys.stderr.write("新鲜度判定跳过：git 不可用或修订号取不到（%s）\n" % error)
@@ -204,7 +204,7 @@ def git_changed_files(revision):
     return {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
 
 
-def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_external_bare_names=False):
+def scan_prose_text(trail, text, index, line_cache, cited_by_path, root, allow_external_bare_names=False):
     """对一段正文跑「路径:行号」判据，返回 (已核对条数, FAIL 列表, WARN 列表)。
 
     trail 是这段正文在图或台账里的位置（进消息用）。allow_external_bare_names 为真时，裸文件名
@@ -216,7 +216,7 @@ def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_externa
     owner = None
     for match in PROSE_REF_RE.finditer(text):
         line = prose_ref_line(match)
-        rel = prose_ref_path(match, owner, index)
+        rel = prose_ref_path(match, owner, index, root)
         if match.group("path") and rel:
             owner = rel
         if rel is None or line is None:
@@ -230,7 +230,7 @@ def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_externa
             continue
         matchedCount += 1
         if rel not in line_cache:
-            absolute = os.path.join(REPO, rel)
+            absolute = os.path.join(root, rel)
             with open(absolute, encoding="utf-8", errors="replace") as handle:
                 line_cache[rel] = handle.read().splitlines()
         lines = line_cache[rel]
@@ -255,10 +255,10 @@ def scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_externa
     return matchedCount, failures, warnings
 
 
-def iter_ledger_prose_texts():
+def iter_ledger_prose_texts(root):
     """台账正文里的手写引用：SECURITY 全篇 + CHANGELOG 最新发布段。产出 (位置, 文本)。"""
     for relative in LEDGER_PROSE_FILES:
-        absolute = os.path.join(REPO, relative)
+        absolute = os.path.join(root, relative)
         if not os.path.isfile(absolute):
             continue  # 缺文件：从「一份都没扫到」的地板里看得见，不必在这里另发错
         with open(absolute, encoding="utf-8", errors="replace") as handle:
@@ -296,9 +296,9 @@ def iter_json_element_sources(data):
 HTML_EVIDENCE_RE = re.compile(r'<script id="archify-source-evidence-data" type="application/json">(.*?)</script>', re.S)
 
 
-def check_delivery_html(name, data, failures, warnings):
+def check_delivery_html(diagram_dir, name, data, failures, warnings):
     """交付 HTML 的内嵌证据块要与源 JSON 同解（见文件头那一条）。HTML 缺失只记警告。"""
-    html_path = os.path.join(DIAGRAM_DIR, name[:-5] + ".html")
+    html_path = os.path.join(diagram_dir, name[:-5] + ".html")
     if not os.path.isfile(html_path):
         warnings.append("DELIVERY_HTML_MISSING %s（没有同名 .html 交付件）" % name)
         return
@@ -332,16 +332,18 @@ def check_delivery_html(name, data, failures, warnings):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="架构图 sources 引用的可追溯性检查")
-    parser.add_argument("--stale-since", help="新鲜度基准修订号，默认取每张图 meta.repository.revision")
+    parser.add_argument("--root", default=REPO, help="待检仓库树根（夹具自测用）")
+    parser.add_argument("--min-refs", type=int, default=MINIMUM_TOTAL_PROSE_REFS, help="正文提取数地板")
     args = parser.parse_args()
+    diagram_dir = os.path.join(args.root, "assets", "diagrams")
 
-    diagrams, load_error = load_diagrams()
+    diagrams, load_error = load_diagrams(diagram_dir)
     if load_error:
         sys.stderr.write(load_error + "\n")
         return 2
     if not diagrams:
         # 交不出任何待检对象不等于通过：目录被移动或改名时会静默变绿
-        sys.stderr.write("找不到 %s 下的图 JSON——判据没跑，不是通过\n" % DIAGRAM_DIR)
+        sys.stderr.write("找不到 %s 下的图 JSON——判据没跑，不是通过\n" % diagram_dir)
         return 2
 
     line_cache = {}
@@ -362,7 +364,7 @@ def main() -> int:
             path = str(ref["path"]).replace("\\", "/")
             cited_by_path.setdefault(path, set()).add(trail)
             if path not in line_cache:
-                absolute = os.path.join(REPO, path)
+                absolute = os.path.join(args.root, path)
                 if not os.path.isfile(absolute):
                     line_cache[path] = None
                 else:
@@ -392,28 +394,28 @@ def main() -> int:
         for element in bare:
             warnings.append("VERTEX_WITHOUT_SOURCES %s" % element)
 
-        check_delivery_html(name, data, failures, warnings)
+        check_delivery_html(diagram_dir, name, data, failures, warnings)
 
-    index = tracked_file_index()
+    index = tracked_file_index(args.root)
     for name, data in diagrams:
         for trail, text in iter_prose_texts(data, name):
-            matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path)
+            matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path, args.root)
             total_prose += matchedCount
             failures.extend(newFailures)
             warnings.extend(newWarnings)
 
     # 台账正文那一半（见 LEDGER_PROSE_FILES 与文件头）：裸文件名对不到树内文件只记警告（可能是
     # 仓库外的依赖头），全仓相对路径读不到仍是死引用
-    for trail, text in iter_ledger_prose_texts():
-        matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path, allow_external_bare_names=True)
+    for trail, text in iter_ledger_prose_texts(args.root):
+        matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, cited_by_path, args.root, allow_external_bare_names=True)
         total_prose += matchedCount
         failures.extend(newFailures)
         warnings.extend(newWarnings)
 
     # 空集防护（见文件头）：提取数塌到地板以下、或有图一条 sources 都没有，都是「门没跑成」
-    if total_refs < MINIMUM_TOTAL_REFS or total_prose < MINIMUM_TOTAL_PROSE_REFS:
+    if total_refs < MINIMUM_TOTAL_REFS or total_prose < args.min_refs:
         sys.stderr.write("提取数低于地板（refs=%d/%d，prose=%d/%d）：判据没吃到东西，按「门没跑成」退 2\n"
-                         % (total_refs, MINIMUM_TOTAL_REFS, total_prose, MINIMUM_TOTAL_PROSE_REFS))
+                         % (total_refs, MINIMUM_TOTAL_REFS, total_prose, args.min_refs))
         return 2
     emptyDiagrams = sorted(name for name, count in per_diagram_refs.items() if count == 0)
     if emptyDiagrams:
@@ -426,23 +428,20 @@ def main() -> int:
     # 新鲜度这一半必须要么给出清单、要么当场说「没跑成」：基准取不到按文件头的承诺退 2，
     # 跳过会把「门没跑」读成「门通过」。
     bases = {}
-    if args.stale_since:
-        bases[args.stale_since] = sorted(name for name, _ in diagrams)
-    else:
-        without_revision = []
-        for name, data in diagrams:
-            pinned = str((data.get("meta") or {}).get("repository", {}).get("revision", "")).strip()
-            if pinned:
-                bases.setdefault(pinned, []).append(name)
-            else:
-                without_revision.append(name)
-        if without_revision:
-            sys.stderr.write("新鲜度判定没有基准：这些图没钉修订号 -> %s\n" % "、".join(sorted(without_revision)))
-            return 2
+    without_revision = []
+    for name, data in diagrams:
+        pinned = str((data.get("meta") or {}).get("repository", {}).get("revision", "")).strip()
+        if pinned:
+            bases.setdefault(pinned, []).append(name)
+        else:
+            without_revision.append(name)
+    if without_revision:
+        sys.stderr.write("新鲜度判定没有基准：这些图没钉修订号 -> %s\n" % "、".join(sorted(without_revision)))
+        return 2
 
     stale_union = set()
     for base in sorted(bases):
-        changed = git_changed_files(base)
+        changed = git_changed_files(base, args.root)
         if changed is None:
             sys.stderr.write("新鲜度判定没跑成：基准 %s 取不到变更清单（浅克隆里没有这个修订就是这种红，"
                              "跑这道门的作业要 fetch-depth: 0）\n" % base[:8])
