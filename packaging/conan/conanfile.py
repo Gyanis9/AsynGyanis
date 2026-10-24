@@ -77,8 +77,8 @@ class AsynGyanisLibrary(ConanFile):
         # 目录必须用 ** 递归匹配：不带通配符的 "src" 只会去找一个叫 src 的文件。
         copy(self, "src/**", src=repository_root, dst=self.export_sources_folder)
         copy(self, "cmake/**", src=repository_root, dst=self.export_sources_folder)
-        # LICENSE 与 NOTICE 必须一起导出：包在别处构建时 self.recipe_folder 指向缓存，仓库根已不存在，
-        # 而 Apache-2.0 第 4(d) 条要求再分发时连带 NOTICE。
+        # LICENSE 与 NOTICE 必须一起导出：包在别处构建时 self.recipe_folder 指向缓存，
+        # 仓库根已不存在，两份文本只能靠导出带过去；Apache-2.0 第 4(d) 条要求再分发时连带 NOTICE。
         copy(self, "LICENSE", src=repository_root, dst=self.export_sources_folder)
         copy(self, "NOTICE", src=repository_root, dst=self.export_sources_folder)
 
@@ -122,8 +122,8 @@ class AsynGyanisLibrary(ConanFile):
 
     def package(self):
         # 库本体已在 build() 里按 install 规则落进包目录（CMakeToolchain 把前缀指向包）。
-        # 这里只补许可文本：license = "Apache-2.0" 是元数据，包里没有文件等于对外说 Apache-2.0 却不交付。
-        # NOTICE 跟着一起放：Apache-2.0 第 4(d) 条要求再分发时连带第三方出处声明，缺它就是不合规的包。
+        # 这里只补许可文本：license = "Apache-2.0" 是元数据，包里没有文件等于对外宣称却不交付。
+        # NOTICE 跟着一起放：Apache-2.0 第 4(d) 条要求再分发时连带第三方出处声明，缺它就不合规。
         copy(self, "LICENSE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"))
         copy(self, "NOTICE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"))
 
