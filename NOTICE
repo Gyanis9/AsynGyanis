@@ -6,9 +6,13 @@ You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2
 
 This product includes a vendored copy of conan_provider.cmake from the
 CMake-Conan project (conan-io/cmake-conan), licensed under the MIT License.
-The copy in this repository is byte-identical to the upstream file as vendored
-in commit 323cd037 (2026-04-29) and has not been modified since; its sha256
-starts with a507098bed2ee5e3. Any later modification must be recorded here.
+It was vendored unmodified from that project, added by commit 323cd037
+(2026-04-29); exactly one commit has ever touched this path, so the copy has
+not been modified in this repository since it was vendored. Its git blob
+object id is 0682ee520addb66c0e82ac13e853b93e2f80bb4f. That is the id of the
+content stored in the repository, which uses LF line endings, not the hash of
+a checked-out file; a checkout with different line endings hashes differently.
+Any later modification must be recorded here.
 
 Third-party dependencies are resolved at configure time by Conan and are not
 shipped inside this repository. Each dependency's license is recorded in
