@@ -389,6 +389,17 @@ def test_traceability(root: Path) -> None:
     result = run_script("check-arch-traceability.py", root / "empty", "--min-refs", "1")
     expect("traceability 扫描面整片消失退 2", result, 2, "一份都没读到")
 
+    changelogTree = root / "changelog-only"
+    changelog = changelogTree / "CHANGELOG.md"
+    # 份数哨按打开的台账计：CHANGELOG 只产出最新发布段，产出的第一条往往不是第 1 行
+    write(changelog, "# 变更日志\n\n## [1.0.0]\n\n证据：CHANGELOG.md:5。\n")
+    result = run_script("check-arch-traceability.py", changelogTree, "--min-refs", "1")
+    expect("traceability 唯一台账是 CHANGELOG 最新发布段", result, 0, "ARCH_TRACE_GATE=OK", "TOTAL_PROSE_REFS=1")
+
+    changelog.unlink()
+    result = run_script("check-arch-traceability.py", changelogTree, "--min-refs", "1")
+    expect("traceability 唯一台账被删掉退 2", result, 2, "一份都没读到")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()

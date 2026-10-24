@@ -161,15 +161,19 @@ def scan_prose_text(trail, text, index, line_cache, root, allow_external_bare_na
     return matchedCount, failures, warnings
 
 
-def iter_ledger_prose_texts(root):
-    """台账正文里的手写引用：LEDGER_PROSE_FILES 那几份逐行产出，CHANGELOG 只取最新发布段。
-    产出 (位置, 文本)，每份文件的位置都从第 1 行起。"""
+def read_ledger_prose_texts(root):
+    """读 LEDGER_PROSE_FILES 中存在的每一份，返回 (打开份数, [(位置, 文本), ...])。
+    位置是「文件:行号」；CHANGELOG 只取最新发布段：首个 `## [` 行起、到下一个之前，
+    产出的第一条往往不是第 1 行，所以份数不能拿位置尾的行号反推。"""
+    texts = []
+    openedFiles = 0
     for relative in LEDGER_PROSE_FILES:
         absolute = os.path.join(root, relative)
         if not os.path.isfile(absolute):
-            continue  # 缺文件：从「一份都没扫到」的地板里看得见，不必在这里另发错
+            continue  # 缺文件：不计进打开份数，整片读不到时由 main 的份数哨退 2
         with open(absolute, encoding="utf-8", errors="replace") as handle:
             lines = handle.read().splitlines()
+        openedFiles += 1
         insideLatestRelease = relative != "CHANGELOG.md"
         for number, text in enumerate(lines, 1):
             if relative == "CHANGELOG.md":
@@ -179,7 +183,8 @@ def iter_ledger_prose_texts(root):
                     insideLatestRelease = True
                 if not insideLatestRelease:
                     continue
-            yield "%s:%d" % (relative, number), text
+            texts.append(("%s:%d" % (relative, number), text))
+    return openedFiles, texts
 
 
 def main() -> int:
@@ -193,17 +198,15 @@ def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
     total_prose = 0
-    scannedFiles = 0
     index = tracked_file_index(root)
-    for trail, text in iter_ledger_prose_texts(root):
-        if trail.endswith(":1"):
-            scannedFiles += 1
+    openedFiles, proseTexts = read_ledger_prose_texts(root)
+    for trail, text in proseTexts:
         matchedCount, newFailures, newWarnings = scan_prose_text(trail, text, index, line_cache, root, allow_external_bare_names=True)
         total_prose += matchedCount
         failures.extend(newFailures)
         warnings.extend(newWarnings)
 
-    if scannedFiles == 0:
+    if openedFiles == 0:
         sys.stderr.write("台账清单里 %d 份文件一份都没读到：扫描面没了，按「门没跑成」退 2\n" % len(LEDGER_PROSE_FILES))
         return 2
     if total_prose < args.min_refs:
