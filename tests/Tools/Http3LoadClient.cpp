@@ -89,9 +89,8 @@ namespace
         int                 errors   = 0;
         int                 sent     = 0;
         const auto          started  = std::chrono::steady_clock::now();
-        const auto          deadline = options.durationSeconds > 0
-                                               ? started + std::chrono::seconds{options.durationSeconds}
-                                               : started + std::chrono::milliseconds{options.timeoutMs * static_cast<long long>(options.messages) + 30000};
+        const auto          deadline = options.durationSeconds > 0 ? started + std::chrono::seconds{options.durationSeconds}
+                                                                   : started + std::chrono::milliseconds{options.timeoutMs * static_cast<long long>(options.messages) + 30000};
         for (;;)
         {
             if (options.messages > 0 && sent >= options.messages)
@@ -114,15 +113,8 @@ namespace
         }
         const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         const auto h3Links = client.idleHttp3LinkCount();
-        std::printf(
-                "{\"messages\":%d,\"errors\":%d,\"p50_us\":%.3f,\"p95_us\":%.3f,\"p99_us\":%.3f,\"elapsed_ms\":%.3f,\"http3_links\":%zu}\n",
-                sent,
-                errors,
-                percentile(latencies, 50.0),
-                percentile(latencies, 95.0),
-                percentile(latencies, 99.0),
-                elapsed,
-                h3Links);
+        std::printf("{\"messages\":%d,\"errors\":%d,\"p50_us\":%.3f,\"p95_us\":%.3f,\"p99_us\":%.3f,\"elapsed_ms\":%.3f,\"http3_links\":%zu}\n", sent, errors,
+                    percentile(latencies, 50.0), percentile(latencies, 95.0), percentile(latencies, 99.0), elapsed, h3Links);
         std::fflush(stdout);
         succeeded = errors == 0 && sent > 0 && (options.messages == 0 || sent == options.messages) && h3Links > 0;
         finished  = true;
@@ -135,8 +127,8 @@ int main(const int argumentCount, char *argumentValues[])
     const Options options = parseOptions(argumentCount, argumentValues);
     try
     {
-        EventLoop                       loop;
-        AsynGyanis::Core::TlsPolicy     policy;
+        EventLoop                   loop;
+        AsynGyanis::Core::TlsPolicy policy;
         policy.certificateAuthorityFile = options.certificateAuthority;
         HttpClient client(loop, {}, policy);
         client.setHttp3Enabled(true);

@@ -61,10 +61,10 @@ namespace
                     std::fprintf(stderr, "URL 缺少端口：%s\n", url.c_str());
                     std::exit(2);
                 }
-                options.host = url.substr(prefix.size(), portBegin - prefix.size());
+                options.host               = url.substr(prefix.size(), portBegin - prefix.size());
                 const std::string portText = url.substr(portBegin + 1, pathBegin == std::string::npos ? std::string::npos : pathBegin - portBegin - 1);
-                options.port              = static_cast<std::uint16_t>(std::stoi(portText));
-                options.path              = pathBegin == std::string::npos ? "/" : url.substr(pathBegin);
+                options.port               = static_cast<std::uint16_t>(std::stoi(portText));
+                options.path               = pathBegin == std::string::npos ? "/" : url.substr(pathBegin);
             } else if (flag == "--messages")
             {
                 options.messages = std::stoi(next());
@@ -105,11 +105,11 @@ namespace
     Task<> run(EventLoop &loop, const Options options, std::atomic<bool> &finished, std::atomic<bool> &succeeded)
     {
         WebSocketClient::Configuration configuration;
-        configuration.hostName        = options.host;
-        configuration.port            = options.port;
-        configuration.requestTarget   = options.path;
+        configuration.hostName         = options.host;
+        configuration.port             = options.port;
+        configuration.requestTarget    = options.path;
         configuration.handshakeTimeout = std::chrono::milliseconds{options.timeoutMs};
-        auto connected                = co_await WebSocketClient::connect(loop, configuration);
+        auto connected                 = co_await WebSocketClient::connect(loop, configuration);
         if (!connected)
         {
             std::printf("{\"messages\":0,\"errors\":1,\"p50_us\":0,\"p95_us\":0,\"p99_us\":0,\"elapsed_ms\":0}\n");
@@ -117,14 +117,13 @@ namespace
             finished = true;
             co_return;
         }
-        auto              client = std::move(*connected);
+        auto                client = std::move(*connected);
         std::vector<double> latencies;
-        int               errors  = 0;
-        int               sent    = 0;
-        const auto        started = std::chrono::steady_clock::now();
-        const auto        deadline = options.durationSeconds > 0
-                                             ? started + std::chrono::seconds{options.durationSeconds}
-                                             : started + std::chrono::milliseconds{options.timeoutMs * static_cast<long long>(options.messages) + 30000};
+        int                 errors   = 0;
+        int                 sent     = 0;
+        const auto          started  = std::chrono::steady_clock::now();
+        const auto          deadline = options.durationSeconds > 0 ? started + std::chrono::seconds{options.durationSeconds}
+                                                                   : started + std::chrono::milliseconds{options.timeoutMs * static_cast<long long>(options.messages) + 30000};
         for (;;)
         {
             if (options.messages > 0 && sent >= options.messages)
@@ -152,14 +151,8 @@ namespace
         }
         const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         static_cast<void>(co_await client->close());
-        std::printf(
-                "{\"messages\":%d,\"errors\":%d,\"p50_us\":%.3f,\"p95_us\":%.3f,\"p99_us\":%.3f,\"elapsed_ms\":%.3f}\n",
-                sent,
-                errors,
-                percentile(latencies, 50.0),
-                percentile(latencies, 95.0),
-                percentile(latencies, 99.0),
-                elapsed);
+        std::printf("{\"messages\":%d,\"errors\":%d,\"p50_us\":%.3f,\"p95_us\":%.3f,\"p99_us\":%.3f,\"elapsed_ms\":%.3f}\n", sent, errors, percentile(latencies, 50.0),
+                    percentile(latencies, 95.0), percentile(latencies, 99.0), elapsed);
         std::fflush(stdout);
         succeeded = errors == 0 && sent > 0 && (options.messages == 0 || sent == options.messages);
         finished  = true;
