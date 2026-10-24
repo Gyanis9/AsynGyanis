@@ -1,0 +1,18 @@
+AsynGyanis
+Copyright 2026 Gyanis
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+This product includes a vendored copy of conan_provider.cmake from the
+CMake-Conan project (conan-io/cmake-conan), licensed under the MIT License.
+The copy in this repository is byte-identical to the upstream file as vendored
+in commit 323cd037 (2026-04-29) and has not been modified since; its sha256
+starts with a507098bed2ee5e3. Any later modification must be recorded here.
+
+Third-party dependencies are resolved at configure time by Conan and are not
+shipped inside this repository. Each dependency's license is recorded in
+packaging/dependency-watch.json and emitted into the generated SBOM.
+The optional MySQL driver links against libmysqlclient, which is
+GPL-2.0-only WITH Universal-FOSS-exception-1.0; that option (with_mysql) is
+disabled by default and degrades to an error stub when the library is absent.

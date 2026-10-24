@@ -278,4 +278,6 @@ python scripts/run_samples.py --only NetHttpDemo --repeat 3 # 重复跑，抓靠
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。
+Apache License 2.0，见 [LICENSE](LICENSE)；随仓分发的第三方源码出处见 [NOTICE](NOTICE)。
+第三方依赖在配置期由 Conan 取，各自许可逐条记在 `packaging/dependency-watch.json` 并写进生成的 SBOM；
+可选的 MySQL 驱动链接 libmysqlclient（GPL-2.0-only WITH Universal-FOSS-exception-1.0），默认关闭、缺失时退化为报错桩。
