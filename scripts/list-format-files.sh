@@ -19,9 +19,12 @@ if [ "${1:-}" = "--check" ]; then
     # 格式门会从“全仓检查”悄悄退化成“什么都没查”。
     list="$(git ls-files -- "${format_patterns[@]}")"
     [ -n "$list" ] || { echo "格式清单为空：clang-format 没有任何输入" >&2; exit 2; }
+    # 不用 printf | grep -q：grep 命中即退出会让写端收 EPIPE，pipefail 会把竞态读成清单缺失。
     for required in src/Core/EventLoop/EventLoop.cpp tests/Core/EventLoop/TestEventLoop.cpp cmake/AsynGyanisFeatures.h.in; do
-        printf '%s\n' "$list" | grep -qxF "$required" \
-            || { echo "格式清单缺少 $required：输入面被改窄了" >&2; exit 2; }
+        case $'\n'"$list"$'\n' in
+            *$'\n'"$required"$'\n'*) ;;
+            *) echo "格式清单缺少 $required：输入面被改窄了" >&2; exit 2 ;;
+        esac
     done
 fi
 
