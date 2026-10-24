@@ -77,7 +77,7 @@ target_compile_features(TestDatabase PRIVATE cxx_std_23)
 
 # 仓库自签证书夹具目录（TestMySqlTls 的「错误 CA」用例要指一个真实存在但与服务端不同源的证书）
 target_compile_definitions(TestDatabase PRIVATE
-        TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/Core/fixtures"
+        TEST_FIXTURES_DIR="${ASYN_TEST_FIXTURES_DIR}"
 )
 
 include(GoogleTest)
@@ -86,25 +86,26 @@ include(GoogleTest)
 # 本机 12 轮 × 4 并发红过 2 次）。资源锁串行化这一族；第二次发现调用另给 POST_FILE，防收尾互相覆盖。
 gtest_discover_tests(TestDatabase
         TEST_FILTER "RedisSubscriptionIntegration.*"
-        PROPERTIES RESOURCE_LOCK asyn-redis-server-config
+        PROPERTIES RESOURCE_LOCK asyn-redis-server-config LABELS Database
         POST_FILE TestDatabase-subscription
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 # MySqlIntegrationTest 一族共用库级对象（迁移登记表等物理表），并行时建表/删表会串进对方现场
 # （实测 -j2 下单条用例间歇红，单跑与串行都过）。挂资源锁串行化；第二次发现调用另给 POST_FILE。
 gtest_discover_tests(TestDatabase
         TEST_FILTER "MySqlIntegrationTest.*"
-        PROPERTIES RESOURCE_LOCK asyn-mysql-integration
+        PROPERTIES RESOURCE_LOCK asyn-mysql-integration LABELS Database
         POST_FILE TestDatabase-mysql
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 # PostgresIntegrationTest 的迁移/种子用例共用库级迁移登记表，并行时一条 DROP 会抽走另一条的现场，
 # 整族串行化；第二次发现调用另给 POST_FILE。
 gtest_discover_tests(TestDatabase
         TEST_FILTER "PostgresIntegrationTest.*"
-        PROPERTIES RESOURCE_LOCK asyn-postgres-integration
+        PROPERTIES RESOURCE_LOCK asyn-postgres-integration LABELS Database
         POST_FILE TestDatabase-postgres
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 gtest_discover_tests(TestDatabase
         TEST_FILTER "-RedisSubscriptionIntegration.*:MySqlIntegrationTest.*:PostgresIntegrationTest.*"
+        PROPERTIES LABELS Database
         POST_FILE TestDatabase-rest
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 

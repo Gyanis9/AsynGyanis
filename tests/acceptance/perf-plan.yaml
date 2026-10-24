@@ -1,0 +1,131 @@
+sampling:
+  warmupSeconds: 10
+  measureSeconds: 30
+  cooldownSeconds: 5
+  runs: 3
+cases:
+  h1:
+    type: capacity
+    protocol: wrk
+    url: "http://127.0.0.1:18080/bench"
+    concurrency: [1, 8, 32, 64]
+    command: "wrk -s {repo}/benchmarks/wrk_report.lua -t1 -c{concurrency} -d{duration}s --latency {url}"
+  h2:
+    type: capacity
+    protocol: h2load
+    url: "http://127.0.0.1:18081/bench"
+    concurrency: [1, 4, 16]
+    command: "h2load -D {duration}s -c {concurrency} -m 32 {url}"
+  h2tls:
+    type: capacity
+    protocol: h2load
+    url: "https://127.0.0.1:18443/bench"
+    concurrency: [1, 4, 16]
+    command: "SSL_CERT_FILE={repo}/tests/Core/fixtures/test_ip_cert.pem h2load -D {duration}s -c {concurrency} -m 32 {url}"
+  h3:
+    type: capacity
+    protocol: json
+    url: "https://127.0.0.1:18443/bench"
+    concurrency: [1, 4, 16]
+    messages: 0
+    command: "{build}/tests/Tools/http3_load_client --url {url} --duration-seconds {duration} --messages 0 --timeout-ms 10000 --ca tests/Core/fixtures/test_ip_cert.pem"
+  ws:
+    type: capacity
+    protocol: json
+    url: "ws://127.0.0.1:18082/ws"
+    concurrency: [1, 8, 32, 64]
+    messages: 0
+    command: "{build}/tests/Tools/websocket_load_client --url {url} --duration-seconds {duration} --messages 0 --timeout-ms 10000"
+  soak_h1:
+    type: soak
+    protocol: wrk
+    url: "http://127.0.0.1:18080/bench"
+    concurrency: 32
+    durationSeconds: 1800
+    command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+  soak_churn:
+    type: soak
+    protocol: wrk
+    url: "http://127.0.0.1:18080/bench"
+    concurrency: 8
+    durationSeconds: 1800
+    command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency -H 'Connection: close' {url}"
+  soak_h2:
+    type: soak
+    protocol: h2load
+    url: "http://127.0.0.1:18081/bench"
+    concurrency: 8
+    durationSeconds: 1800
+    log_requests: false
+    command: "h2load -D {duration}s -c {concurrency} -m 32 {url}"
+  soak_h3:
+    type: soak
+    protocol: json
+    url: "https://127.0.0.1:18443/bench"
+    concurrency: 4
+    messages: 0
+    durationSeconds: 1800
+    command: "{build}/tests/Tools/http3_load_client --url {url} --duration-seconds {duration} --messages 0 --timeout-ms 10000 --ca tests/Core/fixtures/test_ip_cert.pem"
+  soak_ws:
+    type: soak
+    protocol: json
+    url: "ws://127.0.0.1:18082/ws"
+    concurrency: 8
+    messages: 0
+    durationSeconds: 1800
+    command: "{build}/tests/Tools/websocket_load_client --url {url} --duration-seconds {duration} --messages 0 --timeout-ms 10000"
+  overhead_tls:
+    type: overhead
+    protocol: wrk
+    concurrency: [32]
+    variants:
+      plain:
+        url: "http://127.0.0.1:18090/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+      tls:
+        url: "https://127.0.0.1:18444/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+  overhead_compression:
+    type: overhead
+    protocol: wrk
+    concurrency: [32]
+    variants:
+      plain:
+        url: "http://127.0.0.1:18090/big"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+      gzip:
+        url: "http://127.0.0.1:18090/big"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency -H 'Accept-Encoding: gzip' {url}"
+  overhead_metrics:
+    type: overhead
+    protocol: wrk
+    concurrency: [32]
+    variants:
+      off:
+        url: "http://127.0.0.1:18085/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+      on:
+        url: "http://127.0.0.1:18086/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+  overhead_tracing:
+    type: overhead
+    protocol: wrk
+    concurrency: [32]
+    variants:
+      off:
+        url: "http://127.0.0.1:18087/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+      on:
+        url: "http://127.0.0.1:18088/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+  overhead_static:
+    type: overhead
+    protocol: wrk
+    concurrency: [32]
+    variants:
+      dynamic:
+        url: "http://127.0.0.1:18090/bench"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"
+      static:
+        url: "http://127.0.0.1:18090/greeting.txt"
+        command: "wrk -s {repo}/benchmarks/wrk_report.lua -t2 -c{concurrency} -d{duration}s --latency {url}"

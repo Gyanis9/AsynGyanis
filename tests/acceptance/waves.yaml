@@ -1,0 +1,7 @@
+w1: ["PLATFORM.", "BASE.", "CORE."]
+w2: ["NET.TCP", "NET.UDP", "NET.PROXY", "NET.HTTP", "NET.QUIC", "NET.WS", "NET.CLIENT", "NET.GATEWAY", "NET.FUZZ", "NET.SWEEP", "NET.CROSS"]
+w3: ["DEPLOY."]
+w4: ["DB."]
+w5: ["NET.TLS.", "NET.ACME"]
+w6: ["NET.OBS."]
+w8: ["PERF."]

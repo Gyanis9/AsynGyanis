@@ -207,13 +207,14 @@ target_include_directories(TestNet PRIVATE
 
 # HTTPS 端到端用例使用的仓库内证书目录（与 tests/Core/fixtures 同一份自签证书）
 target_compile_definitions(TestNet PRIVATE
-        TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/Core/fixtures"
+        TEST_FIXTURES_DIR="${ASYN_TEST_FIXTURES_DIR}"
 )
 
 target_compile_features(TestNet PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestNet
+        PROPERTIES LABELS Net
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
 # ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）

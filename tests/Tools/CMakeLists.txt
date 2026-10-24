@@ -39,3 +39,21 @@ add_executable(acme_issuance_probe
         AcmeIssuanceProbe.cpp)
 
 target_link_libraries(acme_issuance_probe PRIVATE Net Core Base Platform)
+
+# WebSocket 单连接负载探针：容量与长稳共用，按消息数或时长发文本并等回显，
+# 输出一行 JSON 供 scripts/acceptance/perf_matrix.py 解析
+add_executable(websocket_load_client
+        WebSocketLoadClient.cpp)
+
+target_link_libraries(websocket_load_client PRIVATE Net Core Base Platform)
+
+target_compile_features(websocket_load_client PRIVATE cxx_std_23)
+
+# HTTP/3 单连接负载探针：强制 h3 出站，按消息数或时长发 GET，
+# 输出一行 JSON 与 h3 链路数
+add_executable(http3_load_client
+        Http3LoadClient.cpp)
+
+target_link_libraries(http3_load_client PRIVATE Net Core Base Platform)
+
+target_compile_features(http3_load_client PRIVATE cxx_std_23)

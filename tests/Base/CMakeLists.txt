@@ -66,6 +66,7 @@ target_compile_features(TestBase PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestBase
+        PROPERTIES LABELS Base
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
 # ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）

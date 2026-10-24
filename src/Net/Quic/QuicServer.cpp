@@ -43,6 +43,24 @@ namespace AsynGyanis::Net
         /// 远端可驱动的刷屏面，而量级已经在读数里了
         constexpr std::chrono::seconds kAddressValidationRejectionLogWindow{10};
 
+        /// @brief 将收包协程排回所属循环，截断连续同步完成的调用栈
+        struct ReceiveBatchYield
+        {
+            Core::Scheduler &m_scheduler; ///< 所属循环的调度器
+
+            [[nodiscard]] static bool await_ready() noexcept
+            {
+                return false;
+            }
+            void await_suspend(const std::coroutine_handle<> handle) const
+            {
+                m_scheduler.schedule(handle);
+            }
+            static void await_resume() noexcept
+            {
+            }
+        };
+
         /**
          * @brief 取一段密码学随机字节（Retry 的源连接标识与无状态重置的静态密钥都走它）
          * @details 随机失败没有安全的降级路径：拿一条可猜的标识回出去，旁观者就能提前把后续报文路由到
@@ -478,11 +496,7 @@ namespace AsynGyanis::Net
 
         // 两个循环并发跑：收报文的与驱动定时器的。定时器不能只挂在收报文上，否则空闲期（对端在等超时）
         // 就没人推进 PTO/空闲超时。
-        // 起这一路用「就地首拍」而不是投调度器：投进去的是裸句柄，而本协程的这个局部 Task 是它唯一的
-        // 持有者——收报文这一趟可能一路跑到收尾（回环上报文塞满缓冲时每次 await 都立即就绪，一次都不让出），
-        // 帧于是可能在那次派发之前就被销毁，调度器随后 resume 的已是释放了的内存（TSan 在 h3 大正文用例
-        // 上抓到的正是这条：三处报告同指 runExpiryTicker 的帧）。就地跑第一拍，这条句柄就永远不进队列，
-        // 收尾也就真能等到它退出（见下方 co_await）；首拍只会挂上定时器并让出，此刻连接表还是空的
+        // 定时驱动就地起首拍，帧仅由本协程持有；收尾等待其退出，避免队列残留裸句柄
         Core::Task<> expiryTask = runExpiryTicker();
         expiryTask.handle().resume(); // 惰性协程：手动启动
 
@@ -501,6 +515,12 @@ namespace AsynGyanis::Net
 
         while (!m_isStopped.load(std::memory_order_acquire))
         {
+            // UDP 持续就绪时每次收发都可能同步完成；批间真正挂起，避免协程转移无限累积原生栈
+            co_await ReceiveBatchYield{m_eventLoop.scheduler()};
+            if (m_isStopped.load(std::memory_order_acquire))
+            {
+                break;
+            }
             // 结果按值回来（惰性协程不往调用方的引用里写：实参可能比 await 先亡）
             const Core::AsyncUdpSocket::DatagramBatchReceiveResult received = co_await m_socket->asyncReceiveBatch(slots.data(), slots.size());
             if (received.receivedDatagramCount == 0)

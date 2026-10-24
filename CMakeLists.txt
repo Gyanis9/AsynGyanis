@@ -10,6 +10,11 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 测试夹具目录：默认取源码树里的自签证书。把测试二进制打包到远端运行时改成部署目录，
+# 否则二进制里钉的是构建机的绝对路径。
+set(ASYN_TEST_FIXTURES_DIR "${CMAKE_SOURCE_DIR}/tests/Core/fixtures" CACHE PATH
+        "测试夹具目录；打包到远端运行时指向部署目录")
+
 # 目标平台只有 Linux 与 Windows：事件后端是 epoll 与完成端口，没有 kqueue。
 # 这是拒绝文案而不是待办：不要为 macOS/BSD 补后端。
 if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")

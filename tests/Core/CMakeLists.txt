@@ -71,7 +71,7 @@ target_link_libraries(TestCore PRIVATE
 
 # TLS 测试使用的仓库内证书目录（tests/Core/fixtures）
 target_compile_definitions(TestCore PRIVATE
-        TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        TEST_FIXTURES_DIR="${ASYN_TEST_FIXTURES_DIR}"
         # 多进程编排用例要派生的 worker 侧夹具（tests/Tools/HandoffWorker.cpp）：用例只拿到路径，
         # 判定留在自己这一侧，避免「同一个进程里自己测自己」把跨进程那条路径测成同进程
         ASYN_HANDOFF_WORKER_TOOL="$<TARGET_FILE:handoff_worker>"
@@ -98,6 +98,7 @@ target_compile_features(TestCore PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(TestCore
+        PROPERTIES LABELS Core
         DISCOVERY_TIMEOUT ${ASYN_GTEST_DISCOVERY_TIMEOUT})
 
 # ASan 运行时拷到本目标输出目录（见 cmake/AsynGyanisSanitizers.cmake）
