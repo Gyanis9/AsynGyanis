@@ -19,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONAN_DATA = REPO_ROOT / "conandata.yml"
 ROOT_CMAKE = REPO_ROOT / "CMakeLists.txt"
 WATCH_LIST = REPO_ROOT / "packaging" / "dependency-watch.json"
+LICENSE_FILE = REPO_ROOT / "LICENSE"
+CONAN_RECIPE = REPO_ROOT / "packaging" / "conan" / "conanfile.py"
 
 
 def load_watch_entries() -> dict:
@@ -49,9 +51,20 @@ def project_version() -> str:
     return match.group(1)
 
 
+def read_truth_source(path: Path, purpose: str) -> str:
+    """读一处判据的真值来源；文件不在就是判据没跑成，红在明面上而不是抛 FileNotFoundError 栈。
+
+    产物先写、核对后做，核对一崩已写出的 SBOM 就留在盘上没人收——所以真值缺位要走
+    SystemExit 的成文口径，与本脚本对台账、对 conandata.yml 的处理完全一致。
+    """
+    if not path.exists():
+        raise SystemExit(f"缺少 {path.relative_to(REPO_ROOT).as_posix()}，{purpose}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def project_license() -> str:
     """从 LICENSE 正文判项目自有许可，读不出就是说不清自己是什么许可，按红处理。"""
-    text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8", errors="replace")
+    text = read_truth_source(LICENSE_FILE, "自有许可无从判型，三处同解的核对跑不成")
     if "Apache License" in text and "Version 2.0" in text:
         return "Apache-2.0"
     if "Permission is hereby granted, free of charge" in text:
@@ -130,6 +143,8 @@ def main() -> int:
     arguments = parser.parse_args()
 
     version = project_version()
+    # 自有许可只判一次：写产物与自检读同一个值，不给「同一轮里读出两种答案」留口子
+    licenseId = project_license()
     revision = git_revision()
     watchEntries = load_watch_entries()
     requirements = parse_requirements()
@@ -154,7 +169,7 @@ def main() -> int:
                 "name": "AsynGyanis",
                 "version": version,
                 "description": "C++23 协程异步服务器引擎（HTTP/1.1、HTTP/2、HTTP/3+QUIC、WebSocket、数据库驱动）",
-                "licenses": [{"license": {"id": project_license()}}],
+                "licenses": [{"license": {"id": licenseId}}],
                 "properties": [{"name": "vcs:commit", "value": revision}],
                 "externalReferences": [{"type": "vcs", "url": git_remote_url()}] if git_remote_url() else [],
             },
@@ -191,18 +206,29 @@ def main() -> int:
 
     selfComponent = parsed.get("metadata", {}).get("component", {})
     # 自家许可也有两个出口（LICENSE 正文与包元数据），与依赖台账同一条底线：分叉就红
-    if not selfComponent.get("licenses"):
+    selfLicenses = selfComponent.get("licenses")
+    if not selfLicenses:
         problems.append("SBOM 的顶层组件缺 licenses：自家许可不能只在 LICENSE 里说一遍")
-    recipeLicense = ""
-    recipeText = (REPO_ROOT / "packaging" / "conan" / "conanfile.py").read_text(encoding="utf-8", errors="replace")
-    match = re.search(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
-    if match:
-        recipeLicense = match.group(1)
-    declared = (selfComponent.get("licenses") or [{}])[0].get("license", {}).get("id", "")
-    if declared != project_license():
-        problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {project_license()!r} 不同解")
-    if recipeLicense != project_license():
-        problems.append(f"Conan 配方许可 {recipeLicense!r} 与 LICENSE 判型 {project_license()!r} 不同解")
+    else:
+        # 缺键已经单独报过，不再补一条「'' 与 … 不同解」：一个根因只许占一条问题
+        declared = (selfLicenses[0].get("license") or {}).get("id", "")
+        if declared != licenseId:
+            problems.append(f"顶层组件许可 {declared!r} 与 LICENSE 判型 {licenseId!r} 不同解")
+
+    # 配方的 license 字段只认唯一命中：多处命中时先出现的那条会顶掉包元数据，判据就成了空转
+    recipeText = read_truth_source(CONAN_RECIPE, "配方许可读不到，三处同解的核对跑不成")
+    recipeHits = re.findall(r'^\s*license\s*=\s*"([^"]+)"', recipeText, re.M)
+    if not recipeHits:
+        problems.append(
+            "判据在 packaging/conan/conanfile.py 里没找到 license 字段：这一路的真值缺位"
+        )
+    elif len(recipeHits) > 1:
+        problems.append(
+            f"packaging/conan/conanfile.py 里命中 {len(recipeHits)} 处 license 赋值，"
+            "判据无法认定哪一处是包元数据"
+        )
+    elif recipeHits[0] != licenseId:
+        problems.append(f"Conan 配方许可 {recipeHits[0]!r} 与 LICENSE 判型 {licenseId!r} 不同解")
 
     checksumFile = outputDirectory / "SHA256SUMS"
     if problems:
