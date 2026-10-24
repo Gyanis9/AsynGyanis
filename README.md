@@ -45,61 +45,34 @@
 
 ## 架构
 
-```mermaid
-flowchart BT
-    subgraph consumers["使用方"]
-        app["应用代码<br/>find_package(AsynGyanis)"]
-        samples["自检示例<br/>samples 按模块"]
-        tests["测试与微基准<br/>tests 与 src 对齐"]
-    end
-    net["Net<br/>HTTP · QUIC · WebSocket · ACME"]
-    database["Database<br/>连接池 · 方言 · ORM · 迁移"]
-    core["Core<br/>事件循环 · 协程 · TLS · 多进程"]
-    base["Base<br/>日志 6 级 4 Sink · 配置 · 异常层次"]
-    platform["Platform<br/>描述符 · socket · 事件通知 · 文件监听 · 原子写 · 编码"]
-    backends["epoll / IOCP / io_uring<br/>编译期三选一"]
-    os["Windows / Linux<br/>IOCP · epoll · io_uring · eventfd/socketpair · inotify"]
-    crypto["OpenSSL<br/>TLS 与 QUIC 胶水"]
-    compress["zlib / zstd / brotli<br/>正文与 WS 压缩"]
-    drivers["SQLite3 / MySQL / Postgres / Redis<br/>探测不到即报错桩"]
-    format["nlohmann / yaml-cpp<br/>原生接口，不自研值模型"]
-    syslibs["Threads / ws2_32<br/>Mswsock · iphlpapi"]
-    mimalloc["mimalloc<br/>进程级分配器接管"]
+这张图只讲主干：客户端经网络栈进 Core 的事件循环，平台层接住系统调用与定时器，数据访问与网络栈并列、共用同一套循环。构建级的全量依赖图——哪个模块链哪个、第三方库在哪接进来、三个事件后端从哪来——见 [架构设计](docs/架构设计.md)。
 
+```mermaid
+flowchart LR
+    client["客户端<br/>HTTP/1.1 · h2 · h3 · WebSocket"]
+    app["应用代码<br/>find_package(AsynGyanis)"]
+    net["Net<br/>协议栈 · 路由与中间件 · ACME"]
+    db["Database<br/>连接池 · 方言 · ORM"]
+    core["Core<br/>事件循环 · 协程运行时 · TLS"]
+    platform["Platform<br/>epoll / IOCP / io_uring · socket · 定时器"]
+    store[("SQLite / MySQL / PostgreSQL / Redis")]
+
+    client -->|"TCP · UDP · TLS"| net
     app --> net
-    app --> database
-    samples --> database
-    tests --> net
     net --> core
-    database --> core
-    core --> base
-    base --> platform
-    platform -->|系统调用| os
-    net -->|PRIVATE| compress
-    database -->|SQL| drivers
-    core -->|后端选择| backends
-    core -->|开关| mimalloc
-    core -->|PUBLIC| crypto
-    base -->|PUBLIC| format
-    platform -->|PUBLIC| syslibs
+    app --> db
+    db --> core
+    core --> platform
+    db --> store
 ```
 
-证据：src/Platform/CMakeLists.txt:12、src/Platform/CMakeLists.txt:6-8、src/Platform/CMakeLists.txt:21、src/Platform/CMakeLists.txt:28-32、src/Platform/CMakeLists.txt:40、src/Platform/IO/Epoll.h:37、src/Platform/IO/Epoll.h:55、src/Platform/IO/Epoll.h:68、src/Base/CMakeLists.txt:17、src/Base/CMakeLists.txt:10-13、src/Base/CMakeLists.txt:64-68、src/Core/CMakeLists.txt:21、src/Core/CMakeLists.txt:27、src/Core/CMakeLists.txt:30、src/Core/CMakeLists.txt:34、src/Net/CMakeLists.txt:24、src/Net/CMakeLists.txt:41、src/Net/CMakeLists.txt:46、src/Net/CMakeLists.txt:52、src/Net/CMakeLists.txt:14-15、src/Database/CMakeLists.txt:54、src/Database/CMakeLists.txt:43-50、src/Database/CMakeLists.txt:5、src/Database/CMakeLists.txt:18、src/Database/CMakeLists.txt:27、src/Database/CMakeLists.txt:78、cmake/AsynGyanisOptions.cmake:8、cmake/AsynGyanisOptions.cmake:11、cmake/AsynGyanisOptions.cmake:12、cmake/AsynGyanisOptions.cmake:13、packaging/conan/test_package/CMakeLists.txt:8、CMakeLists.txt:68、CMakeLists.txt:20-25
+证据：src/Net/CMakeLists.txt:9-15、src/Net/CMakeLists.txt:24、src/Net/CMakeLists.txt:41、src/Core/CMakeLists.txt:13-17、src/Core/CMakeLists.txt:21、src/Core/CMakeLists.txt:27、src/Platform/CMakeLists.txt:12、src/Database/CMakeLists.txt:5、src/Database/CMakeLists.txt:43-50、src/Database/CMakeLists.txt:68、src/Database/CMakeLists.txt:78-80、packaging/conan/test_package/CMakeLists.txt:14
 
 要点：
 
 - 静态是默认形态；BUILD_SHARED_LIBS 一开五个模块同转 SHARED（cmake/AsynGyanisOptions.cmake:16、cmake/AsynGyanisLibrary.cmake:7），符号可见性由单份 src/AsynGyanisExport.h 标注，共享形态另有 CI 作业（.github/workflows/windows-ci.yml:131-132）
-- 只支持 Linux 与 Windows：其他系统在配置阶段 FATAL_ERROR（CMakeLists.txt:20-25），事件后端没有 kqueue
-- add_subdirectory(src) 恒开（CMakeLists.txt:66）；tests 与 benchmarks/microbench 同挂 ASYN_BUILD_TESTS（cmake/AsynGyanisOptions.cmake:11、CMakeLists.txt:68-71），samples 挂 ASYN_BUILD_SAMPLES（cmake/AsynGyanisOptions.cmake:12、CMakeLists.txt:73-75）
-- 关掉这两个开发者开关，库本身与安装规则完全不受影响：包配置由 ASYN_ENABLE_INSTALL 生成（cmake/AsynGyanisOptions.cmake:13、CMakeLists.txt:78）
-- Epoll.h 用别名选后端：Windows 是 using Epoll = Iocp（src/Platform/IO/Epoll.h:37），开 ASYN_WITH_IO_URING 是 using Epoll = Uring（src/Platform/IO/Epoll.h:55），其余落到 POSIX epoll 实现（src/Platform/IO/Epoll.h:68）；成员集合一致故 EventLoop/IoWatcher 没有平台分支
-- AcceptEx 接进来的连接只能由 IOCP 的 takeAcceptedSocket() 取走（src/Platform/IO/Iocp.h:126）；epoll 侧的同名成员只是返回 false 的占位（src/Platform/IO/Epoll.h:166），成员集合照旧对齐
-- io_uring 只改后端选择，默认关且需要内核 5.6+（cmake/AsynGyanisOptions.cmake:9），Windows 上开它在配置阶段 FATAL_ERROR（cmake/AsynGyanisOptions.cmake:24）
-- Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:41-43、src/Net/CMakeLists.txt:52）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它
-- Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:68-73）
-- 压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli（src/Net/CMakeLists.txt:46、src/Net/CMakeLists.txt:38）
-- QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3（src/Net/CMakeLists.txt:48-49），跨实现验收走进程外裁判（scripts/quic_cross_check.sh:96）
-- mimalloc 默认开（cmake/AsynGyanisOptions.cmake:8），接管是进程级的（src/Core/CMakeLists.txt:39）；它与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR（cmake/AsynGyanisOptions.cmake:18）
+- 命名空间到模块名为止，include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`），下层不点名上层
+- 全量依赖图、各模块的链接面与构建开关见 [架构设计](docs/架构设计.md)
 
 依赖方向固定为 `Platform ← Base ← Core ← Net / Database`：下层不点名上层。
 
@@ -111,7 +84,7 @@ flowchart BT
 | `Net` | `AsynGyanis::Net` | TCP/UDP、HTTP/1.1/2/3、QUIC、WebSocket、路由与中间件、ACME、遥测出口 |
 | `Database` | `AsynGyanis::Database` | 连接抽象、连接池、SQL 方言、ORM、建表迁移 |
 
-Net 与 Database 是并列的上层模块，共用 Core 的循环与执行器。命名空间到模块名为止，include 路径从 `src/` 起算（`#include "Core/EventLoop/EventLoop.h"`）。事件循环、调度归属、协程帧与停止顺序见 [架构设计](docs/架构设计.md)。
+Net 与 Database 是并列的上层模块，共用 Core 的循环与执行器。事件循环、调度归属、协程帧与停止顺序见 [架构设计](docs/架构设计.md)。
 
 ## 能力矩阵
 
