@@ -101,7 +101,7 @@ flowchart BT
 - QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3（src/Net/CMakeLists.txt:14-15），跨实现验收走进程外裁判（scripts/quic_cross_check.sh:96）
 - mimalloc 默认开（cmake/AsynGyanisOptions.cmake:8），接管是进程级的（src/Core/CMakeLists.txt:39）；它与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR（cmake/AsynGyanisOptions.cmake:18）
 
-依赖方向固定为 `Platform ← Base ← Core ← Net / Database`：下层不点名上层，Net 与 Database 并列在同一层。
+依赖方向固定为 `Platform ← Base ← Core ← Net / Database`：下层不点名上层。
 
 | 模块 | 库 | 职责 |
 | --- | --- | --- |
@@ -214,7 +214,7 @@ target_link_libraries(app PRIVATE AsynGyanis::Net)
 
 只请求 `Net` 会自动带出 `Core`、`Base`、`Platform` 及其外部依赖；只请求 `Base` 不会去找 OpenSSL。安装、ABI 边界与 Conan 包见 [入门与构建](docs/入门与构建.md)。
 
-第三方一律由 Conan 在配置期自动安装。开发侧的依赖图读 conandata.yml:1 的 `requirements`（conanfile.py:29）；库配方另列一份并补上 PUBLIC 依赖的传递形状（packaging/conan/conanfile.py:21），两份靠「依赖同解」机检钉在一起。Conan 2 是唯一维护的包路线；包消费方还有一条冒烟用例，只写 find_package 就链齐全部传递依赖（packaging/conan/test_package/CMakeLists.txt:8）。
+第三方默认由 Conan 在配置期自动安装，可选客户端库另有开关（如库配方的 `with_mysql`，packaging/conan/conanfile.py:60）。开发侧的依赖图读 conandata.yml:1 的 `requirements`（conanfile.py:29）；库配方另列一份并补上 PUBLIC 依赖的传递形状（packaging/conan/conanfile.py:21），两份靠「依赖同解」机检钉在一起。Conan 2 是唯一维护的包路线；包消费方还有一条冒烟用例，只写 find_package 就链齐全部传递依赖（packaging/conan/test_package/CMakeLists.txt:8）。
 
 ## 项目结构
 
