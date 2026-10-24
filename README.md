@@ -29,8 +29,8 @@
 
 - 引擎不绑业务：库里交付的是事件循环、协程运行时、协议栈与数据访问原语；路由表、表结构与部署形态都站在使用方那一侧，`ReferenceServer` 与按模块拆开的自检程序不在库的链接面上。
 - 协程帧的生命周期是契约而不是实现细节：`start()` 这类常驻协程必须由调用方持有到收口，投递句柄后离开作用域会让协程帧被销毁——库里所有常驻协程同这一条规矩，见「最小示例」与 [架构设计](docs/架构设计.md)。
-- 协议栈有外部裁判：h2、WebSocket、QUIC 与 HTTP/3 的验收拿另一份源代码的实现当对端（h2spec、Autobahn、aioquic、Pebble），自研实现不与自己的测试互测，见 [测试与验证](#测试与验证)。
-- 质量门是仓库自己的代码：格式、复杂度冻结线、公开接口基线、正文引用追溯、台账日期、依赖同解、版本一致都是 `scripts/` 里可执行的判据，本地几秒到一两分钟跑得完，名单钉在 scripts/run-gates.sh:69 的 `GATE_NAMES`。
+- 协议栈有外部裁判：h2、WebSocket、QUIC 与 HTTP/3 的验收拿另一份源代码的实现当对端（h2spec、Autobahn、aioquic），ACME 另有 Pebble；自研实现不与自己的测试互测，见 [测试与验证](#测试与验证)。
+- 质量门是仓库自己的代码：格式、复杂度冻结线、公开接口基线、正文引用追溯、台账日期、模块分层、平台边界、重复代码都是 `scripts/` 里可执行的判据，本地几秒到一两分钟跑得完，名单钉在 scripts/run-gates.sh:69 的 `GATE_NAMES`；版本一致性在 `release-gate` 工作流里跑、依赖公告的同解核对在 `supply-chain` 里跑，两条都不在本地这条链上。
 
 ## 核心特性
 
@@ -98,7 +98,7 @@ flowchart BT
 - Net PUBLIC 链 Core 与 OpenSSL（src/Net/CMakeLists.txt:41-43、src/Net/CMakeLists.txt:52）：Platform 与 Base 由 Core 传递而来，而 TLS/QUIC 的公开头直接带着 OpenSSL 类型，使用方必须同样找得到它
 - Database 既然直接用了 Base 的类型就自己声明，不靠 Core 传递（src/Database/CMakeLists.txt:68-73）
 - 压缩库 PRIVATE 够用，但静态库以 LINK_ONLY 传给最终可执行体，包导出清单仍要登记 ZLIB/zstd/brotli（src/Net/CMakeLists.txt:46、src/Net/CMakeLists.txt:38）
-- QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3（src/Net/CMakeLists.txt:14-15），跨实现验收走进程外裁判（scripts/quic_cross_check.sh:96）
+- QUIC 与 HTTP/3 全为自研，Net 不链任何第三方 QUIC/h3（src/Net/CMakeLists.txt:48-49），跨实现验收走进程外裁判（scripts/quic_cross_check.sh:96）
 - mimalloc 默认开（cmake/AsynGyanisOptions.cmake:8），接管是进程级的（src/Core/CMakeLists.txt:39）；它与 sanitizer 互斥，同开在配置阶段 FATAL_ERROR（cmake/AsynGyanisOptions.cmake:18）
 
 依赖方向固定为 `Platform ← Base ← Core ← Net / Database`：下层不点名上层。
