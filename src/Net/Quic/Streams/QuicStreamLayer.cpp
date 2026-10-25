@@ -356,7 +356,20 @@ namespace AsynGyanis::Net
                 // 这条流的发送侧早已收口确认：额度抬给谁都没用了，别为它凭空建一份状态
                 return {};
             }
-            // 本端还没发起就收到额度：留着这个上限等着，等本端真开流时直接用（§4.6 允许）
+            if (isLocallyInitiated(frame.streamId))
+            {
+                // 本端从没创建过这条流，对端却给它抬额度：状态冲突（§19.10 明写 MUST）。
+                // 放行等于让对端拿十几字节的帧换本端的常驻条目——这类条目发不了 FIN 也叫不了停，永远结不清
+                return std::unexpected(makeViolation(kStreamStateError, std::format("对端给了本端尚未创建的本端发起流 {} 额度（RFC 9000 §19.10）", frame.streamId)));
+            }
+            if (const std::uint64_t index = streamIndexOfType(frame.streamId); index >= m_advertisedBidirectionalStreams)
+            {
+                // 走到这里必是对端发起的双向流：越过本端宣告的流数上限就收口（§4.6），
+                // 与 onStreamFrame 的同一道闸对齐，别留一条不数上限的开流通道
+                return std::unexpected(makeViolation(
+                        kStreamLimitError, std::format("对端给了超出本端宣告上限 {} 的双向流 {} 额度（RFC 9000 §4.6）", m_advertisedBidirectionalStreams, frame.streamId)));
+            }
+            // 上限之内、对端发起的双向流：收到额度即算对端开了流（§3.1），把上限记着等本端写数据时用
             stream                     = m_outgoing.emplace(frame.streamId, OutgoingStream{}).first;
             stream->second.streamLimit = initialSendWindowFor(frame.streamId).value_or(0);
         }
@@ -391,6 +404,15 @@ namespace AsynGyanis::Net
         auto incoming = m_incoming.find(frame.streamId);
         if (incoming == m_incoming.end())
         {
+            if (!isLocallyInitiated(frame.streamId) &&
+                streamIndexOfType(frame.streamId) >= (isUnidirectional(frame.streamId) ? m_advertisedUnidirectionalStreams : m_advertisedBidirectionalStreams))
+            {
+                // 越过本端宣告上限的流号上收帧一律收口（§4.6）：静默忽略等于替对端把越界藏起来
+                return std::unexpected(
+                        makeViolation(kStreamLimitError, std::format("对端复位了第 {} 条{}向流 {}，超出本端宣告的上限 {}（RFC 9000 §4.6）", streamIndexOfType(frame.streamId),
+                                                                     isUnidirectional(frame.streamId) ? "单" : "双", frame.streamId,
+                                                                     isUnidirectional(frame.streamId) ? m_advertisedUnidirectionalStreams : m_advertisedBidirectionalStreams)));
+            }
             // 本端还不认识这条流：没有记账要作废，忽略即可（复位只影响发送方的额度）
             return {};
         }
@@ -435,6 +457,20 @@ namespace AsynGyanis::Net
             // 本端已经把这条流发完并得到确认：再补一份状态就会凭空回一条收尾长度为 0 的 RESET_STREAM，
             // 把已经收齐的对端判成越界
             return {};
+        }
+        if (isLocallyInitiated(frame.streamId))
+        {
+            if (m_outgoing.find(frame.streamId) == m_outgoing.end())
+            {
+                // 本端从没创建过这条流（§19.5 明写 MUST）：放行不只是凭空建条目，叫停的处置还会
+                // 替一条幽灵流回一条收尾长度为 0 的 RESET_STREAM，把没存在过的流说成已收口
+                return std::unexpected(makeViolation(kStreamStateError, std::format("对端叫停了本端尚未创建的本端发起流 {}（RFC 9000 §19.5）", frame.streamId)));
+            }
+        } else if (const std::uint64_t index = streamIndexOfType(frame.streamId); index >= m_advertisedBidirectionalStreams)
+        {
+            // 走到这里必是对端发起的双向流（对端发起的单向流上面已经拒掉）：越过上限就收口（§4.6）
+            return std::unexpected(
+                    makeViolation(kStreamLimitError, std::format("对端叫停了超出本端宣告上限 {} 的双向流 {}（RFC 9000 §4.6）", m_advertisedBidirectionalStreams, frame.streamId)));
         }
         OutgoingStream &stream = outgoingStream(frame.streamId);
         if (stream.isAborted)

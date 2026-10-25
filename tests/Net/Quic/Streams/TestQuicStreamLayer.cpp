@@ -946,6 +946,104 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 本端从未创建的流上收到额度是 STREAM_STATE_ERROR（§19.10）
+     * @details 放行并凭空建条目等于把记账表交给对端撑大：每帧十几个字节换一条常驻记录，
+     *          而且这类条目既发不了 FIN 也叫不了停，永远等不到结清
+     */
+    TEST(QuicStreamLayer, RejectsMaxStreamDataForLocallyInitiatedStreamItNeverOpened)
+    {
+        QuicStreamLayer        layer(makeEstablishedLayer());
+        QuicMaxStreamDataFrame maxStreamData;
+        maxStreamData.maximumStreamData = 4096;
+
+        maxStreamData.streamId = 0x01; // 本端发起的双向流，本端从没开过
+        EXPECT_EQ(violationCodeOf(layer.onMaxStreamDataFrame(maxStreamData)), 0x05U) << "未创建的本端双向流上收额度该判状态冲突";
+        maxStreamData.streamId = 0x03; // 本端发起的单向流，同样从没开过
+        EXPECT_EQ(violationCodeOf(layer.onMaxStreamDataFrame(maxStreamData)), 0x05U) << "未创建的本端单向流上收额度该判状态冲突";
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "从未创建的流不该被凭空建出条目";
+    }
+
+    /**
+     * @brief 对端发起的双向流超出本端宣告的流数上限时，额度帧判 STREAM_LIMIT_ERROR（§4.6）
+     */
+    TEST(QuicStreamLayer, RejectsMaxStreamDataForPeerStreamBeyondAdvertisedLimit)
+    {
+        QuicStreamLayer        layer(makeEstablishedLayer());
+        QuicMaxStreamDataFrame maxStreamData;
+        maxStreamData.streamId          = 0x10; // 对端发起的双向流里第 4 号（0 起），本端只宣告了 4 条
+        maxStreamData.maximumStreamData = 4096;
+        EXPECT_EQ(violationCodeOf(layer.onMaxStreamDataFrame(maxStreamData)), 0x04U) << "越过流数上限的额度帧该判 STREAM_LIMIT_ERROR";
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "越界的流号不该被建出条目";
+    }
+
+    /**
+     * @brief 正对照：上限之内、对端发起的双向流收到额度即算开流，抬过的窗口随后用得上（§3.1）
+     */
+    TEST(QuicStreamLayer, AcceptsMaxStreamDataThatOpensPeerBidirectionalStreamWithinLimit)
+    {
+        QuicStreamLayer        layer(makeEstablishedLayer());
+        QuicMaxStreamDataFrame maxStreamData;
+        maxStreamData.streamId          = 0x00;
+        maxStreamData.maximumStreamData = 3000;
+        EXPECT_TRUE(layer.onMaxStreamDataFrame(maxStreamData).has_value());
+
+        // 初始窗口只有 2048：写得进 2500 就说明那笔额度真的落在了这条流上
+        const std::vector<std::uint8_t> payload(2500, 'x');
+        EXPECT_EQ(layer.writeStreamData(0x00, payload, false), payload.size());
+    }
+
+    /**
+     * @brief 本端从未创建的流上收到停发是 STREAM_STATE_ERROR（§19.5）
+     * @details 放行不只是凭空建条目：叫停的处置是回一条收尾长度为 0 的 RESET_STREAM，
+     *          等于替一条从没存在过的流编造终局信号发给对端
+     */
+    TEST(QuicStreamLayer, RejectsStopSendingForLocallyInitiatedStreamItNeverOpened)
+    {
+        QuicStreamLayer      layer(makeEstablishedLayer());
+        QuicStopSendingFrame stopSending;
+        stopSending.applicationErrorCode = 0x010b;
+
+        stopSending.streamId = 0x01; // 本端发起的双向流，本端从没开过
+        EXPECT_EQ(violationCodeOf(layer.onStopSendingFrame(stopSending)), 0x05U) << "未创建的本端双向流上收停发该判状态冲突";
+        stopSending.streamId = 0x03; // 本端发起的单向流，同样从没开过
+        EXPECT_EQ(violationCodeOf(layer.onStopSendingFrame(stopSending)), 0x05U) << "未创建的本端单向流上收停发该判状态冲突";
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "从未创建的流不该被凭空建出条目";
+        EXPECT_FALSE(layer.hasOutgoingFrames()) << "幽灵流不该编出收尾长度为 0 的 RESET_STREAM";
+    }
+
+    /**
+     * @brief 停发越过本端宣告的流数上限时判 STREAM_LIMIT_ERROR（§4.6）
+     */
+    TEST(QuicStreamLayer, RejectsStopSendingForPeerStreamBeyondAdvertisedLimit)
+    {
+        QuicStreamLayer      layer(makeEstablishedLayer());
+        QuicStopSendingFrame stopSending;
+        stopSending.streamId             = 0x10; // 对端发起的双向流里第 4 号（0 起），本端只宣告了 4 条
+        stopSending.applicationErrorCode = 0x010b;
+        EXPECT_EQ(violationCodeOf(layer.onStopSendingFrame(stopSending)), 0x04U) << "越过流数上限的停发该判 STREAM_LIMIT_ERROR";
+        EXPECT_EQ(layer.trackedStreamCount(), 0U) << "越界的流号不该被建出条目";
+    }
+
+    /**
+     * @brief 复位越过本端宣告的流数上限时判 STREAM_LIMIT_ERROR（§4.6），上限之内的未知流仍按忽略处理
+     */
+    TEST(QuicStreamLayer, RejectsResetStreamForPeerStreamBeyondAdvertisedLimit)
+    {
+        QuicStreamLayer      layer(makeEstablishedLayer());
+        QuicResetStreamFrame reset;
+        reset.finalSize = 8;
+
+        reset.streamId = 0x10; // 对端发起的双向流，超出宣告的 4 条
+        EXPECT_EQ(violationCodeOf(layer.onResetStreamFrame(reset)), 0x04U) << "越过双向流数上限的复位该判 STREAM_LIMIT_ERROR";
+        reset.streamId = 0x0a; // 对端发起的单向流里第 2 号（0 起），超出宣告的 2 条
+        EXPECT_EQ(violationCodeOf(layer.onResetStreamFrame(reset)), 0x04U) << "越过单向流数上限的复位该判 STREAM_LIMIT_ERROR";
+
+        reset.streamId = 0x08; // 上限之内的未知流：没有账要作废，忽略即可（既有口径）
+        EXPECT_TRUE(layer.onResetStreamFrame(reset).has_value()) << "上限之内的未知流复位不该被判错";
+        EXPECT_EQ(layer.trackedStreamCount(), 0U);
+    }
+
+    /**
      * @brief 还没建流的入站流被复位：没有账要作废，忽略即可
      */
     TEST(QuicStreamLayer, IgnoresResetForUnknownStream)
