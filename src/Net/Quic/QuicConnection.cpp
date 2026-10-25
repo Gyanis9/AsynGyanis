@@ -383,21 +383,25 @@ namespace AsynGyanis::Net
             co_return;
         }
 
-        // 来源地址折成路径标识、记进表里（状态机产出的数据报按它换回地址）：
-        // 对端换地址（NAT 重绑定、迁移）之后这一格就变，标识与账都按它记（§9.3）
-        const QuicPathKey pathKey = quicPathKeyOf(peerAddress);
-        rememberPathAddress(pathKey, peerAddress);
-        if (m_followsPeerAddressOnReceive && (peerAddress.length != m_peerAddress.length || std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0))
-        {
-            // 服务端：回包仍要打到最新来源地址上（发往哪最终由状态机按「编号最高的非探测包」定）。
-            // 客户端不跟（§9 的 MUST：陌生服务端地址的报文一律丢弃），它只认配置里那个服务端地址
-            m_peerAddress = peerAddress;
-        }
-
+        const QuicPathKey      pathKey = quicPathKeyOf(peerAddress);
         const QuicDecodeStatus handled = m_core->onDatagramReceived(datagram, currentTime(), ecnCodepoint, pathKey);
         if (!handled.has_value())
         {
             LOG_DEBUG_FMT("QuicConnection: 报文不合协议（{}），已按协议收口", handled.error().message);
+        }
+        if (m_core->isPathKeyAuthenticated(pathKey))
+        {
+            // 来源地址折成路径标识、记进表里（状态机产出的数据报按它换回地址）：对端换地址
+            // （NAT 重绑定、迁移）之后这一格就变，标识与账都按它记（§9.3）。只登记认证过的路径：
+            // 解不开的数据报也折得出合法形状的路径标识，无条件登记会让离路攻击者拿垃圾路径灌满
+            // 八格的地址表、挤掉在用路径的回程地址，连带把「最新来源」也拽走（§21.5.4 的伪造迁移）
+            rememberPathAddress(pathKey, peerAddress);
+            if (m_followsPeerAddressOnReceive && (peerAddress.length != m_peerAddress.length || std::memcmp(&peerAddress.storage, &m_peerAddress.storage, peerAddress.length) != 0))
+            {
+                // 服务端：回包仍要打到最新一个认证过的来源地址上（发往哪最终由状态机按「编号最高的
+                // 非探测包」定）。客户端不跟（§9 的 MUST：陌生服务端地址的报文一律丢弃），它只认配置里那个服务端地址
+                m_peerAddress = peerAddress;
+            }
         }
         // 交付排在 drive 之前：应用层是收到数据才排响应的，先 drive 就白跑一轮
         pumpStreamCallbacks();

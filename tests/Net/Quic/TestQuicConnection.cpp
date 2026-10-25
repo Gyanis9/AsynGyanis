@@ -5,6 +5,7 @@
 #include "Net/Quic/QuicConnection.h"
 
 #include "Core/Coroutine/Task.h"
+#include "Core/Socket/InetAddress.h"
 #include "Net/Quic/Crypto/QuicTlsContext.h"
 #include "Platform/IO/Socket.h"
 
@@ -80,17 +81,23 @@ namespace AsynGyanis::Net
          * @brief 一份可直接交给 accept() 的连接配置，报文出口把写出的长度记进台账
          * @param tlsContext 供会话创建用的上下文（生命周期由调用方持有）
          * @param sentDatagramLengths 出参：每次交给发送口的报文字节数
+         * @param sentDestinationAddresses 出参（可空）：每次交给发送口的目的地址文本，与长度台账逐条对应
          * @return QuicConnection::Configuration 填好的配置
          */
-        QuicConnection::Configuration makeConfiguration(SSL_CTX &tlsContext, std::vector<std::size_t> &sentDatagramLengths)
+        QuicConnection::Configuration makeConfiguration(SSL_CTX &tlsContext, std::vector<std::size_t> &sentDatagramLengths,
+                                                        std::vector<std::string> *sentDestinationAddresses = nullptr)
         {
             QuicConnection::Configuration configuration;
             configuration.tlsContext   = &tlsContext;
             configuration.idleTimeout  = kIdleTimeout;
-            configuration.sendDatagram = [&sentDatagramLengths](const Platform::SocketAddress &, const std::uint8_t *, const std::size_t length,
-                                                                const std::uint8_t) -> Core::Task<bool>
+            configuration.sendDatagram = [&sentDatagramLengths, sentDestinationAddresses](const Platform::SocketAddress &destination, const std::uint8_t *,
+                                                                                          const std::size_t              length, const std::uint8_t) -> Core::Task<bool>
             {
                 sentDatagramLengths.push_back(length);
+                if (sentDestinationAddresses != nullptr)
+                {
+                    sentDestinationAddresses->push_back(Core::InetAddress(destination.storage, destination.length).toString());
+                }
                 co_return true;
             };
             return configuration;
@@ -119,7 +126,7 @@ namespace AsynGyanis::Net
         {
         public:
             explicit AcceptedConnectionFixture(const std::uint8_t clientChosenDestinationId = 0xA5) :
-                m_tlsContext(makeBareTlsContext()), m_configuration(makeConfiguration(*m_tlsContext, m_sentDatagramLengths)),
+                m_tlsContext(makeBareTlsContext()), m_configuration(makeConfiguration(*m_tlsContext, m_sentDatagramLengths, &m_sentDestinationAddresses)),
                 m_connection(QuicConnection::accept(m_configuration, makeLoopbackAddress(4433), makeLoopbackAddress(55000), makeClientInitial(clientChosenDestinationId)))
             {
             }
@@ -176,11 +183,18 @@ namespace AsynGyanis::Net
                 return m_sentDatagramLengths.size();
             }
 
+            /// 最近一次交给发送口的目的地址文本；从没发过就是空串
+            [[nodiscard]] std::string lastSentDestinationAddress() const
+            {
+                return m_sentDestinationAddresses.empty() ? std::string{} : m_sentDestinationAddresses.back();
+            }
+
         private:
-            std::vector<std::size_t>                      m_sentDatagramLengths; ///< 发送台账：每条报文的字节数
-            std::unique_ptr<SSL_CTX, void (*)(SSL_CTX *)> m_tlsContext;          ///< 会话上下文，须比连接活得久
-            QuicConnection::Configuration                 m_configuration;       ///< 交给 accept 的配置副本
-            std::unique_ptr<QuicConnection>               m_connection;          ///< 被测连接
+            std::vector<std::size_t>                      m_sentDatagramLengths{};      ///< 发送台账：每条报文的字节数
+            std::vector<std::string>                      m_sentDestinationAddresses{}; ///< 发送台账：每条报文的目的地址文本，与上面逐条对应
+            std::unique_ptr<SSL_CTX, void (*)(SSL_CTX *)> m_tlsContext;                 ///< 会话上下文，须比连接活得久
+            QuicConnection::Configuration                 m_configuration;              ///< 交给 accept 的配置副本
+            std::unique_ptr<QuicConnection>               m_connection;                 ///< 被测连接
         };
     } // namespace
 
@@ -451,7 +465,14 @@ namespace AsynGyanis::Net
      * @details 发往哪条路最终由状态机按「编号最高的非探测包」定，外壳这一层先把「对端地址」
      *          这一格跟上——不然对端 NAT 重绑之后什么都收不到。客户端一侧的规矩相反，见下一条
      */
-    TEST(QuicConnection, FollowsTheSourceAddressForServerSideConnections)
+    /**
+     * @brief 服务端不跟解不开的来源走：伪造来源的垃圾报文既不许拽走「对端地址」，也不许挤掉在用路径的登记
+     * @details 迁移只认「解得开的非探测报文」（§9.3），而解不开的报文照样能折出一个合法形状的路径标识——
+     *          无条件登记与跟随等于让离路攻击者把本连接的回包重定向到自己挑的地址（§21.5.4 的伪造迁移）。
+     *          地址跟随的正面（认证过的迁移要跟）由真实握手的端到端用例与核心层的迁移用例钉住：
+     *          服务端每一条出站报文都要按路径标识换回地址，登记错了它们全都发不出去。
+     */
+    TEST(QuicConnection, KeepsThePeerAddressWhenStrayUndecryptableSourcesFloodIt)
     {
         AcceptedConnectionFixture fixture;
         ASSERT_TRUE(fixture.accepted());
@@ -460,9 +481,29 @@ namespace AsynGyanis::Net
         fixture.deliver(makeClientInitial());
         EXPECT_EQ(connection.remoteAddress(), "127.0.0.1:55000");
 
-        // 同一条连接换成另一个来源端口说话（NAT 重绑定/迁移的样子）：地址那一格要跟上
-        fixture.deliverFrom(makeLoopbackAddress(55001), makeClientInitial());
-        EXPECT_EQ(connection.remoteAddress(), "127.0.0.1:55001");
+        // 旁观者从 24 个伪造来源端口各打一条解不开的短头形状报文：地址表只有 8 格，
+        // 「对端地址」那一格也只有一格——任何一处被拽走，收口报文就打给了伪造来源
+        const std::vector<std::uint8_t> strayDatagram{0x40U, 0x01U, 0x02U, 0x03U, 0x04U};
+        for (std::uint16_t port = 56001; port < 56025; ++port)
+        {
+            fixture.deliverFrom(makeLoopbackAddress(port), strayDatagram);
+        }
+        EXPECT_EQ(connection.remoteAddress(), "127.0.0.1:55000") << "服务端跟着解不开的伪造来源换了地址（§21.5.4）";
+
+        // 出站侧也要能换回地址：先把反放大额度垫够（§8.1 按整条数据报计，不看解不解得开），
+        // 再收口——收口报文查不到登记时是静默丢弃，只留一条限流日志
+        for (int round = 0; round < 20; ++round)
+        {
+            fixture.deliver(makeClientInitial());
+        }
+        fixture.flushUntilSettled();
+        const std::size_t datagramCountBeforeClose = fixture.sentDatagramCount();
+
+        const Core::Task<> closeTask = connection.closeNow(0x100, "服务端正在收口");
+        closeTask.handle().resume();
+        ASSERT_TRUE(closeTask.handle().done()) << "closeNow 在假发送口上挂住了：它没有理由等任何东西";
+        ASSERT_GT(fixture.sentDatagramCount(), datagramCountBeforeClose) << "收口报文没走到发送口：在用路径的地址被伪造来源挤掉了";
+        EXPECT_EQ(fixture.lastSentDestinationAddress(), "127.0.0.1:55000") << "收口报文打给了伪造来源";
     }
 
     /**

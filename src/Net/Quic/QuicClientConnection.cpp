@@ -266,7 +266,12 @@ namespace AsynGyanis::Net
         {
             co_return;
         }
-        co_await m_connection->handleDatagram(received.peerAddress, std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)));
+        // 与握手泵、服务端外壳同一条判据：读得到才把 ECN 交下去（§13.4.1）。漏交会让核心层
+        // 「字段可读」的标志与实收计数脱节：ACK 报着冻结在握手期的计数，服务端按 §13.4.2.1
+        // 验不过就把这条路永久判成 ECN Failed
+        const std::optional<std::uint8_t> ecnCodepoint = m_socket->isEcnFieldVisible() ? std::optional<std::uint8_t>{received.ecnCodepoint} : std::nullopt;
+        co_await m_connection->handleDatagram(received.peerAddress, std::span<const std::uint8_t>(m_receiveBuffer.data(), static_cast<std::size_t>(received.receivedByteCount)),
+                                              ecnCodepoint);
         co_return;
     }
 
