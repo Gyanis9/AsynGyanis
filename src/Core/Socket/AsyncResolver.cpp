@@ -385,13 +385,22 @@ namespace AsynGyanis::Core
                     state->slot = std::move(slot);
 
                     // 时限任务先挂上：解析线程一旦跑起来，等待方就必须有一条在时限内醒来的路。
-                    // 定时任务归本等待器所有，解析先到时析构会把它从 TimerQueue 摘掉
+                    // 定时任务归本等待器所有，解析先到时析构会把它从 TimerQueue 摘掉。
+                    // 就地首拍（惰性协程手动启动），不交给调度器排队：队列里存的是裸句柄，
+                    // 结果或取消的唤醒若抢在首次派发之前恢复调用方，帧先销毁、队列随后对已释放的帧调 done()
                     if (timeout > std::chrono::milliseconds::zero())
                     {
                         try
                         {
                             timeoutTask.emplace(armResolveTimeout(targetLoop, state, timeout));
-                            targetLoop.scheduler().schedule(timeoutTask->handle());
+                            timeoutTask->handle().resume();
+                            if (timeoutTask->isReady())
+                            {
+                                // 首拍即完成＝定时器没挂上（Timer 构造抛出已被 promise 收下并记录）：
+                                // 与下面 catch 分支同一处置，本次解析退回无时限等待
+                                timeoutTask.reset();
+                                LOG_WARN("AsyncResolver: 解析时限定时器挂不上（资源耗尽），本次解析退回无时限等待");
+                            }
                         } catch (...)
                         {
                             timeoutTask.reset();

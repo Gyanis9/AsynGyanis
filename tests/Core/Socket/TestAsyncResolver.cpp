@@ -252,6 +252,48 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(TestSupport::waitForCondition([] { return AsyncResolver::activeLookupCount() == 0; }, std::chrono::seconds{2})) << "后台解析结束后活动名额没有归还";
     }
 
+    /**
+     * @brief 钉住带时限解析的超时任务不把裸句柄留在调度队列里
+     * @details 等待体挂起时若把超时任务句柄交给 schedule()，注入的 lookup 可能让结果唤醒抢在首次
+     *          派发之前入队：runAll() 先跑跨线程唤醒，调用方就地恢复、等待体连同超时任务的帧随
+     *          协程帧销毁，队列里剩下的裸句柄随后被派发侧对已释放的帧调 done()——释放后使用。
+     *          循环刻意不启动，由本线程有界轮询等到唤醒入队，再 runAll() 制造确定先后。
+     */
+    TEST(AsyncResolver, ResultWakeBeforeFirstDispatchLeavesNoQueuedTimeoutHandle)
+    {
+        AsyncResolver::setLookupFunction([](const std::string &, const std::uint16_t port) { return std::vector<InetAddress>{InetAddress("127.0.0.1", port)}; });
+        struct LookupReset
+        {
+            ~LookupReset()
+            {
+                AsyncResolver::clearLookupFunction();
+            }
+        } reset;
+
+        Core::EventLoop          loop;
+        std::vector<InetAddress> resolved;
+        auto                     callerBody = [&]() -> Core::Task<> { resolved = co_await AsyncResolver::resolve(loop, "injected-lookup.test", 80, std::chrono::seconds{30}); };
+        Core::Task<>             caller     = callerBody();
+        caller.handle().resume(); // 挂在 resolve 上：超时任务已创建，工作线程已启动
+        ASSERT_FALSE(caller.isReady()) << "注入的 lookup 还没交回结果，调用方此时不该已经完成";
+
+        // 工作线程是分离线程：有界轮询等它把结果唤醒排进跨线程队列（入队即计入，不赌时序）
+        ASSERT_TRUE(TestSupport::waitForCondition([&loop] { return loop.scheduler().remotePendingCount() > 0; }, std::chrono::seconds{5})) << "后台解析没有把结果唤醒投回来";
+
+        // 用 runOne 逐件泵：它的次序是「跨线程可调用体先、本地句柄后」（Scheduler::runOne）。
+        // 第一件就是结果唤醒：调用方就地恢复完成，等待体连同超时任务的帧随之销毁；
+        // 修复前排在本地队列里的那条裸句柄，下一件派发就对已释放的帧调 done()——ASan 判释放后使用，
+        // 与 WebSocketPeer 的 receiveFor 直测同一口径
+        while (loop.scheduler().runOne())
+        {
+        }
+
+        ASSERT_TRUE(caller.isReady()) << "投回的结果唤醒没有把调用方恢复";
+        caller.await_resume();
+        ASSERT_EQ(resolved.size(), 1U) << "注入 lookup 的地址没有交到调用方";
+        EXPECT_EQ(resolved[0].ip(), "127.0.0.1");
+    }
+
     /// 两步写法：先建 Task，再丢掉临时串，最后才 await
     static Core::Task<void> doResolveTwoStep(Core::EventLoop &loop, std::vector<InetAddress> &result)
     {
