@@ -1664,10 +1664,10 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住 receiveFor() 的超时任务不会把裸句柄留在调度队列里
-     * @details 帧在时限内到达时，等待体就地恢复并在 await_resume() 里销毁定时任务；随后由本线程
-     *          派发队列里剩下的东西。定时任务若被排进调度器而不是就地首拍，那条裸句柄就会在
-     *          这一趟派发里指向已释放的帧，派发侧对帧调 done() 即释放后使用。循环刻意不启动，
-     *          由 runAll() 制造确定先后，不依赖调度运气。
+     * @details 判别看「挂起后本地队列里那一件是谁」：就地首拍的形状下它是定时器驱动句柄，派发一件
+     *          队列即清零；若超时任务被 schedule() 排了队，那一件是它的裸句柄，派发首拍后反而把
+     *          驱动排进来、队列长度回到一——不依赖消毒器也能红。裸句柄的危害由帧先到的收尾兜住：
+     *          等待体销毁帧后队列里那条句柄再被派发就是释放后使用（循环刻意不启动，全由本线程泵）。
      */
     TEST(WebSocketPeerContract, ReceiveForLeavesNoQueuedHandleWhenAFrameBeatsTheTimeoutTask)
     {
@@ -1679,12 +1679,19 @@ namespace AsynGyanis::Net
         Core::Task<>                    receiver     = receiverBody();
 
         receiver.handle().resume(); // 挂在 receiveFor 上：超时任务已在其中就地首拍，挂在定时器上
+
+        // 不带消毒器的判别拍：此刻本地队列里恰好一件——修复后是定时器驱动（跑完停进定时器，清零）；
+        // 旧形状下是超时任务的裸句柄（首拍之后把驱动排进来，长度回到一）
+        ASSERT_EQ(loop.scheduler().localQueueSize(), 1U) << "超时任务挂上之后本地队列里该恰好剩一件待派发";
+        ASSERT_TRUE(loop.scheduler().runOne());
+        EXPECT_EQ(loop.scheduler().localQueueSize(), 0U) << "首拍前排进队列的是超时任务的裸句柄：它被派发后又把定时器驱动排了进来";
+
         const std::string frame = maskedClientFrame(0x1, "hello");
         ASSERT_EQ(peer.feedBytes(frame.data(), frame.size()), WebSocketFeedStatus::Accepted);
         ASSERT_TRUE(receiver.isReady()) << "帧到达没有就地恢复接收方";
         receiver.await_resume();
 
-        // 超时任务若仍在队列里，这一趟派发就会对已随等待体销毁的帧调 done()
+        // 帧已就地交付、等待体连同超时任务的帧已销毁：队列里若还压着与那个帧相关的东西，这一趟就会碰已释放的内存
         loop.scheduler().runAll();
 
         ASSERT_TRUE(received.has_value()) << "时限内到达的帧没有交给业务";
