@@ -95,9 +95,12 @@ namespace AsynGyanis::Net
         /// 所以由发包方标出来，让上层判丢时知道该再补一次（RFC 9000 §19.20）
         bool carriesHandshakeDone{false};
         /// 本包是否带了 NEW_CONNECTION_ID / RETIRE_CONNECTION_ID：§13.3 要求这两类帧判丢后重发，
-        /// 恢复层不理解帧语义，由发包方标出来。重发不必知道具体是哪几条——这两类帧允许重复
-        /// （§19.15 明写同一条帧收两遍不算错），所以判丢时把当前在册的标识与已退序列整批再发一遍即可
+        /// 恢复层不理解帧语义，由发包方标出来。NEW_CONNECTION_ID 的重发不必知道具体是哪几条——
+        /// 这类帧允许重复（§19.15 明写同一条帧收两遍不算错），判丢时把在册标识整批再发一遍即可
         bool carriesConnectionIdFrames{false};
+        /// 本包带出的退休通报序列号：RETIRE_CONNECTION_ID 不许每包重带（§13.3 只认判丢重发），
+        /// 确认要按序列号销账、判丢要按序列号放回待发，所以得记住「哪条在哪个包里」
+        std::vector<std::uint64_t> retiredConnectionIdSequences{};
         /**
          * @brief 本包是不是 PMTU 探针（RFC 9000 §14.4）
          * @details 探针被丢掉不是拥塞证据，也不是「这条路不通」的证据：它本来就是拿去试探一个更大的

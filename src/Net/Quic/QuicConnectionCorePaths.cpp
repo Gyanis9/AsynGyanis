@@ -59,6 +59,12 @@ namespace AsynGyanis::Net
         return found == m_peerPaths.end() ? nullptr : &*found;
     }
 
+    bool QuicConnectionCore::isPathKeyAuthenticated(const QuicPathKey &pathKey) const noexcept
+    {
+        const PeerPathState *const state = findPathState(pathKey);
+        return state != nullptr && state->hasReceivedAuthenticatedPacket;
+    }
+
     QuicConnectionCore::PeerPathState *QuicConnectionCore::pathStateFor(const QuicPathKey &pathKey) noexcept
     {
         const auto found = std::ranges::find(m_peerPaths, pathKey, &PeerPathState::key);
@@ -93,6 +99,12 @@ namespace AsynGyanis::Net
     void QuicConnectionCore::followPeerPath(const QuicPathKey &pathKey, const PacketNumberSpace space, const std::uint64_t packetNumber, const bool carriesNonProbingFrame,
                                             const Timestamp now)
     {
+        // 走到这里说明这条数据报解开了：先落认证痕迹再谈跟不跟路——探测帧不迁移路径，
+        // 但它来的那条路从此算「认证过」，外壳据此才肯登记那个来源地址（§9.3、§21.5.4）
+        if (PeerPathState *const receivedState = pathStateFor(pathKey); receivedState != nullptr)
+        {
+            receivedState->hasReceivedAuthenticatedPacket = true;
+        }
         if (!m_hasAdoptedPeerPath)
         {
             // 第一条认证过的报文定下这条连接的路径：此前到达的字节可能来路不明，不能拿它们作数。

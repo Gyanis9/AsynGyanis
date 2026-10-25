@@ -473,6 +473,15 @@ namespace AsynGyanis::Net
          */
         [[nodiscard]] QuicRoundTripTimeEstimate roundTripTimeEstimate() const noexcept;
 
+        /**
+         * @brief 某条对端路径上来过解得开的数据报没有（§9.3 的「认证过」判据）
+         * @details 外壳按它决定「要不要登记与跟随这个来源地址」：解不开的数据报照样能折出合法
+         *          形状的路径标识，无条件登记会让伪造迁移（§21.5.4）灌满地址表、拽走回包地址
+         * @param pathKey 路径标识
+         * @return true 表示这条路径认证过；从没登记过的路径同样为 false
+         */
+        [[nodiscard]] bool isPathKeyAuthenticated(const QuicPathKey &pathKey) const noexcept;
+
     private:
         /// 包号空间：0-RTT 借用 Initial 的空间，所以只有三个
         enum class PacketNumberSpace : std::size_t
@@ -551,6 +560,8 @@ namespace AsynGyanis::Net
             std::uint64_t receivedByteCount{0}; ///< 从这条路径收到的字节（含解不开的数据报：§8.1 的口径是「不管有没有被处理」）
             std::uint64_t sentByteCount{0};     ///< 发往这条路径的字节
             bool          isValidated{false};   ///< 已通过握手级验证，或完成过一次 PATH_CHALLENGE/PATH_RESPONSE 往返（§8.2.3）
+            /// 这条路径上来过解得开的数据报（§9.3 的「认证过」判据）：外壳按它决定要不要登记与跟随来源地址
+            bool hasReceivedAuthenticatedPacket{false};
         };
 
         /// 已发出、等着回应的 PATH_CHALLENGE（§8.2.1 的发起、§8.2.4 的计时、§13.3 的换数据重发）
@@ -806,12 +817,14 @@ namespace AsynGyanis::Net
         /**
          * @brief 把待发的连接标识帧编进这一包（§19.15 的 NEW_CONNECTION_ID 与 §19.16 的 RETIRE）
          * @details 两类帧都只允许出现在 1-RTT 里（§19 表 3 的 Protection 列），所以只有一个调用点。
-         *          重发不做确认跟踪：§19.15 明写同一条帧收两遍不算错、RETIRE 一个已退的序列号也是
-         *          无害的幂等动作，因此「判丢后整批再发一遍」就足以满足 §13.3 的重发要求
+         *          NEW_CONNECTION_ID 不做确认跟踪：§19.15 明写同一条帧收两遍不算错，判丢后把在册
+         *          标识整批再发一遍即可。RETIRE 不同——它不许每包重带（§13.3 只认判丢重发），
+         *          因此按条记账：只在「没压在未确认包里」时编进去，编了哪些随包记档、确认即销账
          * @param frames 帧序列缓冲，编进去的都接在它后面
+         * @param retirementSequences 出参：本包编进去的退休通报序列号，由调用方随包记档
          * @return bool 是否至少编进了一帧
          */
-        bool appendPendingConnectionIdFrames(std::string &frames);
+        bool appendPendingConnectionIdFrames(std::string &frames, std::vector<std::uint64_t> &retirementSequences);
         /**
          * @brief 1-RTT 出包前的两件准备事：路径 MTU 探针与「给对端补一条没在用的标识」
          * @details 两件事都只在 1-RTT 里做（探针要应用空间的写密钥，标识帧只许出现在 1-RTT 包里），
@@ -838,6 +851,16 @@ namespace AsynGyanis::Net
          */
         void discardSpace(PacketNumberSpace space);
         void adoptTlsRecords();
+        /**
+         * @brief 从重发队列或未写出的头部里切出下一段要上线的握手字节
+         * @details 重发队列优先（§13.3：判丢的那段最可能正是对端缺的）；预算装不下整段时按预算切开，
+         *          剩下的留在账上等下一包。一个字节都切不出来时返回空、账目原样不动
+         * @param state 该包号空间的账目
+         * @param remainingByteBudget 这一包还装得下的字节数
+         * @return std::optional<QuicCryptoRange> 切出的区间（有值即非空）；无可发或预算为零时为空
+         */
+        [[nodiscard]] std::optional<QuicCryptoRange> takeNextCryptoFragment(SpaceState &state, std::size_t remainingByteBudget);
+
         void queueSpacePackets(PacketNumberSpace space, Timestamp now);
         /**
          * @brief 到点的话发一条路径 MTU 探针（RFC 9000 §14.4、RFC 8899 §5.2）
@@ -882,6 +905,7 @@ namespace AsynGyanis::Net
          * @param carriesHandshakeDone 本包是否带了 HANDSHAKE_DONE：它要在被确认之前一直重发（§19.20）
          * @param streamAnnouncements 本包带出的流收口宣告，确认与判丢同样按它回收（§13.3）
          * @param carriesConnectionIdFrames 本包是否带了 NEW_CONNECTION_ID / RETIRE_CONNECTION_ID（§13.3 要求判丢后重发）
+         * @param retirementSequences 本包带出的退休通报序列号：确认按它销账、判丢按它放回待发（§13.3）
          * @param padding 非空就把整包补到这个尺寸（PADDING 帧），要哪一种、为什么补见 `DatagramPadding`
          * @param pathKey 这条数据报发往哪条对端路径：由调用方解析好——普通出包传 `m_sendPathKey`，
          *        路径验证传各自那把键。全零是合法的键值（单路径用法），所以这里没有「留空＝当前路径」
@@ -889,7 +913,7 @@ namespace AsynGyanis::Net
          */
         void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange,
                         std::vector<QuicStreamRange> streamRanges, bool carriesHandshakeDone, std::vector<QuicStreamAnnouncement> streamAnnouncements,
-                        bool carriesConnectionIdFrames, std::optional<DatagramPadding> padding, const QuicPathKey &pathKey);
+                        bool carriesConnectionIdFrames, std::vector<std::uint64_t> retirementSequences, std::optional<DatagramPadding> padding, const QuicPathKey &pathKey);
         /**
          * @brief 这一轮还能往网络上压多少净字节
          * @details 三层取最小：数据报上限（§14.1）、拥塞窗口的余量（§7）、以及地址验证之前的
@@ -991,9 +1015,17 @@ namespace AsynGyanis::Net
         std::uint64_t m_peerRetirePriorTo{0};
         /// 本端发出去的 RETIRE_CONNECTION_ID 里最大的序列号；对端撤回一个比这还大的号即越界（§19.16）
         std::uint64_t m_largestRetiredSequenceSent{0};
-        /// 本端退休过的、已通报给对端的序列号：判丢后整批重发时按它再发一遍（§13.3）
-        std::vector<std::uint64_t> m_retiredSequencesSent{};
-        /// 有一包带连接标识帧的包被判丢：下一次出包把在册的标识与已退序列整批再发一遍（§13.3）
+        /// 一条还没销账的退休通报：§13.3 只认「判丢重发」，因此按条记在途——在途的不重复编进包，
+        /// 确认回来即整条销账，判丢则放回待发。永不销账的旧账会让每个后续包都重带全部历史通报
+        struct PendingRetirementNotice
+        {
+            std::uint64_t sequence{0};       ///< 退休的序列号
+            bool          isInFlight{false}; ///< 是否已随一个还没被确认的包上路
+        };
+        /// 待销账的退休通报，按退休先后排
+        std::vector<PendingRetirementNotice> m_pendingRetirementNotices{};
+        /// 有一包带 NEW_CONNECTION_ID 的包被判丢：下一次出包把在册标识整批再发一遍（§13.3；
+        /// 退休通报不走这个粗账，它按条记在 `m_pendingRetirementNotices` 里）
         bool m_isConnectionIdFramesDirty{false};
         /// 无状态重置令牌的派生密钥（§10.3.2）：配置没给就在这里随机取一把
         std::vector<std::uint8_t> m_statelessResetKey{};

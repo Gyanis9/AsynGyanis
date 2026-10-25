@@ -117,8 +117,8 @@ namespace AsynGyanis::Net
         /**
          * @brief 这类帧是不是只有 1-RTT 包才允许携带
          * @details 依据是 §19 表 3 的 Pkts 列：0x04（RESET_STREAM）、0x05（STOP_SENDING）与
-         *          0x08–0x1a 那一段是 `__01`（0-RTT 与 1-RTT），0x1b（PATH_RESPONSE）与
-         *          0x1e（HANDSHAKE_DONE）是 `___1`（只 1-RTT）。本端没有 0-RTT 空间，两种写法
+         *          0x08–0x1a 那一段是 `__01`（0-RTT 与 1-RTT），0x07（NEW_TOKEN）、0x1b（PATH_RESPONSE）
+         *          与 0x1e（HANDSHAKE_DONE）是 `___1`（只 1-RTT）。本端没有 0-RTT 空间，两种写法
          *          在这里归并成同一件事：Initial 与 Handshake 包里出现即违规。
          * @param frameType §12.4 表 3 的取值
          * @return true 出现在 Initial 或 Handshake 包里即为 PROTOCOL_VIOLATION
@@ -126,7 +126,8 @@ namespace AsynGyanis::Net
         bool isOneRttOnlyFrameType(const std::uint64_t frameType) noexcept
         {
             return frameType == static_cast<std::uint64_t>(QuicFrameType::ResetStream) || frameType == static_cast<std::uint64_t>(QuicFrameType::StopSending) ||
-                   (frameType >= 0x08 && frameType <= 0x1b) || frameType == static_cast<std::uint64_t>(QuicFrameType::HandshakeDone);
+                   frameType == static_cast<std::uint64_t>(QuicFrameType::NewToken) || (frameType >= 0x08 && frameType <= 0x1b) ||
+                   frameType == static_cast<std::uint64_t>(QuicFrameType::HandshakeDone);
         }
 
         /**
@@ -437,7 +438,7 @@ namespace AsynGyanis::Net
                 {
                     padding = DatagramPadding{kQuicMinimumInitialDatagramByteLength, false};
                 }
-                emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, padding, response.key);
+                emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, {}, padding, response.key);
             }
             m_pendingPathResponses = std::move(deferred);
         }
@@ -462,7 +463,7 @@ namespace AsynGyanis::Net
             {
                 padding = DatagramPadding{kQuicMinimumInitialDatagramByteLength, false};
             }
-            emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, padding, challenge.key);
+            emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, {}, padding, challenge.key);
             challenge.isSendPending      = false;
             challenge.wasExpanded        = padding.has_value();
             challenge.sentTime           = now;
@@ -882,6 +883,12 @@ namespace AsynGyanis::Net
         {
             m_streams.onSendRangesAcknowledged(packet.streamRanges);
             m_streams.onStreamAnnouncementsAcknowledged(packet.streamAnnouncements);
+            if (!packet.retiredConnectionIdSequences.empty())
+            {
+                // 退休通报被对端确认：整条销账，这一辈子不再上线（§5.1.2 的「未被确认的退休数」据此收敛）
+                std::erase_if(m_pendingRetirementNotices, [&packet](const PendingRetirementNotice &notice)
+                              { return std::ranges::find(packet.retiredConnectionIdSequences, notice.sequence) != packet.retiredConnectionIdSequences.end(); });
+            }
             if (packet.carriesHandshakeDone)
             {
                 // §19.20 的「重发到被确认为止」到此为止：确认回来之后这一帧这辈子不再发第二遍
@@ -900,9 +907,9 @@ namespace AsynGyanis::Net
             m_streams.onSendRangesLost(packet.streamRanges);
             if (packet.carriesConnectionIdFrames)
             {
-                // §13.3：NEW_CONNECTION_ID 与 RETIRE_CONNECTION_ID 判丢要重发。这两类帧允许重复
-                // （§19.15 明写同一条帧收两遍不算错，RETIRE 一个已退的序列号是幂等动作），因此不必
-                // 记住「哪一条在哪个包里」——下一次出包整批发一遍就够
+                // §13.3：NEW_CONNECTION_ID 判丢要重发。这类帧允许重复（§19.15 明写同一条帧收两遍
+                // 不算错），因此不必记住「哪一条在哪个包里」——下一次出包整批发一遍就够。
+                // 退休通报不走这个粗账：它按包记档，判丢的回放在 queueRetransmissions 里做
                 m_isConnectionIdFramesDirty = true;
             }
         }
@@ -1145,6 +1152,43 @@ namespace AsynGyanis::Net
         }
     }
 
+    std::optional<QuicCryptoRange> QuicConnectionCore::takeNextCryptoFragment(SpaceState &state, const std::size_t remainingByteBudget)
+    {
+        if (!state.pendingRetransmissions.empty())
+        {
+            // 重发队列优先：判丢的那段最可能正是对端缺的。区间按值取出再动队列——erase 队首
+            // 会让引用改指第二段，本包就会按别人的偏移发重复字节，而真正缺的那段被从账上抹掉
+            const QuicCryptoRange queuedRange        = state.pendingRetransmissions.front();
+            const std::size_t     fragmentByteLength = std::min(queuedRange.endOffset - queuedRange.beginOffset, remainingByteBudget);
+            if (queuedRange.beginOffset + fragmentByteLength == queuedRange.endOffset)
+            {
+                state.pendingRetransmissions.erase(state.pendingRetransmissions.begin());
+            } else
+            {
+                // 预算只装得下前半段：队首改成剩下的那截，下一包接着补
+                state.pendingRetransmissions.front().beginOffset += fragmentByteLength;
+            }
+            if (fragmentByteLength == 0)
+            {
+                // 这一包被预算挤得一个字节都带不上：不返回空区间，也别把它记进重发账
+                return std::nullopt;
+            }
+            return QuicCryptoRange{queuedRange.beginOffset, queuedRange.beginOffset + fragmentByteLength};
+        }
+        if (state.cryptoWriteOffset < state.cryptoStream.size())
+        {
+            const std::size_t fragmentByteLength = std::min(state.cryptoStream.size() - state.cryptoWriteOffset, remainingByteBudget);
+            if (fragmentByteLength == 0)
+            {
+                return std::nullopt;
+            }
+            const QuicCryptoRange range{state.cryptoWriteOffset, state.cryptoWriteOffset + fragmentByteLength};
+            state.cryptoWriteOffset += fragmentByteLength;
+            return range;
+        }
+        return std::nullopt;
+    }
+
     void QuicConnectionCore::queueSpacePackets(const PacketNumberSpace space, const Timestamp now)
     {
         SpaceState &state = m_spaces[spaceIndex(space)];
@@ -1181,9 +1225,11 @@ namespace AsynGyanis::Net
             bool elicitsAcknowledgement = false;
             appendAcknowledgementIfPending(state, space, now, frames);
             bool carriesHandshakeDone = false;
-            // 连接标识那两类帧只许出现在 1-RTT 里（§19 表 3），编进去的都触发确认
-            const bool carriesConnectionIdFrames = space == PacketNumberSpace::Application && appendPendingConnectionIdFrames(frames);
-            elicitsAcknowledgement               = elicitsAcknowledgement || carriesConnectionIdFrames;
+            // 连接标识那两类帧只许出现在 1-RTT 里（§19 表 3），编进去的都触发确认；
+            // 本包带上的退休通报序列号随包记档，确认与判丢都按它销账/回放
+            std::vector<std::uint64_t> retirementSequences;
+            const bool                 carriesConnectionIdFrames = space == PacketNumberSpace::Application && appendPendingConnectionIdFrames(frames, retirementSequences);
+            elicitsAcknowledgement                               = elicitsAcknowledgement || carriesConnectionIdFrames;
             if (owesHandshakeDone)
             {
                 appendQuicFrame(frames, QuicFrame{QuicHandshakeDoneFrame{}});
@@ -1195,40 +1241,16 @@ namespace AsynGyanis::Net
 
             // 包号会在本轮里跨档：每发一包都要按当时的 nextPacketNumber 重算固定开销，
             // 拿循环开头那次的值套后续包会把包头少算 1 到 3 字节
-            const std::size_t              fixedOverheadByteLength = packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber));
-            const std::size_t              remainingByteBudget     = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
-            std::optional<QuicCryptoRange> carriedRange;
-            if (!state.pendingRetransmissions.empty())
-            {
-                // 重发队列优先：判丢的那段最可能正是对端缺的
-                QuicCryptoRange  &front              = state.pendingRetransmissions.front();
-                const std::size_t fragmentByteLength = std::min(front.endOffset - front.beginOffset, remainingByteBudget);
-                front.beginOffset += fragmentByteLength;
-                if (front.beginOffset == front.endOffset)
-                {
-                    state.pendingRetransmissions.erase(state.pendingRetransmissions.begin());
-                }
-                if (fragmentByteLength > 0)
-                {
-                    carriedRange = QuicCryptoRange{front.beginOffset - fragmentByteLength, front.beginOffset};
-                }
-            } else if (state.cryptoWriteOffset < state.cryptoStream.size())
-            {
-                const std::size_t fragmentByteLength = std::min(state.cryptoStream.size() - state.cryptoWriteOffset, remainingByteBudget);
-                carriedRange                         = QuicCryptoRange{state.cryptoWriteOffset, state.cryptoWriteOffset + fragmentByteLength};
-                state.cryptoWriteOffset += fragmentByteLength;
-            }
-            if (carriedRange.has_value() && carriedRange->endOffset > carriedRange->beginOffset)
+            const std::size_t fixedOverheadByteLength         = packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber));
+            const std::size_t remainingByteBudget             = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
+            const std::optional<QuicCryptoRange> carriedRange = takeNextCryptoFragment(state, remainingByteBudget);
+            if (carriedRange.has_value())
             {
                 QuicCryptoFrame crypto;
                 crypto.offset = carriedRange->beginOffset;
                 crypto.data   = std::span<const std::uint8_t>(state.cryptoStream).subspan(carriedRange->beginOffset, carriedRange->endOffset - carriedRange->beginOffset);
                 appendQuicFrame(frames, QuicFrame{crypto});
                 elicitsAcknowledgement = true;
-            } else
-            {
-                // 这一包没真带上字节：别把空区间记进重发账，否则它永远排在队头
-                carriedRange = std::nullopt;
             }
 
             std::vector<QuicStreamRange>        sentRanges;
@@ -1260,7 +1282,7 @@ namespace AsynGyanis::Net
             const bool hasMoreCrypto = !state.pendingRetransmissions.empty() || state.cryptoWriteOffset < state.cryptoStream.size();
             const bool hasMoreWork   = hasMoreCrypto || (space == PacketNumberSpace::Application && m_streams.hasOutgoingFrames());
             emitPacket(space, frames, now, elicitsAcknowledgement, carriedRange, std::move(sentRanges), carriesHandshakeDone, std::move(announcements), carriesConnectionIdFrames,
-                       std::nullopt, m_sendPathKey);
+                       std::move(retirementSequences), std::nullopt, m_sendPathKey);
             if (!hasMoreWork || (!carriedRange.has_value() && !carriesStreamFrames))
             {
                 // 已经没有下文，或这一包被预算挤得一个字节都没带上：再转一圈也只是空转
@@ -1289,6 +1311,14 @@ namespace AsynGyanis::Net
             // §13.3：复位与停发都「发到被确认为止」，这一包没了指望就得把宣告重新排回待发。
             // 判丢（按包号）与探测超时（按时间）两条路都走这里，所以登记只在这一处
             m_streams.onStreamAnnouncementsLost(packet.streamAnnouncements);
+            for (const std::uint64_t sequence: packet.retiredConnectionIdSequences)
+            {
+                // 退休通报同理：判丢的那几条放回待发，下一次出包重新带上（两条判丢路都汇到这里）
+                if (const auto notice = std::ranges::find(m_pendingRetirementNotices, sequence, &PendingRetirementNotice::sequence); notice != m_pendingRetirementNotices.end())
+                {
+                    notice->isInFlight = false;
+                }
+            }
         }
         // 相邻或重叠的区间合并：同一段字节被两个包各带过一次时不该重发两遍，队列也不该无限增长
         std::ranges::sort(ranges, {}, &QuicCryptoRange::beginOffset);
@@ -1323,13 +1353,13 @@ namespace AsynGyanis::Net
         }
         std::string frames;
         appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
-        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, DatagramPadding{*probeByteLength, true}, m_sendPathKey);
+        emitPacket(PacketNumberSpace::Application, frames, now, true, std::nullopt, {}, false, {}, false, {}, DatagramPadding{*probeByteLength, true}, m_sendPathKey);
     }
 
     void QuicConnectionCore::emitPacket(const PacketNumberSpace space, const std::string &frames, const Timestamp now, const bool isAckEliciting,
                                         const std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, const bool carriesHandshakeDone,
-                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const bool carriesConnectionIdFrames, const std::optional<DatagramPadding> padding,
-                                        const QuicPathKey &pathKey)
+                                        std::vector<QuicStreamAnnouncement> streamAnnouncements, const bool carriesConnectionIdFrames,
+                                        std::vector<std::uint64_t> retirementSequences, const std::optional<DatagramPadding> padding, const QuicPathKey &pathKey)
     {
         SpaceState         &state        = m_spaces[spaceIndex(space)];
         const std::uint64_t packetNumber = state.nextPacketNumber;
@@ -1377,16 +1407,17 @@ namespace AsynGyanis::Net
         m_outboundDatagrams.push_back(QuicOutboundDatagram{std::move(datagram), outgoingEcnCodepoint, pathKey});
 
         QuicSentPacketInfo record;
-        record.packetNumber              = packetNumber;
-        record.timeSent                  = now;
-        record.byteCount                 = datagramByteCount;
-        record.isAckEliciting            = isAckEliciting;
-        record.ecnCodepoint              = outgoingEcnCodepoint;
-        record.cryptoRange               = cryptoRange;
-        record.streamRanges              = std::move(streamRanges);
-        record.streamAnnouncements       = std::move(streamAnnouncements);
-        record.carriesHandshakeDone      = carriesHandshakeDone;
-        record.carriesConnectionIdFrames = carriesConnectionIdFrames;
+        record.packetNumber                 = packetNumber;
+        record.timeSent                     = now;
+        record.byteCount                    = datagramByteCount;
+        record.isAckEliciting               = isAckEliciting;
+        record.ecnCodepoint                 = outgoingEcnCodepoint;
+        record.cryptoRange                  = cryptoRange;
+        record.streamRanges                 = std::move(streamRanges);
+        record.streamAnnouncements          = std::move(streamAnnouncements);
+        record.carriesHandshakeDone         = carriesHandshakeDone;
+        record.carriesConnectionIdFrames    = carriesConnectionIdFrames;
+        record.retiredConnectionIdSequences = std::move(retirementSequences);
         // 探针被丢不算拥塞证据、也不算 §7.6.2 那一段的端点（RFC 9000 §14.4），所以这一格要留在凭据上；
         // 被确认时它又是「这个尺寸走过去了」的唯一证据，两条出口都靠它分辨
         record.isPathMtuProbe = padding.has_value() && padding->isPathMtuProbe;
@@ -1472,7 +1503,7 @@ namespace AsynGyanis::Net
             // 收口也受 §8.1 约束：额度不够就宁可不发，反正对端已经在把我们当放大器打了
             return;
         }
-        emitPacket(space, frames, now, false, std::nullopt, {}, false, {}, false, std::nullopt, m_sendPathKey);
+        emitPacket(space, frames, now, false, std::nullopt, {}, false, {}, false, {}, std::nullopt, m_sendPathKey);
     }
 
     QuicConnectionCore::PacketNumberSpace QuicConnectionCore::highestSpaceWithWriteKeys() const noexcept
@@ -1856,14 +1887,14 @@ namespace AsynGyanis::Net
                 continue;
             }
             // §5.1.2：不许不打招呼就忘掉一条标识——每退一条都要发一条 RETIRE_CONNECTION_ID。
-            // 序列号进「已通报」表而不是当场出队：判丢要整批重发（§13.3）
+            // 序列号进待销账表而不是当场出队：上线一次、确认销账、判丢放回（§13.3）
             if (iterator->sequence > m_largestRetiredSequenceSent)
             {
                 m_largestRetiredSequenceSent = iterator->sequence;
             }
-            if (std::ranges::find(m_retiredSequencesSent, iterator->sequence) == m_retiredSequencesSent.end())
+            if (std::ranges::find(m_pendingRetirementNotices, iterator->sequence, &PendingRetirementNotice::sequence) == m_pendingRetirementNotices.end())
             {
-                m_retiredSequencesSent.push_back(iterator->sequence);
+                m_pendingRetirementNotices.push_back(PendingRetirementNotice{.sequence = iterator->sequence});
             }
             iterator = m_peerConnectionIds.erase(iterator);
         }
@@ -1958,7 +1989,7 @@ namespace AsynGyanis::Net
         // 少一处会忘、也就少一处会与上限打架
     }
 
-    bool QuicConnectionCore::appendPendingConnectionIdFrames(std::string &frames)
+    bool QuicConnectionCore::appendPendingConnectionIdFrames(std::string &frames, std::vector<std::uint64_t> &retirementSequences)
     {
         bool appendedAny = false;
         for (const IssuedConnectionId &issued: m_issuedConnectionIds)
@@ -1976,11 +2007,18 @@ namespace AsynGyanis::Net
             appendQuicFrame(frames, QuicFrame{frame});
             appendedAny = true;
         }
-        for (const std::uint64_t retiredSequence: m_retiredSequencesSent)
+        for (PendingRetirementNotice &notice: m_pendingRetirementNotices)
         {
+            if (notice.isInFlight)
+            {
+                // 已经随一个还没被确认的包上路：§13.3 只认判丢重发，这里不重复带
+                continue;
+            }
             QuicRetireConnectionIdFrame frame;
-            frame.sequenceNumber = retiredSequence;
+            frame.sequenceNumber = notice.sequence;
             appendQuicFrame(frames, QuicFrame{frame});
+            notice.isInFlight = true;
+            retirementSequences.push_back(notice.sequence);
             appendedAny = true;
         }
         if (appendedAny)

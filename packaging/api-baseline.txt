@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9154
+# headers=310 entries=9161
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -7016,6 +7016,7 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isBlockedByAmplificationLim
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isFinished() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isHandshakeDonePending() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isLocalServer() const noexcept
+src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isPathKeyAuthenticated(const QuicPathKey &pathKey) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isStatelessResetDatagram(std::span<const std::uint8_t> datagram) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] const PeerPathState *findPathState(const QuicPathKey &pathKey) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] const QuicCongestionAlgorithm &congestionAlgorithm() const noexcept
@@ -7031,6 +7032,7 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] static std::size_t spaceIndex(Pa
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] static std::size_t spaceIndex(QuicEncryptionLevel level) noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::array<std::uint64_t, 3> receivedEcnCount(QuicEncryptionLevel level) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::array<std::uint8_t, 16> statelessResetTokenOf(std::span<const std::uint8_t> connectionId) const
+src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<QuicCryptoRange> takeNextCryptoFragment(SpaceState &state, std::size_t remainingByteBudget)
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<QuicOutboundDatagram> takeOutboundDatagram()
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<Timestamp> effectiveIdleTimeout() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::optional<Timestamp> idleDeadlineTime() const noexcept
@@ -7047,12 +7049,14 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::size_t persistentCongestion
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::size_t sendByteBudget(std::size_t reservedByteLength, bool ignoresCongestionWindow) const
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::span<const std::uint8_t> activePeerConnectionId() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] std::string_view selectedApplicationProtocol() const noexcept
-src/Net/Quic/QuicConnectionCore.h	bool appendPendingConnectionIdFrames(std::string &frames)
+src/Net/Quic/QuicConnectionCore.h	bool appendPendingConnectionIdFrames(std::string &frames, std::vector<std::uint64_t> &retirementSequences)
+src/Net/Quic/QuicConnectionCore.h	bool hasReceivedAuthenticatedPacket
 src/Net/Quic/QuicConnectionCore.h	bool hasStatelessResetToken
 src/Net/Quic/QuicConnectionCore.h	bool initiateKeyUpdate(Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	bool isAcknowledgementPending
 src/Net/Quic/QuicConnectionCore.h	bool isAdvertised
 src/Net/Quic/QuicConnectionCore.h	bool isCandidate
+src/Net/Quic/QuicConnectionCore.h	bool isInFlight
 src/Net/Quic/QuicConnectionCore.h	bool isPathMtuProbe
 src/Net/Quic/QuicConnectionCore.h	bool isSendPending
 src/Net/Quic/QuicConnectionCore.h	bool isValidated
@@ -7130,6 +7134,7 @@ src/Net/Quic/QuicConnectionCore.h	std::uint64_t receivedByteCount
 src/Net/Quic/QuicConnectionCore.h	std::uint64_t sentByteCount
 src/Net/Quic/QuicConnectionCore.h	std::uint64_t sequence
 src/Net/Quic/QuicConnectionCore.h	std::uint64_t sequence
+src/Net/Quic/QuicConnectionCore.h	std::uint64_t sequence
 src/Net/Quic/QuicConnectionCore.h	std::unique_ptr<QuicCongestionAlgorithm> m_congestion
 src/Net/Quic/QuicConnectionCore.h	std::unique_ptr<QuicTlsContext> m_tls
 src/Net/Quic/QuicConnectionCore.h	std::vector<IssuedConnectionId> m_issuedConnectionIds
@@ -7137,8 +7142,8 @@ src/Net/Quic/QuicConnectionCore.h	std::vector<PeerConnectionId> m_peerConnection
 src/Net/Quic/QuicConnectionCore.h	std::vector<PeerPathState> m_peerPaths
 src/Net/Quic/QuicConnectionCore.h	std::vector<PendingPathChallenge> m_pendingPathChallenges
 src/Net/Quic/QuicConnectionCore.h	std::vector<PendingPathResponse> m_pendingPathResponses
+src/Net/Quic/QuicConnectionCore.h	std::vector<PendingRetirementNotice> m_pendingRetirementNotices
 src/Net/Quic/QuicConnectionCore.h	std::vector<QuicCryptoRange> pendingRetransmissions
-src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint64_t> m_retiredSequencesSent
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> cryptoStream
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> id
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> id
@@ -7155,6 +7160,7 @@ src/Net/Quic/QuicConnectionCore.h	struct PeerConnectionId
 src/Net/Quic/QuicConnectionCore.h	struct PeerPathState
 src/Net/Quic/QuicConnectionCore.h	struct PendingPathChallenge
 src/Net/Quic/QuicConnectionCore.h	struct PendingPathResponse
+src/Net/Quic/QuicConnectionCore.h	struct PendingRetirementNotice
 src/Net/Quic/QuicConnectionCore.h	struct SpaceState
 src/Net/Quic/QuicConnectionCore.h	using QuicOutboundDatagram = ::AsynGyanis::Net::QuicOutboundDatagram
 src/Net/Quic/QuicConnectionCore.h	using Timestamp = std::chrono::microseconds
@@ -7170,7 +7176,7 @@ src/Net/Quic/QuicConnectionCore.h	void confirmHandshake(Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void confirmPeerPathValidated(const QuicPathKey &pathKey, bool wasExpanded, Timestamp now)
 src/Net/Quic/QuicConnectionCore.h	void discardSpace(PacketNumberSpace space)
 src/Net/Quic/QuicConnectionCore.h	void drive(Timestamp now)
-src/Net/Quic/QuicConnectionCore.h	void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, bool carriesHandshakeDone, std::vector<QuicStreamAnnouncement> streamAnnouncements, bool carriesConnectionIdFrames, std::optional<DatagramPadding> padding, const QuicPathKey &pathKey)
+src/Net/Quic/QuicConnectionCore.h	void emitPacket(PacketNumberSpace space, const std::string &frames, Timestamp now, bool isAckEliciting, std::optional<QuicCryptoRange> cryptoRange, std::vector<QuicStreamRange> streamRanges, bool carriesHandshakeDone, std::vector<QuicStreamAnnouncement> streamAnnouncements, bool carriesConnectionIdFrames, std::vector<std::uint64_t> retirementSequences, std::optional<DatagramPadding> padding, const QuicPathKey &pathKey)
 src/Net/Quic/QuicConnectionCore.h	void ensureActivePeerConnectionIdIsStillHeld()
 src/Net/Quic/QuicConnectionCore.h	void enterDrainingAfterStatelessReset()
 src/Net/Quic/QuicConnectionCore.h	void expirePathChallenges(Timestamp now)
@@ -7537,6 +7543,7 @@ src/Net/Quic/Recovery/QuicRecovery.h	std::vector<QuicSentPacketInfo> lost
 src/Net/Quic/Recovery/QuicRecovery.h	std::vector<QuicSentPacketInfo> lost
 src/Net/Quic/Recovery/QuicRecovery.h	std::vector<QuicStreamAnnouncement> streamAnnouncements
 src/Net/Quic/Recovery/QuicRecovery.h	std::vector<QuicStreamRange> streamRanges
+src/Net/Quic/Recovery/QuicRecovery.h	std::vector<std::uint64_t> retiredConnectionIdSequences
 src/Net/Quic/Recovery/QuicRecovery.h	struct ASYN_NET_API QuicAcknowledgementUpdate
 src/Net/Quic/Recovery/QuicRecovery.h	struct ASYN_NET_API QuicCryptoRange
 src/Net/Quic/Recovery/QuicRecovery.h	struct ASYN_NET_API QuicRecoveryTimeoutAction

@@ -54,6 +54,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -121,13 +122,17 @@ namespace AsynGyanis::Net
                 return holder;
             }
 
-            /// @return FixtureContext 服务端上下文；证书加载失败交出空指针，由用例断言
-            [[nodiscard]] static FixtureContext server()
+            /**
+             * @brief 造一份服务端上下文
+             * @param certificateFileName 夹具目录下的证书文件名；要把握手航班撑长时换带填充链的 test_chain_cert.pem
+             * @return FixtureContext 服务端上下文；证书加载失败交出空指针，由用例断言
+             */
+            [[nodiscard]] static FixtureContext server(const std::string_view certificateFileName = "test_cert.pem")
             {
                 FixtureContext holder;
                 holder.m_context = SSL_CTX_new(TLS_server_method());
                 SSL_CTX_set_min_proto_version(holder.m_context, TLS1_3_VERSION);
-                const std::string certificatePath = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_cert.pem").string();
+                const std::string certificatePath = (std::filesystem::path(TEST_FIXTURES_DIR) / certificateFileName).string();
                 const std::string keyPath         = (std::filesystem::path(TEST_FIXTURES_DIR) / "test_key.pem").string();
                 if (SSL_CTX_use_certificate_chain_file(holder.m_context, certificatePath.c_str()) != 1 ||
                     SSL_CTX_use_PrivateKey_file(holder.m_context, keyPath.c_str(), SSL_FILETYPE_PEM) != 1)
@@ -332,14 +337,29 @@ namespace AsynGyanis::Net
             }
 
             /**
-             * @brief 只跳过某个级别里某一个包号的报文，用来造「中间空一包」的局面
+             * @brief 只跳过某个级别里一个包号的报文，用来造「中间空一包」的局面
              * @param level 要跳过的加密级别
              * @param packetNumber 要跳过的包号；交空回到正常行为
              */
             void skipPacketNumber(const QuicEncryptionLevel level, const std::optional<std::uint64_t> packetNumber) noexcept
             {
-                m_skippedPacketLevel  = level;
-                m_skippedPacketNumber = packetNumber;
+                m_skippedPacketLevel = level;
+                m_skippedPacketNumbers.clear();
+                if (packetNumber.has_value())
+                {
+                    m_skippedPacketNumbers.insert(*packetNumber);
+                }
+            }
+
+            /**
+             * @brief 跳过某个级别里的一批包号，用来造多个互不相邻的空洞
+             * @param level 要跳过的加密级别
+             * @param packetNumbers 要跳过的包号集合，替换掉之前的名单
+             */
+            void skipPacketNumbers(const QuicEncryptionLevel level, const std::initializer_list<std::uint64_t> packetNumbers) noexcept
+            {
+                m_skippedPacketLevel   = level;
+                m_skippedPacketNumbers = packetNumbers;
             }
 
             /**
@@ -502,6 +522,12 @@ namespace AsynGyanis::Net
                 spaceOf(level).suppressesAcknowledgements = true;
             }
 
+            /// 撤销上面的抑制：这个空间恢复回 ACK
+            void resumeAcknowledgements(const QuicEncryptionLevel level) noexcept
+            {
+                spaceOf(level).suppressesAcknowledgements = false;
+            }
+
             /**
              * @brief 只把某个级别已收到的包再确认一次，不管有没有新包要确认
              * @details 重复 ACK 是合法且常见的（周期性确认）。本端用它来走「确认本身就判丢」那条不依赖
@@ -526,6 +552,22 @@ namespace AsynGyanis::Net
             {
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+                return buildDatagram(level, frames);
+            }
+
+            /**
+             * @brief 手工发一条 PING 之外全是 PADDING 的包
+             * @details PADDING 就是裸零字节（§19.1）：ACK 被压住时用它在服务端把反放大额度
+             *          按「已收字节 × 3」撑开（§8.1），好让整条长航班发得出去
+             * @param level 用哪个级别发（同时决定空间与密钥）
+             * @param paddingByteLength PADDING 字节数；连同包头开销合计不得超过数据报上限
+             * @return std::vector<std::uint8_t> 一条完整的 UDP 净字节
+             */
+            [[nodiscard]] std::vector<std::uint8_t> buildPaddedPing(const QuicEncryptionLevel level, const std::size_t paddingByteLength)
+            {
+                std::string frames;
+                appendQuicFrame(frames, QuicFrame{QuicPingFrame{}});
+                frames.append(paddingByteLength, '\0');
                 return buildDatagram(level, frames);
             }
 
@@ -794,7 +836,7 @@ namespace AsynGyanis::Net
                 {
                     return true;
                 }
-                return m_skippedPacketNumber.has_value() && level == m_skippedPacketLevel && packetNumber == *m_skippedPacketNumber;
+                return level == m_skippedPacketLevel && m_skippedPacketNumbers.contains(packetNumber);
             }
 
             void consumePacket(const std::span<const std::uint8_t> remainder, const QuicPacketHeader &header)
@@ -1116,8 +1158,8 @@ namespace AsynGyanis::Net
             std::vector<std::uint8_t>          m_destinationOverride{};                            ///< 非空时覆盖发出包的目的标识
             bool                               m_sawConnectionClose{false};                        ///< 是否收到过 CONNECTION_CLOSE
             bool                               m_dropsAllHandshakePackets{false};                  ///< 是否把 Handshake 级报文一律不看
-            std::optional<std::uint64_t>       m_skippedPacketNumber{};                            ///< 要跳过的那个包号，空表示不挑
-            QuicEncryptionLevel                m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那个包号属于哪个级别
+            std::set<std::uint64_t>            m_skippedPacketNumbers{};                           ///< 要跳过的包号集合，空表示不挑
+            QuicEncryptionLevel                m_skippedPacketLevel{QuicEncryptionLevel::Initial}; ///< 上面那批包号属于哪个级别
             std::optional<QuicEncryptionLevel> m_blackholedLevel{};                                ///< 这个级别的报文一律当作在路上丢了，空表示不黑洞
             std::size_t                        m_pingFrameCount{0};                                ///< 收到过的 PING 帧数
             bool                               m_sawServerKeyUpdate{false};                        ///< 本端是否被迫提升过读密钥代际
@@ -2021,6 +2063,70 @@ namespace AsynGyanis::Net
         }
         EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore) << "补发的字节没有续上 Handshake 流的空洞";
         finishAfterHandshakeGap(core, client);
+    }
+
+    /**
+     * @brief 两段互不相邻的握手空洞同时判丢时，各自按自己的偏移补发
+     * @details 钉的是重发队列「队首被整包带走后出队」这一步的边界：区间必须在出队前就按队首算好，
+     *          出队之后再从队首取数拿到的是第二段，补发的会是重复字节，而真正缺的那段被从账上
+     *          抹掉、永不重发（RFC 9002 §6.2：判丢的字节按原偏移进新包）。造形要靠长证书链把航班
+     *          撑到七包开外，压住 ACK 并用带 PADDING 的 PING 撑反放大额度（§8.1），再跳过 PN2 与 PN4。
+     */
+    TEST(QuicConnectionCore, RetransmitsBothNonAdjacentCryptoHolesAtTheirOwnOffsets)
+    {
+        const FixtureContext serverContext = FixtureContext::server("test_chain_cert.pem");
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        client.skipPacketNumbers(QuicEncryptionLevel::Handshake, {2, 4});
+        client.suppressAcknowledgements(QuicEncryptionLevel::Handshake);
+
+        exchange(core, client, Timestamp{0});
+        // 压住 ACK 期间服务端只有 ClientHello 那 1200 字节的 3 倍额度；五条垫包把额度撑过整条
+        // 证书链航班，航班发完之后的纯确认包接着推包号——最大确认值要越过 4+3，两个空洞才都
+        // 落在包号阈值之内（§6.1.1），同一次确认处理把它们一起判丢、一起进重发队列
+        for (int ping = 0; ping < 5; ++ping)
+        {
+            feed(core, client.buildPaddedPing(QuicEncryptionLevel::Handshake, 1100), Timestamp{10000 * (ping + 1)});
+            // feed 只喂不收：额度每撑开一档，服务端续上的航班都要交回客户端，包号才推得过去
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+        }
+        ASSERT_GE(client.serverReceivedPacketCount(QuicEncryptionLevel::Handshake), 7U) << "航班没撑够长，造不出两个都落在包号阈值之内的不相邻空洞";
+        ASSERT_FALSE(client.isHandshakeCompleted()) << "还空着两段，握手此时不该完成";
+
+        const std::size_t handshakeBytesBefore = client.serverCryptoByteCount(QuicEncryptionLevel::Handshake);
+        ASSERT_TRUE(core.onDatagramReceived(client.buildRepeatedAcknowledgement(QuicEncryptionLevel::Handshake), Timestamp{60000}).has_value());
+        Timestamp retransmissionTime{61000};
+        if (const std::optional<Timestamp> deadline = core.nextTimeout(); deadline.has_value())
+        {
+            // 包号阈值若没把第二个空洞一起判掉，让时间阈值的定时器补一拍
+            core.onTimeout(*deadline);
+            retransmissionTime = *deadline + Timestamp{1000};
+        }
+        core.drive(retransmissionTime);
+
+        const std::vector<std::vector<std::uint8_t>> retransmitted = drain(core);
+        ASSERT_FALSE(retransmitted.empty()) << "两个空洞都判丢了，重发队列不该是空的";
+        for (const auto &datagram: retransmitted)
+        {
+            client.consume(datagram);
+        }
+        EXPECT_GT(client.serverCryptoByteCount(QuicEncryptionLevel::Handshake), handshakeBytesBefore) << "补发没有推进连续前缀：队首那段多半按错误的区间发了重复字节";
+        ASSERT_TRUE(client.isHandshakeCompleted()) << "两段空洞补齐后握手该接上；缺一段就说明重发账把它抹掉了";
+
+        client.skipPacketNumber(QuicEncryptionLevel::Handshake, std::nullopt);
+        client.resumeAcknowledgements(QuicEncryptionLevel::Handshake);
+        for (int round = 7; round < 10; ++round)
+        {
+            exchange(core, client, Timestamp{10000 * round});
+        }
+        EXPECT_EQ(core.phase(), QuicConnectionPhase::Established);
     }
 
     /**
@@ -3593,6 +3699,75 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 退休通报上线一次、确认即销账，只有判丢才重发（§13.3）
+     * @details RETIRE_CONNECTION_ID 不是「发到被确认为止」的周期通报：§13.3 写明只有携带它的包
+     *          判丢才重发。若退休序列永不销账，每个后续包都会重带全部历史通报，而这种包触发确认，
+     *          两端就互相喂出一串无用的包；§5.1.2 的 SHOULD 也把「未被确认的退休数」限定成要销账的量
+     */
+    TEST(QuicConnectionCore, SendsRetireConnectionIdOnceAndResendsItOnlyAfterLoss)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 造形与「先退后添」那条用例相同：对端用 Retire Prior To=2 收回序列号 0 与 1
+        const auto advertise = [&](const std::uint64_t sequence, const std::uint64_t retirePriorTo, const std::vector<std::uint8_t> &id)
+        {
+            std::string              frames;
+            QuicNewConnectionIdFrame frame;
+            frame.sequenceNumber      = sequence;
+            frame.retirePriorTo       = retirePriorTo;
+            frame.connectionId        = id;
+            frame.statelessResetToken = std::span<const std::uint8_t>(kPlaceholderResetToken);
+            appendQuicFrame(frames, QuicFrame{frame});
+            feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{120000});
+            for (const auto &datagram: drain(core))
+            {
+                client.consume(datagram);
+            }
+        };
+        const std::vector<std::uint8_t> secondId(kClientConnectionId.size(), 0x66U);
+        const std::vector<std::uint8_t> thirdId(kClientConnectionId.size(), 0x77U);
+        advertise(1, 0, secondId);
+        advertise(2, 2, thirdId);
+        ASSERT_EQ(client.serverRetiredConnectionIdSequences().size(), 2U) << "两条退休通报该各上线一次";
+
+        // 已交付并被确认的通报不许再随后续包重带：多跑几轮平常交换，计数必须停在 2
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, Timestamp{130000 + 10000 * round});
+        }
+        EXPECT_EQ(client.serverRetiredConnectionIdSequences().size(), 2U) << "已交付的退休通报随每个后续包重带（§13.3 只许判丢重发）";
+
+        // 判丢重发的那半边：黑洞掉 Application 档再触发一次退休（RPT=3 收回序列号 2），
+        // 携带新通报的包全部「在路上丢了」；判丢之后它必须回到待发，放行即重新上线
+        client.blackholePackets(QuicEncryptionLevel::Application);
+        const std::vector<std::uint8_t> fourthId(kClientConnectionId.size(), 0x88U);
+        advertise(3, 3, fourthId);
+        ASSERT_EQ(client.serverRetiredConnectionIdSequences().size(), 2U) << "黑洞没兜住：新的退休通报提前交付了";
+
+        Timestamp now{200000};
+        for (int round = 0; round < 4; ++round)
+        {
+            exchange(core, client, now);
+            const std::optional<Timestamp> deadline = core.nextTimeout();
+            ASSERT_HAS_VALUE(deadline) << "第 " << round << " 轮黑洞期间没有武装定时器";
+            now = *deadline;
+            core.onTimeout(now);
+        }
+        client.clearPacketBlackhole();
+        for (int round = 0; round < 3; ++round)
+        {
+            exchange(core, client, now + Timestamp{10000 * (round + 1)});
+        }
+        EXPECT_GE(client.serverRetiredConnectionIdSequences().size(), 3U) << "携带退休通报的包判丢之后没有重发（§5.1.2：不许不打招呼就忘掉）";
+    }
+
+    /**
      * @brief 本端签发的每一条连接标识都得收（§5.1.1 的 MUST accept）
      * @details 通告出去的备用标识一上线就可能出现在对端的短头里。只认握手期那一条的话，对端改用
      *          备用标识之后本端会把它的报文全丢掉——而外壳的路由表（按签发通知建的别名索引）已经
@@ -3638,8 +3813,8 @@ namespace AsynGyanis::Net
     /**
      * @brief §19 表 3 的 Pkts 列：连接标识与路径验证这几类帧不许出现在 Initial/Handshake 包里
      * @details 表里 0x18（NEW_CONNECTION_ID）、0x19（RETIRE_CONNECTION_ID）、0x1a（PATH_CHALLENGE）
-     *          的 Pkts 是 `__01`，0x1b（PATH_RESPONSE）是 `___1`；本端没有 0-RTT 空间，两者都归并成
-     *          「只许 1-RTT」。§12.4 对这类错放的处置写死了是 PROTOCOL_VIOLATION
+     *          的 Pkts 是 `__01`，0x07（NEW_TOKEN）与 0x1b（PATH_RESPONSE）是 `___1`；本端没有 0-RTT
+     *          空间，两种写法都归并成「只许 1-RTT」。§12.4 对这类错放的处置写死了是 PROTOCOL_VIOLATION
      */
     TEST(QuicConnectionCore, RejectsConnectionIdAndPathFramesCarriedInHandshakePackets)
     {
@@ -3693,12 +3868,50 @@ namespace AsynGyanis::Net
             appendQuicFrame(frames, QuicFrame{QuicPathResponseFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
             frameInHandshakeCloses(frames, "PATH_RESPONSE", true);
         }
+        {
+            // §19 表 3 里 0x07（NEW_TOKEN）的 Pkts 列同样是 `___1`：它是服务端在 1-RTT 里发令牌的帧，
+            // 出现在 Initial/Handshake 包里即违规（§12.4）
+            const std::array<std::uint8_t, 8> token{1, 2, 3, 4, 5, 6, 7, 8};
+            std::string                       frames;
+            appendQuicFrame(frames, QuicFrame{QuicNewTokenFrame{.token = std::span<const std::uint8_t>(token)}});
+            frameInHandshakeCloses(frames, "NEW_TOKEN", true);
+        }
         // 正向对照：同样一条 PATH_CHALLENGE 打进 1-RTT 包必须照常收下，门不能拦过头
         {
             std::string frames;
             appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{.data = {1, 2, 3, 4, 5, 6, 7, 8}}});
             frameInSpaceCloses(QuicEncryptionLevel::Application, frames, "PATH_CHALLENGE(1-RTT)", false);
         }
+    }
+
+    /**
+     * @brief 路径的「认证过」判据只认解得开的数据报（§9.3）
+     * @details 外壳登记来源地址、跟随来源地址都拿这一格当闸：解不开的数据报照样能折出合法的
+     *          路径标识，无条件登记等于给伪造迁移开门（§21.5.4）。只来过一条解得开的报文
+     *          （哪怕只是探测帧）才算认证过——§8.2.2 的回应必须原路打回去，那条路得有地址。
+     */
+    TEST(QuicConnectionCore, MarksPathAuthenticatedOnlyForDatagramsItCouldDecrypt)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+
+        const QuicPathKey               strayKey{makePathKey(0x5A)};
+        const std::vector<std::uint8_t> garbageDatagram{0x40U, 0x01U, 0x02U, 0x03U, 0x04U};
+        ASSERT_TRUE(core.onDatagramReceived(garbageDatagram, Timestamp{0}, std::nullopt, strayKey).has_value()) << "解不开的数据报该被静默丢弃，而不是当成协议错误";
+        EXPECT_FALSE(core.isPathKeyAuthenticated(strayKey)) << "解不开的数据报把路径标成了认证过：伪造来源就能借此登记地址";
+
+        const QuicPathKey                            arrivalKey{makePathKey(0x5B)};
+        const std::vector<std::vector<std::uint8_t>> flight = client.buildFlight();
+        ASSERT_FALSE(flight.empty()) << "客户端没产出 ClientHello，认证报文无从谈起";
+        feedOnPath(core, flight.front(), Timestamp{1000}, arrivalKey);
+        EXPECT_TRUE(core.isPathKeyAuthenticated(arrivalKey)) << "收到过解得开的 ClientHello 的路径没被标成认证过";
+        EXPECT_FALSE(core.isPathKeyAuthenticated(strayKey)) << "只来过垃圾报文的路径不该沾上认证状态";
+        EXPECT_FALSE(core.isPathKeyAuthenticated(makePathKey(0x5C))) << "从没来过任何报文的路径不该算认证过";
     }
 
     /**
