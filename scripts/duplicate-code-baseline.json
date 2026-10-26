@@ -124,13 +124,6 @@
       "occurrences": 2
     },
     {
-      "hash": "8163158fbfa532f4",
-      "files": [
-        "src/Net/Http/Client/HttpProxyPumpedTls.cpp"
-      ],
-      "occurrences": 2
-    },
-    {
       "hash": "84f121c7db51e9f8",
       "files": [
         "src/Net/Http2/Http2Session.h",
@@ -154,9 +147,9 @@
       "occurrences": 2
     },
     {
-      "hash": "916124f7f975e06e",
+      "hash": "8928a42a6ab1bc07",
       "files": [
-        "src/Core/Socket/AsyncSocket.cpp"
+        "src/Core/Coroutine/Task.h"
       ],
       "occurrences": 2
     },
