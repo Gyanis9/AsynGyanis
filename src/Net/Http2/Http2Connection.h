@@ -304,7 +304,7 @@ namespace AsynGyanis::Net
          * @brief 取走已校验通过的请求
          * @return std::vector<Http2Request> 按到达顺序排列的请求；没有新请求时为空
          * @note 取走即清空。请求在头块的 END_HEADERS 收齐、语义校验通过后才出现；同一流后续的正文
-         *       走 takeReceivedData()
+         *       走 takeReceivedData()。新一轮事件的落点是上一批还回来的备用缓冲，容量跨批续用
          */
         [[nodiscard]] std::vector<Http2Request> takeRequests();
 
@@ -312,7 +312,7 @@ namespace AsynGyanis::Net
          * @brief 把刚取走的请求向量还回来复用容量
          * @param buffer 之前 takeRequests() 取走的那个向量（按右值移交）
          * @note 约定与 recycleOutgoingBytes() 一致：遍历完再还，本端只留容量、清掉剩下的空壳元素。
-         *       期间已解出新的待交请求时这份缓冲直接丢弃——覆盖会把刚解出来的请求清掉。
+         *       期间已解出新的待交请求时覆盖仍然不可能——那份缓冲转入备用槽，下一次取走时接上容量
          */
         void recycleRequests(std::vector<Http2Request> &&buffer) noexcept;
 
@@ -993,5 +993,9 @@ namespace AsynGyanis::Net
         std::string                    m_outgoingBytes;       ///< 待发字节：由 takeOutgoingBytes() 一次取走
         std::vector<Http2Request>      m_pendingRequests;     ///< 已校验通过、等着被取走的请求
         std::vector<Http2ReceivedData> m_pendingReceivedData; ///< 已收到、等着被取走的正文片段
+        /// 上一批还回来、暂存的那一份事件缓冲（只保容量）：取下一批时以它作落点，
+        /// 处理期间又攒出新事件的「忙批」也照样把容量续上。至多留一份，多留只会让闲置容量跟着调用节奏长
+        std::vector<Http2Request>      m_spareRequests{};
+        std::vector<Http2ReceivedData> m_spareReceivedData{};
     };
 } // namespace AsynGyanis::Net

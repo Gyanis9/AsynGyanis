@@ -572,14 +572,14 @@ namespace AsynGyanis::Net
     void Http2Session::absorbReceivedData()
     {
         std::vector<Http2ReceivedData> receivedChunks = m_connection.takeReceivedData();
-        for (const Http2ReceivedData &receivedData: receivedChunks)
+        for (Http2ReceivedData &receivedData: receivedChunks)
         {
             absorbOneReceivedData(receivedData);
         }
         m_connection.recycleReceivedData(std::move(receivedChunks));
     }
 
-    void Http2Session::absorbOneReceivedData(const Http2ReceivedData &receivedData)
+    void Http2Session::absorbOneReceivedData(Http2ReceivedData &receivedData)
     {
         const auto requestIterator = m_pendingRequests.find(receivedData.streamId);
         if (requestIterator != m_pendingRequests.end())
@@ -701,7 +701,8 @@ namespace AsynGyanis::Net
             }
             if (!pending.hasRejection())
             {
-                pending.request.appendBody(receivedData.data.data(), receivedData.data.size());
+                // 整段接管事件里的缓冲：单帧正文（小请求最常见）不再从事件拷贝进请求体
+                pending.request.appendBody(std::move(receivedData.data));
             }
             if (receivedData.endStream)
             {
@@ -1574,7 +1575,7 @@ namespace AsynGyanis::Net
             }
 
             std::vector<Http2ReceivedData> receivedChunks = m_connection.takeReceivedData();
-            for (const Http2ReceivedData &receivedData: receivedChunks)
+            for (Http2ReceivedData &receivedData: receivedChunks)
             {
                 if (receivedData.streamId == streamId)
                 {

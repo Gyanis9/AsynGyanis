@@ -95,6 +95,28 @@ namespace AsynGyanis::Net
         EXPECT_EQ(request.path(), "/user/42");
     }
 
+    /**
+     * @brief 钉住：空正文时整段接管事件里的缓冲，非空时按字节追加
+     * @details 单帧正文（小请求最常见）若走按字节追加，会对同一段字节多付一次堆拷贝；
+     *          判据取接管后的缓冲地址与来源相同——改回 append(data,length) 时它立刻变红
+     */
+    TEST(HttpRequest, AppendBodyAdoptsTheChunkWhenBodyIsEmpty)
+    {
+        HttpRequest request;
+        std::string chunk(3000, 'b'); // 超过短串内联长度，确保真的在堆上
+        const char *chunkBuffer = chunk.data();
+
+        request.appendBody(std::move(chunk));
+        ASSERT_EQ(request.body().size(), 3000U);
+        EXPECT_EQ(request.body().data(), chunkBuffer) << "空正文时没有整段接管，仍按字节拷了一次";
+
+        // 已有正文时语义不变：按字节追加
+        std::string tail(10, 'c');
+        request.appendBody(std::move(tail));
+        EXPECT_EQ(request.body().size(), 3010U);
+        EXPECT_EQ(request.body().substr(3000), std::string(10, 'c'));
+    }
+
     TEST(HttpRequest, StoresMethodAndVersionAsGiven)
     {
         HttpRequest request;

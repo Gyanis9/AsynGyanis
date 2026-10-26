@@ -348,6 +348,14 @@ namespace AsynGyanis::Net
         void appendBody(const char *data, size_t length);
 
         /**
+         * @brief 追加一段正文（整段接管）：正文为空时直接接管这块缓冲，否则按字节追加
+         * @details 流式收包每帧一段：单帧正文（小请求最常见）整段移进正文缓冲，免掉
+         *          「事件缓冲 → 正文」的一次堆拷贝；多帧正文其后仍需拼接，语义与按字节追加一致
+         * @param chunk 待追加的正文；被接管时调用后为空
+         */
+        void appendBody(std::string &&chunk);
+
+        /**
          * @brief 获取请求正文（字符串视图）。
          * @return 正文内容的 string_view，视图生命周期跟随本请求对象
          */

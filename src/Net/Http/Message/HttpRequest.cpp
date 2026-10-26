@@ -294,6 +294,17 @@ namespace AsynGyanis::Net
         m_body.append(data, length);
     }
 
+    void HttpRequest::appendBody(std::string &&chunk)
+    {
+        // 空正文直接接管：单帧正文省掉一次堆拷贝；已有内容时仍按字节拼接，语义不变
+        if (m_body.empty())
+        {
+            m_body = std::move(chunk);
+            return;
+        }
+        m_body.append(chunk);
+    }
+
     std::string_view HttpRequest::body() const
     {
         return m_body;

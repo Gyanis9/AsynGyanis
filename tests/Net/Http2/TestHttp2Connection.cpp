@@ -657,6 +657,44 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：处理期间攒出新事件时的「忙批回收」也不丢容量——下一批事件的落点直接带上它
+     * @details 不能覆盖新事件（上一条管着）不等于那份缓冲只能进垃圾桶：收进备用槽后，
+     *          下一批事件落在同样的容量上，稳态不必每批另要一块堆
+     */
+    TEST(Http2Connection, BusyRecycleCarriesBufferCapacityIntoTheNextTake)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        const auto feedRequest = [&connection](const std::uint32_t streamId)
+        { return feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, streamId, makeMinimalGetRequestBlock())); };
+
+        // 先攒一批够大的：容量小于下一批的判据就分不出「复用」与「重分配」
+        constexpr std::uint32_t kBatchStreamCount = 8U;
+        for (std::uint32_t index = 0; index < kBatchStreamCount; ++index)
+        {
+            ASSERT_EQ(feedRequest(2U * index + 1U), Http2ConnectionFeedStatus::NeedMore);
+        }
+        std::vector<Http2Request> firstTake = connection.takeRequests();
+        ASSERT_EQ(firstTake.size(), kBatchStreamCount);
+        const std::size_t batchCapacity = firstTake.capacity();
+        firstTake.clear();
+
+        // 处理期间又解出一条：此时 pending 非空，回收只能走「不覆盖」那一支
+        ASSERT_EQ(feedRequest(2U * kBatchStreamCount + 1U), Http2ConnectionFeedStatus::NeedMore);
+        connection.recycleRequests(std::move(firstTake));
+
+        std::vector<Http2Request> secondTake = connection.takeRequests();
+        ASSERT_EQ(secondTake.size(), 1U);
+        EXPECT_EQ(secondTake[0].streamId, 2U * kBatchStreamCount + 1U);
+
+        // 再攒一条新事件并取走：这一批的落点应当就是上一份备用的容量
+        ASSERT_EQ(feedRequest(2U * kBatchStreamCount + 3U), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> thirdTake = connection.takeRequests();
+        ASSERT_EQ(thirdTake.size(), 1U);
+        EXPECT_GE(thirdTake.capacity(), batchCapacity) << "忙批回收把缓冲扔了：下一批事件又在一块缩水的容量上增长";
+    }
+
+    /**
      * @brief 钉住：还回来的正文片段向量只被接走容量；本端已另攒出新片段时那份缓冲丢弃而不覆盖
      * @details 与上面那条请求向量是同一条契约、同一个失效形状：漏了这道判断会把「已交出去还没处理完
      *          的旧片段」换进本端——旧片段被二次交付、刚到的那片直接消失，两头都不报错。

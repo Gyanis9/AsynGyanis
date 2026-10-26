@@ -171,19 +171,22 @@ namespace AsynGyanis::Net
         /**
          * @brief 接手一份还回来的事件缓冲：只留容量，元素清掉
          * @details 与 recycleOutgoingBytes() 同一条约定——内部缓冲非空说明取走之后又攒出了新事件，
-         *          换过去就是覆盖，此时把还回来的那份丢掉。
+         *          换过去就是覆盖，此时把还回来的那份收进备用槽（至多一份，元素同样清掉），
+         *          下一次 take 以它作落点，容量因此在「忙批」之间也续得上
          * @tparam T 事件类型（Http2Request 或 Http2ReceivedData）
          * @param destination 本端要填的缓冲
-         * @param buffer 上层遍历完还回来的向量；被丢弃时随形参一并析构
+         * @param spare 备用槽：本端已有新事件时接走还回来的那份缓冲
+         * @param buffer 上层遍历完还回来的向量
          */
         template<typename T>
-        void recycleEventBuffer(std::vector<T> &destination, std::vector<T> &&buffer) noexcept
+        void recycleEventBuffer(std::vector<T> &destination, std::vector<T> &spare, std::vector<T> &&buffer) noexcept
         {
+            buffer.clear();
             if (!destination.empty())
             {
+                spare = std::move(buffer);
                 return;
             }
-            buffer.clear();
             destination = std::move(buffer);
         }
 
@@ -362,22 +365,23 @@ namespace AsynGyanis::Net
 
     std::vector<Http2Request> Http2Connection::takeRequests()
     {
-        return std::exchange(m_pendingRequests, std::vector<Http2Request>{});
+        // 落点用备用槽：上一批还回来的容量（可能来自「忙批」回收）接在这里，不必每批另要一块堆
+        return std::exchange(m_pendingRequests, std::move(m_spareRequests));
     }
 
     void Http2Connection::recycleRequests(std::vector<Http2Request> &&buffer) noexcept
     {
-        recycleEventBuffer(m_pendingRequests, std::move(buffer));
+        recycleEventBuffer(m_pendingRequests, m_spareRequests, std::move(buffer));
     }
 
     std::vector<Http2ReceivedData> Http2Connection::takeReceivedData()
     {
-        return std::exchange(m_pendingReceivedData, std::vector<Http2ReceivedData>{});
+        return std::exchange(m_pendingReceivedData, std::move(m_spareReceivedData));
     }
 
     void Http2Connection::recycleReceivedData(std::vector<Http2ReceivedData> &&buffer) noexcept
     {
-        recycleEventBuffer(m_pendingReceivedData, std::move(buffer));
+        recycleEventBuffer(m_pendingReceivedData, m_spareReceivedData, std::move(buffer));
     }
 
     bool Http2Connection::creditReceivedData(const std::uint32_t streamId, const std::size_t byteCount, std::string *const errorText)

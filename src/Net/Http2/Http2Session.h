@@ -392,9 +392,10 @@ namespace AsynGyanis::Net
          * @brief 处理单条接收正文：按上限与预算判定后追加进对应请求，并归还接收窗口
          * @details 抽成单条形式是为隧道路径复用：隧道期间读循环由隧道协程驱动，
          *          同连接其它流的正文要按与主循环完全相同的口径累积与还窗口
-         * @param receivedData 连接层交出的一条接收数据
+         * @param receivedData 连接层交出的一条接收数据；非 const——缓冲型正文会被整段接管，
+         *        免得再往请求体里拷一遍
          */
-        void absorbOneReceivedData(const Http2ReceivedData &receivedData);
+        void absorbOneReceivedData(Http2ReceivedData &receivedData);
 
         /**
          * @brief 把正文已收齐（或已超限）且尚未发起的请求各自起一条处理器协程
