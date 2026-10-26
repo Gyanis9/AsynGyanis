@@ -211,6 +211,7 @@ namespace AsynGyanis::Core
 
         /**
          * @brief 该事件注册对象是否仍然存活
+         * @note 只在所属循环线程上调用：登记表本身不加锁，线程契约见 IoWatcher 的类说明
          * @param watcher 目标对象
          * @return true 仍在登记表里，可以安全派发
          * @note 按线程契约，登记与注销都发生在所属循环线程上（见 IoWatcher 的类注释与
@@ -263,9 +264,10 @@ namespace AsynGyanis::Core
          */
         void dispatchReadyEvents(std::span<epoll_event> readyEvents);
 
-        /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着
-        mutable std::mutex                    m_liveWatcherMutex; ///< 保护下面那张表的锁，跨线程注销也要用
-        std::unordered_set<const IoWatcher *> m_liveWatchers;     ///< 当前还活着的 IoWatcher
+        /// 存活登记表：IoWatcher 构造/析构时登记与注销，事件派发前据此确认接收对象还活着。
+        /// 不加锁：登记、注销、查询三处全在所属循环线程上（IoWatcher 的类说明把「含析构在内的
+        /// 所有方法只在所属循环线程调用」写成硬约束，跨线程的取消也先投递回循环），锁是纯开销
+        std::unordered_set<const IoWatcher *> m_liveWatchers; ///< 当前还活着的 IoWatcher
 
         Platform::EventPoller   m_epoll;                   ///< epoll 事件管理器
         Scheduler               m_scheduler;               ///< 协程调度器，管理待运行的任务队列

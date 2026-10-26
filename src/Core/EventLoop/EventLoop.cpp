@@ -315,19 +315,16 @@ namespace AsynGyanis::Core
 
     void EventLoop::registerWatcher(const IoWatcher *const watcher)
     {
-        const std::lock_guard lock(m_liveWatcherMutex);
         m_liveWatchers.insert(watcher);
     }
 
     void EventLoop::unregisterWatcher(const IoWatcher *const watcher)
     {
-        const std::lock_guard lock(m_liveWatcherMutex);
         m_liveWatchers.erase(watcher);
     }
 
     bool EventLoop::isWatcherAlive(const IoWatcher *const watcher) const
     {
-        const std::lock_guard lock(m_liveWatcherMutex);
         return m_liveWatchers.contains(watcher);
     }
 
