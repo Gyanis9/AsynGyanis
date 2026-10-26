@@ -32,7 +32,7 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
-#include <map>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -387,6 +387,20 @@ namespace AsynGyanis::Net
          * @brief 取走连接层已收到的正文：追加进对应请求，并按量把接收窗口还回去
          */
         void absorbReceivedData();
+
+        /**
+         * @brief 按流号找在册请求
+         * @param streamId 对端流号
+         * @return 迭代器；没在册时等于 end()
+         */
+        [[nodiscard]] std::deque<std::pair<std::uint32_t, PendingRequest>>::iterator findPendingRequest(std::uint32_t streamId);
+
+        /**
+         * @brief 把一条头块已收齐的请求落册：流号递增时直接追加，同一流重复落册则覆盖原记录
+         * @param streamId 对端流号
+         * @param request 记录本体，按移动收下
+         */
+        void upsertPendingRequest(std::uint32_t streamId, PendingRequest &&request);
 
         /**
          * @brief 处理单条接收正文：按上限与预算判定后追加进对应请求，并归还接收窗口
@@ -817,11 +831,13 @@ namespace AsynGyanis::Net
         /// 同一条连接，各持一份会让「谁读到什么」变得不可推理
         std::vector<char> m_http2ReceiveBuffer;
 
-        /// 头块已收齐的请求：按流号（对端流号严格递增，因此遍历顺序就是请求的到达顺序）
-        /// 响应对象与流式正文读取器都在记录里，一条流一份
-        std::map<std::uint32_t, PendingRequest> m_pendingRequests;
-        std::size_t                             m_servedRequestCount{0}; ///< 本连接已服务的请求条数（单连接上限的判据）
-        bool                                    m_isGoAwaySent{false};   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
+        /// 头块已收齐的请求：扁平有序表（对端流号严格递增，插入即尾部追加，遍历顺序就是到达顺序）。
+        /// 响应对象与流式正文读取器都在记录里，一条流一份。用连续存储而非 std::map：一条请求不再
+        /// 各占一个堆节点，遍历与查找也免掉指针追逐；deque 尾部追加不搬动既有元素，
+        /// 持有记录引用的路径不受「别处落册」影响
+        std::deque<std::pair<std::uint32_t, PendingRequest>> m_pendingRequests;
+        std::size_t                                          m_servedRequestCount{0}; ///< 本连接已服务的请求条数（单连接上限的判据）
+        bool                                                 m_isGoAwaySent{false};   ///< 是否已因达到请求上限发过收尾 GOAWAY：同一原因只发一条
         /// 在飞的处理器协程条数：一条连接可以同时有多条流在服务，「忙」因此要计数而不是布尔量——
         /// 第一条起时置忙、最后一条收尾才置闲，否则先跑完的那条会把还在等业务的本连接交回空闲清扫
         std::size_t m_activeServeCount{0};

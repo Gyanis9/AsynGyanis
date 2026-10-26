@@ -20,9 +20,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <stop_token>
 #include <string>
@@ -555,7 +557,7 @@ namespace AsynGyanis::Net
                     !isIntakeRejected && pending.extendedConnect == ExtendedConnectKind::NotExtended && http2Request.hasBody &&
                     (pending.request.headerFieldCount("expect") == 1 ? isContinueExpected(pending.request.firstHeaderValueView("expect").value_or(std::string_view{}))
                                                                      : isContinueExpected(pending.request.getHeader("expect").value_or(std::string{})));
-            m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
+            upsertPendingRequest(http2Request.streamId, std::move(pending));
 
             // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
             // 先回一个 100 的 HEADERS（不带 END_STREAM），免得对端等到自己的超时才发正文
@@ -567,6 +569,42 @@ namespace AsynGyanis::Net
             }
         }
         m_connection.recycleRequests(std::move(requests));
+    }
+
+    std::deque<std::pair<std::uint32_t, Http2Session::PendingRequest>>::iterator Http2Session::findPendingRequest(const std::uint32_t streamId)
+    {
+        // 对端流号严格递增：在册表也按流号有序，先看两端再线性扫——并发流数是连接级的个位到百位量级
+        if (!m_pendingRequests.empty())
+        {
+            if (m_pendingRequests.front().first == streamId)
+            {
+                return m_pendingRequests.begin();
+            }
+            if (m_pendingRequests.back().first == streamId)
+            {
+                return std::prev(m_pendingRequests.end());
+            }
+        }
+        return std::find_if(m_pendingRequests.begin(), m_pendingRequests.end(), [streamId](const auto &entry) { return entry.first == streamId; });
+    }
+
+    void Http2Session::upsertPendingRequest(const std::uint32_t streamId, PendingRequest &&request)
+    {
+        // 严格递增的常态插在尾部；同一流重复落册（防御路径）就地覆盖；
+        // 流号倒退只在协议异常时出现，维持有序以免遍历顺序被打乱
+        if (m_pendingRequests.empty() || m_pendingRequests.back().first < streamId)
+        {
+            m_pendingRequests.emplace_back(streamId, std::move(request));
+            return;
+        }
+        const auto existing =
+                std::lower_bound(m_pendingRequests.begin(), m_pendingRequests.end(), streamId, [](const auto &entry, const std::uint32_t value) { return entry.first < value; });
+        if (existing != m_pendingRequests.end() && existing->first == streamId)
+        {
+            existing->second = std::move(request);
+            return;
+        }
+        m_pendingRequests.emplace(existing, streamId, std::move(request));
     }
 
     void Http2Session::absorbReceivedData()
@@ -581,7 +619,7 @@ namespace AsynGyanis::Net
 
     void Http2Session::absorbOneReceivedData(Http2ReceivedData &receivedData)
     {
-        const auto requestIterator = m_pendingRequests.find(receivedData.streamId);
+        const auto requestIterator = findPendingRequest(receivedData.streamId);
         if (requestIterator != m_pendingRequests.end())
         {
             PendingRequest &pending = requestIterator->second;
@@ -904,7 +942,8 @@ namespace AsynGyanis::Net
     {
         for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it)
         {
-            PendingRequest &pending = it->second;
+            PendingRequest     &pending        = it->second;
+            const std::uint32_t tunnelStreamId = pending.streamId;
             if (pending.extendedConnect != ExtendedConnectKind::WebSocket || pending.isServeClaimed)
             {
                 continue;
@@ -916,7 +955,12 @@ namespace AsynGyanis::Net
             {
                 co_return false;
             }
-            it = m_pendingRequests.erase(it);
+            // 隧道期间这条表会落册新请求（absorbPendingRequests 的尾部追加），而 deque 的迭代器
+            // 经不起插入：不能拿 await 之前那个迭代器去 erase，按流号重新定位
+            if (it = findPendingRequest(tunnelStreamId); it != m_pendingRequests.end())
+            {
+                it = m_pendingRequests.erase(it);
+            }
             break; // 一条连接同时只跑一条隧道（第二条在 serveOtherStreamsDuringTunnel 里已回 503）
         }
         co_return true;
