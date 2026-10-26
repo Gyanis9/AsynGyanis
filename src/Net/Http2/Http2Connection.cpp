@@ -857,9 +857,7 @@ namespace AsynGyanis::Net
         // 拼接态先清掉：解码路径上可能判错收场，留着半成品会让后续帧被误判成「中途插帧」
         m_isAssemblingHeaderBlock = false;
 
-        // 解码直接读成员缓冲、就地写进成员落点，两处的容量都跨头块留着：早先这里把头块 move 成
-        // 局部串再解，move 走的正是那份刚攒够容量的缓冲，下一条请求又得重新向堆要一块。
-        // 字段以视图落在成员池上：视图表与字节池的容量同样跨头块复用
+        // 解码直接读成员缓冲、以视图写进成员落点：头块缓冲、视图表与字节池的容量都跨头块留着
         std::vector<HpackHeaderFieldView> &headerFields = m_decodedHeaderFields;
         const bool                         isDecoded    = m_hpackDecoder.decode(m_pendingHeaderBlock, m_headerFieldArena, headerFields);
         m_pendingHeaderBlock.clear();
@@ -938,8 +936,7 @@ namespace AsynGyanis::Net
                 {
                     if (field.name != "content-length")
                     {
-                        // 尾部字段随收口事件交给上层，要活到下次解码之后：这里按值拷出（量小且罕见）
-                        deliverableTrailers.push_back(HpackHeaderField{std::string(field.name), std::string(field.value)});
+                        deliverableTrailers.push_back(HpackHeaderField{std::string(field.name), std::string(field.value)}); // 要活到下次解码之后：按值拷出
                     }
                 }
 

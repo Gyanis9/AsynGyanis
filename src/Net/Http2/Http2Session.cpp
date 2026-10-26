@@ -739,8 +739,7 @@ namespace AsynGyanis::Net
             }
             if (!pending.hasRejection())
             {
-                // 整段接管事件里的缓冲：单帧正文（小请求最常见）不再从事件拷贝进请求体
-                pending.request.appendBody(std::move(receivedData.data));
+                pending.request.appendBody(std::move(receivedData.data)); // 整段接管：单帧正文不再从事件拷贝进请求体
             }
             if (receivedData.endStream)
             {

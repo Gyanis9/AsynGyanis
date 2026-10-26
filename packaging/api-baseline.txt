@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9161
+# headers=310 entries=9178
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -956,7 +956,6 @@ src/Core/EventLoop/EventLoop.h	enum class LoopPhase : std::uint8_t
 src/Core/EventLoop/EventLoop.h	explicit WorkloadScope(const char *workloadName) noexcept
 src/Core/EventLoop/EventLoop.h	inline constexpr std::chrono::milliseconds kSlowWorkingSegmentAlertThreshold
 src/Core/EventLoop/EventLoop.h	int m_wakeupSentinel
-src/Core/EventLoop/EventLoop.h	mutable std::mutex m_liveWatcherMutex
 src/Core/EventLoop/EventLoop.h	namespace AsynGyanis::Core
 src/Core/EventLoop/EventLoop.h	std::atomic<LoopPhase> m_phase
 src/Core/EventLoop/EventLoop.h	std::atomic<bool> m_running
@@ -4284,6 +4283,7 @@ src/Net/Http/Message/HttpRequest.h	void adoptStagedBody(std::string &stagedBody)
 src/Net/Http/Message/HttpRequest.h	void adoptStagedHeaders(HttpHeaderFieldStore &stagedHeaders) noexcept
 src/Net/Http/Message/HttpRequest.h	void adoptStagedUri(std::string &stagedUri) noexcept
 src/Net/Http/Message/HttpRequest.h	void appendBody(const char *data, size_t length)
+src/Net/Http/Message/HttpRequest.h	void appendBody(std::string &&chunk)
 src/Net/Http/Message/HttpRequest.h	void removeHeader(std::string_view key)
 src/Net/Http/Message/HttpRequest.h	void reserveHeaders(std::size_t fieldCount, std::size_t byteCount)
 src/Net/Http/Message/HttpRequest.h	void reset()
@@ -5122,6 +5122,7 @@ src/Net/Http2/Hpack.h	HpackDynamicTable m_dynamicTable
 src/Net/Http2/Hpack.h	HpackEncoder &operator=(const HpackEncoder &) = delete
 src/Net/Http2/Hpack.h	HpackEncoder(const HpackEncoder &) = delete
 src/Net/Http2/Hpack.h	HpackErrorKind m_errorKind
+src/Net/Http2/Hpack.h	HpackFieldArena m_fieldArena
 src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API Http2ErrorCode toHttp2ErrorCode(HpackErrorKind errorKind) noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API bool decodeHpackHuffmanString(std::string_view encodedBytes, std::string &value, std::string *errorText = nullptr)
 src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API bool decodeHpackInteger(std::string_view bytes, std::uint8_t prefixBitCount, std::uint64_t &value, std::size_t &consumedByteCount, std::string *errorText = nullptr)
@@ -5130,13 +5131,15 @@ src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API std::size_t findHpackStaticTabl
 src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API std::size_t findHpackStaticTableNameIndex(std::string_view name) noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] ASYN_NET_API std::string encodeHpackInteger(std::uint64_t value, std::uint8_t prefixBitCount, std::uint8_t firstByteHighBits)
 src/Net/Http2/Hpack.h	[[nodiscard]] HpackErrorKind errorKind() const
+src/Net/Http2/Hpack.h	[[nodiscard]] bool decode(std::string_view headerBlock, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText = nullptr)
 src/Net/Http2/Hpack.h	[[nodiscard]] bool decode(std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields, std::string *errorText = nullptr)
-src/Net/Http2/Hpack.h	[[nodiscard]] bool decodeLiteralRepresentation(std::uint8_t nameIndexPrefixBitCount, bool isIncrementalIndexing, std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
-src/Net/Http2/Hpack.h	[[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
+src/Net/Http2/Hpack.h	[[nodiscard]] bool decodeLiteralRepresentation(std::uint8_t nameIndexPrefixBitCount, bool isIncrementalIndexing, std::string_view headerBlock, std::size_t &consumed, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields)
+src/Net/Http2/Hpack.h	[[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields)
 src/Net/Http2/Hpack.h	[[nodiscard]] bool hasError() const
 src/Net/Http2/Hpack.h	[[nodiscard]] bool isLimitExceeded() const noexcept
-src/Net/Http2/Hpack.h	[[nodiscard]] bool resolveIndexedField(std::size_t index, HpackHeaderField &field) const
+src/Net/Http2/Hpack.h	[[nodiscard]] bool resolveIndexedFieldView(std::size_t index, HpackFieldArena &arena, HpackHeaderFieldView &field) const
 src/Net/Http2/Hpack.h	[[nodiscard]] bool tryGetEntry(std::size_t entryIndex, HpackHeaderField &field) const
+src/Net/Http2/Hpack.h	[[nodiscard]] const HpackHeaderField *findEntry(std::size_t entryIndex) const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] const std::deque<HpackHeaderField> &dynamicTableEntries() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] const std::deque<HpackHeaderField> &dynamicTableEntries() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] const std::deque<HpackHeaderField> &entries() const noexcept
@@ -5149,10 +5152,12 @@ src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t dynamicTableSizeByteCount() cons
 src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t entryCount() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t maximumDynamicTableSizeByteCount() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t maximumSizeByteCount() const noexcept
+src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t size() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] std::size_t sizeByteCount() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] std::string encode(const std::vector<HpackHeaderField> &headerFields)
 src/Net/Http2/Hpack.h	[[nodiscard]] std::string encode(std::span<const HpackHeaderFieldView> headerFieldViews)
 src/Net/Http2/Hpack.h	[[nodiscard]] std::string errorMessage() const
+src/Net/Http2/Hpack.h	[[nodiscard]] std::string_view append(const std::string_view bytes)
 src/Net/Http2/Hpack.h	bool m_hasError
 src/Net/Http2/Hpack.h	bool m_hasPendingTableSizeUpdate
 src/Net/Http2/Hpack.h	bool m_hasSeenHeaderRepresentation
@@ -5160,6 +5165,7 @@ src/Net/Http2/Hpack.h	bool m_isBeyondHeaderLimits
 src/Net/Http2/Hpack.h	class ASYN_NET_API HpackDecoder
 src/Net/Http2/Hpack.h	class ASYN_NET_API HpackDynamicTable
 src/Net/Http2/Hpack.h	class ASYN_NET_API HpackEncoder
+src/Net/Http2/Hpack.h	class ASYN_NET_API HpackFieldArena
 src/Net/Http2/Hpack.h	enum class HpackErrorKind
 src/Net/Http2/Hpack.h	explicit HpackDecoder(HpackDecoderLimits limits =
 src/Net/Http2/Hpack.h	explicit HpackDynamicTable(std::size_t maximumSizeByteCount = kHpackDefaultDynamicTableSizeByteCount)
@@ -5173,18 +5179,22 @@ src/Net/Http2/Hpack.h	inline constexpr std::size_t kHpackFirstDynamicTableIndex 
 src/Net/Http2/Hpack.h	inline constexpr std::size_t kHpackHuffmanEndOfStringSymbol = 256
 src/Net/Http2/Hpack.h	inline constexpr std::size_t kHpackStaticTableEntryCount = 61
 src/Net/Http2/Hpack.h	namespace AsynGyanis::Net
+src/Net/Http2/Hpack.h	static constexpr std::size_t kBlockByteCount = 4096
 src/Net/Http2/Hpack.h	static_assert(countHpackStaticNameRuns() == countHpackStaticDistinctNames(), "HPACK 静态表里同名条目必须相邻（RFC 7541 Appendix A 的排列即满足）")
 src/Net/Http2/Hpack.h	std::deque<HpackHeaderField> m_entries
+src/Net/Http2/Hpack.h	std::deque<std::string> m_blocks
 src/Net/Http2/Hpack.h	std::size_t entryCount = 0
 src/Net/Http2/Hpack.h	std::size_t firstEntryIndex = 0
 src/Net/Http2/Hpack.h	std::size_t m_headerListByteCount
 src/Net/Http2/Hpack.h	std::size_t m_maximumSizeByteCount
+src/Net/Http2/Hpack.h	std::size_t m_nextBlockIndex
 src/Net/Http2/Hpack.h	std::size_t m_sizeByteCount
 src/Net/Http2/Hpack.h	std::size_t maximumDynamicTableSizeByteCount
 src/Net/Http2/Hpack.h	std::size_t maximumHeaderFieldNameLength
 src/Net/Http2/Hpack.h	std::size_t maximumHeaderFieldValueLength
 src/Net/Http2/Hpack.h	std::size_t maximumHeaderListByteCount
 src/Net/Http2/Hpack.h	std::string m_errorMessage
+src/Net/Http2/Hpack.h	std::string m_stringScratch
 src/Net/Http2/Hpack.h	std::string name
 src/Net/Http2/Hpack.h	std::string value
 src/Net/Http2/Hpack.h	std::string_view name
@@ -5194,13 +5204,15 @@ src/Net/Http2/Hpack.h	std::string_view value
 src/Net/Http2/Hpack.h	std::string_view value
 src/Net/Http2/Hpack.h	std::uint32_t code
 src/Net/Http2/Hpack.h	std::uint8_t bitCount
+src/Net/Http2/Hpack.h	std::vector<HpackHeaderFieldView> m_decodedFieldViews
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackDecoderLimits
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackHeaderField
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackHeaderFieldView
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackHuffmanCode
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackStaticNameRun
 src/Net/Http2/Hpack.h	struct ASYN_NET_API HpackStaticTableEntry
-src/Net/Http2/Hpack.h	void appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields)
+src/Net/Http2/Hpack.h	void appendField(HpackHeaderFieldView field, std::vector<HpackHeaderFieldView> &headerFields)
+src/Net/Http2/Hpack.h	void clear() noexcept
 src/Net/Http2/Hpack.h	void clear() noexcept
 src/Net/Http2/Hpack.h	void insert(HpackHeaderField field)
 src/Net/Http2/Hpack.h	void noteHeaderLimitExceeded(std::string reason)
@@ -5339,6 +5351,7 @@ src/Net/Http2/Http2ClientConnection.h	~PumpLease() noexcept
 src/Net/Http2/Http2Connection.h	HeaderBlockPurpose m_pendingHeaderPurpose
 src/Net/Http2/Http2Connection.h	HpackDecoder m_hpackDecoder
 src/Net/Http2/Http2Connection.h	HpackEncoder m_encoder
+src/Net/Http2/Http2Connection.h	HpackFieldArena m_headerFieldArena
 src/Net/Http2/Http2Connection.h	Http2Connection &operator=(const Http2Connection &) = delete
 src/Net/Http2/Http2Connection.h	Http2Connection(const Http2Connection &) = delete
 src/Net/Http2/Http2Connection.h	Http2ConnectionConfiguration m_configuration
@@ -5359,7 +5372,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] Http2ResponseSendStatus sendRespon
 src/Net/Http2/Http2Connection.h	[[nodiscard]] StreamRecord *findActiveStream(std::uint32_t streamId) noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] StreamRecord *findStream(std::uint32_t streamId) noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool abortStream(std::uint32_t streamId, std::string_view reason, std::string *errorText = nullptr, Http2ErrorCode errorCode = Http2ErrorCode::NoError)
-src/Net/Http2/Http2Connection.h	[[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *errorText)
+src/Net/Http2/Http2Connection.h	[[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, Http2Request &request, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool appendHeaderBlockFragment(std::string_view fragment)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool applyPeerSettings(const Http2SettingsPayload &payload)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool beginHeaderBlock(std::uint32_t streamId, HeaderBlockPurpose purpose, bool endStream, std::string_view firstFragment, bool endHeaders)
@@ -5391,7 +5404,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] bool tryGetStreamState(std::uint32
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static TerminatedStreamFrameVerdict judgeFrameOnTerminatedStream(StreamRecord &stream, Http2FrameType frameType)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptPeerStreamIdParity(std::uint32_t streamId, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptResponseHeaderField(std::string_view name, std::string_view value, std::string *errorText)
-src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderField> &headerFields, std::string *errorText)
+src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool isReceiveCreditWorthFlushing(std::size_t pendingByteCount, std::uint32_t advertisedWindowByteCount) noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::chrono::steady_clock::time_point lastSettingsSentTime() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::optional<std::size_t> oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields, std::string_view pseudoName, std::string_view pseudoValue, std::uint32_t *peerLimitOut) const
@@ -5474,10 +5487,12 @@ src/Net/Http2/Http2Connection.h	std::uint32_t streamId
 src/Net/Http2/Http2Connection.h	std::uint32_t streamId
 src/Net/Http2/Http2Connection.h	std::uint32_t streamId
 src/Net/Http2/Http2Connection.h	std::uint64_t m_rejectedRequestHeaderFieldCount
-src/Net/Http2/Http2Connection.h	std::vector<HpackHeaderField> m_decodedHeaderFields
 src/Net/Http2/Http2Connection.h	std::vector<HpackHeaderField> trailerFields
+src/Net/Http2/Http2Connection.h	std::vector<HpackHeaderFieldView> m_decodedHeaderFields
 src/Net/Http2/Http2Connection.h	std::vector<Http2ReceivedData> m_pendingReceivedData
+src/Net/Http2/Http2Connection.h	std::vector<Http2ReceivedData> m_spareReceivedData
 src/Net/Http2/Http2Connection.h	std::vector<Http2Request> m_pendingRequests
+src/Net/Http2/Http2Connection.h	std::vector<Http2Request> m_spareRequests
 src/Net/Http2/Http2Connection.h	std::vector<std::uint32_t> m_terminatedStreamIds
 src/Net/Http2/Http2Connection.h	struct ASYN_NET_API Http2ConnectionConfiguration
 src/Net/Http2/Http2Connection.h	struct ASYN_NET_API Http2ReceivedData
@@ -5689,6 +5704,7 @@ src/Net/Http2/Http2Session.h	[[nodiscard]] static std::uint32_t normalizeWireSta
 src/Net/Http2/Http2Session.h	[[nodiscard]] static std::vector<HpackHeaderField> collectResponseHeaderFields(const HttpResponse &response)
 src/Net/Http2/Http2Session.h	[[nodiscard]] static std::vector<HpackHeaderField> collectResponseTrailerFields(const HttpResponse &response)
 src/Net/Http2/Http2Session.h	[[nodiscard]] std::chrono::milliseconds settingsAcknowledgementIdleBudget() const noexcept
+src/Net/Http2/Http2Session.h	[[nodiscard]] std::deque<std::pair<std::uint32_t, PendingRequest>>::iterator findPendingRequest(std::uint32_t streamId)
 src/Net/Http2/Http2Session.h	[[nodiscard]] std::string localAddress() const override
 src/Net/Http2/Http2Session.h	[[nodiscard]] std::string remoteAddress() const override
 src/Net/Http2/Http2Session.h	[[nodiscard]] std::string_view protocolName() const noexcept override
@@ -5714,7 +5730,7 @@ src/Net/Http2/Http2Session.h	static constexpr std::size_t kStreamingSendQueueCon
 src/Net/Http2/Http2Session.h	static constexpr std::size_t kStreamingSendQueueLimitByteCount = 1024U * 1024U
 src/Net/Http2/Http2Session.h	static void await_resume() noexcept
 src/Net/Http2/Http2Session.h	std::coroutine_handle<> bodyWaiter
-src/Net/Http2/Http2Session.h	std::map<std::uint32_t, PendingRequest> m_pendingRequests
+src/Net/Http2/Http2Session.h	std::deque<std::pair<std::uint32_t, PendingRequest>> m_pendingRequests
 src/Net/Http2/Http2Session.h	std::optional<Core::Task<>> serveTask
 src/Net/Http2/Http2Session.h	std::optional<Core::TlsSocket> m_tlsSocket
 src/Net/Http2/Http2Session.h	std::shared_ptr<HttpMemoryBudget> m_memoryBudget
@@ -5730,7 +5746,7 @@ src/Net/Http2/Http2Session.h	std::uint64_t m_countedRejectedRequestHeads
 src/Net/Http2/Http2Session.h	std::vector<char> m_http2ReceiveBuffer
 src/Net/Http2/Http2Session.h	std::vector<char> m_receiveBuffer
 src/Net/Http2/Http2Session.h	struct PendingRequest
-src/Net/Http2/Http2Session.h	void absorbOneReceivedData(const Http2ReceivedData &receivedData)
+src/Net/Http2/Http2Session.h	void absorbOneReceivedData(Http2ReceivedData &receivedData)
 src/Net/Http2/Http2Session.h	void absorbPendingRequests()
 src/Net/Http2/Http2Session.h	void absorbReceivedData()
 src/Net/Http2/Http2Session.h	void attachSessionFactsToRequest(HttpRequest &request)
@@ -5742,6 +5758,7 @@ src/Net/Http2/Http2Session.h	void noteServedRequest()
 src/Net/Http2/Http2Session.h	void onGracefulShutdownRequested() override
 src/Net/Http2/Http2Session.h	void startOneServeTask(PendingRequest &pending)
 src/Net/Http2/Http2Session.h	void startReadyRequestTasks()
+src/Net/Http2/Http2Session.h	void upsertPendingRequest(std::uint32_t streamId, PendingRequest &&request)
 src/Net/Http2/Http2Session.h	void wakeStreamingRequestWaiters()
 src/Net/Http2/Http2Session.h	void writeOutgoingBytesBestEffort()
 src/Net/Http3/Http3ClientConnection.h	Config m_config
