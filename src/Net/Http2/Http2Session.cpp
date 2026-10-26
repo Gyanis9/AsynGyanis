@@ -549,8 +549,12 @@ namespace AsynGyanis::Net
             // 扩展 CONNECT 排除在外（与 h3 侧 `protocolText.empty()` 那条同一判据）：它的 `hasBody`
             // 只是「还没 END_STREAM」，那条流上没有正文要发，回一张 1xx 就等于在 200 之前塞进一段
             // 对端没要的过渡响应
-            const bool isContinueRequested = !isIntakeRejected && pending.extendedConnect == ExtendedConnectKind::NotExtended && http2Request.hasBody &&
-                                             isContinueExpected(pending.request.getHeader("expect").value_or(std::string{}));
+            // Expect 是列表字段：h1 逐条处理同名头部，而 getHeader 会按 ", " 合并同名多条。
+            // 常见形状（恰好一条）走视图读、免一次 owning 拷贝；多条时回退到合并读，判据与 h1 等价
+            const bool isContinueRequested =
+                    !isIntakeRejected && pending.extendedConnect == ExtendedConnectKind::NotExtended && http2Request.hasBody &&
+                    (pending.request.headerFieldCount("expect") == 1 ? isContinueExpected(pending.request.firstHeaderValueView("expect").value_or(std::string_view{}))
+                                                                     : isContinueExpected(pending.request.getHeader("expect").value_or(std::string{})));
             m_pendingRequests.insert_or_assign(http2Request.streamId, std::move(pending));
 
             // RFC 9110 §10.1.1 在 h2 上的等价物：对端声明了 Expect: 100-continue 且还有正文要发时，
