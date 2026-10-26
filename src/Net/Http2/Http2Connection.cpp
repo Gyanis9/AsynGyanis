@@ -858,9 +858,10 @@ namespace AsynGyanis::Net
         m_isAssemblingHeaderBlock = false;
 
         // 解码直接读成员缓冲、就地写进成员落点，两处的容量都跨头块留着：早先这里把头块 move 成
-        // 局部串再解，move 走的正是那份刚攒够容量的缓冲，下一条请求又得重新向堆要一块
-        std::vector<HpackHeaderField> &headerFields = m_decodedHeaderFields;
-        const bool                     isDecoded    = m_hpackDecoder.decode(m_pendingHeaderBlock, headerFields);
+        // 局部串再解，move 走的正是那份刚攒够容量的缓冲，下一条请求又得重新向堆要一块。
+        // 字段以视图落在成员池上：视图表与字节池的容量同样跨头块复用
+        std::vector<HpackHeaderFieldView> &headerFields = m_decodedHeaderFields;
+        const bool                         isDecoded    = m_hpackDecoder.decode(m_pendingHeaderBlock, m_headerFieldArena, headerFields);
         m_pendingHeaderBlock.clear();
         if (!isDecoded)
         {
@@ -933,11 +934,12 @@ namespace AsynGyanis::Net
                 // 已给出的正文长度并存时，下游按哪一份解释正文边界会因实现而异——与 HttpParser 的
                 // trailer 段同一张表
                 std::vector<HpackHeaderField> deliverableTrailers;
-                for (const HpackHeaderField &field: headerFields)
+                for (const HpackHeaderFieldView &field: headerFields)
                 {
                     if (field.name != "content-length")
                     {
-                        deliverableTrailers.push_back(field);
+                        // 尾部字段随收口事件交给上层，要活到下次解码之后：这里按值拷出（量小且罕见）
+                        deliverableTrailers.push_back(HpackHeaderField{std::string(field.name), std::string(field.value)});
                     }
                 }
 
@@ -970,7 +972,7 @@ namespace AsynGyanis::Net
         return true;
     }
 
-    bool Http2Connection::acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *const errorText)
+    bool Http2Connection::acceptRequestHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, Http2Request &request, std::string *const errorText)
     {
         clearError(errorText);
         request = Http2Request{};
@@ -980,7 +982,7 @@ namespace AsynGyanis::Net
         std::size_t regularFieldCount   = 0;
         std::size_t headerByteCount     = 0;
         std::size_t wholeBlockByteCount = 0; ///< 含伪头的整块净字节：口径照 h3 的 accountHeaderFieldBudget
-        for (const HpackHeaderField &field: headerFields)
+        for (const HpackHeaderFieldView &field: headerFields)
         {
             wholeBlockByteCount += field.name.size() + field.value.size();
             if (!field.name.empty() && field.name.front() == ':')
@@ -1024,7 +1026,7 @@ namespace AsynGyanis::Net
         bool             hasHostField          = false;
         std::size_t      contentLengthValue    = 0;
         std::string_view firstHostValue;
-        for (const HpackHeaderField &field: headerFields)
+        for (const HpackHeaderFieldView &field: headerFields)
         {
             // 头名必须全小写（§8.2）：HTTP/2 不允许大小写折叠，大写会让同一个头部出现两种写法
             if (field.name.empty())
@@ -1330,10 +1332,10 @@ namespace AsynGyanis::Net
         return std::nullopt;
     }
 
-    bool Http2Connection::acceptTrailerHeaderFields(const std::vector<HpackHeaderField> &headerFields, std::string *const errorText)
+    bool Http2Connection::acceptTrailerHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, std::string *const errorText)
     {
         clearError(errorText);
-        for (const HpackHeaderField &field: headerFields)
+        for (const HpackHeaderFieldView &field: headerFields)
         {
             if (field.name.empty())
             {

@@ -452,6 +452,11 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    const HpackHeaderField *HpackDynamicTable::findEntry(const std::size_t entryIndex) const noexcept
+    {
+        return entryIndex >= m_entries.size() ? nullptr : &m_entries[entryIndex];
+    }
+
     std::size_t HpackDynamicTable::sizeByteCount() const noexcept
     {
         return m_sizeByteCount;
@@ -486,8 +491,26 @@ namespace AsynGyanis::Net
 
     bool HpackDecoder::decode(const std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields, std::string *const errorText)
     {
+        // 老出口：借用成员池解出视图，再整批拷成 owning。解码逻辑只有视图这一份
+        if (!decode(headerBlock, m_fieldArena, m_decodedFieldViews, errorText))
+        {
+            headerFields.clear();
+            return false;
+        }
+        headerFields.clear();
+        headerFields.reserve(m_decodedFieldViews.size());
+        for (const HpackHeaderFieldView &field: m_decodedFieldViews)
+        {
+            headerFields.push_back(HpackHeaderField{std::string(field.name), std::string(field.value)});
+        }
+        return true;
+    }
+
+    bool HpackDecoder::decode(const std::string_view headerBlock, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields, std::string *const errorText)
+    {
         clearError(errorText);
         headerFields.clear();
+        arena.clear();
         // 粘滞错误态下不动动态表：它已经与对端不同步，继续解只会解出错的头部
         if (m_hasError)
         {
@@ -506,7 +529,7 @@ namespace AsynGyanis::Net
         // 表示是自定界的：逐个解到末尾，中途任何失败都由 decodeRepresentation() 记下原因
         while (consumed < headerBlock.size())
         {
-            if (!decodeRepresentation(headerBlock, consumed, headerFields))
+            if (!decodeRepresentation(headerBlock, consumed, arena, headerFields))
             {
                 // 失败时清空输出：解到一半的字段绝不能留在调用方手里——漏掉「丢弃」这一步的调用方
                 // 会把半截头块当成真的用（宁可这里多清一次，也不留这种脚枪）
@@ -571,7 +594,7 @@ namespace AsynGyanis::Net
         return m_dynamicTable.maximumSizeByteCount();
     }
 
-    bool HpackDecoder::decodeRepresentation(const std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
+    bool HpackDecoder::decodeRepresentation(const std::string_view headerBlock, std::size_t &consumed, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields)
     {
         const auto firstByte = static_cast<std::uint8_t>(headerBlock[consumed]);
         if ((firstByte & kIndexedRepresentationPattern) != 0)
@@ -591,8 +614,8 @@ namespace AsynGyanis::Net
                 return false;
             }
 
-            HpackHeaderField field;
-            if (!resolveIndexedField(static_cast<std::size_t>(index), field))
+            HpackHeaderFieldView field;
+            if (!resolveIndexedFieldView(static_cast<std::size_t>(index), arena, field))
             {
                 recordFailure(HpackErrorKind::CompressionError, std::format("索引 {} 既不在静态表（1..{}）也不在动态表（当前 {} 项）里（RFC 7541 §2.3.3）："
                                                                             "两端的动态表已经不同步，请检查对端是否漏插或错插了条目",
@@ -600,14 +623,14 @@ namespace AsynGyanis::Net
                 return false;
             }
             m_hasSeenHeaderRepresentation = true;
-            appendField(std::move(field), headerFields);
+            appendField(field, headerFields);
             return true;
         }
 
         if ((firstByte & kLiteralIncrementalIndexingMask) == kLiteralIncrementalIndexingPattern)
         {
             // 01xxxxxx：带增量索引的字面量（RFC 7541 §6.2.1），这一项要进动态表
-            return decodeLiteralRepresentation(kIndexedNamePrefixBitCount, true, headerBlock, consumed, headerFields);
+            return decodeLiteralRepresentation(kIndexedNamePrefixBitCount, true, headerBlock, consumed, arena, headerFields);
         }
 
         if ((firstByte & kDynamicTableSizeUpdateMask) == kDynamicTableSizeUpdatePattern)
@@ -642,11 +665,11 @@ namespace AsynGyanis::Net
 
         // 0001xxxx（永不索引，§6.2.3）与 0000xxxx（不索引，§6.2.2）在解码侧完全等价：两者都不插动态表，
         // 区别只是「永不索引」是给中间设施的指示，本片只要求把它正确解析出来
-        return decodeLiteralRepresentation(kLiteralNamePrefixBitCount, false, headerBlock, consumed, headerFields);
+        return decodeLiteralRepresentation(kLiteralNamePrefixBitCount, false, headerBlock, consumed, arena, headerFields);
     }
 
     bool HpackDecoder::decodeLiteralRepresentation(const std::uint8_t nameIndexPrefixBitCount, const bool isIncrementalIndexing, const std::string_view headerBlock,
-                                                   std::size_t &consumed, std::vector<HpackHeaderField> &headerFields)
+                                                   std::size_t &consumed, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields)
     {
         std::uint64_t nameIndex          = 0;
         std::size_t   nameIndexByteCount = 0;
@@ -657,12 +680,13 @@ namespace AsynGyanis::Net
         }
         consumed += nameIndexByteCount;
 
-        HpackHeaderField field;
+        HpackHeaderFieldView field;
         if (nameIndex == 0)
         {
-            // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）
+            // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）：先解进复用的临时串，再整段进池——
+            // 逐条新建字符串是这条热路径上最贵的一笔，临时串的容量跨字段、跨头块都留着
             std::size_t nameByteCount = 0;
-            if (!decodeHpackString(headerBlock.substr(consumed), field.name, nameByteCount, nullptr))
+            if (!decodeHpackString(headerBlock.substr(consumed), m_stringScratch, nameByteCount, nullptr))
             {
                 recordFailure(HpackErrorKind::CompressionError, std::format("字面量表示的头名解不开（已消费 {} 字节，头块共 {} 字节）："
                                                                             "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
@@ -670,9 +694,10 @@ namespace AsynGyanis::Net
                 return false;
             }
             consumed += nameByteCount;
+            field.name = arena.append(m_stringScratch);
         } else
         {
-            if (!resolveIndexedField(static_cast<std::size_t>(nameIndex), field))
+            if (!resolveIndexedFieldView(static_cast<std::size_t>(nameIndex), arena, field))
             {
                 recordFailure(HpackErrorKind::CompressionError,
                               std::format("字面量表示引用的名字索引 {} 不存在（RFC 7541 §2.3.3）：两端的动态表已经不同步，请检查对端", nameIndex));
@@ -681,7 +706,7 @@ namespace AsynGyanis::Net
         }
 
         std::size_t valueByteCount = 0;
-        if (!decodeHpackString(headerBlock.substr(consumed), field.value, valueByteCount, nullptr))
+        if (!decodeHpackString(headerBlock.substr(consumed), m_stringScratch, valueByteCount, nullptr))
         {
             recordFailure(HpackErrorKind::CompressionError, std::format("字面量表示的头值解不开（已消费 {} 字节，头块共 {} 字节）："
                                                                         "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
@@ -689,30 +714,41 @@ namespace AsynGyanis::Net
             return false;
         }
         consumed += valueByteCount;
+        field.value = arena.append(m_stringScratch);
 
         if (isIncrementalIndexing)
         {
-            // 带增量索引：对端的编码器已经把它加进了自己的表，本端必须同步插入，后续索引才能对上
-            m_dynamicTable.insert(HpackHeaderField{field.name, field.value});
+            // 带增量索引：对端的编码器已经把它加进了自己的表，本端必须同步插入，后续索引才能对上。
+            // 动态表比任何调用方的池活得久，这两份拷贝是必要成本（与改造前相同）
+            m_dynamicTable.insert(HpackHeaderField{std::string(field.name), std::string(field.value)});
         }
         m_hasSeenHeaderRepresentation = true;
-        appendField(std::move(field), headerFields);
+        appendField(field, headerFields);
         return true;
     }
 
-    bool HpackDecoder::resolveIndexedField(const std::size_t index, HpackHeaderField &field) const
+    bool HpackDecoder::resolveIndexedFieldView(const std::size_t index, HpackFieldArena &arena, HpackHeaderFieldView &field) const
     {
         if (index <= kHpackStaticTableEntryCount)
         {
+            // 静态表是进程级常量：视图直接指向它，一个字节都不用拷
             const HpackStaticTableEntry &entry = kHpackStaticTable[index - 1];
-            field.name.assign(entry.name);
-            field.value.assign(entry.value);
+            field.name                         = entry.name;
+            field.value                        = entry.value;
             return true;
         }
-        return m_dynamicTable.tryGetEntry(index - kHpackFirstDynamicTableIndex, field);
+        const HpackHeaderField *const entry = m_dynamicTable.findEntry(index - kHpackFirstDynamicTableIndex);
+        if (entry == nullptr)
+        {
+            return false;
+        }
+        // 动态表的条目会被本头块后续的增量插入驱逐：视图不能指向表本身，拷进池
+        field.name  = arena.append(entry->name);
+        field.value = arena.append(entry->value);
+        return true;
     }
 
-    void HpackDecoder::appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields)
+    void HpackDecoder::appendField(const HpackHeaderFieldView field, std::vector<HpackHeaderFieldView> &headerFields)
     {
         // 已经越限：这一项解出来了（动态表也照常插过），只是不再收集，也不重复记原因
         if (m_isBeyondHeaderLimits)

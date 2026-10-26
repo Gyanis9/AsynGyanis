@@ -86,8 +86,8 @@ namespace AsynGyanis::Net
 #if defined(_MSC_VER)
         /// MSVC Release 实测
         constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand            = 0U;       ///< 命中精确路由不建参数表，派发本身不再碰堆
-        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 14000U;   ///< 收一条 h2 请求的分配数
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 1325000U; ///< 同上，按字节
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 12000U;   ///< 收一条 h2 请求的分配数（HPACK 视图出口后 14→12）
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 1261000U; ///< 同上，按字节（1325→1261）
         constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 24000U;   ///< 装 10 条头部、不预留
         constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 12000U;   ///< 同一形状、预留 4 条 128 字节
         constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand             = 1014U;    ///< 连接侧发一条 h2 响应
@@ -649,8 +649,8 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住「每条请求头部多一条，本端多付多少分配」这条边际成本
-     * @details 绝对读数看不出「逐字段落串」和「逐请求落一次」的区别：七条头部时量到 14 次，
-     *          可能全是每字段两次，也可能是固定的每请求开销。取两种形状的差才指得准该修哪一处，
+     * @details 绝对读数看不出「逐字段落串」和「逐请求落一次」的区别：七条头部时量到 12 次，
+     *          可能全是逐字段分摊，也可能是固定的每请求开销。取两种形状的差才指得准该修哪一处，
      *          也因此这里刻意让多出来的十条名字与值都短到进小串内联——差值里就不含「字符串本身要堆」，
      *          剩下的纯是容器与逐字段暂存。
      */
@@ -691,8 +691,9 @@ namespace AsynGyanis::Net
         // 留位，摊到一位头部是几十量级；钉成等号就是把实现细节当判据，换分配器即假红
         EXPECT_LE(marginalBytes, kMarginalBytesPerHeaderFieldUpperPerThousand) << "每位头部的字节成本越过上界（读数是「一千次里每条头部占下的字节」）：头部存储开始为一位留胖位置";
 
-        // 对照形状：同样多十条头部，但每条的值长到 64 字节，装不进小串内联。这条必须量出
-        // 「每条头部至少一次分配」——否则上面那个 0 只能说明探针看不见逐字段分配，而不是没有
+        // 长值形状：同样多十条头部，每条的值长到 64 字节，装不进小串内联。视图出口连这一档也是
+        // 零逐字段分配（字节进复用的解码池与请求的头部缓冲），因此它不再是「探针看得见分配」的
+        // 参照物——那件事改由老出口作证：owning 解码按字段落两条串，必然各要几次堆分配
         std::string longValueBlock = baseBlock;
         for (char letter = 'a'; letter <= 'j'; ++letter)
         {
@@ -701,9 +702,27 @@ namespace AsynGyanis::Net
         }
         std::size_t             longValueMark = 0;
         const AllocationProfile longValue     = measureH2RequestIngest(longValueBlock, longValueMark);
-        EXPECT_GT(longValueMark, wideMark) << "对照形状没比宽形状多解出内容，这条对照无效";
+        EXPECT_GT(longValueMark, wideMark) << "长值形状没比宽形状多解出内容，这条对照无效";
         const std::uint64_t longValueMarginalAllocations = (longValue.totalAllocations - base.totalAllocations) / kMarginalHeaderFieldCount;
-        EXPECT_GE(longValueMarginalAllocations, 1000U) << "探针看不见逐字段的堆分配：十条 64 字节值的头部一次都没多要，那个 0 读数就不能作数";
+        EXPECT_EQ(longValueMarginalAllocations, kMarginalAllocationsPerHeaderField) << "长值头部在视图出口上也不该有逐字段分配";
+
+        // 探针不瞎的参照物：老出口（owning）解同一批长值头部，按字段落两条串，每条必然分配
+        HpackDecoder                  controlDecoder;
+        std::vector<HpackHeaderField> controlFields;
+        const auto                    controlOnce = [&controlDecoder, &controlFields, &longValueBlock]() -> std::size_t
+        {
+            static_cast<void>(controlDecoder.decode(longValueBlock, controlFields));
+            std::size_t mark = 0;
+            for (const HpackHeaderField &field: controlFields)
+            {
+                mark += field.name.size() + field.value.size();
+            }
+            return mark;
+        };
+        static_cast<void>(controlOnce()); // 暖身：向量与池的容量先长到位
+        const AllocationProfile controlProfile = measurePerOperation(controlOnce);
+        EXPECT_GE(controlProfile.allocationsPerOperation, static_cast<std::uint64_t>(kMarginalHeaderFieldCount))
+                << "探针看不见逐字段的堆分配：老出口按字段落两条串，十条长值头部一次都没多要，上面的 0 读数就不能作数";
 #endif
     }
 

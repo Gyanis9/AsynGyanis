@@ -69,6 +69,76 @@ namespace AsynGyanis::Net
     };
 
     /**
+     * @brief 解码输出的字节池：字段名值的视图引用池里的字节，池跨头块复用
+     * @details 收包路径解完一个头块就逐条消费（判伪头、写进请求头存储），为每个字段各要两条
+     *          字符串是白付的；池把字节攒进固定大小的块并跨头块留容量。块内只写不搬——
+     *          连续缓冲扩容会把早先字段的视图悬空，一块写完就换下一块，视图在池清空前始终有效。
+     *          静态表来的视图直接指向常量表、不占池；带增量索引进动态表的那份拷贝照旧
+     *          （表比任何调用方的池活得久）
+     * @warning 视图只在池下一次被清空或析构之前有效
+     */
+    class ASYN_NET_API HpackFieldArena
+    {
+    public:
+        /**
+         * @brief 把一段字节追加进池并交出视图
+         * @param bytes 待追加的字节，可空
+         * @return std::string_view 指向池内的视图；空输入给空视图
+         */
+        [[nodiscard]] std::string_view append(const std::string_view bytes)
+        {
+            if (bytes.empty())
+            {
+                return {};
+            }
+            for (;;)
+            {
+                if (m_nextBlockIndex == m_blocks.size())
+                {
+                    m_blocks.emplace_back();
+                    m_blocks.back().reserve(bytes.size() > kBlockByteCount ? bytes.size() : kBlockByteCount);
+                }
+                std::string &block = m_blocks[m_nextBlockIndex];
+                if (block.size() + bytes.size() <= block.capacity())
+                {
+                    const std::size_t begin = block.size();
+                    block.append(bytes);
+                    return std::string_view(block).substr(begin);
+                }
+                // 本块余量不够：换下一块，既有块原地不动（视图不会因此失效）
+                ++m_nextBlockIndex;
+            }
+        }
+
+        /// 清空池（块与容量都留着）：上一批视图自此失效，下一次从第一块重新写
+        void clear() noexcept
+        {
+            for (std::string &block: m_blocks)
+            {
+                block.clear();
+            }
+            m_nextBlockIndex = 0;
+        }
+
+        /// @return std::size_t 池里本轮已写入的字节数（诊断与读数用）
+        [[nodiscard]] std::size_t size() const noexcept
+        {
+            std::size_t total = 0;
+            for (std::size_t blockIndex = 0; blockIndex <= m_nextBlockIndex && blockIndex < m_blocks.size(); ++blockIndex)
+            {
+                total += m_blocks[blockIndex].size();
+            }
+            return total;
+        }
+
+    private:
+        static constexpr std::size_t kBlockByteCount = 4096; ///< 单块默认字节数：比它长的单条字符串按实际长度开块
+
+        std::deque<std::string> m_blocks;            ///< 字节块：块内只追加，清空前字节地址不变
+        std::size_t             m_nextBlockIndex{0}; ///< 下一笔写进哪一块：clear() 后回到第一块
+    };
+
+    /**
      * @brief 静态表的一项（RFC 7541 Appendix A）
      */
     struct ASYN_NET_API HpackStaticTableEntry
@@ -678,6 +748,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool tryGetEntry(std::size_t entryIndex, HpackHeaderField &field) const;
 
         /**
+         * @brief 按动态表内下标取一项（只查不拷）
+         * @details 引用只在表下一次插入/驱逐之前有效：解码路径拿到它就往池里拷，
+         *          不给视图留「指着会变的表」的机会
+         * @param entryIndex 动态表内下标：0 是索引空间里的 62，1 是 63，依此类推
+         * @return const HpackHeaderField * 命中的条目；下标越界时为空
+         */
+        [[nodiscard]] const HpackHeaderField *findEntry(std::size_t entryIndex) const noexcept;
+
+        /**
          * @brief 取当前表大小
          * @return std::size_t 表大小，单位字节（§4.1 算式，含每项 32 字节开销）
          */
@@ -804,6 +883,18 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool decode(std::string_view headerBlock, std::vector<HpackHeaderField> &headerFields, std::string *errorText = nullptr);
 
         /**
+         * @brief 解码一个头块（引用池出口）：字段名值以视图给出，字节落进调用方提供的池
+         * @details 收包热路径解完就逐条消费，不值得为每个字段各要两条字符串。视图有效期到下一次
+         *          decode()（它清空池）或池析构：调用方必须在本头块内消费完。动态表必需的拷贝不受影响
+         * @param headerBlock 完整的头块（原始压缩字节）
+         * @param arena 字节池：进入调用时先清空，视图指向它里面的字节
+         * @param headerFields 输出参数：解出的头部按到达顺序；失败时为空
+         * @param errorText 可选输出参数：失败原因（进入调用时先清空）
+         * @return true 整个头块解完；false 头块非法或超出上限（按 isLimitExceeded() 分两支）
+         */
+        [[nodiscard]] bool decode(std::string_view headerBlock, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText = nullptr);
+
+        /**
          * @brief 重置解码器：清空动态表、粘滞错误与内部计数，回到「新连接」的初态
          */
         void reset();
@@ -860,10 +951,11 @@ namespace AsynGyanis::Net
          * @brief 解码一个表示（RFC 7541 §6 的四种表示或「动态表大小更新」）
          * @param headerBlock 完整头块
          * @param consumed [in,out] 已消费字节数，成功时推进到本表示之后
-         * @param headerFields 输出参数：解出的头部按序追加
+         * @param arena 字节池：字面量字节追加到这里，视图指向池内
+         * @param headerFields 输出参数：解出的头部按序追加（视图）
          * @return true 本表示解完
          */
-        [[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed, std::vector<HpackHeaderField> &headerFields);
+        [[nodiscard]] bool decodeRepresentation(std::string_view headerBlock, std::size_t &consumed, HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields);
 
         /**
          * @brief 解码一个「字面量」表示（带索引名或不带索引名）
@@ -871,28 +963,32 @@ namespace AsynGyanis::Net
          * @param isIncrementalIndexing 是否把这一项插入动态表（对应 01xxxxxx 表示）
          * @param headerBlock 完整头块
          * @param consumed [in,out] 已消费字节数
-         * @param headerFields 输出参数：解出的头部按序追加
+         * @param arena 字节池：字面量字节追加到这里，视图指向池内
+         * @param headerFields 输出参数：解出的头部按序追加（视图）
          * @return true 本表示解完
          */
         [[nodiscard]] bool decodeLiteralRepresentation(std::uint8_t nameIndexPrefixBitCount, bool isIncrementalIndexing, std::string_view headerBlock, std::size_t &consumed,
-                                                       std::vector<HpackHeaderField> &headerFields);
+                                                       HpackFieldArena &arena, std::vector<HpackHeaderFieldView> &headerFields);
 
         /**
-         * @brief 按索引空间取一条头部：1..61 查静态表、62 起查动态表
+         * @brief 按索引空间取一条头部的视图：1..61 查静态表（视图直接指向常量表）、62 起查动态表（拷进池）
+         * @details 动态表的条目会被同一头块里后续的增量插入驱逐，视图不能指向表本身，因此拷进池；
+         *          名字索引只在「名字」上用，值随后的字面量解码会覆盖，所以这里照原样给出（含值）
          * @param index 索引值，0 非法
-         * @param field 输出参数：取到的头部，仅在返回 true 时有效
+         * @param arena 字节池：动态表条目的拷贝落在这里
+         * @param field 输出参数：取到的头部视图，仅在返回 true 时有效
          * @return true 索引有效且命中
          */
-        [[nodiscard]] bool resolveIndexedField(std::size_t index, HpackHeaderField &field) const;
+        [[nodiscard]] bool resolveIndexedFieldView(std::size_t index, HpackFieldArena &arena, HpackHeaderFieldView &field) const;
 
         /**
          * @brief 收下一个头部：先判单条名/值长度与头列表总大小上限，越限则记下原因并到此为止
          * @details 越限时不追加也不中断整块解码——动态表已经按对端的增量插好，剩下的表示必须继续
          *          解完，否则两端的表错开，后面每个头块都会解成压缩错误。
-         * @param field 待收下的头部，按移动收下
+         * @param field 待收下的头部视图
          * @param headerFields 输出参数：未越限时按序追加
          */
-        void appendField(HpackHeaderField field, std::vector<HpackHeaderField> &headerFields);
+        void appendField(HpackHeaderFieldView field, std::vector<HpackHeaderFieldView> &headerFields);
 
         /**
          * @brief 统一的失败记录：置粘滞错误态并补上中文前缀
@@ -909,6 +1005,12 @@ namespace AsynGyanis::Net
 
         HpackDecoderLimits m_limits{};     ///< 构造时按值落定的资源上限，没有中途更换的入口
         HpackDynamicTable  m_dynamicTable; ///< 动态表，与对端的编码器同步演进
+
+        /// 老出口（owning）借用的中间物：字节池 + 视图表 + 单条字符串的复用落点。
+        /// 收包热路径走视图出口、直接用调用方的池，这三格不参与；它们只服务响应头与测试
+        HpackFieldArena                   m_fieldArena{};
+        std::string                       m_stringScratch{};
+        std::vector<HpackHeaderFieldView> m_decodedFieldViews{};
 
         std::size_t m_headerListByteCount{0};             ///< 当前头块已解出的头列表大小（§6.5.2 算式）
         bool        m_hasSeenHeaderRepresentation{false}; ///< 本头块是否已解出过一个头部：大小更新只许出现在它之前

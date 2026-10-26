@@ -725,7 +725,7 @@ namespace AsynGyanis::Net
          *          字段条数超上限把请求标成「头块过大」（上层 431），`:path` 太长标成 `isUriTooLong`
          *          （上层 414），两者都只作废那一条流。
          */
-        [[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderField> &headerFields, Http2Request &request, std::string *errorText);
+        [[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, Http2Request &request, std::string *errorText);
 
         /**
          * @brief 校验尾部头块的语法：禁止伪头与连接特定头、头名必须全小写
@@ -733,7 +733,7 @@ namespace AsynGyanis::Net
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 头列表是一个合法的尾部头块
          */
-        [[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderField> &headerFields, std::string *errorText);
+        [[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText);
 
         /**
          * @brief 按 §8.2 校验一条待发响应头的头名（token、全小写、非连接特定头）与头值字节
@@ -971,12 +971,13 @@ namespace AsynGyanis::Net
         HpackDecoder      m_hpackDecoder; ///< 请求方向的头块解码器，动态表与对端编码器同步演进
         HpackEncoder      m_encoder;      ///< 响应方向的头块编码器，动态表与对端解码器同步演进
 
-        bool                          m_isAssemblingHeaderBlock{false};                    ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
-        std::uint32_t                 m_pendingHeaderStreamId{0};                          ///< 正在拼的头块所属的流号
-        HeaderBlockPurpose            m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
-        bool                          m_pendingHeaderEndStream{false};                     ///< 正在拼的头块是否带 END_STREAM
-        std::string                   m_pendingHeaderBlock;                                ///< 正在拼的头块字节
-        std::vector<HpackHeaderField> m_decodedHeaderFields;                               ///< 头块解码的落点：表容量跨头块留着，字段本身每次解码重写
+        bool                              m_isAssemblingHeaderBlock{false};                    ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
+        std::uint32_t                     m_pendingHeaderStreamId{0};                          ///< 正在拼的头块所属的流号
+        HeaderBlockPurpose                m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
+        bool                              m_pendingHeaderEndStream{false};                     ///< 正在拼的头块是否带 END_STREAM
+        std::string                       m_pendingHeaderBlock;                                ///< 正在拼的头块字节
+        std::vector<HpackHeaderFieldView> m_decodedHeaderFields;                               ///< 头块解码的落点（视图）：表容量跨头块留着，字段本身每次解码重写
+        HpackFieldArena                   m_headerFieldArena;                                  ///< 视图引用的字节池：容量跨头块复用，字段名值不再各要两条字符串
 
         std::map<std::uint32_t, StreamRecord> m_streams;               ///< 流账本：含刚终止的流
         std::vector<std::uint32_t>            m_terminatedStreamIds{}; ///< 终止顺序，用于给账本里已终止的记录设上限
