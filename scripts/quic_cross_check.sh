@@ -52,6 +52,13 @@ serverBinary="$(findServer)" || {
     exit 2
 }
 
+# serverLog <日志名>：服务端 stdout 落成的日志。Windows 上带 CRLF，判定前一律剥掉回车——
+# 否则 ^READY$ 匹配不到 "READY"，取出来的端口也会带一个回车
+serverLog()
+{
+    tr -d '' < "$logDir/$1.log" 2>/dev/null
+}
+
 stopServer()
 {
     if [ -n "$serverPid" ] && kill -0 "$serverPid" 2>/dev/null; then
@@ -71,21 +78,21 @@ startServer()
     "$serverBinary" --cert "$cert" --key "$key" "$@" > "$logDir/$label.log" 2>&1 &
     serverPid=$!
     for _ in $(seq 1 100); do
-        if grep -q '^READY$' "$logDir/$label.log" 2>/dev/null; then
+        if serverLog "$label" | grep -q '^READY$'; then
             break
         fi
         if ! kill -0 "$serverPid" 2>/dev/null; then
             echo "服务端起不来（$label）："
-            tail -5 "$logDir/$label.log"
+            serverLog "$label" | tail -5
             return 1
         fi
         sleep 0.1
     done
-    if ! grep -q '^READY$' "$logDir/$label.log" 2>/dev/null; then
+    if ! serverLog "$label" | grep -q '^READY$'; then
         echo "服务端 10 秒内没宣告就绪（$label）"
         return 1
     fi
-    awk '/^PORT / {print $2; exit}' "$logDir/$label.log"
+    serverLog "$label" | awk '/^PORT / {print $2; exit}'
 }
 
 # runCase <用例名> <日志名> <python 场景参数…>：探针退出码即判据
@@ -106,11 +113,11 @@ runCase()
 expectLog()
 {
     local caseName="$1" label="$2" pattern="$3"
-    if grep -qE "$pattern" "$logDir/$label.log" 2>/dev/null; then
+    if serverLog "$label" | grep -qE "$pattern"; then
         echo "  PASS $caseName（服务端事件已核对）"
     else
         echo "  FAIL $caseName：日志里找不到 $pattern"
-        tail -6 "$logDir/$label.log"
+        serverLog "$label" | tail -6
         failures=$((failures + 1))
     fi
 }
