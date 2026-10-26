@@ -23,6 +23,14 @@
 
 namespace AsynGyanis::Core
 {
+#if defined(__GNUC__) || defined(__clang__)
+// GCC 14 在把 Task 析构内联进 std::optional 的销毁路径时误报 maybe-uninitialized；
+// 判空与销毁收进独立函数，析构仍只做转交，不改变生命周期语义
+#define ASYN_TASK_NOINLINE __attribute__((noinline))
+#else
+#define ASYN_TASK_NOINLINE
+#endif
+
     class Scheduler;
 
     /**
@@ -289,13 +297,9 @@ namespace AsynGyanis::Core
          */
         ~Task()
         {
-            // 判空是因为句柄可能已被移动走（移动构造/赋值会把源对象置空），
-            // 对空句柄调用 destroy 是未定义行为；非空时这里是协程帧的最后回收点：
-            // 帧若停在挂起点上被销毁，帧内尚未结束的局部对象会随帧正常析构
-            if (m_handle)
-            {
-                m_handle.destroy();
-            }
+            // 判空与销毁放到独立函数：GCC 14 在把带判空的析构内联进 std::optional 时
+            // 会误报 maybe-uninitialized，转交后协程帧的回收语义不变
+            destroyHandle(m_handle);
         }
 
         // ========================================================================
@@ -494,6 +498,17 @@ namespace AsynGyanis::Core
         }
 
     private:
+        /**
+         * @brief 销毁非空协程句柄，占用后置空由移动操作负责
+         * @param handle 待销毁的协程句柄
+         */
+        ASYN_TASK_NOINLINE static void destroyHandle(const Handle handle) noexcept
+        {
+            // 空句柄 destroy 是未定义行为；非空时这里是协程帧的最后回收点
+            if (handle)
+                handle.destroy();
+        }
+
         Handle m_handle; ///< 协程句柄
     };
 
@@ -561,11 +576,9 @@ namespace AsynGyanis::Core
          */
         ~Task()
         {
-            // 判空是因为句柄可能已被移动走（移动构造/赋值会把源对象置空），
-            // 对空句柄调用 destroy 是未定义行为；非空时这里是协程帧的最后回收点：
-            // 帧若停在挂起点上被销毁，帧内尚未结束的局部对象会随帧正常析构
-            if (m_handle)
-                m_handle.destroy();
+            // 判空与销毁放到独立函数：GCC 14 在把带判空的析构内联进 std::optional 时
+            // 会误报 maybe-uninitialized，转交后协程帧的回收语义不变
+            destroyHandle(m_handle);
         }
 
         /**
@@ -716,7 +729,20 @@ namespace AsynGyanis::Core
         }
 
     private:
+        /**
+         * @brief 销毁非空协程句柄，占用后置空由移动操作负责
+         * @param handle 待销毁的协程句柄
+         */
+        ASYN_TASK_NOINLINE static void destroyHandle(const Handle handle) noexcept
+        {
+            // 空句柄 destroy 是未定义行为；非空时这里是协程帧的最后回收点
+            if (handle)
+                handle.destroy();
+        }
+
         Handle m_handle; ///< 协程句柄
     };
+
+#undef ASYN_TASK_NOINLINE
 
 } // namespace AsynGyanis::Core

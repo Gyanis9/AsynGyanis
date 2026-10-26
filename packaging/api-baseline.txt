@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9152
+# headers=310 entries=9154
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -770,6 +770,8 @@ src/Core/Coroutine/Semaphore.h	void unlinkIfLinked() noexcept
 src/Core/Coroutine/Semaphore.h	~Awaiter()
 src/Core/Coroutine/Semaphore.h	~Permit()
 src/Core/Coroutine/Semaphore.h	~Semaphore()
+src/Core/Coroutine/Task.h	ASYN_TASK_NOINLINE static void destroyHandle(const Handle handle) noexcept
+src/Core/Coroutine/Task.h	ASYN_TASK_NOINLINE static void destroyHandle(const Handle handle) noexcept
 src/Core/Coroutine/Task.h	Awaiter *m_awaiter
 src/Core/Coroutine/Task.h	Base::LogContextPtr m_logContext
 src/Core/Coroutine/Task.h	Base::LogContextPtr m_logContext
