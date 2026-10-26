@@ -95,8 +95,8 @@ namespace AsynGyanis::Net
         /// libstdc++（GCC 13，-O3）Release 实测：-O3 下记录表与字节缓冲的扩容节奏与 MSVC 不同，
         /// 同一条形状的千次原值差出几千（ECS 上这一档全量用例第一次跑时抓到的就是这几条）
         constexpr std::uint64_t kDispatchExactTotalAllocationsPerThousand            = 1000U;   ///< 命中精确路由不建参数表，派发本身不再碰堆
-        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 8000U;   ///< 收一条 h2 请求的分配数
-        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 688000U; ///< 同上，按字节
+        constexpr std::uint64_t kRequestIngestTotalAllocationsPerThousand            = 6000U;   ///< 收一条 h2 请求的分配数（HPACK 视图出口后 8→6）
+        constexpr std::uint64_t kRequestIngestTotalBytesPerThousand                  = 626000U; ///< 同上，按字节（688→626）
         constexpr std::uint64_t kAssemblyWithoutReserveTotalAllocationsPerThousand   = 15000U;  ///< 装 10 条头部、不预留
         constexpr std::uint64_t kAssemblyWithSmallReserveTotalAllocationsPerThousand = 6000U;   ///< 同一形状、预留 4 条 128 字节
         constexpr std::uint64_t kResponseSendTotalAllocationsPerThousand             = 1009U;   ///< 连接侧发一条 h2 响应
