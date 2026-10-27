@@ -841,20 +841,28 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool expireBlockedHeaderSections(Deadline now);
 
         /**
-         * @brief HEADERS 帧收齐时记下这条流的头段截止时刻
+         * @brief HEADERS 帧收齐时记下这条流某一分段（头段或尾段）的截止时刻
          * @param streamId 承载该头段的流
+         * @param isTrailers true 记尾段那一格，false 记头段那一格
          * @note 配置取 `HttpServerLimits::requestHeaderTimeout`，0 表示关闭这项保护；
          *       QPACK 引用未到达的动态表项时解码会挂起、字段回调不触发，预算也从这里起算
          */
-        void noteHeaderSectionStarted(std::int64_t streamId);
+        void noteHeaderSectionStarted(std::int64_t streamId, bool isTrailers);
 
         /**
-         * @brief 撤下一条流的头段截止记账
+         * @brief 撤下一条流某一分段的头段截止记账
          * @param streamId 流号
-         * @note 头段解完、流被重置或丢弃、连接收尾都走这一句；漏掉它会让一条早已收齐的流
-         *       在下一拍被头段预算误杀
+         * @param isTrailers true 撤尾段那一格，false 撤头段那一格
+         * @note 该段解完时只撤自己那一格：同一流上仍 blocked 的另一段必须留着预算
          */
-        void clearHeaderSectionDeadline(std::int64_t streamId) noexcept;
+        void clearHeaderSectionDeadline(std::int64_t streamId, bool isTrailers) noexcept;
+
+        /**
+         * @brief 撤下一条流的全部头段截止记账
+         * @param streamId 流号
+         * @note 流被丢弃、连接收尾走这一句；漏掉它会让一条早已收齐的流在下一拍被头段预算误杀
+         */
+        void clearHeaderSectionDeadlines(std::int64_t streamId) noexcept;
 
         /**
          * @brief 在安全点把攒下的入向字节交给各条隧道的对端对象
@@ -985,10 +993,18 @@ namespace AsynGyanis::Net
         Core::Cancelable m_shutdownCancelable{};
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
-        /// 头段截止时刻：流号 → 截止点。只覆盖「HEADERS 帧收齐到这段头解完」；与 m_incomingRequests
+        /// 一条流上按段记的头段截止时刻：头段与尾段各一格。两段可以同时挂在 QPACK 解码器里，
+        /// 共用一格时后到的那段会覆盖先到的截止，先解完的一段又会把另一段的预算一起清掉
+        struct HeaderSectionDeadline
+        {
+            std::optional<Deadline> head{};     ///< 头段的截止时刻
+            std::optional<Deadline> trailers{}; ///< 尾段的截止时刻
+        };
+
+        /// 头段截止时刻：流号 → 按段记的截止点。只覆盖「HEADERS 帧收齐到这段头解完」；与 m_incomingRequests
         /// 里的读时限分开，前者管整段总预算，后者管相邻两段字节的间隔。QPACK 阻塞的流没有请求记录，
         /// 只能落在这张表里
-        std::unordered_map<std::int64_t, Deadline> m_headerSectionDeadlines;
+        std::unordered_map<std::int64_t, HeaderSectionDeadline> m_headerSectionDeadlines;
         /// 承载层报来的一次「对端打断」：流号、对端给的应用层错误码、以及是复位还是叫停。
         /// 它们到的时候正在传输层的回调里，只能先记下来，等 pump() 这个安全点再统一回收
         /// （见 cancelStreamByPeer / drainPeerCancelledStreams）

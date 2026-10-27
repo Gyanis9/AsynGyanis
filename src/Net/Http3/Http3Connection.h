@@ -73,10 +73,11 @@ namespace AsynGyanis::Net
             /**
              * @brief 一个 HEADERS 帧已经收齐、即将交给 QPACK 解码
              * @param streamId 承载该头段的流
+             * @param isTrailers 这一段是尾段还是头段：两段可以同时挂在解码器里，上层据此分段记账
              * @note QPACK 引用的动态表项尚未到达时，解码返回挂起，onHeaderField 不会触发；
              *       头段总时限的起点因此只能挂在本通知上，不能等第一个字段
              */
-            std::function<void(std::int64_t streamId)> onHeaderSectionStarted;
+            std::function<void(std::int64_t streamId, bool isTrailers)> onHeaderSectionStarted;
 
             /// 解出一个头字段（含伪头，原样给出）：参数为流号、名、值，以及「它来自尾段还是头段」。
             /// 尾段的字段由会话落进请求的 trailer 一档，不与头部混档（口径同 h1 的 HttpParser 与
@@ -210,6 +211,18 @@ namespace AsynGyanis::Net
          *       回声出去就是本端写了一个规范没定义过的码（RFC 9114 §8.1）
          */
         void noteStreamCancelledByPeer(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer);
+
+        /**
+         * @brief 本端放弃一条入站流：标记状态、取消该流挂起的头段，并清掉待发与编码器侧记账
+         * @param streamId 被本端收口的流
+         * @details 与 noteStreamCancelledByPeer 分开：那条路合成的是「对端取消」的读数，而这里由本端
+         *          按自己的时限或错误处置发起，不能把本地停止伪装成对端 RESET。传输层的
+         *          RESET_STREAM/STOP_SENDING 由调用方另发，本入口只收协议层自己的账。
+         *          幂等：重复调用不再发第二条取消指令，也不改变已经放弃的状态。
+         * @note 流状态刻意保留并只置放弃标记：本地 STOP_SENDING 之后到达的数据仍会交付到连接层，
+         *       摘掉状态会让随后的 HEADERS 按新流重建，处理器与副作用会再跑一遍
+         */
+        void abandonInboundStream(std::int64_t streamId);
 
         /**
          * @brief 提交响应头

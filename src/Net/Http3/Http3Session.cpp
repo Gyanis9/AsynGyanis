@@ -70,16 +70,17 @@ namespace AsynGyanis::Net
         // 连接层的通知逐个接回本会话：它们都在调用方线程上同步触发，这里只是把函数对象绑回来
         Http3Connection::Callbacks callbacks;
         // HEADERS 帧收齐即记头段预算：QPACK 引用未到达的动态表项时解码挂起，下面的字段回调一个都不来
-        callbacks.onHeaderSectionStarted = [this](const std::int64_t streamId) { noteHeaderSectionStarted(streamId); };
+        callbacks.onHeaderSectionStarted = [this](const std::int64_t streamId, const bool isTrailers) { noteHeaderSectionStarted(streamId, isTrailers); };
         // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在
         // addRequestHeader 里；尾段的字段由它另落一档，不并进头部
         callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
         { addRequestHeader(streamId, std::string(name), std::string(value), isTrailers); };
         // 头块收齐：方法/路径此刻可判，命中流式正文路由或扩展 CONNECT 就在这里提前派发。
         // 尾段也走同一个入口——那条流早已从 m_incomingRequests 搬走，函数自己会判出「已派发过」而什么都不做
-        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool)
+        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, const bool isTrailers)
         {
-            clearHeaderSectionDeadline(streamId);
+            // 只撤这一段的账：同一流上还压着另一段时，那一格必须留着
+            clearHeaderSectionDeadline(streamId, isTrailers);
             beginStreamingRequestIfMatched(streamId);
         };
         // 正文段：DATA 载荷的额度何时归还由 addRequestBody 决定（非流式到达即还、流式消费才还）
@@ -991,6 +992,9 @@ namespace AsynGyanis::Net
                 // 会让运维看到的「有人在发坏报文」其实是「对端慢」
                 m_metrics->countTimeoutClosedConnection();
             }
+            // 先让连接层放弃这条流的入站状态：解码器里的挂起段就地取消、流标记为放弃。
+            // 只向传输层发 RESET 不够——对端随后补发的编码器流指令仍会把那段续解并交付
+            m_connection->abandonInboundStream(streamId);
             abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
             dropRequest(streamId);
         }
@@ -1026,6 +1030,8 @@ namespace AsynGyanis::Net
             }
             // 先记下这条流是被预算收口的：处理器随后才回来时，响应不再往这条已复位的流上写
             m_produceBudgetCutStreamIds.insert(streamId);
+            // 入站侧可能还压着一段 blocked 尾段：本地收口时一并让连接层放弃，迟到的指令不得再交付
+            m_connection->abandonInboundStream(streamId);
             abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
             dropRequest(streamId);
         }
@@ -1045,9 +1051,12 @@ namespace AsynGyanis::Net
     {
         // 先把过点的流号挑出来：下面的回收会摘表（dropRequest），边遍历边摘会踩到迭代器
         std::vector<std::int64_t> expiredStreamIds;
-        for (const auto &[streamId, deadline]: m_headerSectionDeadlines)
+        for (const auto &[streamId, deadlines]: m_headerSectionDeadlines)
         {
-            if (deadline <= now)
+            // 两段各记各的预算：头段完成只撤自己那一格，尾段到点仍要收口
+            const bool isHeadExpired    = deadlines.head.has_value() && *deadlines.head <= now;
+            const bool isTrailerExpired = deadlines.trailers.has_value() && *deadlines.trailers <= now;
+            if (isHeadExpired || isTrailerExpired)
             {
                 expiredStreamIds.push_back(streamId);
             }
@@ -1062,7 +1071,7 @@ namespace AsynGyanis::Net
             }
             if (auto &throttle = ASYN_LOG_THROTTLED(kHeaderSectionTimeoutLogWindow); throttle.acquire())
             {
-                LOG_WARN_FMT("Http3Session: 流 {} 的请求头段超出总时限（{} 毫秒，含 QPACK 阻塞等待），本端收口这条流（过去 {} 秒内另有 {} 条同类被压掉）", streamId,
+                LOG_WARN_FMT("Http3Session: 流 {} 的请求头段或尾段超出总时限（{} 毫秒，含 QPACK 阻塞等待），本端收口这条流（过去 {} 秒内另有 {} 条同类被压掉）", streamId,
                              m_serverLimits->requestHeaderTimeout.count(), kHeaderSectionTimeoutLogWindow.count(), throttle.droppedCount());
             }
             if (m_metrics != nullptr)
@@ -1070,6 +1079,9 @@ namespace AsynGyanis::Net
                 // 与读时限、产出时限同一本账：都是本端按时限收口，不是对端发了坏报文
                 m_metrics->countTimeoutClosedConnection();
             }
+            // 只发传输层 RESET 不够：连接层不知道本地复位，解码器里的挂起段仍会随迟到的
+            // 编码器流指令续解并交付，会话据此重建请求、再收口一次
+            m_connection->abandonInboundStream(streamId);
             abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
             dropRequest(streamId);
         }
@@ -1077,17 +1089,39 @@ namespace AsynGyanis::Net
         return !expiredStreamIds.empty();
     }
 
-    void Http3Session::noteHeaderSectionStarted(const std::int64_t streamId)
+    void Http3Session::noteHeaderSectionStarted(const std::int64_t streamId, const bool isTrailers)
     {
         if (m_serverLimits == nullptr || m_serverLimits->requestHeaderTimeout <= std::chrono::milliseconds::zero())
         {
             // 保护关着就不建条目：这张表每拍都要被扫一遍，为一条永不过点的流留格子没有意义
             return;
         }
-        m_headerSectionDeadlines[streamId] = std::chrono::steady_clock::now() + m_serverLimits->requestHeaderTimeout;
+        HeaderSectionDeadline &deadlines = m_headerSectionDeadlines[streamId];
+        const Deadline         deadline  = std::chrono::steady_clock::now() + m_serverLimits->requestHeaderTimeout;
+        if (isTrailers)
+        {
+            deadlines.trailers = deadline;
+        } else
+        {
+            deadlines.head = deadline;
+        }
     }
 
-    void Http3Session::clearHeaderSectionDeadline(const std::int64_t streamId) noexcept
+    void Http3Session::clearHeaderSectionDeadline(const std::int64_t streamId, const bool isTrailers) noexcept
+    {
+        const auto found = m_headerSectionDeadlines.find(streamId);
+        if (found == m_headerSectionDeadlines.end())
+        {
+            return;
+        }
+        (isTrailers ? found->second.trailers : found->second.head).reset();
+        if (!found->second.head.has_value() && !found->second.trailers.has_value())
+        {
+            m_headerSectionDeadlines.erase(found);
+        }
+    }
+
+    void Http3Session::clearHeaderSectionDeadlines(const std::int64_t streamId) noexcept
     {
         static_cast<void>(m_headerSectionDeadlines.erase(streamId));
     }
@@ -1133,7 +1167,7 @@ namespace AsynGyanis::Net
 
     void Http3Session::dropRequest(const std::int64_t streamId)
     {
-        clearHeaderSectionDeadline(streamId);
+        clearHeaderSectionDeadlines(streamId);
         m_incomingRequests.erase(streamId);
         // 这条流已经不产出了（对端重置、或本端按时限收口）：预算记账跟着摘，否则下一拍又把它当
         // 「还在产出」判一次时限
@@ -1986,6 +2020,9 @@ namespace AsynGyanis::Net
 
     void Http3Session::answerMalformedRequest(const std::int64_t streamId, const std::string_view reason)
     {
+        // 头段预算从 HEADERS 到达时起算，而这条流的作答出口不一定经过 dropRequest：已派发或已作答
+        // 时这里只记日志就返回，撤账必须放在入口，否则下一拍会把仍在服务的流按头段超时收掉
+        clearHeaderSectionDeadlines(streamId);
         // 这条流已经派发过或已经答过就只记日志：一条流只能有一份响应，业务此刻可能正在往里写正文
         const bool isAlreadyDispatched = m_streamingResponses.contains(streamId) || m_streamingRequests.contains(streamId) || m_pendingTunnelStreams.contains(streamId) ||
                                          m_webSocketTunnels.contains(streamId) ||
@@ -2035,6 +2072,8 @@ namespace AsynGyanis::Net
             // STOP_SENDING，再丢掉本会话记账。原先这里是 markBroken，承载层随之 closeNow 整条 QUIC
             // 连接：一处本端失误把同连接上别人在途的请求一起带走（h2 同一处已收到流级）
             LOG_ERROR_FMT("Http3Session: 流 {} 的{}未能交出，本端已复位这条流；连接与其它流不受影响。原因：{}", streamId, what, reason);
+            // 本地复位同样要落到连接层：这条流上可能还压着 blocked 的尾段，迟到的指令不得再交付
+            m_connection->abandonInboundStream(streamId);
             abortRequestStream(streamId, errorCode);
             dropRequest(streamId);
             return;

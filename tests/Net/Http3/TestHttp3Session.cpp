@@ -4504,8 +4504,8 @@ namespace AsynGyanis::Net
     /**
      * @brief 正常收齐的 QPACK 头段：预算内不误杀，收齐之后预算即撤下
      * @details 头块只用静态表与字面量，交给会话时立刻解码成功。第一次把本拍推到 300 毫秒预算之内，
-     *          第二次推到 5 秒之后：第二次仍不收口，才说明收齐那一刻已经撤下这条流的头段记账，
-     *          而不是把预算留到读时限（60 秒）才判。
+     *          第二次推到 5 秒之后：第二次仍不收口，才说明收齐那一刻已经撤下这条流的头段记账；
+     *          留着的话 300 毫秒那一拍就会收口，与读时限无关。
      */
     TEST(Http3Session, KeepsDeliveredQpackHeaderSectionBeyondTheHeaderDeadline)
     {
@@ -4543,6 +4543,148 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(session.hasOutstandingWork()) << "这条请求仍该在等 END_STREAM";
     }
 
+    /**
+     * @brief 已被本端收口的阻塞头段：迟到的编码器流指令不能把它复活
+     * @details 本地 RESET 只到传输层，连接层此前并不知道这条流已被放弃，解码器里的挂起段照旧留着。
+     *          对端在收到 RESET 之后补发原先扣下的编码器流指令，那段就会被续解并交付：会话重建请求
+     *          记录、派发处理器，随后一拍再按头段预算收口一次。收口必须同时落到连接层的入站状态上：
+     *          流带放弃标记、挂起段在解码器侧取消、编码器侧与待发字节一并清掉。
+     */
+    TEST(Http3Session, AbandonedBlockedHeaderSectionDoesNotReviveOnLateEncoderInstructions)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::seconds{60};
+        limits->requestHeaderTimeout = std::chrono::milliseconds{300};
+        session.setServerLimits(limits);
+
+        std::size_t handlerCallCount{0};
+        Router      router;
+        router.get("/blocked",
+                   [&handlerCallCount](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                   {
+                       ++handlerCallCount;
+                       response.setStatus(200);
+                       co_return;
+                   });
+        session.attachRouter(router);
+
+        // 编码器先排容量指令，再插入一项并引用它：指令扣下不发给会话，头块因此挂在解码器里
+        std::vector<QpackHeaderField> fieldLines = {QpackHeaderField{":method", "GET"}, QpackHeaderField{":scheme", kRequestScheme}, QpackHeaderField{":authority", "example.com"},
+                                                    QpackHeaderField{":path", "/blocked"}, QpackHeaderField{"x-blocked-section", "needs-a-dynamic-entry"}};
+        std::string                   headerBlock;
+        std::string                   encoderStreamBytes;
+        QpackEncoder                  encoder(4096, 100, 4096);
+        ASSERT_TRUE(encoder.encodeFieldSection(kFirstRequestStreamId, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_FALSE(encoderStreamBytes.empty()) << "头块没有产生编码器流指令：这条用例就造不出阻塞";
+
+        Http3HeadersFrame headersFrame;
+        headersFrame.encodedFieldSection = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        std::string requestBytes;
+        appendHttp3Frame(requestBytes, headersFrame);
+        session.onStreamData(kFirstRequestStreamId, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()), false);
+        ASSERT_FALSE(session.hasOutstandingWork()) << "阻塞中的头段不该已经产生请求记录";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+        ASSERT_EQ(abortedStreams.size(), 1U) << "前提：头段预算到点，这条流已被本端收口";
+
+        // 对端把原先扣下的编码器流指令补上；开头那个 0x02 是对端编码器流的类型前缀
+        std::string encoderStreamData;
+        appendHttp3StreamTypeHeader(encoderStreamData, Http3StreamType::QpackEncoder);
+        encoderStreamData += encoderStreamBytes;
+        session.onStreamData(kClientQpackEncoderStreamId, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(encoderStreamData.data()), encoderStreamData.size()),
+                             false);
+        // 再补一个 END_STREAM：若挂起段真的被续解，这一下就会把请求送进派发
+        const std::vector<std::uint8_t> noBytes;
+        session.onStreamData(kFirstRequestStreamId, std::span<const std::uint8_t>(noBytes), true);
+
+        Core::Task<> pumpTask = session.pump();
+        resumeUntilReady(pumpTask);
+
+        EXPECT_EQ(handlerCallCount, 0U) << "已被本端收口的流在迟到指令到达后复活了：处理器被执行";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "已被本端收口的流在迟到指令到达后重建了请求记录";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{10});
+        EXPECT_EQ(abortedStreams.size(), 1U) << "同一条流被本端二次收口";
+        EXPECT_EQ(metrics->snapshot().timeoutClosedCount, 1U) << "同一条流被二次计入超时收口";
+
+        // 连接层的收尾证据：解码器流上出现了流 0 的 Stream Cancellation（'01' + 6 位流号 = 0x40）
+        constexpr std::int64_t          kLocalDecoderStreamId = 11;
+        constexpr std::uint8_t          kStreamCancellation   = 0x40;
+        const std::vector<std::uint8_t> cancellationBytes{kStreamCancellation};
+        EXPECT_TRUE(wroteBytesToStream(sentStreamData, kLocalDecoderStreamId, cancellationBytes)) << "连接层没有放弃这条流：解码器流上没有该流的 Stream Cancellation";
+    }
+
+    /**
+     * @brief 头段与尾段同时阻塞：头段解完之后，仍在 blocked 的尾段要保留自己的预算
+     * @details 两段的截止时刻此前挤在同一张「流号到截止点」的表里，尾段到达时把先到的头段截止推后；
+     *          头段一解完又无条件清账，仍在 blocked 的尾段从此没有预算，只能等 60 秒的读时限。
+     *          按段记账之后，头段完成只摘自己那一格，尾段到点仍然收口这条流。
+     */
+    TEST(Http3Session, KeepsTrailerHeaderBudgetAfterTheHeadSectionCompletes)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::seconds{60};
+        limits->requestHeaderTimeout = std::chrono::milliseconds{300};
+        session.setServerLimits(limits);
+
+        // 同一个编码器连编两段：头段插入 x-head，尾段插入 x-tail；两段都引用动态表项
+        std::vector<QpackHeaderField> headFields = {QpackHeaderField{":method", "POST"}, QpackHeaderField{":scheme", kRequestScheme}, QpackHeaderField{":authority", "example.com"},
+                                                    QpackHeaderField{":path", "/blocked-both"}, QpackHeaderField{"x-head", "head-value"}};
+        std::vector<QpackHeaderField> trailerFields = {QpackHeaderField{"x-tail", "trailer-value"}};
+        QpackEncoder                  encoder(4096, 100, 4096);
+        std::string                   headBlock;
+        std::string                   headInstructions;
+        std::string                   trailerBlock;
+        std::string                   trailerInstructions;
+        ASSERT_TRUE(encoder.encodeFieldSection(kFirstRequestStreamId, std::span<const QpackHeaderField>(headFields), headBlock, headInstructions).has_value());
+        ASSERT_TRUE(encoder.encodeFieldSection(kFirstRequestStreamId, std::span<const QpackHeaderField>(trailerFields), trailerBlock, trailerInstructions).has_value());
+        ASSERT_FALSE(headInstructions.empty()) << "头段没有插入动态表项：这条用例就造不出阻塞";
+        ASSERT_FALSE(trailerInstructions.empty()) << "尾段没有插入动态表项：这条用例就造不出阻塞";
+
+        const auto feedHeadersFrame = [&session](const std::string &encodedSection)
+        {
+            Http3HeadersFrame headersFrame;
+            headersFrame.encodedFieldSection = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(encodedSection.data()), encodedSection.size());
+            std::string requestBytes;
+            appendHttp3Frame(requestBytes, headersFrame);
+            session.onStreamData(kFirstRequestStreamId, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()), false);
+        };
+        feedHeadersFrame(headBlock);
+        feedHeadersFrame(trailerBlock);
+        ASSERT_FALSE(session.hasOutstandingWork()) << "两段都还压在解码器里，不该已经有请求记录";
+
+        // 只补头段的指令：头段解出并交付，尾段的 Required Insert Count 仍高于本地插入计数
+        std::string headEncoderStreamData;
+        appendHttp3StreamTypeHeader(headEncoderStreamData, Http3StreamType::QpackEncoder);
+        headEncoderStreamData += headInstructions;
+        session.onStreamData(kClientQpackEncoderStreamId,
+                             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headEncoderStreamData.data()), headEncoderStreamData.size()), false);
+        ASSERT_TRUE(session.hasOutstandingWork()) << "头段解完应当有一条正在收的请求记录";
+        EXPECT_TRUE(abortedStreams.empty()) << "头段刚解完就收口了；尾段仍在 blocked，但还没到点";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+        ASSERT_EQ(abortedStreams.size(), 1U) << "头段完成把尾段的预算一并清掉了：仍在 blocked 的尾段只能等读时限";
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条头段没收齐的请求该用 H3_REQUEST_CANCELLED";
+        EXPECT_EQ(metrics->snapshot().timeoutClosedCount, 1U) << "尾段预算到期没进与读时限同一本账";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "收口之后这条流不该再占会话记账";
+    }
+
     namespace
     {
         /**
@@ -4566,6 +4708,58 @@ namespace AsynGyanis::Net
             }
         };
     } // namespace
+
+    /**
+     * @brief 畸形尾段走到「已派发、只记日志」那一路：头段预算不能留到下一拍照旧收口
+     * @details 畸形头作答的正常出口是 dropRequest，它顺手清掉头段记账；但流式路由的请求在头段收齐时
+     *          已经派发，尾段的畸形只能记一条日志就返回，不经过 dropRequest。入口不清账的话，
+     *          这一段的截止时刻留在表里，下一拍会把一条仍在服务中的流按头段超时收掉。
+     */
+    TEST(Http3Session, MalformedTrailerEarlyReturnLeavesNoHeaderBudgetBehind)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::seconds{60};
+        limits->requestHeaderTimeout = std::chrono::milliseconds{300};
+        session.setServerLimits(limits);
+
+        // 流式路由：头段收齐即派发；处理器读完正文后卡在业务自己的等待上，流因此保持打开
+        std::coroutine_handle<> handlerWaiter{};
+        Router                  router;
+        router.postStreaming("/tail",
+                             [&handlerWaiter](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                             {
+                                 while (co_await request.bodyStream()->readNext())
+                                 {
+                                 }
+                                 // 头段预算到点时这条流仍在服务中；处理器等的是用例手里这个句柄
+                                 co_await SuspendHandlerUntilResumed{&handlerWaiter};
+                                 response.setStatus(200);
+                                 co_return;
+                             });
+        session.attachRouter(router);
+
+        Http3ClientPeer peer;
+        // 尾段带伪头：RFC 9114 §4.3 禁止伪头出现在尾段，连接层判定器据此交回畸形
+        for (const CapturedStreamData &chunk: peer.submitRequestWithBodyAndTrailers("POST", "/tail", "example.com", "abc", {QpackHeaderField{":path", "/not-a-trailer"}}))
+        {
+            session.onStreamData(chunk.streamId, chunk.bytes, chunk.isEndStream);
+        }
+        ASSERT_TRUE(handlerWaiter != nullptr) << "前提：处理器已经跑起来，并卡在正文之后";
+        ASSERT_TRUE(abortedStreams.empty()) << "前提：畸形尾段只记日志，不在这里收口";
+
+        // 5 秒后读时限（60 秒）与产出预算都还没到，只有尾段那格 300 毫秒的头段预算可能命中
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+        EXPECT_TRUE(abortedStreams.empty()) << "畸形尾段 early-return 之后头段预算仍在表里：一条仍在服务的流被误杀";
+        EXPECT_EQ(metrics->snapshot().timeoutClosedCount, 0U) << "误杀还把这次收口计进了超时账";
+    }
 
     /**
      * @brief 处理器超过产出预算还没回来：收口这条流，且它事后产出的响应不再写上去

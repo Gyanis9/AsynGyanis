@@ -595,10 +595,6 @@ namespace AsynGyanis::Net
         if (std::holds_alternative<Http3HeadersFrame>(frame))
         {
             const auto &headersFrame = std::get<Http3HeadersFrame>(frame);
-            if (m_callbacks.onHeaderSectionStarted)
-            {
-                m_callbacks.onHeaderSectionStarted(streamId);
-            }
             // 头段之后再来一个头段就是尾段（RFC 9114 §4.1）；正文开始之前只允许一个头段
             const bool isTrailers = state.isHeaderSectionSeen;
             if (isTrailers && state.isTrailersSeen)
@@ -609,6 +605,11 @@ namespace AsynGyanis::Net
             if (isTrailers)
             {
                 state.isTrailersSeen = true;
+            }
+            // HEADERS 帧收齐、即将交给 QPACK：头段预算从这里起算，并按段报身份
+            if (m_callbacks.onHeaderSectionStarted)
+            {
+                m_callbacks.onHeaderSectionStarted(streamId, isTrailers);
             }
 
             std::vector<QpackHeaderField> &fields             = m_inboundFieldLines;
@@ -847,7 +848,8 @@ namespace AsynGyanis::Net
         const auto entry = m_streams.find(streamId);
         if (entry == m_streams.end() || entry->second.isAbandoned)
         {
-            // 阻塞期间该流已被对端取消：解码器那边由 noteStreamCancelledByPeer 收过尾，这里无事可做
+            // 阻塞期间该流已被取消：对端 RESET 时由 noteStreamCancelledByPeer 收尾，本端收口时由
+            // abandonInboundStream 收尾；两种情况下解码器里都不再有它的账，这里无事可做
             return;
         }
         StreamState &state = entry->second;
@@ -1125,6 +1127,29 @@ namespace AsynGyanis::Net
             m_callbacks.onStreamReset(streamId, Http3ErrorCode::RequestCancelled, reason, /*isDecidedByPeer=*/true);
         }
         m_streams.erase(entry);
+    }
+
+    void Http3Connection::abandonInboundStream(const std::int64_t streamId)
+    {
+        // 本端收口：这条流上攒的待发字节与编码器替它记的未确认引用都不再有用——对端不会为一条
+        // 已复位的流回 Section Ack。发指令的方向只属于解码侧，这里用 noteStreamClosed 而不是
+        // noteStreamAbandoned，免得把本地停止写成「对端取消」
+        m_outbound.erase(streamId);
+        if (m_qpackEncoder)
+        {
+            m_qpackEncoder->noteStreamClosed(static_cast<std::uint64_t>(streamId));
+        }
+        // 解码侧：取消这条流的挂起段与待确认记录，并让对端释放相应动态表引用（RFC 9204 §4.4.2）
+        abandonInboundFieldSections(streamId);
+        // 状态保留并只置放弃标记：本地 STOP_SENDING 之后对端仍可能把已排队的字节送到这里，
+        // 摘掉状态会让随后的 HEADERS 按新流重建。标记之后 consumeRequestStream 的早退与
+        // deliverResumedFieldSection 的守卫都会挡住续解与交付
+        const auto entry = m_streams.find(streamId);
+        if (entry != m_streams.end())
+        {
+            entry->second.isFieldSectionBlocked = false;
+            entry->second.isAbandoned           = true;
+        }
     }
 
     void Http3Connection::flush()

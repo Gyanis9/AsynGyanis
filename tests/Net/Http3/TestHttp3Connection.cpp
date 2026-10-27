@@ -1103,6 +1103,67 @@ TEST(Http3Connection, AbandonedStreamCancelsItsFieldSectionsInTheDecoder)
 }
 
 /**
+ * @brief 本端放弃一条入站流：挂起段就地取消，流状态保留并挡住迟到的续解
+ * @details 会话按头段预算收口一条 QPACK 阻塞的流时，先告诉传输层 RESET/STOP，连接层并不知道。
+ *          解码器里的挂起段还在，对端补发编码器流指令就会续解并交付；若把流状态一并摘掉，
+ *          同一条流上随后的 HEADERS 还会被当成新流重建。放弃入口只做三件事：清待发与编码器侧
+ *          记账、在解码器侧取消该流、把状态标成放弃，状态本身留到连接结束。
+ * @note 证伪：把状态改成一并 erase，最后一格（后来的 HEADERS）按新流交付；把解码器取消摘掉，
+ *       迟到指令那一格开始交付字段；重复调用不去重，解码器流上会出现第二条取消指令。
+ */
+TEST(Http3Connection, AbandonInboundStreamKeepsTheStreamClosedToLateEncoderBytes)
+{
+    // 本端发起的三条单向流里解码器流是第三个（控制流 3、编码器流 7、解码器流 11）
+    constexpr std::int64_t kLocalDecoderStreamId = 11;
+
+    FakeTransport                  transport;
+    EventLog                       events;
+    Http3Connection::LocalSettings settings;
+    settings.qpackMaximumTableCapacityByteCount = 4096;
+    auto connection                             = makeConnection(transport, events, settings);
+
+    std::string headerBlock;
+    std::string encoderBytes;
+    {
+        QpackEncoder peerEncoder(4096, 100, 4096);
+        const auto   encoded = peerEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), headerBlock, encoderBytes);
+        ASSERT_HAS_VALUE(encoded) << encoded.error().message;
+    }
+    ASSERT_FALSE(encoderBytes.empty()) << "对端确实插了动态表，这条用例的前提才成立";
+
+    connection->consumeStreamData(kPeerControlStreamId, bytesOfText(streamTypePrefix(0x00) + makeFrame(0x04, std::string("\x01\x50\x00", 3))), false);
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(streamTypePrefix(0x02)), false);
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, headerBlock)), false);
+    ASSERT_TRUE(events.headerFields.empty()) << "前提：头段挂在解码器里等指令";
+
+    connection->abandonInboundStream(kRequestStreamId);
+    // 幂等：第二条不再产生取消指令
+    connection->abandonInboundStream(kRequestStreamId);
+    connection->flush();
+
+    // 流 0 的 Stream Cancellation：'01' 加 6 位前缀的流标识，单字节档就是 0x40
+    const std::string decoderStreamBytes = transport.bytesOf(kLocalDecoderStreamId);
+    EXPECT_EQ(std::ranges::count(decoderStreamBytes, static_cast<char>(0x40)), 1) << "放弃一条有挂起段的流，解码器流上应当恰好有一条取消指令";
+
+    // 迟到的编码器流指令不能再把挂起段解出来
+    connection->consumeStreamData(kPeerEncoderStreamId, bytesOfText(encoderBytes), false);
+    EXPECT_TRUE(events.headerFields.empty()) << "已被本端放弃的流在迟到指令到达后交付了字段";
+    EXPECT_TRUE(events.headerBlocksReceived.empty()) << "已被本端放弃的流在迟到指令到达后交付了头块";
+
+    // 同一流上再来一段能直接解开的头块：状态保留着，因此不该按新流重建
+    std::string staticBlock;
+    std::string noInstructions;
+    {
+        QpackEncoder literalEncoder(0, 0, 0);
+        const auto   encoded = literalEncoder.encodeFieldSection(kRequestStreamId, std::span<const QpackHeaderField>(minimalRequestFields()), staticBlock, noInstructions);
+        ASSERT_HAS_VALUE(encoded) << encoded.error().message;
+    }
+    connection->consumeStreamData(kRequestStreamId, bytesOfText(makeFrame(0x01, staticBlock)), false);
+    EXPECT_TRUE(events.headerFields.empty()) << "已放弃的流被后续 HEADERS 按新流重建了";
+    EXPECT_FALSE(connection->isBroken()) << "放弃一条流不该把整条连接判死";
+}
+
+/**
  * @brief 对端发来 GOAWAY：通告值及以上的本端请求流按 H3_REQUEST_REJECTED 交上去，本端也不再算健康
  * @details RFC 9114 §5.2 的原句是「Requests or pushes with the indicated identifier or greater are
  *          rejected by the sender of the GOAWAY」，§7 接着说这些请求「will not be processed. Clients can
