@@ -119,6 +119,18 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 造一个「索引表示」（RFC 7541 §6.1）
+         * @details 直接复用编码器的整数编码：索引 62（动态表最新一项）编出来就是一个 0xBE 字节，
+         *          与 HpackEncoder 产出的字节一致。
+         * @param index 索引值，从 1 起
+         * @return std::string 该表示的字节
+         */
+        std::string makeIndexedField(const std::size_t index)
+        {
+            return encodeHpackInteger(index, 7, 0x80);
+        }
+
+        /**
          * @brief 由「名 = 值」二元组拼出期望的头列表
          * @param entries 头部条目
          * @return std::vector<HpackHeaderField> 期望值
@@ -1266,6 +1278,84 @@ namespace AsynGyanis::Net
         expectHpackRejected<std::invalid_argument>([&] { static_cast<void>(encodeHpackInteger(10, 9, 0x00)); }, "前缀位数");
         // 5 位前缀的低 5 位归整数所有：模式位 0x01 落进了前缀区间
         expectHpackRejected<std::invalid_argument>([&] { static_cast<void>(encodeHpackInteger(10, 5, 0x01)); }, "模式位");
+    }
+
+    // ============================================================================
+    // 越限后的内存放大
+    // ============================================================================
+
+    /**
+     * @brief 头列表越限后，反复引用同一动态表条目的索引表示不再往池里拷条目
+     * @details 越限只作废这一条流，剩余表示仍要解完以同步动态表（RFC 9113 §10.5.1），
+     *          但「解完」不等于「继续收集」：一条 4000 字节的动态表条目被 4000 个索引表示引用时，
+     *          旧实现会为每次引用拷一份名值，一个十几 KiB 的头块因此放大到十几 MiB。
+     */
+    TEST(Hpack, LimitExceededDoesNotCopyDynamicEntriesIntoArena)
+    {
+        HpackDecoderLimits limits;
+        limits.maximumDynamicTableSizeByteCount = 4096;
+        limits.maximumHeaderListByteCount       = 1024; // 很快越限
+        HpackDecoder decoder(limits);
+
+        // 先插一条大条目，再用索引表示反复引用它：旧实现会为每次引用拷一份值
+        std::vector<HpackHeaderField> fields{{"x-big", std::string(4000, 'a')}};
+        HpackEncoder                  encoder(4096);
+        std::string                   block = encoder.encode(fields);
+        for (int i = 0; i < 4000; ++i)
+        {
+            block += makeIndexedField(62);
+        }
+
+        HpackFieldArena                   arena;
+        std::vector<HpackHeaderFieldView> decoded;
+        EXPECT_FALSE(decoder.decode(block, arena, decoded));
+        EXPECT_TRUE(decoder.isLimitExceeded());
+        EXPECT_LT(arena.size(), 64U * 1024U); // 旧实现是十几 MiB
+    }
+
+    /**
+     * @brief 带索引名的字面量只拷贝名字，不再把动态表条目的值整份拷进池
+     * @details 名字索引指向的动态表条目在读取期间不会被改动，视图可以直接指向表里的名字；
+     *          值由表示本身给出，与表里的旧值无关。旧实现按「整个条目」解析名字索引，
+     *          连随后就被覆盖的旧值也拷了一份。
+     */
+    TEST(Hpack, IndexedNameDoesNotCopyTheDynamicValue)
+    {
+        HpackDecoderLimits limits;
+        limits.maximumDynamicTableSizeByteCount = 4096;
+        limits.maximumHeaderListByteCount       = 64 * 1024;
+        HpackDecoder                      decoder(limits);
+        HpackEncoder                      encoder(4096);
+        const std::string                 block = encoder.encode({{"x-big", std::string(4000, 'a')}});
+        HpackFieldArena                   arena;
+        std::vector<HpackHeaderFieldView> decoded;
+        ASSERT_TRUE(decoder.decode(block, arena, decoded));
+        // 解码头块时池在入口处被清空，读数只能看这一块自己写进去的字节
+        const std::string literal = makeBytesFromHex("7e0162"); // 名字索引 62，值 "b"
+        ASSERT_TRUE(decoder.decode(literal, arena, decoded));
+        EXPECT_LT(arena.size(), 100U); // 旧实现会把 4000 字节的值也拷进来
+        ASSERT_EQ(decoded.size(), 1U);
+        EXPECT_EQ(decoded.front().name, "x-big") << "名字仍然要按名字索引取对";
+        EXPECT_EQ(decoded.front().value, "b");
+    }
+
+    /**
+     * @brief 越限之后出现压缩错误时，结论按压缩错误算
+     * @details 越限本身只作废一条流，压缩错误却必须终止连接：两者同时成立时按更严重的算，
+     *          否则上层会把一条已经与对端错开的连接继续用下去。
+     */
+    TEST(Hpack, CompressionErrorWinsOverLimitExceeded)
+    {
+        HpackDecoderLimits limits;
+        limits.maximumHeaderListByteCount = 1; // 第一条就超限
+        HpackDecoder decoder(limits);
+        // 超限后再给一个非法索引
+        const std::string                 block = makeIndexedField(1) + makeIndexedField(9999);
+        HpackFieldArena                   arena;
+        std::vector<HpackHeaderFieldView> decoded;
+        EXPECT_FALSE(decoder.decode(block, arena, decoded));
+        EXPECT_FALSE(decoder.isLimitExceeded());
+        EXPECT_EQ(decoder.errorKind(), HpackErrorKind::CompressionError);
     }
 
 } // namespace AsynGyanis::Net

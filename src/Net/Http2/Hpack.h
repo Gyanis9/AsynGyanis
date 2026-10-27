@@ -120,6 +120,13 @@ namespace AsynGyanis::Net
             m_nextBlockIndex = 0;
         }
 
+        /// 释放全部块与容量；下一轮从空池重新分配
+        void release() noexcept
+        {
+            m_blocks.clear();
+            m_nextBlockIndex = 0;
+        }
+
         /// @return std::size_t 池里本轮已写入的字节数（诊断与读数用）
         [[nodiscard]] std::size_t size() const noexcept
         {
@@ -972,14 +979,24 @@ namespace AsynGyanis::Net
 
         /**
          * @brief 按索引空间取一条头部的视图：1..61 查静态表（视图直接指向常量表）、62 起查动态表（拷进池）
-         * @details 动态表的条目会被同一头块里后续的增量插入驱逐，视图不能指向表本身，因此拷进池；
-         *          名字索引只在「名字」上用，值随后的字面量解码会覆盖，所以这里照原样给出（含值）
+         * @details 动态表的条目会被同一头块里后续的增量插入驱逐，视图不能指向表本身，因此拷进池
          * @param index 索引值，0 非法
          * @param arena 字节池：动态表条目的拷贝落在这里
          * @param field 输出参数：取到的头部视图，仅在返回 true 时有效
          * @return true 索引有效且命中
          */
         [[nodiscard]] bool resolveIndexedFieldView(std::size_t index, HpackFieldArena &arena, HpackHeaderFieldView &field) const;
+
+        /**
+         * @brief 按索引空间只取一条头部的名字：1..61 查静态表、62 起查动态表，都不经过字节池
+         * @details 带索引名的字面量只需要名字，值由字面量自己给出，不必把动态表条目的旧值也拷一遍。
+         *          动态表条目的名字在插入时已经以 std::string 拷贝进表，读取期间不会变；但同一头块
+         *          后续的增量插入可能驱逐这个条目，因此把名字交给调用方收集之前仍要先落进池
+         * @param index 索引值，0 非法
+         * @param field 输出参数：只填 name，仅在返回 true 时有效
+         * @return true 索引有效且命中
+         */
+        [[nodiscard]] bool resolveIndexedNameView(std::size_t index, HpackHeaderFieldView &field) const;
 
         /**
          * @brief 收下一个头部：先判单条名/值长度与头列表总大小上限，越限则记下原因并到此为止

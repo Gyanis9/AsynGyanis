@@ -863,6 +863,7 @@ namespace AsynGyanis::Net
         m_pendingHeaderBlock.clear();
         if (!isDecoded)
         {
+            m_headerFieldArena.release(); // 失败的头块不交出字段：整池还给堆，不必跨头块留着
             if (!m_hpackDecoder.isLimitExceeded())
             {
                 // 压缩上下文出错必须终止连接（§4.3）：两端的动态表已经错开，

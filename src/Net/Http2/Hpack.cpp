@@ -526,6 +526,9 @@ namespace AsynGyanis::Net
         m_headerListByteCount         = 0;
         m_hasSeenHeaderRepresentation = false;
         std::size_t consumed          = 0;
+        // 池的增长硬上限：正常的收集量不超过头列表上限，再加上动态表一份与头块自身的两倍余量。
+        // 没有这条闸门，越限后继续解完的那部分表示仍可能按条目长度反复往池里写
+        const std::size_t arenaHardLimitByteCount = m_limits.maximumHeaderListByteCount + m_limits.maximumDynamicTableSizeByteCount + headerBlock.size() * 2;
         // 表示是自定界的：逐个解到末尾，中途任何失败都由 decodeRepresentation() 记下原因
         while (consumed < headerBlock.size())
         {
@@ -533,6 +536,18 @@ namespace AsynGyanis::Net
             {
                 // 失败时清空输出：解到一半的字段绝不能留在调用方手里——漏掉「丢弃」这一步的调用方
                 // 会把半截头块当成真的用（宁可这里多清一次，也不留这种脚枪）
+                headerFields.clear();
+                writeError(errorText, m_errorMessage);
+                return false;
+            }
+            if (arena.size() > arenaHardLimitByteCount)
+            {
+                // 这条闸门只能是实现缺陷或对端在边界上钻空子：正常路径的收集量受头列表上限约束，
+                // 头块字节的两倍余量足够覆盖一条超长字面量
+                recordFailure(HpackErrorKind::CompressionError,
+                              std::format("HPACK 解码 arena 超出硬上限 {} 字节（头列表上限 {} + 动态表上限 {} + 头块两倍 {}）："
+                                          "解码器已不再收集字段，请检查本端的上限配置或对端的头块构造",
+                                          arenaHardLimitByteCount, m_limits.maximumHeaderListByteCount, m_limits.maximumDynamicTableSizeByteCount, headerBlock.size() * 2));
                 headerFields.clear();
                 writeError(errorText, m_errorMessage);
                 return false;
@@ -571,7 +586,8 @@ namespace AsynGyanis::Net
 
     bool HpackDecoder::isLimitExceeded() const noexcept
     {
-        return m_isBeyondHeaderLimits;
+        // 压缩错误与越限同时出现时按压缩错误算：压缩上下文已经与对端错开，上层必须终止连接
+        return m_isBeyondHeaderLimits && !m_hasError;
     }
 
     std::string HpackDecoder::errorMessage() const
@@ -615,7 +631,10 @@ namespace AsynGyanis::Net
             }
 
             HpackHeaderFieldView field;
-            if (!resolveIndexedFieldView(static_cast<std::size_t>(index), arena, field))
+            // 越限后只剩「校验索引存在」这件事：索引表示不改动动态表，条目没有进池的必要
+            const bool isResolved = m_isBeyondHeaderLimits ? resolveIndexedNameView(static_cast<std::size_t>(index), field)
+                                                           : resolveIndexedFieldView(static_cast<std::size_t>(index), arena, field);
+            if (!isResolved)
             {
                 recordFailure(HpackErrorKind::CompressionError, std::format("索引 {} 既不在静态表（1..{}）也不在动态表（当前 {} 项）里（RFC 7541 §2.3.3）："
                                                                             "两端的动态表已经不同步，请检查对端是否漏插或错插了条目",
@@ -683,10 +702,11 @@ namespace AsynGyanis::Net
         HpackHeaderFieldView field;
         if (nameIndex == 0)
         {
-            // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）：先解进复用的临时串，再整段进池——
-            // 逐条新建字符串是这条热路径上最贵的一笔，临时串的容量跨字段、跨头块都留着
+            // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）。名字落在调用内的局部串里，
+            // 不用 m_stringScratch：后者紧接着要装值，装完名字再装值会把名字的字节覆盖掉
+            std::string literalName;
             std::size_t nameByteCount = 0;
-            if (!decodeHpackString(headerBlock.substr(consumed), m_stringScratch, nameByteCount, nullptr))
+            if (!decodeHpackString(headerBlock.substr(consumed), literalName, nameByteCount, nullptr))
             {
                 recordFailure(HpackErrorKind::CompressionError, std::format("字面量表示的头名解不开（已消费 {} 字节，头块共 {} 字节）："
                                                                             "请检查对端是否截断了头块或用了本端不支持的 Huffman 码",
@@ -694,14 +714,21 @@ namespace AsynGyanis::Net
                 return false;
             }
             consumed += nameByteCount;
-            field.name = arena.append(m_stringScratch);
+            // 越限后名字只留给动态表插入，不必再进池
+            field.name = m_isBeyondHeaderLimits ? std::string_view(literalName) : arena.append(literalName);
         } else
         {
-            if (!resolveIndexedFieldView(static_cast<std::size_t>(nameIndex), arena, field))
+            if (!resolveIndexedNameView(static_cast<std::size_t>(nameIndex), field))
             {
                 recordFailure(HpackErrorKind::CompressionError,
                               std::format("字面量表示引用的名字索引 {} 不存在（RFC 7541 §2.3.3）：两端的动态表已经不同步，请检查对端", nameIndex));
                 return false;
+            }
+            // 动态表里的名字视图可能被本头块后续的插入驱逐：收集前先落进池（静态表是常量，不占池）。
+            // 越限后不再收集，视图只供随后的插入拷一份名字
+            if (!m_isBeyondHeaderLimits && nameIndex > kHpackStaticTableEntryCount)
+            {
+                field.name = arena.append(field.name);
             }
         }
 
@@ -714,16 +741,17 @@ namespace AsynGyanis::Net
             return false;
         }
         consumed += valueByteCount;
-        field.value = arena.append(m_stringScratch);
+        // 越限后值只留给动态表插入，不必再进池
+        field.value = m_isBeyondHeaderLimits ? std::string_view(m_stringScratch) : arena.append(m_stringScratch);
 
+        m_hasSeenHeaderRepresentation = true;
+        appendField(field, headerFields);
         if (isIncrementalIndexing)
         {
             // 带增量索引：对端的编码器已经把它加进了自己的表，本端必须同步插入，后续索引才能对上。
-            // 动态表比任何调用方的池活得久，这两份拷贝是必要成本（与改造前相同）
+            // 插入放在收集之后：它可能驱逐 field.name 指向的条目，而越限与非越限共用这一份插入逻辑
             m_dynamicTable.insert(HpackHeaderField{std::string(field.name), std::string(field.value)});
         }
-        m_hasSeenHeaderRepresentation = true;
-        appendField(field, headerFields);
         return true;
     }
 
@@ -745,6 +773,23 @@ namespace AsynGyanis::Net
         // 动态表的条目会被本头块后续的增量插入驱逐：视图不能指向表本身，拷进池
         field.name  = arena.append(entry->name);
         field.value = arena.append(entry->value);
+        return true;
+    }
+
+    bool HpackDecoder::resolveIndexedNameView(const std::size_t index, HpackHeaderFieldView &field) const
+    {
+        if (index <= kHpackStaticTableEntryCount)
+        {
+            field.name = kHpackStaticTable[index - 1].name;
+            return true;
+        }
+        const HpackHeaderField *const entry = m_dynamicTable.findEntry(index - kHpackFirstDynamicTableIndex);
+        if (entry == nullptr)
+        {
+            return false;
+        }
+        // 表里的名字在插入时已经拷贝成独立的 std::string，读取期间不会被改写
+        field.name = entry->name;
         return true;
     }
 

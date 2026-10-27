@@ -5138,6 +5138,7 @@ src/Net/Http2/Hpack.h	[[nodiscard]] bool decodeRepresentation(std::string_view h
 src/Net/Http2/Hpack.h	[[nodiscard]] bool hasError() const
 src/Net/Http2/Hpack.h	[[nodiscard]] bool isLimitExceeded() const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] bool resolveIndexedFieldView(std::size_t index, HpackFieldArena &arena, HpackHeaderFieldView &field) const
+src/Net/Http2/Hpack.h	[[nodiscard]] bool resolveIndexedNameView(std::size_t index, HpackHeaderFieldView &field) const
 src/Net/Http2/Hpack.h	[[nodiscard]] bool tryGetEntry(std::size_t entryIndex, HpackHeaderField &field) const
 src/Net/Http2/Hpack.h	[[nodiscard]] const HpackHeaderField *findEntry(std::size_t entryIndex) const noexcept
 src/Net/Http2/Hpack.h	[[nodiscard]] const std::deque<HpackHeaderField> &dynamicTableEntries() const noexcept
@@ -5217,6 +5218,7 @@ src/Net/Http2/Hpack.h	void clear() noexcept
 src/Net/Http2/Hpack.h	void insert(HpackHeaderField field)
 src/Net/Http2/Hpack.h	void noteHeaderLimitExceeded(std::string reason)
 src/Net/Http2/Hpack.h	void recordFailure(HpackErrorKind errorKind, std::string reason)
+src/Net/Http2/Hpack.h	void release() noexcept
 src/Net/Http2/Hpack.h	void reset()
 src/Net/Http2/Hpack.h	void reset()
 src/Net/Http2/Hpack.h	void setMaximumDynamicTableSizeByteCount(std::size_t maximumSizeByteCount)
