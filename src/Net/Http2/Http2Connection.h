@@ -749,6 +749,19 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool acceptRequestHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, Http2Request &request, std::string *errorText);
 
         /**
+         * @brief 按方法判请求目标的取值形态：origin-form 必须以 / 开头，asterisk-form 只给 OPTIONS
+         * @param method 已经过 token 校验的 :method
+         * @param path :path 的取值
+         * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
+         * @return true 取值形态与方法相配
+         * @details CONNECT 与带 :protocol 的扩展 CONNECT 在调用点之前已按各自的伪头规则返回，
+         *          走到这里的方法都要求 origin-form；`*` 只有 OPTIONS 能用（RFC 9110 §7.4）。
+         *          origin-form 的起点是 /（RFC 9112 §3.2.1 的 absolute-path），h3 的 :path 走同一条
+         *          口径（RFC 9114 §4.3.1）。
+         */
+        [[nodiscard]] static bool acceptRequestTargetPath(std::string_view method, std::string_view path, std::string *errorText);
+
+        /**
          * @brief 校验尾部头块的语法：禁止伪头与连接特定头、头名必须全小写
          * @param headerFields 解码后的头列表（按到达顺序）
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）

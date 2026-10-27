@@ -1314,19 +1314,42 @@ namespace AsynGyanis::Net
             writeError(errorText, "请求缺少 :path 伪头：RFC 9113 §8.3.1 要求非 CONNECT 请求必须带 :path");
             return false;
         }
-        if (request.path.empty())
+        if (!acceptRequestTargetPath(request.method, request.path, errorText))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    bool Http2Connection::acceptRequestTargetPath(const std::string_view method, const std::string_view path, std::string *const errorText)
+    {
+        clearError(errorText);
+        if (path.empty())
         {
             writeError(errorText, ":path 伪头的值为空：RFC 9113 §8.3.1 要求 http/https URI 的 :path 不能为空（只有 OPTIONS 可以用 \"*\" 表示「整个服务」）");
             return false;
         }
-        // asterisk-form 说的是整台服务器而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4）：
-        // h1 的请求行解析早就按方法判过它，这里补的是这一半——否则同一个目标在两条通道上
-        // 一个判语法错误、一个放行到「没有路由匹配」报成 404
-        if (request.path == "*" && request.method != "OPTIONS")
+        // asterisk-form 说的是整台服务器而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4）：h1 的请求行
+        // 解析早就按方法判过它，这里补的是这一半——否则同一个目标在两条通道上一个判语法错误、
+        // 一个放行到「没有路由匹配」报成 404
+        if (path == "*")
         {
-            writeError(errorText, std::format(":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}（RFC 9110 §7.4）："
-                                              "请给出 origin-form 的路径（以 / 开头）",
-                                              request.method));
+            if (method != "OPTIONS")
+            {
+                writeError(errorText, std::format(":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}（RFC 9110 §7.4）："
+                                                  "请给出 origin-form 的路径（以 / 开头）",
+                                                  method));
+                return false;
+            }
+            return true;
+        }
+        // origin-form 的 absolute-path 以 / 为起点（RFC 9112 §3.2.1）：h3 的 :path 按这一条判，h2 此前
+        // 只查字符集，`no-slash` 这类目标会一路走到路由，同一条资源因为走哪条通道而被认成两个
+        if (path.front() != '/')
+        {
+            writeError(errorText, std::format(":path 取值 \"{}\" 不以 / 开头：RFC 9113 §8.3.1 要求 http/https 的 :path 是 origin-form 或 \"*\"，"
+                                              "origin-form 的 absolute-path 以 / 为起点（RFC 9112 §3.2.1）",
+                                              Base::escapeForLog(path)));
             return false;
         }
         return true;

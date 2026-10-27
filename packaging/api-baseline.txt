@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=311 entries=9213
+# headers=311 entries=9214
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5409,6 +5409,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] bool tryGetPeerSetting(Http2Settin
 src/Net/Http2/Http2Connection.h	[[nodiscard]] bool tryGetStreamState(std::uint32_t streamId, Http2StreamState &streamState) const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static TerminatedStreamFrameVerdict judgeFrameOnTerminatedStream(StreamRecord &stream, Http2FrameType frameType)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptPeerStreamIdParity(std::uint32_t streamId, std::string *errorText)
+src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptRequestTargetPath(std::string_view method, std::string_view path, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptResponseHeaderField(std::string_view name, std::string_view value, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool isReceiveCreditWorthFlushing(std::size_t pendingByteCount, std::uint32_t advertisedWindowByteCount) noexcept

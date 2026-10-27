@@ -960,6 +960,56 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：非 CONNECT 的 :path 必须是 origin-form，以 / 开头
+     * @details RFC 9112 §3.2.1 的 absolute-path 与 RFC 9114 §4.3.1 都把起点定在 /，h2 此前只查
+     *          字符集，`no-slash` 这类目标会一路走到路由。同一条资源因为走哪条通道而被认成两个，
+     *          路由与缓存键跟着分家。
+     * @note 证伪：把「以 / 开头」这一条摘掉，本用例在「请求被交出」与 RST 两处红。
+     */
+    TEST(Http2Connection, RejectsRequestPathWithoutLeadingSlash)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+
+        const std::string headerBlock = hpackLiteralField(2, "GET") + hpackIndexedField(6) + hpackLiteralField(4, "no-slash") + hpackLiteralField(1, "example.com");
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, headerBlock)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.takeRequests().empty()) << "没有前导斜杠的目标被当成请求交了出去";
+        EXPECT_NE(expectStreamRejected(connection, 1U).find("以 / 开头"), std::string::npos) << "拒因要指出 origin-form 的起点是 /";
+
+        // 连接仍在服务：换一条流给出合法路径，请求照常交出
+        EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> requests = connection.takeRequests();
+        ASSERT_EQ(requests.size(), 1U) << "一条畸形路径把整条连接的服务能力带走了";
+        EXPECT_EQ(requests[0].path, "/");
+    }
+
+    /**
+     * @brief 钉住：斜杠要求不波及两个例外——OPTIONS 的星号目标与不带 :path 的 CONNECT
+     * @details asterisk-form 只属于 OPTIONS（RFC 9110 §7.4）；CONNECT 按 RFC 9113 §8.5 要求省略
+     *          :path。两条例外在伪头判定里各自提前返回，以 / 开头的约束只能落在其余方法上。
+     */
+    TEST(Http2Connection, AcceptsAsteriskPathAndPathlessConnect)
+    {
+        Http2Connection optionsConnection;
+        completeHandshake(optionsConnection);
+        const std::string optionsBlock = hpackLiteralField(2, "OPTIONS") + hpackIndexedField(6) + hpackLiteralField(1, "example.com") + hpackLiteralField(4, "*");
+        EXPECT_EQ(feed(optionsConnection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, optionsBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> optionsRequests = optionsConnection.takeRequests();
+        ASSERT_EQ(optionsRequests.size(), 1U) << "OPTIONS 的星号目标被斜杠要求误伤了";
+        EXPECT_EQ(optionsRequests[0].path, "*");
+
+        Http2Connection connectConnection;
+        completeHandshake(connectConnection);
+        const std::string connectBlock = hpackLiteralField(2, "CONNECT") + hpackLiteralField(1, "example.com:443");
+        EXPECT_EQ(feed(connectConnection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 1U, connectBlock)), Http2ConnectionFeedStatus::NeedMore);
+        const std::vector<Http2Request> connectRequests = connectConnection.takeRequests();
+        ASSERT_EQ(connectRequests.size(), 1U) << "不带 :path 的 CONNECT 被斜杠要求误伤了";
+        EXPECT_EQ(connectRequests[0].method, "CONNECT");
+        EXPECT_TRUE(connectRequests[0].path.empty()) << "CONNECT 的 :path 本来就该缺席（RFC 9113 §8.5）";
+    }
+
+    /**
      * @brief 钉住：头列表超出本端通告的 SETTINGS_MAX_HEADER_LIST_SIZE 只作废那一条流，连接照旧服务
      * @details 依据：RFC 9113 §10.5.1「收不下这一条头块的服务端可以回 431（Request Header Fields Too
      *          Large），且头块必须被处理完以保证连接状态一致」。上限是本端策略而非对端把压缩上下文
