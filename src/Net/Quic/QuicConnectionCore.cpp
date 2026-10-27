@@ -159,16 +159,18 @@ namespace AsynGyanis::Net
          * @param configuration 连接配置，取两条标识的长度
          * @param isLongHeader 本包用长头还是短头
          * @param packetNumberByteCount 本包包号字段的字节数（1 到 4），由 quicPacketNumberByteCountFor 按包号给出
+         * @param tokenByteLength Initial 要带的令牌字节数；Retry 之后不为 0，必须计入包头与 1200 补齐
          * @return std::size_t 包头（含包号字段）+ AEAD 标签 + CRYPTO 帧头上限
          */
-        std::size_t packetOverheadByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader, const std::size_t packetNumberByteCount)
+        std::size_t packetOverheadByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader, const std::size_t packetNumberByteCount,
+                                             const std::size_t tokenByteLength)
         {
-            const std::size_t headerByteLength =
-                    isLongHeader
-                            // 首字节、版本、两条「长度字节 + 标识」、Token 长度域、Length 域、包号
-                            ? 1 + 4 + 1 + configuration.peerConnectionId.size() + 1 + configuration.localConnectionId.size() + 1 + 2 + packetNumberByteCount
-                            // 首字节、目的标识（没有长度字段）、包号
-                            : 1 + configuration.peerConnectionId.size() + packetNumberByteCount;
+            const std::size_t headerByteLength = isLongHeader
+                                                         // 首字节、版本、两条「长度字节 + 标识」、Token 长度域与令牌、Length 域、包号
+                                                         ? 1 + 4 + 1 + configuration.peerConnectionId.size() + 1 + configuration.localConnectionId.size() +
+                                                                   quicVariableLengthIntegerByteCount(tokenByteLength) + tokenByteLength + 2 + packetNumberByteCount
+                                                         // 首字节、目的标识（没有长度字段）、包号
+                                                         : 1 + configuration.peerConnectionId.size() + packetNumberByteCount;
             return headerByteLength + kQuicAuthenticationTagByteLength + kQuicCryptoFrameHeaderByteLimit;
         }
         /**
@@ -425,7 +427,7 @@ namespace AsynGyanis::Net
             {
                 std::string frames;
                 appendQuicFrame(frames, QuicFrame{QuicPathResponseFrame{response.data}});
-                const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber));
+                const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber), 0);
                 const std::size_t packetByteLength   = overheadByteLength + frames.size();
                 if (packetByteLength > amplificationLimitForPath(response.key) || !m_congestion->maySend(packetByteLength))
                 {
@@ -452,7 +454,7 @@ namespace AsynGyanis::Net
             }
             std::string frames;
             appendQuicFrame(frames, QuicFrame{QuicPathChallengeFrame{challenge.data}});
-            const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber));
+            const std::size_t overheadByteLength = packetOverheadByteLength(m_configuration, false, quicPacketNumberByteCountFor(applicationSpace.nextPacketNumber), 0);
             const std::size_t packetByteLength   = overheadByteLength + frames.size();
             if (packetByteLength > amplificationLimitForPath(challenge.key) || !m_congestion->maySend(packetByteLength))
             {
@@ -539,6 +541,11 @@ namespace AsynGyanis::Net
         {
             receivedPath->receivedByteCount += datagram.size();
         }
+        // Retry 没有 Length 与包号，按普通长头解只会得到 Malformed；客户端先看它，处理掉就整条结束
+        if (handleRetryPacket(datagram))
+        {
+            return {};
+        }
         std::size_t offset = 0;
         while (offset < datagram.size())
         {
@@ -557,6 +564,69 @@ namespace AsynGyanis::Net
             offset += decodedHeader->packetByteCount;
         }
         return {};
+    }
+
+    bool QuicConnectionCore::handleRetryPacket(const std::span<const std::uint8_t> datagram)
+    {
+        if (isLocalServer() || datagram.size() < 5U ||
+            (datagram[0] & (kQuicLongHeaderFlagBit | kQuicLongPacketTypeBitMask)) != (kQuicLongHeaderFlagBit | (static_cast<std::uint8_t>(QuicLongPacketType::Retry) << 4U)))
+        {
+            return false;
+        }
+        // RFC 9000 §17.2.5.2：一个连接尝试至多接受一条 Retry；处理过服务端的 Initial 之后到达的
+        // Retry 一律丢弃。握手已经收尾的连接也不再接受它
+        if (m_hasProcessedRetry || m_hasProcessedServerInitial || m_phase != QuicConnectionPhase::Handshaking)
+        {
+            return true;
+        }
+
+        const QuicDecodeExpected<QuicRetryPacketHeader> decoded = decodeQuicRetryPacket(datagram, std::span<const std::uint8_t>(m_configuration.originalDestinationConnectionId));
+        if (!decoded.has_value())
+        {
+            return true;
+        }
+        const QuicRetryPacketHeader &retry = *decoded;
+        // 目的标识必须是本端自报的源标识；源标识不得等于本端第一个 Initial 的目的标识（§17.2.5.1 的
+        // MUST NOT，客户端遇到相同的必须丢弃）；零长令牌按 §17.2.5.2 必须丢弃
+        if (!std::ranges::equal(retry.destinationConnectionId, m_configuration.localConnectionId) ||
+            std::ranges::equal(retry.sourceConnectionId, m_configuration.originalDestinationConnectionId) || retry.token.empty())
+        {
+            return true;
+        }
+        // 没验过标签的 Retry 谁都能造：标签把第一个 Initial 的目的标识绑进了伪包（RFC 9001 §5.8）
+        if (!verifyQuicRetryPacketIntegrity(retry, datagram))
+        {
+            return true;
+        }
+
+        m_hasProcessedRetry = true;
+        m_retryToken.assign(retry.token.begin(), retry.token.end());
+        m_configuration.retrySourceConnectionId.assign(retry.sourceConnectionId.begin(), retry.sourceConnectionId.end());
+        // §17.2.5.2：后续 Initial 的目的标识换成 Retry 的源标识，自己的源标识保持不变（服务端可能把
+        // 它算进令牌校验）。改目的标识等于换掉保护 Initial 的密钥（RFC 9001 §5.2）
+        m_configuration.peerConnectionId                   = m_configuration.retrySourceConnectionId;
+        const QuicPacketDirection inboundInitialDirection  = isLocalServer() ? QuicPacketDirection::ClientToServer : QuicPacketDirection::ServerToClient;
+        const QuicPacketDirection outboundInitialDirection = isLocalServer() ? QuicPacketDirection::ServerToClient : QuicPacketDirection::ClientToServer;
+        SpaceState               &initialSpace             = m_spaces[spaceIndex(PacketNumberSpace::Initial)];
+        initialSpace.readKeys                              = deriveQuicInitialPacketKeys(m_configuration.retrySourceConnectionId, inboundInitialDirection);
+        initialSpace.writeKeys                             = deriveQuicInitialPacketKeys(m_configuration.retrySourceConnectionId, outboundInitialDirection);
+
+        // RFC 9000 §17.2.5.3 与 RFC 9002 §6.3：保留同一份握手消息，从偏移 0 重发；包号不重置；
+        // 丢包、拥塞与定时器整组复位。旧 Initial 的在途字节要从两份账里销掉，否则它们会一直占着窗口
+        initialSpace.cryptoWriteOffset = 0;
+        initialSpace.pendingRetransmissions.clear();
+        const std::vector<QuicSentPacketInfo> discardedInitialPackets = m_recovery.unacknowledgedPackets(QuicRecoverySpace::Initial);
+        m_recovery.discardSpace(QuicRecoverySpace::Initial);
+        m_congestion->onPacketsDiscarded(discardedInitialPackets);
+        // RFC 9002 §6.3 要求连 RTT 估算一起复位；本端只有这一个复位口，与 §9.4 的路径切换共用
+        m_recovery.resetForPathChange();
+        m_congestion->resetToInitialState();
+        m_outboundDatagrams.clear();
+        if (m_probeSpace.has_value() && *m_probeSpace == PacketNumberSpace::Initial)
+        {
+            m_probeSpace.reset();
+        }
+        return true;
     }
 
     bool QuicConnectionCore::noteReceivedPacket(const PacketNumberSpace space, const std::uint64_t packetNumber) noexcept
@@ -741,6 +811,11 @@ namespace AsynGyanis::Net
     QuicDecodeStatus QuicConnectionCore::handleFrames(const std::vector<QuicFrame> &frames, SpaceState &state, const PacketNumberSpace space, const std::uint64_t packetNumber,
                                                       const QuicPathKey &pathKey, const Timestamp arrivalTime)
     {
+        if (!isLocalServer() && space == PacketNumberSpace::Initial)
+        {
+            // RFC 9000 §17.2.5.2：服务端的 Initial 一旦处理过，此后到达的 Retry 一律丢弃
+            m_hasProcessedServerInitial = true;
+        }
         bool hasAckElicitingFrame   = false;
         bool carriesNonProbingFrame = false;
         for (const QuicFrame &frame: frames)
@@ -1009,6 +1084,19 @@ namespace AsynGyanis::Net
                 beginClose(kQuicTransportParameterError, "服务端的 original_destination_connection_id 与本端第一个 Initial 的目的标识不符（RFC 9000 §7.3）", now);
                 return;
             }
+            // §7.3 的另一半：走过 Retry 的连接，服务端必须把 Retry 里的源标识原样回传；没走过就必须不出现
+            if (m_hasProcessedRetry)
+            {
+                if (!decoded->retrySourceConnectionId.has_value() || !std::ranges::equal(*decoded->retrySourceConnectionId, m_configuration.retrySourceConnectionId))
+                {
+                    beginClose(kQuicTransportParameterError, "服务端的 retry_source_connection_id 与 Retry 报文里的源标识不符（RFC 9000 §7.3）", now);
+                    return;
+                }
+            } else if (decoded->retrySourceConnectionId.has_value())
+            {
+                beginClose(kQuicTransportParameterError, "本端没处理过 Retry，服务端却发了 retry_source_connection_id（RFC 9000 §7.3）", now);
+                return;
+            }
         }
         m_peerParameters = *decoded;
         // §10.3：对端（服务端）在参数里给握手标识配了无状态重置令牌就收下——本端此后一直拿那条
@@ -1196,8 +1284,9 @@ namespace AsynGyanis::Net
         {
             return;
         }
-        const bool isLongHeader = space != PacketNumberSpace::Application;
-        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber))))
+        const bool        isLongHeader    = space != PacketNumberSpace::Application;
+        const std::size_t tokenByteLength = space == PacketNumberSpace::Initial ? m_retryToken.size() : 0U;
+        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber), tokenByteLength)))
         {
             // 连一个包头都装不进 3 倍额度：本空间这一轮什么都发不出去，等对端多打些字节再来（§8.1）
             return;
@@ -1241,9 +1330,10 @@ namespace AsynGyanis::Net
 
             // 包号会在本轮里跨档：每发一包都要按当时的 nextPacketNumber 重算固定开销，
             // 拿循环开头那次的值套后续包会把包头少算 1 到 3 字节
-            const std::size_t fixedOverheadByteLength         = packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber));
-            const std::size_t remainingByteBudget             = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
-            const std::optional<QuicCryptoRange> carriedRange = takeNextCryptoFragment(state, remainingByteBudget);
+            const std::size_t fixedOverheadByteLength =
+                    packetOverheadByteLength(m_configuration, isLongHeader, quicPacketNumberByteCountFor(state.nextPacketNumber), tokenByteLength);
+            const std::size_t                    remainingByteBudget = sendByteBudget(fixedOverheadByteLength + frames.size(), isProbingSpace);
+            const std::optional<QuicCryptoRange> carriedRange        = takeNextCryptoFragment(state, remainingByteBudget);
             if (carriedRange.has_value())
             {
                 QuicCryptoFrame crypto;
@@ -1370,9 +1460,10 @@ namespace AsynGyanis::Net
         // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针与路径
         // 验证的挑战/回应按各自章节补到 1200——探针的意义就在那个数上，验证的那两个是让新路先证明
         // 自己过得去大包（§8.2.1/§8.2.2）。包头里的包号就按这一包的实际宽度算，否则补齐会多出 1 到 3 字节
-        const std::size_t plainOverheadByteLength =
-                packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, packetNumberByteCount) - kQuicCryptoFrameHeaderByteLimit;
-        std::string paddedFrameAssembly;
+        const std::size_t plainOverheadByteLength = packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, packetNumberByteCount,
+                                                                             space == PacketNumberSpace::Initial ? m_retryToken.size() : 0U) -
+                                                    kQuicCryptoFrameHeaderByteLimit;
+        std::string       paddedFrameAssembly;
         if (!isLocalServer() && space == PacketNumberSpace::Initial && plainOverheadByteLength + frames.size() < kQuicMinimumInitialDatagramByteLength)
         {
             paddedFrameAssembly = frames;
@@ -1391,7 +1482,9 @@ namespace AsynGyanis::Net
         packet.packetNumber            = packetNumber;
         packet.packetNumberByteCount   = packetNumberByteCount;
         packet.isKeyPhaseBitSet        = m_isSendKeyPhaseSet;
-        packet.frames                  = paddedFrameAssembly.empty() ? asBytes(frames) : asBytes(paddedFrameAssembly);
+        // 只给 Initial 带令牌：Retry 之后每条 Initial 都要重复它（RFC 9000 §8.1.2）
+        packet.token  = space == PacketNumberSpace::Initial ? std::span<const std::uint8_t>(m_retryToken) : std::span<const std::uint8_t>{};
+        packet.frames = paddedFrameAssembly.empty() ? asBytes(frames) : asBytes(paddedFrameAssembly);
 
         std::string datagram;
         appendQuicPacket(datagram, packet, *state.writeKeys);
@@ -1495,10 +1588,11 @@ namespace AsynGyanis::Net
         close.reasonPhrase = asBytes(m_localCloseReasonPhrase);
         std::string frames;
         appendQuicFrame(frames, QuicFrame{close});
-        const PacketNumberSpace space = highestSpaceWithWriteKeys();
-        if (isBlockedByAmplificationLimit(
-                    packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, quicPacketNumberByteCountFor(m_spaces[spaceIndex(space)].nextPacketNumber)) +
-                    frames.size()))
+        const PacketNumberSpace space           = highestSpaceWithWriteKeys();
+        const std::size_t       tokenByteLength = space == PacketNumberSpace::Initial ? m_retryToken.size() : 0U;
+        if (isBlockedByAmplificationLimit(packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application,
+                                                                   quicPacketNumberByteCountFor(m_spaces[spaceIndex(space)].nextPacketNumber), tokenByteLength) +
+                                          frames.size()))
         {
             // 收口也受 §8.1 约束：额度不够就宁可不发，反正对端已经在把我们当放大器打了
             return;

@@ -17,8 +17,8 @@
  *       令牌的签发与识别（§10.3–§10.3.2：收下对端给的令牌、对上即进 draining；发送那一半在服务端
  *       外壳上，见 `QuicServer::Configuration::statelessResetKey`）。
  *       刻意不做：0-RTT、NEW_TOKEN、版本协商、本端主动发起迁移（本端地址不换，§9.2 那一半）与
- *       §9.6 的首选地址；作客户端时不能接住服务端下发的 Retry（挑一个 8 字节以上的随机目的标识
- *       是当前唯一的缓解，真要互操作到开了 Retry 的服务端，得先补这一路）。
+ *       §9.6 的首选地址；作客户端时能接住服务端下发的 Retry（§17.2.5.2：换目的标识与 Initial
+ *       密钥、带令牌重发同一份 ClientHello）。
  * @warning 不是线程安全的：一个实例属于一条连接，只能在所属事件循环线程上驱动。
  */
 
@@ -618,6 +618,19 @@ namespace AsynGyanis::Net
         void followPeerConnectionId(const QuicPacketHeader &header);
 
         /**
+         * @brief 客户端处理一条收到的 Retry（RFC 9000 §17.2.5.2）
+         * @details 依次核对：只处理一次、尚未处理服务端 Initial、目的标识等于本端源标识、源标识不等于
+         *          原始目的标识、令牌非空、完整性标签验得过。命中后按 §17.2.5.2 把目的标识换成 Retry
+         *          的源标识并按它重推 Initial 密钥，令牌记下来给后续每条 Initial 带上；按 RFC 9002 §6.3
+         *          重置 Initial 的丢包与拥塞账，但按 RFC 9000 §17.2.5.3 不重置包号，且保留同一份 ClientHello
+         *          （`cryptoStream` 不动，只把 `cryptoWriteOffset` 归零）。
+         * @param datagram 整条数据报；Retry 没有 Length 域，必须独占一条数据报
+         * @return true 这条数据报是 Retry 形态（无论接受还是丢弃），调用方不要再按普通包拆它
+         * @return false 不是 Retry，也不是客户端，交给常规拆包
+         */
+        [[nodiscard]] bool handleRetryPacket(std::span<const std::uint8_t> datagram);
+
+        /**
          * @brief 把「握手已确认」记下来并武装恢复层（RFC 9001 §4.1.2）
          * @details 两型各有一条成立路径，都收在这个入口里：服务端看对端确认过 Handshake 空间的包，
          *          客户端看自己解开了第一条 1-RTT 报文（那之前拿不到应用密钥，也就解不开）或收到
@@ -989,6 +1002,9 @@ namespace AsynGyanis::Net
         bool                                     m_isHandshakeConfirmed{false};             ///< 对端确认过 Handshake 空间的包，§4.1.2 的「握手已确认」
         bool                                     m_isAddressValidated{false};               ///< 收到过能解开的 Handshake 及以上级别的包，§8.1 的反放大上限到此为止
         bool                                     m_hasAdoptedPeerConnectionId{false};       ///< 客户端已把回包目的标识换成服务端自报的那个（§7.2），此后不再跟
+        bool                                     m_hasProcessedRetry{false};                ///< 已接受并处理过一条 Retry：每个连接尝试至多一次（RFC 9000 §17.2.5.2）
+        bool                                     m_hasProcessedServerInitial{false};        ///< 已处理过服务端的 Initial：此后到达的 Retry 一律丢弃（同节）
+        std::vector<std::uint8_t>                m_retryToken{};                            ///< Retry 给的地址验证令牌：非空即此后每条 Initial 都带它（§8.1.2）
         std::optional<PacketNumberSpace>         m_probeSpace{};                            ///< 探测超时到期后欠一条触发确认的包，出包时补上
         std::optional<Timestamp>                 m_idleDeadline{};                          ///< 空闲超时的截止时刻，只在「活动」发生时重算
         std::optional<Timestamp>                 m_idlePeriod{};                            ///< 本期空闲额度，收包那一刻定下；主动发包的续期沿用它

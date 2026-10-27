@@ -372,6 +372,55 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief Retry 完整性标签的往返与篡改：合法报文验得过，翻一个比特就验不过
+     * @details 标签绑定的是「原始目的标识 + 整条报文去掉标签」，因此另外验一次换掉原始目的标识
+     *          也必须失败——那正是旁观者拿不到第一个 Initial 就造不出 Retry 的原因（RFC 9001 §5.8）。
+     */
+    TEST(QuicPacketBuilder, RetryIntegrityTagRoundTripsAndDetectsTamper)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex("0102030405060708");
+        const auto retryDestinationConnectionId    = makeBytesFromHex("1112131415161718");
+        const auto retrySourceConnectionId         = makeBytesFromHex("2122232425262728");
+        const auto retryToken                      = makeBytesFromHex("aabbccddeeff00112233445566778899");
+
+        const QuicRetryPacket packet{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .destinationConnectionId         = std::span<const std::uint8_t>(retryDestinationConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+        std::string datagram;
+        appendQuicRetryPacket(datagram, packet);
+        const auto bytes = toUnsignedBytes(datagram);
+
+        const auto decoded = decodeQuicRetryPacket(bytes, originalDestinationConnectionId);
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
+        EXPECT_TRUE(verifyQuicRetryPacketIntegrity(*decoded, bytes));
+
+        auto tampered = bytes;
+        tampered.back() ^= 0x01U;
+        EXPECT_FALSE(verifyQuicRetryPacketIntegrity(*decoded, tampered)) << "翻转标签最后一字节仍然验过";
+
+        QuicRetryPacketHeader wrongOriginalDestination           = *decoded;
+        const auto            otherDestination                   = makeBytesFromHex("0102030405060709");
+        wrongOriginalDestination.originalDestinationConnectionId = std::span<const std::uint8_t>(otherDestination);
+        EXPECT_FALSE(verifyQuicRetryPacketIntegrity(wrongOriginalDestination, bytes)) << "换掉原始目的标识仍然验过：伪包没把第一个 Initial 绑进来";
+    }
+
+    /**
+     * @brief 附录 A.4 的官方 Retry 报文（RFC 9001）必须验得过本端的完整性标签校验
+     * @details 期望报文逐字节抄自规范，不由本仓的编码器算出——两侧同源就查不出「都理解错」。
+     */
+    TEST(QuicPacketBuilder, VerifiesAppendixA4RetryIntegrityTag)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex(kVectorDestinationConnectionIdHex);
+        const auto retryBytes                      = makeBytesFromHex(kAppendixA4RetryPacketHex);
+        const auto decoded                         = decodeQuicRetryPacket(retryBytes, originalDestinationConnectionId);
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
+        EXPECT_TRUE(verifyQuicRetryPacketIntegrity(*decoded, retryBytes));
+    }
+
+    /**
      * @brief 组一条满载 Initial 要碰几次堆——服务端一条大响应就是几百条这种包
      * @details 读数用总次数原值而不是摊平均值：摊平会把「一千次里的零星几次」藏起来。
      *          阈值钉在改动后的实测稳态值上，多一次分配就报红。

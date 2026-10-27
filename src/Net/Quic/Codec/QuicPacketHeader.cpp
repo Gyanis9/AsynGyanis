@@ -235,6 +235,51 @@ namespace AsynGyanis::Net
         return header.isLongHeader ? decodeLongHeaderPacket(header, datagram) : decodeShortHeaderPacket(header, datagram, shortHeaderDestinationConnectionIdLength);
     }
 
+    QuicDecodeExpected<QuicRetryPacketHeader> decodeQuicRetryPacket(const std::span<const std::uint8_t> datagram,
+                                                                    const std::span<const std::uint8_t> originalDestinationConnectionId)
+    {
+        // 首字节 + 32 位版本 + 两条连接标识的长度字节 + 16 字节标签：再短连字段都摆不下
+        constexpr std::size_t kMinimumRetryPacketByteLength = 1U + 4U + 1U + 1U + kQuicRetryIntegrityTagByteLength;
+        if (datagram.size() < kMinimumRetryPacketByteLength)
+        {
+            return std::unexpected(makeTruncatedError("Retry 报文", std::format("至少要 {} 字节，实收 {} 字节", kMinimumRetryPacketByteLength, datagram.size())));
+        }
+        if ((datagram[0] & kQuicLongHeaderFlagBit) == 0 || (datagram[0] & kQuicLongPacketTypeBitMask) != (static_cast<std::uint8_t>(QuicLongPacketType::Retry) << 4U))
+        {
+            return std::unexpected(makeMalformedError(
+                    std::format("首字节 0x{:02X} 不是长头 Retry（类型位必须是 3，RFC 9000 §17.2 表 5）：本包按非法处理", static_cast<unsigned int>(datagram[0]))));
+        }
+        if ((datagram[0] & kQuicFixedBit) == 0)
+        {
+            return std::unexpected(
+                    makeMalformedError(std::format("长头首字节 0x{:02X} 的固定位为 0（RFC 9000 §17.2）：本版本里这不是合法报文，请丢弃", static_cast<unsigned int>(datagram[0]))));
+        }
+        QuicRetryPacketHeader header;
+        header.version = static_cast<std::uint32_t>(readBigEndianInteger(datagram.subspan(1), 4));
+        if (header.version != kQuicVersion1)
+        {
+            return std::unexpected(makeMalformedError(std::format("Retry 的版本 0x{:08X} 不是本端支持的唯一版本 1（RFC 9000 §15）：本包按非法处理", header.version)));
+        }
+        std::size_t readOffset = 5;
+        if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "Retry 的目的连接标识", header.destinationConnectionId); !result.has_value())
+        {
+            return std::unexpected(result.error());
+        }
+        if (const auto result = readLongHeaderConnectionId(datagram, readOffset, "Retry 的源连接标识", header.sourceConnectionId); !result.has_value())
+        {
+            return std::unexpected(result.error());
+        }
+        if (datagram.size() - readOffset < kQuicRetryIntegrityTagByteLength)
+        {
+            return std::unexpected(makeTruncatedError(
+                    "Retry 的令牌与完整性标签", std::format("两条连接标识之后只剩 {} 字节，容不下 {} 字节标签", datagram.size() - readOffset, kQuicRetryIntegrityTagByteLength)));
+        }
+        // 令牌没有长度前缀：它一直占到末尾 16 字节标签之前（§17.2.5 的字段表）
+        header.token                           = datagram.subspan(readOffset, datagram.size() - readOffset - kQuicRetryIntegrityTagByteLength);
+        header.originalDestinationConnectionId = originalDestinationConnectionId;
+        return header;
+    }
+
     QuicDecodeStatus refreshQuicPacketHeader(QuicPacketHeader &header, const std::uint8_t unmaskedFirstByte, const std::span<const std::uint8_t> datagram)
     {
         header.firstByte             = unmaskedFirstByte;

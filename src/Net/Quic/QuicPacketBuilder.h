@@ -93,4 +93,17 @@ namespace AsynGyanis::Net
      * @throws Base::Exception 运行期故障：OpenSSL 侧的加密失败
      */
     ASYN_NET_API void appendQuicRetryPacket(std::string &datagram, const QuicRetryPacket &packet);
+
+    /**
+     * @brief 校验一条 Retry 报文的完整性标签（RFC 9001 §5.8）
+     *
+     * @details 关联数据是「原始目的标识长度 + 原始目的标识 + 收到的报文去掉末尾 16 字节标签」，
+     *          密钥与 IV 是 v1 定死的常量，明文为空——AEAD 的输出恰好就是那 16 字节标签。
+     *          伪包把客户端第一个 Initial 的目的标识绑进来，因此没看见那条 Initial 的旁观者造不出
+     *          一条验得过的 Retry。
+     * @param packet 解码出来的 Retry 明文字段，只用其中的原始目的标识拼伪包
+     * @param retryPacket 收到的完整报文（含末尾标签），必须是 `packet` 解码时用的同一段字节
+     * @return true 标签校验通过；长度不足、原始目的标识超过 255 字节或 OpenSSL 侧故障时为 false
+     */
+    [[nodiscard]] ASYN_NET_API bool verifyQuicRetryPacketIntegrity(const QuicRetryPacketHeader &packet, std::span<const std::uint8_t> retryPacket) noexcept;
 } // namespace AsynGyanis::Net

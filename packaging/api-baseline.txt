@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9197
+# headers=310 entries=9210
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -6676,6 +6676,7 @@ src/Net/Quic/Codec/QuicFrame.h	using QuicFrame = std::variant<QuicPaddingFrame, 
 src/Net/Quic/Codec/QuicPacketHeader.h	ASYN_NET_API void appendQuicTruncatedPacketNumber(std::string &bytes, std::uint64_t packetNumber, std::size_t packetNumberByteCount)
 src/Net/Quic/Codec/QuicPacketHeader.h	QuicLongPacketType longPacketType
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicPacketHeader> decodeQuicPacketHeader(std::span<const std::uint8_t> datagram, std::size_t shortHeaderDestinationConnectionIdLength)
+src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicRetryPacketHeader> decodeQuicRetryPacket(std::span<const std::uint8_t> datagram, std::span<const std::uint8_t> originalDestinationConnectionId)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API QuicDecodeStatus refreshQuicPacketHeader(QuicPacketHeader &header, std::uint8_t unmaskedFirstByte, std::span<const std::uint8_t> datagram)
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::optional<QuicVersionNegotiationRequest> readQuicVersionNegotiationRequest(std::span<const std::uint8_t> datagram) noexcept
 src/Net/Quic/Codec/QuicPacketHeader.h	[[nodiscard]] ASYN_NET_API std::uint64_t restoreQuicPacketNumber(std::uint64_t largestReceivedPacketNumber, std::uint64_t truncatedPacketNumber, std::size_t packetNumberByteCount)
@@ -6690,6 +6691,7 @@ src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::size_t kQuicMaximumC
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::size_t kQuicMaximumDatagramPayloadByteLength = 1200
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::size_t kQuicMaximumPacketNumberByteCount = 4
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::size_t kQuicMaximumVersionNegotiationListLength = 64
+src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::size_t kQuicRetryIntegrityTagByteLength = 16
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::uint32_t kQuicVersion1 = 0x00000001U
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::uint32_t kQuicVersionNegotiationVersion = 0x00000000U
 src/Net/Quic/Codec/QuicPacketHeader.h	inline constexpr std::uint8_t kQuicFixedBit = 0x40
@@ -6707,14 +6709,20 @@ src/Net/Quic/Codec/QuicPacketHeader.h	std::size_t packetNumberByteCount
 src/Net/Quic/Codec/QuicPacketHeader.h	std::size_t packetNumberOffset
 src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> destinationConnectionId
 src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> destinationConnectionId
+src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> destinationConnectionId
+src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> originalDestinationConnectionId
+src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> sourceConnectionId
 src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> sourceConnectionId
 src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> sourceConnectionId
 src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> token
+src/Net/Quic/Codec/QuicPacketHeader.h	std::span<const std::uint8_t> token
+src/Net/Quic/Codec/QuicPacketHeader.h	std::uint32_t version
 src/Net/Quic/Codec/QuicPacketHeader.h	std::uint32_t version
 src/Net/Quic/Codec/QuicPacketHeader.h	std::uint32_t version
 src/Net/Quic/Codec/QuicPacketHeader.h	std::uint64_t packetNumber
 src/Net/Quic/Codec/QuicPacketHeader.h	std::uint8_t firstByte
 src/Net/Quic/Codec/QuicPacketHeader.h	struct ASYN_NET_API QuicPacketHeader
+src/Net/Quic/Codec/QuicPacketHeader.h	struct ASYN_NET_API QuicRetryPacketHeader
 src/Net/Quic/Codec/QuicPacketHeader.h	struct ASYN_NET_API QuicVersionNegotiationRequest
 src/Net/Quic/Codec/QuicRawBytes.h	inline void appendQuicRawBytes(std::string &bytes, const std::span<const std::uint8_t> data)
 src/Net/Quic/Codec/QuicRawBytes.h	namespace AsynGyanis::Net
@@ -7048,6 +7056,7 @@ src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] QuicStreamLayer &streamLayer() n
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] Timestamp probeTimeoutPeriod() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool canExpandPathValidationDatagram(const QuicPathKey &pathKey) const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool canInitiateKeyUpdate(Timestamp now) const noexcept
+src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool handleRetryPacket(std::span<const std::uint8_t> datagram)
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool hasRoomForAnotherConnectionId() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isAmplificationLimited() const noexcept
 src/Net/Quic/QuicConnectionCore.h	[[nodiscard]] bool isBlockedByAmplificationLimit(std::size_t reservedByteLength) const noexcept
@@ -7100,6 +7109,8 @@ src/Net/Quic/QuicConnectionCore.h	bool isSendPending
 src/Net/Quic/QuicConnectionCore.h	bool isValidated
 src/Net/Quic/QuicConnectionCore.h	bool m_hasAdoptedPeerConnectionId
 src/Net/Quic/QuicConnectionCore.h	bool m_hasAdoptedPeerPath
+src/Net/Quic/QuicConnectionCore.h	bool m_hasProcessedRetry
+src/Net/Quic/QuicConnectionCore.h	bool m_hasProcessedServerInitial
 src/Net/Quic/QuicConnectionCore.h	bool m_hasSentAckElicitingSinceReceipt
 src/Net/Quic/QuicConnectionCore.h	bool m_hasValidatedPeerPath
 src/Net/Quic/QuicConnectionCore.h	bool m_isAddressValidated
@@ -7186,6 +7197,7 @@ src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> cryptoStream
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> id
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> id
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> localConnectionId
+src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> m_retryToken
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> m_statelessResetKey
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> originalDestinationConnectionId
 src/Net/Quic/QuicConnectionCore.h	std::vector<std::uint8_t> peerConnectionId
@@ -7255,6 +7267,7 @@ src/Net/Quic/QuicOutboundDatagram.h	using QuicPathKey = std::array<std::uint8_t,
 src/Net/Quic/QuicPacketBuilder.h	ASYN_NET_API void appendQuicPacket(std::string &datagram, const QuicOutboundPacket &packet, const QuicPacketKeys &keys)
 src/Net/Quic/QuicPacketBuilder.h	ASYN_NET_API void appendQuicRetryPacket(std::string &datagram, const QuicRetryPacket &packet)
 src/Net/Quic/QuicPacketBuilder.h	QuicLongPacketType longPacketType
+src/Net/Quic/QuicPacketBuilder.h	[[nodiscard]] ASYN_NET_API bool verifyQuicRetryPacketIntegrity(const QuicRetryPacketHeader &packet, std::span<const std::uint8_t> retryPacket) noexcept
 src/Net/Quic/QuicPacketBuilder.h	bool isKeyPhaseBitSet
 src/Net/Quic/QuicPacketBuilder.h	bool isLongHeader
 src/Net/Quic/QuicPacketBuilder.h	namespace AsynGyanis::Net

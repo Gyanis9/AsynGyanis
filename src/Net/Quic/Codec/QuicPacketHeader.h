@@ -112,6 +112,38 @@ namespace AsynGyanis::Net
     /// 包号字段的最长编码：1 到 4 字节（RFC 9000 §17.1）
     inline constexpr std::size_t kQuicMaximumPacketNumberByteCount = 4;
 
+    /// Retry 完整性标签的字节数：128 位（RFC 9001 §5.8），落在整条报文的末尾
+    inline constexpr std::size_t kQuicRetryIntegrityTagByteLength = 16;
+
+    /**
+     * @brief 一条 Retry 报文的明文字段（RFC 9000 §17.2.5）
+     *
+     * @details 线上只有目的标识、源标识、令牌与末尾的完整性标签；原始目的标识不在线上，它由调用方
+     *          按自己发出的第一个 Initial 补进这一格，只用于完整性标签的伪包（RFC 9001 §5.8）。
+     *          各 span 都是指向数据报的视图，调用方必须让数据报活过对这些字段的读取。
+     */
+    struct ASYN_NET_API QuicRetryPacketHeader
+    {
+        std::uint32_t                 version{0};                        ///< 报文里的版本；本实现只支持 v1
+        std::span<const std::uint8_t> destinationConnectionId{};         ///< 线上目的标识：应为客户端 Initial 的源标识
+        std::span<const std::uint8_t> sourceConnectionId{};              ///< 线上源标识：客户端此后所有包的目的标识
+        std::span<const std::uint8_t> token{};                           ///< 地址验证令牌；零长令牌按 §17.2.5.2 必须丢弃
+        std::span<const std::uint8_t> originalDestinationConnectionId{}; ///< 第一个 Initial 的目的标识，不在线上，只进伪包
+    };
+
+    /**
+     * @brief 解一条 Retry 报文的明文字段（RFC 9000 §17.2.5）
+     * @details 与 `decodeQuicPacketHeader` 刻意分开：那个函数是服务端入口，对 Retry 仍按 Malformed
+     *          处置（服务端只发不收），这里只给客户端接 Retry 用。只读不验标签——完整性校验要用
+     *          客户端自己的原始目的标识拼伪包，见 `verifyQuicRetryPacketIntegrity`。
+     * @param datagram 一个完整的数据报，Retry 没有 Length 域，因此它必须独占一条数据报
+     * @param originalDestinationConnectionId 客户端第一个 Initial 的目的标识，原样带进结果供校验使用
+     * @return 成功返回线上四格与调用方给的原始目的标识
+     * @return 失败返回 `QuicDecodeError`：字节不足为 `Truncated`，形态或 v1 字段违规为 `Malformed`
+     */
+    [[nodiscard]] ASYN_NET_API QuicDecodeExpected<QuicRetryPacketHeader> decodeQuicRetryPacket(std::span<const std::uint8_t> datagram,
+                                                                                               std::span<const std::uint8_t> originalDestinationConnectionId);
+
     /**
      * @brief 按本包包号选出能安全还原的最小包号字段字节数（RFC 9000 §17.1）
      * @details 规范要求包号字段能覆盖「最大已确认包号与本包号之差的两倍」，接收方按半窗口还原

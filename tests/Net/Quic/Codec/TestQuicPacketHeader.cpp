@@ -13,6 +13,8 @@
 
 #include "Net/Quic/Codec/QuicPacketHeader.h"
 
+#include "Net/Quic/QuicPacketBuilder.h"
+
 #include "ExpectedAssertions.h"
 #include "AssertionSupport.h"
 #include "NetTestSupport.h"
@@ -45,6 +47,11 @@ namespace AsynGyanis::Net
          * @brief 由字节序列拼出待解码的字节容器（定义见 NetTestSupport.h）
          */
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
+
+        /**
+         * @brief 把二进制安全的字符串转成无符号字节容器（定义见 NetTestSupport.h）
+         */
+        using AsynGyanis::Net::TestSupport::toUnsignedBytes;
 
         /**
          * @brief 判断文本里是否出现指定子串（定义见 NetTestSupport.h）
@@ -293,6 +300,91 @@ namespace AsynGyanis::Net
         EXPECT_EQ(header->packetNumberOffset, 22U);
         EXPECT_EQ(header->packetNumberAndPayloadByteCount, 1182U);
         EXPECT_EQ(header->packetByteCount, 1204U);
+    }
+
+    /**
+     * @brief Retry 解码器读回线上四格，并把调用方给的原始目的标识带在结果里
+     * @details 原始目的标识不在线上（RFC 9001 §5.8 的伪包才用到它），因此由调用方交进来；
+     *          同时复核既有 decodeQuicPacketHeader 对同一条报文仍然判 Malformed——服务端入口的
+     *          行为保持不变，Retry 只在客户端这一路按独立解码器处理。
+     */
+    TEST(QuicPacketHeader, DecodesRetryPacketFields)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex("0102030405060708");
+        const auto retryDestinationConnectionId    = makeBytesFromHex("1112131415161718");
+        const auto retrySourceConnectionId         = makeBytesFromHex("2122232425262728");
+        const auto retryToken                      = makeBytesFromHex("aabbccddeeff00112233445566778899");
+
+        const QuicRetryPacket retryPacket{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .destinationConnectionId         = std::span<const std::uint8_t>(retryDestinationConnectionId),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+        std::string datagram;
+        appendQuicRetryPacket(datagram, retryPacket);
+        const auto bytes = toUnsignedBytes(datagram);
+
+        const auto decoded = decodeQuicRetryPacket(bytes, originalDestinationConnectionId);
+        ASSERT_HAS_VALUE(decoded) << decoded.error().message;
+        EXPECT_EQ(decoded->version, kQuicVersion1);
+        EXPECT_EQ(copyOf(decoded->destinationConnectionId), retryDestinationConnectionId);
+        EXPECT_EQ(copyOf(decoded->sourceConnectionId), retrySourceConnectionId);
+        EXPECT_EQ(copyOf(decoded->token), retryToken);
+        EXPECT_EQ(copyOf(decoded->originalDestinationConnectionId), originalDestinationConnectionId);
+
+        const auto legacy = decodeQuicPacketHeader(bytes, 8);
+        ASSERT_FALSE(legacy.has_value()) << "既有解码器开始接受 Retry：服务端入口的丢弃行为被改了";
+        EXPECT_EQ(legacy.error().kind, QuicDecodeErrorKind::Malformed);
+        EXPECT_NE(legacy.error().message.find("Retry"), std::string::npos) << legacy.error().message;
+    }
+
+    /**
+     * @brief Retry 解码器的拒绝面：截断、固定位为 0、非 v1 版本与标识超长
+     */
+    TEST(QuicPacketHeader, RejectsMalformedRetryPackets)
+    {
+        const auto originalDestinationConnectionId = makeBytesFromHex("0102030405060708");
+        const auto retrySourceConnectionId         = makeBytesFromHex("2122232425262728");
+        const auto retryToken                      = makeBytesFromHex("aabbccddeeff");
+
+        const QuicRetryPacket retryPacket{
+                .originalDestinationConnectionId = std::span<const std::uint8_t>(originalDestinationConnectionId),
+                .destinationConnectionId         = std::span<const std::uint8_t>(retryToken),
+                .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                .token                           = std::span<const std::uint8_t>(retryToken),
+        };
+        std::string datagram;
+        appendQuicRetryPacket(datagram, retryPacket);
+        const auto bytes = toUnsignedBytes(datagram);
+
+        // 连最小形态都不够：首字节 + 版本 + 两条长度字节 + 标签都摆不下
+        auto truncated = bytes;
+        truncated.resize(10U);
+        const auto truncatedResult = decodeQuicRetryPacket(truncated, originalDestinationConnectionId);
+        ASSERT_FALSE(truncatedResult.has_value());
+        EXPECT_EQ(truncatedResult.error().kind, QuicDecodeErrorKind::Truncated);
+
+        // 固定位为 0：本版本里不是合法报文（RFC 9000 §17.2）
+        auto fixedBitCleared = bytes;
+        fixedBitCleared[0] &= static_cast<std::uint8_t>(~kQuicFixedBit);
+        const auto fixedBitResult = decodeQuicRetryPacket(fixedBitCleared, originalDestinationConnectionId);
+        ASSERT_FALSE(fixedBitResult.has_value());
+        EXPECT_EQ(fixedBitResult.error().kind, QuicDecodeErrorKind::Malformed);
+
+        // 版本不是本端支持的那一版
+        auto otherVersion        = bytes;
+        otherVersion[4]          = 0x02;
+        const auto versionResult = decodeQuicRetryPacket(otherVersion, originalDestinationConnectionId);
+        ASSERT_FALSE(versionResult.has_value());
+        EXPECT_EQ(versionResult.error().kind, QuicDecodeErrorKind::Malformed);
+
+        // 目的连接标识长度 21 字节，超过 v1 上限
+        auto oversizedConnectionId = bytes;
+        oversizedConnectionId[5]   = 21;
+        const auto oversizedResult = decodeQuicRetryPacket(oversizedConnectionId, originalDestinationConnectionId);
+        ASSERT_FALSE(oversizedResult.has_value());
+        EXPECT_EQ(oversizedResult.error().kind, QuicDecodeErrorKind::Malformed);
     }
 
     /**

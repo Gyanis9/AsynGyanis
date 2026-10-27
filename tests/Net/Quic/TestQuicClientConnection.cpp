@@ -7,9 +7,14 @@
 #include "Base/Exception/SystemException.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Metrics/ProcessMetricsRegistry.h"
 #include "Core/Socket/InetAddress.h"
 #include "Net/Http/Routing/Router.h"
+#include "Net/Quic/Codec/QuicPacketHeader.h"
+#include "Net/Quic/Crypto/QuicHeaderProtection.h"
+#include "Net/Quic/Crypto/QuicKeySchedule.h"
 #include "Net/Quic/QuicAddressValidationToken.h"
+#include "Net/Quic/QuicPacketBuilder.h"
 #include "Net/Quic/QuicServer.h"
 #include "Platform/IO/Socket.h"
 #include "Platform/IO/DatagramSocket.h"
@@ -24,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -33,7 +39,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -46,6 +54,7 @@ namespace AsynGyanis::Net
         using namespace std::chrono_literals;
         using AsynGyanis::Net::TestSupport::kAppendixA2ProtectedPacketHex;
         using AsynGyanis::Net::TestSupport::makeBytesFromHex;
+        using AsynGyanis::Net::TestSupport::toUnsignedBytes;
 
         /// 一般等待上限：回环上的 QUIC 握手是毫秒级的，超时即判失败
         constexpr std::chrono::milliseconds kWaitTimeout{8000};
@@ -402,6 +411,141 @@ namespace AsynGyanis::Net
             }
             return packet;
         }
+
+        /**
+         * @brief 把报文头里的一条连接标识/令牌视图拷成可比对的容器
+         * @param bytes 指向数据报的视图
+         * @return std::vector<std::uint8_t> 视图内容的副本
+         */
+        std::vector<std::uint8_t> copyOf(const std::span<const std::uint8_t> bytes)
+        {
+            return {bytes.begin(), bytes.end()};
+        }
+
+        /**
+         * @brief 读一个进程级 QUIC 计数
+         * @param name 指标全名
+         * @return std::uint64_t 当前读数；没有这条登记时为 0
+         * @details 服务端在构造时登记、析构时注销，用例在它活着的时候读到的就是这台服务端的计数
+         */
+        std::uint64_t processMetricValue(const std::string_view name)
+        {
+            for (const Core::ProcessMetricSample &sample: Core::ProcessMetricsRegistry::samples())
+            {
+                if (sample.name == name)
+                {
+                    return sample.value;
+                }
+            }
+            return 0;
+        }
+
+        /**
+         * @brief 在一个裸 UDP 套接字上等一条报文
+         * @param socket 收包套接字
+         * @param timeout 等待上限
+         * @param from 出参：来源地址
+         * @return std::optional<std::vector<std::uint8_t>> 收到的字节；超时为空
+         */
+        std::optional<std::vector<std::uint8_t>> receiveDatagram(const Platform::DatagramSocket &socket, const std::chrono::milliseconds timeout, Platform::SocketAddress &from)
+        {
+            std::vector<std::uint8_t> buffer(Platform::DatagramSocket::kMaximumDatagramBytes);
+            std::size_t               byteCount = 0;
+            const bool                received  = waitForCondition(
+                    [&]
+                    {
+                        const ssize_t length = socket.receive(buffer.data(), buffer.size(), from);
+                        if (length <= 0)
+                        {
+                            return false;
+                        }
+                        byteCount = static_cast<std::size_t>(length);
+                        return true;
+                    },
+                    timeout);
+            if (!received)
+            {
+                return std::nullopt;
+            }
+            buffer.resize(byteCount);
+            return buffer;
+        }
+
+        /**
+         * @brief 解一条客户端长头报文
+         * @param datagram 数据报
+         * @param header 出参：解出的明文头
+         * @return true 解出了长头
+         */
+        bool decodeLongHeader(const std::span<const std::uint8_t> datagram, QuicPacketHeader &header)
+        {
+            const auto decoded = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
+            if (!decoded.has_value() || !decoded->isLongHeader)
+            {
+                return false;
+            }
+            header = *decoded;
+            return true;
+        }
+
+        /**
+         * @brief 给一条客户端 Initial 造响应它的 Retry
+         * @param clientInitial 解出来的客户端 Initial
+         * @param retrySourceConnectionId 服务端新挑的源标识
+         * @param token 令牌
+         * @param isTagValid true＝完整性标签正确；false＝翻转标签最后一字节
+         * @return std::vector<std::uint8_t> 完整的 Retry 报文
+         */
+        std::vector<std::uint8_t> makeRetryForClientInitial(const QuicPacketHeader &clientInitial, const std::vector<std::uint8_t> &retrySourceConnectionId,
+                                                            const std::vector<std::uint8_t> &token, const bool isTagValid = true)
+        {
+            const QuicRetryPacket retry{
+                    .originalDestinationConnectionId = clientInitial.destinationConnectionId,
+                    .destinationConnectionId         = clientInitial.sourceConnectionId,
+                    .sourceConnectionId              = std::span<const std::uint8_t>(retrySourceConnectionId),
+                    .token                           = std::span<const std::uint8_t>(token),
+                    .version                         = kQuicVersion1,
+            };
+            std::string packet;
+            appendQuicRetryPacket(packet, retry);
+            std::vector<std::uint8_t> bytes = toUnsignedBytes(packet);
+            if (!isTagValid)
+            {
+                bytes.back() ^= 0x01U;
+            }
+            return bytes;
+        }
+
+        /**
+         * @brief 按客户端 Initial 密钥去掉头部保护，读出完整包号
+         * @param datagram 客户端发出的数据报
+         * @param keyConnectionId 推导 Initial 密钥用的目的标识（首包＝原始目的标识，Retry 后＝Retry 源标识）
+         * @return std::optional<std::uint64_t> 包号；任一步解不开为空
+         */
+        std::optional<std::uint64_t> clientInitialPacketNumber(const std::span<const std::uint8_t> datagram, const std::span<const std::uint8_t> keyConnectionId)
+        {
+            const auto decoded = decodeQuicPacketHeader(datagram, QuicConnection::kSourceConnectionIdLength);
+            if (!decoded.has_value())
+            {
+                return std::nullopt;
+            }
+            const auto sample = extractQuicHeaderProtectionSample(datagram, *decoded);
+            if (!sample.has_value())
+            {
+                return std::nullopt;
+            }
+            const QuicPacketKeys           keys = deriveQuicInitialPacketKeys(keyConnectionId, QuicPacketDirection::ClientToServer);
+            const QuicHeaderProtectionMask mask = generateQuicHeaderProtectionMask(keys, *sample);
+            std::vector<std::uint8_t>      mutablePacket(datagram.begin(), datagram.end());
+            QuicPacketHeader               header            = *decoded;
+            const auto                     unmaskedFirstByte = removeQuicHeaderProtection(mutablePacket, header, mask);
+            if (!unmaskedFirstByte.has_value() || !refreshQuicPacketHeader(header, *unmaskedFirstByte, mutablePacket).has_value())
+            {
+                return std::nullopt;
+            }
+            return header.packetNumber;
+        }
+
         /// 地址验证用例的固定密钥：服务端与用例里的核验器共用同一把，才能就地判「回包里那张令牌验得过」
         const std::vector<std::uint8_t> kAddressValidationTestKey(32U, 0x5AU);
     } // namespace
@@ -1075,6 +1219,147 @@ namespace AsynGyanis::Net
                 },
                 std::chrono::milliseconds{300}))
                 << "长头也换回了无状态重置：§10.3 只把重置留给「连接已经没了」那一档，长头那时的令牌还没发给对端";
+    }
+
+    /**
+     * @brief 服务端要求地址验证时，客户端能接住 Retry 并完成握手
+     * @details 服务端显式打开地址验证（令牌有效期 10 秒、固定密钥），于是每个新连接的第一条 Initial
+     *          都会先吃一条 Retry。旧实现的客户端把 Retry 当 Malformed 丢掉，只能等握手时限；
+     *          这里同时读服务端的 Retry 计数，确认这条用例真的走在那条路径上，而不是服务端没开验证。
+     */
+    TEST(QuicClientConnection, CompletesTheHandshakeWhenTheServerDemandsARetry)
+    {
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration)
+                                 {
+                                     configuration.addressValidationTokenLifetime = std::chrono::seconds{10};
+                                     configuration.addressValidationKey           = std::vector<std::uint8_t>(32U, 0x5AU);
+                                 }};
+        ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
+        const std::uint64_t retriesBefore = processMetricValue("asyn_quic_retries_sent_total");
+
+        ConnectAttempt attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, 4s), Core::InetAddress::resolve("127.0.0.1", server.listeningPort()).value()};
+        ASSERT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "出站握手既没成也没失败，挂在那里";
+        EXPECT_TRUE(attempt.isSuccessful()) << "服务端开了地址验证，客户端没能接住 Retry：" << attempt.elapsed().count() << " 毫秒后收场";
+        EXPECT_EQ(attempt.negotiatedApplicationProtocol(), "h3") << "握手成了但 ALPN 没谈定";
+        EXPECT_GT(processMetricValue("asyn_quic_retries_sent_total"), retriesBefore) << "服务端一条 Retry 都没发：这条用例判的就不是 Retry 那条路径";
+    }
+
+    /**
+     * @brief 收到合法 Retry 后按新目的标识重推 Initial 密钥，并把同一份 ClientHello 带令牌重发
+     * @details 用裸 UDP 桩代替服务端：拿出客户端第一个 Initial 的两条标识造一条标签正确的 Retry，
+     *          再读回客户端紧接着发出的那一包。判据五件——目的标识换成 Retry 的源标识、自己的源标识
+     *          不变、令牌原样带上、整条数据报仍是 1200 字节（令牌长度计入了补齐）、包号没有重置。
+     *          旧实现在这里收不到第二包，只能等握手时限。
+     */
+    TEST(QuicClientConnection, ResendsTheClientHelloWithTheRetryToken)
+    {
+        const Platform::Socket::Initialization socketInitialization;
+        ASSERT_TRUE(socketInitialization.isValid()) << "Winsock 初始化失败";
+        const Platform::DatagramSocket stub = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(stub.isValid()) << "裸 UDP 桩绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Core::InetAddress stubAddress(stub.localAddress().storage, stub.localAddress().length);
+
+        ConnectAttempt                                 attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, std::chrono::milliseconds{800}), stubAddress};
+        Platform::SocketAddress                        clientAddress{};
+        const std::optional<std::vector<std::uint8_t>> firstDatagram = receiveDatagram(stub, kWaitTimeout, clientAddress);
+        ASSERT_TRUE(firstDatagram.has_value()) << "客户端没发出第一个 Initial";
+        QuicPacketHeader firstHeader;
+        ASSERT_TRUE(decodeLongHeader(*firstDatagram, firstHeader));
+        ASSERT_EQ(firstHeader.longPacketType, QuicLongPacketType::Initial);
+        ASSERT_TRUE(firstHeader.token.empty()) << "第一个 Initial 不该带令牌";
+
+        const std::vector<std::uint8_t> retrySourceConnectionId(QuicConnection::kSourceConnectionIdLength, 0x7BU);
+        const std::vector<std::uint8_t> retryToken(32U, 0x6CU);
+        const std::vector<std::uint8_t> retryPacket = makeRetryForClientInitial(firstHeader, retrySourceConnectionId, retryToken);
+        // 先证明这条桩报文本身是一条验得过的 Retry，失败时才好把「桩造错了」与「客户端没处理」分开
+        const auto selfCheck = decodeQuicRetryPacket(retryPacket, firstHeader.destinationConnectionId);
+        ASSERT_HAS_VALUE(selfCheck) << selfCheck.error().message;
+        ASSERT_TRUE(verifyQuicRetryPacketIntegrity(*selfCheck, retryPacket)) << "桩造的 Retry 自己都验不过";
+        ASSERT_GT(stub.send(clientAddress, retryPacket.data(), retryPacket.size()), 0);
+
+        Platform::SocketAddress                  retriedFrom{};
+        std::optional<std::vector<std::uint8_t>> retriedDatagram{};
+        QuicPacketHeader                         retriedHeader{};
+        // Retry 之前客户端可能已经发了不止一条 Initial（ClientHello 会被预算切开），记下其中最大的包号，
+        // 用来判「重发没有重置包号」（RFC 9000 §17.2.5.3）
+        std::uint64_t largestPreRetryPacketNumber = clientInitialPacketNumber(*firstDatagram, firstHeader.destinationConnectionId).value_or(0);
+        const auto    retryDeadline               = std::chrono::steady_clock::now() + 500ms;
+        while (std::chrono::steady_clock::now() < retryDeadline)
+        {
+            const auto                                     remaining = std::chrono::duration_cast<std::chrono::milliseconds>(retryDeadline - std::chrono::steady_clock::now());
+            const std::optional<std::vector<std::uint8_t>> candidate = receiveDatagram(stub, remaining, retriedFrom);
+            if (!candidate.has_value())
+            {
+                break;
+            }
+            QuicPacketHeader candidateHeader;
+            if (!decodeLongHeader(*candidate, candidateHeader))
+            {
+                continue;
+            }
+            if (candidateHeader.token.empty())
+            {
+                if (const auto oldPacketNumber = clientInitialPacketNumber(*candidate, firstHeader.destinationConnectionId); oldPacketNumber.has_value())
+                {
+                    largestPreRetryPacketNumber = std::max(largestPreRetryPacketNumber, *oldPacketNumber);
+                }
+                continue;
+            }
+            retriedDatagram = candidate;
+            // 报文头里的视图指向 candidate 的缓冲，拷贝之后要按拷贝重新解一遍，否则循环结束即悬空
+            ASSERT_TRUE(decodeLongHeader(*retriedDatagram, retriedHeader));
+            break;
+        }
+        ASSERT_TRUE(retriedDatagram.has_value()) << "客户端收到合法 Retry 后没有重发 Initial：旧实现把它当 Malformed 丢掉，只能等握手时限";
+        EXPECT_EQ(retriedDatagram->size(), 1200U) << "带令牌的客户端 Initial 仍要补到 1200 字节（RFC 9000 §14.1）：令牌长度没计入包长就会超出";
+        EXPECT_EQ(copyOf(retriedHeader.destinationConnectionId), retrySourceConnectionId) << "目的标识没换成 Retry 的源标识（RFC 9000 §17.2.5.2）";
+        EXPECT_EQ(copyOf(retriedHeader.sourceConnectionId), copyOf(firstHeader.sourceConnectionId)) << "客户端不得改动自己的源标识（同节）";
+        EXPECT_EQ(copyOf(retriedHeader.token), retryToken) << "重发的 Initial 没带 Retry 给的令牌";
+        const std::optional<std::uint64_t> retriedPacketNumber = clientInitialPacketNumber(*retriedDatagram, retrySourceConnectionId);
+        ASSERT_TRUE(retriedPacketNumber.has_value()) << "按 Retry 的源标识推 Initial 密钥后解不开重发的那一包";
+        EXPECT_GT(*retriedPacketNumber, largestPreRetryPacketNumber) << "重发把包号重置了（RFC 9000 §17.2.5.3）";
+
+        EXPECT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "桩不是真服务端，这次尝试该在握手时限内收场";
+        EXPECT_FALSE(attempt.isSuccessful()) << "桩什么都没答，握手不该成功";
+    }
+
+    /**
+     * @brief 完整性标签不对的 Retry 不得让客户端改目的标识或带上令牌
+     * @details 桩把标签最后一字节翻掉再发。判据是「客户端在随后的短窗口里没有发出带令牌的 Initial」：
+     *          接受坏标签的实现在收到 Retry 后会立刻重发一包，而拒绝的实现只能等自己的握手时限。
+     *          标签校验本身的正负样例在 QuicPacketBuilder 的用例里逐字节钉住。
+     */
+    TEST(QuicClientConnection, DoesNotContinueAfterARetryWithABrokenIntegrityTag)
+    {
+        const Platform::Socket::Initialization socketInitialization;
+        ASSERT_TRUE(socketInitialization.isValid()) << "Winsock 初始化失败";
+        const Platform::DatagramSocket stub = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(stub.isValid()) << "裸 UDP 桩绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+        const Core::InetAddress stubAddress(stub.localAddress().storage, stub.localAddress().length);
+
+        ConnectAttempt                                 attempt{makeConfiguration("127.0.0.1", kIpCertificatePath, std::chrono::milliseconds{800}), stubAddress};
+        Platform::SocketAddress                        clientAddress{};
+        const std::optional<std::vector<std::uint8_t>> firstDatagram = receiveDatagram(stub, kWaitTimeout, clientAddress);
+        ASSERT_TRUE(firstDatagram.has_value()) << "客户端没发出第一个 Initial";
+        QuicPacketHeader firstHeader;
+        ASSERT_TRUE(decodeLongHeader(*firstDatagram, firstHeader));
+
+        const std::vector<std::uint8_t> retrySourceConnectionId(QuicConnection::kSourceConnectionIdLength, 0x7BU);
+        const std::vector<std::uint8_t> retryToken(32U, 0x6CU);
+        const std::vector<std::uint8_t> retryPacket = makeRetryForClientInitial(firstHeader, retrySourceConnectionId, retryToken, false);
+        ASSERT_GT(stub.send(clientAddress, retryPacket.data(), retryPacket.size()), 0);
+
+        Platform::SocketAddress                        followUpFrom{};
+        const std::optional<std::vector<std::uint8_t>> followUp = receiveDatagram(stub, 300ms, followUpFrom);
+        if (followUp.has_value())
+        {
+            QuicPacketHeader followUpHeader;
+            ASSERT_TRUE(decodeLongHeader(*followUp, followUpHeader));
+            EXPECT_TRUE(followUpHeader.token.empty()) << "坏标签的 Retry 被当成了真的：客户端带着令牌继续了握手";
+            EXPECT_NE(copyOf(followUpHeader.destinationConnectionId), retrySourceConnectionId) << "坏标签的 Retry 换掉了目的标识";
+        }
+        EXPECT_TRUE(attempt.awaitFinished(kWaitTimeout)) << "这次尝试该在握手时限内收场";
+        EXPECT_FALSE(attempt.isSuccessful()) << "只收到一条坏标签 Retry，握手不该完成";
     }
 
 } // namespace AsynGyanis::Net

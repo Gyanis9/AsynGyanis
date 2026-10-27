@@ -33,6 +33,8 @@ namespace AsynGyanis::Net
         inline constexpr std::array<std::uint8_t, kQuicInitializationVectorByteLength> kQuicRetryIntegrityVectorBytes{0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63,
                                                                                                                       0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb};
 
+        static_assert(kQuicRetryIntegrityTagByteLength == kQuicAuthenticationTagByteLength, "Retry 完整性标签与 AEAD 标签必须同为 128 位（RFC 9001 §5.8）");
+
         /// Retry 首字节取 0xFF：头部形式位与固定位按 §17.2 置起、类型位是 3，剩下 4 位是 Unused——
         /// 规范说这一档由服务端任意定、客户端 MUST 忽略（§17.2.5）。取全 1 是为了与 RFC 9001 附录 A.4
         /// 那条官方样例逐字相同：完整性标签的关联数据含这一字节，取别的值就没法拿官方向量钉住这条报文
@@ -307,5 +309,35 @@ namespace AsynGyanis::Net
                                    {});
 
         datagram += built;
+    }
+
+    bool verifyQuicRetryPacketIntegrity(const QuicRetryPacketHeader &packet, const std::span<const std::uint8_t> retryPacket) noexcept
+    {
+        if (retryPacket.size() < kQuicRetryIntegrityTagByteLength || packet.originalDestinationConnectionId.size() > 255U)
+        {
+            // 8 位长度域装不下的原始目的标识拼不出伪包；标签都不完整就更无从校验
+            return false;
+        }
+        const std::size_t packetWithoutTagByteCount = retryPacket.size() - kQuicRetryIntegrityTagByteLength;
+        try
+        {
+            // 伪包＝「原始目的标识长度 + 原始目的标识」接在收到报文去掉标签之后（RFC 9001 §5.8 图 8）。
+            // 两者都是线上/调用方的原始字节，不重新编码：首字节的 Unused 位由服务端任意定，重编会改掉关联数据
+            std::string pseudoPacket;
+            pseudoPacket.reserve(1U + packet.originalDestinationConnectionId.size() + packetWithoutTagByteCount);
+            pseudoPacket.push_back(static_cast<char>(packet.originalDestinationConnectionId.size()));
+            appendQuicRawBytes(pseudoPacket, packet.originalDestinationConnectionId);
+            pseudoPacket.append(reinterpret_cast<const char *>(retryPacket.data()), packetWithoutTagByteCount);
+
+            // 明文为空，密文就是末尾那 16 字节标签；包号取 0 与组包侧同一个 nonce（这条报文没有包号字段）
+            const auto opened = openQuicProtectedPayload(std::span<std::uint8_t>{}, retryIntegrityKeys(), 0,
+                                                         std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(pseudoPacket.data()), pseudoPacket.size()),
+                                                         retryPacket.subspan(packetWithoutTagByteCount));
+            return opened.has_value() && *opened == 0;
+        } catch (const Base::Exception &)
+        {
+            // 校验在收包路径上：OpenSSL 侧故障只能判「这条 Retry 不可信」，不能把异常带进拆包循环
+            return false;
+        }
     }
 } // namespace AsynGyanis::Net
