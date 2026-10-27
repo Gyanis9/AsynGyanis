@@ -1847,6 +1847,9 @@ namespace AsynGyanis::Net
             // 第一个原因才是根因：后续判错不再改写结论（例如解码器在失败态里反复报同一批字节）
             return;
         }
+        // 失败连接不再拼任何头块：不清的话 pendingHeaderBlockStartedAt() 会一直报「正在拼头块」，
+        // 上层据此把已死的连接继续按头块预算收口
+        clearHeaderBlockAssembly();
         m_state        = Http2ConnectionState::Failed;
         m_errorCode    = errorCode;
         m_errorMessage = std::move(reason);

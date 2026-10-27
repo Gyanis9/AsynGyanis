@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9183
+# headers=310 entries=9185
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5684,6 +5684,7 @@ src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<RequestServeOutcome> rejec
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<RequestServeOutcome> serveOneRequest(PendingRequest &pending)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> driveConnectionOnce()
+src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> feedTunnelBytes(const char *bytes, std::size_t byteCount)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> flushOutgoingBytes()
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> sendStreamingSegment(std::uint32_t streamId, HttpResponse &response, std::string_view segment)
 src/Net/Http2/Http2Session.h	[[nodiscard]] Core::Task<bool> serveOtherStreamsDuringTunnel(std::uint32_t tunnelStreamId)
@@ -5701,6 +5702,7 @@ src/Net/Http2/Http2Session.h	[[nodiscard]] bool isSecureTransport() const noexce
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool isSettingsAcknowledgementExpired() const noexcept
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool isTransportOpen() const noexcept
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool queueSettingsTimeoutGoAway()
+src/Net/Http2/Http2Session.h	[[nodiscard]] bool refreshConnectionDeadlineWithinHeaderBlockBudget(std::chrono::milliseconds phaseTimeout)
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool rejectWith(const Rejection verdict) noexcept
 src/Net/Http2/Http2Session.h	[[nodiscard]] bool retireFinishedRequestTasks()
 src/Net/Http2/Http2Session.h	[[nodiscard]] int transportFileDescriptor() const noexcept

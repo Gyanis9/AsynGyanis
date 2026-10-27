@@ -121,6 +121,29 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一个不带 END_HEADERS 的 HEADERS 帧（头块随后由 CONTINUATION 续）
+         * @param streamId 流号
+         * @param fragment 本帧携带的头块片段
+         * @return std::string 完整帧字节
+         */
+        std::string makeOpenEndedHeadersFrame(const std::uint32_t streamId, const std::string_view fragment)
+        {
+            return encodeHttp2HeadersFrame(Http2HeadersPayload{.endStream = false, .endHeaders = false, .headerBlockFragment = std::string(fragment)}, streamId);
+        }
+
+        /**
+         * @brief 拼一个 CONTINUATION 帧
+         * @param streamId 流号
+         * @param fragment 头块片段
+         * @param endHeaders 是否置 END_HEADERS（置位即收齐整块）
+         * @return std::string 完整帧字节
+         */
+        std::string makeContinuationFrame(const std::uint32_t streamId, const std::string_view fragment, const bool endHeaders)
+        {
+            return encodeHttp2ContinuationFrame(Http2ContinuationPayload{.endHeaders = endHeaders, .headerBlockFragment = std::string(fragment)}, streamId);
+        }
+
+        /**
          * @brief 拼一个 POST 请求头块（:method POST、:scheme http、:path、:authority）
          * @param path 请求路径
          * @return std::string 头块字节。索引取自 RFC 7541 Appendix A：3 是 :method: POST、6 是 :scheme: http
@@ -2522,6 +2545,111 @@ namespace AsynGyanis::Net
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话在客户端断开后没有收口";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：隧道自身的读写驱动刷新不了另一条流的头块总时限，到点按 ENHANCE_YOUR_CALM 收口
+     * @details 隧道开着时这条连接的读循环由隧道协程驱动，隧道里每来一段字节都会重刷空闲截止时间；
+     *          若头块预算不参与隧道循环的截止时间计算，另一条流上的慢速 CONTINUATION 就能一直停在
+     *          拼接态。这一条先立起隧道并走通一次回显，再在流 3 发不带 END_HEADERS 的 HEADERS 并逐字节
+     *          续帧（头块打开期间协议不允许再夹其它帧，CONTINUATION 因此是唯一的流量），断言 300 毫秒
+     *          预算到点后 2 秒内出现 GOAWAY 且连接收口。
+     */
+    TEST(Http2CleartextSession, TunnelTrafficDoesNotBypassHeaderBlockBudget)
+    {
+        HttpServerLimits limits     = makeCleartextLimits();
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+
+        RunningHttpServerFixture fixture(
+                limits, std::chrono::milliseconds{30}, {},
+                [](Router &router, Core::EventLoop &)
+                {
+                    router.get("/chat",
+                               [](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [](WebSocketPeer &peer) -> Core::Task<>
+                                           {
+                                               while (true)
+                                               {
+                                                   const std::optional<WebSocketMessage> message = co_await peer.receive();
+                                                   if (!message.has_value())
+                                                   {
+                                                       co_return;
+                                                   }
+                                                   if (!co_await peer.sendText(message->payload))
+                                                   {
+                                                       co_return;
+                                                   }
+                                               }
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        CleartextHttp2Client client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 立起隧道（流 1），再用一次回显确认隧道的读循环已经在驱动这条连接
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    return std::any_of(receivedFrames.begin(), receivedFrames.end(),
+                                       [](const Http2Frame &frame) { return frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers; });
+                },
+                kWaitTimeout))
+                << "隧道没有建立";
+        ASSERT_TRUE(client.sendBytes(encodeHttp2DataFrame(Http2DataPayload{.endStream = false, .data = makeMaskedClientFrame(0x1U, "warm-up")}, 1U), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !responseDataPayload(receivedFrames, 1U).empty(); }, kWaitTimeout))
+                << "隧道回显没有走通";
+
+        // 另一条流：头块只发开头一片，随后每 100 毫秒续一个字节，从头到尾不给 END_HEADERS
+        const std::string headerBlock = makeGetRequestHeaderBlock("/hello");
+        ASSERT_TRUE(client.sendBytes(makeOpenEndedHeadersFrame(3U, headerBlock.substr(0, 1)), kWaitTimeout)) << "流 3 的 HEADERS 未能写入";
+
+        const auto  observationDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        bool        isGoAwaySeen        = false;
+        std::size_t fragmentIndex       = 1;
+        while (!isGoAwaySeen && std::chrono::steady_clock::now() < observationDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            const bool isContinuationSent =
+                    client.sendBytes(makeContinuationFrame(3U, headerBlock.substr(fragmentIndex % headerBlock.size(), 1), false), std::chrono::milliseconds{200});
+            ++fragmentIndex;
+            isGoAwaySeen = client.pumpUntil(
+                    frames, [](const std::vector<Http2Frame> &receivedFrames)
+                    { return std::any_of(receivedFrames.begin(), receivedFrames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; }); },
+                    std::chrono::milliseconds{50});
+            if (!isContinuationSent)
+            {
+                // 服务端已经收口：写出失败本身就是证据，GOAWAY 必须已经在手上
+                break;
+            }
+        }
+
+        ASSERT_TRUE(isGoAwaySeen) << "头块总时限 300ms 已过，隧道协程一直把慢速 CONTINUATION 当作隧道流量续着，2 秒内没有收到 GOAWAY";
+        const auto goAwayFrame = std::find_if(frames.begin(), frames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; });
+        ASSERT_NE(goAwayFrame, frames.end());
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "隧道期间的头块超时应按 ENHANCE_YOUR_CALM 收口";
+        EXPECT_TRUE(client.waitForClosure(frames, std::chrono::seconds{2})) << "GOAWAY 之后连接没有收口";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
         EXPECT_FALSE(fixture.startThrew());
     }
 

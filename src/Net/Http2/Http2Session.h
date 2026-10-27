@@ -737,6 +737,20 @@ namespace AsynGyanis::Net
         void writeOutgoingBytesBestEffort();
 
         /**
+         * @brief 按当前相位时限与头块剩余预算刷新连接的空闲截止时间
+         *
+         * @details 头块预算从 HEADERS 到达时刻起算，与「相邻两次读取的间隔」不是一回事：慢速
+         *          CONTINUATION 每来一段都能把相位时限顶回去，只有绝对起点关得住它。主循环、
+         *          读一批字节之后的推进与 WebSocket 隧道循环共用这一处算法，免得三条路径各写一份。
+         *          到点时按 ENHANCE_YOUR_CALM 把 GOAWAY 排进待发字节，调用方随后走既有的写出与
+         *          失败收口路径；已到期仍给 1 毫秒而不是 0——refreshIdleDeadline(0) 的语义是关闭保护。
+         * @param phaseTimeout 当前相位的时限（SETTINGS 握手、读超时、空闲或隧道心跳）；0 表示该相位不限时
+         * @return true 截止时间已刷新，连接仍可用
+         * @return false 头块预算已到点，连接已进入失败态（GOAWAY 已排队，调用方应停止读并由既有路径收口）
+         */
+        [[nodiscard]] bool refreshConnectionDeadlineWithinHeaderBlockBudget(std::chrono::milliseconds phaseTimeout);
+
+        /**
          * @brief 读一批网络字节并让连接层消化：主循环与流式正文的泵共用这一推进
          *
          * @details 一步做完「刷新读时限 → 读传输 → 喂连接层 → 写出待发字节 → 吸收请求与正文」。
@@ -745,6 +759,19 @@ namespace AsynGyanis::Net
          * @return true 连接仍可用；false 读失败、对端关闭或协议失败（GOAWAY 已尽力写出），调用方应停止
          */
         [[nodiscard]] Core::Task<bool> driveConnectionOnce();
+
+        /**
+         * @brief 把隧道阶段读到的一批字节喂进连接层，并按头块预算刷新或收口
+         *
+         * @details 隧道期间读循环由隧道协程驱动，不经过 driveConnectionOnce()；头块总时限若不在这里
+         *          复判，隧道流量（包括另一条流的慢速 CONTINUATION）就能让一条连接长期停在拼接态。
+         *          喂字节后一次判定「连接层是否失败、头块预算是否到点」，再写出这一轮的待发字节。
+         * @param bytes 本次读到的字节
+         * @param byteCount 字节数
+         * @return true 连接仍可用且待发字节已写出
+         * @return false 连接层失败或写出失败，调用方应停止隧道并按既有收尾路径收口
+         */
+        [[nodiscard]] Core::Task<bool> feedTunnelBytes(const char *bytes, std::size_t byteCount);
 
         /**
          * @brief 收尾一条流式正文的流：把还挂着的正文按已消费处理，并对端未收尾时中止这条流

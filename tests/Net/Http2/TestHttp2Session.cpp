@@ -1770,6 +1770,92 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：HEADERS 之后对端完全静默时，头块预算到点由 close() 补发 GOAWAY
+     * @details 读协程挂在读等待上，到点的第一现场是清扫协程调用 close()；那条路径若漏了 GOAWAY，
+     *          对端只会看到连接莫名断开，分不清「本端按时限收口」与「网络断了」。
+     */
+    TEST(Http2Session, SendsGoAwayFromCloseWhenHeaderBlockGoesSilent)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits     = makeLongTimeoutLimits();
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 只发开头一片 HEADERS，此后一个字节都不发：读循环不会再有数据来触发预算判定
+        const std::string headerBlock = makeGetRequestHeaderBlock("/");
+        ASSERT_TRUE(client.sendBytes(makeOpenEndedHeadersFrame(1U, headerBlock.substr(0, 1)), kWaitTimeout)) << "首帧 HEADERS 未能写入";
+
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1; }, std::chrono::seconds{2}))
+                << "头块预算 300ms 到点后没有收到 close() 补发的 GOAWAY：对端静默时只剩裸断连接";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "头块超时应按 ENHANCE_YOUR_CALM 收口";
+        EXPECT_TRUE(client.waitForClosure(std::chrono::seconds{2})) << "GOAWAY 之后连接没有关闭";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：头块收齐后总预算随之清除，超过 requestHeaderTimeout 连接仍可服务
+     * @details 预算的起点活在连接层，收齐时必须一并清掉；漏清的话，一条正常连接会在第一条请求
+     *          之后被头块时限误杀，表现为「短 requestHeaderTimeout 下连接只能用一次」。
+     */
+    TEST(Http2Session, KeepsServingAfterHeaderBlockBudgetIsCleared)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits     = makeLongTimeoutLimits();
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout)) << "第一条请求未能写入";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return hasEndStream(receivedFrames, 1U); }, kWaitTimeout))
+                << "第一条请求没有在时限内收到完整响应";
+
+        // 超过头块预算后再发第二条：预算已随头块收齐清除，连接必须照常服务
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(3U, makeGetRequestHeaderBlock("/hello"), true), kWaitTimeout)) << "第二条请求未能写入";
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return hasEndStream(receivedFrames, 3U); }, kWaitTimeout))
+                << "超过头块预算后连接不再服务：收齐时没有清除总预算";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：h2 流式响应发成 HEADERS + DATA 帧（末片 END_STREAM）且无 h1 专属头；空流式响应也能收尾
      */
     TEST(Http2Session, StreamsChunkedResponseAsOrderedDataFrames)

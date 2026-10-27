@@ -791,9 +791,11 @@ namespace AsynGyanis::Net
         ASSERT_GT(headerBlock.size(), 2U);
 
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, 0, 1U, headerBlock.substr(0, 1U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.pendingHeaderBlockStartedAt().has_value());
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Ping, 0, 0, std::string(8, 'Q'))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::ProtocolError);
         EXPECT_NE(connection.errorMessage().find("CONTINUATION"), std::string::npos) << connection.errorMessage();
+        EXPECT_FALSE(connection.pendingHeaderBlockStartedAt().has_value()) << "失败连接不该继续报「正在拼头块」";
         EXPECT_EQ(takeGoAwayErrorCode(connection.takeOutgoingBytes()), Http2ErrorCode::ProtocolError);
 
         // 没有前置 HEADERS 的 CONTINUATION 同样判错（§6.10）
@@ -1147,9 +1149,11 @@ namespace AsynGyanis::Net
         const std::string headerBlock = makeMinimalGetRequestBlock();
         ASSERT_GT(headerBlock.size(), 8U);
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, headerBlock.substr(0, 8U))), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_TRUE(connection.pendingHeaderBlockStartedAt().has_value());
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, headerBlock.substr(8U))), Http2ConnectionFeedStatus::Failed);
         EXPECT_EQ(connection.errorCode(), Http2ErrorCode::EnhanceYourCalm);
         EXPECT_NE(connection.errorMessage().find("头块压缩后"), std::string::npos) << connection.errorMessage();
+        EXPECT_FALSE(connection.pendingHeaderBlockStartedAt().has_value()) << "拼接越限收口后不该继续报「正在拼头块」";
     }
 
     /**
