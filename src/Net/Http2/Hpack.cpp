@@ -700,11 +700,12 @@ namespace AsynGyanis::Net
         consumed += nameIndexByteCount;
 
         HpackHeaderFieldView field;
+        // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）。名字落在调用内的局部串里，不用
+        // m_stringScratch：后者紧接着要装值。它必须活到函数末尾——越限后 field.name 指向它，
+        // 下面的增量索引插入还要再拷一份
+        std::string literalName;
         if (nameIndex == 0)
         {
-            // 索引 0 表示名字也用字面量给出（RFC 7541 §6.2.1）。名字落在调用内的局部串里，
-            // 不用 m_stringScratch：后者紧接着要装值，装完名字再装值会把名字的字节覆盖掉
-            std::string literalName;
             std::size_t nameByteCount = 0;
             if (!decodeHpackString(headerBlock.substr(consumed), literalName, nameByteCount, nullptr))
             {

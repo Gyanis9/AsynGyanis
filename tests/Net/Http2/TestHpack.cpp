@@ -1358,4 +1358,36 @@ namespace AsynGyanis::Net
         EXPECT_EQ(decoder.errorKind(), HpackErrorKind::CompressionError);
     }
 
+    /**
+     * @brief 越限后的增量索引字面量名在 owning 解码里不能留下悬垂视图
+     * @details 名字是字面量时先落在调用内的局部串；越限后这个视图要活到动态表插入拷完。
+     *          局部串若在 if 块结束时就销毁，插入再拼 std::string 就是 use-after-free；
+     *          模糊测试在 HpackBlock 档抓到的就是这条形状。
+     */
+    TEST(Hpack, KeepsLiteralNameAliveForIncrementalInsertAboveLimit)
+    {
+        HpackDecoderLimits limits;
+        limits.maximumHeaderListByteCount = 1; // 第一条就超限，第二条进入只同步分支
+        HpackDecoder decoder(limits);
+
+        const std::string longName(64, 'n');
+        std::string       block;
+        const auto        appendLiteral = [&block, &longName](const char value)
+        {
+            block.push_back(static_cast<char>(0x40)); // 01xxxxxx：带增量索引的字面量
+            block.push_back(static_cast<char>(longName.size()));
+            block += longName;
+            block.push_back(1);
+            block.push_back(value);
+        };
+        appendLiteral('v');
+        appendLiteral('w');
+
+        std::vector<HpackHeaderField> fields;
+        std::string                   errorText;
+        EXPECT_FALSE(decoder.decode(block, fields, &errorText));
+        EXPECT_TRUE(decoder.isLimitExceeded());
+        EXPECT_TRUE(fields.empty());
+    }
+
 } // namespace AsynGyanis::Net
