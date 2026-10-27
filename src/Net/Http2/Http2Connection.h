@@ -943,6 +943,15 @@ namespace AsynGyanis::Net
         [[nodiscard]] StreamRecord *findActiveStream(std::uint32_t streamId) noexcept;
 
         /**
+         * @brief 取本张 GOAWAY 该通告的 last-stream-id
+         * @details RFC 9113 §6.8 要求多张 GOAWAY 的 last-stream-id 不得增大：首张把当时的
+         *          最高流号记下来，后续各张取它与当前最高流号的较小者。Closing 期间被拒的
+         *          新流仍会推高最高流号，不夹住就会超过首张。
+         * @return std::uint32_t 本张 GOAWAY 的 last-stream-id
+         */
+        [[nodiscard]] std::uint32_t goAwayLastStreamId() noexcept;
+
+        /**
          * @brief 统一记一次连接级失败：置粘滞失败态并把原因写进 GOAWAY
          * @param errorCode 要回给对端的错误码
          * @param reason 中文原因（同时是 GOAWAY 的调试数据）
@@ -1015,6 +1024,9 @@ namespace AsynGyanis::Net
         std::map<std::uint16_t, std::uint32_t> m_peerSettings;                              ///< 对端 SETTINGS 记账（标识 → 取值，重复出现以来值为准）
         bool                                   m_hasPeerGoAway{false};                      ///< 是否已收到对端 GOAWAY
         Http2GoAwayPayload                     m_peerGoAway{};                              ///< 对端 GOAWAY 的负载
+
+        /// 本端首张 GOAWAY 通告的 last-stream-id：后续各张以它为上限（§6.8 要求不得增大）
+        std::optional<std::uint32_t> m_goAwayLastStreamId{};
 
         std::string                    m_outgoingBytes;       ///< 待发字节：由 takeOutgoingBytes() 一次取走
         std::vector<Http2Request>      m_pendingRequests;     ///< 已校验通过、等着被取走的请求

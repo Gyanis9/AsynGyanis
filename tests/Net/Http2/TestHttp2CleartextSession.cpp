@@ -2748,6 +2748,83 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：隧道在连接层失败后写出 GOAWAY，清扫协程在清扫窗口内关掉描述符，不等业务返回
+     * @details 隧道失败分支写出收口 GOAWAY 会把空闲截止刷成写超时；若不再压回 1 毫秒，失败连接
+     *          会在业务挂起期间按写超时留着描述符。这里让隧道业务挂在定时器上，再送一帧取值非法的
+     *          SETTINGS 触发连接失败，断言 GOAWAY 之后 900 毫秒内连接已关闭——业务此时仍未返回。
+     *          清扫节拍取 500 毫秒：失败点在 200 毫秒上下，与清扫节拍不构成「预算到点与清扫同拍」
+     *          的竞态，关闭只能来自清扫协程按 1 毫秒截止收口。
+     */
+    TEST(Http2CleartextSession, ClosesFailedTunnelWithinTheSweepWindow)
+    {
+        std::atomic<bool> isBusinessHeld{false};
+
+        RunningHttpServerFixture fixture(
+                makeCleartextLimits(), std::chrono::milliseconds{500}, {},
+                [&isBusinessHeld](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/held-tunnel",
+                               [&loop, &isBusinessHeld](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [&loop, &isBusinessHeld](WebSocketPeer &) -> Core::Task<>
+                                           {
+                                               Core::Timer holdTimer(loop);
+                                               isBusinessHeld.store(true, std::memory_order_release);
+                                               co_await holdTimer.waitFor(kTunnelGoAwayBusinessHold);
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 立起隧道（流 1）：业务进入后挂到定时器上，此后不再碰对端对象
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/held-tunnel"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    return std::any_of(receivedFrames.begin(), receivedFrames.end(),
+                                       [](const Http2Frame &frame) { return frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers; });
+                },
+                kWaitTimeout))
+                << "隧道没有建立";
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&isBusinessHeld] { return isBusinessHeld.load(std::memory_order_acquire); }, kWaitTimeout)) << "隧道业务没有进入";
+
+        // ENABLE_CONNECT_PROTOCOL 只允许 0 或 1（RFC 8441 §3）：取值 2 让连接层当场判 PROTOCOL_ERROR
+        Http2SettingsPayload invalidSettings;
+        invalidSettings.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::EnableConnectProtocol), .value = 2U});
+        ASSERT_TRUE(client.sendBytes(encodeHttp2SettingsFrame(invalidSettings), kWaitTimeout)) << "非法 SETTINGS 未能写入";
+
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames)
+                { return std::any_of(receivedFrames.begin(), receivedFrames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; }); },
+                kWaitTimeout))
+                << "连接层失败后没有在时限内收到 GOAWAY";
+        const auto goAwayFrame = std::find_if(frames.begin(), frames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; });
+        ASSERT_NE(goAwayFrame, frames.end());
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::ProtocolError) << "非法 ENABLE_CONNECT_PROTOCOL 取值应按 PROTOCOL_ERROR 收口（RFC 8441 §3）";
+
+        // 业务还挂在 kTunnelGoAwayBusinessHold 上：连接必须在清扫窗口内关掉，而不是等业务返回
+        EXPECT_TRUE(client.waitForClosure(frames, std::chrono::milliseconds{900})) << "GOAWAY 之后 900 毫秒内连接没有关闭：失败隧道把描述符留到了写超时";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：配了 handler_timeout_ms 时，跑到那条时限的流被改写成 504，同连接的兄弟流照常完成
      * @details h2 一条连接复用几十条流，`Core::Connection` 上那把连接级的钟表达不了「这一条流的处理器
      *          跑了多久」——只有它到期时会把整条连接连同兄弟流一起收掉。这一格走每请求的看门狗：

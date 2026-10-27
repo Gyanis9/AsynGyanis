@@ -411,6 +411,17 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    std::uint32_t Http2Connection::goAwayLastStreamId() noexcept
+    {
+        // §6.8：多张 GOAWAY 的 last-stream-id 不得增大。首张记下当时的最高流号，后续取小；
+        // Closing 上被拒的新流仍会推高 m_highestPeerStreamId，只按当前值发就会超过首张
+        if (!m_goAwayLastStreamId.has_value())
+        {
+            m_goAwayLastStreamId = m_highestPeerStreamId;
+        }
+        return std::min(*m_goAwayLastStreamId, m_highestPeerStreamId);
+    }
+
     bool Http2Connection::sendGoAway(const std::string_view reason, std::string *const errorText)
     {
         clearError(errorText);
@@ -437,7 +448,7 @@ namespace AsynGyanis::Net
         // 收尾通告带上已处理的最大流号与 NO_ERROR（§6.8）：对端据此知道该号之前的流仍会被处理完，
         // 之后的新流没有生效，可以放心在新连接上重试
         Http2GoAwayPayload payload;
-        payload.lastStreamId = m_highestPeerStreamId;
+        payload.lastStreamId = goAwayLastStreamId();
         payload.errorCode    = Http2ErrorCode::NoError;
         payload.debugData    = std::string(reason);
         appendOutgoing(encodeHttp2GoAwayFrame(payload));
@@ -1856,9 +1867,10 @@ namespace AsynGyanis::Net
         m_state              = Http2ConnectionState::Failed;
         m_errorCode          = errorCode;
         m_errorMessage       = std::move(reason);
-        // 连接错误必须让对端看见：GOAWAY 带上本端处理过的最大流号与错误码（§5.4.1、§6.8）
+        // 连接错误必须让对端看见：GOAWAY 带上本端处理过的最大流号与错误码（§5.4.1、§6.8）。
+        // 若本端先发过收尾通告，这里的流号被夹在那一张已通告的值以内，不得随拒收新流而增大
         Http2GoAwayPayload payload;
-        payload.lastStreamId = m_highestPeerStreamId;
+        payload.lastStreamId = goAwayLastStreamId();
         payload.errorCode    = errorCode;
         payload.debugData    = m_errorMessage;
         appendOutgoing(encodeHttp2GoAwayFrame(payload));

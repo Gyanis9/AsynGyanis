@@ -502,7 +502,8 @@ namespace AsynGyanis::Net
             {
                 // 连接可能已处在 Closing（本端发过收尾通告，或收到对端 GOAWAY）：这里仍补一张
                 // ENHANCE_YOUR_CALM 的 GOAWAY。RFC 9113 §6.8 允许多张 GOAWAY 分别在情况变化时发出，
-                // 只要求后一张的最后受理流号不大于前一张；Closing 之后不再受理新流，这个号不会变大。
+                // 要求后一张的 last-stream-id 不得增大；Closing 上被拒的新流仍会推高最高流号，因此
+                // 连接层把这一张的 last-stream-id 夹在已通告值以内（见 Http2Connection::goAwayLastStreamId）。
                 // 头块超时是独立的连接级错误，丢掉它会让对端把「本端按时限收口」看成断网。
                 const std::uint32_t streamId = m_connection.pendingHeaderBlockStreamId();
                 std::string         errorText;
@@ -597,6 +598,12 @@ namespace AsynGyanis::Net
             // 收口 GOAWAY 已经排在待发字节里：不能只把结论交回调用方——回到隧道循环还要跨过一次
             // 协程挂起，而失败分支刚把空闲截止压到 1 毫秒，清扫协程可能先到并关掉描述符。当场写一次
             static_cast<void>(co_await flushOutgoingBytes());
+            // 写出会把截止刷成写超时，而失败连接没有下一轮读来重刷，照着写超时留着描述符会把关闭
+            // 拖后最多一个写超时。这里压回 1 毫秒，让清扫协程在下一拍收口
+            if (isTransportOpen())
+            {
+                refreshIdleDeadline(std::chrono::milliseconds{1});
+            }
             co_return false;
         }
         co_return co_await flushOutgoingBytes();

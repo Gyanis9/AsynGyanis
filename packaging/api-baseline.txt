@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9185
+# headers=310 entries=9187
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5419,6 +5419,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] std::size_t unsentResponseByteCoun
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::string errorMessage() const
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::string lastStreamErrorMessage() const
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::string takeOutgoingBytes()
+src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t goAwayLastStreamId() noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t peerInitialWindowSize() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t peerMaximumFrameSize() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t pendingHeaderBlockStreamId() const noexcept
@@ -5458,6 +5459,7 @@ src/Net/Http2/Http2Connection.h	std::int64_t sendWindowByteCount
 src/Net/Http2/Http2Connection.h	std::map<std::uint16_t, std::uint32_t> m_peerSettings
 src/Net/Http2/Http2Connection.h	std::map<std::uint32_t, StreamRecord> m_streams
 src/Net/Http2/Http2Connection.h	std::optional<std::chrono::steady_clock::time_point> m_pendingHeaderBlockStartedAt
+src/Net/Http2/Http2Connection.h	std::optional<std::uint32_t> m_goAwayLastStreamId
 src/Net/Http2/Http2Connection.h	std::size_t flowControlByteCount
 src/Net/Http2/Http2Connection.h	std::size_t headerFieldTotal
 src/Net/Http2/Http2Connection.h	std::size_t headerNetByteTotal

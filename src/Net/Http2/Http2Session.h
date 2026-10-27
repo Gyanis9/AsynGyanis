@@ -581,7 +581,8 @@ namespace AsynGyanis::Net
          *       只排进了待发字节（连接已进入失败态），而业务可能正挂在定时器或别的等待上；清扫
          *       协程会在下一拍按已到期的截止关掉描述符，等业务返回再写就送不出去。心跳刷新的失败
          *       分支里，隧道循环内的两次调用由本轮写出或这一次写出兜住；业务发 Ping 触发的那一次
-         *       没有协程栈可以等写权，仍是窄窗口：GOAWAY 要等下一次隧道写出或 close()。
+         *       没有协程栈可以等写权，仍是窄窗口：GOAWAY 要等下一次隧道写出；对端此后一直静默时
+         *       随连接关闭丢弃，close() 对已失败的连接不再补发。
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending);
 

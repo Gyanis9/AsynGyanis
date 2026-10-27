@@ -2271,6 +2271,43 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：先发收尾通告、随后因拒收新流而失败时，第二张 GOAWAY 的 last-stream-id 不得增大（§6.8）
+     * @details 优雅 GOAWAY 通告 last-stream-id 1 之后，对端仍可能开新流：连接层回 REFUSED_STREAM，
+     *          同时把最高流号推到 3。此刻若因头块超时之类的连接错误收口，第二张 GOAWAY 若直接取
+     *          当前最高流号就会变成 3，超过首张。§6.8 要求多张 GOAWAY 的 last-stream-id 不得增大，
+     *          因为对端可能已经把这些流上的请求重试到新连接。
+     */
+    TEST(Http2Connection, ClampsSecondGoAwayLastStreamIdToTheAdvertisedOne)
+    {
+        Http2Connection connection;
+        completeHandshake(connection);
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, makePostRequestBlock())), Http2ConnectionFeedStatus::NeedMore);
+        static_cast<void>(connection.takeRequests());
+
+        std::string errorText;
+        ASSERT_TRUE(connection.sendGoAway("达到单连接请求上限", &errorText)) << errorText;
+        const std::vector<Http2Frame> firstFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(firstFrames.size(), 1U);
+        Http2GoAwayPayload firstPayload;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(firstFrames.front(), firstPayload, &errorText)) << errorText;
+        EXPECT_EQ(firstPayload.lastStreamId, 1U);
+
+        // 对端还没看到 GOAWAY：新流照开，本端拒收并把最高流号推到 3
+        ASSERT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream | kHttp2FlagEndHeaders, 3U, makeMinimalGetRequestBlock())),
+                  Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_EQ(takeRstStreamFrames(connection).size(), 1U);
+
+        ASSERT_TRUE(connection.failConnection(Http2ErrorCode::EnhanceYourCalm, "头块超出总时限", &errorText)) << errorText;
+        const std::vector<Http2Frame> secondFrames = parseFrames(connection.takeOutgoingBytes());
+        ASSERT_EQ(secondFrames.size(), 1U);
+        ASSERT_EQ(secondFrames.front().header.type, Http2FrameType::GoAway);
+        Http2GoAwayPayload secondPayload;
+        ASSERT_TRUE(parseHttp2GoAwayPayload(secondFrames.front(), secondPayload, &errorText)) << errorText;
+        EXPECT_EQ(secondPayload.errorCode, Http2ErrorCode::EnhanceYourCalm);
+        EXPECT_LE(secondPayload.lastStreamId, firstPayload.lastStreamId) << "第二张 GOAWAY 的 last-stream-id 不得大于首张（§6.8）";
+    }
+
+    /**
      * @brief 钉住：尾部头块的字段随那条 END_STREAM 收口信号一起交出，content-length 除外（§8.1）
      * @details 尾部头块必须自带 END_STREAM（§8.1），所以「正文收齐」与「尾部字段到齐」是同一件事，
      *          本层不为它另开一条事件通道。收口信号本身仍是零长的：上层只按 endStream 判定收齐，
