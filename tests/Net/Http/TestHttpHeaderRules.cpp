@@ -40,7 +40,7 @@ namespace AsynGyanis::Net
         }
 
         /**
-         * @brief 字段值字符集的参照实现：照 RFC 9110 §5.6.2 的 field-vchar = VCHAR / obs-text 加 HTAB 直写
+         * @brief 字段值字符集的参照实现：照 RFC 9110 §5.5 的 field-vchar = VCHAR / obs-text 加 HTAB 直写
          * @param byte 字节取值，0-255
          * @return true 表示该字节可以出现在字段值里
          */

@@ -51,7 +51,7 @@ namespace AsynGyanis::Net
     static_assert(kHttpTokenCharacterSet[static_cast<unsigned char>('~')], "~ 属于 tchar");
 
     /**
-     * @brief RFC 9110 §5.6.2 的字段值集合：下标是字节值，true 表示该字节可以出现在头字段值里
+     * @brief RFC 9110 §5.5 的字段值集合：下标是字节值，true 表示该字节可以出现在头字段值里
      * @details 放行 HTAB、可见 ASCII 与 obs-text（0x80 以上）；CR/LF/NUL/DEL 与其余控制字符一律
      *          判否——头部块以 CRLF 定界，放行的话一个字段值就能自己结束头部块。
      */

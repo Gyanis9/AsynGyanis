@@ -1667,7 +1667,7 @@ namespace AsynGyanis::Net
      *          部署里结论相反（内嵌 iframe 的管理台会把 DENY 改成 SAMEORIGIN 或干脆不发），
      *          本层不替调用方选边；只有 nosniff / DENY / no-referrer 这三条取「默认收紧」，
      *          因为它们是「浏览器多做一步猜测」这类风险的兜底，收紧的代价远小于放松。
-     * @note 取值在构造中间件时逐条按 RFC 9110 §5.6.2 的字段值集合校验，含 CR/LF/NUL 的直接抛——
+     * @note 取值在构造中间件时逐条按 RFC 9110 §5.5 的字段值集合校验，含 CR/LF/NUL 的直接抛——
      *       这类文案常由配置拼出来，写进响应头就是 HTTP 响应拆分
      */
     struct ASYN_NET_API SecurityHeadersOptions

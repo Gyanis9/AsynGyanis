@@ -189,7 +189,7 @@ TEST(Http3HeaderValidation, ControlCharactersInFieldValuesAreRejected)
 
 TEST(Http3HeaderValidation, HorizontalTabAndObsTextInValuesAreAccepted)
 {
-    // HTAB 与 obs-text（0x80-0xFF）是 RFC 9110 §5.6.2 允许的：一并拒掉会打死合法的非 ASCII 头值
+    // HTAB 与 obs-text（0x80-0xFF）是 RFC 9110 §5.5 允许的：一并拒掉会打死合法的非 ASCII 头值
     Http3HeaderValidator withTab(Http3MessageKind::Request);
     EXPECT_TRUE(feedRequest(withTab, requestWithFieldReplaced(4, "accept", "a\tb")).has_value());
 
@@ -332,7 +332,7 @@ TEST(Http3HeaderValidation, PathMustBePathAbsoluteOrAsterisk)
     const auto           starResult = feedRequest(optionsStar, {{":method", "OPTIONS"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "*"}});
     EXPECT_HAS_VALUE(starResult) << starResult.error().message << "；OPTIONS 的星号形式合法（RFC 9110 §7.1）";
 
-    // 星号形式说的不是某个资源而是整台服务器，所以只有 OPTIONS 能用（RFC 9110 §7.4）。
+    // 星号形式说的不是某个资源而是整台服务器，所以只有 OPTIONS 能用（RFC 9112 §3.2.4）。
     // 旧断言把 GET + "*" 当合法放行，而 h1 的请求行解析对同一条目标一直判语法错误——
     // 放行之后它会一路走到「没有路由匹配」报成 404，告诉对端「这个资源不存在」，而事实是请求没指明资源
     Http3HeaderValidator getStar(Http3MessageKind::Request);
