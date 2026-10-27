@@ -24,8 +24,8 @@ namespace AsynGyanis::Net
      *          client_body_timeout 同义：约束相邻两次成功读取的间隔而非读总时长。时限与相位的对应：等新请求
      *          与帧间用 idleTimeout、收请求头用 requestHeaderTimeout 总预算与 readTimeout 间隔、收正文用
      *          readTimeout、处理器运行与发送响应用 writeTimeout。
-     * @note 空闲、读、写三项时限由两条 TCP 通道（HTTP/1 与 HTTP/2）消费，requestHeaderTimeout 由
-     *       HTTP/1 会话执行。HTTP/3 的空闲不在这把钟上：那条通道由 QUIC 传输层的 max_idle_timeout 收口
+     * @note 空闲、读、写三项时限由两条 TCP 通道（HTTP/1 与 HTTP/2）消费；requestHeaderTimeout 三条通道都执行
+     *       （h1 在会话读循环、h2 在帧层头块、h3 在头段收齐后）。HTTP/3 的空闲不在这把钟上：那条通道由 QUIC 传输层的 max_idle_timeout 收口
      *       （`QuicServer::Configuration::idleTimeout`），收的是整条连接，隧道里的 WebSocket 帧间空闲也归它兜
      *       ——两处默认值不同（75 秒与 30 秒）是刻意的。
      * @note 会话按 shared_ptr 只读共享一份配置；要改配置请走 HttpServer::setLimits()，

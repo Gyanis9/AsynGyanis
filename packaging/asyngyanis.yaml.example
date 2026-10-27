@@ -99,6 +99,8 @@ server:
     idle_timeout_ms: 75000
     # 相邻两次成功读取之间的最长空闲（慢速攻击防线）
     read_timeout_ms: 60000
+    # 从一条请求的首字节到请求头收齐的总预算；0 = 关闭。正文没有对应的总时限
+    request_header_timeout_ms: 30000
     # 响应产出预算：处理器执行与等待可写的最长时长（慢消费者与长处理器防线）
     write_timeout_ms: 60000
     # HTTP/2 握手期等对端 ACK 本端 SETTINGS 的时长
