@@ -22,10 +22,12 @@ namespace AsynGyanis::Net
      * @details 会话把对应时限刷进连接的空闲截止时间，清扫协程按固定节拍检查并关闭超期连接，因此实际超时是
      *          「时限 + 清扫间隔」量级；取值 0 一律表示关闭该项保护。readTimeout 与 nginx 的
      *          client_body_timeout 同义：约束相邻两次成功读取的间隔而非读总时长。时限与相位的对应：等新请求
-     *          与帧间用 idleTimeout、收请求头与正文用 readTimeout、处理器运行与发送响应用 writeTimeout。
-     * @note 这三项时限由两条 TCP 通道（HTTP/1 与 HTTP/2）消费。HTTP/3 的空闲不在这把钟上：那条通道
-     *       由 QUIC 传输层的 max_idle_timeout 收口（`QuicServer::Configuration::idleTimeout`），
-     *       收的是整条连接，隧道里的 WebSocket 帧间空闲也归它兜——两处默认值不同（75 秒与 30 秒）是刻意的。
+     *          与帧间用 idleTimeout、收请求头用 requestHeaderTimeout 总预算与 readTimeout 间隔、收正文用
+     *          readTimeout、处理器运行与发送响应用 writeTimeout。
+     * @note 空闲、读、写三项时限由两条 TCP 通道（HTTP/1 与 HTTP/2）消费，requestHeaderTimeout 由
+     *       HTTP/1 会话执行。HTTP/3 的空闲不在这把钟上：那条通道由 QUIC 传输层的 max_idle_timeout 收口
+     *       （`QuicServer::Configuration::idleTimeout`），收的是整条连接，隧道里的 WebSocket 帧间空闲也归它兜
+     *       ——两处默认值不同（75 秒与 30 秒）是刻意的。
      * @note 会话按 shared_ptr 只读共享一份配置；要改配置请走 HttpServer::setLimits()，
      *       它整体换代而不是就地改写，避免在途会话读到半新半旧的组合。
      * @note 本结构只管时间与请求条数，单条报文的内存占用由 HttpParserLimits 负责（两者独立生效：
@@ -58,6 +60,10 @@ namespace AsynGyanis::Net
         /// Windows 上本项一律按 0 处理：挂着活动映射的文件既不能被截断也不能被 rename 覆盖，
         /// 启用会挡掉「写临时文件 + rename」这种常规发布方式（HttpServer 在建静态配置时降级并记一条 INFO）
         std::size_t maximumMappedStaticFiles{64};
+
+        /// 从一条请求的首字节到请求头收齐的总预算；0 表示关闭。
+        /// 正文总时限不在这里：慢速大上传会被误杀，正文由 readTimeout、大小上限与连接限额兜底
+        std::chrono::milliseconds requestHeaderTimeout{std::chrono::seconds(30)};
 
         /**
          * @brief 单连接的请求条数是否已到上限（到量就该收口这条连接）

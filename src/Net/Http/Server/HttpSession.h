@@ -576,6 +576,49 @@ namespace AsynGyanis::Net
             // 否则每轮等待都会把截止时间刷回更宽松的空闲值，读超时形同虚设
             bool isRequestInProgress = false;
 
+            // 请求头总预算：从本条请求的首字节起算，到头部块收齐为止。状态放在本协程帧里，
+            // 因为同一个循环同时服务明文与 TLS 两条通道，而预算只属于当前这条连接
+            std::chrono::steady_clock::time_point requestHeaderDeadline{};
+            bool                                  hasRequestHeaderDeadline{false};
+
+            // 首字节到达时武装头预算；时限为 0 表示关闭这项保护
+            const auto armRequestHeaderDeadline = [&]()
+            {
+                hasRequestHeaderDeadline = limits.requestHeaderTimeout > std::chrono::milliseconds::zero();
+                if (hasRequestHeaderDeadline)
+                {
+                    requestHeaderDeadline = std::chrono::steady_clock::now() + limits.requestHeaderTimeout;
+                }
+            };
+
+            // 头部块收齐、会话收尾与流水线复位时都走这里
+            const auto clearRequestHeaderDeadline = [&]() { hasRequestHeaderDeadline = false; };
+
+            // 读相位的截止时间：等新请求按空闲容忍度；请求已经开始则用 readTimeout，
+            // 头部未收齐时再叠加总预算的剩余量，两者取更早到期的那个
+            const auto refreshReadPhaseDeadline = [&]()
+            {
+                if (!isRequestInProgress)
+                {
+                    connection.refreshIdleDeadline(limits.idleTimeout);
+                    return;
+                }
+
+                std::chrono::milliseconds phaseTimeout = limits.readTimeout;
+                if (hasRequestHeaderDeadline)
+                {
+                    // 已过期时用 1ms 而不是 0：refreshIdleDeadline(0) 的语义是关闭保护
+                    std::chrono::milliseconds headerRemaining = std::chrono::duration_cast<std::chrono::milliseconds>(requestHeaderDeadline - std::chrono::steady_clock::now());
+                    if (headerRemaining <= std::chrono::milliseconds::zero())
+                    {
+                        headerRemaining = std::chrono::milliseconds{1};
+                    }
+                    // readTimeout 为 0 表示读超时关闭，此时只由头预算约束
+                    phaseTimeout = phaseTimeout > std::chrono::milliseconds::zero() ? std::min(phaseTimeout, headerRemaining) : headerRemaining;
+                }
+                connection.refreshIdleDeadline(phaseTimeout);
+            };
+
             // 响应对象按连接复用（每轮开头 reset）：容器容量跨请求保留，
             // 让「每条报文都重新长一遍头部容器」这笔开销消失
             HttpResponse response;
@@ -1142,19 +1185,21 @@ namespace AsynGyanis::Net
                 parser.reset();
 
                 // 本条报文已服务完毕：下一条从零开始。窗口里没有余下字节时，等它的第一个字节
-                // 按空闲容忍度计时；若有流水线余字节，下一轮开头会按「请求进行中」复位
+                // 按空闲容忍度计时；若有流水线余字节，下一轮开头会按「请求进行中」复位并武装新的头预算
                 isRequestInProgress = false;
+                clearRequestHeaderDeadline();
                 co_return keepAlive;
             };
 
             while (keepAlive && isAlive())
             {
                 // 窗口里还留着上一条报文收尾时没解析的字节，说明下一条请求已经开始到达：
-                // 上一轮收尾刚把标志清零，这里必须按「请求进行中」复位，否则这一轮不再读新字节、
-                // 直接解析余下的半条报文，后续读等待会落在空闲容忍度上，慢速攻击防线被放宽
-                if (windowLength != 0)
+                // 上一轮收尾刚把标志清零，这里必须按「请求进行中」复位并重新武装头预算，否则这一轮
+                // 不再读新字节、直接解析余下的半条报文，后续读等待会落在空闲容忍度上，慢速攻击防线被放宽
+                if (windowLength != 0 && !isRequestInProgress)
                 {
                     isRequestInProgress = true;
+                    armRequestHeaderDeadline();
                 }
 
                 // ---------------- 第一步：把窗口里的字节交给解析器 ----------------
@@ -1163,8 +1208,10 @@ namespace AsynGyanis::Net
                 if (windowLength == 0)
                 {
                     // 相位决定用哪个时限：本请求已经开始（解析器里攒着半条报文）就按读超时约束，
-                    // 只有「等一条新请求的第一个字节」才用 keep-alive 空闲容忍度
-                    connection.refreshIdleDeadline(isRequestInProgress ? limits.readTimeout : limits.idleTimeout);
+                    // 只有「等一条新请求的第一个字节」才用 keep-alive 空闲容忍度；头部未收齐时
+                    // refreshReadPhaseDeadline 还会把请求头总预算的剩余量折进来
+                    const bool isNewRequest = !isRequestInProgress;
+                    refreshReadPhaseDeadline();
 
                     const ssize_t receivedLength = co_await readIntoWindow();
                     if (receivedLength <= 0)
@@ -1174,14 +1221,31 @@ namespace AsynGyanis::Net
                     }
                     windowLength        = static_cast<std::size_t>(receivedLength);
                     isRequestInProgress = true;
+                    if (isNewRequest)
+                    {
+                        // 首字节已到：请求头总预算从这一刻起算
+                        armRequestHeaderDeadline();
+                    }
 
                     // 读到字节即重新计时：慢速攻击是把一条请求拆成很多次缓慢的写入，
-                    // 因此这一项约束的是「相邻两次成功读取」的间隔，而不是整条请求的读总时长
-                    connection.refreshIdleDeadline(limits.readTimeout);
+                    // 因此 readTimeout 约束的是「相邻两次成功读取」的间隔，而不是整条请求的读总时长；
+                    // 请求头阶段另有 requestHeaderTimeout 从首字节起算，两者取更早到期的那个
+                    refreshReadPhaseDeadline();
                 }
 
                 const ParseStatus status         = parser.parse(receiveBuffer.data(), windowLength);
                 const std::size_t consumedLength = parser.consumedByteCount();
+
+                // 头部块收齐即解除头预算：此后的正文读取回到 readTimeout 的间隔语义，
+                // 总预算只管「首字节到头部收齐」这一段；无正文请求在 Done 时同样清除
+                if (parser.isHeaderBlockComplete())
+                {
+                    clearRequestHeaderDeadline();
+                    connection.refreshIdleDeadline(limits.readTimeout);
+                } else if (status == ParseStatus::Done)
+                {
+                    clearRequestHeaderDeadline();
+                }
 
                 // 契约：NeedMore 意味着本段输入已被全部消费。若一个字节都没消费却还要更多，
                 // 窗口就无法推进，这一轮会变成死循环——宁可当场报错，也不要静默转圈
@@ -1358,6 +1422,7 @@ namespace AsynGyanis::Net
 
                     // 断开之前显式复位：把粘滞错误态与半成品请求一起清掉，
                     // 万一上层复用同一个解析器对象（例如把会话挪作他用），也不会读到脏请求
+                    clearRequestHeaderDeadline();
                     parser.reset();
                     co_return;
                 }

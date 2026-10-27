@@ -62,8 +62,14 @@ namespace AsynGyanis::Net
         };
 
         /// limits 子段支持的键
-        constexpr std::array<std::string_view, 6> kLimitsKeys{
-                "idle_timeout_ms", "read_timeout_ms", "write_timeout_ms", "settings_acknowledgement_timeout_ms", "web_socket_pong_timeout_ms", "maximum_requests_per_connection",
+        constexpr std::array<std::string_view, 7> kLimitsKeys{
+                "idle_timeout_ms",
+                "read_timeout_ms",
+                "request_header_timeout_ms",
+                "write_timeout_ms",
+                "settings_acknowledgement_timeout_ms",
+                "web_socket_pong_timeout_ms",
+                "maximum_requests_per_connection",
         };
 
         /// parser_limits 子段支持的键
@@ -312,6 +318,11 @@ namespace AsynGyanis::Net
             if (node.contains("read_timeout_ms"))
             {
                 limits.readTimeout = toMilliseconds(requireNonNegativeInteger(node.at("read_timeout_ms"), sectionPath + ".read_timeout_ms"), sectionPath + ".read_timeout_ms");
+            }
+            if (node.contains("request_header_timeout_ms"))
+            {
+                limits.requestHeaderTimeout = toMilliseconds(requireNonNegativeInteger(node.at("request_header_timeout_ms"), sectionPath + ".request_header_timeout_ms"),
+                                                             sectionPath + ".request_header_timeout_ms");
             }
             if (node.contains("write_timeout_ms"))
             {

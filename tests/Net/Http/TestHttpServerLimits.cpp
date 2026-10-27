@@ -101,6 +101,45 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 
+    TEST(HttpServerLimits, HeaderTimeoutClosesDrippingRequest)
+    {
+        // 请求头总预算：首行之后每 100ms 滴一个头字节，相邻读间隔远小于 readTimeout，
+        // 只有从首字节起算的总时限能把它收掉
+        HttpServerLimits limits;
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+        limits.idleTimeout          = std::chrono::seconds{10};
+        limits.readTimeout          = std::chrono::seconds{10};
+        limits.writeTimeout         = std::chrono::seconds{10};
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText("GET / HTTP/1.1\r\nHost: x\r\nX-Slow: ", kWaitTimeout)) << "请求首段未能写入";
+
+        // 每滴一个头字节观察一次关闭：等待本身就是 100ms 的滴速，收口后不再白等
+        std::string receivedText;
+        for (int byteIndex = 0; byteIndex < 60; ++byteIndex)
+        {
+            if (!client.sendText("a", kWaitTimeout))
+            {
+                // 服务端已经收口：后续写入失败是预期形态，断言落在关闭观察上
+                break;
+            }
+            if (client.waitForClosure(receivedText, std::chrono::milliseconds{100}))
+            {
+                break;
+            }
+        }
+
+        EXPECT_TRUE(client.waitForClosure(receivedText, std::chrono::seconds{2})) << "请求头在 300ms 总时限后仍未被收口";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+    }
+
     /**
      * @brief 处理器运行超过 readTimeout（但没超过 writeTimeout）时，连接不被清扫掐掉
      * @details 处理器相位既不读也不写，此前沿用的是最后一次读刷出的 readTimeout——慢处理器会被
