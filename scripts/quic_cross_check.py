@@ -53,6 +53,14 @@ class Probe(QuicConnectionProtocol):
         self.tickets = []
         # 有没有见过 Retry 报文：由 datagram_received 在喂给 aioquic 之前自己认（长头且类型位为 3）
         self.saw_retry = False
+        # 「只发首批包」档：置上之后连 aioquic 自己在 Retry 之后排出的重发也不许出去。
+        # aioquic 的默认处理会在收到 Retry 后立刻用令牌重发 Initial，那就不再是半途放弃了
+        self.suppress_transmit = False
+
+    def transmit(self):
+        if self.suppress_transmit:
+            return
+        super().transmit()
 
     def datagram_received(self, data, addr):
         """先把这一批字节认一下形态，再原样交给 aioquic。
@@ -134,7 +142,8 @@ async def open_connection(port: int, configuration: QuicConfiguration, *, ticket
     connection.connect(("127.0.0.1", port), now=time.monotonic())
     protocol.transmit()
     if quiet_after_initial:
-        # 等一小段：让 Initial 真的出去，此后本端不再回应任何包
+        # 首批包已经出去，此后本端不再发任何包；包括 aioquic 在收到 Retry 之后排出的那次重发
+        protocol.suppress_transmit = True
         await asyncio.sleep(0.4)
         return protocol
     await protocol.wait_handshake()
@@ -253,8 +262,14 @@ async def scenario_idle_reap(port: int) -> None:
 
 
 async def scenario_handshake_abandon(port: int) -> None:
-    """只发 Initial 就停：服务端不许把这条半开连接一直挂在表里（对照服务端日志的 CONNECTIONS）。"""
-    await open_connection(port, make_configuration(), quiet_after_initial=True)
+    """只发 Initial 就停：默认地址验证先回 Retry，这条半开握手因此不进在线连接表。
+
+    服务端的 Retry 由本端在原始字节上认：见过它即证明入口没为这条握手建任何状态。
+    此后等服务端的告警窗口走完，运行脚本再核对服务端日志里没有正的 CONNECTIONS 行。
+    """
+    transport = await open_connection(port, make_configuration(), quiet_after_initial=True)
+    if not transport.saw_retry:
+        raise AssertionError("服务端没回 Retry：默认地址验证没生效，这条半开握手会直接占住连接表")
     await asyncio.sleep(REAP_WAIT_SECONDS)
 
 

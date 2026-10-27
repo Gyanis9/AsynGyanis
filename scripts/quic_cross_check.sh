@@ -122,6 +122,19 @@ expectLog()
     fi
 }
 
+# expectNoLog <用例名> <日志名> <正则>：服务端自己的事件行一条都不许匹配（否定判据）
+expectNoLog()
+{
+    local caseName="$1" label="$2" pattern="$3"
+    if serverLog "$label" | grep -qE "$pattern"; then
+        echo "  FAIL $caseName：日志里不该出现 $pattern"
+        serverLog "$label" | grep -E "$pattern" | tail -3
+        failures=$((failures + 1))
+    else
+        echo "  PASS $caseName（服务端事件已核对）"
+    fi
+}
+
 head -c 48 /dev/urandom > "$workDir/ticket.key" || { echo "造不出票据密钥文件"; exit 2; }
 
 echo "== 场景一：单实例基本行为（握手、回显、垃圾包、ALPN、流收尾、drain、限额、流控不饿死）"
@@ -175,9 +188,8 @@ stopServer
 
 port="$(startServer abandon --idle-timeout 2)" || exit 2
 runCase handshake-abandon abandon handshake-abandon "$port"
-# 半开连接要被服务端自己收掉：先看到 1 条在线，再看到归零
-expectLog handshake-abandon-reap abandon '^CONNECTIONS 1$'
-expectLog handshake-abandon-reap abandon '^CONNECTIONS 0$'
+# 默认地址验证把半开握手挡在 Retry 上：连接一条都不进表，日志里不该出现正的在线连接数
+expectNoLog handshake-abandon-counted abandon '^CONNECTIONS [1-9][0-9]*$'
 stopServer
 
 echo "== 场景二：跨实例会话恢复（对照装与不装同一份票据密钥）"
