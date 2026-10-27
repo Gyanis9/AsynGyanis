@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9187
+# headers=310 entries=9192
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5900,6 +5900,7 @@ src/Net/Http3/Http3Connection.h	namespace AsynGyanis::Net
 src/Net/Http3/Http3Connection.h	static constexpr std::size_t kMaximumFlushRounds = 64
 src/Net/Http3/Http3Connection.h	std::deque<std::int64_t> m_outboundOrder
 src/Net/Http3/Http3Connection.h	std::function<void(Http3ErrorCode errorCode, std::string_view reason)> onConnectionClosed
+src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId)> onHeaderSectionStarted
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId)> onRequestEnded
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId)> onStreamClosed
 src/Net/Http3/Http3Connection.h	std::function<void(std::int64_t streamId, Http3ErrorCode errorCode, std::string_view reason, bool isDecidedByPeer)> onStreamReset
@@ -6122,6 +6123,7 @@ src/Net/Http3/Http3Session.h	[[nodiscard]] HttpRequestBody::Pump makeBodyPump(st
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool await_ready() const noexcept
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool await_ready() const noexcept
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool exceedsHeaderFieldBudget(std::size_t fieldCount, std::size_t blockByteCount, std::string_view name, std::string_view value) const
+src/Net/Http3/Http3Session.h	[[nodiscard]] bool expireBlockedHeaderSections(Deadline now)
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool hasArmedProduceDeadlines() const noexcept
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool hasOutstandingWork() const noexcept
 src/Net/Http3/Http3Session.h	[[nodiscard]] bool hasRejection() const noexcept
@@ -6206,6 +6208,7 @@ src/Net/Http3/Http3Session.h	std::string path
 src/Net/Http3/Http3Session.h	std::string pendingIncomingBytes
 src/Net/Http3/Http3Session.h	std::uint64_t applicationErrorCode
 src/Net/Http3/Http3Session.h	std::unique_ptr<Http3Connection> m_connection
+src/Net/Http3/Http3Session.h	std::unordered_map<std::int64_t, Deadline> m_headerSectionDeadlines
 src/Net/Http3/Http3Session.h	std::vector<PeerCancelledStream> m_peerCancelledStreams
 src/Net/Http3/Http3Session.h	std::vector<std::coroutine_handle<>> m_deferredWaiterResumes
 src/Net/Http3/Http3Session.h	std::vector<std::int64_t> m_deferredTunnelClosures
@@ -6236,6 +6239,7 @@ src/Net/Http3/Http3Session.h	void await_suspend(const std::coroutine_handle<> wa
 src/Net/Http3/Http3Session.h	void await_suspend(const std::coroutine_handle<> waiter) const noexcept
 src/Net/Http3/Http3Session.h	void beginStreamingRequestIfMatched(std::int64_t streamId)
 src/Net/Http3/Http3Session.h	void cancelStreamByPeer(std::int64_t streamId, std::uint64_t applicationErrorCode, bool isResetByPeer)
+src/Net/Http3/Http3Session.h	void clearHeaderSectionDeadline(std::int64_t streamId) noexcept
 src/Net/Http3/Http3Session.h	void clearProduceDeadline(std::int64_t streamId) noexcept
 src/Net/Http3/Http3Session.h	void closeDeferredTunnels()
 src/Net/Http3/Http3Session.h	void closeTunnel(std::int64_t streamId)
@@ -6252,6 +6256,7 @@ src/Net/Http3/Http3Session.h	void handleResponseSubmissionFailure(std::int64_t s
 src/Net/Http3/Http3Session.h	void markBroken(Http3ErrorCode errorCode, std::string_view reason)
 src/Net/Http3/Http3Session.h	void noteBadRequest() noexcept
 src/Net/Http3/Http3Session.h	void noteBodyProgress(std::int64_t streamId) noexcept
+src/Net/Http3/Http3Session.h	void noteHeaderSectionStarted(std::int64_t streamId)
 src/Net/Http3/Http3Session.h	void noteRequestServed()
 src/Net/Http3/Http3Session.h	void noteStreamAbortedBeforeAnswer(std::int64_t streamId, Http3ErrorCode errorCode, bool isDecidedByPeer) noexcept
 src/Net/Http3/Http3Session.h	void onStreamData(std::int64_t streamId, std::span<const std::uint8_t> data, bool isEndStream)

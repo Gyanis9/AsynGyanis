@@ -2,6 +2,7 @@
 #include "Net/Http3/Http3SessionSupport.h"
 
 #include "Base/Log/LogMacros.h"
+#include "Base/Log/LogThrottle.h"
 #include "Net/Http/Message/HttpChunkFrame.h"
 #include "Net/Http/Message/HttpDate.h"
 #include "Net/Http/Message/HttpHeaderRules.h"
@@ -41,6 +42,9 @@ namespace AsynGyanis::Net
         constexpr std::size_t kIncomingRequestHeaderFieldGuess = 4U;
         constexpr std::size_t kIncomingRequestHeaderByteGuess  = 128U;
 
+        /// 头段总时限收口的告警放行间隔：对端能同时开多条流撞到同一个截止点，逐条一条 WARN 就是日志放大面
+        constexpr std::chrono::seconds kHeaderSectionTimeoutLogWindow{10};
+
         /// 响应自动带上本次请求的 request-id：口径与 h1/h2 一致，调用方显式设过就不覆盖
         void noteRequestIdOnResponse(const HttpRequest &request, HttpResponse &response)
         {
@@ -65,13 +69,19 @@ namespace AsynGyanis::Net
 
         // 连接层的通知逐个接回本会话：它们都在调用方线程上同步触发，这里只是把函数对象绑回来
         Http3Connection::Callbacks callbacks;
+        // HEADERS 帧收齐即记头段预算：QPACK 引用未到达的动态表项时解码挂起，下面的字段回调一个都不来
+        callbacks.onHeaderSectionStarted = [this](const std::int64_t streamId) { noteHeaderSectionStarted(streamId); };
         // 伪头与普通头都从这一路进来：归位（:method/:path/:authority/:protocol）与限额判定都在
         // addRequestHeader 里；尾段的字段由它另落一档，不并进头部
         callbacks.onHeaderField = [this](const std::int64_t streamId, const std::string_view name, const std::string_view value, const bool isTrailers)
         { addRequestHeader(streamId, std::string(name), std::string(value), isTrailers); };
         // 头块收齐：方法/路径此刻可判，命中流式正文路由或扩展 CONNECT 就在这里提前派发。
         // 尾段也走同一个入口——那条流早已从 m_incomingRequests 搬走，函数自己会判出「已派发过」而什么都不做
-        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool) { beginStreamingRequestIfMatched(streamId); };
+        callbacks.onHeaderBlockReceived = [this](const std::int64_t streamId, bool)
+        {
+            clearHeaderSectionDeadline(streamId);
+            beginStreamingRequestIfMatched(streamId);
+        };
         // 正文段：DATA 载荷的额度何时归还由 addRequestBody 决定（非流式到达即还、流式消费才还）
         callbacks.onBodyBytes    = [this](const std::int64_t streamId, const std::span<const std::uint8_t> bytes) { addRequestBody(streamId, bytes); };
         callbacks.onRequestEnded = [this](const std::int64_t streamId) { finishRequest(streamId); };
@@ -203,6 +213,8 @@ namespace AsynGyanis::Net
             return;
         }
         m_hasAbandonedPendingStreams = true;
+        // 连接已经没了：QPACK 阻塞中的头段不会再被解出来，也没有传输层可以发 RESET
+        m_headerSectionDeadlines.clear();
 
         // 连接不会再有报文进来：正在等可写、等正文收尾的处理器等的是一个永不到来的唤醒，
         // 这里把收口信号交给会话的停止源，让它们经 `request.cancelToken()` 按「本端已放弃」往下走
@@ -983,6 +995,9 @@ namespace AsynGyanis::Net
             dropRequest(streamId);
         }
 
+        // 头段那一趟单独判：QPACK 阻塞中的流还没有请求对象，上面两张表都找不到它
+        const bool hasHeaderExpiry = expireBlockedHeaderSections(now);
+
         // 第三趟：产出相位。这一段两种停摆都归它——处理器迟迟不回来（挂在业务自己的等待上），
         // 以及响应字节出不了发送口（对端只连不读的慢消费者，生产者可正挂在等缓冲空间上）
         std::vector<std::int64_t> produceExpiredStreamIds;
@@ -1015,7 +1030,7 @@ namespace AsynGyanis::Net
             dropRequest(streamId);
         }
 
-        if (!expiredStreamIds.empty() || !produceExpiredStreamIds.empty())
+        if (!expiredStreamIds.empty() || !produceExpiredStreamIds.empty() || hasHeaderExpiry)
         {
             // 被收口的流上可能挂着等正文的处理器：当场叫醒，让它们看到终止而不是挂到连接结束
             wakeStreamingRequests();
@@ -1024,6 +1039,57 @@ namespace AsynGyanis::Net
         // 隧道的那把钟同拍查：它不归上面三趟管——三趟判的是「这条流挂了多久没进展」，隧道本就该长期挂着，
         // 而这一趟判的是「本端发出的 Ping 有没有回音」
         expireStaleWebSocketTunnels(now);
+    }
+
+    bool Http3Session::expireBlockedHeaderSections(const Deadline now)
+    {
+        // 先把过点的流号挑出来：下面的回收会摘表（dropRequest），边遍历边摘会踩到迭代器
+        std::vector<std::int64_t> expiredStreamIds;
+        for (const auto &[streamId, deadline]: m_headerSectionDeadlines)
+        {
+            if (deadline <= now)
+            {
+                expiredStreamIds.push_back(streamId);
+            }
+        }
+
+        for (const std::int64_t streamId: expiredStreamIds)
+        {
+            // 挑出来之后可能已被别的路径摘账（头段收齐、流重置）：认不出就跳过，不补日志也不再计一笔
+            if (!m_headerSectionDeadlines.contains(streamId))
+            {
+                continue;
+            }
+            if (auto &throttle = ASYN_LOG_THROTTLED(kHeaderSectionTimeoutLogWindow); throttle.acquire())
+            {
+                LOG_WARN_FMT("Http3Session: 流 {} 的请求头段超出总时限（{} 毫秒，含 QPACK 阻塞等待），本端收口这条流（过去 {} 秒内另有 {} 条同类被压掉）", streamId,
+                             m_serverLimits->requestHeaderTimeout.count(), kHeaderSectionTimeoutLogWindow.count(), throttle.droppedCount());
+            }
+            if (m_metrics != nullptr)
+            {
+                // 与读时限、产出时限同一本账：都是本端按时限收口，不是对端发了坏报文
+                m_metrics->countTimeoutClosedConnection();
+            }
+            abortRequestStream(streamId, Http3ErrorCode::RequestCancelled);
+            dropRequest(streamId);
+        }
+
+        return !expiredStreamIds.empty();
+    }
+
+    void Http3Session::noteHeaderSectionStarted(const std::int64_t streamId)
+    {
+        if (m_serverLimits == nullptr || m_serverLimits->requestHeaderTimeout <= std::chrono::milliseconds::zero())
+        {
+            // 保护关着就不建条目：这张表每拍都要被扫一遍，为一条永不过点的流留格子没有意义
+            return;
+        }
+        m_headerSectionDeadlines[streamId] = std::chrono::steady_clock::now() + m_serverLimits->requestHeaderTimeout;
+    }
+
+    void Http3Session::clearHeaderSectionDeadline(const std::int64_t streamId) noexcept
+    {
+        static_cast<void>(m_headerSectionDeadlines.erase(streamId));
     }
 
     void Http3Session::expireStaleWebSocketTunnels(const Deadline now)
@@ -1067,6 +1133,7 @@ namespace AsynGyanis::Net
 
     void Http3Session::dropRequest(const std::int64_t streamId)
     {
+        clearHeaderSectionDeadline(streamId);
         m_incomingRequests.erase(streamId);
         // 这条流已经不产出了（对端重置、或本端按时限收口）：预算记账跟着摘，否则下一拍又把它当
         // 「还在产出」判一次时限
@@ -1986,6 +2053,8 @@ namespace AsynGyanis::Net
     void Http3Session::markBroken(const Http3ErrorCode errorCode, const std::string_view reason)
     {
         m_isBroken = true;
+        // 连接层已经作废：头段预算不会再有人来收口，留着条目只会让下一拍继续扫一张死表
+        m_headerSectionDeadlines.clear();
         LOG_WARN_FMT("Http3Session: {}（{}），HTTP/3 会话作废", reason, http3ErrorCodeName(errorCode));
     }
 } // namespace AsynGyanis::Net

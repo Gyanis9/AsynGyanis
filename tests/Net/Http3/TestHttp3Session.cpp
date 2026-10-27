@@ -4450,6 +4450,99 @@ namespace AsynGyanis::Net
         EXPECT_EQ(peer.response().status, 200) << "差一个收尾的请求，补上收尾之后就该正常应答";
     }
 
+    /**
+     * @brief QPACK 阻塞中的请求头段：总时限到点就收口这条流
+     * @details 头块引用一条尚未随编码器流到达的动态表项，连接层解码时挂起，不产生任何字段回调，
+     *          因此这条流既没有请求对象，也刷新不到读时限。总时限只能按「HEADERS 帧收齐」起算。
+     *          时限取 300 毫秒、readTimeout 取 60 秒，再把本拍时刻推到 5 秒之后：收口只可能来自头段预算。
+     */
+    TEST(Http3Session, BlockedQpackHeaderSectionExpires)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        const auto                      metrics = std::make_shared<HttpMetricsCollector>();
+        Http3Session                    session = makeSession(
+                opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); }, metrics);
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::seconds{60};
+        limits->requestHeaderTimeout = std::chrono::milliseconds{300};
+        session.setServerLimits(limits);
+
+        // 动态表容量取本端 SETTINGS 公布的 4096：编码器先排容量指令，再插入一项并引用它。
+        // 只把 HEADERS 交给会话、编码器流指令扣下，解码器的 Required Insert Count 因此大于本地插入计数
+        std::vector<QpackHeaderField> fieldLines = {QpackHeaderField{":method", "GET"}, QpackHeaderField{":scheme", kRequestScheme}, QpackHeaderField{":authority", "example.com"},
+                                                    QpackHeaderField{":path", "/blocked"}, QpackHeaderField{"x-blocked-section", "needs-a-dynamic-entry"}};
+        std::string                   headerBlock;
+        std::string                   encoderStreamBytes;
+        QpackEncoder                  encoder(4096, 100, 4096);
+        ASSERT_TRUE(encoder.encodeFieldSection(kFirstRequestStreamId, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_FALSE(encoderStreamBytes.empty()) << "头块没有产生编码器流指令：动态表项没被插入，这条用例就造不出阻塞";
+
+        Http3HeadersFrame headersFrame;
+        headersFrame.encodedFieldSection = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        std::string requestBytes;
+        appendHttp3Frame(requestBytes, headersFrame);
+        session.onStreamData(kFirstRequestStreamId, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()), false);
+
+        ASSERT_FALSE(session.isBroken()) << "头块应当挂起等待编码器流，而不是解码失败";
+        ASSERT_FALSE(session.hasOutstandingWork()) << "阻塞中的头段不该已经产生请求记录";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+
+        ASSERT_EQ(abortedStreams.size(), 1U) << "QPACK 阻塞中的头段没有总时限：对端只要扣住编码器流就能一直占着这条流";
+        EXPECT_EQ(abortedStreams.front().streamId, kFirstRequestStreamId);
+        EXPECT_EQ(abortedStreams.front().applicationErrorCode, 0x010cU) << "本端放弃一条头段没收齐的请求该用 H3_REQUEST_CANCELLED";
+        const HttpServerStats stats = metrics->snapshot();
+        EXPECT_EQ(stats.timeoutClosedCount, 1U) << "头段总时限到期没进与读时限同一本账";
+        EXPECT_EQ(stats.badRequestCount, 0U) << "等不到编码器流的头段不是报文不合规";
+        EXPECT_FALSE(session.hasOutstandingWork()) << "收口之后这条流不该再占会话记账";
+    }
+
+    /**
+     * @brief 正常收齐的 QPACK 头段：预算内不误杀，收齐之后预算即撤下
+     * @details 头块只用静态表与字面量，交给会话时立刻解码成功。第一次把本拍推到 300 毫秒预算之内，
+     *          第二次推到 5 秒之后：第二次仍不收口，才说明收齐那一刻已经撤下这条流的头段记账，
+     *          而不是把预算留到读时限（60 秒）才判。
+     */
+    TEST(Http3Session, KeepsDeliveredQpackHeaderSectionBeyondTheHeaderDeadline)
+    {
+        FakeStreamOpener                opener;
+        std::vector<CapturedStreamData> sentStreamData;
+        std::vector<AbortedStream>      abortedStreams;
+        Http3Session session = makeSession(opener, sentStreamData, nullptr, [&abortedStreams](const std::int64_t streamId, const std::uint64_t applicationErrorCode)
+                                           { abortedStreams.push_back(AbortedStream{streamId, applicationErrorCode}); });
+
+        const auto limits            = std::make_shared<HttpServerLimits>();
+        limits->readTimeout          = std::chrono::seconds{60};
+        limits->requestHeaderTimeout = std::chrono::milliseconds{300};
+        session.setServerLimits(limits);
+
+        const std::vector<QpackHeaderField> fieldLines = {QpackHeaderField{":method", "GET"}, QpackHeaderField{":scheme", kRequestScheme},
+                                                          QpackHeaderField{":authority", "example.com"}, QpackHeaderField{":path", "/normal"}};
+        std::string                         headerBlock;
+        std::string                         encoderStreamBytes;
+        QpackEncoder                        encoder(0, 0, 0);
+        ASSERT_TRUE(encoder.encodeFieldSection(kFirstRequestStreamId, std::span<const QpackHeaderField>(fieldLines), headerBlock, encoderStreamBytes).has_value());
+        ASSERT_TRUE(encoderStreamBytes.empty()) << "只用静态表就不该产生编码器流指令，这条用例的前提变了";
+
+        Http3HeadersFrame headersFrame;
+        headersFrame.encodedFieldSection = std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(headerBlock.data()), headerBlock.size());
+        std::string requestBytes;
+        appendHttp3Frame(requestBytes, headersFrame);
+        session.onStreamData(kFirstRequestStreamId, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(requestBytes.data()), requestBytes.size()), false);
+        ASSERT_TRUE(session.hasOutstandingWork()) << "头段收齐后应当有一条正在收的请求记录";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::milliseconds{150});
+        EXPECT_TRUE(abortedStreams.empty()) << "还没到 300 毫秒预算，正常头段被误杀";
+
+        session.expireStaleRequests(std::chrono::steady_clock::now() + std::chrono::seconds{5});
+        EXPECT_TRUE(abortedStreams.empty()) << "头段已收齐，头段预算应已撤下；5 秒后的收口只可能来自那条没清的记录";
+        EXPECT_TRUE(session.hasOutstandingWork()) << "这条请求仍该在等 END_STREAM";
+    }
+
     namespace
     {
         /**

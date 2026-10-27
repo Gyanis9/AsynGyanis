@@ -70,6 +70,14 @@ namespace AsynGyanis::Net
          */
         struct Callbacks
         {
+            /**
+             * @brief 一个 HEADERS 帧已经收齐、即将交给 QPACK 解码
+             * @param streamId 承载该头段的流
+             * @note QPACK 引用的动态表项尚未到达时，解码返回挂起，onHeaderField 不会触发；
+             *       头段总时限的起点因此只能挂在本通知上，不能等第一个字段
+             */
+            std::function<void(std::int64_t streamId)> onHeaderSectionStarted;
+
             /// 解出一个头字段（含伪头，原样给出）：参数为流号、名、值，以及「它来自尾段还是头段」。
             /// 尾段的字段由会话落进请求的 trailer 一档，不与头部混档（口径同 h1 的 HttpParser 与
             /// h2 的尾部头块）；定界字段（content-length、host）在尾段根本到不了这里，

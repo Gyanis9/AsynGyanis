@@ -41,6 +41,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -830,6 +831,32 @@ namespace AsynGyanis::Net
         void expireStaleWebSocketTunnels(Deadline now);
 
         /**
+         * @brief 收口头段超出总时限的流
+         * @details QPACK 阻塞中的头段还没有请求对象，读时限那张表里找不到它；只能按连接层报来的
+         *          「HEADERS 帧收齐」时刻单独判。到点的流按 H3_REQUEST_CANCELLED 收口，
+         *          并摘掉头段记账，因此每条流只记一条日志。
+         * @param now 本拍时刻（由调用方注入，用例据此精确复现「过点」）
+         * @return true 至少收口了一条流：调用方据此决定要不要在扫完其余相位后唤醒等正文的处理器
+         */
+        [[nodiscard]] bool expireBlockedHeaderSections(Deadline now);
+
+        /**
+         * @brief HEADERS 帧收齐时记下这条流的头段截止时刻
+         * @param streamId 承载该头段的流
+         * @note 配置取 `HttpServerLimits::requestHeaderTimeout`，0 表示关闭这项保护；
+         *       QPACK 引用未到达的动态表项时解码会挂起、字段回调不触发，预算也从这里起算
+         */
+        void noteHeaderSectionStarted(std::int64_t streamId);
+
+        /**
+         * @brief 撤下一条流的头段截止记账
+         * @param streamId 流号
+         * @note 头段解完、流被重置或丢弃、连接收尾都走这一句；漏掉它会让一条早已收齐的流
+         *       在下一拍被头段预算误杀
+         */
+        void clearHeaderSectionDeadline(std::int64_t streamId) noexcept;
+
+        /**
          * @brief 在安全点把攒下的入向字节交给各条隧道的对端对象
          * @note 不能在连接层的回调里喂：喂进去会让业务协程立刻跑起来，它回头就推帧出去，
          *       而回调期间重入连接层是未定义行为
@@ -958,6 +985,10 @@ namespace AsynGyanis::Net
         Core::Cancelable m_shutdownCancelable{};
         /// 正在接收的请求：键是流号
         std::map<std::int64_t, IncomingRequest> m_incomingRequests;
+        /// 头段截止时刻：流号 → 截止点。只覆盖「HEADERS 帧收齐到这段头解完」；与 m_incomingRequests
+        /// 里的读时限分开，前者管整段总预算，后者管相邻两段字节的间隔。QPACK 阻塞的流没有请求记录，
+        /// 只能落在这张表里
+        std::unordered_map<std::int64_t, Deadline> m_headerSectionDeadlines;
         /// 承载层报来的一次「对端打断」：流号、对端给的应用层错误码、以及是复位还是叫停。
         /// 它们到的时候正在传输层的回调里，只能先记下来，等 pump() 这个安全点再统一回收
         /// （见 cancelStreamByPeer / drainPeerCancelledStreams）

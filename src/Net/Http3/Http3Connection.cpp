@@ -595,6 +595,10 @@ namespace AsynGyanis::Net
         if (std::holds_alternative<Http3HeadersFrame>(frame))
         {
             const auto &headersFrame = std::get<Http3HeadersFrame>(frame);
+            if (m_callbacks.onHeaderSectionStarted)
+            {
+                m_callbacks.onHeaderSectionStarted(streamId);
+            }
             // 头段之后再来一个头段就是尾段（RFC 9114 §4.1）；正文开始之前只允许一个头段
             const bool isTrailers = state.isHeaderSectionSeen;
             if (isTrailers && state.isTrailersSeen)
