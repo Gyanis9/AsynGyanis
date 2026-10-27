@@ -345,8 +345,7 @@ namespace AsynGyanis::Net
         // CR/LF/NUL 一旦放行，字段值就能伪造出状态行或截断头部，这是响应拆分的最小形态
         if (!containsOnlyFieldValueCharacters(value))
         {
-            return std::unexpected(
-                    makeHeaderError(Http3HeaderErrorKind::IllegalFieldValueCharacter, "头字段取值含控制字符（RFC 9110 §5.6.2 只允许 HTAB、可见 ASCII 与 obs-text）"));
+            return std::unexpected(makeHeaderError(Http3HeaderErrorKind::IllegalFieldValueCharacter, "头字段取值含控制字符（RFC 9110 §5.5 只允许 HTAB、可见 ASCII 与 obs-text）"));
         }
         return {};
     }
@@ -411,13 +410,13 @@ namespace AsynGyanis::Net
             return std::unexpected(makeHeaderError(Http3HeaderErrorKind::MissingPseudoHeader, "请求缺少 :path（RFC 9114 §4.3.1）"));
         }
 
-        // asterisk-form 说的是「整台服务器」而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4，
+        // asterisk-form 说的是「整台服务器」而不是某个资源，只有 OPTIONS 能用（RFC 9112 §3.2.4，
         // RFC 9114 §4.3.1 沿用同一口径）。h1 的请求行解析早就按方法判过它，这里补的是这一半：
         // 否则同一个目标在两条通道上一个判语法错误、一个放行到「没有路由匹配」报成 404
         if (m_pathText == "*" && m_methodText != "OPTIONS")
         {
             return std::unexpected(makeHeaderError(Http3HeaderErrorKind::ProhibitedPseudoForMethod,
-                                                   ":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 " + m_methodText + "（RFC 9110 §7.4）"));
+                                                   ":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 " + m_methodText + "（RFC 9112 §3.2.4）"));
         }
 
         // 权威来源的三条规则（RFC 9114 §4.3.1）：http/https 必须有其中一项；出现就必须非空；

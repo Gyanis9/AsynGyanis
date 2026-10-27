@@ -755,7 +755,7 @@ namespace AsynGyanis::Net
          * @param errorText 输出参数：失败时的中文原因（进入调用时先清空）
          * @return true 取值形态与方法相配
          * @details CONNECT 与带 :protocol 的扩展 CONNECT 在调用点之前已按各自的伪头规则返回，
-         *          走到这里的方法都要求 origin-form；`*` 只有 OPTIONS 能用（RFC 9110 §7.4）。
+         *          走到这里的方法都要求 origin-form；`*` 只有 OPTIONS 能用（RFC 9112 §3.2.4）。
          *          origin-form 的起点是 /（RFC 9112 §3.2.1 的 absolute-path），h3 的 :path 走同一条
          *          口径（RFC 9114 §4.3.1）。
          */

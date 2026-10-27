@@ -1963,7 +1963,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：响应头值含 CR 时按协议错误拒收
-     * @details CR/LF/NUL 既不是合法字段值字节（RFC 9110 §5.6.2），又是响应拆分的经典入口；
+     * @details CR/LF/NUL 既不是合法字段值字节（RFC 9110 §5.5），又是响应拆分的经典入口；
      *          HPACK 解出来的字节必须逐条过这一关，不能因为它是二进制帧就跳过。
      */
     TEST(Http2ClientConnection, RejectsResponseHeaderValueContainingCarriageReturn)

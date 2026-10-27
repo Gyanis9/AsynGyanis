@@ -1329,14 +1329,14 @@ namespace AsynGyanis::Net
             writeError(errorText, ":path 伪头的值为空：RFC 9113 §8.3.1 要求 http/https URI 的 :path 不能为空（只有 OPTIONS 可以用 \"*\" 表示「整个服务」）");
             return false;
         }
-        // asterisk-form 说的是整台服务器而不是某个资源，只有 OPTIONS 能用（RFC 9110 §7.4）：h1 的请求行
+        // asterisk-form 说的是整台服务器而不是某个资源，只有 OPTIONS 能用（RFC 9112 §3.2.4）：h1 的请求行
         // 解析早就按方法判过它，这里补的是这一半——否则同一个目标在两条通道上一个判语法错误、
         // 一个放行到「没有路由匹配」报成 404
         if (path == "*")
         {
             if (method != "OPTIONS")
             {
-                writeError(errorText, std::format(":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}（RFC 9110 §7.4）："
+                writeError(errorText, std::format(":path 取值 \"*\"（asterisk-form）只用于 OPTIONS，收到的是 {}（RFC 9112 §3.2.4）："
                                                   "请给出 origin-form 的路径（以 / 开头）",
                                                   method));
                 return false;

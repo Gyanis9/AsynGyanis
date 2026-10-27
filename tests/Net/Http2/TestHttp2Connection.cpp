@@ -866,7 +866,7 @@ namespace AsynGyanis::Net
     /**
      * @brief 星号形式只挡「不是 OPTIONS」：OPTIONS 自己用它当目标时必须照常交出请求
      * @details 上一批样本里那条 GET + "*" 的反面判据。写成「凡 "*" 都拒」会让本框架没法应答
-     *          RFC 9110 §7.4 里唯一合法使用该形式的请求，而 h1 侧是同一条口径（只放行 OPTIONS）。
+     *          RFC 9112 §3.2.4 里唯一合法使用该形式的请求，而 h1 侧是同一条口径（只放行 OPTIONS）。
      */
     TEST(Http2Connection, AcceptsAsteriskPathForOptions)
     {
@@ -986,7 +986,7 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 钉住：斜杠要求不波及两个例外——OPTIONS 的星号目标与不带 :path 的 CONNECT
-     * @details asterisk-form 只属于 OPTIONS（RFC 9110 §7.4）；CONNECT 按 RFC 9113 §8.5 要求省略
+     * @details asterisk-form 只属于 OPTIONS（RFC 9112 §3.2.4）；CONNECT 按 RFC 9113 §8.5 要求省略
      *          :path。两条例外在伪头判定里各自提前返回，以 / 开头的约束只能落在其余方法上。
      */
     TEST(Http2Connection, AcceptsAsteriskPathAndPathlessConnect)
