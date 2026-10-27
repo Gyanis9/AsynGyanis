@@ -1,12 +1,14 @@
 // TestHttpServerLimits.cpp —— HTTP 连接级限额（HttpServerLimits + TcpServer 空闲清扫）的系统级覆盖：
 //   一. 空闲超时：连上却不发任何字节的连接，在 idleTimeout + 清扫节拍内被服务端关闭；
 //   二. 读超时：只发半条请求后静止，按 readTimeout 收口（idleTimeout 故意设得很长，证明起作用的是读超时）；
-//   三. 单连接请求上限：达到上限的那条响应带 Connection: close，其后连接关闭、新请求不再被服务；
-//   四. 写超时：本机无法覆盖——回环上把接收缓冲压到 8 KiB、响应体给到 8 MiB，整份响应仍在一次
+//   三. 请求头总时限：头字节以远小于 readTimeout 的间隔滴入，仍按 requestHeaderTimeout 的总预算收口；
+//       反向守卫是头在预算内收齐后正文慢速到达——总预算此时已解除，响应必须照常完成；
+//   四. 单连接请求上限：达到上限的那条响应带 Connection: close，其后连接关闭、新请求不再被服务；
+//   五. 写超时：本机无法覆盖——回环上把接收缓冲压到 8 KiB、响应体给到 8 MiB，整份响应仍在一次
 //       WSASend 里发完（Windows 回环不制造部分写，此前实测过），构造不出确定性的「写阻塞」。
 //       机制（发送前按 writeTimeout 刷新截止时间）仍在实现里，端到端验证只能在真实网络上做。
-//   五. 拒绝面：清扫节拍设为 0 时，同一份空闲连接不再被超时收口。
-//   六. 优雅关闭（TcpServer::drain）：在途请求被等完才收口（客户端拿到完整响应），
+//   六. 拒绝面：清扫节拍设为 0 时，同一份空闲连接不再被超时收口。
+//   七. 优雅关闭（TcpServer::drain）：在途请求被等完才收口（客户端拿到完整响应），
 //      处理时间远超期限时则在期限附近返回并强关连接。
 // 用例全部走真实回环套接字（清扫协程在 TcpServer 内部），不依赖任何外部服务。
 // 回环夹具（RunningHttpServerFixture / LoopbackClient）在 HttpTestSupport.h 中，与观测性用例共用一份。
@@ -137,6 +139,53 @@ namespace AsynGyanis::Net
         }
 
         EXPECT_TRUE(client.waitForClosure(receivedText, std::chrono::seconds{2})) << "请求头在 300ms 总时限后仍未被收口";
+        EXPECT_TRUE(receivedText.empty()) << "头预算到点收口时服务端不应回任何字节：" << receivedText;
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+    }
+
+    TEST(HttpServerLimits, SlowBodyAfterQuickHeaderIsNotClosedByHeaderBudget)
+    {
+        // 反向守卫：头预算只管「首字节到头部收齐」。头在 300ms 内收齐，正文每 100ms 一字节、
+        // 总耗时远超头预算，但相邻读间隔远小于 readTimeout——总预算必须已经解除，响应照常完成
+        HttpServerLimits limits;
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+        limits.idleTimeout          = std::chrono::seconds{10};
+        limits.readTimeout          = std::chrono::seconds{10};
+        limits.writeTimeout         = std::chrono::seconds{10};
+
+        const RouteRegistrar registerSlowBodyRoute = [](Router &router, Core::EventLoop &)
+        {
+            router.post("/slow-body",
+                        [](HttpRequest &request, HttpResponse &response) -> Core::Task<>
+                        {
+                            response.setBody("body-length=" + std::to_string(request.body().size()));
+                            co_return;
+                        });
+        };
+
+        RunningHttpServerFixture fixture(limits, std::chrono::milliseconds{30}, SlowRouteOptions{}, registerSlowBodyRoute);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "服务器未在时限内进入接受循环";
+
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        LoopbackClient client(listeningPort);
+        ASSERT_TRUE(client.isValid()) << "回环连接失败";
+        ASSERT_TRUE(client.sendText("POST /slow-body HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n", kWaitTimeout)) << "请求头未能写入";
+
+        // 正文共 5 字节、每 100ms 发一个：总时长约 500ms，超过 300ms 头预算两倍
+        for (int byteIndex = 0; byteIndex < 5; ++byteIndex)
+        {
+            ASSERT_TRUE(client.sendText("a", kWaitTimeout)) << "正文第 " << byteIndex << " 字节未能写入：头预算误杀了慢正文";
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        }
+
+        std::string receivedText;
+        EXPECT_TRUE(client.waitForText(receivedText, "body-length=5", kWaitTimeout)) << "慢正文没有得到完整响应：头预算越界管到了正文";
+        EXPECT_NE(receivedText.find("HTTP/1.1 200"), std::string::npos) << "慢正文没有拿到 200：" << receivedText;
+
+        // 响应后连接仍按 keep-alive 留着：由客户端收口，再确认会话正常退场
+        client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
     }
 

@@ -145,6 +145,7 @@ namespace AsynGyanis::Net
         serverMembers.emplace("limits", object(Base::ConfigObject{
                                                 {"idle_timeout_ms", integer(30000)},
                                                 {"read_timeout_ms", integer(15000)},
+                                                {"request_header_timeout_ms", integer(1234)},
                                                 {"write_timeout_ms", integer(20000)},
                                                 {"settings_acknowledgement_timeout_ms", integer(5000)},
                                                 {"web_socket_pong_timeout_ms", integer(8000)},
@@ -195,6 +196,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(configuration.handlerTimeout, std::chrono::milliseconds(4500));
         EXPECT_EQ(configuration.limits.idleTimeout, std::chrono::milliseconds(30000));
         EXPECT_EQ(configuration.limits.readTimeout, std::chrono::milliseconds(15000));
+        EXPECT_EQ(configuration.limits.requestHeaderTimeout, std::chrono::milliseconds(1234));
         EXPECT_EQ(configuration.limits.writeTimeout, std::chrono::milliseconds(20000));
         EXPECT_EQ(configuration.limits.settingsAcknowledgementTimeout, std::chrono::milliseconds(5000));
         EXPECT_EQ(configuration.limits.webSocketPongTimeout, std::chrono::milliseconds(8000));

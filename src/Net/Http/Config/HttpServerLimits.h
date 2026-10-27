@@ -1,6 +1,6 @@
 /**
  * @file HttpServerLimits.h
- * @brief HTTP 连接级限额：空闲 / 读 / 写超时与单连接请求数上限
+ * @brief HTTP 连接级限额：空闲 / 读 / 写超时、请求头总时限与单连接请求数上限
  * @author Gyanis
  * @date 2026-09-13
  * @version 1.0.0

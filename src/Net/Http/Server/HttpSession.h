@@ -591,7 +591,7 @@ namespace AsynGyanis::Net
                 }
             };
 
-            // 头部块收齐、会话收尾与流水线复位时都走这里
+            // 本条报文收尾时清预算：头部块收齐、无正文 Done、应答后的流水线复位与解析错误收口都走这里；连接因读失败等结束靠协程帧销毁，不经过它
             const auto clearRequestHeaderDeadline = [&]() { hasRequestHeaderDeadline = false; };
 
             // 读相位的截止时间：等新请求按空闲容忍度；请求已经开始则用 readTimeout，
