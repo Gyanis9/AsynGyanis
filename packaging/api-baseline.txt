@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=311 entries=9214
+# headers=311 entries=9218
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5271,6 +5271,8 @@ src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] std::size_t inFlightStreamCo
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] std::string encodeLocalSettings() const
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] std::uint32_t lastOpenedStreamId() const noexcept
 src/Net/Http2/Http2ClientConnection.h	[[nodiscard]] std::uint32_t openedStreamCount() const noexcept
+src/Net/Http2/Http2ClientConnection.h	bool acceptResponseBodyLength(PendingStream &stream)
+src/Net/Http2/Http2ClientConnection.h	bool acceptResponseHeaderFields(PendingStream &stream, const std::vector<HpackHeaderField> &headerFields, std::vector<std::pair<std::string, std::string>> *destination, bool isFinalResponse)
 src/Net/Http2/Http2ClientConnection.h	bool appendHeaderBlockFragment(PendingStream &stream, std::string_view fragment)
 src/Net/Http2/Http2ClientConnection.h	bool applyHeaderBlockRules(PendingStream &stream, bool hadFinalStatusBefore, bool isEndStream)
 src/Net/Http2/Http2ClientConnection.h	bool applyPeerSettings(const Http2SettingsPayload &payload)
@@ -5293,6 +5295,7 @@ src/Net/Http2/Http2ClientConnection.h	bool isAwaitingContinuation
 src/Net/Http2/Http2ClientConnection.h	bool isFinalBatchDelivered
 src/Net/Http2/Http2ClientConnection.h	bool isFinalStatusReceived
 src/Net/Http2/Http2ClientConnection.h	bool isGuaranteedUnprocessed
+src/Net/Http2/Http2ClientConnection.h	bool isHeadRequest
 src/Net/Http2/Http2ClientConnection.h	bool isPendingEndStream
 src/Net/Http2/Http2ClientConnection.h	bool isReset
 src/Net/Http2/Http2ClientConnection.h	bool isResponseComplete
@@ -5317,6 +5320,7 @@ src/Net/Http2/Http2ClientConnection.h	std::int64_t m_connectionSendWindowByteCou
 src/Net/Http2/Http2ClientConnection.h	std::int64_t m_peerMaximumFrameByteSize
 src/Net/Http2/Http2ClientConnection.h	std::int64_t sendWindowByteCount
 src/Net/Http2/Http2ClientConnection.h	std::map<std::uint32_t, PendingStream> m_pendingStreams
+src/Net/Http2/Http2ClientConnection.h	std::optional<std::size_t> declaredContentLength
 src/Net/Http2/Http2ClientConnection.h	std::size_t m_waitingStreamCount
 src/Net/Http2/Http2ClientConnection.h	std::size_t maximumHeaderBlockByteCount
 src/Net/Http2/Http2ClientConnection.h	std::size_t maximumResponseBodyBytes

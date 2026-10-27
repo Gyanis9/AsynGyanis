@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -335,6 +336,11 @@ namespace AsynGyanis::Net
             std::string               undeliveredBodyBytes{};       ///< 到了货但还没交给接收口的那段正文
             std::size_t               receivedBodyByteCount{0};     ///< 这条流上累计收到的正文字节（上限按它判，不按缓冲）
             bool                      isFinalBatchDelivered{false}; ///< 收尾那一批（含零长收尾）已经交出去了
+            /// 响应头声明的正文长度（RFC 9110 §8.6）：收到 END_STREAM 时与实际 DATA 累计比对。
+            /// HEAD 的响应允许带 GET 那份长度而无正文（§9.3.2），204/304 按定义没有正文，
+            /// 这三种情形不比对
+            std::optional<std::size_t> declaredContentLength{};
+            bool                       isHeadRequest{false}; ///< 请求方法是 HEAD：响应有 content-length 也可能没有正文
         };
 
         /// 处理一层已解出的帧；返回 false 表示连接不可再用
@@ -359,6 +365,27 @@ namespace AsynGyanis::Net
         /// @return false 表示这段头块没有被接受：HPACK 解码失败（连接已判死），或最终响应之后又出现带
         ///         :status 的头块（按 §8.1/§8.1.1 判成畸形响应，只结这条流，连接仍可用）
         bool finishHeaderBlock(PendingStream &stream, bool recordFields);
+
+        /**
+         * @brief 校验一段响应头块里的普通字段，并通过则落进响应头或尾部头块
+         * @param stream 这条流：content-length 的声明值记在它上面
+         * @param headerFields 解出的字段（伪头跳过，由 :status 那一支处理）
+         * @param destination 落账位置；为空表示只校验不落账（过渡响应：字段丢弃，但语法照样要过，
+         *        §8.1.1 要求客户端不接受畸形响应）
+         * @param isFinalResponse 这一段是不是带最终状态码的响应头：只有它里面的 content-length 才是正文长度声明
+         * @return true 全部字段合规并已落账
+         * @return false 已按畸形响应结掉这条流（§8.1.1：流错误 PROTOCOL_ERROR，连接留给别的流）
+         */
+        bool acceptResponseHeaderFields(PendingStream &stream, const std::vector<HpackHeaderField> &headerFields, std::vector<std::pair<std::string, std::string>> *destination,
+                                        bool isFinalResponse);
+
+        /**
+         * @brief 收到 END_STREAM 时核对声明的 content-length 与实际 DATA 累计
+         * @param stream 这条流
+         * @return true 长度相符，或这条流不参与比对（没声明、HEAD、204、304）
+         * @return false 长度不符，已按流错误 RST 掉这条流
+         */
+        bool acceptResponseBodyLength(PendingStream &stream);
 
         /// 把一段头块片段攒进这条流的缓冲；越过本端上限时终止连接——不肯存的片段没法交给 HPACK 解码器，两边的动态表会从此错位
         bool appendHeaderBlockFragment(PendingStream &stream, std::string_view fragment);

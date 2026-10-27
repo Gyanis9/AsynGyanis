@@ -2,6 +2,7 @@
 
 #include "Net/Http2/Http2ClientConnection.h"
 
+#include "Base/Log/LogEscaping.h"
 #include "Base/Log/LogMacros.h"
 #include "Core/Coroutine/CancellationWatch.h"
 #include "Core/Coroutine/DeadlineGuard.h"
@@ -25,6 +26,19 @@ namespace AsynGyanis::Net
     {
         /// 一次从通路上读的字节数：半帧由解码器自己留着，与服务端侧同一档
         constexpr std::size_t kReadChunkByteCount = 8192;
+
+        /// 头名里有没有 A-Z：HTTP/2 的字段名必须全小写（RFC 9113 §8.2）
+        bool containsUppercaseAscii(const std::string_view text) noexcept
+        {
+            for (const char character: text)
+            {
+                if (character >= 'A' && character <= 'Z')
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         // 窗口初值与上限两条常量在 Http2Frame.h：那是角色中立的协议数值，两条方向共用一份
     } // namespace
@@ -114,6 +128,10 @@ namespace AsynGyanis::Net
         payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::EnablePush), .value = 0U});
         payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::InitialWindowSize), .value = m_config.initialWindowByteCount});
         payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::MaxFrameSize), .value = m_config.maximumFrameByteSize});
+        // 本端解码器按 HpackDecoderLimits 的出厂值构造，通告给对端的头列表上限必须就是同一个数：
+        // 两个数各写一份的话，本端按住一把更紧的尺子拒收，对端却以为可以发到通告值
+        payload.parameters.push_back(Http2Setting{.identifier = static_cast<std::uint16_t>(Http2SettingIdentifier::MaxHeaderListSize),
+                                                  .value      = static_cast<std::uint32_t>(HpackDecoderLimits{}.maximumHeaderListByteCount)});
         return encodeHttp2SettingsFrame(payload);
     }
 
@@ -595,7 +613,7 @@ namespace AsynGyanis::Net
             if (*parsedStatusCode >= 100 && *parsedStatusCode < 200)
             {
                 stream.lastHeaderBlockWasInformational = true;
-                return true;
+                return acceptResponseHeaderFields(stream, headerFields, nullptr, false);
             }
             stream.isFinalStatusReceived = true;
             if (recordFields)
@@ -613,16 +631,99 @@ namespace AsynGyanis::Net
 
         // 两段各有各的落账处：不带 :status 的那一段是正文之后的尾部头块（RFC 9113 §8.1），
         // 过去与响应头部混进同一张表，调用方读不出「这是收完正文才知道的结果」
-        std::vector<std::pair<std::string, std::string>> &destination = carriesStatus ? stream.response.headers : stream.response.trailers;
+        std::vector<std::pair<std::string, std::string>> *const destination = carriesStatus ? &stream.response.headers : &stream.response.trailers;
+        return acceptResponseHeaderFields(stream, headerFields, destination, carriesStatus);
+    }
+
+    bool Http2ClientConnection::acceptResponseHeaderFields(PendingStream &stream, const std::vector<HpackHeaderField> &headerFields,
+                                                           std::vector<std::pair<std::string, std::string>> *const destination, const bool isFinalResponse)
+    {
+        const auto rejectField = [this, &stream](std::string reason)
+        {
+            rejectStreamAsMalformedResponse(stream, std::format("流 {} 的响应头不合规：{}", stream.streamId, std::move(reason)));
+            return false;
+        };
+
         for (const HpackHeaderField &field: headerFields)
         {
-            // 伪头一律不进业务那张表：它们已经按各自的意思处理过（:status 上面那一段），其余的在响应里不合法
-            if (!field.name.empty() && field.name.front() != ':')
+            if (field.name.empty())
             {
-                destination.emplace_back(field.name, field.value);
+                return rejectField("出现空头名：RFC 9113 §8.2 要求头部名必须是非空的小写字段名");
+            }
+            if (field.name.front() == ':')
+            {
+                continue; // 伪头由 :status 那一支处理：这里只看普通字段与尾部字段
+            }
+            // 字段名必须是小写 tchar（§8.2）：大写会让同一个头部出现两种写法，
+            // 而空白、冒号与控制字符会让报文无法定界
+            if (containsUppercaseAscii(field.name))
+            {
+                return rejectField(std::format("字段名 \"{}\" 含大写字母：RFC 9113 §8.2 要求 HTTP/2 的头部名全小写", Base::escapeForLog(field.name)));
+            }
+            if (!isValidHeaderFieldName(field.name))
+            {
+                return rejectField(std::format("字段名 \"{}\" 含 token 之外的字符：RFC 9113 §8.2 要求字段名符合 RFC 9110 §5.1 的 token 语法", Base::escapeForLog(field.name)));
+            }
+            // 连接特定头在 HTTP/2 里一律不存在（§8.2.2）：它们描述的是 h1 的连接语义，
+            // 收下来会让下游按另一条通道的规矩理解这份响应
+            if (isConnectionSpecificHeaderName(field.name))
+            {
+                return rejectField(std::format("出现连接特定头 \"{}\"：RFC 9113 §8.2.2 禁止 connection/keep-alive/proxy-connection/"
+                                               "transfer-encoding/upgrade 出现在 HTTP/2 报文里",
+                                               Base::escapeForLog(field.name)));
+            }
+            // te 是唯一的例外：只允许取值 trailers（§8.2.2）
+            if (field.name == "te" && !teValueIsTrailers(field.value))
+            {
+                return rejectField(std::format("te 的取值是 \"{}\"：RFC 9113 §8.2.2 只允许 te: trailers", Base::escapeForLog(field.value)));
+            }
+            if (!containsOnlyFieldValueCharacters(field.value))
+            {
+                return rejectField(std::format("字段 \"{}\" 的值含 CR/LF/NUL 之类的控制字符：这类字节既不是合法头值，又是响应拆分的入口", Base::escapeForLog(field.name)));
+            }
+            // content-length 与请求侧同一口径：取值必须是单个十进制数字，重复出现必须完全一致。
+            // 长度有歧义时中间设备与业务可能各按一种读法理解正文边界，正是响应走私的形态
+            if (isFinalResponse && field.name == "content-length")
+            {
+                std::size_t declaredLength = 0;
+                if (!parseContentLengthValue(field.value, declaredLength))
+                {
+                    return rejectField(std::format("content-length 的取值 \"{}\" 不是单个十进制数字：RFC 9110 §8.6 要求它只含数字", Base::escapeForLog(field.value)));
+                }
+                if (stream.declaredContentLength.has_value())
+                {
+                    if (*stream.declaredContentLength != declaredLength)
+                    {
+                        return rejectField(std::format("content-length 前后冲突：{} 与 {} 指向不同的正文边界（RFC 9110 §8.6 要求重复出现时取值一致）",
+                                                       *stream.declaredContentLength, declaredLength));
+                    }
+                    continue; // 重复且相等：合并成一条，只保留第一次落账
+                }
+                stream.declaredContentLength = declaredLength;
+            }
+            if (destination != nullptr)
+            {
+                destination->emplace_back(field.name, field.value);
             }
         }
         return true;
+    }
+
+    bool Http2ClientConnection::acceptResponseBodyLength(PendingStream &stream)
+    {
+        // HEAD 的 content-length 说的是同一个资源用 GET 取时的长度（RFC 9110 §9.3.2），204 与 304
+        // 按定义没有正文（§15.3.5、§15.4.5）：这三种情形不拿声明值与实际 DATA 比对
+        if (!stream.declaredContentLength.has_value() || stream.isHeadRequest || stream.response.statusCode == 204 || stream.response.statusCode == 304)
+        {
+            return true;
+        }
+        if (stream.receivedBodyByteCount == *stream.declaredContentLength)
+        {
+            return true;
+        }
+        rejectStreamAsMalformedResponse(stream, std::format("流 {} 声明的 content-length 是 {} 字节，实际收到 {} 字节：RFC 9110 §8.6 要求正文长度与声明一致", stream.streamId,
+                                                            *stream.declaredContentLength, stream.receivedBodyByteCount));
+        return false;
     }
 
     bool Http2ClientConnection::handleHeadersFrame(const Http2Frame &frame)
@@ -813,6 +914,12 @@ namespace AsynGyanis::Net
                                                                     streamId));
                 return true;
             }
+            // 正文到此为止：声明过 content-length 的，实际累计必须与它相等，否则这份响应的边界
+            // 在两处说法不同——复用连接时下一份响应会从错误的位置开始读
+            if (!acceptResponseBodyLength(stream))
+            {
+                return true;
+            }
             stream.isResponseComplete = true;
         }
         return true;
@@ -860,6 +967,12 @@ namespace AsynGyanis::Net
         }
         if (isEndStream)
         {
+            // 头部或尾部头块自己收尾时同样要核对声明的正文长度：没有 DATA 的响应在这里与
+            // 「DATA 带 END_STREAM」那一支走同一条判据
+            if (!acceptResponseBodyLength(stream))
+            {
+                return false;
+            }
             stream.isResponseComplete = true;
         }
         return true;
@@ -1146,9 +1259,9 @@ namespace AsynGyanis::Net
         }
 
         const std::vector<HpackHeaderField> fields = buildRequestFields(scheme, authority, method, path, extraHeaders);
-
-        PendingStream pending;
-        pending.streamId = streamId;
+        PendingStream                       pending;
+        pending.streamId      = streamId;
+        pending.isHeadRequest = method == "HEAD"; // HEAD 的响应按 RFC 9110 §9.3.2 可以带 content-length 而不带正文
         // 新流的发送窗口从对端通告的初值起算（§6.9.2）；本端 SETTINGS 里那条改的是自己收侧的账
         pending.sendWindowByteCount = static_cast<std::int64_t>(m_peerInitialStreamWindowByteCount);
         // 接收口按值存进这条流的记录：调用方那份 std::function 只保证活到 co_await 返回，

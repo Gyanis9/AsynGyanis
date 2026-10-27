@@ -561,11 +561,11 @@ namespace AsynGyanis::Net
          * @param clientSide 本端那一头的通路
          * @param outcome 就地收集结论
          */
-        Core::Task<void> runLateFrameClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome)
+        Core::Task<void> runLateFrameClient(Core::EventLoop &loop, TcpStream clientSide, HeaderBlockRunOutcome &outcome, std::string method = "GET")
         {
             auto connection   = std::make_unique<Http2ClientConnection>(loop, HttpOutboundConnection::forPlain(HttpOutboundEndpointKey{"peer", 0U, false}, std::move(clientSide)));
             outcome.isStarted = co_await connection->start(kClientWaitTimeout);
-            const Http2ClientResponse response = co_await connection->request("http", "peer", "GET", "/tick", {}, {}, kClientWaitTimeout);
+            const Http2ClientResponse response = co_await connection->request("http", "peer", method, "/tick", {}, {}, kClientWaitTimeout);
             outcome.statusCode                 = response.statusCode;
             outcome.body                       = response.body;
             outcome.headers                    = response.headers;
@@ -955,6 +955,51 @@ namespace AsynGyanis::Net
             }
             loop.stop();
             co_return;
+        }
+
+        /// 一趟「脚本化响应」的结论：本端看到的结果与对端收到的回帧
+        struct ScriptedResponseRun
+        {
+            PeerFrames            received; ///< 对端收到的本端回帧
+            HeaderBlockRunOutcome outcome;  ///< 本端交回的响应与连接状态
+        };
+
+        /**
+         * @brief 用一段脚本响应跑一条请求：建一对描述符，起脚本对端与本端，返回两边的结论
+         * @param method 请求方法（HEAD 与 GET 的长度规则不同）
+         * @param script 对端要回的完整帧序列（不含 SETTINGS，那条由对端先发）
+         * @return ScriptedResponseRun 本端结论与对端收到的回帧
+         */
+        ScriptedResponseRun runScriptedResponse(const std::string &method, const std::string &script)
+        {
+            Core::EventLoop loop;
+            int             clientDescriptor = -1;
+            int             peerDescriptor   = -1;
+            EXPECT_TRUE(Platform::FileDescriptor::createPair(clientDescriptor, peerDescriptor));
+
+            ScriptedResponseRun run;
+            auto                peerWork   = runAnsweringPeer(loop, TcpStream(Core::AsyncSocket(loop, peerDescriptor)), run.received, script);
+            auto                clientWork = runLateFrameClient(loop, TcpStream(Core::AsyncSocket(loop, clientDescriptor)), run.outcome, method);
+            static_cast<void>(peerWork.handle().resume());
+            static_cast<void>(clientWork.handle().resume());
+            loop.run();
+            return run;
+        }
+
+        /**
+         * @brief 断言对端收到一枚落在流 1 上、带指定错误码的 RST_STREAM
+         * @param received 对端收到的帧
+         * @param expectedCode 期望的流错误码
+         */
+        void expectResetForStreamOne(const PeerFrames &received, const Http2ErrorCode expectedCode)
+        {
+            const Http2Frame *reset = findFrame(received.frames, Http2FrameType::RstStream, false);
+            ASSERT_NE(reset, nullptr) << "本端没有回 RST_STREAM：这条流没有被按流错误结掉";
+            EXPECT_EQ(reset->header.streamId, 1U) << "RST_STREAM 落到了别的流上";
+            Http2RstStreamPayload resetPayload;
+            std::string           resetErrorText;
+            ASSERT_TRUE(parseHttp2RstStreamPayload(*reset, resetPayload, &resetErrorText)) << resetErrorText;
+            EXPECT_EQ(resetPayload.errorCode, expectedCode) << "流错误码不对，排查会被带去别处";
         }
 
         /// 本端一侧只走到前奏：start() 的结论就是判据
@@ -1656,6 +1701,13 @@ namespace AsynGyanis::Net
 
         ASSERT_NE(ownSettings, nullptr) << "客户端 SETTINGS 都没发出来";
         EXPECT_EQ(ownSettings->header.streamId, 0U) << "SETTINGS 只能是连接级帧（§6.5）";
+        Http2SettingsPayload ownSettingsPayload;
+        std::string          ownSettingsErrorText;
+        ASSERT_TRUE(parseHttp2SettingsPayload(*ownSettings, ownSettingsPayload, &ownSettingsErrorText)) << ownSettingsErrorText;
+        std::uint32_t maximumHeaderListSize = 0;
+        ASSERT_TRUE(tryGetHttp2Setting(ownSettingsPayload, Http2SettingIdentifier::MaxHeaderListSize, maximumHeaderListSize))
+                << "客户端 SETTINGS 没有通告 MAX_HEADER_LIST_SIZE：对端不知道本端能收多大的头列表";
+        EXPECT_EQ(maximumHeaderListSize, 64U * 1024U) << "通告值要等于解码器的头列表上限";
         ASSERT_NE(settingsAck, nullptr) << "收到对端 SETTINGS 必须回 ACK，否则对端会一直等在确认上（§6.5.3）";
         EXPECT_EQ(settingsAck->header.streamId, 0U);
         EXPECT_EQ(settingsAck->payload.size(), 0U) << "ACK 的 SETTINGS 负载必须为空（§6.5）";
@@ -1869,6 +1921,147 @@ namespace AsynGyanis::Net
         ASSERT_EQ(outcome.trailers.size(), 1U) << "尾部头块的字段要收下，只是落在另一张表里";
         EXPECT_EQ(outcome.trailers[0].first, "x-trace");
         EXPECT_EQ(outcome.trailers[0].second, "done") << "尾字段的值要原样交到调用方手上：" << outcome.trailers[0].second;
+    }
+
+    /**
+     * @brief 钉住：响应声明 content-length 为 5，实际只收到 3 字节就 END_STREAM 时按流错误 RST
+     * @details RFC 9110 §8.6 要求正文长度与 content-length 一致；两处说法不同时，中间设备与业务
+     *          会按不同的边界理解这份响应，正是响应走私的形态。§8.1.1 要求畸形响应按流错误
+     *          PROTOCOL_ERROR 处置，连接留给别的流。
+     */
+    TEST(Http2ClientConnection, RejectsResponseBodyShorterThanDeclaredContentLength)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-length", "5"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "abc");
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(run.outcome.errorMessage.find("content-length"), std::string::npos) << "声明 5 实收 3 被当成成功响应收下了：" << run.outcome.errorMessage;
+        expectResetForStreamOne(run.received, Http2ErrorCode::ProtocolError);
+        EXPECT_TRUE(run.outcome.isHealthyAtEnd) << "一条流的长度不符不该把整条连接判死";
+    }
+
+    /**
+     * @brief 钉住：响应头里出现连接特定头时按协议错误拒收
+     * @details RFC 9113 §8.2.2 规定 connection/keep-alive/proxy-connection/transfer-encoding/upgrade
+     *          不得出现在 HTTP/2 报文里。收下它们等于让下游按 h1 的连接语义理解一份 h2 响应，
+     *          中间设备与业务可能各按一套规矩处理同一条连接。
+     */
+    TEST(Http2ClientConnection, RejectsConnectionSpecificResponseHeaderField)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"connection", "close"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headerBlock);
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(run.outcome.errorMessage.find("连接特定头"), std::string::npos) << "Connection: close 被原样收下了：" << run.outcome.errorMessage;
+        expectResetForStreamOne(run.received, Http2ErrorCode::ProtocolError);
+        EXPECT_TRUE(run.outcome.isHealthyAtEnd) << "一条流收到坏头部不该把整条连接判死";
+    }
+
+    /**
+     * @brief 钉住：响应头值含 CR 时按协议错误拒收
+     * @details CR/LF/NUL 既不是合法字段值字节（RFC 9110 §5.6.2），又是响应拆分的经典入口；
+     *          HPACK 解出来的字节必须逐条过这一关，不能因为它是二进制帧就跳过。
+     */
+    TEST(Http2ClientConnection, RejectsResponseHeaderValueContainingCarriageReturn)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"x-note", "a\rb"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headerBlock);
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(run.outcome.errorMessage.find("控制字符"), std::string::npos) << "含 CR 的头值被原样收下了：" << run.outcome.errorMessage;
+        expectResetForStreamOne(run.received, Http2ErrorCode::ProtocolError);
+        EXPECT_TRUE(run.outcome.isHealthyAtEnd) << "一条流收到坏头部不该把整条连接判死";
+    }
+
+    /**
+     * @brief 钉住：content-length 与 DATA 累计一致时响应照常交付
+     * @details 上一条用例的反面判据：把长度闸门写成「凡声明就拒」会让所有正常响应都失败。
+     */
+    TEST(Http2ClientConnection, KeepsSuccessfulResponseWithMatchingContentLength)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock =
+                peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-type", "text/plain"}, HpackHeaderField{"content-length", "5"}});
+        const std::string script = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "hello");
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_TRUE(run.outcome.errorMessage.empty()) << "正常响应被判失败：" << run.outcome.errorMessage;
+        EXPECT_EQ(run.outcome.statusCode, 200);
+        EXPECT_EQ(run.outcome.body, "hello");
+        EXPECT_TRUE(findFrame(run.received.frames, Http2FrameType::RstStream, false) == nullptr) << "正常响应不该被 RST";
+    }
+
+    /**
+     * @brief 钉住：重复且相等的 content-length 合并成一条，不当作两条声明
+     * @details RFC 9110 §8.6 允许重复出现，但要求取值一致。合并之后调用方读到的是一份没有歧义的
+     *          正文长度；不合并会让下游看到两条同名头部，各自猜一条。
+     */
+    TEST(Http2ClientConnection, MergesEqualDuplicateContentLength)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-length", "3"}, HpackHeaderField{"content-length", "3"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, kHttp2FlagEndHeaders, 1U, headerBlock) + makeFrame(Http2FrameType::Data, kHttp2FlagEndStream, 1U, "abc");
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_TRUE(run.outcome.errorMessage.empty()) << "相等的重复 content-length 被判失败：" << run.outcome.errorMessage;
+        EXPECT_EQ(run.outcome.body, "abc");
+        const auto contentLengthCount = std::ranges::count_if(run.outcome.headers, [](const auto &header) { return header.first == "content-length"; });
+        EXPECT_EQ(contentLengthCount, 1) << "重复的 content-length 没有合并，调用方看到的是两条同名头部";
+    }
+
+    /**
+     * @brief 钉住：重复但取值不同的 content-length 按协议错误拒收
+     * @details 两个不同的长度指向两条不同的正文边界，收下哪一条都会让另一条成为走私的缝隙
+     *          （RFC 9110 §8.6 要求重复出现时取值一致）。
+     */
+    TEST(Http2ClientConnection, RejectsConflictingDuplicateContentLength)
+    {
+        HpackEncoder      peerEncoder;
+        const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", "200"}, HpackHeaderField{"content-length", "5"}, HpackHeaderField{"content-length", "6"}});
+        const std::string script      = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headerBlock);
+
+        const ScriptedResponseRun run = runScriptedResponse("GET", script);
+        EXPECT_TRUE(run.outcome.isStarted) << "前奏没走完，请求根本没上路";
+        EXPECT_NE(run.outcome.errorMessage.find("content-length"), std::string::npos) << "冲突的长度被原样收下了：" << run.outcome.errorMessage;
+        expectResetForStreamOne(run.received, Http2ErrorCode::ProtocolError);
+    }
+
+    /**
+     * @brief 钉住：HEAD、204 与 304 的响应跳过 content-length 与实际正文的比对
+     * @details HEAD 的 content-length 说的是同一个资源用 GET 取时的长度（RFC 9110 §9.3.2），
+     *          204 与 304 按定义没有正文（§15.3.5、§15.4.5）。这三类响应带一个非零长度却没有 DATA
+     *          是合规范的，不能按「声明 5 实收 0」拒掉。
+     */
+    TEST(Http2ClientConnection, SkipsContentLengthCheckForHeadAndBodylessStatuses)
+    {
+        const auto runCase = [](const std::string &method, const std::string &statusCode)
+        {
+            HpackEncoder      peerEncoder;
+            const std::string headerBlock = peerEncoder.encode({HpackHeaderField{":status", statusCode}, HpackHeaderField{"content-length", "5"}});
+            const std::string script      = makeFrame(Http2FrameType::Headers, static_cast<std::uint8_t>(kHttp2FlagEndHeaders | kHttp2FlagEndStream), 1U, headerBlock);
+            return runScriptedResponse(method, script);
+        };
+
+        const ScriptedResponseRun headRun = runCase("HEAD", "200");
+        EXPECT_TRUE(headRun.outcome.errorMessage.empty()) << "HEAD 响应被长度比对误伤了：" << headRun.outcome.errorMessage;
+        EXPECT_EQ(headRun.outcome.statusCode, 200);
+        EXPECT_TRUE(headRun.outcome.body.empty());
+
+        const ScriptedResponseRun noContentRun = runCase("GET", "204");
+        EXPECT_TRUE(noContentRun.outcome.errorMessage.empty()) << "204 响应被长度比对误伤了：" << noContentRun.outcome.errorMessage;
+        EXPECT_EQ(noContentRun.outcome.statusCode, 204);
+
+        const ScriptedResponseRun notModifiedRun = runCase("GET", "304");
+        EXPECT_TRUE(notModifiedRun.outcome.errorMessage.empty()) << "304 响应被长度比对误伤了：" << notModifiedRun.outcome.errorMessage;
+        EXPECT_EQ(notModifiedRun.outcome.statusCode, 304);
     }
 
     /**
