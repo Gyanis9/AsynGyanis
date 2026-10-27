@@ -1723,6 +1723,13 @@ namespace AsynGyanis::Net
                 stopReason = "Location 解出的绝对 URL 仍读不出（对端给的引用超出可跟随的范围）";
                 return std::nullopt;
             }
+            // 降级到明文不只是「换了个地址」：跨源剥离只看源、不看 scheme，而 307/308 会把方法与正文
+            // 原样重放，凭据与内容都会落到可被旁听的链路上。到此为止，把对端那条 3xx 交回调用方
+            if (currentUrl.scheme == "https" && step.url.scheme != "https")
+            {
+                stopReason = "拒绝从 https 降级到 http 的重定向：目标会以明文传输";
+                return std::nullopt;
+            }
             // 303 见 GET，HEAD 例外（它本来就是「只要头」的问法）；301/302 只折 POST，那是历史上唯一
             // 被普遍改写成 GET 的方法；307/308 明写不许改方法——它们要的重放就是同一个请求
             const bool isFoldToGet = response.statusCode == 303 ? current.method != "HEAD" : (response.statusCode == 301 || response.statusCode == 302) && current.method == "POST";

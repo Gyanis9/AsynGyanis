@@ -689,6 +689,31 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 用出站客户端向 HTTPS 地址发一条自定义请求（自建循环，跑完即停）
+     * @param url 目标地址
+     * @param request 请求参数（方法、跟随开关、跳数上限等）
+     * @param timeout 本次请求的时限
+     * @return std::expected<HttpClientResponse, std::string> 响应，或失败原因
+     */
+    std::expected<HttpClientResponse, std::string> doHttpsSend(const std::string &url, HttpClientRequest request, const std::chrono::milliseconds timeout)
+    {
+        Core::EventLoop                                loop;
+        std::expected<HttpClientResponse, std::string> outcome{std::unexpect, "协程没有跑完"};
+        auto                                           requestBody = [&loop, &url, &request, &outcome, timeout]() -> Core::Task<>
+        {
+            outcome = co_await HttpClient::send(loop, url, std::move(request), timeout);
+            loop.stop();
+        };
+        Core::Task<> work = requestBody();
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+        return outcome;
+    }
+
+    /**
      * @brief 一次「带着自己 TLS 上下文」的出站请求的结论
      */
     struct ClientTlsAttemptOutcome
@@ -1594,6 +1619,52 @@ namespace AsynGyanis::Net
         std::string receivedText;
         ASSERT_TRUE(allowedClient.sendText(makeRequestText("GET /floor HTTP/1.1"), kWaitTimeout)) << "1.3 通道里的请求写不出去";
         ASSERT_TRUE(allowedClient.waitForTextOccurrences(receivedText, "floor-ok", 1, kWaitTimeout)) << "1.3 的客户拿不到响应：" << receivedText;
+    }
+
+    /**
+     * @brief 钉住：https 响应把下一跳指向 http 时停止跟随，交回那条 3xx
+     * @details 降级会把后续请求送进明文链路；307/308 还会把方法与正文原样重放过去，
+     *          跨源剥离只看源、不看 scheme。目标端口取一个刚关掉的监听口：旧实现真的跟过去
+     *          就会因建连失败拿不到响应，用例红在「必须拿回 302」这一条。
+     */
+    TEST(HttpsServer, RedirectFromHttpsToHttpIsNotFollowed)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kLoopbackCertificatePath)) << "缺少客户端用例的证书夹具：" << kLoopbackCertificatePath.string();
+        const ScopedTrustedCertificateFile trustedCertificate(kLoopbackCertificatePath);
+
+        std::uint16_t plainTargetPort = 0U;
+        {
+            RunningHttpServerFixture reservation(HttpServerLimits{}, std::chrono::milliseconds{50});
+            ASSERT_TRUE(reservation.awaitRunning(kWaitTimeout)) << "预留明文端口用的服务器未进入接受循环";
+            plainTargetPort = reservation.listeningPort();
+        }
+        ASSERT_NE(plainTargetPort, 0U) << "没拿到可用的明文目标端口";
+
+        const std::string    plainTarget   = "http://127.0.0.1:" + std::to_string(plainTargetPort) + "/";
+        const RouteRegistrar serveRedirect = [plainTarget](Router &router, Core::EventLoop &)
+        {
+            router.get("/secure",
+                       [plainTarget](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                       {
+                           response.setStatus(302);
+                           static_cast<void>(response.setHeader("location", plainTarget));
+                           response.setBody("redirected");
+                           co_return;
+                       });
+        };
+
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, serveRedirect, HttpParserLimits{}, {}, kLoopbackCertificatePath,
+                                          kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        ASSERT_FALSE(fixture.startThrew()) << "HTTPS 服务器 start() 以异常收场";
+
+        HttpClientRequest request;
+        request.followRedirects      = true;
+        request.maximumRedirectCount = 5;
+        const std::string url        = "https://127.0.0.1:" + std::to_string(fixture.listeningPort()) + "/secure";
+        const auto        outcome    = doHttpsSend(url, request, std::chrono::seconds{5});
+        ASSERT_TRUE(outcome.has_value()) << "降级重定向被跟到了明文链路，客户端没交回对端给的那条 3xx：" << outcome.error();
+        EXPECT_EQ(outcome->statusCode, 302) << "降级重定向没有被拦下";
     }
 
     /**
