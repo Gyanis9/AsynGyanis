@@ -1072,14 +1072,16 @@ namespace AsynGyanis::Net
          *          探测与取元数据是同一次 `queryFileBasicInfo`：副本的存在性本来就要问文件系统，
          *          再问一次只是多一趟系统调用。
          * @param requestedPath 已通过包含判定的请求路径（`weakly_canonical` 之后的绝对路径）
-         * @param acceptEncoding 请求的 `Accept-Encoding` 原文；空串按「没带这个头」处理
+         * @param rootDirectory 静态根目录（已归一化）；副本规范化后越出它就不参选
+         * @param request 本次请求（读 `Accept-Encoding`）
          * @param dictionaryMatches 请求是否带来「与本端字典逐字节相等」的哈希且连接是 TLS（字典编码的参赛资格，
          *        见 serveStaticFileRequest 的三条门）；标了 `requiresDictionary` 的表项只在它为真时参选
          * @return std::optional<PrecompressedVariant> 选中的变体；一个都不成立时空
          */
-        [[nodiscard]] std::optional<PrecompressedVariant> findPrecompressedVariant(const std::filesystem::path &requestedPath, const std::string_view acceptEncoding,
-                                                                                   const bool dictionaryMatches)
+        [[nodiscard]] std::optional<PrecompressedVariant> findPrecompressedVariant(const std::filesystem::path &requestedPath, const std::filesystem::path &rootDirectory,
+                                                                                   const HttpRequest &request, const bool dictionaryMatches)
         {
+            const std::string acceptEncoding = request.getHeader("accept-encoding").value_or(std::string{});
             for (const Detail::CompressionCodec &codec: Detail::kCompressionCodecs)
             {
                 // 字典编码的资格由调用方核完压成一个布尔；常规编码不看它
@@ -1093,13 +1095,23 @@ namespace AsynGyanis::Net
                 {
                     continue;
                 }
-                // 后缀是表里的 ASCII 字面量，拼在已归一化的路径末尾：这一段带不出根目录，
-                // 也就用不上 pathFromUtf8（那条是给 URI 解码来的 UTF-8 文本用的）
+                // 后缀是表里的 ASCII 字面量，拼在已归一化的路径末尾：这一段带不出 ".." 或分隔符，
+                // 也就用不上 pathFromUtf8（那条是给 URI 解码来的 UTF-8 文本用的）。但拼接证明不了副本
+                // 仍在根内：根内一份指向根外的符号链接，stat 与 open 都会跟过去。规范化后再用同一道
+                // 包含判定复核，越界或规范化失败的候选直接跳过、继续看下一个，全部落空时调用方
+                // 回落到主文件——副本只是可选表示，不该让基名变得不可服务
                 std::filesystem::path variantPath = requestedPath;
                 variantPath += std::filesystem::path(codec.fileSuffix);
-                if (const std::optional<Platform::FileBasicInfo> variantInfo = Platform::queryFileBasicInfo(variantPath); variantInfo.has_value() && variantInfo->isRegularFile)
+                std::error_code       canonicalError;
+                std::filesystem::path canonicalVariant = std::filesystem::weakly_canonical(variantPath, canonicalError);
+                if (canonicalError || !isWithinRootDirectory(canonicalVariant, rootDirectory))
                 {
-                    return PrecompressedVariant{std::move(variantPath), *variantInfo, codec.name};
+                    continue;
+                }
+                if (const std::optional<Platform::FileBasicInfo> variantInfo = Platform::queryFileBasicInfo(canonicalVariant);
+                    variantInfo.has_value() && variantInfo->isRegularFile)
+                {
+                    return PrecompressedVariant{std::move(canonicalVariant), *variantInfo, codec.name};
                 }
             }
             return std::nullopt;
@@ -1287,7 +1299,7 @@ namespace AsynGyanis::Net
             if (settings->precompressedVariantsEnabled)
             {
                 if (const std::optional<PrecompressedVariant> variant =
-                            findPrecompressedVariant(candidatePath, request.getHeader("accept-encoding").value_or(std::string{}), dictionaryNegotiation.dictionaryMatches);
+                            findPrecompressedVariant(candidatePath, settings->rootDirectory, request, dictionaryNegotiation.dictionaryMatches);
                     variant.has_value())
                 {
                     servedPath           = std::move(variant->path);

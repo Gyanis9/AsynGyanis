@@ -462,6 +462,43 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：根内的副本链接指向根外时不许被当成变体发出去
+     * @details 副本路径只由「请求路径 + 后缀」拼出，拼接本身带不出根目录；但根内一个指向根外的
+     *          符号链接会让 stat 与 open 一起跟到根外文件。命中这种副本必须回落明文主文件，
+     *          而不是回 403——副本只是可选表示，缺失或越界都不该让基名变得不可服务
+     */
+    TEST(HttpPrecompressedStatic, SymlinkedVariantOutsideRootFallsBackToPlain)
+    {
+        TemporaryVariantTree        tree;
+        const std::filesystem::path outside = std::filesystem::temp_directory_path() / (tree.directory().filename().string() + "_outside.txt");
+        {
+            std::ofstream secret(outside, std::ios::out | std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(secret.is_open()) << "根外诱饵文件没有建出来";
+            secret << "SECRET-OUTSIDE";
+        }
+
+        // 夹具自带的 app.js.br 必须先撤掉：同名的副本与链接不能并存
+        std::error_code linkError;
+        std::filesystem::remove(tree.directory() / "app.js.br", linkError);
+        ASSERT_FALSE(linkError) << "撤掉夹具里的 app.js.br 失败，建链接的前提不成立";
+        std::filesystem::create_symlink(outside, tree.directory() / "app.js.br", linkError);
+        if (linkError)
+        {
+            std::filesystem::remove(outside);
+            GTEST_SKIP() << "本机不允许建符号链接：" << linkError.message();
+        }
+
+        const std::unique_ptr<RunningHttpServerFixture> fixture = makeVariantFixture(tree.directory(), true, false);
+        const std::optional<ParsedResponse>             reply   = requestStatic(*fixture, "/app.js", {"Accept-Encoding: br"});
+        std::filesystem::remove(outside, linkError);
+
+        ASSERT_HAS_VALUE(reply) << "请求没有响应回来";
+        EXPECT_TRUE(reply->headers.starts_with("HTTP/1.1 200")) << reply->headers.substr(0, 60);
+        EXPECT_EQ(reply->body, tree.plainText()) << "根外目标被当成预压缩副本发了出去";
+        EXPECT_FALSE(hasHeaderLine(reply->headers, "content-encoding")) << "回落的明文不该带编码声明：" << reply->headers;
+    }
+
+    /**
      * @brief 钉住：在线压缩中间件不会在预压缩副本上再压一层
      * @details 两道同时挂着是真实装配（静态目录 + 全局压缩）。副本已经声明了 `content-encoding`，
      *          再压一层对端解不开；而中间件的「已声明就跳过」守卫读的是响应装配后的状态，
