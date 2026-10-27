@@ -153,25 +153,67 @@ namespace AsynGyanis::Net
         /**
          * @brief 本端出包时除帧以外占掉的字节数
          * @details 长头多带版本、源标识与 Token 长度域，且有 Length 字段；短头两者都没有（§17.3）。
-         *          Length 域按 2 字节档预留：1200 的预算用不到 4 字节档，1 字节档又可能被加宽。
+         *          预算按 2 字节档预留 Length：1200 的预算用不到 4 字节档，按 1 字节预留又会在
+         *          需要加宽时把预算算多。真正补 PADDING 时按补齐后的 Length 实际宽度重算，
+         *          见 datagramPaddingByteLength——令牌很长时它只占 1 字节档，按 2 字节预留会少补 1 字节。
          *          包号字段按实际宽度计入：§17.1 允许 1 到 4 字节，宽度随包号增长，按 1 字节估算
          *          会让长包号报文的包头少算 1 到 3 字节，补齐尺寸与预算随之偏小。
          * @param configuration 连接配置，取两条标识的长度
          * @param isLongHeader 本包用长头还是短头
          * @param packetNumberByteCount 本包包号字段的字节数（1 到 4），由 quicPacketNumberByteCountFor 按包号给出
          * @param tokenByteLength Initial 要带的令牌字节数；Retry 之后不为 0，必须计入包头与 1200 补齐
+         * @param lengthFieldByteCount Length 域按几字节计；预算用缺省的 2，补齐时传实际宽度
          * @return std::size_t 包头（含包号字段）+ AEAD 标签 + CRYPTO 帧头上限
          */
         std::size_t packetOverheadByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader, const std::size_t packetNumberByteCount,
-                                             const std::size_t tokenByteLength)
+                                             const std::size_t tokenByteLength, const std::size_t lengthFieldByteCount = 2)
         {
             const std::size_t headerByteLength = isLongHeader
                                                          // 首字节、版本、两条「长度字节 + 标识」、Token 长度域与令牌、Length 域、包号
                                                          ? 1 + 4 + 1 + configuration.peerConnectionId.size() + 1 + configuration.localConnectionId.size() +
-                                                                   quicVariableLengthIntegerByteCount(tokenByteLength) + tokenByteLength + 2 + packetNumberByteCount
+                                                                   quicVariableLengthIntegerByteCount(tokenByteLength) + tokenByteLength + lengthFieldByteCount +
+                                                                   packetNumberByteCount
                                                          // 首字节、目的标识（没有长度字段）、包号
                                                          : 1 + configuration.peerConnectionId.size() + packetNumberByteCount;
             return headerByteLength + kQuicAuthenticationTagByteLength + kQuicCryptoFrameHeaderByteLimit;
+        }
+
+        /**
+         * @brief 把数据报补到目标尺寸所需的 PADDING 帧字节数
+         * @details Length 域覆盖「包号 + 受保护载荷」，宽度随该值落在 1、2、4 或 8 字节档；
+         *          1200 上下的目标只碰得到前两档。先按 2 字节档算一次，若 Length 实际只需
+         *          1 字节，就按 1 字节档重算，多补的 1 字节正好抵掉预留多出的 1 字节。档位
+         *          边界上重算后 Length 涨回 2 字节档，此时保留较大的补齐量，数据报多 1 字节。
+         * @param configuration 连接配置，取两条标识的长度
+         * @param isLongHeader 本包用长头还是短头
+         * @param packetNumberByteCount 本包包号字段的字节数
+         * @param tokenByteLength Initial 要带的令牌字节数，其余空间传 0
+         * @param frameByteLength 已编好的帧字节数（含 CRYPTO 帧头）
+         * @param targetByteLength 目标数据报字节数
+         * @return std::size_t 要追加的 PADDING 字节数；已达标或超目标时为 0
+         */
+        std::size_t datagramPaddingByteLength(const QuicConnectionCoreConfiguration &configuration, const bool isLongHeader, const std::size_t packetNumberByteCount,
+                                              const std::size_t tokenByteLength, const std::size_t frameByteLength, const std::size_t targetByteLength)
+        {
+            std::size_t lengthFieldByteCount = 2;
+            for (;;)
+            {
+                const std::size_t plainOverheadByteLength =
+                        packetOverheadByteLength(configuration, isLongHeader, packetNumberByteCount, tokenByteLength, lengthFieldByteCount) - kQuicCryptoFrameHeaderByteLimit;
+                if (plainOverheadByteLength + frameByteLength >= targetByteLength)
+                {
+                    return 0;
+                }
+                const std::size_t paddingByteLength          = targetByteLength - plainOverheadByteLength - frameByteLength;
+                const std::size_t lengthValue                = packetNumberByteCount + frameByteLength + paddingByteLength + kQuicAuthenticationTagByteLength;
+                const std::size_t actualLengthFieldByteCount = isLongHeader ? quicVariableLengthIntegerByteCount(lengthValue) : 0;
+                if (actualLengthFieldByteCount == 0 || actualLengthFieldByteCount >= lengthFieldByteCount)
+                {
+                    return paddingByteLength;
+                }
+                // 实际只需 1 字节档：按 1 字节档重算，补上预留多出的那 1 字节
+                lengthFieldByteCount = actualLengthFieldByteCount;
+            }
         }
         /**
          * @brief 收包路径上那两块与包长成比例的临时缓冲
@@ -1459,19 +1501,19 @@ namespace AsynGyanis::Net
         // 两处补尺寸补的都是 PADDING 帧（0x00 一字节一帧），落在受保护载荷里，所以差多少要等包头与标签
         // 都算得出来才知道：①客户端握手期的 Initial 按 §14.1 补到不小于 1200；②路径 MTU 探针与路径
         // 验证的挑战/回应按各自章节补到 1200——探针的意义就在那个数上，验证的那两个是让新路先证明
-        // 自己过得去大包（§8.2.1/§8.2.2）。包头里的包号就按这一包的实际宽度算，否则补齐会多出 1 到 3 字节
-        const std::size_t plainOverheadByteLength = packetOverheadByteLength(m_configuration, space != PacketNumberSpace::Application, packetNumberByteCount,
-                                                                             space == PacketNumberSpace::Initial ? m_retryToken.size() : 0U) -
-                                                    kQuicCryptoFrameHeaderByteLimit;
-        std::string       paddedFrameAssembly;
-        if (!isLocalServer() && space == PacketNumberSpace::Initial && plainOverheadByteLength + frames.size() < kQuicMinimumInitialDatagramByteLength)
+        // 自己过得去大包（§8.2.1/§8.2.2）。补齐按 Length 域的实际宽度算：令牌很长时 Length 会落到
+        // 1 字节档，仍按 2 字节预留就会少补 1 字节，见 datagramPaddingByteLength
+        const std::size_t paddingTargetByteLength =
+                (!isLocalServer() && space == PacketNumberSpace::Initial) ? kQuicMinimumInitialDatagramByteLength : (padding.has_value() ? padding->datagramByteLength : 0U);
+        const std::size_t paddingByteLength =
+                paddingTargetByteLength == 0 ? 0
+                                             : datagramPaddingByteLength(m_configuration, space != PacketNumberSpace::Application, packetNumberByteCount,
+                                                                         space == PacketNumberSpace::Initial ? m_retryToken.size() : 0U, frames.size(), paddingTargetByteLength);
+        std::string paddedFrameAssembly;
+        if (paddingByteLength > 0)
         {
             paddedFrameAssembly = frames;
-            paddedFrameAssembly.append(kQuicMinimumInitialDatagramByteLength - plainOverheadByteLength - frames.size(), '\0');
-        } else if (padding.has_value() && plainOverheadByteLength + frames.size() < padding->datagramByteLength)
-        {
-            paddedFrameAssembly = frames;
-            paddedFrameAssembly.append(padding->datagramByteLength - plainOverheadByteLength - frames.size(), '\0');
+            paddedFrameAssembly.append(paddingByteLength, '\0');
         }
         QuicOutboundPacket packet;
         packet.isLongHeader            = space != PacketNumberSpace::Application;
