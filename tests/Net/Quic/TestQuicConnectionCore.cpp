@@ -2998,6 +2998,39 @@ namespace AsynGyanis::Net
         EXPECT_EQ(*client.serverCloseErrorCode(), 0x0aU);
     }
 
+    /**
+     * @brief 客户端发来 NEW_TOKEN：服务端按 PROTOCOL_VIOLATION 收口（RFC 9000 §19.7）
+     * @details 这一帧只有服务端会发。旧实现落进默认分支，既不应答也不记账，等于让对端把一条
+     *          明令禁止的帧当成正常流量——违规与否必须由本端说出来，而不是靠对端自觉。
+     */
+    TEST(QuicConnectionCore, RejectsNewTokenSentByTheClient)
+    {
+        const FixtureContext serverContext = FixtureContext::server();
+        const FixtureContext clientContext = FixtureContext::client();
+        ASSERT_NE(serverContext.get(), nullptr);
+        ASSERT_NE(clientContext.get(), nullptr);
+
+        QuicConnectionCore core(makeServerConfiguration(*serverContext.get()));
+        InMemoryQuicClient client(*clientContext.get(), kClientConnectionId);
+        finishHandshake(core, client);
+
+        // 帧体：类型 0x07 + 令牌长度 1 + 一字节令牌
+        std::string frames;
+        frames.push_back(static_cast<char>(0x07));
+        frames.push_back(static_cast<char>(0x01));
+        frames.push_back('A');
+        feed(core, client.buildDatagramWith(QuicEncryptionLevel::Application, frames), Timestamp{120000});
+        for (const auto &datagram: drain(core))
+        {
+            client.consume(datagram);
+        }
+
+        EXPECT_TRUE(client.sawConnectionClose()) << "客户端发来的 NEW_TOKEN 被静默收下了（§19.7 要求 PROTOCOL_VIOLATION）";
+        ASSERT_TRUE(client.serverCloseErrorCode().has_value());
+        EXPECT_EQ(*client.serverCloseErrorCode(), 0x0aU) << "错误码不是 PROTOCOL_VIOLATION";
+        EXPECT_NE(client.serverCloseReasonPhrase().find("NEW_TOKEN"), std::string::npos) << "原因没有点明是哪一帧：" << client.serverCloseReasonPhrase();
+    }
+
 
     /**
      * @brief 后一段的起点落在已缓存段之内时，必须并进来而不是各留一座孤岛

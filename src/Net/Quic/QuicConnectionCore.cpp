@@ -932,6 +932,18 @@ namespace AsynGyanis::Net
                         {
                             confirmHandshake(arrivalTime);
                         }
+                    } else if constexpr (std::same_as<FrameType, QuicNewTokenFrame>)
+                    {
+                        // §19.7：客户端不得发这一帧，服务端收到即按 PROTOCOL_VIOLATION 收口。反向的判据
+                        // 只管空令牌：规范要求客户端把零长令牌当 FRAME_ENCODING_ERROR，非空令牌存不存由
+                        // 客户端自定（本端不做跨连接复用，收到就丢）
+                        if (isLocalServer())
+                        {
+                            beginClose(kQuicProtocolViolation, "客户端不得发送 NEW_TOKEN（RFC 9000 §19.7）", arrivalTime);
+                        } else if (specificFrame.token.empty())
+                        {
+                            beginClose(kQuicFrameEncodingError, "NEW_TOKEN 的令牌为零长（RFC 9000 §19.7 要求令牌至少 1 字节）", arrivalTime);
+                        }
                     } else if constexpr (std::same_as<FrameType, QuicNewConnectionIdFrame>)
                     {
                         handleNewConnectionIdFrame(specificFrame, arrivalTime);

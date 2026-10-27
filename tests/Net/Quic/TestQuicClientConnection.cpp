@@ -415,6 +415,39 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 手拼一条补齐到 1200 字节的客户端 Initial
+         * @details 与 `makeClientInitial` 的区别只在长度：那个函数刻意拼最小可解析形状（66 字节），
+         *          小于 §14.1 门槛的 Initial 现在会被服务端入口整条丢掉。需要走进正常流程的夹具用本函数；
+         *          Length 域按两字节档写，载荷是纯垃圾——判据只到「头部读得懂、令牌验得过」为止。
+         * @param destinationConnectionId 目的标识（本端在此识别连接）
+         * @param sourceConnectionId 本端自报的源标识
+         * @param token 令牌字段，空即「还没验过地址」
+         * @return std::vector<std::uint8_t> 一条总长恰为 1200 字节的 Initial
+         */
+        std::vector<std::uint8_t> makePaddedClientInitial(const std::vector<std::uint8_t> &destinationConnectionId, const std::vector<std::uint8_t> &sourceConnectionId,
+                                                          const std::vector<std::uint8_t> &token)
+        {
+            std::string packet{static_cast<char>(0xC0U), static_cast<char>(0x00U), static_cast<char>(0x00U), static_cast<char>(0x00U), static_cast<char>(0x01U)};
+            packet.push_back(static_cast<char>(destinationConnectionId.size()));
+            packet.append(reinterpret_cast<const char *>(destinationConnectionId.data()), destinationConnectionId.size());
+            packet.push_back(static_cast<char>(sourceConnectionId.size()));
+            packet.append(reinterpret_cast<const char *>(sourceConnectionId.data()), sourceConnectionId.size());
+            packet.push_back(static_cast<char>(token.size()));
+            packet.append(reinterpret_cast<const char *>(token.data()), token.size());
+
+            // Length 覆盖包号与载荷。前缀约二十余字节，取值一定落在两字节档（64..16383）
+            constexpr std::size_t kTargetDatagramByteLength = 1200;
+            constexpr std::size_t kLengthFieldByteCount     = 2;
+            const std::size_t     lengthValue               = kTargetDatagramByteLength - packet.size() - kLengthFieldByteCount;
+            EXPECT_GE(lengthValue, 64U) << "令牌太大，Length 落不进两字节档；这份夹具需要另选编码";
+            packet.push_back(static_cast<char>(0x40U | ((lengthValue >> 8U) & 0x3FU)));
+            packet.push_back(static_cast<char>(lengthValue & 0xFFU));
+            packet.resize(kTargetDatagramByteLength, '\0');
+            EXPECT_EQ(packet.size(), kTargetDatagramByteLength);
+            return {packet.begin(), packet.end()};
+        }
+
+        /**
          * @brief 把报文头里的一条连接标识/令牌视图拷成可比对的容器
          * @param bytes 指向数据报的视图
          * @return std::vector<std::uint8_t> 视图内容的副本
@@ -1116,7 +1149,7 @@ namespace AsynGyanis::Net
         {
             clientSourceConnectionId.push_back(static_cast<std::uint8_t>(0x50U + index));
         }
-        const std::vector<std::uint8_t> firstInitial = makeClientInitial(clientDestinationConnectionId, clientSourceConnectionId, {}, 40U);
+        const std::vector<std::uint8_t> firstInitial = makePaddedClientInitial(clientDestinationConnectionId, clientSourceConnectionId, {});
 
         // ① 不带令牌
         ASSERT_GT(sender.send(serverAddress.platformAddress(), firstInitial.data(), firstInitial.size()), 0);
@@ -1174,7 +1207,7 @@ namespace AsynGyanis::Net
         EXPECT_EQ(locallyVerified->originalDestinationConnectionId.size(), 8U) << "令牌恢复的原始目的标识长度不对";
 
         // ② 带着这张令牌重来，目的标识换成本端给出去的那一条
-        const std::vector<std::uint8_t> retriedInitial = makeClientInitial(retrySourceConnectionId, clientSourceConnectionId, addressValidationToken, 40U);
+        const std::vector<std::uint8_t> retriedInitial = makePaddedClientInitial(retrySourceConnectionId, clientSourceConnectionId, addressValidationToken);
         ASSERT_GT(sender.send(serverAddress.platformAddress(), retriedInitial.data(), retriedInitial.size()), 0);
         // 这一包的载荷是故意的垃圾：本端去掉头部保护后看到保留位非 0，按 §17.3.1 把这条连接判成收口，
         // 它在表里因此只活到同一批的回收那一拍。按在线数判等于赌调度，改读受理那一刻写的日志——accept
@@ -1211,7 +1244,7 @@ namespace AsynGyanis::Net
         // 这一格判的就不再是「伪造」
         forgedToken[6] ^= 0x01U;
         const std::vector<std::uint8_t> tamperedInitial =
-                makeClientInitial(std::vector<std::uint8_t>(QuicConnection::kSourceConnectionIdLength, 0xB0U), clientSourceConnectionId, forgedToken, 40U);
+                makePaddedClientInitial(std::vector<std::uint8_t>(QuicConnection::kSourceConnectionIdLength, 0xB0U), clientSourceConnectionId, forgedToken);
         ASSERT_GT(sender.send(serverAddress.platformAddress(), tamperedInitial.data(), tamperedInitial.size()), 0);
         // 这一格的丢弃必须出声：只有它和计数一起在场，运维才看得出被拦下的这条是「自造的令牌」还是
         // 「别处的令牌搬了来」。那条记录写在服务端处理这条数据报的那一刻，可能晚于本端的 send 返回，

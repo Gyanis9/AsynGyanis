@@ -43,6 +43,10 @@ namespace AsynGyanis::Net
         /// 远端可驱动的刷屏面，而量级已经在读数里了
         constexpr std::chrono::seconds kAddressValidationRejectionLogWindow{10};
 
+        /// 服务端入口能接受的最小 Initial 数据报（RFC 9000 §14.1：UDP 负载小于 1200 字节的 Initial
+        /// 必须丢弃）。与核心侧补足客户端 Initial 用的那个数同值，两处各管一个方向
+        constexpr std::size_t kQuicMinimumInitialDatagramByteLength = 1200;
+
         /// @brief 将收包协程排回所属循环，截断连续同步完成的调用栈
         struct ReceiveBatchYield
         {
@@ -973,6 +977,13 @@ namespace AsynGyanis::Net
             // 解不开不等于该丢：版本不合的长头要按 §6.1 回一条版本协商包（连两条连接标识都取不出来的
             // 报文除外）。取不出来的仍走下面这条静默丢的出口
             co_await respondToUnsupportedVersion(peerAddress, datagram);
+            co_return;
+        }
+        // §14.1：UDP 负载不足 1200 字节的 Initial 必须整条丢弃——不建状态、不回包。判据排在查连接表
+        // 之前：规范按「收到的那条数据报」论处，重传的 Initial 也不例外；放行这一档，不补齐的对端
+        // 照样拿得到回包，§14.1 要保的那份最小 MTU 凭据随之作废
+        if (decodedHeader->isLongHeader && decodedHeader->longPacketType == QuicLongPacketType::Initial && datagram.size() < kQuicMinimumInitialDatagramByteLength)
+        {
             co_return;
         }
         // 用视图查表：两张表都是透明比较（std::less<>），而本端连接标识固定 18 字节、超过

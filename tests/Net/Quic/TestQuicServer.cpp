@@ -89,6 +89,45 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 手拼一条 v1 Initial 数据报，并补齐到指定总长
+         * @details 载荷是纯垃圾：这条通道只判「头部读得懂」与「UDP 负载有多大」，后续解密注定失败。
+         *          包头按 §17.2.2 取：固定位与 Initial 类型、版本 1、两条 8 字节连接标识、零长 Token、
+         *          Length 域（按取值自动选一或两字节档）与一字节包号。
+         * @param datagramByteLength 目标数据报总字节数
+         * @return std::vector<std::uint8_t> 一条可直接交给 UDP 的 Initial
+         */
+        std::vector<std::uint8_t> makeProbeInitial(const std::size_t datagramByteLength)
+        {
+            constexpr std::size_t     kProbeConnectionIdByteCount = 8;
+            std::vector<std::uint8_t> packet{0xC0U, 0x00U, 0x00U, 0x00U, 0x01U, static_cast<std::uint8_t>(kProbeConnectionIdByteCount)};
+            for (std::size_t index = 0; index < kProbeConnectionIdByteCount; ++index)
+            {
+                packet.push_back(static_cast<std::uint8_t>(0xD0U + index));
+            }
+            packet.push_back(static_cast<std::uint8_t>(kProbeConnectionIdByteCount));
+            for (std::size_t index = 0; index < kProbeConnectionIdByteCount; ++index)
+            {
+                packet.push_back(static_cast<std::uint8_t>(0x50U + index));
+            }
+            packet.push_back(0x00U); // Token 长度
+
+            // Length 覆盖包号与载荷；先按「没有 Length 域」估一次档位，再扣掉它自己的字节数
+            const std::size_t prefixByteCount      = packet.size();
+            std::size_t       lengthFieldByteCount = datagramByteLength - prefixByteCount < 64U ? 1U : 2U;
+            const std::size_t lengthValue          = datagramByteLength - prefixByteCount - lengthFieldByteCount;
+            if (lengthFieldByteCount == 1U)
+            {
+                packet.push_back(static_cast<std::uint8_t>(lengthValue));
+            } else
+            {
+                packet.push_back(static_cast<std::uint8_t>(0x40U | ((lengthValue >> 8U) & 0x3FU)));
+                packet.push_back(static_cast<std::uint8_t>(lengthValue & 0xFFU));
+            }
+            packet.resize(datagramByteLength, 0x00U);
+            return packet;
+        }
+
+        /**
          * @brief 起一台回环上的 QUIC 服务端，把循环放到自己的线程上跑
          * @details 只为本文件的两条构造期判据服务：构造要落到一个真实的事件循环上，
          *          而端口与连接数这类成员只由循环线程读写，读它们一律走投递（跨线程直读
@@ -607,6 +646,80 @@ namespace AsynGyanis::Net
         RunningQuicServer serving(std::chrono::seconds{30}, nullptr, {}, std::move(boundSocket));
 
         EXPECT_EQ(serving.listeningPort(), boundPort) << "接手模式下端口该来自交来的那份套接字，而不是自己再绑一个";
+    }
+
+    /**
+     * @brief 小于 1200 字节的 Initial 必须在入口丢弃：不建连接、不回包（RFC 9000 §14.1）
+     * @details 规范给的是 MUST discard：这一档既是「这条路径扛得住最小 MTU」的凭据，也是客户端的
+     *          合规要求。入口放行它的代价不止多一条连接——地址验证开着时本端会先回一条 Retry，
+     *          一个不用补齐就能拿到回包的对端从此没有动力按 §14.1 补齐。判据三面：小包一条回话
+     *          都不该有、连接数为 0；同一形状补齐到 1200 之后仍要走进正常流程并拿到 Retry（旧实现
+     *          两格都会回 Retry，因此第一面红、第二面绿，两侧合起来才钉住「按尺寸分流」）。
+     * @note 这里刻意手拼字节而不用自家客户端：判据是「入口按 UDP 负载尺寸分流」，不是一次握手。
+     *       与文件开头的约定不冲突——没有让自家实现充当裁判，报文形状直接取自 §17.2.2。
+     */
+    TEST(QuicServer, DiscardsSmallInitialDatagramsWithoutAnswering)
+    {
+        const Platform::Socket::Initialization network;
+        Core::EventLoop                        loop;
+        QuicServer::Configuration              configuration = makeServerConfiguration();
+        // 开着地址验证：正常流程的第一站就是 Retry，回没回话因此成了「有没有走到这一步」的判据
+        configuration.addressValidationTokenLifetime = std::chrono::seconds{30};
+        configuration.addressValidationKey           = std::vector<std::uint8_t>(32U, 0x5AU);
+        QuicServer                      server(loop, configuration);
+        std::optional<Core::Task<void>> listenTask = server.listen(Core::InetAddress("127.0.0.1", 0));
+        EventLoopThread                 loopThread{loop};
+        loopThread.loop().scheduler().scheduleRemote(listenTask->handle());
+        ASSERT_TRUE(waitForCondition([&] { return server.listeningPort() != 0U; }, kPeerWaitTimeout)) << "服务端没进入监听，后面的判据都是空的";
+
+        const Core::InetAddress        serverAddress("127.0.0.1", server.listeningPort());
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+
+        const std::vector<std::uint8_t> smallInitial = makeProbeInitial(66U);
+        ASSERT_EQ(smallInitial.size(), 66U);
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), smallInitial.data(), smallInitial.size()), 0);
+
+        // 等一个明显超过回环往返的窗口：旧实现会回一条 Retry，新实现一条都不回
+        std::vector<std::uint8_t> reply(1200U);
+        bool                      gotReply     = false;
+        const auto                pollDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{300};
+        while (std::chrono::steady_clock::now() < pollDeadline && !gotReply)
+        {
+            Platform::SocketAddress replyFrom{};
+            gotReply = sender.receive(reply.data(), reply.size(), replyFrom) > 0;
+            if (!gotReply)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+        }
+        EXPECT_FALSE(gotReply) << "66 字节的 Initial 得到了回话：小于 1200 的 Initial 必须整条丢弃（RFC 9000 §14.1）";
+        EXPECT_EQ(server.connectionCount(), 0U) << "丢掉的 Initial 不该留下连接状态";
+
+        // 对照：同一形状补齐到 1200 之后，入口必须把它交给正常流程，地址验证回一条 Retry
+        const std::vector<std::uint8_t> paddedInitial = makeProbeInitial(1200U);
+        ASSERT_EQ(paddedInitial.size(), 1200U);
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), paddedInitial.data(), paddedInitial.size()), 0);
+
+        std::size_t replyLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    const ssize_t           received = sender.receive(reply.data(), reply.size(), replyFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    replyLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kPeerWaitTimeout))
+                << "补齐到 1200 的 Initial 什么都没收到：入口把合规尺寸的报文也一起丢了";
+        ASSERT_GE(replyLength, 5U) << "回包短于长头固定段";
+        EXPECT_NE(reply[0] & 0x80U, 0U) << "回包不是长头";
+        EXPECT_EQ((reply[0] >> 4U) & 0x03U, 3U) << "回包不是 Retry：地址验证开着，没带令牌的合规 Initial 应当进正常流程";
+        EXPECT_EQ(server.connectionCount(), 0U) << "Retry 不该为这条握手留下状态";
     }
 
     /**
