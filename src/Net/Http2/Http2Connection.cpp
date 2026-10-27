@@ -499,6 +499,17 @@ namespace AsynGyanis::Net
         return m_lastSettingsSentTime;
     }
 
+    std::optional<std::chrono::steady_clock::time_point> Http2Connection::pendingHeaderBlockStartedAt() const noexcept
+    {
+        // 只在本端正在拼头块时有值：块一收齐就清空，上层据此停掉头块总时限
+        return m_isAssemblingHeaderBlock ? m_pendingHeaderBlockStartedAt : std::nullopt;
+    }
+
+    std::uint32_t Http2Connection::pendingHeaderBlockStreamId() const noexcept
+    {
+        return m_isAssemblingHeaderBlock ? m_pendingHeaderStreamId : 0;
+    }
+
     Http2ResponseSendStatus Http2Connection::sendResponseHeaders(const std::uint32_t streamId, const std::uint32_t statusCode, const std::vector<HpackHeaderField> &headerFields,
                                                                  const bool endStream, std::string *const errorText)
     {
@@ -822,6 +833,9 @@ namespace AsynGyanis::Net
         m_pendingHeaderStreamId   = streamId;
         m_pendingHeaderPurpose    = purpose;
         m_pendingHeaderEndStream  = endStream;
+        // 记绝对起点而不是逐帧刷新：CONTINUATION 可以一段段慢慢来，头块总时限只有按 HEADERS 的
+        // 到达时刻算才关得住，上层据此把连接 deadline 取 min
+        m_pendingHeaderBlockStartedAt = std::chrono::steady_clock::now();
         m_pendingHeaderBlock.clear();
         if (!appendHeaderBlockFragment(firstFragment))
         {
@@ -849,13 +863,19 @@ namespace AsynGyanis::Net
         return true;
     }
 
+    void Http2Connection::clearHeaderBlockAssembly() noexcept
+    {
+        m_isAssemblingHeaderBlock = false;
+        m_pendingHeaderBlockStartedAt.reset();
+    }
+
     bool Http2Connection::finishHeaderBlock()
     {
         const std::uint32_t      streamId  = m_pendingHeaderStreamId;
         const HeaderBlockPurpose purpose   = m_pendingHeaderPurpose;
         const bool               endStream = m_pendingHeaderEndStream;
         // 拼接态先清掉：解码路径上可能判错收场，留着半成品会让后续帧被误判成「中途插帧」
-        m_isAssemblingHeaderBlock = false;
+        clearHeaderBlockAssembly();
 
         // 解码直接读成员缓冲、以视图写进成员落点：头块缓冲、视图表与字节池的容量都跨头块留着
         std::vector<HpackHeaderFieldView> &headerFields = m_decodedHeaderFields;

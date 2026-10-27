@@ -361,6 +361,36 @@ namespace AsynGyanis::Net
         }
 
         /**
+         * @brief 拼一个不带 END_HEADERS 的 HEADERS 帧（头块随后由 CONTINUATION 续）
+         * @param streamId 流号
+         * @param fragment 本帧携带的头块片段
+         * @return std::string 完整帧字节
+         */
+        std::string makeOpenEndedHeadersFrame(const std::uint32_t streamId, const std::string_view fragment)
+        {
+            Http2HeadersPayload payload;
+            payload.endStream           = false;
+            payload.endHeaders          = false;
+            payload.headerBlockFragment = std::string(fragment);
+            return encodeHttp2HeadersFrame(payload, streamId);
+        }
+
+        /**
+         * @brief 拼一个 CONTINUATION 帧
+         * @param streamId 流号
+         * @param fragment 头块片段
+         * @param endHeaders 是否置 END_HEADERS（置位即收齐整块）
+         * @return std::string 完整帧字节
+         */
+        std::string makeContinuationFrame(const std::uint32_t streamId, const std::string_view fragment, const bool endHeaders)
+        {
+            Http2ContinuationPayload payload;
+            payload.endHeaders          = endHeaders;
+            payload.headerBlockFragment = std::string(fragment);
+            return encodeHttp2ContinuationFrame(payload, streamId);
+        }
+
+        /**
          * @brief 拼一个 DATA 帧
          * @param streamId 流号
          * @param data 应用数据
@@ -1676,6 +1706,67 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "空闲 h2 连接未被清扫协程收口：上界 kWaitTimeout（idleTimeout 300ms + 清扫节拍 30ms）";
         ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().timeoutClosedCount >= 1; }, kWaitTimeout)) << "被超时收口的 h2 连接没有计入 timeoutClosedCount";
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+    }
+
+    /**
+     * @brief 钉住：头块总时限从 HEADERS 起算，慢速 CONTINUATION 不能靠逐帧刷新把读超时无限推后
+     * @details 读超时是 10 秒而头块总预算只有 300 毫秒：没有总预算时，每 100 毫秒一段 CONTINUATION
+     *          总能让相邻两次读取落在读超时之内，连接可以一直被占着；有总预算时到点按
+     *          ENHANCE_YOUR_CALM 发出 GOAWAY 并收口。
+     */
+    TEST(Http2Session, HeaderBlockTotalTimeoutClosesDrippingContinuation)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits     = makeLongTimeoutLimits();
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+        limits.idleTimeout          = std::chrono::seconds{10};
+        limits.readTimeout          = std::chrono::seconds{10};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        // 前奏与 SETTINGS 完成协商：ACK 之后连接才进入常规相位，本用例要量的是头块总预算
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + makeClientSettingsFrame(), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::Settings) >= 1; }, kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+        ASSERT_TRUE(client.sendBytes(makeSettingsAckFrame(), kWaitTimeout));
+
+        // 头块只发开头一片，且不带 END_HEADERS：余下字节每 100 毫秒续一段，从头到尾不给 END_HEADERS
+        const std::string headerBlock = makeGetRequestHeaderBlock("/");
+        ASSERT_TRUE(client.sendBytes(makeOpenEndedHeadersFrame(1U, headerBlock.substr(0, 1)), kWaitTimeout)) << "首帧 HEADERS 未能写入";
+
+        const auto observationDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        bool       isGoAwaySeen        = false;
+        for (std::size_t fragmentIndex = 1; fragmentIndex < 60U && !isGoAwaySeen && std::chrono::steady_clock::now() < observationDeadline; ++fragmentIndex)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            // 片段在头块内循环取，内容本身不影响判定：本用例的头块永远不会走到 HPACK 解码
+            const std::size_t offset = fragmentIndex % headerBlock.size();
+            const bool        isSent = client.sendBytes(makeContinuationFrame(1U, headerBlock.substr(offset, 1), false), std::chrono::milliseconds{200});
+            isGoAwaySeen             = client.pumpUntil(
+                    frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1; }, std::chrono::milliseconds{50});
+            if (!isSent)
+            {
+                // 服务端已经收口：写出失败本身就是收口的证据，但 GOAWAY 必须已经在手上
+                break;
+            }
+        }
+
+        ASSERT_TRUE(isGoAwaySeen) << "头块总时限 300ms 已过，2 秒内没有收到 GOAWAY：慢速 CONTINUATION 仍在刷新读超时";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "头块超时应按 ENHANCE_YOUR_CALM 收口";
+        EXPECT_TRUE(client.waitForClosure(std::chrono::seconds{2})) << "GOAWAY 之后连接没有收口";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
     }
 
     /**

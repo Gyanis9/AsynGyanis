@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -413,6 +414,21 @@ namespace AsynGyanis::Net
         [[nodiscard]] std::chrono::steady_clock::time_point lastSettingsSentTime() const noexcept;
 
         /**
+         * @brief 取当前正在拼接的头块（HEADERS 已到、END_HEADERS 未到）的起始时刻
+         *
+         * @details 头块总时限要从 HEADERS 的到达时刻起算，而不是从最近一次读取起算：逐帧慢速的
+         *          CONTINUATION 每来一段都会刷新上层按读取间隔设的读超时，只有绝对起点能约束总时长。
+         * @return std::optional<std::chrono::steady_clock::time_point> 起始时刻；没有正在拼接的头块时为空
+         */
+        [[nodiscard]] std::optional<std::chrono::steady_clock::time_point> pendingHeaderBlockStartedAt() const noexcept;
+
+        /**
+         * @brief 取当前正在拼接的头块所属的流号
+         * @return std::uint32_t 流号；没有正在拼接的头块时为 0（对端流号非 0，0 不可能是合法取值）
+         */
+        [[nodiscard]] std::uint32_t pendingHeaderBlockStreamId() const noexcept;
+
+        /**
          * @brief 在某条流上发响应头
          *
          * @details 头列表按「:status 在最前（§8.3 伪头必须先于普通头部）+ 调用方给的字段」交给
@@ -708,6 +724,11 @@ namespace AsynGyanis::Net
         [[nodiscard]] bool appendHeaderBlockFragment(std::string_view fragment);
 
         /**
+         * @brief 清掉头块拼接态与起始时刻：块已收齐，头块总时限不再适用
+         */
+        void clearHeaderBlockAssembly() noexcept;
+
+        /**
          * @brief 头块拼完：交 HpackDecoder 解码，再按用途校验与交出
          */
         [[nodiscard]] bool finishHeaderBlock();
@@ -971,13 +992,17 @@ namespace AsynGyanis::Net
         HpackDecoder      m_hpackDecoder; ///< 请求方向的头块解码器，动态表与对端编码器同步演进
         HpackEncoder      m_encoder;      ///< 响应方向的头块编码器，动态表与对端解码器同步演进
 
-        bool                              m_isAssemblingHeaderBlock{false};                    ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
-        std::uint32_t                     m_pendingHeaderStreamId{0};                          ///< 正在拼的头块所属的流号
-        HeaderBlockPurpose                m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
-        bool                              m_pendingHeaderEndStream{false};                     ///< 正在拼的头块是否带 END_STREAM
-        std::string                       m_pendingHeaderBlock;                                ///< 正在拼的头块字节
-        std::vector<HpackHeaderFieldView> m_decodedHeaderFields;                               ///< 头块解码的落点（视图）：表容量跨头块留着，字段本身每次解码重写
-        HpackFieldArena                   m_headerFieldArena;                                  ///< 视图引用的字节池：容量跨头块复用，字段名值不再各要两条字符串
+        bool               m_isAssemblingHeaderBlock{false};                    ///< 是否正在拼一个头块（期间只收同流 CONTINUATION）
+        std::uint32_t      m_pendingHeaderStreamId{0};                          ///< 正在拼的头块所属的流号
+        HeaderBlockPurpose m_pendingHeaderPurpose{HeaderBlockPurpose::Request}; ///< 正在拼的头块的用途
+        bool               m_pendingHeaderEndStream{false};                     ///< 正在拼的头块是否带 END_STREAM
+        std::string        m_pendingHeaderBlock;                                ///< 正在拼的头块字节
+
+        /// 正在拼的头块的绝对起始时刻：与拼接态同生共死，上层据此算头块总时限的剩余预算
+        std::optional<std::chrono::steady_clock::time_point> m_pendingHeaderBlockStartedAt{};
+
+        std::vector<HpackHeaderFieldView> m_decodedHeaderFields; ///< 头块解码的落点（视图）：表容量跨头块留着，字段本身每次解码重写
+        HpackFieldArena                   m_headerFieldArena;    ///< 视图引用的字节池：容量跨头块复用，字段名值不再各要两条字符串
 
         std::map<std::uint32_t, StreamRecord> m_streams;               ///< 流账本：含刚终止的流
         std::vector<std::uint32_t>            m_terminatedStreamIds{}; ///< 终止顺序，用于给账本里已终止的记录设上限

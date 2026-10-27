@@ -26,6 +26,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -97,6 +98,44 @@ namespace AsynGyanis::Net
                 description = "非标准异常（无 what() 描述）";
             }
             return description;
+        }
+
+        /**
+         * @brief 取当前头块的绝对截止时刻（HEADERS 到达时刻 + requestHeaderTimeout）
+         * @details 头块总时限与读超时的区别：读超时量相邻两次读取的间隔，对端每来一段 CONTINUATION
+         *          都能把它顶回去；本时限从 HEADERS 的到达时刻起算，只有绝对起点关得住慢速续帧。
+         * @param connection 连接层状态机
+         * @param limits 连接级限额；requestHeaderTimeout 为 0 表示关闭这项保护
+         * @return std::optional<std::chrono::steady_clock::time_point> 截止时刻；没有正在拼接的头块、
+         *         或这项保护关闭时为空
+         * @note 残余面：本时限只覆盖「HEADERS 已解出、END_HEADERS 未到」这一段。帧解码器把半帧
+         *       缓冲在自己内部，不暴露半帧的类型与起始时刻，因此一个 HEADERS 帧自身被逐字节滴送
+         *       时只受 readTimeout 约束，没有总预算；要补这一面得让帧层记下帧头收齐的时刻。
+         *       隧道阶段由隧道协程自己驱动读循环，那一段同样不经过本时限的判定。
+         */
+        std::optional<std::chrono::steady_clock::time_point> pendingHeaderBlockDeadline(const Http2Connection &connection, const HttpServerLimits &limits)
+        {
+            if (limits.requestHeaderTimeout <= std::chrono::milliseconds::zero())
+            {
+                return std::nullopt;
+            }
+            const std::optional<std::chrono::steady_clock::time_point> startedAt = connection.pendingHeaderBlockStartedAt();
+            if (!startedAt.has_value())
+            {
+                return std::nullopt;
+            }
+            return *startedAt + limits.requestHeaderTimeout;
+        }
+
+        /**
+         * @brief 拼一条「头块超出总时限」的收口原因
+         * @param streamId 头块所属流号（只进原因文本）
+         * @param timeout 生效的头块总时限
+         * @return std::string 中文原因
+         */
+        std::string formatHeaderBlockTimeoutReason(const std::uint32_t streamId, const std::chrono::milliseconds timeout)
+        {
+            return std::format("流 {} 的请求头超出总时限 {} 毫秒（从 HEADERS 帧起算）：慢速 CONTINUATION 不得让一条连接长期停在头块拼接上", streamId, timeout.count());
         }
     } // namespace
 
@@ -200,13 +239,34 @@ namespace AsynGyanis::Net
 
     void Http2Session::close()
     {
-        // SETTINGS 仍待 ACK 且已过专项限额：这是「会话被关停」路径上唯一还能写字节的时刻——
-        // 清扫协程正是先调用本函数再关描述符，而会话自己的读协程要等描述符关闭才被唤醒，
-        // 那时一个字节都写不出去。先把收口原因告知对端（尽力），再走基类收口。
-        // 已经失败过说明 GOAWAY 带着真正的错误码发过一次了，这里不再补第二张通告
-        if (isTransportOpen() && !m_connection.hasFailed() && isSettingsAcknowledgementExpired() && queueSettingsTimeoutGoAway())
+        // 两类到期收口都在这条路径上把原因告知对端：SETTINGS 待 ACK 超时与头块超出总时限。
+        // 这是「会话被关停」路径上唯一还能写字节的时刻——清扫协程正是先调用本函数再关描述符，
+        // 而会话自己的读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。先把收口原因送出
+        // （尽力），再走基类收口。已经失败过说明 GOAWAY 带着真正的错误码发过一次了，不再补第二张
+        if (isTransportOpen() && !m_connection.hasFailed())
         {
-            writeOutgoingBytesBestEffort();
+            if (isSettingsAcknowledgementExpired())
+            {
+                if (queueSettingsTimeoutGoAway())
+                {
+                    writeOutgoingBytesBestEffort();
+                }
+            } else if (const std::optional<std::chrono::steady_clock::time_point> headerDeadline = pendingHeaderBlockDeadline(m_connection, *m_limits);
+                       headerDeadline.has_value() && std::chrono::steady_clock::now() >= *headerDeadline)
+            {
+                // 头块预算到点时读循环多半正挂在读等待上，等清扫协程关描述符；这里补一次
+                // ENHANCE_YOUR_CALM，对端才能区分「本端按时限收口」与「连接莫名断了」
+                const std::uint32_t streamId = m_connection.pendingHeaderBlockStreamId();
+                std::string         errorText;
+                if (m_connection.failConnection(Http2ErrorCode::EnhanceYourCalm, formatHeaderBlockTimeoutReason(streamId, m_limits->requestHeaderTimeout), &errorText))
+                {
+                    LOG_ERROR_FMT("Http2Session: 流 {} 的请求头超出总时限 {} 毫秒，已按 ENHANCE_YOUR_CALM 发 GOAWAY 并收口连接", streamId, m_limits->requestHeaderTimeout.count());
+                    writeOutgoingBytesBestEffort();
+                } else
+                {
+                    LOG_DEBUG_FMT("Http2Session: 流 {} 的请求头超出总时限，但连接层未能按 ENHANCE_YOUR_CALM 收口：{}", streamId, errorText);
+                }
+            }
         }
 
         // TLS 通道要先收：明文模式下它为空，等于直接走基类关闭真实套接字
@@ -347,16 +407,25 @@ namespace AsynGyanis::Net
 
             // 相位时限与 HTTP/1.1 侧同口径：已经在收某条请求（有挂着等正文的流）就按读超时约束
             // 相邻两次成功读取的间隔，纯粹等新请求才用空闲容忍度；SETTINGS 待 ACK 的握手期用
-            // 专项限额的剩余时长，到点由清扫协程收口——因此不新造定时器
+            // 专项限额的剩余时长，到点由清扫协程收口——因此不新造定时器。
+            // 正在拼头块时再与头块总预算取更早的那个：只按读超时的话，每段 CONTINUATION 都会把
+            // 截止时间推后，慢速对端能一直占着连接
             const std::chrono::milliseconds settingsIdleBudget = settingsAcknowledgementIdleBudget();
-            if (settingsIdleBudget > std::chrono::milliseconds::zero())
-            {
-                refreshIdleDeadline(settingsIdleBudget);
-            } else
+            std::chrono::milliseconds       phaseTimeout       = settingsIdleBudget;
+            if (phaseTimeout <= std::chrono::milliseconds::zero())
             {
                 const bool isRequestInProgress = !m_pendingRequests.empty();
-                refreshIdleDeadline(isRequestInProgress ? m_limits->readTimeout : m_limits->idleTimeout);
+                phaseTimeout                   = isRequestInProgress ? m_limits->readTimeout : m_limits->idleTimeout;
             }
+            if (const std::optional<std::chrono::steady_clock::time_point> headerDeadline = pendingHeaderBlockDeadline(m_connection, *m_limits); headerDeadline.has_value())
+            {
+                // 已到期时给 1 毫秒而不是 0：refreshIdleDeadline(0) 的语义是关闭保护，不能让清扫协程放过这条连接
+                const std::chrono::milliseconds headerRemaining =
+                        std::max(std::chrono::ceil<std::chrono::milliseconds>(*headerDeadline - std::chrono::steady_clock::now()), std::chrono::milliseconds{1});
+                // readTimeout 为 0 表示读超时关闭，此时只由头块预算约束
+                phaseTimeout = phaseTimeout > std::chrono::milliseconds::zero() ? std::min(phaseTimeout, headerRemaining) : headerRemaining;
+            }
+            refreshIdleDeadline(phaseTimeout);
 
             // 驱动顺序：喂字节（协议失败时 GOAWAY 已排进待发）→ 立刻写出（初始 SETTINGS、ACK、
             // WINDOW_UPDATE、RST_STREAM、GOAWAY）→ 起本轮新到的处理器协程 → 叫醒被正文/取消推进的
@@ -439,6 +508,31 @@ namespace AsynGyanis::Net
         refreshIdleDeadline(m_limits->readTimeout);
 
         const Http2ConnectionFeedStatus feedStatus = m_connection.feedBytes(m_http2ReceiveBuffer.data(), static_cast<std::size_t>(receivedLength));
+
+        // 头块总预算按绝对起点算，到点即按 ENHANCE_YOUR_CALM 收口：读超时只管相邻两次读取的间隔，
+        // 慢速 CONTINUATION 每来一段都能把它顶回去。连接已失败时不再补第二张 GOAWAY
+        if (!m_connection.hasFailed())
+        {
+            if (const std::optional<std::chrono::steady_clock::time_point> headerDeadline = pendingHeaderBlockDeadline(m_connection, *m_limits); headerDeadline.has_value())
+            {
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                if (now >= *headerDeadline)
+                {
+                    const std::uint32_t streamId = m_connection.pendingHeaderBlockStreamId();
+                    std::string         errorText;
+                    if (!m_connection.failConnection(Http2ErrorCode::EnhanceYourCalm, formatHeaderBlockTimeoutReason(streamId, m_limits->requestHeaderTimeout), &errorText))
+                    {
+                        LOG_DEBUG_FMT("Http2Session: 流 {} 的请求头超出总时限，但连接层未能按 ENHANCE_YOUR_CALM 收口：{}", streamId, errorText);
+                    }
+                } else
+                {
+                    const std::chrono::milliseconds headerRemaining = std::max(std::chrono::ceil<std::chrono::milliseconds>(*headerDeadline - now), std::chrono::milliseconds{1});
+                    // readTimeout 为 0 表示读超时关闭，此时只由头块预算约束
+                    refreshIdleDeadline(m_limits->readTimeout > std::chrono::milliseconds::zero() ? std::min(m_limits->readTimeout, headerRemaining) : headerRemaining);
+                }
+            }
+        }
+
         if (!co_await flushOutgoingBytes())
         {
             co_return false;
@@ -2017,7 +2111,7 @@ namespace AsynGyanis::Net
         {
             // 发送挂起：放弃剩余字节。此刻连接已经注定关闭，为一条 GOAWAY 等可写只会把清扫协程拖住；
             // 挂起的帧随本函数返回销毁，其等待器析构时会自行从注册对象摘除
-            LOG_WARN_FMT("Http2Session: SETTINGS_TIMEOUT 的 GOAWAY 未能在收口前写出（等可写），连接仍然关闭");
+            LOG_WARN_FMT("Http2Session: 收口 GOAWAY 未能在关闭前写出（等可写），连接仍然关闭");
             return;
         }
 
@@ -2026,11 +2120,11 @@ namespace AsynGyanis::Net
             const ssize_t writtenByteCount = sendTask.await_resume();
             if (writtenByteCount <= 0)
             {
-                LOG_WARN_FMT("Http2Session: SETTINGS_TIMEOUT 的 GOAWAY 写出失败（传输层返回 {}），连接仍然关闭", writtenByteCount);
+                LOG_WARN_FMT("Http2Session: 收口 GOAWAY 写出失败（传输层返回 {}），连接仍然关闭", writtenByteCount);
             }
         } catch (const std::exception &exception)
         {
-            LOG_WARN_FMT("Http2Session: SETTINGS_TIMEOUT 的 GOAWAY 写出失败（{}），连接仍然关闭", exception.what());
+            LOG_WARN_FMT("Http2Session: 收口 GOAWAY 写出失败（{}），连接仍然关闭", exception.what());
         }
     }
 

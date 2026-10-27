@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9179
+# headers=310 entries=9183
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -5410,6 +5410,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptResponseHeaderFi
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool acceptTrailerHeaderFields(const std::vector<HpackHeaderFieldView> &headerFields, std::string *errorText)
 src/Net/Http2/Http2Connection.h	[[nodiscard]] static bool isReceiveCreditWorthFlushing(std::size_t pendingByteCount, std::uint32_t advertisedWindowByteCount) noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::chrono::steady_clock::time_point lastSettingsSentTime() const noexcept
+src/Net/Http2/Http2Connection.h	[[nodiscard]] std::optional<std::chrono::steady_clock::time_point> pendingHeaderBlockStartedAt() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::optional<std::size_t> oversizeAgainstPeerHeaderListLimit(const std::vector<HpackHeaderField> &fields, std::string_view pseudoName, std::string_view pseudoValue, std::uint32_t *peerLimitOut) const
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::size_t openStreamCount() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::size_t pendingResponseByteCount(std::uint32_t streamId) const noexcept
@@ -5420,6 +5421,7 @@ src/Net/Http2/Http2Connection.h	[[nodiscard]] std::string lastStreamErrorMessage
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::string takeOutgoingBytes()
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t peerInitialWindowSize() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t peerMaximumFrameSize() const noexcept
+src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint32_t pendingHeaderBlockStreamId() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::uint64_t rejectedRequestHeaderFieldCount() const noexcept
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::vector<Http2ReceivedData> takeReceivedData()
 src/Net/Http2/Http2Connection.h	[[nodiscard]] std::vector<Http2Request> takeRequests()
@@ -5455,6 +5457,7 @@ src/Net/Http2/Http2Connection.h	std::int64_t receiveWindowByteCount
 src/Net/Http2/Http2Connection.h	std::int64_t sendWindowByteCount
 src/Net/Http2/Http2Connection.h	std::map<std::uint16_t, std::uint32_t> m_peerSettings
 src/Net/Http2/Http2Connection.h	std::map<std::uint32_t, StreamRecord> m_streams
+src/Net/Http2/Http2Connection.h	std::optional<std::chrono::steady_clock::time_point> m_pendingHeaderBlockStartedAt
 src/Net/Http2/Http2Connection.h	std::size_t flowControlByteCount
 src/Net/Http2/Http2Connection.h	std::size_t headerFieldTotal
 src/Net/Http2/Http2Connection.h	std::size_t headerNetByteTotal
@@ -5503,6 +5506,7 @@ src/Net/Http2/Http2Connection.h	struct ASYN_NET_API Http2Request
 src/Net/Http2/Http2Connection.h	struct StreamRecord
 src/Net/Http2/Http2Connection.h	void appendOutgoing(std::string frameBytes)
 src/Net/Http2/Http2Connection.h	void appendOutgoingFrame(Http2FrameType type, std::uint8_t flags, std::uint32_t streamId, std::string_view payload)
+src/Net/Http2/Http2Connection.h	void clearHeaderBlockAssembly() noexcept
 src/Net/Http2/Http2Connection.h	void creditConnectionReceiveWindow(std::size_t byteCount)
 src/Net/Http2/Http2Connection.h	void creditStreamReceiveWindow(StreamRecord *stream, std::size_t byteCount)
 src/Net/Http2/Http2Connection.h	void emitHeaderBlock(std::uint32_t streamId, const std::string &headerBlock, bool endStream)
