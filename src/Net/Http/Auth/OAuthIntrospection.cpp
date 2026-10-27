@@ -18,6 +18,10 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("OAuthIntrospectionClient: introspectionUrl 不能为空——没有端点就无从自省");
         }
+        if (!isSecureOrLoopbackEndpoint(m_options.introspectionUrl))
+        {
+            throw Base::InvalidArgumentException("OAuthIntrospectionClient: introspectionUrl 的传输不安全——非回环端点必须使用 https，否则令牌原文会随请求走明文");
+        }
         if (m_options.requestTimeout.count() <= 0)
         {
             throw Base::InvalidArgumentException("OAuthIntrospectionClient: requestTimeout 必须为正");

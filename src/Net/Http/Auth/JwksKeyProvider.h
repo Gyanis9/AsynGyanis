@@ -51,7 +51,7 @@ namespace AsynGyanis::Net
      */
     struct JwksKeyProviderOptions
     {
-        std::string               jwksUrl;                   ///< JWKS 端点（必填；http 或 https）
+        std::string               jwksUrl;                   ///< JWKS 端点（必填；https，或回环地址上的 http）
         std::chrono::seconds      refreshInterval{300};      ///< 后台轮换周期
         std::chrono::milliseconds requestTimeout{5000};      ///< 单次拉取超时
         std::chrono::milliseconds refreshRequestSlice{1000}; ///< 等待周期时的醒来粒度（未知 kid 触发的提前刷新以它为上限；必须为正，非正会让轮换忙等）
@@ -69,9 +69,9 @@ namespace AsynGyanis::Net
         /**
          * @brief 起一个供给器并立即发起首次拉取（异步，不阻塞调用方）
          * @param loop 事件循环；必须比返回的供给器活得久
-         * @param options 取值；jwksUrl 为空、refreshInterval 非正、requestTimeout 非正或 refreshRequestSlice 非正即抛
+         * @param options 取值；jwksUrl 为空或不是 https 且不在回环地址上、refreshInterval 非正、requestTimeout 非正或 refreshRequestSlice 非正即抛
          * @return std::shared_ptr<JwksKeyProvider> 供给器
-         * @throws Base::InvalidArgumentException 取值缺失或明显非法
+         * @throws Base::InvalidArgumentException 取值缺失、端点不满足安全传输要求或明显非法
          * @note 首次拉取完成前 verify() 一律拒（键集为空）——启动期的短暂拒绝好过在 verify 里
          *       同步等一手网络
          */

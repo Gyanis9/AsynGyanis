@@ -16,7 +16,7 @@
  * @note 凭据按 RFC 6749 §2.3.1 走 HTTP Basic（client_id 作用户名、client_secret 作口令）；
  *       未给 clientId 时不发认证头（公开客户端或网关已代管的部署）。
  * @warning 自省端点必须在 TLS 之下：请求体里带着令牌原文，明文连接等于把令牌交给链路上的
- *          每一跳。本件不替调用方拦明文端点——它照发并解析，但调用方要清楚这是它自己的选择。
+ *          每一跳。构造时只放行 https 或回环地址上的 http，其余明文端点当场拒绝。
  */
 #pragma once
 
@@ -73,7 +73,7 @@ namespace AsynGyanis::Net
          * @brief 构造
          * @param loop 事件循环，只在这条循环上使用（与框架里每条连接归属一个循环的约定同口径）
          * @param options 取值；introspectionUrl 为空即抛
-         * @throws Base::InvalidArgumentException introspectionUrl 为空
+         * @throws Base::InvalidArgumentException introspectionUrl 为空，或不是 https 且不在回环地址上
          */
         OAuthIntrospectionClient(EventLoop &loop, OAuthIntrospectionOptions options);
 

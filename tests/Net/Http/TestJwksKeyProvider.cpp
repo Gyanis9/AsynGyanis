@@ -12,6 +12,7 @@
 
 #include "Base/Exception/InvalidArgumentException.h"
 #include "Core/EventLoop/EventLoop.h"
+#include "Net/Http/Auth/OAuthSupport.h"
 
 #include "ExpectedAssertions.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -470,6 +471,26 @@ namespace AsynGyanis::Net
         const std::optional<std::string> outcome = provider->verify(token, JwtClaimExpectations{}, TimePoint{std::chrono::seconds{kNowSeconds}});
         ASSERT_HAS_VALUE(outcome);
         EXPECT_NE(outcome->find("尚未成功拉取"), std::string::npos) << *outcome;
+    }
+
+    TEST(JwksKeyProviderTest, RejectsPlaintextNonLoopbackJwksUrl)
+    {
+        // 非回环端点的明文连接会把公钥交给链路上的每一跳：构造期就该拒，且不发起任何请求
+        Core::EventLoop        loop;
+        JwksKeyProviderOptions options;
+        options.jwksUrl = "http://example.com/jwks";
+        EXPECT_THROW({ const auto provider = JwksKeyProvider::start(loop, options); }, Base::InvalidArgumentException);
+    }
+
+    TEST(JwksKeyProviderTest, AcceptsHttpsAndLoopbackEndpointPolicy)
+    {
+        // 只验判定本身：https 一律放行，http 仅限回环主机（含大小写与 IPv6 字面量），全程不触网
+        EXPECT_TRUE(isSecureOrLoopbackEndpoint("https://example.com/jwks"));
+        EXPECT_TRUE(isSecureOrLoopbackEndpoint("http://127.0.0.1:8080/jwks"));
+        EXPECT_TRUE(isSecureOrLoopbackEndpoint("http://localhost:8080/jwks"));
+        EXPECT_TRUE(isSecureOrLoopbackEndpoint("http://LOCALHOST:8080/jwks"));
+        EXPECT_TRUE(isSecureOrLoopbackEndpoint("http://[::1]:8080/jwks"));
+        EXPECT_FALSE(isSecureOrLoopbackEndpoint("http://example.com/jwks"));
     }
 
     TEST(JwksKeyProviderTest, StartRejectsNonPositiveRefreshRequestSlice)

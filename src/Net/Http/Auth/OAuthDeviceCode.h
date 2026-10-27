@@ -18,7 +18,7 @@
  * @note 本件按公开客户端形状发请求：client_id 走表单字段（§3.1 必填）；给了 clientSecret
  *       时凭据额外走 Basic（RFC 6749 §2.3.1）。不配 secret 的部署什么都不用改。
  * @warning 两个端点必须在 TLS 之下：来往上带着设备码与最终令牌，明文连接等于把它们交给
- *          链路上的每一跳。本件不替调用方拦明文端点——照发，但调用方要清楚这是它自己的选择。
+ *          链路上的每一跳。构造时只放行 https 或回环地址上的 http，其余明文端点当场拒绝。
  */
 #pragma once
 
@@ -78,7 +78,7 @@ namespace AsynGyanis::Net
          * @brief 构造
          * @param loop 事件循环，只在这条循环上使用（与框架里每条连接归属一个循环的约定同口径）
          * @param options 取值；三个必填项（deviceAuthorizationUrl / tokenUrl / clientId）任一为空即抛
-         * @throws Base::InvalidArgumentException 必填取值缺失，或 requestTimeout 非正
+         * @throws Base::InvalidArgumentException 必填取值缺失，端点不是 https 且不在回环地址上，或 requestTimeout 非正
          */
         OAuthDeviceCodeClient(EventLoop &loop, OAuthDeviceCodeOptions options);
 

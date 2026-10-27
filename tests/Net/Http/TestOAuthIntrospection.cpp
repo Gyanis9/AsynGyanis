@@ -310,6 +310,26 @@ namespace AsynGyanis::Net
         SUCCEED();
     }
 
+    TEST(OAuthIntrospectionClientTest, RejectsPlaintextNonLoopbackEndpointAtConstruction)
+    {
+        Core::EventLoop           loop;
+        OAuthIntrospectionOptions options;
+        options.introspectionUrl = "http://example.com/introspect";
+        EXPECT_THROW({ OAuthIntrospectionClient client(loop, options); }, Base::InvalidArgumentException);
+    }
+
+    TEST(OAuthIntrospectionClientTest, AcceptsHttpsAndLoopbackEndpointAtConstruction)
+    {
+        // 构造期只做取值校验：两个被接受的端点都不发请求
+        Core::EventLoop           loop;
+        OAuthIntrospectionOptions options;
+        options.introspectionUrl = "https://example.com/introspect";
+        EXPECT_NO_THROW({ OAuthIntrospectionClient client(loop, options); });
+
+        options.introspectionUrl = "http://127.0.0.1:1/introspect";
+        EXPECT_NO_THROW({ OAuthIntrospectionClient client(loop, options); });
+    }
+
     TEST(OAuthIntrospectionClientTest, RejectsEmptyEndpointAtConstruction)
     {
         Core::EventLoop loop;

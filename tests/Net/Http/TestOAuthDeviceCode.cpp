@@ -563,6 +563,41 @@ namespace AsynGyanis::Net
         EXPECT_FALSE(watchdogFired) << "用例被看门狗掐停——协议不符没有被当成终止条件";
     }
 
+    TEST(OAuthDeviceCodeClientTest, RejectsPlaintextNonLoopbackTokenUrlAtConstruction)
+    {
+        Core::EventLoop        loop;
+        OAuthDeviceCodeOptions options;
+        options.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization";
+        options.tokenUrl               = "http://example.com/token";
+        options.clientId               = "client-1";
+        EXPECT_THROW({ OAuthDeviceCodeClient client(loop, options); }, Base::InvalidArgumentException);
+    }
+
+    TEST(OAuthDeviceCodeClientTest, RejectsPlaintextNonLoopbackDeviceAuthorizationUrlAtConstruction)
+    {
+        Core::EventLoop        loop;
+        OAuthDeviceCodeOptions options;
+        options.deviceAuthorizationUrl = "http://example.com/device_authorization";
+        options.tokenUrl               = "http://127.0.0.1:1/token";
+        options.clientId               = "client-1";
+        EXPECT_THROW({ OAuthDeviceCodeClient client(loop, options); }, Base::InvalidArgumentException);
+    }
+
+    TEST(OAuthDeviceCodeClientTest, AcceptsHttpsAndLoopbackEndpointsAtConstruction)
+    {
+        // 构造期只做取值校验：被接受的端点都不发请求
+        Core::EventLoop        loop;
+        OAuthDeviceCodeOptions options;
+        options.deviceAuthorizationUrl = "https://example.com/device_authorization";
+        options.tokenUrl               = "https://example.com/token";
+        options.clientId               = "client-1";
+        EXPECT_NO_THROW({ OAuthDeviceCodeClient client(loop, options); });
+
+        options.deviceAuthorizationUrl = "http://127.0.0.1:1/device_authorization";
+        options.tokenUrl               = "http://127.0.0.1:1/token";
+        EXPECT_NO_THROW({ OAuthDeviceCodeClient client(loop, options); });
+    }
+
     TEST(OAuthDeviceCodeClientTest, RejectsEmptyConfigurationAtConstruction)
     {
         Core::EventLoop loop;

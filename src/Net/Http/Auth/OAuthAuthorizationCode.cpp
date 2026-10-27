@@ -63,6 +63,10 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("OAuthAuthorizationCodeClient: tokenUrl 不能为空——没有端点就换不到令牌");
         }
+        if (!isSecureOrLoopbackEndpoint(m_options.tokenUrl))
+        {
+            throw Base::InvalidArgumentException("OAuthAuthorizationCodeClient: tokenUrl 的传输不安全——非回环端点必须使用 https，否则授权码与令牌会走明文");
+        }
         if (m_options.clientId.empty())
         {
             throw Base::InvalidArgumentException("OAuthAuthorizationCodeClient: clientId 不能为空——授权请求必须带它（RFC 6749 §4.1.1）");

@@ -16,8 +16,8 @@
  * @note PKCE 按 RFC 7636 §4.3：能力允许时必须用 S256（本件只发 S256，不发 plain）。
  * @note 授权码只能换一次、且要与发起时的 redirectUri 与 verifier 配套（RFC 6749 §4.1.3、
  *       RFC 7636 §4.5）——三者都由 `beginAuthorization()` 的产物与配置提供，调用方不必自己拼。
- * @warning 令牌端点必须在 TLS 之下：来往上带着授权码与最终令牌。本件不替调用方拦明文端点
- *          ——照发，但调用方要清楚这是它自己的选择。
+ * @warning 令牌端点必须在 TLS 之下：来往上带着授权码与最终令牌。构造时只放行 https 或
+ *          回环地址上的 http，其余明文令牌端点当场拒绝。
  */
 #pragma once
 
@@ -84,7 +84,7 @@ namespace AsynGyanis::Net
          * @brief 构造
          * @param loop 事件循环，只在这条循环上使用（与框架里每条连接归属一个循环的约定同口径）
          * @param options 取值；四个必填项（authorizationUrl / tokenUrl / clientId / redirectUri）任一为空即抛
-         * @throws Base::InvalidArgumentException 必填取值缺失，或 requestTimeout 非正
+         * @throws Base::InvalidArgumentException 必填取值缺失，tokenUrl 不是 https 且不在回环地址上，或 requestTimeout 非正
          */
         OAuthAuthorizationCodeClient(EventLoop &loop, OAuthAuthorizationCodeOptions options);
 

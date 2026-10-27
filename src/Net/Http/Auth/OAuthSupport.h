@@ -16,6 +16,8 @@
 #include "Net/Http/Client/HttpClient.h"
 #include "Net/Http/Auth/OAuthError.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <expected>
@@ -26,6 +28,32 @@
 
 namespace AsynGyanis::Net
 {
+    /**
+     * @brief 端点是否走安全传输：https 一律允许，http 只允许回环主机
+     * @details 回环主机按 127.0.0.1、::1、localhost 三个名字逐字比较（大小写无关）。这类地址的
+     *          流量不出本机，本地开发与测试因此可以继续用明文；其余 http 端点会把令牌、客户端
+     *          凭据或公钥交给链路上的每一跳，一律不放行。
+     * @param url 端点 URL，解析口径与 parseUrl 相同
+     * @return bool 允许为 true
+     * @throws Base::InvalidArgumentException URL 畸形（parseUrl 的口径）
+     */
+    [[nodiscard]] inline bool isSecureOrLoopbackEndpoint(const std::string_view url)
+    {
+        const ParsedUrl parsed = parseUrl(url);
+        if (parsed.scheme == "https")
+        {
+            return true;
+        }
+
+        // 主机名大小写无关（RFC 3986 §3.2.2 的 reg-name）；IP 字面量比较不受大小写影响
+        const auto equalsIgnoringCase = [](const std::string_view left, const std::string_view right)
+        {
+            return std::ranges::equal(left, right, [](const char leftCharacter, const char rightCharacter)
+                                      { return std::tolower(static_cast<unsigned char>(leftCharacter)) == std::tolower(static_cast<unsigned char>(rightCharacter)); });
+        };
+        return equalsIgnoringCase(parsed.host, "127.0.0.1") || equalsIgnoringCase(parsed.host, "::1") || equalsIgnoringCase(parsed.host, "localhost");
+    }
+
     /**
      * @brief `application/x-www-form-urlencoded` 的百分号编码
      * @details 未保留字符原样、其余按 `%XX`；空格编 `%20`（不用 `+`，免与真值里的加号混淆——

@@ -429,6 +429,32 @@ namespace AsynGyanis::Net
         runControlTask(loop, exchangeScenario(loop, client, endpoint));
     }
 
+    TEST(OAuthAuthorizationCodeClientTest, RejectsPlaintextNonLoopbackTokenUrlAtConstruction)
+    {
+        Core::EventLoop               loop;
+        OAuthAuthorizationCodeOptions options;
+        options.authorizationUrl = "https://auth.example/authorize";
+        options.tokenUrl         = "http://example.com/token";
+        options.clientId         = "client-1";
+        options.redirectUri      = "https://app.example/cb";
+        EXPECT_THROW({ OAuthAuthorizationCodeClient client(loop, options); }, Base::InvalidArgumentException);
+    }
+
+    TEST(OAuthAuthorizationCodeClientTest, AcceptsHttpsAndLoopbackTokenUrlAtConstruction)
+    {
+        // 构造期只做取值校验：两个被接受的令牌端点都不发请求
+        Core::EventLoop               loop;
+        OAuthAuthorizationCodeOptions options;
+        options.authorizationUrl = "https://auth.example/authorize";
+        options.tokenUrl         = "https://example.com/token";
+        options.clientId         = "client-1";
+        options.redirectUri      = "https://app.example/cb";
+        EXPECT_NO_THROW({ OAuthAuthorizationCodeClient client(loop, options); });
+
+        options.tokenUrl = "http://127.0.0.1:1/token";
+        EXPECT_NO_THROW({ OAuthAuthorizationCodeClient client(loop, options); });
+    }
+
     TEST(OAuthAuthorizationCodeClientTest, RejectsEmptyConfigurationAtConstruction)
     {
         Core::EventLoop loop;

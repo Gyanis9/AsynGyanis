@@ -30,9 +30,17 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("OAuthDeviceCodeClient: deviceAuthorizationUrl 不能为空——没有端点就取不到设备码");
         }
+        if (!isSecureOrLoopbackEndpoint(m_options.deviceAuthorizationUrl))
+        {
+            throw Base::InvalidArgumentException("OAuthDeviceCodeClient: deviceAuthorizationUrl 的传输不安全——非回环端点必须使用 https，否则设备码会随请求走明文");
+        }
         if (m_options.tokenUrl.empty())
         {
             throw Base::InvalidArgumentException("OAuthDeviceCodeClient: tokenUrl 不能为空——没有端点就换不到令牌");
+        }
+        if (!isSecureOrLoopbackEndpoint(m_options.tokenUrl))
+        {
+            throw Base::InvalidArgumentException("OAuthDeviceCodeClient: tokenUrl 的传输不安全——非回环端点必须使用 https，否则客户端凭据与令牌会走明文");
         }
         if (m_options.clientId.empty())
         {

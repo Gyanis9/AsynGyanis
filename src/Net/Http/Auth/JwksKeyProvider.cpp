@@ -27,6 +27,10 @@ namespace AsynGyanis::Net
         {
             throw Base::InvalidArgumentException("JwksKeyProvider: jwksUrl 不能为空——没有端点就没有可拉取的密钥");
         }
+        if (!isSecureOrLoopbackEndpoint(options.jwksUrl))
+        {
+            throw Base::InvalidArgumentException("JwksKeyProvider: jwksUrl 的传输不安全——非回环端点必须使用 https，明文拉取会让公钥被链路上的每一跳看到并可被篡改");
+        }
         if (options.refreshInterval.count() <= 0)
         {
             throw Base::InvalidArgumentException("JwksKeyProvider: refreshInterval 必须为正——非正的轮换周期会把拉取变成无间隔循环");
