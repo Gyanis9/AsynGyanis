@@ -53,6 +53,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <stop_token>
@@ -2364,6 +2365,7 @@ namespace AsynGyanis::Net
         clientPolicy.certificateAuthorityFile = kLoopbackCertificatePath.string();
         Core::TlsContext clientContext(clientPolicy, Core::TlsContext::Role::Client);
         ASSERT_TRUE(clientContext.loadCertificate(kLoopbackCertificatePath.string(), kLoopbackKeyPath.string()));
+        clientContext.enableClientPeerVerification();
 
         WebSocketClient::Configuration configuration;
         configuration.hostName         = "127.0.0.1";
@@ -2411,6 +2413,79 @@ namespace AsynGyanis::Net
         EXPECT_TRUE(serverVerified->load(std::memory_order_acquire)) << "服务端业务读到的身份未验证";
         EXPECT_EQ(serverReply, expectedFingerprint) << "服务端业务没把客户端证书身份交出来";
         EXPECT_EQ(clientObserved, expectedFingerprint) << "客户端没把服务端证书身份交出来";
+    }
+
+    namespace
+    {
+        /// 一次只跑 connect 的结论：类别、文案与成败
+        struct WebSocketConnectOutcome
+        {
+            bool                                 isConnected{false}; ///< connect 是否交回会话
+            std::optional<WebSocketUpgradeError> error;              ///< 失败时的类别与文案
+        };
+
+        /**
+         * @brief 在自建事件循环上跑一次 connect
+         * @details 成功时直接销毁会话（析构关通路）：本函数只回答闸门放不放行，不承载会话动作
+         * @param configuration 握手参数
+         * @return WebSocketConnectOutcome 结论读数
+         */
+        WebSocketConnectOutcome runConnect(WebSocketClient::Configuration configuration)
+        {
+            Core::EventLoop         loop;
+            WebSocketConnectOutcome outcome;
+            auto                    driver = [&]() -> Core::Task<>
+            {
+                auto connected = co_await WebSocketClient::connect(loop, configuration);
+                if (!connected.has_value())
+                {
+                    outcome.error = connected.error();
+                } else
+                {
+                    outcome.isConnected = true;
+                }
+                loop.stop();
+            };
+            auto task = driver();
+            if (!task.isReady())
+            {
+                loop.scheduler().schedule(task.handle());
+            }
+            loop.run();
+            return outcome;
+        }
+    } // namespace
+
+    /**
+     * @brief 钉住：wss 的 clientTls 没开对端校验时，connect 在解析与建连之前就拒绝
+     * @details 不验对端证书的 wss 与明文无异：任何受信 CA 给任意名字签的证书都能冒充目标。
+     *          判据两条：拒因是 TlsSetupRejected（不是握手失败），且服务端一条连接都没接受——
+     *          闸门若晚于 DNS 或建连，这两条里至少有一条会红。
+     */
+    TEST(HttpsServer, RejectsWebSocketClientTlsThatDoesNotVerifyServer)
+    {
+        RunningHttpsServerFixture fixture(makeLongTimeoutLimits(), std::chrono::milliseconds{100}, {}, HttpParserLimits{}, {}, kLoopbackCertificatePath, kLoopbackKeyPath);
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+
+        Core::TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kLoopbackCertificatePath.string();
+        Core::TlsContext unverified(clientPolicy, Core::TlsContext::Role::Client);
+
+        WebSocketClient::Configuration configuration;
+        configuration.hostName         = "127.0.0.1";
+        configuration.port             = fixture.listeningPort();
+        configuration.requestTarget    = "/ws";
+        configuration.clientTls        = &unverified;
+        configuration.handshakeTimeout = std::chrono::seconds{5};
+
+        const WebSocketConnectOutcome outcome = runConnect(configuration);
+        ASSERT_FALSE(outcome.isConnected) << "未开对端校验的上下文仍然连上了：中间人可以冒充目标";
+        ASSERT_TRUE(outcome.error.has_value());
+        EXPECT_EQ(outcome.error->kind, WebSocketUpgradeErrorKind::TlsSetupRejected);
+        EXPECT_NE(outcome.error->message.find("enableClientPeerVerification"), std::string::npos) << "实际文案：" << outcome.error->message;
+        EXPECT_FALSE(fixture.awaitConnectionAccepted(std::chrono::milliseconds{200})) << "闸门之后服务端仍接受了一条 TCP 连接";
+        EXPECT_EQ(fixture.server().stats().activeConnectionCount, 0U);
+        EXPECT_EQ(fixture.server().stats().totalRequestCount, 0U) << "服务端数到了请求：这条连接根本没该被建立";
     }
 
     /**

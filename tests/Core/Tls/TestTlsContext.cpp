@@ -1567,6 +1567,24 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 钉住只读查询：判据是客户端角色当前生效的校验模式
+     */
+    TEST(TlsContext, ReportsClientPeerVerificationFromTheActiveContext)
+    {
+        TlsContext client(TlsPolicy{}, TlsContext::Role::Client);
+        EXPECT_FALSE(client.isClientPeerVerificationEnabled()) << "客户端上下文默认未开校验，查询却报已开";
+
+        client.enableClientPeerVerification();
+        EXPECT_TRUE(client.isClientPeerVerificationEnabled()) << "enableClientPeerVerification() 之后查询仍报未开";
+
+        TlsContext server;
+        ASSERT_TRUE(server.loadCertificate(kTestCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(server.loadClientCertificateAuthority(kTestCertificatePath.string()));
+        server.setClientCertificateRequired(true);
+        EXPECT_FALSE(server.isClientPeerVerificationEnabled()) << "服务端角色要求客户端证书不是出站校验，查询不该报已开";
+    }
+
+    /**
      * @brief 钉住：客户端角色经 enableClientPeerVerification() 开出的对端校验，轮换后不能丢
      */
     TEST(TlsContext, ReloadCertificatePreservesClientPeerVerification)
@@ -1577,11 +1595,13 @@ namespace AsynGyanis::Core
         TlsContext context(TlsPolicy{}, TlsContext::Role::Client);
         ASSERT_TRUE(context.loadCertificate(certificatePath.string(), kTestKeyPath.string()));
         context.enableClientPeerVerification();
+        ASSERT_TRUE(context.isClientPeerVerificationEnabled());
         ASSERT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0);
 
         ASSERT_TRUE(writeSelfSignedCertificate(kTestKeyPath, certificatePath, 0x5EF0L));
         ASSERT_TRUE(context.reloadCertificate());
 
+        EXPECT_TRUE(context.isClientPeerVerificationEnabled()) << "轮换后查询读到的校验模式丢了";
         EXPECT_NE(SSL_CTX_get_verify_mode(context.nativeHandle()) & SSL_VERIFY_PEER, 0) << "客户端上下文轮换后丢失了对端证书校验";
 
         std::error_code errorCode;

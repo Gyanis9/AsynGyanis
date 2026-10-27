@@ -80,12 +80,20 @@ namespace AsynGyanis::Net
         };
 
         /**
-         * @brief 校验 Configuration 里必须为正的两个时限
+         * @brief 校验 Configuration 里能当场判死的用法错误
+         * @details 这些错误都在任何资源获取之前判完：缺主机名、两个时限非正、出站 TLS 没开服务端证书校验。
+         *          最后一条不在本类代开：上下文归调用方所有，是否校验证书是它的策略；这里只拒绝，
+         *          让调用方显式调用 enableClientPeerVerification() 表达「这条 wss 要验对端」。
          * @param configuration 握手参数
          * @return 失败时交回可直接上报的升级错误；通过时为空
          */
-        std::optional<WebSocketUpgradeError> validateTimeouts(const WebSocketClient::Configuration &configuration)
+        std::optional<WebSocketUpgradeError> validateConfiguration(const WebSocketClient::Configuration &configuration)
         {
+            if (configuration.hostName.empty())
+            {
+                return WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid,
+                                             "WebSocket 出站缺 Configuration.hostName：请给出目标主机名或 IP 字面量（它同时用作 Host、SNI 与证书主机名校验的对象）"};
+            }
             if (configuration.handshakeTimeout <= std::chrono::milliseconds::zero())
             {
                 return WebSocketUpgradeError{
@@ -99,6 +107,12 @@ namespace AsynGyanis::Net
                 return WebSocketUpgradeError{
                         WebSocketUpgradeErrorKind::LocalRequestInvalid,
                         std::format("WebSocket 出站的 sendTimeout 是 {} 毫秒：单帧写出必须有正时限，0 或负数会让对端不读时的发送永久挂住", configuration.sendTimeout.count())};
+            }
+            if (configuration.clientTls != nullptr && !configuration.clientTls->isClientPeerVerificationEnabled())
+            {
+                return WebSocketUpgradeError{WebSocketUpgradeErrorKind::TlsSetupRejected,
+                                             "WebSocket 出站的 Configuration.clientTls 没有开启服务端证书校验：不验对端的 wss 与明文无异，"
+                                             "任何受信 CA 给任意名字签的证书都能冒充目标。请先对该上下文调用 enableClientPeerVerification()，再发起 connect"};
             }
             return std::nullopt;
         }
@@ -467,13 +481,7 @@ namespace AsynGyanis::Net
     {
         // 用法错误在任何资源获取之前判完：解析与连接都是要归还的东西，带着坏参数进去就会留下一条
         // 半途的连接，或者一条永远没人接的协程帧
-        if (configuration.hostName.empty())
-        {
-            co_return std::unexpected(
-                    WebSocketUpgradeError{WebSocketUpgradeErrorKind::LocalRequestInvalid,
-                                          "WebSocket 出站缺 Configuration.hostName：请给出目标主机名或 IP 字面量（它同时用作 Host、SNI 与证书主机名校验的对象）"});
-        }
-        if (const std::optional<WebSocketUpgradeError> failure = validateTimeouts(configuration); failure.has_value())
+        if (const std::optional<WebSocketUpgradeError> failure = validateConfiguration(configuration); failure.has_value())
         {
             co_return std::unexpected(*failure);
         }

@@ -242,6 +242,15 @@ namespace AsynGyanis::Core
          */
         void enableClientPeerVerification() const;
 
+        /**
+         * @brief 出站校验是否真的开着
+         * @details 判据取 SSL_CTX 上当前生效的校验模式，而不是「调用过 enableClientPeerVerification()」这一事实：
+         *          设置可能被后续调用覆盖，也可能在换代中丢失，只有上下文此刻的取值能回答「这条 wss 会不会验服务端」。
+         * @return true 角色是 Client 且校验模式带 SSL_VERIFY_PEER；false 其余全部情形（含服务端角色）
+         * @note 只读查询，持上下文锁取一次快照；不改变任何配置
+         */
+        [[nodiscard]] bool isClientPeerVerificationEnabled() const;
+
     private:
         /**
          * @brief 新建一个 SSL_CTX 并施加全部安全加固与策略（构造与热轮换共用同一份，避免两处配置各自漂移）

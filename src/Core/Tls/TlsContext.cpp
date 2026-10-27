@@ -472,6 +472,18 @@ namespace AsynGyanis::Core
         m_sessionTicketKeyFiles = keyFiles;
     }
 
+    bool TlsContext::isClientPeerVerificationEnabled() const
+    {
+        // 与 reloadCertificate() 互斥：换代期间取到的必须是某一份完整上下文的校验模式
+        std::lock_guard<std::mutex> guard(m_contextMutex);
+        if (m_role != Role::Client)
+        {
+            return false;
+        }
+        // 判据取当前生效的校验模式：调用过 enableClientPeerVerification() 之后又被覆盖的情形同样要报 false
+        return (SSL_CTX_get_verify_mode(m_context) & SSL_VERIFY_PEER) != 0;
+    }
+
     SSL_CTX *TlsContext::nativeHandle() const
     {
         std::lock_guard<std::mutex> guard(m_contextMutex);

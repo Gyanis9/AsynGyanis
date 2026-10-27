@@ -15,6 +15,8 @@
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/EventLoop.h"
 #include "Core/EventLoop/Timer.h"
+#include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsPolicy.h"
 #include "Net/WebSocket/WebSocketHandshake.h"
 #include "Net/WebSocket/PerMessageDeflate.h"
 #include "Platform/IO/FileDescriptor.h"
@@ -67,6 +69,7 @@ namespace AsynGyanis::Net
         {
             bool                                     is_connected{false};          ///< connect() 是否成功
             std::string                              failure_reason;               ///< 失败时点明断在哪一段
+            std::optional<WebSocketUpgradeErrorKind> failure_kind;                 ///< 失败类别：拒因文本会改，这一格才是调用方能分支的那一层
             std::vector<WebSocketFrame>              delivered;                    ///< 会话交给业务的消息
             std::vector<bool>                        send_results;                 ///< 用例里几次 send*/close 的结论
             std::chrono::milliseconds                send_elapsed{0};              ///< 用例里那次 send* 的墙钟时长
@@ -233,6 +236,11 @@ namespace AsynGyanis::Net
             {
                 return m_port.load(std::memory_order_acquire);
             }
+            /// 已接受过多少条连接：闸门设在 TCP 之前的用例据此判「一条都没连进来」
+            [[nodiscard]] std::size_t acceptedConnectionCount() const noexcept
+            {
+                return m_acceptedCount.load(std::memory_order_acquire);
+            }
             [[nodiscard]] std::string headBytes() const
             {
                 const std::lock_guard guard(m_sinkMutex);
@@ -300,6 +308,7 @@ namespace AsynGyanis::Net
                     {
                         continue;
                     }
+                    m_acceptedCount.fetch_add(1, std::memory_order_acq_rel);
                     PeerWire wire(client, m_headBytes, m_frameBytes, m_sinkMutex, m_isStopping);
                     m_script(wire);
                     Platform::FileDescriptor::close(client);
@@ -313,6 +322,7 @@ namespace AsynGyanis::Net
             std::atomic<bool>          m_isStopping{false}; ///< 收摊标志
             std::atomic<bool>          m_isFinished{false}; ///< 脚本是否已跑完
             std::atomic<std::uint16_t> m_port{0};           ///< 实际监听端口，0 表示还没起来
+            std::atomic<std::size_t>   m_acceptedCount{0};  ///< 已接受的连接数；成功连接后脚本才跑，故 0 表示一条都没连进来
             mutable std::mutex         m_sinkMutex;         ///< 保护下面两份线上读数
             std::string                m_headBytes;         ///< 读到的升级请求原文
             std::string                m_frameBytes;        ///< 请求之后读到的帧字节
@@ -477,6 +487,7 @@ namespace AsynGyanis::Net
             if (!connected.has_value())
             {
                 outcome.failure_reason = connected.error().message;
+                outcome.failure_kind   = connected.error().kind;
                 loop.stop();
                 co_return;
             }
@@ -497,6 +508,7 @@ namespace AsynGyanis::Net
             if (!connected.has_value())
             {
                 outcome.failure_reason = connected.error().message;
+                outcome.failure_kind   = connected.error().kind;
                 loop.stop();
                 co_return;
             }
@@ -1366,6 +1378,42 @@ namespace AsynGyanis::Net
         EXPECT_NE(outcome.failure_reason.find("101"), std::string::npos) << outcome.failure_reason;
         EXPECT_NE(outcome.failure_reason.find("时限"), std::string::npos) << outcome.failure_reason;
         EXPECT_LT(elapsed, std::chrono::milliseconds{3000}) << "等了 " << elapsed.count() << " 毫秒：时限没管住等 101 这一段";
+    }
+
+    /**
+     * @brief 钉住：clientTls 没开对端校验时，connect 在建立 TCP 之前就拒绝
+     * @details 不验对端证书的 wss 与明文无异：任何受信 CA 给任意名字签的证书都能冒充目标。
+     *          判据落在对端的接受计数上——闸门若晚于 DNS 或建连，这里会数到那条连接。
+     */
+    TEST(WebSocketClient, RejectsUnverifiedClientTlsBeforeAnyTcpConnection)
+    {
+        ScriptedWsPeer peer([](PeerWire &) {});
+        ASSERT_TRUE(peer.start()) << "对端没能在回环上监听";
+
+        Core::TlsContext               unverified(Core::TlsPolicy{}, Core::TlsContext::Role::Client);
+        WebSocketClient::Configuration configuration = baseConfiguration();
+        configuration.hostName                       = "127.0.0.1";
+        configuration.port                           = peer.port();
+        configuration.clientTls                      = &unverified;
+        configuration.handshakeTimeout               = std::chrono::milliseconds{500};
+
+        Core::EventLoop  loop;
+        ClientRunOutcome outcome;
+        auto             work = driveClient(loop, configuration, kNoAction, outcome);
+        if (!work.isReady())
+        {
+            loop.scheduler().schedule(work.handle());
+        }
+        loop.run();
+
+        EXPECT_FALSE(outcome.is_connected) << "未开对端校验的上下文仍然连上了：中间人可以冒充目标";
+        ASSERT_TRUE(outcome.failure_kind.has_value());
+        EXPECT_EQ(*outcome.failure_kind, WebSocketUpgradeErrorKind::TlsSetupRejected) << outcome.failure_reason;
+        EXPECT_NE(outcome.failure_reason.find("enableClientPeerVerification"), std::string::npos) << outcome.failure_reason;
+
+        // 给对端的接受循环足够的时间：闸门若在建连之后，这条连接一定已经被 accept
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        EXPECT_EQ(peer.acceptedConnectionCount(), 0U) << "拒因是 TLS 设置，TCP 却已经连进来了";
     }
 
     /**
