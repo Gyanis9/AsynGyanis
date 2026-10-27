@@ -755,7 +755,13 @@ namespace AsynGyanis::Net
     TEST(QuicServer, AttributesHandshakingConnectionsSeparatelyFromEstablishedOnes)
     {
         // 空闲时限收到 3 秒：③里半程握手的连接靠它收口，收口之后两数回零也靠它兑现
-        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration) { configuration.idleTimeout = std::chrono::seconds{3}; }};
+        // 地址验证显式关掉：本用例测的是握手状态归因，不测地址验证——默认开着时半程 Initial 只会换回
+        // 一条 Retry、连接根本不进表，③那一格无从成立
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [](QuicServer::Configuration &configuration)
+                                 {
+                                     configuration.idleTimeout                    = std::chrono::seconds{3};
+                                     configuration.addressValidationTokenLifetime = std::chrono::seconds{0};
+                                 }};
         ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
         EXPECT_EQ(server.server().connectionCount(), 0U);
         EXPECT_EQ(server.server().handshakingConnectionCount(), 0U);
@@ -818,7 +824,13 @@ namespace AsynGyanis::Net
         const HttpTestSupport::LogCapture logCapture; // 先挂再开服：日志走根日志器，晚一步就漏掉前面几条
 
         const std::shared_ptr<PerIpConnectionLimiter> limiter = std::make_shared<PerIpConnectionLimiter>(2);
-        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [&limiter](QuicServer::Configuration &configuration) { configuration.perIpConnectionLimiter = limiter; }};
+        // 地址验证显式关掉：本用例测单来源名额拒绝的告警节流，不测地址验证——默认开着时被拒的
+        // Initial 先换回一条 Retry，根本走不到名额判定，告警自然不会出现
+        RunningServerPeer server{kIpCertificatePath, kIpPrivateKeyPath, [&limiter](QuicServer::Configuration &configuration)
+                                 {
+                                     configuration.perIpConnectionLimiter         = limiter;
+                                     configuration.addressValidationTokenLifetime = std::chrono::seconds{0};
+                                 }};
         ASSERT_NE(server.listeningPort(), 0U) << "对面的服务端没起来，后面的判据都是空的";
 
         // 先把手上的两个名额占满：两条完成握手的连接都从 127.0.0.1 来，同一份单来源账。

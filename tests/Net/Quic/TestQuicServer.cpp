@@ -723,6 +723,57 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住默认配置：地址验证开着，不带令牌的合规 Initial 先吃一条 Retry 且不建状态
+     * @details 「默认开」不能只靠读配置那一行：默认值被改回 0 时那句话会红，但真正要守的是端口上
+     *          的行为——一条新连接不建任何状态。因此第二段起一台只填证书与私钥的服务端，发一条
+     *          符合 §14.1 尺寸的手拼 Initial，断言回包是长头 Retry（§17.2.5）且连接表仍为空。
+     * @note 报文形状取自 §17.2.2 的手拼夹具，不借自家客户端：判据是入口的行为，不是一次握手
+     */
+    TEST(QuicServer, DefaultConfigurationRequiresAddressValidation)
+    {
+        // 只读配置那一格：让「默认值被改回 0」红在原因所在的地方
+        const QuicServer::Configuration defaults;
+        EXPECT_GT(defaults.addressValidationTokenLifetime.count(), 0) << "地址验证默认关着：公网端口上一条 Initial 就能换走一份 TLS 会话与流表";
+
+        const Platform::Socket::Initialization network;
+        Core::EventLoop                        loop;
+        QuicServer                             server(loop, makeServerConfiguration()); // 证书与私钥之外一律用默认档
+        std::optional<Core::Task<void>>        listenTask = server.listen(Core::InetAddress("127.0.0.1", 0));
+        EventLoopThread                        loopThread{loop};
+        loopThread.loop().scheduler().scheduleRemote(listenTask->handle());
+        ASSERT_TRUE(waitForCondition([&] { return server.listeningPort() != 0U; }, kPeerWaitTimeout)) << "服务端没进入监听，后面的判据都是空的";
+
+        const Core::InetAddress        serverAddress("127.0.0.1", server.listeningPort());
+        const Platform::DatagramSocket sender = Platform::DatagramSocket::bindTo(Core::InetAddress("127.0.0.1", 0).platformAddress());
+        ASSERT_TRUE(sender.isValid()) << "发送端绑定失败，错误码 " << Platform::PlatformError::lastSocketErrorCode();
+
+        const std::vector<std::uint8_t> initial = makeProbeInitial(1200U);
+        ASSERT_EQ(initial.size(), 1200U);
+        ASSERT_GT(sender.send(serverAddress.platformAddress(), initial.data(), initial.size()), 0);
+
+        std::vector<std::uint8_t> reply(1200U);
+        std::size_t               replyLength = 0;
+        ASSERT_TRUE(waitForCondition(
+                [&]
+                {
+                    Platform::SocketAddress replyFrom{};
+                    const ssize_t           received = sender.receive(reply.data(), reply.size(), replyFrom);
+                    if (received <= 0)
+                    {
+                        return false;
+                    }
+                    replyLength = static_cast<std::size_t>(received);
+                    return true;
+                },
+                kPeerWaitTimeout))
+                << "默认配置下不带令牌的 Initial 什么都没收到：本端直接开始握手，等于把成本账留给对端";
+        ASSERT_GE(replyLength, 5U) << "回包短于长头固定段";
+        EXPECT_NE(reply[0] & 0x80U, 0U) << "回包不是长头";
+        EXPECT_EQ((reply[0] >> 4U) & 0x03U, 3U) << "回包不是 Retry：默认地址验证应当先让对端证明自己能收到回包";
+        EXPECT_EQ(server.connectionCount(), 0U) << "Retry 不该为这条握手留下状态";
+    }
+
+    /**
      * @brief 两种启动顺序不许混用：接手来的不许再 bind，按地址来的不许无参启动
      * @details 混用的后果都是静默的：接手来的服务端再去 bind 会把交过来的套接字闲置，对端往那个端口
      *          发的报文一条也到不了，症状与「移交没做成」一模一样；反过来无参的 listen() 落在按地址

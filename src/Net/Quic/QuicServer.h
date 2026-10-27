@@ -157,25 +157,27 @@ namespace AsynGyanis::Net
             /// 同一来源不管从 TCP 还是 QUIC 进来都算在同一个名额里
             std::shared_ptr<PerIpConnectionLimiter> perIpConnectionLimiter;
             /**
-             * @brief 地址验证令牌的有效期（秒）；0 表示不开这项保护（缺省，逐字保持这一格落地之前的行为）
+             * @brief 地址验证令牌的有效期（秒）；0 表示关闭这项保护，默认 30 秒即默认开启
              *
-             * @details 开了之后，每个不带令牌的新连接 Initial 都先吃一条 Retry（RFC 9000 §8.1.2）：本端
+             * @details 开着时，每个不带令牌的新连接 Initial 都先吃一条 Retry（RFC 9000 §8.1.2）：本端
              *          不为它建任何状态，等它带着令牌重来才建。这一格的存在理由是公网 UDP 端口上的成本
              *          不对称——一条 Initial 就能让本端建一份 TLS 会话、一张流表与一套拥塞状态，而发的人
              *          不必是自己。测试计划里「放大/反射字节比 ≤3」与「Initial 洪水」两格都靠它收口。
-             * @note 开了之后自家出站客户端连不上：本实现的客户端不处理 Retry 报文（见 §17.2.5.2 那格
-             *       未落地），所以要由能接 Retry 的客户端来连（跨实现核对用的 aioquic 就能）。
+             * @note 本引擎的出站客户端（`QuicConnectionCore`）已处理 Retry 报文，默认开启后自家客户端
+             *       仍能连上本服务端；不处理 Retry 的第三方客户端会被挡在第一条 Initial 上。
+             * @note 多进程 worker 必须共享 `addressValidationKey`：各进程随机自造时，客户端带着 A 签的令牌
+             *       撞到 B 必然验不过，表现为握手偶尔白走一轮（理由见那一格）。
              * @note 令牌由 HMAC 算出，密钥见 `addressValidationKey`。有效期就是密钥轮换的窗口：
              *       旧密钥签出的令牌最长活到这里，之后就没人再认它。
              */
-            std::chrono::seconds addressValidationTokenLifetime{0};
+            std::chrono::seconds addressValidationTokenLifetime{30};
             /**
              * @brief 令牌 HMAC 的签发密钥；留空＝启动时随机自造一把
              *
              * @details 多进程 worker 必须配同一份（同一台机器上的几份进程共享一把密钥，或从同一份
-             *          密钥文件读）：各进程随机自造时，客户端带着 A 签的令牌撞到 B 必然验不过，症状是
-             *          「同样的握手偶尔要重来一次」——与 `sessionTicketKeyFiles` 那格同一条道理。
-             *          低于 16 字节在构造期即被拒（RFC 9000 §8.1.4 的「难猜」要求）。
+             *          密钥文件读）：地址验证默认开启，各进程随机自造时，客户端带着 A 签的令牌撞到 B
+             *          必然验不过，症状是「同样的握手偶尔要重来一次」——与 `sessionTicketKeyFiles` 那格
+             *          同一条道理。低于 16 字节在构造期即被拒（RFC 9000 §8.1.4 的「难猜」要求）。
              */
             std::vector<std::uint8_t> addressValidationKey{};
             /**

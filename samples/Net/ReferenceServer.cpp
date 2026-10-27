@@ -1719,6 +1719,10 @@ int main(int argc, char **argv)
         // 多 worker 下必须共用同一把（照 --ticket-key 的理由）：不给则每进程各随机一把，
         // 撞到别的进程那份旧连接的报文只能继续不理，客户端要等自己的空闲超时才知道连接没了
         http3Configuration.statelessResetKey = statelessResetKeyBytes;
+        // 地址验证默认开启，多 worker 同样必须共享同一把签发密钥：各进程随机自造时，客户端带着
+        // A 进程签的令牌撞到 B 进程必然验不过，握手白走一轮。这里给的是参考实现与多 worker 测试
+        // 用的固定值；生产部署要从密钥文件或环境注入，不要拿源码里这一份上线
+        http3Configuration.addressValidationKey = std::vector<std::uint8_t>(32U, 0x52U);
         // 与 h1/h2 用同一份解析上限：h3 的正文总量上限同样不该由样本自己去猜
         http3Configuration.parserLimits = configuration.parserLimits;
         // 在途正文预算与 HTTP 侧共用同一份账：h3 的正文也驻留在进程内存里，
