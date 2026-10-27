@@ -17,7 +17,8 @@ namespace AsynGyanis::Core
     /**
      * @brief 校验已完成握手的客户端会话收到的 OCSP 装订响应
      * @details 只有收到响应才校验：未装订时直接返回，保持「服务端不提供 OCSP 也能连接」的既有行为。
-     *          校验覆盖 DER 编码、响应状态、已验证证书链上的签名、CertID 匹配、有效期与 GOOD 状态。
+     *          校验覆盖 DER 编码、响应状态、已验证证书链上的签名、CertID 匹配（按响应声明的
+     *          摘要算法）、有效期与 GOOD 状态。
      * @param ssl 已完成 SSL_connect 的客户端会话；空指针按失败处理
      * @throws CoreException 收到响应但任一项校验不通过（含状态为已吊销）；失败即拒握手
      * @note 必须在对端证书校验已开启（SSL_VERIFY_PEER）的会话上调用：签名校验要用到

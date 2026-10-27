@@ -2476,12 +2476,15 @@ namespace AsynGyanis::Core
          * @param issuerCertificate 签发者证书
          * @param issuerKey 签发者私钥
          * @param certificateStatus 叶证书状态（GOOD 或 REVOKED），吊销用例靠它造出「签名有效但状态为拒」的响应
+         * @param certificateIdDigest CertID 的摘要算法（默认 SHA-1）；真实 responder 用哪种，响应就带哪种
          * @return std::string DER 字节；任一步失败返回空串
          */
-        std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD)
+        std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD,
+                                                const EVP_MD *certificateIdDigest = EVP_sha1())
         {
             const std::unique_ptr<OCSP_BASICRESP, decltype(&OCSP_BASICRESP_free)> basic(OCSP_BASICRESP_new(), &OCSP_BASICRESP_free);
-            const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)>       certificateId(OCSP_cert_to_id(EVP_sha1(), leafCertificate, issuerCertificate), &OCSP_CERTID_free);
+            const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)>       certificateId(OCSP_cert_to_id(certificateIdDigest, leafCertificate, issuerCertificate),
+                                                                                                &OCSP_CERTID_free);
             const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)>           thisUpdate(ASN1_TIME_set(nullptr, std::time(nullptr)), &ASN1_TIME_free);
             const std::unique_ptr<ASN1_TIME, decltype(&ASN1_TIME_free)>           nextUpdate(ASN1_TIME_adj(nullptr, std::time(nullptr), 0, 3600), &ASN1_TIME_free);
             if (!basic || !certificateId || !thisUpdate || !nextUpdate)
@@ -2507,6 +2510,31 @@ namespace AsynGyanis::Core
                 return {};
             }
 
+            unsigned char *der       = nullptr;
+            const int      derLength = i2d_OCSP_RESPONSE(response.get(), &der);
+            if (derLength <= 0 || der == nullptr)
+            {
+                return {};
+            }
+            std::string bytes(reinterpret_cast<const char *>(der), static_cast<std::size_t>(derLength));
+            OPENSSL_free(der);
+            return bytes;
+        }
+
+        /**
+         * @brief 造一份只有响应状态、没有 basicResponse 的 OCSP 响应（DER 字节）
+         * @details 用来验证「响应状态不是 successful」这条拒绝面：服务端装订前只解析 DER，
+         *          不查状态，因此这种响应能原样送到客户端。
+         * @param responseStatus OCSP_RESPONSE_STATUS_* 取值
+         * @return std::string DER 字节；失败返回空串
+         */
+        std::string makeOcspResponseDerWithStatus(const int responseStatus)
+        {
+            const std::unique_ptr<OCSP_RESPONSE, decltype(&OCSP_RESPONSE_free)> response(OCSP_response_create(responseStatus, nullptr), &OCSP_RESPONSE_free);
+            if (!response)
+            {
+                return {};
+            }
             unsigned char *der       = nullptr;
             const int      derLength = i2d_OCSP_RESPONSE(response.get(), &der);
             if (derLength <= 0 || der == nullptr)
@@ -2559,9 +2587,11 @@ namespace AsynGyanis::Core
          * @param tag 临时文件用途标签
          * @param serialNumber 叶证书序列号
          * @param certificateStatus 响应里的叶证书状态（GOOD 或 REVOKED）
+         * @param certificateIdDigest CertID 的摘要算法（默认 SHA-1）
          * @return StaplingTestMaterial 材料；任一步失败时路径为空
          */
-        StaplingTestMaterial makeStaplingTestMaterial(const std::string_view tag, const long serialNumber, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD)
+        StaplingTestMaterial makeStaplingTestMaterial(const std::string_view tag, const long serialNumber, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD,
+                                                      const EVP_MD *certificateIdDigest = EVP_sha1())
         {
             StaplingTestMaterial material;
             material.leafCertificatePath = makeUniqueTemporaryPath(tag).replace_extension(".pem");
@@ -2578,7 +2608,7 @@ namespace AsynGyanis::Core
                 return material;
             }
 
-            material.responseBytes = makeMatchingOcspResponseDer(leaf.get(), issuer.get(), issuerKey.get(), certificateStatus);
+            material.responseBytes = makeMatchingOcspResponseDer(leaf.get(), issuer.get(), issuerKey.get(), certificateStatus, certificateIdDigest);
             if (material.responseBytes.empty())
             {
                 return material;
@@ -2791,6 +2821,74 @@ namespace AsynGyanis::Core
         std::error_code errorCode;
         std::filesystem::remove(material.leafCertificatePath, errorCode);
         std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 装订的 CertID 使用 SHA-256 时客户端必须接受
+     * @details 真实 responder 常用的摘要算法不止 SHA-1。客户端若固定按 SHA-1 重算 CertID，
+     *          这类响应就对不上任何条目，合法装订会被当成「没有当前叶证书的状态」拒绝。
+     */
+    TEST(TlsContext, ClientAcceptsSha256CertIdStapledOcspResponse)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("client_ocsp_sha256", 0x54L, V_OCSP_CERTSTATUS_GOOD, EVP_sha256());
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(serverContext.loadOcspResponse(material.responsePath.string()));
+
+        TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kTestCertificatePath.string();
+        clientPolicy.maximumProtocolVersion   = TlsPolicy::ProtocolVersion::Tls1_2;
+        TlsContext clientContext(clientPolicy, TlsContext::Role::Client);
+        clientContext.enableClientPeerVerification();
+
+        const TlsSocketHandshakeOutcome outcome = runTlsSocketHandshake(serverContext, clientContext);
+
+        ASSERT_FALSE(outcome.setupFailed) << outcome.clientErrorText;
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << "SHA-256 CertID 的有效装订响应被客户端拒了：" << outcome.clientErrorText;
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 装订的响应状态不是 successful 时客户端拒握手
+     * @details 服务端装订前只解析 DER、不查状态，tryLater 这类响应会被原样送到客户端；
+     *          客户端必须按失败处理，而不是当成「没有可用状态」放行。
+     */
+    TEST(TlsContext, ClientRejectsStapledOcspResponseWithoutSuccessfulStatus)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("client_ocsp_trylater", 0x55L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        const std::string tryLaterBytes = makeOcspResponseDerWithStatus(OCSP_RESPONSE_STATUS_TRYLATER);
+        ASSERT_FALSE(tryLaterBytes.empty());
+        const std::filesystem::path tryLaterPath = writeTemporaryBytes("client_ocsp_trylater_resp", tryLaterBytes);
+        ASSERT_FALSE(tryLaterPath.empty());
+
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(serverContext.loadOcspResponse(tryLaterPath.string()));
+
+        TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kTestCertificatePath.string();
+        clientPolicy.maximumProtocolVersion   = TlsPolicy::ProtocolVersion::Tls1_2;
+        TlsContext clientContext(clientPolicy, TlsContext::Role::Client);
+        clientContext.enableClientPeerVerification();
+
+        const TlsSocketHandshakeOutcome outcome = runTlsSocketHandshake(serverContext, clientContext);
+
+        ASSERT_FALSE(outcome.setupFailed) << outcome.clientErrorText;
+        EXPECT_FALSE(outcome.clientCompleted) << "响应状态不是 successful，客户端却完成了握手";
+        EXPECT_NE(outcome.clientErrorText.find("OCSP"), std::string::npos) << "拒绝原因没有指向 OCSP：" << outcome.clientErrorText;
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+        std::filesystem::remove(tryLaterPath, errorCode);
     }
 
     /**

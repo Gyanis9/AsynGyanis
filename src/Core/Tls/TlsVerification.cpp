@@ -402,6 +402,68 @@ namespace AsynGyanis::Core
                     return "无法识别的状态";
             }
         }
+
+        /// OCSP 响应的时钟偏移容忍：两端时钟无法严丝合缝，5 分钟是常见口径
+        constexpr long kOcspClockSkewSeconds = 300;
+
+        /**
+         * @brief thisUpdate 允许的最大年龄（7 天）
+         * @details 不设上限等于接受一份永久有效的 GOOD：responder 停更后，几周前的状态也会被
+         *          当成当前状态。7 天大于任何合理的刷新间隔与缓存时长，又不会把长期未更新的
+         *          状态放行。
+         */
+        constexpr long kOcspMaximumThisUpdateAgeSeconds = 7L * 24L * 60L * 60L;
+
+        /**
+         * @brief 在 basic 响应里找出与叶证书匹配的那条 SingleResponse
+         * @details CertID 的摘要算法由响应自己声明，SHA-1 只是其中一种；固定按 SHA-1 重算，
+         *          responder 用 SHA-256 时合法的装订会被当成「没有当前叶证书的状态」拒绝。
+         *          这里读出每条响应的摘要 OID，用同一算法为叶证书重算 CertID 再逐字段比对。
+         * @param basic 已解析的 basic 响应
+         * @param leaf 已校验链上的叶证书
+         * @param issuer 叶证书的签发者
+         * @return OCSP_SINGLERESP* 命中的条目（归 basic 所有）；没有匹配时返回 nullptr
+         */
+        OCSP_SINGLERESP *findMatchingSingleResponse(OCSP_BASICRESP *basic, X509 *leaf, X509 *issuer)
+        {
+            const int responseCount = OCSP_resp_count(basic);
+            for (int index = 0; index < responseCount; ++index)
+            {
+                OCSP_SINGLERESP *const singleResponse = OCSP_resp_get0(basic, index);
+                if (singleResponse == nullptr)
+                {
+                    continue;
+                }
+                OCSP_CERTID *const presentedId = const_cast<OCSP_CERTID *>(OCSP_SINGLERESP_get0_id(singleResponse));
+                if (presentedId == nullptr)
+                {
+                    continue;
+                }
+
+                ASN1_OBJECT *digestObject = nullptr;
+                if (OCSP_id_get0_info(nullptr, &digestObject, nullptr, nullptr, presentedId) != 1 || digestObject == nullptr)
+                {
+                    continue;
+                }
+                const EVP_MD *const digest = EVP_get_digestbyobj(digestObject);
+                if (digest == nullptr)
+                {
+                    // 不认识的摘要算法：跳过这一条，由调用方在整体无匹配时判失败
+                    continue;
+                }
+
+                const std::unique_ptr<OCSP_CERTID, OcspCertificateIdDeleter> expectedId(OCSP_cert_to_id(digest, leaf, issuer));
+                if (expectedId == nullptr)
+                {
+                    continue;
+                }
+                if (OCSP_id_cmp(expectedId.get(), presentedId) == 0)
+                {
+                    return singleResponse;
+                }
+            }
+            return nullptr;
+        }
     } // namespace
 
 
@@ -418,11 +480,16 @@ namespace AsynGyanis::Core
 
         unsigned char *responseBytes  = nullptr;
         const long     responseLength = SSL_get_tlsext_status_ocsp_resp(ssl, &responseBytes);
-        if (responseLength <= 0 || responseBytes == nullptr)
+        if (responseLength <= 0)
         {
             // 服务端没有装订（或本端没有请求）：不强制，握手照常完成
             ERR_clear_error();
             return;
+        }
+        if (responseBytes == nullptr)
+        {
+            // 长度非零却没有内容：不是「没有装订」，按失败处理
+            throwOcspVerificationFailure("装订长度非零但内容为空");
         }
 
         const unsigned char                                      *cursor = responseBytes;
@@ -430,6 +497,10 @@ namespace AsynGyanis::Core
         if (response == nullptr)
         {
             throwOcspVerificationFailure("装订内容不是合法的 DER 编码");
+        }
+        if (cursor != responseBytes + responseLength)
+        {
+            throwOcspVerificationFailure("装订内容在 DER 之后还有多余字节");
         }
 
         const int responseStatus = OCSP_response_status(response.get());
@@ -464,24 +535,24 @@ namespace AsynGyanis::Core
             throwOcspVerificationFailure("响应的签名链校验不通过");
         }
 
-        const std::unique_ptr<OCSP_CERTID, OcspCertificateIdDeleter> certificateId(OCSP_cert_to_id(nullptr, leaf, issuer));
-        if (certificateId == nullptr)
+        OCSP_SINGLERESP *const matchedResponse = findMatchingSingleResponse(basic.get(), leaf, issuer);
+        if (matchedResponse == nullptr)
         {
-            throwOcspVerificationFailure("无法为叶证书构造 CertID");
+            throwOcspVerificationFailure("响应里没有当前叶证书的状态");
         }
 
-        int                   certificateStatus = V_OCSP_CERTSTATUS_UNKNOWN;
         int                   revocationReason  = 0;
         ASN1_GENERALIZEDTIME *revocationTime    = nullptr;
         ASN1_GENERALIZEDTIME *thisUpdate        = nullptr;
         ASN1_GENERALIZEDTIME *nextUpdate        = nullptr;
-        if (OCSP_resp_find_status(basic.get(), certificateId.get(), &certificateStatus, &revocationReason, &revocationTime, &thisUpdate, &nextUpdate) != 1)
+        const int             certificateStatus = OCSP_single_get0_status(matchedResponse, &revocationReason, &revocationTime, &thisUpdate, &nextUpdate);
+        if (certificateStatus < 0)
         {
-            throwOcspVerificationFailure("响应里没有当前叶证书的状态");
+            throwOcspVerificationFailure("无法读取响应里的叶证书状态");
         }
-        if (OCSP_check_validity(thisUpdate, nextUpdate, 300, -1) != 1)
+        if (OCSP_check_validity(thisUpdate, nextUpdate, kOcspClockSkewSeconds, kOcspMaximumThisUpdateAgeSeconds) != 1)
         {
-            throwOcspVerificationFailure("响应的有效期不合法或已过期");
+            throwOcspVerificationFailure("响应的有效期不合法、已过期或 thisUpdate 过旧");
         }
         if (certificateStatus != V_OCSP_CERTSTATUS_GOOD)
         {
