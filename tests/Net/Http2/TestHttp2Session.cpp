@@ -2368,6 +2368,45 @@ namespace AsynGyanis::Net
     }
 
     /**
+     * @brief 钉住：对端只发前奏、不发自己的 SETTINGS 时，SETTINGS 超时的 GOAWAY 仍要送到对端
+     * @details 前奏收齐后连接停在「等对端 SETTINGS」，此时对端一个帧都没发过。到点收口的第一现场
+     *          是清扫协程调用 close()（读协程仍挂在读等待上）；那条路径若只认「正常收发」状态，
+     *          GOAWAY 就不会排入，对端看到的只是连接被关掉，分不清是本端按时限收口还是网络断了。
+     */
+    TEST(Http2Session, SendsSettingsTimeoutGoAwayBeforePeerSettingsArrive)
+    {
+        ASSERT_TRUE(std::filesystem::exists(kTestCertificatePath)) << "缺少仓库自签证书夹具：" << kTestCertificatePath.string();
+
+        HttpServerLimits limits               = makeLongTimeoutLimits();
+        limits.settingsAcknowledgementTimeout = std::chrono::milliseconds{200};
+
+        RunningHttp2ServerFixture fixture(limits, std::chrono::milliseconds{30});
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTPS 服务器未在时限内进入接受循环";
+        const std::uint16_t listeningPort = fixture.listeningPort();
+        ASSERT_NE(listeningPort, 0);
+
+        TlsHttp2LoopbackClient client(listeningPort, "h2");
+        ASSERT_TRUE(client.isHandshakeComplete()) << "TLS 回环握手未在时限内完成";
+
+        // 只发前奏：服务端会回初始 SETTINGS，但对端既不发自己的 SETTINGS，也不回 ACK
+        std::vector<TestFrame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface), kWaitTimeout));
+
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<TestFrame> &receivedFrames) { return countFrames(receivedFrames, Http2FrameType::GoAway) >= 1; }, kWaitTimeout))
+                << "对端只发前奏、不发 SETTINGS 时没有在时限内收到 GOAWAY：SETTINGS 超时的收口只剩裸关连接";
+        const TestFrame *const goAwayFrame = findFrame(frames, Http2FrameType::GoAway);
+        ASSERT_NE(goAwayFrame, nullptr);
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::SettingsTimeout) << "GOAWAY 的错误码应当是 SETTINGS_TIMEOUT（0x4）";
+
+        EXPECT_TRUE(client.waitForClosure(kWaitTimeout)) << "GOAWAY 之后连接没有关闭";
+        ASSERT_TRUE(waitForCondition([&fixture] { return fixture.server().stats().timeoutClosedCount >= 1; }, kWaitTimeout))
+                << "被 SETTINGS 超时收口的连接没有计入 timeoutClosedCount";
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
      * @brief 钉住：settingsAcknowledgementTimeout 取 0 表示不设这项保护——对端同样不回 ACK，但不发 GOAWAY、连接不被超时收口
      */
     TEST(Http2Session, KeepsConnectionWhenSettingsTimeoutProtectionIsOff)

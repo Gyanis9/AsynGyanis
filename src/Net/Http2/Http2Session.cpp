@@ -243,9 +243,13 @@ namespace AsynGyanis::Net
         // 这是「会话被关停」路径上唯一还能写字节的时刻——清扫协程正是先调用本函数再关描述符，
         // 而会话自己的读协程要等描述符关闭才被唤醒，那时一个字节都写不出去。先把收口原因送出
         // （尽力），再走基类收口。
-        // 只在 Open 上补发：已失败说明 GOAWAY 带着真正的错误码发过一次了；Closing 说明优雅关停
-        // 已经通告过一次，再补一张不同错误码的 GOAWAY 会把对端看到的收口原因改成另一件事
-        if (isTransportOpen() && m_connection.state() == Http2ConnectionState::Open)
+        // 已失败的不再补：GOAWAY 已经带着真正的错误码排过一次，连接层也会拒绝第二次。
+        // Closing 不补：关闭已经由一方通告过（本端发过收尾通告，或收到对端 GOAWAY），这条清扫
+        // 兜底不再追加第二张 GOAWAY；读循环里真正撞上预算到点的那条路径仍会按错误码收口
+        // （见 refreshConnectionDeadlineWithinHeaderBlockBudget 的取舍说明）。
+        // 特别不能只认 Open：SETTINGS 超时恰恰发生在「等对端 SETTINGS」——客户端只发前奏就静默时
+        // 连接永远走不到 Open，这里漏掉 GOAWAY 就只剩裸关连接。
+        if (isTransportOpen() && !m_connection.hasFailed() && m_connection.state() != Http2ConnectionState::Closing)
         {
             if (isSettingsAcknowledgementExpired())
             {
@@ -496,6 +500,10 @@ namespace AsynGyanis::Net
             refreshIdleDeadline(std::chrono::milliseconds{1});
             if (!m_connection.hasFailed())
             {
+                // 连接可能已处在 Closing（本端发过收尾通告，或收到对端 GOAWAY）：这里仍补一张
+                // ENHANCE_YOUR_CALM 的 GOAWAY。RFC 9113 §6.8 允许多张 GOAWAY 分别在情况变化时发出，
+                // 只要求后一张的最后受理流号不大于前一张；Closing 之后不再受理新流，这个号不会变大。
+                // 头块超时是独立的连接级错误，丢掉它会让对端把「本端按时限收口」看成断网。
                 const std::uint32_t streamId = m_connection.pendingHeaderBlockStreamId();
                 std::string         errorText;
                 if (m_connection.failConnection(Http2ErrorCode::EnhanceYourCalm, formatHeaderBlockTimeoutReason(streamId, m_limits->requestHeaderTimeout), &errorText))
@@ -586,6 +594,9 @@ namespace AsynGyanis::Net
             {
                 LOG_ERROR_FMT("Http2Session: WebSocket 隧道期间连接层失败，已收口。原因：{}", m_connection.errorMessage());
             }
+            // 收口 GOAWAY 已经排在待发字节里：不能只把结论交回调用方——回到隧道循环还要跨过一次
+            // 协程挂起，而失败分支刚把空闲截止压到 1 毫秒，清扫协程可能先到并关掉描述符。当场写一次
+            static_cast<void>(co_await flushOutgoingBytes());
             co_return false;
         }
         co_return co_await flushOutgoingBytes();
@@ -1787,6 +1798,8 @@ namespace AsynGyanis::Net
             }
         }
 
+        // 跳出循环时 GOAWAY 可能只排在待发字节里：先写一次，别等业务协程返回或被清扫关掉描述符
+        static_cast<void>(co_await flushOutgoingBytes());
         // 收尾与 h1 阶段同一判据：协议错误按具体码收口、心跳到点判死，否则主动发正常关闭帧
         co_await finishWebSocketTunnelPeer(streamId, *peer, feedStatus);
         peer->markClosed();

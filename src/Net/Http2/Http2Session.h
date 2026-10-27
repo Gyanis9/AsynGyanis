@@ -577,6 +577,11 @@ namespace AsynGyanis::Net
          *       都在本协程里，主循环在隧道存续期间不再拿回执行权。因此隧道期间本协程就是这条连接的驱动者：
          *       自己读传输字节、喂连接层、把本流的 DATA 交给解码器、归还接收窗口，并调用
          *       serveOtherStreamsDuringTunnel() 就地服务同连接其它流上已收齐的请求
+         * @note 隧道循环跳出后、等待业务协程之前会先写一次待发字节：头块预算到点时 GOAWAY 可能
+         *       只排进了待发字节（连接已进入失败态），而业务可能正挂在定时器或别的等待上；清扫
+         *       协程会在下一拍按已到期的截止关掉描述符，等业务返回再写就送不出去。心跳刷新的失败
+         *       分支里，隧道循环内的两次调用由本轮写出或这一次写出兜住；业务发 Ping 触发的那一次
+         *       没有协程栈可以等写权，仍是窄窗口：GOAWAY 要等下一次隧道写出或 close()。
          */
         [[nodiscard]] Core::Task<RequestServeOutcome> serveWebSocketTunnel(std::uint32_t streamId, PendingRequest &pending);
 

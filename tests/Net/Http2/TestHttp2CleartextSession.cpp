@@ -70,6 +70,7 @@ namespace AsynGyanis::Net
         constexpr std::chrono::milliseconds kStreamTimeoutHandlerBudget{120}; ///< 配的每请求处理时限
         constexpr std::chrono::milliseconds kStreamTimeoutHandlerHold{600};   ///< 处理器故意挂住的时长（> 时限）
         constexpr std::chrono::milliseconds kUnbudgetedHandlerHold{200};      ///< 没配时限那条对照的挂起时长
+        constexpr std::chrono::milliseconds kTunnelGoAwayBusinessHold{1500};  ///< 隧道业务挂住时长：要盖过 GOAWAY 观察窗，又要在夹具收尾上限之内
         constexpr std::chrono::milliseconds kCancelPollTick{5};               ///< 轮询取消状态的那一拍
         constexpr int                       kCancelPollRounds = 100;          ///< 轮询上限：只有拿不到取消才跑满
 
@@ -2647,6 +2648,99 @@ namespace AsynGyanis::Net
         ASSERT_NE(goAwayFrame, frames.end());
         EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "隧道期间的头块超时应按 ENHANCE_YOUR_CALM 收口";
         EXPECT_TRUE(client.waitForClosure(frames, std::chrono::seconds{2})) << "GOAWAY 之后连接没有收口";
+
+        client.closeNow();
+        EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";
+        EXPECT_FALSE(fixture.startThrew());
+    }
+
+    /**
+     * @brief 钉住：头块预算到点后，隧道收尾的 GOAWAY 不能等到业务协程返回才写出
+     * @details 隧道业务挂在定时器上、不再拉取消息，另一条流把头块停在拼接态。预算到点后隧道循环
+     *          立即跳出，随后要等待 businessTask；业务不返回，收口就一直拖到它结束。GOAWAY 若只
+     *          排进待发字节而等业务返回后才写，对端在这整段时间里只看得到一条没解释的连接。
+     *          清扫节拍刻意放慢：本用例钉的是「跳出循环即写出」这一顺序，不让清扫协程与下一段
+     *          CONTINUATION 抢同一毫秒。
+     */
+    TEST(Http2CleartextSession, FlushesTunnelGoAwayBeforeAwaitingBusiness)
+    {
+        HttpServerLimits limits     = makeCleartextLimits();
+        limits.requestHeaderTimeout = std::chrono::milliseconds{300};
+
+        std::atomic<bool> isBusinessHeld{false};
+
+        RunningHttpServerFixture fixture(
+                limits, std::chrono::seconds{5}, {},
+                [&isBusinessHeld](Router &router, Core::EventLoop &loop)
+                {
+                    router.get("/held-chat",
+                               [&loop, &isBusinessHeld](HttpRequest &, HttpResponse &response) -> Core::Task<>
+                               {
+                                   response.upgradeToWebSocket(
+                                           [&loop, &isBusinessHeld](WebSocketPeer &) -> Core::Task<>
+                                           {
+                                               Core::Timer holdTimer(loop);
+                                               isBusinessHeld.store(true, std::memory_order_release);
+                                               co_await holdTimer.waitFor(kTunnelGoAwayBusinessHold);
+                                           });
+                                   co_return;
+                               });
+                },
+                HttpParserLimits{}, [](TestHttpServer &server) { server.setHttp2CleartextEnabled(true); });
+        ASSERT_TRUE(fixture.awaitRunning(kWaitTimeout)) << "HTTP 服务器未在时限内进入接受循环";
+
+        CleartextHttp2Client client(fixture.listeningPort());
+        ASSERT_TRUE(client.isValid()) << "明文回环连接失败";
+
+        std::vector<Http2Frame> frames;
+        ASSERT_TRUE(client.sendBytes(std::string(kHttp2ConnectionPreface) + encodeHttp2SettingsFrame(Http2SettingsPayload{}), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames, [](const std::vector<Http2Frame> &receivedFrames) { return !receivedFrames.empty() && receivedFrames.front().header.type == Http2FrameType::Settings; },
+                kWaitTimeout))
+                << "没有在时限内收到服务端的初始 SETTINGS";
+
+        // 立起隧道（流 1）：业务进入后挂到定时器上，此后不再碰对端对象
+        ASSERT_TRUE(client.sendBytes(makeRequestHeadersFrame(1U, makeWebSocketTunnelHeaderBlock("/held-chat"), false), kWaitTimeout));
+        ASSERT_TRUE(client.pumpUntil(
+                frames,
+                [](const std::vector<Http2Frame> &receivedFrames)
+                {
+                    return std::any_of(receivedFrames.begin(), receivedFrames.end(),
+                                       [](const Http2Frame &frame) { return frame.header.streamId == 1U && frame.header.type == Http2FrameType::Headers; });
+                },
+                kWaitTimeout))
+                << "隧道没有建立";
+        ASSERT_TRUE(AsynGyanis::TestSupport::waitForCondition([&isBusinessHeld] { return isBusinessHeld.load(std::memory_order_acquire); }, kWaitTimeout)) << "隧道业务没有进入";
+
+        // 另一条流：头块只发开头一片，此后每 100 毫秒续一个字节，从头到尾不给 END_HEADERS
+        const std::string headerBlock = makeGetRequestHeaderBlock("/hello");
+        ASSERT_TRUE(client.sendBytes(makeOpenEndedHeadersFrame(3U, headerBlock.substr(0, 1)), kWaitTimeout)) << "流 3 的 HEADERS 未能写入";
+
+        // 观察窗比业务挂起时长短得多：GOAWAY 若被压到业务返回之后，这里就看不到
+        const auto  observationDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{800};
+        bool        isGoAwaySeen        = false;
+        std::size_t fragmentIndex       = 1;
+        while (!isGoAwaySeen && std::chrono::steady_clock::now() < observationDeadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            const bool isContinuationSent =
+                    client.sendBytes(makeContinuationFrame(3U, headerBlock.substr(fragmentIndex % headerBlock.size(), 1), false), std::chrono::milliseconds{200});
+            ++fragmentIndex;
+            isGoAwaySeen = client.pumpUntil(
+                    frames, [](const std::vector<Http2Frame> &receivedFrames)
+                    { return std::any_of(receivedFrames.begin(), receivedFrames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; }); },
+                    std::chrono::milliseconds{50});
+            if (!isContinuationSent)
+            {
+                // 服务端已经收口：写出失败本身就是证据，GOAWAY 必须已经在手上
+                break;
+            }
+        }
+        ASSERT_TRUE(isGoAwaySeen) << "头块预算到点后，隧道业务挂在定时器上，800 毫秒内没有收到 GOAWAY：收口通告被压到业务返回之后";
+
+        const auto goAwayFrame = std::find_if(frames.begin(), frames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; });
+        ASSERT_NE(goAwayFrame, frames.end());
+        EXPECT_EQ(readGoAwayErrorCode(goAwayFrame->payload), Http2ErrorCode::EnhanceYourCalm) << "头块超时应按 ENHANCE_YOUR_CALM 收口";
 
         client.closeNow();
         EXPECT_TRUE(fixture.awaitConnectionsDrained(kWaitTimeout)) << "会话收口后未从连接管理器摘除";

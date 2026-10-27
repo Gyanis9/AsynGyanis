@@ -1850,9 +1850,12 @@ namespace AsynGyanis::Net
         // 失败连接不再拼任何头块：不清的话 pendingHeaderBlockStartedAt() 会一直报「正在拼头块」，
         // 上层据此把已死的连接继续按头块预算收口
         clearHeaderBlockAssembly();
-        m_state        = Http2ConnectionState::Failed;
-        m_errorCode    = errorCode;
-        m_errorMessage = std::move(reason);
+        // 半块字节也一并丢掉：失败态不会再拼新块，别让一条已死的连接把最多
+        // maximumHeaderBlockByteCount 的缓冲与内容带到析构
+        m_pendingHeaderBlock = std::string{};
+        m_state              = Http2ConnectionState::Failed;
+        m_errorCode          = errorCode;
+        m_errorMessage       = std::move(reason);
         // 连接错误必须让对端看见：GOAWAY 带上本端处理过的最大流号与错误码（§5.4.1、§6.8）
         Http2GoAwayPayload payload;
         payload.lastStreamId = m_highestPeerStreamId;

@@ -769,9 +769,11 @@ namespace AsynGyanis::Net
 
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Headers, kHttp2FlagEndStream, 1U, firstPart)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty()) << "END_HEADERS 之前不得交出请求";
+        EXPECT_TRUE(connection.pendingHeaderBlockStartedAt().has_value()) << "HEADERS 已到而 END_HEADERS 未到时应报正在拼头块";
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Continuation, 0, 1U, secondPart)), Http2ConnectionFeedStatus::NeedMore);
         EXPECT_TRUE(connection.takeRequests().empty());
         EXPECT_EQ(feed(connection, makeFrame(Http2FrameType::Continuation, kHttp2FlagEndHeaders, 1U, thirdPart)), Http2ConnectionFeedStatus::NeedMore);
+        EXPECT_FALSE(connection.pendingHeaderBlockStartedAt().has_value()) << "头块收齐后总时限的起点必须清掉，否则正常连接会被头块预算误杀";
 
         const std::vector<Http2Request> requests = connection.takeRequests();
         ASSERT_EQ(requests.size(), 1U);
