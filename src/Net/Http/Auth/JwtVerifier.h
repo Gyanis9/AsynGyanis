@@ -88,7 +88,7 @@ namespace AsynGyanis::Net
     [[nodiscard]] ASYN_NET_API bool verifyRs256(const ParsedJwt &parsed, EVP_PKEY *publicKey);
 
     /**
-     * @brief 声明校验的期望值（都为空时只校时间）
+     * @brief 声明校验的期望值（exp 必填；iss / aud 为空时不校）
      */
     struct JwtClaimExpectations
     {
@@ -99,13 +99,13 @@ namespace AsynGyanis::Net
 
     /**
      * @brief 校验 exp / nbf / iss / aud
-     * @details 时间声明按 RFC 7519 §4.1.4 / §4.1.5 解读为 NumericDate（秒）；未给出 exp 或 nbf 时
-     *          该项不判（规范允许缺省），但 iss / aud 一旦在期望里给出就必须命中。时钟由调用方传入，
-     *          本层不读系统时间——用例因此可以对「过期前一秒、过期后一秒」逐点证伪。
+     * @details 时间声明按 RFC 7519 §4.1.4 / §4.1.5 解读为 NumericDate（秒）；exp 必填，缺失即拒，
+     *          nbf 未给出时该项不判。iss / aud 由调用方按部署给出：期望为空表示不校，给出即必须命中。
+     *          时钟由调用方传入，本层不读系统时间——用例因此可以对「过期前一秒、过期后一秒」逐点证伪。
      * @param payloadJson 载荷段的 JSON 文本
      * @param expectations 期望值
      * @param now 当前时刻
-     * @return std::optional<std::string> 通过为空；不通过给出中文原因
+     * @return std::optional<std::string> 通过为空；不通过给出中文原因（exp 缺失时点名 exp）
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::string> validateJwtClaims(std::string_view payloadJson, const JwtClaimExpectations &expectations,
                                                                             std::chrono::system_clock::time_point now);
@@ -119,6 +119,7 @@ namespace AsynGyanis::Net
      * @return std::optional<std::string> 通过为空；不通过给出中文原因（可直接进日志或回给调用方）
      * @note 任何一步失败都只给原因、不抛异常：验签属于「对端输入驱动」的路径，抛异常会让每条
      *       畸形令牌都变成一次异常分发
+     * @note 声明校验要求 exp 必填；iss / aud 按调用方给出的期望决定是否校验
      */
     [[nodiscard]] ASYN_NET_API std::optional<std::string> verifyJwtRs256(std::string_view token, EVP_PKEY *publicKey, const JwtClaimExpectations &expectations,
                                                                          std::chrono::system_clock::time_point now);

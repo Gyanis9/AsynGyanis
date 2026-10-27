@@ -310,17 +310,20 @@ namespace AsynGyanis::Net
         // 过大的偏差也没有实际意义。先钳偏差、再按差值比较，避免 exp/nbf 取到 int64 边界时相加溢出
         const std::int64_t skew = std::clamp<std::int64_t>(expectations.clockSkew.count(), 0, 86400 * 365);
 
-        // exp：到期之后（含偏差）一律拒——now < exp + skew 才放行。差值用无符号算：
+        // exp 必填：缺少时不能把「没有到期时间」当成「永不过期」——那会让任何不带 exp 的令牌
+        // 绕过时间校验。到期之后（含偏差）一律拒——now < exp + skew 才放行。差值用无符号算：
         // 有符号的 now - exp 在 exp 取到 int64_min 时会溢出，无符号减法在这种两数之差的场景仍然精确
-        if (const std::optional<std::int64_t> expiration = readNumericDate(payload, "exp"); expiration.has_value())
+        const std::optional<std::int64_t> expiration = readNumericDate(payload, "exp");
+        if (!expiration.has_value())
         {
-            if (*expiration <= nowSeconds)
+            return "JWT 缺少 exp：请让签发方带上过期时间，或改用不依赖本校验器的通道";
+        }
+        if (*expiration <= nowSeconds)
+        {
+            const std::uint64_t expiredSeconds = static_cast<std::uint64_t>(nowSeconds) - static_cast<std::uint64_t>(*expiration);
+            if (expiredSeconds >= static_cast<std::uint64_t>(skew))
             {
-                const std::uint64_t expiredSeconds = static_cast<std::uint64_t>(nowSeconds) - static_cast<std::uint64_t>(*expiration);
-                if (expiredSeconds >= static_cast<std::uint64_t>(skew))
-                {
-                    return "JWT 已过期（exp 已过，允许偏差 " + std::to_string(skew) + " 秒）";
-                }
+                return "JWT 已过期（exp 已过，允许偏差 " + std::to_string(skew) + " 秒）";
             }
         }
 

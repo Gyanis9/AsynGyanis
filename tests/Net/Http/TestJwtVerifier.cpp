@@ -9,6 +9,7 @@
 // - TreatsInt64MaxExpAsNeverExpiring / TreatsInt64MinExpAsAlreadyExpired / TreatsInt64MaxNotBeforeAsNotYetValid
 //   （时间声明取到 int64 边界：判定不得因相加或转换溢出而反转）
 // - TreatsUnsignedMaxExpAsNeverExpiring（exp 为 uint64 上限：按无符号读出，不得回绕成负数而反判过期）
+// - RejectsTokenWithoutExpiration（exp 必填：缺失即拒，不跳过时间校验）
 // - JwkRoundTripsExportedKeyMaterial（JWK 构造的公钥与原键同解，并能验真令牌）
 
 #include "ExpectedAssertions.h"
@@ -246,6 +247,17 @@ namespace AsynGyanis::Net
 
         const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
         EXPECT_FALSE(reason.has_value()) << *reason;
+    }
+
+    TEST_F(JwtVerifierTest, RejectsTokenWithoutExpiration)
+    {
+        // 不带 exp：旧实现直接跳过时间校验，令牌是否过期无从判断；新语义要求签发方给出到期时刻
+        const std::string token = makeToken(defaultHeader(), R"({"iss":"https://issuer.example","aud":"https://api.example","sub":"user-1"})", signingKey.get());
+
+        const std::optional<std::string> reason = verifyJwtRs256(token, signingKey.get(), JwtClaimExpectations{}, atUnixSeconds(kNowSeconds));
+        ASSERT_HAS_VALUE(reason);
+        EXPECT_NE(reason->find("exp"), std::string::npos) << *reason;
+        EXPECT_NE(reason->find("缺少"), std::string::npos) << *reason;
     }
 
     TEST_F(JwtVerifierTest, TreatsInt64MinExpAsAlreadyExpired)
