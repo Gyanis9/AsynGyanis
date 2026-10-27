@@ -2623,22 +2623,22 @@ namespace AsynGyanis::Net
         const std::string headerBlock = makeGetRequestHeaderBlock("/hello");
         ASSERT_TRUE(client.sendBytes(makeOpenEndedHeadersFrame(3U, headerBlock.substr(0, 1)), kWaitTimeout)) << "流 3 的 HEADERS 未能写入";
 
-        const auto  observationDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        bool        isGoAwaySeen        = false;
-        std::size_t fragmentIndex       = 1;
+        const auto observationDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        const auto hasGoAway           = [](const std::vector<Http2Frame> &receivedFrames)
+        { return std::any_of(receivedFrames.begin(), receivedFrames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; }); };
+        bool        isGoAwaySeen  = false;
+        std::size_t fragmentIndex = 1;
         while (!isGoAwaySeen && std::chrono::steady_clock::now() < observationDeadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
             const bool isContinuationSent =
                     client.sendBytes(makeContinuationFrame(3U, headerBlock.substr(fragmentIndex % headerBlock.size(), 1), false), std::chrono::milliseconds{200});
             ++fragmentIndex;
-            isGoAwaySeen = client.pumpUntil(
-                    frames, [](const std::vector<Http2Frame> &receivedFrames)
-                    { return std::any_of(receivedFrames.begin(), receivedFrames.end(), [](const Http2Frame &frame) { return frame.header.type == Http2FrameType::GoAway; }); },
-                    std::chrono::milliseconds{50});
+            isGoAwaySeen = client.pumpUntil(frames, hasGoAway, std::chrono::milliseconds{50});
             if (!isContinuationSent)
             {
-                // 服务端已经收口：写出失败本身就是证据，GOAWAY 必须已经在手上
+                // 服务端可能已经发完 GOAWAY 并关描述符；写出失败时缓冲里还可能剩最后一帧，补一次有界读取再判定
+                isGoAwaySeen = client.pumpUntil(frames, hasGoAway, std::chrono::milliseconds{500});
                 break;
             }
         }
