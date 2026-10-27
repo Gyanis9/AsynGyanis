@@ -451,6 +451,26 @@ namespace AsynGyanis::Core
     }
 
     /**
+     * @brief 客户端策略未显式给下限时落 TLS 1.2，而不是交给 OpenSSL 的发行版默认档
+     */
+    TEST(TlsContext, ClientDefaultMinimumVersionIsTls12)
+    {
+        TlsContext client(TlsPolicy{}, TlsContext::Role::Client);
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(client.nativeHandle()), TLS1_2_VERSION);
+    }
+
+    /**
+     * @brief 显式下限优先于默认档：策略点名 1.3 时客户端上下文不得停在 1.2
+     */
+    TEST(TlsContext, ClientExplicitMinimumVersionWins)
+    {
+        TlsPolicy policy;
+        policy.minimumProtocolVersion = TlsPolicy::ProtocolVersion::Tls1_3;
+        const TlsContext client(policy, TlsContext::Role::Client);
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(client.nativeHandle()), TLS1_3_VERSION);
+    }
+
+    /**
      * @brief 服务端不接受重协商：客户端发起的重握手是一条按单条连接放大的 CPU 消耗通道
      * @details 断言落在配置面（与本文件其余加固项同一层次）：选项位挂在 SSL_CTX 上，
      *          构造与热轮换两条创建路径因此共用同一份加固。TLS 1.3 本身没有重协商，

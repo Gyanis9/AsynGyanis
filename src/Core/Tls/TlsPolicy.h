@@ -47,7 +47,7 @@ namespace AsynGyanis::Core
             Tls1_3, ///< TLS 1.3
         };
 
-        /// 最低协议版本；空表示用本角色的默认（服务端补 TLS 1.2；客户端不补下限；QUIC 只能 1.3）
+        /// 最低协议版本；空表示用本角色的默认（服务端与客户端都补 TLS 1.2；QUIC 只能 1.3）
         std::optional<ProtocolVersion> minimumProtocolVersion;
         /// 最高协议版本；空表示用 OpenSSL 支持到的那一档
         std::optional<ProtocolVersion> maximumProtocolVersion;

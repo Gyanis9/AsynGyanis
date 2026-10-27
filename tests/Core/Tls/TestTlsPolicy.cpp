@@ -88,19 +88,18 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 钉住：服务端的 TLS 1.2 下限仍在，且是「角色」给的而不是策略里写死的
-     * @details 改造前那句 SSL_CTX_set_min_proto_version(TLS1_2_VERSION) 直接写在加固函数里；
-     *          现在它等价地表达为「服务端角色 + 未指定下限时补 1.2」。老调用方（不带参数的
-     *          TlsContext 构造）必须读到同一个下限，否则一次不改配置的升级就把 TLS 1.0 放回来了。
+     * @brief 钉住：服务端与客户端在策略未显式给下限时都落 TLS 1.2
+     * @details 下限由角色这一层补齐，而不是 OpenSSL 的默认档：换库或配置漂移时默认档可能
+     *          落回旧协议，两侧读到同一个下限才算把这件事钉住。显式值仍优先（见下一条用例）。
      */
-    TEST(TlsPolicy, ServerRoleKeepsTheTls12FloorAndClientRoleDoesNot)
+    TEST(TlsPolicy, BothRolesKeepTheTls12FloorByDefault)
     {
         const TlsContext serverContext;
         EXPECT_EQ(SSL_CTX_get_min_proto_version(serverContext.nativeHandle()), TLS1_2_VERSION);
 
         const TlsContext clientContext(TlsPolicy{}, TlsContext::Role::Client);
-        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.nativeHandle()), 0) << "客户端被强加服务端的下限，等于把本可以连上的对端拒掉";
-        // 但加固照做：等级 2 与「不协商压缩」两侧同档
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.nativeHandle()), TLS1_2_VERSION) << "客户端未设下限，实际协议档位交给 OpenSSL 默认决定";
+        // 加固照做：等级 2 与「不协商压缩」两侧同档
         EXPECT_EQ(SSL_CTX_get_security_level(clientContext.nativeHandle()), 2);
         EXPECT_NE(SSL_CTX_get_options(clientContext.nativeHandle()) & SSL_OP_NO_COMPRESSION, 0UL);
     }
@@ -278,18 +277,19 @@ namespace AsynGyanis::Core
     }
 
     /**
-     * @brief 钉住：客户端一侧不预设套件列表，也不被强加 1.2 下限
+     * @brief 钉住：客户端一侧不预设套件列表，且 applyTlsPolicy 自己不发明版本下限
      * @details 出站连接面对的是「对面有什么就说什么」：把服务端的排除表套到客户端上，可能把本可以
      *          连上的服务器拒掉，而那种失败在调用方看来只是「握手失败」。builtInCipherList 传
-     *          nullptr 就是这条语义的开关。
+     *          nullptr 就是这条语义的开关。版本下限属于角色层（TlsContext 补 1.2），本函数只认
+     *          策略里显式给的值，直接施加到裸上下文上时下限必须原样不动。
      */
-    TEST(TlsPolicy, ClientRoleAppliesNoBuiltInCipherListAndNoVersionFloor)
+    TEST(TlsPolicy, ClientRoleAppliesNoBuiltInCipherListAndApplyPolicyInventsNoFloor)
     {
         const RawContext untouched(false);
         const RawContext clientContext(false);
         applyTlsPolicy(clientContext.get(), TlsPolicy{}, nullptr);
 
-        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.get()), 0) << "客户端角色不该被强加服务端的下限";
+        EXPECT_EQ(SSL_CTX_get_min_proto_version(clientContext.get()), 0) << "applyTlsPolicy 替调用方发明了下限";
         const STACK_OF(SSL_CIPHER) *untouchedCiphers = SSL_CTX_get_ciphers(untouched.get());
         const STACK_OF(SSL_CIPHER) *clientCiphers    = SSL_CTX_get_ciphers(clientContext.get());
         ASSERT_NE(untouchedCiphers, nullptr);

@@ -235,10 +235,11 @@ namespace AsynGyanis::Core
         }
 
         // 加固项里属于「策略」的那一批（安全等级、版本区间、套件与曲线、信任库、票据）交给
-        // applyTlsPolicy，一处实现；服务端那一档默认值也在这里补进策略，而不是散在两段代码里：
-        // 最低协议限定 TLS 1.2（RFC 8996 已把 1.0/1.1 列为废弃，两者仍有已知攻击面与过时算法组合）
+        // applyTlsPolicy，一处实现；两侧的默认下限也在这里补进策略，而不是散在两段代码里：
+        // 最低协议限定 TLS 1.2（RFC 8996 已把 1.0/1.1 列为废弃，两者仍有已知攻击面与过时算法组合），
+        // 不依赖 OpenSSL 的发行版默认档
         TlsPolicy effectivePolicy = policy;
-        if (role == Role::Server && !effectivePolicy.minimumProtocolVersion.has_value())
+        if (!effectivePolicy.minimumProtocolVersion.has_value())
         {
             effectivePolicy.minimumProtocolVersion = TlsPolicy::ProtocolVersion::Tls1_2;
         }
