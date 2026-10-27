@@ -385,40 +385,10 @@ namespace AsynGyanis::Net
             return configuration;
         }
         /**
-         * @brief 手拼一条客户端 Initial：目的/源标识与 Token 字段都由调用方给
-         * @details 刻意不借被测的组包器：这条报文是「对端发来的东西」，用自家编码器拼就等于让实现
-         *          自己给自己出题。长度字段按「包号 1 字节 + 载荷」算，载荷是纯垃圾——本文件的判据
-         *          只到「头部读得懂、令牌验得过」为止，后面的解密注定失败。
-         * @param destinationConnectionId 目的标识（本端在此识别连接）
-         * @param sourceConnectionId 本端自报的源标识
-         * @param token 令牌字段，空即「还没验过地址」
-         * @param payloadByteCount 垃圾载荷字节数
-         */
-        std::vector<std::uint8_t> makeClientInitial(const std::vector<std::uint8_t> &destinationConnectionId, const std::vector<std::uint8_t> &sourceConnectionId,
-                                                    const std::vector<std::uint8_t> &token, const std::size_t payloadByteCount)
-        {
-            std::vector<std::uint8_t> packet{0xC0U, 0x00U, 0x00U, 0x00U, 0x01U};
-            packet.push_back(static_cast<std::uint8_t>(destinationConnectionId.size()));
-            packet.insert(packet.end(), destinationConnectionId.begin(), destinationConnectionId.end());
-            packet.push_back(static_cast<std::uint8_t>(sourceConnectionId.size()));
-            packet.insert(packet.end(), sourceConnectionId.begin(), sourceConnectionId.end());
-            // 两处长度都用变长整数的一字节档（本文件的取值都小于 64）
-            packet.push_back(static_cast<std::uint8_t>(token.size()));
-            packet.insert(packet.end(), token.begin(), token.end());
-            packet.push_back(static_cast<std::uint8_t>(1U + payloadByteCount));
-            packet.push_back(0x00U); // 包号：一字节档的 0
-            for (std::size_t index = 0; index < payloadByteCount; ++index)
-            {
-                packet.push_back(static_cast<std::uint8_t>(0x20U + index));
-            }
-            return packet;
-        }
-
-        /**
          * @brief 手拼一条补齐到 1200 字节的客户端 Initial
-         * @details 与 `makeClientInitial` 的区别只在长度：那个函数刻意拼最小可解析形状（66 字节），
-         *          小于 §14.1 门槛的 Initial 现在会被服务端入口整条丢掉。需要走进正常流程的夹具用本函数；
-         *          Length 域按两字节档写，载荷是纯垃圾——判据只到「头部读得懂、令牌验得过」为止。
+         * @details 与最小可解析形状的区别只在长度：小于 §14.1 门槛的 Initial 会被服务端入口整条丢掉；
+         *          需要走进正常流程的夹具用本函数。Length 域按两字节档写，载荷是纯垃圾——判据只到
+         *          「头部读得懂、令牌验得过」为止。
          * @param destinationConnectionId 目的标识（本端在此识别连接）
          * @param sourceConnectionId 本端自报的源标识
          * @param token 令牌字段，空即「还没验过地址」
