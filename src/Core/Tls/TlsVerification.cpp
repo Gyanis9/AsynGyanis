@@ -1,15 +1,18 @@
 #include "Core/Tls/TlsContext.h"
+#include "Core/Tls/TlsVerification.h"
 
 #include "Base/Log/LogMacros.h"
 #include "Core/Exception/CoreException.h"
 
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/ocsp.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -318,5 +321,174 @@ namespace AsynGyanis::Core
                 }
             }
         }
+    }
+
+    namespace
+    {
+        /// OCSP_RESPONSE 的 RAII 释放器
+        struct OcspResponseDeleter
+        {
+            void operator()(OCSP_RESPONSE *response) const noexcept
+            {
+                OCSP_RESPONSE_free(response);
+            }
+        };
+
+        /// OCSP_BASICRESP 的 RAII 释放器
+        struct OcspBasicResponseDeleter
+        {
+            void operator()(OCSP_BASICRESP *basic) const noexcept
+            {
+                OCSP_BASICRESP_free(basic);
+            }
+        };
+
+        /// OCSP_CERTID 的 RAII 释放器
+        struct OcspCertificateIdDeleter
+        {
+            void operator()(OCSP_CERTID *certificateId) const noexcept
+            {
+                OCSP_CERTID_free(certificateId);
+            }
+        };
+
+        /**
+         * @brief 取走 OpenSSL 错误栈里最靠外的一条并清空队列
+         * @return std::string 错误原文；队列为空时返回空串
+         */
+        [[nodiscard]] std::string takeOpenSslDiagnosticText()
+        {
+            std::string detail;
+            if (const unsigned long queueEntry = ERR_get_error(); queueEntry != 0)
+            {
+                char buffer[256];
+                ERR_error_string_n(queueEntry, buffer, sizeof(buffer));
+                detail = buffer;
+            }
+            ERR_clear_error();
+            return detail;
+        }
+
+        /**
+         * @brief 以统一的「校验对端装订的 OCSP 响应失败」前缀抛出，并清空 OpenSSL 错误队列
+         * @param reason 具体是哪一项没通过
+         */
+        [[noreturn]] void throwOcspVerificationFailure(const std::string &reason)
+        {
+            const std::string detail = takeOpenSslDiagnosticText();
+            if (detail.empty())
+            {
+                throw CoreException("校验对端装订的 OCSP 响应失败：" + reason);
+            }
+            throw CoreException("校验对端装订的 OCSP 响应失败：" + reason + "（OpenSSL 报：" + detail + "）");
+        }
+
+        /**
+         * @brief 把叶证书的 OCSP 状态写成报错文案
+         * @param status V_OCSP_CERTSTATUS_* 取值
+         * @return const char* 状态名；无法识别时给出说明
+         */
+        [[nodiscard]] const char *certificateStatusName(const int status) noexcept
+        {
+            switch (status)
+            {
+                case V_OCSP_CERTSTATUS_GOOD:
+                    return "GOOD";
+                case V_OCSP_CERTSTATUS_REVOKED:
+                    return "REVOKED";
+                case V_OCSP_CERTSTATUS_UNKNOWN:
+                    return "UNKNOWN";
+                default:
+                    return "无法识别的状态";
+            }
+        }
+    } // namespace
+
+
+    void verifyStapledOcspResponse(SSL *const ssl)
+    {
+        if (ssl == nullptr)
+        {
+            ERR_clear_error();
+            throw CoreException("校验对端装订的 OCSP 响应失败：TLS 会话为空");
+        }
+
+        // 先清空错误栈：失败文案里的 OpenSSL 原文必须来自本次校验，而不是更早的调用
+        ERR_clear_error();
+
+        unsigned char *responseBytes  = nullptr;
+        const long     responseLength = SSL_get_tlsext_status_ocsp_resp(ssl, &responseBytes);
+        if (responseLength <= 0 || responseBytes == nullptr)
+        {
+            // 服务端没有装订（或本端没有请求）：不强制，握手照常完成
+            ERR_clear_error();
+            return;
+        }
+
+        const unsigned char                                      *cursor = responseBytes;
+        const std::unique_ptr<OCSP_RESPONSE, OcspResponseDeleter> response(d2i_OCSP_RESPONSE(nullptr, &cursor, responseLength));
+        if (response == nullptr)
+        {
+            throwOcspVerificationFailure("装订内容不是合法的 DER 编码");
+        }
+
+        const int responseStatus = OCSP_response_status(response.get());
+        if (responseStatus != OCSP_RESPONSE_STATUS_SUCCESSFUL)
+        {
+            throwOcspVerificationFailure("响应状态不是 successful（当前 " + std::to_string(responseStatus) + "）");
+        }
+
+        const std::unique_ptr<OCSP_BASICRESP, OcspBasicResponseDeleter> basic(OCSP_response_get1_basic(response.get()));
+        if (basic == nullptr)
+        {
+            throwOcspVerificationFailure("响应里没有 basicResponse");
+        }
+
+        // 签名校验与 CertID 匹配都要用到握手时已经验过的链：叶证书在第 0 位，签发者在第 1 位
+        STACK_OF(X509) *const verifiedChain = SSL_get0_verified_chain(ssl);
+        if (verifiedChain == nullptr || sk_X509_num(verifiedChain) < 2)
+        {
+            throwOcspVerificationFailure("拿不到已校验的证书链（客户端未开启对端证书校验，或链不完整）");
+        }
+        X509 *const leaf   = sk_X509_value(verifiedChain, 0);
+        X509 *const issuer = sk_X509_value(verifiedChain, 1);
+
+        SSL_CTX *const    sslContext = SSL_get_SSL_CTX(ssl);
+        X509_STORE *const store      = sslContext != nullptr ? SSL_CTX_get_cert_store(sslContext) : nullptr;
+        if (store == nullptr)
+        {
+            throwOcspVerificationFailure("拿不到上下文的证书存储");
+        }
+        if (OCSP_basic_verify(basic.get(), verifiedChain, store, 0) != 1)
+        {
+            throwOcspVerificationFailure("响应的签名链校验不通过");
+        }
+
+        const std::unique_ptr<OCSP_CERTID, OcspCertificateIdDeleter> certificateId(OCSP_cert_to_id(nullptr, leaf, issuer));
+        if (certificateId == nullptr)
+        {
+            throwOcspVerificationFailure("无法为叶证书构造 CertID");
+        }
+
+        int                   certificateStatus = V_OCSP_CERTSTATUS_UNKNOWN;
+        int                   revocationReason  = 0;
+        ASN1_GENERALIZEDTIME *revocationTime    = nullptr;
+        ASN1_GENERALIZEDTIME *thisUpdate        = nullptr;
+        ASN1_GENERALIZEDTIME *nextUpdate        = nullptr;
+        if (OCSP_resp_find_status(basic.get(), certificateId.get(), &certificateStatus, &revocationReason, &revocationTime, &thisUpdate, &nextUpdate) != 1)
+        {
+            throwOcspVerificationFailure("响应里没有当前叶证书的状态");
+        }
+        if (OCSP_check_validity(thisUpdate, nextUpdate, 300, -1) != 1)
+        {
+            throwOcspVerificationFailure("响应的有效期不合法或已过期");
+        }
+        if (certificateStatus != V_OCSP_CERTSTATUS_GOOD)
+        {
+            throwOcspVerificationFailure(std::string("叶证书状态不是 GOOD（当前 ") + certificateStatusName(certificateStatus) + "）");
+        }
+
+        // 校验通过也不把中间尝试留下的错误条目带去后续调用
+        ERR_clear_error();
     }
 } // namespace AsynGyanis::Core

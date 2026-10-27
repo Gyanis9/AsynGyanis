@@ -2,7 +2,7 @@
 # 一行一条「头文件相对路径<TAB>规范化声明」，整体排序，不含时间戳与绝对路径。
 # 排除名单来自 cmake/AsynGyanisInstall.cmake 里 install(DIRECTORY src/ …) 的 EXCLUDE 项，现读不抄。
 # version=1.0.0
-# headers=310 entries=9211
+# headers=311 entries=9213
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64Decode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::optional<std::string> base64UrlDecode(std::string_view text) noexcept
 src/Base/Coding/Base64.h	[[nodiscard]] ASYN_BASE_API std::string base64Encode(std::string_view bytes)
@@ -1753,6 +1753,8 @@ src/Core/Tls/TlsSocket.h	void close()
 src/Core/Tls/TlsSocket.h	void operator()(SSL *ssl) const noexcept
 src/Core/Tls/TlsSocket.h	void requireLiveContext(std::string_view operationName) const
 src/Core/Tls/TlsSocket.h	~TlsSocket()
+src/Core/Tls/TlsVerification.h	ASYN_CORE_API void verifyStapledOcspResponse(SSL *ssl)
+src/Core/Tls/TlsVerification.h	namespace AsynGyanis::Core
 src/Database/Common/BinaryBytes.h	namespace AsynGyanis::Database
 src/Database/Common/BinaryBytes.h	namespace Detail
 src/Database/Common/BinaryBytes.h	template<> struct IsBinaryBytes<BinaryBytes> : std::true_type

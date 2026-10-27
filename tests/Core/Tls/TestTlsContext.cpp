@@ -2,10 +2,14 @@
 
 #include "Core/Tls/TlsContext.h"
 #include "Core/Tls/TlsPolicy.h"
+#include "Core/Tls/TlsSocket.h"
 
 #include "Base/Exception/Exception.h"
 #include "Base/Exception/InvalidArgumentException.h"
+#include "Core/Coroutine/Task.h"
+#include "Core/EventLoop/EventLoop.h"
 #include "Core/Exception/CoreException.h"
+#include "Core/Socket/AsyncSocket.h"
 #include "Platform/IO/FileDescriptor.h"
 #include "Platform/System/ProcessInfo.h"
 
@@ -2471,9 +2475,10 @@ namespace AsynGyanis::Core
          * @param leafCertificate 叶证书
          * @param issuerCertificate 签发者证书
          * @param issuerKey 签发者私钥
+         * @param certificateStatus 叶证书状态（GOOD 或 REVOKED），吊销用例靠它造出「签名有效但状态为拒」的响应
          * @return std::string DER 字节；任一步失败返回空串
          */
-        std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey)
+        std::string makeMatchingOcspResponseDer(X509 *leafCertificate, X509 *issuerCertificate, EVP_PKEY *issuerKey, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD)
         {
             const std::unique_ptr<OCSP_BASICRESP, decltype(&OCSP_BASICRESP_free)> basic(OCSP_BASICRESP_new(), &OCSP_BASICRESP_free);
             const std::unique_ptr<OCSP_CERTID, decltype(&OCSP_CERTID_free)>       certificateId(OCSP_cert_to_id(EVP_sha1(), leafCertificate, issuerCertificate), &OCSP_CERTID_free);
@@ -2484,7 +2489,9 @@ namespace AsynGyanis::Core
                 return {};
             }
 
-            if (OCSP_basic_add1_status(basic.get(), certificateId.get(), V_OCSP_CERTSTATUS_GOOD, 0, nullptr, thisUpdate.get(), nextUpdate.get()) == nullptr)
+            // 吊销状态必须带撤销时间，GOOD 状态则不允许带：OCSP_basic_add1_status 按状态校验这一项
+            ASN1_TIME *const revocationTime = certificateStatus == V_OCSP_CERTSTATUS_REVOKED ? thisUpdate.get() : nullptr;
+            if (OCSP_basic_add1_status(basic.get(), certificateId.get(), certificateStatus, 0, revocationTime, thisUpdate.get(), nextUpdate.get()) == nullptr)
             {
                 return {};
             }
@@ -2551,9 +2558,10 @@ namespace AsynGyanis::Core
          * @brief 造一套装订测试材料（叶证书 + 与之匹配的 OCSP 响应文件）
          * @param tag 临时文件用途标签
          * @param serialNumber 叶证书序列号
+         * @param certificateStatus 响应里的叶证书状态（GOOD 或 REVOKED）
          * @return StaplingTestMaterial 材料；任一步失败时路径为空
          */
-        StaplingTestMaterial makeStaplingTestMaterial(const std::string_view tag, const long serialNumber)
+        StaplingTestMaterial makeStaplingTestMaterial(const std::string_view tag, const long serialNumber, const int certificateStatus = V_OCSP_CERTSTATUS_GOOD)
         {
             StaplingTestMaterial material;
             material.leafCertificatePath = makeUniqueTemporaryPath(tag).replace_extension(".pem");
@@ -2570,7 +2578,7 @@ namespace AsynGyanis::Core
                 return material;
             }
 
-            material.responseBytes = makeMatchingOcspResponseDer(leaf.get(), issuer.get(), issuerKey.get());
+            material.responseBytes = makeMatchingOcspResponseDer(leaf.get(), issuer.get(), issuerKey.get(), certificateStatus);
             if (material.responseBytes.empty())
             {
                 return material;
@@ -2591,6 +2599,92 @@ namespace AsynGyanis::Core
             }
             SSL_CTX_set_max_proto_version(clientContext.get(), TLS1_2_VERSION);
             return runInProcessHandshake(serverContext, clientContext.get(), false, false, kHttp11AlpnWireFormat, sizeof(kHttp11AlpnWireFormat), true);
+        }
+
+        /// 一次真实 TlsSocket 握手的结论：两端各自是否完成与失败原因
+        struct TlsSocketHandshakeOutcome
+        {
+            bool        serverCompleted{false}; ///< 服务端握手是否完成
+            bool        clientCompleted{false}; ///< 客户端握手是否完成（含装订校验）
+            bool        setupFailed{false};     ///< 描述符或 SSL 对象建不起来（环境问题，非被测语义）
+            std::string serverErrorText;        ///< 服务端失败原因
+            std::string clientErrorText;        ///< 客户端失败原因
+        };
+
+        /**
+         * @brief 用一对本机描述符跑真实 TlsSocket 握手，覆盖客户端在 SSL_connect 之后的校验路径
+         * @param serverContext 服务端上下文（证书与可选装订响应已装好）
+         * @param clientContext 客户端上下文（信任库与对端校验已开）
+         * @return TlsSocketHandshakeOutcome 两端结论；setupFailed 表示描述符或 SSL 建不起来
+         */
+        TlsSocketHandshakeOutcome runTlsSocketHandshake(TlsContext &serverContext, TlsContext &clientContext)
+        {
+            TlsSocketHandshakeOutcome outcome;
+
+            int serverDescriptor = -1;
+            int clientDescriptor = -1;
+            if (!Platform::FileDescriptor::createPair(serverDescriptor, clientDescriptor))
+            {
+                outcome.setupFailed = true;
+                return outcome;
+            }
+
+            SSL *serverHandle = nullptr;
+            SSL *clientHandle = nullptr;
+            try
+            {
+                serverHandle = serverContext.createSSL(serverDescriptor);
+                clientHandle = clientContext.createSSL(clientDescriptor);
+            } catch (const CoreException &failure)
+            {
+                if (clientHandle != nullptr)
+                {
+                    SSL_free(clientHandle);
+                }
+                if (serverHandle != nullptr)
+                {
+                    SSL_free(serverHandle);
+                }
+                Platform::FileDescriptor::close(serverDescriptor);
+                Platform::FileDescriptor::close(clientDescriptor);
+                outcome.setupFailed     = true;
+                outcome.clientErrorText = failure.what();
+                return outcome;
+            }
+
+            EventLoop loop;
+            {
+                TlsSocket serverSocket(serverHandle, loop, AsyncSocket(loop, serverDescriptor));
+                TlsSocket clientSocket(clientHandle, loop, AsyncSocket(loop, clientDescriptor), TlsSocket::Role::Client);
+
+                Task<> serverHandshake = serverSocket.handshake();
+                Task<> clientHandshake = clientSocket.handshake();
+                static_cast<void>(serverHandshake.handle().resume());
+                static_cast<void>(clientHandshake.handle().resume());
+                if (!TestSupport::advanceUntil(loop, [&serverHandshake, &clientHandshake] { return serverHandshake.isReady() && clientHandshake.isReady(); }))
+                {
+                    outcome.setupFailed = true;
+                    return outcome;
+                }
+
+                try
+                {
+                    serverHandshake.handle().promise().result();
+                    outcome.serverCompleted = true;
+                } catch (const std::exception &failure)
+                {
+                    outcome.serverErrorText = failure.what();
+                }
+                try
+                {
+                    clientHandshake.handle().promise().result();
+                    outcome.clientCompleted = true;
+                } catch (const std::exception &failure)
+                {
+                    outcome.clientErrorText = failure.what();
+                }
+            }
+            return outcome;
         }
     } // namespace
 
@@ -2613,6 +2707,114 @@ namespace AsynGyanis::Core
         EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
         EXPECT_TRUE(outcome.clientCompleted) << outcome.clientErrorText;
         EXPECT_EQ(outcome.stapledOcspResponse, material.responseBytes) << "装订响应与加载的字节不一致";
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 客户端上下文默认请求 OCSP 装订：新建的 SSL 都带着 status_request 的类型
+     */
+    TEST(TlsContext, ClientContextRequestsOcspStapling)
+    {
+        const TlsContext client(TlsPolicy{}, TlsContext::Role::Client);
+
+        int localDescriptor = -1;
+        int peerDescriptor  = -1;
+        ASSERT_TRUE(Platform::FileDescriptor::createPair(localDescriptor, peerDescriptor));
+        SSL *ssl = client.createSSL(localDescriptor);
+        ASSERT_NE(ssl, nullptr);
+        EXPECT_EQ(SSL_get_tlsext_status_type(ssl), TLSEXT_STATUSTYPE_ocsp) << "客户端没有请求 OCSP 装订";
+
+        SSL_free(ssl);
+        Platform::FileDescriptor::close(localDescriptor);
+        Platform::FileDescriptor::close(peerDescriptor);
+    }
+
+    /**
+     * @brief 服务端装订有效响应时客户端完成握手
+     * @details 叶证书由夹具根签发，客户端信任该根并开启对端校验；装订响应的签名、
+     *          CertID、有效期与 GOOD 状态都真实有效，握手应原样完成。
+     */
+    TEST(TlsContext, ClientAcceptsValidStapledOcspResponse)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("client_ocsp_good", 0x51L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(serverContext.loadOcspResponse(material.responsePath.string()));
+
+        TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kTestCertificatePath.string();
+        clientPolicy.maximumProtocolVersion   = TlsPolicy::ProtocolVersion::Tls1_2;
+        TlsContext clientContext(clientPolicy, TlsContext::Role::Client);
+        clientContext.enableClientPeerVerification();
+
+        const TlsSocketHandshakeOutcome outcome = runTlsSocketHandshake(serverContext, clientContext);
+
+        ASSERT_FALSE(outcome.setupFailed) << outcome.clientErrorText;
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << "有效的装订响应被客户端拒了：" << outcome.clientErrorText;
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 服务端装订「已吊销」响应时客户端拒握手，且原因指向 OCSP
+     */
+    TEST(TlsContext, ClientRejectsInvalidStapledOcspResponse)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("client_ocsp_revoked", 0x52L, V_OCSP_CERTSTATUS_REVOKED);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+        ASSERT_TRUE(serverContext.loadOcspResponse(material.responsePath.string()));
+
+        TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kTestCertificatePath.string();
+        clientPolicy.maximumProtocolVersion   = TlsPolicy::ProtocolVersion::Tls1_2;
+        TlsContext clientContext(clientPolicy, TlsContext::Role::Client);
+        clientContext.enableClientPeerVerification();
+
+        const TlsSocketHandshakeOutcome outcome = runTlsSocketHandshake(serverContext, clientContext);
+
+        ASSERT_FALSE(outcome.setupFailed) << outcome.clientErrorText;
+        EXPECT_FALSE(outcome.clientCompleted) << "状态为已吊销的装订响应没有被拒";
+        EXPECT_NE(outcome.clientErrorText.find("OCSP"), std::string::npos) << "拒绝原因没有指向 OCSP：" << outcome.clientErrorText;
+        EXPECT_NE(outcome.clientErrorText.find("REVOKED"), std::string::npos) << "拒绝原因没有点明状态为已吊销：" << outcome.clientErrorText;
+
+        std::error_code errorCode;
+        std::filesystem::remove(material.leafCertificatePath, errorCode);
+        std::filesystem::remove(material.responsePath, errorCode);
+    }
+
+    /**
+     * @brief 服务端不装订时客户端照常连接：没收到响应不等于吊销检查失败
+     */
+    TEST(TlsContext, ClientAllowsServerWithoutStapledOcspResponse)
+    {
+        const StaplingTestMaterial material = makeStaplingTestMaterial("client_ocsp_absent", 0x53L);
+        ASSERT_FALSE(material.responsePath.empty()) << "装订测试材料构造失败（叶证书或 OCSP 响应）";
+
+        TlsContext serverContext;
+        ASSERT_TRUE(serverContext.loadCertificate(material.leafCertificatePath.string(), kTestKeyPath.string()));
+
+        TlsPolicy clientPolicy;
+        clientPolicy.certificateAuthorityFile = kTestCertificatePath.string();
+        clientPolicy.maximumProtocolVersion   = TlsPolicy::ProtocolVersion::Tls1_2;
+        TlsContext clientContext(clientPolicy, TlsContext::Role::Client);
+        clientContext.enableClientPeerVerification();
+
+        const TlsSocketHandshakeOutcome outcome = runTlsSocketHandshake(serverContext, clientContext);
+
+        ASSERT_FALSE(outcome.setupFailed) << outcome.clientErrorText;
+        EXPECT_TRUE(outcome.serverCompleted) << outcome.serverErrorText;
+        EXPECT_TRUE(outcome.clientCompleted) << "服务端没装订时客户端不该拒握手：" << outcome.clientErrorText;
 
         std::error_code errorCode;
         std::filesystem::remove(material.leafCertificatePath, errorCode);

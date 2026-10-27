@@ -11,6 +11,7 @@
 #include "AsynGyanisExport.h"
 
 #include "Core/Tls/TlsPeerIdentity.h"
+#include "Core/Tls/TlsVerification.h"
 
 #include "Core/Coroutine/Task.h"
 #include "Core/EventLoop/Timer.h"

@@ -258,6 +258,14 @@ namespace AsynGyanis::Core
             // 服务端那份套件列表显式排除弱算法（MD5/RC4/3DES/DES/导出级/匿名/PSK/SRP），与安全等级
             // 形成双保险；客户端一侧不预设列表——原先就没设过，设了反而可能把本可以连上的服务器拒掉
             applyTlsPolicy(context, effectivePolicy, role == Role::Server ? kServerCipherList : nullptr);
+
+            // 客户端请求 OCSP 装订：服务端装了响应才会下发，收到后由 TlsSocket 在 SSL_connect
+            // 成功后校验。请求本身不改变「服务端不装订也能连」的既有行为
+            if (role == Role::Client && SSL_CTX_set_tlsext_status_type(context, TLSEXT_STATUSTYPE_ocsp) != 1)
+            {
+                throw CoreException("创建 TLS 上下文失败：无法请求 OCSP 装订"
+                                    "（SSL_CTX_set_tlsext_status_type 返回失败）");
+            }
         } catch (...)
         {
             SSL_CTX_free(context);

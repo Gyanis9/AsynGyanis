@@ -178,6 +178,12 @@ namespace AsynGyanis::Core
             const int ret = m_role == Role::Client ? ::SSL_connect(m_ssl.get()) : ::SSL_accept(m_ssl.get());
             if (ret == 1)
             {
+                // 客户端在 SSL_connect 成功之后核对服务端装订的 OCSP 响应：未装订放行，
+                // 收到即校验；校验失败按握手失败处理，不把这条会话交给调用方
+                if (m_role == Role::Client)
+                {
+                    verifyStapledOcspResponse(m_ssl.get());
+                }
                 m_handshakeDone = true;
                 noteHandshakeCompleted(m_ssl.get());
                 co_return;
