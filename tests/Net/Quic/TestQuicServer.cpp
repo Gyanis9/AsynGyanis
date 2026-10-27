@@ -731,9 +731,9 @@ namespace AsynGyanis::Net
      */
     TEST(QuicServer, DefaultConfigurationRequiresAddressValidation)
     {
-        // 只读配置那一格：让「默认值被改回 0」红在原因所在的地方
+        // 只读配置那一格：默认值钉在 30 秒，改回 0 或改成别的数都红在原因所在的地方
         const QuicServer::Configuration defaults;
-        EXPECT_GT(defaults.addressValidationTokenLifetime.count(), 0) << "地址验证默认关着：公网端口上一条 Initial 就能换走一份 TLS 会话与流表";
+        EXPECT_EQ(defaults.addressValidationTokenLifetime, std::chrono::seconds{30}) << "地址验证的默认有效期不再是 30 秒：改回 0 等于公网端口上一条 Initial 就能换走一份 TLS 会话与流表";
 
         const Platform::Socket::Initialization network;
         Core::EventLoop                        loop;
