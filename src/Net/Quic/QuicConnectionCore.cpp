@@ -327,7 +327,7 @@ namespace AsynGyanis::Net
 
         // §7.3 要求服务端把「收到的原始目的标识」和「自己第一个 Initial 的源标识」都写进参数：
         // 这两项由本类按配置补齐，调用方漏了也照样合法，免得每条连接都要手抄一遍再抄错。
-        // 客户端一侧相反：原始目的标识只有在接住 Retry 之后才允许出现（本实现不做 Retry，故必须不写），
+        // 客户端一侧相反：这一项只许服务端发（RFC 9000 §18.2），走过 Retry 也一样不写；
         // 写了会被对端按非法参数收口
         QuicTransportParameters localParameters = m_configuration.transportParameters;
         if (isLocalServer())
